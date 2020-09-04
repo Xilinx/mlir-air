@@ -1,0 +1,6 @@
+PETALINUX_VER=2020.1
+VALIDATE_HW_CHKSUM=1
+HARDWARE_PATH=/scratch/jefff/test/training-architectures/src/acdc/air/platforms/xilinx_vck190_air/vivado/xilinx_vck190_air.xsa
+HARDWARE_CHECKSUM=0c00a91bcbfeca693ad1ff08563a35c1
+YOCTO_SDK=b034efc026f5f7d24a4732927cb62e43
+RFSCONFIG_CHKSUM=6937b2401fd0b90326a1c315aeca4bd3
