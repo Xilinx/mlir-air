@@ -11,17 +11,23 @@ export COMMON_RFS_KRNL_SYSROOT = TRUE
 $(PLATOFORM): all
 all: $(PLATFORM)
 
-$(PLATFORM): xsa petalinux_proj
+$(PLATFORM): xsa petalinux_build
 	@echo 'Platform build complete'
 
 xsa:
 	$(MAKE) -C vivado PLATFORM=$(PLATFORM)
 
-petalinux_proj:
+xsa_clean:
+	$(MAKE) -C vivado clean PLATFORM=$(PLATFORM)
+
+petalinux_build:
 	$(MAKE) -C petalinux all XSA_DIR=$(XSA_DIR) PLATFORM=$(PLATFORM)
 
-peta_sysroot:
+petalinux_sysroot:
 	$(MAKE) -C petalinux sysroot
+
+petalinux_clean:
+	$(MAKE) -C petalinux ultraclean PLATFORM=$(PLATFORM)
 
 ifeq ($(COMMON_RFS_KRNL_SYSROOT), TRUE)
 pfm:
@@ -36,7 +42,6 @@ pfm:
 	cp -rf platform_repo/tmp/sw_components/src/${CPU_ARCH}/xrt/filesystem platform_repo/${PLATFORM}/export/${PLATFORM}/sw/${PLATFORM}/
 endif
 
-cleanall:
+cleanall: petalinux_clean xsa_clean
 	${RM} -r platform_repo
-	$(MAKE) -C vivado clean PLATFORM=$(PLATFORM)
-	$(MAKE) -C petalinux ultraclean PLATFORM=$(PLATFORM)
+	
