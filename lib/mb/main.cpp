@@ -3,13 +3,14 @@
 #include <cstring>
 
 extern "C" {
-#include "platform.h"
 #include "xil_printf.h"
 #include "mb_interface.h"
 
 #include "acdc_queue.h"
 #include "hsa_defs.h"
 }
+
+#include "platform.h"
 
 #define MB_QUEUE_SIZE 128
 

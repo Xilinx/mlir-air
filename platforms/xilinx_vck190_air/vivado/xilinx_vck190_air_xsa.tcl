@@ -80,7 +80,7 @@ if { $list_projs eq "" } {
    set_property BOARD_PART xilinx.com:vck190_es:part0:1.0 [current_project]
 }
 
-set_property ip_repo_paths {../../../../../../../segment-architecture/hardware/dma_subsystem} [current_project]
+set_property ip_repo_paths {../../../segment-architecture/hardware/dma_subsystem} [current_project]
 update_ip_catalog
 
 

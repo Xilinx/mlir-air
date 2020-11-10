@@ -1,63 +1,16 @@
+#VITIS_BIN := /proj/xbuilds/SWIP/2020.1_0602_1208/installs/lin64/Vitis/2020.1/bin
+#VIVADO_BIN := /proj/xbuilds/SWIP/2020.1_0602_1208/installs/lin64/Vivado/2020.1/bin
 
-LIBS := -Wl,--start-group,-lxil,-lgcc,-lc,--end-group
+PROJECT := ../../platforms/xilinx_vck190_air/vivado/xilinx_vck190_air.xsa
+PROJECT_SOURCES :=  ../../platforms/xilinx_vck190_air/vivado/myproj/project_1.srcs/sources_1
 
-
-# Add inputs and outputs from these tool invocations to the build variables 
-LD_SRCS += \
-	lscript.ld 
-
-C_SRCS += \
-	main.c \
-	platform.c 
-
-OBJS += \
-	main.o \
-	platform.o 
-
-C_DEPS += \
-	main.d \
-	platform.d 
-# Add inputs and outputs from these tool invocations to the build variables 
-ELFSIZE += \
-main.elf.size \
-
-# All Target
-all: main.elf secondary-outputs
-
-# Tool invocations
-main.elf: $(OBJS) lscript.ld $(USER_OBJS)
-	@echo 'Building target: $@'
-	@echo 'Invoking: MicroBlaze gcc linker'
-	mb-gcc -m64 -Wl,-T -Wl,lscript.ld -L/scratch/jefff/test/training-architectures/src/acdc/air/platforms/xilinx_vck190_air/workspace/project_1_wrapper/export/project_1_wrapper/sw/project_1_wrapper/domain_microblaze_0/bsplib/lib -mlittle-endian -mxl-barrel-shift -mcpu=v11.0 -mxl-soft-mul -Wl,--no-relax -Wl,--gc-sections -o "main.elf" $(OBJS) $(USER_OBJS) $(LIBS)
-	@echo 'Finished building target: $@'
-	@echo ' '
-
-main.elf.size: main.elf
-	@echo 'Invoking: MicroBlaze Print Size'
-	mb-size main.elf  |tee "main.elf.size"
-	@echo 'Finished building: $@'
-	@echo ' '
-
-# Other Targets
-clean:
-	-$(RM) $(EXECUTABLES)$(OBJS)$(S_UPPER_DEPS)$(C_DEPS)$(ELFSIZE) main.elf
-	-@echo ' '
-
-secondary-outputs: $(ELFSIZE)
-
-.PHONY: all clean dependents
-
-%.o: %.cpp
-	@echo 'Building file: $<'
-	@echo 'Invoking: MicroBlaze g++ compiler'
-	mb-g++ -Wall -O3 -g3 -c -fmessage-length=0 -MT"$@" -m64 -I../include -I/scratch/jefff/test/training-architectures/src/acdc/air/platforms/xilinx_vck190_air/workspace/project_1_wrapper/export/project_1_wrapper/sw/project_1_wrapper/domain_microblaze_0/bspinclude/include -mlittle-endian -mxl-barrel-shift -mcpu=v11.0 -mxl-soft-mul -Wl,--no-relax -ffunction-sections -fdata-sections -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@)" -o "$@" "$<"
-	@echo 'Finished building: $<'
-	@echo ' '
+# would be better if I stripped off the trailing /
+SCRIPT_DIR := $(dir $(realpath $(firstword $(MAKEFILE_LIST))))
+BUILD_DIR := build
+APP_NAME := acdc_agent
 
 
-%.o: %.c
-	@echo 'Building file: $<'
-	@echo 'Invoking: MicroBlaze gcc compiler'
-	mb-gcc -Wall -O3 -g3 -c -fmessage-length=0 -MT"$@" -m64 -I../include -I/scratch/jefff/test/training-architectures/src/acdc/air/platforms/xilinx_vck190_air/workspace/project_1_wrapper/export/project_1_wrapper/sw/project_1_wrapper/domain_microblaze_0/bspinclude/include -mlittle-endian -mxl-barrel-shift -mcpu=v11.0 -mxl-soft-mul -Wl,--no-relax -ffunction-sections -fdata-sections -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@)" -o "$@" "$<"
-	@echo 'Finished building: $<'
-	@echo ' '
+all : ${BUILD_DIR}/${APP_NAME}/acdc_agent.elf 
+
+${BUILD_DIR}/${APP_NAME}/acdc_agent.elf : ../../platforms/xilinx_vck190_air/vivado/xilinx_vck190_air.xsa
+	xsct build.tcl
