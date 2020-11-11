@@ -9,8 +9,10 @@ SCRIPT_DIR := $(dir $(realpath $(firstword $(MAKEFILE_LIST))))
 BUILD_DIR := build
 APP_NAME := acdc_agent
 
-
-all : ${BUILD_DIR}/${APP_NAME}/acdc_agent.elf 
+all: ${BUILD_DIR}/${APP_NAME}/acdc_agent.elf 
 
 ${BUILD_DIR}/${APP_NAME}/acdc_agent.elf : ../../platforms/xilinx_vck190_air/vivado/xilinx_vck190_air.xsa
-	xsct build.tcl
+	rm -rf build && xsct build.tcl
+
+clean:
+	rm -rf build
