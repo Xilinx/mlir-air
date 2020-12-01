@@ -3,6 +3,13 @@
 
 #define MB_QUEUE_SIZE 64
 
+#define AIR_PKT_TYPE_INVALID     0x0000
+
+#define AIR_PKT_TYPE_PUT_STREAM  0x0001
+#define AIR_PKT_TYPE_GET_STREAM  0x0002
+
+#define AIR_PKT_TYPE_XAIE_LOCK   0x0003
+
 typedef struct dispatch_packet_s {
   
   // HSA-like interface
@@ -96,6 +103,7 @@ inline hsa_status_t signal_create(signal_value_t initial_value, uint32_t num_con
 inline hsa_status_t signal_destroy(signal_t signal)
 {
   //free((void*)signal.handle);
+  return HSA_STATUS_SUCCESS;
 }
 
 inline void signal_store_release(signal_t *signal, signal_value_t value)

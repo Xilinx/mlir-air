@@ -245,7 +245,7 @@ int main(int argc, char *argv[])
   pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
   // release lock 0 with value 0
-  pkt->arg[0] = 0x00beef00;
+  pkt->arg[0] = AIR_PKT_TYPE_XAIE_LOCK;
   pkt->arg[1] = 0;
   pkt->arg[2] = 1;
   pkt->arg[3] = 0;

@@ -12,8 +12,9 @@ domain create -name microblaze -proc microblaze_0
 platform generate
 
 app create -lang c++ -name acdc_agent -platform mb -domain microblaze -template "Empty Application (C++)" 
+#app config -name acdc_agent build-config Release
 
 importsources -name acdc_agent -soft-link -path [file join $root_directory "lib/mb"]
-
 app config -name acdc_agent include-path [file join $root_directory "lib/include"]
+
 app build -name acdc_agent

@@ -194,6 +194,24 @@ XAieGbl_Config *XAieGbl_LookupConfig(u16 DeviceId)
 
 } // namespace xaie
 
+int xaie_shim_dma_mm2s(XAieGbl_Tile *tile, int channel, uint64_t addr, uint32_t len)
+{
+  static XAieDma_Shim ShimDmaInst;
+  XAieDma_ShimSoftInitialize(tile, &ShimDmaInst);
+
+  uint8_t bd = 1;
+
+  XAieDma_ShimBdSetAddr(&ShimDmaInst, bd, HIGH_ADDR(addr), LOW_ADDR(addr), len);
+  XAieDma_ShimBdSetAxi(&ShimDmaInst, bd, 0, 4, 0, 0, XAIE_ENABLE);
+  XAieDma_ShimBdWrite(&ShimDmaInst, bd);
+  XAieDma_ShimSetStartBd((&ShimDmaInst), channel/*XAIEDMA_SHIM_CHNUM_MM2S1*/, bd);
+  XAieDma_ShimChControl((&ShimDmaInst), channel/*XAIEDMA_SHIM_CHNUM_MM2S1*/, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
+
+  int count = 0;
+  while (XAieDma_ShimPendingBdCount(&ShimDmaInst, channel/*XAIEDMA_SHIM_CHNUM_MM2S1*/)) {}
+
+}
+
 int xaie_lock_release(XAieGbl_Tile *tile, u32 lock_id, u32 val)
 {
   XAieTile_LockRelease(tile, lock_id, val, 0);
@@ -272,7 +290,146 @@ void complete_agent_dispatch_packet(dispatch_packet_t *pkt)
 {
   // completion phase
   packet_set_active(pkt, false);
+  pkt->type = HSA_PACKET_TYPE_INVALID;
   signal_subtract_acq_rel((signal_t*)&pkt->completion_signal, 1);
+}
+
+void handle_packet_xaie_lock(dispatch_packet_t *pkt)
+{
+  // packet is in active phase
+  packet_set_active(pkt, true);
+
+  u32 lock_id = pkt->arg[1];
+  u32 acqrel = pkt->arg[2];
+  u32 val = pkt->arg[3];
+  if (acqrel == 0)
+    xaie_lock_acquire_nb(&xaie::TileInst, lock_id, val);
+  else
+    xaie_lock_release(&xaie::TileInst, lock_id, val);
+}
+
+
+void handle_packet_put_stream(dispatch_packet_t *pkt)
+{
+  // packet is in active phase
+  packet_set_active(pkt, true);
+
+  uint64_t which_stream = pkt->arg[1];
+  uint64_t data = pkt->arg[2];
+
+  register uint32_t d0 = data & 0xffffffff;
+  register uint32_t d1 = data >> 32;
+
+  switch (which_stream) {
+  case 0:
+    putfsl(d0, 0);
+    cputfsl(d1, 0);
+    break;
+  case 1:
+    putfsl(d0, 1);
+    cputfsl(d1, 1);
+    break;
+  case 2:
+    putfsl(d0, 2);
+    cputfsl(d1, 2);
+    break;
+  case 3:
+    putfsl(d0, 3);
+    cputfsl(d1, 3);
+    break;
+  default:
+    break;
+  }
+}
+
+void handle_packet_get_stream(dispatch_packet_t *pkt)
+{
+  // packet is in active phase
+  packet_set_active(pkt, true);
+
+  uint64_t which_stream = pkt->arg[1];
+  register uint32_t d;
+
+  switch (which_stream) {
+  case 0:
+    getfsl_interruptible(d, 0);
+    break;
+  case 1:
+    getfsl_interruptible(d, 1);
+    break;
+  case 2:
+    getfsl_interruptible(d, 2);
+    break;
+  case 3:
+    getfsl_interruptible(d, 3);
+    break;
+  default:
+    break;
+  }
+
+  // BUG
+  pkt->return_address = d;
+
+}
+
+} // namespace
+
+struct dma_cmd_t {
+  uint8_t select;
+  uint16_t length;
+  uint16_t uram_addr;
+  uint8_t id;
+};
+
+struct dma_rsp_t {
+	uint8_t id;
+};
+
+void put_dma_cmd(dma_cmd_t *cmd, int stream)
+{
+  static dispatch_packet_t pkt;
+
+  pkt.arg[1] = stream;
+  pkt.arg[2] = 0;
+  pkt.arg[2] |= ((uint64_t)cmd->select) << 32;
+  pkt.arg[2] |= cmd->length << 18;
+  pkt.arg[2] |= cmd->uram_addr << 5;
+  pkt.arg[2] |= cmd->id;
+
+  handle_packet_put_stream(&pkt);
+}
+
+void get_dma_rsp(dma_rsp_t *rsp, int stream)
+{
+  static dispatch_packet_t pkt;
+  pkt.arg[1] = stream;
+  handle_packet_get_stream(&pkt);
+  rsp->id = pkt.return_address;
+}
+
+void test_stream()
+{
+  xil_printf("Test stream..");
+  static dma_cmd_t cmd;
+
+  cmd.select = 2;
+  cmd.length = 1;
+  cmd.uram_addr = 0;
+  cmd.id = 3;
+
+  put_dma_cmd(&cmd, 0);
+
+  xil_printf("..");
+
+  static dma_rsp_t rsp;
+  rsp.id = -1;
+  get_dma_rsp(&rsp, 0);
+
+
+  if (rsp.id == cmd.id)
+    xil_printf("PASS!\n\r");
+  else
+    xil_printf("fail, cmd=%d, rsp=%d\n\r", cmd.id, rsp.id);
 }
 
 void handle_agent_dispatch_packet(dispatch_packet_t *pkt)
@@ -286,26 +443,43 @@ void handle_agent_dispatch_packet(dispatch_packet_t *pkt)
   xil_printf("handle dispatch packet, args: 0x%x 0x%x 0x%x 0x%x\n\r",
              pkt->arg[0], pkt->arg[1], pkt->arg[2], pkt->arg[3]);
   auto op = pkt->arg[0];
-  if (op == 0x00beef00) {
-    u32 lock_id = pkt->arg[1];
-    u32 acqrel = pkt->arg[2];
-    u32 val = pkt->arg[3];
-    if (acqrel == 0)
-      xaie_lock_acquire_nb(&xaie::TileInst, lock_id, val);
-    else
-      xaie_lock_release(&xaie::TileInst, lock_id, val);
-  }
-  // packet is in active phase
-  packet_set_active(pkt, true);
-}
+  switch (op) {
+    case AIR_PKT_TYPE_INVALID:
+    default:
+      break;
 
-} // namespace
+    // case AIR_PKT_TYPE_READ_MEMORY_32:
+    //   handle_packet_read_memory(pkt);
+    //   break;
+    // case AIR_PKT_TYPE_WRITE_MEMORY_32:
+    //   handle_packet_write_memory(pkt);
+    //   break;
+
+    // case AIR_PKT_TYPE_MEMCPY:
+    //   handle_packet_memcpy(pkt);
+    //   break;
+
+    case AIR_PKT_TYPE_PUT_STREAM:
+      handle_packet_put_stream(pkt);
+      break;
+    case AIR_PKT_TYPE_GET_STREAM:
+      handle_packet_get_stream(pkt);
+      break;
+
+    case AIR_PKT_TYPE_XAIE_LOCK:
+      handle_packet_xaie_lock(pkt);
+      break;
+  }
+
+}
 
 int main()
 {
   xil_printf("Hello, world!\n\r");
   init_platform();
   xaie_init();
+
+  test_stream();
 
   queue_t *q = nullptr;
   queue_create(MB_QUEUE_SIZE, &q);
