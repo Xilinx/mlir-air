@@ -80,7 +80,7 @@ if { $list_projs eq "" } {
    set_property BOARD_PART xilinx.com:vck190_es:part0:1.0 [current_project]
 }
 
-set_property ip_repo_paths {../../../../../../../segment-architecture/hardware/dma_subsystem} [current_project]
+set_property ip_repo_paths {../../../segment-architecture/hardware/dma_subsystem} [current_project]
 update_ip_catalog
 
 
@@ -164,9 +164,11 @@ xilinx.com:ip:versal_cips:2.0\
 xilinx.com:ip:axi_noc:1.0\
 xilinx.com:ip:ai_engine:1.0\
 xilinx.com:ip:axi_bram_ctrl:4.1\
+xilinx.com:ip:axi_dbg_hub:1.0\
 xilinx.com:ip:axi_intc:4.1\
 xilinx.com:ip:axi_uartlite:2.0\
 xilinx.com:ip:axis_data_fifo:2.0\
+xilinx.com:ip:axis_dwidth_converter:1.1\
 xilinx.com:ip:clk_wizard:1.0\
 user.org:user:dma_subsystem_ipi_wrap:1.0\
 xilinx.com:ip:emb_mem_gen:1.0\
@@ -618,7 +620,7 @@ proc create_root_design { parentCell } {
    CONFIG.NUM_CLKS {27} \
    CONFIG.NUM_MC {1} \
    CONFIG.NUM_MCP {4} \
-   CONFIG.NUM_MI {3} \
+   CONFIG.NUM_MI {4} \
    CONFIG.NUM_NMI {0} \
    CONFIG.NUM_NSI {1} \
    CONFIG.NUM_SI {25} \
@@ -645,8 +647,14 @@ proc create_root_design { parentCell } {
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
+   CONFIG.APERTURES {{0x201_C000_0000 1G}} \
+   CONFIG.CATEGORY {pl} \
+ ] [get_bd_intf_pins /NOC_0/M03_AXI]
+
+  set_property -dict [ list \
+   CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_0 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40:M00_AXI:0x240} \
    CONFIG.CATEGORY {ps_cci} \
  ] [get_bd_intf_pins /NOC_0/S00_AXI]
 
@@ -658,173 +666,173 @@ proc create_root_design { parentCell } {
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_1 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40:M00_AXI:0x240} \
    CONFIG.CATEGORY {ps_cci} \
  ] [get_bd_intf_pins /NOC_0/S01_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_2 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40:M00_AXI:0x240} \
    CONFIG.CATEGORY {ps_cci} \
  ] [get_bd_intf_pins /NOC_0/S02_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_3 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40:M00_AXI:0x240} \
    CONFIG.CATEGORY {ps_cci} \
  ] [get_bd_intf_pins /NOC_0/S03_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_0 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40:M00_AXI:0x240} \
    CONFIG.CATEGORY {ps_nci} \
  ] [get_bd_intf_pins /NOC_0/S04_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_1 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40:M00_AXI:0x240} \
    CONFIG.CATEGORY {ps_nci} \
  ] [get_bd_intf_pins /NOC_0/S05_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_2 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40:M00_AXI:0x240} \
    CONFIG.CATEGORY {ps_rpu} \
  ] [get_bd_intf_pins /NOC_0/S06_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_3 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40:M00_AXI:0x240} \
    CONFIG.CATEGORY {ps_pmc} \
  ] [get_bd_intf_pins /NOC_0/S07_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {32} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_0 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40:M00_AXI:0x240} \
    CONFIG.CATEGORY {pl} \
  ] [get_bd_intf_pins /NOC_0/S08_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
-   CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_1 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_1 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
+   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S09_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
-   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_2 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_2 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
+   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S10_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
-   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_3 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_3 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
+   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S11_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
-   CONFIG.CONNECTIONS {MC_0 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.CONNECTIONS {MC_0 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
+   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S12_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
-   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_1 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_1 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
+   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S13_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
-   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_2 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_2 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
+   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S14_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
-   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_3 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_3 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
+   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S15_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
-   CONFIG.CONNECTIONS {MC_0 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.CONNECTIONS {MC_0 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
+   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S16_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
-   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_1 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_1 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
+   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S17_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
-   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_2 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_2 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
+   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S18_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
-   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_3 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_3 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
+   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S19_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
-   CONFIG.CONNECTIONS {MC_0 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.CONNECTIONS {MC_0 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
+   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S20_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
-   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_1 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_1 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
+   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S21_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
-   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_2 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_2 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
+   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S22_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
-   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_3 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_3 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
+   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S23_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
-   CONFIG.CONNECTIONS {MC_0 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x40:M02_AXI:0x80:M00_AXI:0x300} \
+   CONFIG.CONNECTIONS {MC_0 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
+   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S24_AXI]
 
   set_property -dict [ list \
-   CONFIG.ASSOCIATED_BUSIF {S08_AXI} \
+   CONFIG.ASSOCIATED_BUSIF {M03_AXI:S08_AXI} \
  ] [get_bd_pins /NOC_0/aclk0]
 
   set_property -dict [ list \
@@ -1136,6 +1144,12 @@ proc create_root_design { parentCell } {
   # Create instance: axi_bram_ctrl_0, and set properties
   set axi_bram_ctrl_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:4.1 axi_bram_ctrl_0 ]
 
+  # Create instance: axi_dbg_hub_0, and set properties
+  set axi_dbg_hub_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_dbg_hub:1.0 axi_dbg_hub_0 ]
+  set_property -dict [ list \
+   CONFIG.C_NUM_DEBUG_CORES {0} \
+ ] $axi_dbg_hub_0
+
   # Create instance: axi_intc_0, and set properties
   set axi_intc_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_intc:4.1 axi_intc_0 ]
   set_property -dict [ list \
@@ -1308,6 +1322,42 @@ proc create_root_design { parentCell } {
    CONFIG.FIFO_DEPTH {16} \
  ] $axis_data_fifo_23
 
+  # Create instance: axis_dwidth_converter_0, and set properties
+  set axis_dwidth_converter_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axis_dwidth_converter:1.1 axis_dwidth_converter_0 ]
+  set_property -dict [ list \
+   CONFIG.HAS_MI_TKEEP {1} \
+   CONFIG.HAS_TLAST {1} \
+   CONFIG.M_TDATA_NUM_BYTES {8} \
+   CONFIG.S_TDATA_NUM_BYTES {4} \
+ ] $axis_dwidth_converter_0
+
+  # Create instance: axis_dwidth_converter_1, and set properties
+  set axis_dwidth_converter_1 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axis_dwidth_converter:1.1 axis_dwidth_converter_1 ]
+  set_property -dict [ list \
+   CONFIG.HAS_MI_TKEEP {1} \
+   CONFIG.HAS_TLAST {1} \
+   CONFIG.M_TDATA_NUM_BYTES {8} \
+   CONFIG.S_TDATA_NUM_BYTES {4} \
+ ] $axis_dwidth_converter_1
+
+  # Create instance: axis_dwidth_converter_2, and set properties
+  set axis_dwidth_converter_2 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axis_dwidth_converter:1.1 axis_dwidth_converter_2 ]
+  set_property -dict [ list \
+   CONFIG.HAS_MI_TKEEP {1} \
+   CONFIG.HAS_TLAST {1} \
+   CONFIG.M_TDATA_NUM_BYTES {8} \
+   CONFIG.S_TDATA_NUM_BYTES {4} \
+ ] $axis_dwidth_converter_2
+
+  # Create instance: axis_dwidth_converter_3, and set properties
+  set axis_dwidth_converter_3 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axis_dwidth_converter:1.1 axis_dwidth_converter_3 ]
+  set_property -dict [ list \
+   CONFIG.HAS_MI_TKEEP {1} \
+   CONFIG.HAS_TLAST {1} \
+   CONFIG.M_TDATA_NUM_BYTES {8} \
+   CONFIG.S_TDATA_NUM_BYTES {4} \
+ ] $axis_dwidth_converter_3
+
   # Create instance: clk_wizard_0, and set properties
   set clk_wizard_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wizard:1.0 clk_wizard_0 ]
   set_property -dict [ list \
@@ -1424,6 +1474,7 @@ proc create_root_design { parentCell } {
   connect_bd_intf_net -intf_net NOC_0_M00_AXI [get_bd_intf_pins NOC_0/M00_AXI] [get_bd_intf_pins ai_engine_0/S00_AXI]
   connect_bd_intf_net -intf_net NOC_0_M01_AXI [get_bd_intf_pins NOC_0/M01_AXI] [get_bd_intf_pins axi_bram_ctrl_0/S_AXI]
   connect_bd_intf_net -intf_net NOC_0_M02_AXI [get_bd_intf_pins NOC_0/M02_AXI] [get_bd_intf_pins dma_subsystem_ipi_wr_0/s_axi]
+  connect_bd_intf_net -intf_net NOC_0_M03_AXI [get_bd_intf_pins NOC_0/M03_AXI] [get_bd_intf_pins axi_dbg_hub_0/S_AXI]
   connect_bd_intf_net -intf_net ai_engine_0_M00_AXI [get_bd_intf_pins NOC_0/S09_AXI] [get_bd_intf_pins ai_engine_0/M00_AXI]
   connect_bd_intf_net -intf_net ai_engine_0_M00_AXIS [get_bd_intf_pins ai_engine_0/M00_AXIS] [get_bd_intf_pins axis_data_fifo_8/S_AXIS]
   connect_bd_intf_net -intf_net ai_engine_0_M01_AXI [get_bd_intf_pins NOC_0/S10_AXI] [get_bd_intf_pins ai_engine_0/M01_AXI]
@@ -1476,6 +1527,10 @@ proc create_root_design { parentCell } {
   connect_bd_intf_net -intf_net axis_data_fifo_7_M_AXIS [get_bd_intf_pins ai_engine_0/S07_AXIS] [get_bd_intf_pins axis_data_fifo_7/M_AXIS]
   connect_bd_intf_net -intf_net axis_data_fifo_8_M_AXIS [get_bd_intf_pins axis_data_fifo_8/M_AXIS] [get_bd_intf_pins dma_subsystem_ipi_wr_0/part0_out_a]
   connect_bd_intf_net -intf_net axis_data_fifo_9_M_AXIS [get_bd_intf_pins axis_data_fifo_9/M_AXIS] [get_bd_intf_pins dma_subsystem_ipi_wr_0/part0_out_b]
+  connect_bd_intf_net -intf_net axis_dwidth_converter_0_M_AXIS [get_bd_intf_pins axis_dwidth_converter_0/M_AXIS] [get_bd_intf_pins dma_subsystem_ipi_wr_0/cmd_in_a]
+  connect_bd_intf_net -intf_net axis_dwidth_converter_1_M_AXIS [get_bd_intf_pins axis_dwidth_converter_1/M_AXIS] [get_bd_intf_pins dma_subsystem_ipi_wr_0/cmd_in_b]
+  connect_bd_intf_net -intf_net axis_dwidth_converter_2_M_AXIS [get_bd_intf_pins axis_dwidth_converter_2/M_AXIS] [get_bd_intf_pins dma_subsystem_ipi_wr_0/cmd_in_c]
+  connect_bd_intf_net -intf_net axis_dwidth_converter_3_M_AXIS [get_bd_intf_pins axis_dwidth_converter_3/M_AXIS] [get_bd_intf_pins dma_subsystem_ipi_wr_0/cmd_in_d]
   connect_bd_intf_net -intf_net dma_subsystem_ipi_wr_0_id_resp_a [get_bd_intf_pins dma_subsystem_ipi_wr_0/id_resp_a] [get_bd_intf_pins microblaze_0/S0_AXIS]
   connect_bd_intf_net -intf_net dma_subsystem_ipi_wr_0_id_resp_b [get_bd_intf_pins dma_subsystem_ipi_wr_0/id_resp_b] [get_bd_intf_pins microblaze_0/S1_AXIS]
   connect_bd_intf_net -intf_net dma_subsystem_ipi_wr_0_id_resp_c [get_bd_intf_pins dma_subsystem_ipi_wr_0/id_resp_c] [get_bd_intf_pins microblaze_0/S2_AXIS]
@@ -1501,10 +1556,10 @@ proc create_root_design { parentCell } {
   connect_bd_intf_net -intf_net mdm_0_MBDEBUG_0 [get_bd_intf_pins mdm_0/MBDEBUG_0] [get_bd_intf_pins microblaze_0/DEBUG]
   connect_bd_intf_net -intf_net microblaze_0_DLMB [get_bd_intf_pins lmb_bram_if_cntlr_0/SLMB] [get_bd_intf_pins microblaze_0/DLMB]
   connect_bd_intf_net -intf_net microblaze_0_ILMB [get_bd_intf_pins lmb_bram_if_cntlr_1/SLMB] [get_bd_intf_pins microblaze_0/ILMB]
-  connect_bd_intf_net -intf_net microblaze_0_M0_AXIS [get_bd_intf_pins dma_subsystem_ipi_wr_0/cmd_in_a] [get_bd_intf_pins microblaze_0/M0_AXIS]
-  connect_bd_intf_net -intf_net microblaze_0_M1_AXIS [get_bd_intf_pins dma_subsystem_ipi_wr_0/cmd_in_b] [get_bd_intf_pins microblaze_0/M1_AXIS]
-  connect_bd_intf_net -intf_net microblaze_0_M2_AXIS [get_bd_intf_pins dma_subsystem_ipi_wr_0/cmd_in_c] [get_bd_intf_pins microblaze_0/M2_AXIS]
-  connect_bd_intf_net -intf_net microblaze_0_M3_AXIS [get_bd_intf_pins dma_subsystem_ipi_wr_0/cmd_in_d] [get_bd_intf_pins microblaze_0/M3_AXIS]
+  connect_bd_intf_net -intf_net microblaze_0_M0_AXIS [get_bd_intf_pins axis_dwidth_converter_0/S_AXIS] [get_bd_intf_pins microblaze_0/M0_AXIS]
+  connect_bd_intf_net -intf_net microblaze_0_M1_AXIS [get_bd_intf_pins axis_dwidth_converter_1/S_AXIS] [get_bd_intf_pins microblaze_0/M1_AXIS]
+  connect_bd_intf_net -intf_net microblaze_0_M2_AXIS [get_bd_intf_pins axis_dwidth_converter_2/S_AXIS] [get_bd_intf_pins microblaze_0/M2_AXIS]
+  connect_bd_intf_net -intf_net microblaze_0_M3_AXIS [get_bd_intf_pins axis_dwidth_converter_3/S_AXIS] [get_bd_intf_pins microblaze_0/M3_AXIS]
   connect_bd_intf_net -intf_net microblaze_0_M_AXI_DP [get_bd_intf_pins microblaze_0/M_AXI_DP] [get_bd_intf_pins smartconnect_0/S00_AXI]
   connect_bd_intf_net -intf_net smartconnect_0_M00_AXI [get_bd_intf_pins NOC_0/S08_AXI] [get_bd_intf_pins smartconnect_0/M00_AXI]
   connect_bd_intf_net -intf_net smartconnect_0_M01_AXI [get_bd_intf_pins axi_uartlite_0/S_AXI] [get_bd_intf_pins smartconnect_0/M01_AXI]
@@ -1541,14 +1596,14 @@ proc create_root_design { parentCell } {
   connect_bd_net -net ai_engine_0_m15_axi_aclk [get_bd_pins NOC_0/aclk25] [get_bd_pins ai_engine_0/m15_axi_aclk]
   connect_bd_net -net ai_engine_0_s00_axi_aclk [get_bd_pins NOC_0/aclk9] [get_bd_pins ai_engine_0/s00_axi_aclk]
   connect_bd_net -net axi_intc_0_irq [get_bd_pins CIPS_0/pl_ps_irq0] [get_bd_pins axi_intc_0/irq]
-  connect_bd_net -net clk_wizard_0_clk_out1 [get_bd_pins CIPS_0/m_axi_fpd_aclk] [get_bd_pins NOC_0/aclk0] [get_bd_pins ai_engine_0/aclk0] [get_bd_pins axi_intc_0/s_axi_aclk] [get_bd_pins axi_uartlite_0/s_axi_aclk] [get_bd_pins clk_wizard_0/clk_out1] [get_bd_pins dma_subsystem_ipi_wr_0/clk1x] [get_bd_pins lmb_bram_if_cntlr_0/LMB_Clk] [get_bd_pins lmb_bram_if_cntlr_1/LMB_Clk] [get_bd_pins microblaze_0/Clk] [get_bd_pins proc_sys_reset_0/slowest_sync_clk] [get_bd_pins smartconnect_0/aclk] [get_bd_pins smartconnect_1/aclk] [get_bd_pins smartconnect_1/aclk1]
+  connect_bd_net -net clk_wizard_0_clk_out1 [get_bd_pins CIPS_0/m_axi_fpd_aclk] [get_bd_pins NOC_0/aclk0] [get_bd_pins ai_engine_0/aclk0] [get_bd_pins axi_dbg_hub_0/aclk] [get_bd_pins axi_intc_0/s_axi_aclk] [get_bd_pins axi_uartlite_0/s_axi_aclk] [get_bd_pins axis_dwidth_converter_0/aclk] [get_bd_pins axis_dwidth_converter_1/aclk] [get_bd_pins axis_dwidth_converter_2/aclk] [get_bd_pins axis_dwidth_converter_3/aclk] [get_bd_pins clk_wizard_0/clk_out1] [get_bd_pins dma_subsystem_ipi_wr_0/clk1x] [get_bd_pins lmb_bram_if_cntlr_0/LMB_Clk] [get_bd_pins lmb_bram_if_cntlr_1/LMB_Clk] [get_bd_pins microblaze_0/Clk] [get_bd_pins proc_sys_reset_0/slowest_sync_clk] [get_bd_pins smartconnect_0/aclk] [get_bd_pins smartconnect_1/aclk] [get_bd_pins smartconnect_1/aclk1]
   connect_bd_net -net clk_wizard_0_clk_out2 [get_bd_pins clk_wizard_0/clk_out2] [get_bd_pins proc_sys_reset_1/slowest_sync_clk]
   connect_bd_net -net clk_wizard_0_clk_out3 [get_bd_pins clk_wizard_0/clk_out3] [get_bd_pins proc_sys_reset_2/slowest_sync_clk]
   connect_bd_net -net clk_wizard_0_clk_out4 [get_bd_pins NOC_0/aclk26] [get_bd_pins ai_engine_0/aclk1] [get_bd_pins axi_bram_ctrl_0/s_axi_aclk] [get_bd_pins axis_data_fifo_0/s_axis_aclk] [get_bd_pins axis_data_fifo_1/s_axis_aclk] [get_bd_pins axis_data_fifo_10/s_axis_aclk] [get_bd_pins axis_data_fifo_11/s_axis_aclk] [get_bd_pins axis_data_fifo_12/s_axis_aclk] [get_bd_pins axis_data_fifo_13/s_axis_aclk] [get_bd_pins axis_data_fifo_14/s_axis_aclk] [get_bd_pins axis_data_fifo_15/s_axis_aclk] [get_bd_pins axis_data_fifo_16/s_axis_aclk] [get_bd_pins axis_data_fifo_17/s_axis_aclk] [get_bd_pins axis_data_fifo_18/s_axis_aclk] [get_bd_pins axis_data_fifo_19/s_axis_aclk] [get_bd_pins axis_data_fifo_2/s_axis_aclk] [get_bd_pins axis_data_fifo_20/s_axis_aclk] [get_bd_pins axis_data_fifo_21/s_axis_aclk] [get_bd_pins axis_data_fifo_22/s_axis_aclk] [get_bd_pins axis_data_fifo_23/s_axis_aclk] [get_bd_pins axis_data_fifo_3/s_axis_aclk] [get_bd_pins axis_data_fifo_4/s_axis_aclk] [get_bd_pins axis_data_fifo_5/s_axis_aclk] [get_bd_pins axis_data_fifo_6/s_axis_aclk] [get_bd_pins axis_data_fifo_7/s_axis_aclk] [get_bd_pins axis_data_fifo_8/s_axis_aclk] [get_bd_pins axis_data_fifo_9/s_axis_aclk] [get_bd_pins clk_wizard_0/clk_out4] [get_bd_pins dma_subsystem_ipi_wr_0/clk2x]
   connect_bd_net -net clk_wizard_0_locked [get_bd_pins clk_wizard_0/locked] [get_bd_pins proc_sys_reset_0/dcm_locked] [get_bd_pins proc_sys_reset_1/dcm_locked] [get_bd_pins proc_sys_reset_2/dcm_locked]
   connect_bd_net -net mdm_0_Debug_SYS_Rst [get_bd_pins mdm_0/Debug_SYS_Rst] [get_bd_pins proc_sys_reset_0/mb_debug_sys_rst]
   connect_bd_net -net proc_sys_reset_0_mb_reset [get_bd_pins lmb_bram_if_cntlr_0/LMB_Rst] [get_bd_pins lmb_bram_if_cntlr_1/LMB_Rst] [get_bd_pins microblaze_0/Reset] [get_bd_pins proc_sys_reset_0/mb_reset]
-  connect_bd_net -net proc_sys_reset_0_peripheral_aresetn [get_bd_pins axi_bram_ctrl_0/s_axi_aresetn] [get_bd_pins axi_intc_0/s_axi_aresetn] [get_bd_pins axi_uartlite_0/s_axi_aresetn] [get_bd_pins axis_data_fifo_0/s_axis_aresetn] [get_bd_pins axis_data_fifo_1/s_axis_aresetn] [get_bd_pins axis_data_fifo_10/s_axis_aresetn] [get_bd_pins axis_data_fifo_11/s_axis_aresetn] [get_bd_pins axis_data_fifo_12/s_axis_aresetn] [get_bd_pins axis_data_fifo_13/s_axis_aresetn] [get_bd_pins axis_data_fifo_14/s_axis_aresetn] [get_bd_pins axis_data_fifo_15/s_axis_aresetn] [get_bd_pins axis_data_fifo_16/s_axis_aresetn] [get_bd_pins axis_data_fifo_17/s_axis_aresetn] [get_bd_pins axis_data_fifo_18/s_axis_aresetn] [get_bd_pins axis_data_fifo_19/s_axis_aresetn] [get_bd_pins axis_data_fifo_2/s_axis_aresetn] [get_bd_pins axis_data_fifo_20/s_axis_aresetn] [get_bd_pins axis_data_fifo_21/s_axis_aresetn] [get_bd_pins axis_data_fifo_22/s_axis_aresetn] [get_bd_pins axis_data_fifo_23/s_axis_aresetn] [get_bd_pins axis_data_fifo_3/s_axis_aresetn] [get_bd_pins axis_data_fifo_4/s_axis_aresetn] [get_bd_pins axis_data_fifo_5/s_axis_aresetn] [get_bd_pins axis_data_fifo_6/s_axis_aresetn] [get_bd_pins axis_data_fifo_7/s_axis_aresetn] [get_bd_pins axis_data_fifo_8/s_axis_aresetn] [get_bd_pins axis_data_fifo_9/s_axis_aresetn] [get_bd_pins dma_subsystem_ipi_wr_0/rstn] [get_bd_pins proc_sys_reset_0/peripheral_aresetn] [get_bd_pins smartconnect_0/aresetn] [get_bd_pins smartconnect_1/aresetn]
+  connect_bd_net -net proc_sys_reset_0_peripheral_aresetn [get_bd_pins axi_bram_ctrl_0/s_axi_aresetn] [get_bd_pins axi_dbg_hub_0/aresetn] [get_bd_pins axi_intc_0/s_axi_aresetn] [get_bd_pins axi_uartlite_0/s_axi_aresetn] [get_bd_pins axis_data_fifo_0/s_axis_aresetn] [get_bd_pins axis_data_fifo_1/s_axis_aresetn] [get_bd_pins axis_data_fifo_10/s_axis_aresetn] [get_bd_pins axis_data_fifo_11/s_axis_aresetn] [get_bd_pins axis_data_fifo_12/s_axis_aresetn] [get_bd_pins axis_data_fifo_13/s_axis_aresetn] [get_bd_pins axis_data_fifo_14/s_axis_aresetn] [get_bd_pins axis_data_fifo_15/s_axis_aresetn] [get_bd_pins axis_data_fifo_16/s_axis_aresetn] [get_bd_pins axis_data_fifo_17/s_axis_aresetn] [get_bd_pins axis_data_fifo_18/s_axis_aresetn] [get_bd_pins axis_data_fifo_19/s_axis_aresetn] [get_bd_pins axis_data_fifo_2/s_axis_aresetn] [get_bd_pins axis_data_fifo_20/s_axis_aresetn] [get_bd_pins axis_data_fifo_21/s_axis_aresetn] [get_bd_pins axis_data_fifo_22/s_axis_aresetn] [get_bd_pins axis_data_fifo_23/s_axis_aresetn] [get_bd_pins axis_data_fifo_3/s_axis_aresetn] [get_bd_pins axis_data_fifo_4/s_axis_aresetn] [get_bd_pins axis_data_fifo_5/s_axis_aresetn] [get_bd_pins axis_data_fifo_6/s_axis_aresetn] [get_bd_pins axis_data_fifo_7/s_axis_aresetn] [get_bd_pins axis_data_fifo_8/s_axis_aresetn] [get_bd_pins axis_data_fifo_9/s_axis_aresetn] [get_bd_pins axis_dwidth_converter_0/aresetn] [get_bd_pins axis_dwidth_converter_1/aresetn] [get_bd_pins axis_dwidth_converter_2/aresetn] [get_bd_pins axis_dwidth_converter_3/aresetn] [get_bd_pins dma_subsystem_ipi_wr_0/rstn] [get_bd_pins proc_sys_reset_0/peripheral_aresetn] [get_bd_pins smartconnect_0/aresetn] [get_bd_pins smartconnect_1/aresetn]
   connect_bd_net -net xlconstant_0_dout [get_bd_pins microblaze_0/Reset_Mode] [get_bd_pins xlconstant_0/dout]
 
   # Create address segments
@@ -1560,87 +1615,95 @@ proc create_root_design { parentCell } {
   assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI1] [get_bd_addr_segs NOC_0/S01_AXI/C1_DDR_LOW0] -force
   assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI1] [get_bd_addr_segs NOC_0/S05_AXI/C1_DDR_LOW1] -force
   assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI1] [get_bd_addr_segs NOC_0/S01_AXI/C1_DDR_LOW1] -force
-  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI2] [get_bd_addr_segs NOC_0/S02_AXI/C2_DDR_LOW0] -force
   assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_RPU0] [get_bd_addr_segs NOC_0/S06_AXI/C2_DDR_LOW0] -force
+  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI2] [get_bd_addr_segs NOC_0/S02_AXI/C2_DDR_LOW0] -force
   assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI2] [get_bd_addr_segs NOC_0/S02_AXI/C2_DDR_LOW1] -force
   assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_RPU0] [get_bd_addr_segs NOC_0/S06_AXI/C2_DDR_LOW1] -force
-  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs NOC_0/S03_AXI/C3_DDR_LOW0] -force
   assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs NOC_0/S07_AXI/C3_DDR_LOW0] -force
-  assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs NOC_0/S03_AXI/C3_DDR_LOW1] -force
+  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs NOC_0/S03_AXI/C3_DDR_LOW0] -force
   assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs NOC_0/S07_AXI/C3_DDR_LOW1] -force
+  assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs NOC_0/S03_AXI/C3_DDR_LOW1] -force
   assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI1] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
   assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI1] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI0] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
   assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI0] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_RPU0] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
+  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
+  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI0] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
   assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI2] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020100000000 -range 0x00008000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_RPU0] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI1] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
+  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_RPU0] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
   assign_bd_address -offset 0x020100000000 -range 0x00008000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
-  assign_bd_address -offset 0x020100000000 -range 0x00008000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI0] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
   assign_bd_address -offset 0x020100000000 -range 0x00008000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI0] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x020100000000 -range 0x00008000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_RPU0] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
   assign_bd_address -offset 0x020100000000 -range 0x00008000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI2] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
-  assign_bd_address -offset 0x020100000000 -range 0x00008000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
   assign_bd_address -offset 0x020100000000 -range 0x00008000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI1] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x020100000000 -range 0x00008000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI0] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x020100000000 -range 0x00008000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
   assign_bd_address -offset 0x020100000000 -range 0x00008000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI1] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x0201C0000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI0] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
+  assign_bd_address -offset 0x0201C0000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
+  assign_bd_address -offset 0x0201C0000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI0] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
+  assign_bd_address -offset 0x0201C0000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_RPU0] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
+  assign_bd_address -offset 0x0201C0000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI2] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
+  assign_bd_address -offset 0x0201C0000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI1] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
+  assign_bd_address -offset 0x0201C0000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI1] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
+  assign_bd_address -offset 0x0201C0000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
   assign_bd_address -offset 0xA4000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces CIPS_0/Data1] [get_bd_addr_segs axi_intc_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
   assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
-  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
   assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
   assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_RPU0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
-  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
-  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI2] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
   assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
+  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
+  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI2] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
+  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
+  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
   assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
+  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
+  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
+  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_RPU0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
+  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI2] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
   assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
   assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
-  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
-  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI2] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
-  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_RPU0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
-  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
-  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
-  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
-  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
-  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI2] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
-  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
   assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_RPU0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
-  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
+  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
   assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
+  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
+  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
+  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI2] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
   assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
-  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
   assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
-  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
-  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
-  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_RPU0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
   assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI2] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
-  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_RPU0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
   assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
   assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
   assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
-  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
-  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_RPU0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
-  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
   assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
+  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
+  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_RPU0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
+  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
   assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI2] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
-  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
-  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
-  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
   assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
   assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
-  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
   assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
+  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
+  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
   assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI2] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
+  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
   assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_RPU0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI2] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
   assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI2] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
   assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
   assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_RPU0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI3] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
   assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_RPU0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
   assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_PMC] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
   assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_NCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
@@ -1649,201 +1712,187 @@ proc create_root_design { parentCell } {
   assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI2] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
   assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI1] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
   assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces CIPS_0/DATA_CCI0] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
+  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs NOC_0/S12_AXI/C0_DDR_LOW0] -force
   assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M15_AXI] [get_bd_addr_segs NOC_0/S24_AXI/C0_DDR_LOW0] -force
   assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs NOC_0/S20_AXI/C0_DDR_LOW0] -force
   assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs NOC_0/S16_AXI/C0_DDR_LOW0] -force
-  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs NOC_0/S12_AXI/C0_DDR_LOW0] -force
+  assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs NOC_0/S12_AXI/C0_DDR_LOW1] -force
   assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M15_AXI] [get_bd_addr_segs NOC_0/S24_AXI/C0_DDR_LOW1] -force
   assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs NOC_0/S20_AXI/C0_DDR_LOW1] -force
   assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs NOC_0/S16_AXI/C0_DDR_LOW1] -force
-  assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs NOC_0/S12_AXI/C0_DDR_LOW1] -force
-  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs NOC_0/S09_AXI/C1_DDR_LOW0] -force
-  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs NOC_0/S21_AXI/C1_DDR_LOW0] -force
   assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M08_AXI] [get_bd_addr_segs NOC_0/S17_AXI/C1_DDR_LOW0] -force
   assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs NOC_0/S13_AXI/C1_DDR_LOW0] -force
+  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs NOC_0/S09_AXI/C1_DDR_LOW0] -force
+  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs NOC_0/S21_AXI/C1_DDR_LOW0] -force
   assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs NOC_0/S09_AXI/C1_DDR_LOW1] -force
-  assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs NOC_0/S21_AXI/C1_DDR_LOW1] -force
   assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M08_AXI] [get_bd_addr_segs NOC_0/S17_AXI/C1_DDR_LOW1] -force
   assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs NOC_0/S13_AXI/C1_DDR_LOW1] -force
-  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs NOC_0/S14_AXI/C2_DDR_LOW0] -force
-  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs NOC_0/S18_AXI/C2_DDR_LOW0] -force
-  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs NOC_0/S10_AXI/C2_DDR_LOW0] -force
+  assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs NOC_0/S21_AXI/C1_DDR_LOW1] -force
   assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs NOC_0/S22_AXI/C2_DDR_LOW0] -force
-  assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs NOC_0/S22_AXI/C2_DDR_LOW1] -force
-  assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs NOC_0/S10_AXI/C2_DDR_LOW1] -force
-  assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs NOC_0/S14_AXI/C2_DDR_LOW1] -force
+  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs NOC_0/S10_AXI/C2_DDR_LOW0] -force
+  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs NOC_0/S18_AXI/C2_DDR_LOW0] -force
+  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs NOC_0/S14_AXI/C2_DDR_LOW0] -force
   assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs NOC_0/S18_AXI/C2_DDR_LOW1] -force
-  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M14_AXI] [get_bd_addr_segs NOC_0/S23_AXI/C3_DDR_LOW0] -force
-  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs NOC_0/S15_AXI/C3_DDR_LOW0] -force
-  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs NOC_0/S19_AXI/C3_DDR_LOW0] -force
+  assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs NOC_0/S10_AXI/C2_DDR_LOW1] -force
+  assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs NOC_0/S22_AXI/C2_DDR_LOW1] -force
+  assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs NOC_0/S14_AXI/C2_DDR_LOW1] -force
   assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs NOC_0/S11_AXI/C3_DDR_LOW0] -force
+  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M14_AXI] [get_bd_addr_segs NOC_0/S23_AXI/C3_DDR_LOW0] -force
+  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs NOC_0/S19_AXI/C3_DDR_LOW0] -force
+  assign_bd_address -offset 0x00000000 -range 0x80000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs NOC_0/S15_AXI/C3_DDR_LOW0] -force
   assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs NOC_0/S15_AXI/C3_DDR_LOW1] -force
-  assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs NOC_0/S11_AXI/C3_DDR_LOW1] -force
   assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs NOC_0/S19_AXI/C3_DDR_LOW1] -force
   assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M14_AXI] [get_bd_addr_segs NOC_0/S23_AXI/C3_DDR_LOW1] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M14_AXI] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M08_AXI] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M15_AXI] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
-  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
-  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
-  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
-  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M14_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
-  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs NOC_0/S11_AXI/C3_DDR_LOW1] -force
   assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M08_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
-  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
   assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M15_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
-  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
-  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
-  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
-  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
-  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
-  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
   assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
-  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
+  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M14_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x020100000000 -range 0x00002000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x0201C0000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
   assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
-  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
-  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
-  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
-  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
-  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
-  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
-  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M15_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
-  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
-  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M08_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
-  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
-  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
-  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
   assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M14_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
+  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
+  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
+  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
+  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M15_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
+  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
+  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
+  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M08_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
+  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
+  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
+  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
+  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
+  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
+  assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
   assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
-  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M08_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
   assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
-  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
+  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M15_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
+  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
   assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
-  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
-  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
-  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
-  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
   assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
+  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M08_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
+  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
+  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
+  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
+  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
+  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
+  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
   assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M14_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
   assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
-  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
-  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
+  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
   assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
-  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
-  assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M15_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
-  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
-  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M15_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
-  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
-  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
+  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
+  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
   assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
   assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
-  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M14_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
-  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
-  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
-  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
-  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
-  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
   assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M08_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
-  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
   assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
-  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
-  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
-  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
-  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
-  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
-  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
-  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
-  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M15_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
-  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
-  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
-  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
-  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
-  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
+  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M15_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
+  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
+  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M14_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
+  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
+  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
+  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
+  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
+  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
+  assign_bd_address -offset 0x020240040000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem2] -force
   assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
-  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
   assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M14_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M15_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
   assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M08_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240060000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem3] -force
+  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
   assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
   assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
-  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
-  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M15_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
-  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M14_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
-  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M08_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
-  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
-  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
-  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
-  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
-  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
-  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
   assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
-  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
+  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
+  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M14_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
+  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
+  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
+  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M08_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
+  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M15_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
   assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
+  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
+  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
+  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
+  assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
   assign_bd_address -offset 0x020240080000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem4] -force
-  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
-  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
-  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
   assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
-  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
-  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
-  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
-  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
-  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
-  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
   assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M14_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
+  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
+  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
+  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
   assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
-  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
-  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M08_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
-  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
+  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
+  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
+  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
+  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
   assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M15_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M14_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
+  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
+  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
+  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M08_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
+  assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
   assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M08_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M15_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
-  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
   assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
-  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M15_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M14_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M08_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
+  assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
   assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M15_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
-  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
-  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
   assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M14_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
-  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
-  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
   assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M13_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
-  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
-  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
-  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
   assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M12_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
-  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
-  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M08_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
   assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M11_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
+  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M10_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
   assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M09_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
+  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M08_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
+  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M07_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
+  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M06_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
+  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M05_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
+  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M04_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
+  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M03_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
+  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M02_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
+  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M01_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
+  assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
   assign_bd_address -offset 0x00000000 -range 0x40000000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs NOC_0/S08_AXI/C0_DDR_LOW0] -force
   assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
   assign_bd_address -offset 0x020100000000 -range 0x00008000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x0201C0000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
   assign_bd_address -offset 0x40600000 -range 0x00010000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs axi_uartlite_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
   assign_bd_address -offset 0x020240020000 -range 0x00020000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem1] -force
@@ -1891,6 +1940,7 @@ save_bd_design
 
 import_files -fileset constrs_1 -norecurse ./constraints/hwflow/profiles/PL/xdc/default.xdc
 import_files -fileset constrs_1 -norecurse ./constraints/hwflow/profiles/PL/xdc/pl_clk_uncertainty.xdc
+import_files -fileset constrs_1 -norecurse ./constraints/hwflow/profiles/PL/xdc/pl_aie_axis_placement.xdc
 import_files -fileset constrs_1 -norecurse ./constraints/vnc_xdcs/vck190_vmk180_ddr4single_dimm1.xdc
 import_files -fileset constrs_1 -norecurse ./constraints/vnc_xdcs/ai_ph1.xdc
 
