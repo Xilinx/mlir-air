@@ -6,7 +6,15 @@ module {
   %t71 = AIE.tile(7, 1)
   %t72 = AIE.tile(7, 2)
 
-  AIE.flow(%t70, "South" : 7, %t72, "DMA" : 0)
+  // Fixup
+  %sw = AIE.switchbox(%t70) {
+    AIE.connect<"South" : 3, "North" : 3>
+  }
+  %mux = AIE.shimmux(%t70) {
+    AIE.connect<"DMA" : 0, "South": 3>
+  }
+
+  AIE.flow(%t71, "South" : 3, %t72, "DMA" : 0)
 
   %buf72_0 = AIE.buffer(%t72) : memref<256xi32>
   %buf72_1 = AIE.buffer(%t72) : memref<256xi32>
