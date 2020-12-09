@@ -23,13 +23,22 @@ extern "C" {
 
 namespace {
 
+struct HerdConfig {
+  uint32_t row_start;
+  uint32_t num_rows;
+  uint32_t col_start;
+  uint32_t num_cols;
+};
+
+HerdConfig HerdCfgInst;
+
 namespace xaie {
 
 XAieGbl_Config *AieConfigPtr;	                          /**< AIE configuration pointer */
 //XAieGbl AieInst;	                                      /**< AIE global instance */
 //XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuration instance */
 //XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];  /**< Instantiates AIE array of [XAIE_NUM_COLS] x [XAIE_NUM_ROWS] */
-XAieGbl_Tile TileInst;
+XAieGbl_Tile TileInst[4][4];
 //XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
 
 XAieGbl_Config XAieGbl_ConfigTable[XPAR_AIE_NUM_INSTANCES] =
@@ -233,14 +242,26 @@ int xaie_lock_acquire_nb(XAieGbl_Tile *tile, u32 lock_id, u32 val)
   return 1;
 }
 
-void xaie_init()
+// Initialize one herd with lower left corner at (col_start, row_start)
+void xaie_herd_init(int col_start, int num_cols, int row_start, int num_rows)
 {
   size_t aie_base = XAIE_ADDR_ARRAY_OFF << 14;
   XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuration instance */
   XAIEGBL_HWCFG_SET_CONFIG((&AieConfig), XAIE_NUM_ROWS, XAIE_NUM_COLS, XAIE_ADDR_ARRAY_OFF);
   xaie::XAieGbl_HwInit(&AieConfig);
   xaie::AieConfigPtr = xaie::XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
-  xaie::XAieGbl_CfgInitialize_Tile(0, &xaie::TileInst, 7, 2, xaie::AieConfigPtr);
+
+  HerdCfgInst.col_start = col_start;
+  HerdCfgInst.num_cols = num_cols;
+  HerdCfgInst.row_start = row_start;
+  HerdCfgInst.num_rows = num_rows;
+
+  for (int col=0; col<num_cols; col++) {
+    for (int row=0; row<num_rows; row++) {
+      xaie::XAieGbl_CfgInitialize_Tile(0, &xaie::TileInst[col][row],
+                                       col+col_start, row+row_start, xaie::AieConfigPtr);
+    }
+  }
 }
 
 } // namespace
@@ -303,9 +324,9 @@ void handle_packet_xaie_lock(dispatch_packet_t *pkt)
   u32 acqrel = pkt->arg[2];
   u32 val = pkt->arg[3];
   if (acqrel == 0)
-    xaie_lock_acquire_nb(&xaie::TileInst, lock_id, val);
+    xaie_lock_acquire_nb(&xaie::TileInst[0][0], lock_id, val);
   else
-    xaie_lock_release(&xaie::TileInst, lock_id, val);
+    xaie_lock_release(&xaie::TileInst[0][0], lock_id, val);
 }
 
 
@@ -477,7 +498,7 @@ int main()
 {
   xil_printf("Hello, world!\n\r");
   init_platform();
-  xaie_init();
+  xaie_herd_init(7, 1, 2, 1);
 
   test_stream();
 
