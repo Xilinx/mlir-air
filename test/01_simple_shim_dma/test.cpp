@@ -30,6 +30,28 @@ XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
 
 }
 
+void printCoreStatus(int col, int row) {
+
+	
+	u32 status, coreTimerLow, locks;
+	status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x032004);
+	coreTimerLow = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0340F8);
+	locks = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001EF00);
+	printf("Core [%d, %d] status is %08X, timer is %u, locks are %08X\n",col, row, status, coreTimerLow, locks);
+	for (int lock=0;lock<16;lock++) {
+		u32 two_bits = (locks >> (lock*2)) & 0x3;
+		if (two_bits) {
+			printf("Lock %d: ", lock);
+			u32 acquired = two_bits & 0x1;
+			u32 value = two_bits & 0x2;
+			if (acquired)
+				printf("Acquired ");
+			printf(value?"1":"0");
+			printf("\n");
+		}
+	}
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -50,6 +72,7 @@ main(int argc, char *argv[])
     }
   }
 
+  printCoreStatus(col, 2);
   // cores
   //
   //  mlir_initialize_cores();
@@ -77,7 +100,7 @@ main(int argc, char *argv[])
   uint32_t *bram_ptr;
 
   #define BRAM_ADDR 0x020100000000LL
-  #define DMA_COUNT 256
+  #define DMA_COUNT 512
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd != -1) {
@@ -86,6 +109,11 @@ main(int argc, char *argv[])
       bram_ptr[i] = i+1;
       //printf("%p %llx\n", &bram_ptr[i], bram_ptr[i]);
     }
+  }
+
+  // We're going to stamp over the memory
+  for (int i=0; i<DMA_COUNT; i++) {
+    XAieTile_DmWriteWord(&(TileInst[col][2]), i*4, 0xdeadbeef);
   }
 
   auto burstlen = 4;
@@ -111,6 +139,8 @@ main(int argc, char *argv[])
     }
   }
 
+  printCoreStatus(col, 2);
+  
   int errors = 0;
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = XAieTile_DmReadWord(&(TileInst[col][2]), i*4);
