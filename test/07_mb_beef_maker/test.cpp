@@ -11,11 +11,17 @@
 #include <sys/mman.h>
 #include <xaiengine.h>
 
+#include "acdc_queue.h"
+#include "hsa_defs.h"
+
+
 #define XAIE_NUM_ROWS            8
 #define XAIE_NUM_COLS           50
 #define XAIE_ADDR_ARRAY_OFF     0x800
 
 #define SCRATCH_AREA 8
+
+#define SHMEM_BASE 0x020100000000LL
 
 namespace {
 
@@ -28,6 +34,47 @@ XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
 #include "aie_inc.cpp"
 
 }
+
+hsa_status_t queue_create(uint32_t size, uint32_t type, queue_t **queue)
+{
+  int fd = open("/dev/mem", O_RDWR | O_SYNC);
+  if (fd == -1)
+    return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
+
+  uint64_t *bram_ptr = (uint64_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, SHMEM_BASE);
+  // I have no idea if this does anything
+  __clear_cache((void*)bram_ptr, (void*)(bram_ptr+0x1000));
+  //for (int i=0; i<20; i++)
+  //  printf("%p %llx\n", &bram_ptr[i], bram_ptr[i]);
+
+  printf("Opened shared memory paddr: %p vaddr: %p\n", SHMEM_BASE, bram_ptr);
+  uint64_t q_paddr = bram_ptr[0];
+  uint64_t q_offset = q_paddr - SHMEM_BASE;
+  queue_t *q = (queue_t*)( ((size_t)bram_ptr) + q_offset );
+  printf("Queue location at paddr: %p vaddr: %p\n", bram_ptr[0], q);
+
+  if (q->id !=  0xacdc) {
+    printf("%s error invalid id %x\n", __func__, q->id);
+    return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
+  }
+
+  if (q->size != size) {
+    printf("%s error size mismatch %d\n", __func__, q->size);
+    return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
+  }
+
+  if (q->type != type) {
+    printf("%s error type mismatch %d\n", __func__, q->type);
+    return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
+  }
+
+  uint64_t base_address_offset = q->base_address - SHMEM_BASE;
+  q->base_address_vaddr = ((size_t)bram_ptr) + base_address_offset;
+
+  *queue = q;
+  return HSA_STATUS_SUCCESS;
+}
+
 
 void printCoreStatus(int col, int row, bool PM, bool mem, int trace) {
 
@@ -91,6 +138,13 @@ main(int argc, char *argv[])
 
   printCoreStatus(col, 2, true, true, 0);
   
+  // create the queue
+  queue_t *q = nullptr;
+  auto ret = queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q);
+  assert(ret == 0 && "failed to create queue!");
+
+
+
   // cores
   //
   //  mlir_initialize_cores();
@@ -122,8 +176,35 @@ main(int argc, char *argv[])
     XAieTile_DmWriteWord(&(TileInst[col][2]), i*4, d);
   }
   printCoreStatus(col, 2, false, true, 0);
-  // We wrote data, so lets toggle the job lock 0
-  XAieTile_LockRelease(&(TileInst[col][2]), 0, 0x1, 0);
+
+  // We wrote data, so lets tell the MicroBlaze to toggle the job lock 0
+  // reserve a packet in the queue
+  uint64_t wr_idx = queue_add_write_index(q, 1);
+  uint64_t packet_id = wr_idx % q->size;
+
+  // setup packet
+  dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  initialize_packet(pkt);
+  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+
+  // release lock 0 with value 1
+  pkt->arg[0] = AIR_PKT_TYPE_XAIE_LOCK;
+  pkt->arg[1] = 0;  // Which lock?
+  pkt->arg[2] = 1;  // Acquire = 0, Release = 1
+  pkt->arg[3] = 1;  // What value to use
+  // dispatch packet
+  signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
+  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
+  signal_store_release((signal_t*)&q->doorbell, wr_idx);
+
+  // wait for packet completion
+  while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
+    printf("packet completion signal timeout!\n");
+    printf("%x\n", pkt->header);
+    printf("%x\n", pkt->type);
+    printf("%x\n", pkt->completion_signal);
+  }
+
   printCoreStatus(col, 2, false, true, 0);
 
   auto count = 0;
