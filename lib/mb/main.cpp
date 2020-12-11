@@ -315,18 +315,45 @@ void complete_agent_dispatch_packet(dispatch_packet_t *pkt)
   signal_subtract_acq_rel((signal_t*)&pkt->completion_signal, 1);
 }
 
+void handle_packet_herd_initialize(dispatch_packet_t *pkt) {
+  packet_set_active(pkt, true);
+  // Address mode here is absolute range
+  if (((pkt->arg[0] >> 48) & 0xf) == AIR_ADDRESS_ABSOLUTE_RANGE) {
+    u32 start_row = (pkt->arg[0] >> 16) & 0xff;
+    u32 num_rows  = (pkt->arg[0] >> 24) & 0xff;
+    u32 start_col = (pkt->arg[0] >> 32) & 0xff;
+    u32 num_cols  = (pkt->arg[0] >> 40) & 0xff;
+  
+    u32 herd_id = pkt->arg[1] & 0xffff;
+    xaie_herd_init(start_col, num_cols, start_row, num_rows);
+    xil_printf("Initialized herd %d at (%d, %d) of size (%d,%d)\r\n",herd_id, start_col, start_row, num_cols, num_rows);
+    // herd_id is ignored - current restriction is 1 herd -> 1 controller
+  }
+  else
+    xil_printf("Unsupported address type 0x%04X for herd initialize\r\n",(pkt->arg[0] >> 48) & 0xf);
+}
+
+
 void handle_packet_xaie_lock(dispatch_packet_t *pkt)
 {
   // packet is in active phase
   packet_set_active(pkt, true);
 
+  u32 num_cols = (((pkt->arg[0] >> 48) & 0xf) == AIR_ADDRESS_HERD_RELATIVE_RANGE) ? ((pkt->arg[0] >> 40) & 0xff) : 1;
+  u32 num_rows = (((pkt->arg[0] >> 48) & 0xf) == AIR_ADDRESS_HERD_RELATIVE_RANGE) ? ((pkt->arg[0] >> 24) & 0xff) : 1;
+  u32 start_col = (pkt->arg[0] >> 32) & 0xff;
+  u32 start_row = (pkt->arg[0] >> 16) & 0xff;
   u32 lock_id = pkt->arg[1];
   u32 acqrel = pkt->arg[2];
   u32 val = pkt->arg[3];
-  if (acqrel == 0)
-    xaie_lock_acquire_nb(&xaie::TileInst[0][0], lock_id, val);
-  else
-    xaie_lock_release(&xaie::TileInst[0][0], lock_id, val);
+  for (u32 col = 0; col < num_cols; col++) {
+    for (u32 row = 0; row < num_rows; row++) {
+      if (acqrel == 0)
+	xaie_lock_acquire_nb(&xaie::TileInst[start_col+col][start_row+row], lock_id, val);
+      else
+	xaie_lock_release(&xaie::TileInst[start_col+col][start_row+row], lock_id, val);
+    }
+  }
 }
 
 
@@ -461,14 +488,26 @@ void handle_agent_dispatch_packet(dispatch_packet_t *pkt)
   pkt_idx = ((pkt_idx & 0x3fff) >> 6) - 2;
   //xil_printf("handle agent dispatch pkt %x @ 0x%llx\n\r", pkt_idx, (size_t)pkt);
 
-  xil_printf("handle dispatch packet, args: 0x%x 0x%x 0x%x 0x%x\n\r",
-             pkt->arg[0], pkt->arg[1], pkt->arg[2], pkt->arg[3]);
-  auto op = pkt->arg[0];
+  // Because why would you ever want to print 64 bits?
+  uint32_t pkt_arg0_upper = uint32_t(pkt->arg[0] >> 32);
+  uint32_t pkt_arg0_lower = uint32_t(pkt->arg[0]);
+  uint32_t pkt_arg1_upper = uint32_t(pkt->arg[1] >> 32);
+  uint32_t pkt_arg1_lower = uint32_t(pkt->arg[1]);
+  uint32_t pkt_arg2_upper = uint32_t(pkt->arg[2] >> 32);
+  uint32_t pkt_arg2_lower = uint32_t(pkt->arg[2]);
+  uint32_t pkt_arg3_upper = uint32_t(pkt->arg[3] >> 32);
+  uint32_t pkt_arg3_lower = uint32_t(pkt->arg[3]);
+  xil_printf("handle dispatch packet, args: 0x%x%08x 0x%x%08x 0x%x%08x 0x%x%08x\n\r",
+             pkt_arg0_upper, pkt_arg0_lower, pkt_arg1_upper, pkt_arg1_lower,
+	     pkt_arg2_upper, pkt_arg2_lower, pkt_arg3_upper, pkt_arg3_lower);
+  auto op = pkt->arg[0] & 0xffff;
   switch (op) {
     case AIR_PKT_TYPE_INVALID:
     default:
       break;
-
+    case AIR_PKT_TYPE_HERD_INITIALIZE:
+      handle_packet_herd_initialize(pkt);
+      break;
     // case AIR_PKT_TYPE_READ_MEMORY_32:
     //   handle_packet_read_memory(pkt);
     //   break;
@@ -496,9 +535,9 @@ void handle_agent_dispatch_packet(dispatch_packet_t *pkt)
 
 int main()
 {
-  xil_printf("Hello, world!\n\r");
+  xil_printf("Hello, AIR world!\n\r");
+  xil_printf("MB firmware created on %s at %s GMT, guvnor\n\r",__DATE__, __TIME__); 
   init_platform();
-  xaie_herd_init(7, 1, 2, 1);
 
   test_stream();
 
