@@ -3,12 +3,24 @@
 
 #define MB_QUEUE_SIZE 64
 
-#define AIR_PKT_TYPE_INVALID     0x0000
+// See https://confluence.xilinx.com/display/XRLABS/AIR+Controller+HSA+Packet+Formats
+// All defined as longs, so we can shift them into 64 registers
 
-#define AIR_PKT_TYPE_PUT_STREAM  0x0001
-#define AIR_PKT_TYPE_GET_STREAM  0x0002
+#define AIR_PKT_TYPE_INVALID         0x0000L
+#define AIR_PKT_TYPE_PUT_STREAM      0x0001L
+#define AIR_PKT_TYPE_GET_STREAM      0x0002L
 
-#define AIR_PKT_TYPE_XAIE_LOCK   0x0003
+#define AIR_PKT_TYPE_HERD_INITIALIZE 0x0010L
+
+#define AIR_PKT_TYPE_XAIE_LOCK       0x0020L
+
+#define AIR_PKT_TYPE_SHIM_DMA_MEMCPY 0x0100L
+
+
+#define AIR_ADDRESS_ABSOLUTE       0x0L
+#define AIR_ADDRESS_ABSOLUTE_RANGE 0x1L
+#define AIR_ADDRESS_HERD_RELATIVE  0x2L
+#define AIR_ADDRESS_HERD_RELATIVE_RANGE 0x3L
 
 typedef struct dispatch_packet_s {
   
