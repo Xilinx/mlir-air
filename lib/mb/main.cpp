@@ -203,22 +203,39 @@ XAieGbl_Config *XAieGbl_LookupConfig(u16 DeviceId)
 
 } // namespace xaie
 
+int xaie_shim_dma_s2mm(XAieGbl_Tile *tile, int channel, uint64_t addr, uint32_t len)
+{
+  static XAieDma_Shim ShimDmaInst;
+  xil_printf("s2mm start\n\r");
+  XAieDma_ShimInitialize(tile, &ShimDmaInst);
+
+  uint8_t bd = 1;
+  XAieDma_ShimBdSetAddr(&ShimDmaInst, bd, HIGH_ADDR((u64)addr), LOW_ADDR((u64)addr), len);
+  XAieDma_ShimBdSetAxi(&ShimDmaInst, bd, 0, 4, 0, 0, XAIE_ENABLE);
+  XAieDma_ShimBdWrite(&ShimDmaInst, bd);
+  XAieDma_ShimSetStartBd(&ShimDmaInst, channel, bd);
+  XAieDma_ShimChControl(&ShimDmaInst, channel, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
+
+  while (XAieDma_ShimPendingBdCount(&ShimDmaInst, channel)) {}
+  xil_printf("s2mm done\n\r");
+
+}
+
 int xaie_shim_dma_mm2s(XAieGbl_Tile *tile, int channel, uint64_t addr, uint32_t len)
 {
   static XAieDma_Shim ShimDmaInst;
-  XAieDma_ShimSoftInitialize(tile, &ShimDmaInst);
+  xil_printf("mm2s start\n\r");
+  XAieDma_ShimInitialize(tile, &ShimDmaInst);
 
   uint8_t bd = 1;
-
   XAieDma_ShimBdSetAddr(&ShimDmaInst, bd, HIGH_ADDR(addr), LOW_ADDR(addr), len);
   XAieDma_ShimBdSetAxi(&ShimDmaInst, bd, 0, 4, 0, 0, XAIE_ENABLE);
   XAieDma_ShimBdWrite(&ShimDmaInst, bd);
-  XAieDma_ShimSetStartBd((&ShimDmaInst), channel/*XAIEDMA_SHIM_CHNUM_MM2S1*/, bd);
-  XAieDma_ShimChControl((&ShimDmaInst), channel/*XAIEDMA_SHIM_CHNUM_MM2S1*/, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
+  XAieDma_ShimSetStartBd(&ShimDmaInst, channel, bd);
+  XAieDma_ShimChControl(&ShimDmaInst, channel, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
 
-  int count = 0;
-  while (XAieDma_ShimPendingBdCount(&ShimDmaInst, channel/*XAIEDMA_SHIM_CHNUM_MM2S1*/)) {}
-
+  while (XAieDma_ShimPendingBdCount(&ShimDmaInst, channel)) {}
+  xil_printf("mm2s done\n\r");
 }
 
 int xaie_lock_release(XAieGbl_Tile *tile, u32 lock_id, u32 val)
@@ -258,6 +275,8 @@ void xaie_herd_init(int col_start, int num_cols, int row_start, int num_rows)
 
   for (int col=0; col<num_cols; col++) {
     for (int row=0; row<num_rows; row++) {
+      xil_printf("init physical col %d, row %d as herd col %d row %d\n\r",
+                  col+col_start, row+row_start, col, row);
       xaie::XAieGbl_CfgInitialize_Tile(0, &xaie::TileInst[col][row],
                                        col+col_start, row+row_start, xaie::AieConfigPtr);
     }
@@ -420,6 +439,33 @@ void handle_packet_get_stream(dispatch_packet_t *pkt)
 
 }
 
+void handle_packet_shim_memcpy(dispatch_packet_t *pkt)
+{
+  xil_printf("handle_packet_shim_memory\n\r");
+  packet_set_active(pkt, true);
+
+  uint16_t row = (pkt->arg[0] >> 16) & 0xffff;
+  uint16_t col = (pkt->arg[0] >> 32) & 0xffff;
+  uint16_t flags = (pkt->arg[0] >> 48) & 0xffff;
+  bool start = flags & 0x1;
+  uint32_t burst_len = pkt->arg[1] & 0xffffffff;
+  uint16_t direction = (pkt->arg[1] >> 32) & 0xffff;
+  uint16_t channel = (pkt->arg[1] >> 48) & 0xffff;
+  uint64_t paddr = pkt->arg[2];
+  uint64_t bytes = pkt->arg[3];
+
+  //XAieGbl_Tile tile;
+  //xaie::XAieGbl_CfgInitialize_Tile(0, &(aie::TileInst[0][0]), col, row, xaie::AieConfigPtr);
+
+  xil_printf("col %d row %d direction %d channel %d paddr %llx bytes %d\n\r",
+              col, row, direction, channel, paddr, bytes);
+
+  if (direction == 0)
+    xaie_shim_dma_s2mm(&xaie::TileInst[0][0], channel, paddr, bytes);
+  else
+    xaie_shim_dma_mm2s(&xaie::TileInst[0][0], channel, paddr, bytes);
+}
+
 } // namespace
 
 struct dma_cmd_t {
@@ -455,30 +501,30 @@ void get_dma_rsp(dma_rsp_t *rsp, int stream)
   rsp->id = pkt.return_address;
 }
 
-void test_stream()
-{
-  xil_printf("Test stream..");
-  static dma_cmd_t cmd;
+// void test_stream()
+// {
+//   xil_printf("Test stream..");
+//   static dma_cmd_t cmd;
 
-  cmd.select = 2;
-  cmd.length = 1;
-  cmd.uram_addr = 0;
-  cmd.id = 3;
+//   cmd.select = 2;
+//   cmd.length = 1;
+//   cmd.uram_addr = 0;
+//   cmd.id = 3;
 
-  put_dma_cmd(&cmd, 0);
+//   put_dma_cmd(&cmd, 0);
 
-  xil_printf("..");
+//   xil_printf("..");
 
-  static dma_rsp_t rsp;
-  rsp.id = -1;
-  get_dma_rsp(&rsp, 0);
+//   static dma_rsp_t rsp;
+//   rsp.id = -1;
+//   get_dma_rsp(&rsp, 0);
 
 
-  if (rsp.id == cmd.id)
-    xil_printf("PASS!\n\r");
-  else
-    xil_printf("fail, cmd=%d, rsp=%d\n\r", cmd.id, rsp.id);
-}
+//   if (rsp.id == cmd.id)
+//     xil_printf("PASS!\n\r");
+//   else
+//     xil_printf("fail, cmd=%d, rsp=%d\n\r", cmd.id, rsp.id);
+// }
 
 void handle_agent_dispatch_packet(dispatch_packet_t *pkt)
 {
@@ -488,26 +534,18 @@ void handle_agent_dispatch_packet(dispatch_packet_t *pkt)
   pkt_idx = ((pkt_idx & 0x3fff) >> 6) - 2;
   //xil_printf("handle agent dispatch pkt %x @ 0x%llx\n\r", pkt_idx, (size_t)pkt);
 
-  // Because why would you ever want to print 64 bits?
-  uint32_t pkt_arg0_upper = uint32_t(pkt->arg[0] >> 32);
-  uint32_t pkt_arg0_lower = uint32_t(pkt->arg[0]);
-  uint32_t pkt_arg1_upper = uint32_t(pkt->arg[1] >> 32);
-  uint32_t pkt_arg1_lower = uint32_t(pkt->arg[1]);
-  uint32_t pkt_arg2_upper = uint32_t(pkt->arg[2] >> 32);
-  uint32_t pkt_arg2_lower = uint32_t(pkt->arg[2]);
-  uint32_t pkt_arg3_upper = uint32_t(pkt->arg[3] >> 32);
-  uint32_t pkt_arg3_lower = uint32_t(pkt->arg[3]);
-  xil_printf("handle dispatch packet, args: 0x%x%08x 0x%x%08x 0x%x%08x 0x%x%08x\n\r",
-             pkt_arg0_upper, pkt_arg0_lower, pkt_arg1_upper, pkt_arg1_lower,
-	     pkt_arg2_upper, pkt_arg2_lower, pkt_arg3_upper, pkt_arg3_lower);
+  xil_printf("handle dispatch packet, args: 0x%llx 0x%llx 0x%llx 0x%llx\n\r",
+             pkt->arg[0], pkt->arg[1], pkt->arg[2], pkt->arg[3]);
   auto op = pkt->arg[0] & 0xffff;
   switch (op) {
     case AIR_PKT_TYPE_INVALID:
     default:
       break;
+
     case AIR_PKT_TYPE_HERD_INITIALIZE:
       handle_packet_herd_initialize(pkt);
       break;
+
     // case AIR_PKT_TYPE_READ_MEMORY_32:
     //   handle_packet_read_memory(pkt);
     //   break;
@@ -529,17 +567,21 @@ void handle_agent_dispatch_packet(dispatch_packet_t *pkt)
     case AIR_PKT_TYPE_XAIE_LOCK:
       handle_packet_xaie_lock(pkt);
       break;
+
+    case AIR_PKT_TYPE_SHIM_DMA_MEMCPY:
+      handle_packet_shim_memcpy(pkt);
+      break;
   }
 
 }
 
 int main()
 {
-  xil_printf("Hello, AIR world!\n\r");
-  xil_printf("MB firmware created on %s at %s GMT, guvnor\n\r",__DATE__, __TIME__); 
+  xil_printf("\n\nMB firmware created on %s at %s GMT\n\r",__DATE__, __TIME__); 
   init_platform();
+  xaie_herd_init(7, 1, 0, 3);
 
-  test_stream();
+  //test_stream();
 
   queue_t *q = nullptr;
   queue_create(MB_QUEUE_SIZE, &q);
