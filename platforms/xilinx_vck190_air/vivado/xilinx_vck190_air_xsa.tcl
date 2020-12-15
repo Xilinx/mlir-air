@@ -654,7 +654,7 @@ proc create_root_design { parentCell } {
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_0 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40:M00_AXI:0x240} \
+   CONFIG.DEST_IDS {M03_AXI:0x80:M01_AXI:0xc0:M02_AXI:0x40:M00_AXI:0x240} \
    CONFIG.CATEGORY {ps_cci} \
  ] [get_bd_intf_pins /NOC_0/S00_AXI]
 
@@ -666,168 +666,168 @@ proc create_root_design { parentCell } {
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_1 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40:M00_AXI:0x240} \
+   CONFIG.DEST_IDS {M03_AXI:0x80:M01_AXI:0xc0:M02_AXI:0x40:M00_AXI:0x240} \
    CONFIG.CATEGORY {ps_cci} \
  ] [get_bd_intf_pins /NOC_0/S01_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_2 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40:M00_AXI:0x240} \
+   CONFIG.DEST_IDS {M03_AXI:0x80:M01_AXI:0xc0:M02_AXI:0x40:M00_AXI:0x240} \
    CONFIG.CATEGORY {ps_cci} \
  ] [get_bd_intf_pins /NOC_0/S02_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_3 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40:M00_AXI:0x240} \
+   CONFIG.DEST_IDS {M03_AXI:0x80:M01_AXI:0xc0:M02_AXI:0x40:M00_AXI:0x240} \
    CONFIG.CATEGORY {ps_cci} \
  ] [get_bd_intf_pins /NOC_0/S03_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_0 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40:M00_AXI:0x240} \
+   CONFIG.DEST_IDS {M03_AXI:0x80:M01_AXI:0xc0:M02_AXI:0x40:M00_AXI:0x240} \
    CONFIG.CATEGORY {ps_nci} \
  ] [get_bd_intf_pins /NOC_0/S04_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_1 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40:M00_AXI:0x240} \
+   CONFIG.DEST_IDS {M03_AXI:0x80:M01_AXI:0xc0:M02_AXI:0x40:M00_AXI:0x240} \
    CONFIG.CATEGORY {ps_nci} \
  ] [get_bd_intf_pins /NOC_0/S05_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_2 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40:M00_AXI:0x240} \
+   CONFIG.DEST_IDS {M03_AXI:0x80:M01_AXI:0xc0:M02_AXI:0x40:M00_AXI:0x240} \
    CONFIG.CATEGORY {ps_rpu} \
  ] [get_bd_intf_pins /NOC_0/S06_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_3 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40:M00_AXI:0x240} \
+   CONFIG.DEST_IDS {M03_AXI:0x80:M01_AXI:0xc0:M02_AXI:0x40:M00_AXI:0x240} \
    CONFIG.CATEGORY {ps_pmc} \
  ] [get_bd_intf_pins /NOC_0/S07_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {32} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_0 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M00_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40:M00_AXI:0x240} \
+   CONFIG.DEST_IDS {M03_AXI:0x80:M01_AXI:0xc0:M02_AXI:0x40:M00_AXI:0x240} \
    CONFIG.CATEGORY {pl} \
  ] [get_bd_intf_pins /NOC_0/S08_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M03_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_1 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M03_AXI:0xc0:M01_AXI:0x80:M02_AXI:0x40} \
+   CONFIG.DEST_IDS {M03_AXI:0x80:M01_AXI:0xc0:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S09_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_2 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
+   CONFIG.DEST_IDS {M01_AXI:0xc0:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S10_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_3 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
+   CONFIG.DEST_IDS {M01_AXI:0xc0:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S11_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {MC_0 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
+   CONFIG.DEST_IDS {M01_AXI:0xc0:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S12_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_1 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
+   CONFIG.DEST_IDS {M01_AXI:0xc0:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S13_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_2 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
+   CONFIG.DEST_IDS {M01_AXI:0xc0:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S14_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_3 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
+   CONFIG.DEST_IDS {M01_AXI:0xc0:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S15_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {MC_0 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
+   CONFIG.DEST_IDS {M01_AXI:0xc0:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S16_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_1 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
+   CONFIG.DEST_IDS {M01_AXI:0xc0:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S17_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_2 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
+   CONFIG.DEST_IDS {M01_AXI:0xc0:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S18_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_3 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
+   CONFIG.DEST_IDS {M01_AXI:0xc0:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S19_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {MC_0 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
+   CONFIG.DEST_IDS {M01_AXI:0xc0:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S20_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_1 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
+   CONFIG.DEST_IDS {M01_AXI:0xc0:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S21_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_2 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
+   CONFIG.DEST_IDS {M01_AXI:0xc0:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S22_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} MC_3 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
+   CONFIG.DEST_IDS {M01_AXI:0xc0:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S23_AXI]
 
   set_property -dict [ list \
    CONFIG.DATA_WIDTH {128} \
    CONFIG.CONNECTIONS {MC_0 { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M01_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} M02_AXI { read_bw {5} write_bw {5} read_avg_burst {4} write_avg_burst {4}} } \
-   CONFIG.DEST_IDS {M01_AXI:0x80:M02_AXI:0x40} \
+   CONFIG.DEST_IDS {M01_AXI:0xc0:M02_AXI:0x40} \
    CONFIG.CATEGORY {aie} \
  ] [get_bd_intf_pins /NOC_0/S24_AXI]
 
@@ -1891,7 +1891,7 @@ proc create_root_design { parentCell } {
   assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces ai_engine_0/M00_AXI] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
   assign_bd_address -offset 0x00000000 -range 0x40000000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs NOC_0/S08_AXI/C0_DDR_LOW0] -force
   assign_bd_address -offset 0x020000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs ai_engine_0/S00_AXI/AIE_ARRAY_0] -force
-  assign_bd_address -offset 0x020100000000 -range 0x00008000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
+  assign_bd_address -offset 0x020100000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs axi_bram_ctrl_0/S_AXI/Mem0] -force
   assign_bd_address -offset 0x0201C0000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
   assign_bd_address -offset 0x40600000 -range 0x00010000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs axi_uartlite_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x020240000000 -range 0x00020000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem0] -force
@@ -1902,8 +1902,8 @@ proc create_root_design { parentCell } {
   assign_bd_address -offset 0x0202400A0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem5] -force
   assign_bd_address -offset 0x0202400C0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem6] -force
   assign_bd_address -offset 0x0202400E0000 -range 0x00020000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs dma_subsystem_ipi_wr_0/s_axi/mem7] -force
-  assign_bd_address -offset 0x40000000 -range 0x00008000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs lmb_bram_if_cntlr_0/SLMB/Mem] -force
-  assign_bd_address -offset 0x40000000 -range 0x00008000 -target_address_space [get_bd_addr_spaces microblaze_0/Instruction] [get_bd_addr_segs lmb_bram_if_cntlr_1/SLMB/Mem] -force
+  assign_bd_address -offset 0x40000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs lmb_bram_if_cntlr_0/SLMB/Mem] -force
+  assign_bd_address -offset 0x40000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces microblaze_0/Instruction] [get_bd_addr_segs lmb_bram_if_cntlr_1/SLMB/Mem] -force
 
   # Exclude Address Segments
   exclude_bd_addr_seg -offset 0x000800000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces microblaze_0/Data] [get_bd_addr_segs NOC_0/S08_AXI/C0_DDR_LOW1]
@@ -1911,7 +1911,7 @@ proc create_root_design { parentCell } {
 
   # Restore current instance
   current_bd_instance $oldCurInst
-
+  
   # Create PFM attributes
   set_property PFM_NAME {xilinx:vck190:xilinx_vck190_air:1.0} [get_files [current_bd_design].bd]
   set_property PFM.IRQ {intr {id 0 range 32}} [get_bd_cells /axi_intc_0]
