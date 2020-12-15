@@ -143,7 +143,7 @@ main(int argc, char *argv[])
   
   int errors = 0;
   for (int i=0; i<DMA_COUNT; i++) {
-    uint32_t d = XAieTile_DmReadWord(&(TileInst[col][2]), i*4);
+    uint32_t d = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000+i*4);
     if (d != (i+1)) {
       errors++;
       printf("mismatch %x != 1 + %x\n", d, i);
