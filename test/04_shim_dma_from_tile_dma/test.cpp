@@ -76,7 +76,7 @@ main(int argc, char *argv[])
   XAieDma_Shim ShimDmaInst1;
   uint32_t *bram_ptr;
 
-  #define BRAM_ADDR 0x020100000000LL
+  #define BRAM_ADDR (0x4000+0x020100000000LL)
   #define DMA_COUNT 512
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
