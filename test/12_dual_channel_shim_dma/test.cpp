@@ -106,7 +106,7 @@ main(int argc, char *argv[])
     }
 
     // Stomp
-    for (int i=DMA_COUNT*4; i<DMA_COUNT*6; i++) {
+    for (int i=DMA_COUNT*4; i<DMA_COUNT*8; i++) {
       bram_ptr[i] = 0x5a1ad;
       //printf("%p %llx\n", &bram_ptr[i], bram_ptr[i]);
     }
@@ -130,23 +130,41 @@ main(int argc, char *argv[])
   XAieDma_ShimBdWrite(&ShimDmaInst1, 1);
   XAieDma_ShimSetStartBd((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_MM2S0, 1);
 
-  XAieDma_ShimBdSetAddr(&ShimDmaInst1, 2, HIGH_ADDR((u64)BRAM_ADDR+(DMA_COUNT*sizeof(u32))), LOW_ADDR((u64)BRAM_ADDR+(2*DMA_COUNT*sizeof(u32))), sizeof(u32) * DMA_COUNT * 2);
+  XAieDma_ShimBdSetAddr(&ShimDmaInst1, 2, HIGH_ADDR((u64)BRAM_ADDR+(2*DMA_COUNT*sizeof(u32))), LOW_ADDR((u64)BRAM_ADDR+(2*DMA_COUNT*sizeof(u32))), sizeof(u32) * DMA_COUNT * 2);
   XAieDma_ShimBdSetAxi(&ShimDmaInst1, 2 , 0, burstlen, 0, 0, XAIE_ENABLE);
   XAieDma_ShimBdWrite(&ShimDmaInst1, 2);
   XAieDma_ShimSetStartBd((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_MM2S1, 2);
+
+  XAieDma_ShimBdSetAddr(&ShimDmaInst1, 3, HIGH_ADDR((u64)BRAM_ADDR+(4*DMA_COUNT*sizeof(u32))), LOW_ADDR((u64)BRAM_ADDR+(4*DMA_COUNT*sizeof(u32))), sizeof(u32) * DMA_COUNT*2);
+  XAieDma_ShimBdSetAxi(&ShimDmaInst1, 3 , 0, burstlen, 0, 0, XAIE_ENABLE);
+  XAieDma_ShimBdWrite(&ShimDmaInst1, 3);
+  XAieDma_ShimSetStartBd((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_S2MM0, 3);
+
+  XAieDma_ShimBdSetAddr(&ShimDmaInst1, 4, HIGH_ADDR((u64)BRAM_ADDR+(6*DMA_COUNT*sizeof(u32))), LOW_ADDR((u64)BRAM_ADDR+(6*DMA_COUNT*sizeof(u32))), sizeof(u32) * DMA_COUNT*2);
+  XAieDma_ShimBdSetAxi(&ShimDmaInst1, 4 , 0, burstlen, 0, 0, XAIE_ENABLE);
+  XAieDma_ShimBdWrite(&ShimDmaInst1, 4);
+  XAieDma_ShimSetStartBd((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_S2MM1, 4);
 
   auto ret = XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_MM2S0);
   if (ret)
     printf("%s %d Warn %d\n", __FUNCTION__, __LINE__, ret);
 
-  XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_MM2S0, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
-
   ret = XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_MM2S1);
   if (ret)
     printf("%s %d Warn %d\n", __FUNCTION__, __LINE__, ret);
 
-  XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_MM2S1, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
+  ret = XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_S2MM0);
+  if (ret)
+    printf("%s %d Warn %d\n", __FUNCTION__, __LINE__, ret);
 
+  ret = XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_S2MM1);
+  if (ret)
+    printf("%s %d Warn %d\n", __FUNCTION__, __LINE__, ret);
+
+  XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_MM2S0, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
+  XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_MM2S1, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
+  XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_S2MM0, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
+  XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_S2MM1, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
 
   auto count = 0;
   while (XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_MM2S0)) {
@@ -158,7 +176,6 @@ main(int argc, char *argv[])
     }
   }
   count = 0;
-
   while (XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_MM2S1)) {
     XAieLib_usleep(1000);
     count++;
@@ -168,6 +185,25 @@ main(int argc, char *argv[])
     }
   }
 
+  count = 0;
+  while (XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_S2MM0)) {
+    XAieLib_usleep(1000);
+    count++;
+    if (!(count % 1000)) {
+      printf("S2MM0 %d seconds\n",count/1000);
+      if (count == 2000) break;
+    }
+  }
+
+  count = 0;
+  while (XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_S2MM1)) {
+    XAieLib_usleep(1000);
+    count++;
+    if (!(count % 1000)) {
+      printf("S2MM1 %d seconds\n",count/1000);
+      if (count == 2000) break;
+    }
+  }
 
   printCoreStatus(col, 2);
   printCoreStatus(col, 4);
@@ -177,7 +213,7 @@ main(int argc, char *argv[])
     uint32_t d = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000+i*4);
     if (d != (i+1)) {
       errors++;
-      printf("mismatch %x != 1 + %x\n", d, i);
+      printf("Tile Memory[%d][%d] Address %04X mismatch %x != 1 + %x\n", col, 2, 0x1000+i*4,d, i);
     }
   }
   
@@ -185,9 +221,26 @@ main(int argc, char *argv[])
     uint32_t d = XAieTile_DmReadWord(&(TileInst[col][4]), 0x1000+i*4);
     if (d != (i+2)) {
       errors++;
-      printf("mismatch %x != 2 + %x\n", d, i);
+      printf("Tile Memory[%d][%d] Address %04X mismatch %x != 2 + %x\n", col, 4, 0x1000+i*4,d, i);
     }
   }
+
+  for (int i=0; i<DMA_COUNT*2; i++) {
+    uint32_t d = bram_ptr[DMA_COUNT*4+i];
+    if (d != (i+1)) {
+      errors++;
+      printf("Ext Memory offset %04X mismatch %x != 1 + %x\n", DMA_COUNT*4+i,d, i);
+    }
+  }
+
+  for (int i=0; i<DMA_COUNT*2; i++) {
+    uint32_t d = bram_ptr[DMA_COUNT*6+i];
+    if (d != (i+2)) {
+      errors++;
+      printf("Ext Memory offset %04X mismatch %x != 2 + %x\n", DMA_COUNT*6+i,d, i);
+    }
+  }
+
 
   if (!errors) {
     printf("PASS!\n");
