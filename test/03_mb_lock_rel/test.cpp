@@ -239,28 +239,63 @@ int main(int argc, char *argv[])
   uint64_t wr_idx = queue_add_write_index(q, 1);
   uint64_t packet_id = wr_idx % q->size;
 
-  // setup packet
-  dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  // herd_setup packet
+  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  initialize_packet(herd_pkt);
+  herd_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
-  // release lock 0 with value 0
-  pkt->arg[0] = AIR_PKT_TYPE_XAIE_LOCK;
-  pkt->arg[1] = 0;
-  pkt->arg[2] = 1;
-  pkt->arg[3] = 0;
+  // Set up the worlds smallest herd at 7,2
+  herd_pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
+  herd_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
+  herd_pkt->arg[0] |= (1L << 40);
+  herd_pkt->arg[0] |= (7L << 32);
+  herd_pkt->arg[0] |= (1L << 24);
+  herd_pkt->arg[0] |= (2L << 16);
+  
+  herd_pkt->arg[1] = 0;  // Herd ID 0
+  herd_pkt->arg[2] = 0;
+  herd_pkt->arg[3] = 0;
 
   // dispatch packet
-  signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
+  signal_create(1, 0, NULL, (signal_t*)&herd_pkt->completion_signal);
   signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
   signal_store_release((signal_t*)&q->doorbell, wr_idx);
 
   // wait for packet completion
-  while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-    printf("packet completion signal timeout!\n");
-    printf("%x\n", pkt->header);
-    printf("%x\n", pkt->type);
-    printf("%x\n", pkt->completion_signal);
+  while (signal_wait_aquire((signal_t*)&herd_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
+    printf("packet completion signal timeout on herd initialization!\n");
+    printf("%x\n", herd_pkt->header);
+    printf("%x\n", herd_pkt->type);
+    printf("%x\n", herd_pkt->completion_signal);
+  }
+
+  // reserve another packet in the queue
+  wr_idx = queue_add_write_index(q, 1);
+  packet_id = wr_idx % q->size;
+
+  // lock packet
+  dispatch_packet_t *lock_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  initialize_packet(lock_pkt);
+  lock_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+
+  // Release lock 0 in 0,0 with value 0
+  lock_pkt->arg[0]  = AIR_PKT_TYPE_XAIE_LOCK;
+  lock_pkt->arg[0] |= (AIR_ADDRESS_HERD_RELATIVE << 48);
+  lock_pkt->arg[1]  = 0;
+  lock_pkt->arg[2]  = 1;
+  lock_pkt->arg[3]  = 0;
+
+  // dispatch packet
+  signal_create(1, 0, NULL, (signal_t*)&lock_pkt->completion_signal);
+  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
+  signal_store_release((signal_t*)&q->doorbell, wr_idx);
+
+  // wait for packet completion
+  while (signal_wait_aquire((signal_t*)&lock_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
+    printf("packet completion signal timeout on lock release!\n");
+    printf("%x\n", lock_pkt->header);
+    printf("%x\n", lock_pkt->type);
+    printf("%x\n", lock_pkt->completion_signal);
   }
 
   //XAieTile_LockRelease(&(TileInst[col][2]), 0, 0, 0);
