@@ -579,7 +579,6 @@ int main()
 {
   xil_printf("\n\nMB firmware created on %s at %s GMT\n\r",__DATE__, __TIME__); 
   init_platform();
-  xaie_herd_init(7, 1, 0, 3);
 
   //test_stream();
 
@@ -593,23 +592,28 @@ int main()
     //   xil_printf("No Ding Dong 0x%llx\n\r", q->doorbell);
 
     if (q->doorbell+1 > q->last_doorbell) {
-      xil_printf("Ding Dong 0x%llx\n\r", q->doorbell);
+      xil_printf("Ding Dong 0x%llx\n\r", q->doorbell+1);
 
       q->last_doorbell = q->doorbell+1;
 
-      auto rd_idx = queue_load_read_index(q);
-      //xil_printf("Handle pkt read_index=%d\n\r", rd_idx);
+      // process packets until we hit an invalid packet
+      bool invalid = false;
+      while (!invalid) {
+        uint64_t rd_idx = queue_load_read_index(q);
+        xil_printf("Handle pkt read_index=%d\n\r", rd_idx);
 
-      dispatch_packet_t *pkt = &((dispatch_packet_t*)q->base_address)[rd_idx % q->size];
-      switch (pkt->type) {
-        default:
-        case HSA_PACKET_TYPE_INVALID:
-          break;
-        case HSA_PACKET_TYPE_AGENT_DISPATCH:
-          handle_agent_dispatch_packet(pkt);
-          complete_agent_dispatch_packet(pkt);
-          queue_add_read_index(q, 1);
-          break;
+        dispatch_packet_t *pkt = &((dispatch_packet_t*)q->base_address)[rd_idx % q->size];
+        switch (pkt->type) {
+          default:
+          case HSA_PACKET_TYPE_INVALID:
+            invalid = true;
+            break;
+          case HSA_PACKET_TYPE_AGENT_DISPATCH:
+            handle_agent_dispatch_packet(pkt);
+            complete_agent_dispatch_packet(pkt);
+            queue_add_read_index(q, 1);
+            break;
+        }
       }
     }
   }
