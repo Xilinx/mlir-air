@@ -102,16 +102,107 @@ hsa_status_t queue_create(uint32_t size, uint32_t type, queue_t **queue)
   return HSA_STATUS_SUCCESS;
 }
 
+//
+// global q ptr
+//
+queue_t *q = nullptr;
+uint32_t *bram_ptr;
+
 }
+
+#define BRAM_ADDR 0x4000+0x020100000000LL
+#define DMA_COUNT 32
 
 extern "C" {
   
 void _mlir_ciface_acap_L2_dma_copy_arg0(tensor_t<float,2> *input, tensor_t<float,2> *output, size_t dim1_idx, size_t dim0_idx) {
   printf("copy L2 arg0 %p %p %d %d\n", input->d, output->d, dim1_idx, dim0_idx);
+
+  
+  uint64_t row = 7;
+  uint64_t col = 0;
+
+  for (int row_offset=0; row_offset<DMA_COUNT; row_offset++) {
+    for (int i=0; i<DMA_COUNT; i++) {
+      bram_ptr[i] = input->d[(row_offset+dim1_idx)*input->shape[0] + dim0_idx + i];
+    }
+
+    uint64_t wr_idx = queue_add_write_index(q, 1);
+    uint64_t packet_id = wr_idx % q->size;
+
+    dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+    initialize_packet(pkt);
+    pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+    pkt->arg[0] = AIR_PKT_TYPE_SHIM_DMA_MEMCPY;
+    pkt->arg[0] |= (row << 16);
+    pkt->arg[0] |= (col << 32);
+    uint64_t flags = 0x1;
+    pkt->arg[0] |= (flags << 48);
+
+    uint32_t burst_len = 4;
+    uint64_t direction = 1;
+    uint64_t channel = XAIEDMA_SHIM_CHNUM_MM2S0;
+
+    pkt->arg[1] = burst_len;
+    pkt->arg[1] |= (direction << 32);
+    pkt->arg[1] |= (channel << 48);
+    pkt->arg[2] = BRAM_ADDR;
+    pkt->arg[3] = DMA_COUNT*sizeof(float);
+
+    signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
+    signal_store_release((signal_t*)&q->doorbell, wr_idx);
+    
+    while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
+      printf("packet completion signal timeout!\n");
+      printf("%x\n", pkt->header);
+      printf("%x\n", pkt->type);
+      printf("%x\n", pkt->completion_signal);
+    }
+  }
 }
 
 void _mlir_ciface_acap_L2_dma_copy_arg1(tensor_t<float,2> *input, tensor_t<float,2> *output, size_t dim1_idx, size_t dim0_idx) {
+
   printf("copy L2 arg1 %p %p %d %d\n", input->d, output->d, dim1_idx, dim0_idx);
+  for (int row_offset=0; row_offset<DMA_COUNT; row_offset++) {
+    uint64_t wr_idx = queue_add_write_index(q, 1);
+    uint64_t packet_id = wr_idx % q->size;
+    uint64_t row = 7;
+    uint64_t col = 0;
+
+    dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+    initialize_packet(pkt);
+    pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+    pkt->arg[0] = AIR_PKT_TYPE_SHIM_DMA_MEMCPY;
+    pkt->arg[0] |= (row << 16);
+    pkt->arg[0] |= (col << 32);
+    uint64_t flags = 0x1;
+    pkt->arg[0] |= (flags << 48);
+    
+    uint64_t direction = 0;
+    uint64_t channel = XAIEDMA_SHIM_CHNUM_S2MM0;
+
+    uint32_t burst_len = 4;
+    pkt->arg[1] = burst_len;
+    pkt->arg[1] |= (direction << 32);
+    pkt->arg[1] |= (channel << 48);
+    pkt->arg[2] = BRAM_ADDR+DMA_COUNT*sizeof(float);
+    pkt->arg[3] = DMA_COUNT*sizeof(float);
+
+    signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
+    signal_store_release((signal_t*)&q->doorbell, wr_idx);
+
+    while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
+      printf("packet completion signal timeout!\n");
+      printf("%x\n", pkt->header);
+      printf("%x\n", pkt->type);
+      printf("%x\n", pkt->completion_signal);
+    }
+    
+    for (int i=0; i<DMA_COUNT; i++) {
+      output->d[(row_offset+dim1_idx)*output->shape[0] + dim0_idx + i] = bram_ptr[DMA_COUNT+i];
+    }
+  }
 }
 
 }
@@ -134,27 +225,19 @@ main(int argc, char *argv[])
   mlir_configure_dmas();
   mlir_start_cores();
 
-  uint32_t *bram_ptr;
-
-  #define BRAM_ADDR 0x4000+0x020100000000LL
-  #define DMA_COUNT 16
-
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd != -1) {
     bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, BRAM_ADDR);
-    for (int i=0; i<DMA_COUNT; i++) {
-      bram_ptr[i] = i+1;
-      bram_ptr[DMA_COUNT+i] = 0xdeface;
-      //printf("%p %llx\n", &bram_ptr[i], bram_ptr[i]);
+    for (int i=0; i<32*32; i++) {
+      bram_ptr[i] = 0xdeface;
     }
   }
 
-  for (int i=0; i<DMA_COUNT*2; i++) {
+  for (int i=0; i<16*2; i++) {
     XAieTile_DmWriteWord(&(TileInst[col][2]), 0x1000+i*4, 0xdecaf);
   }
 
   // create the queue
-  queue_t *q = nullptr;
   auto ret = queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q);
   assert(ret == 0 && "failed to create queue!");
 
@@ -185,110 +268,43 @@ main(int argc, char *argv[])
   signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
   //signal_store_release((signal_t*)&q->doorbell, wr_idx);
 
-  if (true) {
-    printf("loading add_one.so\n");
-    auto handle = dlopen("./add_one.so", RTLD_NOW);
-    if (!handle) {
-      printf("%s\n",dlerror());
-    }
-    assert(handle && "failed to open add_one.so");
+  tensor_t<float,2> input;
+  tensor_t<float,2> output;
 
-    auto graph_fn = (void (*)(void*,void*))dlsym(handle, "_mlir_ciface_graph");
-    assert(graph_fn && "failed to locate _mlir_ciface_graph in add_one.so");
+  input.shape[0] = 256;
+  input.shape[1] = 256;
+  input.d = input.aligned = (float*)malloc(sizeof(float)*input.shape[0]*input.shape[1]);
 
-    tensor_t<float,2> input;
-    tensor_t<float,2> output;
-
-    input.shape[0] = 256;
-    input.shape[1] = 256;
-    input.d = input.aligned = (float*)malloc(sizeof(float)*input.shape[0]*input.shape[1]);
-
-    output.shape[0] = 256;
-    output.shape[1] = 256;
-    output.d = output.aligned = (float*)malloc(sizeof(float)*output.shape[0]*output.shape[1]);
-    
-    for (int i=0; i<input.shape[0]*input.shape[1]; i++) {
-      input.d[i] = (float)i;
-      output.d[i] = -1.11111f;
-    }
-
-    void *i,*o;
-    i = &input;
-    o = &output;
-    graph_fn(i, o);
-  }
-  // else do it by hand (below)
-
-  //
-  // send the data
-  //
-
-  wr_idx = queue_add_write_index(q, 1);
-  packet_id = wr_idx % q->size;
-
-  dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  pkt->arg[0] = AIR_PKT_TYPE_SHIM_DMA_MEMCPY;
-  pkt->arg[0] |= (row << 16);
-  pkt->arg[0] |= (col << 32);
-  uint64_t flags = 0x1;
-  pkt->arg[0] |= (flags << 48);
-
-  uint32_t burst_len = 4;
-  uint64_t direction = 1;
-  uint64_t channel = XAIEDMA_SHIM_CHNUM_MM2S0;
-
-  pkt->arg[1] = burst_len;
-  pkt->arg[1] |= (direction << 32);
-  pkt->arg[1] |= (channel << 48);
-  pkt->arg[2] = BRAM_ADDR;
-  pkt->arg[3] = DMA_COUNT*sizeof(float);
-
-  signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
-  //signal_store_release((signal_t*)&q->doorbell, wr_idx);
-
-  //
-  // read the data
-  //
-
-   wr_idx = queue_add_write_index(q, 1);
-  packet_id = wr_idx % q->size;
-
-  pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  pkt->arg[0] = AIR_PKT_TYPE_SHIM_DMA_MEMCPY;
-  pkt->arg[0] |= (row << 16);
-  pkt->arg[0] |= (col << 32);
-  pkt->arg[0] |= (flags << 48);
+  output.shape[0] = 256;
+  output.shape[1] = 256;
+  output.d = output.aligned = (float*)malloc(sizeof(float)*output.shape[0]*output.shape[1]);
   
-  direction = 0;
-  channel = XAIEDMA_SHIM_CHNUM_S2MM0;
-
-  pkt->arg[1] = burst_len;
-  pkt->arg[1] |= (direction << 32);
-  pkt->arg[1] |= (channel << 48);
-  pkt->arg[2] = BRAM_ADDR+DMA_COUNT*sizeof(float);
-  pkt->arg[3] = DMA_COUNT*sizeof(float);
-
-  signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
-  signal_store_release((signal_t*)&q->doorbell, wr_idx);
-
-  while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-    printf("packet completion signal timeout!\n");
-    printf("%x\n", pkt->header);
-    printf("%x\n", pkt->type);
-    printf("%x\n", pkt->completion_signal);
-    break;
+  printf("loading add_one.so\n");
+  auto handle = dlopen("./add_one.so", RTLD_NOW);
+  if (!handle) {
+    printf("%s\n",dlerror());
   }
+  assert(handle && "failed to open add_one.so");
+
+  auto graph_fn = (void (*)(void*,void*))dlsym(handle, "_mlir_ciface_graph");
+  assert(graph_fn && "failed to locate _mlir_ciface_graph in add_one.so");
+
+  for (int i=0; i<input.shape[0]*input.shape[1]; i++) {
+    input.d[i] = (float)i;
+    output.d[i] = -1.11111f;
+  }
+
+  void *i,*o;
+  i = &input;
+  o = &output;
+  graph_fn(i, o);
 
   int errors = 0;
-  for (int i=0; i<DMA_COUNT; i++) {
-    uint32_t d = bram_ptr[DMA_COUNT+i];
-    if (d != (i+2)) {
+  for (int i=0; i<output.shape[0]*output.shape[1]; i++) {
+    uint32_t d = output.d[i];
+    if (d != (i+1)) {
       errors++;
-      printf("mismatch %x != 2 + %x\n", d, i);
+      printf("mismatch %x != 1 + %x\n", d, i);
     }
   }
   if (!errors) {
