@@ -147,7 +147,7 @@ void printCoreStatus(int col, int row, bool PM, int mem, int trace) {
   if (mem) {
     printf("FIRST %d WORDS\n", mem);
     for (int i = 0; i < mem; i++) {
-      u32 RegVal = XAieTile_DmReadWord(&(TileInst[col][row]), i * 4);
+      u32 RegVal = XAieTile_DmReadWord(&(TileInst[col][row]), 0x1000 + i * 4);
       printf("memory value %d : %08X %f\n", i, RegVal, *(float *)(&RegVal));
     }
   }
