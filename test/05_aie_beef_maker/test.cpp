@@ -29,7 +29,7 @@ XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
 
 }
 
-void printCoreStatus(int col, int row, bool PM, bool mem, int trace) {
+void printCoreStatus(int col, int row, bool PM, int mem, int trace) {
 
   u32 status, coreTimerLow, PC, LR, SP, locks, R0, R4;
   status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x032004);
@@ -60,9 +60,9 @@ void printCoreStatus(int col, int row, bool PM, bool mem, int trace) {
     for (int i=0;i<40;i++)
       printf("PM[%d]: %08X\n",i*4, XAieGbl_Read32(TileInst[col][row].TileAddr + 0x00020000 + i*4));
   if (mem) {
-    printf("FIRST 8 WORDS\n");
+    printf("FIRST %d WORDS\n", mem);
     for (int i = 0; i < 8; i++) {
-      u32 RegVal = XAieTile_DmReadWord(&(TileInst[col][row]), i * 4);
+      u32 RegVal = XAieTile_DmReadWord(&(TileInst[col][row]), 0x1000 + (i * 4));
       printf("memory value %d : %08X %f\n", i, RegVal, *(float *)(&RegVal));
     }
   }
@@ -80,51 +80,27 @@ main(int argc, char *argv[])
   AieConfigPtr = XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
   XAieGbl_CfgInitialize(&AieInst, &TileInst[0][0], AieConfigPtr);
 
-  // reset cores and locks
-  for (int i = 1; i <= XAIE_NUM_ROWS; i++) {
-    for (int j = 0; j < XAIE_NUM_COLS; j++) {
-      XAieTile_CoreControl(&(TileInst[j][i]), XAIE_DISABLE, XAIE_ENABLE);
-      for (int l=0; l<16; l++)
-        XAieTile_LockRelease(&(TileInst[j][i]), l, 0x0, 0);
-    }
-  }
-
-  printCoreStatus(col, 2, true, true, 0);
+  printCoreStatus(col, 2, true, SCRATCH_AREA, 0);
   
-  // cores
-  //
-  //  mlir_initialize_cores();
+  // cores - most of these calls do nothing - there's no routing or DMAs ...
 
   mlir_configure_cores();
-  //XAieTile_CoreControl(&(TileInst[col][2]), XAIE_DISABLE, XAIE_DISABLE);
-  printCoreStatus(col, 2, false, true, 0);
-  
-  // configure switchboxes
-  //
   mlir_configure_switchboxes();
-  
-  // locks
-  //
   mlir_initialize_locks();
-
-  // dmas
-  //
-
   mlir_configure_dmas();
-
   mlir_start_cores();
   
-  printCoreStatus(col, 2, false, true, 0);
+  printCoreStatus(col, 2, false, SCRATCH_AREA, 0);
 
   // We first write an ascending pattern into the area the AIE will write into
   for (int i=0; i<SCRATCH_AREA; i++) {
     uint32_t d = i+1;
-    XAieTile_DmWriteWord(&(TileInst[col][2]), i*4, d);
+    XAieTile_DmWriteWord(&(TileInst[col][2]), 0x1000 + (i*4), d);
   }
-  printCoreStatus(col, 2, false, true, 0);
+  printCoreStatus(col, 2, false, SCRATCH_AREA, 0);
   // We wrote data, so lets toggle the job lock 0
   XAieTile_LockRelease(&(TileInst[col][2]), 0, 0x1, 0);
-  printCoreStatus(col, 2, false, true, 0);
+  printCoreStatus(col, 2, false, SCRATCH_AREA, 0);
 
   auto count = 0;
   while (!XAieTile_LockAcquire(&(TileInst[col][2]), 0, 0, 1000)) {
@@ -140,21 +116,21 @@ main(int argc, char *argv[])
   // If you are squeemish, look away now
   u32 rb;
 
-  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x0 * sizeof(u32));
+  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000 + (0x0 * sizeof(u32)));
   if (rb != 0xdeadbeef)
     printf("Error %d: %08x != 0xdeadbeef",errors++, rb);
-  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1 * sizeof(u32));
+  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000 + (0x1 * sizeof(u32)));
   if (rb != 0xcafecafe)
     printf("Error %d: %08x != 0xcafecafe",errors++, rb);
-  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x2 * sizeof(u32));
+  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000 + (0x2 * sizeof(u32)));
   if (rb != 0x000decaf)
     printf("Error %d: %08x != 0x000decaf",errors++, rb);
-  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x3 * sizeof(u32));
+  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000 + (0x3 * sizeof(u32)));
   if (rb != 0x5a1ad000)
     printf("Error %d: %08x != 0x5a1ad000",errors++, rb);
 
   for (int i=4; i<SCRATCH_AREA; i++) {
-    rb = XAieTile_DmReadWord(&(TileInst[col][2]), i * sizeof(u32));
+    rb = XAieTile_DmReadWord(&(TileInst[col][2]),0x1000 + (i * sizeof(u32)));
     if (rb != i+1)
       printf("Error %d: %08x != %08x\n", errors++, rb, i+1);
   }

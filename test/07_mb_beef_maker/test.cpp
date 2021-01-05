@@ -76,7 +76,7 @@ hsa_status_t queue_create(uint32_t size, uint32_t type, queue_t **queue)
 }
 
 
-void printCoreStatus(int col, int row, bool PM, bool mem, int trace) {
+void printCoreStatus(int col, int row, bool PM, int mem, int trace) {
 
   u32 status, coreTimerLow, PC, LR, SP, locks, R0, R4;
   status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x032004);
@@ -107,9 +107,9 @@ void printCoreStatus(int col, int row, bool PM, bool mem, int trace) {
     for (int i=0;i<40;i++)
       printf("PM[%d]: %08X\n",i*4, XAieGbl_Read32(TileInst[col][row].TileAddr + 0x00020000 + i*4));
   if (mem) {
-    printf("FIRST 8 WORDS\n");
-    for (int i = 0; i < 8; i++) {
-      u32 RegVal = XAieTile_DmReadWord(&(TileInst[col][row]), i * 4);
+    printf("FIRST %d WORDS\n",mem);
+    for (int i = 0; i < mem; i++) {
+      u32 RegVal = XAieTile_DmReadWord(&(TileInst[col][row]), 0x1000 + i * 4);
       printf("memory value %d : %08X %f\n", i, RegVal, *(float *)(&RegVal));
     }
   }
@@ -136,76 +136,94 @@ main(int argc, char *argv[])
     }
   }
 
-  printCoreStatus(col, 2, true, true, 0);
+  printCoreStatus(col, 2, true, SCRATCH_AREA, 0);
   
   // create the queue
   queue_t *q = nullptr;
   auto ret = queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q);
   assert(ret == 0 && "failed to create queue!");
 
-
-
-  // cores
-  //
-  //  mlir_initialize_cores();
-
-  mlir_configure_cores();
-  //XAieTile_CoreControl(&(TileInst[col][2]), XAIE_DISABLE, XAIE_DISABLE);
-  printCoreStatus(col, 2, false, true, 0);
-  
-  // configure switchboxes
-  //
-  mlir_configure_switchboxes();
-  
-  // locks
-  //
-  mlir_initialize_locks();
-
-  // dmas
-  //
-
-  mlir_configure_dmas();
-
-  mlir_start_cores();
-  
-  printCoreStatus(col, 2, false, true, 0);
-
-  // We first write an ascending pattern into the area the AIE will write into
-  for (int i=0; i<SCRATCH_AREA; i++) {
-    uint32_t d = i+1;
-    XAieTile_DmWriteWord(&(TileInst[col][2]), i*4, d);
-  }
-  printCoreStatus(col, 2, false, true, 0);
-
-  // We wrote data, so lets tell the MicroBlaze to toggle the job lock 0
   // reserve a packet in the queue
   uint64_t wr_idx = queue_add_write_index(q, 1);
   uint64_t packet_id = wr_idx % q->size;
 
-  // setup packet
-  dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  // herd_setup packet
+  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  initialize_packet(herd_pkt);
+  herd_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
-  // release lock 0 with value 1
-  pkt->arg[0] = AIR_PKT_TYPE_XAIE_LOCK;
-  pkt->arg[1] = 0;  // Which lock?
-  pkt->arg[2] = 1;  // Acquire = 0, Release = 1
-  pkt->arg[3] = 1;  // What value to use
+  // Set up the worlds smallest herd at 7,2
+  herd_pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
+  herd_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
+  herd_pkt->arg[0] |= (1L << 40);
+  herd_pkt->arg[0] |= (7L << 32);
+  herd_pkt->arg[0] |= (1L << 24);
+  herd_pkt->arg[0] |= (2L << 16);
+  
+  herd_pkt->arg[1] = 0;  // Herd ID 0
+  herd_pkt->arg[2] = 0;
+  herd_pkt->arg[3] = 0;
+
   // dispatch packet
-  signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
+  signal_create(1, 0, NULL, (signal_t*)&herd_pkt->completion_signal);
   signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
   signal_store_release((signal_t*)&q->doorbell, wr_idx);
 
   // wait for packet completion
-  while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-    printf("packet completion signal timeout!\n");
-    printf("%x\n", pkt->header);
-    printf("%x\n", pkt->type);
-    printf("%x\n", pkt->completion_signal);
+  while (signal_wait_aquire((signal_t*)&herd_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
+    printf("packet completion signal timeout on herd initialization!\n");
+    printf("%x\n", herd_pkt->header);
+    printf("%x\n", herd_pkt->type);
+    printf("%x\n", herd_pkt->completion_signal);
   }
 
-  printCoreStatus(col, 2, false, true, 0);
+  mlir_configure_cores();
+  printCoreStatus(col, 2, false, SCRATCH_AREA, 0);
+  mlir_configure_switchboxes();
+  mlir_initialize_locks();
+  mlir_configure_dmas();
+  mlir_start_cores();
+  
+  printCoreStatus(col, 2, false, SCRATCH_AREA, 0);
+  // We first write an ascending pattern into the area the AIE will write into
+  for (int i=0; i<SCRATCH_AREA; i++) {
+    uint32_t d = i+1;
+    XAieTile_DmWriteWord(&(TileInst[col][2]), 0x1000+i*4, d);
+  }
+  printCoreStatus(col, 2, false, SCRATCH_AREA, 0);
+
+  // We wrote data, so lets tell the MicroBlaze to toggle the job lock 0
+  // reserve another packet in the queue
+  wr_idx = queue_add_write_index(q, 1);
+  packet_id = wr_idx % q->size;
+
+  // lock packet
+  dispatch_packet_t *lock_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  initialize_packet(lock_pkt);
+  lock_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+
+  // Release lock 0 in 0,0 with value 0
+  lock_pkt->arg[0]  = AIR_PKT_TYPE_XAIE_LOCK;
+  lock_pkt->arg[0] |= (AIR_ADDRESS_HERD_RELATIVE << 48);
+  lock_pkt->arg[1]  = 0;
+  lock_pkt->arg[2]  = 1;
+  lock_pkt->arg[3]  = 1;
+
+  // dispatch packet
+  signal_create(1, 0, NULL, (signal_t*)&lock_pkt->completion_signal);
+  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
+  signal_store_release((signal_t*)&q->doorbell, wr_idx);
+
+  // wait for packet completion
+  while (signal_wait_aquire((signal_t*)&lock_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
+    printf("packet completion signal timeout on lock release!\n");
+    printf("%x\n", lock_pkt->header);
+    printf("%x\n", lock_pkt->type);
+    printf("%x\n", lock_pkt->completion_signal);
+  }
+
+
+  printCoreStatus(col, 2, false, SCRATCH_AREA, 0);
 
   auto count = 0;
   while (!XAieTile_LockAcquire(&(TileInst[col][2]), 0, 0, 1000)) {
@@ -221,21 +239,21 @@ main(int argc, char *argv[])
   // If you are squeemish, look away now
   u32 rb;
 
-  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x0 * sizeof(u32));
+  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000 + (0x0 * sizeof(u32)));
   if (rb != 0xdeadbeef)
-    printf("Error %d: %08x != 0xdeadbeef",errors++, rb);
-  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1 * sizeof(u32));
+    printf("Error %d: %08x != 0xdeadbeef\n",errors++, rb);
+  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000 + (0x1 * sizeof(u32)));
   if (rb != 0xcafecafe)
-    printf("Error %d: %08x != 0xcafecafe",errors++, rb);
-  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x2 * sizeof(u32));
+    printf("Error %d: %08x != 0xcafecafe\n",errors++, rb);
+  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000 + (0x2 * sizeof(u32)));
   if (rb != 0x000decaf)
-    printf("Error %d: %08x != 0x000decaf",errors++, rb);
-  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x3 * sizeof(u32));
+    printf("Error %d: %08x != 0x000decaf\n",errors++, rb);
+  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000 + (0x3 * sizeof(u32)));
   if (rb != 0x5a1ad000)
-    printf("Error %d: %08x != 0x5a1ad000",errors++, rb);
+    printf("Error %d: %08x != 0x5a1ad000\n",errors++, rb);
 
   for (int i=4; i<SCRATCH_AREA; i++) {
-    rb = XAieTile_DmReadWord(&(TileInst[col][2]), i * sizeof(u32));
+    rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000 + (i * sizeof(u32)));
     if (rb != i+1)
       printf("Error %d: %08x != %08x\n", errors++, rb, i+1);
   }
