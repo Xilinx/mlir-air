@@ -62,6 +62,8 @@ typedef struct signal_s {
 
 typedef uint64_t signal_value_t;
 
+hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue, uint64_t paddr);
+
 namespace {
 
 inline uint64_t queue_add_write_index(queue_t *q, uint64_t v)
