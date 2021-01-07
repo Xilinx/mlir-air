@@ -43,11 +43,11 @@ hsa_status_t queue_create(uint32_t size, uint32_t type, queue_t **queue)
 
   uint64_t *bram_ptr = (uint64_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, SHMEM_BASE);
 
-  printf("Opened shared memory paddr: %p vaddr: %p\n", SHMEM_BASE, bram_ptr);
+  printf("Opened shared memory paddr: %p vaddr: %p\n", (void*)SHMEM_BASE, (void*)bram_ptr);
   uint64_t q_paddr = bram_ptr[0];
   uint64_t q_offset = q_paddr - SHMEM_BASE;
   queue_t *q = (queue_t*)( ((size_t)bram_ptr) + q_offset );
-  printf("Queue location at paddr: %p vaddr: %p\n", bram_ptr[0], q);
+  printf("Queue location at paddr: %p vaddr: %p\n", (void*)bram_ptr[0], q);
 
   if (q->id !=  0xacdc) {
     printf("%s error invalid id %x\n", __func__, q->id);
@@ -101,7 +101,7 @@ main(int argc, char *argv[])
   if (fd != -1) {
     bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, BRAM_ADDR);
     for (int i=0; i<DMA_COUNT; i++) {
-      bram_ptr[i] = i+1;
+      bram_ptr[i] = 0;
       bram_ptr[DMA_COUNT+i] = 0xdeface;
       //printf("%p %llx\n", &bram_ptr[i], bram_ptr[i]);
     }

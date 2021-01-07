@@ -157,6 +157,38 @@ void printDMAStatus(int col, int row) {
 
 
 
+struct dma_cmd_t {
+  uint8_t select;
+  uint16_t length;
+  uint16_t uram_addr;
+  uint8_t id;
+};
+
+struct dma_rsp_t {
+	uint8_t id;
+};
+
+// void put_dma_cmd(dma_cmd_t *cmd, int stream)
+// {
+//   static dispatch_packet_t pkt;
+
+//   pkt.arg[1] = stream;
+//   pkt.arg[2] = 0;
+//   pkt.arg[2] |= ((uint64_t)cmd->select) << 32;
+//   pkt.arg[2] |= cmd->length << 18;
+//   pkt.arg[2] |= cmd->uram_addr << 5;
+//   pkt.arg[2] |= cmd->id;
+
+//   handle_packet_put_stream(&pkt);
+// }
+
+// void get_dma_rsp(dma_rsp_t *rsp, int stream)
+// {
+//   static dispatch_packet_t pkt;
+//   pkt.arg[1] = stream;
+//   handle_packet_get_stream(&pkt);
+//   rsp->id = pkt.return_address;
+// }
 
 int main(int argc, char *argv[])
 {
@@ -176,12 +208,15 @@ int main(int argc, char *argv[])
 
 
   for (int i=0; i<32; i++) {
-    XAieTile_DmWriteWord(&(TileInst[6][2]), 0x1000+i*4, 0xdecaf);
+    XAieTile_DmWriteWord(&(TileInst[7][2]), 0x1000+i*4, 0xdecaf);
   }
 
-  printDMAStatus(6,2);
+  printDMAStatus(7,2);
 
+  XAieGbl_Write32(TileInst[7][0].TileAddr + 0x00033008, 0xFF);
 
+  uint32_t reg = XAieGbl_Read32(TileInst[7][0].TileAddr + 0x00033004);
+  printf("REG %x\n", reg);
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd == -1)
     return -1;
@@ -189,7 +224,7 @@ int main(int argc, char *argv[])
   uint64_t *bank0_ptr = (uint64_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE);
 
   // I have no idea if this does anything
-  __clear_cache((void*)bank0_ptr, (void*)(bank0_ptr+0x20000));
+  //__clear_cache((void*)bank0_ptr, (void*)(bank0_ptr+0x20000));
 
   // Write a value
   bank0_ptr[0] = 0xf001ba11deadbeefL;
@@ -250,8 +285,23 @@ int main(int argc, char *argv[])
   pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
   pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
 
-  pkt->arg[1] = 0x00L;  // Which FSL?
-  pkt->arg[2] = 0x20L;  // Command to the datamover
+
+  static dma_cmd_t cmd;
+  cmd.select = 0;
+  cmd.length = 32;
+  cmd.uram_addr = 0;
+  cmd.id = 0;
+
+  uint64_t stream = 0;
+  pkt->arg[1] = stream;
+  pkt->arg[2] = 0;
+  pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
+  pkt->arg[2] |= cmd.length << 18;
+  pkt->arg[2] |= cmd.uram_addr << 5;
+  pkt->arg[2] |= cmd.id;
+
+  //pkt->arg[1] = 0x00L;  // Which FSL?
+  //pkt->arg[2] = 0x20L;  // Command to the datamover
 
   signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
   signal_store_release((signal_t*)&q->doorbell, wr_idx);
@@ -264,10 +314,10 @@ int main(int argc, char *argv[])
     break;
   }
 
-  printDMAStatus(6,2);
+  printDMAStatus(7,2);
 
   for (int i=0; i<32; i++) {
-    uint32_t d = XAieTile_DmReadWord(&(TileInst[6][2]), 0x1000 + (i*4));
+    uint32_t d = XAieTile_DmReadWord(&(TileInst[7][2]), 0x1000 + (i*4));
     printf("%d: %08X\n", i, d);
   }
 

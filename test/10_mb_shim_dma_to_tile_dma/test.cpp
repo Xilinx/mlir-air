@@ -160,7 +160,7 @@ main(int argc, char *argv[])
   initialize_packet(herd_pkt);
   herd_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
-  // Set up a 2x4 herd starting 7,2
+  // Set up a 1x3 herd starting 7,0
   herd_pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
   herd_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
   herd_pkt->arg[0] |= (1L << 40);

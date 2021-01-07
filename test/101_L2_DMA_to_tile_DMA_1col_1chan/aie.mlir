@@ -2,27 +2,27 @@
 // aie-opt --aie-create-flows --aie-find-flows %s | aie-translate --aie-generate-xaie
 
 module {
-  %t60 = AIE.tile(6, 0)
-  %t61 = AIE.tile(6, 1)
-  %t62 = AIE.tile(6, 2)
+  %t70 = AIE.tile(7, 0)
+  %t71 = AIE.tile(7, 1)
+  %t72 = AIE.tile(7, 2)
 
-  %sw = AIE.switchbox(%t60) {
+  %sw = AIE.switchbox(%t70) {
     AIE.connect<"South" : 0, "North" : 0>
   }
 
-//  %mux = AIE.shimmux(%t60) {
+//  %mux = AIE.shimmux(%t70) {
 //    AIE.connect<"DMA" : 0, "South": 3>
 //  }
 
-  AIE.flow(%t61, "South" : 0, %t62, "DMA" : 0)
+  AIE.flow(%t71, "South" : 0, %t72, "DMA" : 0)
 
-  %buf62_0 = AIE.buffer(%t62) : memref<16xi32>
-  %buf62_1 = AIE.buffer(%t62) : memref<16xi32>
+  %buf62_0 = AIE.buffer(%t72) : memref<16xi32>
+  %buf62_1 = AIE.buffer(%t72) : memref<16xi32>
 
-  %l62_0 = AIE.lock(%t62, 0)
-  %l62_1 = AIE.lock(%t62, 1)
+  %l62_0 = AIE.lock(%t72, 0)
+  %l62_1 = AIE.lock(%t72, 1)
 
-  %m62 = AIE.mem(%t62) {
+  %m62 = AIE.mem(%t72) {
       %srcDma = AIE.dmaStart("S2MM0", ^bd0, ^end)
     ^bd0:
       AIE.useLock(%l62_0, "Acquire", 0, 0)

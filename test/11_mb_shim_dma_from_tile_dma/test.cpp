@@ -97,7 +97,6 @@ main(int argc, char *argv[])
   mlir_initialize_locks();
   mlir_configure_dmas();
 
-  XAieDma_Shim ShimDmaInst1;
   uint32_t *bram_ptr;
 
   #define BRAM_ADDR 0x020100000000LL
@@ -130,7 +129,7 @@ main(int argc, char *argv[])
   initialize_packet(herd_pkt);
   herd_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
-  // Set up a 2x4 herd starting 7,2
+  // Set up a 1x3 herd starting 7,0
   herd_pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
   herd_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
   herd_pkt->arg[0] |= (1L << 40);
@@ -194,6 +193,7 @@ main(int argc, char *argv[])
   }
 
   // auto burstlen = 4;
+  // XAieDma_Shim ShimDmaInst1;
   // XAieDma_ShimInitialize(&(TileInst[col][0]), &ShimDmaInst1);
   // // use BRAM_ADDR + 0x4000 as the data address
   // XAieDma_ShimBdSetAddr(&ShimDmaInst1, 1, HIGH_ADDR((u64)BRAM_ADDR), LOW_ADDR((u64)(BRAM_ADDR + 0x4000)), sizeof(u32) * DMA_COUNT);
