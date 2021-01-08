@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cassert>
 #include <stdlib.h>
+#include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <xaiengine.h>
@@ -208,24 +209,32 @@ int main(int argc, char *argv[])
 
 
   for (int i=0; i<32; i++) {
-    XAieTile_DmWriteWord(&(TileInst[7][2]), 0x1000+i*4, 0xdecaf);
+    for (int col=7;col<11;col++)
+      XAieTile_DmWriteWord(&(TileInst[col][2]), 0x1000+i*4, 0xdecaf | (col << 28));
   }
 
   printDMAStatus(7,2);
+  printDMAStatus(8,2);
+  printDMAStatus(9,2);
+  printDMAStatus(10,2);
 
   XAieGbl_Write32(TileInst[7][0].TileAddr + 0x00033008, 0xFF);
+  XAieGbl_Write32(TileInst[8][0].TileAddr + 0x00033008, 0xFF);
+  XAieGbl_Write32(TileInst[9][0].TileAddr + 0x00033008, 0xFF);
+  XAieGbl_Write32(TileInst[10][0].TileAddr + 0x00033008, 0xFF);
 
-  uint32_t reg = XAieGbl_Read32(TileInst[7][0].TileAddr + 0x00033004);
-  printf("REG %x\n", reg);
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd == -1)
     return -1;
 
   uint32_t *bank0_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE);
-  uint32_t *bank1_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+0x20000);
-
-  // I have no idea if this does anything
-  //__clear_cache((void*)bank0_ptr, (void*)(bank0_ptr+0x20000));
+  uint32_t *bank1_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+1*0x20000);
+  uint32_t *bank2_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+2*0x20000);
+  uint32_t *bank3_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+3*0x20000);
+  uint32_t *bank4_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+4*0x20000);
+  uint32_t *bank5_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+5*0x20000);
+  uint32_t *bank6_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+6*0x20000);
+  uint32_t *bank7_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+7*0x20000);
 
   // Write an ascending pattern value into the memories
   // Also stamp with 1 for the lower memory, and 1 for the upper memory as it goes in
@@ -241,23 +250,28 @@ int main(int argc, char *argv[])
     uint32_t toWrite = i + (((upper_lower)+1) << 28);
 
     printf("%d : %d %d %d %d %d %08X\n",i,upper_lower, first128_second128, first64_second64, first32_second32, offset, toWrite);
-    if (upper_lower)
+    if (upper_lower) {
+      toWrite += (0x100000);
       bank1_ptr[offset] = toWrite;
-    else
+      toWrite += (0x200000);
+      bank3_ptr[offset] = toWrite;
+      toWrite += (0x400000);
+      bank5_ptr[offset] = toWrite;
+      toWrite += (0x800000);
+      bank7_ptr[offset] = toWrite;
+    }
+    else {
+      toWrite += (0x100000);
       bank0_ptr[offset] = toWrite;
-
+      toWrite += (0x200000);
+      bank2_ptr[offset] = toWrite;
+      toWrite += (0x400000);
+      bank4_ptr[offset] = toWrite;
+      toWrite += (0x800000);
+      bank6_ptr[offset] = toWrite;
+    }
   }
 
-
-
-  // Read back the value above it
-
-  for (int i=0;i<16;i++) {
-    uint32_t word0 = bank0_ptr[i];
-    uint32_t word1 = bank1_ptr[i];
-
-    printf("%x %08X %08X\r\n", i, word0, word1);
-  }
   // create the queue
   queue_t *q = nullptr;
   auto ret = queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q);
@@ -276,10 +290,10 @@ int main(int argc, char *argv[])
 
   pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
   pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
-  pkt->arg[0] |= (1L << 40);
+  pkt->arg[0] |= (4L << 40);
   pkt->arg[0] |= (6L << 32);
   pkt->arg[0] |= (4L << 24);
-  pkt->arg[0] |= (4L << 16);
+  pkt->arg[0] |= (1L << 16);
   
   pkt->arg[1] = 0;  // Herd ID 0
   pkt->arg[2] = 0;
@@ -293,65 +307,59 @@ int main(int argc, char *argv[])
   // send the data
   //
 
-  wr_idx = queue_add_write_index(q, 1);
-  packet_id = wr_idx % q->size;
+  for (int stream=0; stream<4; stream++) {
 
-  pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
+    wr_idx = queue_add_write_index(q, 1);
+    packet_id = wr_idx % q->size;
 
+    pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+    initialize_packet(pkt);
+    pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+    pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
 
-  static dma_cmd_t cmd;
-  cmd.select = 0;
-  cmd.length = 8;
-  cmd.uram_addr = 0;
-  cmd.id = 0;
+    static dma_cmd_t cmd;
+    cmd.select = 0;
+    cmd.length = 32;
+    cmd.uram_addr = 0;
+    cmd.id = 0;
 
-  uint64_t stream = 0;
-  pkt->arg[1] = stream;
-  pkt->arg[2] = 0;
-  pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
-  pkt->arg[2] |= cmd.length << 18;
-  pkt->arg[2] |= cmd.uram_addr << 5;
-  pkt->arg[2] |= cmd.id;
+    pkt->arg[1] = stream;
+    pkt->arg[2] = 0;
+    pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
+    pkt->arg[2] |= cmd.length << 18;
+    pkt->arg[2] |= cmd.uram_addr << 5;
+    pkt->arg[2] |= cmd.id;
 
-  //pkt->arg[1] = 0x00L;  // Which FSL?
-  //pkt->arg[2] = 0x20L;  // Command to the datamover
-
-  signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
-  signal_store_release((signal_t*)&q->doorbell, wr_idx);
-
-  while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-    printf("packet completion signal timeout!\n");
-    printf("%x\n", pkt->header);
-    printf("%x\n", pkt->type);
-    printf("%x\n", pkt->completion_signal);
-    break;
-  }
-
-  printDMAStatus(7,2);
-  uint32_t errs = 0;
-  for (int i=0; i<33; i++) {
-    uint32_t d = XAieTile_DmReadWord(&(TileInst[7][2]), 0x1000 + (i*4));
-    printf("%d: %08X\n", i, d);
-    if (i == 0) {
-      if (d != 0x80000000) {
-        printf("Word 0 : Expect 0x80000000, got %08X\n",d);
-        errs++;
+    signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
+    if (stream == 3) {
+      signal_store_release((signal_t*)&q->doorbell, wr_idx);
+      while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
+        printf("packet completion signal timeout!\n");
+        printf("%x\n", pkt->header);
+        printf("%x\n", pkt->type);
+        printf("%x\n", pkt->completion_signal);
+        break;
       }
     }
     else {
-      if ((d & 0x0fffffff) != (i-1)) {
-        printf("Word %i : Expect %d-1, got %08X\n",i, i, d);
-        errs++;
-      }
+      //signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
     }
   }
 
-  if (errs) {
-    printf("FAIL: %d errors\n", errs);
+
+  sleep(1);
+  printDMAStatus(7,2);
+  printDMAStatus(8,2);
+  printDMAStatus(9,2);
+  printDMAStatus(10,2);
+
+  for (int i=0; i<32; i++) {
+    uint32_t d7 = XAieTile_DmReadWord(&(TileInst[0x7][2]), 0x1000 + (i*4));
+    uint32_t d8 = XAieTile_DmReadWord(&(TileInst[0x8][2]), 0x1000 + (i*4));
+    uint32_t d9 = XAieTile_DmReadWord(&(TileInst[0x9][2]), 0x1000 + (i*4));
+    uint32_t da = XAieTile_DmReadWord(&(TileInst[0xa][2]), 0x1000 + (i*4));
+    printf("%d: %08X %08X %08X %08X\n", i, d7, d8, d9, da);
   }
-  else
-    printf("PASS!\n");
+
+  printf("PASS!\n");
 }
