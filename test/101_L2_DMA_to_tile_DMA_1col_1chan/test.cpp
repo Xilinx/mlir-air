@@ -222,26 +222,32 @@ int main(int argc, char *argv[])
     return -1;
 
   uint64_t *bank0_ptr = (uint64_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE);
+  uint64_t *bank1_ptr = (uint64_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+0x20000);
 
   // I have no idea if this does anything
   //__clear_cache((void*)bank0_ptr, (void*)(bank0_ptr+0x20000));
 
-  // Write a value
-  bank0_ptr[0] = 0xf001ba11deadbeefL;
-  bank0_ptr[1] = 0x00defaceL;
+  // Write an ascending pattern value into 
+  for (int i=0;i<16;i++) {
+    uint64_t toWrite0 = 0;
+    toWrite0 |= ((uint64_t)(0+i*4));
+    toWrite0 |= ((uint64_t)(1+i*4))<<32;
+    bank0_ptr[i] = toWrite0;
+    uint64_t toWrite1 = 0;
+    toWrite1 |= ((uint64_t)(2+i*4));
+    toWrite1 |= ((uint64_t)(3+i*4))<<32;
+    bank1_ptr[i] = toWrite1;
+  }
+
 
   // Read back the value above it
 
-  uint64_t word0 = bank0_ptr[0];
-  uint64_t word1 = bank0_ptr[1];
+  for (int i=0;i<16;i++) {
+    uint64_t word0 = bank0_ptr[i];
+    uint64_t word1 = bank1_ptr[i];
 
-  unsigned word0_lo = (unsigned)word0;
-  unsigned word1_lo = (unsigned)word1;
-  unsigned word0_hi = (unsigned)(word0 >> 32);
-  unsigned word1_hi = (unsigned)(word1 >> 32);
-  printf("I read back %08X%08X\r\n", word0_hi, word0_lo);
-  printf("I read back %08X%08X\r\n", word1_hi, word1_lo);
-
+    printf("%x %016lX %016lX\r\n", i, word0, word1);
+  }
   // create the queue
   queue_t *q = nullptr;
   auto ret = queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q);
