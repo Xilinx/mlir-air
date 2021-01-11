@@ -2034,6 +2034,11 @@ create_root_design ""
 regenerate_bd_layout
 save_bd_design
 
+import_files -fileset sources_1 -norecurse /work/aarch64/training-architectures/src/acdc/air/platforms/xilinx_vck190_air/lib/mb/acdc_agent.elf
+set_property used_in_simulation 0 [get_files acdc_agent.elf]
+set_property SCOPED_TO_REF project_1 [get_files -all -of_objects [get_fileset sources_1] {acdc_agent.elf}]
+set_property SCOPED_TO_CELLS { microblaze_0 } [get_files -all -of_objects [get_fileset sources_1] {acdc_agent.elf}]
+
 #import_files -fileset constrs_1 -norecurse ./constraints/ai_ph1.xdc
 #import_files -fileset constrs_1 -norecurse ./constraints/default.xdc
 #import_files -fileset constrs_1 -norecurse ./constraints/pl_clk_uncertainty.xdc
