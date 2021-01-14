@@ -5,6 +5,10 @@
 	};
 };
 
+&sdhci1 {
+   /delete-property/ no-1-8-v;
+};
+
 &amba_pl {
     /delete-node/ interrupt-controller@a4000000;
 };
