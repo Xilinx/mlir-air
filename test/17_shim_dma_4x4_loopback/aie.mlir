@@ -4,8 +4,10 @@
 module {
   %t2_0 = AIE.tile(2, 0)
   %t2_1 = AIE.tile(2, 1)
+  %t2_2 = AIE.tile(2, 2)
   %t3_0 = AIE.tile(3, 0)
   %t3_1 = AIE.tile(3, 1)
+  %t3_2 = AIE.tile(3, 2)
   %t6_0 = AIE.tile(6, 0)
   %t6_1 = AIE.tile(6, 1)
   %t7_0 = AIE.tile(7, 0)
@@ -49,10 +51,16 @@ module {
     AIE.connect<"South" : 2, "DMA": 0>
     AIE.connect<"South" : 3, "DMA": 1>
   }
-  AIE.flow(%t2_1, "South" : 0, %t8_3, "DMA" : 0)
-  AIE.flow(%t2_1, "South" : 1, %t8_4, "DMA" : 0)
-  AIE.flow(%t8_3, "DMA" : 0, %t2_1, "South" : 0)
-  AIE.flow(%t8_4, "DMA" : 0, %t2_1, "South" : 1)
+  %sw2_1 = AIE.switchbox(%t2_1) {
+    AIE.connect<"South" : 0, "North" : 0>
+    AIE.connect<"South" : 1, "North" : 1>
+    AIE.connect<"North" : 0, "South" : 0>
+    AIE.connect<"North" : 1, "South" : 1>
+  }
+  AIE.flow(%t2_2, "South" : 0, %t8_3, "DMA" : 0)
+  AIE.flow(%t2_2, "South" : 1, %t8_4, "DMA" : 0)
+  AIE.flow(%t8_3, "DMA" : 0, %t2_2, "South" : 0)
+  AIE.flow(%t8_4, "DMA" : 0, %t2_2, "South" : 1)
 
 
   %sw3_0 = AIE.switchbox(%t3_0) {
@@ -67,10 +75,16 @@ module {
     AIE.connect<"South" : 2, "DMA": 0>
     AIE.connect<"South" : 3, "DMA": 1>
   }
-  AIE.flow(%t3_1, "South" : 0, %t8_5, "DMA" : 0)
-  AIE.flow(%t3_1, "South" : 1, %t8_6, "DMA" : 0)
-  AIE.flow(%t8_5, "DMA" : 0, %t3_1, "South" : 0)
-  AIE.flow(%t8_6, "DMA" : 0, %t3_1, "South" : 1)
+  %sw3_1 = AIE.switchbox(%t3_1) {
+    AIE.connect<"South" : 0, "North" : 0>
+    AIE.connect<"South" : 1, "North" : 1>
+    AIE.connect<"North" : 0, "South" : 0>
+    AIE.connect<"North" : 1, "South" : 1>
+  }
+  AIE.flow(%t3_2, "South" : 0, %t8_5, "DMA" : 0)
+  AIE.flow(%t3_2, "South" : 1, %t8_6, "DMA" : 0)
+  AIE.flow(%t8_5, "DMA" : 0, %t3_2, "South" : 0)
+  AIE.flow(%t8_6, "DMA" : 0, %t3_2, "South" : 1)
 
 
   %sw6_0 = AIE.switchbox(%t6_0) {
