@@ -326,6 +326,23 @@ void xaie_device_init(int num_cols)
       xil_printf("init physical dma col %d\n\r", col);
       xaie::XAieGbl_CfgInitialize_Tile(0, &xaie::ShimTileInst[col],
                                        col, 0, xaie::AieConfigPtr);
+      // I'd love to do this, but it overflows the program memory, because, yeah
+      /*
+      XAieDma_Shim dma;
+      XAieDma_ShimInitialize(&xaie::ShimTileInst[col], &dma);  // Reset!!!
+      */
+    // Invalidate all BDs by writing to their buffer control register
+    for (int ch=0;ch<4;ch++) {
+      XAieGbl_Write32(xaie::ShimTileInst[col].TileAddr + 0x0001D40 + 0x8*ch, 0x00); // Disable all channels
+    }
+    for (int bd=0;bd<16;bd++) {
+      XAieGbl_Write32(xaie::ShimTileInst[col].TileAddr + 0x0001D008 + 0x15*bd, 0);
+    }
+    // Enable all 4 channels
+    for (int ch=0;ch<4;ch++) {
+      XAieGbl_Write32(xaie::ShimTileInst[col].TileAddr + 0x0001D40 + 0x8*ch, 0x01); // Enable channel
+    }
+
       //XAieDma_ShimInitialize(&xaie::ShimTileInst[col], &xaie::ShimDMAInst[col]);  // We might want to reset ...
   }
 }
@@ -346,8 +363,7 @@ void xaie_herd_init(int col_start, int num_cols, int row_start, int num_rows)
 
   for (int col=0; col<num_cols; col++) {
     for (int row=0; row<num_rows; row++) {
-      xil_printf("init physical col %d, row %d as herd col %d row %d\n\r",
-                  col+col_start, row+row_start, col, row);
+      xil_printf("init physical col %d, row %d as herd col %d row %d\n\r", col+col_start, row+row_start, col, row);
       xaie::XAieGbl_CfgInitialize_Tile(0, &xaie::TileInst[col][row],
                                        col+col_start, row+row_start, xaie::AieConfigPtr);
     }
@@ -415,8 +431,9 @@ void handle_packet_device_initialize(dispatch_packet_t *pkt) {
     xil_printf("Initialized shim DMA of size %d\r\n",num_cols);
     // herd_id is ignored - current restriction is 1 herd -> 1 controller
   }
-  else
+  else {
     xil_printf("Unsupported address type 0x%04X for device initialize\r\n",(pkt->arg[0] >> 48) & 0xf);
+  }
 }
 
 void handle_packet_herd_initialize(dispatch_packet_t *pkt) {
@@ -433,8 +450,9 @@ void handle_packet_herd_initialize(dispatch_packet_t *pkt) {
     xil_printf("Initialized herd %d at (%d, %d) of size (%d,%d)\r\n",herd_id, start_col, start_row, num_cols, num_rows);
     // herd_id is ignored - current restriction is 1 herd -> 1 controller
   }
-  else
+  else {
     xil_printf("Unsupported address type 0x%04X for herd initialize\r\n",(pkt->arg[0] >> 48) & 0xf);
+  }
 }
 
 
@@ -541,8 +559,7 @@ void handle_packet_shim_memcpy(dispatch_packet_t *pkt)
   //XAieGbl_Tile tile;
   //xaie::XAieGbl_CfgInitialize_Tile(0, &(aie::TileInst[0][0]), col, row, xaie::AieConfigPtr);
 
-  xil_printf("shim_memcpy: col %d direction %d channel %d paddr %llx bytes %d\n\r",
-              col, direction, channel, paddr, bytes);
+  xil_printf("shim_memcpy: col %d direction %d channel %d paddr %llx bytes %d\n\r",col, direction, channel, paddr, bytes);
 
   if (direction == 0)
     xaie_shim_dma_s2mm(&xaie::ShimTileInst[col], channel, paddr, bytes);
@@ -618,8 +635,7 @@ void handle_agent_dispatch_packet(dispatch_packet_t *pkt)
   pkt_idx = ((pkt_idx & 0x3fff) >> 6) - 2;
   //xil_printf("handle agent dispatch pkt %x @ 0x%llx\n\r", pkt_idx, (size_t)pkt);
 
-  xil_printf("handle dispatch packet, args: 0x%llx 0x%llx 0x%llx 0x%llx\n\r",
-             pkt->arg[0], pkt->arg[1], pkt->arg[2], pkt->arg[3]);
+  xil_printf("handle dispatch packet, args: 0x%llx 0x%llx 0x%llx 0x%llx\n\r",pkt->arg[0], pkt->arg[1], pkt->arg[2], pkt->arg[3]);
   auto op = pkt->arg[0] & 0xffff;
   xil_printf("Op is %04X\n\r",op);
   switch (op) {
