@@ -38,7 +38,8 @@ XAieGbl_Config *AieConfigPtr;	                          /**< AIE configuration p
 //XAieGbl AieInst;	                                      /**< AIE global instance */
 //XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuration instance */
 //XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];  /**< Instantiates AIE array of [XAIE_NUM_COLS] x [XAIE_NUM_ROWS] */
-XAieGbl_Tile TileInst[4][4];
+XAieGbl_Tile TileInst[4][4];   // Needs to be dynamic, and have a pool of these
+XAieGbl_Tile ShimTileInst[XAIE_NUM_COLS];
 //XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
 
 XAieGbl_Config XAieGbl_ConfigTable[XPAR_AIE_NUM_INSTANCES] =
@@ -205,37 +206,90 @@ XAieGbl_Config *XAieGbl_LookupConfig(u16 DeviceId)
 
 int xaie_shim_dma_s2mm(XAieGbl_Tile *tile, int channel, uint64_t addr, uint32_t len)
 {
-  static XAieDma_Shim ShimDmaInst;
-  xil_printf("s2mm start\n\r");
-  XAieDma_ShimInitialize(tile, &ShimDmaInst);
+  uint32_t shimDMAchannel = channel + XAIEDMA_SHIM_CHNUM_S2MM0;
+  xil_printf("Shim S2MM start chanel %d\n\r", shimDMAchannel);
 
-  uint8_t bd = 1;
-  XAieDma_ShimBdSetAddr(&ShimDmaInst, bd, HIGH_ADDR((u64)addr), LOW_ADDR((u64)addr), len);
-  XAieDma_ShimBdSetAxi(&ShimDmaInst, bd, 0, 4, 0, 0, XAIE_ENABLE);
-  XAieDma_ShimBdWrite(&ShimDmaInst, bd);
-  XAieDma_ShimSetStartBd(&ShimDmaInst, channel, bd);
-  XAieDma_ShimChControl(&ShimDmaInst, channel, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
+  XAieDma_Shim dma;
+  XAieDma_ShimSoftInitialize(tile, &dma);  // We don't want to reset ...
+  // Status print out for debug
+  uint32_t s2mm_status = XAieGbl_Read32(tile->TileAddr + 0x0001D160);
+  uint32_t mm2s_status = XAieGbl_Read32(tile->TileAddr + 0x0001D164);
 
-  while (XAieDma_ShimPendingBdCount(&ShimDmaInst, channel)) {}
-  xil_printf("s2mm done\n\r");
+  xil_printf("s2mm status : %08X\n\r", s2mm_status);
+  xil_printf("mm2s status : %08X\n\r", mm2s_status);
+
+  uint8_t start_bd = 8 + 4*channel;
+  uint32_t outstanding = XAieDma_ShimPendingBdCount(&dma, shimDMAchannel);
+  // If outstanding >=4, we're in trouble!!!!
+  if (outstanding >=4) {
+    xil_printf("\n\r *** BD OVERFLOW in s2mm channel %d *** \n\r",channel);
+    while (XAieDma_ShimPendingBdCount(&dma, shimDMAchannel) > 3) {}
+  }
+  xil_printf("Outstanding pre : %d\n\r", outstanding);
+  uint8_t bd = start_bd+outstanding;
+  XAieDma_ShimBdSetAddr(&dma, bd, HIGH_ADDR((u64)addr), LOW_ADDR((u64)addr), len);
+  XAieDma_ShimBdSetAxi(&dma, bd, 0, 4, 0, 0, XAIE_ENABLE);
+  XAieDma_ShimBdWrite(&dma, bd);
+  XAieDma_ShimSetStartBd(&dma, shimDMAchannel, bd);
+  XAieDma_ShimChControl(&dma, shimDMAchannel, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
+
+  outstanding = XAieDma_ShimPendingBdCount(&dma, shimDMAchannel);
+  xil_printf("Outstanding post: %d\n\r", outstanding);
+  //while (XAieDma_ShimPendingBdCount(&ShimDmaInst, channel)) {}
+  xil_printf("s2mm bd pushed as bd %d\n\r",bd);
+    // Status print out for debug
+  s2mm_status = XAieGbl_Read32(tile->TileAddr + 0x0001D160);
+  mm2s_status = XAieGbl_Read32(tile->TileAddr + 0x0001D164);
+
+  xil_printf("s2mm status : %08X\n\r", s2mm_status);
+  xil_printf("mm2s status : %08X\n\r", mm2s_status);
 
 }
 
 int xaie_shim_dma_mm2s(XAieGbl_Tile *tile, int channel, uint64_t addr, uint32_t len)
 {
-  static XAieDma_Shim ShimDmaInst;
-  xil_printf("mm2s start\n\r");
-  XAieDma_ShimInitialize(tile, &ShimDmaInst);
+  uint32_t shimDMAchannel = channel + XAIEDMA_SHIM_CHNUM_MM2S0;
+  xil_printf("Shim MM2S start channel %d\n\r", shimDMAchannel);
 
-  uint8_t bd = 1;
-  XAieDma_ShimBdSetAddr(&ShimDmaInst, bd, HIGH_ADDR(addr), LOW_ADDR(addr), len);
-  XAieDma_ShimBdSetAxi(&ShimDmaInst, bd, 0, 4, 0, 0, XAIE_ENABLE);
-  XAieDma_ShimBdWrite(&ShimDmaInst, bd);
-  XAieDma_ShimSetStartBd(&ShimDmaInst, channel, bd);
-  XAieDma_ShimChControl(&ShimDmaInst, channel, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
+  XAieDma_Shim dma;
+  XAieDma_ShimSoftInitialize(tile, &dma);  // We don't want to reset ...
 
-  while (XAieDma_ShimPendingBdCount(&ShimDmaInst, channel)) {}
-  xil_printf("mm2s done\n\r");
+  // Status print out for debug
+  uint32_t s2mm_status = XAieGbl_Read32(tile->TileAddr + 0x0001D160);
+  uint32_t mm2s_status = XAieGbl_Read32(tile->TileAddr + 0x0001D164);
+
+  xil_printf("s2mm status : %08X\n\r", s2mm_status);
+  xil_printf("mm2s status : %08X\n\r", mm2s_status);
+
+  uint8_t start_bd = 0 + 4*channel;
+  uint32_t outstanding = XAieDma_ShimPendingBdCount(&dma, shimDMAchannel);
+  // If outstanding >=4, we're in trouble!!!!
+  if (outstanding >=4) {
+    xil_printf("\n\r *** BD OVERFLOW in mm2s channel %d *** \n\r",channel);
+    while (XAieDma_ShimPendingBdCount(&dma, shimDMAchannel) > 3) {}
+  }
+  xil_printf("Outstanding pre : %d\n\r", outstanding);
+  uint8_t bd = start_bd + outstanding;
+  XAieDma_ShimBdSetAddr(&dma, bd, HIGH_ADDR(addr), LOW_ADDR(addr), len);
+  XAieDma_ShimBdSetAxi(&dma, bd, 0, 4, 0, 0, XAIE_ENABLE);
+  XAieDma_ShimBdWrite(&dma, bd);
+  XAieDma_ShimSetStartBd(&dma, shimDMAchannel, bd);
+  XAieDma_ShimChControl(&dma, shimDMAchannel, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
+
+  outstanding = XAieDma_ShimPendingBdCount(&dma, shimDMAchannel);
+  xil_printf("Outstanding post: %d\n\r", outstanding);
+
+  //while (XAieDma_ShimPendingBdCount(&ShimDmaInst, channel)) {}
+  xil_printf("mm2s bd pushed as bd %d\n\r",bd);
+
+  // Status print out for debug
+  s2mm_status = XAieGbl_Read32(tile->TileAddr + 0x0001D160);
+  mm2s_status = XAieGbl_Read32(tile->TileAddr + 0x0001D164);
+
+  xil_printf("s2mm status : %08X\n\r", s2mm_status);
+  xil_printf("mm2s status : %08X\n\r", mm2s_status);
+
+
 }
 
 int xaie_lock_release(XAieGbl_Tile *tile, u32 lock_id, u32 val)
@@ -257,6 +311,23 @@ int xaie_lock_acquire_nb(XAieGbl_Tile *tile, u32 lock_id, u32 val)
     return 0;
   }
   return 1;
+}
+
+// Initialize the structures for the shim DMA at the bottom of the device
+void xaie_device_init(int num_cols)
+{
+  size_t aie_base = XAIE_ADDR_ARRAY_OFF << 14;
+  XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuration instance */
+  XAIEGBL_HWCFG_SET_CONFIG((&AieConfig), XAIE_NUM_ROWS, XAIE_NUM_COLS, XAIE_ADDR_ARRAY_OFF);
+  xaie::XAieGbl_HwInit(&AieConfig);
+  xaie::AieConfigPtr = xaie::XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
+
+  for (int col=0; col<num_cols; col++) {
+      xil_printf("init physical dma col %d\n\r", col);
+      xaie::XAieGbl_CfgInitialize_Tile(0, &xaie::ShimTileInst[col],
+                                       col, 0, xaie::AieConfigPtr);
+      //XAieDma_ShimInitialize(&xaie::ShimTileInst[col], &xaie::ShimDMAInst[col]);  // We might want to reset ...
+  }
 }
 
 // Initialize one herd with lower left corner at (col_start, row_start)
@@ -332,6 +403,20 @@ void complete_agent_dispatch_packet(dispatch_packet_t *pkt)
   packet_set_active(pkt, false);
   pkt->type = HSA_PACKET_TYPE_INVALID;
   signal_subtract_acq_rel((signal_t*)&pkt->completion_signal, 1);
+}
+
+void handle_packet_device_initialize(dispatch_packet_t *pkt) {
+  packet_set_active(pkt, true);
+  // Address mode here is absolute range
+  if (((pkt->arg[0] >> 48) & 0xf) == AIR_ADDRESS_ABSOLUTE_RANGE) {
+    u32 num_cols  = (pkt->arg[0] >> 40) & 0xff;
+
+    xaie_device_init(num_cols);
+    xil_printf("Initialized shim DMA of size %d\r\n",num_cols);
+    // herd_id is ignored - current restriction is 1 herd -> 1 controller
+  }
+  else
+    xil_printf("Unsupported address type 0x%04X for device initialize\r\n",(pkt->arg[0] >> 48) & 0xf);
 }
 
 void handle_packet_herd_initialize(dispatch_packet_t *pkt) {
@@ -444,7 +529,6 @@ void handle_packet_shim_memcpy(dispatch_packet_t *pkt)
   xil_printf("handle_packet_shim_memory\n\r");
   packet_set_active(pkt, true);
 
-  uint16_t row = (pkt->arg[0] >> 16) & 0xffff;
   uint16_t col = (pkt->arg[0] >> 32) & 0xffff;
   uint16_t flags = (pkt->arg[0] >> 48) & 0xffff;
   bool start = flags & 0x1;
@@ -457,13 +541,13 @@ void handle_packet_shim_memcpy(dispatch_packet_t *pkt)
   //XAieGbl_Tile tile;
   //xaie::XAieGbl_CfgInitialize_Tile(0, &(aie::TileInst[0][0]), col, row, xaie::AieConfigPtr);
 
-  xil_printf("col %d row %d direction %d channel %d paddr %llx bytes %d\n\r",
-              col, row, direction, channel, paddr, bytes);
+  xil_printf("shim_memcpy: col %d direction %d channel %d paddr %llx bytes %d\n\r",
+              col, direction, channel, paddr, bytes);
 
   if (direction == 0)
-    xaie_shim_dma_s2mm(&xaie::TileInst[0][0], channel, paddr, bytes);
+    xaie_shim_dma_s2mm(&xaie::ShimTileInst[col], channel, paddr, bytes);
   else
-    xaie_shim_dma_mm2s(&xaie::TileInst[0][0], channel, paddr, bytes);
+    xaie_shim_dma_mm2s(&xaie::ShimTileInst[col], channel, paddr, bytes);
 }
 
 } // namespace
@@ -537,11 +621,15 @@ void handle_agent_dispatch_packet(dispatch_packet_t *pkt)
   xil_printf("handle dispatch packet, args: 0x%llx 0x%llx 0x%llx 0x%llx\n\r",
              pkt->arg[0], pkt->arg[1], pkt->arg[2], pkt->arg[3]);
   auto op = pkt->arg[0] & 0xffff;
+  xil_printf("Op is %04X\n\r",op);
   switch (op) {
     case AIR_PKT_TYPE_INVALID:
     default:
       break;
 
+    case AIR_PKT_TYPE_DEVICE_INITIALIZE:
+      handle_packet_device_initialize(pkt);
+      break;
     case AIR_PKT_TYPE_HERD_INITIALIZE:
       handle_packet_herd_initialize(pkt);
       break;
