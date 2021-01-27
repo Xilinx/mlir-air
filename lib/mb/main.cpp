@@ -542,6 +542,16 @@ void handle_packet_get_stream(dispatch_packet_t *pkt)
 
 }
 
+
+void handle_packet_hello(dispatch_packet_t *pkt)
+{
+  // packet is in active phase
+  packet_set_active(pkt, true);
+
+  uint64_t say_what = pkt->arg[1];
+  xil_printf("HELLO %08X\n\r",(uint32_t)say_what);
+}
+
 void handle_packet_shim_memcpy(dispatch_packet_t *pkt)
 {
   xil_printf("handle_packet_shim_memory\n\r");
@@ -661,6 +671,9 @@ void handle_agent_dispatch_packet(dispatch_packet_t *pkt)
     //   handle_packet_memcpy(pkt);
     //   break;
 
+    case AIR_PKT_TYPE_HELLO:
+      handle_packet_hello(pkt);
+      break;
     case AIR_PKT_TYPE_PUT_STREAM:
       handle_packet_put_stream(pkt);
       break;
