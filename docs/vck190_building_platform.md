@@ -13,7 +13,7 @@ Petalinux build can be used to boot the board or to generate a sysroot
 for cross-compilation. This build will contain some low-level libraries and
 tools, but it will not contain the full set of dependencies needed to build
 and run most AIR programs. The
-[Pynq based environment](docs/vck190_building_pynq.md) if preferred for most
+[Pynq based environment](vck190_building_pynq.md) is preferred for most
 use cases.
 
 #
