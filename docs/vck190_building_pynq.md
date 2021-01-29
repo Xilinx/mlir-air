@@ -5,7 +5,7 @@
 #
 ## Prerequisites
 
-1. Build the XSA file, BSP file, and Petalinux for the VCK190 AIR platform. ([Documentation](docs/vck190_building_platform.md))
+1. Build the XSA file, BSP file, and Petalinux for the VCK190 AIR platform. ([Documentation](vck190_building_platform.md))
 
 2. Setup an envrionment to build Pynq.
 ([Documentation](https://pynq.readthedocs.io/en/latest/pynq_sd_card.html#prepare-the-building-environment))
@@ -38,7 +38,7 @@ For changes to the Vivado design that don't require Linux driver changes, it
 is often easier to update just the BOOT.BIN on the SD Card.
 
 1. Update the Vivado design and generate a new XSA file.
-2. Run make in the 'air/platforms/xilinx_vck190_air/bootgen' directory
+2. Run make in the `air/platforms/xilinx_vck190_air/bootgen` directory
 3. Write the resulting BOOT.BIN file to the boot partition of the Pynq SD card.
 
 For hardware changes requiring device driver or device-tree modifications, it
