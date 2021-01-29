@@ -25,6 +25,9 @@ petalinux_sysroot:
 petalinux_clean:
 	$(MAKE) -C petalinux ultraclean PLATFORM=$(PLATFORM)
 
+petalinux_bsp:
+	$(MAKE) -C petalinux bsp
+
 cleanall: petalinux_clean xsa_clean
 	${RM} -r platform_repo
 	
