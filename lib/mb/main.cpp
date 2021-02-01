@@ -426,7 +426,6 @@ void handle_packet_device_initialize(dispatch_packet_t *pkt) {
   // Address mode here is absolute range
   if (((pkt->arg[0] >> 48) & 0xf) == AIR_ADDRESS_ABSOLUTE_RANGE) {
     u32 num_cols  = (pkt->arg[0] >> 40) & 0xff;
-
     xaie_device_init(num_cols);
     xil_printf("Initialized shim DMA of size %d\r\n",num_cols);
     // herd_id is ignored - current restriction is 1 herd -> 1 controller
