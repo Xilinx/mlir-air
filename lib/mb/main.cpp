@@ -21,6 +21,11 @@ extern "C" {
 #define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
 #define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
 
+#define LOGICAL_HERD_DMAS      16
+
+#define SHIM_DMA_S2MM 0 
+#define SHIM_DMA_MM2S 1 
+
 namespace {
 
 struct HerdConfig {
@@ -39,8 +44,12 @@ XAieGbl_Config *AieConfigPtr;	                          /**< AIE configuration p
 //XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuration instance */
 //XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];  /**< Instantiates AIE array of [XAIE_NUM_COLS] x [XAIE_NUM_ROWS] */
 XAieGbl_Tile TileInst[4][4];   // Needs to be dynamic, and have a pool of these
-XAieGbl_Tile ShimTileInst[XAIE_NUM_COLS];
+XAieGbl_Tile ShimTileInst[XAIE_NUM_COLS];  
 //XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
+uint16_t logicalToPhysicalS2MMshimDMAcolMap[LOGICAL_HERD_DMAS];                 // The hardwired 16 will never bite us
+uint16_t logicalToPhysicalS2MMshimDMAchannelMap[LOGICAL_HERD_DMAS];             // The hardwired 16 will never bite us
+uint16_t logicalToPhysicalMM2SshimDMAcolMap[LOGICAL_HERD_DMAS];                 // The hardwired 16 will never bite us
+uint16_t logicalToPhysicalMM2SshimDMAchannelMap[LOGICAL_HERD_DMAS];             // The hardwired 16 will never bite us
 
 XAieGbl_Config XAieGbl_ConfigTable[XPAR_AIE_NUM_INSTANCES] =
 {
@@ -204,10 +213,17 @@ XAieGbl_Config *XAieGbl_LookupConfig(u16 DeviceId)
 
 } // namespace xaie
 
-int xaie_shim_dma_s2mm(XAieGbl_Tile *tile, int channel, uint64_t addr, uint32_t len)
+int xaie_shim_dma_push_bd(XAieGbl_Tile *tile, int direction, int channel, uint64_t addr, uint32_t len)
 {
-  uint32_t shimDMAchannel = channel + XAIEDMA_SHIM_CHNUM_S2MM0;
-  xil_printf("Shim S2MM start chanel %d\n\r", shimDMAchannel);
+  uint32_t shimDMAchannel = channel;
+  if (direction == SHIM_DMA_S2MM) {
+    shimDMAchannel += XAIEDMA_SHIM_CHNUM_S2MM0;   
+    xil_printf("\n\r  S2MM Shim DMA start channel %d\n\r", shimDMAchannel);
+  }
+  else {
+    shimDMAchannel += XAIEDMA_SHIM_CHNUM_MM2S0;   
+    xil_printf("\n\r  MM2S Shim DMA start channel %d\n\r", shimDMAchannel);
+  }
 
   XAieDma_Shim dma;
   XAieDma_ShimSoftInitialize(tile, &dma);  // We don't want to reset ...
@@ -218,17 +234,19 @@ int xaie_shim_dma_s2mm(XAieGbl_Tile *tile, int channel, uint64_t addr, uint32_t 
   xil_printf("s2mm status : %08X\n\r", s2mm_status);
   xil_printf("mm2s status : %08X\n\r", mm2s_status);
 
-  uint8_t start_bd = 8 + 4*channel;
+  uint8_t start_bd = 4*shimDMAchannel;
   uint32_t outstanding = XAieDma_ShimPendingBdCount(&dma, shimDMAchannel);
   // If outstanding >=4, we're in trouble!!!!
   if (outstanding >=4) {
-    xil_printf("\n\r *** BD OVERFLOW in s2mm channel %d *** \n\r",channel);
+    xil_printf("\n\r *** BD OVERFLOW in shimDMA channel %d *** \n\r",shimDMAchannel);
     while (XAieDma_ShimPendingBdCount(&dma, shimDMAchannel) > 3) {}
   }
   xil_printf("Outstanding pre : %d\n\r", outstanding);
   uint8_t bd = start_bd+outstanding;
   XAieDma_ShimBdSetAddr(&dma, bd, HIGH_ADDR((u64)addr), LOW_ADDR((u64)addr), len);
   XAieDma_ShimBdSetAxi(&dma, bd, 0, 4, 0, 0, XAIE_ENABLE);
+  XAieDma_ShimBdSetNext(&dma, bd, 0xff);  // Form an orderly queue
+
   XAieDma_ShimBdWrite(&dma, bd);
   XAieDma_ShimSetStartBd(&dma, shimDMAchannel, bd);
   XAieDma_ShimChControl(&dma, shimDMAchannel, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
@@ -236,7 +254,7 @@ int xaie_shim_dma_s2mm(XAieGbl_Tile *tile, int channel, uint64_t addr, uint32_t 
   outstanding = XAieDma_ShimPendingBdCount(&dma, shimDMAchannel);
   xil_printf("Outstanding post: %d\n\r", outstanding);
   //while (XAieDma_ShimPendingBdCount(&ShimDmaInst, channel)) {}
-  xil_printf("s2mm bd pushed as bd %d\n\r",bd);
+  xil_printf("bd pushed as bd %d\n\r",bd);
     // Status print out for debug
   s2mm_status = XAieGbl_Read32(tile->TileAddr + 0x0001D160);
   mm2s_status = XAieGbl_Read32(tile->TileAddr + 0x0001D164);
@@ -244,52 +262,12 @@ int xaie_shim_dma_s2mm(XAieGbl_Tile *tile, int channel, uint64_t addr, uint32_t 
   xil_printf("s2mm status : %08X\n\r", s2mm_status);
   xil_printf("mm2s status : %08X\n\r", mm2s_status);
 
-}
-
-int xaie_shim_dma_mm2s(XAieGbl_Tile *tile, int channel, uint64_t addr, uint32_t len)
-{
-  uint32_t shimDMAchannel = channel + XAIEDMA_SHIM_CHNUM_MM2S0;
-  xil_printf("Shim MM2S start channel %d\n\r", shimDMAchannel);
-
-  XAieDma_Shim dma;
-  XAieDma_ShimSoftInitialize(tile, &dma);  // We don't want to reset ...
-
-  // Status print out for debug
-  uint32_t s2mm_status = XAieGbl_Read32(tile->TileAddr + 0x0001D160);
-  uint32_t mm2s_status = XAieGbl_Read32(tile->TileAddr + 0x0001D164);
-
-  xil_printf("s2mm status : %08X\n\r", s2mm_status);
-  xil_printf("mm2s status : %08X\n\r", mm2s_status);
-
-  uint8_t start_bd = 0 + 4*channel;
-  uint32_t outstanding = XAieDma_ShimPendingBdCount(&dma, shimDMAchannel);
-  // If outstanding >=4, we're in trouble!!!!
-  if (outstanding >=4) {
-    xil_printf("\n\r *** BD OVERFLOW in mm2s channel %d *** \n\r",channel);
-    while (XAieDma_ShimPendingBdCount(&dma, shimDMAchannel) > 3) {}
+  if (direction == SHIM_DMA_S2MM) {
+    xil_printf("  End of S2MM Shim DMA start channel %d\n\r", shimDMAchannel);
   }
-  xil_printf("Outstanding pre : %d\n\r", outstanding);
-  uint8_t bd = start_bd + outstanding;
-  XAieDma_ShimBdSetAddr(&dma, bd, HIGH_ADDR(addr), LOW_ADDR(addr), len);
-  XAieDma_ShimBdSetAxi(&dma, bd, 0, 4, 0, 0, XAIE_ENABLE);
-  XAieDma_ShimBdWrite(&dma, bd);
-  XAieDma_ShimSetStartBd(&dma, shimDMAchannel, bd);
-  XAieDma_ShimChControl(&dma, shimDMAchannel, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
-
-  outstanding = XAieDma_ShimPendingBdCount(&dma, shimDMAchannel);
-  xil_printf("Outstanding post: %d\n\r", outstanding);
-
-  //while (XAieDma_ShimPendingBdCount(&ShimDmaInst, channel)) {}
-  xil_printf("mm2s bd pushed as bd %d\n\r",bd);
-
-  // Status print out for debug
-  s2mm_status = XAieGbl_Read32(tile->TileAddr + 0x0001D160);
-  mm2s_status = XAieGbl_Read32(tile->TileAddr + 0x0001D164);
-
-  xil_printf("s2mm status : %08X\n\r", s2mm_status);
-  xil_printf("mm2s status : %08X\n\r", mm2s_status);
-
-
+  else {
+    xil_printf("  End of MM2S Shim DMA start channel %d\n\r", shimDMAchannel);
+  }
 }
 
 int xaie_lock_release(XAieGbl_Tile *tile, u32 lock_id, u32 val)
@@ -333,17 +311,17 @@ void xaie_device_init(int num_cols)
       */
     // Invalidate all BDs by writing to their buffer control register
     for (int ch=0;ch<4;ch++) {
-      XAieGbl_Write32(xaie::ShimTileInst[col].TileAddr + 0x0001D40 + 0x8*ch, 0x00); // Disable all channels
+      XAieGbl_Write32(xaie::ShimTileInst[col].TileAddr + 0x0001D140 + 0x8*ch, 0x00); // Disable all channels
     }
     for (int bd=0;bd<16;bd++) {
-      XAieGbl_Write32(xaie::ShimTileInst[col].TileAddr + 0x0001D008 + 0x15*bd, 0);
+      XAieGbl_Write32(xaie::ShimTileInst[col].TileAddr + 0x0001D008 + 0x14*bd, 0);
     }
     // Enable all 4 channels
     for (int ch=0;ch<4;ch++) {
-      XAieGbl_Write32(xaie::ShimTileInst[col].TileAddr + 0x0001D40 + 0x8*ch, 0x01); // Enable channel
+      XAieGbl_Write32(xaie::ShimTileInst[col].TileAddr + 0x0001D140 + 0x8*ch, 0x01); // Enable channel
     }
 
-      //XAieDma_ShimInitialize(&xaie::ShimTileInst[col], &xaie::ShimDMAInst[col]);  // We might want to reset ...
+      //XAieDma_ShimInitialize(&xaie::ShimTileInst[col], &xaie::ShimDMAInst[col]);  // We might want to reset ...          
   }
 }
 
@@ -375,6 +353,12 @@ void xaie_herd_init(int col_start, int num_cols, int row_start, int num_rows)
 namespace {
 
 const uint64_t base_address = 0x020100000000UL;
+
+u32 last_before_hi, last_before_lo, last_after_hi, last_after_lo;
+u32 phase;
+bool setup;
+u32 dispatch_before_lo, call_before_lo, invalidate_before_lo;
+
 
 int queue_create(uint32_t size, queue_t **queue)
 {
@@ -426,6 +410,7 @@ void handle_packet_device_initialize(dispatch_packet_t *pkt) {
   // Address mode here is absolute range
   if (((pkt->arg[0] >> 48) & 0xf) == AIR_ADDRESS_ABSOLUTE_RANGE) {
     u32 num_cols  = (pkt->arg[0] >> 40) & 0xff;
+  
     xaie_device_init(num_cols);
     xil_printf("Initialized shim DMA of size %d\r\n",num_cols);
     // herd_id is ignored - current restriction is 1 herd -> 1 controller
@@ -436,6 +421,8 @@ void handle_packet_device_initialize(dispatch_packet_t *pkt) {
 }
 
 void handle_packet_herd_initialize(dispatch_packet_t *pkt) {
+  phase = 0;
+  setup = true;
   packet_set_active(pkt, true);
   // Address mode here is absolute range
   if (((pkt->arg[0] >> 48) & 0xf) == AIR_ADDRESS_ABSOLUTE_RANGE) {
@@ -547,8 +534,50 @@ void handle_packet_hello(dispatch_packet_t *pkt)
   // packet is in active phase
   packet_set_active(pkt, true);
 
-  uint64_t say_what = pkt->arg[1];
-  xil_printf("HELLO %08X\n\r",(uint32_t)say_what);
+//  uint64_t say_what = pkt->arg[1];
+//  xil_printf("HELLO %08X\n\r",(uint32_t)say_what);
+
+  //u32 before_hi = XAieGbl_Read32(xaie::TileInst[0][0].TileAddr + 0x000340FC); // Timer high
+  u32 before_lo = XAieGbl_Read32(xaie::TileInst[0][0].TileAddr + 0x000340F8); // Timer low
+  //u32 after_hi  = XAieGbl_Read32(xaie::TileInst[0][0].TileAddr + 0x000340FC); // Timer high
+  u32 after_lo  = XAieGbl_Read32(xaie::TileInst[0][0].TileAddr + 0x000340F8); // Timer low
+
+  if (phase == 1) {
+    xil_printf("last before %08X\n\r",last_before_lo);
+    xil_printf("last after  %08X\n\r",last_after_lo);
+    xil_printf("this before %08X\n\r",before_lo);
+    xil_printf("this after  %08X\n\r",after_lo);
+    xil_printf("turnaround time %d\n\r",before_lo - last_after_lo);
+    phase = 0;
+  }
+  else {
+    last_before_lo = before_lo;
+    last_after_lo = after_lo;
+    phase = 1;
+  }
+  setup= true;
+}
+
+void handle_packet_allocate_herd_shim_dmas(dispatch_packet_t *pkt)
+{
+  xil_printf("handle_packet_allocate_herd_shim_dmas\n\r");
+  packet_set_active(pkt, true);
+
+  uint16_t physical_col   = (pkt->arg[0] >> 32) & 0x00ff;
+  uint16_t logical_col    = (pkt->arg[0] >> 40) & 0x00ff;
+  uint32_t herd_id        =  pkt->arg[1]        & 0x00ff;
+  uint16_t channel   =       pkt->arg[2]        & 0x00ff;
+  uint16_t direction =       pkt->arg[3]        & 0x00ff;
+
+  if (direction == 0) {
+    xaie::logicalToPhysicalS2MMshimDMAcolMap[logical_col] = physical_col;
+    xaie::logicalToPhysicalS2MMshimDMAchannelMap[logical_col] = channel;
+  }
+  else {
+    xaie::logicalToPhysicalMM2SshimDMAcolMap[logical_col] = physical_col;
+    xaie::logicalToPhysicalMM2SshimDMAchannelMap[logical_col] = channel;
+  }
+  xil_printf("shim_dma_allocate: herd %d allocated physical shim dma in col %d channel %d as logical dma %d for direction %d\n\r",herd_id, physical_col, channel, logical_col, direction);
 }
 
 void handle_packet_shim_memcpy(dispatch_packet_t *pkt)
@@ -569,12 +598,66 @@ void handle_packet_shim_memcpy(dispatch_packet_t *pkt)
   //xaie::XAieGbl_CfgInitialize_Tile(0, &(aie::TileInst[0][0]), col, row, xaie::AieConfigPtr);
 
   xil_printf("shim_memcpy: col %d direction %d channel %d paddr %llx bytes %d\n\r",col, direction, channel, paddr, bytes);
-
-  if (direction == 0)
-    xaie_shim_dma_s2mm(&xaie::ShimTileInst[col], channel, paddr, bytes);
-  else
-    xaie_shim_dma_mm2s(&xaie::ShimTileInst[col], channel, paddr, bytes);
+  xaie_shim_dma_push_bd(&xaie::ShimTileInst[col], direction, channel, paddr, bytes);
 }
+
+void handle_packet_herd_shim_memcpy(dispatch_packet_t *pkt)
+{
+  xil_printf("handle_packet_herd_shim_memory\n\r");
+  packet_set_active(pkt, true);
+
+  uint16_t col = (pkt->arg[0] >> 32) & 0xffff;
+  uint16_t herd_id = (pkt->arg[0] >> 52) & 0xff;
+  uint32_t burst_len = pkt->arg[1] & 0xffffffff;
+  uint16_t direction = (pkt->arg[1] >> 32) & 0xffff;
+  uint64_t paddr = pkt->arg[2];
+  uint64_t bytes = pkt->arg[3];
+
+  //XAieGbl_Tile tile;
+  //xaie::XAieGbl_CfgInitialize_Tile(0, &(aie::TileInst[0][0]), col, row, xaie::AieConfigPtr);
+
+  xil_printf("herd_shim_memcpy: herd_d relative col %d direction %d paddr %llx bytes %d\n\r",col, direction, paddr, bytes);
+  uint16_t mapped_col = (direction ==0) ? xaie::logicalToPhysicalS2MMshimDMAcolMap[col] : xaie::logicalToPhysicalMM2SshimDMAcolMap[col];  // todo: a 2d array
+  uint16_t mapped_channel = (direction == 0) ? xaie::logicalToPhysicalS2MMshimDMAchannelMap[col] : xaie::logicalToPhysicalMM2SshimDMAchannelMap[col];
+  xil_printf("Unmaps to col %d chan %d\n\r",mapped_col, mapped_channel);
+  xil_printf("Somethings a happenin over in col %d\n\r", mapped_col);
+
+  for (int off=0x1D160; off <= 0x1d164; off += 4) {
+    xil_printf("Offset 0x%05X: %08X\n\r",off, XAieGbl_Read32(xaie::ShimTileInst[mapped_col].TileAddr + off));
+  }
+  xaie_shim_dma_push_bd(&xaie::ShimTileInst[mapped_col], direction, mapped_channel, paddr, bytes);
+}
+
+void handle_packet_herd_shim_1d_strided_memcpy(dispatch_packet_t *pkt)
+{
+  xil_printf("handle_packet_herd_shim_1d_strided_memcpy\n\r");
+  packet_set_active(pkt, true);
+
+  uint16_t start_col = (pkt->arg[0] >> 32) & 0x00ff;
+  uint16_t num_cols = (pkt->arg[0] >> 40) & 0x00ff;
+  uint16_t herd_id = (pkt->arg[0] >> 52) & 0xff;
+  uint32_t burst_len = pkt->arg[1] & 0xffffffff;
+  uint16_t direction = (pkt->arg[1] >> 32) & 0xffff;
+  uint64_t paddr = pkt->arg[2];
+  uint64_t bytes = pkt->arg[3] & 0xffffffff;
+  uint64_t stride = (pkt->arg[3]>>32) & 0xffffffff;
+
+  //XAieGbl_Tile tile;
+  //xaie::XAieGbl_CfgInitialize_Tile(0, &(aie::TileInst[0][0]), col, row, xaie::AieConfigPtr);
+
+  xil_printf("herd_shim_1d_strided_memcpy: herd direction %d paddr %llx bytes %d stride %d\n\r",direction, paddr, bytes, stride);
+
+  for (int col=start_col; col<(start_col+num_cols); col++) {
+    uint16_t mapped_col = (direction ==0) ? xaie::logicalToPhysicalS2MMshimDMAcolMap[col] : xaie::logicalToPhysicalMM2SshimDMAcolMap[col];  // todo: a 2d array
+    uint16_t mapped_channel = (direction == 0) ? xaie::logicalToPhysicalS2MMshimDMAchannelMap[col] : xaie::logicalToPhysicalMM2SshimDMAchannelMap[col];
+    xil_printf("Unmaps to col %d chan %d\n\r",mapped_col, mapped_channel);
+    xaie_shim_dma_push_bd(&xaie::ShimTileInst[mapped_col], direction, mapped_channel, paddr, bytes);
+    paddr += stride; // Because multiplication is nothing more than repeated addition ...
+  }
+}
+
+
+
 
 } // namespace
 
@@ -644,9 +727,9 @@ void handle_agent_dispatch_packet(dispatch_packet_t *pkt)
   pkt_idx = ((pkt_idx & 0x3fff) >> 6) - 2;
   //xil_printf("handle agent dispatch pkt %x @ 0x%llx\n\r", pkt_idx, (size_t)pkt);
 
-  xil_printf("handle dispatch packet, args: 0x%llx 0x%llx 0x%llx 0x%llx\n\r",pkt->arg[0], pkt->arg[1], pkt->arg[2], pkt->arg[3]);
+  //xil_printf("handle dispatch packet, args: 0x%llx 0x%llx 0x%llx 0x%llx\n\r",pkt->arg[0], pkt->arg[1], pkt->arg[2], pkt->arg[3]);
   auto op = pkt->arg[0] & 0xffff;
-  xil_printf("Op is %04X\n\r",op);
+  //xil_printf("Op is %04X\n\r",op);
   switch (op) {
     case AIR_PKT_TYPE_INVALID:
     default:
@@ -673,6 +756,11 @@ void handle_agent_dispatch_packet(dispatch_packet_t *pkt)
     case AIR_PKT_TYPE_HELLO:
       handle_packet_hello(pkt);
       break;
+
+    case AIR_PKT_TYPE_ALLOCATE_HERD_SHIM_DMAS:
+      handle_packet_allocate_herd_shim_dmas(pkt);
+      break;
+
     case AIR_PKT_TYPE_PUT_STREAM:
       handle_packet_put_stream(pkt);
       break;
@@ -687,6 +775,13 @@ void handle_agent_dispatch_packet(dispatch_packet_t *pkt)
     case AIR_PKT_TYPE_SHIM_DMA_MEMCPY:
       handle_packet_shim_memcpy(pkt);
       break;
+    case AIR_PKT_TYPE_HERD_SHIM_DMA_MEMCPY:
+      handle_packet_herd_shim_memcpy(pkt);
+      break;
+    case AIR_PKT_TYPE_HERD_SHIM_DMA_1D_STRIDED_MEMCPY:
+      handle_packet_herd_shim_1d_strided_memcpy(pkt);
+      break;
+
   }
 
 }
@@ -695,9 +790,8 @@ int main()
 {
   xil_printf("\n\nMB firmware created on %s at %s GMT\n\r",__DATE__, __TIME__); 
   init_platform();
-
+  setup = false;
   //test_stream();
-
   queue_t *q = nullptr;
   queue_create(MB_QUEUE_SIZE, &q);
   xil_printf("Created queue @ 0x%llx\n\r", (size_t)q);
@@ -706,7 +800,6 @@ int main()
   while (!done) {
     // if (!(cnt++ % 0x00100000))
     //   xil_printf("No Ding Dong 0x%llx\n\r", q->doorbell);
-
     if (q->doorbell+1 > q->last_doorbell) {
       xil_printf("Ding Dong 0x%llx\n\r", q->doorbell+1);
 
@@ -716,12 +809,16 @@ int main()
       bool invalid = false;
       while (!invalid) {
         uint64_t rd_idx = queue_load_read_index(q);
-        xil_printf("Handle pkt read_index=%d\n\r", rd_idx);
+        //xil_printf("Handle pkt read_index=%d\n\r", rd_idx);
 
         dispatch_packet_t *pkt = &((dispatch_packet_t*)q->base_address)[rd_idx % q->size];
         switch (pkt->type) {
           default:
           case HSA_PACKET_TYPE_INVALID:
+            if (setup) {
+              xil_printf("Waiting\n\r");
+              setup = false;
+            }
             invalid = true;
             break;
           case HSA_PACKET_TYPE_AGENT_DISPATCH:
