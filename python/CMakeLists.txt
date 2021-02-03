@@ -13,4 +13,5 @@ set_target_properties(_air PROPERTIES PREFIX "")
 
 target_link_libraries(_air
   ${Python3_LIBRARIES}
+  ${AIR_LIBXAIE_LIBS}
 )

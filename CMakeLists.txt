@@ -13,6 +13,9 @@ if(POLICY CMP0077)
   cmake_policy(SET CMP0077 NEW)
 endif()
 
+option(AIR_LIBXAIE_ENABLE "Enables libxaie functionality" OFF)
+
+
 project(air LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 14)
@@ -72,6 +75,20 @@ include(TableGen)
 include(AddLLVM)
 include(AddMLIR)
 include(HandleLLVMOptions)
+
+if (AIR_LIBXAIE_ENABLE)
+  add_compile_definitions(AIR_LIBXAIE_ENABLE)
+  if (AIR_LIBXAIE_DIR)
+    set(AIR_LIBXAIE_INCDIR "${AIR_LIBXAIE_DIR}/include")
+    set(AIR_LIBXAIE_LIBDIR "${AIR_LIBXAIE_DIR}/lib")
+  else()
+    set(AIR_LIBXAIE_DIR "/opt/xaiengine")
+    set(AIR_LIBXAIE_INCDIR "${AIR_LIBXAIE_DIR}/include")
+    set(AIR_LIBXAIE_LIBDIR "${AIR_LIBXAIE_DIR}/lib")
+  endif()
+  set(AIR_LIBXAIE_LIBS "${AIR_LIBXAIE_LIBDIR}/libxaiengine.so")
+  include_directories(${AIR_LIBXAIE_INCDIR})
+endif()
 
 #include_directories(${LLVM_INCLUDE_DIRS})
 #include_directories(${MLIR_INCLUDE_DIRS})
