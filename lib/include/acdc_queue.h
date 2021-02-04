@@ -1,3 +1,6 @@
+#ifndef ACDC_QUEUE_H
+#define ACDC_QUEUE_H
+
 #include <stdint.h>
 #include "hsa_defs.h"
 
@@ -61,8 +64,6 @@ typedef struct signal_s {
 } signal_t;
 
 typedef uint64_t signal_value_t;
-
-hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue, uint64_t paddr);
 
 namespace {
 
@@ -151,3 +152,5 @@ inline void signal_subtract_acq_rel(signal_t *signal, signal_value_t value)
 }
 
 }
+
+#endif
