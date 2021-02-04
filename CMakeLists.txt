@@ -97,3 +97,4 @@ endif()
 #add_definitions(${LLVM_DEFINITIONS})
 
 add_subdirectory(python)
+add_subdirectory(lib)
