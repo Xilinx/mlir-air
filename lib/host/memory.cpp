@@ -72,4 +72,3 @@ void *air_mem_get_vaddr(void *paddr) {
   assert(0 && "not implemented");
 #endif
   return nullptr;
-}
