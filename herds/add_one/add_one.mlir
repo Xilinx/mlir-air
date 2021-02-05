@@ -1,8 +1,9 @@
-module {
+module  {
   func @graph(%arg0: tensor<256x256xf32>) -> tensor<256x256xf32> {
-    %0 = "aten.constant"() {type = "f32", value = 1.000000e+00 : f32} : () -> f32
-    %1 = "aten.constant"() {type = "i32", value = 1 : i32} : () -> i32
-    %2 = "aten.add"(%arg0, %0, %1) {acdc_layer_name = "L0-add-0"} : (tensor<256x256xf32>, f32, i32) -> tensor<256x256xf32>
-    return %2 : tensor<256x256xf32>
+    %cst = constant dense<1.000000e+00> : tensor<f32>
+    %c1_i64 = constant 1 : i64
+    %0 = "aten.add"(%arg0, %cst, %c1_i64) : (tensor<256x256xf32>, tensor<f32>, i64) -> tensor<256x256xf32>
+    return %0 : tensor<256x256xf32>
   }
 }
+
