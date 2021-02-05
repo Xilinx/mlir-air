@@ -4,13 +4,8 @@
 #include <xaiengine.h>
 #endif
 
-
 #define STRINGIFY(x) #x
 #define MACRO_STRINGIFY(x) STRINGIFY(x)
-
-int add(int i, int j) {
-  return i + j;
-}
 
 namespace py = pybind11;
 
@@ -145,10 +140,6 @@ PYBIND11_MODULE(_air, m) {
 #endif
     });
 
-    m.def("_add", [](uint64_t i, uint64_t j) {
-      return add(i,j);
-    });
-    
 #ifdef VERSION_INFO
     m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);
 #else
