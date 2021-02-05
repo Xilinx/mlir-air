@@ -114,7 +114,11 @@ uint32_t *bram_ptr;
 #define DMA_COUNT 32
 
 extern "C" {
-  
+
+void _mlir_ciface_acap_add_one_hw_kernel_AtenAcapOp_I64_I64() {
+
+}
+
 void _mlir_ciface_acap_L2_dma_copy_arg0(tensor_t<float,2> *input, tensor_t<float,2> *output, size_t dim1_idx, size_t dim0_idx) {
   printf("copy L2 arg0 %p %p %d %d\n", input->d, output->d, dim1_idx, dim0_idx);
 
