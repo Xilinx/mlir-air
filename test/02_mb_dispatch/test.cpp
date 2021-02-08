@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <cassert>
 
+#include "air_host.h"
 #include "acdc_queue.h"
 #include "hsa_defs.h"
 
