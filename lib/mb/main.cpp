@@ -218,21 +218,21 @@ int xaie_shim_dma_push_bd(XAieGbl_Tile *tile, int direction, int channel, uint64
   uint32_t shimDMAchannel = channel;
   if (direction == SHIM_DMA_S2MM) {
     shimDMAchannel += XAIEDMA_SHIM_CHNUM_S2MM0;   
-    xil_printf("\n\r  S2MM Shim DMA start channel %d\n\r", shimDMAchannel);
+    //xil_printf("\n\r  S2MM Shim DMA start channel %d\n\r", shimDMAchannel);
   }
   else {
     shimDMAchannel += XAIEDMA_SHIM_CHNUM_MM2S0;   
-    xil_printf("\n\r  MM2S Shim DMA start channel %d\n\r", shimDMAchannel);
+    //xil_printf("\n\r  MM2S Shim DMA start channel %d\n\r", shimDMAchannel);
   }
 
   XAieDma_Shim dma;
   XAieDma_ShimSoftInitialize(tile, &dma);  // We don't want to reset ...
   // Status print out for debug
-  uint32_t s2mm_status = XAieGbl_Read32(tile->TileAddr + 0x0001D160);
-  uint32_t mm2s_status = XAieGbl_Read32(tile->TileAddr + 0x0001D164);
+  //uint32_t s2mm_status = XAieGbl_Read32(tile->TileAddr + 0x0001D160);
+  //uint32_t mm2s_status = XAieGbl_Read32(tile->TileAddr + 0x0001D164);
 
-  xil_printf("s2mm status : %08X\n\r", s2mm_status);
-  xil_printf("mm2s status : %08X\n\r", mm2s_status);
+  //xil_printf("s2mm status : %08X\n\r", s2mm_status);
+  //xil_printf("mm2s status : %08X\n\r", mm2s_status);
 
   uint8_t start_bd = 4*shimDMAchannel;
   uint32_t outstanding = XAieDma_ShimPendingBdCount(&dma, shimDMAchannel);
@@ -241,7 +241,7 @@ int xaie_shim_dma_push_bd(XAieGbl_Tile *tile, int direction, int channel, uint64
     xil_printf("\n\r *** BD OVERFLOW in shimDMA channel %d *** \n\r",shimDMAchannel);
     while (XAieDma_ShimPendingBdCount(&dma, shimDMAchannel) > 3) {}
   }
-  xil_printf("Outstanding pre : %d\n\r", outstanding);
+  //xil_printf("Outstanding pre : %d\n\r", outstanding);
   uint8_t bd = start_bd+outstanding;
   XAieDma_ShimBdSetAddr(&dma, bd, HIGH_ADDR((u64)addr), LOW_ADDR((u64)addr), len);
   XAieDma_ShimBdSetAxi(&dma, bd, 0, 4, 0, 0, XAIE_ENABLE);
@@ -250,10 +250,9 @@ int xaie_shim_dma_push_bd(XAieGbl_Tile *tile, int direction, int channel, uint64
   XAieDma_ShimBdWrite(&dma, bd);
   XAieDma_ShimSetStartBd(&dma, shimDMAchannel, bd);
   XAieDma_ShimChControl(&dma, shimDMAchannel, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
-
+/*
   outstanding = XAieDma_ShimPendingBdCount(&dma, shimDMAchannel);
   xil_printf("Outstanding post: %d\n\r", outstanding);
-  //while (XAieDma_ShimPendingBdCount(&ShimDmaInst, channel)) {}
   xil_printf("bd pushed as bd %d\n\r",bd);
     // Status print out for debug
   s2mm_status = XAieGbl_Read32(tile->TileAddr + 0x0001D160);
@@ -268,6 +267,7 @@ int xaie_shim_dma_push_bd(XAieGbl_Tile *tile, int direction, int channel, uint64
   else {
     xil_printf("  End of MM2S Shim DMA start channel %d\n\r", shimDMAchannel);
   }
+  */
 }
 
 int xaie_lock_release(XAieGbl_Tile *tile, u32 lock_id, u32 val)
@@ -616,15 +616,16 @@ void handle_packet_herd_shim_memcpy(dispatch_packet_t *pkt)
   //XAieGbl_Tile tile;
   //xaie::XAieGbl_CfgInitialize_Tile(0, &(aie::TileInst[0][0]), col, row, xaie::AieConfigPtr);
 
-  xil_printf("herd_shim_memcpy: herd_d relative col %d direction %d paddr %llx bytes %d\n\r",col, direction, paddr, bytes);
+  //xil_printf("herd_shim_memcpy: herd_d relative col %d direction %d paddr %llx bytes %d\n\r",col, direction, paddr, bytes);
   uint16_t mapped_col = (direction ==0) ? xaie::logicalToPhysicalS2MMshimDMAcolMap[col] : xaie::logicalToPhysicalMM2SshimDMAcolMap[col];  // todo: a 2d array
   uint16_t mapped_channel = (direction == 0) ? xaie::logicalToPhysicalS2MMshimDMAchannelMap[col] : xaie::logicalToPhysicalMM2SshimDMAchannelMap[col];
-  xil_printf("Unmaps to col %d chan %d\n\r",mapped_col, mapped_channel);
-  xil_printf("Somethings a happenin over in col %d\n\r", mapped_col);
-
+  //xil_printf("Unmaps to col %d chan %d\n\r",mapped_col, mapped_channel);
+  //xil_printf("Somethings a happenin over in col %d\n\r", mapped_col);
+/*
   for (int off=0x1D160; off <= 0x1d164; off += 4) {
     xil_printf("Offset 0x%05X: %08X\n\r",off, XAieGbl_Read32(xaie::ShimTileInst[mapped_col].TileAddr + off));
   }
+  */
   xaie_shim_dma_push_bd(&xaie::ShimTileInst[mapped_col], direction, mapped_channel, paddr, bytes);
 }
 
@@ -651,6 +652,11 @@ void handle_packet_herd_shim_1d_strided_memcpy(dispatch_packet_t *pkt)
     uint16_t mapped_col = (direction ==0) ? xaie::logicalToPhysicalS2MMshimDMAcolMap[col] : xaie::logicalToPhysicalMM2SshimDMAcolMap[col];  // todo: a 2d array
     uint16_t mapped_channel = (direction == 0) ? xaie::logicalToPhysicalS2MMshimDMAchannelMap[col] : xaie::logicalToPhysicalMM2SshimDMAchannelMap[col];
     xil_printf("Unmaps to col %d chan %d\n\r",mapped_col, mapped_channel);
+  xil_printf("Somethings a happenin over in col %d\n\r", mapped_col);
+
+  for (int off=0x1D160; off <= 0x1d164; off += 4) {
+    xil_printf("Offset 0x%05X: %08X\n\r",off, XAieGbl_Read32(xaie::ShimTileInst[mapped_col].TileAddr + off));
+  }
     xaie_shim_dma_push_bd(&xaie::ShimTileInst[mapped_col], direction, mapped_channel, paddr, bytes);
     paddr += stride; // Because multiplication is nothing more than repeated addition ...
   }
