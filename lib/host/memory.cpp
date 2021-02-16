@@ -9,7 +9,9 @@
 
 namespace {
 
+#ifdef AIR_LIBXAIE_ENABLE
 static std::vector<XAieLib_MemInst*> AirAllocations;
+#endif
 
 }
 
