@@ -90,11 +90,5 @@ if (AIR_LIBXAIE_ENABLE)
   include_directories(${AIR_LIBXAIE_INCDIR})
 endif()
 
-#include_directories(${LLVM_INCLUDE_DIRS})
-#include_directories(${MLIR_INCLUDE_DIRS})
-#include_directories(${PROJECT_SOURCE_DIR}/dialect/include)
-#include_directories(${PROJECT_BINARY_DIR}/dialect/include)
-#add_definitions(${LLVM_DEFINITIONS})
-
 add_subdirectory(python)
 add_subdirectory(lib)
