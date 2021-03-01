@@ -30,18 +30,42 @@ all: herd.exe add_one.so
 		-ldl \
 		-o $@
 
-aie_inc.cpp: aie.mlir
-	$(AIE_OPT) --aie-create-flows --aie-find-flows --aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
+add_one.mlir: add_one.py
+	python3 $< > $@ 
 
-add_one_tiled.mlir: add_one.mlir
+aie_inc.cpp: aie.mlir
+	$(AIE_OPT) -lower-affine --convert-scf-to-std \
+			   --aie-create-flows --aie-find-flows --aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
+
+add_one_tiled_0.mlir: add_one.mlir
 	$(ATEN_OPT) -aten-to-air \
 				-air-to-affine \
-				-affine-loop-opt -affine-opt-copy-depths 1 -affine-opt-tile-sizes 32,32 \
+				-affine-loop-opt -affine-opt-copy-depths 0 -affine-opt-copy-fast-space 2 -affine-opt-tile-sizes 64 \
 				-cse \
 				-o $@ $<
 
-add_one_lowered.mlir: add_one_tiled.mlir
+add_one_tiled_1.mlir: add_one_tiled_0.mlir
+	$(ATEN_OPT) -affine-loop-normalize \
+				-affine-loop-opt -affine-opt-tile-sizes 2 \
+				-affine-loop-normalize -simplify-affine-structures \
+				-cse \
+				-o $@ $<
+
+add_one_air.mlir: add_one_tiled_1.mlir
+	$(ATEN_OPT) -acap-herd-assign \
+				-herd-assign-depth 0 \
+				-affine-to-air \
+				-cse \
+				-o $@ $<
+
+aie.mlir: add_one_air.mlir
+	$(ATEN_OPT) -air-to-aie \
+				-air-to-aie-output-file $@ $< \
+				-o /dev/null
+
+add_one_lowered.mlir: add_one_tiled_1.mlir
 	$(ATEN_OPT) -affine-to-air \
+				-air-to-std \
 				-aten-to-std \
 				-return-elimination \
 				-cse \
@@ -66,4 +90,5 @@ add_one.so: add_one.o
 
 clean:
 	rm -rf aie_inc.cpp *.o *.exe *.elf ./$(AIE_SRC_DIR)/work
-	rm -rf add_one.so add_one.o add_one.llvm.mlir add_one_lowered.mlir add_one_tiled.mlir
+	rm -rf add_one.so add_one.o
+	rm -rf add_one_air.mlir add_one.llvm.mlir add_one_lowered.mlir add_one_tiled*.mlir
