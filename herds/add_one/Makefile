@@ -8,6 +8,8 @@ AIE_OPT = aie-opt
 AIE_XLATE = aie-translate
 ATEN_OPT = aten-opt
 
+AIECC = /group/xrlabs2/acdc-buildbot/installs/daily_latest/bin/aiecc.py
+
 uname_p := $(shell uname -p)
 ifeq ($(uname_p),aarch64)
 	CFLAGS += -I/opt/xaiengine/include
@@ -60,8 +62,15 @@ add_one_air.mlir: add_one_tiled_1.mlir
 
 aie.mlir: add_one_air.mlir
 	$(ATEN_OPT) -air-to-aie \
+				-air-to-aie-row-offset 2 \
+				-air-to-aie-col-offset 7 \
 				-air-to-aie-output-file $@ $< \
 				-o /dev/null
+peano.mlir: aie.mlir
+	$(AIE_OPT) -lower-affine -o $@ $< 
+
+elfs: peano.mlir
+	$(AIECC) --no-xbridge peano.mlir
 
 add_one_lowered.mlir: add_one_tiled_1.mlir
 	$(ATEN_OPT) -affine-to-air \
