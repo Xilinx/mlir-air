@@ -31,6 +31,17 @@ image into a new directory called `output`
 
 5. Write resulting image to SD card
 
+6. Copy the files `bl31.elf plm.elf psmfw.elf system.dtb u-boot.elf` from the PYNQ petalinux build area:
+  `<path to PYNQ>/sdbuild/build/vck190_air/petalinux_project/images/linux`,
+to the platform bootgen directory:
+  `air/platforms/xilinx_vck190_air/bootgen`.
+
+7. Run make in the platform bootgen directory `air/platforms/xilinx_vck190_air/bootgen`.
+
+8. Copy the resulting BOOT.BIN file to the boot partition of the Pynq SD card writen in step 5.
+
+Steps 6-8 configure the BOOT.BIN to bring the microblaze control processor out of reset at boot time.
+
 #
 ## Updating the SD Card with a new hardware design
 
@@ -39,7 +50,7 @@ is often easier to update just the BOOT.BIN on the SD Card.
 
 1. Update the Vivado design and generate a new XSA file.
 2. Run make in the `air/platforms/xilinx_vck190_air/bootgen` directory
-3. Write the resulting BOOT.BIN file to the boot partition of the Pynq SD card.
+3. Copy the resulting BOOT.BIN file to the boot partition of the Pynq SD card.
 
 For hardware changes requiring device driver or device-tree modifications, it
 is best to update the Petalinux project and rebuild Pynq from scratch.
