@@ -43,8 +43,7 @@ XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
 
 extern "C" {
 
-void _mlir_ciface_air_dma_memcpy_AtenAcapOp_M256xI32_I64_I64_I64_I64_I64 (void* t,
-                    uint64_t i0, uint64_t i1, uint64_t i2, uint64_t i3, uint64_t i4) {
+void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length) {
 
   uint64_t col = 2;
   auto burstlen = 4;
@@ -215,7 +214,7 @@ main(int argc, char *argv[])
   }
   assert(handle && "failed to open aie_ctrl.so");
 
-  auto graph_fn = (void (*)(void*))dlsym(handle, "_mlir_ciface_graph");
+  auto graph_fn = (void (*)(void*,void*))dlsym(handle, "_mlir_ciface_graph");
   assert(graph_fn && "failed to locate _mlir_ciface_graph in aie_ctrl.so");
 
   tensor_t<uint32_t,1> input;
@@ -226,7 +225,7 @@ main(int argc, char *argv[])
   }
 
   auto i = &input;
-  graph_fn(i);
+  graph_fn(i, i);
 
   //return 0;
   // wr_idx = queue_add_write_index(q, 1);
