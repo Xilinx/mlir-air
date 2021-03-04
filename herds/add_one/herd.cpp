@@ -158,14 +158,18 @@ void _mlir_ciface_acap_add_one_hw_kernel_AtenAcapOp_I64_I64() {
 
 }
 
-long TILE_TO_SHIM_DMA[2][2] {0};
+long TILE_TO_SHIM_DMA[2][2][2] {0};
 long ARG_TO_SHIM_DMA_CHANNEL[2+1] {0};
 // Let's imagine the compiler made this function
 void build_tile_to_shim_dma_mapping() {
-  TILE_TO_SHIM_DMA[0][0] = 2L;
-  TILE_TO_SHIM_DMA[1][0] = 6L;
-  TILE_TO_SHIM_DMA[0][1] = 10L;
-  TILE_TO_SHIM_DMA[1][1] = 18L;
+  TILE_TO_SHIM_DMA[0][0][0] = 2L;
+  TILE_TO_SHIM_DMA[1][0][0] = 3L;
+  TILE_TO_SHIM_DMA[0][1][0] = 6L;
+  TILE_TO_SHIM_DMA[1][1][0] = 7L;
+  TILE_TO_SHIM_DMA[0][0][1] = 10L;
+  TILE_TO_SHIM_DMA[1][0][1] = 11L;
+  TILE_TO_SHIM_DMA[0][1][1] = 18L;
+  TILE_TO_SHIM_DMA[1][1][1] = 19L;
 }
 
 void build_arg_to_shim_dma_channel_mapping() {
@@ -174,19 +178,21 @@ void build_arg_to_shim_dma_channel_mapping() {
 }
 
 void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length) {
-  printf("Do transfer with id %ld of length %ld on behalf of x=%ld, y=%ld using shim DMA %ld channel %ld\n", id, length, x, y, TILE_TO_SHIM_DMA[x][y], ARG_TO_SHIM_DMA_CHANNEL[id]);
+  printf("Do transfer with id %ld of length %ld on behalf of x=%ld, y=%ld using shim DMA %ld channel %ld\n", id, length, x, y, TILE_TO_SHIM_DMA[id-1][x][y], ARG_TO_SHIM_DMA_CHANNEL[id]);
 
-  printDMAStatus(TILE_TO_SHIM_DMA[x][y], 0);
+  printDMAStatus(TILE_TO_SHIM_DMA[id-1][x][y], 0);
   printDMAStatus(x+7, y+2);
   printCoreStatus(x+7, y+2);
   auto burstlen = 4;
   XAieDma_Shim ShimDmaInst1;
-  XAieDma_ShimInitialize(&(TileInst[TILE_TO_SHIM_DMA[x][y]][0]), &ShimDmaInst1);
+  XAieDma_ShimInitialize(&(TileInst[TILE_TO_SHIM_DMA[id-1][x][y]][0]), &ShimDmaInst1);
   // use BRAM_ADDR + 0x4000 as the data address
-  XAieDma_ShimBdSetAddr(&ShimDmaInst1, 1, HIGH_ADDR((u64)BRAM_ADDR), LOW_ADDR((u64)(BRAM_ADDR)), length*sizeof(uint32_t));
-  XAieDma_ShimBdSetAxi(&ShimDmaInst1, 1 , 0, burstlen, 0, 0, XAIE_ENABLE);
-  XAieDma_ShimBdWrite(&ShimDmaInst1, 1+ARG_TO_SHIM_DMA_CHANNEL[id]);             // We don't really care, we just want these to be unique and none zero
-  XAieDma_ShimSetStartBd((&ShimDmaInst1), ARG_TO_SHIM_DMA_CHANNEL[id], 1+ARG_TO_SHIM_DMA_CHANNEL[id]);
+  uint64_t addr = (u64)BRAM_ADDR + 0x4000 + offset;
+  u8 bd = 1+ARG_TO_SHIM_DMA_CHANNEL[id];
+  XAieDma_ShimBdSetAddr(&ShimDmaInst1, bd, HIGH_ADDR(addr), LOW_ADDR(addr), length*sizeof(uint32_t));
+  XAieDma_ShimBdSetAxi(&ShimDmaInst1, bd , 0, burstlen, 0, 0, XAIE_ENABLE);
+  XAieDma_ShimBdWrite(&ShimDmaInst1, bd);             // We don't really care, we just want these to be unique and none zero
+  XAieDma_ShimSetStartBd((&ShimDmaInst1), ARG_TO_SHIM_DMA_CHANNEL[id], bd);
 
   auto ret = XAieDma_ShimPendingBdCount(&ShimDmaInst1, ARG_TO_SHIM_DMA_CHANNEL[id]);
   if (ret)
@@ -203,7 +209,7 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
       if (count == 2000) break;
     }
   }
-  printDMAStatus(TILE_TO_SHIM_DMA[x][y], 0);
+  printDMAStatus(TILE_TO_SHIM_DMA[id-1][x][y], 0);
   printDMAStatus(x+7, y+2);
   printCoreStatus(x+7, y+2);
 }

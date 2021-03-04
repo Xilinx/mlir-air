@@ -8,7 +8,7 @@ AIE_OPT = aie-opt
 AIE_XLATE = aie-translate
 ATEN_OPT = aten-opt
 
-AIECC = /group/xrlabs2/acdc-buildbot/installs/daily_latest/bin/aiecc.py
+AIECC = aiecc.py
 
 uname_p := $(shell uname -p)
 ifeq ($(uname_p),aarch64)
