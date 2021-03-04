@@ -35,6 +35,10 @@ XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
 
 #include "aie_inc.cpp"
 
+
+
+
+
 template<typename T, int N>
 struct tensor_t {
   T *d;
@@ -62,6 +66,41 @@ struct tensor_t {
       shape[i] = stride[i] = 0;
   }
 };
+
+
+void printCoreStatus(int col, int row) {
+  u32 status, coreTimerLow, locks;
+	status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x032004);
+	coreTimerLow = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0340F8);
+	locks = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001EF00);
+	printf("Core [%d, %d] status is %08X, timer is %u, locks are %08X\n",col, row, status, coreTimerLow, locks);
+	for (int lock=0;lock<16;lock++) {
+		u32 two_bits = (locks >> (lock*2)) & 0x3;
+		if (two_bits) {
+			printf("Lock %d: ", lock);
+			u32 acquired = two_bits & 0x1;
+			u32 value = two_bits & 0x2;
+			if (acquired)
+				printf("Acquired ");
+			printf(value?"1":"0");
+			printf("\n");
+		}
+	}
+}
+
+void printDMAStatus(int col, int row) {
+  u32 dma_s2mm_status, dma_mm2s_status;
+  if (row == 0) {
+    dma_s2mm_status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x01D160);
+    dma_mm2s_status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x01D164);
+  }
+  else {
+    dma_s2mm_status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x01DF00);
+    dma_mm2s_status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x01DF10);
+  }
+  printf("DMA [%d, %d] s2mm status is %08X, mm2s status %08X\n",col, row, dma_s2mm_status, dma_mm2s_status);
+
+}
 
 hsa_status_t queue_create(uint32_t size, uint32_t type, queue_t **queue)
 {
@@ -111,13 +150,64 @@ uint32_t *bram_ptr;
 }
 
 #define BRAM_ADDR 0x4000+0x020100000000LL
-#define DMA_COUNT 32
+#define DMA_COUNT 64
 
 extern "C" {
 
 void _mlir_ciface_acap_add_one_hw_kernel_AtenAcapOp_I64_I64() {
 
 }
+
+long TILE_TO_SHIM_DMA[2][2] {0};
+long ARG_TO_SHIM_DMA_CHANNEL[2+1] {0};
+// Let's imagine the compiler made this function
+void build_tile_to_shim_dma_mapping() {
+  TILE_TO_SHIM_DMA[0][0] = 2L;
+  TILE_TO_SHIM_DMA[1][0] = 6L;
+  TILE_TO_SHIM_DMA[0][1] = 10L;
+  TILE_TO_SHIM_DMA[1][1] = 18L;
+}
+
+void build_arg_to_shim_dma_channel_mapping() {
+  ARG_TO_SHIM_DMA_CHANNEL[1] = XAIEDMA_SHIM_CHNUM_MM2S0;
+  ARG_TO_SHIM_DMA_CHANNEL[2] = XAIEDMA_SHIM_CHNUM_S2MM0;
+}
+
+void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length) {
+  printf("Do transfer with id %ld of length %ld on behalf of x=%ld, y=%ld using shim DMA %ld channel %ld\n", id, length, x, y, TILE_TO_SHIM_DMA[x][y], ARG_TO_SHIM_DMA_CHANNEL[id]);
+
+  printDMAStatus(TILE_TO_SHIM_DMA[x][y], 0);
+  printDMAStatus(x+7, y+2);
+  printCoreStatus(x+7, y+2);
+  auto burstlen = 4;
+  XAieDma_Shim ShimDmaInst1;
+  XAieDma_ShimInitialize(&(TileInst[TILE_TO_SHIM_DMA[x][y]][0]), &ShimDmaInst1);
+  // use BRAM_ADDR + 0x4000 as the data address
+  XAieDma_ShimBdSetAddr(&ShimDmaInst1, 1, HIGH_ADDR((u64)BRAM_ADDR), LOW_ADDR((u64)(BRAM_ADDR)), length*sizeof(uint32_t));
+  XAieDma_ShimBdSetAxi(&ShimDmaInst1, 1 , 0, burstlen, 0, 0, XAIE_ENABLE);
+  XAieDma_ShimBdWrite(&ShimDmaInst1, 1+ARG_TO_SHIM_DMA_CHANNEL[id]);             // We don't really care, we just want these to be unique and none zero
+  XAieDma_ShimSetStartBd((&ShimDmaInst1), ARG_TO_SHIM_DMA_CHANNEL[id], 1+ARG_TO_SHIM_DMA_CHANNEL[id]);
+
+  auto ret = XAieDma_ShimPendingBdCount(&ShimDmaInst1, ARG_TO_SHIM_DMA_CHANNEL[id]);
+  if (ret)
+    printf("%s %d Warn %d\n", __FUNCTION__, __LINE__, ret);
+
+  XAieDma_ShimChControl((&ShimDmaInst1), ARG_TO_SHIM_DMA_CHANNEL[id], XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
+
+  auto count = 0;
+  while (XAieDma_ShimPendingBdCount(&ShimDmaInst1, ARG_TO_SHIM_DMA_CHANNEL[id])) {
+    XAieLib_usleep(1000);
+    count++;
+    if (!(count % 1000)) {
+      printf("%d seconds\n",count/1000);
+      if (count == 2000) break;
+    }
+  }
+  printDMAStatus(TILE_TO_SHIM_DMA[x][y], 0);
+  printDMAStatus(x+7, y+2);
+  printCoreStatus(x+7, y+2);
+}
+
 
 void _mlir_ciface_acap_L2_dma_copy_arg0(tensor_t<float,2> *input, tensor_t<float,2> *output, size_t dim1_idx, size_t dim0_idx) {
   printf("copy L2 arg0 %p %p %d %d\n", input->d, output->d, dim1_idx, dim0_idx);
@@ -223,11 +313,17 @@ main(int argc, char *argv[])
   AieConfigPtr = XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
   XAieGbl_CfgInitialize(&AieInst, &TileInst[0][0], AieConfigPtr);
 
+  printCoreStatus(7,2);
+
+
   mlir_configure_cores();
   mlir_configure_switchboxes();
   mlir_initialize_locks();
   mlir_configure_dmas();
   mlir_start_cores();
+
+  build_tile_to_shim_dma_mapping();
+  build_arg_to_shim_dma_channel_mapping();
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd != -1) {
@@ -237,10 +333,19 @@ main(int argc, char *argv[])
     }
   }
 
-  for (int i=0; i<16*2; i++) {
-    XAieTile_DmWriteWord(&(TileInst[col][2]), 0x1000+i*4, 0xdecaf);
+  // Stomp
+  for (int i=0; i<DMA_COUNT; i++) {
+    mlir_write_buffer_buf0(i, 0x0decaf);
+    mlir_write_buffer_buf1(i, 0x1decaf);
+    mlir_write_buffer_buf2(i, 0x2decaf);
+    mlir_write_buffer_buf3(i, 0x3decaf);
+    mlir_write_buffer_buf4(i, 0x4decaf);
+    mlir_write_buffer_buf5(i, 0x5decaf);
+    mlir_write_buffer_buf6(i, 0x6decaf);
+    mlir_write_buffer_buf7(i, 0x7decaf);
   }
 
+  printCoreStatus(7,2);
   // create the queue
   auto ret = queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q);
   assert(ret == 0 && "failed to create queue!");
@@ -272,30 +377,38 @@ main(int argc, char *argv[])
   signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
   //signal_store_release((signal_t*)&q->doorbell, wr_idx);
 
-  tensor_t<float,2> input;
-  tensor_t<float,2> output;
+  tensor_t<int32_t,1> input;
+  tensor_t<int32_t,1> output;
 
-  input.shape[0] = 256;
-  input.shape[1] = 256;
-  input.d = input.aligned = (float*)malloc(sizeof(float)*input.shape[0]*input.shape[1]);
+  input.shape[0] = DMA_COUNT*4;
+  input.d = input.aligned = (int32_t*)malloc(sizeof(int32_t)*input.shape[0]);
 
-  output.shape[0] = 256;
-  output.shape[1] = 256;
-  output.d = output.aligned = (float*)malloc(sizeof(float)*output.shape[0]*output.shape[1]);
+  output.shape[0] = DMA_COUNT*4;
+  output.d = output.aligned = (int32_t*)malloc(sizeof(int32_t)*output.shape[0]);
   
-  printf("loading add_one.so\n");
-  auto handle = dlopen("./add_one.so", RTLD_NOW);
+  printf("loading aie_ctrl.so\n");
+  auto handle = dlopen("./aie_ctrl.so", RTLD_NOW);
   if (!handle) {
     printf("%s\n",dlerror());
   }
-  assert(handle && "failed to open add_one.so");
+  assert(handle && "failed to open aie_ctrl.so");
 
   auto graph_fn = (void (*)(void*,void*))dlsym(handle, "_mlir_ciface_graph");
   assert(graph_fn && "failed to locate _mlir_ciface_graph in add_one.so");
 
-  for (int i=0; i<input.shape[0]*input.shape[1]; i++) {
-    input.d[i] = (float)i;
-    output.d[i] = -1.11111f;
+  for (int i=0; i<input.shape[0]; i++) {
+    input.d[i] = i;
+  }
+  for (int i=0; i<16; i++) { 
+    int32_t rb0 = mlir_read_buffer_buf0(i);
+    int32_t rb1 = mlir_read_buffer_buf1(i);
+    int32_t rb2 = mlir_read_buffer_buf2(i);
+    int32_t rb3 = mlir_read_buffer_buf3(i);
+    int32_t rb4 = mlir_read_buffer_buf4(i);
+    int32_t rb5 = mlir_read_buffer_buf5(i);
+    int32_t rb6 = mlir_read_buffer_buf6(i);
+    int32_t rb7 = mlir_read_buffer_buf7(i);
+    printf("before %d [7][2] : %08X -> %08X, [8][2] :%08X -> %08X, [7][3] : %08X -> %08X, [8][3] :%08X -> %08X\n", i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7);
   }
 
   void *i,*o;
@@ -303,8 +416,22 @@ main(int argc, char *argv[])
   o = &output;
   graph_fn(i, o);
 
+  for (int i=0; i<16; i++) { 
+    int32_t rb0 = mlir_read_buffer_buf0(i);
+    int32_t rb1 = mlir_read_buffer_buf1(i);
+    int32_t rb2 = mlir_read_buffer_buf2(i);
+    int32_t rb3 = mlir_read_buffer_buf3(i);
+    int32_t rb4 = mlir_read_buffer_buf4(i);
+    int32_t rb5 = mlir_read_buffer_buf5(i);
+    int32_t rb6 = mlir_read_buffer_buf6(i);
+    int32_t rb7 = mlir_read_buffer_buf7(i);
+    printf(" after %d [7][2] : %08X -> %08X, [8][2] :%08X -> %08X, [7][3] : %08X -> %08X, [8][3] :%08X -> %08X\n", i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7);
+  }
+
+  printCoreStatus(7,2);
+/*
   int errors = 0;
-  for (int i=0; i<output.shape[0]*output.shape[1]; i++) {
+  for (int i=0; i<output.shape[0]; i++) {
     uint32_t d = output.d[i];
     if (d != (i+1)) {
       errors++;
@@ -315,7 +442,7 @@ main(int argc, char *argv[])
     printf("PASS!\n");
   }
   else {
-    printf("fail %d/%d.\n", (DMA_COUNT-errors), DMA_COUNT);
+    printf("fail %d/%d.\n", (output.shape[0]-errors), output.shape[0]);
   }
-
+*/
 }

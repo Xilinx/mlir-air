@@ -1,6 +1,6 @@
 # General Makefile for tests
 
-AIE_SRC_DIR = chess
+AIE_SRC_DIR = acdc_project
 ARM_SRC_DIR = .
 ARM_OBJ_DIR = .
 
@@ -37,7 +37,8 @@ add_one.mlir: add_one.py
 
 aie_inc.cpp: aie.mlir
 	$(AIE_OPT) -lower-affine --convert-scf-to-std \
-			   --aie-create-flows --aie-find-flows --aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
+			   	--aie-create-flows --aie-find-flows \
+				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
 
 add_one_tiled_0.mlir: add_one.mlir
 	$(ATEN_OPT) -aten-to-air \
@@ -67,29 +68,31 @@ aie.mlir: add_one_air.mlir
 				-air-to-aie-output-file $@ $< \
 				-o /dev/null
 peano.mlir: aie.mlir
-	$(AIE_OPT) -lower-affine -o $@ $< 
+	$(ATEN_OPT) -lower-affine -o $@ $< 
 
 elfs: peano.mlir
 	$(AIECC) --no-xbridge peano.mlir
 
-add_one_lowered.mlir: add_one_tiled_1.mlir
-	$(ATEN_OPT) -affine-to-air \
+
+aie_ctrl.mlir: add_one_air.mlir
+	$(ATEN_OPT) -air-to-aie $< -air-to-aie-output-file /dev/null \
+				-air-to-aie-row-offset 2 \
+				-air-to-aie-col-offset 7 \
 				-air-to-std \
 				-aten-to-std \
-				-return-elimination \
-				-cse \
-				-o $@ $<
+				-o $@
 
-add_one.llvm.mlir: add_one_lowered.mlir
-	mlir-opt --lower-affine \
+aie_ctrl.llvm.mlir: aie_ctrl.mlir
+	$(ATEN_OPT) -return-elimination \
+		--lower-affine \
 		--convert-scf-to-std \
 		--convert-std-to-llvm='emit-c-wrappers'  \
 		-o $@ $<
 
-add_one.o: add_one.llvm.mlir
+aie_ctrl.o: aie_ctrl.llvm.mlir
 	mlir-translate --mlir-to-llvmir $< | llc --march=aarch64 --filetype=obj -o $@
 
-add_one.so: add_one.o
+aie_ctrl.so: aie_ctrl.o
 	$(CC) -shared $< -o $@
 
 %.elf: $(AIE_SRC_DIR)/main.cc
@@ -98,6 +101,6 @@ add_one.so: add_one.o
 	cp work/Release_LLVM/$*.prx/$* ../$*.elf
 
 clean:
-	rm -rf aie_inc.cpp *.o *.exe *.elf ./$(AIE_SRC_DIR)/work
+	rm -rf aie_inc.cpp *.o *.exe *.elf ./$(AIE_SRC_DIR)
 	rm -rf add_one.so add_one.o
-	rm -rf add_one_air.mlir add_one.llvm.mlir add_one_lowered.mlir add_one_tiled*.mlir
+	rm -rf *.mlir
