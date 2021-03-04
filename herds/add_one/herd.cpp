@@ -178,7 +178,19 @@ void build_arg_to_shim_dma_channel_mapping() {
 }
 
 void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length) {
-  printf("Do transfer with id %ld of length %ld on behalf of x=%ld, y=%ld using shim DMA %ld channel %ld\n", id, length, x, y, TILE_TO_SHIM_DMA[id-1][x][y], ARG_TO_SHIM_DMA_CHANNEL[id]);
+  printf("Do transfer with id %ld of length %ld on behalf of x=%ld, y=%ld using shim DMA %ld channel %ld, offset is %ld\n", id, length, x, y, TILE_TO_SHIM_DMA[id-1][x][y], ARG_TO_SHIM_DMA_CHANNEL[id], offset);
+
+  tensor_t<int32_t,1> *tt = (tensor_t<int32_t,1> *)t;
+
+  // Used to use BRAM_ADDR + 0x4000 as the data address
+  uint64_t addr = (u64)BRAM_ADDR;
+  int32_t *bounce_buffer = (int32_t *)bram_ptr;
+  if (id == 1) {
+    // This is the input, so we need to take what is in t and put it into the BRAM
+    for (int i=0; i<length; i++) {
+      bounce_buffer[i] = tt->d[offset + i];
+    }
+  }
 
   printDMAStatus(TILE_TO_SHIM_DMA[id-1][x][y], 0);
   printDMAStatus(x+7, y+2);
@@ -186,8 +198,6 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
   auto burstlen = 4;
   XAieDma_Shim ShimDmaInst1;
   XAieDma_ShimInitialize(&(TileInst[TILE_TO_SHIM_DMA[id-1][x][y]][0]), &ShimDmaInst1);
-  // use BRAM_ADDR + 0x4000 as the data address
-  uint64_t addr = (u64)BRAM_ADDR + 0x4000 + offset;
   u8 bd = 1+ARG_TO_SHIM_DMA_CHANNEL[id];
   XAieDma_ShimBdSetAddr(&ShimDmaInst1, bd, HIGH_ADDR(addr), LOW_ADDR(addr), length*sizeof(uint32_t));
   XAieDma_ShimBdSetAxi(&ShimDmaInst1, bd , 0, burstlen, 0, 0, XAIE_ENABLE);
@@ -209,6 +219,15 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
       if (count == 2000) break;
     }
   }
+  if (id == 2) {
+    // This is the output, so we need to take what is in t and put it into the BRAM
+    printf("Copy %ld samples to the output starting at %ld\n",length, offset);
+    for (int i=0; i<length; i++) {
+      tt->d[offset + i] = bounce_buffer[i];
+    }
+  }
+
+
   printDMAStatus(TILE_TO_SHIM_DMA[id-1][x][y], 0);
   printDMAStatus(x+7, y+2);
   printCoreStatus(x+7, y+2);
@@ -435,7 +454,7 @@ main(int argc, char *argv[])
   }
 
   printCoreStatus(7,2);
-/*
+
   int errors = 0;
   for (int i=0; i<output.shape[0]; i++) {
     uint32_t d = output.d[i];
@@ -450,5 +469,4 @@ main(int argc, char *argv[])
   else {
     printf("fail %d/%d.\n", (output.shape[0]-errors), output.shape[0]);
   }
-*/
 }
