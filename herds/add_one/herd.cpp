@@ -35,10 +35,6 @@ XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
 
 #include "aie_inc.cpp"
 
-
-
-
-
 template<typename T, int N>
 struct tensor_t {
   T *d;
@@ -110,19 +106,19 @@ hsa_status_t queue_create(uint32_t size, uint32_t type, queue_t **queue)
 
   uint64_t *bram_ptr = (uint64_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, SHMEM_BASE);
 
-  printf("Opened shared memory paddr: %p vaddr: %p\n", SHMEM_BASE, bram_ptr);
+  printf("Opened shared memory paddr: %p vaddr: %p\n", (void*)SHMEM_BASE, (void*)bram_ptr);
   uint64_t q_paddr = bram_ptr[0];
   uint64_t q_offset = q_paddr - SHMEM_BASE;
   queue_t *q = (queue_t*)( ((size_t)bram_ptr) + q_offset );
-  printf("Queue location at paddr: %p vaddr: %p\n", bram_ptr[0], q);
+  printf("Queue location at paddr: %p vaddr: %p\n", (void*)bram_ptr[0], (void*)q);
 
   if (q->id !=  0xacdc) {
-    printf("%s error invalid id %x\n", __func__, q->id);
+    printf("%s error invalid id %x\n", __func__, (unsigned)q->id);
     return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
   }
 
   if (q->size != size) {
-    printf("%s error size mismatch %d\n", __func__, q->size);
+    printf("%s error size mismatch %d\n", __func__, (unsigned)q->size);
     return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
   }
 
@@ -154,10 +150,6 @@ uint32_t *bram_ptr;
 
 extern "C" {
 
-void _mlir_ciface_acap_add_one_hw_kernel_AtenAcapOp_I64_I64() {
-
-}
-
 long TILE_TO_SHIM_DMA[2][2][2] {0};
 long ARG_TO_SHIM_DMA_CHANNEL[2+1] {0};
 // Let's imagine the compiler made this function
@@ -178,7 +170,7 @@ void build_arg_to_shim_dma_channel_mapping() {
 }
 
 void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length) {
-  printf("Do transfer with id %ld of length %ld on behalf of x=%ld, y=%ld using shim DMA %ld channel %ld, offset is %ld\n", id, length, x, y, TILE_TO_SHIM_DMA[id-1][x][y], ARG_TO_SHIM_DMA_CHANNEL[id], offset);
+  printf("Do transfer with id %d of length %ld on behalf of x=%ld, y=%ld using shim DMA %ld channel %ld, offset is %ld\n", id, length, x, y, TILE_TO_SHIM_DMA[id-1][x][y], ARG_TO_SHIM_DMA_CHANNEL[id], offset);
 
   tensor_t<int32_t,1> *tt = (tensor_t<int32_t,1> *)t;
 
@@ -231,97 +223,6 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
   printDMAStatus(TILE_TO_SHIM_DMA[id-1][x][y], 0);
   printDMAStatus(x+7, y+2);
   printCoreStatus(x+7, y+2);
-}
-
-
-void _mlir_ciface_acap_L2_dma_copy_arg0(tensor_t<float,2> *input, tensor_t<float,2> *output, size_t dim1_idx, size_t dim0_idx) {
-  printf("copy L2 arg0 %p %p %d %d\n", input->d, output->d, dim1_idx, dim0_idx);
-
-  
-  uint64_t row = 7;
-  uint64_t col = 0;
-
-  for (int row_offset=0; row_offset<DMA_COUNT; row_offset++) {
-    for (int i=0; i<DMA_COUNT; i++) {
-      bram_ptr[i] = input->d[(row_offset+dim1_idx)*input->shape[0] + dim0_idx + i];
-    }
-
-    uint64_t wr_idx = queue_add_write_index(q, 1);
-    uint64_t packet_id = wr_idx % q->size;
-
-    dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-    initialize_packet(pkt);
-    pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-    pkt->arg[0] = AIR_PKT_TYPE_SHIM_DMA_MEMCPY;
-    pkt->arg[0] |= (row << 16);
-    pkt->arg[0] |= (col << 32);
-    uint64_t flags = 0x1;
-    pkt->arg[0] |= (flags << 48);
-
-    uint32_t burst_len = 4;
-    uint64_t direction = 1;
-    uint64_t channel = XAIEDMA_SHIM_CHNUM_MM2S0;
-
-    pkt->arg[1] = burst_len;
-    pkt->arg[1] |= (direction << 32);
-    pkt->arg[1] |= (channel << 48);
-    pkt->arg[2] = BRAM_ADDR;
-    pkt->arg[3] = DMA_COUNT*sizeof(float);
-
-    signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
-    signal_store_release((signal_t*)&q->doorbell, wr_idx);
-    
-    while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-      printf("packet completion signal timeout!\n");
-      printf("%x\n", pkt->header);
-      printf("%x\n", pkt->type);
-      printf("%x\n", pkt->completion_signal);
-    }
-  }
-}
-
-void _mlir_ciface_acap_L2_dma_copy_arg1(tensor_t<float,2> *input, tensor_t<float,2> *output, size_t dim1_idx, size_t dim0_idx) {
-
-  printf("copy L2 arg1 %p %p %d %d\n", input->d, output->d, dim1_idx, dim0_idx);
-  for (int row_offset=0; row_offset<DMA_COUNT; row_offset++) {
-    uint64_t wr_idx = queue_add_write_index(q, 1);
-    uint64_t packet_id = wr_idx % q->size;
-    uint64_t row = 7;
-    uint64_t col = 0;
-
-    dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-    initialize_packet(pkt);
-    pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-    pkt->arg[0] = AIR_PKT_TYPE_SHIM_DMA_MEMCPY;
-    pkt->arg[0] |= (row << 16);
-    pkt->arg[0] |= (col << 32);
-    uint64_t flags = 0x1;
-    pkt->arg[0] |= (flags << 48);
-    
-    uint64_t direction = 0;
-    uint64_t channel = XAIEDMA_SHIM_CHNUM_S2MM0;
-
-    uint32_t burst_len = 4;
-    pkt->arg[1] = burst_len;
-    pkt->arg[1] |= (direction << 32);
-    pkt->arg[1] |= (channel << 48);
-    pkt->arg[2] = BRAM_ADDR+DMA_COUNT*sizeof(float);
-    pkt->arg[3] = DMA_COUNT*sizeof(float);
-
-    signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
-    signal_store_release((signal_t*)&q->doorbell, wr_idx);
-
-    while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-      printf("packet completion signal timeout!\n");
-      printf("%x\n", pkt->header);
-      printf("%x\n", pkt->type);
-      printf("%x\n", pkt->completion_signal);
-    }
-    
-    for (int i=0; i<DMA_COUNT; i++) {
-      output->d[(row_offset+dim1_idx)*output->shape[0] + dim0_idx + i] = bram_ptr[DMA_COUNT+i];
-    }
-  }
 }
 
 }
@@ -418,7 +319,7 @@ main(int argc, char *argv[])
   }
   assert(handle && "failed to open aie_ctrl.so");
 
-  auto graph_fn = (void (*)(void*,void*))dlsym(handle, "_mlir_ciface_graph");
+  auto graph_fn = (void (*)(void*,void*))dlsym(handle, "_mlir_ciface_myAddOne");
   assert(graph_fn && "failed to locate _mlir_ciface_graph in add_one.so");
 
   for (int i=0; i<input.shape[0]; i++) {
@@ -467,6 +368,6 @@ main(int argc, char *argv[])
     printf("PASS!\n");
   }
   else {
-    printf("fail %d/%d.\n", (output.shape[0]-errors), output.shape[0]);
+    printf("fail %ld/%ld.\n", (output.shape[0]-errors), output.shape[0]);
   }
 }
