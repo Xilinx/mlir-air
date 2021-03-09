@@ -159,26 +159,32 @@ void _mlir_ciface_acap_add_one_hw_kernel_AtenAcapOp_I64_I64() {
 }
 
 long TILE_TO_SHIM_DMA[2][2][2] {0};
-long ARG_TO_SHIM_DMA_CHANNEL[2+1] {0};
+long ARG_TO_SHIM_DMA_CHANNEL[2][2][2] {0};
 // Let's imagine the compiler made this function
 void build_tile_to_shim_dma_mapping() {
   TILE_TO_SHIM_DMA[0][0][0] = 2L;
-  TILE_TO_SHIM_DMA[1][0][0] = 3L;
-  TILE_TO_SHIM_DMA[0][1][0] = 6L;
-  TILE_TO_SHIM_DMA[1][1][0] = 7L;
-  TILE_TO_SHIM_DMA[0][0][1] = 10L;
-  TILE_TO_SHIM_DMA[1][0][1] = 11L;
-  TILE_TO_SHIM_DMA[0][1][1] = 18L;
-  TILE_TO_SHIM_DMA[1][1][1] = 19L;
+  TILE_TO_SHIM_DMA[1][0][0] = 2L;
+  TILE_TO_SHIM_DMA[0][1][0] = 2L;
+  TILE_TO_SHIM_DMA[1][1][0] = 2L;
+  TILE_TO_SHIM_DMA[0][0][1] = 3L;
+  TILE_TO_SHIM_DMA[1][0][1] = 3L;
+  TILE_TO_SHIM_DMA[0][1][1] = 3L;
+  TILE_TO_SHIM_DMA[1][1][1] = 3L;
 }
 
 void build_arg_to_shim_dma_channel_mapping() {
-  ARG_TO_SHIM_DMA_CHANNEL[1] = XAIEDMA_SHIM_CHNUM_MM2S0;
-  ARG_TO_SHIM_DMA_CHANNEL[2] = XAIEDMA_SHIM_CHNUM_S2MM0;
+  ARG_TO_SHIM_DMA_CHANNEL[0][0][0] = XAIEDMA_SHIM_CHNUM_MM2S0;
+  ARG_TO_SHIM_DMA_CHANNEL[1][0][0] = XAIEDMA_SHIM_CHNUM_S2MM0;
+  ARG_TO_SHIM_DMA_CHANNEL[0][1][0] = XAIEDMA_SHIM_CHNUM_MM2S1;
+  ARG_TO_SHIM_DMA_CHANNEL[1][1][0] = XAIEDMA_SHIM_CHNUM_S2MM1;
+  ARG_TO_SHIM_DMA_CHANNEL[0][0][1] = XAIEDMA_SHIM_CHNUM_MM2S0;
+  ARG_TO_SHIM_DMA_CHANNEL[1][0][1] = XAIEDMA_SHIM_CHNUM_S2MM0;
+  ARG_TO_SHIM_DMA_CHANNEL[0][1][1] = XAIEDMA_SHIM_CHNUM_MM2S1;
+  ARG_TO_SHIM_DMA_CHANNEL[1][1][1] = XAIEDMA_SHIM_CHNUM_S2MM1;
 }
 
 void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length) {
-  printf("Do transfer with id %ld of length %ld on behalf of x=%ld, y=%ld using shim DMA %ld channel %ld, offset is %ld\n", id, length, x, y, TILE_TO_SHIM_DMA[id-1][x][y], ARG_TO_SHIM_DMA_CHANNEL[id], offset);
+  printf("Do transfer with id %ld of length %ld on behalf of x=%ld, y=%ld using shim DMA %ld channel %ld, offset is %ld\n", id, length, x, y, TILE_TO_SHIM_DMA[id-1][x][y], ARG_TO_SHIM_DMA_CHANNEL[id-1][x][y], offset);
 
   tensor_t<int32_t,1> *tt = (tensor_t<int32_t,1> *)t;
 
@@ -198,20 +204,20 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
   auto burstlen = 4;
   XAieDma_Shim ShimDmaInst1;
   XAieDma_ShimInitialize(&(TileInst[TILE_TO_SHIM_DMA[id-1][x][y]][0]), &ShimDmaInst1);
-  u8 bd = 1+ARG_TO_SHIM_DMA_CHANNEL[id];
+  u8 bd = 1+ARG_TO_SHIM_DMA_CHANNEL[id-1][x][y];
   XAieDma_ShimBdSetAddr(&ShimDmaInst1, bd, HIGH_ADDR(addr), LOW_ADDR(addr), length*sizeof(uint32_t));
   XAieDma_ShimBdSetAxi(&ShimDmaInst1, bd , 0, burstlen, 0, 0, XAIE_ENABLE);
   XAieDma_ShimBdWrite(&ShimDmaInst1, bd);             // We don't really care, we just want these to be unique and none zero
-  XAieDma_ShimSetStartBd((&ShimDmaInst1), ARG_TO_SHIM_DMA_CHANNEL[id], bd);
+  XAieDma_ShimSetStartBd((&ShimDmaInst1), ARG_TO_SHIM_DMA_CHANNEL[id-1][x][y], bd);
 
-  auto ret = XAieDma_ShimPendingBdCount(&ShimDmaInst1, ARG_TO_SHIM_DMA_CHANNEL[id]);
+  auto ret = XAieDma_ShimPendingBdCount(&ShimDmaInst1, ARG_TO_SHIM_DMA_CHANNEL[id-1][x][y]);
   if (ret)
     printf("%s %d Warn %d\n", __FUNCTION__, __LINE__, ret);
 
-  XAieDma_ShimChControl((&ShimDmaInst1), ARG_TO_SHIM_DMA_CHANNEL[id], XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
+  XAieDma_ShimChControl((&ShimDmaInst1), ARG_TO_SHIM_DMA_CHANNEL[id-1][x][y], XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
 
   auto count = 0;
-  while (XAieDma_ShimPendingBdCount(&ShimDmaInst1, ARG_TO_SHIM_DMA_CHANNEL[id])) {
+  while (XAieDma_ShimPendingBdCount(&ShimDmaInst1, ARG_TO_SHIM_DMA_CHANNEL[id-1][x][y])) {
     XAieLib_usleep(1000);
     count++;
     if (!(count % 1000)) {
