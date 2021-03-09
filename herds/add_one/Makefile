@@ -17,7 +17,7 @@ ifeq ($(uname_p),aarch64)
 endif
 
 CFLAGS += -I../../lib/include
-all: herd.exe add_one.so
+all: herd.exe aie_ctrl.so elfs
 
 %.o: %.cpp aie_inc.cpp
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -37,7 +37,7 @@ add_one.mlir: add_one.py
 
 aie_inc.cpp: aie.mlir
 	$(AIE_OPT) -lower-affine --convert-scf-to-std \
-			   	--aie-create-flows --aie-find-flows \
+				--aie-create-flows --aie-find-flows \
 				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
 
 add_one_tiled_0.mlir: add_one.mlir
@@ -102,5 +102,5 @@ aie_ctrl.so: aie_ctrl.o
 
 clean:
 	rm -rf aie_inc.cpp *.o *.exe *.elf ./$(AIE_SRC_DIR)
-	rm -rf add_one.so add_one.o
+	rm -rf aie_ctrl.so aie_ctrl.o
 	rm -rf *.mlir
