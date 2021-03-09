@@ -37,7 +37,7 @@ add_one.mlir: add_one.py
 
 aie_inc.cpp: aie.mlir
 	$(AIE_OPT) -lower-affine --convert-scf-to-std \
-			   	--aie-create-flows --aie-find-flows \
+				--aie-create-flows --aie-find-flows \
 				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
 
 add_one_tiled_0.mlir: add_one.mlir
