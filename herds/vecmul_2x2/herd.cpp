@@ -94,6 +94,7 @@ void printDMAStatus(int col, int row) {
     dma_s2mm_status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x01DF00);
     dma_mm2s_status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x01DF10);
   }
+  printf((row == 0) ? "SHIM " : "TILE ");
   printf("DMA [%d, %d] s2mm status is %08X, mm2s status %08X\n",col, row, dma_s2mm_status, dma_mm2s_status);
 
 }
@@ -150,30 +151,60 @@ uint32_t *bram_ptr;
 
 extern "C" {
 
-long TILE_TO_SHIM_DMA[2][2][2] {0};
-long ARG_TO_SHIM_DMA_CHANNEL[2][2][2] {0};
+long TILE_TO_SHIM_DMA[3][2][2] {0};
+long ARG_TO_SHIM_DMA_CHANNEL[3][2][2] {0};
 // Let's imagine the compiler made this function
 void build_tile_to_shim_dma_mapping() {
   TILE_TO_SHIM_DMA[0][0][0] = 2L;
   TILE_TO_SHIM_DMA[1][0][0] = 2L;
-  TILE_TO_SHIM_DMA[0][1][0] = 2L;
-  TILE_TO_SHIM_DMA[1][1][0] = 2L;
-  TILE_TO_SHIM_DMA[0][0][1] = 3L;
-  TILE_TO_SHIM_DMA[1][0][1] = 3L;
-  TILE_TO_SHIM_DMA[0][1][1] = 3L;
-  TILE_TO_SHIM_DMA[1][1][1] = 3L;
+  TILE_TO_SHIM_DMA[2][0][0] = 2L;
+
+  TILE_TO_SHIM_DMA[0][1][0] = 3L;
+  TILE_TO_SHIM_DMA[1][1][0] = 3L;
+  TILE_TO_SHIM_DMA[2][1][0] = 2L;
+
+  TILE_TO_SHIM_DMA[0][0][1] = 6L;
+  TILE_TO_SHIM_DMA[1][0][1] = 6L;
+  TILE_TO_SHIM_DMA[2][0][1] = 3L;
+  TILE_TO_SHIM_DMA[0][1][1] = 7L;
+  TILE_TO_SHIM_DMA[1][1][1] = 7L;
+  TILE_TO_SHIM_DMA[2][1][1] = 3L;
 }
 
 void build_arg_to_shim_dma_channel_mapping() {
   ARG_TO_SHIM_DMA_CHANNEL[0][0][0] = XAIEDMA_SHIM_CHNUM_MM2S0;
-  ARG_TO_SHIM_DMA_CHANNEL[1][0][0] = XAIEDMA_SHIM_CHNUM_S2MM0;
-  ARG_TO_SHIM_DMA_CHANNEL[0][1][0] = XAIEDMA_SHIM_CHNUM_MM2S1;
-  ARG_TO_SHIM_DMA_CHANNEL[1][1][0] = XAIEDMA_SHIM_CHNUM_S2MM1;
+  ARG_TO_SHIM_DMA_CHANNEL[1][0][0] = XAIEDMA_SHIM_CHNUM_MM2S1;
+  ARG_TO_SHIM_DMA_CHANNEL[2][0][0] = XAIEDMA_SHIM_CHNUM_S2MM0;
+
+  ARG_TO_SHIM_DMA_CHANNEL[0][1][0] = XAIEDMA_SHIM_CHNUM_MM2S0;
+  ARG_TO_SHIM_DMA_CHANNEL[1][1][0] = XAIEDMA_SHIM_CHNUM_MM2S1;
+  ARG_TO_SHIM_DMA_CHANNEL[2][0][0] = XAIEDMA_SHIM_CHNUM_S2MM1;
+
   ARG_TO_SHIM_DMA_CHANNEL[0][0][1] = XAIEDMA_SHIM_CHNUM_MM2S0;
-  ARG_TO_SHIM_DMA_CHANNEL[1][0][1] = XAIEDMA_SHIM_CHNUM_S2MM0;
-  ARG_TO_SHIM_DMA_CHANNEL[0][1][1] = XAIEDMA_SHIM_CHNUM_MM2S1;
-  ARG_TO_SHIM_DMA_CHANNEL[1][1][1] = XAIEDMA_SHIM_CHNUM_S2MM1;
+  ARG_TO_SHIM_DMA_CHANNEL[1][0][1] = XAIEDMA_SHIM_CHNUM_MM2S1;
+  ARG_TO_SHIM_DMA_CHANNEL[2][0][0] = XAIEDMA_SHIM_CHNUM_S2MM0;
+
+  ARG_TO_SHIM_DMA_CHANNEL[0][1][1] = XAIEDMA_SHIM_CHNUM_MM2S0;
+  ARG_TO_SHIM_DMA_CHANNEL[1][1][1] = XAIEDMA_SHIM_CHNUM_MM2S1;
+  ARG_TO_SHIM_DMA_CHANNEL[2][0][0] = XAIEDMA_SHIM_CHNUM_S2MM1;
 }
+
+void printMems(int i, char *prefix) {
+    int32_t rb0 = mlir_read_buffer_buf0(i);
+    int32_t rb1 = mlir_read_buffer_buf1(i);
+    int32_t rb2 = mlir_read_buffer_buf2(i);
+    int32_t rb3 = mlir_read_buffer_buf3(i);
+    int32_t rb4 = mlir_read_buffer_buf4(i);
+    int32_t rb5 = mlir_read_buffer_buf5(i);
+    int32_t rb6 = mlir_read_buffer_buf6(i);
+    int32_t rb7 = mlir_read_buffer_buf7(i);
+    int32_t rb8 = mlir_read_buffer_buf8(i);
+    int32_t rb9 = mlir_read_buffer_buf9(i);
+    int32_t rb10 = mlir_read_buffer_buf10(i);
+    int32_t rb11 = mlir_read_buffer_buf11(i);
+    printf("%s %d [7][2] : %08X * %08X -> %08X, [8][2] :%08X * %08X -> %08X, [7][3] : %08X * %08X -> %08X, [8][3] :%08X * %08X-> %08X\n", prefix, i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7, rb8, rb9, rb10, rb11);
+}
+
 
 void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length) {
   printf("Do transfer with id %ld of length %ld on behalf of x=%ld, y=%ld using shim DMA %ld channel %ld, offset is %ld\n", id, length, x, y, TILE_TO_SHIM_DMA[id-1][x][y], ARG_TO_SHIM_DMA_CHANNEL[id-1][x][y], offset);
@@ -183,8 +214,8 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
   // Used to use BRAM_ADDR + 0x4000 as the data address
   uint64_t addr = (u64)BRAM_ADDR;
   int32_t *bounce_buffer = (int32_t *)bram_ptr;
-  if (id == 1) {
-    // This is the input, so we need to take what is in t and put it into the BRAM
+  if (id < 3) {
+    // This are the inputs, so we need to take what is in t and put it into the BRAM
     for (int i=0; i<length; i++) {
       bounce_buffer[i] = tt->d[offset + i];
     }
@@ -193,9 +224,12 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
   printDMAStatus(TILE_TO_SHIM_DMA[id-1][x][y], 0);
   printDMAStatus(x+7, y+2);
   printCoreStatus(x+7, y+2);
+
+  printMems(0, "before"); 
+
   auto burstlen = 4;
   XAieDma_Shim ShimDmaInst1;
-  XAieDma_ShimInitialize(&(TileInst[TILE_TO_SHIM_DMA[id-1][x][y]][0]), &ShimDmaInst1);
+  XAieDma_ShimSoftInitialize(&(TileInst[TILE_TO_SHIM_DMA[id-1][x][y]][0]), &ShimDmaInst1);
   u8 bd = 1+ARG_TO_SHIM_DMA_CHANNEL[id-1][x][y];
   XAieDma_ShimBdSetAddr(&ShimDmaInst1, bd, HIGH_ADDR(addr), LOW_ADDR(addr), length*sizeof(uint32_t));
   XAieDma_ShimBdSetAxi(&ShimDmaInst1, bd , 0, burstlen, 0, 0, XAIE_ENABLE);
@@ -229,9 +263,14 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
   printDMAStatus(TILE_TO_SHIM_DMA[id-1][x][y], 0);
   printDMAStatus(x+7, y+2);
   printCoreStatus(x+7, y+2);
+  printMems(0, "after"); 
 }
 
+
+
 }
+
+
 
 int
 main(int argc, char *argv[])
@@ -275,6 +314,10 @@ main(int argc, char *argv[])
     mlir_write_buffer_buf5(i, 0x5decaf);
     mlir_write_buffer_buf6(i, 0x6decaf);
     mlir_write_buffer_buf7(i, 0x7decaf);
+    mlir_write_buffer_buf8(i, 0x8decaf);
+    mlir_write_buffer_buf9(i, 0x9decaf);
+    mlir_write_buffer_buf10(i, 0xadecaf);
+    mlir_write_buffer_buf11(i, 0xbdecaf);
   }
 
   printCoreStatus(7,2);
@@ -309,11 +352,15 @@ main(int argc, char *argv[])
   signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
   //signal_store_release((signal_t*)&q->doorbell, wr_idx);
 
-  tensor_t<int32_t,1> input;
+  tensor_t<int32_t,1> input_A;
+  tensor_t<int32_t,1> input_B;
   tensor_t<int32_t,1> output;
 
-  input.shape[0] = DMA_COUNT*4;
-  input.d = input.aligned = (int32_t*)malloc(sizeof(int32_t)*input.shape[0]);
+  input_A.shape[0] = DMA_COUNT*4;
+  input_A.d = input_A.aligned = (int32_t*)malloc(sizeof(int32_t)*input_A.shape[0]);
+
+  input_B.shape[0] = DMA_COUNT*4;
+  input_B.d = input_B.aligned = (int32_t*)malloc(sizeof(int32_t)*input_B.shape[0]);
 
   output.shape[0] = DMA_COUNT*4;
   output.d = output.aligned = (int32_t*)malloc(sizeof(int32_t)*output.shape[0]);
@@ -325,11 +372,12 @@ main(int argc, char *argv[])
   }
   assert(handle && "failed to open aie_ctrl.so");
 
-  auto graph_fn = (void (*)(void*,void*))dlsym(handle, "_mlir_ciface_myAddOne");
-  assert(graph_fn && "failed to locate _mlir_ciface_graph in add_one.so");
+  auto graph_fn = (void (*)(void*,void *,void*))dlsym(handle, "_mlir_ciface_task");
+  assert(graph_fn && "failed to locate _mlir_ciface_task in vecmul.so");
 
-  for (int i=0; i<input.shape[0]; i++) {
-    input.d[i] = i;
+  for (int i=0; i<input_A.shape[0]; i++) {
+    input_A.d[i] = i;
+    input_B.d[i] = i+1;
   }
   for (int i=0; i<16; i++) { 
     int32_t rb0 = mlir_read_buffer_buf0(i);
@@ -340,13 +388,18 @@ main(int argc, char *argv[])
     int32_t rb5 = mlir_read_buffer_buf5(i);
     int32_t rb6 = mlir_read_buffer_buf6(i);
     int32_t rb7 = mlir_read_buffer_buf7(i);
-    printf("before %d [7][2] : %08X -> %08X, [8][2] :%08X -> %08X, [7][3] : %08X -> %08X, [8][3] :%08X -> %08X\n", i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7);
+    int32_t rb8 = mlir_read_buffer_buf8(i);
+    int32_t rb9 = mlir_read_buffer_buf9(i);
+    int32_t rb10 = mlir_read_buffer_buf10(i);
+    int32_t rb11 = mlir_read_buffer_buf11(i);
+    printf("before %d [7][2] : %08X * %08X -> %08X, [8][2] :%08X * %08X -> %08X, [7][3] : %08X * %08X -> %08X, [8][3] :%08X * %08X-> %08X\n", i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7, rb8, rb9, rb10, rb11);
   }
 
-  void *i,*o;
-  i = &input;
+  void *a, *b,*o;
+  a = &input_A;
+  b = &input_B;
   o = &output;
-  graph_fn(i, o);
+  graph_fn(a, b, o);
 
   for (int i=0; i<16; i++) { 
     int32_t rb0 = mlir_read_buffer_buf0(i);
@@ -357,7 +410,11 @@ main(int argc, char *argv[])
     int32_t rb5 = mlir_read_buffer_buf5(i);
     int32_t rb6 = mlir_read_buffer_buf6(i);
     int32_t rb7 = mlir_read_buffer_buf7(i);
-    printf(" after %d [7][2] : %08X -> %08X, [8][2] :%08X -> %08X, [7][3] : %08X -> %08X, [8][3] :%08X -> %08X\n", i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7);
+    int32_t rb8 = mlir_read_buffer_buf8(i);
+    int32_t rb9 = mlir_read_buffer_buf9(i);
+    int32_t rb10 = mlir_read_buffer_buf10(i);
+    int32_t rb11 = mlir_read_buffer_buf11(i);
+    printf(" after %d [7][2] : %08X * %08X -> %08X, [8][2] :%08X * %08X -> %08X, [7][3] : %08X * %08X -> %08X, [8][3] :%08X * %08X-> %08X\n", i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7, rb8, rb9, rb10, rb11);
   }
 
   printCoreStatus(7,2);

@@ -6,8 +6,8 @@ import torch_mlir
 # Capture some MLIR
 #
 
-t0 = torch.zeros(512, dtype=torch.int32)
-t1 = torch.zeros(512, dtype=torch.int32)
+t0 = torch.zeros(256, dtype=torch.int32)
+t1 = torch.zeros(256, dtype=torch.int32)
 
 builder = torch_mlir.ModuleBuilder()
 with builder.capture_function("task", [t0,t1]) as f:

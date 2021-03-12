@@ -60,16 +60,10 @@ vecmul_tiled_2.mlir: vecmul_tiled_1.mlir
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
-vecmul_tiled_3.mlir: vecmul_tiled_2.mlir
-	$(ATEN_OPT) -affine-loop-normalize \
-				-affine-loop-opt -affine-opt-tile-sizes 2 \
-				-affine-loop-normalize -simplify-affine-structures \
-				-cse \
-				-o $@ $<
 
-vecmul_air.mlir: vecmul_tiled_3.mlir
+vecmul_air.mlir: vecmul_tiled_2.mlir
 	$(ATEN_OPT) -acap-herd-assign \
-				-herd-assign-depth 1 \
+				-herd-assign-depth 0 \
 				-affine-to-air \
 				-cse \
 				-o $@ $<
