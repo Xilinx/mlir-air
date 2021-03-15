@@ -79,11 +79,11 @@ aie_ctrl.mlir: add_one_air.mlir
 				-air-to-aie-row-offset 2 \
 				-air-to-aie-col-offset 7 \
 				-air-to-std \
-				-aten-to-std \
+				-aten-lowering \
 				-o $@
 
 aie_ctrl.llvm.mlir: aie_ctrl.mlir
-	$(ATEN_OPT) -return-elimination \
+	$(ATEN_OPT) -air-return-elimination \
 		--lower-affine \
 		--convert-scf-to-std \
 		--convert-std-to-llvm='emit-c-wrappers'  \
