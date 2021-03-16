@@ -65,11 +65,12 @@ struct tensor_t {
 
 
 void printCoreStatus(int col, int row) {
-  u32 status, coreTimerLow, locks;
+  u32 status, coreTimerLow, locks, PC;
 	status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x032004);
 	coreTimerLow = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0340F8);
 	locks = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001EF00);
-	printf("Core [%d, %d] status is %08X, timer is %u, locks are %08X\n",col, row, status, coreTimerLow, locks);
+	PC = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x00030280);
+	printf("Core [%d, %d] @ %04X: status is %08X, timer is %u, locks are %08X\n",col, row, PC, status, coreTimerLow, locks);
 	for (int lock=0;lock<16;lock++) {
 		u32 two_bits = (locks >> (lock*2)) & 0x3;
 		if (two_bits) {
@@ -178,15 +179,15 @@ void build_arg_to_shim_dma_channel_mapping() {
 
   ARG_TO_SHIM_DMA_CHANNEL[0][1][0] = XAIEDMA_SHIM_CHNUM_MM2S0;
   ARG_TO_SHIM_DMA_CHANNEL[1][1][0] = XAIEDMA_SHIM_CHNUM_MM2S1;
-  ARG_TO_SHIM_DMA_CHANNEL[2][0][0] = XAIEDMA_SHIM_CHNUM_S2MM1;
+  ARG_TO_SHIM_DMA_CHANNEL[2][1][0] = XAIEDMA_SHIM_CHNUM_S2MM1;
 
   ARG_TO_SHIM_DMA_CHANNEL[0][0][1] = XAIEDMA_SHIM_CHNUM_MM2S0;
   ARG_TO_SHIM_DMA_CHANNEL[1][0][1] = XAIEDMA_SHIM_CHNUM_MM2S1;
-  ARG_TO_SHIM_DMA_CHANNEL[2][0][0] = XAIEDMA_SHIM_CHNUM_S2MM0;
+  ARG_TO_SHIM_DMA_CHANNEL[2][0][1] = XAIEDMA_SHIM_CHNUM_S2MM0;
 
   ARG_TO_SHIM_DMA_CHANNEL[0][1][1] = XAIEDMA_SHIM_CHNUM_MM2S0;
   ARG_TO_SHIM_DMA_CHANNEL[1][1][1] = XAIEDMA_SHIM_CHNUM_MM2S1;
-  ARG_TO_SHIM_DMA_CHANNEL[2][0][0] = XAIEDMA_SHIM_CHNUM_S2MM1;
+  ARG_TO_SHIM_DMA_CHANNEL[2][1][1] = XAIEDMA_SHIM_CHNUM_S2MM1;
 }
 
 void printMems(int i, char *prefix) {
@@ -225,7 +226,7 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
   printDMAStatus(x+7, y+2);
   printCoreStatus(x+7, y+2);
 
-  printMems(0, "before"); 
+  printMems(2, "before"); 
 
   auto burstlen = 4;
   XAieDma_Shim ShimDmaInst1;
@@ -251,7 +252,7 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
       if (count == 2000) break;
     }
   }
-  if (id == 2) {
+  if (id == 3) {
     // This is the output, so we need to take what is in t and put it into the BRAM
     printf("Copy %ld samples to the output starting at %ld\n",length, offset);
     for (int i=0; i<length; i++) {
@@ -263,7 +264,7 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
   printDMAStatus(TILE_TO_SHIM_DMA[id-1][x][y], 0);
   printDMAStatus(x+7, y+2);
   printCoreStatus(x+7, y+2);
-  printMems(0, "after"); 
+  printMems(2, "after"); 
 }
 
 
@@ -421,10 +422,12 @@ main(int argc, char *argv[])
 
   int errors = 0;
   for (int i=0; i<output.shape[0]; i++) {
+    uint32_t a = input_A.d[i];
+    uint32_t b = input_B.d[i];
     uint32_t d = output.d[i];
-    if (d != (i+1)) {
+    if (d != (a*b)) {
       errors++;
-      printf("mismatch %x != 1 + %x\n", d, i);
+      printf("%04X: mismatch %x != %x * %x\n", i, d, a, b);
     }
   }
   if (!errors) {
