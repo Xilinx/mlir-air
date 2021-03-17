@@ -60,16 +60,23 @@ vecmul_tiled_2.mlir: vecmul_tiled_1.mlir
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
+vecmul_tiled_3.mlir: vecmul_tiled_2.mlir
+	$(ATEN_OPT) -affine-loop-normalize \
+				-affine-loop-opt -affine-opt-tile-sizes 2 \
+				-affine-loop-normalize -simplify-affine-structures \
+				-cse \
+				-o $@ $<
 
-vecmul_air.mlir: vecmul_tiled_2.mlir
+vecmul_air.mlir: vecmul_tiled_3.mlir
 	$(ATEN_OPT) -acap-herd-assign \
-				-herd-assign-depth 0 \
+				-herd-assign-depth 1 \
 				-affine-to-air \
 				-cse \
 				-o $@ $<
 
 aie.mlir: vecmul_air.mlir
 	$(ATEN_OPT) -air-to-aie \
+				-air-to-aie-emit-while-loop=true \
 				-air-to-aie-row-offset 2 \
 				-air-to-aie-col-offset 7 \
 				-air-to-aie-output-file $@ $< \

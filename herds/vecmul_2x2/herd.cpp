@@ -306,7 +306,7 @@ main(int argc, char *argv[])
   }
 
   // Stomp
-  for (int i=0; i<DMA_COUNT; i++) {
+  for (int i=0; i<DMA_COUNT*4*4; i++) {
     mlir_write_buffer_buf0(i, 0x0decaf);
     mlir_write_buffer_buf1(i, 0x1decaf);
     mlir_write_buffer_buf2(i, 0x2decaf);
@@ -357,13 +357,13 @@ main(int argc, char *argv[])
   tensor_t<int32_t,1> input_B;
   tensor_t<int32_t,1> output;
 
-  input_A.shape[0] = DMA_COUNT*4;
+  input_A.shape[0] = DMA_COUNT*4*4;
   input_A.d = input_A.aligned = (int32_t*)malloc(sizeof(int32_t)*input_A.shape[0]);
 
-  input_B.shape[0] = DMA_COUNT*4;
+  input_B.shape[0] = DMA_COUNT*4*4;
   input_B.d = input_B.aligned = (int32_t*)malloc(sizeof(int32_t)*input_B.shape[0]);
 
-  output.shape[0] = DMA_COUNT*4;
+  output.shape[0] = DMA_COUNT*4*4;
   output.d = output.aligned = (int32_t*)malloc(sizeof(int32_t)*output.shape[0]);
   
   printf("loading aie_ctrl.so\n");
