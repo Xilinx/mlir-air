@@ -15,3 +15,11 @@ target_link_libraries(_air
   ${Python3_LIBRARIES}
   ${AIR_LIBXAIE_LIBS}
 )
+
+install(TARGETS _air
+LIBRARY DESTINATION python COMPONENT python
+ARCHIVE DESTINATION python COMPONENT python
+RUNTIME DESTINATION bin COMPONENT python)
+
+install(DIRECTORY air
+DESTINATION python COMPONENT python)
