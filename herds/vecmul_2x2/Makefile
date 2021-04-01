@@ -68,18 +68,13 @@ vecmul_tiled_3.mlir: vecmul_tiled_2.mlir
 				-o $@ $<
 
 vecmul_air.mlir: vecmul_tiled_3.mlir
-	$(ATEN_OPT) -acap-herd-assign \
-				-herd-assign-depth 1 \
+	$(ATEN_OPT) -acap-herd-assign=herd-assign-depth=1 \
 				-affine-to-air \
 				-cse \
 				-o $@ $<
 
 aie.mlir: vecmul_air.mlir
-	$(ATEN_OPT) -air-to-aie \
-				-air-to-aie-emit-while-loop=true \
-				-air-to-aie-row-offset 2 \
-				-air-to-aie-col-offset 7 \
-				-air-to-aie-output-file $@ $< \
+	$(ATEN_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-file=$@}" $< \
 				-o /dev/null
 peano.mlir: aie.mlir
 	$(ATEN_OPT) -lower-affine -o $@ $< 
@@ -89,12 +84,10 @@ elfs: peano.mlir
 
 
 aie_ctrl.mlir: vecmul_air.mlir
-	$(ATEN_OPT) -air-to-aie $< -air-to-aie-output-file /dev/null \
-				-air-to-aie-row-offset 2 \
-				-air-to-aie-col-offset 7 \
+	$(ATEN_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-file=/dev/null}"\
 				-air-to-std \
 				-aten-lowering \
-				-o $@
+				-o $@ $<
 
 aie_ctrl.llvm.mlir: aie_ctrl.mlir
 	$(ATEN_OPT) -air-return-elimination \
