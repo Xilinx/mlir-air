@@ -204,7 +204,7 @@ main(int argc, char *argv[])
     printf("packet completion signal timeout on herd initialization!\n");
     printf("%x\n", herd_pkt->header);
     printf("%x\n", herd_pkt->type);
-    printf("%x\n", herd_pkt->completion_signal);
+    printf("%x\n", (unsigned)herd_pkt->completion_signal);
   }
 
   printf("loading aie_ctrl.so\n");

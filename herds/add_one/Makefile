@@ -43,30 +43,33 @@ aie_inc.cpp: aie.mlir
 add_one_tiled_0.mlir: add_one.mlir
 	$(ATEN_OPT) -aten-to-air \
 				-air-to-affine \
-				-affine-loop-opt -affine-opt-copy-depths 0 -affine-opt-copy-fast-space 2 -affine-opt-tile-sizes 64 \
-				-cse \
-				-o $@ $<
-
-add_one_tiled_1.mlir: add_one_tiled_0.mlir
-	$(ATEN_OPT) -affine-loop-normalize \
-				-affine-loop-opt -affine-opt-tile-sizes 2 \
+				-affine-loop-opt -affine-opt-tile-sizes 64 \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
 
-add_one_air.mlir: add_one_tiled_1.mlir
-	$(ATEN_OPT) -acap-herd-assign \
-				-herd-assign-depth 0 \
+add_one_tiled_1.mlir: add_one_tiled_0.mlir
+	$(ATEN_OPT) -affine-loop-opt -affine-opt-copy-depths 0 -affine-opt-copy-fast-space 2 \
+				-affine-loop-normalize -simplify-affine-structures \
+				-cse \
+				-o $@ $<
+
+add_one_tiled_2.mlir: add_one_tiled_1.mlir
+	$(ATEN_OPT) -affine-loop-opt -affine-opt-tile-sizes 2 \
+				-affine-loop-normalize -simplify-affine-structures \
+				-cse \
+				-o $@ $<
+
+add_one_air.mlir: add_one_tiled_2.mlir
+	$(ATEN_OPT) -acap-herd-assign=herd-assign-depth=0 \
 				-affine-to-air \
 				-cse \
 				-o $@ $<
 
 aie.mlir: add_one_air.mlir
-	$(ATEN_OPT) -air-to-aie \
-				-air-to-aie-row-offset 2 \
-				-air-to-aie-col-offset 7 \
-				-air-to-aie-output-file $@ $< \
+	$(ATEN_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-file=$@}" $< \
 				-o /dev/null
+
 peano.mlir: aie.mlir
 	$(ATEN_OPT) -lower-affine -o $@ $< 
 
@@ -75,12 +78,10 @@ elfs: peano.mlir
 
 
 aie_ctrl.mlir: add_one_air.mlir
-	$(ATEN_OPT) -air-to-aie $< -air-to-aie-output-file /dev/null \
-				-air-to-aie-row-offset 2 \
-				-air-to-aie-col-offset 7 \
+	$(ATEN_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-file=/dev/null}"\
 				-air-to-std \
 				-aten-lowering \
-				-o $@
+				-o $@ $<
 
 aie_ctrl.llvm.mlir: aie_ctrl.mlir
 	$(ATEN_OPT) -air-return-elimination \

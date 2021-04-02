@@ -133,7 +133,7 @@ main(int argc, char *argv[])
     printf("packet completion signal timeout on herd initialization!\n");
     printf("%x\n", herd_pkt->header);
     printf("%x\n", herd_pkt->type);
-    printf("%x\n", herd_pkt->completion_signal);
+    printf("%x\n", (unsigned)herd_pkt->completion_signal);
   }
 
   mlir_configure_cores();
@@ -178,7 +178,7 @@ main(int argc, char *argv[])
     printf("packet completion signal timeout on lock release!\n");
     printf("%x\n", lock_pkt->header);
     printf("%x\n", lock_pkt->type);
-    printf("%x\n", lock_pkt->completion_signal);
+    printf("%x\n", (unsigned)lock_pkt->completion_signal);
   }
 
 

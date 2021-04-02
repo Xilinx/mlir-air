@@ -17,8 +17,8 @@ module {
     AIE.connect<"South": 2, "DMA" : 0>
   }
 
-  %buf72_0 = AIE.buffer(%t72) : memref<256xi32>
-  %buf72_1 = AIE.buffer(%t72) : memref<256xi32>
+  %buf72_0 = AIE.buffer(%t72) {sym_name="a"} : memref<256xi32>
+  %buf72_1 = AIE.buffer(%t72) {sym_name="b"} : memref<256xi32>
 
   %l72_0 = AIE.lock(%t72, 0)
   %l72_1 = AIE.lock(%t72, 1)

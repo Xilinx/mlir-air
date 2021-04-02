@@ -26,10 +26,10 @@ module {
     elf_file = "add_one.elf"
   }
 
-  %buf72_0 = AIE.buffer(%t72) : memref<8xi32>
-  %buf72_1 = AIE.buffer(%t72) : memref<8xi32>
-  %buf72_2 = AIE.buffer(%t72) : memref<8xi32>
-  %buf72_3 = AIE.buffer(%t72) : memref<8xi32>
+  %buf72_0 = AIE.buffer(%t72) {sym_name="a"} : memref<8xi32>
+  %buf72_1 = AIE.buffer(%t72) {sym_name="b"} : memref<8xi32>
+  %buf72_2 = AIE.buffer(%t72) {sym_name="c"} : memref<8xi32>
+  %buf72_3 = AIE.buffer(%t72) {sym_name="d"} : memref<8xi32>
 
   %l72_0 = AIE.lock(%t72, 0)
   %l72_1 = AIE.lock(%t72, 1)

@@ -13,6 +13,6 @@ module {
     elf_file = "maker.elf"
   }
   
-  %buf72_0 = AIE.buffer(%t72) : memref<4xi32>
+  %buf72_0 = AIE.buffer(%t72) {sym_name="buffer"}: memref<4xi32>
   %l72_0 = AIE.lock(%t72, 0)
 }

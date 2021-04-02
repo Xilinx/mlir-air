@@ -93,7 +93,7 @@ int main(int argc, char *argv[])
     printf("packet completion signal timeout on herd initialization!\n");
     printf("%x\n", herd_pkt->header);
     printf("%x\n", herd_pkt->type);
-    printf("%x\n", herd_pkt->completion_signal);
+    printf("%x\n", (unsigned)herd_pkt->completion_signal);
   }
 
   // reserve another packet in the queue
@@ -124,7 +124,7 @@ int main(int argc, char *argv[])
     printf("packet completion signal timeout on lock acquire!\n");
     printf("%x\n", lock_pkt->header);
     printf("%x\n", lock_pkt->type);
-    printf("%x\n", lock_pkt->completion_signal);
+    printf("%x\n", (unsigned)lock_pkt->completion_signal);
   }
 
   u32 errors = 0;
@@ -175,7 +175,7 @@ int main(int argc, char *argv[])
       printf("packet completion signal timeout on lock release!\n");
       printf("%x\n", release_pkt->header);
       printf("%x\n", release_pkt->type);
-      printf("%x\n", release_pkt->completion_signal);
+      printf("%x\n", (unsigned)release_pkt->completion_signal);
     }
 
     for (int col = 6; col < 10 ; col++)
