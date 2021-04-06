@@ -56,7 +56,7 @@ void printCoreStatus(int col, int row) {
 int
 main(int argc, char *argv[])
 {
-  auto col = 7;
+  auto shim_col = 2;
 
   size_t aie_base = XAIE_ADDR_ARRAY_OFF << 14;
   XAIEGBL_HWCFG_SET_CONFIG((&AieConfig), XAIE_NUM_ROWS, XAIE_NUM_COLS, XAIE_ADDR_ARRAY_OFF);
@@ -88,7 +88,7 @@ main(int argc, char *argv[])
 
   for (int i=0; i<TILE_SIZE; i++) {
     uint32_t d = i+1;
-    mlir_write_buffer_scratch(i,0xfadefade);
+    mlir_write_buffer_scratch_0_0(i,0xfadefade);
   }
 
 
@@ -99,7 +99,7 @@ main(int argc, char *argv[])
   mlir_initialize_locks();
   mlir_configure_switchboxes();
 
-  XAieDma_ShimInitialize(&(TileInst[col][0]), &ShimDmaInst1);
+  XAieDma_ShimInitialize(&(TileInst[shim_col][0]), &ShimDmaInst1);
   XAieDma_ShimBdClearAll((&ShimDmaInst1));
   XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_MM2S0, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
   XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_S2MM0, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
@@ -129,7 +129,7 @@ main(int argc, char *argv[])
   // Go look at the scratch buffer
   int errors = 0;
   for (int i=0;i<TILE_SIZE;i++) {
-    u32 rb = mlir_read_buffer_scratch(i);
+    u32 rb = mlir_read_buffer_scratch_0_0(i);
     u32 row = i / TILE_WIDTH;
     u32 col = i % TILE_WIDTH;
     u32 orig_index = row * IMAGE_WIDTH + col;
@@ -194,9 +194,9 @@ main(int argc, char *argv[])
   for (int bd=0;bd<16;bd++) {
     // Take no prisoners.  No regerts
     // Overwrites the DMA_BDX_Control registers
-    u32 rb = XAieGbl_Read32(TileInst[col][0].TileAddr + 0x0001D008+(bd*0x14));
+    u32 rb = XAieGbl_Read32(TileInst[shim_col][0].TileAddr + 0x0001D008+(bd*0x14));
     printf("Before : bd%x control is %08X\n", bd, rb);
-    XAieGbl_Write32(TileInst[col][0].TileAddr + 0x0001D008+(bd*0x14), 0x0);
+    XAieGbl_Write32(TileInst[shim_col][0].TileAddr + 0x0001D008+(bd*0x14), 0x0);
 
   }
 
