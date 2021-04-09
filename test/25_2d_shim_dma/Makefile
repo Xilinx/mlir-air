@@ -33,6 +33,6 @@ aie_ctrl.o: aie_ctrl.llvm.mlir
 aie_ctrl.so: aie_ctrl.o
 	$(CC) -shared $< -o $@
 
-clean:
+clean::
 	rm -rf acdc_project *.elf aie.cpp aie.mlir
 	rm -rf aie_ctrl.* test.exe

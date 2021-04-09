@@ -50,5 +50,5 @@ $(BUILD_CPP_FILES):  $(MLIR_CPP_FILES)
 	xchessmk $*.prx && \
 	cp work/Release_LLVM/$*.prx/$* ../$*.elf
 
-clean:
+clean::
 	rm -rf $(MLIR_CPP_FILES) $(OBJ_FILES) *.exe *.elf ./$(AIE_SRC_DIR)/work

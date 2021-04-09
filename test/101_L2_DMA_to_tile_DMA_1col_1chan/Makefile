@@ -29,5 +29,5 @@ $(ARM_OBJ_DIR)/%.o: $(ARM_SRC_DIR)/%.cpp
 		-ldl \
 		-o $@
 
-clean:
+clean::
 	rm -rf *.o *.exe 
