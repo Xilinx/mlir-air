@@ -32,24 +32,23 @@ XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
 
 void printCoreStatus(int col, int row) {
 
-	
-	u32 status, coreTimerLow, locks;
-	status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x032004);
-	coreTimerLow = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0340F8);
-	locks = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001EF00);
-	printf("Core [%d, %d] status is %08X, timer is %u, locks are %08X\n",col, row, status, coreTimerLow, locks);
-	for (int lock=0;lock<16;lock++) {
-		u32 two_bits = (locks >> (lock*2)) & 0x3;
-		if (two_bits) {
-			printf("Lock %d: ", lock);
-			u32 acquired = two_bits & 0x1;
-			u32 value = two_bits & 0x2;
-			if (acquired)
-				printf("Acquired ");
-			printf(value?"1":"0");
-			printf("\n");
-		}
-	}
+  u32 status, coreTimerLow, locks;
+  status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x032004);
+  coreTimerLow = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0340F8);
+  locks = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001EF00);
+  printf("Core [%d, %d] status is %08X, timer is %u, locks are %08X\n",col, row, status, coreTimerLow, locks);
+  for (int lock=0;lock<16;lock++) {
+    u32 two_bits = (locks >> (lock*2)) & 0x3;
+    if (two_bits) {
+      printf("Lock %d: ", lock);
+      u32 acquired = two_bits & 0x1;
+      u32 value = two_bits & 0x2;
+      if (acquired)
+        printf("Acquired ");
+      printf(value?"1":"0");
+      printf("\n");
+    }
+  }
 }
 
 
@@ -76,7 +75,6 @@ main(int argc, char *argv[])
   #define TILE_HEIGHT 8
   #define TILE_SIZE  (TILE_WIDTH * TILE_HEIGHT)
 
-
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd != -1) {
     bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, BRAM_ADDR);
@@ -91,7 +89,6 @@ main(int argc, char *argv[])
     mlir_write_buffer_scratch_0_0(i,0xfadefade);
   }
 
-
   // Fire up the AIE array
 
   mlir_configure_cores();
@@ -99,11 +96,12 @@ main(int argc, char *argv[])
   mlir_initialize_locks();
   mlir_configure_switchboxes();
 
+  mlir_start_cores();
+
   XAieDma_ShimInitialize(&(TileInst[shim_col][0]), &ShimDmaInst1);
   XAieDma_ShimBdClearAll((&ShimDmaInst1));
   XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_MM2S0, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
   XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_S2MM0, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
-
 
   for (int row = 0; row < TILE_HEIGHT; row++) {
     auto burstlen = 4;
@@ -200,15 +198,6 @@ main(int argc, char *argv[])
 
   }
 
-/*
-  for (int i=0; i<DMA_COUNT; i++) {
-    uint32_t d = bram_ptr[i];
-    if (d != (i+1)) {
-      errors++;
-      printf("mismatch %x != 1 + %x\n", d, i);
-    }
-  }
-*/
   if (!errors) {
     printf("PASS!\n");
   }
