@@ -9,9 +9,12 @@ all: test.exe aie_ctrl.so core_7_2.elf
 core_7_2.elf: aie.mlir
 	aiecc.py --no-xbridge aie.mlir
 
-aie.mlir: air.mlir Makefile
+aie0.mlir: air.mlir Makefile
 	aten-opt $< -air-to-aie="air-to-aie-output-file=$@ air-to-aie-row-offset=2 air-to-aie-col-offset=7" \
 			-o /dev/null
+
+aie.mlir: aie0.mlir
+	aten-opt -lower-affine -convert-scf-to-std -o $@ $<
 
 aie_ctrl.mlir: air.mlir Makefile
 	aten-opt $< -air-to-aie="air-to-aie-output-file=/dev/null air-to-aie-row-offset=2 air-to-aie-col-offset=7" \
