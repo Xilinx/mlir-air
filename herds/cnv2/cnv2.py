@@ -26,7 +26,7 @@ class CNV2(nn.Module):
         #x = x.view(-1, 64)
         #print(x.shape)
         #x = F.softmax(self.fc1(x))
-        x = torch.cat((x, x))
+        #x = torch.cat((x, x))
         return x
 
 
