@@ -9,6 +9,9 @@ AIE_XLATE = aie-translate
 ATEN_OPT = aten-opt
 
 AIECC = aiecc.py
+SYSROOT = /group/xrlabs/platforms/pynq-vck190-sysroot/
+CC = clang --target=aarch64-linux-gnu -std=c++11 --sysroot=$(SYSROOT) \
+   -I$(SYSROOT)/opt/xaiengine/include -L$(SYSROOT)/opt/xaiengine/lib -fuse-ld=lld -rdynamic -lxaiengine
 
 uname_p := $(shell uname -p)
 ifeq ($(uname_p),aarch64)
