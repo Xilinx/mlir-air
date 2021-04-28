@@ -13,8 +13,10 @@
 
 #include <xaiengine.h>
 
-#include "acdc_queue.h"
+#include "air_host.h"
+#include "air_tensor.h"
 #include "hsa_defs.h"
+#include "test_library.h"
 
 #define SHMEM_BASE 0x020100000000LL
 
@@ -34,108 +36,6 @@ XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];  /**< Instantiates AIE ar
 XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
 
 #include "aie_inc.cpp"
-
-template<typename T, int N>
-struct tensor_t {
-  T *d;
-  T *aligned;
-  size_t offset;
-  size_t shape[N];
-  size_t stride[N];
-
-  size_t index(size_t n, size_t channel, size_t row, size_t col) const {
-    size_t channels = shape[1];
-    size_t height = shape[2];
-    size_t width = shape[3];
-    size_t idx = n * height * width * channels + channel * height * width + row * width + col;
-    if (idx >= shape[0]*shape[1]*shape[2]*shape[3]) {
-      printf("warning\n");
-      return 0;
-    }
-    return idx;
-  }
-
-  tensor_t() {
-    d = aligned = nullptr;
-    offset = 0;
-    for (int i=0; i<N; i++)
-      shape[i] = stride[i] = 0;
-  }
-};
-
-
-void printCoreStatus(int col, int row) {
-  u32 status, coreTimerLow, locks;
-	status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x032004);
-	coreTimerLow = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0340F8);
-	locks = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001EF00);
-	printf("Core [%d, %d] status is %08X, timer is %u, locks are %08X\n",col, row, status, coreTimerLow, locks);
-	for (int lock=0;lock<16;lock++) {
-		u32 two_bits = (locks >> (lock*2)) & 0x3;
-		if (two_bits) {
-			printf("Lock %d: ", lock);
-			u32 acquired = two_bits & 0x1;
-			u32 value = two_bits & 0x2;
-			if (acquired)
-				printf("Acquired ");
-			printf(value?"1":"0");
-			printf("\n");
-		}
-	}
-}
-
-void printDMAStatus(int col, int row) {
-  u32 dma_s2mm_status, dma_mm2s_status;
-  if (row == 0) {
-    dma_s2mm_status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x01D160);
-    dma_mm2s_status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x01D164);
-  }
-  else {
-    dma_s2mm_status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x01DF00);
-    dma_mm2s_status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x01DF10);
-  }
-  printf("DMA [%d, %d] s2mm status is %08X, mm2s status %08X\n",col, row, dma_s2mm_status, dma_mm2s_status);
-
-}
-
-hsa_status_t queue_create(uint32_t size, uint32_t type, queue_t **queue)
-{
-  int fd = open("/dev/mem", O_RDWR | O_SYNC);
-  if (fd == -1)
-    return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
-
-  uint64_t *bram_ptr = (uint64_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, SHMEM_BASE);
-
-  printf("Opened shared memory paddr: %p vaddr: %p\n", (void*)SHMEM_BASE, (void*)bram_ptr);
-  uint64_t q_paddr = bram_ptr[0];
-  uint64_t q_offset = q_paddr - SHMEM_BASE;
-  queue_t *q = (queue_t*)( ((size_t)bram_ptr) + q_offset );
-  printf("Queue location at paddr: %p vaddr: %p\n", (void*)bram_ptr[0], (void*)q);
-
-  if (q->id !=  0xacdc) {
-    printf("%s error invalid id %x\n", __func__, (unsigned)q->id);
-    return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
-  }
-
-  if (q->size != size) {
-    printf("%s error size mismatch %d\n", __func__, (unsigned)q->size);
-    return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
-  }
-
-  if (q->type != type) {
-    printf("%s error type mismatch %d\n", __func__, q->type);
-    return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
-  }
-
-  uint64_t base_address_offset = q->base_address - SHMEM_BASE;
-  q->base_address_vaddr = ((size_t)bram_ptr) + base_address_offset;
-
-  q->doorbell = 0xffffffffffffffffUL;
-  q->last_doorbell = 0;
-
-  *queue = q;
-  return HSA_STATUS_SUCCESS;
-}
 
 //
 // global q ptr
@@ -176,7 +76,8 @@ void build_arg_to_shim_dma_channel_mapping() {
 }
 
 void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length) {
-  printf("Do transfer with id %ld of length %ld on behalf of x=%ld, y=%ld using shim DMA %ld channel %ld, offset is %ld\n", id, length, x, y, TILE_TO_SHIM_DMA[id-1][x][y], ARG_TO_SHIM_DMA_CHANNEL[id-1][x][y], offset);
+  printf("Do transfer with id %ld of length %ld on behalf of x=%ld, y=%ld using shim DMA %ld channel %ld, offset is %ld\n",
+         id, length, x, y, TILE_TO_SHIM_DMA[id-1][x][y], ARG_TO_SHIM_DMA_CHANNEL[id-1][x][y], offset);
 
   tensor_t<int32_t,1> *tt = (tensor_t<int32_t,1> *)t;
 
@@ -190,9 +91,9 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
     }
   }
 
-  printDMAStatus(TILE_TO_SHIM_DMA[id-1][x][y], 0);
-  printDMAStatus(x+7, y+2);
-  printCoreStatus(x+7, y+2);
+  ACDC_print_dma_status(TileInst[x+7][y+2]);
+  ACDC_print_tile_status(TileInst[x+7][y+2]);
+
   auto burstlen = 4;
   XAieDma_Shim ShimDmaInst1;
   XAieDma_ShimInitialize(&(TileInst[TILE_TO_SHIM_DMA[id-1][x][y]][0]), &ShimDmaInst1);
@@ -210,7 +111,6 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
 
   auto count = 0;
   while (XAieDma_ShimPendingBdCount(&ShimDmaInst1, ARG_TO_SHIM_DMA_CHANNEL[id-1][x][y])) {
-    XAieLib_usleep(1000);
     count++;
     if (!(count % 1000)) {
       printf("%d seconds\n",count/1000);
@@ -225,10 +125,8 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
     }
   }
 
-
-  printDMAStatus(TILE_TO_SHIM_DMA[id-1][x][y], 0);
-  printDMAStatus(x+7, y+2);
-  printCoreStatus(x+7, y+2);
+  ACDC_print_dma_status(TileInst[x+7][y+2]);
+  ACDC_print_tile_status(TileInst[x+7][y+2]);
 }
 
 }
@@ -236,7 +134,6 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
 int
 main(int argc, char *argv[])
 {
-  uint64_t row = 0;
   uint64_t col = 7;
 
   size_t aie_base = XAIE_ADDR_ARRAY_OFF << 14;
@@ -245,8 +142,7 @@ main(int argc, char *argv[])
   AieConfigPtr = XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
   XAieGbl_CfgInitialize(&AieInst, &TileInst[0][0], AieConfigPtr);
 
-  printCoreStatus(7,2);
-
+  ACDC_print_tile_status(TileInst[7][2]);
 
   mlir_configure_cores();
   mlir_configure_switchboxes();
@@ -277,37 +173,18 @@ main(int argc, char *argv[])
     mlir_write_buffer_buf7(i, 0x7decaf);
   }
 
-  printCoreStatus(7,2);
+  ACDC_print_tile_status(TileInst[7][2]);
+
   // create the queue
-  auto ret = queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q);
+  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, SHMEM_BASE);
   assert(ret == 0 && "failed to create queue!");
 
   uint64_t wr_idx = queue_add_write_index(q, 1);
   uint64_t packet_id = wr_idx % q->size;
 
   dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(herd_pkt);
-  herd_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-
-  //
-  // Set up a 1x3 herd starting 7,0
-  //
-
-  herd_pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
-  herd_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
-  herd_pkt->arg[0] |= (1L << 40);
-  herd_pkt->arg[0] |= (7L << 32);
-  herd_pkt->arg[0] |= (3L << 24);
-  herd_pkt->arg[0] |= (0L << 16);
-  
-  herd_pkt->arg[1] = 0;  // Herd ID 0
-  herd_pkt->arg[2] = 0;
-  herd_pkt->arg[3] = 0;
-
-  // dispatch packet
-  signal_create(1, 0, NULL, (signal_t*)&herd_pkt->completion_signal);
-  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-  //signal_store_release((signal_t*)&q->doorbell, wr_idx);
+  air_packet_herd_init(herd_pkt, 0, col, 2, /*row=*/2, 2);
+  //air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
 
   tensor_t<int32_t,1> input;
   tensor_t<int32_t,1> output;
@@ -360,7 +237,7 @@ main(int argc, char *argv[])
     printf(" after %d [7][2] : %08X -> %08X, [8][2] :%08X -> %08X, [7][3] : %08X -> %08X, [8][3] :%08X -> %08X\n", i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7);
   }
 
-  printCoreStatus(7,2);
+  ACDC_print_tile_status(TileInst[7][2]);
 
   int errors = 0;
   for (int i=0; i<output.shape[0]; i++) {

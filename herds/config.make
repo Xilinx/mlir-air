@@ -13,6 +13,7 @@ LDFLAGS = -fuse-ld=lld -rdynamic \
 		-lxaiengine \
 		-lmetal \
 		-lopen_amp \
+		-lairhost \
 		-ldl
 
 uname_p := $(shell uname -p)
@@ -27,4 +28,8 @@ else
 	LDFLAGS += -L$(SYSROOT)/opt/xaiengine/lib
 endif
 
-CFLAGS += -I../../lib/include
+CFLAGS += -I../../lib/include -I../../../aie/runtime_lib
+LDFLAGS += -L../../../build/air
+
+test_library.o: ../../../aie/runtime_lib/test_library.cpp
+	$(CC) $^ $(CFLAGS) -c -o $@

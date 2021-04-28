@@ -7,8 +7,8 @@ all: herd.exe aie_ctrl.so elfs
 %.o: %.cpp aie_inc.cpp
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-%.exe: $(ARM_OBJ_DIR)/%.o
-	$(CC) $^ $(LDFLAGS) -o $@
+%.exe: $(ARM_OBJ_DIR)/%.o test_library.o
+	$(CC) $(LDFLAGS) -o $@ $^
 
 add_one.mlir: add_one.py
 	python3 $< > $@ 
