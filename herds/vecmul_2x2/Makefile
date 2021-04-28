@@ -1,25 +1,6 @@
 # General Makefile for tests
 
-AIE_SRC_DIR = acdc_project
-ARM_SRC_DIR = .
-ARM_OBJ_DIR = .
-
-AIE_OPT = aie-opt
-AIE_XLATE = aie-translate
-ATEN_OPT = aten-opt
-
-AIECC = aiecc.py
-SYSROOT = /group/xrlabs/platforms/pynq-vck190-sysroot/
-CC = clang --target=aarch64-linux-gnu -std=c++11 --sysroot=$(SYSROOT) \
-   -I$(SYSROOT)/opt/xaiengine/include -L$(SYSROOT)/opt/xaiengine/lib -fuse-ld=lld -rdynamic -lxaiengine
-
-uname_p := $(shell uname -p)
-ifeq ($(uname_p),aarch64)
-	CFLAGS += -I/opt/xaiengine/include
-	LDFLAGS += -L/opt/xaiengine/lib
-endif
-
-CFLAGS += -I../../lib/include
+include ../config.make
 
 all: herd.exe aie_ctrl.so elfs
 
@@ -27,21 +8,14 @@ all: herd.exe aie_ctrl.so elfs
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 %.exe: $(ARM_OBJ_DIR)/%.o
-	$(CC) $^ \
-		$(LDFLAGS) \
-		-rdynamic \
-		-lxaiengine \
-		-lmetal \
-		-lopen_amp \
-		-ldl \
-		-o $@
+	$(CC) $^ $(LDFLAGS) -o $@
 
 vecmul.mlir: vecmul.py
-	python3 $< > $@ 
+	python3 $< > $@
 
 aie_inc.cpp: aie.herd_0.mlir
 	$(AIE_OPT) -lower-affine --convert-scf-to-std \
-			   	--aie-create-flows --aie-find-flows \
+				--aie-create-flows --aie-find-flows \
 				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
 
 vecmul_tiled_0.mlir: vecmul.mlir
@@ -81,7 +55,7 @@ aie.herd_0.mlir: vecmul_air.mlir
 				-o /dev/null
 
 peano.mlir: aie.herd_0.mlir
-	$(ATEN_OPT) -lower-affine -o $@ $< 
+	$(ATEN_OPT) -lower-affine -o $@ $<
 
 elfs: peano.mlir
 	$(AIECC) --no-xbridge peano.mlir

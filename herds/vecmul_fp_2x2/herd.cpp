@@ -232,12 +232,12 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
     printDMAStatus(TILE_TO_SHIM_DMA[id-1][x][y], 0);
     printDMAStatus(x+7, y+2);
     printCoreStatus(x+7, y+2);
-    printMems(2, "before");
+    printMems(2, "before"); 
   }
 
   auto burstlen = 4;
   XAieDma_Shim ShimDmaInst1;
-  XAieDma_ShimSoftInitialize(&(TileInst[TILE_TO_SHIM_DMA[id-1][x][y]][0]), &ShimDmaInst1);
+  XAieDma_ShimInitialize(&(TileInst[TILE_TO_SHIM_DMA[id-1][x][y]][0]), &ShimDmaInst1);
   u8 bd = 1+ARG_TO_SHIM_DMA_CHANNEL[id-1][x][y];
   XAieDma_ShimBdSetAddr(&ShimDmaInst1, bd, HIGH_ADDR(addr), LOW_ADDR(addr), length*sizeof(uint32_t));
   XAieDma_ShimBdSetAxi(&ShimDmaInst1, bd , 0, burstlen, 0, 0, XAIE_ENABLE);
@@ -260,6 +260,7 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
     }
   }
   if (id == 3) {
+    XAieLib_usleep(100);
     // This is the output, so we need to take what is in t and put it into the BRAM
     if (VERBOSE)
       printf("Copy %ld samples to the output starting at %ld\n",length, offset);
@@ -272,7 +273,7 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
     printDMAStatus(TILE_TO_SHIM_DMA[id-1][x][y], 0);
     printDMAStatus(x+7, y+2);
     printCoreStatus(x+7, y+2);
-    printMems(2, "after");
+    printMems(2, "after"); 
   }
 }
 
@@ -285,7 +286,6 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
 int
 main(int argc, char *argv[])
 {
-  uint64_t row = 0;
   uint64_t col = 7;
 
   size_t aie_base = XAIE_ADDR_ARRAY_OFF << 14;
@@ -354,7 +354,7 @@ main(int argc, char *argv[])
   herd_pkt->arg[0] |= (7L << 32);
   herd_pkt->arg[0] |= (3L << 24);
   herd_pkt->arg[0] |= (0L << 16);
-
+  
   herd_pkt->arg[1] = 0;  // Herd ID 0
   herd_pkt->arg[2] = 0;
   herd_pkt->arg[3] = 0;
@@ -376,7 +376,7 @@ main(int argc, char *argv[])
 
   output.shape[0] = GRID_SIZE;
   output.d = output.aligned = (int32_t*)malloc(sizeof(int32_t)*output.shape[0]);
-
+  
   printf("loading aie_ctrl.so\n");
   auto handle = dlopen("./aie_ctrl.so", RTLD_NOW);
   if (!handle) {
@@ -390,10 +390,11 @@ main(int argc, char *argv[])
   for (int i=0; i<input_A.shape[0]; i++) {
     input_A.d[i] = i;
     input_B.d[i] = i+1;
+    output.d[i] = 0xfeedcafe;
   }
 
   if (VERBOSE) {
-    for (int i=0; i<16; i++) {
+    for (int i=0; i<16; i++) { 
       int32_t rb0 = mlir_read_buffer_buf0(i);
       int32_t rb1 = mlir_read_buffer_buf1(i);
       int32_t rb2 = mlir_read_buffer_buf2(i);
@@ -421,7 +422,7 @@ main(int argc, char *argv[])
   gettimeofday(&after, NULL);
   diff_s = after.tv_sec - before.tv_sec;
   diff_us = after.tv_usec - before.tv_usec;
-
+  
   if (diff_s)
     diff_us += 10000000;
 
@@ -431,7 +432,7 @@ main(int argc, char *argv[])
     printf("diff   %ld.%06ld\n",diff_s, diff_us);
   }
   if (VERBOSE) {
-    for (int i=0; i<16; i++) {
+    for (int i=0; i<16; i++) { 
       int32_t rb0 = mlir_read_buffer_buf0(i);
       int32_t rb1 = mlir_read_buffer_buf1(i);
       int32_t rb2 = mlir_read_buffer_buf2(i);
@@ -456,7 +457,7 @@ main(int argc, char *argv[])
     uint32_t d = output.d[i];
     if (d != (a*b)) {
       errors++;
-      printf("%04X: mismatch %x != %x * %x\n", i, d, a, b);
+      printf("%04X: mismatch %x != %x * %x (%x)\n", i, d, a, b, (a*b));
     }
   }
   if (!errors) {

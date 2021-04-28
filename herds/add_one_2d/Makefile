@@ -1,25 +1,7 @@
 # General Makefile for tests
 
-AIE_SRC_DIR = acdc_project
-ARM_SRC_DIR = .
-ARM_OBJ_DIR = .
+include ../config.make
 
-AIE_OPT = aie-opt
-AIE_XLATE = aie-translate
-ATEN_OPT = aten-opt
-
-AIECC = aiecc.py
-SYSROOT = /group/xrlabs/platforms/pynq-vck190-sysroot/
-CC = clang --target=aarch64-linux-gnu -std=c++11 --sysroot=$(SYSROOT) \
-   -I$(SYSROOT)/opt/xaiengine/include -L$(SYSROOT)/opt/xaiengine/lib -fuse-ld=lld -rdynamic -lxaiengine
-
-uname_p := $(shell uname -p)
-ifeq ($(uname_p),aarch64)
-	CFLAGS += -I/opt/xaiengine/include
-	LDFLAGS += -L/opt/xaiengine/lib
-endif
-
-CFLAGS += -I../../lib/include
 all: herd.exe aie_ctrl.so elfs
 
 %.o: %.cpp aie_inc.cpp

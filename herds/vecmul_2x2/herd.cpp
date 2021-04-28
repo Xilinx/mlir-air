@@ -237,7 +237,7 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
 
   auto burstlen = 4;
   XAieDma_Shim ShimDmaInst1;
-  XAieDma_ShimSoftInitialize(&(TileInst[TILE_TO_SHIM_DMA[id-1][x][y]][0]), &ShimDmaInst1);
+  XAieDma_ShimInitialize(&(TileInst[TILE_TO_SHIM_DMA[id-1][x][y]][0]), &ShimDmaInst1);
   u8 bd = 1+ARG_TO_SHIM_DMA_CHANNEL[id-1][x][y];
   XAieDma_ShimBdSetAddr(&ShimDmaInst1, bd, HIGH_ADDR(addr), LOW_ADDR(addr), length*sizeof(uint32_t));
   XAieDma_ShimBdSetAxi(&ShimDmaInst1, bd , 0, burstlen, 0, 0, XAIE_ENABLE);
@@ -260,6 +260,7 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
     }
   }
   if (id == 3) {
+    XAieLib_usleep(100);
     // This is the output, so we need to take what is in t and put it into the BRAM
     if (VERBOSE)
       printf("Copy %ld samples to the output starting at %ld\n",length, offset);
@@ -285,7 +286,6 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
 int
 main(int argc, char *argv[])
 {
-  uint64_t row = 0;
   uint64_t col = 7;
 
   size_t aie_base = XAIE_ADDR_ARRAY_OFF << 14;
@@ -390,6 +390,7 @@ main(int argc, char *argv[])
   for (int i=0; i<input_A.shape[0]; i++) {
     input_A.d[i] = i;
     input_B.d[i] = i+1;
+    output.d[i] = 0xfeedcafe;
   }
 
   if (VERBOSE) {
@@ -456,7 +457,7 @@ main(int argc, char *argv[])
     uint32_t d = output.d[i];
     if (d != (a*b)) {
       errors++;
-      printf("%04X: mismatch %x != %x * %x\n", i, d, a, b);
+      printf("%04X: mismatch %x != %x * %x (%x)\n", i, d, a, b, (a*b));
     }
   }
   if (!errors) {
