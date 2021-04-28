@@ -39,7 +39,7 @@ all: herd.exe aie_ctrl.so elfs
 vecmul.mlir: vecmul.py
 	python3 $< > $@
 
-aie_inc.cpp: aie.mlir
+aie_inc.cpp: aie.herd_0.mlir
 	$(AIE_OPT) -lower-affine --convert-scf-to-std \
 				--aie-create-flows --aie-find-flows \
 				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
@@ -77,10 +77,11 @@ vecmul_air.mlir: vecmul_tiled_3.mlir
 				-cse \
 				-o $@ $<
 
-aie.mlir: vecmul_air.mlir
-	$(ATEN_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-file=$@}" $< \
+aie.herd_0.mlir: vecmul_air.mlir
+	$(ATEN_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=./}" $< \
 				-o /dev/null
-peano.mlir: aie.mlir
+
+peano.mlir: aie.herd_0.mlir
 	$(ATEN_OPT) -lower-affine -o $@ $<
 
 elfs: peano.mlir
@@ -88,7 +89,7 @@ elfs: peano.mlir
 
 
 aie_ctrl.mlir: vecmul_air.mlir
-	$(ATEN_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-file=/dev/null}"\
+	$(ATEN_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}"\
 				-air-to-std \
 				-aten-lowering \
 				-o $@ $<
@@ -106,11 +107,6 @@ aie_ctrl.o: aie_ctrl.llvm.mlir
 
 aie_ctrl.so: aie_ctrl.o
 	$(CC) -shared $< -o $@
-
-%.elf: $(AIE_SRC_DIR)/main.cc
-	cd ./$(AIE_SRC_DIR) && \
-	xchessmk $*.prx && \
-	cp work/Release_LLVM/$*.prx/$* ../$*.elf
 
 clean:
 	rm -rf aie_inc.cpp *.o *.exe *.elf ./$(AIE_SRC_DIR)
