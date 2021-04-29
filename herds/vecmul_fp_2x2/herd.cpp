@@ -148,7 +148,7 @@ hsa_status_t queue_create(uint32_t size, uint32_t type, queue_t **queue)
 // global q ptr
 //
 queue_t *q = nullptr;
-uint32_t *bram_ptr;
+float *bram_ptr;
 
 }
 
@@ -196,19 +196,19 @@ void build_arg_to_shim_dma_channel_mapping() {
 }
 
 void printMems(int i, char *prefix) {
-    int32_t rb0 = mlir_read_buffer_buf0(i);
-    int32_t rb1 = mlir_read_buffer_buf1(i);
-    int32_t rb2 = mlir_read_buffer_buf2(i);
-    int32_t rb3 = mlir_read_buffer_buf3(i);
-    int32_t rb4 = mlir_read_buffer_buf4(i);
-    int32_t rb5 = mlir_read_buffer_buf5(i);
-    int32_t rb6 = mlir_read_buffer_buf6(i);
-    int32_t rb7 = mlir_read_buffer_buf7(i);
-    int32_t rb8 = mlir_read_buffer_buf8(i);
-    int32_t rb9 = mlir_read_buffer_buf9(i);
-    int32_t rb10 = mlir_read_buffer_buf10(i);
-    int32_t rb11 = mlir_read_buffer_buf11(i);
-    printf("%s %d [7][2] : %08X * %08X -> %08X, [8][2] :%08X * %08X -> %08X, [7][3] : %08X * %08X -> %08X, [8][3] :%08X * %08X-> %08X\n", prefix, i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7, rb8, rb9, rb10, rb11);
+    float rb0 = mlir_read_buffer_buf0(i);
+    float rb1 = mlir_read_buffer_buf1(i);
+    float rb2 = mlir_read_buffer_buf2(i);
+    float rb3 = mlir_read_buffer_buf3(i);
+    float rb4 = mlir_read_buffer_buf4(i);
+    float rb5 = mlir_read_buffer_buf5(i);
+    float rb6 = mlir_read_buffer_buf6(i);
+    float rb7 = mlir_read_buffer_buf7(i);
+    float rb8 = mlir_read_buffer_buf8(i);
+    float rb9 = mlir_read_buffer_buf9(i);
+    float rb10 = mlir_read_buffer_buf10(i);
+    float rb11 = mlir_read_buffer_buf11(i);
+    printf("%s %d [7][2] : %f * %f -> %f, [8][2] :%f * %f -> %f, [7][3] : %f * %f -> %f, [8][3] :%f * %f-> %f\n", prefix, i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7, rb8, rb9, rb10, rb11);
 }
 
 
@@ -216,11 +216,11 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
   if (VERBOSE)
     printf("Do transfer with id %ld of length %ld on behalf of x=%ld, y=%ld using shim DMA %ld channel %ld, offset is %ld\n", id, length, x, y, TILE_TO_SHIM_DMA[id-1][x][y], ARG_TO_SHIM_DMA_CHANNEL[id-1][x][y], offset);
 
-  tensor_t<int32_t,1> *tt = (tensor_t<int32_t,1> *)t;
+  tensor_t<float,1> *tt = (tensor_t<float,1> *)t;
 
   // Used to use BRAM_ADDR + 0x4000 as the data address
   uint64_t addr = (u64)BRAM_ADDR;
-  int32_t *bounce_buffer = (int32_t *)bram_ptr;
+  float *bounce_buffer = (float *)bram_ptr;
   if (id < 3) {
     // This are the inputs, so we need to take what is in t and put it into the BRAM
     for (int i=0; i<length; i++) {
@@ -281,7 +281,11 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
 
 }
 
-
+float to_float(int32_t v) {
+  int32_t v2 = v;
+  float r = *reinterpret_cast<float *>(&v2);
+  return r;
+}
 
 int
 main(int argc, char *argv[])
@@ -309,26 +313,44 @@ main(int argc, char *argv[])
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd != -1) {
-    bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, BRAM_ADDR);
+    bram_ptr = (float *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, BRAM_ADDR);
     for (int i=0; i<32*32; i++) {
-      bram_ptr[i] = 0xdeface;
+      bram_ptr[i] = 0.0;
     }
   }
 
   // Stomp
   for (int i=0; i<GRID_SIZE; i++) {
-    mlir_write_buffer_buf0(i, 0x0decaf);
-    mlir_write_buffer_buf1(i, 0x1decaf);
-    mlir_write_buffer_buf2(i, 0x2decaf);
-    mlir_write_buffer_buf3(i, 0x3decaf);
-    mlir_write_buffer_buf4(i, 0x4decaf);
-    mlir_write_buffer_buf5(i, 0x5decaf);
-    mlir_write_buffer_buf6(i, 0x6decaf);
-    mlir_write_buffer_buf7(i, 0x7decaf);
-    mlir_write_buffer_buf8(i, 0x8decaf);
-    mlir_write_buffer_buf9(i, 0x9decaf);
-    mlir_write_buffer_buf10(i, 0xadecaf);
-    mlir_write_buffer_buf11(i, 0xbdecaf);
+    mlir_write_buffer_buf0(i, 0x3ff00caf);
+    mlir_write_buffer_buf1(i, 0x100caf);
+    mlir_write_buffer_buf2(i, 0x200caf);
+    mlir_write_buffer_buf3(i, 0x300caf);
+    mlir_write_buffer_buf4(i, 0x400caf);
+    mlir_write_buffer_buf5(i, 0x500caf);
+    mlir_write_buffer_buf6(i, 0x600caf);
+    mlir_write_buffer_buf7(i, 0x700caf);
+    mlir_write_buffer_buf8(i, 0x800caf);
+    mlir_write_buffer_buf9(i, 0x900caf);
+    mlir_write_buffer_buf10(i, 0xa00caf);
+    mlir_write_buffer_buf11(i, 0xb00caf);
+  }
+
+  if (VERBOSE) {
+    for (int i=0; i<16; i++) {
+      float rb0 = to_float(mlir_read_buffer_buf0(i));
+      float rb1 = to_float(mlir_read_buffer_buf1(i));
+      float rb2 = to_float(mlir_read_buffer_buf2(i));
+      float rb3 = to_float(mlir_read_buffer_buf3(i));
+      float rb4 = to_float(mlir_read_buffer_buf4(i));
+      float rb5 = to_float(mlir_read_buffer_buf5(i));
+      float rb6 = to_float(mlir_read_buffer_buf6(i));
+      float rb7 = to_float(mlir_read_buffer_buf7(i));
+      float rb8 = to_float(mlir_read_buffer_buf8(i));
+      float rb9 = to_float(mlir_read_buffer_buf9(i));
+      float rb10 = to_float(mlir_read_buffer_buf10(i));
+      float rb11 = to_float(mlir_read_buffer_buf11(i));
+      printf("before %d [7][2] : %f * %f -> %f, [8][2] :%f * %f -> %f, [7][3] : %f * %f -> %f, [8][3] :%f * %f-> %f\n", i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7, rb8, rb9, rb10, rb11);
+    }
   }
 
   if (VERBOSE)
@@ -364,19 +386,19 @@ main(int argc, char *argv[])
   signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
   //signal_store_release((signal_t*)&q->doorbell, wr_idx);
 
-  tensor_t<int32_t,1> input_A;
-  tensor_t<int32_t,1> input_B;
-  tensor_t<int32_t,1> output;
+  tensor_t<float,1> input_A;
+  tensor_t<float,1> input_B;
+  tensor_t<float,1> output;
 
   input_A.shape[0] = GRID_SIZE;
-  input_A.d = input_A.aligned = (int32_t*)malloc(sizeof(int32_t)*input_A.shape[0]);
+  input_A.d = input_A.aligned = (float*)malloc(sizeof(float)*input_A.shape[0]);
 
   input_B.shape[0] = GRID_SIZE;
-  input_B.d = input_B.aligned = (int32_t*)malloc(sizeof(int32_t)*input_B.shape[0]);
+  input_B.d = input_B.aligned = (float*)malloc(sizeof(float)*input_B.shape[0]);
 
   output.shape[0] = GRID_SIZE;
-  output.d = output.aligned = (int32_t*)malloc(sizeof(int32_t)*output.shape[0]);
-  
+  output.d = output.aligned = (float*)malloc(sizeof(float)*output.shape[0]);
+
   printf("loading aie_ctrl.so\n");
   auto handle = dlopen("./aie_ctrl.so", RTLD_NOW);
   if (!handle) {
@@ -388,26 +410,25 @@ main(int argc, char *argv[])
   assert(graph_fn && "failed to locate _mlir_ciface_task in vecmul.so");
 
   for (int i=0; i<input_A.shape[0]; i++) {
-    input_A.d[i] = i;
-    input_B.d[i] = i+1;
-    output.d[i] = 0xfeedcafe;
+    input_A.d[i] = 1.0*i;
+    input_B.d[i] = 2.0*i;
   }
 
   if (VERBOSE) {
-    for (int i=0; i<16; i++) { 
-      int32_t rb0 = mlir_read_buffer_buf0(i);
-      int32_t rb1 = mlir_read_buffer_buf1(i);
-      int32_t rb2 = mlir_read_buffer_buf2(i);
-      int32_t rb3 = mlir_read_buffer_buf3(i);
-      int32_t rb4 = mlir_read_buffer_buf4(i);
-      int32_t rb5 = mlir_read_buffer_buf5(i);
-      int32_t rb6 = mlir_read_buffer_buf6(i);
-      int32_t rb7 = mlir_read_buffer_buf7(i);
-      int32_t rb8 = mlir_read_buffer_buf8(i);
-      int32_t rb9 = mlir_read_buffer_buf9(i);
-      int32_t rb10 = mlir_read_buffer_buf10(i);
-      int32_t rb11 = mlir_read_buffer_buf11(i);
-      printf("before %d [7][2] : %08X * %08X -> %08X, [8][2] :%08X * %08X -> %08X, [7][3] : %08X * %08X -> %08X, [8][3] :%08X * %08X-> %08X\n", i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7, rb8, rb9, rb10, rb11);
+    for (int i=0; i<16; i++) {
+      float rb0 = to_float(mlir_read_buffer_buf0(i));
+      float rb1 = to_float(mlir_read_buffer_buf1(i));
+      float rb2 = to_float(mlir_read_buffer_buf2(i));
+      float rb3 = to_float(mlir_read_buffer_buf3(i));
+      float rb4 = to_float(mlir_read_buffer_buf4(i));
+      float rb5 = to_float(mlir_read_buffer_buf5(i));
+      float rb6 = to_float(mlir_read_buffer_buf6(i));
+      float rb7 = to_float(mlir_read_buffer_buf7(i));
+      float rb8 = to_float(mlir_read_buffer_buf8(i));
+      float rb9 = to_float(mlir_read_buffer_buf9(i));
+      float rb10 = to_float(mlir_read_buffer_buf10(i));
+      float rb11 = to_float(mlir_read_buffer_buf11(i));
+      printf("before %d [7][2] : %f * %f -> %f, [8][2] :%f * %f -> %f, [7][3] : %f * %f -> %f, [8][3] :%f * %f-> %f\n", i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7, rb8, rb9, rb10, rb11);
     }
   }
 
@@ -432,32 +453,32 @@ main(int argc, char *argv[])
     printf("diff   %ld.%06ld\n",diff_s, diff_us);
   }
   if (VERBOSE) {
-    for (int i=0; i<16; i++) { 
-      int32_t rb0 = mlir_read_buffer_buf0(i);
-      int32_t rb1 = mlir_read_buffer_buf1(i);
-      int32_t rb2 = mlir_read_buffer_buf2(i);
-      int32_t rb3 = mlir_read_buffer_buf3(i);
-      int32_t rb4 = mlir_read_buffer_buf4(i);
-      int32_t rb5 = mlir_read_buffer_buf5(i);
-      int32_t rb6 = mlir_read_buffer_buf6(i);
-      int32_t rb7 = mlir_read_buffer_buf7(i);
-      int32_t rb8 = mlir_read_buffer_buf8(i);
-      int32_t rb9 = mlir_read_buffer_buf9(i);
-      int32_t rb10 = mlir_read_buffer_buf10(i);
-      int32_t rb11 = mlir_read_buffer_buf11(i);
-      printf(" after %d [7][2] : %08X * %08X -> %08X, [8][2] :%08X * %08X -> %08X, [7][3] : %08X * %08X -> %08X, [8][3] :%08X * %08X-> %08X\n", i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7, rb8, rb9, rb10, rb11);
+    for (int i=0; i<16; i++) {
+      float rb0 = to_float(mlir_read_buffer_buf0(i));
+      float rb1 = to_float(mlir_read_buffer_buf1(i));
+      float rb2 = to_float(mlir_read_buffer_buf2(i));
+      float rb3 = to_float(mlir_read_buffer_buf3(i));
+      float rb4 = to_float(mlir_read_buffer_buf4(i));
+      float rb5 = to_float(mlir_read_buffer_buf5(i));
+      float rb6 = to_float(mlir_read_buffer_buf6(i));
+      float rb7 = to_float(mlir_read_buffer_buf7(i));
+      float rb8 = to_float(mlir_read_buffer_buf8(i));
+      float rb9 = to_float(mlir_read_buffer_buf9(i));
+      float rb10 = to_float(mlir_read_buffer_buf10(i));
+      float rb11 = to_float(mlir_read_buffer_buf11(i));
+      printf(" after %d [7][2] : %f * %f -> %f, [8][2] :%f * %f -> %f, [7][3] : %f * %f -> %f, [8][3] :%f * %f-> %f\n", i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7, rb8, rb9, rb10, rb11);
     }
     printCoreStatus(7,2);
   }
 
   int errors = 0;
-  for (int i=0; i<output.shape[0]; i++) {
-    uint32_t a = input_A.d[i];
-    uint32_t b = input_B.d[i];
-    uint32_t d = output.d[i];
+  for (int i=0; i<8; i++) {
+    float a = input_A.d[i];
+    float b = input_B.d[i];
+    float d = output.d[i];
     if (d != (a*b)) {
       errors++;
-      printf("%04X: mismatch %x != %x * %x (%x)\n", i, d, a, b, (a*b));
+      printf("%04X: mismatch %f != %f * %f\n", i, d, a, b);
     }
   }
   if (!errors) {
