@@ -1492,7 +1492,9 @@ proc create_root_design { parentCell } {
    CONFIG.C_USE_BARREL {1} \
    CONFIG.C_USE_DCACHE {0} \
    CONFIG.C_USE_ICACHE {0} \
-   CONFIG.C_USE_MMU {0} \
+   CONFIG.C_PVR {2} \
+   CONFIG.C_PVR_USER1 {0x01} \
+   CONFIG.C_PVR_USER2 {0x01000100} \
  ] $microblaze_0
 
   # Create instance: proc_sys_reset_0, and set properties
