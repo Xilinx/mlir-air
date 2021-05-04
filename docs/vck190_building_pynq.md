@@ -27,7 +27,7 @@ checkout the versal_acdc branch.
 3. Go into the `sdbuild` folder of the PYNQ repostory and unzip the pre-built.
 image into a new directory called `output`
 
-4. Run `make PREBUILT=output/bionic.aarch64.*.img BOARDDIR=<<this dir>> nocheck_images`
+4. Run `make PREBUILT=output/bionic.aarch64.*.img BOARDDIR=<path to acdc>/air/pynq nocheck_images`
 
 5. Write resulting image to SD card
 
