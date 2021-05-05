@@ -4,7 +4,9 @@
 #include "acdc_queue.h"
 #include "hsa_defs.h"
 
+#ifdef AIR_LIBXAIE_ENABLE
 #include <xaiengine.h>
+#endif
 
 #include <stdlib.h>
 
@@ -18,11 +20,13 @@ extern "C" {
 #define XAIE_NUM_COLS 50
 
 struct air_libxaie1_ctx_t {
+#ifdef AIR_LIBXAIE_ENABLE
   XAieGbl_Config *AieConfigPtr;
   XAieGbl AieInst;
   XAieGbl_HwCfg AieConfig;
   XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
   XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
+#endif
 };
 
 air_libxaie1_ctx_t *air_init_libxaie1();

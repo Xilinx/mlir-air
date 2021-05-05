@@ -29,7 +29,8 @@ else
 	LDFLAGS += -L$(SYSROOT)/opt/xaiengine/lib
 endif
 
-CFLAGS += -std=c++11 -I../../lib/include -I../../../aie/runtime_lib
+CFLAGS += -std=c++11 -I../../lib/include -I../../../aie/runtime_lib \
+		-DAIR_LIBXAIE_ENABLE
 LDFLAGS += -L../../../build/air
 
 test_library.o: ../../../aie/runtime_lib/test_library.cpp

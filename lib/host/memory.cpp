@@ -101,6 +101,8 @@ extern uint32_t *_air_host_bram_ptr;
 #define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
 #define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
 
+#ifdef AIR_LIBXAIE_ENABLE
+
 void air_mem_shim_memcpy_impl(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length)
 {
   assert(_air_host_active_herd && "cannot shim memcpy without active herd");
@@ -166,3 +168,4 @@ void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, 
 }
 
 }
+#endif
