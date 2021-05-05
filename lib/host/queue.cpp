@@ -4,6 +4,7 @@
 
 #include <cstdio>
 
+#include "air_host.h"
 #include "acdc_queue.h"
 
 hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue, uint64_t paddr)
