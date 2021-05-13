@@ -21,19 +21,19 @@ aie_inc.cpp: aie.herd_0.mlir
 add_one_tiled_0.mlir: add_one.mlir
 	$(ATEN_OPT) -aten-to-air \
 				-air-to-affine \
-				-affine-loop-opt -affine-opt-tile-sizes 64 \
+				-affine-loop-opt='affine-opt-tile-sizes=64' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
 
 add_one_tiled_1.mlir: add_one_tiled_0.mlir
-	$(ATEN_OPT) -affine-loop-opt -affine-opt-copy-depths 0 -affine-opt-copy-fast-space 2 \
+	$(ATEN_OPT) -affine-loop-opt='affine-opt-copy-depths=0 affine-opt-copy-fast-space=2' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
 
 add_one_tiled_2.mlir: add_one_tiled_1.mlir
-	$(ATEN_OPT) -affine-loop-opt -affine-opt-tile-sizes 2 \
+	$(ATEN_OPT) -affine-loop-opt='affine-opt-tile-sizes=2' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
@@ -45,7 +45,7 @@ add_one_air.mlir: add_one_tiled_2.mlir
 				-o $@ $<
 
 aie.herd_0.mlir: add_one_air.mlir
-	$(ATEN_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=./}" $< \
+	$(ATEN_OPT) -air-to-aie='air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=./' $< \
 				-o /dev/null
 
 peano.mlir: aie.herd_0.mlir
@@ -56,7 +56,7 @@ elfs: peano.mlir
 
 
 aie_ctrl.mlir: add_one_air.mlir
-	$(ATEN_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}"\
+	$(ATEN_OPT) -air-to-aie='air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null' \
 				-air-to-std \
 				-aten-lowering \
 				-o $@ $<

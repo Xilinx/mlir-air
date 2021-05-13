@@ -28,19 +28,19 @@ aie_inc.cpp: aie.herd_0.mlir
 add_one_tiled_0.mlir: add_one.mlir
 	$(ATEN_OPT) -aten-to-air \
 				-air-to-affine \
-				-affine-loop-opt -affine-opt-tile-sizes 32,32 \
+				-affine-loop-opt='affine-opt-tile-sizes=32,32' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
 
 add_one_tiled_1.mlir: add_one_tiled_0.mlir
-	$(ATEN_OPT) -affine-loop-opt -affine-opt-copy-depths 1 -affine-opt-copy-fast-space 2 \
+	$(ATEN_OPT) -affine-loop-opt='affine-opt-copy-depths=1 affine-opt-copy-fast-space=2' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
 
 add_one_tiled_2.mlir: add_one_tiled_1.mlir
-	$(ATEN_OPT) -affine-loop-opt -affine-opt-tile-sizes 4,4 \
+	$(ATEN_OPT) -affine-loop-opt='affine-opt-tile-sizes=4,4' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
