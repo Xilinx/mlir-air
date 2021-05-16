@@ -6,6 +6,8 @@ parser = argparse.ArgumentParser(description='Plots paths')
 parser.add_argument('-filename', default="", help='filename to be plotted')
 args = parser.parse_args()
 
+print(args.filename)
+
 labels = np.genfromtxt(args.filename, delimiter=" ", usecols=0, dtype=str, skip_header=1)
 data = np.genfromtxt(args.filename, delimiter=' ', usecols=[1,2,3,4,5,6,7,8,9,10], names=True, dtype=int)
 
@@ -16,7 +18,7 @@ def plotTimes():
     plt.xticks(np.arange(len(labels)), labels, rotation='vertical')
     plt.legend()
     plt.ylabel("cycles")
-    plt.show()
+    plt.show
 
 plotTimes()
 

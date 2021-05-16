@@ -1,0 +1,22 @@
+import matplotlib.pyplot as plt
+import numpy as np
+import argparse
+
+parser = argparse.ArgumentParser(description='Plots paths')
+parser.add_argument('-filename', default="", help='filename to be plotted')
+args = parser.parse_args()
+
+print(args.filename)
+
+data = np.genfromtxt(args.filename, delimiter=' ', usecols=[0,1,2], names=True, dtype=int)
+
+def plotTimes():
+    plt.grid()
+    plt.plot(data['Throughput'], label='Throughput')
+    plt.xticks(np.arange(0, len(data['Area']), 10))
+    plt.legend()
+    plt.ylabel("FPS")
+    plt.show()
+
+plotTimes()
+
