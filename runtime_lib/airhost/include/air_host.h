@@ -43,7 +43,7 @@ hsa_status_t air_queue_dispatch_and_wait(queue_t *queue, uint64_t doorbell, disp
 //
 
 // initialize pkt as a herd init packet with given parameters
-hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id, 
+hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
                                   uint8_t start_col, uint8_t num_cols,
                                   uint8_t start_row, uint8_t num_rows);
 

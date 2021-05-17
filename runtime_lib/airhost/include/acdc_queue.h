@@ -32,7 +32,7 @@
 #define AIR_ADDRESS_HERD_RELATIVE_RANGE 0x3L
 
 typedef struct dispatch_packet_s {
-  
+
   // HSA-like interface
   uint16_t header;
   uint16_t type;

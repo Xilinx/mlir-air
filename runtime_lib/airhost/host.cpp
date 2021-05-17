@@ -17,7 +17,7 @@ uint32_t *_air_host_bram_ptr = nullptr;
 air_libxaie1_ctx_t *
 air_init_libxaie1()
 {
-  air_libxaie1_ctx_t *xaie = 
+  air_libxaie1_ctx_t *xaie =
     (air_libxaie1_ctx_t*)malloc(sizeof(air_libxaie1_ctx_t));
   if (!xaie)
     return 0;
@@ -73,7 +73,7 @@ air_herd_unload(air_herd_handle_t handle)
 {
   if (!handle)
     return -1;
-  
+
   if (air_herd_get_desc(handle) == _air_host_active_herd)
     _air_host_active_herd = nullptr;
 
@@ -86,4 +86,3 @@ air_herd_get_desc(air_herd_handle_t handle)
   if (!handle) return nullptr;
   return (air_herd_desc_t*)dlsym((void*)handle, "__air_herd_descriptor");
 }
-

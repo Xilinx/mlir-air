@@ -152,7 +152,7 @@ void air_mem_shim_memcpy_impl(uint32_t id, uint64_t x, uint64_t y, void* t, uint
     }
   }
   if (!isMM2S) {
-    // This is the output, so we need to take what is in the BRAM and put it into t 
+    // This is the output, so we need to take what is in the BRAM and put it into t
     printf("Copy %ld samples to the output starting at %ld\n",length, offset);
     for (int i=0; i<length; i++) {
       tt->d[offset + i] = bounce_buffer[i];

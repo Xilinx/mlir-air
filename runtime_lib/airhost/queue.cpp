@@ -14,7 +14,7 @@ hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue, uin
     return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
 
   uint64_t *bram_ptr = (uint64_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, paddr);
-  
+
   //printf("Opened shared memory paddr: %p vaddr: %p\n", paddr, bram_ptr);
   uint64_t q_paddr = bram_ptr[0];
   uint64_t q_offset = q_paddr - paddr;
@@ -83,4 +83,3 @@ hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
 //hsa_status_t air_packet_aie_lock()
 
 //air_packet_unlock
-

@@ -91,4 +91,5 @@ if (AIR_LIBXAIE_ENABLE)
 endif()
 
 add_subdirectory(python)
+add_subdirectory(runtime_lib)
 add_subdirectory(lib)
