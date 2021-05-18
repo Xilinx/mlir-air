@@ -1,4 +1,4 @@
-if(AIR_LIBXAIE_ENABLE)
+if(LIBXAIE_FOUND)
 add_library(airhost STATIC
     memory.cpp
     queue.cpp
@@ -25,5 +25,5 @@ set(INSTALLS memory.cpp queue.cpp host.cpp)
 install(FILES ${INSTALLS} DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/airhost)
 
 else()
-message("AIR_LIBXAIE_ENABLE not set.  Skipping building airhost library")
+message("LIBXAIE_FOUND not set.  Skipping building airhost library")
 endif()
