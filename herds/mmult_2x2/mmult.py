@@ -16,14 +16,14 @@ t2_mlir = builder.module
 
 c = Compiler()
 m = c.torch_to_aten(t2_mlir)
-m = c.aten_to_linalg(m)
-#print(m)
-
-c.air_linalg_codegen(m)
-#print(m)
-
-c.affine_to_air(m)
+#m = c.aten_to_linalg(m)
 print(m)
+
+#c.air_linalg_codegen(m)
+#print(m)
+
+#c.affine_to_air(m)
+#print(m)
 
 #c.air_to_aie(m, row_offset=2, col_offset=7)
 #print(m)
