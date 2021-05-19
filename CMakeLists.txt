@@ -27,6 +27,8 @@ find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 # Eventually we need to have some configuration options to select LibXAIEV2
 find_package(LibXAIE)
 
+find_package(Torch 1.8)
+
 function(npcomp_detect_pybind11_install)
   if(pybind11_DIR)
     message(STATUS "Using explicit pybind11 cmake directory: ${pybind11_DIR} (-Dpybind11_DIR to change)")
