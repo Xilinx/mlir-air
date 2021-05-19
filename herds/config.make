@@ -13,7 +13,7 @@ LDFLAGS = -fuse-ld=lld -rdynamic \
 		-lxaiengine \
 		-lmetal \
 		-lopen_amp \
-		-lairhost \
+		-Wl,--whole-archive -lairhost -Wl,--no-whole-archive \
 		-lstdc++ \
 		-ldl
 
