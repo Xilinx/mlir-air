@@ -1,0 +1,2 @@
+// RUN: sudo ./01_simple_shim_dma.exe | FileCheck %s
+// CHECK: PASS!

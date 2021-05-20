@@ -4,7 +4,7 @@ AIE_SRC_DIR = chess
 ARM_SRC_DIR = .
 ARM_OBJ_DIR = .
 
-MLIR_CPP_FILES = $(patsubst %.mlir,%.cpp,$(filter %.mlir, $(SOURCE_FILES)))
+MLIR_CPP_FILES = $(patsubst %.mlir,%.inc,$(filter %.mlir, $(SOURCE_FILES)))
 BUILD_CPP_FILES = $(filter %.cpp, $(SOURCE_FILES))
 
 OBJ_FILES=$(patsubst %.cpp,%.o,$(BUILD_CPP_FILES))
@@ -14,8 +14,8 @@ AIE_XLATE = aie-translate
 
 uname_p := $(shell uname -p)
 ifeq ($(uname_p),aarch64)
-	CFLAGS += -I/opt/xaiengine/include -I../../lib/include
-	LDFLAGS += -L/opt/xaiengine/lib -L../../../build/air
+	CFLAGS += -I/opt/xaiengine/include -I${ACDC_AIR}/runtime_lib/airhost/include
+	LDFLAGS += -L/opt/xaiengine/lib -L${ACDC_AIR}/runtime_lib
 endif
 
 .PHONY: all
@@ -37,7 +37,7 @@ $(BUILD_CPP_FILES):  $(MLIR_CPP_FILES)
 		-lairhost \
 		-o $@
 
-%.cpp: %.mlir
+%.inc: %.mlir
 	$(AIE_OPT) --aie-create-flows --aie-find-flows --aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
 
 %.elf: $(AIE_SRC_DIR)/main.cc

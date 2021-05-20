@@ -1,0 +1,2 @@
+// RUN: sudo ./02_mb_dispatch.exe | FileCheck %s
+// CHECK: PASS!
