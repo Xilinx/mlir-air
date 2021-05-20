@@ -1,0 +1,2 @@
+// RUN: sudo ./04_shim_dma_from_tile_dma.exe | FileCheck %s
+// CHECK: PASS!

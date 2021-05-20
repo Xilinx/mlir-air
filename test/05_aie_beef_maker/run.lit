@@ -1,0 +1,2 @@
+// RUN: sudo ./05_aie_beef_maker.exe | FileCheck %s
+// CHECK: PASS!
