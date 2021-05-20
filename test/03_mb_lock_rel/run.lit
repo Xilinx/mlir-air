@@ -1,0 +1,2 @@
+// RUN: sudo ./03_mb_lock_rel.exe | FileCheck %s
+// CHECK: PASS!
