@@ -8,9 +8,12 @@ MLIR_CPP_FILES = $(patsubst %.mlir,%.inc,$(filter %.mlir, $(SOURCE_FILES)))
 BUILD_CPP_FILES = $(filter %.cpp, $(SOURCE_FILES))
 
 OBJ_FILES=$(patsubst %.cpp,%.o,$(BUILD_CPP_FILES))
+OBJ_FILES += test_library.o
 
 AIE_OPT = aie-opt
 AIE_XLATE = aie-translate
+
+CFLAGS += -I../../../aie/runtime_lib -DAIR_LIBXAIE_ENABLE
 
 uname_p := $(shell uname -p)
 ifeq ($(uname_p),aarch64)
@@ -33,8 +36,8 @@ $(BUILD_CPP_FILES):  $(MLIR_CPP_FILES)
 		-lxaiengine \
 		-lmetal \
 		-lopen_amp \
-		-ldl \
 		-lairhost \
+		-ldl \
 		-o $@
 
 %.inc: %.mlir
@@ -49,6 +52,9 @@ $(BUILD_CPP_FILES):  $(MLIR_CPP_FILES)
 	cd ./$(AIE_SRC_DIR) && \
 	xchessmk $*.prx && \
 	cp work/Release_LLVM/$*.prx/$* ../$*.elf
+
+test_library.o: ../../../aie/runtime_lib/test_library.cpp
+	$(CC) $^ $(CFLAGS) -c -o $@
 
 clean::
 	rm -rf $(MLIR_CPP_FILES) $(OBJ_FILES) *.exe *.elf ./$(AIE_SRC_DIR)/work

@@ -1,0 +1,2 @@
+// RUN: sudo ./100_hello_L2_dma.exe | FileCheck %s
+// CHECK: PASS!

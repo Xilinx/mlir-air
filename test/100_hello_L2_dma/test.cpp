@@ -15,13 +15,15 @@ int main(int argc, char *argv[])
 {
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
-  if (fd == -1)
+  if (fd == -1) {
+    printf("failed to open /dev/mem\n");
     return -1;
+  }
 
   uint64_t *bank0_ptr = (uint64_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE);
 
   // I have no idea if this does anything
-  __clear_cache((void*)bank0_ptr, (void*)(bank0_ptr+0x20000));
+  __clear_cache((void*)bank0_ptr, (void*)(((size_t)bank0_ptr)+0x20000));
 
   // Write a value
   bank0_ptr[0] = 0xf001ba11deadbeefL;
@@ -39,4 +41,6 @@ int main(int argc, char *argv[])
   printf("I read back %08X%08X\r\n", word0_hi, word0_lo);
   printf("I read back %08X%08X\r\n", word1_hi, word1_lo);
   printf("PASS!\n");
+
+  return 0;
 }

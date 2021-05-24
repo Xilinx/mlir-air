@@ -9,27 +9,20 @@ int main(int argc, char *argv[])
 {
   // create the queue
   queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, 0x020100000000LL);
+  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
   assert(ret == 0 && "failed to create queue!");
 
   uint64_t wr_idx = queue_add_write_index(q, 1);
   uint64_t packet_id = wr_idx % q->size;
 
-  dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  auto row = 4;
+  auto col = 13;
+  auto num_rows = 1;
+  auto num_cols = 1;
 
-  signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
-  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-
-  signal_store_release((signal_t*)&q->doorbell, wr_idx);
-
-  while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-    printf("packet completion signal timeout!\n");
-    printf("%x\n", pkt->header);
-    printf("%x\n", pkt->type);
-    printf("%x\n", (unsigned int)pkt->completion_signal);
-  }
+  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  air_packet_herd_init(herd_pkt, 0, col, num_cols, row, num_rows);
+  air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
 
   printf("PASS!\n");
 }

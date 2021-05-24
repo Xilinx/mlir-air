@@ -13,6 +13,7 @@ SUBDIRLIST(SUBDIRS ${CMAKE_CURRENT_SOURCE_DIR})
 
 include_directories(
   ${CMAKE_SOURCE_DIR}/runtime_lib/airhost/include
+  ${CMAKE_SOURCE_DIR}/../aie/runtime_lib
 )
 
 configure_lit_site_cfg(
@@ -26,7 +27,7 @@ set(TEST_DEPENDS
   FileCheck count not
 )
 
-add_lit_testsuite(check-air "Running the torch-air regression tests"
+add_lit_testsuite(check-air "Running the air board regression tests"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
   )
