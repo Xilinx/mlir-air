@@ -15,6 +15,6 @@ app create -lang c++ -name acdc_agent -platform mb -domain microblaze -template 
 #app config -name acdc_agent build-config Release
 
 importsources -name acdc_agent -soft-link -path [file join $root_directory "lib/mb"]
-app config -name acdc_agent include-path [file join $root_directory "lib/include"]
+app config -name acdc_agent include-path [file join $root_directory "runtime_lib/airhost/include"]
 
 app build -name acdc_agent
