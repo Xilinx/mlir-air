@@ -1,4 +1,3 @@
-
 // aie-opt --aie-create-flows --aie-find-flows %s | aie-translate --aie-generate-xaie
 
 module {
@@ -8,28 +7,27 @@ module {
 
   // Fixup
   %sw = AIE.switchbox(%t70) {
-    AIE.connect<"South" : 3, "North" : 3>
-    AIE.connect<"North" : 2, "South" : 2>
+    AIE.connect<"South" : 3, "North" : 0>
+    AIE.connect<"South" : 7, "North" : 1>
+    AIE.connect<"North" : 0, "South" : 2>
+    AIE.connect<"North" : 1, "South" : 3>
   }
   %mux = AIE.shimmux(%t70) {
     AIE.connect<"DMA" : 0, "South": 3>
+    AIE.connect<"DMA" : 1, "South": 7>
     AIE.connect<"South" : 2, "DMA": 0>
+    AIE.connect<"South" : 3, "DMA": 1>
   }
 
-  AIE.flow(%t71, "South" : 3, %t72, "DMA" : 0)
-  AIE.flow(%t72, "DMA" : 0, %t71, "South" : 2)
+  AIE.flow(%t71, "South" : 0, %t72, "DMA" : 0)
+  AIE.flow(%t71, "South" : 1, %t72, "DMA" : 1)
+  AIE.flow(%t72, "DMA" : 0, %t71, "South" : 0)
+  AIE.flow(%t72, "DMA" : 1, %t71, "South" : 1)
 
-  AIE.core(%t72) {
-    AIE.end
-  }
-  {
-    elf_file = "add_one.elf"
-  }
-
-  %buf72_0 = AIE.buffer(%t72) {sym_name="a"} : memref<8xi32>
-  %buf72_1 = AIE.buffer(%t72) {sym_name="b"} : memref<8xi32>
-  %buf72_2 = AIE.buffer(%t72) {sym_name="c"} : memref<8xi32>
-  %buf72_3 = AIE.buffer(%t72) {sym_name="d"} : memref<8xi32>
+  %buf72_0 = AIE.buffer(%t72) { sym_name = "ping_in" } : memref<8xi32>
+  %buf72_1 = AIE.buffer(%t72) { sym_name = "ping_out" } : memref<8xi32>
+  %buf72_2 = AIE.buffer(%t72) { sym_name = "pong_in" } : memref<8xi32>
+  %buf72_3 = AIE.buffer(%t72) { sym_name = "pong_out" } : memref<8xi32>
 
   %l72_0 = AIE.lock(%t72, 0)
   %l72_1 = AIE.lock(%t72, 1)
@@ -47,12 +45,12 @@ module {
       br ^bd1
     ^bd1:
       AIE.useLock(%l72_1, "Acquire", 0, 0)
-      AIE.dmaBd(<%buf72_1 : memref<8xi32>, 0, 8>, 0)
+      AIE.dmaBd(<%buf72_2 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l72_1, "Release", 1, 0)
       br ^bd0
     ^bd2:
       AIE.useLock(%l72_2, "Acquire", 1, 0)
-      AIE.dmaBd(<%buf72_2 : memref<8xi32>, 0, 8>, 0)
+      AIE.dmaBd(<%buf72_1 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l72_2, "Release", 0, 0)
       br ^bd3
     ^bd3:
@@ -62,6 +60,35 @@ module {
       br ^bd2
     ^end:
       AIE.end
+  }
+
+  AIE.core(%t72) {
+    %c8 = constant 8 : index
+    %c0 = constant 0 : index
+    %c1 = constant 1 : index
+    %c1_32 = constant 1 : i32
+
+    AIE.useLock(%l72_0, "Acquire", 1, 0)
+    AIE.useLock(%l72_2, "Acquire", 0, 0)
+    scf.for %arg3 = %c0 to %c8 step %c1 {
+        %0 = memref.load %buf72_0[%arg3] : memref<8xi32>
+        %1 = addi %0, %c1_32 : i32
+        memref.store %1, %buf72_1[%arg3] : memref<8xi32>
+    }
+    AIE.useLock(%l72_0, "Release", 0, 0)
+    AIE.useLock(%l72_2, "Release", 1, 0)
+
+    AIE.useLock(%l72_1, "Acquire", 1, 0)
+    AIE.useLock(%l72_3, "Acquire", 0, 0)
+    scf.for %arg4 = %c0 to %c8 step %c1 {
+        %2 = memref.load %buf72_2[%arg4] : memref<8xi32>
+        %3 = addi %2, %c1_32 : i32
+        memref.store %3, %buf72_3[%arg4] : memref<8xi32>
+    }
+    AIE.useLock(%l72_1, "Release", 0, 0)
+    AIE.useLock(%l72_3, "Release", 1, 0)
+    AIE.end
 
   }
+
 }

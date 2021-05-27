@@ -26,7 +26,7 @@ XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuratio
 XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];  /**< Instantiates AIE array of [XAIE_NUM_COLS] x [XAIE_NUM_ROWS] */
 XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
 
-#include "aie.cpp"
+#include "aie.inc"
 
 }
 
@@ -208,10 +208,14 @@ main(int argc, char *argv[])
     }
   }
 
-  for (int i=0; i<DMA_COUNT*2; i++) {
-    XAieTile_DmWriteWord(&(TileInst[col][2]), i*4, 0xdecaf);
-  }
+  // for (int i=0; i<DMA_COUNT*2; i++) {
+  //   XAieTile_DmWriteWord(&(TileInst[col][2]), i*4, 0xdecaf);
+  // }
 
+  for (int i=0; i<8; i++) {
+    mlir_write_buffer_ping_out(i, 0x01234567);
+    mlir_write_buffer_pong_out(i, 0x76543210);
+  }
 
   printCoreStatus(7, 2, false, DMA_COUNT*2, 0);
   printDMAStatus(7, 2);
@@ -250,23 +254,11 @@ main(int argc, char *argv[])
     }
   }
 
-
-  // We want lock 2 and 3 to be released with the value 0, so an 0 in the second nibble
-  count = 0;
-  while ((XAieGbl_Read32(TileInst[col][2].TileAddr + 0x000302B0) & 0x0f0) != 0x000) {
-    count++;
-    if (!(count % 1000)) {
-      printf("%d seconds\n",count/1000);
-      if (count == 2000) break;
-    }
-  }
-
   printCoreStatus(7, 2, false, DMA_COUNT*2, 0);
   printDMAStatus(7, 2);
 
   int errors = 0;
-  for (int i=0; i<DMA_COUNT; i++) {
-    //uint32_t d = XAieTile_DmReadWord(&(TileInst[col][2]), 0x20 + (i*4));
+  for (int i=0; i<16; i++) {
     uint32_t d = bram_ptr[DMA_COUNT+i];
     if (d != (i+2)) {
       errors++;
