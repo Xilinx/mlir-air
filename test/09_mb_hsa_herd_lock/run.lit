@@ -1,0 +1,2 @@
+// RUN: sudo ./09_mb_hsa_herd_lock.exe | FileCheck %s
+// CHECK: PASS!
