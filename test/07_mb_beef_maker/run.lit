@@ -1,0 +1,2 @@
+// RUN: sudo ./07_mb_beef_maker.exe | FileCheck %s
+// CHECK: PASS!

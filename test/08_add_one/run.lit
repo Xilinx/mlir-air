@@ -1,0 +1,2 @@
+// RUN: sudo ./08_add_one.exe | FileCheck %s
+// CHECK: PASS!
