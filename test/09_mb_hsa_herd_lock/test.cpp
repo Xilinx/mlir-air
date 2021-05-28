@@ -22,40 +22,29 @@
 
 namespace {
 
-XAieGbl_Config *AieConfigPtr;	                          /**< AIE configuration pointer */
-XAieGbl AieInst;	                                      /**< AIE global instance */
-XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuration instance */
-XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];  /**< Instantiates AIE array of [XAIE_NUM_COLS] x [XAIE_NUM_ROWS] */
-XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
+// global libxaie state
+air_libxaie1_ctx_t *xaie;
 
-}
+#define TileInst (xaie->TileInst)
+#define TileDMAInst (xaie->TileDMAInst)
+#include "aie.inc"
+#undef TileInst
+#undef TileDMAInst
 
-void setup_aie(void)
-{
-  auto col = 7;
-
-  size_t aie_base = XAIE_ADDR_ARRAY_OFF << 14;
-  XAIEGBL_HWCFG_SET_CONFIG((&AieConfig), XAIE_NUM_ROWS, XAIE_NUM_COLS, XAIE_ADDR_ARRAY_OFF);
-  XAieGbl_HwInit(&AieConfig);
-  AieConfigPtr = XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
-  XAieGbl_CfgInitialize(&AieInst, &TileInst[0][0], AieConfigPtr);
-
-  // reset cores and locks
-  for (int i = 1; i <= XAIE_NUM_ROWS; i++) {
-    for (int j = 0; j < XAIE_NUM_COLS; j++) {
-      XAieTile_CoreControl(&(TileInst[j][i]), XAIE_DISABLE, XAIE_ENABLE);
-      for (int l=0; l<16; l++)
-        XAieTile_LockRelease(&(TileInst[j][i]), l, 0x0, 0);
-    }
-  }
 }
 
 int main(int argc, char *argv[])
 {
   auto col = 7;
+  auto row = 2;
 
-  // setup the aie array
-  setup_aie();
+  xaie = air_init_libxaie1();
+
+  mlir_configure_cores();
+  mlir_configure_switchboxes();
+  mlir_initialize_locks();
+  mlir_configure_dmas();
+  //mlir_start_cores();
 
   // create the queue
   queue_t *q = nullptr;
@@ -66,35 +55,16 @@ int main(int argc, char *argv[])
   uint64_t wr_idx = queue_add_write_index(q, 1);
   uint64_t packet_id = wr_idx % q->size;
 
+  auto herd_id = 0;
+  auto num_rows = 4;
+  auto num_cols = 2;
+  auto lock_id = 0;
+
   // herd_setup packet
-  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(herd_pkt);
-  herd_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-
   // Set up a 2x4 herd starting 7,2
-  herd_pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
-  herd_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
-  herd_pkt->arg[0] |= (2L << 40);
-  herd_pkt->arg[0] |= (7L << 32);
-  herd_pkt->arg[0] |= (4L << 24);
-  herd_pkt->arg[0] |= (2L << 16);
-  
-  herd_pkt->arg[1] = 0;  // Herd ID 0
-  herd_pkt->arg[2] = 0;
-  herd_pkt->arg[3] = 0;
-
-  // dispatch packet
-  signal_create(1, 0, NULL, (signal_t*)&herd_pkt->completion_signal);
-  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-  signal_store_release((signal_t*)&q->doorbell, wr_idx);
-
-  // wait for packet completion
-  while (signal_wait_aquire((signal_t*)&herd_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-    printf("packet completion signal timeout on herd initialization!\n");
-    printf("%x\n", herd_pkt->header);
-    printf("%x\n", herd_pkt->type);
-    printf("%x\n", (unsigned)herd_pkt->completion_signal);
-  }
+  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  air_packet_herd_init(herd_pkt, 0, col, 2, row, 4);
+  //air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
 
   // reserve another packet in the queue
   wr_idx = queue_add_write_index(q, 1);
@@ -102,103 +72,60 @@ int main(int argc, char *argv[])
 
   // lock packet
   dispatch_packet_t *lock_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(lock_pkt);
-  lock_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-
-  // Acquire all the herd locks starting at 0,0 with value 0
-  lock_pkt->arg[0]  = AIR_PKT_TYPE_XAIE_LOCK;
-  lock_pkt->arg[0] |= (AIR_ADDRESS_HERD_RELATIVE_RANGE << 48);
-  lock_pkt->arg[0] |= (2L << 40);
-  lock_pkt->arg[0] |= (4L << 24);
-  lock_pkt->arg[1]  = 0;
-  lock_pkt->arg[2]  = 0;
-  lock_pkt->arg[3]  = 0;
-
-  // dispatch packet
-  signal_create(1, 0, NULL, (signal_t*)&lock_pkt->completion_signal);
-  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-  signal_store_release((signal_t*)&q->doorbell, wr_idx);
-
-  // wait for packet completion
-  while (signal_wait_aquire((signal_t*)&lock_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-    printf("packet completion signal timeout on lock acquire!\n");
-    printf("%x\n", lock_pkt->header);
-    printf("%x\n", lock_pkt->type);
-    printf("%x\n", (unsigned)lock_pkt->completion_signal);
-  }
+  air_packet_aie_lock_range(lock_pkt, herd_id, lock_id, /*acq_rel*/0,
+                            /*value*/0, 0, num_cols, 0, num_rows);
+  air_queue_dispatch_and_wait(q, wr_idx, lock_pkt);
 
   u32 errors = 0;
-  for (int col = 6; col < 10; col++)
-    for (int row = 1; row < 7; row++) {
-      u32 locks = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001EF00);
-      if ((col >= 7) && (col <= 8) && (row >=2) && (row <= 5)) {
-	if (locks != 0x1) errors++;
+  for (int c = 6; c < 10; c++)
+    for (int r = 1; r < 7; r++) {
+      u32 locks = XAieGbl_Read32(xaie->TileInst[c][r].TileAddr + 0x0001EF00);
+      if ((c >= 7) && (c <= 8) && (r >=2) && (r <= 5)) {
+        if (locks != 0x1) errors++;
+      } else {
+        if (locks != 0x0) errors++;
       }
-      else
-	if (locks != 0x0) errors++;
     }
 
   if (errors) {
-    for (int col = 6; col < 10 ; col++)
-      for (int row = 1; row < 7; row++) {
-	u32 locks = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001EF00);
-	printf("C[%d][%d] %08X\n", col, row, locks);
+    printf("%d errors\n", errors);
+    for (int c = 6; c < 10 ; c++)
+      for (int r = 1; r < 7; r++) {
+        u32 locks = XAieGbl_Read32(xaie->TileInst[c][r].TileAddr + 0x0001EF00);
+        printf("C[%d][%d] %08X\n", c, r, locks);
       }
   }
   else {
     // Release the herd locks!
-    // reserve another packet in the queue
     wr_idx = queue_add_write_index(q, 1);
     packet_id = wr_idx % q->size;
   
-    // lock packet
     dispatch_packet_t *release_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-    initialize_packet(release_pkt);
-    release_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  
-    // Release all the herd locks starting at 0,0 with value 0
-    release_pkt->arg[0]  = AIR_PKT_TYPE_XAIE_LOCK;
-    release_pkt->arg[0] |= (AIR_ADDRESS_HERD_RELATIVE_RANGE << 48);
-    release_pkt->arg[0] |= (2L << 40);
-    release_pkt->arg[0] |= (4L << 24);
-    release_pkt->arg[1]  = 0;
-    release_pkt->arg[2]  = 1;
-    release_pkt->arg[3]  = 1;
-    
-    // dispatch packet
-    signal_create(1, 0, NULL, (signal_t*)&release_pkt->completion_signal);
-    signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-    signal_store_release((signal_t*)&q->doorbell, wr_idx);
-  
-    // wait for packet completion
-    while (signal_wait_aquire((signal_t*)&release_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-      printf("packet completion signal timeout on lock release!\n");
-      printf("%x\n", release_pkt->header);
-      printf("%x\n", release_pkt->type);
-      printf("%x\n", (unsigned)release_pkt->completion_signal);
-    }
+    air_packet_aie_lock_range(release_pkt, herd_id, lock_id, /*acq_rel*/1,
+                            /*value*/1, 0, num_cols, 0, num_rows);
+    air_queue_dispatch_and_wait(q, wr_idx, release_pkt);
 
-    for (int col = 6; col < 10 ; col++)
-      for (int row = 1; row < 7; row++) {
-	u32 locks = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001EF00);
-	if ((col >= 7) && (col <= 8) && (row >=2) && (row <= 5)) {
-	  if (locks != 0x2) errors++;
-	}
-	else
-	  if (locks != 0x0) errors++;
+    for (int c = 6; c < 10 ; c++)
+      for (int r = 1; r < 7; r++) {
+        u32 locks = XAieGbl_Read32(xaie->TileInst[c][r].TileAddr + 0x0001EF00);
+        if ((c >= 7) && (c <= 8) && (r >=2) && (r <= 5)) {
+          if (locks != 0x2) errors++;
+	      }
+        else {
+      	  if (locks != 0x0) errors++;
+        }
       }
 
     if (errors) {
       for (int col = 6; col < 10 ; col++)
-	for (int row = 1; row < 7; row++) {
-	  u32 locks = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001EF00);
-	  printf("C[%d][%d] %08X\n", col, row, locks);
-	}
-    }    
+        for (int row = 1; row < 7; row++) {
+          u32 locks = XAieGbl_Read32(xaie->TileInst[col][row].TileAddr + 0x0001EF00);
+          printf("C[%d][%d] %08X\n", col, row, locks);
+        }
+    }
   }
 
-    
-   if (errors == 0x0)
+  if (errors == 0)
     printf("PASS!\n");
   else
     printf("fail.\n");

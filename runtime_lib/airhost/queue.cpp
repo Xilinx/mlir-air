@@ -65,7 +65,6 @@ hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
   initialize_packet(pkt);
   pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
-  // Set up the worlds smallest herd at 7,2
   pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
   pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
   pkt->arg[0] |= ((uint64_t)num_cols) << 40;
@@ -80,6 +79,31 @@ hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
   return HSA_STATUS_SUCCESS;
 }
 
-//hsa_status_t air_packet_aie_lock()
+hsa_status_t air_packet_aie_lock_range(dispatch_packet_t *pkt, uint16_t herd_id,
+                                 uint64_t lock_id, uint64_t acq_rel, uint64_t value,
+                                 uint8_t start_col, uint8_t num_cols,
+                                 uint8_t start_row, uint8_t num_rows) {
+  initialize_packet(pkt);
+  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+
+  pkt->arg[0]  = AIR_PKT_TYPE_XAIE_LOCK;
+  pkt->arg[0] |= (AIR_ADDRESS_HERD_RELATIVE_RANGE << 48);
+  pkt->arg[0] |= ((uint64_t)num_cols) << 40;
+  pkt->arg[0] |= ((uint64_t)start_col) << 32;
+  pkt->arg[0] |= ((uint64_t)num_rows) << 24;
+  pkt->arg[0] |= ((uint64_t)start_row) << 16;
+  pkt->arg[1]  = lock_id;
+  pkt->arg[2]  = acq_rel;
+  pkt->arg[3]  = value;
+
+  return HSA_STATUS_SUCCESS;
+}
+
+hsa_status_t air_packet_aie_lock(dispatch_packet_t *pkt, uint16_t herd_id,
+                                 uint64_t lock_id, uint64_t acq_rel, uint64_t value,
+                                 uint8_t col, uint8_t row) {
+  return air_packet_aie_lock_range(pkt, herd_id, lock_id, acq_rel,
+                                   value, col, 0, row, 0);
+}
 
 //air_packet_unlock

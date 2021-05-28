@@ -27,10 +27,10 @@ module {
   AIE.flow(%t71, "South" : 1, %t74, "DMA" : 0)
   AIE.flow(%t74, "DMA" : 0, %t71, "South" : 1)
 
-  %buf72_0 = AIE.buffer(%t72) : memref<16xi32>
-  %buf72_1 = AIE.buffer(%t72) : memref<16xi32>
-  %buf74_0 = AIE.buffer(%t74) : memref<16xi32>
-  %buf74_1 = AIE.buffer(%t74) : memref<16xi32>
+  %buf72_0 = AIE.buffer(%t72) {sym_name="b0"} : memref<16xi32>
+  %buf72_1 = AIE.buffer(%t72) {sym_name="b1"} : memref<16xi32>
+  %buf74_0 = AIE.buffer(%t74) {sym_name="b2"} : memref<16xi32>
+  %buf74_1 = AIE.buffer(%t74) {sym_name="b3"} : memref<16xi32>
 
   %l72_0 = AIE.lock(%t72, 0)
   %l72_1 = AIE.lock(%t72, 1)

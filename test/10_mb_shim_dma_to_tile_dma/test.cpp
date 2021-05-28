@@ -17,90 +17,32 @@
 
 #define SHMEM_BASE 0x020100000000LL
 
-#define XAIE_NUM_ROWS            8
-#define XAIE_NUM_COLS           50
-#define XAIE_ADDR_ARRAY_OFF     0x800
-
-#define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
-#define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
-
 namespace {
 
-XAieGbl_Config *AieConfigPtr;	                          /**< AIE configuration pointer */
-XAieGbl AieInst;	                                      /**< AIE global instance */
-XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuration instance */
-XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];  /**< Instantiates AIE array of [XAIE_NUM_COLS] x [XAIE_NUM_ROWS] */
-XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
+// global libxaie state
+air_libxaie1_ctx_t *xaie;
 
-#include "aie.cpp"
+#define TileInst (xaie->TileInst)
+#define TileDMAInst (xaie->TileDMAInst)
+#include "aie.inc"
+#undef TileInst
+#undef TileDMAInst
 
-}
-
-void printCoreStatus(int col, int row) {
-
-	
-	u32 status, coreTimerLow, locks;
-	status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x032004);
-	coreTimerLow = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0340F8);
-	locks = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001EF00);
-	printf("Core [%d, %d] status is %08X, timer is %u, locks are %08X\n",col, row, status, coreTimerLow, locks);
-	for (int lock=0;lock<16;lock++) {
-		u32 two_bits = (locks >> (lock*2)) & 0x3;
-		if (two_bits) {
-			printf("Lock %d: ", lock);
-			u32 acquired = two_bits & 0x1;
-			u32 value = two_bits & 0x2;
-			if (acquired)
-				printf("Acquired ");
-			printf(value?"1":"0");
-			printf("\n");
-		}
-	}
 }
 
 int
 main(int argc, char *argv[])
 {
-  uint64_t row = 0;
   uint64_t col = 7;
+  uint64_t row = 0;
 
-  size_t aie_base = XAIE_ADDR_ARRAY_OFF << 14;
-  XAIEGBL_HWCFG_SET_CONFIG((&AieConfig), XAIE_NUM_ROWS, XAIE_NUM_COLS, XAIE_ADDR_ARRAY_OFF);
-  XAieGbl_HwInit(&AieConfig);
-  AieConfigPtr = XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
-  XAieGbl_CfgInitialize(&AieInst, &TileInst[0][0], AieConfigPtr);
+  xaie = air_init_libxaie1();
 
-  // reset cores and locks
-  for (int i = 1; i <= XAIE_NUM_ROWS; i++) {
-    for (int j = 0; j < XAIE_NUM_COLS; j++) {
-      XAieTile_CoreControl(&(TileInst[j][i]), XAIE_DISABLE, XAIE_ENABLE);
-      for (int l=0; l<16; l++)
-        XAieTile_LockRelease(&(TileInst[j][i]), l, 0x0, 0);
-    }
-  }
-
-  // cores
-  //
   mlir_configure_cores();
-  //XAieTile_CoreControl(&(TileInst[col][1]), XAIE_DISABLE, XAIE_DISABLE);
-  //XAieTile_CoreControl(&(TileInst[col][2]), XAIE_DISABLE, XAIE_DISABLE);
-
-  //XAieTile_ShimColumnReset(&(TileInst[col][0]), XAIE_RESETENABLE);
-  //XAieTile_ShimColumnReset(&(TileInst[col][0]), XAIE_RESETDISABLE);
-
-  // configure switchboxes
-  //
   mlir_configure_switchboxes();
-  //XAieTile_ShimStrmMuxConfig(&(TileInst[col][0]), XAIETILE_SHIM_STRM_MUX_SOUTH7, XAIETILE_SHIM_STRM_MUX_DMA);
-
-  // locks
-  //
   mlir_initialize_locks();
-
-  // dmas
-  //
-
   mlir_configure_dmas();
+  mlir_start_cores();
 
   XAieDma_Shim ShimDmaInst1;
   uint32_t *bram_ptr;
@@ -109,9 +51,8 @@ main(int argc, char *argv[])
   #define DMA_COUNT 512
 
   // We're going to stamp over the memory
-  for (int i=0; i<DMA_COUNT; i++) {
-    XAieTile_DmWriteWord(&(TileInst[col][2]), i*4, 0xdeadbeef);
-  }
+  for (int i=0; i<DMA_COUNT; i++)
+    mlir_write_buffer_b0(i, 0xdeadbeef);
 
   // create the queue
   queue_t *q = nullptr;
@@ -122,33 +63,20 @@ main(int argc, char *argv[])
   uint64_t packet_id = wr_idx % q->size;
 
   dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(herd_pkt);
-  herd_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  air_packet_herd_init(herd_pkt, 0, col, 1, row, 3);
+  air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
 
-  // Set up a 1x3 herd starting 7,0
-  herd_pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
-  herd_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
-  herd_pkt->arg[0] |= (1L << 40);
-  herd_pkt->arg[0] |= (7L << 32);
-  herd_pkt->arg[0] |= (3L << 24);
-  herd_pkt->arg[0] |= (0L << 16);
-  
-  herd_pkt->arg[1] = 0;  // Herd ID 0
-  herd_pkt->arg[2] = 0;
-  herd_pkt->arg[3] = 0;
+  wr_idx = queue_add_write_index(q, 1);
+  packet_id = wr_idx % q->size;
 
-  // dispatch packet
-  signal_create(1, 0, NULL, (signal_t*)&herd_pkt->completion_signal);
-  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-  signal_store_release((signal_t*)&q->doorbell, wr_idx);
+  dispatch_packet_t *shim_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  initialize_packet(shim_pkt);
+  shim_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  shim_pkt->arg[0]  = AIR_PKT_TYPE_DEVICE_INITIALIZE;
+  shim_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
+  shim_pkt->arg[0] |= ((uint64_t)XAIE_NUM_COLS << 40);
 
-  // wait for packet completion
-  while (signal_wait_aquire((signal_t*)&herd_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-    printf("packet completion signal timeout on herd initialization!\n");
-    printf("%x\n", herd_pkt->header);
-    printf("%x\n", herd_pkt->type);
-    printf("%x\n", herd_pkt->completion_signal);
-  }
+  air_queue_dispatch_and_wait(q, wr_idx, shim_pkt);
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
@@ -172,24 +100,16 @@ main(int argc, char *argv[])
   pkt->arg[2] = BRAM_ADDR;
   pkt->arg[3] = DMA_COUNT*sizeof(float);
 
-  signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
-  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-
-  signal_store_release((signal_t*)&q->doorbell, wr_idx);
-
-  while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-    printf("packet completion signal timeout!\n");
-    printf("%x\n", pkt->header);
-    printf("%x\n", pkt->type);
-    printf("%x\n", pkt->completion_signal);
-    break;
-  }
+  air_queue_dispatch_and_wait(q, wr_idx, pkt);
 
   // we copied the start of the shared bram into tile memory,
   // fish out the queue id and check it
-  uint32_t d = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000+(24*4));
-  printf("ID %x\n", d);
+  for (int i=0; i<30; i++) {
+    uint32_t d = mlir_read_buffer_b0(i);
+    printf("ID %x\n", d);
+  }
 
+  uint32_t d = mlir_read_buffer_b0(24);
   if (d == 0xacdc)
     printf("PASS!\n");
   else

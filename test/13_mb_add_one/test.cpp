@@ -32,7 +32,7 @@ XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuratio
 XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];  /**< Instantiates AIE array of [XAIE_NUM_COLS] x [XAIE_NUM_ROWS] */
 XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
 
-#include "aie.cpp"
+#include "aie.inc"
 
 }
 
@@ -103,8 +103,19 @@ main(int argc, char *argv[])
   // dispatch packet
   signal_create(1, 0, NULL, (signal_t*)&herd_pkt->completion_signal);
   signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-  //signal_store_release((signal_t*)&q->doorbell, wr_idx);
+  signal_store_release((signal_t*)&q->doorbell, wr_idx);
 
+  wr_idx = queue_add_write_index(q, 1);
+  packet_id = wr_idx % q->size;
+
+  dispatch_packet_t *shim_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  initialize_packet(shim_pkt);
+  shim_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  shim_pkt->arg[0]  = AIR_PKT_TYPE_DEVICE_INITIALIZE;
+  shim_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
+  shim_pkt->arg[0] |= ((uint64_t)XAIE_NUM_COLS << 40);
+
+  air_queue_dispatch_and_wait(q, wr_idx, shim_pkt);
   //
   // send the data
   //

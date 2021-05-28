@@ -77,3 +77,6 @@ tools = [
 ]
 
 llvm_config.add_tool_substitutions(tools, tool_dirs)
+
+lit_config.parallelism_groups["board"] = 1
+config.parallelism_group = "board"
