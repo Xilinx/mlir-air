@@ -8,13 +8,19 @@ module {
 
   // Fixup
   %sw = AIE.switchbox(%t70) {
-    AIE.connect<"South" : 3, "North" : 3>
+    AIE.connect<"South" : 3, "North" : 0>
+    AIE.connect<"South" : 7, "North" : 1>
+    AIE.connect<"North" : 0, "South" : 2>
+    AIE.connect<"North" : 1, "South" : 3>
   }
   %mux = AIE.shimmux(%t70) {
     AIE.connect<"DMA" : 0, "South": 3>
+    AIE.connect<"DMA" : 1, "South": 7>
+    AIE.connect<"South" : 2, "DMA": 0>
+    AIE.connect<"South" : 3, "DMA": 1>
   }
 
-  AIE.flow(%t71, "South" : 3, %t72, "DMA" : 0)
+  AIE.flow(%t71, "South" : 0, %t72, "DMA" : 0)
 
   %buf72_0 = AIE.buffer(%t72) {sym_name="b0"} : memref<256xi32>
 

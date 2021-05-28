@@ -38,13 +38,14 @@ main(int argc, char *argv[])
 
   xaie = air_init_libxaie1();
 
-  ACDC_print_tile_status(xaie->TileInst[col][row]);
 
   // Run auto generated config functions
   mlir_configure_cores();
   mlir_configure_switchboxes();
   mlir_initialize_locks();
   mlir_configure_dmas();
+
+  ACDC_print_tile_status(xaie->TileInst[col][row]);
 
   XAieDma_Shim ShimDmaInst1;
   uint32_t *bram_ptr;

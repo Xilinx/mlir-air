@@ -8,15 +8,19 @@ module {
   %t71 = AIE.tile(7, 1)
   %t72 = AIE.tile(7, 2)
 
-  // FIXME: An explicit route through the shim, which has routing constraints that
-  // arr not properly modeled in the router.
+  // Fixup
   %sw = AIE.switchbox(%t70) {
-    AIE.connect<"North": 2, "South" : 2>
+    AIE.connect<"South" : 3, "North" : 0>
+    AIE.connect<"South" : 7, "North" : 1>
+    AIE.connect<"North" : 0, "South" : 2>
+    AIE.connect<"North" : 1, "South" : 3>
   }
   %mux = AIE.shimmux(%t70) {
-    AIE.connect<"South": 2, "DMA" : 0>
+    AIE.connect<"DMA" : 0, "South": 3>
+    AIE.connect<"DMA" : 1, "South": 7>
+    AIE.connect<"South" : 2, "DMA": 0>
+    AIE.connect<"South" : 3, "DMA": 1>
   }
-
   %buf72_0 = AIE.buffer(%t72) {sym_name="a"} : memref<256xi32>
   %buf72_1 = AIE.buffer(%t72) {sym_name="b"} : memref<256xi32>
 
@@ -41,5 +45,5 @@ module {
   %d70 = AIE.shimDMA(%t70) {
     AIE.end
   }
-  AIE.flow(%t72, "DMA" : 0, %t71, "South" : 2)
+  AIE.flow(%t72, "DMA" : 0, %t71, "South" : 0)
 }
