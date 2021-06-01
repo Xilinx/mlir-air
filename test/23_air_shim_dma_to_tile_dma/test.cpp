@@ -37,7 +37,7 @@ XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuratio
 XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];  /**< Instantiates AIE array of [XAIE_NUM_COLS] x [XAIE_NUM_ROWS] */
 XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
 
-#include "aie.cpp"
+#include "aie.0.inc"
 
 }
 
@@ -143,32 +143,10 @@ main(int argc, char *argv[])
     }
   }
 
-
-  // cores
-  //
   mlir_configure_cores();
-
-  // configure switchboxes
-  //
   mlir_configure_switchboxes();
-
-  // locks
-  //
   mlir_initialize_locks();
-
-  // dmas
-  //
-
   mlir_configure_dmas();
-
-//  XAieDma_Shim ShimDmaInst1;
-//  uint32_t *bram_ptr;
-
-
-  // We're going to stamp over the memory
-  for (int i=0; i<DMA_COUNT; i++) {
-    XAieTile_DmWriteWord(&(TileInst[col][2]), i*4, 0xdeadbeef);
-  }
 
   // create the queue
   queue_t *q = nullptr;
@@ -182,30 +160,19 @@ main(int argc, char *argv[])
   initialize_packet(herd_pkt);
   herd_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
-  // Set up a 1x3 herd starting 7,0
+  // Set up a 1x1 herd starting 7,2
   herd_pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
   herd_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
   herd_pkt->arg[0] |= (1L << 40);
   herd_pkt->arg[0] |= (7L << 32);
-  herd_pkt->arg[0] |= (3L << 24);
-  herd_pkt->arg[0] |= (0L << 16);
+  herd_pkt->arg[0] |= (1L << 24);
+  herd_pkt->arg[0] |= (2L << 16);
   
   herd_pkt->arg[1] = 0;  // Herd ID 0
   herd_pkt->arg[2] = 0;
   herd_pkt->arg[3] = 0;
 
-  // dispatch packet
-  signal_create(1, 0, NULL, (signal_t*)&herd_pkt->completion_signal);
-  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-  signal_store_release((signal_t*)&q->doorbell, wr_idx);
-
-  // wait for packet completion
-  while (signal_wait_aquire((signal_t*)&herd_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-    printf("packet completion signal timeout on herd initialization!\n");
-    printf("%x\n", herd_pkt->header);
-    printf("%x\n", herd_pkt->type);
-    printf("%x\n", (unsigned)herd_pkt->completion_signal);
-  }
+  air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
 
   printf("loading aie_ctrl.so\n");
   auto handle = dlopen("./aie_ctrl.so", RTLD_NOW);
@@ -217,7 +184,7 @@ main(int argc, char *argv[])
   auto graph_fn = (void (*)(void*,void*))dlsym(handle, "_mlir_ciface_graph");
   assert(graph_fn && "failed to locate _mlir_ciface_graph in aie_ctrl.so");
 
-  tensor_t<uint32_t,1> input;
+  tensor_t<uint32_t,1> input;6
   input.shape[0] = 256;
   input.d = (uint32_t*)malloc(sizeof(uint32_t)*256);
   for (int i=0; i<input.shape[0]; i++) {
@@ -227,45 +194,10 @@ main(int argc, char *argv[])
   auto i = &input;
   graph_fn(i, i);
 
-  //return 0;
-  // wr_idx = queue_add_write_index(q, 1);
-  // packet_id = wr_idx % q->size;
-
-  // dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  // initialize_packet(pkt);
-  // pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  // pkt->arg[0] = AIR_PKT_TYPE_SHIM_DMA_MEMCPY;
-  // pkt->arg[0] |= (row << 16);
-  // pkt->arg[0] |= (col << 32);
-  // uint64_t flags = 0x1;
-  // pkt->arg[0] |= (flags << 48);
-  
-  // uint32_t burst_len = 4;
-  // uint64_t direction = 1;
-  // uint64_t channel = XAIEDMA_SHIM_CHNUM_MM2S0;
-
-  // pkt->arg[1] = burst_len;
-  // pkt->arg[1] |= (direction << 32);
-  // pkt->arg[1] |= (channel << 48);
-  // pkt->arg[2] = BRAM_ADDR;
-  // pkt->arg[3] = DMA_COUNT*sizeof(int);
-
-  // signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
-  // signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-
-  // signal_store_release((signal_t*)&q->doorbell, wr_idx);
-
-  // while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-  //   printf("packet completion signal timeout!\n");
-  //   printf("%x\n", pkt->header);
-  //   printf("%x\n", pkt->type);
-  //   printf("%x\n", pkt->completion_signal);
-  //   break;
-  // }
   printCoreStatus(7,2);
   // we copied the start of the shared bram into tile memory,
   // fish out the queue id and check it
-  uint32_t d = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000+(24*4));
+  uint32_t d = mlir_read_buffer_buf0(24);
   printf("ID %x\n", d);
 
   if (d == 0xacdc)
