@@ -29,6 +29,8 @@ else
 	LDFLAGS += -L$(SYSROOT)/opt/xaiengine/lib
 endif
 
+ACDC_AIR = $(dir $(shell which aie-opt))/..
+
 CFLAGS += -std=c++11 -I$(ACDC_AIR)/runtime_lib/airhost/include -I../../../aie/runtime_lib \
 		-DAIR_LIBXAIE_ENABLE
 LDFLAGS += -L$(ACDC_AIR)/runtime_lib
