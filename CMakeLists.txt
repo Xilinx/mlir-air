@@ -84,6 +84,5 @@ include(HandleLLVMOptions)
 add_custom_target(check-all)
 
 add_subdirectory(python)
-add_subdirectory(runtime_lib)
 add_subdirectory(lib)
 add_subdirectory(test)
