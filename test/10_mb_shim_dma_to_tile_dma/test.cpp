@@ -12,6 +12,8 @@
 #include <xaiengine.h>
 
 #include "air_host.h"
+#include "test_library.h"
+
 #include "acdc_queue.h"
 #include "hsa_defs.h"
 
@@ -38,6 +40,9 @@ main(int argc, char *argv[])
 
   xaie = air_init_libxaie1();
 
+  ACDC_print_dma_status(xaie->TileInst[7][2]);
+
+
   mlir_configure_cores();
   mlir_configure_switchboxes();
   mlir_initialize_locks();
@@ -56,8 +61,20 @@ main(int argc, char *argv[])
 
   // create the queue
   queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, SHMEM_BASE);
+  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, 0x020100000000LL);
   assert(ret == 0 && "failed to create queue!");
+
+
+  // Let's make a buffer that we can transfer in the same BRAM, after the queue of HSA packets
+  int fd = open("/dev/mem", O_RDWR | O_SYNC);
+  if (fd == -1)
+    return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
+
+  bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, BRAM_ADDR+(MB_QUEUE_SIZE*64));
+  
+  for (int i=0;i<DMA_COUNT;i++) {
+    bram_ptr[i] = i;
+  }
 
   uint64_t wr_idx = queue_add_write_index(q, 1);
   uint64_t packet_id = wr_idx % q->size;
@@ -84,33 +101,39 @@ main(int argc, char *argv[])
   dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
   initialize_packet(pkt);
   pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  pkt->arg[0] = AIR_PKT_TYPE_SHIM_DMA_MEMCPY;
-  pkt->arg[0] |= (row << 16);
+  pkt->arg[0] = AIR_PKT_TYPE_ND_MEMCPY;
+
   pkt->arg[0] |= (col << 32);
-  uint64_t flags = 0x1;
-  pkt->arg[0] |= (flags << 48);
   
-  uint32_t burst_len = 4;
+  uint64_t burst_len = 4;
   uint64_t direction = 1;
-  uint64_t channel = XAIEDMA_SHIM_CHNUM_MM2S0;
+  uint64_t channel = 0;
 
-  pkt->arg[1] = burst_len;
-  pkt->arg[1] |= (direction << 32);
-  pkt->arg[1] |= (channel << 48);
-  pkt->arg[2] = BRAM_ADDR;
-  pkt->arg[3] = DMA_COUNT*sizeof(float);
+  pkt->arg[0] |= burst_len << 52;
+  pkt->arg[0] |= (direction << 60);
+  pkt->arg[0] |= (channel << 24);
+  pkt->arg[0] |= (2 << 16);
 
+  pkt->arg[1]  = BRAM_ADDR+(MB_QUEUE_SIZE*64);
+  pkt->arg[2]  = DMA_COUNT*sizeof(float);
+  pkt->arg[2] |= (1L<<32);
+  pkt->arg[3]  = 1;
+  pkt->arg[3] |= (1L<<32);
   air_queue_dispatch_and_wait(q, wr_idx, pkt);
 
-  // we copied the start of the shared bram into tile memory,
-  // fish out the queue id and check it
-  for (int i=0; i<30; i++) {
+
+  ACDC_print_dma_status(xaie->TileInst[7][2]);
+  uint32_t errs = 0;
+  // Let go check the tile memory
+  for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = mlir_read_buffer_b0(i);
-    printf("ID %x\n", d);
+    if (d != i) {
+      printf("ERROR: id %d Expected %08X, got %08X\n", i, i, d);
+      errs++;
+    }
   }
 
-  uint32_t d = mlir_read_buffer_b0(24);
-  if (d == 0xacdc)
+  if (errs == 0)
     printf("PASS!\n");
   else
     printf("fail.\n");
