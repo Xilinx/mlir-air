@@ -165,31 +165,10 @@ main(int argc, char *argv[])
   AieConfigPtr = XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
   XAieGbl_CfgInitialize(&AieInst, &TileInst[0][0], AieConfigPtr);
 
-  // reset cores and locks
-  for (int i = 1; i <= XAIE_NUM_ROWS; i++) {
-    for (int j = 0; j < XAIE_NUM_COLS; j++) {
-      XAieTile_CoreControl(&(TileInst[j][i]), XAIE_DISABLE, XAIE_ENABLE);
-      for (int l=0; l<16; l++)
-        XAieTile_LockRelease(&(TileInst[j][i]), l, 0x0, 0);
-    }
-  }
-
-  // cores
-  //
   mlir_configure_cores();
-
-  // configure switchboxes
-  //
   mlir_configure_switchboxes();
-
-  // locks
-  //
   mlir_initialize_locks();
-
-  // dmas
-  //
   mlir_configure_dmas();
-
   mlir_start_cores();
 
   XAieDma_Shim ShimDmaInst1;
@@ -207,10 +186,6 @@ main(int argc, char *argv[])
       //printf("%p %llx\n", &bram_ptr[i], bram_ptr[i]);
     }
   }
-
-  // for (int i=0; i<DMA_COUNT*2; i++) {
-  //   XAieTile_DmWriteWord(&(TileInst[col][2]), i*4, 0xdecaf);
-  // }
 
   for (int i=0; i<8; i++) {
     mlir_write_buffer_ping_out(i, 0x01234567);
