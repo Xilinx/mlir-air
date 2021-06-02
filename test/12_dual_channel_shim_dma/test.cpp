@@ -11,242 +11,259 @@
 #include <sys/mman.h>
 #include <xaiengine.h>
 
-#define XAIE_NUM_ROWS            8
-#define XAIE_NUM_COLS           50
-#define XAIE_ADDR_ARRAY_OFF     0x800
+#include "air_host.h"
+#include "test_library.h"
 
-#define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
-#define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
+#include "acdc_queue.h"
+#include "hsa_defs.h"
+
+#define SHMEM_BASE 0x020100000000LL
 
 namespace {
 
-XAieGbl_Config *AieConfigPtr;	                          /**< AIE configuration pointer */
-XAieGbl AieInst;	                                      /**< AIE global instance */
-XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuration instance */
-XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];  /**< Instantiates AIE array of [XAIE_NUM_COLS] x [XAIE_NUM_ROWS] */
-XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
+// global libxaie state
+air_libxaie1_ctx_t *xaie;
 
+#define TileInst (xaie->TileInst)
+#define TileDMAInst (xaie->TileDMAInst)
 #include "aie.inc"
+#undef TileInst
+#undef TileDMAInst
 
-}
-
-void printCoreStatus(int col, int row) {
-
-	
-	u32 status, coreTimerLow, locks;
-	status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x032004);
-	coreTimerLow = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0340F8);
-	locks = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001EF00);
-	printf("Core [%d, %d] status is %08X, timer is %u, locks are %08X\n",col, row, status, coreTimerLow, locks);
-	for (int lock=0;lock<16;lock++) {
-		u32 two_bits = (locks >> (lock*2)) & 0x3;
-		if (two_bits) {
-			printf("Lock %d: ", lock);
-			u32 acquired = two_bits & 0x1;
-			u32 value = two_bits & 0x2;
-			if (acquired)
-				printf("Acquired ");
-			printf(value?"1":"0");
-			printf("\n");
-		}
-	}
 }
 
 int
 main(int argc, char *argv[])
 {
-  auto col = 7;
+  uint64_t col = 7;
+  uint64_t row = 0;
 
-  size_t aie_base = XAIE_ADDR_ARRAY_OFF << 14;
-  XAIEGBL_HWCFG_SET_CONFIG((&AieConfig), XAIE_NUM_ROWS, XAIE_NUM_COLS, XAIE_ADDR_ARRAY_OFF);
-  XAieGbl_HwInit(&AieConfig);
-  AieConfigPtr = XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
-  XAieGbl_CfgInitialize(&AieInst, &TileInst[0][0], AieConfigPtr);
+  xaie = air_init_libxaie1();
+
+  ACDC_print_dma_status(xaie->TileInst[7][2]);
 
 
-  printCoreStatus(col, 2);
-  printCoreStatus(col, 4);
-  
-  // cores
-  //
   mlir_configure_cores();
-
-  // configure switchboxes
-  //
   mlir_configure_switchboxes();
-  //XAieTile_ShimStrmMuxConfig(&(TileInst[col][0]), XAIETILE_SHIM_STRM_MUX_SOUTH7, XAIETILE_SHIM_STRM_MUX_DMA);
-
-  // locks
-  //
   mlir_initialize_locks();
-
-  // dmas
-  //
-
   mlir_configure_dmas();
+  mlir_start_cores();
 
   XAieDma_Shim ShimDmaInst1;
   uint32_t *bram_ptr;
 
-  #define BRAM_ADDR (0x4000+0x020100000000LL)
-  #define DMA_COUNT 16
+  #define BRAM_ADDR 0x020100000000LL
+  #define DMA_COUNT 32
 
-  int fd = open("/dev/mem", O_RDWR | O_SYNC);
-  if (fd != -1) {
-    bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, BRAM_ADDR);
-    // + 1 ascending pattern
-    for (int i=0; i<DMA_COUNT*2; i++) {
-      bram_ptr[i] = i+1;
-      //printf("%p %llx\n", &bram_ptr[i], bram_ptr[i]);
-    }
-    // + 2 ascending pattern
-    for (int i=DMA_COUNT*2; i<DMA_COUNT*4; i++) {
-      bram_ptr[i] = (i-DMA_COUNT*2)+2;
-      //printf("%p %llx\n", &bram_ptr[i], bram_ptr[i]);
-    }
-
-    // Stomp
-    for (int i=DMA_COUNT*4; i<DMA_COUNT*8; i++) {
-      bram_ptr[i] = 0x5a1ad;
-      //printf("%p %llx\n", &bram_ptr[i], bram_ptr[i]);
-    }
-
-
-  }
-
-  // We're going to stamp over the local memories where the data is going to end up
-  for (int i=0; i<DMA_COUNT*2; i++) {
-    XAieTile_DmWriteWord(&(TileInst[col][2]), 0x1000 + i*4, 0xdefaced0);
-  }
   // We're going to stamp over the memories
-  for (int i=0; i<DMA_COUNT*2; i++) {
-    XAieTile_DmWriteWord(&(TileInst[col][4]), 0x1000 + i*4, 0x0defaced);
+  for (int i=0; i<DMA_COUNT; i++) {
+    mlir_write_buffer_buf72_0(i, 0xdeadbeef);
+    mlir_write_buffer_buf74_0(i, 0xfeedf00d);
   }
+  // create the queue
+  queue_t *q = nullptr;
+  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, 0x020100000000LL);
+  assert(ret == 0 && "failed to create queue!");
 
-  auto burstlen = 4;
-  XAieDma_ShimInitialize(&(TileInst[col][0]), &ShimDmaInst1);
-  XAieDma_ShimBdSetAddr(&ShimDmaInst1, 1, HIGH_ADDR((u64)BRAM_ADDR), LOW_ADDR((u64)BRAM_ADDR), sizeof(u32) * DMA_COUNT*2);
-  XAieDma_ShimBdSetAxi(&ShimDmaInst1, 1 , 0, burstlen, 0, 0, XAIE_ENABLE);
-  XAieDma_ShimBdWrite(&ShimDmaInst1, 1);
-  XAieDma_ShimSetStartBd((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_MM2S0, 1);
 
-  XAieDma_ShimBdSetAddr(&ShimDmaInst1, 2, HIGH_ADDR((u64)BRAM_ADDR+(2*DMA_COUNT*sizeof(u32))), LOW_ADDR((u64)BRAM_ADDR+(2*DMA_COUNT*sizeof(u32))), sizeof(u32) * DMA_COUNT * 2);
-  XAieDma_ShimBdSetAxi(&ShimDmaInst1, 2 , 0, burstlen, 0, 0, XAIE_ENABLE);
-  XAieDma_ShimBdWrite(&ShimDmaInst1, 2);
-  XAieDma_ShimSetStartBd((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_MM2S1, 2);
+  // Let's make a buffer that we can transfer in the same BRAM, after the queue of HSA packets
+  int fd = open("/dev/mem", O_RDWR | O_SYNC);
+  if (fd == -1)
+    return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
 
-  XAieDma_ShimBdSetAddr(&ShimDmaInst1, 3, HIGH_ADDR((u64)BRAM_ADDR+(4*DMA_COUNT*sizeof(u32))), LOW_ADDR((u64)BRAM_ADDR+(4*DMA_COUNT*sizeof(u32))), sizeof(u32) * DMA_COUNT*2);
-  XAieDma_ShimBdSetAxi(&ShimDmaInst1, 3 , 0, burstlen, 0, 0, XAIE_ENABLE);
-  XAieDma_ShimBdWrite(&ShimDmaInst1, 3);
-  XAieDma_ShimSetStartBd((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_S2MM0, 3);
-
-  XAieDma_ShimBdSetAddr(&ShimDmaInst1, 4, HIGH_ADDR((u64)BRAM_ADDR+(6*DMA_COUNT*sizeof(u32))), LOW_ADDR((u64)BRAM_ADDR+(6*DMA_COUNT*sizeof(u32))), sizeof(u32) * DMA_COUNT*2);
-  XAieDma_ShimBdSetAxi(&ShimDmaInst1, 4 , 0, burstlen, 0, 0, XAIE_ENABLE);
-  XAieDma_ShimBdWrite(&ShimDmaInst1, 4);
-  XAieDma_ShimSetStartBd((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_S2MM1, 4);
-
-  auto ret = XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_MM2S0);
-  if (ret)
-    printf("%s %d Warn %d\n", __FUNCTION__, __LINE__, ret);
-
-  ret = XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_MM2S1);
-  if (ret)
-    printf("%s %d Warn %d\n", __FUNCTION__, __LINE__, ret);
-
-  ret = XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_S2MM0);
-  if (ret)
-    printf("%s %d Warn %d\n", __FUNCTION__, __LINE__, ret);
-
-  ret = XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_S2MM1);
-  if (ret)
-    printf("%s %d Warn %d\n", __FUNCTION__, __LINE__, ret);
-
-  XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_MM2S0, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
-  XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_MM2S1, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
-  XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_S2MM0, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
-  XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_S2MM1, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
-
-  auto count = 0;
-  while (XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_MM2S0)) {
-    XAieLib_usleep(1000);
-    count++;
-    if (!(count % 1000)) {
-      printf("MM2S0 %d seconds\n",count/1000);
-      if (count == 2000) break;
-    }
-  }
-  count = 0;
-  while (XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_MM2S1)) {
-    XAieLib_usleep(1000);
-    count++;
-    if (!(count % 1000)) {
-      printf("MM2S1 %d seconds\n",count/1000);
-      if (count == 2000) break;
-    }
-  }
-
-  count = 0;
-  while (XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_S2MM0)) {
-    XAieLib_usleep(1000);
-    count++;
-    if (!(count % 1000)) {
-      printf("S2MM0 %d seconds\n",count/1000);
-      if (count == 2000) break;
-    }
-  }
-
-  count = 0;
-  while (XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_S2MM1)) {
-    XAieLib_usleep(1000);
-    count++;
-    if (!(count % 1000)) {
-      printf("S2MM1 %d seconds\n",count/1000);
-      if (count == 2000) break;
-    }
-  }
-
-  printCoreStatus(col, 2);
-  printCoreStatus(col, 4);
+  bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, BRAM_ADDR+(MB_QUEUE_SIZE*64));
   
-  int errors = 0;
-  for (int i=0; i<DMA_COUNT*2; i++) {
-    uint32_t d = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000+i*4);
-    if (d != (i+1)) {
-      errors++;
-      printf("Tile Memory[%d][%d] Address %04X mismatch %x != 1 + %x\n", col, 2, 0x1000+i*4,d, i);
-    }
+  for (int i=0;i<DMA_COUNT;i++) {
+    bram_ptr[i] = i;
+    bram_ptr[DMA_COUNT+i] = i*2;
+    bram_ptr[2*DMA_COUNT+i] = 0xf001ba11; // 50 years of hurt
+    bram_ptr[3*DMA_COUNT+i] = 0x00051ade; // Cum on hear the noize
   }
+
+  uint64_t wr_idx = queue_add_write_index(q, 1);
+  uint64_t packet_id = wr_idx % q->size;
+
+  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  air_packet_herd_init(herd_pkt, 0, col, 1, row, 3);
+  air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
+
+  wr_idx = queue_add_write_index(q, 1);
+  packet_id = wr_idx % q->size;
+
+
+  // TODO: Make this a helper function
+  dispatch_packet_t *shim_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  initialize_packet(shim_pkt);
+  shim_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  shim_pkt->arg[0]  = AIR_PKT_TYPE_DEVICE_INITIALIZE;
+  shim_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
+  shim_pkt->arg[0] |= ((uint64_t)XAIE_NUM_COLS << 40);
+
+  air_queue_dispatch_and_wait(q, wr_idx, shim_pkt);
+
+  wr_idx = queue_add_write_index(q, 1);
+  packet_id = wr_idx % q->size;
+
+  // TODO: Make this a helper function
+  dispatch_packet_t *pkt_a = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  initialize_packet(pkt_a);
+  pkt_a->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  pkt_a->arg[0] = AIR_PKT_TYPE_ND_MEMCPY;
+
+  pkt_a->arg[0] |= (col << 32);
   
-  for (int i=0; i<DMA_COUNT*2; i++) {
-    uint32_t d = XAieTile_DmReadWord(&(TileInst[col][4]), 0x1000+i*4);
-    if (d != (i+2)) {
-      errors++;
-      printf("Tile Memory[%d][%d] Address %04X mismatch %x != 2 + %x\n", col, 4, 0x1000+i*4,d, i);
+  uint64_t burst_len = 4;
+  uint64_t direction = 1;
+  uint64_t channel = 0;
+
+  pkt_a->arg[0] |= burst_len << 52;
+  pkt_a->arg[0] |= (direction << 60);
+  pkt_a->arg[0] |= (channel << 24);
+  pkt_a->arg[0] |= (2 << 16);
+
+  pkt_a->arg[1]  = BRAM_ADDR+(MB_QUEUE_SIZE*64);
+  pkt_a->arg[2]  = DMA_COUNT*sizeof(float);
+  pkt_a->arg[2] |= (1L<<32);
+  pkt_a->arg[3]  = 1;
+  pkt_a->arg[3] |= (1L<<32);
+  air_queue_dispatch_and_wait(q, wr_idx, pkt_a);
+
+  wr_idx = queue_add_write_index(q, 1);
+  packet_id = wr_idx % q->size;
+
+  // TODO: Use the helper function
+  dispatch_packet_t *pkt_b = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  initialize_packet(pkt_b);
+  pkt_b->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  pkt_b->arg[0] = AIR_PKT_TYPE_ND_MEMCPY;
+
+  pkt_b->arg[0] |= (col << 32);
+  
+  channel = 1;
+
+  pkt_b->arg[0] |= burst_len << 52;
+  pkt_b->arg[0] |= (direction << 60);
+  pkt_b->arg[0] |= (channel << 24);
+  pkt_b->arg[0] |= (2 << 16);
+
+  pkt_b->arg[1]  = BRAM_ADDR+(MB_QUEUE_SIZE*64)+(DMA_COUNT*4);
+  pkt_b->arg[2]  = DMA_COUNT*sizeof(float);
+  pkt_b->arg[2] |= (1L<<32);
+  pkt_b->arg[3]  = 1;
+  pkt_b->arg[3] |= (1L<<32);
+  air_queue_dispatch_and_wait(q, wr_idx, pkt_b);
+
+  // This completes the copying to the tiles, let's move the pattern back
+
+  wr_idx = queue_add_write_index(q, 1);
+  packet_id = wr_idx % q->size;
+
+  // TODO: Use the helper function
+  dispatch_packet_t *pkt_c = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  initialize_packet(pkt_c);
+  pkt_c->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  pkt_c->arg[0] = AIR_PKT_TYPE_ND_MEMCPY;
+
+  pkt_c->arg[0] |= (col << 32);
+  
+  direction = 0;
+  channel = 0;
+
+  pkt_c->arg[0] |= burst_len << 52;
+  pkt_c->arg[0] |= (direction << 60);
+  pkt_c->arg[0] |= (channel << 24);
+  pkt_c->arg[0] |= (2 << 16);
+
+  pkt_c->arg[1]  = BRAM_ADDR+(MB_QUEUE_SIZE*64)+(2*DMA_COUNT*sizeof(float));
+  pkt_c->arg[2]  = DMA_COUNT*sizeof(float);
+  pkt_c->arg[2] |= (1L<<32);
+  pkt_c->arg[3]  = 1;
+  pkt_c->arg[3] |= (1L<<32);
+  air_queue_dispatch_and_wait(q, wr_idx, pkt_c);
+
+  wr_idx = queue_add_write_index(q, 1);
+  packet_id = wr_idx % q->size;
+
+  // TODO: Use the helper function
+  dispatch_packet_t *pkt_d = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  initialize_packet(pkt_d);
+  pkt_d->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  pkt_d->arg[0] = AIR_PKT_TYPE_ND_MEMCPY;
+
+  pkt_d->arg[0] |= (col << 32);
+  
+  direction = 0;
+  channel = 1;
+
+  pkt_d->arg[0] |= burst_len << 52;
+  pkt_d->arg[0] |= (direction << 60);
+  pkt_d->arg[0] |= (channel << 24);
+  pkt_d->arg[0] |= (2 << 16);
+
+  pkt_d->arg[1]  = BRAM_ADDR+(MB_QUEUE_SIZE*64)+(3*DMA_COUNT*sizeof(float));
+  pkt_d->arg[2]  = DMA_COUNT*sizeof(float);
+  pkt_d->arg[2] |= (1L<<32);
+  pkt_d->arg[3]  = 1;
+  pkt_d->arg[3] |= (1L<<32);
+  air_queue_dispatch_and_wait(q, wr_idx, pkt_d);
+
+
+
+
+
+  ACDC_print_dma_status(xaie->TileInst[7][2]);
+  ACDC_print_dma_status(xaie->TileInst[7][4]);
+  uint32_t errs = 0;
+  // Let go check the tile memory
+  for (int i=0; i<DMA_COUNT; i++) {
+    uint32_t d = mlir_read_buffer_buf72_0(i);
+    if (d != i) {
+      printf("ERROR: buf72_0 id %d Expected %08X, got %08X\n", i, i, d);
+      errs++;
+    }
+  }
+  for (int i=0; i<DMA_COUNT; i++) {
+    uint32_t d = mlir_read_buffer_buf74_0(i);
+    if (d != i*2) {
+      printf("ERROR: buf74_0 id %d Expected %08X, got %08X\n", i, i*2, d);
+      errs++;
+    }
+  }
+  // And the BRAM we updated
+  for (int i=0; i<DMA_COUNT; i++) {
+    uint32_t d = bram_ptr[2*DMA_COUNT+i];;
+    if (d != i) {
+      printf("ERROR: buf72_0 copy id %d Expected %08X, got %08X\n", i, i, d);
+      errs++;
+    }
+  }
+  for (int i=0; i<DMA_COUNT; i++) {
+    uint32_t d = bram_ptr[3*DMA_COUNT+i];;
+    if (d != i*2) {
+      printf("ERROR: buf74_0 copy id %d Expected %08X, got %08X\n", i, i*2, d);
+      errs++;
     }
   }
 
-  for (int i=0; i<DMA_COUNT*2; i++) {
-    uint32_t d = bram_ptr[DMA_COUNT*4+i];
-    if (d != (i+1)) {
-      errors++;
-      printf("Ext Memory offset %04X mismatch %x != 1 + %x\n", DMA_COUNT*4+i,d, i);
-    }
-  }
-
-  for (int i=0; i<DMA_COUNT*2; i++) {
-    uint32_t d = bram_ptr[DMA_COUNT*6+i];
-    if (d != (i+2)) {
-      errors++;
-      printf("Ext Memory offset %04X mismatch %x != 2 + %x\n", DMA_COUNT*6+i,d, i);
-    }
-  }
 
 
-  if (!errors) {
+
+
+
+
+  if (errs == 0)
     printf("PASS!\n");
+  else
+    printf("fail.\n");
+
+  for (int bd=0;bd<16;bd++) {
+    // Take no prisoners.  No regerts
+    // Overwrites the DMA_BDX_Control registers
+    XAieGbl_Write32(xaie->TileInst[7][0].TileAddr + 0x0001D008+(bd*0x14), 0x0);
+    XAieGbl_Write32(xaie->TileInst[7][2].TileAddr + 0x0001D018+(bd*0x20), 0x0);
+    XAieGbl_Write32(xaie->TileInst[7][4].TileAddr + 0x0001D018+(bd*0x20), 0x0);
   }
-  else {
-    printf("fail %d/%d.\n", (DMA_COUNT*4-errors), DMA_COUNT*4);
-  }
+
+
 
 }
