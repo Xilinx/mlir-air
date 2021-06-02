@@ -59,7 +59,7 @@ main(int argc, char *argv[])
   for (int i=0; i<DMA_COUNT; i++)
     mlir_write_buffer_a(i, i+2);
   XAieTile_LockRelease(&(xaie->TileInst[7][2]), 0, 0x1, 0);
-  XAieTile_LockRelease(&(xaie->TileInst[7][2]), 1, 0x1, 0);
+  //XAieTile_LockRelease(&(xaie->TileInst[7][2]), 1, 0x1, 0);
 
 
   // create the queue
@@ -102,35 +102,11 @@ main(int argc, char *argv[])
   packet_id = wr_idx % q->size;
 
   dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  pkt->arg[0] = AIR_PKT_TYPE_ND_MEMCPY;
-
-  pkt->arg[0] |= (col << 32);
-  
-  uint64_t burst_len = 4;
-  uint64_t direction = 0;
-  uint64_t channel = 0;
-
-  pkt->arg[0] |= burst_len << 52;
-  pkt->arg[0] |= (direction << 60);
-  pkt->arg[0] |= (channel << 24);
-  pkt->arg[0] |= (2 << 16);
-
-  pkt->arg[1]  = BRAM_ADDR+(MB_QUEUE_SIZE*64);
-  pkt->arg[2]  = DMA_COUNT*sizeof(float);
-  pkt->arg[2] |= (1L<<32);
-  pkt->arg[3]  = 1;
-  pkt->arg[3] |= (1L<<32);
+  air_packet_nd_memcpy(pkt, 0, col, 0, 0, 4, 2, BRAM_ADDR+(MB_QUEUE_SIZE*64), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
   air_queue_dispatch_and_wait(q, wr_idx, pkt);
 
-
   ACDC_print_dma_status(xaie->TileInst[7][2]);
-  /*
-  printf("Sleeping\n");
-  sleep(1);
-  printf("Sleep no more\n");
-*/
+
   uint32_t errs = 0;
   // Let go check the tile memory
   for (int i=0; i<DMA_COUNT; i++) {

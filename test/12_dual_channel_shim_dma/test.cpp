@@ -103,108 +103,30 @@ main(int argc, char *argv[])
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
-
-  // TODO: Make this a helper function
   dispatch_packet_t *pkt_a = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt_a);
-  pkt_a->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  pkt_a->arg[0] = AIR_PKT_TYPE_ND_MEMCPY;
-
-  pkt_a->arg[0] |= (col << 32);
-  
-  uint64_t burst_len = 4;
-  uint64_t direction = 1;
-  uint64_t channel = 0;
-
-  pkt_a->arg[0] |= burst_len << 52;
-  pkt_a->arg[0] |= (direction << 60);
-  pkt_a->arg[0] |= (channel << 24);
-  pkt_a->arg[0] |= (2 << 16);
-
-  pkt_a->arg[1]  = BRAM_ADDR+(MB_QUEUE_SIZE*64);
-  pkt_a->arg[2]  = DMA_COUNT*sizeof(float);
-  pkt_a->arg[2] |= (1L<<32);
-  pkt_a->arg[3]  = 1;
-  pkt_a->arg[3] |= (1L<<32);
+  air_packet_nd_memcpy(pkt_a, 0, col, 1, 0, 4, 2, BRAM_ADDR+(MB_QUEUE_SIZE*64), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
   air_queue_dispatch_and_wait(q, wr_idx, pkt_a);
 
+  
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
-
-  // TODO: Use the helper function
   dispatch_packet_t *pkt_b = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt_b);
-  pkt_b->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  pkt_b->arg[0] = AIR_PKT_TYPE_ND_MEMCPY;
-
-  pkt_b->arg[0] |= (col << 32);
-  
-  channel = 1;
-
-  pkt_b->arg[0] |= burst_len << 52;
-  pkt_b->arg[0] |= (direction << 60);
-  pkt_b->arg[0] |= (channel << 24);
-  pkt_b->arg[0] |= (2 << 16);
-
-  pkt_b->arg[1]  = BRAM_ADDR+(MB_QUEUE_SIZE*64)+(DMA_COUNT*4);
-  pkt_b->arg[2]  = DMA_COUNT*sizeof(float);
-  pkt_b->arg[2] |= (1L<<32);
-  pkt_b->arg[3]  = 1;
-  pkt_b->arg[3] |= (1L<<32);
+  air_packet_nd_memcpy(pkt_b, 0, col, 1, 1, 4, 2, BRAM_ADDR+(MB_QUEUE_SIZE*64)+(DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
   air_queue_dispatch_and_wait(q, wr_idx, pkt_b);
 
   // This completes the copying to the tiles, let's move the pattern back
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
-
-  // TODO: Use the helper function
   dispatch_packet_t *pkt_c = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt_c);
-  pkt_c->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  pkt_c->arg[0] = AIR_PKT_TYPE_ND_MEMCPY;
-
-  pkt_c->arg[0] |= (col << 32);
-  
-  direction = 0;
-  channel = 0;
-
-  pkt_c->arg[0] |= burst_len << 52;
-  pkt_c->arg[0] |= (direction << 60);
-  pkt_c->arg[0] |= (channel << 24);
-  pkt_c->arg[0] |= (2 << 16);
-
-  pkt_c->arg[1]  = BRAM_ADDR+(MB_QUEUE_SIZE*64)+(2*DMA_COUNT*sizeof(float));
-  pkt_c->arg[2]  = DMA_COUNT*sizeof(float);
-  pkt_c->arg[2] |= (1L<<32);
-  pkt_c->arg[3]  = 1;
-  pkt_c->arg[3] |= (1L<<32);
+  air_packet_nd_memcpy(pkt_c, 0, col, 0, 0, 4, 2, BRAM_ADDR+(MB_QUEUE_SIZE*64)+(2*DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
   air_queue_dispatch_and_wait(q, wr_idx, pkt_c);
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
-
-  // TODO: Use the helper function
   dispatch_packet_t *pkt_d = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt_d);
-  pkt_d->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  pkt_d->arg[0] = AIR_PKT_TYPE_ND_MEMCPY;
+  air_packet_nd_memcpy(pkt_d, 0, col, 0, 1, 4, 2, BRAM_ADDR+(MB_QUEUE_SIZE*64)+(3*DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
 
-  pkt_d->arg[0] |= (col << 32);
-  
-  direction = 0;
-  channel = 1;
-
-  pkt_d->arg[0] |= burst_len << 52;
-  pkt_d->arg[0] |= (direction << 60);
-  pkt_d->arg[0] |= (channel << 24);
-  pkt_d->arg[0] |= (2 << 16);
-
-  pkt_d->arg[1]  = BRAM_ADDR+(MB_QUEUE_SIZE*64)+(3*DMA_COUNT*sizeof(float));
-  pkt_d->arg[2]  = DMA_COUNT*sizeof(float);
-  pkt_d->arg[2] |= (1L<<32);
-  pkt_d->arg[3]  = 1;
-  pkt_d->arg[3] |= (1L<<32);
   air_queue_dispatch_and_wait(q, wr_idx, pkt_d);
 
 
