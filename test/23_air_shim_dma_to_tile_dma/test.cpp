@@ -184,7 +184,7 @@ main(int argc, char *argv[])
   auto graph_fn = (void (*)(void*,void*))dlsym(handle, "_mlir_ciface_graph");
   assert(graph_fn && "failed to locate _mlir_ciface_graph in aie_ctrl.so");
 
-  tensor_t<uint32_t,1> input;6
+  tensor_t<uint32_t,1> input;
   input.shape[0] = 256;
   input.d = (uint32_t*)malloc(sizeof(uint32_t)*256);
   for (int i=0; i<input.shape[0]; i++) {
