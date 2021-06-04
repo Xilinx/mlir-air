@@ -79,6 +79,16 @@ hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
   return HSA_STATUS_SUCCESS;
 }
 
+hsa_status_t air_packet_device_init(dispatch_packet_t *pkt, uint32_t num_cols) {
+  initialize_packet(pkt);
+  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  pkt->arg[0]  = AIR_PKT_TYPE_DEVICE_INITIALIZE;
+  pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
+  pkt->arg[0] |= ((uint64_t)num_cols << 40);
+
+  return HSA_STATUS_SUCCESS;
+}
+
 hsa_status_t air_packet_aie_lock_range(dispatch_packet_t *pkt, uint16_t herd_id,
                                  uint64_t lock_id, uint64_t acq_rel, uint64_t value,
                                  uint8_t start_col, uint8_t num_cols,

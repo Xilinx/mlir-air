@@ -60,12 +60,10 @@ main(int argc, char *argv[])
   mlir_initialize_locks();
   mlir_configure_dmas();
 
-  for (int i=0; i<DMA_COUNT; i++) {
-    uint32_t d = i+1;
-    mlir_write_buffer_buf0(i, d);
-  }
+  for (int i=0; i<DMA_COUNT; i++)
+    mlir_write_buffer_buf0(i, i+1);
 
-  uint32_t *bram_ptr;
+  uint32_t *bram_ptr = nullptr;
 
   // use BRAM_ADDR + 0x4000 as the data address
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
@@ -89,13 +87,9 @@ main(int argc, char *argv[])
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
-  dispatch_packet_t *shim_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(shim_pkt);
-  shim_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  shim_pkt->arg[0]  = AIR_PKT_TYPE_DEVICE_INITIALIZE;
-  shim_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
-  shim_pkt->arg[0] |= ((uint64_t)XAIE_NUM_COLS << 40);
-  air_queue_dispatch_and_wait(q, wr_idx, shim_pkt);
+  dispatch_packet_t *dev_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  air_packet_device_init(dev_pkt, XAIE_NUM_COLS);
+  air_queue_dispatch_and_wait(q, wr_idx, dev_pkt);
 
   printf("loading aie_ctrl.so\n");
   auto handle = dlopen("./aie_ctrl.so", RTLD_NOW);

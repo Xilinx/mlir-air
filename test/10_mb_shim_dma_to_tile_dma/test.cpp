@@ -52,7 +52,6 @@ main(int argc, char *argv[])
   XAieDma_Shim ShimDmaInst1;
   uint32_t *bram_ptr;
 
-  #define BRAM_ADDR 0x020100000000LL
   #define DMA_COUNT 512
 
   // We're going to stamp over the memory
@@ -61,16 +60,15 @@ main(int argc, char *argv[])
 
   // create the queue
   queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, 0x020100000000LL);
+  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
   assert(ret == 0 && "failed to create queue!");
-
 
   // Let's make a buffer that we can transfer in the same BRAM, after the queue of HSA packets
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd == -1)
     return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
 
-  bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, BRAM_ADDR+(MB_QUEUE_SIZE*64));
+  bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_SHMEM_BASE+0x4000);
   
   for (int i=0;i<DMA_COUNT;i++) {
     bram_ptr[i] = i;
@@ -86,24 +84,19 @@ main(int argc, char *argv[])
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
 
-  dispatch_packet_t *shim_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(shim_pkt);
-  shim_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  shim_pkt->arg[0]  = AIR_PKT_TYPE_DEVICE_INITIALIZE;
-  shim_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
-  shim_pkt->arg[0] |= ((uint64_t)XAIE_NUM_COLS << 40);
-
-  air_queue_dispatch_and_wait(q, wr_idx, shim_pkt);
+  dispatch_packet_t *dev_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  air_packet_device_init(dev_pkt, XAIE_NUM_COLS);
+  air_queue_dispatch_and_wait(q, wr_idx, dev_pkt);
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
 
-
   dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt, 0, col, 1, 0, 4, 2, BRAM_ADDR+(MB_QUEUE_SIZE*64), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt, 0, col, 1, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000, DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
   air_queue_dispatch_and_wait(q, wr_idx, pkt);
 
   ACDC_print_dma_status(xaie->TileInst[7][2]);
+
   uint32_t errs = 0;
   // Let go check the tile memory
   for (int i=0; i<DMA_COUNT; i++) {
