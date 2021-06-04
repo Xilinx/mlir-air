@@ -216,18 +216,48 @@ XAieGbl_Config *XAieGbl_LookupConfig(u16 DeviceId)
 int xaie_shim_dma_push_bd(XAieGbl_Tile *tile, int direction, int channel, uint64_t addr, uint32_t len)
 {
   uint32_t shimDMAchannel = channel;
+  uint32_t status_register_offset;
+  uint32_t status_mask_shift;
+  uint32_t control_register_offset;
+  uint32_t start_queue_register_offset;
+  uint32_t start_queue_size_mask_shift;
+
   if (direction == SHIM_DMA_S2MM) {
     shimDMAchannel += XAIEDMA_SHIM_CHNUM_S2MM0;   
     xil_printf("\n\r  S2MM Shim DMA start channel %d\n\r", shimDMAchannel);
+    status_register_offset = 0x1d160;
+    if (channel == 0) {
+      status_mask_shift = 0; 
+      control_register_offset = 0x1d140;
+      start_queue_register_offset = 0x1d144;
+      start_queue_size_mask_shift = 6; 
+    }
+    else {
+      status_mask_shift = 2; 
+      control_register_offset = 0x1d148;
+      start_queue_register_offset = 0x1d14c;
+      start_queue_size_mask_shift = 9; 
+
+    }
   }
   else {
     shimDMAchannel += XAIEDMA_SHIM_CHNUM_MM2S0;   
     xil_printf("\n\r  MM2S Shim DMA start channel %d\n\r", shimDMAchannel);
+    status_register_offset = 0x1d164;
+    if (channel == 0) {
+      status_mask_shift = 0; 
+      control_register_offset = 0x1d150;
+      start_queue_register_offset = 0x1d154;
+      start_queue_size_mask_shift = 6; 
+    }
+    else {
+      status_mask_shift = 2; 
+      control_register_offset = 0x1d158;
+      start_queue_register_offset = 0x1d15c;
+      start_queue_size_mask_shift = 9; 
+    }
   }
 
-  XAieDma_Shim dma;
-  XAieDma_ShimSoftInitialize(tile, &dma);  // We don't want to reset ...
-  // Status print out for debug
   uint32_t s2mm_status = XAieGbl_Read32(tile->TileAddr + 0x0001D160);
   uint32_t mm2s_status = XAieGbl_Read32(tile->TileAddr + 0x0001D164);
   uint32_t s2mm0_ctrl  = XAieGbl_Read32(tile->TileAddr + 0x0001D140);
@@ -239,46 +269,49 @@ int xaie_shim_dma_push_bd(XAieGbl_Tile *tile, int direction, int channel, uint64
   xil_printf("mm2s0 ctrl  : %08X\n\r", mm2s0_ctrl);
 
   uint32_t start_bd = 4*shimDMAchannel;
-  uint32_t outstanding = XAieDma_ShimPendingBdCount(&dma, shimDMAchannel);
+  uint32_t outstanding = (XAieGbl_Read32(tile->TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
   // If outstanding >=4, we're in trouble!!!!
   if (outstanding >=4) {
     xil_printf("\n\r *** BD OVERFLOW in shimDMA channel %d *** \n\r",shimDMAchannel);
-    while (XAieDma_ShimPendingBdCount(&dma, shimDMAchannel) > 3) {}
+    bool waiting = true;
+    while (waiting) {
+      outstanding = (XAieGbl_Read32(tile->TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
+      waiting = (outstanding > 3);
+    }
   }
   xil_printf("Outstanding pre : %d\n\r", outstanding);
-  uint32_t bd = start_bd+outstanding;
-  XAieGbl_Write32(tile->TileAddr + 0x0001D008+(bd*0x14), 0x0);
+  uint32_t bd = start_bd+outstanding + 0; //hack
+  XAieGbl_Write32(tile->TileAddr + 0x0001D008+(bd*0x14), 0x0);           // Mark the BD as invalid
   uint32_t chk = XAieGbl_Read32(tile->TileAddr + 0x0001D008+(bd*0x14));
   xil_printf("bd %d %08X : %08X\n\r",bd, 0x0001D008+(bd*0x14), chk);
   xil_printf("bd %d HAD : %08X\n\r",bd, HIGH_ADDR((u64)addr));
   xil_printf("bd %d LAD : %08X\n\r",bd, LOW_ADDR((u64)addr));
   xil_printf("bd %d LEN : %08X\n\r",bd, len);
 
-  /*
-
-  XAieDma_ShimBdSetAddr(&dma, bd, HIGH_ADDR((u64)addr), LOW_ADDR((u64)addr), len);
-  XAieDma_ShimBdSetAxi(&dma, bd, 0, 4, 0, 0, XAIE_ENABLE);
-  //XAieDma_ShimBdSetNext(&dma, bd, 0xff);  // Form an orderly queue
-
-  XAieDma_ShimBdWrite(&dma, bd);
-*/
   // Set the registers directly ...
   uint32_t base_address =  0x1d000 + bd * 0x14;
   XAieGbl_Write32(tile->TileAddr + base_address + 0x00, LOW_ADDR((u64)addr));
   XAieGbl_Write32(tile->TileAddr + base_address + 0x04, len >> 2); // We pass in bytes, but the shim DMA can ony deal with 32 bits
   u32 control = (HIGH_ADDR((u64)addr) << 16) | 1;
   XAieGbl_Write32(tile->TileAddr + base_address + 0x08, control);
-  XAieGbl_Write32(tile->TileAddr + base_address + 0x0C, 0x0);
+  XAieGbl_Write32(tile->TileAddr + base_address + 0x0C, 0x10); // Secure bit
   XAieGbl_Write32(tile->TileAddr + base_address + 0x10, 0x0);
 
-  XAieDma_ShimSetStartBd(&dma, shimDMAchannel, bd);
-  //XAieDma_ShimChControl(&dma, shimDMAchannel, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
+
+  // Check if the channel is running or not
+  uint32_t precheck_status = (XAieGbl_Read32(tile->TileAddr + status_register_offset) >> status_mask_shift) & 0b11;
+  if (precheck_status == 0b00) {
+    XAieGbl_Write32(tile->TileAddr + control_register_offset, 0xb001); // Stream traffic can run, we can issue AXI-MM, and the channel is enabled
+  }
+  // Now push into the queue
+  XAieGbl_Write32(tile->TileAddr + start_queue_register_offset, bd);
 
   for (int i=0;i<0x14;i+=4) {
     uint32_t rb = XAieGbl_Read32(tile->TileAddr + 0x0001D000+(bd*0x14)+i);
-    xil_printf("bd %d %08X : %08X\n\r",bd, 0x0001D008+(bd*0x14)+i, rb);
+    xil_printf("bd %d %08X : %08X\n\r",bd, 0x0001D000+(bd*0x14)+i, rb);
   }
-  outstanding = XAieDma_ShimPendingBdCount(&dma, shimDMAchannel);
+
+  outstanding = (XAieGbl_Read32(tile->TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
   xil_printf("Outstanding post: %d\n\r", outstanding);
   xil_printf("bd pushed as bd %d\n\r",bd);
     // Status print out for debug
@@ -298,7 +331,7 @@ int xaie_shim_dma_push_bd(XAieGbl_Tile *tile, int direction, int channel, uint64
   else {
     xil_printf("  End of MM2S Shim DMA start channel %d\n\r", shimDMAchannel);
   }
-  
+  return 1;
 }
 
 int xaie_lock_release(XAieGbl_Tile *tile, u32 lock_id, u32 val)
@@ -332,7 +365,7 @@ void xaie_device_init(int num_cols)
   xaie::AieConfigPtr = xaie::XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
 
   for (int col=0; col<num_cols; col++) {
-      xil_printf("init physical dma col %d\n\r", col);
+      //xil_printf("init physical dma col %d\n\r", col);
       xaie::XAieGbl_CfgInitialize_Tile(0, &xaie::ShimTileInst[col],
                                        col, 0, xaie::AieConfigPtr);
       // I'd love to do this, but it overflows the program memory, because, yeah
@@ -347,11 +380,12 @@ void xaie_device_init(int num_cols)
     for (int bd=0;bd<16;bd++) {
       XAieGbl_Write32(xaie::ShimTileInst[col].TileAddr + 0x0001D008 + 0x14*bd, 0);
     }
+    /*
     // Enable all 4 channels
     for (int ch=0;ch<4;ch++) {
       XAieGbl_Write32(xaie::ShimTileInst[col].TileAddr + 0x0001D140 + 0x8*ch, 0x01); // Enable channel
     }
-
+    */
       //XAieDma_ShimInitialize(&xaie::ShimTileInst[col], &xaie::ShimDMAInst[col]);  // We might want to reset ...          
   }
 }
