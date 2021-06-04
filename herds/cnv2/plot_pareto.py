@@ -13,8 +13,8 @@ data = np.genfromtxt(args.filename, delimiter=' ', usecols=[0,1,2], names=True, 
 
 def plotTimes():
     plt.grid()
-    plt.plot(data[args.columnName], label=args.columnName)
-    plt.xticks(np.arange(0, len(data['Area']), 10))
+    plt.plot(np.arange(data['Area'][0], len(data['Area']) + data['Area'][0]), data[args.columnName], label=args.columnName)
+    plt.xticks(np.arange(data['Area'][0], len(data['Area']) + data['Area'][0], 10))
     plt.legend()
     plt.ylabel("FPS")
     plt.show()
