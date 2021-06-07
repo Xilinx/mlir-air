@@ -117,9 +117,6 @@ main(int argc, char *argv[])
   mlir_configure_dmas();
   mlir_start_cores();
 
-  // build_tile_to_shim_dma_mapping();
-  // build_arg_to_shim_dma_channel_mapping();
-
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd != -1) {
     bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_SHMEM_BASE+0x4000);
@@ -232,7 +229,7 @@ main(int argc, char *argv[])
   gettimeofday(&after, NULL);
   diff_s = after.tv_sec - before.tv_sec;
   diff_us = after.tv_usec - before.tv_usec;
-  
+
   if (diff_s)
     diff_us += 10000000;
 
