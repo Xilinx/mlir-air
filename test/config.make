@@ -24,6 +24,8 @@ endif
 .PHONY: all
 all:
 
+CC=clang-8
+
 $(BUILD_CPP_FILES):  $(MLIR_CPP_FILES)
 
 %.o: %.cpp
@@ -36,7 +38,8 @@ $(BUILD_CPP_FILES):  $(MLIR_CPP_FILES)
 		-lxaiengine \
 		-lmetal \
 		-lopen_amp \
-		-lairhost \
+		-Wl,--whole-archive -lairhost -Wl,--no-whole-archive \
+		-lstdc++ \
 		-ldl \
 		-o $@
 

@@ -5,10 +5,6 @@ module {
   %t70 = AIE.tile(7, 0)
   %t71 = AIE.tile(7, 1)
   %t72 = AIE.tile(7, 2)
-  
-  %c72 = AIE.core(%t72) {
-    AIE.end
-  }
 
   // Fixup
   %sw = AIE.switchbox(%t70) {

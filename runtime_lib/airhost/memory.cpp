@@ -4,6 +4,7 @@
 #include <cassert>
 #include <vector>
 #include <cstdio>
+#include <cstring>
 
 #ifdef AIR_LIBXAIE_ENABLE
 #include <xaiengine.h>
@@ -161,10 +162,81 @@ void air_mem_shim_memcpy_impl(uint32_t id, uint64_t x, uint64_t y, void* t, uint
 
 }
 
-extern "C" {
+void air_mem_shim_memcpy2d_impl(uint32_t id, uint64_t x, uint64_t y, void* t,
+                                uint64_t offset_y, uint64_t offset_x,
+                                uint64_t length, uint64_t stride, uint64_t elem_per_stride) {
+
+  auto shim_desc = _air_host_active_herd->shim_desc;
+  auto shim_col = shim_location_data(shim_desc, id-1, x, y);
+  auto shim_chan = shim_channel_data(shim_desc, id-1, x, y);
+
+  tensor_t<uint32_t,2> *tt = (tensor_t<uint32_t,2> *)t;
+
+  printf("Do transfer %p with id %ld of length %ld on behalf of x=%ld, y=%ld shim col %ld channel %ld, offset %ld,%ld, stride %ld, elem %ld\n",
+          tt->d, id, length, x, y, shim_col, shim_chan, offset_y, offset_x, stride, elem_per_stride);
+
+  uint64_t addr = (u64)AIR_VCK190_SHMEM_BASE+0x4000;
+  uint32_t *bounce_buffer = _air_host_bram_ptr;
+  bool isMM2S = shim_chan >= 2;
+
+  XAieDma_Shim dmaInst;
+  XAieDma_ShimInitialize(&(_air_host_active_libxaie1->TileInst[shim_col][0]), &dmaInst);
+
+  if (isMM2S) {
+    uint32_t *data_ptr = tt->d + (offset_y * tt->shape[1] + offset_x);
+    uint32_t *bounce_ptr = bounce_buffer;
+    for (int n=0; n<length; n+=elem_per_stride) {
+      // This is the input, so we need to take what is in t and put it into the BRAM
+      memcpy(bounce_ptr, data_ptr, elem_per_stride*sizeof(uint32_t));
+      data_ptr += stride;
+      bounce_ptr += elem_per_stride;
+    }
+  }
+
+  //for (int n=0; n<length; n+=elem_per_stride) {
+    uint32_t bd = shim_chan+1;
+    auto burstlen = 4;
+    XAieDma_ShimBdSetAddr(&dmaInst, bd, HIGH_ADDR(addr), LOW_ADDR(addr), sizeof(uint32_t) * length);
+    XAieDma_ShimBdSetAxi(&dmaInst, bd, 0, burstlen, 0, 0, XAIE_ENABLE);
+    XAieDma_ShimBdWrite(&dmaInst, bd);
+    XAieDma_ShimSetStartBd((&dmaInst), shim_chan, bd); 
+
+    XAieDma_ShimChControl((&dmaInst), shim_chan, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
+
+    int count = 0;
+    while (XAieDma_ShimPendingBdCount(&dmaInst, shim_chan)) {
+      XAieLib_usleep(1000);
+      count++;
+      if (!(count % 1000)) {
+        printf("%d seconds\n",count/1000);
+        if (count == 2000) break;
+      }
+    }
+    //addr += elem_per_stride;
+  //}
+
+  if (!isMM2S) {
+    uint32_t *data_ptr = tt->d + (offset_y * tt->shape[1] + offset_x);
+    uint32_t *bounce_ptr = bounce_buffer;
+    for (int n=0; n<length; n+=elem_per_stride) {
+      // This is the input, so we need to take what is in t and put it into the BRAM
+      memcpy(data_ptr, bounce_ptr, elem_per_stride*sizeof(uint32_t));
+      data_ptr += stride;
+      bounce_ptr += elem_per_stride;
+    }
+  }
+}
+
+extern "C"  {
 
 void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length) {
   air_mem_shim_memcpy_impl(id, x, y, t, offset, length);
+}
+
+void _mlir_ciface_air_shim_memcpy2d(uint32_t id, uint64_t x, uint64_t y, void* t,
+                                    uint64_t offset_y, uint64_t offset_x,
+                                    uint64_t length, uint64_t stride, uint64_t elem_per_stride) {
+  air_mem_shim_memcpy2d_impl(id, x, y, t, offset_y, offset_x, length, stride, elem_per_stride);
 }
 
 }

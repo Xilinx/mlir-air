@@ -42,7 +42,7 @@ queue_t *q = nullptr;
 
 extern "C" {
 
-void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length) {
+void q_mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length) {
   uint64_t col = 2;
 
   uint64_t wr_idx = queue_add_write_index(q, 1);
@@ -87,13 +87,10 @@ main(int argc, char *argv[])
   air_queue_dispatch_and_wait(q, wr_idx, dev_pkt);
 
   printf("loading aie_ctrl.so\n");
-  auto handle = dlopen("./aie_ctrl.so", RTLD_NOW);
-  if (!handle) {
-    printf("%s\n",dlerror());
-  }
+  auto handle = air_herd_load_from_file("./aie_ctrl.so");
   assert(handle && "failed to open aie_ctrl.so");
 
-  auto graph_fn = (void (*)(void*,void*))dlsym(handle, "_mlir_ciface_graph");
+  auto graph_fn = (void (*)(void*))dlsym((void*)handle, "_mlir_ciface_graph");
   assert(graph_fn && "failed to locate _mlir_ciface_graph in aie_ctrl.so");
 
   tensor_t<uint32_t,1> input;
@@ -103,13 +100,13 @@ main(int argc, char *argv[])
     input.d[i] = i;
   }
 
+  input.d[24] = 0xacdc;
+
   auto i = &input;
-  graph_fn(i, i);
+  graph_fn(i);
 
   ACDC_print_dma_status(xaie->TileInst[7][2]);
 
-  // we copied the start of the shared bram into tile memory,
-  // fish out the queue id and check it
   uint32_t d = mlir_read_buffer_buf0(24);
   printf("ID %x\n", d);
 

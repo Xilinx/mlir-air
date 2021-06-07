@@ -21,34 +21,37 @@ configure_lit_site_cfg(
   ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
   MAIN_CONFIG
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py
-)
+  )
 
-set(TEST_DEPENDS
+  set(TEST_DEPENDS
   FileCheck count not
-)
+  )
 
-add_lit_testsuite(check-air "Running the air board regression tests"
+  add_lit_testsuite(check-air "Running the air board regression tests"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
   )
-set_target_properties(check-air PROPERTIES FOLDER "Tests")
+  set_target_properties(check-air PROPERTIES FOLDER "Tests")
+  
+  add_lit_testsuites(AIR_TEST ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS ${TEST_DEPENDS})
+  
+  add_custom_target(build-check-air)
+  add_dependencies(check-air build-check-air)
+  add_dependencies(check-all check-air)
 
-add_lit_testsuites(AIR_TEST ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS ${TEST_DEPENDS})
-
-add_custom_target(build-check-air)
-add_dependencies(check-air build-check-air)
-add_dependencies(check-all check-air)
-
-if(LIBXAIE_FOUND)
+#if(LIBXAIE_FOUND)
 
   link_libraries(
     ${AIR_LIBXAIE_LIBS}
     airhost
+    dl
   )
+
+  link_directories(${CMAKE_BINARY_DIR}/../air_runtime_lib/airhost)
 
   foreach(subdir ${SUBDIRS})
     add_subdirectory(${subdir})
     message(${subdir})
   endforeach()
 
-endif()
+#endif()
