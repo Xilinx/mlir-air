@@ -80,13 +80,18 @@ struct air_herd_desc_t {
   air_herd_shim_desc_t *shim_desc;
 };
 
+struct air_rt_herd_desc_t {
+  queue_t *q;
+  air_herd_desc_t *herd_desc;
+};
+
 // herd shared library helpers
 //
 
 typedef size_t air_herd_handle_t;
 
 // return 0 on failure, nonzero otherwise
-air_herd_handle_t air_herd_load_from_file(const char* filename);
+air_herd_handle_t air_herd_load_from_file(const char* filename, queue_t *q=0);
 
 // return 0 on success, nonzero otherwise
 int32_t air_herd_unload(air_herd_handle_t handle);

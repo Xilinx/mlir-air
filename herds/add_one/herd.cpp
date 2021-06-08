@@ -73,6 +73,13 @@ main(int argc, char *argv[])
   air_packet_herd_init(herd_pkt, 0, col, 2, /*row=*/2, 2);
   air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
 
+  wr_idx = queue_add_write_index(q, 1);
+  packet_id = wr_idx % q->size;
+
+  dispatch_packet_t *dev_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  air_packet_device_init(dev_pkt, XAIE_NUM_COLS);
+  air_queue_dispatch_and_wait(q, wr_idx, dev_pkt);
+
   tensor_t<int32_t,1> input;
   tensor_t<int32_t,1> output;
 
@@ -83,7 +90,7 @@ main(int argc, char *argv[])
   output.d = output.aligned = (int32_t*)malloc(sizeof(int32_t)*output.shape[0]);
   
   printf("loading aie_ctrl.so\n");
-  auto handle = air_herd_load_from_file("./aie_ctrl.so");
+  auto handle = air_herd_load_from_file("./aie_ctrl.so", q);
   assert(handle && "failed to open aie_ctrl.so");
 
   auto graph_fn = (void (*)(void*,void*))dlsym((void*)handle, "_mlir_ciface_myAddOne");
@@ -92,7 +99,7 @@ main(int argc, char *argv[])
   for (int i=0; i<input.shape[0]; i++) {
     input.d[i] = i;
   }
-  for (int i=0; i<16; i++) { 
+  for (int i=0; i<16; i++) {
     int32_t rb0 = mlir_read_buffer_buf0(i);
     int32_t rb1 = mlir_read_buffer_buf1(i);
     int32_t rb2 = mlir_read_buffer_buf2(i);
@@ -109,7 +116,7 @@ main(int argc, char *argv[])
   o = &output;
   graph_fn(i, o);
 
-  for (int i=0; i<16; i++) { 
+  for (int i=0; i<16; i++) {
     int32_t rb0 = mlir_read_buffer_buf0(i);
     int32_t rb1 = mlir_read_buffer_buf1(i);
     int32_t rb2 = mlir_read_buffer_buf2(i);

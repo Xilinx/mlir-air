@@ -93,7 +93,7 @@ int64_t shim_channel_data(air_herd_shim_desc_t *sd, int i, int j, int k) {
 
 extern "C" {
 
-extern air_herd_desc_t *_air_host_active_herd;
+extern air_rt_herd_desc_t _air_host_active_herd;
 extern air_libxaie1_ctx_t *_air_host_active_libxaie1;
 extern uint32_t *_air_host_bram_ptr;
 
@@ -106,14 +106,14 @@ extern uint32_t *_air_host_bram_ptr;
 
 void air_mem_shim_memcpy_impl(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length)
 {
-  assert(_air_host_active_herd && "cannot shim memcpy without active herd");
+  assert(_air_host_active_herd.herd_desc && "cannot shim memcpy without active herd");
 
-  auto shim_desc = _air_host_active_herd->shim_desc;
+  auto shim_desc = _air_host_active_herd.herd_desc->shim_desc;
   auto shim_col = shim_location_data(shim_desc, id-1, x, y);
   auto shim_chan = shim_channel_data(shim_desc, id-1, x, y);
 
-  printf("Do transfer with id %d of length %ld on behalf of x=%ld, y=%ld using shim DMA %ld channel %ld, offset is %ld\n",
-         id, length, x, y, shim_col, shim_chan, offset);
+  // printf("Do transfer with id %d of length %ld on behalf of x=%ld, y=%ld using shim DMA %ld channel %ld, offset is %ld\n",
+  //        id, length, x, y, shim_col, shim_chan, offset);
 
   tensor_t<uint32_t,1> *tt = (tensor_t<uint32_t,1> *)t;
 
@@ -154,7 +154,7 @@ void air_mem_shim_memcpy_impl(uint32_t id, uint64_t x, uint64_t y, void* t, uint
   }
   if (!isMM2S) {
     // This is the output, so we need to take what is in the BRAM and put it into t
-    printf("Copy %ld samples to the output starting at %ld\n",length, offset);
+    //printf("Copy %ld samples to the output starting at %ld\n",length, offset);
     for (int i=0; i<length; i++) {
       tt->d[offset + i] = bounce_buffer[i];
     }
@@ -166,14 +166,16 @@ void air_mem_shim_memcpy2d_impl(uint32_t id, uint64_t x, uint64_t y, void* t,
                                 uint64_t offset_y, uint64_t offset_x,
                                 uint64_t length, uint64_t stride, uint64_t elem_per_stride) {
 
-  auto shim_desc = _air_host_active_herd->shim_desc;
+  assert(_air_host_active_herd.herd_desc && "cannot shim memcpy without active herd");
+
+  auto shim_desc = _air_host_active_herd.herd_desc->shim_desc;
   auto shim_col = shim_location_data(shim_desc, id-1, x, y);
   auto shim_chan = shim_channel_data(shim_desc, id-1, x, y);
 
   tensor_t<uint32_t,2> *tt = (tensor_t<uint32_t,2> *)t;
 
-  printf("Do transfer %p with id %ld of length %ld on behalf of x=%ld, y=%ld shim col %ld channel %ld, offset %ld,%ld, stride %ld, elem %ld\n",
-          tt->d, id, length, x, y, shim_col, shim_chan, offset_y, offset_x, stride, elem_per_stride);
+  // printf("Do transfer %p with id %ld of length %ld on behalf of x=%ld, y=%ld shim col %ld channel %ld, offset %ld,%ld, stride %ld, elem %ld\n",
+  //         tt->d, id, length, x, y, shim_col, shim_chan, offset_y, offset_x, stride, elem_per_stride);
 
   uint64_t addr = (u64)AIR_VCK190_SHMEM_BASE+0x4000;
   uint32_t *bounce_buffer = _air_host_bram_ptr;
@@ -227,10 +229,47 @@ void air_mem_shim_memcpy2d_impl(uint32_t id, uint64_t x, uint64_t y, void* t,
   }
 }
 
+void air_shim_memcpy_queue_impl(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length) {
+  assert(_air_host_active_herd.herd_desc && "cannot shim memcpy without active herd");
+  assert(_air_host_active_herd.q && "cannot shim memcpy using a queue without active queue");
+
+  auto shim_desc = _air_host_active_herd.herd_desc->shim_desc;
+  auto shim_col = shim_location_data(shim_desc, id-1, x, y);
+  auto shim_chan = shim_channel_data(shim_desc, id-1, x, y);
+
+  tensor_t<uint32_t,1> *tt = (tensor_t<uint32_t,1> *)t;
+  uint32_t *bounce_buffer = _air_host_bram_ptr;
+  bool isMM2S = shim_chan >= 2;
+
+  if (isMM2S) {
+    shim_chan = shim_chan - 2;
+    uint32_t *data_ptr = tt->d + offset;
+    // This is the input, so we need to take what is in t and put it into the BRAM
+    memcpy(bounce_buffer, data_ptr, length*sizeof(uint32_t));
+  }
+
+  uint64_t wr_idx = queue_add_write_index(_air_host_active_herd.q, 1);
+  uint64_t packet_id = wr_idx % _air_host_active_herd.q->size;
+
+  dispatch_packet_t *pkt = (dispatch_packet_t*)(_air_host_active_herd.q->base_address_vaddr) + packet_id;
+  air_packet_nd_memcpy(pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S, shim_chan, /*burst_len=*/4, /*memory_space=*/2,
+                       AIR_VCK190_SHMEM_BASE+0x4000, length*sizeof(uint32_t), 1, 0, 1, 0, 1, 0);
+  air_queue_dispatch_and_wait(_air_host_active_herd.q, wr_idx, pkt);
+
+  if (!isMM2S) {
+    uint32_t *data_ptr = tt->d + offset;
+    memcpy(data_ptr, bounce_buffer, length*sizeof(uint32_t));
+  }
+}
+
 extern "C"  {
 
 void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length) {
-  air_mem_shim_memcpy_impl(id, x, y, t, offset, length);
+  assert(_air_host_active_herd.herd_desc && "cannot shim memcpy without active herd");
+  if (_air_host_active_herd.q)
+    air_shim_memcpy_queue_impl(id, x, y, t, offset, length);
+  else
+    air_mem_shim_memcpy_impl(id, x, y, t, offset, length);
 }
 
 void _mlir_ciface_air_shim_memcpy2d(uint32_t id, uint64_t x, uint64_t y, void* t,

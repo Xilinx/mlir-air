@@ -9,7 +9,7 @@
 
 // temporary solution to stash some state
 extern "C" {
-air_herd_desc_t *_air_host_active_herd = nullptr;
+air_rt_herd_desc_t _air_host_active_herd = {nullptr, nullptr};
 air_libxaie1_ctx_t *_air_host_active_libxaie1 = nullptr;
 uint32_t *_air_host_bram_ptr = nullptr;
 }
@@ -47,7 +47,7 @@ air_deinit_libxaie1(air_libxaie1_ctx_t *xaie)
 }
 
 air_herd_handle_t
-air_herd_load_from_file(const char* filename)
+air_herd_load_from_file(const char* filename, queue_t *q)
 {
   air_herd_handle_t handle;
   void* _handle = dlopen(filename, RTLD_NOW);
@@ -56,9 +56,11 @@ air_herd_load_from_file(const char* filename)
     return 0;
   }
 
+  _air_host_active_herd.q = q;
+
   handle = (air_herd_handle_t)_handle;
-  _air_host_active_herd = air_herd_get_desc(handle);
-  assert(_air_host_active_herd);
+  _air_host_active_herd.herd_desc = air_herd_get_desc(handle);
+  assert(_air_host_active_herd.herd_desc);
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   assert(fd != -1 && "Failed to open /dev/mem");
@@ -77,8 +79,10 @@ air_herd_unload(air_herd_handle_t handle)
   if (!handle)
     return -1;
 
-  if (air_herd_get_desc(handle) == _air_host_active_herd)
-    _air_host_active_herd = nullptr;
+  if (air_herd_get_desc(handle) == _air_host_active_herd.herd_desc) {
+    _air_host_active_herd.herd_desc = nullptr;
+    _air_host_active_herd.q = nullptr;
+  }
 
   return dlclose((void*)handle);
 }
