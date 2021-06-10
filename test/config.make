@@ -7,7 +7,8 @@ ARM_OBJ_DIR = .
 MLIR_CPP_FILES = $(patsubst %.mlir,%.inc,$(filter %.mlir, $(SOURCE_FILES)))
 BUILD_CPP_FILES = $(filter %.cpp, $(SOURCE_FILES))
 
-OBJ_FILES=$(patsubst %.cpp,%.o,$(BUILD_CPP_FILES))
+OBJ_FILES = $(filter %.o, $(SOURCE_FILES))
+OBJ_FILES += $(patsubst %.cpp,%.o,$(BUILD_CPP_FILES))
 OBJ_FILES += test_library.o
 
 AIE_OPT = aie-opt

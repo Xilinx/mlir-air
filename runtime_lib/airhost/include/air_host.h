@@ -85,6 +85,11 @@ struct air_rt_herd_desc_t {
   air_herd_desc_t *herd_desc;
 };
 
+struct air_module_desc_t {
+  uint64_t length;
+  air_herd_desc_t **herd_descs;
+};
+
 // herd shared library helpers
 //
 
