@@ -38,8 +38,8 @@ int main(int argc, char *argv[])
   unsigned word1_lo = (unsigned)word1;
   unsigned word0_hi = (unsigned)(word0 >> 32);
   unsigned word1_hi = (unsigned)(word1 >> 32);
-  printf("I read back %08X%08X\r\n", word0_hi, word0_lo);
-  printf("I read back %08X%08X\r\n", word1_hi, word1_lo);
+  printf("I was able to read back %08X%08X\r\n", word0_hi, word0_lo);
+  printf("I was able to read back %08X%08X\r\n", word1_hi, word1_lo);
   printf("PASS!\n");
 
   return 0;
