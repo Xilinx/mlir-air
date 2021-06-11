@@ -118,7 +118,7 @@ main(int argc, char *argv[])
   output_ref.d = output_ref.aligned = (float*)malloc(sizeof(float)*output_ref.shape[0]*output_ref.shape[1]);
 
   printf("loading aie_ctrl.so\n");
-  auto handle = air_herd_load_from_file("./aie_ctrl.so");
+  auto handle = air_module_load_from_file("./aie_ctrl.so");
   assert(handle && "failed to open aie_ctrl.so");
 
   auto herd_fn = (void (*)(void*,void *,void*))dlsym((void*)handle, "_mlir_ciface_task");

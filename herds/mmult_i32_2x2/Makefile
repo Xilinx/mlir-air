@@ -21,7 +21,7 @@ mmult.air.mlir: mmult.mlir
 	aten-opt  -o $@ $< \
 			-aten-to-air \
 			-air-to-linalg \
-			-air-linalg-codegen \
+			-air-linalg-codegen='herd-size=2,2' \
 			-affine-to-air \
 			-convert-linalg-to-affine-loops
 
@@ -29,6 +29,7 @@ aie_ctrl.mlir: mmult.air.mlir
 	$(ATEN_OPT) -air-to-aie="air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null" \
 				--convert-vector-to-llvm \
 				-air-to-std \
+				-airrt-to-std \
 				-aten-lowering \
 				-o $@ $<
 

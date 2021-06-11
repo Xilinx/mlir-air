@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <string.h>
 
 // temporary solution to stash some state
 extern "C" {
@@ -46,20 +47,23 @@ air_deinit_libxaie1(air_libxaie1_ctx_t *xaie)
   free(xaie);
 }
 
-air_herd_handle_t
-air_herd_load_from_file(const char* filename, queue_t *q)
+air_module_handle_t
+air_module_load_from_file(const char* filename, queue_t *q)
 {
-  air_herd_handle_t handle;
+  air_module_handle_t handle;
   void* _handle = dlopen(filename, RTLD_NOW);
   if (!_handle) {
     printf("%s\n",dlerror());
     return 0;
   }
 
+  handle = (air_module_handle_t)_handle;
+  auto module_desc = air_module_get_desc(handle);
+
+  if (module_desc->length)
+    _air_host_active_herd.herd_desc = module_desc->herd_descs[0];
   _air_host_active_herd.q = q;
 
-  handle = (air_herd_handle_t)_handle;
-  _air_host_active_herd.herd_desc = air_herd_get_desc(handle);
   assert(_air_host_active_herd.herd_desc);
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
@@ -74,22 +78,39 @@ air_herd_load_from_file(const char* filename, queue_t *q)
 }
 
 int32_t
-air_herd_unload(air_herd_handle_t handle)
+air_module_unload(air_module_handle_t handle)
 {
   if (!handle)
     return -1;
 
-  if (air_herd_get_desc(handle) == _air_host_active_herd.herd_desc) {
-    _air_host_active_herd.herd_desc = nullptr;
-    _air_host_active_herd.q = nullptr;
+  auto module_desc = air_module_get_desc(handle);
+  for (int i=0; i<module_desc->length; i++) {
+    auto herd_desc = module_desc->herd_descs[i];
+    if (herd_desc == _air_host_active_herd.herd_desc) {
+      _air_host_active_herd.herd_desc = nullptr;
+      _air_host_active_herd.q = nullptr;
+    }
   }
 
   return dlclose((void*)handle);
 }
 
 air_herd_desc_t *
-air_herd_get_desc(air_herd_handle_t handle)
+air_herd_get_desc(air_module_handle_t handle, const char *herd_name)
 {
   if (!handle) return nullptr;
-  return (air_herd_desc_t*)dlsym((void*)handle, "__air_herd_descriptor");
+  auto module_desc = air_module_get_desc(handle);
+  for (int i=0; i<module_desc->length; i++) {
+    auto herd_desc = module_desc->herd_descs[i];
+    if (!strncmp(herd_name, herd_desc->name, herd_desc->name_length))
+      return herd_desc;
+  }
+  return nullptr;
+}
+
+air_module_desc_t *
+air_module_get_desc(air_module_handle_t handle)
+{
+  if (!handle) return nullptr;
+  return (air_module_desc_t*)dlsym((void*)handle, "__air_module_descriptor");
 }

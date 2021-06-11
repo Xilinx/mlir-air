@@ -90,7 +90,7 @@ main(int argc, char *argv[])
   output.d = output.aligned = (int32_t*)malloc(sizeof(int32_t)*output.shape[0]);
   
   printf("loading aie_ctrl.so\n");
-  auto handle = air_herd_load_from_file("./aie_ctrl.so", q);
+  auto handle = air_module_load_from_file("./aie_ctrl.so", q);
   assert(handle && "failed to open aie_ctrl.so");
 
   auto graph_fn = (void (*)(void*,void*))dlsym((void*)handle, "_mlir_ciface_myAddOne");

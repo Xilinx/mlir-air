@@ -82,7 +82,6 @@ main(int argc, char *argv[])
   if (VERBOSE)
     ACDC_print_tile_status(xaie->TileInst[col][2]);
 
-
   auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
   assert(ret == 0 && "failed to create queue!");
 
@@ -92,7 +91,7 @@ main(int argc, char *argv[])
   dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
   air_packet_herd_init(herd_pkt, 0, col, 2, row, 2);
   air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
-  
+
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
 
@@ -102,23 +101,33 @@ main(int argc, char *argv[])
 
   tensor_t<uint32_t,2> input_A;
   tensor_t<uint32_t,2> input_B;
+  tensor_t<uint32_t,2> input_C;
   tensor_t<uint32_t,2> output;
-  tensor_t<uint32_t,2> output_ref;
+  tensor_t<uint32_t,2> output_ref0;
+  tensor_t<uint32_t,2> output_ref1;
 
-  input_A.shape[0] = input_A.shape[1] = 64;
+  #define M_SIZE 128
+
+  input_A.shape[0] = input_A.shape[1] = M_SIZE;
   input_A.d = input_A.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input_A.shape[0]*input_A.shape[1]);
 
-  input_B.shape[0] = input_B.shape[1] = 64;
+  input_B.shape[0] = input_B.shape[1] = M_SIZE;
   input_B.d = input_B.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input_B.shape[0]*input_B.shape[1]);
 
-  output.shape[0] = output.shape[1] = 64;
+  input_C.shape[0] = input_C.shape[1] = M_SIZE;
+  input_C.d = input_C.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input_C.shape[0]*input_C.shape[1]);
+
+  output.shape[0] = output.shape[1] = M_SIZE;
   output.d = output.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output.shape[0]*output.shape[1]);
 
-  output_ref.shape[0] = output_ref.shape[1] = 64;
-  output_ref.d = output_ref.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output_ref.shape[0]*output_ref.shape[1]);
-  
+  output_ref0.shape[0] = output_ref0.shape[1] = M_SIZE;
+  output_ref0.d = output_ref0.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output_ref0.shape[0]*output_ref0.shape[1]);
+
+  output_ref1.shape[0] = output_ref1.shape[1] = M_SIZE;
+  output_ref1.d = output_ref1.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output_ref1.shape[0]*output_ref1.shape[1]);
+
   printf("loading aie_ctrl.so\n");
-  auto handle = air_herd_load_from_file("./aie_ctrl.so");
+  auto handle = air_module_load_from_file("./aie_ctrl.so");
   assert(handle && "failed to open aie_ctrl.so");
 
   auto herd_fn = (void (*)(void*,void *,void*))dlsym((void*)handle, "_mlir_ciface_task");
@@ -126,16 +135,21 @@ main(int argc, char *argv[])
 
   for (int i=0; i<input_A.shape[0]*input_A.shape[1]; i++) {
     input_A.d[i] = (uint32_t)i;
-    input_B.d[i] = (uint32_t)i+1.1f;
-    output.d[i] = 0.0f;
-    output_ref.d[i] = 0.0f;
+    input_B.d[i] = (uint32_t)i+1;
+    input_C.d[i] = (uint32_t)i+2;
+    output.d[i] = 0;
+    output_ref0.d[i] = 0;
+    output_ref1.d[i] = 0;
+    
   }
 
-  mm_out(&input_A, &input_B, &output_ref);
+  mm_out(&input_A, &input_B, &output_ref0);
+  mm_out(&input_C, &output_ref0, &output_ref1);
 
-  void *a, *b,*o;
+  void *a, *b, *c, *o;
   a = &input_A;
   b = &input_B;
+  c = &input_C;
   o = &output;
   struct timeval before, after;
   long diff_s, diff_us;
@@ -169,11 +183,11 @@ main(int argc, char *argv[])
   int errors = 0;
   auto output_size = output.shape[0]*output.shape[1];
   for (int i=0; i<output_size; i++) {
-    float d = output.d[i];
-    float ref = output_ref.d[i];
+    auto d = output.d[i];
+    auto ref = output_ref0.d[i];
     if (d != ref) {
       errors++;
-      printf("%04X: mismatch %f != %f\n", i, d, ref);
+      printf("%04X: mismatch %d != %d\n", i, d, ref);
     }
   }
   if (!errors) {

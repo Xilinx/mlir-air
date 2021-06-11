@@ -90,18 +90,27 @@ struct air_module_desc_t {
   air_herd_desc_t **herd_descs;
 };
 
-// herd shared library helpers
+// AIR module shared library helpers
 //
 
-typedef size_t air_herd_handle_t;
+typedef size_t air_module_handle_t;
 
 // return 0 on failure, nonzero otherwise
-air_herd_handle_t air_herd_load_from_file(const char* filename, queue_t *q=0);
+air_module_handle_t air_module_load_from_file(const char* filename, queue_t *q=0);
 
 // return 0 on success, nonzero otherwise
-int32_t air_herd_unload(air_herd_handle_t handle);
+int32_t air_module_unload(air_module_handle_t handle);
 
-air_herd_desc_t *air_herd_get_desc(air_herd_handle_t handle);
+air_module_desc_t *air_module_get_desc(air_module_handle_t handle);
+
+air_herd_desc_t *air_herd_get_desc(air_module_handle_t handle, const char *name);
+
+//int32_t air_herd_load(const char *name);
+//int32_t air_herd_load(air_herd_desc_t *herd_desc);
+
+//typedef uint32_t air_herd_status_t;
+//air_herd_status_t air_herd_status(air_herd_desc_t *herd_desc)
+//bool air_herd_is_loaded(air_herd_desc_t *herd_desc);
 
 // memory operations
 //

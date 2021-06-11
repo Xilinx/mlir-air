@@ -19,6 +19,7 @@ aie.1.mlir: aie.0.mlir
 aie_ctrl.mlir: air.mlir Makefile
 	aten-opt $< -air-to-aie="air-to-aie-output-prefix=/dev/null air-to-aie-row-offset=2 air-to-aie-col-offset=7" \
 			-air-to-std \
+			-airrt-to-llvm \
 			-aten-lowering \
 			-o $@
 

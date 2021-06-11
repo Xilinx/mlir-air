@@ -87,7 +87,7 @@ main(int argc, char *argv[])
   air_queue_dispatch_and_wait(q, wr_idx, dev_pkt);
 
   printf("loading aie_ctrl.so\n");
-  auto handle = air_herd_load_from_file("./aie_ctrl.so");
+  auto handle = air_module_load_from_file("./aie_ctrl.so");
   assert(handle && "failed to open aie_ctrl.so");
 
   auto graph_fn = (void (*)(void*))dlsym((void*)handle, "_mlir_ciface_graph");
