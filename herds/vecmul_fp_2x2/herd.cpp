@@ -80,7 +80,7 @@ void printDMAStatus(int col, int row) {
 
 #define GRID_SIZE 4096
 
-void printMems(int i, char *prefix) {
+void printMems(int i, const char *prefix) {
     float rb0 = mlir_read_buffer_buf0(i);
     float rb1 = mlir_read_buffer_buf1(i);
     float rb2 = mlir_read_buffer_buf2(i);
@@ -94,12 +94,6 @@ void printMems(int i, char *prefix) {
     float rb10 = mlir_read_buffer_buf10(i);
     float rb11 = mlir_read_buffer_buf11(i);
     printf("%s %d [7][2] : %f * %f -> %f, [8][2] :%f * %f -> %f, [7][3] : %f * %f -> %f, [8][3] :%f * %f-> %f\n", prefix, i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7, rb8, rb9, rb10, rb11);
-}
-
-float to_float(int32_t v) {
-  int32_t v2 = v;
-  float r = *reinterpret_cast<float *>(&v2);
-  return r;
 }
 
 int
@@ -129,35 +123,23 @@ main(int argc, char *argv[])
 
   // Stomp
   for (int i=0; i<GRID_SIZE; i++) {
-    mlir_write_buffer_buf0(i, 0x3ff00caf);
-    mlir_write_buffer_buf1(i, 0x100caf);
-    mlir_write_buffer_buf2(i, 0x200caf);
-    mlir_write_buffer_buf3(i, 0x300caf);
-    mlir_write_buffer_buf4(i, 0x400caf);
-    mlir_write_buffer_buf5(i, 0x500caf);
-    mlir_write_buffer_buf6(i, 0x600caf);
-    mlir_write_buffer_buf7(i, 0x700caf);
-    mlir_write_buffer_buf8(i, 0x800caf);
-    mlir_write_buffer_buf9(i, 0x900caf);
-    mlir_write_buffer_buf10(i, 0xa00caf);
-    mlir_write_buffer_buf11(i, 0xb00caf);
+    mlir_write_buffer_buf0(i, 1.0f);
+    mlir_write_buffer_buf1(i, 2.0f);
+    mlir_write_buffer_buf2(i, 3.0f);
+    mlir_write_buffer_buf3(i, 4.0f);
+    mlir_write_buffer_buf4(i, 5.0f);
+    mlir_write_buffer_buf5(i, 6.0f);
+    mlir_write_buffer_buf6(i, 7.0f);
+    mlir_write_buffer_buf7(i, 8.0f);
+    mlir_write_buffer_buf8(i, 9.0f);
+    mlir_write_buffer_buf9(i, 10.0f);
+    mlir_write_buffer_buf10(i, 11.0f);
+    mlir_write_buffer_buf11(i, 12.0f);
   }
 
   if (VERBOSE) {
     for (int i=0; i<16; i++) {
-      float rb0 = to_float(mlir_read_buffer_buf0(i));
-      float rb1 = to_float(mlir_read_buffer_buf1(i));
-      float rb2 = to_float(mlir_read_buffer_buf2(i));
-      float rb3 = to_float(mlir_read_buffer_buf3(i));
-      float rb4 = to_float(mlir_read_buffer_buf4(i));
-      float rb5 = to_float(mlir_read_buffer_buf5(i));
-      float rb6 = to_float(mlir_read_buffer_buf6(i));
-      float rb7 = to_float(mlir_read_buffer_buf7(i));
-      float rb8 = to_float(mlir_read_buffer_buf8(i));
-      float rb9 = to_float(mlir_read_buffer_buf9(i));
-      float rb10 = to_float(mlir_read_buffer_buf10(i));
-      float rb11 = to_float(mlir_read_buffer_buf11(i));
-      printf("before %d [7][2] : %f * %f -> %f, [8][2] :%f * %f -> %f, [7][3] : %f * %f -> %f, [8][3] :%f * %f-> %f\n", i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7, rb8, rb9, rb10, rb11);
+      printMems(i, "before");
     }
   }
 
@@ -215,25 +197,13 @@ main(int argc, char *argv[])
   assert(graph_fn && "failed to locate _mlir_ciface_task in vecmul.so");
 
   for (int i=0; i<input_A.shape[0]; i++) {
-    input_A.d[i] = 1.0*i;
-    input_B.d[i] = 2.0*i;
+    input_A.d[i] = 1.0f*i;
+    input_B.d[i] = 2.0f*i;
   }
 
   if (VERBOSE) {
     for (int i=0; i<16; i++) {
-      float rb0 = to_float(mlir_read_buffer_buf0(i));
-      float rb1 = to_float(mlir_read_buffer_buf1(i));
-      float rb2 = to_float(mlir_read_buffer_buf2(i));
-      float rb3 = to_float(mlir_read_buffer_buf3(i));
-      float rb4 = to_float(mlir_read_buffer_buf4(i));
-      float rb5 = to_float(mlir_read_buffer_buf5(i));
-      float rb6 = to_float(mlir_read_buffer_buf6(i));
-      float rb7 = to_float(mlir_read_buffer_buf7(i));
-      float rb8 = to_float(mlir_read_buffer_buf8(i));
-      float rb9 = to_float(mlir_read_buffer_buf9(i));
-      float rb10 = to_float(mlir_read_buffer_buf10(i));
-      float rb11 = to_float(mlir_read_buffer_buf11(i));
-      printf("before %d [7][2] : %f * %f -> %f, [8][2] :%f * %f -> %f, [7][3] : %f * %f -> %f, [8][3] :%f * %f-> %f\n", i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7, rb8, rb9, rb10, rb11);
+      printMems(i, "before");
     }
   }
 
@@ -259,19 +229,7 @@ main(int argc, char *argv[])
   }
   if (VERBOSE) {
     for (int i=0; i<16; i++) {
-      float rb0 = to_float(mlir_read_buffer_buf0(i));
-      float rb1 = to_float(mlir_read_buffer_buf1(i));
-      float rb2 = to_float(mlir_read_buffer_buf2(i));
-      float rb3 = to_float(mlir_read_buffer_buf3(i));
-      float rb4 = to_float(mlir_read_buffer_buf4(i));
-      float rb5 = to_float(mlir_read_buffer_buf5(i));
-      float rb6 = to_float(mlir_read_buffer_buf6(i));
-      float rb7 = to_float(mlir_read_buffer_buf7(i));
-      float rb8 = to_float(mlir_read_buffer_buf8(i));
-      float rb9 = to_float(mlir_read_buffer_buf9(i));
-      float rb10 = to_float(mlir_read_buffer_buf10(i));
-      float rb11 = to_float(mlir_read_buffer_buf11(i));
-      printf(" after %d [7][2] : %f * %f -> %f, [8][2] :%f * %f -> %f, [7][3] : %f * %f -> %f, [8][3] :%f * %f-> %f\n", i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7, rb8, rb9, rb10, rb11);
+      printMems(i, "after");
     }
     printCoreStatus(7,2);
   }
