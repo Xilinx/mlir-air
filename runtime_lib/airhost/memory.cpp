@@ -104,6 +104,8 @@ extern uint32_t *_air_host_bram_ptr;
 
 #ifdef AIR_LIBXAIE_ENABLE
 
+namespace {
+
 void air_mem_shim_memcpy_impl(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length)
 {
   assert(_air_host_active_herd.herd_desc && "cannot shim memcpy without active herd");
@@ -260,6 +262,8 @@ void air_shim_memcpy_queue_impl(uint32_t id, uint64_t x, uint64_t y, void* t, ui
     uint32_t *data_ptr = tt->d + offset;
     memcpy(data_ptr, bounce_buffer, length*sizeof(uint32_t));
   }
+}
+
 }
 
 extern "C"  {

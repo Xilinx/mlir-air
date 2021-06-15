@@ -10,9 +10,12 @@
 
 // temporary solution to stash some state
 extern "C" {
+
 air_rt_herd_desc_t _air_host_active_herd = {nullptr, nullptr};
 air_libxaie1_ctx_t *_air_host_active_libxaie1 = nullptr;
 uint32_t *_air_host_bram_ptr = nullptr;
+air_module_handle_t _air_host_active_module = (air_module_handle_t)nullptr;
+
 }
 
 air_libxaie1_ctx_t *
@@ -57,8 +60,11 @@ air_module_load_from_file(const char* filename, queue_t *q)
     return 0;
   }
 
-  handle = (air_module_handle_t)_handle;
-  auto module_desc = air_module_get_desc(handle);
+  if (_air_host_active_module)
+    air_module_unload(_air_host_active_module);
+  _air_host_active_module = (air_module_handle_t)_handle;
+
+  auto module_desc = air_module_get_desc(_air_host_active_module);
 
   if (module_desc->length)
     _air_host_active_herd.herd_desc = module_desc->herd_descs[0];
@@ -74,7 +80,7 @@ air_module_load_from_file(const char* filename, queue_t *q)
                                         AIR_VCK190_SHMEM_BASE+0x4000);
   assert(_air_host_bram_ptr && "Failed to map scratch bram location");
 
-  return handle;
+  return (air_module_handle_t)_handle;
 }
 
 int32_t
@@ -91,6 +97,8 @@ air_module_unload(air_module_handle_t handle)
       _air_host_active_herd.q = nullptr;
     }
   }
+  if (_air_host_active_module == handle)
+    _air_host_active_module = (air_module_handle_t)nullptr;
 
   return dlclose((void*)handle);
 }
@@ -99,7 +107,10 @@ air_herd_desc_t *
 air_herd_get_desc(air_module_handle_t handle, const char *herd_name)
 {
   if (!handle) return nullptr;
+
   auto module_desc = air_module_get_desc(handle);
+  if (!module_desc) return nullptr;
+
   for (int i=0; i<module_desc->length; i++) {
     auto herd_desc = module_desc->herd_descs[i];
     if (!strncmp(herd_name, herd_desc->name, herd_desc->name_length))
@@ -113,4 +124,12 @@ air_module_get_desc(air_module_handle_t handle)
 {
   if (!handle) return nullptr;
   return (air_module_desc_t*)dlsym((void*)handle, "__air_module_descriptor");
+}
+
+int32_t
+air_herd_load(const char *name) {
+  auto herd_desc = air_herd_get_desc(_air_host_active_module, name);
+  if (!herd_desc) return -1;
+  _air_host_active_herd.herd_desc = herd_desc;
+  return 0;
 }
