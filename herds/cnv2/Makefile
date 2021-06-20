@@ -52,38 +52,15 @@ $(DESIGN)_airin.mlir: $(DESIGN).mlir
 				-air-expand-graph \
 				-o $@ $<
 
-$(DESIGN)_tiled_0.mlir: $(DESIGN)_airin.mlir				
-	$(ATEN_OPT) -air-to-affine \
-				-affine-loop-opt="affine-opt-tile-sizes=64" \
-				-affine-loop-normalize -simplify-affine-structures \
-				-cse \
+$(DESIGN).air.mlir: $(DESIGN)_airin.mlir
+	aten-opt  -o $@ $< \
+			-air-to-linalg \
+			-air-linalg-codegen='herd-size=1,1' \
+			-affine-to-air \
+			-convert-linalg-to-affine-loops
 				-o $@ $<
 
-$(DESIGN)_tiled_1.mlir: $(DESIGN)_tiled_0.mlir
-	$(ATEN_OPT) -affine-loop-opt="affine-opt-copy-depths=0 affine-opt-copy-fast-space=2" \
-				-cse \
-				-o $@ $<
-
-$(DESIGN)_tiled_2.mlir: $(DESIGN)_tiled_1.mlir
-	$(ATEN_OPT) -affine-loop-normalize \
-				-affine-loop-opt="affine-opt-tile-sizes=2" \
-				-affine-loop-normalize -simplify-affine-structures \
-				-cse \
-				-o $@ $<
-$(DESIGN)_tiled_3.mlir: $(DESIGN)_tiled_2.mlir
-	$(ATEN_OPT) -affine-loop-normalize \
-				-affine-loop-opt="affine-opt-tile-sizes=2" \
-				-affine-loop-normalize -simplify-affine-structures \
-				-cse \
-				-o $@ $<
-
-$(DESIGN)_air.mlir: $(DESIGN)_tiled_3.mlir
-	$(ATEN_OPT) -acap-herd-assign="herd-assign-depth=1" \
-				-affine-to-air \
-				-cse \
-				-o $@ $<
-
-aie.mlir: $(DESIGN)_air.mlir
+aie.mlir: $(DESIGN).air.mlir
         $(ATEN_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=./}" $< \
 
 peano.mlir: aie.mlir
@@ -92,12 +69,13 @@ peano.mlir: aie.mlir
 elfs: peano.mlir
 	$(AIECC) --no-xbridge peano.mlir
 
-aie_ctrl.mlir: $(DESIGN)_air.mlir
+aie_ctrl.mlir: $(DESIGN).air.mlir
 	$(ATEN_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}"\
-                                -air-to-std \
-                                -airrt-to-llvm \
-                                -aten-lowering \
-                                -o $@ $<
+				--convert-vector-to-llvm \
+				-air-to-std \
+				-airrt-to-std \
+				-aten-lowering \
+				-o $@ $<
 
 aie_ctrl.llvm.mlir: aie_ctrl.mlir
         $(ATEN_OPT) -air-return-elimination \
