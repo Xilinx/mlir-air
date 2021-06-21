@@ -8,6 +8,8 @@
 #include <sys/mman.h>
 #include <string.h>
 
+#include <string>
+
 // temporary solution to stash some state
 extern "C" {
 
@@ -130,6 +132,32 @@ int32_t
 air_herd_load(const char *name) {
   auto herd_desc = air_herd_get_desc(_air_host_active_module, name);
   if (!herd_desc) return -1;
+  
+  // bool configured = (_air_host_active_herd.herd_desc == herd_desc);
+  // if (configured) return 0;
+  
   _air_host_active_herd.herd_desc = herd_desc;
+
+  std::string func_name = "__airrt_" +
+                          std::string(name) +
+                          "_aie_functions";
+  air_rt_aie_functions_t *mlir = 
+    (air_rt_aie_functions_t *)dlsym((void*)_air_host_active_module,
+                                    func_name.c_str());
+
+  if (mlir) {
+    printf("configuring herd: '%s'\n",name);
+    assert(mlir->configure_cores);
+    assert(mlir->configure_switchboxes);
+    assert(mlir->initialize_locks);
+    assert(mlir->configure_dmas);
+    assert(mlir->start_cores);
+    mlir->configure_cores();
+    mlir->configure_switchboxes();
+    mlir->initialize_locks();
+    mlir->configure_dmas();
+    mlir->start_cores();
+  }
+
   return 0;
 }
