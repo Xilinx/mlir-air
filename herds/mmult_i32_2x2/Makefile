@@ -29,7 +29,7 @@ aie_ctrl.mlir: mmult.air.mlir
 	$(ATEN_OPT) -air-to-aie="air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null" \
 				--convert-vector-to-llvm \
 				-air-to-std \
-				-airrt-to-std \
+				-airrt-to-llvm \
 				-aten-lowering \
 				-o $@ $<
 
