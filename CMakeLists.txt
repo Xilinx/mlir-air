@@ -81,6 +81,23 @@ include(AddLLVM)
 include(AddMLIR)
 include(HandleLLVMOptions)
 
+include_directories(${PROJECT_SOURCE_DIR}/../pytorch_mlir/dialect/include)
+include_directories(${PROJECT_BINARY_DIR}/../pytorch_mlir/dialect/include)
+link_directories(${PROJECT_BINARY_DIR}/../pytorch_mlir/lib/)
+
+include_directories(${PROJECT_SOURCE_DIR}/../pytorch_mlir/Targets)
+include_directories(${PROJECT_BINARY_DIR}/../pytorch_mlir/Targets/include)
+
+# NPCOMP
+set(NPCOMP_BINARY_DIR "${PROJECT_BINARY_DIR}/../npcomp")
+set(NPCOMP_SOURCE_DIR "${PROJECT_SOURCE_DIR}/../npcomp/mlir-npcomp")
+include_directories(${NPCOMP_SOURCE_DIR}/include)
+include_directories(${NPCOMP_BINARY_DIR}/include)
+link_directories(${NPCOMP_BINARY_DIR}/lib)
+link_directories(${PROJECT_BINARY_DIR}/../aie/lib/)
+
+add_definitions(${LLVM_DEFINITIONS})
+
 add_custom_target(check-all)
 
 add_subdirectory(python)

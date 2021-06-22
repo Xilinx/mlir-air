@@ -93,9 +93,10 @@ def run_flow(opts, tmpdirname):
     aie_ctrl_obj = opts.tmpdir+'/'+opts.air_mlir_file+'.o'
     do_call(['llc', '--march=aarch64', '--filetype=obj', aie_ctrl_llvm_ir, '-o', aie_ctrl_obj])
 
-    #t = do_run(['aie-translate', '--aie-generate-corelist', file_with_addresses])
-    #cores = eval(t.stdout)
-    herds = ["herd_0", "herd_1"]
+    t = do_run(['air-translate', '--airrt-generate-json', aie_ctrl_airrt])
+    module_meta = eval(t.stdout)
+    herds = [module_meta[herd]["sym_name"] for herd in module_meta]
+    print ("Compiling herds:", herds)
     obj_files = [aie_ctrl_obj]
     for herd in herds:
       herd_file = opts.tmpdir+'/aie.'+herd+'.mlir'
