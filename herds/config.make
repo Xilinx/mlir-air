@@ -19,12 +19,13 @@ LDFLAGS = -fuse-ld=lld -rdynamic \
 
 uname_p := $(shell uname -p)
 ifeq ($(uname_p),aarch64)
-	CC = clang -std=c++11 -g
-	CFLAGS += -I/opt/xaiengine/include
+	CC = clang
+	CFLAGS += -std=c++11 -g -I/opt/xaiengine/include
 	LDFLAGS += -L/opt/xaiengine/lib
 else
 	SYSROOT = /group/xrlabs/platforms/pynq-vck190-sysroot/
-	CC = clang --target=aarch64-linux-gnu -std=c++11 --sysroot=$(SYSROOT) -g
+	CC = clang
+	CFLAGS += --target=aarch64-linux-gnu -std=c++11 --sysroot=$(SYSROOT) -g 
 	CFLAGS += -I$(SYSROOT)/opt/xaiengine/include
 	LDFLAGS += -L$(SYSROOT)/opt/xaiengine/lib
 endif
