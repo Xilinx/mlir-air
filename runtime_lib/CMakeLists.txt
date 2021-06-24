@@ -19,6 +19,6 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 
 # Eventually we need to have some configuration options to select LibXAIEV2
-find_package(LibXAIE)
+find_package(LibXAIE REQUIRED)
 
 add_subdirectory(airhost)

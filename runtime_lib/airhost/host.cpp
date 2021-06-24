@@ -28,17 +28,12 @@ air_init_libxaie1()
   if (!xaie)
     return 0;
 
-#ifdef AIR_LIBXAIE_ENABLE
   XAIEGBL_HWCFG_SET_CONFIG((&xaie->AieConfig),
                            XAIE_NUM_ROWS, XAIE_NUM_COLS, 0x800);
   XAieGbl_HwInit(&xaie->AieConfig);
   xaie->AieConfigPtr = XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
   XAieGbl_CfgInitialize(&xaie->AieInst,
                         &xaie->TileInst[0][0], xaie->AieConfigPtr);
-#else
-  printf("%s : FATAL ERROR : libxaie not enabled\n", __func__);
-  assert(0 && "AIR_LIBXAIE_ENABLE not defined");
-#endif
 
   _air_host_active_libxaie1 = xaie;
   return xaie;

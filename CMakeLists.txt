@@ -13,9 +13,6 @@ if(POLICY CMP0077)
   cmake_policy(SET CMP0077 NEW)
 endif()
 
-option(AIR_LIBXAIE_ENABLE "Enables libxaie functionality" OFF)
-
-
 project(air LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 14)

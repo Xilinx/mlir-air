@@ -6,35 +6,24 @@
 #include <cstdio>
 #include <cstring>
 
-#ifdef AIR_LIBXAIE_ENABLE
 #include <xaiengine.h>
-#endif
 
 namespace {
 
-#ifdef AIR_LIBXAIE_ENABLE
 static std::vector<XAieLib_MemInst*> AirAllocations;
-#endif
 
 }
 
 void* air_mem_alloc(size_t size) {
-#ifdef AIR_LIBXAIE_ENABLE
   XAieLib_MemInst *mem = XAieLib_MemAllocate(size, 0);
   if (!mem)
     return nullptr;
   AirAllocations.push_back(mem);
   void *vaddr = (void*)XAieLib_MemGetVaddr(mem);
   return vaddr;
-#else
-  // TODO
-  assert(0 && "not implemented");
-  return nullptr;
-#endif
 }
 
 void air_mem_dealloc(void *vaddr) {
-#ifdef AIR_LIBXAIE_ENABLE
   for (auto it = AirAllocations.begin(); it != AirAllocations.end(); ) {
     void *p = (void*)XAieLib_MemGetVaddr(*it);
     if (p == vaddr) {
@@ -45,37 +34,23 @@ void air_mem_dealloc(void *vaddr) {
       ++it;
     }
   }
-#else
-  // TODO
-  assert(0 && "not implemented");
-#endif
 }
 
 void *air_mem_get_paddr(void *vaddr) {
-#ifdef AIR_LIBXAIE_ENABLE
   for (auto *m : AirAllocations) {
     void *p = (void*)XAieLib_MemGetVaddr(m);
     if (p == vaddr)
       return (void*)XAieLib_MemGetPaddr(m);
   }
-#else
-  // TODO
-  assert(0 && "not implemented");
-#endif
   return nullptr;
 }
 
 void *air_mem_get_vaddr(void *paddr) {
-#ifdef AIR_LIBXAIE_ENABLE
   for (auto *m : AirAllocations) {
     void *p = (void*)XAieLib_MemGetPaddr(m);
     if (p == paddr)
       return (void*)XAieLib_MemGetVaddr(m);
   }
-#else
-  // TODO
-  assert(0 && "not implemented");
-#endif
   return nullptr;
 }
 
@@ -102,7 +77,6 @@ extern uint32_t *_air_host_bram_ptr;
 #define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
 #define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
 
-#ifdef AIR_LIBXAIE_ENABLE
 
 namespace {
 
@@ -283,4 +257,3 @@ void _mlir_ciface_air_shim_memcpy2d(uint32_t id, uint64_t x, uint64_t y, void* t
 }
 
 }
-#endif
