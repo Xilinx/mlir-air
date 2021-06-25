@@ -14,11 +14,12 @@ $ ninja check-air
 It is almost always much faster to cross-compile these tools for embedded processors (e.g. ARM/AArch64) rather than compiling locally.  To test a cross-compiled build, the tests can be configured using cmake independently from the rest of the source code.  This leverages standard cmake mechanisms to export information about an install area.
 
 ```
-$ cd aie
+$ cd aie/test
 $ mkdir build
 $ cd build
 $ cmake -GNinja .. -DCMAKE_MODULE_PATH=/home/xilinx/acdc/cmakeModules/cmakeModulesXilinx/
 ```
+Note that CMAKE_MODULE_PATH needs to be an absolute path at the moment
 
 ## Unit Testing
 

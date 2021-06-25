@@ -14,7 +14,7 @@ air
 ## Documentation
 
 ### [Examples]() -- TODO: how to run examples and/or tests
-### [Testing](docs/board_testing.md)
+### [Testing](docs/testing.md)
 ### VCK190 Platform
 #### [Building the VCK190 AIR platform](docs/vck190_building_platform.md)
 #### [Building Pynq based SD card image for the VCK190 AIR platform](docs/vck190_building_pynq.md)
