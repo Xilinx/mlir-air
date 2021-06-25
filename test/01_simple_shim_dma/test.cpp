@@ -24,7 +24,7 @@ air_libxaie1_ctx_t *xaie;
 
 #define TileInst (xaie->TileInst)
 #define TileDMAInst (xaie->TileDMAInst)
-#include "aie.inc"
+#include "aie_inc.cpp"
 #undef TileInst
 #undef TileDMAInst
 
@@ -37,7 +37,6 @@ main(int argc, char *argv[])
   auto row = 2;
 
   xaie = air_init_libxaie1();
-
 
   // Run auto generated config functions
   mlir_configure_cores();
@@ -97,24 +96,19 @@ main(int argc, char *argv[])
   int errors = 0;
   for (int i=0; i<BUFFER_SIZE; i++) {
     uint32_t d = mlir_read_buffer_b0(i);
-    if (d != (i+1)) {
-      errors++;
-      printf("mismatch %x != 1 + %x\n", d, i);
-    }
+     ACDC_check("Check Result b0:", d, i+1);
   }
   for (int i=0; i<BUFFER_SIZE; i++) {
     uint32_t d = mlir_read_buffer_b1(i);
-    if (d != (i+BUFFER_SIZE+1)) {
-      errors++;
-      printf("mismatch %x != 1 + %x\n", d, i);
-    }
+    ACDC_check("Check Result b1:", d, i+BUFFER_SIZE+1);
   }
 
   if (!errors) {
     printf("PASS!\n");
-  }
-  else {
+    return 0;
+  } else {
     printf("fail %d/%d.\n", (DMA_COUNT-errors), DMA_COUNT);
+    return -1;
   }
 
 }

@@ -1,7 +1,8 @@
-// RUN: aie-opt --aie-create-flows --aie-find-flows %s | FileCheck %s
-// CHECK: AIE.flow(%2, "DMA" : 0, %0, "DMA" : 0)
-
-// aie-opt --aie-create-flows --aie-find-flows %s | aie-translate --aie-generate-xaie 
+// (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
+//
+// RUN: aiecc.py -v --sysroot=%VITIS_SYSROOT% %s -I%air_runtime_lib%/airhost/include -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp -L%aie_runtime_lib% %S/test.cpp -Wl,--whole-archive -lairhost -Wl,--no-whole-archive -lstdc++ -o %T/test.elf
+// RUN: %run_on_board %T/test.elf
+// CHECK: PASS!
 
 module {
   %t70 = AIE.tile(7, 0)

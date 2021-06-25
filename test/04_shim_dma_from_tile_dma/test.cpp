@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <xaiengine.h>
+#include "test_library.h"
 
 #define XAIE_NUM_ROWS            8
 #define XAIE_NUM_COLS           50
@@ -18,17 +19,13 @@
 #define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
 #define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
 
-namespace {
-
 XAieGbl_Config *AieConfigPtr;	                          /**< AIE configuration pointer */
 XAieGbl AieInst;	                                      /**< AIE global instance */
 XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuration instance */
 XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];  /**< Instantiates AIE array of [XAIE_NUM_COLS] x [XAIE_NUM_ROWS] */
 XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
 
-#include "aie.inc"
-
-}
+#include "aie_inc.cpp"
 
 int
 main(int argc, char *argv[])
@@ -62,12 +59,15 @@ main(int argc, char *argv[])
     }
   }
 
+  // Populate buffer with some data.  It will get pushed into a stream connected
+  // to the ShimDMA.
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = i+1;
-    XAieTile_DmWriteWord(&(TileInst[col][2]), 0x1000+i*4, d);
+    mlir_write_buffer_a(i, d);
+//    XAieTile_DmWriteWord(&(TileInst[col][2]), 0x1000+i*4, d);
   }
 
-
+  // Program the ShimDMA to write from stream to memory
   auto burstlen = 4;
   XAieDma_ShimInitialize(&(TileInst[col][0]), &ShimDmaInst1);
   XAieDma_ShimBdSetAddr(&ShimDmaInst1, 1, HIGH_ADDR((u64)BRAM_ADDR), LOW_ADDR((u64)BRAM_ADDR), sizeof(u32) * DMA_COUNT);
@@ -85,6 +85,7 @@ main(int argc, char *argv[])
   XAieTile_LockRelease(&(TileInst[col][2]), 0, 0x1, 0);
   XAieTile_LockRelease(&(TileInst[col][2]), 1, 0x1, 0);
 
+  // Why does this test the pending BDCount, rather than using the locks in the shim?
   auto count = 0;
   while (XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_S2MM0)) {
     XAieLib_usleep(1000);
@@ -95,20 +96,18 @@ main(int argc, char *argv[])
     }
   }
 
+  // Check the data coming out in L2.
   int errors = 0;
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = bram_ptr[i];
-    if (d != (i+1)) {
-      errors++;
-      printf("mismatch %x != 1 + %x\n", d, i);
-    }
+    ACDC_check("Check Result:", d, i+1);
   }
 
   if (!errors) {
     printf("PASS!\n");
-  }
-  else {
+    return 0;
+  } else {
     printf("fail %d/%d.\n", (DMA_COUNT-errors), DMA_COUNT);
+    return -1;
   }
-
 }
