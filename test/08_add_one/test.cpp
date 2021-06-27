@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <xaiengine.h>
+#include "test_library.h"
 
 #define XAIE_NUM_ROWS            8
 #define XAIE_NUM_COLS           50
@@ -26,7 +27,7 @@ XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuratio
 XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];  /**< Instantiates AIE array of [XAIE_NUM_COLS] x [XAIE_NUM_ROWS] */
 XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
 
-#include "aie.inc"
+#include "aie_inc.cpp"
 
 }
 
@@ -108,9 +109,7 @@ void printDMAStatus(int col, int row) {
         printf("   Using FIFO Cnt%d : %08X\n",FIFO, dma_fifo_counter);
       }
     }
-
   }
-
 }
 
 
@@ -182,7 +181,7 @@ main(int argc, char *argv[])
     bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, BRAM_ADDR);
     for (int i=0; i<DMA_COUNT; i++) {
       bram_ptr[i] = i+1;
-      bram_ptr[DMA_COUNT+i] = 0xdeface;
+      bram_ptr[DMA_COUNT+i] = 0xdeface00+i+1;
       //printf("%p %llx\n", &bram_ptr[i], bram_ptr[i]);
     }
   }
@@ -233,13 +232,10 @@ main(int argc, char *argv[])
   printDMAStatus(7, 2);
 
   int errors = 0;
-  for (int i=0; i<16; i++) {
+  for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = bram_ptr[DMA_COUNT+i];
-    if (d != (i+2)) {
-      errors++;
-      printf("mismatch %x != 2 + %x\n", d, i);
-    }
-  }
+   ACDC_check("Check Result:", d, i+2);
+   }
   if (!errors) {
     printf("PASS!\n");
   }
