@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <xaiengine.h>
+#include "test_library.h"
 
 #include "air_host.h"
 #include "acdc_queue.h"
@@ -31,7 +32,7 @@ XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuratio
 XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];  /**< Instantiates AIE array of [XAIE_NUM_COLS] x [XAIE_NUM_ROWS] */
 XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
 
-#include "aie.inc"
+#include "aie_inc.cpp"
 
 }
 
@@ -147,7 +148,7 @@ main(int argc, char *argv[])
   // We first write an ascending pattern into the area the AIE will write into
   for (int i=0; i<SCRATCH_AREA; i++) {
     uint32_t d = i+1;
-    XAieTile_DmWriteWord(&(TileInst[col][2]), 0x1000+i*4, d);
+    mlir_write_buffer_buffer(i, d);
   }
   printCoreStatus(col, 2, false, SCRATCH_AREA, 0);
 
@@ -181,7 +182,6 @@ main(int argc, char *argv[])
     printf("%x\n", (unsigned)lock_pkt->completion_signal);
   }
 
-
   printCoreStatus(col, 2, false, SCRATCH_AREA, 0);
 
   auto count = 0;
@@ -194,34 +194,20 @@ main(int argc, char *argv[])
   }
 
   int errors = 0;
+  ACDC_check("Check Result 0:", mlir_read_buffer_buffer(0), 0xdeadbeef);
+  ACDC_check("Check Result 1:", mlir_read_buffer_buffer(1), 0xcafecafe);
+  ACDC_check("Check Result 2:", mlir_read_buffer_buffer(2), 0x000decaf);
+  ACDC_check("Check Result 3:", mlir_read_buffer_buffer(3), 0x5a1ad000);
 
-  // If you are squeemish, look away now
-  u32 rb;
-
-  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000 + (0x0 * sizeof(u32)));
-  if (rb != 0xdeadbeef)
-    printf("Error %d: %08x != 0xdeadbeef\n",errors++, rb);
-  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000 + (0x1 * sizeof(u32)));
-  if (rb != 0xcafecafe)
-    printf("Error %d: %08x != 0xcafecafe\n",errors++, rb);
-  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000 + (0x2 * sizeof(u32)));
-  if (rb != 0x000decaf)
-    printf("Error %d: %08x != 0x000decaf\n",errors++, rb);
-  rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000 + (0x3 * sizeof(u32)));
-  if (rb != 0x5a1ad000)
-    printf("Error %d: %08x != 0x5a1ad000\n",errors++, rb);
-
-  for (int i=4; i<SCRATCH_AREA; i++) {
-    rb = XAieTile_DmReadWord(&(TileInst[col][2]), 0x1000 + (i * sizeof(u32)));
-    if (rb != i+1)
-      printf("Error %d: %08x != %08x\n", errors++, rb, i+1);
-  }
+  for (int i=4; i<SCRATCH_AREA; i++)
+    ACDC_check("Check Result:", mlir_read_buffer_buffer(i), i+1);
 
   if (!errors) {
     printf("PASS!\n");
-  }
+    return 0;
+      }
   else {
     printf("fail %d/%d.\n", (SCRATCH_AREA-errors), SCRATCH_AREA);
-  }
-
+    return -1;
+      }
 }
