@@ -28,8 +28,18 @@ config.host_ldflags = '@HOST_LDFLAGS@'
 config.llvm_use_sanitizer = "@LLVM_USE_SANITIZER@"
 config.llvm_host_triple = '@LLVM_HOST_TRIPLE@'
 config.host_arch = "@HOST_ARCH@"
-config.aie_src_root = "@CMAKE_SOURCE_DIR@"
-config.aie_obj_root = "@CMAKE_BINARY_DIR@"
+config.aie_src_root = "@AIE_SOURCE_DIR@"
+config.aie_obj_root = "@AIE_BINARY_DIR@"
+config.air_src_root = "@AIR_SOURCE_DIR@"
+config.air_obj_root = "@AIR_BINARY_DIR@"
+# test_exec_root: The root path where tests should be run.
+config.test_exec_root = "@CMAKE_CURRENT_BINARY_DIR@"
+
+# pass on vitis settings
+#config.enable_chess_tests = @CONFIG_ENABLE_CHESS_TESTS@
+config.vitis_root = "@VITIS_ROOT@"
+config.vitis_sysroot = "@VitisSysroot@"
+config.libxaie_dir = "@XILINX_XAIE_LIBS@"
 
 # Support substitution of the tools_dir with user parameters. This is
 # used when we can't determine the tool dir at configuration time.
@@ -46,4 +56,4 @@ import lit.llvm
 lit.llvm.initialize(lit_config, config)
 
 # Let the main config do the real work.
-lit_config.load_config(config, "@CMAKE_SOURCE_DIR@/test/lit.cfg.py")
+lit_config.load_config(config, "@PROJECT_SOURCE_DIR@/lit.cfg.py")

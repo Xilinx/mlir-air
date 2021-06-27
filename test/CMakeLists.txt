@@ -1,3 +1,72 @@
+cmake_minimum_required(VERSION 3.10)
+
+if(POLICY CMP0068)
+  cmake_policy(SET CMP0068 NEW)
+  set(CMAKE_BUILD_WITH_INSTALL_NAME_DIR ON)
+endif()
+
+if(POLICY CMP0075)
+  cmake_policy(SET CMP0075 NEW)
+endif()
+
+if(POLICY CMP0077)
+  cmake_policy(SET CMP0077 NEW)
+endif()
+
+option(AIR_LIBXAIE_ENABLE "Enables libxaie functionality" OFF)
+
+
+project(air LANGUAGES CXX C)
+
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED YES)
+
+find_package(MLIR REQUIRED CONFIG)
+find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+
+# Eventually we need to have some configuration options to select LibXAIEV2
+find_package(LibXAIE)
+
+find_package(Torch 1.8)
+
+message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
+message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
+
+option(LLVM_INCLUDE_TOOLS "Generate build targets for the LLVM tools." ON)
+option(LLVM_BUILD_TOOLS "Build the LLVM tools. If OFF, just generate build targets." ON)
+
+set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/bin)
+set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/lib)
+set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
+
+# Define the default arguments to use with 'lit', and an option for the user to
+# override.
+set(LIT_ARGS_DEFAULT "-sv -j 1")
+if (MSVC_IDE OR XCODE)
+  set(LIT_ARGS_DEFAULT "${LIT_ARGS_DEFAULT} --no-progress-bar")
+endif()
+set(LLVM_LIT_ARGS "${LIT_ARGS_DEFAULT}" CACHE STRING "Default options for lit")
+
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR})
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR})
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR})
+
+list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
+list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
+
+include(TableGen)
+include(AddLLVM)
+include(AddMLIR)
+include(HandleLLVMOptions)
+
+include_directories(${LLVM_INCLUDE_DIRS})
+include_directories(${MLIR_INCLUDE_DIRS})
+include_directories(${PROJECT_SOURCE_DIR}/include)
+include_directories(${PROJECT_BINARY_DIR}/include)
+add_definitions(${LLVM_DEFINITIONS})
+
+###
+
 MACRO(SUBDIRLIST result curdir)
   file(GLOB children RELATIVE ${curdir} ${curdir}/*)
   set(dirlist "")
@@ -12,8 +81,8 @@ ENDMACRO()
 SUBDIRLIST(SUBDIRS ${CMAKE_CURRENT_SOURCE_DIR})
 
 include_directories(
-  ${CMAKE_SOURCE_DIR}/runtime_lib/airhost/include
-  ${CMAKE_SOURCE_DIR}/../aie/runtime_lib
+  ${AIR_SOURCE_DIR}/runtime_lib/airhost/include
+  ${AIE_BINARY_DIR}/runtime_lib
 )
 
 configure_lit_site_cfg(
@@ -30,6 +99,7 @@ configure_lit_site_cfg(
   add_lit_testsuite(check-air "Running the air board regression tests"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
+  ARGS "-sv --timeout 30 --time-tests"
   )
   set_target_properties(check-air PROPERTIES FOLDER "Tests")
   
@@ -37,7 +107,9 @@ configure_lit_site_cfg(
   
   add_custom_target(build-check-air)
   add_dependencies(check-air build-check-air)
-  add_dependencies(check-all check-air)
+if(EXISTS check-all)
+add_dependencies(check-all check-air)
+endif()
 
 #if(LIBXAIE_FOUND)
 
@@ -47,7 +119,8 @@ configure_lit_site_cfg(
     dl
   )
 
-  link_directories(${CMAKE_BINARY_DIR}/../air_runtime_lib/airhost)
+  link_directories(${AIR_BINARY_DIR}/runtime_lib
+                   ${AIE_BINARY_DIR}/runtime_lib)
 
   foreach(subdir ${SUBDIRS})
     add_subdirectory(${subdir})

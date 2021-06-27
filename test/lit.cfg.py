@@ -21,12 +21,12 @@ config.name = 'AIR_TEST'
 config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
 config.environment['PYTHONPATH'] \
     = "{}:{}:{}:{}:{}:{}".format(
-                            os.path.join(config.aie_src_root, "python"),
-                            os.path.join(config.aie_obj_root),
-                            os.path.join(config.aie_obj_root, "../npcomp/python"),
-                            os.path.join(config.aie_obj_root, "../peano/python"),
-                            os.path.join(config.aie_src_root, "../air/python"),
-                            os.path.join(config.aie_obj_root, "../air")
+                            os.path.join(config.air_src_root, "python"),
+                            os.path.join(config.air_obj_root),
+                            os.path.join(config.air_obj_root, "../npcomp/python"),
+                            os.path.join(config.air_obj_root, "../peano/python"),
+                            os.path.join(config.air_obj_root, "/python"),
+                            os.path.join(config.air_obj_root, "../air")
                           )
 #os.environ['PYTHONPATH']
 print("PATH",config.environment['PYTHONPATH'])
@@ -38,12 +38,16 @@ config.suffixes = ['.lit']
 config.test_source_root = os.path.dirname(__file__)
 
 # test_exec_root: The root path where tests should be run.
-config.test_exec_root = os.path.join(config.aie_obj_root, 'test')
+config.test_exec_root = os.path.join(config.air_obj_root, 'test')
 
 config.substitutions.append(('%PATH%', config.environment['PATH']))
 config.substitutions.append(('%shlibext', config.llvm_shlib_ext))
 config.substitutions.append(('%PYTHON', config.python_executable))
+config.substitutions.append(('%VITIS_SYSROOT%', config.vitis_sysroot))
+config.substitutions.append(('%aie_runtime_lib%', os.path.join(config.aie_obj_root, "runtime_lib")))
+config.substitutions.append(('%air_runtime_lib%', os.path.join(config.aie_obj_root, "runtime_lib")))
 
+config.substitutions.append(('%run_on_board', "echo %T >> /home/xilinx/testlog | sync | echo"))
 
 llvm_config.with_system_environment(
     ['HOME', 'INCLUDE', 'LIB', 'TMP', 'TEMP'])
@@ -59,8 +63,9 @@ config.excludes = ['Inputs', 'Examples', 'CMakeLists.txt', 'README.txt', 'LICENS
 config.test_source_root = os.path.dirname(__file__)
 
 # test_exec_root: The root path where tests should be run.
-config.test_exec_root = os.path.join(config.aie_obj_root, 'test')
+config.test_exec_root = os.path.join(config.air_obj_root, 'test')
 config.aie_tools_dir = os.path.join(config.aie_obj_root, 'bin')
+config.air_tools_dir = os.path.join(config.air_obj_root, 'bin')
 
 # Tweak the PATH to include the tools dir.
 llvm_config.with_environment('PATH', config.llvm_tools_dir, append_path=True)
