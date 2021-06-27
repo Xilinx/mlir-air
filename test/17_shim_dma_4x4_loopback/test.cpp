@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <xaiengine.h>
+#include "test_library.h"
 
 #define XAIE_NUM_ROWS            8
 #define XAIE_NUM_COLS           50
@@ -26,7 +27,7 @@ XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuratio
 XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];  /**< Instantiates AIE array of [XAIE_NUM_COLS] x [XAIE_NUM_ROWS] */
 XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
 
-#include "aie.inc"
+#include "aie_inc.cpp"
 
 }
 
@@ -63,7 +64,6 @@ int main(int argc, char *argv[]) {
   AieConfigPtr = XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
   XAieGbl_CfgInitialize(&AieInst, &TileInst[0][0], AieConfigPtr);
 
-
   mlir_configure_cores();
   mlir_configure_switchboxes();
   mlir_initialize_locks();
@@ -85,26 +85,18 @@ int main(int argc, char *argv[]) {
     // + 1 ascending pattern
     for (int i=0; i<DMA_COUNT*4*NUM_SHIM_DMAS; i++) {
       input_bram_ptr[i] = i+1;
-      //printf("%p %llx\n", &bram_ptr[i], bram_ptr[i]);
     }
 
     // Stomp
     for (int i=0; i<DMA_COUNT*4*NUM_SHIM_DMAS; i++) {
       output_bram_ptr[i] = 0x5a1ad;
-      //printf("%p %llx\n", &bram_ptr[i], bram_ptr[i]);
     }
-
-
   }
-  printf("HEre!\n");
 
   // We're going to stamp over the local memories where the data is going to end up
-  for (int col=0;col<NUM_SHIM_DMAS;col++) {
-    for (int i=0; i<DMA_COUNT*2; i++) {
-      XAieTile_DmWriteWord(&(TileInst[cols[col]][1]), 0x1000 + i*4, 0xdefaced0);
-      XAieTile_DmWriteWord(&(TileInst[cols[col]][2]), 0x1000 + i*4, 0x0defaced);
-    }
-  } 
+  for (int col=8; col<=11; col++)
+    for (int row=3; row<=6; row++)
+      ACDC_clear_tile_memory(TileInst[col][row]);
 
   auto burstlen = 4;
   for (int col=0;col<NUM_SHIM_DMAS;col++) {
@@ -199,33 +191,34 @@ int main(int argc, char *argv[]) {
 
 
   int errors = 0;
-  for (int col=0;col<NUM_SHIM_DMAS;col++) {
-    for (int i=0; i<DMA_COUNT*2; i++) {
-      uint32_t d = XAieTile_DmReadWord(&(TileInst[cols[col]][1]), 0x1000+i*4);
-      uint32_t expected = 1+col*DMA_COUNT*4+i;
-      if (d != expected) {
-        errors++;
-        printf("Tile Memory[%d][%d] Address %04X mismatch %x != %x\n", cols[col], 1, 0x1000+i*4,d, expected);
-      }
-    }
-  
-    for (int i=0; i<DMA_COUNT*2; i++) {
-      uint32_t expected = 1+col*DMA_COUNT*4+2*DMA_COUNT+i;
-      uint32_t d = XAieTile_DmReadWord(&(TileInst[cols[col]][2]), 0x1000+i*4);
-      if (d != expected) {
-        errors++;
-        printf("Tile Memory[%d][%d] Address %04X mismatch %x != %x\n", cols[col], 2, 0x1000+i*4,d, expected);
-      }
-    }
+  for (int i=0; i<DMA_COUNT; i++) {
+    uint32_t d = mlir_read_buffer_a0(i);
+    ACDC_check("Check Result a0:", d, i+1);
   }
-
+  for (int i=0; i<DMA_COUNT; i++) {
+    uint32_t d = mlir_read_buffer_a1(i);
+    ACDC_check("Check Result a1:", d, i+DMA_COUNT+1);
+  }
+  for (int i=0; i<DMA_COUNT; i++) {
+    uint32_t d = mlir_read_buffer_f0(i);
+    ACDC_check("Check Result f0:", d, i+DMA_COUNT*10+1);
+  }
+  for (int i=0; i<DMA_COUNT; i++) {
+    uint32_t d = mlir_read_buffer_f1(i);
+    ACDC_check("Check Result f1:", d, i+DMA_COUNT*11+1);
+  }
+  for (int i=0; i<DMA_COUNT; i++) {
+    uint32_t d = mlir_read_buffer_p0(i);
+    ACDC_check("Check Result p0:", d, i+DMA_COUNT*30+1);
+  }
+  for (int i=0; i<DMA_COUNT; i++) {
+    uint32_t d = mlir_read_buffer_p1(i);
+    ACDC_check("Check Result p1:", d, i+DMA_COUNT*31+1);
+  }
 
   // Let's just compare the input and output buffers
   for (int i=0; i<DMA_COUNT*4*NUM_SHIM_DMAS; i++) {
-    if (input_bram_ptr[i] != output_bram_ptr[i]) {
-      printf("Ext memory [%d] mismatch %x != %x\n", i*4,input_bram_ptr[i], output_bram_ptr[i]);
-      errors++;
-    }
+    ACDC_check("Check Result:", input_bram_ptr[i], output_bram_ptr[i]);
   }
 
 /*
@@ -249,9 +242,11 @@ int main(int argc, char *argv[]) {
 
   if (!errors) {
     printf("PASS!\n");
+    return 0;
   }
   else {
     printf("fail %d/%d.\n", (DMA_COUNT*8*NUM_SHIM_DMAS-errors), DMA_COUNT*8*NUM_SHIM_DMAS);
+    return -1;
   }
 
 }

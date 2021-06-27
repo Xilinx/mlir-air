@@ -1,5 +1,4 @@
-
-// aie-opt --aie-create-flows --aie-find-flows %s | aie-translate --aie-generate-xaie
+// (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
 
 module {
   %t2_0 = AIE.tile(2, 0)
@@ -195,43 +194,39 @@ module {
 
   %buf8_3_0 = AIE.buffer(%t8_3) {sym_name="a0"} : memref<16xi32>
   %buf8_3_1 = AIE.buffer(%t8_3) {sym_name="a1"} : memref<16xi32>
-  %buf8_4_0 = AIE.buffer(%t8_4) {sym_name="a2"} : memref<16xi32>
-  %buf8_4_1 = AIE.buffer(%t8_4) {sym_name="a3"} : memref<16xi32>
+  %buf8_4_0 = AIE.buffer(%t8_4) {sym_name="b0"} : memref<16xi32>
+  %buf8_4_1 = AIE.buffer(%t8_4) {sym_name="b1"} : memref<16xi32>
+  %buf8_5_0 = AIE.buffer(%t8_5) {sym_name="c0"} : memref<16xi32>
+  %buf8_5_1 = AIE.buffer(%t8_5) {sym_name="c1"} : memref<16xi32>
+  %buf8_6_0 = AIE.buffer(%t8_6) {sym_name="d0"} : memref<16xi32>
+  %buf8_6_1 = AIE.buffer(%t8_6) {sym_name="d1"} : memref<16xi32>
 
-  %buf8_5_0 = AIE.buffer(%t8_5) {sym_name="b0"} : memref<16xi32>
-  %buf8_5_1 = AIE.buffer(%t8_5) {sym_name="b1"} : memref<16xi32>
-  %buf8_6_0 = AIE.buffer(%t8_6) {sym_name="b2"} : memref<16xi32>
-  %buf8_6_1 = AIE.buffer(%t8_6) {sym_name="b3"} : memref<16xi32>
+  %buf9_3_0 = AIE.buffer(%t9_3) {sym_name="e0"} : memref<16xi32>
+  %buf9_3_1 = AIE.buffer(%t9_3) {sym_name="e1"} : memref<16xi32>
+  %buf9_4_0 = AIE.buffer(%t9_4) {sym_name="f0"} : memref<16xi32>
+  %buf9_4_1 = AIE.buffer(%t9_4) {sym_name="f1"} : memref<16xi32>
+  %buf9_5_0 = AIE.buffer(%t9_5) {sym_name="g0"} : memref<16xi32>
+  %buf9_5_1 = AIE.buffer(%t9_5) {sym_name="g1"} : memref<16xi32>
+  %buf9_6_0 = AIE.buffer(%t9_6) {sym_name="h0"} : memref<16xi32>
+  %buf9_6_1 = AIE.buffer(%t9_6) {sym_name="h1"} : memref<16xi32>
 
-  %buf9_3_0 = AIE.buffer(%t9_3) {sym_name="c0"} : memref<16xi32>
-  %buf9_3_1 = AIE.buffer(%t9_3) {sym_name="c1"} : memref<16xi32>
-  %buf9_4_0 = AIE.buffer(%t9_4) {sym_name="c2"} : memref<16xi32>
-  %buf9_4_1 = AIE.buffer(%t9_4) {sym_name="c3"} : memref<16xi32>
+  %buf10_3_0 = AIE.buffer(%t10_3) {sym_name="i0"} : memref<16xi32>
+  %buf10_3_1 = AIE.buffer(%t10_3) {sym_name="i1"} : memref<16xi32>
+  %buf10_4_0 = AIE.buffer(%t10_4) {sym_name="j0"} : memref<16xi32>
+  %buf10_4_1 = AIE.buffer(%t10_4) {sym_name="j1"} : memref<16xi32>
+  %buf10_5_0 = AIE.buffer(%t10_5) {sym_name="k0"} : memref<16xi32>
+  %buf10_5_1 = AIE.buffer(%t10_5) {sym_name="k1"} : memref<16xi32>
+  %buf10_6_0 = AIE.buffer(%t10_6) {sym_name="l0"} : memref<16xi32>
+  %buf10_6_1 = AIE.buffer(%t10_6) {sym_name="l1"} : memref<16xi32>
 
-  %buf9_5_0 = AIE.buffer(%t9_5) {sym_name="d0"} : memref<16xi32>
-  %buf9_5_1 = AIE.buffer(%t9_5) {sym_name="d1"} : memref<16xi32>
-  %buf9_6_0 = AIE.buffer(%t9_6) {sym_name="d2"} : memref<16xi32>
-  %buf9_6_1 = AIE.buffer(%t9_6) {sym_name="d3"} : memref<16xi32>
-
-  %buf10_3_0 = AIE.buffer(%t10_3) {sym_name="e0"} : memref<16xi32>
-  %buf10_3_1 = AIE.buffer(%t10_3) {sym_name="e1"} : memref<16xi32>
-  %buf10_4_0 = AIE.buffer(%t10_4) {sym_name="e2"} : memref<16xi32>
-  %buf10_4_1 = AIE.buffer(%t10_4) {sym_name="e3"} : memref<16xi32>
-
-  %buf10_5_0 = AIE.buffer(%t10_5) {sym_name="f0"} : memref<16xi32>
-  %buf10_5_1 = AIE.buffer(%t10_5) {sym_name="f1"} : memref<16xi32>
-  %buf10_6_0 = AIE.buffer(%t10_6) {sym_name="f2"} : memref<16xi32>
-  %buf10_6_1 = AIE.buffer(%t10_6) {sym_name="f3"} : memref<16xi32>
-
-  %buf11_3_0 = AIE.buffer(%t11_3) {sym_name="g0"} : memref<16xi32>
-  %buf11_3_1 = AIE.buffer(%t11_3) {sym_name="g1"} : memref<16xi32>
-  %buf11_4_0 = AIE.buffer(%t11_4) {sym_name="g2"} : memref<16xi32>
-  %buf11_4_1 = AIE.buffer(%t11_4) {sym_name="g3"} : memref<16xi32>
-
-  %buf11_5_0 = AIE.buffer(%t11_5) {sym_name="h0"} : memref<16xi32>
-  %buf11_5_1 = AIE.buffer(%t11_5) {sym_name="h1"} : memref<16xi32>
-  %buf11_6_0 = AIE.buffer(%t11_6) {sym_name="h2"} : memref<16xi32>
-  %buf11_6_1 = AIE.buffer(%t11_6) {sym_name="h3"} : memref<16xi32>
+  %buf11_3_0 = AIE.buffer(%t11_3) {sym_name="m0"} : memref<16xi32>
+  %buf11_3_1 = AIE.buffer(%t11_3) {sym_name="m1"} : memref<16xi32>
+  %buf11_4_0 = AIE.buffer(%t11_4) {sym_name="n0"} : memref<16xi32>
+  %buf11_4_1 = AIE.buffer(%t11_4) {sym_name="n1"} : memref<16xi32>
+  %buf11_5_0 = AIE.buffer(%t11_5) {sym_name="o0"} : memref<16xi32>
+  %buf11_5_1 = AIE.buffer(%t11_5) {sym_name="o1"} : memref<16xi32>
+  %buf11_6_0 = AIE.buffer(%t11_6) {sym_name="p0"} : memref<16xi32>
+  %buf11_6_1 = AIE.buffer(%t11_6) {sym_name="p1"} : memref<16xi32>
 
   // ...
   %l8_3_0 = AIE.lock(%t8_3, 0)
