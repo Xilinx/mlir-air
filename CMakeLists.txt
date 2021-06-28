@@ -13,13 +13,14 @@ if(POLICY CMP0077)
   cmake_policy(SET CMP0077 NEW)
 endif()
 
-project(air LANGUAGES CXX C)
+project(AIR LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 
 find_package(MLIR REQUIRED CONFIG)
 find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+find_package(AIE)
 
 # Eventually we need to have some configuration options to select LibXAIEV2
 find_package(LibXAIE)
@@ -51,6 +52,7 @@ set(pybind11_INCLUDE_DIR ${pybind11_INCLUDE_DIR})
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
+message(STATUS "Using AIEConfig.cmake in: ${AIE_DIR}")
 
 option(LLVM_INCLUDE_TOOLS "Generate build targets for the LLVM tools." ON)
 option(LLVM_BUILD_TOOLS "Build the LLVM tools. If OFF, just generate build targets." ON)
@@ -61,11 +63,12 @@ set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 
 # Define the default arguments to use with 'lit', and an option for the user to
 # override.
-set(LIT_ARGS_DEFAULT "-sv -j 1")
+set(LIT_ARGS_DEFAULT "-sv -j 1 --timeout=30")
 if (MSVC_IDE OR XCODE)
   set(LIT_ARGS_DEFAULT "${LIT_ARGS_DEFAULT} --no-progress-bar")
 endif()
 set(LLVM_LIT_ARGS "${LIT_ARGS_DEFAULT}" CACHE STRING "Default options for lit")
+set(LLVM_LIT_ARGS "${LIT_ARGS_DEFAULT}" FORCE)
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR})

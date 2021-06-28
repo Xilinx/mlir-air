@@ -13,8 +13,12 @@ if(POLICY CMP0077)
   cmake_policy(SET CMP0077 NEW)
 endif()
 
-option(AIR_LIBXAIE_ENABLE "Enables libxaie functionality" OFF)
-
+if(${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL aarch64)
+  set(DEFAULT_ENABLE_BOARD_TESTS ON)
+else()
+  set(DEFAULT_ENABLE_BOARD_TESTS OFF)
+endif()
+option(ENABLE_BOARD_TESTS "Enable board tests" ${DEFAULT_ENABLE_BOARD_TESTS})
 
 project(air LANGUAGES CXX C)
 
@@ -85,6 +89,11 @@ include_directories(
   ${AIE_BINARY_DIR}/runtime_lib
 )
 
+if(ENABLE_BOARD_TESTS)
+set(CONFIG_ENABLE_BOARD_TESTS 1)
+else()
+set(CONFIG_ENABLE_BOARD_TESTS 0)
+endif()
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
   ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
@@ -92,23 +101,24 @@ configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py
   )
 
-  set(TEST_DEPENDS
+set(TEST_DEPENDS
   FileCheck count not
   )
 
-  add_lit_testsuite(check-air "Running the air board regression tests"
+add_lit_testsuite(check-air "Running the air board regression tests"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
   ARGS "-sv --timeout 30 --time-tests"
   )
-  set_target_properties(check-air PROPERTIES FOLDER "Tests")
+set_target_properties(check-air PROPERTIES FOLDER "Tests")
   
-  add_lit_testsuites(AIR_TEST ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS ${TEST_DEPENDS})
+add_lit_testsuites(AIR_TEST ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS ${TEST_DEPENDS})
   
-  add_custom_target(build-check-air)
-  add_dependencies(check-air build-check-air)
+add_custom_target(build-check-air)
+add_dependencies(check-air build-check-air)
+
 if(EXISTS check-all)
-add_dependencies(check-all check-air)
+  add_dependencies(check-all check-air)
 endif()
 
 #if(LIBXAIE_FOUND)

@@ -47,7 +47,10 @@ config.substitutions.append(('%VITIS_SYSROOT%', config.vitis_sysroot))
 config.substitutions.append(('%aie_runtime_lib%', os.path.join(config.aie_obj_root, "runtime_lib")))
 config.substitutions.append(('%air_runtime_lib%', os.path.join(config.aie_obj_root, "runtime_lib")))
 
-config.substitutions.append(('%run_on_board', "echo %T >> /home/xilinx/testlog | sync | echo"))
+if(config.enable_board_tests):
+    config.substitutions.append(('%run_on_board', "echo %T >> /home/xilinx/testlog | sync | sudo"))
+else:
+    config.substitutions.append(('%run_on_board', "echo"))
 
 llvm_config.with_system_environment(
     ['HOME', 'INCLUDE', 'LIB', 'TMP', 'TEMP'])
