@@ -21,8 +21,8 @@ aie_inc.cpp: aie.herd_0.mlir
 vecmul_tiled_0.mlir: vecmul.mlir
 	$(ATEN_OPT) -aten-to-air \
 				-air-to-affine \
-				-affine-loop-opt='affine-opt-tile-sizes=64' \
-				-affine-loop-normalize -simplify-affine-structures \
+				-air-automatic-tiling='air-loop-tile-sizes=64' \
+				-simplify-affine-structures \
 				-cse \
 				-o $@ $<
 
@@ -32,19 +32,12 @@ vecmul_tiled_1.mlir: vecmul_tiled_0.mlir
 				-o $@ $<
 
 vecmul_tiled_2.mlir: vecmul_tiled_1.mlir
-	$(ATEN_OPT) -affine-loop-normalize \
-				-affine-loop-opt='affine-opt-tile-sizes=2' \
-				-affine-loop-normalize -simplify-affine-structures \
-				-cse \
-				-o $@ $<
-vecmul_tiled_3.mlir: vecmul_tiled_2.mlir
-	$(ATEN_OPT) -affine-loop-normalize \
-				-affine-loop-opt='affine-opt-tile-sizes=2' \
-				-affine-loop-normalize -simplify-affine-structures \
+	$(ATEN_OPT) -air-automatic-tiling='air-loop-tile-sizes=2,2' \
+				-simplify-affine-structures \
 				-cse \
 				-o $@ $<
 
-vecmul_air.mlir: vecmul_tiled_3.mlir
+vecmul_air.mlir: vecmul_tiled_2.mlir
 	$(ATEN_OPT) -acap-herd-assign=herd-assign-depth=1 \
 				-affine-to-air \
 				-cse \
