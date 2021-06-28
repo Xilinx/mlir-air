@@ -20,7 +20,7 @@ air_libxaie1_ctx_t *xaie;
 
 #define TileInst (xaie->TileInst)
 #define TileDMAInst (xaie->TileDMAInst)
-#include "aie.inc"
+#include "aie_inc.cpp"
 #undef TileInst
 #undef TileDMAInst
 
@@ -128,8 +128,11 @@ int main(int argc, char *argv[])
   uint32_t d = mlir_read_buffer_b0(24);
   printf("ID %x\n", d);
 
-  if (d == 0xacdc)
+  if (d == 0xacdc) {
     printf("PASS!\n");
-  else
+    return 0;
+  } else {
     printf("fail.\n");
+    return -1;
+  }
 }

@@ -1,3 +1,5 @@
+// (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
+
 #include <cstdio>
 #include <cassert>
 
@@ -25,4 +27,5 @@ int main(int argc, char *argv[])
   air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
 
   printf("PASS!\n");
+  return 0;
 }
