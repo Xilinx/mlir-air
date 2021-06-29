@@ -13,13 +13,6 @@ if(POLICY CMP0077)
   cmake_policy(SET CMP0077 NEW)
 endif()
 
-if(${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL aarch64)
-  set(DEFAULT_ENABLE_BOARD_TESTS ON)
-else()
-  set(DEFAULT_ENABLE_BOARD_TESTS OFF)
-endif()
-option(ENABLE_BOARD_TESTS "Enable board tests" ${DEFAULT_ENABLE_BOARD_TESTS})
-
 project(air LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 14)
@@ -38,6 +31,13 @@ message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
 option(LLVM_INCLUDE_TOOLS "Generate build targets for the LLVM tools." ON)
 option(LLVM_BUILD_TOOLS "Build the LLVM tools. If OFF, just generate build targets." ON)
+
+if(${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL aarch64)
+  set(DEFAULT_ENABLE_BOARD_TESTS ON)
+else()
+  set(DEFAULT_ENABLE_BOARD_TESTS OFF)
+endif()
+option(ENABLE_BOARD_TESTS "Enable board tests" ${DEFAULT_ENABLE_BOARD_TESTS})
 
 set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/bin)
 set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/lib)
