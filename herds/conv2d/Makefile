@@ -49,7 +49,7 @@ aie_inc.cpp: aie.mlir
 # first tiling to model L3->L2 tiling associated with each 'logical column' of overlay/herd
 conv2d_tiled_0.mlir: conv2d.mlir
 	$(ATEN_OPT) -aten-to-air \
-				-air-to-affine \
+				-air-to-affine='air-loop-order=3,0,1,2,4' \
 				-affine-loop-opt='affine-opt-tile-sizes=104' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
@@ -59,7 +59,7 @@ conv2d_tiled_0.mlir: conv2d.mlir
 # of the overlay)
 conv2d_tiled_1.mlir: conv2d_tiled_0.mlir
 	$(ATEN_OPT) -affine-loop-normalize \
-				-affine-loop-opt='affine-opt-tile-sizes=1,8,16,26,1,1,13' \
+				-affine-loop-opt='affine-opt-tile-sizes=1,2,16,26,1,1,13' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
@@ -67,7 +67,7 @@ conv2d_tiled_1.mlir: conv2d_tiled_0.mlir
 # third tiling to model weights/OFM partitioning in logical rows 
 conv2d_tiled_2.mlir: conv2d_tiled_1.mlir
 	$(ATEN_OPT) -affine-loop-normalize \
-				-affine-loop-opt='affine-opt-tile-sizes=1,2,1,1,1,1,1,1,1,1,1' \
+				-affine-loop-opt='affine-opt-tile-sizes=1,8,1,1,1,1,1,1,1,1,1' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
