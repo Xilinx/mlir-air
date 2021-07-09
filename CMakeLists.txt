@@ -20,7 +20,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
 
 find_package(MLIR REQUIRED CONFIG)
 find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
-find_package(AIE)
+find_package(AIE REQUIRED)
 
 # Eventually we need to have some configuration options to select LibXAIEV2
 find_package(LibXAIE)
@@ -104,3 +104,4 @@ add_subdirectory(python)
 add_subdirectory(lib)
 add_subdirectory(test)
 add_subdirectory(tools)
+add_subdirectory(cmake/modules)
