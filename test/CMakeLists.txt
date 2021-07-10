@@ -24,6 +24,14 @@ find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 # Eventually we need to have some configuration options to select LibXAIEV2
 find_package(LibXAIE)
 
+# if(NOT AIE_BINARY_DIR)
+# find_package(AIE REQUIRED CONFIG)
+# endif()
+
+if(NOT AIR_BINARY_DIR)
+find_package(AIR REQUIRED CONFIG)
+endif()
+
 find_package(Torch 1.8)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")

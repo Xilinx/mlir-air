@@ -18,6 +18,7 @@ project(AIR LANGUAGES CXX C)
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 
+include(ExternalProject)
 find_package(MLIR REQUIRED CONFIG)
 find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 find_package(AIE REQUIRED)
@@ -99,6 +100,31 @@ link_directories(${PROJECT_BINARY_DIR}/../aie/lib/)
 add_definitions(${LLVM_DEFINITIONS})
 
 add_custom_target(check-all)
+
+message("ARM_TOOLCHAIN_OPT=${ARM_TOOLCHAIN_OPT}")
+ExternalProject_Add(air_runtime_lib
+	PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp
+	SOURCE_DIR ${PROJECT_SOURCE_DIR}/runtime_lib
+	BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib
+	CMAKE_ARGS
+		-DCMAKE_MODULE_PATH=${CMAKE_MODULE_PATH}
+		-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+		-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+		-DCMAKE_ASM_COMPILER=${CMAKE_ASM_COMPILER}
+		-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+		-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
+		-Dpybind11_DIR=${pybind11_DIR}
+		-DXILINX_LIBXAIE_DIR=${VitisSysroot}/opt/xaiengine
+		${ARM_TOOLCHAIN_OPT}
+	BUILD_ALWAYS true
+	STEP_TARGETS clean build install test
+	USES_TERMINAL_CONFIGURE true
+	USES_TERMINAL_BUILD true
+	USES_TERMINAL_TEST true
+	USES_TERMINAL_INSTALL true
+	TEST_BEFORE_INSTALL true
+	TEST_EXCLUDE_FROM_MAIN true
+)
 
 add_subdirectory(python)
 add_subdirectory(lib)

@@ -32,7 +32,7 @@ air_libxaie1_ctx_t *xaie;
 
 #define TileInst (xaie->TileInst)
 #define TileDMAInst (xaie->TileDMAInst)
-#include "aie.0.inc"
+#include "aie_inc.cpp"
 #undef TileInst
 #undef TileDMAInst
 

@@ -29,7 +29,7 @@ config.environment['PYTHONPATH'] \
                             os.path.join(config.air_obj_root, "../air")
                           )
 #os.environ['PYTHONPATH']
-print("PATH",config.environment['PYTHONPATH'])
+print("Running with PYTHONPATH",config.environment['PYTHONPATH'])
 
 # suffixes: A list of file extensions to treat as test files.
 config.suffixes = ['.lit']
@@ -39,13 +39,15 @@ config.test_source_root = os.path.dirname(__file__)
 
 # test_exec_root: The root path where tests should be run.
 config.test_exec_root = os.path.join(config.air_obj_root, 'test')
+air_runtime_lib = os.path.join(config.air_obj_root, "runtime_lib")
 
 config.substitutions.append(('%PATH%', config.environment['PATH']))
 config.substitutions.append(('%shlibext', config.llvm_shlib_ext))
 config.substitutions.append(('%PYTHON', config.python_executable))
 config.substitutions.append(('%VITIS_SYSROOT%', config.vitis_sysroot))
 config.substitutions.append(('%aie_runtime_lib%', os.path.join(config.aie_obj_root, "runtime_lib")))
-config.substitutions.append(('%air_runtime_lib%', os.path.join(config.aie_obj_root, "runtime_lib")))
+config.substitutions.append(('%air_runtime_lib%', air_runtime_lib))
+config.substitutions.append(('%airhost_libs%', "-I" + air_runtime_lib + "/airhost/include -L" + air_runtime_lib + "/airhost -Wl,--whole-archive -lairhost -Wl,--no-whole-archive -lmetal -lopen_amp -lpthread -lstdc++ -lsysfs -ldl -lrt"))
 
 if(config.enable_board_tests):
     config.substitutions.append(('%run_on_board', "echo %T >> /home/xilinx/testlog | sync | sudo"))

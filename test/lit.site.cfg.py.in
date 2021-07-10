@@ -32,6 +32,7 @@ config.aie_src_root = "@AIE_SOURCE_DIR@"
 config.aie_obj_root = "@AIE_BINARY_DIR@"
 config.air_src_root = "@AIR_SOURCE_DIR@"
 config.air_obj_root = "@AIR_BINARY_DIR@"
+config.air_runtime_lib_obj_root = "@AIR_BINARY_DIR@/runtime_lib"
 # test_exec_root: The root path where tests should be run.
 config.test_exec_root = "@CMAKE_CURRENT_BINARY_DIR@"
 

@@ -54,7 +54,7 @@ aie_ctrl.o: aie_ctrl.llvm.mlir
 	mlir-translate --mlir-to-llvmir $< | llc --march=aarch64 --filetype=obj -o $@
 
 aie_ctrl.so: aie_ctrl.o
-	$(CC) -shared $< -o $@
+	$(CC) $(CFLAGS) -shared $< -o $@
 
 clean::
 	rm -rf acdc_project mmult.*mlir aie*.mlir peano.mlir *.elf aie_ctrl.* *.exe *.inc *.o

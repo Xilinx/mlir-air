@@ -90,7 +90,7 @@ conv2d_tiled_4.mlir: conv2d_tiled_3.mlir
 		
 # assign herd/overlay only.
 # TODO: lowering affine-to-air crashes currently; separating that step
-conv2d_air_0.mlir: conv2d_tiled_4.mlir
+conv2d_air.mlir: conv2d_tiled_4.mlir
 	$(ATEN_OPT) -acap-herd-assign=herd-assign-depth=0 \
 				-cse \
 				-o $@ $<
