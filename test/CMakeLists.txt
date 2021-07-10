@@ -69,26 +69,6 @@ include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_BINARY_DIR}/include)
 add_definitions(${LLVM_DEFINITIONS})
 
-###
-
-MACRO(SUBDIRLIST result curdir)
-  file(GLOB children RELATIVE ${curdir} ${curdir}/*)
-  set(dirlist "")
-  foreach(child ${children})
-    if(IS_DIRECTORY ${curdir}/${child} AND EXISTS ${curdir}/${child}/CMakeLists.txt)
-      LIST(APPEND dirlist ${child})
-    endif()
-  endforeach()
-  set(${result} ${dirlist})
-ENDMACRO()
-
-SUBDIRLIST(SUBDIRS ${CMAKE_CURRENT_SOURCE_DIR})
-
-include_directories(
-  ${AIR_SOURCE_DIR}/runtime_lib/airhost/include
-  ${AIE_BINARY_DIR}/runtime_lib
-)
-
 if(ENABLE_BOARD_TESTS)
 set(CONFIG_ENABLE_BOARD_TESTS 1)
 else()
@@ -121,20 +101,4 @@ if(EXISTS check-all)
   add_dependencies(check-all check-air)
 endif()
 
-#if(LIBXAIE_FOUND)
 
-  link_libraries(
-    ${AIR_LIBXAIE_LIBS}
-    airhost
-    dl
-  )
-
-  link_directories(${AIR_BINARY_DIR}/runtime_lib
-                   ${AIE_BINARY_DIR}/runtime_lib)
-
-  foreach(subdir ${SUBDIRS})
-    add_subdirectory(${subdir})
-    message(${subdir})
-  endforeach()
-
-#endif()
