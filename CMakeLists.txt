@@ -101,6 +101,10 @@ add_definitions(${LLVM_DEFINITIONS})
 
 add_custom_target(check-all)
 
+# Make sure we build the docs
+add_custom_target(docs ALL)
+add_dependencies(docs mlir-doc)
+
 message("ARM_TOOLCHAIN_OPT=${ARM_TOOLCHAIN_OPT}")
 ExternalProject_Add(air_runtime_lib
 	PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp
