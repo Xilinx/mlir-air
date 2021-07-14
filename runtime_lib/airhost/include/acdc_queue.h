@@ -4,7 +4,12 @@
 #include <stdint.h>
 #include "hsa_defs.h"
 
-#define MB_QUEUE_SIZE 64
+// Define the number of HSA packets we can have in a queue
+#define MB_QUEUE_SIZE 48
+
+// Define the amount of shared memory accessible to each controller
+// This includes the queues, events, doorbells etc
+#define MB_SHMEM_SEGMENT_SIZE 0x1000
 
 // See https://confluence.xilinx.com/display/XRLABS/AIR+Controller+HSA+Packet+Formats
 // All defined as longs, so we can shift them into 64 registers
