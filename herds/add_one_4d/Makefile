@@ -26,7 +26,7 @@ aie_inc.cpp: aie.herd_0.mlir
 				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
 
 add_one_tiled_0.mlir: add_one.mlir
-	$(ATEN_OPT) -aten-to-air \
+	$(AIR_OPT) -aten-to-air \
 				-air-to-affine \
 				-affine-loop-opt='affine-opt-tile-sizes=1,1,16,16' \
 				-affine-loop-normalize -simplify-affine-structures \
@@ -34,44 +34,44 @@ add_one_tiled_0.mlir: add_one.mlir
 				-o $@ $<
 
 add_one_tiled_1.mlir: add_one_tiled_0.mlir
-	$(ATEN_OPT) -affine-loop-opt='affine-opt-copy-depths=1 affine-opt-copy-fast-space=2' \
+	$(AIR_OPT) -affine-loop-opt='affine-opt-copy-depths=1 affine-opt-copy-fast-space=2' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
 
 add_one_tiled_2.mlir: add_one_tiled_1.mlir
-	$(ATEN_OPT) -affine-loop-opt='affine-opt-tile-sizes=16,16' \
+	$(AIR_OPT) -affine-loop-opt='affine-opt-tile-sizes=16,16' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
 
 add_one_air.mlir: add_one_tiled_2.mlir
-	$(ATEN_OPT) -acap-herd-assign=herd-assign-depth=0 \
+	$(AIR_OPT) -acap-herd-assign=herd-assign-depth=0 \
 				-affine-to-air \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
 
 aie.herd_0.mlir: add_one_air.mlir
-	$(ATEN_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=./}" $< \
+	$(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=./}" $< \
 				-o /dev/null
 
 peano.mlir: aie.herd_0.mlir
-	$(ATEN_OPT) -lower-affine -o $@ $< 
+	$(AIR_OPT) -lower-affine -o $@ $< 
 
 elfs: peano.mlir
 	$(AIECC) --no-xbridge peano.mlir
 
 
 aie_ctrl.mlir: add_one_air.mlir
-	$(ATEN_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}"\
+	$(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}"\
 				-air-to-std \
 				-airrt-to-llvm \
 				-aten-lowering \
 				-o $@ $<
 
 aie_ctrl.llvm.mlir: aie_ctrl.mlir
-	$(ATEN_OPT) -air-return-elimination \
+	$(AIR_OPT) -air-return-elimination \
 		--lower-affine \
 		--convert-scf-to-std \
 		--convert-std-to-llvm='emit-c-wrappers'  \

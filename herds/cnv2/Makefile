@@ -6,7 +6,7 @@ ARM_OBJ_DIR = .
 
 AIE_OPT = aie-opt
 AIE_XLATE = aie-translate
-ATEN_OPT = aten-opt
+AIR_OPT = air-opt
 
 AIECC = aiecc.py
 SYSROOT = /group/xrlabs/platforms/pynq-vck190-sysroot/
@@ -47,13 +47,13 @@ aie_inc.cpp: aie.mlir
 				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
 
 $(DESIGN)_airin.mlir: $(DESIGN).mlir
-	$(ATEN_OPT) -aten-to-air \
+	$(AIR_OPT) -aten-to-air \
 				-air-name-layers \
 				-air-expand-graph \
 				-o $@ $<
 
 $(DESIGN).air.mlir: $(DESIGN)_airin.mlir
-	aten-opt  -o $@ $< \
+	air-opt  -o $@ $< \
 			-air-to-linalg \
 			-air-linalg-codegen='herd-size=1,1' \
 			-affine-to-air \
@@ -61,16 +61,16 @@ $(DESIGN).air.mlir: $(DESIGN)_airin.mlir
 				-o $@ $<
 
 aie.mlir: $(DESIGN).air.mlir
-        $(ATEN_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=./}" $< \
+        $(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=./}" $< \
 
 peano.mlir: aie.mlir
-	$(ATEN_OPT) -lower-affine -o $@ $< 
+	$(AIR_OPT) -lower-affine -o $@ $< 
 
 elfs: peano.mlir
 	$(AIECC) --no-xbridge peano.mlir
 
 aie_ctrl.mlir: $(DESIGN).air.mlir
-	$(ATEN_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}"\
+	$(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}"\
 				--convert-vector-to-llvm \
 				-air-to-std \
 				-airrt-to-llvm \
@@ -78,7 +78,7 @@ aie_ctrl.mlir: $(DESIGN).air.mlir
 				-o $@ $<
 
 aie_ctrl.llvm.mlir: aie_ctrl.mlir
-        $(ATEN_OPT) -air-return-elimination \
+        $(AIR_OPT) -air-return-elimination \
                 --lower-affine \
                 --convert-scf-to-std \
                 --convert-std-to-llvm='emit-c-wrappers'  \

@@ -18,7 +18,7 @@ aie.inc: aie.herd_0.mlir
 				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
 
 mmult.air.mlir: mmult.mlir
-	aten-opt  -o $@ $< \
+	air-opt  -o $@ $< \
 			-aten-to-air \
 			-air-to-linalg \
 			-air-linalg-codegen='herd-size=2,2' \
@@ -26,7 +26,7 @@ mmult.air.mlir: mmult.mlir
 			-convert-linalg-to-affine-loops
 
 aie_ctrl.mlir: mmult.air.mlir
-	$(ATEN_OPT) -air-to-aie="air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null" \
+	$(AIR_OPT) -air-to-aie="air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null" \
 				--convert-vector-to-llvm \
 				-air-to-std \
 				-airrt-to-llvm \
@@ -34,18 +34,18 @@ aie_ctrl.mlir: mmult.air.mlir
 				-o $@ $<
 
 aie_ctrl.llvm.mlir: aie_ctrl.mlir
-	$(ATEN_OPT) -air-return-elimination \
+	$(AIR_OPT) -air-return-elimination \
 		--lower-affine \
 		--convert-scf-to-std \
 		--convert-std-to-llvm='emit-c-wrappers'  \
 		-o $@ $<
 
 aie.herd_0.mlir: mmult.air.mlir
-	aten-opt $< -convert-linalg-to-loops \
+	air-opt $< -convert-linalg-to-loops \
 				-air-to-aie="air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=./" -o /dev/null
 
 peano.mlir: aie.herd_0.mlir
-	aten-opt -lower-affine -o $@ $<
+	air-opt -lower-affine -o $@ $<
 
 elfs: peano.mlir
 	aiecc.py --no-xbridge $<

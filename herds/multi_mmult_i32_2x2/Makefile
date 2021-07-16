@@ -13,7 +13,7 @@ mmult.mlir: mmult.py
 	python3 $< > $@ 
 
 mmult.air.mlir: mmult.mlir
-	aten-opt  -o $@ $< \
+	air-opt  -o $@ $< \
 			-aten-to-air \
 			-air-to-linalg \
 			-air-linalg-codegen='herd-size=2,2' \

@@ -6,7 +6,7 @@ ARM_OBJ_DIR = .
 
 AIE_OPT = aie-opt
 AIE_XLATE = aie-translate
-ATEN_OPT = aten-opt
+AIR_OPT = air-opt
 
 AIECC = aiecc.py
 SYSROOT = /group/xrlabs/platforms/pynq-vck190-sysroot/
@@ -48,7 +48,7 @@ aie_inc.cpp: aie.mlir
 # TODO: loop ordering is hardcoded in aten-to-air lowering for now
 # first tiling to model L3->L2 tiling associated with each 'logical column' of overlay/herd
 conv2d_tiled_0.mlir: conv2d.mlir
-	$(ATEN_OPT) -aten-to-air \
+	$(AIR_OPT) -aten-to-air \
 				-air-to-affine='air-loop-order=3,0,1,2,4' \
 				-affine-loop-opt='affine-opt-tile-sizes=104' \
 				-affine-loop-normalize -simplify-affine-structures \
@@ -58,7 +58,7 @@ conv2d_tiled_0.mlir: conv2d.mlir
 # second tiling to model L1 sub-volume partitioning (minus the weights/OFM tiling in 'logical rows' 
 # of the overlay)
 conv2d_tiled_1.mlir: conv2d_tiled_0.mlir
-	$(ATEN_OPT) -affine-loop-normalize \
+	$(AIR_OPT) -affine-loop-normalize \
 				-affine-loop-opt='affine-opt-tile-sizes=1,2,16,26,1,1,13' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
@@ -66,7 +66,7 @@ conv2d_tiled_1.mlir: conv2d_tiled_0.mlir
 
 # third tiling to model weights/OFM partitioning in logical rows 
 conv2d_tiled_2.mlir: conv2d_tiled_1.mlir
-	$(ATEN_OPT) -affine-loop-normalize \
+	$(AIR_OPT) -affine-loop-normalize \
 				-affine-loop-opt='affine-opt-tile-sizes=1,8,1,1,1,1,1,1,1,1,1' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
@@ -78,7 +78,7 @@ conv2d_tiled_2.mlir: conv2d_tiled_1.mlir
 # casuing a failure (crash now) when attempting to assign to a herd. Workaround is to manually
 # move the alloc/DMA code inside second loop (completely valid)
 conv2d_tiled_3.mlir: conv2d_tiled_2.mlir
-	$(ATEN_OPT) -affine-loop-opt='affine-opt-copy-depths=1 affine-opt-copy-fast-space=2' \
+	$(AIR_OPT) -affine-loop-opt='affine-opt-copy-depths=1 affine-opt-copy-fast-space=2' \
 		        -o $@ $<
 
 # TODO: workaround to manually move memref allocation/deallocation for L2 tiles inside second loop
@@ -91,26 +91,26 @@ conv2d_tiled_4.mlir: conv2d_tiled_3.mlir
 # assign herd/overlay only.
 # TODO: lowering affine-to-air crashes currently; separating that step
 conv2d_air.mlir: conv2d_tiled_4.mlir
-	$(ATEN_OPT) -acap-herd-assign=herd-assign-depth=0 \
+	$(AIR_OPT) -acap-herd-assign=herd-assign-depth=0 \
 				-cse \
 				-o $@ $<
 
 aie.mlir: conv2d_air.mlir
-	$(ATEN_OPT) -air-to-aie \
+	$(AIR_OPT) -air-to-aie \
 				-air-to-aie-emit-while-loop=true \
 				-air-to-aie-row-offset 2 \
 				-air-to-aie-col-offset 7 \
 				-air-to-aie-output-file $@ $< \
 				-o aie_t.mlir
 peano.mlir: aie.mlir
-	$(ATEN_OPT) -lower-affine -o $@ $< 
+	$(AIR_OPT) -lower-affine -o $@ $< 
 
 elfs: peano.mlir
 	$(AIECC) --no-xbridge peano.mlir
 
 
 aie_ctrl.mlir: conv2d_air.mlir
-	$(ATEN_OPT) -air-to-aie $< -air-to-aie-output-file /dev/null \
+	$(AIR_OPT) -air-to-aie $< -air-to-aie-output-file /dev/null \
 				-air-to-aie-row-offset 2 \
 				-air-to-aie-col-offset 7 \
 				-air-to-std \
@@ -118,7 +118,7 @@ aie_ctrl.mlir: conv2d_air.mlir
 				-o $@
 
 aie_ctrl.llvm.mlir: aie_ctrl.mlir
-	$(ATEN_OPT) -air-return-elimination \
+	$(AIR_OPT) -air-return-elimination \
 		--lower-affine \
 		--convert-scf-to-std \
 		--convert-std-to-llvm='emit-c-wrappers'  \

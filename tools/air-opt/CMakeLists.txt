@@ -12,7 +12,6 @@ set(LIBS
   NPCOMPTypingCPA
   ATen
   AIE
-  AIRRt
   MLIR
   )
 

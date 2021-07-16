@@ -82,6 +82,10 @@ include(AddLLVM)
 include(AddMLIR)
 include(HandleLLVMOptions)
 
+include_directories(${PROJECT_SOURCE_DIR}/../aie/include)
+include_directories(${PROJECT_BINARY_DIR}/../aie/include)
+link_directories(${PROJECT_BINARY_DIR}/../aie/lib/)
+
 include_directories(${PROJECT_SOURCE_DIR}/../pytorch_mlir/dialect/include)
 include_directories(${PROJECT_BINARY_DIR}/../pytorch_mlir/dialect/include)
 link_directories(${PROJECT_BINARY_DIR}/../pytorch_mlir/lib/)
@@ -95,7 +99,6 @@ set(NPCOMP_SOURCE_DIR "${PROJECT_SOURCE_DIR}/../npcomp/mlir-npcomp")
 include_directories(${NPCOMP_SOURCE_DIR}/include)
 include_directories(${NPCOMP_BINARY_DIR}/include)
 link_directories(${NPCOMP_BINARY_DIR}/lib)
-link_directories(${PROJECT_BINARY_DIR}/../aie/lib/)
 
 add_definitions(${LLVM_DEFINITIONS})
 

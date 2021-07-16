@@ -10,21 +10,21 @@ core_7_2.elf: aie.1.mlir
 	aiecc.py --no-xbridge $<
 
 aie.0.mlir: air.mlir Makefile
-	aten-opt $< -air-to-aie="air-to-aie-output-prefix=./ air-to-aie-row-offset=2 air-to-aie-col-offset=7" \
+	air-opt $< -air-to-aie="air-to-aie-output-prefix=./ air-to-aie-row-offset=2 air-to-aie-col-offset=7" \
 			-o /dev/null
 
 aie.1.mlir: aie.0.mlir
-	aten-opt -lower-affine -convert-scf-to-std -o $@ $<
+	air-opt -lower-affine -convert-scf-to-std -o $@ $<
 
 aie_ctrl.mlir: air.mlir Makefile
-	aten-opt $< -air-to-aie="air-to-aie-output-prefix=/dev/null air-to-aie-row-offset=2 air-to-aie-col-offset=7" \
+	air-opt $< -air-to-aie="air-to-aie-output-prefix=/dev/null air-to-aie-row-offset=2 air-to-aie-col-offset=7" \
 			-air-to-std \
 			-airrt-to-llvm \
 			-aten-lowering \
 			-o $@
 
 aie_ctrl.llvm.mlir: aie_ctrl.mlir
-	aten-opt \
+	air-opt \
 		-air-return-elimination \
 		--lower-affine \
 		--convert-scf-to-std \

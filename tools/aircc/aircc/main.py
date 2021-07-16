@@ -64,7 +64,7 @@ def run_flow(opts, tmpdirname):
     air_to_aie_pass = air_to_aie_pass + f' air-to-aie-row-offset={opts.row_offset} air-to-aie-col-offset={opts.col_offset}'
     air_to_aie_pass = air_to_aie_pass + f' air-to-aie-output-prefix={opts.tmpdir}/'
     
-    do_call(['aten-opt', opts.air_mlir_file, '-convert-linalg-to-loops',
+    do_call(['air-opt', opts.air_mlir_file, '-convert-linalg-to-loops',
              air_to_aie_pass, '-o', '/dev/null'])
 
     air_to_airrt_pass = '-air-to-aie=air-to-aie-emit-while-loop=true'
@@ -72,17 +72,17 @@ def run_flow(opts, tmpdirname):
     air_to_airrt_pass = air_to_airrt_pass + f' air-to-aie-output-prefix={opts.tmpdir}/'
 
     aie_ctrl_airrt = opts.tmpdir+'/airrt.'+opts.air_mlir_file
-    do_call(['aten-opt', opts.air_mlir_file, air_to_airrt_pass,
+    do_call(['air-opt', opts.air_mlir_file, air_to_airrt_pass,
             '-convert-vector-to-llvm', '-air-to-std',
             '-o', aie_ctrl_airrt])
 
     aie_ctrl = opts.tmpdir+'/aie_ctrl.'+opts.air_mlir_file
-    do_call(['aten-opt', aie_ctrl_airrt,
+    do_call(['air-opt', aie_ctrl_airrt,
             '-airrt-to-llvm', '-aten-lowering',
             '-o', aie_ctrl])
 
     aie_ctrl_llvm = opts.tmpdir+'/llvm.'+opts.air_mlir_file
-    do_call(['aten-opt', aie_ctrl,
+    do_call(['air-opt', aie_ctrl,
             '-air-return-elimination','--lower-affine','--convert-scf-to-std',
             '--convert-std-to-llvm=emit-c-wrappers',
             '-o', aie_ctrl_llvm])
@@ -102,7 +102,7 @@ def run_flow(opts, tmpdirname):
       herd_file = opts.tmpdir+'/aie.'+herd+'.mlir'
       aiecc_file = opts.tmpdir+'/aiecc.'+herd+'.mlir'
       aiecc_dir = opts.tmpdir+'/'+herd
-      do_call(['aten-opt', herd_file, '--lower-affine', '-o', aiecc_file])
+      do_call(['air-opt', herd_file, '--lower-affine', '-o', aiecc_file])
       do_call(['aiecc.py'] +
               (['-v'] if opts.verbose else []) +
               (['--sysroot', opts.sysroot] if opts.sysroot!="" else []) +

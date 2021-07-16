@@ -76,12 +76,12 @@ config.air_tools_dir = os.path.join(config.air_obj_root, 'bin')
 # Tweak the PATH to include the tools dir.
 llvm_config.with_environment('PATH', config.llvm_tools_dir, append_path=True)
 
-tool_dirs = [config.aie_tools_dir, config.llvm_tools_dir]
+tool_dirs = [config.aie_tools_dir, config.air_tools_dir, config.llvm_tools_dir]
 tools = [
     'aie-opt',
     'aie-translate',
     'aiecc.py',
-    'aten-opt',
+    'air-opt',
     'clang',
     'clang++',
     'ld.lld',

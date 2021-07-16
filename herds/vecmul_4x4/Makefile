@@ -19,7 +19,7 @@ aie_inc.cpp: aie.herd_0.mlir
 				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
 
 vecmul_tiled_0.mlir: vecmul.mlir
-	$(ATEN_OPT) -aten-to-air \
+	$(AIR_OPT) -aten-to-air \
 				-air-to-affine \
 				-air-automatic-tiling='air-loop-tile-sizes=64' \
 				-simplify-affine-structures \
@@ -27,42 +27,42 @@ vecmul_tiled_0.mlir: vecmul.mlir
 				-o $@ $<
 
 vecmul_tiled_1.mlir: vecmul_tiled_0.mlir
-	$(ATEN_OPT) -affine-loop-opt='affine-opt-copy-depths=0 affine-opt-copy-fast-space=2' \
+	$(AIR_OPT) -affine-loop-opt='affine-opt-copy-depths=0 affine-opt-copy-fast-space=2' \
 				-cse \
 				-o $@ $<
 
 vecmul_tiled_2.mlir: vecmul_tiled_1.mlir
-	$(ATEN_OPT) -air-automatic-tiling='air-loop-tile-sizes=4,4' \
+	$(AIR_OPT) -air-automatic-tiling='air-loop-tile-sizes=4,4' \
 				-simplify-affine-structures \
 				-cse \
 				-o $@ $<
 
 vecmul_air.mlir: vecmul_tiled_2.mlir
-	$(ATEN_OPT) -acap-herd-assign=herd-assign-depth=1 \
+	$(AIR_OPT) -acap-herd-assign=herd-assign-depth=1 \
 				-affine-to-air \
 				-cse \
 				-o $@ $<
 
 aie.herd_0.mlir: vecmul_air.mlir
-	$(ATEN_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=./}" $< \
+	$(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=./}" $< \
 				-o /dev/null
 
 peano.mlir: aie.herd_0.mlir
-	$(ATEN_OPT) -lower-affine -o $@ $<
+	$(AIR_OPT) -lower-affine -o $@ $<
 
 elfs: peano.mlir
 	$(AIECC) --no-xbridge peano.mlir
 
 
 aie_ctrl.mlir: vecmul_air.mlir
-	$(ATEN_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}"\
+	$(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}"\
 				-air-to-std \
 				-airrt-to-llvm \
 				-aten-lowering \
 				-o $@ $<
 
 aie_ctrl.llvm.mlir: aie_ctrl.mlir
-	$(ATEN_OPT) -air-return-elimination \
+	$(AIR_OPT) -air-return-elimination \
 		--lower-affine \
 		--convert-scf-to-std \
 		--convert-std-to-llvm='emit-c-wrappers'  \

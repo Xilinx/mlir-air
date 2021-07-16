@@ -7,7 +7,7 @@ include ../config.make
 all: test.exe
 
 herd.llvm.mlir: herd.airrt.mlir
-	aten-opt -o $@ $< -airrt-to-llvm
+	air-opt -o $@ $< -airrt-to-llvm
 
 herd.o: herd.llvm.mlir
 	mlir-translate --mlir-to-llvmir $< | llc --filetype=obj -o $@

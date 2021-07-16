@@ -10,7 +10,7 @@ beefmaker_kernel.o: chess/beefmaker_kernel.cc
 	xchesscc -p me -P ${CARDANO}/data/cervino/lib -c $<
 
 aie.mlir: air.mlir Makefile
-	aten-opt $< -air-to-aie="air-to-aie-output-file=$@ air-to-aie-row-offset=2 air-to-aie-col-offset=7" \
+	air-opt $< -air-to-aie="air-to-aie-output-file=$@ air-to-aie-row-offset=2 air-to-aie-col-offset=7" \
 			-o /dev/null
 
 core_7_2.elf: aie.mlir
