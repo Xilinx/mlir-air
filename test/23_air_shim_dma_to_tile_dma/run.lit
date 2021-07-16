@@ -3,7 +3,7 @@
 
 // RUN: aten-opt %S/air.mlir -air-to-aie="air-to-aie-output-prefix=/dev/null air-to-aie-row-offset=2 air-to-aie-col-offset=7" -air-to-std -airrt-to-llvm -aten-lowering -o %T/aie_ctrl.mlir
 // RUN: aten-opt -air-return-elimination --lower-affine --convert-scf-to-std --convert-std-to-llvm='emit-c-wrappers' -o %T/aie_ctrl.llvm.mlir %T/aie_ctrl.mlir
-// RUN: mlir-translate --mlir-to-llvmir %T/aie_ctrl.llvm.mlir | llc --march=aarch64 --filetype=obj -o %T/aie_ctrl.o
-// RUN: clang --target=aarch64-linux-gnu --sysroot=%VITIS_SYSROOT% -shared %T/aie_ctrl.o -o %T/aie_ctrl.so
+// RUN: mlir-translate --mlir-to-llvmir %T/aie_ctrl.llvm.mlir | llc --march=aarch64 --relocation-model=pic --filetype=obj -o %T/aie_ctrl.o
+// RUN: %ARM_CLANG -shared %T/aie_ctrl.o -o %T/aie_ctrl.so
 
 // RUN: %run_on_board %T/test.elf
