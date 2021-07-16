@@ -81,9 +81,13 @@ tools = [
     'aie-opt',
     'aie-translate',
     'aiecc.py',
+    'aten-opt',
+    'clang',
+    'clang++',
     'ld.lld',
     'llc',
     'llvm-objdump',
+    'mlir-translate',
     'opt',
 ]
 
