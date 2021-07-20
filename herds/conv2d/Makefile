@@ -19,7 +19,7 @@ ifeq ($(uname_p),aarch64)
 	LDFLAGS += -L/opt/xaiengine/lib
 endif
 
-CFLAGS += -I../../lib/include
+CFLAGS += -I../../runtime_lib/airhost/include
 
 all: aie_ctrl.so elfs
 
@@ -93,6 +93,7 @@ conv2d_tiled_4.mlir: conv2d_tiled_3.mlir
 conv2d_air.mlir: conv2d_tiled_4.mlir
 	$(AIR_OPT) -acap-herd-assign=herd-assign-depth=0 \
 				-cse \
+				-affine-to-air \
 				-o $@ $<
 
 aie.mlir: conv2d_air.mlir
@@ -129,6 +130,31 @@ aie_ctrl.o: aie_ctrl.llvm.mlir
 
 aie_ctrl.so: aie_ctrl.o
 	$(CC) -shared $< -o $@
+
+conv2d_cpu.std.mlir: conv2d_air.mlir
+	$(AIR_OPT) \
+		-air-to-std='lower-to-cpu=true' -cse \
+		-lower-affine -cse \
+		-tensor-constant-bufferize -aten-lowering -finalizing-bufferize \
+		-convert-scf-to-std \
+		-o $@ $<
+
+
+conv2d_cpu.llvm.mlir: conv2d_cpu.std.mlir
+	$(AIR_OPT) \
+		-airrt-to-llvm \
+		-convert-std-to-llvm='emit-c-wrappers=true' \
+		-lower-to-libaten \
+		-o $@ $<
+
+conv2d_cpu.o: conv2d_cpu.llvm.mlir
+	mlir-translate --mlir-to-llvmir $< | llc --filetype=obj -o $@
+
+test_cpu.o: test_cpu.cpp
+	clang++ $(CFLAGS) -c -o $@ $<
+
+test_cpu.exe: test_cpu.o conv2d_cpu.o
+	clang -o $@ $^ -lstdc++
 
 %.elf: $(AIE_SRC_DIR)/main.cc
 	cd ./$(AIE_SRC_DIR) && \
