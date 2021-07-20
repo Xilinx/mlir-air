@@ -21,23 +21,18 @@ aie_inc.cpp: aie.herd_0.mlir
 vecmul_tiled_0.mlir: vecmul.mlir
 	$(AIR_OPT) -aten-to-air \
 				-air-to-affine \
-				-air-automatic-tiling='air-loop-tile-sizes=64' \
+				-air-automatic-tiling='loop-tile-sizes=64,2,2' \
 				-simplify-affine-structures \
 				-cse \
 				-o $@ $<
 
 vecmul_tiled_1.mlir: vecmul_tiled_0.mlir
-	$(AIR_OPT) -affine-loop-opt='affine-opt-copy-depths=0 affine-opt-copy-fast-space=2' \
+	$(AIR_OPT) -air-regularize-loop \
+        -affine-loop-opt='affine-opt-copy-depths=2 affine-opt-copy-fast-space=2' \
 				-cse \
 				-o $@ $<
 
-vecmul_tiled_2.mlir: vecmul_tiled_1.mlir
-	$(AIR_OPT) -air-automatic-tiling='air-loop-tile-sizes=2,2' \
-				-simplify-affine-structures \
-				-cse \
-				-o $@ $<
-
-vecmul_air.mlir: vecmul_tiled_2.mlir
+vecmul_air.mlir: vecmul_tiled_1.mlir
 	$(AIR_OPT) -acap-herd-assign=herd-assign-depth=1 \
 				-affine-to-air \
 				-cse \
