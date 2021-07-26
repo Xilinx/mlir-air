@@ -45,7 +45,6 @@ aie_inc.cpp: aie.mlir
 				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
 
 # convert to affine loops with the ordering suitable for multiple tilings...
-# TODO: loop ordering is hardcoded in aten-to-air lowering for now
 # first tiling to model L3->L2 tiling associated with each 'logical column' of overlay/herd
 conv2d_tiled_0.mlir: conv2d.mlir
 	$(AIR_OPT) -aten-to-air \
@@ -88,21 +87,18 @@ conv2d_tiled_4.mlir: conv2d_tiled_3.mlir
 	sed '/memref.dealloc %7 : memref<1xi32>/d' t2.mlir | sed '/memref.dealloc %6 : memref<1x48x106x416xf32, 2>/d' > t3.mlir; \
 	sed 's/memref.dealloc %10 : memref<1x16x104x416xf32, 2>/memref.dealloc %10 : memref<1x16x104x416xf32, 2>\n      memref.dealloc %7 : memref<1xi32>\n      memref.dealloc %6 : memref<1x48x106x416xf32, 2>/' t3.mlir > conv2d_tiled_4.mlir
 		
-# assign herd/overlay only.
-# TODO: lowering affine-to-air crashes currently; separating that step
-conv2d_air.mlir: conv2d_tiled_4.mlir
+# assign herd/overlay i.e. convert 2 outer loops into affine parallel structure as precursor to lowering to AIE dialect
+conv2d_air_0.mlir: conv2d_tiled_4.mlir
 	$(AIR_OPT) -acap-herd-assign=herd-assign-depth=0 \
+		        -affine-to-air \
 				-cse \
-				-affine-to-air \
 				-o $@ $<
 
-aie.mlir: conv2d_air.mlir
-	$(AIR_OPT) -air-to-aie \
-				-air-to-aie-emit-while-loop=true \
-				-air-to-aie-row-offset 2 \
-				-air-to-aie-col-offset 7 \
-				-air-to-aie-output-file $@ $< \
-				-o aie_t.mlir
+# lowering to AIE dialect i.e. conversion of affine parallel structure into 'aiert' structures (module/herd) with corresponding 'metadata' as attributes that describe shim allocations
+conv2d_aie_0.mlir: conv2d_air_0.mlir
+	$(AIRT_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}" \
+		        -o $@ $<
+
 peano.mlir: aie.mlir
 	$(AIR_OPT) -lower-affine -o $@ $< 
 
@@ -110,13 +106,11 @@ elfs: peano.mlir
 	$(AIECC) --no-xbridge peano.mlir
 
 
-aie_ctrl.mlir: conv2d_air.mlir
-	$(AIR_OPT) -air-to-aie $< -air-to-aie-output-file /dev/null \
-				-air-to-aie-row-offset 2 \
-				-air-to-aie-col-offset 7 \
+conv2d_aie_ctrl.mlir: conv2d_air_0.mlir
+	$(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}"\
 				-air-to-std \
 				-aten-lowering \
-				-o $@
+				-o $@ $<
 
 aie_ctrl.llvm.mlir: aie_ctrl.mlir
 	$(AIR_OPT) -air-return-elimination \

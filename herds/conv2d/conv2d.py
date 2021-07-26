@@ -7,12 +7,12 @@ Created on Fri May 14 14:47:16 2021
 """
 
 import numpy as np
-
 np.random.seed(0)
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+torch.manual_seed(0)
 
 import torch_mlir
 
