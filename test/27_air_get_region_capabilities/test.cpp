@@ -12,7 +12,7 @@
 #include "hsa_defs.h"
 
 #define SHMEM_BASE 0x020100000000LL
-#define CAPABILITIES_SCRATCH_BASE (SHMEM_BASE+0x1000LL)
+#define CAPABILITIES_SCRATCH_BASE SHMEM_BASE
 
 #define XAIE_NUM_ROWS            8
 #define XAIE_NUM_COLS           50
@@ -21,57 +21,109 @@
 #define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
 #define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
 
+#define MAX_CONTROLLERS 64
 
 int main(int argc, char *argv[])
 {
 
-  // create the queue
-  queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, SHMEM_BASE);
-  assert(ret == 0 && "failed to create queue!");
-
-  // reserve a packet in the queue
-  uint64_t wr_idx = queue_add_write_index(q, 1);
-  uint64_t packet_id = wr_idx % q->size;
-
-  // capabilities packet
-  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(herd_pkt);
-  herd_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-
-  // Set up a 2x4 herd starting 7,2
-  herd_pkt->arg[0]  = AIR_PKT_TYPE_GET_CAPABILITIES;
-  herd_pkt->arg[1] = CAPABILITIES_SCRATCH_BASE;
-
-  // dispatch packet
-  signal_create(1, 0, NULL, (signal_t*)&herd_pkt->completion_signal);
-  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-  signal_store_release((signal_t*)&q->doorbell, wr_idx);
-
-  // wait for packet completion
-  while (signal_wait_aquire((signal_t*)&herd_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-    printf("packet completion signal timeout on getting capabilities!\n");
-    printf("%x\n", herd_pkt->header);
-    printf("%x\n", herd_pkt->type);
-    printf("%x\n", (unsigned)herd_pkt->completion_signal);
-  }
-
-  // Check the packet we got back
+  uint64_t controller_id = 0;
+  uint64_t total_controllers;
+  bool done = false;
   uint32_t errors = 0;
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd == -1)
     return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
 
-  uint64_t *capabilities = (uint64_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, CAPABILITIES_SCRATCH_BASE);
-  uint64_t expected[8] = {0L, 1L, 0x10001L, 16L, 32768L, 8L, 16384L, 0L};
-  for (int i=0;i<8;i++) {
-    if (capabilities[i] != expected[i]) {
-      printf("Register %X: expected 0x%016lX: read 0x%016lX\n", i, expected[i], capabilities[i]);
-      errors++;
+  while (!done) {
+
+    // create the queue
+    queue_t *q = nullptr;
+    auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, SHMEM_BASE+(MB_SHMEM_SEGMENT_SIZE*(controller_id+1)));
+
+    assert(ret == 0 && "failed to create queue!");
+
+    // reserve a packet in the queue
+    uint64_t wr_idx = queue_add_write_index(q, 1);
+    uint64_t packet_id = wr_idx % q->size;
+
+    // capabilities packet
+    dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+    initialize_packet(herd_pkt);
+    herd_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+
+    // Set up a 2x4 herd starting 7,2
+    herd_pkt->arg[0]  = AIR_PKT_TYPE_GET_CAPABILITIES;
+    herd_pkt->arg[1] = CAPABILITIES_SCRATCH_BASE + 0x100; // avoid the UART semaphore stuff
+
+    // dispatch packet
+    signal_create(1, 0, NULL, (signal_t*)&herd_pkt->completion_signal);
+    signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
+    signal_store_release((signal_t*)&q->doorbell, wr_idx);
+
+    // wait for packet completion
+    while (signal_wait_aquire((signal_t*)&herd_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
+      printf("packet completion signal timeout on getting capabilities!\n");
+      printf("%x\n", herd_pkt->header);
+      printf("%x\n", herd_pkt->type);
+      printf("%x\n", (unsigned)herd_pkt->completion_signal);
     }
+
+    // Check the packet we got back
+
+
+    printf("Checking capabilities for MB %d\n", controller_id);
+    uint64_t *capabilities = (uint64_t *)mmap(NULL, 0x100, PROT_READ|PROT_WRITE, MAP_SHARED, fd, CAPABILITIES_SCRATCH_BASE);
+
+    uint64_t expected[8] = {controller_id, 0L, 0x10001L, 16L, 32768L, 8L, 16384L, 0L};
+    uint8_t to_check[8] = {1, 0, 1, 1, 1, 1, 1, 1};
+    for (int i=0;i<8;i++) {
+      if (to_check[i] && (capabilities[i+0x20] != expected[i])) {
+        printf("Register %X: expected 0x%016lX: read 0x%016lX\n", i, expected[i], capabilities[i+0x20]);
+        errors++;
+      }
+    }
+    if (!errors) {
+      total_controllers = capabilities[0x21];
+      printf("MB %d of %d total is good\n", capabilities[0x20], capabilities[0x21]);
+    }
+    controller_id++;
+    if ((errors) || (controller_id == capabilities[0x21]))
+      done = true;
   }
-  printf("MB %d of %d total\n", capabilities[0], capabilities[1]);
+
+  if (errors == 0x0) {
+    printf("Checked %d controllers, now make them all say hello\n", total_controllers);
+    for (int c=0;c<total_controllers;c++) {
+      queue_t *q = nullptr;
+      auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, SHMEM_BASE+(MB_SHMEM_SEGMENT_SIZE*(c+1)));
+
+      assert(ret == 0 && "failed to create queue!");
+
+      // reserve a packet in the queue
+      uint64_t wr_idx = queue_add_write_index(q, 1);
+      uint64_t packet_id = wr_idx % q->size;
+
+      dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+      initialize_packet(herd_pkt);
+      herd_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+      herd_pkt->arg[0]  = AIR_PKT_TYPE_HELLO;
+      herd_pkt->arg[1] = 0xacdc0000LL + c;
+
+      // dispatch packet
+      signal_create(1, 0, NULL, (signal_t*)&herd_pkt->completion_signal);
+      signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
+      signal_store_release((signal_t*)&q->doorbell, wr_idx);
+
+      // wait for packet completion
+      while (signal_wait_aquire((signal_t*)&herd_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
+        printf("packet completion signal timeout on getting capabilities!\n");
+        printf("%x\n", herd_pkt->header);
+        printf("%x\n", herd_pkt->type);
+        printf("%x\n", (unsigned)herd_pkt->completion_signal);
+     }
+    } 
+  }  
 
   if (errors == 0x0)
     printf("PASS!\n");
