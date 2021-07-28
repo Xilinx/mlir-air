@@ -1,4 +1,3 @@
-
 #include <cstdint>
 #include <cstring>
 
@@ -417,20 +416,50 @@ void xaie_herd_init(int col_start, int num_cols, int row_start, int num_rows)
 
 namespace {
 
-uint64_t base_address = 0x020100000000UL;
+uint64_t shmem_base   = 0x020100000000UL;
+  uint64_t base_address;
 
 u32 last_before_hi, last_before_lo, last_after_hi, last_after_lo;
 u32 phase;
 bool setup;
 u32 dispatch_before_lo, call_before_lo, invalidate_before_lo;
 
+void lock_uart(uint32_t id) {
+  bool is_locked = false;
 
-int queue_create(uint32_t size, queue_t **queue)
+  while (!is_locked) {
+    uint32_t status = *(uint32_t *)shmem_base;
+    if (status != 1) {
+      *(uint32_t *)(shmem_base + 0x4) = id;
+      *(uint32_t *)shmem_base = 1;
+      // See if they stuck
+      uint32_t status = *(uint32_t *)shmem_base;
+      uint32_t lockee = *(uint32_t *)(shmem_base + 0x04);
+      if ((status == 1) && (lockee == id)) {
+	xil_printf("MB %02d: ", id);
+	is_locked = true;
+      }
+    }
+  }
+}
+
+  // This looks unsafe, but its okay as long as we always aquire
+  // the lock first
+void unlock_uart() {
+  *(uint32_t *)(shmem_base + 0x4) = 0;
+  *(uint32_t *)shmem_base = 0;
+}
+
+  
+  
+  int queue_create(uint32_t size, queue_t **queue, uint32_t mb_id)
 {
   uint64_t queue_address[1] = {base_address + sizeof(dispatch_packet_t)};
   uint64_t queue_base_address[1] = {queue_address[0] + sizeof(dispatch_packet_t)};
-
-  xil_printf("setup_queue, %x bytes + %d 64 byte packets\n\r", sizeof(queue_t), size);
+  lock_uart(mb_id);
+  xil_printf("setup_queue 0x%llx, %x bytes + %d 64 byte packets\n\r", (void *)queue_address, sizeof(queue_t), size);
+  xil_printf("base address 0x%llx\n\r", base_address);
+  unlock_uart();
 
   // The address of the queue_t is stored @ base_address
   memcpy((void*)base_address, (void*)queue_address, sizeof(uint64_t));
@@ -506,18 +535,20 @@ void handle_packet_herd_initialize(dispatch_packet_t *pkt) {
   }
 }
 
-void handle_packet_get_capabilities(dispatch_packet_t *pkt)
+void handle_packet_get_capabilities(dispatch_packet_t *pkt, uint32_t mb_id)
 {
   // packet is in active phase
   packet_set_active(pkt, true);
   uint64_t *addr = (uint64_t *)(pkt->arg[1]);
+
+  lock_uart(mb_id); xil_printf("Writing to 0x%llx\n\r",(uint64_t)addr); unlock_uart();
   // We now write a capabilities structure to the address we were just passed
   // We've already done this once - should we just cache the results?
   pvr_t pvr;
   microblaze_get_pvr(&pvr);
   int user1 = MICROBLAZE_PVR_USER1(pvr);
   int user2 = MICROBLAZE_PVR_USER2(pvr);
-  int mb_id = user2 & 0xff;
+  //int mb_id = user2 & 0xff;    // We'll use the one passed in
   int maj   = (user2 >> 24) & 0xff;
   int min   = (user2 >> 16) & 0xff;
   int ver   = (user2 >> 8) & 0xff;
@@ -619,14 +650,14 @@ void handle_packet_get_stream(dispatch_packet_t *pkt)
 }
 
 
-void handle_packet_hello(dispatch_packet_t *pkt)
+void handle_packet_hello(dispatch_packet_t *pkt, uint32_t mb_id)
 {
   // packet is in active phase
   packet_set_active(pkt, true);
 
-//  uint64_t say_what = pkt->arg[1];
-//  xil_printf("HELLO %08X\n\r",(uint32_t)say_what);
-
+  uint64_t say_what = pkt->arg[1];
+  lock_uart(mb_id); xil_printf("HELLO %08X\n\r",(uint32_t)say_what); unlock_uart();
+  /*
   //u32 before_hi = XAieGbl_Read32(xaie::TileInst[0][0].TileAddr + 0x000340FC); // Timer high
   u32 before_lo = XAieGbl_Read32(xaie::TileInst[0][0].TileAddr + 0x000340F8); // Timer low
   //u32 after_hi  = XAieGbl_Read32(xaie::TileInst[0][0].TileAddr + 0x000340FC); // Timer high
@@ -646,6 +677,7 @@ void handle_packet_hello(dispatch_packet_t *pkt)
     phase = 1;
   }
   setup= true;
+  */
 }
 
 void handle_packet_allocate_herd_shim_dmas(dispatch_packet_t *pkt)
@@ -860,7 +892,7 @@ void get_dma_rsp(dma_rsp_t *rsp, int stream)
 //     xil_printf("fail, cmd=%d, rsp=%d\n\r", cmd.id, rsp.id);
 // }
 
-void handle_agent_dispatch_packet(dispatch_packet_t *pkt)
+void handle_agent_dispatch_packet(dispatch_packet_t *pkt, uint32_t mb_id)
 {
   // get the index
   uint32_t pkt_idx;
@@ -895,10 +927,10 @@ void handle_agent_dispatch_packet(dispatch_packet_t *pkt)
     //   break;
 
     case AIR_PKT_TYPE_HELLO:
-      handle_packet_hello(pkt);
+      handle_packet_hello(pkt, mb_id);
       break;
     case AIR_PKT_TYPE_GET_CAPABILITIES:
-      handle_packet_get_capabilities(pkt);
+      handle_packet_get_capabilities(pkt, mb_id);
       break;
 
     case AIR_PKT_TYPE_ALLOCATE_HERD_SHIM_DMAS:
@@ -940,27 +972,31 @@ int main()
   microblaze_get_pvr(&pvr);
   int user1 = MICROBLAZE_PVR_USER1(pvr);
   int user2 = MICROBLAZE_PVR_USER2(pvr);
-  int mb_id = user2 & 0xff;
+  int mb_id = user2 & 0xff;  
   int maj   = (user2 >> 24) & 0xff;
   int min   = (user2 >> 16) & 0xff;
   int ver   = (user2 >> 8) & 0xff;
-  
-  xil_printf("\n\nMB %d firmware %d.%d.%d created on %s at %s GMT\n\r",mb_id,maj,min,ver,__DATE__, __TIME__); 
-  
-  base_address += (sizeof(queue_t) + MB_QUEUE_SIZE*64) * mb_id;
 
+  // Skip over the system wide shmem area, then find your own
+  base_address = shmem_base + (1+mb_id)*MB_SHMEM_SEGMENT_SIZE;
+  
+  lock_uart(mb_id);
+  xil_printf("MB %d firmware %d.%d.%d created on %s at %s GMT\n\r",mb_id,maj,min,ver,__DATE__, __TIME__); 
+  unlock_uart();
+  
   setup = false;
   //test_stream();
   queue_t *q = nullptr;
-  queue_create(MB_QUEUE_SIZE, &q);
-  xil_printf("Created queue @ 0x%llx\n\r", (size_t)q);
+  queue_create(MB_QUEUE_SIZE, &q, mb_id);
+  lock_uart(mb_id); xil_printf("Created queue @ 0x%llx\n\r", (size_t)q); unlock_uart();
+  
   bool done = false;
   int cnt = 0;
   while (!done) {
     // if (!(cnt++ % 0x00100000))
     //   xil_printf("No Ding Dong 0x%llx\n\r", q->doorbell);
     if (q->doorbell+1 > q->last_doorbell) {
-      xil_printf("Ding Dong 0x%llx\n\r", q->doorbell+1);
+      lock_uart(mb_id); xil_printf("Ding Dong 0x%llx\n\r", q->doorbell+1); unlock_uart();
 
       q->last_doorbell = q->doorbell+1;
 
@@ -975,13 +1011,13 @@ int main()
           default:
           case HSA_PACKET_TYPE_INVALID:
             if (setup) {
-              xil_printf("Waiting\n\r");
+              lock_uart(mb_id); xil_printf("Waiting\n\r"); unlock_uart();
               setup = false;
             }
             invalid = true;
             break;
           case HSA_PACKET_TYPE_AGENT_DISPATCH:
-            handle_agent_dispatch_packet(pkt);
+            handle_agent_dispatch_packet(pkt, mb_id);
             complete_agent_dispatch_packet(pkt);
             queue_add_read_index(q, 1);
             break;
