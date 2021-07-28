@@ -17,10 +17,10 @@
 ## Building
 
 1. Copy the XSA and BSP to the Pynq board repository for VCK190 AIR:
-
+```
     cp air/platforms/xilinx_vck190_air/vivado/xilinx_vck190_air.xsa air/pynq/vck190_air
     cp air/platforms/xilinx_vck190_air/petalinux/xilinx_vck190_air.bsp air/pynq/vck190_air/vck190_air.bsp
-
+```
 2. Clone [this PYNQ repo](https://gitenterprise.xilinx.com/jefff/PYNQ),
 checkout the versal_acdc branch.
 
