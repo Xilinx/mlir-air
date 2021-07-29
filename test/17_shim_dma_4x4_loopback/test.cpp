@@ -193,32 +193,32 @@ int main(int argc, char *argv[]) {
   int errors = 0;
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = mlir_read_buffer_a0(i);
-    ACDC_check("Check Result a0:", d, i+1);
+    ACDC_check("Check Result a0:", d, i+1,errors);
   }
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = mlir_read_buffer_a1(i);
-    ACDC_check("Check Result a1:", d, i+DMA_COUNT+1);
+    ACDC_check("Check Result a1:", d, i+DMA_COUNT+1,errors);
   }
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = mlir_read_buffer_f0(i);
-    ACDC_check("Check Result f0:", d, i+DMA_COUNT*10+1);
+    ACDC_check("Check Result f0:", d, i+DMA_COUNT*10+1,errors);
   }
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = mlir_read_buffer_f1(i);
-    ACDC_check("Check Result f1:", d, i+DMA_COUNT*11+1);
+    ACDC_check("Check Result f1:", d, i+DMA_COUNT*11+1,errors);
   }
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = mlir_read_buffer_p0(i);
-    ACDC_check("Check Result p0:", d, i+DMA_COUNT*30+1);
+    ACDC_check("Check Result p0:", d, i+DMA_COUNT*30+1,errors);
   }
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = mlir_read_buffer_p1(i);
-    ACDC_check("Check Result p1:", d, i+DMA_COUNT*31+1);
+    ACDC_check("Check Result p1:", d, i+DMA_COUNT*31+1,errors);
   }
 
   // Let's just compare the input and output buffers
   for (int i=0; i<DMA_COUNT*4*NUM_SHIM_DMAS; i++) {
-    ACDC_check("Check Result:", input_bram_ptr[i], output_bram_ptr[i]);
+    ACDC_check("Check Result:", input_bram_ptr[i], output_bram_ptr[i],errors);
   }
 
 /*

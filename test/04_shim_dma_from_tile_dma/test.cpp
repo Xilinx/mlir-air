@@ -100,7 +100,7 @@ main(int argc, char *argv[])
   int errors = 0;
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = bram_ptr[i];
-    ACDC_check("Check Result:", d, i+1);
+    ACDC_check("Check Result:", d, i+1, errors);
   }
 
   if (!errors) {

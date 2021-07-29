@@ -96,11 +96,11 @@ main(int argc, char *argv[])
   int errors = 0;
   for (int i=0; i<BUFFER_SIZE; i++) {
     uint32_t d = mlir_read_buffer_b0(i);
-     ACDC_check("Check Result b0:", d, i+1);
+     ACDC_check("Check Result b0:", d, i+1, errors);
   }
   for (int i=0; i<BUFFER_SIZE; i++) {
     uint32_t d = mlir_read_buffer_b1(i);
-    ACDC_check("Check Result b1:", d, i+BUFFER_SIZE+1);
+    ACDC_check("Check Result b1:", d, i+BUFFER_SIZE+1, errors);
   }
 
   if (!errors) {

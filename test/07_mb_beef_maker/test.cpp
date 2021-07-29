@@ -194,13 +194,13 @@ main(int argc, char *argv[])
   }
 
   int errors = 0;
-  ACDC_check("Check Result 0:", mlir_read_buffer_buffer(0), 0xdeadbeef);
-  ACDC_check("Check Result 1:", mlir_read_buffer_buffer(1), 0xcafecafe);
-  ACDC_check("Check Result 2:", mlir_read_buffer_buffer(2), 0x000decaf);
-  ACDC_check("Check Result 3:", mlir_read_buffer_buffer(3), 0x5a1ad000);
+  ACDC_check("Check Result 0:", mlir_read_buffer_buffer(0), 0xdeadbeef,errors);
+  ACDC_check("Check Result 1:", mlir_read_buffer_buffer(1), 0xcafecafe,errors);
+  ACDC_check("Check Result 2:", mlir_read_buffer_buffer(2), 0x000decaf,errors);
+  ACDC_check("Check Result 3:", mlir_read_buffer_buffer(3), 0x5a1ad000,errors);
 
   for (int i=4; i<SCRATCH_AREA; i++)
-    ACDC_check("Check Result:", mlir_read_buffer_buffer(i), i+1);
+    ACDC_check("Check Result:", mlir_read_buffer_buffer(i), i+1,errors);
 
   if (!errors) {
     printf("PASS!\n");
