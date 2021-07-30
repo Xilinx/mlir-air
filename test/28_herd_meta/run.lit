@@ -1,2 +1,3 @@
-// RUN: aiecc.py --sysroot=%VITIS_SYSROOT% %S/herd.airrt.mlir -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp %S/test.cpp %airhost_libs% -o %T/test.elf
+// RUN: air-opt %S/herd.airrt.mlir -airrt-to-llvm | mlir-translate --mlir-to-llvmir | llc --filetype=obj -o %T/herd.o
+// RUN: %ARM_CLANG %S/test.cpp -I%VITIS_SYSROOT%/opt/xaiengine/include -L%VITIS_SYSROOT%/opt/xaiengine/lib -lxaiengine -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp %T/herd.o %airhost_libs% -o %T/test.elf
 // RUN: %run_on_board %T/test.elf

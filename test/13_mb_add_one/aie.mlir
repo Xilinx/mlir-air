@@ -22,9 +22,6 @@ module {
   AIE.core(%t72) {
     AIE.end
   }
-  {
-    elf_file = "add_one.elf"
-  }
 
   %buf72_0 = AIE.buffer(%t72) {sym_name="b0"} : memref<8xi32>
   %buf72_1 = AIE.buffer(%t72) {sym_name="b1"} : memref<8xi32>
