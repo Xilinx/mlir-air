@@ -71,27 +71,28 @@ def run_flow(opts, tmpdirname):
     air_to_airrt_pass = air_to_airrt_pass + f' air-to-aie-row-offset={opts.row_offset} air-to-aie-col-offset={opts.col_offset}'
     air_to_airrt_pass = air_to_airrt_pass + f' air-to-aie-output-prefix={opts.tmpdir}/'
 
-    aie_ctrl_airrt = opts.tmpdir+'/airrt.'+opts.air_mlir_file
+    _,air_mlir_filename = os.path.split(opts.air_mlir_file)
+    aie_ctrl_airrt = opts.tmpdir+'/airrt.'+air_mlir_filename
     do_call(['air-opt', opts.air_mlir_file, air_to_airrt_pass,
             '-convert-vector-to-llvm', '-air-to-std',
             '-o', aie_ctrl_airrt])
 
-    aie_ctrl = opts.tmpdir+'/aie_ctrl.'+opts.air_mlir_file
+    aie_ctrl = opts.tmpdir+'/aie_ctrl.'+air_mlir_filename
     do_call(['air-opt', aie_ctrl_airrt,
             '-airrt-to-llvm', '-aten-lowering',
             '-o', aie_ctrl])
 
-    aie_ctrl_llvm = opts.tmpdir+'/llvm.'+opts.air_mlir_file
+    aie_ctrl_llvm = opts.tmpdir+'/llvm.'+air_mlir_filename
     do_call(['air-opt', aie_ctrl,
             '-air-return-elimination','--lower-affine','--convert-scf-to-std',
             '--convert-std-to-llvm=emit-c-wrappers',
             '-o', aie_ctrl_llvm])
 
-    aie_ctrl_llvm_ir = opts.tmpdir+'/'+opts.air_mlir_file+'.ll'
+    aie_ctrl_llvm_ir = opts.tmpdir+'/'+air_mlir_filename+'.ll'
     do_call(['mlir-translate', '--mlir-to-llvmir', aie_ctrl_llvm, '-o', aie_ctrl_llvm_ir])
 
-    aie_ctrl_obj = opts.tmpdir+'/'+opts.air_mlir_file+'.o'
-    do_call(['llc', '--march=aarch64', '--filetype=obj', aie_ctrl_llvm_ir, '-o', aie_ctrl_obj])
+    aie_ctrl_obj = opts.tmpdir+'/'+air_mlir_filename+'.o'
+    do_call(['llc', '--relocation-model=pic', '--march=aarch64', '--filetype=obj', aie_ctrl_llvm_ir, '-o', aie_ctrl_obj])
 
     t = do_run(['air-translate', '--airrt-generate-json', aie_ctrl_airrt])
     module_meta = eval(t.stdout)
@@ -109,9 +110,9 @@ def run_flow(opts, tmpdirname):
               ['--tmpdir', aiecc_dir] +
               ['--no-xbridge', '--no-xchesscc', aiecc_file])
 
-      inc_file = opts.tmpdir+'/'+opts.air_mlir_file+'.'+herd+'.inc'
-      cpp_file = opts.tmpdir+'/'+opts.air_mlir_file+'.'+herd+'.cpp'
-      obj_file = opts.tmpdir+'/'+opts.air_mlir_file+'.'+herd+'.o'
+      inc_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.inc'
+      cpp_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.cpp'
+      obj_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.o'
 
       do_call(['cp',aiecc_dir+'/aie_inc.cpp',inc_file])
 

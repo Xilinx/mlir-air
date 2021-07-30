@@ -11,18 +11,9 @@
 #include <sys/mman.h>
 #include <dlfcn.h>
 
-#include <xaiengine.h>
-
 #include "air_host.h"
 #include "air_tensor.h"
 #include "test_library.h"
-
-#define XAIE_NUM_ROWS            8
-#define XAIE_NUM_COLS           50
-#define XAIE_ADDR_ARRAY_OFF     0x800
-
-#define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
-#define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
 
 #define VERBOSE 1
 
@@ -41,7 +32,7 @@ air_libxaie1_ctx_t *xaie;
 
 #define TileInst (xaie->TileInst)
 #define TileDMAInst (xaie->TileDMAInst)
-#include "aie.1.inc"
+#include "air_project/air.mlir.copyherd.inc"
 #undef TileInst
 #undef TileDMAInst
 

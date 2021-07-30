@@ -19,7 +19,7 @@ CFLAGS += -I../../../aie/runtime_lib -DAIR_LIBXAIE_ENABLE
 uname_p := $(shell uname -p)
 ifeq ($(uname_p),aarch64)
 	CFLAGS += -I/opt/xaiengine/include -I${ACDC_AIR}/runtime_lib/airhost/include
-	LDFLAGS += -L/opt/xaiengine/lib -L${ACDC_AIR}/runtime_lib
+	LDFLAGS += -L/opt/xaiengine/lib -L${ACDC_AIR}/runtime_lib/airhost
 endif
 
 .PHONY: all

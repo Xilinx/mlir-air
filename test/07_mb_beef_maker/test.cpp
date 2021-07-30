@@ -87,17 +87,6 @@ main(int argc, char *argv[])
   AieConfigPtr = XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
   XAieGbl_CfgInitialize(&AieInst, &TileInst[0][0], AieConfigPtr);
 
-  // reset cores and locks
-  for (int i = 1; i <= XAIE_NUM_ROWS; i++) {
-    for (int j = 0; j < XAIE_NUM_COLS; j++) {
-      XAieTile_CoreControl(&(TileInst[j][i]), XAIE_DISABLE, XAIE_ENABLE);
-      for (int l=0; l<16; l++)
-        XAieTile_LockRelease(&(TileInst[j][i]), l, 0x0, 0);
-    }
-  }
-
-  printCoreStatus(col, 2, true, SCRATCH_AREA, 0);
-  
   // create the queue
   queue_t *q = nullptr;
   auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, SHMEM_BASE);
@@ -162,7 +151,7 @@ main(int argc, char *argv[])
   initialize_packet(lock_pkt);
   lock_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
-  // Release lock 0 in 0,0 with value 0
+  // Release lock 0 in 7,2 with value 1
   lock_pkt->arg[0]  = AIR_PKT_TYPE_XAIE_LOCK;
   lock_pkt->arg[0] |= (AIR_ADDRESS_HERD_RELATIVE << 48);
   lock_pkt->arg[1]  = 0;
@@ -192,6 +181,8 @@ main(int argc, char *argv[])
       if (count == 2000) break;
     }
   }
+
+  printCoreStatus(col, 2, false, SCRATCH_AREA, 0);
 
   int errors = 0;
   ACDC_check("Check Result 0:", mlir_read_buffer_buffer(0), 0xdeadbeef,errors);
