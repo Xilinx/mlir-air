@@ -19,6 +19,8 @@
 
 #include "ATenPasses.h"
 
+#include "XTenPasses.h"
+
 #include "AIRDialect.h"
 #include "AIRPasses.h"
 
@@ -35,6 +37,7 @@ int main(int argc, char **argv) {
   xilinx::aten::registerATenPasses();
   xilinx::air::registerAIRPasses();
   xilinx::airrt::registerPasses();
+  xilinx::xten::registerXTenPasses();
 
   DialectRegistry registry;
   registerAllDialects(registry);

@@ -27,7 +27,7 @@ aie_inc.cpp: aie.herd_0.mlir
 
 add_one_tiled_0.mlir: add_one.mlir
 	$(AIR_OPT) -aten-to-air \
-				-air-to-affine \
+				-xten-to-affine \
 				-affine-loop-opt='affine-opt-tile-sizes=1,1,16,16' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \

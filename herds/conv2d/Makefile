@@ -48,7 +48,7 @@ aie_inc.cpp: aie.mlir
 # first tiling to model L3->L2 tiling associated with each 'logical column' of overlay/herd
 conv2d_tiled_0.mlir: conv2d.mlir
 	$(AIR_OPT) -aten-to-air \
-				-air-to-affine='air-loop-order=3,0,1,2,4' \
+				-xten-to-affine='air-loop-order=3,0,1,2,4' \
 				-affine-loop-opt='affine-opt-tile-sizes=104' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \

@@ -20,7 +20,7 @@ aie_inc.cpp: aie.herd_0.mlir
 
 vecmul_tiled_0.mlir: vecmul.mlir
 	$(AIR_OPT) -aten-to-air \
-				-air-to-affine \
+				-xten-to-affine \
 				-affine-loop-opt='affine-opt-tile-sizes=64' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
