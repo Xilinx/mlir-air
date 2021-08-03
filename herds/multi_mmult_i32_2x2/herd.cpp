@@ -62,6 +62,12 @@ void mm_out(tensor_t<T,2> *a, tensor_t<T,2> *b, tensor_t<T,2> *r)
   }
 }
 
+namespace air::herds::herd_0 {
+int32_t mlir_read_buffer_buf0(int index);
+int32_t mlir_read_buffer_buf1(int index);
+int32_t mlir_read_buffer_buf2(int index);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -72,12 +78,6 @@ main(int argc, char *argv[])
 
   if (VERBOSE)
     ACDC_print_tile_status(xaie->TileInst[col][2]);
-
-  // mlir_configure_cores();
-  // mlir_configure_switchboxes();
-  // mlir_initialize_locks();
-  // mlir_configure_dmas();
-  // mlir_start_cores();
 
   if (VERBOSE)
     ACDC_print_tile_status(xaie->TileInst[col][2]);
@@ -174,9 +174,9 @@ main(int argc, char *argv[])
     ACDC_print_tile_status(xaie->TileInst[col][2]);
 
   for (int i=0; i<64; i++) {
-    //printf("%d\n", mlir_read_buffer_buf0(i));
-    //printf("%d\n", mlir_read_buffer_buf1(i));
-    //printf("%d\n", mlir_read_buffer_buf2(i));
+    // printf("%d\n", air::herds::herd_0::mlir_read_buffer_buf0(i));
+    // printf("%d\n", air::herds::herd_0::mlir_read_buffer_buf1(i));
+    // printf("%d\n", air::herds::herd_0::mlir_read_buffer_buf2(i));
   }
 
   int errors = 0;

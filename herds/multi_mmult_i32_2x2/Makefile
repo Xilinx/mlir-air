@@ -24,4 +24,4 @@ mmult.air.a: mmult.air.mlir
 	aircc.py -o $@ -row-offset=2 -col-offset=7 -v -cc $(CC) $<
 
 clean::
-	rm -rf air_project mmult.*mlir* *.elf *.exe *.o
+	rm -rf air_project mmult.*mlir* *.elf *.exe *.o *.a

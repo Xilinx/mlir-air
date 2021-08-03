@@ -26,17 +26,10 @@ namespace {
 
 air_libxaie1_ctx_t *xaie;
 
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
-#include "aie.inc"
-#undef TileInst
-#undef TileDMAInst
-
 //
 // global q ptr
 //
 queue_t *q = nullptr;
-uint32_t *bram_ptr;
 
 }
 
@@ -62,6 +55,13 @@ void mm_out(tensor_t<T,2> *a, tensor_t<T,2> *b, tensor_t<T,2> *r)
   }
 }
 
+namespace air::herds::herd_0 {
+int32_t mlir_read_buffer_buf0(int index);
+int32_t mlir_read_buffer_buf1(int index);
+int32_t mlir_read_buffer_buf2(int index);
+}
+using namespace air::herds::herd_0;
+
 int
 main(int argc, char *argv[])
 {
@@ -69,15 +69,6 @@ main(int argc, char *argv[])
   uint64_t row = 2;
 
   xaie = air_init_libxaie1();
-
-  if (VERBOSE)
-    ACDC_print_tile_status(xaie->TileInst[col][2]);
-
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
-  mlir_start_cores();
 
   if (VERBOSE)
     ACDC_print_tile_status(xaie->TileInst[col][2]);
@@ -101,10 +92,8 @@ main(int argc, char *argv[])
 
   tensor_t<uint32_t,2> input_A;
   tensor_t<uint32_t,2> input_B;
-  tensor_t<uint32_t,2> input_C;
   tensor_t<uint32_t,2> output;
   tensor_t<uint32_t,2> output_ref0;
-  tensor_t<uint32_t,2> output_ref1;
 
   #define M_SIZE 128
 
@@ -114,42 +103,30 @@ main(int argc, char *argv[])
   input_B.shape[0] = input_B.shape[1] = M_SIZE;
   input_B.d = input_B.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input_B.shape[0]*input_B.shape[1]);
 
-  input_C.shape[0] = input_C.shape[1] = M_SIZE;
-  input_C.d = input_C.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input_C.shape[0]*input_C.shape[1]);
-
   output.shape[0] = output.shape[1] = M_SIZE;
   output.d = output.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output.shape[0]*output.shape[1]);
 
   output_ref0.shape[0] = output_ref0.shape[1] = M_SIZE;
   output_ref0.d = output_ref0.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output_ref0.shape[0]*output_ref0.shape[1]);
 
-  output_ref1.shape[0] = output_ref1.shape[1] = M_SIZE;
-  output_ref1.d = output_ref1.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output_ref1.shape[0]*output_ref1.shape[1]);
-
-  printf("loading aie_ctrl.so\n");
-  auto handle = air_module_load_from_file("./aie_ctrl.so");
-  assert(handle && "failed to open aie_ctrl.so");
+  auto handle = air_module_load_from_file(nullptr);
+  assert(handle && "failed to open linked air module");
 
   auto herd_fn = (void (*)(void*,void *,void*))dlsym((void*)handle, "_mlir_ciface_task");
   assert(herd_fn && "failed to locate _mlir_ciface_task in .so");
 
   for (int i=0; i<input_A.shape[0]*input_A.shape[1]; i++) {
-    input_A.d[i] = (uint32_t)i;
-    input_B.d[i] = (uint32_t)i+1;
-    input_C.d[i] = (uint32_t)i+2;
+    input_A.d[i] = ((uint32_t)i % 3);
+    input_B.d[i] = ((uint32_t)i+1) % 4;
     output.d[i] = 0;
     output_ref0.d[i] = 0;
-    output_ref1.d[i] = 0;
-    
   }
 
   mm_out(&input_A, &input_B, &output_ref0);
-  mm_out(&input_C, &output_ref0, &output_ref1);
 
-  void *a, *b, *c, *o;
+  void *a, *b, *o;
   a = &input_A;
   b = &input_B;
-  c = &input_C;
   o = &output;
   struct timeval before, after;
   long diff_s, diff_us;

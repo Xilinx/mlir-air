@@ -19,7 +19,11 @@ def emit_wrapper(herd_name="herd", include_name="aie.inc"):
 #include "assert.h"
 #include "air_host.h"
 extern air_libxaie1_ctx_t *_air_host_active_libxaie1;
-namespace {
+namespace air {
+namespace herds {
+"""
+    s = s + f'namespace {herd_name} {{'
+    s = s + """
 #define TileInst (_air_host_active_libxaie1->TileInst)
 #define TileDMAInst (_air_host_active_libxaie1->TileDMAInst)
 """
@@ -28,6 +32,11 @@ namespace {
 #undef TileInst
 #undef TileDMAInst
 }
+}
+}
+"""
+    s = s + f'using namespace air::herds::{herd_name};'
+    s = s + """
 extern "C" {
 """
     s = s + f'air_rt_aie_functions_t __airrt_{herd_name}_aie_functions {{'
@@ -123,7 +132,7 @@ def run_flow(opts, tmpdirname):
       if(opts.sysroot):
         cmd += ['--sysroot=%s' % opts.sysroot]
       cmd += ['-I.', f'-I{opts.sysroot}/opt/xaiengine/include']
-      cmd += ['-I/work/aarch64/acdc/build/install/bin//../runtime_lib/airhost/include']
+      cmd += [f'-I{thispath}/../../runtime_lib/airhost/include']
       cmd += ['-DAIR_LIBXAIE_ENABLE', '-fPIC', '-c']
       cmd += ['-o', obj_file, cpp_file]
       do_call(cmd)
@@ -138,7 +147,7 @@ def run_flow(opts, tmpdirname):
     do_call(cmd)
 
     if opts.output_file:
-      do_call(['cp', lib_file, opts.output_file])
+      do_call(['mv', lib_file, opts.output_file])
 
 
 def main(builtin_params={}):
