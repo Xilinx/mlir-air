@@ -1,4 +1,4 @@
 // RUN: aircc.py -v --sysroot=%VITIS_SYSROOT% -row-offset=2 -col-offset=7 %S/air.mlir
 // RUN: %ARM_CLANG -shared air_project/air.mlir.o -o aie_ctrl.so
-// RUN: %ARM_CLANG %S/test.cpp -I%VITIS_SYSROOT%/opt/xaiengine/include -L%VITIS_SYSROOT%/opt/xaiengine/lib -lxaiengine -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
+// RUN: %ARM_CLANG %S/test.cpp -I%VITIS_SYSROOT%/opt/xaiengine/include -L%VITIS_SYSROOT%/opt/xaiengine/lib -lxaiengine -I%aie_runtime_lib% -I%air_runtime_lib%/airhost/include %aie_runtime_lib%/test_library.cpp -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
 // RUN: %run_on_board %T/test.elf

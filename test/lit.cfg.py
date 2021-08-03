@@ -81,6 +81,7 @@ tools = [
     'aie-opt',
     'aie-translate',
     'aiecc.py',
+    'aircc.py',
     'air-opt',
     'clang',
     'clang++',
