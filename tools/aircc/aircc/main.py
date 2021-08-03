@@ -98,7 +98,7 @@ def run_flow(opts, tmpdirname):
             '-o', aie_ctrl_llvm])
 
     aie_ctrl_llvm_ir = opts.tmpdir+'/'+air_mlir_filename+'.ll'
-    do_call(['mlir-translate', '--mlir-to-llvmir', aie_ctrl_llvm, '-o', aie_ctrl_llvm_ir])
+    do_call(['aie-translate', '--mlir-to-llvmir', aie_ctrl_llvm, '-o', aie_ctrl_llvm_ir])
 
     aie_ctrl_obj = opts.tmpdir+'/'+air_mlir_filename+'.o'
     do_call(['llc', '--relocation-model=pic', '--march=aarch64', '--filetype=obj', aie_ctrl_llvm_ir, '-o', aie_ctrl_obj])
