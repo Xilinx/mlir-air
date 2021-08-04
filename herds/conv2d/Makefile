@@ -48,7 +48,7 @@ aie_inc.cpp: aie.mlir
 # first tiling to model L3->L2 tiling associated with each 'logical column' of overlay/herd
 conv2d_tiled_0.mlir: conv2d.mlir
 	$(AIR_OPT) -aten-to-air \
-				-xten-to-affine='air-loop-order=3,0,1,2,4' \
+				-xten-to-affine='xten-loop-order=3,0,1,2,4' \
 				-affine-loop-opt='affine-opt-tile-sizes=104' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
@@ -94,7 +94,7 @@ conv2d_air_0.mlir: conv2d_tiled_4.mlir
 				-cse \
 				-o $@ $<
 
-# lowering to AIE dialect i.e. conversion of affine parallel structure into 'aiert' structures (module/herd) with corresponding 'metadata' as attributes that describe shim allocations
+# lowering to AIE dialect i.e. conversion of affine parallel structure into 'airrt' structures (module/herd) with corresponding 'metadata' as attributes that describe shim allocations
 conv2d_aie_0.mlir: conv2d_air_0.mlir
 	$(AIRT_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}" \
 		        -o $@ $<
@@ -125,7 +125,7 @@ aie_ctrl.o: aie_ctrl.llvm.mlir
 aie_ctrl.so: aie_ctrl.o
 	$(CC) -shared $< -o $@
 
-conv2d_cpu.std.mlir: conv2d_air.mlir
+conv2d_cpu.std.mlir: conv2d_air_0.mlir
 	$(AIR_OPT) \
 		-air-to-std='lower-to-cpu=true' -cse \
 		-lower-affine -cse \
