@@ -33,6 +33,7 @@ find_package(AIR REQUIRED CONFIG)
 endif()
 
 find_package(Torch 1.8)
+find_package(Vitis)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
@@ -76,6 +77,13 @@ include_directories(${MLIR_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_BINARY_DIR}/include)
 add_definitions(${LLVM_DEFINITIONS})
+
+set(ENABLE_CHESS_TESTS ON CACHE BOOL "Enable backend tests using xchesscc")
+if(ENABLE_CHESS_TESTS)
+set(CONFIG_ENABLE_CHESS_TESTS 1)
+else()
+set(CONFIG_ENABLE_CHESS_TESTS 0)
+endif()
 
 if(ENABLE_BOARD_TESTS)
 set(CONFIG_ENABLE_BOARD_TESTS 1)
