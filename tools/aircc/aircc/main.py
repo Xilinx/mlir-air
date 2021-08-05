@@ -101,7 +101,7 @@ def run_flow(opts, tmpdirname):
     do_call(['aie-translate', '--mlir-to-llvmir', aie_ctrl_llvm, '-o', aie_ctrl_llvm_ir])
 
     aie_ctrl_obj = opts.tmpdir+'/'+air_mlir_filename+'.o'
-    do_call(['llc', '--relocation-model=pic', '--march=aarch64', '--filetype=obj', aie_ctrl_llvm_ir, '-o', aie_ctrl_obj])
+    do_call(['clang', '-Wno-override-module', '-fPIC', '--target=aarch64-linux-gnu', '-c', aie_ctrl_llvm_ir, '-o', aie_ctrl_obj])
 
     t = do_run(['air-translate', '--airrt-generate-json', aie_ctrl_airrt])
     module_meta = eval(t.stdout)
