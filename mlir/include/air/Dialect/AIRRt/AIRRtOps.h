@@ -9,6 +9,6 @@
 #include "mlir/IR/SymbolTable.h"
 
 #define GET_OP_CLASSES
-#include "AIRRtOps.h.inc"
+#include "air/Dialect/AIRRt/AIRRtOps.h.inc"
 
 #endif // AIRRTOPS_H

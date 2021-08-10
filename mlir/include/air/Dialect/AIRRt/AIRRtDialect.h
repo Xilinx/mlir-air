@@ -18,6 +18,6 @@ public:
 } // namespace airrt
 } // namespace xilinx
 
-#include "AIRRtOpsDialect.h.inc"
+#include "air/Dialect/AIRRt/AIRRtOpsDialect.h.inc"
 
 #endif // AIRRT_DIALECT_H

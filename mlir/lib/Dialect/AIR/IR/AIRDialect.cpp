@@ -1,6 +1,5 @@
 // (c) Copyright 2019 Xilinx Inc. All Rights Reserved.
-#include "AIRDialect.h"
-#include "AIRPasses.h"
+#include "air/Dialect/AIR/AIRDialect.h"
 
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/DialectImplementation.h"
@@ -16,7 +15,7 @@ void airDialect::initialize() {
      addTypes<AsyncTokenType>();
      addOperations<
 #define GET_OP_LIST
-#include "AIR.cpp.inc"
+#include "air/Dialect/AIR/AIR.cpp.inc"
       >();
 }
 
@@ -302,27 +301,12 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
   printer << "]";
 }
 
-void registerAIRPasses() {
-// #define GEN_PASS_REGISTRATION
-  registerAIRLoweringPass();
-  registerAffineToAIRPass();
-  registerAIRToAIEPass();
-  registerXTenToLinalgPass();
-  registerAIRLinalgCodegen();
-  xten::registerXTenDataflowPass();
-  xten::registerXTenNamePass();
-  registerAIRAutomaticTilingPass();
-  registerAIRRegularizeLoopPass();
-  registerAIRLoopPermutationPass();
-  registerAIRLoopMergingPass();
-}
-
 }
 }
 
-#include "AIROpInterfaces.cpp.inc"
+#include "air/Dialect/AIR/AIROpInterfaces.cpp.inc"
 
 using namespace mlir::NPCOMP;
 
 #define GET_OP_CLASSES
-#include "AIR.cpp.inc"
+#include "air/Dialect/AIR/AIR.cpp.inc"

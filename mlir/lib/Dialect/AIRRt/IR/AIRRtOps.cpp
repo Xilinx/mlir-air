@@ -6,12 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "AIRRtOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/TypeUtilities.h"
-#include "AIRRtDialect.h"
+
+#include "air/Dialect/AIRRt/AIRRtOps.h"
+#include "air/Dialect/AIRRt/AIRRtDialect.h"
 
 using namespace mlir;
 using namespace xilinx::airrt;
@@ -44,4 +45,4 @@ static ParseResult parseModuleMetadataOp(OpAsmParser &parser,
 //===----------------------------------------------------------------------===//
 
 #define GET_OP_CLASSES
-#include "AIRRtOps.cpp.inc"
+#include "air/Dialect/AIRRt/AIRRtOps.cpp.inc"

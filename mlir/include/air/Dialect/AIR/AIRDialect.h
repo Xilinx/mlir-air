@@ -22,7 +22,6 @@
 #include "npcomp/Dialect/Basicpy/IR/BasicpyDialect.h"
 
 #include <map>
-#include "Util.h"
 
 using namespace mlir;
 
@@ -49,12 +48,12 @@ void addAsyncDependency(Operation *op, Value token);
 }
 }
 
-#include "AIROpInterfaces.h.inc"
-#include "AIRDialect.h.inc"
-#include "AIREnums.h.inc"
+#include "air/Dialect/AIR/AIROpInterfaces.h.inc"
+#include "air/Dialect/AIR/AIRDialect.h.inc"
+#include "air/Dialect/AIR/AIREnums.h.inc"
 
 // include TableGen generated Op definitions
 #define GET_OP_CLASSES
-#include "AIR.h.inc"
+#include "air/Dialect/AIR/AIR.h.inc"
 
 #endif
