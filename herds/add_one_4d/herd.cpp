@@ -9,8 +9,6 @@
 #include "air_host.h"
 #include "air_tensor.h"
 
-#include "hsa_defs.h"
-
 #include "test_library.h"
 
 #define INPUT_SIZE 32
@@ -20,12 +18,6 @@ namespace {
 // global libxaie state
 air_libxaie1_ctx_t *xaie;
 
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
-#include "aie_inc.cpp"
-#undef TileInst
-#undef TileDMAInst
-
 //
 // global q ptr
 //
@@ -33,18 +25,33 @@ queue_t *q = nullptr;
 
 }
 
+namespace air::herds::herd_0 {
+
+int32_t mlir_read_buffer_buf0(int index);
+int32_t mlir_read_buffer_buf1(int index);
+int32_t mlir_read_buffer_buf2(int index);
+int32_t mlir_read_buffer_buf3(int index);
+int32_t mlir_read_buffer_buf4(int index);
+int32_t mlir_read_buffer_buf5(int index);
+int32_t mlir_read_buffer_buf6(int index);
+int32_t mlir_read_buffer_buf7(int index);
+void mlir_write_buffer_buf0(int index, int32_t value);
+void mlir_write_buffer_buf1(int index, int32_t value);
+void mlir_write_buffer_buf2(int index, int32_t value);
+void mlir_write_buffer_buf3(int index, int32_t value);
+void mlir_write_buffer_buf4(int index, int32_t value);
+void mlir_write_buffer_buf5(int index, int32_t value);
+void mlir_write_buffer_buf6(int index, int32_t value);
+void mlir_write_buffer_buf7(int index, int32_t value);
+}
+using namespace air::herds::herd_0;
+
 int
 main(int argc, char *argv[])
 {
   uint64_t col = 7;
 
   xaie = air_init_libxaie1();
-
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
-  mlir_start_cores();
 
   // Stomp
   for (int i=0; i<INPUT_SIZE*INPUT_SIZE; i++) {
@@ -86,8 +93,8 @@ main(int argc, char *argv[])
   output.d = output.aligned = (int32_t*)malloc(sizeof(int32_t)*output.shape[0]*output.shape[1]*output.shape[2]*output.shape[3]);
   
   printf("loading aie_ctrl.so\n");
-  auto handle = air_module_load_from_file("./aie_ctrl.so");
-  assert(handle && "failed to open aie_ctrl.so");
+  auto handle = air_module_load_from_file(nullptr);
+  assert(handle && "failed to open linked air module");
 
   auto graph_fn = (void (*)(void*,void*))dlsym((void*)handle, "_mlir_ciface_myAddOne");
   assert(graph_fn && "failed to locate _mlir_ciface_graph in add_one.so");
