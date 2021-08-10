@@ -47,7 +47,7 @@ aie_inc.cpp: aie.mlir
 				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
 
 $(DESIGN)_airin.mlir: $(DESIGN).mlir
-	$(AIR_OPT) -aten-to-air \
+	$(AIR_OPT) -aten-to-xten \
 				-air-name-layers \
 				-air-expand-graph \
 				-o $@ $<

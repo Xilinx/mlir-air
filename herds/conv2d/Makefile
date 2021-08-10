@@ -39,15 +39,10 @@ all: aie_ctrl.so elfs
 conv2d.mlir: conv2d.py
 	python3 $< > $@
 
-aie_inc.cpp: aie.mlir
-	$(AIE_OPT) -lower-affine --convert-scf-to-std \
-			   	--aie-create-flows --aie-find-flows \
-				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
-
 # convert to affine loops with the ordering suitable for multiple tilings...
 # first tiling to model L3->L2 tiling associated with each 'logical column' of overlay/herd
 conv2d_tiled_0.mlir: conv2d.mlir
-	$(AIR_OPT) -aten-to-air \
+	$(AIR_OPT) -aten-to-xten \
 				-xten-to-affine='xten-loop-order=3,0,1,2,4' \
 				-affine-loop-opt='affine-opt-tile-sizes=104' \
 				-affine-loop-normalize -simplify-affine-structures \

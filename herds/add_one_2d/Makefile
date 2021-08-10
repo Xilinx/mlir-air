@@ -26,7 +26,7 @@ aie_inc.cpp: aie.herd_0.mlir
 				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
 
 add_one_tiled_0.mlir: add_one.mlir
-	$(AIR_OPT) -aten-to-air \
+	$(AIR_OPT) -aten-to-xten \
 				-xten-to-affine \
 				-affine-loop-opt='affine-opt-tile-sizes=32,32' \
 				-affine-loop-normalize -simplify-affine-structures \

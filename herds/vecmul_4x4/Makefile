@@ -19,7 +19,7 @@ aie_inc.cpp: aie.herd_0.mlir
 				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
 
 vecmul_tiled_0.mlir: vecmul.mlir
-	$(AIR_OPT) -aten-to-air \
+	$(AIR_OPT) -aten-to-xten \
 				-xten-to-affine \
 				-air-automatic-tiling='air-loop-tile-sizes=64' \
 				-simplify-affine-structures \
