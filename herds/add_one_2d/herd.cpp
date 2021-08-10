@@ -14,38 +14,40 @@
 #include <xaiengine.h>
 
 #include <air_host.h>
-#include <air_tensor.h>>
-
-#define SHMEM_BASE 0x020100000000LL
-
-#define XAIE_NUM_ROWS            8
-#define XAIE_NUM_COLS           50
-#define XAIE_ADDR_ARRAY_OFF     0x800
-
-#define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
-#define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
+#include <air_tensor.h>
 
 namespace {
 
 // global libxaie state
 air_libxaie1_ctx_t *xaie;
 
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
-#include "aie_inc.cpp"
-#undef TileInst
-#undef TileDMAInst
-
 //
 // global q ptr
 //
 queue_t *q = nullptr;
-uint32_t *bram_ptr;
 
 }
 
-#define BRAM_ADDR 0x4000+0x020100000000LL
+namespace air::herds::herd_0 {
 
+int32_t mlir_read_buffer_buf0(int index);
+int32_t mlir_read_buffer_buf1(int index);
+int32_t mlir_read_buffer_buf2(int index);
+int32_t mlir_read_buffer_buf3(int index);
+int32_t mlir_read_buffer_buf4(int index);
+int32_t mlir_read_buffer_buf5(int index);
+int32_t mlir_read_buffer_buf6(int index);
+int32_t mlir_read_buffer_buf7(int index);
+void mlir_write_buffer_buf0(int index, int32_t value);
+void mlir_write_buffer_buf1(int index, int32_t value);
+void mlir_write_buffer_buf2(int index, int32_t value);
+void mlir_write_buffer_buf3(int index, int32_t value);
+void mlir_write_buffer_buf4(int index, int32_t value);
+void mlir_write_buffer_buf5(int index, int32_t value);
+void mlir_write_buffer_buf6(int index, int32_t value);
+void mlir_write_buffer_buf7(int index, int32_t value);
+}
+using namespace air::herds::herd_0;
 
 int
 main(int argc, char *argv[])
@@ -54,20 +56,6 @@ main(int argc, char *argv[])
   uint64_t col = 7;
 
   xaie = air_init_libxaie1();
-
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
-  mlir_start_cores();
-
-  int fd = open("/dev/mem", O_RDWR | O_SYNC);
-  if (fd != -1) {
-    bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, BRAM_ADDR);
-    for (int i=0; i<32*32; i++) {
-      bram_ptr[i] = 0xdeface;
-    }
-  }
 
   // Stomp
   for (int i=0; i<32*32; i++) {
@@ -120,10 +108,9 @@ main(int argc, char *argv[])
 
   output.shape[0] = output.shape[1] = 256;
   output.d = output.aligned = (int32_t*)malloc(sizeof(int32_t)*output.shape[0]*output.shape[1]);
-  
-  printf("loading aie_ctrl.so\n");
-  auto handle = air_module_load_from_file("./aie_ctrl.so");
-  assert(handle && "failed to open aie_ctrl.so");
+
+  auto handle = air_module_load_from_file(nullptr);
+  assert(handle && "failed to open linked air module");
 
   auto graph_fn = (void (*)(void*,void*))dlsym((void*)handle, "_mlir_ciface_myAddOne");
   assert(graph_fn && "failed to locate _mlir_ciface_graph in add_one.so");
