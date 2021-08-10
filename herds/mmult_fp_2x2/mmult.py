@@ -4,8 +4,8 @@ import torch_mlir
 import air
 from air.compiler.jit import Compiler
 
-t0 = torch.randn((64,64))
-t1 = torch.randn((64,64))
+t0 = torch.randn((128,128))
+t1 = torch.randn((128,128))
 
 builder = torch_mlir.ModuleBuilder()
 with builder.capture_function("task", [t0,t1]) as f:

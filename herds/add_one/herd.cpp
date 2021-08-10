@@ -99,7 +99,7 @@ main(int argc, char *argv[])
   output.d = output.aligned = (int32_t*)malloc(sizeof(int32_t)*output.shape[0]);
   
   auto handle = air_module_load_from_file(nullptr, q);
-  assert(handle && "failed to open linked aie module");
+  assert(handle && "failed to open linked air module");
 
   auto graph_fn = (void (*)(void*,void*))dlsym((void*)handle, "_mlir_ciface_myAddOne");
   assert(graph_fn && "failed to locate _mlir_ciface_graph in add_one.so");

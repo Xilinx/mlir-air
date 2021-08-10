@@ -26,19 +26,19 @@ namespace {
 
 air_libxaie1_ctx_t *xaie;
 
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
-#include "aie.inc"
-#undef TileInst
-#undef TileDMAInst
-
 //
 // global q ptr
 //
 queue_t *q = nullptr;
-uint32_t *bram_ptr;
 
 }
+
+namespace air::herds::herd_0 {
+float mlir_read_buffer_buf0(int index);
+float mlir_read_buffer_buf1(int index);
+float mlir_read_buffer_buf2(int index);
+};
+using namespace air::herds::herd_0;
 
 template<typename T>
 void mm_out(tensor_t<T,2> *a, tensor_t<T,2> *b, tensor_t<T,2> *r)
@@ -73,11 +73,11 @@ main(int argc, char *argv[])
   if (VERBOSE)
     ACDC_print_tile_status(xaie->TileInst[col][2]);
 
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
-  mlir_start_cores();
+  // mlir_configure_cores();
+  // mlir_configure_switchboxes();
+  // mlir_initialize_locks();
+  // mlir_configure_dmas();
+  // mlir_start_cores();
 
   if (VERBOSE)
     ACDC_print_tile_status(xaie->TileInst[col][2]);
@@ -105,21 +105,22 @@ main(int argc, char *argv[])
   tensor_t<float,2> output;
   tensor_t<float,2> output_ref;
 
-  input_A.shape[0] = input_A.shape[1] = 64;
+  #define M_SIZE 128
+
+  input_A.shape[0] = input_A.shape[1] = M_SIZE;
   input_A.d = input_A.aligned = (float*)malloc(sizeof(float)*input_A.shape[0]*input_A.shape[1]);
 
-  input_B.shape[0] = input_B.shape[1] = 64;
+  input_B.shape[0] = input_B.shape[1] = M_SIZE;
   input_B.d = input_B.aligned = (float*)malloc(sizeof(float)*input_B.shape[0]*input_B.shape[1]);
 
-  output.shape[0] = output.shape[1] = 64;
+  output.shape[0] = output.shape[1] = M_SIZE;
   output.d = output.aligned = (float*)malloc(sizeof(float)*output.shape[0]*output.shape[1]);
 
-  output_ref.shape[0] = output_ref.shape[1] = 64;
+  output_ref.shape[0] = output_ref.shape[1] = M_SIZE;
   output_ref.d = output_ref.aligned = (float*)malloc(sizeof(float)*output_ref.shape[0]*output_ref.shape[1]);
 
-  printf("loading aie_ctrl.so\n");
-  auto handle = air_module_load_from_file("./aie_ctrl.so");
-  assert(handle && "failed to open aie_ctrl.so");
+  auto handle = air_module_load_from_file(nullptr);
+  assert(handle && "failed to open linked air module");
 
   auto herd_fn = (void (*)(void*,void *,void*))dlsym((void*)handle, "_mlir_ciface_task");
   assert(herd_fn && "failed to locate _mlir_ciface_task in .so");
@@ -161,9 +162,9 @@ main(int argc, char *argv[])
     ACDC_print_tile_status(xaie->TileInst[col][2]);
 
   for (int i=0; i<64; i++) {
-    printf("%d\n", mlir_read_buffer_buf0(i));
-    printf("%d\n", mlir_read_buffer_buf1(i));
-    printf("%d\n", mlir_read_buffer_buf2(i));
+    printf("%f\n", mlir_read_buffer_buf0(i));
+    printf("%f\n", mlir_read_buffer_buf1(i));
+    printf("%f\n", mlir_read_buffer_buf2(i));
   }
 
   int errors = 0;
