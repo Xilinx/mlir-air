@@ -15,7 +15,7 @@ mmult.mlir: mmult.py
 mmult.air.mlir: mmult.mlir
 	air-opt  -o $@ $< \
 			-aten-to-xten \
-			-air-to-linalg \
+			-xten-to-linalg \
 			-air-linalg-codegen='herd-size=2,2' \
 			-affine-to-air \
 			-convert-linalg-to-affine-loops
