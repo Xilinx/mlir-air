@@ -3,6 +3,7 @@
 
 #include "air/Transform/AffineLoopOptPass.h"
 #include "air/Transform/AIRAutomaticTilingPass.h"
+#include "air/Transform/AIRHerdAssignPass.h"
 #include "air/Transform/AIRLinalgCodegen.h"
 #include "air/Transform/AIRLoopPermutationPass.h"
 #include "air/Transform/AIRRegularizeLoopPass.h"

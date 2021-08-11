@@ -145,6 +145,11 @@ def AIRAutomaticTiling: Pass<"air-automatic-tiling", "ModuleOp"> {
   ];
 }
 
+def AIRHerdAssign : Pass<"air-herd-assign", "ModuleOp"> {
+  let summary = "Transfor affine.for to affine.parallel";
+  let constructor = "createAIRHerdAssignPass()";
+}
+
 def AIRLinalgCodegen : Pass<"air-linalg-codegen", "ModuleOp"> {
   let summary = "AIR codegen strategies for linalg";
   let constructor = "createAIRLinalgCodegenPass()";
