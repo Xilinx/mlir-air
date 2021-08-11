@@ -6,6 +6,7 @@ AIRHerdAssignPass.cpp
 AIRLinalgCodegen.cpp
 AIRLoopPermutationPass.cpp
 AIRRegularizeLoopPass.cpp
+ReturnEliminationPass.cpp
 
 DEPENDS
 AIRTransformPassIncGen

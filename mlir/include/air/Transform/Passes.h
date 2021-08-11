@@ -7,6 +7,7 @@
 #include "air/Transform/AIRLinalgCodegen.h"
 #include "air/Transform/AIRLoopPermutationPass.h"
 #include "air/Transform/AIRRegularizeLoopPass.h"
+#include "air/Transform/ReturnEliminationPass.h"
 
 namespace xilinx {
 namespace air {
