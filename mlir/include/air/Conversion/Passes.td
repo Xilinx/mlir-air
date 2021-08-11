@@ -13,6 +13,16 @@ def AIRLowering : Pass<"air-to-std", "ModuleOp"> {
   let constructor = "xilinx::air::createAIRLoweringPass()";
 }
 
+def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
+  let summary = "Lower air.launch_herd to AIE dialect";
+  let constructor = "xilinx::air::createAIRToAIEPass()";
+}
+
+def ATenToXTen : Pass<"aten-to-xten", "ModuleOp"> {
+  let summary = "Convert ATen dialect to XTen dialect";
+  let constructor = "xilinx::xten::createATenToXTenPass()";
+}
+
 def AIRRtToLLVM : Pass<"airrt-to-llvm", "ModuleOp"> {
   let summary = "Lower AIRRt dialect to LLVM dialect";
   let constructor = "xilinx::airrt::createAIRRtToLLVMPass()";

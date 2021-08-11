@@ -997,11 +997,5 @@ std::unique_ptr<mlir::Pass> createAIRToAIEPass() {
   return std::make_unique<AIRToAIEPass>();
 }
 
-void registerAIRToAIEPass() {
-    PassRegistration<AIRToAIEPass>(
-      "air-to-aie",
-      "Lower air.launch_herd to AIE dialect.");
-}
-
 } // namespace air
 } // namespace xilinx
