@@ -1,4 +1,4 @@
-// RUN: aten-opt %s -affine-to-air -cse
+// RUN: air-opt %s -affine-to-air -cse
 // CHECK: air.dma_memcpy_2d (%5, %arg6, [%c0, %c0], [%2, %c0], %c1024, %c64, %c64) : (memref<16x64xf32, 2>, memref<64x64xf32>, [index, index], [index, index], index, index, index) -> ()
 // CHECK: air.dma_memcpy_2d (%6, %arg7, [%c0, %c0], [%c0, %4], %c1024, %c64, %c16) : (memref<64x16xf32, 2>, memref<64x64xf32>, [index, index], [index, index], index, index, index) -> ()
 // CHECK: air.dma_memcpy_2d (%7, %arg8, [%c0, %c0], [%2, %4], %c256, %c64, %c16) : (memref<16x16xf32, 2>, memref<64x64xf32>, [index, index], [index, index], index, index, index) -> ()
