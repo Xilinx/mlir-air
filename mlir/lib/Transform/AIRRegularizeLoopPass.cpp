@@ -16,9 +16,10 @@
 //
 // ===---------------------------------------------------------------------===//
 
-#include "AIRRegularizeLoopPass.h"
-#include "AIRTilingUtils.h"
+#include "air/Transform/AIRRegularizeLoopPass.h"
+#include "air/Transform/AIRTilingUtils.h"
 
+#include "PassDetail.h"
 #include "../lib/Dialect/Affine/Transforms/PassDetail.h"
 #include "mlir/Analysis/AffineAnalysis.h"
 #include "mlir/Analysis/AffineStructures.h"
@@ -267,13 +268,3 @@ std::unique_ptr<Pass> createAIRRegularizeLoopPass() {
 
 } // namespace air
 } // namespace xilinx
-
-void xilinx::air::registerAIRRegularizeLoopPass() {
-    PassRegistration<AIRRegularizeLoopPass>(
-      "air-regularize-loop",
-      "Move independent instructions inside loop body");
-}
-
-static PassRegistration<AIRRegularizeLoopPass>
-    pass("air-regularize-loop", "Move independent instructions inside \
-      loop body");

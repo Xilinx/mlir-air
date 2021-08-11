@@ -7,10 +7,16 @@ add_llvm_tool(air-opt air-opt.cpp)
 llvm_update_compile_flags(air-opt)
 
 set(LIBS
+  AIRDialect
+  AIRRtDialect
+  XTenDialect
+  AIRUtil
+  AIRConversionPasses
+  AIRTransformPasses
+
   NPCOMPATenDialect
   NPCOMPBasicpyDialect
   NPCOMPTypingCPA
-  ATen
   AIE
   MLIR
   )

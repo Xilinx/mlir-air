@@ -1,10 +1,11 @@
 
 // (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
 
-#include "AffineLoopOptPass.h"
+#include "air/Transform/AffineLoopOptPass.h"
 #include "npcomp/Dialect/ATen/IR/ATenDialect.h"
-#include "AcapOutliner.h"
+#include "air/Util/Outliner.h"
 
+#include "PassDetail.h"
 #include "mlir/Analysis/AffineAnalysis.h"
 #include "mlir/Analysis/LoopAnalysis.h"
 #include "mlir/Analysis/Utils.h"
@@ -23,12 +24,9 @@
 #define DEBUG_TYPE "affine-loop-opt"
 
 using namespace mlir;
-using namespace xilinx;
-
-
 
 namespace xilinx {
-namespace aten {
+namespace air {
 
 std::vector<uint64_t> AffineLoopOptCopyDepths;
 std::vector<uint64_t> AffineLoopOptTileSizes;
@@ -55,11 +53,11 @@ public:
         LLVM_DEBUG(llvm::outs() << "clTileSizes[" << i << "] = " << clTileSizes[i] << "\n");
       }
     }
-    else if (xilinx::aten::AffineLoopOptTileSizes.size() > 0) {
-      for (unsigned i = 0; i < xilinx::aten::AffineLoopOptTileSizes.size(); ++i) {
-        optTileSizes.push_back(xilinx::aten::AffineLoopOptTileSizes[i]);
+    else if (xilinx::air::AffineLoopOptTileSizes.size() > 0) {
+      for (unsigned i = 0; i < xilinx::air::AffineLoopOptTileSizes.size(); ++i) {
+        optTileSizes.push_back(xilinx::air::AffineLoopOptTileSizes[i]);
         LLVM_DEBUG(llvm::outs() << "AffineLoopOptTileSizes[" << i << "] = "
-          << xilinx::aten::AffineLoopOptTileSizes[i] << "\n");
+          << xilinx::air::AffineLoopOptTileSizes[i] << "\n");
       }
     }
 
@@ -70,19 +68,19 @@ public:
         LLVM_DEBUG(llvm::outs() << "clCopyDepths[" << i << "] = " << clCopyDepths[i] << "\n");
       }
     }
-    else if (xilinx::aten::AffineLoopOptCopyDepths.size() > 0) {
-      for (unsigned i = 0; i < xilinx::aten::AffineLoopOptCopyDepths.size(); ++i) {
-        optCopyDepths.push_back(xilinx::aten::AffineLoopOptCopyDepths[i]);
+    else if (xilinx::air::AffineLoopOptCopyDepths.size() > 0) {
+      for (unsigned i = 0; i < xilinx::air::AffineLoopOptCopyDepths.size(); ++i) {
+        optCopyDepths.push_back(xilinx::air::AffineLoopOptCopyDepths[i]);
         LLVM_DEBUG(llvm::outs() << "AffineLoopOptCopyDepths[" << i << "] = "
-          << xilinx::aten::AffineLoopOptCopyDepths[i] << "\n");
+          << xilinx::air::AffineLoopOptCopyDepths[i] << "\n");
       }
     }
 
     // if (clFastSpace.getNumOccurrences() == 0)
-    //   clFastSpace.setValue(xilinx::aten::AffineLoopOptFastSpace);
+    //   clFastSpace.setValue(xilinx::air::AffineLoopOptFastSpace);
 
     // if (clSlowSpace.getNumOccurrences() == 0)
-    //   clSlowSpace.setValue(xilinx::aten::AffineLoopOptSlowSpace);
+    //   clSlowSpace.setValue(xilinx::air::AffineLoopOptSlowSpace);
 
     erasedOps.clear();
     dataCopyNests.clear();
@@ -289,7 +287,7 @@ void AffineLoopOptPass::generateDataCopyLoops(std::vector<SmallVector<AffineForO
 void AffineLoopOptPass::outlineDataCopyLoops() {
   for (auto &nest : dataCopyNests) {
     for (auto o : nest) {
-      aten::AcapOutliner olnr;
+      xilinx::air::AIROutliner olnr;
       /*auto call = */olnr.outline(cast<AffineForOp>(o), "air_dma_copy");
       erasedOps.insert(o);
     }
@@ -538,20 +536,11 @@ void AffineLoopOptPass::getTileSizes(ArrayRef<AffineForOp> band,
 } // namespace
 
 namespace xilinx {
-namespace aten {
+namespace air {
 
 std::unique_ptr<Pass> createAffineLoopOptPass() {
   return std::make_unique<AffineLoopOptPass>();
 }
 
-} // namespace aten
+} // namespace air
 } // namespace xilinx
-
-void xilinx::aten::registerAffineLoopOptPass() {
-    PassRegistration<AffineLoopOptPass>(
-      "affine-loop-opt",
-      "Optimize affine loops");
-}
-
-static PassRegistration<AffineLoopOptPass>
-    pass("affine-loop-opt", "Optimize affine loops");

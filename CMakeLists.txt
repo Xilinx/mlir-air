@@ -81,21 +81,22 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR})
 
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
+include(AddAIR)
 include(TableGen)
 include(AddLLVM)
 include(AddMLIR)
 include(HandleLLVMOptions)
 
+include_directories(${LLVM_INCLUDE_DIRS})
+include_directories(${MLIR_INCLUDE_DIRS})
+
 include_directories(${PROJECT_SOURCE_DIR}/../aie/include)
 include_directories(${PROJECT_BINARY_DIR}/../aie/include)
 link_directories(${PROJECT_BINARY_DIR}/../aie/lib/)
 
-include_directories(${PROJECT_SOURCE_DIR}/../pytorch_mlir/dialect/include)
-include_directories(${PROJECT_BINARY_DIR}/../pytorch_mlir/dialect/include)
-link_directories(${PROJECT_BINARY_DIR}/../pytorch_mlir/lib/)
-
-include_directories(${PROJECT_SOURCE_DIR}/../pytorch_mlir/Targets)
-include_directories(${PROJECT_BINARY_DIR}/../pytorch_mlir/Targets/include)
+include_directories(${PROJECT_SOURCE_DIR}/mlir/include)
+include_directories(${PROJECT_BINARY_DIR}/mlir/include)
 
 # NPCOMP
 set(NPCOMP_BINARY_DIR "${PROJECT_BINARY_DIR}/../npcomp")
@@ -142,3 +143,4 @@ add_subdirectory(lib)
 add_subdirectory(test)
 add_subdirectory(tools)
 add_subdirectory(cmake/modules)
+add_subdirectory(mlir)

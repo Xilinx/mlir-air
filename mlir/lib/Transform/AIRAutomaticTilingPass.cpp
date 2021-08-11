@@ -12,9 +12,10 @@
 //
 // ===---------------------------------------------------------------------===//
 
-#include "AIRAutomaticTilingPass.h"
-#include "AIRTilingUtils.h"
+#include "air/Transform/AIRAutomaticTilingPass.h"
+#include "air/Transform/AIRTilingUtils.h"
 
+#include "PassDetail.h"
 #include "mlir/Analysis/AffineAnalysis.h"
 #include "mlir/Analysis/LoopAnalysis.h"
 #include "mlir/Analysis/Utils.h"
@@ -345,12 +346,3 @@ std::unique_ptr<Pass> createAIRAutomaticTilingPass() {
 
 } // namespace air
 } // namespace xilinx
-
-void xilinx::air::registerAIRAutomaticTilingPass() {
-    PassRegistration<AIRAutomaticTilingPass>(
-      "air-automatic-tiling",
-      "Automatically tiles the loops");
-}
-
-static PassRegistration<AIRAutomaticTilingPass>
-    pass("air-automatic-tiling", "Automatically tiles the loops");

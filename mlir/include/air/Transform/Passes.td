@@ -1,0 +1,395 @@
+#ifndef AIR_TRANSFORM_PASSES
+#define AIR_TRANSFORM_PASSES
+
+include "mlir/Pass/PassBase.td"
+
+def AffineLoopOptPass : Pass<"affine-loop-opt", "ModuleOp"> {
+  let summary = "Affine loop transformations";
+  let constructor = "createAffineLoopOptPass()";
+}
+
+def AIRAutomaticTiling: Pass<"air-automatic-tiling", "ModuleOp"> {
+  let summary = "Tile loop nests manually or automatically with prime"
+    " factorization";
+  let constructor = "createAIRAutomaticTilingPass()";
+  let description = [{
+    This pass performs multi-dimensional tiling of loop nests. If the tile 
+    sizes are specified in the command line, all loops in loops nests will be 
+    tiled along with the input factors. If no input tiling sizes are received, 
+    the pass tiles all loops in loop bands with prime factors of the original 
+    loop tripcounts. This pass assumes that loops are in normalized form and 
+    the loop spaces are hyper-rectangular.
+
+    Example 1: Manual tiling 
+
+    `-air-automatic-tiling="loop-tile-sizes=64,2,2" -simplify-affine-structures -cse`
+
+    Input:
+    ```mlir
+    module  {
+      func @task(%arg0: tensor<4096xi32>, %arg1: tensor<4096xi32>) -> tensor<4096xi32> {
+        %0 = memref.alloc() : memref<4096xi32>
+        %1 = "aten.type_cast"(%arg0) : (tensor<4096xi32>) -> memref<4096xi32>
+        %2 = "aten.type_cast"(%arg1) : (tensor<4096xi32>) -> memref<4096xi32>
+        %c0 = constant 0 : index
+        %c4096 = constant 4096 : index
+        %c0_0 = constant 0 : index
+        affine.for %arg2 = 0 to 4096 {
+          %4 = affine.load %1[%arg2] : memref<4096xi32>
+          %5 = affine.load %2[%arg2] : memref<4096xi32>
+          %6 = muli %4, %5 : i32
+          affine.store %6, %0[%arg2] : memref<4096xi32>
+        } {affine_opt_label = "air.binary_op"}
+        %3 = "aten.type_cast"(%0) : (memref<4096xi32>) -> tensor<4096xi32>
+        return %3 : tensor<4096xi32>
+      }
+    }
+    ```
+    Output:
+    ```mlir
+    #map = affine_map<(d0, d1, d2, d3) -> (d0 + d1 * 64 + d2 * 128 + d3 * 256)>
+    module  {
+      func @task(%arg0: tensor<4096xi32>, %arg1: tensor<4096xi32>) -> tensor<4096xi32> {
+        %0 = memref.alloc() : memref<4096xi32>
+        %1 = "aten.type_cast"(%arg0) : (tensor<4096xi32>) -> memref<4096xi32>
+        %2 = "aten.type_cast"(%arg1) : (tensor<4096xi32>) -> memref<4096xi32>
+        affine.for %arg2 = 0 to 16 {
+          affine.for %arg3 = 0 to 2 {
+            affine.for %arg4 = 0 to 2 {
+              affine.for %arg5 = 0 to 64 {
+                %4 = affine.apply #map(%arg5, %arg4, %arg3, %arg2)
+                %5 = affine.load %1[%4] : memref<4096xi32>
+                %6 = affine.load %2[%4] : memref<4096xi32>
+                %7 = muli %5, %6 : i32
+                affine.store %7, %0[%4] : memref<4096xi32>
+              }
+            }
+          }
+        } {affine_opt_label = ""}
+        %3 = "aten.type_cast"(%0) : (memref<4096xi32>) -> tensor<4096xi32>
+        return %3 : tensor<4096xi32>
+      }
+    }
+    ```
+
+    Example 2: Automatic tiling
+
+    `-air-automatic-tiling -simplify-affine-structures -cse`
+
+    Input:
+
+    ```mlir
+    module  {
+      func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+        %0 = memref.alloc() : memref<28x10xf32>
+        %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
+        %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
+        affine.for %arg2 = 0 to 28 {
+          affine.for %arg3 = 0 to 10 {
+            %4 = affine.load %1[%arg2, %arg3] : memref<28x10xf32>
+            %5 = affine.load %2[%arg2, %arg3] : memref<28x10xf32>
+            %6 = mulf %4, %5 : f32
+            affine.store %6, %0[%arg2, %arg3] : memref<28x10xf32>
+          }
+        } {affine_opt_label = "air.binary_op"}
+        %3 = "aten.type_cast"(%0) : (memref<28x10xf32>) -> tensor<28x10xf32>
+        return %3 : tensor<28x10xf32>
+      }
+    }
+    ```
+
+    Output:
+
+    ```mlir
+    #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
+    #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
+    module  {
+      func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+        %0 = memref.alloc() : memref<28x10xf32>
+        %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
+        %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
+        affine.for %arg2 = 0 to 2 {
+          affine.for %arg3 = 0 to 2 {
+            affine.for %arg4 = 0 to 7 {
+              %4 = affine.apply #map0(%arg4, %arg3, %arg2)
+              affine.for %arg5 = 0 to 2 {
+                affine.for %arg6 = 0 to 5 {
+                  %5 = affine.apply #map1(%arg6, %arg5)
+                  %6 = affine.load %1[%4, %5] : memref<28x10xf32>
+                  %7 = affine.load %2[%4, %5] : memref<28x10xf32>
+                  %8 = mulf %6, %7 : f32
+                  affine.store %8, %0[%4, %5] : memref<28x10xf32>
+                }
+              }
+            }
+          }
+        }
+        %3 = "aten.type_cast"(%0) : (memref<28x10xf32>) -> tensor<28x10xf32>
+        return %3 : tensor<28x10xf32>
+      }
+    }
+    ```
+
+  }];
+  let options = [
+    ListOption<"loopTileSizes", "loop-tile-sizes", "unsigned",
+               "A list of multi-dimensional loop tile sizes",
+               "llvm::cl::ZeroOrMore, llvm::cl::CommaSeparated">,
+    Option<"tileSeparate", "tile-separate", "bool", /*default=*/"false",
+           "AIR loop tiling separates full and partial tiles">,
+    Option<"AIRLabel", "air-label", "std::string", /*default=*/"",
+           "Transform loops with the given label">,
+    Option<"AIRPostLabel", "air-post-label", "std::string", 
+            /*default=*/"",
+            "Label to apply to transformed loop nest">
+  ];
+}
+
+def AIRLinalgCodegen : Pass<"air-linalg-codegen", "ModuleOp"> {
+  let summary = "AIR codegen strategies for linalg";
+  let constructor = "createAIRLinalgCodegenPass()";
+}
+
+def AIRRegularizeLoop: Pass<"air-regularize-loop", "ModuleOp"> {
+  let summary = "Move operations inside the innermost loop body to regularize "
+    "loop nests";
+  let constructor = "createAIRRegularizeLoopPass()";
+  let description = [{
+    This pass regularizes loop nests by moving intermediate operations between
+    subloops in a loop nest inside the innermost loop body. The pass is 
+    essentiallythe inverse of the affine loop invariant code motion pass. For 
+    each opeation that makes the loop nest non-perfect, the pass will check 
+    recursively if the content of the operation is independent of the induction 
+    variable of the inner loop. And if it is independent, the operation will be 
+    moved inside the inner loop body until the induction variable of the inner 
+    loop is dependent on the operation or there are no loops at the same level.
+
+    Example: Regularize a loop nest with `-air-regularize-loop`
+
+    Input:
+
+    ```mlir
+    #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
+    #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
+    module  {
+      func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+        %0 = memref.alloc() : memref<28x10xf32>
+        %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
+        %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
+        affine.for %arg2 = 0 to 2 {
+          affine.for %arg3 = 0 to 2 {
+            affine.for %arg4 = 0 to 7 {
+              %4 = affine.apply #map0(%arg4, %arg3, %arg2)
+              affine.for %arg5 = 0 to 2 {
+                affine.for %arg6 = 0 to 5 {
+                  %5 = affine.apply #map1(%arg6, %arg5)
+                  %6 = affine.load %1[%4, %5] : memref<28x10xf32>
+                  %7 = affine.load %2[%4, %5] : memref<28x10xf32>
+                  %8 = mulf %6, %7 : f32
+                  affine.store %8, %0[%4, %5] : memref<28x10xf32>
+                }
+              }
+            }
+          }
+        }
+        %3 = "aten.type_cast"(%0) : (memref<28x10xf32>) -> tensor<28x10xf32>
+        return %3 : tensor<28x10xf32>
+      }
+    }
+    ```
+
+    Output:
+
+    ```mlir
+    #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
+    #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
+    module  {
+      func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+        %0 = memref.alloc() : memref<28x10xf32>
+        %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
+        %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
+        affine.for %arg2 = 0 to 2 {
+          affine.for %arg3 = 0 to 2 {
+            affine.for %arg4 = 0 to 7 {
+              affine.for %arg5 = 0 to 2 {
+                affine.for %arg6 = 0 to 5 {
+                  %4 = affine.apply #map0(%arg4, %arg3, %arg2)
+                  %5 = affine.apply #map1(%arg6, %arg5)
+                  %6 = affine.load %1[%4, %5] : memref<28x10xf32>
+                  %7 = affine.load %2[%4, %5] : memref<28x10xf32>
+                  %8 = mulf %6, %7 : f32
+                  affine.store %8, %0[%4, %5] : memref<28x10xf32>
+                }
+              }
+            }
+          }
+        }
+        %3 = "aten.type_cast"(%0) : (memref<28x10xf32>) -> tensor<28x10xf32>
+        return %3 : tensor<28x10xf32>
+      }
+    }
+    ```
+
+  }];
+}
+
+def AIRLoopPermutation: Pass<"air-loop-permutation", "ModuleOp"> {
+  let summary = "Change the loop ordering according to the input mapping";
+  let constructor = "createAIRLoopPermutationPass()";
+  let description = [{
+    This pass performs a loop nest reordering according to the input mapping. 
+    The i-th loop will be moved from position i -> permMap[i] where the counting 
+    of i starts at the outermost loop. The pass transforms only
+    perfect loop nests. The specified ordering starts from 0, and should be of 
+    the same length as the loop nest size. Each number is required to appear once in 
+    the input mapping.
+
+    Example: Permute a loop nest with `-air-loop-permutation="loop-order=4,3,2,1,0"`
+
+    Input: 
+
+    ```mlir
+    #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
+    #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
+    module  {
+      func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+        %0 = memref.alloc() : memref<28x10xf32>
+        %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
+        %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
+        affine.for %arg2 = 0 to 2 {
+          affine.for %arg3 = 0 to 2 {
+            affine.for %arg4 = 0 to 7 {
+              affine.for %arg5 = 0 to 2 {
+                affine.for %arg6 = 0 to 5 {
+                  %4 = affine.apply #map0(%arg4, %arg3, %arg2)
+                  %5 = affine.apply #map1(%arg6, %arg5)
+                  %6 = affine.load %1[%4, %5] : memref<28x10xf32>
+                  %7 = affine.load %2[%4, %5] : memref<28x10xf32>
+                  %8 = mulf %6, %7 : f32
+                  affine.store %8, %0[%4, %5] : memref<28x10xf32>
+                }
+              }
+            }
+          }
+        }
+        %3 = "aten.type_cast"(%0) : (memref<28x10xf32>) -> tensor<28x10xf32>
+        return %3 : tensor<28x10xf32>
+      }
+    }
+    ```
+
+    Output:
+
+    ```mlir
+    #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
+    #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
+    module  {
+      func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+        %0 = memref.alloc() : memref<28x10xf32>
+        %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
+        %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
+        affine.for %arg2 = 0 to 5 {
+          affine.for %arg3 = 0 to 2 {
+            affine.for %arg4 = 0 to 7 {
+              affine.for %arg5 = 0 to 2 {
+                affine.for %arg6 = 0 to 2 {
+                  %4 = affine.apply #map0(%arg4, %arg5, %arg6)
+                  %5 = affine.apply #map1(%arg2, %arg3)
+                  %6 = affine.load %1[%4, %5] : memref<28x10xf32>
+                  %7 = affine.load %2[%4, %5] : memref<28x10xf32>
+                  %8 = mulf %6, %7 : f32
+                  affine.store %8, %0[%4, %5] : memref<28x10xf32>
+                }
+              }
+            }
+          }
+        }
+        %3 = "aten.type_cast"(%0) : (memref<28x10xf32>) -> tensor<28x10xf32>
+        return %3 : tensor<28x10xf32>
+      }
+    }
+    ```
+
+  }];
+  let options = [
+    ListOption<"loopOrder", "loop-order", "unsigned",
+               "The target loop permutation ordering",
+               "llvm::cl::OneOrMore, llvm::cl::CommaSeparated">
+  ];
+}
+
+def AIRLoopMergingPass: Pass<"air-loop-merging", "ModuleOp"> {
+  let summary = "Merge several nested subloops into a single loop";
+  let description = [{
+    This pass transforms several perfectly nested subloops into a single 
+    loop. The trip count of the new single loop is the product of all
+    trip counts in subloops. The original loop induction variables are 
+    restored using floordiv and modulo operations. Users can specify which 
+    loop levels they want to merge together.
+
+    Example: Merge subloops with `-air-loop-merging="loop-merge-levels=1,2,3" -simplify-affine-structures -cse`
+
+    Input:
+
+    ```mlir
+    #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
+    #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
+    module  {
+      func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+        %0 = memref.alloc() : memref<28x10xf32>
+        %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
+        %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
+        affine.for %arg2 = 0 to 2 {
+          affine.for %arg3 = 0 to 2 {
+            affine.for %arg4 = 0 to 7 {
+              affine.for %arg5 = 0 to 2 {
+                affine.for %arg6 = 0 to 5 {
+                  %4 = affine.apply #map0(%arg4, %arg3, %arg2)
+                  %5 = affine.apply #map1(%arg6, %arg5)
+                  %6 = affine.load %1[%4, %5] : memref<28x10xf32>
+                  %7 = affine.load %2[%4, %5] : memref<28x10xf32>
+                  %8 = mulf %6, %7 : f32
+                  affine.store %8, %0[%4, %5] : memref<28x10xf32>
+                }
+              }
+            }
+          }
+        } {affine_opt_label = ""}
+        %3 = "aten.type_cast"(%0) : (memref<28x10xf32>) -> tensor<28x10xf32>
+        return %3 : tensor<28x10xf32>
+      }
+    }
+    ```
+
+    Output:
+
+    ```mlir
+    #map0 = affine_map<(d0, d1) -> (d0 * 14 + d1 floordiv 2 - ((d1 floordiv 2) floordiv 7) * 7 + (d1 floordiv 14) * 7)>
+    #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5 - (d1 floordiv 2) * 10)>
+    module  {
+      func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+        %0 = memref.alloc() : memref<28x10xf32>
+        %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
+        %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
+        affine.for %arg2 = 0 to 2 {
+          affine.for %arg3 = 0 to 28 {
+            affine.for %arg4 = 0 to 5 {
+              %4 = affine.apply #map0(%arg2, %arg3)
+              %5 = affine.apply #map1(%arg4, %arg3)
+              %6 = affine.load %1[%4, %5] : memref<28x10xf32>
+              %7 = affine.load %2[%4, %5] : memref<28x10xf32>
+              %8 = mulf %6, %7 : f32
+              affine.store %8, %0[%4, %5] : memref<28x10xf32>
+            }
+          }
+        } {affine_opt_label = ""}
+        %3 = "aten.type_cast"(%0) : (memref<28x10xf32>) -> tensor<28x10xf32>
+        return %3 : tensor<28x10xf32>
+      }
+    }
+    ```
+
+  }];
+}
+
+#endif // AIR_CONVERSION_PASSES

@@ -1,6 +1,6 @@
 // (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
 
-#include "Util.h"
+
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -26,12 +26,15 @@
 
 #include <vector>
 
+#include "PassDetail.h"
 #include "npcomp/Dialect/ATen/IR/ATenDialect.h"
 #include "npcomp/Dialect/Basicpy/IR/BasicpyOps.h"
-#include "XTenOps.h"
-#include "AIRRtDialect.h"
-#include "AIRRtOps.h"
-#include "AIRPasses.h"
+
+#include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Dialect/AIRRt/AIRRtDialect.h"
+#include "air/Dialect/AIRRt/AIRRtOps.h"
+#include "air/Dialect/XTen/XTenOps.h"
+#include "air/Util/Util.h"
 
 #define DEBUG_TYPE "air-lowering-pass"
 
@@ -758,9 +761,3 @@ std::unique_ptr<mlir::Pass> createAIRLoweringPass() {
 
 } // namespace air
 } // namespace xilinx
-
-void xilinx::air::registerAIRLoweringPass() {
-    PassRegistration<AIRLoweringPass>(
-      "air-to-std",
-      "AIR dialect lowering");
-}

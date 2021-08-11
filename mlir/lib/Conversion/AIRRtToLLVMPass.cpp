@@ -14,7 +14,8 @@
 #include "mlir/Transforms/DialectConversion.h"
 
 
-#include "AIRRtOps.h"
+#include "PassDetail.h"
+#include "air/Dialect/AIRRt/AIRRtOps.h"
 
 #define DEBUG_TYPE "airrt-to-llvm-pass"
 

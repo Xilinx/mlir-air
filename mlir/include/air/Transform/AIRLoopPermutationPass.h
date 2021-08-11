@@ -1,18 +1,16 @@
 // (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
-#pragma once
+#ifndef AIR_LOOP_PERMUTATION_PASS_H
+#define AIR_LOOP_PERMUTATION_PASS_H
 
-#include "AIRPasses.h"
-
-namespace mlir {
-class Pass;
-} // namespace mlir
+#include "mlir/Pass/Pass.h"
+#include <memory>
 
 namespace xilinx {
 namespace air {
 
 std::unique_ptr<mlir::Pass> createAIRLoopPermutationPass();
-void registerAIRLoopPermutationPass();
 
 } // namespace air
 } // namespace xilinx
 
+#endif // AIR_LOOP_PERMUTATION_PASS_H

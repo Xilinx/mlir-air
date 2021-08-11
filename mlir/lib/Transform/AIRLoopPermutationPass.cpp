@@ -13,9 +13,10 @@
 //
 // ===---------------------------------------------------------------------===//
 
-#include "AIRLoopPermutationPass.h"
-#include "AIRTilingUtils.h"
+#include "air/Transform/AIRLoopPermutationPass.h"
+#include "air/Transform/AIRTilingUtils.h"
 
+#include "PassDetail.h"
 #include "mlir/Analysis/AffineAnalysis.h"
 #include "mlir/Analysis/LoopAnalysis.h"
 #include "mlir/Analysis/Utils.h"
@@ -111,11 +112,11 @@ std::unique_ptr<Pass> createAIRLoopPermutationPass() {
 } // namespace air
 } // namespace xilinx
 
-void xilinx::air::registerAIRLoopPermutationPass() {
-    PassRegistration<AIRLoopPermutationPass>(
-      "air-loop-permutation",
-      "Permute affine loops");
-}
+// void xilinx::air::registerAIRLoopPermutationPass() {
+//     PassRegistration<AIRLoopPermutationPass>(
+//       "air-loop-permutation",
+//       "Permute affine loops");
+// }
 
-static PassRegistration<AIRLoopPermutationPass>
-    pass("air-loop-permutation", "Permute affine loops");
+// static PassRegistration<AIRLoopPermutationPass>
+//     pass("air-loop-permutation", "Permute affine loops");

@@ -17,15 +17,11 @@
 #include "npcomp/Dialect/ATen/IR/ATenDialect.h"
 #include "npcomp/Dialect/Basicpy/IR/BasicpyDialect.h"
 
-#include "ATenPasses.h"
-
-#include "XTenPasses.h"
-
-#include "AIRDialect.h"
-#include "AIRPasses.h"
-
-#include "AIRRtDialect.h"
-#include "AIRRtPasses.h"
+#include "air/Conversion/Passes.h"
+#include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Dialect/AIRRt/AIRRtDialect.h"
+#include "air/Dialect/XTen/XTenDialect.h"
+#include "air/Transform/Passes.h"
 
 #include "AIEDialect.h"
 
@@ -34,10 +30,8 @@ using namespace mlir;
 
 int main(int argc, char **argv) {
   registerAllPasses();
-  xilinx::aten::registerATenPasses();
-  xilinx::air::registerAIRPasses();
-  xilinx::airrt::registerPasses();
-  xilinx::xten::registerXTenPasses();
+  xilinx::air::registerAIRConversionPasses();
+  xilinx::air::registerAIRTransformPasses();
 
   DialectRegistry registry;
   registerAllDialects(registry);
@@ -45,6 +39,7 @@ int main(int argc, char **argv) {
                   NPCOMP::Basicpy::BasicpyDialect,
                   xilinx::air::airDialect,
                   xilinx::airrt::AIRRtDialect,
+                  xilinx::xten::XTenDialect,
                   xilinx::AIE::AIEDialect>();
 
   return failed(MlirOptMain(argc, argv, "MLIR modular optimizer driver\n",

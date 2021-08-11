@@ -1,8 +1,10 @@
 // (c) Copyright 2019 Xilinx Inc. All Rights Reserved.
 
 #include "npcomp/Dialect/ATen/IR/ATenDialect.h"
-#include "AIRDialect.h"
-#include "AffineToAIRPass.h"
+
+#include "PassDetail.h"
+#include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Conversion/AffineToAIRPass.h"
 
 #include "mlir/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/EDSC/Builders.h"
@@ -47,8 +49,6 @@ using namespace xilinx;
 #define DEBUG_TYPE "affine-to-air"
 
 namespace {
-
-#include "AffineToAIR.cpp.inc"
 
 static uint64_t DmaMemcpyOpID;
 
@@ -626,8 +626,6 @@ struct AffineToAIRPass : public PassWrapper<AffineToAIRPass,
     patterns.insert<AffineParToHerdLaunchConversion,
                     ScfParToHerdLaunchConversion>(context);
 
-    populateWithGenerated(patterns);
-
     ConversionTarget target(*context);
 
     target.addLegalDialect<LLVM::LLVMDialect,
@@ -726,9 +724,3 @@ std::unique_ptr<mlir::Pass> createAffineToAIRPass() {
 
 } // namespace air
 } // namespace xilinx
-
-void xilinx::air::registerAffineToAIRPass() {
-    PassRegistration<AffineToAIRPass>(
-      "affine-to-air",
-      "Lift affine loops to AIR dialect");
-}

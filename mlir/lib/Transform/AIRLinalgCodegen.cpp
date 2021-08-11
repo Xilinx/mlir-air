@@ -1,8 +1,9 @@
 // (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
 
-#include "AIRLinalgCodegen.h"
-#include "AcapOutliner.h"
+#include "air/Transform/AIRLinalgCodegen.h"
+#include "air/Util/Outliner.h"
 
+#include "PassDetail.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Linalg/IR/LinalgOps.h"
 #include "mlir/Dialect/Linalg/Transforms/CodegenStrategy.h"
@@ -13,6 +14,9 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/SetVector.h"
+
+#include "npcomp/Dialect/ATen/IR/ATenDialect.h"
+
 
 #define DEBUG_TYPE "air-linalg-codegen"
 
@@ -176,7 +180,7 @@ public:
     // MatmulOp
     for (auto matmulOp : matmulOps) {
 
-      xilinx::aten::AcapOutliner olnr;
+      xilinx::air::AIROutliner olnr;
       CallOp call = olnr.outline({matmulOp}, "call_mmult");
       FuncOp called = funcOp->getParentOfType<ModuleOp>()
                         .lookupSymbol<FuncOp>(call.getCallee());
@@ -240,7 +244,7 @@ public:
     // Conv2dOp
     for (auto conv2dOp : conv2dOps) {
 
-      xilinx::aten::AcapOutliner olnr;
+      xilinx::air::AIROutliner olnr;
       CallOp call = olnr.outline({conv2dOp}, "call_conv_2d_nchw");
       FuncOp called = funcOp->getParentOfType<ModuleOp>()
                         .lookupSymbol<FuncOp>(call.getCallee());
@@ -350,15 +354,9 @@ private:
 namespace xilinx {
 namespace air {
 
-std::unique_ptr<Pass> createAIRLinalgCodegen() {
+std::unique_ptr<Pass> createAIRLinalgCodegenPass() {
   return std::make_unique<AIRLinalgCodegen>();
 }
 
 } // namespace air
 } // namespace xilinx
-
-void xilinx::air::registerAIRLinalgCodegen() {
-    PassRegistration<AIRLinalgCodegen>(
-      "air-linalg-codegen",
-      "AIR codegen strategies for linalg");
-}

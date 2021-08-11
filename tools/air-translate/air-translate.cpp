@@ -24,17 +24,15 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
 
-#include "AIRDialect.h"
-#include "AIRRtDialect.h"
+#include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Dialect/AIRRt/AIRRtDialect.h"
 
 using namespace mlir;
 
 int main(int argc, char **argv) {
-  // DialectRegistry registry;
-  // registerAllDialects(registry);
 
   registerAllTranslations();
   xilinx::air::registerAIRRtTranslations();
 
-  return failed(mlirTranslateMain(argc, argv, "MLIR Translation Testing Tool"));
+  return failed(mlirTranslateMain(argc, argv, "AIR MLIR Translation Tool"));
 }

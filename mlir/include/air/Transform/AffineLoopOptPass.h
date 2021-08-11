@@ -1,22 +1,22 @@
 // (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
-#pragma once
+#ifndef AFFINE_LOOP_OPT_H
+#define AFFINE_LOOP_OPT_H
 
-#include "ATenPasses.h"
-
-namespace mlir {
-class Pass;
-} // namespace mlir
+#include <mlir/Pass/Pass.h>
+#include <memory>
+#include <vector>
 
 namespace xilinx {
-namespace aten {
+namespace air {
 
 std::unique_ptr<mlir::Pass> createAffineLoopOptPass();
-void registerAffineLoopOptPass();
 
 extern std::vector<uint64_t> AffineLoopOptCopyDepths;
 extern std::vector<uint64_t> AffineLoopOptTileSizes;
 extern uint64_t AffineLoopOptFastSpace;
 extern uint64_t AffineLoopOptSlowSpace;
 
-} // namespace aten
+} // namespace air
 } // namespace xilinx
+
+#endif // AFFINE_LOOP_OPT_H

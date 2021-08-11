@@ -1,8 +1,9 @@
 // (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
 
-#include "AIRDialect.h"
-#include "AIRRtDialect.h"
-#include "AIRRtOps.h"
+#include "PassDetail.h"
+#include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Dialect/AIRRt/AIRRtDialect.h"
+#include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "AIEDialect.h"
 
 #include "llvm/Support/Debug.h"

@@ -16,11 +16,12 @@ install(TARGETS air-translate
   RUNTIME DESTINATION ${LLVM_TOOLS_INSTALL_DIR}
   COMPONENT air-translate)
 
-#add_dependencies(air-translate AIRTargets)
+add_dependencies(air-translate AIRTargets)
 
 set(LIBS
+  AIRDialect
+  AIRRtDialect
   AIRTargets
-  ATen
   NPCOMPATenDialect
   NPCOMPBasicpyDialect
   NPCOMPTypingCPA

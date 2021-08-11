@@ -1,17 +1,17 @@
 // (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
-#pragma once
+#ifndef AIR_AUTOMATIC_TILING_PASS_H
+#define AIR_AUTOMATIC_TILING_PASS_H
 
-#include "AIRPasses.h"
-
-namespace mlir {
-class Pass;
-} // namespace mlir
+#include "mlir/Pass/Pass.h"
+#include <memory>
+#include <vector>
 
 namespace xilinx {
 namespace air {
 
 std::unique_ptr<mlir::Pass> createAIRAutomaticTilingPass();
-void registerAIRAutomaticTilingPass();
 
 } // namespace air
 } // namespace xilinx
+
+#endif

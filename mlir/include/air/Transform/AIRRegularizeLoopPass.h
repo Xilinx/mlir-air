@@ -1,18 +1,16 @@
 // (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
-#pragma once
+#ifndef AIR_REGULARIZE_LOOP_PASS_H
+#define AIR_REGULARIZE_LOOP_PASS_H
 
-#include "AIRPasses.h"
-
-namespace mlir {
-class Pass;
-} // namespace mlir
+#include "mlir/Pass/Pass.h"
+#include <memory>
 
 namespace xilinx {
 namespace air {
 
 std::unique_ptr<mlir::Pass> createAIRRegularizeLoopPass();
-void registerAIRRegularizeLoopPass();
 
 } // namespace air
 } // namespace xilinx
 
+#endif // AIR_REGULARIZE_LOOP_PASS_H

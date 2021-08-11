@@ -1,15 +1,16 @@
 // (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
-#pragma once
+#ifndef AIR_TO_STD_H
+#define AIR_TO_STD_H
 
-namespace mlir {
-class Pass;
-} // namespace mlir
+#include "mlir/Pass/Pass.h"
+#include <memory>
 
 namespace xilinx {
 namespace air {
 
 std::unique_ptr<mlir::Pass> createAIRLoweringPass();
-void registerAIRLoweringPass();
 
 } // namespace aten
 } // namespace xilinx
+
+#endif // AIR_TO_STD_H
