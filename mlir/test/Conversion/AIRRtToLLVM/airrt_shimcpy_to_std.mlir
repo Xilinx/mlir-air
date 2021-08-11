@@ -1,0 +1,143 @@
+// RUN: air-opt %s -airrt-to-llvm | FileCheck %s
+// CHECK: call @air_shim_memcpy(%c1_i32, {{.*}}) : (i32, i64, i64, memref<?xi32>, i64, i64) -> ()
+// CHECK: call @air_shim_memcpy2d(%c2_i32, {{.*}}) : (i32, i64, i64, memref<?x?xi32>, i64, i64, i64, i64, i64) -> ()
+// CHECK: call @air_shim_memcpy(%c3_i32, {{.*}}) : (i32, i64, i64, memref<?xi32>, i64, i64) -> ()
+// CHECK: call @air_shim_memcpy2d(%c4_i32, {{.*}}) : (i32, i64, i64, memref<?x?xi32>, i64, i64, i64, i64, i64) -> ()
+// CHECK: call @air_shim_memcpy4d(%c1_i32_0, {{.*}}) : (i32, i64, i64, memref<?x?x?x?xi32>, i64, i64, i64, i64, i64, i64, i64) -> ()
+// CHECK: call @air_shim_memcpy4d(%c2_i32, {{.*}}) : (i32, i64, i64, memref<?x?x?x?xi32>, i64, i64, i64, i64, i64, i64, i64) -> ()
+#map0 = affine_map<()[s0, s1] -> (s0 * 64 + s1 * 128)>
+#map1 = affine_map<(d0)[s0] -> (d0 + s0 * 16)>
+module  {
+  func @task0(%arg0: tensor<256x256xi32>, %arg1: tensor<256xi32>) -> tensor<256x256xi32> {
+    %0 = memref.alloc() : memref<256x256xi32>
+    %1 = memref.alloc() : memref<256xi32>
+    %2 = "aten.type_cast"(%arg0) : (tensor<256x256xi32>) -> memref<256x256xi32>
+    %3 = "aten.type_cast"(%arg1) : (tensor<256xi32>) -> memref<256xi32>
+    affine.for %arg2 = 0 to 2 {
+      affine.for %arg3 = 0 to 2 {
+        %c2 = constant 2 : index
+        affine.for %arg4 = 0 to 2 {
+          affine.for %arg5 = 0 to 2 {
+            %c0 = constant 0 : index
+            %c4096 = constant 4096 : index
+            %c64 = constant 64 : index
+            %c256 = constant 256 : index
+            %5 = memref.alloc() : memref<64x64xi32, 2>
+            %6 = memref.alloc() : memref<64xi32, 2>
+            %7 = memref.alloc() : memref<32xi32, 2>
+            %8 = affine.apply #map0()[%arg4, %arg2]
+            %9 = affine.apply #map0()[%arg5, %arg3]
+            %c1_i32 = constant 1 : i32
+            %10 = index_cast %arg5 : index to i64
+            %11 = index_cast %arg4 : index to i64
+            %12 = index_cast %8 : index to i64
+            %13 = index_cast %c64 : index to i64
+            airrt.dma_memcpy(%c1_i32, %10, %11, %3[%12], %13) : (i32, i64, i64, memref<256xi32>, [i64], i64) -> ()
+            %c2_i32 = constant 2 : i32
+            %14 = index_cast %arg5 : index to i64
+            %15 = index_cast %arg4 : index to i64
+            %16 = index_cast %8 : index to i64
+            %17 = index_cast %9 : index to i64
+            %18 = index_cast %c4096 : index to i64
+            %19 = index_cast %c256 : index to i64
+            %20 = index_cast %c64 : index to i64
+            airrt.dma_memcpy_2d(%c2_i32, %14, %15, %2[%16, %17], %18, %19, %20) : (i32, i64, i64, memref<256x256xi32>, [i64, i64], i64, i64, i64) -> ()
+            %21 = memref.alloc() : memref<64x64xi32, 2>
+            %22 = memref.alloc() : memref<64xi32, 2>
+            affine.for %arg6 = 0 to 64 {
+              %c1_i32_0 = constant 1 : i32
+              %34 = affine.load %6[%arg6] : memref<64xi32, 2>
+              %35 = addi %34, %c1_i32_0 : i32
+              affine.store %35, %22[%arg6] : memref<64xi32, 2>
+              affine.for %arg7 = 0 to 64 {
+                %36 = affine.load %5[%arg6, %arg7] : memref<64x64xi32, 2>
+                %37 = addi %36, %c1_i32_0 : i32
+                affine.store %37, %21[%arg6, %arg7] : memref<64x64xi32, 2>
+              }
+            }
+            %c3_i32 = constant 3 : i32
+            %23 = index_cast %arg5 : index to i64
+            %24 = index_cast %arg4 : index to i64
+            %25 = index_cast %8 : index to i64
+            %26 = index_cast %c64 : index to i64
+            airrt.dma_memcpy(%c3_i32, %23, %24, %1[%25], %26) : (i32, i64, i64, memref<256xi32>, [i64], i64) -> ()
+            %c4_i32 = constant 4 : i32
+            %27 = index_cast %arg5 : index to i64
+            %28 = index_cast %arg4 : index to i64
+            %29 = index_cast %8 : index to i64
+            %30 = index_cast %9 : index to i64
+            %31 = index_cast %c4096 : index to i64
+            %32 = index_cast %c256 : index to i64
+            %33 = index_cast %c64 : index to i64
+            airrt.dma_memcpy_2d(%c4_i32, %27, %28, %0[%29, %30], %31, %32, %33) : (i32, i64, i64, memref<256x256xi32>, [i64, i64], i64, i64, i64) -> ()
+            memref.dealloc %21 : memref<64x64xi32, 2>
+            memref.dealloc %5 : memref<64x64xi32, 2>
+            memref.dealloc %22 : memref<64xi32, 2>
+            memref.dealloc %6 : memref<64xi32, 2>
+          } {air.herd_launch = "inner"}
+        } {air.herd_launch = "outer"}
+      }
+    } {affine_opt_label = "affine_opt"}
+    %4 = "aten.type_cast"(%0) : (memref<256x256xi32>) -> tensor<256x256xi32>
+    return %4 : tensor<256x256xi32>
+  }
+  func @task1(%arg0: tensor<32x32x32x32xi32>) -> tensor<32x32x32x32xi32> {
+    %c2 = constant 2 : index
+    %0 = memref.alloc() : memref<32x32x32x32xi32>
+    %1 = "aten.type_cast"(%arg0) : (tensor<32x32x32x32xi32>) -> memref<32x32x32x32xi32>
+    %2 = airrt.herd_load "herd_0"() : () -> i32
+    affine.for %arg1 = 0 to 2 {
+      affine.for %arg2 = 0 to 2 {
+        %c0 = constant 0 : index
+        %c1024 = constant 1024 : index
+        %c1_i32 = constant 1 : i32
+        affine.for %arg3 = 0 to 16 {
+          %4 = affine.apply #map1(%arg3)[%arg1]
+          affine.for %arg4 = 0 to 16 {
+            %5 = affine.apply #map1(%arg4)[%arg2]
+            %6 = memref.alloc() : memref<1x1x32x32xi32, 2>
+            %c1_i32_0 = constant 1 : i32
+            %7 = index_cast %arg2 : index to i64
+            %8 = index_cast %arg1 : index to i64
+            %9 = index_cast %4 : index to i64
+            %10 = index_cast %5 : index to i64
+            %11 = index_cast %c0 : index to i64
+            %12 = index_cast %c0 : index to i64
+            %13 = index_cast %c1024 : index to i64
+            %14 = index_cast %c1024 : index to i64
+            %15 = index_cast %c1024 : index to i64
+            airrt.dma_memcpy_4d(%c1_i32_0, %7, %8, %1[%9, %10, %11, %12], %13, %14, %15) : (i32, i64, i64, memref<32x32x32x32xi32>, [i64, i64, i64, i64], i64, i64, i64) -> ()
+            %16 = memref.alloc() : memref<1x1x32x32xi32, 2>
+            affine.for %arg5 = 0 to 2 {
+              affine.for %arg6 = 0 to 2 {
+                affine.for %arg7 = 0 to 16 {
+                  affine.for %arg8 = 0 to 16 {
+                    %26 = affine.load %6[0, 0, %arg7 + %arg5 * 16, %arg8 + %arg6 * 16] : memref<1x1x32x32xi32, 2>
+                    %27 = addi %26, %c1_i32 : i32
+                    affine.store %27, %16[0, 0, %arg7 + %arg5 * 16, %arg8 + %arg6 * 16] : memref<1x1x32x32xi32, 2>
+                  }
+                }
+              }
+            }
+            %c2_i32 = constant 2 : i32
+            %17 = index_cast %arg2 : index to i64
+            %18 = index_cast %arg1 : index to i64
+            %19 = index_cast %4 : index to i64
+            %20 = index_cast %5 : index to i64
+            %21 = index_cast %c0 : index to i64
+            %22 = index_cast %c0 : index to i64
+            %23 = index_cast %c1024 : index to i64
+            %24 = index_cast %c1024 : index to i64
+            %25 = index_cast %c1024 : index to i64
+            airrt.dma_memcpy_4d(%c2_i32, %17, %18, %0[%19, %20, %21, %22], %23, %24, %25) : (i32, i64, i64, memref<32x32x32x32xi32>, [i64, i64, i64, i64], i64, i64, i64) -> ()
+            memref.dealloc %16 : memref<1x1x32x32xi32, 2>
+            memref.dealloc %6 : memref<1x1x32x32xi32, 2>
+          }
+        }
+      } {air.herd_launch = "inner"}
+    } {air.herd_launch = "outer"}
+    %3 = "aten.type_cast"(%0) : (memref<32x32x32x32xi32>) -> tensor<32x32x32x32xi32>
+    return %3 : tensor<32x32x32x32xi32>
+  }
+}
+
