@@ -1,4 +1,5 @@
 // REQUIRES: valid_xchess_license
+// XFAIL: *
 // RUN: xchesscc -p me -P ${CARDANO}/data/cervino/lib -c %S/chess/beefmaker_kernel.cc
 // RUN: air-opt %S/air.mlir -air-to-aie="air-to-aie-output-prefix=./ air-to-aie-row-offset=2 air-to-aie-col-offset=7" -o /dev/null
 // RUN: aiecc.py --sysroot=%VITIS_SYSROOT% aie.cowfactory.mlir --no-xbridge  %S/test.cpp -o %T/test.elf
