@@ -8,11 +8,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: aten-opt %s -air-automatic-tiling="air-label=xten.binary_op" -simplify-affine-structures -cse | FileCheck %s
-// CHECK:   {{.*}} {affine_opt_label = "affine_opt"}{{.*}}affine.for {{.*}} = 0 to 7 {{.*}} {affine_opt_label = "xten.binary_op"}
-// CHECK:   {{.*}} {affine_opt_label = "affine_opt"}{{.*}}affine.for {{.*}} = 0 to 5 {{.*}} {affine_opt_label = "xten.binary_op"}
-// CHECK:   {{.*}}affine.for {{.*}} = 0 to 28 {{.*}} {affine_opt_label = "affine_opt"}
-// CHECK:   {{.*}}affine.for {{.*}} = 0 to 10 {{.*}} {affine_opt_label = "affine_opt"}  
+// RUN: air-opt %s -air-automatic-tiling="air-label=xten.binary_op" -simplify-affine-structures -cse | FileCheck %s
+// CHECK: affine.for {{.*}} = 0 to 28
+// CHECK: affine.for {{.*}} = 0 to 10
+// CHECK: {affine_opt_label = "affine_opt"}
+// CHECK: affine.for {{.*}} = 0 to 7
+// CHECK: affine.for {{.*}} = 0 to 5
+// CHECK: {affine_opt_label = "xten.binary_op"}
 
 module  {
   func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {

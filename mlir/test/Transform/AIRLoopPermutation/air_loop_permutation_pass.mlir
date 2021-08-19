@@ -8,9 +8,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: aten-opt %s -air-loop-permutation="loop-order=4,3,2,1,0 air-label=xten.binary_op" | FileCheck %s
-// CHECK:   {{.*}}affine.for {{.*}} = 0 to 2 {\n            affine.for {{.*}} = 0 to 5{{.*}}{affine_opt_label = "affine_opt"}{{.*}}{affine_opt_label = "xten.binary_op"}
-// CHECK:   {{.*}} {affine_opt_label = "affine_opt"}{{.*}}affine.for {{.*}} = 0 to 5 {\n      affine.for {{.*}} = 0 to 2 {{.*}}{affine_opt_label = "xten.binary_op"}
+// RUN: air-opt %s -air-loop-permutation="loop-order=4,3,2,1,0 air-label=xten.binary_op"  | FileCheck %s
+// CHECK: affine.for {{.*}} = 0 to 2
+// CHECK: affine.for {{.*}} = 0 to 5
+// CHECK: {affine_opt_label = "affine_opt"}
+// CHECK: affine.for {{.*}} = 0 to 5
+// CHECK: affine.for {{.*}} = 0 to 2
+// CHECK: {affine_opt_label = "xten.binary_op"}
 
 #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
 #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
