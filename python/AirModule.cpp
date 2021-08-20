@@ -1,6 +1,6 @@
 #include <pybind11/pybind11.h>
 
-#ifdef AIR_LIBXAIE_ENABLE
+#ifdef AIE_LIBXAIE_ENABLE
 #include <xaiengine.h>
 #endif
 
@@ -9,7 +9,7 @@
 
 namespace py = pybind11;
 
-#ifdef AIR_LIBXAIE_ENABLE
+#ifdef AIE_LIBXAIE_ENABLE
 #define XAIE_NUM_ROWS            8
 #define XAIE_NUM_COLS           50
 #define XAIE_ADDR_ARRAY_OFF     0x800
@@ -20,7 +20,7 @@ namespace py = pybind11;
 
 namespace {
 
-#ifdef AIR_LIBXAIE_ENABLE
+#ifdef AIE_LIBXAIE_ENABLE
 XAieGbl_Config *AieConfigPtr;                              /**< AIE configuration pointer */
 XAieGbl AieInst;                                          /**< AIE global instance */
 XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuration instance */
@@ -128,7 +128,7 @@ PYBIND11_MODULE(_air, m) {
     )pbdoc";
 
     m.def("dma_status", [](int col, int row) {
-#ifdef AIR_LIBXAIE_ENABLE
+#ifdef AIE_LIBXAIE_ENABLE
         size_t aie_base = XAIE_ADDR_ARRAY_OFF << 14;
         XAIEGBL_HWCFG_SET_CONFIG((&AieConfig), XAIE_NUM_ROWS, XAIE_NUM_COLS, XAIE_ADDR_ARRAY_OFF);
         XAieGbl_HwInit(&AieConfig);

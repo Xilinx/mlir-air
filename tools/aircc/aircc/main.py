@@ -133,7 +133,7 @@ def run_flow(opts, tmpdirname):
         cmd += ['--sysroot=%s' % opts.sysroot]
       cmd += ['-I.', f'-I{opts.sysroot}/opt/xaiengine/include']
       cmd += [f'-I{thispath}/../../runtime_lib/airhost/include']
-      cmd += ['-DAIR_LIBXAIE_ENABLE', '-fPIC', '-c']
+      cmd += ['-DAIE_LIBXAIE_ENABLE', '-fPIC', '-c']
       cmd += ['-o', obj_file, cpp_file]
       do_call(cmd)
 

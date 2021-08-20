@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
 
+if(POLICY CMP0074)
+  cmake_policy(SET CMP0074 NEW)
+endif()
+
 if(POLICY CMP0068)
   cmake_policy(SET CMP0068 NEW)
   set(CMAKE_BUILD_WITH_INSTALL_NAME_DIR ON)
@@ -121,7 +125,7 @@ ExternalProject_Add(air_runtime_lib
 		-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
 		-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
 		-Dpybind11_DIR=${pybind11_DIR}
-		-DXILINX_LIBXAIE_DIR=${VitisSysroot}/opt/xaiengine
+    -DLibXAIE_ROOT=${VitisSysroot}/opt/xaiengine
 		${ARM_TOOLCHAIN_OPT}
 	BUILD_ALWAYS true
 	STEP_TARGETS clean build install test
