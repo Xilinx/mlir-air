@@ -10,8 +10,8 @@
 //
 // ===---------------------------------------------------------------------===//
 
-#include "AIRLoopMergingPass.h"
-#include "AIRTilingUtils.h"
+#include "air/Transform/AIRLoopMergingPass.h"
+#include "air/Transform/AIRTilingUtils.h"
 
 #include "mlir/Analysis/AffineAnalysis.h"
 #include "mlir/Analysis/LoopAnalysis.h"
@@ -256,12 +256,3 @@ std::unique_ptr<Pass> createAIRLoopMergingPass() {
 
 } // namespace air
 } // namespace xilinx
-
-void xilinx::air::registerAIRLoopMergingPass() {
-    PassRegistration<AIRLoopMergingPass>(
-      "air-loop-merging",
-      "Reverse of loop tiling");
-}
-
-static PassRegistration<AIRLoopMergingPass>
-    pass("air-loop-merging", "Reverse of loop tiling");

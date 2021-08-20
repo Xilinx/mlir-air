@@ -5,8 +5,10 @@
 #include "air/Transform/AIRAutomaticTilingPass.h"
 #include "air/Transform/AIRHerdAssignPass.h"
 #include "air/Transform/AIRLinalgCodegen.h"
+#include "air/Transform/AIRLoopMergingPass.h"
 #include "air/Transform/AIRLoopPermutationPass.h"
 #include "air/Transform/AIRRegularizeLoopPass.h"
+#include "air/Transform/AIRTilingUtils.h"
 #include "air/Transform/ReturnEliminationPass.h"
 
 namespace xilinx {

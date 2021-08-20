@@ -4,7 +4,9 @@ AffineLoopOptPass.cpp
 AIRAutomaticTilingPass.cpp
 AIRHerdAssignPass.cpp
 AIRLinalgCodegen.cpp
+AIRLoopMergingPass.cpp
 AIRLoopPermutationPass.cpp
+AIRTilingUtils.cpp
 AIRRegularizeLoopPass.cpp
 ReturnEliminationPass.cpp
 

@@ -330,6 +330,7 @@ def AIRLoopPermutation: Pass<"air-loop-permutation", "ModuleOp"> {
 
 def AIRLoopMergingPass: Pass<"air-loop-merging", "ModuleOp"> {
   let summary = "Merge several nested subloops into a single loop";
+  let constructor = "createAIRLoopMergingPass()";
   let description = [{
     This pass transforms several perfectly nested subloops into a single 
     loop. The trip count of the new single loop is the product of all
