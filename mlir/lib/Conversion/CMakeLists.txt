@@ -5,6 +5,7 @@ AIRLoweringPass.cpp
 AIRRtToLLVMPass.cpp
 AIRToAIEPass.cpp
 ATenToXTenPass.cpp
+Passes.cpp
 XTenToAffine.cpp
 XTenToLinalg.cpp
 

@@ -14,10 +14,7 @@
 namespace xilinx {
 namespace air {
 
-using namespace mlir;
-
-#define GEN_PASS_REGISTRATION
-#include "air/Transform/Passes.h.inc"
+void registerTransformPasses();
 
 } // namespace air
 } // namespace xilinx

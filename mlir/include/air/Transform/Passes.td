@@ -5,13 +5,13 @@ include "mlir/Pass/PassBase.td"
 
 def AffineLoopOptPass : Pass<"affine-loop-opt", "ModuleOp"> {
   let summary = "Affine loop transformations";
-  let constructor = "createAffineLoopOptPass()";
+  let constructor = "xilinx::air::createAffineLoopOptPass()";
 }
 
 def AIRAutomaticTiling: Pass<"air-automatic-tiling", "ModuleOp"> {
   let summary = "Tile loop nests manually or automatically with prime"
     " factorization";
-  let constructor = "createAIRAutomaticTilingPass()";
+  let constructor = "xilinx::air::createAIRAutomaticTilingPass()";
   let description = [{
     This pass performs multi-dimensional tiling of loop nests. If the tile 
     sizes are specified in the command line, all loops in loops nests will be 
@@ -147,18 +147,18 @@ def AIRAutomaticTiling: Pass<"air-automatic-tiling", "ModuleOp"> {
 
 def AIRHerdAssign : Pass<"air-herd-assign", "ModuleOp"> {
   let summary = "Transfor affine.for to affine.parallel";
-  let constructor = "createAIRHerdAssignPass()";
+  let constructor = "xilinx::air::createAIRHerdAssignPass()";
 }
 
 def AIRLinalgCodegen : Pass<"air-linalg-codegen", "ModuleOp"> {
   let summary = "AIR codegen strategies for linalg";
-  let constructor = "createAIRLinalgCodegenPass()";
+  let constructor = "xilinx::air::createAIRLinalgCodegenPass()";
 }
 
 def AIRRegularizeLoop: Pass<"air-regularize-loop", "ModuleOp"> {
   let summary = "Move operations inside the innermost loop body to regularize "
     "loop nests";
-  let constructor = "createAIRRegularizeLoopPass()";
+  let constructor = "xilinx::air::createAIRRegularizeLoopPass()";
   let description = [{
     This pass regularizes loop nests by moving intermediate operations between
     subloops in a loop nest inside the innermost loop body. The pass is 
@@ -240,12 +240,12 @@ def AIRRegularizeLoop: Pass<"air-regularize-loop", "ModuleOp"> {
 
 def AIRReturnElimination : Pass<"air-return-elimination", "ModuleOp"> {
   let summary = "Convert functions to return their values with out parameters";
-  let constructor = "createReturnEliminationPass()";
+  let constructor = "xilinx::air::createReturnEliminationPass()";
 }
 
 def AIRLoopPermutation: Pass<"air-loop-permutation", "ModuleOp"> {
   let summary = "Change the loop ordering according to the input mapping";
-  let constructor = "createAIRLoopPermutationPass()";
+  let constructor = "xilinx::air::createAIRLoopPermutationPass()";
   let description = [{
     This pass performs a loop nest reordering according to the input mapping. 
     The i-th loop will be moved from position i -> permMap[i] where the counting 
@@ -330,7 +330,7 @@ def AIRLoopPermutation: Pass<"air-loop-permutation", "ModuleOp"> {
 
 def AIRLoopMergingPass: Pass<"air-loop-merging", "ModuleOp"> {
   let summary = "Merge several nested subloops into a single loop";
-  let constructor = "createAIRLoopMergingPass()";
+  let constructor = "xilinx::air::createAIRLoopMergingPass()";
   let description = [{
     This pass transforms several perfectly nested subloops into a single 
     loop. The trip count of the new single loop is the product of all

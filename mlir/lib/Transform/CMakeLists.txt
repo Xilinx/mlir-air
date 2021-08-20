@@ -8,6 +8,7 @@ AIRLoopMergingPass.cpp
 AIRLoopPermutationPass.cpp
 AIRTilingUtils.cpp
 AIRRegularizeLoopPass.cpp
+Passes.cpp
 ReturnEliminationPass.cpp
 
 DEPENDS
@@ -18,5 +19,4 @@ Core
 
 LINK_LIBS PUBLIC
 AIRUtil
-${air_transform_libs}
 )

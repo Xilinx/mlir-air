@@ -12,9 +12,7 @@
 namespace xilinx {
 namespace air {
 
-/// Generate the code for registering conversion passes.
-#define GEN_PASS_REGISTRATION
-#include "air/Conversion/Passes.h.inc"
+void registerConversionPasses();
 
 } // namespace air
 } // namespace xilinx

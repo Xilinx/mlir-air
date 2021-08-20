@@ -17,11 +17,10 @@
 #include "npcomp/Dialect/ATen/IR/ATenDialect.h"
 #include "npcomp/Dialect/Basicpy/IR/BasicpyDialect.h"
 
-#include "air/Conversion/Passes.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/XTen/XTenDialect.h"
-#include "air/Transform/Passes.h"
+#include "air/InitAll.h"
 
 #include "AIEDialect.h"
 
@@ -30,8 +29,7 @@ using namespace mlir;
 
 int main(int argc, char **argv) {
   registerAllPasses();
-  xilinx::air::registerAIRConversionPasses();
-  xilinx::air::registerAIRTransformPasses();
+  xilinx::air::registerAllPasses();
 
   DialectRegistry registry;
   registerAllDialects(registry);
