@@ -9,7 +9,6 @@ llvm_update_compile_flags(air-opt)
 set(LIBS
   AIRDialect
   AIRRtDialect
-  XTenDialect
   AIRUtil
   AIRConversionPasses
   AIRTransformPasses

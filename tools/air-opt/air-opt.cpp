@@ -19,10 +19,7 @@
 
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
-#include "air/Dialect/XTen/XTenDialect.h"
 #include "air/InitAll.h"
-
-#include "AIEDialect.h"
 
 using namespace llvm;
 using namespace mlir;
@@ -36,9 +33,7 @@ int main(int argc, char **argv) {
   registry.insert<NPCOMP::aten::ATenDialect,
                   NPCOMP::Basicpy::BasicpyDialect,
                   xilinx::air::airDialect,
-                  xilinx::airrt::AIRRtDialect,
-                  xilinx::xten::XTenDialect,
-                  xilinx::AIE::AIEDialect>();
+                  xilinx::airrt::AIRRtDialect>();
 
   return failed(MlirOptMain(argc, argv, "MLIR modular optimizer driver\n",
                             registry,

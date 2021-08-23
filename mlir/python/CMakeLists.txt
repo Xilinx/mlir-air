@@ -23,7 +23,6 @@ target_link_libraries(AIRMLIRPyExt
   AIRInitAll
   AIRDialect
   AIRRtDialect
-  XTenDialect
   AIRUtil
   AIRConversionPasses
   AIRTransformPasses

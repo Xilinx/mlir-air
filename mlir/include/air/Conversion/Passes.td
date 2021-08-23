@@ -18,24 +18,9 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
   let constructor = "xilinx::air::createAIRToAIEPass()";
 }
 
-def ATenToXTen : Pass<"aten-to-xten", "ModuleOp"> {
-  let summary = "Convert ATen dialect to XTen dialect";
-  let constructor = "xilinx::xten::createATenToXTenPass()";
-}
-
 def AIRRtToLLVM : Pass<"airrt-to-llvm", "ModuleOp"> {
   let summary = "Lower AIRRt dialect to LLVM dialect";
   let constructor = "xilinx::airrt::createAIRRtToLLVMPass()";
-}
-
-def XTenToAffine : Pass<"xten-to-affine", "ModuleOp"> {
-  let summary = "Convert XTen dialect to Affine dialect";
-  let constructor = "xilinx::xten::createXTenToAffinePass()";
-}
-
-def XTenToLinalg : Pass<"xten-to-linalg", "ModuleOp"> {
-  let summary = "Convert XTen dialect to Linalg dialect";
-  let constructor = "xilinx::xten::createXTenToLinalgPass()";
 }
 
 #endif

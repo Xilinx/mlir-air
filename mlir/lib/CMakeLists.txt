@@ -13,7 +13,6 @@ add_air_library(AIRInitAll
   AIRTransformPasses
   AIRDialect
   AIRRtDialect
-  XTenDialect
   AIRUtil
   MLIR
   )

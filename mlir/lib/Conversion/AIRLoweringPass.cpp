@@ -33,7 +33,6 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
-#include "air/Dialect/XTen/XTenOps.h"
 #include "air/Util/Util.h"
 
 #define DEBUG_TYPE "air-lowering-pass"
@@ -78,6 +77,7 @@ void unpack_int_list(const Value &op, std::vector<int64_t> &v) {
   }
 }
 
+#ifdef XTEN_DIALECT
 class NoOpConversion_affine : public ConversionPattern {
 public:
   explicit NoOpConversion_affine(MLIRContext *context)
@@ -157,7 +157,7 @@ public:
   }
 };
 
-/// Lower conv2d
+/ Lower conv2d
 class AIRConv2dConversion : public ConversionPattern {
 public:
   explicit AIRConv2dConversion(MLIRContext *context)
@@ -250,7 +250,7 @@ public:
   }
 };
 
-/// Lower conv2d
+/ Lower conv2d
 class AIRConv2dBatchNormReLUConversion : public ConversionPattern {
 public:
   explicit AIRConv2dBatchNormReLUConversion(MLIRContext *context)
@@ -325,6 +325,7 @@ public:
     return success();
   }
 };
+#endif //XTEN_DIALECT
 
 class AIRHerdLaunchConversion : public ConversionPattern {
 public:
@@ -723,11 +724,12 @@ public:
                         AIRDmaMemcpy2dToShimConversion,
                         AIRDmaMemcpy4dToShimConversion>(context);
     }
-    air_patterns.insert<AIRHerdLaunchConversion,
-                        NoOpConversion_affine,
-                        AIRConv2dConversion,
-                        AIRConv2dReLUConversion,
-                        AIRConv2dBatchNormReLUConversion>(context);
+    air_patterns.insert<AIRHerdLaunchConversion>(context);
+    // air_patterns.insert<AIRHerdLaunchConversion,
+    //                     NoOpConversion_affine,
+    //                     AIRConv2dConversion,
+    //                     AIRConv2dReLUConversion,
+    //                     AIRConv2dBatchNormReLUConversion>(context);
 
     mlir::populateFuncOpTypeConversionPattern(air_patterns,
                                               typeConverter);
