@@ -1,1 +1,1 @@
-aiecc.py --sysroot=/group/xrlabs/platforms/pynq-vck190-sysroot/ lineGeneratorStitcher.aie.mlir -I../acdc/aie/runtime_lib/ ../acdc/aie/runtime_lib/test_library.cpp ./test.cpp -o test.elf
+aiecc.py --xbridge --sysroot=/group/xrlabs/platforms/pynq-vck190-sysroot/ lineGeneratorStitcher.aie.mlir -I../../../aie/runtime_lib/ ../../../aie/runtime_lib/test_library.cpp ./test.cpp -o test.elf
