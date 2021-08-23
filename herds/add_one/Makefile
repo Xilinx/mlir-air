@@ -18,10 +18,13 @@ aie_inc.cpp: aie.herd_0.mlir
 				--aie-create-flows --aie-find-flows \
 				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
 
-add_one_tiled_0.mlir: add_one.mlir
-	$(AIR_OPT) -aten-to-xten \
+add_one.affine.mlir: add_one.mlir
+	$(ATEN_OPT) -aten-to-xten \
 				-xten-to-affine \
-				-affine-loop-opt='affine-opt-tile-sizes=64' \
+				-o $@ $<
+
+add_one_tiled_0.mlir: add_one.affine.mlir
+	$(AIR_OPT) -affine-loop-opt='affine-opt-tile-sizes=64' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
@@ -39,13 +42,13 @@ add_one_tiled_2.mlir: add_one_tiled_1.mlir
 				-o $@ $<
 
 add_one.air.mlir: add_one_tiled_2.mlir
-	$(AIR_OPT) -acap-herd-assign=herd-assign-depth=0 \
+	$(AIR_OPT) -air-herd-assign=herd-assign-depth=0 \
 				-affine-to-air \
 				-cse \
 				-o $@ $<
 
 add_one.air.a: add_one.air.mlir
-	aircc.py -o $@ -row-offset=2 -col-offset=7 $<
+	aircc.py --sysroot=${SYSROOT} -o $@ -row-offset=2 -col-offset=7 $<
 
 clean::
 	rm -rf air_project mmult.*mlir* *.elf *.exe *.o *.a *.mlir

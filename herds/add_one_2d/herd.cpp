@@ -1,17 +1,13 @@
 // (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
 
 #include <cassert>
-#include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <thread>
-#include <stdlib.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/mman.h>
 #include <dlfcn.h>
+#include <string>
 
-#include <xaiengine.h>
+#include "air_host.h"
+#include "air_tensor.h"
 
 #include <air_host.h>
 #include <air_tensor.h>
@@ -49,16 +45,16 @@ void mlir_write_buffer_buf7(int index, int32_t value);
 }
 using namespace air::herds::herd_0;
 
+#define INPUT_SIZE 256
+
 int
 main(int argc, char *argv[])
 {
-  uint64_t row = 0;
   uint64_t col = 7;
 
   xaie = air_init_libxaie1();
 
-  // Stomp
-  for (int i=0; i<32*32; i++) {
+  for (int i=0; i<INPUT_SIZE*INPUT_SIZE; i++) {
     mlir_write_buffer_buf0(i, 0x0decaf);
     mlir_write_buffer_buf1(i, 0x1decaf);
     mlir_write_buffer_buf2(i, 0x2decaf);
@@ -77,36 +73,23 @@ main(int argc, char *argv[])
   uint64_t packet_id = wr_idx % q->size;
 
   dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(herd_pkt);
-  herd_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  air_packet_herd_init(herd_pkt, 0, col, 2, /*row=*/2, 2);
+  air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
 
-  //
-  // Set up a 1x3 herd starting 7,0
-  //
+  wr_idx = queue_add_write_index(q, 1);
+  packet_id = wr_idx % q->size;
 
-  herd_pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
-  herd_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
-  herd_pkt->arg[0] |= (1L << 40);
-  herd_pkt->arg[0] |= (7L << 32);
-  herd_pkt->arg[0] |= (3L << 24);
-  herd_pkt->arg[0] |= (0L << 16);
-  
-  herd_pkt->arg[1] = 0;  // Herd ID 0
-  herd_pkt->arg[2] = 0;
-  herd_pkt->arg[3] = 0;
-
-  // dispatch packet
-  signal_create(1, 0, NULL, (signal_t*)&herd_pkt->completion_signal);
-  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-  //signal_store_release((signal_t*)&q->doorbell, wr_idx);
+  dispatch_packet_t *dev_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  air_packet_device_init(dev_pkt, XAIE_NUM_COLS);
+  air_queue_dispatch_and_wait(q, wr_idx, dev_pkt);
 
   tensor_t<int32_t,2> input;
   tensor_t<int32_t,2> output;
 
-  input.shape[0] = input.shape[1] = 256;
+  input.shape[0] = input.shape[1] = INPUT_SIZE;
   input.d = input.aligned = (int32_t*)malloc(sizeof(int32_t)*input.shape[0]*input.shape[1]);
 
-  output.shape[0] = output.shape[1] = 256;
+  output.shape[0] = output.shape[1] = INPUT_SIZE;
   output.d = output.aligned = (int32_t*)malloc(sizeof(int32_t)*output.shape[0]*output.shape[1]);
 
   auto handle = air_module_load_from_file(nullptr);
@@ -118,7 +101,7 @@ main(int argc, char *argv[])
   for (int i=0; i<input.shape[0]*input.shape[1]; i++) {
     input.d[i] = i;
   }
-  for (int i=0; i<16; i++) { 
+  for (int i=0; i<16; i++) {
     int32_t rb0 = mlir_read_buffer_buf0(i);
     int32_t rb1 = mlir_read_buffer_buf1(i);
     int32_t rb2 = mlir_read_buffer_buf2(i);
@@ -135,7 +118,7 @@ main(int argc, char *argv[])
   o = &output;
   graph_fn(i, o);
 
-  for (int i=0; i<16; i++) { 
+  for (int i=0; i<16; i++) {
     int32_t rb0 = mlir_read_buffer_buf0(i);
     int32_t rb1 = mlir_read_buffer_buf1(i);
     int32_t rb2 = mlir_read_buffer_buf2(i);

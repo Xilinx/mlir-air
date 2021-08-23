@@ -18,10 +18,13 @@ aie_inc.cpp: aie.herd_0.mlir
 				--aie-create-flows --aie-find-flows \
 				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
 
-vecmul_tiled_0.mlir: vecmul.mlir
-	$(AIR_OPT) -aten-to-xten \
+vecmul.affine.mlir: vecmul.mlir
+	$(ATEN_OPT) -aten-to-xten \
 				-xten-to-affine \
-				-air-automatic-tiling='air-loop-tile-sizes=64' \
+				-o $@ $<
+
+vecmul_tiled_0.mlir: vecmul.affine.mlir
+	$(AIR_OPT) -air-automatic-tiling='air-loop-tile-sizes=64' \
 				-simplify-affine-structures \
 				-cse \
 				-o $@ $<
@@ -38,7 +41,7 @@ vecmul_tiled_2.mlir: vecmul_tiled_1.mlir
 				-o $@ $<
 
 vecmul_air.mlir: vecmul_tiled_2.mlir
-	$(AIR_OPT) -acap-herd-assign=herd-assign-depth=1 \
+	$(AIR_OPT) -air-herd-assign=herd-assign-depth=1 \
 				-affine-to-air \
 				-cse \
 				-o $@ $<
@@ -58,8 +61,8 @@ aie_ctrl.mlir: vecmul_air.mlir
 	$(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}"\
 				-air-to-std \
 				-airrt-to-llvm \
-				-aten-lowering \
-				-o $@ $<
+				$< | \
+				$(ATEN_OPT) -aten-lowering -o $@ 
 
 aie_ctrl.llvm.mlir: aie_ctrl.mlir
 	$(AIR_OPT) -air-return-elimination \

@@ -12,16 +12,19 @@ all: herd.exe
 mmult.mlir: mmult.py
 	python3 $< > $@ 
 
-mmult.air.mlir: mmult.mlir
-	air-opt  -o $@ $< \
-			-aten-to-xten \
-			-xten-to-linalg \
+mmult.linalg.mlir: mmult.mlir
+	$(ATEN_OPT) -aten-to-xten \
+				-xten-to-linalg \
+				-o $@ $<
+
+mmult.air.mlir: mmult.linalg.mlir
+	$(AIR_OPT)  -o $@ $< \
 			-air-linalg-codegen='herd-size=2,2' \
 			-affine-to-air \
 			-convert-linalg-to-affine-loops
 
 mmult.air.a: mmult.air.mlir
-	aircc.py -o $@ -row-offset=2 -col-offset=7 -v -cc $(CC) $<
+	aircc.py --sysroot=${SYSROOT} -o $@ -row-offset=2 -col-offset=7 -v -cc $(CC) $<
 
 clean::
 	rm -rf air_project mmult.*mlir* *.elf *.exe *.o *.a
