@@ -103,7 +103,7 @@ CallOp AIROutliner::outline(std::vector<mlir::Operation*> ops, std::string fname
         outline_ops.push_back(def);
       else
         outline_args.push_back(v);
-          }
+    }
     outline_ops.push_back(op);
     for (Value v : op->getResults()) {
       outline_rets.push_back(v);
@@ -135,18 +135,21 @@ CallOp AIROutliner::outline(std::vector<mlir::Operation*> ops, std::string fname
   for (auto a : outline_args)
     mapper.map(a, entryBlock.getArgument(idx++));
 
+  SmallVector<Value, 4> rets;
   for (Operation *op : outline_ops) {
     Operation* clone = op->clone(mapper);
     for (auto p : llvm::zip(op->getResults(), clone->getResults()))
       mapper.map(std::get<0>(p), std::get<1>(p));
     entryBlock.push_back(clone);
+    auto results = clone->getResults();
+    rets.append(results.begin(), results.end());
   }
 
   auto builder = OpBuilder(ops[0]);
   auto call = builder.create<CallOp>(loc, function, outline_args);
 
   auto func_builder = OpBuilder::atBlockEnd(&entryBlock);
-  func_builder.create<ReturnOp>(loc, call->getResults());
+  func_builder.create<ReturnOp>(loc, rets);
 
   idx = 0;
   for (auto r : call.getResults()) {
@@ -156,7 +159,6 @@ CallOp AIROutliner::outline(std::vector<mlir::Operation*> ops, std::string fname
     op->erase();
 
   module.push_back(function);
-
   return call;
 }
 
