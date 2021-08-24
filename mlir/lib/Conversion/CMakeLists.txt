@@ -8,6 +8,8 @@ Passes.cpp
 
 DEPENDS
 AIRConversionPassIncGen
+AIRDialect
+AIRRtDialect
 
 LINK_COMPONENTS
 Core

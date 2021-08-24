@@ -6,6 +6,7 @@ add_air_dialect_library(AIRDialect
 
   DEPENDS
   MLIRAIRIncGen
+  MLIRAIROpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   MLIRIR

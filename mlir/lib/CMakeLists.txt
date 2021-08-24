@@ -8,6 +8,10 @@ add_subdirectory(Util)
 add_air_library(AIRInitAll
   InitAll.cpp
 
+  DEPENDS
+  AIRDialect
+  AIRRtDialect
+
   LINK_LIBS
   AIRConversionPasses
   AIRTransformPasses

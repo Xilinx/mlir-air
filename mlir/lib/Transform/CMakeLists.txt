@@ -13,6 +13,8 @@ ReturnEliminationPass.cpp
 
 DEPENDS
 AIRTransformPassIncGen
+AIRDialect
+AIRRtDialect
 
 LINK_COMPONENTS
 Core
