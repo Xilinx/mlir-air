@@ -51,7 +51,8 @@ class CONV2D_NN(nn.Module):
 
 graph = CONV2D_NN()
 
-with builder.capture_function("graph", [i0]) as f:
+params = [p for p in graph.parameters()]
+with builder.capture_function("graph", [i0]+params) as f:
     t2 = graph(i0)
     f.returns([t2])
 

@@ -1,29 +1,10 @@
-# General Makefile for tests
 
-AIE_SRC_DIR = acdc_project
-ARM_SRC_DIR = .
-ARM_OBJ_DIR = .
+include ../config.make
 
-AIE_OPT = aie-opt
-AIE_XLATE = aie-translate
-AIR_OPT = air-opt
+#all: conv2d_air.a test_cpu.exe
+all: test_cpu.exe
 
-AIECC = aiecc.py
-SYSROOT = /group/xrlabs/platforms/pynq-vck190-sysroot/
-CC = clang --target=aarch64-linux-gnu -std=c++11 --sysroot=$(SYSROOT) \
-   -I$(SYSROOT)/opt/xaiengine/include -L$(SYSROOT)/opt/xaiengine/lib -fuse-ld=lld -rdynamic -lxaiengine
-
-uname_p := $(shell uname -p)
-ifeq ($(uname_p),aarch64)
-	CFLAGS += -I/opt/xaiengine/include
-	LDFLAGS += -L/opt/xaiengine/lib
-endif
-
-CFLAGS += -I../../runtime_lib/airhost/include
-
-all: aie_ctrl.so elfs
-
-%.o: %.cpp aie_inc.cpp
+%.o: %.cpp
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 %.exe: $(ARM_OBJ_DIR)/%.o
@@ -39,12 +20,16 @@ all: aie_ctrl.so elfs
 conv2d.mlir: conv2d.py
 	python3 $< > $@
 
+conv2d_affine.mlir: conv2d.mlir
+	$(ATEN_OPT) -aten-to-xten \
+				-xten-to-affine='xten-loop-order=3,0,1,2,4' \
+				-cse \
+				-o $@ $<
+
 # convert to affine loops with the ordering suitable for multiple tilings...
 # first tiling to model L3->L2 tiling associated with each 'logical column' of overlay/herd
-conv2d_tiled_0.mlir: conv2d.mlir
-	$(AIR_OPT) -aten-to-xten \
-				-xten-to-affine='xten-loop-order=3,0,1,2,4' \
-				-affine-loop-opt='affine-opt-tile-sizes=104' \
+conv2d_tiled_0.mlir: conv2d_affine.mlir
+	$(AIR_OPT) -affine-loop-opt='affine-opt-tile-sizes=104' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
@@ -77,80 +62,52 @@ conv2d_tiled_3.mlir: conv2d_tiled_2.mlir
 
 # TODO: workaround to manually move memref allocation/deallocation for L2 tiles inside second loop
 conv2d_tiled_4.mlir: conv2d_tiled_3.mlir
-	sed '/affine.for %arg2 = 0 to 4 {/d' conv2d_tiled_3.mlir > t.mlir; \
-    sed 's/affine.for %arg1 = 0 to 4 {/affine.for %arg1 = 0 to 4 {\n      affine.for %arg2 = 0 to 4 {/' t.mlir > t2.mlir; \
+	sed '/affine.for %arg4 = 0 to 4 {/d' conv2d_tiled_3.mlir > t.mlir; \
+    sed 's/affine.for %arg3 = 0 to 4 {/affine.for %arg3 = 0 to 4 {\n      affine.for %arg4 = 0 to 4 {/' t.mlir > t2.mlir; \
 	sed '/memref.dealloc %7 : memref<1xi32>/d' t2.mlir | sed '/memref.dealloc %6 : memref<1x48x106x416xf32, 2>/d' > t3.mlir; \
 	sed 's/memref.dealloc %10 : memref<1x16x104x416xf32, 2>/memref.dealloc %10 : memref<1x16x104x416xf32, 2>\n      memref.dealloc %7 : memref<1xi32>\n      memref.dealloc %6 : memref<1x48x106x416xf32, 2>/' t3.mlir > conv2d_tiled_4.mlir
 		
 # assign herd/overlay i.e. convert 2 outer loops into affine parallel structure as precursor to lowering to AIE dialect
 conv2d_air_0.mlir: conv2d_tiled_4.mlir
-	$(AIR_OPT) -acap-herd-assign=herd-assign-depth=0 \
+	$(AIR_OPT) -air-herd-assign=herd-assign-depth=0 \
 		        -affine-to-air \
 				-cse \
 				-o $@ $<
 
-# lowering to AIE dialect i.e. conversion of affine parallel structure into 'airrt' structures (module/herd) with corresponding 'metadata' as attributes that describe shim allocations
+conv2d_air.a: conv2d_air_0.mlir
+	aircc.py -o $@ -row-offset=2 -col-offset=7 -v $<
+
+# lowering to AIE dialect i.e. conversion of affine parallel structure into 'aiert' structures (module/herd) with corresponding 'metadata' as attributes that describe shim allocations
 conv2d_aie_0.mlir: conv2d_air_0.mlir
-	$(AIRT_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}" \
+	$(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}" \
 		        -o $@ $<
-
-peano.mlir: aie.mlir
-	$(AIR_OPT) -lower-affine -o $@ $< 
-
-elfs: peano.mlir
-	$(AIECC) --no-xbridge peano.mlir
-
-
-conv2d_aie_ctrl.mlir: conv2d_air_0.mlir
-	$(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}"\
-				-air-to-std \
-				-aten-lowering \
-				-o $@ $<
-
-aie_ctrl.llvm.mlir: aie_ctrl.mlir
-	$(AIR_OPT) -air-return-elimination \
-		--lower-affine \
-		--convert-scf-to-std \
-		--convert-std-to-llvm='emit-c-wrappers'  \
-		-o $@ $<
-
-aie_ctrl.o: aie_ctrl.llvm.mlir
-	mlir-translate --mlir-to-llvmir $< | llc --march=aarch64 --filetype=obj -o $@
-
-aie_ctrl.so: aie_ctrl.o
-	$(CC) -shared $< -o $@
 
 conv2d_cpu.std.mlir: conv2d_air_0.mlir
 	$(AIR_OPT) \
-		-air-to-std='lower-to-cpu=true' -cse \
+		-air-to-std='lower-to-cpu=true' -airrt-to-llvm -cse $< | \
+	$(ATEN_OPT) \
 		-lower-affine -cse \
 		-tensor-constant-bufferize -aten-lowering -finalizing-bufferize \
 		-convert-scf-to-std \
-		-o $@ $<
+		-o $@
 
 
 conv2d_cpu.llvm.mlir: conv2d_cpu.std.mlir
-	$(AIR_OPT) \
-		-airrt-to-llvm \
+	$(ATEN_OPT) \
 		-convert-std-to-llvm='emit-c-wrappers=true' \
 		-lower-to-libaten \
 		-o $@ $<
 
 conv2d_cpu.o: conv2d_cpu.llvm.mlir
-	mlir-translate --mlir-to-llvmir $< | llc --filetype=obj -o $@
+	mlir-translate --mlir-to-llvmir $< | llc -relocation-model=pic --filetype=obj -o $@
 
 test_cpu.o: test_cpu.cpp
-	clang++ $(CFLAGS) -c -o $@ $<
+	clang++ -I$(ACDC_AIR)/runtime_lib/airhost/include -c -o $@ $<
 
 test_cpu.exe: test_cpu.o conv2d_cpu.o
 	clang -o $@ $^ -lstdc++
 
-%.elf: $(AIE_SRC_DIR)/main.cc
-	cd ./$(AIE_SRC_DIR) && \
-	xchessmk $*.prx && \
-	cp work/Release_LLVM/$*.prx/$* ../$*.elf
-
 clean:
 	rm -rf aie_inc.cpp *.o *.exe *.elf ./$(AIE_SRC_DIR)
 	rm -rf aie_ctrl.so aie_ctrl.o
-	rm -rf *.mlir
+	rm -rf *.mlir air_project

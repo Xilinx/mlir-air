@@ -5,7 +5,7 @@
 
 extern "C" {
 
-void _mlir_ciface_graph(tensor_t<float,4> *in, tensor_t<float,4> *out);
+void _mlir_ciface_graph(tensor_t<float,4> *in,  tensor_t<float,4> *weight, tensor_t<float,1> *bias,tensor_t<float,4> *out);
 
 void air_herd_load(char *name) {
   std::cout << "Load herd: " << name << std::endl;
@@ -33,6 +33,8 @@ void air_memcpy4d_4F32_4F32(uint32_t id, uint64_t x, uint64_t y, tensor_t<float,
 int main(int argc, char *argv[])
 {
   tensor_t<float,4> in;
+  tensor_t<float,1> bias;
+  tensor_t<float,4> weight;
   tensor_t<float,4> out;
   
   in.shape[0] = 1;
@@ -41,12 +43,21 @@ int main(int argc, char *argv[])
   in.shape[3] = 416;
   in.d = in.aligned = (float*)malloc(sizeof(float)*in.shape[0]*in.shape[1]*in.shape[2]*in.shape[3]);
 
+  bias.shape[0] = 64;
+  bias.d = bias.aligned = (float*)malloc(sizeof(float)*bias.shape[0]);
+
+  weight.shape[0] = 64;
+  weight.shape[1] = 48;
+  weight.shape[2] = 3;
+  weight.shape[3] = 3;
+  weight.d = weight.aligned = (float*)malloc(sizeof(float)*weight.shape[0]*weight.shape[1]*weight.shape[2]*weight.shape[3]);
+
   out.shape[0] = 1;
   out.shape[1] = 64;
   out.shape[2] = 416;
   out.shape[3] = 416;
   out.d = out.aligned = (float*)malloc(sizeof(float)*out.shape[0]*out.shape[1]*out.shape[2]*out.shape[3]);
 
-  _mlir_ciface_graph(&in, &out);
+  _mlir_ciface_graph(&in, &weight, &bias, &out);
   return EXIT_SUCCESS;
 }
