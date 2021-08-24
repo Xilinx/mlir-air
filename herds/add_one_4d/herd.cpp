@@ -53,7 +53,6 @@ main(int argc, char *argv[])
 
   xaie = air_init_libxaie1();
 
-  // Stomp
   for (int i=0; i<INPUT_SIZE*INPUT_SIZE; i++) {
     mlir_write_buffer_buf0(i, 0x0decaf);
     mlir_write_buffer_buf1(i, 0x1decaf);

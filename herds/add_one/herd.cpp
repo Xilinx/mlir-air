@@ -9,8 +9,6 @@
 #include "air_host.h"
 #include "air_tensor.h"
 
-#include "hsa_defs.h"
-
 #include "test_library.h"
 
 #define INPUT_SIZE 256
@@ -55,7 +53,7 @@ main(int argc, char *argv[])
 
   xaie = air_init_libxaie1();
 
-  ACDC_print_tile_status(xaie->TileInst[7][2]);
+  // ACDC_print_tile_status(xaie->TileInst[7][2]);
 
   // Stomp
   for (int i=0; i<INPUT_SIZE; i++) {
@@ -69,7 +67,7 @@ main(int argc, char *argv[])
     mlir_write_buffer_buf7(i, 0x7decaf);
   }
 
-  ACDC_print_tile_status(xaie->TileInst[7][2]);
+  // ACDC_print_tile_status(xaie->TileInst[7][2]);
 
   // create the queue
   auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
@@ -98,7 +96,7 @@ main(int argc, char *argv[])
   output.shape[0] = INPUT_SIZE;
   output.d = output.aligned = (int32_t*)malloc(sizeof(int32_t)*output.shape[0]);
   
-  auto handle = air_module_load_from_file(nullptr, q);
+  auto handle = air_module_load_from_file(nullptr);
   assert(handle && "failed to open linked air module");
 
   auto graph_fn = (void (*)(void*,void*))dlsym((void*)handle, "_mlir_ciface_myAddOne");
@@ -136,7 +134,7 @@ main(int argc, char *argv[])
     printf(" after %d [7][2] : %08X -> %08X, [8][2] :%08X -> %08X, [7][3] : %08X -> %08X, [8][3] :%08X -> %08X\n", i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7);
   }
 
-  ACDC_print_tile_status(xaie->TileInst[7][2]);
+  // ACDC_print_tile_status(xaie->TileInst[7][2]);
 
   int errors = 0;
   for (int i=0; i<output.shape[0]; i++) {

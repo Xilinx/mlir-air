@@ -9,8 +9,9 @@
 #include "air_host.h"
 #include "air_tensor.h"
 
-#include <air_host.h>
-#include <air_tensor.h>
+#include "test_library.h"
+
+#define INPUT_SIZE 256
 
 namespace {
 
@@ -45,8 +46,6 @@ void mlir_write_buffer_buf7(int index, int32_t value);
 }
 using namespace air::herds::herd_0;
 
-#define INPUT_SIZE 256
-
 int
 main(int argc, char *argv[])
 {
@@ -54,7 +53,7 @@ main(int argc, char *argv[])
 
   xaie = air_init_libxaie1();
 
-  for (int i=0; i<INPUT_SIZE*INPUT_SIZE; i++) {
+  for (int i=0; i<32*32; i++) {
     mlir_write_buffer_buf0(i, 0x0decaf);
     mlir_write_buffer_buf1(i, 0x1decaf);
     mlir_write_buffer_buf2(i, 0x2decaf);
