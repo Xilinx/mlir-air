@@ -88,7 +88,11 @@ def run_flow(opts, tmpdirname):
 
     aie_ctrl = opts.tmpdir+'/aie_ctrl.'+air_mlir_filename
     do_call(['air-opt', aie_ctrl_airrt,
-            '-airrt-to-llvm', '-aten-lowering',
+            '-airrt-to-llvm',
+            '-o', aie_ctrl+".0"])
+
+    do_call(['aten-opt', aie_ctrl+".0",
+            '-aten-lowering',
             '-o', aie_ctrl])
 
     aie_ctrl_llvm = opts.tmpdir+'/llvm.'+air_mlir_filename

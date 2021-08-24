@@ -6,6 +6,7 @@ ARM_OBJ_DIR = .
 AIE_OPT = aie-opt
 AIE_XLATE = aie-translate
 AIR_OPT = air-opt
+ATEN_OPT = aten-opt
 
 AIECC = aiecc.py
 
