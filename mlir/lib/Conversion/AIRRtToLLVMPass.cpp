@@ -461,14 +461,6 @@ public:
     auto module = getOperation();
     auto context = module.getContext();
 
-    LLVMTypeConverter converter(context);
-    converter.addConversion([&](Type type) -> Type {
-      // make all memory spaces zero
-      if (auto memref = type.dyn_cast<MemRefType>())
-        return mlir::MemRefType::get(memref.getShape(), memref.getElementType(), memref.getAffineMaps(), 0);
-      return type;
-    });
-
     OwningRewritePatternList patterns(context);
     patterns.insert<ModuleMetadataToLLVMConversion,
                     HerdLoadToLLVMConversion,
