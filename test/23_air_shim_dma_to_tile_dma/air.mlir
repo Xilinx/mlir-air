@@ -8,6 +8,7 @@ func @graph(%arg0 : memref<256xi32>) -> () {
     %c256 = constant 256 : index
     %buf0 = memref.alloc() : memref<256xi32, 2>
     air.dma_memcpy (%buf0, %ext0, [%c0], [%c0], %c256) {id = 1 : i32}  : (memref<256xi32, 2>, memref<256xi32>, [index], [index], index) -> ()
+    memref.dealloc %buf0  : memref<256xi32, 2>
     air.herd_terminator
   }
   return

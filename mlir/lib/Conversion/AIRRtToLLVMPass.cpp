@@ -428,6 +428,24 @@ public:
   }
 };
 
+class AllocOpLowering : public OpRewritePattern<memref::AllocOp> {
+public:
+  using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::AllocOp op,
+                                PatternRewriter &rewriter) const override {
+
+    auto memrefTy = op.getType();
+    if (op.getType().getMemorySpace() != 0) {
+      auto alloc = rewriter.create<memref::AllocOp>(op.getLoc(), MemRefType::get(memrefTy.getShape(),
+                                            memrefTy.getElementType(), memrefTy.getAffineMaps(), 0));
+      rewriter.replaceOp(op, alloc.getResult());
+      return success();
+    }
+    return failure();
+  }
+};
+
 class AIRRtToLLVM : public PassWrapper<AIRRtToLLVM,
                                        OperationPass<ModuleOp>> {
 
@@ -443,12 +461,21 @@ public:
     auto module = getOperation();
     auto context = module.getContext();
 
-    OwningRewritePatternList patterns(&getContext());
+    LLVMTypeConverter converter(context);
+    converter.addConversion([&](Type type) -> Type {
+      // make all memory spaces zero
+      if (auto memref = type.dyn_cast<MemRefType>())
+        return mlir::MemRefType::get(memref.getShape(), memref.getElementType(), memref.getAffineMaps(), 0);
+      return type;
+    });
+
+    OwningRewritePatternList patterns(context);
     patterns.insert<ModuleMetadataToLLVMConversion,
                     HerdLoadToLLVMConversion,
                     DmaMemcpyToLLVMConversion,
                     DmaMemcpy2dToLLVMConversion,
-                    DmaMemcpy4dToLLVMConversion>(context);
+                    DmaMemcpy4dToLLVMConversion,
+                    AllocOpLowering>(context);
 
     ConversionTarget target(*context);
 
@@ -457,6 +484,10 @@ public:
                           AffineDialect,
                           scf::SCFDialect,
                           memref::MemRefDialect>();
+
+    target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
+      return (op.getType().getMemorySpace() == 0);
+    });
 
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering AIRRt\n");
