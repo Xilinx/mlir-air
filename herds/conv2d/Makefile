@@ -87,7 +87,7 @@ conv2d_cpu.std.mlir: conv2d_air_0.mlir
 		-air-to-std='lower-to-cpu=true' -airrt-to-llvm -cse $< | \
 	$(ATEN_OPT) \
 		-lower-affine -cse \
-		-tensor-constant-bufferize -aten-lowering -finalizing-bufferize \
+		-tensor-constant-bufferize -func-bufferize -finalizing-bufferize \
 		-convert-scf-to-std \
 		-o $@
 
