@@ -461,6 +461,14 @@ public:
     auto module = getOperation();
     auto context = module.getContext();
 
+    LLVMTypeConverter converter(context);
+    converter.addConversion([&](Type type) -> Type {
+      // make all memory spaces zero
+      if (auto memref = type.dyn_cast<MemRefType>())
+        return mlir::MemRefType::get(memref.getShape(), memref.getElementType(), memref.getAffineMaps(), 0);
+      return type;
+    });
+
     OwningRewritePatternList patterns(context);
     patterns.insert<ModuleMetadataToLLVMConversion,
                     HerdLoadToLLVMConversion,
@@ -468,6 +476,8 @@ public:
                     DmaMemcpy2dToLLVMConversion,
                     DmaMemcpy4dToLLVMConversion,
                     AllocOpLowering>(context);
+
+    mlir::populateFuncOpTypeConversionPattern(patterns, converter);
 
     ConversionTarget target(*context);
 
@@ -481,6 +491,10 @@ public:
       return (op.getType().getMemorySpace() == 0);
     });
 
+    target.addDynamicallyLegalOp<FuncOp>([&](FuncOp op) {
+      return converter.isSignatureLegal(op.getType());
+    });
+  
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering AIRRt\n");
       signalPassFailure();
