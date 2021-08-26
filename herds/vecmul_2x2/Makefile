@@ -55,9 +55,8 @@ elfs: peano.mlir
 aie_ctrl.mlir: vecmul_air.mlir
 	$(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}"\
 				-air-to-std \
-				-airrt-to-llvm \
-				$< | \
-				$(ATEN_OPT) -aten-lowering -o $@
+				-airrt-to-llvm -func-bufferize -finalizing-bufferize \
+				-o $@ $<
 
 aie_ctrl.llvm.mlir: aie_ctrl.mlir
 	$(AIR_OPT) -air-return-elimination \
