@@ -51,12 +51,25 @@ conv2d_tiled_2.mlir: conv2d_tiled_1.mlir
 				-cse \
 				-o $@ $<
 
+# permute loops so that 'processing iterations' mapped to MLLib kernels are the inner-most in the loop nest
+# TODO - it seems that loop permutation does NOT work for more that the first 8 loops???? This should be 
+# sufficient for conv2d, but the more general cases should be handled too.
+conv2d_perm_0.mlir: conv2d_tiled_2.mlir
+	$(AIR_OPT) -air-regularize-loop \
+				-air-loop-permutation="loop-order=0,1,2,3,6,7,4,5,8,9,10,11" \
+				-o  $@ $<
+
+# TODO - add label to loop nest since permutation seems to get rid of it...
+conv2d_perm_1.mlir: conv2d_perm_0.mlir
+	cat conv2d_perm_0.mlir | awk 'BEGIN {CURLY = 0; AFFINE = 0} { if ($$1 == "affine.store") AFFINE = 1; if (AFFINE > 0 && $$1 == "}") CURLY += 1; if (CURLY == 12) {print $$0 " {affine_opt_label = \"\"}" ; CURLY = 0}  else print $$0}' > conv2d_perm_1.mlir
+
+
 # copy buffers/memrefs at the 'right' depth to support modeling of DMA transfers
 # TODO: unable to fully control placement of memrefs allocation resulting in 'code' between 
 # first and second affine loop; this code makes these two loops appear not perfectly nested 
 # casuing a failure (crash now) when attempting to assign to a herd. Workaround is to manually
 # move the alloc/DMA code inside second loop (completely valid)
-conv2d_tiled_3.mlir: conv2d_tiled_2.mlir
+conv2d_tiled_3.mlir: conv2d_perm_1.mlir
 	$(AIR_OPT) -affine-loop-opt='affine-opt-copy-depths=1 affine-opt-copy-fast-space=2' \
 		        -o $@ $<
 
@@ -79,8 +92,8 @@ conv2d_air.a: conv2d_air_0.mlir
 
 # lowering to AIE dialect i.e. conversion of affine parallel structure into 'aiert' structures (module/herd) with corresponding 'metadata' as attributes that describe shim allocations
 conv2d_aie_0.mlir: conv2d_air_0.mlir
-	$(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}" \
-		        -o $@ $<
+	$(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}"\
+		-o $@ $<
 
 conv2d_cpu.std.mlir: conv2d_air_0.mlir
 	$(AIR_OPT) \
