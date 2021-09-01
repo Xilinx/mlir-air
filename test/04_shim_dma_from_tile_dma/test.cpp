@@ -12,43 +12,42 @@
 #include <xaiengine.h>
 #include "test_library.h"
 
-#define XAIE_NUM_ROWS            8
-#define XAIE_NUM_COLS           50
-#define XAIE_ADDR_ARRAY_OFF     0x800
+#include "air_host.h"
 
 #define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
 #define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
 
-XAieGbl_Config *AieConfigPtr;	                          /**< AIE configuration pointer */
-XAieGbl AieInst;	                                      /**< AIE global instance */
-XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuration instance */
-XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];  /**< Instantiates AIE array of [XAIE_NUM_COLS] x [XAIE_NUM_ROWS] */
-XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
+#define BRAM_ADDR (AIR_VCK190_SHMEM_BASE+0x4000)
+#define DMA_COUNT 512
 
+namespace {
+
+// global libxaie state
+air_libxaie1_ctx_t *xaie;
+
+#define TileInst (xaie->TileInst)
+#define TileDMAInst (xaie->TileDMAInst)
 #include "aie_inc.cpp"
+#undef TileInst
+#undef TileDMAInst
+
+}
 
 int
 main(int argc, char *argv[])
 {
   auto col = 7;
 
-  size_t aie_base = XAIE_ADDR_ARRAY_OFF << 14;
-  XAIEGBL_HWCFG_SET_CONFIG((&AieConfig), XAIE_NUM_ROWS, XAIE_NUM_COLS, XAIE_ADDR_ARRAY_OFF);
-  XAieGbl_HwInit(&AieConfig);
-  AieConfigPtr = XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
-  XAieGbl_CfgInitialize(&AieInst, &TileInst[0][0], AieConfigPtr);
+  xaie = air_init_libxaie1();
 
   mlir_configure_cores();
   mlir_configure_switchboxes();
   mlir_initialize_locks();
-
   mlir_configure_dmas();
+  //mlir_start_cores();
 
   XAieDma_Shim ShimDmaInst1;
   uint32_t *bram_ptr;
-
-  #define BRAM_ADDR (0x4000+0x020100000000LL)
-  #define DMA_COUNT 512
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd != -1) {
@@ -63,13 +62,15 @@ main(int argc, char *argv[])
   // to the ShimDMA.
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = i+1;
-    mlir_write_buffer_a(i, d);
-//    XAieTile_DmWriteWord(&(TileInst[col][2]), 0x1000+i*4, d);
+    if (i<(DMA_COUNT/2))
+      mlir_write_buffer_a(i, d);
+    else
+      mlir_write_buffer_b(i-(DMA_COUNT/2), d);
   }
 
   // Program the ShimDMA to write from stream to memory
   auto burstlen = 4;
-  XAieDma_ShimInitialize(&(TileInst[col][0]), &ShimDmaInst1);
+  XAieDma_ShimInitialize(&(xaie->TileInst[col][0]), &ShimDmaInst1);
   XAieDma_ShimBdSetAddr(&ShimDmaInst1, 1, HIGH_ADDR((u64)BRAM_ADDR), LOW_ADDR((u64)BRAM_ADDR), sizeof(u32) * DMA_COUNT);
   XAieDma_ShimBdSetAxi(&ShimDmaInst1, 1 , 0, burstlen, 0, 0, XAIE_ENABLE);
   XAieDma_ShimBdWrite(&ShimDmaInst1, 1);
@@ -82,8 +83,8 @@ main(int argc, char *argv[])
   XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_S2MM0, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
 
   // We wrote data, so lets toggle locks 0 and 1
-  XAieTile_LockRelease(&(TileInst[col][2]), 0, 0x1, 0);
-  XAieTile_LockRelease(&(TileInst[col][2]), 1, 0x1, 0);
+  XAieTile_LockRelease(&(xaie->TileInst[col][2]), 0, 0x1, 0);
+  XAieTile_LockRelease(&(xaie->TileInst[col][2]), 1, 0x1, 0);
 
   // Why does this test the pending BDCount, rather than using the locks in the shim?
   auto count = 0;
