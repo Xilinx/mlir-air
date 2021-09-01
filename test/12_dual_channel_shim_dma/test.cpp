@@ -69,7 +69,7 @@ main(int argc, char *argv[])
   // Let's make a buffer that we can transfer in the same BRAM, after the queue of HSA packets
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd == -1)
-    return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
+    return -1;
 
   bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, BRAM_ADDR+(MB_QUEUE_SIZE*64));
   
@@ -167,25 +167,13 @@ main(int argc, char *argv[])
     }
   }
 
-
-
-
-
-
-
-  if (errs == 0)
+  if (errs == 0) {
     printf("PASS!\n");
-  else
-    printf("fail.\n");
-
-  for (int bd=0;bd<16;bd++) {
-    // Take no prisoners.  No regerts
-    // Overwrites the DMA_BDX_Control registers
-    XAieGbl_Write32(xaie->TileInst[7][0].TileAddr + 0x0001D008+(bd*0x14), 0x0);
-    XAieGbl_Write32(xaie->TileInst[7][2].TileAddr + 0x0001D018+(bd*0x20), 0x0);
-    XAieGbl_Write32(xaie->TileInst[7][4].TileAddr + 0x0001D018+(bd*0x20), 0x0);
+    return 0;
   }
-
-
+  else {
+    printf("fail.\n");
+    return -1;
+  }
 
 }

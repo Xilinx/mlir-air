@@ -140,9 +140,11 @@ main(int argc, char *argv[])
 
   if (!errors) {
     printf("PASS!\n");
+    return 0;
   }
   else {
     printf("fail %d/%d.\n", (TILE_SIZE+IMAGE_SIZE-errors), TILE_SIZE+IMAGE_SIZE);
+    return -1;
   }
 
 }

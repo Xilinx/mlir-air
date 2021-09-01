@@ -110,9 +110,13 @@ main(int argc, char *argv[])
   uint32_t d = mlir_read_buffer_buf0(24);
   printf("ID %x\n", d);
 
-  if (d == 0xacdc)
+  if (d == 0xacdc) {
     printf("PASS!\n");
-  else
+    return 0;
+  }
+  else {
     printf("fail.\n");
+    return -1;
+  }
 
 }

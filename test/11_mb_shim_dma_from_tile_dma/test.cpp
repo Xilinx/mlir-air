@@ -119,16 +119,11 @@ main(int argc, char *argv[])
     }
   }
 
-  if (errs == 0)
+  if (errs == 0) {
     printf("PASS!\n");
-  else
+    return 0;
+  } else {
     printf("fail %d/%d.\n",DMA_COUNT-errs, DMA_COUNT);
-
-
-  for (int bd=0;bd<16;bd++) {
-    // Take no prisoners.  No regerts
-    // Overwrites the DMA_BDX_Control registers
-    XAieGbl_Write32(xaie->TileInst[7][0].TileAddr + 0x0001D008+(bd*0x14), 0x0);
-    XAieGbl_Write32(xaie->TileInst[7][2].TileAddr + 0x0001D018+(bd*0x20), 0x0);
+    return -1;
   }
 }

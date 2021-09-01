@@ -2,21 +2,16 @@
 
 include ../config.make
 
-all: herd.exe aie_ctrl.so elfs
+all: herd.exe
 
-%.o: %.cpp aie_inc.cpp
+%.o: %.cpp
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-%.exe: $(ARM_OBJ_DIR)/%.o
-	$(CC) $^ $(LDFLAGS) -o $@
+%.exe: %.o test_library.o  vecmul.air.a
+	$(CC) $(LDFLAGS) -o $@ $< test_library.o -Wl,--whole-archive vecmul.air.a -Wl,--no-whole-archive
 
 vecmul.mlir: vecmul.py
 	python3 $< > $@
-
-aie_inc.cpp: aie.herd_0.mlir
-	$(AIE_OPT) -lower-affine --convert-scf-to-std \
-				--aie-create-flows --aie-find-flows \
-				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
 
 vecmul.affine.mlir: vecmul.mlir
 	$(ATEN_OPT) -aten-to-xten \
@@ -24,7 +19,7 @@ vecmul.affine.mlir: vecmul.mlir
 				-o $@ $<
 
 vecmul_tiled_0.mlir: vecmul.affine.mlir
-	$(AIR_OPT) -air-automatic-tiling='air-loop-tile-sizes=64' \
+	$(AIR_OPT) -air-automatic-tiling='loop-tile-sizes=64' \
 				-simplify-affine-structures \
 				-cse \
 				-o $@ $<
@@ -35,49 +30,19 @@ vecmul_tiled_1.mlir: vecmul_tiled_0.mlir
 				-o $@ $<
 
 vecmul_tiled_2.mlir: vecmul_tiled_1.mlir
-	$(AIR_OPT) -air-automatic-tiling='air-loop-tile-sizes=4,4' \
+	$(AIR_OPT) -air-automatic-tiling='loop-tile-sizes=4,4' \
 				-simplify-affine-structures \
 				-cse \
 				-o $@ $<
 
-vecmul_air.mlir: vecmul_tiled_2.mlir
+vecmul.air.mlir: vecmul_tiled_2.mlir
 	$(AIR_OPT) -air-herd-assign=herd-assign-depth=1 \
 				-affine-to-air \
 				-cse \
 				-o $@ $<
 
-aie.herd_0.mlir: vecmul_air.mlir
-	$(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=./}" $< \
-				-o /dev/null
+vecmul.air.a: vecmul.air.mlir
+	aircc.py -o $@ --sysroot=${SYSROOT} -row-offset=3 -col-offset=20 $<
 
-peano.mlir: aie.herd_0.mlir
-	$(AIR_OPT) -lower-affine -o $@ $<
-
-elfs: peano.mlir
-	$(AIECC) --no-xbridge peano.mlir
-
-
-aie_ctrl.mlir: vecmul_air.mlir
-	$(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}"\
-				-air-to-std \
-				-airrt-to-llvm \
-				$< | \
-				$(ATEN_OPT) -aten-lowering -o $@ 
-
-aie_ctrl.llvm.mlir: aie_ctrl.mlir
-	$(AIR_OPT) -air-return-elimination \
-		--lower-affine \
-		--convert-scf-to-std \
-		--convert-std-to-llvm='emit-c-wrappers'  \
-		-o $@ $<
-
-aie_ctrl.o: aie_ctrl.llvm.mlir
-	mlir-translate --mlir-to-llvmir $< | llc --march=aarch64 --filetype=obj -o $@
-
-aie_ctrl.so: aie_ctrl.o
-	$(CC) -shared $< -o $@
-
-clean:
-	rm -rf aie_inc.cpp *.o *.exe *.elf ./$(AIE_SRC_DIR)
-	rm -rf aie_ctrl.so aie_ctrl.o
-	rm -rf *.mlir
+clean::
+	rm -rf air_project vecmul*mlir* *.elf *.exe *.o *.a

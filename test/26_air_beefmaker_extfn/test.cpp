@@ -178,9 +178,11 @@ main(int argc, char *argv[])
 
   if (!errors) {
     printf("PASS!\n");
+    return 0;
   }
   else {
     printf("fail %d/%d.\n", 4-errors, 4);
+    return -1;
   }
 
 }

@@ -107,9 +107,13 @@ main(int argc, char *argv[])
     }
   }
 
-  if (errs == 0)
+  if (errs == 0) {
     printf("PASS!\n");
-  else
+    return 0;
+  }
+  else {
     printf("fail.\n");
+    return -1;
+  }
 
 }

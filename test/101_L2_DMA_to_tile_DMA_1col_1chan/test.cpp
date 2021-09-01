@@ -351,7 +351,10 @@ int main(int argc, char *argv[])
 
   if (errs) {
     printf("FAIL: %d errors\n", errs);
+    return -1;
   }
-  else
+  else {
     printf("PASS!\n");
+    return 0;
+  }
 }
