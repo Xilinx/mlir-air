@@ -1,3 +1,18 @@
-// RUN: air-opt %S/herd.airrt.mlir -airrt-to-llvm | mlir-translate --mlir-to-llvmir | llc --march=aarch64 --filetype=obj -o %T/herd.o
-// RUN: %ARM_CLANG %S/test.cpp -I%VITIS_SYSROOT%/opt/xaiengine/include -L%VITIS_SYSROOT%/opt/xaiengine/lib -lxaiengine -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp %T/herd.o %airhost_libs% -o %T/test.elf
-// RUN: %run_on_board %T/test.elf
+// RUN: air-opt %S/herd.airrt.mlir -airrt-to-llvm | mlir-translate --mlir-to-llvmir | llc --filetype=obj -o %T/herd.o
+// RUN: clang++ %S/test.cpp %T/herd.o -o %T/test.elf
+// RUN: %T/test.elf | FileCheck %s
+// CHECK: Num Herds: 2
+// CHECK: Herd 0: herd_0
+// CHECK: Shim Channel : id 0, row 0, col 0, channel 1
+// CHECK: Shim Location : id 0, row 0, col 0, column 2
+// CHECK: Shim Channel : id 1, row 0, col 0, channel 2
+// CHECK: Shim Location : id 1, row 0, col 0, column 2
+// CHECK: Shim Channel : id 2, row 0, col 0, channel 3
+// CHECK: Shim Location : id 2, row 0, col 0, column 2
+// CHECK: Herd 1: herd_1
+// CHECK: Shim Channel : id 3, row 1, col 1, channel 4
+// CHECK: Shim Location : id 3, row 1, col 1, column 3
+// CHECK: Shim Channel : id 4, row 1, col 1, channel 5
+// CHECK: Shim Location : id 4, row 1, col 1, column 3
+// CHECK: Shim Channel : id 5, row 1, col 1, channel 6
+// CHECK: Shim Location : id 5, row 1, col 1, column 3
