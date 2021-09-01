@@ -24,8 +24,6 @@
 #define XAIE_NUM_COLS           50
 #define XAIE_ADDR_ARRAY_OFF     0x800
 
-#define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
-#define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
 
 #define MLIR_STACK_OFFSET 4096
 
@@ -34,9 +32,6 @@
 //define some constants, CAREFUL NEED TO MATCH MLIR
 #define LINE_WIDTH 16
 #define HEIGHT 10
-
-#define MAP_SIZE 16UL
-#define MAP_MASK (MAP_SIZE - 1)
 
 namespace {
 
@@ -52,7 +47,7 @@ XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
 
 int main(int argc, char *argv[])
 {
-    printf("test start.\n");
+    printf("lineGeneratorStitcherTwoAIEMultipleBufferElements test start.\n");
 
     size_t aie_base = XAIE_ADDR_ARRAY_OFF << 14;
     XAIEGBL_HWCFG_SET_CONFIG((&AieConfig), XAIE_NUM_ROWS, XAIE_NUM_COLS, XAIE_ADDR_ARRAY_OFF);
@@ -85,15 +80,15 @@ int main(int argc, char *argv[])
 
     for (int i=0; i < HEIGHT; i++){
         for(int j=0; j < LINE_WIDTH; j++)
+            ACDC_check("AFTER", mlir_read_buffer_out(i*LINE_WIDTH+j), i, errors);        
+    }
+
+    for (int i=0; i < HEIGHT; i++){
+        for(int j=0; j < LINE_WIDTH; j++)
             printf("%d ",mlir_read_buffer_out(i*LINE_WIDTH+j));
         printf("\n");       
     }
     
-    for (int i=0; i < HEIGHT; i++){
-        for(int j=0; j < LINE_WIDTH; j++)
-            ACDC_check("AFTER", mlir_read_buffer_out(i*LINE_WIDTH+j), i, errors);        
-    }
-
 
     if (!errors) {
         printf("PASS!\n"); return 0;
