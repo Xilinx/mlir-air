@@ -1,26 +1,14 @@
-# Simplified Makefile for tests
 
-ARM_SRC_DIR = .
-ARM_OBJ_DIR = .
-uname_p := $(shell uname -p)
+SOURCE_FILES = test.cpp
 
-ifeq ($(uname_p),x86_64)
-	CFLAGS = -I../../include
-	LDFLAGS = -L../../lib
-endif
+include ../config.make
+all: aie_inc.cpp test.exe core_7_4.elf
 
-ifeq ($(uname_p),aarch64)
-	CFLAGS = -I/opt/xaiengine/include -I../../lib/include
-	LDFLAGS = -L/opt/xaiengine/lib
-endif
-
-all: test.exe
-
-$(ARM_OBJ_DIR)/%.o: $(ARM_SRC_DIR)/%.cpp
+%.o: %.cpp
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-%.exe: $(ARM_OBJ_DIR)/%.o
-	$(CC) $^ \
+%.exe: %.o
+	$(CC) $< \
 		$(LDFLAGS) \
 		-rdynamic \
 		-lxaiengine \
@@ -29,5 +17,11 @@ $(ARM_OBJ_DIR)/%.o: $(ARM_SRC_DIR)/%.cpp
 		-ldl \
 		-o $@
 
+aie_inc.cpp: aie.mlir
+	aie-opt --aie-create-flows --aie-find-flows --aie-assign-buffer-addresses $^ | aie-translate --aie-generate-xaie -o $@
+
+core_7_4.elf: aie.mlir
+	aiecc.py aie.mlir
+
 clean::
-	rm -rf *.o *.exe 
+	rm -rf *.o *.exe aie_inc.cpp
