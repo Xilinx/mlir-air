@@ -20,6 +20,17 @@ install(TARGETS airhost DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/airhost)
 
 add_subdirectory(include)
 
+# Stuff into the build area:
+add_custom_target(copy-runtime-libs ALL)
+foreach(file ${INSTALLS})
+    add_custom_target(copy-runtime-libs-${file} ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/${file})
+    add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${file}
+                    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/${file}
+                    ${CMAKE_CURRENT_BINARY_DIR}/${file}
+                    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${file})
+    add_dependencies(copy-runtime-libs copy-runtime-libs-${file} )
+endforeach()
+
 # Install files
 set(INSTALLS memory.cpp queue.cpp host.cpp)
 install(FILES ${INSTALLS} DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/airhost)
