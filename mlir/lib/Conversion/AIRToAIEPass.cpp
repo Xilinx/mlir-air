@@ -26,17 +26,23 @@ using namespace xilinx;
 
 namespace {
 
-class LaunchHerdOpConversion : public ConversionPattern {
-public:
-  explicit LaunchHerdOpConversion(MLIRContext *context)
-      : ConversionPattern(air::HerdLaunchOp::getOperationName(), 1, context) {}
-
-  LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value > operands,
-                  ConversionPatternRewriter &rewriter) const override {
-    return success();
+AIE::TileOp getPhysTileOpOrNull(ModuleOp aie_module, int col, int row) {
+  for (auto t : aie_module.getOps<AIE::TileOp>()) {
+    if (t.colIndex() == col && t.rowIndex() == row)
+      return t;
   }
-};
+  return nullptr;
+}
+
+// get tileop using physical coordinates
+AIE::TileOp getPhysTileOp(ModuleOp aie_module, int col, int row) {
+  auto t = getPhysTileOpOrNull(aie_module, col, row);
+  if (t) return t;
+
+  OpBuilder builder(aie_module);
+  builder.setInsertionPointToStart(aie_module.getBody());
+  return builder.create<AIE::TileOp>(UnknownLoc::get(aie_module.getContext()), col, row);
+}
 
 bool isMM2S(AIE::DMAChan channel) {
   if ((channel == AIE::DMAChan::MM2S0) ||
@@ -45,6 +51,88 @@ bool isMM2S(AIE::DMAChan channel) {
   else
     return false;
 }
+
+  struct DMAAllocator {
+
+    std::vector<int> dma_columns;
+    int dma_channels;
+
+    struct allocation_info_t {
+      AIE::TileOp dma_tile;
+      int64_t col;
+      int64_t row;
+      int64_t dma_channel;
+      int64_t tile_channel;
+      std::vector<int32_t> dma_id;
+    };
+
+    std::vector<allocation_info_t> mm2s_allocs, s2mm_allocs;
+
+    DMAAllocator(std::vector<int> cols, int channels)
+      : dma_columns(cols), dma_channels(channels)
+      {
+      }
+
+    AIE::TileOp getTile(ModuleOp aie_module, air::DmaMemcpyInterface &dmaOp, int64_t tile_channel, int64_t col, int64_t row)
+    {
+      auto src_memory_space = dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+      auto dst_memory_space = dmaOp.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+      assert(src_memory_space != dst_memory_space);
+
+      bool isMM2S = (src_memory_space < dst_memory_space);
+      auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
+
+      for (auto &t : *allocs) {
+        if (col == t.col && row == t.row) {
+          for (auto id : t.dma_id)
+            if (dmaOp.getId() == id)
+              return t.dma_tile;
+          if (tile_channel == t.tile_channel) {
+            t.dma_id.push_back(dmaOp.getId());
+            return t.dma_tile;
+          }
+        }
+      }
+      auto dma_col = dma_columns[allocs->size()/dma_channels];
+      auto dma_channel = allocs->size() % dma_channels;
+      auto dma_tile = getPhysTileOp(aie_module, dma_col, 0);
+      allocs->push_back({dma_tile, col, row, (int64_t)dma_channel, tile_channel, {dmaOp.getId()}});
+      LLVM_DEBUG(llvm::outs() << "isMM2S = " << isMM2S << " " << dmaOp.getId() << ", col =" << col << ", row = " << row << ", l2 col =" << dma_col << ", l2 chan =" << dma_channel << "\n");
+
+      return dma_tile;
+    }
+
+    AIE::DMAChan getChannel(ModuleOp aie_module, air::DmaMemcpyInterface &dmaOp, int64_t tile_channel, int64_t col, int64_t row)
+    {
+      auto src_memory_space = dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+      auto dst_memory_space = dmaOp.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+      assert(src_memory_space != dst_memory_space);
+
+      bool isMM2S = (src_memory_space < dst_memory_space);
+      auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
+
+      int64_t chan = -1;
+      for (auto &t : *allocs) {
+        LLVM_DEBUG(llvm::outs() << "gSDC: op " << t.dma_tile << ", col" << t.col << ", row " << t.row << ", chan " << t.dma_channel << "\n");
+        if (col == t.col && row == t.row) {
+          for (auto id : t.dma_id)
+            if (dmaOp.getId() == id)
+              chan = t.dma_channel;
+          if (tile_channel == t.tile_channel) {
+            chan = t.dma_channel;
+          }
+        }
+      }
+      assert(chan != -1);
+
+      LLVM_DEBUG(llvm::outs() << "isMM2S = " << isMM2S << ", col =" << col << ", row = " << row << " chan =" << chan << "\n");
+
+      if (isMM2S)
+        return (AIE::DMAChan)((uint64_t)AIE::DMAChan::MM2S0 + chan);
+      else
+        return (AIE::DMAChan)((uint64_t)AIE::DMAChan::S2MM0 + chan);
+    }
+  };
 
 class AIRToAIEPass : public PassWrapper<AIRToAIEPass,
                                         OperationPass<ModuleOp>> {
@@ -102,19 +190,16 @@ public:
 
     int64_t chan = -1;
 
-    // std::vector<std::tuple<AIE::TileOp, int32_t, int64_t, int64_t, int64_t>> tile_dma_allocs;
     unsigned num_allocs = 0;
     for (auto &t : *all_tile_dma_allocs) {
       if (col == std::get<2>(t) && row == std::get<3>(t)) {
         if (dmaOp.getId() == std::get<1>(t))
           chan = std::get<4>(t);
-        // tile_dma_allocs.push_back(t);
         num_allocs++;
       }
     }
     if (chan == -1) {
       // Need to allocate a new one
-      // chan = tile_dma_allocs.size() % tile_dma_channels;
       chan = num_allocs % tile_dma_channels;
       auto tile = getPhysTileOp(aie_module, col, row);
       all_tile_dma_allocs->push_back({tile, dmaOp.getId(), col, row, chan});
@@ -166,24 +251,6 @@ public:
     return lockOp;
   }
 
-  AIE::TileOp getPhysTileOpOrNull(ModuleOp aie_module, int col, int row) {
-    for (auto t : aie_module.getOps<AIE::TileOp>()) {
-      if (t.colIndex() == col && t.rowIndex() == row)
-        return t;
-    }
-    return nullptr;
-  }
-
-  // get tileop using physical coordinates
-  AIE::TileOp getPhysTileOp(ModuleOp aie_module, int col, int row) {
-    auto t = getPhysTileOpOrNull(aie_module, col, row);
-    if (t) return t;
-
-    OpBuilder builder(aie_module);
-    builder.setInsertionPointToStart(aie_module.getBody());
-    return builder.create<AIE::TileOp>(UnknownLoc::get(aie_module.getContext()), col, row);
-  }
-
   // get tileop using herd-relative coordinates
   AIE::TileOp getTileOp(ModuleOp aie_module, int herd_col, int herd_row) {
     int col = herd_col + AIRToAIEColOffset;
@@ -214,83 +281,6 @@ public:
 
   std::vector<int> l2_dma_cols{7, 8, 9, 10};
   const int l2_dma_channels = 2;
-  
-    // these vectors record shim dma allocations as (AIE.tile, air.memcpy, col, row, shim_channel, tile_channel, id) tuples
-  struct l2_allocation_info_t {
-    AIE::TileOp l2_tile;
-    int64_t col;
-    int64_t row;
-    int64_t l2_channel;
-    int64_t tile_channel;
-    std::vector<int32_t> dma_id;
-  };
-  std::vector<l2_allocation_info_t> l2_dma_S2MM_allocs;
-  std::vector<l2_allocation_info_t> l2_dma_MM2S_allocs;
-
-  AIE::TileOp getL2Tile(ModuleOp aie_module, air::DmaMemcpyInterface &dmaOp, int64_t col, int64_t row)
-  {
-    auto src_memory_space = dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    auto dst_memory_space = dmaOp.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    assert(src_memory_space != dst_memory_space);
-
-    bool isMM2S = (src_memory_space < dst_memory_space);      // This is the shim DMA pushing data into the AIE Array using the MM2S interface
-
-    auto l2_dma_allocs = isMM2S ? &l2_dma_MM2S_allocs : &l2_dma_S2MM_allocs;
-
-    int64_t tile_channel = (int64_t)getTileDMAChannel(aie_module, dmaOp, col, row);
-
-    for (auto &t : *l2_dma_allocs) {
-      if (col == t.col && row == t.row) {
-        for (auto id : t.dma_id)
-          if (dmaOp.getId() == id)
-            return t.l2_tile;
-        if (tile_channel == t.tile_channel) {
-          t.dma_id.push_back(dmaOp.getId());
-          return t.l2_tile;
-        }
-      }
-    }
-    auto l2_col = l2_dma_cols[l2_dma_allocs->size()/l2_dma_channels];
-    auto l2_channel = l2_dma_allocs->size() % l2_dma_channels;
-    auto l2_tile = getPhysTileOp(aie_module, l2_col, 0);
-    l2_dma_allocs->push_back({l2_tile, col, row, (int64_t)l2_channel, tile_channel, {dmaOp.getId()}});
-    LLVM_DEBUG(llvm::outs() << "isMM2S = " << isMM2S << " " << dmaOp.getId() << ", col =" << col << ", row = " << row << ", l2 col =" << l2_col << ", l2 chan =" << l2_channel << "\n");
-
-    return l2_tile;
-  }
-
-  AIE::DMAChan getL2Channel(ModuleOp aie_module, air::DmaMemcpyInterface &dmaOp, int64_t col, int64_t row)
-  {
-    auto src_memory_space = dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    auto dst_memory_space = dmaOp.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    assert(src_memory_space != dst_memory_space);
-
-    bool isMM2S = (src_memory_space < dst_memory_space);
-    auto l2_dma_allocs = isMM2S ? &l2_dma_MM2S_allocs : &l2_dma_S2MM_allocs;
-
-    int64_t tile_channel = (int64_t)getTileDMAChannel(aie_module, dmaOp, col, row);
-
-    int64_t chan = -1;
-    for (auto &t : *l2_dma_allocs) {
-      LLVM_DEBUG(llvm::outs() << "gSDC: op " << t.l2_tile << ", col" << t.col << ", row " << t.row << ", chan " << t.l2_channel << "\n");
-      if (col == t.col && row == t.row) {
-        for (auto id : t.dma_id)
-          if (dmaOp.getId() == id)
-            chan = t.l2_channel;
-        if (tile_channel == t.tile_channel) {
-          chan = t.l2_channel;
-        }
-      }
-    }
-    assert(chan != -1);
-
-    LLVM_DEBUG(llvm::outs() << "isMM2S = " << isMM2S << ", col =" << col << ", row = " << row << " chan =" << chan << "\n");
-
-    if (isMM2S)
-      return (AIE::DMAChan)((uint64_t)AIE::DMAChan::MM2S0 + chan);
-    else
-      return (AIE::DMAChan)((uint64_t)AIE::DMAChan::S2MM0 + chan);
-  }
 
   // std::vector<int> s80_nmu_col_list{0, 0, 1, 1, 0, 0, 1, 1,
   //                                   0, 0, 1, 1, 0, 0, 0, 0,
@@ -301,83 +291,6 @@ public:
   //                                   0, 0};
   std::vector<int> shim_dma_cols{2, 3, 6, 7, 10, 11, 18, 19, 26, 27, 34, 35, 42, 43, 46, 47};
   const int shim_dma_channels = 2;
-  
-    // these vectors record shim dma allocations as (AIE.tile, air.memcpy, col, row, shim_channel, tile_channel, id) tuples
-  struct shim_allocation_info_t {
-    AIE::TileOp shim_tile;
-    int64_t col;
-    int64_t row;
-    int64_t shim_channel;
-    int64_t tile_channel;
-    std::vector<int32_t> dma_id;
-  };
-  std::vector<shim_allocation_info_t> shim_dma_S2MM_allocs;
-  std::vector<shim_allocation_info_t> shim_dma_MM2S_allocs;
-
-  // Return the shim dma TileOp allocated for dmaOp at herd-relative location (col, row)
-  AIE::TileOp getShimDMATile(ModuleOp aie_module, air::DmaMemcpyInterface &dmaOp, int64_t col, int64_t row)
-  {
-    auto src_memory_space = dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    auto dst_memory_space = dmaOp.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    assert(src_memory_space != dst_memory_space);
-
-    bool isMM2S = (src_memory_space < dst_memory_space);      // This is the shim DMA pushing data into the AIE Array using the MM2S interface
-    auto shim_dma_allocs = isMM2S ? &shim_dma_MM2S_allocs : &shim_dma_S2MM_allocs;
-
-    int64_t tile_channel = (int64_t)getTileDMAChannel(aie_module, dmaOp, col, row);
-
-    for (auto &t : *shim_dma_allocs) {
-      if (col == t.col && row == t.row) {
-        for (auto id : t.dma_id)
-          if (dmaOp.getId() == id)
-            return t.shim_tile;
-        if (tile_channel == t.tile_channel) {
-          t.dma_id.push_back(dmaOp.getId());
-          return t.shim_tile;
-        }
-      }
-    }
-    auto shim_col = shim_dma_cols[shim_dma_allocs->size()/shim_dma_channels];
-    auto shim_channel = shim_dma_allocs->size() % shim_dma_channels;
-    auto shim_tile = getPhysTileOp(aie_module, shim_col, 0);
-    shim_dma_allocs->push_back({shim_tile, col, row, (int64_t)shim_channel, tile_channel, {dmaOp.getId()}});
-    LLVM_DEBUG(llvm::outs() << "isMM2S = " << isMM2S << " " << dmaOp.getId() << ", col =" << col << ", row = " << row << ", shim col =" << shim_col << ", shim chan =" << shim_channel << "\n");
-
-    return shim_tile;
-  }
-
-  AIE::DMAChan getShimDMAChannel(ModuleOp aie_module, air::DmaMemcpyInterface &dmaOp, int64_t col, int64_t row)
-  {
-    auto src_memory_space = dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    auto dst_memory_space = dmaOp.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    assert(src_memory_space != dst_memory_space);
-
-    bool isMM2S = (src_memory_space < dst_memory_space);
-    auto shim_dma_allocs = isMM2S ? &shim_dma_MM2S_allocs : &shim_dma_S2MM_allocs;
-
-    int64_t tile_channel = (int64_t)getTileDMAChannel(aie_module, dmaOp, col, row);
-
-    int64_t chan = -1;
-    for (auto &t : *shim_dma_allocs) {
-      LLVM_DEBUG(llvm::outs() << "gSDC: op " << t.shim_tile << ", col" << t.col << ", row " << t.row << ", chan " << t.shim_channel << "\n");
-      if (col == t.col && row == t.row) {
-        for (auto id : t.dma_id)
-          if (dmaOp.getId() == id)
-            chan = t.shim_channel;
-        if (tile_channel == t.tile_channel) {
-          chan = t.shim_channel;
-        }
-      }
-    }
-    assert(chan != -1);
-
-    LLVM_DEBUG(llvm::outs() << "isMM2S = " << isMM2S << ", col =" << col << ", row = " << row << " chan =" << chan << "\n");
-
-    if (isMM2S)
-      return (AIE::DMAChan)((uint64_t)AIE::DMAChan::MM2S0 + chan);
-    else
-      return (AIE::DMAChan)((uint64_t)AIE::DMAChan::S2MM0 + chan);
-  }
 
   void generateShimMuxBoilerplate(ModuleOp aie_module) {
     auto context = aie_module.getContext();
@@ -425,7 +338,8 @@ public:
   }
 
   std::map<AIE::DMAChan, std::vector<Operation *>> getDmaSchedules(AIE::CoreOp core, int x, int y,
-                                                                   lock_allocation_list &lock_allocs,
+                                                                   DMAAllocator &shim_dma_alloc,
+                                                                   DMAAllocator &l2_dma_alloc,
                                                                    std::vector<AIE::TileOp> &shim_dma_inits,
                                                                    std::vector<AIE::TileOp> &l2_dma_tiles,
                                                                    BlockAndValueMapping &remap) {
@@ -441,18 +355,17 @@ public:
       auto loc = o->getLoc();
 
       auto dmaOpIf = cast<air::DmaMemcpyInterface>(o);
-      AIE::DMAChan tile_channel = getTileDMAChannel(aie_module, dmaOpIf,x,y);
-      //AIE::LockOp lockOp = getLockForTileDMA(aie_module, dmaOpIf, lock_allocs, remap, x, y);
-      
+      AIE::DMAChan tile_channel = getTileDMAChannel(aie_module, dmaOpIf, x, y);
+
       int src_space = dmaOpIf.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
       int dst_space = dmaOpIf.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
 
       if ( (src_space == (int)air::MemorySpace::L3 && dst_space == (int)air::MemorySpace::L1) ||
            (src_space == (int)air::MemorySpace::L1 && dst_space == (int)air::MemorySpace::L3) ) {
-        
+
         // copy between L1 and external memory, use shim dma
-        AIE::TileOp shim_tile = getShimDMATile(aie_module, dmaOpIf, x, y);
-        AIE::DMAChan shim_channel = getShimDMAChannel(aie_module, dmaOpIf, x, y);
+        AIE::TileOp shim_tile = shim_dma_alloc.getTile(aie_module, dmaOpIf, (int64_t)tile_channel, x, y);
+        AIE::DMAChan shim_channel = shim_dma_alloc.getChannel(aie_module, dmaOpIf, (int64_t)tile_channel, x, y);
 
         LLVM_DEBUG(llvm::outs() << "Shim channel is " << (uint64_t)shim_channel << " for x=" << x << ", y=" << y << "\n");
 
@@ -485,7 +398,7 @@ public:
         if (((uint64_t)shim_channel >= (uint64_t)AIE::DMAChan::S2MM0) && ((uint64_t)shim_channel < ((uint64_t)AIE::DMAChan::S2MM0 + shim_dma_channels ))) {
           getFlowOp(aie_module,
                     tile, AIE::WireBundle::DMA, (uint32_t)tile_channel-2,
-                    workaround_tile, AIE::WireBundle::South,((uint32_t)shim_channel) % shim_dma_channels);
+                    workaround_tile, AIE::WireBundle::South, ((uint32_t)shim_channel) % shim_dma_channels);
         }
         else {
           getFlowOp(aie_module,
@@ -496,9 +409,10 @@ public:
       }
       else if ( (src_space == (int)air::MemorySpace::L2 && dst_space == (int)air::MemorySpace::L1) ||
                 (src_space == (int)air::MemorySpace::L1 && dst_space == (int)air::MemorySpace::L2) ) {
-          // copy between L1 and L2
-        AIE::TileOp l2_tile = getL2Tile(aie_module, dmaOpIf, x, y);
-        AIE::DMAChan l2_channel = getL2Channel(aie_module, dmaOpIf, x, y);
+        // copy between L1 and L2
+        int64_t tile_channel = (int64_t)getTileDMAChannel(aie_module, dmaOpIf, x, y);
+        AIE::TileOp l2_tile = l2_dma_alloc.getTile(aie_module, dmaOpIf, tile_channel, x, y);
+        AIE::DMAChan l2_channel = l2_dma_alloc.getChannel(aie_module, dmaOpIf, tile_channel, x, y);
 
         OpBuilder builder(aie_module);
         builder.setInsertionPointToEnd(&(aie_module.body().front()));
@@ -517,10 +431,10 @@ public:
           builder.setInsertionPointAfter(workaround_sb);
           l2_dma_tiles.push_back(workaround_tile);
         }
-        if (((uint64_t)l2_channel >= (uint64_t)AIE::DMAChan::S2MM0) && ((uint64_t)l2_channel < ((uint64_t)AIE::DMAChan::S2MM0 + shim_dma_channels ))) {
+        if (((uint64_t)l2_channel >= (uint64_t)AIE::DMAChan::S2MM0) && ((uint64_t)l2_channel < ((uint64_t)AIE::DMAChan::S2MM0 + l2_dma_channels ))) {
           getFlowOp(aie_module,
                     tile, AIE::WireBundle::DMA, (uint32_t)tile_channel-2,
-                    workaround_tile, AIE::WireBundle::South,((uint32_t)l2_channel) % shim_dma_channels);
+                    workaround_tile, AIE::WireBundle::South, ((uint32_t)l2_channel) % shim_dma_channels);
         }
         else {
           getFlowOp(aie_module,
@@ -583,12 +497,21 @@ public:
           builder.setInsertionPointToStart(aie_module.getBody());
 
           air::HerdDim2 herd_size = h.getHerdSizeOperands();
+          if (!isa<ConstantIndexOp>(herd_size.x.getDefiningOp()) ||
+              !isa<ConstantIndexOp>(herd_size.y.getDefiningOp()) ) {
+            llvm::errs() << "Only constant sized herds are supported";
+            return;
+          }
+
           int64_t herd_size_x = cast<ConstantIndexOp>(herd_size.x.getDefiningOp()).getValue();
           int64_t herd_size_y = cast<ConstantIndexOp>(herd_size.y.getDefiningOp()).getValue();
 
           LLVM_DEBUG(llvm::outs() << "Herd Size x=" << herd_size_x << ", y=" << herd_size_y << "\n");
           std::vector<AIE::TileOp> shim_dma_inits;
           std::vector<AIE::TileOp> l2_dma_tiles;
+
+          DMAAllocator shimDmaAlloc(shim_dma_cols, shim_dma_channels);
+          DMAAllocator L2DmaAlloc(shim_dma_cols, shim_dma_channels);
 
           for (auto y = 0; y < herd_size_y; y++) {
             for (auto x = 0; x < herd_size_x; x++) {
@@ -686,7 +609,7 @@ public:
 
               // collect dma operations and generate a schedule
               std::map<AIE::DMAChan, std::vector<Operation *>> tile_dma_copies = 
-                getDmaSchedules(core, x, y, lock_allocs, shim_dma_inits, l2_dma_tiles, remap);
+                getDmaSchedules(core, x, y, shimDmaAlloc, L2DmaAlloc, shim_dma_inits, l2_dma_tiles, remap);
 
               // emit the aquire and release of the L1 buffer locks
               std::unordered_set<Operation*> allocs_to_remap;
@@ -880,11 +803,11 @@ public:
 
           std::vector<Attribute> shim_allocations;
           auto ctx = module.getContext();
-          for (auto &t : shim_dma_S2MM_allocs) {
-            auto tileOp = t.shim_tile;
+          for (auto &t : shimDmaAlloc.s2mm_allocs) {
+            auto tileOp = t.dma_tile;
             int64_t col = t.col;
             int64_t row = t.row;
-            int64_t chan = t.shim_channel;
+            int64_t chan = t.dma_channel;
             for (int64_t id : t.dma_id) {
               SmallVector<NamedAttribute, 5> attrs;
               attrs.push_back(NamedAttribute(Identifier::get("id", ctx),
@@ -900,11 +823,11 @@ public:
               shim_allocations.push_back(DictionaryAttr::get(ctx, attrs));
             }
           }
-          for (auto &t : shim_dma_MM2S_allocs) {
-            auto tileOp = t.shim_tile;
+          for (auto &t : shimDmaAlloc.mm2s_allocs) {
+            auto tileOp = t.dma_tile;
             int64_t col = t.col;
             int64_t row = t.row;
-            int64_t chan = t.shim_channel;
+            int64_t chan = t.dma_channel;
             for (int64_t id : t.dma_id) {
               SmallVector<NamedAttribute, 5> attrs;
               attrs.push_back(NamedAttribute(Identifier::get("id", ctx),
@@ -923,11 +846,6 @@ public:
           auto herd_meta = createHerdMetadata(module_meta, h);
           herd_meta->setAttr("shim_allocations",
                              ArrayAttr::get(ctx, shim_allocations));
-
-          shim_dma_MM2S_allocs.clear();
-          shim_dma_S2MM_allocs.clear();
-          tile_dma_S2MM_allocs.clear();
-          tile_dma_MM2S_allocs.clear();
         }
       });
     }
