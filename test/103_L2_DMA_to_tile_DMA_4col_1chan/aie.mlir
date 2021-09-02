@@ -37,23 +37,23 @@ module {
   AIE.flow(%t91, "South" : 0, %t92, "DMA" : 0)
   AIE.flow(%ta1, "South" : 0, %ta2, "DMA" : 0)
 
-  %buf72_0 = AIE.buffer(%t72) : memref<16xi32>
-  %buf72_1 = AIE.buffer(%t72) : memref<16xi32>
+  %buf72_0 = AIE.buffer(%t72) { sym_name = "a" } : memref<16xi32>
+  %buf72_1 = AIE.buffer(%t72) { sym_name = "b" } : memref<16xi32>
   %l72_0 = AIE.lock(%t72, 0)
   %l72_1 = AIE.lock(%t72, 1)
 
-  %buf82_0 = AIE.buffer(%t82) : memref<16xi32>
-  %buf82_1 = AIE.buffer(%t82) : memref<16xi32>
+  %buf82_0 = AIE.buffer(%t82) { sym_name = "c" } : memref<16xi32>
+  %buf82_1 = AIE.buffer(%t82) { sym_name = "d" } : memref<16xi32>
   %l82_0 = AIE.lock(%t82, 0)
   %l82_1 = AIE.lock(%t82, 1)
 
-  %buf92_0 = AIE.buffer(%t92) : memref<16xi32>
-  %buf92_1 = AIE.buffer(%t92) : memref<16xi32>
+  %buf92_0 = AIE.buffer(%t92) { sym_name = "e" } : memref<16xi32>
+  %buf92_1 = AIE.buffer(%t92) { sym_name = "f" } : memref<16xi32>
   %l92_0 = AIE.lock(%t92, 0)
   %l92_1 = AIE.lock(%t92, 1)
 
-  %bufa2_0 = AIE.buffer(%ta2) : memref<16xi32>
-  %bufa2_1 = AIE.buffer(%ta2) : memref<16xi32>
+  %bufa2_0 = AIE.buffer(%ta2) { sym_name = "g" } : memref<16xi32>
+  %bufa2_1 = AIE.buffer(%ta2) { sym_name = "i" } : memref<16xi32>
   %la2_0 = AIE.lock(%ta2, 0)
   %la2_1 = AIE.lock(%ta2, 1)
 
