@@ -1,3 +1,5 @@
+// (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
+
 module {
     airrt.module_metadata {
         airrt.herd_metadata {

@@ -1,5 +1,4 @@
-
-// aie-opt --aie-create-flows --aie-find-flows %s | aie-translate --aie-generate-xaie
+// (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
 
 module {
   %t70 = AIE.tile(0x7, 0)

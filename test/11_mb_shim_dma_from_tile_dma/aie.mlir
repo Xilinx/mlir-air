@@ -1,7 +1,5 @@
-// RUN: aie-opt --aie-create-flows --aie-find-flows %s | FileCheck %s
-// CHECK: AIE.flow(%2, "DMA" : 0, %0, "DMA" : 0)
+// (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
 
-// aie-opt --aie-create-flows --aie-find-flows %s | aie-translate --aie-generate-xaie 
 
 module {
   %t70 = AIE.tile(7, 0)

@@ -1,3 +1,4 @@
+// (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
 
 module {
   %t72 = AIE.tile(7, 2)

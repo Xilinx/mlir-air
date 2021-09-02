@@ -1,3 +1,5 @@
+// (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
+
 module {
 
 func @foo(%arg0: i32) {

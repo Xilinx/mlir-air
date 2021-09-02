@@ -1,3 +1,5 @@
+// (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
+
 module {
 
 func @graph(%arg0 : memref<32x16xi32>, %arg1 : memref<32x16xi32>) -> () {
