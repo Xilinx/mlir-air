@@ -24,9 +24,9 @@ find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 # Eventually we need to have some configuration options to select LibXAIEV2
 find_package(LibXAIE)
 
-# if(NOT AIE_BINARY_DIR)
-# find_package(AIE REQUIRED CONFIG)
-# endif()
+if(NOT AIE_BINARY_DIR)
+find_package(AIE REQUIRED CONFIG)
+endif()
 
 if(NOT AIR_BINARY_DIR)
 find_package(AIR REQUIRED CONFIG)
@@ -37,6 +37,8 @@ find_package(Vitis)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
+message(STATUS "Using AIEConfig.cmake in: ${AIE_DIR}")
+message(STATUS "Using AIRConfig.cmake in: ${AIR_DIR}")
 
 option(LLVM_INCLUDE_TOOLS "Generate build targets for the LLVM tools." ON)
 option(LLVM_BUILD_TOOLS "Build the LLVM tools. If OFF, just generate build targets." ON)
