@@ -76,7 +76,7 @@ int main(int argc, char *argv[])
 
 
     printf("Waiting to acquire output lock for read ...\n");
-    if(!XAieTile_LockAcquire(&(TileInst[1][3]), 0, 1, LOCK_TIMEOUT)) {
+    if(!XAieTile_LockAcquire(&(TileInst[1][2]), 0, 1, LOCK_TIMEOUT)) {
         printf("ERROR: timeout hit!\n");
     }
 
