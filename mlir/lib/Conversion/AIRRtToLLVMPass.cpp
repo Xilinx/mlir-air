@@ -422,9 +422,9 @@ public:
   {
     auto space = op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt();
     if (space == (int)xilinx::air::MemorySpace::L3)
-      return lowerDmaMemcpy(op, rewriter, "air_shim_memcpy_2d");
+      return lowerDmaMemcpy(op, rewriter, "air_shim_memcpy2d");
     if (space == (int)xilinx::air::MemorySpace::L2)
-      return lowerDmaMemcpy(op, rewriter, "air_L1L2_memcpy_2d");
+      return lowerDmaMemcpy(op, rewriter, "air_L1L2_memcpy2d");
     return failure();
   }
 };
@@ -439,9 +439,9 @@ public:
   {
     auto space = op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt();
     if (space == (int)xilinx::air::MemorySpace::L3)
-      return lowerDmaMemcpy(op, rewriter, "air_shim_memcpy_4d");
+      return lowerDmaMemcpy(op, rewriter, "air_shim_memcpy4d");
     if (space == (int)xilinx::air::MemorySpace::L2)
-      return lowerDmaMemcpy(op, rewriter, "air_L1L2_memcpy_4d");
+      return lowerDmaMemcpy(op, rewriter, "air_L1L2_memcpy4d");
     return failure();
   }
 };
