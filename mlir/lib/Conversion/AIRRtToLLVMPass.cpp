@@ -16,6 +16,7 @@
 
 #include "PassDetail.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
+#include "air/Dialect/AIR/AIRDialect.h"
 
 #define DEBUG_TYPE "airrt-to-llvm-pass"
 
@@ -375,7 +376,9 @@ lowerDmaMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
     tys.push_back(o.getType());
   MemRefType memrefTy = tys[3].cast<MemRefType>();
   tys[3] = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
-                           memrefTy.getElementType());
+                           memrefTy.getElementType(),
+                           memrefTy.getAffineMaps(),
+                           memrefTy.getMemorySpace());
   auto module = op->getParentOfType<ModuleOp>();
 
   auto fnTy = FunctionType::get(ctx, tys, retTys);
@@ -400,7 +403,12 @@ public:
   matchAndRewrite(xilinx::airrt::DmaMemcpyOp op,
                   PatternRewriter &rewriter) const override
   {
-    return lowerDmaMemcpy(op, rewriter, "air_shim_memcpy");
+    auto space = op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+    if (space == (int)xilinx::air::MemorySpace::L3)
+      return lowerDmaMemcpy(op, rewriter, "air_shim_memcpy");
+    if (space == (int)xilinx::air::MemorySpace::L2)
+      return lowerDmaMemcpy(op, rewriter, "air_L1L2_memcpy");
+    return failure();
   }
 };
 
@@ -412,7 +420,12 @@ public:
   matchAndRewrite(xilinx::airrt::DmaMemcpy2dOp op,
                   PatternRewriter &rewriter) const override
   {
-    return lowerDmaMemcpy(op, rewriter, "air_shim_memcpy2d");
+    auto space = op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+    if (space == (int)xilinx::air::MemorySpace::L3)
+      return lowerDmaMemcpy(op, rewriter, "air_shim_memcpy_2d");
+    if (space == (int)xilinx::air::MemorySpace::L2)
+      return lowerDmaMemcpy(op, rewriter, "air_L1L2_memcpy_2d");
+    return failure();
   }
 };
 
@@ -424,7 +437,12 @@ public:
   matchAndRewrite(xilinx::airrt::DmaMemcpy4dOp op,
                   PatternRewriter &rewriter) const override
   {
-    return lowerDmaMemcpy(op, rewriter, "air_shim_memcpy4d");
+    auto space = op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+    if (space == (int)xilinx::air::MemorySpace::L3)
+      return lowerDmaMemcpy(op, rewriter, "air_shim_memcpy_4d");
+    if (space == (int)xilinx::air::MemorySpace::L2)
+      return lowerDmaMemcpy(op, rewriter, "air_L1L2_memcpy_4d");
+    return failure();
   }
 };
 

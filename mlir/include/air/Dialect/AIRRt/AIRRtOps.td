@@ -159,4 +159,28 @@ def AIRRt_DmaMemcpy4dOp: AIRRt_Op<"dma_memcpy_4d", []> {
   }];
 }
 
+def AIRRt_AllocOp: AIRRt_Op<"alloc", []> {
+  let summary = "AIRRt Allocation Op";
+  let arguments = (ins);
+  let results = (outs AnyMemRef:$result);
+  let assemblyFormat = [{
+    attr-dict `:` type($result)
+  }];
+  let description = [{
+    AIRRt Allocation Op
+  }];
+}
+
+def AIRRt_DeallocOp: AIRRt_Op<"dealloc", []> {
+  let summary = "AIRRt Deallocation Op";
+  let arguments = (ins AnyMemRef:$memref);
+  let results = (outs);
+  let assemblyFormat = [{
+    attr-dict $memref `:` type($memref)
+  }];
+  let description = [{
+    AIRRt Deallocation Op
+  }];
+}
+
 #endif // #ifndef AIRRT_OPS

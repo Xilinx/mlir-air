@@ -75,7 +75,7 @@ def air_HerdPipelineOp : air_Op<"pipeline", [HasParent<"HerdLaunchOp">,
   }];
 }
 
-def air_PipelineYieldOp : air_Op<"yield", [HasParent<"HerdPipelineOp">,
+def air_PipelineYieldOp : air_Op<"pipeline_yield", [HasParent<"HerdPipelineOp">,
                                           NoSideEffect, Terminator]>,
     Arguments<(ins Variadic<AnyType>:$opers)>, Results<(outs)> {
   let summary = "Yield for air pipeline regions.";
@@ -85,34 +85,6 @@ def air_PipelineYieldOp : air_Op<"yield", [HasParent<"HerdPipelineOp">,
   }];
   let assemblyFormat = [{
     `(` $opers `)`  attr-dict `->` `(` type($opers) `)`
-  }];
-}
-
-def air_AllocOp: air_Op<"alloc", []>,
-                Results<(outs AnyMemRef)> {
-  let arguments = (
-    ins Variadic<AnyType>:$events
-  );
-
-  let summary = "alloc operator";
-  let description = [{
-    dma operator
-  }];
-//   let extraClassDeclaration = [{
-//     std::map<std::string, uint64_t> getStatistics();
-//   }];
-}
-
-def air_DeallocOp: air_Op<"dealloc", []>,
-                Results<(outs I1:$evt)> {
-  let arguments = (
-    ins AnyMemRef:$memref,
-        Variadic<AnyType>:$events
-  );
-
-  let summary = "dealloc operator";
-  let description = [{
-    dma operator
   }];
 }
 
@@ -245,24 +217,6 @@ def air_DmaMemcpyOp: air_Op<"dma_memcpy", [air_AsyncOpInterface, air_DmaMemcpyIn
   }];
 }
 
-
-def air_DmaCopyOp: air_Op<"copy", []>,
-                Results<(outs I1:$evt)> {
-  let arguments = (
-    ins AnyMemRef:$dst,
-        AnyMemRef:$src,
-        Variadic<AnyType>:$events
-  );
-
-  let summary = "dma operator";
-  let description = [{
-    dma operator
-  }];
-//   let extraClassDeclaration = [{
-//     std::map<std::string, uint64_t> getStatistics();
-//   }];
-}
-
 def air_WaitAllOp: air_Op<"wait_all", []>,
                 Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
   let arguments = (ins Variadic<air_AsyncToken>:$asyncDependencies);
@@ -271,46 +225,9 @@ def air_WaitAllOp: air_Op<"wait_all", []>,
   let description = [{
     dma operator
   }];
-//   let extraClassDeclaration = [{
-//     std::map<std::string, uint64_t> getStatistics();
-//   }];
-
   let assemblyFormat = [{
     custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) attr-dict
   }];
-}
-
-def air_DmaLoadOp: air_Op<"tensor_load", []>,
-                Results<(outs AnyTensor)> {
-  let arguments = (
-    ins AnyMemRef:$memref,
-        Variadic<AnyType>:$events
-  );
-
-  let summary = "dma operator";
-  let description = [{
-    dma operator
-  }];
-//   let extraClassDeclaration = [{
-//     std::map<std::string, uint64_t> getStatistics();
-//   }];
-}
-
-def air_DmaStoreOp: air_Op<"tensor_store", []>,
-                Results<(outs I1:$evt)> {
-  let arguments = (
-    ins AnyMemRef:$memref,
-        AnyTensor:$tensor,
-        Variadic<AnyType>:$events
-  );
-
-  let summary = "dma operator";
-  let description = [{
-    dma operator
-  }];
-//   let extraClassDeclaration = [{
-//     std::map<std::string, uint64_t> getStatistics();
-//   }];
 }
 
 #endif
