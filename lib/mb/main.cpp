@@ -788,19 +788,19 @@ void handle_packet_nd_memcpy(dispatch_packet_t *pkt)
   xil_printf("handle_packet_nd_memcpy\n\r");
   packet_set_active(pkt, true);
 
-  uint16_t memory_space = (pkt->arg[0] >> 16) & 0x00ff;
+  uint16_t memory_space = (pkt->arg[0] >> 16) & 0xffff;
   uint16_t channel      = (pkt->arg[0] >> 24) & 0x00ff;
   uint16_t col          = (pkt->arg[0] >> 32) & 0x00ff;
   uint16_t direction    = (pkt->arg[0] >> 60) & 0x000f;
   uint32_t burst_len    = (pkt->arg[0] >> 52) & 0x00ff;
   uint64_t paddr        =  pkt->arg[1];
-  uint32_t length_1d    = (pkt->arg[2] >>  0) & 0xffff;
-  uint32_t length_2d    = (pkt->arg[2] >> 32) & 0x00ff;
-  uint32_t stride_2d    = (pkt->arg[2] >> 48) & 0x00ff;
-  uint32_t length_3d    = (pkt->arg[3] >>  0) & 0x00ff;
-  uint32_t stride_3d    = (pkt->arg[3] >>  16) & 0x00ff;
-  uint32_t length_4d    = (pkt->arg[3] >> 32) & 0x00ff;
-  uint32_t stride_4d    = (pkt->arg[3] >> 48) & 0x00ff;
+  uint32_t length_1d    = (pkt->arg[2] >>  0) & 0xffffffff;
+  uint32_t length_2d    = (pkt->arg[2] >> 32) & 0x0000ffff;
+  uint32_t stride_2d    = (pkt->arg[2] >> 48) & 0x0000ffff;
+  uint32_t length_3d    = (pkt->arg[3] >>  0) & 0x0000ffff;
+  uint32_t stride_3d    = (pkt->arg[3] >> 16) & 0x0000ffff;
+  uint32_t length_4d    = (pkt->arg[3] >> 32) & 0x0000ffff;
+  uint32_t stride_4d    = (pkt->arg[3] >> 48) & 0x0000ffff;
 
   if (memory_space == 2) {
     // This is the shim DMA
