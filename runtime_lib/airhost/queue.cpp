@@ -130,11 +130,11 @@ hsa_status_t air_packet_nd_memcpy(dispatch_packet_t *pkt, uint16_t herd_id,
   pkt->arg[1]  = phys_addr;
   pkt->arg[2]  = transfer_length1d;
   pkt->arg[2] |= ((uint64_t)transfer_length2d) <<32;
-  pkt->arg[2] |= ((uint64_t)transfer_stride2d) <<32;
+  pkt->arg[2] |= ((uint64_t)transfer_stride2d) <<48;
   pkt->arg[3]  = transfer_length3d;
   pkt->arg[3] |= ((uint64_t)transfer_stride3d) <<16;
   pkt->arg[3] |= ((uint64_t)transfer_length4d) <<32;
-  pkt->arg[3] |= ((uint64_t)transfer_stride4d) <<32;
+  pkt->arg[3] |= ((uint64_t)transfer_stride4d) <<48;
 
   return HSA_STATUS_SUCCESS;
 }
