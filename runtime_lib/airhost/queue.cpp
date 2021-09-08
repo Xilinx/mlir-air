@@ -13,13 +13,16 @@ hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue, uin
   if (fd == -1)
     return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
 
-  uint64_t *bram_ptr = (uint64_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, paddr);
+  uint64_t paddr_aligned = paddr & 0xfffffffffffff000;
+  uint64_t paddr_offset = paddr & 0x0000000000000fff;
+
+  uint64_t *bram_ptr = (uint64_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, paddr_aligned);
 
   //printf("Opened shared memory paddr: %p vaddr: %p\n", paddr, bram_ptr);
-  uint64_t q_paddr = bram_ptr[0];
+  uint64_t q_paddr = bram_ptr[paddr_offset/sizeof(uint64_t)];
   uint64_t q_offset = q_paddr - paddr;
-  queue_t *q = (queue_t*)( ((size_t)bram_ptr) + q_offset );
-  //printf("Queue location at paddr: %p vaddr: %p\n", bram_ptr[0], q);
+  queue_t *q = (queue_t*)( ((size_t)bram_ptr) + q_offset + paddr_offset );
+  //printf("Queue location at paddr: %p vaddr: %p\n", bram_ptr[paddr_offset/sizeof(uint64_t)], q);
 
   if (q->id !=  0xacdc) {
     //printf("%s error invalid id %x\n", __func__, q->id);
@@ -36,7 +39,7 @@ hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue, uin
     return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
   }
 
-  uint64_t base_address_offset = q->base_address - paddr;
+  uint64_t base_address_offset = q->base_address - paddr_aligned;
   q->base_address_vaddr = ((size_t)bram_ptr) + base_address_offset;
 
   *queue = q;

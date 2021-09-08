@@ -12,8 +12,7 @@
 #include "acdc_queue.h"
 #include "hsa_defs.h"
 
-#define SHMEM_BASE 0x020100000000LL
-#define CAPABILITIES_SCRATCH_BASE SHMEM_BASE
+#define CAPABILITIES_SCRATCH_BASE AIR_VCK190_SHMEM_BASE
 
 #define XAIE_NUM_ROWS            8
 #define XAIE_NUM_COLS           50
@@ -40,7 +39,8 @@ int main(int argc, char *argv[])
 
     // create the queue
     queue_t *q = nullptr;
-    auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, SHMEM_BASE+(MB_SHMEM_SEGMENT_SIZE*(controller_id+1)));
+    uint64_t* qaddrs = (uint64_t*)AIR_VCK190_SHMEM_BASE;
+    auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, (uint64_t)&qaddrs[controller_id]);
 
     assert(ret == 0 && "failed to create queue!");
 
@@ -97,7 +97,8 @@ int main(int argc, char *argv[])
     printf("Checked %d controllers, now make them all say hello\n", total_controllers);
     for (int c=0;c<total_controllers;c++) {
       queue_t *q = nullptr;
-      auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, SHMEM_BASE+(MB_SHMEM_SEGMENT_SIZE*(c+1)));
+      uint64_t *qaddrs = (uint64_t*)AIR_VCK190_SHMEM_BASE;
+      auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, (uint64_t)&qaddrs[c]);
 
       assert(ret == 0 && "failed to create queue!");
 
