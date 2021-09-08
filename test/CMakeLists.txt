@@ -109,17 +109,13 @@ add_lit_testsuite(check-air "Running the air board regression tests"
   ARGS "-sv --timeout 30 --time-tests"
   )
 set_target_properties(check-air PROPERTIES FOLDER "Tests")
-  
+
 add_lit_testsuites(AIR_TEST
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
   ARGS "-sv --timeout 30 --time-tests"
-)  
+)
 add_custom_target(build-check-air)
 add_dependencies(check-air build-check-air)
 
-if(EXISTS check-all)
-  add_dependencies(check-all check-air)
-endif()
-
-
+add_dependencies(check-all check-air)
