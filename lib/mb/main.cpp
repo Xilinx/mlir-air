@@ -53,12 +53,12 @@ uint16_t logicalToPhysicalMM2SshimDMAchannelMap[LOGICAL_HERD_DMAS];             
 
 XAieGbl_Config XAieGbl_ConfigTable[XPAR_AIE_NUM_INSTANCES] =
 {
-	{
-		XPAR_AIE_DEVICE_ID,
-		XPAR_AIE_ARRAY_OFFSET,
-		XPAR_AIE_NUM_ROWS,
-		XPAR_AIE_NUM_COLUMNS
-	}
+  {
+    XPAR_AIE_DEVICE_ID,
+    XPAR_AIE_ARRAY_OFFSET,
+    XPAR_AIE_NUM_ROWS,
+    XPAR_AIE_NUM_COLUMNS
+  }
 };
 
 void XAieGbl_HwInit(XAieGbl_HwCfg *CfgPtr)
@@ -222,38 +222,38 @@ int xaie_shim_dma_push_bd(XAieGbl_Tile *tile, int direction, int channel, uint64
   uint32_t start_queue_size_mask_shift;
 
   if (direction == SHIM_DMA_S2MM) {
-    shimDMAchannel += XAIEDMA_SHIM_CHNUM_S2MM0;   
+    shimDMAchannel += XAIEDMA_SHIM_CHNUM_S2MM0;
     xil_printf("\n\r  S2MM Shim DMA start channel %d\n\r", shimDMAchannel);
     status_register_offset = 0x1d160;
     if (channel == 0) {
-      status_mask_shift = 0; 
+      status_mask_shift = 0;
       control_register_offset = 0x1d140;
       start_queue_register_offset = 0x1d144;
-      start_queue_size_mask_shift = 6; 
+      start_queue_size_mask_shift = 6;
     }
     else {
-      status_mask_shift = 2; 
+      status_mask_shift = 2;
       control_register_offset = 0x1d148;
       start_queue_register_offset = 0x1d14c;
-      start_queue_size_mask_shift = 9; 
+      start_queue_size_mask_shift = 9;
 
     }
   }
   else {
-    shimDMAchannel += XAIEDMA_SHIM_CHNUM_MM2S0;   
+    shimDMAchannel += XAIEDMA_SHIM_CHNUM_MM2S0;
     xil_printf("\n\r  MM2S Shim DMA start channel %d\n\r", shimDMAchannel);
     status_register_offset = 0x1d164;
     if (channel == 0) {
-      status_mask_shift = 0; 
+      status_mask_shift = 0;
       control_register_offset = 0x1d150;
       start_queue_register_offset = 0x1d154;
-      start_queue_size_mask_shift = 6; 
+      start_queue_size_mask_shift = 6;
     }
     else {
-      status_mask_shift = 2; 
+      status_mask_shift = 2;
       control_register_offset = 0x1d158;
       start_queue_register_offset = 0x1d15c;
-      start_queue_size_mask_shift = 9; 
+      start_queue_size_mask_shift = 9;
     }
   }
 
@@ -385,7 +385,7 @@ void xaie_device_init(int num_cols)
       XAieGbl_Write32(xaie::ShimTileInst[col].TileAddr + 0x0001D140 + 0x8*ch, 0x01); // Enable channel
     }
     */
-      //XAieDma_ShimInitialize(&xaie::ShimTileInst[col], &xaie::ShimDMAInst[col]);  // We might want to reset ...          
+    //XAieDma_ShimInitialize(&xaie::ShimTileInst[col], &xaie::ShimDMAInst[col]);  // We might want to reset ...
   }
 }
 
@@ -416,8 +416,9 @@ void xaie_herd_init(int col_start, int num_cols, int row_start, int num_rows)
 
 namespace {
 
-uint64_t shmem_base   = 0x020100000000UL;
-  uint64_t base_address;
+uint64_t shmem_base = 0x020100000000UL;
+uint64_t uart_lock_base = shmem_base + 0x20;
+uint64_t base_address;
 
 u32 last_before_hi, last_before_lo, last_after_hi, last_after_lo;
 u32 phase;
@@ -428,16 +429,16 @@ void lock_uart(uint32_t id) {
   bool is_locked = false;
 
   while (!is_locked) {
-    uint32_t status = *(uint32_t *)shmem_base;
+    uint32_t status = *(uint32_t *)uart_lock_base;
     if (status != 1) {
-      *(uint32_t *)(shmem_base + 0x4) = id;
-      *(uint32_t *)shmem_base = 1;
+      *(uint32_t *)(uart_lock_base + 0x4) = id;
+      *(uint32_t *)uart_lock_base = 1;
       // See if they stuck
-      uint32_t status = *(uint32_t *)shmem_base;
-      uint32_t lockee = *(uint32_t *)(shmem_base + 0x04);
+      uint32_t status = *(uint32_t *)uart_lock_base;
+      uint32_t lockee = *(uint32_t *)(uart_lock_base + 0x04);
       if ((status == 1) && (lockee == id)) {
-	xil_printf("MB %02d: ", id);
-	is_locked = true;
+        xil_printf("MB %02d: ", id);
+        is_locked = true;
       }
     }
   }
@@ -446,13 +447,11 @@ void lock_uart(uint32_t id) {
   // This looks unsafe, but its okay as long as we always aquire
   // the lock first
 void unlock_uart() {
-  *(uint32_t *)(shmem_base + 0x4) = 0;
-  *(uint32_t *)shmem_base = 0;
+  *(uint32_t *)(uart_lock_base + 0x4) = 0;
+  *(uint32_t *)uart_lock_base = 0;
 }
 
-  
-  
-  int queue_create(uint32_t size, queue_t **queue, uint32_t mb_id)
+int queue_create(uint32_t size, queue_t **queue, uint32_t mb_id)
 {
   uint64_t queue_address[1] = {base_address + sizeof(dispatch_packet_t)};
   uint64_t queue_base_address[1] = {queue_address[0] + sizeof(dispatch_packet_t)};
@@ -461,8 +460,8 @@ void unlock_uart() {
   xil_printf("base address 0x%llx\n\r", base_address);
   unlock_uart();
 
-  // The address of the queue_t is stored @ base_address
-  memcpy((void*)base_address, (void*)queue_address, sizeof(uint64_t));
+  // The address of the queue_t is stored @ shmem_base[mb_id]
+  memcpy((void*)(((uint64_t*)shmem_base)+mb_id), (void*)queue_address, sizeof(uint64_t));
 
   // Initialize the queue_t
   queue_t q;
@@ -578,9 +577,9 @@ void handle_packet_xaie_lock(dispatch_packet_t *pkt)
   for (u32 col = 0; col < num_cols; col++) {
     for (u32 row = 0; row < num_rows; row++) {
       if (acqrel == 0)
-	xaie_lock_acquire_nb(&xaie::TileInst[start_col+col][start_row+row], lock_id, val);
+        xaie_lock_acquire_nb(&xaie::TileInst[start_col+col][start_row+row], lock_id, val);
       else
-	xaie_lock_release(&xaie::TileInst[start_col+col][start_row+row], lock_id, val);
+        xaie_lock_release(&xaie::TileInst[start_col+col][start_row+row], lock_id, val);
     }
   }
 }
@@ -979,17 +978,17 @@ int main()
 
   // Skip over the system wide shmem area, then find your own
   base_address = shmem_base + (1+mb_id)*MB_SHMEM_SEGMENT_SIZE;
-  
+
   lock_uart(mb_id);
   xil_printf("MB %d firmware %d.%d.%d created on %s at %s GMT\n\r",mb_id,maj,min,ver,__DATE__, __TIME__); 
   unlock_uart();
-  
+
   setup = false;
   //test_stream();
   queue_t *q = nullptr;
   queue_create(MB_QUEUE_SIZE, &q, mb_id);
   lock_uart(mb_id); xil_printf("Created queue @ 0x%llx\n\r", (size_t)q); unlock_uart();
-  
+
   bool done = false;
   int cnt = 0;
   while (!done) {
