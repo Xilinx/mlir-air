@@ -37,7 +37,6 @@ air_libxaie1_ctx_t *xaie;
 #undef TileDMAInst
 
 queue_t *q = nullptr;
-uint32_t *bram_ptr = nullptr;
 
 }
 
@@ -47,15 +46,6 @@ main(int argc, char *argv[])
   auto shim_col = 2;
 
   xaie = air_init_libxaie1();
-
-  int fd = open("/dev/mem", O_RDWR | O_SYNC);
-  if (fd != -1) {
-    bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, (0x4000+AIR_VCK190_SHMEM_BASE));
-    for (int i=0; i<IMAGE_SIZE; i++) {
-      bram_ptr[i] = 0xFFFF1111;
-      bram_ptr[i+IMAGE_SIZE] = 0xeeee2222;
-    }
-  }
 
   for (int i=0; i<TILE_SIZE; i++)
     mlir_write_buffer_scratch_0_0(i,0xfadefade);

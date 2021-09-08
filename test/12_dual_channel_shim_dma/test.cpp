@@ -17,8 +17,6 @@
 #include "acdc_queue.h"
 #include "hsa_defs.h"
 
-#define SHMEM_BASE 0x020100000000LL
-
 namespace {
 
 // global libxaie state
@@ -129,12 +127,9 @@ main(int argc, char *argv[])
 
   air_queue_dispatch_and_wait(q, wr_idx, pkt_d);
 
-
-
-
-
   ACDC_print_dma_status(xaie->TileInst[7][2]);
   ACDC_print_dma_status(xaie->TileInst[7][4]);
+
   uint32_t errs = 0;
   // Let go check the tile memory
   for (int i=0; i<DMA_COUNT; i++) {

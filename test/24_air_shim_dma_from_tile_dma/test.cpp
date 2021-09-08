@@ -32,21 +32,6 @@ queue_t *q = nullptr;
 
 }
 
-extern "C" {
-
-void q_mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length) {
-  uint64_t col = 2;
-
-  uint64_t wr_idx = queue_add_write_index(q, 1);
-  uint64_t packet_id = wr_idx % q->size;
-
-  dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt, 0, col, 0, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000, DMA_COUNT*sizeof(uint32_t), 1, 0, 1, 0, 1, 0);
-  air_queue_dispatch_and_wait(q, wr_idx, pkt);
-}
-
-}
-
 int
 main(int argc, char *argv[])
 {

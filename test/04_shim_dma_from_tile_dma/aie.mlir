@@ -43,8 +43,5 @@ module {
     ^end:
       AIE.end
   }
-  %d70 = AIE.shimDMA(%t70) {
-    AIE.end
-  }
   AIE.flow(%t72, "DMA" : 0, %t71, "South" : 0)
 }
