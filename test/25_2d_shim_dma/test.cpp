@@ -69,7 +69,7 @@ main(int argc, char *argv[])
   tensor_t<uint32_t,2> output;
 
   input.shape[0] = 32; input.shape[1] = 16;
-  input.d = input.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input.shape[0]*input.shape[1]);;
+  input.d = input.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input.shape[0]*input.shape[1]);
 
   output.shape[0] = 32; output.shape[1] = 16;
   output.d = output.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output.shape[0]*output.shape[1]);
