@@ -1,14 +1,19 @@
 # This directory contains examples of the AIR architecture
 ```
 air
+├── cmake                     CMake files
+├── docs                      Additional documentation
 ├── herds                     Example herds
-├── lib                       Runtime libries for ARM and MicroBlaze
+├── mlir                      MLIR dialects and passes
 ├── platforms                 Hardware platforms
 │   └── xilinx_vck190_air
 ├── pynq                      Board repo for building Pynq images
 │   └── vck190_air
+├── python                    Python libraries and bindings
+├── runtime_libs              Runtime libraries for host and controllers
 ├── segment-architecture      Submodule containing AIR IP blocks
-└── test                      testing for AIR components
+├── test                      In hardware tests of AIR components
+└── tools                     aircc.py, air-opt, air-translate
 ```
 
 ## Documentation
