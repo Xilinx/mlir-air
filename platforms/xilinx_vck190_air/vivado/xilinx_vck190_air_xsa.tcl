@@ -61,7 +61,7 @@ if { [string first $scripts_vivado_version $current_vivado_version] == -1 } {
    return 1
 }
 
-set_param board.repoPaths ../../boards/Xilinx/vck190/es/1.1
+set_param board.repoPaths ../../boards/boards/Xilinx/vck190/es/1.4
 
 ################################################################
 # START
@@ -77,7 +77,7 @@ set_param board.repoPaths ../../boards/Xilinx/vck190/es/1.1
 set list_projs [get_projects -quiet]
 if { $list_projs eq "" } {
    create_project project_1 myproj -part xcvc1902-vsva2197-2MP-e-S-es1
-   set_property BOARD_PART xilinx.com:vck190_es:part0:1.1 [current_project]
+   set_property BOARD_PART xilinx.com:vck190_es:part0:1.4 [current_project]
 }
 
 set_property ip_repo_paths {../../../segment-architecture/hardware/dma_subsystem} [current_project]
