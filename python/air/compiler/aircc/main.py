@@ -11,7 +11,7 @@ from subprocess import PIPE, run, call
 from joblib import Parallel, delayed
 import tempfile
 
-import aircc.cl_arguments
+import air.compiler.aircc.cl_arguments as cl_arguments
 
 def emit_wrapper(herd_name="herd", include_name="aie.inc"):
     s = """// generated, do not edit
@@ -159,7 +159,7 @@ def main(builtin_params={}):
     os.environ['PATH'] = air_path + os.pathsep + os.environ['PATH']
 
     global opts
-    opts = aircc.cl_arguments.parse_args()
+    opts = cl_arguments.parse_args()
     is_windows = platform.system() == 'Windows'
 
     if opts.shared:
