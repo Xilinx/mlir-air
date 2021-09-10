@@ -220,84 +220,6 @@ public:
     rewriter.eraseOp(op);
     return success();
   }
-    // mlir::AffineLoadOp load = nullptr;
-    // mlir::AffineStoreOp store = nullptr;
-
-    // for (auto &o : afo.getLoopBody().getOps()) {
-    //   if (isa<AffineLoadOp>(o)) {
-    //     load = cast<AffineLoadOp>(o);
-    //   }
-    //   else if (isa<AffineStoreOp>(o)) {
-    //     store = cast<AffineStoreOp>(o);
-    //   }
-    //   else if (isa<AffineYieldOp>(o)) {
-    //   }
-    //   else {
-    //     llvm::outs() << "FAIL!\n";
-    //     op->print(llvm::outs());
-    //     o.print(llvm::outs());
-    //     return failure();
-    //   }
-    // }
-
-    // llvm::outs() << "HERE!\n";
-    // op->print(llvm::outs());
-
-    // if (!load || !store)
-    //   return failure();
-
-    // if (store.value() != load)
-    //   return failure();
-
-    // auto srcTy = load.memref().getType().cast<mlir::MemRefType>();
-    // auto dstTy = store.memref().getType().cast<mlir::MemRefType>();
-
-    // if (srcTy.getMemorySpace() == 0 && dstTy.getMemorySpace() == 1) {
-    //   // ext -> L2
-    //   // #map7 = affine_map<()[s0] -> (s0 + 32)>
-    //   // affine.for %arg5 = %arg3 to #map7()[%arg3] {
-    //   //   %0 = affine.load %arg1[%arg4, %arg5] : memref<256x256xf32>
-    //   //   affine.store %0, %arg2[-%arg0 + %arg4, -%arg3 + %arg5] : memref<32x32xf32, 1>
-    //   // }
-    //   //air.shim_dma_memcpy(%src,  %dst,  %src_d1, %src_d0, %dst_d1,        %dst_d0, %num)
-    //   //air.shim_dma_memcpy(%arg1, %arg2, %arg4,   %arg3,   -%arg0 + %arg4, 0,       32)
-    //   llvm::outs() << "L3 to L2!\n";
-
-    //   mlir::AffineMap lbm = afo.getLowerBoundMap();
-    //   mlir::AffineMap ubm = afo.getUpperBoundMap();
-
-    //   auto int32Ty = mlir::IntegerType::get(op->getContext(), 32);
-    //   auto attr = mlir::IntegerAttr::get(int32Ty, 0);
-    //   SmallVector<Attribute, 1> attrs{attr};
-    //   SmallVector<Attribute, 2> ints;
-    //   lbm.constantFold(attrs, ints);
-    //   ubm.constantFold(attrs, ints);
-    //   int64_t lower_bound = ints[0].cast<mlir::IntegerAttr>().getInt();
-    //   int64_t upper_bound = ints[1].cast<mlir::IntegerAttr>().getInt();
-
-    //   llvm::outs() << "LB: " << lower_bound << " UB: " << upper_bound << "\n";
-    //   auto loc = op->getLoc();
-    //   auto zero_const = rewriter.create<ConstantIndexOp>(loc, 0);
-    //   auto upper_bound_const = rewriter.create<ConstantIndexOp>(loc, upper_bound);
-    //   SmallVector<Value, 1> deps;
-    //   SmallVector<Type, 1> rets;
-    //   /*auto shim_dma_memcpy =*/ rewriter.create<xilinx::air::DmaMemcpy2d>(loc, rets, deps, load.memref(), store.memref(),
-    //                                                                    load.indices()[0], afo.getLowerBoundOperands()[0],
-    //                                                                    store.indices()[0], zero_const, upper_bound_const);
-    //   // rewriter.eraseOp(load);
-    //   // rewriter.eraseOp(store);
-    //   rewriter.eraseOp(op);
-
-    //   return success();
-    // }
-    // else if (srcTy.getMemorySpace() == 1 || dstTy.getMemorySpace() == 0) {
-    //   // L2 -> ext
-    // }
-    // else {
-    //   return failure();
-    // }
-    // return failure();
-  //}
 };
 
 class AffineParToHerdLaunchConversion : public OpRewritePattern<AffineParallelOp> {
@@ -495,110 +417,6 @@ public:
 struct AffineToAIRPass : public PassWrapper<AffineToAIRPass,
                                             OperationPass<ModuleOp>> {
 
-
-  LogicalResult lower_dma_to_function(StringRef callee, CallOp dma_callOp)
-  {
-    auto module = getOperation();
-    auto funcOp = module.lookupSymbol<mlir::FuncOp>(callee);
-    auto ctx = funcOp.getContext();
-    auto loc = dma_callOp.getLoc();
-
-    assert(callee.startswith("air_dma_copy"));
-    for (auto &bb : funcOp) {
-      for (auto &op : bb) {
-        if (auto forOp = dyn_cast<AffineForOp>(op)) {
-          mlir::AffineLoadOp load = nullptr;
-          mlir::AffineStoreOp store = nullptr;
-
-          for (auto &o : forOp.getLoopBody().getOps()) {
-            if (isa<AffineLoadOp>(o)) {
-              load = cast<AffineLoadOp>(o);
-            }
-            else if (isa<AffineStoreOp>(o)) {
-              store = cast<AffineStoreOp>(o);
-            }
-            else if (isa<AffineYieldOp>(o)) {
-            }
-            else {
-              return failure();
-            }
-          }
-
-
-          if (!load || !store)
-            return failure();
-
-          if (store.value() != load)
-            return failure();
-
-          //auto srcTy = load.memref().getType().cast<mlir::MemRefType>();
-          //auto dstTy = store.memref().getType().cast<mlir::MemRefType>();
-        }
-      }
-    }
-
-    // for now it's all very much hard coded
-    if ( callee.equals("acap_L2_dma_copy_1") ) {
-      auto arg_iter = dma_callOp.arg_operand_begin();
-      // input and output here are relative to the copy
-      auto dim1_idx = *(arg_iter);
-      auto input_operand = *(++arg_iter);
-      auto output_operand = *(++arg_iter);
-      auto dim0_idx = *(++arg_iter);
-      std::string dmafn_name = "acap_L2_dma_copy_arg0";
-      FuncOp dmafn = module.lookupSymbol<FuncOp>(dmafn_name);
-      if (!dmafn) {
-        SmallVector<Type, 4> tys{input_operand.getType(),
-                                 output_operand.getType(),
-                                 dim1_idx.getType(),
-                                 dim0_idx.getType()};
-        SmallVector<Type, 1> retTy{};
-        auto fnTy = FunctionType::get(ctx, tys, retTy);
-        dmafn = FuncOp::create(loc, dmafn_name, fnTy);
-        dmafn.setPrivate();
-        module.push_back(dmafn);
-      } 
-      OpBuilder builder(dma_callOp);
-      SmallVector<Value,4> opers{input_operand, output_operand, dim1_idx, dim0_idx};
-      SmallVector<Type, 1> retTy;
-      builder.create<CallOp>(loc, retTy, builder.getSymbolRefAttr(dmafn_name), opers);
-      dma_callOp.erase();
-      //acap_L2_dma_copy_arg1(&weights);
-    }
-    else if (callee.equals("acap_L2_dma_copy")) {
-      auto arg_iter = dma_callOp.arg_operand_begin();
-      // input and output here are relative to the copy
-      auto dim1_idx = *(arg_iter);
-      auto input_operand = *(++arg_iter);
-      auto dim0_idx = *(++arg_iter);
-      auto output_operand = *(++arg_iter);
-      std::string dmafn_name = "acap_L2_dma_copy_arg1";
-      FuncOp dmafn = module.lookupSymbol<FuncOp>(dmafn_name);
-      if (!dmafn) {
-        SmallVector<Type, 4> tys{input_operand.getType(),
-                                 output_operand.getType(),
-                                 dim1_idx.getType(),
-                                 dim0_idx.getType()};
-        SmallVector<Type, 1> retTy{};
-        auto fnTy = FunctionType::get(ctx, tys, retTy);
-        dmafn = FuncOp::create(loc, dmafn_name, fnTy);
-        dmafn.setPrivate();
-        module.push_back(dmafn);
-      } 
-      OpBuilder builder(dma_callOp);
-      SmallVector<Value,4> opers{input_operand, output_operand, dim1_idx, dim0_idx};
-      SmallVector<Type, 1> retTy;
-      builder.create<CallOp>(loc, retTy, builder.getSymbolRefAttr(dmafn_name), opers);
-      dma_callOp.erase();
-    }
-    return success();
-  }
-
-  LogicalResult lowerDma(StringRef callee, CallOp dma_callOp) {
-    //return lowerDma_pad(callee, dma_callOp);
-    return lower_dma_to_function(callee, dma_callOp);
-  }
-
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
      registry.insert<xilinx::air::airDialect>();
   }
@@ -610,18 +428,6 @@ struct AffineToAIRPass : public PassWrapper<AffineToAIRPass,
     LLVM_DEBUG(llvm::outs() << "input\n");
     LLVM_DEBUG(module.print(llvm::outs()));
 
-    for (auto f : module.getOps<FuncOp>()) {
-      f.walk([&](Operation *op) {
-        if (auto co = dyn_cast<CallOp>(op)) {
-          if (co.getCallee().startswith("air_dma_copy")) {
-            if (failed(lowerDma(co.getCallee(), co)))
-              LLVM_DEBUG(llvm::outs() << "Failed to lower 'air_dma_copy'\n");
-          }
-        }
-      });
-    }
-
-    // tablegen patterns
     OwningRewritePatternList patterns(context);
     patterns.insert<AffineParToHerdLaunchConversion,
                     ScfParToHerdLaunchConversion>(context);
@@ -660,7 +466,7 @@ struct AffineToAIRPass : public PassWrapper<AffineToAIRPass,
 
     OwningRewritePatternList stage3Patterns(context);
     stage3Patterns.insert<AffineCopyToAIRDMAConversion,
-                   LinalgCopyToAIRDmaConversion>(context);
+                          LinalgCopyToAIRDmaConversion>(context);
     if (failed(applyPartialConversion(module, target, std::move(stage3Patterns)))) {
       emitError(UnknownLoc::get(context), "error\n");
       signalPassFailure();
