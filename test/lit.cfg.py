@@ -20,10 +20,13 @@ config.name = 'AIR_TEST'
 
 config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
 config.environment['PYTHONPATH'] \
-    = "{}:{}:{}".format(
+    = "{}:{}:{}:{}:{}:{}".format(
                             os.path.join(config.air_src_root, "python"),
                             os.path.join(config.air_obj_root),
-                            os.path.join(config.air_obj_root, "../install/python")
+                            os.path.join(config.air_obj_root, "../npcomp/python"),
+                            os.path.join(config.air_obj_root, "../peano/python"),
+                            os.path.join(config.air_obj_root, "/python"),
+                            os.path.join(config.air_obj_root, "../air")
                           )
 #os.environ['PYTHONPATH']
 print("Running with PYTHONPATH",config.environment['PYTHONPATH'])
