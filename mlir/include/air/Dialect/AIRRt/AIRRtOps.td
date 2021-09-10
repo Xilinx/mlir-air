@@ -114,13 +114,13 @@ def AIRRt_DmaMemcpyNdOp: AIRRt_Op<"dma_memcpy_nd", []> {
         I64:$offset2,
         I64:$offset1,
         I64:$offset0,
-        I64:$stride3,
-        I64:$stride2,
-        I64:$stride1,
         I64:$length3,
         I64:$length2,
         I64:$length1,
-        I64:$length0
+        I64:$length0,
+        I64:$stride3,
+        I64:$stride2,
+        I64:$stride1
   );
   let results = (outs);
   let assemblyFormat = [{
