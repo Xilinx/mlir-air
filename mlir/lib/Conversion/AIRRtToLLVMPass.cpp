@@ -395,6 +395,44 @@ lowerDmaMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
   return success();
 }
 
+LogicalResult
+lowerDmaNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
+{
+  auto ctx = op->getContext();
+
+  SmallVector<Type, 6> tys;
+  SmallVector<Type, 1> retTys;
+  for (auto o : op->getOperands())
+    tys.push_back(o.getType());
+  MemRefType memrefTy = tys[3].cast<MemRefType>();
+  tys[3] = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
+                           memrefTy.getElementType(),
+                           memrefTy.getAffineMaps(),
+                           memrefTy.getMemorySpace());
+
+  SmallVector<Value, 16> operands = op->getOperands();
+  operands[3] = rewriter.create<memref::CastOp>(op->getLoc(), operands[3], tys[3]);
+
+  // mangle the name by appending '_<rank>d<space><type>'
+  llvm::raw_string_ostream ss(fnName);
+  ss << "_" << memrefTy.getRank();
+  ss << "d" << memrefTy.getMemorySpaceAsInt();
+  memrefTy.getElementType().print(ss);
+
+  auto module = op->getParentOfType<ModuleOp>();
+  auto fn = module.lookupSymbol<FuncOp>(fnName);
+  if (!fn) {
+    auto fnTy = FunctionType::get(ctx, tys, retTys);
+    fn = FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
+    fn.setPrivate();
+    module.push_back(fn);
+  }
+
+  CallOp call = rewriter.create<CallOp>(op->getLoc(), retTys, rewriter.getSymbolRefAttr(fn), operands);
+  rewriter.replaceOp(op, call->getResults());
+  return success();
+}
+
 class DmaMemcpyToLLVMConversion : public OpRewritePattern<xilinx::airrt::DmaMemcpyOp> {
 public:
   using OpRewritePattern<xilinx::airrt::DmaMemcpyOp>::OpRewritePattern;
@@ -446,6 +484,18 @@ public:
   }
 };
 
+class DmaMemcpyNdToLLVMConversion : public OpRewritePattern<xilinx::airrt::DmaMemcpyNdOp> {
+public:
+  using OpRewritePattern<xilinx::airrt::DmaMemcpyNdOp>::OpRewritePattern;
+
+  LogicalResult
+  matchAndRewrite(xilinx::airrt::DmaMemcpyNdOp op,
+                  PatternRewriter &rewriter) const override
+  {
+    return lowerDmaNdMemcpy(op, rewriter, "air_dma_nd_memcpy");
+  }
+};
+
 class AllocOpLowering : public OpRewritePattern<memref::AllocOp> {
 public:
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
@@ -471,7 +521,8 @@ public:
   AIRRtToLLVM() {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-     registry.insert<LLVM::LLVMDialect>();
+     registry.insert<LLVM::LLVMDialect,
+                     memref::MemRefDialect>();
   }
 
   void runOnOperation() override {
@@ -493,6 +544,7 @@ public:
                     DmaMemcpyToLLVMConversion,
                     DmaMemcpy2dToLLVMConversion,
                     DmaMemcpy4dToLLVMConversion,
+                    DmaMemcpyNdToLLVMConversion,
                     AllocOpLowering>(context);
 
     mlir::populateFuncOpTypeConversionPattern(patterns, converter);

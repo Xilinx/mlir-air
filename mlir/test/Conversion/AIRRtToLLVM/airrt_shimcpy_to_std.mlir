@@ -5,6 +5,9 @@
 // CHECK: call @air_shim_memcpy2d(%c4_i32, {{.*}}) : (i32, i64, i64, memref<?x?xi32>, i64, i64, i64, i64, i64) -> ()
 // CHECK: call @air_shim_memcpy4d(%c1_i32_0, {{.*}}) : (i32, i64, i64, memref<?x?x?x?xi32>, i64, i64, i64, i64, i64, i64, i64) -> ()
 // CHECK: call @air_shim_memcpy4d(%c2_i32, {{.*}}) : (i32, i64, i64, memref<?x?x?x?xi32>, i64, i64, i64, i64, i64, i64, i64) -> ()
+// CHECK: call @air_dma_nd_memcpy_2d0i32(
+// CHECK: call @air_dma_nd_memcpy_1d1f32(
+// CHECK: call @air_dma_nd_memcpy_1d0f32(
 #map0 = affine_map<()[s0, s1] -> (s0 * 64 + s1 * 128)>
 #map1 = affine_map<(d0)[s0] -> (d0 + s0 * 16)>
 module  {
@@ -139,5 +142,27 @@ module  {
     %3 = "aten.type_cast"(%0) : (memref<32x32x32x32xi32>) -> tensor<32x32x32x32xi32>
     return %3 : tensor<32x32x32x32xi32>
   }
+  func @ndfoo(%arg0: memref<256x256xi32>, %arg1: memref<256xf32>) {
+    %L2 = airrt.alloc : memref<512xf32, 1>
+    affine.for %arg2 = 0 to 1 {
+      affine.for %arg3 = 0 to 1 {
+        %c16 = constant 16 : index
+        %c0_i64 = constant 0 : i64
+        %c1_i64 = constant 1 : i64
+        %c1_i32 = constant 1 : i32
+        %c2_i32 = constant 2 : i32
+        %c128_i64 = constant 128 : i64
+        %c256_i64 = constant 256 : i64
+        %0 = index_cast %arg3 : index to i64
+        %1 = index_cast %arg2 : index to i64
+        %2 = index_cast %c16 : index to i64
+        airrt.dma_memcpy_nd(%c1_i32, %0, %1, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %2, %2], [%c0_i64, %c0_i64, %c256_i64]) : (i32, i64, i64, memref<256x256xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) -> ()
+        airrt.dma_memcpy_nd(%c2_i32, %0, %1, %L2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %2, %2], [%c0_i64, %c0_i64, %c128_i64]) {attr = "attr"} : (i32, i64, i64, memref<512xf32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) -> ()
+        airrt.dma_memcpy_nd(%c2_i32, %0, %1, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %2, %2], [%c0_i64, %c0_i64, %c128_i64]) : (i32, i64, i64, memref<256xf32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) -> ()
+      } {air.herd_launch = "inner"}
+    } {air.herd_launch = "outer"}
+    return
+  }
+
 }
 

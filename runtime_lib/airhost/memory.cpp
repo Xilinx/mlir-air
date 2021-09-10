@@ -307,6 +307,23 @@ void air_shim_memcpy_queue_impl(uint32_t id, uint64_t x, uint64_t y, void* t, ui
   }
 }
 
+template<typename T>
+void air_mem_dma_nd_memcpy_impl(uint32_t id, uint64_t x, uint64_t y, T* t, uint32_t space,
+                                uint64_t offset_3, uint64_t offset_2, uint64_t offset_1, uint64_t offset_0,
+                                uint64_t length_3, uint64_t length_2, uint64_t length_1, uint64_t length_0,
+                                uint64_t stride_2, uint64_t stride_1, uint64_t stride_0) {
+                              
+  //auto shim_desc = _air_host_active_herd.herd_desc->shim_desc;
+  auto dma_col = -1;//shim_location_data(shim_desc, id-1, x, y);
+  auto dma_chan = -1;//shim_channel_data(shim_desc, id-1, x, y);
+
+  //tensor_t<uint32_t,2> *tt = (tensor_t<uint32_t,2> *)t;
+
+  printf("Do transfer %p with id %d on behalf of x=%ld, y=%ld dma col %d channel %d, space %d, offset [%ld,%ld,%ld,%ld], length [%ld,%ld,%ld,%ld], stride [%ld,%ld,%ld]\n",
+         t->d, id, x, y, dma_col, dma_chan, space,
+         offset_3, offset_2, offset_1, offset_0,
+         length_3, length_2, length_1, length_0,
+         stride_2, stride_1, stride_0);
 }
 
 extern "C"  {
@@ -330,4 +347,29 @@ void _mlir_ciface_air_shim_memcpy4d(uint32_t id, uint64_t x, uint64_t y, void* t
                                     uint64_t length, uint64_t stride, uint64_t elem_per_stride) {
   air_mem_shim_memcpy4d_impl(id, x, y, t, offset_3, offset_2, offset_1, offset_0, length, stride, elem_per_stride);
 }
+
+#define mlir_air_dma_nd_memcpy(mangle, rank, space, type) \
+void _mlir_ciface_air_dma_nd_memcpy_##mangle( \
+  uint32_t id, uint64_t x, uint64_t y, void* t, \
+  uint64_t offset_3, uint64_t offset_2, uint64_t offset_1, uint64_t offset_0, \
+  uint64_t length_3, uint64_t length_2, uint64_t length_1, uint64_t length_0, \
+  uint64_t stride_2, uint64_t stride_1, uint64_t stride_0) \
+{ \
+  tensor_t<type, rank> *tt = (tensor_t<type, rank>*)t; \
+  air_mem_dma_nd_memcpy_impl(id, x, y, tt, space, \
+                             offset_3, offset_2, offset_1, offset_0, \
+                             length_3, length_2, length_1, length_0, \
+                             stride_2, stride_1, stride_0); \
 }
+
+mlir_air_dma_nd_memcpy(1d0i32, 1, 2, uint32_t);
+mlir_air_dma_nd_memcpy(2d0i32, 2, 2, uint32_t);
+mlir_air_dma_nd_memcpy(3d0i32, 3, 2, uint32_t);
+mlir_air_dma_nd_memcpy(4d0i32, 4, 2, uint32_t);
+mlir_air_dma_nd_memcpy(1d0f32, 1, 2, float);
+mlir_air_dma_nd_memcpy(2d0f32, 2, 2, float);
+mlir_air_dma_nd_memcpy(3d0f32, 3, 2, float);
+mlir_air_dma_nd_memcpy(4d0f32, 4, 2, float);
+
+} // extern "C"
+} // namespace
