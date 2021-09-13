@@ -1,3 +1,5 @@
+// (c) Copyright 2021 Xilinx Inc.
+
 // RUN: air-opt %s -air-to-aie='air-to-aie-row-offset=5 air-to-aie-col-offset=23' | FileCheck %s
 // CHECK: [[T:%.*]] = AIE.tile(23, 5)
 // CHECK: [[L:%.*]] = AIE.lock([[T]], {{.*}})
