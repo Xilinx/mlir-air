@@ -1,3 +1,4 @@
+// (c) Copyright 2021 Xilinx Inc.
 
 // RUN: air-opt %s -air-to-aie | FileCheck %s
 module {

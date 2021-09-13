@@ -1,3 +1,5 @@
+// (c) Copyright 2021 Xilinx Inc.
+
 // RUN: air-opt %s -affine-loop-opt='affine-opt-copy-depths=1 affine-opt-tile-sizes=2,2' | FileCheck %s
 //
 // check that it was tiled

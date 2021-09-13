@@ -1,3 +1,5 @@
+// (c) Copyright 2021 Xilinx Inc.
+
 // RUN: air-opt %s -air-to-aie | FileCheck %s
 // CHECK: module
 #map = affine_map<()[s0, s1] -> (s0 * 64 + s1 * 128)>

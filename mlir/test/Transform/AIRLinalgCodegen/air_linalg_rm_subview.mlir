@@ -1,3 +1,5 @@
+// (c) Copyright 2021 Xilinx Inc.
+
 // RUN: air-opt %s -air-linalg-codegen=test-patterns
 // CHECK: %1 = memref.subview %arg0[%arg2, 0] [16, 64] [1, 1] : memref<64x64xf32> to memref<16x64xf32, #map>
 // CHECK: %2 = memref.subview %arg1[0, %arg3] [64, 16] [1, 1] : memref<64x64xf32> to memref<64x16xf32, #map>

@@ -1,3 +1,5 @@
+// (c) Copyright 2021 Xilinx Inc.
+
 // RUN: air-opt %s -air-to-aie | FileCheck %s
 // CHECK:    %[[VAL_0:.*]] = AIE.tile(2, 1)
 // CHECK:         %[[VAL_1:.*]] = AIE.tile(2, 0)

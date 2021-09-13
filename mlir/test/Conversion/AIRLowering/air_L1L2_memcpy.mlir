@@ -1,3 +1,5 @@
+// (c) Copyright 2021 Xilinx Inc.
+
 // RUN: air-opt %s -air-to-std | FileCheck %s
 // CHECK: %0 = airrt.alloc : memref<1024xi32, 1>
 // CHECK: airrt.dma_memcpy(%c1_i32, {{.*}}, {{.*}}, %0[{{.*}}], {{.*}}) : (i32, i64, i64, memref<1024xi32, 1>, [i64], i64) -> ()

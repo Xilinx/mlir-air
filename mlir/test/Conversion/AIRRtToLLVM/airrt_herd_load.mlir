@@ -1,3 +1,5 @@
+// (c) Copyright 2021 Xilinx Inc.
+
 // RUN: air-opt %s -airrt-to-llvm | FileCheck %s
 // CHECK:  %0 = llvm.mlir.addressof @__air_string_elk : !llvm.ptr<array<3 x i8>>
 // CHECK:  %1 = llvm.bitcast %0 : !llvm.ptr<array<3 x i8>> to !llvm.ptr<i8>

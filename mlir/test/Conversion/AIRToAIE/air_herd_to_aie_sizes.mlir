@@ -1,3 +1,5 @@
+// (c) Copyright 2021 Xilinx Inc.
+
 // RUN: air-opt -air-to-aie %s | FileCheck %s
 
 func @launch(%arg0: i32) {

@@ -1,3 +1,5 @@
+// (c) Copyright 2021 Xilinx Inc.
+
 // RUN: air-opt %s -airrt-to-llvm | FileCheck %s
 // CHECK: call @air_shim_memcpy(%c1_i32, {{.*}}) : (i32, i64, i64, memref<?xi32>, i64, i64) -> ()
 // CHECK: call @air_shim_memcpy2d(%c2_i32, {{.*}}) : (i32, i64, i64, memref<?x?xi32>, i64, i64, i64, i64, i64) -> ()
