@@ -118,4 +118,7 @@ add_lit_testsuites(AIR_TEST
 add_custom_target(build-check-air)
 add_dependencies(check-air build-check-air)
 
+if(NOT TARGET check-all)
+  add_custom_target(check-all)
+endif()
 add_dependencies(check-all check-air)
