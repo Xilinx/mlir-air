@@ -1,4 +1,5 @@
-#include "npcomp/Dialect/ATen/IR/ATenDialect.h"
+// (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
+
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -37,9 +38,8 @@ std::string getMangledType(const Type ty) {
   else if (const IndexType it = ty.dyn_cast<const IndexType>()) {
     ret << "I64";
   }
-  else if (const NPCOMP::aten::ATenListType alt = ty.dyn_cast<const NPCOMP::aten::ATenListType>()) {
-
-  }
+  // else if (const NPCOMP::aten::ATenListType alt = ty.dyn_cast<const NPCOMP::aten::ATenListType>()) {
+  // }
   else {
     Type t = ty;
     t.dump();

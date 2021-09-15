@@ -14,9 +14,6 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
 
-#include "npcomp/Dialect/ATen/IR/ATenDialect.h"
-#include "npcomp/Dialect/Basicpy/IR/BasicpyDialect.h"
-
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/InitAll.h"
@@ -32,9 +29,7 @@ int main(int argc, char **argv) {
 
   DialectRegistry registry;
   registerAllDialects(registry);
-  registry.insert<NPCOMP::aten::ATenDialect,
-                  NPCOMP::Basicpy::BasicpyDialect,
-                  xilinx::air::airDialect,
+  registry.insert<xilinx::air::airDialect,
                   xilinx::airrt::AIRRtDialect,
                   xilinx::AIE::AIEDialect>();
 

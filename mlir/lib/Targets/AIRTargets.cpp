@@ -89,8 +89,7 @@ namespace {
                       vector::VectorDialect,
                       LLVM::LLVMDialect,
                       scf::SCFDialect,
-                      AffineDialect,
-                      NPCOMP::aten::ATenDialect>();
+                      AffineDialect>();
     });
 
 }

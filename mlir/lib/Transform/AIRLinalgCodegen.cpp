@@ -2,6 +2,7 @@
 
 #include "air/Transform/AIRLinalgCodegen.h"
 #include "air/Util/Outliner.h"
+#include "air/Dialect/AIR/AIRDialect.h"
 
 #include "PassDetail.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -14,9 +15,6 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/SetVector.h"
-
-#include "npcomp/Dialect/ATen/IR/ATenDialect.h"
-
 
 #define DEBUG_TYPE "air-linalg-codegen"
 
@@ -155,9 +153,10 @@ public:
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<AffineDialect,
+                    memref::MemRefDialect,
                     linalg::LinalgDialect,
                     scf::SCFDialect,
-                    NPCOMP::aten::ATenDialect,
+                    air::airDialect,
                     StandardOpsDialect>();
   }
 

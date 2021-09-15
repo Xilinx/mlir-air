@@ -13,10 +13,6 @@ set(LIBS
   AIRConversionPasses
   AIRTransformPasses
   AIRInitAll
-
-  NPCOMPATenDialect
-  NPCOMPBasicpyDialect
-  NPCOMPTypingCPA
   AIE
   MLIR
   )

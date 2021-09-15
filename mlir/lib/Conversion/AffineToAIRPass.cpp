@@ -1,7 +1,5 @@
 // (c) Copyright 2019 Xilinx Inc. All Rights Reserved.
 
-#include "npcomp/Dialect/ATen/IR/ATenDialect.h"
-
 #include "PassDetail.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Conversion/AffineToAIRPass.h"

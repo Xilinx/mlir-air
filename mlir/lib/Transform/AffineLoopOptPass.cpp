@@ -2,7 +2,6 @@
 // (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
 
 #include "air/Transform/AffineLoopOptPass.h"
-#include "npcomp/Dialect/ATen/IR/ATenDialect.h"
 #include "air/Util/Outliner.h"
 
 #include "PassDetail.h"
@@ -268,6 +267,7 @@ void AffineLoopOptPass::generateDataCopyLoops(std::vector<SmallVector<AffineForO
   auto fors = (*bands)[0];
 
   for (auto fors : *bands) {
+
     DenseSet<Operation *> copyNests;
 
     AffineCopyOptions copyOptions;
@@ -278,6 +278,8 @@ void AffineLoopOptPass::generateDataCopyLoops(std::vector<SmallVector<AffineForO
     copyOptions.fastMemCapacityBytes = 100e9;
 
     for (auto depth : optCopyDepths) {
+      if (depth >= fors.size())
+        continue;
       affineDataCopyGenerate(fors[depth], copyOptions, filterMemRef, copyNests);
       dataCopyNests.push_back(copyNests);
     }

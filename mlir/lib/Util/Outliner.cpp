@@ -1,5 +1,4 @@
 // (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
-#include "npcomp/Dialect/ATen/IR/ATenDialect.h"
 
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/Transforms/LoopUtils.h"

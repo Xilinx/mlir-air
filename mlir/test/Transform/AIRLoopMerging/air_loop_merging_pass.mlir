@@ -19,7 +19,7 @@
 module  {
   func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
     %0 = memref.alloc() : memref<28x10xf32>
-    %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
+    %1 = memref.buffer_cast %arg0 : memref<28x10xf32>
     affine.for %arg2 = 0 to 2 {
       affine.for %arg3 = 0 to 2 {
         affine.for %arg4 = 0 to 7 {
@@ -36,10 +36,10 @@ module  {
         }
       }
     } {affine_opt_label = "affine_opt"}
-    %2 = "aten.type_cast"(%0) : (memref<28x10xf32>) -> tensor<28x10xf32>
+    %2 = memref.tensor_load %0 : memref<28x10xf32>
     %3 = memref.alloc() : memref<28x10xf32>
-    %4 = "aten.type_cast"(%2) : (tensor<28x10xf32>) -> memref<28x10xf32>
-    %5 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
+    %4 = memref.buffer_cast %2 : memref<28x10xf32>
+    %5 = memref.buffer_cast %arg1 : memref<28x10xf32>
     affine.for %arg2 = 0 to 5 {
       affine.for %arg3 = 0 to 2 {
         affine.for %arg4 = 0 to 7 {
@@ -56,7 +56,7 @@ module  {
         }
       }
     } {affine_opt_label = "xten.binary_op"}
-    %6 = "aten.type_cast"(%3) : (memref<28x10xf32>) -> tensor<28x10xf32>
+    %6 = memref.tensor_load %3 : memref<28x10xf32>
     return %6 : tensor<28x10xf32>
   }
 }

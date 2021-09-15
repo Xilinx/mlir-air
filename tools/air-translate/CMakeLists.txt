@@ -22,9 +22,6 @@ set(LIBS
   AIRDialect
   AIRRtDialect
   AIRTargets
-  NPCOMPATenDialect
-  NPCOMPBasicpyDialect
-  NPCOMPTypingCPA
   AIE
   MLIR
 )

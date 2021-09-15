@@ -27,9 +27,6 @@ target_link_libraries(AIRMLIRPyExt
   AIRConversionPasses
   AIRTransformPasses
   ${Python3_LIBRARIES}
-  NPCOMPATenDialect
-  NPCOMPBasicpyDialect
-  NPCOMPTypingCPA
   AIE
 )
 

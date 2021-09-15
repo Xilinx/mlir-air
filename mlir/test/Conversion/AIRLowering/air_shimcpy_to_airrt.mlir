@@ -13,8 +13,8 @@ module  {
   func @task0(%arg0: tensor<256x256xi32>, %arg1: tensor<256xi32>) -> tensor<256x256xi32> {
     %0 = memref.alloc() : memref<256x256xi32>
     %1 = memref.alloc() : memref<256xi32>
-    %2 = "aten.type_cast"(%arg0) : (tensor<256x256xi32>) -> memref<256x256xi32>
-    %3 = "aten.type_cast"(%arg1) : (tensor<256xi32>) -> memref<256xi32>
+    %2 = memref.buffer_cast %arg0 : memref<256x256xi32>
+    %3 = memref.buffer_cast %arg1 : memref<256xi32>
     affine.for %arg2 = 0 to 2 {
       affine.for %arg3 = 0 to 2 {
         %c2 = constant 2 : index
@@ -53,13 +53,13 @@ module  {
         }
       }
     } {affine_opt_label = "affine_opt"}
-    %4 = "aten.type_cast"(%0) : (memref<256x256xi32>) -> tensor<256x256xi32>
+    %4 = memref.tensor_load %0 : memref<256x256xi32>
     return %4 : tensor<256x256xi32>
   }
   func @task1(%arg0: tensor<32x32x32x32xi32>) -> tensor<32x32x32x32xi32> {
     %c2 = constant 2 : index
     %0 = memref.alloc() : memref<32x32x32x32xi32>
-    %1 = "aten.type_cast"(%arg0) : (tensor<32x32x32x32xi32>) -> memref<32x32x32x32xi32>
+    %1 = memref.buffer_cast %arg0 : memref<32x32x32x32xi32>
     air.launch_herd tile (%arg1, %arg2) in (%arg3=%c2, %arg4=%c2) args(%arg5=%1, %arg6=%0) : memref<32x32x32x32xi32>,memref<32x32x32x32xi32>attributes {sym_name = "herd_0"} {
       %c0 = constant 0 : index
       %c1024 = constant 1024 : index
@@ -89,7 +89,7 @@ module  {
       }
       air.herd_terminator
     }
-    %2 = "aten.type_cast"(%0) : (memref<32x32x32x32xi32>) -> tensor<32x32x32x32xi32>
+    %2 = memref.tensor_load %0 : memref<32x32x32x32xi32>
     return %2 : tensor<32x32x32x32xi32>
   }
 }

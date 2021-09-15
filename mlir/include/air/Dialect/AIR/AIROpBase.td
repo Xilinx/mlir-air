@@ -3,11 +3,35 @@
 
 include "mlir/IR/OpBase.td"
 
-include "npcomp/Dialect/Basicpy/IR/BasicpyDialect.td"
-
 def air_Dialect : Dialect {
   let name = "air";
   let cppNamespace = "xilinx::air";
+  let description = [{
+    The `air` dialect is used to describe cooperating arrays of AIE cores
+    and the bulk data movement between AIE cores and a memory hierarchy.
+    Its primary features are collective operations for executing work on
+    groups of AIE cores and multi-dimensional DMA copy operations.
+
+    ### Herds
+    A *herd* in the `air` dialect is a one or two dimensional array of adjacent
+    AIE cores executing the same code region.
+
+    ### Memory Hierarchy
+    There are three levels of memory in the air dialect:
+    - L1 memory corresponds to the AIE tile memory.
+    - L2 memory corresponds to pools of on-device memory such as of URAMs,
+      BRAMs, or other memory resources.
+    - L3 memory corresponds to off-chip memory such as DDR.
+
+    The individual cores of a herd have direct access to L1 memory with
+    standard load and store operations. Access to all other levels of memory
+    is through DMA copy operations only.
+
+    ### Asynchronous operations
+    Operations in air dialect can be asynchronous. An asynchronous token
+    interface is provided to synchronize between operations.
+
+  }];
 }
 
 def air_AnyScalarOrTensor : TypeConstraint<Or<[AnySignlessInteger.predicate,
@@ -18,11 +42,6 @@ def air_AnyScalarOrTensor : TypeConstraint<Or<[AnySignlessInteger.predicate,
 def air_AnyScalar : TypeConstraint<Or<[AnySignlessInteger.predicate,
                                    AnyFloat.predicate]>,
                                  "scalar">;
-
-def air_AnyOptionalTensor : AnyTypeOf<[
-  AnyTensor,
-  Basicpy_NoneType
-], "tensor or None">;
 
 def L1:  I32EnumAttrCase<"L1", 2>;
 def L2:  I32EnumAttrCase<"L2", 1>;

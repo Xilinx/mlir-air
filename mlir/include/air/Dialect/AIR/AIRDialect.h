@@ -18,9 +18,6 @@
 #include "mlir/IR/Types.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
-#include "npcomp/Dialect/ATen/IR/ATenDialect.h"
-#include "npcomp/Dialect/Basicpy/IR/BasicpyDialect.h"
-
 #include <map>
 
 using namespace mlir;

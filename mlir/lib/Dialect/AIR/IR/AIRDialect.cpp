@@ -306,7 +306,5 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
 
 #include "air/Dialect/AIR/AIROpInterfaces.cpp.inc"
 
-using namespace mlir::NPCOMP;
-
 #define GET_OP_CLASSES
 #include "air/Dialect/AIR/AIR.cpp.inc"

@@ -45,6 +45,8 @@ using constFloat = edsc::intrinsics::std_constant_float;
 
 namespace {
 
+#ifdef XTEN_DIALECT
+
 Value typeCast(PatternRewriter &builder, Value val, Type destTy) {
   if (val.getType() == destTy)
     return val;
@@ -63,7 +65,6 @@ Value MemRefTypeCast(PatternRewriter &builder, Value val) {
   return typeCast(builder, val, memRefType);
 }
 
-#ifdef XTEN_DIALECT
 class NoOpConversion_affine : public ConversionPattern {
 public:
   explicit NoOpConversion_affine(MLIRContext *context)

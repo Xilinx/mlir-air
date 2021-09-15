@@ -6,7 +6,7 @@
 module  {
   func @myAddOne(%arg0: tensor<256x256xi32>) -> tensor<256x256xi32> {
     %0 = memref.alloc() : memref<256x256xi32>
-    %1 = "aten.type_cast"(%arg0) : (tensor<256x256xi32>) -> memref<256x256xi32>
+    %1 = memref.buffer_cast %arg0 : memref<256x256xi32>
     affine.for %arg1 = 0 to 2 {
       affine.for %arg2 = 0 to 2 {
         %c2 = constant 2 : index
@@ -35,7 +35,7 @@ module  {
         }
       }
     } {affine_opt_label = "affine_opt"}
-    %2 = "aten.type_cast"(%0) : (memref<256x256xi32>) -> tensor<256x256xi32>
+    %2 = memref.tensor_load %0 : memref<256x256xi32>
     return %2 : tensor<256x256xi32>
   }
 }

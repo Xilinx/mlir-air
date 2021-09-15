@@ -21,7 +21,6 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/LoopUtils.h"
 
-#include "npcomp/Dialect/ATen/IR/ATenDialect.h"
 #include "air/Transform/AIRHerdAssignPass.h"
 #include "air/Util/Util.h"
 

@@ -8,9 +8,8 @@ include "mlir/IR/OpBase.td"
 include "AIROpBase.td"
 
 include "mlir/Interfaces/SideEffectInterfaces.td"
-include "npcomp/Dialect/ATen/IR/ATenOpInterface.td"
 
-class air_Op<string mnemonic, list<OpTrait> traits = [StatisticsOpInterface]> :
+class air_Op<string mnemonic, list<OpTrait> traits = []> :
     Op<air_Dialect, mnemonic, traits>;
 
 def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,
@@ -23,7 +22,7 @@ def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,
                         Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
   let summary = "Launch a herd";
   let description = [{
-    Defines and runs a 2D grid of tiles as an AIR Herd.
+    Define and run a 1D or 2D array of tiles as an AIR Herd.
   }];
 
   let regions = (region AnyRegion:$body);
@@ -223,7 +222,7 @@ def air_WaitAllOp: air_Op<"wait_all", []>,
 
   let summary = "wait for all operator";
   let description = [{
-    dma operator
+    Block and wait for all async tokens before preceding.
   }];
   let assemblyFormat = [{
     custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) attr-dict

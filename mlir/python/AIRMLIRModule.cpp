@@ -6,7 +6,7 @@
 
 #include "air-c/Registration.h"
 
-#include "npcomp/Python/PybindUtils.h"
+#include "air/Python/PybindUtils.h"
 
 namespace py = pybind11;
 
