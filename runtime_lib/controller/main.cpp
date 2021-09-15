@@ -417,7 +417,8 @@ void xaie_herd_init(int col_start, int num_cols, int row_start, int num_rows)
 namespace {
 
 uint64_t shmem_base = 0x020100000000UL;
-uint64_t uart_lock_base = shmem_base + 0x20;
+uint64_t uart_lock_offset = 0x200;
+//uint64_t uart_lock_base = shmem_base + 0x20;
 uint64_t base_address;
 
 u32 last_before_hi, last_before_lo, last_after_hi, last_after_lo;
@@ -427,17 +428,24 @@ u32 dispatch_before_lo, call_before_lo, invalidate_before_lo;
 
 void lock_uart(uint32_t id) {
   bool is_locked = false;
+  uint32_t *ulb = (uint32_t *)(shmem_base+uart_lock_offset);
+  //ulb[1] = 0xABBA;
 
   while (!is_locked) {
-    uint32_t status = *(uint32_t *)uart_lock_base;
+    //uint32_t status = *(uint32_t *)uart_lock_base;
+    uint32_t status = ulb[0];
     if (status != 1) {
-      *(uint32_t *)(uart_lock_base + 0x4) = id;
-      *(uint32_t *)uart_lock_base = 1;
+      //*(uint32_t *)(uart_lock_base + 0x4) = id;
+      //*(uint32_t *)uart_lock_base = 1;
+      ulb[1] = id;
+      ulb[0] = 1;
       // See if they stuck
-      uint32_t status = *(uint32_t *)uart_lock_base;
-      uint32_t lockee = *(uint32_t *)(uart_lock_base + 0x04);
+      //uint32_t status = *(uint32_t *)uart_lock_base;
+      //uint32_t lockee = *(uint32_t *)(uart_lock_base + 0x04);
+      uint32_t status = ulb[0];
+      uint32_t lockee = ulb[1];
       if ((status == 1) && (lockee == id)) {
-        xil_printf("MB %02d: ", id);
+        xil_printf("ULock @ %lx MB %02d: ",ulb, id);
         is_locked = true;
       }
     }
@@ -447,8 +455,11 @@ void lock_uart(uint32_t id) {
   // This looks unsafe, but its okay as long as we always aquire
   // the lock first
 void unlock_uart() {
-  *(uint32_t *)(uart_lock_base + 0x4) = 0;
-  *(uint32_t *)uart_lock_base = 0;
+  uint32_t *ulb = (uint32_t *)(shmem_base+uart_lock_offset);
+  ulb[1] = 0; 
+  ulb[0] = 0;
+  //*(uint32_t *)(uart_lock_base + 0x4) = 0;
+  //*(uint32_t *)uart_lock_base = 0;
 }
 
 int queue_create(uint32_t size, queue_t **queue, uint32_t mb_id)
@@ -788,7 +799,7 @@ void handle_packet_nd_memcpy(dispatch_packet_t *pkt)
   xil_printf("handle_packet_nd_memcpy\n\r");
   packet_set_active(pkt, true);
 
-  uint16_t memory_space = (pkt->arg[0] >> 16) & 0xffff;
+  uint16_t memory_space = (pkt->arg[0] >> 16) & 0x00ff;
   uint16_t channel      = (pkt->arg[0] >> 24) & 0x00ff;
   uint16_t col          = (pkt->arg[0] >> 32) & 0x00ff;
   uint16_t direction    = (pkt->arg[0] >> 60) & 0x000f;
@@ -978,9 +989,11 @@ int main()
 
   // Skip over the system wide shmem area, then find your own
   base_address = shmem_base + (1+mb_id)*MB_SHMEM_SEGMENT_SIZE;
+  uint32_t *num_mbs = (uint32_t *)(shmem_base+0x208);
+  num_mbs[0] = user1;
 
   lock_uart(mb_id);
-  xil_printf("MB %d firmware %d.%d.%d created on %s at %s GMT\n\r",mb_id,maj,min,ver,__DATE__, __TIME__); 
+  xil_printf("MB %d of %d firmware %d.%d.%d created on %s at %s GMT\n\r",mb_id,*num_mbs,maj,min,ver,__DATE__, __TIME__); 
   xil_printf("(c) Copyright 2020-2021 Xilinx, Inc. All rights reserved.\n\r");
   unlock_uart();
 
