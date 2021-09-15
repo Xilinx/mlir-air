@@ -418,7 +418,6 @@ namespace {
 
 uint64_t shmem_base = 0x020100000000UL;
 uint64_t uart_lock_offset = 0x200;
-//uint64_t uart_lock_base = shmem_base + 0x20;
 uint64_t base_address;
 
 u32 last_before_hi, last_before_lo, last_after_hi, last_after_lo;
@@ -429,19 +428,13 @@ u32 dispatch_before_lo, call_before_lo, invalidate_before_lo;
 void lock_uart(uint32_t id) {
   bool is_locked = false;
   uint32_t *ulb = (uint32_t *)(shmem_base+uart_lock_offset);
-  //ulb[1] = 0xABBA;
 
   while (!is_locked) {
-    //uint32_t status = *(uint32_t *)uart_lock_base;
     uint32_t status = ulb[0];
     if (status != 1) {
-      //*(uint32_t *)(uart_lock_base + 0x4) = id;
-      //*(uint32_t *)uart_lock_base = 1;
       ulb[1] = id;
       ulb[0] = 1;
       // See if they stuck
-      //uint32_t status = *(uint32_t *)uart_lock_base;
-      //uint32_t lockee = *(uint32_t *)(uart_lock_base + 0x04);
       uint32_t status = ulb[0];
       uint32_t lockee = ulb[1];
       if ((status == 1) && (lockee == id)) {
@@ -458,8 +451,6 @@ void unlock_uart() {
   uint32_t *ulb = (uint32_t *)(shmem_base+uart_lock_offset);
   ulb[1] = 0; 
   ulb[0] = 0;
-  //*(uint32_t *)(uart_lock_base + 0x4) = 0;
-  //*(uint32_t *)uart_lock_base = 0;
 }
 
 int queue_create(uint32_t size, queue_t **queue, uint32_t mb_id)
