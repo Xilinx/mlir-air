@@ -981,6 +981,7 @@ int main()
 
   lock_uart(mb_id);
   xil_printf("MB %d firmware %d.%d.%d created on %s at %s GMT\n\r",mb_id,maj,min,ver,__DATE__, __TIME__); 
+  xil_printf("(c) Copyright 2020-2021 Xilinx, Inc. All rights reserved.\n\r");
   unlock_uart();
 
   setup = false;

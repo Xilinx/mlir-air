@@ -1,6 +1,6 @@
 
 proc numberOfCPUs {} {
-    return 10
+    return 8
 
     # Windows puts it in an environment variable
     global tcl_platform env

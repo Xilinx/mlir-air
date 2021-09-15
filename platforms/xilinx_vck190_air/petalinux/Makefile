@@ -35,9 +35,7 @@ bsp:
 	petalinux-package --bsp -o xilinx_vck190_air.bsp -p .
 
 clean:
-	petalinux-build -x cleanall
 	$(RM) -r images/linux/*
-
-ultraclean: clean
+	petalinux-build -x cleanall || true
 	${RM} -r build ip_cache components
 

@@ -23,11 +23,17 @@ petalinux_sysroot:
 	$(MAKE) -C petalinux sysroot
 
 petalinux_clean:
-	$(MAKE) -C petalinux ultraclean PLATFORM=$(PLATFORM)
+	$(MAKE) -C petalinux clean PLATFORM=$(PLATFORM)
 
 petalinux_bsp:
 	$(MAKE) -C petalinux bsp
 
-cleanall: petalinux_clean xsa_clean
+bootbin:
+	$(MAKE) -C bootgen
+
+bootbin_clean:
+	$(MAKE) -C bootgen clean
+
+clean: petalinux_clean xsa_clean bootbin_clean
 	${RM} -r platform_repo
 	
