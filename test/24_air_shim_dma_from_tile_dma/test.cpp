@@ -46,7 +46,7 @@ main(int argc, char *argv[])
   mlir_configure_dmas();
 
   for (int i=0; i<DMA_COUNT; i++)
-    mlir_write_buffer_buf0(i, i+1);
+    mlir_write_buffer_buf0(i, i+0x10);
 
   uint32_t *bram_ptr = nullptr;
 
@@ -62,23 +62,9 @@ main(int argc, char *argv[])
   auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
   assert(ret == 0 && "failed to create queue!");
 
-  uint64_t wr_idx = queue_add_write_index(q, 1);
-  uint64_t packet_id = wr_idx % q->size;
-
-  // Set up a 1x1 herd starting 7,2
-  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_herd_init(herd_pkt, 0, col, 1, row, 1);
-  air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
-
-  wr_idx = queue_add_write_index(q, 1);
-  packet_id = wr_idx % q->size;
-  dispatch_packet_t *dev_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_device_init(dev_pkt, XAIE_NUM_COLS);
-  air_queue_dispatch_and_wait(q, wr_idx, dev_pkt);
-
   printf("loading aie_ctrl.so\n");
   
-  auto handle = air_module_load_from_file("./aie_ctrl.so");
+  auto handle = air_module_load_from_file("./aie_ctrl.so",q);
   assert(handle && "failed to open aie_ctrl.so");
 
   auto graph_fn = (void (*)(void*))dlsym((void*)handle, "_mlir_ciface_graph");
@@ -102,9 +88,9 @@ main(int argc, char *argv[])
   int errors = 0;
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = bram_ptr[i];
-    if (d != (i+1)) {
+    if (d != (i+0x10)) {
       errors++;
-      printf("mismatch %x != 1 + %x\n", d, i);
+      printf("mismatch %x != 0x10 + %x\n", d, i);
     }
   }
 

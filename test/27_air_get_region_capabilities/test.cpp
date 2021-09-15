@@ -55,7 +55,7 @@ int main(int argc, char *argv[])
 
     // Set up a 2x4 herd starting 7,2
     herd_pkt->arg[0]  = AIR_PKT_TYPE_GET_CAPABILITIES;
-    herd_pkt->arg[1] = CAPABILITIES_SCRATCH_BASE + 0x100; // avoid the UART semaphore stuff
+    herd_pkt->arg[1] = CAPABILITIES_SCRATCH_BASE + 0x300; // avoid the UART semaphore stuff
 
     // dispatch packet
     signal_create(1, 0, NULL, (signal_t*)&herd_pkt->completion_signal);
@@ -72,29 +72,29 @@ int main(int argc, char *argv[])
 
     // Check the packet we got back
 
-
-    printf("Checking capabilities for MB %d\n", controller_id);
+    printf("Checking capabilities for MB %ld\n", controller_id);
     uint64_t *capabilities = (uint64_t *)mmap(NULL, 0x100, PROT_READ|PROT_WRITE, MAP_SHARED, fd, CAPABILITIES_SCRATCH_BASE);
 
     uint64_t expected[8] = {controller_id, 0L, 0x10001L, 16L, 32768L, 8L, 16384L, 0L};
     uint8_t to_check[8] = {1, 0, 1, 1, 1, 1, 1, 1};
     for (int i=0;i<8;i++) {
-      if (to_check[i] && (capabilities[i+0x20] != expected[i])) {
-        printf("Register %X: expected 0x%016lX: read 0x%016lX\n", i, expected[i], capabilities[i+0x20]);
+      if (to_check[i] && (capabilities[i+0x60] != expected[i])) {
+        printf("Register %X: expected 0x%016lX: read 0x%016lX\n", i, expected[i], capabilities[i+0x60]);
         errors++;
       }
     }
     if (!errors) {
-      total_controllers = capabilities[0x21];
-      printf("MB %d of %d total is good\n", capabilities[0x20], capabilities[0x21]);
+      total_controllers = capabilities[0x61];
+      printf("MB %ld of %ld total is good\n", capabilities[0x60], capabilities[0x61]);
     }
     controller_id++;
-    if ((errors) || (controller_id == capabilities[0x21]))
+
+    if ((errors) || (controller_id == capabilities[0x61]))
       done = true;
   }
 
   if (errors == 0x0) {
-    printf("Checked %d controllers, now make them all say hello\n", total_controllers);
+    printf("Checked %ld controllers, now make them all say hello\n", total_controllers);
     for (int c=0;c<total_controllers;c++) {
       queue_t *q = nullptr;
       uint64_t *qaddrs = (uint64_t*)AIR_VCK190_SHMEM_BASE;

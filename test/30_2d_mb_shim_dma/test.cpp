@@ -116,9 +116,9 @@ main(int argc, char *argv[])
   // Let go check the tile memory
   for (int i=0; i<TILE_SIZE; i++) {
     uint32_t d = mlir_read_buffer_buf72_0(i);
-    u32 row = i / 16;
-    u32 col = i % 16;
-    u32 o_i = row * 32 + col;
+    u32 row = i / TILE_WIDTH;
+    u32 col = i % TILE_WIDTH;
+    u32 o_i = row * IMAGE_WIDTH + col;
     if (d != o_i) {
       printf("ERROR: buf72_0 idx %d Expected %08X, got %08X\n", i, o_i, d);
       errs++;
@@ -127,9 +127,9 @@ main(int argc, char *argv[])
   // And the BRAM we updated
   for (int i=0; i<IMAGE_SIZE; i++) {
     uint32_t d = bram_ptr[IMAGE_SIZE+i];;
-    u32 r = i / 32;
-    u32 c = i % 32;
-    if ((r < 8) && (c < 16)) {
+    u32 r = i / IMAGE_WIDTH;
+    u32 c = i % IMAGE_WIDTH;
+    if ((r < TILE_HEIGHT) && (c < TILE_WIDTH)) {
       if (d != i) {
         printf("ERROR: buf72_0 copy idx %d Expected %08X, got %08X\n", i, i, d);
         errs++;

@@ -93,7 +93,10 @@ main(int argc, char *argv[])
     count++;
     if (!(count % 1000)) {
       printf("%d seconds\n",count/1000);
-      if (count == 2000) break;
+      if (count == 2000) {
+	fprintf(stderr, "Timeout waiting for shim DMA.\n");
+        break;
+      }
     }
   }
 

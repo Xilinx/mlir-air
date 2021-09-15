@@ -209,17 +209,17 @@ main(int argc, char *argv[])
 
   auto ret = XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_MM2S0);
   if (ret)
-    printf("%s %d Warn %d\n", __FUNCTION__, __LINE__, ret);
+    printf("MM2S0 %s %d Warn %d\n", __FUNCTION__, __LINE__, ret);
 
   ret = XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_S2MM0);
   if (ret)
-    printf("%s %d Warn %d\n", __FUNCTION__, __LINE__, ret);
+    printf("S2MM0 %s %d Warn %d\n", __FUNCTION__, __LINE__, ret);
 
   XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_MM2S0, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
   XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_S2MM0, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
 
   auto count = 0;
-  while (XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_MM2S0) || XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_MM2S0) ) {
+  while (XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_MM2S0) || XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_S2MM0) ) {
     XAieLib_usleep(1000);
     count++;
     if (!(count % 1000)) {
@@ -230,6 +230,10 @@ main(int argc, char *argv[])
 
   printCoreStatus(7, 2, false, DMA_COUNT*2, 0);
   printDMAStatus(7, 2);
+ 
+  ret = XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_S2MM0);
+  if (ret)
+    printf("S2MM0 %s %d Warn %d\n", __FUNCTION__, __LINE__, ret);
 
   int errors = 0;
   for (int i=0; i<DMA_COUNT; i++) {
