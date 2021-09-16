@@ -180,7 +180,8 @@ public:
     for (auto matmulOp : matmulOps) {
 
       xilinx::air::AIROutliner olnr;
-      CallOp call = olnr.outline({matmulOp}, "call_mmult");
+      CallOp call = olnr.outline(std::vector<Operation*>{matmulOp},
+                                 "call_mmult");
       FuncOp called = funcOp->getParentOfType<ModuleOp>()
                         .lookupSymbol<FuncOp>(call.getCallee());
 
@@ -244,7 +245,8 @@ public:
     for (auto conv2dOp : conv2dOps) {
 
       xilinx::air::AIROutliner olnr;
-      CallOp call = olnr.outline({conv2dOp}, "call_conv_2d_nchw");
+      CallOp call = olnr.outline(std::vector<Operation*>{conv2dOp},
+                                 "call_conv_2d_nchw");
       FuncOp called = funcOp->getParentOfType<ModuleOp>()
                         .lookupSymbol<FuncOp>(call.getCallee());
 

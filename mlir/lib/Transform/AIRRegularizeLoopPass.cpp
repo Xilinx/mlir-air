@@ -20,7 +20,6 @@
 #include "air/Transform/AIRTilingUtils.h"
 
 #include "PassDetail.h"
-#include "../lib/Dialect/Affine/Transforms/PassDetail.h"
 #include "mlir/Analysis/AffineAnalysis.h"
 #include "mlir/Analysis/AffineStructures.h"
 #include "mlir/Analysis/LoopAnalysis.h"
