@@ -18,7 +18,7 @@
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/InitAll.h"
 
-#include "AIEDialect.h"
+#include "aie/AIEDialect.h"
 
 using namespace llvm;
 using namespace mlir;
