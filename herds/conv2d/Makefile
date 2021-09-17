@@ -23,7 +23,7 @@ conv2d.mlir: conv2d.py
 conv2d_affine.mlir: conv2d.mlir
 	$(ATEN_OPT) -aten-to-xten \
 				-xten-to-affine='xten-loop-order=3,0,1,2,4' \
-				-cse \
+				-cse -cse \
 				-o $@ $<
 
 # convert to affine loops with the ordering suitable for multiple tilings...
