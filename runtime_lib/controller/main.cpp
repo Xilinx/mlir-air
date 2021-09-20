@@ -26,6 +26,11 @@ extern "C" {
 #define SHIM_DMA_S2MM 0 
 #define SHIM_DMA_MM2S 1 
 
+#define CHATTY 1 
+
+#define air_printf(fmt, ...) \
+	                    do { if (CHATTY) xil_printf(fmt, ##__VA_ARGS__); } while (0)
+
 namespace {
 
 struct HerdConfig {
@@ -223,7 +228,7 @@ int xaie_shim_dma_push_bd(XAieGbl_Tile *tile, int direction, int channel, uint64
 
   if (direction == SHIM_DMA_S2MM) {
     shimDMAchannel += XAIEDMA_SHIM_CHNUM_S2MM0;
-    xil_printf("\n\r  S2MM Shim DMA start channel %d\n\r", shimDMAchannel);
+    air_printf("\n\r  S2MM Shim DMA start channel %d\n\r", shimDMAchannel);
     status_register_offset = 0x1d160;
     if (channel == 0) {
       status_mask_shift = 0;
@@ -241,7 +246,7 @@ int xaie_shim_dma_push_bd(XAieGbl_Tile *tile, int direction, int channel, uint64
   }
   else {
     shimDMAchannel += XAIEDMA_SHIM_CHNUM_MM2S0;
-    xil_printf("\n\r  MM2S Shim DMA start channel %d\n\r", shimDMAchannel);
+    air_printf("\n\r  MM2S Shim DMA start channel %d\n\r", shimDMAchannel);
     status_register_offset = 0x1d164;
     if (channel == 0) {
       status_mask_shift = 0;
@@ -262,30 +267,30 @@ int xaie_shim_dma_push_bd(XAieGbl_Tile *tile, int direction, int channel, uint64
   uint32_t s2mm0_ctrl  = XAieGbl_Read32(tile->TileAddr + 0x0001D140);
   uint32_t mm2s0_ctrl  = XAieGbl_Read32(tile->TileAddr + 0x0001D150);
 
-  xil_printf("s2mm status : %08X\n\r", s2mm_status);
-  xil_printf("mm2s status : %08X\n\r", mm2s_status);
-  xil_printf("s2mm0 ctrl  : %08X\n\r", s2mm0_ctrl);
-  xil_printf("mm2s0 ctrl  : %08X\n\r", mm2s0_ctrl);
+  air_printf("s2mm status : %08X\n\r", s2mm_status);
+  air_printf("mm2s status : %08X\n\r", mm2s_status);
+  air_printf("s2mm0 ctrl  : %08X\n\r", s2mm0_ctrl);
+  air_printf("mm2s0 ctrl  : %08X\n\r", mm2s0_ctrl);
 
   uint32_t start_bd = 4*shimDMAchannel;
   uint32_t outstanding = (XAieGbl_Read32(tile->TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
   // If outstanding >=4, we're in trouble!!!!
   if (outstanding >=4) {
-    xil_printf("\n\r *** BD OVERFLOW in shimDMA channel %d *** \n\r",shimDMAchannel);
+    air_printf("\n\r *** BD OVERFLOW in shimDMA channel %d *** \n\r",shimDMAchannel);
     bool waiting = true;
     while (waiting) {
       outstanding = (XAieGbl_Read32(tile->TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
       waiting = (outstanding > 3);
     }
   }
-  xil_printf("Outstanding pre : %d\n\r", outstanding);
+  air_printf("Outstanding pre : %d\n\r", outstanding);
   uint32_t bd = start_bd+outstanding + 0; //hack
   XAieGbl_Write32(tile->TileAddr + 0x0001D008+(bd*0x14), 0x0);           // Mark the BD as invalid
   uint32_t chk = XAieGbl_Read32(tile->TileAddr + 0x0001D008+(bd*0x14));
-  xil_printf("bd %d %08X : %08X\n\r",bd, 0x0001D008+(bd*0x14), chk);
-  xil_printf("bd %d HAD : %08X\n\r",bd, HIGH_ADDR((u64)addr));
-  xil_printf("bd %d LAD : %08X\n\r",bd, LOW_ADDR((u64)addr));
-  xil_printf("bd %d LEN : %08X\n\r",bd, len);
+  air_printf("bd %d %08X : %08X\n\r",bd, 0x0001D008+(bd*0x14), chk);
+  air_printf("bd %d HAD : %08X\n\r",bd, HIGH_ADDR((u64)addr));
+  air_printf("bd %d LAD : %08X\n\r",bd, LOW_ADDR((u64)addr));
+  air_printf("bd %d LEN : %08X\n\r",bd, len);
 
   // Set the registers directly ...
   uint32_t base_address =  0x1d000 + bd * 0x14;
@@ -307,28 +312,28 @@ int xaie_shim_dma_push_bd(XAieGbl_Tile *tile, int direction, int channel, uint64
 
   for (int i=0;i<0x14;i+=4) {
     uint32_t rb = XAieGbl_Read32(tile->TileAddr + 0x0001D000+(bd*0x14)+i);
-    xil_printf("bd %d %08X : %08X\n\r",bd, 0x0001D000+(bd*0x14)+i, rb);
+    air_printf("bd %d %08X : %08X\n\r",bd, 0x0001D000+(bd*0x14)+i, rb);
   }
 
   outstanding = (XAieGbl_Read32(tile->TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
-  xil_printf("Outstanding post: %d\n\r", outstanding);
-  xil_printf("bd pushed as bd %d\n\r",bd);
+  air_printf("Outstanding post: %d\n\r", outstanding);
+  air_printf("bd pushed as bd %d\n\r",bd);
     // Status print out for debug
   s2mm_status = XAieGbl_Read32(tile->TileAddr + 0x0001D160);
   mm2s_status = XAieGbl_Read32(tile->TileAddr + 0x0001D164);
   s2mm0_ctrl  = XAieGbl_Read32(tile->TileAddr + 0x0001D140);
   mm2s0_ctrl  = XAieGbl_Read32(tile->TileAddr + 0x0001D150);
 
-  xil_printf("s2mm status : %08X\n\r", s2mm_status);
-  xil_printf("mm2s status : %08X\n\r", mm2s_status);
-  xil_printf("s2mm0 ctrl  : %08X\n\r", s2mm0_ctrl);
-  xil_printf("mm2s0 ctrl  : %08X\n\r", mm2s0_ctrl);
+  air_printf("s2mm status : %08X\n\r", s2mm_status);
+  air_printf("mm2s status : %08X\n\r", mm2s_status);
+  air_printf("s2mm0 ctrl  : %08X\n\r", s2mm0_ctrl);
+  air_printf("mm2s0 ctrl  : %08X\n\r", mm2s0_ctrl);
 
   if (direction == SHIM_DMA_S2MM) {
-    xil_printf("  End of S2MM Shim DMA start channel %d\n\r", shimDMAchannel);
+    air_printf("  End of S2MM Shim DMA start channel %d\n\r", shimDMAchannel);
   }
   else {
-    xil_printf("  End of MM2S Shim DMA start channel %d\n\r", shimDMAchannel);
+    air_printf("  End of MM2S Shim DMA start channel %d\n\r", shimDMAchannel);
   }
   return 1;
 }
@@ -348,7 +353,7 @@ int xaie_lock_acquire_nb(XAieGbl_Tile *tile, u32 lock_id, u32 val)
     loop++;
   }
   if (loop == 512) {
-    xil_printf("Acquire [%d, %d, %d] value %d time-out\n\r", tile->ColId, tile->RowId, lock_id, val);
+    air_printf("Acquire [%d, %d, %d] value %d time-out\n\r", tile->ColId, tile->RowId, lock_id, val);
     return 0;
   }
   return 1;
@@ -364,7 +369,7 @@ void xaie_device_init(int num_cols)
   xaie::AieConfigPtr = xaie::XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
 
   for (int col=0; col<num_cols; col++) {
-      //xil_printf("init physical dma col %d\n\r", col);
+      //air_printf("init physical dma col %d\n\r", col);
       xaie::XAieGbl_CfgInitialize_Tile(0, &xaie::ShimTileInst[col],
                                        col, 0, xaie::AieConfigPtr);
       // I'd love to do this, but it overflows the program memory, because, yeah
@@ -405,7 +410,7 @@ void xaie_herd_init(int col_start, int num_cols, int row_start, int num_rows)
 
   for (int col=0; col<num_cols; col++) {
     for (int row=0; row<num_rows; row++) {
-      xil_printf("init physical col %d, row %d as herd col %d row %d\n\r", col+col_start, row+row_start, col, row);
+      air_printf("init physical col %d, row %d as herd col %d row %d\n\r", col+col_start, row+row_start, col, row);
       xaie::XAieGbl_CfgInitialize_Tile(0, &xaie::TileInst[col][row],
                                        col+col_start, row+row_start, xaie::AieConfigPtr);
     }
@@ -427,7 +432,7 @@ u32 dispatch_before_lo, call_before_lo, invalidate_before_lo;
 
 void lock_uart(uint32_t id) {
   bool is_locked = false;
-  uint32_t *ulb = (uint32_t *)(shmem_base+uart_lock_offset);
+  uint32_t *ulb = (uint32_t *)(0x0);//(shmem_base+uart_lock_offset);
 
   while (!is_locked) {
     uint32_t status = ulb[0];
@@ -438,7 +443,7 @@ void lock_uart(uint32_t id) {
       uint32_t status = ulb[0];
       uint32_t lockee = ulb[1];
       if ((status == 1) && (lockee == id)) {
-        xil_printf("ULock @ %lx MB %02d: ",ulb, id);
+        air_printf("ULock @ %lx MB %02d: ",ulb, id);
         is_locked = true;
       }
     }
@@ -448,7 +453,7 @@ void lock_uart(uint32_t id) {
   // This looks unsafe, but its okay as long as we always aquire
   // the lock first
 void unlock_uart() {
-  uint32_t *ulb = (uint32_t *)(shmem_base+uart_lock_offset);
+  uint32_t *ulb = (uint32_t *)(0x0);//(shmem_base+uart_lock_offset);
   ulb[1] = 0; 
   ulb[0] = 0;
 }
@@ -458,8 +463,8 @@ int queue_create(uint32_t size, queue_t **queue, uint32_t mb_id)
   uint64_t queue_address[1] = {base_address + sizeof(dispatch_packet_t)};
   uint64_t queue_base_address[1] = {queue_address[0] + sizeof(dispatch_packet_t)};
   lock_uart(mb_id);
-  xil_printf("setup_queue 0x%llx, %x bytes + %d 64 byte packets\n\r", (void *)queue_address, sizeof(queue_t), size);
-  xil_printf("base address 0x%llx\n\r", base_address);
+  air_printf("setup_queue 0x%llx, %x bytes + %d 64 byte packets\n\r", (void *)queue_address, sizeof(queue_t), size);
+  air_printf("base address 0x%llx\n\r", base_address);
   unlock_uart();
 
   // The address of the queue_t is stored @ shmem_base[mb_id]
@@ -507,11 +512,11 @@ void handle_packet_device_initialize(dispatch_packet_t *pkt) {
     u32 num_cols  = (pkt->arg[0] >> 40) & 0xff;
   
     xaie_device_init(num_cols);
-    xil_printf("Initialized shim DMA of size %d\r\n",num_cols);
+    air_printf("Initialized shim DMA of size %d\r\n",num_cols);
     // herd_id is ignored - current restriction is 1 herd -> 1 controller
   }
   else {
-    xil_printf("Unsupported address type 0x%04X for device initialize\r\n",(pkt->arg[0] >> 48) & 0xf);
+    air_printf("Unsupported address type 0x%04X for device initialize\r\n",(pkt->arg[0] >> 48) & 0xf);
   }
 }
 
@@ -528,11 +533,11 @@ void handle_packet_herd_initialize(dispatch_packet_t *pkt) {
   
     u32 herd_id = pkt->arg[1] & 0xffff;
     xaie_herd_init(start_col, num_cols, start_row, num_rows);
-    xil_printf("Initialized herd %d at (%d, %d) of size (%d,%d)\r\n",herd_id, start_col, start_row, num_cols, num_rows);
+    air_printf("Initialized herd %d at (%d, %d) of size (%d,%d)\r\n",herd_id, start_col, start_row, num_cols, num_rows);
     // herd_id is ignored - current restriction is 1 herd -> 1 controller
   }
   else {
-    xil_printf("Unsupported address type 0x%04X for herd initialize\r\n",(pkt->arg[0] >> 48) & 0xf);
+    air_printf("Unsupported address type 0x%04X for herd initialize\r\n",(pkt->arg[0] >> 48) & 0xf);
   }
 }
 
@@ -542,7 +547,7 @@ void handle_packet_get_capabilities(dispatch_packet_t *pkt, uint32_t mb_id)
   packet_set_active(pkt, true);
   uint64_t *addr = (uint64_t *)(pkt->arg[1]);
 
-  lock_uart(mb_id); xil_printf("Writing to 0x%llx\n\r",(uint64_t)addr); unlock_uart();
+  lock_uart(mb_id); air_printf("Writing to 0x%llx\n\r",(uint64_t)addr); unlock_uart();
   // We now write a capabilities structure to the address we were just passed
   // We've already done this once - should we just cache the results?
   pvr_t pvr;
@@ -657,7 +662,7 @@ void handle_packet_hello(dispatch_packet_t *pkt, uint32_t mb_id)
   packet_set_active(pkt, true);
 
   uint64_t say_what = pkt->arg[1];
-  lock_uart(mb_id); xil_printf("HELLO %08X\n\r",(uint32_t)say_what); unlock_uart();
+  lock_uart(mb_id); air_printf("HELLO %08X\n\r",(uint32_t)say_what); unlock_uart();
   /*
   //u32 before_hi = XAieGbl_Read32(xaie::TileInst[0][0].TileAddr + 0x000340FC); // Timer high
   u32 before_lo = XAieGbl_Read32(xaie::TileInst[0][0].TileAddr + 0x000340F8); // Timer low
@@ -665,11 +670,11 @@ void handle_packet_hello(dispatch_packet_t *pkt, uint32_t mb_id)
   u32 after_lo  = XAieGbl_Read32(xaie::TileInst[0][0].TileAddr + 0x000340F8); // Timer low
 
   if (phase == 1) {
-    xil_printf("last before %08X\n\r",last_before_lo);
-    xil_printf("last after  %08X\n\r",last_after_lo);
-    xil_printf("this before %08X\n\r",before_lo);
-    xil_printf("this after  %08X\n\r",after_lo);
-    xil_printf("turnaround time %d\n\r",before_lo - last_after_lo);
+    air_printf("last before %08X\n\r",last_before_lo);
+    air_printf("last after  %08X\n\r",last_after_lo);
+    air_printf("this before %08X\n\r",before_lo);
+    air_printf("this after  %08X\n\r",after_lo);
+    air_printf("turnaround time %d\n\r",before_lo - last_after_lo);
     phase = 0;
   }
   else {
@@ -683,7 +688,7 @@ void handle_packet_hello(dispatch_packet_t *pkt, uint32_t mb_id)
 
 void handle_packet_allocate_herd_shim_dmas(dispatch_packet_t *pkt)
 {
-  xil_printf("handle_packet_allocate_herd_shim_dmas\n\r");
+  air_printf("handle_packet_allocate_herd_shim_dmas\n\r");
   packet_set_active(pkt, true);
 
   uint16_t physical_col   = (pkt->arg[0] >> 32) & 0x00ff;
@@ -700,12 +705,12 @@ void handle_packet_allocate_herd_shim_dmas(dispatch_packet_t *pkt)
     xaie::logicalToPhysicalMM2SshimDMAcolMap[logical_col] = physical_col;
     xaie::logicalToPhysicalMM2SshimDMAchannelMap[logical_col] = channel;
   }
-  xil_printf("shim_dma_allocate: herd %d allocated physical shim dma in col %d channel %d as logical dma %d for direction %d\n\r",herd_id, physical_col, channel, logical_col, direction);
+  air_printf("shim_dma_allocate: herd %d allocated physical shim dma in col %d channel %d as logical dma %d for direction %d\n\r",herd_id, physical_col, channel, logical_col, direction);
 }
 
 void handle_packet_shim_memcpy(dispatch_packet_t *pkt)
 {
-  xil_printf("handle_packet_shim_memory\n\r");
+  air_printf("handle_packet_shim_memory\n\r");
   packet_set_active(pkt, true);
 
   uint16_t col = (pkt->arg[0] >> 32) & 0xffff;
@@ -720,13 +725,13 @@ void handle_packet_shim_memcpy(dispatch_packet_t *pkt)
   //XAieGbl_Tile tile;
   //xaie::XAieGbl_CfgInitialize_Tile(0, &(aie::TileInst[0][0]), col, row, xaie::AieConfigPtr);
 
-  xil_printf("shim_memcpy: col %d direction %d channel %d paddr %llx bytes %d\n\r",col, direction, channel, paddr, bytes);
+  air_printf("shim_memcpy: col %d direction %d channel %d paddr %llx bytes %d\n\r",col, direction, channel, paddr, bytes);
   xaie_shim_dma_push_bd(&xaie::ShimTileInst[col], direction, channel, paddr, bytes);
 }
 
 void handle_packet_herd_shim_memcpy(dispatch_packet_t *pkt)
 {
-  xil_printf("handle_packet_herd_shim_memory\n\r");
+  air_printf("handle_packet_herd_shim_memory\n\r");
   packet_set_active(pkt, true);
 
   uint16_t col = (pkt->arg[0] >> 32) & 0xffff;
@@ -739,14 +744,14 @@ void handle_packet_herd_shim_memcpy(dispatch_packet_t *pkt)
   //XAieGbl_Tile tile;
   //xaie::XAieGbl_CfgInitialize_Tile(0, &(aie::TileInst[0][0]), col, row, xaie::AieConfigPtr);
 
-  //xil_printf("herd_shim_memcpy: herd_d relative col %d direction %d paddr %llx bytes %d\n\r",col, direction, paddr, bytes);
+  //air_printf("herd_shim_memcpy: herd_d relative col %d direction %d paddr %llx bytes %d\n\r",col, direction, paddr, bytes);
   uint16_t mapped_col = (direction ==0) ? xaie::logicalToPhysicalS2MMshimDMAcolMap[col] : xaie::logicalToPhysicalMM2SshimDMAcolMap[col];  // todo: a 2d array
   uint16_t mapped_channel = (direction == 0) ? xaie::logicalToPhysicalS2MMshimDMAchannelMap[col] : xaie::logicalToPhysicalMM2SshimDMAchannelMap[col];
-  //xil_printf("Unmaps to col %d chan %d\n\r",mapped_col, mapped_channel);
-  //xil_printf("Somethings a happenin over in col %d\n\r", mapped_col);
+  //air_printf("Unmaps to col %d chan %d\n\r",mapped_col, mapped_channel);
+  //air_printf("Somethings a happenin over in col %d\n\r", mapped_col);
 /*
   for (int off=0x1D160; off <= 0x1d164; off += 4) {
-    xil_printf("Offset 0x%05X: %08X\n\r",off, XAieGbl_Read32(xaie::ShimTileInst[mapped_col].TileAddr + off));
+    air_printf("Offset 0x%05X: %08X\n\r",off, XAieGbl_Read32(xaie::ShimTileInst[mapped_col].TileAddr + off));
   }
   */
   xaie_shim_dma_push_bd(&xaie::ShimTileInst[mapped_col], direction, mapped_channel, paddr, bytes);
@@ -754,7 +759,7 @@ void handle_packet_herd_shim_memcpy(dispatch_packet_t *pkt)
 
 void handle_packet_herd_shim_1d_strided_memcpy(dispatch_packet_t *pkt)
 {
-  xil_printf("handle_packet_herd_shim_1d_strided_memcpy\n\r");
+  air_printf("handle_packet_herd_shim_1d_strided_memcpy\n\r");
   packet_set_active(pkt, true);
 
   uint16_t start_col = (pkt->arg[0] >> 32) & 0x00ff;
@@ -769,16 +774,16 @@ void handle_packet_herd_shim_1d_strided_memcpy(dispatch_packet_t *pkt)
   //XAieGbl_Tile tile;
   //xaie::XAieGbl_CfgInitialize_Tile(0, &(aie::TileInst[0][0]), col, row, xaie::AieConfigPtr);
 
-  xil_printf("herd_shim_1d_strided_memcpy: herd direction %d paddr %llx bytes %d stride %d\n\r",direction, paddr, bytes, stride);
+  air_printf("herd_shim_1d_strided_memcpy: herd direction %d paddr %llx bytes %d stride %d\n\r",direction, paddr, bytes, stride);
 
   for (int col=start_col; col<(start_col+num_cols); col++) {
     uint16_t mapped_col = (direction ==0) ? xaie::logicalToPhysicalS2MMshimDMAcolMap[col] : xaie::logicalToPhysicalMM2SshimDMAcolMap[col];  // todo: a 2d array
     uint16_t mapped_channel = (direction == 0) ? xaie::logicalToPhysicalS2MMshimDMAchannelMap[col] : xaie::logicalToPhysicalMM2SshimDMAchannelMap[col];
-    xil_printf("Unmaps to col %d chan %d\n\r",mapped_col, mapped_channel);
-  xil_printf("Somethings a happenin over in col %d\n\r", mapped_col);
+    air_printf("Unmaps to col %d chan %d\n\r",mapped_col, mapped_channel);
+  air_printf("Somethings a happenin over in col %d\n\r", mapped_col);
 
   for (int off=0x1D160; off <= 0x1d164; off += 4) {
-    xil_printf("Offset 0x%05X: %08X\n\r",off, XAieGbl_Read32(xaie::ShimTileInst[mapped_col].TileAddr + off));
+    air_printf("Offset 0x%05X: %08X\n\r",off, XAieGbl_Read32(xaie::ShimTileInst[mapped_col].TileAddr + off));
   }
     xaie_shim_dma_push_bd(&xaie::ShimTileInst[mapped_col], direction, mapped_channel, paddr, bytes);
     paddr += stride; // Because multiplication is nothing more than repeated addition ...
@@ -787,7 +792,7 @@ void handle_packet_herd_shim_1d_strided_memcpy(dispatch_packet_t *pkt)
 
 void handle_packet_nd_memcpy(dispatch_packet_t *pkt)
 {
-  xil_printf("handle_packet_nd_memcpy\n\r");
+  air_printf("handle_packet_nd_memcpy\n\r");
   packet_set_active(pkt, true);
 
   uint16_t memory_space = (pkt->arg[0] >> 16) & 0x00ff;
@@ -806,7 +811,7 @@ void handle_packet_nd_memcpy(dispatch_packet_t *pkt)
 
   if (memory_space == 2) {
     // This is the shim DMA
-    xil_printf("shim DMA %d dir %d chan %d paddr %llx 4d %d stride %d length 3d %d stride %d length, 2d %d stride %d length, 1d %d length\n\r",col, direction, channel, paddr, stride_4d, length_4d,
+    air_printf("shim DMA %d dir %d chan %d paddr %llx 4d %d stride %d length 3d %d stride %d length, 2d %d stride %d length, 1d %d length\n\r",col, direction, channel, paddr, stride_4d, length_4d,
        stride_3d, length_3d, stride_2d, length_2d, length_1d);
     uint64_t paddr_4d = paddr;
     uint64_t paddr_3d = paddr;
@@ -817,7 +822,7 @@ void handle_packet_nd_memcpy(dispatch_packet_t *pkt)
       for (uint32_t index_3d=0;index_3d<length_3d;index_3d++) {
         paddr_1d = paddr_2d;
         for (uint32_t index_2d=0;index_2d<length_2d;index_2d++) {
-          xil_printf("shim DMA %d %d [%d][%d][%d] paddr %llx \n\r",direction, channel, index_4d, index_3d, index_2d, paddr_1d);
+          air_printf("shim DMA %d %d [%d][%d][%d] paddr %llx \n\r",direction, channel, index_4d, index_3d, index_2d, paddr_1d);
           xaie_shim_dma_push_bd(&xaie::ShimTileInst[col], direction, channel, paddr_1d, length_1d);
           paddr_1d += stride_2d;
         }
@@ -827,7 +832,7 @@ void handle_packet_nd_memcpy(dispatch_packet_t *pkt)
     }
   }
   else {
-    xil_printf("NOT SUPPORTED: Cannot program memory space %d DMAs\n\r",memory_space);
+    air_printf("NOT SUPPORTED: Cannot program memory space %d DMAs\n\r",memory_space);
   }
 }
 
@@ -870,7 +875,7 @@ void get_dma_rsp(dma_rsp_t *rsp, int stream)
 
 // void test_stream()
 // {
-//   xil_printf("Test stream..");
+//   air_printf("Test stream..");
 //   static dma_cmd_t cmd;
 
 //   cmd.select = 2;
@@ -880,7 +885,7 @@ void get_dma_rsp(dma_rsp_t *rsp, int stream)
 
 //   put_dma_cmd(&cmd, 0);
 
-//   xil_printf("..");
+//   air_printf("..");
 
 //   static dma_rsp_t rsp;
 //   rsp.id = -1;
@@ -888,9 +893,9 @@ void get_dma_rsp(dma_rsp_t *rsp, int stream)
 
 
 //   if (rsp.id == cmd.id)
-//     xil_printf("PASS!\n\r");
+//     air_printf("PASS!\n\r");
 //   else
-//     xil_printf("fail, cmd=%d, rsp=%d\n\r", cmd.id, rsp.id);
+//     air_printf("fail, cmd=%d, rsp=%d\n\r", cmd.id, rsp.id);
 // }
 
 void handle_agent_dispatch_packet(dispatch_packet_t *pkt, uint32_t mb_id)
@@ -899,11 +904,11 @@ void handle_agent_dispatch_packet(dispatch_packet_t *pkt, uint32_t mb_id)
   uint32_t pkt_idx;
   memcpy(&pkt_idx, &pkt, sizeof(pkt_idx));
   pkt_idx = ((pkt_idx & 0x3fff) >> 6) - 2;
-  //xil_printf("handle agent dispatch pkt %x @ 0x%llx\n\r", pkt_idx, (size_t)pkt);
+  //air_printf("handle agent dispatch pkt %x @ 0x%llx\n\r", pkt_idx, (size_t)pkt);
 
-  //xil_printf("handle dispatch packet, args: 0x%llx 0x%llx 0x%llx 0x%llx\n\r",pkt->arg[0], pkt->arg[1], pkt->arg[2], pkt->arg[3]);
+  //air_printf("handle dispatch packet, args: 0x%llx 0x%llx 0x%llx 0x%llx\n\r",pkt->arg[0], pkt->arg[1], pkt->arg[2], pkt->arg[3]);
   auto op = pkt->arg[0] & 0xffff;
-  //xil_printf("Op is %04X\n\r",op);
+  //air_printf("Op is %04X\n\r",op);
   switch (op) {
     case AIR_PKT_TYPE_INVALID:
     default:
@@ -984,7 +989,7 @@ int main()
   num_mbs[0] = user1;
 
   lock_uart(mb_id);
-  xil_printf("MB %d of %d firmware %d.%d.%d created on %s at %s GMT\n\r",mb_id,*num_mbs,maj,min,ver,__DATE__, __TIME__); 
+  xil_printf("MB %d of %d firmware %d.%d.%d created on %s at %s GMT\n\r",mb_id+1,*num_mbs,maj,min,ver,__DATE__, __TIME__); 
   xil_printf("(c) Copyright 2020-2021 Xilinx, Inc. All rights reserved.\n\r");
   unlock_uart();
 
@@ -998,9 +1003,9 @@ int main()
   int cnt = 0;
   while (!done) {
     // if (!(cnt++ % 0x00100000))
-    //   xil_printf("No Ding Dong 0x%llx\n\r", q->doorbell);
+    //   air_printf("No Ding Dong 0x%llx\n\r", q->doorbell);
     if (q->doorbell+1 > q->last_doorbell) {
-      lock_uart(mb_id); xil_printf("Ding Dong 0x%llx\n\r", q->doorbell+1); unlock_uart();
+      lock_uart(mb_id); air_printf("Ding Dong 0x%llx\n\r", q->doorbell+1); unlock_uart();
 
       q->last_doorbell = q->doorbell+1;
 
@@ -1008,14 +1013,14 @@ int main()
       bool invalid = false;
       while (!invalid) {
         uint64_t rd_idx = queue_load_read_index(q);
-        //xil_printf("Handle pkt read_index=%d\n\r", rd_idx);
+        //air_printf("Handle pkt read_index=%d\n\r", rd_idx);
 
         dispatch_packet_t *pkt = &((dispatch_packet_t*)q->base_address)[rd_idx % q->size];
         switch (pkt->type) {
           default:
           case HSA_PACKET_TYPE_INVALID:
             if (setup) {
-              lock_uart(mb_id); xil_printf("Waiting\n\r"); unlock_uart();
+              lock_uart(mb_id); air_printf("Waiting\n\r"); unlock_uart();
               setup = false;
             }
             invalid = true;
