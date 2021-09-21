@@ -11,11 +11,6 @@ namespace air {
 
 std::unique_ptr<mlir::Pass> createAffineLoopOptPass();
 
-extern std::vector<uint64_t> AffineLoopOptCopyDepths;
-extern std::vector<uint64_t> AffineLoopOptTileSizes;
-extern uint64_t AffineLoopOptFastSpace;
-extern uint64_t AffineLoopOptSlowSpace;
-
 } // namespace air
 } // namespace xilinx
 

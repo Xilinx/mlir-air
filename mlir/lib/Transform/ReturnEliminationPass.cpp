@@ -1,7 +1,5 @@
 // (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
 
-// This is an empty module pass.  Copy it to make your own pass.
-
 #include "air/Transform/ReturnEliminationPass.h"
 
 #include "llvm/Support/Debug.h"
