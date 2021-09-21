@@ -4,8 +4,8 @@
 //
 // This pass regularizes loop nests by moving intermediate operations between
 // subloops in a loop nest inside the innermost loop body. The pass is 
-// essentiallythe inverse of the affine loop invariant code motion pass. For 
-// each opeation that makes the loop nest non-perfect, the pass will check 
+// essentially the inverse of the affine loop invariant code motion pass. For 
+// each operation that makes the loop nest non-perfect, the pass will check 
 // recursively if the content of the operation is independent of the induction 
 // variable of the inner loop. And if it is independent, the operation will be 
 // moved inside the inner loop body until the induction variable of the inner 
