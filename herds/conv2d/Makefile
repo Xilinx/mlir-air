@@ -17,16 +17,16 @@ all: test_cpu.exe
 		-ldl \
 		-o $@
 
-conv2d.mlir: conv2d.py
+conv2d_aten.mlir: conv2d.py
 	python3 $< > $@
 
-conv2d_affine.mlir: conv2d.mlir
+# convert to affine loops with the ordering suitable for multiple tilings...
+conv2d_affine.mlir: conv2d_aten.mlir
 	$(ATEN_OPT) -aten-to-xten \
 				-xten-to-affine='xten-loop-order=3,0,1,2,4' \
 				-cse -cse \
 				-o $@ $<
 
-# convert to affine loops with the ordering suitable for multiple tilings...
 # first tiling to model L3->L2 tiling associated with each 'logical column' of overlay/herd
 conv2d_tiled_0.mlir: conv2d_affine.mlir
 	$(AIR_OPT) -affine-loop-opt='affine-opt-tile-sizes=104' \
