@@ -202,7 +202,7 @@ public:
         ctx, linalg::LinalgTilingOptions().setTileSizes(tile_sizes)
                                           .setInterchange({2,1,0})
                                           .setLoopType(linalg::LinalgTilingLoopType::Loops),
-        linalg::LinalgTransformationFilter(Identifier::get("ACDC_mmult", ctx),
+        linalg::LinalgTransformationFilter(Identifier::get("xten_mmult", ctx),
                                           Identifier::get("L1", ctx)));
 
       // divide it up evenly between tiles
@@ -279,7 +279,7 @@ public:
                                                          ifm_channels_sw})
                                           .setInterchange({0,2,1,3,4,5,6})
                                           .setLoopType(linalg::LinalgTilingLoopType::Loops),
-        linalg::LinalgTransformationFilter(Identifier::get("ACDC_conv2d", ctx),
+        linalg::LinalgTransformationFilter(Identifier::get("xten_conv2d", ctx),
                                           Identifier::get("promote_L2", ctx)));
 
       stage1Patterns.insert<linalg::LinalgPromotionPattern<linalg::ConvNCHWOp>>(

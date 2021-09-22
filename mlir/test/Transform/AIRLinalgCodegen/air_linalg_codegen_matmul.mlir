@@ -49,7 +49,7 @@ module  {
     %0 = memref.buffer_cast %arg0 : memref<128x128xi32>
     %1 = memref.buffer_cast %arg1 : memref<128x128xi32>
     %2 = memref.alloc() : memref<128x128xi32>
-    linalg.matmul {__internal_linalg_transform__ = "ACDC_mmult"} ins(%0, %1 : memref<128x128xi32>, memref<128x128xi32>) outs(%2 : memref<128x128xi32>)
+    linalg.matmul {__internal_linalg_transform__ = "xten_mmult"} ins(%0, %1 : memref<128x128xi32>, memref<128x128xi32>) outs(%2 : memref<128x128xi32>)
     %3 = memref.tensor_load %2 : memref<128x128xi32>
     return %3 : tensor<128x128xi32>
   }
