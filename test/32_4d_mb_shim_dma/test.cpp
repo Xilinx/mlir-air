@@ -32,13 +32,16 @@ air_libxaie1_ctx_t *xaie;
 
 }
 
-#define IMAGE_WIDTH 32
+#define IMAGE_WIDTH 128
 #define IMAGE_HEIGHT 16
 #define IMAGE_SIZE  (IMAGE_WIDTH * IMAGE_HEIGHT)
 
 #define TILE_WIDTH 16
 #define TILE_HEIGHT 8
 #define TILE_SIZE  (TILE_WIDTH * TILE_HEIGHT)
+
+#define NUM_3D (IMAGE_WIDTH / TILE_WIDTH)
+#define NUM_4D (IMAGE_HEIGHT / TILE_HEIGHT)
 
 int
 main(int argc, char *argv[])
@@ -96,64 +99,36 @@ main(int argc, char *argv[])
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
-  dispatch_packet_t *pkt_a = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  //air_packet_nd_memcpy(pkt, herd, col, dir, ch, burst, space?, 
-  //                     phys_addr, 1d_len, 2d_len, 2d_str, 3d_len, 3d_str, 4d_len, 4d_str);
-  air_packet_nd_memcpy(pkt_a, 0, col, 1, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), 2, TILE_WIDTH*sizeof(float), 2, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
-  air_queue_dispatch_and_wait(q, wr_idx, pkt_a);
+  dispatch_packet_t *pkt_c = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  air_packet_nd_memcpy(pkt_c, 0, col, 0, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000+(IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
+  //air_queue_dispatch_and_wait(q, wr_idx, pkt_a);
 
   //printf("This completes the copying to the tiles, let's move the pattern back\n");
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
-  dispatch_packet_t *pkt_c = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_c, 0, col, 0, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000+(IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), 2, TILE_WIDTH*sizeof(float), 2, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
-  air_queue_dispatch_and_wait(q, wr_idx, pkt_c);
+  dispatch_packet_t *pkt_a = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  air_packet_nd_memcpy(pkt_a, 0, col, 1, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
+  air_queue_dispatch_and_wait(q, wr_idx-1, pkt_c);
 
   ACDC_print_dma_status(xaie->TileInst[7][2]);
   ACDC_print_dma_status(xaie->TileInst[7][4]);
   uint32_t errs = 0;
   // Let go check the tile memory
-  for (int i=0; i<TILE_SIZE; i++) {
-    uint32_t d = mlir_read_buffer_buf72_0(i);
-    u32 row = i / 16;
-    u32 col = i % 16;
-    u32 o_i = row * 32 + col;
-    if (d != o_i) {
-      printf("ERROR: buf72_0 idx %d Expected %08X, got %08X\n", i, o_i, d);
-      errs++;
-    } 
-  }
-  for (int i=0; i<TILE_SIZE; i++) {
-    uint32_t d = mlir_read_buffer_buf72_0(i+TILE_SIZE);
-    u32 row = i / 16;
-    u32 col = i % 16;
-    u32 o_i = row * 32 + col + TILE_WIDTH;
-    if (d != o_i) {
-      printf("ERROR: buf72_0 idx %d Expected %08X, got %08X\n", i+TILE_SIZE, o_i, d);
-      errs++;
-    } 
-  }
-  for (int i=0; i<TILE_SIZE; i++) {
-    uint32_t d = mlir_read_buffer_buf72_0(i+2*TILE_SIZE);
-    u32 row = i / 16;
-    u32 col = i % 16;
-    u32 o_i = row * 32 + col + IMAGE_WIDTH*TILE_HEIGHT;
-    if (d != o_i) {
-      printf("ERROR: buf72_0 idx %d Expected %08X, got %08X\n", i+2*TILE_SIZE, o_i, d);
-      errs++;
-    } 
-  }
-  for (int i=0; i<TILE_SIZE; i++) {
-    uint32_t d = mlir_read_buffer_buf72_0(i+3*TILE_SIZE);
-    u32 row = i / 16;
-    u32 col = i % 16;
-    u32 o_i = row * 32 + col + IMAGE_WIDTH*TILE_HEIGHT + TILE_WIDTH;
-    if (d != o_i) {
-      printf("ERROR: buf72_0 idx %d Expected %08X, got %08X\n", i+3*TILE_SIZE, o_i, d);
-      errs++;
-    } 
-  }
+  // Will be last two tiles transferred
+  //for (int j=0; j<2; j++) {
+  //  for (int i=0; i<TILE_SIZE; i++) {
+  //    uint32_t d = mlir_read_buffer_buf72_0(i+TILE_SIZE*j);
+  //    u32 row = i / TILE_WIDTH;
+  //    u32 col = i % TILE_WIDTH;
+  //    u32 o_i = row * IMAGE_WIDTH + col + TILE_WIDTH*j; // NOTE this has not been updated
+  //    if (d != o_i) {`
+  //      printf("ERROR: buf72_0 idx %d Expected %08X, got %08X\n", i, o_i, d);
+  //      errs++;
+  //    } 
+  //  }
+  //}
+
   // And the BRAM we updated
   for (int i=0; i<IMAGE_SIZE; i++) {
     uint32_t d = bram_ptr[IMAGE_SIZE+i];;

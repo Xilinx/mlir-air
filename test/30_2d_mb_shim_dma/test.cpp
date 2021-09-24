@@ -32,7 +32,7 @@ air_libxaie1_ctx_t *xaie;
 
 }
 
-#define IMAGE_WIDTH 32
+#define IMAGE_WIDTH 128
 #define IMAGE_HEIGHT 16
 #define IMAGE_SIZE  (IMAGE_WIDTH * IMAGE_HEIGHT)
 
@@ -96,19 +96,18 @@ main(int argc, char *argv[])
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
-  dispatch_packet_t *pkt_a = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  //air_packet_nd_memcpy(pkt, herd, col, dir, ch, burst, space?, 
-  //                     phys_addr, 1d_len, 2d_len, 2d_str, 3d_len, 3d_str, 4d_len, 4d_str);
-  air_packet_nd_memcpy(pkt_a, 0, col, 1, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), 1, 0, 1, 0);
-  air_queue_dispatch_and_wait(q, wr_idx, pkt_a);
+  dispatch_packet_t *pkt_c = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  air_packet_nd_memcpy(pkt_c, 0, col, 0, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000+(IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), 1, 0, 1, 0);
+  //air_queue_dispatch_and_wait(q, wr_idx, pkt_c);
 
   //printf("This completes the copying to the tiles, let's move the pattern back\n");
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
-  dispatch_packet_t *pkt_c = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_c, 0, col, 0, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000+(IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), 1, 0, 1, 0);
-  air_queue_dispatch_and_wait(q, wr_idx, pkt_c);
+  dispatch_packet_t *pkt_a = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  air_packet_nd_memcpy(pkt_a, 0, col, 1, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), 1, 0, 1, 0);
+  //air_queue_dispatch_and_wait(q, wr_idx-1, pkt_c);
+  air_queue_dispatch_and_wait(q, wr_idx, pkt_a);
 
   ACDC_print_dma_status(xaie->TileInst[7][2]);
   ACDC_print_dma_status(xaie->TileInst[7][4]);
