@@ -60,8 +60,9 @@ main(int argc, char *argv[])
   uint32_t *bram_ptr;
 
   // We're going to stamp over the memories
-  for (int i=0; i<IMAGE_SIZE; i++) {
+  for (int i=0; i<2*TILE_SIZE; i++) {
     mlir_write_buffer_buf72_0(i, 0xdeadbeef);
+    mlir_write_buffer_buf72_1(i, 0xfeedface);
   }
   // create the queue
   queue_t *q = nullptr;
@@ -94,6 +95,7 @@ main(int argc, char *argv[])
 
   //printf("This starts the copying to the tiles\n");
 
+  // Start by sending the packet to read from the tiles
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_c = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
@@ -102,6 +104,7 @@ main(int argc, char *argv[])
 
   //printf("This completes the copying to the tiles, let's move the pattern back\n");
 
+  // Send the packet to write the tiles
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_a = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;

@@ -62,8 +62,9 @@ main(int argc, char *argv[])
   uint32_t *bram_ptr;
 
   // We're going to stamp over the memories
-  for (int i=0; i<IMAGE_SIZE; i++) {
+  for (int i=0; i<2*TILE_SIZE; i++) {
     mlir_write_buffer_buf72_0(i, 0xdeadbeef);
+    mlir_write_buffer_buf72_1(i, 0xfeedface);
   }
   // create the queue
   queue_t *q = nullptr;
@@ -113,14 +114,14 @@ main(int argc, char *argv[])
   ACDC_print_dma_status(xaie->TileInst[7][2]);
   ACDC_print_dma_status(xaie->TileInst[7][4]);
   uint32_t errs = 0;
-  // Let go check the tile memory
-  // Will be last two tiles transferred
+  // Can check the tile memory however it will be last two tiles transferred into the ping-pong tiles
+  // NOTE this is set up for IMAGE_WIDTH 32
   //for (int j=0; j<2; j++) {
   //  for (int i=0; i<TILE_SIZE; i++) {
   //    uint32_t d = mlir_read_buffer_buf72_0(i+TILE_SIZE*j);
   //    u32 row = i / TILE_WIDTH;
   //    u32 col = i % TILE_WIDTH;
-  //    u32 o_i = row * IMAGE_WIDTH + col + TILE_WIDTH*j; // NOTE this is set up for IMAGE_WIDTH 32
+  //    u32 o_i = row * IMAGE_WIDTH + col + TILE_WIDTH*j; 
   //    if (d != o_i) {`
   //      printf("ERROR: buf72_0 idx %d Expected %08X, got %08X\n", i, o_i, d);
   //      errs++;
@@ -135,12 +136,12 @@ main(int argc, char *argv[])
     u32 c = i % IMAGE_WIDTH;
     if ((r < TILE_HEIGHT)) {
       if (d != i) {
-        printf("ERROR: buf72_0 copy idx %d Expected %08X, got %08X\n", i, i, d);
+        printf("ERROR: copy idx %d Expected %08X, got %08X\n", i, i, d);
         errs++;
       }
     } else {
       if (d != 0xf001ba11) {
-        printf("ERROR: buf72_0 copy idx %d Expected %08X, got %08X\n", i, 0xf001ba11, d);
+        printf("ERROR: copy idx %d Expected %08X, got %08X\n", i, 0xf001ba11, d);
         errs++;
       }
     } 

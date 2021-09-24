@@ -63,9 +63,11 @@ main(int argc, char *argv[])
   uint32_t *bram_ptr;
 
   // We're going to stamp over the memories
-  for (int i=0; i<IMAGE_SIZE; i++) {
+  for (int i=0; i<2*TILE_SIZE; i++) { 
     mlir_write_buffer_buf72_0(i, 0xdeadbeef);
+    mlir_write_buffer_buf72_1(i, 0xfeedface);
   }
+
   // create the queue
   queue_t *q = nullptr;
   auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
@@ -97,6 +99,7 @@ main(int argc, char *argv[])
 
   //printf("This starts the copying to the tiles\n");
 
+  // Start by sending the packet to read from the tiles
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_c = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
@@ -105,6 +108,7 @@ main(int argc, char *argv[])
 
   //printf("This completes the copying to the tiles, let's move the pattern back\n");
 
+  // Send the packet to write the tiles
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_a = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
@@ -114,22 +118,9 @@ main(int argc, char *argv[])
   ACDC_print_dma_status(xaie->TileInst[7][2]);
   ACDC_print_dma_status(xaie->TileInst[7][4]);
   uint32_t errs = 0;
-  // Let go check the tile memory
-  // Will be last two tiles transferred
-  //for (int j=0; j<2; j++) {
-  //  for (int i=0; i<TILE_SIZE; i++) {
-  //    uint32_t d = mlir_read_buffer_buf72_0(i+TILE_SIZE*j);
-  //    u32 row = i / TILE_WIDTH;
-  //    u32 col = i % TILE_WIDTH;
-  //    u32 o_i = row * IMAGE_WIDTH + col + TILE_WIDTH*j; // NOTE this has not been updated
-  //    if (d != o_i) {`
-  //      printf("ERROR: buf72_0 idx %d Expected %08X, got %08X\n", i, o_i, d);
-  //      errs++;
-  //    } 
-  //  }
-  //}
+  // Can check the tile memory however it will be last two tiles transferred into the ping-pong tiles
 
-  // And the BRAM we updated
+  // Now check the BRAM we updated
   for (int i=0; i<IMAGE_SIZE; i++) {
     uint32_t d = bram_ptr[IMAGE_SIZE+i];;
     if (d != i) {
