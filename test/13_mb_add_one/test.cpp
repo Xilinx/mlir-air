@@ -56,131 +56,82 @@ main(int argc, char *argv[])
 
   uint32_t *bram_ptr;
 
-  #define BRAM_ADDR 0x4000+0x020100000000LL
+  #define BRAM_ADDR 0x4000+AIR_VCK190_SHMEM_BASE
   #define DMA_COUNT 16
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd != -1) {
     bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, BRAM_ADDR);
     for (int i=0; i<DMA_COUNT; i++) {
-      bram_ptr[i] = 0;
+      bram_ptr[i] = i+1;
       bram_ptr[DMA_COUNT+i] = 0xdeface;
-      //printf("%p %llx\n", &bram_ptr[i], bram_ptr[i]);
+      printf("bbuf %p %llx\n", &bram_ptr[i], bram_ptr[i]);
     }
   }
 
-  for (int i=0; i<DMA_COUNT*2; i++) {
-    XAieTile_DmWriteWord(&(TileInst[col][2]), 0x1000+i*4, 0xdecaf);
+  for (int i=0; i<8; i++) {
+    mlir_write_buffer_ping_in(i, 0xabbaba00+i);
+    mlir_write_buffer_pong_in(i, 0xdeeded00+i);
+    mlir_write_buffer_ping_out(i, 0x12345670+i);
+    mlir_write_buffer_pong_out(i, 0x76543210+i);
   }
 
   // create the queue
   queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, SHMEM_BASE);
+  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
   assert(ret == 0 && "failed to create queue!");
-
-  uint64_t wr_idx = queue_add_write_index(q, 1);
-  uint64_t packet_id = wr_idx % q->size;
-
-  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(herd_pkt);
-  herd_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
   //
   // Set up a 1x3 herd starting 7,0
   //
-
-  herd_pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
-  herd_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
-  herd_pkt->arg[0] |= (1L << 40);
-  herd_pkt->arg[0] |= (7L << 32);
-  herd_pkt->arg[0] |= (3L << 24);
-  herd_pkt->arg[0] |= (0L << 16);
-  
-  herd_pkt->arg[1] = 0;  // Herd ID 0
-  herd_pkt->arg[2] = 0;
-  herd_pkt->arg[3] = 0;
-
-  // dispatch packet
-  signal_create(1, 0, NULL, (signal_t*)&herd_pkt->completion_signal);
-  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-  signal_store_release((signal_t*)&q->doorbell, wr_idx);
+  uint64_t wr_idx = queue_add_write_index(q, 1);
+  uint64_t packet_id = wr_idx % q->size;
+  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  air_packet_herd_init(herd_pkt, 0, col, 1, row, 3);
+  air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
-
   dispatch_packet_t *shim_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(shim_pkt);
-  shim_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  shim_pkt->arg[0]  = AIR_PKT_TYPE_DEVICE_INITIALIZE;
-  shim_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
-  shim_pkt->arg[0] |= ((uint64_t)XAIE_NUM_COLS << 40);
-
+  air_packet_device_init(shim_pkt,XAIE_NUM_COLS);
   air_queue_dispatch_and_wait(q, wr_idx, shim_pkt);
+
   //
   // send the data
   //
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
-
   dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  pkt->arg[0] = AIR_PKT_TYPE_SHIM_DMA_MEMCPY;
-  pkt->arg[0] |= (row << 16);
-  pkt->arg[0] |= (col << 32);
-  uint64_t flags = 0x1;
-  pkt->arg[0] |= (flags << 48);
-
-  uint32_t burst_len = 4;
-  uint64_t direction = 1;
-  uint64_t channel = XAIEDMA_SHIM_CHNUM_MM2S0;
-
-  pkt->arg[1] = burst_len;
-  pkt->arg[1] |= (direction << 32);
-  pkt->arg[1] |= (channel << 48);
-  pkt->arg[2] = BRAM_ADDR;
-  pkt->arg[3] = DMA_COUNT*sizeof(float);
-
-  signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
-  //signal_store_release((signal_t*)&q->doorbell, wr_idx);
+  air_packet_nd_memcpy(pkt, 0, col, 1, 0, 4, 2, BRAM_ADDR, DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
 
   //
   // read the data
   //
 
-   wr_idx = queue_add_write_index(q, 1);
+  wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
-
-  pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  pkt->arg[0] = AIR_PKT_TYPE_SHIM_DMA_MEMCPY;
-  pkt->arg[0] |= (row << 16);
-  pkt->arg[0] |= (col << 32);
-  pkt->arg[0] |= (flags << 48);
-  
-  direction = 0;
-  channel = XAIEDMA_SHIM_CHNUM_S2MM0;
-
-  pkt->arg[1] = burst_len;
-  pkt->arg[1] |= (direction << 32);
-  pkt->arg[1] |= (channel << 48);
-  pkt->arg[2] = BRAM_ADDR+DMA_COUNT*sizeof(float);
-  pkt->arg[3] = DMA_COUNT*sizeof(float);
-
-  signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
-  signal_store_release((signal_t*)&q->doorbell, wr_idx);
-
-  while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-    printf("packet completion signal timeout!\n");
-    printf("%x\n", pkt->header);
-    printf("%x\n", pkt->type);
-    printf("%x\n", pkt->completion_signal);
-    break;
-  }
+  dispatch_packet_t *pkt2 = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  air_packet_nd_memcpy(pkt2, 0, col, 0, 0, 4, 2, BRAM_ADDR+(DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_queue_dispatch_and_wait(q, wr_idx, pkt2);
 
   int errors = 0;
+
+  for (int i=0; i<8; i++) {
+    uint32_t d0 = mlir_read_buffer_ping_in(i);
+    uint32_t d1 = mlir_read_buffer_pong_in(i);
+    uint32_t d2 = mlir_read_buffer_ping_out(i);
+    uint32_t d3 = mlir_read_buffer_pong_out(i);
+    if (d0+1 != d2) {
+      printf("mismatch ping %x != %x\n", d0, d2);
+      errors++;
+    }
+    if (d1+1 != d3) {
+      printf("mismatch pong %x != %x\n", d1, d3);
+      errors++;
+    }
+  }
+
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = bram_ptr[DMA_COUNT+i];
     if (d != (i+2)) {
@@ -193,7 +144,7 @@ main(int argc, char *argv[])
     return 0;
   }
   else {
-    printf("fail %d/%d.\n", (DMA_COUNT-errors), DMA_COUNT);
+    printf("fail %d/%d.\n", errors, DMA_COUNT);
     return -1;
   }
 
