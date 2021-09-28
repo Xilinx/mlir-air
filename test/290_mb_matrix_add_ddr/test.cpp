@@ -18,6 +18,7 @@
 #include "hsa_defs.h"
 
 #define BRAM_ADDR 0x4000+AIR_VCK190_SHMEM_BASE
+#define DDR_ADDR  0x2000
 
 namespace {
 
@@ -33,12 +34,12 @@ air_libxaie1_ctx_t *xaie;
 }
 
 // test configuration
-#define IMAGE_WIDTH 128
-#define IMAGE_HEIGHT 16
+#define IMAGE_WIDTH 192
+#define IMAGE_HEIGHT 192
 #define IMAGE_SIZE  (IMAGE_WIDTH * IMAGE_HEIGHT)
 
-#define TILE_WIDTH 16
-#define TILE_HEIGHT 8
+#define TILE_WIDTH 32
+#define TILE_HEIGHT 32
 #define TILE_SIZE  (TILE_WIDTH * TILE_HEIGHT)
 
 #define NUM_3D (IMAGE_WIDTH / TILE_WIDTH)
@@ -62,14 +63,23 @@ main(int argc, char *argv[])
 
   // setup images in memory
   uint32_t *bram_ptr;
+  uint32_t *dram_ptr;
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd != -1) {
     bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, BRAM_ADDR);
+  } else return -1;
+
+  if (fd != -1) {
+    dram_ptr = (uint32_t *)mmap(NULL, 0x100000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, DDR_ADDR);
+    if ((3*IMAGE_SIZE*sizeof(uint32_t)) > 0x100000) {
+      printf("Image buffers out of range!\n");
+      return -1;
+    }
     for (int i=0; i<IMAGE_SIZE; i++) {
-      bram_ptr[i] = i+1;
-      bram_ptr[IMAGE_SIZE+i] = 1;
-      bram_ptr[2*IMAGE_SIZE+i] = 0xdeface;
+      dram_ptr[i] = i+1;
+      dram_ptr[IMAGE_SIZE+i] = i+1;
+      dram_ptr[2*IMAGE_SIZE+i] = 0xdeface;
     }
   } else return -1;
 
@@ -102,34 +112,34 @@ main(int argc, char *argv[])
   air_queue_dispatch_and_wait(q, wr_idx, shim_pkt);
 
   //
-  // packet to read the data
+  // packet to read the output matrix
   //
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_c = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_c, 0, col, 0, 0, 4, 2, BRAM_ADDR+(2*IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
+  air_packet_nd_memcpy(pkt_c, 0, col, 0, 0, 4, 2, DDR_ADDR+(2*IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
 
   //
-  // packet to send the data
+  // packet to send the input matrices
   //
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_a = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_a, 0, col, 1, 0, 4, 2, BRAM_ADDR, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
+  air_packet_nd_memcpy(pkt_a, 0, col, 1, 0, 4, 2, DDR_ADDR, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_b = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_b, 0, col, 1, 1, 4, 2, BRAM_ADDR+(IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
+  air_packet_nd_memcpy(pkt_b, 0, col, 1, 1, 4, 2, DDR_ADDR+(IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
 
   //
   // dispatch the packets to the MB
   //
 
   air_queue_dispatch_and_wait(q, wr_idx-2, pkt_c);
-
+  
   int errors = 0;
   // check the aie tiles
   for (int i=0; i<TILE_SIZE; i++) {
@@ -151,8 +161,8 @@ main(int argc, char *argv[])
 
   // check the output image
   for (int i=0; i<IMAGE_SIZE; i++) {
-    uint32_t d = bram_ptr[2*IMAGE_SIZE+i];
-    if (d != (i+2)) {
+    uint32_t d = dram_ptr[2*IMAGE_SIZE+i];
+    if (d != ((i+1)*2)) {
       errors++;
       printf("mismatch %x != 2 + %x\n", d, i);
     }
