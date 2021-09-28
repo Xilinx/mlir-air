@@ -49,7 +49,7 @@ def air_HerdTerminatorOp : air_Op<"herd_terminator", [HasParent<"HerdLaunchOp">,
     Arguments<(ins)>, Results<(outs)> {
   let summary = "Terminator for air launch_herd regions.";
   let description = [{
-    A terminator operation for regions that appear in the body of 
+    A terminator operation for regions that appear in the body of
     `air.launch_herd` operation.  These regions are not expected to return any
     value so the terminator takes no operands.
   }];
@@ -60,8 +60,8 @@ def air_HerdTerminatorOp : air_Op<"herd_terminator", [HasParent<"HerdLaunchOp">,
 
 def air_HerdPipelineOp : air_Op<"pipeline", [HasParent<"HerdLaunchOp">,
                                              AffineScope]>,
-                          Arguments<(ins Variadic<AnyType>:$opers)>,
-                          Results<(outs Variadic<AnyType>:$returns)> {
+                          Arguments<(ins)>,
+                          Results<(outs)> {
   let summary = "Define a pipeline";
   let description = [{
     Define a pipeline within an AIR Herd.
@@ -70,21 +70,49 @@ def air_HerdPipelineOp : air_Op<"pipeline", [HasParent<"HerdLaunchOp">,
   let regions = (region AnyRegion:$body);
 
   let assemblyFormat = [{
-    `(` $opers `)` `:` type($opers) attr-dict $body `->` `(` type($returns) `)`
+    attr-dict $body
   }];
 }
 
-def air_PipelineYieldOp : air_Op<"pipeline_yield", [HasParent<"HerdPipelineOp">,
+def air_PipelineStageOp : air_Op<"pipeline.stage", [HasParent<"HerdPipelineOp">]>,
+    Arguments<(ins Variadic<AnyType>:$opers)>, Results<(outs Variadic<AnyType>:$results)> {
+  let summary = "Pipeline stage";
+  let regions = (region AnyRegion:$body);
+  // let assemblyFormat = [{
+  //   `(` $opers `)` `:` type($opers) attr-dict $body `->` `(` type($results) `)`
+  // }];
+  let description = [{
+    Pipeline stage.
+  }];
+  let parser = [{ return parsePipelineStageOp(parser, result); }];
+  let printer = [{ printPipelineStageOp(p, *this); }];
+  let verifier = [{ return ::verify(*this); }];
+}
+
+def air_PipelineYieldOp : air_Op<"pipeline.yield", [HasParent<"PipelineStageOp">,
                                           NoSideEffect, Terminator]>,
     Arguments<(ins Variadic<AnyType>:$opers)>, Results<(outs)> {
-  let summary = "Yield for air pipeline regions.";
+  let summary = "Yield for air pipeline stages.";
+  let description = [{
+    A terminator operation for regions that appear in the body of 
+    `air.pipeline.yield` operation.
+  }];
+  let assemblyFormat = [{
+    ($opers^)? attr-dict (`:` type($opers)^)?
+  }];
+}
+
+def air_PipelineTerminatorOp : air_Op<"pipeline.terminator", [HasParent<"HerdPipelineOp">,
+                                          NoSideEffect, Terminator]>,
+    Arguments<(ins Variadic<AnyType>:$opers)>, Results<(outs)> {
+  let summary = "Terminator for air pipeline regions.";
   let description = [{
     A terminator operation for regions that appear in the body of 
     `air.pipeline` operation.
   }];
-  let assemblyFormat = [{
-    `(` $opers `)`  attr-dict `->` `(` type($opers) `)`
-  }];
+
+  let parser = [{ return success(); }];
+  let printer = [{ p << getOperationName(); }];
 }
 
 def air_DmaMemcpy4dOp: air_Op<"dma_memcpy_4d", [air_AsyncOpInterface, air_DmaMemcpyInterface]> {

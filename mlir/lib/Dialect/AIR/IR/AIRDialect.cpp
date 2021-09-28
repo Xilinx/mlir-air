@@ -254,6 +254,94 @@ Value HerdLaunchOp::getKernelOperand(unsigned i) {
 ArrayRef<BlockArgument> HerdLaunchOp::getKernelArguments() {
   return body().front().getArguments().drop_front(4);
 }
+
+
+static ParseResult
+parsePipelineStageOp(OpAsmParser &parser, OperationState &result) {
+
+  SmallVector<OpAsmParser::OperandType, 4> args;
+
+  SmallVector<OpAsmParser::OperandType, 4> kernelOperands;
+  SmallVector<OpAsmParser::OperandType, 4> kernelArguments;
+  SmallVector<Type, 4> types;
+  if (succeeded(parser.parseOptionalKeyword("args"))) {
+    if (parser.parseLParen())
+      return failure();
+    do {
+      OpAsmParser::OperandType argument;
+      OpAsmParser::OperandType operand;
+      if (parser.parseRegionArgument(argument) || parser.parseEqual() ||
+        parser.parseOperand(operand))
+      return failure();
+      kernelArguments.push_back(argument);
+      kernelOperands.push_back(operand);
+    } while (succeeded(parser.parseOptionalComma()));
+    if (parser.parseRParen())
+      return failure();
+    if (parser.parseColonTypeList(types))
+      return failure();
+  }
+
+  for (int i=0,e=kernelOperands.size(); i<e; i++) {
+    args.push_back(kernelArguments[i]);
+    parser.resolveOperand(kernelOperands[i], types[i], result.operands);
+  }
+
+  parser.parseOptionalAttrDictWithKeyword(result.attributes);
+
+  Region *body = result.addRegion();
+  if (parser.parseRegion(*body, args, types))
+    return failure();
+
+  SmallVector<Type, 4> retTypes;
+  if (parser.parseOptionalColon())
+    return success();
+
+  if (parser.parseTypeList(retTypes))
+    return failure();
+
+  result.addTypes(retTypes);
+  return success();
+}
+
+//
+// PipelineStageOp
+//
+
+static LogicalResult verify(PipelineStageOp op) {
+  return success();
+}
+
+static void printPipelineStageOp(OpAsmPrinter &p, PipelineStageOp op) {
+
+  p << PipelineStageOp::getOperationName();
+
+  if (op.getNumOperands()) {
+    auto args = op.body().front().getArguments();
+    p << " args(";
+    for (int i=0,e=op.getNumOperands(); i<e; i++) {
+      if (i) p << ", ";
+      p << args[i] << "=";
+      p << op.getOperand(i);
+    }
+    p << ") : ";
+    for (int i=0,e=op.getNumOperands(); i<e; i++) {
+      if (i) p << ",";
+      p << op.getOperand(i).getType();
+    }
+  }
+
+  if (op->getAttrs().size())
+    p << " attributes";
+  p.printOptionalAttrDict(op->getAttrs());
+  p.printRegion(op.body(), /*printEntryBlockArgs=*/false);
+
+  if (op->getNumResults())
+    p << " : ";
+  for (Type type : op->getResultTypes())
+    p.printType(type);
+}
+
 //===----------------------------------------------------------------------===//
 // AsyncOpInterface
 //===----------------------------------------------------------------------===//
