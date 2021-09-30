@@ -27,13 +27,13 @@
 #define DEBUG_TYPE "air-herd-assign"
 
 using namespace mlir;
+using namespace xilinx::air;
 
 static llvm::cl::OptionCategory clOptionsCategory(DEBUG_TYPE " options");
 
 namespace {
 
-class AIRHerdAssignPass : public PassWrapper<AIRHerdAssignPass,
-                                              OperationPass<ModuleOp>> {
+class AIRHerdAssignPass : public AIRHerdAssignBase<AIRHerdAssignPass> {
 
 public:
 

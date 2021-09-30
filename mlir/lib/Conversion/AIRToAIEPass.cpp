@@ -1,10 +1,10 @@
 // (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
 
-#include "PassDetail.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "aie/AIEDialect.h"
+#include "PassDetail.h"
 
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -24,6 +24,7 @@
 
 using namespace mlir;
 using namespace xilinx;
+using namespace xilinx::air;
 
 namespace {
 
@@ -135,8 +136,7 @@ struct DMAAllocator {
   }
 };
 
-class AIRToAIEPass : public PassWrapper<AIRToAIEPass,
-                                        OperationPass<ModuleOp>> {
+class AIRToAIEPass : public AIRToAIEBase<AIRToAIEPass> {
 
 public:
   AIRToAIEPass() = default;

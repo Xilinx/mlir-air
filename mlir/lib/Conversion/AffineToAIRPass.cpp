@@ -1,8 +1,8 @@
 // (c) Copyright 2019 Xilinx Inc. All Rights Reserved.
 
-#include "PassDetail.h"
-#include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Conversion/AffineToAIRPass.h"
+#include "air/Dialect/AIR/AIRDialect.h"
+#include "PassDetail.h"
 
 #include "mlir/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -37,6 +37,7 @@
 
 using namespace mlir;
 using namespace xilinx;
+using namespace xilinx::air;
 
 #define DEBUG_TYPE "affine-to-air"
 
@@ -412,8 +413,7 @@ public:
   }
 };
 
-struct AffineToAIRPass : public PassWrapper<AffineToAIRPass,
-                                            OperationPass<ModuleOp>> {
+struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
      registry.insert<xilinx::air::airDialect>();

@@ -9,6 +9,8 @@
 using namespace mlir;
 using namespace xilinx::airrt;
 
+#include "air/Dialect/AIRRt/AIRRtOpsDialect.cpp.inc"
+
 void AIRRtDialect::initialize() {
   addOperations<
 #define GET_OP_LIST

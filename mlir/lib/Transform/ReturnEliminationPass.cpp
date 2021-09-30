@@ -18,11 +18,11 @@
 #define DEBUG_TYPE "return-elimination"
 
 using namespace mlir;
+using namespace xilinx::air;
 
 namespace {
 
-class ReturnEliminationPass : public PassWrapper<ReturnEliminationPass,
-                                                 OperationPass<ModuleOp>> {
+class ReturnEliminationPass : public AIRReturnEliminationBase<ReturnEliminationPass> {
 
 public:
   ReturnEliminationPass() {}

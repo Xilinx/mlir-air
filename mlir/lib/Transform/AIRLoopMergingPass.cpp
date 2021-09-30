@@ -12,6 +12,7 @@
 
 #include "air/Transform/AIRLoopMergingPass.h"
 #include "air/Transform/AIRTilingUtils.h"
+#include "PassDetail.h"
 
 #include "mlir/Analysis/AffineAnalysis.h"
 #include "mlir/Analysis/LoopAnalysis.h"
@@ -35,11 +36,11 @@
 
 using namespace mlir;
 using namespace xilinx;
+using namespace xilinx::air;
 
 namespace {
   
-class AIRLoopMergingPass : public PassWrapper<AIRLoopMergingPass, 
-                                                  FunctionPass> {
+class AIRLoopMergingPass : public AIRLoopMergingPassBase<AIRLoopMergingPass> {
 
 public:
   AIRLoopMergingPass() = default;
@@ -60,7 +61,7 @@ public:
                               nest"),
                           llvm::cl::init("")};
 
-  void runOnFunction() override;
+  void runOnOperation() override;
 
   static const char *affineOptAttrName;
 
@@ -210,9 +211,9 @@ static void constructReducedLoopNest(MutableArrayRef<AffineForOp> origLoops,
   origLoops[0].erase();
 }
 
-void AIRLoopMergingPass::runOnFunction() {
+void AIRLoopMergingPass::runOnOperation() {
 
-  auto func = getFunction();
+  auto func = getOperation();
   SmallVector<unsigned, 3> reduceLoopLevels;
   for (unsigned i = 0; i < clLoopMergeLevels.size(); i++) {
     reduceLoopLevels.push_back(clLoopMergeLevels[i]);

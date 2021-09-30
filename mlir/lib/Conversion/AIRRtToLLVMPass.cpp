@@ -5,6 +5,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include "mlir/Conversion/StandardToLLVM/ConvertStandardToLLVM.h"
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
@@ -21,6 +22,7 @@
 #define DEBUG_TYPE "airrt-to-llvm-pass"
 
 using namespace mlir;
+using namespace xilinx::air;
 
 namespace {
 
@@ -514,8 +516,7 @@ public:
   }
 };
 
-class AIRRtToLLVM : public PassWrapper<AIRRtToLLVM,
-                                       OperationPass<ModuleOp>> {
+class AIRRtToLLVM : public AIRRtToLLVMBase<AIRRtToLLVM> {
 
 public:
   AIRRtToLLVM() {}

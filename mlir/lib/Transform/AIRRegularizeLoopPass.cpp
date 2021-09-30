@@ -46,11 +46,11 @@
 
 using namespace mlir;
 using namespace xilinx;
+using namespace xilinx::air;
 
 namespace {
   
-class AIRRegularizeLoopPass : public PassWrapper<AIRRegularizeLoopPass, 
-                                                  FunctionPass> {
+class AIRRegularizeLoopPass : public AIRRegularizeLoopBase<AIRRegularizeLoopPass> {
 
 public:
   AIRRegularizeLoopPass() = default;
@@ -61,7 +61,7 @@ public:
                               label"),
                           llvm::cl::init("")};
 
-  void runOnFunction() override;
+  void runOnOperation() override;
   void runOnAffineForNest(SmallVector<AffineForOp, 6> &band);
                               
   static const char *affineOptAttrName;
@@ -241,12 +241,12 @@ void AIRRegularizeLoopPass::runOnAffineForNest(SmallVector<AffineForOp, 6> &band
   }
 }
 
-void AIRRegularizeLoopPass::runOnFunction() {
+void AIRRegularizeLoopPass::runOnOperation() {
   // Walk through all loops in a function in outermost-loop-first order. This
   // way, we iteratively move operations inside loop body until we hit a 
   // dependency conflict or there are no loops at the same level.
 
-  auto func = getFunction();
+  auto func = getOperation();
 
   std::vector<SmallVector<AffineForOp, 6>> bands;
   xilinx::air::getTileableBands(func, bands, 

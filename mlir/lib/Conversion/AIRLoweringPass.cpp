@@ -33,6 +33,7 @@
 #define DEBUG_TYPE "air-lowering-pass"
 
 using namespace mlir;
+using namespace xilinx::air;
 
 namespace {
 
@@ -453,8 +454,7 @@ public:
   }
 };
 
-class AIRLoweringPass : public PassWrapper<AIRLoweringPass,
-                                           OperationPass<ModuleOp>> {
+class AIRLoweringPass : public AIRLoweringBase<AIRLoweringPass> {
 
   MemRefType convertTensorType(TensorType tensor) {
     return mlir::MemRefType::get(tensor.getShape(), tensor.getElementType(), {}, 0);

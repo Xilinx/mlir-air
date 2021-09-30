@@ -23,10 +23,11 @@
 #define DEBUG_TYPE "affine-loop-opt"
 
 using namespace mlir;
+using namespace xilinx::air;
 
 namespace {
   
-class AffineLoopOptPass : public PassWrapper<AffineLoopOptPass, FunctionPass> {
+class AffineLoopOptPass : public AffineLoopOptPassBase<AffineLoopOptPass> {
 
 public:
   AffineLoopOptPass() = default;
@@ -84,7 +85,9 @@ public:
                           llvm::cl::desc("Label to apply to transformed loop nest"),
                           llvm::cl::init("")};
 
-  void runOnFunction() override;
+  void runOnOperation() override;
+  // void runOnBlock(Block *block);
+  // static const llvm::DenseMap<StringRef, unsigned> optConf;
 
   void tileLoops(std::vector<SmallVector<AffineForOp, 6>> *bands);
   void generateDataCopyLoops(std::vector<SmallVector<AffineForOp, 6>> *bands, Optional<Value> filterMemRef = None);
@@ -105,10 +108,10 @@ private:
 
 const char *AffineLoopOptPass::affineOptAttrName = "affine_opt_label";
 
-void AffineLoopOptPass::runOnFunction() {
+void AffineLoopOptPass::runOnOperation() {
 
   init_options();
-  auto func = getFunction();
+  auto func = getOperation();
 
   // Bands of loops to tile.
   std::vector<SmallVector<AffineForOp, 6>> bands;

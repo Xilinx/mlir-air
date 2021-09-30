@@ -38,39 +38,17 @@
 
 using namespace mlir;
 using namespace xilinx;
+using namespace xilinx::air;
 
 namespace {
   
-class AIRAutomaticTilingPass : public PassWrapper<AIRAutomaticTilingPass, 
-                                                  FunctionPass> {
+class AIRAutomaticTilingPass : public AIRAutomaticTilingBase<AIRAutomaticTilingPass> {
 
 public:
   AIRAutomaticTilingPass() = default;
   AIRAutomaticTilingPass(const AIRAutomaticTilingPass &pass){};
 
-  // Specify the multi-dimensional tiling sizes from the command line
-  // e.g. `-air-automatic-tiling="air-loop-tile-sizes=2,2"`
-  ListOption<unsigned> clTileSizes{*this, "loop-tile-sizes",
-                                   llvm::cl::desc("AIR loop tiling sizes"),
-                                   llvm::cl::ZeroOrMore,
-                                   llvm::cl::CommaSeparated};
-
-  Option<bool> clSeparate{*this, "tile-separate",
-                          llvm::cl::desc("AIR loop tiling separates full and \
-                              partial tiles"),
-                          llvm::cl::init(false)};
-
-  Option<std::string> clAIROptLabel{*this, "air-label",
-                          llvm::cl::desc("Transform loops with the given \
-                              label"),
-                          llvm::cl::init("")};
-                          
-  Option<std::string> clAIROptPostLabel{*this, "air-post-label",
-                          llvm::cl::desc("Label to apply to transformed loop \
-                              nest"),
-                          llvm::cl::init("")};
-
-  void runOnFunction() override;
+  void runOnOperation() override;
 
   // Tile all bands of loops with the same set of tiling sizes.
   void tileLoopsManually(std::vector<SmallVector<AffineForOp, 6>> &bands, 
@@ -89,21 +67,21 @@ private:
 
 const char *AIRAutomaticTilingPass::affineOptAttrName = "affine_opt_label";
 
-void AIRAutomaticTilingPass::runOnFunction() {
-  auto func = getFunction();
+void AIRAutomaticTilingPass::runOnOperation() {
+  auto func = getOperation();
 
   optTileSizes.clear();
-  if (clTileSizes.size() > 0) {
+  if (loopTileSizes.size() > 0) {
     // Initialize tile sizes from the command line.
-    for (unsigned i = 0; i < clTileSizes.size(); ++i) {
-      optTileSizes.push_back(clTileSizes[i]);
+    for (unsigned i = 0; i < loopTileSizes.size(); ++i) {
+      optTileSizes.push_back(loopTileSizes[i]);
     }
 
     for (auto tileSize: optTileSizes) {
       // Bands of loops to tile
       std::vector<SmallVector<AffineForOp, 6>> bands;
       xilinx::air::getTileableBands(func, bands, 
-                       AIRAutomaticTilingPass::affineOptAttrName, clAIROptLabel);
+                       AIRAutomaticTilingPass::affineOptAttrName, AIRLabel);
 
       tileLoopsManually(bands, tileSize);
 
@@ -117,7 +95,7 @@ void AIRAutomaticTilingPass::runOnFunction() {
     // Find the optimal tile sizes automatically.
     std::vector<SmallVector<AffineForOp, 6>> bands;
     xilinx::air::getTileableBands(func, bands, 
-                     AIRAutomaticTilingPass::affineOptAttrName, clAIROptLabel);
+                     AIRAutomaticTilingPass::affineOptAttrName, AIRLabel);
 
     // Normalize every loop before tiling.
     for (auto band: bands) 
@@ -129,7 +107,7 @@ void AIRAutomaticTilingPass::runOnFunction() {
     // Normalize every loop after tiling.
     bands.clear();
     xilinx::air::getTileableBands(func, bands, 
-                     AIRAutomaticTilingPass::affineOptAttrName, clAIROptLabel);
+                     AIRAutomaticTilingPass::affineOptAttrName, AIRLabel);
     for (auto band: bands) 
       for (AffineForOp affineFor: band) 
         normalizeAffineFor(affineFor);
@@ -293,8 +271,8 @@ void AIRAutomaticTilingPass::tileLoopsAutomatically(
     auto stringAttr = band[0]->getAttrOfType<StringAttr>(
         AIRAutomaticTilingPass::affineOptAttrName);
     if (stringAttr) {
-      StringAttr postLabel = clAIROptPostLabel.empty() ? 
-        stringAttr:StringAttr::get(clAIROptPostLabel, stringAttr.getType());
+      StringAttr postLabel = AIRPostLabel.empty() ? 
+        stringAttr:StringAttr::get(AIRPostLabel, stringAttr.getType());
       tiledLoops[0]->setAttr(
           AIRAutomaticTilingPass::affineOptAttrName, postLabel);
     }
@@ -316,7 +294,7 @@ void AIRAutomaticTilingPass::tileLoopsManually(
       return signalPassFailure();
 
     // Separate full and partial tiles.
-    if (clSeparate) {
+    if (tileSeparate) {
       auto intraTileLoops =
           MutableArrayRef<AffineForOp>(tiledNest).drop_front(band.size());
       (void)separateFullTiles(intraTileLoops);
@@ -327,8 +305,8 @@ void AIRAutomaticTilingPass::tileLoopsManually(
     // StringRef originalLabel = band[0]->getAttrOfType<StringRef>(
     //   AIRAutomaticTilingPass::affineOptAttrName);
     if (stringAttr) {
-      StringAttr postLabel = clAIROptPostLabel.empty() ? 
-        stringAttr:StringAttr::get(clAIROptPostLabel, stringAttr.getType());
+      StringAttr postLabel = AIRPostLabel.empty() ? 
+        stringAttr:StringAttr::get(AIRPostLabel, stringAttr.getType());
       tiledNest[0]->setAttr(
           AIRAutomaticTilingPass::affineOptAttrName, postLabel);
     }

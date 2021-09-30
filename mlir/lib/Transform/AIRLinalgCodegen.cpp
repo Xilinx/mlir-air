@@ -20,6 +20,7 @@
 
 using namespace mlir;
 using namespace xilinx;
+using namespace xilinx::air;
 
 namespace {
 
@@ -130,8 +131,7 @@ struct RemoveSubViewOpsPattern
   }
 };
 
-class AIRLinalgCodegen : public PassWrapper<AIRLinalgCodegen,
-                                            OperationPass<ModuleOp> > {
+class AIRLinalgCodegen : public AIRLinalgCodegenBase<AIRLinalgCodegen> {
 
 public:
   AIRLinalgCodegen() = default;

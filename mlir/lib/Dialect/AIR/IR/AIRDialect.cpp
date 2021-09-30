@@ -11,6 +11,8 @@ using namespace mlir;
 using namespace xilinx::air;
 //using namespace xilinx::xten;
 
+#include "air/Dialect/AIR/AIRDialect.cpp.inc"
+
 void airDialect::initialize() {
      addTypes<AsyncTokenType>();
      addOperations<

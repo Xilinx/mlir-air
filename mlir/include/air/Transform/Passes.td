@@ -3,12 +3,12 @@
 
 include "mlir/Pass/PassBase.td"
 
-def AffineLoopOptPass : Pass<"affine-loop-opt", "ModuleOp"> {
+def AffineLoopOptPass : Pass<"affine-loop-opt", "FuncOp"> {
   let summary = "Affine loop transformations";
   let constructor = "xilinx::air::createAffineLoopOptPass()";
 }
 
-def AIRAutomaticTiling: Pass<"air-automatic-tiling", "ModuleOp"> {
+def AIRAutomaticTiling: Pass<"air-automatic-tiling", "FuncOp"> {
   let summary = "Tile loop nests manually or automatically with prime"
     " factorization";
   let constructor = "xilinx::air::createAIRAutomaticTilingPass()";
@@ -175,7 +175,7 @@ def AIRLowerLinalgTensors : Pass<"air-lower-linalg-tensors", "ModuleOp"> {
   }];
 }
 
-def AIRRegularizeLoop: Pass<"air-regularize-loop", "ModuleOp"> {
+def AIRRegularizeLoop: Pass<"air-regularize-loop", "FuncOp"> {
   let summary = "Move operations inside the innermost loop body to regularize "
     "loop nests";
   let constructor = "xilinx::air::createAIRRegularizeLoopPass()";
@@ -263,7 +263,7 @@ def AIRReturnElimination : Pass<"air-return-elimination", "ModuleOp"> {
   let constructor = "xilinx::air::createReturnEliminationPass()";
 }
 
-def AIRLoopPermutation: Pass<"air-loop-permutation", "ModuleOp"> {
+def AIRLoopPermutation: Pass<"air-loop-permutation", "FuncOp"> {
   let summary = "Change the loop ordering according to the input mapping";
   let constructor = "xilinx::air::createAIRLoopPermutationPass()";
   let description = [{
@@ -344,11 +344,16 @@ def AIRLoopPermutation: Pass<"air-loop-permutation", "ModuleOp"> {
   let options = [
     ListOption<"loopOrder", "loop-order", "unsigned",
                "The target loop permutation ordering",
-               "llvm::cl::OneOrMore, llvm::cl::CommaSeparated">
+               "llvm::cl::OneOrMore, llvm::cl::CommaSeparated">,
+    Option<"AIRLabel", "air-label", "std::string", /*default=*/"",
+           "Transform loops with the given label">,
+    Option<"AIRPostLabel", "air-post-label", "std::string", 
+            /*default=*/"",
+            "Label to apply to transformed loop nest">
   ];
 }
 
-def AIRLoopMergingPass: Pass<"air-loop-merging", "ModuleOp"> {
+def AIRLoopMergingPass: Pass<"air-loop-merging", "FuncOp"> {
   let summary = "Merge several nested subloops into a single loop";
   let constructor = "xilinx::air::createAIRLoopMergingPass()";
   let description = [{
