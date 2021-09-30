@@ -77,6 +77,12 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
         elem_per_stride = rewriter.create<ConstantIndexOp>(loc,
                             alloc.getType().getShape()[0]);
       }
+      else if (auto cast = src.getDefiningOp<memref::BufferCastOp>()) {
+        src_indices.push_back(zero);
+        src_indices.push_back(zero);
+        elem_per_stride = rewriter.create<ConstantIndexOp>(loc,
+                            cast.getType().cast<MemRefType>().getShape()[0]);
+      }
       else if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
         auto offsets = subview.offsets().begin();
         auto static_offsets = extractFromI64ArrayAttr(subview.static_offsets());
