@@ -588,24 +588,31 @@ public:
               // generate a buffer for each alloc into L1
               lock_allocation_list lock_allocs;
               core.walk([&](Operation *op) {
-                if (!isa<memref::AllocOp>(op))
+                auto alloc = dyn_cast<memref::AllocOp>(op);
+                auto cast = dyn_cast<memref::BufferCastOp>(op);
+                if (!(alloc || cast))
                   return;
 
-                auto alloc = dyn_cast<memref::AllocOp>(op);
-                if (alloc.getType().getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
+                MemRefType memrefTy = nullptr;
+                if (alloc)
+                  memrefTy = alloc.getType();
+                if (cast)
+                  memrefTy = cast.getType().cast<MemRefType>();
+
+                if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
                   return;
 
                 builder.setInsertionPointAfter(tile);
 
-                auto buffer = builder.create<AIE::BufferOp>(alloc.getLoc(),
-                                                            alloc.getType(),
+                auto buffer = builder.create<AIE::BufferOp>(op->getLoc(),
+                                                            memrefTy,
                                                             tile);
 
                 // if the alloc already carries a symbol name, use it to make 
                 // the buffer symbol name as "sym_name_x_y",
                 // otherwise we'll make a generic symbol name "bufN"
                 std::stringstream ss;
-                if (auto attr = alloc->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+                if (auto attr = op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
                   ss << attr.getValue().str() << "_" << x << "_" << y;
                 }
                 else {
@@ -616,16 +623,21 @@ public:
                                 StringAttr::get(module.getContext(), ss.str()));
 
                 // map uses of the alloc to the new buffer
-                remap.map(alloc, buffer);
+                remap.map(op->getResult(0), buffer);
 
-                builder.setInsertionPoint(alloc);
+                builder.setInsertionPoint(op);
+                if (cast)
+                  builder.create<memref::TensorStoreOp>(cast.getLoc(),
+                                                        cast.getOperand(),
+                                                        buffer);
               });
 
               // collect dma operations and generate a schedule
               std::map<AIE::DMAChan, std::vector<Operation *>> tile_dma_copies = 
-                getDmaSchedules(core, x, y, shimDmaAlloc, L2DmaAlloc, shim_dma_inits, l2_dma_tiles, remap);
+                getDmaSchedules(core, x, y, shimDmaAlloc, L2DmaAlloc,
+                                shim_dma_inits, l2_dma_tiles, remap);
 
-              // emit the aquire and release of the L1 buffer locks
+              // emit the acquire and release of the L1 buffer locks
               std::unordered_set<Operation*> allocs_to_remap;
               for (auto p : tile_dma_copies) {
                 for (auto o : p.second) {
@@ -644,15 +656,33 @@ public:
                     lockRelValue = 1;
                     alloc = dmaOpIf.getSrcMemref();
                   }
-                  builder.setInsertionPoint(alloc.getDefiningOp());
+                  if (auto bco = dyn_cast<memref::BufferCastOp>(alloc.getDefiningOp()))
+                    builder.setInsertionPoint(bco.getOperand().getDefiningOp());
+                  else
+                    builder.setInsertionPoint(alloc.getDefiningOp());
+
                   builder.create<AIE::UseLockOp>(o->getLoc(), lockOp, lockAqValue,
                                                   AIE::LockAction::Acquire, 0);
+                  // try to find a place to put the unlock. If there are deallocs,
+                  // replace them with unlock. Otherwise, put them at the end.
+                  bool need_unlock = true;
                   for (auto u : alloc.getUsers()) {
                     if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
                       builder.setInsertionPoint(dealloc);
-                      builder.create<AIE::UseLockOp>(dealloc->getLoc(), lockOp, lockRelValue,
-                                                     AIE::LockAction::Release, 0);
+                      builder.create<AIE::UseLockOp>(
+                        dealloc->getLoc(), lockOp, lockRelValue,
+                        AIE::LockAction::Release, 0);
+                      // assume that the deallocs will take care of it when
+                      // deallocs are present
+                      need_unlock = false;
                     }
+                  }
+                  if (need_unlock) {
+                    auto t = alloc.getParentBlock()->getTerminator();
+                    builder.setInsertionPoint(t);
+                    builder.create<AIE::UseLockOp>(
+                        t->getLoc(), lockOp, lockRelValue,
+                        AIE::LockAction::Release, 0);
                   }
                   allocs_to_remap.insert(alloc.getDefiningOp());
                 }
@@ -665,14 +695,15 @@ public:
                     break;
                   }
                 alloc.replaceAllUsesWith(remap.lookup( alloc ));
-                o->erase();
+                if (isa<memref::AllocOp>(o))
+                  o->erase();
               }
 
               // Generate the TileDMA bd program. That is, generate the AIE.mem
               // body for the tile. Above we collected per channel lists of dma
               // copy operations. We'll assume these lists are in the correct
-              // execution order and generate a AIE.mem program to loop over each
-              // list.
+              // execution order and generate a AIE.mem program to loop over
+              // each list.
 
               // The first block
               Block *channel_head = nullptr;
@@ -747,7 +778,7 @@ public:
                   auto fn = aie_module.lookupSymbol<FuncOp>(call.getCallee());
                   if (!fn) {
                     fn = FuncOp::create(builder.getUnknownLoc(),
-                                        call.getCallee(), 
+                                        call.getCallee(),
                                         call.getCalleeType());
                     fn.setPrivate();
                     aie_module.push_back(fn);
