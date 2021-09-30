@@ -18,6 +18,7 @@
 #include <vector>
 #include <unordered_set>
 #include <numeric>
+#include <set>
 
 #define DEBUG_TYPE "air-to-aie"
 
@@ -229,6 +230,21 @@ public:
     return bufferOp;
   }
 
+  AIE::LockOp allocateLockOp(ModuleOp aie_module, AIE::TileOp tile)
+  {
+    std::set<int> ids;
+    aie_module.walk([&](AIE::LockOp lock) {
+      if (cast<xilinx::AIE::TileOp>(lock.tile().getDefiningOp()) == tile)
+        ids.insert(lock.getLockID());
+    });
+    int new_id = 0;
+    while (ids.count(new_id))
+      new_id++;
+    OpBuilder b(aie_module);
+    b.setInsertionPointAfter(tile);
+    return b.create<AIE::LockOp>(tile.getLoc(), tile, new_id);
+  }
+
   AIE::LockOp getLockForTileDMA(ModuleOp aie_module, air::DmaMemcpyInterface &dmaOp, lock_allocation_list &info, BlockAndValueMapping &map, int col, int row) {
     AIE::BufferOp bufferOp = getBufferForTileDMA(aie_module, dmaOp, map, col, row);
     AIE::DMAChan channel = getTileDMAChannel(aie_module, dmaOp, col, row);
@@ -243,9 +259,7 @@ public:
     }
     if (!lockOp) {
       OpBuilder builder(bufferOp);
-      lockOp = builder.create<AIE::LockOp>(bufferOp.getLoc(),
-                                           bufferOp.getTileOp(),
-                                           info.size());
+      lockOp = allocateLockOp(aie_module, bufferOp.getTileOp());
       info.push_back({bufferOp,lockOp,channel});
     }
     return lockOp;
