@@ -52,87 +52,87 @@ bool isMM2S(AIE::DMAChan channel) {
     return false;
 }
 
-  struct DMAAllocator {
+struct DMAAllocator {
 
-    std::vector<int> dma_columns;
-    int dma_channels;
+  std::vector<int> dma_columns;
+  int dma_channels;
 
-    struct allocation_info_t {
-      AIE::TileOp dma_tile;
-      int64_t col;
-      int64_t row;
-      int64_t dma_channel;
-      int64_t tile_channel;
-      std::vector<int32_t> dma_id;
-    };
-
-    std::vector<allocation_info_t> mm2s_allocs, s2mm_allocs;
-
-    DMAAllocator(std::vector<int> cols, int channels)
-      : dma_columns(cols), dma_channels(channels)
-      {
-      }
-
-    AIE::TileOp getTile(ModuleOp aie_module, air::DmaMemcpyInterface &dmaOp, int64_t tile_channel, int64_t col, int64_t row)
-    {
-      auto src_memory_space = dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-      auto dst_memory_space = dmaOp.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-      assert(src_memory_space != dst_memory_space);
-
-      bool isMM2S = (src_memory_space < dst_memory_space);
-      auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
-
-      for (auto &t : *allocs) {
-        if (col == t.col && row == t.row) {
-          for (auto id : t.dma_id)
-            if (dmaOp.getId() == id)
-              return t.dma_tile;
-          if (tile_channel == t.tile_channel) {
-            t.dma_id.push_back(dmaOp.getId());
-            return t.dma_tile;
-          }
-        }
-      }
-      auto dma_col = dma_columns[allocs->size()/dma_channels];
-      auto dma_channel = allocs->size() % dma_channels;
-      auto dma_tile = getPhysTileOp(aie_module, dma_col, 0);
-      allocs->push_back({dma_tile, col, row, (int64_t)dma_channel, tile_channel, {dmaOp.getId()}});
-      LLVM_DEBUG(llvm::outs() << "isMM2S = " << isMM2S << " " << dmaOp.getId() << ", col =" << col << ", row = " << row << ", l2 col =" << dma_col << ", l2 chan =" << dma_channel << "\n");
-
-      return dma_tile;
-    }
-
-    AIE::DMAChan getChannel(ModuleOp aie_module, air::DmaMemcpyInterface &dmaOp, int64_t tile_channel, int64_t col, int64_t row)
-    {
-      auto src_memory_space = dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-      auto dst_memory_space = dmaOp.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-      assert(src_memory_space != dst_memory_space);
-
-      bool isMM2S = (src_memory_space < dst_memory_space);
-      auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
-
-      int64_t chan = -1;
-      for (auto &t : *allocs) {
-        LLVM_DEBUG(llvm::outs() << "gSDC: op " << t.dma_tile << ", col" << t.col << ", row " << t.row << ", chan " << t.dma_channel << "\n");
-        if (col == t.col && row == t.row) {
-          for (auto id : t.dma_id)
-            if (dmaOp.getId() == id)
-              chan = t.dma_channel;
-          if (tile_channel == t.tile_channel) {
-            chan = t.dma_channel;
-          }
-        }
-      }
-      assert(chan != -1);
-
-      LLVM_DEBUG(llvm::outs() << "isMM2S = " << isMM2S << ", col =" << col << ", row = " << row << " chan =" << chan << "\n");
-
-      if (isMM2S)
-        return (AIE::DMAChan)((uint64_t)AIE::DMAChan::MM2S0 + chan);
-      else
-        return (AIE::DMAChan)((uint64_t)AIE::DMAChan::S2MM0 + chan);
-    }
+  struct allocation_info_t {
+    AIE::TileOp dma_tile;
+    int64_t col;
+    int64_t row;
+    int64_t dma_channel;
+    int64_t tile_channel;
+    std::vector<int32_t> dma_id;
   };
+
+  std::vector<allocation_info_t> mm2s_allocs, s2mm_allocs;
+
+  DMAAllocator(std::vector<int> cols, int channels)
+    : dma_columns(cols), dma_channels(channels)
+    {
+    }
+
+  AIE::TileOp getTile(ModuleOp aie_module, air::DmaMemcpyInterface &dmaOp, int64_t tile_channel, int64_t col, int64_t row)
+  {
+    auto src_memory_space = dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+    auto dst_memory_space = dmaOp.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+    assert(src_memory_space != dst_memory_space);
+
+    bool isMM2S = (src_memory_space < dst_memory_space);
+    auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
+
+    for (auto &t : *allocs) {
+      if (col == t.col && row == t.row) {
+        for (auto id : t.dma_id)
+          if (dmaOp.getId() == id)
+            return t.dma_tile;
+        if (tile_channel == t.tile_channel) {
+          t.dma_id.push_back(dmaOp.getId());
+          return t.dma_tile;
+        }
+      }
+    }
+    auto dma_col = dma_columns[allocs->size()/dma_channels];
+    auto dma_channel = allocs->size() % dma_channels;
+    auto dma_tile = getPhysTileOp(aie_module, dma_col, 0);
+    allocs->push_back({dma_tile, col, row, (int64_t)dma_channel, tile_channel, {dmaOp.getId()}});
+    LLVM_DEBUG(llvm::outs() << "isMM2S = " << isMM2S << " " << dmaOp.getId() << ", col =" << col << ", row = " << row << ", l2 col =" << dma_col << ", l2 chan =" << dma_channel << "\n");
+
+    return dma_tile;
+  }
+
+  AIE::DMAChan getChannel(ModuleOp aie_module, air::DmaMemcpyInterface &dmaOp, int64_t tile_channel, int64_t col, int64_t row)
+  {
+    auto src_memory_space = dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+    auto dst_memory_space = dmaOp.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+    assert(src_memory_space != dst_memory_space);
+
+    bool isMM2S = (src_memory_space < dst_memory_space);
+    auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
+
+    int64_t chan = -1;
+    for (auto &t : *allocs) {
+      LLVM_DEBUG(llvm::outs() << "gSDC: op " << t.dma_tile << ", col" << t.col << ", row " << t.row << ", chan " << t.dma_channel << "\n");
+      if (col == t.col && row == t.row) {
+        for (auto id : t.dma_id)
+          if (dmaOp.getId() == id)
+            chan = t.dma_channel;
+        if (tile_channel == t.tile_channel) {
+          chan = t.dma_channel;
+        }
+      }
+    }
+    assert(chan != -1);
+
+    LLVM_DEBUG(llvm::outs() << "isMM2S = " << isMM2S << ", col =" << col << ", row = " << row << " chan =" << chan << "\n");
+
+    if (isMM2S)
+      return (AIE::DMAChan)((uint64_t)AIE::DMAChan::MM2S0 + chan);
+    else
+      return (AIE::DMAChan)((uint64_t)AIE::DMAChan::S2MM0 + chan);
+  }
+};
 
 class AIRToAIEPass : public PassWrapper<AIRToAIEPass,
                                         OperationPass<ModuleOp>> {
