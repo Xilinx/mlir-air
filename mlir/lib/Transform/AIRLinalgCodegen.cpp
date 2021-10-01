@@ -24,14 +24,6 @@ using namespace xilinx::air;
 
 namespace {
 
-/// Extract int64_t values from the assumed ArrayAttr of IntegerAttr.
-static SmallVector<int64_t, 4> extractFromI64ArrayAttr(Attribute attr) {
-  return llvm::to_vector<4>(
-      llvm::map_range(attr.cast<ArrayAttr>(), [](Attribute a) -> int64_t {
-        return a.cast<IntegerAttr>().getInt();
-      }));
-}
-
 struct FoldSubViewOpsPattern
     : public OpRewritePattern<memref::SubViewOp> {
   using OpRewritePattern<memref::SubViewOp>::OpRewritePattern;
@@ -236,8 +228,8 @@ public:
   void runConv2dPatterns(FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
 
-    SmallVector<linalg::ConvNCHWOp, 4> conv2dOps;
-    funcOp.walk([&](linalg::ConvNCHWOp op) {
+    SmallVector<linalg::Conv2DNchwOp, 4> conv2dOps;
+    funcOp.walk([&](linalg::Conv2DNchwOp op) {
       conv2dOps.push_back(op);
     });
 
@@ -270,7 +262,7 @@ public:
       int64_t kernel_w = weightTy.getDimSize(3);
 
       OwningRewritePatternList stage1Patterns(&getContext());
-      stage1Patterns.insert<linalg::LinalgTilingPattern<linalg::ConvNCHWOp>>(
+      stage1Patterns.insert<linalg::LinalgTilingPattern<linalg::Conv2DNchwOp>>(
         ctx, linalg::LinalgTilingOptions().setTileSizes({batch_hw,
                                                          ofm_channels_sw,
                                                          ifm_height_sw/4,
@@ -282,12 +274,12 @@ public:
         linalg::LinalgTransformationFilter(Identifier::get("xten_conv2d", ctx),
                                           Identifier::get("promote_L2", ctx)));
 
-      stage1Patterns.insert<linalg::LinalgPromotionPattern<linalg::ConvNCHWOp>>(
+      stage1Patterns.insert<linalg::LinalgPromotionPattern<linalg::Conv2DNchwOp>>(
         ctx, linalg::LinalgPromotionOptions().setOperandsToPromote(std::vector<int64_t>{0,1,2}),
         linalg::LinalgTransformationFilter(Identifier::get("promote_L2", ctx),
                                           Identifier::get("L2", ctx)));
 
-      stage1Patterns.insert<linalg::LinalgTilingPattern<linalg::ConvNCHWOp>>(
+      stage1Patterns.insert<linalg::LinalgTilingPattern<linalg::Conv2DNchwOp>>(
         ctx, linalg::LinalgTilingOptions().setTileSizes({batch_hw,
                                                          ofm_channels_sw/4,
                                                          ifm_height_sw/4,
@@ -299,7 +291,7 @@ public:
         linalg::LinalgTransformationFilter(Identifier::get("L2", ctx),
                                           Identifier::get("promote_HERD", ctx)));
 
-      stage1Patterns.insert<linalg::LinalgPromotionPattern<linalg::ConvNCHWOp>>(
+      stage1Patterns.insert<linalg::LinalgPromotionPattern<linalg::Conv2DNchwOp>>(
         ctx, linalg::LinalgPromotionOptions().setOperandsToPromote(std::vector<int64_t>{0,1,2}),
         linalg::LinalgTransformationFilter(Identifier::get("promote_HERD", ctx),
                                           Identifier::get("HERD", ctx)));

@@ -2,3 +2,6 @@
 // RUN: %ARM_CLANG -shared air_project/air.mlir.o -o aie_ctrl.so
 // RUN: %ARM_CLANG %S/test.cpp %aie_runtime_lib%/test_library.cpp -I%VITIS_SYSROOT%/opt/xaiengine/include -L%VITIS_SYSROOT%/opt/xaiengine/lib -lxaiengine -I%aie_runtime_lib% -I./ -I%air_runtime_lib%/airhost/include -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
 // RUN: %run_on_board %T/test.elf
+
+// This test ends up inferring a memcpy on AIE and we don't correctly link with libc.
+// XFAIL: *

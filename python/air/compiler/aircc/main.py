@@ -95,6 +95,7 @@ def run_flow(opts, tmpdirname):
     aie_ctrl_llvm = opts.tmpdir+'/llvm.'+air_mlir_filename
     do_call(['air-opt', aie_ctrl,
             '-air-return-elimination','--lower-affine','--convert-scf-to-std',
+            '--convert-memref-to-llvm',
             '--convert-std-to-llvm=emit-c-wrappers',
             '-o', aie_ctrl_llvm])
 
