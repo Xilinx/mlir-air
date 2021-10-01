@@ -43,7 +43,7 @@ module {
 func @foo(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %herd_cols = constant 1 : index
   %herd_rows = constant 1 : index
-  air.launch_herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<1024xi32>, memref<1024xi32> attributes { } {
+  air.launch_herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<1024xi32>, memref<1024xi32> attributes { sym_name="foo"} {
     %c0 = constant 0 : index
     %c1024 = constant 0 : index
     %buf0 = memref.alloc() : memref<1024xi32, 2>
