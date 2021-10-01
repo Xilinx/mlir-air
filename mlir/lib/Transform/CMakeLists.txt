@@ -6,8 +6,9 @@ AIRHerdAssignPass.cpp
 AIRLinalgCodegen.cpp
 AIRLoopMergingPass.cpp
 AIRLoopPermutationPass.cpp
-AIRTilingUtils.cpp
+AIRLowerLinalgTensors.cpp
 AIRRegularizeLoopPass.cpp
+AIRTilingUtils.cpp
 Passes.cpp
 ReturnEliminationPass.cpp
 

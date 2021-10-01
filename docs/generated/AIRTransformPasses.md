@@ -128,6 +128,8 @@ module  {
 ```
 ### `-air-herd-assign`: Transfor affine.for to affine.parallel
 ### `-air-linalg-codegen`: AIR codegen strategies for linalg
+This pass implements some tiling strategies for linalg ops targeting AIR
+dialect.
 ### `-air-loop-merging`: Merge several nested subloops into a single loop
 This pass transforms several perfectly nested subloops into a single 
 loop. The trip count of the new single loop is the product of all
@@ -276,6 +278,16 @@ module  {
 ```
 -loop-order : The target loop permutation ordering
 ```
+### `-air-lower-linalg-tensors`: Lowering from linalg on tensors to loops
+This pass implements a lowering pipeline from linalg on tensors to affine
+loops. There are three stages:
+1. Bufferize with `linalg::populateLinalgBufferizePatterns`
+2. Run some peephole optimizations to cleanup after bufferization.
+3. Named ops are transformed to linalg GenericOps then all GenericOps
+are lowered to loops using `linalg::LinalgLoweringPattern`.
+
+The transforms are biased toward AIE.core regions and are intended
+to be run after the air-to-aie pass.
 ### `-air-regularize-loop`: Move operations inside the innermost loop body to regularize loop nests
 This pass regularizes loop nests by moving intermediate operations between
 subloops in a loop nest inside the innermost loop body. The pass is 

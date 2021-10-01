@@ -153,6 +153,26 @@ def AIRHerdAssign : Pass<"air-herd-assign", "ModuleOp"> {
 def AIRLinalgCodegen : Pass<"air-linalg-codegen", "ModuleOp"> {
   let summary = "AIR codegen strategies for linalg";
   let constructor = "xilinx::air::createAIRLinalgCodegenPass()";
+  let description = [{
+    This pass implements some tiling strategies for linalg ops targeting AIR
+    dialect.
+  }];
+}
+
+def AIRLowerLinalgTensors : Pass<"air-lower-linalg-tensors", "ModuleOp"> {
+  let summary = "Lowering from linalg on tensors to loops";
+  let constructor = "xilinx::air::createAIRLowerLinalgTensorsPass()";
+  let description = [{
+    This pass implements a lowering pipeline from linalg on tensors to affine
+    loops. There are three stages:
+    1. Bufferize with `linalg::populateLinalgBufferizePatterns`
+    2. Run some peephole optimizations to cleanup after bufferization.
+    3. Named ops are transformed to linalg GenericOps then all GenericOps
+    are lowered to loops using `linalg::LinalgLoweringPattern`.
+
+    The transforms are biased toward AIE.core regions and are intended
+    to be run after the air-to-aie pass.
+  }];
 }
 
 def AIRRegularizeLoop: Pass<"air-regularize-loop", "ModuleOp"> {
