@@ -11,9 +11,9 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "mlir/IR/BlockAndValueMapping.h"
 
 #include <vector>
 #include <unordered_set>
@@ -149,7 +149,7 @@ public:
 
   Option<std::string>
   AIRToAIEELFFilename{*this, "air-to-aie-elf-file",
-                      llvm::cl::desc("Specify elf file to add as an attribuite of AIE.core"),
+                      llvm::cl::desc("Specify elf file to add as an attribute of AIE.core"),
                       llvm::cl::init("-")};
 
   Option<int>
@@ -243,6 +243,37 @@ public:
     OpBuilder b(aie_module);
     b.setInsertionPointAfter(tile);
     return b.create<AIE::LockOp>(tile.getLoc(), tile, new_id);
+  }
+
+  AIE::BufferOp allocateBufferOp(ModuleOp module,
+                                 MemRefType memrefTy, AIE::TileOp tile,
+                                 mlir::StringAttr attr=nullptr,
+                                 int x=-1, int y=-1)
+  {
+    static uint64_t BufferId = 0;
+    OpBuilder builder(module);
+    builder.setInsertionPointAfter(tile);
+    AIE::BufferOp bufferOp = builder.create<AIE::BufferOp>(tile->getLoc(),
+                                                           memrefTy,
+                                                           tile);
+
+    // if a symbol name was passed in, use it to make 
+    // the buffer symbol name as "sym_name_x_y",
+    // otherwise we'll make a generic symbol name "bufN"
+    std::stringstream ss;
+    if (attr) {
+      if (x >= 0 && y >= 0)
+        ss << attr.getValue().str() << "_" << x << "_" << y;
+      else
+        ss << attr.getValue().str() << BufferId++;
+    }
+    else {
+      ss << "buf" << BufferId++;
+    }
+    bufferOp->setAttr(SymbolTable::getSymbolAttrName(),
+                    StringAttr::get(module.getContext(), ss.str()));
+
+    return bufferOp;
   }
 
   AIE::LockOp getLockForTileDMA(ModuleOp aie_module, air::DmaMemcpyInterface &dmaOp, lock_allocation_list &info, BlockAndValueMapping &map, int col, int row) {
@@ -604,24 +635,9 @@ public:
 
                 builder.setInsertionPointAfter(tile);
 
-                auto buffer = builder.create<AIE::BufferOp>(op->getLoc(),
-                                                            memrefTy,
-                                                            tile);
-
-                // if the alloc already carries a symbol name, use it to make 
-                // the buffer symbol name as "sym_name_x_y",
-                // otherwise we'll make a generic symbol name "bufN"
-                std::stringstream ss;
-                if (auto attr = op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
-                  ss << attr.getValue().str() << "_" << x << "_" << y;
-                }
-                else {
-                  ss << "buf" << BufferId++;
-                }
-
-                buffer->setAttr(SymbolTable::getSymbolAttrName(),
-                                StringAttr::get(module.getContext(), ss.str()));
-
+                auto buffer = allocateBufferOp(aie_module, memrefTy, tile,
+                                  op->getAttrOfType<StringAttr>(
+                                    SymbolTable::getSymbolAttrName()), x, y);
                 // map uses of the alloc to the new buffer
                 remap.map(op->getResult(0), buffer);
 
