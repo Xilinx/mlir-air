@@ -509,6 +509,168 @@ public:
     return herd_meta;
   }
 
+  // This function replaces the body of any air.pipeline in 'core' with the
+  // air.pipeline.stage for tile ('x', 'y'). air.pipeline.get and
+  // air.pipeline.get operations are generated for the args and yielded values
+  // of the pipeline stage.  The air.pipeline.stage operations are erased.
+  void specializePipelineOps(int64_t x, int64_t y,
+                             air::HerdLaunchOp h, AIE::CoreOp core) {
+    air::HerdDim2 herd_size = h.getHerdSizeOperands();
+    if (!isa<ConstantIndexOp>(herd_size.x.getDefiningOp()) ||
+        !isa<ConstantIndexOp>(herd_size.y.getDefiningOp()) ) {
+      llvm::errs() << "Only constant sized herds are supported";
+      return;
+    }
+
+    int64_t herd_size_x = cast<ConstantIndexOp>(herd_size.x.getDefiningOp())
+                            .getValue();
+    auto aie_module = core->getParentOfType<ModuleOp>();
+    // specialize pipeline stages for this core
+    core.walk([&](air::HerdPipelineOp pipelineOp) {
+      OpBuilder builder(pipelineOp);
+
+      SmallVector<air::PipelineStageOp,8> stages;
+      for (auto &o : pipelineOp.body().front().getOperations()) {
+        if (auto stage = dyn_cast<air::PipelineStageOp>(o))
+          stages.push_back(stage);
+      }
+
+      // TODO: dont assume 'horiz'
+      auto pipeline_size = herd_size_x;
+      if (stages.size() != pipeline_size) {
+        llvm::errs()
+          << "ERROR: Herd size did not match pipeline size, giving up.\n";
+        return;
+      }
+
+      for (int i=0; i<pipeline_size; i++) {
+        auto stage = stages[i];
+        // This is the stage for the current tile,
+        // pull the operations out of the body and replace
+        // the yield with a put to the next stage
+        if (i == x) {
+          Block &bb = stage.body().front();
+          for (int i = 0, e=bb.getNumArguments(); i<e; i++) {
+            bb.getArgument(i).replaceAllUsesWith(stage->getOperand(i));
+          }
+          auto yield = cast<air::PipelineYieldOp>(bb.getTerminator());
+          pipelineOp.body().front().getOperations()
+                                   .splice(Block::iterator(stage),
+                                           bb.getOperations());
+          stage->replaceAllUsesWith(yield->getOperands());
+          builder.setInsertionPointAfter(stage);
+          if (stage->getNumResults() && (i!=(pipeline_size-1)))
+            builder.create<air::PipelinePutOp>(stage.getLoc(),
+                                              yield->getResultTypes(),
+                                              getTileOp(aie_module,x+1,y),
+                                              yield->getOperands());
+          yield.erase();
+        }
+        // This is the stage for tile x-1, turn it into
+        // a get from that stage
+        else if ((i == x-1) && stage->getNumResults()) {
+          builder.setInsertionPointAfter(stage);
+          stage.replaceAllUsesWith(
+              builder.create<air::PipelineGetOp>(stage.getLoc(),
+                                                stage->getResultTypes(),
+                                                getTileOp(aie_module,x-1,y))
+          );
+          Block &bb = stage.body().front();
+          bb.clear();
+      }
+      // otherwise get ride of the ops in the stage
+      else {
+          Block &bb = stage.body().front();
+          bb.clear();
+        }
+      }
+
+      // remove the now empty air.pipeline.stage ops in reverse
+      for (int i=0; i<pipeline_size; i++) {
+        auto stage = stages[pipeline_size-i-1];
+        stage.erase();
+      }
+    });
+
+  };
+
+  // This function replaces PipelinePutOp/PipelineGetOp pairs with a
+  // shared AIE.buffer + AIE.lock. This is a single-buffered implementation
+  // with exclusive access to the buffer controlled by the lock. i.e. FIXME.
+  void lowerPipelineGetPut(ModuleOp &aie_module) {
+    aie_module.walk([&](air::PipelinePutOp putOp) {
+      auto core = putOp->getParentOfType<AIE::CoreOp>();
+      assert(core);
+
+      auto other_core = cast<AIE::TileOp>(putOp.dst().getDefiningOp()).getCoreOp();
+      air::PipelineGetOp getOp;
+      other_core.walk([&](air::PipelineGetOp pgo) {
+        getOp = pgo;
+      });
+      assert(getOp && getOp->getNumResults() == (putOp->getNumOperands()-1));
+
+      for (auto p : llvm::zip(putOp->getOperands().drop_front(1), getOp->getResults())) {
+        OpBuilder b(core);
+        auto o = std::get<0>(p); // operand of put
+        auto r = std::get<1>(p); // result of get
+        // for each ranked tensor put (yielded) by the tile
+        if (RankedTensorType tt = o.getType().dyn_cast<RankedTensorType>()) {
+          auto memrefTy = MemRefType::get(tt.getShape(),
+                                    tt.getElementType(),
+                                    {},
+                                    (int)air::MemorySpace::L1);
+          // allocate buffer+lock
+          auto buf = allocateBufferOp(aie_module, memrefTy, core.getTileOp(),
+                        StringAttr::get(aie_module.getContext(), "pipebuf"));
+          auto lockOp = allocateLockOp(aie_module, core.getTileOp());
+
+          auto pipelineOp = putOp->getParentOfType<air::HerdPipelineOp>();
+
+          // acquire the lock for write on the put side
+          b.setInsertionPointToStart(&pipelineOp.body().front());
+          b.create<AIE::UseLockOp>(putOp->getLoc(), lockOp, 0,
+                                  AIE::LockAction::Acquire, 0);
+          b.setInsertionPoint(pipelineOp.body().front().getTerminator());
+          b.create<AIE::UseLockOp>(putOp->getLoc(), lockOp, 1,
+                                  AIE::LockAction::Release, 0);
+          b.setInsertionPoint(putOp);
+          b.create<memref::TensorStoreOp>(putOp->getLoc(), o, buf);
+
+          // acquire the lock for read on the get side
+          pipelineOp = getOp->getParentOfType<air::HerdPipelineOp>();
+          b.setInsertionPointToStart(&pipelineOp.body().front());
+          b.create<AIE::UseLockOp>(getOp->getLoc(), lockOp, 1,
+                                  AIE::LockAction::Acquire, 0);
+          b.setInsertionPoint(pipelineOp.body().front().getTerminator());
+          b.create<AIE::UseLockOp>(getOp->getLoc(), lockOp, 0,
+                                  AIE::LockAction::Release, 0);
+          b.setInsertionPoint(getOp);
+          auto loadOp = b.create<memref::TensorLoadOp>(getOp->getLoc(), buf);
+          r.replaceAllUsesWith(loadOp.getResult());
+        }
+        else {
+          llvm::errs() << "error, unsupported air.pipeline.yield operand type\n";
+          assert(0 && "Unsupported");
+        }
+      }
+      putOp->erase();
+    });
+  }
+  
+  void cleanupPipelineOps(ModuleOp aie_module) {
+    // erase air.pipeline.terminator ops
+    aie_module.walk([&](air::PipelineTerminatorOp op) {
+      op->erase();
+    });
+
+    // yank the ops out of the pipeline op and erase it
+    aie_module.walk([&](air::HerdPipelineOp op) {
+      op->getBlock()->getOperations().splice(Block::iterator(op),
+                                              op.body().front().getOperations());
+      op->erase();
+    });
+  }
+
   void runOnOperation() override {
     auto module = getOperation();
     static uint64_t BufferId = 0;
@@ -615,6 +777,13 @@ public:
                 core_builder.create<BranchOp>(hloc, core_bb);
               else
                 core_builder.create<AIE::EndOp>(hloc);
+
+              // erase air.herd_termintor ops
+              launch_bb->walk([&](air::HerdTerminatorOp op) {
+                op->erase();
+              });
+
+              specializePipelineOps(x,y,h,core);
 
               // generate a buffer for each alloc into L1
               lock_allocation_list lock_allocs;
@@ -839,12 +1008,6 @@ public:
                 }
               });
 
-              // erase air.herd_termintor ops
-              launch_bb->walk([&](Operation *op) {
-                if (isa<air::HerdTerminatorOp>(op))
-                  erase_ops.push_back(op);
-              });
-
               for (auto o : erase_ops)
                 o->erase();
 
@@ -859,6 +1022,9 @@ public:
               LLVM_DEBUG(aie_module.print(llvm::outs()));
             } // for each x
           } // for each y
+
+          lowerPipelineGetPut(aie_module);
+          cleanupPipelineOps(aie_module);
 
           generateShimMuxBoilerplate(aie_module);
 
