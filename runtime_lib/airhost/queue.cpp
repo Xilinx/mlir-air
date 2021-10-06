@@ -83,8 +83,9 @@ hsa_status_t air_queue_dispatch_and_wait(queue_t *q, uint64_t doorbell, dispatch
 
 hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
                                   uint8_t start_col, uint8_t num_cols,
-                                  uint8_t start_row, uint8_t num_rows,
-                                  uint16_t dma0, uint16_t dma1) {
+                                  uint8_t start_row, uint8_t num_rows) {
+                                  //uint8_t start_row, uint8_t num_rows,
+                                  //uint16_t dma0, uint16_t dma1) {
   initialize_packet(pkt);
 
   pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
@@ -95,8 +96,8 @@ hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
   pkt->arg[0] |= ((uint64_t)start_row) << 16;
 
   pkt->arg[1]  = herd_id;  // Herd ID
-  pkt->arg[1] |= ((char)dma0) << 16;
-  pkt->arg[1] |= ((char)dma1) << 24;
+  //pkt->arg[1] |= ((char)dma0) << 16;
+  //pkt->arg[1] |= ((char)dma1) << 24;
   pkt->arg[2]  = 0;        // unused
   pkt->arg[3]  = 0;        // unused
 
