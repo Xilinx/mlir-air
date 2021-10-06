@@ -201,33 +201,6 @@ parseHerdLaunchOp(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
-// static ParseResult
-// parseLaunchFuncOperands(OpAsmParser &parser,
-//                         SmallVectorImpl<OpAsmParser::OperandType> &argNames,
-//                         SmallVectorImpl<Type> &argTypes) {
-//   if (parser.parseOptionalKeyword("args"))
-//     return success();
-//   SmallVector<NamedAttrList, 4> argAttrs;
-//   bool isVariadic = false;
-//   return impl::parseFunctionArgumentList(parser, /*allowAttributes=*/false,
-//                                          /*allowVariadic=*/false, argNames,
-//                                          argTypes, argAttrs, isVariadic);
-// }
-
-// static void printLaunchFuncOperands(OpAsmPrinter &printer, Operation *,
-//                                     OperandRange operands, TypeRange types) {
-//   if (operands.empty())
-//     return;
-//   printer << "args(";
-//   llvm::interleaveComma(llvm::zip(operands, types), printer,
-//                         [&](const auto &pair) {
-//                           printer.printOperand(std::get<0>(pair));
-//                           printer << " : ";
-//                           printer.printType(std::get<1>(pair));
-//                         });
-//   printer << ")";
-// }
-
 HerdDim2 HerdLaunchOp::getTileIds() {
   auto args = body().front().getArguments();
   return HerdDim2{args[0], args[1]};
@@ -255,6 +228,22 @@ ArrayRef<BlockArgument> HerdLaunchOp::getKernelArguments() {
   return body().front().getArguments().drop_front(4);
 }
 
+//
+// HerdPipelineOp
+//
+
+SmallVector<PipelineStageOp, 8> HerdPipelineOp::getStages() {
+  SmallVector<PipelineStageOp, 8> stages;
+  for (auto &o : body().front().getOperations()) {
+    if (auto stage = dyn_cast<air::PipelineStageOp>(o))
+      stages.push_back(stage);
+  }
+  return stages;
+}
+
+//
+// PipelineStageOp
+//
 
 static ParseResult
 parsePipelineStageOp(OpAsmParser &parser, OperationState &result) {
@@ -340,6 +329,15 @@ static void printPipelineStageOp(OpAsmPrinter &p, PipelineStageOp op) {
     p << " : ";
   for (Type type : op->getResultTypes())
     p.printType(type);
+}
+
+unsigned PipelineStageOp::getStageId() {
+  auto stages = getOperation()->getParentOfType<HerdPipelineOp>().getStages();
+  for (unsigned idx = 0; idx<stages.size(); idx++)
+    if (stages[idx] == *this)
+      return idx;
+  llvm_unreachable("Could not find stage in parent");
+  return -1;
 }
 
 //===----------------------------------------------------------------------===//

@@ -529,11 +529,7 @@ public:
     core.walk([&](air::HerdPipelineOp pipelineOp) {
       OpBuilder builder(pipelineOp);
 
-      SmallVector<air::PipelineStageOp,8> stages;
-      for (auto &o : pipelineOp.body().front().getOperations()) {
-        if (auto stage = dyn_cast<air::PipelineStageOp>(o))
-          stages.push_back(stage);
-      }
+      auto stages = pipelineOp.getStages();
 
       // TODO: dont assume 'horiz'
       auto pipeline_size = herd_size_x;

@@ -72,21 +72,26 @@ def air_HerdPipelineOp : air_Op<"pipeline", [HasParent<"HerdLaunchOp">,
   let assemblyFormat = [{
     attr-dict $body
   }];
+  let extraClassDeclaration = [{
+    // Return a vector of the air.pipeline.stage ops for this pipeline
+    SmallVector<PipelineStageOp,8> getStages();
+  }];
 }
 
 def air_PipelineStageOp : air_Op<"pipeline.stage", [HasParent<"HerdPipelineOp">]>,
     Arguments<(ins Variadic<AnyType>:$opers)>, Results<(outs Variadic<AnyType>:$results)> {
   let summary = "Pipeline stage";
   let regions = (region AnyRegion:$body);
-  // let assemblyFormat = [{
-  //   `(` $opers `)` `:` type($opers) attr-dict $body `->` `(` type($results) `)`
-  // }];
   let description = [{
     Pipeline stage.
   }];
   let parser = [{ return parsePipelineStageOp(parser, result); }];
   let printer = [{ printPipelineStageOp(p, *this); }];
   let verifier = [{ return ::verify(*this); }];
+  let extraClassDeclaration = [{
+    // Return the offset of this stage in the pipeline"
+    unsigned getStageId();
+  }];
 }
 
 def air_PipelineYieldOp : air_Op<"pipeline.yield", [HasParent<"PipelineStageOp">,
