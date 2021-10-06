@@ -41,8 +41,8 @@
 typedef struct dispatch_packet_s {
 
   // HSA-like interface
-  uint16_t header;
-  uint16_t type;
+  volatile uint16_t header;
+  volatile uint16_t type;
   uint32_t reserved0;
   uint64_t return_address;
   uint64_t arg[4];
@@ -57,7 +57,7 @@ typedef struct queue_s {
   uint32_t type;
   uint32_t features;
   uint64_t base_address;
-  uint64_t doorbell;
+  volatile uint64_t doorbell;
   uint32_t size;
   uint32_t reserved0;
   uint64_t id;

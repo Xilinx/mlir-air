@@ -46,6 +46,25 @@ hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue, uin
   return HSA_STATUS_SUCCESS;
 }
 
+hsa_status_t air_queue_dispatch(queue_t *q, uint64_t doorbell, dispatch_packet_t *pkt) {
+  // dispatch packet
+  signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
+  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
+  signal_store_release((signal_t*)&q->doorbell, doorbell);
+  return HSA_STATUS_SUCCESS;
+}
+
+hsa_status_t air_queue_wait(queue_t *q, dispatch_packet_t *pkt) {
+  // wait for packet completion
+  while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
+    printf("packet completion signal timeout!\n");
+    printf("%x\n", pkt->header);
+    printf("%x\n", pkt->type);
+    printf("%x\n", (unsigned)pkt->completion_signal);
+  }
+  return HSA_STATUS_SUCCESS;
+}
+
 hsa_status_t air_queue_dispatch_and_wait(queue_t *q, uint64_t doorbell, dispatch_packet_t *pkt) {
   // dispatch packet
   signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
@@ -64,9 +83,9 @@ hsa_status_t air_queue_dispatch_and_wait(queue_t *q, uint64_t doorbell, dispatch
 
 hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
                                   uint8_t start_col, uint8_t num_cols,
-                                  uint8_t start_row, uint8_t num_rows) {
+                                  uint8_t start_row, uint8_t num_rows,
+                                  uint16_t dma0, uint16_t dma1) {
   initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
   pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
   pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
@@ -75,19 +94,25 @@ hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
   pkt->arg[0] |= ((uint64_t)num_rows) << 24;
   pkt->arg[0] |= ((uint64_t)start_row) << 16;
 
-  pkt->arg[1] = herd_id;  // Herd ID
-  pkt->arg[2] = 0;        // unused
-  pkt->arg[3] = 0;        // unused
+  pkt->arg[1]  = herd_id;  // Herd ID
+  pkt->arg[1] |= ((char)dma0) << 16;
+  pkt->arg[1] |= ((char)dma1) << 24;
+  pkt->arg[2]  = 0;        // unused
+  pkt->arg[3]  = 0;        // unused
+
+  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
   return HSA_STATUS_SUCCESS;
 }
 
 hsa_status_t air_packet_device_init(dispatch_packet_t *pkt, uint32_t num_cols) {
   initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+
   pkt->arg[0]  = AIR_PKT_TYPE_DEVICE_INITIALIZE;
   pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
   pkt->arg[0] |= ((uint64_t)num_cols << 40);
+
+  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
   return HSA_STATUS_SUCCESS;
 }
@@ -97,7 +122,6 @@ hsa_status_t air_packet_aie_lock_range(dispatch_packet_t *pkt, uint16_t herd_id,
                                  uint8_t start_col, uint8_t num_cols,
                                  uint8_t start_row, uint8_t num_rows) {
   initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
   pkt->arg[0]  = AIR_PKT_TYPE_XAIE_LOCK;
   pkt->arg[0] |= (AIR_ADDRESS_HERD_RELATIVE_RANGE << 48);
@@ -108,6 +132,8 @@ hsa_status_t air_packet_aie_lock_range(dispatch_packet_t *pkt, uint16_t herd_id,
   pkt->arg[1]  = lock_id;
   pkt->arg[2]  = acq_rel;
   pkt->arg[3]  = value;
+
+  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
   return HSA_STATUS_SUCCESS;
 }
@@ -121,7 +147,6 @@ hsa_status_t air_packet_nd_memcpy(dispatch_packet_t *pkt, uint16_t herd_id,
                                  uint32_t transfer_length4d, uint32_t transfer_stride4d) {
 
   initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
   pkt->arg[0]  = AIR_PKT_TYPE_ND_MEMCPY;
   pkt->arg[0] |= ((uint64_t)memory_space) << 16;
@@ -139,6 +164,8 @@ hsa_status_t air_packet_nd_memcpy(dispatch_packet_t *pkt, uint16_t herd_id,
   pkt->arg[3] |= ((uint64_t)transfer_length4d) <<32;
   pkt->arg[3] |= ((uint64_t)transfer_stride4d) <<48;
 
+  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+
   return HSA_STATUS_SUCCESS;
 }
 
@@ -148,7 +175,7 @@ hsa_status_t air_packet_aie_lock(dispatch_packet_t *pkt, uint16_t herd_id,
                                  uint64_t lock_id, uint64_t acq_rel, uint64_t value,
                                  uint8_t col, uint8_t row) {
   return air_packet_aie_lock_range(pkt, herd_id, lock_id, acq_rel,
-                                   value, col, 0, row, 0);
+                                   value, col, 1, row, 1);
 }
 
 //air_packet_unlock

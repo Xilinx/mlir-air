@@ -33,6 +33,8 @@ void air_deinit_libxaie1(air_libxaie1_ctx_t*);
 
 hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue, uint64_t paddr);
 
+hsa_status_t air_queue_dispatch(queue_t *queue, uint64_t doorbell, dispatch_packet_t *pkt);
+hsa_status_t air_queue_wait(queue_t *queue, dispatch_packet_t *pkt);
 hsa_status_t air_queue_dispatch_and_wait(queue_t *queue, uint64_t doorbell, dispatch_packet_t *pkt);
 
 // packet utilities
@@ -41,7 +43,8 @@ hsa_status_t air_queue_dispatch_and_wait(queue_t *queue, uint64_t doorbell, disp
 // initialize pkt as a herd init packet with given parameters
 hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
                                   uint8_t start_col, uint8_t num_cols,
-                                  uint8_t start_row, uint8_t num_rows);
+                                  uint8_t start_row, uint8_t num_rows,
+                                  uint16_t dma0, uint16_t dma1);
 
 hsa_status_t air_packet_device_init(dispatch_packet_t *pkt, uint32_t num_cols);
 
