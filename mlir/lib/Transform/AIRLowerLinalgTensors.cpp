@@ -100,10 +100,6 @@ struct RemoveTensorLoadStorePattern
     if (!store)
       return failure();
 
-    auto buffer = store.memref().getDefiningOp<AIE::BufferOp>();
-    if (!buffer)
-      return failure();
-
     rewriter.replaceOp(alloc, store.memref());
     rewriter.eraseOp(store);
     rewriter.eraseOp(op);
@@ -128,7 +124,7 @@ void AIRLowerLinalgTensors::runOnOperation() {
 
   // Mark all Linalg operations illegal as long as they work on tensors.
   auto isLegalOperation = [&](Operation *op) {
-  return typeConverter.isLegal(op);
+    return typeConverter.isLegal(op);
   };
   target.addDynamicallyLegalDialect<linalg::LinalgDialect>(isLegalOperation);
   target.addDynamicallyLegalOp<ConstantOp>(isLegalOperation);
