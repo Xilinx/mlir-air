@@ -26,7 +26,7 @@ extern "C" {
 #define SHIM_DMA_S2MM 0 
 #define SHIM_DMA_MM2S 1 
 
-#define CHATTY 1 
+#define CHATTY 0 
 
 #define air_printf(fmt, ...) \
 	                    do { if (CHATTY) xil_printf(fmt, ##__VA_ARGS__); } while (0)
