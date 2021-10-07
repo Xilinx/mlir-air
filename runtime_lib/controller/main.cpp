@@ -498,7 +498,7 @@ u32 dispatch_before_lo, call_before_lo, invalidate_before_lo;
 
 void lock_uart(uint32_t id) {
   bool is_locked = false;
-  volatile uint32_t *ulb = (volatile uint32_t *)(0x0);// HACK //(shmem_base+uart_lock_offset);
+  volatile uint32_t *ulb = (volatile uint32_t *)(shmem_base+uart_lock_offset);
 
   while (!is_locked) {
     uint32_t status = ulb[0];
@@ -509,7 +509,7 @@ void lock_uart(uint32_t id) {
       uint32_t status = ulb[0];
       uint32_t lockee = ulb[1];
       if ((status == 1) && (lockee == id)) {
-        air_printf("ULock @ %lx MB %02d: ",ulb, id);
+        //air_printf("ULock @ %lx MB %02d: ",ulb, id);
         is_locked = true;
       }
     }
@@ -519,7 +519,7 @@ void lock_uart(uint32_t id) {
   // This looks unsafe, but its okay as long as we always aquire
   // the lock first
 void unlock_uart() {
-  volatile uint32_t *ulb = (volatile uint32_t *)(0x0);// HACK //(shmem_base+uart_lock_offset);
+  volatile uint32_t *ulb = (volatile uint32_t *)(shmem_base+uart_lock_offset);
   ulb[1] = 0; 
   ulb[0] = 0;
 }
@@ -964,9 +964,15 @@ int do_packet_nd_memcpy(uint32_t slot)
   return 0;
 }
 
+// TODO test reset of last_bd[slot] = 0;
+// TODO test use of slots flexibly 
 int stage_packet_nd_memcpy(dispatch_packet_t *pkt, uint32_t slot)
 {
   air_printf("stage_packet_nd_memcpy %d\n\r",slot);
+  if (staged_nd_slot[slot].valid) {
+    air_printf("STALL: ND Memcpy Slot %d Busy!\n\r",slot);
+    return 2;
+  }
   packet_set_active(pkt, true);
 
   uint16_t memory_space = (pkt->arg[0] >> 16) & 0x00ff;
@@ -1206,20 +1212,21 @@ packet_op:
         uint16_t direction    = (pkt->arg[0] >> 60) & 0x000f;
         uint16_t col  = (pkt->arg[0] >> 32) & 0x00ff;
         int slot = channel;
-        slot += ((col%2)==1)?4:0;
+        slot += ((col%2)==1)?4:0; 
         if (direction == SHIM_DMA_S2MM) 
           slot += XAIEDMA_SHIM_CHNUM_S2MM0;
         else 
           slot += XAIEDMA_SHIM_CHNUM_MM2S0;
-        if (stage_packet_nd_memcpy(pkt,slot) == 0) {
+        int ret = stage_packet_nd_memcpy(pkt,slot);
+        if (ret == 0) { 
           last_slot = slot;
 	        if (do_packet_nd_memcpy(slot)) {
 	          num_active_packets++;
 	          break;
 	        } // else completed the packet in the first try
-        }
+        } else if (ret == 2) break; // slot busy, retry.
         staged_nd_slot[slot].valid = 0; 
-        complete_agent_dispatch_packet(pkt); // this is correct for the first try 
+        complete_agent_dispatch_packet(pkt); // this is correct for the first try or invalid stage 
         packets_processed++;
         break;
 
@@ -1245,6 +1252,8 @@ int main()
   base_address = shmem_base + (1+mb_id)*MB_SHMEM_SEGMENT_SIZE;
   uint32_t *num_mbs = (uint32_t *)(shmem_base+0x208);
   num_mbs[0] = user1;
+
+  if (mb_id==0) unlock_uart(); // NOTE: Initialize uart lock only from 'first' MB
 
   lock_uart(mb_id);
   xil_printf("MB %d of %d firmware %d.%d.%d created on %s at %s GMT\n\r",mb_id+1,*num_mbs,maj,min,ver,__DATE__, __TIME__); 
