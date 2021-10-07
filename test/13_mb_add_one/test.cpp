@@ -15,24 +15,16 @@
 #include "acdc_queue.h"
 #include "hsa_defs.h"
 
-#define SHMEM_BASE 0x020100000000LL
-
-#define XAIE_NUM_ROWS            8
-#define XAIE_NUM_COLS           50
-#define XAIE_ADDR_ARRAY_OFF     0x800
-
-#define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
-#define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
-
 namespace {
 
-XAieGbl_Config *AieConfigPtr;	                          /**< AIE configuration pointer */
-XAieGbl AieInst;	                                      /**< AIE global instance */
-XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuration instance */
-XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];  /**< Instantiates AIE array of [XAIE_NUM_COLS] x [XAIE_NUM_ROWS] */
-XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
+// global libxaie state
+air_libxaie1_ctx_t *xaie;
 
+#define TileInst (xaie->TileInst)
+#define TileDMAInst (xaie->TileDMAInst)
 #include "aie_inc.cpp"
+#undef TileInst
+#undef TileDMAInst
 
 }
 
@@ -42,11 +34,7 @@ main(int argc, char *argv[])
   uint64_t row = 0;
   uint64_t col = 7;
 
-  size_t aie_base = XAIE_ADDR_ARRAY_OFF << 14;
-  XAIEGBL_HWCFG_SET_CONFIG((&AieConfig), XAIE_NUM_ROWS, XAIE_NUM_COLS, XAIE_ADDR_ARRAY_OFF);
-  XAieGbl_HwInit(&AieConfig);
-  AieConfigPtr = XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
-  XAieGbl_CfgInitialize(&AieInst, &TileInst[0][0], AieConfigPtr);
+  xaie = air_init_libxaie1();
 
   mlir_configure_cores();
   mlir_configure_switchboxes();

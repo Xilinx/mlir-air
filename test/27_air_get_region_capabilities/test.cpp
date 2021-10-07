@@ -56,19 +56,8 @@ int main(int argc, char *argv[])
     // Set up a 2x4 herd starting 7,2
     herd_pkt->arg[0]  = AIR_PKT_TYPE_GET_CAPABILITIES;
     herd_pkt->arg[1] = CAPABILITIES_SCRATCH_BASE + 0x300; // avoid the UART semaphore stuff
+    air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
 
-    // dispatch packet
-    signal_create(1, 0, NULL, (signal_t*)&herd_pkt->completion_signal);
-    signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-    signal_store_release((signal_t*)&q->doorbell, wr_idx);
-
-    // wait for packet completion
-    while (signal_wait_aquire((signal_t*)&herd_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-      printf("packet completion signal timeout on getting capabilities!\n");
-      printf("%x\n", herd_pkt->header);
-      printf("%x\n", herd_pkt->type);
-      printf("%x\n", (unsigned)herd_pkt->completion_signal);
-    }
 
     // Check the packet we got back
 
@@ -112,18 +101,7 @@ int main(int argc, char *argv[])
       herd_pkt->arg[0]  = AIR_PKT_TYPE_HELLO;
       herd_pkt->arg[1] = 0xacdc0000LL + c;
 
-      // dispatch packet
-      signal_create(1, 0, NULL, (signal_t*)&herd_pkt->completion_signal);
-      signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-      signal_store_release((signal_t*)&q->doorbell, wr_idx);
-
-      // wait for packet completion
-      while (signal_wait_aquire((signal_t*)&herd_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-        printf("packet completion signal timeout on getting capabilities!\n");
-        printf("%x\n", herd_pkt->header);
-        printf("%x\n", herd_pkt->type);
-        printf("%x\n", (unsigned)herd_pkt->completion_signal);
-     }
+      air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
     } 
   }  
 

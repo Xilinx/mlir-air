@@ -73,43 +73,24 @@ int main(int argc, char *argv[])
 
   XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_MM2S0, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
 
+  uint32_t herd_id = 0;
+  uint32_t lock_id = 0;
+
   // reserve a packet in the queue
   uint64_t wr_idx = queue_add_write_index(q, 1);
   uint64_t packet_id = wr_idx % q->size;
-
   // Set up the worlds smallest herd at 7,2
   dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_herd_init(herd_pkt, 0, col, num_cols, row, num_rows);
+  air_packet_herd_init(herd_pkt, herd_id, col, num_cols, row, num_rows);
   air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
 
   // reserve another packet in the queue
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
-
   // lock packet
   dispatch_packet_t *lock_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(lock_pkt);
-  lock_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-
-  // Release lock 0 in 0,0 with value 0
-  lock_pkt->arg[0]  = AIR_PKT_TYPE_XAIE_LOCK;
-  lock_pkt->arg[0] |= (AIR_ADDRESS_HERD_RELATIVE << 48);
-  lock_pkt->arg[1]  = 0;
-  lock_pkt->arg[2]  = 1;
-  lock_pkt->arg[3]  = 0;
-
-  // dispatch packet
-  signal_create(1, 0, NULL, (signal_t*)&lock_pkt->completion_signal);
-  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-  signal_store_release((signal_t*)&q->doorbell, wr_idx);
-
-  // wait for packet completion
-  while (signal_wait_aquire((signal_t*)&lock_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-    printf("packet completion signal timeout on lock release!\n");
-    printf("%x\n", lock_pkt->header);
-    printf("%x\n", lock_pkt->type);
-    printf("%x\n", lock_pkt->completion_signal);
-  }
+  air_packet_aie_lock(lock_pkt, herd_id, lock_id, /*acq_rel*/1, /*value*/0, 0, 0);
+  air_queue_dispatch_and_wait(q, wr_idx, lock_pkt);
 
   //XAieTile_LockRelease(&(xaie->TileInst[col][2]), 0, 0, 0);
 
