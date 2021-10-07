@@ -1,7 +1,6 @@
 // Expected to fail until https://github.com/Xilinx/mlir-aie/pull/34 is merged
 // XFAIL: *
-// RUN: air-opt %S/air.mlir -air-to-aie='air-to-aie-row-offset=3 air-to-aie-col-offset=3 air-to-aie-output-prefix=%T/' -o /dev/null
-// RUN: air-opt -air-lower-linalg-tensors %T/aie.0.mlir -o %T/aie.mlir
-// RUN: aiecc.py --sysroot=%VITIS_SYSROOT% %T/aie.mlir
+// RUN: aircc.py --sysroot=%VITIS_SYSROOT% -row-offset=3 -col-offset=3 %S/air.mlir -o %T/air.mlir.a
+// RUN: %ARM_CLANG -shared air_project/air.mlir.herd_0.o air_project/air.mlir.o -o aie_ctrl.so
 // RUN: %ARM_CLANG %S/test.cpp -I%VITIS_SYSROOT%/opt/xaiengine/include -I%T/.. -L%VITIS_SYSROOT%/opt/xaiengine/lib -lxaiengine -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
 // RUN: %run_on_board %T/test.elf

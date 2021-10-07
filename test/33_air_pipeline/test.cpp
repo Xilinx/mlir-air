@@ -9,6 +9,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <dlfcn.h>
+
 #include <xaiengine.h>
 #include "test_library.h"
 
@@ -20,12 +22,6 @@ namespace {
 // global libxaie state
 air_libxaie1_ctx_t *xaie;
 
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
-#include "acdc_project/aie_inc.cpp"
-#undef TileInst
-#undef TileDMAInst
-
 }
 
 int
@@ -35,21 +31,6 @@ main(int argc, char *argv[])
   auto row = 3;
 
   xaie = air_init_libxaie1();
-
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
-  mlir_start_cores();
-
-  uint32_t *bram_ptr = nullptr;
-
-  int fd = open("/dev/mem", O_RDWR | O_SYNC);
-  if (fd != -1)
-    bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_SHMEM_BASE+0x4000);
-
-  if (!bram_ptr)
-    return -1;
 
   // create the queue
   queue_t *q = nullptr;
@@ -93,37 +74,18 @@ main(int argc, char *argv[])
     d += 1;
   }
 
-  for (int i=0;i<DATA_LENGTH;i++) {
-    bram_ptr[i] = input_a.d[i];
-    bram_ptr[i+DATA_LENGTH] = input_b.d[i];
-    bram_ptr[i+2*DATA_LENGTH] = -42;
-  }
+  printf("loading aie_ctrl.so\n");
+  auto handle = air_module_load_from_file("./aie_ctrl.so", q);
+  assert(handle && "failed to open aie_ctrl.so");
 
-  wr_idx = queue_add_write_index(q, 1);
-  packet_id = wr_idx % q->size;
-  dispatch_packet_t *pkt_a = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_a, 0, 2, 1, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000, DATA_LENGTH*sizeof(DATA_TYPE), 1, 0, 1, 0, 1, 0);
+  auto launch = (void (*)(void*,void *,void *))dlsym((void*)handle, "_mlir_ciface_launch");
+  assert(launch && "failed to locate _mlir_ciface_launch in .so");
 
-  air_queue_dispatch_and_wait(q, wr_idx, pkt_a);
-
-  wr_idx = queue_add_write_index(q, 1);
-  packet_id = wr_idx % q->size;
-  dispatch_packet_t *pkt_b = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_b, 0, 2, 1, 1, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000+DATA_LENGTH*sizeof(DATA_TYPE), DATA_LENGTH*sizeof(DATA_TYPE), 1, 0, 1, 0, 1, 0);
-
-  air_queue_dispatch_and_wait(q, wr_idx, pkt_b);
-
-  wr_idx = queue_add_write_index(q, 1);
-  packet_id = wr_idx % q->size;
-  dispatch_packet_t *pkt_c = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_c, 0, 2, 0, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000+2*DATA_LENGTH*sizeof(DATA_TYPE), DATA_LENGTH*sizeof(DATA_TYPE), 1, 0, 1, 0, 1, 0);
-
-  air_queue_dispatch_and_wait(q, wr_idx, pkt_c);
+  launch((void*)&input_a, (void*)&input_b, (void*)&output);
 
   int errors = 0;
 
   for (int i=0;i<DATA_LENGTH;i++) {
-    output.d[i] = bram_ptr[i+2*DATA_LENGTH];
     DATA_TYPE ref = (input_a.d[i]*input_b.d[i]) + (DATA_TYPE)1 + (DATA_TYPE)2 + (DATA_TYPE)3;
     if (output.d[i] != ref) {
       printf("output[%d] = %d (expected %d)\n", i, output.d[i], ref);

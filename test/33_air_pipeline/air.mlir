@@ -1,13 +1,11 @@
 // (c) Copyright 2021 Xilinx Inc.
 
-// RUN: air-opt -air-to-aie %s | FileCheck %s
-// CHECK: module
 #map0 = affine_map<(d0) -> (d0)>
 module  {
   func @launch(%m0: memref<1024xi32>, %m1: memref<1024xi32>, %m2: memref<1024xi32>) {
     %c4 = constant 4 : index
     %c1 = constant 1 : index
-    air.launch_herd tile (%x, %y) in (%sx=%c4, %sy=%c1) args(%op0=%m0, %op1=%m1, %op2=%m2) : memref<1024xi32>,memref<1024xi32>,memref<1024xi32> {
+    air.launch_herd tile (%x, %y) in (%sx=%c4, %sy=%c1) args(%op0=%m0, %op1=%m1, %op2=%m2) : memref<1024xi32>,memref<1024xi32>,memref<1024xi32> attributes {sym_name="herd_0"} {
       %c0 = constant 0 : index
       %c1024 = constant 1024 : index
 
