@@ -69,14 +69,14 @@ def do_run(command):
 
 def run_flow(opts, tmpdirname):
     thispath = os.path.dirname(os.path.realpath(__file__))
-    air_to_aie_pass = '-air-to-aie=air-to-aie-emit-while-loop=true'
+    air_to_aie_pass = '-air-to-aie=air-to-aie-emit-while-loop=false'
     air_to_aie_pass = air_to_aie_pass + f' air-to-aie-row-offset={opts.row_offset} air-to-aie-col-offset={opts.col_offset}'
     air_to_aie_pass = air_to_aie_pass + f' air-to-aie-output-prefix={opts.tmpdir}/'
     
-    do_call(['air-opt', opts.air_mlir_file, '-convert-linalg-to-loops',
+    do_call(['air-opt', opts.air_mlir_file,
              air_to_aie_pass, '-o', '/dev/null'])
 
-    air_to_airrt_pass = '-air-to-aie=air-to-aie-emit-while-loop=true'
+    air_to_airrt_pass = '-air-to-aie=air-to-aie-emit-while-loop=false'
     air_to_airrt_pass = air_to_airrt_pass + f' air-to-aie-row-offset={opts.row_offset} air-to-aie-col-offset={opts.col_offset}'
     air_to_airrt_pass = air_to_airrt_pass + f' air-to-aie-output-prefix={opts.tmpdir}/'
 
@@ -84,6 +84,7 @@ def run_flow(opts, tmpdirname):
     aie_ctrl_airrt = opts.tmpdir+'/airrt.'+air_mlir_filename
     do_call(['air-opt', opts.air_mlir_file, air_to_airrt_pass,
             '-convert-vector-to-llvm', '-air-to-std',
+            '-air-lower-linalg-tensors', '-canonicalize', '-cse',
             '-o', aie_ctrl_airrt])
 
     aie_ctrl = opts.tmpdir+'/aie_ctrl.'+air_mlir_filename
@@ -100,8 +101,14 @@ def run_flow(opts, tmpdirname):
     aie_ctrl_llvm_ir = opts.tmpdir+'/'+air_mlir_filename+'.ll'
     do_call(['aie-translate', '--mlir-to-llvmir', aie_ctrl_llvm, '-o', aie_ctrl_llvm_ir])
 
+    aie_ctrl_llvm_opt_bc = opts.tmpdir+'/'+air_mlir_filename+'.opt.bc'
+    do_call(['opt', '-O3', aie_ctrl_llvm_ir, '-o', aie_ctrl_llvm_opt_bc])
+
+    aie_ctrl_llvm_opt_ir = opts.tmpdir+'/'+air_mlir_filename+'.opt.ll'
+    do_call(['llvm-dis', aie_ctrl_llvm_opt_bc, '-o', aie_ctrl_llvm_opt_ir])
+
     aie_ctrl_obj = opts.tmpdir+'/'+air_mlir_filename+'.o'
-    do_call(['clang', '-Wno-override-module', '-fPIC', '--target=aarch64-linux-gnu', '-c', aie_ctrl_llvm_ir, '-o', aie_ctrl_obj])
+    do_call(['clang', '-Wno-override-module', '-fPIC', '--target=aarch64-linux-gnu', '-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
 
     t = do_run(['air-translate', '--airrt-generate-json', aie_ctrl_airrt])
     module_meta = eval(t.stdout)
@@ -112,7 +119,7 @@ def run_flow(opts, tmpdirname):
       herd_file = opts.tmpdir+'/aie.'+herd+'.mlir'
       aiecc_file = opts.tmpdir+'/aiecc.'+herd+'.mlir'
       aiecc_dir = opts.tmpdir+'/'+herd
-      do_call(['air-opt', herd_file, '--lower-affine', '-o', aiecc_file])
+      do_call(['air-opt', herd_file, '-air-lower-linalg-tensors', '--lower-affine', '-canonicalize', '-cse', '-o', aiecc_file])
       do_call(['aiecc.py'] +
               (['-v'] if opts.verbose else []) +
               (['--sysroot', opts.sysroot] if opts.sysroot!="" else []) +
