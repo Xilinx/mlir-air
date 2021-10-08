@@ -358,7 +358,7 @@ void addAsyncDependency(Operation *op, Value token) {
   if (!sizeAttr)
     return; // Async dependencies is the only variadic operand.
   SmallVector<int32_t, 8> sizes;
-  for (auto size : sizeAttr.getIntValues())
+  for (auto size : sizeAttr.getValues<APInt>())
     sizes.push_back(size.getSExtValue());
   ++sizes.front();
   op->setAttr(attrName, Builder(op->getContext()).getI32VectorAttr(sizes));

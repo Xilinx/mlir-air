@@ -217,7 +217,7 @@ CallOp convertDmaMemcpyToMemcpyFn(Operation *op, ArrayRef<Value > operands,
 
   auto fn = xilinx::air::getATenFn(op->getParentOfType<ModuleOp>(),
                                    fnName.str(), callops, {});
-  auto call = rewriter.create<CallOp>(loc, retTys, rewriter.getSymbolRefAttr(fn), callops);
+  auto call = rewriter.create<CallOp>(loc, retTys, SymbolRefAttr::get(fn), callops);
   rewriter.eraseOp(op);
   return call;
 }

@@ -10,6 +10,8 @@
 #include "mlir/Dialect/Linalg/Transforms/CodegenStrategy.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
+#include "mlir/Dialect/SCF/SCF.h"
+#include "mlir/Dialect/SCF/Transforms.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -210,7 +212,7 @@ public:
                                           Identifier::get("promote", ctx)));
 
       OwningRewritePatternList stage2Patterns(ctx);
-      stage2Patterns.insert<linalg::AffineMinSCFCanonicalizationPattern>(ctx);
+      scf::populateSCFForLoopCanonicalizationPatterns(stage2Patterns);
       
       OwningRewritePatternList stage3Patterns(&getContext());
       stage3Patterns.insert<RemoveSubViewOpsPattern, 
@@ -228,8 +230,8 @@ public:
   void runConv2dPatterns(FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
 
-    SmallVector<linalg::Conv2DNchwOp, 4> conv2dOps;
-    funcOp.walk([&](linalg::Conv2DNchwOp op) {
+    SmallVector<linalg::Conv2DNchwFchwOp, 4> conv2dOps;
+    funcOp.walk([&](linalg::Conv2DNchwFchwOp op) {
       conv2dOps.push_back(op);
     });
 
@@ -262,7 +264,7 @@ public:
       int64_t kernel_w = weightTy.getDimSize(3);
 
       OwningRewritePatternList stage1Patterns(&getContext());
-      stage1Patterns.insert<linalg::LinalgTilingPattern<linalg::Conv2DNchwOp>>(
+      stage1Patterns.insert<linalg::LinalgTilingPattern<linalg::Conv2DNchwFchwOp>>(
         ctx, linalg::LinalgTilingOptions().setTileSizes({batch_hw,
                                                          ofm_channels_sw,
                                                          ifm_height_sw/4,
@@ -274,12 +276,12 @@ public:
         linalg::LinalgTransformationFilter(Identifier::get("xten_conv2d", ctx),
                                           Identifier::get("promote_L2", ctx)));
 
-      stage1Patterns.insert<linalg::LinalgPromotionPattern<linalg::Conv2DNchwOp>>(
+      stage1Patterns.insert<linalg::LinalgPromotionPattern<linalg::Conv2DNchwFchwOp>>(
         ctx, linalg::LinalgPromotionOptions().setOperandsToPromote(std::vector<int64_t>{0,1,2}),
         linalg::LinalgTransformationFilter(Identifier::get("promote_L2", ctx),
                                           Identifier::get("L2", ctx)));
 
-      stage1Patterns.insert<linalg::LinalgTilingPattern<linalg::Conv2DNchwOp>>(
+      stage1Patterns.insert<linalg::LinalgTilingPattern<linalg::Conv2DNchwFchwOp>>(
         ctx, linalg::LinalgTilingOptions().setTileSizes({batch_hw,
                                                          ofm_channels_sw/4,
                                                          ifm_height_sw/4,
@@ -291,14 +293,14 @@ public:
         linalg::LinalgTransformationFilter(Identifier::get("L2", ctx),
                                           Identifier::get("promote_HERD", ctx)));
 
-      stage1Patterns.insert<linalg::LinalgPromotionPattern<linalg::Conv2DNchwOp>>(
+      stage1Patterns.insert<linalg::LinalgPromotionPattern<linalg::Conv2DNchwFchwOp>>(
         ctx, linalg::LinalgPromotionOptions().setOperandsToPromote(std::vector<int64_t>{0,1,2}),
         linalg::LinalgTransformationFilter(Identifier::get("promote_HERD", ctx),
                                           Identifier::get("HERD", ctx)));
 
       OwningRewritePatternList stage2Patterns =
         linalg::getLinalgTilingCanonicalizationPatterns(ctx);
-      stage2Patterns.insert<linalg::AffineMinSCFCanonicalizationPattern>(ctx);
+      scf::populateSCFForLoopCanonicalizationPatterns(stage2Patterns);
 
       OwningRewritePatternList stage3Patterns(&getContext());
       stage3Patterns.insert<RemoveSubViewOpsPattern, 

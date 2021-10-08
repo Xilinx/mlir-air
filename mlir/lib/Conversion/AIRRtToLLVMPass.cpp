@@ -392,7 +392,7 @@ lowerDmaMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
   }
   SmallVector<Value, 16> operands = op->getOperands();
   operands[3] = rewriter.create<memref::CastOp>(op->getLoc(), operands[3], tys[3]);
-  CallOp call = rewriter.create<CallOp>(op->getLoc(), retTys, rewriter.getSymbolRefAttr(fn), operands);
+  CallOp call = rewriter.create<CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn), operands);
   rewriter.replaceOp(op, call->getResults());
   return success();
 }
@@ -430,7 +430,7 @@ lowerDmaNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
     module.push_back(fn);
   }
 
-  CallOp call = rewriter.create<CallOp>(op->getLoc(), retTys, rewriter.getSymbolRefAttr(fn), operands);
+  CallOp call = rewriter.create<CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn), operands);
   rewriter.replaceOp(op, call->getResults());
   return success();
 }
