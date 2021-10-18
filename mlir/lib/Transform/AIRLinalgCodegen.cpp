@@ -196,8 +196,8 @@ public:
         ctx, linalg::LinalgTilingOptions().setTileSizes(tile_sizes)
                                           .setInterchange({2,1,0})
                                           .setLoopType(linalg::LinalgTilingLoopType::Loops),
-        linalg::LinalgTransformationFilter(Identifier::get("xten_mmult", ctx),
-                                          Identifier::get("L1", ctx)));
+        linalg::LinalgTransformationFilter(ArrayRef<Identifier>{},
+                                           Identifier::get("L1", ctx)));
 
       // divide it up evenly between tiles
       stage1Patterns.insert<linalg::LinalgTilingPattern<linalg::MatmulOp>>(
