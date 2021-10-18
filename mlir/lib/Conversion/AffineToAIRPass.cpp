@@ -58,6 +58,10 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
     SmallVector<Value, 4> src_indices;
     SmallVector<Value, 4> dst_indices;
 
+    if ((src.getType().cast<MemRefType>().getMemorySpace() == 0) &&
+        (dst.getType().cast<MemRefType>().getMemorySpace() == 0) )
+      return failure();
+
     if (dims == 2) {
       Value zero = rewriter.create<ConstantIndexOp>(loc,0);
       Value stride = zero;
