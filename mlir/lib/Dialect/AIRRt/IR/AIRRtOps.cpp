@@ -22,7 +22,6 @@ using namespace xilinx::airrt;
 //===----------------------------------------------------------------------===//
 
 static void printModuleMetadataOp(OpAsmPrinter &p, ModuleMetadataOp &op) {
-  p << "airrt.module_metadata";
   p.printOptionalAttrDictWithKeyword(op->getAttrs());
   p.printRegion(op.herds(), /*printEntryBlockArgs=*/false,
                 /*printBlockTerminators=*/false);

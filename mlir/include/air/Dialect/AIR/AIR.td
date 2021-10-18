@@ -55,7 +55,7 @@ def air_HerdTerminatorOp : air_Op<"herd_terminator", [HasParent<"HerdLaunchOp">,
   }];
 
   let parser = [{ return success(); }];
-  let printer = [{ p << getOperationName(); }];
+  let printer = [{  }];
 }
 
 def air_HerdPipelineOp : air_Op<"pipeline", [HasParent<"HerdLaunchOp">,
@@ -140,7 +140,7 @@ def air_PipelineTerminatorOp : air_Op<"pipeline.terminator", [HasParent<"HerdPip
   }];
 
   let parser = [{ return success(); }];
-  let printer = [{ p << getOperationName(); }];
+  let printer = [{  }];
 }
 
 def air_DmaMemcpy4dOp: air_Op<"dma_memcpy_4d", [air_AsyncOpInterface, air_DmaMemcpyInterface]> {

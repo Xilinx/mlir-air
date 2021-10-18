@@ -74,8 +74,6 @@ static LogicalResult verify(HerdLaunchOp op) {
 
 static void printHerdLaunchOp(OpAsmPrinter &p, HerdLaunchOp op) {
 
-  p << HerdLaunchOp::getOperationName();
-
   auto num_async_deps = op.asyncDependencies().size();
   if (num_async_deps) {
     p << " [";
