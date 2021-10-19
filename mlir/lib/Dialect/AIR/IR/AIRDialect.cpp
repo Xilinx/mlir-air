@@ -303,8 +303,6 @@ static LogicalResult verify(PipelineStageOp op) {
 
 static void printPipelineStageOp(OpAsmPrinter &p, PipelineStageOp op) {
 
-  p << PipelineStageOp::getOperationName();
-
   if (op.getNumOperands()) {
     auto args = op.body().front().getArguments();
     p << " args(";

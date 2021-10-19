@@ -490,16 +490,6 @@ public:
                           linalg::LinalgDialect,
                           xilinx::airrt::AIRRtDialect>();
 
-    target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
-      return (op.getType().getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L2);
-    });
-
-    target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-      return (op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
-              (int)xilinx::air::MemorySpace::L2);
-    });
-    target.addLegalOp<memref::TensorLoadOp,memref::TensorStoreOp>();
-
     // Replace the PipelineStageOps first, followed by the 
     // HerdPipelineOps, then run the rest of the patterns.
     // This avoids creating invalid intermediate code with respect
@@ -520,6 +510,16 @@ public:
       emitError(UnknownLoc::get(context), "error lowering air.pipeline.stage\n");
       signalPassFailure();
     }
+
+    target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
+      return (op.getType().getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L2);
+    });
+
+    target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
+      return (op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
+              (int)xilinx::air::MemorySpace::L2);
+    });
+    target.addLegalOp<memref::TensorLoadOp,memref::TensorStoreOp>();
 
     // DMA and HerdLaunchOp conversion
     OwningRewritePatternList air_patterns(context);

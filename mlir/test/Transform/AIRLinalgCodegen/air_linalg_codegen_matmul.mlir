@@ -7,10 +7,10 @@
 // CHECK-LABEL:   func @call_mmult(
 // CHECK-SAME:                     %[[VAL_0:.*]]: memref<128x128xi32>, %[[VAL_1:.*]]: memref<128x128xi32>,
 // CHECK-SAME:                     %[[VAL_2:.*]]: memref<128x128xi32>) {
+// CHECK:           %[[VAL_6:.*]] = constant 64 : index
 // CHECK:           %[[VAL_3:.*]] = constant 128 : index
 // CHECK:           %[[VAL_4:.*]] = constant 0 : index
 // CHECK:           %[[VAL_5:.*]] = constant 32 : index
-// CHECK:           %[[VAL_6:.*]] = constant 64 : index
 // CHECK:           scf.for %[[VAL_7:.*]] = %[[VAL_4]] to %[[VAL_3]] step %[[VAL_6]] {
 // CHECK:             scf.for %[[VAL_8:.*]] = %[[VAL_4]] to %[[VAL_3]] step %[[VAL_6]] {
 // CHECK:               scf.for %[[VAL_9:.*]] = %[[VAL_4]] to %[[VAL_3]] step %[[VAL_6]] {
@@ -49,7 +49,7 @@ module  {
     %0 = memref.buffer_cast %arg0 : memref<128x128xi32>
     %1 = memref.buffer_cast %arg1 : memref<128x128xi32>
     %2 = memref.alloc() : memref<128x128xi32>
-    linalg.matmul {__internal_linalg_transform__ = "xten_mmult"} ins(%0, %1 : memref<128x128xi32>, memref<128x128xi32>) outs(%2 : memref<128x128xi32>)
+    linalg.matmul ins(%0, %1 : memref<128x128xi32>, memref<128x128xi32>) outs(%2 : memref<128x128xi32>)
     %3 = memref.tensor_load %2 : memref<128x128xi32>
     return %3 : tensor<128x128xi32>
   }

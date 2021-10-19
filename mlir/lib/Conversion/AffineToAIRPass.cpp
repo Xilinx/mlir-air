@@ -413,6 +413,7 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
      registry.insert<xilinx::air::airDialect>();
+     registry.insert<linalg::LinalgDialect>();
   }
 
   void runOnOperation() override {
