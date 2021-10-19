@@ -488,6 +488,7 @@ public:
                           AffineDialect,
                           scf::SCFDialect,
                           linalg::LinalgDialect,
+                          memref::MemRefDialect,
                           xilinx::airrt::AIRRtDialect>();
 
     // Replace the PipelineStageOps first, followed by the 
