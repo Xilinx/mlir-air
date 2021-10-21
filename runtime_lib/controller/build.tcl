@@ -12,8 +12,8 @@ domain create -name microblaze -proc microblaze_0
 platform generate
 
 app create -lang c++ -name acdc_agent -platform mb -domain microblaze -template "Empty Application (C++)" 
-app config -name acdc_agent build-config Release
-app config -name acdc_agent compiler-misc {-O1}
+#app config -name acdc_agent build-config Release
+#app config -name acdc_agent compiler-misc {-O1}
 
 importsources -name acdc_agent -soft-link -path [file join $root_directory "runtime_lib/controller"]
 app config -name acdc_agent include-path [file join $root_directory "runtime_lib/airhost/include"]
