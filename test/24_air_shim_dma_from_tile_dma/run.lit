@@ -2,7 +2,7 @@
 // RUN: aiecc.py --sysroot=%VITIS_SYSROOT% aie.0.mlir -I%air_runtime_lib%/airhost/include -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp %S/test.cpp %airhost_libs% -o %T/test.elf
 
 // RUN: air-opt %S/air.mlir -air-to-aie="air-to-aie-output-prefix=/dev/null air-to-aie-row-offset=2 air-to-aie-col-offset=7" -air-to-std -airrt-to-llvm -o %T/aie_ctrl.mlir
-// RUN: air-opt -air-return-elimination --lower-affine --convert-scf-to-std --convert-memref-to-llvm --convert-std-to-llvm='emit-c-wrappers' -o %T/aie_ctrl.llvm.mlir %T/aie_ctrl.mlir
+// RUN: air-opt -air-return-elimination --lower-affine --convert-scf-to-std --convert-memref-to-llvm --convert-std-to-llvm='emit-c-wrappers' -canonicalize -cse -o %T/aie_ctrl.llvm.mlir %T/aie_ctrl.mlir
 // RUN: mlir-translate --mlir-to-llvmir %T/aie_ctrl.llvm.mlir | llc --march=aarch64 --relocation-model=pic --filetype=obj -o %T/aie_ctrl.o
 // RUN: %ARM_CLANG -shared %T/aie_ctrl.o -o aie_ctrl.so
 
