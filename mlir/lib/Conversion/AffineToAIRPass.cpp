@@ -334,39 +334,35 @@ public:
                                 PatternRewriter &rewriter) const override {
     if (failed(normalizeScfParallel(op, rewriter)))
       return failure();
-  
-    if (op.getNumLoops() == 2) {
+
+    if (op.getNumLoops() <= 2) {
       auto loc = op.getLoc();
-      auto lb0 = dyn_cast<ConstantIndexOp>(op.lowerBound()[0].getDefiningOp());
-      auto lb1 = dyn_cast<ConstantIndexOp>(op.lowerBound()[1].getDefiningOp());
-      auto ub0 = dyn_cast<ConstantIndexOp>(op.upperBound()[0].getDefiningOp());
-      auto ub1 = dyn_cast<ConstantIndexOp>(op.upperBound()[1].getDefiningOp());
-      auto step0 = dyn_cast<ConstantIndexOp>(op.step()[0].getDefiningOp());
-      auto step1 = dyn_cast<ConstantIndexOp>(op.step()[1].getDefiningOp());
 
-      // lowerBound, upperBound and step must be ConstantIndexOps
-      if (!(lb0 && lb1 && step0 && step1 && ub0 && ub1))
-        return failure();
+      SmallVector<int, 2> bounds{1, 1};
+      for (unsigned int i = 0; i < op.getNumLoops(); i++) {
+        auto lb = dyn_cast<ConstantIndexOp>(op.lowerBound()[i].getDefiningOp());
+        auto ub = dyn_cast<ConstantIndexOp>(op.upperBound()[i].getDefiningOp());
+        auto step = dyn_cast<ConstantIndexOp>(op.step()[i].getDefiningOp());
 
-      auto ub0_int = ub0.getValue();
-      auto ub1_int = ub1.getValue();
-      auto lb0_int = lb0.getValue();
-      auto lb1_int = lb1.getValue();
-      auto step0_int = step0.getValue();
-      auto step1_int = step1.getValue();
+        // lowerBound, upperBound and step must be ConstantIndexOps
+        if (!(lb && step && ub))
+          return failure();
 
-      // must start at (0,0)
-      if (lb0_int || lb1_int)
-        return failure();
+        auto ub_int = ub.getValue();
+        auto lb_int = lb.getValue();
+        auto step_int = step.getValue();
 
-      // step must divide upper bound evenly
-      if ((ub0_int % step0_int) || (ub1_int % step1_int))
-        return failure();
+        // must start at 0
+        if (lb_int)
+          return failure();
 
-      ub0_int = ub0_int / step0_int;
-      ub1_int = ub1_int / step1_int;
+        // step must divide upper bound evenly
+        if (ub_int % step_int)
+          return failure();
 
-      // TODO this is code duplicated from the affine version, refactor.
+        ub_int = ub_int / step_int;
+        bounds[i] = ub_int;
+      }
       SmallVector<Value, 4> args;
       SmallVector<Value, 4> constants;
       llvm::SetVector<Value> region_args;
@@ -377,13 +373,16 @@ public:
         else
           args.push_back(v);
       }
-      air::HerdDim2 dims{rewriter.create<ConstantIndexOp>(loc,ub0_int),
-                         rewriter.create<ConstantIndexOp>(loc,ub1_int)};
+      air::HerdDim2 dims{rewriter.create<ConstantIndexOp>(loc, bounds[0]),
+                         rewriter.create<ConstantIndexOp>(loc, bounds[1])};
       auto launch = rewriter.create<air::HerdLaunchOp>(op.getLoc(), dims, args);
       auto &bb = launch.body().front();
       auto ivs = op.getInductionVars();
+
       ivs[0].replaceAllUsesWith(launch.getTileIds().x);
-      ivs[1].replaceAllUsesWith(launch.getTileIds().y);
+      if (op.getNumLoops() == 2)
+        ivs[1].replaceAllUsesWith(launch.getTileIds().y);
+
       auto &body = op.getBody()->getOperations();
       bb.getOperations().splice(bb.begin(), body,
                                 body.begin(), --body.end());
