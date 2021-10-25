@@ -162,6 +162,70 @@ public:
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 
+  void runGenericPatterns(FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+
+    SmallVector<linalg::GenericOp, 4> genericOps;
+    funcOp.walk([&](linalg::GenericOp op) { genericOps.push_back(op); });
+
+    // GenericOp
+    for (auto genericOp : genericOps) {
+
+      xilinx::air::AIROutliner olnr;
+      CallOp call = olnr.outline(std::vector<Operation *>{genericOp},
+                                 "call_linalg_generic");
+      FuncOp called = funcOp->getParentOfType<ModuleOp>().lookupSymbol<FuncOp>(
+          call.getCallee());
+
+      SmallVector<int64_t, 4> l1_tile_size{32, 32};
+      SmallVector<int64_t, 4> herd_size{2, 2};
+
+      for (int i = 0, e = HerdSize.size(); i < e; i++) {
+        herd_size[i] = HerdSize[i];
+      }
+
+      SmallVector<int64_t, 3> tile_sizes{128, 128};
+
+      OwningRewritePatternList stage1Patterns(ctx);
+
+      stage1Patterns.insert<linalg::LinalgTilingPattern<linalg::GenericOp>>(
+          ctx,
+          linalg::LinalgTilingOptions()
+              .setTileSizes(tile_sizes)
+              .setLoopType(linalg::LinalgTilingLoopType::Loops),
+          linalg::LinalgTransformationFilter(ArrayRef<Identifier>{},
+                                             Identifier::get("L1", ctx)));
+
+      // divide it up evenly between tiles
+      stage1Patterns.insert<linalg::LinalgTilingPattern<linalg::GenericOp>>(
+          ctx,
+          linalg::LinalgTilingOptions()
+              .setTileSizes(l1_tile_size)
+              .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
+          linalg::LinalgTransformationFilter(Identifier::get("L1", ctx),
+                                             Identifier::get("HERD", ctx)));
+
+      stage1Patterns.insert<linalg::LinalgPromotionPattern<linalg::GenericOp>>(
+          ctx, linalg::LinalgPromotionOptions(),
+          linalg::LinalgTransformationFilter(Identifier::get("HERD", ctx),
+                                             Identifier::get("promote", ctx)));
+
+      OwningRewritePatternList stage2Patterns(ctx);
+      scf::populateSCFForLoopCanonicalizationPatterns(stage2Patterns);
+
+      OwningRewritePatternList stage3Patterns(&getContext());
+      stage3Patterns.insert<RemoveSubViewOpsPattern, FoldSubViewOpsPattern>(
+          ctx);
+
+      (void)applyPatternsAndFoldGreedily(called, std::move(stage1Patterns));
+      (void)applyPatternsAndFoldGreedily(called, std::move(stage2Patterns));
+      (void)applyPatternsAndFoldGreedily(called, std::move(stage3Patterns));
+      called.walk([](linalg::LinalgOp op) {
+        op->removeAttr(linalg::LinalgTransforms::kLinalgTransformMarker);
+      });
+    }
+  }
+
   void runMatmulPatterns(FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
 
@@ -322,6 +386,7 @@ public:
     if (!AIRLinalgCodegenTestPatterns) {
       runMatmulPatterns(f);
       runConv2dPatterns(f);
+      runGenericPatterns(f);
     }
     else {
       runTestPatterns(f);
