@@ -1,4 +1,4 @@
-# Test 01_simple_shim_dma
+# Test 08_add_one
 
 ## Coverage
 

@@ -38,156 +38,45 @@ module {
   %t11_6 = AIE.tile(11,6)
 
   // Per shim DMA routing
-  %sw2_0 = AIE.switchbox(%t2_0) {
-    AIE.connect<"South" : 3, "North" : 0>
-    AIE.connect<"South" : 7, "North" : 1>
-    AIE.connect<"North" : 0, "South" : 2>
-    AIE.connect<"North" : 1, "South" : 3>
-  }
-  %mux2_0 = AIE.shimmux(%t2_0) {
-    AIE.connect<"DMA" : 0, "South": 3>
-    AIE.connect<"DMA" : 1, "South": 7>
-    AIE.connect<"South" : 2, "DMA": 0>
-    AIE.connect<"South" : 3, "DMA": 1>
-  }
-  %sw2_1 = AIE.switchbox(%t2_1) {
-    AIE.connect<"South" : 0, "North" : 0>
-    AIE.connect<"South" : 1, "North" : 1>
-    AIE.connect<"North" : 0, "South" : 0>
-    AIE.connect<"North" : 1, "South" : 1>
-  }
-  AIE.flow(%t2_2, "South" : 0, %t8_3, "DMA" : 0)
-  AIE.flow(%t2_2, "South" : 1, %t8_4, "DMA" : 0)
-  AIE.flow(%t8_3, "DMA" : 0, %t2_2, "South" : 0)
-  AIE.flow(%t8_4, "DMA" : 0, %t2_2, "South" : 1)
+  AIE.flow(%t2_0, "DMA" : 0, %t8_3, "DMA" : 0)
+  AIE.flow(%t2_0, "DMA" : 1, %t8_4, "DMA" : 0)
+  AIE.flow(%t8_3, "DMA" : 0, %t2_0, "DMA" : 0)
+  AIE.flow(%t8_4, "DMA" : 0, %t2_0, "DMA" : 1)
 
+  AIE.flow(%t3_0, "DMA" : 0, %t8_5, "DMA" : 0)
+  AIE.flow(%t3_0, "DMA" : 1, %t8_6, "DMA" : 0)
+  AIE.flow(%t8_5, "DMA" : 0, %t3_0, "DMA" : 0)
+  AIE.flow(%t8_6, "DMA" : 0, %t3_0, "DMA" : 1)
 
-  %sw3_0 = AIE.switchbox(%t3_0) {
-    AIE.connect<"South" : 3, "North" : 0>
-    AIE.connect<"South" : 7, "North" : 1>
-    AIE.connect<"North" : 0, "South" : 2>
-    AIE.connect<"North" : 1, "South" : 3>
-  }
-  %mux3_0 = AIE.shimmux(%t3_0) {
-    AIE.connect<"DMA" : 0, "South": 3>
-    AIE.connect<"DMA" : 1, "South": 7>
-    AIE.connect<"South" : 2, "DMA": 0>
-    AIE.connect<"South" : 3, "DMA": 1>
-  }
-  %sw3_1 = AIE.switchbox(%t3_1) {
-    AIE.connect<"South" : 0, "North" : 0>
-    AIE.connect<"South" : 1, "North" : 1>
-    AIE.connect<"North" : 0, "South" : 0>
-    AIE.connect<"North" : 1, "South" : 1>
-  }
-  AIE.flow(%t3_2, "South" : 0, %t8_5, "DMA" : 0)
-  AIE.flow(%t3_2, "South" : 1, %t8_6, "DMA" : 0)
-  AIE.flow(%t8_5, "DMA" : 0, %t3_2, "South" : 0)
-  AIE.flow(%t8_6, "DMA" : 0, %t3_2, "South" : 1)
+  AIE.flow(%t6_0, "DMA" : 0, %t9_3, "DMA" : 0)
+  AIE.flow(%t6_0, "DMA" : 1, %t9_4, "DMA" : 0)
+  AIE.flow(%t9_3, "DMA" : 0, %t6_0, "DMA" : 0)
+  AIE.flow(%t9_4, "DMA" : 0, %t6_0, "DMA" : 1)
 
+  AIE.flow(%t7_0, "DMA" : 0, %t9_5, "DMA" : 0)
+  AIE.flow(%t7_0, "DMA" : 1, %t9_6, "DMA" : 0)
+  AIE.flow(%t9_5, "DMA" : 0, %t7_0, "DMA" : 0)
+  AIE.flow(%t9_6, "DMA" : 0, %t7_0, "DMA" : 1)
 
-  %sw6_0 = AIE.switchbox(%t6_0) {
-    AIE.connect<"South" : 3, "North" : 0>
-    AIE.connect<"South" : 7, "North" : 1>
-    AIE.connect<"North" : 0, "South" : 2>
-    AIE.connect<"North" : 1, "South" : 3>
-  }
-  %mux6_0 = AIE.shimmux(%t6_0) {
-    AIE.connect<"DMA" : 0, "South": 3>
-    AIE.connect<"DMA" : 1, "South": 7>
-    AIE.connect<"South" : 2, "DMA": 0>
-    AIE.connect<"South" : 3, "DMA": 1>
-  }
-  AIE.flow(%t6_1, "South" : 0, %t9_3, "DMA" : 0)
-  AIE.flow(%t6_1, "South" : 1, %t9_4, "DMA" : 0)
-  AIE.flow(%t9_3, "DMA" : 0, %t6_1, "South" : 0)
-  AIE.flow(%t9_4, "DMA" : 0, %t6_1, "South" : 1)
+  AIE.flow(%t10_0, "DMA" : 0, %t10_3, "DMA" : 0)
+  AIE.flow(%t10_0, "DMA" : 1, %t10_4, "DMA" : 0)
+  AIE.flow(%t10_3, "DMA" : 0, %t10_0, "DMA" : 0)
+  AIE.flow(%t10_4, "DMA" : 0, %t10_0, "DMA" : 1)
 
+  AIE.flow(%t11_0, "DMA" : 0, %t10_5, "DMA" : 0)
+  AIE.flow(%t11_0, "DMA" : 1, %t10_6, "DMA" : 0)
+  AIE.flow(%t10_5, "DMA" : 0, %t11_0, "DMA" : 0)
+  AIE.flow(%t10_6, "DMA" : 0, %t11_0, "DMA" : 1)
 
-  %sw7_0 = AIE.switchbox(%t7_0) {
-    AIE.connect<"South" : 3, "North" : 0>
-    AIE.connect<"South" : 7, "North" : 1>
-    AIE.connect<"North" : 0, "South" : 2>
-    AIE.connect<"North" : 1, "South" : 3>
-  }
-  %mux7_0 = AIE.shimmux(%t7_0) {
-    AIE.connect<"DMA" : 0, "South": 3>
-    AIE.connect<"DMA" : 1, "South": 7>
-    AIE.connect<"South" : 2, "DMA": 0>
-    AIE.connect<"South" : 3, "DMA": 1>
-  }
-  AIE.flow(%t7_1, "South" : 0, %t9_5, "DMA" : 0)
-  AIE.flow(%t7_1, "South" : 1, %t9_6, "DMA" : 0)
-  AIE.flow(%t9_5, "DMA" : 0, %t7_1, "South" : 0)
-  AIE.flow(%t9_6, "DMA" : 0, %t7_1, "South" : 1)
+  AIE.flow(%t18_0, "DMA" : 0, %t11_3, "DMA" : 0)
+  AIE.flow(%t18_0, "DMA" : 1, %t11_4, "DMA" : 0)
+  AIE.flow(%t11_3, "DMA" : 0, %t18_0, "DMA" : 0)
+  AIE.flow(%t11_4, "DMA" : 0, %t18_0, "DMA" : 1)
 
-  %sw10_0 = AIE.switchbox(%t10_0) {
-    AIE.connect<"South" : 3, "North" : 0>
-    AIE.connect<"South" : 7, "North" : 1>
-    AIE.connect<"North" : 0, "South" : 2>
-    AIE.connect<"North" : 1, "South" : 3>
-  }
-  %mux10_0 = AIE.shimmux(%t10_0) {
-    AIE.connect<"DMA" : 0, "South": 3>
-    AIE.connect<"DMA" : 1, "South": 7>
-    AIE.connect<"South" : 2, "DMA": 0>
-    AIE.connect<"South" : 3, "DMA": 1>
-  }
-  AIE.flow(%t10_1, "South" : 0, %t10_3, "DMA" : 0)
-  AIE.flow(%t10_1, "South" : 1, %t10_4, "DMA" : 0)
-  AIE.flow(%t10_3, "DMA" : 0, %t10_1, "South" : 0)
-  AIE.flow(%t10_4, "DMA" : 0, %t10_1, "South" : 1)
-
-  %sw11_0 = AIE.switchbox(%t11_0) {
-    AIE.connect<"South" : 3, "North" : 0>
-    AIE.connect<"South" : 7, "North" : 1>
-    AIE.connect<"North" : 0, "South" : 2>
-    AIE.connect<"North" : 1, "South" : 3>
-  }
-  %mux11_0 = AIE.shimmux(%t11_0) {
-    AIE.connect<"DMA" : 0, "South": 3>
-    AIE.connect<"DMA" : 1, "South": 7>
-    AIE.connect<"South" : 2, "DMA": 0>
-    AIE.connect<"South" : 3, "DMA": 1>
-  }
-  AIE.flow(%t11_1, "South" : 0, %t10_5, "DMA" : 0)
-  AIE.flow(%t11_1, "South" : 1, %t10_6, "DMA" : 0)
-  AIE.flow(%t10_5, "DMA" : 0, %t11_1, "South" : 0)
-  AIE.flow(%t10_6, "DMA" : 0, %t11_1, "South" : 1)
-
-  %sw18_0 = AIE.switchbox(%t18_0) {
-    AIE.connect<"South" : 3, "North" : 0>
-    AIE.connect<"South" : 7, "North" : 1>
-    AIE.connect<"North" : 0, "South" : 2>
-    AIE.connect<"North" : 1, "South" : 3>
-  }
-  %mux18_0 = AIE.shimmux(%t18_0) {
-    AIE.connect<"DMA" : 0, "South": 3>
-    AIE.connect<"DMA" : 1, "South": 7>
-    AIE.connect<"South" : 2, "DMA": 0>
-    AIE.connect<"South" : 3, "DMA": 1>
-  }
-  AIE.flow(%t18_1, "South" : 0, %t11_3, "DMA" : 0)
-  AIE.flow(%t18_1, "South" : 1, %t11_4, "DMA" : 0)
-  AIE.flow(%t11_3, "DMA" : 0, %t18_1, "South" : 0)
-  AIE.flow(%t11_4, "DMA" : 0, %t18_1, "South" : 1)
-
-  %sw19_0 = AIE.switchbox(%t19_0) {
-    AIE.connect<"South" : 3, "North" : 0>
-    AIE.connect<"South" : 7, "North" : 1>
-    AIE.connect<"North" : 0, "South" : 2>
-    AIE.connect<"North" : 1, "South" : 3>
-  }
-  %mux19_0 = AIE.shimmux(%t19_0) {
-    AIE.connect<"DMA" : 0, "South": 3>
-    AIE.connect<"DMA" : 1, "South": 7>
-    AIE.connect<"South" : 2, "DMA": 0>
-    AIE.connect<"South" : 3, "DMA": 1>
-  }
-  AIE.flow(%t19_1, "South" : 0, %t11_5, "DMA" : 0)
-  AIE.flow(%t19_1, "South" : 1, %t11_6, "DMA" : 0)
-  AIE.flow(%t11_5, "DMA" : 0, %t19_1, "South" : 0)
-  AIE.flow(%t11_6, "DMA" : 0, %t19_1, "South" : 1)
+  AIE.flow(%t19_0, "DMA" : 0, %t11_5, "DMA" : 0)
+  AIE.flow(%t19_0, "DMA" : 1, %t11_6, "DMA" : 0)
+  AIE.flow(%t11_5, "DMA" : 0, %t19_0, "DMA" : 0)
+  AIE.flow(%t11_6, "DMA" : 0, %t19_0, "DMA" : 1)
 
   // etc ...
 

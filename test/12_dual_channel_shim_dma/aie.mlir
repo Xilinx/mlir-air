@@ -2,29 +2,13 @@
 
 module {
   %t70 = AIE.tile(7, 0)
-  %t71 = AIE.tile(7, 1)
   %t72 = AIE.tile(7, 2)
-  %t73 = AIE.tile(7, 3)
   %t74 = AIE.tile(7, 4)
 
-  // Fixup
-  %sw = AIE.switchbox(%t70) {
-    AIE.connect<"South" : 3, "North" : 0>
-    AIE.connect<"South" : 7, "North" : 1>
-    AIE.connect<"North" : 0, "South" : 2>
-    AIE.connect<"North" : 1, "South" : 3>
-  }
-  %mux = AIE.shimmux(%t70) {
-    AIE.connect<"DMA" : 0, "South": 3>
-    AIE.connect<"DMA" : 1, "South": 7>
-    AIE.connect<"South" : 2, "DMA": 0>
-    AIE.connect<"South" : 3, "DMA": 1>
-  }
-
-  AIE.flow(%t71, "South" : 0, %t72, "DMA" : 0)
-  AIE.flow(%t72, "DMA" : 0, %t71, "South" : 0)
-  AIE.flow(%t71, "South" : 1, %t74, "DMA" : 0)
-  AIE.flow(%t74, "DMA" : 0, %t71, "South" : 1)
+  AIE.flow(%t70, "DMA" : 0, %t72, "DMA" : 0)
+  AIE.flow(%t72, "DMA" : 0, %t70, "DMA" : 0)
+  AIE.flow(%t70, "DMA" : 1, %t74, "DMA" : 0)
+  AIE.flow(%t74, "DMA" : 0, %t70, "DMA" : 1)
 
   %buf72_0 = AIE.buffer(%t72) {sym_name = "buf72_0"} : memref<32xi32>
   %buf74_0 = AIE.buffer(%t74) {sym_name = "buf74_0"}: memref<32xi32>

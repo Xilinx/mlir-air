@@ -51,7 +51,7 @@ config.substitutions.append(('%air_runtime_lib%', air_runtime_lib))
 config.substitutions.append(('%airhost_libs%', "-I" + air_runtime_lib + "/airhost/include -L" + air_runtime_lib + "/airhost -Wl,--whole-archive -lairhost -Wl,--no-whole-archive -lmetal -lopen_amp -lpthread -lstdc++ -lsysfs -ldl -lrt"))
 
 if(config.enable_board_tests):
-    config.substitutions.append(('%run_on_board', "echo %T >> /home/xilinx/testlog | sync | sudo"))
+    config.substitutions.append(('%run_on_board', "sudo"))
 else:
     config.substitutions.append(('%run_on_board', "echo"))
 
