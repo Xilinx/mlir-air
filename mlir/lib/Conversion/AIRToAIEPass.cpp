@@ -337,35 +337,6 @@ public:
   std::vector<int> shim_dma_cols{2, 3, 6, 7, 10, 11, 18, 19, 26, 27, 34, 35, 42, 43, 46, 47};
   const int shim_dma_channels = 2;
 
-  void generateShimMuxBoilerplate(ModuleOp aie_module) {
-    auto context = aie_module.getContext();
-    auto loc = UnknownLoc::get(context);
-
-    for (int col : shim_dma_cols) {
-      OpBuilder builder(aie_module);
-      builder.setInsertionPointToEnd(&(aie_module.body().front()));
-      AIE::TileOp tile = getPhysTileOpOrNull(aie_module, col, 0);
-      if (!tile) continue;
-
-      AIE::ShimMuxOp mux = builder.create<AIE::ShimMuxOp>(loc, tile);
-      Block *mux_bb = builder.createBlock(&mux.connections());
-      OpBuilder mux_builder = OpBuilder::atBlockBegin(mux_bb);
-      mux_builder.create<AIE::ConnectOp>(loc,
-                                         AIE::WireBundle::DMA, 0,
-                                         AIE::WireBundle::South, 3);
-      mux_builder.create<AIE::ConnectOp>(loc,
-                                         AIE::WireBundle::DMA, 1,
-                                         AIE::WireBundle::South, 7);
-      mux_builder.create<AIE::ConnectOp>(loc,
-                                         AIE::WireBundle::South, 2,
-                                         AIE::WireBundle::DMA, 0);
-      mux_builder.create<AIE::ConnectOp>(loc,
-                                         AIE::WireBundle::South, 3,
-                                         AIE::WireBundle::DMA, 1);
-      mux_builder.create<AIE::EndOp>(loc);
-    }
-  }
-
   void getAIRDmaMemcpyInBlock(Block &b, std::vector<Operation *> &output)
   {
     for (Operation &o : b.getOperations()) {
@@ -414,40 +385,14 @@ public:
 
         LLVM_DEBUG(llvm::outs() << "Shim channel is " << (uint64_t)shim_channel << " for x=" << x << ", y=" << y << "\n");
 
-        AIE::TileOp workaround_tile = getPhysTileOp(aie_module, shim_tile.col(), shim_tile.row()+1);
-
-        OpBuilder builder(aie_module);
-        builder.setInsertionPointToEnd(&(aie_module.body().front()));
-
-        // Is the first time we've seen this shim dma?
-        if (std::find(shim_dma_inits.begin(), shim_dma_inits.end(), workaround_tile) == shim_dma_inits.end()) {
-          AIE::SwitchboxOp workaround_sb = builder.create<AIE::SwitchboxOp>(loc, shim_tile);
-          builder.createBlock(&workaround_sb.connections());
-          builder.create<AIE::ConnectOp>(loc,
-                                        AIE::WireBundle::South, 3,
-                                        AIE::WireBundle::North, 0);
-          builder.create<AIE::ConnectOp>(loc,
-                                        AIE::WireBundle::South, 7,
-                                        AIE::WireBundle::North, 1);
-          builder.create<AIE::ConnectOp>(loc,
-                                        AIE::WireBundle::North, 0,
-                                        AIE::WireBundle::South, 2);
-          builder.create<AIE::ConnectOp>(loc,
-                                        AIE::WireBundle::North, 1,
-                                        AIE::WireBundle::South, 3);
-          builder.create<AIE::EndOp>(loc);
-
-          builder.setInsertionPointAfter(workaround_sb);
-          shim_dma_inits.push_back(workaround_tile);
-        }
         if (((uint64_t)shim_channel >= (uint64_t)AIE::DMAChan::S2MM0) && ((uint64_t)shim_channel < ((uint64_t)AIE::DMAChan::S2MM0 + shim_dma_channels ))) {
           getFlowOp(aie_module,
                     tile, AIE::WireBundle::DMA, (uint32_t)tile_channel-2,
-                    workaround_tile, AIE::WireBundle::South, ((uint32_t)shim_channel) % shim_dma_channels);
+                    shim_tile, AIE::WireBundle::DMA, ((uint32_t)shim_channel) % shim_dma_channels);
         }
         else {
           getFlowOp(aie_module,
-                    workaround_tile, AIE::WireBundle::South, ((uint32_t)shim_channel) % shim_dma_channels,
+                    shim_tile, AIE::WireBundle::DMA, ((uint32_t)shim_channel) % shim_dma_channels,
                     tile, AIE::WireBundle::DMA, (uint32_t)tile_channel);
         }
 
@@ -1021,8 +966,6 @@ public:
 
           lowerPipelineGetPut(aie_module);
           cleanupPipelineOps(aie_module);
-
-          generateShimMuxBoilerplate(aie_module);
 
           std::vector<Attribute> shim_allocations;
           auto ctx = module.getContext();

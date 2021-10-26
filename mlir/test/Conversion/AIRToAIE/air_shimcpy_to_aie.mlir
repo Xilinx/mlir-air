@@ -1,9 +1,9 @@
 // (c) Copyright 2021 Xilinx Inc.
 
-// RUN: air-opt %s -air-to-aie | FileCheck %s
-// CHECK:    %[[VAL_0:.*]] = AIE.tile(2, 1)
-// CHECK:         %[[VAL_1:.*]] = AIE.tile(2, 0)
-// CHECK:         %[[VAL_2:.*]] = AIE.tile(0, 0)
+// RUN: air-opt %s -air-to-aie="air-to-aie-row-offset=2 air-to-aie-col-offset=2" | FileCheck %s
+// CHECK:    %[[VAL_0:.*]] = AIE.tile(2, 0)
+// CHECK:         %[[VAL_1:.*]] = AIE.tile(0, 0)
+// CHECK:         %[[VAL_2:.*]] = AIE.tile(2, 2)
 // CHECK:         %[[VAL_4:.*]] = AIE.lock(%[[VAL_2]], 0)
 // CHECK:         %[[VAL_3:.*]] = AIE.buffer(%[[VAL_2]]) {sym_name = "buf0"} : memref<1024xi32, 2>
 
@@ -24,19 +24,7 @@
 // CHECK:           AIE.end
 // CHECK:         }
 
-// CHECK:           AIE.connect<South : 3, North : 0>
-// CHECK:           AIE.connect<South : 7, North : 1>
-// CHECK:           AIE.connect<North : 0, South : 2>
-// CHECK:           AIE.connect<North : 1, South : 3>
-// CHECK:         }
-// CHECK:         AIE.flow(%[[VAL_0]], South : 0, %[[VAL_2]], DMA : 0)
-
-// CHECK:     AIE.shimmux(%[[VAL_1]])  {
-// CHECK:           AIE.connect<DMA : 0, South : 3>
-// CHECK:           AIE.connect<DMA : 1, South : 7>
-// CHECK:           AIE.connect<South : 2, DMA : 0>
-// CHECK:           AIE.connect<South : 3, DMA : 1>
-// CHECK:         }
+// CHECK:         AIE.flow(%[[VAL_0]], DMA : 0, %[[VAL_2]], DMA : 0)
 
 module {
 
