@@ -45,7 +45,7 @@ mmult.air.mlir: mmult.linalg-memrefs.mlir
 			-convert-linalg-to-affine-loops
 
 mmult.air.a: mmult.air.mlir
-	aircc.py -o $@ -row-offset=2 -col-offset=7 -v $<
+	aircc.py -o $@ --sysroot=${SYSROOT} -row-offset=2 -col-offset=7 -v $<
 
 clean::
 	rm -rf air_project mmult.*mlir* *.elf *.exe *.o *.a
