@@ -52,22 +52,26 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
     auto loc = op.getLoc();
     auto src = op.input();
     auto dst = op.output();
-    auto src_type = src.getType().cast<MemRefType>();
-    auto dims = src_type.getShape().size();
 
-    SmallVector<Value, 4> src_indices;
-    SmallVector<Value, 4> dst_indices;
-
-    if ((src.getType().cast<MemRefType>().getMemorySpace() == 0) &&
-        (dst.getType().cast<MemRefType>().getMemorySpace() == 0) )
+    // It must already be a memref
+    auto src_type = src.getType().dyn_cast<MemRefType>();
+    auto dst_type = dst.getType().dyn_cast<MemRefType>();
+    if (!src_type)
       return failure();
 
-    if (dims == 2) {
+    if ((src_type.getMemorySpaceAsInt() == (int)MemorySpace::L3) &&
+        (dst_type.getMemorySpaceAsInt() == (int)MemorySpace::L3))
+      return failure();
+
+    auto rank = src_type.getShape().size();
+    if (rank == 2) {
+
+      SmallVector<Value, 4> src_indices;
+      SmallVector<Value, 4> dst_indices;
       Value zero = rewriter.create<ConstantIndexOp>(loc,0);
       Value stride = zero;
       Value elem_per_stride = zero;
-      SmallVector<Value,1> deps;
-      SmallVector<Type,1> tys;
+
       if (auto alloc = src.getDefiningOp<memref::AllocOp>()) {
         src_indices.push_back(zero);
         src_indices.push_back(zero);
@@ -115,9 +119,9 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
         stride = rewriter.create<ConstantIndexOp>(loc,
                    dst.getType().cast<MemRefType>().getShape()[1]);
       }
-      else
-        return failure();
-  
+
+      SmallVector<Value, 1> deps;
+      SmallVector<Type, 1> tys;
       auto dma = rewriter.create<air::DmaMemcpy2dOp>(loc, tys,
                                                     deps, dst, src,
                                                     dst_indices[0], dst_indices[1],
@@ -129,11 +133,79 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
       dma->setAttr("id",
                    mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
                                           ++DmaMemcpyOpID));
+    } else {
+      SmallVector<Value, 4> src_offsets, dst_offsets;
+      SmallVector<Value, 4> src_strides, dst_strides;
+      SmallVector<Value, 4> src_sizes, dst_sizes;
+      auto extractOperandsFromSubview = [&](memref::SubViewOp subview,
+                                            auto &offsets, auto &sizes,
+                                            auto &strides) {
+        auto subview_offsets = subview.offsets().begin();
+        auto static_offsets = extractFromI64ArrayAttr(subview.static_offsets());
+        auto static_sizes = extractFromI64ArrayAttr(subview.static_sizes());
+        auto static_strides = extractFromI64ArrayAttr(subview.static_strides());
+        auto loc = subview.getLoc();
+
+        // get the strides and offsets from the memref type
+        auto inferredType = memref::SubViewOp::inferResultType(
+                                subview.getSourceType(), static_offsets,
+                                static_sizes, static_strides)
+                                .cast<MemRefType>();
+        int64_t offset;
+        SmallVector<int64_t, 4> layout_strides;
+        auto successStrides =
+            getStridesAndOffset(inferredType, layout_strides, offset);
+        if (failed(successStrides)) {
+          llvm::outs() << "Failed to get strides\n";
+          return; // failure();
+        }
+
+        for (auto o : static_offsets) {
+          if (o >= 0)
+            offsets.push_back(rewriter.create<ConstantIndexOp>(loc, o));
+          else
+            offsets.push_back(*subview_offsets++);
+        }
+        for (auto s : static_sizes)
+          sizes.push_back(rewriter.create<ConstantIndexOp>(loc, s));
+        for (auto s : layout_strides)
+          strides.push_back(rewriter.create<ConstantIndexOp>(loc, s));
+      };
+
+      if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
+        extractOperandsFromSubview(subview, src_offsets, src_sizes,
+                                   src_strides);
+
+        if (src_sizes.size() != rank)
+          return failure();
+        if (src_strides.size() != rank)
+          return failure();
+
+        src = subview.source();
+      }
+
+      if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
+        extractOperandsFromSubview(subview, dst_offsets, dst_sizes,
+                                   dst_strides);
+
+        if (dst_sizes.size() != rank)
+          return failure();
+        if (dst_strides.size() != rank)
+          return failure();
+
+        dst = subview.source();
+      }
+
+      SmallVector<Value, 4> deps;
+      SmallVector<Type, 4> tys;
+      auto dma = rewriter.create<air::DmaMemcpyNdOp>(
+          loc, tys, deps, dst, dst_offsets, dst_sizes, dst_strides, src,
+          src_offsets, src_sizes, src_strides);
+      dma->setAttr("id", mlir::IntegerAttr::get(
+                             mlir::IntegerType::get(op->getContext(), 32),
+                             ++DmaMemcpyOpID));
     }
-    else {
-      // assert(0 && "dims != 2");
-      return failure();
-    }
+
     rewriter.eraseOp(op);
     return success();
   }
@@ -435,6 +507,7 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
     target.addLegalOp<xilinx::air::DmaMemcpyOp>();
     target.addLegalOp<xilinx::air::DmaMemcpy2dOp>();
     target.addLegalOp<xilinx::air::DmaMemcpy4dOp>();
+    target.addLegalOp<xilinx::air::DmaMemcpyNdOp>();
     target.addLegalOp<xilinx::air::HerdLaunchOp>();
 
     target.addLegalOp<AffineApplyOp,
