@@ -28,7 +28,7 @@ else
 	CC = clang
 	CFLAGS += --target=aarch64-linux-gnu --sysroot=$(SYSROOT) -g 
 	CFLAGS += -I$(SYSROOT)/opt/xaiengine/include
-	LDFLAGS += -L$(SYSROOT)/opt/xaiengine/lib
+	LDFLAGS += --target=aarch64-linux-gnu --sysroot=$(SYSROOT) -L$(SYSROOT)/opt/xaiengine/lib
 endif
 
 ACDC_AIR = $(dir $(shell which aie-opt))/..
