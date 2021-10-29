@@ -29,4 +29,25 @@ func @foo(%arg0 : memref<16x16xf32>, %arg1 : memref<16x16xf32>) -> () {
   return
 }
 
+// CHECK: func @memcpy_nd
+func @memcpy_nd(%arg0: memref<4096xi32>) {
+  %c0 = constant 0 : index
+  %c4096 = constant 4096 : index
+  %c128 = constant 128 : index
+  %c4 = constant 4 : index
+  %c1 = constant 1 : index
+  air.launch_herd tile (%arg1, %arg2) in (%arg3=%c4, %arg4=%c1) args(%arg5=%arg0) : memref<4096xi32>attributes {sym_name = "memcpy_nd"} {
+    %c32 = constant 32 : index
+    %0 = muli %arg1, %c32 : index
+    %1 = memref.alloc() : memref<32xi32, 2>
+    %c1_0 = constant 1 : index
+    // CHECK: air.dma_memcpy_nd
+    air.dma_memcpy_nd (%1[] [] [], %arg5[%0] [%c32] [%c1_0]) {id = 1 : i32} : (memref<32xi32, 2>, memref<4096xi32>)
+    air.dma_memcpy_nd (%arg5[%0] [%c32] [%c1_0], %1[] [] []) {id = 2 : i32} : (memref<4096xi32>, memref<32xi32, 2>)
+    memref.dealloc %1 : memref<32xi32, 2>
+    air.herd_terminator
+  }
+  return
+}
+
 }

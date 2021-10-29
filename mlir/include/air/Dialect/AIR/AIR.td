@@ -272,6 +272,46 @@ def air_DmaMemcpyOp: air_Op<"dma_memcpy", [air_AsyncOpInterface, air_DmaMemcpyIn
   }];
 }
 
+def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
+                        [air_AsyncOpInterface,
+                         air_DmaMemcpyInterface,
+                         AttrSizedOperandSegments]> {
+  let summary = "dma operator";
+  let arguments = (
+    ins Variadic<air_AsyncToken>:$asyncDependencies,
+        AnyMemRef:$dst,
+        Variadic<Index>:$dst_offsets,
+        Variadic<Index>:$dst_sizes,
+        Variadic<Index>:$dst_strides,
+        AnyMemRef:$src,
+        Variadic<Index>:$src_offsets,
+        Variadic<Index>:$src_sizes,
+        Variadic<Index>:$src_strides
+  );
+  let results = (outs Optional<air_AsyncToken>:$asyncToken);
+  let assemblyFormat = [{
+    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) 
+    `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `,` 
+        $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)`  attr-dict `:`
+    `(` type($dst) `,` type($src) `)`
+  }];
+  let description = [{
+    dma operator
+  }];
+  let extraClassDeclaration = [{
+    unsigned getNumDims() { return 0; }
+    Value getSrcMemref() { return src(); }
+    Value getDstMemref() { return dst(); }
+    Value getLength() { return nullptr; }
+    int32_t getId() {
+      if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
+        return id_attr.getInt();
+      }
+      return -1;
+    }
+  }];
+}
+
 def air_WaitAllOp: air_Op<"wait_all", []>,
                 Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
   let arguments = (ins Variadic<air_AsyncToken>:$asyncDependencies);
