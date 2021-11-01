@@ -11,28 +11,45 @@ all: herd.exe
 	$(CC) $(LDFLAGS) -o $@ $< test_library.o -Wl,--whole-archive vecmul.air.a -Wl,--no-whole-archive
 
 vecmul.mlir: vecmul.py
-	python3 $< > $@
+	python $< > $@
 
-vecmul.affine.mlir: vecmul.mlir
-	$(ATEN_OPT) -aten-to-xten \
-				-xten-to-affine \
-				-o $@ $<
+# It should be possbile to do this step with the pass pipeline
+# 'torch-backend-to-linalg-on-tensors-backend-pipeline' but it 
+# doesn't seem to work so the pipeline is written out here instead.
+vecmul.linalg-tensors.mlir: vecmul.mlir
+	torch-mlir-opt \
+		--torch-verify-invariants-before-backend-lowering \
+		--convert-torch-to-linalg \
+		--convert-torch-to-std \
+		--convert-torch-to-scf \
+		--std-expand \
+		--canonicalize \
+		--resolve-shaped-type-result-dims \
+		--torch-func-backend-type-conversion \
+		--cse \
+		--torch-finalizing-backend-type-conversion \
+		-o $@ $<
 
-vecmul_tiled_0.mlir: vecmul.affine.mlir
-	$(AIR_OPT) -air-automatic-tiling='loop-tile-sizes=64,2,2' \
-				-simplify-affine-structures \
-				-cse \
-				-o $@ $<
+# change linalg on tensors into linalg on memrefs
+vecmul.linalg-memrefs.mlir: vecmul.linalg-tensors.mlir
+	air-opt \
+		--func-bufferize \
+		--buffer-results-to-out-params \
+		--linalg-bufferize \
+		--tensor-bufferize \
+		--finalizing-bufferize \
+		--canonicalize \
+		--cse \
+		-o $@ $<
 
-vecmul_tiled_1.mlir: vecmul_tiled_0.mlir
-	$(AIR_OPT) -air-regularize-loop \
-				-affine-loop-opt='affine-opt-copy-depths=2 affine-opt-copy-fast-space=2' \
-				-cse \
-				-o $@ $<
+vecmul_tiled.mlir: vecmul.linalg-memrefs.mlir
+	$(AIR_OPT) \
+		--air-linalg-codegen \
+		--canonicalize --cse \
+		-o $@ $<
 
-vecmul.air.mlir: vecmul_tiled_1.mlir
-	$(AIR_OPT) -air-herd-assign=herd-assign-depth=1 \
-				-affine-to-air \
+vecmul.air.mlir: vecmul_tiled.mlir
+	$(AIR_OPT) -affine-to-air \
 				-cse \
 				-o $@ $<
 
