@@ -177,8 +177,10 @@ public:
   }
 
   int tile_dma_channels = 2;
-  std::vector<std::tuple<AIE::TileOp, int32_t, int64_t, int64_t, int64_t>> tile_dma_S2MM_allocs;
-  std::vector<std::tuple<AIE::TileOp, int32_t, int64_t, int64_t, int64_t>> tile_dma_MM2S_allocs;
+  std::vector<std::tuple<int32_t, int64_t, int64_t, int64_t>>
+      tile_dma_S2MM_allocs;
+  std::vector<std::tuple<int32_t, int64_t, int64_t, int64_t>>
+      tile_dma_MM2S_allocs;
 
   // A very simple scheme to allocate channels for dma operations:
   //  <description>
@@ -193,17 +195,16 @@ public:
 
     unsigned num_allocs = 0;
     for (auto &t : *all_tile_dma_allocs) {
-      if (col == std::get<2>(t) && row == std::get<3>(t)) {
-        if (dmaOp.getId() == std::get<1>(t))
-          chan = std::get<4>(t);
+      if (col == std::get<1>(t) && row == std::get<2>(t)) {
+        if (dmaOp.getId() == std::get<0>(t))
+          chan = std::get<3>(t);
         num_allocs++;
       }
     }
     if (chan == -1) {
       // Need to allocate a new one
       chan = num_allocs % tile_dma_channels;
-      auto tile = getPhysTileOp(aie_module, col, row);
-      all_tile_dma_allocs->push_back({tile, dmaOp.getId(), col, row, chan});
+      all_tile_dma_allocs->push_back({dmaOp.getId(), col, row, chan});
       LLVM_DEBUG(llvm::outs() << "  1 tile isMM2S = " << isMM2S << ", col =" << col << ", row = " << row << ", tile chan =" << chan << "\n");
     }
 
@@ -875,11 +876,38 @@ public:
                     lockAqValue = 1;
                     lockRelValue = 0;
                   }
+                  Value length = dmaOp.getLength();
+                  if (!length) {
+                    auto ndcpy = cast<air::DmaMemcpyNdOp>(dmaOps[i]);
+                    auto src_memory_space = ndcpy.getSrcMemref()
+                                                .getType()
+                                                .cast<MemRefType>()
+                                                .getMemorySpaceAsInt();
+                    auto dst_memory_space = ndcpy.getDstMemref()
+                                                .getType()
+                                                .cast<MemRefType>()
+                                                .getMemorySpaceAsInt();
+                    auto sizes = src_memory_space > dst_memory_space
+                                     ? ndcpy.dst_sizes()
+                                     : ndcpy.src_sizes();
+                    int64_t size = 1;
+                    for (auto s : sizes) {
+                      auto c = dyn_cast<ConstantIndexOp>(s.getDefiningOp());
+                      if (!c) {
+                        size = -1;
+                        break;
+                      }
+                      size = size * c.getValue();
+                    }
+                    length = b.create<ConstantIndexOp>(dmaOp.getLoc(), size)
+                                 ->getResult(0);
+                  }
                   b.create<AIE::UseLockOp>(hloc, lockOp, lockAqValue,
                                           AIE::LockAction::Acquire, 0);
-                  b.create<AIE::DMABDOp>(hloc, bufferOp,
-                                        0,//cast<ConstantIndexOp>(dmaOp.dst_d0().getDefiningOp()).getValue(),
-                                        cast<ConstantIndexOp>(dmaOp.getLength().getDefiningOp()).getValue(), 0);
+                  b.create<AIE::DMABDOp>(
+                      hloc, bufferOp, 0,
+                      cast<ConstantIndexOp>(length.getDefiningOp()).getValue(),
+                      0);
                   b.create<AIE::UseLockOp>(hloc, lockOp, lockRelValue,
                                           AIE::LockAction::Release, 0);
                 }
