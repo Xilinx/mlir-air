@@ -126,6 +126,7 @@ def run_flow(opts, tmpdirname):
               (['-v'] if opts.verbose else []) +
               (['--sysroot', opts.sysroot] if opts.sysroot!="" else []) +
               ['--tmpdir', aiecc_dir] +
+              ['--pathfinder'] +
               ['--no-xbridge', '--no-xchesscc', aiecc_file])
 
       inc_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.inc'
