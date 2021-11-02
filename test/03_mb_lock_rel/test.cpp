@@ -62,7 +62,7 @@ int main(int argc, char *argv[])
 
   auto burstlen = 4;
   XAieDma_ShimInitialize(&(xaie->TileInst[col][0]), &ShimDmaInst1);
-  XAieDma_ShimBdSetAddr(&ShimDmaInst1, 1, HIGH_ADDR((u64)AIR_VCK190_SHMEM_BASE), LOW_ADDR((u64)AIR_VCK190_SHMEM_BASE), sizeof(u32) * DMA_COUNT);
+  XAieDma_ShimBdSetAddr(&ShimDmaInst1, 1, HIGH_ADDR((u64)AIR_VCK190_SHMEM_BASE), LOW_ADDR((u64)AIR_VCK190_SHMEM_BASE+0x1000), sizeof(u32) * DMA_COUNT);
   XAieDma_ShimBdSetAxi(&ShimDmaInst1, 1 , 0, burstlen, 0, 0, XAIE_ENABLE);
   XAieDma_ShimBdWrite(&ShimDmaInst1, 1);
   XAieDma_ShimSetStartBd((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_MM2S0, 1);
