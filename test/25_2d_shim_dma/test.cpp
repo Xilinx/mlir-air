@@ -124,7 +124,7 @@ main(int argc, char *argv[])
     // Take no prisoners.  No regerts
     // Overwrites the DMA_BDX_Control registers
     u32 rb = XAieGbl_Read32(xaie->TileInst[shim_col][0].TileAddr + 0x0001D008+(bd*0x14));
-    printf("Before : bd%x control is %08X\n", bd, rb);
+    // printf("Before : bd%x control is %08X\n", bd, rb);
     XAieGbl_Write32(xaie->TileInst[shim_col][0].TileAddr + 0x0001D008+(bd*0x14), 0x0);
   }
 
