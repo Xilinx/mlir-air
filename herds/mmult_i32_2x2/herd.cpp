@@ -112,12 +112,12 @@ main(int argc, char *argv[])
   auto handle = air_module_load_from_file(nullptr);
   assert(handle && "failed to open linked air module");
 
-  auto herd_fn = (void (*)(void*,void *,void*))dlsym((void*)handle, "_mlir_ciface_forward");
+  auto herd_fn = (void (*)(void*,void *,void*))dlsym((void*)handle, "_mlir_ciface_call_mmult");
   assert(herd_fn && "failed to locate _mlir_ciface_forward in .so");
 
   for (int i=0; i<input_A.shape[0]*input_A.shape[1]; i++) {
-    input_A.d[i] = ((uint32_t)i % 3);
-    input_B.d[i] = ((uint32_t)i+1) % 4;
+    input_A.d[i] = ((uint32_t)i % 3) + 1;
+    input_B.d[i] = ((uint32_t)i+1) % 4 + 1;
     output.d[i] = 0;
     output_ref0.d[i] = 0;
   }
