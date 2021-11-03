@@ -121,7 +121,7 @@ def run_flow(opts, tmpdirname):
       herd_file = opts.tmpdir+'/aie.'+herd+'.mlir'
       aiecc_file = opts.tmpdir+'/aiecc.'+herd+'.mlir'
       aiecc_dir = opts.tmpdir+'/'+herd
-      do_call(['air-opt', herd_file, '-air-lower-linalg-tensors', '--lower-affine', '-canonicalize', '-cse', '-o', aiecc_file])
+      do_call(['air-opt', herd_file, '-air-lower-linalg-tensors', '--lower-affine', '-cse', '-o', aiecc_file])
       do_call(['aiecc.py'] +
               (['-v'] if opts.verbose else []) +
               (['--sysroot', opts.sysroot] if opts.sysroot!="" else []) +
