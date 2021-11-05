@@ -125,6 +125,54 @@ struct RemoveSubViewOpsPattern
   }
 };
 
+// Replace a pattern like this:
+//  %0 = memref.alloc() : memref<4096xi32>
+//  linalg.generic with outs(%0 : memref<4096xi32>), does not read %0
+//  %1 = memref.cast %0 : memref<4096xi32> to memref<?xi32>
+//  memref.copy %1, %2 : memref<?xi32> to memref<?xi32>
+// with this:
+//  %1 = memref.cast %2 : memref<?xi32> to memref<4096xi32>
+//  linalg.generic with outs(%1 : memref<4096xi32>)
+struct RemoveAllocLinalgOpCopyPattern
+    : public OpRewritePattern<memref::AllocOp> {
+  using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::AllocOp op,
+                                PatternRewriter &rewriter) const override {
+
+    Value memref;
+    if (op->use_empty()) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+    Operation *castOp = nullptr;
+    Operation *linalgOp = nullptr;
+    for (auto &u : op->getUses())
+      if (auto c = dyn_cast<memref::CastOp>(u.getOwner()))
+        castOp = c;
+      else if (auto l = dyn_cast<linalg::LinalgOp>(u.getOwner())) {
+        linalgOp = l;
+        if (l.isInitTensor(&u))
+          return failure();
+      }
+    if (!castOp || !linalgOp)
+      return failure();
+
+    if (!castOp->hasOneUse())
+      return failure();
+    auto copyOp = dyn_cast<memref::CopyOp>(*castOp->user_begin());
+    if (!copyOp)
+      return failure();
+
+    auto newOp = rewriter.create<memref::CastOp>(op->getLoc(), op.getType(),
+                                                 copyOp->getOperand(1));
+    rewriter.replaceOp(op, newOp->getResults());
+    rewriter.eraseOp(copyOp);
+    rewriter.eraseOp(castOp);
+    return success();
+  }
+};
+
 class AIRLinalgCodegen : public AIRLinalgCodegenBase<AIRLinalgCodegen> {
 
 public:
@@ -382,6 +430,10 @@ public:
   }
 
   void runOnFunction(FuncOp f) {
+
+    OwningRewritePatternList prePatterns(&getContext());
+    prePatterns.insert<RemoveAllocLinalgOpCopyPattern>(&getContext());
+    (void)applyPatternsAndFoldGreedily(f, std::move(prePatterns));
 
     if (!AIRLinalgCodegenTestPatterns) {
       runMatmulPatterns(f);

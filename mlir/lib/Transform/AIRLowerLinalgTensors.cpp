@@ -133,7 +133,7 @@ void AIRLowerLinalgTensors::runOnOperation() {
   linalg::populateLinalgBufferizePatterns(typeConverter, patterns0);
   if (failed(applyPartialConversion(aie_module, target,
                                   std::move(patterns0))))
-  signalPassFailure();
+    signalPassFailure();
 
   OwningRewritePatternList patterns1(&context);
   patterns1.add<RemoveBufferCastPattern,
