@@ -1,7 +1,7 @@
 # Test 39_2x2_herd_L2_DMA_in
 
 ##
-Designed to test the L2 DMA pushing tiles of data into the AIE array in
+This test designed to test the L2 DMA pushing tiles of data into the AIE array in
 a broadcast manner.
 
 [Want to end up with this](2x2.png)
