@@ -41,14 +41,5 @@ module @aie.0  {
     AIE.useLock(%4, Acquire, 1, 0)
     AIE.end
   }
-  %12 = AIE.switchbox(%1)  {
-    AIE.connect<South : 0, North : 0>
-  }
-  AIE.flow(%0, South : 0, %3, DMA : 0)
-  %13 = AIE.shimmux(%1)  {
-    AIE.connect<DMA : 0, South : 3>
-    AIE.connect<DMA : 1, South : 7>
-    AIE.connect<South : 2, DMA : 0>
-    AIE.connect<South : 3, DMA : 1>
-  }
+  AIE.flow(%1, PLIO : 0, %3, DMA : 0)
 }

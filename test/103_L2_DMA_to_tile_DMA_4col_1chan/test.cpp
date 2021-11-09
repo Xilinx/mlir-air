@@ -6,11 +6,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
-#include <xaiengine.h>
 
-
-#include "acdc_queue.h"
-#include "hsa_defs.h"
+#include "air_host.h"
+#include "test_library.h"
 
 #define XAIE_NUM_ROWS            8
 #define XAIE_NUM_COLS           50
@@ -21,143 +19,19 @@
 
 namespace {
 
-XAieGbl_Config *AieConfigPtr;	                          /**< AIE configuration pointer */
-XAieGbl AieInst;	                                      /**< AIE global instance */
-XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuration instance */
-XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];  /**< Instantiates AIE array of [XAIE_NUM_COLS] x [XAIE_NUM_ROWS] */
-XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
+// global libxaie state
+air_libxaie1_ctx_t *xaie;
 
+#define TileInst (xaie->TileInst)
+#define TileDMAInst (xaie->TileDMAInst)
 #include "aie_inc.cpp"
+#undef TileInst
+#undef TileDMAInst
 
 }
 
 #define L2_DMA_BASE 0x020240000000LL
 #define SHMEM_BASE  0x020100000000LL
-
-hsa_status_t queue_create(uint32_t size, uint32_t type, queue_t **queue)
-{
-  int fd = open("/dev/mem", O_RDWR | O_SYNC);
-  if (fd == -1)
-    return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
-
-  uint64_t *bram_ptr = (uint64_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, SHMEM_BASE);
-
-  printf("Opened shared memory paddr: %p vaddr: %p\n", SHMEM_BASE, bram_ptr);
-  uint64_t q_paddr = bram_ptr[0];
-  uint64_t q_offset = q_paddr - SHMEM_BASE;
-  queue_t *q = (queue_t*)( ((size_t)bram_ptr) + q_offset );
-  printf("Queue location at paddr: %p vaddr: %p\n", bram_ptr[0], q);
-
-  if (q->id !=  0xacdc) {
-    printf("%s error invalid id %x\n", __func__, q->id);
-    return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
-  }
-
-  if (q->size != size) {
-    printf("%s error size mismatch %d\n", __func__, q->size);
-    return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
-  }
-
-  if (q->type != type) {
-    printf("%s error type mismatch %d\n", __func__, q->type);
-    return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
-  }
-
-  uint64_t base_address_offset = q->base_address - SHMEM_BASE;
-  q->base_address_vaddr = ((size_t)bram_ptr) + base_address_offset;
-
-  q->doorbell = 0xffffffffffffffffUL;
-  q->last_doorbell = 0;
-
-  *queue = q;
-  return HSA_STATUS_SUCCESS;
-}
-
-
-void printDMAStatus(int col, int row) {
-
-
-  u32 dma_mm2s_status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001DF10);
-  u32 dma_s2mm_status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001DF00);
-  u32 dma_mm2s_control = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001DE10);
-  u32 dma_s2mm_control = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001DE00);
-  u32 dma_bd0_a       = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001D000); 
-  u32 dma_bd0_control = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001D018);
-
-  u32 s2mm_ch0_running = dma_s2mm_status & 0x3;
-  u32 s2mm_ch1_running = (dma_s2mm_status >> 2) & 0x3;
-  u32 mm2s_ch0_running = dma_mm2s_status & 0x3;
-  u32 mm2s_ch1_running = (dma_mm2s_status >> 2) & 0x3;
-
-  printf("DMA [%d, %d] mm2s_status/ctrl is %08X %08X, s2mm_status is %08X %08X, BD0_Addr_A is %08X, BD0_control is %08X\n",col, row, dma_mm2s_status, dma_mm2s_control, dma_s2mm_status, dma_s2mm_control, dma_bd0_a, dma_bd0_control);
-  for (int bd=0;bd<8;bd++) {
-      u32 dma_bd_addr_a        = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001D000 + (0x20*bd));
-      u32 dma_bd_control       = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001D018 + (0x20*bd));
-    if (dma_bd_control & 0x80000000) {
-      printf("BD %d valid\n",bd);
-      int current_s2mm_ch0 = (dma_s2mm_status >> 16) & 0xf;  
-      int current_s2mm_ch1 = (dma_s2mm_status >> 20) & 0xf;  
-      int current_mm2s_ch0 = (dma_mm2s_status >> 16) & 0xf;  
-      int current_mm2s_ch1 = (dma_mm2s_status >> 20) & 0xf;  
-
-      if (s2mm_ch0_running && bd == current_s2mm_ch0) {
-        printf(" * Current BD for s2mm channel 0\n");
-      }
-      if (s2mm_ch1_running && bd == current_s2mm_ch1) {
-        printf(" * Current BD for s2mm channel 1\n");
-      }
-      if (mm2s_ch0_running && bd == current_mm2s_ch0) {
-        printf(" * Current BD for mm2s channel 0\n");
-      }
-      if (mm2s_ch1_running && bd == current_mm2s_ch1) {
-        printf(" * Current BD for mm2s channel 1\n");
-      }
-
-      if (dma_bd_control & 0x08000000) {
-        u32 dma_packet = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001D010 + (0x20*bd));
-        printf("   Packet mode: %02X\n",dma_packet & 0x1F);
-      }
-      int words_to_transfer = 1+(dma_bd_control & 0x1FFF);
-      int base_address = dma_bd_addr_a  & 0x1FFF;
-      printf("   Transfering %d 32 bit words to/from %05X\n",words_to_transfer, base_address);
-
-      printf("   ");
-      for (int w=0;w<4; w++) {
-        printf("%08X ",XAieTile_DmReadWord(&(TileInst[col][row]), (base_address+w) * 4));
-      }
-      printf("\n");
-      if (dma_bd_addr_a & 0x40000) {
-        u32 lock_id = (dma_bd_addr_a >> 22) & 0xf;
-        printf("   Acquires lock %d ",lock_id);
-        if (dma_bd_addr_a & 0x10000) 
-          printf("with value %d ",(dma_bd_addr_a >> 17) & 0x1);
-
-        printf("currently ");
-        u32 locks = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001EF00);
-        u32 two_bits = (locks >> (lock_id*2)) & 0x3;
-        if (two_bits) {
-          u32 acquired = two_bits & 0x1;
-          u32 value = two_bits & 0x2;
-          if (acquired)
-            printf("Acquired ");
-          printf(value?"1":"0");
-        }
-        else printf("0");
-        printf("\n");
-
-      }
-      if (dma_bd_control & 0x30000000) { // FIFO MODE
-        int FIFO = (dma_bd_control >> 28) & 0x3;
-          u32 dma_fifo_counter = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001DF20);				
-        printf("   Using FIFO Cnt%d : %08X\n",FIFO, dma_fifo_counter);
-      }
-    }
-
-  }
-
-}
-
-
 
 struct dma_cmd_t {
   uint8_t select;
@@ -170,37 +44,10 @@ struct dma_rsp_t {
 	uint8_t id;
 };
 
-// void put_dma_cmd(dma_cmd_t *cmd, int stream)
-// {
-//   static dispatch_packet_t pkt;
-
-//   pkt.arg[1] = stream;
-//   pkt.arg[2] = 0;
-//   pkt.arg[2] |= ((uint64_t)cmd->select) << 32;
-//   pkt.arg[2] |= cmd->length << 18;
-//   pkt.arg[2] |= cmd->uram_addr << 5;
-//   pkt.arg[2] |= cmd->id;
-
-//   handle_packet_put_stream(&pkt);
-// }
-
-// void get_dma_rsp(dma_rsp_t *rsp, int stream)
-// {
-//   static dispatch_packet_t pkt;
-//   pkt.arg[1] = stream;
-//   handle_packet_get_stream(&pkt);
-//   rsp->id = pkt.return_address;
-// }
-
 int main(int argc, char *argv[])
 {
 
-
-  size_t aie_base = XAIE_ADDR_ARRAY_OFF << 14;
-  XAIEGBL_HWCFG_SET_CONFIG((&AieConfig), XAIE_NUM_ROWS, XAIE_NUM_COLS, XAIE_ADDR_ARRAY_OFF);
-  XAieGbl_HwInit(&AieConfig);
-  AieConfigPtr = XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
-  XAieGbl_CfgInitialize(&AieInst, &TileInst[0][0], AieConfigPtr);
+  xaie = air_init_libxaie1();
 
   mlir_configure_cores();
   mlir_configure_switchboxes();
@@ -208,27 +55,32 @@ int main(int argc, char *argv[])
   mlir_configure_dmas();
   mlir_start_cores();
 
-
   for (int i=0; i<32; i++) {
-    for (int col=7;col<11;col++)
-      XAieTile_DmWriteWord(&(TileInst[col][2]), 0x1000+i*4, 0xdecaf | (col << 28));
+    mlir_write_buffer_a(i, 0xcafe01);
+    mlir_write_buffer_b(i, 0xcafe02);
+    mlir_write_buffer_c(i, 0xcafe03);
+    mlir_write_buffer_d(i, 0xcafe04);
+    mlir_write_buffer_e(i, 0xcafe05);
+    mlir_write_buffer_f(i, 0xcafe06);
+    mlir_write_buffer_g(i, 0xcafe07);
+    mlir_write_buffer_i(i, 0xcafe08);
   }
 
-  printDMAStatus(7,2);
-  printDMAStatus(8,2);
-  printDMAStatus(9,2);
-  printDMAStatus(10,2);
+  ACDC_print_dma_status(xaie->TileInst[7][2]);
+  ACDC_print_dma_status(xaie->TileInst[8][2]);
+  ACDC_print_dma_status(xaie->TileInst[9][2]);
+  ACDC_print_dma_status(xaie->TileInst[10][2]);
 
-  XAieGbl_Write32(TileInst[7][0].TileAddr + 0x00033008, 0xFF);
-  XAieGbl_Write32(TileInst[8][0].TileAddr + 0x00033008, 0xFF);
-  XAieGbl_Write32(TileInst[9][0].TileAddr + 0x00033008, 0xFF);
-  XAieGbl_Write32(TileInst[10][0].TileAddr + 0x00033008, 0xFF);
+  XAieGbl_Write32(xaie->TileInst[7][0].TileAddr + 0x00033008, 0xFF);
+  XAieGbl_Write32(xaie->TileInst[8][0].TileAddr + 0x00033008, 0xFF);
+  XAieGbl_Write32(xaie->TileInst[9][0].TileAddr + 0x00033008, 0xFF);
+  XAieGbl_Write32(xaie->TileInst[10][0].TileAddr + 0x00033008, 0xFF);
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd == -1)
     return -1;
 
-  uint32_t *bank0_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE);
+  uint32_t *bank0_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+0*0x20000);
   uint32_t *bank1_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+1*0x20000);
   uint32_t *bank2_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+2*0x20000);
   uint32_t *bank3_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+3*0x20000);
@@ -272,10 +124,17 @@ int main(int argc, char *argv[])
       bank6_ptr[offset] = toWrite;
     }
   }
+  
+  for (int i=0;i<16;i++) {
+    uint32_t word0 = bank0_ptr[i];
+    uint32_t word1 = bank1_ptr[i];
+
+    printf("%x %08X %08X\r\n", i, word0, word1);
+  }
 
   // create the queue
   queue_t *q = nullptr;
-  auto ret = queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q);
+  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
   assert(ret == 0 && "failed to create queue!");
 
   uint64_t wr_idx = queue_add_write_index(q, 1);
@@ -286,7 +145,7 @@ int main(int argc, char *argv[])
   pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
   //
-  // Set up a 4x4 herd starting 6,0
+  // Set up a 4x4 herd starting 6,1
   //
 
   pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
@@ -303,6 +162,34 @@ int main(int argc, char *argv[])
   // dispatch packet
   signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
   signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
+  
+  for (int stream=0; stream<4; stream++) {
+    // globally bypass headers
+    wr_idx = queue_add_write_index(q, 1);
+    packet_id = wr_idx % q->size;
+
+    pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+    initialize_packet(pkt);
+    pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+    pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
+
+
+    static dma_cmd_t cmd;
+    cmd.select = 7;
+    cmd.length = 0;
+    cmd.uram_addr = 1;
+    cmd.id = 0;
+
+    pkt->arg[1] = stream;
+    pkt->arg[2] = 0;
+    pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
+    pkt->arg[2] |= cmd.length << 18;
+    pkt->arg[2] |= cmd.uram_addr << 5;
+    pkt->arg[2] |= cmd.id;
+
+    signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
+    signal_store_release((signal_t*)&q->doorbell, wr_idx);
+  }
 
   //
   // send the data
@@ -320,9 +207,9 @@ int main(int argc, char *argv[])
 
     static dma_cmd_t cmd;
     cmd.select = 0;
-    cmd.length = 32;
+    cmd.length = 4;
     cmd.uram_addr = 0;
-    cmd.id = 0;
+    cmd.id = stream;
 
     pkt->arg[1] = stream;
     pkt->arg[2] = 0;
@@ -338,30 +225,72 @@ int main(int argc, char *argv[])
         printf("packet completion signal timeout!\n");
         printf("%x\n", pkt->header);
         printf("%x\n", pkt->type);
-        printf("%x\n", pkt->completion_signal);
+        printf("%lx\n", pkt->completion_signal);
         break;
       }
     }
-    else {
-      //signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-    }
   }
-
 
   sleep(1);
-  printDMAStatus(7,2);
-  printDMAStatus(8,2);
-  printDMAStatus(9,2);
-  printDMAStatus(10,2);
+  ACDC_print_dma_status(xaie->TileInst[7][2]);
+  ACDC_print_dma_status(xaie->TileInst[8][2]);
+  ACDC_print_dma_status(xaie->TileInst[9][2]);
+  ACDC_print_dma_status(xaie->TileInst[10][2]);
 
+  printf("\nChecking the output...\n");
+
+  uint32_t errs = 0;
   for (int i=0; i<32; i++) {
-    uint32_t d7 = XAieTile_DmReadWord(&(TileInst[0x7][2]), 0x1000 + (i*4));
-    uint32_t d8 = XAieTile_DmReadWord(&(TileInst[0x8][2]), 0x1000 + (i*4));
-    uint32_t d9 = XAieTile_DmReadWord(&(TileInst[0x9][2]), 0x1000 + (i*4));
-    uint32_t da = XAieTile_DmReadWord(&(TileInst[0xa][2]), 0x1000 + (i*4));
-    printf("%d: %08X %08X %08X %08X\n", i, d7, d8, d9, da);
+    uint32_t d;
+    if (i<16)
+      d = mlir_read_buffer_a(i) - 0x100000;
+    else 
+      d = mlir_read_buffer_b(i-16) - 0x100000;
+    if ((d & 0x0fffffff) != (i)) {
+      printf("[7] Word %i : Expect %d, got %08X\n",i, i, d);
+      errs++;
+    }
   }
-
-  printf("PASS!\n");
-  return 0;
+  for (int i=0; i<32; i++) {
+    uint32_t d;
+    if (i<16)
+      d = mlir_read_buffer_c(i) - 0x300000;
+    else 
+      d = mlir_read_buffer_d(i-16) - 0x300000;
+    if ((d & 0x0fffffff) != (i)) {
+      printf("[8] Word %i : Expect %d, got %08X\n",i, i, d);
+      errs++;
+    }
+  }
+  for (int i=0; i<32; i++) {
+    uint32_t d;
+    if (i<16)
+      d = mlir_read_buffer_e(i) - 0x700000;
+    else 
+      d = mlir_read_buffer_f(i-16) - 0x700000;
+    if ((d & 0x0fffffff) != (i)) {
+      printf("[9] Word %i : Expect %d, got %08X\n",i, i, d);
+      errs++;
+    }
+  }
+  for (int i=0; i<32; i++) {
+    uint32_t d;
+    if (i<16)
+      d = mlir_read_buffer_g(i) - 0xf00000;
+    else 
+      d = mlir_read_buffer_i(i-16) - 0xf00000;
+    if ((d & 0x0fffffff) != (i)) {
+      printf("[A] Word %i : Expect %d, got %08X\n",i, i, d);
+      errs++;
+    }
+  }
+  
+  if (errs) {
+    printf("FAIL: %d errors\n", errs);
+    return -1;
+  }
+  else {
+    printf("PASS!\n");
+    return 0;
+  }
 }

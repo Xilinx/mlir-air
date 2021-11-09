@@ -56,10 +56,19 @@ int main(int argc, char *argv[])
   mlir_start_cores();
 
   for (int i=0; i<16; i++) {
-    mlir_write_buffer_buf1(i, 0xdecaf);
-    mlir_write_buffer_buf2(i, 0xacafe);
+    mlir_write_buffer_buf1(i, 0x9a01);
+    mlir_write_buffer_buf2(i, 0xba01);
+    mlir_write_buffer_buf4(i, 0x9a02);
+    mlir_write_buffer_buf5(i, 0xba02);
+    mlir_write_buffer_buf7(i, 0x9401);
+    mlir_write_buffer_buf8(i, 0xb401);
+    mlir_write_buffer_buf10(i, 0x9402);
+    mlir_write_buffer_buf11(i, 0xb402);
   }
 
+  ACDC_print_dma_status(xaie->TileInst[7][1]);
+  ACDC_print_dma_status(xaie->TileInst[7][2]);
+  ACDC_print_dma_status(xaie->TileInst[7][3]);
   ACDC_print_dma_status(xaie->TileInst[7][4]);
 
   XAieGbl_Write32(xaie->TileInst[7][0].TileAddr + 0x00033008, 0xFF);
@@ -91,10 +100,9 @@ int main(int argc, char *argv[])
       bank1_ptr[offset] = toWrite;
     else
       bank0_ptr[offset] = toWrite;
-
   }
 
-  // Read back the values from above
+  // Read back the values from above 
   for (int i=0;i<16;i++) {
     uint32_t word0 = bank0_ptr[i];
     uint32_t word1 = bank1_ptr[i];
@@ -115,13 +123,13 @@ int main(int argc, char *argv[])
   pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
   //
-  // Set up a 4x4 herd starting 6,1
+  // Set up a 1x4 herd starting 7,1
   //
 
   pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
   pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
-  pkt->arg[0] |= (4L << 40);
-  pkt->arg[0] |= (6L << 32);
+  pkt->arg[0] |= (1L << 40);
+  pkt->arg[0] |= (7L << 32);
   pkt->arg[0] |= (4L << 24);
   pkt->arg[0] |= (1L << 16);
   
@@ -132,7 +140,7 @@ int main(int argc, char *argv[])
   // dispatch packet
   signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
   signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-  
+
   // globally bypass headers
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
@@ -151,10 +159,10 @@ int main(int argc, char *argv[])
   uint64_t stream = 0;
   pkt->arg[1] = stream;
   pkt->arg[2] = 0;
-  pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
-  pkt->arg[2] |= cmd.length << 18;
-  pkt->arg[2] |= cmd.uram_addr << 5;
-  pkt->arg[2] |= cmd.id;
+  pkt->arg[2] |= ((uint64_t)cmd.select) << 32; // 3 bits
+  pkt->arg[2] |= cmd.length << 18; // 14 bits
+  pkt->arg[2] |= cmd.uram_addr << 5; // 13 bits
+  pkt->arg[2] |= cmd.id; // 5 bits
 
   signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
   signal_store_release((signal_t*)&q->doorbell, wr_idx);
@@ -163,49 +171,84 @@ int main(int argc, char *argv[])
   // send the data
   //
 
-  wr_idx = queue_add_write_index(q, 1);
-  packet_id = wr_idx % q->size;
+  for (int sel=0; sel<4; sel++) {
 
-  pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
+    wr_idx = queue_add_write_index(q, 1);
+    packet_id = wr_idx % q->size;
 
-  cmd.select = 0;
-  cmd.length = 4;
-  cmd.uram_addr = 0;
-  cmd.id = 0x7;
+    pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+    initialize_packet(pkt);
+    pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+    pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
 
-  pkt->arg[1] = stream;
-  pkt->arg[2] = 0;
-  pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
-  pkt->arg[2] |= cmd.length << 18;
-  pkt->arg[2] |= cmd.uram_addr << 5;
-  pkt->arg[2] |= cmd.id;
+    cmd.select = sel;
+    cmd.length = (sel>1) ? 8 : 4;
+    cmd.uram_addr = 0;
+    cmd.id = sel+1;
 
-  signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
-  signal_store_release((signal_t*)&q->doorbell, wr_idx);
+    pkt->arg[1] = stream;
+    pkt->arg[2] = 0;
+    pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
+    pkt->arg[2] |= cmd.length << 18;
+    pkt->arg[2] |= cmd.uram_addr << 5;
+    pkt->arg[2] |= cmd.id;
 
-  while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-    printf("cmd packet completion signal timeout!\n");
-    printf("%x\n", pkt->header);
-    printf("%x\n", pkt->type);
-    printf("%lx\n", pkt->completion_signal);
-    break;
+    signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
+    if (sel == 3) {
+      signal_store_release((signal_t*)&q->doorbell, wr_idx);
+      while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
+        printf("packet completion signal timeout!\n");
+        printf("%x\n", pkt->header);
+        printf("%x\n", pkt->type);
+        printf("%lx\n", pkt->completion_signal);
+        break;
+      }
+    }
   }
 
+  ACDC_print_dma_status(xaie->TileInst[7][1]);
+  ACDC_print_dma_status(xaie->TileInst[7][2]);
+  ACDC_print_dma_status(xaie->TileInst[7][3]);
   ACDC_print_dma_status(xaie->TileInst[7][4]);
   
   uint32_t errs = 0;
+  for (int i=0; i<16; i++) {
+    uint32_t check = (i % 4) + ((i / 4) * 8);
+    uint32_t d;
+    d = mlir_read_buffer_buf1(i);
+    if ((d & 0x0fffffff) != check) {
+      printf("Part 0 : Word %i : Expect %x, got %08X\n", i, check, d);
+      errs++;
+    }
+  }
+  for (int i=0; i<16; i++) {
+    uint32_t check = (i % 4) + ((i / 4) * 8) + 4;
+    uint32_t d;
+    d = mlir_read_buffer_buf4(i);
+    if ((d & 0x0fffffff) != check) {
+      printf("Part 1 : Word %i : Expect %x, got %08X\n", i, check, d);
+      errs++;
+    }
+  }
   for (int i=0; i<32; i++) {
     uint32_t d;
     if (i<16)
-      d = mlir_read_buffer_buf1(i);
+      d = mlir_read_buffer_buf7(i);
     else 
-      d = mlir_read_buffer_buf2(i-16);
-    printf("%d: %08X\n", i, d);
+      d = mlir_read_buffer_buf8(i-16);
     if ((d & 0x0fffffff) != (i)) {
-      printf("Word %i : Expect %d, got %08X\n",i, i, d);
+      printf("Prim 0 : Word %i : Expect %d, got %08X\n",i, i, d);
+      errs++;
+    }
+  }
+  for (int i=0; i<32; i++) {
+    uint32_t d;
+    if (i<16)
+      d = mlir_read_buffer_buf10(i);
+    else 
+      d = mlir_read_buffer_buf11(i-16);
+    if ((d & 0x0fffffff) != (i)) {
+      printf("Prim 1 : Word %i : Expect %d, got %08X\n",i, i, d);
       errs++;
     }
   }

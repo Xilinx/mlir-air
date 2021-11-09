@@ -346,7 +346,9 @@ int xaie_shim_dma_push_bd(XAieGbl_Tile *tile, int direction, int channel, int co
   XAieGbl_Write32(tile->TileAddr + base_address + 0x04, len >> 2); // We pass in bytes, but the shim DMA can ony deal with 32 bits
   u32 control = (HIGH_ADDR((u64)addr) << 16) | 1;
   XAieGbl_Write32(tile->TileAddr + base_address + 0x08, control);
-  XAieGbl_Write32(tile->TileAddr + base_address + 0x0C, 0x10); // Secure bit
+  XAieGbl_Write32(tile->TileAddr + base_address + 0x0C, 0x410); // Burst len [10:9] = 2 (16)
+                                                                // QoS [8:5] = 0 (best effort)
+                                                                // Secure bit [4] = 1 (set)
   XAieGbl_Write32(tile->TileAddr + base_address + 0x10, 0x0);
 
 
@@ -680,6 +682,12 @@ void handle_packet_put_stream(dispatch_packet_t *pkt)
   register uint32_t d0 = data & 0xffffffff;
   register uint32_t d1 = data >> 32;
 
+  uint32_t id = data & 0x1f;   
+  bool isdma = (d1 < 6);   
+  air_printf("Put fsl %d : id %d\n\r",which_stream,id);
+  register uint32_t d;
+  uint32_t it = 0;
+  
   switch (which_stream) {
   case 0:
     putfsl(d0, 0);
@@ -700,6 +708,27 @@ void handle_packet_put_stream(dispatch_packet_t *pkt)
   default:
     break;
   }
+
+  if (!isdma) return;
+    do {
+    switch (which_stream) {
+    case 0:
+      ngetfsl(d, 0);
+      break;
+    case 1:
+      ngetfsl(d, 1);
+      break;
+    case 2:
+      ngetfsl(d, 2);
+      break;
+    case 3:
+      ngetfsl(d, 3);
+      break;
+    default:
+      break;
+    }
+    air_printf("[%d] Get fsl %d : id %d\n\r",++it,which_stream,d);
+  } while (it < 10 && d != id);
 }
 
 void handle_packet_get_stream(dispatch_packet_t *pkt)
@@ -727,9 +756,9 @@ void handle_packet_get_stream(dispatch_packet_t *pkt)
     break;
   }
 
-  // BUG
-  pkt->return_address = d;
+  air_printf("Get fsl %d : id %d\n\r",which_stream,d);
 
+  pkt->arg[2] = d;
 }
 
 
@@ -934,7 +963,7 @@ int do_packet_nd_memcpy(uint32_t slot)
   //uint16_t col          = mappedShimDMA[logical_col];
   uint32_t outstanding = 0;
 
-  air_printf("DO ND shim DMA %d dir %d chan %d paddr %llx 4d %d stride %d length 3d %d stride %d length, 2d %d stride %d length, 1d %d length\n\r",col, direction, channel, paddr_1d, stride_4d, length_4d,
+  air_printf("Do ND shim DMA %d dir %d chan %d paddr %llx 4d %d stride %d length 3d %d stride %d length, 2d %d stride %d length, 1d %d length\n\r",col, direction, channel, paddr_1d, stride_4d, length_4d,
        stride_3d, length_3d, stride_2d, length_2d, length_1d);
 
   for (;index_4d<length_4d;index_4d++) {
@@ -964,8 +993,6 @@ int do_packet_nd_memcpy(uint32_t slot)
   return 0;
 }
 
-// TODO test reset of last_bd[slot] = 0;
-// TODO test use of slots flexibly 
 int stage_packet_nd_memcpy(dispatch_packet_t *pkt, uint32_t slot)
 {
   air_printf("stage_packet_nd_memcpy %d\n\r",slot);
@@ -992,38 +1019,38 @@ int stage_packet_nd_memcpy(dispatch_packet_t *pkt, uint32_t slot)
 
 } // namespace
 
-struct dma_cmd_t {
-  uint8_t select;
-  uint16_t length;
-  uint16_t uram_addr;
-  uint8_t id;
-};
-
-struct dma_rsp_t {
-	uint8_t id;
-};
-
-void put_dma_cmd(dma_cmd_t *cmd, int stream)
-{
-  static dispatch_packet_t pkt;
-
-  pkt.arg[1] = stream;
-  pkt.arg[2] = 0;
-  pkt.arg[2] |= ((uint64_t)cmd->select) << 32;
-  pkt.arg[2] |= cmd->length << 18;
-  pkt.arg[2] |= cmd->uram_addr << 5;
-  pkt.arg[2] |= cmd->id;
-
-  handle_packet_put_stream(&pkt);
-}
-
-void get_dma_rsp(dma_rsp_t *rsp, int stream)
-{
-  static dispatch_packet_t pkt;
-  pkt.arg[1] = stream;
-  handle_packet_get_stream(&pkt);
-  rsp->id = pkt.return_address;
-}
+//struct dma_cmd_t {
+//  uint8_t select;
+//  uint16_t length;
+//  uint16_t uram_addr;
+//  uint8_t id;
+//};
+//
+//struct dma_rsp_t {
+//	uint8_t id;
+//};
+//
+//void put_dma_cmd(dma_cmd_t *cmd, int stream)
+//{
+//  static dispatch_packet_t pkt;
+//
+//  pkt.arg[1] = stream;
+//  pkt.arg[2] = 0;
+//  pkt.arg[2] |= ((uint64_t)cmd->select) << 32;
+//  pkt.arg[2] |= cmd->length << 18;
+//  pkt.arg[2] |= cmd->uram_addr << 5;
+//  pkt.arg[2] |= cmd->id;
+//
+//  handle_packet_put_stream(&pkt);
+//}
+//
+//void get_dma_rsp(dma_rsp_t *rsp, int stream)
+//{
+//  static dispatch_packet_t pkt;
+//  pkt.arg[1] = stream;
+//  handle_packet_get_stream(&pkt);
+//  rsp->id = pkt.return_address;
+//}
 
 // void test_stream()
 // {
