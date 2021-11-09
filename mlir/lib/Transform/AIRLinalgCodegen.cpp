@@ -15,12 +15,12 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-
 #include "llvm/ADT/SetVector.h"
 
 #define DEBUG_TYPE "air-linalg-codegen"
 
 using namespace mlir;
+
 using namespace xilinx;
 using namespace xilinx::air;
 
@@ -64,8 +64,8 @@ struct FoldSubViewOpsPattern
         else {
           Value a = *offsets++;
           Value b = rewriter.create<ConstantIndexOp>(op.getLoc(), source_offset);
-          result_offsets.push_back( 
-            rewriter.create<AddIOp>(op.getLoc(), a.getType(), a, b));
+          result_offsets.push_back(
+              rewriter.create<AddIOp>(op.getLoc(), a.getType(), a, b));
         }
       }
       else if (op_offset >= 0 && source_offset < 0) {
@@ -76,15 +76,15 @@ struct FoldSubViewOpsPattern
         else {
           Value a = *source_offsets++;
           Value b = rewriter.create<ConstantIndexOp>(op.getLoc(), op_offset);
-          result_offsets.push_back( 
-            rewriter.create<AddIOp>(op.getLoc(), a.getType(), a, b));
+          result_offsets.push_back(
+              rewriter.create<AddIOp>(op.getLoc(), a.getType(), a, b));
         }
       }
       else if (op_offset < 0 && source_offset < 0) {
         Value a = *source_offsets++;
         Value b = *offsets++;
-        result_offsets.push_back( 
-          rewriter.create<AddIOp>(op.getLoc(), a.getType(), a, b));
+        result_offsets.push_back(
+            rewriter.create<AddIOp>(op.getLoc(), a.getType(), a, b));
         result_static_offsets.push_back(source_offset);
       }
     }
@@ -99,9 +99,75 @@ struct FoldSubViewOpsPattern
   }
 };
 
+struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
+  using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::AllocOp op,
+                                PatternRewriter &rewriter) const override {
+    auto ty = op.getType();
+    if (ty.hasStaticShape())
+      return failure();
+
+    std::vector<int64_t> shape = ty.getShape();
+    if (op.getNumOperands() != shape.size())
+      return failure();
+
+    int dim = 0;
+    for (auto oper : op.getOperands()) {
+      if (auto c = oper.getDefiningOp<ConstantIndexOp>())
+        shape[dim] = c.getValue();
+      dim++;
+    }
+    Value newOp = rewriter.replaceOpWithNewOp<memref::AllocOp>(
+        op,
+        MemRefType::get(shape, ty.getElementType(), {}, ty.getMemorySpace()));
+    for (auto use : newOp.getUsers()) {
+      if (auto launch = dyn_cast<air::HerdLaunchOp>(use)) {
+        assert(launch.getKernelArguments().size() == launch.operands().size());
+        for (int i = 0; i < launch.getNumKernelOperands(); i++) {
+          auto arg = launch.getKernelArguments()[i];
+          auto oper = launch.getKernelOperand(i);
+          if (oper == newOp) {
+            Block *b = arg.getOwner();
+            auto new_arg =
+                b->insertArgument(arg.getArgNumber(), newOp.getType());
+            rewriter.setInsertionPointToStart(&*launch.getRegion().begin());
+            arg.replaceAllUsesWith(rewriter.create<memref::CastOp>(
+                op.getLoc(), new_arg, arg.getType()));
+            b->eraseArgument(arg.getArgNumber());
+          }
+        }
+      }
+    }
+    return success();
+  }
+};
+
+// struct DimPattern
+//     : public OpRewritePattern<memref::DimOp> {
+//   using OpRewritePattern<memref::DimOp>::OpRewritePattern;
+
+//   LogicalResult matchAndRewrite(memref::DimOp op,
+//                                 PatternRewriter &rewriter) const override {
+//     auto operTy = op.memrefOrTensor().getType().dyn_cast<ShapedType>();
+//     if (!operTy.hasStaticShape())
+//       return failure();
+
+//     auto indexOp = op.index().getDefiningOp<ConstantIndexOp>();
+//     if (!indexOp)
+//       return failure();
+
+//     rewriter.replaceOp(op, indexOp.getResult());
+//     return success();
+//   }
+// };
+
 struct RemoveSubViewOpsPattern
     : public OpRewritePattern<memref::SubViewOp> {
   using OpRewritePattern<memref::SubViewOp>::OpRewritePattern;
+
+  RemoveSubViewOpsPattern(MLIRContext *ctx, unsigned int fast_memory_space = 1,
+                          unsigned int slow_memory_space = 0);
 
   LogicalResult matchAndRewrite(memref::SubViewOp op,
                                 PatternRewriter &rewriter) const override {
@@ -112,17 +178,19 @@ struct RemoveSubViewOpsPattern
     if (!alloc)
       return failure();
 
-    /* Force memory space 2 below */
+    /* Force memory space */
     Value newOp = rewriter.replaceOpWithNewOp<memref::AllocOp>(
-      op,
-      MemRefType::get(op.getType().getShape(),
-                      op.getType().getElementType(),
-                      {}, 2),
-      op.sizes());
-//                      {}, view.getType().getMemorySpace()));
+        op,
+        MemRefType::get(op.getType().getShape(), op.getType().getElementType(),
+                        {}, fast_space),
+        op.sizes());
     alloc.replaceAllUsesWith(newOp);
     return success();
   }
+
+private:
+  unsigned int fast_space;
+  unsigned int slow_space;
 };
 
 // Replace a pattern like this:
@@ -172,6 +240,12 @@ struct RemoveAllocLinalgOpCopyPattern
     return success();
   }
 };
+
+RemoveSubViewOpsPattern::RemoveSubViewOpsPattern(MLIRContext *ctx,
+                                                 unsigned int fast_memory_space,
+                                                 unsigned int slow_memory_space)
+    : OpRewritePattern(ctx), fast_space(fast_memory_space),
+      slow_space(slow_memory_space) {}
 
 class AIRLinalgCodegen : public AIRLinalgCodegenBase<AIRLinalgCodegen> {
 
@@ -262,8 +336,8 @@ public:
       scf::populateSCFForLoopCanonicalizationPatterns(stage2Patterns);
 
       OwningRewritePatternList stage3Patterns(&getContext());
-      stage3Patterns.insert<RemoveSubViewOpsPattern, FoldSubViewOpsPattern>(
-          ctx);
+      stage3Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
+      stage3Patterns.insert<FoldSubViewOpsPattern>(ctx);
 
       (void)applyPatternsAndFoldGreedily(called, std::move(stage1Patterns));
       (void)applyPatternsAndFoldGreedily(called, std::move(stage2Patterns));
@@ -291,47 +365,72 @@ public:
       FuncOp called = funcOp->getParentOfType<ModuleOp>()
                         .lookupSymbol<FuncOp>(call.getCallee());
 
-      SmallVector<int64_t, 3> l1_tile_size{32, 32, 32};
-      SmallVector<int64_t, 3> herd_size{2, 2, 2};
 
+      SmallVector<int64_t, 3> herd_size{2, 2, 2};
       for (int i=0, e=HerdSize.size(); i<e; i++) {
         herd_size[i] = HerdSize[i];
       }
 
-      SmallVector<int64_t, 3> tile_sizes{l1_tile_size[0]*herd_size[0],
+      SmallVector<int64_t, 3> l1_tile_size{32, 32, 32};
+      SmallVector<int64_t, 3> l2_tile_size{l1_tile_size[0]*herd_size[0],
                                           l1_tile_size[1]*herd_size[1],
                                           l1_tile_size[2]*herd_size[2]};
 
-      OwningRewritePatternList stage1Patterns(ctx);
+      // SmallVector<int64_t, 3> tile_sizes{l1_tile_size[0]*herd_size[0],
+      //                                     l1_tile_size[1]*herd_size[1],
+      //                                     l1_tile_size[2]*herd_size[2]};
 
-      stage1Patterns.insert<linalg::LinalgTilingPattern<linalg::MatmulOp>>(
-        ctx, linalg::LinalgTilingOptions().setTileSizes(tile_sizes)
-                                          .setInterchange({2,1,0})
-                                          .setLoopType(linalg::LinalgTilingLoopType::Loops),
-        linalg::LinalgTransformationFilter(ArrayRef<Identifier>{},
-                                           Identifier::get("L1", ctx)));
+      OwningRewritePatternList stageL2Patterns(ctx);
+      bool tileForL2 = false;
+      if (tileForL2) {
+        stageL2Patterns.insert<linalg::LinalgTilingPattern<linalg::MatmulOp>>(
+            ctx,
+            linalg::LinalgTilingOptions()
+                .setTileSizes(l2_tile_size)
+                .setInterchange({2, 1, 0})
+                .setLoopType(linalg::LinalgTilingLoopType::Loops),
+            linalg::LinalgTransformationFilter(ArrayRef<Identifier>{},
+                                               Identifier::get("L2", ctx)));
 
-      // divide it up evenly between tiles
-      stage1Patterns.insert<linalg::LinalgTilingPattern<linalg::MatmulOp>>(
-        ctx, linalg::LinalgTilingOptions().setTileSizes(l1_tile_size)
-                                          .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
-        linalg::LinalgTransformationFilter(Identifier::get("L1", ctx),
-                                          Identifier::get("HERD", ctx)));
+        stageL2Patterns
+            .insert<linalg::LinalgPromotionPattern<linalg::MatmulOp>>(
+                ctx, linalg::LinalgPromotionOptions(),
+                linalg::LinalgTransformationFilter(
+                    Identifier::get("L2", ctx),
+                    Identifier::get("L2_promoted", ctx)));
 
-      stage1Patterns.insert<linalg::LinalgPromotionPattern<linalg::MatmulOp>>(
-        ctx, linalg::LinalgPromotionOptions(),
-        linalg::LinalgTransformationFilter(Identifier::get("HERD", ctx),
-                                          Identifier::get("promote", ctx)));
+        stageL2Patterns.insert<RemoveSubViewOpsPattern>(ctx, 1);
+        stageL2Patterns.insert<FoldSubViewOpsPattern>(ctx);
+        stageL2Patterns.insert<MemrefsPattern>(ctx);
+        scf::populateSCFForLoopCanonicalizationPatterns(stageL2Patterns);
+      }
 
-      OwningRewritePatternList stage2Patterns(ctx);
-      scf::populateSCFForLoopCanonicalizationPatterns(stage2Patterns);
-      
+      OwningRewritePatternList stageL1Patterns(ctx);
+
+      stageL1Patterns.insert<linalg::LinalgTilingPattern<linalg::MatmulOp>>(
+          ctx,
+          linalg::LinalgTilingOptions()
+              .setTileSizes(l1_tile_size)
+              .setInterchange({0, 1, 2})
+              .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
+          linalg::LinalgTransformationFilter(
+              tileForL2 ? Identifier::get("L2_promoted", ctx)
+                        : ArrayRef<Identifier>{},
+              Identifier::get("L1", ctx)));
+
+      stageL1Patterns.insert<linalg::LinalgPromotionPattern<linalg::MatmulOp>>(
+          ctx, linalg::LinalgPromotionOptions(),
+          linalg::LinalgTransformationFilter(
+              Identifier::get("L1", ctx), Identifier::get("L1_promoted", ctx)));
+
       OwningRewritePatternList stage3Patterns(&getContext());
-      stage3Patterns.insert<RemoveSubViewOpsPattern, 
-                            FoldSubViewOpsPattern>(ctx);
-      
-      (void)applyPatternsAndFoldGreedily(called, std::move(stage1Patterns));
-      (void)applyPatternsAndFoldGreedily(called, std::move(stage2Patterns));
+      stage3Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
+      stage3Patterns.insert<FoldSubViewOpsPattern>(ctx);
+      stage3Patterns.insert<MemrefsPattern>(ctx);
+      scf::populateSCFForLoopCanonicalizationPatterns(stage3Patterns);
+
+      (void)applyPatternsAndFoldGreedily(called, std::move(stageL2Patterns));
+      (void)applyPatternsAndFoldGreedily(called, std::move(stageL1Patterns));
       (void)applyPatternsAndFoldGreedily(called, std::move(stage3Patterns));
       called.walk([](linalg::LinalgOp op) {
         op->removeAttr(linalg::LinalgTransforms::kLinalgTransformMarker);
@@ -415,9 +514,9 @@ public:
       scf::populateSCFForLoopCanonicalizationPatterns(stage2Patterns);
 
       OwningRewritePatternList stage3Patterns(&getContext());
-      stage3Patterns.insert<RemoveSubViewOpsPattern, 
-                            FoldSubViewOpsPattern>(ctx);
-      
+      stage3Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
+      stage3Patterns.insert<FoldSubViewOpsPattern>(ctx);
+
       (void)applyPatternsAndFoldGreedily(called, std::move(stage1Patterns));
       (void)applyPatternsAndFoldGreedily(called, std::move(stage2Patterns));
       (void)applyPatternsAndFoldGreedily(called, std::move(stage3Patterns));
