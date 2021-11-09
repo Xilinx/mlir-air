@@ -1,1 +1,1 @@
-Test
+A simple test
