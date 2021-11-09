@@ -1,4 +1,2 @@
-// Expected to fail if pathfinder router is not the default
-// XFAIL: *
-// RUN: aiecc.py --sysroot=%VITIS_SYSROOT% %S/aie.mlir -I%air_runtime_lib%/airhost/include -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp -L%air_runtime_lib%/airhost %S/test.cpp -Wl,--whole-archive -lairhost -Wl,--no-whole-archive -lstdc++ -o %T/test.elf
+// RUN: aiecc.py --pathfinder --sysroot=%VITIS_SYSROOT% %S/aie.mlir -I%air_runtime_lib%/airhost/include -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp -L%air_runtime_lib%/airhost %S/test.cpp -Wl,--whole-archive -lairhost -Wl,--no-whole-archive -lstdc++ -o %T/test.elf
 // RUN: %run_on_board %T/test.elf
