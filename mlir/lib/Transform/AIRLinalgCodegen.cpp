@@ -1,10 +1,10 @@
 // (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
 
+#include "PassDetail.h"
 #include "air/Transform/AIRLinalgCodegen.h"
 #include "air/Util/Outliner.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 
-#include "PassDetail.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Linalg/IR/LinalgOps.h"
 #include "mlir/Dialect/Linalg/Transforms/CodegenStrategy.h"
@@ -15,6 +15,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/InliningUtils.h"
 #include "llvm/ADT/SetVector.h"
 
 #define DEBUG_TYPE "air-linalg-codegen"
@@ -345,6 +346,11 @@ public:
       called.walk([](linalg::LinalgOp op) {
         op->removeAttr(linalg::LinalgTransforms::kLinalgTransformMarker);
       });
+      
+      InlinerInterface interface(&getContext());
+      inlineCall(interface, call, called, &called.getRegion(), true);
+      call.erase();
+      called.erase();
     }
   }
 
@@ -435,6 +441,11 @@ public:
       called.walk([](linalg::LinalgOp op) {
         op->removeAttr(linalg::LinalgTransforms::kLinalgTransformMarker);
       });
+
+      InlinerInterface interface(&getContext());
+      inlineCall(interface, call, called, &called.getRegion(), true);
+      call.erase();
+      called.erase();
     }
   }
 
@@ -525,6 +536,11 @@ public:
       called.walk([](linalg::LinalgOp op) {
         op->removeAttr(linalg::LinalgTransforms::kLinalgTransformMarker);
       });
+      
+      InlinerInterface interface(&getContext());
+      inlineCall(interface, call, called, &called.getRegion(), true);
+      call.erase();
+      called.erase();
     }
   }
 
