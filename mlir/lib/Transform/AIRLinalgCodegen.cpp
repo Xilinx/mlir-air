@@ -1,17 +1,18 @@
 // (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
 
 #include "PassDetail.h"
+
+#include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRLinalgCodegen.h"
 #include "air/Util/Outliner.h"
-#include "air/Dialect/AIR/AIRDialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Linalg/IR/LinalgOps.h"
 #include "mlir/Dialect/Linalg/Transforms/CodegenStrategy.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Dialect/SCF/Transforms.h"
+#include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -27,8 +28,7 @@ using namespace xilinx::air;
 
 namespace {
 
-struct FoldSubViewOpsPattern
-    : public OpRewritePattern<memref::SubViewOp> {
+struct FoldSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
   using OpRewritePattern<memref::SubViewOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(memref::SubViewOp op,
@@ -45,43 +45,40 @@ struct FoldSubViewOpsPattern
 
     auto offsets = op.offsets().begin();
     auto source_offsets = source_subview.offsets().begin();
-    SmallVector<Value,4> result_offsets;
+    SmallVector<Value, 4> result_offsets;
 
     auto static_offsets = extractFromI64ArrayAttr(op.static_offsets());
-    auto source_static_offsets = extractFromI64ArrayAttr(source_subview.static_offsets());
-    SmallVector<int64_t,4> result_static_offsets;
+    auto source_static_offsets =
+        extractFromI64ArrayAttr(source_subview.static_offsets());
+    SmallVector<int64_t, 4> result_static_offsets;
 
     for (auto p : llvm::zip(static_offsets, source_static_offsets)) {
       auto op_offset = std::get<0>(p);
       auto source_offset = std::get<1>(p);
       if (op_offset >= 0 && source_offset >= 0) {
-        result_static_offsets.push_back(op_offset+source_offset);
-      }
-      else if (op_offset < 0 && source_offset >= 0) {
+        result_static_offsets.push_back(op_offset + source_offset);
+      } else if (op_offset < 0 && source_offset >= 0) {
         result_static_offsets.push_back(op_offset);
         if (source_offset == 0) {
           result_offsets.push_back(*offsets++);
-        }
-        else {
+        } else {
           Value a = *offsets++;
-          Value b = rewriter.create<ConstantIndexOp>(op.getLoc(), source_offset);
+          Value b =
+              rewriter.create<ConstantIndexOp>(op.getLoc(), source_offset);
           result_offsets.push_back(
               rewriter.create<AddIOp>(op.getLoc(), a.getType(), a, b));
         }
-      }
-      else if (op_offset >= 0 && source_offset < 0) {
+      } else if (op_offset >= 0 && source_offset < 0) {
         result_static_offsets.push_back(source_offset);
         if (op_offset == 0) {
           result_offsets.push_back(*source_offsets++);
-        }
-        else {
+        } else {
           Value a = *source_offsets++;
           Value b = rewriter.create<ConstantIndexOp>(op.getLoc(), op_offset);
           result_offsets.push_back(
               rewriter.create<AddIOp>(op.getLoc(), a.getType(), a, b));
         }
-      }
-      else if (op_offset < 0 && source_offset < 0) {
+      } else if (op_offset < 0 && source_offset < 0) {
         Value a = *source_offsets++;
         Value b = *offsets++;
         result_offsets.push_back(
@@ -91,10 +88,10 @@ struct FoldSubViewOpsPattern
     }
 
     rewriter.replaceOpWithNewOp<memref::SubViewOp>(
-      op.getOperation(), op.getType(), source_subview.source(),
-      result_offsets, op.sizes(), op.strides(),
-      rewriter.getI64ArrayAttr(result_static_offsets),
-      op.static_sizes(), op.static_strides());
+        op.getOperation(), op.getType(), source_subview.source(),
+        result_offsets, op.sizes(), op.strides(),
+        rewriter.getI64ArrayAttr(result_static_offsets), op.static_sizes(),
+        op.static_strides());
 
     return success();
   }
@@ -163,8 +160,7 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
 //   }
 // };
 
-struct RemoveSubViewOpsPattern
-    : public OpRewritePattern<memref::SubViewOp> {
+struct RemoveSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
   using OpRewritePattern<memref::SubViewOp>::OpRewritePattern;
 
   RemoveSubViewOpsPattern(MLIRContext *ctx, unsigned int fast_memory_space = 1,
@@ -254,34 +250,27 @@ public:
   AIRLinalgCodegen() = default;
   AIRLinalgCodegen(const AIRLinalgCodegen &pass) {}
 
-  Option<bool>
-  AIRLinalgCodegenTestPatterns{*this, "test-patterns",
-                               llvm::cl::desc("Test canonicalization patterns"),
-                               llvm::cl::init(false)};
+  Option<bool> AIRLinalgCodegenTestPatterns{
+      *this, "test-patterns", llvm::cl::desc("Test canonicalization patterns"),
+      llvm::cl::init(false)};
 
   ListOption<unsigned> HerdSize{*this, "herd-size",
                                 llvm::cl::desc("Herd size to target"),
-                                llvm::cl::ZeroOrMore,
-                                llvm::cl::CommaSeparated};
+                                llvm::cl::ZeroOrMore, llvm::cl::CommaSeparated};
 
   Option<unsigned> L1CacheSize{*this, "L1-size",
                                llvm::cl::desc("Size of L1 Cache"),
-                               llvm::cl::init(32*1024)};
+                               llvm::cl::init(32 * 1024)};
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<AffineDialect,
-                    memref::MemRefDialect,
-                    linalg::LinalgDialect,
-                    scf::SCFDialect,
-                    air::airDialect,
-                    StandardOpsDialect>();
+    registry.insert<AffineDialect, memref::MemRefDialect, linalg::LinalgDialect,
+                    scf::SCFDialect, air::airDialect, StandardOpsDialect>();
   }
 
   void runTestPatterns(FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     OwningRewritePatternList patterns(&getContext());
-    patterns.insert<RemoveSubViewOpsPattern,
-                    FoldSubViewOpsPattern>(ctx);
+    patterns.insert<RemoveSubViewOpsPattern, FoldSubViewOpsPattern>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 
@@ -346,7 +335,7 @@ public:
       called.walk([](linalg::LinalgOp op) {
         op->removeAttr(linalg::LinalgTransforms::kLinalgTransformMarker);
       });
-      
+
       InlinerInterface interface(&getContext());
       inlineCall(interface, call, called, &called.getRegion(), true);
       call.erase();
@@ -358,29 +347,26 @@ public:
     MLIRContext *ctx = funcOp.getContext();
 
     SmallVector<linalg::MatmulOp, 4> matmulOps;
-    funcOp.walk([&](linalg::MatmulOp op) {
-      matmulOps.push_back(op);
-    });
+    funcOp.walk([&](linalg::MatmulOp op) { matmulOps.push_back(op); });
 
     // MatmulOp
     for (auto matmulOp : matmulOps) {
 
       xilinx::air::AIROutliner olnr;
-      CallOp call = olnr.outline(std::vector<Operation*>{matmulOp},
-                                 "call_mmult");
-      FuncOp called = funcOp->getParentOfType<ModuleOp>()
-                        .lookupSymbol<FuncOp>(call.getCallee());
-
+      CallOp call =
+          olnr.outline(std::vector<Operation *>{matmulOp}, "call_mmult");
+      FuncOp called = funcOp->getParentOfType<ModuleOp>().lookupSymbol<FuncOp>(
+          call.getCallee());
 
       SmallVector<int64_t, 3> herd_size{2, 2, 2};
-      for (int i=0, e=HerdSize.size(); i<e; i++) {
+      for (int i = 0, e = HerdSize.size(); i < e; i++) {
         herd_size[i] = HerdSize[i];
       }
 
       SmallVector<int64_t, 3> l1_tile_size{32, 32, 32};
-      SmallVector<int64_t, 3> l2_tile_size{l1_tile_size[0]*herd_size[0],
-                                          l1_tile_size[1]*herd_size[1],
-                                          l1_tile_size[2]*herd_size[2]};
+      SmallVector<int64_t, 3> l2_tile_size{l1_tile_size[0] * herd_size[0],
+                                           l1_tile_size[1] * herd_size[1],
+                                           l1_tile_size[2] * herd_size[2]};
 
       // SmallVector<int64_t, 3> tile_sizes{l1_tile_size[0]*herd_size[0],
       //                                     l1_tile_size[1]*herd_size[1],
@@ -453,18 +439,16 @@ public:
     MLIRContext *ctx = funcOp.getContext();
 
     SmallVector<linalg::Conv2DNchwFchwOp, 4> conv2dOps;
-    funcOp.walk([&](linalg::Conv2DNchwFchwOp op) {
-      conv2dOps.push_back(op);
-    });
+    funcOp.walk([&](linalg::Conv2DNchwFchwOp op) { conv2dOps.push_back(op); });
 
     // Conv2dOp
     for (auto conv2dOp : conv2dOps) {
 
       xilinx::air::AIROutliner olnr;
-      CallOp call = olnr.outline(std::vector<Operation*>{conv2dOp},
-                                 "call_conv_2d_nchw");
-      FuncOp called = funcOp->getParentOfType<ModuleOp>()
-                        .lookupSymbol<FuncOp>(call.getCallee());
+      CallOp call =
+          olnr.outline(std::vector<Operation *>{conv2dOp}, "call_conv_2d_nchw");
+      FuncOp called = funcOp->getParentOfType<ModuleOp>().lookupSymbol<FuncOp>(
+          call.getCallee());
 
       Value input = conv2dOp.getOperand(0);
       Value weight = conv2dOp.getOperand(1);
@@ -474,54 +458,64 @@ public:
       auto weightTy = weight.getType().cast<ShapedType>();
       auto resultTy = result.getType().cast<ShapedType>();
 
-      //int64_t batch_sw = inputTy.getDimSize(0);
+      // int64_t batch_sw = inputTy.getDimSize(0);
       int64_t batch_hw = 1;
       int64_t ifm_channels_sw = inputTy.getDimSize(1);
       int64_t ifm_height_sw = inputTy.getDimSize(2);
       int64_t ifm_width_sw = inputTy.getDimSize(3);
       int64_t ofm_channels_sw = resultTy.getDimSize(1);
-      //int64_t ofm_height_sw = resultTy.getDimSize(2);
-      //int64_t ofm_width_sw = resultTy.getDimSize(3);
+      // int64_t ofm_height_sw = resultTy.getDimSize(2);
+      // int64_t ofm_width_sw = resultTy.getDimSize(3);
       int64_t kernel_h = weightTy.getDimSize(2);
       int64_t kernel_w = weightTy.getDimSize(3);
 
       OwningRewritePatternList stage1Patterns(&getContext());
-      stage1Patterns.insert<linalg::LinalgTilingPattern<linalg::Conv2DNchwFchwOp>>(
-        ctx, linalg::LinalgTilingOptions().setTileSizes({batch_hw,
-                                                         ofm_channels_sw,
-                                                         ifm_height_sw/4,
-                                                         ifm_width_sw,
-                                                         kernel_h, kernel_w,
-                                                         ifm_channels_sw})
-                                          .setInterchange({0,2,1,3,4,5,6})
-                                          .setLoopType(linalg::LinalgTilingLoopType::Loops),
-        linalg::LinalgTransformationFilter(Identifier::get("xten_conv2d", ctx),
-                                          Identifier::get("promote_L2", ctx)));
+      stage1Patterns
+          .insert<linalg::LinalgTilingPattern<linalg::Conv2DNchwFchwOp>>(
+              ctx,
+              linalg::LinalgTilingOptions()
+                  .setTileSizes({batch_hw, ofm_channels_sw, ifm_height_sw / 4,
+                                 ifm_width_sw, kernel_h, kernel_w,
+                                 ifm_channels_sw})
+                  .setInterchange({0, 2, 1, 3, 4, 5, 6})
+                  .setLoopType(linalg::LinalgTilingLoopType::Loops),
+              linalg::LinalgTransformationFilter(
+                  Identifier::get("xten_conv2d", ctx),
+                  Identifier::get("promote_L2", ctx)));
 
-      stage1Patterns.insert<linalg::LinalgPromotionPattern<linalg::Conv2DNchwFchwOp>>(
-        ctx, linalg::LinalgPromotionOptions().setOperandsToPromote(std::vector<int64_t>{0,1,2}),
-        linalg::LinalgTransformationFilter(Identifier::get("promote_L2", ctx),
-                                          Identifier::get("L2", ctx)));
+      stage1Patterns
+          .insert<linalg::LinalgPromotionPattern<linalg::Conv2DNchwFchwOp>>(
+              ctx,
+              linalg::LinalgPromotionOptions().setOperandsToPromote(
+                  std::vector<int64_t>{0, 1, 2}),
+              linalg::LinalgTransformationFilter(
+                  Identifier::get("promote_L2", ctx),
+                  Identifier::get("L2", ctx)));
 
-      stage1Patterns.insert<linalg::LinalgTilingPattern<linalg::Conv2DNchwFchwOp>>(
-        ctx, linalg::LinalgTilingOptions().setTileSizes({batch_hw,
-                                                         ofm_channels_sw/4,
-                                                         ifm_height_sw/4,
-                                                         ifm_width_sw,
-                                                         kernel_h, kernel_w,
-                                                         ifm_channels_sw})
-                                          .setInterchange({1,0,2,3,4,5,6})
-                                          .setLoopType(linalg::LinalgTilingLoopType::Loops),
-        linalg::LinalgTransformationFilter(Identifier::get("L2", ctx),
-                                          Identifier::get("promote_HERD", ctx)));
+      stage1Patterns
+          .insert<linalg::LinalgTilingPattern<linalg::Conv2DNchwFchwOp>>(
+              ctx,
+              linalg::LinalgTilingOptions()
+                  .setTileSizes({batch_hw, ofm_channels_sw / 4,
+                                 ifm_height_sw / 4, ifm_width_sw, kernel_h,
+                                 kernel_w, ifm_channels_sw})
+                  .setInterchange({1, 0, 2, 3, 4, 5, 6})
+                  .setLoopType(linalg::LinalgTilingLoopType::Loops),
+              linalg::LinalgTransformationFilter(
+                  Identifier::get("L2", ctx),
+                  Identifier::get("promote_HERD", ctx)));
 
-      stage1Patterns.insert<linalg::LinalgPromotionPattern<linalg::Conv2DNchwFchwOp>>(
-        ctx, linalg::LinalgPromotionOptions().setOperandsToPromote(std::vector<int64_t>{0,1,2}),
-        linalg::LinalgTransformationFilter(Identifier::get("promote_HERD", ctx),
-                                          Identifier::get("HERD", ctx)));
+      stage1Patterns
+          .insert<linalg::LinalgPromotionPattern<linalg::Conv2DNchwFchwOp>>(
+              ctx,
+              linalg::LinalgPromotionOptions().setOperandsToPromote(
+                  std::vector<int64_t>{0, 1, 2}),
+              linalg::LinalgTransformationFilter(
+                  Identifier::get("promote_HERD", ctx),
+                  Identifier::get("HERD", ctx)));
 
       OwningRewritePatternList stage2Patterns =
-        linalg::getLinalgTilingCanonicalizationPatterns(ctx);
+          linalg::getLinalgTilingCanonicalizationPatterns(ctx);
       scf::populateSCFForLoopCanonicalizationPatterns(stage2Patterns);
 
       OwningRewritePatternList stage3Patterns(&getContext());
@@ -536,7 +530,7 @@ public:
       called.walk([](linalg::LinalgOp op) {
         op->removeAttr(linalg::LinalgTransforms::kLinalgTransformMarker);
       });
-      
+
       InlinerInterface interface(&getContext());
       inlineCall(interface, call, called, &called.getRegion(), true);
       call.erase();
@@ -554,26 +548,20 @@ public:
       runMatmulPatterns(f);
       runConv2dPatterns(f);
       runGenericPatterns(f);
-    }
-    else {
+    } else {
       runTestPatterns(f);
     }
-
   }
-
 
   void runOnOperation() override {
     auto module = getOperation();
     SmallVector<FuncOp, 4> funcOps;
-    module.walk([&](FuncOp op) {
-      funcOps.push_back(op);
-    });
+    module.walk([&](FuncOp op) { funcOps.push_back(op); });
     for (auto f : funcOps)
       runOnFunction(f);
   }
 
 private:
-
 };
 
 } // namespace
