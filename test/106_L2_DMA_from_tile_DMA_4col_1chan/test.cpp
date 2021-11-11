@@ -71,16 +71,11 @@ int main(int argc, char *argv[])
   auto lock_ret4 = XAieTile_LockAcquire(&(xaie->TileInst[10][4]), 1, 0, 10000);
   assert(lock_ret4);
 
-
-  mlir_write_buffer_buf1(0,0);
-  mlir_write_buffer_buf2(0,0);
-  mlir_write_buffer_buf3(0,0);
-  mlir_write_buffer_buf4(0,0);
   for (int i=0; i<16; i++) {
-    mlir_write_buffer_buf1(i+1,i+0x1000);
-    mlir_write_buffer_buf2(i+1,i+0x2000);
-    mlir_write_buffer_buf3(i+1,i+0x3000);
-    mlir_write_buffer_buf4(i+1,i+0x4000);
+    mlir_write_buffer_buf1(i,i+0x1000);
+    mlir_write_buffer_buf2(i,i+0x2000);
+    mlir_write_buffer_buf3(i,i+0x3000);
+    mlir_write_buffer_buf4(i,i+0x4000);
   }
 
   ACDC_print_dma_status(xaie->TileInst[7][4]);
@@ -239,7 +234,7 @@ int main(int argc, char *argv[])
 
   air_queue_dispatch_and_wait(q, wr_idx, pkt);
 
-  sleep(1);
+  //sleep(1);
   ACDC_print_dma_status(xaie->TileInst[7][4]);
   ACDC_print_dma_status(xaie->TileInst[8][4]);
   ACDC_print_dma_status(xaie->TileInst[9][4]);

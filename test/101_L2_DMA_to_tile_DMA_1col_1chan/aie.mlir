@@ -9,14 +9,9 @@ module @aie.0  {
   %5 = AIE.buffer(%3) {sym_name = "buf2"} : memref<16xi32, 2>
   %6 = AIE.lock(%3, 1)
   %7 = AIE.buffer(%3) {sym_name = "buf1"} : memref<16xi32, 2>
-  %8 = AIE.lock(%3, 0)
-  %9 = AIE.buffer(%3) {sym_name = "buf0"} : memref<4xi32, 2>
   %10 = AIE.mem(%3)  {
     %14 = AIE.dmaStart(S2MM0, ^bb1, ^bb4)
   ^bb1:  // 2 preds: ^bb0, ^bb3
-    AIE.useLock(%8, Acquire, 0, 0)
-    AIE.dmaBd(<%9 : memref<4xi32, 2>, 0, 1>, 0)
-    AIE.useLock(%8, Release, 1, 0)
     br ^bb2
   ^bb2:  // pred: ^bb1
     AIE.useLock(%6, Acquire, 0, 0)
@@ -36,7 +31,6 @@ module @aie.0  {
   ^bb1:  // pred: ^bb0
     br ^bb2
   ^bb2:  // pred: ^bb1
-    AIE.useLock(%8, Acquire, 1, 0)
     AIE.useLock(%6, Acquire, 1, 0)
     AIE.useLock(%4, Acquire, 1, 0)
     AIE.end

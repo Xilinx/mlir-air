@@ -63,9 +63,8 @@ int main(int argc, char *argv[])
   auto lock_ret2 = XAieTile_LockAcquire(&(xaie->TileInst[7][4]), 2, 1, 10000);
   assert(lock_ret2);
 
-  mlir_write_buffer_buf1(0,0);
   for (int i=0; i<16; i++) {
-    mlir_write_buffer_buf1(i+1,i+0x1000);
+    mlir_write_buffer_buf1(i,i+0x1000);
   }
 
   ACDC_print_dma_status(xaie->TileInst[7][4]);
@@ -203,7 +202,6 @@ int main(int argc, char *argv[])
 
   air_queue_dispatch_and_wait(q, wr_idx, pkt);
 
-  sleep(1);
   ACDC_print_dma_status(xaie->TileInst[7][4]);
   
   uint32_t errs = 0;

@@ -24,38 +24,27 @@ module {
 
   %buf72_0 = AIE.buffer(%t72) { sym_name = "a" } : memref<16xi32, 2>
   %buf72_1 = AIE.buffer(%t72) { sym_name = "b" } : memref<16xi32, 2>
-  %buf72_2 = AIE.buffer(%t72) { sym_name = "w" } : memref<4xi32, 2>
   %l72_0 = AIE.lock(%t72, 0)
   %l72_1 = AIE.lock(%t72, 1)
-  %l72_2 = AIE.lock(%t72, 2)
 
   %buf82_0 = AIE.buffer(%t82) { sym_name = "c" } : memref<16xi32, 2>
   %buf82_1 = AIE.buffer(%t82) { sym_name = "d" } : memref<16xi32, 2>
-  %buf82_2 = AIE.buffer(%t82) { sym_name = "x" } : memref<4xi32, 2>
   %l82_0 = AIE.lock(%t82, 0)
   %l82_1 = AIE.lock(%t82, 1)
-  %l82_2 = AIE.lock(%t82, 2)
 
   %buf92_0 = AIE.buffer(%t92) { sym_name = "e" } : memref<16xi32, 2>
   %buf92_1 = AIE.buffer(%t92) { sym_name = "f" } : memref<16xi32, 2>
-  %buf92_2 = AIE.buffer(%t92) { sym_name = "y" } : memref<4xi32, 2>
   %l92_0 = AIE.lock(%t92, 0)
   %l92_1 = AIE.lock(%t92, 1)
-  %l92_2 = AIE.lock(%t92, 2)
 
   %bufa2_0 = AIE.buffer(%ta2) { sym_name = "g" } : memref<16xi32, 2>
   %bufa2_1 = AIE.buffer(%ta2) { sym_name = "i" } : memref<16xi32, 2>
-  %bufa2_2 = AIE.buffer(%ta2) { sym_name = "z" } : memref<4xi32, 2>
   %la2_0 = AIE.lock(%ta2, 0)
   %la2_1 = AIE.lock(%ta2, 1)
-  %la2_2 = AIE.lock(%ta2, 2)
 
   %m72 = AIE.mem(%t72) {
       %srcDma = AIE.dmaStart("S2MM0", ^bd2, ^end)
     ^bd2:
-      AIE.useLock(%l72_2, "Acquire", 0, 0)
-      AIE.dmaBd(<%buf72_2 : memref<4xi32,2>, 0, 1>, 0)
-      AIE.useLock(%l72_2, "Release", 1, 0)
       br ^bd0
     ^bd0:
       AIE.useLock(%l72_0, "Acquire", 0, 0)
@@ -74,9 +63,6 @@ module {
   %m82 = AIE.mem(%t82) {
       %srcDma = AIE.dmaStart("S2MM0", ^bd2, ^end)
     ^bd2:
-      AIE.useLock(%l82_2, "Acquire", 0, 0)
-      AIE.dmaBd(<%buf82_2 : memref<4xi32,2>, 0, 1>, 0)
-      AIE.useLock(%l82_2, "Release", 1, 0)
       br ^bd0
     ^bd0:
       AIE.useLock(%l82_0, "Acquire", 0, 0)
@@ -95,9 +81,6 @@ module {
   %m92 = AIE.mem(%t92) {
       %srcDma = AIE.dmaStart("S2MM0", ^bd2, ^end)
     ^bd2:
-      AIE.useLock(%l92_2, "Acquire", 0, 0)
-      AIE.dmaBd(<%buf92_2 : memref<4xi32,2>, 0, 1>, 0)
-      AIE.useLock(%l92_2, "Release", 1, 0)
       br ^bd0
     ^bd0:
       AIE.useLock(%l92_0, "Acquire", 0, 0)
@@ -116,9 +99,6 @@ module {
   %ma2 = AIE.mem(%ta2) {
       %srcDma = AIE.dmaStart("S2MM0", ^bd2, ^end)
     ^bd2:
-      AIE.useLock(%la2_2, "Acquire", 0, 0)
-      AIE.dmaBd(<%bufa2_2 : memref<4xi32,2>, 0, 1>, 0)
-      AIE.useLock(%la2_2, "Release", 1, 0)
       br ^bd0
     ^bd0:
       AIE.useLock(%la2_0, "Acquire", 0, 0)

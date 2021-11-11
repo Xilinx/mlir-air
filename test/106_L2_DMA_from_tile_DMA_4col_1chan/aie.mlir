@@ -11,13 +11,13 @@ module @aie.0  {
   %ta4 = AIE.tile(10, 4)
 
   %6 = AIE.lock(%t74, 1)
-  %7 = AIE.buffer(%t74) {sym_name = "buf1"} : memref<17xi32, 2>
+  %7 = AIE.buffer(%t74) {sym_name = "buf1"} : memref<16xi32, 2>
   %10 = AIE.lock(%t84, 1)
-  %11 = AIE.buffer(%t84) {sym_name = "buf2"} : memref<17xi32, 2>
+  %11 = AIE.buffer(%t84) {sym_name = "buf2"} : memref<16xi32, 2>
   %14 = AIE.lock(%t94, 1)
-  %15 = AIE.buffer(%t94) {sym_name = "buf3"} : memref<17xi32, 2>
+  %15 = AIE.buffer(%t94) {sym_name = "buf3"} : memref<16xi32, 2>
   %18 = AIE.lock(%ta4, 1)
-  %19 = AIE.buffer(%ta4) {sym_name = "buf4"} : memref<17xi32, 2>
+  %19 = AIE.buffer(%ta4) {sym_name = "buf4"} : memref<16xi32, 2>
 
   %8 = AIE.mem(%t74)  {
     %9 = AIE.dmaStart(MM2S0, ^bb1, ^bb4)
@@ -25,7 +25,7 @@ module @aie.0  {
     br ^bb2
   ^bb2: 
     AIE.useLock(%6, Acquire, 1, 0)
-    AIE.dmaBd(<%7 : memref<17xi32, 2>, 0, 17>, 0)
+    AIE.dmaBd(<%7 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%6, Release, 0, 0)
     br ^bb3
   ^bb3: 
@@ -39,7 +39,7 @@ module @aie.0  {
     br ^bb2
   ^bb2: 
     AIE.useLock(%10, Acquire, 1, 0)
-    AIE.dmaBd(<%11 : memref<17xi32, 2>, 0, 17>, 0)
+    AIE.dmaBd(<%11 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%10, Release, 0, 0)
     br ^bb3
   ^bb3: 
@@ -53,7 +53,7 @@ module @aie.0  {
     br ^bb2
   ^bb2: 
     AIE.useLock(%14, Acquire, 1, 0)
-    AIE.dmaBd(<%15 : memref<17xi32, 2>, 0, 17>, 0)
+    AIE.dmaBd(<%15 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%14, Release, 0, 0)
     br ^bb3
   ^bb3: 
@@ -67,7 +67,7 @@ module @aie.0  {
     br ^bb2
   ^bb2: 
     AIE.useLock(%18, Acquire, 1, 0)
-    AIE.dmaBd(<%19 : memref<17xi32, 2>, 0, 17>, 0)
+    AIE.dmaBd(<%19 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%18, Release, 0, 0)
     br ^bb3
   ^bb3: 
