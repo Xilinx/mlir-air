@@ -6,14 +6,12 @@
 
 #include "air-c/Registration.h"
 
-#include "air/Python/PybindUtils.h"
-
 namespace py = pybind11;
 
-namespace {
-} // namespace
+PYBIND11_MODULE(_airMlir, m) {
 
-PYBIND11_MODULE(_airmlir, m) {
+  ::airRegisterAllPasses();
+
   m.doc() = R"pbdoc(
     Xilinx AIR MLIR Python bindings
     --------------------------

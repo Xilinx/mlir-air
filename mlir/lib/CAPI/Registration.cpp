@@ -2,9 +2,10 @@
 
 #include "air-c/Registration.h"
 
+#include "air/InitAll.h"
+
 #include "mlir/CAPI/IR.h"
 #include "mlir/InitAllPasses.h"
-#include "air/InitAll.h"
 
 void airRegisterAllDialects(MlirContext context) {
   mlir::DialectRegistry registry;

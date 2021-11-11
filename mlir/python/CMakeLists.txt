@@ -20,7 +20,6 @@ set_target_properties(AIRMLIRPyExt PROPERTIES SUFFIX
 target_link_libraries(AIRMLIRPyExt
   PRIVATE
   AIRCAPI
-  AIRInitAll
   AIRDialect
   AIRRtDialect
   AIRUtil

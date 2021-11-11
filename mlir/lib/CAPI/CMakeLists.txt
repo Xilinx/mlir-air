@@ -1,11 +1,13 @@
 
-add_air_library(AIRCAPI
+add_mlir_library(AIRCAPI
 Registration.cpp
 
 DEPENDS
 
+ENABLE_AGGREGATION
 LINK_COMPONENTS
 Core
 
 LINK_LIBS PUBLIC
+AIRInitAll
 )

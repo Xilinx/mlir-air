@@ -1,5 +1,7 @@
 #include <pybind11/pybind11.h>
 
+#include "LibAirHostModule.h"
+
 #ifdef AIE_LIBXAIE_ENABLE
 #include <xaiengine.h>
 #endif
@@ -115,7 +117,7 @@ void aie_memory_module_DMA_S2MM_Status(int col, int row)
 
 } // namespace
 
-PYBIND11_MODULE(_air, m) {
+PYBIND11_MODULE(_airRt, m) {
     m.doc() = R"pbdoc(
         Xilinx AIR Python bindings
         --------------------------
@@ -145,4 +147,7 @@ PYBIND11_MODULE(_air, m) {
 #else
     m.attr("__version__") = "dev";
 #endif
+
+  auto airhost = m.def_submodule("host", "libairhost bindings");
+  xilinx::air::defineAIRHostModule(airhost);
 }

@@ -1,7 +1,9 @@
 import argparse
 import sys
 
-def parse_args():
+def parse_args(args=None):
+    if (args is None):
+        args = sys.argv[1:]
     parser = argparse.ArgumentParser(prog='aircc')
     parser.add_argument('air_mlir_file',
                         metavar="air_mlir_file",
@@ -41,6 +43,6 @@ def parse_args():
             action='store_true',
             help='Generate a shared library (.so) instead of the default of a static library (.a)')
 
-    opts = parser.parse_args(sys.argv[1:])
+    opts = parser.parse_args(args)
     return opts
 

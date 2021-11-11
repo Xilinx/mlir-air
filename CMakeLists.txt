@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.12)
 
 if(POLICY CMP0074)
   cmake_policy(SET CMP0074 NEW)
@@ -24,36 +24,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
 
 include(ExternalProject)
 find_package(MLIR REQUIRED CONFIG)
-find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 find_package(AIE REQUIRED)
 
 # Eventually we need to have some configuration options to select LibXAIEV2
 find_package(LibXAIE)
-
-find_package(Torch 1.8)
-
-function(npcomp_detect_pybind11_install)
-  if(pybind11_DIR)
-    message(STATUS "Using explicit pybind11 cmake directory: ${pybind11_DIR} (-Dpybind11_DIR to change)")
-  else()
-    message(STATUS "Checking for pybind11 in python path...")
-    execute_process(
-      COMMAND "${Python3_EXECUTABLE}"
-      -c "import pybind11;print(pybind11.get_cmake_dir(), end='')"
-      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-      RESULT_VARIABLE STATUS
-      OUTPUT_VARIABLE PACKAGE_DIR
-      ERROR_QUIET)
-    if(NOT STATUS EQUAL "0")
-      message(CHECK_FAIL "not found (install via 'pip install pybind11' or set pybind11_DIR)")
-      return()
-    endif()
-    set(pybind11_DIR "${PACKAGE_DIR}" PARENT_SCOPE)
-  endif()
-endfunction()
-npcomp_detect_pybind11_install()
-find_package(pybind11 REQUIRED)
-set(pybind11_INCLUDE_DIR ${pybind11_INCLUDE_DIR})
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
@@ -82,11 +56,21 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR})
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
+
 include(AddAIR)
 include(TableGen)
 include(AddLLVM)
 include(AddMLIR)
 include(HandleLLVMOptions)
+
+# setup python
+find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+include(MLIRDetectPythonEnv)
+mlir_detect_pybind11_install()
+find_package(pybind11 2.6 REQUIRED)
+if(NOT AIR_PYTHON_PACKAGES_DIR)
+  set(AIR_PYTHON_PACKAGES_DIR "${CMAKE_CURRENT_BINARY_DIR}/python_packages")
+endif()
 
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
