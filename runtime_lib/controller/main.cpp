@@ -741,16 +741,16 @@ void handle_packet_get_stream(dispatch_packet_t *pkt)
 
   switch (which_stream) {
   case 0:
-    getfsl_interruptible(d, 0);
+    ngetfsl(d, 0);
     break;
   case 1:
-    getfsl_interruptible(d, 1);
+    ngetfsl(d, 1);
     break;
   case 2:
-    getfsl_interruptible(d, 2);
+    ngetfsl(d, 2);
     break;
   case 3:
-    getfsl_interruptible(d, 3);
+    ngetfsl(d, 3);
     break;
   default:
     break;
