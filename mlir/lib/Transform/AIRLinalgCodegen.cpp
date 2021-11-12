@@ -368,29 +368,24 @@ public:
                                            l1_tile_size[1] * herd_size[1],
                                            l1_tile_size[2] * herd_size[2]};
 
-      // SmallVector<int64_t, 3> tile_sizes{l1_tile_size[0]*herd_size[0],
-      //                                     l1_tile_size[1]*herd_size[1],
-      //                                     l1_tile_size[2]*herd_size[2]};
-
       OwningRewritePatternList stageL2Patterns(ctx);
       bool tileForL2 = false;
-      if (tileForL2) {
-        stageL2Patterns.insert<linalg::LinalgTilingPattern<linalg::MatmulOp>>(
-            ctx,
-            linalg::LinalgTilingOptions()
-                .setTileSizes(l2_tile_size)
-                .setInterchange({2, 1, 0})
-                .setLoopType(linalg::LinalgTilingLoopType::Loops),
-            linalg::LinalgTransformationFilter(ArrayRef<Identifier>{},
-                                               Identifier::get("L2", ctx)));
+      stageL2Patterns.insert<linalg::LinalgTilingPattern<linalg::MatmulOp>>(
+          ctx,
+          linalg::LinalgTilingOptions()
+              .setTileSizes(l2_tile_size)
+              .setInterchange({2, 1, 0})
+              .setLoopType(linalg::LinalgTilingLoopType::Loops),
+          linalg::LinalgTransformationFilter(ArrayRef<Identifier>{},
+                                             Identifier::get("L2", ctx)));
 
+      if (tileForL2) {
         stageL2Patterns
             .insert<linalg::LinalgPromotionPattern<linalg::MatmulOp>>(
                 ctx, linalg::LinalgPromotionOptions(),
                 linalg::LinalgTransformationFilter(
                     Identifier::get("L2", ctx),
                     Identifier::get("L2_promoted", ctx)));
-
         stageL2Patterns.insert<RemoveSubViewOpsPattern>(ctx, 1);
         stageL2Patterns.insert<FoldSubViewOpsPattern>(ctx);
         stageL2Patterns.insert<MemrefsPattern>(ctx);
@@ -403,11 +398,11 @@ public:
           ctx,
           linalg::LinalgTilingOptions()
               .setTileSizes(l1_tile_size)
-              .setInterchange({0, 1, 2})
+              //.setInterchange({2, 1, 0})
               .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
           linalg::LinalgTransformationFilter(
               tileForL2 ? Identifier::get("L2_promoted", ctx)
-                        : ArrayRef<Identifier>{},
+                        : Identifier::get("L2", ctx),
               Identifier::get("L1", ctx)));
 
       stageL1Patterns.insert<linalg::LinalgPromotionPattern<linalg::MatmulOp>>(
@@ -418,7 +413,7 @@ public:
       OwningRewritePatternList stage3Patterns(&getContext());
       stage3Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
       stage3Patterns.insert<FoldSubViewOpsPattern>(ctx);
-      stage3Patterns.insert<MemrefsPattern>(ctx);
+      // stage3Patterns.insert<MemrefsPattern>(ctx);
       scf::populateSCFForLoopCanonicalizationPatterns(stage3Patterns);
 
       (void)applyPatternsAndFoldGreedily(called, std::move(stageL2Patterns));
