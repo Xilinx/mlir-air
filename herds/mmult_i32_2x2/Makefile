@@ -40,6 +40,7 @@ mmult.linalg-memrefs.mlir: mmult.linalg-tensors.mlir
 
 mmult.air.mlir: mmult.linalg-memrefs.mlir
 	$(AIR_OPT)  -o $@ $< \
+			-buffer-results-to-out-params \
 			-air-linalg-codegen='herd-size=2,2' \
 			-affine-to-air \
 			-convert-linalg-to-affine-loops
