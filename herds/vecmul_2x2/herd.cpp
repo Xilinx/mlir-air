@@ -129,7 +129,7 @@ main(int argc, char *argv[])
   auto handle = air_module_load_from_file(nullptr);
   assert(handle && "failed to open linked air module");
 
-  auto herd_fn = (void (*)(void*,void *,void*))dlsym((void*)handle, "_mlir_ciface_task");
+  auto herd_fn = (void (*)(void*,void *,void*))dlsym((void*)handle, "_mlir_ciface_forward");
   assert(herd_fn && "failed to locate _mlir_ciface_task in vecmul.so");
 
   for (int i=0; i<input_A.shape[0]; i++) {
