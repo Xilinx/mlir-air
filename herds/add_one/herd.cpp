@@ -87,14 +87,14 @@ main(int argc, char *argv[])
   air_packet_device_init(dev_pkt, XAIE_NUM_COLS);
   air_queue_dispatch_and_wait(q, wr_idx, dev_pkt);
 
-  tensor_t<int32_t,1> input;
-  tensor_t<int32_t,1> output;
+  tensor_t<int32_t,2> input;
+  tensor_t<int32_t,2> output;
 
-  input.shape[0] = INPUT_SIZE;
-  input.d = input.aligned = (int32_t*)malloc(sizeof(int32_t)*input.shape[0]);
+  input.shape[0] = input.shape[1] = INPUT_SIZE;
+  input.d = input.aligned = (int32_t*)malloc(sizeof(int32_t)*input.shape[0]*input.shape[1]);
 
-  output.shape[0] = INPUT_SIZE;
-  output.d = output.aligned = (int32_t*)malloc(sizeof(int32_t)*output.shape[0]);
+  output.shape[0] = output.shape[1] = INPUT_SIZE;
+  output.d = output.aligned = (int32_t*)malloc(sizeof(int32_t)*output.shape[0]*output.shape[1]);
   
   auto handle = air_module_load_from_file(nullptr);
   assert(handle && "failed to open linked air module");
@@ -102,7 +102,7 @@ main(int argc, char *argv[])
   auto graph_fn = (void (*)(void*,void*))dlsym((void*)handle, "_mlir_ciface_myAddOne");
   assert(graph_fn && "failed to locate _mlir_ciface_graph in add_one.so");
 
-  for (int i=0; i<input.shape[0]; i++) {
+  for (int i=0; i<input.shape[0]*input.shape[1]; i++) {
     input.d[i] = i;
   }
   for (int i=0; i<16; i++) {

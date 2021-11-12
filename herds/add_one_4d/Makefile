@@ -10,41 +10,58 @@ all: herd.exe
 %.o: %.cpp
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-add_one.mlir: add_one.py
-	python3 $< > $@ 
-
-aie_inc.cpp: aie.herd_0.mlir
-	$(AIE_OPT) -lower-affine --convert-scf-to-std \
-				--aie-create-flows --aie-find-flows \
-				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
+# add_one.mlir: add_one.py
+# 	python3 $< > $@ 
 
 add_one.affine.mlir: add_one.mlir
 	$(ATEN_OPT) -aten-to-xten \
 				-xten-to-affine \
 				-o $@ $<
 
-add_one_tiled_0.mlir: add_one.affine.mlir
+add_one.affine-tensors.mlir: add_one.affine.mlir
+	torch-mlir-opt \
+		--torch-verify-invariants-before-backend-lowering \
+		--convert-torch-to-linalg \
+		--convert-torch-to-std \
+		--convert-torch-to-scf \
+		--std-expand \
+		--canonicalize \
+		--resolve-shaped-type-result-dims \
+		--torch-func-backend-type-conversion \
+		--cse \
+		--torch-finalizing-backend-type-conversion \
+		-o $@ $<
+
+# change linalg on tensors into linalg on memrefs
+add_one.affine-memrefs.mlir: add_one.affine-tensors.mlir
+	mlir-opt \
+		--linalg-bufferize \
+		--func-bufferize \
+		--tensor-bufferize \
+		--finalizing-bufferize \
+		-o $@ $<
+
+add_one.tiled_0.mlir: add_one.affine-memrefs.mlir
 	$(AIR_OPT) -affine-loop-opt='affine-opt-tile-sizes=1,1,16,16' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
 
-add_one_tiled_1.mlir: add_one_tiled_0.mlir
+add_one.tiled_1.mlir: add_one.tiled_0.mlir
 	$(AIR_OPT) -affine-loop-opt='affine-opt-copy-depths=1 affine-opt-copy-fast-space=2' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
 
-add_one_tiled_2.mlir: add_one_tiled_1.mlir
+add_one.tiled_2.mlir: add_one.tiled_1.mlir
 	$(AIR_OPT) -affine-loop-opt='affine-opt-tile-sizes=16,16' \
 				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
 
-add_one.air.mlir: add_one_tiled_2.mlir
+add_one.air.mlir: add_one.tiled_2.mlir
 	$(AIR_OPT) -air-herd-assign=herd-assign-depth=0 \
 				-affine-to-air \
-				-affine-loop-normalize -simplify-affine-structures \
 				-cse \
 				-o $@ $<
 
@@ -52,4 +69,4 @@ add_one.air.a: add_one.air.mlir
 	aircc.py --sysroot=${SYSROOT} -o $@ -row-offset=2 -col-offset=7 $<
 
 clean::
-	rm -rf air_project mmult.*mlir* *.elf *.exe *.o *.a *.mlir
+	rm -rf air_project add_one.*.mlir *.elf *.exe *.o *.a 
