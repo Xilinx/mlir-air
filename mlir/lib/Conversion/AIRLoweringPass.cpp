@@ -448,7 +448,7 @@ public:
     SmallVector<Value, 4> lengths(4, one);
     SmallVector<Value, 3> strides(3, zero);
 
-    int idx = 0;
+    int idx = 4 - src.getRank();
     for (auto o : isFromTile ? dmaOp.dst_offsets() : dmaOp.src_offsets())
       offsets[idx++] = rewriter.create<IndexCastOp>(
           op->getLoc(), o, IntegerType::get(op->getContext(), 64));
