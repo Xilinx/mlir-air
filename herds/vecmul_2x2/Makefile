@@ -13,25 +13,8 @@ all: herd.exe
 vecmul.mlir: vecmul.py
 	python $< > $@
 
-# It should be possbile to do this step with the pass pipeline
-# 'torch-backend-to-linalg-on-tensors-backend-pipeline' but it 
-# doesn't seem to work so the pipeline is written out here instead.
-vecmul.linalg-tensors.mlir: vecmul.mlir
-	torch-mlir-opt \
-		--torch-verify-invariants-before-backend-lowering \
-		--convert-torch-to-linalg \
-		--convert-torch-to-std \
-		--convert-torch-to-scf \
-		--std-expand \
-		--canonicalize \
-		--resolve-shaped-type-result-dims \
-		--torch-func-backend-type-conversion \
-		--cse \
-		--torch-finalizing-backend-type-conversion \
-		-o $@ $<
-
 # change linalg on tensors into linalg on memrefs
-vecmul.linalg-memrefs.mlir: vecmul.linalg-tensors.mlir
+vecmul.linalg-memrefs.mlir: vecmul.mlir
 	air-opt \
 		--func-bufferize \
 		--buffer-results-to-out-params \

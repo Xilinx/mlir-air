@@ -32,7 +32,7 @@ extract_annotations(program, scripted, class_annotator)
 mb = ModuleBuilder()
 mb.import_module(scripted._c, class_annotator)
 
-pm = PassManager.parse('torchscript-module-to-torch-backend-pipeline', mb.module.context)
+pm = PassManager.parse('torchscript-module-to-torch-backend-pipeline,torch-backend-to-linalg-on-tensors-backend-pipeline', mb.module.context)
 pm.run(mb.module)
 print(mb.module)
 
