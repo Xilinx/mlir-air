@@ -78,7 +78,7 @@ aie_ctrl.llvm.mlir: aie_ctrl.mlir
 		--lower-affine \
 		--convert-scf-to-std \
 		--convert-vector-to-llvm \
-		--convert-std-to-llvm='emit-c-wrappers'  \
+		--convert-std-to-llvm  \
 		-o $@ $<
 
 aie_ctrl.o: aie_ctrl.llvm.mlir

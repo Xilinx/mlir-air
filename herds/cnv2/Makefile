@@ -81,7 +81,7 @@ aie_ctrl.llvm.mlir: aie_ctrl.mlir
         $(AIR_OPT) -air-return-elimination \
                 --lower-affine \
                 --convert-scf-to-std \
-                --convert-std-to-llvm='emit-c-wrappers'  \
+                --convert-std-to-llvm  \
                 -o $@ $<
 
 aie_ctrl.o: aie_ctrl.llvm.mlir

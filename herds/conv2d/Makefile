@@ -107,7 +107,7 @@ conv2d_cpu.std.mlir: conv2d_air_0.mlir
 
 conv2d_cpu.llvm.mlir: conv2d_cpu.std.mlir
 	$(ATEN_OPT) \
-		-convert-std-to-llvm='emit-c-wrappers=true' \
+		-convert-std-to-llvm \
 		-lower-to-libaten \
 		-o $@ $<
 

@@ -570,6 +570,9 @@ public:
       emitError(UnknownLoc::get(context), "error lowering AIRRt\n");
       signalPassFailure();
     }
+
+    for (auto func : module.getOps<FuncOp>())
+      func->setAttr("llvm.emit_c_interface", UnitAttr::get(func.getContext()));
   }
 
 private:
