@@ -1,23 +1,39 @@
+
 import torch
-import torch_mlir
+from torch import nn
 
-import air
-from air.compiler.jit import Compiler
+from torch_mlir.dialects.torch.importer.jit_ir import ClassAnnotator, ModuleBuilder
+from torch_mlir.dialects.torch.importer.jit_ir.torchscript_annotations import extract_annotations
+from torch_mlir_e2e_test.torchscript.annotations import annotate_args, export
 
-t0 = torch.randint(high=10, size=(128,128), dtype=torch.int32)
-t1 = torch.randint(high=10, size=(128,128), dtype=torch.int32)
-t3 = torch.randint(high=10, size=(128,128), dtype=torch.int32)
+from torch_mlir.passmanager import PassManager
+from torch_mlir_e2e_test.linalg_on_tensors_backends.refbackend import RefBackendLinalgOnTensorsBackend
 
-builder = torch_mlir.ModuleBuilder()
-with builder.capture_function("task", [t0,t1,t3]) as f:
-    t2 = torch.mm(t0, t1)
-    t4 = torch.mm(t2, t3)
-    f.returns([t4])
+class model(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
 
-t2_mlir = builder.module
-#print(builder.module)
+    @export
+    @annotate_args([
+        None,
+        ([128,128], torch.int32, True),
+        ([128,128], torch.int32, True),
+        ([128,128], torch.int32, True)
+    ])
+    def forward(self, t0, t1, t2):
+        t3 = torch.mm(t0, t1)
+        t4 = torch.mm(t3, t2)
+        return t4
 
-c = Compiler()
-m = c.torch_to_aten(t2_mlir)
+program = model()
+scripted = torch.jit.script(program)
 
-print(m)
+class_annotator = ClassAnnotator()
+extract_annotations(program, scripted, class_annotator)
+
+mb = ModuleBuilder()
+mb.import_module(scripted._c, class_annotator)
+
+pm = PassManager.parse('torchscript-module-to-torch-backend-pipeline,torch-backend-to-linalg-on-tensors-backend-pipeline', mb.module.context)
+pm.run(mb.module)
+print(mb.module)
