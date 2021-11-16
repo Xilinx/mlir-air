@@ -21,22 +21,16 @@ from .abc import AirBackend
 import air.mlir._mlir_libs._airMlir
 import air.compiler.aircc.main as aircc
 
+import ctypes
+from pathlib import Path
+path = Path(air.backend.__file__).resolve().parent
+ctypes.CDLL(f"{path}/../../../runtime_lib/airhost/libairhost_shared.so", mode=ctypes.RTLD_GLOBAL)
+
+import air.mlir._mlir_libs._airRt as airrt
+
 __all__ = [
     "LinalgOnTensorsAirBackend",
 ]
-
-ATEN_TO_LINALG_TENSORS_PIPELINE = ",".join([
-    "torch-verify-invariants-before-backend-lowering",
-    "builtin.func(convert-torch-to-linalg)",
-    "builtin.func(convert-torch-to-std)",
-    "builtin.func(convert-torch-to-scf)",
-    "builtin.func(std-expand)",
-    "canonicalize",
-    "resolve-shaped-type-result-dims",
-    "cse",
-    "torch-func-backend-type-conversion",
-    "builtin.func(torch-finalizing-backend-type-conversion)"
-])
 
 LINALG_TENSOR_TO_MEMREF_PIPELINE = ",".join([
     # Bufferize.
@@ -60,33 +54,6 @@ LINALG_MEMREF_TO_AIRRT_PIPELINE = ",".join([
     "cse"
 ])
 
-LOWERING_PIPELINE = ",".join([
-    # Bufferize.
-    "tensor-constant-bufferize",
-    "builtin.func(scf-bufferize)",
-    "builtin.func(linalg-bufferize)",
-    "builtin.func(std-bufferize)",
-    "builtin.func(tensor-bufferize)",
-    "func-bufferize",
-    "builtin.func(finalizing-bufferize)",
-    # Munge to make it ExecutionEngine compatible.
-    # Specifically, we rewrite calling convention boundaries to be in terms
-    # of unranked memref, and we rewrite the return to actually be a
-    # callback that consumes the return (the final munged function always
-    # returns void at the C level -- we get the return value by providing the
-    # callback).
-    "refback-munge-calling-conventions",
-    # Lower to LLVM
-    "builtin.func(convert-linalg-to-loops)",
-    "builtin.func(lower-affine)",
-    "builtin.func(convert-scf-to-std)",
-    "builtin.func(refback-expand-ops-for-llvm)",
-    "builtin.func(convert-math-to-llvm)",
-    "convert-memref-to-llvm",
-    "convert-std-to-llvm",
-    "reconcile-unrealized-casts",
-])
-
 class LinalgOnTensorsAirBackend(AirBackend):
     """Main entry-point for the linalg-on-tensors based AIR backend.
 
@@ -99,9 +66,6 @@ class LinalgOnTensorsAirBackend(AirBackend):
     def compile(self, imported_module: torch_mlir.ir.Module):
         """Compiles an imported module, with a flat list of functions.
         The module is expected to be in linalg-on-tensors + scalar code form.
-        TODO: More clearly define the backend contract. Generally this will
-        extend to support globals, lists, and other stuff.
-
         Args:
           imported_module: The MLIR module consisting of funcs in the torch
             dialect.
@@ -110,21 +74,20 @@ class LinalgOnTensorsAirBackend(AirBackend):
           passed to `load`.
         """
 
-        run_pipeline_with_repro_report(
-            imported_module, ATEN_TO_LINALG_TENSORS_PIPELINE,
-            "Lowering ATen IR to linalg on tensors")
-
         with air.mlir.ir.Context():
             air_module = air.mlir.ir.Module.parse(str(imported_module))
             pm = air.mlir.passmanager.PassManager.parse(LINALG_TENSOR_TO_MEMREF_PIPELINE)
             pm.run(air_module)
             pm = air.mlir.passmanager.PassManager.parse(LINALG_MEMREF_TO_AIRRT_PIPELINE)
             pm.run(air_module)
-            aircc.run(air_module,['-o', 'mlir.air.a', '--sysroot=/work/aarch64/mnt', '-row-offset=2', '-col-offset=7', 'torch.mlir'])
-            with open('air_project/llvm.torch.mlir') as f:
+            aircc.run(air_module,['--shared', '-o', 'torch.mlir.so', '--sysroot=/', '-row-offset=2', '-col-offset=7', 'torch.mlir'])
+            with open('air_project/refback.torch.mlir') as f:
                 imported_module = torch_mlir.ir.Module.parse(f.read(),imported_module.context)
-        return imported_module
+
+        return self.refbackend.compile(imported_module)
 
     def load(self, module):
         """Loads a compiled artifact into the runtime."""
+        airrt.host.init_libxaie1()
+        handle = airrt.host.module_load_from_file("./torch.mlir.so")
         return self.refbackend.load(module)

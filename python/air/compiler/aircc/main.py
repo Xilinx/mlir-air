@@ -12,6 +12,7 @@ from joblib import Parallel, delayed
 import tempfile
 
 from air.mlir.passmanager import PassManager
+from air.mlir.ir import Module
 
 import air.compiler.aircc.cl_arguments as cl_arguments
 
@@ -90,11 +91,12 @@ def run(mlir_module, args):
       print('created temporary directory', tmpdirname)
 
   with mlir_module.context as ctx:
+    m = Module.parse(str(mlir_module))
     air_to_aie_pass = 'air-to-aie{air-to-aie-emit-while-loop=false'
     air_to_aie_pass = air_to_aie_pass + f' air-to-aie-row-offset={opts.row_offset} air-to-aie-col-offset={opts.col_offset}'
     air_to_aie_pass = air_to_aie_pass + f' air-to-aie-output-prefix={opts.tmpdir}/' + '}'
 
-    run_passes(air_to_aie_pass+',builtin.func(convert-linalg-to-loops)',mlir_module,opts)
+    run_passes(air_to_aie_pass+',builtin.func(convert-linalg-to-loops)',Module.parse(str(m)),opts)
 
     air_to_airrt_pass = 'air-to-aie{air-to-aie-emit-while-loop=true'
     air_to_airrt_pass = air_to_airrt_pass + f' air-to-aie-row-offset={opts.row_offset} air-to-aie-col-offset={opts.col_offset}'
@@ -102,10 +104,10 @@ def run(mlir_module, args):
 
     _,air_mlir_filename = os.path.split(opts.air_mlir_file)
     air_mlir_filename = "torch.mlir"
-    aie_ctrl_airrt = opts.tmpdir+'/airrt.'+air_mlir_filename
 
     # make the control program as llvm dialect
 
+    aie_ctrl_airrt = opts.tmpdir+'/airrt.'+air_mlir_filename
     pass_pipeline = air_to_airrt_pass+',convert-vector-to-llvm,air-to-std,air-lower-linalg-tensors,canonicalize,cse'
     run_passes(pass_pipeline, mlir_module, opts, aie_ctrl_airrt)
 
@@ -113,8 +115,13 @@ def run(mlir_module, args):
     pass_pipeline = 'airrt-to-llvm,func-bufferize,builtin.func(finalizing-bufferize)'
     run_passes(pass_pipeline, mlir_module, opts, aie_ctrl)
 
+    aie_ctrl_refback = opts.tmpdir+'/refback.'+air_mlir_filename
+    pass_pipeline = 'convert-vector-to-llvm,air-to-std,air-lower-linalg-tensors,canonicalize,cse,'+ \
+                    'airrt-to-llvm,canonicalize,cse'
+    run_passes(pass_pipeline, Module.parse(str(m)), opts, aie_ctrl_refback)
+
     aie_ctrl_llvm = opts.tmpdir+'/llvm.'+air_mlir_filename
-    pass_pipeline = 'air-return-elimination,lower-affine,convert-scf-to-std,convert-memref-to-llvm,convert-std-to-llvm{emit-c-wrappers},canonicalize,cse'
+    pass_pipeline = 'lower-affine,convert-scf-to-std,convert-memref-to-llvm,convert-std-to-llvm{emit-c-wrappers},canonicalize,cse'
     run_passes(pass_pipeline, mlir_module, opts, aie_ctrl_llvm)
 
     aie_ctrl_llvm_ir = opts.tmpdir+'/'+air_mlir_filename+'.ll'
@@ -167,15 +174,15 @@ def run(mlir_module, args):
 
       obj_files.append(obj_file)
 
-    lib_file = opts.air_mlir_file+('.so' if opts.shared else '.a')
+    lib_file = opts.tmpdir+'/'+opts.air_mlir_file+('.so' if opts.shared else '.a')
     if opts.shared:
-      raise NotImplemented
+      cmd = ['clang', '-shared', '-o', lib_file] + obj_files
     else:
       cmd = ['llvm-ar', 'rc', lib_file] + obj_files
     do_call(cmd)
 
     if opts.output_file:
-      do_call(['mv', lib_file, opts.output_file])
+      do_call(['cp', lib_file, opts.output_file])
 
 def run_flow(opts):
     thispath = os.path.dirname(os.path.realpath(__file__))
