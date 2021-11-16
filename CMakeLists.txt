@@ -68,8 +68,15 @@ find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 include(MLIRDetectPythonEnv)
 mlir_detect_pybind11_install()
 find_package(pybind11 2.6 REQUIRED)
+
+# python build directory
 if(NOT AIR_PYTHON_PACKAGES_DIR)
-  set(AIR_PYTHON_PACKAGES_DIR "${CMAKE_CURRENT_BINARY_DIR}/python_packages")
+  set(AIR_PYTHON_PACKAGES_DIR "${CMAKE_CURRENT_BINARY_DIR}/python")
+endif()
+
+# python install directory
+if(NOT AIR_PYTHON_INSTALL_DIR)
+  set(AIR_PYTHON_INSTALL_DIR "python")
 endif()
 
 include_directories(${LLVM_INCLUDE_DIRS})

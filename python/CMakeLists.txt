@@ -77,7 +77,7 @@ set(_source_components
 
 add_mlir_python_common_capi_library(AirAggregateCAPI
   INSTALL_COMPONENT AirPythonModules
-  INSTALL_DESTINATION python_packages/air/mlir/_mlir_libs
+  INSTALL_DESTINATION ${AIR_PYTHON_INSTALL_DIR}/air/mlir/_mlir_libs
   OUTPUT_DIRECTORY "${AIR_PYTHON_PACKAGES_DIR}/air/mlir/_mlir_libs"
   RELATIVE_INSTALL_ROOT "../../../.."
   DECLARED_SOURCES ${_source_components}
@@ -85,7 +85,7 @@ add_mlir_python_common_capi_library(AirAggregateCAPI
 
 add_mlir_python_modules(AirPythonModules
   ROOT_PREFIX "${AIR_PYTHON_PACKAGES_DIR}/air/mlir"
-  INSTALL_PREFIX "python_packages/air/mlir"
+  INSTALL_PREFIX "${AIR_PYTHON_INSTALL_DIR}/air/mlir"
   DECLARED_SOURCES ${_source_components}
   COMMON_CAPI_LINK_LIBS
     AirAggregateCAPI

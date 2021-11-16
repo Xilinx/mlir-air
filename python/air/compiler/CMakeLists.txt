@@ -10,6 +10,6 @@ declare_mlir_python_sources(AirCompilerPythonSources.Core
 
 add_mlir_python_modules(AirCompilerPythonModules
   ROOT_PREFIX "${AIR_PYTHON_PACKAGES_DIR}/air/compiler"
-  INSTALL_PREFIX "python_packages/air/compiler"
+  INSTALL_PREFIX "${AIR_PYTHON_INSTALL_DIR}/air/compiler"
   DECLARED_SOURCES AirCompilerPythonSources
   )
