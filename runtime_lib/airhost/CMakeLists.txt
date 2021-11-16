@@ -4,6 +4,14 @@ add_library(airhost STATIC
     queue.cpp
     host.cpp
 )
+set_property(TARGET airhost PROPERTY POSITION_INDEPENDENT_CODE ON)
+
+add_library(airhost_shared SHARED
+    memory.cpp
+    queue.cpp
+    host.cpp
+    )
+set_property(TARGET airhost_shared PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -17,6 +25,11 @@ target_link_libraries(airhost
 set_target_properties(airhost PROPERTIES
          LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/runtime_lib)
 install(TARGETS airhost DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/airhost)
+
+set_target_properties(airhost_shared PROPERTIES
+         LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/runtime_lib)
+install(TARGETS airhost_shared DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/airhost)
+
 
 add_subdirectory(include)
 
