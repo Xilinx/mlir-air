@@ -176,7 +176,7 @@ public:
     registry.insert<LLVM::LLVMDialect>();
   }
 
-  int tile_dma_channels = 2;
+  const int tile_dma_channels = 2;
   std::vector<std::tuple<int32_t, int64_t, int64_t, int64_t>>
       tile_dma_S2MM_allocs;
   std::vector<std::tuple<int32_t, int64_t, int64_t, int64_t>>
@@ -1040,6 +1040,8 @@ public:
           auto herd_meta = createHerdMetadata(module_meta, h);
           herd_meta->setAttr("shim_allocations",
                              ArrayAttr::get(ctx, shim_allocations));
+          tile_dma_S2MM_allocs.clear();
+          tile_dma_MM2S_allocs.clear();
         }
       });
     }
