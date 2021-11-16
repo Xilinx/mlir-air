@@ -565,6 +565,43 @@ int queue_create(uint32_t size, queue_t **queue, uint32_t mb_id)
   return 0;
 }
 
+int32_t fsl_outstanding[4] = {0};
+
+void drain_fsl()
+{
+  register uint32_t d;
+  for (int i=0; i<4; i++) {
+    bool done = false;
+    while (!done) {
+      uint32_t which_stream = 4;
+      if (fsl_outstanding[i]>0) which_stream = i;
+      else if (i==3) return;
+      else break;
+      switch (which_stream) {
+      case 0:
+        getfsl_interruptible(d, 0);
+        fsl_outstanding[0]--;
+        break;
+      case 1:
+        getfsl_interruptible(d, 1);
+        fsl_outstanding[1]--;
+        break;
+      case 2:
+        getfsl_interruptible(d, 2);
+        fsl_outstanding[2]--;
+        break;
+      case 3:
+        getfsl_interruptible(d, 3);
+        fsl_outstanding[3]--;
+        break;
+      default:
+        break;
+      }
+      air_printf("Get fsl %d : id %d\n\r",i,d);
+    }
+  }
+}
+
 void complete_agent_dispatch_packet(dispatch_packet_t *pkt)
 {
   // completion phase
@@ -670,7 +707,6 @@ void handle_packet_xaie_lock(dispatch_packet_t *pkt)
   }
 }
 
-
 void handle_packet_put_stream(dispatch_packet_t *pkt)
 {
   // packet is in active phase
@@ -682,53 +718,33 @@ void handle_packet_put_stream(dispatch_packet_t *pkt)
   register uint32_t d0 = data & 0xffffffff;
   register uint32_t d1 = data >> 32;
 
-  uint32_t id = data & 0x1f;   
-  bool isdma = (d1 < 6);   
-  air_printf("Put fsl %d : id %d\n\r",which_stream,id);
-  register uint32_t d;
-  uint32_t it = 0;
+  bool isdma = (d1 < 6); 
+  air_printf("Put fsl %d : id %d\n\r", which_stream, data & 0x1f);
   
   switch (which_stream) {
   case 0:
     putfsl(d0, 0);
     cputfsl(d1, 0);
+    if (isdma) fsl_outstanding[0]++;
     break;
   case 1:
     putfsl(d0, 1);
     cputfsl(d1, 1);
+    if (isdma) fsl_outstanding[1]++;
     break;
   case 2:
     putfsl(d0, 2);
     cputfsl(d1, 2);
+    if (isdma) fsl_outstanding[2]++;
     break;
   case 3:
     putfsl(d0, 3);
     cputfsl(d1, 3);
+    if (isdma) fsl_outstanding[3]++;
     break;
   default:
     break;
   }
-
-  if (!isdma) return;
-    do {
-    switch (which_stream) {
-    case 0:
-      ngetfsl(d, 0);
-      break;
-    case 1:
-      ngetfsl(d, 1);
-      break;
-    case 2:
-      ngetfsl(d, 2);
-      break;
-    case 3:
-      ngetfsl(d, 3);
-      break;
-    default:
-      break;
-    }
-    air_printf("[%d] Get fsl %d : id %d\n\r",++it,which_stream,d);
-  } while (it < 10 && d != id);
 }
 
 void handle_packet_get_stream(dispatch_packet_t *pkt)
@@ -1315,6 +1331,7 @@ int main()
           default:
           case HSA_PACKET_TYPE_INVALID:
             if (setup) {
+              drain_fsl();
               lock_uart(mb_id); air_printf("Waiting\n\r"); unlock_uart();
               setup = false;
             }
