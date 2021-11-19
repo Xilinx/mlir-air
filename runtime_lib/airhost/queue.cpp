@@ -3,9 +3,77 @@
 #include <cstdlib>
 
 #include <cstdio>
+#include <vector>
+#include <iostream>
 
 #include "air_host.h"
 #include "acdc_queue.h"
+
+hsa_status_t air_get_agents(void *data) {
+  std::vector<air_agent_t> *pAgents = nullptr;
+
+  if (data == nullptr) {
+    return HSA_STATUS_ERROR_INVALID_ARGUMENT;
+  } else {
+    pAgents = static_cast<std::vector<air_agent_t> *>(data);
+  }
+
+  uint64_t total_controllers = 0;
+
+  int fd = open("/dev/mem", O_RDWR | O_SYNC);
+  if (fd == -1)
+    return HSA_STATUS_ERROR;
+
+  uint64_t *bram_base =
+      reinterpret_cast<uint64_t *>(mmap(NULL, 0x1000, PROT_READ | PROT_WRITE,
+                                        MAP_SHARED, fd, AIR_VCK190_SHMEM_BASE));
+
+  total_controllers = bram_base[65];
+  if (total_controllers < 1) {
+    std::cerr << "No agents found" << std::endl;
+    return HSA_STATUS_ERROR;
+  }
+
+  uint64_t *base_addr = reinterpret_cast<uint64_t *>(AIR_VCK190_SHMEM_BASE);
+  for (int i = 0; i < total_controllers; i++) {
+    air_agent_t a;
+    a.handle = reinterpret_cast<uintptr_t>(&base_addr[i]);
+    pAgents->push_back(a);
+  }
+
+  auto res = munmap(bram_base, 0x1000);
+  if (res) {
+    std::cerr << "Could not munmap" << std::endl;
+    return HSA_STATUS_ERROR;
+  }
+
+  return HSA_STATUS_SUCCESS;
+}
+
+hsa_status_t air_get_agent_info(queue_t *queue, air_agent_info_t attribute, void* data) {
+  if ((data == nullptr) || (queue == nullptr)) {
+    return HSA_STATUS_ERROR_INVALID_ARGUMENT;
+  } 
+ 
+  uint64_t wr_idx = queue_add_write_index(queue, 1);
+  uint64_t packet_id = wr_idx % queue->size;
+
+  dispatch_packet_t *pkt = (dispatch_packet_t*)(queue->base_address_vaddr) + packet_id;
+  initialize_packet(pkt);
+  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  pkt->arg[0] = AIR_PKT_TYPE_GET_INFO;
+  pkt->arg[1] = attribute;
+  air_queue_dispatch_and_wait(queue, wr_idx, pkt);
+  
+  if (attribute <= AIR_AGENT_INFO_VENDOR_NAME) {
+    char *p = static_cast<char *>(data);
+    *p = pkt->arg[2];
+  } else {
+    uint64_t *p = static_cast<uint64_t *>(data);
+    *p = pkt->arg[2];
+  }
+  return HSA_STATUS_SUCCESS;
+}
 
 hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue, uint64_t paddr)
 {

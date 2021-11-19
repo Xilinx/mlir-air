@@ -685,6 +685,79 @@ void handle_packet_get_capabilities(dispatch_packet_t *pkt, uint32_t mb_id)
   addr[7] = 0L;                        // L2 data memory per region
 }
 
+void handle_packet_get_info(dispatch_packet_t *pkt, uint32_t mb_id)
+{
+  // packet is in active phase
+  packet_set_active(pkt, true);
+  uint64_t attribute = (pkt->arg[1]);
+
+  pvr_t pvr;
+  microblaze_get_pvr(&pvr);
+  int user1 = MICROBLAZE_PVR_USER1(pvr);
+  int user2 = MICROBLAZE_PVR_USER2(pvr);
+  char name[] = {'A','C','D','C','\0'};
+  char vend[] = {'X','i','l','i','n','x','\0'};
+
+  switch(attribute) {
+    case AIR_AGENT_INFO_NAME:
+      memcpy(&pkt->arg[2],name,8); 
+      break;
+    case AIR_AGENT_INFO_VENDOR_NAME:
+      memcpy(&pkt->arg[2],vend,8); 
+      break;
+    case AIR_AGENT_INFO_CONTROLLER_ID:
+      pkt->arg[2] = (uint64_t)mb_id;           // region id
+      break;
+    case AIR_AGENT_INFO_FIRMWARE_VER:
+      pkt->arg[2] = (uint64_t)(user2 >> 8);    // region controller firmware version
+      break;
+    case AIR_AGENT_INFO_NUM_REGIONS: 
+      pkt->arg[2] = (uint64_t)user1;           // num regions
+      break;
+    case AIR_AGENT_INFO_HERD_SIZE:             // TODO make herd size, rows, cols dynamic
+      pkt->arg[2] = 16L;                       // cores per region
+      break;
+    case AIR_AGENT_INFO_HERD_ROWS:
+      pkt->arg[2] = 4L;                        // rows of cores
+      break;
+    case AIR_AGENT_INFO_HERD_COLS:
+      pkt->arg[2] = 4L;                        // cols of cores
+      break;
+    case AIR_AGENT_INFO_TILE_DATA_MEM_SIZE:
+      pkt->arg[2] = 32768L;                    // total L1 data memory per core
+      break;
+    case AIR_AGENT_INFO_TILE_PROG_MEM_SIZE:
+      pkt->arg[2] = 16384L;                    // L1 program memory per core
+      break;
+    case AIR_AGENT_INFO_L2_MEM_SIZE:
+      pkt->arg[2] = 1048576L;                  // L2 memory per region (4 cols * 256k)
+      break;
+    default:
+      pkt->arg[2] = 0;
+      break;
+  }
+}
+
+uint64_t cdma_base = 0x0202C0000000UL;
+
+void handle_packet_cdma(dispatch_packet_t *pkt)
+{
+  // packet is in active phase
+  packet_set_active(pkt, true);
+  volatile uint32_t *cdmab = (volatile uint32_t *)(cdma_base);
+  uint32_t status = cdmab[1];
+  air_printf("CMDA raw %x idle %x\n\r",status,status&2);
+  uint64_t daddr = (pkt->arg[1]);
+  uint64_t saddr = (pkt->arg[2]);
+  uint32_t bytes = (pkt->arg[3]);
+  cdmab[6] = saddr&0xffffffff; 
+  cdmab[7] = saddr>>32; 
+  cdmab[8] = daddr&0xffffffff; 
+  cdmab[9] = daddr>>32;
+  cdmab[10] = bytes;
+  while (!(cdmab[1]&2)) air_printf("CMDA wait...\n\r");
+}
+
 void handle_packet_xaie_lock(dispatch_packet_t *pkt)
 {
   // packet is in active phase
@@ -773,7 +846,6 @@ void handle_packet_get_stream(dispatch_packet_t *pkt)
   }
 
   air_printf("Get fsl %d : id %d\n\r",which_stream,d);
-
   pkt->arg[2] = d;
 }
 
@@ -1201,6 +1273,12 @@ packet_op:
       //   packets_processed++;
       //   break;
 
+      case AIR_PKT_TYPE_CDMA:
+        handle_packet_cdma(pkt);
+        complete_agent_dispatch_packet(pkt);
+        packets_processed++;
+        break;
+
       case AIR_PKT_TYPE_HELLO:
         handle_packet_hello(pkt, mb_id);
         complete_agent_dispatch_packet(pkt);
@@ -1208,6 +1286,11 @@ packet_op:
         break;
       case AIR_PKT_TYPE_GET_CAPABILITIES:
         handle_packet_get_capabilities(pkt, mb_id);
+        complete_agent_dispatch_packet(pkt);
+        packets_processed++;
+        break;
+      case AIR_PKT_TYPE_GET_INFO:
+        handle_packet_get_info(pkt, mb_id);
         complete_agent_dispatch_packet(pkt);
         packets_processed++;
         break;

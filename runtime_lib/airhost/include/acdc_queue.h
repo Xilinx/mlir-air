@@ -23,7 +23,11 @@
 #define AIR_PKT_TYPE_HELLO                    0x0012L
 #define AIR_PKT_TYPE_ALLOCATE_HERD_SHIM_DMAS  0x0013L
 #define AIR_PKT_TYPE_GET_CAPABILITIES         0x0014L
-#define AIR_PKT_TYPE_XAIE_LOCK       0x0020L
+#define AIR_PKT_TYPE_GET_INFO                 0x0015L
+
+#define AIR_PKT_TYPE_XAIE_LOCK 0x0020L
+
+#define AIR_PKT_TYPE_CDMA 0x030L
 
 #define AIR_PKT_TYPE_SHIM_DMA_MEMCPY 0x0100L
 #define AIR_PKT_TYPE_HERD_SHIM_DMA_MEMCPY 0x0101L
@@ -35,6 +39,24 @@
 #define AIR_ADDRESS_ABSOLUTE_RANGE 0x1L
 #define AIR_ADDRESS_HERD_RELATIVE  0x2L
 #define AIR_ADDRESS_HERD_RELATIVE_RANGE 0x3L
+
+typedef enum {
+AIR_AGENT_INFO_NAME = 0,        // NUL-terminated char[8]
+AIR_AGENT_INFO_VENDOR_NAME = 1, // NUL-terminated char[8]
+AIR_AGENT_INFO_CONTROLLER_ID = 2,
+AIR_AGENT_INFO_FIRMWARE_VER = 3,
+AIR_AGENT_INFO_NUM_REGIONS = 4,
+AIR_AGENT_INFO_HERD_SIZE = 5,
+AIR_AGENT_INFO_HERD_ROWS = 6,
+AIR_AGENT_INFO_HERD_COLS = 7,
+AIR_AGENT_INFO_TILE_DATA_MEM_SIZE = 8,
+AIR_AGENT_INFO_TILE_PROG_MEM_SIZE = 9,
+AIR_AGENT_INFO_L2_MEM_SIZE = 10 // Per region
+} air_agent_info_t;
+
+typedef struct air_agent_s {
+  uint64_t handle;
+} air_agent_t;
 
 // Note below that "__attribute__((packed))" also asserts that the whole structure is
 // unaligned in some compilers.  This helps to silence errors from -waddress-of-packed-struct

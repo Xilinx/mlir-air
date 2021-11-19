@@ -28,6 +28,12 @@ struct air_libxaie1_ctx_t {
 air_libxaie1_ctx_t *air_init_libxaie1();
 void air_deinit_libxaie1(air_libxaie1_ctx_t*);
 
+// runtime operations
+//
+
+hsa_status_t air_get_agents(void *data);
+hsa_status_t air_get_agent_info(queue_t *queue, air_agent_info_t attribute, void* data);
+
 // queue operations
 //
 
