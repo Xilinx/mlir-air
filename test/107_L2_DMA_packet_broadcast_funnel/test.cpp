@@ -67,10 +67,6 @@ int main(int argc, char *argv[])
   ACDC_print_dma_status(xaie->TileInst[7][3]);
   ACDC_print_dma_status(xaie->TileInst[7][4]);
 
-  XAieGbl_Write32(xaie->TileInst[7][0].TileAddr + 0x00033008, 0xFF);
-
-  uint32_t reg = XAieGbl_Read32(xaie->TileInst[7][0].TileAddr + 0x00033004);
-  printf("REG %x\n", reg);
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd == -1)
     return -1;

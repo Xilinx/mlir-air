@@ -414,6 +414,15 @@ int xaie_lock_acquire_nb(XAieGbl_Tile *tile, u32 lock_id, u32 val)
   return 1;
 }
 
+void xaie_l2_dma_init(int col)
+{
+  xaie::AieConfigPtr = xaie::XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
+
+  xaie::XAieGbl_CfgInitialize_Tile(0, &xaie::ShimTileInst[col],
+                                     col, 0, xaie::AieConfigPtr);
+  // Configure PLIO enable and up/downsizer
+  XAieGbl_Write32(xaie::ShimTileInst[col].TileAddr + 0x00033008, 0xFF);
+}
 void xaie_shim_dma_init(int col)
 {
   xaie::AieConfigPtr = xaie::XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
@@ -482,6 +491,7 @@ void xaie_herd_init(int col_start, int num_cols, int row_start, int num_rows)
       xaie::XAieGbl_CfgInitialize_Tile(0, &xaie::TileInst[col][row],
                                        col+col_start, row+row_start, xaie::AieConfigPtr);
     }
+    xaie_l2_dma_init(col+col_start);
   }
 }
 

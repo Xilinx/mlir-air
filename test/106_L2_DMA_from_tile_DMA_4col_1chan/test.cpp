@@ -83,19 +83,6 @@ int main(int argc, char *argv[])
   ACDC_print_dma_status(xaie->TileInst[9][4]);
   ACDC_print_dma_status(xaie->TileInst[10][4]);
 
-  XAieGbl_Write32(xaie->TileInst[7][0].TileAddr + 0x00033008, 0xFF);
-  uint32_t reg = XAieGbl_Read32(xaie->TileInst[7][0].TileAddr + 0x00033004);
-  printf(" 7 REG %x\n", reg);
-  XAieGbl_Write32(xaie->TileInst[8][0].TileAddr + 0x00033008, 0xFF);
-  reg = XAieGbl_Read32(xaie->TileInst[8][0].TileAddr + 0x00033004);
-  printf(" 8 REG %x\n", reg);
-  XAieGbl_Write32(xaie->TileInst[9][0].TileAddr + 0x00033008, 0xFF);
-  reg = XAieGbl_Read32(xaie->TileInst[9][0].TileAddr + 0x00033004);
-  printf(" 9 REG %x\n", reg);
-  XAieGbl_Write32(xaie->TileInst[10][0].TileAddr + 0x00033008, 0xFF);
-  reg = XAieGbl_Read32(xaie->TileInst[10][0].TileAddr + 0x00033004);
-  printf("10 REG %x\n", reg);
-
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd == -1)
     return -1;
@@ -137,37 +124,19 @@ int main(int argc, char *argv[])
 
   }
 
-
   // create the queue
   queue_t *q = nullptr;
   auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
   assert(ret == 0 && "failed to create queue!");
 
-  uint64_t wr_idx = queue_add_write_index(q, 1);
-  uint64_t packet_id = wr_idx % q->size;
-
-  dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-
   //
   // Set up a 4x1 herd starting 7,4
   //
-
-  pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
-  pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
-  pkt->arg[0] |= (4L << 40);
-  pkt->arg[0] |= (7L << 32);
-  pkt->arg[0] |= (1L << 24);
-  pkt->arg[0] |= (4L << 16);
-  
-  pkt->arg[1] = 0;  // Herd ID 0
-  pkt->arg[2] = 0;
-  pkt->arg[3] = 0;
-
-  // dispatch packet
-  signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
-  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
+  uint64_t wr_idx = queue_add_write_index(q, 1);
+  uint64_t packet_id = wr_idx % q->size;
+  dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  air_packet_herd_init(pkt, 0, 7, 4, 4, 1);
+  air_queue_dispatch_and_wait(q, wr_idx, pkt);
     
   // globally bypass headers
   for (uint64_t stream=0; stream < 4; stream++) {
@@ -192,8 +161,7 @@ int main(int argc, char *argv[])
     pkt->arg[2] |= cmd.uram_addr << 5;
     pkt->arg[2] |= cmd.id;
 
-    signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
-    signal_store_release((signal_t*)&q->doorbell, wr_idx);
+    air_queue_dispatch_and_wait(q, wr_idx, pkt);
   }
 
   // release the lock on the tile DMA
