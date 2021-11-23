@@ -370,16 +370,16 @@ public:
 
       OwningRewritePatternList stageL2Patterns(ctx);
       bool tileForL2 = false;
-      stageL2Patterns.insert<linalg::LinalgTilingPattern<linalg::MatmulOp>>(
-          ctx,
-          linalg::LinalgTilingOptions()
-              .setTileSizes(l2_tile_size)
-              .setInterchange({2, 1, 0})
-              .setLoopType(linalg::LinalgTilingLoopType::Loops),
-          linalg::LinalgTransformationFilter(ArrayRef<Identifier>{},
-                                             Identifier::get("L2", ctx)));
-
       if (tileForL2) {
+        stageL2Patterns.insert<linalg::LinalgTilingPattern<linalg::MatmulOp>>(
+            ctx,
+            linalg::LinalgTilingOptions()
+                .setTileSizes(l2_tile_size)
+                .setInterchange({2, 1, 0})
+                .setLoopType(linalg::LinalgTilingLoopType::Loops),
+            linalg::LinalgTransformationFilter(ArrayRef<Identifier>{},
+                                               Identifier::get("L2", ctx)));
+
         stageL2Patterns
             .insert<linalg::LinalgPromotionPattern<linalg::MatmulOp>>(
                 ctx, linalg::LinalgPromotionOptions(),
@@ -402,7 +402,7 @@ public:
               .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
           linalg::LinalgTransformationFilter(
               tileForL2 ? Identifier::get("L2_promoted", ctx)
-                        : Identifier::get("L2", ctx),
+                        : ArrayRef<Identifier>{},
               Identifier::get("L1", ctx)));
 
       stageL1Patterns.insert<linalg::LinalgPromotionPattern<linalg::MatmulOp>>(
@@ -413,7 +413,7 @@ public:
       OwningRewritePatternList stage3Patterns(&getContext());
       stage3Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
       stage3Patterns.insert<FoldSubViewOpsPattern>(ctx);
-      // stage3Patterns.insert<MemrefsPattern>(ctx);
+      if (!tileForL2) stage3Patterns.insert<MemrefsPattern>(ctx);
       scf::populateSCFForLoopCanonicalizationPatterns(stage3Patterns);
 
       (void)applyPatternsAndFoldGreedily(called, std::move(stageL2Patterns));
