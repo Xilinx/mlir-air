@@ -195,16 +195,8 @@ int main(int argc, char *argv[])
     pkt->arg[2] |= cmd.uram_addr << 5;
     pkt->arg[2] |= cmd.id;
 
-    signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
     if (stream == 3) {
-      signal_store_release((signal_t*)&q->doorbell, wr_idx);
-      while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-        printf("packet completion signal timeout!\n");
-        printf("%x\n", pkt->header);
-        printf("%x\n", pkt->type);
-        printf("%lx\n", pkt->completion_signal);
-        break;
-      }
+      air_queue_dispatch_and_wait(q, wr_idx, pkt);
     }
   }
 
