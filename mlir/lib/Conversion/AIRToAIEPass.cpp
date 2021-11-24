@@ -633,13 +633,14 @@ public:
         if (auto h = dyn_cast<air::HerdLaunchOp>(op)) {
 
           // if the herd has a symbol name, then the module is
-          // named aie.symbol_name, otherwise it's aie.N
-          std::stringstream aie_module_ss;
+          // named aie.symbol_name, otherwise it's aie.herd_N
+          std::string herd_name;
           if (auto attr = h->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-            aie_module_ss << "aie." << attr.getValue().str();
+            herd_name = attr.getValue().str();
           else
-            aie_module_ss << "aie." << aie_modules.size();
-          ModuleOp aie_module = ModuleOp::create(module.getLoc(), StringRef(aie_module_ss.str()));
+            herd_name = "herd_" + std::to_string(aie_modules.size());
+          std::string aie_module_name = "aie." + herd_name;
+          ModuleOp aie_module = ModuleOp::create(module.getLoc(), StringRef(aie_module_name));
 
           aie_modules.push_back({aie_module,h});
 
@@ -662,6 +663,7 @@ public:
           DMAAllocator shimDmaAlloc(shim_dma_cols, shim_dma_channels);
           DMAAllocator L2DmaAlloc(shim_dma_cols, shim_dma_channels);
 
+          auto ctx = module.getContext();
           for (auto y = 0; y < herd_size_y; y++) {
             for (auto x = 0; x < herd_size_x; x++) {
               auto hloc = h.getLoc();
@@ -679,8 +681,12 @@ public:
 
               // make the AIE.core for the tile core
               auto core = tile.getCoreOp();
-              if (!core)
+              if (!core) {
                 core = builder.create<AIE::CoreOp>(hloc, tile);
+                core->setAttr("elf_file",
+                  StringAttr::get(ctx, herd_name+"_core_" + std::to_string(x) + "_" +
+                     std::to_string(y) + ".elf"));
+              }
 
               // the buffers and locks created below need to go before the core and mem
               builder.setInsertionPoint(mem);
@@ -996,7 +1002,6 @@ public:
           cleanupPipelineOps(aie_module);
 
           std::vector<Attribute> shim_allocations;
-          auto ctx = module.getContext();
           for (auto &t : shimDmaAlloc.s2mm_allocs) {
             auto tileOp = t.dma_tile;
             int64_t col = t.col;
