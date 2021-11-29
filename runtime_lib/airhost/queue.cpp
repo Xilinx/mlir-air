@@ -1,6 +1,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <cstdlib>
+#include <cstring>
 
 #include <cstdio>
 #include <vector>
@@ -66,8 +67,7 @@ hsa_status_t air_get_agent_info(queue_t *queue, air_agent_info_t attribute, void
   air_queue_dispatch_and_wait(queue, wr_idx, pkt);
   
   if (attribute <= AIR_AGENT_INFO_VENDOR_NAME) {
-    char *p = static_cast<char *>(data);
-    *p = pkt->arg[2];
+    std::memcpy(data,&pkt->arg[2],8);
   } else {
     uint64_t *p = static_cast<uint64_t *>(data);
     *p = pkt->arg[2];

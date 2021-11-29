@@ -48,53 +48,20 @@ int main(int argc, char *argv[]) {
     queues.push_back(q);
   }
  
+  uint64_t data = -1;
   char vend[8];
   for (auto q : queues) {
     std::cout << std::endl << "Requesting attribute: AIR_AGENT_INFO_CONTROLLER_ID... ";
-    // reserve a packet in the queue
-    uint64_t wr_idx = queue_add_write_index(q, 1);
-    uint64_t packet_id = wr_idx % q->size;
-
-    dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-    initialize_packet(herd_pkt);
-    herd_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-    herd_pkt->arg[0] = AIR_PKT_TYPE_GET_INFO;
-    herd_pkt->arg[1] = AIR_AGENT_INFO_CONTROLLER_ID;
-
-    air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
-
-    std::cout << "Agent ID is: " << herd_pkt->arg[2] << std::endl;
+    air_get_agent_info(q, AIR_AGENT_INFO_CONTROLLER_ID, &data);
+    std::cout << "Agent ID is: " << data << std::endl;
 
     std::cout << "Requesting attribute: AIR_AGENT_INFO_VENDOR_NAME... ";
-    // reserve a packet in the queue
-    wr_idx = queue_add_write_index(q, 1);
-    packet_id = wr_idx % q->size;
-
-    herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-    initialize_packet(herd_pkt);
-    herd_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-    herd_pkt->arg[0] = AIR_PKT_TYPE_GET_INFO;
-    herd_pkt->arg[1] = AIR_AGENT_INFO_VENDOR_NAME;
-
-    air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
-
-    memcpy(vend,&herd_pkt->arg[2],8);
+    air_get_agent_info(q, AIR_AGENT_INFO_VENDOR_NAME, vend);
     std::cout << "Vendor is: " << vend << std::endl;
 
     std::cout << "Requesting attribute: AIR_AGENT_INFO_L2_MEM_SIZE... ";
-    // reserve a packet in the queue
-    wr_idx = queue_add_write_index(q, 1);
-    packet_id = wr_idx % q->size;
-
-    herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-    initialize_packet(herd_pkt);
-    herd_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-    herd_pkt->arg[0] = AIR_PKT_TYPE_GET_INFO;
-    herd_pkt->arg[1] = AIR_AGENT_INFO_L2_MEM_SIZE;
-
-    air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
-
-    std::cout << "L2 size is: " << std::dec << herd_pkt->arg[2] << "B" << std::endl;
+    air_get_agent_info(q, AIR_AGENT_INFO_L2_MEM_SIZE, &data);
+    std::cout << "L2 size is: " << std::dec << data << "B" << std::endl;
   }
 
   std::cout << std::endl << "PASS!" << std::endl;
