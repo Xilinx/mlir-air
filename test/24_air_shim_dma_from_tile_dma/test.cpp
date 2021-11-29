@@ -17,20 +17,9 @@
 
 #define DMA_COUNT 256
 
-namespace {
-
-// global libxaie state
-air_libxaie1_ctx_t *xaie;
-
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
 #include "aie_inc.cpp"
-#undef TileInst
-#undef TileDMAInst
 
 queue_t *q = nullptr;
-
-}
 
 int
 main(int argc, char *argv[])
@@ -38,15 +27,16 @@ main(int argc, char *argv[])
   uint64_t row = 0;
   uint64_t col = 7;
 
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
+  mlir_aie_init_device(xaie);
 
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
+  mlir_aie_configure_cores(xaie);
+  mlir_aie_configure_switchboxes(xaie);
+  mlir_aie_initialize_locks(xaie);
+  mlir_aie_configure_dmas(xaie);
 
   for (int i=0; i<DMA_COUNT; i++)
-    mlir_write_buffer_buf0(i, i+0x10);
+    mlir_aie_write_buffer_buf0(xaie, i, i+0x10);
 
   uint32_t *bram_ptr = nullptr;
 
@@ -77,13 +67,13 @@ main(int argc, char *argv[])
     input.d[i] = i;
   }
 
-  mlir_start_cores();
+  mlir_aie_start_cores(xaie);
 
   auto i = &input;
   graph_fn(i);
 
-  ACDC_print_dma_status(xaie->TileInst[7][2]);
-  ACDC_print_tile_status(xaie->TileInst[7][2]);
+  mlir_aie_print_dma_status(xaie, 7, 2);
+  mlir_aie_print_tile_status(xaie,7,2);
 
   int errors = 0;
   for (int i=0; i<DMA_COUNT; i++) {

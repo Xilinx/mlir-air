@@ -17,18 +17,7 @@
 #define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
 #define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
 
-namespace {
-
-// global libxaie state
-air_libxaie1_ctx_t *xaie;
-
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
 #include "aie_inc.cpp"
-#undef TileInst
-#undef TileDMAInst
-
-}
 
 #define L2_DMA_BASE 0x020240000000LL
 #define SHMEM_BASE  0x020100000000LL
@@ -47,29 +36,30 @@ struct dma_rsp_t {
 int main(int argc, char *argv[])
 {
 
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
+  mlir_aie_init_device(xaie);
   
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
-  mlir_start_cores();
+  mlir_aie_configure_cores(xaie);
+  mlir_aie_configure_switchboxes(xaie);
+  mlir_aie_initialize_locks(xaie);
+  mlir_aie_configure_dmas(xaie);
+  mlir_aie_start_cores(xaie);
 
   for (int i=0; i<16; i++) {
-    mlir_write_buffer_buf1(i, 0x9a01);
-    mlir_write_buffer_buf2(i, 0xba01);
-    mlir_write_buffer_buf4(i, 0x9a02);
-    mlir_write_buffer_buf5(i, 0xba02);
-    mlir_write_buffer_buf7(i, 0x9401);
-    mlir_write_buffer_buf8(i, 0xb401);
-    mlir_write_buffer_buf10(i, 0x9402);
-    mlir_write_buffer_buf11(i, 0xb402);
+    mlir_aie_write_buffer_buf1(xaie, i, 0x9a01);
+    mlir_aie_write_buffer_buf2(xaie, i, 0xba01);
+    mlir_aie_write_buffer_buf4(xaie, i, 0x9a02);
+    mlir_aie_write_buffer_buf5(xaie, i, 0xba02);
+    mlir_aie_write_buffer_buf7(xaie, i, 0x9401);
+    mlir_aie_write_buffer_buf8(xaie, i, 0xb401);
+    mlir_aie_write_buffer_buf10(xaie, i, 0x9402);
+    mlir_aie_write_buffer_buf11(xaie, i, 0xb402);
   }
 
-  ACDC_print_dma_status(xaie->TileInst[7][1]);
-  ACDC_print_dma_status(xaie->TileInst[7][2]);
-  ACDC_print_dma_status(xaie->TileInst[7][3]);
-  ACDC_print_dma_status(xaie->TileInst[7][4]);
+  mlir_aie_print_dma_status(xaie, 7, 1);
+  mlir_aie_print_dma_status(xaie, 7, 2);
+  mlir_aie_print_dma_status(xaie, 7, 3);
+  mlir_aie_print_dma_status(xaie, 7, 4);
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd == -1)
@@ -176,16 +166,16 @@ int main(int argc, char *argv[])
     }
   }
 
-  ACDC_print_dma_status(xaie->TileInst[7][1]);
-  ACDC_print_dma_status(xaie->TileInst[7][2]);
-  ACDC_print_dma_status(xaie->TileInst[7][3]);
-  ACDC_print_dma_status(xaie->TileInst[7][4]);
+  mlir_aie_print_dma_status(xaie, 7, 1);
+  mlir_aie_print_dma_status(xaie, 7, 2);
+  mlir_aie_print_dma_status(xaie, 7, 3);
+  mlir_aie_print_dma_status(xaie, 7, 4);
   
   uint32_t errs = 0;
   for (int i=0; i<16; i++) {
     uint32_t check = (i % 4) + ((i / 4) * 8);
     uint32_t d;
-    d = mlir_read_buffer_buf1(i);
+    d = mlir_aie_read_buffer_buf1(xaie, i);
     if ((d & 0x0fffffff) != check) {
       printf("Part 0 : Word %i : Expect %x, got %08X\n", i, check, d);
       errs++;
@@ -194,7 +184,7 @@ int main(int argc, char *argv[])
   for (int i=0; i<16; i++) {
     uint32_t check = (i % 4) + ((i / 4) * 8) + 4;
     uint32_t d;
-    d = mlir_read_buffer_buf4(i);
+    d = mlir_aie_read_buffer_buf4(xaie, i);
     if ((d & 0x0fffffff) != check) {
       printf("Part 1 : Word %i : Expect %x, got %08X\n", i, check, d);
       errs++;
@@ -203,9 +193,9 @@ int main(int argc, char *argv[])
   for (int i=0; i<32; i++) {
     uint32_t d;
     if (i<16)
-      d = mlir_read_buffer_buf7(i);
+      d = mlir_aie_read_buffer_buf7(xaie, i);
     else 
-      d = mlir_read_buffer_buf8(i-16);
+      d = mlir_aie_read_buffer_buf8(xaie, i-16);
     if ((d & 0x0fffffff) != (i)) {
       printf("Prim 0 : Word %i : Expect %d, got %08X\n",i, i, d);
       errs++;
@@ -214,9 +204,9 @@ int main(int argc, char *argv[])
   for (int i=0; i<32; i++) {
     uint32_t d;
     if (i<16)
-      d = mlir_read_buffer_buf10(i);
+      d = mlir_aie_read_buffer_buf10(xaie, i);
     else 
-      d = mlir_read_buffer_buf11(i-16);
+      d = mlir_aie_read_buffer_buf11(xaie, i-16);
     if ((d & 0x0fffffff) != (i)) {
       printf("Prim 1 : Word %i : Expect %d, got %08X\n",i, i, d);
       errs++;

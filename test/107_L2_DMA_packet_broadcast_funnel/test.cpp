@@ -17,18 +17,7 @@
 #define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
 #define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
 
-namespace {
-
-// global libxaie state
-air_libxaie1_ctx_t *xaie;
-
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
 #include "aie_inc.cpp"
-#undef TileInst
-#undef TileDMAInst
-
-}
 
 #define L2_DMA_BASE 0x020240000000LL
 #define SHMEM_BASE  0x020100000000LL
@@ -47,25 +36,26 @@ struct dma_rsp_t {
 int main(int argc, char *argv[])
 {
 
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
+  mlir_aie_init_device(xaie);
   
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
-  mlir_start_cores();
+  mlir_aie_configure_cores(xaie);
+  mlir_aie_configure_switchboxes(xaie);
+  mlir_aie_initialize_locks(xaie);
+  mlir_aie_configure_dmas(xaie);
+  mlir_aie_start_cores(xaie);
 
   for (int i=0; i<512; i++) {
-    mlir_write_buffer_buf1(i,i+0x1000);
-    mlir_write_buffer_buf2(i,i+0x2000);
-    mlir_write_buffer_buf3(i,i+0x3000);
-    mlir_write_buffer_buf4(i,i+0x4000);
+    mlir_aie_write_buffer_buf1(i,i+0x1000);
+    mlir_aie_write_buffer_buf2(i,i+0x2000);
+    mlir_aie_write_buffer_buf3(i,i+0x3000);
+    mlir_aie_write_buffer_buf4(i,i+0x4000);
   }
 
-  ACDC_print_dma_status(xaie->TileInst[7][1]);
-  ACDC_print_dma_status(xaie->TileInst[7][2]);
-  ACDC_print_dma_status(xaie->TileInst[7][3]);
-  ACDC_print_dma_status(xaie->TileInst[7][4]);
+  mlir_aie_print_dma_status(xaie, 7, 1);
+  mlir_aie_print_dma_status(xaie, 7, 2);
+  mlir_aie_print_dma_status(xaie, 7, 3);
+  mlir_aie_print_dma_status(xaie, 7, 4);
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd == -1)
@@ -174,10 +164,10 @@ int main(int argc, char *argv[])
   }
   air_queue_dispatch_and_wait(q, wr_idx, pkt);
 
-  ACDC_print_dma_status(xaie->TileInst[7][1]);
-  ACDC_print_dma_status(xaie->TileInst[7][2]);
-  ACDC_print_dma_status(xaie->TileInst[7][3]);
-  ACDC_print_dma_status(xaie->TileInst[7][4]);
+  mlir_aie_print_dma_status(xaie, 7, 1);
+  mlir_aie_print_dma_status(xaie, 7, 2);
+  mlir_aie_print_dma_status(xaie, 7, 3);
+  mlir_aie_print_dma_status(xaie, 7, 4);
   
   uint32_t errs = 0;
   int it = 0;

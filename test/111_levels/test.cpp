@@ -13,18 +13,7 @@
 #include "air_host.h"
 #include "test_library.h"
 
-namespace {
-
-// global libxaie state
-air_libxaie1_ctx_t *xaie;
-
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
 #include "aie_inc.cpp"
-#undef TileInst
-#undef TileDMAInst
-
-}
 
 #define L2_DMA_BASE 0x020240000000LL
 #define DDR_BASE    0x2000
@@ -45,25 +34,26 @@ struct dma_rsp_t {
 
 int main(int argc, char *argv[])
 {
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
+  mlir_aie_init_device(xaie);
   
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
-  mlir_start_cores();
+  mlir_aie_configure_cores(xaie);
+  mlir_aie_configure_switchboxes(xaie);
+  mlir_aie_initialize_locks(xaie);
+  mlir_aie_configure_dmas(xaie);
+  mlir_aie_start_cores(xaie);
 
   for (int i=0; i<XFR_SIZE; i++) {
-    mlir_write_buffer_buf1(i,i+0xbeef1000);
-    mlir_write_buffer_buf2(i,i+0xbeef2000);
-    mlir_write_buffer_buf3(i,i+0xbeef3000);
-    mlir_write_buffer_buf4(i,i+0xbeef4000);
+    mlir_aie_write_buffer_buf1(i,i+0xbeef1000);
+    mlir_aie_write_buffer_buf2(i,i+0xbeef2000);
+    mlir_aie_write_buffer_buf3(i,i+0xbeef3000);
+    mlir_aie_write_buffer_buf4(i,i+0xbeef4000);
   }
 
-  ACDC_print_dma_status(xaie->TileInst[7][1]);
-  ACDC_print_dma_status(xaie->TileInst[7][2]);
-  ACDC_print_dma_status(xaie->TileInst[7][3]);
-  ACDC_print_dma_status(xaie->TileInst[7][4]);
+  mlir_aie_print_Dma_Status(xaie, 7, 1);
+  mlir_aie_print_dma_status(xaie, 7, 2);
+  mlir_aie_print_Dma_Status(xaie, 7, 3);
+  mlir_aie_print_dma_status(xaie, 7, 4);
 
   XAieGbl_Write32(xaie->TileInst[7][0].TileAddr + 0x00033008, 0xFF);
 
@@ -226,10 +216,10 @@ int main(int argc, char *argv[])
 
   printf("Tile after: \n");
   for (int i=0; i<XFR_SIZE; i++) {
-    uint32_t d0 = mlir_read_buffer_buf1(i);
-    uint32_t d1 = mlir_read_buffer_buf2(i);
-    uint32_t d2 = mlir_read_buffer_buf3(i);
-    uint32_t d3 = mlir_read_buffer_buf4(i);
+    uint32_t d0 = mlir_aie_read_buffer_buf1(i);
+    uint32_t d1 = mlir_aie_read_buffer_buf2(i);
+    uint32_t d2 = mlir_aie_read_buffer_buf3(i);
+    uint32_t d3 = mlir_aie_read_buffer_buf4(i);
     printf("%4d contains %08x %08x %08x %08x\n",i,d0,d1,d2,d3);
   }
   printf("L2 after: \n");

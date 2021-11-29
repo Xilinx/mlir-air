@@ -19,18 +19,7 @@
 
 #define SHMEM_BASE 0x020100000000LL
 
-namespace {
-
-// global libxaie state
-air_libxaie1_ctx_t *xaie;
-
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
 #include "aie_inc.cpp"
-#undef TileInst
-#undef TileDMAInst
-
-}
 
 #define IMAGE_WIDTH 96
 #define IMAGE_HEIGHT 16
@@ -49,26 +38,27 @@ main(int argc, char *argv[])
   uint64_t col = 7;
   uint64_t row = 0;
 
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
+  mlir_aie_init_device(xaie);
 
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
-  mlir_start_cores();
+  mlir_aie_configure_cores(xaie);
+  mlir_aie_configure_switchboxes(xaie);
+  mlir_aie_initialize_locks(xaie);
+  mlir_aie_configure_dmas(xaie);
+  mlir_aie_start_cores(xaie);
 
   uint32_t *bram_ptr;
 
   // We're going to stamp over the memories
   for (int i=0; i<2*TILE_SIZE; i++) {
-    mlir_write_buffer_buf72_0(i, 0xdeadbeef);
-    mlir_write_buffer_buf72_1(i, 0xfeedface);
-    mlir_write_buffer_buf74_0(i, 0xdeadbeef);
-    mlir_write_buffer_buf74_1(i, 0xfeedface);
-    mlir_write_buffer_buf82_0(i, 0xdeadbeef);
-    mlir_write_buffer_buf82_1(i, 0xfeedface);
-    mlir_write_buffer_buf84_0(i, 0xdeadbeef);
-    mlir_write_buffer_buf84_1(i, 0xfeedface);
+    mlir_aie_write_buffer_buf72_0(xaie, i, 0xdeadbeef);
+    mlir_aie_write_buffer_buf72_1(xaie, i, 0xfeedface);
+    mlir_aie_write_buffer_buf74_0(xaie, i, 0xdeadbeef);
+    mlir_aie_write_buffer_buf74_1(xaie, i, 0xfeedface);
+    mlir_aie_write_buffer_buf82_0(xaie, i, 0xdeadbeef);
+    mlir_aie_write_buffer_buf82_1(xaie, i, 0xfeedface);
+    mlir_aie_write_buffer_buf84_0(xaie, i, 0xdeadbeef);
+    mlir_aie_write_buffer_buf84_1(xaie, i, 0xfeedface);
   }
   // create the queue
   queue_t *q = nullptr;

@@ -14,18 +14,7 @@
 #include "air_host.h"
 #include "test_library.h"
 
-namespace {
-
-// global libxaie state
-air_libxaie1_ctx_t *xaie;
-
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
 #include "aie_inc.cpp"
-#undef TileInst
-#undef TileDMAInst
-
-}
 
 int
 main(int argc, char *argv[])
@@ -33,15 +22,16 @@ main(int argc, char *argv[])
   uint64_t col = 7;
   uint64_t row = 0;
 
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
+  mlir_aie_init_device(xaie);
 
-  ACDC_print_dma_status(xaie->TileInst[7][2]);
+  mlir_aie_print_dma_status(xaie, 7, 2);
 
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
-  mlir_start_cores();
+  mlir_aie_configure_cores(xaie);
+  mlir_aie_configure_switchboxes(xaie);
+  mlir_aie_initialize_locks(xaie);
+  mlir_aie_configure_dmas(xaie);
+  mlir_aie_start_cores(xaie);
 
   uint32_t *bram_ptr;
 
@@ -50,9 +40,9 @@ main(int argc, char *argv[])
   // Ascending plus 2 sequence in the tile memory, and toggle the associated lock
   for (int i=0; i<DMA_COUNT; i++) {
     if (i<(DMA_COUNT/2))
-      mlir_write_buffer_a(i, i+2);
+      mlir_aie_write_buffer_a(xaie, i, i+2);
     else
-      mlir_write_buffer_b(i-(DMA_COUNT/2), i+2);
+      mlir_aie_write_buffer_b(xaie, i-(DMA_COUNT/2), i+2);
   }
 
   XAieTile_LockRelease(&(xaie->TileInst[7][2]), 0, 0x1, 0);
@@ -96,16 +86,16 @@ main(int argc, char *argv[])
   air_packet_nd_memcpy(cpypkt0, 0, col, 0, 0, 8, 2, AIR_VCK190_SHMEM_BASE+0x4000, DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
   air_queue_dispatch_and_wait(q, wr_idx, cpypkt0);
 
-  ACDC_print_dma_status(xaie->TileInst[7][2]);
+  mlir_aie_print_dma_status(xaie, 7, 2);
 
   uint32_t errs = 0;
   // Let go check the tile memory
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d;
     if (i<(DMA_COUNT/2))
-      d = mlir_read_buffer_a(i);
+      d = mlir_aie_read_buffer_a(xaie, i);
     else
-      d = mlir_read_buffer_b(i-(DMA_COUNT/2));
+      d = mlir_aie_read_buffer_b(xaie, i-(DMA_COUNT/2));
 
     if (d != i+2) {
       printf("ERROR: Tile Memory id %d Expected %08X, got %08X\n", i, i+2, d);

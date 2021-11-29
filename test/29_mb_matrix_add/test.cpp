@@ -19,18 +19,7 @@
 
 #define BRAM_ADDR 0x4000+AIR_VCK190_SHMEM_BASE
 
-namespace {
-
-// global libxaie state
-air_libxaie1_ctx_t *xaie;
-
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
 #include "aie_inc.cpp"
-#undef TileInst
-#undef TileDMAInst
-
-}
 
 // test configuration
 #define IMAGE_WIDTH 128
@@ -50,15 +39,16 @@ main(int argc, char *argv[])
   uint64_t col = 7;
   uint64_t row = 0;
 
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
+  mlir_aie_init_device(xaie);
 
-  ACDC_print_dma_status(xaie->TileInst[7][2]);
+  mlir_aie_print_dma_status(xaie, 7, 2);
 
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
-  mlir_start_cores();
+  mlir_aie_configure_cores(xaie);
+  mlir_aie_configure_switchboxes(xaie);
+  mlir_aie_initialize_locks(xaie);
+  mlir_aie_configure_dmas(xaie);
+  mlir_aie_start_cores(xaie);
 
   // setup images in memory
   uint32_t *bram_ptr;
@@ -75,12 +65,12 @@ main(int argc, char *argv[])
 
   // stamp over the aie tiles
   for (int i=0; i<TILE_SIZE; i++) {
-    mlir_write_buffer_ping_a(i, 0xabba0000+i);
-    mlir_write_buffer_pong_a(i, 0xdeeded00+i);
-    mlir_write_buffer_ping_b(i, 0xcafe0000+i);
-    mlir_write_buffer_pong_b(i, 0xfabcab00+i);
-    mlir_write_buffer_ping_c(i, 0x12345670+i);
-    mlir_write_buffer_pong_c(i, 0x76543210+i);
+    mlir_aie_write_buffer_ping_a(xaie, i, 0xabba0000+i);
+    mlir_aie_write_buffer_pong_a(xaie, i, 0xdeeded00+i);
+    mlir_aie_write_buffer_ping_b(xaie, i, 0xcafe0000+i);
+    mlir_aie_write_buffer_pong_b(xaie, i, 0xfabcab00+i);
+    mlir_aie_write_buffer_ping_c(xaie, i, 0x12345670+i);
+    mlir_aie_write_buffer_pong_c(xaie, i, 0x76543210+i);
   }
 
   // create the queue
@@ -133,12 +123,12 @@ main(int argc, char *argv[])
   int errors = 0;
   // check the aie tiles
   for (int i=0; i<TILE_SIZE; i++) {
-    uint32_t d0 = mlir_read_buffer_ping_a(i);
-    uint32_t d1 = mlir_read_buffer_pong_a(i);
-    uint32_t d4 = mlir_read_buffer_ping_b(i);
-    uint32_t d5 = mlir_read_buffer_pong_b(i);
-    uint32_t d2 = mlir_read_buffer_ping_c(i);
-    uint32_t d3 = mlir_read_buffer_pong_c(i);
+    uint32_t d0 = mlir_aie_read_buffer_ping_a(xaie, i);
+    uint32_t d1 = mlir_aie_read_buffer_pong_a(xaie, i);
+    uint32_t d4 = mlir_aie_read_buffer_ping_b(xaie, i);
+    uint32_t d5 = mlir_aie_read_buffer_pong_b(xaie, i);
+    uint32_t d2 = mlir_aie_read_buffer_ping_c(xaie, i);
+    uint32_t d3 = mlir_aie_read_buffer_pong_c(xaie, i);
     if (d0+d4 != d2) {
       printf("mismatch [%d] ping %x+%x != %x\n", i, d0, d4, d2);
       errors++;

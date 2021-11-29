@@ -20,30 +20,20 @@
 #define BRAM_ADDR (AIR_VCK190_SHMEM_BASE+0x4000)
 #define DMA_COUNT 512
 
-namespace {
-
-// global libxaie state
-air_libxaie1_ctx_t *xaie;
-
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
 #include "aie_inc.cpp"
-#undef TileInst
-#undef TileDMAInst
-
-}
 
 int
 main(int argc, char *argv[])
 {
   auto col = 7;
 
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
+  mlir_aie_init_device(xaie);
 
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
+  mlir_aie_configure_cores(xaie);
+  mlir_aie_configure_switchboxes(xaie);
+  mlir_aie_initialize_locks(xaie);
+  mlir_aie_configure_dmas(xaie);
   //mlir_start_cores();
 
   XAieDma_Shim ShimDmaInst1;
@@ -63,9 +53,9 @@ main(int argc, char *argv[])
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = i+1;
     if (i<(DMA_COUNT/2))
-      mlir_write_buffer_a(i, d);
+      mlir_aie_write_buffer_a(xaie, i, d);
     else
-      mlir_write_buffer_b(i-(DMA_COUNT/2), d);
+      mlir_aie_write_buffer_b(xaie, i-(DMA_COUNT/2), d);
   }
 
   // Program the ShimDMA to write from stream to memory
@@ -104,7 +94,7 @@ main(int argc, char *argv[])
   int errors = 0;
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = bram_ptr[i];
-    ACDC_check("Check Result:", d, i+1, errors);
+    mlir_aie_check("Check Result:", d, i+1, errors);
   }
 
   if (!errors) {

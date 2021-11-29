@@ -12,6 +12,8 @@
 #include "acdc_queue.h"
 #include "hsa_defs.h"
 
+#include "test_library.h"
+
 #define SHMEM_BASE 0x020100000000LL
 
 #define XAIE_NUM_ROWS            8
@@ -21,31 +23,21 @@
 #define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
 #define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
 
-namespace {
-
-// global libxaie state
-air_libxaie1_ctx_t *xaie;
-
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
 #include "aie_inc.cpp"
-#undef TileInst
-#undef TileDMAInst
-
-}
 
 int main(int argc, char *argv[])
 {
   auto col = 7;
   auto row = 2;
 
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
+  mlir_aie_init_device(xaie);
 
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
-  //mlir_start_cores();
+  mlir_aie_configure_cores(xaie);
+  mlir_aie_configure_switchboxes(xaie);
+  mlir_aie_initialize_locks(xaie);
+  mlir_aie_configure_dmas(xaie);
+  //mlir_aie_start_cores(xaie);
 
   // create the queue
   queue_t *q = nullptr;

@@ -17,18 +17,7 @@
 #define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
 #define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
 
-namespace {
-
-// global libxaie state
-air_libxaie1_ctx_t *xaie;
-
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
 #include "aie_inc.cpp"
-#undef TileInst
-#undef TileDMAInst
-
-}
 
 #define L2_DMA_BASE 0x020240000000LL
 #define SHMEM_BASE  0x020100000000LL
@@ -47,29 +36,30 @@ struct dma_rsp_t {
 int main(int argc, char *argv[])
 {
 
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
+  mlir_aie_init_device(xaie);
 
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
-  mlir_start_cores();
+  mlir_aie_configure_cores(xaie);
+  mlir_aie_configure_switchboxes(xaie);
+  mlir_aie_initialize_locks(xaie);
+  mlir_aie_configure_dmas(xaie);
+  mlir_aie_start_cores(xaie);
 
   for (int i=0; i<32; i++) {
-    mlir_write_buffer_a71(i, 0xcafe0a71);
-    mlir_write_buffer_b71(i, 0xcafe0b71);
-    mlir_write_buffer_a72(i, 0xcafe0a72);
-    mlir_write_buffer_b72(i, 0xcafe0b72);
-    mlir_write_buffer_a81(i, 0xcafe0a81);
-    mlir_write_buffer_b81(i, 0xcafe0b81);
-    mlir_write_buffer_a82(i, 0xcafe0a82);
-    mlir_write_buffer_b82(i, 0xcafe0b82);
+    mlir_aie_write_buffer_a71(xaie, i, 0xcafe0a71);
+    mlir_aie_write_buffer_b71(xaie, i, 0xcafe0b71);
+    mlir_aie_write_buffer_a72(xaie, i, 0xcafe0a72);
+    mlir_aie_write_buffer_b72(xaie, i, 0xcafe0b72);
+    mlir_aie_write_buffer_a81(xaie, i, 0xcafe0a81);
+    mlir_aie_write_buffer_b81(xaie, i, 0xcafe0b81);
+    mlir_aie_write_buffer_a82(xaie, i, 0xcafe0a82);
+    mlir_aie_write_buffer_b82(xaie, i, 0xcafe0b82);
   }
 
-  ACDC_print_dma_status(xaie->TileInst[7][1]);
-  ACDC_print_dma_status(xaie->TileInst[7][1]);
-  ACDC_print_dma_status(xaie->TileInst[8][1]);
-  ACDC_print_dma_status(xaie->TileInst[8][2]);
+  mlir_aie_print_dma_status(xaie, 7, 1);
+  mlir_aie_print_dma_status(xaie, 7, 1);
+  mlir_aie_print_dma_status(xaie, 8, 1);
+  mlir_aie_print_dma_status(xaie, 8, 2);
 
   XAieGbl_Write32(xaie->TileInst[7][0].TileAddr + 0x00033008, 0xFF);
   XAieGbl_Write32(xaie->TileInst[8][0].TileAddr + 0x00033008, 0xFF);
@@ -232,10 +222,10 @@ int main(int argc, char *argv[])
   }
 
   sleep(1);
-  ACDC_print_dma_status(xaie->TileInst[7][1]);
-  ACDC_print_dma_status(xaie->TileInst[7][2]);
-  ACDC_print_dma_status(xaie->TileInst[8][1]);
-  ACDC_print_dma_status(xaie->TileInst[8][2]);
+  mlir_aie_print_dma_status(xaie, 7, 1);
+  mlir_aie_print_dma_status(xaie, 7, 2);
+  mlir_aie_print_dma_status(xaie, 8, 1);
+  mlir_aie_print_dma_status(xaie, 8, 2);
 
   printf("\nChecking the output...\n");
 
@@ -244,9 +234,9 @@ int main(int argc, char *argv[])
   for (int i=0; i<32; i++) {
     uint32_t d;
     if (i<16)
-      d = mlir_read_buffer_a71(i) - 0x100000;
+      d = mlir_aie_read_buffer_a71(xaie, i) - 0x100000;
     else 
-      d = mlir_read_buffer_b71(i-16) - 0x100000;
+      d = mlir_aie_read_buffer_b71(xaie, i-16) - 0x100000;
     if ((d & 0x0fffffff) != (i)) {
       printf("[7,1] Word %i : Expect %d, got %08X\n",i, i, d);
       errs++;
@@ -255,9 +245,9 @@ int main(int argc, char *argv[])
   for (int i=0; i<32; i++) {
     uint32_t d;
     if (i<16)
-      d = mlir_read_buffer_a72(i) - 0x300000;
+      d = mlir_aie_read_buffer_a72(xaie, i) - 0x300000;
     else 
-      d = mlir_read_buffer_b72(i-16) - 0x300000;
+      d = mlir_aie_read_buffer_b72(xaie, i-16) - 0x300000;
     if ((d & 0x0fffffff) != (i)) {
       printf("[7,2] Word %i : Expect %d, got %08X\n",i, i, d);
       errs++;
@@ -266,9 +256,9 @@ int main(int argc, char *argv[])
   for (int i=0; i<32; i++) {
     uint32_t d;
     if (i<16)
-      d = mlir_read_buffer_a81(i) - 0x700000;
+      d = mlir_aie_read_buffer_a81(xaie, i) - 0x700000;
     else 
-      d = mlir_read_buffer_b81(i-16) - 0x700000;
+      d = mlir_aie_read_buffer_b81(xaie, i-16) - 0x700000;
     if ((d & 0x0fffffff) != (i)) {
       printf("[8,1] Word %i : Expect %d, got %08X\n",i, i, d);
       errs++;
@@ -277,9 +267,9 @@ int main(int argc, char *argv[])
   for (int i=0; i<32; i++) {
     uint32_t d;
     if (i<16)
-      d = mlir_read_buffer_a82(i) - 0xf00000;
+      d = mlir_aie_read_buffer_a82(xaie, i) - 0xf00000;
     else 
-      d = mlir_read_buffer_b82(i-16) - 0xf00000;
+      d = mlir_aie_read_buffer_b82(xaie, i-16) - 0xf00000;
     if ((d & 0x0fffffff) != (i)) {
       printf("[8,2] Word %i : Expect %d, got %08X\n",i, i, d);
       errs++;

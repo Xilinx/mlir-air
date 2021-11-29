@@ -17,18 +17,7 @@
 #define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
 #define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
 
-namespace {
-
-// global libxaie state
-air_libxaie1_ctx_t *xaie;
-
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
 #include "aie_inc.cpp"
-#undef TileInst
-#undef TileDMAInst
-
-}
 
 int
 main(int argc, char *argv[])
@@ -36,15 +25,18 @@ main(int argc, char *argv[])
   auto col = 7;
   auto row = 2;
 
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
+  mlir_aie_init_device(xaie);
 
   // Run auto generated config functions
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
+  mlir_aie_configure_cores(xaie);
+  mlir_aie_configure_switchboxes(xaie);
+  mlir_aie_initialize_locks(xaie);
+  mlir_aie_configure_dmas(xaie);
 
-  ACDC_print_tile_status(xaie->TileInst[col][row]);
+  mlir_aie_start_cores(xaie);
+
+  mlir_aie_print_tile_status(xaie, col, row);
 
   XAieDma_Shim ShimDmaInst1;
   uint32_t *bram_ptr;
@@ -63,8 +55,8 @@ main(int argc, char *argv[])
 
   // Write over the tile memory buffers
   for (int i=0; i<256; i++) {
-    mlir_write_buffer_b0(i, 0xdeadbeef);
-    mlir_write_buffer_b1(i, 0x1234FEDC);
+    mlir_aie_write_buffer_b0(xaie, i, 0xdeadbeef);
+    mlir_aie_write_buffer_b1(xaie, i, 0x1234FEDC);
   }
 
   auto burstlen = 4;
@@ -90,17 +82,17 @@ main(int argc, char *argv[])
     }
   }
 
-  ACDC_print_tile_status(xaie->TileInst[col][row]);
+  mlir_aie_print_tile_status(xaie, col, row);
   
   // Read back the tile memory buffers
   int errors = 0;
   for (int i=0; i<BUFFER_SIZE; i++) {
-    uint32_t d = mlir_read_buffer_b0(i);
-     ACDC_check("Check Result b0:", d, i+1, errors);
+    uint32_t d = mlir_aie_read_buffer_b0(xaie, i);
+     mlir_aie_check("Check Result b0:", d, i+1, errors);
   }
   for (int i=0; i<BUFFER_SIZE; i++) {
-    uint32_t d = mlir_read_buffer_b1(i);
-    ACDC_check("Check Result b1:", d, i+BUFFER_SIZE+1, errors);
+    uint32_t d = mlir_aie_read_buffer_b1(xaie, i);
+    mlir_aie_check("Check Result b1:", d, i+BUFFER_SIZE+1, errors);
   }
 
   if (!errors) {
@@ -111,4 +103,5 @@ main(int argc, char *argv[])
     return -1;
   }
 
+  mlir_aie_deinit_libxaie(xaie);
 }

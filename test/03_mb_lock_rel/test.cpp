@@ -14,18 +14,7 @@
 #define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
 #define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
 
-namespace {
-
-// global libxaie state
-air_libxaie1_ctx_t *xaie;
-
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
 #include "aie_inc.cpp"
-#undef TileInst
-#undef TileDMAInst
-
-}
 
 int main(int argc, char *argv[])
 {
@@ -34,20 +23,21 @@ int main(int argc, char *argv[])
   auto num_rows = 1;
   auto num_cols = 1;
 
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
+  mlir_aie_init_device(xaie);
 
-  ACDC_print_tile_status(xaie->TileInst[col][row]);
+  mlir_aie_print_tile_status(xaie, col, row);
 
   // Run auto generated config functions
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
+  mlir_aie_configure_cores(xaie);
+  mlir_aie_configure_switchboxes(xaie);
+  mlir_aie_initialize_locks(xaie);
 
   XAieTile_LockRelease(&(xaie->TileInst[col][2]), 0, 1, 0);
   auto lock_ret = XAieTile_LockAcquire(&(xaie->TileInst[col][2]), 0, 1, 10000);
   assert(lock_ret);
 
-  mlir_configure_dmas();
+  mlir_aie_configure_dmas(xaie);
 
   // create the queue
   queue_t *q = nullptr;
@@ -107,7 +97,7 @@ int main(int argc, char *argv[])
 
   // we copied the start of the shared bram into tile memory,
   // fish out the queue id and check it
-  uint32_t d = mlir_read_buffer_b0(24);
+  uint32_t d = mlir_aie_read_buffer_b0(xaie, 24);
   printf("ID %x\n", d);
 
   if (d == 0xacdc) {

@@ -19,18 +19,7 @@
 
 #define SHMEM_BASE 0x020100000000LL
 
-namespace {
-
-// global libxaie state
-air_libxaie1_ctx_t *xaie;
-
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
 #include "aie_inc.cpp"
-#undef TileInst
-#undef TileDMAInst
-
-}
 
 #define IMAGE_WIDTH 128
 #define IMAGE_HEIGHT 16
@@ -48,23 +37,24 @@ main(int argc, char *argv[])
   uint64_t col = 7;
   uint64_t row = 0;
 
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
+  mlir_aie_init_device(xaie);
 
-  ACDC_print_dma_status(xaie->TileInst[7][2]);
+  mlir_aie_print_dma_status(xaie, 7, 2);
 
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
-  mlir_start_cores();
+  mlir_aie_configure_cores(xaie);
+  mlir_aie_configure_switchboxes(xaie);
+  mlir_aie_initialize_locks(xaie);
+  mlir_aie_configure_dmas(xaie);
+  mlir_aie_start_cores(xaie);
 
   XAieDma_Shim ShimDmaInst1;
   uint32_t *bram_ptr;
 
   // We're going to stamp over the memories
   for (int i=0; i<2*TILE_SIZE; i++) {
-    mlir_write_buffer_buf72_0(i, 0xdeadbeef);
-    mlir_write_buffer_buf72_1(i, 0xfeedface);
+    mlir_aie_write_buffer_buf72_0(xaie, i, 0xdeadbeef);
+    mlir_aie_write_buffer_buf72_1(xaie, i, 0xfeedface);
   }
   // create the queue
   queue_t *q = nullptr;
@@ -111,14 +101,14 @@ main(int argc, char *argv[])
   air_packet_nd_memcpy(pkt_a, 0, col, 1, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), 1, 0);
   air_queue_dispatch_and_wait(q, wr_idx-1, pkt_c);
 
-  ACDC_print_dma_status(xaie->TileInst[7][2]);
-  ACDC_print_dma_status(xaie->TileInst[7][4]);
+  mlir_aie_print_dma_status(xaie, 7, 2);
+  mlir_aie_print_dma_status(xaie, 7, 4);
   uint32_t errs = 0;
   // Can check the tile memory however it will be last two tiles transferred into the ping-pong tiles
   // NOTE this is set up for IMAGE_WIDTH 32
   //for (int j=0; j<2; j++) {
   //  for (int i=0; i<TILE_SIZE; i++) {
-  //    uint32_t d = mlir_read_buffer_buf72_0(i+TILE_SIZE*j);
+  //    uint32_t d = mlir_aie_read_buffer_buf72_0(xaie, i+TILE_SIZE*j);
   //    u32 row = i / TILE_WIDTH;
   //    u32 col = i % TILE_WIDTH;
   //    u32 o_i = row * IMAGE_WIDTH + col + TILE_WIDTH*j; 

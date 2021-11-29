@@ -14,19 +14,8 @@
 #include "air_host.h"
 #include "acdc_queue.h"
 #include "hsa_defs.h"
-
-namespace {
-
-// global libxaie state
-air_libxaie1_ctx_t *xaie;
-
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
+#include "test_library.h"
 #include "aie_inc.cpp"
-#undef TileInst
-#undef TileDMAInst
-
-}
 
 int
 main(int argc, char *argv[])
@@ -35,13 +24,14 @@ main(int argc, char *argv[])
   uint64_t col  = 7;
   uint64_t col2 = 34;
 
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
+  mlir_aie_init_device(xaie);
 
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
-  mlir_start_cores();
+  mlir_aie_configure_cores(xaie);
+  mlir_aie_configure_switchboxes(xaie);
+  mlir_aie_initialize_locks(xaie);
+  mlir_aie_configure_dmas(xaie);
+  mlir_aie_start_cores(xaie);
 
   uint32_t *bram_ptr;
 
@@ -59,14 +49,14 @@ main(int argc, char *argv[])
   }
 
   for (int i=0; i<8; i++) {
-    mlir_write_buffer_ping_in(i, 0xabbaba10+i);
-    mlir_write_buffer_pong_in(i, 0xdeeded10+i);
-    mlir_write_buffer_ping_out(i, 0x12345610+i);
-    mlir_write_buffer_pong_out(i, 0x76543210+i);
-    mlir_write_buffer_ping_in2(i, 0xabbaba20+i);
-    mlir_write_buffer_pong_in2(i, 0xdeeded20+i);
-    mlir_write_buffer_ping_out2(i, 0x12345620+i);
-    mlir_write_buffer_pong_out2(i, 0x76543220+i);
+    mlir_aie_write_buffer_ping_in(xaie, i, 0xabbaba10+i);
+    mlir_aie_write_buffer_pong_in(xaie, i, 0xdeeded10+i);
+    mlir_aie_write_buffer_ping_out(xaie, i, 0x12345610+i);
+    mlir_aie_write_buffer_pong_out(xaie, i, 0x76543210+i);
+    mlir_aie_write_buffer_ping_in2(xaie, i, 0xabbaba20+i);
+    mlir_aie_write_buffer_pong_in2(xaie, i, 0xdeeded20+i);
+    mlir_aie_write_buffer_ping_out2(xaie, i, 0x12345620+i);
+    mlir_aie_write_buffer_pong_out2(xaie, i, 0x76543220+i);
   }
 
   // create the queues
@@ -138,10 +128,10 @@ main(int argc, char *argv[])
   int errors = 0;
 
   for (int i=0; i<8; i++) {
-    uint32_t d0 = mlir_read_buffer_ping_in(i);
-    uint32_t d1 = mlir_read_buffer_pong_in(i);
-    uint32_t d2 = mlir_read_buffer_ping_out(i);
-    uint32_t d3 = mlir_read_buffer_pong_out(i);
+    uint32_t d0 = mlir_aie_read_buffer_ping_in(xaie, i);
+    uint32_t d1 = mlir_aie_read_buffer_pong_in(xaie, i);
+    uint32_t d2 = mlir_aie_read_buffer_ping_out(xaie, i);
+    uint32_t d3 = mlir_aie_read_buffer_pong_out(xaie, i);
     if (d0+1 != d2) {
       printf("1 mismatch ping %x != %x\n", d0, d2);
       errors++;
@@ -160,10 +150,10 @@ main(int argc, char *argv[])
     }
   }
   for (int i=0; i<8; i++) {
-    uint32_t d0 = mlir_read_buffer_ping_in2(i);
-    uint32_t d1 = mlir_read_buffer_pong_in2(i);
-    uint32_t d2 = mlir_read_buffer_ping_out2(i);
-    uint32_t d3 = mlir_read_buffer_pong_out2(i);
+    uint32_t d0 = mlir_aie_read_buffer_ping_in2(xaie, i);
+    uint32_t d1 = mlir_aie_read_buffer_pong_in2(xaie, i);
+    uint32_t d2 = mlir_aie_read_buffer_ping_out2(xaie, i);
+    uint32_t d3 = mlir_aie_read_buffer_pong_out2(xaie, i);
     if (d0+1 != d2) {
       printf("2 mismatch ping %x != %x\n", d0, d2);
       errors++;

@@ -15,20 +15,9 @@
 #include "air_tensor.h"
 #include "test_library.h"
 
-namespace {
-
-// global libxaie state
-air_libxaie1_ctx_t *xaie;
-
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
 #include "aie_inc.cpp"
-#undef TileInst
-#undef TileDMAInst
 
 queue_t *q = nullptr;
-
-}
 
 int
 main(int argc, char *argv[])
@@ -36,12 +25,13 @@ main(int argc, char *argv[])
   uint64_t row = 0;
   uint64_t col = 7;
 
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
+  mlir_aie_init_device(xaie);
 
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
+  mlir_aie_configure_cores(xaie);
+  mlir_aie_configure_switchboxes(xaie);
+  mlir_aie_initialize_locks(xaie);
+  mlir_aie_configure_dmas(xaie);
 
   // create the queue
   auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
@@ -66,9 +56,9 @@ main(int argc, char *argv[])
   auto i = &input;
   graph_fn(i);
 
-  ACDC_print_dma_status(xaie->TileInst[7][2]);
+  mlir_aie_print_dma_status(xaie, 7, 2);
 
-  uint32_t d = mlir_read_buffer_buf0(24);
+  uint32_t d = mlir_aie_read_buffer_buf0(xaie, 24);
   printf("ID %x\n", d);
 
   if (d == 0xacdc) {
