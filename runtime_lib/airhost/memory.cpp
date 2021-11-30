@@ -69,7 +69,7 @@ int64_t shim_channel_data(air_herd_shim_desc_t *sd, int i, int j, int k) {
 extern "C" {
 
 extern air_rt_herd_desc_t _air_host_active_herd;
-extern air_libxaie1_ctx_t *_air_host_active_libxaie1;
+extern aie_libxaie_ctx_t *_air_host_active_libxaie1;
 extern uint32_t *_air_host_bram_ptr;
 
 }
@@ -190,7 +190,7 @@ void air_mem_shim_memcpy4d_impl(uint32_t id, uint64_t x, uint64_t y, void* t,
       count++;
       if (!(count % 1000)) {
         printf("%d seconds\n",count/1000);
-        if (count == 2000) break;
+        if (count == 5000) break;
       }
     }
     //addr += elem_per_stride;
@@ -256,7 +256,7 @@ void air_mem_shim_memcpy2d_impl(uint32_t id, uint64_t x, uint64_t y, void* t,
       count++;
       if (!(count % 1000)) {
         printf("%d seconds\n",count/1000);
-        if (count == 2000) break;
+        if (count == 5000) break;
       }
     }
     //addr += elem_per_stride;
@@ -308,22 +308,59 @@ void air_shim_memcpy_queue_impl(uint32_t id, uint64_t x, uint64_t y, void* t, ui
 }
 
 template<typename T>
-void air_mem_dma_nd_memcpy_impl(uint32_t id, uint64_t x, uint64_t y, T* t, uint32_t space,
+void air_mem_shim_nd_memcpy_queue_impl(uint32_t id, uint64_t x, uint64_t y, T* t, uint32_t space,
+                                 uint64_t offset_3, uint64_t offset_2, uint64_t offset_1, uint64_t offset_0,
+                                 uint64_t length_3, uint64_t length_2, uint64_t length_1, uint64_t length_0,
+                                 uint64_t stride_2, uint64_t stride_1, uint64_t stride_0) {
+  assert(_air_host_active_herd.herd_desc && "cannot shim memcpy without active herd");
+  assert(_air_host_active_herd.q && "cannot shim memcpy using a queue without active queue");
+
+
+}
+
+extern "C" void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length);
+
+template<typename T, int R>
+void air_mem_shim_nd_memcpy_impl(uint32_t id, uint64_t x, uint64_t y, tensor_t<T, R>* t, uint32_t space,
                                 uint64_t offset_3, uint64_t offset_2, uint64_t offset_1, uint64_t offset_0,
-                                uint64_t length_3, uint64_t length_2, uint64_t length_1, uint64_t length_0,
-                                uint64_t stride_2, uint64_t stride_1, uint64_t stride_0) {
-                              
-  //auto shim_desc = _air_host_active_herd.herd_desc->shim_desc;
-  auto dma_col = -1;//shim_location_data(shim_desc, id-1, x, y);
-  auto dma_chan = -1;//shim_channel_data(shim_desc, id-1, x, y);
+                                uint64_t length_4d, uint64_t length_3d, uint64_t length_2d, uint64_t length_1d,
+                                uint64_t stride_4d, uint64_t stride_3d, uint64_t stride_2d)
+{
+  // printf("Do transfer %p with id %d on behalf of x=%ld, y=%ld space %d, offset [%ld,%ld,%ld,%ld], length [%ld,%ld,%ld,%ld], stride [%ld,%ld,%ld]\n",
+  //        t->d, id, x, y, space,
+  //        offset_3, offset_2, offset_1, offset_0,
+  //        length_4d, length_3d, length_2d, length_1d,
+  //        stride_4d, stride_3d, stride_2d);
 
-  //tensor_t<uint32_t,2> *tt = (tensor_t<uint32_t,2> *)t;
-
-  printf("Do transfer %p with id %d on behalf of x=%ld, y=%ld dma col %d channel %d, space %d, offset [%ld,%ld,%ld,%ld], length [%ld,%ld,%ld,%ld], stride [%ld,%ld,%ld]\n",
-         t->d, id, x, y, dma_col, dma_chan, space,
-         offset_3, offset_2, offset_1, offset_0,
-         length_3, length_2, length_1, length_0,
-         stride_2, stride_1, stride_0);
+  size_t stride = 1;
+  size_t offset = 0;
+  std::vector<uint64_t> offsets{offset_0, offset_1, offset_2, offset_3};
+  for (int i=0; i<R; i++) {
+    offset += offsets[i] * stride;
+    stride *= t->shape[i];
+  }
+  // printf("offset %d stride %d\n",offset, stride);
+  size_t p = (size_t)t->d + offset;
+  size_t paddr_3d = p;
+  size_t paddr_2d = p;
+  size_t paddr_1d = p;
+  uint64_t index_3d=0;
+  uint64_t index_2d=0;
+  for (uint64_t index_4d=0;index_4d<length_4d;index_4d++) {
+    for (;index_3d<length_3d;index_3d++) {
+      for (;index_2d<length_2d;index_2d++) {
+        _mlir_ciface_air_shim_memcpy(id, x, y, t, paddr_1d-(size_t)t->d, length_1d);
+        paddr_1d += stride_2d;
+      }
+      index_2d = 0;
+      paddr_2d += stride_3d;
+      if (index_3d+1<length_3d) paddr_1d = paddr_2d;
+      else paddr_1d = paddr_3d + stride_4d;
+    }
+    index_3d = 0;
+    paddr_3d += stride_4d;
+    paddr_2d = paddr_3d;
+  }
 }
 
 extern "C"  {
@@ -356,10 +393,17 @@ void _mlir_ciface_air_dma_nd_memcpy_##mangle( \
   uint64_t stride_2, uint64_t stride_1, uint64_t stride_0) \
 { \
   tensor_t<type, rank> *tt = (tensor_t<type, rank>*)t; \
-  air_mem_dma_nd_memcpy_impl(id, x, y, tt, space, \
-                             offset_3, offset_2, offset_1, offset_0, \
-                             length_3, length_2, length_1, length_0, \
-                             stride_2, stride_1, stride_0); \
+  if (_air_host_active_herd.q) { \
+    air_mem_shim_nd_memcpy_queue_impl(id, x, y, tt, space, \
+                                     offset_3, offset_2, offset_1, offset_0, \
+                                     length_3, length_2, length_1, length_0, \
+                                     stride_2, stride_1, stride_0); \
+  } else { \
+    air_mem_shim_nd_memcpy_impl(id, x, y, tt, space, \
+                               offset_3, offset_2, offset_1, offset_0, \
+                               length_3, length_2, length_1, length_0, \
+                               stride_2, stride_1, stride_0); \
+  } \
 }
 
 mlir_air_dma_nd_memcpy(1d0i32, 1, 2, uint32_t);
