@@ -10,21 +10,24 @@
 
 #include <string>
 
+#define XAIE_NUM_ROWS 8
+#define XAIE_NUM_COLS 50
+
 // temporary solution to stash some state
 extern "C" {
 
 air_rt_herd_desc_t _air_host_active_herd = {nullptr, nullptr};
-air_libxaie1_ctx_t *_air_host_active_libxaie1 = nullptr;
+aie_libxaie_ctx_t *_air_host_active_libxaie1 = nullptr;
 uint32_t *_air_host_bram_ptr = nullptr;
 air_module_handle_t _air_host_active_module = (air_module_handle_t)nullptr;
 
 }
 
-air_libxaie1_ctx_t *
+aie_libxaie_ctx_t *
 air_init_libxaie1()
 {
-  air_libxaie1_ctx_t *xaie =
-    (air_libxaie1_ctx_t*)malloc(sizeof(air_libxaie1_ctx_t));
+  aie_libxaie_ctx_t *xaie =
+    (aie_libxaie_ctx_t*)malloc(sizeof(aie_libxaie_ctx_t));
   if (!xaie)
     return 0;
 
@@ -40,7 +43,7 @@ air_init_libxaie1()
 }
 
 void
-air_deinit_libxaie1(air_libxaie1_ctx_t *xaie)
+air_deinit_libxaie1(aie_libxaie_ctx_t *xaie)
 {
   if (xaie == _air_host_active_libxaie1)
     _air_host_active_libxaie1 = nullptr;

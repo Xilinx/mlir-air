@@ -28,7 +28,10 @@ declare_mlir_python_sources(AirPythonSources.Dialects
 #   DIALECT_NAME torch
 # )
 
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../runtime_lib/airhost/include)
+include_directories(
+  ${AIE_INCLUDE_DIRS}/../runtime_lib
+  ${CMAKE_CURRENT_SOURCE_DIR}/../runtime_lib/airhost/include
+)
 link_directories(${CMAKE_CURRENT_BINARY_DIR}/../runtime_lib/airhost)
 
 ################################################################################

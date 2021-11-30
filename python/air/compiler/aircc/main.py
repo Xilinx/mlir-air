@@ -22,8 +22,6 @@ def emit_wrapper(herd_name="herd", include_name="aie.inc"):
 #include "assert.h"
 #include "air_host.h"
 
-#define aie_libxaie_ctx_t air_libxaie1_ctx_t
-
 namespace air {
 namespace herds {
 """
@@ -135,7 +133,8 @@ def run(mlir_module, args):
     t = do_run(['air-translate', '--airrt-generate-json', aie_ctrl_airrt])
     module_meta = eval(t.stdout)
     herds = [module_meta[herd]["sym_name"] for herd in module_meta]
-    print ("Compiling herds:", herds)
+    if opts.verbose:
+      print ("Compiling herds:", herds)
     obj_files = [aie_ctrl_obj]
     for herd in herds:
       herd_file = opts.tmpdir+'/aie.'+herd+'.mlir'
@@ -164,6 +163,7 @@ def run(mlir_module, args):
       cmd += ['-I.', f'-I{opts.sysroot}/opt/xaiengine/include']
       thispath = os.path.dirname(os.path.realpath(__file__))
       cmd += [f'-I{thispath}/../../../../runtime_lib/airhost/include']
+      cmd += [f'-I{thispath}/../../../../runtime_lib']
       cmd += ['-DAIE_LIBXAIE_ENABLE', '-fPIC', '-c']
       cmd += ['-o', obj_file, cpp_file]
       do_call(cmd)
@@ -256,6 +256,7 @@ def run_flow(opts):
         cmd += ['--sysroot=%s' % opts.sysroot]
       cmd += ['-I.', f'-I{opts.sysroot}/opt/xaiengine/include']
       cmd += [f'-I{thispath}/../../../../runtime_lib/airhost/include']
+      cmd += [f'-I{thispath}/../../../../runtime_lib']
       cmd += ['-DAIE_LIBXAIE_ENABLE', '-fPIC', '-c']
       cmd += ['-o', obj_file, cpp_file]
       do_call(cmd)

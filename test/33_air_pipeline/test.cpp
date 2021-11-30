@@ -17,20 +17,11 @@
 #include "air_host.h"
 #include "air_tensor.h"
 
-namespace {
-
-// global libxaie state
-air_libxaie1_ctx_t *xaie;
-
-}
-
 int
 main(int argc, char *argv[])
 {
   auto col = 3;
   auto row = 3;
-
-  xaie = air_init_libxaie1();
 
   // create the queue
   queue_t *q = nullptr;

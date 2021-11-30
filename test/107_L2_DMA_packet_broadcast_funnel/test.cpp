@@ -9,18 +9,9 @@
 
 #include "air_host.h"
 #include "test_library.h"
-
-#define XAIE_NUM_ROWS            8
-#define XAIE_NUM_COLS           50
-#define XAIE_ADDR_ARRAY_OFF     0x800
-
-#define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
-#define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
-
 #include "aie_inc.cpp"
 
 #define L2_DMA_BASE 0x020240000000LL
-#define SHMEM_BASE  0x020100000000LL
 
 struct dma_cmd_t {
   uint8_t select;
@@ -46,10 +37,10 @@ int main(int argc, char *argv[])
   mlir_aie_start_cores(xaie);
 
   for (int i=0; i<512; i++) {
-    mlir_aie_write_buffer_buf1(i,i+0x1000);
-    mlir_aie_write_buffer_buf2(i,i+0x2000);
-    mlir_aie_write_buffer_buf3(i,i+0x3000);
-    mlir_aie_write_buffer_buf4(i,i+0x4000);
+    mlir_aie_write_buffer_buf1(xaie,i,i+0x1000);
+    mlir_aie_write_buffer_buf2(xaie,i,i+0x2000);
+    mlir_aie_write_buffer_buf3(xaie,i,i+0x3000);
+    mlir_aie_write_buffer_buf4(xaie,i,i+0x4000);
   }
 
   mlir_aie_print_dma_status(xaie, 7, 1);

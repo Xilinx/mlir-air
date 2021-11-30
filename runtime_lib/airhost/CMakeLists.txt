@@ -1,3 +1,9 @@
+
+include_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${AIE_INCLUDE_DIRS}/../runtime_lib
+)
+
 if(LIBXAIE_FOUND)
 add_library(airhost STATIC
     memory.cpp
@@ -12,10 +18,6 @@ add_library(airhost_shared SHARED
     host.cpp
     )
 set_property(TARGET airhost_shared PROPERTY POSITION_INDEPENDENT_CODE ON)
-
-include_directories(
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
 
 target_link_libraries(airhost
   ${AIR_LIBXAIE_LIBS}

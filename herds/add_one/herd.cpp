@@ -13,16 +13,6 @@
 
 #define INPUT_SIZE 256
 
-namespace {
-
-//
-// global q ptr
-//
-queue_t *q = nullptr;
-
-}
-
-
 namespace air::herds::herd_0 {
 int32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t*, int);
 int32_t mlir_aie_read_buffer_buf1(aie_libxaie_ctx_t*, int);
@@ -48,7 +38,9 @@ main(int argc, char *argv[])
 {
   uint64_t col = 7;
 
-  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie1();
+  queue_t *q = nullptr;
+
+  aie_libxaie_ctx_t *xaie = air_init_libxaie1();
 
   // mlir_aie_print_tile_status(xaie,7,2);
 

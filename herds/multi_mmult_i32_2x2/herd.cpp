@@ -19,16 +19,10 @@
 
 #include <sys/time.h>
 
-#define VERBOSE 1
+#define VERBOSE 0
 #define PROFILE 1
 
 namespace {
-
-//
-// global q ptr
-//
-queue_t *q = nullptr;
-uint32_t *bram_ptr;
 
 template<typename T>
 void mm_out(tensor_t<T,2> *a, tensor_t<T,2> *b, tensor_t<T,2> *r)
@@ -66,7 +60,10 @@ main(int argc, char *argv[])
   uint64_t col = 7;
   uint64_t row = 2;
 
-  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie1();
+  queue_t *q = nullptr;
+  uint32_t *bram_ptr;
+
+  aie_libxaie_ctx_t *xaie = air_init_libxaie1();
 
   if (VERBOSE)
     mlir_aie_print_tile_status(xaie,col,2);
@@ -162,13 +159,13 @@ main(int argc, char *argv[])
     printf("diff   %ld.%06ld\n",diff_s, diff_us);
   }
 
-  if (VERBOSE)
+  if (VERBOSE) {
     mlir_aie_print_tile_status(xaie,col,2);
-
-  for (int i=0; i<64; i++) {
-    // printf("%d\n", air::herds::herd_0::mlir_aie_read_buffer_buf0(i));
-    // printf("%d\n", air::herds::herd_0::mlir_aie_read_buffer_buf1(i));
-    // printf("%d\n", air::herds::herd_0::mlir_aie_read_buffer_buf2(i));
+    for (int i=0; i<64; i++) {
+      printf("%d\n", air::herds::herd_0::mlir_aie_read_buffer_buf0(i));
+      printf("%d\n", air::herds::herd_0::mlir_aie_read_buffer_buf1(i));
+      printf("%d\n", air::herds::herd_0::mlir_aie_read_buffer_buf2(i));
+    }
   }
 
   int errors = 0;

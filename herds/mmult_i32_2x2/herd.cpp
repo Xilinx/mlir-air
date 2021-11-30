@@ -19,12 +19,10 @@
 
 #include <sys/time.h>
 
-#define VERBOSE 1
+#define VERBOSE 0
 #define PROFILE 1
 
 namespace {
-
-queue_t *q = nullptr;
 
 template<typename T>
 void mm_out(tensor_t<T,2> *a, tensor_t<T,2> *b, tensor_t<T,2> *r)
@@ -63,10 +61,12 @@ main(int argc, char *argv[])
   uint64_t col = 7;
   uint64_t row = 2;
 
-  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie1();
+  queue_t *q = nullptr;
 
-  // if (VERBOSE)
-  //   mlir_aie_print_tile_status(xaie,col,2);
+  aie_libxaie_ctx_t *xaie = air_init_libxaie1();
+
+  if (VERBOSE)
+    mlir_aie_print_tile_status(xaie,col,2);
 
   auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
   assert(ret == 0 && "failed to create queue!");
@@ -143,13 +143,13 @@ main(int argc, char *argv[])
     printf("diff   %ld.%06ld\n",diff_s, diff_us);
   }
 
-  // if (VERBOSE)
-  //   mlir_aie_print_tile_status(xaie,col,2);
-
-  for (int i=0; i<64; i++) {
-    //printf("%d\n", mlir_aie_read_buffer_buf0(xaie, i));
-    //printf("%d\n", mlir_aie_read_buffer_buf1(xaie, i));
-    //printf("%d\n", mlir_aie_read_buffer_buf2(xaie, i));
+  if (VERBOSE) {
+    mlir_aie_print_tile_status(xaie,col,2);
+    for (int i=0; i<64; i++) {
+      printf("%d\n", mlir_aie_read_buffer_buf0(xaie, i));
+      printf("%d\n", mlir_aie_read_buffer_buf1(xaie, i));
+      printf("%d\n", mlir_aie_read_buffer_buf2(xaie, i));
+    }
   }
 
   int errors = 0;

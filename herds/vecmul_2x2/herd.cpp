@@ -22,15 +22,6 @@
 #define VERBOSE 1
 #define PROFILE 1
 
-namespace {
-
-//
-// global q ptr
-//
-queue_t *q = nullptr;
-
-}
-
 #define GRID_SIZE 4096
 
 namespace air::herds::herd_0 {
@@ -68,7 +59,9 @@ main(int argc, char *argv[])
   uint64_t col = 7;
   uint64_t row = 2;
 
-  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie1();
+  queue_t *q = nullptr;
+
+  aie_libxaie_ctx_t *xaie = air_init_libxaie1();
 
   if (VERBOSE)
     mlir_aie_print_tile_status(xaie, col, row);
