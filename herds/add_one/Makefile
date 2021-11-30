@@ -10,9 +10,6 @@ all: herd.exe
 %.o: %.cpp
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# add_one.mlir: add_one.py
-# 	python3 $< > $@ 
-
 add_one.affine.mlir: add_one.mlir
 	$(ATEN_OPT) -aten-to-xten \
 				-xten-to-affine \
@@ -66,7 +63,7 @@ add_one.air.mlir: add_one.tiled_2.mlir
 				-o $@ $<
 
 add_one.air.a: add_one.air.mlir
-	aircc.py --sysroot=${SYSROOT} -o $@ -row-offset=2 -col-offset=7 $<
+	aircc.py --sysroot=${SYSROOT} -o $@ -row-offset=2 -col-offset=7 $< -v
 
 clean::
 	rm -rf air_project add_one.*.mlir *.elf *.exe *.o *.a 

@@ -24,14 +24,7 @@
 
 namespace {
 
-air_libxaie1_ctx_t *xaie;
-
-//
-// global q ptr
-//
 queue_t *q = nullptr;
-
-}
 
 template<typename T>
 void mm_out(tensor_t<T,2> *a, tensor_t<T,2> *b, tensor_t<T,2> *r)
@@ -55,10 +48,12 @@ void mm_out(tensor_t<T,2> *a, tensor_t<T,2> *b, tensor_t<T,2> *r)
   }
 }
 
+}
+
 namespace air::herds::herd_0 {
-int32_t mlir_read_buffer_buf0(int index);
-int32_t mlir_read_buffer_buf1(int index);
-int32_t mlir_read_buffer_buf2(int index);
+int32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t *, int);
+int32_t mlir_aie_read_buffer_buf1(aie_libxaie_ctx_t *, int);
+int32_t mlir_aie_read_buffer_buf2(aie_libxaie_ctx_t *, int);
 }
 using namespace air::herds::herd_0;
 
@@ -68,10 +63,10 @@ main(int argc, char *argv[])
   uint64_t col = 7;
   uint64_t row = 2;
 
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie1();
 
-  if (VERBOSE)
-    ACDC_print_tile_status(xaie->TileInst[col][2]);
+  // if (VERBOSE)
+  //   mlir_aie_print_tile_status(xaie,col,2);
 
   auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
   assert(ret == 0 && "failed to create queue!");
@@ -109,7 +104,7 @@ main(int argc, char *argv[])
   output_ref0.shape[0] = output_ref0.shape[1] = M_SIZE;
   output_ref0.d = output_ref0.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output_ref0.shape[0]*output_ref0.shape[1]);
 
-  auto handle = air_module_load_from_file(nullptr);
+  auto handle = air_module_load_from_file(nullptr,q);
   assert(handle && "failed to open linked air module");
 
   auto herd_fn = (void (*)(void*,void *,void*))dlsym((void*)handle, "_mlir_ciface_forward");
@@ -148,13 +143,13 @@ main(int argc, char *argv[])
     printf("diff   %ld.%06ld\n",diff_s, diff_us);
   }
 
-  if (VERBOSE)
-    ACDC_print_tile_status(xaie->TileInst[col][2]);
+  // if (VERBOSE)
+  //   mlir_aie_print_tile_status(xaie,col,2);
 
   for (int i=0; i<64; i++) {
-    //printf("%d\n", mlir_read_buffer_buf0(i));
-    //printf("%d\n", mlir_read_buffer_buf1(i));
-    //printf("%d\n", mlir_read_buffer_buf2(i));
+    //printf("%d\n", mlir_aie_read_buffer_buf0(xaie, i));
+    //printf("%d\n", mlir_aie_read_buffer_buf1(xaie, i));
+    //printf("%d\n", mlir_aie_read_buffer_buf2(xaie, i));
   }
 
   int errors = 0;
@@ -164,6 +159,7 @@ main(int argc, char *argv[])
     auto ref = output_ref0.d[i];
     if (d != ref) {
       errors++;
+      if (errors < 10)
       printf("%04X: mismatch %d != %d\n", i, d, ref);
     }
   }

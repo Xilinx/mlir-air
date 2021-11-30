@@ -24,21 +24,11 @@
 
 namespace {
 
-air_libxaie1_ctx_t *xaie;
-
-// #define TileInst (xaie->TileInst)
-// #define TileDMAInst (xaie->TileDMAInst)
-// #include "aie.inc"
-// #undef TileInst
-// #undef TileDMAInst
-
 //
 // global q ptr
 //
 queue_t *q = nullptr;
 uint32_t *bram_ptr;
-
-}
 
 template<typename T>
 void mm_out(tensor_t<T,2> *a, tensor_t<T,2> *b, tensor_t<T,2> *r)
@@ -62,10 +52,12 @@ void mm_out(tensor_t<T,2> *a, tensor_t<T,2> *b, tensor_t<T,2> *r)
   }
 }
 
+}
+
 namespace air::herds::herd_0 {
-int32_t mlir_read_buffer_buf0(int index);
-int32_t mlir_read_buffer_buf1(int index);
-int32_t mlir_read_buffer_buf2(int index);
+int32_t mlir_aie_read_buffer_buf0(int index);
+int32_t mlir_aie_read_buffer_buf1(int index);
+int32_t mlir_aie_read_buffer_buf2(int index);
 }
 
 int
@@ -74,13 +66,13 @@ main(int argc, char *argv[])
   uint64_t col = 7;
   uint64_t row = 2;
 
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie1();
 
   if (VERBOSE)
-    ACDC_print_tile_status(xaie->TileInst[col][2]);
+    mlir_aie_print_tile_status(xaie,col,2);
 
   if (VERBOSE)
-    ACDC_print_tile_status(xaie->TileInst[col][2]);
+    mlir_aie_print_tile_status(xaie,col,2);
 
   auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
   assert(ret == 0 && "failed to create queue!");
@@ -171,12 +163,12 @@ main(int argc, char *argv[])
   }
 
   if (VERBOSE)
-    ACDC_print_tile_status(xaie->TileInst[col][2]);
+    mlir_aie_print_tile_status(xaie,col,2);
 
   for (int i=0; i<64; i++) {
-    // printf("%d\n", air::herds::herd_0::mlir_read_buffer_buf0(i));
-    // printf("%d\n", air::herds::herd_0::mlir_read_buffer_buf1(i));
-    // printf("%d\n", air::herds::herd_0::mlir_read_buffer_buf2(i));
+    // printf("%d\n", air::herds::herd_0::mlir_aie_read_buffer_buf0(i));
+    // printf("%d\n", air::herds::herd_0::mlir_aie_read_buffer_buf1(i));
+    // printf("%d\n", air::herds::herd_0::mlir_aie_read_buffer_buf2(i));
   }
 
   int errors = 0;
