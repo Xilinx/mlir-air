@@ -147,11 +147,11 @@ air_herd_load(const char *name) {
     assert(mlir->initialize_locks);
     assert(mlir->configure_dmas);
     assert(mlir->start_cores);
-    mlir->configure_cores();
-    mlir->configure_switchboxes();
-    mlir->initialize_locks();
-    mlir->configure_dmas();
-    mlir->start_cores();
+    mlir->configure_cores(_air_host_active_libxaie1);
+    mlir->configure_switchboxes(_air_host_active_libxaie1);
+    mlir->initialize_locks(_air_host_active_libxaie1);
+    mlir->configure_dmas(_air_host_active_libxaie1);
+    mlir->start_cores(_air_host_active_libxaie1);
   }
 
   return 0;

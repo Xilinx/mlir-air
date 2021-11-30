@@ -21,19 +21,15 @@ def emit_wrapper(herd_name="herd", include_name="aie.inc"):
 #include "stdio.h"
 #include "assert.h"
 #include "air_host.h"
-extern air_libxaie1_ctx_t *_air_host_active_libxaie1;
+
+#define aie_libxaie_ctx_t air_libxaie1_ctx_t
+
 namespace air {
 namespace herds {
 """
-    s = s + f'namespace {herd_name} {{'
-    s = s + """
-#define TileInst (_air_host_active_libxaie1->TileInst)
-#define TileDMAInst (_air_host_active_libxaie1->TileDMAInst)
-"""
+    s = s + f'namespace {herd_name} {{\n'
     s = s + f'#include "{include_name}"'
     s = s + """
-#undef TileInst
-#undef TileDMAInst
 }
 }
 }
@@ -44,11 +40,11 @@ extern "C" {
 """
     s = s + f'air_rt_aie_functions_t __airrt_{herd_name}_aie_functions {{'
     s = s + """
-  .configure_cores = &mlir_configure_cores,
-  .configure_switchboxes = &mlir_configure_switchboxes,
-  .initialize_locks = &mlir_initialize_locks,
-  .configure_dmas = &mlir_configure_dmas,
-  .start_cores = &mlir_start_cores
+  .configure_cores = &mlir_aie_configure_cores,
+  .configure_switchboxes = &mlir_aie_configure_switchboxes,
+  .initialize_locks = &mlir_aie_initialize_locks,
+  .configure_dmas = &mlir_aie_configure_dmas,
+  .start_cores = &mlir_aie_start_cores
 };
 }
 """
