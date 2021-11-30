@@ -8,7 +8,7 @@ include ../config.make
 all: test aie_ctrl.so
 
 air_project/air.mlir.copyherd.inc: air.mlir
-	aircc.py -row-offset=2 -col-offset=7 $<
+	aircc.py --sysroot=${SYSROOT} -row-offset=2 -col-offset=7 $<
 
 test.exe: air_project/air.mlir.copyherd.inc test.o 
 	$(CC) test.o \

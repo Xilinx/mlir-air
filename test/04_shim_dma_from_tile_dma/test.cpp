@@ -10,7 +10,6 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <xaiengine.h>
-#include "test_library.h"
 
 #include "air_host.h"
 

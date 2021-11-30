@@ -8,7 +8,6 @@
 #include <sys/mman.h>
 
 #include "air_host.h"
-#include "test_library.h"
 #include "aie_inc.cpp"
 
 #define L2_DMA_BASE 0x020240000000LL

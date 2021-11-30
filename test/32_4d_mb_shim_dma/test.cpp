@@ -12,7 +12,6 @@
 #include <xaiengine.h>
 
 #include "air_host.h"
-#include "test_library.h"
 
 #include "acdc_queue.h"
 #include "hsa_defs.h"

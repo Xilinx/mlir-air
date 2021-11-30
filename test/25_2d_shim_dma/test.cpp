@@ -11,9 +11,10 @@
 #include <sys/mman.h>
 #include <dlfcn.h>
 
+#include <xaiengine.h>
+
 #include "air_host.h"
 #include "air_tensor.h"
-#include "test_library.h"
 
 #define VERBOSE 1
 
@@ -25,38 +26,26 @@
 #define TILE_HEIGHT 8
 #define TILE_SIZE  (TILE_WIDTH * TILE_HEIGHT)
 
-namespace {
-
-// global libxaie state
-air_libxaie1_ctx_t *xaie;
-
-#define TileInst (xaie->TileInst)
-#define TileDMAInst (xaie->TileDMAInst)
-#include "air_project/air.mlir.copyherd.inc"
-#undef TileInst
-#undef TileDMAInst
-
-queue_t *q = nullptr;
-
-}
+//namespace air::herds::copyherd {
+//int32_t mlir_aie_read_buffer_scratch_0_0(aie_libxaie_ctx_t*, int);
+//void mlir_aie_write_buffer_scratch_0_0(aie_libxaie_ctx_t*, int, int32_t);
+//}
+//using namespace air::herds::copyherd;
 
 int
 main(int argc, char *argv[])
 {
   auto shim_col = 2;
 
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = air_init_libxaie1();
 
-  for (int i=0; i<TILE_SIZE; i++)
-    mlir_write_buffer_scratch_0_0(i,0xfadefade);
+  // create the queue
+  queue_t *q = nullptr;
+  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
+  assert(ret == 0 && "failed to create queue!");
 
-  // Fire up the AIE array
-
-  mlir_configure_cores();
-  mlir_configure_dmas();
-  mlir_initialize_locks();
-  mlir_configure_switchboxes();
-  mlir_start_cores();
+  //for (int i=0; i<TILE_SIZE; i++)
+  //  mlir_aie_write_buffer_scratch_0_0(xaie, i, 0xfadefade);
 
   printf("loading aie_ctrl.so\n");
   auto handle = air_module_load_from_file("./aie_ctrl.so");
@@ -84,18 +73,19 @@ main(int argc, char *argv[])
   o = &output;
   graph_fn(i, o);
 
-  // Go look at the scratch buffer
   int errors = 0;
-  for (int i=0;i<TILE_SIZE;i++) {
-    u32 rb = mlir_read_buffer_scratch_0_0(i);
-    u32 row = i / TILE_WIDTH;
-    u32 col = i % TILE_WIDTH;
-    u32 orig_index = row * IMAGE_WIDTH + col;
-    if (!(rb == orig_index+0x1000)) {
-      printf("SB %d [%d, %d] should be %08X, is %08X\n", i, col, row, orig_index, rb);
-      errors++;
-    }
-  }
+
+  //// Go look at the scratch buffer
+  //for (int i=0;i<TILE_SIZE;i++) {
+  //  u32 rb = mlir_aie_read_buffer_scratch_0_0(xaie, i);
+  //  u32 row = i / TILE_WIDTH;
+  //  u32 col = i % TILE_WIDTH;
+  //  u32 orig_index = row * IMAGE_WIDTH + col;
+  //  if (!(rb == orig_index+0x1000)) {
+  //    printf("SB %d [%d, %d] should be %08X, is %08X\n", i, col, row, orig_index, rb);
+  //    errors++;
+  //  }
+  //}
 
   // Now look at the image, should have the top left filled in
   for (int i=0;i<IMAGE_SIZE;i++) {
@@ -110,22 +100,12 @@ main(int argc, char *argv[])
         errors++;
       }
     }
-    else {
-      if (rb != 0x00defaced) {
-        printf("IM %d [%d, %d] should be 0xdefaced, is %08X\n", i, col, row, rb);
-        errors++;
-      }
-    }
-  }
-
-  // Now clean up
-
-  for (int bd=0;bd<16;bd++) {
-    // Take no prisoners.  No regerts
-    // Overwrites the DMA_BDX_Control registers
-    u32 rb = XAieGbl_Read32(xaie->TileInst[shim_col][0].TileAddr + 0x0001D008+(bd*0x14));
-    // printf("Before : bd%x control is %08X\n", bd, rb);
-    XAieGbl_Write32(xaie->TileInst[shim_col][0].TileAddr + 0x0001D008+(bd*0x14), 0x0);
+    //else {
+    //  if (rb != 0x00defaced) {
+    //    printf("IM %d [%d, %d] should be 0xdefaced, is %08X\n", i, col, row, rb);
+    //    errors++;
+    //  }
+    //}
   }
 
   if (!errors) {

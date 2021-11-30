@@ -5,7 +5,7 @@ module {
 
 func @foo(%arg0: i32) {
   %cst1 = constant 1 : index
-  // CHECK-LABEL: module @aie.0
+  // CHECK-LABEL: module @aie.herd_0
   // CHECK: %[[VAR1:.*]] = AIE.tile(0, 0)
   // CHECK: %[[BUF1:.*]] = AIE.buffer(%[[VAR1]]) {sym_name = {{.*}}} : memref<1xi32, 2>
   // CHECK: %[[BUF2:.*]] = AIE.buffer(%[[VAR1]]) {sym_name = {{.*}}} : memref<1xi32, 2>

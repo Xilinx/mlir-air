@@ -14,7 +14,6 @@
 #include "air_host.h"
 #include "acdc_queue.h"
 #include "hsa_defs.h"
-#include "test_library.h"
 #include "aie_inc.cpp"
 
 int

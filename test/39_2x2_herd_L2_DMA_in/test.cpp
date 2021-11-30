@@ -8,7 +8,6 @@
 #include <sys/mman.h>
 
 #include "air_host.h"
-#include "test_library.h"
 
 #define XAIE_NUM_ROWS            8
 #define XAIE_NUM_COLS           50

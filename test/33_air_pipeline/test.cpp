@@ -12,7 +12,6 @@
 #include <dlfcn.h>
 
 #include <xaiengine.h>
-#include "test_library.h"
 
 #include "air_host.h"
 #include "air_tensor.h"

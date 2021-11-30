@@ -10,7 +10,6 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <xaiengine.h>
-#include "test_library.h"
 
 #define XAIE_NUM_ROWS            8
 #define XAIE_NUM_COLS           50
@@ -19,9 +18,9 @@
 #define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
 #define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
 
+#include "air_host.h"
+
 #include "aie_inc.cpp"
-
-
 
 #define NUM_SHIM_DMAS 8
 

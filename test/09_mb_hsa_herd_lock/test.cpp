@@ -12,7 +12,6 @@
 #include "acdc_queue.h"
 #include "hsa_defs.h"
 
-#include "test_library.h"
 
 #define SHMEM_BASE 0x020100000000LL
 

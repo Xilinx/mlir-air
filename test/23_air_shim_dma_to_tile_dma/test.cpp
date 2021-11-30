@@ -13,7 +13,6 @@
 
 #include "air_host.h"
 #include "air_tensor.h"
-#include "test_library.h"
 
 #include "aie_inc.cpp"
 

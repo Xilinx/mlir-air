@@ -12,7 +12,6 @@
 #include <xaiengine.h>
 
 #include "air_host.h"
-#include "test_library.h"
 
 #define SCRATCH_AREA 8
 
