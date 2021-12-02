@@ -186,6 +186,81 @@ hsa_status_t air_packet_device_init(dispatch_packet_t *pkt, uint32_t num_cols) {
   return HSA_STATUS_SUCCESS;
 }
 
+hsa_status_t air_packet_get_capabilities(dispatch_packet_t *pkt, uint64_t return_address) {
+  initialize_packet(pkt);
+
+  pkt->arg[0] = AIR_PKT_TYPE_GET_CAPABILITIES;
+  pkt->arg[1] = return_address;
+
+  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+
+  return HSA_STATUS_SUCCESS;
+}
+
+hsa_status_t air_packet_hello(dispatch_packet_t *pkt, uint64_t value) {
+  initialize_packet(pkt);
+
+  pkt->arg[0]  = AIR_PKT_TYPE_HELLO;
+  pkt->arg[1] = value;
+
+  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+
+  return HSA_STATUS_SUCCESS;
+}
+
+hsa_status_t air_packet_put_stream(dispatch_packet_t *pkt, uint64_t stream, uint64_t value) {
+  initialize_packet(pkt);
+
+  pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
+  pkt->arg[1] = stream;
+  pkt->arg[2] = value;
+
+  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+
+  return HSA_STATUS_SUCCESS;
+}
+
+hsa_status_t air_packet_get_stream(dispatch_packet_t *pkt, uint64_t stream) {
+  initialize_packet(pkt);
+
+  pkt->arg[0] = AIR_PKT_TYPE_GET_STREAM;
+  pkt->arg[1] = stream;
+
+  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+
+  return HSA_STATUS_SUCCESS;
+}
+
+hsa_status_t air_packet_l2_dma(dispatch_packet_t *pkt, uint64_t stream, l2_dma_cmd_t cmd) {
+  initialize_packet(pkt);
+
+  pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
+  pkt->arg[1] = stream;
+  pkt->arg[2] = 0;
+  pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
+  pkt->arg[2] |= cmd.length << 18;
+  pkt->arg[2] |= cmd.uram_addr << 5;
+  pkt->arg[2] |= cmd.id;
+
+  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+
+  return HSA_STATUS_SUCCESS;
+}
+
+hsa_status_t air_packet_cdma_memcpy(dispatch_packet_t *pkt, uint64_t dest,
+                                    uint64_t source, uint32_t length) {
+  initialize_packet(pkt);
+
+  pkt->arg[0]  = AIR_PKT_TYPE_CDMA;
+  pkt->arg[1]  = dest;   // Destination
+  pkt->arg[2]  = source; // Source 
+  pkt->arg[3]  = length; // Num Bytes 
+
+  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+
+  return HSA_STATUS_SUCCESS;
+}
+
 hsa_status_t air_packet_aie_lock_range(dispatch_packet_t *pkt, uint16_t herd_id,
                                  uint64_t lock_id, uint64_t acq_rel, uint64_t value,
                                  uint8_t start_col, uint8_t num_cols,

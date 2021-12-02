@@ -9,32 +9,10 @@
 
 #include "air_host.h"
 
-#define XAIE_NUM_ROWS            8
-#define XAIE_NUM_COLS           50
-#define XAIE_ADDR_ARRAY_OFF     0x800
-
-#define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
-#define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
-
 #include "aie_inc.cpp"
-
-#define L2_DMA_BASE 0x020240000000LL
-#define SHMEM_BASE  0x020100000000LL
-
-struct dma_cmd_t {
-  uint8_t select;
-  uint16_t length;
-  uint16_t uram_addr;
-  uint8_t id;
-};
-
-struct dma_rsp_t {
-	uint8_t id;
-};
 
 int main(int argc, char *argv[])
 {
-
   aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
   mlir_aie_init_device(xaie);
   
@@ -76,14 +54,14 @@ int main(int argc, char *argv[])
   if (fd == -1)
     return -1;
 
-  uint32_t *bank0_A_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE);
-  uint32_t *bank1_A_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+0x20000);
-  uint32_t *bank0_B_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+0x40000);
-  uint32_t *bank1_B_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+0x60000);
-  uint32_t *bank0_C_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+0x80000);
-  uint32_t *bank1_C_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+0xA0000);
-  uint32_t *bank0_D_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+0xC0000);
-  uint32_t *bank1_D_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+0xE0000);
+  uint32_t *bank0_A_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE);
+  uint32_t *bank1_A_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE+0x20000);
+  uint32_t *bank0_B_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE+0x40000);
+  uint32_t *bank1_B_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE+0x60000);
+  uint32_t *bank0_C_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE+0x80000);
+  uint32_t *bank1_C_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE+0xA0000);
+  uint32_t *bank0_D_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE+0xC0000);
+  uint32_t *bank1_D_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE+0xE0000);
 
   // Write an ascending pattern value into the memories
   // Also stamp with 1 for the lower memory, and 2 for the upper memory as it goes in
@@ -131,24 +109,15 @@ int main(int argc, char *argv[])
   for (uint64_t stream=0; stream < 4; stream++) {
     wr_idx = queue_add_write_index(q, 1);
     packet_id = wr_idx % q->size;
-
     pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-    initialize_packet(pkt);
-    pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-    pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
 
-    static dma_cmd_t cmd;
+    static l2_dma_cmd_t cmd;
     cmd.select = 7;
     cmd.length = 0;
     cmd.uram_addr = 1;
     cmd.id = 0;
 
-    pkt->arg[1] = stream;
-    pkt->arg[2] = 0;
-    pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
-    pkt->arg[2] |= cmd.length << 18;
-    pkt->arg[2] |= cmd.uram_addr << 5;
-    pkt->arg[2] |= cmd.id;
+    air_packet_l2_dma(pkt, stream, cmd);
 
     air_queue_dispatch_and_wait(q, wr_idx, pkt);
   }
@@ -169,24 +138,15 @@ int main(int argc, char *argv[])
   for (uint64_t stream=0; stream < 4; stream++) {
     wr_idx = queue_add_write_index(q, 1);
     packet_id = wr_idx % q->size;
-
     pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-    initialize_packet(pkt);
-    pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-    pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
 
-    static dma_cmd_t cmd;
+    static l2_dma_cmd_t cmd;
     cmd.select = 4;
     cmd.length = 4;
     cmd.uram_addr = 0;
     cmd.id = 0x2+stream;
 
-    pkt->arg[1] = stream;
-    pkt->arg[2] = 0;
-    pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
-    pkt->arg[2] |= cmd.length << 18;
-    pkt->arg[2] |= cmd.uram_addr << 5;
-    pkt->arg[2] |= cmd.id;
+    air_packet_l2_dma(pkt, stream, cmd);
   }
 
   air_queue_dispatch_and_wait(q, wr_idx, pkt);

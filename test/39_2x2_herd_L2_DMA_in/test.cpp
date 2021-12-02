@@ -9,32 +9,10 @@
 
 #include "air_host.h"
 
-#define XAIE_NUM_ROWS            8
-#define XAIE_NUM_COLS           50
-#define XAIE_ADDR_ARRAY_OFF     0x800
-
-#define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
-#define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
-
 #include "aie_inc.cpp"
-
-#define L2_DMA_BASE 0x020240000000LL
-#define SHMEM_BASE  0x020100000000LL
-
-struct dma_cmd_t {
-  uint8_t select;
-  uint16_t length;
-  uint16_t uram_addr;
-  uint8_t id;
-};
-
-struct dma_rsp_t {
-	uint8_t id;
-};
 
 int main(int argc, char *argv[])
 {
-
   aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
   mlir_aie_init_device(xaie);
 
@@ -60,23 +38,18 @@ int main(int argc, char *argv[])
   mlir_aie_print_dma_status(xaie, 8, 1);
   mlir_aie_print_dma_status(xaie, 8, 2);
 
-  XAieGbl_Write32(xaie->TileInst[7][0].TileAddr + 0x00033008, 0xFF);
-  XAieGbl_Write32(xaie->TileInst[8][0].TileAddr + 0x00033008, 0xFF);
-  XAieGbl_Write32(xaie->TileInst[9][0].TileAddr + 0x00033008, 0xFF);
-  XAieGbl_Write32(xaie->TileInst[10][0].TileAddr + 0x00033008, 0xFF);
-
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd == -1)
     return -1;
 
-  uint32_t *bank0_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+0*0x20000);
-  uint32_t *bank1_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+1*0x20000);
-  uint32_t *bank2_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+2*0x20000);
-  uint32_t *bank3_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+3*0x20000);
-  uint32_t *bank4_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+4*0x20000);
-  uint32_t *bank5_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+5*0x20000);
-  uint32_t *bank6_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+6*0x20000);
-  uint32_t *bank7_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+7*0x20000);
+  uint32_t *bank0_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE+0*0x20000);
+  uint32_t *bank1_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE+1*0x20000);
+  uint32_t *bank2_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE+2*0x20000);
+  uint32_t *bank3_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE+3*0x20000);
+  uint32_t *bank4_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE+4*0x20000);
+  uint32_t *bank5_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE+5*0x20000);
+  uint32_t *bank6_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE+6*0x20000);
+  uint32_t *bank7_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE+7*0x20000);
 
   // Write an ascending pattern value into the memories
   // Also stamp with 1 for the lower memory, and 1 for the upper memory as it goes in
@@ -128,56 +101,30 @@ int main(int argc, char *argv[])
 
   uint64_t wr_idx = queue_add_write_index(q, 1);
   uint64_t packet_id = wr_idx % q->size;
-
   dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
   //
   // Set up a 2x2 herd starting 7,1
   //
-
-  pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
-  pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
-  pkt->arg[0] |= (2L << 40);
-  pkt->arg[0] |= (7L << 32);
-  pkt->arg[0] |= (2L << 24);
-  pkt->arg[0] |= (1L << 16);
-  
-  pkt->arg[1] = 0;  // Herd ID 0
-  pkt->arg[2] = 0;
-  pkt->arg[3] = 0;
+  air_packet_herd_init(pkt, 0, 7, 2, 1, 2);
 
   // dispatch packet
-  signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
-  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
+  air_queue_dispatch_and_wait(q, wr_idx, pkt);
   
   for (int stream=0; stream<4; stream++) {
     // globally bypass headers
     wr_idx = queue_add_write_index(q, 1);
     packet_id = wr_idx % q->size;
-
     pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-    initialize_packet(pkt);
-    pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-    pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
 
-
-    static dma_cmd_t cmd;
+    static l2_dma_cmd_t cmd;
     cmd.select = 7;
     cmd.length = 0;
     cmd.uram_addr = 1;
     cmd.id = 0;
 
-    pkt->arg[1] = stream;
-    pkt->arg[2] = 0;
-    pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
-    pkt->arg[2] |= cmd.length << 18;
-    pkt->arg[2] |= cmd.uram_addr << 5;
-    pkt->arg[2] |= cmd.id;
-
-    signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
-    signal_store_release((signal_t*)&q->doorbell, wr_idx);
+    air_packet_l2_dma(pkt, stream, cmd);
+    air_queue_dispatch_and_wait(q, wr_idx, pkt);
   }
 
   //
@@ -185,38 +132,21 @@ int main(int argc, char *argv[])
   //
 
   for (int stream=0; stream<4; stream++) {
-
     wr_idx = queue_add_write_index(q, 1);
     packet_id = wr_idx % q->size;
-
     pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-    initialize_packet(pkt);
-    pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-    pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
 
-    static dma_cmd_t cmd;
+    static l2_dma_cmd_t cmd;
     cmd.select = 0;
     cmd.length = 4;
     cmd.uram_addr = 0;
     cmd.id = stream;
 
-    pkt->arg[1] = stream;
-    pkt->arg[2] = 0;
-    pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
-    pkt->arg[2] |= cmd.length << 18;
-    pkt->arg[2] |= cmd.uram_addr << 5;
-    pkt->arg[2] |= cmd.id;
+    air_packet_l2_dma(pkt, stream, cmd);
 
     signal_create(1, 0, NULL, (signal_t*)&pkt->completion_signal);
     if (stream == 3) {
-      signal_store_release((signal_t*)&q->doorbell, wr_idx);
-      while (signal_wait_aquire((signal_t*)&pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
-        printf("packet completion signal timeout!\n");
-        printf("%x\n", pkt->header);
-        printf("%x\n", pkt->type);
-        printf("%lx\n", pkt->completion_signal);
-        break;
-      }
+      air_queue_wait(q, pkt);
     }
   }
 

@@ -11,20 +11,6 @@
 
 #include "aie_inc.cpp"
 
-#define L2_DMA_BASE 0x020240000000LL
-#define SHMEM_BASE  0x020100000000LL
-
-struct dma_cmd_t {
-  uint8_t select;
-  uint16_t length;
-  uint16_t uram_addr;
-  uint8_t id;
-};
-
-struct dma_rsp_t {
-	uint8_t id;
-};
-
 int main(int argc, char *argv[])
 {
   aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
@@ -54,8 +40,8 @@ int main(int argc, char *argv[])
   if (fd == -1)
     return -1;
 
-  uint32_t *bank0_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE);
-  uint32_t *bank1_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+0x20000);
+  uint32_t *bank0_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE);
+  uint32_t *bank1_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE+0x20000);
 
   // Write an ascending pattern value into the memories
   // Also stamp with 1 for the lower memory, and 2 for the upper memory as it goes in
@@ -92,51 +78,29 @@ int main(int argc, char *argv[])
 
   uint64_t wr_idx = queue_add_write_index(q, 1);
   uint64_t packet_id = wr_idx % q->size;
-
   dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
   //
   // Set up a 1x2 herd starting 7,3
   //
-
-  pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
-  pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
-  pkt->arg[0] |= (1L << 40);
-  pkt->arg[0] |= (7L << 32);
-  pkt->arg[0] |= (2L << 24);
-  pkt->arg[0] |= (3L << 16);
-  
-  pkt->arg[1] = 0;  // Herd ID 0
-  pkt->arg[2] = 0;
-  pkt->arg[3] = 0;
+  air_packet_herd_init(pkt, 0, 7, 1, 3, 2);
 
   // dispatch packet
-  air_queue_dispatch(q, wr_idx, pkt);
+  air_queue_dispatch_and_wait(q, wr_idx, pkt);
     
   // globally bypass headers
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
-
   pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
 
-  static dma_cmd_t cmd;
+  static l2_dma_cmd_t cmd;
   cmd.select = 7;
   cmd.length = 0;
   cmd.uram_addr = 1;
   cmd.id = 0;
 
   uint64_t stream = 0;
-  pkt->arg[1] = stream;
-  pkt->arg[2] = 0;
-  pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
-  pkt->arg[2] |= cmd.length << 18;
-  pkt->arg[2] |= cmd.uram_addr << 5;
-  pkt->arg[2] |= cmd.id;
+  air_packet_l2_dma(pkt, stream, cmd);
 
   // dispatch packet
   air_queue_dispatch(q, wr_idx, pkt);
@@ -148,23 +112,14 @@ int main(int argc, char *argv[])
   for (int sel=2; sel<4; sel++) {
     wr_idx = queue_add_write_index(q, 1);
     packet_id = wr_idx % q->size;
-
     pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-    initialize_packet(pkt);
-    pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-    pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
 
     cmd.select = sel;
     cmd.length = 4;
     cmd.uram_addr = 0;
     cmd.id = sel+1;
 
-    pkt->arg[1] = stream;
-    pkt->arg[2] = 0;
-    pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
-    pkt->arg[2] |= cmd.length << 18;
-    pkt->arg[2] |= cmd.uram_addr << 5;
-    pkt->arg[2] |= cmd.id;
+    air_packet_l2_dma(pkt, stream, cmd);
   }
 
   //
@@ -174,23 +129,14 @@ int main(int argc, char *argv[])
   for (int sel = 4; sel < 6; sel++) { 
     wr_idx = queue_add_write_index(q, 1);
     packet_id = wr_idx % q->size;
-
     pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-    initialize_packet(pkt);
-    pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-    pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
 
     cmd.select = sel;
     cmd.length = 4;
     cmd.uram_addr = 4;
     cmd.id = 0x6+sel;
 
-    pkt->arg[1] = stream;
-    pkt->arg[2] = 0;
-    pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
-    pkt->arg[2] |= cmd.length << 18;
-    pkt->arg[2] |= cmd.uram_addr << 5;
-    pkt->arg[2] |= cmd.id;
+    air_packet_l2_dma(pkt, stream, cmd);
   }
   air_queue_dispatch_and_wait(q, wr_idx, pkt);
 

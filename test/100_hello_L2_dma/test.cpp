@@ -7,10 +7,7 @@
 #include <sys/mman.h>
 
 #include "acdc_queue.h"
-#include "hsa_defs.h"
-
-
-#define L2_DMA_BASE 0x020240000000LL
+#include "air_host.h"
 
 int main(int argc, char *argv[])
 {
@@ -21,8 +18,8 @@ int main(int argc, char *argv[])
     return -1;
   }
 
-  uint64_t *bank0_ptr = (uint64_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE);
-  uint64_t *bank1_ptr = (uint64_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+0x20000);
+  uint64_t *bank0_ptr = (uint64_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE);
+  uint64_t *bank1_ptr = (uint64_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE+0x20000);
 
   // I have no idea if this does anything
   __clear_cache((void*)bank0_ptr, (void*)(((size_t)bank0_ptr)+0x20000));

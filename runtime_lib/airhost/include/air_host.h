@@ -12,6 +12,7 @@ extern "C" {
 
 #define AIR_VCK190_SHMEM_BASE  0x020100000000LL
 #define AIR_VCK190_L2_DMA_BASE 0x020240000000LL
+#define AIR_VCK190_DDR_BASE 0x2000LL
 
 // library operations
 
@@ -36,6 +37,17 @@ hsa_status_t air_queue_dispatch_and_wait(queue_t *queue, uint64_t doorbell, disp
 // packet utilities
 //
 
+struct l2_dma_cmd_t {
+  uint8_t select;
+  uint16_t length;
+  uint16_t uram_addr;
+  uint8_t id;
+};
+
+struct l2_dma_rsp_t {
+  uint8_t id;
+};
+
 // initialize pkt as a herd init packet with given parameters
 hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
                                   uint8_t start_col, uint8_t num_cols,
@@ -44,6 +56,18 @@ hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
                                   //uint16_t dma0, uint16_t dma1);
 
 hsa_status_t air_packet_device_init(dispatch_packet_t *pkt, uint32_t num_cols);
+
+hsa_status_t air_packet_get_capabilities(dispatch_packet_t *pkt, uint64_t return_address);
+
+hsa_status_t air_packet_hello(dispatch_packet_t *pkt, uint64_t value);
+
+hsa_status_t air_packet_put_stream(dispatch_packet_t *pkt, uint64_t stream, uint64_t value);
+hsa_status_t air_packet_get_stream(dispatch_packet_t *pkt, uint64_t stream);
+
+hsa_status_t air_packet_l2_dma(dispatch_packet_t *pkt, uint64_t stream, l2_dma_cmd_t cmd);
+
+hsa_status_t air_packet_cdma_memcpy(dispatch_packet_t *pkt, uint64_t dest,
+                                    uint64_t source, uint32_t length);
 
 hsa_status_t air_packet_aie_lock_range(dispatch_packet_t *pkt, uint16_t herd_id,
                                  uint64_t lock_id, uint64_t acq_rel, uint64_t value,

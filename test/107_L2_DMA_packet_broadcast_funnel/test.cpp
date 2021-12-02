@@ -10,19 +10,6 @@
 #include "air_host.h"
 #include "aie_inc.cpp"
 
-#define L2_DMA_BASE 0x020240000000LL
-
-struct dma_cmd_t {
-  uint8_t select;
-  uint16_t length;
-  uint16_t uram_addr;
-  uint8_t id;
-};
-
-struct dma_rsp_t {
-	uint8_t id;
-};
-
 int main(int argc, char *argv[])
 {
 
@@ -51,8 +38,8 @@ int main(int argc, char *argv[])
   if (fd == -1)
     return -1;
 
-  uint32_t *bank0_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE);
-  uint32_t *bank1_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, L2_DMA_BASE+0x20000);
+  uint32_t *bank0_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE);
+  uint32_t *bank1_ptr = (uint32_t *)mmap(NULL, 0x20000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_L2_DMA_BASE+0x20000);
 
   // Write an ascending pattern value into the memories
   // Also stamp with 1 for the lower memory, and 2 for the upper memory as it goes in
@@ -83,25 +70,15 @@ int main(int argc, char *argv[])
   //
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
-
   pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
 
-  static dma_cmd_t cmd;
+  static l2_dma_cmd_t cmd;
   cmd.select = 7;
   cmd.length = 0;
   cmd.uram_addr = 0;
   cmd.id = 0;
 
-  uint64_t stream = 0;
-  pkt->arg[1] = stream;
-  pkt->arg[2] = 0;
-  pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
-  pkt->arg[2] |= cmd.length << 18;
-  pkt->arg[2] |= cmd.uram_addr << 5;
-  pkt->arg[2] |= cmd.id;
+  air_packet_l2_dma(pkt, 0, cmd);
 
   //
   // send the data
@@ -109,23 +86,14 @@ int main(int argc, char *argv[])
   int sel=2;
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
-
   pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
 
   cmd.select = sel;
   cmd.length = 128;
   cmd.uram_addr = 0;
   cmd.id = sel+1;
 
-  pkt->arg[1] = stream;
-  pkt->arg[2] = 0;
-  pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
-  pkt->arg[2] |= cmd.length << 18;
-  pkt->arg[2] |= cmd.uram_addr << 5;
-  pkt->arg[2] |= cmd.id;
+  air_packet_l2_dma(pkt, 0, cmd);
 
   //
   // read the data back
@@ -134,23 +102,14 @@ int main(int argc, char *argv[])
   for (int i = 0; i < 4; i++) { 
     wr_idx = queue_add_write_index(q, 1);
     packet_id = wr_idx % q->size;
-
     pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-    initialize_packet(pkt);
-    pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-    pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
 
     cmd.select = sel;
     cmd.length = 128;
     cmd.uram_addr = 128+128*i;
     cmd.id = 0xA+i;
 
-    pkt->arg[1] = stream;
-    pkt->arg[2] = 0;
-    pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
-    pkt->arg[2] |= cmd.length << 18;
-    pkt->arg[2] |= cmd.uram_addr << 5;
-    pkt->arg[2] |= cmd.id;
+    air_packet_l2_dma(pkt, 0, cmd);
   }
   air_queue_dispatch_and_wait(q, wr_idx, pkt);
 
