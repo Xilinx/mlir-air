@@ -66,6 +66,7 @@ main(int argc, char *argv[])
     input.d[i] = i;
   }
 
+  mlir_aie_print_dma_status(xaie, 7, 2);
   mlir_aie_start_cores(xaie);
 
   auto i = &input;

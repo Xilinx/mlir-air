@@ -165,6 +165,8 @@ int main(int argc, char *argv[])
     }
   }
 
+  sleep(1);
+
   mlir_aie_print_dma_status(xaie, 7, 1);
   mlir_aie_print_dma_status(xaie, 7, 2);
   mlir_aie_print_dma_status(xaie, 7, 3);

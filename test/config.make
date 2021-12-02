@@ -30,7 +30,7 @@ else
   LDFLAGS += --target=aarch64-linux-gnu --sysroot=$(SYSROOT) -L$(SYSROOT)/opt/xaiengine/lib
 endif
 
-CFLAGS += -std=c++17 -I$(ACDC_AIR)/runtime_lib/airhost/include
+CFLAGS += -std=c++17 -I$(ACDC)/runtime_lib/airhost/include
 LDFLAGS += -L${ACDC}/runtime_lib/airhost
 
 .PHONY: all

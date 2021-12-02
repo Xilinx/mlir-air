@@ -34,6 +34,7 @@ int main(int argc, char *argv[]) {
   mlir_aie_configure_switchboxes(xaie);
   mlir_aie_initialize_locks(xaie);
   mlir_aie_configure_dmas(xaie);
+  mlir_aie_start_cores(xaie);
 
   XAieDma_Shim ShimDmaInst[NUM_SHIM_DMAS];
 
@@ -114,27 +115,27 @@ int main(int argc, char *argv[]) {
   int errors = 0;
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = mlir_aie_read_buffer_a0(xaie, i);
-    mlir_aie_check("Check Result a0:", d, i+1,errors);
+    mlir_aie_check("Check Result a0:", i+1, d, errors);
   }
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = mlir_aie_read_buffer_a1(xaie, i);
-    mlir_aie_check("Check Result a1:", d, i+DMA_COUNT+1,errors);
+    mlir_aie_check("Check Result a1:", i+DMA_COUNT+1, d, errors);
   }
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = mlir_aie_read_buffer_f0(xaie, i);
-    mlir_aie_check("Check Result f0:", d, i+DMA_COUNT*10+1,errors);
+    mlir_aie_check("Check Result f0:", i+DMA_COUNT*10+1, d, errors);
   }
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = mlir_aie_read_buffer_f1(xaie, i);
-    mlir_aie_check("Check Result f1:", d, i+DMA_COUNT*11+1,errors);
+    mlir_aie_check("Check Result f1:", i+DMA_COUNT*11+1, d, errors);
   }
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = mlir_aie_read_buffer_p0(xaie, i);
-    mlir_aie_check("Check Result p0:", d, i+DMA_COUNT*30+1,errors);
+    mlir_aie_check("Check Result p0:", i+DMA_COUNT*30+1, d, errors);
   }
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = mlir_aie_read_buffer_p1(xaie, i);
-    mlir_aie_check("Check Result p1:", d, i+DMA_COUNT*31+1,errors);
+    mlir_aie_check("Check Result p1:", i+DMA_COUNT*31+1, d, errors);
   }
 
   // Let's just compare the input and output buffers
