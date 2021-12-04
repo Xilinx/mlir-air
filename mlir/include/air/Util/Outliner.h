@@ -1,5 +1,6 @@
 // (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
-#pragma once
+#ifndef AIR_UTIL_OUTLINER_H
+#define AIR_UTIL_OUTLINER_H
 
 #include <string>
 
@@ -26,3 +27,4 @@ private:
 
 } // namespace air
 } // namespace xilinx
+#endif // AIR_UTIL_OUTLINER_H

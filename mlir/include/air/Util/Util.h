@@ -1,3 +1,7 @@
+// (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
+#ifndef AIR_UTIL_UTIL_H
+#define AIR_UTIL_UTIL_H
+
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -19,3 +23,4 @@ uint64_t getTensorVolume(const Type ty);
 
 }
 }
+#endif // AIR_UTIL_UTIL_H
