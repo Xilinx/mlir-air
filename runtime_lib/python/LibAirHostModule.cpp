@@ -10,17 +10,21 @@
 
 #ifdef AIE_LIBXAIE_ENABLE
 #include "air_host.h"
+#include "acdc_queue.h"
 #endif
-
 namespace xilinx {
 namespace air {
 
 void defineAIRHostModule(pybind11::module &m) {
 #ifdef AIE_LIBXAIE_ENABLE
-  m.def("init_libxaie1", [](void) -> void {
-    air_init_libxaie1();
+
+  pybind11::class_<aie_libxaie_ctx_t>(m, "LibXAIEContext");
+
+  m.def("init_libxaie", &air_init_libxaie1, pybind11::return_value_policy::reference);
+
+  m.def("deinit_libxaie",[](aie_libxaie_ctx_t* ctx) -> void {
+    air_deinit_libxaie1(ctx);
   });
-  m.def("deinit_libxaie1", &air_deinit_libxaie1);
 
   pybind11::class_<air_module_desc_t>(m, "ModuleDescriptor")
     .def("getHerds", [](const air_module_desc_t &d) -> std::vector<air_herd_desc_t*> {
@@ -35,8 +39,8 @@ void defineAIRHostModule(pybind11::module &m) {
       return std::string(d.name, d.name_length);
     });
 
-  m.def("module_load_from_file", [](std::string filename) -> air_module_handle_t {
-    return air_module_load_from_file(filename.c_str(),nullptr);
+  m.def("module_load_from_file", [](std::string filename, queue_t* q) -> air_module_handle_t {
+    return air_module_load_from_file(filename.c_str(), q);
   });
 
   m.def("module_unload", &air_module_unload);
@@ -46,6 +50,16 @@ void defineAIRHostModule(pybind11::module &m) {
 
   m.def("get_herd_descriptor", [](air_module_handle_t h, std::string name) {
     return air_herd_get_desc(h, name.c_str());
+  }, pybind11::return_value_policy::reference);
+
+  pybind11::class_<queue_t>(m, "Queue");
+
+  m.def("queue_create", []() -> queue_t* {
+    queue_t *q = nullptr;
+    auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
+    if (ret != 0)
+      return nullptr;
+    return q;
   }, pybind11::return_value_policy::reference);
 #endif
 }
