@@ -393,7 +393,7 @@ void _mlir_ciface_air_dma_nd_memcpy_##mangle( \
   uint64_t stride_2, uint64_t stride_1, uint64_t stride_0) \
 { \
   tensor_t<type, rank> *tt = (tensor_t<type, rank>*)t; \
-  if (_air_host_active_herd.q) { \
+  if (/*Defer for now */0/*_air_host_active_herd.q*/) { \
     air_mem_shim_nd_memcpy_queue_impl(id, x, y, tt, space, \
                                      offset_3, offset_2, offset_1, offset_0, \
                                      length_3, length_2, length_1, length_0, \
