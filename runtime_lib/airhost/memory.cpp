@@ -314,11 +314,11 @@ void air_mem_shim_nd_memcpy_queue_impl(uint32_t id, uint64_t x, uint64_t y, tens
                                  uint64_t stride_4d, uint64_t stride_3d, uint64_t stride_2d) {
   assert(_air_host_active_herd.herd_desc && "cannot shim memcpy without active herd");
   assert(_air_host_active_herd.q && "cannot shim memcpy using a queue without active queue");
-   printf("Do transfer %p with id %d on behalf of x=%ld, y=%ld space %d, offset [%ld,%ld,%ld,%ld], length [%ld,%ld,%ld,%ld], stride [%ld,%ld,%ld]\n",
-          t->d, id, x, y, space,
-          offset_3, offset_2, offset_1, offset_0,
-          length_4d, length_3d, length_2d, length_1d,
-          stride_4d, stride_3d, stride_2d);
+  // printf("Do transfer %p with id %d on behalf of x=%ld, y=%ld space %d, offset [%ld,%ld,%ld,%ld], length [%ld,%ld,%ld,%ld], stride [%ld,%ld,%ld]\n",
+  //        t->d, id, x, y, space,
+  //        offset_3, offset_2, offset_1, offset_0,
+  //        length_4d, length_3d, length_2d, length_1d,
+  //        stride_4d, stride_3d, stride_2d);
 
   auto shim_desc = _air_host_active_herd.herd_desc->shim_desc;
   auto shim_col = shim_location_data(shim_desc, id-1, x, y);
@@ -330,12 +330,9 @@ void air_mem_shim_nd_memcpy_queue_impl(uint32_t id, uint64_t x, uint64_t y, tens
   size_t stride = 1;
   size_t offset = 0;
   std::vector<uint64_t> offsets{offset_0, offset_1, offset_2, offset_3};
-  //std::vector<uint64_t> strides{1, stride_2d, stride_3d, stride_4d};
   for (int i=0; i<R; i++) {
-    printf("[B] %d offset %d stride %d\n",i,offset,stride);
     offset += offsets[i] * stride * sizeof(uint32_t);
     stride *= t->shape[i];
-    printf("[A] %d offset %d stride %d\n",i,offset,stride);
   }
 
   uint64_t length = 0;
