@@ -45,7 +45,7 @@ main(int argc, char *argv[])
     mlir_aie_write_buffer_scratch_0_0(xaie, i, 0xfadefade);
 
   printf("loading aie_ctrl.so\n");
-  auto handle = air_module_load_from_file("./aie_ctrl.so",q);
+  auto handle = air_module_load_from_file("./aie_ctrl.so");
   assert(handle && "failed to open aie_ctrl.so");
 
   auto graph_fn = (void (*)(void*,void *))dlsym((void*)handle, "_mlir_ciface_graph");
