@@ -129,22 +129,26 @@ air_module_get_desc(air_module_handle_t handle)
 int32_t
 air_herd_load(const char *name) {
   auto herd_desc = air_herd_get_desc(_air_host_active_module, name);
-  if (!herd_desc) return -1;
-  
+  if (!herd_desc) {
+    printf("Failed to locate herd descriptor '%s'!\n",name);
+    assert(0);
+  }
+  std::string herd_name(herd_desc->name, herd_desc->name_length);
+
   // bool configured = (_air_host_active_herd.herd_desc == herd_desc);
   // if (configured) return 0;
   
   _air_host_active_herd.herd_desc = herd_desc;
 
   std::string func_name = "__airrt_" +
-                          std::string(name) +
+                          herd_name +
                           "_aie_functions";
   air_rt_aie_functions_t *mlir = 
     (air_rt_aie_functions_t *)dlsym((void*)_air_host_active_module,
                                     func_name.c_str());
 
   if (mlir) {
-    printf("configuring herd: '%s'\n",name);
+    //printf("configuring herd: '%s'\n",herd_name.c_str());
     assert(mlir->configure_cores);
     assert(mlir->configure_switchboxes);
     assert(mlir->initialize_locks);
@@ -155,6 +159,10 @@ air_herd_load(const char *name) {
     mlir->initialize_locks(_air_host_active_libxaie1);
     mlir->configure_dmas(_air_host_active_libxaie1);
     mlir->start_cores(_air_host_active_libxaie1);
+  }
+  else {
+    printf("Failed to locate herd '%s' configuration functions!\n",herd_name.c_str());
+    assert(0);
   }
 
   return 0;
