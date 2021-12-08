@@ -11,12 +11,8 @@
 #include <sys/mman.h>
 #include <dlfcn.h>
 
-#include <xaiengine.h>
-
 #include "air_host.h"
 #include "air_tensor.h"
-
-#include "aie_inc.cpp"
 
 #define VERBOSE 1
 
@@ -27,6 +23,12 @@
 #define TILE_WIDTH 16
 #define TILE_HEIGHT 8
 #define TILE_SIZE  (TILE_WIDTH * TILE_HEIGHT)
+
+namespace air::herds::copyherd {
+int32_t mlir_aie_read_buffer_scratch_0_0(aie_libxaie_ctx_t*, int);
+void mlir_aie_write_buffer_scratch_0_0(aie_libxaie_ctx_t*, int, int32_t);
+};
+using namespace air::herds::copyherd;
 
 int
 main(int argc, char *argv[])
@@ -43,9 +45,9 @@ main(int argc, char *argv[])
   for (int i=0; i<TILE_SIZE; i++)
     mlir_aie_write_buffer_scratch_0_0(xaie, i, 0xfadefade);
 
-  printf("loading aie_ctrl.so\n");
-  auto handle = air_module_load_from_file("./aie_ctrl.so");
-  assert(handle && "failed to open aie_ctrl.so");
+  printf("loading air module\n");
+  auto handle = air_module_load_from_file(nullptr);
+  assert(handle && "failed to load air module");
 
   auto graph_fn = (void (*)(void*,void *))dlsym((void*)handle, "_mlir_ciface_graph");
   assert(graph_fn && "failed to locate _mlir_ciface_graph in .so");

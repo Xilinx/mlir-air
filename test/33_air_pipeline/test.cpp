@@ -22,6 +22,8 @@ main(int argc, char *argv[])
   auto col = 3;
   auto row = 3;
 
+  /*aie_libxaie_ctx_t *xaie = */air_init_libxaie1();
+
   // create the queue
   queue_t *q = nullptr;
   auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
@@ -65,7 +67,7 @@ main(int argc, char *argv[])
   }
 
   printf("loading aie_ctrl.so\n");
-  auto handle = air_module_load_from_file("./aie_ctrl.so", q);
+  auto handle = air_module_load_from_file("./aie_ctrl.so");
   assert(handle && "failed to open aie_ctrl.so");
 
   auto launch = (void (*)(void*,void *,void *))dlsym((void*)handle, "_mlir_ciface_launch");
