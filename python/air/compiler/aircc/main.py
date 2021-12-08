@@ -266,7 +266,7 @@ def run_flow(opts):
 
     lib_file = opts.air_mlir_file+('.so' if opts.shared else '.a')
     if opts.shared:
-      raise NotImplemented
+      cmd = ['clang', '-shared', '-o', lib_file] + obj_files
     else:
       cmd = ['llvm-ar', 'rc', lib_file] + obj_files
     do_call(cmd)
@@ -279,10 +279,6 @@ def main():
     global opts
     opts = cl_arguments.parse_args()
     is_windows = platform.system() == 'Windows'
-
-    if opts.shared:
-      print('shared library option not implemented')
-      raise NotImplemented
 
     if(opts.verbose):
         sys.stderr.write('\ncompiling %s\n' % opts.air_mlir_file)
