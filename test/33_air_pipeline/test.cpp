@@ -24,26 +24,10 @@ main(int argc, char *argv[])
 
   /*aie_libxaie_ctx_t *xaie = */air_init_libxaie1();
 
-  // create the queue
-  queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
-  assert(ret == 0 && "failed to create queue!");
-
-  // reserve a packet in the queue
-  uint64_t wr_idx = queue_add_write_index(q, 1);
-  uint64_t packet_id = wr_idx % q->size;
-
-  // herd_setup packet
-  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_herd_init(herd_pkt, 0, col, 4, row, 1);
-  air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
-
-  // device init packet
-  wr_idx = queue_add_write_index(q, 1);
-  packet_id = wr_idx % q->size;
-  dispatch_packet_t *shim_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_device_init(shim_pkt,XAIE_NUM_COLS);
-  air_queue_dispatch_and_wait(q, wr_idx, shim_pkt);
+  //// create the queue
+  //queue_t *q = nullptr;
+  //auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
+  //assert(ret == 0 && "failed to create queue!");
 
   #define DATA_LENGTH 1024
   #define DATA_TYPE int
@@ -67,7 +51,7 @@ main(int argc, char *argv[])
   }
 
   printf("loading aie_ctrl.so\n");
-  auto handle = air_module_load_from_file("./aie_ctrl.so");
+  auto handle = air_module_load_from_file(nullptr);
   assert(handle && "failed to open aie_ctrl.so");
 
   auto launch = (void (*)(void*,void *,void *))dlsym((void*)handle, "_mlir_ciface_launch");

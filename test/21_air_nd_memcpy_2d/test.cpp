@@ -16,10 +16,6 @@
 #include "air_host.h"
 #include "air_tensor.h"
 
-#include "aie_inc.cpp"
-
-#define VERBOSE 1
-
 #define IMAGE_WIDTH 32
 #define IMAGE_HEIGHT 16
 #define IMAGE_SIZE  (IMAGE_WIDTH * IMAGE_HEIGHT)
@@ -28,18 +24,18 @@
 #define TILE_HEIGHT 8
 #define TILE_SIZE  (TILE_WIDTH * TILE_HEIGHT)
 
+namespace air::herds::herd_0 {
+void mlir_aie_write_buffer_scratch_0_0(aie_libxaie_ctx_t*, int, int32_t);
+};
+using namespace air::herds::herd_0;
+
 int
 main(int argc, char *argv[])
 {
-  auto shim_col = 2;
-
+  uint64_t row = 4;
+  uint64_t col = 5;
+  
   aie_libxaie_ctx_t *xaie = air_init_libxaie1();
-  mlir_aie_init_device(xaie);
-
-  mlir_aie_configure_cores(xaie);
-  mlir_aie_configure_switchboxes(xaie);
-  mlir_aie_initialize_locks(xaie);
-  mlir_aie_configure_dmas(xaie);
 
   // create the queue
   queue_t *q = nullptr;
@@ -50,7 +46,7 @@ main(int argc, char *argv[])
     mlir_aie_write_buffer_scratch_0_0(xaie, i, 0xfadefade);
 
   printf("loading aie_ctrl.so\n");
-  auto handle = air_module_load_from_file("./aie_ctrl.so",q);
+  auto handle = air_module_load_from_file(nullptr,q);
   assert(handle && "failed to open aie_ctrl.so");
 
   auto graph_fn = (void (*)(void*,void *))dlsym((void*)handle, "_mlir_ciface_graph");
@@ -69,8 +65,6 @@ main(int argc, char *argv[])
     input.d[i] = i+0x1000;
     output.d[i] = 0x00defaced;
   }
-
-  mlir_aie_start_cores(xaie);
 
   void *i, *o;
   i = &input;

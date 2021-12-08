@@ -14,30 +14,27 @@
 #include "air_host.h"
 #include "air_tensor.h"
 
-#include "aie_inc.cpp"
-
-queue_t *q = nullptr;
+namespace air::herds::herd_0 {
+void mlir_aie_write_buffer_buf0(aie_libxaie_ctx_t*, int, int32_t);
+uint32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t*, int);
+};
+using namespace air::herds::herd_0;
 
 int
 main(int argc, char *argv[])
 {
-  uint64_t row = 0;
+  uint64_t row = 2;
   uint64_t col = 7;
 
-  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
-  mlir_aie_init_device(xaie);
-
-  mlir_aie_configure_cores(xaie);
-  mlir_aie_configure_switchboxes(xaie);
-  mlir_aie_initialize_locks(xaie);
-  mlir_aie_configure_dmas(xaie);
+  aie_libxaie_ctx_t *xaie = air_init_libxaie1();
 
   // create the queue
+  queue_t *q = nullptr;
   auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
   assert(ret == 0 && "failed to create queue!");
 
   printf("loading aie_ctrl.so\n");
-  auto handle = air_module_load_from_file("./aie_ctrl.so",q);
+  auto handle = air_module_load_from_file(nullptr,q);
   assert(handle && "failed to open aie_ctrl.so");
 
   auto graph_fn = (void (*)(void*))dlsym((void*)handle, "_mlir_ciface_graph");

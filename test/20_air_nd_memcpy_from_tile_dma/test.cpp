@@ -34,7 +34,6 @@ main(int argc, char *argv[])
 
   uint32_t *bram_ptr = nullptr;
 
-  // use BRAM_ADDR + 0x4000 as the data address
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd != -1) {
     bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_SHMEM_BASE+0x4000);
@@ -43,13 +42,12 @@ main(int argc, char *argv[])
   }
 
   // create the queue
-  // queue_t *q = nullptr;
-  // auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
-  // assert(ret == 0 && "failed to create queue!");
+  queue_t *q = nullptr;
+  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
+  assert(ret == 0 && "failed to create queue!");
 
   printf("loading aie_ctrl.so\n");
-  
-  auto handle = air_module_load_from_file(nullptr);
+  auto handle = air_module_load_from_file(nullptr,q);
   assert(handle && "failed to open aie_ctrl.so");
 
   auto graph_fn = (void (*)(void*))dlsym((void*)handle, "_mlir_ciface_graph");

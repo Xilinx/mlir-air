@@ -43,13 +43,12 @@ main(int argc, char *argv[])
   }
 
   // create the queue
-  // queue_t *q = nullptr;
-  // auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
-  // assert(ret == 0 && "failed to create queue!");
+  queue_t *q = nullptr;
+  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
+  assert(ret == 0 && "failed to create queue!");
 
   printf("loading aie_ctrl.so\n");
-  
-  auto handle = air_module_load_from_file(nullptr);
+  auto handle = air_module_load_from_file(nullptr,q);
   assert(handle && "failed to open aie_ctrl.so");
 
   auto graph_fn = (void (*)(void*))dlsym((void*)handle, "_mlir_ciface_graph");
