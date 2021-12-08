@@ -8,7 +8,7 @@ from typing import TypeVar
 
 import torch
 
-from torch_mlir.ir import Module
+from air.mlir.ir import Module
 
 # A type shared between the result of `AirBackend.compile` and the
 # input to `AirBackend.load`. Each backend will likely have a

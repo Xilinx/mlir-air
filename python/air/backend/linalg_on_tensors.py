@@ -28,9 +28,6 @@ ctypes.CDLL(f"{path}/../../../runtime_lib/airhost/libairhost_shared.so", mode=ct
 
 import air.mlir._mlir_libs._airRt as airrt
 
-import tempfile
-import os
-
 __all__ = [
     "LinalgOnTensorsAirBackend",
 ]
@@ -65,25 +62,6 @@ class LinalgOnTensorsAirBackend(AirBackend):
     def __init__(self):
         super().__init__()
         self.refbackend = RefBackendLinalgOnTensorsBackend()
-
-    def _op_stats(self, air_module):
-        with tempfile.NamedTemporaryFile(delete=False) as tmpfile:
-            name = tmpfile.name
-            with air_module.context:
-                pipeline = f"air-linalg-op-stats{{outputfile={name}}}"
-                pm = air.mlir.passmanager.PassManager.parse(pipeline)
-                pm.run(air_module)
-            stats = open(name).read()
-            os.unlink(name)
-        return stats
-
-    def op_stats(self, module):
-        """Return operation count information as JSON"""
-        if not isinstance(module, air.mlir.ir.Module):
-            air_module = air.mlir.ir.Module.parse(str(module),air.mlir.ir.Context())
-        else:
-            air_module = module
-        return self._op_stats(air_module)
 
     def compile(self, imported_module: torch_mlir.ir.Module):
         """Compiles an imported module, with a flat list of functions.
