@@ -159,6 +159,13 @@ def AIRLinalgCodegen : Pass<"air-linalg-codegen", "ModuleOp"> {
   }];
 }
 
+def AIRLinalgOpStats : Pass<"air-linalg-op-stats", "ModuleOp"> {
+  let summary = "AIR linalg operation statistics";
+  let constructor = "xilinx::air::createAIRLinalgOpStatsPass()";
+  let description = [{
+  }];
+}
+
 def AIRLowerLinalgTensors : Pass<"air-lower-linalg-tensors", "ModuleOp"> {
   let summary = "Lowering from linalg on tensors to loops";
   let constructor = "xilinx::air::createAIRLowerLinalgTensorsPass()";
