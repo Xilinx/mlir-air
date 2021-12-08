@@ -100,3 +100,4 @@ add_subdirectory(air/backend)
 
 add_dependencies(AirPythonModules AirCompilerPythonModules)
 add_subdirectory(air/compiler)
+#add_subdirectory(test)
