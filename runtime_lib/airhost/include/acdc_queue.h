@@ -60,6 +60,7 @@ typedef struct air_agent_s {
 
 // Note below that "__attribute__((packed))" also asserts that the whole structure is
 // unaligned in some compilers.  This helps to silence errors from -waddress-of-packed-struct
+
 typedef struct dispatch_packet_s {
 
   // HSA-like interface
@@ -72,6 +73,30 @@ typedef struct dispatch_packet_s {
   uint64_t completion_signal;
 
 } __attribute__((packed,aligned(__alignof__(uint64_t)))) dispatch_packet_t;
+
+typedef struct barrier_and_packet_s {
+
+  // HSA-like interface
+  volatile uint16_t header;
+  uint16_t reserved0;
+  uint32_t reserved1;
+  uint64_t dep_signal[5];
+  uint64_t reserved2;
+  uint64_t completion_signal;
+
+} __attribute__((packed,aligned(__alignof__(uint64_t)))) barrier_and_packet_t;
+
+typedef struct barrier_or_packet_s {
+
+  // HSA-like interface
+  volatile uint16_t header;
+  uint16_t reserved0;
+  uint32_t reserved1;
+  uint64_t dep_signal[5];
+  uint64_t reserved2;
+  uint64_t completion_signal;
+
+} __attribute__((packed,aligned(__alignof__(uint64_t)))) barrier_or_packet_t;
 
 typedef struct queue_s {
 
@@ -126,6 +151,10 @@ inline uint64_t queue_load_write_index(queue_t *q)
   return q->write_index;
 }
 
+inline uint64_t queue_paddr_from_index(queue_t *q, uint64_t idx) {
+  return q->base_address_paddr + idx; 
+}
+
 inline bool packet_get_active(dispatch_packet_t *pkt)
 {
   return pkt->reserved1 & 0x1;
@@ -138,8 +167,8 @@ inline void packet_set_active(dispatch_packet_t *pkt, bool b)
 
 inline void initialize_packet(dispatch_packet_t *pkt)
 {
-  pkt->header = 0;
-  pkt->type = HSA_PACKET_TYPE_INVALID;
+  pkt->header = HSA_PACKET_TYPE_INVALID;
+  //pkt->type = AIR_PKT_TYPE_INVALID;
 }
 
 inline hsa_status_t signal_create(signal_value_t initial_value, uint32_t num_consumers, void *consumers, signal_t *signal)

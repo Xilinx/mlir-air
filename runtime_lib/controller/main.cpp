@@ -1,5 +1,6 @@
 #include <cstdint>
 #include <cstring>
+#include "unistd.h"
 
 extern "C" {
 #include "xil_printf.h"
@@ -616,8 +617,18 @@ void complete_agent_dispatch_packet(dispatch_packet_t *pkt)
 {
   // completion phase
   packet_set_active(pkt, false);
-  pkt->type = HSA_PACKET_TYPE_INVALID;
+  pkt->header = HSA_PACKET_TYPE_INVALID;
+  pkt->type = AIR_PKT_TYPE_INVALID;
   signal_subtract_acq_rel((signal_t*)&pkt->completion_signal, 1);
+}
+
+void complete_barrier_packet(void *pkt)
+{
+  barrier_and_packet_t *p = (barrier_and_packet_t *)(pkt);
+  // completion phase
+  //packet_set_active(pkt, false);
+  p->header = HSA_PACKET_TYPE_INVALID;
+  signal_subtract_acq_rel((signal_t*)&p->completion_signal, 1);
 }
 
 void handle_packet_device_initialize(dispatch_packet_t *pkt) { 
@@ -671,7 +682,7 @@ void handle_packet_get_capabilities(dispatch_packet_t *pkt, uint32_t mb_id)
 {
   // packet is in active phase
   packet_set_active(pkt, true);
-  uint64_t *addr = (uint64_t *)(pkt->arg[1]);
+  uint64_t *addr = (uint64_t *)(pkt->return_address);
 
   lock_uart(mb_id); air_printf("Writing to 0x%llx\n\r",(uint64_t)addr); unlock_uart();
   // We now write a capabilities structure to the address we were just passed
@@ -699,7 +710,8 @@ void handle_packet_get_info(dispatch_packet_t *pkt, uint32_t mb_id)
 {
   // packet is in active phase
   packet_set_active(pkt, true);
-  uint64_t attribute = (pkt->arg[1]);
+  uint64_t attribute = (pkt->arg[0]);
+  uint64_t *addr = (uint64_t *)(&pkt->return_address); // FIXME when we can use a VA
 
   pvr_t pvr;
   microblaze_get_pvr(&pvr);
@@ -708,42 +720,43 @@ void handle_packet_get_info(dispatch_packet_t *pkt, uint32_t mb_id)
   char name[] = {'A','C','D','C','\0'};
   char vend[] = {'X','i','l','i','n','x','\0'};
 
+  // TODO change this to use pkt->return_address
   switch(attribute) {
     case AIR_AGENT_INFO_NAME:
-      memcpy(&pkt->arg[2],name,8); 
+      memcpy(addr,name,8); 
       break;
     case AIR_AGENT_INFO_VENDOR_NAME:
-      memcpy(&pkt->arg[2],vend,8); 
+      memcpy(addr,vend,8); 
       break;
     case AIR_AGENT_INFO_CONTROLLER_ID:
-      pkt->arg[2] = (uint64_t)mb_id;           // region id
+      *addr = (uint64_t)mb_id;           // region id
       break;
     case AIR_AGENT_INFO_FIRMWARE_VER:
-      pkt->arg[2] = (uint64_t)(user2 >> 8);    // region controller firmware version
+      *addr = (uint64_t)(user2 >> 8);    // region controller firmware version
       break;
     case AIR_AGENT_INFO_NUM_REGIONS: 
-      pkt->arg[2] = (uint64_t)user1;           // num regions
+      *addr = (uint64_t)user1;           // num regions
       break;
-    case AIR_AGENT_INFO_HERD_SIZE:             // TODO make herd size, rows, cols dynamic
-      pkt->arg[2] = 16L;                       // cores per region
+    case AIR_AGENT_INFO_HERD_SIZE:       // TODO make herd size, rows, cols dynamic
+      *addr = 16L;                       // cores per region
       break;
     case AIR_AGENT_INFO_HERD_ROWS:
-      pkt->arg[2] = 4L;                        // rows of cores
+      *addr = 4L;                        // rows of cores
       break;
     case AIR_AGENT_INFO_HERD_COLS:
-      pkt->arg[2] = 4L;                        // cols of cores
+      *addr = 4L;                        // cols of cores
       break;
     case AIR_AGENT_INFO_TILE_DATA_MEM_SIZE:
-      pkt->arg[2] = 32768L;                    // total L1 data memory per core
+      *addr = 32768L;                    // total L1 data memory per core
       break;
     case AIR_AGENT_INFO_TILE_PROG_MEM_SIZE:
-      pkt->arg[2] = 16384L;                    // L1 program memory per core
+      *addr = 16384L;                    // L1 program memory per core
       break;
     case AIR_AGENT_INFO_L2_MEM_SIZE:
-      pkt->arg[2] = 1048576L;                  // L2 memory per region (4 cols * 256k)
+      *addr = 1048576L;                  // L2 memory per region (4 cols * 256k)
       break;
     default:
-      pkt->arg[2] = 0;
+      *addr = 0;
       break;
   }
 }
@@ -757,9 +770,9 @@ void handle_packet_cdma(dispatch_packet_t *pkt)
   volatile uint32_t *cdmab = (volatile uint32_t *)(cdma_base);
   uint32_t status = cdmab[1];
   air_printf("CMDA raw %x idle %x\n\r",status,status&2);
-  uint64_t daddr = (pkt->arg[1]);
-  uint64_t saddr = (pkt->arg[2]);
-  uint32_t bytes = (pkt->arg[3]);
+  uint64_t daddr = (pkt->arg[0]);
+  uint64_t saddr = (pkt->arg[1]);
+  uint32_t bytes = (pkt->arg[2]);
   cdmab[6] = saddr&0xffffffff; 
   cdmab[7] = saddr>>32; 
   cdmab[8] = daddr&0xffffffff; 
@@ -795,8 +808,8 @@ void handle_packet_put_stream(dispatch_packet_t *pkt)
   // packet is in active phase
   packet_set_active(pkt, true);
 
-  uint64_t which_stream = pkt->arg[1];
-  uint64_t data = pkt->arg[2];
+  uint64_t which_stream = pkt->arg[0];
+  uint64_t data = pkt->arg[1];
 
   register uint32_t d0 = data & 0xffffffff;
   register uint32_t d1 = data >> 32;
@@ -835,7 +848,7 @@ void handle_packet_get_stream(dispatch_packet_t *pkt)
   // packet is in active phase
   packet_set_active(pkt, true);
 
-  uint64_t which_stream = pkt->arg[1];
+  uint64_t which_stream = pkt->arg[0];
   register uint32_t d;
 
   switch (which_stream) {
@@ -856,146 +869,125 @@ void handle_packet_get_stream(dispatch_packet_t *pkt)
   }
 
   air_printf("Get fsl %d : id %d\n\r",which_stream,d);
-  pkt->arg[2] = d;
+  uint32_t *ptr = (uint32_t *)(pkt->return_address);
+  *ptr = d;
 }
 
 
 void handle_packet_hello(dispatch_packet_t *pkt, uint32_t mb_id)
 {
-  // packet is in active phase
   packet_set_active(pkt, true);
 
-  uint64_t say_what = pkt->arg[1];
-  lock_uart(mb_id); xil_printf("HELLO %08X\n\r",(uint32_t)say_what); unlock_uart();
-  /*
-  //u32 before_hi = XAieGbl_Read32(xaie::TileInst[0][0].TileAddr + 0x000340FC); // Timer high
-  u32 before_lo = XAieGbl_Read32(xaie::TileInst[0][0].TileAddr + 0x000340F8); // Timer low
-  //u32 after_hi  = XAieGbl_Read32(xaie::TileInst[0][0].TileAddr + 0x000340FC); // Timer high
-  u32 after_lo  = XAieGbl_Read32(xaie::TileInst[0][0].TileAddr + 0x000340F8); // Timer low
-
-  if (phase == 1) {
-    air_printf("last before %08X\n\r",last_before_lo);
-    air_printf("last after  %08X\n\r",last_after_lo);
-    air_printf("this before %08X\n\r",before_lo);
-    air_printf("this after  %08X\n\r",after_lo);
-    air_printf("turnaround time %d\n\r",before_lo - last_after_lo);
-    phase = 0;
-  }
-  else {
-    last_before_lo = before_lo;
-    last_after_lo = after_lo;
-    phase = 1;
-  }
-  setup= true;
-  */
+  uint64_t say_what = pkt->arg[0];
+  lock_uart(mb_id); xil_printf("MB %d : HELLO %08X\n\r",mb_id,(uint32_t)say_what); unlock_uart();
 }
 
-void handle_packet_allocate_herd_shim_dmas(dispatch_packet_t *pkt)
-{
-  air_printf("handle_packet_allocate_herd_shim_dmas\n\r");
-  packet_set_active(pkt, true);
-
-  uint16_t physical_col   = (pkt->arg[0] >> 32) & 0x00ff;
-  uint16_t logical_col    = (pkt->arg[0] >> 40) & 0x00ff;
-  uint32_t herd_id        =  pkt->arg[1]        & 0x00ff;
-  uint16_t channel   =       pkt->arg[2]        & 0x00ff;
-  uint16_t direction =       pkt->arg[3]        & 0x00ff;
-
-  if (direction == 0) {
-    xaie::logicalToPhysicalS2MMshimDMAcolMap[logical_col] = physical_col;
-    xaie::logicalToPhysicalS2MMshimDMAchannelMap[logical_col] = channel;
-  }
-  else {
-    xaie::logicalToPhysicalMM2SshimDMAcolMap[logical_col] = physical_col;
-    xaie::logicalToPhysicalMM2SshimDMAchannelMap[logical_col] = channel;
-  }
-  air_printf("shim_dma_allocate: herd %d allocated physical shim dma in col %d channel %d as logical dma %d for direction %d\n\r",herd_id, physical_col, channel, logical_col, direction);
-}
-
-void handle_packet_shim_memcpy(dispatch_packet_t *pkt)
-{
-  air_printf("handle_packet_shim_memory\n\r");
-  packet_set_active(pkt, true);
-
-  uint16_t col = (pkt->arg[0] >> 32) & 0xffff;
-  uint16_t flags = (pkt->arg[0] >> 48) & 0xffff;
-  bool start = flags & 0x1;
-  uint32_t burst_len = pkt->arg[1] & 0xffffffff;
-  uint16_t direction = (pkt->arg[1] >> 32) & 0xffff;
-  uint16_t channel = (pkt->arg[1] >> 48) & 0xffff;
-  uint64_t paddr = pkt->arg[2];
-  uint64_t bytes = pkt->arg[3];
-
-  //XAieGbl_Tile tile;
-  //xaie::XAieGbl_CfgInitialize_Tile(0, &(aie::TileInst[0][0]), col, row, xaie::AieConfigPtr);
-
-  air_printf("shim_memcpy: col %d direction %d channel %d paddr %llx bytes %d\n\r",col, direction, channel, paddr, bytes);
-  xaie_shim_dma_push_bd(&xaie::ShimTileInst[col], direction, channel, col, paddr, bytes);
-  //xaie_shim_dma_push_bd(&xaie::ShimTileInst[col], direction, channel, 0, paddr, bytes);
-}
-
-void handle_packet_herd_shim_memcpy(dispatch_packet_t *pkt)
-{
-  air_printf("handle_packet_herd_shim_memory\n\r");
-  packet_set_active(pkt, true);
-
-  uint16_t col = (pkt->arg[0] >> 32) & 0xffff;
-  uint16_t herd_id = (pkt->arg[0] >> 52) & 0xff;
-  uint32_t burst_len = pkt->arg[1] & 0xffffffff;
-  uint16_t direction = (pkt->arg[1] >> 32) & 0xffff;
-  uint64_t paddr = pkt->arg[2];
-  uint64_t bytes = pkt->arg[3];
-
-  //XAieGbl_Tile tile;
-  //xaie::XAieGbl_CfgInitialize_Tile(0, &(aie::TileInst[0][0]), col, row, xaie::AieConfigPtr);
-
-  //air_printf("herd_shim_memcpy: herd_d relative col %d direction %d paddr %llx bytes %d\n\r",col, direction, paddr, bytes);
-  uint16_t mapped_col = (direction ==0) ? xaie::logicalToPhysicalS2MMshimDMAcolMap[col] : xaie::logicalToPhysicalMM2SshimDMAcolMap[col];  // todo: a 2d array
-  uint16_t mapped_channel = (direction == 0) ? xaie::logicalToPhysicalS2MMshimDMAchannelMap[col] : xaie::logicalToPhysicalMM2SshimDMAchannelMap[col];
-  //air_printf("Unmaps to col %d chan %d\n\r",mapped_col, mapped_channel);
-  //air_printf("Somethings a happenin over in col %d\n\r", mapped_col);
-/*
-  for (int off=0x1D160; off <= 0x1d164; off += 4) {
-    air_printf("Offset 0x%05X: %08X\n\r",off, XAieGbl_Read32(xaie::ShimTileInst[mapped_col].TileAddr + off));
-  }
-  */
-  xaie_shim_dma_push_bd(&xaie::ShimTileInst[col], direction, mapped_channel, col, paddr, bytes);
-  //xaie_shim_dma_push_bd(&xaie::ShimTileInst[col], direction, channel, 0, paddr, bytes);
-}
-
-void handle_packet_herd_shim_1d_strided_memcpy(dispatch_packet_t *pkt)
-{
-  air_printf("handle_packet_herd_shim_1d_strided_memcpy\n\r");
-  packet_set_active(pkt, true);
-
-  uint16_t start_col = (pkt->arg[0] >> 32) & 0x00ff;
-  uint16_t num_cols = (pkt->arg[0] >> 40) & 0x00ff;
-  uint16_t herd_id = (pkt->arg[0] >> 52) & 0xff;
-  uint32_t burst_len = pkt->arg[1] & 0xffffffff;
-  uint16_t direction = (pkt->arg[1] >> 32) & 0xffff;
-  uint64_t paddr = pkt->arg[2];
-  uint64_t bytes = pkt->arg[3] & 0xffffffff;
-  uint64_t stride = (pkt->arg[3]>>32) & 0xffffffff;
-
-  //XAieGbl_Tile tile;
-  //xaie::XAieGbl_CfgInitialize_Tile(0, &(aie::TileInst[0][0]), col, row, xaie::AieConfigPtr);
-
-  air_printf("herd_shim_1d_strided_memcpy: herd direction %d paddr %llx bytes %d stride %d\n\r",direction, paddr, bytes, stride);
-
-  for (int col=start_col; col<(start_col+num_cols); col++) {
-    uint16_t mapped_col = (direction ==0) ? xaie::logicalToPhysicalS2MMshimDMAcolMap[col] : xaie::logicalToPhysicalMM2SshimDMAcolMap[col];  // todo: a 2d array
-    uint16_t mapped_channel = (direction == 0) ? xaie::logicalToPhysicalS2MMshimDMAchannelMap[col] : xaie::logicalToPhysicalMM2SshimDMAchannelMap[col];
-    air_printf("Unmaps to col %d chan %d\n\r",mapped_col, mapped_channel);
-  air_printf("Somethings a happenin over in col %d\n\r", mapped_col);
-
-  for (int off=0x1D160; off <= 0x1d164; off += 4) {
-    air_printf("Offset 0x%05X: %08X\n\r",off, XAieGbl_Read32(xaie::ShimTileInst[mapped_col].TileAddr + off));
-  }
-    xaie_shim_dma_push_bd(&xaie::ShimTileInst[mapped_col], direction, mapped_channel, mapped_col, paddr, bytes);
-    //xaie_shim_dma_push_bd(&xaie::ShimTileInst[mapped_col], direction, mapped_channel, 0, paddr, bytes);
-    paddr += stride; // Because multiplication is nothing more than repeated addition ...
-  }
-}
+//void handle_packet_allocate_herd_shim_dmas(dispatch_packet_t *pkt)
+//{
+//  air_printf("handle_packet_allocate_herd_shim_dmas\n\r");
+//  packet_set_active(pkt, true);
+//
+//  uint16_t physical_col   = (pkt->arg[0] >> 32) & 0x00ff;
+//  uint16_t logical_col    = (pkt->arg[0] >> 40) & 0x00ff;
+//  uint32_t herd_id        =  pkt->arg[1]        & 0x00ff;
+//  uint16_t channel   =       pkt->arg[2]        & 0x00ff;
+//  uint16_t direction =       pkt->arg[3]        & 0x00ff;
+//
+//  if (direction == 0) {
+//    xaie::logicalToPhysicalS2MMshimDMAcolMap[logical_col] = physical_col;
+//    xaie::logicalToPhysicalS2MMshimDMAchannelMap[logical_col] = channel;
+//  }
+//  else {
+//    xaie::logicalToPhysicalMM2SshimDMAcolMap[logical_col] = physical_col;
+//    xaie::logicalToPhysicalMM2SshimDMAchannelMap[logical_col] = channel;
+//  }
+//  air_printf("shim_dma_allocate: herd %d allocated physical shim dma in col %d channel %d as logical dma %d for direction %d\n\r",herd_id, physical_col, channel, logical_col, direction);
+//}
+//
+//void handle_packet_shim_memcpy(dispatch_packet_t *pkt)
+//{
+//  air_printf("handle_packet_shim_memory\n\r");
+//  packet_set_active(pkt, true);
+//
+//  uint16_t col = (pkt->arg[0] >> 32) & 0xffff;
+//  uint16_t flags = (pkt->arg[0] >> 48) & 0xffff;
+//  bool start = flags & 0x1;
+//  uint32_t burst_len = pkt->arg[1] & 0xffffffff;
+//  uint16_t direction = (pkt->arg[1] >> 32) & 0xffff;
+//  uint16_t channel = (pkt->arg[1] >> 48) & 0xffff;
+//  uint64_t paddr = pkt->arg[2];
+//  uint64_t bytes = pkt->arg[3];
+//
+//  //XAieGbl_Tile tile;
+//  //xaie::XAieGbl_CfgInitialize_Tile(0, &(aie::TileInst[0][0]), col, row, xaie::AieConfigPtr);
+//
+//  air_printf("shim_memcpy: col %d direction %d channel %d paddr %llx bytes %d\n\r",col, direction, channel, paddr, bytes);
+//  xaie_shim_dma_push_bd(&xaie::ShimTileInst[col], direction, channel, col, paddr, bytes);
+//  //xaie_shim_dma_push_bd(&xaie::ShimTileInst[col], direction, channel, 0, paddr, bytes);
+//}
+//
+//void handle_packet_herd_shim_memcpy(dispatch_packet_t *pkt)
+//{
+//  air_printf("handle_packet_herd_shim_memory\n\r");
+//  packet_set_active(pkt, true);
+//
+//  uint16_t col = (pkt->arg[0] >> 32) & 0xffff;
+//  uint16_t herd_id = (pkt->arg[0] >> 52) & 0xff;
+//  uint32_t burst_len = pkt->arg[1] & 0xffffffff;
+//  uint16_t direction = (pkt->arg[1] >> 32) & 0xffff;
+//  uint64_t paddr = pkt->arg[2];
+//  uint64_t bytes = pkt->arg[3];
+//
+//  //XAieGbl_Tile tile;
+//  //xaie::XAieGbl_CfgInitialize_Tile(0, &(aie::TileInst[0][0]), col, row, xaie::AieConfigPtr);
+//
+//  //air_printf("herd_shim_memcpy: herd_d relative col %d direction %d paddr %llx bytes %d\n\r",col, direction, paddr, bytes);
+//  uint16_t mapped_col = (direction ==0) ? xaie::logicalToPhysicalS2MMshimDMAcolMap[col] : xaie::logicalToPhysicalMM2SshimDMAcolMap[col];  // todo: a 2d array
+//  uint16_t mapped_channel = (direction == 0) ? xaie::logicalToPhysicalS2MMshimDMAchannelMap[col] : xaie::logicalToPhysicalMM2SshimDMAchannelMap[col];
+//  //air_printf("Unmaps to col %d chan %d\n\r",mapped_col, mapped_channel);
+//  //air_printf("Somethings a happenin over in col %d\n\r", mapped_col);
+///*
+//  for (int off=0x1D160; off <= 0x1d164; off += 4) {
+//    air_printf("Offset 0x%05X: %08X\n\r",off, XAieGbl_Read32(xaie::ShimTileInst[mapped_col].TileAddr + off));
+//  }
+//  */
+//  xaie_shim_dma_push_bd(&xaie::ShimTileInst[col], direction, mapped_channel, col, paddr, bytes);
+//  //xaie_shim_dma_push_bd(&xaie::ShimTileInst[col], direction, channel, 0, paddr, bytes);
+//}
+//
+//void handle_packet_herd_shim_1d_strided_memcpy(dispatch_packet_t *pkt)
+//{
+//  air_printf("handle_packet_herd_shim_1d_strided_memcpy\n\r");
+//  packet_set_active(pkt, true);
+//
+//  uint16_t start_col = (pkt->arg[0] >> 32) & 0x00ff;
+//  uint16_t num_cols = (pkt->arg[0] >> 40) & 0x00ff;
+//  uint16_t herd_id = (pkt->arg[0] >> 52) & 0xff;
+//  uint32_t burst_len = pkt->arg[1] & 0xffffffff;
+//  uint16_t direction = (pkt->arg[1] >> 32) & 0xffff;
+//  uint64_t paddr = pkt->arg[2];
+//  uint64_t bytes = pkt->arg[3] & 0xffffffff;
+//  uint64_t stride = (pkt->arg[3]>>32) & 0xffffffff;
+//
+//  //XAieGbl_Tile tile;
+//  //xaie::XAieGbl_CfgInitialize_Tile(0, &(aie::TileInst[0][0]), col, row, xaie::AieConfigPtr);
+//
+//  air_printf("herd_shim_1d_strided_memcpy: herd direction %d paddr %llx bytes %d stride %d\n\r",direction, paddr, bytes, stride);
+//
+//  for (int col=start_col; col<(start_col+num_cols); col++) {
+//    uint16_t mapped_col = (direction ==0) ? xaie::logicalToPhysicalS2MMshimDMAcolMap[col] : xaie::logicalToPhysicalMM2SshimDMAcolMap[col];  // todo: a 2d array
+//    uint16_t mapped_channel = (direction == 0) ? xaie::logicalToPhysicalS2MMshimDMAchannelMap[col] : xaie::logicalToPhysicalMM2SshimDMAchannelMap[col];
+//    air_printf("Unmaps to col %d chan %d\n\r",mapped_col, mapped_channel);
+//  air_printf("Somethings a happenin over in col %d\n\r", mapped_col);
+//
+//  for (int off=0x1D160; off <= 0x1d164; off += 4) {
+//    air_printf("Offset 0x%05X: %08X\n\r",off, XAieGbl_Read32(xaie::ShimTileInst[mapped_col].TileAddr + off));
+//  }
+//    xaie_shim_dma_push_bd(&xaie::ShimTileInst[mapped_col], direction, mapped_channel, mapped_col, paddr, bytes);
+//    //xaie_shim_dma_push_bd(&xaie::ShimTileInst[mapped_col], direction, mapped_channel, 0, paddr, bytes);
+//    paddr += stride; // Because multiplication is nothing more than repeated addition ...
+//  }
+//}
 
 typedef struct staged_nd_memcpy_s {
   uint32_t valid;
@@ -1221,7 +1213,7 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id)
         rd_idx++; 
         pkt = &((dispatch_packet_t*)q->base_address)[rd_idx % q->size];
         air_printf("HELLO NEW PACKET IN FLIGHT!\n\r");
-        if (pkt->type ==  HSA_PACKET_TYPE_INVALID) {
+        if (((pkt->header)&0xF) ==  HSA_PACKET_TYPE_INVALID) { // FIXME handle barrier packets
           rd_idx--;
           pkt = &((dispatch_packet_t*)q->base_address)[rd_idx % q->size];
           air_printf("WARN: Found invalid HSA packet inside peek loop!\n\r");
@@ -1245,7 +1237,7 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id)
     }
 
 packet_op:
-    auto op = pkt->arg[0] & 0xffff;
+    auto op = pkt->type & 0xffff;
     air_printf("Op is %04X\n\r",op);
     switch (op) {
       case AIR_PKT_TYPE_INVALID:
@@ -1305,11 +1297,11 @@ packet_op:
         packets_processed++;
         break;
 
-      case AIR_PKT_TYPE_ALLOCATE_HERD_SHIM_DMAS:
-        handle_packet_allocate_herd_shim_dmas(pkt);
-        complete_agent_dispatch_packet(pkt);
-        packets_processed++;
-        break;
+      //case AIR_PKT_TYPE_ALLOCATE_HERD_SHIM_DMAS:
+      //  handle_packet_allocate_herd_shim_dmas(pkt);
+      //  complete_agent_dispatch_packet(pkt);
+      //  packets_processed++;
+      //  break;
 
       case AIR_PKT_TYPE_PUT_STREAM:
         handle_packet_put_stream(pkt);
@@ -1328,21 +1320,21 @@ packet_op:
         packets_processed++;
         break;
 
-      case AIR_PKT_TYPE_SHIM_DMA_MEMCPY:
-        handle_packet_shim_memcpy(pkt);
-        complete_agent_dispatch_packet(pkt);
-        packets_processed++;
-        break;
-      case AIR_PKT_TYPE_HERD_SHIM_DMA_MEMCPY:
-        handle_packet_herd_shim_memcpy(pkt);
-        complete_agent_dispatch_packet(pkt);
-        packets_processed++;
-        break;
-      case AIR_PKT_TYPE_HERD_SHIM_DMA_1D_STRIDED_MEMCPY:
-        handle_packet_herd_shim_1d_strided_memcpy(pkt);
-        complete_agent_dispatch_packet(pkt);
-        packets_processed++;
-        break;
+      //case AIR_PKT_TYPE_SHIM_DMA_MEMCPY:
+      //  handle_packet_shim_memcpy(pkt);
+      //  complete_agent_dispatch_packet(pkt);
+      //  packets_processed++;
+      //  break;
+      //case AIR_PKT_TYPE_HERD_SHIM_DMA_MEMCPY:
+      //  handle_packet_herd_shim_memcpy(pkt);
+      //  complete_agent_dispatch_packet(pkt);
+      //  packets_processed++;
+      //  break;
+      //case AIR_PKT_TYPE_HERD_SHIM_DMA_1D_STRIDED_MEMCPY:
+      //  handle_packet_herd_shim_1d_strided_memcpy(pkt);
+      //  complete_agent_dispatch_packet(pkt);
+      //  packets_processed++;
+      //  break;
       case AIR_PKT_TYPE_ND_MEMCPY: // Only arrive here the first try. 
         uint16_t channel      = (pkt->arg[0] >> 24) & 0x00ff;
         uint16_t direction    = (pkt->arg[0] >> 60) & 0x000f;
@@ -1370,6 +1362,86 @@ packet_op:
   } while (num_active_packets > 1);
   lock_uart(mb_id); air_printf("Completing: %d packets processed.\n\r",packets_processed); unlock_uart();
   queue_add_read_index(q,packets_processed);
+}
+
+inline signal_value_t signal_wait(volatile signal_t *signal,
+                                  signal_value_t compare_value,
+                                  uint64_t timeout_hint,
+                                  signal_value_t default_value)
+{
+  if (signal->handle == 0) return default_value;
+  signal_value_t ret = 0;
+  uint64_t timeout = timeout_hint;
+  do {
+    ret = signal->handle;
+    if (ret == compare_value)
+      return compare_value;
+  } while (timeout--);
+  return ret;
+}
+
+void handle_barrier_and_packet(queue_t *q, uint32_t mb_id)
+{
+  uint64_t rd_idx = queue_load_read_index(q);
+  barrier_and_packet_t *pkt = &((barrier_and_packet_t*)q->base_address)[rd_idx % q->size];
+
+  // TODO complete functionality with correct PAs
+  //signal_t *s0 = (signal_t *)pkt->dep_signal[0]; 
+  //signal_t *s1 = (signal_t *)pkt->dep_signal[1]; 
+  //signal_t *s2 = (signal_t *)pkt->dep_signal[2]; 
+  //signal_t *s3 = (signal_t *)pkt->dep_signal[3]; 
+  //signal_t *s4 = (signal_t *)pkt->dep_signal[4]; 
+
+  //lock_uart(mb_id);
+  //for (int i = 0; i < 5; i++)
+  //  air_printf("MB %d : dep_signal[%d] @ %p\n\r",mb_id,i,(uint64_t *)(pkt->dep_signal[i]));
+  //unlock_uart();
+
+  //while ((signal_wait(s0, 0, 0x80000, 0) != 0) ||
+  //       (signal_wait(s1, 0, 0x80000, 0) != 0) ||
+  //       (signal_wait(s2, 0, 0x80000, 0) != 0) ||
+  //       (signal_wait(s3, 0, 0x80000, 0) != 0) ||
+  //       (signal_wait(s4, 0, 0x80000, 0) != 0))
+  //{
+  //  lock_uart(mb_id);
+  //  air_printf("MB %d : barrier AND packet completion signal timeout!\n\r",mb_id);
+  //  for (int i = 0; i < 5; i++)
+  //    air_printf("MB %d : dep_signal[%d] = %d\n\r",mb_id,i,*((uint32_t *)(pkt->dep_signal[i])));
+  //  unlock_uart();
+  //}
+
+  complete_barrier_packet(pkt);
+  queue_add_read_index(q,1);
+}
+  
+void handle_barrier_or_packet(queue_t *q, uint32_t mb_id)
+{
+  uint64_t rd_idx = queue_load_read_index(q);
+  barrier_or_packet_t *pkt = &((barrier_or_packet_t*)q->base_address)[rd_idx % q->size];
+
+  // TODO complete functionality with correct PAs
+  //signal_t *s0 = (signal_t *)pkt->dep_signal[0]; 
+  //signal_t *s1 = (signal_t *)pkt->dep_signal[1]; 
+  //signal_t *s2 = (signal_t *)pkt->dep_signal[2]; 
+  //signal_t *s3 = (signal_t *)pkt->dep_signal[3]; 
+  //signal_t *s4 = (signal_t *)pkt->dep_signal[4]; 
+
+  //for (int i = 0; i < 5; i++)
+  //  air_printf("MB %d : dep_signal[%d] @ %p\n\r",mb_id,i,(uint64_t *)(pkt->dep_signal[i]));
+
+  //while ((signal_wait(s0, 0, 0x80000, 1) != 0) &&
+  //       (signal_wait(s1, 0, 0x80000, 1) != 0) &&
+  //       (signal_wait(s2, 0, 0x80000, 1) != 0) &&
+  //       (signal_wait(s3, 0, 0x80000, 1) != 0) &&
+  //       (signal_wait(s4, 0, 0x80000, 1) != 0))
+  //{
+  //  air_printf("MB %d : barrier OR packet completion signal timeout!\n\r",mb_id);
+  //  for (int i = 0; i < 5; i++)
+  //    air_printf("MB %d : dep_signal[%d] = %d\n\r",mb_id,i,*((uint32_t *)(pkt->dep_signal[i])));
+  //}
+
+  complete_barrier_packet(pkt);
+  queue_add_read_index(q,1);
 }
   
 int main()
@@ -1420,7 +1492,10 @@ int main()
         //air_printf("Handle pkt read_index=%d\n\r", rd_idx);
 
         dispatch_packet_t *pkt = &((dispatch_packet_t*)q->base_address)[rd_idx % q->size];
-        switch (pkt->type) {
+        uint8_t type = ((pkt->header) & (0xF));
+        //uint8_t type = ((pkt->header >> HSA_PACKET_HEADER_TYPE) &
+        //                ((1 << HSA_PACKET_HEADER_WIDTH_TYPE) - 1));
+        switch (type) {
           default:
           case HSA_PACKET_TYPE_INVALID:
             if (setup) {
@@ -1435,6 +1510,12 @@ int main()
 	          handle_agent_dispatch_packet(q, mb_id);
             //complete_agent_dispatch_packet(pkt); MOVED
             //queue_add_read_index(q, 1); MOVED
+            break;
+          case HSA_PACKET_TYPE_BARRIER_AND:
+            handle_barrier_and_packet(q, mb_id); 
+            break;
+          case HSA_PACKET_TYPE_BARRIER_OR:
+            handle_barrier_or_packet(q, mb_id); 
             break;
         }
       }

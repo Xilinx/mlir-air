@@ -331,7 +331,7 @@ void air_mem_shim_nd_memcpy_queue_impl(uint32_t id, uint64_t x, uint64_t y, tens
   size_t offset = 0;
   std::vector<uint64_t> offsets{offset_0, offset_1, offset_2, offset_3};
   for (int i=0; i<R; i++) {
-    offset += offsets[i] * stride * sizeof(uint32_t);
+    offset += offsets[i] * stride * sizeof(T);
     stride *= t->shape[i];
   }
 
@@ -354,13 +354,13 @@ void air_mem_shim_nd_memcpy_queue_impl(uint32_t id, uint64_t x, uint64_t y, tens
       for (uint32_t index_3d=0;index_3d<length_3d;index_3d++) {
         paddr_1d = paddr_2d;
         for (uint32_t index_2d=0;index_2d<length_2d;index_2d++) {
-          memcpy((size_t*)bounce_buffer, (size_t*)paddr_1d, length_1d*sizeof(uint32_t));
+          memcpy((size_t*)bounce_buffer, (size_t*)paddr_1d, length_1d*sizeof(T));
           bounce_buffer += length_1d;
-          paddr_1d += stride_2d*sizeof(uint32_t);
+          paddr_1d += stride_2d*sizeof(T);
         }
-        paddr_2d += stride_3d*sizeof(uint32_t);
+        paddr_2d += stride_3d*sizeof(T);
       }
-      paddr_3d += stride_4d*sizeof(uint32_t);
+      paddr_3d += stride_4d*sizeof(T);
     }
   }
 
@@ -369,7 +369,7 @@ void air_mem_shim_nd_memcpy_queue_impl(uint32_t id, uint64_t x, uint64_t y, tens
 
   dispatch_packet_t *pkt = (dispatch_packet_t*)(_air_host_active_herd.q->base_address_vaddr) + packet_id;
   air_packet_nd_memcpy(pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S, shim_chan, /*burst_len=*/4, /*memory_space=*/2,
-                       AIR_VCK190_SHMEM_BASE+0x4000, length*sizeof(uint32_t), 1, 0, 1, 0, 1, 0);
+                       AIR_VCK190_SHMEM_BASE+0x4000, length*sizeof(T), 1, 0, 1, 0, 1, 0);
   air_queue_dispatch_and_wait(_air_host_active_herd.q, wr_idx, pkt);
 
   if (!isMM2S) {
@@ -378,13 +378,13 @@ void air_mem_shim_nd_memcpy_queue_impl(uint32_t id, uint64_t x, uint64_t y, tens
       for (uint32_t index_3d=0;index_3d<length_3d;index_3d++) {
         paddr_1d = paddr_2d;
         for (uint32_t index_2d=0;index_2d<length_2d;index_2d++) {
-          memcpy((size_t*)paddr_1d, (size_t*)bounce_buffer, length_1d*sizeof(uint32_t));
+          memcpy((size_t*)paddr_1d, (size_t*)bounce_buffer, length_1d*sizeof(T));
           bounce_buffer += length_1d;
-          paddr_1d += stride_2d*sizeof(uint32_t);
+          paddr_1d += stride_2d*sizeof(T);
         }
-        paddr_2d += stride_3d*sizeof(uint32_t);
+        paddr_2d += stride_3d*sizeof(T);
       }
-      paddr_3d += stride_4d*sizeof(uint32_t);
+      paddr_3d += stride_4d*sizeof(T);
     }
   }
 }

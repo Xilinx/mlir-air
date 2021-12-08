@@ -42,11 +42,11 @@ hsa_status_t air_get_agents(void *data) {
     pAgents->push_back(a);
   }
 
-  auto res = munmap(bram_base, 0x1000);
-  if (res) {
-    std::cerr << "Could not munmap" << std::endl;
-    return HSA_STATUS_ERROR;
-  }
+  //auto res = munmap(bram_base, 0x1000);
+  //if (res) {
+  //  std::cerr << "Could not munmap" << std::endl;
+  //  return HSA_STATUS_ERROR;
+  //}
 
   return HSA_STATUS_SUCCESS;
 }
@@ -61,16 +61,18 @@ hsa_status_t air_get_agent_info(queue_t *queue, air_agent_info_t attribute, void
 
   dispatch_packet_t *pkt = (dispatch_packet_t*)(queue->base_address_vaddr) + packet_id;
   initialize_packet(pkt);
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-  pkt->arg[0] = AIR_PKT_TYPE_GET_INFO;
-  pkt->arg[1] = attribute;
+  pkt->arg[0] = attribute;
+  //pkt->return_address = data; // FIXME this won't work without address translation 
+  pkt->type = AIR_PKT_TYPE_GET_INFO;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
   air_queue_dispatch_and_wait(queue, wr_idx, pkt);
-  
+
+  // fake it because of no address translation
   if (attribute <= AIR_AGENT_INFO_VENDOR_NAME) {
-    std::memcpy(data,&pkt->arg[2],8);
+    std::memcpy(data,&pkt->return_address,8);
   } else {
     uint64_t *p = static_cast<uint64_t *>(data);
-    *p = pkt->arg[2];
+    *p = pkt->return_address;
   }
   return HSA_STATUS_SUCCESS;
 }
@@ -156,7 +158,7 @@ hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
                                   //uint16_t dma0, uint16_t dma1) {
   initialize_packet(pkt);
 
-  pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
+  pkt->arg[0]  = 0;
   pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
   pkt->arg[0] |= ((uint64_t)num_cols) << 40;
   pkt->arg[0] |= ((uint64_t)start_col) << 32;
@@ -169,7 +171,8 @@ hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
   pkt->arg[2]  = 0;        // unused
   pkt->arg[3]  = 0;        // unused
 
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  pkt->type   = AIR_PKT_TYPE_HERD_INITIALIZE;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
 
   return HSA_STATUS_SUCCESS;
 }
@@ -177,11 +180,12 @@ hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
 hsa_status_t air_packet_device_init(dispatch_packet_t *pkt, uint32_t num_cols) {
   initialize_packet(pkt);
 
-  pkt->arg[0]  = AIR_PKT_TYPE_DEVICE_INITIALIZE;
+  pkt->arg[0]  = 0;
   pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
   pkt->arg[0] |= ((uint64_t)num_cols << 40);
 
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  pkt->type  = AIR_PKT_TYPE_DEVICE_INITIALIZE;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
 
   return HSA_STATUS_SUCCESS;
 }
@@ -189,10 +193,10 @@ hsa_status_t air_packet_device_init(dispatch_packet_t *pkt, uint32_t num_cols) {
 hsa_status_t air_packet_get_capabilities(dispatch_packet_t *pkt, uint64_t return_address) {
   initialize_packet(pkt);
 
-  pkt->arg[0] = AIR_PKT_TYPE_GET_CAPABILITIES;
-  pkt->arg[1] = return_address;
+  pkt->return_address = return_address;
 
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  pkt->type = AIR_PKT_TYPE_GET_CAPABILITIES;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
 
   return HSA_STATUS_SUCCESS;
 }
@@ -200,10 +204,10 @@ hsa_status_t air_packet_get_capabilities(dispatch_packet_t *pkt, uint64_t return
 hsa_status_t air_packet_hello(dispatch_packet_t *pkt, uint64_t value) {
   initialize_packet(pkt);
 
-  pkt->arg[0]  = AIR_PKT_TYPE_HELLO;
-  pkt->arg[1] = value;
+  pkt->arg[0] = value;
 
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  pkt->type  = AIR_PKT_TYPE_HELLO;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
 
   return HSA_STATUS_SUCCESS;
 }
@@ -211,22 +215,23 @@ hsa_status_t air_packet_hello(dispatch_packet_t *pkt, uint64_t value) {
 hsa_status_t air_packet_put_stream(dispatch_packet_t *pkt, uint64_t stream, uint64_t value) {
   initialize_packet(pkt);
 
-  pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
-  pkt->arg[1] = stream;
-  pkt->arg[2] = value;
+  pkt->arg[0] = stream;
+  pkt->arg[1] = value;
 
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  pkt->type = AIR_PKT_TYPE_PUT_STREAM;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
 
   return HSA_STATUS_SUCCESS;
 }
 
-hsa_status_t air_packet_get_stream(dispatch_packet_t *pkt, uint64_t stream) {
+hsa_status_t air_packet_get_stream(dispatch_packet_t *pkt, uint64_t stream, uint64_t return_address) {
   initialize_packet(pkt);
 
-  pkt->arg[0] = AIR_PKT_TYPE_GET_STREAM;
-  pkt->arg[1] = stream;
+  pkt->arg[0] = stream;
+  pkt->return_address = return_address;
 
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  pkt->type = AIR_PKT_TYPE_GET_STREAM;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
 
   return HSA_STATUS_SUCCESS;
 }
@@ -234,15 +239,15 @@ hsa_status_t air_packet_get_stream(dispatch_packet_t *pkt, uint64_t stream) {
 hsa_status_t air_packet_l2_dma(dispatch_packet_t *pkt, uint64_t stream, l2_dma_cmd_t cmd) {
   initialize_packet(pkt);
 
-  pkt->arg[0] = AIR_PKT_TYPE_PUT_STREAM;
-  pkt->arg[1] = stream;
-  pkt->arg[2] = 0;
-  pkt->arg[2] |= ((uint64_t)cmd.select) << 32;
-  pkt->arg[2] |= cmd.length << 18;
-  pkt->arg[2] |= cmd.uram_addr << 5;
-  pkt->arg[2] |= cmd.id;
+  pkt->arg[0] = stream;
+  pkt->arg[1] = 0;
+  pkt->arg[1] |= ((uint64_t)cmd.select) << 32;
+  pkt->arg[1] |= cmd.length << 18;
+  pkt->arg[1] |= cmd.uram_addr << 5;
+  pkt->arg[1] |= cmd.id;
 
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  pkt->type = AIR_PKT_TYPE_PUT_STREAM;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
 
   return HSA_STATUS_SUCCESS;
 }
@@ -251,12 +256,12 @@ hsa_status_t air_packet_cdma_memcpy(dispatch_packet_t *pkt, uint64_t dest,
                                     uint64_t source, uint32_t length) {
   initialize_packet(pkt);
 
-  pkt->arg[0]  = AIR_PKT_TYPE_CDMA;
-  pkt->arg[1]  = dest;   // Destination
-  pkt->arg[2]  = source; // Source 
-  pkt->arg[3]  = length; // Num Bytes 
+  pkt->arg[0]  = dest;   // Destination
+  pkt->arg[1]  = source; // Source 
+  pkt->arg[2]  = length; // Num Bytes 
 
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  pkt->type = AIR_PKT_TYPE_CDMA;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
 
   return HSA_STATUS_SUCCESS;
 }
@@ -267,7 +272,7 @@ hsa_status_t air_packet_aie_lock_range(dispatch_packet_t *pkt, uint16_t herd_id,
                                  uint8_t start_row, uint8_t num_rows) {
   initialize_packet(pkt);
 
-  pkt->arg[0]  = AIR_PKT_TYPE_XAIE_LOCK;
+  pkt->arg[0]  = 0;
   pkt->arg[0] |= (AIR_ADDRESS_HERD_RELATIVE_RANGE << 48);
   pkt->arg[0] |= ((uint64_t)num_cols) << 40;
   pkt->arg[0] |= ((uint64_t)start_col) << 32;
@@ -277,7 +282,8 @@ hsa_status_t air_packet_aie_lock_range(dispatch_packet_t *pkt, uint16_t herd_id,
   pkt->arg[2]  = acq_rel;
   pkt->arg[3]  = value;
 
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  pkt->type   = AIR_PKT_TYPE_XAIE_LOCK;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
 
   return HSA_STATUS_SUCCESS;
 }
@@ -292,7 +298,7 @@ hsa_status_t air_packet_nd_memcpy(dispatch_packet_t *pkt, uint16_t herd_id,
 
   initialize_packet(pkt);
 
-  pkt->arg[0]  = AIR_PKT_TYPE_ND_MEMCPY;
+  pkt->arg[0]  = 0;
   pkt->arg[0] |= ((uint64_t)memory_space) << 16;
   pkt->arg[0] |= ((uint64_t)channel)      << 24;
   pkt->arg[0] |= ((uint64_t)col)          << 32;
@@ -308,12 +314,11 @@ hsa_status_t air_packet_nd_memcpy(dispatch_packet_t *pkt, uint16_t herd_id,
   pkt->arg[3] |= ((uint64_t)transfer_length4d) <<32;
   pkt->arg[3] |= ((uint64_t)transfer_stride4d) <<48;
 
-  pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  pkt->type   = AIR_PKT_TYPE_ND_MEMCPY;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
 
   return HSA_STATUS_SUCCESS;
 }
-
-
 
 hsa_status_t air_packet_aie_lock(dispatch_packet_t *pkt, uint16_t herd_id,
                                  uint64_t lock_id, uint64_t acq_rel, uint64_t value,
@@ -322,4 +327,41 @@ hsa_status_t air_packet_aie_lock(dispatch_packet_t *pkt, uint16_t herd_id,
                                    value, col, 1, row, 1);
 }
 
-//air_packet_unlock
+hsa_status_t air_packet_barrier_and(barrier_and_packet_t *pkt, 
+                                    uint64_t dep_signal0,
+                                    uint64_t dep_signal1,
+                                    uint64_t dep_signal2,
+                                    uint64_t dep_signal3,
+                                    uint64_t dep_signal4)
+{
+  
+  pkt->dep_signal[0] = dep_signal0;
+  pkt->dep_signal[1] = dep_signal1;
+  pkt->dep_signal[2] = dep_signal2;
+  pkt->dep_signal[3] = dep_signal3;
+  pkt->dep_signal[4] = dep_signal4;
+
+  pkt->header = (HSA_PACKET_TYPE_BARRIER_AND << HSA_PACKET_HEADER_TYPE);
+
+  return HSA_STATUS_SUCCESS;
+}
+
+hsa_status_t air_packet_barrier_or(barrier_or_packet_t *pkt, 
+                                    uint64_t dep_signal0,
+                                    uint64_t dep_signal1,
+                                    uint64_t dep_signal2,
+                                    uint64_t dep_signal3,
+                                    uint64_t dep_signal4)
+{
+  
+  pkt->dep_signal[0] = dep_signal0;
+  pkt->dep_signal[1] = dep_signal1;
+  pkt->dep_signal[2] = dep_signal2;
+  pkt->dep_signal[3] = dep_signal3;
+  pkt->dep_signal[4] = dep_signal4;
+ 
+ pkt->header = (HSA_PACKET_TYPE_BARRIER_OR << HSA_PACKET_HEADER_TYPE);
+
+  return HSA_STATUS_SUCCESS;
+}
+

@@ -82,6 +82,58 @@ typedef enum {
   HSA_PACKET_TYPE_BARRIER_OR = 5
 } hsa_packet_type_t;
 
+/**
+ * @brief Sub-fields of the @a header field that is present in any AQL
+ * packet. The offset (with respect to the address of @a header) of a sub-field
+ * is identical to its enumeration constant. The width of each sub-field is
+ * determined by the corresponding value in ::hsa_packet_header_width_t. The
+ * offset and the width are expressed in bits.
+ */
+typedef enum {
+  /**
+   * Packet type. The value of this sub-field must be one of
+   * ::hsa_packet_type_t. If the type is ::HSA_PACKET_TYPE_VENDOR_SPECIFIC, the
+   * packet layout is vendor-specific.
+   */
+  HSA_PACKET_HEADER_TYPE = 0,
+  /**
+   * Barrier bit. If the barrier bit is set, the processing of the current
+   * packet only launches when all preceding packets (within the same queue) are
+   * complete.
+   */
+  HSA_PACKET_HEADER_BARRIER = 8,
+  /**
+   * Acquire fence scope. The value of this sub-field determines the scope and
+   * type of the memory fence operation applied before the packet enters the
+   * active phase. An acquire fence ensures that any subsequent global segment
+   * or image loads by any unit of execution that belongs to a dispatch that has
+   * not yet entered the active phase on any queue of the same kernel agent,
+   * sees any data previously released at the scopes specified by the acquire
+   * fence. The value of this sub-field must be one of ::hsa_fence_scope_t.
+   */
+  HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE = 9,
+  /**
+   * Release fence scope, The value of this sub-field determines the scope and
+   * type of the memory fence operation applied after kernel completion but
+   * before the packet is completed. A release fence makes any global segment or
+   * image data that was stored by any unit of execution that belonged to a
+   * dispatch that has completed the active phase on any queue of the same
+   * kernel agent visible in all the scopes specified by the release fence. The
+   * value of this sub-field must be one of ::hsa_fence_scope_t.
+   */
+  HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE = 11
+} hsa_packet_header_t;
+
+/**
+ * @brief Width (in bits) of the sub-fields in ::hsa_packet_header_t.
+ */
+typedef enum {
+  HSA_PACKET_HEADER_WIDTH_TYPE = 8,
+  HSA_PACKET_HEADER_WIDTH_BARRIER = 1,
+  HSA_PACKET_HEADER_WIDTH_ACQUIRE_FENCE_SCOPE = 2,
+  HSA_PACKET_HEADER_WIDTH_RELEASE_FENCE_SCOPE = 2
+} hsa_packet_header_width_t;
+
 typedef enum {
   HSA_STATUS_SUCCESS = 0x0,
 
