@@ -1,10 +1,15 @@
 // (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
 
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <thread>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
 #include <dlfcn.h>
-#include <string>
 
 #include <xaiengine.h>
 
@@ -29,12 +34,6 @@ main(int argc, char *argv[])
   auto shim_col = 2;
 
   aie_libxaie_ctx_t *xaie = air_init_libxaie1();
-  mlir_aie_init_device(xaie);
-
-  mlir_aie_configure_cores(xaie);
-  mlir_aie_configure_switchboxes(xaie);
-  mlir_aie_initialize_locks(xaie);
-  mlir_aie_configure_dmas(xaie);
 
   // create the queue
   queue_t *q = nullptr;
@@ -54,18 +53,16 @@ main(int argc, char *argv[])
   tensor_t<uint32_t,2> input;
   tensor_t<uint32_t,2> output;
 
-  input.shape[0] = IMAGE_WIDTH; input.shape[1] = IMAGE_HEIGHT;
+  input.shape[0] = 32; input.shape[1] = 16;
   input.d = input.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input.shape[0]*input.shape[1]);
 
-  output.shape[0] = IMAGE_WIDTH; output.shape[1] = IMAGE_HEIGHT;
+  output.shape[0] = 32; output.shape[1] = 16;
   output.d = output.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output.shape[0]*output.shape[1]);
 
   for (int i=0; i<IMAGE_SIZE; i++) {
     input.d[i] = i+0x1000;
     output.d[i] = 0x00defaced;
   }
-  
-  mlir_aie_start_cores(xaie);
 
   void *i, *o;
   i = &input;
@@ -73,7 +70,20 @@ main(int argc, char *argv[])
   graph_fn(i, o);
 
   int errors = 0;
-  // Go look at the image, should have the top left filled in
+
+  // Go look at the scratch buffer
+  for (int i=0;i<TILE_SIZE;i++) {
+    u32 rb = mlir_aie_read_buffer_scratch_0_0(xaie, i);
+    u32 row = i / TILE_WIDTH;
+    u32 col = i % TILE_WIDTH;
+    u32 orig_index = row * IMAGE_WIDTH + col;
+    if (!(rb == orig_index+0x1000)) {
+      printf("SB %d [%d, %d] should be %08X, is %08X\n", i, col, row, orig_index, rb);
+      errors++;
+    }
+  }
+
+  // Now look at the image, should have the top left filled in
   for (int i=0;i<IMAGE_SIZE;i++) {
     u32 rb = output.d[i];
 

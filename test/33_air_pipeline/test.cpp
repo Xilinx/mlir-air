@@ -16,18 +16,9 @@
 #include "air_host.h"
 #include "air_tensor.h"
 
-#include "aie_inc.cpp"
-
 int
 main(int argc, char *argv[])
 {
-  aie_libxaie_ctx_t *xaie = air_init_libxaie1();
-
-  mlir_aie_configure_cores(xaie);
-  mlir_aie_configure_switchboxes(xaie);
-  mlir_aie_initialize_locks(xaie);
-  mlir_aie_configure_dmas(xaie);
-
   auto col = 3;
   auto row = 3;
 
@@ -79,8 +70,6 @@ main(int argc, char *argv[])
 
   auto launch = (void (*)(void*,void *,void *))dlsym((void*)handle, "_mlir_ciface_launch");
   assert(launch && "failed to locate _mlir_ciface_launch in .so");
-
-  mlir_aie_start_cores(xaie);
 
   launch((void*)&input_a, (void*)&input_b, (void*)&output);
 
