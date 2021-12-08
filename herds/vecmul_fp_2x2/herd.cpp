@@ -152,29 +152,12 @@ main(int argc, char *argv[])
   uint64_t wr_idx = queue_add_write_index(q, 1);
   uint64_t packet_id = wr_idx % q->size;
 
-  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(herd_pkt);
-  herd_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
-
   //
   // Set up a 1x3 herd starting 7,0
   //
-
-  herd_pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
-  herd_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
-  herd_pkt->arg[0] |= (1L << 40);
-  herd_pkt->arg[0] |= (7L << 32);
-  herd_pkt->arg[0] |= (3L << 24);
-  herd_pkt->arg[0] |= (0L << 16);
-  
-  herd_pkt->arg[1] = 0;  // Herd ID 0
-  herd_pkt->arg[2] = 0;
-  herd_pkt->arg[3] = 0;
-
-  // dispatch packet
-  signal_create(1, 0, NULL, (signal_t*)&herd_pkt->completion_signal);
-  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-  //signal_store_release((signal_t*)&q->doorbell, wr_idx);
+  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  air_packet_herd_init(herd_pkt, 0, col, 1, 0, 3);
+  air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
 
   tensor_t<float,1> input_A;
   tensor_t<float,1> input_B;
