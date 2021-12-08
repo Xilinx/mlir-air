@@ -172,7 +172,9 @@ def run(mlir_module, args):
 
     lib_file = opts.tmpdir+'/'+opts.air_mlir_file+('.so' if opts.shared else '.a')
     if opts.shared:
-      cmd = ['clang', '-shared', '--target=aarch64-linux-gnu', '-o', lib_file] + obj_files
+      cmd = ['clang', '-shared']
+      cmd += ['--sysroot', opts.sysroot] if opts.sysroot!="" else []
+      cmd += ['-fuse-ld=lld', '--target=aarch64-linux-gnu', '-o', lib_file] + obj_files
     else:
       cmd = ['llvm-ar', 'rc', lib_file] + obj_files
     do_call(cmd)
@@ -266,7 +268,9 @@ def run_flow(opts):
 
     lib_file = opts.air_mlir_file+('.so' if opts.shared else '.a')
     if opts.shared:
-      cmd = ['clang', '-shared', '--target=aarch64-linux-gnu', '-o', lib_file] + obj_files
+      cmd = ['clang', '-shared']
+      cmd += ['--sysroot', opts.sysroot] if opts.sysroot!="" else []
+      cmd += ['-fuse-ld=lld', '--target=aarch64-linux-gnu', '-o', lib_file] + obj_files
     else:
       cmd = ['llvm-ar', 'rc', lib_file] + obj_files
     do_call(cmd)
