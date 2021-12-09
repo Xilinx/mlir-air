@@ -152,7 +152,7 @@ inline uint64_t queue_load_write_index(queue_t *q)
 }
 
 inline uint64_t queue_paddr_from_index(queue_t *q, uint64_t idx) {
-  return q->base_address_paddr + idx; 
+  return q->base_address + idx; 
 }
 
 inline bool packet_get_active(dispatch_packet_t *pkt)

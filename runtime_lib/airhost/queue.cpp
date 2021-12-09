@@ -111,6 +111,7 @@ hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue, uin
 
   uint64_t base_address_offset = q->base_address - paddr_aligned;
   q->base_address_vaddr = ((size_t)bram_ptr) + base_address_offset;
+  q->base_address_paddr = q->base_address;
 
   *queue = q;
   return HSA_STATUS_SUCCESS;

@@ -1238,7 +1238,7 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id)
 
 packet_op:
     auto op = pkt->type & 0xffff;
-    air_printf("Op is %04X\n\r",op);
+    //air_printf("Op is %04X\n\r",op);
     switch (op) {
       case AIR_PKT_TYPE_INVALID:
       default:
@@ -1386,29 +1386,29 @@ void handle_barrier_and_packet(queue_t *q, uint32_t mb_id)
   barrier_and_packet_t *pkt = &((barrier_and_packet_t*)q->base_address)[rd_idx % q->size];
 
   // TODO complete functionality with correct PAs
-  //signal_t *s0 = (signal_t *)pkt->dep_signal[0]; 
-  //signal_t *s1 = (signal_t *)pkt->dep_signal[1]; 
-  //signal_t *s2 = (signal_t *)pkt->dep_signal[2]; 
-  //signal_t *s3 = (signal_t *)pkt->dep_signal[3]; 
-  //signal_t *s4 = (signal_t *)pkt->dep_signal[4]; 
+  signal_t *s0 = (signal_t *)pkt->dep_signal[0]; 
+  signal_t *s1 = (signal_t *)pkt->dep_signal[1]; 
+  signal_t *s2 = (signal_t *)pkt->dep_signal[2]; 
+  signal_t *s3 = (signal_t *)pkt->dep_signal[3]; 
+  signal_t *s4 = (signal_t *)pkt->dep_signal[4]; 
 
   //lock_uart(mb_id);
   //for (int i = 0; i < 5; i++)
   //  air_printf("MB %d : dep_signal[%d] @ %p\n\r",mb_id,i,(uint64_t *)(pkt->dep_signal[i]));
   //unlock_uart();
 
-  //while ((signal_wait(s0, 0, 0x80000, 0) != 0) ||
-  //       (signal_wait(s1, 0, 0x80000, 0) != 0) ||
-  //       (signal_wait(s2, 0, 0x80000, 0) != 0) ||
-  //       (signal_wait(s3, 0, 0x80000, 0) != 0) ||
-  //       (signal_wait(s4, 0, 0x80000, 0) != 0))
-  //{
-  //  lock_uart(mb_id);
-  //  air_printf("MB %d : barrier AND packet completion signal timeout!\n\r",mb_id);
-  //  for (int i = 0; i < 5; i++)
-  //    air_printf("MB %d : dep_signal[%d] = %d\n\r",mb_id,i,*((uint32_t *)(pkt->dep_signal[i])));
-  //  unlock_uart();
-  //}
+  while ((signal_wait(s0, 0, 0x80000, 0) != 0) ||
+         (signal_wait(s1, 0, 0x80000, 0) != 0) ||
+         (signal_wait(s2, 0, 0x80000, 0) != 0) ||
+         (signal_wait(s3, 0, 0x80000, 0) != 0) ||
+         (signal_wait(s4, 0, 0x80000, 0) != 0))
+  {
+    lock_uart(mb_id);
+    air_printf("MB %d : barrier AND packet completion signal timeout!\n\r",mb_id);
+    for (int i = 0; i < 5; i++)
+      air_printf("MB %d : dep_signal[%d] = %d\n\r",mb_id,i,*((uint32_t *)(pkt->dep_signal[i])));
+    unlock_uart();
+  }
 
   complete_barrier_packet(pkt);
   queue_add_read_index(q,1);
@@ -1420,25 +1420,29 @@ void handle_barrier_or_packet(queue_t *q, uint32_t mb_id)
   barrier_or_packet_t *pkt = &((barrier_or_packet_t*)q->base_address)[rd_idx % q->size];
 
   // TODO complete functionality with correct PAs
-  //signal_t *s0 = (signal_t *)pkt->dep_signal[0]; 
-  //signal_t *s1 = (signal_t *)pkt->dep_signal[1]; 
-  //signal_t *s2 = (signal_t *)pkt->dep_signal[2]; 
-  //signal_t *s3 = (signal_t *)pkt->dep_signal[3]; 
-  //signal_t *s4 = (signal_t *)pkt->dep_signal[4]; 
+  signal_t *s0 = (signal_t *)pkt->dep_signal[0]; 
+  signal_t *s1 = (signal_t *)pkt->dep_signal[1]; 
+  signal_t *s2 = (signal_t *)pkt->dep_signal[2]; 
+  signal_t *s3 = (signal_t *)pkt->dep_signal[3]; 
+  signal_t *s4 = (signal_t *)pkt->dep_signal[4]; 
 
+  //lock_uart(mb_id);
   //for (int i = 0; i < 5; i++)
   //  air_printf("MB %d : dep_signal[%d] @ %p\n\r",mb_id,i,(uint64_t *)(pkt->dep_signal[i]));
+  //unlock_uart();
 
-  //while ((signal_wait(s0, 0, 0x80000, 1) != 0) &&
-  //       (signal_wait(s1, 0, 0x80000, 1) != 0) &&
-  //       (signal_wait(s2, 0, 0x80000, 1) != 0) &&
-  //       (signal_wait(s3, 0, 0x80000, 1) != 0) &&
-  //       (signal_wait(s4, 0, 0x80000, 1) != 0))
-  //{
-  //  air_printf("MB %d : barrier OR packet completion signal timeout!\n\r",mb_id);
-  //  for (int i = 0; i < 5; i++)
-  //    air_printf("MB %d : dep_signal[%d] = %d\n\r",mb_id,i,*((uint32_t *)(pkt->dep_signal[i])));
-  //}
+  while ((signal_wait(s0, 0, 0x80000, 1) != 0) &&
+         (signal_wait(s1, 0, 0x80000, 1) != 0) &&
+         (signal_wait(s2, 0, 0x80000, 1) != 0) &&
+         (signal_wait(s3, 0, 0x80000, 1) != 0) &&
+         (signal_wait(s4, 0, 0x80000, 1) != 0))
+  {
+    lock_uart(mb_id);
+    air_printf("MB %d : barrier OR packet completion signal timeout!\n\r",mb_id);
+    for (int i = 0; i < 5; i++)
+      air_printf("MB %d : dep_signal[%d] = %d\n\r",mb_id,i,*((uint32_t *)(pkt->dep_signal[i])));
+    unlock_uart();
+  }
 
   complete_barrier_packet(pkt);
   queue_add_read_index(q,1);
@@ -1469,16 +1473,12 @@ int main()
   unlock_uart();
 
   setup = false;
-  //test_stream();
   queue_t *q = nullptr;
   queue_create(MB_QUEUE_SIZE, &q, mb_id);
   lock_uart(mb_id); xil_printf("Created queue @ 0x%llx\n\r", (size_t)q); unlock_uart();
 
   volatile bool done = false;
-  int cnt = 0;
   while (!done) {
-    // if (!(cnt++ % 0x00100000))
-    //   air_printf("No Ding Dong 0x%llx\n\r", q->doorbell);
     if (q->doorbell+1 > q->last_doorbell) {
       lock_uart(mb_id); air_printf("Ding Dong 0x%llx\n\r", q->doorbell+1); unlock_uart();
 
@@ -1506,10 +1506,7 @@ int main()
             invalid = true;
             break;
           case HSA_PACKET_TYPE_AGENT_DISPATCH:
-	          //handle_agent_dispatch_packet(pkt, mb_id); CHANGED
 	          handle_agent_dispatch_packet(q, mb_id);
-            //complete_agent_dispatch_packet(pkt); MOVED
-            //queue_add_read_index(q, 1); MOVED
             break;
           case HSA_PACKET_TYPE_BARRIER_AND:
             handle_barrier_and_packet(q, mb_id); 
