@@ -26,7 +26,9 @@ declare_mlir_dialect_python_bindings(
   ADD_TO_PARENT AirPythonSources.Dialects
   ROOT_DIR "${AIR_PYTHON_ROOT_DIR}"
   TD_FILE dialects/AirBinding.td
-  SOURCES dialects/air/__init__.py
+  SOURCES
+    dialects/air/__init__.py
+    dialects/_air_ops_ext.py
   DIALECT_NAME air
 )
 
