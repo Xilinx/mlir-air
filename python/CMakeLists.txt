@@ -1,3 +1,5 @@
+# (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
+
 include(AddMLIRPython)
 
 # The directory at which the Python import tree begins.
@@ -20,13 +22,13 @@ declare_mlir_python_sources(AirPythonSources.Dialects
   ADD_TO_PARENT AirPythonSources
 )
 
-# declare_mlir_dialect_python_bindings(
-#   ADD_TO_PARENT AirPythonSources.Dialects
-#   ROOT_DIR "${AIR_PYTHON_ROOT_DIR}"
-#   TD_FILE dialects/TorchBinding.td
-#   SOURCES dialects/torch/__init__.py
-#   DIALECT_NAME torch
-# )
+declare_mlir_dialect_python_bindings(
+  ADD_TO_PARENT AirPythonSources.Dialects
+  ROOT_DIR "${AIR_PYTHON_ROOT_DIR}"
+  TD_FILE dialects/AirBinding.td
+  SOURCES dialects/air/__init__.py
+  DIALECT_NAME air
+)
 
 include_directories(
   ${AIE_INCLUDE_DIRS}/../runtime_lib

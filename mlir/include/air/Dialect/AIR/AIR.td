@@ -5,7 +5,7 @@
 #define AIR_OPS
 
 include "mlir/IR/OpBase.td"
-include "AIROpBase.td"
+include "air/Dialect/AIR/AIROpBase.td"
 
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
