@@ -61,15 +61,6 @@ int main(int argc, char *argv[])
     bank0_ptr[an] = toWrite + (1 << 28);
   }
 
-  // Read back the value above it
-
-  //for (int i=0;i<2*XFR_SZ;i++) {
-  //  uint32_t word0 = bank0_ptr[i];
-  //  uint32_t word1 = bank1_ptr[i];
-
-  //  printf("%x %08X %08X\r\n", i, word0, word1);
-  //}
-
   // create the queue
   queue_t *q = nullptr;
   auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
@@ -102,39 +93,36 @@ int main(int argc, char *argv[])
   air_packet_l2_dma(pkt, stream, cmd);
   air_queue_dispatch_and_wait(q, wr_idx, pkt);
 
-  //
-  // send the data
-  //
+  for (int sel=0; sel<2; sel++) {
+    //
+    // send the data
+    //
+    wr_idx = queue_add_write_index(q, 1);
+    packet_id = wr_idx % q->size;
+    pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  
+    air_packet_nd_memcpy(pkt, 0, 7, 1, sel, 4, 1, 
+                         0,
+                         XFR_SZ*sizeof(float), 
+                         1, 0,
+                         1, 0,
+                         1, 0);
 
-  for (int sel=2; sel<4; sel++) {
+    //
+    // read the data back
+    //
     wr_idx = queue_add_write_index(q, 1);
     packet_id = wr_idx % q->size;
     pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
 
-    cmd.select = sel;
-    cmd.length = XFR_SZ/4;
-    cmd.uram_addr = 0;
-    cmd.id = sel+1;
-
-    air_packet_l2_dma(pkt, stream, cmd);
+    air_packet_nd_memcpy(pkt, 0, 7, 0, sel, 4, 1, 
+                         XFR_SZ*sizeof(float), 
+                         XFR_SZ*sizeof(float), 
+                         1, 0,
+                         1, 0,
+                         1, 0);
   }
 
-  //
-  // read the data back
-  //
-
-  for (int sel = 4; sel < 6; sel++) { 
-    wr_idx = queue_add_write_index(q, 1);
-    packet_id = wr_idx % q->size;
-    pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-
-    cmd.select = sel; 
-    cmd.length = XFR_SZ/4;
-    cmd.uram_addr = XFR_SZ/4;
-    cmd.id = 0x6+sel;
-
-    air_packet_l2_dma(pkt, stream, cmd);
-  }
   air_queue_dispatch_and_wait(q, wr_idx, pkt);
 
   sleep(1);

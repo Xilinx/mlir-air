@@ -32,6 +32,14 @@ extern "C" {
 #define air_printf(fmt, ...) \
 	                    do { if (CHATTY) xil_printf(fmt, ##__VA_ARGS__); } while (0)
 
+uint64_t mymod(uint64_t a) {
+  uint64_t result = a;
+  while (result >= MB_QUEUE_SIZE) {
+    result -= MB_QUEUE_SIZE;
+  }
+  return result;
+}
+
 namespace {
 
 struct HerdConfig {
@@ -815,8 +823,8 @@ void handle_packet_put_stream(dispatch_packet_t *pkt)
   register uint32_t d1 = data >> 32;
 
   bool isdma = (d1 < 6); 
-  air_printf("Put fsl %d : id %d\n\r", which_stream, data & 0x1f);
-  
+  air_printf("Put fsl %d : id %d d0 %x d1 %x\n\r", which_stream, data & 0x1f, d0, d1);
+ 
   switch (which_stream) {
   case 0:
     putfsl(d0, 0);
@@ -1083,6 +1091,82 @@ int do_packet_nd_memcpy(uint32_t slot)
   return 0;
 }
 
+int do_l2_nd_memcpy(dispatch_packet_t *pkt) {
+  uint64_t paddr        =  pkt->arg[1];
+
+  uint32_t length_1d    = (pkt->arg[2] >>  0) & 0xffffffff;
+  uint32_t length_2d    = (pkt->arg[2] >> 32) & 0x0000ffff;
+  uint32_t stride_2d    = (pkt->arg[2] >> 48) & 0x0000ffff;
+  uint32_t length_3d    = (pkt->arg[3] >>  0) & 0x0000ffff;
+  uint32_t stride_3d    = (pkt->arg[3] >> 16) & 0x0000ffff;
+  uint32_t length_4d    = (pkt->arg[3] >> 32) & 0x0000ffff;
+  uint32_t stride_4d    = (pkt->arg[3] >> 48) & 0x0000ffff;
+
+  uint16_t channel      = (pkt->arg[0] >> 24) & 0x00ff;
+  uint16_t col          = (pkt->arg[0] >> 32) & 0x00ff;
+  uint16_t direction    = (pkt->arg[0] >> 60) & 0x000f;
+  direction = (direction==1) ? 0 : 1;
+  register uint32_t d1 = 2 + 2*direction + channel;
+  uint8_t id = d1 - 2;
+
+  uint64_t which_stream = col-7;
+
+  bool isdma = (d1 < 6); 
+  
+  uint64_t paddr_4d = paddr;
+  uint64_t paddr_3d = paddr;
+  uint64_t paddr_2d = paddr;
+  uint64_t paddr_1d = paddr;
+  for (uint32_t index_4d=0;index_4d<length_4d;index_4d++) {
+    paddr_2d = paddr_3d;
+    for (uint32_t index_3d=0;index_3d<length_3d;index_3d++) {
+      paddr_1d = paddr_2d;
+      for (uint32_t index_2d=0;index_2d<length_2d;index_2d++) {
+        uint16_t length = length_1d / 16;
+        uint16_t uram_addr = paddr_1d / 16;
+
+        uint32_t d0 = 0;
+        d0 |= length << 18;
+        d0 |= uram_addr << 5;
+        d0 |= id;
+  
+        air_printf("Put fsl %d : id %d d0 %x d1 %x\n\r", which_stream, id++, d0, d1);
+
+        switch (which_stream) {
+        case 0:
+          putfsl(d0, 0);
+          cputfsl(d1, 0);
+          if (isdma) fsl_outstanding[0]++;
+          break;
+        case 1:
+          putfsl(d0, 1);
+          cputfsl(d1, 1);
+          if (isdma) fsl_outstanding[1]++;
+          break;
+        case 2:
+          putfsl(d0, 2);
+          cputfsl(d1, 2);
+          if (isdma) fsl_outstanding[2]++;
+          break;
+        case 3:
+          putfsl(d0, 3);
+          cputfsl(d1, 3);
+          if (isdma) fsl_outstanding[3]++;
+          break;
+        default:
+          break;
+        }
+        paddr_1d += stride_2d;
+      }
+      paddr_2d += stride_3d;
+    }
+    paddr_3d += stride_4d;
+  }
+  drain_fsl();
+
+  return 3;
+}
+
 int stage_packet_nd_memcpy(dispatch_packet_t *pkt, uint32_t slot)
 {
   air_printf("stage_packet_nd_memcpy %d\n\r",slot);
@@ -1095,7 +1179,9 @@ int stage_packet_nd_memcpy(dispatch_packet_t *pkt, uint32_t slot)
   uint16_t memory_space = (pkt->arg[0] >> 16) & 0x00ff;
   uint64_t paddr        =  pkt->arg[1];
 
-  if (memory_space == 2) {
+  if (memory_space == 1) {
+    return do_l2_nd_memcpy(pkt);
+  } else if (memory_space == 2) {
     nd_dma_put_checkpoint(&pkt,slot,0,0,0,paddr,paddr,paddr);
     staged_nd_slot[slot].valid = 1; 
     return 0;
@@ -1170,7 +1256,7 @@ int stage_packet_nd_memcpy(dispatch_packet_t *pkt, uint32_t slot)
 void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id)
 {
   uint64_t rd_idx = queue_load_read_index(q);
-  dispatch_packet_t *pkt = &((dispatch_packet_t*)q->base_address)[rd_idx % q->size];
+  dispatch_packet_t *pkt = &((dispatch_packet_t*)q->base_address)[mymod(rd_idx)];
   int last_slot = 0;
 
   int num_active_packets = 1;
@@ -1211,11 +1297,11 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id)
 
       if (slot==last_slot) { // Begin get next packet
         rd_idx++; 
-        pkt = &((dispatch_packet_t*)q->base_address)[rd_idx % q->size];
+        pkt = &((dispatch_packet_t*)q->base_address)[mymod(rd_idx)];
         air_printf("HELLO NEW PACKET IN FLIGHT!\n\r");
         if (((pkt->header)&0xF) ==  HSA_PACKET_TYPE_INVALID) { // FIXME handle barrier packets
           rd_idx--;
-          pkt = &((dispatch_packet_t*)q->base_address)[rd_idx % q->size];
+          pkt = &((dispatch_packet_t*)q->base_address)[mymod(rd_idx)];
           air_printf("WARN: Found invalid HSA packet inside peek loop!\n\r");
           // TRICKY weird state where we didn't find a new packet but RR won't let us retry. So advance last_slot.
           last_slot = (slot==7)?0:slot+1;
@@ -1383,9 +1469,9 @@ inline signal_value_t signal_wait(volatile signal_t *signal,
 void handle_barrier_and_packet(queue_t *q, uint32_t mb_id)
 {
   uint64_t rd_idx = queue_load_read_index(q);
-  barrier_and_packet_t *pkt = &((barrier_and_packet_t*)q->base_address)[rd_idx % q->size];
+  barrier_and_packet_t *pkt = &((barrier_and_packet_t*)q->base_address)[mymod(rd_idx)];
 
-  // TODO complete functionality with correct PAs
+  // TODO complete functionality with VAs
   signal_t *s0 = (signal_t *)pkt->dep_signal[0]; 
   signal_t *s1 = (signal_t *)pkt->dep_signal[1]; 
   signal_t *s2 = (signal_t *)pkt->dep_signal[2]; 
@@ -1417,9 +1503,9 @@ void handle_barrier_and_packet(queue_t *q, uint32_t mb_id)
 void handle_barrier_or_packet(queue_t *q, uint32_t mb_id)
 {
   uint64_t rd_idx = queue_load_read_index(q);
-  barrier_or_packet_t *pkt = &((barrier_or_packet_t*)q->base_address)[rd_idx % q->size];
+  barrier_or_packet_t *pkt = &((barrier_or_packet_t*)q->base_address)[mymod(rd_idx)];
 
-  // TODO complete functionality with correct PAs
+  // TODO complete functionality with VAs
   signal_t *s0 = (signal_t *)pkt->dep_signal[0]; 
   signal_t *s1 = (signal_t *)pkt->dep_signal[1]; 
   signal_t *s2 = (signal_t *)pkt->dep_signal[2]; 
@@ -1491,7 +1577,7 @@ int main()
         
         //air_printf("Handle pkt read_index=%d\n\r", rd_idx);
 
-        dispatch_packet_t *pkt = &((dispatch_packet_t*)q->base_address)[rd_idx % q->size];
+        dispatch_packet_t *pkt = &((dispatch_packet_t*)q->base_address)[mymod(rd_idx)];
         uint8_t type = ((pkt->header) & (0xF));
         //uint8_t type = ((pkt->header >> HSA_PACKET_HEADER_TYPE) &
         //                ((1 << HSA_PACKET_HEADER_WIDTH_TYPE) - 1));
