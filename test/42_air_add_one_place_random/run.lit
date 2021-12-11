@@ -1,0 +1,24 @@
+// RUN: aircc.py --sysroot=%VITIS_SYSROOT% -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-39 -n 1) %S/air.mlir -o %T/air.a
+// RUN: cat air_project/aiecc.herd_0.mlir | grep %1 | grep tile 
+// RUN: %ARM_CLANG %S/test.cpp %aie_runtime_lib%/test_library.cpp -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -g -I%VITIS_SYSROOT%/opt/xaiengine/include -L%VITIS_SYSROOT%/opt/xaiengine/lib -lxaiengine -I%aie_runtime_lib% -I%air_runtime_lib%/airhost/include -rdynamic -lxaiengine %airhost_libs% -o %T/air_test.elf
+// RUN: %run_on_board %T/air_test.elf
+
+// RUN: aircc.py --sysroot=%VITIS_SYSROOT% -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-39 -n 1) %S/air.mlir -o %T/air.a
+// RUN: cat air_project/aiecc.herd_0.mlir | grep %1 | grep tile 
+// RUN: %ARM_CLANG %S/test.cpp %aie_runtime_lib%/test_library.cpp -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -g -I%VITIS_SYSROOT%/opt/xaiengine/include -L%VITIS_SYSROOT%/opt/xaiengine/lib -lxaiengine -I%aie_runtime_lib% -I%air_runtime_lib%/airhost/include -rdynamic -lxaiengine %airhost_libs% -o %T/air_test.elf
+// RUN: %run_on_board %T/air_test.elf
+
+// RUN: aircc.py --sysroot=%VITIS_SYSROOT% -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-39 -n 1) %S/air.mlir -o %T/air.a
+// RUN: cat air_project/aiecc.herd_0.mlir | grep %1 | grep tile 
+// RUN: %ARM_CLANG %S/test.cpp %aie_runtime_lib%/test_library.cpp -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -g -I%VITIS_SYSROOT%/opt/xaiengine/include -L%VITIS_SYSROOT%/opt/xaiengine/lib -lxaiengine -I%aie_runtime_lib% -I%air_runtime_lib%/airhost/include -rdynamic -lxaiengine %airhost_libs% -o %T/air_test.elf
+// RUN: %run_on_board %T/air_test.elf
+
+// RUN: aircc.py --sysroot=%VITIS_SYSROOT% -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-39 -n 1) %S/air.mlir -o %T/air.a
+// RUN: cat air_project/aiecc.herd_0.mlir | grep %1 | grep tile 
+// RUN: %ARM_CLANG %S/test.cpp %aie_runtime_lib%/test_library.cpp -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -g -I%VITIS_SYSROOT%/opt/xaiengine/include -L%VITIS_SYSROOT%/opt/xaiengine/lib -lxaiengine -I%aie_runtime_lib% -I%air_runtime_lib%/airhost/include -rdynamic -lxaiengine %airhost_libs% -o %T/air_test.elf
+// RUN: %run_on_board %T/air_test.elf
+
+// RUN: aircc.py --sysroot=%VITIS_SYSROOT% -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-39 -n 1) %S/air.mlir -o %T/air.a
+// RUN: cat air_project/aiecc.herd_0.mlir | grep %1 | grep tile 
+// RUN: %ARM_CLANG %S/test.cpp %aie_runtime_lib%/test_library.cpp -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -g -I%VITIS_SYSROOT%/opt/xaiengine/include -L%VITIS_SYSROOT%/opt/xaiengine/lib -lxaiengine -I%aie_runtime_lib% -I%air_runtime_lib%/airhost/include -rdynamic -lxaiengine %airhost_libs% -o %T/air_test.elf
+// RUN: %run_on_board %T/air_test.elf
