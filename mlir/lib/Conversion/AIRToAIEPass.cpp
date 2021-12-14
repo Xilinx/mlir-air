@@ -408,28 +408,14 @@ public:
         OpBuilder builder(aie_module);
         builder.setInsertionPointToEnd(&(aie_module.body().front()));
 
-        AIE::TileOp workaround_tile = getPhysTileOp(aie_module, l2_tile.col(), l2_tile.row()+1);
-
-        // Is the first time we've seen this l2 dma?
-        if (std::find(l2_dma_tiles.begin(), l2_dma_tiles.end(), workaround_tile) == l2_dma_tiles.end()) {
-          AIE::SwitchboxOp workaround_sb = builder.create<AIE::SwitchboxOp>(loc, l2_tile);
-          builder.createBlock(&workaround_sb.connections());
-          builder.create<AIE::ConnectOp>(loc,
-                                        AIE::WireBundle::South, 0,
-                                        AIE::WireBundle::North, 0);
-          builder.create<AIE::EndOp>(loc);
-
-          builder.setInsertionPointAfter(workaround_sb);
-          l2_dma_tiles.push_back(workaround_tile);
-        }
         if (((uint64_t)l2_channel >= (uint64_t)AIE::DMAChan::S2MM0) && ((uint64_t)l2_channel < ((uint64_t)AIE::DMAChan::S2MM0 + l2_dma_channels ))) {
           getFlowOp(aie_module,
                     tile, AIE::WireBundle::DMA, (uint32_t)tile_channel-2,
-                    workaround_tile, AIE::WireBundle::South, ((uint32_t)l2_channel) % shim_dma_channels);
+                    l2_tile, AIE::WireBundle::PLIO, ((uint32_t)l2_channel) % l2_dma_channels);
         }
         else {
           getFlowOp(aie_module,
-                    workaround_tile, AIE::WireBundle::South, ((uint32_t)l2_channel) % shim_dma_channels,
+                    l2_tile, AIE::WireBundle::PLIO, ((uint32_t)l2_channel) % l2_dma_channels,
                     tile, AIE::WireBundle::DMA, (uint32_t)tile_channel);
         }
       }
@@ -661,7 +647,7 @@ public:
           std::vector<AIE::TileOp> l2_dma_tiles;
 
           DMAAllocator shimDmaAlloc(shim_dma_cols, shim_dma_channels);
-          DMAAllocator L2DmaAlloc(shim_dma_cols, shim_dma_channels);
+          DMAAllocator L2DmaAlloc(l2_dma_cols, l2_dma_channels);
 
           auto ctx = module.getContext();
           for (auto y = 0; y < herd_size_y; y++) {

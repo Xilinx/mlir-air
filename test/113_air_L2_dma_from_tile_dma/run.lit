@@ -1,0 +1,7 @@
+// (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
+
+// RUN: air-opt -air-to-aie='air-to-aie-col-offset=7 air-to-aie-row-offset=4 air-to-aie-output-prefix=%T/' %S/air.mlir
+// RUN: aie-opt --aie-create-pathfinder-flows --aie-find-flows --aie-assign-buffer-addresses %T/aie.herd_0.mlir | aie-translate --aie-generate-xaie -o %T/aie_inc.cpp
+// RUN: aiecc.py --pathfinder  --sysroot=%VITIS_SYSROOT% %T/aie.herd_0.mlir
+// RUN: %ARM_CLANG %S/test.cpp -I%VITIS_SYSROOT%/opt/xaiengine/include -I%T -L%VITIS_SYSROOT%/opt/xaiengine/lib -lxaiengine -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
+// RUN: %run_on_board %T/test.elf
