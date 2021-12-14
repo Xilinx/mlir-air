@@ -7,7 +7,7 @@ all: test run
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 air.a: air.mlir 
-	aircc.py --sysroot=${SYSROOT} -row-offset=$(shell shuf -i 1-8 -n 1) -col-offset=$(shell shuf -i 0-39 -n 1) $< -o $@
+	aircc.py --sysroot=${SYSROOT} -row-offset=$(shell shuf -i 1-8 -n 1) -col-offset=$(shell shuf -i 0-49 -n 1) $< -o $@
 
 test.exe: air.a test.o 
 	$(CC) test.o \

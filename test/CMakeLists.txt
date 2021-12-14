@@ -106,7 +106,7 @@ set(TEST_DEPENDS
 add_lit_testsuite(check-air "Running the air board regression tests"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
-  ARGS "-sv --timeout 60 --time-tests"
+  ARGS "-sv --timeout 90 --time-tests --order=random" # order can be random,lexical,smart
   )
 set_target_properties(check-air PROPERTIES FOLDER "Tests")
 
