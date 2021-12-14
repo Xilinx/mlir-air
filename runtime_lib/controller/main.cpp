@@ -103,7 +103,7 @@ uint32_t xaie_shim_dma_get_outstanding(uint64_t TileAddr, int direction, int cha
     shimDMAchannel += XAIEDMA_SHIM_CHNUM_MM2S0;
     status_register_offset = 0x1d164;
   }
-  uint32_t outstanding = (XAieGbl_Read32(/*tile->*/TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
+  uint32_t outstanding = (XAieGbl_Read32(TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
   return outstanding;
 }
 
@@ -161,7 +161,7 @@ int xaie_shim_dma_push_bd(uint64_t TileAddr, int direction, int channel, int col
   }
 
   uint32_t start_bd = 4*shimDMAchannel; // shimDMAchannel<<2;
-  uint32_t outstanding = (XAieGbl_Read32(/*tile->*/TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
+  uint32_t outstanding = (XAieGbl_Read32(TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
   // If outstanding >=4, we're in trouble!!!!
   // Theoretically this should never occur due to check in do_packet_nd_memcpy 
   if (outstanding >=4) { // NOTE had this at 3? // What is proper 'stalled' threshold? 
@@ -169,7 +169,7 @@ int xaie_shim_dma_push_bd(uint64_t TileAddr, int direction, int channel, int col
       air_printf("\n\r *** BD OVERFLOW in shimDMA channel %d *** \n\r",shimDMAchannel);
     bool waiting = true;
     while (waiting) {
-      outstanding = (XAieGbl_Read32(/*tile->*/TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
+      outstanding = (XAieGbl_Read32(TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
       waiting = (outstanding > 3); // NOTE maybe >= 3
       air_printf("*** Stalled in shimDMA channel %d outstanding = %d *** \n\r",shimDMAchannel,outstanding+1);
     } // WARNING this can lead to an endless loop 
@@ -187,30 +187,30 @@ int xaie_shim_dma_push_bd(uint64_t TileAddr, int direction, int channel, int col
   //uint32_t bd = start_bd+last_bd[shimDMAchannel][dma];
   //last_bd[shimDMAchannel][dma] = (last_bd[shimDMAchannel][dma]==3)?0:last_bd[shimDMAchannel][dma]+1;
   uint32_t bd_offset = bd*0x14;
-  XAieGbl_Write32(/*tile->*/TileAddr + 0x0001D008+(bd_offset), 0x0);           // Mark the BD as invalid
+  XAieGbl_Write32(TileAddr + 0x0001D008+(bd_offset), 0x0);           // Mark the BD as invalid
 
   // Set the registers directly ...
   uint32_t base_address =  0x1d000 + bd_offset;
-  XAieGbl_Write32(/*tile->*/TileAddr + base_address + 0x00, LOW_ADDR((u64)addr));
-  XAieGbl_Write32(/*tile->*/TileAddr + base_address + 0x04, len >> 2); // We pass in bytes, but the shim DMA can ony deal with 32 bits
+  XAieGbl_Write32(TileAddr + base_address + 0x00, LOW_ADDR((u64)addr));
+  XAieGbl_Write32(TileAddr + base_address + 0x04, len >> 2); // We pass in bytes, but the shim DMA can ony deal with 32 bits
   u32 control = (HIGH_ADDR((u64)addr) << 16) | 1;
-  XAieGbl_Write32(/*tile->*/TileAddr + base_address + 0x08, control);
-  XAieGbl_Write32(/*tile->*/TileAddr + base_address + 0x0C, 0x410); // Burst len [10:9] = 2 (16)
+  XAieGbl_Write32(TileAddr + base_address + 0x08, control);
+  XAieGbl_Write32(TileAddr + base_address + 0x0C, 0x410); // Burst len [10:9] = 2 (16)
                                                                 // QoS [8:5] = 0 (best effort)
                                                                 // Secure bit [4] = 1 (set)
-  XAieGbl_Write32(/*tile->*/TileAddr + base_address + 0x10, 0x0);
+  XAieGbl_Write32(TileAddr + base_address + 0x10, 0x0);
 
 
   // Check if the channel is running or not
-  uint32_t precheck_status = (XAieGbl_Read32(/*tile->*/TileAddr + status_register_offset) >> status_mask_shift) & 0b11;
+  uint32_t precheck_status = (XAieGbl_Read32(TileAddr + status_register_offset) >> status_mask_shift) & 0b11;
   if (precheck_status == 0b00) {
-    XAieGbl_Write32(/*tile->*/TileAddr + control_register_offset, 0xb001); // Stream traffic can run, we can issue AXI-MM, and the channel is enabled
+    XAieGbl_Write32(TileAddr + control_register_offset, 0xb001); // Stream traffic can run, we can issue AXI-MM, and the channel is enabled
   }
   // Now push into the queue
-  XAieGbl_Write32(/*tile->*/TileAddr + start_queue_register_offset, bd);
+  XAieGbl_Write32(TileAddr + start_queue_register_offset, bd);
 
 #if CHATTY
-  outstanding = (XAieGbl_Read32(/*tile->*/TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
+  outstanding = (XAieGbl_Read32(TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
   air_printf("Outstanding post: %d\n\r", outstanding);
   air_printf("bd pushed as bd %d\n\r",bd);
  
@@ -452,6 +452,8 @@ void complete_barrier_packet(void *pkt)
 void handle_packet_device_initialize(dispatch_packet_t *pkt) { 
   packet_set_active(pkt, true);
   air_printf("Called depricated function: handle_packet_device_initialize\r\n");
+  air_printf("...still invalidating shim DMA bds\r\n");
+  xaie_device_init(NUM_SHIM_DMAS);
 }
 
 void handle_packet_herd_initialize(dispatch_packet_t *pkt) {
