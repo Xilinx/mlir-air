@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstdio>
+#include <climits>
 #include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -16,7 +17,7 @@ int main(int argc, char *argv[])
   aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
   mlir_aie_init_device(xaie);
 
-  for (int i=0; i<16; i++) {
+  for (int i=0; i<32; i++) {
     mlir_aie_write_buffer_buf0(xaie, i,i+0x0113);
   }
 
@@ -32,22 +33,16 @@ int main(int argc, char *argv[])
   // Write an ascending pattern value into the memories
   // Also stamp with 1 for the lower memory, and 2 for the upper memory as it goes in
   for (int i=0;i<32;i++) {
-    uint32_t upper_lower = (i%8)/4;
-    uint32_t first128_second128 = i%2;
-    uint32_t first64_second64 = (i%16)/8;
-    uint32_t first32_second32 = (i/2)%2;
-    uint32_t offset = (first128_second128)*4;
-    offset += (first64_second64)*2;
-    offset += first32_second32;
-    offset += (i/16)*8;
-    uint32_t toWrite = 0xcafe00 + i + (((upper_lower)+1) << 28);
+    // 3D DMA address generation
+    //           X Y Z
+    // increment 1 2 8
+    // wrap      2 4 max
+    // offset    4 1 8
+    int an = 4*((i/1)%2) + 1*((i/2)%4) + 8*((i/8)%UINT_MAX); 
+    uint32_t toWrite = i + 0xabbabaab;
 
-    printf("%d : %d %d %d %d %d %08X\n",i,upper_lower, first128_second128, first64_second64, first32_second32, offset, toWrite);
-    if (upper_lower)
-      bank1_ptr[offset] = toWrite;
-    else
-      bank0_ptr[offset] = toWrite;
-
+    bank1_ptr[i] = toWrite + (1 << 28);
+    bank0_ptr[i] = toWrite + (2 << 28);
   }
 
   // Read back the value above it
@@ -106,7 +101,7 @@ int main(int argc, char *argv[])
   pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
 
   cmd.select = 4;
-  cmd.length = 4;
+  cmd.length = 8;
   cmd.uram_addr = 0;
   cmd.id = 0xa;
 
@@ -117,17 +112,10 @@ int main(int argc, char *argv[])
   mlir_aie_print_dma_status(xaie, 7, 4);
   
   uint32_t errs = 0;
-  for (int i=0; i<16; i++) {
-    uint32_t upper_lower = i/4;
-    uint32_t first128_second128 = i%2;
-    uint32_t first64_second64 = (i%16)/8;
-    uint32_t first32_second32 = (i/2)%2;
-    uint32_t offset = (first128_second128)*4;
-    offset += first64_second64*4;
-    offset += first32_second32;
-    offset += upper_lower*2;
+  for (int i=0; i<32; i++) {
+    int an = 4*((i/1)%2) + 1*((i/2)%4) + 8*((i/8)%UINT_MAX); 
     uint32_t d;
-    d = bank0_ptr[offset];
+    d = bank0_ptr[an];
     if ((d & 0x0fffffff) != (i+0x0113)) {
       printf("Word %i : Expect %08X, got %08X\n",i, i+0x0113, d);
       errs++;

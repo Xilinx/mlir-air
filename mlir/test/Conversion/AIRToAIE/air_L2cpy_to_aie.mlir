@@ -10,7 +10,7 @@
 // CHECK: {{.*}} = AIE.core([[T]])  {
 // CHECK:   AIE.useLock([[L]], Acquire, 1, 0)
 // CHECK:   AIE.useLock([[L]], Release, 0, 0)
-// CHECK: AIE.flow({{.*}}, PLIO : 0, [[T]], DMA : 0)
+// CHECK: AIE.flow({{.*}}, PLIO : 4, [[T]], DMA : 0)
 module {
 
 func @foo(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {

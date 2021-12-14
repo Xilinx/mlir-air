@@ -2,15 +2,15 @@
 
 module {
 
-func @graph(%arg0 : memref<16xi32, 1>) -> () {
+func @graph(%arg0 : memref<32xi32, 1>) -> () {
   %herd_cols = constant 1 : index
   %herd_rows = constant 1 : index
-  air.launch_herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0) : memref<16xi32, 1> attributes { sym_name="herd_0"} {
+  air.launch_herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0) : memref<32xi32, 1> attributes { sym_name="herd_0"} {
     %c0 = constant 0 : index
-    %c16 = constant 16 : index
-    %buf0 = memref.alloc() : memref<16xi32, 2>
-    air.dma_memcpy_nd (%ext0[%c0][%c16][%c0], %buf0[%c0][%c16][%c0]) {id = 1 : i32} : (memref<16xi32, 1>, memref<16xi32, 2>)
-    memref.dealloc %buf0 : memref<16xi32, 2>
+    %c32 = constant 32 : index
+    %buf0 = memref.alloc() : memref<32xi32, 2>
+    air.dma_memcpy_nd (%ext0[%c0][%c32][%c0], %buf0[%c0][%c32][%c0]) {id = 1 : i32} : (memref<32xi32, 1>, memref<32xi32, 2>)
+    memref.dealloc %buf0 : memref<32xi32, 2>
     air.herd_terminator
   }
   return

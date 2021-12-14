@@ -415,7 +415,7 @@ public:
         }
         else {
           getFlowOp(aie_module,
-                    l2_tile, AIE::WireBundle::PLIO, ((uint32_t)l2_channel) % l2_dma_channels,
+                    l2_tile, AIE::WireBundle::PLIO, ((uint32_t)l2_channel) % l2_dma_channels + 4,
                     tile, AIE::WireBundle::DMA, (uint32_t)tile_channel);
         }
       }
