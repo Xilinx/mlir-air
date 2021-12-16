@@ -254,13 +254,27 @@ public:
       *this, "test-patterns", llvm::cl::desc("Test canonicalization patterns"),
       llvm::cl::init(false)};
 
-  ListOption<unsigned> HerdSize{*this, "herd-size",
-                                llvm::cl::desc("Herd size to target"),
-                                llvm::cl::ZeroOrMore, llvm::cl::CommaSeparated};
+  ListOption<unsigned> clHerdSize{
+      *this, "herd-size", llvm::cl::desc("Herd size to target"),
+      llvm::cl::ZeroOrMore, llvm::cl::CommaSeparated};
 
-  Option<unsigned> L1CacheSize{*this, "L1-size",
-                               llvm::cl::desc("Size of L1 Cache"),
-                               llvm::cl::init(32 * 1024)};
+  ListOption<unsigned> clL1TileSize{
+      *this, "l1-tile-size",
+      llvm::cl::desc("Tile factors to pass to L1 tiling"), llvm::cl::ZeroOrMore,
+      llvm::cl::CommaSeparated};
+
+  ListOption<unsigned> clL2TileSize{
+      *this, "l2-tile-size",
+      llvm::cl::desc("Tile factors to pass to L2 tiling"), llvm::cl::ZeroOrMore,
+      llvm::cl::CommaSeparated};
+
+  Option<unsigned> clL1MaxSize{*this, "L1-size",
+                               llvm::cl::desc("L1 allocation limit"),
+                               llvm::cl::init(-1)};
+
+  Option<unsigned> clL2MaxSize{*this, "L2-size",
+                               llvm::cl::desc("L2 allocation limit"),
+                               llvm::cl::init(-1)};
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<AffineDialect, memref::MemRefDialect, linalg::LinalgDialect,
@@ -292,8 +306,8 @@ public:
       SmallVector<int64_t, 4> l1_tile_size{32, 32};
       SmallVector<int64_t, 4> herd_size{2, 2};
 
-      for (int i = 0, e = HerdSize.size(); i < e; i++) {
-        herd_size[i] = HerdSize[i];
+      for (int i = 0, e = clHerdSize.size(); i < e; i++) {
+        herd_size[i] = clHerdSize[i];
       }
 
       SmallVector<int64_t, 3> tile_sizes{128, 128};
@@ -359,17 +373,24 @@ public:
           call.getCallee());
 
       SmallVector<int64_t, 3> herd_size{2, 2, 2};
-      for (int i = 0, e = HerdSize.size(); i < e; i++) {
-        herd_size[i] = HerdSize[i];
+      for (int i = 0, e = clHerdSize.size(); i < e; i++) {
+        herd_size[i] = clHerdSize[i];
       }
 
       SmallVector<int64_t, 3> l1_tile_size{32, 32, 32};
+      for (int i = 0, e = clL1TileSize.size(); i < e; i++) {
+        l1_tile_size[i] = clL1TileSize[i];
+      }
+
       SmallVector<int64_t, 3> l2_tile_size{l1_tile_size[0] * herd_size[0],
                                            l1_tile_size[1] * herd_size[1],
-                                           l1_tile_size[2] * herd_size[2]};
+                                           l1_tile_size[2]};
+      for (int i = 0, e = clL2TileSize.size(); i < e; i++) {
+        l2_tile_size[i] = clL2TileSize[i];
+      }
 
       OwningRewritePatternList stageL2Patterns(ctx);
-      bool tileForL2 = false;
+      bool tileForL2 = clL2TileSize.size();
       if (tileForL2) {
         stageL2Patterns.insert<linalg::LinalgTilingPattern<linalg::MatmulOp>>(
             ctx,

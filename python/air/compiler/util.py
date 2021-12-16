@@ -2,13 +2,28 @@
 import air.mlir.ir
 import air.mlir.passmanager
 import air.mlir.all_passes_registration
+import air.mlir._mlir_libs._airMlir
 
 import tempfile
 import os
 
 __all__ = [
-    "CostModel"
+    "CostModel",
+    "LINALG_TENSOR_TO_MEMREF_PIPELINE"
 ]
+
+LINALG_TENSOR_TO_MEMREF_PIPELINE = ",".join([
+    # Bufferize.
+    "tensor-constant-bufferize",
+    "builtin.func(scf-bufferize)",
+    "builtin.func(linalg-bufferize)",
+    "builtin.func(std-bufferize)",
+    "builtin.func(tensor-bufferize)",
+    "func-bufferize",
+    "builtin.func(finalizing-bufferize)",
+    "canonicalize",
+    "cse"
+])
 
 class CostModel:
     def __init__(self):
