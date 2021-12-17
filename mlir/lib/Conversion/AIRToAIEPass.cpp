@@ -369,7 +369,6 @@ public:
     auto tile = getTileOp(aie_module, x, y);
 
     for (auto o : dma_memcpy_ops) {
-      auto loc = o->getLoc();
 
       auto dmaOpIf = cast<air::DmaMemcpyInterface>(o);
       AIE::DMAChan tile_channel = getTileDMAChannel(aie_module, dmaOpIf, x, y);
@@ -465,7 +464,7 @@ public:
 
       // TODO: dont assume 'horiz'
       auto pipeline_size = herd_size_x;
-      if (stages.size() != pipeline_size) {
+      if (stages.size() != (size_t)pipeline_size) {
         llvm::errs()
           << "ERROR: Herd size did not match pipeline size, giving up.\n";
         return;
@@ -601,7 +600,6 @@ public:
 
   void runOnOperation() override {
     auto module = getOperation();
-    static uint64_t BufferId = 0;
     OpBuilder builder(module);
 
     auto loc = builder.getUnknownLoc();

@@ -122,7 +122,7 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
     for (auto use : newOp.getUsers()) {
       if (auto launch = dyn_cast<air::HerdLaunchOp>(use)) {
         assert(launch.getKernelArguments().size() == launch.operands().size());
-        for (int i = 0; i < launch.getNumKernelOperands(); i++) {
+        for (unsigned int i = 0; i < launch.getNumKernelOperands(); i++) {
           auto arg = launch.getKernelArguments()[i];
           auto oper = launch.getKernelOperand(i);
           if (oper == newOp) {
@@ -163,8 +163,7 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
 struct RemoveSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
   using OpRewritePattern<memref::SubViewOp>::OpRewritePattern;
 
-  RemoveSubViewOpsPattern(MLIRContext *ctx, unsigned int fast_memory_space = 1,
-                          unsigned int slow_memory_space = 0);
+  RemoveSubViewOpsPattern(MLIRContext *ctx, unsigned int fast_memory_space = 1);
 
   LogicalResult matchAndRewrite(memref::SubViewOp op,
                                 PatternRewriter &rewriter) const override {
@@ -187,7 +186,6 @@ struct RemoveSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
 
 private:
   unsigned int fast_space;
-  unsigned int slow_space;
 };
 
 // Replace a pattern like this:
@@ -239,10 +237,8 @@ struct RemoveAllocLinalgOpCopyPattern
 };
 
 RemoveSubViewOpsPattern::RemoveSubViewOpsPattern(MLIRContext *ctx,
-                                                 unsigned int fast_memory_space,
-                                                 unsigned int slow_memory_space)
-    : OpRewritePattern(ctx), fast_space(fast_memory_space),
-      slow_space(slow_memory_space) {}
+                                                 unsigned int fast_memory_space)
+    : OpRewritePattern(ctx), fast_space(fast_memory_space) {}
 
 class AIRLinalgCodegen : public AIRLinalgCodegenBase<AIRLinalgCodegen> {
 
@@ -351,7 +347,7 @@ public:
       });
 
       InlinerInterface interface(&getContext());
-      inlineCall(interface, call, called, &called.getRegion(), true);
+      (void)inlineCall(interface, call, called, &called.getRegion(), true);
       call.erase();
       called.erase();
     }
@@ -434,7 +430,8 @@ public:
       OwningRewritePatternList stage3Patterns(&getContext());
       stage3Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
       stage3Patterns.insert<FoldSubViewOpsPattern>(ctx);
-      if (!tileForL2) stage3Patterns.insert<MemrefsPattern>(ctx);
+      if (!tileForL2)
+        stage3Patterns.insert<MemrefsPattern>(ctx);
       scf::populateSCFForLoopCanonicalizationPatterns(stage3Patterns);
 
       (void)applyPatternsAndFoldGreedily(called, std::move(stageL2Patterns));
@@ -445,7 +442,7 @@ public:
       });
 
       InlinerInterface interface(&getContext());
-      inlineCall(interface, call, called, &called.getRegion(), true);
+      (void)inlineCall(interface, call, called, &called.getRegion(), true);
       call.erase();
       called.erase();
     }
@@ -548,7 +545,7 @@ public:
       });
 
       InlinerInterface interface(&getContext());
-      inlineCall(interface, call, called, &called.getRegion(), true);
+      (void)inlineCall(interface, call, called, &called.getRegion(), true);
       call.erase();
       called.erase();
     }
