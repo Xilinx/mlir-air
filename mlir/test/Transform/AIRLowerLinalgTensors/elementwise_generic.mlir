@@ -26,9 +26,9 @@ module @aie.0  {
   ^bb1:  // pred: ^bb0
     br ^bb2
   ^bb2:  // pred: ^bb1
-    AIE.useLock(%3, Acquire, 1, 0)
-    AIE.useLock(%2, Acquire, 1, 0)
-    AIE.useLock(%1, Acquire, 0, 0)
+    AIE.useLock(%3, Acquire, 1)
+    AIE.useLock(%2, Acquire, 1)
+    AIE.useLock(%1, Acquire, 0)
     %8 = linalg.init_tensor [32, 32] : tensor<32x32xi32>
     %9 = memref.tensor_load %6 : memref<32x32xi32, 2>
     %10 = memref.tensor_load %5 : memref<32x32xi32, 2>
@@ -38,9 +38,9 @@ module @aie.0  {
       linalg.yield %12 : i32
     } -> tensor<32x32xi32>
     memref.tensor_store %11, %4 : memref<32x32xi32, 2>
-    AIE.useLock(%3, Release, 0, 0)
-    AIE.useLock(%2, Release, 0, 0)
-    AIE.useLock(%1, Release, 1, 0)
+    AIE.useLock(%3, Release, 0)
+    AIE.useLock(%2, Release, 0)
+    AIE.useLock(%1, Release, 1)
     AIE.end
   }
 }

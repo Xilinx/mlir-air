@@ -4,12 +4,12 @@
 // CHECK: [[T:%.*]] = AIE.tile(7, 2)
 // CHECK: [[L:%.*]] = AIE.lock([[T]], {{.*}})
 // CHECK: {{.*}} = AIE.mem([[T:.*]])  {
-// CHECK:   AIE.useLock([[L]], Acquire, 0, 0)
+// CHECK:   AIE.useLock([[L]], Acquire, 0)
 // CHECK:   AIE.dmaBd(<{{.*}} : memref<1024xi32, 2>, 0, 0>, 0)
-// CHECK:   AIE.useLock([[L]], Release, 1, 0)
+// CHECK:   AIE.useLock([[L]], Release, 1)
 // CHECK: {{.*}} = AIE.core([[T]])  {
-// CHECK:   AIE.useLock([[L]], Acquire, 1, 0)
-// CHECK:   AIE.useLock([[L]], Release, 0, 0)
+// CHECK:   AIE.useLock([[L]], Acquire, 1)
+// CHECK:   AIE.useLock([[L]], Release, 0)
 // CHECK: AIE.flow({{.*}}, PLIO : 4, [[T]], DMA : 0)
 module {
 

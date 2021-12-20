@@ -13,17 +13,17 @@ module {
 // CHECK:    AIE.mem(%[[VAL_2]])  {
 // CHECK:           AIE.dmaStart(S2MM0, ^bb1, ^bb2)
 // CHECK:         ^bb1:
-// CHECK:           AIE.useLock(%[[VAL_4]], Acquire, 0, 0)
+// CHECK:           AIE.useLock(%[[VAL_4]], Acquire, 0)
 // CHECK:           AIE.dmaBd(<%[[VAL_3]] : memref<1024xi32, 2>, 0, 0>, 0)
-// CHECK:           AIE.useLock(%[[VAL_4]], Release, 1, 0)
+// CHECK:           AIE.useLock(%[[VAL_4]], Release, 1)
 // CHECK:           br ^bb1
 // CHECK:         ^bb2:
 // CHECK:           AIE.end
 // CHECK:         }
 
 // CHECK:    AIE.core(%[[VAL_2]])  {
-// CHECK:           AIE.useLock(%[[VAL_4]], Acquire, 1, 0)
-// CHECK:           AIE.useLock(%[[VAL_4]], Release, 0, 0)
+// CHECK:           AIE.useLock(%[[VAL_4]], Acquire, 1)
+// CHECK:           AIE.useLock(%[[VAL_4]], Release, 0)
 // CHECK:           AIE.end
 // CHECK:         }
 
@@ -51,17 +51,17 @@ func @func0(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:    AIE.mem(%[[VAL_12]])  {
 // CHECK:           AIE.dmaStart(S2MM0, ^bb1, ^bb2)
 // CHECK:         ^bb1:
-// CHECK:           AIE.useLock(%[[VAL_14]], Acquire, 0, 0)
+// CHECK:           AIE.useLock(%[[VAL_14]], Acquire, 0)
 // CHECK:           AIE.dmaBd(<%[[VAL_13]] : memref<1024xi32, 2>, 0, 0>, 0)
-// CHECK:           AIE.useLock(%[[VAL_14]], Release, 1, 0)
+// CHECK:           AIE.useLock(%[[VAL_14]], Release, 1)
 // CHECK:           br ^bb1
 // CHECK:         ^bb2:
 // CHECK:           AIE.end
 // CHECK:         }
 
 // CHECK:    AIE.core(%[[VAL_12]])  {
-// CHECK:           AIE.useLock(%[[VAL_14]], Acquire, 1, 0)
-// CHECK:           AIE.useLock(%[[VAL_14]], Release, 0, 0)
+// CHECK:           AIE.useLock(%[[VAL_14]], Acquire, 1)
+// CHECK:           AIE.useLock(%[[VAL_14]], Release, 0)
 // CHECK:           AIE.end
 // CHECK:         }
 

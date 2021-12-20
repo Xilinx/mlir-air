@@ -557,10 +557,10 @@ public:
           // acquire the lock for write on the put side
           b.setInsertionPointToStart(&pipelineOp.body().front());
           b.create<AIE::UseLockOp>(putOp->getLoc(), lockOp, 0,
-                                  AIE::LockAction::Acquire, 0);
+                                  AIE::LockAction::Acquire);
           b.setInsertionPoint(pipelineOp.body().front().getTerminator());
           b.create<AIE::UseLockOp>(putOp->getLoc(), lockOp, 1,
-                                  AIE::LockAction::Release, 0);
+                                  AIE::LockAction::Release);
           b.setInsertionPoint(putOp);
           b.create<memref::TensorStoreOp>(putOp->getLoc(), o, buf);
 
@@ -568,10 +568,10 @@ public:
           pipelineOp = getOp->getParentOfType<air::HerdPipelineOp>();
           b.setInsertionPointToStart(&pipelineOp.body().front());
           b.create<AIE::UseLockOp>(getOp->getLoc(), lockOp, 1,
-                                  AIE::LockAction::Acquire, 0);
+                                  AIE::LockAction::Acquire);
           b.setInsertionPoint(pipelineOp.body().front().getTerminator());
           b.create<AIE::UseLockOp>(getOp->getLoc(), lockOp, 0,
-                                  AIE::LockAction::Release, 0);
+                                  AIE::LockAction::Release);
           b.setInsertionPoint(getOp);
           auto loadOp = b.create<memref::TensorLoadOp>(getOp->getLoc(), buf);
           r.replaceAllUsesWith(loadOp.getResult());
@@ -781,7 +781,7 @@ public:
                     builder.setInsertionPoint(alloc.getDefiningOp());
 
                   builder.create<AIE::UseLockOp>(o->getLoc(), lockOp, lockAqValue,
-                                                  AIE::LockAction::Acquire, 0);
+                                                  AIE::LockAction::Acquire);
                   // try to find a place to put the unlock. If there are deallocs,
                   // replace them with unlock. Otherwise, put them at the end.
                   bool need_unlock = true;
@@ -790,7 +790,7 @@ public:
                       builder.setInsertionPoint(dealloc);
                       builder.create<AIE::UseLockOp>(
                         dealloc->getLoc(), lockOp, lockRelValue,
-                        AIE::LockAction::Release, 0);
+                        AIE::LockAction::Release);
                       // assume that the deallocs will take care of it when
                       // deallocs are present
                       need_unlock = false;
@@ -801,7 +801,7 @@ public:
                     builder.setInsertionPoint(t);
                     builder.create<AIE::UseLockOp>(
                         t->getLoc(), lockOp, lockRelValue,
-                        AIE::LockAction::Release, 0);
+                        AIE::LockAction::Release);
                   }
                   allocs_to_remap.insert(alloc.getDefiningOp());
                 }
@@ -895,13 +895,13 @@ public:
                                  ->getResult(0);
                   }
                   b.create<AIE::UseLockOp>(hloc, lockOp, lockAqValue,
-                                          AIE::LockAction::Acquire, 0);
+                                          AIE::LockAction::Acquire);
                   b.create<AIE::DMABDOp>(
                       hloc, bufferOp, 0,
                       cast<ConstantIndexOp>(length.getDefiningOp()).getValue(),
                       0);
                   b.create<AIE::UseLockOp>(hloc, lockOp, lockRelValue,
-                                          AIE::LockAction::Release, 0);
+                                          AIE::LockAction::Release);
                 }
                 if (!channel_head) {
                   channel_head = start_bb;
