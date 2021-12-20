@@ -14,12 +14,12 @@ module {
     %idx2 = constant 1 : index
     %idx3 = constant 2 : index
     %idx4 = constant 3 : index
-    AIE.useLock(%lock, "Acquire", 1, 0)
+    AIE.useLock(%lock, "Acquire", 1)
     memref.store %val1, %buf72_0[%idx1] : memref<4xi32>
     memref.store %val2, %buf72_0[%idx2] : memref<4xi32>
     memref.store %val3, %buf72_0[%idx3] : memref<4xi32>
     memref.store %val4, %buf72_0[%idx4] : memref<4xi32>
-    AIE.useLock(%lock, "Release", 0, 0)
+    AIE.useLock(%lock, "Release", 0)
     AIE.end
   }
   

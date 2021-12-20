@@ -34,24 +34,24 @@ module {
     ^dma0:
       %dstDma = AIE.dmaStart("MM2S0", ^bd2, ^end)
     ^bd0:
-      AIE.useLock(%l72_0, "Acquire", 0, 0)
+      AIE.useLock(%l72_0, "Acquire", 0)
       AIE.dmaBd(<%buf72_0 : memref<128xi32>, 0, 128>, 0)
-      AIE.useLock(%l72_0, "Release", 1, 0)
+      AIE.useLock(%l72_0, "Release", 1)
       br ^bd1
     ^bd1:
-      AIE.useLock(%l72_1, "Acquire", 0, 0)
+      AIE.useLock(%l72_1, "Acquire", 0)
       AIE.dmaBd(<%buf72_1 : memref<128xi32>, 0, 128>, 0)
-      AIE.useLock(%l72_1, "Release", 1, 0)
+      AIE.useLock(%l72_1, "Release", 1)
       br ^bd0
     ^bd2:
-      AIE.useLock(%l72_0, "Acquire", 1, 0)
+      AIE.useLock(%l72_0, "Acquire", 1)
       AIE.dmaBd(<%buf72_0 : memref<128xi32>, 0, 128>, 0)
-      AIE.useLock(%l72_0, "Release", 0, 0)
+      AIE.useLock(%l72_0, "Release", 0)
       br ^bd3
     ^bd3:
-      AIE.useLock(%l72_1, "Acquire", 1, 0)
+      AIE.useLock(%l72_1, "Acquire", 1)
       AIE.dmaBd(<%buf72_1 : memref<128xi32>, 0, 128>, 0)
-      AIE.useLock(%l72_1, "Release", 0, 0)
+      AIE.useLock(%l72_1, "Release", 0)
       br ^bd2
     ^end:
       AIE.end
@@ -68,24 +68,24 @@ module {
     ^dma0:
       %dstDma = AIE.dmaStart("MM2S0", ^bd2, ^end)
     ^bd0:
-      AIE.useLock(%l74_0, "Acquire", 0, 0)
+      AIE.useLock(%l74_0, "Acquire", 0)
       AIE.dmaBd(<%buf74_0 : memref<128xi32>, 0, 128>, 0)
-      AIE.useLock(%l74_0, "Release", 1, 0)
+      AIE.useLock(%l74_0, "Release", 1)
       br ^bd1
     ^bd1:
-      AIE.useLock(%l74_1, "Acquire", 0, 0)
+      AIE.useLock(%l74_1, "Acquire", 0)
       AIE.dmaBd(<%buf74_1 : memref<128xi32>, 0, 128>, 0)
-      AIE.useLock(%l74_1, "Release", 1, 0)
+      AIE.useLock(%l74_1, "Release", 1)
       br ^bd0
     ^bd2:
-      AIE.useLock(%l74_0, "Acquire", 1, 0)
+      AIE.useLock(%l74_0, "Acquire", 1)
       AIE.dmaBd(<%buf74_0 : memref<128xi32>, 0, 128>, 0)
-      AIE.useLock(%l74_0, "Release", 0, 0)
+      AIE.useLock(%l74_0, "Release", 0)
       br ^bd3
     ^bd3:
-      AIE.useLock(%l74_1, "Acquire", 1, 0)
+      AIE.useLock(%l74_1, "Acquire", 1)
       AIE.dmaBd(<%buf74_1 : memref<128xi32>, 0, 128>, 0)
-      AIE.useLock(%l74_1, "Release", 0, 0)
+      AIE.useLock(%l74_1, "Release", 0)
       br ^bd2
     ^end:
       AIE.end
@@ -102,24 +102,24 @@ module {
     ^dma0:
       %dstDma = AIE.dmaStart("MM2S0", ^bd2, ^end)
     ^bd0:
-      AIE.useLock(%l82_0, "Acquire", 0, 0)
+      AIE.useLock(%l82_0, "Acquire", 0)
       AIE.dmaBd(<%buf82_0 : memref<128xi32>, 0, 128>, 0)
-      AIE.useLock(%l82_0, "Release", 1, 0)
+      AIE.useLock(%l82_0, "Release", 1)
       br ^bd1
     ^bd1:
-      AIE.useLock(%l82_1, "Acquire", 0, 0)
+      AIE.useLock(%l82_1, "Acquire", 0)
       AIE.dmaBd(<%buf82_1 : memref<128xi32>, 0, 128>, 0)
-      AIE.useLock(%l82_1, "Release", 1, 0)
+      AIE.useLock(%l82_1, "Release", 1)
       br ^bd0
     ^bd2:
-      AIE.useLock(%l82_0, "Acquire", 1, 0)
+      AIE.useLock(%l82_0, "Acquire", 1)
       AIE.dmaBd(<%buf82_0 : memref<128xi32>, 0, 128>, 0)
-      AIE.useLock(%l82_0, "Release", 0, 0)
+      AIE.useLock(%l82_0, "Release", 0)
       br ^bd3
     ^bd3:
-      AIE.useLock(%l82_1, "Acquire", 1, 0)
+      AIE.useLock(%l82_1, "Acquire", 1)
       AIE.dmaBd(<%buf82_1 : memref<128xi32>, 0, 128>, 0)
-      AIE.useLock(%l82_1, "Release", 0, 0)
+      AIE.useLock(%l82_1, "Release", 0)
       br ^bd2
     ^end:
       AIE.end
@@ -136,24 +136,24 @@ module {
     ^dma0:
       %dstDma = AIE.dmaStart("MM2S0", ^bd2, ^end)
     ^bd0:
-      AIE.useLock(%l84_0, "Acquire", 0, 0)
+      AIE.useLock(%l84_0, "Acquire", 0)
       AIE.dmaBd(<%buf84_0 : memref<128xi32>, 0, 128>, 0)
-      AIE.useLock(%l84_0, "Release", 1, 0)
+      AIE.useLock(%l84_0, "Release", 1)
       br ^bd1
     ^bd1:
-      AIE.useLock(%l84_1, "Acquire", 0, 0)
+      AIE.useLock(%l84_1, "Acquire", 0)
       AIE.dmaBd(<%buf84_1 : memref<128xi32>, 0, 128>, 0)
-      AIE.useLock(%l84_1, "Release", 1, 0)
+      AIE.useLock(%l84_1, "Release", 1)
       br ^bd0
     ^bd2:
-      AIE.useLock(%l84_0, "Acquire", 1, 0)
+      AIE.useLock(%l84_0, "Acquire", 1)
       AIE.dmaBd(<%buf84_0 : memref<128xi32>, 0, 128>, 0)
-      AIE.useLock(%l84_0, "Release", 0, 0)
+      AIE.useLock(%l84_0, "Release", 0)
       br ^bd3
     ^bd3:
-      AIE.useLock(%l84_1, "Acquire", 1, 0)
+      AIE.useLock(%l84_1, "Acquire", 1)
       AIE.dmaBd(<%buf84_1 : memref<128xi32>, 0, 128>, 0)
-      AIE.useLock(%l84_1, "Release", 0, 0)
+      AIE.useLock(%l84_1, "Release", 0)
       br ^bd2
     ^end:
       AIE.end

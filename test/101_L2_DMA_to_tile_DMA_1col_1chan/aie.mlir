@@ -14,14 +14,14 @@ module @aie.0  {
   ^bb1:  // 2 preds: ^bb0, ^bb3
     br ^bb2
   ^bb2:  // pred: ^bb1
-    AIE.useLock(%6, Acquire, 0, 0)
+    AIE.useLock(%6, Acquire, 0)
     AIE.dmaBd(<%7 : memref<16xi32, 2>, 0, 16>, 0)
-    AIE.useLock(%6, Release, 1, 0)
+    AIE.useLock(%6, Release, 1)
     br ^bb3
   ^bb3:  // pred: ^bb2
-    AIE.useLock(%4, Acquire, 0, 0)
+    AIE.useLock(%4, Acquire, 0)
     AIE.dmaBd(<%5 : memref<16xi32, 2>, 0, 16>, 0)
-    AIE.useLock(%4, Release, 1, 0)
+    AIE.useLock(%4, Release, 1)
     br ^bb1
   ^bb4:  // pred: ^bb0
     AIE.end
@@ -31,8 +31,8 @@ module @aie.0  {
   ^bb1:  // pred: ^bb0
     br ^bb2
   ^bb2:  // pred: ^bb1
-    AIE.useLock(%6, Acquire, 1, 0)
-    AIE.useLock(%4, Acquire, 1, 0)
+    AIE.useLock(%6, Acquire, 1)
+    AIE.useLock(%4, Acquire, 1)
     AIE.end
   }
   AIE.flow(%1, PLIO : 0, %3, DMA : 0)

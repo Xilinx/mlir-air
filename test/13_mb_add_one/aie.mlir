@@ -25,24 +25,24 @@ module {
     ^dma0:
       %dstDma = AIE.dmaStart("MM2S0", ^bd2, ^end)
     ^bd0:
-      AIE.useLock(%l72_0, "Acquire", 0, 0)
+      AIE.useLock(%l72_0, "Acquire", 0)
       AIE.dmaBd(<%buf72_0 : memref<8xi32>, 0, 8>, 0)
-      AIE.useLock(%l72_0, "Release", 1, 0)
+      AIE.useLock(%l72_0, "Release", 1)
       br ^bd1
     ^bd1:
-      AIE.useLock(%l72_1, "Acquire", 0, 0)
+      AIE.useLock(%l72_1, "Acquire", 0)
       AIE.dmaBd(<%buf72_2 : memref<8xi32>, 0, 8>, 0)
-      AIE.useLock(%l72_1, "Release", 1, 0)
+      AIE.useLock(%l72_1, "Release", 1)
       br ^bd0
     ^bd2:
-      AIE.useLock(%l72_2, "Acquire", 1, 0)
+      AIE.useLock(%l72_2, "Acquire", 1)
       AIE.dmaBd(<%buf72_1 : memref<8xi32>, 0, 8>, 0)
-      AIE.useLock(%l72_2, "Release", 0, 0)
+      AIE.useLock(%l72_2, "Release", 0)
       br ^bd3
     ^bd3:
-      AIE.useLock(%l72_3, "Acquire", 1, 0)
+      AIE.useLock(%l72_3, "Acquire", 1)
       AIE.dmaBd(<%buf72_3 : memref<8xi32>, 0, 8>, 0)
-      AIE.useLock(%l72_3, "Release", 0, 0)
+      AIE.useLock(%l72_3, "Release", 0)
       br ^bd2
     ^end:
       AIE.end
@@ -54,25 +54,25 @@ module {
     %c1 = constant 1 : index
     %c1_32 = constant 1 : i32
 
-    AIE.useLock(%l72_0, "Acquire", 1, 0)
-    AIE.useLock(%l72_2, "Acquire", 0, 0)
+    AIE.useLock(%l72_0, "Acquire", 1)
+    AIE.useLock(%l72_2, "Acquire", 0)
     scf.for %arg3 = %c0 to %c8 step %c1 {
         %0 = memref.load %buf72_0[%arg3] : memref<8xi32>
         %1 = addi %0, %c1_32 : i32
         memref.store %1, %buf72_1[%arg3] : memref<8xi32>
     }
-    AIE.useLock(%l72_0, "Release", 0, 0)
-    AIE.useLock(%l72_2, "Release", 1, 0)
+    AIE.useLock(%l72_0, "Release", 0)
+    AIE.useLock(%l72_2, "Release", 1)
 
-    AIE.useLock(%l72_1, "Acquire", 1, 0)
-    AIE.useLock(%l72_3, "Acquire", 0, 0)
+    AIE.useLock(%l72_1, "Acquire", 1)
+    AIE.useLock(%l72_3, "Acquire", 0)
     scf.for %arg4 = %c0 to %c8 step %c1 {
         %2 = memref.load %buf72_2[%arg4] : memref<8xi32>
         %3 = addi %2, %c1_32 : i32
         memref.store %3, %buf72_3[%arg4] : memref<8xi32>
     }
-    AIE.useLock(%l72_1, "Release", 0, 0)
-    AIE.useLock(%l72_3, "Release", 1, 0)
+    AIE.useLock(%l72_1, "Release", 0)
+    AIE.useLock(%l72_3, "Release", 1)
     AIE.end
 
   }

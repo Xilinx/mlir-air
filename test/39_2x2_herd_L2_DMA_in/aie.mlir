@@ -47,14 +47,14 @@ module {
   ^dma1:
     %dma71_b = AIE.dmaStart(S2MM1,^bb2,^end)
   ^bb1:
-    AIE.useLock(%l71_a, Acquire, 0, 0)
+    AIE.useLock(%l71_a, Acquire, 0)
     AIE.dmaBd(<%buf71_a : memref<1024xi32>, 0, 1024>, 0)
-    AIE.useLock(%l71_a, Release, 1, 0)
+    AIE.useLock(%l71_a, Release, 1)
     br ^bb1
   ^bb2:
-    AIE.useLock(%l71_b, Acquire, 0, 0)
+    AIE.useLock(%l71_b, Acquire, 0)
     AIE.dmaBd(<%buf71_b : memref<1024xi32>, 0, 1024>, 0)
-    AIE.useLock(%l71_b, Release, 1, 0)
+    AIE.useLock(%l71_b, Release, 1)
     br ^bb2
   ^end:
     AIE.end
@@ -66,12 +66,12 @@ module {
     %c0 = constant 0 : index
     %c1 = constant 1 : index
     scf.for %iter = %c0 to %c8 step %c1 {
-      AIE.useLock(%l71_a, Acquire, 1, 0)
-      AIE.useLock(%l71_b, Acquire, 1, 0)
-      AIE.useLock(%l71_arm, Acquire, 1, 0)
-      AIE.useLock(%l71_a, Release, 0, 0)
-      AIE.useLock(%l71_b, Release, 0, 0)
-      AIE.useLock(%l71_arm, Release, 0, 0)
+      AIE.useLock(%l71_a, Acquire, 1)
+      AIE.useLock(%l71_b, Acquire, 1)
+      AIE.useLock(%l71_arm, Acquire, 1)
+      AIE.useLock(%l71_a, Release, 0)
+      AIE.useLock(%l71_b, Release, 0)
+      AIE.useLock(%l71_arm, Release, 0)
     }
     AIE.end
 }
@@ -81,14 +81,14 @@ module {
   ^dma1:
     %dma72_b = AIE.dmaStart(S2MM1,^bb2,^end)
   ^bb1:
-    AIE.useLock(%l72_a, Acquire, 0, 0)
+    AIE.useLock(%l72_a, Acquire, 0)
     AIE.dmaBd(<%buf72_a : memref<1024xi32>, 0, 1024>, 0)
-    AIE.useLock(%l72_a, Release, 1, 0)
+    AIE.useLock(%l72_a, Release, 1)
     br ^bb1
   ^bb2:
-    AIE.useLock(%l72_b, Acquire, 0, 0)
+    AIE.useLock(%l72_b, Acquire, 0)
     AIE.dmaBd(<%buf72_b : memref<1024xi32>, 0, 1024>, 0)
-    AIE.useLock(%l72_b, Release, 1, 0)
+    AIE.useLock(%l72_b, Release, 1)
     br ^bb2
   ^end:
     AIE.end
@@ -99,12 +99,12 @@ module {
     %c0 = constant 0 : index
     %c1 = constant 1 : index
     scf.for %iter = %c0 to %c8 step %c1 {
-      AIE.useLock(%l72_a, Acquire, 1, 0)
-      AIE.useLock(%l72_b, Acquire, 1, 0)
-      AIE.useLock(%l72_arm, Acquire, 1, 0)
-      AIE.useLock(%l72_a, Release, 0, 0)
-      AIE.useLock(%l72_b, Release, 0, 0)
-      AIE.useLock(%l72_arm, Release, 0, 0)
+      AIE.useLock(%l72_a, Acquire, 1)
+      AIE.useLock(%l72_b, Acquire, 1)
+      AIE.useLock(%l72_arm, Acquire, 1)
+      AIE.useLock(%l72_a, Release, 0)
+      AIE.useLock(%l72_b, Release, 0)
+      AIE.useLock(%l72_arm, Release, 0)
     }
     AIE.end
 }
@@ -115,14 +115,14 @@ module {
   ^dma1:
     %dma81_b = AIE.dmaStart(S2MM1,^bb2,^end)
   ^bb1:
-    AIE.useLock(%l81_a, Acquire, 0, 0)
+    AIE.useLock(%l81_a, Acquire, 0)
     AIE.dmaBd(<%buf81_a : memref<1024xi32>, 0, 1024>, 0)
-    AIE.useLock(%l81_a, Release, 1, 0)
+    AIE.useLock(%l81_a, Release, 1)
     br ^bb1
   ^bb2:
-    AIE.useLock(%l81_b, Acquire, 0, 0)
+    AIE.useLock(%l81_b, Acquire, 0)
     AIE.dmaBd(<%buf81_b : memref<1024xi32>, 0, 1024>, 0)
-    AIE.useLock(%l81_b, Release, 1, 0)
+    AIE.useLock(%l81_b, Release, 1)
     br ^bb2
   ^end:
     AIE.end
@@ -133,12 +133,12 @@ module {
     %c0 = constant 0 : index
     %c1 = constant 1 : index
     scf.for %iter = %c0 to %c8 step %c1 {
-      AIE.useLock(%l81_a, Acquire, 1, 0)
-      AIE.useLock(%l81_b, Acquire, 1, 0)
-      AIE.useLock(%l81_arm, Acquire, 1, 0)
-      AIE.useLock(%l81_a, Release, 0, 0)
-      AIE.useLock(%l81_b, Release, 0, 0)
-      AIE.useLock(%l81_arm, Release, 0, 0)
+      AIE.useLock(%l81_a, Acquire, 1)
+      AIE.useLock(%l81_b, Acquire, 1)
+      AIE.useLock(%l81_arm, Acquire, 1)
+      AIE.useLock(%l81_a, Release, 0)
+      AIE.useLock(%l81_b, Release, 0)
+      AIE.useLock(%l81_arm, Release, 0)
     }
     AIE.end
 }
@@ -149,14 +149,14 @@ module {
   ^dma1:
     %dma82_b = AIE.dmaStart(S2MM1,^bb2,^end)
   ^bb1:
-    AIE.useLock(%l82_a, Acquire, 0, 0)
+    AIE.useLock(%l82_a, Acquire, 0)
     AIE.dmaBd(<%buf82_a : memref<1024xi32>, 0, 1024>, 0)
-    AIE.useLock(%l82_a, Release, 1, 0)
+    AIE.useLock(%l82_a, Release, 1)
     br ^bb1
   ^bb2:
-    AIE.useLock(%l82_b, Acquire, 0, 0)
+    AIE.useLock(%l82_b, Acquire, 0)
     AIE.dmaBd(<%buf82_b : memref<1024xi32>, 0, 1024>, 0)
-    AIE.useLock(%l82_b, Release, 1, 0)
+    AIE.useLock(%l82_b, Release, 1)
     br ^bb2
   ^end:
     AIE.end
@@ -167,12 +167,12 @@ module {
     %c0 = constant 0 : index
     %c1 = constant 1 : index
     scf.for %iter = %c0 to %c8 step %c1 {
-      AIE.useLock(%l82_a, Acquire, 1, 0)
-      AIE.useLock(%l82_b, Acquire, 1, 0)
-      AIE.useLock(%l82_arm, Acquire, 1, 0)
-      AIE.useLock(%l82_a, Release, 0, 0)
-      AIE.useLock(%l82_b, Release, 0, 0)
-      AIE.useLock(%l82_arm, Release, 0, 0)
+      AIE.useLock(%l82_a, Acquire, 1)
+      AIE.useLock(%l82_b, Acquire, 1)
+      AIE.useLock(%l82_arm, Acquire, 1)
+      AIE.useLock(%l82_a, Release, 0)
+      AIE.useLock(%l82_b, Release, 0)
+      AIE.useLock(%l82_arm, Release, 0)
     }
     AIE.end
 }

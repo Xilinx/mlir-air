@@ -12,9 +12,9 @@ module @aie.0  {
   ^bb1: 
     br ^bb2
   ^bb2: 
-    AIE.useLock(%6, Acquire, 1, 0)
+    AIE.useLock(%6, Acquire, 1)
     AIE.dmaBd(<%7 : memref<16xi32, 2>, 0, 16>, 0)
-    AIE.useLock(%6, Release, 0, 0)
+    AIE.useLock(%6, Release, 0)
     br ^bb3
   ^bb3: 
     br ^bb1

@@ -16,14 +16,14 @@ module @aie.0  {
   ^dma0:
     %dstDma = AIE.dmaStart("MM2S0", ^bb3, ^end)
   ^bb2: 
-    AIE.useLock(%6, Acquire, 0, 0)
+    AIE.useLock(%6, Acquire, 0)
     AIE.dmaBd(<%7 : memref<64xi32, 2>, 0, 64>, 0)
-    AIE.useLock(%6, Release, 1, 0)
+    AIE.useLock(%6, Release, 1)
     br ^bb2
   ^bb3: 
-    AIE.useLock(%6, Acquire, 1, 0)
+    AIE.useLock(%6, Acquire, 1)
     AIE.dmaBd(<%7 : memref<64xi32, 2>, 0, 64>, 0)
-    AIE.useLock(%6, Release, 0, 0)
+    AIE.useLock(%6, Release, 0)
     br ^bb3
   ^end: 
     AIE.end
@@ -33,14 +33,14 @@ module @aie.0  {
   ^dma0:
     %dstDma = AIE.dmaStart("MM2S0", ^bb3, ^end)
   ^bb2: 
-    AIE.useLock(%10, Acquire, 0, 0)
+    AIE.useLock(%10, Acquire, 0)
     AIE.dmaBd(<%11 : memref<64xi32, 2>, 0, 64>, 0)
-    AIE.useLock(%10, Release, 1, 0)
+    AIE.useLock(%10, Release, 1)
     br ^bb2
   ^bb3: 
-    AIE.useLock(%10, Acquire, 1, 0)
+    AIE.useLock(%10, Acquire, 1)
     AIE.dmaBd(<%11 : memref<64xi32, 2>, 0, 64>, 0)
-    AIE.useLock(%10, Release, 0, 0)
+    AIE.useLock(%10, Release, 0)
     br ^bb3
   ^end: 
     AIE.end

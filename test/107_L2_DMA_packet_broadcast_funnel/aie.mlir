@@ -21,16 +21,16 @@ module @aie.0  {
   ^dma0:
     %dstDma = AIE.dmaStart("MM2S0", ^bb3, ^end)
   ^bb2: 
-    AIE.useLock(%10, Acquire, 0, 0)
+    AIE.useLock(%10, Acquire, 0)
     AIE.dmaBdPacket(0x1, 3)
     AIE.dmaBd(<%11 : memref<512xi32, 2>, 0, 512>, 0)
-    AIE.useLock(%10, Release, 1, 0)
+    AIE.useLock(%10, Release, 1)
     br ^bb2
   ^bb3: 
-    AIE.useLock(%10, Acquire, 1, 0)
+    AIE.useLock(%10, Acquire, 1)
     AIE.dmaBdPacket(0x6, 10)
     AIE.dmaBd(<%11 : memref<512xi32, 2>, 0, 512>, 0)
-    AIE.useLock(%10, Release, 0, 0)
+    AIE.useLock(%10, Release, 0)
     br ^bb3
   ^end: 
     AIE.end
@@ -40,16 +40,16 @@ module @aie.0  {
   ^dma0:
     %dstDma = AIE.dmaStart("MM2S0", ^bb3, ^end)
   ^bb2: 
-    AIE.useLock(%14, Acquire, 0, 0)
+    AIE.useLock(%14, Acquire, 0)
     AIE.dmaBdPacket(0x2, 3)
     AIE.dmaBd(<%15 : memref<512xi32, 2>, 0, 512>, 0)
-    AIE.useLock(%14, Release, 1, 0)
+    AIE.useLock(%14, Release, 1)
     br ^bb2
   ^bb3: 
-    AIE.useLock(%14, Acquire, 1, 0)
+    AIE.useLock(%14, Acquire, 1)
     AIE.dmaBdPacket(0x7, 11)
     AIE.dmaBd(<%15 : memref<512xi32, 2>, 0, 512>, 0)
-    AIE.useLock(%14, Release, 0, 0)
+    AIE.useLock(%14, Release, 0)
     br ^bb3
   ^end: 
     AIE.end
@@ -59,16 +59,16 @@ module @aie.0  {
   ^dma0:
     %dstDma = AIE.dmaStart("MM2S0", ^bb3, ^end)
   ^bb2: 
-    AIE.useLock(%18, Acquire, 0, 0)
+    AIE.useLock(%18, Acquire, 0)
     AIE.dmaBdPacket(0x3, 3)
     AIE.dmaBd(<%19 : memref<512xi32, 2>, 0, 512>, 0)
-    AIE.useLock(%18, Release, 1, 0)
+    AIE.useLock(%18, Release, 1)
     br ^bb2
   ^bb3: 
-    AIE.useLock(%18, Acquire, 1, 0)
+    AIE.useLock(%18, Acquire, 1)
     AIE.dmaBdPacket(0x8, 12)
     AIE.dmaBd(<%19 : memref<512xi32, 2>, 0, 512>, 0)
-    AIE.useLock(%18, Release, 0, 0)
+    AIE.useLock(%18, Release, 0)
     br ^bb3
   ^end: 
     AIE.end
@@ -78,16 +78,16 @@ module @aie.0  {
   ^dma0:
     %dstDma = AIE.dmaStart("MM2S0", ^bb3, ^end)
   ^bb2: 
-    AIE.useLock(%22, Acquire, 0, 0)
+    AIE.useLock(%22, Acquire, 0)
     AIE.dmaBdPacket(0x4, 3)
     AIE.dmaBd(<%23 : memref<512xi32, 2>, 0, 512>, 0)
-    AIE.useLock(%22, Release, 1, 0)
+    AIE.useLock(%22, Release, 1)
     br ^bb2
   ^bb3: 
-    AIE.useLock(%22, Acquire, 1, 0)
+    AIE.useLock(%22, Acquire, 1)
     AIE.dmaBdPacket(0x9, 13)
     AIE.dmaBd(<%23 : memref<512xi32, 2>, 0, 512>, 0)
-    AIE.useLock(%22, Release, 0, 0)
+    AIE.useLock(%22, Release, 0)
     br ^bb3
   ^end: 
     AIE.end
