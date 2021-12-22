@@ -5,14 +5,14 @@
 // CHECK: Herd 0: herd_0
 // CHECK: Shim Channel : id 0, row 0, col 0, channel 1
 // CHECK: Shim Location : id 0, row 0, col 0, column 2
-// CHECK: Shim Channel : id 1, row 0, col 0, channel 2
-// CHECK: Shim Location : id 1, row 0, col 0, column 2
-// CHECK: Shim Channel : id 2, row 0, col 0, channel 3
-// CHECK: Shim Location : id 2, row 0, col 0, column 2
+// CHECK: Shim Channel : id 4, row 0, col 0, channel 2
+// CHECK: Shim Location : id 4, row 0, col 0, column 2
+// CHECK: Shim Channel : id 8, row 0, col 0, channel 3
+// CHECK: Shim Location : id 8, row 0, col 0, column 2
 // CHECK: Herd 1: herd_1
-// CHECK: Shim Channel : id 3, row 1, col 1, channel 4
-// CHECK: Shim Location : id 3, row 1, col 1, column 3
-// CHECK: Shim Channel : id 4, row 1, col 1, channel 5
-// CHECK: Shim Location : id 4, row 1, col 1, column 3
-// CHECK: Shim Channel : id 5, row 1, col 1, channel 6
-// CHECK: Shim Location : id 5, row 1, col 1, column 3
+// CHECK: Shim Channel : id 0, row 2, col 1, channel 4
+// CHECK: Shim Location : id 0, row 2, col 1, column 3
+// CHECK: Shim Channel : id 4, row 2, col 1, channel 5
+// CHECK: Shim Location : id 4, row 2, col 1, column 3
+// CHECK: Shim Channel : id 8, row 2, col 1, channel 6
+// CHECK: Shim Location : id 8, row 2, col 1, column 3
