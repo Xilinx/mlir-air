@@ -22,5 +22,12 @@ LINK_COMPONENTS
 Core
 
 LINK_LIBS PUBLIC
+AIRDialect
+AIRRtDialect
 AIRUtil
+MLIRIR
+MLIRLinalg
+MLIRLinalgTransforms
+MLIRLinalgUtils
+MLIRSupport
 )

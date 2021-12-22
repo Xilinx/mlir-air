@@ -15,6 +15,17 @@ LINK_COMPONENTS
 Core
 
 LINK_LIBS
-MLIR
+AIRDialect
+AIRRtDialect
+AIRUtil
 AIE
+MLIRAffine
+MLIRIR
+MLIRLinalg
+MLIRLinalgUtils
+MLIRLinalgTransforms
+MLIRLLVMIR
+MLIRSCF
+MLIRSupport
+MLIRTransforms
 )

@@ -6,4 +6,14 @@ add_air_library(AIRTargets
   PUBLIC
   AIRRtDialect
   AIRDialect
+  MLIRAffine
+  MLIRIR
+  MLIRLLVMIR
+  MLIRMemRef
+  MLIRSCF
+  MLIRSupport
+  MLIRTensor
+  MLIRTransforms
+  MLIRTranslation
+  MLIRVector
   )

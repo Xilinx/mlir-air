@@ -23,7 +23,14 @@ set(LIBS
   AIRRtDialect
   AIRTargets
   AIE
-  MLIR
+  ${dialect_libs}
+  ${translation_libs}
+  MLIRIR
+  MLIRParser
+  MLIRPass
+  MLIRSPIRV
+  MLIRTranslation
+  MLIRSupport
 )
 
 llvm_update_compile_flags(air-translate)
