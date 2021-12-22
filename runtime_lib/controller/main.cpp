@@ -690,11 +690,20 @@ typedef struct staged_nd_memcpy_s {
 	dispatch_packet_t *pkt;
 	uint64_t paddr[3];
 	uint32_t index[3];
-} staged_nd_memcpy_t;
+} staged_nd_memcpy_t; // about 48B therefore @ 64 slots ~3kB
+
+int get_slot(int col) {
+  for (int i=0; i<NUM_SHIM_DMAS; i++) {
+    if (col == shim_dma_cols[i]) {
+      return i*4;
+    }
+  }
+  return 0;
+}
 
 // GLOBAL storage for 'in progress' ND memcpy work
 // NOTE 4 slots per shim DMA 
-staged_nd_memcpy_t staged_nd_slot[8]; 
+staged_nd_memcpy_t staged_nd_slot[NUM_SHIM_DMAS*4]; 
 
 void nd_dma_put_checkpoint(dispatch_packet_t **pkt, uint32_t slot, 
 			uint32_t idx_4d, uint32_t idx_3d, uint32_t idx_2d,
@@ -886,6 +895,7 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id)
   uint64_t rd_idx = queue_load_read_index(q);
   dispatch_packet_t *pkt = &((dispatch_packet_t*)q->base_address)[mymod(rd_idx)];
   int last_slot = 0;
+  int max_slot = 4*NUM_SHIM_DMAS-1;
 
   int num_active_packets = 1;
   int packets_processed = 0;
@@ -904,7 +914,7 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id)
       bool stalled = true;
       bool active = false; 
       do {
-        slot = (slot==7)?0:slot+1;
+        slot = (slot==max_slot)?0:slot+1; // TODO better heuristic 
         if (slot == last_slot) break;
         air_printf("RR check slot: %d\n\r",slot);
         if (staged_nd_slot[slot].valid) {
@@ -932,7 +942,7 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id)
           pkt = &((dispatch_packet_t*)q->base_address)[mymod(rd_idx)];
           air_printf("WARN: Found invalid HSA packet inside peek loop!\n\r");
           // TRICKY weird state where we didn't find a new packet but RR won't let us retry. So advance last_slot.
-          last_slot = (slot==7)?0:slot+1;
+          last_slot = (slot==max_slot)?0:slot+1; // TODO better heuristic 
           continue;  
         } else goto packet_op;
       } // End get next packet
@@ -1016,7 +1026,7 @@ packet_op:
         uint16_t direction    = (pkt->arg[0] >> 60) & 0x000f;
         uint16_t col  = (pkt->arg[0] >> 32) & 0x00ff;
         int slot = channel;
-        slot += ((col%2)==1)?4:0; 
+        slot += get_slot(col); 
         if (direction == SHIM_DMA_S2MM) 
           slot += XAIEDMA_SHIM_CHNUM_S2MM0;
         else 

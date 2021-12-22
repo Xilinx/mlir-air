@@ -34,10 +34,10 @@ LLVM::LLVMStructType getShimDescriptorType(MLIRContext *ctx ) {
   return LLVM::LLVMStructType::getLiteral(ctx,{
     // int64_t[64]* location data
     LLVM::LLVMPointerType::get(
-      LLVM::LLVMArrayType::get(IntegerType::get(ctx, 64), 16*4*4)),
+      LLVM::LLVMArrayType::get(IntegerType::get(ctx, 64), 16*8*8)),
     // int64_t[64]* channel data
     LLVM::LLVMPointerType::get(
-      LLVM::LLVMArrayType::get(IntegerType::get(ctx, 64), 16*4*4)),
+      LLVM::LLVMArrayType::get(IntegerType::get(ctx, 64), 16*8*8)),
   });
 }
 
@@ -200,13 +200,13 @@ LLVM::GlobalOp createHerdDescriptor(OpBuilder builder, ModuleOp module,
 
 LLVM::GlobalOp createShimDescriptor(OpBuilder builder,
                                     ModuleOp module,
-                                    int64_t cols[16][4][4],
-                                    int64_t chans[16][4][4])
+                                    int64_t cols[16][8][8],
+                                    int64_t chans[16][8][8])
 {
   auto ctx = module.getContext();
   auto loc = builder.getUnknownLoc();
   auto descTy = getShimDescriptorType(ctx);
-  auto arrayTy = LLVM::LLVMArrayType::get(IntegerType::get(ctx, 64), 16*4*4);
+  auto arrayTy = LLVM::LLVMArrayType::get(IntegerType::get(ctx, 64), 16*8*8);
 
   // construct the location data global array + initializer
   std::string str_name = "__air_shim_location_data";
@@ -221,12 +221,12 @@ LLVM::GlobalOp createShimDescriptor(OpBuilder builder,
     builder.createBlock(&locArrayGlobal.initializer());
     Value data = builder.create<LLVM::UndefOp>(loc, arrayTy);
     for (int i=0; i<16; i++) {
-      for (int j=0; j<4; j++) {
-        for (int k=0; k<4; k++) {
+      for (int j=0; j<8; j++) {
+        for (int k=0; k<8; k++) {
           auto c = builder.create<LLVM::ConstantOp>(loc, IntegerType::get(ctx, 64),
                                                     builder.getI64IntegerAttr(cols[i][j][k]));
           data = builder.create<LLVM::InsertValueOp>(loc, data, c,
-                                                      builder.getI64ArrayAttr({i*4*4+j*4+k}));
+                                                      builder.getI64ArrayAttr({i*8*8+j*8+k}));
         }
       }
     }
@@ -246,12 +246,12 @@ LLVM::GlobalOp createShimDescriptor(OpBuilder builder,
     builder.createBlock(&chanArrayGlobal.initializer());
     Value data = builder.create<LLVM::UndefOp>(loc, arrayTy);
     for (int i=0; i<16; i++) {
-      for (int j=0; j<4; j++) {
-        for (int k=0; k<4; k++) {
+      for (int j=0; j<8; j++) {
+        for (int k=0; k<8; k++) {
           auto c = builder.create<LLVM::ConstantOp>(loc, IntegerType::get(ctx, 64),
                                                     builder.getI32IntegerAttr(chans[i][j][k]));
           data = builder.create<LLVM::InsertValueOp>(loc, data, c,
-                                                      builder.getI32ArrayAttr({i*4*4+j*4+k}));
+                                                      builder.getI32ArrayAttr({i*8*8+j*8+k}));
         }
       }
     }
@@ -300,8 +300,8 @@ public:
       auto herd_meta = dyn_cast<xilinx::airrt::HerdMetadataOp>(herd_op);
       if (!herd_meta) continue;
 
-      int64_t cols[16][4][4] = {{{0}}};
-      int64_t chans[16][4][4] = {{{0}}};
+      int64_t cols[16][8][8] = {{{0}}};
+      int64_t chans[16][8][8] = {{{0}}};
 
       // "shim_allocations" attribute is an array of DictAttr
       ArrayAttr shim_attr = herd_meta->getAttrOfType<ArrayAttr>("shim_allocations");

@@ -57,11 +57,11 @@ void *air_mem_get_vaddr(void *paddr) {
 namespace {
 
 int64_t shim_location_data(air_herd_shim_desc_t *sd, int i, int j, int k) {
-  return sd->location_data[i*16 + j*4 +k];
+  return sd->location_data[i*8*8 + j*8 + k];
 }
 
 int64_t shim_channel_data(air_herd_shim_desc_t *sd, int i, int j, int k) {
-  return sd->channel_data[i*16 + j*4 +k];
+  return sd->channel_data[i*8*8 + j*8 + k];
 }
 
 }

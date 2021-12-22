@@ -1,4 +1,4 @@
-// (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
+// (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
 
 #include <cassert>
 #include <cmath>
@@ -9,7 +9,7 @@
 #include "air_host.h"
 #include "air_tensor.h"
 
-#define IMAGE_WIDTH 128
+#define IMAGE_WIDTH 256  
 #define IMAGE_HEIGHT 16
 #define IMAGE_SIZE  (IMAGE_WIDTH * IMAGE_HEIGHT)
 
@@ -37,6 +37,22 @@ void mlir_aie_write_buffer_scratch_3_0(aie_libxaie_ctx_t*, int, int32_t);
 void mlir_aie_write_buffer_scratch_3_1(aie_libxaie_ctx_t*, int, int32_t);
 void mlir_aie_write_buffer_scratch_3_2(aie_libxaie_ctx_t*, int, int32_t);
 void mlir_aie_write_buffer_scratch_3_3(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_scratch_4_0(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_scratch_4_1(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_scratch_4_2(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_scratch_4_3(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_scratch_5_0(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_scratch_5_1(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_scratch_5_2(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_scratch_5_3(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_scratch_6_0(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_scratch_6_1(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_scratch_6_2(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_scratch_6_3(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_scratch_7_0(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_scratch_7_1(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_scratch_7_2(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_scratch_7_3(aie_libxaie_ctx_t*, int, int32_t);
 };
 using namespace air::herds::copyherd;
 
@@ -62,6 +78,22 @@ main(int argc, char *argv[])
     mlir_aie_write_buffer_scratch_3_1(xaie,i,0xfade0003);
     mlir_aie_write_buffer_scratch_3_2(xaie,i,0xfade0003);
     mlir_aie_write_buffer_scratch_3_3(xaie,i,0xfade0003);
+    mlir_aie_write_buffer_scratch_4_0(xaie,i,0xfade0004);
+    mlir_aie_write_buffer_scratch_4_1(xaie,i,0xfade0004);
+    mlir_aie_write_buffer_scratch_4_2(xaie,i,0xfade0004);
+    mlir_aie_write_buffer_scratch_4_3(xaie,i,0xfade0004);
+    mlir_aie_write_buffer_scratch_5_0(xaie,i,0xfade0005);
+    mlir_aie_write_buffer_scratch_5_1(xaie,i,0xfade0005);
+    mlir_aie_write_buffer_scratch_5_2(xaie,i,0xfade0005);
+    mlir_aie_write_buffer_scratch_5_3(xaie,i,0xfade0005);
+    mlir_aie_write_buffer_scratch_6_0(xaie,i,0xfade0006);
+    mlir_aie_write_buffer_scratch_6_1(xaie,i,0xfade0006);
+    mlir_aie_write_buffer_scratch_6_2(xaie,i,0xfade0006);
+    mlir_aie_write_buffer_scratch_6_3(xaie,i,0xfade0006);
+    mlir_aie_write_buffer_scratch_7_0(xaie,i,0xfade0007);
+    mlir_aie_write_buffer_scratch_7_1(xaie,i,0xfade0007);
+    mlir_aie_write_buffer_scratch_7_2(xaie,i,0xfade0007);
+    mlir_aie_write_buffer_scratch_7_3(xaie,i,0xfade0007);
   }
 
   // create the queue
