@@ -61,15 +61,37 @@ main(int argc, char *argv[])
   tensor_t<uint32_t,1> output;
 
   input.shape[0] = DMA_COUNT;
-  input.d = input.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input.shape[0]);
-
   output.shape[0] = DMA_COUNT;
-  output.d = output.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output.shape[0]);
 
-  for (int i=0; i<DMA_COUNT; i++) {
-    input.d[i] = i+0x1;
-    output.d[i] = 0x00defaced;
+  XAieLib_MemInst *mem_i = XAieLib_MemAllocate(sizeof(uint32_t)*input.shape[0], 0);
+  input.d = input.aligned = (uint32_t*)XAieLib_MemGetPaddr(mem_i);
+  uint32_t *in = (uint32_t*)XAieLib_MemGetVaddr(mem_i); 
+
+  XAieLib_MemInst *mem_o = XAieLib_MemAllocate(sizeof(uint32_t)*output.shape[0], 0);
+  output.d = output.aligned = (uint32_t*)XAieLib_MemGetPaddr(mem_o);
+  uint32_t *out = (uint32_t*)XAieLib_MemGetVaddr(mem_o);
+
+  if (mem_i) {
+    for (int i=0; i<DMA_COUNT; i++) {
+      in[i] = i+0x1;
+      //printf("in %p %p %llx\n", &in[i], &input.d[i], in[i]);
+    }
+  } else {
+    printf("ERROR: could not allocate memory!\n");
+    return 1;
   }
+  if (mem_o) {
+    for (int i=0; i<DMA_COUNT; i++) {
+      out[i] = 0x00defaced;
+      //printf("out %p %p %llx\n", &out[i], &output.d[i], out[i]);
+    }
+  } else {
+    printf("ERROR: could not allocate memory!\n");
+    return 1;
+  }
+
+  XAieLib_MemSyncForDev(mem_i);
+  XAieLib_MemSyncForDev(mem_o);
 
   void *i, *o;
   i = &input;
@@ -87,12 +109,16 @@ main(int argc, char *argv[])
   }
 
   for (int i=0; i<DMA_COUNT; i++) {
-    uint32_t d = output.d[i];
+    uint32_t d = out[i];
     if (d != (i+2)) {
       errors++;
       printf("mismatch %x != 2 + %x\n", d, i);
     }
   }
+
+  XAieLib_MemFree(mem_i);
+  XAieLib_MemFree(mem_o);
+
   if (!errors) {
     printf("PASS!\n");
     return 0;
@@ -101,5 +127,4 @@ main(int argc, char *argv[])
     printf("fail %d/%d.\n", errors, 2*DMA_COUNT);
     return -1;
   }
-
 }

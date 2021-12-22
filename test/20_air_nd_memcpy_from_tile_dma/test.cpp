@@ -32,15 +32,6 @@ main(int argc, char *argv[])
   for (int i=0; i<DMA_COUNT; i++)
     mlir_aie_write_buffer_buf0(xaie, i, i+0x10);
 
-  uint32_t *bram_ptr = nullptr;
-
-  int fd = open("/dev/mem", O_RDWR | O_SYNC);
-  if (fd != -1) {
-    bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_SHMEM_BASE+0x4000);
-    for (int i=0; i<DMA_COUNT; i++) {
-      bram_ptr[i] = 0xdeadbeef;    }
-  }
-
   // create the queue
   queue_t *q = nullptr;
   auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
@@ -53,29 +44,30 @@ main(int argc, char *argv[])
   auto graph_fn = (void (*)(void*))dlsym((void*)handle, "_mlir_ciface_graph");
   assert(graph_fn && "failed to locate _mlir_ciface_graph in aie_ctrl.so");
 
-  tensor_t<uint32_t,1> input;
-  input.shape[0] = DMA_COUNT;
-  input.d = (uint32_t*)malloc(sizeof(uint32_t)*DMA_COUNT);
-  for (int i=0; i<input.shape[0]; i++) {
-    input.d[i] = i;
+  tensor_t<uint32_t,1> output;
+  output.shape[0] = DMA_COUNT;
+  XAieLib_MemInst *mem_o = XAieLib_MemAllocate(sizeof(uint32_t)*output.shape[0], 0);
+  output.d = output.aligned = (uint32_t*)XAieLib_MemGetPaddr(mem_o);
+  uint32_t *out = (uint32_t*)XAieLib_MemGetVaddr(mem_o);
+  for (int i=0; i<output.shape[0]; i++) {
+    out[i] = 0xfacefeed;
   }
 
-  mlir_aie_print_dma_status(xaie, col, row);
+  XAieLib_MemSyncForDev(mem_o);
 
-  auto i = &input;
-  graph_fn(i);
-
-  mlir_aie_print_dma_status(xaie, col, row);
-  mlir_aie_print_tile_status(xaie, col, row);
+  auto o = &output;
+  graph_fn(o);
 
   int errors = 0;
   for (int i=0; i<DMA_COUNT; i++) {
-    uint32_t d = bram_ptr[i];
+    uint32_t d = out[i];
     if (d != (i+0x10)) {
       errors++;
       printf("mismatch %x != 0x10 + %x\n", d, i);
     }
   }
+
+  XAieLib_MemFree(mem_o);
 
   if (!errors) {
     printf("PASS!\n");

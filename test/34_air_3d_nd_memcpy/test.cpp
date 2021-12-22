@@ -16,8 +16,6 @@
 #include "air_host.h"
 #include "air_tensor.h"
 
-#include "aie_inc.cpp"
-
 #define VERBOSE 1
 
 #define TENSOR_1D 16
@@ -30,18 +28,18 @@
 #define TILE_3D 2
 #define TILE_SIZE  (TILE_1D * TILE_2D * TILE_3D)
 
+namespace air::herds::herd_0 {
+int32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t*, int);
+void mlir_aie_write_buffer_buf0(aie_libxaie_ctx_t*, int, int32_t);
+};
+using namespace air::herds::herd_0;
+
 int
 main(int argc, char *argv[])
 {
   auto shim_col = 2;
 
   aie_libxaie_ctx_t *xaie = air_init_libxaie1();
-  mlir_aie_init_device(xaie);
-
-  mlir_aie_configure_cores(xaie);
-  mlir_aie_configure_switchboxes(xaie);
-  mlir_aie_initialize_locks(xaie);
-  mlir_aie_configure_dmas(xaie);
 
   // create the queue
   queue_t *q = nullptr;
@@ -51,9 +49,9 @@ main(int argc, char *argv[])
   for (int i=0; i<TILE_SIZE; i++)
     mlir_aie_write_buffer_buf0(xaie, i, 0xfadefade);
 
-  printf("loading aie_ctrl.so\n");
-  auto handle = air_module_load_from_file("./aie_ctrl.so",q);
-  assert(handle && "failed to open aie_ctrl.so");
+  printf("loading air module\n");
+  auto handle = air_module_load_from_file(nullptr,q);
+  assert(handle && "failed to open air module");
 
   auto graph_fn = (void (*)(void*))dlsym((void*)handle, "_mlir_ciface_graph");
   assert(graph_fn && "failed to locate _mlir_ciface_graph in .so");
@@ -62,13 +60,15 @@ main(int argc, char *argv[])
 
   input.shape[0] = TENSOR_1D; input.shape[1] = TENSOR_2D;
   input.shape[2] = TENSOR_3D;
-  input.d = input.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input.shape[0]*input.shape[1]*input.shape[2]);
+  XAieLib_MemInst *mem_i = XAieLib_MemAllocate(sizeof(uint32_t)*input.shape[0]*input.shape[1]*input.shape[2], 0);
+  input.d = input.aligned = (uint32_t*)XAieLib_MemGetPaddr(mem_i);
+  uint32_t *in = (uint32_t*)XAieLib_MemGetVaddr(mem_i); 
 
   for (int i=0; i<TENSOR_SIZE; i++) {
-    input.d[i] = i;
+    in[i] = i;
   }
 
-  mlir_aie_start_cores(xaie);
+  XAieLib_MemSyncForDev(mem_i);
 
   void *i;
   i = &input;
@@ -87,12 +87,14 @@ main(int argc, char *argv[])
     uint32_t yn = 16*((i/4)%2);
     uint32_t zn = 64*((i/8)%2);
     uint32_t a = xn + yn + zn;
-    uint32_t vb = input.d[a];
+    uint32_t vb = in[a];
     if (!(rb == vb)) {
       printf("Tile Mem %d should be %08X, is %08X\n", i, vb, rb);
       errors++;
     }
   }
+
+  XAieLib_MemFree(mem_i);
 
   if (!errors) {
     printf("PASS!\n");
@@ -102,5 +104,4 @@ main(int argc, char *argv[])
     printf("fail %d/%d.\n", (TILE_SIZE+TENSOR_SIZE-errors), TILE_SIZE+TENSOR_SIZE);
     return -1;
   }
-
 }

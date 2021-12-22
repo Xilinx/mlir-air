@@ -112,15 +112,22 @@ main(int argc, char *argv[])
   tensor_t<uint32_t,2> output;
 
   input.shape[0] = IMAGE_WIDTH; input.shape[1] = IMAGE_HEIGHT;
-  input.d = input.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input.shape[0]*input.shape[1]);
+  XAieLib_MemInst *mem_i = XAieLib_MemAllocate(sizeof(uint32_t)*input.shape[0]*input.shape[1], 0);
+  input.d = input.aligned = (uint32_t*)XAieLib_MemGetPaddr(mem_i);
+  uint32_t *in = (uint32_t*)XAieLib_MemGetVaddr(mem_i); 
 
   output.shape[0] = IMAGE_WIDTH; output.shape[1] = IMAGE_HEIGHT;
-  output.d = output.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output.shape[0]*output.shape[1]);
+  XAieLib_MemInst *mem_o = XAieLib_MemAllocate(sizeof(uint32_t)*output.shape[0]*output.shape[1], 0);
+  output.d = output.aligned = (uint32_t*)XAieLib_MemGetPaddr(mem_o);
+  uint32_t *out = (uint32_t*)XAieLib_MemGetVaddr(mem_o);
 
   for (int i=0; i<IMAGE_SIZE; i++) {
-    input.d[i] = i+0x1000;
-    output.d[i] = 0xdecaf;
+    in[i] = i+0x1000;
+    out[i] = 0xdecaf;
   }
+
+  XAieLib_MemSyncForDev(mem_i);
+  XAieLib_MemSyncForDev(mem_o);
 
   void *i, *o;
   i = &input;
@@ -130,10 +137,10 @@ main(int argc, char *argv[])
   uint32_t errs = 0;
   // Check the memory we updated
   for (int i=0; i<IMAGE_SIZE; i++) {
-    uint32_t d = output.d[i];
+    uint32_t d = out[i];
     u32 r = i / IMAGE_WIDTH;
     u32 c = i % IMAGE_WIDTH;
-    uint32_t id = (r>=TILE_HEIGHT) ? input.d[i-IMAGE_WIDTH*TILE_HEIGHT] : 0;
+    uint32_t id = (r>=TILE_HEIGHT) ? in[i-IMAGE_WIDTH*TILE_HEIGHT] : 0;
     if ((r >= TILE_HEIGHT)) {
       if (d != (id)) {
         printf("ERROR: copy idx %d Expected %08X, got %08X\n", i, id, d);
@@ -147,6 +154,9 @@ main(int argc, char *argv[])
       }
     }
   }
+
+  XAieLib_MemFree(mem_i);
+  XAieLib_MemFree(mem_o);
 
   if (errs == 0) {
     printf("PASS!\n");

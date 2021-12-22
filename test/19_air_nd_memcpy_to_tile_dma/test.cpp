@@ -38,12 +38,16 @@ main(int argc, char *argv[])
 
   tensor_t<uint32_t,1> input;
   input.shape[0] = 256;
-  input.d = (uint32_t*)malloc(sizeof(uint32_t)*256);
+  XAieLib_MemInst *mem_i = XAieLib_MemAllocate(sizeof(uint32_t)*input.shape[0], 0);
+  input.d = input.aligned = (uint32_t*)XAieLib_MemGetPaddr(mem_i);
+  uint32_t *in = (uint32_t*)XAieLib_MemGetVaddr(mem_i); 
   for (int i=0; i<input.shape[0]; i++) {
-    input.d[i] = i;
+    in[i] = i;
   }
 
-  input.d[24] = 0xacdc;
+  in[24] = 0xacdc;
+
+  XAieLib_MemSyncForDev(mem_i);
 
   auto i = &input;
   graph_fn(i);
@@ -52,6 +56,8 @@ main(int argc, char *argv[])
 
   uint32_t d = mlir_aie_read_buffer_buf0(xaie, 24);
   printf("ID %x\n", d);
+
+  XAieLib_MemFree(mem_i);
 
   if (d == 0xacdc) {
     printf("PASS!\n");
