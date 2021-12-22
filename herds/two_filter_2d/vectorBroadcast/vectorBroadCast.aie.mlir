@@ -53,12 +53,12 @@ module @vectorBroadCast {
         %value0 = constant 5 : i32
 
         //acquire output buffer
-        AIE.useLock(%lock12_0, "Acquire", 0, 0) // acquire for produce
+        AIE.useLock(%lock12_0, "Acquire", 0) // acquire for produce
         
         call @generateLineVector(%value0,%buf12_0) : (i32, memref<16xi32>) -> ()
         call @generateLineScalar(%value0,%buf12_1) : (i32, memref<16xi32>) -> ()
 
-        AIE.useLock(%lock12_0, "Release", 1, 0) // release for consume
+        AIE.useLock(%lock12_0, "Release", 1) // release for consume
 
         AIE.end
     }

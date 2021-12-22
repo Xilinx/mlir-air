@@ -65,10 +65,10 @@ module @lineGeneratorStitcherTwoAIEOneBufferElement {
 
 
         scf.for %indexInHeight = %c0 to %height step %M {
-            AIE.useLock(%lock11_0, "Acquire", 0, 0) // acquire for produce
+            AIE.useLock(%lock11_0, "Acquire", 0) // acquire for produce
             %value0 = std.index_cast %indexInHeight : index to i32
             call @generateLineScalar(%value0,%buf11_0) : (i32, memref<16xi32>) -> ()
-            AIE.useLock(%lock11_0, "Release", 1, 0) // release for consume
+            AIE.useLock(%lock11_0, "Release", 1) // release for consume
         }
 
         AIE.end
@@ -85,16 +85,16 @@ module @lineGeneratorStitcherTwoAIEOneBufferElement {
         %M = constant 1 : index
 
         //acquire output buffer
-        AIE.useLock(%lock12_0, "Acquire", 0, 0) // acquire for produce
+        AIE.useLock(%lock12_0, "Acquire", 0) // acquire for produce
 
 
         scf.for %indexInHeight = %c0 to %height step %M {
-            AIE.useLock(%lock11_0, "Acquire", 1, 0) // acquire for consume
+            AIE.useLock(%lock11_0, "Acquire", 1) // acquire for consume
             call @storeLineScalar(%buf11_0,%indexInHeight,%buff12_0) : (memref<16xi32>,index,memref<10x16xi32>) -> ()
-            AIE.useLock(%lock11_0, "Release", 0, 0) // release for produce
+            AIE.useLock(%lock11_0, "Release", 0) // release for produce
         }
 
-        AIE.useLock(%lock12_0, "Release", 1, 0) // release for consume
+        AIE.useLock(%lock12_0, "Release", 1) // release for consume
 
         AIE.end
     }
