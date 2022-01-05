@@ -66,29 +66,15 @@ int main(int argc, char *argv[])
   // Write an ascending pattern value into the memories
   // Also stamp with 1 for the lower memory, and 2 for the upper memory as it goes in
   for (int i=0;i<16;i++) {
-    uint32_t upper_lower = (i%8)/4;
-    uint32_t first128_second128 = i%2;
-    uint32_t first64_second64 = (i%16)/8;
-    uint32_t first32_second32 = (i/2)%2;
-    uint32_t offset = (first128_second128)*4;
-    offset += (first64_second64)*2;
-    offset += first32_second32;
-    offset += (i/16)*8;
-    uint32_t toWrite = 0xcafe00 + i + (((upper_lower)+1) << 28);
-
-    printf("%d : %d %d %d %d %d %08X\n",i,upper_lower, first128_second128, first64_second64, first32_second32, offset, toWrite);
-    if (upper_lower) {
-      bank1_A_ptr[offset] = toWrite;
-      bank1_B_ptr[offset] = toWrite;
-      bank1_C_ptr[offset] = toWrite;
-      bank1_D_ptr[offset] = toWrite;
-    } else {
-      bank0_A_ptr[offset] = toWrite;
-      bank0_B_ptr[offset] = toWrite;
-      bank0_C_ptr[offset] = toWrite;
-      bank0_D_ptr[offset] = toWrite;
-    }
-
+    uint32_t toWrite = 0xcafe00 + i;
+    bank1_A_ptr[i] = toWrite + (2 << 28);
+    bank1_B_ptr[i] = toWrite + (2 << 28);
+    bank1_C_ptr[i] = toWrite + (2 << 28);
+    bank1_D_ptr[i] = toWrite + (2 << 28);
+    bank0_A_ptr[i] = toWrite + (1 << 28);
+    bank0_B_ptr[i] = toWrite + (1 << 28);
+    bank0_C_ptr[i] = toWrite + (1 << 28);
+    bank0_D_ptr[i] = toWrite + (1 << 28);
   }
 
   // create the queue
@@ -159,64 +145,32 @@ int main(int argc, char *argv[])
   
   uint32_t errs = 0;
   for (int i=0; i<16; i++) {
-    uint32_t upper_lower = i/4;
-    uint32_t first128_second128 = i%2;
-    uint32_t first64_second64 = (i%16)/8;
-    uint32_t first32_second32 = (i/2)%2;
-    uint32_t offset = (first128_second128)*4;
-    offset += first64_second64*4;
-    offset += first32_second32;
-    offset += upper_lower*2;
     uint32_t d;
-    d = bank0_A_ptr[offset];
+    d = bank0_A_ptr[i];
     if ((d & 0x0fffffff) != (i+0x1000)) {
       printf("Part 0 A %i : Expect %d, got %08X\n",i, i, d);
       errs++;
     }
   }
   for (int i=0; i<16; i++) {
-    uint32_t upper_lower = i/4;
-    uint32_t first128_second128 = i%2;
-    uint32_t first64_second64 = (i%16)/8;
-    uint32_t first32_second32 = (i/2)%2;
-    uint32_t offset = (first128_second128)*4;
-    offset += first64_second64*4;
-    offset += first32_second32;
-    offset += upper_lower*2;
     uint32_t d;
-    d = bank0_B_ptr[offset];
+    d = bank0_B_ptr[i];
     if ((d & 0x0fffffff) != (i+0x2000)) {
       printf("Part 0 B %i : Expect %d, got %08X\n",i, i, d);
       errs++;
     }
   }
   for (int i=0; i<16; i++) {
-    uint32_t upper_lower = i/4;
-    uint32_t first128_second128 = i%2;
-    uint32_t first64_second64 = (i%16)/8;
-    uint32_t first32_second32 = (i/2)%2;
-    uint32_t offset = (first128_second128)*4;
-    offset += first64_second64*4;
-    offset += first32_second32;
-    offset += upper_lower*2;
     uint32_t d;
-    d = bank0_C_ptr[offset];
+    d = bank0_C_ptr[i];
     if ((d & 0x0fffffff) != (i+0x3000)) {
       printf("Part 0 C %i : Expect %d, got %08X\n",i, i, d);
       errs++;
     }
   }
   for (int i=0; i<16; i++) {
-    uint32_t upper_lower = i/4;
-    uint32_t first128_second128 = i%2;
-    uint32_t first64_second64 = (i%16)/8;
-    uint32_t first32_second32 = (i/2)%2;
-    uint32_t offset = (first128_second128)*4;
-    offset += first64_second64*4;
-    offset += first32_second32;
-    offset += upper_lower*2;
     uint32_t d;
-    d = bank0_D_ptr[offset];
+    d = bank0_D_ptr[i];
     if ((d & 0x0fffffff) != (i+0x4000)) {
       printf("Part 0 D %i : Expect %d, got %08X\n",i, i, d);
       errs++;

@@ -53,38 +53,20 @@ int main(int argc, char *argv[])
 
   // Write an ascending pattern value into the memories
   // Also stamp with 1 for the lower memory, and 1 for the upper memory as it goes in
-  for (int i=0;i<32;i++) {
-    uint32_t upper_lower = (i%8)/4;
-    uint32_t first128_second128 = i%2;
-    uint32_t first64_second64 = (i%16)/8;
-    uint32_t first32_second32 = (i/2)%2;
-    uint32_t offset = (first128_second128)*4;
-    offset += (first64_second64)*2;
-    offset += first32_second32;
-    offset += (i/16)*8;
-    uint32_t toWrite = i + (((upper_lower)+1) << 28);
-
-    printf("%d : %d %d %d %d %d %08X\n",i,upper_lower, first128_second128, first64_second64, first32_second32, offset, toWrite);
-    if (upper_lower) {
-      toWrite += (0x100000);
-      bank1_ptr[offset] = toWrite;
-      toWrite += (0x200000);
-      bank3_ptr[offset] = toWrite;
-      toWrite += (0x400000);
-      bank5_ptr[offset] = toWrite;
-      toWrite += (0x800000);
-      bank7_ptr[offset] = toWrite;
-    }
-    else {
-      toWrite += (0x100000);
-      bank0_ptr[offset] = toWrite;
-      toWrite += (0x200000);
-      bank2_ptr[offset] = toWrite;
-      toWrite += (0x400000);
-      bank4_ptr[offset] = toWrite;
-      toWrite += (0x800000);
-      bank6_ptr[offset] = toWrite;
-    }
+  for (int i=0;i<16;i++) {
+    uint32_t toWrite = i;
+    toWrite += (0x100000);
+    bank1_ptr[i] = toWrite + (2 << 28);
+    bank0_ptr[i] = toWrite + (1 << 28);
+    toWrite += (0x200000);
+    bank3_ptr[i] = toWrite + (2 << 28);
+    bank2_ptr[i] = toWrite + (1 << 28);
+    toWrite += (0x400000);
+    bank5_ptr[i] = toWrite + (2 << 28);
+    bank4_ptr[i] = toWrite + (1 << 28);
+    toWrite += (0x800000);
+    bank7_ptr[i] = toWrite + (2 << 28);
+    bank6_ptr[i] = toWrite + (1 << 28);
   }
   
   for (int i=0;i<16;i++) {
@@ -157,47 +139,75 @@ int main(int argc, char *argv[])
   printf("\nChecking the output...\n");
 
   uint32_t errs = 0;
-  for (int i=0; i<32; i++) {
-    uint32_t d;
-    if (i<16)
-      d = mlir_aie_read_buffer_a(xaie, i) - 0x100000;
-    else 
-      d = mlir_aie_read_buffer_b(xaie, i-16) - 0x100000;
-    if ((d & 0x0fffffff) != (i)) {
-      printf("[7] Word %i : Expect %d, got %08X\n",i, i, d);
+  for (int i=0; i<16; i++) {
+    uint32_t c,d;
+    c = i%4 + 4*(i/8);
+    d = mlir_aie_read_buffer_a(xaie, i) - 0x100000;
+    if ((d & 0xffff) != (c)) {
+      printf("[7] Word %i : expect %d, got %08x\n",i, c, d);
       errs++;
     }
   }
-  for (int i=0; i<32; i++) {
-    uint32_t d;
-    if (i<16)
-      d = mlir_aie_read_buffer_c(xaie, i) - 0x300000;
-    else 
-      d = mlir_aie_read_buffer_d(xaie, i-16) - 0x300000;
-    if ((d & 0x0fffffff) != (i)) {
-      printf("[8] Word %i : Expect %d, got %08X\n",i, i, d);
+  for (int i=0; i<16; i++) {
+    uint32_t c,d;
+    c = i%4 + 4*(i/8) + 8;
+    d = mlir_aie_read_buffer_b(xaie, i) - 0x100000;
+    if ((d & 0xffff) != (c)) {
+      printf("[7] Word %i : expect %d, got %08x\n",i+16, c, d);
       errs++;
     }
   }
-  for (int i=0; i<32; i++) {
-    uint32_t d;
-    if (i<16)
-      d = mlir_aie_read_buffer_e(xaie, i) - 0x700000;
-    else 
-      d = mlir_aie_read_buffer_f(xaie, i-16) - 0x700000;
-    if ((d & 0x0fffffff) != (i)) {
-      printf("[9] Word %i : Expect %d, got %08X\n",i, i, d);
+  for (int i=0; i<16; i++) {
+    uint32_t c,d;
+    c = i%4 + 4*(i/8);
+    d = mlir_aie_read_buffer_a(xaie, i) - 0x300000;
+    if ((d & 0xffff) != (c)) {
+      printf("[8] Word %i : expect %d, got %08x\n",i, c, d);
       errs++;
     }
   }
-  for (int i=0; i<32; i++) {
-    uint32_t d;
-    if (i<16)
-      d = mlir_aie_read_buffer_g(xaie, i) - 0xf00000;
-    else 
-      d = mlir_aie_read_buffer_i(xaie, i-16) - 0xf00000;
-    if ((d & 0x0fffffff) != (i)) {
-      printf("[A] Word %i : Expect %d, got %08X\n",i, i, d);
+  for (int i=0; i<16; i++) {
+    uint32_t c,d;
+    c = i%4 + 4*(i/8) + 8;
+    d = mlir_aie_read_buffer_b(xaie, i) - 0x300000;
+    if ((d & 0xffff) != (c)) {
+      printf("[8] Word %i : expect %d, got %08x\n",i+16, c, d);
+      errs++;
+    }
+  }
+  for (int i=0; i<16; i++) {
+    uint32_t c,d;
+    c = i%4 + 4*(i/8);
+    d = mlir_aie_read_buffer_a(xaie, i) - 0x700000;
+    if ((d & 0xffff) != (c)) {
+      printf("[9] Word %i : expect %d, got %08x\n",i, c, d);
+      errs++;
+    }
+  }
+  for (int i=0; i<16; i++) {
+    uint32_t c,d;
+    c = i%4 + 4*(i/8) + 8;
+    d = mlir_aie_read_buffer_b(xaie, i) - 0x700000;
+    if ((d & 0xffff) != (c)) {
+      printf("[9] Word %i : expect %d, got %08x\n",i+16, c, d);
+      errs++;
+    }
+  }
+  for (int i=0; i<16; i++) {
+    uint32_t c,d;
+    c = i%4 + 4*(i/8);
+    d = mlir_aie_read_buffer_a(xaie, i) - 0xf00000;
+    if ((d & 0xffff) != (c)) {
+      printf("[A] Word %i : expect %d, got %08x\n",i, c, d);
+      errs++;
+    }
+  }
+  for (int i=0; i<16; i++) {
+    uint32_t c,d;
+    c = i%4 + 4*(i/8) + 8;
+    d = mlir_aie_read_buffer_b(xaie, i) - 0xf00000;
+    if ((d & 0xffff) != (c)) {
+      printf("[A] Word %i : expect %d, got %08x\n",i+16, c, d);
       errs++;
     }
   }

@@ -45,23 +45,10 @@ int main(int argc, char *argv[])
 
   // Write an ascending pattern value into the memories
   // Also stamp with 1 for the lower memory, and 2 for the upper memory as it goes in
-  for (int i=0;i<32;i++) {
-    uint32_t upper_lower = (i%8)/4;
-    uint32_t first128_second128 = i%2;
-    uint32_t first64_second64 = (i%16)/8;
-    uint32_t first32_second32 = (i/2)%2;
-    uint32_t offset = (first128_second128)*4;
-    offset += (first64_second64)*2;
-    offset += first32_second32;
-    offset += (i/16)*8;
-    uint32_t toWrite = 0xcafe00 + i + (((upper_lower)+1) << 28);
-
-    printf("%d : %d %d %d %d %d %08X\n",i,upper_lower, first128_second128, first64_second64, first32_second32, offset, toWrite);
-    if (upper_lower)
-      bank1_ptr[offset] = toWrite;
-    else
-      bank0_ptr[offset] = toWrite;
-
+  for (int i=0;i<16;i++) {
+    uint32_t toWrite = 0xcafe00 + i;
+    bank1_ptr[i] = toWrite + (2 << 28);
+    bank0_ptr[i] = toWrite + (1 << 28);
   }
 
   // Read back the value above it
@@ -134,16 +121,8 @@ int main(int argc, char *argv[])
   
   uint32_t errs = 0;
   for (int i=0; i<16; i++) {
-    uint32_t upper_lower = i/4;
-    uint32_t first128_second128 = i%2;
-    uint32_t first64_second64 = (i%16)/8;
-    uint32_t first32_second32 = (i/2)%2;
-    uint32_t offset = (first128_second128)*4;
-    offset += first64_second64*4;
-    offset += first32_second32;
-    offset += upper_lower*2;
     uint32_t d;
-    d = bank0_ptr[offset];
+    d = bank0_ptr[i];
     if ((d & 0x0fffffff) != (i+0x1000)) {
       printf("Word %i : Expect %d, got %08X\n",i, i, d);
       errs++;

@@ -57,18 +57,18 @@ int main(int argc, char *argv[])
     int an = 4*((i/1)%2) + 1*((i/2)%4) + 8*((i/8)%UINT_MAX); 
     uint32_t toWrite = i;
 
-    bank1_ptr[an] = toWrite + (2 << 28);
-    bank0_ptr[an] = toWrite + (1 << 28);
+    bank1_ptr[i] = toWrite + (2 << 28);
+    bank0_ptr[i] = toWrite + (1 << 28);
   }
 
   // Read back the value above it
 
-  //for (int i=0;i<2*XFR_SZ;i++) {
-  //  uint32_t word0 = bank0_ptr[i];
-  //  uint32_t word1 = bank1_ptr[i];
+  for (int i=0;i<2*XFR_SZ;i++) {
+    uint32_t word0 = bank0_ptr[i];
+    uint32_t word1 = bank1_ptr[i];
 
-  //  printf("%x %08X %08X\r\n", i, word0, word1);
-  //}
+    printf("%x %08X %08X\r\n", i, word0, word1);
+  }
 
   // create the queue
   queue_t *q = nullptr;

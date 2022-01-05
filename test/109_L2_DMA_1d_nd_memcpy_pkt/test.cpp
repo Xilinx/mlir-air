@@ -49,16 +49,10 @@ int main(int argc, char *argv[])
   // Write an ascending pattern value into the memories
   // Also stamp with 1 for the lower memory, and 2 for the upper memory as it goes in
   for (int i=0;i<2*XFR_SZ;i++) {
-    // 3D DMA address generation
-    //           X Y Z
-    // increment 1 2 8
-    // wrap      2 4 max
-    // offset    4 1 8
-    int an = 4*((i/1)%2) + 1*((i/2)%4) + 8*((i/8)%UINT_MAX); 
     uint32_t toWrite = i;
 
-    bank1_ptr[an] = toWrite + (2 << 28);
-    bank0_ptr[an] = toWrite + (1 << 28);
+    bank1_ptr[i] = toWrite + (2 << 28);
+    bank0_ptr[i] = toWrite + (1 << 28);
   }
 
   // create the queue

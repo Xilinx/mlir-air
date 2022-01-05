@@ -33,12 +33,6 @@ int main(int argc, char *argv[])
   // Write an ascending pattern value into the memories
   // Also stamp with 1 for the lower memory, and 2 for the upper memory as it goes in
   for (int i=0;i<32;i++) {
-    // 3D DMA address generation
-    //           X Y Z
-    // increment 1 2 8
-    // wrap      2 4 max
-    // offset    4 1 8
-    int an = 4*((i/1)%2) + 1*((i/2)%4) + 8*((i/8)%UINT_MAX); 
     uint32_t toWrite = i + 0xabbabaab;
 
     bank1_ptr[i] = toWrite + (1 << 28);
@@ -113,9 +107,8 @@ int main(int argc, char *argv[])
   
   uint32_t errs = 0;
   for (int i=0; i<32; i++) {
-    int an = 4*((i/1)%2) + 1*((i/2)%4) + 8*((i/8)%UINT_MAX); 
     uint32_t d;
-    d = bank0_ptr[an];
+    d = bank0_ptr[i];
     if ((d & 0x0fffffff) != (i+0x0113)) {
       printf("Word %i : Expect %08X, got %08X\n",i, i+0x0113, d);
       errs++;

@@ -29,15 +29,15 @@ int main(int argc, char *argv[])
   mlir_aie_start_cores(xaie);
 
   for (int i=0; i<XFR_SIZE; i++) {
-    mlir_aie_write_buffer_buf1(i,i+0xbeef1000);
-    mlir_aie_write_buffer_buf2(i,i+0xbeef2000);
-    mlir_aie_write_buffer_buf3(i,i+0xbeef3000);
-    mlir_aie_write_buffer_buf4(i,i+0xbeef4000);
+    mlir_aie_write_buffer_buf1(xaie,i,i+0xbeef1000);
+    mlir_aie_write_buffer_buf2(xaie,i,i+0xbeef2000);
+    mlir_aie_write_buffer_buf3(xaie,i,i+0xbeef3000);
+    mlir_aie_write_buffer_buf4(xaie,i,i+0xbeef4000);
   }
 
-  mlir_aie_print_dma_Status(xaie, 7, 1);
+  mlir_aie_print_dma_status(xaie, 7, 1);
   mlir_aie_print_dma_status(xaie, 7, 2);
-  mlir_aie_print_dma_Status(xaie, 7, 3);
+  mlir_aie_print_dma_status(xaie, 7, 3);
   mlir_aie_print_dma_status(xaie, 7, 4);
 
   XAieGbl_Write32(xaie->TileInst[7][0].TileAddr + 0x00033008, 0xFF);
@@ -70,7 +70,7 @@ int main(int argc, char *argv[])
     // wrap      2 4 max
     // offset    4 1 8
     int an = 4*((i/1)%2) + 1*((i/2)%4) + 8*((i/8)%UINT_MAX); 
-    dram_ptr[an] = 0x100 + i;
+    dram_ptr[i] = 0x100 + i;
   }
   printf("DRAM before: \n");
   for (int i=0; i<XFR_SIZE; i++) {
@@ -134,6 +134,7 @@ int main(int argc, char *argv[])
   // read the data back
   //
   sel = 4;
+  dispatch_packet_t *p[4];
   for (int i = 0; i < 4; i++) { 
     wr_idx = queue_add_write_index(q, 1);
     packet_id = wr_idx % q->size;
@@ -145,9 +146,14 @@ int main(int argc, char *argv[])
     cmd.id = 0xA+i;
 
     air_packet_l2_dma(pkt, stream, cmd);
+    signal_create(1, 0, NULL, (signal_t *)&pkt->completion_signal);
+    p[i] = pkt;
   }
 
-  air_queue_dispatch_and_wait(q, wr_idx, pkt);
+  air_queue_dispatch_and_wait(q, wr_idx, p[3]);
+  air_queue_wait(q, p[0]);
+  air_queue_wait(q, p[1]);
+  air_queue_wait(q, p[2]);
   sleep(1);
 
   //
@@ -156,16 +162,16 @@ int main(int argc, char *argv[])
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_cdma_memcpy(pkt, uint64_t(AIR_VCK190_DDR_BASE+XFR_BYTES), uint64_t(AIR_VCK190_L2_BASE), XFR_BYTES*4);
+  air_packet_cdma_memcpy(pkt, uint64_t(AIR_VCK190_DDR_BASE+XFR_BYTES), uint64_t(AIR_VCK190_L2_DMA_BASE), XFR_BYTES*4);
  
   air_queue_dispatch_and_wait(q, wr_idx, pkt);
 
   printf("Tile after: \n");
   for (int i=0; i<XFR_SIZE; i++) {
-    uint32_t d0 = mlir_aie_read_buffer_buf1(i);
-    uint32_t d1 = mlir_aie_read_buffer_buf2(i);
-    uint32_t d2 = mlir_aie_read_buffer_buf3(i);
-    uint32_t d3 = mlir_aie_read_buffer_buf4(i);
+    uint32_t d0 = mlir_aie_read_buffer_buf1(xaie,i);
+    uint32_t d1 = mlir_aie_read_buffer_buf2(xaie,i);
+    uint32_t d2 = mlir_aie_read_buffer_buf3(xaie,i);
+    uint32_t d3 = mlir_aie_read_buffer_buf4(xaie,i);
     printf("%4d contains %08x %08x %08x %08x\n",i,d0,d1,d2,d3);
   }
   printf("L2 after: \n");
@@ -175,8 +181,10 @@ int main(int argc, char *argv[])
   printf("DRAM after: \n");
   int errs = 0;
   for (int i=0; i<XFR_SIZE; i++) {
-    if (!(dram_ptr[i] & dram_ptr[i+XFR_SIZE] & dram_ptr[i+2*XFR_SIZE]
-	        & dram_ptr[i+3*XFR_SIZE] & dram_ptr[i+4*XFR_SIZE])) errs++;
+    if (!(dram_ptr[i] == dram_ptr[i+XFR_SIZE] && 
+        dram_ptr[i+XFR_SIZE] == dram_ptr[i+2*XFR_SIZE] &&
+        dram_ptr[i+2*XFR_SIZE] == dram_ptr[i+3*XFR_SIZE] &&
+        dram_ptr[i+3*XFR_SIZE] == dram_ptr[i+4*XFR_SIZE])) errs++;
     printf("%4d contains %08x %08x %08x %08x %08x\n",i,dram_ptr[i],dram_ptr[i+XFR_SIZE],dram_ptr[i+2*XFR_SIZE],dram_ptr[i+3*XFR_SIZE],dram_ptr[i+4*XFR_SIZE]);
   }
 

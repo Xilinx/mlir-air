@@ -10,5 +10,3 @@
 | Microblaze | CDMA packets used to progam CDMA |
 | Microblaze | Asynchronous packet dispatch and wait |
 
-# NOTE: this test will not run on the current ACDC platform
-#       as it does not contain the CDMA
