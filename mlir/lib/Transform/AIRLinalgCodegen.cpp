@@ -264,13 +264,23 @@ public:
       llvm::cl::desc("Tile factors to pass to L2 tiling"), llvm::cl::ZeroOrMore,
       llvm::cl::CommaSeparated};
 
+  ListOption<unsigned> clL1TileInterchange{
+      *this, "l1-tile-permute",
+      llvm::cl::desc("Tile permute vector to pass to L1 tiling"),
+      llvm::cl::ZeroOrMore, llvm::cl::CommaSeparated};
+
+  ListOption<unsigned> clL2TileInterchange{
+      *this, "l2-tile-permute",
+      llvm::cl::desc("Tile permute vector to pass to L2 tiling"),
+      llvm::cl::ZeroOrMore, llvm::cl::CommaSeparated};
+
   Option<unsigned> clL1MaxSize{*this, "L1-size",
-                               llvm::cl::desc("L1 allocation limit"),
-                               llvm::cl::init(-1)};
+                               llvm::cl::desc("L1 allocation limit in bytes"),
+                               llvm::cl::init(32 * 1024)};
 
   Option<unsigned> clL2MaxSize{*this, "L2-size",
-                               llvm::cl::desc("L2 allocation limit"),
-                               llvm::cl::init(-1)};
+                               llvm::cl::desc("L2 allocation limit in bytes"),
+                               llvm::cl::init(/*256*1024*/ 0)};
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<AffineDialect, memref::MemRefDialect, linalg::LinalgDialect,
@@ -369,30 +379,35 @@ public:
           call.getCallee());
 
       SmallVector<int64_t, 3> herd_size{2, 2, 2};
-      for (int i = 0, e = clHerdSize.size(); i < e; i++) {
-        herd_size[i] = clHerdSize[i];
-      }
-
       SmallVector<int64_t, 3> l1_tile_size{32, 32, 32};
-      for (int i = 0, e = clL1TileSize.size(); i < e; i++) {
-        l1_tile_size[i] = clL1TileSize[i];
-      }
+      SmallVector<unsigned, 3> l1_tile_interchange{0, 1, 2};
+      SmallVector<int64_t, 3> l2_tile_size{64, 64, 64};
+      SmallVector<unsigned, 3> l2_tile_interchange{0, 1, 2};
 
-      SmallVector<int64_t, 3> l2_tile_size{l1_tile_size[0] * herd_size[0],
-                                           l1_tile_size[1] * herd_size[1],
-                                           l1_tile_size[2]};
-      for (int i = 0, e = clL2TileSize.size(); i < e; i++) {
-        l2_tile_size[i] = clL2TileSize[i];
-      }
+      for (int i = 0, e = clL1TileSize.size(); i < e; i++)
+        l1_tile_size[i] = clL1TileSize[i];
+
+      for (int i = 0, e = clL1TileInterchange.size(); i < e; i++)
+        l1_tile_interchange[i] = clL1TileInterchange[i];
+
+      for (int i = 0, e = clL2TileInterchange.size(); i < e; i++)
+        l2_tile_interchange[i] = clL2TileInterchange[i];
 
       OwningRewritePatternList stageL2Patterns(ctx);
-      bool tileForL2 = clL2TileSize.size();
+
+      bool tileForL2 = false;
+      if (clL2TileSize.size()) {
+        for (int i = 0, e = clL2TileSize.size(); i < e; i++)
+          l2_tile_size[i] = clL2TileSize[i];
+        tileForL2 = true;
+      }
+
       if (tileForL2) {
         stageL2Patterns.insert<linalg::LinalgTilingPattern<linalg::MatmulOp>>(
             ctx,
             linalg::LinalgTilingOptions()
                 .setTileSizes(l2_tile_size)
-                .setInterchange({2, 1, 0})
+                .setInterchange(l2_tile_interchange)
                 .setLoopType(linalg::LinalgTilingLoopType::Loops),
             linalg::LinalgTransformationFilter(ArrayRef<Identifier>{},
                                                Identifier::get("L2", ctx)));
@@ -415,7 +430,7 @@ public:
           ctx,
           linalg::LinalgTilingOptions()
               .setTileSizes(l1_tile_size)
-              //.setInterchange({2, 1, 0})
+              .setInterchange(l1_tile_interchange)
               .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
           linalg::LinalgTransformationFilter(
               tileForL2 ? Identifier::get("L2_promoted", ctx)
