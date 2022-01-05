@@ -4,6 +4,7 @@
 
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRLinalgCodegen.h"
+#include "air/Util/CostModel.h"
 #include "air/Util/Outliner.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -114,6 +115,8 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
     for (auto oper : op.getOperands()) {
       if (auto c = oper.getDefiningOp<ConstantIndexOp>())
         shape[dim] = c.getValue();
+      else
+        return failure();
       dim++;
     }
     Value newOp = rewriter.replaceOpWithNewOp<memref::AllocOp>(
@@ -240,6 +243,48 @@ RemoveSubViewOpsPattern::RemoveSubViewOpsPattern(MLIRContext *ctx,
                                                  unsigned int fast_memory_space)
     : OpRewritePattern(ctx), fast_space(fast_memory_space) {}
 
+// Custom LinalgOp tiling pattern
+//
+struct TileLinalgOpPattern : public RewritePattern {
+  TileLinalgOpPattern(MLIRContext *context, linalg::LinalgTilingOptions options,
+                      linalg::LinalgTransformationFilter filter =
+                          linalg::LinalgTransformationFilter(),
+                      PatternBenefit benefit = 1)
+      : RewritePattern(MatchAnyOpTypeTag(), benefit, context), filter(filter),
+        options(options) {}
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    if (!isa<linalg::GenericOp>(op))
+      return failure();
+
+    linalg::LinalgOp linalgOp = dyn_cast<linalg::LinalgOp>(op);
+    if (!linalgOp)
+      return failure();
+    if (failed(filter.checkAndNotify(rewriter, linalgOp)))
+      return failure();
+
+    Optional<linalg::TiledLinalgOp> tiledLinalgOp =
+        tileLinalgOp(rewriter, linalgOp, options);
+    if (!tiledLinalgOp)
+      return failure();
+
+    filter.replaceLinalgTransformationFilter(rewriter, tiledLinalgOp->op);
+
+    if (tiledLinalgOp->tensorResults.empty())
+      rewriter.eraseOp(op);
+    else
+      rewriter.replaceOp(op, tiledLinalgOp->tensorResults);
+    return success();
+  }
+
+private:
+  /// LinalgTransformMarker handles special attribute manipulations.
+  linalg::LinalgTransformationFilter filter;
+  /// Options to control tiling;
+  linalg::LinalgTilingOptions options;
+};
+
 class AIRLinalgCodegen : public AIRLinalgCodegenBase<AIRLinalgCodegen> {
 
 public:
@@ -294,6 +339,92 @@ public:
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 
+  static SmallVector<int64_t> getTripCounts(linalg::LinalgOp op) {
+
+    SmallVector<int64_t, 4> tripCounts;
+    OpBuilder b(op);
+    auto loc = op.getLoc();
+
+    // use getStaticLoopRanges instead?
+    auto allShapeSizes = op.createFlatListOfOperandDims(b, loc);
+    AffineMap shapeSizesToLoopsMap = op.getShapesToLoopsMap();
+    if (!shapeSizesToLoopsMap)
+      return {};
+
+    auto shapeSizes =
+        linalg::applyMapToValues(b, loc, shapeSizesToLoopsMap, allShapeSizes);
+    for (auto size : shapeSizes) {
+      auto c = dyn_cast<ConstantIndexOp>(size.getDefiningOp());
+      if (!c) {
+        LLVM_DEBUG(llvm::outs() << "Found non-constant dim!\n");
+        return {};
+      }
+      llvm::outs() << "dim: " << c << "\n";
+      tripCounts.push_back(c.getValue());
+    }
+
+    return std::move(tripCounts);
+  }
+
+  static void
+  adjustToDivisorsOfTripCounts(linalg::LinalgOp op,
+                               SmallVectorImpl<int64_t> *tileSizes,
+                               SmallVectorImpl<int64_t> &tripCounts) {
+
+    assert(op.getNumLoops() == tileSizes->size() && "invalid tile size count");
+    for (unsigned i = 0, e = op.getNumLoops(); i < e; i++) {
+      auto &tFactorAdjusted = (*tileSizes)[i];
+      tFactorAdjusted = std::max(1L, tripCounts[i] / tFactorAdjusted);
+      // Adjust the tile size to largest factor of the trip count less than
+      // tSize.
+      auto constTripCount = tripCounts[i];
+      LLVM_DEBUG(llvm::outs() << "adj: " << tFactorAdjusted
+                              << " iters: " << constTripCount << "\n");
+      if (constTripCount > 1 && tFactorAdjusted > constTripCount / 2)
+        tFactorAdjusted = constTripCount / 2;
+      while (constTripCount % tFactorAdjusted != 0)
+        tFactorAdjusted--;
+      LLVM_DEBUG(llvm::outs() << "final adj: " << tFactorAdjusted << "\n");
+    }
+  }
+
+  // use the algorithm from affine loop tiling pass
+  static void getTileSizes(linalg::LinalgOp op, size_t cacheSizeBytes,
+                           SmallVectorImpl<int64_t> &tripCounts,
+                           SmallVectorImpl<int64_t> *tileSizes) {
+    if (!cacheSizeBytes)
+      return;
+
+    auto nLoops = op.getNumLoops();
+    tileSizes->resize(nLoops);
+
+    uint64_t fp = CostModel().getOpCounts(op)["footprint"];
+    LLVM_DEBUG(llvm::outs() << "Footprint: " << fp << "\n");
+    LLVM_DEBUG(llvm::outs() << "Cache size: " << cacheSizeBytes << "\n");
+    uint64_t excessFactor = llvm::divideCeil(fp, cacheSizeBytes);
+    if (excessFactor <= 1) {
+      *tileSizes = tripCounts;
+      return;
+    }
+    // For an n-d tileable band, compute the n^th root of the excess.
+    int64_t tSize =
+        static_cast<int64_t>(floorl(std::pow(excessFactor, 1.0 / nLoops)));
+    llvm::outs() << "tile size: " << tSize << "\n";
+    // We'll keep a running product to determine the last tile size better.
+    unsigned cumulProductOfTileSizes = 1;
+    for (unsigned i = 0, e = nLoops; i < e; i++) {
+      if (i < e - 1)
+        (*tileSizes)[i] = std::min(tSize, tripCounts[i]);
+      else
+        // Set last tile size to cover the balance.
+        (*tileSizes)[i] = std::max(
+            1U, static_cast<unsigned>(excessFactor / cumulProductOfTileSizes));
+      cumulProductOfTileSizes *= (*tileSizes)[i];
+    }
+
+    adjustToDivisorsOfTripCounts(op, tileSizes, tripCounts);
+  }
+
   void runGenericPatterns(FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
 
@@ -303,55 +434,147 @@ public:
     // GenericOp
     for (auto genericOp : genericOps) {
 
+      SmallVector<int64_t, 2> herd_size{2, 2};
+      SmallVector<int64_t, 4> l1_tile_size;
+      SmallVector<unsigned, 4> l1_tile_interchange;
+      SmallVector<int64_t, 4> l2_tile_size;
+      SmallVector<unsigned, 4> l2_tile_interchange;
+
+      auto tripCounts = getTripCounts(genericOp);
+
+      bool tileForL2 = true;
+      if (clL2TileSize.size())
+        for (int i = 0, e = clL2TileSize.size(); i < e; i++)
+          l2_tile_size[i] = clL2TileSize[i];
+      else if (clL2MaxSize > 0)
+        getTileSizes(genericOp, clL2MaxSize, tripCounts, &l2_tile_size);
+      else
+        tileForL2 = false;
+
+      for (int i = 0, e = clL2TileInterchange.size(); i < e; i++)
+        l2_tile_interchange[i] = clL2TileInterchange[i];
+
+      for (int i = 0, e = std::min(2, (int)clHerdSize.size()); i < e; i++)
+        herd_size[i] = clHerdSize[i];
+
+      // outline the operation for convenience
+
       xilinx::air::AIROutliner olnr;
-      CallOp call = olnr.outline(std::vector<Operation *>{genericOp},
-                                 "call_linalg_generic");
+      CallOp call =
+          olnr.outline(std::vector<Operation *>{genericOp}, "call_generic_op");
       FuncOp called = funcOp->getParentOfType<ModuleOp>().lookupSymbol<FuncOp>(
           call.getCallee());
 
-      SmallVector<int64_t, 4> l1_tile_size{32, 32};
-      SmallVector<int64_t, 4> herd_size{2, 2};
+      // L2 tiling
 
-      for (int i = 0, e = clHerdSize.size(); i < e; i++) {
-        herd_size[i] = clHerdSize[i];
+      Identifier next_match = Identifier::get("", ctx);
+      if (tileForL2) {
+        OwningRewritePatternList stageL2Patterns(ctx);
+        stageL2Patterns.insert<TileLinalgOpPattern>(
+            ctx,
+            linalg::LinalgTilingOptions()
+                .setTileSizes(l2_tile_size)
+                .setInterchange(l2_tile_interchange)
+                .setLoopType(linalg::LinalgTilingLoopType::Loops),
+            linalg::LinalgTransformationFilter(ArrayRef<Identifier>{},
+                                               Identifier::get("L2", ctx)));
+
+        stageL2Patterns
+            .insert<linalg::LinalgPromotionPattern<linalg::GenericOp>>(
+                ctx, linalg::LinalgPromotionOptions(),
+                linalg::LinalgTransformationFilter(
+                    Identifier::get("L2", ctx),
+                    Identifier::get("L2_promoted", ctx)));
+        stageL2Patterns.insert<RemoveSubViewOpsPattern>(ctx, 1);
+        stageL2Patterns.insert<FoldSubViewOpsPattern>(ctx);
+        stageL2Patterns.insert<MemrefsPattern>(ctx);
+        scf::populateSCFForLoopCanonicalizationPatterns(stageL2Patterns);
+        (void)applyPatternsAndFoldGreedily(called, std::move(stageL2Patterns));
+
+        LLVM_DEBUG(llvm::outs() << "After L2 Tiling\n");
+        LLVM_DEBUG(called.print(llvm::outs()));
+        for (int i = 0, e = tripCounts.size(); i < e; i++)
+          tripCounts[i] = l2_tile_size[i];
+        next_match = Identifier::get("L2_promoted", ctx);
       }
 
-      SmallVector<int64_t, 3> tile_sizes{128, 128};
+      // compute L1 tile size
 
-      OwningRewritePatternList stage1Patterns(ctx);
+      called.walk([&](linalg::GenericOp l1_op) {
+        if (clL1TileSize.size())
+          for (int i = 0, e = clL1TileSize.size(); i < e; i++)
+            l1_tile_size[i] = clL1TileSize[i];
+        else if (clL1MaxSize > 0) {
+          getTileSizes(l1_op, clL1MaxSize, tripCounts, &l1_tile_size);
+        }
+      });
 
-      stage1Patterns.insert<linalg::LinalgTilingPattern<linalg::GenericOp>>(
+      for (int i = 0, e = clL1TileInterchange.size(); i < e; i++)
+        l1_tile_interchange[i] = clL1TileInterchange[i];
+
+      // tile to the herd size
+
+      SmallVector<int64_t, 4> herd_tile_size(tripCounts.size(), -1);
+      for (int i = 0, e = l1_tile_size.size(); i < e; i++) {
+        if (herd_size[i] > tripCounts[i])
+          herd_tile_size[i] = tripCounts[i];
+        else if (herd_size[i] < tripCounts[i] / l1_tile_size[i])
+          herd_tile_size[i] = tripCounts[i] / herd_size[i];
+        else {
+          herd_tile_size[i] = l1_tile_size[i];
+          l1_tile_size[i] = 0;
+        }
+        LLVM_DEBUG(llvm::outs() << "herd tile size [" << i
+                                << "] = " << herd_tile_size[i] << "\n");
+        LLVM_DEBUG(llvm::outs() << "L1 tile size [" << i
+                                << "] = " << l1_tile_size[i] << "\n");
+      }
+
+      OwningRewritePatternList patterns(ctx);
+      patterns.insert<TileLinalgOpPattern>(
           ctx,
           linalg::LinalgTilingOptions()
-              .setTileSizes(tile_sizes)
-              .setLoopType(linalg::LinalgTilingLoopType::Loops),
-          linalg::LinalgTransformationFilter(ArrayRef<Identifier>{},
-                                             Identifier::get("L1", ctx)));
-
-      // divide it up evenly between tiles
-      stage1Patterns.insert<linalg::LinalgTilingPattern<linalg::GenericOp>>(
-          ctx,
-          linalg::LinalgTilingOptions()
-              .setTileSizes(l1_tile_size)
+              .setTileSizes(herd_tile_size)
               .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
-          linalg::LinalgTransformationFilter(Identifier::get("L1", ctx),
-                                             Identifier::get("HERD", ctx)));
+          linalg::LinalgTransformationFilter(
+              tileForL2 ? next_match : ArrayRef<Identifier>{},
+              Identifier::get("herd_tiling", ctx)));
+      (void)applyPatternsAndFoldGreedily(called, std::move(patterns));
+      next_match = Identifier::get("herd_tiling", ctx);
 
-      stage1Patterns.insert<linalg::LinalgPromotionPattern<linalg::GenericOp>>(
+      LLVM_DEBUG(llvm::outs() << "After Herd Tiling\n");
+      LLVM_DEBUG(called.print(llvm::outs()));
+
+      bool needL1Tiling = !std::all_of(l1_tile_size.begin(), l1_tile_size.end(),
+                                       [](int i) { return i == 0; });
+      OwningRewritePatternList stageL1Patterns(ctx);
+      if (needL1Tiling) {
+        stageL1Patterns.insert<TileLinalgOpPattern>(
+            ctx,
+            linalg::LinalgTilingOptions()
+                .setTileSizes(l1_tile_size)
+                .setInterchange(l1_tile_interchange)
+                .setLoopType(linalg::LinalgTilingLoopType::Loops),
+            linalg::LinalgTransformationFilter(next_match,
+                                               Identifier::get("L1", ctx)));
+      }
+      stageL1Patterns.insert<linalg::LinalgPromotionPattern<linalg::GenericOp>>(
           ctx, linalg::LinalgPromotionOptions(),
-          linalg::LinalgTransformationFilter(Identifier::get("HERD", ctx),
-                                             Identifier::get("promote", ctx)));
-
-      OwningRewritePatternList stage2Patterns(ctx);
-      scf::populateSCFForLoopCanonicalizationPatterns(stage2Patterns);
+          linalg::LinalgTransformationFilter(
+              needL1Tiling ? Identifier::get("L1", ctx) : next_match,
+              Identifier::get("L1_promoted", ctx)));
+      stageL1Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
+      stageL1Patterns.insert<FoldSubViewOpsPattern>(ctx);
+      scf::populateSCFForLoopCanonicalizationPatterns(stageL1Patterns);
+      (void)applyPatternsAndFoldGreedily(called, std::move(stageL1Patterns));
 
       OwningRewritePatternList stage3Patterns(&getContext());
-      stage3Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
-      stage3Patterns.insert<FoldSubViewOpsPattern>(ctx);
-
-      (void)applyPatternsAndFoldGreedily(called, std::move(stage1Patterns));
-      (void)applyPatternsAndFoldGreedily(called, std::move(stage2Patterns));
+      stage3Patterns.insert<MemrefsPattern>(ctx);
       (void)applyPatternsAndFoldGreedily(called, std::move(stage3Patterns));
+
+      LLVM_DEBUG(llvm::outs() << "After L1 Tiling\n");
+      LLVM_DEBUG(called.print(llvm::outs()));
+
       called.walk([](linalg::LinalgOp op) {
         op->removeAttr(linalg::LinalgTransforms::kLinalgTransformMarker);
       });

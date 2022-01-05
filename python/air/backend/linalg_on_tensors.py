@@ -26,6 +26,8 @@ from pathlib import Path
 path = Path(air.backend.__file__).resolve().parent
 ctypes.CDLL(f"{path}/../../../runtime_lib/airhost/libairhost_shared.so", mode=ctypes.RTLD_GLOBAL)
 
+import air.mlir._mlir_libs._airRt as airrt
+
 __all__ = [
     "LinalgOnTensorsAirBackend",
 ]
