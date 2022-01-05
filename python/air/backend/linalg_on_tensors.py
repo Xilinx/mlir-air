@@ -18,7 +18,7 @@ from torch_mlir_e2e_test.linalg_on_tensors_backends.refbackend import RefBackend
 
 from .abc import AirBackend
 
-import air.mlir._mlir_libs._airMlir
+import air.compiler.util
 import air.compiler.aircc.main as aircc
 
 import ctypes
@@ -26,24 +26,9 @@ from pathlib import Path
 path = Path(air.backend.__file__).resolve().parent
 ctypes.CDLL(f"{path}/../../../runtime_lib/airhost/libairhost_shared.so", mode=ctypes.RTLD_GLOBAL)
 
-import air.mlir._mlir_libs._airRt as airrt
-
 __all__ = [
     "LinalgOnTensorsAirBackend",
 ]
-
-LINALG_TENSOR_TO_MEMREF_PIPELINE = ",".join([
-    # Bufferize.
-    "tensor-constant-bufferize",
-    "builtin.func(scf-bufferize)",
-    "builtin.func(linalg-bufferize)",
-    "builtin.func(std-bufferize)",
-    "builtin.func(tensor-bufferize)",
-    "func-bufferize",
-    "builtin.func(finalizing-bufferize)",
-    "canonicalize",
-    "cse"
-])
 
 LINALG_MEMREF_TO_AIRRT_PIPELINE = ",".join([
     "air-linalg-codegen",
@@ -76,11 +61,11 @@ class LinalgOnTensorsAirBackend(AirBackend):
 
         with air.mlir.ir.Context():
             air_module = air.mlir.ir.Module.parse(str(imported_module))
-            pm = air.mlir.passmanager.PassManager.parse(LINALG_TENSOR_TO_MEMREF_PIPELINE)
+            pm = air.mlir.passmanager.PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
             pm.run(air_module)
             pm = air.mlir.passmanager.PassManager.parse(LINALG_MEMREF_TO_AIRRT_PIPELINE)
             pm.run(air_module)
-            aircc.run(air_module,['--shared', '-o', 'torch.mlir.so', '--sysroot=/', '-row-offset=2', '-col-offset=7', 'torch.mlir'])
+            aircc.run(air_module,['--shared', '-v', '-o', 'torch.mlir.so', '--sysroot=/', '-row-offset=2', '-col-offset=7', 'torch.mlir'])
             with open('air_project/refback.torch.mlir') as f:
                 imported_module = torch_mlir.ir.Module.parse(f.read(),imported_module.context)
 
