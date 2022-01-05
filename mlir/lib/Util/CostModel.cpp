@@ -20,6 +20,28 @@ using namespace mlir;
 namespace xilinx {
 namespace air {
 
+
+static uint64_t getTensorVolume(const ShapedType ty) {
+
+  if (!ty.hasRank())
+    return 1;
+
+  uint64_t volume = 1;
+  for (auto &d : ty.getShape())
+    volume *= d;
+  return volume * (ty.getElementTypeBitWidth()/8);
+}
+
+static uint64_t getTensorVolume(const Type ty) {
+  if (auto t = ty.dyn_cast<ShapedType>()) {
+    return getTensorVolume(t);
+  }
+  else {
+    return 1;
+  }
+}
+
+
 void
 CostModel::getLinalgOpCounts(OpCountMap &map, linalg::LinalgOp op) {
   OpBuilder b(op);
@@ -36,6 +58,7 @@ CostModel::getLinalgOpCounts(OpCountMap &map, linalg::LinalgOp op) {
   int64_t iters = 1;
   int64_t reads = 0;
   int64_t writes = 0;
+  uint64_t footprint = 0;
   for (auto size : shapeSizes) {
     auto c = dyn_cast<ConstantIndexOp>(size.getDefiningOp());
     if (!c) {
@@ -52,20 +75,26 @@ CostModel::getLinalgOpCounts(OpCountMap &map, linalg::LinalgOp op) {
       map.map.insert({s, 0});
     map[s] = map[s] + 1;
   });
-  for (auto &oper : op.getInputOperands())
+  for (auto &oper : op.getInputOperands()) {
     if (op.payloadUsesValueFromOperand(oper))
       reads++;
+    footprint += getTensorVolume(oper->get().getType());
+  }
   for (auto &oper : op.getOutputOperands()) {
     if (op.payloadUsesValueFromOperand(oper))
       reads++;
     writes++;
+    footprint += getTensorVolume(oper->get().getType());
   }
-  map["reads"] = reads;
-  map["writes"] = writes;
+  map.map.insert({"reads", reads});
+  map.map.insert({"writes", writes});
   map.map.erase("linalg.yield");
 
   for (auto &m : map.map)
     m.second = m.second * iters;
+
+  map.map.insert({"footprint", footprint});
+
   return;
 }
 

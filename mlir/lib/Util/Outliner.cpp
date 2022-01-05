@@ -73,9 +73,6 @@ CallOp AIROutliner::outline(AffineForOp forOp, std::string fname) {
   Operation* clone = body_builder.clone(*forOp.getOperation(), mapper);
   assert(clone);
 
-  if (auto a = forOp->getAttr("acdc_loop_footprint")) {
-    clone->setAttr("acdc_loop_footprint", a);
-  }
   body_builder.create<ReturnOp>(loc);
 
   OpBuilder call_builder(forOp);
