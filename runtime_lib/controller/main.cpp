@@ -645,6 +645,7 @@ void handle_packet_put_stream(dispatch_packet_t *pkt)
   default:
     break;
   }
+  drain_fsl();
 }
 
 void handle_packet_get_stream(dispatch_packet_t *pkt)
