@@ -34,11 +34,11 @@ main(int argc, char *argv[])
     printf("\tHerd %d: %s\n", i, herd_name.c_str());
 
     for (int i=0; i<16; i++) {
-      for (int j=0; j<4; j++) {
-        for (int k=0; k<4; k++) {
-          if (int d = herd_desc->shim_desc->channel_data[i*4*4 + j*4 + k])
+      for (int j=0; j<8; j++) {
+        for (int k=0; k<8; k++) {
+          if (int d = herd_desc->shim_desc->channel_data[i*8*8 + j*8 + k])
             printf("\t\tShim Channel : id %d, row %d, col %d, channel %d\n", i,j,k,d);
-          if (int d = herd_desc->shim_desc->location_data[i*4*4 + j*4 + k])
+          if (int d = herd_desc->shim_desc->location_data[i*8*8 + j*8 + k])
             printf("\t\tShim Location : id %d, row %d, col %d, column %d\n", i,j,k,d);
         }
       }

@@ -15,9 +15,9 @@ module {
             sym_name = "herd_1",
             shim_allocations =
             [
-                {id=1, row=1, col=1, channel=4, location=3},
-                {id=2, row=1, col=1, channel=5, location=3},
-                {id=3, row=1, col=1, channel=6, location=3}
+                {id=4, row=1, col=1, channel=4, location=3},
+                {id=5, row=1, col=1, channel=5, location=3},
+                {id=6, row=1, col=1, channel=6, location=3}
             ]
         }
     }
