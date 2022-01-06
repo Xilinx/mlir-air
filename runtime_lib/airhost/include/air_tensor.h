@@ -5,10 +5,10 @@ template<typename T, int N>
 struct tensor_t {
   T *d;
   T *aligned;
-  bool uses_pa;
   size_t offset;
   size_t shape[N];
   size_t stride[N];
+  bool uses_pa;
 
   size_t index(size_t n, size_t channel, size_t row, size_t col) const {
     size_t channels = shape[1];
@@ -24,10 +24,10 @@ struct tensor_t {
 
   tensor_t() {
     d = aligned = nullptr;
-    uses_pa = false;
     offset = 0;
     for (int i=0; i<N; i++)
       shape[i] = stride[i] = 0;
+    uses_pa = false;
   }
 };
 
