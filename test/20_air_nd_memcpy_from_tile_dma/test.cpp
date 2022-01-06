@@ -48,6 +48,7 @@ main(int argc, char *argv[])
   output.shape[0] = DMA_COUNT;
   XAieLib_MemInst *mem_o = XAieLib_MemAllocate(sizeof(uint32_t)*output.shape[0], 0);
   output.d = output.aligned = (uint32_t*)XAieLib_MemGetPaddr(mem_o);
+  output.uses_pa = true;
   uint32_t *out = (uint32_t*)XAieLib_MemGetVaddr(mem_o);
   for (int i=0; i<output.shape[0]; i++) {
     out[i] = 0xfacefeed;

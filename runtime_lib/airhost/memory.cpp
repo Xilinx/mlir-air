@@ -326,23 +326,89 @@ void air_mem_shim_nd_memcpy_queue_impl(uint32_t id, uint64_t x, uint64_t y, tens
   auto shim_chan = shim_channel_data(shim_desc, id-1, x, y);
 
   bool isMM2S = shim_chan >= 2;
-  if (isMM2S) shim_chan = shim_chan - 2;
 
-  size_t stride = 1;
-  size_t offset = 0;
-  std::vector<uint64_t> offsets{offset_0, offset_1, offset_2, offset_3};
-  for (int i=0; i<R; i++) {
-    offset += offsets[i] * stride * sizeof(T);
-    stride *= t->shape[i];
+  if (t->uses_pa) {
+    if (isMM2S) shim_chan = shim_chan - 2;
+
+    size_t stride = 1;
+    size_t offset = 0;
+    std::vector<uint64_t> offsets{offset_0, offset_1, offset_2, offset_3};
+    for (int i=0; i<R; i++) {
+      offset += offsets[i] * stride * sizeof(T);
+      stride *= t->shape[i];
+    }
+
+    uint64_t wr_idx = queue_add_write_index(_air_host_active_herd.q, 1);
+    uint64_t packet_id = wr_idx % _air_host_active_herd.q->size;
+
+    dispatch_packet_t *pkt = (dispatch_packet_t*)(_air_host_active_herd.q->base_address_vaddr) + packet_id;
+    air_packet_nd_memcpy(pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S, shim_chan, /*burst_len=*/4, /*memory_space=*/space,
+                         (uint64_t)t->d + offset, length_1d*sizeof(T), length_2d, stride_2d*sizeof(T), length_3d, stride_3d*sizeof(T), length_4d, stride_4d*sizeof(T));
+    air_queue_dispatch_and_wait(_air_host_active_herd.q, wr_idx, pkt);
+  } else {
+    uint32_t *bounce_buffer = _air_host_bram_ptr;
+
+    size_t stride = 1;
+    size_t offset = 0;
+    std::vector<uint64_t> offsets{offset_0, offset_1, offset_2, offset_3};
+    for (int i=0; i<R; i++) {
+      offset += offsets[i] * stride * sizeof(T);
+      stride *= t->shape[i];
+    }
+
+    uint64_t length = 0;
+    for (uint32_t index_4d=0;index_4d<length_4d;index_4d++)
+      for (uint32_t index_3d=0;index_3d<length_3d;index_3d++)
+        for (uint32_t index_2d=0;index_2d<length_2d;index_2d++)
+          length += length_1d;
+
+    size_t p = (size_t)t->d + offset;
+    uint64_t paddr_4d = p;
+    uint64_t paddr_3d = p;
+    uint64_t paddr_2d = p;
+    uint64_t paddr_1d = p;
+
+    if (isMM2S) {
+      shim_chan = shim_chan - 2;
+      for (uint32_t index_4d=0;index_4d<length_4d;index_4d++) {
+        paddr_2d = paddr_3d;
+        for (uint32_t index_3d=0;index_3d<length_3d;index_3d++) {
+          paddr_1d = paddr_2d;
+          for (uint32_t index_2d=0;index_2d<length_2d;index_2d++) {
+            memcpy((size_t*)bounce_buffer, (size_t*)paddr_1d, length_1d*sizeof(T));
+            bounce_buffer += length_1d;
+            paddr_1d += stride_2d*sizeof(T);
+          }
+          paddr_2d += stride_3d*sizeof(T);
+        }
+        paddr_3d += stride_4d*sizeof(T);
+      }
+    }
+
+    uint64_t wr_idx = queue_add_write_index(_air_host_active_herd.q, 1);
+    uint64_t packet_id = wr_idx % _air_host_active_herd.q->size;
+
+    dispatch_packet_t *pkt = (dispatch_packet_t*)(_air_host_active_herd.q->base_address_vaddr) + packet_id;
+    air_packet_nd_memcpy(pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S, shim_chan, /*burst_len=*/4, /*memory_space=*/2,
+                         AIR_VCK190_SHMEM_BASE+0x4000, length*sizeof(T), 1, 0, 1, 0, 1, 0);
+    air_queue_dispatch_and_wait(_air_host_active_herd.q, wr_idx, pkt);
+
+    if (!isMM2S) {
+      for (uint32_t index_4d=0;index_4d<length_4d;index_4d++) {
+        paddr_2d = paddr_3d;
+        for (uint32_t index_3d=0;index_3d<length_3d;index_3d++) {
+          paddr_1d = paddr_2d;
+          for (uint32_t index_2d=0;index_2d<length_2d;index_2d++) {
+            memcpy((size_t*)paddr_1d, (size_t*)bounce_buffer, length_1d*sizeof(T));
+            bounce_buffer += length_1d;
+            paddr_1d += stride_2d*sizeof(T);
+          }
+          paddr_2d += stride_3d*sizeof(T);
+        }
+        paddr_3d += stride_4d*sizeof(T);
+      }
+    }
   }
-
-  uint64_t wr_idx = queue_add_write_index(_air_host_active_herd.q, 1);
-  uint64_t packet_id = wr_idx % _air_host_active_herd.q->size;
-
-  dispatch_packet_t *pkt = (dispatch_packet_t*)(_air_host_active_herd.q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S, shim_chan, /*burst_len=*/4, /*memory_space=*/space,
-                       (uint64_t)t->d + offset, length_1d*sizeof(T), length_2d, stride_2d*sizeof(T), length_3d, stride_3d*sizeof(T), length_4d, stride_4d*sizeof(T));
-  air_queue_dispatch_and_wait(_air_host_active_herd.q, wr_idx, pkt);
 }
 
 extern "C" void _mlir_ciface_air_shim_memcpy(uint32_t id, uint64_t x, uint64_t y, void* t, uint64_t offset, uint64_t length);

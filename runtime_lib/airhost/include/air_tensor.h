@@ -5,6 +5,7 @@ template<typename T, int N>
 struct tensor_t {
   T *d;
   T *aligned;
+  bool uses_pa;
   size_t offset;
   size_t shape[N];
   size_t stride[N];
@@ -23,6 +24,7 @@ struct tensor_t {
 
   tensor_t() {
     d = aligned = nullptr;
+    uses_pa = false;
     offset = 0;
     for (int i=0; i<N; i++)
       shape[i] = stride[i] = 0;

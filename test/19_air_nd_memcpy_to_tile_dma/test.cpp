@@ -40,6 +40,7 @@ main(int argc, char *argv[])
   input.shape[0] = 256;
   XAieLib_MemInst *mem_i = XAieLib_MemAllocate(sizeof(uint32_t)*input.shape[0], 0);
   input.d = input.aligned = (uint32_t*)XAieLib_MemGetPaddr(mem_i);
+  input.uses_pa = true;
   uint32_t *in = (uint32_t*)XAieLib_MemGetVaddr(mem_i); 
   for (int i=0; i<input.shape[0]; i++) {
     in[i] = i;

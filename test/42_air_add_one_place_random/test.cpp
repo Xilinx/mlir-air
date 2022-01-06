@@ -65,10 +65,12 @@ main(int argc, char *argv[])
 
   XAieLib_MemInst *mem_i = XAieLib_MemAllocate(sizeof(uint32_t)*input.shape[0], 0);
   input.d = input.aligned = (uint32_t*)XAieLib_MemGetPaddr(mem_i);
+  input.uses_pa = true; 
   uint32_t *in = (uint32_t*)XAieLib_MemGetVaddr(mem_i); 
 
   XAieLib_MemInst *mem_o = XAieLib_MemAllocate(sizeof(uint32_t)*output.shape[0], 0);
   output.d = output.aligned = (uint32_t*)XAieLib_MemGetPaddr(mem_o);
+  output.uses_pa = true;
   uint32_t *out = (uint32_t*)XAieLib_MemGetVaddr(mem_o);
 
   if (mem_i) {

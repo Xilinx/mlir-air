@@ -62,6 +62,7 @@ main(int argc, char *argv[])
   input.shape[2] = TENSOR_3D;
   XAieLib_MemInst *mem_i = XAieLib_MemAllocate(sizeof(uint32_t)*input.shape[0]*input.shape[1]*input.shape[2], 0);
   input.d = input.aligned = (uint32_t*)XAieLib_MemGetPaddr(mem_i);
+  input.uses_pa = true;
   uint32_t *in = (uint32_t*)XAieLib_MemGetVaddr(mem_i); 
 
   for (int i=0; i<TENSOR_SIZE; i++) {
