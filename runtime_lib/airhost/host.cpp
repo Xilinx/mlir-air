@@ -26,6 +26,9 @@ air_module_handle_t _air_host_active_module = (air_module_handle_t)nullptr;
 aie_libxaie_ctx_t *
 air_init_libxaie1()
 {
+  if (_air_host_active_libxaie1)
+    return _air_host_active_libxaie1;
+
   aie_libxaie_ctx_t *xaie =
     (aie_libxaie_ctx_t*)malloc(sizeof(aie_libxaie_ctx_t));
   if (!xaie)
@@ -53,15 +56,16 @@ air_deinit_libxaie1(aie_libxaie_ctx_t *xaie)
 air_module_handle_t
 air_module_load_from_file(const char* filename, queue_t *q)
 {
+
+  if (_air_host_active_module)
+    air_module_unload(_air_host_active_module);
+
   air_module_handle_t handle;
   void* _handle = dlopen(filename, RTLD_NOW);
   if (!_handle) {
     printf("%s\n",dlerror());
     return 0;
   }
-
-  if (_air_host_active_module)
-    air_module_unload(_air_host_active_module);
   _air_host_active_module = (air_module_handle_t)_handle;
 
   auto module_desc = air_module_get_desc(_air_host_active_module);
@@ -89,12 +93,13 @@ air_module_unload(air_module_handle_t handle)
   if (!handle)
     return -1;
 
-  auto module_desc = air_module_get_desc(handle);
-  for (int i=0; i<module_desc->length; i++) {
-    auto herd_desc = module_desc->herd_descs[i];
-    if (herd_desc == _air_host_active_herd.herd_desc) {
-      _air_host_active_herd.herd_desc = nullptr;
-      _air_host_active_herd.q = nullptr;
+  if (auto module_desc = air_module_get_desc(handle)) {
+    for (int i=0; i<module_desc->length; i++) {
+      auto herd_desc = module_desc->herd_descs[i];
+      if (herd_desc == _air_host_active_herd.herd_desc) {
+        _air_host_active_herd.herd_desc = nullptr;
+        _air_host_active_herd.q = nullptr;
+      }
     }
   }
   if (_air_host_active_module == handle)

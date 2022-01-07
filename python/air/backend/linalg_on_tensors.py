@@ -48,7 +48,11 @@ class LinalgOnTensorsAirBackend(AirBackend):
     """
     def __init__(self):
         super().__init__()
+        self.handle = None
         self.refbackend = RefBackendLinalgOnTensorsBackend()
+
+    def __del__(self):
+        self.unload()
 
     def compile(self, imported_module: torch_mlir.ir.Module):
         """Compiles an imported module, with a flat list of functions.
@@ -67,7 +71,7 @@ class LinalgOnTensorsAirBackend(AirBackend):
             pm.run(air_module)
             pm = air.mlir.passmanager.PassManager.parse(LINALG_MEMREF_TO_AIRRT_PIPELINE)
             pm.run(air_module)
-            aircc.run(air_module,['--shared', '-v', '-o', 'torch.mlir.so', '--sysroot=/', '-row-offset=2', '-col-offset=7', 'torch.mlir'])
+            aircc.run(air_module,['--shared', '-o', 'torch.mlir.so', '--sysroot=/', '-row-offset=2', '-col-offset=7', 'torch.mlir'])
             with open('air_project/refback.torch.mlir') as f:
                 imported_module = torch_mlir.ir.Module.parse(f.read(),imported_module.context)
 
@@ -76,6 +80,12 @@ class LinalgOnTensorsAirBackend(AirBackend):
     def load(self, module):
         """Loads a compiled artifact into the runtime."""
         airrt.host.init_libxaie()
-        q = airrt.host.queue_create()
-        airrt.host.module_load_from_file("./torch.mlir.so", q)
+        #q = airrt.host.queue_create()
+        q = None
+        self.handle = airrt.host.module_load_from_file("./torch.mlir.so", q)
         return self.refbackend.load(module)
+
+    def unload(self):
+        if self.handle:
+            airrt.host.module_unload(self.handle)
+        self.handle = None
