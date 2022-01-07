@@ -90,7 +90,7 @@ main(int argc, char *argv[])
   tensor_t<uint32_t,2> output;
   tensor_t<uint32_t,2> output_ref0;
 
-  #define M_SIZE 128
+  #define M_SIZE 64
 
   input_A.shape[0] = input_A.shape[1] = M_SIZE;
   input_A.d = input_A.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input_A.shape[0]*input_A.shape[1]);

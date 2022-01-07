@@ -16,8 +16,8 @@ class mmult(torch.nn.Module):
     @export
     @annotate_args([
         None,
-        ([128,128], torch.int32, True),
-        ([128,128], torch.int32, True)
+        ([64,64], torch.int32, True),
+        ([64,64], torch.int32, True)
     ])
     def forward(self, a, b):
         return torch.mm(a,b)

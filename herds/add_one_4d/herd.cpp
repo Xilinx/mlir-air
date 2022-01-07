@@ -16,7 +16,7 @@
 namespace {
 
 // global libxaie state
-air_libxaie1_ctx_t *xaie;
+aie_libxaie_ctx_t *xaie;
 
 //
 // global q ptr
@@ -27,22 +27,22 @@ queue_t *q = nullptr;
 
 namespace air::herds::herd_0 {
 
-int32_t mlir_read_buffer_buf0(int index);
-int32_t mlir_read_buffer_buf1(int index);
-int32_t mlir_read_buffer_buf2(int index);
-int32_t mlir_read_buffer_buf3(int index);
-int32_t mlir_read_buffer_buf4(int index);
-int32_t mlir_read_buffer_buf5(int index);
-int32_t mlir_read_buffer_buf6(int index);
-int32_t mlir_read_buffer_buf7(int index);
-void mlir_write_buffer_buf0(int index, int32_t value);
-void mlir_write_buffer_buf1(int index, int32_t value);
-void mlir_write_buffer_buf2(int index, int32_t value);
-void mlir_write_buffer_buf3(int index, int32_t value);
-void mlir_write_buffer_buf4(int index, int32_t value);
-void mlir_write_buffer_buf5(int index, int32_t value);
-void mlir_write_buffer_buf6(int index, int32_t value);
-void mlir_write_buffer_buf7(int index, int32_t value);
+int32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t*, int);
+int32_t mlir_aie_read_buffer_buf1(aie_libxaie_ctx_t*, int);
+int32_t mlir_aie_read_buffer_buf2(aie_libxaie_ctx_t*, int);
+int32_t mlir_aie_read_buffer_buf3(aie_libxaie_ctx_t*, int);
+int32_t mlir_aie_read_buffer_buf4(aie_libxaie_ctx_t*, int);
+int32_t mlir_aie_read_buffer_buf5(aie_libxaie_ctx_t*, int);
+int32_t mlir_aie_read_buffer_buf6(aie_libxaie_ctx_t*, int);
+int32_t mlir_aie_read_buffer_buf7(aie_libxaie_ctx_t*, int);
+void mlir_aie_write_buffer_buf0(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_buf1(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_buf2(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_buf3(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_buf4(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_buf5(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_buf6(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_buf7(aie_libxaie_ctx_t*, int, int32_t);
 }
 using namespace air::herds::herd_0;
 
@@ -51,17 +51,17 @@ main(int argc, char *argv[])
 {
   uint64_t col = 7;
 
-  xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = air_init_libxaie1();
 
   for (int i=0; i<INPUT_SIZE*INPUT_SIZE; i++) {
-    mlir_write_buffer_buf0(i, 0x0decaf);
-    mlir_write_buffer_buf1(i, 0x1decaf);
-    mlir_write_buffer_buf2(i, 0x2decaf);
-    mlir_write_buffer_buf3(i, 0x3decaf);
-    mlir_write_buffer_buf4(i, 0x4decaf);
-    mlir_write_buffer_buf5(i, 0x5decaf);
-    mlir_write_buffer_buf6(i, 0x6decaf);
-    mlir_write_buffer_buf7(i, 0x7decaf);
+    mlir_aie_write_buffer_buf0(xaie, i, 0x0decaf);
+    mlir_aie_write_buffer_buf1(xaie, i, 0x1decaf);
+    mlir_aie_write_buffer_buf2(xaie, i, 0x2decaf);
+    mlir_aie_write_buffer_buf3(xaie, i, 0x3decaf);
+    mlir_aie_write_buffer_buf4(xaie, i, 0x4decaf);
+    mlir_aie_write_buffer_buf5(xaie, i, 0x5decaf);
+    mlir_aie_write_buffer_buf6(xaie, i, 0x6decaf);
+    mlir_aie_write_buffer_buf7(xaie, i, 0x7decaf);
   }
 
   // create the queue
@@ -102,14 +102,14 @@ main(int argc, char *argv[])
     input.d[i] = i;
   }
   for (int i=0; i<16; i++) {
-    int32_t rb0 = mlir_read_buffer_buf0(i);
-    int32_t rb1 = mlir_read_buffer_buf1(i);
-    int32_t rb2 = mlir_read_buffer_buf2(i);
-    int32_t rb3 = mlir_read_buffer_buf3(i);
-    int32_t rb4 = mlir_read_buffer_buf4(i);
-    int32_t rb5 = mlir_read_buffer_buf5(i);
-    int32_t rb6 = mlir_read_buffer_buf6(i);
-    int32_t rb7 = mlir_read_buffer_buf7(i);
+    int32_t rb0 = mlir_aie_read_buffer_buf0(xaie,i);
+    int32_t rb1 = mlir_aie_read_buffer_buf1(xaie,i);
+    int32_t rb2 = mlir_aie_read_buffer_buf2(xaie,i);
+    int32_t rb3 = mlir_aie_read_buffer_buf3(xaie,i);
+    int32_t rb4 = mlir_aie_read_buffer_buf4(xaie,i);
+    int32_t rb5 = mlir_aie_read_buffer_buf5(xaie,i);
+    int32_t rb6 = mlir_aie_read_buffer_buf6(xaie,i);
+    int32_t rb7 = mlir_aie_read_buffer_buf7(xaie,i);
     printf("before %d [7][2] : %08X -> %08X, [8][2] :%08X -> %08X, [7][3] : %08X -> %08X, [8][3] :%08X -> %08X\n", i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7);
   }
 
@@ -119,14 +119,14 @@ main(int argc, char *argv[])
   graph_fn(i, o);
 
   for (int i=0; i<16; i++) {
-    int32_t rb0 = mlir_read_buffer_buf0(i);
-    int32_t rb1 = mlir_read_buffer_buf1(i);
-    int32_t rb2 = mlir_read_buffer_buf2(i);
-    int32_t rb3 = mlir_read_buffer_buf3(i);
-    int32_t rb4 = mlir_read_buffer_buf4(i);
-    int32_t rb5 = mlir_read_buffer_buf5(i);
-    int32_t rb6 = mlir_read_buffer_buf6(i);
-    int32_t rb7 = mlir_read_buffer_buf7(i);
+    int32_t rb0 = mlir_aie_read_buffer_buf0(xaie,i);
+    int32_t rb1 = mlir_aie_read_buffer_buf1(xaie,i);
+    int32_t rb2 = mlir_aie_read_buffer_buf2(xaie,i);
+    int32_t rb3 = mlir_aie_read_buffer_buf3(xaie,i);
+    int32_t rb4 = mlir_aie_read_buffer_buf4(xaie,i);
+    int32_t rb5 = mlir_aie_read_buffer_buf5(xaie,i);
+    int32_t rb6 = mlir_aie_read_buffer_buf6(xaie,i);
+    int32_t rb7 = mlir_aie_read_buffer_buf7(xaie,i);
     printf(" after %d [7][2] : %08X -> %08X, [8][2] :%08X -> %08X, [7][3] : %08X -> %08X, [8][3] :%08X -> %08X\n", i, rb0, rb1, rb2, rb3, rb4, rb5, rb6, rb7);
   }
 

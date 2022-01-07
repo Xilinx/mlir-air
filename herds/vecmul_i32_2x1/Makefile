@@ -27,7 +27,7 @@ vecmul.linalg-memrefs.mlir: vecmul.mlir
 
 vecmul_tiled.mlir: vecmul.linalg-memrefs.mlir
 	$(AIR_OPT) \
-		--air-linalg-codegen \
+		--air-linalg-codegen='herd-size=2,1' \
 		--canonicalize --cse \
 		-o $@ $<
 
