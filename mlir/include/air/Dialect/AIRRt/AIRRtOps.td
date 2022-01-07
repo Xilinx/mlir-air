@@ -138,6 +138,39 @@ def AIRRt_DmaMemcpyNdOp: AIRRt_Op<"dma_memcpy_nd", []> {
   }];
 }
 
+def AIRRt_MemcpyNdOp: AIRRt_Op<"memcpy_nd", []> {
+  let summary = "dma operator";
+  let arguments = (
+    ins AnyMemRef:$dst,
+        AnyMemRef:$src,
+        I64:$offset3,
+        I64:$offset2,
+        I64:$offset1,
+        I64:$offset0,
+        I64:$length3,
+        I64:$length2,
+        I64:$length1,
+        I64:$length0,
+        I64:$stride3,
+        I64:$stride2,
+        I64:$stride1
+  );
+  let results = (outs);
+  let assemblyFormat = [{
+    `(` $dst`,`$src`,`
+    `[` $offset3`,`$offset2`,`$offset1`,`$offset0 `]` `,`
+    `[` $length3`,`$length2`,`$length1`,`$length0 `]` `,`
+    `[` $stride3`,`$stride2`,`$stride1 `]` `)` attr-dict `:`
+    `(` type($dst)`,`type($src)`,`
+    `[` type($offset3)`,`type($offset2)`,`type($offset1)`,` type($offset0) `]` `,`
+    `[` type($length3)`,`type($length2)`,`type($length1)`,` type($length0) `]` `,`
+    `[` type($stride3)`,`type($stride2)`,`type($stride1) `]` `)`  `->` `(` `)`
+  }];
+  let description = [{
+    nd memcpy operator
+  }];
+}
+
 def AIRRt_DmaMemcpy2dOp: AIRRt_Op<"dma_memcpy_2d", []> {
   let summary = "dma operator";
   let arguments = (
