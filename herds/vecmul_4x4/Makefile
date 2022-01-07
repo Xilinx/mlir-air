@@ -10,16 +10,17 @@ all: herd.exe
 %.exe: %.o test_library.o  vecmul.air.a
 	$(CC) $(LDFLAGS) -o $@ $< test_library.o -Wl,--whole-archive vecmul.air.a -Wl,--no-whole-archive
 
-vecmul.mlir: vecmul.py
+vecmul.linalg.mlir: vecmul.py
 	python3 $< > $@
-
-vecmul.affine.mlir: vecmul.mlir
-	$(ATEN_OPT) -aten-to-xten \
-				-xten-to-affine \
+vecmul.affine.mlir: vecmul.linalg.mlir
+	$(ATEN_OPT) -linalg-bufferize -func-bufferize -tensor-bufferize -finalizing-bufferize -convert-linalg-to-affine-loops \
 				-o $@ $<
 
-vecmul_tiled_0.mlir: vecmul.affine.mlir
-	$(AIR_OPT) -air-automatic-tiling='loop-tile-sizes=64' \
+vecmul.affine_attr.mlir: vecmul.affine.mlir
+	cat $< | awk 'BEGIN {CURLY = 0; AFFINE = 0} { if ($$1 == "affine.store") AFFINE = 1; if (AFFINE > 0 && $$1 == "}") CURLY += 1; if (CURLY == 1) {print $$0 " {affine_opt_label = \"\"}" ; CURLY = 0; AFFINE = 0}  else print $$0}' > $@
+
+vecmul_tiled_0.mlir: vecmul.affine_attr.mlir
+	$(AIR_OPT) -air-automatic-tiling='loop-tile-sizes=256' \
 				-simplify-affine-structures \
 				-cse \
 				-o $@ $<
@@ -36,7 +37,7 @@ vecmul_tiled_2.mlir: vecmul_tiled_1.mlir
 				-o $@ $<
 
 vecmul.air.mlir: vecmul_tiled_2.mlir
-	$(AIR_OPT) -air-herd-assign=herd-assign-depth=1 \
+	$(AIR_OPT) -air-herd-assign=herd-assign-depth=0 \
 				-affine-to-air \
 				-cse \
 				-o $@ $<

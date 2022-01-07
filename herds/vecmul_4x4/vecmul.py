@@ -1,31 +1,39 @@
-# (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
+# (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 import torch
-import torch_mlir
+from torch import nn
 
-#
-# Capture some MLIR
-#
+from torch_mlir.dialects.torch.importer.jit_ir import ClassAnnotator, ModuleBuilder
+from torch_mlir.dialects.torch.importer.jit_ir.torchscript_annotations import extract_annotations
+from torch_mlir_e2e_test.torchscript.annotations import annotate_args, export
 
-t0 = torch.zeros(16384, dtype=torch.int32)
-t1 = torch.zeros(16384, dtype=torch.int32)
+from torch_mlir.passmanager import PassManager
+from torch_mlir_e2e_test.linalg_on_tensors_backends.refbackend import RefBackendLinalgOnTensorsBackend
 
-builder = torch_mlir.ModuleBuilder()
-with builder.capture_function("task", [t0,t1]) as f:
-    t2 = t0 * t1
-    f.returns([t2])
+class model(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
 
-t2_mlir = builder.module
+    @export
+    @annotate_args([
+        None,
+        ([16*1024], torch.int32, True),
+        ([16*1024], torch.int32, True)
+    ])
+    def forward(self, a,b):
+        x = a * b
+        return x
 
-#
-# transform captured MLIR to ATen
-#
+program = model()
+scripted = torch.jit.script(program)
 
-from mlir.ir import *
-from mlir.passmanager import *
-import mlir.transforms
-from npcomp.compiler.generic.backend import refjit as refjit_backend
+class_annotator = ClassAnnotator()
+extract_annotations(program, scripted, class_annotator)
 
-pm = PassManager.parse("func(aten-recognize-kernels),numpy-public-functions-to-tensor,canonicalize",
-                        context=builder.module.context)
-pm.run(t2_mlir)
-print(t2_mlir)
+mb = ModuleBuilder()
+mb.import_module(scripted._c, class_annotator)
+
+pm = PassManager.parse('torchscript-module-to-torch-backend-pipeline,torch-backend-to-linalg-on-tensors-backend-pipeline', mb.module.context)
+pm.run(mb.module)
+print(mb.module)
+
