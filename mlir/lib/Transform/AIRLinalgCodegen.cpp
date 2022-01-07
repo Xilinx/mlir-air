@@ -359,7 +359,6 @@ public:
         LLVM_DEBUG(llvm::outs() << "Found non-constant dim!\n");
         return {};
       }
-      llvm::outs() << "dim: " << c << "\n";
       tripCounts.push_back(c.getValue());
     }
 
@@ -409,7 +408,7 @@ public:
     // For an n-d tileable band, compute the n^th root of the excess.
     int64_t tSize =
         static_cast<int64_t>(floorl(std::pow(excessFactor, 1.0 / nLoops)));
-    llvm::outs() << "tile size: " << tSize << "\n";
+
     // We'll keep a running product to determine the last tile size better.
     unsigned cumulProductOfTileSizes = 1;
     for (unsigned i = 0, e = nLoops; i < e; i++) {
