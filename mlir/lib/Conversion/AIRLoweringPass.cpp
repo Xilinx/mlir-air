@@ -380,7 +380,8 @@ public:
 
     MemRefType src = dmaif.getSrcMemref().getType().cast<MemRefType>();
     MemRefType dst = dmaif.getDstMemref().getType().cast<MemRefType>();
-    bool isFromTile;
+    bool isFromTile = false;
+    bool isFullMemcpy = false;
     if (src.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1 &&
         dst.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3) {
       isFromTile = true;
@@ -393,51 +394,63 @@ public:
     } else if (dst.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1 &&
                src.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L2) {
       isFromTile = false;
+    } else if (src.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3 &&
+               dst.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L2) {
+      isFullMemcpy = true;
+    } else if (dst.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3 &&
+               src.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L2) {
+      isFromTile = true;
+      isFullMemcpy = true;
     } else
       return failure();
 
     SmallVector<Value, 16> opers;
 
-    auto idTy = IntegerType::get(op->getContext(), 32);
-    if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
-      opers.push_back(rewriter.create<ConstantOp>(loc, idTy, id_attr));
-    } else {
-      opers.push_back(
-          rewriter.create<ConstantOp>(loc, idTy, IntegerAttr::get(idTy, 0)));
-    }
+    if (!isFullMemcpy) {
+      auto idTy = IntegerType::get(op->getContext(), 32);
+      if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
+        opers.push_back(rewriter.create<ConstantOp>(loc, idTy, id_attr));
+      } else {
+        opers.push_back(
+            rewriter.create<ConstantOp>(loc, idTy, IntegerAttr::get(idTy, 0)));
+      }
 
-    xilinx::air::HerdLaunchOp launch =
-        op->getParentOfType<xilinx::air::HerdLaunchOp>();
-    if (!launch) {
+      xilinx::air::HerdLaunchOp launch =
+          op->getParentOfType<xilinx::air::HerdLaunchOp>();
+      if (!launch) {
 
-      AffineForOp afo = op->getParentOfType<AffineForOp>();
-      while (afo && !afo->getAttr("air.herd_launch"))
+        AffineForOp afo = op->getParentOfType<AffineForOp>();
+        while (afo && !afo->getAttr("air.herd_launch"))
+          afo = afo->getParentOfType<AffineForOp>();
+        if (!afo)
+          return failure();
+        opers.push_back(afo.getInductionVar());
+
         afo = afo->getParentOfType<AffineForOp>();
-      if (!afo)
-        return failure();
-      opers.push_back(afo.getInductionVar());
+        while (afo && !afo->getAttr("air.herd_launch"))
+          afo = afo->getParentOfType<AffineForOp>();
+        if (!afo)
+          return failure();
+        opers.push_back(afo.getInductionVar());
+      } else {
+        auto tileIds = launch.getTileIds();
+        opers.push_back(tileIds.x);
+        opers.push_back(tileIds.y);
+      }
+      opers[1] = rewriter.create<IndexCastOp>(
+          op->getLoc(), opers[1], IntegerType::get(op->getContext(), 64));
+      opers[2] = rewriter.create<IndexCastOp>(
+          op->getLoc(), opers[2], IntegerType::get(op->getContext(), 64));
 
-      afo = afo->getParentOfType<AffineForOp>();
-      while (afo && !afo->getAttr("air.herd_launch"))
-        afo = afo->getParentOfType<AffineForOp>();
-      if (!afo)
-        return failure();
-      opers.push_back(afo.getInductionVar());
-    } else {
-      auto tileIds = launch.getTileIds();
-      opers.push_back(tileIds.x);
-      opers.push_back(tileIds.y);
+      if (isFromTile)
+        opers.push_back(dmaif.getDstMemref());
+      else
+        opers.push_back(dmaif.getSrcMemref());
     }
-    opers[1] = rewriter.create<IndexCastOp>(
-        op->getLoc(), opers[1], IntegerType::get(op->getContext(), 64));
-    opers[2] = rewriter.create<IndexCastOp>(
-        op->getLoc(), opers[2], IntegerType::get(op->getContext(), 64));
-
-    if (isFromTile)
+    else {
       opers.push_back(dmaif.getDstMemref());
-    else
       opers.push_back(dmaif.getSrcMemref());
-
+    }
     auto i64Ty = rewriter.getI64Type();
     auto zero =
         rewriter.create<ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 0));
@@ -454,7 +467,7 @@ public:
           op->getLoc(), o, IntegerType::get(op->getContext(), 64));
     idx = 4 - dst.getRank();
     for (auto o : isFromTile ? dmaOp.dst_strides().drop_back()
-                             : dmaOp.src_strides().drop_back())
+                            : dmaOp.src_strides().drop_back())
       strides[idx++] = rewriter.create<IndexCastOp>(
           op->getLoc(), o, IntegerType::get(op->getContext(), 64));
     idx = 4 - src.getRank();
@@ -467,7 +480,11 @@ public:
     opers.append(strides);
 
     SmallVector<Type, 1> tys;
-    rewriter.create<xilinx::airrt::DmaMemcpyNdOp>(loc, tys, opers);
+    if (isFullMemcpy) {
+      rewriter.create<xilinx::airrt::MemcpyNdOp>(loc, tys, opers);
+    } else {
+      rewriter.create<xilinx::airrt::DmaMemcpyNdOp>(loc, tys, opers);
+    }
     rewriter.eraseOp(op);
     return success();
   }

@@ -435,6 +435,55 @@ lowerDmaNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
   return success();
 }
 
+LogicalResult
+lowerNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
+{
+  auto ctx = op->getContext();
+  auto dmaOp = cast<xilinx::airrt::MemcpyNdOp>(op);
+  SmallVector<Type, 6> tys;
+  SmallVector<Type, 1> retTys;
+
+  MemRefType dstMemRefTy = dmaOp.dst().getType().cast<MemRefType>();
+  MemRefType srcMemRefTy = dmaOp.src().getType().cast<MemRefType>();
+
+  SmallVector<Value, 16> operands = op->getOperands();
+  operands[0] = rewriter.create<memref::CastOp>(op->getLoc(), operands[0],
+           MemRefType::get(std::vector<int64_t>(dstMemRefTy.getRank(), -1),
+                           dstMemRefTy.getElementType(),
+                           dstMemRefTy.getAffineMaps(),
+                           dstMemRefTy.getMemorySpace()));
+  operands[1] = rewriter.create<memref::CastOp>(op->getLoc(), operands[1],
+           MemRefType::get(std::vector<int64_t>(srcMemRefTy.getRank(), -1),
+                           srcMemRefTy.getElementType(),
+                           srcMemRefTy.getAffineMaps(),
+                           srcMemRefTy.getMemorySpace()));
+
+  for (auto o : operands)
+    tys.push_back(o.getType());
+
+  // mangle the name by appending '_<rank>d<space><type>'
+  llvm::raw_string_ostream ss(fnName);
+  ss << "_" << dstMemRefTy.getRank();
+  ss << "d" << dstMemRefTy.getMemorySpaceAsInt();
+  dstMemRefTy.getElementType().print(ss);
+  ss << "_" << srcMemRefTy.getRank();
+  ss << "d" << srcMemRefTy.getMemorySpaceAsInt();
+  srcMemRefTy.getElementType().print(ss);
+
+  auto module = op->getParentOfType<ModuleOp>();
+  auto fn = module.lookupSymbol<FuncOp>(fnName);
+  if (!fn) {
+    auto fnTy = FunctionType::get(ctx, tys, retTys);
+    fn = FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
+    fn.setPrivate();
+    module.push_back(fn);
+  }
+
+  CallOp call = rewriter.create<CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn), operands);
+  rewriter.replaceOp(op, call->getResults());
+  return success();
+}
+
 class DmaMemcpyToLLVMConversion : public OpRewritePattern<xilinx::airrt::DmaMemcpyOp> {
 public:
   using OpRewritePattern<xilinx::airrt::DmaMemcpyOp>::OpRewritePattern;
@@ -498,6 +547,18 @@ public:
   }
 };
 
+class MemcpyNdToLLVMConversion : public OpRewritePattern<xilinx::airrt::MemcpyNdOp> {
+public:
+  using OpRewritePattern<xilinx::airrt::MemcpyNdOp>::OpRewritePattern;
+
+  LogicalResult
+  matchAndRewrite(xilinx::airrt::MemcpyNdOp op,
+                  PatternRewriter &rewriter) const override
+  {
+    return lowerNdMemcpy(op, rewriter, "air_nd_memcpy");
+  }
+};
+
 class AllocOpLowering : public OpRewritePattern<memref::AllocOp> {
 public:
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
@@ -535,7 +596,7 @@ public:
     converter.addConversion([&](Type type) -> Type {
       // make all memory spaces zero
       if (auto memref = type.dyn_cast<MemRefType>())
-        return mlir::MemRefType::get(memref.getShape(), memref.getElementType(), memref.getAffineMaps(), 0);
+        return type;//mlir::MemRefType::get(memref.getShape(), memref.getElementType(), memref.getAffineMaps(), 0);
       return type;
     });
 
@@ -546,6 +607,7 @@ public:
                     DmaMemcpy2dToLLVMConversion,
                     DmaMemcpy4dToLLVMConversion,
                     DmaMemcpyNdToLLVMConversion,
+                    MemcpyNdToLLVMConversion,
                     AllocOpLowering>(context);
 
     mlir::populateFuncOpTypeConversionPattern(patterns, converter);
