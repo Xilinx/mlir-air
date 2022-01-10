@@ -18,6 +18,7 @@
 #include "PassDetail.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Util/Util.h"
 
 #define DEBUG_TYPE "airrt-to-llvm-pass"
 
@@ -577,6 +578,94 @@ public:
   }
 };
 
+class AllocToFunction : public OpRewritePattern<xilinx::airrt::AllocOp> {
+public:
+  using OpRewritePattern<xilinx::airrt::AllocOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(xilinx::airrt::AllocOp op,
+                                PatternRewriter &rewriter) const override {
+
+    SmallVector<Value, 1> operands;
+    SmallVector<Type, 1> tys;
+    SmallVector<Type, 1> retTys;
+
+    auto ctx = op->getContext();
+
+    auto memrefTy = op.getType().cast<MemRefType>();
+
+    tys.push_back(IndexType::get(ctx));
+    retTys.push_back(MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
+                           memrefTy.getElementType(),
+                           memrefTy.getAffineMaps(),
+                           memrefTy.getMemorySpace()));
+
+    auto size = getTensorVolume(memrefTy);
+    operands.push_back(rewriter.create<ConstantIndexOp>(op->getLoc(), size));
+
+    auto module = op->getParentOfType<ModuleOp>();
+
+    std::string fnName = "air_alloc_L2";
+    llvm::raw_string_ostream ss(fnName);
+    ss << "_" << memrefTy.getRank();
+    ss << "d" << memrefTy.getMemorySpaceAsInt();
+    memrefTy.getElementType().print(ss);
+
+    auto fn = module.lookupSymbol<FuncOp>(fnName);
+    if (!fn) {
+      auto fnTy = FunctionType::get(ctx, tys, retTys);
+      fn = FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
+      fn.setPrivate();
+      module.push_back(fn);
+    }
+
+    auto callOp = rewriter.create<CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn), operands);
+    auto castOp = rewriter.create<memref::CastOp>(op->getLoc(), memrefTy, callOp.getResult(0));
+    rewriter.replaceOp(op, castOp->getResults());
+    return success();
+  }
+};
+
+class DeallocToFunction : public OpRewritePattern<xilinx::airrt::DeallocOp> {
+public:
+  using OpRewritePattern<xilinx::airrt::DeallocOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(xilinx::airrt::DeallocOp op,
+                                PatternRewriter &rewriter) const override {
+
+    SmallVector<Value, 1> operands;
+    SmallVector<Type, 1> tys;
+    SmallVector<Type, 1> retTys;
+    auto ctx = op->getContext();
+
+    auto memrefTy = op.memref().getType().cast<MemRefType>();
+    tys.push_back(MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
+                           memrefTy.getElementType(),
+                           memrefTy.getAffineMaps(),
+                           memrefTy.getMemorySpace()));
+    operands.push_back(rewriter.create<memref::CastOp>(op->getLoc(), tys[0], op.memref()));
+
+    auto module = op->getParentOfType<ModuleOp>();
+    
+    std::string fnName = "air_dealloc_L2";
+    llvm::raw_string_ostream ss(fnName);
+    ss << "_" << memrefTy.getRank();
+    ss << "d" << memrefTy.getMemorySpaceAsInt();
+    memrefTy.getElementType().print(ss);
+
+    auto fn = module.lookupSymbol<FuncOp>(fnName);
+    if (!fn) {
+      auto fnTy = FunctionType::get(ctx, tys, retTys);
+      fn = FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
+      fn.setPrivate();
+      module.push_back(fn);
+    }
+
+    auto callOp = rewriter.create<CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn), operands);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 class AIRRtToLLVM : public AIRRtToLLVMBase<AIRRtToLLVM> {
 
 public:
@@ -608,6 +697,8 @@ public:
                     DmaMemcpy4dToLLVMConversion,
                     DmaMemcpyNdToLLVMConversion,
                     MemcpyNdToLLVMConversion,
+                    AllocToFunction,
+                    DeallocToFunction,
                     AllocOpLowering>(context);
 
     mlir::populateFuncOpTypeConversionPattern(patterns, converter);
