@@ -64,12 +64,6 @@ int main(int argc, char *argv[])
     printf("%4d contains %08x %08x\n",i,bank0_ptr[i],bank1_ptr[i]);
   }
   for (int i=0; i<5*XFR_SIZE; i++) {
-    // 3D DMA address generation
-    //           X Y Z
-    // increment 1 2 8
-    // wrap      2 4 max
-    // offset    4 1 8
-    int an = 4*((i/1)%2) + 1*((i/2)%4) + 8*((i/8)%UINT_MAX); 
     dram_ptr[i] = 0x100 + i;
   }
   printf("DRAM before: \n");

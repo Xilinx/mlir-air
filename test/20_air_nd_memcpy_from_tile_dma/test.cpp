@@ -51,13 +51,8 @@ main(int argc, char *argv[])
     output.d[i] = i;
   }
 
-  mlir_aie_print_dma_status(xaie, col, row);
-
   auto o = &output;
   graph_fn(o);
-
-  mlir_aie_print_dma_status(xaie, col, row);
-  mlir_aie_print_tile_status(xaie, col, row);
 
   int errors = 0;
   for (int i=0; i<DMA_COUNT; i++) {
