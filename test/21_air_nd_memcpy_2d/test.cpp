@@ -56,25 +56,15 @@ main(int argc, char *argv[])
   tensor_t<uint32_t,2> output;
 
   input.shape[0] = IMAGE_WIDTH; input.shape[1] = IMAGE_HEIGHT;
+  input.d = input.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input.shape[0]*input.shape[1]);
+
   output.shape[0] = IMAGE_WIDTH; output.shape[1] = IMAGE_HEIGHT;
-
-  XAieLib_MemInst *mem_i = XAieLib_MemAllocate(sizeof(uint32_t)*input.shape[0]*input.shape[1], 0);
-  input.d = input.aligned = (uint32_t*)XAieLib_MemGetPaddr(mem_i);
-  input.uses_pa = true;
-  uint32_t *in = (uint32_t*)XAieLib_MemGetVaddr(mem_i); 
-
-  XAieLib_MemInst *mem_o = XAieLib_MemAllocate(sizeof(uint32_t)*output.shape[0]*output.shape[1], 0);
-  output.d = output.aligned = (uint32_t*)XAieLib_MemGetPaddr(mem_o);
-  output.uses_pa = true;
-  uint32_t *out = (uint32_t*)XAieLib_MemGetVaddr(mem_o);
+  output.d = output.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output.shape[0]*output.shape[1]);
 
   for (int i=0; i<IMAGE_SIZE; i++) {
-    in[i] = i+0x1000;
-    out[i] = 0x00defaced;
+    input.d[i] = i+0x1000;
+    output.d[i] = 0x00defaced;
   }
-
-  XAieLib_MemSyncForDev(mem_i);
-  XAieLib_MemSyncForDev(mem_o);
 
   void *i, *o;
   i = &input;
@@ -85,7 +75,7 @@ main(int argc, char *argv[])
 
   // Now look at the image, should have the bottom left filled in
   for (int i=0;i<IMAGE_SIZE;i++) {
-    u32 rb = out[i];
+    u32 rb = output.d[i];
 
     u32 row = i / IMAGE_WIDTH;
     u32 col = i % IMAGE_WIDTH;
@@ -103,9 +93,6 @@ main(int argc, char *argv[])
       }
     }
   }
-
-  XAieLib_MemFree(mem_i);
-  XAieLib_MemFree(mem_o);
 
   if (!errors) {
     printf("PASS!\n");

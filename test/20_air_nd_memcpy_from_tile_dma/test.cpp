@@ -46,29 +46,27 @@ main(int argc, char *argv[])
 
   tensor_t<uint32_t,1> output;
   output.shape[0] = DMA_COUNT;
-  XAieLib_MemInst *mem_o = XAieLib_MemAllocate(sizeof(uint32_t)*output.shape[0], 0);
-  output.d = output.aligned = (uint32_t*)XAieLib_MemGetPaddr(mem_o);
-  output.uses_pa = true;
-  uint32_t *out = (uint32_t*)XAieLib_MemGetVaddr(mem_o);
+  output.d = (uint32_t*)malloc(sizeof(uint32_t)*DMA_COUNT);
   for (int i=0; i<output.shape[0]; i++) {
-    out[i] = 0xfacefeed;
+    output.d[i] = i;
   }
 
-  XAieLib_MemSyncForDev(mem_o);
+  mlir_aie_print_dma_status(xaie, col, row);
 
   auto o = &output;
   graph_fn(o);
 
+  mlir_aie_print_dma_status(xaie, col, row);
+  mlir_aie_print_tile_status(xaie, col, row);
+
   int errors = 0;
   for (int i=0; i<DMA_COUNT; i++) {
-    uint32_t d = out[i];
+    uint32_t d = output.d[i];
     if (d != (i+0x10)) {
       errors++;
       printf("mismatch %x != 0x10 + %x\n", d, i);
     }
   }
-
-  XAieLib_MemFree(mem_o);
 
   if (!errors) {
     printf("PASS!\n");

@@ -308,7 +308,7 @@ void air_shim_memcpy_queue_impl(uint32_t id, uint64_t x, uint64_t y, void* t, ui
 }
 
 template<typename T, int R>
-void air_mem_shim_nd_memcpy_queue_impl(uint32_t id, uint64_t x, uint64_t y, tensor_t<T, R>* t, uint32_t space, bool uses_pa,
+void air_mem_shim_nd_memcpy_queue_impl(uint32_t id, uint64_t x, uint64_t y, tensor_t<T, R>* t, uint32_t space,
                                  uint64_t offset_3, uint64_t offset_2, uint64_t offset_1, uint64_t offset_0,
                                  uint64_t length_4d, uint64_t length_3d, uint64_t length_2d, uint64_t length_1d,
                                  uint64_t stride_4d, uint64_t stride_3d, uint64_t stride_2d) {
@@ -327,6 +327,7 @@ void air_mem_shim_nd_memcpy_queue_impl(uint32_t id, uint64_t x, uint64_t y, tens
 
   bool isMM2S = shim_chan >= 2;
 
+  bool uses_pa = (space == 1); // t->uses_pa;
   if (uses_pa) {
     if (isMM2S) shim_chan = shim_chan - 2;
 
@@ -487,7 +488,7 @@ void _mlir_ciface_air_dma_nd_memcpy_##mangle( \
 { \
   tensor_t<type, rank> *tt = (tensor_t<type, rank>*)t; \
   if (_air_host_active_herd.q) { \
-    air_mem_shim_nd_memcpy_queue_impl(id, x, y, tt, space, tt->uses_pa, \
+    air_mem_shim_nd_memcpy_queue_impl(id, x, y, tt, space, \
                                      offset_3, offset_2, offset_1, offset_0, \
                                      length_3, length_2, length_1, length_0, \
                                      stride_2, stride_1, stride_0); \

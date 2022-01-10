@@ -62,17 +62,12 @@ main(int argc, char *argv[])
 
   input.shape[0] = TENSOR_1D; input.shape[1] = TENSOR_2D;
   input.shape[2] = TENSOR_3D; input.shape[3] = TENSOR_4D;
-  XAieLib_MemInst *mem_i = XAieLib_MemAllocate(sizeof(uint32_t)*input.shape[0]*
-                                               input.shape[1]*input.shape[2]*input.shape[3], 0);
-  input.d = input.aligned = (uint32_t*)XAieLib_MemGetPaddr(mem_i);
-  input.uses_pa = true;
-  uint32_t *in = (uint32_t*)XAieLib_MemGetVaddr(mem_i); 
+  input.d = input.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input.shape[0]*
+                                              input.shape[1]*input.shape[2]*input.shape[3]);
 
   for (int i=0; i<TENSOR_SIZE; i++) {
-    in[i] = i;
+    input.d[i] = i;
   }
-
-  XAieLib_MemSyncForDev(mem_i);
 
   void *i;
   i = &input;
@@ -92,14 +87,12 @@ main(int argc, char *argv[])
     uint32_t zn = 64*((i/8)%2);
     uint32_t wn = 256*((i/16)%2);
     uint32_t a = xn + yn + zn + wn;
-    uint32_t vb = in[a];
+    uint32_t vb = input.d[a];
     if (!(rb == vb)) {
       printf("Tile Mem %d should be %08X, is %08X\n", i, vb, rb);
       errors++;
     }
   }
-
-  XAieLib_MemFree(mem_i);
 
   if (!errors) {
     printf("PASS!\n");
