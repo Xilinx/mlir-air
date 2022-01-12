@@ -42,6 +42,55 @@ void airDialect::printType(Type type, DialectAsmPrinter &os) const {
       .Default([](Type) { llvm_unreachable("unexpected 'gpu' type kind"); });
 }
 
+//===----------------------------------------------------------------------===//
+// AsyncOpInterface
+//===----------------------------------------------------------------------===//
+namespace xilinx {
+namespace air {
+
+void addAsyncDependency(Operation *op, Value token) {
+  op->insertOperands(0, {token});
+  if (!op->template hasTrait<OpTrait::AttrSizedOperandSegments>())
+    return;
+  auto attrName =
+      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
+  auto sizeAttr = op->template getAttrOfType<DenseIntElementsAttr>(attrName);
+  if (!sizeAttr)
+    return; // Async dependencies is the only variadic operand.
+  SmallVector<int32_t, 8> sizes;
+  for (auto size : sizeAttr.getValues<APInt>())
+    sizes.push_back(size.getSExtValue());
+  ++sizes.front();
+  op->setAttr(attrName, Builder(op->getContext()).getI32VectorAttr(sizes));
+}
+
+static ParseResult parseAsyncDependencies(
+    OpAsmParser &parser, Type &asyncTokenType,
+    SmallVectorImpl<OpAsmParser::OperandType> &asyncDependencies) {
+  auto loc = parser.getCurrentLocation();
+  if (succeeded(parser.parseOptionalKeyword("async"))) {
+    if (parser.getNumResults() == 0)
+      return parser.emitError(loc, "needs to be named when marked 'async'");
+    asyncTokenType = parser.getBuilder().getType<AsyncTokenType>();
+  }
+  return parser.parseOperandList(asyncDependencies,
+                                 OpAsmParser::Delimiter::OptionalSquare);
+}
+
+static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
+                                   Type asyncTokenType,
+                                   OperandRange asyncDependencies) {
+  if (asyncTokenType)
+    printer << "async ";
+  if (asyncDependencies.empty())
+    return;
+  printer << "[";
+  llvm::interleaveComma(asyncDependencies, printer);
+  printer << "]";
+}
+
+}
+}
 //
 // LaunchHerdOp
 //
@@ -75,12 +124,9 @@ static LogicalResult verify(HerdLaunchOp op) {
 static void printHerdLaunchOp(OpAsmPrinter &p, HerdLaunchOp op) {
 
   auto num_async_deps = op.asyncDependencies().size();
-  if (num_async_deps) {
-    p << " [";
-    llvm::interleaveComma(op.asyncDependencies(), p);
-    p << "] ";
-  }
-
+  if (num_async_deps)
+    p << ' ';
+  printAsyncDependencies(p, op, (op.asyncToken() ? op.asyncToken().getType() : Type()), op.asyncDependencies());
   p << " tile (";
   p << op.getTileIds().x << ", ";
   p << op.getTileIds().y << ") in (";
@@ -99,7 +145,7 @@ static void printHerdLaunchOp(OpAsmPrinter &p, HerdLaunchOp op) {
     }
     p << ") : ";
     for (int i=0,e=op.getNumKernelOperands(); i<e; i++) {
-      if (i) p << ",";
+      if (i) p << ", ";
       p << op.getKernelOperand(i).getType();
     }
   }
@@ -110,7 +156,7 @@ static void printHerdLaunchOp(OpAsmPrinter &p, HerdLaunchOp op) {
             != attr.first.strref());
         }));
   if (filteredAttrs.size()) {
-    p << "attributes";
+    p << " attributes";
     p.printOptionalAttrDict(filteredAttrs);
   }
   p.printRegion(op.body(), /*printEntryBlockArgs=*/false);
@@ -125,12 +171,10 @@ parseHerdLaunchOp(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::OperandType, 2> tileSizeRef(2);
 
   Type asyncTokenType = nullptr;
-  if (succeeded(parser.parseOptionalKeyword("async"))) {
-    asyncTokenType = parser.getBuilder().getType<AsyncTokenType>();
-  }
-
-  if (parser.parseOperandList(asyncDependencies, OpAsmParser::Delimiter::OptionalSquare))
+  if (parseAsyncDependencies(parser, asyncTokenType, asyncDependencies))
     return failure();
+  if (asyncTokenType)
+    result.addTypes(asyncTokenType);
 
   if (parser.parseKeyword("tile"))
     return failure();
@@ -157,7 +201,8 @@ parseHerdLaunchOp(OpAsmParser &parser, OperationState &result) {
   tileArgs.push_back(tileSizeRef[0]);
   tileArgs.push_back(tileSizeRef[1]);
 
-  parser.resolveOperands(asyncDependencies, asyncTokenType, result.operands);
+  auto tokenType = xilinx::air::AsyncTokenType::get(parser.getBuilder().getContext());
+  parser.resolveOperands(asyncDependencies, tokenType, result.operands);
   parser.resolveOperands(tileSize, index, result.operands);
 
   SmallVector<OpAsmParser::OperandType, 4> kernelOperands;
@@ -338,55 +383,6 @@ unsigned PipelineStageOp::getStageId() {
   return -1;
 }
 
-//===----------------------------------------------------------------------===//
-// AsyncOpInterface
-//===----------------------------------------------------------------------===//
-namespace xilinx {
-namespace air {
-
-void addAsyncDependency(Operation *op, Value token) {
-  op->insertOperands(0, {token});
-  if (!op->template hasTrait<OpTrait::AttrSizedOperandSegments>())
-    return;
-  auto attrName =
-      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
-  auto sizeAttr = op->template getAttrOfType<DenseIntElementsAttr>(attrName);
-  if (!sizeAttr)
-    return; // Async dependencies is the only variadic operand.
-  SmallVector<int32_t, 8> sizes;
-  for (auto size : sizeAttr.getValues<APInt>())
-    sizes.push_back(size.getSExtValue());
-  ++sizes.front();
-  op->setAttr(attrName, Builder(op->getContext()).getI32VectorAttr(sizes));
-}
-
-static ParseResult parseAsyncDependencies(
-    OpAsmParser &parser, Type &asyncTokenType,
-    SmallVectorImpl<OpAsmParser::OperandType> &asyncDependencies) {
-  auto loc = parser.getCurrentLocation();
-  if (succeeded(parser.parseOptionalKeyword("async"))) {
-    if (parser.getNumResults() == 0)
-      return parser.emitError(loc, "needs to be named when marked 'async'");
-    asyncTokenType = parser.getBuilder().getType<AsyncTokenType>();
-  }
-  return parser.parseOperandList(asyncDependencies,
-                                 OpAsmParser::Delimiter::OptionalSquare);
-}
-
-static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
-                                   Type asyncTokenType,
-                                   OperandRange asyncDependencies) {
-  if (asyncTokenType)
-    printer << "async ";
-  if (asyncDependencies.empty())
-    return;
-  printer << "[";
-  llvm::interleaveComma(asyncDependencies, printer);
-  printer << "]";
-}
-
-}
-}
 
 #include "air/Dialect/AIR/AIROpInterfaces.cpp.inc"
 
