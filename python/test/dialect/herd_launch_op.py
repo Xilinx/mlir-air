@@ -4,7 +4,7 @@
 # RUN: %PYTHON %s | FileCheck %s
 # CHECK: %[[C0:.*]] = constant 2 : index
 # CHECK: %[[C1:.*]] = constant 2 : index
-# CHECK: air.launch_herd tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%[[C0]], %{{.*}}=%[[C1]])attributes {sym_name = "pyHerd"} {
+# CHECK: air.launch_herd tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%[[C0]], %{{.*}}=%[[C1]]) attributes {sym_name = "pyHerd"} {
 # CHECK:   air.herd_terminator
 # CHECK: }
 import air
