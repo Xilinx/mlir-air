@@ -131,7 +131,7 @@ air_module_get_desc(air_module_handle_t handle)
   return (air_module_desc_t*)dlsym((void*)handle, "__air_module_descriptor");
 }
 
-int32_t
+uint64_t
 air_herd_load(const char *name) {
   auto herd_desc = air_herd_get_desc(_air_host_active_module, name);
   if (!herd_desc) {

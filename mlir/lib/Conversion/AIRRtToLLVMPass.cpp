@@ -338,7 +338,7 @@ public:
                   PatternRewriter &rewriter) const override
   {
     auto ctx = op->getContext();
-    auto retTy = IntegerType::get(ctx, 32);
+    auto retTy = IntegerType::get(ctx, 64);
     SmallVector<Type, 1> tys{
       LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8))};
     auto functionTy = LLVM::LLVMFunctionType::get(retTy, tys);

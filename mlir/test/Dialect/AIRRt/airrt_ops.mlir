@@ -12,8 +12,8 @@ func @f0() {
     %event2 = airrt.wait_all : !airrt.event
     %event3 = airrt.wait_all %event1, %event2 : !airrt.event
     airrt.wait_all %event3
-    %herd_load = airrt.herd_load "herd_0" : i32
-    %h, %e = airrt.herd_load "herd_0" : i32, !airrt.event
+    %herd_load = airrt.herd_load "herd_0" : i64
+    %h, %e = airrt.herd_load "herd_0" : i64, !airrt.event
     return
 }
 

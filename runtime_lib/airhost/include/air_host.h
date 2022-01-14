@@ -147,8 +147,7 @@ air_module_desc_t *air_module_get_desc(air_module_handle_t handle);
 
 air_herd_desc_t *air_herd_get_desc(air_module_handle_t handle, const char *name);
 
-int32_t air_herd_load(const char *name);
-//int32_t air_herd_load(air_herd_desc_t *herd_desc);
+uint64_t air_herd_load(const char *name);
 
 //typedef uint32_t air_herd_status_t;
 //air_herd_status_t air_herd_status(air_herd_desc_t *herd_desc)

@@ -38,7 +38,7 @@ module attributes {torch.debug_module_name = "mmult"}  {
     airrt.memcpy_nd(%2, %arg0, [%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c64_i64, %c64_i64], [%c0_i64, %c0_i64, %c64_i64]) : (memref<64x64xi32, 1>, memref<64x64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
     airrt.memcpy_nd(%3, %arg1, [%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c64_i64, %c64_i64], [%c0_i64, %c0_i64, %c64_i64]) : (memref<64x64xi32, 1>, memref<64x64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
     airrt.memcpy_nd(%4, %1, [%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c64_i64, %c64_i64], [%c0_i64, %c0_i64, %c64_i64]) : (memref<64x64xi32, 1>, memref<64x64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
-    %5 = airrt.herd_load "herd_0" : i32
+    %5 = airrt.herd_load "herd_0" : i64
     affine.for %arg3 = 0 to 2 {
       affine.for %arg4 = 0 to 2 {
         %6 = arith.muli %arg3, %c32 : index

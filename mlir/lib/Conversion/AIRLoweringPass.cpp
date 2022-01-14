@@ -50,7 +50,7 @@ public:
     xilinx::air::HerdLaunchOp launch = cast<xilinx::air::HerdLaunchOp>(op);
     if (auto attr = op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
       auto herd_name = attr.getValue().str();
-      rewriter.create<xilinx::airrt::HerdLoadOp>(op->getLoc(), rewriter.getI32Type(), herd_name);
+      rewriter.create<xilinx::airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(), herd_name);
     }
     auto herd_size = launch.getHerdSizeOperands();
     int64_t herd_size_x = cast<ConstantIndexOp>(herd_size.x.getDefiningOp()).value();

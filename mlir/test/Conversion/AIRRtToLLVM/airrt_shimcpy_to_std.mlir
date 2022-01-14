@@ -90,7 +90,7 @@ module  {
     %c2 = arith.constant 2 : index
     %0 = memref.alloc() : memref<32x32x32x32xi32>
     %1 = memref.buffer_cast %arg0 : memref<32x32x32x32xi32>
-    %2 = airrt.herd_load "herd_0" : i32
+    %2 = airrt.herd_load "herd_0" : i64
     affine.for %arg1 = 0 to 2 {
       affine.for %arg2 = 0 to 2 {
         %c0 = arith.constant 0 : index
