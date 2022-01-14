@@ -39,7 +39,7 @@ Type airDialect::parseType(DialectAsmParser &parser) const {
 void airDialect::printType(Type type, DialectAsmPrinter &os) const {
   TypeSwitch<Type>(type)
       .Case<AsyncTokenType>([&](Type) { os << "async.token"; })
-      .Default([](Type) { llvm_unreachable("unexpected 'gpu' type kind"); });
+      .Default([](Type) { llvm_unreachable("unexpected 'air' type"); });
 }
 
 //===----------------------------------------------------------------------===//

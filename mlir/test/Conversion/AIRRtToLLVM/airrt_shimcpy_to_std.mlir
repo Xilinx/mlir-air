@@ -37,7 +37,7 @@ module  {
             %11 = index_cast %arg4 : index to i64
             %12 = index_cast %8 : index to i64
             %13 = index_cast %c64 : index to i64
-            airrt.dma_memcpy(%c1_i32, %10, %11, %3[%12], %13) : (i32, i64, i64, memref<256xi32>, [i64], i64) -> ()
+            airrt.dma_memcpy(%c1_i32, %10, %11, %3[%12], %13) : (i32, i64, i64, memref<256xi32>, [i64], i64)
             %c2_i32 = constant 2 : i32
             %14 = index_cast %arg5 : index to i64
             %15 = index_cast %arg4 : index to i64
@@ -46,7 +46,7 @@ module  {
             %18 = index_cast %c4096 : index to i64
             %19 = index_cast %c256 : index to i64
             %20 = index_cast %c64 : index to i64
-            airrt.dma_memcpy_2d(%c2_i32, %14, %15, %2[%16, %17], %18, %19, %20) : (i32, i64, i64, memref<256x256xi32>, [i64, i64], i64, i64, i64) -> ()
+            airrt.dma_memcpy_2d(%c2_i32, %14, %15, %2[%16, %17], %18, %19, %20) : (i32, i64, i64, memref<256x256xi32>, [i64, i64], i64, i64, i64)
             %21 = memref.alloc() : memref<64x64xi32, 2>
             %22 = memref.alloc() : memref<64xi32, 2>
             affine.for %arg6 = 0 to 64 {
@@ -65,7 +65,7 @@ module  {
             %24 = index_cast %arg4 : index to i64
             %25 = index_cast %8 : index to i64
             %26 = index_cast %c64 : index to i64
-            airrt.dma_memcpy(%c3_i32, %23, %24, %1[%25], %26) : (i32, i64, i64, memref<256xi32>, [i64], i64) -> ()
+            airrt.dma_memcpy(%c3_i32, %23, %24, %1[%25], %26) : (i32, i64, i64, memref<256xi32>, [i64], i64)
             %c4_i32 = constant 4 : i32
             %27 = index_cast %arg5 : index to i64
             %28 = index_cast %arg4 : index to i64
@@ -74,7 +74,7 @@ module  {
             %31 = index_cast %c4096 : index to i64
             %32 = index_cast %c256 : index to i64
             %33 = index_cast %c64 : index to i64
-            airrt.dma_memcpy_2d(%c4_i32, %27, %28, %0[%29, %30], %31, %32, %33) : (i32, i64, i64, memref<256x256xi32>, [i64, i64], i64, i64, i64) -> ()
+            airrt.dma_memcpy_2d(%c4_i32, %27, %28, %0[%29, %30], %31, %32, %33) : (i32, i64, i64, memref<256x256xi32>, [i64, i64], i64, i64, i64)
             memref.dealloc %21 : memref<64x64xi32, 2>
             memref.dealloc %5 : memref<64x64xi32, 2>
             memref.dealloc %22 : memref<64xi32, 2>
@@ -90,7 +90,7 @@ module  {
     %c2 = constant 2 : index
     %0 = memref.alloc() : memref<32x32x32x32xi32>
     %1 = memref.buffer_cast %arg0 : memref<32x32x32x32xi32>
-    %2 = airrt.herd_load "herd_0"() : () -> i32
+    %2 = airrt.herd_load "herd_0" : i32
     affine.for %arg1 = 0 to 2 {
       affine.for %arg2 = 0 to 2 {
         %c0 = constant 0 : index
@@ -111,7 +111,7 @@ module  {
             %13 = index_cast %c1024 : index to i64
             %14 = index_cast %c1024 : index to i64
             %15 = index_cast %c1024 : index to i64
-            airrt.dma_memcpy_4d(%c1_i32_0, %7, %8, %1[%9, %10, %11, %12], %13, %14, %15) : (i32, i64, i64, memref<32x32x32x32xi32>, [i64, i64, i64, i64], i64, i64, i64) -> ()
+            airrt.dma_memcpy_4d(%c1_i32_0, %7, %8, %1[%9, %10, %11, %12], %13, %14, %15) : (i32, i64, i64, memref<32x32x32x32xi32>, [i64, i64, i64, i64], i64, i64, i64)
             %16 = memref.alloc() : memref<1x1x32x32xi32, 2>
             affine.for %arg5 = 0 to 2 {
               affine.for %arg6 = 0 to 2 {
@@ -134,7 +134,7 @@ module  {
             %23 = index_cast %c1024 : index to i64
             %24 = index_cast %c1024 : index to i64
             %25 = index_cast %c1024 : index to i64
-            airrt.dma_memcpy_4d(%c2_i32, %17, %18, %0[%19, %20, %21, %22], %23, %24, %25) : (i32, i64, i64, memref<32x32x32x32xi32>, [i64, i64, i64, i64], i64, i64, i64) -> ()
+            airrt.dma_memcpy_4d(%c2_i32, %17, %18, %0[%19, %20, %21, %22], %23, %24, %25) : (i32, i64, i64, memref<32x32x32x32xi32>, [i64, i64, i64, i64], i64, i64, i64)
             memref.dealloc %16 : memref<1x1x32x32xi32, 2>
             memref.dealloc %6 : memref<1x1x32x32xi32, 2>
           }
@@ -158,9 +158,9 @@ module  {
         %0 = index_cast %arg3 : index to i64
         %1 = index_cast %arg2 : index to i64
         %2 = index_cast %c16 : index to i64
-        airrt.dma_memcpy_nd(%c1_i32, %0, %1, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %2, %2], [%c0_i64, %c0_i64, %c256_i64]) : (i32, i64, i64, memref<256x256xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) -> ()
-        airrt.dma_memcpy_nd(%c2_i32, %0, %1, %L2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %2, %2], [%c0_i64, %c0_i64, %c128_i64]) {attr = "attr"} : (i32, i64, i64, memref<512xf32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) -> ()
-        airrt.dma_memcpy_nd(%c2_i32, %0, %1, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %2, %2], [%c0_i64, %c0_i64, %c128_i64]) : (i32, i64, i64, memref<256xf32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) -> ()
+        airrt.dma_memcpy_nd(%c1_i32, %0, %1, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %2, %2], [%c0_i64, %c0_i64, %c256_i64]) : (i32, i64, i64, memref<256x256xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+        airrt.dma_memcpy_nd(%c2_i32, %0, %1, %L2[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %2, %2], [%c0_i64, %c0_i64, %c128_i64]) {attr = "attr"} : (i32, i64, i64, memref<512xf32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+        airrt.dma_memcpy_nd(%c2_i32, %0, %1, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %2, %2], [%c0_i64, %c0_i64, %c128_i64]) : (i32, i64, i64, memref<256xf32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
       } {air.herd_launch = "inner"}
     } {air.herd_launch = "outer"}
     return

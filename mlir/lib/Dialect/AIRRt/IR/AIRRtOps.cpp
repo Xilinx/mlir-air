@@ -17,6 +17,9 @@
 using namespace mlir;
 using namespace xilinx::airrt;
 
+namespace xilinx {
+namespace airrt {
+
 //===----------------------------------------------------------------------===//
 // ModuleMetadataOp
 //===----------------------------------------------------------------------===//
@@ -39,9 +42,8 @@ static ParseResult parseModuleMetadataOp(OpAsmParser &parser,
   return success();
 }
 
-//===----------------------------------------------------------------------===//
-// HerdMetadataOp
-//===----------------------------------------------------------------------===//
+} // namespace airrt
+} // namespace xilinx
 
 #define GET_OP_CLASSES
 #include "air/Dialect/AIRRt/AIRRtOps.cpp.inc"

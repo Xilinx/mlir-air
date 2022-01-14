@@ -15,4 +15,8 @@ can be lowered to a combination of standard and LLVM dialects.
   }];
 }
 
+def AIRRt_Event : DialectType<
+  AIRRt_Dialect, CPred<"$_self.isa<xilinx::airrt::EventType>()">, "event type">,
+             BuildableType<"xilinx::airrt::EventType::get($_builder.getContext())">;
+
 #endif // #ifndef AIRRT_BASE

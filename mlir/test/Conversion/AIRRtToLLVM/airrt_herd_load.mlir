@@ -13,8 +13,8 @@ module {
         airrt.herd_metadata { sym_name = "deer", shim_allocations = [] }
     }
     func @f() {
-        %ret1 = airrt.herd_load "elk" () : () -> (i32)
-        airrt.herd_load "deer" () : () -> (i32)
+        %ret1 = airrt.herd_load "elk" : i32
+        airrt.herd_load "deer" : i32
         return
     }
 }

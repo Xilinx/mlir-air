@@ -71,11 +71,10 @@ def AIRRt_HerdMetadataTerminatorOp
 
 def AIRRt_HerdLoadOp : AIRRt_Op<"herd_load", []> {
     let summary = "load a herd";
-    let arguments = (ins StrAttr:$sym_name, Variadic<AnyType>:$args);
-    let results = (outs I32:$ret);
+    let arguments = (ins StrAttr:$sym_name);
+    let results = (outs I32:$h, Optional<AIRRt_Event>:$event);
     let assemblyFormat = [{
-      $sym_name `(` $args `)` attr-dict `:` functional-type($args, results)
-
+      $sym_name attr-dict `:` type($h) (`,` type($event)^)?
     }];
 }
 
@@ -89,14 +88,14 @@ def AIRRt_DmaMemcpyOp : AIRRt_Op<"dma_memcpy", []> {
         I64:$offset,
         I64:$num
   );
-  let results = (outs);
+  let results = (outs Optional<AIRRt_Event>:$event);
   let assemblyFormat = [{
     `(` $id `,`$x `,`$y `,`$memref
     `[` $offset `]` `,`
     $num `)`  attr-dict `:`
     `(` type($id)`,`type($x)`,`type($y)`,`type($memref)`,`
     `[` type($offset) `]` `,`
-    type($num) `)`  `->` `(` `)`
+    type($num) `)` (`:` type($event)^)?
   }];
   let description = [{
     half dma operator
@@ -122,7 +121,7 @@ def AIRRt_DmaMemcpyNdOp: AIRRt_Op<"dma_memcpy_nd", []> {
         I64:$stride2,
         I64:$stride1
   );
-  let results = (outs);
+  let results = (outs Optional<AIRRt_Event>:$event);
   let assemblyFormat = [{
     `(` $id `,`$x `,`$y `,`$memref
     `[` $offset3`,`$offset2`,`$offset1`,`$offset0 `]` `,`
@@ -131,7 +130,7 @@ def AIRRt_DmaMemcpyNdOp: AIRRt_Op<"dma_memcpy_nd", []> {
     `(` type($id)`,`type($x)`,`type($y)`,`type($memref)`,`
     `[` type($offset3)`,`type($offset2)`,`type($offset1)`,` type($offset0) `]` `,`
     `[` type($length3)`,`type($length2)`,`type($length1)`,` type($length0) `]` `,`
-    `[` type($stride3)`,`type($stride2)`,`type($stride1) `]` `)`  `->` `(` `)`
+    `[` type($stride3)`,`type($stride2)`,`type($stride1) `]` `)` (`:` type($event)^)?
   }];
   let description = [{
     nd half dma operator
@@ -155,7 +154,7 @@ def AIRRt_MemcpyNdOp: AIRRt_Op<"memcpy_nd", []> {
         I64:$stride2,
         I64:$stride1
   );
-  let results = (outs);
+  let results = (outs Optional<AIRRt_Event>:$event);
   let assemblyFormat = [{
     `(` $dst`,`$src`,`
     `[` $offset3`,`$offset2`,`$offset1`,`$offset0 `]` `,`
@@ -164,7 +163,7 @@ def AIRRt_MemcpyNdOp: AIRRt_Op<"memcpy_nd", []> {
     `(` type($dst)`,`type($src)`,`
     `[` type($offset3)`,`type($offset2)`,`type($offset1)`,` type($offset0) `]` `,`
     `[` type($length3)`,`type($length2)`,`type($length1)`,` type($length0) `]` `,`
-    `[` type($stride3)`,`type($stride2)`,`type($stride1) `]` `)`  `->` `(` `)`
+    `[` type($stride3)`,`type($stride2)`,`type($stride1) `]` `)`  (`:` type($event)^)?
   }];
   let description = [{
     nd memcpy operator
@@ -184,14 +183,14 @@ def AIRRt_DmaMemcpy2dOp: AIRRt_Op<"dma_memcpy_2d", []> {
         I64:$stride,
         I64:$elem_per_stride
   );
-  let results = (outs);
+  let results = (outs Optional<AIRRt_Event>:$event);
   let assemblyFormat = [{
     `(` $id `,`$x `,`$y `,`$memref
     `[` $offset1`,`$offset0 `]` `,`
     $num `,` $stride `,` $elem_per_stride `)` attr-dict `:`
     `(` type($id)`,`type($x)`,`type($y)`,`type($memref)`,`
     `[` type($offset1)`,` type($offset0) `]` `,`
-    type($num) `,` type($stride) `,` type($elem_per_stride) `)`  `->` `(` `)`
+    type($num) `,` type($stride) `,` type($elem_per_stride) `)` (`:` type($event)^)?
   }];
   let description = [{
     2d half dma operator
@@ -213,14 +212,14 @@ def AIRRt_DmaMemcpy4dOp: AIRRt_Op<"dma_memcpy_4d", []> {
         I64:$stride,
         I64:$elem_per_stride
   );
-  let results = (outs);
+  let results = (outs Optional<AIRRt_Event>:$event);
   let assemblyFormat = [{
     `(` $id `,`$x `,`$y `,`$memref
     `[` $offset3`,`$offset2`,`$offset1`,`$offset0 `]` `,`
     $num `,` $stride `,` $elem_per_stride `)` attr-dict `:`
     `(` type($id)`,`type($x)`,`type($y)`,`type($memref)`,`
     `[` type($offset3)`,`type($offset2)`,`type($offset1)`,` type($offset0) `]` `,`
-    type($num) `,` type($stride) `,` type($elem_per_stride) `)`  `->` `(` `)`
+    type($num) `,` type($stride) `,` type($elem_per_stride) `)` (`:` type($event)^)?
   }];
   let description = [{
     4d half dma operator
@@ -248,6 +247,19 @@ def AIRRt_DeallocOp: AIRRt_Op<"dealloc", []> {
   }];
   let description = [{
     AIRRt Deallocation Op
+  }];
+}
+
+def AIRRt_WaitAllOp : AIRRt_Op<"wait_all", []> {
+  let arguments = (ins Variadic<AIRRt_Event>:$events);
+  let results = (outs Optional<AIRRt_Event>:$event);
+  let summary = "wait for all operator";
+  let description = [{
+    Block and wait for all events before preceding.
+    Optionally return an event.
+  }];
+  let assemblyFormat = [{
+    ($events^)? attr-dict (`:` type($event)^)?
   }];
 }
 
