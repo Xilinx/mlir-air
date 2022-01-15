@@ -28,8 +28,8 @@ module  {
               %7 = affine.apply #map0(%arg4, %arg3, %arg2)
               %8 = affine.apply #map1(%arg6, %arg5)
               %9 = affine.load %1[%7, %8] : memref<28x10xf32>
-              %cst = constant 1.000000e+00 : f32
-              %10 = addf %9, %cst : f32
+              %cst = arith.constant 1.000000e+00 : f32
+              %10 = arith.addf %9, %cst : f32
               affine.store %10, %0[%7, %8] : memref<28x10xf32>
             }
           }
@@ -49,7 +49,7 @@ module  {
               %8 = affine.apply #map1(%arg2, %arg3)
               %9 = affine.load %4[%7, %8] : memref<28x10xf32>
               %10 = affine.load %5[%7, %8] : memref<28x10xf32>
-              %11 = mulf %9, %10 : f32
+              %11 = arith.mulf %9, %10 : f32
               affine.store %11, %3[%7, %8] : memref<28x10xf32>
             }
           }

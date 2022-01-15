@@ -4,7 +4,7 @@
 module {
 
 func @foo(%arg0: i32) {
-  %cst1 = constant 1 : index
+  %cst1 = arith.constant 1 : index
   // CHECK-LABEL: module @aie.herd_0
   // CHECK: AIE.core(%0)  {
   // CHECK:   call @beefmaker_kernel(%1) : (memref<1024xi32, 2>) -> ()

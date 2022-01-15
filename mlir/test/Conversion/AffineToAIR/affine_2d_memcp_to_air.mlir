@@ -7,10 +7,10 @@
 #map1 = affine_map<(d0, d1) -> (d0 + d1 * 2)>
 module  {
   func @myAddOne(%arg0: tensor<256x256xi32>) -> tensor<256x256xi32> {
-    %c4096 = constant 4096 : index
-    %c256 = constant 256 : index
-    %c64 = constant 64 : index
-    %c0 = constant 0 : index
+    %c4096 = arith.constant 4096 : index
+    %c256 = arith.constant 256 : index
+    %c64 = arith.constant 64 : index
+    %c0 = arith.constant 0 : index
     %0 = memref.alloc() : memref<256x256xi32>
     %1 = memref.buffer_cast %arg0 : memref<256x256xi32>
     affine.for %arg1 = 0 to 2 {
@@ -29,8 +29,8 @@ module  {
           affine.for %arg5 = 0 to 64 {
             affine.for %arg6 = 0 to 64 {
               %11 = affine.load %7[%arg5, %arg6] : memref<64x64xi32, 2>
-              %c1_i32 = constant 1 : i32
-              %12 = addi %11, %c1_i32 : i32
+              %c1_i32 = arith.constant 1 : i32
+              %12 = arith.addi %11, %c1_i32 : i32
               affine.store %12, %9[%arg5, %arg6] : memref<64x64xi32, 2>
             }
           }

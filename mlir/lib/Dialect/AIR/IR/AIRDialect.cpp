@@ -153,7 +153,7 @@ static void printHerdLaunchOp(OpAsmPrinter &p, HerdLaunchOp op) {
   SmallVector<NamedAttribute, 8> filteredAttrs(
         llvm::make_filter_range(op->getAttrs(), [&](NamedAttribute attr) {
           return (OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr()
-            != attr.first.strref());
+            != attr.getName());
         }));
   if (filteredAttrs.size()) {
     p << " attributes";

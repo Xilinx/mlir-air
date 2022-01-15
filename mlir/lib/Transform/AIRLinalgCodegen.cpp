@@ -39,10 +39,11 @@ struct FoldSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
 
     auto source_subview = cast<memref::SubViewOp>(op.source().getDefiningOp());
 
-    for (auto m : llvm::zip(source_subview.getType().getAffineMaps(),
-                            op.getType().getAffineMaps()))
-      if (std::get<0>(m) != std::get<1>(m))
-        return failure();
+    // FIXME: do we still need this?
+    // for (auto m : llvm::zip(source_subview.getType().getLayout(),
+    //                         op.getType().getLayout()))
+    //   if (std::get<0>(m) != std::get<1>(m))
+    //     return failure();
 
     auto offsets = op.offsets().begin();
     auto source_offsets = source_subview.offsets().begin();
@@ -65,9 +66,9 @@ struct FoldSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
         } else {
           Value a = *offsets++;
           Value b =
-              rewriter.create<ConstantIndexOp>(op.getLoc(), source_offset);
+              rewriter.create<arith::ConstantIndexOp>(op.getLoc(), source_offset);
           result_offsets.push_back(
-              rewriter.create<AddIOp>(op.getLoc(), a.getType(), a, b));
+              rewriter.create<arith::AddIOp>(op.getLoc(), a.getType(), a, b));
         }
       } else if (op_offset >= 0 && source_offset < 0) {
         result_static_offsets.push_back(source_offset);
@@ -75,15 +76,15 @@ struct FoldSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
           result_offsets.push_back(*source_offsets++);
         } else {
           Value a = *source_offsets++;
-          Value b = rewriter.create<ConstantIndexOp>(op.getLoc(), op_offset);
+          Value b = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), op_offset);
           result_offsets.push_back(
-              rewriter.create<AddIOp>(op.getLoc(), a.getType(), a, b));
+              rewriter.create<arith::AddIOp>(op.getLoc(), a.getType(), a, b));
         }
       } else if (op_offset < 0 && source_offset < 0) {
         Value a = *source_offsets++;
         Value b = *offsets++;
         result_offsets.push_back(
-            rewriter.create<AddIOp>(op.getLoc(), a.getType(), a, b));
+            rewriter.create<arith::AddIOp>(op.getLoc(), a.getType(), a, b));
         result_static_offsets.push_back(source_offset);
       }
     }
@@ -113,15 +114,15 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
 
     int dim = 0;
     for (auto oper : op.getOperands()) {
-      if (auto c = oper.getDefiningOp<ConstantIndexOp>())
-        shape[dim] = c.getValue();
+      if (auto c = oper.getDefiningOp<arith::ConstantIndexOp>())
+        shape[dim] = c.value();
       else
         return failure();
       dim++;
     }
     Value newOp = rewriter.replaceOpWithNewOp<memref::AllocOp>(
         op,
-        MemRefType::get(shape, ty.getElementType(), {}, ty.getMemorySpace()));
+        MemRefType::get(shape, ty.getElementType(), nullptr, ty.getMemorySpace()));
     for (auto use : newOp.getUsers()) {
       if (auto launch = dyn_cast<air::HerdLaunchOp>(use)) {
         assert(launch.getKernelArguments().size() == launch.operands().size());
@@ -154,7 +155,7 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
 //     if (!operTy.hasStaticShape())
 //       return failure();
 
-//     auto indexOp = op.index().getDefiningOp<ConstantIndexOp>();
+//     auto indexOp = op.index().getDefiningOp<arith::ConstantIndexOp>();
 //     if (!indexOp)
 //       return failure();
 
@@ -354,12 +355,12 @@ public:
     auto shapeSizes =
         linalg::applyMapToValues(b, loc, shapeSizesToLoopsMap, allShapeSizes);
     for (auto size : shapeSizes) {
-      auto c = dyn_cast<ConstantIndexOp>(size.getDefiningOp());
+      auto c = dyn_cast<arith::ConstantIndexOp>(size.getDefiningOp());
       if (!c) {
         LLVM_DEBUG(llvm::outs() << "Found non-constant dim!\n");
         return {};
       }
-      tripCounts.push_back(c.getValue());
+      tripCounts.push_back(c.value());
     }
 
     return std::move(tripCounts);

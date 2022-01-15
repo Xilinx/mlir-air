@@ -46,8 +46,8 @@ namespace {
     else if (auto dict_attr = attr.dyn_cast<DictionaryAttr>()) {
       llvm::json::Object dictJSON;
       for (auto a : dict_attr) {
-        auto ident = a.first;
-        auto attr = a.second;
+        auto ident = a.getName();
+        auto attr = a.getValue();
         dictJSON[ident.str()] = attrToJSON(attr);
       }
       return llvm::json::Value(std::move(dictJSON));
@@ -67,8 +67,8 @@ namespace {
         for (auto herd_meta : module_meta.getOps<airrt::HerdMetadataOp>()) {
           llvm::json::Object herdJSON;
           for (auto a : herd_meta->getAttrs()) {
-            auto ident = a.first;
-            auto attr = a.second;
+            auto ident = a.getName();
+            auto attr = a.getValue();
             herdJSON[ident.str()] = attrToJSON(attr);
           }
           moduleJSON[herd_meta.sym_name()] = llvm::json::Value(std::move(herdJSON));
@@ -85,6 +85,7 @@ namespace {
       registry.insert<xilinx::air::airDialect,
                       xilinx::airrt::AIRRtDialect,
                       StandardOpsDialect,
+                      arith::ArithmeticDialect,
                       memref::MemRefDialect,
                       vector::VectorDialect,
                       LLVM::LLVMDialect,

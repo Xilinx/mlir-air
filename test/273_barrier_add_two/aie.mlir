@@ -163,16 +163,16 @@ module {
   }
 
   AIE.core(%t72) {
-    %c8 = constant 8 : index
-    %c0 = constant 0 : index
-    %c1 = constant 1 : index
-    %c1_32 = constant 1 : i32
+    %c8 = arith.constant 8 : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c1_32 = arith.constant 1 : i32
 
     AIE.useLock(%l72_0, "Acquire", 1)
     AIE.useLock(%l72_2, "Acquire", 0)
     scf.for %arg3 = %c0 to %c8 step %c1 {
         %0 = memref.load %buf72_0[%arg3] : memref<8xi32>
-        %1 = addi %0, %c1_32 : i32
+        %1 = arith.addi %0, %c1_32 : i32
         memref.store %1, %buf72_1[%arg3] : memref<8xi32>
     }
     AIE.useLock(%l72_0, "Release", 0)
@@ -182,7 +182,7 @@ module {
     AIE.useLock(%l72_3, "Acquire", 0)
     scf.for %arg4 = %c0 to %c8 step %c1 {
         %2 = memref.load %buf72_2[%arg4] : memref<8xi32>
-        %3 = addi %2, %c1_32 : i32
+        %3 = arith.addi %2, %c1_32 : i32
         memref.store %3, %buf72_3[%arg4] : memref<8xi32>
     }
     AIE.useLock(%l72_1, "Release", 0)
@@ -190,16 +190,16 @@ module {
     AIE.end
   }
   AIE.core(%t73) {
-    %c8 = constant 8 : index
-    %c0 = constant 0 : index
-    %c1 = constant 1 : index
-    %c1_32 = constant 1 : i32
+    %c8 = arith.constant 8 : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c1_32 = arith.constant 1 : i32
 
     AIE.useLock(%l73_0, "Acquire", 1)
     AIE.useLock(%l73_2, "Acquire", 0)
     scf.for %arg3 = %c0 to %c8 step %c1 {
         %0 = memref.load %buf73_0[%arg3] : memref<8xi32>
-        %1 = addi %0, %c1_32 : i32
+        %1 = arith.addi %0, %c1_32 : i32
         memref.store %1, %buf73_1[%arg3] : memref<8xi32>
     }
     AIE.useLock(%l73_0, "Release", 0)
@@ -209,7 +209,7 @@ module {
     AIE.useLock(%l73_3, "Acquire", 0)
     scf.for %arg4 = %c0 to %c8 step %c1 {
         %2 = memref.load %buf73_2[%arg4] : memref<8xi32>
-        %3 = addi %2, %c1_32 : i32
+        %3 = arith.addi %2, %c1_32 : i32
         memref.store %3, %buf73_3[%arg4] : memref<8xi32>
     }
     AIE.useLock(%l73_1, "Release", 0)
@@ -217,16 +217,16 @@ module {
     AIE.end
   }
   AIE.core(%t82) {
-    %c8 = constant 8 : index
-    %c0 = constant 0 : index
-    %c1 = constant 1 : index
-    %c1_32 = constant 1 : i32
+    %c8 = arith.constant 8 : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c1_32 = arith.constant 1 : i32
 
     AIE.useLock(%l82_0, "Acquire", 1)
     AIE.useLock(%l82_2, "Acquire", 0)
     scf.for %arg3 = %c0 to %c8 step %c1 {
         %0 = memref.load %buf82_0[%arg3] : memref<8xi32>
-        %1 = addi %0, %c1_32 : i32
+        %1 = arith.addi %0, %c1_32 : i32
         memref.store %1, %buf82_1[%arg3] : memref<8xi32>
     }
     AIE.useLock(%l82_0, "Release", 0)
@@ -236,7 +236,7 @@ module {
     AIE.useLock(%l82_3, "Acquire", 0)
     scf.for %arg4 = %c0 to %c8 step %c1 {
         %2 = memref.load %buf82_2[%arg4] : memref<8xi32>
-        %3 = addi %2, %c1_32 : i32
+        %3 = arith.addi %2, %c1_32 : i32
         memref.store %3, %buf82_3[%arg4] : memref<8xi32>
     }
     AIE.useLock(%l82_1, "Release", 0)
@@ -244,16 +244,16 @@ module {
     AIE.end
   }
   AIE.core(%t83) {
-    %c8 = constant 8 : index
-    %c0 = constant 0 : index
-    %c1 = constant 1 : index
-    %c1_32 = constant 1 : i32
+    %c8 = arith.constant 8 : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c1_32 = arith.constant 1 : i32
 
     AIE.useLock(%l83_0, "Acquire", 1)
     AIE.useLock(%l83_2, "Acquire", 0)
     scf.for %arg3 = %c0 to %c8 step %c1 {
         %0 = memref.load %buf83_0[%arg3] : memref<8xi32>
-        %1 = addi %0, %c1_32 : i32
+        %1 = arith.addi %0, %c1_32 : i32
         memref.store %1, %buf83_1[%arg3] : memref<8xi32>
     }
     AIE.useLock(%l83_0, "Release", 0)
@@ -263,7 +263,7 @@ module {
     AIE.useLock(%l83_3, "Acquire", 0)
     scf.for %arg4 = %c0 to %c8 step %c1 {
         %2 = memref.load %buf83_2[%arg4] : memref<8xi32>
-        %3 = addi %2, %c1_32 : i32
+        %3 = arith.addi %2, %c1_32 : i32
         memref.store %3, %buf83_3[%arg4] : memref<8xi32>
     }
     AIE.useLock(%l83_1, "Release", 0)
@@ -313,18 +313,18 @@ module {
   }
 
   AIE.core(%t342) {
-    %c8 = constant 8 : index
-    %c0 = constant 0 : index
-    %c4 = constant 4 : index
-    %c1 = constant 1 : index
-    %c1_32 = constant 1 : i32
+    %c8 = arith.constant 8 : index
+    %c0 = arith.constant 0 : index
+    %c4 = arith.constant 4 : index
+    %c1 = arith.constant 1 : index
+    %c1_32 = arith.constant 1 : i32
 
     scf.for %arg2 = %c0 to %c4 step %c1 {
       AIE.useLock(%l342_0, "Acquire", 1)
       AIE.useLock(%l342_2, "Acquire", 0)
       scf.for %arg3 = %c0 to %c8 step %c1 {
           %0 = memref.load %buf342_0[%arg3] : memref<8xi32>
-          %1 = addi %0, %c1_32 : i32
+          %1 = arith.addi %0, %c1_32 : i32
           memref.store %1, %buf342_1[%arg3] : memref<8xi32>
       }
       AIE.useLock(%l342_0, "Release", 0)
@@ -334,7 +334,7 @@ module {
       AIE.useLock(%l342_3, "Acquire", 0)
       scf.for %arg4 = %c0 to %c8 step %c1 {
           %2 = memref.load %buf342_2[%arg4] : memref<8xi32>
-          %3 = addi %2, %c1_32 : i32
+          %3 = arith.addi %2, %c1_32 : i32
           memref.store %3, %buf342_3[%arg4] : memref<8xi32>
       }
       AIE.useLock(%l342_1, "Release", 0)

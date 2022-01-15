@@ -33,6 +33,7 @@
 #define DEBUG_TYPE "air-lowering-pass"
 
 using namespace mlir;
+using namespace mlir::arith;
 using namespace xilinx::air;
 
 namespace {
@@ -52,8 +53,8 @@ public:
       rewriter.create<xilinx::airrt::HerdLoadOp>(op->getLoc(), rewriter.getI32Type(), herd_name);
     }
     auto herd_size = launch.getHerdSizeOperands();
-    int64_t herd_size_x = cast<ConstantIndexOp>(herd_size.x.getDefiningOp()).getValue();
-    int64_t herd_size_y = cast<ConstantIndexOp>(herd_size.y.getDefiningOp()).getValue();
+    int64_t herd_size_x = cast<ConstantIndexOp>(herd_size.x.getDefiningOp()).value();
+    int64_t herd_size_y = cast<ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
 
     auto outer = rewriter.create<AffineForOp>(launch.getLoc(), 0, herd_size_x);
     auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
@@ -181,9 +182,9 @@ CallOp convertDmaMemcpyToMemcpyFn(Operation *op, ArrayRef<Value > operands,
 
   auto idTy = IntegerType::get(op->getContext(), 32);
   if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
-    callops.push_back(rewriter.create<ConstantOp>(loc, idTy, id_attr));
+    callops.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
   } else {
-    callops.push_back(rewriter.create<ConstantOp>(loc, idTy,
+    callops.push_back(rewriter.create<arith::ConstantOp>(loc, idTy,
                                                   IntegerAttr::get(idTy, 0)));
   }
 
@@ -253,9 +254,9 @@ Operation* convertDmaMemcpyToAirRt(Operation *op, ArrayRef<Value > operands,
 
   auto idTy = IntegerType::get(op->getContext(), 32);
   if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
-    opers.push_back(rewriter.create<ConstantOp>(loc, idTy, id_attr));
+    opers.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
   } else {
-    opers.push_back(rewriter.create<ConstantOp>(loc, idTy,
+    opers.push_back(rewriter.create<arith::ConstantOp>(loc, idTy,
                                                 IntegerAttr::get(idTy, 0)));
   }
 
@@ -408,10 +409,10 @@ public:
     if (!isFullMemcpy) {
       auto idTy = IntegerType::get(op->getContext(), 32);
       if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
-        opers.push_back(rewriter.create<ConstantOp>(loc, idTy, id_attr));
+        opers.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
       } else {
         opers.push_back(
-            rewriter.create<ConstantOp>(loc, idTy, IntegerAttr::get(idTy, 0)));
+            rewriter.create<arith::ConstantOp>(loc, idTy, IntegerAttr::get(idTy, 0)));
       }
 
       xilinx::air::HerdLaunchOp launch =
@@ -452,9 +453,9 @@ public:
     }
     auto i64Ty = rewriter.getI64Type();
     auto zero =
-        rewriter.create<ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 0));
+        rewriter.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 0));
     auto one =
-        rewriter.create<ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 1));
+        rewriter.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 1));
 
     SmallVector<Value, 4> offsets(4, zero);
     SmallVector<Value, 4> lengths(4, one);
@@ -609,6 +610,7 @@ public:
 
     target.addLegalDialect<LLVM::LLVMDialect,
                           StandardOpsDialect,
+                          arith::ArithmeticDialect,
                           AffineDialect,
                           scf::SCFDialect,
                           linalg::LinalgDialect,

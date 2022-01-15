@@ -60,12 +60,12 @@ CostModel::getLinalgOpCounts(OpCountMap &map, linalg::LinalgOp op) {
   int64_t writes = 0;
   uint64_t footprint = 0;
   for (auto size : shapeSizes) {
-    auto c = dyn_cast<ConstantIndexOp>(size.getDefiningOp());
+    auto c = dyn_cast<arith::ConstantIndexOp>(size.getDefiningOp());
     if (!c) {
       LLVM_DEBUG(llvm::outs() << "Found non-constant dim!\n");
       return;
     }
-    iters *= c.getValue();
+    iters *= c.value();
   }
   Region &region = op.getOperation()->getRegion(0);
   region.walk([&](Operation *op) {
@@ -103,20 +103,20 @@ CostModel::getScfForOpCounts(CostModel::OpCountMap &map, scf::ForOp op)
 {
   // everything must be a constant
   auto step = op.step();
-  if (!step.getDefiningOp<ConstantIndexOp>())
+  if (!step.getDefiningOp<arith::ConstantIndexOp>())
     return;
 
   auto lowerBound = op.lowerBound();
-  if (!lowerBound.getDefiningOp<ConstantIndexOp>())
+  if (!lowerBound.getDefiningOp<arith::ConstantIndexOp>())
     return;
 
   auto upperBound = op.upperBound();
-  if (!upperBound.getDefiningOp<ConstantIndexOp>())
+  if (!upperBound.getDefiningOp<arith::ConstantIndexOp>())
     return;
 
-  auto stepI64 = cast<ConstantIndexOp>(step.getDefiningOp()).getValue();
-  auto lowerBoundI64 = cast<ConstantIndexOp>(lowerBound.getDefiningOp()).getValue();
-  auto upperBoundI64 = cast<ConstantIndexOp>(upperBound.getDefiningOp()).getValue();
+  auto stepI64 = cast<arith::ConstantIndexOp>(step.getDefiningOp()).value();
+  auto lowerBoundI64 = cast<arith::ConstantIndexOp>(lowerBound.getDefiningOp()).value();
+  auto upperBoundI64 = cast<arith::ConstantIndexOp>(upperBound.getDefiningOp()).value();
 
   auto iters = (upperBoundI64 - lowerBoundI64) / stepI64;
 

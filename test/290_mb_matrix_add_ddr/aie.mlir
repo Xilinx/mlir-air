@@ -65,10 +65,10 @@ module {
   }
 
   AIE.core(%t72) {
-    %clp = constant 36 : index
-    %c1024 = constant 1024 : index
-    %c0 = constant 0 : index
-    %c1 = constant 1 : index
+    %clp = arith.constant 36 : index
+    %c1024 = arith.constant 1024 : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
 
     scf.for %arg5 = %c0 to %clp step %c1 {  
       AIE.useLock(%l72_0, "Acquire", 1)
@@ -77,7 +77,7 @@ module {
       scf.for %arg3 = %c0 to %c1024 step %c1 {
           %0 = memref.load %buf72_0[%arg3] : memref<1024xi32>
           %1 = memref.load %buf72_4[%arg3] : memref<1024xi32>
-          %2 = addi %0, %1 : i32
+          %2 = arith.addi %0, %1 : i32
           memref.store %2, %buf72_1[%arg3] : memref<1024xi32>
       }
       AIE.useLock(%l72_0, "Release", 0)
@@ -90,7 +90,7 @@ module {
       scf.for %arg4 = %c0 to %c1024 step %c1 {
           %3 = memref.load %buf72_2[%arg4] : memref<1024xi32>
           %4 = memref.load %buf72_5[%arg4] : memref<1024xi32>
-          %5 = addi %3, %4 : i32
+          %5 = arith.addi %3, %4 : i32
           memref.store %5, %buf72_3[%arg4] : memref<1024xi32>
       }
       AIE.useLock(%l72_1, "Release", 0)

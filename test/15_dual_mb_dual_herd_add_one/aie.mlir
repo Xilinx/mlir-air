@@ -50,16 +50,16 @@ module {
   }
 
   AIE.core(%t72) {
-    %c8 = constant 8 : index
-    %c0 = constant 0 : index
-    %c1 = constant 1 : index
-    %c1_32 = constant 1 : i32
+    %c8 = arith.constant 8 : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c1_32 = arith.constant 1 : i32
 
     AIE.useLock(%l72_0, "Acquire", 1)
     AIE.useLock(%l72_2, "Acquire", 0)
     scf.for %arg3 = %c0 to %c8 step %c1 {
         %0 = memref.load %buf72_0[%arg3] : memref<8xi32>
-        %1 = addi %0, %c1_32 : i32
+        %1 = arith.addi %0, %c1_32 : i32
         memref.store %1, %buf72_1[%arg3] : memref<8xi32>
     }
     AIE.useLock(%l72_0, "Release", 0)
@@ -69,7 +69,7 @@ module {
     AIE.useLock(%l72_3, "Acquire", 0)
     scf.for %arg4 = %c0 to %c8 step %c1 {
         %2 = memref.load %buf72_2[%arg4] : memref<8xi32>
-        %3 = addi %2, %c1_32 : i32
+        %3 = arith.addi %2, %c1_32 : i32
         memref.store %3, %buf72_3[%arg4] : memref<8xi32>
     }
     AIE.useLock(%l72_1, "Release", 0)
@@ -122,16 +122,16 @@ module {
   }
 
   AIE.core(%t342) {
-    %c8 = constant 8 : index
-    %c0 = constant 0 : index
-    %c1 = constant 1 : index
-    %c1_32 = constant 1 : i32
+    %c8 = arith.constant 8 : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c1_32 = arith.constant 1 : i32
 
     AIE.useLock(%l342_0, "Acquire", 1)
     AIE.useLock(%l342_2, "Acquire", 0)
     scf.for %arg3 = %c0 to %c8 step %c1 {
         %0 = memref.load %buf342_0[%arg3] : memref<8xi32>
-        %1 = addi %0, %c1_32 : i32
+        %1 = arith.addi %0, %c1_32 : i32
         memref.store %1, %buf342_1[%arg3] : memref<8xi32>
     }
     AIE.useLock(%l342_0, "Release", 0)
@@ -141,7 +141,7 @@ module {
     AIE.useLock(%l342_3, "Acquire", 0)
     scf.for %arg4 = %c0 to %c8 step %c1 {
         %2 = memref.load %buf342_2[%arg4] : memref<8xi32>
-        %3 = addi %2, %c1_32 : i32
+        %3 = arith.addi %2, %c1_32 : i32
         memref.store %3, %buf342_3[%arg4] : memref<8xi32>
     }
     AIE.useLock(%l342_1, "Release", 0)

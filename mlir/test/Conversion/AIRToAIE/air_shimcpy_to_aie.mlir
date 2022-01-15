@@ -29,11 +29,11 @@ module {
 
 // CHECK:         AIE.flow(%[[VAL_0]], DMA : 0, %[[VAL_2]], DMA : 0)
 func @func0(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
-  %herd_cols = constant 1 : index
-  %herd_rows = constant 1 : index
+  %herd_cols = arith.constant 1 : index
+  %herd_rows = arith.constant 1 : index
   air.launch_herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<1024xi32>, memref<1024xi32> attributes { sym_name="func0"} {
-    %c0 = constant 0 : index
-    %c1024 = constant 0 : index
+    %c0 = arith.constant 0 : index
+    %c1024 = arith.constant 0 : index
     %buf0 = memref.alloc() : memref<1024xi32, 2>
     air.dma_memcpy (%buf0, %ext0, [%c0], [%c0], %c1024) : (memref<1024xi32, 2>, memref<1024xi32>, [index], [index], index) -> ()
     memref.dealloc %buf0 : memref<1024xi32, 2>
@@ -67,12 +67,12 @@ func @func0(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 
 // CHECK:         AIE.flow(%[[VAL_10]], DMA : 0, %[[VAL_12]], DMA : 0)
 func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
-  %herd_cols = constant 1 : index
-  %herd_rows = constant 1 : index
+  %herd_cols = arith.constant 1 : index
+  %herd_rows = arith.constant 1 : index
   air.launch_herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<1024xi32>, memref<1024xi32> attributes { sym_name="func1"} {
-    %c0 = constant 0 : index
-    %c1 = constant 0 : index
-    %c1024 = constant 0 : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 0 : index
+    %c1024 = arith.constant 0 : index
     %buf0 = memref.alloc() : memref<1024xi32, 2>
     air.dma_memcpy_nd (%buf0[] [] [], %ext0[%c0] [%c1024] [%c1]) : (memref<1024xi32, 2>, memref<1024xi32>)
     memref.dealloc %buf0 : memref<1024xi32, 2>

@@ -23,8 +23,8 @@ module  {
     affine.for %arg2 = 0 to 28 {
       affine.for %arg3 = 0 to 10 {
         %7 = affine.load %1[%arg2, %arg3] : memref<28x10xf32>
-        %cst = constant 1.000000e+00 : f32
-        %8 = addf %7, %cst : f32
+        %cst = arith.constant 1.000000e+00 : f32
+        %8 = arith.addf %7, %cst : f32
         affine.store %8, %0[%arg2, %arg3] : memref<28x10xf32>
       }
     } {affine_opt_label = "affine_opt"}
@@ -36,7 +36,7 @@ module  {
       affine.for %arg3 = 0 to 10 {
         %7 = affine.load %4[%arg2, %arg3] : memref<28x10xf32>
         %8 = affine.load %5[%arg2, %arg3] : memref<28x10xf32>
-        %9 = mulf %7, %8 : f32
+        %9 = arith.mulf %7, %8 : f32
         affine.store %9, %3[%arg2, %arg3] : memref<28x10xf32>
       }
     } {affine_opt_label = "xten.binary_op"}

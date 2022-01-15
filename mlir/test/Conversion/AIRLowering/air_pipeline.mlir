@@ -14,12 +14,12 @@
 #map0 = affine_map<(d0) -> (d0)>
 module  {
   func @launch(%m0: memref<1024xf32>, %m1: memref<1024xf32>, %m2: memref<1024xf32>) {
-    %c4 = constant 4 : index
-    %c1 = constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c1 = arith.constant 1 : index
     air.launch_herd tile (%x, %y) in (%sx=%c4, %sy=%c1) args(%op0=%m0, %op1=%m1, %op2=%m2) : memref<1024xf32>,memref<1024xf32>,memref<1024xf32> {
-      %c1_f32 = constant 1.0 : f32
-      %c0 = constant 0 : index
-      %c1024 = constant 1024 : index
+      %c1_f32 = arith.constant 1.0 : f32
+      %c0 = arith.constant 0 : index
+      %c1024 = arith.constant 1024 : index
 
       air.pipeline {direction = "horiz"} {
         %output1 = air.pipeline.stage {
@@ -32,7 +32,7 @@ module  {
           %tb = memref.tensor_load %b : memref<1024xf32, 2>
           %5 = linalg.generic {indexing_maps = [#map0, #map0, #map0], iterator_types = ["parallel"]} ins(%ta, %tb : tensor<1024xf32>, tensor<1024xf32>) outs(%init : tensor<1024xf32>) {
           ^bb0(%a2: f32, %a3: f32, %a4: f32):  // no predecessors
-            %6 = mulf %a2, %a3 : f32
+            %6 = arith.mulf %a2, %a3 : f32
             linalg.yield %6 : f32
           } -> tensor<1024xf32>
           air.pipeline.yield %5 : tensor<1024xf32>
@@ -42,8 +42,8 @@ module  {
           %init = linalg.init_tensor [1024] : tensor<1024xf32>
           %5 = linalg.generic {indexing_maps = [#map0, #map0], iterator_types = ["parallel"]} ins(%in : tensor<1024xf32>) outs(%init : tensor<1024xf32>) {
           ^bb0(%a2: f32, %a3: f32):  // no predecessors
-            %one = constant 1.0 : f32
-            %6 = addf %a2, %one : f32
+            %one = arith.constant 1.0 : f32
+            %6 = arith.addf %a2, %one : f32
             linalg.yield %6 : f32
           } -> tensor<1024xf32>
           air.pipeline.yield %5 : tensor<1024xf32>
@@ -53,8 +53,8 @@ module  {
           %init = linalg.init_tensor [1024] : tensor<1024xf32>
           %5 = linalg.generic {indexing_maps = [#map0, #map0], iterator_types = ["parallel"]} ins(%in : tensor<1024xf32>) outs(%init : tensor<1024xf32>) {
           ^bb0(%a2: f32, %a3: f32):  // no predecessors
-            %one = constant 1.0 : f32
-            %6 = addf %a2, %one : f32
+            %one = arith.constant 1.0 : f32
+            %6 = arith.addf %a2, %one : f32
             linalg.yield %6 : f32
           } -> tensor<1024xf32>
           air.pipeline.yield %5 : tensor<1024xf32>
@@ -65,8 +65,8 @@ module  {
           %init = linalg.init_tensor [1024] : tensor<1024xf32>
           %5 = linalg.generic {indexing_maps = [#map0, #map0], iterator_types = ["parallel"]} ins(%in : tensor<1024xf32>) outs(%init : tensor<1024xf32>) {
           ^bb0(%a2: f32, %a3: f32):  // no predecessors
-            %one = constant 1.0 : f32
-            %6 = addf %a2, %one : f32
+            %one = arith.constant 1.0 : f32
+            %6 = arith.addf %a2, %one : f32
             linalg.yield %6 : f32
           } -> tensor<1024xf32>
           memref.tensor_store %5, %c : memref<1024xf32, 2>

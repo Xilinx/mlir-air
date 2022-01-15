@@ -239,6 +239,7 @@ def run_flow(opts):
     do_call(['clang', '-Wno-override-module', '-fPIC', '--target=aarch64-linux-gnu', '-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
 
     t = do_run(['air-translate', '--airrt-generate-json', aie_ctrl_airrt])
+    print(t.stderr)
     module_meta = eval(t.stdout)
     herds = [module_meta[herd]["sym_name"] for herd in module_meta]
     print ("Compiling herds:", herds)

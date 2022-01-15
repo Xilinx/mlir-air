@@ -8,7 +8,7 @@
 // CHECK:     affine.for %arg1 = 0 to 32 {
 // CHECK:       %{{.*}} = affine.load %[[BUF0]][%arg0, %arg1] : memref<32x32xi32, 2>
 // CHECK:       %{{.*}} = affine.load %[[BUF1]][%arg0, %arg1] : memref<32x32xi32, 2>
-// CHECK:       %{{.*}} = muli %{{.*}}, %{{.*}} : i32
+// CHECK:       %{{.*}} = arith.muli %{{.*}}, %{{.*}} : i32
 // CHECK:       affine.store %{{.*}}, %[[BUF2]][%arg0, %arg1] : memref<32x32xi32, 2>
 // CHECK:     }
 // CHECK:   }
@@ -34,7 +34,7 @@ module @aie.0  {
     %10 = memref.tensor_load %5 : memref<32x32xi32, 2>
     %11 = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%9, %10 : tensor<32x32xi32>, tensor<32x32xi32>) outs(%8 : tensor<32x32xi32>) {
     ^bb0(%arg0: i32, %arg1: i32, %arg2: i32):  // no predecessors
-      %12 = muli %arg0, %arg1 : i32
+      %12 = arith.muli %arg0, %arg1 : i32
       linalg.yield %12 : i32
     } -> tensor<32x32xi32>
     memref.tensor_store %11, %4 : memref<32x32xi32, 2>

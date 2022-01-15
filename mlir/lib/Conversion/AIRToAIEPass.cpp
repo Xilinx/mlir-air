@@ -447,14 +447,14 @@ public:
   void specializePipelineOps(int64_t x, int64_t y,
                              air::HerdLaunchOp h, AIE::CoreOp core) {
     air::HerdDim2 herd_size = h.getHerdSizeOperands();
-    if (!isa<ConstantIndexOp>(herd_size.x.getDefiningOp()) ||
-        !isa<ConstantIndexOp>(herd_size.y.getDefiningOp()) ) {
+    if (!isa<arith::ConstantIndexOp>(herd_size.x.getDefiningOp()) ||
+        !isa<arith::ConstantIndexOp>(herd_size.y.getDefiningOp()) ) {
       llvm::errs() << "Only constant sized herds are supported";
       return;
     }
 
-    int64_t herd_size_x = cast<ConstantIndexOp>(herd_size.x.getDefiningOp())
-                            .getValue();
+    int64_t herd_size_x = cast<arith::ConstantIndexOp>(herd_size.x.getDefiningOp())
+                            .value();
     auto aie_module = core->getParentOfType<ModuleOp>();
     // specialize pipeline stages for this core
     core.walk([&](air::HerdPipelineOp pipelineOp) {
@@ -631,14 +631,14 @@ public:
           builder.setInsertionPointToStart(aie_module.getBody());
 
           air::HerdDim2 herd_size = h.getHerdSizeOperands();
-          if (!isa<ConstantIndexOp>(herd_size.x.getDefiningOp()) ||
-              !isa<ConstantIndexOp>(herd_size.y.getDefiningOp()) ) {
+          if (!isa<arith::ConstantIndexOp>(herd_size.x.getDefiningOp()) ||
+              !isa<arith::ConstantIndexOp>(herd_size.y.getDefiningOp()) ) {
             llvm::errs() << "Only constant sized herds are supported";
             return;
           }
 
-          int64_t herd_size_x = cast<ConstantIndexOp>(herd_size.x.getDefiningOp()).getValue();
-          int64_t herd_size_y = cast<ConstantIndexOp>(herd_size.y.getDefiningOp()).getValue();
+          int64_t herd_size_x = cast<arith::ConstantIndexOp>(herd_size.x.getDefiningOp()).value();
+          int64_t herd_size_y = cast<arith::ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
 
           LLVM_DEBUG(llvm::outs() << "Herd Size x=" << herd_size_x << ", y=" << herd_size_y << "\n");
           std::vector<AIE::TileOp> shim_dma_inits;
@@ -690,13 +690,13 @@ public:
 
               // map the tile ids and herd size to constants
               remap.map(h.getTileIds().x,
-                        core_builder.create<ConstantIndexOp>(hloc, x));
+                        core_builder.create<arith::ConstantIndexOp>(hloc, x));
               remap.map(h.getTileIds().y,
-                        core_builder.create<ConstantIndexOp>(hloc, y));
+                        core_builder.create<arith::ConstantIndexOp>(hloc, y));
               remap.map(h.getHerdSize().x,
-                        core_builder.create<ConstantIndexOp>(hloc, herd_size_x));
+                        core_builder.create<arith::ConstantIndexOp>(hloc, herd_size_x));
               remap.map(h.getHerdSize().y,
-                        core_builder.create<ConstantIndexOp>(hloc, herd_size_y));
+                        core_builder.create<arith::ConstantIndexOp>(hloc, herd_size_y));
 
               Region &r = h.getRegion();
               r.cloneInto(&core.body(), remap);
@@ -882,21 +882,21 @@ public:
                                      : ndcpy.src_sizes();
                     int64_t size = 1;
                     for (auto s : sizes) {
-                      auto c = dyn_cast<ConstantIndexOp>(s.getDefiningOp());
+                      auto c = dyn_cast<arith::ConstantIndexOp>(s.getDefiningOp());
                       if (!c) {
                         size = -1;
                         break;
                       }
-                      size = size * c.getValue();
+                      size = size * c.value();
                     }
-                    length = b.create<ConstantIndexOp>(dmaOp.getLoc(), size)
+                    length = b.create<arith::ConstantIndexOp>(dmaOp.getLoc(), size)
                                  ->getResult(0);
                   }
                   b.create<AIE::UseLockOp>(hloc, lockOp, lockAqValue,
                                           AIE::LockAction::Acquire);
                   b.create<AIE::DMABDOp>(
                       hloc, bufferOp, 0,
-                      cast<ConstantIndexOp>(length.getDefiningOp()).getValue(),
+                      cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(),
                       0);
                   b.create<AIE::UseLockOp>(hloc, lockOp, lockRelValue,
                                           AIE::LockAction::Release);

@@ -4,13 +4,13 @@
 module {
 
 func @graph(%arg0 : memref<256x16xi32>, %arg1 : memref<256x16xi32>) -> () {
-  %herd_cols = constant 8 : index
-  %herd_rows = constant 4 : index
+  %herd_cols = arith.constant 8 : index
+  %herd_rows = arith.constant 4 : index
   air.launch_herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<256x16xi32>, memref<256x16xi32> attributes { sym_name="copyherd"} {
-    %c0 = constant 0 : index
-    %c64 = constant 64 : index
-    %c256 = constant 256 : index
-    %c8 = constant 8 : index
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c256 = arith.constant 256 : index
+    %c8 = arith.constant 8 : index
     %buf0 = memref.alloc() {sym_name = "scratch"}: memref<8x8xi32, 2>
     %buf1 = memref.alloc() {sym_name = "scratch_copy"}: memref<8x8xi32, 2>
     %5 = affine.apply #map0(%tx, %ty)

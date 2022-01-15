@@ -68,20 +68,20 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
 
       SmallVector<Value, 4> src_indices;
       SmallVector<Value, 4> dst_indices;
-      Value zero = rewriter.create<ConstantIndexOp>(loc,0);
+      Value zero = rewriter.create<arith::ConstantIndexOp>(loc,0);
       Value stride = zero;
       Value elem_per_stride = zero;
 
       if (auto alloc = src.getDefiningOp<memref::AllocOp>()) {
         src_indices.push_back(zero);
         src_indices.push_back(zero);
-        elem_per_stride = rewriter.create<ConstantIndexOp>(loc,
+        elem_per_stride = rewriter.create<arith::ConstantIndexOp>(loc,
                             alloc.getType().getShape()[1]);
       }
       else if (auto cast = src.getDefiningOp<memref::BufferCastOp>()) {
         src_indices.push_back(zero);
         src_indices.push_back(zero);
-        elem_per_stride = rewriter.create<ConstantIndexOp>(loc,
+        elem_per_stride = rewriter.create<arith::ConstantIndexOp>(loc,
                             cast.getType().cast<MemRefType>().getShape()[1]);
       }
       else if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
@@ -89,12 +89,12 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
         auto static_offsets = extractFromI64ArrayAttr(subview.static_offsets());
         for (auto o : static_offsets) {
           if (o >= 0)
-            src_indices.push_back(rewriter.create<ConstantIndexOp>(loc, o));
+            src_indices.push_back(rewriter.create<arith::ConstantIndexOp>(loc, o));
           else
             src_indices.push_back(*offsets++);
         }
         src = subview.source();
-        stride = rewriter.create<ConstantIndexOp>(loc,
+        stride = rewriter.create<arith::ConstantIndexOp>(loc,
                    src.getType().cast<MemRefType>().getShape()[1]);
       }
       else
@@ -103,7 +103,7 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
       if (auto alloc = dst.getDefiningOp<memref::AllocOp>()) {
         dst_indices.push_back(zero);
         dst_indices.push_back(zero);
-        elem_per_stride = rewriter.create<ConstantIndexOp>(loc,
+        elem_per_stride = rewriter.create<arith::ConstantIndexOp>(loc,
                             alloc.getType().getShape()[1]);
       }
       else if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
@@ -111,12 +111,12 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
         auto static_offsets = extractFromI64ArrayAttr(subview.static_offsets());
         for (auto o : static_offsets) {
           if (o >= 0)
-            dst_indices.push_back(rewriter.create<ConstantIndexOp>(loc, o));
+            dst_indices.push_back(rewriter.create<arith::ConstantIndexOp>(loc, o));
           else
             dst_indices.push_back(*offsets++);
         }
         dst = subview.source();
-        stride = rewriter.create<ConstantIndexOp>(loc,
+        stride = rewriter.create<arith::ConstantIndexOp>(loc,
                    dst.getType().cast<MemRefType>().getShape()[1]);
       }
 
@@ -126,7 +126,7 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
                                                     deps, dst, src,
                                                     dst_indices[0], dst_indices[1],
                                                     src_indices[0], src_indices[1],
-                                                    rewriter.create<ConstantIndexOp>(
+                                                    rewriter.create<arith::ConstantIndexOp>(
                                                       loc,
                                                       src_type.getNumElements()),
                                                     stride, elem_per_stride);
@@ -162,14 +162,14 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
 
         for (auto o : static_offsets) {
           if (o >= 0)
-            offsets.push_back(rewriter.create<ConstantIndexOp>(loc, o));
+            offsets.push_back(rewriter.create<arith::ConstantIndexOp>(loc, o));
           else
             offsets.push_back(*subview_offsets++);
         }
         for (auto s : static_sizes)
-          sizes.push_back(rewriter.create<ConstantIndexOp>(loc, s));
+          sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, s));
         for (auto s : layout_strides)
-          strides.push_back(rewriter.create<ConstantIndexOp>(loc, s));
+          strides.push_back(rewriter.create<arith::ConstantIndexOp>(loc, s));
       };
 
       if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
@@ -309,8 +309,8 @@ public:
         else
           args.push_back(v);
       }
-      air::HerdDim2 dims{rewriter.create<ConstantIndexOp>(loc,ub0.getValue()),
-                         rewriter.create<ConstantIndexOp>(loc,ub1.getValue())};
+      air::HerdDim2 dims{rewriter.create<arith::ConstantIndexOp>(loc,ub0.getValue()),
+                         rewriter.create<arith::ConstantIndexOp>(loc,ub1.getValue())};
       auto launch = rewriter.create<air::HerdLaunchOp>(op.getLoc(), dims, args);
 
       if (auto attr = op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
@@ -356,15 +356,15 @@ public:
 
     // everything must be a constant
     for (auto step : parOp.step()) {
-      if (!step.getDefiningOp<ConstantIndexOp>())
+      if (!step.getDefiningOp<arith::ConstantIndexOp>())
         return failure();
     }
     for (auto lowerBound : parOp.lowerBound()) {
-      if (!lowerBound.getDefiningOp<ConstantIndexOp>())
+      if (!lowerBound.getDefiningOp<arith::ConstantIndexOp>())
         return failure();
     }
     for (auto upperBound : parOp.upperBound()) {
-      if (!upperBound.getDefiningOp<ConstantIndexOp>())
+      if (!upperBound.getDefiningOp<arith::ConstantIndexOp>())
         return failure();
     }
 
@@ -381,16 +381,16 @@ public:
     while (step != parOp.step().end()) {
       Value sv = *step++;
       Value lbv = *lowerBound++;
-      float s = sv.getDefiningOp<ConstantIndexOp>().getValue();
-      float lb = lbv.getDefiningOp<ConstantIndexOp>().getValue();
-      float ub = (*upperBound++).getDefiningOp<ConstantIndexOp>().getValue();
-      new_ub.push_back(rewriter.create<ConstantIndexOp>(loc,(uint64_t)ceil((ub - lb) / s)));
-      new_lb.push_back(rewriter.create<ConstantIndexOp>(loc,0));
-      new_step.push_back(rewriter.create<ConstantIndexOp>(loc,1));
+      float s = sv.getDefiningOp<arith::ConstantIndexOp>().value();
+      float lb = lbv.getDefiningOp<arith::ConstantIndexOp>().value();
+      float ub = (*upperBound++).getDefiningOp<arith::ConstantIndexOp>().value();
+      new_ub.push_back(rewriter.create<arith::ConstantIndexOp>(loc,(uint64_t)ceil((ub - lb) / s)));
+      new_lb.push_back(rewriter.create<arith::ConstantIndexOp>(loc,0));
+      new_step.push_back(rewriter.create<arith::ConstantIndexOp>(loc,1));
       auto iv = *ivs++;
       auto mul = 
-        builder.create<MulIOp>(loc, iv, sv.getDefiningOp<ConstantIndexOp>());
-      Value new_iv = builder.create<AddIOp>(loc, mul, lbv);
+        builder.create<arith::MulIOp>(loc, iv, sv.getDefiningOp<arith::ConstantIndexOp>());
+      Value new_iv = builder.create<arith::AddIOp>(loc, mul, lbv);
       SmallPtrSet<Operation *, 1> keep{mul};
       iv.replaceAllUsesExcept(new_iv, keep);
     }
@@ -412,17 +412,17 @@ public:
 
       SmallVector<int, 2> bounds{1, 1};
       for (unsigned int i = 0; i < op.getNumLoops(); i++) {
-        auto lb = dyn_cast<ConstantIndexOp>(op.lowerBound()[i].getDefiningOp());
-        auto ub = dyn_cast<ConstantIndexOp>(op.upperBound()[i].getDefiningOp());
-        auto step = dyn_cast<ConstantIndexOp>(op.step()[i].getDefiningOp());
+        auto lb = dyn_cast<arith::ConstantIndexOp>(op.lowerBound()[i].getDefiningOp());
+        auto ub = dyn_cast<arith::ConstantIndexOp>(op.upperBound()[i].getDefiningOp());
+        auto step = dyn_cast<arith::ConstantIndexOp>(op.step()[i].getDefiningOp());
 
-        // lowerBound, upperBound and step must be ConstantIndexOps
+        // lowerBound, upperBound and step must be arith::ConstantIndexOps
         if (!(lb && step && ub))
           return failure();
 
-        auto ub_int = ub.getValue();
-        auto lb_int = lb.getValue();
-        auto step_int = step.getValue();
+        auto ub_int = ub.value();
+        auto lb_int = lb.value();
+        auto step_int = step.value();
 
         // must start at 0
         if (lb_int)
@@ -445,8 +445,8 @@ public:
         else
           args.push_back(v);
       }
-      air::HerdDim2 dims{rewriter.create<ConstantIndexOp>(loc, bounds[0]),
-                         rewriter.create<ConstantIndexOp>(loc, bounds[1])};
+      air::HerdDim2 dims{rewriter.create<arith::ConstantIndexOp>(loc, bounds[0]),
+                         rewriter.create<arith::ConstantIndexOp>(loc, bounds[1])};
       auto launch = rewriter.create<air::HerdLaunchOp>(op.getLoc(), dims, args);
       auto &bb = launch.body().front();
       auto ivs = op.getInductionVars();
@@ -501,8 +501,8 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
     ConversionTarget target(*context);
 
     target.addLegalDialect<LLVM::LLVMDialect,
-                           StandardOpsDialect/*,
-                           scf::SCFDialect*/>();
+                           StandardOpsDialect,
+                           arith::ArithmeticDialect>();
 
     target.addLegalOp<xilinx::air::DmaMemcpyOp>();
     target.addLegalOp<xilinx::air::DmaMemcpy2dOp>();

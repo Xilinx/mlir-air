@@ -9,7 +9,7 @@
 // CHECK: buf0
 // CHECK: scratch_0_0
 func @launch(%arg0: i32) {
-  %cst2 = constant 3 : index
+  %cst2 = arith.constant 3 : index
   air.launch_herd tile (%x, %y) in (%sx=%cst2, %sy=%cst2) {
     %buf0 = memref.alloc() {sym_name = "scratch"} : memref<10xindex,2>
     %buf1 = memref.alloc() : memref<10xindex,2>

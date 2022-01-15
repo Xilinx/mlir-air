@@ -6,20 +6,20 @@
 // CHECK:   scf.for %[[VAL_8:.*]] = {{.*}} {
 // CHECK:     scf.for %[[VAL_9:.*]] = {{.*}} {
 // CHECK:       scf.parallel (%[[VAL_10:.*]], %[[VAL_11:.*]]) = ({{.*}}) to ({{.*}}) step ({{.*}}) {
-// CHECK:         %[[VAL_12:.*]] = addi %[[VAL_7]], %[[VAL_10]] : index
+// CHECK:         %[[VAL_12:.*]] = arith.addi %[[VAL_7]], %[[VAL_10]] : index
 // CHECK:         %[[VAL_13:.*]] = memref.subview %arg0{{\[}}%[[VAL_12]], %[[VAL_9]]] [16, 64] [1, 1] : memref<1024x1024xf32> to memref<16x64xf32, #map>
-// CHECK:         %[[VAL_14:.*]] = addi %[[VAL_8]], %[[VAL_11]] : index
+// CHECK:         %[[VAL_14:.*]] = arith.addi %[[VAL_8]], %[[VAL_11]] : index
 // CHECK:         %[[VAL_15:.*]] = memref.subview %arg1{{\[}}%[[VAL_9]], %[[VAL_14]]] [64, 16] [1, 1] : memref<1024x1024xf32> to memref<64x16xf32, #map>
-// CHECK:         %[[VAL_16:.*]] = addi %[[VAL_7]], %[[VAL_10]] : index
-// CHECK:         %[[VAL_17:.*]] = addi %[[VAL_8]], %[[VAL_11]] : index
+// CHECK:         %[[VAL_16:.*]] = arith.addi %[[VAL_7]], %[[VAL_10]] : index
+// CHECK:         %[[VAL_17:.*]] = arith.addi %[[VAL_8]], %[[VAL_11]] : index
 // CHECK:         %[[VAL_18:.*]] = memref.subview %0{{\[}}%[[VAL_16]], %[[VAL_17]]] [16, 16] [1, 1] : memref<1024x1024xf32> to memref<16x16xf32, #map>
 #map = affine_map<(d0, d1)[s0] -> (d0 * 1024 + s0 + d1)>
 module  {
   func @myFunc(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1024xf32>) -> memref<1024x1024xf32> {
-    %c16 = constant 16 : index
-    %c0 = constant 0 : index
-    %c1024 = constant 1024 : index
-    %c64 = constant 64 : index
+    %c16 = arith.constant 16 : index
+    %c0 = arith.constant 0 : index
+    %c1024 = arith.constant 1024 : index
+    %c64 = arith.constant 64 : index
     %0 = memref.alloc() : memref<1024x1024xf32>
     scf.for %arg2 = %c0 to %c1024 step %c64 {
       scf.for %arg3 = %c0 to %c1024 step %c64 {

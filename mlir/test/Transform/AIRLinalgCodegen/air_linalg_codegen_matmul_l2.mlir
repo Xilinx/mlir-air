@@ -18,7 +18,7 @@
 // CHECK: scf.yield
 // CHECK: linalg.copy({{.*}}) : memref<{{.*}}, 1>, memref<{{.*}}>
 func @matmul_on_memref(%arg0: memref<128x128xi32>, %arg1: memref<128x128xi32>) -> memref<128x128xi32> {
-    %c0_i32 = constant 0 : i32
+    %c0_i32 = arith.constant 0 : i32
     %0 = memref.alloc() : memref<128x128xi32>
     linalg.fill(%c0_i32, %0) : i32, memref<128x128xi32>
     %1 = memref.alloc() : memref<128x128xi32>

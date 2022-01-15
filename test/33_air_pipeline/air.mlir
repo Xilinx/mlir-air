@@ -3,11 +3,11 @@
 #map0 = affine_map<(d0) -> (d0)>
 module  {
   func @launch(%m0: memref<1024xi32>, %m1: memref<1024xi32>, %m2: memref<1024xi32>) {
-    %c4 = constant 4 : index
-    %c1 = constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c1 = arith.constant 1 : index
     air.launch_herd tile (%x, %y) in (%sx=%c4, %sy=%c1) args(%op0=%m0, %op1=%m1, %op2=%m2) : memref<1024xi32>,memref<1024xi32>,memref<1024xi32> attributes {sym_name="herd_0"} {
-      %c0 = constant 0 : index
-      %c1024 = constant 1024 : index
+      %c0 = arith.constant 0 : index
+      %c1024 = arith.constant 1024 : index
 
       air.pipeline {direction = "horiz"} {
 
@@ -21,7 +21,7 @@ module  {
           %tb = memref.tensor_load %b : memref<1024xi32, 2>
           %5 = linalg.generic {indexing_maps = [#map0, #map0, #map0], iterator_types = ["parallel"]} ins(%ta, %tb : tensor<1024xi32>, tensor<1024xi32>) outs(%init : tensor<1024xi32>) {
           ^bb0(%a2: i32, %a3: i32, %a4: i32):  // no predecessors
-            %6 = muli %a2, %a3 : i32
+            %6 = arith.muli %a2, %a3 : i32
             linalg.yield %6 : i32
           } -> tensor<1024xi32>
           air.pipeline.yield %5 : tensor<1024xi32>
@@ -31,8 +31,8 @@ module  {
           %init = linalg.init_tensor [1024] : tensor<1024xi32>
           %5 = linalg.generic {indexing_maps = [#map0, #map0], iterator_types = ["parallel"]} ins(%in : tensor<1024xi32>) outs(%init : tensor<1024xi32>) {
           ^bb0(%a2: i32, %a3: i32):  // no predecessors
-            %one = constant 1 : i32
-            %6 = addi %a2, %one : i32
+            %one = arith.constant 1 : i32
+            %6 = arith.addi %a2, %one : i32
             linalg.yield %6 : i32
           } -> tensor<1024xi32>
           air.pipeline.yield %5 : tensor<1024xi32>
@@ -42,8 +42,8 @@ module  {
           %init = linalg.init_tensor [1024] : tensor<1024xi32>
           %5 = linalg.generic {indexing_maps = [#map0, #map0], iterator_types = ["parallel"]} ins(%in : tensor<1024xi32>) outs(%init : tensor<1024xi32>) {
           ^bb0(%a2: i32, %a3: i32):  // no predecessors
-            %two = constant 2 : i32
-            %6 = addi %a2, %two : i32
+            %two = arith.constant 2 : i32
+            %6 = arith.addi %a2, %two : i32
             linalg.yield %6 : i32
           } -> tensor<1024xi32>
           air.pipeline.yield %5 : tensor<1024xi32>
@@ -54,8 +54,8 @@ module  {
           %init = linalg.init_tensor [1024] : tensor<1024xi32>
           %5 = linalg.generic {indexing_maps = [#map0, #map0], iterator_types = ["parallel"]} ins(%in : tensor<1024xi32>) outs(%init : tensor<1024xi32>) {
           ^bb0(%a2: i32, %a3: i32):  // no predecessors
-            %three = constant 3 : i32
-            %6 = addi %a2, %three : i32
+            %three = arith.constant 3 : i32
+            %6 = arith.addi %a2, %three : i32
             linalg.yield %6 : i32
           } -> tensor<1024xi32>
           memref.tensor_store %5, %c : memref<1024xi32, 2>

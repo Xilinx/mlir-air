@@ -62,9 +62,9 @@ module {
 
  %core71 = AIE.core(%t71) {
 
-    %c8 = constant 8 : index
-    %c0 = constant 0 : index
-    %c1 = constant 1 : index
+    %c8 = arith.constant 8 : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
     scf.for %iter = %c0 to %c8 step %c1 {
       AIE.useLock(%l71_a, Acquire, 1)
       AIE.useLock(%l71_b, Acquire, 1)
@@ -95,9 +95,9 @@ module {
  }
 
  %core72 = AIE.core(%t72) {
-    %c8 = constant 8 : index
-    %c0 = constant 0 : index
-    %c1 = constant 1 : index
+    %c8 = arith.constant 8 : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
     scf.for %iter = %c0 to %c8 step %c1 {
       AIE.useLock(%l72_a, Acquire, 1)
       AIE.useLock(%l72_b, Acquire, 1)
@@ -129,9 +129,9 @@ module {
  }
 
  %core81 = AIE.core(%t81) {
-    %c8 = constant 8 : index
-    %c0 = constant 0 : index
-    %c1 = constant 1 : index
+    %c8 = arith.constant 8 : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
     scf.for %iter = %c0 to %c8 step %c1 {
       AIE.useLock(%l81_a, Acquire, 1)
       AIE.useLock(%l81_b, Acquire, 1)
@@ -163,9 +163,9 @@ module {
  }
 
  %core82 = AIE.core(%t82) {
-   %c8 = constant 8 : index
-    %c0 = constant 0 : index
-    %c1 = constant 1 : index
+   %c8 = arith.constant 8 : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
     scf.for %iter = %c0 to %c8 step %c1 {
       AIE.useLock(%l82_a, Acquire, 1)
       AIE.useLock(%l82_b, Acquire, 1)

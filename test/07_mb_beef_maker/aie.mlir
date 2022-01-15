@@ -6,14 +6,14 @@ module {
   %lock = AIE.lock(%t72, 0)
 
   %core13 = AIE.core(%t72) {
-    %val1 = constant 0xdeadbeef : i32
-    %val2 = constant 0xcafecafe : i32
-    %val3 = constant 0x000decaf : i32
-    %val4 = constant 0x5a1ad000 : i32
-    %idx1 = constant 0 : index
-    %idx2 = constant 1 : index
-    %idx3 = constant 2 : index
-    %idx4 = constant 3 : index
+    %val1 = arith.constant 0xdeadbeef : i32
+    %val2 = arith.constant 0xcafecafe : i32
+    %val3 = arith.constant 0x000decaf : i32
+    %val4 = arith.constant 0x5a1ad000 : i32
+    %idx1 = arith.constant 0 : index
+    %idx2 = arith.constant 1 : index
+    %idx3 = arith.constant 2 : index
+    %idx4 = arith.constant 3 : index
     AIE.useLock(%lock, "Acquire", 1)
     memref.store %val1, %buf72_0[%idx1] : memref<4xi32>
     memref.store %val2, %buf72_0[%idx2] : memref<4xi32>

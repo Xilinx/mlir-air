@@ -20,11 +20,11 @@
 #map2 = affine_map<(d0, d1) -> (d0 * 16 + d1)>
 module  {
   func @myFunc(%arg0: memref<64x64xf32>, %arg1: memref<64x64xf32>) -> memref<64x64xf32> {
-    %c4096 = constant 4096 : index
-    %c64 = constant 64 : index
-    %c16 = constant 16 : index
-    %c0 = constant 0 : index
-    %c1024 = constant 1024 : index
+    %c4096 = arith.constant 4096 : index
+    %c64 = arith.constant 64 : index
+    %c16 = arith.constant 16 : index
+    %c0 = arith.constant 0 : index
+    %c1024 = arith.constant 1024 : index
     %0 = memref.alloc() : memref<64x64xf32>
     scf.parallel (%arg2, %arg3) = (%c0, %c0) to (%c64, %c64) step (%c16, %c16) {
       %1 = memref.subview %arg0[%arg2, 0] [16, 64] [1, 1] : memref<64x64xf32> to memref<16x64xf32, #map0>

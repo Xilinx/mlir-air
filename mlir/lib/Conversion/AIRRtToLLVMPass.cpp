@@ -380,7 +380,7 @@ lowerDmaMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
   MemRefType memrefTy = tys[3].cast<MemRefType>();
   tys[3] = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
                            memrefTy.getElementType(),
-                           memrefTy.getAffineMaps(),
+                           memrefTy.getLayout(),
                            memrefTy.getMemorySpace());
   auto module = op->getParentOfType<ModuleOp>();
 
@@ -410,7 +410,7 @@ lowerDmaNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
   MemRefType memrefTy = tys[3].cast<MemRefType>();
   tys[3] = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
                            memrefTy.getElementType(),
-                           memrefTy.getAffineMaps(),
+                           memrefTy.getLayout(),
                            memrefTy.getMemorySpace());
 
   SmallVector<Value, 16> operands = op->getOperands();
@@ -451,12 +451,12 @@ lowerNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
   operands[0] = rewriter.create<memref::CastOp>(op->getLoc(), operands[0],
            MemRefType::get(std::vector<int64_t>(dstMemRefTy.getRank(), -1),
                            dstMemRefTy.getElementType(),
-                           dstMemRefTy.getAffineMaps(),
+                           dstMemRefTy.getLayout(),
                            dstMemRefTy.getMemorySpace()));
   operands[1] = rewriter.create<memref::CastOp>(op->getLoc(), operands[1],
            MemRefType::get(std::vector<int64_t>(srcMemRefTy.getRank(), -1),
                            srcMemRefTy.getElementType(),
-                           srcMemRefTy.getAffineMaps(),
+                           srcMemRefTy.getLayout(),
                            srcMemRefTy.getMemorySpace()));
 
   for (auto o : operands)
@@ -570,7 +570,7 @@ public:
     auto memrefTy = op.getType();
     if (op.getType().getMemorySpace() != 0) {
       auto alloc = rewriter.create<memref::AllocOp>(op.getLoc(), MemRefType::get(memrefTy.getShape(),
-                                            memrefTy.getElementType(), memrefTy.getAffineMaps(), 0));
+                                            memrefTy.getElementType(), memrefTy.getLayout(), 0));
       rewriter.replaceOp(op, alloc.getResult());
       return success();
     }
@@ -596,11 +596,11 @@ public:
     tys.push_back(IndexType::get(ctx));
     retTys.push_back(MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
                            memrefTy.getElementType(),
-                           memrefTy.getAffineMaps(),
+                           memrefTy.getLayout(),
                            memrefTy.getMemorySpace()));
 
     auto size = getTensorVolume(memrefTy);
-    operands.push_back(rewriter.create<ConstantIndexOp>(op->getLoc(), size));
+    operands.push_back(rewriter.create<arith::ConstantIndexOp>(op->getLoc(), size));
 
     auto module = op->getParentOfType<ModuleOp>();
 
@@ -640,7 +640,7 @@ public:
     auto memrefTy = op.memref().getType().cast<MemRefType>();
     tys.push_back(MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
                            memrefTy.getElementType(),
-                           memrefTy.getAffineMaps(),
+                           memrefTy.getLayout(),
                            memrefTy.getMemorySpace()));
     operands.push_back(rewriter.create<memref::CastOp>(op->getLoc(), tys[0], op.memref()));
 
@@ -660,7 +660,7 @@ public:
       module.push_back(fn);
     }
 
-    auto callOp = rewriter.create<CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn), operands);
+    rewriter.create<CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn), operands);
     rewriter.eraseOp(op);
     return success();
   }
@@ -685,7 +685,7 @@ public:
     converter.addConversion([&](Type type) -> Type {
       // make all memory spaces zero
       if (auto memref = type.dyn_cast<MemRefType>())
-        return type;//mlir::MemRefType::get(memref.getShape(), memref.getElementType(), memref.getAffineMaps(), 0);
+        return type;//mlir::MemRefType::get(memref.getShape(), memref.getElementType(), memref.getLayout(), 0);
       return type;
     });
 
@@ -707,6 +707,7 @@ public:
 
     target.addLegalDialect<LLVM::LLVMDialect,
                           StandardOpsDialect,
+                          arith::ArithmeticDialect,
                           AffineDialect,
                           scf::SCFDialect,
                           memref::MemRefDialect>();

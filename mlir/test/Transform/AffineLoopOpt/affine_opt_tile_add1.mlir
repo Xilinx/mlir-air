@@ -14,24 +14,24 @@
 #map2 = affine_map<() -> (4)>
 module {
   func @graph(%arg0: tensor<4x4xf32>) -> tensor<4x4xf32> {
-    %0 = constant 1.0 : f32
+    %0 = arith.constant 1.0 : f32
     %1 = memref.alloc() : memref<4x4xf32>
     %2 = memref.buffer_cast %arg0 : memref<4x4xf32>
-    %c0 = constant 0 : index
-    %c1 = constant 1 : index
-    %c4 = constant 4 : index
-    %c4_0 = constant 4 : index
-    %c0_1 = constant 0 : index
-    %c0_2 = constant 0 : index
-    %c4_3 = constant 4 : index
-    %c4_4 = constant 4 : index
-    %c0_5 = constant 0 : index
-    %c0_6 = constant 0 : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c4_0 = arith.constant 4 : index
+    %c0_1 = arith.constant 0 : index
+    %c0_2 = arith.constant 0 : index
+    %c4_3 = arith.constant 4 : index
+    %c4_4 = arith.constant 4 : index
+    %c0_5 = arith.constant 0 : index
+    %c0_6 = arith.constant 0 : index
     affine.for %arg1 = 0 to 4 {
       affine.for %arg2 = 0 to 4 {
         %4 = affine.load %2[%arg1, %arg2] : memref<4x4xf32>
-        %cst = constant 1.000000e+00 : f32
-        %5 = addf %4, %cst : f32
+        %cst = arith.constant 1.000000e+00 : f32
+        %5 = arith.addf %4, %cst : f32
         affine.store %4, %1[%arg1, %arg2] : memref<4x4xf32>
       }
     } {affine_opt_label = "affine_opt"}

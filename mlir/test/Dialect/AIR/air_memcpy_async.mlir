@@ -6,11 +6,11 @@ module {
 // CHECK-LABEL: module
 // CHECK: func @foo
 func @foo(%arg0 : memref<16x16xf32>, %arg1 : memref<16x16xf32>) -> () {
-  %cst1 = constant 1 : index
+  %cst1 = arith.constant 1 : index
 
   air.launch_herd tile(%tx, %ty) in (%size_x = %cst1, %size_y = %cst1) args(%ext0 = %arg0, %ext1 = %arg1) : memref<16x16xf32>, memref<16x16xf32> attributes { "foo" = "bar" } {
-    %c0 = constant 0 : index
-    %c256 = constant 256 : index
+    %c0 = arith.constant 0 : index
+    %c256 = arith.constant 256 : index
     %src0 = memref.alloc() : memref<16x16xf32, 2>
     %dst0 = memref.alloc() : memref<16x16xf32, 2>
     %e0 = air.wait_all async
@@ -18,8 +18,8 @@ func @foo(%arg0 : memref<16x16xf32>, %arg1 : memref<16x16xf32>) -> () {
     affine.for %arg4 = 0 to 16 {
       affine.for %arg5 = 0 to 16 {
         %0 = affine.load %src0[%arg4, %arg5] : memref<16x16xf32, 2>
-        %cst = constant 1.000000e+00 : f32
-        %1 = addf %0, %cst : f32
+        %cst = arith.constant 1.000000e+00 : f32
+        %1 = arith.addf %0, %cst : f32
         affine.store %1, %dst0[%arg4, %arg5] : memref<16x16xf32, 2>
       }
     }
@@ -31,16 +31,16 @@ func @foo(%arg0 : memref<16x16xf32>, %arg1 : memref<16x16xf32>) -> () {
 
 // CHECK: func @memcpy_nd
 func @memcpy_nd(%arg0: memref<4096xi32>) {
-  %c0 = constant 0 : index
-  %c4096 = constant 4096 : index
-  %c128 = constant 128 : index
-  %c4 = constant 4 : index
-  %c1 = constant 1 : index
+  %c0 = arith.constant 0 : index
+  %c4096 = arith.constant 4096 : index
+  %c128 = arith.constant 128 : index
+  %c4 = arith.constant 4 : index
+  %c1 = arith.constant 1 : index
   air.launch_herd tile (%arg1, %arg2) in (%arg3=%c4, %arg4=%c1) args(%arg5=%arg0) : memref<4096xi32>attributes {sym_name = "memcpy_nd"} {
-    %c32 = constant 32 : index
-    %0 = muli %arg1, %c32 : index
+    %c32 = arith.constant 32 : index
+    %0 = arith.muli %arg1, %c32 : index
     %1 = memref.alloc() : memref<32xi32, 2>
-    %c1_0 = constant 1 : index
+    %c1_0 = arith.constant 1 : index
     // CHECK: air.dma_memcpy_nd
     air.dma_memcpy_nd (%1[] [] [], %arg5[%0] [%c32] [%c1_0]) {id = 1 : i32} : (memref<32xi32, 2>, memref<4096xi32>)
     air.dma_memcpy_nd (%arg5[%0] [%c32] [%c1_0], %1[] [] []) {id = 2 : i32} : (memref<4096xi32>, memref<32xi32, 2>)

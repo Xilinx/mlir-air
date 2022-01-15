@@ -9,22 +9,22 @@ module  {
     %1 = memref.buffer_cast %arg0 : memref<256x256xi32>
     affine.for %arg1 = 0 to 2 {
       affine.for %arg2 = 0 to 2 {
-        %c2 = constant 2 : index
+        %c2 = arith.constant 2 : index
         air.launch_herd tile (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) args(%arg7=%arg1, %arg8=%arg2, %arg9=%1, %arg10=%0) : index,index,memref<256x256xi32>,memref<256x256xi32> {
-          %c0 = constant 0 : index
-          %c64 = constant 64 : index
-          %c256 = constant 256 : index
-          %c4096 = constant 4096 : index
+          %c0 = arith.constant 0 : index
+          %c64 = arith.constant 64 : index
+          %c256 = arith.constant 256 : index
+          %c4096 = arith.constant 4096 : index
           %3 = memref.alloc() : memref<64x64xi32, 2>
           %4 = affine.apply #map()[%arg3, %arg7]
           %5 = affine.apply #map()[%arg4, %arg8]
           air.dma_memcpy_2d (%3, %arg9, [%c0, %c0], [%4, %5], %c4096, %c256, %c64) {id = 2 : i32} : (memref<64x64xi32, 2>, memref<256x256xi32>, [index, index], [index, index], index, index, index) -> ()
           %6 = memref.alloc() : memref<64x64xi32, 2>
           affine.for %arg11 = 0 to 64 {
-            %c1_i32 = constant 1 : i32
+            %c1_i32 = arith.constant 1 : i32
             affine.for %arg12 = 0 to 64 {
               %7 = affine.load %3[%arg11, %arg12] : memref<64x64xi32, 2>
-              %8 = addi %7, %c1_i32 : i32
+              %8 = arith.addi %7, %c1_i32 : i32
               affine.store %8, %6[%arg11, %arg12] : memref<64x64xi32, 2>
             }
           }

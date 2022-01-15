@@ -119,7 +119,8 @@ void AIRLowerLinalgTensors::runOnOperation() {
   ConversionTarget target(context);
   BufferizeTypeConverter typeConverter;
   target.addLegalDialect<AIE::AIEDialect, AffineDialect, math::MathDialect,
-                      memref::MemRefDialect, StandardOpsDialect>();
+                      memref::MemRefDialect, StandardOpsDialect,
+                      arith::ArithmeticDialect>();
   target.addIllegalOp<linalg::InitTensorOp, tensor::ExtractSliceOp, tensor::InsertSliceOp>();
 
   // Mark all Linalg operations illegal as long as they work on tensors.
