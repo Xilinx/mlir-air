@@ -304,7 +304,7 @@ public:
       llvm::SetVector<Value> region_args;
       getUsedValuesDefinedAbove(op.getRegion(), region_args);
       for (Value v : region_args) {
-        if (v.getDefiningOp() && isa<ConstantOp>(v.getDefiningOp()))
+        if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
           constants.push_back(v);
         else
           args.push_back(v);

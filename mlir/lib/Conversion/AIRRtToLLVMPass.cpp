@@ -560,24 +560,6 @@ public:
   }
 };
 
-class AllocOpLowering : public OpRewritePattern<memref::AllocOp> {
-public:
-  using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(memref::AllocOp op,
-                                PatternRewriter &rewriter) const override {
-
-    auto memrefTy = op.getType();
-    if (op.getType().getMemorySpace() != 0) {
-      auto alloc = rewriter.create<memref::AllocOp>(op.getLoc(), MemRefType::get(memrefTy.getShape(),
-                                            memrefTy.getElementType(), memrefTy.getLayout(), 0));
-      rewriter.replaceOp(op, alloc.getResult());
-      return success();
-    }
-    return failure();
-  }
-};
-
 class AllocToFunction : public OpRewritePattern<xilinx::airrt::AllocOp> {
 public:
   using OpRewritePattern<xilinx::airrt::AllocOp>::OpRewritePattern;
@@ -682,13 +664,6 @@ public:
     auto context = module.getContext();
 
     LLVMTypeConverter converter(context);
-    converter.addConversion([&](Type type) -> Type {
-      // make all memory spaces zero
-      if (auto memref = type.dyn_cast<MemRefType>())
-        return type;//mlir::MemRefType::get(memref.getShape(), memref.getElementType(), memref.getLayout(), 0);
-      return type;
-    });
-
     OwningRewritePatternList patterns(context);
     patterns.insert<ModuleMetadataToLLVMConversion,
                     HerdLoadToLLVMConversion,
@@ -698,8 +673,7 @@ public:
                     DmaMemcpyNdToLLVMConversion,
                     MemcpyNdToLLVMConversion,
                     AllocToFunction,
-                    DeallocToFunction,
-                    AllocOpLowering>(context);
+                    DeallocToFunction>(context);
 
     mlir::populateFuncOpTypeConversionPattern(patterns, converter);
 
@@ -713,13 +687,9 @@ public:
                           memref::MemRefDialect>();
 
     target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
-      return (op.getType().getMemorySpace() == 0);
+      return (op.getType().getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L2);
     });
 
-    target.addDynamicallyLegalOp<FuncOp>([&](FuncOp op) {
-      return converter.isSignatureLegal(op.getType());
-    });
-  
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering AIRRt\n");
       signalPassFailure();
