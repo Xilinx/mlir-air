@@ -16,9 +16,9 @@ def run(f):
 # CHECK-LABEL: TEST: matmul_on_buffers_test
 # CHECK:"matmul_on_buffers": {
 # CHECK:  "linalg.matmul{{.*}}": {
+# CHECK:    "arith.addf": 512,
+# CHECK:    "arith.mulf": 512,
 # CHECK:    "reads": 1536,
-# CHECK:    "std.addf": 512,
-# CHECK:    "std.mulf": 512,
 # CHECK:    "writes": 512
 @run
 def matmul_on_buffers_test():
