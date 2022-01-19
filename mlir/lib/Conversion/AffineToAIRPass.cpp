@@ -63,6 +63,9 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
         (dst_type.getMemorySpaceAsInt() == (int)MemorySpace::L3))
       return failure();
 
+    if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
+      return failure();
+
     auto rank = src_type.getShape().size();
     if (rank == 2) {
 
@@ -122,13 +125,20 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
 
       SmallVector<Value, 1> deps;
       SmallVector<Type, 1> tys;
+
+      auto num_elements = 0;
+      if (src_type.hasStaticShape())
+        num_elements = src_type.getNumElements();
+      else
+        num_elements = dst_type.getNumElements();
+      
       auto dma = rewriter.create<air::DmaMemcpy2dOp>(loc, tys,
                                                     deps, dst, src,
                                                     dst_indices[0], dst_indices[1],
                                                     src_indices[0], src_indices[1],
                                                     rewriter.create<arith::ConstantIndexOp>(
                                                       loc,
-                                                      src_type.getNumElements()),
+                                                      num_elements),
                                                     stride, elem_per_stride);
       dma->setAttr("id",
                    mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),

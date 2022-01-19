@@ -5,7 +5,7 @@ from air.mlir.ir import *
 from air.mlir.passmanager import PassManager
 from air.mlir.dialects import builtin
 from air.mlir.dialects import linalg
-from air.mlir.dialects import std
+from air.mlir.dialects import arith
 from air.mlir.dialects import tensor
 
 # this has a side effect of registering the air passes
@@ -40,7 +40,7 @@ def matmul_l1_l2_2x2():
       @builtin.FuncOp.from_py_func(
         RankedTensorType.get((128, 128), elemTy), RankedTensorType.get((128, 128), elemTy))
       def matmul_on_tensors(lhs, rhs):
-        zero = std.ConstantOp(elemTy, IntegerAttr.get(elemTy, 0))
+        zero = arith.ConstantOp(elemTy, IntegerAttr.get(elemTy, 0))
         init_tensor = linalg.InitTensorOp((128, 128), elemTy)
         zero_tensor = linalg.FillOp(init_tensor.result, zero.result)
         out = linalg.matmul(lhs, rhs, outs=[zero_tensor.results[0]])

@@ -668,8 +668,7 @@ public:
       OwningRewritePatternList stage3Patterns(&getContext());
       stage3Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
       stage3Patterns.insert<FoldSubViewOpsPattern>(ctx);
-      if (!tileForL2)
-        stage3Patterns.insert<MemrefsPattern>(ctx);
+      stage3Patterns.insert<MemrefsPattern>(ctx);
       scf::populateSCFForLoopCanonicalizationPatterns(stage3Patterns);
 
       (void)applyPatternsAndFoldGreedily(called, std::move(stageL2Patterns));
