@@ -30,8 +30,8 @@ module @aie.0  {
     AIE.useLock(%2, Acquire, 1)
     AIE.useLock(%1, Acquire, 0)
     %8 = linalg.init_tensor [32, 32] : tensor<32x32xi32>
-    %9 = memref.tensor_load %6 : memref<32x32xi32, 2>
-    %10 = memref.tensor_load %5 : memref<32x32xi32, 2>
+    %9 = bufferization.to_tensor %6 : memref<32x32xi32, 2>
+    %10 = bufferization.to_tensor %5 : memref<32x32xi32, 2>
     %11 = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%9, %10 : tensor<32x32xi32>, tensor<32x32xi32>) outs(%8 : tensor<32x32xi32>) {
     ^bb0(%arg0: i32, %arg1: i32, %arg2: i32):  // no predecessors
       %12 = arith.muli %arg0, %arg1 : i32

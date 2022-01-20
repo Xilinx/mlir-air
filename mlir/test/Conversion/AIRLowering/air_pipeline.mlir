@@ -28,8 +28,8 @@ module  {
           air.dma_memcpy (%a, %op0, [%c0], [%c0], %c1024) {id = 1 : i32} : (memref<1024xf32, 2>, memref<1024xf32>, [index], [index], index) -> ()
           air.dma_memcpy (%b, %op1, [%c0], [%c0], %c1024) {id = 2 : i32} : (memref<1024xf32, 2>, memref<1024xf32>, [index], [index], index) -> ()
           %init = linalg.init_tensor [1024] : tensor<1024xf32>
-          %ta = memref.tensor_load %a : memref<1024xf32, 2>
-          %tb = memref.tensor_load %b : memref<1024xf32, 2>
+          %ta = bufferization.to_tensor %a : memref<1024xf32, 2>
+          %tb = bufferization.to_tensor %b : memref<1024xf32, 2>
           %5 = linalg.generic {indexing_maps = [#map0, #map0, #map0], iterator_types = ["parallel"]} ins(%ta, %tb : tensor<1024xf32>, tensor<1024xf32>) outs(%init : tensor<1024xf32>) {
           ^bb0(%a2: f32, %a3: f32, %a4: f32):  // no predecessors
             %6 = arith.mulf %a2, %a3 : f32

@@ -45,7 +45,7 @@ public:
         tys.push_back(t);
 
       auto newFnTy = FunctionType::get(op->getContext(), tys, {});
-      std::string newFnName = callOp.callee().str()+"_out";
+      std::string newFnName = callOp.getCallee().str()+"_out";
 
       if (!module.lookupSymbol<FuncOp>(newFnName)) {
         auto fn = FuncOp::create(op->getLoc(), newFnName, newFnTy);
@@ -72,7 +72,7 @@ public:
                                                ArrayRef<Type>{},
                                                newCallArgs);
       erasedOps.insert(op);
-      auto fn = module.lookupSymbol<FuncOp>(callOp.callee());
+      auto fn = module.lookupSymbol<FuncOp>(callOp.getCallee());
       if (fn && fn.use_empty()) erasedOps.insert(fn);
     }
     else if ( isa<memref::AllocOp>(op) ) {

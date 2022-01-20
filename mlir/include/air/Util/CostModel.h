@@ -2,7 +2,7 @@
 #ifndef AIR_UTIL_COSTMODEL_H
 #define AIR_UTIL_COSTMODEL_H
 
-#include "mlir/Dialect/Linalg/IR/LinalgOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "llvm/Support/JSON.h"
 

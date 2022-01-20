@@ -6,7 +6,8 @@
 
 #include "mlir/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Linalg/IR/LinalgOps.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/CodegenStrategy.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/SCF.h"
@@ -81,7 +82,7 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
         elem_per_stride = rewriter.create<arith::ConstantIndexOp>(loc,
                             alloc.getType().getShape()[1]);
       }
-      else if (auto cast = src.getDefiningOp<memref::BufferCastOp>()) {
+      else if (auto cast = src.getDefiningOp<bufferization::ToMemrefOp>()) {
         src_indices.push_back(zero);
         src_indices.push_back(zero);
         elem_per_stride = rewriter.create<arith::ConstantIndexOp>(loc,
@@ -365,30 +366,30 @@ public:
     auto loc = parOp.getLoc();
 
     // everything must be a constant
-    for (auto step : parOp.step()) {
+    for (auto step : parOp.getStep()) {
       if (!step.getDefiningOp<arith::ConstantIndexOp>())
         return failure();
     }
-    for (auto lowerBound : parOp.lowerBound()) {
+    for (auto lowerBound : parOp.getLowerBound()) {
       if (!lowerBound.getDefiningOp<arith::ConstantIndexOp>())
         return failure();
     }
-    for (auto upperBound : parOp.upperBound()) {
+    for (auto upperBound : parOp.getUpperBound()) {
       if (!upperBound.getDefiningOp<arith::ConstantIndexOp>())
         return failure();
     }
 
     auto ivs = parOp.getInductionVars().begin();
-    auto step = parOp.step().begin();
-    auto lowerBound = parOp.lowerBound().begin();
-    auto upperBound = parOp.upperBound().begin();
+    auto step = parOp.getStep().begin();
+    auto lowerBound = parOp.getLowerBound().begin();
+    auto upperBound = parOp.getUpperBound().begin();
 
     SmallVector<Value, 4> new_step;
     SmallVector<Value, 4> new_ub;
     SmallVector<Value, 4> new_lb;
     
     auto builder = OpBuilder::atBlockBegin(parOp.getBody());
-    while (step != parOp.step().end()) {
+    while (step != parOp.getStep().end()) {
       Value sv = *step++;
       Value lbv = *lowerBound++;
       float s = sv.getDefiningOp<arith::ConstantIndexOp>().value();
@@ -405,9 +406,9 @@ public:
       iv.replaceAllUsesExcept(new_iv, keep);
     }
 
-    parOp.lowerBoundMutable().assign(new_lb);
-    parOp.upperBoundMutable().assign(new_ub);
-    parOp.stepMutable().assign(new_step);
+    parOp.getLowerBoundMutable().assign(new_lb);
+    parOp.getUpperBoundMutable().assign(new_ub);
+    parOp.getStepMutable().assign(new_step);
 
     return success();
   }
@@ -422,9 +423,9 @@ public:
 
       SmallVector<int, 2> bounds{1, 1};
       for (unsigned int i = 0; i < op.getNumLoops(); i++) {
-        auto lb = dyn_cast<arith::ConstantIndexOp>(op.lowerBound()[i].getDefiningOp());
-        auto ub = dyn_cast<arith::ConstantIndexOp>(op.upperBound()[i].getDefiningOp());
-        auto step = dyn_cast<arith::ConstantIndexOp>(op.step()[i].getDefiningOp());
+        auto lb = dyn_cast<arith::ConstantIndexOp>(op.getLowerBound()[i].getDefiningOp());
+        auto ub = dyn_cast<arith::ConstantIndexOp>(op.getUpperBound()[i].getDefiningOp());
+        auto step = dyn_cast<arith::ConstantIndexOp>(op.getStep()[i].getDefiningOp());
 
         // lowerBound, upperBound and step must be arith::ConstantIndexOps
         if (!(lb && step && ub))

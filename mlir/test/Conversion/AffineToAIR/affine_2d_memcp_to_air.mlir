@@ -12,7 +12,7 @@ module  {
     %c64 = arith.constant 64 : index
     %c0 = arith.constant 0 : index
     %0 = memref.alloc() : memref<256x256xi32>
-    %1 = memref.buffer_cast %arg0 : memref<256x256xi32>
+    %1 = bufferization.to_memref %arg0 : memref<256x256xi32>
     affine.for %arg1 = 0 to 2 {
       affine.for %arg2 = 0 to 2 {
         affine.parallel (%arg3, %arg4) = (0, 0) to (2, 2) {
@@ -43,7 +43,7 @@ module  {
         }
       }
     } {affine_opt_label = "affine_opt"}
-    %2 = memref.tensor_load %0 : memref<256x256xi32>
+    %2 = bufferization.to_tensor %0 : memref<256x256xi32>
     return %2 : tensor<256x256xi32>
   }
 }

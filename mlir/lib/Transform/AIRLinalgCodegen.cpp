@@ -8,7 +8,7 @@
 #include "air/Util/Outliner.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Linalg/IR/LinalgOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/CodegenStrategy.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/SCF/SCF.h"
@@ -207,7 +207,6 @@ struct RemoveAllocLinalgOpCopyPattern
   LogicalResult matchAndRewrite(memref::AllocOp op,
                                 PatternRewriter &rewriter) const override {
 
-    Value memref;
     if (op->use_empty()) {
       rewriter.eraseOp(op);
       return success();
@@ -353,7 +352,7 @@ public:
       return {};
 
     auto shapeSizes =
-        linalg::applyMapToValues(b, loc, shapeSizesToLoopsMap, allShapeSizes);
+        applyMapToValues(b, loc, shapeSizesToLoopsMap, allShapeSizes);
     for (auto size : shapeSizes) {
       auto c = dyn_cast<arith::ConstantIndexOp>(size.getDefiningOp());
       if (!c) {
@@ -626,7 +625,8 @@ public:
       }
 
       if (tileForL2) {
-        stageL2Patterns.insert<linalg::LinalgTilingPattern<linalg::MatmulOp>>(
+        stageL2Patterns.insert<linalg::LinalgTilingPattern>(
+            linalg::MatmulOp::getOperationName(),
             ctx,
             linalg::LinalgTilingOptions()
                 .setTileSizes(l2_tile_size)
@@ -649,7 +649,8 @@ public:
 
       OwningRewritePatternList stageL1Patterns(ctx);
 
-      stageL1Patterns.insert<linalg::LinalgTilingPattern<linalg::MatmulOp>>(
+      stageL1Patterns.insert<linalg::LinalgTilingPattern>(
+          linalg::MatmulOp::getOperationName(),
           ctx,
           linalg::LinalgTilingOptions()
               .setTileSizes(l1_tile_size)
@@ -721,7 +722,8 @@ public:
 
       OwningRewritePatternList stage1Patterns(&getContext());
       stage1Patterns
-          .insert<linalg::LinalgTilingPattern<linalg::Conv2DNchwFchwOp>>(
+          .insert<linalg::LinalgTilingPattern>(
+              linalg::Conv2DNchwFchwOp::getOperationName(),
               ctx,
               linalg::LinalgTilingOptions()
                   .setTileSizes({batch_hw, ofm_channels_sw, ifm_height_sw / 4,
@@ -743,7 +745,8 @@ public:
                   Identifier::get("L2", ctx)));
 
       stage1Patterns
-          .insert<linalg::LinalgTilingPattern<linalg::Conv2DNchwFchwOp>>(
+          .insert<linalg::LinalgTilingPattern>(
+              linalg::Conv2DNchwFchwOp::getOperationName(),
               ctx,
               linalg::LinalgTilingOptions()
                   .setTileSizes({batch_hw, ofm_channels_sw / 4,

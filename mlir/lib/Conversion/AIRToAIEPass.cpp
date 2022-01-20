@@ -11,6 +11,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -572,7 +573,7 @@ public:
           b.create<AIE::UseLockOp>(getOp->getLoc(), lockOp, 0,
                                   AIE::LockAction::Release);
           b.setInsertionPoint(getOp);
-          auto loadOp = b.create<memref::TensorLoadOp>(getOp->getLoc(), buf);
+          auto loadOp = b.create<bufferization::ToTensorOp>(getOp->getLoc(), buf);
           r.replaceAllUsesWith(loadOp.getResult());
         }
         else {
@@ -721,7 +722,7 @@ public:
               lock_allocation_list lock_allocs;
               core.walk([&](Operation *op) {
                 auto alloc = dyn_cast<memref::AllocOp>(op);
-                auto cast = dyn_cast<memref::BufferCastOp>(op);
+                auto cast = dyn_cast<bufferization::ToMemrefOp>(op);
                 if (!(alloc || cast))
                   return;
 
@@ -773,7 +774,7 @@ public:
                     lockRelValue = 1;
                     alloc = dmaOpIf.getSrcMemref();
                   }
-                  if (auto bco = dyn_cast<memref::BufferCastOp>(alloc.getDefiningOp()))
+                  if (auto bco = dyn_cast<bufferization::ToMemrefOp>(alloc.getDefiningOp()))
                     builder.setInsertionPoint(bco.getOperand().getDefiningOp());
                   else
                     builder.setInsertionPoint(alloc.getDefiningOp());

@@ -7,7 +7,8 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
-#include "mlir/Dialect/Linalg/IR/LinalgOps.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -150,7 +151,7 @@ public:
         rewriter.create<memref::TensorStoreOp>(yield.getLoc(), o, buf);
         rewriter.setInsertionPointAfter(aif);
         bufs.push_back(
-          rewriter.create<memref::TensorLoadOp>(aif.getLoc(),buf).getResult());
+          rewriter.create<bufferization::ToTensorOp>(aif.getLoc(),buf).getResult());
       }
     }
     rewriter.replaceOp(stage, bufs);
@@ -646,7 +647,7 @@ public:
       return (op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
               (int)xilinx::air::MemorySpace::L2);
     });
-    target.addLegalOp<memref::TensorLoadOp,memref::TensorStoreOp>();
+    target.addLegalOp<bufferization::ToTensorOp,memref::TensorStoreOp>();
 
     // DMA and HerdLaunchOp conversion
     OwningRewritePatternList air_patterns(context);

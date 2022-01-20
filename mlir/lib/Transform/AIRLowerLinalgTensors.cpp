@@ -12,7 +12,8 @@
 #include "mlir/Conversion/LinalgToStandard/LinalgToStandard.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
-#include "mlir/Transforms/Bufferize.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Bufferization/Transforms/Bufferize.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #define DEBUG_TYPE "air-lower-linalg-tensors"
@@ -23,13 +24,13 @@ using namespace xilinx::air;
 
 // Remove tensor_load followed by buffer_cast
 struct RemoveBufferCastPattern
-    : public OpRewritePattern<memref::BufferCastOp> {
-  using OpRewritePattern<memref::BufferCastOp>::OpRewritePattern;
+    : public OpRewritePattern<bufferization::ToMemrefOp> {
+  using OpRewritePattern<bufferization::ToMemrefOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(memref::BufferCastOp op,
+  LogicalResult matchAndRewrite(bufferization::ToMemrefOp op,
                                 PatternRewriter &rewriter) const override {
                                 
-    auto load = op.getOperand().getDefiningOp<memref::TensorLoadOp>();
+    auto load = op.getOperand().getDefiningOp<bufferization::ToTensorOp>();
     if (!load)
       return failure();
       
@@ -83,10 +84,10 @@ struct RemoveAllocCopyPattern
 // to this:
 //   <use of %1>
 struct RemoveTensorLoadStorePattern
-    : public OpRewritePattern<memref::TensorLoadOp> {
-  using OpRewritePattern<memref::TensorLoadOp>::OpRewritePattern;
+    : public OpRewritePattern<bufferization::ToTensorOp> {
+  using OpRewritePattern<bufferization::ToTensorOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(memref::TensorLoadOp op,
+  LogicalResult matchAndRewrite(bufferization::ToTensorOp op,
                                 PatternRewriter &rewriter) const override {
 
     auto alloc = op.getOperand().getDefiningOp<memref::AllocOp>();
@@ -117,7 +118,7 @@ void AIRLowerLinalgTensors::runOnOperation() {
   MLIRContext &context = getContext();
 
   ConversionTarget target(context);
-  BufferizeTypeConverter typeConverter;
+  bufferization::BufferizeTypeConverter typeConverter;
   target.addLegalDialect<AIE::AIEDialect, AffineDialect, math::MathDialect,
                       memref::MemRefDialect, StandardOpsDialect,
                       arith::ArithmeticDialect>();

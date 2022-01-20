@@ -1,7 +1,7 @@
 // (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
 #include "air/Util/CostModel.h"
 
-#include "mlir/Dialect/Linalg/IR/LinalgOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/SCF.h"
 
 #include "llvm/ADT/TypeSwitch.h"
@@ -54,7 +54,7 @@ CostModel::getLinalgOpCounts(OpCountMap &map, linalg::LinalgOp op) {
     return;
 
   auto shapeSizes =
-      linalg::applyMapToValues(b, loc, shapeSizesToLoopsMap, allShapeSizes);
+      applyMapToValues(b, loc, shapeSizesToLoopsMap, allShapeSizes);
   int64_t iters = 1;
   int64_t reads = 0;
   int64_t writes = 0;
@@ -102,15 +102,15 @@ void
 CostModel::getScfForOpCounts(CostModel::OpCountMap &map, scf::ForOp op)
 {
   // everything must be a constant
-  auto step = op.step();
+  auto step = op.getStep();
   if (!step.getDefiningOp<arith::ConstantIndexOp>())
     return;
 
-  auto lowerBound = op.lowerBound();
+  auto lowerBound = op.getLowerBound();
   if (!lowerBound.getDefiningOp<arith::ConstantIndexOp>())
     return;
 
-  auto upperBound = op.upperBound();
+  auto upperBound = op.getUpperBound();
   if (!upperBound.getDefiningOp<arith::ConstantIndexOp>())
     return;
 

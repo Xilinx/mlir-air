@@ -63,7 +63,7 @@ public:
 
       auto affine_par = builder.create<AffineParallelOp>(loc,
                                                          std::vector<Type>{},
-                                                         std::vector<AtomicRMWKind>{},
+                                                         std::vector<arith::AtomicRMWKind>{},
                                                          std::vector<int64_t>{ub_0,ub_1});
 
       outer.getBody()->back().erase();

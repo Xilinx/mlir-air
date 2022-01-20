@@ -16,8 +16,8 @@ module  {
   func @task0(%arg0: tensor<256x256xi32>, %arg1: tensor<256xi32>) -> tensor<256x256xi32> {
     %0 = memref.alloc() : memref<256x256xi32>
     %1 = memref.alloc() : memref<256xi32>
-    %2 = memref.buffer_cast %arg0 : memref<256x256xi32>
-    %3 = memref.buffer_cast %arg1 : memref<256xi32>
+    %2 = bufferization.to_memref %arg0 : memref<256x256xi32>
+    %3 = bufferization.to_memref %arg1 : memref<256xi32>
     affine.for %arg2 = 0 to 2 {
       affine.for %arg3 = 0 to 2 {
         %c2 = arith.constant 2 : index
@@ -83,13 +83,13 @@ module  {
         } {air.herd_launch = "outer"}
       }
     } {affine_opt_label = "affine_opt"}
-    %4 = memref.tensor_load %0 : memref<256x256xi32>
+    %4 = bufferization.to_tensor %0 : memref<256x256xi32>
     return %4 : tensor<256x256xi32>
   }
   func @task1(%arg0: tensor<32x32x32x32xi32>) -> tensor<32x32x32x32xi32> {
     %c2 = arith.constant 2 : index
     %0 = memref.alloc() : memref<32x32x32x32xi32>
-    %1 = memref.buffer_cast %arg0 : memref<32x32x32x32xi32>
+    %1 = bufferization.to_memref %arg0 : memref<32x32x32x32xi32>
     %2 = airrt.herd_load "herd_0" : i64
     affine.for %arg1 = 0 to 2 {
       affine.for %arg2 = 0 to 2 {
@@ -141,7 +141,7 @@ module  {
         }
       } {air.herd_launch = "inner"}
     } {air.herd_launch = "outer"}
-    %3 = memref.tensor_load %0 : memref<32x32x32x32xi32>
+    %3 = bufferization.to_tensor %0 : memref<32x32x32x32xi32>
     return %3 : tensor<32x32x32x32xi32>
   }
   func @ndfoo(%arg0: memref<256x256xi32>, %arg1: memref<256xf32>) {

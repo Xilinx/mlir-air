@@ -92,7 +92,7 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder,
       str_name, /*value=*/Attribute());
   {
     OpBuilder::InsertionGuard guard(builder);
-    builder.createBlock(&herd_descs_global.initializer());
+    builder.createBlock(&herd_descs_global.getInitializerRegion());
     Value data = builder.create<LLVM::UndefOp>(loc, arrayTy);
     for (int i=0,e=herd_descs.size(); i<e; i++) {
       auto a = builder.create<LLVM::AddressOfOp>(loc, herd_descs[i]);
@@ -111,7 +111,7 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder,
     str_name, /*value=*/Attribute());
   if (1) {
     OpBuilder::InsertionGuard guard(builder);
-    builder.createBlock(&descGlobal.initializer());
+    builder.createBlock(&descGlobal.getInitializerRegion());
     Value desc = builder.create<LLVM::UndefOp>(loc, descTy);
 
     // length of the array of herd_desc_t
@@ -172,7 +172,7 @@ LLVM::GlobalOp createHerdDescriptor(OpBuilder builder, ModuleOp module,
     loc, descTy, /*isConstant=*/true, LLVM::Linkage::External,
     str_name, /*value=*/Attribute());
 
-  builder.createBlock(&descGlobal.initializer());
+  builder.createBlock(&descGlobal.getInitializerRegion());
 
   Value desc = builder.create<LLVM::UndefOp>(loc, descTy);
   auto herdNameArray = builder.create<LLVM::AddressOfOp>(loc, herdName);
@@ -219,7 +219,7 @@ LLVM::GlobalOp createShimDescriptor(OpBuilder builder,
     str_name, /*value=*/Attribute());
   {
     OpBuilder::InsertionGuard guard(builder);
-    builder.createBlock(&locArrayGlobal.initializer());
+    builder.createBlock(&locArrayGlobal.getInitializerRegion());
     Value data = builder.create<LLVM::UndefOp>(loc, arrayTy);
     for (int i=0; i<16; i++) {
       for (int j=0; j<8; j++) {
@@ -244,7 +244,7 @@ LLVM::GlobalOp createShimDescriptor(OpBuilder builder,
     str_name, /*value=*/Attribute());
   {
     OpBuilder::InsertionGuard guard(builder);
-    builder.createBlock(&chanArrayGlobal.initializer());
+    builder.createBlock(&chanArrayGlobal.getInitializerRegion());
     Value data = builder.create<LLVM::UndefOp>(loc, arrayTy);
     for (int i=0; i<16; i++) {
       for (int j=0; j<8; j++) {
@@ -269,7 +269,7 @@ LLVM::GlobalOp createShimDescriptor(OpBuilder builder,
     str_name, /*value=*/Attribute());
   {
     OpBuilder::InsertionGuard guard(builder);
-    builder.createBlock(&descGlobal.initializer());
+    builder.createBlock(&descGlobal.getInitializerRegion());
 
     Value desc = builder.create<LLVM::UndefOp>(loc, descTy);
 
