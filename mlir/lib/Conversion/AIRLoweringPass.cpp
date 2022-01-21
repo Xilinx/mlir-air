@@ -616,6 +616,7 @@ public:
                           scf::SCFDialect,
                           linalg::LinalgDialect,
                           memref::MemRefDialect,
+                          bufferization::BufferizationDialect,
                           xilinx::airrt::AIRRtDialect>();
 
     // Replace the PipelineStageOps first, followed by the 
@@ -627,7 +628,7 @@ public:
     OwningRewritePatternList air_pipe_stage_patterns(context);
     air_pipe_stage_patterns.insert<AIRPipeStageConversion>(context);
     if (failed(applyPartialConversion(module, target, std::move(air_pipe_stage_patterns)))) {
-      emitError(UnknownLoc::get(context), "error lowering air.pipeline\n");
+      emitError(UnknownLoc::get(context), "error lowering air.pipeline.stage\n");
       signalPassFailure();
     }
 
@@ -635,7 +636,7 @@ public:
     OwningRewritePatternList air_pipe_patterns(context);
     air_pipe_patterns.insert<AIRPipelineConversion>(context);
     if (failed(applyPartialConversion(module, target, std::move(air_pipe_patterns)))) {
-      emitError(UnknownLoc::get(context), "error lowering air.pipeline.stage\n");
+      emitError(UnknownLoc::get(context), "error lowering air.pipeline\n");
       signalPassFailure();
     }
 
@@ -647,7 +648,6 @@ public:
       return (op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
               (int)xilinx::air::MemorySpace::L2);
     });
-    target.addLegalOp<bufferization::ToTensorOp,memref::TensorStoreOp>();
 
     // DMA and HerdLaunchOp conversion
     OwningRewritePatternList air_patterns(context);
