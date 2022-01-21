@@ -61,7 +61,6 @@ module  {
         } : tensor<1024xf32>
 
         air.pipeline.stage args(%in = %output3) : tensor<1024xf32> {
-          %c = memref.alloc() : memref<1024xf32, 2>
           %init = linalg.init_tensor [1024] : tensor<1024xf32>
           %5 = linalg.generic {indexing_maps = [#map0, #map0], iterator_types = ["parallel"]} ins(%in : tensor<1024xf32>) outs(%init : tensor<1024xf32>) {
           ^bb0(%a2: f32, %a3: f32):  // no predecessors
@@ -69,7 +68,7 @@ module  {
             %6 = arith.addf %a2, %one : f32
             linalg.yield %6 : f32
           } -> tensor<1024xf32>
-          memref.tensor_store %5, %c : memref<1024xf32, 2>
+          %c = bufferization.to_memref %5 : memref<1024xf32, 2>
           air.dma_memcpy (%op2, %c, [%c0], [%c0], %c1024) {id = 3 : i32} : (memref<1024xf32>, memref<1024xf32, 2>, [index], [index], index) -> ()
           air.pipeline.yield
         }
