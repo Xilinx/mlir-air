@@ -35,7 +35,7 @@ CallOp AIROutliner::outline(AffineForOp forOp, std::string fname) {
 
   for (Value v : region_args) {
     auto o = v.getDefiningOp();
-    if (o && isa<ConstantOp>(o)) {
+    if (o && isa<arith::ConstantOp>(o)) {
       auto builder = OpBuilder::atBlockBegin(forOp.getBody());
       auto c = builder.clone(*o);
       replaceAllUsesInRegionWith(v, c->getResult(0), region);
@@ -95,7 +95,7 @@ CallOp AIROutliner::outline(std::vector<mlir::Operation*> ops, std::string fname
     bb = op->getBlock();
     for (Value v : op->getOperands()) {
       auto def = v.getDefiningOp();
-      if (def && dyn_cast<ConstantOp>(def))
+      if (def && dyn_cast<arith::ConstantOp>(def))
         outline_ops.push_back(def);
       else
         outline_args.push_back(v);

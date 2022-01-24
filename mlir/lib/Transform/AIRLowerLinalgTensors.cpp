@@ -129,7 +129,6 @@ void AIRLowerLinalgTensors::runOnOperation() {
     return typeConverter.isLegal(op);
   };
   target.addDynamicallyLegalDialect<linalg::LinalgDialect>(isLegalOperation);
-  target.addDynamicallyLegalOp<ConstantOp>(isLegalOperation);
 
   RewritePatternSet patterns0(&context);
   linalg::populateLinalgBufferizePatterns(typeConverter, patterns0);
