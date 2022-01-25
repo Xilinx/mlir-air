@@ -54,14 +54,6 @@ set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/bin)
 set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/lib)
 set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 
-# Define the default arguments to use with 'lit', and an option for the user to
-# override.
-set(LIT_ARGS_DEFAULT "-sv -j 1")
-if (MSVC_IDE OR XCODE)
-  set(LIT_ARGS_DEFAULT "${LIT_ARGS_DEFAULT} --no-progress-bar")
-endif()
-set(LLVM_LIT_ARGS "${LIT_ARGS_DEFAULT}" CACHE STRING "Default options for lit")
-
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR})
@@ -89,8 +81,10 @@ endif()
 
 if(ENABLE_BOARD_TESTS)
 set(CONFIG_ENABLE_BOARD_TESTS 1)
+set(AIR_TEST_LIT_ARGS "-sv -j 1 --timeout 90 --time-tests --order=random")
 else()
 set(CONFIG_ENABLE_BOARD_TESTS 0)
+set(AIR_TEST_LIT_ARGS "-sv -j 8 --timeout 90 --time-tests --order=random")
 endif()
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
@@ -103,12 +97,12 @@ set(TEST_DEPENDS
   FileCheck count not
   )
 
-add_lit_testsuite(check-air "Running the air board regression tests"
+add_lit_testsuite(check-air-board "Running the air board regression tests"
   ${CMAKE_CURRENT_BINARY_DIR}
   DEPENDS ${TEST_DEPENDS}
-  ARGS "-sv --timeout 90 --time-tests --order=random" # order can be random,lexical,smart
+  ARGS ${AIR_TEST_LIT_ARGS}
   )
-set_target_properties(check-air PROPERTIES FOLDER "Tests")
+set_target_properties(check-air-board PROPERTIES FOLDER "Tests")
 
 add_lit_testsuites(AIR_TEST
   ${CMAKE_CURRENT_BINARY_DIR}
@@ -116,9 +110,9 @@ add_lit_testsuites(AIR_TEST
   ARGS "-sv --timeout 30 --time-tests"
 )
 add_custom_target(build-check-air)
-add_dependencies(check-air build-check-air)
+add_dependencies(check-air-board build-check-air)
 
 if(NOT TARGET check-all)
   add_custom_target(check-all)
 endif()
-add_dependencies(check-all check-air)
+add_dependencies(check-all check-air-board)

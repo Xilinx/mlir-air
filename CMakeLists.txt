@@ -48,7 +48,7 @@ set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 
 # Define the default arguments to use with 'lit', and an option for the user to
 # override.
-set(LIT_ARGS_DEFAULT "-sv -j 1 --timeout=30")
+set(LIT_ARGS_DEFAULT "-sv --timeout=30")
 if (MSVC_IDE OR XCODE)
   set(LIT_ARGS_DEFAULT "${LIT_ARGS_DEFAULT} --no-progress-bar")
 endif()
