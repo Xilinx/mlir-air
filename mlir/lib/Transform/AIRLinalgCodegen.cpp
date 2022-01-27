@@ -334,7 +334,7 @@ public:
 
   void runTestPatterns(FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
-    OwningRewritePatternList patterns(&getContext());
+    RewritePatternSet patterns(&getContext());
     patterns.insert<RemoveSubViewOpsPattern, FoldSubViewOpsPattern>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
@@ -468,7 +468,7 @@ public:
 
       StringAttr next_match = StringAttr::get(ctx, "");
       if (tileForL2) {
-        OwningRewritePatternList stageL2Patterns(ctx);
+        RewritePatternSet stageL2Patterns(ctx);
         stageL2Patterns.insert<TileLinalgOpPattern>(
             ctx,
             linalg::LinalgTilingOptions()
@@ -529,7 +529,7 @@ public:
                                 << "] = " << l1_tile_size[i] << "\n");
       }
 
-      OwningRewritePatternList patterns(ctx);
+      RewritePatternSet patterns(ctx);
       patterns.insert<TileLinalgOpPattern>(
           ctx,
           linalg::LinalgTilingOptions()
@@ -546,7 +546,7 @@ public:
 
       bool needL1Tiling = !std::all_of(l1_tile_size.begin(), l1_tile_size.end(),
                                        [](int i) { return i == 0; });
-      OwningRewritePatternList stageL1Patterns(ctx);
+      RewritePatternSet stageL1Patterns(ctx);
       if (needL1Tiling) {
         stageL1Patterns.insert<TileLinalgOpPattern>(
             ctx,
@@ -567,7 +567,7 @@ public:
       scf::populateSCFForLoopCanonicalizationPatterns(stageL1Patterns);
       (void)applyPatternsAndFoldGreedily(called, std::move(stageL1Patterns));
 
-      OwningRewritePatternList stage3Patterns(&getContext());
+      RewritePatternSet stage3Patterns(&getContext());
       stage3Patterns.insert<MemrefsPattern>(ctx);
       (void)applyPatternsAndFoldGreedily(called, std::move(stage3Patterns));
 
@@ -615,7 +615,7 @@ public:
       for (int i = 0, e = clL2TileInterchange.size(); i < e; i++)
         l2_tile_interchange[i] = clL2TileInterchange[i];
 
-      OwningRewritePatternList stageL2Patterns(ctx);
+      RewritePatternSet stageL2Patterns(ctx);
 
       bool tileForL2 = false;
       if (clL2TileSize.size()) {
@@ -647,7 +647,7 @@ public:
         scf::populateSCFForLoopCanonicalizationPatterns(stageL2Patterns);
       }
 
-      OwningRewritePatternList stageL1Patterns(ctx);
+      RewritePatternSet stageL1Patterns(ctx);
 
       stageL1Patterns.insert<linalg::LinalgTilingPattern>(
           linalg::MatmulOp::getOperationName(),
@@ -666,7 +666,7 @@ public:
           linalg::LinalgTransformationFilter(
               StringAttr::get(ctx, "L1"), StringAttr::get(ctx, "L1_promoted")));
 
-      OwningRewritePatternList stage3Patterns(&getContext());
+      RewritePatternSet stage3Patterns(&getContext());
       stage3Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
       stage3Patterns.insert<FoldSubViewOpsPattern>(ctx);
       stage3Patterns.insert<MemrefsPattern>(ctx);
@@ -720,7 +720,7 @@ public:
       int64_t kernel_h = weightTy.getDimSize(2);
       int64_t kernel_w = weightTy.getDimSize(3);
 
-      OwningRewritePatternList stage1Patterns(&getContext());
+      RewritePatternSet stage1Patterns(&getContext());
       stage1Patterns
           .insert<linalg::LinalgTilingPattern>(
               linalg::Conv2DNchwFchwOp::getOperationName(),
@@ -767,11 +767,11 @@ public:
                   StringAttr::get(ctx, "promote_HERD"),
                   StringAttr::get(ctx, "HERD")));
 
-      OwningRewritePatternList stage2Patterns =
+      RewritePatternSet stage2Patterns =
           linalg::getLinalgTilingCanonicalizationPatterns(ctx);
       scf::populateSCFForLoopCanonicalizationPatterns(stage2Patterns);
 
-      OwningRewritePatternList stage3Patterns(&getContext());
+      RewritePatternSet stage3Patterns(&getContext());
       stage3Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
       stage3Patterns.insert<FoldSubViewOpsPattern>(ctx);
 
@@ -793,7 +793,7 @@ public:
 
   void runOnFunction(FuncOp f) {
 
-    OwningRewritePatternList prePatterns(&getContext());
+    RewritePatternSet prePatterns(&getContext());
     prePatterns.insert<RemoveAllocLinalgOpCopyPattern>(&getContext());
     (void)applyPatternsAndFoldGreedily(f, std::move(prePatterns));
 

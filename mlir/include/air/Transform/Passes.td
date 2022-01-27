@@ -22,7 +22,7 @@ def AIRAutomaticTiling: Pass<"air-automatic-tiling", "FuncOp"> {
 
     Example 1: Manual tiling 
 
-    `-air-automatic-tiling="loop-tile-sizes=64,2,2" -simplify-affine-structures -cse`
+    `-air-automatic-tiling="loop-tile-sizes=64,2,2" -affine-simplify-structures -cse`
 
     Input:
     ```mlir
@@ -74,7 +74,7 @@ def AIRAutomaticTiling: Pass<"air-automatic-tiling", "FuncOp"> {
 
     Example 2: Automatic tiling
 
-    `-air-automatic-tiling -simplify-affine-structures -cse`
+    `-air-automatic-tiling -affine-simplify-structures -cse`
 
     Input:
 
@@ -370,7 +370,7 @@ def AIRLoopMergingPass: Pass<"air-loop-merging", "FuncOp"> {
     restored using floordiv and modulo operations. Users can specify which 
     loop levels they want to merge together.
 
-    Example: Merge subloops with `-air-loop-merging="loop-merge-levels=1,2,3" -simplify-affine-structures -cse`
+    Example: Merge subloops with `-air-loop-merging="loop-merge-levels=1,2,3" -affine-simplify-structures -cse`
 
     Input:
 

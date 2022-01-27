@@ -625,7 +625,7 @@ public:
     // to the herd->pipeline->stages nesting requirements.
 
     // PipelineStageOp conversion
-    OwningRewritePatternList air_pipe_stage_patterns(context);
+    RewritePatternSet air_pipe_stage_patterns(context);
     air_pipe_stage_patterns.insert<AIRPipeStageConversion>(context);
     if (failed(applyPartialConversion(module, target, std::move(air_pipe_stage_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air.pipeline.stage\n");
@@ -633,7 +633,7 @@ public:
     }
 
     // HerdPipelineOp conversion
-    OwningRewritePatternList air_pipe_patterns(context);
+    RewritePatternSet air_pipe_patterns(context);
     air_pipe_patterns.insert<AIRPipelineConversion>(context);
     if (failed(applyPartialConversion(module, target, std::move(air_pipe_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air.pipeline\n");
@@ -650,7 +650,7 @@ public:
     });
 
     // DMA and HerdLaunchOp conversion
-    OwningRewritePatternList air_patterns(context);
+    RewritePatternSet air_patterns(context);
 
     if (lowerToCpu) {
       // lower to cpu memcpy

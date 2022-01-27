@@ -40,19 +40,19 @@ add_one.affine-memrefs.mlir: add_one.affine-tensors.mlir
 
 add_one.tiled_0.mlir: add_one.affine-memrefs.mlir
 	$(AIR_OPT) -affine-loop-opt='affine-opt-tile-sizes=64' \
-				-affine-loop-normalize -simplify-affine-structures \
+				-affine-loop-normalize -affine-simplify-structures \
 				-cse \
 				-o $@ $<
 
 add_one.tiled_1.mlir: add_one.tiled_0.mlir
 	$(AIR_OPT) -affine-loop-opt='affine-opt-copy-depths=0 affine-opt-copy-fast-space=2' \
-				-affine-loop-normalize -simplify-affine-structures \
+				-affine-loop-normalize -affine-simplify-structures \
 				-cse \
 				-o $@ $<
 
 add_one.tiled_2.mlir: add_one.tiled_1.mlir
 	$(AIR_OPT) -affine-loop-opt='affine-opt-tile-sizes=2' \
-				-affine-loop-normalize -simplify-affine-structures \
+				-affine-loop-normalize -affine-simplify-structures \
 				-cse \
 				-o $@ $<
 

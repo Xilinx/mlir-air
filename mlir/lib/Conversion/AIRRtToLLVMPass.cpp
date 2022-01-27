@@ -766,7 +766,7 @@ public:
     converter.addSourceMaterialization(addUnrealizedCast);
     converter.addTargetMaterialization(addUnrealizedCast);
 
-    OwningRewritePatternList patterns(context);
+    RewritePatternSet patterns(context);
     patterns.add<ModuleMetadataToLLVMConversion, HerdLoadToLLVMConversion,
                  DmaMemcpyToLLVMConversion, DmaMemcpy2dToLLVMConversion,
                  DmaMemcpy4dToLLVMConversion, DmaMemcpyNdToLLVMConversion,

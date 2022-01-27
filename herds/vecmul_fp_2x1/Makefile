@@ -25,7 +25,7 @@ vecmul.affine.mlir: vecmul.mlir
 
 vecmul_tiled_0.mlir: vecmul.affine.mlir
 	$(AIR_OPT) -affine-loop-opt='affine-opt-tile-sizes=64' \
-				-affine-loop-normalize -simplify-affine-structures \
+				-affine-loop-normalize -affine-simplify-structures \
 				-cse \
 				-o $@ $<
 
@@ -37,14 +37,14 @@ vecmul_tiled_1.mlir: vecmul_tiled_0.mlir
 vecmul_tiled_2.mlir: vecmul_tiled_1.mlir
 	$(AIR_OPT) -affine-loop-normalize \
 				-affine-loop-opt='affine-opt-tile-sizes=2' \
-				-affine-loop-normalize -simplify-affine-structures \
+				-affine-loop-normalize -affine-simplify-structures \
 				-cse \
 				-o $@ $<
 
 vecmul_tiled_3.mlir: vecmul_tiled_2.mlir
 	$(AIR_OPT) -affine-loop-normalize \
 				-affine-loop-opt='affine-opt-tile-sizes=2' \
-				-affine-loop-normalize -simplify-affine-structures \
+				-affine-loop-normalize -affine-simplify-structures \
 				-cse \
 				-o $@ $<
 

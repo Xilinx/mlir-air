@@ -30,7 +30,7 @@ conv2d_affine.mlir: conv2d_aten.mlir
 # first tiling to model L3->L2 tiling associated with each 'logical column' of overlay/herd
 conv2d_tiled_0.mlir: conv2d_affine.mlir
 	$(AIR_OPT) -affine-loop-opt='affine-opt-tile-sizes=104' \
-				-affine-loop-normalize -simplify-affine-structures \
+				-affine-loop-normalize -affine-simplify-structures \
 				-cse \
 				-o $@ $<
 
@@ -39,7 +39,7 @@ conv2d_tiled_0.mlir: conv2d_affine.mlir
 conv2d_tiled_1.mlir: conv2d_tiled_0.mlir
 	$(AIR_OPT) -affine-loop-normalize \
 				-affine-loop-opt='affine-opt-tile-sizes=1,2,16,26,1,1,13' \
-				-affine-loop-normalize -simplify-affine-structures \
+				-affine-loop-normalize -affine-simplify-structures \
 				-cse \
 				-o $@ $<
 
@@ -47,7 +47,7 @@ conv2d_tiled_1.mlir: conv2d_tiled_0.mlir
 conv2d_tiled_2.mlir: conv2d_tiled_1.mlir
 	$(AIR_OPT) -affine-loop-normalize \
 				-affine-loop-opt='affine-opt-tile-sizes=1,8,1,1,1,1,1,1,1,1,1' \
-				-affine-loop-normalize -simplify-affine-structures \
+				-affine-loop-normalize -affine-simplify-structures \
 				-cse \
 				-o $@ $<
 

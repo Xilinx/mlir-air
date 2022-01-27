@@ -136,13 +136,13 @@ void AIRLowerLinalgTensors::runOnOperation() {
                                   std::move(patterns0))))
     signalPassFailure();
 
-  OwningRewritePatternList patterns1(&context);
+  RewritePatternSet patterns1(&context);
   patterns1.add<RemoveBufferCastPattern,
               //RemoveAllocCopyPattern,
               RemoveTensorLoadStorePattern>(&context);
   (void)applyPatternsAndFoldGreedily(aie_module, std::move(patterns1));
 
-  OwningRewritePatternList patterns2(&context);
+  RewritePatternSet patterns2(&context);
   linalg::populateLinalgNamedOpsGeneralizationPatterns(patterns2);
   if (1/*lower to loops*/) {
     patterns2.add<linalg::LinalgLoweringPattern<linalg::GenericOp>>(

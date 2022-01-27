@@ -8,7 +8,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-automatic-tiling="air-label=xten.binary_op" -simplify-affine-structures -cse | FileCheck %s
+// RUN: air-opt %s -air-automatic-tiling="air-label=xten.binary_op" -affine-simplify-structures -cse | FileCheck %s
 // CHECK: affine.for {{.*}} = 0 to 28
 // CHECK: affine.for {{.*}} = 0 to 10
 // CHECK: {affine_opt_label = "affine_opt"}

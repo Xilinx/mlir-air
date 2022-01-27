@@ -505,7 +505,7 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
     LLVM_DEBUG(llvm::outs() << "input\n");
     LLVM_DEBUG(module.print(llvm::outs()));
 
-    OwningRewritePatternList patterns(context);
+    RewritePatternSet patterns(context);
     patterns.insert<AffineParToHerdLaunchConversion,
                     ScfParToHerdLaunchConversion>(context);
 
@@ -537,12 +537,12 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
 
     // Simplify all the subviews so we can rewrite them easily.
     // Mostly this is propagating constant sizes into dimensioned memref types.
-    OwningRewritePatternList stage2Patterns =
+    RewritePatternSet stage2Patterns =
       linalg::getLinalgTilingCanonicalizationPatterns(context);
     memref::AllocOp::getCanonicalizationPatterns(stage2Patterns, context);
     (void)applyPatternsAndFoldGreedily(module, std::move(stage2Patterns));
 
-    OwningRewritePatternList stage3Patterns(context);
+    RewritePatternSet stage3Patterns(context);
     stage3Patterns.insert<AffineCopyToAIRDMAConversion,
                           LinalgCopyToAIRDmaConversion>(context);
     if (failed(applyPartialConversion(module, target, std::move(stage3Patterns)))) {

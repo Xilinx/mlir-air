@@ -156,9 +156,11 @@ static void printHerdLaunchOp(OpAsmPrinter &p, HerdLaunchOp op) {
           return (OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr()
             != attr.getName());
         }));
+  p << " ";
   if (filteredAttrs.size()) {
-    p << " attributes";
+    p << "attributes";
     p.printOptionalAttrDict(filteredAttrs);
+    p << " ";
   }
   p.printRegion(op.body(), /*printEntryBlockArgs=*/false);
 }
@@ -359,14 +361,17 @@ static void printPipelineStageOp(OpAsmPrinter &p, PipelineStageOp op) {
     }
     p << ") : ";
     for (int i=0,e=op.getNumOperands(); i<e; i++) {
-      if (i) p << ",";
+      if (i) p << ", ";
       p << op.getOperand(i).getType();
     }
   }
 
-  if (op->getAttrs().size())
-    p << " attributes";
-  p.printOptionalAttrDict(op->getAttrs());
+  p << " ";
+  if (op->getAttrs().size()) {
+    p << "attributes ";
+    p.printOptionalAttrDict(op->getAttrs());
+    p << " ";
+  }
   p.printRegion(op.body(), /*printEntryBlockArgs=*/false);
 
   if (op->getNumResults())

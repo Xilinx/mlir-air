@@ -21,7 +21,7 @@ vecmul.affine_attr.mlir: vecmul.affine.mlir
 
 vecmul_tiled_0.mlir: vecmul.affine_attr.mlir
 	$(AIR_OPT) -air-automatic-tiling='loop-tile-sizes=256' \
-				-simplify-affine-structures \
+				-affine-simplify-structures \
 				-cse \
 				-o $@ $<
 
@@ -32,7 +32,7 @@ vecmul_tiled_1.mlir: vecmul_tiled_0.mlir
 
 vecmul_tiled_2.mlir: vecmul_tiled_1.mlir
 	$(AIR_OPT) -air-automatic-tiling='loop-tile-sizes=4,4' \
-				-simplify-affine-structures \
+				-affine-simplify-structures \
 				-cse \
 				-o $@ $<
 

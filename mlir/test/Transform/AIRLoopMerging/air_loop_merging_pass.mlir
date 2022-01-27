@@ -8,7 +8,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-loop-merging="loop-merge-levels=1,2 air-label=xten.binary_op" -simplify-affine-structures -cse | FileCheck %s
+// RUN: air-opt %s -air-loop-merging="loop-merge-levels=1,2 air-label=xten.binary_op" -affine-simplify-structures -cse | FileCheck %s
 // CHECK: affine.for {{.*}} = 0 to 7
 // CHECK: {affine_opt_label = "affine_opt"}
 // CHECK: affine.for {{.*}} = 0 to 14

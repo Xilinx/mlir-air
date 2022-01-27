@@ -1,6 +1,6 @@
 // (c) Copyright 2021 Xilinx Inc.
 
-// RUN: air-opt %s -affine-to-air -simplify-affine-structures -cse | FileCheck %s
+// RUN: air-opt %s -affine-to-air -affine-simplify-structures -cse | FileCheck %s
 // CHECK: air.dma_memcpy_2d (%3, %arg9, [%c0, %c0], [%4, %5], %c4096, %c256, %c64) {id = 1 : i32} : (memref<64x64xi32, 2>, memref<256x256xi32>, [index, index], [index, index], index, index, index) -> ()
 // CHECK: air.dma_memcpy_2d (%arg10, %6, [%4, %5], [%c0, %c0], %c4096, %c256, %c64) {id = 2 : i32} : (memref<256x256xi32>, memref<64x64xi32, 2>, [index, index], [index, index], index, index, index) -> ()
 #map0 = affine_map<(d0) -> (d0)>
