@@ -775,7 +775,7 @@ public:
     patterns.add<L1AllocOpConversion, L1AffineLoadOpConversion,
                  L1AffineStoreOpConversion, L1DeallocOpConversion>(converter,
                                                                    context);
-    mlir::populateFuncOpTypeConversionPattern(patterns, converter);
+    populateFunctionOpInterfaceTypeConversionPattern<FuncOp>(patterns, converter);
 
     ConversionTarget target(*context);
 

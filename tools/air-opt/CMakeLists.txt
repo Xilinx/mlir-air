@@ -20,7 +20,7 @@ set(LIBS
   ${dialect_libs}
   ${conversion_libs}
   ${test_libs}
-  MLIRLoopAnalysis
+  MLIRAffineAnalysis
   MLIRAnalysis
   MLIRDialect
   MLIROptLib

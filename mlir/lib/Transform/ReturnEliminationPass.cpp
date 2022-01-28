@@ -144,7 +144,7 @@ public:
       erasedOps.insert(retOp);
 
       for (Value v : operands)
-        valueMap[v] = BB.addArgument(v.getType());
+        valueMap[v] = BB.addArgument(v.getType(), retOp->getLoc());
 
       for (Value v : operands) {
         if (!v.getType().isa<MemRefType>())

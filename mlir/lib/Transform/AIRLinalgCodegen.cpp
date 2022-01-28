@@ -132,7 +132,7 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
           if (oper == newOp) {
             Block *b = arg.getOwner();
             auto new_arg =
-                b->insertArgument(arg.getArgNumber(), newOp.getType());
+                b->insertArgument(arg.getArgNumber(), newOp.getType(), newOp.getLoc());
             rewriter.setInsertionPointToStart(&*launch.getRegion().begin());
             arg.replaceAllUsesWith(rewriter.create<memref::CastOp>(
                 op.getLoc(), new_arg, arg.getType()));
@@ -466,7 +466,7 @@ public:
 
       // L2 tiling
 
-      Identifier next_match = Identifier::get("", ctx);
+      StringAttr next_match = StringAttr::get(ctx, "");
       if (tileForL2) {
         OwningRewritePatternList stageL2Patterns(ctx);
         stageL2Patterns.insert<TileLinalgOpPattern>(
@@ -475,15 +475,15 @@ public:
                 .setTileSizes(l2_tile_size)
                 .setInterchange(l2_tile_interchange)
                 .setLoopType(linalg::LinalgTilingLoopType::Loops),
-            linalg::LinalgTransformationFilter(ArrayRef<Identifier>{},
-                                               Identifier::get("L2", ctx)));
+            linalg::LinalgTransformationFilter(ArrayRef<StringAttr>{},
+                                               StringAttr::get(ctx, "L2")));
 
         stageL2Patterns
             .insert<linalg::LinalgPromotionPattern<linalg::GenericOp>>(
                 ctx, linalg::LinalgPromotionOptions(),
                 linalg::LinalgTransformationFilter(
-                    Identifier::get("L2", ctx),
-                    Identifier::get("L2_promoted", ctx)));
+                    StringAttr::get(ctx, "L2"),
+                    StringAttr::get(ctx, "L2_promoted")));
         stageL2Patterns.insert<RemoveSubViewOpsPattern>(ctx, 1);
         stageL2Patterns.insert<FoldSubViewOpsPattern>(ctx);
         stageL2Patterns.insert<MemrefsPattern>(ctx);
@@ -494,7 +494,7 @@ public:
         LLVM_DEBUG(called.print(llvm::outs()));
         for (int i = 0, e = tripCounts.size(); i < e; i++)
           tripCounts[i] = l2_tile_size[i];
-        next_match = Identifier::get("L2_promoted", ctx);
+        next_match = StringAttr::get(ctx, "L2_promoted");
       }
 
       // compute L1 tile size
@@ -536,10 +536,10 @@ public:
               .setTileSizes(herd_tile_size)
               .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
           linalg::LinalgTransformationFilter(
-              tileForL2 ? next_match : ArrayRef<Identifier>{},
-              Identifier::get("herd_tiling", ctx)));
+              tileForL2 ? next_match : ArrayRef<StringAttr>{},
+              StringAttr::get(ctx, "herd_tiling")));
       (void)applyPatternsAndFoldGreedily(called, std::move(patterns));
-      next_match = Identifier::get("herd_tiling", ctx);
+      next_match = StringAttr::get(ctx, "herd_tiling");
 
       LLVM_DEBUG(llvm::outs() << "After Herd Tiling\n");
       LLVM_DEBUG(called.print(llvm::outs()));
@@ -555,13 +555,13 @@ public:
                 .setInterchange(l1_tile_interchange)
                 .setLoopType(linalg::LinalgTilingLoopType::Loops),
             linalg::LinalgTransformationFilter(next_match,
-                                               Identifier::get("L1", ctx)));
+                                               StringAttr::get(ctx, "L1")));
       }
       stageL1Patterns.insert<linalg::LinalgPromotionPattern<linalg::GenericOp>>(
           ctx, linalg::LinalgPromotionOptions(),
           linalg::LinalgTransformationFilter(
-              needL1Tiling ? Identifier::get("L1", ctx) : next_match,
-              Identifier::get("L1_promoted", ctx)));
+              needL1Tiling ? StringAttr::get(ctx, "L1") : next_match,
+              StringAttr::get(ctx, "L1_promoted")));
       stageL1Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
       stageL1Patterns.insert<FoldSubViewOpsPattern>(ctx);
       scf::populateSCFForLoopCanonicalizationPatterns(stageL1Patterns);
@@ -632,15 +632,15 @@ public:
                 .setTileSizes(l2_tile_size)
                 .setInterchange(l2_tile_interchange)
                 .setLoopType(linalg::LinalgTilingLoopType::Loops),
-            linalg::LinalgTransformationFilter(ArrayRef<Identifier>{},
-                                               Identifier::get("L2", ctx)));
+            linalg::LinalgTransformationFilter(ArrayRef<StringAttr>{},
+                                               StringAttr::get(ctx, "L2")));
 
         stageL2Patterns
             .insert<linalg::LinalgPromotionPattern<linalg::MatmulOp>>(
                 ctx, linalg::LinalgPromotionOptions(),
                 linalg::LinalgTransformationFilter(
-                    Identifier::get("L2", ctx),
-                    Identifier::get("L2_promoted", ctx)));
+                    StringAttr::get(ctx, "L2"),
+                    StringAttr::get(ctx, "L2_promoted")));
         stageL2Patterns.insert<RemoveSubViewOpsPattern>(ctx, 1);
         stageL2Patterns.insert<FoldSubViewOpsPattern>(ctx);
         stageL2Patterns.insert<MemrefsPattern>(ctx);
@@ -657,14 +657,14 @@ public:
               .setInterchange(l1_tile_interchange)
               .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
           linalg::LinalgTransformationFilter(
-              tileForL2 ? Identifier::get("L2_promoted", ctx)
-                        : ArrayRef<Identifier>{},
-              Identifier::get("L1", ctx)));
+              tileForL2 ? StringAttr::get(ctx, "L2_promoted")
+                        : ArrayRef<StringAttr>{},
+              StringAttr::get(ctx, "L1")));
 
       stageL1Patterns.insert<linalg::LinalgPromotionPattern<linalg::MatmulOp>>(
           ctx, linalg::LinalgPromotionOptions(),
           linalg::LinalgTransformationFilter(
-              Identifier::get("L1", ctx), Identifier::get("L1_promoted", ctx)));
+              StringAttr::get(ctx, "L1"), StringAttr::get(ctx, "L1_promoted")));
 
       OwningRewritePatternList stage3Patterns(&getContext());
       stage3Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
@@ -732,8 +732,8 @@ public:
                   .setInterchange({0, 2, 1, 3, 4, 5, 6})
                   .setLoopType(linalg::LinalgTilingLoopType::Loops),
               linalg::LinalgTransformationFilter(
-                  Identifier::get("xten_conv2d", ctx),
-                  Identifier::get("promote_L2", ctx)));
+                  StringAttr::get(ctx, "xten_conv2d"),
+                  StringAttr::get(ctx, "promote_L2")));
 
       stage1Patterns
           .insert<linalg::LinalgPromotionPattern<linalg::Conv2DNchwFchwOp>>(
@@ -741,8 +741,8 @@ public:
               linalg::LinalgPromotionOptions().setOperandsToPromote(
                   std::vector<int64_t>{0, 1, 2}),
               linalg::LinalgTransformationFilter(
-                  Identifier::get("promote_L2", ctx),
-                  Identifier::get("L2", ctx)));
+                  StringAttr::get(ctx, "promote_L2"),
+                  StringAttr::get(ctx, "L2")));
 
       stage1Patterns
           .insert<linalg::LinalgTilingPattern>(
@@ -755,8 +755,8 @@ public:
                   .setInterchange({1, 0, 2, 3, 4, 5, 6})
                   .setLoopType(linalg::LinalgTilingLoopType::Loops),
               linalg::LinalgTransformationFilter(
-                  Identifier::get("L2", ctx),
-                  Identifier::get("promote_HERD", ctx)));
+                  StringAttr::get(ctx, "L2"),
+                  StringAttr::get(ctx, "promote_HERD")));
 
       stage1Patterns
           .insert<linalg::LinalgPromotionPattern<linalg::Conv2DNchwFchwOp>>(
@@ -764,8 +764,8 @@ public:
               linalg::LinalgPromotionOptions().setOperandsToPromote(
                   std::vector<int64_t>{0, 1, 2}),
               linalg::LinalgTransformationFilter(
-                  Identifier::get("promote_HERD", ctx),
-                  Identifier::get("HERD", ctx)));
+                  StringAttr::get(ctx, "promote_HERD"),
+                  StringAttr::get(ctx, "HERD")));
 
       OwningRewritePatternList stage2Patterns =
           linalg::getLinalgTilingCanonicalizationPatterns(ctx);

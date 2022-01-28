@@ -1,7 +1,7 @@
 // (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
 
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
-#include "mlir/Transforms/LoopUtils.h"
+#include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"

@@ -4,8 +4,9 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include "mlir/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Analysis/Utils.h"
+#include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -14,7 +15,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "mlir/Transforms/LoopUtils.h"
+
 
 #include "air/Transform/AIRHerdAssignPass.h"
 #include "air/Util/Util.h"

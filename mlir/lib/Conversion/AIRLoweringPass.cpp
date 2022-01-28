@@ -669,7 +669,7 @@ public:
     air_patterns.insert<AIRHerdLaunchConversion>(context);
 
     TypeConverter typeConverter;
-    mlir::populateFuncOpTypeConversionPattern(air_patterns,
+    populateFunctionOpInterfaceTypeConversionPattern<FuncOp>(air_patterns,
                                               typeConverter);
 
     if (failed(applyPartialConversion(module, target, std::move(air_patterns)))) {

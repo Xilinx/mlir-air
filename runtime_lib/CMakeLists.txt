@@ -17,6 +17,10 @@ if(POLICY CMP0077)
   cmake_policy(SET CMP0077 NEW)
 endif()
 
+if(POLICY CMP0116)
+  cmake_policy(SET CMP0116 OLD)
+endif()
+
 project(air_runtime_lib LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 14)

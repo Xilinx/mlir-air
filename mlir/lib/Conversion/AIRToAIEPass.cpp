@@ -994,15 +994,15 @@ public:
             int64_t chan = t.dma_channel;
             for (int64_t id : t.dma_id) {
               SmallVector<NamedAttribute, 5> attrs;
-              attrs.push_back(NamedAttribute(Identifier::get("id", ctx),
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "id"),
                                              builder.getI64IntegerAttr(id)));
-              attrs.push_back(NamedAttribute(Identifier::get("row", ctx),
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "row"),
                                              builder.getI64IntegerAttr(row)));
-              attrs.push_back(NamedAttribute(Identifier::get("col", ctx),
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "col"),
                                              builder.getI64IntegerAttr(col)));
-              attrs.push_back(NamedAttribute(Identifier::get("channel", ctx),
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "channel"),
                                              builder.getI64IntegerAttr(chan)));
-              attrs.push_back(NamedAttribute(Identifier::get("location", ctx),
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "location"),
                                              builder.getI64IntegerAttr(tileOp.col())));
               shim_allocations.push_back(DictionaryAttr::get(ctx, attrs));
             }
@@ -1014,15 +1014,15 @@ public:
             int64_t chan = t.dma_channel;
             for (int64_t id : t.dma_id) {
               SmallVector<NamedAttribute, 5> attrs;
-              attrs.push_back(NamedAttribute(Identifier::get("id", ctx),
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "id"),
                                              builder.getI64IntegerAttr(id)));
-              attrs.push_back(NamedAttribute(Identifier::get("row", ctx),
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "row"),
                                              builder.getI64IntegerAttr(row)));
-              attrs.push_back(NamedAttribute(Identifier::get("col", ctx),
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "col"),
                                              builder.getI64IntegerAttr(col)));
-              attrs.push_back(NamedAttribute(Identifier::get("channel", ctx),
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "channel"),
                                              builder.getI64IntegerAttr(chan+2)));
-              attrs.push_back(NamedAttribute(Identifier::get("location", ctx),
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "location"),
                                              builder.getI64IntegerAttr(tileOp.col())));
               shim_allocations.push_back(DictionaryAttr::get(ctx, attrs));
             }

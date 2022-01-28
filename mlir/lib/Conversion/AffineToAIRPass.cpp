@@ -4,8 +4,8 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "PassDetail.h"
 
-#include "mlir/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Analysis/Utils.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/CodegenStrategy.h"

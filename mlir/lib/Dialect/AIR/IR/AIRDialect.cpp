@@ -110,9 +110,10 @@ void HerdLaunchOp::build(OpBuilder &builder, OperationState &result,
   Region *r = result.addRegion();
   Block *body = new Block();
   SmallVector<Type, 4> argtypes(4, builder.getIndexType());
-  body->addArguments(argtypes);
+  SmallVector<Location, 4> arglocs(4, builder.getUnknownLoc());
+  body->addArguments(argtypes, arglocs);
   for (Value v : launchOperands) {
-    body->addArgument(v.getType());
+    body->addArgument(v.getType(), builder.getUnknownLoc());
   }
   r->push_back(body);
 }

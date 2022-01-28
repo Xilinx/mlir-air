@@ -2,7 +2,7 @@
 #include "air/Transform/AIRTilingUtils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Transforms/LoopUtils.h"
+#include "mlir/Dialect/Affine/LoopUtils.h"
 
 #define DEBUG_TYPE "air-tiling-utils"
 
