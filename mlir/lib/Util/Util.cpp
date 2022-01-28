@@ -1,5 +1,7 @@
 // (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
 
+#include "air/Dialect/AIR/AIRDialect.h"
+
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -23,10 +25,16 @@ std::string getMangledType(const Type ty) {
 
   if (const MemRefType mrt = ty.dyn_cast<const MemRefType>()) {
     ret << "M";
-    auto shape = mrt.getShape();
+    ret << mrt.getMemorySpaceAsInt();
+    if (mrt.hasStaticShape()) {
+      auto shape = mrt.getShape();
+      for (auto s : shape)
+        ret << s << "x";
+    }
+    else if (mrt.hasRank()) {
+      ret << "D" << mrt.getRank();
+    }
     const Type elem = mrt.getElementType();
-    for (auto s : shape)
-      ret << s << "x";
     ret << getMangledType(elem);
   }
   else if (FloatType ft = ty.dyn_cast<FloatType>()) {
@@ -38,8 +46,9 @@ std::string getMangledType(const Type ty) {
   else if (const IndexType it = ty.dyn_cast<const IndexType>()) {
     ret << "I64";
   }
-  // else if (const NPCOMP::aten::ATenListType alt = ty.dyn_cast<const NPCOMP::aten::ATenListType>()) {
-  // }
+  else if (ty.dyn_cast<air::AsyncTokenType>()) {
+    ret << "E";
+  }
   else {
     Type t = ty;
     t.dump();
@@ -129,7 +138,7 @@ void normalizeLoop(AffineForOp afo)
   return;
 }
 
-FuncOp getATenFn(ModuleOp module, std::string prefix, ArrayRef<Value> operands, ArrayRef<Type> retTys)
+FuncOp getMangledFunction(ModuleOp module, std::string prefix, ArrayRef<Value> operands, ArrayRef<Type> retTys)
 {
   Builder builder(module);
 
@@ -139,7 +148,7 @@ FuncOp getATenFn(ModuleOp module, std::string prefix, ArrayRef<Value> operands, 
 
   auto fnTy = builder.getFunctionType(tys, retTys);
 
-  std::string fnName = getMangledFuncName(module, prefix+"_AtenAcapOp", fnTy);
+  std::string fnName = getMangledFuncName(module, prefix, fnTy);
   auto fn = module.lookupSymbol<FuncOp>(fnName);
 
   if (!fn) {
