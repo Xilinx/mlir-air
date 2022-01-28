@@ -919,7 +919,7 @@ public:
     }
 
     if (lowerToCpu) {
-      OwningRewritePatternList air_cpu_herd_patterns(context);
+      RewritePatternSet air_cpu_herd_patterns(context);
       air_cpu_herd_patterns.insert<AIRHerdLaunchToCpuConversion>(context);
       if (failed(applyPartialConversion(module, target, std::move(air_cpu_herd_patterns)))) {
         emitError(UnknownLoc::get(context), "error lowering air.launch_herd\n");
