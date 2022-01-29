@@ -39,19 +39,19 @@ int main(int argc, char *argv[]) {
   tensor_t<int32_t, 2> output_ref;
 
   input0.shape[0] = input0.shape[1] = INPUT_SIZE;
-  input0.stride[0] = 1;
+  input0.stride[1] = 1;
   input0.stride[0] = 1024;
   input0.d = input0.aligned =
       (int32_t *)malloc(sizeof(int32_t) * input0.shape[0] * input0.shape[1]);
 
   input1.shape[0] = input1.shape[1] = INPUT_SIZE;
-  input1.stride[0] = 1;
+  input1.stride[1] = 1;
   input1.stride[0] = 1024;
   input1.d = input1.aligned =
       (int32_t *)malloc(sizeof(int32_t) * input1.shape[0] * input1.shape[1]);
 
   output.shape[0] = output.shape[1] = INPUT_SIZE;
-  output.stride[0] = 1;
+  output.stride[1] = 1;
   output.stride[0] = 1024;
   output.d = output.aligned =
       (int32_t *)malloc(sizeof(int32_t) * output.shape[0] * output.shape[1]);
