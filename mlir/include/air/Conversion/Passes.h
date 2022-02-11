@@ -4,6 +4,7 @@
 #include "air/Conversion/AffineToAIRPass.h"
 #include "air/Conversion/AIRLoweringPass.h"
 #include "air/Conversion/AIRToAIEPass.h"
+#include "air/Conversion/AIRToCpuPass.h"
 #include "air/Conversion/AIRRtToLLVMPass.h"
 namespace xilinx {
 namespace air {

@@ -276,6 +276,10 @@ ArrayRef<BlockArgument> HerdLaunchOp::getKernelArguments() {
   return body().front().getArguments().drop_front(4);
 }
 
+BlockArgument HerdLaunchOp::getKernelArgument(unsigned i) {
+  return getKernelArguments()[i];
+}
+
 //
 // HerdPipelineOp
 //

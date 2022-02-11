@@ -82,86 +82,6 @@ public:
 
 };
 
-class AIRHerdLaunchToCpuConversion : public ConversionPattern {
-public:
-  explicit AIRHerdLaunchToCpuConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::HerdLaunchOp::getOperationName(), 1, context) {}
-
-  LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value > operands,
-                  ConversionPatternRewriter &rewriter) const override
-  {
-    xilinx::air::HerdLaunchOp launch = cast<xilinx::air::HerdLaunchOp>(op);
-    std::string herd_name = "herd";
-    if (auto attr = op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
-      herd_name = attr.getValue().str();
-    }
-    auto herd_size = launch.getHerdSizeOperands();
-    int64_t herd_size_x = cast<ConstantIndexOp>(herd_size.x.getDefiningOp()).value();
-    int64_t herd_size_y = cast<ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
-
-    auto outer = rewriter.create<AffineForOp>(launch.getLoc(), 0, herd_size_x);
-    auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
-    auto inner = outer_builder.create<AffineForOp>(launch.getLoc(), 0, herd_size_y);
-
-    outer->setAttr("air.herd_launch", StringAttr::get(op->getContext(), "outer"));
-    inner->setAttr("air.herd_launch", StringAttr::get(op->getContext(), "inner"));
-
-    SmallVector<Value, 16> callops;
-    callops.push_back(outer.getInductionVar());
-    callops.push_back(inner.getInductionVar());
-
-    launch.getHerdSize().x.replaceAllUsesWith(herd_size.x);
-    launch.getHerdSize().y.replaceAllUsesWith(herd_size.y);
-
-    int i=0;
-    for (auto arg : launch.getKernelArguments()) {
-      callops.push_back(launch.getKernelOperand(i++));
-      //arg.replaceAllUsesWith()
-    }
-
-    auto module = op->getParentOfType<ModuleOp>();
-    std::string fname = herd_name+"_body_fn";
-    std::string new_fname = fname;
-    int which_try = 0;
-    while (module.lookupSymbol(new_fname))
-      new_fname = fname + "_" + std::to_string(++which_try);
-    fname = new_fname;
-
-    std::vector<mlir::Type> ret_types;
-    std::vector<mlir::Type> arg_types;
-    for (auto o : callops)
-      arg_types.push_back(o.getType());
-
-    auto func_type = mlir::FunctionType::get(op->getContext(), arg_types, ret_types);
-    auto function = mlir::FuncOp::create(op->getLoc(), fname,
-                                        func_type, /* attrs = */ {});
-
-    auto &entryBlock = *function.addEntryBlock();
-
-    i = 0;
-    launch.getTileIds().x.replaceAllUsesWith(entryBlock.getArgument(i++));
-    launch.getTileIds().y.replaceAllUsesWith(entryBlock.getArgument(i++));
-    for (auto arg : launch.getKernelArguments()) {
-      arg.replaceAllUsesWith(entryBlock.getArgument(i++));
-    }
-
-    auto &body = launch.body().front().getOperations();
-    entryBlock.getOperations().splice(entryBlock.begin(), body,
-                                      body.begin(), --body.end());
-
-    rewriter.setInsertionPointToStart(&inner.getBodyRegion().front());
-    rewriter.create<CallOp>(op->getLoc(), function, callops);
-
-    rewriter.setInsertionPointToEnd(&entryBlock);
-    rewriter.create<ReturnOp>(op->getLoc());
-    rewriter.eraseOp(op);
-    module.push_back(function);
-    return success();
-  }
-
-};
-
 class AIRPipelineConversion : public ConversionPattern {
 public:
   explicit AIRPipelineConversion(MLIRContext *context)
@@ -253,151 +173,22 @@ public:
   }
 };
 
-static
-CallOp convertOpToFunctionWithId(Operation *op, ArrayRef<Value > operands,
-                                     ConversionPatternRewriter &rewriter, StringRef fnName) {
-  auto loc = op->getLoc();
+class AIRWaitAllToAIRRtConversion: public OpConversionPattern<xilinx::air::WaitAllOp> {
+public:
+  using OpConversionPattern<xilinx::air::WaitAllOp>::OpConversionPattern;
 
-  SmallVector<Value, 16> callops;
-  SmallVector<Type, 1> retTys{};
+  LogicalResult
+  matchAndRewrite(xilinx::air::WaitAllOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override
+  {
+    SmallVector<Type, 1> tys;
+    if (op->getNumResults())
+      tys.push_back(xilinx::airrt::EventType::get(op->getContext()));
 
-  auto idTy = IntegerType::get(op->getContext(), 32);
-  if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
-    callops.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
+    rewriter.replaceOpWithNewOp<xilinx::airrt::WaitAllOp>(op, tys, adaptor.getOperands());
+    return success();
   }
-
-  for (auto o : operands) {
-    // erase the size to reduce the number of manglings
-    if (auto memrefTy = o.getType().dyn_cast<MemRefType>()) {
-      auto t = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
-                               memrefTy.getElementType(),
-                               memrefTy.getLayout(),
-                               memrefTy.getMemorySpace());
-      callops.push_back(rewriter.create<memref::CastOp>(op->getLoc(), o, t));
-    } else {
-      callops.push_back(o);
-    }
-  }
-  SmallVector<Type, 16> tys;
-  for (auto o : callops)
-    tys.push_back(o.getType());
-
-  SmallVector<MemRefType, 16> real_result_tys;
-  for (auto t : op->getResultTypes()) {
-    if (auto memrefTy = t.dyn_cast<MemRefType>()) {
-      auto mrt = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
-                               memrefTy.getElementType(),
-                               memrefTy.getLayout(),
-                               memrefTy.getMemorySpace());
-      retTys.push_back(mrt);
-      real_result_tys.push_back(memrefTy);
-    } else {
-      retTys.push_back(t);
-    }
-  }
-
-  auto fn = xilinx::air::getMangledFunction(op->getParentOfType<ModuleOp>(),
-                                            fnName.str(), callops, retTys);
-  auto call = rewriter.replaceOpWithNewOp<CallOp>(op, retTys, SymbolRefAttr::get(fn), callops);
-  int real_result_idx = 0;
-  int result_idx = 0;
-  for (auto r : op->getResults()) {
-    if (auto memrefTy = r.getType().dyn_cast<MemRefType>()) {
-      auto t = real_result_tys[real_result_idx++];
-      auto c = rewriter.create<memref::CastOp>(op->getLoc(), call.getResult(result_idx), t);
-      r.replaceAllUsesWith(c.getResult());
-    }
-    else {
-      r.replaceAllUsesWith(call.getResult(result_idx));
-    }
-    result_idx++;
-  }
-  return call;
-}
-
-static
-CallOp convertOpToFunctionWithTileId(Operation *op, ArrayRef<Value > operands,
-                                     ConversionPatternRewriter &rewriter, StringRef fnName) {
-  auto loc = op->getLoc();
-
-  SmallVector<Value, 16> callops;
-  SmallVector<Type, 1> retTys{};
-
-  auto idTy = IntegerType::get(op->getContext(), 32);
-  if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
-    callops.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
-  }
-
-  xilinx::air::HerdLaunchOp launch = op->getParentOfType<xilinx::air::HerdLaunchOp>();
-  if (!launch) {
-    AffineForOp afo = op->getParentOfType<AffineForOp>();
-    while (afo && !afo->getAttr("air.herd_launch"))
-      afo = afo->getParentOfType<AffineForOp>();
-    if (afo) {
-      callops.push_back(afo.getInductionVar());
-      afo = afo->getParentOfType<AffineForOp>();
-    }
-    while (afo && !afo->getAttr("air.herd_launch"))
-      afo = afo->getParentOfType<AffineForOp>();
-    if (afo)
-      callops.push_back(afo.getInductionVar());
-  }
-  else {
-    auto tileIds = launch.getTileIds();
-    callops.push_back(tileIds.x);
-    callops.push_back(tileIds.y);
-  }
-
-  for (auto o : operands) {
-    // erase the size to reduce the number of manglings
-    if (auto memrefTy = o.getType().dyn_cast<MemRefType>()) {
-      auto t = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
-                               memrefTy.getElementType(),
-                               memrefTy.getLayout(),
-                               memrefTy.getMemorySpace());
-      callops.push_back(rewriter.create<memref::CastOp>(op->getLoc(), o, t));
-    } else {
-      callops.push_back(o);
-    }
-  }
-
-  SmallVector<Type, 16> tys;
-  for (auto o : callops)
-    tys.push_back(o.getType());
-
-  SmallVector<MemRefType, 16> real_result_tys;
-  for (auto t : op->getResultTypes()) {
-    if (auto memrefTy = t.dyn_cast<MemRefType>()) {
-      auto mrt = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
-                               memrefTy.getElementType(),
-                               memrefTy.getLayout(),
-                               memrefTy.getMemorySpace());
-      retTys.push_back(mrt);
-      real_result_tys.push_back(memrefTy);
-    } else {
-      retTys.push_back(t);
-    }
-  }
-
-  auto fn = xilinx::air::getMangledFunction(op->getParentOfType<ModuleOp>(),
-                                            fnName.str(), callops, retTys);
-  auto call = rewriter.create<CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn), callops);
-  int real_result_idx = 0;
-  int result_idx = 0;
-  for (auto r : op->getResults()) {
-    if (auto memrefTy = r.getType().dyn_cast<MemRefType>()) {
-      auto t = real_result_tys[real_result_idx++];
-      auto c = rewriter.create<memref::CastOp>(op->getLoc(), call.getResult(result_idx), t);
-      r.replaceAllUsesWith(c.getResult());
-    }
-    else {
-      r.replaceAllUsesWith(call.getResult(result_idx));
-    }
-    result_idx++;
-  }
-  rewriter.eraseOp(op);
-  return call;
-}
+};
 
 static
 Operation* convertDmaMemcpyToAirRt(Operation *op, ArrayRef<Value > operands,
@@ -664,114 +455,6 @@ public:
   }
 };
 
-class AIRDmaMemcpyToMemcpyConversion : public ConversionPattern {
-public:
-  explicit AIRDmaMemcpyToMemcpyConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::DmaMemcpyOp::getOperationName(), 1, context) {}
-
-  LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value > operands,
-                  ConversionPatternRewriter &rewriter) const override
-  {
-    auto call = convertOpToFunctionWithTileId(op, operands, rewriter, "air_memcpy");
-    if (call)
-      return success();
-    else
-      return failure();
-  }
-};
-
-class AIRDmaMemcpy2dToMemcpyConversion : public ConversionPattern {
-public:
-  explicit AIRDmaMemcpy2dToMemcpyConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::DmaMemcpy2dOp::getOperationName(), 1, context) {}
-
-  LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value > operands,
-                  ConversionPatternRewriter &rewriter) const override
-  {
-    auto call = convertOpToFunctionWithTileId(op, operands, rewriter, "air_memcpy2d");
-    if (call)
-      return success();
-    else
-      return failure();
-  }
-};
-
-class AIRDmaMemcpy4dToMemcpyConversion : public ConversionPattern {
-public:
-  explicit AIRDmaMemcpy4dToMemcpyConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::DmaMemcpy4dOp::getOperationName(), 1, context) {}
-
-  LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value > operands,
-                  ConversionPatternRewriter &rewriter) const override
-  {
-    auto call = convertOpToFunctionWithTileId(op, operands, rewriter, "air_memcpy4d");
-    if (call)
-      return success();
-    else
-      return failure();
-  }
-};
-
-class AIRDmaMemcpyNdToMemcpyConversion : public ConversionPattern {
-public:
-  explicit AIRDmaMemcpyNdToMemcpyConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::DmaMemcpyNdOp::getOperationName(), 1, context) {}
-
-  LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value > operands,
-                  ConversionPatternRewriter &rewriter) const override
-  {
-    auto call = convertOpToFunctionWithTileId(op, operands, rewriter, "air_memcpy_nd");
-    if (call)
-      return success();
-    else
-      return failure();
-  }
-};
-
-class AllocToCpuConversion : public ConversionPattern {
-public:
-  explicit AllocToCpuConversion(MLIRContext *context)
-      : ConversionPattern(memref::AllocOp::getOperationName(), 1, context) {}
-
-  LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value > operands,
-                  ConversionPatternRewriter &rewriter) const override
-  {
-    auto alloc = cast<memref::AllocOp>(op);
-    auto type = alloc.getType().cast<MemRefType>();
-    auto space = type.getMemorySpaceAsInt();
-    auto call = convertOpToFunctionWithTileId(op, operands, rewriter, "air_alloc");
-    if (call)
-      return success();
-    else
-      return failure();
-  }
-};
-
-class DeallocToCpuConversion : public ConversionPattern {
-public:
-  explicit DeallocToCpuConversion(MLIRContext *context)
-      : ConversionPattern(memref::DeallocOp::getOperationName(), 1, context) {}
-
-  LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value > operands,
-                  ConversionPatternRewriter &rewriter) const override
-  {
-    auto dealloc = cast<memref::DeallocOp>(op);
-    auto type = dealloc.memref().getType().cast<MemRefType>();
-    auto space = type.getMemorySpaceAsInt();
-    auto call = convertOpToFunctionWithTileId(op, operands, rewriter, "air_dealloc");
-    if (call)
-      return success();
-    else
-      return failure();
-  }
-};
-
 class L2AllocToAIRRtConversion : public ConversionPattern {
 public:
   explicit L2AllocToAIRRtConversion(MLIRContext *context)
@@ -817,11 +500,6 @@ public:
   AIRLoweringPass() = default;
   AIRLoweringPass(const AIRLoweringPass &pass) {}
 
-  Option<bool>
-  lowerToCpu{*this, "lower-to-cpu",
-              llvm::cl::desc("Lower for cpu emulation"),
-              llvm::cl::init(false)};
-
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<AffineDialect,
                     xilinx::airrt::AIRRtDialect,
@@ -866,6 +544,11 @@ public:
       signalPassFailure();
     }
 
+    // DMA and HerdLaunchOp conversion
+    RewritePatternSet air_patterns(context);
+
+    // lower to air runtime
+    
     target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
       return (op.getType().getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L2);
     });
@@ -875,58 +558,19 @@ public:
               (int)xilinx::air::MemorySpace::L2);
     });
 
-    // DMA and HerdLaunchOp conversion
-    RewritePatternSet air_patterns(context);
+    air_patterns.add<AIRDmaMemcpy2dToAIRRtConversion,
+        AIRDmaMemcpy4dToAIRRtConversion, AIRDmaMemcpyNdToAIRRtConversion,
+        L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion, AIRHerdLaunchConversion>(context);
 
-    if (lowerToCpu) {
-      // lower to cpu memcpy
-  
-      target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
-        return (op.getType().getMemorySpaceAsInt() == 0);
-      });
+    populateFunctionOpInterfaceTypeConversionPattern<FuncOp>(
+        air_patterns, converter);
 
-      target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-        return (op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt() == 0);
-      });
-
-      air_patterns.insert<AIRDmaMemcpyToMemcpyConversion,
-                          AIRDmaMemcpy2dToMemcpyConversion,
-                          AIRDmaMemcpy4dToMemcpyConversion,
-                          AIRDmaMemcpyNdToMemcpyConversion,
-                          AllocToCpuConversion, DeallocToCpuConversion>(context);
-    }
-    else {
-      // lower to air runtime
-      
-      target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
-        return (op.getType().getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L2);
-      });
-
-      target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-        return (op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
-                (int)xilinx::air::MemorySpace::L2);
-      });
-
-      air_patterns.insert<
-          AIRDmaMemcpyToAIRRtConversion, AIRDmaMemcpy2dToAIRRtConversion,
-          AIRDmaMemcpy4dToAIRRtConversion, AIRDmaMemcpyNdToAIRRtConversion,
-          L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion, AIRHerdLaunchConversion>(context);
-    }
+    air_patterns.add<
+       AIRDmaMemcpyToAIRRtConversion, AIRWaitAllToAIRRtConversion>(converter, context);
 
     if (failed(applyPartialConversion(module, target, std::move(air_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air dialect\n");
       signalPassFailure();
-    }
-
-    if (lowerToCpu) {
-      RewritePatternSet air_cpu_herd_patterns(context);
-      air_cpu_herd_patterns.insert<AIRHerdLaunchToCpuConversion>(context);
-      if (failed(applyPartialConversion(module, target, std::move(air_cpu_herd_patterns)))) {
-        emitError(UnknownLoc::get(context), "error lowering air.launch_herd\n");
-        signalPassFailure();
-      }
-      for (auto func : module.getOps<FuncOp>())
-        func->setAttr("llvm.emit_c_interface", UnitAttr::get(func.getContext()));
     }
   }
 };

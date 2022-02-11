@@ -79,6 +79,13 @@ def AffineToAIR : Pass<"affine-to-air", "ModuleOp"> {
   }];
 }
 
+def AIRToCpu : Pass<"air-to-cpu", "ModuleOp"> {
+  let summary = "AIR dialect lowering";
+  let constructor = "xilinx::air::createAIRToCpuPass()";
+  let description = [{
+  }];
+}
+
 def AIRLowering : Pass<"air-to-std", "ModuleOp"> {
   let summary = "AIR dialect lowering";
   let constructor = "xilinx::air::createAIRLoweringPass()";
@@ -131,7 +138,6 @@ def AIRLowering : Pass<"air-to-std", "ModuleOp"> {
       }
     ```
   }];
-  
 }
 
 def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {

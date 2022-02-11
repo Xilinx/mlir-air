@@ -4,6 +4,7 @@ AffineToAIRPass.cpp
 AIRLoweringPass.cpp
 AIRRtToLLVMPass.cpp
 AIRToAIEPass.cpp
+AIRToCpuPass.cpp
 Passes.cpp
 
 DEPENDS

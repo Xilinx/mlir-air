@@ -10,7 +10,7 @@ namespace air {
 
 std::unique_ptr<mlir::Pass> createAIRLoweringPass();
 
-} // namespace aten
+} // namespace air
 } // namespace xilinx
 
 #endif // AIR_TO_STD_H

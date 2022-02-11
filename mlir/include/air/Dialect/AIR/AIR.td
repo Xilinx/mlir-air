@@ -41,6 +41,7 @@ def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,
     unsigned getNumKernelOperands();
     Value getKernelOperand(unsigned i);
     ArrayRef<BlockArgument> getKernelArguments();
+    BlockArgument getKernelArgument(unsigned i);
   }];
 }
 
