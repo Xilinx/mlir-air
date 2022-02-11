@@ -22,7 +22,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
 
-#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -360,6 +360,9 @@ class ScfParToHerdLaunchConversion : public OpRewritePattern<scf::ParallelOp> {
 public:
   using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
 
+  ScfParToHerdLaunchConversion(MLIRContext *ctx, llvm::SmallSet<scf::ParallelOp, 2> &filteredOps)
+      : OpRewritePattern(ctx), filteredOps(filteredOps) {};
+
   LogicalResult normalizeScfParallel(scf::ParallelOp parOp,
                                      PatternRewriter &rewriter) const
   {
@@ -399,11 +402,13 @@ public:
       new_lb.push_back(rewriter.create<arith::ConstantIndexOp>(loc,0));
       new_step.push_back(rewriter.create<arith::ConstantIndexOp>(loc,1));
       auto iv = *ivs++;
-      auto mul = 
-        builder.create<arith::MulIOp>(loc, iv, sv.getDefiningOp<arith::ConstantIndexOp>());
-      Value new_iv = builder.create<arith::AddIOp>(loc, mul, lbv);
-      SmallPtrSet<Operation *, 1> keep{mul};
-      iv.replaceAllUsesExcept(new_iv, keep);
+      AffineExpr d0 = builder.getAffineDimExpr(0);
+      AffineExpr mul = d0 * sv.getDefiningOp<arith::ConstantIndexOp>().value();
+      AffineExpr add = mul + lbv.getDefiningOp<arith::ConstantIndexOp>().value();
+      auto map = AffineMap::get(1, 0, add);
+      auto new_iv = builder.create<AffineApplyOp>(loc, map, iv);
+      SmallPtrSet<Operation *, 1> keep{new_iv};
+      iv.replaceAllUsesExcept(new_iv.getResult(), keep);
     }
 
     parOp.getLowerBoundMutable().assign(new_lb);
@@ -415,83 +420,101 @@ public:
 
   LogicalResult matchAndRewrite(scf::ParallelOp op,
                                 PatternRewriter &rewriter) const override {
+
+    if (op.getNumLoops() > 2)
+      return failure();
+
+    // the number of nested scf.parallel above this one
+    if (!filteredOps.contains(op))
+      return failure();
+
     if (failed(normalizeScfParallel(op, rewriter)))
       return failure();
 
-    if (op.getNumLoops() <= 2) {
-      auto loc = op.getLoc();
+    auto loc = op.getLoc();
 
-      SmallVector<int, 2> bounds{1, 1};
-      for (unsigned int i = 0; i < op.getNumLoops(); i++) {
-        auto lb = dyn_cast<arith::ConstantIndexOp>(op.getLowerBound()[i].getDefiningOp());
-        auto ub = dyn_cast<arith::ConstantIndexOp>(op.getUpperBound()[i].getDefiningOp());
-        auto step = dyn_cast<arith::ConstantIndexOp>(op.getStep()[i].getDefiningOp());
+    SmallVector<int, 2> bounds{1, 1};
+    for (unsigned int i = 0; i < op.getNumLoops(); i++) {
+      auto lb = dyn_cast<arith::ConstantIndexOp>(op.getLowerBound()[i].getDefiningOp());
+      auto ub = dyn_cast<arith::ConstantIndexOp>(op.getUpperBound()[i].getDefiningOp());
+      auto step = dyn_cast<arith::ConstantIndexOp>(op.getStep()[i].getDefiningOp());
 
-        // lowerBound, upperBound and step must be arith::ConstantIndexOps
-        if (!(lb && step && ub))
-          return failure();
+      // lowerBound, upperBound and step must be arith::ConstantIndexOps
+      if (!(lb && step && ub))
+        return failure();
 
-        auto ub_int = ub.value();
-        auto lb_int = lb.value();
-        auto step_int = step.value();
+      auto ub_int = ub.value();
+      auto lb_int = lb.value();
+      auto step_int = step.value();
 
-        // must start at 0
-        if (lb_int)
-          return failure();
+      // must start at 0
+      if (lb_int)
+        return failure();
 
-        // step must divide upper bound evenly
-        if (ub_int % step_int)
-          return failure();
+      // step must divide upper bound evenly
+      if (ub_int % step_int)
+        return failure();
 
-        ub_int = ub_int / step_int;
-        bounds[i] = ub_int;
-      }
-      SmallVector<Value, 4> args;
-      SmallVector<Value, 4> constants;
-      llvm::SetVector<Value> region_args;
-      getUsedValuesDefinedAbove(op.getRegion(), region_args);
-      for (Value v : region_args) {
-        if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
-          constants.push_back(v);
-        else
-          args.push_back(v);
-      }
-      air::HerdDim2 dims{rewriter.create<arith::ConstantIndexOp>(loc, bounds[0]),
-                         rewriter.create<arith::ConstantIndexOp>(loc, bounds[1])};
-      auto launch = rewriter.create<air::HerdLaunchOp>(op.getLoc(), dims, args);
-      auto &bb = launch.body().front();
-      auto ivs = op.getInductionVars();
-
-      ivs[0].replaceAllUsesWith(launch.getTileIds().x);
-      if (op.getNumLoops() == 2)
-        ivs[1].replaceAllUsesWith(launch.getTileIds().y);
-
-      auto &body = op.getBody()->getOperations();
-      bb.getOperations().splice(bb.begin(), body,
-                                body.begin(), --body.end());
-      rewriter.setInsertionPointToStart(&launch.getRegion().front());
-      for (auto c : constants) {
-        replaceAllUsesInRegionWith(c,
-                                   rewriter.clone(*c.getDefiningOp())->getResult(0),
-                                   launch.getRegion());
-      }
-      auto builder = OpBuilder::atBlockEnd(&bb);
-      builder.create<air::HerdTerminatorOp>(loc);
-
-      int i = 0;
-      auto kernel_args = launch.getKernelArguments();
-      for (Value v : args)
-        replaceAllUsesInRegionWith(v, kernel_args[i++], launch.getRegion());
-
-      rewriter.eraseOp(op);
-
-      return success();
+      ub_int = ub_int / step_int;
+      bounds[i] = ub_int;
     }
-    return failure();
+    SmallVector<Value, 4> args;
+    SmallVector<Value, 4> constants;
+    llvm::SetVector<Value> region_args;
+    getUsedValuesDefinedAbove(op.getRegion(), region_args);
+    for (Value v : region_args) {
+      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
+        constants.push_back(v);
+      else
+        args.push_back(v);
+    }
+    air::HerdDim2 dims{rewriter.create<arith::ConstantIndexOp>(loc, bounds[0]),
+                      rewriter.create<arith::ConstantIndexOp>(loc, bounds[1])};
+    auto launch = rewriter.create<air::HerdLaunchOp>(op.getLoc(), dims, args);
+    auto &bb = launch.body().front();
+    auto ivs = op.getInductionVars();
+
+    ivs[0].replaceAllUsesWith(launch.getTileIds().x);
+    if (op.getNumLoops() == 2)
+      ivs[1].replaceAllUsesWith(launch.getTileIds().y);
+
+    auto &body = op.getBody()->getOperations();
+    bb.getOperations().splice(bb.begin(), body,
+                              body.begin(), --body.end());
+    rewriter.setInsertionPointToStart(&launch.getRegion().front());
+    for (auto c : constants) {
+      replaceAllUsesInRegionWith(c,
+                                rewriter.clone(*c.getDefiningOp())->getResult(0),
+                                launch.getRegion());
+    }
+    auto builder = OpBuilder::atBlockEnd(&bb);
+    builder.create<air::HerdTerminatorOp>(loc);
+
+    int i = 0;
+    auto kernel_args = launch.getKernelArguments();
+    for (Value v : args)
+      replaceAllUsesInRegionWith(v, kernel_args[i++], launch.getRegion());
+
+    rewriter.eraseOp(op);
+
+    return success();
   }
+
+private:
+  llvm::SmallSet<scf::ParallelOp, 2> &filteredOps;
+
 };
 
 struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
+
+  AffineToAIRPass() = default;
+  AffineToAIRPass(const AffineToAIRPass &pass) {}
+
+  Option<int> clHerdAssignDepth{
+      *this, "herd-assign-depth",
+      llvm::cl::desc("Given a nest of parallel for loops, which depth to map to herd launch"),
+      llvm::cl::init(-1)
+    };
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
      registry.insert<xilinx::air::airDialect>();
@@ -506,8 +529,25 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
     LLVM_DEBUG(module.print(llvm::outs()));
 
     RewritePatternSet patterns(context);
-    patterns.insert<AffineParToHerdLaunchConversion,
-                    ScfParToHerdLaunchConversion>(context);
+    patterns.add<AffineParToHerdLaunchConversion>(context);
+
+    llvm::SmallSet<scf::ParallelOp, 2> filteredOps;
+    module.walk([&](scf::ParallelOp op) {
+      if (clHerdAssignDepth < 0) {
+        filteredOps.insert(op);
+        return;
+      }
+      // the number of nested scf.parallel above this one
+      int parallel_depth = 0;
+      Operation *par = op.getOperation();
+      while ((par = par->getParentOp()))
+        if (isa<scf::ParallelOp>(par))
+          parallel_depth++;
+      if (parallel_depth != clHerdAssignDepth)
+        return;
+      filteredOps.insert(op);
+    });
+    patterns.add<ScfParToHerdLaunchConversion>(context, filteredOps);
 
     ConversionTarget target(*context);
 
