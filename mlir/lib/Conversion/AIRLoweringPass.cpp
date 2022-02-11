@@ -111,8 +111,11 @@ public:
   matchAndRewrite(Operation *op, ArrayRef<Value > operands,
                   ConversionPatternRewriter &rewriter) const override
   {
-    // xilinx::air::HerdPipelineOp pipeline =
-    //   op->getParentOfType<xilinx::air::HerdPipelineOp>();
+    xilinx::air::HerdPipelineOp pipeline =
+      op->getParentOfType<xilinx::air::HerdPipelineOp>();
+
+    auto direction = pipeline->getAttrOfType<StringAttr>("direction");
+
     xilinx::air::HerdLaunchOp launch = 
       op->getParentOfType<xilinx::air::HerdLaunchOp>();
     if (!launch) {
@@ -128,9 +131,12 @@ public:
 
     // Create an affine.if to contain the code for this pipeline stage.
     unsigned id = stage.getStageId();
-    SmallVector<AffineExpr, 2> constraints{getAffineDimExpr(0, ctx) -
+
+    bool dir = (direction.str() == "horiz");
+
+    SmallVector<AffineExpr, 2> constraints{getAffineDimExpr(dir ? 0 : 1, ctx) -
                                            getAffineConstantExpr(id, ctx),
-                                           getAffineDimExpr(1, ctx)};
+                                           getAffineDimExpr(dir ? 1 : 0, ctx)};
     SmallVector<bool,2> eqflags{true, false};
     auto int_set = IntegerSet::get(2, 0, constraints, eqflags);
     SmallVector<Value, 2> int_set_args{x, y};
@@ -160,6 +166,11 @@ public:
     BlockAndValueMapping remap;
     for (int i = 0, e=stageBlock.getNumArguments(); i<e; i++)
       remap.map(stageBlock.getArgument(i), operands[i]);
+    
+    rewriter.setInsertionPoint(aif);
+    auto idVal = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), id);
+    remap.map(dir ? x : y, idVal);
+
     stage.body().cloneInto(&aif.getBodyRegion(),
                             aif.getBodyRegion().begin(), remap);
     rewriter.eraseBlock(&aif.getBodyRegion().back());
@@ -195,6 +206,7 @@ Operation* convertDmaMemcpyToAirRt(Operation *op, ArrayRef<Value > operands,
                                    ConversionPatternRewriter &rewriter) {
   auto dmaif = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op);
   auto loc = op->getLoc();
+  auto ctx = op->getContext();
 
   MemRefType src = dmaif.getSrcMemref().getType().cast<MemRefType>();
   MemRefType dst = dmaif.getDstMemref().getType().cast<MemRefType>();
@@ -220,7 +232,7 @@ Operation* convertDmaMemcpyToAirRt(Operation *op, ArrayRef<Value > operands,
 
   SmallVector<Value, 16> opers;
 
-  auto idTy = IntegerType::get(op->getContext(), 32);
+  auto idTy = IntegerType::get(ctx, 32);
   if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
     opers.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
   }
@@ -246,8 +258,15 @@ Operation* convertDmaMemcpyToAirRt(Operation *op, ArrayRef<Value > operands,
     opers.push_back(tileIds.y);
   }
 
-  for (auto o : operands)
-    opers.push_back(o);
+  SmallVector<Value, 4> deps;
+  for (auto o : operands) {
+    if (o.getType().isa<xilinx::airrt::EventType>())
+      deps.push_back(o);
+    else
+      opers.push_back(o);
+  }
+  if (deps.size())
+    rewriter.create<xilinx::airrt::WaitAllOp>(loc, SmallVector<Type, 1>{}, deps);
 
   if (isFromTile) {
     opers.erase(opers.begin() + 4);
@@ -260,13 +279,16 @@ Operation* convertDmaMemcpyToAirRt(Operation *op, ArrayRef<Value > operands,
       opers.erase(opers.begin() + 4);
   }
 
-  SmallVector<Type, 16> tys;
   for (int i=0,e=opers.size(); i<e; i++) {
     if (opers[i].getType().isa<IndexType>()) {
       opers[i] = rewriter.create<IndexCastOp>(
-        op->getLoc(), opers[i], IntegerType::get(op->getContext(), 64));
+        op->getLoc(), opers[i], IntegerType::get(ctx, 64));
     }
   }
+
+  SmallVector<Type, 1> tys;
+  if (op->getNumResults())
+    tys.push_back(xilinx::airrt::EventType::get(ctx));
 
   Operation* airrtOp = nullptr;
   if (dmaif.getNumDims() == 1)
@@ -275,19 +297,20 @@ Operation* convertDmaMemcpyToAirRt(Operation *op, ArrayRef<Value > operands,
     airrtOp = rewriter.create<xilinx::airrt::DmaMemcpy2dOp>(loc, tys, opers);
   else if (dmaif.getNumDims() == 4)
     airrtOp = rewriter.create<xilinx::airrt::DmaMemcpy4dOp>(loc, tys, opers);
-  rewriter.eraseOp(op);
+  if (airrtOp)
+    rewriter.replaceOp(op, airrtOp->getResults());
   return airrtOp;
 }
 
-class AIRDmaMemcpyToAIRRtConversion : public ConversionPattern {
+class AIRDmaMemcpyToAIRRtConversion : public OpConversionPattern<xilinx::air::DmaMemcpyOp> {
 public:
-  explicit AIRDmaMemcpyToAIRRtConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::DmaMemcpyOp::getOperationName(), 1, context) {}
+  using OpConversionPattern<xilinx::air::DmaMemcpyOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value > operands,
+  matchAndRewrite(xilinx::air::DmaMemcpyOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override
   {
+    SmallVector<Value, 8> operands{adaptor.getOperands()};
     auto call = convertDmaMemcpyToAirRt(op, operands, rewriter);
     if (call)
       return success();
@@ -296,15 +319,15 @@ public:
   }
 };
 
-class AIRDmaMemcpy2dToAIRRtConversion : public ConversionPattern {
+class AIRDmaMemcpy2dToAIRRtConversion : public OpConversionPattern<xilinx::air::DmaMemcpy2dOp> {
 public:
-  explicit AIRDmaMemcpy2dToAIRRtConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::DmaMemcpy2dOp::getOperationName(), 1, context) {}
+  using OpConversionPattern<xilinx::air::DmaMemcpy2dOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value > operands,
+  matchAndRewrite(xilinx::air::DmaMemcpy2dOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override
   {
+    SmallVector<Value, 16> operands{adaptor.getOperands()};
     auto call = convertDmaMemcpyToAirRt(op, operands, rewriter);
     if (call)
       return success();
@@ -313,15 +336,15 @@ public:
   }
 };
 
-class AIRDmaMemcpy4dToAIRRtConversion : public ConversionPattern {
+class AIRDmaMemcpy4dToAIRRtConversion : public OpConversionPattern<xilinx::air::DmaMemcpy4dOp> {
 public:
-  explicit AIRDmaMemcpy4dToAIRRtConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::DmaMemcpy4dOp::getOperationName(), 1, context) {}
+  using OpConversionPattern<xilinx::air::DmaMemcpy4dOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value > operands,
+  matchAndRewrite(xilinx::air::DmaMemcpy4dOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override
   {
+    SmallVector<Value, 16> operands{adaptor.getOperands()};
     auto call = convertDmaMemcpyToAirRt(op, operands, rewriter);
     if (call)
       return success();
@@ -330,21 +353,20 @@ public:
   }
 };
 
-class AIRDmaMemcpyNdToAIRRtConversion : public ConversionPattern {
+class AIRDmaMemcpyNdToAIRRtConversion : public OpConversionPattern<xilinx::air::DmaMemcpyNdOp> {
 public:
-  explicit AIRDmaMemcpyNdToAIRRtConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::DmaMemcpyNdOp::getOperationName(), 1,
-                          context) {}
+  using OpConversionPattern<xilinx::air::DmaMemcpyNdOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto dmaif = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op);
-    auto dmaOp = dyn_cast<xilinx::air::DmaMemcpyNdOp>(op);
+  matchAndRewrite(xilinx::air::DmaMemcpyNdOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override
+  {
+    SmallVector<Value, 8> operands{adaptor.getOperands()};
     auto loc = op->getLoc();
+    auto ctx = op->getContext();
 
-    MemRefType src = dmaif.getSrcMemref().getType().cast<MemRefType>();
-    MemRefType dst = dmaif.getDstMemref().getType().cast<MemRefType>();
+    MemRefType src = op.getSrcMemref().getType().cast<MemRefType>();
+    MemRefType dst = op.getDstMemref().getType().cast<MemRefType>();
     bool isFromTile = false;
     bool isFullMemcpy = false;
     if (src.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1 &&
@@ -408,13 +430,13 @@ public:
           op->getLoc(), opers[2], IntegerType::get(op->getContext(), 64));
 
       if (isFromTile)
-        opers.push_back(dmaif.getDstMemref());
+        opers.push_back(op.getDstMemref());
       else
-        opers.push_back(dmaif.getSrcMemref());
+        opers.push_back(op.getSrcMemref());
     }
     else {
-      opers.push_back(dmaif.getDstMemref());
-      opers.push_back(dmaif.getSrcMemref());
+      opers.push_back(op.getDstMemref());
+      opers.push_back(op.getSrcMemref());
     }
     auto i64Ty = rewriter.getI64Type();
     auto zero =
@@ -427,24 +449,26 @@ public:
     SmallVector<Value, 3> strides(3, zero);
 
     int idx = 4 - src.getRank();
-    for (auto o : isFromTile ? dmaOp.dst_offsets() : dmaOp.src_offsets())
+    for (auto o : isFromTile ? op.dst_offsets() : op.src_offsets())
       offsets[idx++] = rewriter.create<IndexCastOp>(
-          op->getLoc(), o, IntegerType::get(op->getContext(), 64));
+          op->getLoc(), o, IntegerType::get(ctx, 64));
     idx = 4 - dst.getRank();
-    for (auto o : isFromTile ? dmaOp.dst_strides().drop_back()
-                            : dmaOp.src_strides().drop_back())
+    for (auto o : isFromTile ? op.dst_strides().drop_back()
+                            : op.src_strides().drop_back())
       strides[idx++] = rewriter.create<IndexCastOp>(
-          op->getLoc(), o, IntegerType::get(op->getContext(), 64));
+          op->getLoc(), o, IntegerType::get(ctx, 64));
     idx = 4 - src.getRank();
-    for (auto o : isFromTile ? dmaOp.dst_sizes() : dmaOp.src_sizes())
+    for (auto o : isFromTile ? op.dst_sizes() : op.src_sizes())
       lengths[idx++] = rewriter.create<IndexCastOp>(
-          op->getLoc(), o, IntegerType::get(op->getContext(), 64));
+          op->getLoc(), o, IntegerType::get(ctx, 64));
 
     opers.append(offsets);
     opers.append(lengths);
     opers.append(strides);
 
     SmallVector<Type, 1> tys;
+      if (op->getNumResults())
+        tys.push_back(xilinx::airrt::EventType::get(ctx));
     if (isFullMemcpy) {
       rewriter.create<xilinx::airrt::MemcpyNdOp>(loc, tys, opers);
     } else {
@@ -511,6 +535,22 @@ public:
     auto module = getOperation();
     auto context = module.getContext();
 
+    TypeConverter converter;
+    converter.addConversion([&](Type type) -> Optional<Type> {
+      // convert !air.async.token to !airrt.event
+      if (auto t = type.dyn_cast<xilinx::air::AsyncTokenType>())
+        return xilinx::airrt::EventType::get(context);
+      else
+        return type;
+    });
+    auto addUnrealizedCast = [](OpBuilder &builder, Type type,
+                                ValueRange inputs, Location loc) {
+      auto cast = builder.create<UnrealizedConversionCastOp>(loc, type, inputs);
+      return Optional<Value>(cast.getResult(0));
+    };
+    converter.addSourceMaterialization(addUnrealizedCast);
+    converter.addTargetMaterialization(addUnrealizedCast);
+
     ConversionTarget target(*context);
 
     target.addLegalDialect<LLVM::LLVMDialect,
@@ -558,14 +598,13 @@ public:
               (int)xilinx::air::MemorySpace::L2);
     });
 
-    air_patterns.add<AIRDmaMemcpy2dToAIRRtConversion,
-        AIRDmaMemcpy4dToAIRRtConversion, AIRDmaMemcpyNdToAIRRtConversion,
-        L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion, AIRHerdLaunchConversion>(context);
+    air_patterns.add<L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion, AIRHerdLaunchConversion>(context);
 
     populateFunctionOpInterfaceTypeConversionPattern<FuncOp>(
         air_patterns, converter);
 
-    air_patterns.add<
+    air_patterns.add<AIRDmaMemcpy2dToAIRRtConversion,
+        AIRDmaMemcpy4dToAIRRtConversion, AIRDmaMemcpyNdToAIRRtConversion,
        AIRDmaMemcpyToAIRRtConversion, AIRWaitAllToAIRRtConversion>(converter, context);
 
     if (failed(applyPartialConversion(module, target, std::move(air_patterns)))) {

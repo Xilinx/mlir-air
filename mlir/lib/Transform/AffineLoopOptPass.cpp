@@ -209,7 +209,7 @@ void AffineLoopOptPass::generateDataCopyLoops(std::vector<SmallVector<AffineForO
     for (auto depth : optCopyDepths) {
       if (depth >= fors.size())
         continue;
-      affineDataCopyGenerate(fors[depth], copyOptions, filterMemRef, copyNests);
+      (void)affineDataCopyGenerate(fors[depth], copyOptions, filterMemRef, copyNests);
       dataCopyNests.push_back(copyNests);
     }
   }

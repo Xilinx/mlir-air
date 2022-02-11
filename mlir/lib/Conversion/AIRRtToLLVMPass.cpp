@@ -580,6 +580,7 @@ public:
     return success();
   }
 };
+
 class L1DeallocOpConversion : public OpConversionPattern<memref::DeallocOp> {
 public:
   using OpConversionPattern<memref::DeallocOp>::OpConversionPattern;
