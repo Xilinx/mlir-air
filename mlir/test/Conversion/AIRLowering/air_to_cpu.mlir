@@ -1,7 +1,7 @@
 
 // (c) Copyright 2021 Xilinx Inc.
 
-// RUN: air-opt %s -air-to-std='lower-to-cpu' | FileCheck %s
+// RUN: air-opt %s -air-to-cpu | FileCheck %s
 
 // Check that the herd body was outlined and spot check the ops were turned into calls
 // CHECK: affine.for %{{.*}} = 0 to 32 {
