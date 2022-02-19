@@ -426,15 +426,15 @@ public:
   }
 };
 
-class AIRDmaMemcpyNdToMemcpyConversion : public ConversionPattern {
+class AIRDmaMemcpyNdToMemcpyConversion
+    : public OpConversionPattern<xilinx::air::DmaMemcpyNdOp> {
 public:
-  explicit AIRDmaMemcpyNdToMemcpyConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::DmaMemcpyNdOp::getOperationName(), 1,
-                          context) {}
+  using OpConversionPattern<xilinx::air::DmaMemcpyNdOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+  matchAndRewrite(xilinx::air::DmaMemcpyNdOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value, 8> operands{adaptor.getOperands()};
     auto call =
         convertOpToFunctionWithTileId(op, operands, rewriter, "air_memcpy_nd");
     if (call)
@@ -478,7 +478,7 @@ public:
   }
 };
 
-// Convert CallOp returns of AsyncTokenType to uint64 
+// Convert CallOp returns of AsyncTokenType to uint64
 class AsyncCallOpConversion : public OpConversionPattern<CallOp> {
 public:
   using OpConversionPattern<CallOp>::OpConversionPattern;
@@ -497,6 +497,68 @@ public:
     auto callOp = rewriter.create<CallOp>(op->getLoc(), adaptor.getCallee(),
                                           retTy, adaptor.getOperands());
     rewriter.replaceOp(op, callOp.getResults());
+    return success();
+  }
+};
+
+class WaitAllOpConversion : public OpConversionPattern<xilinx::air::WaitAllOp> {
+public:
+  using OpConversionPattern<xilinx::air::WaitAllOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(xilinx::air::WaitAllOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value, 8> operands{adaptor.getOperands()};
+    auto call =
+        convertOpToFunctionWithId(op, operands, rewriter, "air_wait_all");
+    if (call)
+      return success();
+    else
+      return failure();
+  }
+};
+
+class ScfYieldOpConversion : public OpConversionPattern<scf::YieldOp> {
+public:
+  using OpConversionPattern<scf::YieldOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::YieldOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value, 8> operands{adaptor.getOperands()};
+    SmallVector<Type, 2> retTys;
+    for (auto t : op->getResultTypes()) {
+      if (t.isa<xilinx::air::AsyncTokenType>()) {
+        retTys.push_back(mlir::IntegerType::get(op->getContext(), 64));
+      } else {
+        retTys.push_back(t);
+      }
+    }
+    rewriter.replaceOpWithNewOp<scf::YieldOp>(op, retTys, operands);
+    return success();
+  }
+};
+
+class ScfForOpConversion : public OpConversionPattern<scf::ForOp> {
+public:
+  using OpConversionPattern<scf::ForOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::ForOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto newOp = rewriter.replaceOpWithNewOp<scf::ForOp>(
+        op, adaptor.getLowerBound(), adaptor.getUpperBound(), adaptor.getStep(),
+        adaptor.getInitArgs());
+    auto body = op.getBody();
+    auto newBody = newOp.getBody();
+
+    for (int i = 0, e = body->getNumArguments(); i < e; i++) {
+      body->getArgument(i).replaceAllUsesWith(newBody->getArgument(i));
+    }
+
+    auto &ops = body->getOperations();
+    auto &newOps = newBody->getOperations();
+    newOps.splice(newOps.begin(), ops, ops.begin(), ops.end());
     return success();
   }
 };
@@ -578,8 +640,9 @@ public:
               0);
     });
 
-    air_mem_patterns.insert<AllocToCpuConversion, DeallocToCpuConversion,
-                            AIRDmaMemcpyNdToMemcpyConversion>(context);
+    air_mem_patterns.add<AllocToCpuConversion, DeallocToCpuConversion,
+                         WaitAllOpConversion, AIRDmaMemcpyNdToMemcpyConversion>(
+        context);
     // air_mem_patterns.insert<AIRDmaMemcpyToMemcpyConversion,
     //                     AIRDmaMemcpy2dToMemcpyConversion,
     //                     AIRDmaMemcpy4dToMemcpyConversion,
@@ -594,7 +657,7 @@ public:
     }
 
     RewritePatternSet air_herd_patterns(context);
-    air_herd_patterns.insert<AIRHerdLaunchToCpuConversion>(context);
+    air_herd_patterns.add<AIRHerdLaunchToCpuConversion>(context);
     if (failed(applyPartialConversion(module, target,
                                       std::move(air_herd_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air.launch_herd\n");
@@ -610,10 +673,30 @@ public:
       }));
     });
 
+    target.addDynamicallyLegalOp<scf::ForOp>([&](scf::ForOp op) {
+      for (auto o : op.getRegionIterArgs()) {
+        if (o.getType().isa<xilinx::air::AsyncTokenType>())
+          return false;
+      }
+      return true;
+    });
+
+    target.addDynamicallyLegalOp<scf::YieldOp>([&](scf::YieldOp op) {
+      for (auto v : op.getResults()) {
+        if (v.getType().isa<xilinx::air::AsyncTokenType>())
+          return false;
+      }
+      return true;
+    });
+
     RewritePatternSet typeConversionPatterns(context);
     populateFunctionOpInterfaceTypeConversionPattern<FuncOp>(
         typeConversionPatterns, converter);
-    typeConversionPatterns.add<AsyncCallOpConversion>(converter, context);
+
+    typeConversionPatterns
+        .add<ScfYieldOpConversion, ScfForOpConversion, AsyncCallOpConversion>(
+            converter, context);
+
     if (failed(applyPartialConversion(module, target,
                                       std::move(typeConversionPatterns)))) {
       emitError(UnknownLoc::get(context),
