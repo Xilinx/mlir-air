@@ -1,12 +1,12 @@
 // (c) Copyright 2021 Xilinx Inc.
 
 // RUN: air-opt %s -airrt-to-llvm | FileCheck %s
-// CHECK: call @air_shim_memcpy(%c1_i32, {{.*}}) : (i32, i64, i64, memref<?xi32>, i64, i64) -> ()
-// CHECK: call @air_shim_memcpy2d(%c2_i32, {{.*}}) : (i32, i64, i64, memref<?x?xi32>, i64, i64, i64, i64, i64) -> ()
-// CHECK: call @air_shim_memcpy(%c3_i32, {{.*}}) : (i32, i64, i64, memref<?xi32>, i64, i64) -> ()
-// CHECK: call @air_shim_memcpy2d(%c4_i32, {{.*}}) : (i32, i64, i64, memref<?x?xi32>, i64, i64, i64, i64, i64) -> ()
-// CHECK: call @air_shim_memcpy4d(%c1_i32_0, {{.*}}) : (i32, i64, i64, memref<?x?x?x?xi32>, i64, i64, i64, i64, i64, i64, i64) -> ()
-// CHECK: call @air_shim_memcpy4d(%c2_i32, {{.*}}) : (i32, i64, i64, memref<?x?x?x?xi32>, i64, i64, i64, i64, i64, i64, i64) -> ()
+// CHECK: call @air_shim_memcpy({{.*}}, %c1_i32, {{.*}}) : (!llvm.ptr<i64>, i32, i64, i64, memref<?xi32>, i64, i64) -> ()
+// CHECK: call @air_shim_memcpy2d({{.*}}, %c2_i32, {{.*}}) : (!llvm.ptr<i64>, i32, i64, i64, memref<?x?xi32>, i64, i64, i64, i64, i64) -> ()
+// CHECK: call @air_shim_memcpy({{.*}}, %c3_i32, {{.*}}) : (!llvm.ptr<i64>, i32, i64, i64, memref<?xi32>, i64, i64) -> ()
+// CHECK: call @air_shim_memcpy2d({{.*}}, %c4_i32, {{.*}}) : (!llvm.ptr<i64>, i32, i64, i64, memref<?x?xi32>, i64, i64, i64, i64, i64) -> ()
+// CHECK: call @air_shim_memcpy4d({{.*}}, %c1_i32_0, {{.*}}) : (!llvm.ptr<i64>, i32, i64, i64, memref<?x?x?x?xi32>, i64, i64, i64, i64, i64, i64, i64) -> ()
+// CHECK: call @air_shim_memcpy4d({{.*}}, %c2_i32, {{.*}}) : (!llvm.ptr<i64>, i32, i64, i64, memref<?x?x?x?xi32>, i64, i64, i64, i64, i64, i64, i64) -> ()
 // CHECK: call @air_dma_nd_memcpy_2d0i32(
 // CHECK: call @air_dma_nd_memcpy_1d1f32(
 // CHECK: call @air_dma_nd_memcpy_1d0f32(

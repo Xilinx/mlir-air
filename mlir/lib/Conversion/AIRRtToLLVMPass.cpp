@@ -14,10 +14,10 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 
-
 #include "PassDetail.h"
-#include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Dialect/AIRRt/AIRRtDialect.h"
+#include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Util/Util.h"
 
 #define DEBUG_TYPE "airrt-to-llvm-pass"
@@ -372,15 +372,34 @@ LogicalResult
 lowerDmaMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
 {
   auto ctx = op->getContext();
+  auto loc = op->getLoc();
 
   SmallVector<Type, 6> tys;
   SmallVector<Type, 1> retTys;
-  for (auto o : op->getOperands())
+  SmallVector<Value, 16> operands;
+
+  auto i32Ty = IntegerType::get(ctx, 32);
+  auto i64Ty = IntegerType::get(ctx, 64);
+  auto signalTy = LLVM::LLVMPointerType::get(i64Ty);
+  tys.push_back(signalTy);
+  if (op->getNumResults()) {
+    auto one = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                                                 rewriter.getI32IntegerAttr(1));
+    auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, one, 4);
+    operands.push_back(signal);
+  } else {
+    auto nullV = rewriter.create<LLVM::NullOp>(loc, signalTy).getResult();
+    operands.push_back(nullV);
+  }
+
+  for (auto o : op->getOperands()) {
     tys.push_back(o.getType());
-  MemRefType memrefTy = tys[3].cast<MemRefType>();
-  tys[3] = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
-                           memrefTy.getElementType(),
-                           memrefTy.getLayout(),
+    operands.push_back(o);
+  }
+
+  MemRefType memrefTy = tys[4].cast<MemRefType>();
+  tys[4] = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
+                           memrefTy.getElementType(), memrefTy.getLayout(),
                            memrefTy.getMemorySpace());
   auto module = op->getParentOfType<ModuleOp>();
 
@@ -391,10 +410,13 @@ lowerDmaMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
     fn.setPrivate();
     module.push_back(fn);
   }
-  SmallVector<Value, 16> operands = op->getOperands();
-  operands[3] = rewriter.create<memref::CastOp>(op->getLoc(), operands[3], tys[3]);
-  CallOp call = rewriter.create<CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn), operands);
-  rewriter.replaceOp(op, call->getResults());
+  operands[4] = rewriter.create<memref::CastOp>(loc, operands[4], tys[4]);
+  rewriter.create<CallOp>(loc, retTys, SymbolRefAttr::get(fn), operands);
+  if (op->getNumResults()) {
+    rewriter.replaceOp(op, operands[0]);
+  } else {
+    rewriter.eraseOp(op);
+  }
   return success();
 }
 
@@ -402,19 +424,37 @@ LogicalResult
 lowerDmaNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
 {
   auto ctx = op->getContext();
+  auto loc = op->getLoc();
 
   SmallVector<Type, 6> tys;
   SmallVector<Type, 1> retTys;
-  for (auto o : op->getOperands())
+  SmallVector<Value, 16> operands;
+
+  auto i32Ty = IntegerType::get(ctx, 32);
+  auto i64Ty = IntegerType::get(ctx, 64);
+  auto signalTy = LLVM::LLVMPointerType::get(i64Ty);
+  tys.push_back(signalTy);
+  if (op->getNumResults()) {
+    auto one = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                                                 rewriter.getI32IntegerAttr(1));
+    auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, one, 4);
+    operands.push_back(signal);
+  } else {
+    auto nullV = rewriter.create<LLVM::NullOp>(loc, signalTy).getResult();
+    operands.push_back(nullV);
+  }
+
+  for (auto o : op->getOperands()) {
     tys.push_back(o.getType());
-  MemRefType memrefTy = tys[3].cast<MemRefType>();
-  tys[3] = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
-                           memrefTy.getElementType(),
-                           memrefTy.getLayout(),
+    operands.push_back(o);
+  }
+
+  MemRefType memrefTy = tys[4].cast<MemRefType>();
+  tys[4] = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
+                           memrefTy.getElementType(), memrefTy.getLayout(),
                            memrefTy.getMemorySpace());
 
-  SmallVector<Value, 16> operands = op->getOperands();
-  operands[3] = rewriter.create<memref::CastOp>(op->getLoc(), operands[3], tys[3]);
+  operands[4] = rewriter.create<memref::CastOp>(loc, operands[4], tys[4]);
 
   // mangle the name by appending '_<rank>d<space><type>'
   llvm::raw_string_ostream ss(fnName);
@@ -431,8 +471,12 @@ lowerDmaNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
     module.push_back(fn);
   }
 
-  CallOp call = rewriter.create<CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn), operands);
-  rewriter.replaceOp(op, call->getResults());
+  rewriter.create<CallOp>(loc, retTys, SymbolRefAttr::get(fn), operands);
+  if (op->getNumResults()) {
+    rewriter.replaceOp(op, operands[0]);
+  } else {
+    rewriter.eraseOp(op);
+  }
   return success();
 }
 
@@ -440,24 +484,42 @@ LogicalResult
 lowerNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
 {
   auto ctx = op->getContext();
+  auto loc = op->getLoc();
+
   auto dmaOp = cast<xilinx::airrt::MemcpyNdOp>(op);
   SmallVector<Type, 6> tys;
   SmallVector<Type, 1> retTys;
+  SmallVector<Value, 16> operands;
+
+  auto i32Ty = IntegerType::get(ctx, 32);
+  auto i64Ty = IntegerType::get(ctx, 64);
+  auto signalTy = LLVM::LLVMPointerType::get(i64Ty);
+  if (op->getNumResults()) {
+    auto one = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                                                 rewriter.getI32IntegerAttr(1));
+    auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, one, 4);
+    operands.push_back(signal);
+  } else {
+    auto nullV = rewriter.create<LLVM::NullOp>(loc, signalTy).getResult();
+    operands.push_back(nullV);
+  }
 
   MemRefType dstMemRefTy = dmaOp.dst().getType().cast<MemRefType>();
   MemRefType srcMemRefTy = dmaOp.src().getType().cast<MemRefType>();
 
-  SmallVector<Value, 16> operands = op->getOperands();
-  operands[0] = rewriter.create<memref::CastOp>(op->getLoc(), operands[0],
-           MemRefType::get(std::vector<int64_t>(dstMemRefTy.getRank(), -1),
-                           dstMemRefTy.getElementType(),
-                           dstMemRefTy.getLayout(),
-                           dstMemRefTy.getMemorySpace()));
-  operands[1] = rewriter.create<memref::CastOp>(op->getLoc(), operands[1],
-           MemRefType::get(std::vector<int64_t>(srcMemRefTy.getRank(), -1),
-                           srcMemRefTy.getElementType(),
-                           srcMemRefTy.getLayout(),
-                           srcMemRefTy.getMemorySpace()));
+  for (auto o : op->getOperands())
+    operands.push_back(o);
+
+  operands[1] = rewriter.create<memref::CastOp>(
+      loc, operands[1],
+      MemRefType::get(std::vector<int64_t>(dstMemRefTy.getRank(), -1),
+                      dstMemRefTy.getElementType(), dstMemRefTy.getLayout(),
+                      dstMemRefTy.getMemorySpace()));
+  operands[2] = rewriter.create<memref::CastOp>(
+      loc, operands[2],
+      MemRefType::get(std::vector<int64_t>(srcMemRefTy.getRank(), -1),
+                      srcMemRefTy.getElementType(), srcMemRefTy.getLayout(),
+                      srcMemRefTy.getMemorySpace()));
 
   for (auto o : operands)
     tys.push_back(o.getType());
@@ -480,8 +542,13 @@ lowerNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
     module.push_back(fn);
   }
 
-  CallOp call = rewriter.create<CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn), operands);
-  rewriter.replaceOp(op, call->getResults());
+  rewriter.create<CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn),
+                          operands);
+  if (op->getNumResults()) {
+    rewriter.replaceOp(op, operands[0]);
+  } else {
+    rewriter.eraseOp(op);
+  }
   return success();
 }
 
@@ -633,7 +700,6 @@ public:
     auto load = rewriter.create<AffineLoadOp>(op.getLoc(), adaptor.memref(),
                                               adaptor.indices());
     rewriter.replaceOp(op, load.getResult());
-    load.dump();
     return success();
   }
 };
@@ -711,7 +777,7 @@ public:
     operands.push_back(rewriter.create<memref::CastOp>(op->getLoc(), tys[0], op.memref()));
 
     auto module = op->getParentOfType<ModuleOp>();
-    
+
     std::string fnName = "air_dealloc_L2";
     llvm::raw_string_ostream ss(fnName);
     ss << "_" << memrefTy.getRank();
@@ -727,6 +793,42 @@ public:
     }
 
     rewriter.create<CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn), operands);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+class WaitAllOpConversion
+    : public OpConversionPattern<xilinx::airrt::WaitAllOp> {
+public:
+  using OpConversionPattern<xilinx::airrt::WaitAllOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(xilinx::airrt::WaitAllOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    SmallVector<Value, 8> operands{adaptor.getOperands()};
+    auto module = op->getParentOfType<ModuleOp>();
+    auto ctx = op->getContext();
+
+    SmallVector<Type, 8> tys(
+        operands.size(), LLVM::LLVMPointerType::get(IntegerType::get(ctx, 64)));
+    SmallVector<Type, 1> retTys;
+
+    std::string fnName = "air_wait_all";
+    llvm::raw_string_ostream ss(fnName);
+    ss << "_" << operands.size();
+
+    auto fn = module.lookupSymbol<FuncOp>(fnName);
+    if (!fn) {
+      auto fnTy = FunctionType::get(ctx, tys, retTys);
+      fn = FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
+      fn.setPrivate();
+      module.push_back(fn);
+    }
+
+    rewriter.create<CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn),
+                            operands);
     rewriter.eraseOp(op);
     return success();
   }
@@ -756,6 +858,8 @@ public:
           return mlir::MemRefType::get(memref.getShape(),
                                        memref.getElementType(),
                                        memref.getLayout(), 0);
+      if (auto t = type.dyn_cast<xilinx::airrt::EventType>())
+        return LLVM::LLVMPointerType::get(IntegerType::get(context, 64));
       return type;
     });
 
@@ -774,8 +878,8 @@ public:
                  MemcpyNdToLLVMConversion, L2AllocOpConversion,
                  L2DeallocOpConversion>(context);
     patterns.add<L1AllocOpConversion, L1AffineLoadOpConversion,
-                 L1AffineStoreOpConversion, L1DeallocOpConversion>(converter,
-                                                                   context);
+                 L1AffineStoreOpConversion, L1DeallocOpConversion,
+                 WaitAllOpConversion>(converter, context);
     populateFunctionOpInterfaceTypeConversionPattern<FuncOp>(patterns, converter);
 
     ConversionTarget target(*context);
