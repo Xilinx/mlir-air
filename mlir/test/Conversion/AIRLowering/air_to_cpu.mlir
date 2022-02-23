@@ -10,7 +10,7 @@
 // CHECK:   } {air.herd_launch = "inner"}
 // CHECK: } {air.herd_launch = "outer"}
 // CHECK: func @herd_0_body_fn(%{{.*}}: index, %{{.*}}: index, %{{.*}}: memref<1024x1024xi32>, %{{.*}}: memref<1024x1024xi32>, %{{.*}}: memref<1024x1024xi32>) attributes {llvm.emit_c_interface} {
-// CHECK: call @air_alloc_M2D2I32_I64_I64
+// CHECK: call @air_alloc_rM2D2I32_I64_I64
 // CHECK: call @air_memcpy_nd_I32_I64_I64_M2D2I32_M0D2I32_I64_I64_I64_I64_I64_I64
 // CHECK  linalg.matmul
 // CHECK: call @air_memcpy_nd_I32_I64_I64_M0D2I32_I64_I64_I64_I64_I64_I64_M2D2I32

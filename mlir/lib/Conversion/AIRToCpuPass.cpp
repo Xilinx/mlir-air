@@ -55,9 +55,9 @@ public:
     }
     auto herd_size = launch.getHerdSizeOperands();
     int64_t herd_size_x =
-        cast<ConstantIndexOp>(herd_size.x.getDefiningOp()).value();
+        cast<arith::ConstantIndexOp>(herd_size.x.getDefiningOp()).value();
     int64_t herd_size_y =
-        cast<ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
+        cast<arith::ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
 
     auto outer = rewriter.create<AffineForOp>(launch.getLoc(), 0, herd_size_x);
     auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
@@ -669,6 +669,8 @@ public:
 
     target.addDynamicallyLegalOp<CallOp>([&](CallOp op) {
       return (!llvm::any_of(op->getResultTypes(), [](Type t) {
+        return t.isa<xilinx::air::AsyncTokenType>();
+      }) && !llvm::any_of(op->getOperandTypes(), [](Type t) {
         return t.isa<xilinx::air::AsyncTokenType>();
       }));
     });

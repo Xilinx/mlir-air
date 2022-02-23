@@ -65,7 +65,7 @@ std::string getMangledFuncName(ModuleOp module, std::string prefix, FunctionType
 
   std::string ret = prefix;
   for (const Type t : resultTy)
-    ret = ret + sep + getMangledType(t);
+    ret = ret + sep + "r" + getMangledType(t);
   for (const Type t : operTy)
     ret = ret + sep + getMangledType(t);
 

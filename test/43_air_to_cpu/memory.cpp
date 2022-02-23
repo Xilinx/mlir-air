@@ -65,13 +65,13 @@ void air_memcpy_nd_src(tensor_t<T, R> *dst, tensor_t<T, R> *src, size_t *offset,
 
 extern "C" {
 
-void _mlir_ciface_air_alloc_M1D2I32(void *t) {
+void _mlir_ciface_air_alloc_rM1D2I32(void *t) {
   tensor_t<int32_t, 2> *tt = (tensor_t<int32_t, 2> *)t;
   size_t shape[2] = {64, 64};
   air_alloc_tensor(tt, shape);
 }
 
-void _mlir_ciface_air_alloc_M2D2I32_I64_I64(void *t, uint64_t x, uint64_t y) {
+void _mlir_ciface_air_alloc_rM2D2I32_I64_I64(void *t, uint64_t x, uint64_t y) {
   tensor_t<int32_t, 2> *tt = (tensor_t<int32_t, 2> *)t;
   size_t shape[2] = {32, 32};
   air_alloc_tensor(tt, shape);
