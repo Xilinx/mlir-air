@@ -81,10 +81,10 @@ endif()
 
 if(ENABLE_BOARD_TESTS)
 set(CONFIG_ENABLE_BOARD_TESTS 1)
-set(AIR_TEST_LIT_ARGS "-sv -j 1 --timeout 90 --time-tests --order=random")
+set(AIR_TEST_LIT_ARGS "-sv -j 1 --timeout 300 --time-tests --order=random")
 else()
 set(CONFIG_ENABLE_BOARD_TESTS 0)
-set(AIR_TEST_LIT_ARGS "-sv -j 8 --timeout 90 --time-tests --order=random")
+set(AIR_TEST_LIT_ARGS "-sv -j 8 --timeout 300 --time-tests --order=random")
 endif()
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
