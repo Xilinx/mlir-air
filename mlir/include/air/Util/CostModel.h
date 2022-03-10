@@ -18,11 +18,12 @@ public:
     size_t count(std::string& s) {
       return map.count(s);
     }
-    int &operator[](const std::string& s) { 
+    uint64_t &operator[](const std::string& s) {
+      assert(map.count(s) && "key not found");
       return map[s];
     }
     std::string name;
-    std::map<std::string, int> map;
+    std::map<std::string, uint64_t> map;
     std::vector<OpCountMap> ops;
   };
 
