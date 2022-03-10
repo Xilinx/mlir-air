@@ -53,13 +53,13 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
     auto loc = op.getLoc();
     auto src = op.input();
     auto dst = op.output();
-
+    
     // It must already be a memref
     auto src_type = src.getType().dyn_cast<MemRefType>();
     auto dst_type = dst.getType().dyn_cast<MemRefType>();
     if (!src_type)
       return failure();
-
+      
     if ((src_type.getMemorySpaceAsInt() == (int)MemorySpace::L3) &&
         (dst_type.getMemorySpaceAsInt() == (int)MemorySpace::L3))
       return failure();
@@ -68,8 +68,8 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
       return failure();
 
     auto rank = src_type.getShape().size();
+    
     if (rank == 2) {
-
       SmallVector<Value, 4> src_indices;
       SmallVector<Value, 4> dst_indices;
       Value zero = rewriter.create<arith::ConstantIndexOp>(loc,0);
@@ -137,6 +137,79 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
                                                     deps, dst, src,
                                                     dst_indices[0], dst_indices[1],
                                                     src_indices[0], src_indices[1],
+                                                    rewriter.create<arith::ConstantIndexOp>(
+                                                      loc,
+                                                      num_elements),
+                                                    stride, elem_per_stride);
+      dma->setAttr("id",
+                   mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
+                                          ++DmaMemcpyOpID));
+    } else if (rank == 4) {
+      SmallVector<Value, 4> src_indices;
+      SmallVector<Value, 4> dst_indices;
+      Value zero = rewriter.create<arith::ConstantIndexOp>(loc,0);
+      Value stride = zero;
+      Value elem_per_stride = zero;
+
+      if (auto alloc = src.getDefiningOp<memref::AllocOp>()) {
+        src_indices.push_back(zero);
+        src_indices.push_back(zero);
+        src_indices.push_back(zero);
+        src_indices.push_back(zero);
+        elem_per_stride = rewriter.create<arith::ConstantIndexOp>(loc,
+                            alloc.getType().getShape()[1]);
+      }
+      else if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
+        auto offsets = subview.offsets().begin();
+        auto static_offsets = extractFromI64ArrayAttr(subview.static_offsets());
+        for (auto o : static_offsets) {
+          if (o >= 0)
+            src_indices.push_back(rewriter.create<arith::ConstantIndexOp>(loc, o));
+          else
+            src_indices.push_back(*offsets++);
+        }
+        src = subview.source();
+        stride = rewriter.create<arith::ConstantIndexOp>(loc,
+                   src.getType().cast<MemRefType>().getShape()[1]);
+      }
+      else
+        return failure();
+
+      if (auto alloc = dst.getDefiningOp<memref::AllocOp>()) {
+        dst_indices.push_back(zero);
+        dst_indices.push_back(zero);
+        dst_indices.push_back(zero);
+        dst_indices.push_back(zero);
+        elem_per_stride = rewriter.create<arith::ConstantIndexOp>(loc,
+                            alloc.getType().getShape()[1]);
+      }
+      else if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
+        auto offsets = subview.offsets().begin();
+        auto static_offsets = extractFromI64ArrayAttr(subview.static_offsets());
+        for (auto o : static_offsets) {
+          if (o >= 0)
+            dst_indices.push_back(rewriter.create<arith::ConstantIndexOp>(loc, o));
+          else
+            dst_indices.push_back(*offsets++);
+        }
+        dst = subview.source();
+        stride = rewriter.create<arith::ConstantIndexOp>(loc,
+                   dst.getType().cast<MemRefType>().getShape()[1]);
+      }
+
+      SmallVector<Value, 1> deps;
+      SmallVector<Type, 1> tys;
+
+      auto num_elements = 0;
+      if (src_type.hasStaticShape())
+        num_elements = src_type.getNumElements();
+      else
+        num_elements = dst_type.getNumElements();
+
+      auto dma = rewriter.create<air::DmaMemcpy4dOp>(loc, tys,
+                                                    deps, dst, src,
+                                                    dst_indices[0], dst_indices[1], dst_indices[2], dst_indices[3],
+                                                    src_indices[0], src_indices[1], src_indices[2], src_indices[3],
                                                     rewriter.create<arith::ConstantIndexOp>(
                                                       loc,
                                                       num_elements),

@@ -1,0 +1,27 @@
+--- 1.conv2d.air.mlir	2022-02-01 16:19:15.815059000 -0800
++++ 1m.conv2d.air.mlir	2022-02-01 16:15:23.006056000 -0800
+@@ -1,6 +1,4 @@
+ #map0 = affine_map<(d0, d1, d2, d3) -> (d0 * 278784 + d1 * 4356 + d2 * 66 + d3 + 67)>
+-#map1 = affine_map<(d0, d1, d2, d3) -> (d1)>
+-#map2 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
+ module attributes {torch.debug_module_name = "Conv2D"}  {
+   memref.global "private" constant @__constant_128xf32 : memref<128xf32> = dense<1.000000e+00>
+   memref.global "private" constant @__constant_128x64x3x3xf32 : memref<128x64x3x3xf32> = dense<1.000000e+00>
+@@ -16,16 +14,7 @@
+     linalg.copy(%2, %3) : memref<1x64x66x66xf32>, memref<1x64x66x66xf32> 
+     %4 = memref.subview %3[0, 0, 1, 1] [1, 64, 64, 64] [1, 1, 1, 1] : memref<1x64x66x66xf32> to memref<1x64x64x64xf32, #map0>
+     linalg.copy(%arg0, %4) : memref<1x64x64x64xf32>, memref<1x64x64x64xf32, #map0> 
+-    %5 = memref.alloc() : memref<1x128x64x64xf32>
+-    linalg.generic {indexing_maps = [#map1, #map2], iterator_types = ["parallel", "parallel", "parallel", "parallel"]} ins(%1 : memref<128xf32>) outs(%5 : memref<1x128x64x64xf32>) {
+-    ^bb0(%arg2: f32, %arg3: f32):  // no predecessors
+-      linalg.yield %arg2 : f32
+-    }
+-    %6 = memref.alloc() : memref<1x128x64x64xf32>
+-    linalg.copy(%5, %6) : memref<1x128x64x64xf32>, memref<1x128x64x64xf32> 
+-    linalg.conv_2d_nchw_fchw {dilations = dense<1> : vector<2xi64>, strides = dense<1> : vector<2xi64>} ins(%3, %0 : memref<1x64x66x66xf32>, memref<128x64x3x3xf32>) outs(%6 : memref<1x128x64x64xf32>)
+-    memref.copy %6, %arg1 : memref<1x128x64x64xf32> to memref<1x128x64x64xf32>
++    linalg.conv_2d_nchw_fchw {dilations = dense<1> : vector<2xi64>, strides = dense<1> : vector<2xi64>} ins(%3, %0 : memref<1x64x66x66xf32>, memref<128x64x3x3xf32>) outs(%arg1 : memref<1x128x64x64xf32>)
+     return
+   }
+ }
+-

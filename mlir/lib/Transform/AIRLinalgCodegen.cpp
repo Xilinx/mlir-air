@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Dialect/SCF/Transforms.h"
+#include "mlir/Transforms/RegionUtils.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
@@ -107,7 +108,7 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
     auto ty = op.getType();
     if (ty.hasStaticShape())
       return failure();
-
+    
     std::vector<int64_t> shape = ty.getShape();
     if (op.getNumOperands() != shape.size())
       return failure();
@@ -164,6 +165,11 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
 //   }
 // };
 
+// Replace a pattern like this:
+// %7 = memref.alloc() : memref<20736xi8> 
+// %8 = memref.view %7[%c0][] : memref<20736xi8> to 	 	memref<1x16x18x18xf32> 
+// With this 
+// %7 = memref.alloc() : memref< 1x16x18x18xf32, 2> 
 struct RemoveSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
   using OpRewritePattern<memref::SubViewOp>::OpRewritePattern;
 
@@ -175,6 +181,31 @@ struct RemoveSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
     if (!view)
       return failure();
     auto alloc = view.source().getDefiningOp<memref::AllocOp>();
+    if (!alloc)
+      return failure();
+
+    /* Force memory space */
+    Value newOp = rewriter.replaceOpWithNewOp<memref::AllocOp>(
+        op,
+        MemRefType::get(op.getType().getShape(), op.getType().getElementType(),
+                        {}, fast_space),
+        op.sizes());
+    alloc.replaceAllUsesWith(newOp);
+    return success();
+  }
+
+private:
+  unsigned int fast_space;
+};
+
+struct RemoveViewOpsPattern : public OpRewritePattern<memref::ViewOp> {
+  using OpRewritePattern<memref::ViewOp>::OpRewritePattern;
+
+  RemoveViewOpsPattern(MLIRContext *ctx, unsigned int fast_memory_space = 1);
+
+  LogicalResult matchAndRewrite(memref::ViewOp op,
+                                PatternRewriter &rewriter) const override {
+    auto alloc = op.source().getDefiningOp<memref::AllocOp>();
     if (!alloc)
       return failure();
 
@@ -243,6 +274,11 @@ RemoveSubViewOpsPattern::RemoveSubViewOpsPattern(MLIRContext *ctx,
                                                  unsigned int fast_memory_space)
     : OpRewritePattern(ctx), fast_space(fast_memory_space) {}
 
+RemoveViewOpsPattern::RemoveViewOpsPattern(MLIRContext *ctx,
+                                                 unsigned int fast_memory_space)
+    : OpRewritePattern(ctx), fast_space(fast_memory_space) {}
+
+
 // Custom LinalgOp tiling pattern
 //
 struct TileLinalgOpPattern : public RewritePattern {
@@ -273,8 +309,9 @@ struct TileLinalgOpPattern : public RewritePattern {
 
     if (tiledLinalgOp->tensorResults.empty())
       rewriter.eraseOp(op);
-    else
+    else 
       rewriter.replaceOp(op, tiledLinalgOp->tensorResults);
+    
     return success();
   }
 
@@ -335,8 +372,32 @@ public:
   void runTestPatterns(FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<RemoveSubViewOpsPattern, FoldSubViewOpsPattern>(ctx);
+    patterns.insert<RemoveSubViewOpsPattern, FoldSubViewOpsPattern, RemoveViewOpsPattern>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+  /// Collect perfectly nested loops starting from `rootForOps`.  Loops are
+  /// perfectly nested if each loop is the first and only non-terminator operation
+  /// in the parent loop.  Collect at most `maxLoops` loops and append them to
+  /// `forOps`.
+  template <typename T>
+  static void getPerfectlyNestedLoopsImpl(
+      SmallVectorImpl<T> &forOps, T rootForOp,
+      unsigned maxLoops = std::numeric_limits<unsigned>::max()) {
+    for (unsigned i = 0; i < maxLoops; ++i) {
+      forOps.push_back(rootForOp);
+      Block &body = rootForOp.getRegion().front();
+      if (body.begin() != std::prev(body.end(), 2))
+        return;
+
+      rootForOp = dyn_cast<T>(&body.front());
+      if (!rootForOp)
+        return;
+    }
+  }
+
+  void getPerfectlyNestedLoops(SmallVectorImpl<scf::ForOp> &nestedLoops,
+                                    scf::ForOp root) {
+    getPerfectlyNestedLoopsImpl(nestedLoops, root);
   }
 
   static SmallVector<int64_t> getTripCounts(linalg::LinalgOp op) {
@@ -432,7 +493,6 @@ public:
 
     // GenericOp
     for (auto genericOp : genericOps) {
-
       SmallVector<int64_t, 2> herd_size{2, 2};
       SmallVector<int64_t, 4> l1_tile_size;
       SmallVector<unsigned, 4> l1_tile_interchange;
@@ -694,68 +754,33 @@ public:
 
     // Conv2dOp
     for (auto conv2dOp : conv2dOps) {
-
       xilinx::air::AIROutliner olnr;
       CallOp call =
           olnr.outline(std::vector<Operation *>{conv2dOp}, "call_conv_2d_nchw");
       FuncOp called = funcOp->getParentOfType<ModuleOp>().lookupSymbol<FuncOp>(
           call.getCallee());
 
-      Value input = conv2dOp.getOperand(0);
-      Value weight = conv2dOp.getOperand(1);
-      Value result = conv2dOp.getOperand(2);
+      SmallVector<int64_t, 7> l1_tile_size{1, 32, 32, 32, 32, 3, 3};
+      SmallVector<unsigned, 7> l1_tile_interchange{0, 1, 2, 3, 4, 5, 6};
+    
+      for (int i = 0, e = clL1TileSize.size(); i < e; i++)
+        l1_tile_size[i] = clL1TileSize[i];
 
-      auto inputTy = input.getType().cast<ShapedType>();
-      auto weightTy = weight.getType().cast<ShapedType>();
-      auto resultTy = result.getType().cast<ShapedType>();
-
-      // int64_t batch_sw = inputTy.getDimSize(0);
-      int64_t batch_hw = 1;
-      int64_t ifm_channels_sw = inputTy.getDimSize(1);
-      int64_t ifm_height_sw = inputTy.getDimSize(2);
-      int64_t ifm_width_sw = inputTy.getDimSize(3);
-      int64_t ofm_channels_sw = resultTy.getDimSize(1);
-      // int64_t ofm_height_sw = resultTy.getDimSize(2);
-      // int64_t ofm_width_sw = resultTy.getDimSize(3);
-      int64_t kernel_h = weightTy.getDimSize(2);
-      int64_t kernel_w = weightTy.getDimSize(3);
-
+      for (int i = 0, e = clL1TileInterchange.size(); i < e; i++)
+        l1_tile_interchange[i] = clL1TileInterchange[i];
+    
       RewritePatternSet stage1Patterns(&getContext());
+    
       stage1Patterns
           .insert<linalg::LinalgTilingPattern>(
               linalg::Conv2DNchwFchwOp::getOperationName(),
               ctx,
               linalg::LinalgTilingOptions()
-                  .setTileSizes({batch_hw, ofm_channels_sw, ifm_height_sw / 4,
-                                 ifm_width_sw, kernel_h, kernel_w,
-                                 ifm_channels_sw})
-                  .setInterchange({0, 2, 1, 3, 4, 5, 6})
+                  .setTileSizes(l1_tile_size)
+                  .setInterchange(l1_tile_interchange)
                   .setLoopType(linalg::LinalgTilingLoopType::Loops),
               linalg::LinalgTransformationFilter(
-                  StringAttr::get(ctx, "xten_conv2d"),
-                  StringAttr::get(ctx, "promote_L2")));
-
-      stage1Patterns
-          .insert<linalg::LinalgPromotionPattern<linalg::Conv2DNchwFchwOp>>(
-              ctx,
-              linalg::LinalgPromotionOptions().setOperandsToPromote(
-                  std::vector<int64_t>{0, 1, 2}),
-              linalg::LinalgTransformationFilter(
-                  StringAttr::get(ctx, "promote_L2"),
-                  StringAttr::get(ctx, "L2")));
-
-      stage1Patterns
-          .insert<linalg::LinalgTilingPattern>(
-              linalg::Conv2DNchwFchwOp::getOperationName(),
-              ctx,
-              linalg::LinalgTilingOptions()
-                  .setTileSizes({batch_hw, ofm_channels_sw / 4,
-                                 ifm_height_sw / 4, ifm_width_sw, kernel_h,
-                                 kernel_w, ifm_channels_sw})
-                  .setInterchange({1, 0, 2, 3, 4, 5, 6})
-                  .setLoopType(linalg::LinalgTilingLoopType::Loops),
-              linalg::LinalgTransformationFilter(
-                  StringAttr::get(ctx, "L2"),
+                  ArrayRef<StringAttr>{},
                   StringAttr::get(ctx, "promote_HERD")));
 
       stage1Patterns
@@ -774,20 +799,75 @@ public:
       RewritePatternSet stage3Patterns(&getContext());
       stage3Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
       stage3Patterns.insert<FoldSubViewOpsPattern>(ctx);
-
+      stage3Patterns.insert<MemrefsPattern>(ctx);
+      stage3Patterns.insert<RemoveViewOpsPattern>(ctx, 2);
+      
       (void)applyPatternsAndFoldGreedily(called, std::move(stage1Patterns));
       (void)applyPatternsAndFoldGreedily(called, std::move(stage2Patterns));
       (void)applyPatternsAndFoldGreedily(called, std::move(stage3Patterns));
+      
+      /// scf.parallel transform from herd dimension
+      /// Step-1: Capture the perfectly nested scf.for loops
+      /// Step-2: Create scf.parallel loop based on herd dimension
+      /// Step-3: Replace the scf.for loops IV with scf.parallel loops IV
+
+      /// Capture the perfectly nested loops
+      SmallVector<scf::ForOp, 6> loops;
+      called.walk([&](Operation *op) {
+      if (auto scfForOp = dyn_cast<scf::ForOp>(op))
+        if(!op->getParentOfType<scf::ForOp>())
+          getPerfectlyNestedLoops(loops, scfForOp); 
+      });
+      
+      assert(clHerdSize.size() != 0 && 
+         "AIE tile dimension can't be zero");
+
+      assert(clHerdSize.size() <= loops.size() && 
+         "AIE tile dimension must be equal or less than Tiled loops number"); 
+
+      scf::ForOp outermost = loops[0];
+      OpBuilder builder(outermost);
+      Location loc = outermost.getLoc();
+      
+      // Create parallel loops for spatial iteration. 
+      SmallVector<Value, 2> lowerBounds, upperBounds, steps;
+      for(unsigned i = 0, e = clHerdSize.size(); i < e; ++i) {
+        lowerBounds.push_back(loops[i].getLowerBound());
+        upperBounds.push_back(loops[i].getUpperBound());
+        steps.push_back(loops[i].getStep());
+      }
+      
+      auto parallelLoop = builder.create<scf::ParallelOp>(
+        loc, lowerBounds, upperBounds, steps);
+      
+      builder.setInsertionPointToStart(parallelLoop.getBody());
+
+      // Replace the scf.for IV with scf.parallel IV
+      auto pLoopIV = parallelLoop.getInductionVars();
+      for(unsigned i = 0, e = pLoopIV.size(); i < e; ++i) 
+        replaceAllUsesInRegionWith(loops[i].getInductionVar(), pLoopIV[i],
+                                loops[loops.size() -1].getRegion());
+
+      // Move the remaining inner scf.for loops and delete extra 
+      // terminator and perfectly nested loops. 
+      loops[clHerdSize.size() -1].getBody()->back().erase();
+      parallelLoop.getBody()->getOperations().splice(
+      Block::iterator(parallelLoop.getBody()->back()),
+      loops[clHerdSize.size() -1].getBody()->getOperations()  
+      );
+
+      outermost.erase();
 
       // Drop the marker.
       called.walk([](linalg::LinalgOp op) {
         op->removeAttr(linalg::LinalgTransforms::kLinalgTransformMarker);
       });
-
+      
       InlinerInterface interface(&getContext());
       (void)inlineCall(interface, call, called, &called.getRegion(), true);
       call.erase();
       called.erase();
+     
     }
   }
 
@@ -796,7 +876,6 @@ public:
     RewritePatternSet prePatterns(&getContext());
     prePatterns.insert<RemoveAllocLinalgOpCopyPattern>(&getContext());
     (void)applyPatternsAndFoldGreedily(f, std::move(prePatterns));
-
     if (!AIRLinalgCodegenTestPatterns) {
       runMatmulPatterns(f);
       runConv2dPatterns(f);
