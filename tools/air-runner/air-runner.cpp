@@ -148,21 +148,6 @@ class AIRRunner {
     out[0] = result;
   }
 
-  void executeOp(xilinx::air::DmaMemcpyInterface op,
-                 std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    return;
-    // llvm::ArrayRef<int64_t> shape =
-    // op.getType().cast<TensorType>().getShape(); unsigned address = 0;
-    // unsigned ptr = llvm::any_cast<unsigned>(in[0]);
-    // assert(ptr < store.size());
-    // auto &ref = store[ptr];
-    // assert(address < ref.size());
-    // //  LLVM_DEBUG(llvm::dbgs() << "Load " << ref[address] << " from " << ptr
-    // << "[" << address << "]\n"); llvm::Any result = ref[address]; out[0] =
-    // result;
-  }
-
   void executeOp(memref::StoreOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
     llvm::ArrayRef<int64_t> shape = op.getMemRefType().getShape();
@@ -225,23 +210,32 @@ class AIRRunner {
   //   out[1] = op.getIVs()[1];
   // }
 
+  void decrementAsyncTokens(Operation *op, std::vector<llvm::Any> &in,
+                 std::vector<llvm::Any> &out) {
+
+    for (unsigned i = 0, e=op->getNumResults(); i<e; i++) {
+      auto r = op->getResult(i);
+      if (r.getType().isa<xilinx::air::AsyncTokenType>()) {
+        out[i] =
+            llvm::any_cast<llvm::APInt>(valueMap[r]) - llvm::APInt(64, 1);
+        valueMap[r] = out[i];
+      }
+    }
+  }
+
   void executeOp(scf::ForOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
-    assert(!op->getNumResults());
-    // int i = 0;
-    // for (auto r : op.getResults())
-    //   out[i++] = llvm::APInt(64,0);
+    ;//decrementAsyncTokens(op, in, out);
   }
 
   void executeOp(xilinx::air::HerdLaunchOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
-    if (op->getNumResults()) {
-      auto res = op->getResult(0);
-      if (res.getType().isa<xilinx::air::AsyncTokenType>()) {
-        out[0] = llvm::any_cast<llvm::APInt>(valueMap[res]) - llvm::APInt(64, 1);
-        valueMap[res] = out[0];
-      }
-    }
+    decrementAsyncTokens(op, in, out);
+  }
+
+  void executeOp(xilinx::air::DmaMemcpyInterface op, std::vector<llvm::Any> &in,
+                 std::vector<llvm::Any> &out) {
+    decrementAsyncTokens(op, in, out);
   }
 
 #if HAVE_REGION_OP
@@ -250,7 +244,8 @@ class AIRRunner {
     if (op->getNumResults()) {
       auto res = op->getResult(0);
       if (res.getType().isa<xilinx::air::AsyncTokenType>()) {
-        out[0] = llvm::any_cast<llvm::APInt>(valueMap[res]) - llvm::APInt(64, 1);
+        out[0] =
+            llvm::any_cast<llvm::APInt>(valueMap[res]) - llvm::APInt(64, 1);
         valueMap[res] = out[0];
       }
     }
@@ -259,8 +254,7 @@ class AIRRunner {
 
   void executeOp(xilinx::air::WaitAllOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
-    if (op->getNumResults())
-      out[0] = llvm::APInt(64, 0);
+    decrementAsyncTokens(op, in, out);
   }
 
   bool executeOpImpls(mlir::Operation &op, std::vector<llvm::Any> &inValues,
@@ -701,24 +695,28 @@ public:
 
     if (auto Op = mlir::dyn_cast<xilinx::air::WaitAllOp>(op)) {
       execution_time = 1;
-    }
-    else if (auto Op = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op)) {
+    } else if (auto Op = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op)) {
 
       MemRefType srcTy = Op.getSrcMemref().getType().cast<MemRefType>();
       MemRefType dstTy = Op.getDstMemref().getType().cast<MemRefType>();
       auto srcSpace = srcTy.getMemorySpaceAsInt();
       auto dstSpace = dstTy.getMemorySpaceAsInt();
       // if there is a size mismatch, it's because we're moving a tile of the
-      // larger tensor 
+      // larger tensor
       if (getTensorVolume(srcTy) <= getTensorVolume(dstTy))
         execution_time = getTransferCost(srcSpace, dstSpace, srcTy);
       else
         execution_time = getTransferCost(srcSpace, dstSpace, dstTy);
-    }
-    else if (auto Op = mlir::dyn_cast<linalg::LinalgOp>(op)) {
+    } else if (auto Op = mlir::dyn_cast<linalg::LinalgOp>(op)) {
       auto opCounts = xilinx::air::CostModel().getOpCounts(op);
+      std::string skip = "footprint";
       std::string memops = "reads;writes;";
-      std::string cpuops = "arith.mulf;arith.addf;arith.muli;arith.addi;";
+      std::string cpuops = "math.rsqrt;";
+      cpuops += "arith.mulf;arith.divf;arith.addf;arith.subf;arith.truncf;"
+                "arith.cmpf;arith.maxf;";
+      cpuops += "arith.muli;arith.divi;arith.addi;arith.subi;arith.trunci;"
+                "arith.cmpi;arith.maxi";
+      cpuops += "std.select";
       uint64_t memory_op_count = 0;
       uint64_t compute_op_count = 0;
       for (auto &p : opCounts.map) {
@@ -728,14 +726,15 @@ public:
           memory_op_count += count;
         else if (cpuops.find(name) != std::string::npos)
           compute_op_count += count;
-        else if (verbose)
-          llvm::outs() << name << " not counted\n";
+        else if (skip.find(name) == std::string::npos)
+          //if (verbose)
+            llvm::outs() << name << " not counted\n";
       }
-      c.compute_xfer_cost = memory_op_count;
+      c.compute_xfer_cost = 0;//memory_op_count;
 
       if (compute_op_count) {
         // defaults
-        double num_cores = 16;
+        double num_cores = 1;
         double ops_per_core_per_cycle = 8; // vector width for this type
         double cycles_per_second = 1e9;
         double efficiency = 1.0f;
@@ -775,14 +774,14 @@ public:
         }
 
         double ops_per_cycle = num_cores * ops_per_core_per_cycle * efficiency;
-        assert(ops_per_cycle > 0 && "ops per cycle in model must be greater than zero");
+        assert(ops_per_cycle > 0 &&
+               "ops per cycle in model must be greater than zero");
 
         double cycles = ceil(compute_op_count / ops_per_cycle);
         c.compute_op_cost = cycles;
       }
       execution_time = std::max(c.compute_op_cost, c.compute_xfer_cost);
-    }
-    else {
+    } else {
       LLVM_DEBUG(llvm::errs()
                  << "WARNING: execution time not modeled for op: '");
       LLVM_DEBUG(llvm::errs() << to_string(op) << "'\n");
@@ -902,11 +901,16 @@ public:
 
     bool ready = true;
     for (Value in : c_next.op->getOperands()) {
-      if (!valueMap.count(in))
-        ;//ready = false;
-      else if (in.getType().isa<xilinx::air::AsyncTokenType>() && !valueMap.count(in))
-//               llvm::any_cast<llvm::APInt>(valueMap[in]) != 0)
-        ready = false;
+      if (in.getType().isa<xilinx::air::AsyncTokenType>()) {
+        if (!valueMap.count(in))
+          ready = false;
+        else if (llvm::any_cast<llvm::APInt>(valueMap[in]) != 0) {
+          if (verbose)
+            llvm::outs() << "count @ "
+                         << llvm::any_cast<llvm::APInt>(valueMap[in]) << "\n";
+          ready = false;
+        }
+      }
     }
 
     if (!ready) {
@@ -946,7 +950,8 @@ public:
                          std::deque<CommandQueueEntry> *dataOps,
                          std::deque<CommandQueueEntry> herdOps[16][16]) {
 
-    if (r->getNumResults() && r->getResult(0).getType().isa<xilinx::air::AsyncTokenType>())
+    if (r->getNumResults() &&
+        r->getResult(0).getType().isa<xilinx::air::AsyncTokenType>())
       valueMap[r->getResult(0)] = llvm::APInt(64, 1);
 
     kernelOps->push_back(
@@ -968,7 +973,13 @@ public:
     auto r = ub.value() - lb.value();
     auto trip_count = mlir::ceilDiv(r, step.value());
 
-    // kernelOps->push_back(CommandQueueEntry(fo.getOperation()));
+    kernelOps->push_back(CommandQueueEntry(fo.getOperation()));
+
+    for (auto r : fo->getResults()) {
+      if (r.getType().isa<xilinx::air::AsyncTokenType>()) {
+        valueMap[r] = APInt(64, 1);
+      }
+    }
 
     for (auto i = 0; i < trip_count; i++) {
       scheduleRegion(fo.getRegion(), kernelOps, dataOps, herdOps);
@@ -1028,32 +1039,50 @@ public:
                        .value();
 
     if (hlo->getNumResults())
-      valueMap[hlo->getResult(0)] = APInt(64, cols * rows);
+      valueMap[hlo->getResult(0)] = APInt(64, rows * cols + 1);
 
-    if (hlo->getNumResults())
-      valueMap[hlo->getResult(0)] = APInt(64, 1);
-
-    llvm::DenseMap<Value, llvm::Any> *vmap = &valueMap;
-    kernelOps->push_back(
-        CommandQueueEntry(hlo.getOperation(), [=](Operation *op) {
-          auto o = cast<xilinx::air::HerdLaunchOp>(op);
-          auto args = o.getKernelArguments();
+    kernelOps->push_back(CommandQueueEntry(hlo.getOperation(), [=](Operation
+                                                                       *op) {
+      auto ho = cast<xilinx::air::HerdLaunchOp>(op);
+      auto tokenTy = xilinx::air::AsyncTokenType::get(op->getContext());
+      SmallVector<Value, 16> exit_tokens;
+      for (auto row = 0; row < rows; row++) {
+        for (auto col = 0; col < cols; col++) {
           BlockAndValueMapping map;
-          for (int i = 0, e = o.getNumKernelOperands(); i < e; i++) {
-            auto operand = o.getKernelOperand(i);
-            if (vmap->count(operand))
-              (*vmap)[args[i]] = (*vmap)[o.getKernelOperand(i)];
-            map.map(args[i], o.getKernelOperand(i));
+          auto bb = new mlir::Block();
+          ho.getRegion().push_back(bb);
+          auto bldr = OpBuilder::atBlockEnd(bb);
+          auto w = bldr.create<xilinx::air::WaitAllOp>(
+              op->getLoc(), SmallVector<Type, 1>{}, ho.getAsyncDependencies());
+          SmallVector<Value, 8> exit_deps;
+          for (auto &o : ho.getRegion().front()) {
+            auto c = bldr.clone(o, map);
+            for (auto r : c->getResults())
+              if (r.getType().isa<xilinx::air::AsyncTokenType>())
+                exit_deps.push_back(r);
           }
-          for (auto row = 0; row < rows; row++) {
-            for (auto col = 0; col < cols; col++) {
-              auto r = new Block();
-              //o.getRegion().front().cloneInto(r, map);
-              scheduleBlock(*r, &herdOps[col][row],
-                             &herdOps[col][row], herdOps);
-            }
-          }
-        }));
+          scheduleBlock(*bb, &herdOps[col][row], &herdOps[col][row], herdOps);
+          auto t = bldr.create<xilinx::air::WaitAllOp>(
+              op->getLoc(), SmallVector<Type, 1>{tokenTy}, exit_deps);
+          exit_tokens.push_back(t.getResult(0));
+          valueMap[t->getResult(0)] = APInt(64, 1);
+          herdOps[col][row].push_back(CommandQueueEntry(t, [=](Operation *tOp) {
+            valueMap[op->getResult(0)] =
+                llvm::any_cast<llvm::APInt>(valueMap[op->getResult(0)]) -
+                llvm::APInt(64, 1);
+          }));
+        }
+      }
+    }));
+  }
+
+  void scheduleAIRAsyncOp(Operation *op, std::deque<CommandQueueEntry> *q) {
+    q->push_back(CommandQueueEntry(op));
+    for (auto r : op->getResults()) {
+      if (r.getType().isa<xilinx::air::AsyncTokenType>()) {
+        valueMap[r] = APInt(64, 1);
+      }
+    }
   }
 
   void scheduleBlock(mlir::Block &block,
@@ -1066,25 +1095,20 @@ public:
 
       if (isa<arith::ConstantOp>(op) || isa<arith::ConstantIndexOp>(op)) {
         executeOp(*op);
-      } else if (isa<memref::AllocOp>(op) || isa<memref::DeallocOp>(op) ||
-                 isa<xilinx::air::WaitAllOp>(op)) {
+      } else if (isa<memref::AllocOp>(op) || isa<memref::DeallocOp>(op)) {
         kernelOps->push_back(CommandQueueEntry(op));
-      }
+      } else if (isa<xilinx::air::WaitAllOp>(op) ||
+                 isa<xilinx::air::DmaMemcpyInterface>(op)) {
+        scheduleAIRAsyncOp(op, kernelOps);
 #if HAVE_REGION_OP
-      else if (auto r = dyn_cast<xilinx::air::RegionOp>(op)) {
+      } else if (auto r = dyn_cast<xilinx::air::RegionOp>(op)) {
         scheduleAIRRegion(r, kernelOps, dataOps, herdOps);
-      }
 #endif
-      else if (auto hlo = dyn_cast<xilinx::air::HerdLaunchOp>(op)) {
+      } else if (auto hlo = dyn_cast<xilinx::air::HerdLaunchOp>(op)) {
         scheduleHerdLaunch(hlo, kernelOps, dataOps, herdOps);
-      }
-      else if (auto dmaOpIf = dyn_cast<air::DmaMemcpyInterface>(op)) {
-        kernelOps->push_back( CommandQueueEntry(op) );
-      }
-      else if (auto linalgOp = mlir::dyn_cast<linalg::LinalgOp>(op)) {
+      } else if (auto linalgOp = mlir::dyn_cast<linalg::LinalgOp>(op)) {
         kernelOps->push_back(CommandQueueEntry(op));
-      }
-      else if (auto sfo = dyn_cast<mlir::scf::ForOp>(op)) {
+      } else if (auto sfo = dyn_cast<mlir::scf::ForOp>(op)) {
         scheduleScfFor(sfo, kernelOps, dataOps, herdOps);
       } else {
         ; // op->dump();

@@ -37,9 +37,9 @@ extract_annotations(program, scripted, class_annotator)
 mb = ModuleBuilder()
 mb.import_module(scripted._c, class_annotator)
 
-pm = PassManager.parse('torchscript-module-to-torch-backend-pipeline,torch-backend-to-linalg-on-tensors-backend-pipeline', mb.module.context)
+pass_pipeline = 'torchscript-module-to-torch-backend-pipeline,torch-backend-to-linalg-on-tensors-backend-pipeline'
+pm = PassManager.parse(pass_pipeline, mb.module.context)
 pm.run(mb.module)
-#print(mb.module)
 
 airbackend = backend.LinalgOnTensorsAirBackend()
 compiled = airbackend.compile(mb.module)
