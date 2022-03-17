@@ -317,6 +317,95 @@ void air_shim_memcpy_queue_impl(signal_t *s, uint32_t id, uint64_t x,
   }
 }
 
+template<typename T0, int R0, typename T1, int R1>
+void air_mem_cdma_nd_memcpy_queue_impl(tensor_t<T0, R0>* t0, tensor_t<T1, R1>* t1, uint32_t space0, uint32_t space1, 
+                                 uint64_t offset_3, uint64_t offset_2, uint64_t offset_1, uint64_t offset_0,
+                                 uint64_t length_4d, uint64_t length_3d, uint64_t length_2d, uint64_t length_1d,
+                                 uint64_t stride_4d, uint64_t stride_3d, uint64_t stride_2d) {
+  assert(_air_host_active_herd.herd_desc && "cannot cdma memcpy without active herd");
+  assert(_air_host_active_herd.q && "cannot cdma memcpy using a queue without active queue");
+  assert(sizeof(T0) == sizeof(T1) && "cannot cdma memcpy with mismatched sized types");
+  assert(R0 == R1 && "cannot cdma memcpy with mismatched tensor ranks");
+  //assert(length_2d<=1 && length_3d<=1 && length_4d<=1 && "ERROR: CDMA memcpy only supports 1D DMAs");
+
+  //printf("Do CDMA transfer dst %p src %p dst space %d, src space %d, offset [%ld,%ld,%ld,%ld], length [%ld,%ld,%ld,%ld], stride [%ld,%ld,%ld]\n",
+  //       t0->d, t1->d, space0, space1,
+  //       offset_3, offset_2, offset_1, offset_0,
+  //       length_4d, length_3d, length_2d, length_1d,
+  //       stride_4d, stride_3d, stride_2d);
+
+  uint32_t *bounce_buffer = _air_host_bram_ptr;
+
+  bool isDDR2L2 = space0 < space1;
+  tensor_t<T1, R1>* t = (isDDR2L2) ? t1 : t0;
+ 
+  size_t stride = 1;
+  size_t offset = 0;
+  std::vector<uint64_t> offsets{offset_0, offset_1, offset_2, offset_3};
+  for (int i=0; i<R0; i++) {
+    offset += offsets[i] * stride * sizeof(T0);
+    stride *= t->shape[i]; 
+  }
+
+  uint64_t length = 0;
+  for (uint32_t index_4d=0;index_4d<length_4d;index_4d++)
+    for (uint32_t index_3d=0;index_3d<length_3d;index_3d++)
+      for (uint32_t index_2d=0;index_2d<length_2d;index_2d++)
+        length += length_1d;
+
+  assert(length*sizeof(T0) <= 16*8192 && "error cdma memcpy length out of bounds");
+
+  size_t p = (size_t)t->d + offset;
+  uint64_t paddr_4d = p;
+  uint64_t paddr_3d = p;
+  uint64_t paddr_2d = p;
+  uint64_t paddr_1d = p;
+
+  if (isDDR2L2) {
+    for (uint32_t index_4d=0;index_4d<length_4d;index_4d++) {
+      paddr_2d = paddr_3d;
+      for (uint32_t index_3d=0;index_3d<length_3d;index_3d++) {
+        paddr_1d = paddr_2d;
+        for (uint32_t index_2d=0;index_2d<length_2d;index_2d++) {
+          memcpy((size_t*)bounce_buffer, (size_t*)paddr_1d, length_1d*sizeof(T0));
+          bounce_buffer += length_1d;
+          paddr_1d += stride_2d*sizeof(T0);
+        }
+        paddr_2d += stride_3d*sizeof(T0);
+      }
+      paddr_3d += stride_4d*sizeof(T0);
+    }
+  }
+
+  uint64_t ofs = uint64_t(AIR_VCK190_L2_DMA_BASE);
+
+  uint64_t wr_idx = queue_add_write_index(_air_host_active_herd.q, 1);
+  uint64_t packet_id = wr_idx % _air_host_active_herd.q->size;
+  dispatch_packet_t *pkt = (dispatch_packet_t*)(_air_host_active_herd.q->base_address_vaddr) + packet_id;
+
+  if (isDDR2L2)
+    air_packet_cdma_memcpy(pkt, uint64_t(t0->d)+ofs, AIR_VCK190_SHMEM_BASE+0x4000, sizeof(T0)*length);
+  else
+    air_packet_cdma_memcpy(pkt, AIR_VCK190_SHMEM_BASE+0x4000, uint64_t(t1->d)+ofs, sizeof(T0)*length);
+  air_queue_dispatch_and_wait(_air_host_active_herd.q, wr_idx, pkt);
+
+  if (!isDDR2L2) {
+    for (uint32_t index_4d=0;index_4d<length_4d;index_4d++) {
+      paddr_2d = paddr_3d;
+      for (uint32_t index_3d=0;index_3d<length_3d;index_3d++) {
+        paddr_1d = paddr_2d;
+        for (uint32_t index_2d=0;index_2d<length_2d;index_2d++) {
+          memcpy((size_t*)paddr_1d, (size_t*)bounce_buffer, length_1d*sizeof(T0));
+          bounce_buffer += length_1d;
+          paddr_1d += stride_2d*sizeof(T0);
+        }
+        paddr_2d += stride_3d*sizeof(T0);
+      }
+      paddr_3d += stride_4d*sizeof(T0);
+    }
+  }
+}
+
 template <typename T, int R>
 void air_mem_shim_nd_memcpy_queue_impl(signal_t *s, uint32_t id, uint64_t x,
                                        uint64_t y, tensor_t<T, R> *t,
@@ -329,15 +418,15 @@ void air_mem_shim_nd_memcpy_queue_impl(signal_t *s, uint32_t id, uint64_t x,
   assert(_air_host_active_herd.herd_desc && "cannot shim memcpy without active herd");
   assert(_air_host_active_herd.q && "cannot shim memcpy using a queue without active queue");
 
-  //printf("Do transfer %p with id %d on behalf of x=%ld, y=%ld space %d, offset [%ld,%ld,%ld,%ld], length [%ld,%ld,%ld,%ld], stride [%ld,%ld,%ld]\n",
-  //       t->d, id, x, y, space,
-  //       offset_3, offset_2, offset_1, offset_0,
-  //       length_4d, length_3d, length_2d, length_1d,
-  //       stride_4d, stride_3d, stride_2d);
-
   auto shim_desc = _air_host_active_herd.herd_desc->shim_desc;
   auto shim_col = shim_location_data(shim_desc, id-1, x, y);
   auto shim_chan = shim_channel_data(shim_desc, id-1, x, y);
+
+  //printf("Do transfer %p with id %d on behalf of x=%ld, y=%ld space %d, col %d, dir %d, chan %d, offset [%ld,%ld,%ld,%ld], length [%ld,%ld,%ld,%ld], stride [%ld,%ld,%ld]\n",
+  //       t->d, id, x, y, space, shim_col, shim_chan>=2, (shim_chan>=2) ? shim_chan-2 : shim_chan,
+  //       offset_3, offset_2, offset_1, offset_0,
+  //       length_4d, length_3d, length_2d, length_1d,
+  //       stride_4d, stride_3d, stride_2d);
 
   bool isMM2S = shim_chan >= 2;
 
@@ -547,6 +636,48 @@ mlir_air_dma_nd_memcpy(1d0f32, 1, 2, float);
 mlir_air_dma_nd_memcpy(2d0f32, 2, 2, float);
 mlir_air_dma_nd_memcpy(3d0f32, 3, 2, float);
 mlir_air_dma_nd_memcpy(4d0f32, 4, 2, float);
+mlir_air_dma_nd_memcpy(1d1i32, 1, 1, uint32_t);
+mlir_air_dma_nd_memcpy(2d1i32, 2, 1, uint32_t);
+mlir_air_dma_nd_memcpy(3d1i32, 3, 1, uint32_t);
+mlir_air_dma_nd_memcpy(4d1i32, 4, 1, uint32_t);
+mlir_air_dma_nd_memcpy(1d1f32, 1, 1, float);
+mlir_air_dma_nd_memcpy(2d1f32, 2, 1, float);
+mlir_air_dma_nd_memcpy(3d1f32, 3, 1, float);
+mlir_air_dma_nd_memcpy(4d1f32, 4, 1, float);
+
+#define mlir_air_nd_memcpy(mangle, rank0, space0, type0, rank1, space1, type1) \
+void _mlir_ciface_air_nd_memcpy_##mangle( \
+  void* t0, void* t1, \
+  uint64_t offset_3, uint64_t offset_2, uint64_t offset_1, uint64_t offset_0, \
+  uint64_t length_3, uint64_t length_2, uint64_t length_1, uint64_t length_0, \
+  uint64_t stride_2, uint64_t stride_1, uint64_t stride_0) \
+{ \
+  tensor_t<type0, rank0> *tt0 = (tensor_t<type0, rank0>*)t0; \
+  tensor_t<type1, rank1> *tt1 = (tensor_t<type1, rank1>*)t1; \
+  if (_air_host_active_herd.q) { \
+    air_mem_cdma_nd_memcpy_queue_impl(tt0, tt1, space0, space1, \
+                                     offset_3, offset_2, offset_1, offset_0, \
+                                     length_3, length_2, length_1, length_0, \
+                                     stride_2, stride_1, stride_0); \
+  } \
+}
+
+mlir_air_nd_memcpy(1d0i32_1d1i32, 1, 2, uint32_t, 1, 1, uint32_t);
+mlir_air_nd_memcpy(1d1i32_1d0i32, 1, 1, uint32_t, 1, 2, uint32_t);
+mlir_air_nd_memcpy(2d0i32_2d1i32, 2, 2, uint32_t, 2, 1, uint32_t);
+mlir_air_nd_memcpy(2d1i32_2d0i32, 2, 1, uint32_t, 2, 2, uint32_t);
+mlir_air_nd_memcpy(3d0i32_3d1i32, 3, 2, uint32_t, 3, 1, uint32_t);
+mlir_air_nd_memcpy(3d1i32_3d0i32, 3, 1, uint32_t, 3, 2, uint32_t);
+mlir_air_nd_memcpy(4d0i32_4d1i32, 4, 2, uint32_t, 4, 1, uint32_t);
+mlir_air_nd_memcpy(4d1i32_4d0i32, 4, 1, uint32_t, 4, 2, uint32_t);
+mlir_air_nd_memcpy(1d0f32_1d1f32, 1, 2, float, 1, 1, float);
+mlir_air_nd_memcpy(1d1f32_1d0f32, 1, 1, float, 1, 2, float);
+mlir_air_nd_memcpy(2d0f32_2d1f32, 2, 2, float, 2, 1, float);
+mlir_air_nd_memcpy(2d1f32_2d0f32, 2, 1, float, 2, 2, float);
+mlir_air_nd_memcpy(3d0f32_3d1f32, 3, 2, float, 3, 1, float);
+mlir_air_nd_memcpy(3d1f32_3d0f32, 3, 1, float, 3, 2, float);
+mlir_air_nd_memcpy(4d0f32_4d1f32, 4, 2, float, 4, 1, float);
+mlir_air_nd_memcpy(4d1f32_4d0f32, 4, 1, float, 4, 2, float);
 
 } // extern "C"
 } // namespace

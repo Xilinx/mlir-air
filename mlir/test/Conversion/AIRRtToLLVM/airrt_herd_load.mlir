@@ -9,8 +9,8 @@
 // CHECK:  %5 = llvm.call @air_herd_load(%4) : (!llvm.ptr<i8>) -> i64
 module {
     airrt.module_metadata {
-        airrt.herd_metadata { sym_name = "elk", shim_allocations = [] }
-        airrt.herd_metadata { sym_name = "deer", shim_allocations = [] }
+        airrt.herd_metadata { sym_name = "elk", dma_allocations = [] }
+        airrt.herd_metadata { sym_name = "deer", dma_allocations = [] }
     }
     func @f() {
         %ret1 = airrt.herd_load "elk" : i64

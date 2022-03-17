@@ -372,10 +372,17 @@ public:
     for (auto o : dma_memcpy_ops) {
 
       auto dmaOpIf = cast<air::DmaMemcpyInterface>(o);
-      AIE::DMAChan tile_channel = getTileDMAChannel(aie_module, dmaOpIf, x, y);
 
       int src_space = dmaOpIf.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
       int dst_space = dmaOpIf.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+
+      if ( (src_space == (int)air::MemorySpace::L2 && dst_space == (int)air::MemorySpace::L3) ||
+                (src_space == (int)air::MemorySpace::L3 && dst_space == (int)air::MemorySpace::L2) ) {
+        o->erase();
+        continue;
+      }
+
+      AIE::DMAChan tile_channel = getTileDMAChannel(aie_module, dmaOpIf, x, y);
 
       if ( (src_space == (int)air::MemorySpace::L3 && dst_space == (int)air::MemorySpace::L1) ||
            (src_space == (int)air::MemorySpace::L1 && dst_space == (int)air::MemorySpace::L3) ) {
@@ -986,7 +993,7 @@ public:
           lowerPipelineGetPut(aie_module);
           cleanupPipelineOps(aie_module);
 
-          std::vector<Attribute> shim_allocations;
+          std::vector<Attribute> dma_allocations;
           for (auto &t : shimDmaAlloc.s2mm_allocs) {
             auto tileOp = t.dma_tile;
             int64_t col = t.col;
@@ -1004,7 +1011,7 @@ public:
                                              builder.getI64IntegerAttr(chan)));
               attrs.push_back(NamedAttribute(StringAttr::get(ctx, "location"),
                                              builder.getI64IntegerAttr(tileOp.col())));
-              shim_allocations.push_back(DictionaryAttr::get(ctx, attrs));
+              dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
             }
           }
           for (auto &t : shimDmaAlloc.mm2s_allocs) {
@@ -1024,12 +1031,52 @@ public:
                                              builder.getI64IntegerAttr(chan+2)));
               attrs.push_back(NamedAttribute(StringAttr::get(ctx, "location"),
                                              builder.getI64IntegerAttr(tileOp.col())));
-              shim_allocations.push_back(DictionaryAttr::get(ctx, attrs));
+              dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
+            }
+          }
+          for (auto &t : L2DmaAlloc.s2mm_allocs) {
+            auto tileOp = t.dma_tile;
+            int64_t col = t.col;
+            int64_t row = t.row;
+            int64_t chan = t.dma_channel;
+            for (int64_t id : t.dma_id) {
+              SmallVector<NamedAttribute, 5> attrs;
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "id"),
+                                             builder.getI64IntegerAttr(id)));
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "row"),
+                                             builder.getI64IntegerAttr(row)));
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "col"),
+                                             builder.getI64IntegerAttr(col)));
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "channel"),
+                                             builder.getI64IntegerAttr(chan+2)));
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "location"),
+                                             builder.getI64IntegerAttr(tileOp.col())));
+              dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
+            }
+          }
+          for (auto &t : L2DmaAlloc.mm2s_allocs) {
+            auto tileOp = t.dma_tile;
+            int64_t col = t.col;
+            int64_t row = t.row;
+            int64_t chan = t.dma_channel;
+            for (int64_t id : t.dma_id) {
+              SmallVector<NamedAttribute, 5> attrs;
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "id"),
+                                             builder.getI64IntegerAttr(id)));
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "row"),
+                                             builder.getI64IntegerAttr(row)));
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "col"),
+                                             builder.getI64IntegerAttr(col)));
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "channel"),
+                                             builder.getI64IntegerAttr(chan+2)));
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "location"),
+                                             builder.getI64IntegerAttr(tileOp.col())));
+              dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
             }
           }
           auto herd_meta = createHerdMetadata(module_meta, h);
-          herd_meta->setAttr("shim_allocations",
-                             ArrayAttr::get(ctx, shim_allocations));
+          herd_meta->setAttr("dma_allocations",
+                             ArrayAttr::get(ctx, dma_allocations));
           tile_dma_S2MM_allocs.clear();
           tile_dma_MM2S_allocs.clear();
         }

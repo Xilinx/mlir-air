@@ -304,8 +304,8 @@ public:
       int64_t cols[16][8][8] = {{{0}}};
       int64_t chans[16][8][8] = {{{0}}};
 
-      // "shim_allocations" attribute is an array of DictAttr
-      ArrayAttr shim_attr = herd_meta->getAttrOfType<ArrayAttr>("shim_allocations");
+      // "dma_allocations" attribute is an array of DictAttr
+      ArrayAttr shim_attr = herd_meta->getAttrOfType<ArrayAttr>("dma_allocations");
       assert(shim_attr);
       for (auto &shim_alloc : shim_attr) {
         auto shim_alloc_dict = shim_alloc.cast<DictionaryAttr>();

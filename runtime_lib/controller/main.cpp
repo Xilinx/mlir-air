@@ -28,7 +28,10 @@ extern "C" {
 #define SHIM_DMA_MM2S 1 
 
 #define NUM_SHIM_DMAS 16
+#define NUM_COL_DMAS 4
 int shim_dma_cols[NUM_SHIM_DMAS] = {2, 3, 6, 7, 10, 11, 18, 19, 26, 27, 34, 35, 42, 43, 46, 47};
+int col_dma_cols[NUM_COL_DMAS] = {7, 8, 9, 10};
+#define NUM_DMAS (NUM_SHIM_DMAS + NUM_COL_DMAS)
 
 #define CHATTY 0 
 
@@ -395,41 +398,80 @@ int queue_create(uint32_t size, queue_t **queue, uint32_t mb_id)
   return 0;
 }
 
-int32_t fsl_outstanding[4] = {0};
+int32_t fsl_outstanding[NUM_COL_DMAS*4] = {0};
 
-void drain_fsl()
+void drain_fsls()
 {
   register uint32_t d;
-  for (int i=0; i<4; i++) {
+  for (int i=0; i<(NUM_COL_DMAS*4); i++) {
     bool done = false;
     while (!done) {
       uint32_t which_stream = 4;
-      if (fsl_outstanding[i]>0) which_stream = i;
-      else if (i==3) return;
+      if (fsl_outstanding[i]>0) which_stream = i/4;
+      else if (i==(NUM_COL_DMAS*4-1)) return;
       else break;
       switch (which_stream) {
       case 0:
         getfsl_interruptible(d, 0);
-        fsl_outstanding[0]--;
+        fsl_outstanding[i]--;
         break;
       case 1:
         getfsl_interruptible(d, 1);
-        fsl_outstanding[1]--;
+        fsl_outstanding[i]--;
         break;
       case 2:
         getfsl_interruptible(d, 2);
-        fsl_outstanding[2]--;
+        fsl_outstanding[i]--;
         break;
       case 3:
         getfsl_interruptible(d, 3);
-        fsl_outstanding[3]--;
+        fsl_outstanding[i]--;
         break;
       default:
         break;
       }
-      air_printf("Get fsl %d : id %d\n\r",i,d);
+      air_printf("Drain fsl %d %d : id %d\n\r",which_stream,i,d);
     }
   }
+}
+
+int drain_fsl(int fsl)
+{
+  register uint32_t d;
+  register uint32_t v;
+  bool done = false;
+  while (!done) {
+    uint32_t which_stream = 4;
+    if (fsl_outstanding[fsl]>0) which_stream = fsl/4;
+    else return 0;
+    switch (which_stream) {
+    case 0:
+      ngetfsl(d, 0);
+      fsl_isinvalid(v);
+      break;
+    case 1:
+      ngetfsl(d, 1);
+      fsl_isinvalid(v);
+      break;
+    case 2:
+      ngetfsl(d, 2);
+      fsl_isinvalid(v);
+      break;
+    case 3:
+      ngetfsl(d, 3);
+      fsl_isinvalid(v);
+      break;
+    default:
+      break;
+    }
+    air_printf("Get fsl %d %d : invalid %d id %d\n\r",which_stream,fsl,v,d);
+    if (!v) { 
+      fsl_outstanding[fsl]--;
+    } else {
+      return 1;
+    }
+  }
+  return 0;
 }
 
 void complete_agent_dispatch_packet(dispatch_packet_t *pkt)
@@ -645,7 +687,7 @@ void handle_packet_put_stream(dispatch_packet_t *pkt)
   default:
     break;
   }
-  drain_fsl();
+  drain_fsls();
 }
 
 void handle_packet_get_stream(dispatch_packet_t *pkt)
@@ -693,10 +735,18 @@ typedef struct staged_nd_memcpy_s {
 	uint32_t index[3];
 } staged_nd_memcpy_t; // about 48B therefore @ 64 slots ~3kB
 
-int get_slot(int col) {
-  for (int i=0; i<NUM_SHIM_DMAS; i++) {
-    if (col == shim_dma_cols[i]) {
-      return i*4;
+int get_slot(int col, int space) {
+  if (space == 2) {
+    for (int i=0; i<NUM_SHIM_DMAS; i++) {
+      if (col == shim_dma_cols[i]) {
+        return i*4;
+      }
+    }
+  } else if (space == 1) {
+    for (int i=0; i<NUM_COL_DMAS; i++) {
+      if (col == col_dma_cols[i]) {
+        return i*4 + NUM_SHIM_DMAS*4;
+      }
     }
   }
   return 0;
@@ -704,13 +754,12 @@ int get_slot(int col) {
 
 // GLOBAL storage for 'in progress' ND memcpy work
 // NOTE 4 slots per shim DMA 
-staged_nd_memcpy_t staged_nd_slot[NUM_SHIM_DMAS*4]; 
+staged_nd_memcpy_t staged_nd_slot[NUM_DMAS*4]; 
 
 void nd_dma_put_checkpoint(dispatch_packet_t **pkt, uint32_t slot, 
-			uint32_t idx_4d, uint32_t idx_3d, uint32_t idx_2d,
+			    uint32_t idx_4d, uint32_t idx_3d, uint32_t idx_2d,
     			uint64_t pad_3d, uint64_t pad_2d, uint64_t pad_1d) 
 {
-  air_printf("nd_dma_put_checkpoint %d\n\r",slot);
   staged_nd_slot[slot].pkt = *pkt;
   staged_nd_slot[slot].paddr[0] = pad_1d;
   staged_nd_slot[slot].paddr[1] = pad_2d;
@@ -720,11 +769,10 @@ void nd_dma_put_checkpoint(dispatch_packet_t **pkt, uint32_t slot,
   staged_nd_slot[slot].index[2] = idx_4d;
 }
 
-void nd_dma_get_checkpoint(dispatch_packet_t **pkt, uint32_t slot, 
-			uint32_t& idx_4d, uint32_t& idx_3d, uint32_t& idx_2d,
+void nd_dma_get_checkpoint(dispatch_packet_t **pkt, uint32_t slot,
+			    uint32_t& idx_4d, uint32_t& idx_3d, uint32_t& idx_2d,
     			uint64_t& pad_3d, uint64_t& pad_2d, uint64_t& pad_1d) 
 {
-  air_printf("nd_dma_get_checkpoint %d\n\r",slot);
   *pkt = staged_nd_slot[slot].pkt;
   pad_1d = staged_nd_slot[slot].paddr[0];
   pad_2d = staged_nd_slot[slot].paddr[1];
@@ -789,82 +837,110 @@ int do_packet_nd_memcpy(uint32_t slot)
   return 0;
 }
 
-int do_l2_nd_memcpy(dispatch_packet_t *pkt) {
-  uint64_t paddr        =  pkt->arg[1];
+int do_l2_nd_memcpy(uint32_t slot) {
+  dispatch_packet_t* a_pkt;
+  uint64_t paddr_3d;
+  uint64_t paddr_2d;
+  uint64_t paddr_1d;
+  uint32_t index_4d;
+  uint32_t index_3d;
+  uint32_t index_2d;
+  nd_dma_get_checkpoint(&a_pkt,slot,index_4d,index_3d,index_2d,paddr_3d,paddr_2d,paddr_1d);
 
-  uint32_t length_1d    = (pkt->arg[2] >>  0) & 0xffffffff;
-  uint32_t length_2d    = (pkt->arg[2] >> 32) & 0x0000ffff;
-  uint32_t stride_2d    = (pkt->arg[2] >> 48) & 0x0000ffff;
-  uint32_t length_3d    = (pkt->arg[3] >>  0) & 0x0000ffff;
-  uint32_t stride_3d    = (pkt->arg[3] >> 16) & 0x0000ffff;
-  uint32_t length_4d    = (pkt->arg[3] >> 32) & 0x0000ffff;
-  uint32_t stride_4d    = (pkt->arg[3] >> 48) & 0x0000ffff;
+  uint32_t length_1d    = (a_pkt->arg[2] >>  0) & 0xffffffff;
+  uint32_t length_2d    = (a_pkt->arg[2] >> 32) & 0x0000ffff;
+  uint32_t stride_2d    = (a_pkt->arg[2] >> 48) & 0x0000ffff;
+  uint32_t length_3d    = (a_pkt->arg[3] >>  0) & 0x0000ffff;
+  uint32_t stride_3d    = (a_pkt->arg[3] >> 16) & 0x0000ffff;
+  uint32_t length_4d    = (a_pkt->arg[3] >> 32) & 0x0000ffff;
+  uint32_t stride_4d    = (a_pkt->arg[3] >> 48) & 0x0000ffff;
 
-  uint16_t channel      = (pkt->arg[0] >> 24) & 0x00ff;
-  uint16_t col          = (pkt->arg[0] >> 32) & 0x00ff;
-  uint16_t direction    = (pkt->arg[0] >> 60) & 0x000f;
-  direction = (direction==1) ? 0 : 1;
-  register uint32_t d1 = 2 + 2*direction + channel;
-  uint8_t id = d1 - 2;
+  uint16_t channel      = (a_pkt->arg[0] >> 24) & 0x00ff;
+  uint16_t col          = (a_pkt->arg[0] >> 32) & 0x00ff;
+  uint16_t direction    = (a_pkt->arg[0] >> 60) & 0x000f;
 
   uint64_t which_stream = col-7;
+  int fsl = 4*which_stream + 2*direction + channel;
+
+  direction = (direction==1) ? 0 : 1;
+  register uint32_t d1 = 2 + 2*direction + channel;
+  uint8_t id = fsl;
 
   bool isdma = (d1 < 6); 
-  
-  uint64_t paddr_3d = paddr;
-  uint64_t paddr_2d = paddr;
-  uint64_t paddr_1d = paddr;
-  for (uint32_t index_4d=0;index_4d<length_4d;index_4d++) {
-    paddr_2d = paddr_3d;
-    for (uint32_t index_3d=0;index_3d<length_3d;index_3d++) {
-      paddr_1d = paddr_2d;
-      for (uint32_t index_2d=0;index_2d<length_2d;index_2d++) {
-        uint16_t length = length_1d / 16;
-        uint16_t uram_addr = paddr_1d / 16;
+  if (!isdma) return 0;
+
+  int max_out = (d1 > 3) ? 4 : 16; 
+  uint32_t length = length_1d & 0x3FFF0;
+  uint32_t s_length = length << 14;
+
+  for (;index_4d<length_4d;index_4d++) {
+    for (;index_3d<length_3d;index_3d++) {
+      for (;index_2d<length_2d;index_2d++) {
+        if (fsl_outstanding[fsl] >= max_out) {
+          if (drain_fsl(fsl)) {
+            nd_dma_put_checkpoint(&a_pkt,slot,index_4d,index_3d,index_2d,paddr_3d,paddr_2d,paddr_1d);
+	          return 1;
+          }
+        }
+        uint32_t uram_addr = paddr_1d & 0x1FFF0;
 
         uint32_t d0 = 0;
-        d0 |= length << 18;
-        d0 |= uram_addr << 5;
+        //id++;
+        id &= 0x1F;
+        d0 |= s_length;
+        d0 |= uram_addr << 1;
         d0 |= id;
-  
-        air_printf("Put fsl %d : id %d d0 %x d1 %x\n\r", which_stream, id++, d0, d1);
+
+        air_printf("Put fsl %d dir %d ch %d: id %d d0 %x d1 %x\n\r", which_stream, direction, channel, id, d0, d1);
 
         switch (which_stream) {
         case 0:
           putfsl(d0, 0);
           cputfsl(d1, 0);
-          if (isdma) fsl_outstanding[0]++;
           break;
         case 1:
           putfsl(d0, 1);
           cputfsl(d1, 1);
-          if (isdma) fsl_outstanding[1]++;
           break;
         case 2:
           putfsl(d0, 2);
           cputfsl(d1, 2);
-          if (isdma) fsl_outstanding[2]++;
           break;
         case 3:
           putfsl(d0, 3);
           cputfsl(d1, 3);
-          if (isdma) fsl_outstanding[3]++;
           break;
         default:
           break;
         }
+        fsl_outstanding[fsl]++;
+        air_printf("FSL %d slot %d outs %d\n\r",fsl,slot-NUM_SHIM_DMAS*4,fsl_outstanding[fsl]);
         paddr_1d += stride_2d;
       }
+      index_2d = 0;
       paddr_2d += stride_3d;
+      if (index_3d+1<length_3d) paddr_1d = paddr_2d;
+      else paddr_1d = paddr_3d + stride_4d;
     }
+    index_3d = 0;
     paddr_3d += stride_4d;
+    paddr_2d = paddr_3d;
   }
-  drain_fsl();
 
-  return 3;
+  drain_fsls();
+
+  return 0;
 }
 
-int stage_packet_nd_memcpy(dispatch_packet_t *pkt, uint32_t slot)
+int do_packet_memcpy(uint32_t slot) {
+  if (slot >= NUM_SHIM_DMAS*4) {
+    return do_l2_nd_memcpy(slot);
+  } else {
+    return do_packet_nd_memcpy(slot);
+  }
+}
+
+int stage_packet_nd_memcpy(dispatch_packet_t *pkt, uint32_t slot, uint32_t memory_space)
 {
   air_printf("stage_packet_nd_memcpy %d\n\r",slot);
   if (staged_nd_slot[slot].valid) {
@@ -873,12 +949,9 @@ int stage_packet_nd_memcpy(dispatch_packet_t *pkt, uint32_t slot)
   }
   packet_set_active(pkt, true);
 
-  uint16_t memory_space = (pkt->arg[0] >> 16) & 0x00ff;
   uint64_t paddr        =  pkt->arg[1];
 
-  if (memory_space == 1) {
-    return do_l2_nd_memcpy(pkt);
-  } else if (memory_space == 2) {
+  if (memory_space == 1 || memory_space == 2) {
     nd_dma_put_checkpoint(&pkt,slot,0,0,0,paddr,paddr,paddr);
     staged_nd_slot[slot].valid = 1; 
     return 0;
@@ -896,7 +969,7 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id)
   uint64_t rd_idx = queue_load_read_index(q);
   dispatch_packet_t *pkt = &((dispatch_packet_t*)q->base_address)[mymod(rd_idx)];
   int last_slot = 0;
-  int max_slot = 4*NUM_SHIM_DMAS-1;
+  int max_slot = 4*NUM_DMAS-1;
 
   int num_active_packets = 1;
   int packets_processed = 0;
@@ -919,14 +992,24 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id)
         if (slot == last_slot) break;
         air_printf("RR check slot: %d\n\r",slot);
         if (staged_nd_slot[slot].valid) {
-          dispatch_packet_t* a_pkt = staged_nd_slot[slot].pkt;
-          uint16_t channel      = (a_pkt->arg[0] >> 24) & 0x00ff;
-          uint16_t col          = (a_pkt->arg[0] >> 32) & 0x00ff;
-          //uint16_t logical_col  = (a_pkt->arg[0] >> 32) & 0x00ff;
-          uint16_t direction    = (a_pkt->arg[0] >> 60) & 0x000f;
-          //uint16_t col          = mappedShimDMA[logical_col];
-          stalled = (xaie_shim_dma_get_outstanding(xaie::getTileAddr(col,0),direction,channel) >= 4); 
-          active = packet_get_active(a_pkt);
+          if (slot >= NUM_SHIM_DMAS*4) {
+            dispatch_packet_t* a_pkt = staged_nd_slot[slot].pkt;
+            uint16_t channel      = (a_pkt->arg[0] >> 24) & 0x00ff;
+            uint16_t col          = (a_pkt->arg[0] >> 32) & 0x00ff;
+            uint16_t direction    = (a_pkt->arg[0] >> 60) & 0x000f;
+            active = packet_get_active(a_pkt);
+            int fsl = 4*(col-7) + 2*direction + channel;
+            stalled = drain_fsl(fsl); 
+          } else {
+            dispatch_packet_t* a_pkt = staged_nd_slot[slot].pkt;
+            uint16_t channel      = (a_pkt->arg[0] >> 24) & 0x00ff;
+            uint16_t col          = (a_pkt->arg[0] >> 32) & 0x00ff;
+            //uint16_t logical_col  = (a_pkt->arg[0] >> 32) & 0x00ff;
+            uint16_t direction    = (a_pkt->arg[0] >> 60) & 0x000f;
+            //uint16_t col          = mappedShimDMA[logical_col];
+            stalled = (xaie_shim_dma_get_outstanding(xaie::getTileAddr(col,0),direction,channel) >= 4); 
+            active = packet_get_active(a_pkt);
+          }
         } else {
           stalled = true;
           active = false;
@@ -935,6 +1018,14 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id)
       } while (!staged_nd_slot[slot].valid || stalled || !active); 
 
       if (slot==last_slot) { // Begin get next packet
+        if (slot >= NUM_SHIM_DMAS*4) { 
+          dispatch_packet_t* a_pkt = staged_nd_slot[slot].pkt;
+          uint16_t channel      = (a_pkt->arg[0] >> 24) & 0x00ff;
+          uint16_t col          = (a_pkt->arg[0] >> 32) & 0x00ff;
+          uint16_t direction    = (a_pkt->arg[0] >> 60) & 0x000f;
+          int fsl = 4*(col-7) + 2*direction + channel;
+          if (!drain_fsl(fsl)) goto found;
+        }
         rd_idx++; 
         pkt = &((dispatch_packet_t*)q->base_address)[mymod(rd_idx)];
         air_printf("HELLO NEW PACKET IN FLIGHT!\n\r");
@@ -949,8 +1040,9 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id)
       } // End get next packet
 
       // FOUND ND packet process here 
+found:
       last_slot = slot; 
-      int ret = do_packet_nd_memcpy(slot);  
+      int ret = do_packet_memcpy(slot);  
       if (ret) continue;
       else {
         num_active_packets--;
@@ -1023,19 +1115,20 @@ packet_op:
         break;
 
       case AIR_PKT_TYPE_ND_MEMCPY: // Only arrive here the first try. 
+        uint16_t memory_space = (pkt->arg[0] >> 16) & 0x00ff;
         uint16_t channel      = (pkt->arg[0] >> 24) & 0x00ff;
         uint16_t direction    = (pkt->arg[0] >> 60) & 0x000f;
         uint16_t col  = (pkt->arg[0] >> 32) & 0x00ff;
         int slot = channel;
-        slot += get_slot(col); 
+        slot += get_slot(col,memory_space); 
         if (direction == SHIM_DMA_S2MM) 
           slot += XAIEDMA_SHIM_CHNUM_S2MM0;
         else 
           slot += XAIEDMA_SHIM_CHNUM_MM2S0;
-        int ret = stage_packet_nd_memcpy(pkt,slot);
+        int ret = stage_packet_nd_memcpy(pkt,slot,memory_space);
         if (ret == 0) { 
           last_slot = slot;
-	        if (do_packet_nd_memcpy(slot)) {
+	        if (do_packet_memcpy(slot)) {
 	          num_active_packets++;
 	          break;
 	        } // else completed the packet in the first try
@@ -1186,7 +1279,7 @@ int main()
           default:
           case HSA_PACKET_TYPE_INVALID:
             if (setup) {
-              drain_fsl();
+              //drain_fsls();
               lock_uart(mb_id); air_printf("Waiting\n\r"); unlock_uart();
               setup = false;
             }

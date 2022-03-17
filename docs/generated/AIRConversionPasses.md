@@ -145,7 +145,7 @@ allocation of channel 2 of the shim DMA in column 2 of the AIE
 array to perform the copy with id=1 in tile 0,0 
 ```mlir
   airrt.module_metadata {
-    airrt.herd_metadata {shim_allocations = [{channel = 2 : i64, col = 0 : i64, id = 1 : i64, location = 2 : i64, row = 0 : i64 ...
+    airrt.herd_metadata {dma_allocations = [{channel = 2 : i64, col = 0 : i64, id = 1 : i64, location = 2 : i64, row = 0 : i64 ...
   }
 ```
 The control program itself will be generated from this output by the 
