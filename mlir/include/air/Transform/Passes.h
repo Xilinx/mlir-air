@@ -11,7 +11,6 @@
 #include "air/Transform/AIRLowerLinalgTensors.h"
 #include "air/Transform/AIRRegularizeLoopPass.h"
 #include "air/Transform/AIRTilingUtils.h"
-#include "air/Transform/AIRDependency.h"
 #include "air/Transform/ReturnEliminationPass.h"
 
 namespace xilinx {

@@ -435,13 +435,4 @@ def AIRLoopMergingPass: Pass<"air-loop-merging", "FuncOp"> {
   }];
 }
 
-def AIRDependency : Pass<"air-dependency", "ModuleOp"> {
-  let summary = "AIR dependency analysis";
-  let constructor = "xilinx::air::createAIRDependencyPass()";
-  let description = [{
-    This pass analyzes dependencies among air.async_region ops, and constructs
-    a dependency graph for scheduling.
-  }];
-}
-
 #endif // AIR_CONVERSION_PASSES

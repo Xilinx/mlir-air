@@ -393,16 +393,6 @@ unsigned PipelineStageOp::getStageId() {
   return -1;
 }
 
-//
-// Asynchronous region
-//
-
-static LogicalResult verify(RegionOp op) {
-  assert(op.getOperation()->getNumRegions() == 1 && "RegionOp has zero region!");
-  assert(!op.body().empty() && "RegionOp should have non-empty body");
-
-  return success();
-}
 
 #include "air/Dialect/AIR/AIROpInterfaces.cpp.inc"
 

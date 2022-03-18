@@ -10,7 +10,6 @@ AIRLoopPermutationPass.cpp
 AIRLowerLinalgTensors.cpp
 AIRRegularizeLoopPass.cpp
 AIRTilingUtils.cpp
-AIRDependency.cpp
 Passes.cpp
 ReturnEliminationPass.cpp
 
