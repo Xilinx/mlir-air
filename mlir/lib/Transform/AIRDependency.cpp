@@ -448,7 +448,6 @@ public:
           auto incoming_deps = in_edges(dstTRVertex, asyncRegionGraphTR);
           for (in_edge_iterator it = incoming_deps.first; it != incoming_deps.second; it++) {
             auto TRVertex = source(*it, asyncRegionGraphTR);
-            // async_region_op.addAsyncDependency(getRegionOpFromGraphGVertex(tr_to_g[TRVertex]).getResult(0));
             async_region_op.addAsyncDependency(getRegionOpFromVertex(TRVertex, asyncRegionGraphTR).getResult(0));
           }
         }
