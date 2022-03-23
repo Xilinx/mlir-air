@@ -444,14 +444,12 @@ public:
     for (auto f : module.getOps<FuncOp>()) {
       f.walk([&](Operation *op) {
         if (auto async_region_op = dyn_cast<air::RegionOp>(op)) {
-          // uint64_t region_op_id = async_region_op.getId();
-          // uint64_t graph_node_id = region_op_id - 1; // Region id starts from 1
-          // uint64_t graph_node_id = getGraphGVertexFromRegionOp(async_region_op);
           uint64_t dstTRVertex = g_to_tr[getGraphGVertexFromRegionOp(async_region_op)];
           auto incoming_deps = in_edges(dstTRVertex, asyncRegionGraphTR);
           for (in_edge_iterator it = incoming_deps.first; it != incoming_deps.second; it++) {
             auto TRVertex = source(*it, asyncRegionGraphTR);
-            async_region_op.addAsyncDependency(getRegionOpFromGraphGVertex(tr_to_g[TRVertex]).getResult(0));
+            // async_region_op.addAsyncDependency(getRegionOpFromGraphGVertex(tr_to_g[TRVertex]).getResult(0));
+            async_region_op.addAsyncDependency(getRegionOpFromVertex(TRVertex, asyncRegionGraphTR).getResult(0));
           }
         }
       });
@@ -843,9 +841,9 @@ private:
   region_id_to_vertex_map region_to_g; // Map between air ops and vertices in graph
 
   // air region op to g vertex mapping
-  air::RegionOp getRegionOpFromGraphGVertex (Graph::vertex_descriptor v){
-    assert(asyncRegionGraph[v].asyncEventType == "region" && "This vertex is not a RegionOp");
-    return async_region_op_history[asyncRegionGraph[v].operationId - 1];
+  air::RegionOp getRegionOpFromVertex (Graph::vertex_descriptor v, Graph g){
+    assert(g[v].asyncEventType == "region" && "This vertex is not a RegionOp");
+    return async_region_op_history[g[v].operationId - 1];
   }
 
   // g vertex to air region op mapping
