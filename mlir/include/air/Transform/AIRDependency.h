@@ -33,7 +33,7 @@ typedef graph_traits<Graph>::out_edge_iterator out_edge_iterator;
 typedef graph_traits<Graph>::vertex_iterator vertex_iterator;
 
 typedef std::map<Graph::vertex_descriptor, Graph::vertex_descriptor> vertex_map;
-typedef std::map<unsigned, Graph::vertex_descriptor> region_id_to_vertex_map;
+typedef std::map<unsigned, Graph::vertex_descriptor> operation_id_to_vertex_map;
 
 std::unique_ptr<mlir::Pass> createAIRDependencyPass();
 

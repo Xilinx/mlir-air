@@ -331,10 +331,10 @@ public:
               // Detect RAW deps
               for (auto operand : child_op_memref_reads) {
                 // Trace the defining op of target op, RAW
-                pushDefiningOpAsDep(operand.memrefValue, async_region_op);
+                pushDefiningOpAsDep<air::RegionOp>(operand.memrefValue, async_region_op);
 
                 // If target op and operand's use are under the same scope
-                pushDepsAtCurrentScope(operand.memrefValue, async_region_op, 'w', operand.memrefIdx, operand.memrefIdy);
+                pushDepsAtCurrentScope<air::RegionOp>(operand.memrefValue, async_region_op, 'w', operand.memrefIdx, operand.memrefIdy);
 
                 // If target op is in HerdLaunchOp
                 if (auto lh = op->getParentOfType<xilinx::air::HerdLaunchOp>()){
@@ -342,7 +342,7 @@ public:
                   for (unsigned lh_operand_id = 0; lh_operand_id < lh.getNumKernelOperands(); lh_operand_id++){
                     if (lh.getKernelArguments()[lh_operand_id] == operand.memrefValue){
                       auto ancestor_op = lh.getKernelOperand(lh_operand_id);
-                      pushDepsAtCurrentScope(ancestor_op, lh->getParentOfType<xilinx::air::RegionOp>(), 'w');
+                      pushDepsAtCurrentScope<air::RegionOp>(ancestor_op, lh->getParentOfType<xilinx::air::RegionOp>(), 'w');
                     }
                   }
                 }
@@ -354,7 +354,7 @@ public:
                     if (auto lh = dyn_cast<xilinx::air::HerdLaunchOp>(u.getOwner())){
                       auto ar = lh->getParentOfType<xilinx::air::RegionOp>();
                       if (foundARUsesAboveCurrentLine(&ar)){
-                        addNewAsyncDependency(ar.getResult(0), async_region_op);
+                        addNewAsyncDepToGraph<air::RegionOp>(ar.getResult(0), async_region_op);
                       }
                     }
                   }
@@ -364,10 +364,10 @@ public:
               // Detect WAW and WAR deps
               for (auto operand : child_op_memref_writes) {
                 // Trace the defining op of target op, WAW
-                pushDefiningOpAsDep(operand.memrefValue, async_region_op);
+                pushDefiningOpAsDep<air::RegionOp>(operand.memrefValue, async_region_op);
 
                 // If target op and operand's use are under the same scope
-                pushDepsAtCurrentScope(operand.memrefValue, async_region_op, 'n', operand.memrefIdx, operand.memrefIdy);
+                pushDepsAtCurrentScope<air::RegionOp>(operand.memrefValue, async_region_op, 'n', operand.memrefIdx, operand.memrefIdy);
 
                 // If target op is in HerdLaunchOp
                 if (auto lh = op->getParentOfType<xilinx::air::HerdLaunchOp>()){
@@ -375,7 +375,7 @@ public:
                   for (unsigned lh_operand_id = 0; lh_operand_id < lh.getNumKernelOperands(); lh_operand_id++){
                     if (lh.getKernelArguments()[lh_operand_id] == operand.memrefValue){
                       auto ancestor_op = lh.getKernelOperand(lh_operand_id);
-                      pushDepsAtCurrentScope(ancestor_op, lh->getParentOfType<xilinx::air::RegionOp>());
+                      pushDepsAtCurrentScope<air::RegionOp>(ancestor_op, lh->getParentOfType<xilinx::air::RegionOp>());
                     }
                   }
                 }
@@ -388,7 +388,7 @@ public:
                     if (auto lh = dyn_cast<xilinx::air::HerdLaunchOp>(u.getOwner())){
                       auto ar = lh->getParentOfType<xilinx::air::RegionOp>();
                       if (foundARUsesAboveCurrentLine(&ar)){
-                        addNewAsyncDependency(ar.getResult(0), async_region_op);
+                        addNewAsyncDepToGraph<air::RegionOp>(ar.getResult(0), async_region_op);
                       }
                     }
                   }
@@ -397,25 +397,25 @@ public:
               // Tile index deps
               for (auto operand : child_op_memref_reads) {
                 if (operand.memrefIdx){
-                  pushTileIndexAsDep(operand.memrefIdx, async_region_op);
+                  pushTileIndexAsDep<air::RegionOp>(operand.memrefIdx, async_region_op);
                 }
                 if (operand.memrefIdy){
-                  pushTileIndexAsDep(operand.memrefIdy, async_region_op);                  
+                  pushTileIndexAsDep<air::RegionOp>(operand.memrefIdy, async_region_op);                  
                 }
               }
               for (auto operand : child_op_memref_writes) {
                 if (operand.memrefIdx){
-                  pushTileIndexAsDep(operand.memrefIdx, async_region_op);
+                  pushTileIndexAsDep<air::RegionOp>(operand.memrefIdx, async_region_op);
                 }
                 if (operand.memrefIdy){
-                  pushTileIndexAsDep(operand.memrefIdy, async_region_op);                  
+                  pushTileIndexAsDep<air::RegionOp>(operand.memrefIdy, async_region_op);                  
                 }
               }
               for (auto scalar : child_op_scalar_ins) {
-                pushTileIndexAsDep(scalar, async_region_op);
+                pushTileIndexAsDep<air::RegionOp>(scalar, async_region_op);
               }
               for (auto scalar : child_op_scalar_outs) {
-                pushTileIndexAsDep(scalar, async_region_op);
+                pushTileIndexAsDep<air::RegionOp>(scalar, async_region_op);
               }
             }
           }
@@ -444,7 +444,7 @@ public:
     for (auto f : module.getOps<FuncOp>()) {
       f.walk([&](Operation *op) {
         if (auto async_region_op = dyn_cast<air::RegionOp>(op)) {
-          uint64_t dstTRVertex = g_to_tr[getGraphGVertexFromRegionOp(async_region_op)];
+          uint64_t dstTRVertex = g_to_tr[getGraphGVertexFromAIROp(async_region_op)];
           auto incoming_deps = in_edges(dstTRVertex, asyncRegionGraphTR);
           for (in_edge_iterator it = incoming_deps.first; it != incoming_deps.second; it++) {
             auto TRVertex = source(*it, asyncRegionGraphTR);
@@ -543,10 +543,10 @@ public:
                 unsigned src = 0;
                 unsigned dst = 0;
                 if (auto dst_op = dyn_cast<air::RegionOp>(user)){
-                  dst = g_to_tr[getGraphGVertexFromRegionOp(dst_op)];
+                  dst = g_to_tr[getGraphGVertexFromAIROp(dst_op)];
                 }
                 if (auto src_op = dyn_cast<air::RegionOp>(v.getDefiningOp())){
-                  src = g_to_tr[getGraphGVertexFromRegionOp(src_op)];
+                  src = g_to_tr[getGraphGVertexFromAIROp(src_op)];
                 }
                 if (edge(src, dst, asyncRegionGraphTR).second){ // if an edge exists
                   remove_edge(src, dst, asyncRegionGraphTR);
@@ -635,39 +635,42 @@ private:
   }
   
   // Check if operand is returned from RegionOp (memref.alloc)
-  void pushDefiningOpAsDep(Value operand, air::RegionOp op){
+  template <typename T>
+  void pushDefiningOpAsDep(Value operand, T op){
     // Check memref deps
     if (auto defop = operand.getDefiningOp<air::RegionOp>()){
       if (foundARUsesAboveCurrentLine(&defop)){
-        addNewAsyncDependency(defop.getResult(0), op);
+        addNewAsyncDepToGraph<T>(defop.getResult(0), op);
       }
     }
   }
 
   // Trace tile index deps
-  void pushTileIndexAsDep(mlir::Value tile_index, air::RegionOp op){
+  template <typename T>
+  void pushTileIndexAsDep(mlir::Value tile_index, T op){
     // If created by async_region
     if (auto defop = tile_index.getDefiningOp<air::RegionOp>()){
       if (foundARUsesAboveCurrentLine(&defop)){
-        addNewAsyncDependency(defop.getResult(0), op);
+        addNewAsyncDepToGraph<T>(defop.getResult(0), op);
       }
     }
     // If created by launch_herd (as loop iter)
     else if (auto lh = dyn_cast<air::HerdLaunchOp>(tile_index.getParentRegion()->getParentOp())){
       if (lh.getTileIds().x == tile_index || lh.getTileIds().y == tile_index){
-        addNewAsyncDependency(tile_index, op);
+        addNewAsyncDepToGraph<T>(tile_index, op);
       }
     }
     // If created by scf.for (as loop iter)
     else if (auto forloop = dyn_cast<scf::ForOp>(tile_index.getParentRegion()->getParentOp())){
       if (forloop.getInductionVar() == tile_index){
-        addNewAsyncDependency(tile_index, op);
+        addNewAsyncDepToGraph<T>(tile_index, op);
       }
     }
   }
 
   // Trace operand's uses at current scope
-  void pushDepsAtCurrentScope(mlir::Value operand, air::RegionOp op, char rw = 'n', mlir::Value idx = 0, mlir::Value idy = 0){
+  template <typename T>
+  void pushDepsAtCurrentScope(mlir::Value operand, T op, char rw = 'n', mlir::Value idx = 0, mlir::Value idy = 0){
     for (auto &u : operand.getUses()){
       // If used in DmaMemcpy2dOp
       if (auto dma2d = dyn_cast<xilinx::air::DmaMemcpy2dOp>(u.getOwner())){
@@ -677,34 +680,34 @@ private:
             if (rw == 'r'){
               if (u.getOperandNumber() == 1){
                 if (idx == 0 && idy == 0){
-                  addNewAsyncDependency(ar.getResult(0), op);
+                  addNewAsyncDepToGraph<T>(ar.getResult(0), op);
                 }
                 else if (areEqualIndices(idx, dma2d.getSrcMemrefD1()) && areEqualIndices(idy, dma2d.getSrcMemrefD0())){
-                  addNewAsyncDependency(ar.getResult(0), op);
+                  addNewAsyncDepToGraph<T>(ar.getResult(0), op);
                 }
               }
             }
             else if (rw == 'w'){
               if (u.getOperandNumber() == 0){
                 if (idx == 0 && idy == 0){
-                  addNewAsyncDependency(ar.getResult(0), op);
+                  addNewAsyncDepToGraph<T>(ar.getResult(0), op);
                 }
                 else if (areEqualIndices(idx, dma2d.getDstMemrefD1()) && areEqualIndices(idy, dma2d.getDstMemrefD0())){
-                  addNewAsyncDependency(ar.getResult(0), op);
+                  addNewAsyncDepToGraph<T>(ar.getResult(0), op);
                 }
               }
             }
             else{
               if (idx == 0 && idy == 0) {
-                addNewAsyncDependency(ar.getResult(0), op);
+                addNewAsyncDepToGraph<T>(ar.getResult(0), op);
               }
               else if (u.getOperandNumber() == 0){
                 if (areEqualIndices(idx, dma2d.getDstMemrefD1()) && areEqualIndices(idy, dma2d.getDstMemrefD0()))
-                  addNewAsyncDependency(ar.getResult(0), op);
+                  addNewAsyncDepToGraph<T>(ar.getResult(0), op);
               }
               else if (u.getOperandNumber() == 1){
                 if (areEqualIndices(idx, dma2d.getSrcMemrefD1()) && areEqualIndices(idy, dma2d.getSrcMemrefD0()))
-                  addNewAsyncDependency(ar.getResult(0), op);
+                  addNewAsyncDepToGraph<T>(ar.getResult(0), op);
               }
             }
           }
@@ -717,16 +720,16 @@ private:
           if (foundARUsesAboveCurrentLine(&ar)){
             if (rw == 'r'){
               if (u.getOperandNumber() <= 2){
-                addNewAsyncDependency(ar.getResult(0), op);
+                addNewAsyncDepToGraph<T>(ar.getResult(0), op);
               }
             }
             else if (rw == 'w'){
               if (u.getOperandNumber() == 2){
-                addNewAsyncDependency(ar.getResult(0), op);
+                addNewAsyncDepToGraph<T>(ar.getResult(0), op);
               }
             }
             else{
-              addNewAsyncDependency(ar.getResult(0), op);
+              addNewAsyncDepToGraph<T>(ar.getResult(0), op);
             }
           }
         }
@@ -738,16 +741,16 @@ private:
           if (foundARUsesAboveCurrentLine(&ar)){
             if (rw == 'r'){
               if (u.getOperandNumber() == 1){
-                addNewAsyncDependency(ar.getResult(0), op);
+                addNewAsyncDepToGraph<T>(ar.getResult(0), op);
               }
             }
             else if (rw == 'w'){
               if (u.getOperandNumber() == 1){
-                addNewAsyncDependency(ar.getResult(0), op);
+                addNewAsyncDepToGraph<T>(ar.getResult(0), op);
               }
             }
             else{
-              addNewAsyncDependency(ar.getResult(0), op);
+              addNewAsyncDepToGraph<T>(ar.getResult(0), op);
             }
           }
         }
@@ -759,16 +762,16 @@ private:
           if (foundARUsesAboveCurrentLine(&ar)){
             if (rw == 'r'){
               if (u.getOperandNumber() <= 1){
-                addNewAsyncDependency(ar.getResult(0), op);
+                addNewAsyncDepToGraph<T>(ar.getResult(0), op);
               }
             }
             else if (rw == 'w'){
               if (u.getOperandNumber() == 1){
-                addNewAsyncDependency(ar.getResult(0), op);
+                addNewAsyncDepToGraph<T>(ar.getResult(0), op);
               }
             }
             else{
-              addNewAsyncDependency(ar.getResult(0), op);
+              addNewAsyncDepToGraph<T>(ar.getResult(0), op);
             }
           }
         }
@@ -792,15 +795,22 @@ private:
     }
   }
 
-  void addNewAsyncDependency(Value dep, air::RegionOp op){
+  template <typename T>
+  void addNewAsyncDepToGraph(Value dep, T op){
     for (auto old_dep : op.getAsyncDependencies())
       if (old_dep == dep) return;
 
     // Add edge to boost graph, iff dep is async region (i.e. not a loop iterator)
     if (auto srcOp = dep.getDefiningOp()) {
-      assert(dyn_cast<air::RegionOp>(srcOp) && "dependency token should be generated by async region");
-      uint64_t srcNode = getGraphGVertexFromRegionOp(dyn_cast<air::RegionOp>(srcOp));
-      uint64_t dstNode = getGraphGVertexFromRegionOp(op);
+      uint64_t srcNode;
+      if (auto region_op = dyn_cast<air::RegionOp>(srcOp)){
+        srcNode = getGraphGVertexFromAIROp(region_op);
+      }
+      else if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(srcOp)){
+        srcNode = getGraphGVertexFromAIROp(dma2d_op);
+      }
+      else assert(false && "dependency token should be generated by an async op");
+      uint64_t dstNode = getGraphGVertexFromAIROp(op);
       add_edge(srcNode, dstNode, asyncRegionGraph);
     }
   }
@@ -837,7 +847,7 @@ private:
   Graph asyncRegionGraph;
   Graph asyncRegionGraphTR;
   vertex_map g_to_tr, tr_to_g; // Map between graph g and graph tr (post-tr graph)
-  region_id_to_vertex_map region_to_g; // Map between air ops and vertices in graph
+  operation_id_to_vertex_map region_to_g; // Map between air ops and vertices in graph
 
   // air region op to g vertex mapping
   air::RegionOp getRegionOpFromVertex (Graph::vertex_descriptor v, Graph g){
@@ -845,8 +855,12 @@ private:
     return async_region_op_history[g[v].operationId - 1];
   }
 
-  // g vertex to air region op mapping
-  Graph::vertex_descriptor getGraphGVertexFromRegionOp (air::RegionOp op){
+  // g vertex to air op mapping
+  Graph::vertex_descriptor getGraphGVertexFromAIROp (air::RegionOp op){
+    return region_to_g[op.getId()];
+  }
+
+  Graph::vertex_descriptor getGraphGVertexFromAIROp (air::DmaMemcpy2dOp op){
     return region_to_g[op.getId()];
   }
 
