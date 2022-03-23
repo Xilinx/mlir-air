@@ -7,6 +7,7 @@
 include "mlir/IR/OpBase.td"
 include "air/Dialect/AIR/AIROpBase.td"
 
+include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 class air_Op<string mnemonic, list<OpTrait> traits = []> :
@@ -224,6 +225,10 @@ def air_DmaMemcpy2dOp: air_Op<"dma_memcpy_2d", [air_AsyncOpInterface, air_DmaMem
     unsigned getNumDims() { return 2; }
     Value getSrcMemref() { return src(); }
     Value getDstMemref() { return dst(); }
+    Value getSrcMemrefD1() { return src_d1(); }
+    Value getSrcMemrefD0() { return src_d0(); }
+    Value getDstMemrefD1() { return dst_d1(); }
+    Value getDstMemrefD0() { return dst_d0(); }
     Value getLength() { return num(); }
     int32_t getId() {
       if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
@@ -313,9 +318,11 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
   }];
 }
 
-def air_WaitAllOp: air_Op<"wait_all", []>,
-                Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
+def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
   let arguments = (ins Variadic<air_AsyncToken>:$asyncDependencies);
+  let results = (
+    outs  air_AsyncToken:$asyncToken
+  );
 
   let summary = "wait for all operator";
   let description = [{
@@ -324,6 +331,59 @@ def air_WaitAllOp: air_Op<"wait_all", []>,
   let assemblyFormat = [{
     custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) attr-dict
   }];
+}
+
+// AIR asynchronous region for dynamic event dispatching. WiP
+
+def air_RegionOp : air_Op<"region", [air_AsyncOpInterface, AffineScope]> {
+  let arguments = (
+    ins Variadic<AnyType>:$asyncDependencies
+  );
+  let results = (
+    outs  air_AsyncToken:$asyncToken,
+          Optional<AnyType>:$valOut
+  );
+  let summary = "Asynchronous code region";
+  let regions = (region AnyRegion:$body);
+  let description = [{
+    Defines a code region to be dispatched asynchronously at runtime. All operations in
+    the region must be executed sequentially.
+  }];
+
+  let assemblyFormat = [{
+    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) (`:` 
+    `(` type($asyncDependencies)^ `)`)? regions attr-dict (`:` `(` type($valOut)^ `)`)?
+  }];
+  let extraClassDeclaration = [{
+    int32_t getId() {
+      if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
+        return id_attr.getInt();
+      }
+      return -1;
+    }
+  }];
+
+
+  let verifier = [{ return ::verify(*this); }];
+}
+
+def air_RegionTerminatorOp : air_Op<"region_terminator", [HasParent<"RegionOp">,
+                                                      NoSideEffect, ReturnLike, Terminator]>{
+  let summary = "Terminator for air regions.";
+  let description = [{
+    A terminator operation for regions that appear in the body of
+    `air.region` operation.  These regions are not expected to return any
+    value so the terminator takes no operands.
+  }];
+
+  let arguments = (ins Variadic<AnyType>:$results);
+  let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
+
+  let assemblyFormat =
+      [{  attr-dict ($results^ `:` type($results))? }];
+
+  let parser = [{ return success(); }];
+  let printer = [{  }];
 }
 
 #endif
