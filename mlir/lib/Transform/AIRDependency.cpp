@@ -427,7 +427,6 @@ public:
 
     // 3rd traversal: perform transitive reduction on dependency graph.
 
-    vertex_map g_to_tr, tr_to_g;
     std::vector<size_t> id_map(num_vertices(asyncRegionGraph));
     std::iota(id_map.begin(), id_map.end(), 0u);
 
@@ -435,7 +434,9 @@ public:
 
     for (vertex_map::iterator i = g_to_tr.begin(); i != g_to_tr.end(); ++i){
       // Copy over graph properties
-      asyncRegionGraphTR[i->second].regionType = asyncRegionGraph[i->first].regionType;
+      asyncRegionGraphTR[i->second].asyncEventName = asyncRegionGraph[i->first].asyncEventName;
+      asyncRegionGraphTR[i->second].asyncEventType = asyncRegionGraph[i->first].asyncEventType;
+      asyncRegionGraphTR[i->second].operationId = asyncRegionGraph[i->first].operationId;
       // Build reverse map tr_to_g, for convenient vertex mapping
       tr_to_g[i->second] = i->first;
     }
@@ -443,15 +444,14 @@ public:
     for (auto f : module.getOps<FuncOp>()) {
       f.walk([&](Operation *op) {
         if (auto async_region_op = dyn_cast<air::RegionOp>(op)) {
-          uint64_t region_op_id = async_region_op->getAttrOfType<IntegerAttr>("id").getInt();
-          uint64_t graph_node_id = region_op_id - 1; // Region id starts from 1
-          uint64_t dstTRVertex;
-
-          dstTRVertex = g_to_tr[graph_node_id];
+          // uint64_t region_op_id = async_region_op.getId();
+          // uint64_t graph_node_id = region_op_id - 1; // Region id starts from 1
+          // uint64_t graph_node_id = getGraphGVertexFromRegionOp(async_region_op);
+          uint64_t dstTRVertex = g_to_tr[getGraphGVertexFromRegionOp(async_region_op)];
           auto incoming_deps = in_edges(dstTRVertex, asyncRegionGraphTR);
           for (in_edge_iterator it = incoming_deps.first; it != incoming_deps.second; it++) {
             auto TRVertex = source(*it, asyncRegionGraphTR);
-            async_region_op.addAsyncDependency(async_region_op_history[tr_to_g[TRVertex]].getResult(0));
+            async_region_op.addAsyncDependency(getRegionOpFromGraphGVertex(tr_to_g[TRVertex]).getResult(0));
           }
         }
       });
@@ -483,8 +483,10 @@ public:
 
             // Update boost graph
             auto wait_all_op_yielded_v = add_vertex(asyncRegionGraphTR);
-            asyncRegionGraphTR[wait_all_op_yielded_v].regionType = to_string(number_of_nested_for_ops);
-            asyncRegionGraphTR[wait_all_op_yielded_v].regionType += "d_for_loop_end";
+            asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventName = to_string(number_of_nested_for_ops);
+            asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventName += "d_for_loop_end";
+            asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventType = "wait_all";
+            asyncRegionGraphTR[wait_all_op_yielded_v].operationId = 0;
             for (auto sink : sinks_in_for_op){
               unsigned src_id = dyn_cast<air::RegionOp>(sink.getDefiningOp()).getId() - 1;
               auto src = g_to_tr[src_id];
@@ -509,8 +511,10 @@ public:
             
             // Update boost graph
             auto wait_all_op_before_loop_v = add_vertex(asyncRegionGraphTR);
-            asyncRegionGraphTR[wait_all_op_before_loop_v].regionType = to_string(number_of_nested_for_ops);
-            asyncRegionGraphTR[wait_all_op_before_loop_v].regionType += "d_for_loop_begin";
+            asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventName = to_string(number_of_nested_for_ops);
+            asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventName += "d_for_loop_begin";
+            asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventType = "wait_all";
+            asyncRegionGraphTR[wait_all_op_before_loop_v].operationId = 0;
 
             // (3) Create new for op with iter_args.
             SmallVector<Value, 4> merged_incoming_token;
@@ -542,10 +546,10 @@ public:
                 unsigned src = 0;
                 unsigned dst = 0;
                 if (auto dst_op = dyn_cast<air::RegionOp>(user)){
-                  dst = g_to_tr[dst_op.getId() - 1];
+                  dst = g_to_tr[getGraphGVertexFromRegionOp(dst_op)];
                 }
                 if (auto src_op = dyn_cast<air::RegionOp>(v.getDefiningOp())){
-                  src = g_to_tr[src_op.getId() - 1];
+                  src = g_to_tr[getGraphGVertexFromRegionOp(src_op)];
                 }
                 if (edge(src, dst, asyncRegionGraphTR).second){ // if an edge exists
                   remove_edge(src, dst, asyncRegionGraphTR);
@@ -604,7 +608,7 @@ private:
 
   
 
-  air::RegionOp createAsyncRegion(OpBuilder &builder, Operation *op, std::string regionType, uint64_t &RegionOpID, mlir::Type valueType = NULL){
+  air::RegionOp createAsyncRegion(OpBuilder &builder, Operation *op, std::string asyncEventName, uint64_t &RegionOpID, mlir::Type valueType = NULL){
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
     air::RegionOp async_region;
@@ -618,7 +622,11 @@ private:
     
     // Create a vertex out of the current async region
     auto v = add_vertex(asyncRegionGraph);
-    asyncRegionGraph[v].regionType = regionType;
+    asyncRegionGraph[v].asyncEventName = asyncEventName;
+    asyncRegionGraph[v].asyncEventType = "region";
+    asyncRegionGraph[v].operationId = RegionOpID;
+    // Update op-to-graph map
+    region_to_g[async_region.getId()] = v;
     return async_region;
   }
 
@@ -794,8 +802,8 @@ private:
     // Add edge to boost graph, iff dep is async region (i.e. not a loop iterator)
     if (auto srcOp = dep.getDefiningOp()) {
       assert(dyn_cast<air::RegionOp>(srcOp) && "dependency token should be generated by async region");
-      uint64_t srcNode = dyn_cast<air::RegionOp>(srcOp).getId() - 1;
-      uint64_t dstNode = op.getId() - 1;
+      uint64_t srcNode = getGraphGVertexFromRegionOp(dyn_cast<air::RegionOp>(srcOp));
+      uint64_t dstNode = getGraphGVertexFromRegionOp(op);
       add_edge(srcNode, dstNode, asyncRegionGraph);
     }
   }
@@ -831,12 +839,25 @@ private:
   // Dependency graph constructed as Boost graph
   Graph asyncRegionGraph;
   Graph asyncRegionGraphTR;
+  vertex_map g_to_tr, tr_to_g; // Map between graph g and graph tr (post-tr graph)
+  region_id_to_vertex_map region_to_g; // Map between air ops and vertices in graph
+
+  // air region op to g vertex mapping
+  air::RegionOp getRegionOpFromGraphGVertex (Graph::vertex_descriptor v){
+    assert(asyncRegionGraph[v].asyncEventType == "region" && "This vertex is not a RegionOp");
+    return async_region_op_history[asyncRegionGraph[v].operationId - 1];
+  }
+
+  // g vertex to air region op mapping
+  Graph::vertex_descriptor getGraphGVertexFromRegionOp (air::RegionOp op){
+    return region_to_g[op.getId()];
+  }
 
   // Dump graphviz
   void dump_graph(char *filename)
   {
     std::ofstream ofs (filename, std::ofstream::out); 
-    write_graphviz(ofs, asyncRegionGraphTR, boost::make_label_writer(boost::get(&regionNode::regionType, asyncRegionGraphTR)));
+    write_graphviz(ofs, asyncRegionGraphTR, boost::make_label_writer(boost::get(&regionNode::asyncEventName, asyncRegionGraphTR)));
   };
 
 };
