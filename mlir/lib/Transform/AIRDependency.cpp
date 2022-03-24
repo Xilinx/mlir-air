@@ -64,190 +64,78 @@ public:
 
     RegionOpID = 0;
 
-    // 1st traversal: create async regions with empty dep list.
+    // 1st traversal: create async ops with empty dep list.
 
     for (auto f : module.getOps<FuncOp>()) {
       f.walk([&](Operation *op) {
+        // Create async region for air.dmamemcpy2d
         if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(op)) {
-          
           module_builder.setInsertionPoint(op);
-
-          // Create async region operation.
-          auto async_region = createAsyncRegion(module_builder, op, "air::dma2d", RegionOpID);
-          Block *async_region_bb = module_builder.createBlock(&async_region.body());
-
-          // Insert op to the new async region's body.
-          module_builder.setInsertionPointToStart(async_region_bb);
-          module_builder.clone(*op);
-          module_builder.create<xilinx::air::RegionTerminatorOp>(module_builder.getUnknownLoc());
-
+          createAsyncDma2d(module_builder, dma2d_op);
           op->erase();
-
         }
 
+        // Create async region for linalg.matmul
         else if (auto matmul_op = dyn_cast<linalg::MatmulOp>(op)) {
-
           module_builder.setInsertionPoint(op);
-
-          // Create async region for linalg.matmul
-          auto async_region = createAsyncRegion(module_builder, op, "linalg::matmul", RegionOpID);
-          Block *async_region_bb = module_builder.createBlock(&async_region.body());
-
-          // Insert op to the new async region's body.
-          module_builder.setInsertionPointToStart(async_region_bb);
-          module_builder.clone(*op);
-          module_builder.create<xilinx::air::RegionTerminatorOp>(module_builder.getUnknownLoc());
-
+          createAsyncRegion(module_builder, op, "linalg::matmul", RegionOpID);
           op->erase();
         }
 
+        // Create async region for linalg.fill
         else if (auto linalg_fill_op = dyn_cast<linalg::FillOp>(op)) {
-
           module_builder.setInsertionPoint(op);
-
-          // Create async region for linalg.fill
-          auto async_region = createAsyncRegion(module_builder, op, "linalg::fill", RegionOpID);
-          Block *async_region_bb = module_builder.createBlock(&async_region.body());
-
-          // Insert op to the new async region's body.
-          module_builder.setInsertionPointToStart(async_region_bb);
-          module_builder.clone(*op);
-          module_builder.create<xilinx::air::RegionTerminatorOp>(module_builder.getUnknownLoc());
-
+          createAsyncRegion(module_builder, op, "linalg::fill", RegionOpID);
           op->erase();
         }
 
+        // Create async region for linalg.copy
         else if (auto linalg_copy_op = dyn_cast<linalg::CopyOp>(op)) {
-
           module_builder.setInsertionPoint(op);
-
-          // Create async region for linalg.copy
-          auto async_region = createAsyncRegion(module_builder, op, "linalg::copy", RegionOpID);
-          Block *async_region_bb = module_builder.createBlock(&async_region.body());
-
-          // Insert op to the new async region's body.
-          module_builder.setInsertionPointToStart(async_region_bb);
-          module_builder.clone(*op);
-          module_builder.create<xilinx::air::RegionTerminatorOp>(module_builder.getUnknownLoc());
-
+          createAsyncRegion(module_builder, op, "linalg::copy", RegionOpID);
           op->erase();
         }
 
+        // Create async region for memref.alloc
         else if (auto memalloc_op = dyn_cast<memref::AllocOp>(op)) {
-
           module_builder.setInsertionPoint(op);
-
-          // Create async region for memref.alloc
-          auto async_region = createAsyncRegion(module_builder, op, "memref::alloc", RegionOpID, memalloc_op.memref().getType());
-          Block *async_region_bb = module_builder.createBlock(&async_region.body());
-
-          // Insert op to the new async region's body.
-          module_builder.setInsertionPointToStart(async_region_bb);
-          auto new_memref_alloc_op = dyn_cast<memref::AllocOp>(module_builder.clone(*op));
-          module_builder.create<xilinx::air::RegionTerminatorOp>(module_builder.getUnknownLoc(), new_memref_alloc_op.memref());
-
-          SmallVector<Value, 1> returnVals;
-          returnVals.push_back(async_region.getResult(1));
-          op->replaceAllUsesWith(returnVals);
-
+          createAsyncRegion<memref::AllocOp>(module_builder, op, "memref::alloc", RegionOpID, memalloc_op.memref().getType());
           op->erase();
-
         }
 
+        // Create async region for memref.alloc
         else if (auto memcast_op = dyn_cast<memref::CastOp>(op)) {
-
           module_builder.setInsertionPoint(op);
-
-          // Create async region for memref.alloc
-          auto async_region = createAsyncRegion(module_builder, op, "memref::cast", RegionOpID, memcast_op.dest().getType());
-          Block *async_region_bb = module_builder.createBlock(&async_region.body());
-
-          // Insert op to the new async region's body.
-          module_builder.setInsertionPointToStart(async_region_bb);
-          auto new_memref_cast_op = dyn_cast<memref::CastOp>(module_builder.clone(*op));
-          module_builder.create<xilinx::air::RegionTerminatorOp>(module_builder.getUnknownLoc(), new_memref_cast_op.dest());
-
-          SmallVector<Value, 1> returnVals;
-          returnVals.push_back(async_region.getResult(1));
-          op->replaceAllUsesWith(returnVals);
-
+          createAsyncRegion<memref::CastOp>(module_builder, op, "memref::cast", RegionOpID, memcast_op.dest().getType());
           op->erase();
-
         }
 
+        // Create async region for memref.dealloc
         else if (auto memdealloc_op = dyn_cast<memref::DeallocOp>(op)) {
-
           module_builder.setInsertionPoint(op);
-
-          // Create async region for memref.dealloc
-          auto async_region = createAsyncRegion(module_builder, op, "memref::dealloc", RegionOpID);
-          Block *async_region_bb = module_builder.createBlock(&async_region.body());
-
-          // Insert op to the new async region's body.
-          module_builder.setInsertionPointToStart(async_region_bb);
-          module_builder.clone(*op);
-          module_builder.create<xilinx::air::RegionTerminatorOp>(module_builder.getUnknownLoc());
-
+          createAsyncRegion(module_builder, op, "memref::dealloc", RegionOpID);
           op->erase();
         }
 
+        // Create async region for arith.muli
         else if (auto arith_op = dyn_cast<arith::MulIOp>(op)) {
-
           module_builder.setInsertionPoint(op);
-
-          // Create async region for arith.muli
-          auto async_region = createAsyncRegion(module_builder, op, "arith::muli", RegionOpID, arith_op.getResult().getType());
-          Block *async_region_bb = module_builder.createBlock(&async_region.body());
-
-          // Insert op to the new async region's body.
-          module_builder.setInsertionPointToStart(async_region_bb);
-          auto new_arith_muli_op = dyn_cast<arith::MulIOp>(module_builder.clone(*op));
-          module_builder.create<xilinx::air::RegionTerminatorOp>(module_builder.getUnknownLoc(), new_arith_muli_op.getResult());
-
-          SmallVector<Value, 1> returnVals;
-          returnVals.push_back(async_region.getResult(1));
-          op->replaceAllUsesWith(returnVals);
-
+          createAsyncRegion<arith::MulIOp>(module_builder, op, "arith::muli", RegionOpID, arith_op.getResult().getType());
           op->erase();
-
         }
 
+        // Create async region for affine.apply
         else if (auto apply_op = dyn_cast<mlir::AffineApplyOp>(op)) {
-
           module_builder.setInsertionPoint(op);
-
-          // Create async region for affine.apply
-          auto async_region = createAsyncRegion(module_builder, op, "affine::apply", RegionOpID, apply_op.getResult().getType());
-          Block *async_region_bb = module_builder.createBlock(&async_region.body());
-
-          // Insert op to the new async region's body.
-          module_builder.setInsertionPointToStart(async_region_bb);
-          auto new_apply_op = dyn_cast<mlir::AffineApplyOp>(module_builder.clone(*op));
-          module_builder.create<xilinx::air::RegionTerminatorOp>(module_builder.getUnknownLoc(), new_apply_op.getResult());
-
-          SmallVector<Value, 1> returnVals;
-          returnVals.push_back(async_region.getResult(1));
-          op->replaceAllUsesWith(returnVals);
-
+          createAsyncRegion<mlir::AffineApplyOp>(module_builder, op, "affine::apply", RegionOpID, apply_op.getResult().getType());
           op->erase();
-
         }
 
+        // Create async region for air.herdlaunch.
         else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(op)) {
-          
           module_builder.setInsertionPoint(op);
-
-          // Create async region operation.
-          auto async_region = createAsyncRegion(module_builder, op, "air::herd_launch", RegionOpID);
-          Block *async_region_bb = module_builder.createBlock(&async_region.body());
-
-          // Insert op to the new async region's body.
-          module_builder.setInsertionPointToStart(async_region_bb);
-          module_builder.clone(*op);
-          module_builder.create<xilinx::air::RegionTerminatorOp>(module_builder.getUnknownLoc());
-
+          createAsyncRegion(module_builder, op, "air::herd_launch", RegionOpID);
           op->erase();
-
         }
       });
     }
@@ -256,172 +144,107 @@ public:
 
     for (auto f : module.getOps<FuncOp>()) {
       f.walk([&](Operation *op) {
+        Operation* sink_op = nullptr;
         if (auto async_region_op = dyn_cast<air::RegionOp>(op)) {
-
           for (auto &bb : async_region_op.body()){
-            
             for (auto &child_op : bb.getOperations()){
-
-              SmallVector<partialMemref, 1> child_op_memref_reads;
-              SmallVector<partialMemref, 1> child_op_memref_writes;
-              SmallVector<Value, 1> child_op_scalar_ins;
-              SmallVector<Value, 1> child_op_scalar_outs;
-
-              // If the child op is linalg::matmul
-              if (auto child_mmult = dyn_cast<linalg::MatmulOp>(child_op)){
-                for (auto mmult_ins : child_mmult.inputs()){
-                  partialMemref tile = createPartialMemref(mmult_ins);
-                  child_op_memref_reads.push_back(tile);
-                }
-                // TODO: assert if # of output memref is not one
-                for (auto mmult_outs : child_mmult.outputs()){
-                  partialMemref tile = createPartialMemref(mmult_outs);
-                  child_op_memref_reads.push_back(tile); // linalg.matmul accumulates on output
-                  child_op_memref_writes.push_back(tile);
-                }
-              }
-              
-              // If the child op is linalg::fill
-              if (auto child_fill = dyn_cast<linalg::FillOp>(child_op)){
-                partialMemref tile = createPartialMemref(child_fill.output());
-                child_op_memref_reads.push_back(tile);
-                child_op_memref_writes.push_back(tile);
-              }
-              
-              // If the child op is linalg::copy
-              if (auto child_copy = dyn_cast<linalg::CopyOp>(child_op)){
-                partialMemref tile_in = createPartialMemref(child_copy.input());
-                partialMemref tile_out = createPartialMemref(child_copy.output());
-                child_op_memref_reads.push_back(tile_in);
-                child_op_memref_reads.push_back(tile_out); // linalg.copy both reads and writes output
-                child_op_memref_writes.push_back(tile_out);
-              }
-              
-              // If the child op is memref::dealloc
-              if (auto child_memdealloc = dyn_cast<memref::DeallocOp>(child_op)){
-                partialMemref tile = createPartialMemref(child_memdealloc.memref());
-                child_op_memref_reads.push_back(tile);
-                child_op_memref_writes.push_back(tile); // dealloc erases (i.e. writes to) output memref
-              }
-              
-              // If the child op is air::DmaMemcpy2dOp
-              if (auto child_dma2d = dyn_cast<air::DmaMemcpy2dOp>(child_op)){
-                partialMemref tile_in = createPartialMemref(child_dma2d.getSrcMemref(), child_dma2d.getSrcMemrefD1(), child_dma2d.getSrcMemrefD0());
-                child_op_memref_reads.push_back(tile_in);
-                partialMemref tile_out = createPartialMemref(child_dma2d.getDstMemref(), child_dma2d.getDstMemrefD1(), child_dma2d.getDstMemrefD0());
-                child_op_memref_writes.push_back(tile_out);
-              }
-              
-              // If the child op is linalg::MulIOp
-              if (auto child_arith = dyn_cast<arith::MulIOp>(child_op)){
-                child_op_scalar_ins.push_back(child_arith.getLhs());
-                child_op_scalar_ins.push_back(child_arith.getRhs());
-                child_op_scalar_outs.push_back(child_arith.getResult());
-              }
-              
-              // If the child op is mlir::AffineApplyOp
-              if (auto child_apply = dyn_cast<mlir::AffineApplyOp>(child_op)){
-                for (auto applyop_operand : child_apply.getMapOperands()){
-                  child_op_scalar_ins.push_back(applyop_operand);
-                }
-                child_op_scalar_outs.push_back(child_apply.getResult());
-              }
-
-
-              // Detect RAW deps
-              for (auto operand : child_op_memref_reads) {
-                // Trace the defining op of target op, RAW
-                pushDefiningOpAsDep<air::RegionOp>(operand.memrefValue, async_region_op);
-
-                // If target op and operand's use are under the same scope
-                pushDepsAtCurrentScope<air::RegionOp>(operand.memrefValue, async_region_op, 'w', operand.memrefIdx, operand.memrefIdy);
-
-                // If target op is in HerdLaunchOp
-                if (auto lh = op->getParentOfType<xilinx::air::HerdLaunchOp>()){
-                  // Search for dma deps outside (before) HerdLaunchOp
-                  for (unsigned lh_operand_id = 0; lh_operand_id < lh.getNumKernelOperands(); lh_operand_id++){
-                    if (lh.getKernelArguments()[lh_operand_id] == operand.memrefValue){
-                      auto ancestor_op = lh.getKernelOperand(lh_operand_id);
-                      pushDepsAtCurrentScope<air::RegionOp>(ancestor_op, lh->getParentOfType<xilinx::air::RegionOp>(), 'w');
-                    }
-                  }
-                }
-
-                // If target op is outside HerdLaunchOp
-                else {
-                  // If the input memref was used inside HerdLaunchOp in the past
-                  for (auto &u : operand.memrefValue.getUses()){
-                    if (auto lh = dyn_cast<xilinx::air::HerdLaunchOp>(u.getOwner())){
-                      auto ar = lh->getParentOfType<xilinx::air::RegionOp>();
-                      if (foundARUsesAboveCurrentLine(&ar)){
-                        addNewAsyncDepToGraph<air::RegionOp>(ar.getResult(0), async_region_op);
-                      }
-                    }
-                  }
-                }
-              }
-
-              // Detect WAW and WAR deps
-              for (auto operand : child_op_memref_writes) {
-                // Trace the defining op of target op, WAW
-                pushDefiningOpAsDep<air::RegionOp>(operand.memrefValue, async_region_op);
-
-                // If target op and operand's use are under the same scope
-                pushDepsAtCurrentScope<air::RegionOp>(operand.memrefValue, async_region_op, 'n', operand.memrefIdx, operand.memrefIdy);
-
-                // If target op is in HerdLaunchOp
-                if (auto lh = op->getParentOfType<xilinx::air::HerdLaunchOp>()){
-                  // Search for dma deps outside (before) HerdLaunchOp
-                  for (unsigned lh_operand_id = 0; lh_operand_id < lh.getNumKernelOperands(); lh_operand_id++){
-                    if (lh.getKernelArguments()[lh_operand_id] == operand.memrefValue){
-                      auto ancestor_op = lh.getKernelOperand(lh_operand_id);
-                      pushDepsAtCurrentScope<air::RegionOp>(ancestor_op, lh->getParentOfType<xilinx::air::RegionOp>());
-                    }
-                  }
-                }
-
-                // If target op is outside HerdLaunchOp
-                else {
-
-                  // If the input memref was used inside HerdLaunchOp in the past
-                  for (auto &u : operand.memrefValue.getUses()){
-                    if (auto lh = dyn_cast<xilinx::air::HerdLaunchOp>(u.getOwner())){
-                      auto ar = lh->getParentOfType<xilinx::air::RegionOp>();
-                      if (foundARUsesAboveCurrentLine(&ar)){
-                        addNewAsyncDepToGraph<air::RegionOp>(ar.getResult(0), async_region_op);
-                      }
-                    }
-                  }
-                }
-              }
-              // Tile index deps
-              for (auto operand : child_op_memref_reads) {
-                if (operand.memrefIdx){
-                  pushTileIndexAsDep<air::RegionOp>(operand.memrefIdx, async_region_op);
-                }
-                if (operand.memrefIdy){
-                  pushTileIndexAsDep<air::RegionOp>(operand.memrefIdy, async_region_op);                  
-                }
-              }
-              for (auto operand : child_op_memref_writes) {
-                if (operand.memrefIdx){
-                  pushTileIndexAsDep<air::RegionOp>(operand.memrefIdx, async_region_op);
-                }
-                if (operand.memrefIdy){
-                  pushTileIndexAsDep<air::RegionOp>(operand.memrefIdy, async_region_op);                  
-                }
-              }
-              for (auto scalar : child_op_scalar_ins) {
-                pushTileIndexAsDep<air::RegionOp>(scalar, async_region_op);
-              }
-              for (auto scalar : child_op_scalar_outs) {
-                pushTileIndexAsDep<air::RegionOp>(scalar, async_region_op);
-              }
+              if (!dyn_cast<air::RegionTerminatorOp>(child_op)) sink_op = &child_op;
             }
           }
-          // Keep track of processed async region ops. Deps should point to the past, not future.
-          async_region_op_history.push_back(async_region_op);
         }
+        else if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(op)){
+          sink_op = op;
+        }
+        else return;
+
+        SmallVector<partialMemref, 1> child_op_memref_reads;
+        SmallVector<partialMemref, 1> child_op_memref_writes;
+        SmallVector<Value, 1> child_op_scalar_ins;
+        SmallVector<Value, 1> child_op_scalar_outs;
+
+        // If the sink op is linalg::matmul
+        if (auto child_mmult = dyn_cast<linalg::MatmulOp>(sink_op)){
+          for (auto mmult_ins : child_mmult.inputs()){
+            partialMemref tile = createPartialMemref(mmult_ins);
+            child_op_memref_reads.push_back(tile);
+          }
+          for (auto mmult_outs : child_mmult.outputs()){
+            partialMemref tile = createPartialMemref(mmult_outs);
+            child_op_memref_reads.push_back(tile); // linalg.matmul accumulates on output
+            child_op_memref_writes.push_back(tile);
+          }
+        }
+        
+        // If the sink op is linalg::fill
+        if (auto child_fill = dyn_cast<linalg::FillOp>(sink_op)){
+          partialMemref tile = createPartialMemref(child_fill.output());
+          child_op_memref_reads.push_back(tile);
+          child_op_memref_writes.push_back(tile);
+        }
+        
+        // If the sink op is linalg::copy
+        if (auto child_copy = dyn_cast<linalg::CopyOp>(sink_op)){
+          partialMemref tile_in = createPartialMemref(child_copy.input());
+          partialMemref tile_out = createPartialMemref(child_copy.output());
+          child_op_memref_reads.push_back(tile_in);
+          child_op_memref_reads.push_back(tile_out); // linalg.copy both reads and writes output
+          child_op_memref_writes.push_back(tile_out);
+        }
+        
+        // If the sink op is memref::dealloc
+        if (auto child_memdealloc = dyn_cast<memref::DeallocOp>(sink_op)){
+          partialMemref tile = createPartialMemref(child_memdealloc.memref());
+          child_op_memref_reads.push_back(tile);
+          child_op_memref_writes.push_back(tile); // dealloc erases (i.e. writes to) output memref
+        }
+        
+        // If the sink op is air::DmaMemcpy2dOp
+        if (auto child_dma2d = dyn_cast<air::DmaMemcpy2dOp>(sink_op)){
+          partialMemref tile_in = createPartialMemref(child_dma2d.getSrcMemref(), child_dma2d.getSrcMemrefD1(), child_dma2d.getSrcMemrefD0());
+          child_op_memref_reads.push_back(tile_in);
+          partialMemref tile_out = createPartialMemref(child_dma2d.getDstMemref(), child_dma2d.getDstMemrefD1(), child_dma2d.getDstMemrefD0());
+          child_op_memref_writes.push_back(tile_out);
+        }
+        
+        // If the sink op is linalg::MulIOp
+        if (auto child_arith = dyn_cast<arith::MulIOp>(sink_op)){
+          child_op_scalar_ins.push_back(child_arith.getLhs());
+          child_op_scalar_ins.push_back(child_arith.getRhs());
+          child_op_scalar_outs.push_back(child_arith.getResult());
+        }
+        
+        // If the sink op is mlir::AffineApplyOp
+        if (auto child_apply = dyn_cast<mlir::AffineApplyOp>(sink_op)){
+          for (auto applyop_operand : child_apply.getMapOperands()){
+            child_op_scalar_ins.push_back(applyop_operand);
+          }
+          child_op_scalar_outs.push_back(child_apply.getResult());
+        }
+
+
+        // Detect RAW deps
+        if (auto async_region_op = dyn_cast<air::RegionOp>(op))
+          traceDeps<air::RegionOp>(child_op_memref_reads, async_region_op, "RAW");
+        else if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(op))
+          traceDeps<air::DmaMemcpy2dOp>(child_op_memref_reads, dma2d_op, "RAW");
+
+        // Detect WAW and WAR deps
+        if (auto async_region_op = dyn_cast<air::RegionOp>(op))
+          traceDeps<air::RegionOp>(child_op_memref_writes, async_region_op, "WAW/WAR");
+        else if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(op))
+          traceDeps<air::DmaMemcpy2dOp>(child_op_memref_writes, dma2d_op, "WAW/WAR");
+          
+        // Tile index deps
+        if (auto async_region_op = dyn_cast<air::RegionOp>(op))
+          traceTileIndices(child_op_memref_reads, child_op_memref_writes, child_op_scalar_ins, child_op_scalar_outs, async_region_op);
+        else if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(op))
+          traceTileIndices(child_op_memref_reads, child_op_memref_writes, child_op_scalar_ins, child_op_scalar_outs, dma2d_op);
+          
+        // Keep track of processed async region ops. Deps should point to the past, not future.
+        if (auto async_region_op = dyn_cast<air::RegionOp>(op))
+          async_region_op_history.push_back(async_region_op);
+        else if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(op))
+          dma2d_op_history.push_back(dma2d_op);
       });
     }
 
@@ -443,12 +266,30 @@ public:
 
     for (auto f : module.getOps<FuncOp>()) {
       f.walk([&](Operation *op) {
+        // Fill dep list of air region ops
         if (auto async_region_op = dyn_cast<air::RegionOp>(op)) {
           uint64_t dstTRVertex = g_to_tr[getGraphGVertexFromAIROp(async_region_op)];
           auto incoming_deps = in_edges(dstTRVertex, asyncRegionGraphTR);
           for (in_edge_iterator it = incoming_deps.first; it != incoming_deps.second; it++) {
             auto TRVertex = source(*it, asyncRegionGraphTR);
-            async_region_op.addAsyncDependency(getRegionOpFromVertex(TRVertex, asyncRegionGraphTR).getResult(0));
+            if (asyncRegionGraphTR[TRVertex].asyncEventType == "region")
+              async_region_op.addAsyncDependency(getRegionOpFromVertex(TRVertex, asyncRegionGraphTR).getResult(0));
+            else if (asyncRegionGraphTR[TRVertex].asyncEventType == "dma2d")
+              async_region_op.addAsyncDependency(getDma2dOpFromVertex(TRVertex, asyncRegionGraphTR).getResult(0));
+            else assert(false && "Unknown async event type");
+          }
+        }
+        // Fill dep list of air dmamemcpy2d ops
+        else if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(op)) {
+          uint64_t dstTRVertex = g_to_tr[getGraphGVertexFromAIROp(dma2d_op)];
+          auto incoming_deps = in_edges(dstTRVertex, asyncRegionGraphTR);
+          for (in_edge_iterator it = incoming_deps.first; it != incoming_deps.second; it++) {
+            auto TRVertex = source(*it, asyncRegionGraphTR);
+            if (asyncRegionGraphTR[TRVertex].asyncEventType == "region")
+              dma2d_op.addAsyncDependency(getRegionOpFromVertex(TRVertex, asyncRegionGraphTR).getResult(0));
+            else if (asyncRegionGraphTR[TRVertex].asyncEventType == "dma2d")
+              dma2d_op.addAsyncDependency(getDma2dOpFromVertex(TRVertex, asyncRegionGraphTR).getResult(0));
+            else assert(false && "Unknown async event type");
           }
         }
       });
@@ -472,6 +313,13 @@ public:
             if (async_region_op.getResult(0).use_empty())
               sinks_in_for_op.push_back(async_region_op.getResult(0));
           }
+          // Get async dma2d in loop body
+          for (auto dma2d_op : for_op.getOps<air::DmaMemcpy2dOp>()){
+            hasAsyncRegionsInBody = true;
+            // Get sinks of dep graph
+            if (dma2d_op.getResult(0).use_empty())
+              sinks_in_for_op.push_back(dma2d_op.getResult(0));
+          }
           if (hasAsyncRegionsInBody){
             // (1) Create one wait_all event at the end of current for loop body.
             auto for_op_terminator = for_op.getBody()->getTerminator();
@@ -485,7 +333,13 @@ public:
             asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventType = "wait_all";
             asyncRegionGraphTR[wait_all_op_yielded_v].operationId = 0;
             for (auto sink : sinks_in_for_op){
-              unsigned src_id = dyn_cast<air::RegionOp>(sink.getDefiningOp()).getId() - 1;
+              unsigned src_id = 0;
+              if (auto async_region_op = dyn_cast<air::RegionOp>(sink.getDefiningOp())){
+                src_id = getGraphGVertexFromAIROp(async_region_op);
+              }
+              else if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(sink.getDefiningOp())){
+                src_id = getGraphGVertexFromAIROp(dma2d_op);
+              }
               auto src = g_to_tr[src_id];
               add_edge(src, wait_all_op_yielded_v, asyncRegionGraphTR);
             }
@@ -498,10 +352,16 @@ public:
             for (Value v : region_args) {
               if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
                 constants.push_back(v);
-              else if (v.getDefiningOp())
-                if (auto v_op = dyn_cast<air::RegionOp>(v.getDefiningOp()))
+              else if (v.getDefiningOp()){
+                if (auto v_op = dyn_cast<air::RegionOp>(v.getDefiningOp())){
                   if (v_op.getAsyncToken() == v)
                     incoming_tokens.push_back(v);
+                }
+                else if (auto v_op = dyn_cast<air::DmaMemcpy2dOp>(v.getDefiningOp())){
+                  if (v_op.getAsyncToken() == v)
+                    incoming_tokens.push_back(v);
+                }
+              }
             }
             module_builder.setInsertionPoint(for_op);
             auto wait_all_op_before_loop = module_builder.create<xilinx::air::WaitAllOp>(module_builder.getUnknownLoc(), air::AsyncTokenType::get(for_op->getContext()), incoming_tokens);
@@ -545,7 +405,13 @@ public:
                 if (auto dst_op = dyn_cast<air::RegionOp>(user)){
                   dst = g_to_tr[getGraphGVertexFromAIROp(dst_op)];
                 }
+                else if (auto dst_op = dyn_cast<air::DmaMemcpy2dOp>(user)){
+                  dst = g_to_tr[getGraphGVertexFromAIROp(dst_op)];
+                }
                 if (auto src_op = dyn_cast<air::RegionOp>(v.getDefiningOp())){
+                  src = g_to_tr[getGraphGVertexFromAIROp(src_op)];
+                }
+                else if (auto src_op = dyn_cast<air::DmaMemcpy2dOp>(v.getDefiningOp())){
                   src = g_to_tr[getGraphGVertexFromAIROp(src_op)];
                 }
                 if (edge(src, dst, asyncRegionGraphTR).second){ // if an edge exists
@@ -568,6 +434,11 @@ public:
                 async_region_op.addAsyncDependency(new_for_op.getRegionIterArgs()[0]);
               }
             }
+            for (auto dma2d_op : new_for_op.getOps<air::DmaMemcpy2dOp>()){
+              if (dma2d_op.getAsyncDependencies().size() == 0){
+                dma2d_op.addAsyncDependency(new_for_op.getRegionIterArgs()[0]);
+              }
+            }
 
             // Yield an async token
             SmallVector<Value, 4> yield_token;
@@ -587,7 +458,9 @@ public:
 
 private:
 
+  // Air async op history
   std::vector<air::RegionOp> async_region_op_history;
+  std::vector<air::DmaMemcpy2dOp> dma2d_op_history;
 
   struct partialMemref {
     Value memrefValue;
@@ -604,32 +477,99 @@ private:
   }
 
   
-
-  air::RegionOp createAsyncRegion(OpBuilder &builder, Operation *op, std::string asyncEventName, uint64_t &RegionOpID, mlir::Type valueType = NULL){
+  // Create air region op with async interface; update graph
+  air::RegionOp createAsyncRegion(OpBuilder &builder, Operation *op, std::string asyncEventName, uint64_t &RegionOpID){
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
     air::RegionOp async_region;
-    if (valueType)
-      async_region = builder.create<xilinx::air::RegionOp>(loc, air::AsyncTokenType::get(op->getContext()), valueType, deps);
-    else
-      async_region = builder.create<xilinx::air::RegionOp>(loc, air::AsyncTokenType::get(op->getContext()), deps);
+    async_region = builder.create<xilinx::air::RegionOp>(loc, air::AsyncTokenType::get(op->getContext()), deps);
     async_region->setAttr("id",
             mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
                     ++RegionOpID));
+
+    // Insert op to the new async region's body.
+    Block *async_region_bb = builder.createBlock(&async_region.body());
+    builder.setInsertionPointToStart(async_region_bb);
+
+    builder.clone(*op);
+    builder.create<xilinx::air::RegionTerminatorOp>(builder.getUnknownLoc());
+
+    // Create a vertex out of the current async region
+    auto v = add_vertex(asyncRegionGraph);
+    asyncRegionGraph[v].asyncEventName = asyncEventName;
+    asyncRegionGraph[v].asyncEventType = "region";
+    asyncRegionGraph[v].operationId = RegionOpID;
+
+    // Update op-to-graph map
+    region_to_g[async_region.getId()] = v;
+    return async_region;
+  }
+
+  
+  // Create air region op with async interface; update graph
+  template <typename T>
+  air::RegionOp createAsyncRegion(OpBuilder &builder, Operation *op, std::string asyncEventName, uint64_t &RegionOpID, mlir::Type valueType){
+    auto loc = op->getLoc();
+    SmallVector<Value, 1> deps;
+    air::RegionOp async_region;
+      async_region = builder.create<xilinx::air::RegionOp>(loc, air::AsyncTokenType::get(op->getContext()), valueType, deps);
+    async_region->setAttr("id",
+            mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
+                    ++RegionOpID));
+
+    // Insert op to the new async region's body.
+    Block *async_region_bb = builder.createBlock(&async_region.body());
+    builder.setInsertionPointToStart(async_region_bb);
+    auto op_cloned = dyn_cast<T>(builder.clone(*op));
+    builder.create<xilinx::air::RegionTerminatorOp>(builder.getUnknownLoc(), op_cloned.getResult());
+    SmallVector<Value, 1> returnVals;
+    returnVals.push_back(async_region.getResult(1));
+    op->replaceAllUsesWith(returnVals);
     
     // Create a vertex out of the current async region
     auto v = add_vertex(asyncRegionGraph);
     asyncRegionGraph[v].asyncEventName = asyncEventName;
     asyncRegionGraph[v].asyncEventType = "region";
     asyncRegionGraph[v].operationId = RegionOpID;
+
     // Update op-to-graph map
     region_to_g[async_region.getId()] = v;
     return async_region;
   }
 
-  bool foundARUsesAboveCurrentLine(air::RegionOp *op){
+  // Re-instantiate the dmamemcpy2d op with async interface; update graph
+  air::DmaMemcpy2dOp createAsyncDma2d(OpBuilder &builder, air::DmaMemcpy2dOp op){
+    auto loc = op->getLoc();
+    SmallVector<Value, 1> deps;
+    air::DmaMemcpy2dOp new_dma2d_op = builder.create<air::DmaMemcpy2dOp>(loc, air::AsyncTokenType::get(op->getContext()), 
+            deps, op.getDstMemref(), op.getSrcMemref(), op.getDstMemrefD1(), op.getDstMemrefD0(), 
+            op.getSrcMemrefD1(), op.getSrcMemrefD0(), op.getLength(), op.getStride(), op.getElemPerStride()); 
+    unsigned id = op.getId();
+    new_dma2d_op->setAttr("id",
+            mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
+            id));
+
+    // Create a vertex out of the current dmamemcpy2d op
+    auto v = add_vertex(asyncRegionGraph);
+    asyncRegionGraph[v].asyncEventName = "air::dma2d";
+    asyncRegionGraph[v].asyncEventType = "dma2d";
+    asyncRegionGraph[v].operationId = id;
+
+    // Update op-to-graph map
+    dma2d_to_g[id] = v;
+    return new_dma2d_op;
+  }
+
+  bool foundAsyncOpUsesAboveCurrentLine(air::RegionOp *op){
     if (!async_region_op_history.empty())
       for (auto &iter : async_region_op_history)
+        if (iter.getResult(0) == op->getResult(0)) return true;
+    return false;
+  }
+
+  bool foundAsyncOpUsesAboveCurrentLine(air::DmaMemcpy2dOp *op){
+    if (!dma2d_op_history.empty())
+      for (auto &iter : dma2d_op_history)
         if (iter.getResult(0) == op->getResult(0)) return true;
     return false;
   }
@@ -639,7 +579,7 @@ private:
   void pushDefiningOpAsDep(Value operand, T op){
     // Check memref deps
     if (auto defop = operand.getDefiningOp<air::RegionOp>()){
-      if (foundARUsesAboveCurrentLine(&defop)){
+      if (foundAsyncOpUsesAboveCurrentLine(&defop)){
         addNewAsyncDepToGraph<T>(defop.getResult(0), op);
       }
     }
@@ -650,7 +590,7 @@ private:
   void pushTileIndexAsDep(mlir::Value tile_index, T op){
     // If created by async_region
     if (auto defop = tile_index.getDefiningOp<air::RegionOp>()){
-      if (foundARUsesAboveCurrentLine(&defop)){
+      if (foundAsyncOpUsesAboveCurrentLine(&defop)){
         addNewAsyncDepToGraph<T>(defop.getResult(0), op);
       }
     }
@@ -674,41 +614,39 @@ private:
     for (auto &u : operand.getUses()){
       // If used in DmaMemcpy2dOp
       if (auto dma2d = dyn_cast<xilinx::air::DmaMemcpy2dOp>(u.getOwner())){
-        if (auto ar = dyn_cast<xilinx::air::RegionOp>(dma2d->getParentOp())){
-          if (foundARUsesAboveCurrentLine(&ar)){ // If this use is above current line
-            // DMA2D: Need to check for overlapping partial memrefs in use
-            if (rw == 'r'){
-              if (u.getOperandNumber() == 1){
-                if (idx == 0 && idy == 0){
-                  addNewAsyncDepToGraph<T>(ar.getResult(0), op);
-                }
-                else if (areEqualIndices(idx, dma2d.getSrcMemrefD1()) && areEqualIndices(idy, dma2d.getSrcMemrefD0())){
-                  addNewAsyncDepToGraph<T>(ar.getResult(0), op);
-                }
+        if (foundAsyncOpUsesAboveCurrentLine(&dma2d)){ // If this use is above current line
+          // DMA2D: Need to check for overlapping partial memrefs in use
+          if (rw == 'r'){
+            if (u.getOperandNumber() == 1){
+              if (idx == 0 && idy == 0){
+                addNewAsyncDepToGraph<T>(dma2d.getResult(0), op);
+              }
+              else if (areEqualIndices(idx, dma2d.getSrcMemrefD1()) && areEqualIndices(idy, dma2d.getSrcMemrefD0())){
+                addNewAsyncDepToGraph<T>(dma2d.getResult(0), op);
               }
             }
-            else if (rw == 'w'){
-              if (u.getOperandNumber() == 0){
-                if (idx == 0 && idy == 0){
-                  addNewAsyncDepToGraph<T>(ar.getResult(0), op);
-                }
-                else if (areEqualIndices(idx, dma2d.getDstMemrefD1()) && areEqualIndices(idy, dma2d.getDstMemrefD0())){
-                  addNewAsyncDepToGraph<T>(ar.getResult(0), op);
-                }
+          }
+          else if (rw == 'w'){
+            if (u.getOperandNumber() == 0){
+              if (idx == 0 && idy == 0){
+                addNewAsyncDepToGraph<T>(dma2d.getResult(0), op);
+              }
+              else if (areEqualIndices(idx, dma2d.getDstMemrefD1()) && areEqualIndices(idy, dma2d.getDstMemrefD0())){
+                addNewAsyncDepToGraph<T>(dma2d.getResult(0), op);
               }
             }
-            else{
-              if (idx == 0 && idy == 0) {
-                addNewAsyncDepToGraph<T>(ar.getResult(0), op);
-              }
-              else if (u.getOperandNumber() == 0){
-                if (areEqualIndices(idx, dma2d.getDstMemrefD1()) && areEqualIndices(idy, dma2d.getDstMemrefD0()))
-                  addNewAsyncDepToGraph<T>(ar.getResult(0), op);
-              }
-              else if (u.getOperandNumber() == 1){
-                if (areEqualIndices(idx, dma2d.getSrcMemrefD1()) && areEqualIndices(idy, dma2d.getSrcMemrefD0()))
-                  addNewAsyncDepToGraph<T>(ar.getResult(0), op);
-              }
+          }
+          else{
+            if (idx == 0 && idy == 0) {
+              addNewAsyncDepToGraph<T>(dma2d.getResult(0), op);
+            }
+            else if (u.getOperandNumber() == 0){
+              if (areEqualIndices(idx, dma2d.getDstMemrefD1()) && areEqualIndices(idy, dma2d.getDstMemrefD0()))
+                addNewAsyncDepToGraph<T>(dma2d.getResult(0), op);
+            }
+            else if (u.getOperandNumber() == 1){
+              if (areEqualIndices(idx, dma2d.getSrcMemrefD1()) && areEqualIndices(idy, dma2d.getSrcMemrefD0()))
+                addNewAsyncDepToGraph<T>(dma2d.getResult(0), op);
             }
           }
         }
@@ -717,7 +655,7 @@ private:
       // If used in MatmulOp
       if (auto matmul = dyn_cast<linalg::MatmulOp>(u.getOwner())){
         if (auto ar = dyn_cast<xilinx::air::RegionOp>(matmul->getParentOp())){
-          if (foundARUsesAboveCurrentLine(&ar)){
+          if (foundAsyncOpUsesAboveCurrentLine(&ar)){
             if (rw == 'r'){
               if (u.getOperandNumber() <= 2){
                 addNewAsyncDepToGraph<T>(ar.getResult(0), op);
@@ -738,7 +676,7 @@ private:
       // If used in linalg.fill
       if (auto fill_op = dyn_cast<linalg::FillOp>(u.getOwner())){
         if (auto ar = dyn_cast<xilinx::air::RegionOp>(fill_op->getParentOp())){
-          if (foundARUsesAboveCurrentLine(&ar)){
+          if (foundAsyncOpUsesAboveCurrentLine(&ar)){
             if (rw == 'r'){
               if (u.getOperandNumber() == 1){
                 addNewAsyncDepToGraph<T>(ar.getResult(0), op);
@@ -759,7 +697,7 @@ private:
       // If used in linalg.copy
       if (auto copy_op = dyn_cast<linalg::CopyOp>(u.getOwner())){
         if (auto ar = dyn_cast<xilinx::air::RegionOp>(copy_op->getParentOp())){
-          if (foundARUsesAboveCurrentLine(&ar)){
+          if (foundAsyncOpUsesAboveCurrentLine(&ar)){
             if (rw == 'r'){
               if (u.getOperandNumber() <= 1){
                 addNewAsyncDepToGraph<T>(ar.getResult(0), op);
@@ -777,6 +715,77 @@ private:
         }
       }
 
+    }
+  }
+
+
+  template <typename T>
+  void traceDeps(SmallVector<partialMemref, 1> operands, T sink_air_op, std::string dep_type){
+
+    char dep_tracing_mode = 'n';
+    if (dep_type == "RAW")
+      dep_tracing_mode = 'w';
+    else if (dep_type == "WAW/WAR")
+      dep_tracing_mode = 'n';
+    else assert(false && "Unknown dependency type");
+
+    // Detect RAW deps
+    for (auto operand : operands) {
+      // Trace the defining op of sink op, RAW
+      pushDefiningOpAsDep<T>(operand.memrefValue, sink_air_op);
+
+      // If sink op and operand's use are under the same scope
+      pushDepsAtCurrentScope<T>(operand.memrefValue, sink_air_op, dep_tracing_mode, operand.memrefIdx, operand.memrefIdy);
+
+      // If sink op is in HerdLaunchOp
+      if (auto lh = sink_air_op->template getParentOfType<xilinx::air::HerdLaunchOp>()){
+        // Search for dma deps outside (before) HerdLaunchOp
+        for (unsigned lh_operand_id = 0; lh_operand_id < lh.getNumKernelOperands(); lh_operand_id++){
+          if (lh.getKernelArguments()[lh_operand_id] == operand.memrefValue){
+            auto ancestor_op = lh.getKernelOperand(lh_operand_id);
+            pushDepsAtCurrentScope<air::RegionOp>(ancestor_op, lh->template getParentOfType<xilinx::air::RegionOp>(), dep_tracing_mode);
+          }
+        }
+      }
+
+      // If sink op is outside HerdLaunchOp
+      else {
+        // If the input memref was used inside HerdLaunchOp in the past
+        for (auto &u : operand.memrefValue.getUses()){
+          if (auto lh = dyn_cast<xilinx::air::HerdLaunchOp>(u.getOwner())){
+            auto ar = lh->getParentOfType<xilinx::air::RegionOp>();
+            if (foundAsyncOpUsesAboveCurrentLine(&ar)){
+              addNewAsyncDepToGraph<T>(ar.getResult(0), sink_air_op);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  template <typename T>
+  void traceTileIndices(SmallVector<partialMemref, 1> read_operands, SmallVector<partialMemref, 1> write_operands, SmallVector<Value, 1> in_scalars, SmallVector<Value, 1> out_scalars, T sink_air_op){
+    for (auto operand : read_operands) {
+      if (operand.memrefIdx){
+        pushTileIndexAsDep<T>(operand.memrefIdx, sink_air_op);
+      }
+      if (operand.memrefIdy){
+        pushTileIndexAsDep<T>(operand.memrefIdy, sink_air_op);                  
+      }
+    }
+    for (auto operand : write_operands) {
+      if (operand.memrefIdx){
+        pushTileIndexAsDep<T>(operand.memrefIdx, sink_air_op);
+      }
+      if (operand.memrefIdy){
+        pushTileIndexAsDep<T>(operand.memrefIdy, sink_air_op);                  
+      }
+    }
+    for (auto scalar : in_scalars) {
+      pushTileIndexAsDep<T>(scalar, sink_air_op);
+    }
+    for (auto scalar : out_scalars) {
+      pushTileIndexAsDep<T>(scalar, sink_air_op);
     }
   }
 
@@ -847,21 +856,26 @@ private:
   Graph asyncRegionGraph;
   Graph asyncRegionGraphTR;
   vertex_map g_to_tr, tr_to_g; // Map between graph g and graph tr (post-tr graph)
-  operation_id_to_vertex_map region_to_g; // Map between air ops and vertices in graph
+  operation_id_to_vertex_map region_to_g; // Map between air regions and vertices in graph
+  operation_id_to_vertex_map dma2d_to_g; // Map between air dmamemcpy2d and vertices in graph
 
-  // air region op to g vertex mapping
+  // g vertex to air op mapping
   air::RegionOp getRegionOpFromVertex (Graph::vertex_descriptor v, Graph g){
     assert(g[v].asyncEventType == "region" && "This vertex is not a RegionOp");
     return async_region_op_history[g[v].operationId - 1];
   }
+  air::DmaMemcpy2dOp getDma2dOpFromVertex (Graph::vertex_descriptor v, Graph g){
+    assert(g[v].asyncEventType == "dma2d" && "This vertex is not a DmaMemcpy2dOp");
+    return dma2d_op_history[g[v].operationId - 1];
+  }
 
-  // g vertex to air op mapping
+  // air region op to g vertex mapping
   Graph::vertex_descriptor getGraphGVertexFromAIROp (air::RegionOp op){
     return region_to_g[op.getId()];
   }
 
   Graph::vertex_descriptor getGraphGVertexFromAIROp (air::DmaMemcpy2dOp op){
-    return region_to_g[op.getId()];
+    return dma2d_to_g[op.getId()];
   }
 
   // Dump graphviz

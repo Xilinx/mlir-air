@@ -230,6 +230,8 @@ def air_DmaMemcpy2dOp: air_Op<"dma_memcpy_2d", [air_AsyncOpInterface, air_DmaMem
     Value getDstMemrefD1() { return dst_d1(); }
     Value getDstMemrefD0() { return dst_d0(); }
     Value getLength() { return num(); }
+    Value getStride() { return stride(); }
+    Value getElemPerStride() { return elem_per_stride(); }
     int32_t getId() {
       if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
         return id_attr.getInt();
