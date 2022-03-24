@@ -1,0 +1,9 @@
+the_ROM_image:
+{
+	[bootimage] xilinx_vck190_air.pdi 
+	[bootloader] plm.elf 
+	[destination_cpu=psm] psmfw.elf 
+	[partition_type=raw, load=0x00001000] system.dtb
+	[exception_level=el-2] u-boot.elf
+	[destination_cpu=a72-0, exception_level=el-3, trustzone] bl31.elf
+}
