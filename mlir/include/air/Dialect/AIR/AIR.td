@@ -30,7 +30,11 @@ def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,
 
   let skipDefaultBuilders = 1;
   let builders = [
-    OpBuilder<(ins "HerdDim2":$gridSize,"ValueRange":$kernelOperands)>
+    OpBuilder<(ins "HerdDim2":$gridSize,"ValueRange":$kernelOperands)>,
+    OpBuilder<(ins "ValueRange":$asyncDependencies,
+      "HerdDim2":$gridSize,
+      "ValueRange":$kernelOperands
+    )>
   ];
   let parser = [{ return parseHerdLaunchOp(parser, result); }];
   let printer = [{ printHerdLaunchOp(p, *this); }];
@@ -43,6 +47,12 @@ def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,
     Value getKernelOperand(unsigned i);
     ArrayRef<BlockArgument> getKernelArguments();
     BlockArgument getKernelArgument(unsigned i);
+    int32_t getId() {
+      if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
+        return id_attr.getInt();
+      }
+      return -1;
+    }
   }];
 }
 

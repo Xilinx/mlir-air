@@ -118,6 +118,32 @@ void HerdLaunchOp::build(OpBuilder &builder, OperationState &result,
   r->push_back(body);
 }
 
+void HerdLaunchOp::build(OpBuilder &builder, OperationState &result,
+                         ValueRange asyncDependencies,
+                         HerdDim2 herdSize, ValueRange launchOperands) {
+
+  result.addOperands(asyncDependencies);
+  result.addTypes(air::AsyncTokenType::get(builder.getContext()));
+  result.addOperands({herdSize.x, herdSize.y});
+  result.addOperands(launchOperands);
+
+  SmallVector<int32_t, 8> segmentSizes(4, 1);
+  segmentSizes.front() = 0; // Initially no async dependencies.
+  segmentSizes.back() = static_cast<int32_t>(launchOperands.size());
+  result.addAttribute(getOperandSegmentSizeAttr(),
+                      builder.getI32VectorAttr(segmentSizes));
+
+  Region *r = result.addRegion();
+  Block *body = new Block();
+  SmallVector<Type, 4> argtypes(4, builder.getIndexType());
+  SmallVector<Location, 4> arglocs(4, builder.getUnknownLoc());
+  body->addArguments(argtypes, arglocs);
+  for (Value v : launchOperands) {
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+  }
+  r->push_back(body);
+}
+
 static LogicalResult verify(HerdLaunchOp op) {
   return success();
 }

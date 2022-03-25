@@ -51,6 +51,7 @@ using namespace xilinx::air;
 namespace {
 
 static uint64_t RegionOpID;
+static uint64_t HerdLaunchOpID;
 
 class AIRDependency : public AIRDependencyBase<AIRDependency> {
 
@@ -63,12 +64,13 @@ public:
     OpBuilder module_builder(module);
 
     RegionOpID = 0;
+    HerdLaunchOpID = 0;
 
     // 1st traversal: create async ops with empty dep list.
 
     for (auto f : module.getOps<FuncOp>()) {
       f.walk([&](Operation *op) {
-        // Create async region for air.dmamemcpy2d
+        // Create async interface for air.dmamemcpy2d
         if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(op)) {
           module_builder.setInsertionPoint(op);
           createAsyncDma2d(module_builder, dma2d_op);
@@ -134,7 +136,7 @@ public:
         // Create async region for air.herdlaunch.
         else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(op)) {
           module_builder.setInsertionPoint(op);
-          createAsyncRegion(module_builder, op, "air::herd_launch", RegionOpID);
+          createAsyncHerdLaunch(module_builder, hl_op, HerdLaunchOpID);
           op->erase();
         }
       });
@@ -153,6 +155,9 @@ public:
           }
         }
         else if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(op)){
+          sink_op = op;
+        }
+        else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(op)){
           sink_op = op;
         }
         else return;
@@ -222,29 +227,26 @@ public:
         }
 
 
-        // Detect RAW deps
-        if (auto async_region_op = dyn_cast<air::RegionOp>(op))
+        // Detect dependencies
+        if (auto async_region_op = dyn_cast<air::RegionOp>(op)){
+          // Detect RAW deps
           traceDeps<air::RegionOp>(child_op_memref_reads, async_region_op, "RAW");
-        else if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(op))
-          traceDeps<air::DmaMemcpy2dOp>(child_op_memref_reads, dma2d_op, "RAW");
-
-        // Detect WAW and WAR deps
-        if (auto async_region_op = dyn_cast<air::RegionOp>(op))
+          // Detect WAW and WAR deps
           traceDeps<air::RegionOp>(child_op_memref_writes, async_region_op, "WAW/WAR");
-        else if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(op))
-          traceDeps<air::DmaMemcpy2dOp>(child_op_memref_writes, dma2d_op, "WAW/WAR");
-          
-        // Tile index deps
-        if (auto async_region_op = dyn_cast<air::RegionOp>(op))
+          // Detect tile index deps
           traceTileIndices(child_op_memref_reads, child_op_memref_writes, child_op_scalar_ins, child_op_scalar_outs, async_region_op);
-        else if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(op))
-          traceTileIndices(child_op_memref_reads, child_op_memref_writes, child_op_scalar_ins, child_op_scalar_outs, dma2d_op);
-          
-        // Keep track of processed async region ops. Deps should point to the past, not future.
-        if (auto async_region_op = dyn_cast<air::RegionOp>(op))
+          // Keep track of processed async region ops. Deps should point to the past, not future.
           async_region_op_history.push_back(async_region_op);
-        else if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(op))
+        }
+        else if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(op)){
+          traceDeps<air::DmaMemcpy2dOp>(child_op_memref_reads, dma2d_op, "RAW");
+          traceDeps<air::DmaMemcpy2dOp>(child_op_memref_writes, dma2d_op, "WAW/WAR");
+          traceTileIndices(child_op_memref_reads, child_op_memref_writes, child_op_scalar_ins, child_op_scalar_outs, dma2d_op);
           dma2d_op_history.push_back(dma2d_op);
+        }
+        else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(op)){
+          hl_op_history.push_back(hl_op);
+        }
       });
     }
 
@@ -268,29 +270,14 @@ public:
       f.walk([&](Operation *op) {
         // Fill dep list of air region ops
         if (auto async_region_op = dyn_cast<air::RegionOp>(op)) {
-          uint64_t dstTRVertex = g_to_tr[getGraphGVertexFromAIROp(async_region_op)];
-          auto incoming_deps = in_edges(dstTRVertex, asyncRegionGraphTR);
-          for (in_edge_iterator it = incoming_deps.first; it != incoming_deps.second; it++) {
-            auto TRVertex = source(*it, asyncRegionGraphTR);
-            if (asyncRegionGraphTR[TRVertex].asyncEventType == "region")
-              async_region_op.addAsyncDependency(getRegionOpFromVertex(TRVertex, asyncRegionGraphTR).getResult(0));
-            else if (asyncRegionGraphTR[TRVertex].asyncEventType == "dma2d")
-              async_region_op.addAsyncDependency(getDma2dOpFromVertex(TRVertex, asyncRegionGraphTR).getResult(0));
-            else assert(false && "Unknown async event type");
-          }
+          fillAIRDepListUsingGraphTR<air::RegionOp>(async_region_op);
         }
         // Fill dep list of air dmamemcpy2d ops
         else if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(op)) {
-          uint64_t dstTRVertex = g_to_tr[getGraphGVertexFromAIROp(dma2d_op)];
-          auto incoming_deps = in_edges(dstTRVertex, asyncRegionGraphTR);
-          for (in_edge_iterator it = incoming_deps.first; it != incoming_deps.second; it++) {
-            auto TRVertex = source(*it, asyncRegionGraphTR);
-            if (asyncRegionGraphTR[TRVertex].asyncEventType == "region")
-              dma2d_op.addAsyncDependency(getRegionOpFromVertex(TRVertex, asyncRegionGraphTR).getResult(0));
-            else if (asyncRegionGraphTR[TRVertex].asyncEventType == "dma2d")
-              dma2d_op.addAsyncDependency(getDma2dOpFromVertex(TRVertex, asyncRegionGraphTR).getResult(0));
-            else assert(false && "Unknown async event type");
-          }
+          fillAIRDepListUsingGraphTR<air::DmaMemcpy2dOp>(dma2d_op);
+        }
+        else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(op)) {
+          fillAIRDepListUsingGraphTR<air::HerdLaunchOp>(hl_op);
         }
       });
     }
@@ -320,6 +307,13 @@ public:
             if (dma2d_op.getResult(0).use_empty())
               sinks_in_for_op.push_back(dma2d_op.getResult(0));
           }
+          // Get async herd_launch in loop body
+          for (auto hl_op : for_op.getOps<air::HerdLaunchOp>()){
+            hasAsyncRegionsInBody = true;
+            // Get sinks of dep graph
+            if (hl_op.getResult(0).use_empty())
+              sinks_in_for_op.push_back(hl_op.getResult(0));
+          }
           if (hasAsyncRegionsInBody){
             // (1) Create one wait_all event at the end of current for loop body.
             auto for_op_terminator = for_op.getBody()->getTerminator();
@@ -340,6 +334,9 @@ public:
               else if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(sink.getDefiningOp())){
                 src_id = getGraphGVertexFromAIROp(dma2d_op);
               }
+              else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(sink.getDefiningOp())){
+                src_id = getGraphGVertexFromAIROp(hl_op);
+              }
               auto src = g_to_tr[src_id];
               add_edge(src, wait_all_op_yielded_v, asyncRegionGraphTR);
             }
@@ -358,6 +355,10 @@ public:
                     incoming_tokens.push_back(v);
                 }
                 else if (auto v_op = dyn_cast<air::DmaMemcpy2dOp>(v.getDefiningOp())){
+                  if (v_op.getAsyncToken() == v)
+                    incoming_tokens.push_back(v);
+                }
+                else if (auto v_op = dyn_cast<air::HerdLaunchOp>(v.getDefiningOp())){
                   if (v_op.getAsyncToken() == v)
                     incoming_tokens.push_back(v);
                 }
@@ -408,10 +409,16 @@ public:
                 else if (auto dst_op = dyn_cast<air::DmaMemcpy2dOp>(user)){
                   dst = g_to_tr[getGraphGVertexFromAIROp(dst_op)];
                 }
+                else if (auto dst_op = dyn_cast<air::HerdLaunchOp>(user)){
+                  dst = g_to_tr[getGraphGVertexFromAIROp(dst_op)];
+                }
                 if (auto src_op = dyn_cast<air::RegionOp>(v.getDefiningOp())){
                   src = g_to_tr[getGraphGVertexFromAIROp(src_op)];
                 }
                 else if (auto src_op = dyn_cast<air::DmaMemcpy2dOp>(v.getDefiningOp())){
+                  src = g_to_tr[getGraphGVertexFromAIROp(src_op)];
+                }
+                else if (auto src_op = dyn_cast<air::HerdLaunchOp>(v.getDefiningOp())){
                   src = g_to_tr[getGraphGVertexFromAIROp(src_op)];
                 }
                 if (edge(src, dst, asyncRegionGraphTR).second){ // if an edge exists
@@ -439,6 +446,11 @@ public:
                 dma2d_op.addAsyncDependency(new_for_op.getRegionIterArgs()[0]);
               }
             }
+            for (auto hl_op : new_for_op.getOps<air::HerdLaunchOp>()){
+              if (hl_op.getAsyncDependencies().size() == 0){
+                hl_op.addAsyncDependency(new_for_op.getRegionIterArgs()[0]);
+              }
+            }
 
             // Yield an async token
             SmallVector<Value, 4> yield_token;
@@ -461,6 +473,7 @@ private:
   // Air async op history
   std::vector<air::RegionOp> async_region_op_history;
   std::vector<air::DmaMemcpy2dOp> dma2d_op_history;
+  std::vector<air::HerdLaunchOp> hl_op_history;
 
   struct partialMemref {
     Value memrefValue;
@@ -560,6 +573,61 @@ private:
     return new_dma2d_op;
   }
 
+  // Re-instantiate the dmamemcpy2d op with async interface; update graph
+  air::HerdLaunchOp createAsyncHerdLaunch(OpBuilder &builder, air::HerdLaunchOp op, uint64_t &HerdLaunchOpID){
+    auto loc = op->getLoc();
+    SmallVector<Value, 1> deps;
+    air::HerdDim2 dims{op.getHerdSizeOperands().x, op.getHerdSizeOperands().y};
+    SmallVector<Value, 4> args;
+    SmallVector<Value, 4> constants;
+    for (unsigned i = 0; i < op.getNumKernelOperands(); i++){
+      auto v = op.getKernelOperand(i);
+      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
+        constants.push_back(v);
+      else
+        args.push_back(v);
+    }
+    air::HerdLaunchOp new_launch = builder.create<air::HerdLaunchOp>(loc, deps, dims, args);
+    new_launch->setAttr("id",
+            mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
+            ++HerdLaunchOpID));
+
+    if (auto attr = op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+      new_launch->setAttr(SymbolTable::getSymbolAttrName(), attr);
+
+    auto &bb = new_launch.body().front();
+    auto ivs = op.getTileIds();
+    ivs.x.replaceAllUsesWith(new_launch.getTileIds().x);
+    ivs.y.replaceAllUsesWith(new_launch.getTileIds().y);
+    auto &body = op.body().front().getOperations();
+    bb.getOperations().splice(bb.begin(), body,
+                              body.begin(), --body.end());
+    builder.setInsertionPointToStart(&new_launch.getRegion().front());
+    for (auto c : constants) {
+      replaceAllUsesInRegionWith(c,
+                                  builder.clone(*c.getDefiningOp())->getResult(0),
+                                  new_launch.getRegion());
+    }
+    builder.setInsertionPointToEnd(&bb);
+    builder.create<air::HerdTerminatorOp>(loc);
+
+    int i = 0;
+    auto old_kernel_args = op.getKernelArguments();
+    auto new_kernel_args = new_launch.getKernelArguments();
+    for (Value v : old_kernel_args)
+      replaceAllUsesInRegionWith(v, new_kernel_args[i++], new_launch.getRegion());
+
+    // Create a vertex out of the current dmamemcpy2d op
+    auto v = add_vertex(asyncRegionGraph);
+    asyncRegionGraph[v].asyncEventName = "air::herd_launch";
+    asyncRegionGraph[v].asyncEventType = "herd_launch";
+    asyncRegionGraph[v].operationId = HerdLaunchOpID;
+
+    // Update op-to-graph map
+    hl_to_g[HerdLaunchOpID] = v;
+    return new_launch;
+  }
+
   bool foundAsyncOpUsesAboveCurrentLine(air::RegionOp *op){
     if (!async_region_op_history.empty())
       for (auto &iter : async_region_op_history)
@@ -570,6 +638,13 @@ private:
   bool foundAsyncOpUsesAboveCurrentLine(air::DmaMemcpy2dOp *op){
     if (!dma2d_op_history.empty())
       for (auto &iter : dma2d_op_history)
+        if (iter.getResult(0) == op->getResult(0)) return true;
+    return false;
+  }
+
+  bool foundAsyncOpUsesAboveCurrentLine(air::HerdLaunchOp *op){
+    if (!hl_op_history.empty())
+      for (auto &iter : hl_op_history)
         if (iter.getResult(0) == op->getResult(0)) return true;
     return false;
   }
@@ -743,7 +818,7 @@ private:
         for (unsigned lh_operand_id = 0; lh_operand_id < lh.getNumKernelOperands(); lh_operand_id++){
           if (lh.getKernelArguments()[lh_operand_id] == operand.memrefValue){
             auto ancestor_op = lh.getKernelOperand(lh_operand_id);
-            pushDepsAtCurrentScope<air::RegionOp>(ancestor_op, lh->template getParentOfType<xilinx::air::RegionOp>(), dep_tracing_mode);
+            pushDepsAtCurrentScope<air::HerdLaunchOp>(ancestor_op, lh, dep_tracing_mode);
           }
         }
       }
@@ -753,9 +828,8 @@ private:
         // If the input memref was used inside HerdLaunchOp in the past
         for (auto &u : operand.memrefValue.getUses()){
           if (auto lh = dyn_cast<xilinx::air::HerdLaunchOp>(u.getOwner())){
-            auto ar = lh->getParentOfType<xilinx::air::RegionOp>();
-            if (foundAsyncOpUsesAboveCurrentLine(&ar)){
-              addNewAsyncDepToGraph<T>(ar.getResult(0), sink_air_op);
+            if (foundAsyncOpUsesAboveCurrentLine(&lh)){
+              addNewAsyncDepToGraph<T>(lh.getResult(0), sink_air_op);
             }
           }
         }
@@ -818,23 +892,23 @@ private:
       else if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(srcOp)){
         srcNode = getGraphGVertexFromAIROp(dma2d_op);
       }
+      else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(srcOp)){
+        srcNode = getGraphGVertexFromAIROp(hl_op);
+      }
       else assert(false && "dependency token should be generated by an async op");
       uint64_t dstNode = getGraphGVertexFromAIROp(op);
       add_edge(srcNode, dstNode, asyncRegionGraph);
     }
   }
 
+  // Check if current for op is the single child in a parent for op
   bool isSingleChildInParentForOp(scf::ForOp child_for_op){
     if (!child_for_op->getParentOp())
       return false;
     if (!dyn_cast<scf::ForOp>(child_for_op->getParentOp()))
       return false;
     auto parent_op = dyn_cast<scf::ForOp>(child_for_op->getParentOp());
-    unsigned number_of_nested_for_ops = 0;
-    for (auto &op : parent_op.getBody()->getOperations()){
-      number_of_nested_for_ops ++;
-    }
-    if (number_of_nested_for_ops == 2) return true; // child for op plus terminator
+    if (parent_op.getBody()->getOperations().size() == 2) return true; // child for op plus terminator
     else return false;
   }
 
@@ -858,6 +932,7 @@ private:
   vertex_map g_to_tr, tr_to_g; // Map between graph g and graph tr (post-tr graph)
   operation_id_to_vertex_map region_to_g; // Map between air regions and vertices in graph
   operation_id_to_vertex_map dma2d_to_g; // Map between air dmamemcpy2d and vertices in graph
+  operation_id_to_vertex_map hl_to_g; // Map between air herd_launch and vertices in graph
 
   // g vertex to air op mapping
   air::RegionOp getRegionOpFromVertex (Graph::vertex_descriptor v, Graph g){
@@ -868,6 +943,10 @@ private:
     assert(g[v].asyncEventType == "dma2d" && "This vertex is not a DmaMemcpy2dOp");
     return dma2d_op_history[g[v].operationId - 1];
   }
+  air::HerdLaunchOp getHLOpFromVertex (Graph::vertex_descriptor v, Graph g){
+    assert(g[v].asyncEventType == "herd_launch" && "This vertex is not a HerdLaunchOp");
+    return hl_op_history[g[v].operationId - 1];
+  }
 
   // air region op to g vertex mapping
   Graph::vertex_descriptor getGraphGVertexFromAIROp (air::RegionOp op){
@@ -876,6 +955,27 @@ private:
 
   Graph::vertex_descriptor getGraphGVertexFromAIROp (air::DmaMemcpy2dOp op){
     return dma2d_to_g[op.getId()];
+  }
+
+  Graph::vertex_descriptor getGraphGVertexFromAIROp (air::HerdLaunchOp op){
+    return hl_to_g[op.getId()];
+  }
+
+  // Fill in dep list of air async ops using graph tr's connectivity
+  template <typename T>
+  void fillAIRDepListUsingGraphTR(T op){
+    uint64_t dstTRVertex = g_to_tr[getGraphGVertexFromAIROp(op)];
+    auto incoming_deps = in_edges(dstTRVertex, asyncRegionGraphTR);
+    for (in_edge_iterator it = incoming_deps.first; it != incoming_deps.second; it++) {
+      auto TRVertex = source(*it, asyncRegionGraphTR);
+      if (asyncRegionGraphTR[TRVertex].asyncEventType == "region")
+        op.addAsyncDependency(getRegionOpFromVertex(TRVertex, asyncRegionGraphTR).getResult(0));
+      else if (asyncRegionGraphTR[TRVertex].asyncEventType == "dma2d")
+        op.addAsyncDependency(getDma2dOpFromVertex(TRVertex, asyncRegionGraphTR).getResult(0));
+      else if (asyncRegionGraphTR[TRVertex].asyncEventType == "herd_launch")
+        op.addAsyncDependency(getHLOpFromVertex(TRVertex, asyncRegionGraphTR).getResult(0));
+      else assert(false && "Unknown async event type");
+    }
   }
 
   // Dump graphviz
