@@ -68,7 +68,7 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
       return failure();
 
     auto rank = src_type.getShape().size();
-    
+
     if (rank == 2) {
       SmallVector<Value, 4> src_indices;
       SmallVector<Value, 4> dst_indices;
@@ -491,13 +491,11 @@ public:
     return success();
   }
 
-  LogicalResult matchAndRewrite(scf::ParallelOp op,
+  LogicalResult matchAndRewrite(scf::ParallelOp parOp,
                                 PatternRewriter &rewriter) const override {
 
-    if (op.getNumLoops() > 2)
-      return failure();
+    scf::ParallelOp op = parOp;
 
-    // the number of nested scf.parallel above this one
     if (!filteredOps.contains(op))
       return failure();
 
@@ -505,6 +503,42 @@ public:
       return failure();
 
     auto loc = op.getLoc();
+
+    if (op.getNumLoops() > 2) {
+      unsigned split_idx = op.getNumLoops() - 2;
+      SmallVector<Value, 2> outerLowerBounds, outerUpperBounds, outerSteps;
+      SmallVector<Value, 2> innerLowerBounds, innerUpperBounds, innerSteps;
+
+      for (unsigned i = 0, e = split_idx; i < e; ++i) {
+        outerLowerBounds.push_back(op.getLowerBound()[i]);
+        outerUpperBounds.push_back(op.getUpperBound()[i]);
+        outerSteps.push_back(op.getStep()[i]);
+      }
+      auto outerLoop = rewriter.create<scf::ParallelOp>(
+          loc, outerLowerBounds, outerUpperBounds, outerSteps);
+      for (unsigned i = 0, e = split_idx; i < e; ++i)
+        op.getInductionVars()[i].replaceAllUsesWith(
+            outerLoop.getInductionVars()[i]);
+
+      rewriter.setInsertionPointToStart(outerLoop.getBody());
+
+      for (unsigned i = split_idx, e = op.getNumLoops(); i < e; ++i) {
+        innerLowerBounds.push_back(op.getLowerBound()[i]);
+        innerUpperBounds.push_back(op.getUpperBound()[i]);
+        innerSteps.push_back(op.getStep()[i]);
+      }
+      auto innerLoop = rewriter.create<scf::ParallelOp>(
+          loc, innerLowerBounds, innerUpperBounds, innerSteps);
+      for (unsigned i = split_idx, e = op.getNumLoops(); i < e; ++i)
+        op.getInductionVars()[i].replaceAllUsesWith(
+            innerLoop.getInductionVars()[i - split_idx]);
+
+      auto &body = op.getBody()->getOperations();
+      innerLoop.getBody()->getOperations().splice(
+          innerLoop.getBody()->begin(), body, body.begin(), --body.end());
+      op->getParentOp()->dump();
+      op = innerLoop;
+    }
 
     SmallVector<int, 2> bounds{1, 1};
     for (unsigned int i = 0; i < op.getNumLoops(); i++) {
@@ -568,7 +602,9 @@ public:
     for (Value v : args)
       replaceAllUsesInRegionWith(v, kernel_args[i++], launch.getRegion());
 
-    rewriter.eraseOp(op);
+    if (op != parOp)
+      op.erase();
+    rewriter.eraseOp(parOp);
 
     return success();
   }
@@ -634,11 +670,11 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
     target.addLegalOp<xilinx::air::DmaMemcpyNdOp>();
     target.addLegalOp<xilinx::air::HerdLaunchOp>();
 
-    target.addLegalOp<AffineApplyOp,
-                      AffineForOp,
-                      AffineLoadOp,
-                      AffineStoreOp,
-                      AffineYieldOp>();
+    target.addLegalOp<AffineApplyOp, AffineForOp, AffineLoadOp, AffineStoreOp,
+                      AffineYieldOp, scf::YieldOp>();
+
+    target.addDynamicallyLegalOp<scf::ParallelOp>(
+        [&](scf::ParallelOp p) { return !filteredOps.contains(p); });
 
     DmaMemcpyOpID = 0;
 
