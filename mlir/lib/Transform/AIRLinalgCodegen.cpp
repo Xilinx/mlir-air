@@ -314,7 +314,7 @@ struct RemoveAllocLinalgOpCopyPattern
 //  linalg.copy(%11, %6) : memref<1x32x16x16xf32, 2>, memref<1x32x16x16xf32, #map1> 
 //  memref.dealloc %11 : memref<1x32x16x16xf32, 2> 
 //}
-struct OFMAccumPattern : public OpRewritePattern<linalg::CopyOp> {
+struct HoistReduceBufferPattern : public OpRewritePattern<linalg::CopyOp> {
   using OpRewritePattern<linalg::CopyOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(linalg::CopyOp op,
@@ -325,6 +325,7 @@ struct OFMAccumPattern : public OpRewritePattern<linalg::CopyOp> {
     Operation *subviewOp = nullptr;
     Operation *memrefAllocaOp = nullptr;
     Operation *scfForOp = nullptr;
+    Operation *otherCpy = nullptr;
 
     //Find linalg.copy input uses that has following pattern
     // a. Uses in kernel op (conv2d, fused_ops etc)
@@ -337,46 +338,66 @@ struct OFMAccumPattern : public OpRewritePattern<linalg::CopyOp> {
     // After matching those pattern, memref.alloc() & 2_linalg.copy move before inner scf.for loop
     // and 1_linalg.copy & memref.dealloc() move after inner scf.for loop.
     for (Operation *userOp : op.input().getUsers()) {
-      if(isa<linalg::Conv2DNchwFchwOp>(userOp)){
+      if (isa<linalg::CopyOp>(userOp))
+        otherCpy = userOp;
+      else if (isa<linalg::LinalgOp>(userOp))
         kernelOp = userOp;
-      } else if(isa<memref::DeallocOp>(userOp)) {
+      else if (isa<memref::DeallocOp>(userOp))
         DeallocOp = userOp;
-      }
-         
-      if(auto linalgCpy = dyn_cast<linalg::CopyOp>(userOp)){      
-        if(kernelOp && kernelOp->getParentRegion() == linalgCpy->getParentRegion() && 
-                       kernelOp->getParentRegion() == op->getParentRegion() &&
-                       op.input() == linalgCpy.output() && 
-                       op.output() == linalgCpy.input()){ 
-
-          if(isa<memref::SubViewOp>(linalgCpy.input().getDefiningOp())) {
-            if(kernelOp->getParentRegion() == linalgCpy.input().getDefiningOp()->getParentRegion())
-              return failure();
-            else
-              subviewOp= linalgCpy.input().getDefiningOp();
-          }
-
-          if(isa<memref::AllocOp>(linalgCpy.output().getDefiningOp()))          
-            memrefAllocaOp = linalgCpy.output().getDefiningOp();
-
-          if(isa<scf::ForOp>(kernelOp->getParentOp()))
-            scfForOp = kernelOp->getParentOp();
-                
-          if((scfForOp->getParentRegion() == subviewOp->getParentRegion()) && 
-              (kernelOp && DeallocOp && memrefAllocaOp && scfForOp)){
-            //if(subviewOp) subviewOp->moveBefore(scfForOp);
-            memrefAllocaOp->moveBefore(scfForOp); 
-            userOp->moveBefore(scfForOp);
-
-            DeallocOp->moveAfter(scfForOp);
-            op->moveAfter(scfForOp);
-                  
-            return success();
-          }
-        }
-      }
+      else
+        ; // return failure();
     }
-    return failure();
+
+    // a. Uses in kernel op (conv2d, fused_ops etc)
+    // b. Uses in linalg.copy
+    // c. Uses in Dealloc op
+    if (!kernelOp || !DeallocOp || !otherCpy)
+      return failure();
+
+    auto linalgCpy = dyn_cast<linalg::CopyOp>(otherCpy);
+
+    // d. 2_linalg.copy input defining op is memref.subview
+    if (isa<memref::SubViewOp>(linalgCpy.input().getDefiningOp()))
+      subviewOp = linalgCpy.input().getDefiningOp();
+    else
+      return failure();
+
+    // 1_linalg.copy.input == 2_linalg.copy.output && 1_linalg.copy.output ==
+    // 2_linalg.copy.input
+    if (op.input() != linalgCpy.output() || op.output() != linalgCpy.input())
+      return failure();
+
+    // 1_linalg.copy & 2_linalg.copy & kernel op are in same region
+    if (kernelOp->getParentRegion() != linalgCpy->getParentRegion() ||
+        kernelOp->getParentRegion() != op->getParentRegion())
+      return failure();
+
+    // c. defining op is memref.alloc()
+    if (isa<memref::AllocOp>(linalgCpy.output().getDefiningOp()))
+      memrefAllocaOp = linalgCpy.output().getDefiningOp();
+    else
+      return failure();
+
+    // e. kernel parent op is a scf.for op
+    if (isa<scf::ForOp>(kernelOp->getParentOp()))
+      scfForOp = kernelOp->getParentOp();
+    else
+      return failure();
+
+    // memref.subview and kernel op are not in same region.
+    // loop invarient code motion move this subview op outside loop.
+    if (scfForOp->getParentRegion() != subviewOp->getParentRegion())
+      return failure();
+
+    // hoist alloc and copy in
+    memrefAllocaOp->moveBefore(scfForOp);
+    linalgCpy->moveBefore(scfForOp);
+
+    // hoist copy out and dealloc
+    DeallocOp->moveAfter(scfForOp);
+    op->moveAfter(scfForOp);
+
+    return success();
   }
 };
 
@@ -482,7 +503,8 @@ public:
   void runTestPatterns(FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<RemoveSubViewOpsPattern, FoldSubViewOpsPattern, RemoveViewOpsPattern, OFMAccumPattern>(ctx);
+    patterns.insert<RemoveSubViewOpsPattern, FoldSubViewOpsPattern,
+                    RemoveViewOpsPattern, HoistReduceBufferPattern>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
   /// Collect perfectly nested loops starting from `rootForOps`.  Loops are
