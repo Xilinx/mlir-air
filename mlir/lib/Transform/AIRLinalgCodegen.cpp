@@ -270,6 +270,116 @@ struct RemoveAllocLinalgOpCopyPattern
   }
 };
 
+// Loop invarient code motion pass doesn't move kernel op partial result (linalg.copy) memcpy outside loop
+// this patternMatch transform perform kernel op partial result accumulation modeling. This transformation
+// model mllib kernel library. 
+// 
+// Replace a pattern like this:
+// scf.for %arg6 = %c0 to %c64 step %c16 {
+//  %6 = memref.subview %arg1[0, %4, %arg6, %5] [1, 32, 16, 16] [1, 1, 1, 1] : memref<1x128x64x64xf32> to memref<1x32x16x16xf32, #map1>
+//  scf.for %ag7 = %c0 to %c64 step %c16 {
+//    %7 = memref.subview %2[0, %arg7, %arg6, %5] [1, 16, 18, 18] [1, 1, 1, 1] : memref<1x64x66x66xf32> to memref<1x16x18x18xf32, #map2>
+//    %8 = memref.subview %0[%4, %arg7, 0, 0] [32, 16, 3, 3] [1, 1, 1, 1] : memref<128x64x3x3xf32> to memref<32x16x3x3xf32, #map3>
+//    %9 = memref.alloc() : memref<1x16x18x18xf32, 2>
+//    %10 = memref.alloc() : memref<32x16x3x3xf32, 2>
+//    %11 = memref.alloc() : memref<1x32x16x16xf32, 2>
+//    linalg.copy(%7, %9) : memref<1x16x18x18xf32, #map2>, memref<1x16x18x18xf32, 2> 
+//    linalg.copy(%8, %10) : memref<32x16x3x3xf32, #map3>, memref<32x16x3x3xf32, 2> 
+//    linalg.copy(%6, %11) : memref<1x32x16x16xf32, #map1>, memref<1x32x16x16xf32, 2> 
+//    linalg.conv_2d_nchw_fchw {dilations = dense<1> : vector<2xi64>, strides = dense<1> : vector<2xi64>} ins(%9, %10 : memref<1x16x18x18xf32, 2>,
+//    memref<32x16x3x3xf32, 2>) outs(%11 : memref<1x32x16x16xf32, 2>)
+//    linalg.copy(%11, %6) : memref<1x32x16x16xf32, 2>, memref<1x32x16x16xf32, #map1> 
+//    memref.dealloc %9 : memref<1x16x18x18xf32, 2>
+//    memref.dealloc %10 : memref<32x16x3x3xf32, 2>
+//    memref.dealloc %11 : memref<1x32x16x16xf32, 2>
+//  }   
+//}
+// with this:
+// scf.for %arg6 = %c0 to %c64 step %c16 {
+//  %6 = memref.subview %arg1[0, %4, %arg6, %5] [1, 32, 16, 16] [1, 1, 1, 1] : memref<1x128x64x64xf32> to memref<1x32x16x16xf32, #map1>
+//  %11 = memref.alloc() : memref<1x32x16x16xf32, 2>
+//  linalg.copy(%6, %11) : memref<1x32x16x16xf32, #map1>, memref<1x32x16x16xf32, 2>
+//  scf.for %ag7 = %c0 to %c64 step %c16 {
+//    %7 = memref.subview %2[0, %arg7, %arg6, %5] [1, 16, 18, 18] [1, 1, 1, 1] : memref<1x64x66x66xf32> to memref<1x16x18x18xf32, #map2>
+//    %8 = memref.subview %0[%4, %arg7, 0, 0] [32, 16, 3, 3] [1, 1, 1, 1] : memref<128x64x3x3xf32> to memref<32x16x3x3xf32, #map3>
+//    %9 = memref.alloc() : memref<1x16x18x18xf32, 2>
+//    %10 = memref.alloc() : memref<32x16x3x3xf32, 2>
+//    linalg.copy(%7, %9) : memref<1x16x18x18xf32, #map2>, memref<1x16x18x18xf32, 2> 
+//    linalg.copy(%8, %10) : memref<32x16x3x3xf32, #map3>, memref<32x16x3x3xf32, 2> 
+//    linalg.conv_2d_nchw_fchw {dilations = dense<1> : vector<2xi64>, strides = dense<1> : vector<2xi64>} ins(%9, %10 : memref<1x16x18x18xf32, 2>,
+//    memref<32x16x3x3xf32, 2>) outs(%11 : memref<1x32x16x16xf32, 2>)
+//    memref.dealloc %9 : memref<1x16x18x18xf32, 2>
+//    memref.dealloc %10 : memref<32x16x3x3xf32, 2>
+//  }  
+//  linalg.copy(%11, %6) : memref<1x32x16x16xf32, 2>, memref<1x32x16x16xf32, #map1> 
+//  memref.dealloc %11 : memref<1x32x16x16xf32, 2> 
+//}
+struct OFMAccumPattern : public OpRewritePattern<linalg::CopyOp> {
+  using OpRewritePattern<linalg::CopyOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(linalg::CopyOp op,
+                                PatternRewriter &rewriter) const override { 
+
+    Operation *DeallocOp = nullptr;
+    Operation *kernelOp = nullptr;
+    Operation *subviewOp = nullptr;
+    Operation *memrefAllocaOp = nullptr;
+    Operation *scfForOp = nullptr;
+
+    //Find linalg.copy input uses that has following pattern
+    // a. Uses in kernel op (conv2d, fused_ops etc)
+    // b. Uses in linalg.copy. 1_linalg.copy.input == 2_linalg.copy.output && 1_linalg.copy.output == 2_linalg.copy.input 
+    //    and 1_linalg.copy & 2_linalg.copy & kernel op are in same region
+    // c. Uses in Dealloc op && defining op is memref.alloc()
+    // d. 2_linalg.copy input defining op is memref.subview & memref.subview and kernel op are not in same region.
+    //    loop invarient code motion move this subview op outside loop.
+    // e. kernel parent op is a scf.for op
+    // After matching those pattern, memref.alloc() & 2_linalg.copy move before inner scf.for loop
+    // and 1_linalg.copy & memref.dealloc() move after inner scf.for loop.
+    for (Operation *userOp : op.input().getUsers()) {
+      if(isa<linalg::Conv2DNchwFchwOp>(userOp)){
+        kernelOp = userOp;
+      } else if(isa<memref::DeallocOp>(userOp)) {
+        DeallocOp = userOp;
+      }
+         
+      if(auto linalgCpy = dyn_cast<linalg::CopyOp>(userOp)){      
+        if(kernelOp && kernelOp->getParentRegion() == linalgCpy->getParentRegion() && 
+                       kernelOp->getParentRegion() == op->getParentRegion() &&
+                       op.input() == linalgCpy.output() && 
+                       op.output() == linalgCpy.input()){ 
+
+          if(isa<memref::SubViewOp>(linalgCpy.input().getDefiningOp())) {
+            if(kernelOp->getParentRegion() == linalgCpy.input().getDefiningOp()->getParentRegion())
+              return failure();
+            else
+              subviewOp= linalgCpy.input().getDefiningOp();
+          }
+
+          if(isa<memref::AllocOp>(linalgCpy.output().getDefiningOp()))          
+            memrefAllocaOp = linalgCpy.output().getDefiningOp();
+
+          if(isa<scf::ForOp>(kernelOp->getParentOp()))
+            scfForOp = kernelOp->getParentOp();
+                
+          if((scfForOp->getParentRegion() == subviewOp->getParentRegion()) && 
+              (kernelOp && DeallocOp && memrefAllocaOp && scfForOp)){
+            //if(subviewOp) subviewOp->moveBefore(scfForOp);
+            memrefAllocaOp->moveBefore(scfForOp); 
+            userOp->moveBefore(scfForOp);
+
+            DeallocOp->moveAfter(scfForOp);
+            op->moveAfter(scfForOp);
+                  
+            return success();
+          }
+        }
+      }
+    }
+    return failure();
+  }
+};
+
 RemoveSubViewOpsPattern::RemoveSubViewOpsPattern(MLIRContext *ctx,
                                                  unsigned int fast_memory_space)
     : OpRewritePattern(ctx), fast_space(fast_memory_space) {}
@@ -372,7 +482,7 @@ public:
   void runTestPatterns(FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<RemoveSubViewOpsPattern, FoldSubViewOpsPattern, RemoveViewOpsPattern>(ctx);
+    patterns.insert<RemoveSubViewOpsPattern, FoldSubViewOpsPattern, RemoveViewOpsPattern, OFMAccumPattern>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
   /// Collect perfectly nested loops starting from `rootForOps`.  Loops are
