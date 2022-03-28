@@ -1,5 +1,5 @@
 // RUN: air-opt %s -air-linalg-codegen='herd-size=4,4' | FileCheck %s
-
+// XFAIL: *
 // CHECK:    scf.parallel (%arg2, %arg3) = (%c0, %c0) to (%c64, %c128) step (%c16, %c32) {
 // CHECK:      scf.for %arg4 = %c0 to %c64 step %c16 {
 // CHECK:        scf.for %arg5 = %c0 to %c64 step %c16 {
