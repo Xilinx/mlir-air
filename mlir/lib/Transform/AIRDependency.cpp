@@ -376,7 +376,7 @@ public:
 
             // (3) Create new for op with iter_args.
             SmallVector<Value, 4> merged_incoming_token;
-            merged_incoming_token.push_back(wait_all_op_before_loop);
+            merged_incoming_token.push_back(wait_all_op_before_loop.getResult(0));
             auto new_for_op = module_builder.create<scf::ForOp>(for_op.getLoc(), for_op.getLowerBound(),
                                          for_op.getUpperBound(), for_op.getStep(), merged_incoming_token);
 
@@ -454,7 +454,7 @@ public:
 
             // Yield an async token
             SmallVector<Value, 4> yield_token;
-            yield_token.push_back(wait_all_op_yielded.getResult());
+            yield_token.push_back(wait_all_op_yielded.getResult(0));
             module_builder.setInsertionPointToEnd(new_for_op.getBody());
             module_builder.create<scf::YieldOp>(new_for_op.getLoc(), yield_token);
 

@@ -333,12 +333,12 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
 def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
   let arguments = (ins Variadic<air_AsyncToken>:$asyncDependencies);
   let results = (
-    outs  air_AsyncToken:$asyncToken
+    outs Optional<air_AsyncToken>:$asyncToken
   );
 
   let summary = "wait for all operator";
   let description = [{
-    Block and wait for all async tokens before preceding.
+    Wait for all async tokens before preceding.
   }];
   let assemblyFormat = [{
     custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) attr-dict
