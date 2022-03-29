@@ -21,6 +21,8 @@
 #include "mlir/Transforms/InliningUtils.h"
 #include "llvm/ADT/SetVector.h"
 
+#include <numeric>
+
 #define DEBUG_TYPE "air-linalg-codegen"
 
 using namespace mlir;
@@ -625,24 +627,28 @@ public:
 
     // GenericOp
     for (auto genericOp : genericOps) {
+      size_t nLoops = genericOp.getNumLoops();
       SmallVector<int64_t, 2> herd_size{2, 2};
-      SmallVector<int64_t, 4> l1_tile_size;
-      SmallVector<unsigned, 4> l1_tile_interchange;
-      SmallVector<int64_t, 4> l2_tile_size;
-      SmallVector<unsigned, 4> l2_tile_interchange;
+      SmallVector<int64_t, 4> l1_tile_size(nLoops, 1);
+      SmallVector<unsigned, 4> l1_tile_interchange(nLoops, 0);
+      SmallVector<int64_t, 4> l2_tile_size(nLoops, 1);
+      SmallVector<unsigned, 4> l2_tile_interchange(nLoops, 0);
+      ;
 
       auto tripCounts = getTripCounts(genericOp);
 
       bool tileForL2 = true;
       if (clL2TileSize.size())
-        for (int i = 0, e = clL2TileSize.size(); i < e; i++)
+        for (int i = 0, e = std::min(nLoops, clL2TileSize.size()); i < e; i++)
           l2_tile_size[i] = clL2TileSize[i];
       else if (clL2MaxSize > 0)
         getTileSizes(genericOp, clL2MaxSize, tripCounts, &l2_tile_size);
       else
         tileForL2 = false;
 
-      for (int i = 0, e = clL2TileInterchange.size(); i < e; i++)
+      std::iota(l2_tile_interchange.begin(), l2_tile_interchange.end(), 0);
+      for (int i = 0, e = std::min(nLoops, clL2TileInterchange.size()); i < e;
+           i++)
         l2_tile_interchange[i] = clL2TileInterchange[i];
 
       for (int i = 0, e = std::min(2, (int)clHerdSize.size()); i < e; i++)
@@ -693,14 +699,16 @@ public:
 
       called.walk([&](linalg::GenericOp l1_op) {
         if (clL1TileSize.size())
-          for (int i = 0, e = clL1TileSize.size(); i < e; i++)
+          for (int i = 0, e = std::min(nLoops, clL1TileSize.size()); i < e; i++)
             l1_tile_size[i] = clL1TileSize[i];
         else if (clL1MaxSize > 0) {
           getTileSizes(l1_op, clL1MaxSize, tripCounts, &l1_tile_size);
         }
       });
 
-      for (int i = 0, e = clL1TileInterchange.size(); i < e; i++)
+      std::iota(l1_tile_interchange.begin(), l1_tile_interchange.end(), 0);
+      for (int i = 0, e = std::min(nLoops, clL1TileInterchange.size()); i < e;
+           i++)
         l1_tile_interchange[i] = clL1TileInterchange[i];
 
       // tile to the herd size
