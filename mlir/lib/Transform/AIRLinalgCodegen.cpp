@@ -497,6 +497,10 @@ public:
                                llvm::cl::desc("L2 allocation limit in bytes"),
                                llvm::cl::init(/*256*1024*/ 0)};
 
+  Option<std::string> clInputFilter{*this, "input-filter",
+                                    llvm::cl::desc("Input filter"),
+                                    llvm::cl::init("")};
+
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<AffineDialect, memref::MemRefDialect, linalg::LinalgDialect,
                     scf::SCFDialect, air::airDialect, StandardOpsDialect>();
@@ -627,13 +631,26 @@ public:
 
     // GenericOp
     for (auto genericOp : genericOps) {
+
+      auto attr = genericOp->getAttrOfType<StringAttr>(
+          linalg::LinalgTransforms::kLinalgTransformMarker);
+      if (!attr) {
+        if (clInputFilter != "")
+          continue;
+        genericOp->setAttr(linalg::LinalgTransforms::kLinalgTransformMarker,
+                           StringAttr::get(ctx, ""));
+        attr = genericOp->getAttrOfType<StringAttr>(
+            linalg::LinalgTransforms::kLinalgTransformMarker);
+      } else if (clInputFilter != attr.str())
+        continue;
+      StringAttr next_match = attr;
+
       size_t nLoops = genericOp.getNumLoops();
       SmallVector<int64_t, 2> herd_size{2, 2};
       SmallVector<int64_t, 4> l1_tile_size(nLoops, 1);
       SmallVector<unsigned, 4> l1_tile_interchange(nLoops, 0);
       SmallVector<int64_t, 4> l2_tile_size(nLoops, 1);
       SmallVector<unsigned, 4> l2_tile_interchange(nLoops, 0);
-      ;
 
       auto tripCounts = getTripCounts(genericOp);
 
@@ -655,7 +672,6 @@ public:
         herd_size[i] = clHerdSize[i];
 
       // outline the operation for convenience
-
       xilinx::air::AIROutliner olnr;
       CallOp call =
           olnr.outline(std::vector<Operation *>{genericOp}, "call_generic_op");
@@ -663,8 +679,6 @@ public:
           call.getCallee());
 
       // L2 tiling
-
-      StringAttr next_match = StringAttr::get(ctx, "");
       if (tileForL2) {
         RewritePatternSet stageL2Patterns(ctx);
         stageL2Patterns.insert<TileLinalgOpPattern>(
@@ -673,7 +687,7 @@ public:
                 .setTileSizes(l2_tile_size)
                 .setInterchange(l2_tile_interchange)
                 .setLoopType(linalg::LinalgTilingLoopType::Loops),
-            linalg::LinalgTransformationFilter(ArrayRef<StringAttr>{},
+            linalg::LinalgTransformationFilter(next_match,
                                                StringAttr::get(ctx, "L2")));
 
         stageL2Patterns
@@ -736,8 +750,7 @@ public:
               .setTileSizes(herd_tile_size)
               .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
           linalg::LinalgTransformationFilter(
-              tileForL2 ? next_match : ArrayRef<StringAttr>{},
-              StringAttr::get(ctx, "herd_tiling")));
+              next_match, StringAttr::get(ctx, "herd_tiling")));
       (void)applyPatternsAndFoldGreedily(called, std::move(patterns));
       next_match = StringAttr::get(ctx, "herd_tiling");
 
@@ -794,6 +807,20 @@ public:
     // MatmulOp
     for (auto matmulOp : matmulOps) {
 
+      auto attr = matmulOp->getAttrOfType<StringAttr>(
+          linalg::LinalgTransforms::kLinalgTransformMarker);
+      if (!attr) {
+        if (clInputFilter != "")
+          continue;
+        matmulOp->setAttr(linalg::LinalgTransforms::kLinalgTransformMarker,
+                          StringAttr::get(ctx, ""));
+        attr = matmulOp->getAttrOfType<StringAttr>(
+            linalg::LinalgTransforms::kLinalgTransformMarker);
+      } else if (clInputFilter != attr.str())
+        continue;
+
+      StringAttr next_match = attr;
+
       xilinx::air::AIROutliner olnr;
       CallOp call =
           olnr.outline(std::vector<Operation *>{matmulOp}, "call_mmult");
@@ -815,7 +842,6 @@ public:
       for (int i = 0, e = clL2TileInterchange.size(); i < e; i++)
         l2_tile_interchange[i] = clL2TileInterchange[i];
 
-      RewritePatternSet stageL2Patterns(ctx);
 
       bool tileForL2 = false;
       if (clL2TileSize.size()) {
@@ -825,14 +851,14 @@ public:
       }
 
       if (tileForL2) {
+        RewritePatternSet stageL2Patterns(ctx);
         stageL2Patterns.insert<linalg::LinalgTilingPattern>(
-            linalg::MatmulOp::getOperationName(),
-            ctx,
+            linalg::MatmulOp::getOperationName(), ctx,
             linalg::LinalgTilingOptions()
                 .setTileSizes(l2_tile_size)
                 .setInterchange(l2_tile_interchange)
                 .setLoopType(linalg::LinalgTilingLoopType::Loops),
-            linalg::LinalgTransformationFilter(ArrayRef<StringAttr>{},
+            linalg::LinalgTransformationFilter(next_match,
                                                StringAttr::get(ctx, "L2")));
 
         stageL2Patterns
@@ -845,21 +871,20 @@ public:
         stageL2Patterns.insert<FoldSubViewOpsPattern>(ctx);
         stageL2Patterns.insert<MemrefsPattern>(ctx);
         scf::populateSCFForLoopCanonicalizationPatterns(stageL2Patterns);
+        (void)applyPatternsAndFoldGreedily(called, std::move(stageL2Patterns));
+        next_match = StringAttr::get(ctx, "L2_promoted");
       }
 
       RewritePatternSet stageL1Patterns(ctx);
 
       stageL1Patterns.insert<linalg::LinalgTilingPattern>(
-          linalg::MatmulOp::getOperationName(),
-          ctx,
+          linalg::MatmulOp::getOperationName(), ctx,
           linalg::LinalgTilingOptions()
               .setTileSizes(l1_tile_size)
               .setInterchange(l1_tile_interchange)
               .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
-          linalg::LinalgTransformationFilter(
-              tileForL2 ? StringAttr::get(ctx, "L2_promoted")
-                        : ArrayRef<StringAttr>{},
-              StringAttr::get(ctx, "L1")));
+          linalg::LinalgTransformationFilter(next_match,
+                                             StringAttr::get(ctx, "L1")));
 
       stageL1Patterns.insert<linalg::LinalgPromotionPattern<linalg::MatmulOp>>(
           ctx, linalg::LinalgPromotionOptions(),
@@ -872,7 +897,6 @@ public:
       stage3Patterns.insert<MemrefsPattern>(ctx);
       scf::populateSCFForLoopCanonicalizationPatterns(stage3Patterns);
 
-      (void)applyPatternsAndFoldGreedily(called, std::move(stageL2Patterns));
       (void)applyPatternsAndFoldGreedily(called, std::move(stageL1Patterns));
       (void)applyPatternsAndFoldGreedily(called, std::move(stage3Patterns));
       called.walk([](linalg::LinalgOp op) {
