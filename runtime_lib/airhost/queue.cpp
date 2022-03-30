@@ -253,6 +253,20 @@ hsa_status_t air_packet_l2_dma(dispatch_packet_t *pkt, uint64_t stream, l2_dma_c
   return HSA_STATUS_SUCCESS;
 }
 
+hsa_status_t air_packet_cdma_configure(dispatch_packet_t *pkt, uint64_t dest,
+                                    uint64_t source, uint32_t length) {
+  initialize_packet(pkt);
+
+  pkt->arg[0]  = dest;   // Destination (BD for SG mode)
+  pkt->arg[1]  = source; // Source (BD for SG mode)
+  pkt->arg[2]  = length; // Num Bytes (0xFFFFFFFF for SG mode)
+
+  pkt->type = AIR_PKT_TYPE_CONFIGURE;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
+
+  return HSA_STATUS_SUCCESS;
+}
+
 hsa_status_t air_packet_cdma_memcpy(dispatch_packet_t *pkt, uint64_t dest,
                                     uint64_t source, uint32_t length) {
   initialize_packet(pkt);

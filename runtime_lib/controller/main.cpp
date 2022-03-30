@@ -493,8 +493,8 @@ void complete_barrier_packet(void *pkt)
 
 void handle_packet_device_initialize(dispatch_packet_t *pkt) { 
   packet_set_active(pkt, true);
-  air_printf("Called depricated function: handle_packet_device_initialize\r\n");
-  air_printf("...still invalidating shim DMA bds\r\n");
+  air_printf("Called depricated function: handle_packet_device_initialize...\r\n");
+  air_printf("...but will still invalidate shim DMA bds\r\n");
   xaie_device_init(NUM_SHIM_DMAS);
 }
 
@@ -608,21 +608,60 @@ void handle_packet_get_info(dispatch_packet_t *pkt, uint32_t mb_id)
 }
 
 uint64_t cdma_base = 0x0202C0000000UL;
+//uint64_t cdma_base1 = 0x020340000000UL;
+uint64_t cfg_cdma_base = 0x000044A00000UL;
+
+void handle_packet_sg_cdma(dispatch_packet_t *pkt)
+{
+  //volatile uint32_t *timerCtrl = (volatile uint32_t *)(xaie::getTileAddr(7,1) + 0x00034000);
+  //volatile uint32_t *timer = (volatile uint32_t *)(xaie::getTileAddr(7,1) + 0x000340F8);
+  // packet is in active phase
+  packet_set_active(pkt, true);
+  volatile uint32_t *cdmab = (volatile uint32_t *)(cfg_cdma_base);
+  //uint32_t status = cdmab[1];
+  //air_printf("CMDA raw %x idle %x\n\r",status,status&2);
+  uint64_t daddr = (pkt->arg[0]);
+  uint64_t saddr = (pkt->arg[1]);
+  uint32_t bytes = (pkt->arg[2]);
+  //uint32_t before = 0;
+  cdmab[0] = 0x0; // unset SG mode 
+  if (bytes >= 0xffffff) { // SG
+    cdmab[0] = 0x8; // set SG mode 
+    cdmab[2] = saddr&0xffffffff; 
+    cdmab[3] = saddr>>32; 
+    //timerCtrl[0] = 1<<31;
+    cdmab[5] = daddr>>32;  
+    //before = timer[0];
+    cdmab[4] = daddr&0xffffffff; 
+  } else {
+    cdmab[6] = saddr&0xffffffff; 
+    cdmab[7] = saddr>>32; 
+    cdmab[8] = daddr&0xffffffff; 
+    //timerCtrl[0] = 1<<31;
+    cdmab[9] = daddr>>32;  
+    //before = timer[0];
+    cdmab[10] = bytes;
+  }
+  while (!(cdmab[1]&2)) air_printf("CMDA wait...\n\r");
+  //uint32_t after = timer[0];
+  //xil_printf("CDMA usec B %4u A %6u A-B %6u\n\r",before, after, (after - before));
+}
 
 void handle_packet_cdma(dispatch_packet_t *pkt)
 {
   // packet is in active phase
   packet_set_active(pkt, true);
   volatile uint32_t *cdmab = (volatile uint32_t *)(cdma_base);
-  uint32_t status = cdmab[1];
-  air_printf("CMDA raw %x idle %x\n\r",status,status&2);
+  //uint32_t status = cdmab[1];
+  //air_printf("CMDA raw %x idle %x\n\r",status,status&2);
   uint64_t daddr = (pkt->arg[0]);
   uint64_t saddr = (pkt->arg[1]);
   uint32_t bytes = (pkt->arg[2]);
+  cdmab[0] = 0x0; // unset SG mode 
   cdmab[6] = saddr&0xffffffff; 
   cdmab[7] = saddr>>32; 
   cdmab[8] = daddr&0xffffffff; 
-  cdmab[9] = daddr>>32;
+  cdmab[9] = daddr>>32;  
   cdmab[10] = bytes;
   while (!(cdmab[1]&2)) air_printf("CMDA wait...\n\r");
 }
@@ -1077,6 +1116,11 @@ packet_op:
 
       case AIR_PKT_TYPE_CDMA:
         handle_packet_cdma(pkt);
+        complete_agent_dispatch_packet(pkt);
+        packets_processed++;
+        break;
+      case AIR_PKT_TYPE_CONFIGURE:
+        handle_packet_sg_cdma(pkt);
         complete_agent_dispatch_packet(pkt);
         packets_processed++;
         break;
