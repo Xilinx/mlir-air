@@ -718,9 +718,9 @@ void _mlir_ciface_air_shim_memcpy2d(signal_t *s, uint32_t id, uint64_t x,
                                     uint64_t y, void *t, uint64_t offset_y,
                                     uint64_t offset_x, uint64_t length,
                                     uint64_t stride, uint64_t elem_per_stride) {
-  if (_air_host_active_herd.q)
-    air_shim_memcpy2d_queue_impl(id, x, y, t, offset_y, offset_x, length, stride, elem_per_stride);
-  else
+  //if (_air_host_active_herd.q)
+  //  air_shim_memcpy2d_queue_impl(id, x, y, t, offset_y, offset_x, length, stride, elem_per_stride);
+  //else
     air_mem_shim_memcpy2d_impl(id, x, y, t, offset_y, offset_x, length, stride, elem_per_stride);
 }
 
@@ -729,9 +729,9 @@ void _mlir_ciface_air_shim_memcpy4d(signal_t *s, uint32_t id, uint64_t x,
                                     uint64_t offset_2, uint64_t offset_1,
                                     uint64_t offset_0, uint64_t length,
                                     uint64_t stride, uint64_t elem_per_stride) {
-  if (_air_host_active_herd.q)
-    air_shim_memcpy4d_queue_impl(id, x, y, t, offset_3, offset_2, offset_1, offset_0, length, stride, elem_per_stride); 
-  else
+  //if (_air_host_active_herd.q)
+  //  air_shim_memcpy4d_queue_impl(id, x, y, t, offset_3, offset_2, offset_1, offset_0, length, stride, elem_per_stride); 
+  //else
     air_mem_shim_memcpy4d_impl(id, x, y, t, offset_3, offset_2, offset_1, offset_0, length, stride, elem_per_stride);
 }
 
