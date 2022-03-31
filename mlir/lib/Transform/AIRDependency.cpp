@@ -4,12 +4,9 @@
 
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRDependency.h"
-#include "air/Util/CostModel.h"
-#include "air/Util/Outliner.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/Linalg/Transforms/CodegenStrategy.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Dialect/SCF/Transforms.h"
@@ -23,32 +20,58 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/Parser.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/RegionUtils.h"
 
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/IR/DerivedTypes.h"
-#include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/Type.h"
 
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
+#define BOOST_NO_EXCEPTIONS
+#include <boost/throw_exception.hpp>
+void boost::throw_exception(std::exception const & e) {
+  llvm_unreachable("boost exception");
+}
+
+// boost graph
+#include <boost/graph/adjacency_list.hpp>
+#include <boost/graph/transitive_reduction.hpp>
+#include <boost/graph/graph_traits.hpp>
+#include <boost/graph/graphviz.hpp>
+
 #include <algorithm>
-#include <sstream>
+#include <map>
 #include <numeric> 
+#include <string>
+#include <vector>
 
 using namespace mlir;
 using namespace xilinx;
 using namespace xilinx::air;
+using namespace boost;
 
 #define DEBUG_TYPE "air-dependency"
 
 namespace {
+
+// Construction of a dependency graph as a Boost graph
+
+struct regionNode {
+    std::string asyncEventName;
+    std::string asyncEventType;
+    unsigned operationId;
+};
+
+typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::bidirectionalS, regionNode> Graph;
+typedef boost::graph_traits<Graph>::in_edge_iterator in_edge_iterator;
+typedef boost::graph_traits<Graph>::out_edge_iterator out_edge_iterator;
+typedef boost::graph_traits<Graph>::vertex_iterator vertex_iterator;
+
+typedef std::map<Graph::vertex_descriptor, Graph::vertex_descriptor> vertex_map;
+typedef std::map<unsigned, Graph::vertex_descriptor> operation_id_to_vertex_map;
 
 static uint64_t RegionOpID;
 static uint64_t HerdLaunchOpID;
