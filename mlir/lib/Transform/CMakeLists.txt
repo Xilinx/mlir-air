@@ -8,6 +8,7 @@ AIRLinalgOpStats.cpp
 AIRLoopMergingPass.cpp
 AIRLoopPermutationPass.cpp
 AIRLowerLinalgTensors.cpp
+AIRMiscPasses.cpp
 AIRRegularizeLoopPass.cpp
 AIRTilingUtils.cpp
 AIRDependency.cpp
