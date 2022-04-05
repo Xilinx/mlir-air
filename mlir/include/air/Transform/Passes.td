@@ -444,4 +444,29 @@ def AIRDependency : Pass<"air-dependency", "ModuleOp"> {
   }];
 }
 
+def AIRExamplePass : Pass<"air-example-pass", "ModuleOp"> {
+  let summary = "Skeleton module op pass";
+  let constructor = "xilinx::air::createAIRExamplePass()";
+}
+
+def AIRSpecializeDma : Pass<"air-specialize-dma", "ModuleOp"> {
+  let summary = "Specialize dma operations";
+  let constructor = "xilinx::air::createAIRSpecializeDma()";
+}
+
+def AIRPromoteUniformL1Dma : Pass<"air-promote-dma", "ModuleOp"> {
+  let summary = "promote uniform dma operations";
+  let constructor = "xilinx::air::createAIRPromoteUniformL1Dma()";
+}
+
+def AIRLinalgNamePass : Pass<"air-linalg-name", "ModuleOp"> {
+  let summary = "Give linalg ops a LinalgTransformMarker string attribute if they don't already have one";
+  let constructor = "xilinx::air::createAIRLinalgNamePass()";
+}
+
+def AIRRemoveLinalgNamePass : Pass<"air-rm-linalg-name", "ModuleOp"> {
+  let summary = "Remove LinalgTransformMarker string attributes from linalg ops";
+  let constructor = "xilinx::air::createAIRRemoveLinalgNamePass()";
+}
+
 #endif // AIR_CONVERSION_PASSES
