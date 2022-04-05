@@ -88,6 +88,28 @@ u64 getTileAddr(u16 ColIdx, u16 RowIdx)
 
 } // namespace xaie
 
+
+void xaie_shim_dma_wait_idle(uint64_t TileAddr, int direction, int channel) {
+  uint32_t shimDMAchannel = channel;
+  uint32_t status_register_offset;
+  uint32_t status_mask_shift;
+  if (channel == 0) {
+    status_mask_shift = 0;
+  }
+  else {
+    status_mask_shift = 2;
+  }
+  if (direction == SHIM_DMA_S2MM) {
+    shimDMAchannel += XAIEDMA_SHIM_CHNUM_S2MM0;
+    status_register_offset = 0x1d160;
+  }
+  else {
+    shimDMAchannel += XAIEDMA_SHIM_CHNUM_MM2S0;
+    status_register_offset = 0x1d164;
+  }
+  while ((XAieGbl_Read32(TileAddr + status_register_offset) >> status_mask_shift) & 0b11);
+}
+
 uint32_t xaie_shim_dma_get_outstanding(uint64_t TileAddr, int direction, int channel) {
   uint32_t shimDMAchannel = channel;
   uint32_t status_register_offset;
@@ -652,8 +674,10 @@ void handle_packet_cdma(dispatch_packet_t *pkt)
   // packet is in active phase
   packet_set_active(pkt, true);
   volatile uint32_t *cdmab = (volatile uint32_t *)(cdma_base);
-  //uint32_t status = cdmab[1];
-  //air_printf("CMDA raw %x idle %x\n\r",status,status&2);
+  if (CHATTY) {
+    uint32_t status = cdmab[1];
+    air_printf("CMDA raw %x idle %x\n\r",status,status&2);
+  }
   uint64_t daddr = (pkt->arg[0]);
   uint64_t saddr = (pkt->arg[1]);
   uint32_t bytes = (pkt->arg[2]);
@@ -873,6 +897,10 @@ int do_packet_nd_memcpy(uint32_t slot)
     paddr_3d += stride_4d;
     paddr_2d = paddr_3d;
   }
+
+  // Wait check idle
+  xaie_shim_dma_wait_idle(xaie::getTileAddr(col,0),direction,channel);
+
   return 0;
 }
 
