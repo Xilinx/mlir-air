@@ -54,7 +54,7 @@ class LinalgOnTensorsAirBackend(AirBackend):
     def __del__(self):
         self.unload()
 
-    def compile(self, imported_module: torch_mlir.ir.Module):
+    def compile(self, imported_module: torch_mlir.ir.Module, verbose=False):
         """Compiles an imported module, with a flat list of functions.
         The module is expected to be in linalg-on-tensors + scalar code form.
         Args:
@@ -72,6 +72,7 @@ class LinalgOnTensorsAirBackend(AirBackend):
             pm = air.mlir.passmanager.PassManager.parse(LINALG_MEMREF_TO_AIRRT_PIPELINE)
             pm.run(air_module)
             aircc.run(air_module,['--shared', '-o', 'torch.mlir.so', '--sysroot=/', '-row-offset=2', '-col-offset=7', 'torch.mlir'])
+            aircc.run(air_module,['--shared', '-o', 'torch.mlir.so', '--sysroot=/', '-row-offset=2', '-col-offset=7', 'torch.mlir'] + (['-v'] if verbose else []))
             with open('air_project/refback.torch.mlir') as f:
                 imported_module = torch_mlir.ir.Module.parse(f.read(),imported_module.context)
 
