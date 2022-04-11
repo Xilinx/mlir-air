@@ -151,8 +151,7 @@ static LogicalResult verify(HerdLaunchOp op) {
 static void printHerdLaunchOp(OpAsmPrinter &p, HerdLaunchOp op) {
 
   auto num_async_deps = op.asyncDependencies().size();
-  if (num_async_deps)
-    p << ' ';
+  p << ' ';
   printAsyncDependencies(p, op, (op.asyncToken() ? op.asyncToken().getType() : Type()), op.asyncDependencies());
   p << " tile (";
   p << op.getTileIds().x << ", ";
