@@ -197,19 +197,6 @@ class AIRRunner {
     deallocateMemRef(ptr);
   }
 
-  // void executeOp(mlir::AffineForOp op, std::vector<llvm::Any> &in,
-  //                std::vector<llvm::Any> &out) {
-  //   out.resize(1);
-  //   out[0] = op.getConstantUpperBound();
-  // }
-
-  // void executeOp(mlir::AffineParallelOp op, std::vector<llvm::Any> &in,
-  //                std::vector<llvm::Any> &out) {
-  //   out.resize(2);
-  //   out[0] = op.getIVs()[0];
-  //   out[1] = op.getIVs()[1];
-  // }
-
   void decrementAsyncTokens(Operation *op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
 
@@ -228,6 +215,9 @@ class AIRRunner {
     ;//decrementAsyncTokens(op, in, out);
   }
 
+  void executeOp(scf::ParallelOp op, std::vector<llvm::Any> &in,
+                 std::vector<llvm::Any> &out) {}
+
   void executeOp(xilinx::air::HerdLaunchOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
     decrementAsyncTokens(op, in, out);
@@ -238,19 +228,17 @@ class AIRRunner {
     decrementAsyncTokens(op, in, out);
   }
 
-#if HAVE_REGION_OP
   void executeOp(xilinx::air::RegionOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
-    if (op->getNumResults()) {
-      auto res = op->getResult(0);
-      if (res.getType().isa<xilinx::air::AsyncTokenType>()) {
-        out[0] =
-            llvm::any_cast<llvm::APInt>(valueMap[res]) - llvm::APInt(64, 1);
-        valueMap[res] = out[0];
-      }
-    }
+    decrementAsyncTokens(op, in, out);
   }
-#endif
+
+  void executeOp(xilinx::air::RegionTerminatorOp op, std::vector<llvm::Any> &in,
+                 std::vector<llvm::Any> &out) {
+    auto regionOp = op->getParentOfType<xilinx::air::RegionOp>();
+    std::vector<llvm::Any> v(regionOp->getNumResults(), llvm::APInt(64, 0));
+    decrementAsyncTokens(regionOp, v, v);
+  }
 
   void executeOp(xilinx::air::WaitAllOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
@@ -289,10 +277,12 @@ class AIRRunner {
       executeOp(Op, inValues, outValues);
     else if (auto Op = dyn_cast<scf::ForOp>(op))
       executeOp(Op, inValues, outValues);
-    // else if (auto Op = dyn_cast<mlir::AffineForOp>(op))
-    //   executeOp(Op, inValues, outValues);
-    // else if (auto Op = dyn_cast<mlir::AffineParallelOp>(op))
-    //   executeOp(Op, inValues, outValues);
+    else if (auto Op = dyn_cast<scf::ParallelOp>(op))
+      executeOp(Op, inValues, outValues);
+    else if (auto Op = dyn_cast<xilinx::air::RegionOp>(op))
+      executeOp(Op, inValues, outValues);
+    else if (auto Op = dyn_cast<xilinx::air::RegionTerminatorOp>(op))
+      executeOp(Op, inValues, outValues);
     else if (auto Op = dyn_cast<xilinx::air::HerdLaunchOp>(op))
       executeOp(Op, inValues, outValues);
 #if HAVE_REGION_OP
@@ -386,7 +376,6 @@ public:
   // given store.  Return the pseudo-pointer to the new matrix in the
   // store (i.e. the first dimension index)
   unsigned allocateMemRef(mlir::MemRefType type, std::vector<llvm::Any> &in) {
-    llvm::ArrayRef<int64_t> shape = type.getShape();
     auto memorySpace = type.getMemorySpaceAsInt();
     auto volume = getTensorVolume(type);
     auto model = jsonModel.getAsObject();
@@ -426,7 +415,7 @@ public:
   void deallocateMemRef(unsigned ptr) {
     return;
     // assert(store[ptr].size());
-    auto allocationSize = store[ptr].size();
+    // auto allocationSize = store[ptr].size();
     if (verbose)
       llvm::outs() << "dealloc " << ptr << "\n";
     store[ptr].resize(0);
@@ -578,7 +567,7 @@ public:
     if (!memories)
       assert(memories);
 
-    unsigned idx = 0;
+    // unsigned idx = 0;
     // for (Value o : op->getOperands()) {
     //   if (auto tty = o.getType().dyn_cast<TensorType>()) {
     //     if (auto tensor_load =
@@ -944,27 +933,25 @@ public:
     return;
   }
 
-#if HAVE_REGION_OP
-  void scheduleAIRRegion(xilinx::air::RegionOp &r,
-                         std::deque<CommandQueueEntry> *kernelOps,
-                         std::deque<CommandQueueEntry> *dataOps,
-                         std::deque<CommandQueueEntry> herdOps[16][16]) {
+  void
+  scheduleAIRRegion(xilinx::air::RegionOp &r,
+                    std::deque<CommandQueueEntry> *programQueue,
+                    std::array<std::deque<CommandQueueEntry>, 4> *dispatchQueue,
+                    std::deque<CommandQueueEntry> tileQueue[16][16]) {
 
     if (r->getNumResults() &&
         r->getResult(0).getType().isa<xilinx::air::AsyncTokenType>())
-      valueMap[r->getResult(0)] = llvm::APInt(64, 1);
+      valueMap[r->getResult(0)] = llvm::APInt(64, 2);
 
-    kernelOps->push_back(
-        CommandQueueEntry(r.getOperation(), [=](Operation *op) {
-          auto o = cast<xilinx::air::RegionOp>(op);
-        }));
+    programQueue->push_back(CommandQueueEntry(r.getOperation()));
+    scheduleBlock(r->getRegion(0).front(), programQueue, dispatchQueue, tileQueue);
   }
-#endif
 
-  void scheduleScfFor(mlir::scf::ForOp &fo,
-                      std::deque<CommandQueueEntry> *kernelOps,
-                      std::deque<CommandQueueEntry> *dataOps,
-                      std::deque<CommandQueueEntry> herdOps[16][16]) {
+  void
+  scheduleScfFor(mlir::scf::ForOp &fo,
+                 std::deque<CommandQueueEntry> *programQueue,
+                 std::array<std::deque<CommandQueueEntry>, 4> *dispatchQueue,
+                 std::deque<CommandQueueEntry> tileQueue[16][16]) {
     auto ub = fo.getUpperBound().getDefiningOp<arith::ConstantIndexOp>();
     auto lb = fo.getLowerBound().getDefiningOp<arith::ConstantIndexOp>();
     auto step = fo.getStep().getDefiningOp<arith::ConstantIndexOp>();
@@ -973,7 +960,7 @@ public:
     auto r = ub.value() - lb.value();
     auto trip_count = mlir::ceilDiv(r, step.value());
 
-    kernelOps->push_back(CommandQueueEntry(fo.getOperation()));
+    programQueue->push_back(CommandQueueEntry(fo.getOperation()));
 
     for (auto r : fo->getResults()) {
       if (r.getType().isa<xilinx::air::AsyncTokenType>()) {
@@ -982,54 +969,59 @@ public:
     }
 
     for (auto i = 0; i < trip_count; i++) {
-      scheduleRegion(fo.getRegion(), kernelOps, dataOps, herdOps);
+      // scheduleRegion(fo.getRegion(), programQueue, dispatchQueue, tileQueue);
+      BlockAndValueMapping map;
+      auto bb = new mlir::Block();
+      fo.getRegion().push_back(bb);
+      auto bldr = OpBuilder::atBlockEnd(bb);
+      for (auto &o : fo.getRegion().front()) {
+        bldr.clone(o, map);
+      }
+      scheduleBlock(*bb, programQueue, dispatchQueue, tileQueue);
     }
     return;
   }
 
-  // void scheduleAffineFor(mlir::AffineForOp &afo,
-  //                        std::deque<CommandQueueEntry> *kernelOps,
-  //                        std::deque<CommandQueueEntry> *dataOps,
-  //                        std::deque<CommandQueueEntry> herdOps[16][16]) {
-  //   assert(afo.hasConstantBounds());
-  //   auto r = afo.getConstantUpperBound() - afo.getConstantLowerBound();
-  //   auto trip_count = mlir::ceilDiv((int64_t)r, afo.getStep());
+  void scheduleScfParallel(
+      mlir::scf::ParallelOp &po, std::deque<CommandQueueEntry> *programQueue,
+      std::array<std::deque<CommandQueueEntry>, 4> *dispatchQueue,
+      std::deque<CommandQueueEntry> tileQueue[16][16]) {
 
-  //   //kernelOps->push_back(CommandQueueEntry(afo.getOperation()));
+    int64_t trip_count = 1;
+    for (auto t :
+         llvm::zip(po.getLowerBound(), po.getUpperBound(), po.getStep())) {
+      auto lb = std::get<0>(t).getDefiningOp<arith::ConstantIndexOp>();
+      auto ub = std::get<1>(t).getDefiningOp<arith::ConstantIndexOp>();
+      auto step = std::get<2>(t).getDefiningOp<arith::ConstantIndexOp>();
+      assert(ub && lb && step);
+      auto r = ub.value() - lb.value();
+      trip_count *= mlir::ceilDiv(r, step.value());
+    }
 
-  //   for (auto i = 0; i < trip_count; i++) {
-  //     scheduleRegion(afo.getRegion(), kernelOps, dataOps, herdOps);
-  //   }
-  //   return;
-  // }
+    programQueue->push_back(
+        CommandQueueEntry(po.getOperation(), [=](Operation *op) {
+          for (auto i = 0; i < trip_count; i++) {
+            BlockAndValueMapping map;
+            auto bb = new mlir::Block();
+            auto spo = cast<scf::ParallelOp>(op);
+            spo.getRegion().push_back(bb);
+            auto bldr = OpBuilder::atBlockEnd(bb);
+            for (auto &o : spo.getRegion().front().getOperations()) {
+              bldr.clone(o, map);
+            }
+            scheduleBlock(
+                *bb, &(dispatchQueue->data()[i % dispatchQueue->size()]),
+                dispatchQueue, tileQueues[i % (dispatchQueue->size()/2)]);
+          }
+        }));
+    return;
+  }
 
-  // void scheduleAffineParallel(mlir::AffineParallelOp &apo,
-  //                             std::deque<CommandQueueEntry> *kernelOps,
-  //                             std::deque<CommandQueueEntry> *dataOps,
-  //                             std::deque<CommandQueueEntry> herdOps[16][16])
-  //                             {
-  //   assert(apo.getNumDims() == 2);
-  //   auto ub_rows =
-  //       apo.upperBoundsMap().getResult(0).cast<AffineConstantExpr>().getValue();
-  //   auto ub_cols =
-  //       apo.upperBoundsMap().getResult(1).cast<AffineConstantExpr>().getValue();
-
-  //   kernelOps->push_back(CommandQueueEntry(apo.getOperation()));
-
-  //   for (auto row = 0; row < ub_rows; row++) {
-  //     for (auto col = 0; col < ub_cols; col++) {
-  //       auto herd_row = row % 2;
-  //       auto herd_col = col % 12;
-  //       scheduleRegion(apo.getRegion(), herdOps[herd_col][herd_row],
-  //                      herdOps[herd_col][herd_row], herdOps);
-  //     }
-  //   }
-  // }
-
-  void scheduleHerdLaunch(xilinx::air::HerdLaunchOp &hlo,
-                          std::deque<CommandQueueEntry> *kernelOps,
-                          std::deque<CommandQueueEntry> *dataOps,
-                          std::deque<CommandQueueEntry> herdOps[16][16]) {
+  void scheduleHerdLaunch(
+      xilinx::air::HerdLaunchOp &hlo,
+      std::deque<CommandQueueEntry> *programQueue,
+      std::array<std::deque<CommandQueueEntry>, 4> *dispatchQueue,
+      std::deque<CommandQueueEntry> tileQueue[16][16]) {
 
     int64_t cols = cast<arith::ConstantIndexOp>(
                        hlo.getHerdSizeOperands().x.getDefiningOp())
@@ -1041,39 +1033,50 @@ public:
     if (hlo->getNumResults())
       valueMap[hlo->getResult(0)] = APInt(64, rows * cols + 1);
 
-    kernelOps->push_back(CommandQueueEntry(hlo.getOperation(), [=](Operation
-                                                                       *op) {
-      auto ho = cast<xilinx::air::HerdLaunchOp>(op);
-      auto tokenTy = xilinx::air::AsyncTokenType::get(op->getContext());
-      SmallVector<Value, 16> exit_tokens;
-      for (auto row = 0; row < rows; row++) {
-        for (auto col = 0; col < cols; col++) {
-          BlockAndValueMapping map;
-          auto bb = new mlir::Block();
-          ho.getRegion().push_back(bb);
-          auto bldr = OpBuilder::atBlockEnd(bb);
-          auto w = bldr.create<xilinx::air::WaitAllOp>(
-              op->getLoc(), SmallVector<Type, 1>{}, ho.getAsyncDependencies());
-          SmallVector<Value, 8> exit_deps;
-          for (auto &o : ho.getRegion().front()) {
-            auto c = bldr.clone(o, map);
-            for (auto r : c->getResults())
-              if (r.getType().isa<xilinx::air::AsyncTokenType>())
-                exit_deps.push_back(r);
+    programQueue->push_back(
+        CommandQueueEntry(hlo.getOperation(), [=](Operation *op) {
+          auto ho = cast<xilinx::air::HerdLaunchOp>(op);
+          auto tokenTy = xilinx::air::AsyncTokenType::get(op->getContext());
+          SmallVector<Value, 16> exit_tokens;
+          for (auto row = 0; row < rows; row++) {
+            for (auto col = 0; col < cols; col++) {
+              BlockAndValueMapping map;
+              auto bb = new mlir::Block();
+              ho.getRegion().push_back(bb);
+              auto bldr = OpBuilder::atBlockEnd(bb);
+              // insert a blocking wait on all input dependencies of the launch
+              // op
+              bldr.create<xilinx::air::WaitAllOp>(op->getLoc(),
+                                                  SmallVector<Type, 1>{},
+                                                  ho.getAsyncDependencies());
+              SmallVector<Value, 8> exit_deps;
+              for (auto &o : ho.getRegion().front()) {
+                auto c = bldr.clone(o, map);
+                // collect each token created in the block
+                for (auto r : c->getResults())
+                  if (r.getType().isa<xilinx::air::AsyncTokenType>())
+                    exit_deps.push_back(r);
+              }
+              scheduleBlock(*bb, &tileQueue[col][row], dispatchQueue,
+                            tileQueue);
+              if (ho->getNumResults()) {
+                // Create an async wait_all on all tokens created in the block.
+                // When the wait_all runs it decrements the herd result event.
+                auto t = bldr.create<xilinx::air::WaitAllOp>(
+                    op->getLoc(), SmallVector<Type, 1>{tokenTy}, exit_deps);
+                exit_tokens.push_back(t.getResult(0));
+                valueMap[t->getResult(0)] = APInt(64, 1);
+                tileQueue[col][row].push_back(
+                    CommandQueueEntry(t, [=](Operation *tOp) {
+                      valueMap[op->getResult(0)] =
+                          llvm::any_cast<llvm::APInt>(
+                              valueMap[op->getResult(0)]) -
+                          llvm::APInt(64, 1);
+                    }));
+              }
+            }
           }
-          scheduleBlock(*bb, &herdOps[col][row], &herdOps[col][row], herdOps);
-          auto t = bldr.create<xilinx::air::WaitAllOp>(
-              op->getLoc(), SmallVector<Type, 1>{tokenTy}, exit_deps);
-          exit_tokens.push_back(t.getResult(0));
-          valueMap[t->getResult(0)] = APInt(64, 1);
-          herdOps[col][row].push_back(CommandQueueEntry(t, [=](Operation *tOp) {
-            valueMap[op->getResult(0)] =
-                llvm::any_cast<llvm::APInt>(valueMap[op->getResult(0)]) -
-                llvm::APInt(64, 1);
-          }));
-        }
-      }
-    }));
+        }));
   }
 
   void scheduleAIRAsyncOp(Operation *op, std::deque<CommandQueueEntry> *q) {
@@ -1085,10 +1088,12 @@ public:
     }
   }
 
-  void scheduleBlock(mlir::Block &block,
-                     std::deque<CommandQueueEntry> *kernelOps,
-                     std::deque<CommandQueueEntry> *dataOps,
-                     std::deque<CommandQueueEntry> herdOps[16][16]) {
+  void
+  scheduleBlock(mlir::Block &block, std::deque<CommandQueueEntry> *programQueue,
+                std::array<std::deque<CommandQueueEntry>, 4> *dispatchQueue,
+                std::deque<CommandQueueEntry> tileQueue[16][16]) {
+    if (!block.getOperations().size())
+      return;
     Operation &o = block.getOperations().front();
     Operation *op = &o;
     while (op) {
@@ -1096,20 +1101,21 @@ public:
       if (isa<arith::ConstantOp>(op) || isa<arith::ConstantIndexOp>(op)) {
         executeOp(*op);
       } else if (isa<memref::AllocOp>(op) || isa<memref::DeallocOp>(op)) {
-        kernelOps->push_back(CommandQueueEntry(op));
+        programQueue->push_back(CommandQueueEntry(op));
       } else if (isa<xilinx::air::WaitAllOp>(op) ||
-                 isa<xilinx::air::DmaMemcpyInterface>(op)) {
-        scheduleAIRAsyncOp(op, kernelOps);
-#if HAVE_REGION_OP
+                 isa<xilinx::air::DmaMemcpyInterface>(op)||
+                 isa<xilinx::air::RegionTerminatorOp>(op)) {
+        scheduleAIRAsyncOp(op, programQueue);
       } else if (auto r = dyn_cast<xilinx::air::RegionOp>(op)) {
-        scheduleAIRRegion(r, kernelOps, dataOps, herdOps);
-#endif
+        scheduleAIRRegion(r, programQueue, dispatchQueue, tileQueue);
       } else if (auto hlo = dyn_cast<xilinx::air::HerdLaunchOp>(op)) {
-        scheduleHerdLaunch(hlo, kernelOps, dataOps, herdOps);
+        scheduleHerdLaunch(hlo, programQueue, dispatchQueue, tileQueue);
       } else if (auto linalgOp = mlir::dyn_cast<linalg::LinalgOp>(op)) {
-        kernelOps->push_back(CommandQueueEntry(op));
+        programQueue->push_back(CommandQueueEntry(op));
       } else if (auto sfo = dyn_cast<mlir::scf::ForOp>(op)) {
-        scheduleScfFor(sfo, kernelOps, dataOps, herdOps);
+        scheduleScfFor(sfo, programQueue, dispatchQueue, tileQueue);
+      } else if (auto spo = dyn_cast<mlir::scf::ParallelOp>(op)) {
+        scheduleScfParallel(spo, programQueue, dispatchQueue, tileQueue);
       } else {
         ; // op->dump();
         ; // llvm_unreachable("unexpected operation");
@@ -1118,22 +1124,22 @@ public:
     }
   }
 
-  void scheduleRegion(mlir::Region &region,
-                      std::deque<CommandQueueEntry> *kernelOps,
-                      std::deque<CommandQueueEntry> *dataOps,
-                      std::deque<CommandQueueEntry> herdOps[16][16]) {
+  void
+  scheduleRegion(mlir::Region &region,
+                 std::deque<CommandQueueEntry> *programQueue,
+                 std::array<std::deque<CommandQueueEntry>, 4> *dispatchQueue,
+                 std::deque<CommandQueueEntry> tileQueue[16][16]) {
     for (auto &b : region.getBlocks())
-      scheduleBlock(b, kernelOps, dataOps, herdOps);
+      scheduleBlock(b, programQueue, dispatchQueue, tileQueue);
   }
 
   void scheduleFunction(mlir::FuncOp &toplevel) {
-    std::deque<CommandQueueEntry> kernelOps;
-    std::deque<CommandQueueEntry> dataOps_Load;
-    std::deque<CommandQueueEntry> dataOps_Store;
-    std::deque<CommandQueueEntry> herdOps[16][16];
+    std::deque<CommandQueueEntry> programQueue;
+    std::array<std::deque<CommandQueueEntry>, 4> dispatchQueue;
 
     // push everything onto the queues in program order
-    scheduleRegion(toplevel.getRegion(), &kernelOps, &dataOps_Load, herdOps);
+    scheduleRegion(toplevel.getRegion(), &programQueue, &dispatchQueue,
+                   tileQueues[0]);
 
     uint64_t time = 1;
 
@@ -1142,51 +1148,45 @@ public:
       if (verbose)
         llvm::outs() << "time: " << time << "\n";
 
-      // processQueue(dataOps_Store, time);
-      processQueue(dataOps_Load, time);
-      processQueue(kernelOps, time);
-      for (int y = 0; y < 16; y++) {
-        for (int x = 0; x < 16; x++) {
-          processQueue(herdOps[y][x], time);
-          processQueue(herdOps[y][x], time);
+      running = false;
+      std::vector<uint64_t> next_times;
+
+      processQueue(programQueue, time);
+      if (programQueue.size()) {
+        running = true;
+        if (programQueue.front().is_started() &&
+            (programQueue.front().end_time))
+          next_times.push_back(programQueue.front().end_time);
+      }
+      for (unsigned i = 0; i < dispatchQueue.size(); i++) {
+        processQueue(dispatchQueue[i], time);
+        if (dispatchQueue[i].size()) {
+          running = true;
+          if (dispatchQueue[i].front().is_started() &&
+              (dispatchQueue[i].front().end_time))
+            next_times.push_back(dispatchQueue[i].front().end_time);
         }
       }
-
-      std::vector<uint64_t> next_times;
-      if (dataOps_Store.size()) {
-        if (dataOps_Store.front().is_started() &&
-            (dataOps_Store.front().end_time))
-          next_times.push_back(dataOps_Store.front().end_time);
-      }
-      if (dataOps_Load.size()) {
-        if (dataOps_Load.front().is_started() &&
-            (dataOps_Load.front().end_time))
-          next_times.push_back(dataOps_Load.front().end_time);
-      }
-      if (kernelOps.size()) {
-        if (kernelOps.front().is_started() && (kernelOps.front().end_time))
-          next_times.push_back(kernelOps.front().end_time);
-      }
-      for (int y = 0; y < 16; y++) {
-        for (int x = 0; x < 16; x++) {
-          if (herdOps[y][x].size()) {
-            if (herdOps[y][x].front().is_started() &&
-                (herdOps[y][x].front().end_time))
-              next_times.push_back(herdOps[y][x].front().end_time);
+      for (int i = 0; i < 4; i++) {
+        for (int y = 0; y < 16; y++) {
+          for (int x = 0; x < 16; x++) {
+            processQueue(tileQueues[i][y][x], time);
+            if (tileQueues[i][y][x].size()) {
+              running = true;
+              if (tileQueues[i][y][x].front().is_started() &&
+                  (tileQueues[i][y][x].front().end_time))
+                next_times.push_back(tileQueues[i][y][x].front().end_time);
+            }
           }
         }
       }
-      running = dataOps_Store.size() || dataOps_Load.size() || kernelOps.size();
-      for (int y = 0; y < 16; y++) {
-        for (int x = 0; x < 16; x++) {
-          running |= herdOps[y][x].size();
-          running |= herdOps[y][x].size();
-        }
-      }
-      uint64_t next_time;
+
+      uint64_t next_time = 0;
       if (next_times.size())
         next_time = *std::min_element(next_times.begin(), next_times.end());
       time = std::max(time + 1, next_time);
+      // if (time > 5000000)
+      //   running = false;
     }
 
     for (unsigned ptr = 0, end = store.size(); ptr != end; ++ptr) {
@@ -1196,6 +1196,7 @@ public:
         store[ptr].resize(0);
       }
     }
+    llvm::outs() << "Finished at time " << time << "\n";
   }
 
   // todo private:
@@ -1211,6 +1212,8 @@ private:
   llvm::raw_ostream &traceStream;
   std::vector<llvm::Any> results;
   std::vector<uint64_t> resultTimes;
+
+  std::deque<CommandQueueEntry> tileQueues[4][16][16];
 
   // The store associates each allocation in the program
   // (represented by a int) with a vector of values which can be
