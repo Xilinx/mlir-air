@@ -34,11 +34,11 @@ module  {
             %7 = memref.alloc() : memref<16x64xf32, 2>
             %8 = memref.alloc() : memref<64x16xf32, 2>
             %9 = memref.alloc() : memref<16x16xf32, 2>
-            linalg.copy(%4, %7) : memref<16x64xf32, #map>, memref<16x64xf32, 2>
-            linalg.copy(%5, %8) : memref<64x16xf32, #map>, memref<64x16xf32, 2>
-            linalg.copy(%6, %9) : memref<16x16xf32, #map>, memref<16x16xf32, 2>
+            linalg.copy ins(%4 :  memref<16x64xf32, #map>) outs(%7 : memref<16x64xf32, 2>)
+            linalg.copy ins(%5 :  memref<64x16xf32, #map>) outs(%8 : memref<64x16xf32, 2>)
+            linalg.copy ins(%6 :  memref<16x16xf32, #map>) outs(%9 : memref<16x16xf32, 2>)
             linalg.matmul ins(%7, %8 : memref<16x64xf32, 2>, memref<64x16xf32, 2>) outs(%9 : memref<16x16xf32, 2>)
-            linalg.copy(%9, %6) : memref<16x16xf32, 2>, memref<16x16xf32, #map>
+            linalg.copy ins(%9 : memref<16x16xf32, 2>) outs(%6 : memref<16x16xf32, #map>)
             memref.dealloc %7 : memref<16x64xf32, 2>
             memref.dealloc %8 : memref<64x16xf32, 2>
             memref.dealloc %9 : memref<16x16xf32, 2>

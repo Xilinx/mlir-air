@@ -6,7 +6,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Pass/Pass.h"
 
@@ -34,7 +34,7 @@ public:
       return;
     visitedOps.insert(op);
 
-    if (auto callOp = dyn_cast<CallOp>(op)) {
+    if (auto callOp = dyn_cast<func::CallOp>(op)) {
 
       auto builder = std::make_unique<mlir::OpBuilder>(op);
 
@@ -67,15 +67,12 @@ public:
         newCallArgs.push_back(valueMap[v]);
       }
 
-      /*auto newCallOp =*/ builder->create<CallOp>(op->getLoc(),
-                                               newFnName,
-                                               ArrayRef<Type>{},
-                                               newCallArgs);
+      /*auto newCallOp =*/builder->create<func::CallOp>(
+          op->getLoc(), newFnName, ArrayRef<Type>{}, newCallArgs);
       erasedOps.insert(op);
       auto fn = module.lookupSymbol<FuncOp>(callOp.getCallee());
       if (fn && fn.use_empty()) erasedOps.insert(fn);
-    }
-    else if ( isa<memref::AllocOp>(op) ) {
+    } else if (isa<memref::AllocOp>(op)) {
       Value v = op->getResult(0);
       if (valueMap.count(v)) {
         v.replaceAllUsesWith(valueMap[v]);
@@ -110,10 +107,10 @@ public:
       if (graph.isExternal())
         return;
       Block &BB = graph.front();
-  
-      std::vector<ReturnOp> retOps;
+
+      std::vector<func::ReturnOp> retOps;
       graph.walk([&](Operation *op) {
-        if (auto r = dyn_cast<ReturnOp>(op))
+        if (auto r = dyn_cast<func::ReturnOp>(op))
           retOps.push_back(r);
       });
 
@@ -135,7 +132,7 @@ public:
       Operation *retOp = retOps.front();
       auto builder = std::make_unique<mlir::OpBuilder>(retOp);
 
-      builder->create<ReturnOp>(retOp->getLoc());
+      builder->create<func::ReturnOp>(retOp->getLoc());
 
       std::vector<Value> operands{retOp->getOperands().begin(),
                                   retOp->getOperands().end()};

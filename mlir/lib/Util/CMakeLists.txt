@@ -7,6 +7,5 @@ add_mlir_library(AIRUtil
   MLIRAffine
   MLIRLinalg
   MLIRIR
-  MLIRStandard
   MLIRTransforms
 )

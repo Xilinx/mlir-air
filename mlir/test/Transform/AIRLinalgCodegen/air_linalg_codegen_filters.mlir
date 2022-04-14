@@ -16,11 +16,8 @@
 #map = affine_map<(d0, d1) -> (d0, d1)>
 module attributes {torch.debug_module_name = "mmult"} {
   func @forward(%arg0: memref<128x128xi32>, %arg1: memref<128x128xi32>, %arg2: memref<128x128xi32>, %arg3: memref<128x128xi32>) -> memref<?x?xi32> {
-    %c0_i32 = arith.constant 0 : i32
     %0 = memref.alloc() : memref<128x128xi32>
-    linalg.fill(%c0_i32, %0) : i32, memref<128x128xi32> 
     %1 = memref.alloc() : memref<128x128xi32>
-    linalg.copy(%0, %1) : memref<128x128xi32>, memref<128x128xi32> 
     linalg.matmul {__internal_linalg_transform__ = "mmult"} ins(%arg2, %arg3 : memref<128x128xi32>, memref<128x128xi32>) outs(%1 : memref<128x128xi32>)
     %2 = memref.alloc() : memref<128x128xi32>
     linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%arg1, %1 : memref<128x128xi32>, memref<128x128xi32>) outs(%2 : memref<128x128xi32>) attrs =  {__internal_linalg_transform__ = "generic0"} {

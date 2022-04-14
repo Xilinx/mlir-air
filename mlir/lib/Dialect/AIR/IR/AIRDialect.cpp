@@ -86,7 +86,7 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
     return;
   printer << "[";
   llvm::interleaveComma(asyncDependencies, printer);
-  printer << "]";
+  printer << "] ";
 }
 
 }

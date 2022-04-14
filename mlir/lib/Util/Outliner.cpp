@@ -1,11 +1,11 @@
 // (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
 
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
-#include "mlir/Transforms/RegionUtils.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/BlockAndValueMapping.h"
+#include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/Debug.h"
 
@@ -20,7 +20,7 @@ using namespace mlir;
 namespace xilinx {
 namespace air {
 
-CallOp AIROutliner::outline(AffineForOp forOp, std::string fname) {
+func::CallOp AIROutliner::outline(AffineForOp forOp, std::string fname) {
 
   llvm::SetVector<Value> outline_args;
 
@@ -73,13 +73,15 @@ CallOp AIROutliner::outline(AffineForOp forOp, std::string fname) {
   Operation* clone = body_builder.clone(*forOp.getOperation(), mapper);
   assert(clone);
 
-  body_builder.create<ReturnOp>(loc);
+  body_builder.create<func::ReturnOp>(loc);
 
   OpBuilder call_builder(forOp);
-  return call_builder.create<CallOp>(loc, function, outline_args.getArrayRef());
+  return call_builder.create<func::CallOp>(loc, function,
+                                           outline_args.getArrayRef());
 }
 
-CallOp AIROutliner::outline(std::vector<mlir::Operation*> ops, std::string fname) {
+func::CallOp AIROutliner::outline(std::vector<mlir::Operation *> ops,
+                                  std::string fname) {
   if (!ops.size())
     return nullptr;
 
@@ -142,10 +144,10 @@ CallOp AIROutliner::outline(std::vector<mlir::Operation*> ops, std::string fname
   }
 
   auto builder = OpBuilder(ops[0]);
-  auto call = builder.create<CallOp>(loc, function, outline_args);
+  auto call = builder.create<func::CallOp>(loc, function, outline_args);
 
   auto func_builder = OpBuilder::atBlockEnd(&entryBlock);
-  func_builder.create<ReturnOp>(loc, rets);
+  func_builder.create<func::ReturnOp>(loc, rets);
 
   idx = 0;
   for (auto r : call.getResults()) {

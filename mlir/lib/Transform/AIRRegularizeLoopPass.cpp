@@ -98,7 +98,7 @@ bool isIndependent(Operation *op, AffineForOp forOp,
     }
   } else if (isa<AffineDmaWaitOp, AffineDmaStartOp>(op)) {
     return false;
-  } else if (!isa<ConstantOp>(op)) {
+  } else if (!isa<arith::ConstantOp>(op)) {
     // Register op in the set of ops that have users.
     opsWithUsers.insert(op);
     if (isa<AffineMapAccessInterface>(op)) {

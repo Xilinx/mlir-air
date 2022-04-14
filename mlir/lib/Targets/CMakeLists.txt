@@ -14,6 +14,6 @@ add_air_library(AIRTargets
   MLIRSupport
   MLIRTensor
   MLIRTransforms
-  MLIRTranslation
+
   MLIRVector
   )

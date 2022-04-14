@@ -10,5 +10,4 @@ add_air_dialect_library(AIRDialect
 
   LINK_LIBS PUBLIC
   MLIRIR
-  MLIRStandard
 )

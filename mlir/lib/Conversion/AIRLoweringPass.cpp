@@ -8,19 +8,18 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
+#include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/OperationSupport.h"
-#include "mlir/Parser.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "mlir/IR/BlockAndValueMapping.h"
 
 #include <vector>
 
@@ -282,7 +281,7 @@ Operation* convertDmaMemcpyToAirRt(Operation *op, ArrayRef<Value > operands,
   for (int i=0,e=opers.size(); i<e; i++) {
     if (opers[i].getType().isa<IndexType>()) {
       opers[i] = rewriter.create<IndexCastOp>(
-        op->getLoc(), opers[i], IntegerType::get(ctx, 64));
+          op->getLoc(), IntegerType::get(ctx, 64), opers[i]);
     }
   }
 
@@ -425,9 +424,9 @@ public:
         opers.push_back(tileIds.y);
       }
       opers[1] = rewriter.create<IndexCastOp>(
-          op->getLoc(), opers[1], IntegerType::get(op->getContext(), 64));
+          op->getLoc(), IntegerType::get(op->getContext(), 64), opers[1]);
       opers[2] = rewriter.create<IndexCastOp>(
-          op->getLoc(), opers[2], IntegerType::get(op->getContext(), 64));
+          op->getLoc(), IntegerType::get(op->getContext(), 64), opers[2]);
 
       if (isFromTile)
         opers.push_back(op.getDstMemref());
@@ -451,16 +450,16 @@ public:
     int idx = 4 - src.getRank();
     for (auto o : isFromTile ? op.dst_offsets() : op.src_offsets())
       offsets[idx++] = rewriter.create<IndexCastOp>(
-          op->getLoc(), o, IntegerType::get(ctx, 64));
+          op->getLoc(), IntegerType::get(ctx, 64), o);
     idx = 4 - dst.getRank();
     for (auto o : isFromTile ? op.dst_strides().drop_back()
                             : op.src_strides().drop_back())
       strides[idx++] = rewriter.create<IndexCastOp>(
-          op->getLoc(), o, IntegerType::get(ctx, 64));
+          op->getLoc(), IntegerType::get(ctx, 64), o);
     idx = 4 - src.getRank();
     for (auto o : isFromTile ? op.dst_sizes() : op.src_sizes())
       lengths[idx++] = rewriter.create<IndexCastOp>(
-          op->getLoc(), o, IntegerType::get(ctx, 64));
+          op->getLoc(), IntegerType::get(ctx, 64), o);
 
     opers.append(offsets);
     opers.append(lengths);
@@ -553,15 +552,11 @@ public:
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<LLVM::LLVMDialect,
-                          StandardOpsDialect,
-                          arith::ArithmeticDialect,
-                          AffineDialect,
-                          scf::SCFDialect,
-                          linalg::LinalgDialect,
-                          memref::MemRefDialect,
-                          bufferization::BufferizationDialect,
-                          xilinx::airrt::AIRRtDialect>();
+    target.addLegalDialect<
+        LLVM::LLVMDialect, func::FuncDialect, arith::ArithmeticDialect,
+        AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
+        memref::MemRefDialect, bufferization::BufferizationDialect,
+        xilinx::airrt::AIRRtDialect>();
 
     // Replace the PipelineStageOps first, followed by the 
     // HerdPipelineOps, then run the rest of the patterns.
@@ -587,8 +582,6 @@ public:
     // DMA and HerdLaunchOp conversion
     RewritePatternSet air_patterns(context);
 
-    // lower to air runtime
-    
     target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
       return (op.getType().getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L2);
     });

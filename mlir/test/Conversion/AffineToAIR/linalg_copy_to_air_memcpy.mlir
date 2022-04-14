@@ -22,11 +22,11 @@ module  {
       %4 = memref.alloc() : memref<16x64xf32, 2>
       %5 = memref.alloc() : memref<64x16xf32, 2>
       %6 = memref.alloc() : memref<16x16xf32, 2>
-      linalg.copy(%1, %4) : memref<16x64xf32, #map>, memref<16x64xf32, 2>
-      linalg.copy(%2, %5) : memref<64x16xf32, #map>, memref<64x16xf32, 2>
-      linalg.copy(%3, %6) : memref<16x16xf32, #map>, memref<16x16xf32, 2>
+      linalg.copy ins(%1 : memref<16x64xf32, #map>) outs(%4 : memref<16x64xf32, 2>)
+      linalg.copy ins(%2 : memref<64x16xf32, #map>) outs(%5 : memref<64x16xf32, 2>)
+      linalg.copy ins(%3 : memref<16x16xf32, #map>) outs(%6 : memref<16x16xf32, 2>)
       linalg.matmul ins(%4, %5 : memref<16x64xf32, 2>, memref<64x16xf32, 2>) outs(%6 : memref<16x16xf32, 2>)
-      linalg.copy(%6, %3) : memref<16x16xf32, 2>, memref<16x16xf32, #map>
+      linalg.copy ins(%6 : memref<16x16xf32, 2>) outs(%3 : memref<16x16xf32, #map>)
       memref.dealloc %4 : memref<16x64xf32, 2>
       memref.dealloc %5 : memref<64x16xf32, 2>
       memref.dealloc %6 : memref<16x16xf32, 2>
@@ -57,15 +57,15 @@ module  {
             %5 = memref.alloc() : memref<32x32x128xi32, 2>
             %6 = memref.alloc() : memref<32x32x128xi32, 2>
             %7 = memref.alloc() : memref<32x32x128xi32, 2>
-            linalg.copy(%2, %5) : memref<32x32x128xi32, #map0>, memref<32x32x128xi32, 2> 
-            linalg.copy(%3, %6) : memref<32x32x128xi32, #map0>, memref<32x32x128xi32, 2> 
-            linalg.copy(%4, %7) : memref<32x32x128xi32, #map0>, memref<32x32x128xi32, 2> 
+            linalg.copy ins(%2 : memref<32x32x128xi32, #map0>) outs(%5 : memref<32x32x128xi32, 2>)
+            linalg.copy ins(%3 : memref<32x32x128xi32, #map0>) outs(%6 : memref<32x32x128xi32, 2>)
+            linalg.copy ins(%4 : memref<32x32x128xi32, #map0>) outs(%7 : memref<32x32x128xi32, 2>)
             linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel", "parallel", "parallel"]} ins(%5, %6 : memref<32x32x128xi32, 2>, memref<32x32x128xi32, 2>) outs(%7 : memref<32x32x128xi32, 2>) {
             ^bb0(%arg8: i32, %arg9: i32, %arg10: i32):  // no predecessors
               %8 = arith.muli %arg8, %arg9 : i32
               linalg.yield %8 : i32
             }
-            linalg.copy(%7, %4) : memref<32x32x128xi32, 2>, memref<32x32x128xi32, #map0> 
+            linalg.copy ins(%7 : memref<32x32x128xi32,  2>) outs(%4 : memref<32x32x128xi32, #map0>)
             memref.dealloc %5 : memref<32x32x128xi32, 2>
             memref.dealloc %6 : memref<32x32x128xi32, 2>
             memref.dealloc %7 : memref<32x32x128xi32, 2>

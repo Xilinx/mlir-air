@@ -4,18 +4,17 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
-#include "mlir/Dialect/SCF/SCF.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/OperationSupport.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
-
 
 #include "air/Transform/AIRHerdAssignPass.h"
 #include "air/Util/Util.h"
@@ -107,9 +106,9 @@ public:
     }
 
     for (auto f : module.getOps<FuncOp>()) {
-      std::vector<CallOp> kernelOps;
+      std::vector<func::CallOp> kernelOps;
       f.walk([&](Operation *o) {
-        if (auto co = dyn_cast<CallOp>(o)) {
+        if (auto co = dyn_cast<func::CallOp>(o)) {
           if (co.getCallee().startswith("acap_conv2d_hw_kernel")) {
             kernelOps.push_back(co);
           }

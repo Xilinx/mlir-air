@@ -1,21 +1,21 @@
 // (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
 
-#include "mlir/Transforms/Passes.h"
-#include "mlir/IR/Attributes.h"
-#include "mlir/IR/BlockAndValueMapping.h"
-#include "mlir/IR/PatternMatch.h"
-#include "mlir/IR/Location.h"
-#include "mlir/Pass/Pass.h"
-#include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/SCF/SCF.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
-#include "mlir/Dialect/Vector/VectorOps.h"
-#include "mlir/Translation.h"
-#include "mlir/Target/LLVMIR/Import.h"
+#include "mlir/Dialect/SCF/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/IR/Attributes.h"
+#include "mlir/IR/BlockAndValueMapping.h"
+#include "mlir/IR/Location.h"
+#include "mlir/IR/PatternMatch.h"
+#include "mlir/Pass/Pass.h"
 #include "mlir/Target/LLVMIR/Export.h"
+#include "mlir/Target/LLVMIR/Import.h"
+#include "mlir/Tools/mlir-translate/Translation.h"
+#include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/Passes.h"
 
 #include "llvm/IR/Module.h"
 #include "llvm/Support/JSON.h"
@@ -60,39 +60,36 @@ namespace {
 }
   void registerAIRRtTranslations() {
 
-  TranslateFromMLIRRegistration
-    registrationMMap("airrt-generate-json", [](ModuleOp module, raw_ostream &output) {
-      llvm::json::Object moduleJSON;
-      for (auto module_meta : module.getOps<airrt::ModuleMetadataOp>()) {
-        for (auto herd_meta : module_meta.getOps<airrt::HerdMetadataOp>()) {
-          llvm::json::Object herdJSON;
-          for (auto a : herd_meta->getAttrs()) {
-            auto ident = a.getName();
-            auto attr = a.getValue();
-            herdJSON[ident.str()] = attrToJSON(attr);
+    TranslateFromMLIRRegistration registrationMMap(
+        "airrt-generate-json",
+        [](ModuleOp module, raw_ostream &output) {
+          llvm::json::Object moduleJSON;
+          for (auto module_meta : module.getOps<airrt::ModuleMetadataOp>()) {
+            for (auto herd_meta : module_meta.getOps<airrt::HerdMetadataOp>()) {
+              llvm::json::Object herdJSON;
+              for (auto a : herd_meta->getAttrs()) {
+                auto ident = a.getName();
+                auto attr = a.getValue();
+                herdJSON[ident.str()] = attrToJSON(attr);
+              }
+              moduleJSON[herd_meta.sym_name()] =
+                  llvm::json::Value(std::move(herdJSON));
+            }
           }
-          moduleJSON[herd_meta.sym_name()] = llvm::json::Value(std::move(herdJSON));
-        }
-      }
-      llvm::json::Value topv(std::move(moduleJSON));
-      std::string ret;
-      llvm::raw_string_ostream ss(ret);
-      ss << llvm::formatv("{0:2}",topv) << "\n";
-      output << ss.str();
-      return success();
-    }, 
-    [](DialectRegistry &registry) {
-      registry.insert<xilinx::air::airDialect,
-                      xilinx::airrt::AIRRtDialect,
-                      StandardOpsDialect,
-                      arith::ArithmeticDialect,
-                      memref::MemRefDialect,
-                      vector::VectorDialect,
-                      LLVM::LLVMDialect,
-                      scf::SCFDialect,
-                      AffineDialect>();
-    });
-
+          llvm::json::Value topv(std::move(moduleJSON));
+          std::string ret;
+          llvm::raw_string_ostream ss(ret);
+          ss << llvm::formatv("{0:2}", topv) << "\n";
+          output << ss.str();
+          return success();
+        },
+        [](DialectRegistry &registry) {
+          registry.insert<xilinx::air::airDialect, xilinx::airrt::AIRRtDialect,
+                          func::FuncDialect, cf::ControlFlowDialect,
+                          arith::ArithmeticDialect, memref::MemRefDialect,
+                          vector::VectorDialect, LLVM::LLVMDialect,
+                          scf::SCFDialect, AffineDialect>();
+        });
 }
 
 } // namespace air

@@ -86,7 +86,6 @@ private:
 
 void AIRRemoveLinalgNamePass::runOnOperation() {
   auto module = getOperation();
-  auto ctx = module.getContext();
 
   module.walk([&](linalg::LinalgOp op) {
     auto attr = op->getAttrOfType<StringAttr>(

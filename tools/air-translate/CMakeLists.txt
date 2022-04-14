@@ -29,7 +29,6 @@ set(LIBS
   MLIRParser
   MLIRPass
   MLIRSPIRV
-  MLIRTranslation
   MLIRSupport
 )
 

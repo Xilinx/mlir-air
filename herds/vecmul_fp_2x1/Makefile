@@ -14,7 +14,7 @@ vecmul.mlir: vecmul.py
 	python3 $< > $@
 
 aie_inc.cpp: aie.herd_0.mlir
-	$(AIE_OPT) -lower-affine --convert-scf-to-std \
+	$(AIE_OPT) -lower-affine --convert-scf-to-cf \
 				--aie-create-flows --aie-find-flows \
 				--aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
 
@@ -76,9 +76,10 @@ aie_ctrl.mlir: vecmul_air.mlir
 aie_ctrl.llvm.mlir: aie_ctrl.mlir
 	$(AIR_OPT) -air-return-elimination \
 		--lower-affine \
-		--convert-scf-to-std \
+		--convert-scf-to-cf \
 		--convert-vector-to-llvm \
-		--convert-std-to-llvm  \
+		--convert-func-to-llvm  \
+		--convert-cf-to-llvm  \
 		-o $@ $<
 
 aie_ctrl.o: aie_ctrl.llvm.mlir

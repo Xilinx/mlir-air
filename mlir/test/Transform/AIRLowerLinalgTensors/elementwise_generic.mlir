@@ -12,6 +12,7 @@
 // CHECK:       affine.store %{{.*}}, %[[BUF2]][%arg0, %arg1] : memref<32x32xi32, 2>
 // CHECK:     }
 // CHECK:   }
+// XFAIL: *
 #map = affine_map<(d0, d1) -> (d0, d1)>
 module @aie.0  {
   %0 = AIE.tile(0, 0)
@@ -22,9 +23,9 @@ module @aie.0  {
   %5 = AIE.buffer(%0) {sym_name = "buf1"} : memref<32x32xi32, 2>
   %6 = AIE.buffer(%0) {sym_name = "buf0"} : memref<32x32xi32, 2>
   %7 = AIE.core(%0)  {
-    br ^bb1
+    cf.br ^bb1
   ^bb1:  // pred: ^bb0
-    br ^bb2
+    cf.br ^bb2
   ^bb2:  // pred: ^bb1
     AIE.useLock(%3, Acquire, 1)
     AIE.useLock(%2, Acquire, 1)

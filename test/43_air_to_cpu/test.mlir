@@ -7,9 +7,9 @@ module attributes {torch.debug_module_name = "mmult"}  {
     %c64 = arith.constant 64 : index
     %c0_i32 = arith.constant 0 : i32
     %0 = memref.alloc() : memref<1024x1024xi32>
-    linalg.fill(%c0_i32, %0) : i32, memref<1024x1024xi32> 
+    linalg.fill ins(%c0_i32 : i32) outs(%0 : memref<1024x1024xi32>)
     %1 = memref.cast %arg2 : memref<?x?xi32> to memref<1024x1024xi32>
-    linalg.copy(%0, %1) : memref<1024x1024xi32>, memref<1024x1024xi32> 
+    linalg.copy ins(%0 : memref<1024x1024xi32>) outs(%1 : memref<1024x1024xi32>)
     scf.for %arg3 = %c0 to %c1024 step %c64 {
       scf.for %arg4 = %c0 to %c1024 step %c64 {
         scf.for %arg5 = %c0 to %c1024 step %c64 {

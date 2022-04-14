@@ -12,7 +12,7 @@
 include "AIRRtBase.td"
 include "mlir/IR/SymbolInterfaces.td"
 
-class AIRRt_Op<string mnemonic, list<OpTrait> traits = []>
+class AIRRt_Op<string mnemonic, list<Trait> traits = []>
     : Op<AIRRt_Dialect, mnemonic, traits> {
 }
 

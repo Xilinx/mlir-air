@@ -115,7 +115,7 @@ def run(mlir_module, args):
     run_passes(pass_pipeline, Module.parse(str(m)), opts, aie_ctrl_refback)
 
     aie_ctrl_llvm = opts.tmpdir+'/llvm.'+air_mlir_filename
-    pass_pipeline = 'lower-affine,convert-scf-to-std,convert-memref-to-llvm,convert-std-to-llvm,canonicalize,cse'
+    pass_pipeline = 'lower-affine,convert-scf-to-cf,convert-memref-to-llvm,convert-func-to-llvm,convert-cf-to-llvm,canonicalize,cse'
     run_passes(pass_pipeline, mlir_module, opts, aie_ctrl_llvm)
 
     # compile the llvm dialect into a .o object file
@@ -220,9 +220,10 @@ def run_flow(opts):
 
     aie_ctrl_llvm = opts.tmpdir+'/llvm.'+air_mlir_filename
     do_call(['air-opt', aie_ctrl,
-            '-air-return-elimination','--lower-affine','--convert-scf-to-std',
+            '-air-return-elimination','--lower-affine','--convert-scf-to-cf',
             '--convert-memref-to-llvm',
-            '--convert-std-to-llvm',
+            '--convert-func-to-llvm',
+            '--convert-cf-to-llvm',
             '--canonicalize', '--cse',
             '-o', aie_ctrl_llvm])
 

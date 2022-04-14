@@ -4,19 +4,19 @@
 // CHECK: scf.for %arg6 = %c0 to %c64 step %c16 {
 // CHECK:     %6 = memref.subview %arg1[0, %4, %arg6, %5] [1, 32, 16, 16] [1, 1, 1, 1] : memref<1x128x64x64xf32> to memref<1x32x16x16xf32, #map1>
 // CHECK:     %7 = memref.alloc() : memref<1x32x16x16xf32, 2>
-// CHECK:     linalg.copy(%6, %7) : memref<1x32x16x16xf32, #map1>, memref<1x32x16x16xf32, 2> 
+// CHECK:     linalg.copy ins(%6 : memref<1x32x16x16xf32, #map1>) outs(%7 : memref<1x32x16x16xf32, 2>)
 // CHECK:     scf.for %arg7 = %c0 to %c64 step %c16 {
 // CHECK:         %8 = memref.subview %2[0, %arg7, %arg6, %5] [1, 16, 18, 18] [1, 1, 1, 1] : memref<1x64x66x66xf32> to memref<1x16x18x18xf32, #map2>
 // CHECK:         %9 = memref.subview %0[%4, %arg7, 0, 0] [32, 16, 3, 3] [1, 1, 1, 1] : memref<128x64x3x3xf32> to memref<32x16x3x3xf32, #map3>
 // CHECK:         %10 = memref.alloc() : memref<1x16x18x18xf32, 2>
 // CHECK:         %11 = memref.alloc() : memref<32x16x3x3xf32, 2>
-// CHECK:         linalg.copy(%8, %10) : memref<1x16x18x18xf32, #map2>, memref<1x16x18x18xf32, 2> 
-// CHECK:         linalg.copy(%9, %11) : memref<32x16x3x3xf32, #map3>, memref<32x16x3x3xf32, 2> 
+// CHECK:         linalg.copy ins(%8 : memref<1x16x18x18xf32, #map2>) outs(%10 : memref<1x16x18x18xf32, 2>)
+// CHECK:         linalg.copy ins(%9 : memref<32x16x3x3xf32, #map3>) outs(%11 : memref<32x16x3x3xf32, 2>)
 // CHECK:         linalg.conv_2d_nchw_fchw {dilations = dense<1> : vector<2xi64>, strides = dense<1> : vector<2xi64>} ins(%10, %11 : memref<1x16x18x18xf32, 2>, memref<32x16x3x3xf32, 2>) outs(%7 : memref<1x32x16x16xf32, 2>)
 // CHECK:         memref.dealloc %10 : memref<1x16x18x18xf32, 2>
 // CHECK:         memref.dealloc %11 : memref<32x16x3x3xf32, 2>
 // CHECK:     }
-// CHECK:     linalg.copy(%7, %6) : memref<1x32x16x16xf32, 2>, memref<1x32x16x16xf32, #map1> 
+// CHECK:     linalg.copy ins(%7 : memref<1x32x16x16xf32, 2>) outs(%6 : memref<1x32x16x16xf32, #map1>)
 // CHECK:     memref.dealloc %7 : memref<1x32x16x16xf32, 2>
 // CHECK: }
 
@@ -36,11 +36,11 @@ module attributes {torch.debug_module_name = "Conv2D"} {
     %cst = arith.constant 0.000000e+00 : f32
     %0 = memref.get_global @__constant_128x64x3x3xf32 : memref<128x64x3x3xf32>
     %1 = memref.alloc() : memref<1x64x66x66xf32>
-    linalg.fill(%cst, %1) : f32, memref<1x64x66x66xf32> 
+    linalg.fill ins(%cst : f32) outs(%1 : memref<1x64x66x66xf32>)
     %2 = memref.alloc() : memref<1x64x66x66xf32>
-    linalg.copy(%1, %2) : memref<1x64x66x66xf32>, memref<1x64x66x66xf32> 
+    linalg.copy ins(%1 : memref<1x64x66x66xf32>) outs(%2 : memref<1x64x66x66xf32>)
     %3 = memref.subview %2[0, 0, 1, 1] [1, 64, 64, 64] [1, 1, 1, 1] : memref<1x64x66x66xf32> to memref<1x64x64x64xf32, #map0>
-    linalg.copy(%arg0, %3) : memref<1x64x64x64xf32>, memref<1x64x64x64xf32, #map0> 
+    linalg.copy ins(%arg0 : memref<1x64x64x64xf32>) outs(%3 : memref<1x64x64x64xf32, #map0>)
     scf.parallel (%arg2, %arg3) = (%c0, %c0) to (%c32, %c64) step (%c16, %c32) {
       scf.for %arg4 = %c0 to %c128 step %c64 {
         %4 = arith.addi %arg4, %arg3 : index
@@ -54,11 +54,11 @@ module attributes {torch.debug_module_name = "Conv2D"} {
               %9 = memref.alloc() : memref<1x16x18x18xf32, 2>
               %10 = memref.alloc() : memref<32x16x3x3xf32, 2>
               %11 = memref.alloc() : memref<1x32x16x16xf32, 2>
-              linalg.copy(%7, %9) : memref<1x16x18x18xf32, #map2>, memref<1x16x18x18xf32, 2> 
-              linalg.copy(%8, %10) : memref<32x16x3x3xf32, #map3>, memref<32x16x3x3xf32, 2> 
-              linalg.copy(%6, %11) : memref<1x32x16x16xf32, #map1>, memref<1x32x16x16xf32, 2> 
+              linalg.copy ins(%7 : memref<1x16x18x18xf32, #map2>) outs(%9 : memref<1x16x18x18xf32, 2>)
+              linalg.copy ins(%8 : memref<32x16x3x3xf32, #map3>) outs(%10 : memref<32x16x3x3xf32, 2>)
+              linalg.copy ins(%6 : memref<1x32x16x16xf32, #map1>) outs(%11 : memref<1x32x16x16xf32, 2>)
               linalg.conv_2d_nchw_fchw {dilations = dense<1> : vector<2xi64>, strides = dense<1> : vector<2xi64>} ins(%9, %10 : memref<1x16x18x18xf32, 2>, memref<32x16x3x3xf32, 2>) outs(%11 : memref<1x32x16x16xf32, 2>)
-              linalg.copy(%11, %6) : memref<1x32x16x16xf32, 2>, memref<1x32x16x16xf32, #map1> 
+              linalg.copy ins(%11 : memref<1x32x16x16xf32, 2>) outs(%6 : memref<1x32x16x16xf32, #map1>)
               memref.dealloc %9 : memref<1x16x18x18xf32, 2>
               memref.dealloc %10 : memref<32x16x3x3xf32, 2>
               memref.dealloc %11 : memref<1x32x16x16xf32, 2>
@@ -71,4 +71,3 @@ module attributes {torch.debug_module_name = "Conv2D"} {
     return
   }
 }
-

@@ -18,8 +18,9 @@ test.exe: memory.o main.o test.o
 %.llvmir.mlir: %.cpu.mlir
 	air-opt  -o $@ $< \
 					-convert-linalg-to-affine-loops \
-					-lower-affine -convert-scf-to-std \
-					-convert-std-to-llvm \
+					-lower-affine -convert-scf-to-cf \
+					-convert-func-to-llvm \
+					-convert-cf-to-llvm \
 					-convert-memref-to-llvm \
 					-canonicalize -cse
 

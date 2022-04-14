@@ -4,17 +4,18 @@
 #include "air/Transform/AIRLowerLinalgTensors.h"
 #include "aie/AIEDialect.h"
 
+#include "mlir/Conversion/LinalgToStandard/LinalgToStandard.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Bufferization/Transforms/Bufferize.h"
+#include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-
-#include "mlir/Dialect/Linalg/Transforms/Transforms.h"
-#include "mlir/Conversion/LinalgToStandard/LinalgToStandard.h"
-#include "mlir/Dialect/Math/IR/Math.h"
-#include "mlir/Pass/Pass.h"
-#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
-#include "mlir/Dialect/Bufferization/Transforms/Bufferize.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #define DEBUG_TYPE "air-lower-linalg-tensors"
 
@@ -63,7 +64,7 @@ struct RemoveAllocCopyPattern
 
     for (auto u : op->getUsers())
       if (auto copy = dyn_cast<linalg::CopyOp>(u)) {
-        memref = copy.input();
+        memref = copy.inputs()[0];
         rewriter.eraseOp(copy);
       }
 
@@ -120,8 +121,8 @@ void AIRLowerLinalgTensors::runOnOperation() {
   ConversionTarget target(context);
   bufferization::BufferizeTypeConverter typeConverter;
   target.addLegalDialect<AIE::AIEDialect, AffineDialect, math::MathDialect,
-                      memref::MemRefDialect, StandardOpsDialect,
-                      arith::ArithmeticDialect>();
+                         memref::MemRefDialect, func::FuncDialect,
+                         arith::ArithmeticDialect>();
   target.addIllegalOp<linalg::InitTensorOp, tensor::ExtractSliceOp, tensor::InsertSliceOp>();
 
   // Mark all Linalg operations illegal as long as they work on tensors.
@@ -130,10 +131,11 @@ void AIRLowerLinalgTensors::runOnOperation() {
   };
   target.addDynamicallyLegalDialect<linalg::LinalgDialect>(isLegalOperation);
 
-  RewritePatternSet patterns0(&context);
-  linalg::populateLinalgBufferizePatterns(typeConverter, patterns0);
-  if (failed(applyPartialConversion(aie_module, target,
-                                  std::move(patterns0))))
+  bufferization::BufferizationOptions options =
+      bufferization::getPartialBufferizationOptions();
+  options.allowDialectInFilter<linalg::LinalgDialect>();
+
+  if (failed(bufferizeOp(getOperation(), options)))
     signalPassFailure();
 
   RewritePatternSet patterns1(&context);

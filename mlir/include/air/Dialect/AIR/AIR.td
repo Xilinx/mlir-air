@@ -10,7 +10,7 @@ include "air/Dialect/AIR/AIROpBase.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
-class air_Op<string mnemonic, list<OpTrait> traits = []> :
+class air_Op<string mnemonic, list<Trait> traits = []> :
     Op<air_Dialect, mnemonic, traits>;
 
 def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,

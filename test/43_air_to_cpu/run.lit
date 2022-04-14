@@ -1,4 +1,4 @@
-// RUN: air-opt %S/test.mlir -o %T/test.llvmir.mlir -air-to-cpu -cse -convert-linalg-to-affine-loops -lower-affine -convert-scf-to-std -convert-std-to-llvm -convert-memref-to-llvm -canonicalize -cse 
+// RUN: air-opt %S/test.mlir -o %T/test.llvmir.mlir -air-to-cpu -cse -convert-linalg-to-affine-loops -lower-affine -convert-scf-to-cf -convert-func-to-llvm -convert-cf-to-llvm -convert-memref-to-llvm -canonicalize -cse 
 // RUN: mlir-translate %T/test.llvmir.mlir --mlir-to-llvmir | opt -O3 -o %T/test.bc
 // RUN: clang -O3 -Wno-override-module -c %T/test.bc -o %T/test.o
 // RUN: clang -I%air_runtime_lib%/airhost/include %S/main.cpp %S/memory.cpp %T/test.o  -o %T/test.elf

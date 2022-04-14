@@ -1,20 +1,20 @@
 // (c) Copyright 2021 Xilinx Inc.
 
-// RUN: air-opt %s -air-linalg-codegen=test-patterns
+// RUN: air-opt %s -air-linalg-codegen=test-patterns | FileCheck %s
 // CHECK: %1 = memref.subview %arg0[%arg2, 0] [16, 64] [1, 1] : memref<64x64xf32> to memref<16x64xf32, #map>
 // CHECK: %2 = memref.subview %arg1[0, %arg3] [64, 16] [1, 1] : memref<64x64xf32> to memref<64x16xf32, #map>
 // CHECK: %3 = memref.subview %0[%arg2, %arg3] [16, 16] [1, 1] : memref<64x64xf32> to memref<16x16xf32, #map>
-// CHECK: %4 = memref.alloc() : memref<16x64xf32, 2>
-// CHECK: %5 = memref.alloc() : memref<64x16xf32, 2>
-// CHECK: %6 = memref.alloc() : memref<16x16xf32, 2>
-// CHECK: linalg.copy(%1, %4) : memref<16x64xf32, #map>, memref<16x64xf32, 2>
-// CHECK: linalg.copy(%2, %5) : memref<64x16xf32, #map>, memref<64x16xf32, 2>
-// CHECK: linalg.copy(%3, %6) : memref<16x16xf32, #map>, memref<16x16xf32, 2>
-// CHECK: linalg.matmul ins(%4, %5 : memref<16x64xf32, 2>, memref<64x16xf32, 2>) outs(%6 : memref<16x16xf32, 2>)
-// CHECK: linalg.copy(%6, %3) : memref<16x16xf32, 2>, memref<16x16xf32, #map>
-// CHECK: memref.dealloc %4 : memref<16x64xf32, 2>
-// CHECK: memref.dealloc %5 : memref<64x16xf32, 2>
-// CHECK: memref.dealloc %6 : memref<16x16xf32, 2>
+// CHECK: %4 = memref.alloc() : memref<16x64xf32, 1>
+// CHECK: %5 = memref.alloc() : memref<64x16xf32, 1>
+// CHECK: %6 = memref.alloc() : memref<16x16xf32, 1>
+// CHECK: linalg.copy ins(%1 : memref<16x64xf32, #map>) outs(%4 : memref<16x64xf32, 1>)
+// CHECK: linalg.copy ins(%2 : memref<64x16xf32, #map>) outs(%5 : memref<64x16xf32, 1>)
+// CHECK: linalg.copy ins(%3 : memref<16x16xf32, #map>) outs(%6 : memref<16x16xf32, 1>)
+// CHECK: linalg.matmul ins(%4, %5 : memref<16x64xf32, 1>, memref<64x16xf32, 1>) outs(%6 : memref<16x16xf32, 1>)
+// CHECK: linalg.copy ins(%6 : memref<16x16xf32, 1>) outs(%3 : memref<16x16xf32, #map>)
+// CHECK: memref.dealloc %4 : memref<16x64xf32, 1>
+// CHECK: memref.dealloc %5 : memref<64x16xf32, 1>
+// CHECK: memref.dealloc %6 : memref<16x16xf32, 1>
 #map0 = affine_map<(d0, d1)[s0] -> (d0 * 64 + s0 + d1)>
 #map1 = affine_map<(d0, d1) -> (d0 * 64 + d1)>
 #map2 = affine_map<(d0, d1) -> (d0 * 16 + d1)>
@@ -39,11 +39,11 @@ module  {
       %10 = memref.alloc(%c1024) : memref<?xi8>
       %11 = memref.view %10[%c0][] : memref<?xi8> to memref<16x16xf32>
       %12 = memref.subview %11[0, 0] [16, 16] [1, 1] : memref<16x16xf32> to memref<16x16xf32, #map2>
-      linalg.copy(%1, %6) : memref<16x64xf32, #map0>, memref<16x64xf32, #map1>
-      linalg.copy(%2, %9) : memref<64x16xf32, #map0>, memref<64x16xf32, #map2>
-      linalg.copy(%3, %12) : memref<16x16xf32, #map0>, memref<16x16xf32, #map2>
+      linalg.copy ins(%1 : memref<16x64xf32, #map0>) outs(%6 : memref<16x64xf32, #map1>)
+      linalg.copy ins(%2 : memref<64x16xf32, #map0>) outs(%9 : memref<64x16xf32, #map2>)
+      linalg.copy ins(%3 : memref<16x16xf32, #map0>) outs(%12 : memref<16x16xf32, #map2>)
       linalg.matmul ins(%6, %9 : memref<16x64xf32, #map1>, memref<64x16xf32, #map2>) outs(%12 : memref<16x16xf32, #map2>)
-      linalg.copy(%12, %3) : memref<16x16xf32, #map2>, memref<16x16xf32, #map0>
+      linalg.copy ins(%12 : memref<16x16xf32, #map2>) outs(%3 : memref<16x16xf32, #map0>)
       memref.dealloc %4 : memref<?xi8>
       memref.dealloc %7 : memref<?xi8>
       memref.dealloc %10 : memref<?xi8>

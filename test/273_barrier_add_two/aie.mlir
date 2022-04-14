@@ -61,22 +61,22 @@ module {
       AIE.useLock(%l72_0, "Acquire", 0)
       AIE.dmaBd(<%buf72_0 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l72_0, "Release", 1)
-      br ^bd1
+      cf.br ^bd1
     ^bd1:
       AIE.useLock(%l72_1, "Acquire", 0)
       AIE.dmaBd(<%buf72_2 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l72_1, "Release", 1)
-      br ^bd0
+      cf.br ^bd0
     ^bd2:
       AIE.useLock(%l72_2, "Acquire", 1)
       AIE.dmaBd(<%buf72_1 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l72_2, "Release", 0)
-      br ^bd3
+      cf.br ^bd3
     ^bd3:
       AIE.useLock(%l72_3, "Acquire", 1)
       AIE.dmaBd(<%buf72_3 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l72_3, "Release", 0)
-      br ^bd2
+      cf.br ^bd2
     ^end:
       AIE.end
   }
@@ -88,22 +88,22 @@ module {
       AIE.useLock(%l73_0, "Acquire", 0)
       AIE.dmaBd(<%buf73_0 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l73_0, "Release", 1)
-      br ^bd1
+      cf.br ^bd1
     ^bd1:
       AIE.useLock(%l73_1, "Acquire", 0)
       AIE.dmaBd(<%buf73_2 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l73_1, "Release", 1)
-      br ^bd0
+      cf.br ^bd0
     ^bd2:
       AIE.useLock(%l73_2, "Acquire", 1)
       AIE.dmaBd(<%buf73_1 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l73_2, "Release", 0)
-      br ^bd3
+      cf.br ^bd3
     ^bd3:
       AIE.useLock(%l73_3, "Acquire", 1)
       AIE.dmaBd(<%buf73_3 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l73_3, "Release", 0)
-      br ^bd2
+      cf.br ^bd2
     ^end:
       AIE.end
   }
@@ -115,22 +115,22 @@ module {
       AIE.useLock(%l82_0, "Acquire", 0)
       AIE.dmaBd(<%buf82_0 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l82_0, "Release", 1)
-      br ^bd1
+      cf.br ^bd1
     ^bd1:
       AIE.useLock(%l82_1, "Acquire", 0)
       AIE.dmaBd(<%buf82_2 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l82_1, "Release", 1)
-      br ^bd0
+      cf.br ^bd0
     ^bd2:
       AIE.useLock(%l82_2, "Acquire", 1)
       AIE.dmaBd(<%buf82_1 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l82_2, "Release", 0)
-      br ^bd3
+      cf.br ^bd3
     ^bd3:
       AIE.useLock(%l82_3, "Acquire", 1)
       AIE.dmaBd(<%buf82_3 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l82_3, "Release", 0)
-      br ^bd2
+      cf.br ^bd2
     ^end:
       AIE.end
   }
@@ -142,22 +142,22 @@ module {
       AIE.useLock(%l83_0, "Acquire", 0)
       AIE.dmaBd(<%buf83_0 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l83_0, "Release", 1)
-      br ^bd1
+      cf.br ^bd1
     ^bd1:
       AIE.useLock(%l83_1, "Acquire", 0)
       AIE.dmaBd(<%buf83_2 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l83_1, "Release", 1)
-      br ^bd0
+      cf.br ^bd0
     ^bd2:
       AIE.useLock(%l83_2, "Acquire", 1)
       AIE.dmaBd(<%buf83_1 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l83_2, "Release", 0)
-      br ^bd3
+      cf.br ^bd3
     ^bd3:
       AIE.useLock(%l83_3, "Acquire", 1)
       AIE.dmaBd(<%buf83_3 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l83_3, "Release", 0)
-      br ^bd2
+      cf.br ^bd2
     ^end:
       AIE.end
   }
@@ -292,22 +292,22 @@ module {
       AIE.useLock(%l342_0, "Acquire", 0)
       AIE.dmaBd(<%buf342_0 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l342_0, "Release", 1)
-      br ^bd1
+      cf.br ^bd1
     ^bd1:
       AIE.useLock(%l342_1, "Acquire", 0)
       AIE.dmaBd(<%buf342_2 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l342_1, "Release", 1)
-      br ^bd0
+      cf.br ^bd0
     ^bd2:
       AIE.useLock(%l342_2, "Acquire", 1)
       AIE.dmaBd(<%buf342_1 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l342_2, "Release", 0)
-      br ^bd3
+      cf.br ^bd3
     ^bd3:
       AIE.useLock(%l342_3, "Acquire", 1)
       AIE.dmaBd(<%buf342_3 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l342_3, "Release", 0)
-      br ^bd2
+      cf.br ^bd2
     ^end:
       AIE.end
   }

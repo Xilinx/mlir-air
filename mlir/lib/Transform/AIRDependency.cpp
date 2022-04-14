@@ -6,21 +6,21 @@
 #include "air/Transform/AIRDependency.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Dialect/SCF/Transforms.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/InliningUtils.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/IR/Builders.h"
-#include "mlir/IR/OperationSupport.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/RegionUtils.h"
 
 #include "llvm/ADT/SetVector.h"
@@ -212,8 +212,8 @@ public:
         
         // If the sink op is linalg::copy
         if (auto child_copy = dyn_cast<linalg::CopyOp>(sink_op)){
-          partialMemref tile_in = createPartialMemref(child_copy.input());
-          partialMemref tile_out = createPartialMemref(child_copy.output());
+          partialMemref tile_in = createPartialMemref(child_copy.inputs()[0]);
+          partialMemref tile_out = createPartialMemref(child_copy.outputs()[0]);
           child_op_memref_reads.push_back(tile_in);
           child_op_memref_reads.push_back(tile_out); // linalg.copy both reads and writes output
           child_op_memref_writes.push_back(tile_out);

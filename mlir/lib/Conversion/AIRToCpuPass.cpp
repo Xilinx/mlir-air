@@ -7,17 +7,16 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/OperationSupport.h"
-#include "mlir/Parser.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 
@@ -111,10 +110,10 @@ public:
                                       --body.end());
 
     rewriter.setInsertionPointToStart(&inner.getBodyRegion().front());
-    rewriter.create<CallOp>(op->getLoc(), function, callops);
+    rewriter.create<func::CallOp>(op->getLoc(), function, callops);
 
     rewriter.setInsertionPointToEnd(&entryBlock);
-    rewriter.create<ReturnOp>(op->getLoc());
+    rewriter.create<func::ReturnOp>(op->getLoc());
     rewriter.eraseOp(op);
     module.push_back(function);
     return success();
@@ -222,9 +221,10 @@ public:
   }
 };
 
-static CallOp convertOpToFunctionWithId(Operation *op, ArrayRef<Value> operands,
-                                        ConversionPatternRewriter &rewriter,
-                                        StringRef fnName) {
+static func::CallOp
+convertOpToFunctionWithId(Operation *op, ArrayRef<Value> operands,
+                          ConversionPatternRewriter &rewriter,
+                          StringRef fnName) {
   auto loc = op->getLoc();
 
   SmallVector<Value, 16> callops;
@@ -241,7 +241,7 @@ static CallOp convertOpToFunctionWithId(Operation *op, ArrayRef<Value> operands,
       auto t = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
                                memrefTy.getElementType(), memrefTy.getLayout(),
                                memrefTy.getMemorySpace());
-      callops.push_back(rewriter.create<memref::CastOp>(op->getLoc(), o, t));
+      callops.push_back(rewriter.create<memref::CastOp>(op->getLoc(), t, o));
     } else {
       callops.push_back(o);
     }
@@ -266,15 +266,15 @@ static CallOp convertOpToFunctionWithId(Operation *op, ArrayRef<Value> operands,
 
   auto fn = xilinx::air::getMangledFunction(op->getParentOfType<ModuleOp>(),
                                             fnName.str(), callops, retTys);
-  auto call = rewriter.replaceOpWithNewOp<CallOp>(
+  auto call = rewriter.replaceOpWithNewOp<func::CallOp>(
       op, retTys, SymbolRefAttr::get(fn), callops);
   int real_result_idx = 0;
   int result_idx = 0;
   for (auto r : op->getResults()) {
     if (auto memrefTy = r.getType().dyn_cast<MemRefType>()) {
       auto t = real_result_tys[real_result_idx++];
-      auto c = rewriter.create<memref::CastOp>(op->getLoc(),
-                                               call.getResult(result_idx), t);
+      auto c = rewriter.create<memref::CastOp>(op->getLoc(), t,
+                                               call.getResult(result_idx));
       r.replaceAllUsesWith(c.getResult());
     } else {
       r.replaceAllUsesWith(call.getResult(result_idx));
@@ -284,10 +284,10 @@ static CallOp convertOpToFunctionWithId(Operation *op, ArrayRef<Value> operands,
   return call;
 }
 
-static CallOp convertOpToFunctionWithTileId(Operation *op,
-                                            ArrayRef<Value> operands,
-                                            ConversionPatternRewriter &rewriter,
-                                            StringRef fnName) {
+static func::CallOp
+convertOpToFunctionWithTileId(Operation *op, ArrayRef<Value> operands,
+                              ConversionPatternRewriter &rewriter,
+                              StringRef fnName) {
   auto loc = op->getLoc();
   // op->print(llvm::outs());
   // llvm::outs() << "\n";
@@ -325,7 +325,7 @@ static CallOp convertOpToFunctionWithTileId(Operation *op,
       auto t = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
                                memrefTy.getElementType(), memrefTy.getLayout(),
                                memrefTy.getMemorySpace());
-      callops.push_back(rewriter.create<memref::CastOp>(op->getLoc(), o, t));
+      callops.push_back(rewriter.create<memref::CastOp>(op->getLoc(), t, o));
     } else {
       callops.push_back(o);
     }
@@ -351,15 +351,15 @@ static CallOp convertOpToFunctionWithTileId(Operation *op,
 
   auto fn = xilinx::air::getMangledFunction(op->getParentOfType<ModuleOp>(),
                                             fnName.str(), callops, retTys);
-  auto call = rewriter.create<CallOp>(op->getLoc(), retTys,
-                                      SymbolRefAttr::get(fn), callops);
+  auto call = rewriter.create<func::CallOp>(op->getLoc(), retTys,
+                                            SymbolRefAttr::get(fn), callops);
   int real_result_idx = 0;
   int result_idx = 0;
   for (auto r : op->getResults()) {
     if (auto memrefTy = r.getType().dyn_cast<MemRefType>()) {
       auto t = real_result_tys[real_result_idx++];
-      auto c = rewriter.create<memref::CastOp>(op->getLoc(),
-                                               call.getResult(result_idx), t);
+      auto c = rewriter.create<memref::CastOp>(op->getLoc(), t,
+                                               call.getResult(result_idx));
       r.replaceAllUsesWith(c.getResult());
     } else {
       r.replaceAllUsesWith(call.getResult(result_idx));
@@ -479,12 +479,12 @@ public:
 };
 
 // Convert CallOp returns of AsyncTokenType to uint64
-class AsyncCallOpConversion : public OpConversionPattern<CallOp> {
+class AsyncCallOpConversion : public OpConversionPattern<func::CallOp> {
 public:
-  using OpConversionPattern<CallOp>::OpConversionPattern;
+  using OpConversionPattern<func::CallOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(CallOp op, OpAdaptor adaptor,
+  matchAndRewrite(func::CallOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
     SmallVector<Type, 2> retTy;
@@ -494,8 +494,8 @@ public:
       else
         retTy.push_back(t);
 
-    auto callOp = rewriter.create<CallOp>(op->getLoc(), adaptor.getCallee(),
-                                          retTy, adaptor.getOperands());
+    auto callOp = rewriter.create<func::CallOp>(
+        op->getLoc(), adaptor.getCallee(), retTy, adaptor.getOperands());
     rewriter.replaceOp(op, callOp.getResults());
     return success();
   }
@@ -597,7 +597,7 @@ public:
     ConversionTarget target(*context);
 
     target.addLegalDialect<
-        LLVM::LLVMDialect, StandardOpsDialect, arith::ArithmeticDialect,
+        LLVM::LLVMDialect, func::FuncDialect, arith::ArithmeticDialect,
         AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
         memref::MemRefDialect, bufferization::BufferizationDialect,
         xilinx::airrt::AIRRtDialect>();
@@ -667,7 +667,7 @@ public:
     target.addDynamicallyLegalOp<FuncOp>(
         [&](FuncOp op) { return converter.isSignatureLegal(op.getType()); });
 
-    target.addDynamicallyLegalOp<CallOp>([&](CallOp op) {
+    target.addDynamicallyLegalOp<func::CallOp>([&](func::CallOp op) {
       return (!llvm::any_of(op->getResultTypes(), [](Type t) {
         return t.isa<xilinx::air::AsyncTokenType>();
       }) && !llvm::any_of(op->getOperandTypes(), [](Type t) {

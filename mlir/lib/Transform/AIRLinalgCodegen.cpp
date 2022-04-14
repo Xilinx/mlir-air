@@ -8,17 +8,17 @@
 #include "air/Util/Outliner.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/CodegenStrategy.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Dialect/SCF/Transforms.h"
-#include "mlir/Transforms/RegionUtils.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/InliningUtils.h"
+#include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/SetVector.h"
 
 #include <numeric>
@@ -138,7 +138,7 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
                 b->insertArgument(arg.getArgNumber(), newOp.getType(), newOp.getLoc());
             rewriter.setInsertionPointToStart(&*launch.getRegion().begin());
             arg.replaceAllUsesWith(rewriter.create<memref::CastOp>(
-                op.getLoc(), new_arg, arg.getType()));
+                op.getLoc(), arg.getType(), new_arg));
             b->eraseArgument(arg.getArgNumber());
           }
         }
@@ -246,28 +246,37 @@ struct RemoveAllocLinalgOpCopyPattern
     }
     Operation *castOp = nullptr;
     Operation *linalgOp = nullptr;
+    Operation *copyOp = nullptr;
     for (auto &u : op->getUses())
       if (auto c = dyn_cast<memref::CastOp>(u.getOwner()))
         castOp = c;
+      else if (auto c = dyn_cast<memref::CopyOp>(u.getOwner()))
+        copyOp = c;
       else if (auto l = dyn_cast<linalg::LinalgOp>(u.getOwner())) {
         linalgOp = l;
         if (l.isInitTensor(&u))
           return failure();
       }
-    if (!castOp || !linalgOp)
+    if (castOp && copyOp)
       return failure();
 
-    if (!castOp->hasOneUse())
+    if (!(castOp || copyOp) || !linalgOp)
       return failure();
-    auto copyOp = dyn_cast<memref::CopyOp>(*castOp->user_begin());
-    if (!copyOp)
-      return failure();
+
+    if (!copyOp) {
+      if (!castOp->hasOneUse())
+        return failure();
+      copyOp = dyn_cast<memref::CopyOp>(*castOp->user_begin());
+      if (!copyOp)
+        return failure();
+    }
 
     auto newOp = rewriter.create<memref::CastOp>(op->getLoc(), op.getType(),
                                                  copyOp->getOperand(1));
     rewriter.replaceOp(op, newOp->getResults());
     rewriter.eraseOp(copyOp);
-    rewriter.eraseOp(castOp);
+    if (castOp)
+      rewriter.eraseOp(castOp);
     return success();
   }
 };
@@ -339,7 +348,7 @@ struct HoistReduceBufferPattern : public OpRewritePattern<linalg::CopyOp> {
     // e. kernel parent op is a scf.for op
     // After matching those pattern, memref.alloc() & 2_linalg.copy move before inner scf.for loop
     // and 1_linalg.copy & memref.dealloc() move after inner scf.for loop.
-    for (Operation *userOp : op.input().getUsers()) {
+    for (Operation *userOp : op.inputs()[0].getUsers()) {
       if (isa<linalg::CopyOp>(userOp))
         otherCpy = userOp;
       else if (isa<linalg::LinalgOp>(userOp))
@@ -359,14 +368,15 @@ struct HoistReduceBufferPattern : public OpRewritePattern<linalg::CopyOp> {
     auto linalgCpy = dyn_cast<linalg::CopyOp>(otherCpy);
 
     // d. 2_linalg.copy input defining op is memref.subview
-    if (isa<memref::SubViewOp>(linalgCpy.input().getDefiningOp()))
-      subviewOp = linalgCpy.input().getDefiningOp();
+    if (isa<memref::SubViewOp>(linalgCpy.inputs()[0].getDefiningOp()))
+      subviewOp = linalgCpy.inputs()[0].getDefiningOp();
     else
       return failure();
 
     // 1_linalg.copy.input == 2_linalg.copy.output && 1_linalg.copy.output ==
     // 2_linalg.copy.input
-    if (op.input() != linalgCpy.output() || op.output() != linalgCpy.input())
+    if (op.inputs()[0] != linalgCpy.outputs()[0] ||
+        op.outputs()[0] != linalgCpy.inputs()[0])
       return failure();
 
     // 1_linalg.copy & 2_linalg.copy & kernel op are in same region
@@ -375,8 +385,8 @@ struct HoistReduceBufferPattern : public OpRewritePattern<linalg::CopyOp> {
       return failure();
 
     // c. defining op is memref.alloc()
-    if (isa<memref::AllocOp>(linalgCpy.output().getDefiningOp()))
-      memrefAllocaOp = linalgCpy.output().getDefiningOp();
+    if (isa<memref::AllocOp>(linalgCpy.outputs()[0].getDefiningOp()))
+      memrefAllocaOp = linalgCpy.outputs()[0].getDefiningOp();
     else
       return failure();
 
@@ -503,7 +513,7 @@ public:
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<AffineDialect, memref::MemRefDialect, linalg::LinalgDialect,
-                    scf::SCFDialect, air::airDialect, StandardOpsDialect>();
+                    scf::SCFDialect, air::airDialect, func::FuncDialect>();
   }
 
   void runTestPatterns(FuncOp funcOp) {
@@ -673,7 +683,7 @@ public:
 
       // outline the operation for convenience
       xilinx::air::AIROutliner olnr;
-      CallOp call =
+      func::CallOp call =
           olnr.outline(std::vector<Operation *>{genericOp}, "call_generic_op");
       FuncOp called = funcOp->getParentOfType<ModuleOp>().lookupSymbol<FuncOp>(
           call.getCallee());
@@ -728,7 +738,7 @@ public:
       // tile to the herd size
 
       SmallVector<int64_t, 4> herd_tile_size(tripCounts.size(), -1);
-      for (int i = 0, e = l1_tile_size.size(); i < e; i++) {
+      for (int i = 0, e = std::min(2, (int)l1_tile_size.size()); i < e; i++) {
         if (herd_size[i] > tripCounts[i])
           herd_tile_size[i] = tripCounts[i];
         else if (herd_size[i] < tripCounts[i] / l1_tile_size[i])
@@ -742,6 +752,10 @@ public:
         LLVM_DEBUG(llvm::outs() << "L1 tile size [" << i
                                 << "] = " << l1_tile_size[i] << "\n");
       }
+
+      for (auto &s : herd_tile_size)
+        if (s == -1)
+          s = 0;
 
       RewritePatternSet patterns(ctx);
       patterns.insert<TileLinalgOpPattern>(
@@ -822,7 +836,7 @@ public:
       StringAttr next_match = attr;
 
       xilinx::air::AIROutliner olnr;
-      CallOp call =
+      func::CallOp call =
           olnr.outline(std::vector<Operation *>{matmulOp}, "call_mmult");
       FuncOp called = funcOp->getParentOfType<ModuleOp>().lookupSymbol<FuncOp>(
           call.getCallee());
@@ -919,7 +933,7 @@ public:
     // Conv2dOp
     for (auto conv2dOp : conv2dOps) {
       xilinx::air::AIROutliner olnr;
-      CallOp call =
+      func::CallOp call =
           olnr.outline(std::vector<Operation *>{conv2dOp}, "call_conv_2d_nchw");
       FuncOp called = funcOp->getParentOfType<ModuleOp>().lookupSymbol<FuncOp>(
           call.getCallee());

@@ -4,11 +4,11 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include "mlir/Conversion/StandardToLLVM/ConvertStandardToLLVM.h"
+#include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Pass/Pass.h"
@@ -410,8 +410,8 @@ lowerDmaMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
     fn.setPrivate();
     module.push_back(fn);
   }
-  operands[4] = rewriter.create<memref::CastOp>(loc, operands[4], tys[4]);
-  rewriter.create<CallOp>(loc, retTys, SymbolRefAttr::get(fn), operands);
+  operands[4] = rewriter.create<memref::CastOp>(loc, tys[4], operands[4]);
+  rewriter.create<func::CallOp>(loc, retTys, SymbolRefAttr::get(fn), operands);
   if (op->getNumResults()) {
     rewriter.replaceOp(op, operands[0]);
   } else {
@@ -454,7 +454,7 @@ lowerDmaNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
                            memrefTy.getElementType(), memrefTy.getLayout(),
                            memrefTy.getMemorySpace());
 
-  operands[4] = rewriter.create<memref::CastOp>(loc, operands[4], tys[4]);
+  operands[4] = rewriter.create<memref::CastOp>(loc, tys[4], operands[4]);
 
   // mangle the name by appending '_<rank>d<space><type>'
   llvm::raw_string_ostream ss(fnName);
@@ -471,7 +471,7 @@ lowerDmaNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
     module.push_back(fn);
   }
 
-  rewriter.create<CallOp>(loc, retTys, SymbolRefAttr::get(fn), operands);
+  rewriter.create<func::CallOp>(loc, retTys, SymbolRefAttr::get(fn), operands);
   if (op->getNumResults()) {
     rewriter.replaceOp(op, operands[0]);
   } else {
@@ -511,15 +511,17 @@ lowerNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
     operands.push_back(o);
 
   operands[1] = rewriter.create<memref::CastOp>(
-      loc, operands[1],
+      loc,
       MemRefType::get(std::vector<int64_t>(dstMemRefTy.getRank(), -1),
                       dstMemRefTy.getElementType(), dstMemRefTy.getLayout(),
-                      dstMemRefTy.getMemorySpace()));
+                      dstMemRefTy.getMemorySpace()),
+      operands[1]);
   operands[2] = rewriter.create<memref::CastOp>(
-      loc, operands[2],
+      loc,
       MemRefType::get(std::vector<int64_t>(srcMemRefTy.getRank(), -1),
                       srcMemRefTy.getElementType(), srcMemRefTy.getLayout(),
-                      srcMemRefTy.getMemorySpace()));
+                      srcMemRefTy.getMemorySpace()),
+      operands[2]);
 
   for (auto o : operands)
     tys.push_back(o.getType());
@@ -542,8 +544,8 @@ lowerNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
     module.push_back(fn);
   }
 
-  rewriter.create<CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn),
-                          operands);
+  rewriter.create<func::CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn),
+                                operands);
   if (op->getNumResults()) {
     rewriter.replaceOp(op, operands[0]);
   } else {
@@ -746,7 +748,8 @@ public:
       module.push_back(fn);
     }
 
-    auto callOp = rewriter.create<CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn), operands);
+    auto callOp = rewriter.create<func::CallOp>(
+        op->getLoc(), retTys, SymbolRefAttr::get(fn), operands);
     auto castOp = rewriter.create<memref::CastOp>(op->getLoc(), memrefTy, callOp.getResult(0));
     rewriter.replaceOp(op, castOp->getResults());
     return success();
@@ -792,7 +795,8 @@ public:
       module.push_back(fn);
     }
 
-    rewriter.create<CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn), operands);
+    rewriter.create<func::CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn),
+                                  operands);
     rewriter.eraseOp(op);
     return success();
   }
@@ -827,8 +831,8 @@ public:
       module.push_back(fn);
     }
 
-    rewriter.create<CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn),
-                            operands);
+    rewriter.create<func::CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn),
+                                  operands);
     rewriter.eraseOp(op);
     return success();
   }
@@ -884,12 +888,9 @@ public:
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<LLVM::LLVMDialect,
-                          StandardOpsDialect,
-                          arith::ArithmeticDialect,
-                          AffineDialect,
-                          scf::SCFDialect,
-                          memref::MemRefDialect>();
+    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
+                           arith::ArithmeticDialect, AffineDialect,
+                           scf::SCFDialect, memref::MemRefDialect>();
 
     target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
       return (op.getType().getMemorySpaceAsInt() == 0);

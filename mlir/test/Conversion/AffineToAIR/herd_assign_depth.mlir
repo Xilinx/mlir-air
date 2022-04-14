@@ -9,9 +9,9 @@ module attributes {torch.debug_module_name = "mmult"} {
   func @forward(%arg0: memref<1024x1024xi32>, %arg1: memref<1024x1024xi32>, %arg2: memref<?x?xi32>) {
     %c0_i32 = arith.constant 0 : i32
     %0 = memref.alloc() : memref<1024x1024xi32>
-    linalg.fill(%c0_i32, %0) : i32, memref<1024x1024xi32> 
+    linalg.fill ins(%c0_i32 : i32) outs(%0 : memref<1024x1024xi32>)
     %1 = memref.cast %arg2 : memref<?x?xi32> to memref<1024x1024xi32>
-    linalg.copy(%0, %1) : memref<1024x1024xi32>, memref<1024x1024xi32> 
+    linalg.copy ins(%0 : memref<1024x1024xi32>) outs(%1 : memref<1024x1024xi32> )
     %c64 = arith.constant 64 : index
     %c32 = arith.constant 32 : index
     %c1024 = arith.constant 1024 : index
@@ -34,11 +34,11 @@ module attributes {torch.debug_module_name = "mmult"} {
             %13 = memref.alloc(%c32, %2) : memref<?x?xi32, 2>
             %14 = memref.alloc(%6, %c32) : memref<?x?xi32, 2>
             %15 = memref.alloc() : memref<32x32xi32, 2>
-            linalg.copy(%5, %13) : memref<?x?xi32, #map1>, memref<?x?xi32, 2> 
-            linalg.copy(%9, %14) : memref<?x?xi32, #map1>, memref<?x?xi32, 2> 
-            linalg.copy(%12, %15) : memref<?x?xi32, #map1>, memref<32x32xi32, 2> 
+            linalg.copy ins(%5 : memref<?x?xi32, #map1>) outs(%13 : memref<?x?xi32, 2>)
+            linalg.copy ins(%9 : memref<?x?xi32, #map1>) outs(%14 : memref<?x?xi32, 2>)
+            linalg.copy ins(%12 : memref<?x?xi32, #map1>) outs(%15 : memref<32x32xi32, 2>)
             linalg.matmul ins(%13, %14 : memref<?x?xi32, 2>, memref<?x?xi32, 2>) outs(%15 : memref<32x32xi32, 2>)
-            linalg.copy(%15, %12) : memref<32x32xi32, 2>, memref<?x?xi32, #map1> 
+            linalg.copy ins(%15 : memref<32x32xi32, 2>) outs(%12 : memref<?x?xi32, #map1>)
             memref.dealloc %13 : memref<?x?xi32, 2>
             memref.dealloc %14 : memref<?x?xi32, 2>
             memref.dealloc %15 : memref<32x32xi32, 2>

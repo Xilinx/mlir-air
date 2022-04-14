@@ -7,16 +7,15 @@
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/CodegenStrategy.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OperationSupport.h"
-#include "mlir/Parser.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -46,13 +45,13 @@ namespace {
 
 static uint64_t DmaMemcpyOpID;
 
-class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
-  using OpRewritePattern<linalg::CopyOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(linalg::CopyOp op,
+class MemrefCopyToAIRDmaConversion : public OpRewritePattern<memref::CopyOp> {
+  using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(memref::CopyOp op,
                                 PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    auto src = op.input();
-    auto dst = op.output();
+    auto src = op.source();
+    auto dst = op.target();
 
     // It must already be a memref
     auto src_type = src.getType().dyn_cast<MemRefType>();
@@ -69,6 +68,104 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
 
     auto rank = src_type.getShape().size();
 
+    SmallVector<Value, 4> src_offsets, dst_offsets;
+    SmallVector<Value, 4> src_strides, dst_strides;
+    SmallVector<Value, 4> src_sizes, dst_sizes;
+    auto extractOperandsFromSubview = [&](memref::SubViewOp subview,
+                                          auto &offsets, auto &sizes,
+                                          auto &strides) {
+      auto subview_offsets = subview.offsets().begin();
+      auto static_offsets = extractFromI64ArrayAttr(subview.static_offsets());
+      auto static_sizes = extractFromI64ArrayAttr(subview.static_sizes());
+      auto static_strides = extractFromI64ArrayAttr(subview.static_strides());
+      auto loc = subview.getLoc();
+
+      // get the strides and offsets from the memref type
+      auto inferredType = memref::SubViewOp::inferResultType(
+                              subview.getSourceType(), static_offsets,
+                              static_sizes, static_strides)
+                              .cast<MemRefType>();
+      int64_t offset;
+      SmallVector<int64_t, 4> layout_strides;
+      auto successStrides =
+          getStridesAndOffset(inferredType, layout_strides, offset);
+      if (failed(successStrides)) {
+        llvm::outs() << "Failed to get strides\n";
+        return; // failure();
+      }
+
+      for (auto o : static_offsets) {
+        if (o >= 0)
+          offsets.push_back(rewriter.create<arith::ConstantIndexOp>(loc, o));
+        else
+          offsets.push_back(*subview_offsets++);
+      }
+      for (auto s : static_sizes)
+        sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, s));
+      for (auto s : layout_strides)
+        strides.push_back(rewriter.create<arith::ConstantIndexOp>(loc, s));
+    };
+
+    if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
+      extractOperandsFromSubview(subview, src_offsets, src_sizes, src_strides);
+
+      if (src_sizes.size() != rank)
+        return failure();
+      if (src_strides.size() != rank)
+        return failure();
+
+      src = subview.source();
+    }
+
+    if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
+      extractOperandsFromSubview(subview, dst_offsets, dst_sizes, dst_strides);
+
+      if (dst_sizes.size() != rank)
+        return failure();
+      if (dst_strides.size() != rank)
+        return failure();
+
+      dst = subview.source();
+    }
+
+    SmallVector<Value, 4> deps;
+    SmallVector<Type, 4> tys;
+    auto dma = rewriter.create<air::DmaMemcpyNdOp>(
+        loc, tys, deps, dst, dst_offsets, dst_sizes, dst_strides, src,
+        src_offsets, src_sizes, src_strides);
+    dma->setAttr("id", mlir::IntegerAttr::get(
+                           mlir::IntegerType::get(op->getContext(), 32),
+                           ++DmaMemcpyOpID));
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
+  using OpRewritePattern<linalg::CopyOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(linalg::CopyOp op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto src = op.inputs()[0];
+    auto dst = op.outputs()[0];
+
+    // It must already be a memref
+    auto src_type = src.getType().dyn_cast<MemRefType>();
+    auto dst_type = dst.getType().dyn_cast<MemRefType>();
+    if (!src_type)
+      return failure();
+
+    if ((src_type.getMemorySpaceAsInt() == (int)MemorySpace::L3) &&
+        (dst_type.getMemorySpaceAsInt() == (int)MemorySpace::L3))
+      return failure();
+
+    if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
+      return failure();
+
+    auto rank = src_type.getShape().size();
+
+#if DONT_USE_ND_COPY
     if (rank == 2) {
       SmallVector<Value, 4> src_indices;
       SmallVector<Value, 4> dst_indices;
@@ -210,6 +307,9 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
                              mlir::IntegerType::get(op->getContext(), 32),
                              ++DmaMemcpyOpID));
     } else {
+#else
+    {
+#endif
       SmallVector<Value, 4> src_offsets, dst_offsets;
       SmallVector<Value, 4> src_strides, dst_strides;
       SmallVector<Value, 4> src_sizes, dst_sizes;
@@ -648,7 +748,7 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<LLVM::LLVMDialect, StandardOpsDialect,
+    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
                            arith::ArithmeticDialect>();
 
     target.addLegalOp<xilinx::air::DmaMemcpyOp>();
@@ -680,8 +780,8 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
 
     RewritePatternSet stage3Patterns(context);
     stage3Patterns
-        .insert<AffineCopyToAIRDMAConversion, LinalgCopyToAIRDmaConversion>(
-            context);
+        .insert<AffineCopyToAIRDMAConversion, LinalgCopyToAIRDmaConversion,
+                MemrefCopyToAIRDmaConversion>(context);
     if (failed(applyPartialConversion(module, target,
                                       std::move(stage3Patterns)))) {
       emitError(UnknownLoc::get(context), "error\n");

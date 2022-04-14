@@ -6,15 +6,17 @@
 #include "aie/AIEDialect.h"
 #include "PassDetail.h"
 
-#include "llvm/Support/Debug.h"
-#include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/raw_ostream.h"
-
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <vector>
 #include <unordered_set>
@@ -693,7 +695,7 @@ public:
 
               Block *entry_bb = core_builder.createBlock(core_bb);
               core_builder.setInsertionPointToEnd(entry_bb);
-              core_builder.create<BranchOp>(hloc, core_bb);
+              core_builder.create<cf::BranchOp>(hloc, core_bb);
               core_builder.setInsertionPointToEnd(core_bb);
 
               // map the tile ids and herd size to constants
@@ -710,11 +712,11 @@ public:
               r.cloneInto(&core.body(), remap);
 
               Block *launch_bb = remap.lookup(&r.front());
-              core_builder.create<BranchOp>(hloc, launch_bb);
+              core_builder.create<cf::BranchOp>(hloc, launch_bb);
               core_builder.setInsertionPoint(launch_bb->getTerminator());
 
               if (AIRToAIEEmitWhileLoop)
-                core_builder.create<BranchOp>(hloc, core_bb);
+                core_builder.create<cf::BranchOp>(hloc, core_bb);
               else
                 core_builder.create<AIE::EndOp>(hloc);
 
@@ -856,11 +858,11 @@ public:
                     bd = next_bd;
                   auto b = OpBuilder::atBlockEnd(bd);
                   if (i == dmaOps.size()-1) {
-                    b.create<BranchOp>(hloc, first_bd);
+                    b.create<cf::BranchOp>(hloc, first_bd);
                   } else {
                     next_bd = new Block();
                     mem.body().push_back(next_bd);
-                    b.create<BranchOp>(hloc, next_bd);
+                    b.create<cf::BranchOp>(hloc, next_bd);
                   }
                   AIE::BufferOp bufferOp = getBufferForTileDMA(aie_module, dmaOp, remap,x,y);
                   AIE::LockOp lockOp = getLockForTileDMA(aie_module, dmaOp, lock_allocs, remap, x, y);
@@ -926,7 +928,7 @@ public:
               }
 
               core.walk([&](Operation *op) {
-                if (auto call = dyn_cast<CallOp>(op)) {
+                if (auto call = dyn_cast<func::CallOp>(op)) {
                   auto fn = aie_module.lookupSymbol<FuncOp>(call.getCallee());
                   if (!fn) {
                     fn = FuncOp::create(builder.getUnknownLoc(),

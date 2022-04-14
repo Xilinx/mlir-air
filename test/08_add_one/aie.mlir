@@ -28,22 +28,22 @@ module {
       AIE.useLock(%l72_0, "Acquire", 0)
       AIE.dmaBd(<%buf72_0 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l72_0, "Release", 1)
-      br ^bd1
+      cf.br ^bd1
     ^bd1:
       AIE.useLock(%l72_1, "Acquire", 0)
       AIE.dmaBd(<%buf72_2 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l72_1, "Release", 1)
-      br ^bd0
+      cf.br ^bd0
     ^bd2:
       AIE.useLock(%l72_2, "Acquire", 1)
       AIE.dmaBd(<%buf72_1 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l72_2, "Release", 0)
-      br ^bd3
+      cf.br ^bd3
     ^bd3:
       AIE.useLock(%l72_3, "Acquire", 1)
       AIE.dmaBd(<%buf72_3 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l72_3, "Release", 0)
-      br ^bd2
+      cf.br ^bd2
     ^end:
       AIE.end
   }

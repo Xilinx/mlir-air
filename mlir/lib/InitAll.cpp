@@ -16,5 +16,4 @@ void xilinx::air::registerAllDialects(mlir::DialectRegistry &registry) {
 void xilinx::air::registerAllPasses() {
   xilinx::air::registerTransformPasses();
   xilinx::air::registerConversionPasses();
-  mlir::registerAllPasses();
 }
