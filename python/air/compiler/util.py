@@ -14,12 +14,11 @@ __all__ = [
 
 LINALG_TENSOR_TO_MEMREF_PIPELINE = ",".join([
     # Bufferize.
-    "tensor-constant-bufferize",
     "builtin.func(scf-bufferize)",
     "builtin.func(linalg-bufferize)",
-    "builtin.func(std-bufferize)",
-    "builtin.func(tensor-bufferize)",
     "func-bufferize",
+    "arith-bufferize",
+    "builtin.func(tensor-bufferize)",
     "builtin.func(finalizing-bufferize)",
     "canonicalize",
     "cse"
