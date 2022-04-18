@@ -415,7 +415,7 @@ public:
         AIE::DMAChan l2_channel = l2_dma_alloc.getChannel(aie_module, dmaOpIf, tile_channel, x, y);
 
         OpBuilder builder(aie_module);
-        builder.setInsertionPointToEnd(&(aie_module.body().front()));
+        builder.setInsertionPointToEnd(&(aie_module.bodyRegion().front()));
 
         if (((uint64_t)l2_channel >= (uint64_t)AIE::DMAChan::S2MM0) && ((uint64_t)l2_channel < ((uint64_t)AIE::DMAChan::S2MM0 + l2_dma_channels ))) {
           getFlowOp(aie_module,
