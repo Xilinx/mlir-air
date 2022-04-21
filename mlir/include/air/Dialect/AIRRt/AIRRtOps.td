@@ -29,9 +29,7 @@ def AIRRt_ModuleMetadataOp : AIRRt_Op<"module_metadata", [
   let arguments = (ins);
   let results = (outs);
   let regions = (region SizedRegion<1>:$herds);
-
-  let printer = [{ return ::print$cppClass(p, *this); }];
-  let parser = [{ return ::parse$cppClass(parser, result); }];
+  let hasCustomAssemblyFormat = 1;
 }
 
 def AIRRt_ModuleMetadataTerminatorOp

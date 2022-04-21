@@ -24,13 +24,13 @@ namespace airrt {
 // ModuleMetadataOp
 //===----------------------------------------------------------------------===//
 
-static void printModuleMetadataOp(OpAsmPrinter &p, ModuleMetadataOp &op) {
-  p.printOptionalAttrDictWithKeyword(op->getAttrs());
-  p.printRegion(op.herds(), /*printEntryBlockArgs=*/false,
+void ModuleMetadataOp::print(OpAsmPrinter &p) {
+  p.printOptionalAttrDictWithKeyword((*this)->getAttrs());
+  p.printRegion(herds(), /*printEntryBlockArgs=*/false,
                 /*printBlockTerminators=*/false);
 }
 
-static ParseResult parseModuleMetadataOp(OpAsmParser &parser,
+ParseResult ModuleMetadataOp::parse(OpAsmParser &parser,
                                          OperationState &result) {
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();

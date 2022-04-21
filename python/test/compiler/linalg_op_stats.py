@@ -4,7 +4,6 @@
 from air.mlir.ir import *
 from air.mlir.dialects import builtin
 from air.mlir.dialects import linalg
-from air.mlir.dialects import std
 
 from air.compiler.util import CostModel
 

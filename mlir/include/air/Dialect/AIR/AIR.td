@@ -36,8 +36,7 @@ def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,
       "ValueRange":$kernelOperands
     )>
   ];
-  let parser = [{ return parseHerdLaunchOp(parser, result); }];
-  let printer = [{ printHerdLaunchOp(p, *this); }];
+  let hasCustomAssemblyFormat = 1;
   let verifier = [{ return ::verify(*this); }];
   let extraClassDeclaration = [{
     HerdDim2 getTileIds();
@@ -65,9 +64,7 @@ def air_HerdTerminatorOp : air_Op<"herd_terminator", [HasParent<"HerdLaunchOp">,
     `air.launch_herd` operation.  These regions are not expected to return any
     value so the terminator takes no operands.
   }];
-
-  let parser = [{ return success(); }];
-  let printer = [{  }];
+  let assemblyFormat = "attr-dict";
 }
 
 def air_HerdPipelineOp : air_Op<"pipeline", [HasParent<"HerdLaunchOp">,
@@ -97,8 +94,7 @@ def air_PipelineStageOp : air_Op<"pipeline.stage", [HasParent<"HerdPipelineOp">]
   let description = [{
     Pipeline stage.
   }];
-  let parser = [{ return parsePipelineStageOp(parser, result); }];
-  let printer = [{ printPipelineStageOp(p, *this); }];
+  let hasCustomAssemblyFormat = 1;
   let verifier = [{ return ::verify(*this); }];
   let extraClassDeclaration = [{
     // Return the offset of this stage in the pipeline"
@@ -142,6 +138,7 @@ def air_PipelineGetOp : air_Op<"pipeline.get", []>,
     $src attr-dict `:` type($src) `->` type($results)
   }];
 }
+
 def air_PipelineTerminatorOp : air_Op<"pipeline.terminator", [HasParent<"HerdPipelineOp">,
                                           NoSideEffect, Terminator]>,
     Arguments<(ins Variadic<AnyType>:$opers)>, Results<(outs)> {
@@ -150,9 +147,7 @@ def air_PipelineTerminatorOp : air_Op<"pipeline.terminator", [HasParent<"HerdPip
     A terminator operation for regions that appear in the body of 
     `air.pipeline` operation.
   }];
-
-  let parser = [{ return success(); }];
-  let printer = [{  }];
+  let assemblyFormat = "attr-dict ($opers^ `:` type($opers))?";
 }
 
 def air_DmaMemcpy4dOp: air_Op<"dma_memcpy_4d", [air_AsyncOpInterface, air_DmaMemcpyInterface]> {
@@ -393,9 +388,6 @@ def air_RegionTerminatorOp : air_Op<"region_terminator", [HasParent<"RegionOp">,
 
   let assemblyFormat =
       [{  attr-dict ($results^ `:` type($results))? }];
-
-  let parser = [{ return success(); }];
-  let printer = [{  }];
 }
 
 #endif

@@ -12,7 +12,7 @@ from air.mlir.ir import *
 from air.mlir.dialects import air as airdialect
 from air.mlir.dialects import arith
 from air.mlir.dialects import builtin
-from air.mlir.dialects import std
+from air.mlir.dialects import func
 
 with Context() as ctx, Location.unknown():
   airdialect.register_dialect(ctx)
@@ -32,6 +32,6 @@ with Context() as ctx, Location.unknown():
       herd = airdialect.HerdLaunchOp("pyHerd", size_x.result, size_y.result, [])
       with InsertionPoint(herd.body):
         airdialect.HerdTerminatorOp()
-      std.ReturnOp([])
+      func.ReturnOp([])
 
 print (module)

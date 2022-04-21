@@ -148,36 +148,36 @@ static LogicalResult verify(HerdLaunchOp op) {
   return success();
 }
 
-static void printHerdLaunchOp(OpAsmPrinter &p, HerdLaunchOp op) {
+void HerdLaunchOp::print(OpAsmPrinter &p) {
 
-  auto num_async_deps = op.asyncDependencies().size();
+  auto num_async_deps = asyncDependencies().size();
   p << ' ';
-  printAsyncDependencies(p, op, (op.asyncToken() ? op.asyncToken().getType() : Type()), op.asyncDependencies());
+  printAsyncDependencies(p, *this, (asyncToken() ? asyncToken().getType() : Type()), asyncDependencies());
   p << " tile (";
-  p << op.getTileIds().x << ", ";
-  p << op.getTileIds().y << ") in (";
-  p << op.getHerdSize().x << "=";
-  p << op.getOperand(num_async_deps + 0) << ", ";
-  p << op.getHerdSize().y << "=";
-  p << op.getOperand(num_async_deps + 1) << ")";
+  p << getTileIds().x << ", ";
+  p << getTileIds().y << ") in (";
+  p << getHerdSize().x << "=";
+  p << getOperand(num_async_deps + 0) << ", ";
+  p << getHerdSize().y << "=";
+  p << getOperand(num_async_deps + 1) << ")";
 
-  if (op.getNumKernelOperands()) {
-    auto args = op.getKernelArguments();
+  if (getNumKernelOperands()) {
+    auto args = getKernelArguments();
     p << " args(";
-    for (int i=0,e=op.getNumKernelOperands(); i<e; i++) {
+    for (int i=0,e=getNumKernelOperands(); i<e; i++) {
       if (i) p << ", ";
       p << args[i] << "=";
-      p << op.getKernelOperand(i);
+      p << getKernelOperand(i);
     }
     p << ") : ";
-    for (int i=0,e=op.getNumKernelOperands(); i<e; i++) {
+    for (int i=0,e=getNumKernelOperands(); i<e; i++) {
       if (i) p << ", ";
-      p << op.getKernelOperand(i).getType();
+      p << getKernelOperand(i).getType();
     }
   }
 
   SmallVector<NamedAttribute, 8> filteredAttrs(
-        llvm::make_filter_range(op->getAttrs(), [&](NamedAttribute attr) {
+        llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
           return (OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr()
             != attr.getName());
         }));
@@ -187,11 +187,10 @@ static void printHerdLaunchOp(OpAsmPrinter &p, HerdLaunchOp op) {
     p.printOptionalAttrDict(filteredAttrs);
     p << " ";
   }
-  p.printRegion(op.body(), /*printEntryBlockArgs=*/false);
+  p.printRegion(body(), /*printEntryBlockArgs=*/false);
 }
 
-static ParseResult
-parseHerdLaunchOp(OpAsmParser &parser, OperationState &result) {
+ParseResult HerdLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
 
   SmallVector<OpAsmParser::OperandType, 4> asyncDependencies;
   SmallVector<OpAsmParser::OperandType, 4> tileArgs;
@@ -322,8 +321,8 @@ SmallVector<PipelineStageOp, 8> HerdPipelineOp::getStages() {
 // PipelineStageOp
 //
 
-static ParseResult
-parsePipelineStageOp(OpAsmParser &parser, OperationState &result) {
+ParseResult
+PipelineStageOp::parse(OpAsmParser &parser, OperationState &result) {
 
   SmallVector<OpAsmParser::OperandType, 4> args;
 
@@ -370,42 +369,38 @@ parsePipelineStageOp(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
-//
-// PipelineStageOp
-//
-
 static LogicalResult verify(PipelineStageOp op) {
   return success();
 }
 
-static void printPipelineStageOp(OpAsmPrinter &p, PipelineStageOp op) {
+void PipelineStageOp::print(OpAsmPrinter &p) {
 
-  if (op.getNumOperands()) {
-    auto args = op.body().front().getArguments();
+  if (getNumOperands()) {
+    auto args = body().front().getArguments();
     p << " args(";
-    for (int i=0,e=op.getNumOperands(); i<e; i++) {
+    for (int i=0,e=getNumOperands(); i<e; i++) {
       if (i) p << ", ";
       p << args[i] << "=";
-      p << op.getOperand(i);
+      p << getOperand(i);
     }
     p << ") : ";
-    for (int i=0,e=op.getNumOperands(); i<e; i++) {
+    for (int i=0,e=getNumOperands(); i<e; i++) {
       if (i) p << ", ";
-      p << op.getOperand(i).getType();
+      p << getOperand(i).getType();
     }
   }
 
   p << " ";
-  if (op->getAttrs().size()) {
+  if ((*this)->getAttrs().size()) {
     p << "attributes ";
-    p.printOptionalAttrDict(op->getAttrs());
+    p.printOptionalAttrDict((*this)->getAttrs());
     p << " ";
   }
-  p.printRegion(op.body(), /*printEntryBlockArgs=*/false);
+  p.printRegion(body(), /*printEntryBlockArgs=*/false);
 
-  if (op->getNumResults())
+  if ((*this)->getNumResults())
     p << " : ";
-  for (Type type : op->getResultTypes())
+  for (Type type : (*this)->getResultTypes())
     p.printType(type);
 }
 
