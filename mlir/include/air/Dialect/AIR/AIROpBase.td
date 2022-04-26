@@ -116,6 +116,12 @@ def air_DmaMemcpyInterface : OpInterface<"DmaMemcpyInterface"> {
     "Value", "getDstMemref"
     >,
     InterfaceMethod<"description",
+    "Value", "getSrcMemrefDim", (ins "unsigned":$i)
+    >,
+    InterfaceMethod<"description",
+    "Value", "getDstMemrefDim", (ins "unsigned":$i)
+    >,
+    InterfaceMethod<"description",
     "Value", "getLength"
     >,
     InterfaceMethod<"description",

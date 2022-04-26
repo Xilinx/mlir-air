@@ -187,7 +187,15 @@ def air_DmaMemcpy4dOp: air_Op<"dma_memcpy_4d", [air_AsyncOpInterface, air_DmaMem
     unsigned getNumDims() { return 4; }
     Value getSrcMemref() { return src(); }
     Value getDstMemref() { return dst(); }
+    Value getSrcMemrefDim(unsigned i) { 
+      return SmallVector<Value, 4> {src_d3(), src_d2(), src_d1(), src_d0()}[i]; 
+    }
+    Value getDstMemrefDim(unsigned i) { 
+      return SmallVector<Value, 4> {dst_d3(), dst_d2(), dst_d1(), dst_d0()}[i]; 
+    }
     Value getLength() { return num(); }
+    Value getStride() { return stride(); }
+    Value getElemPerStride() { return elem_per_stride(); }
     int32_t getId() {
       if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
         return id_attr.getInt();
@@ -230,10 +238,12 @@ def air_DmaMemcpy2dOp: air_Op<"dma_memcpy_2d", [air_AsyncOpInterface, air_DmaMem
     unsigned getNumDims() { return 2; }
     Value getSrcMemref() { return src(); }
     Value getDstMemref() { return dst(); }
-    Value getSrcMemrefD1() { return src_d1(); }
-    Value getSrcMemrefD0() { return src_d0(); }
-    Value getDstMemrefD1() { return dst_d1(); }
-    Value getDstMemrefD0() { return dst_d0(); }
+    Value getSrcMemrefDim(unsigned i) { 
+      return SmallVector<Value, 2> {src_d1(), src_d0()}[i]; 
+    }
+    Value getDstMemrefDim(unsigned i) { 
+      return SmallVector<Value, 2> {dst_d1(), dst_d0()}[i]; 
+    }
     Value getLength() { return num(); }
     Value getStride() { return stride(); }
     Value getElemPerStride() { return elem_per_stride(); }
@@ -275,6 +285,8 @@ def air_DmaMemcpyOp: air_Op<"dma_memcpy", [air_AsyncOpInterface, air_DmaMemcpyIn
     unsigned getNumDims() { return 1; }
     Value getSrcMemref() { return src(); }
     Value getDstMemref() { return dst(); }
+    Value getSrcMemrefDim(unsigned i) { return src_d0(); }
+    Value getDstMemrefDim(unsigned i) { return dst_d0(); }
     Value getLength() { return num(); }
     int32_t getId() {
       if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
@@ -315,6 +327,14 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
     unsigned getNumDims() { return 0; }
     Value getSrcMemref() { return src(); }
     Value getDstMemref() { return dst(); }
+    SmallVector<Value, 4> getDstOffsets(){ return dst_offsets(); }
+    SmallVector<Value, 4> getSrcOffsets(){ return src_offsets(); }
+    SmallVector<Value, 4> getDstSizes(){ return dst_sizes(); }
+    SmallVector<Value, 4> getSrcSizes(){ return src_sizes(); }
+    SmallVector<Value, 4> getDstStrides(){ return dst_strides(); }
+    SmallVector<Value, 4> getSrcStrides(){ return src_strides(); }
+    Value getSrcMemrefDim(unsigned i) { return nullptr; }
+    Value getDstMemrefDim(unsigned i) { return nullptr; }
     Value getLength() { return nullptr; }
     int32_t getId() {
       if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
