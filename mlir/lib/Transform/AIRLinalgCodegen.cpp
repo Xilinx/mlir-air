@@ -1051,9 +1051,9 @@ public:
 
   void runOnFunction(FuncOp f) {
 
-    RewritePatternSet prePatterns(&getContext());
-    prePatterns.insert<RemoveAllocLinalgOpCopyPattern>(&getContext());
-    (void)applyPatternsAndFoldGreedily(f, std::move(prePatterns));
+    //RewritePatternSet prePatterns(&getContext());
+    //prePatterns.insert<RemoveAllocLinalgOpCopyPattern>(&getContext());
+    //(void)applyPatternsAndFoldGreedily(f, std::move(prePatterns));
     if (!AIRLinalgCodegenTestPatterns) {
       runMatmulPatterns(f);
       runConv2dPatterns(f);
