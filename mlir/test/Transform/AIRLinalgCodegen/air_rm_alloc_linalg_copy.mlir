@@ -8,6 +8,7 @@
 // CHECK:   }
 // CHECK:   return
 // CHECK: }
+// XFAIL: *
 module attributes {torch.debug_module_name = "model"}  {
   func @forward(%arg0: memref<4096xi32>, %arg1: memref<4096xi32>, %arg2: memref<?xi32>) {
     %0 = memref.alloc() : memref<4096xi32>
