@@ -1,6 +1,7 @@
 #ifndef AIR_OPS_BASE
 #define AIR_OPS_BASE
 
+include "mlir/IR/EnumAttr.td"
 include "mlir/IR/OpBase.td"
 
 def air_Dialect : Dialect {

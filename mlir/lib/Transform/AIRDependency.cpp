@@ -91,7 +91,7 @@ public:
 
     // 1st traversal: create async ops with empty dep list.
 
-    for (auto f : module.getOps<FuncOp>()) {
+    for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
         // Create async interface for air.dmamemcpy ops
         if (mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op))
@@ -167,7 +167,7 @@ public:
 
     // 2nd traversal: trace deps among async regions; build a boost dep graph.
 
-    for (auto f : module.getOps<FuncOp>()) {
+    for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
         Operation* sink_op = nullptr;
         if (auto async_region_op = dyn_cast<air::RegionOp>(op)) {
@@ -368,7 +368,7 @@ public:
       tr_to_g[i->second] = i->first;
     }
 
-    for (auto f : module.getOps<FuncOp>()) {
+    for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
         // Fill dep list of air region ops
         if (auto async_region_op = dyn_cast<air::RegionOp>(op)) {
@@ -387,7 +387,7 @@ public:
     // 4th traversal: loop-carried deps.
     // Add wait_all events to collect sinks in loop bodies. Add iter_args to scp for loops representing loop-carried deps.
 
-    for (auto f : module.getOps<FuncOp>()) {
+    for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
         if (auto for_op = dyn_cast<scf::ForOp>(op)) {
           // Check for nested for loops

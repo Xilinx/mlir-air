@@ -12,7 +12,6 @@
 // CHECK:       affine.store %{{.*}}, %[[BUF2]][%arg0, %arg1] : memref<32x32xi32, 2>
 // CHECK:     }
 // CHECK:   }
-// XFAIL: *
 #map = affine_map<(d0, d1) -> (d0, d1)>
 module @aie.0  {
   %0 = AIE.tile(0, 0)

@@ -593,8 +593,8 @@ public:
 
     air_patterns.add<L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion, AIRHerdLaunchConversion>(context);
 
-    populateFunctionOpInterfaceTypeConversionPattern<FuncOp>(
-        air_patterns, converter);
+    populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(air_patterns,
+                                                                   converter);
 
     air_patterns.add<AIRDmaMemcpy2dToAIRRtConversion,
         AIRDmaMemcpy4dToAIRRtConversion, AIRDmaMemcpyNdToAIRRtConversion,

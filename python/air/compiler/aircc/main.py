@@ -90,7 +90,7 @@ def run(mlir_module, args):
     air_to_aie_pass = air_to_aie_pass + f' air-to-aie-row-offset={opts.row_offset} air-to-aie-col-offset={opts.col_offset}'
     air_to_aie_pass = air_to_aie_pass + f' air-to-aie-output-prefix={opts.tmpdir}/' + '}'
 
-    run_passes(air_to_aie_pass+',builtin.func(convert-linalg-to-loops)',Module.parse(str(m)),opts)
+    run_passes(air_to_aie_pass+',func.func(convert-linalg-to-loops)',Module.parse(str(m)),opts)
 
     air_to_airrt_pass = 'air-to-aie{air-to-aie-emit-while-loop=true'
     air_to_airrt_pass = air_to_airrt_pass + f' air-to-aie-row-offset={opts.row_offset} air-to-aie-col-offset={opts.col_offset}'
@@ -106,7 +106,7 @@ def run(mlir_module, args):
     run_passes(pass_pipeline, mlir_module, opts, aie_ctrl_airrt)
 
     aie_ctrl = opts.tmpdir+'/aie_ctrl.'+air_mlir_filename
-    pass_pipeline = 'airrt-to-llvm,func-bufferize,builtin.func(finalizing-bufferize)'
+    pass_pipeline = 'airrt-to-llvm,func-bufferize,func.func(finalizing-bufferize)'
     run_passes(pass_pipeline, mlir_module, opts, aie_ctrl)
 
     aie_ctrl_refback = opts.tmpdir+'/refback.'+air_mlir_filename

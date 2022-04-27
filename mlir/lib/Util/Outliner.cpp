@@ -58,8 +58,7 @@ func::CallOp AIROutliner::outline(AffineForOp forOp, std::string fname) {
     new_fname = fname + "_" + std::to_string(++which_try);
   fname = new_fname;
 
-  auto function = mlir::FuncOp::create(loc, fname,
-                                       func_type, /* attrs = */ {});
+  auto function = func::FuncOp::create(loc, fname, func_type, /* attrs = */ {});
   module.push_back(function);
 
   auto &entryBlock = *function.addEntryBlock();
@@ -123,8 +122,7 @@ func::CallOp AIROutliner::outline(std::vector<mlir::Operation *> ops,
   fname = new_fname;
 
   auto func_type = mlir::FunctionType::get(context, arg_types, ret_types);
-  auto function = mlir::FuncOp::create(loc, fname,
-                                       func_type, /* attrs = */ {});
+  auto function = func::FuncOp::create(loc, fname, func_type, /* attrs = */ {});
 
   auto &entryBlock = *function.addEntryBlock();
 

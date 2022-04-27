@@ -5,13 +5,14 @@
 #include "air/Util/Outliner.h"
 
 #include "PassDetail.h"
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/IR/BlockAndValueMapping.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/Passes.h"
@@ -56,14 +57,13 @@ public:
   }
 
   ListOption<unsigned> clTileSizes{*this, "affine-opt-tile-sizes",
-                                        llvm::cl::desc("Affine loop tiling sizes"),
-                                        llvm::cl::ZeroOrMore,
-                                        llvm::cl::CommaSeparated};
+                                   llvm::cl::desc("Affine loop tiling sizes"),
+                                   llvm::cl::ZeroOrMore};
 
-  ListOption<unsigned> clCopyDepths{*this, "affine-opt-copy-depths",
-                                        llvm::cl::desc("Affine loop data copy loop depths"),
-                                        llvm::cl::ZeroOrMore,
-                                        llvm::cl::CommaSeparated};
+  ListOption<unsigned> clCopyDepths{
+      *this, "affine-opt-copy-depths",
+      llvm::cl::desc("Affine loop data copy loop depths"),
+      llvm::cl::ZeroOrMore};
 
   Option<unsigned> clFastSpace{*this, "affine-opt-copy-fast-space",
                               llvm::cl::desc("Fast memory space to use for affine data copy"),
@@ -93,7 +93,9 @@ public:
   void generateDataCopyLoops(std::vector<SmallVector<AffineForOp, 6>> *bands, Optional<Value> filterMemRef = None);
   void outlineDataCopyLoops();
 
-  static void getTileableBands(FuncOp f, std::vector<SmallVector<AffineForOp, 6>> *bands, StringRef label);
+  static void getTileableBands(func::FuncOp,
+                               std::vector<SmallVector<AffineForOp, 6>> *bands,
+                               StringRef label);
 
   SmallVector<unsigned, 6> optTileSizes;
   SmallVector<unsigned, 6> optCopyDepths;
@@ -230,9 +232,9 @@ void AffineLoopOptPass::outlineDataCopyLoops() {
 // Identify valid and profitable bands of loops to tile. This is currently just
 // a temporary placeholder to test the mechanics of tiled code generation.
 // Returns all maximal outermost perfect loop nests to tile.
-void AffineLoopOptPass::getTileableBands(FuncOp f,
-                      std::vector<SmallVector<AffineForOp, 6>> *bands,
-                      StringRef label) {
+void AffineLoopOptPass::getTileableBands(
+    func::FuncOp f, std::vector<SmallVector<AffineForOp, 6>> *bands,
+    StringRef label) {
   // Get maximal perfect nest of 'affine.for' insts starting from root
   // (inclusive).
   auto getMaximalPerfectLoopNest = [&](AffineForOp root) {

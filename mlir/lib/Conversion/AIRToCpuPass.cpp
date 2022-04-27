@@ -93,8 +93,8 @@ public:
 
     auto func_type =
         mlir::FunctionType::get(op->getContext(), arg_types, ret_types);
-    auto function =
-        mlir::FuncOp::create(op->getLoc(), fname, func_type, /* attrs = */ {});
+    auto function = mlir::func::FuncOp::create(op->getLoc(), fname, func_type,
+                                               /* attrs = */ {});
 
     auto &entryBlock = *function.addEntryBlock();
 
@@ -664,8 +664,9 @@ public:
       signalPassFailure();
     }
 
-    target.addDynamicallyLegalOp<FuncOp>(
-        [&](FuncOp op) { return converter.isSignatureLegal(op.getType()); });
+    target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
+      return converter.isSignatureLegal(op.getFunctionType());
+    });
 
     target.addDynamicallyLegalOp<func::CallOp>([&](func::CallOp op) {
       return (!llvm::any_of(op->getResultTypes(), [](Type t) {
@@ -692,7 +693,7 @@ public:
     });
 
     RewritePatternSet typeConversionPatterns(context);
-    populateFunctionOpInterfaceTypeConversionPattern<FuncOp>(
+    populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(
         typeConversionPatterns, converter);
 
     typeConversionPatterns
@@ -706,7 +707,7 @@ public:
       signalPassFailure();
     }
 
-    for (auto func : module.getOps<FuncOp>())
+    for (auto func : module.getOps<func::FuncOp>())
       func->setAttr("llvm.emit_c_interface", UnitAttr::get(func.getContext()));
   }
 };

@@ -2,7 +2,7 @@
 
 # RUN: %PYTHON %s | FileCheck %s
 from air.mlir.ir import *
-from air.mlir.dialects import builtin
+from air.mlir.dialects import func
 from air.mlir.dialects import linalg
 
 from air.compiler.util import CostModel
@@ -25,7 +25,7 @@ def matmul_on_buffers_test():
     module = Module.create()
     f32 = F32Type.get()
     with InsertionPoint(module.body):
-      @builtin.FuncOp.from_py_func(
+      @func.FuncOp.from_py_func(
         MemRefType.get((4, 16), f32), MemRefType.get((16, 8), f32),
         MemRefType.get((4, 8), f32))
       def matmul_on_buffers(lhs, rhs, out):

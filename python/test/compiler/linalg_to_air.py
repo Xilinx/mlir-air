@@ -3,7 +3,7 @@
 # RUN: %PYTHON %s | FileCheck %s
 from air.mlir.ir import *
 from air.mlir.passmanager import PassManager
-from air.mlir.dialects import builtin
+from air.mlir.dialects import func
 from air.mlir.dialects import linalg
 from air.mlir.dialects import arith
 from air.mlir.dialects import tensor
@@ -37,7 +37,7 @@ def matmul_l1_l2_2x2():
     f32 = F32Type.get()
     with InsertionPoint(module.body):
       elemTy = IntegerType.get_signless(32)
-      @builtin.FuncOp.from_py_func(
+      @func.FuncOp.from_py_func(
         RankedTensorType.get((128, 128), elemTy), RankedTensorType.get((128, 128), elemTy))
       def matmul_on_tensors(lhs, rhs):
         zero = arith.ConstantOp(elemTy, IntegerAttr.get(elemTy, 0))

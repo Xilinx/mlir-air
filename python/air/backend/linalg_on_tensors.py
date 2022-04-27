@@ -13,7 +13,6 @@ import air.mlir.passmanager
 import torch_mlir.all_passes_registration
 import air.mlir.all_passes_registration
 
-from torch_mlir_e2e_test.utils import run_pipeline_with_repro_report
 from torch_mlir_e2e_test.linalg_on_tensors_backends.refbackend import RefBackendLinalgOnTensorsBackend
 
 from .abc import AirBackend
@@ -23,9 +22,12 @@ import air.compiler.aircc.main as aircc
 
 import ctypes
 from pathlib import Path
-path = Path(air.backend.__file__).resolve().parent
-ctypes.CDLL(f"{path}/../../../runtime_lib/airhost/libairhost_shared.so", mode=ctypes.RTLD_GLOBAL)
 
+path = Path(air.backend.__file__).resolve().parent
+try:
+    ctypes.CDLL(f"{path}/../../../runtime_lib/airhost/libairhost_shared.so", mode=ctypes.RTLD_GLOBAL)
+except:
+    pass
 import air.mlir._mlir_libs._airRt as airrt
 
 __all__ = [

@@ -11,7 +11,7 @@ import air
 from air.mlir.ir import *
 from air.mlir.dialects import air as airdialect
 from air.mlir.dialects import arith
-from air.mlir.dialects import builtin
+from air.mlir.dialects import func
 from air.mlir.dialects import func
 
 with Context() as ctx, Location.unknown():
@@ -22,7 +22,7 @@ with Context() as ctx, Location.unknown():
     ftype = FunctionType.get(
               [IntegerType.get_signless(32),
                IntegerType.get_signless(32)], [])
-    fop = builtin.FuncOp("test", ftype)
+    fop = func.FuncOp("test", ftype)
 
     bb = fop.add_entry_block()
     with InsertionPoint(bb):

@@ -15,7 +15,9 @@ void coalesceLoops(AffineForOp outer, AffineForOp inner);
 
 void normalizeLoop(AffineForOp afo);
 
-FuncOp getMangledFunction(ModuleOp module, std::string fnName, ArrayRef<Value> operands, ArrayRef<Type> retTys);
+func::FuncOp getMangledFunction(ModuleOp module, std::string fnName,
+                                ArrayRef<Value> operands,
+                                ArrayRef<Type> retTys);
 
 uint64_t getTensorVolume(const ShapedType ty);
 

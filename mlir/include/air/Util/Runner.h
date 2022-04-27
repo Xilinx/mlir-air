@@ -18,7 +18,7 @@ struct AIRRunner {
   void emitTraceStart(llvm::raw_ostream &s);
   void emitTraceEnd(llvm::raw_ostream &s);
 
-  void scheduleFunction(mlir::FuncOp &toplevel);
+  void scheduleFunction(mlir::func::FuncOp &toplevel);
 
 private:
   class AIRRunner_impl;

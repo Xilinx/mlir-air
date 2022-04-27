@@ -47,8 +47,8 @@ public:
       auto newFnTy = FunctionType::get(op->getContext(), tys, {});
       std::string newFnName = callOp.getCallee().str()+"_out";
 
-      if (!module.lookupSymbol<FuncOp>(newFnName)) {
-        auto fn = FuncOp::create(op->getLoc(), newFnName, newFnTy);
+      if (!module.lookupSymbol<func::FuncOp>(newFnName)) {
+        auto fn = func::FuncOp::create(op->getLoc(), newFnName, newFnTy);
         fn.setPrivate();
         module.push_back(fn);
       }
@@ -70,7 +70,7 @@ public:
       /*auto newCallOp =*/builder->create<func::CallOp>(
           op->getLoc(), newFnName, ArrayRef<Type>{}, newCallArgs);
       erasedOps.insert(op);
-      auto fn = module.lookupSymbol<FuncOp>(callOp.getCallee());
+      auto fn = module.lookupSymbol<func::FuncOp>(callOp.getCallee());
       if (fn && fn.use_empty()) erasedOps.insert(fn);
     } else if (isa<memref::AllocOp>(op)) {
       Value v = op->getResult(0);
@@ -102,7 +102,7 @@ public:
 
     auto module = getOperation();
 
-    for (auto graph : module.getOps<mlir::FuncOp>()) {
+    for (auto graph : module.getOps<func::FuncOp>()) {
       // assume a single return statement
       if (graph.isExternal())
         return;
@@ -114,7 +114,7 @@ public:
           retOps.push_back(r);
       });
 
-      FunctionType funcTy = graph.getType();
+      FunctionType funcTy = graph.getFunctionType();
       if (funcTy.getNumResults() == 0)
         continue;
 

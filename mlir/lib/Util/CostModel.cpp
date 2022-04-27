@@ -1,6 +1,9 @@
 // (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
 #include "air/Util/CostModel.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/SCF.h"
 
@@ -170,14 +173,14 @@ std::string
 CostModel::opCountsToJSON(ModuleOp module) {
   llvm::json::Object top;
 
-  module.walk([&](mlir::FuncOp fop) {
+  module.walk([&](func::FuncOp fop) {
     LayerID = 0;
     llvm::json::Object function;
     fop.walk([&](Operation *op) {
       auto opCounts = getOpCounts(op);
       opCountToJSON(opCounts, function);
     });
-    top[fop.sym_name()] = llvm::json::Value(std::move(function));
+    top[fop.getSymName()] = llvm::json::Value(std::move(function));
   });
 
   llvm::json::Value topv(std::move(top));

@@ -790,7 +790,7 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
     }
 
     std::vector<Operation *> waits;
-    for (auto f : module.getOps<FuncOp>()) {
+    for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
         if (auto wo = dyn_cast<AffineDmaWaitOp>(op)) {
           auto memref = wo.getTagMemRef();
@@ -804,7 +804,7 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
       o->erase();
 
     std::vector<std::string> herd_syms;
-    for (auto f : module.getOps<FuncOp>()) {
+    for (auto f : module.getOps<func::FuncOp>()) {
       // record existing symbol names
       f.walk([&](xilinx::air::HerdLaunchOp op) {
         if (auto attr = op->getAttrOfType<StringAttr>(

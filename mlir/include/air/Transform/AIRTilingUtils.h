@@ -18,10 +18,9 @@ namespace air {
 /// a temporary placeholder to test the mechanics of tiled code generation.
 /// Returns all maximal outermost perfect loop nests that has been attached with
 /// the given label to tile.
-void getTileableBands(FuncOp f,
+void getTileableBands(func::FuncOp f,
                       std::vector<SmallVector<AffineForOp, 6>> &bands,
-                      const char* attrName,
-                      StringRef label);
+                      const char *attrName, StringRef label);
 
 /// Get the loop band that has been attached with the given label.
 AffineForOp getLabel(AffineForOp root, StringRef label, const char* attrName);

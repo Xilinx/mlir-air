@@ -6,6 +6,7 @@
 #include "aie/AIEDialect.h"
 #include "PassDetail.h"
 
+#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -622,7 +623,7 @@ public:
     // modules to avoid resource conflicts in the AIE physical dialect.
     std::vector<std::pair<ModuleOp,air::HerdLaunchOp>> aie_modules;
 
-    for (auto f : module.getOps<FuncOp>()) {
+    for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
         if (auto h = dyn_cast<air::HerdLaunchOp>(op)) {
 
@@ -929,11 +930,12 @@ public:
 
               core.walk([&](Operation *op) {
                 if (auto call = dyn_cast<func::CallOp>(op)) {
-                  auto fn = aie_module.lookupSymbol<FuncOp>(call.getCallee());
+                  auto fn =
+                      aie_module.lookupSymbol<func::FuncOp>(call.getCallee());
                   if (!fn) {
-                    fn = FuncOp::create(builder.getUnknownLoc(),
-                                        call.getCallee(),
-                                        call.getCalleeType());
+                    fn = func::FuncOp::create(builder.getUnknownLoc(),
+                                              call.getCallee(),
+                                              call.getCalleeType());
                     fn.setPrivate();
                     aie_module.push_back(fn);
                   }

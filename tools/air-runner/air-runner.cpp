@@ -94,7 +94,7 @@ LogicalResult run(int argc, char **argv, llvm::StringRef toolName) {
     llvm::SourceMgr sourceMgr;
     sourceMgr.AddNewSourceBuffer(std::move(ownedBuffer), llvm::SMLoc());
 
-    auto module = parseSourceFile(sourceMgr, &context);
+    auto module = parseSourceFile<ModuleOp>(sourceMgr, &context);
     if (!module)
       return failure();
 
@@ -125,8 +125,9 @@ LogicalResult run(int argc, char **argv, llvm::StringRef toolName) {
     unsigned numInputs = 0;
     unsigned numOutputs = 0;
 
-    if (FuncOp toplevel = module->lookupSymbol<FuncOp>(topLevelFunction)) {
-      ftype = toplevel.getType();
+    if (func::FuncOp toplevel =
+            module->lookupSymbol<func::FuncOp>(topLevelFunction)) {
+      ftype = toplevel.getFunctionType();
       Block &entryBlock = toplevel.getBody().front();
       blockArgs = entryBlock.getArguments();
 
@@ -156,7 +157,8 @@ LogicalResult run(int argc, char **argv, llvm::StringRef toolName) {
 
     std::vector<llvm::Any> results(numOutputs);
     std::vector<uint64_t> resultTimes(numOutputs);
-    if (FuncOp toplevel = module->lookupSymbol<FuncOp>(topLevelFunction)) {
+    if (func::FuncOp toplevel =
+            module->lookupSymbol<func::FuncOp>(topLevelFunction)) {
       runner.scheduleFunction(toplevel);
     }
     runner.emitTraceEnd(os);

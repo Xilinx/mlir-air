@@ -14,17 +14,17 @@
 // CHECK:           %[[VAL_7:.*]] = arith.constant 0 : index
 // CHECK:           scf.parallel (%[[VAL_8:.*]], %[[VAL_9:.*]]) = (%[[VAL_7]], %[[VAL_7]]) to (%[[VAL_6]], %[[VAL_6]]) step (%[[VAL_5]], %[[VAL_5]]) {
 // CHECK:             scf.for %[[VAL_10:.*]] = %[[VAL_7]] to %[[VAL_6]] step %[[VAL_5]] {
-// CHECK:               %[[VAL_11:.*]] = memref.subview %[[VAL_2]]{{\[}}%[[VAL_8]], %[[VAL_10]]] {{\[}}%[[VAL_5]], %[[VAL_5]]] [1, 1] : memref<128x128xi32> to memref<?x?xi32, #map>
-// CHECK:               %[[VAL_12:.*]] = memref.subview %[[VAL_3]]{{\[}}%[[VAL_10]], %[[VAL_9]]] {{\[}}%[[VAL_5]], %[[VAL_5]]] [1, 1] : memref<128x128xi32> to memref<?x?xi32, #map>
-// CHECK:               %[[VAL_13:.*]] = memref.subview %[[VAL_4]]{{\[}}%[[VAL_8]], %[[VAL_9]]] {{\[}}%[[VAL_5]], %[[VAL_5]]] [1, 1] : memref<128x128xi32> to memref<?x?xi32, #map>
+// CHECK:               %[[VAL_11:.*]] = memref.subview %[[VAL_2]]{{\[}}%[[VAL_8]], %[[VAL_10]]] [32, 32] [1, 1] : memref<128x128xi32> to memref<32x32xi32, #map>
+// CHECK:               %[[VAL_12:.*]] = memref.subview %[[VAL_3]]{{\[}}%[[VAL_10]], %[[VAL_9]]] [32, 32] [1, 1] : memref<128x128xi32> to memref<32x32xi32, #map>
+// CHECK:               %[[VAL_13:.*]] = memref.subview %[[VAL_4]]{{\[}}%[[VAL_8]], %[[VAL_9]]] [32, 32] [1, 1] : memref<128x128xi32> to memref<32x32xi32, #map>
 // CHECK:               %[[VAL_14:.*]] = memref.alloc() : memref<32x32xi32, 2>
 // CHECK:               %[[VAL_15:.*]] = memref.alloc() : memref<32x32xi32, 2>
 // CHECK:               %[[VAL_16:.*]] = memref.alloc() : memref<32x32xi32, 2>
-// CHECK:               memref.copy %[[VAL_11]], %[[VAL_14]] : memref<?x?xi32, #map> to memref<32x32xi32, 2>
-// CHECK:               memref.copy %[[VAL_12]], %[[VAL_15]] : memref<?x?xi32, #map> to memref<32x32xi32, 2>
-// CHECK:               memref.copy %[[VAL_13]], %[[VAL_16]] : memref<?x?xi32, #map> to memref<32x32xi32, 2>
+// CHECK:               memref.copy %[[VAL_11]], %[[VAL_14]] : memref<32x32xi32, #map> to memref<32x32xi32, 2>
+// CHECK:               memref.copy %[[VAL_12]], %[[VAL_15]] : memref<32x32xi32, #map> to memref<32x32xi32, 2>
+// CHECK:               memref.copy %[[VAL_13]], %[[VAL_16]] : memref<32x32xi32, #map> to memref<32x32xi32, 2>
 // CHECK:               linalg.matmul ins(%[[VAL_14]], %[[VAL_15]] : memref<32x32xi32, 2>, memref<32x32xi32, 2>) outs(%[[VAL_16]] : memref<32x32xi32, 2>)
-// CHECK:               memref.copy %[[VAL_16]], %[[VAL_13]] : memref<32x32xi32, 2> to memref<?x?xi32, #map>
+// CHECK:               memref.copy %[[VAL_16]], %[[VAL_13]] : memref<32x32xi32, 2> to memref<32x32xi32, #map>
 // CHECK:               memref.dealloc %[[VAL_14]] : memref<32x32xi32, 2>
 // CHECK:               memref.dealloc %[[VAL_15]] : memref<32x32xi32, 2>
 // CHECK:               memref.dealloc %[[VAL_16]] : memref<32x32xi32, 2>

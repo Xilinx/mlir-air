@@ -1130,7 +1130,7 @@ public:
       scheduleBlock(b, programQueue, dispatchQueue, tileQueue);
   }
 
-  void scheduleFunction(mlir::FuncOp &toplevel) {
+  void scheduleFunction(func::FuncOp &toplevel) {
     std::deque<CommandQueueEntry> programQueue;
     std::array<std::deque<CommandQueueEntry>, 32> dispatchQueue;
 
@@ -1239,8 +1239,7 @@ AIRRunner::emitTraceEnd(llvm::raw_ostream &s) {
   impl->emitTraceEnd(s);
 }
 
-void
-AIRRunner::scheduleFunction(mlir::FuncOp &toplevel) {
+void AIRRunner::scheduleFunction(func::FuncOp &toplevel) {
   impl->scheduleFunction(toplevel);
 }
 

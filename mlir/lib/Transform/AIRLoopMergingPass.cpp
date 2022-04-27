@@ -46,12 +46,11 @@ public:
   AIRLoopMergingPass() = default;
   AIRLoopMergingPass(const AIRLoopMergingPass &pass){};
 
-  ListOption<unsigned> clLoopMergeLevels{*this, "loop-merge-levels",
-                          llvm::cl::desc("which loop levels to merge together"),
-                          llvm::cl::Required,
-                          llvm::cl::OneOrMore,
-                          llvm::cl::CommaSeparated};
-  
+  ListOption<unsigned> clLoopMergeLevels{
+      *this, "loop-merge-levels",
+      llvm::cl::desc("which loop levels to merge together"), llvm::cl::Required,
+      llvm::cl::OneOrMore};
+
   Option<std::string> clAIROptLabel{*this, "air-label",
                           llvm::cl::desc("Transform loops with the given label"),
                           llvm::cl::init("")};

@@ -345,7 +345,7 @@ public:
 
     auto module = op->getParentOfType<ModuleOp>();
 
-    rewriter.setInsertionPoint(op->getParentOfType<FuncOp>());
+    rewriter.setInsertionPoint(op->getParentOfType<func::FuncOp>());
     auto herd_name = getOrCreateAIRString(rewriter, module, op.sym_name());
 
     auto funcOpSym = module.lookupSymbol("air_herd_load");
@@ -404,9 +404,9 @@ lowerDmaMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
   auto module = op->getParentOfType<ModuleOp>();
 
   auto fnTy = FunctionType::get(ctx, tys, retTys);
-  auto fn = module.lookupSymbol<FuncOp>(fnName);
+  auto fn = module.lookupSymbol<func::FuncOp>(fnName);
   if (!fn) {
-    fn = FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
+    fn = func::FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
     fn.setPrivate();
     module.push_back(fn);
   }
@@ -463,10 +463,10 @@ lowerDmaNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
   memrefTy.getElementType().print(ss);
 
   auto module = op->getParentOfType<ModuleOp>();
-  auto fn = module.lookupSymbol<FuncOp>(fnName);
+  auto fn = module.lookupSymbol<func::FuncOp>(fnName);
   if (!fn) {
     auto fnTy = FunctionType::get(ctx, tys, retTys);
-    fn = FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
+    fn = func::FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
     fn.setPrivate();
     module.push_back(fn);
   }
@@ -536,10 +536,10 @@ lowerNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
   srcMemRefTy.getElementType().print(ss);
 
   auto module = op->getParentOfType<ModuleOp>();
-  auto fn = module.lookupSymbol<FuncOp>(fnName);
+  auto fn = module.lookupSymbol<func::FuncOp>(fnName);
   if (!fn) {
     auto fnTy = FunctionType::get(ctx, tys, retTys);
-    fn = FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
+    fn = func::FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
     fn.setPrivate();
     module.push_back(fn);
   }
@@ -740,10 +740,10 @@ public:
     ss << "d" << memrefTy.getMemorySpaceAsInt();
     memrefTy.getElementType().print(ss);
 
-    auto fn = module.lookupSymbol<FuncOp>(fnName);
+    auto fn = module.lookupSymbol<func::FuncOp>(fnName);
     if (!fn) {
       auto fnTy = FunctionType::get(ctx, tys, retTys);
-      fn = FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
+      fn = func::FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
       fn.setPrivate();
       module.push_back(fn);
     }
@@ -787,10 +787,10 @@ public:
     ss << "d" << memrefTy.getMemorySpaceAsInt();
     memrefTy.getElementType().print(ss);
 
-    auto fn = module.lookupSymbol<FuncOp>(fnName);
+    auto fn = module.lookupSymbol<func::FuncOp>(fnName);
     if (!fn) {
       auto fnTy = FunctionType::get(ctx, tys, retTys);
-      fn = FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
+      fn = func::FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
       fn.setPrivate();
       module.push_back(fn);
     }
@@ -823,10 +823,10 @@ public:
     llvm::raw_string_ostream ss(fnName);
     ss << "_" << operands.size();
 
-    auto fn = module.lookupSymbol<FuncOp>(fnName);
+    auto fn = module.lookupSymbol<func::FuncOp>(fnName);
     if (!fn) {
       auto fnTy = FunctionType::get(ctx, tys, retTys);
-      fn = FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
+      fn = func::FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
       fn.setPrivate();
       module.push_back(fn);
     }
@@ -884,7 +884,8 @@ public:
     patterns.add<L1AllocOpConversion, L1AffineLoadOpConversion,
                  L1AffineStoreOpConversion, L1DeallocOpConversion,
                  WaitAllOpConversion>(converter, context);
-    populateFunctionOpInterfaceTypeConversionPattern<FuncOp>(patterns, converter);
+    populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(patterns,
+                                                                   converter);
 
     ConversionTarget target(*context);
 
@@ -911,15 +912,16 @@ public:
               (int)xilinx::air::MemorySpace::L1);
     });
 
-    target.addDynamicallyLegalOp<FuncOp>(
-        [&](FuncOp op) { return converter.isSignatureLegal(op.getType()); });
+    target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
+      return converter.isSignatureLegal(op.getFunctionType());
+    });
 
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering AIRRt\n");
       signalPassFailure();
     }
 
-    for (auto func : module.getOps<FuncOp>())
+    for (auto func : module.getOps<func::FuncOp>())
       func->setAttr("llvm.emit_c_interface", UnitAttr::get(func.getContext()));
   }
 

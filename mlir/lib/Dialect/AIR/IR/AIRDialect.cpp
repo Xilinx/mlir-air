@@ -2,6 +2,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 
 #include "mlir/IR/Attributes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/FunctionImplementation.h"
 
@@ -66,7 +67,7 @@ void addAsyncDependency(Operation *op, Value token) {
 
 static ParseResult parseAsyncDependencies(
     OpAsmParser &parser, Type &asyncTokenType,
-    SmallVectorImpl<OpAsmParser::OperandType> &asyncDependencies) {
+    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &asyncDependencies) {
   auto loc = parser.getCurrentLocation();
   if (succeeded(parser.parseOptionalKeyword("async"))) {
     if (parser.getNumResults() == 0)
@@ -144,9 +145,7 @@ void HerdLaunchOp::build(OpBuilder &builder, OperationState &result,
   r->push_back(body);
 }
 
-static LogicalResult verify(HerdLaunchOp op) {
-  return success();
-}
+LogicalResult HerdLaunchOp::verify() { return success(); }
 
 void HerdLaunchOp::print(OpAsmPrinter &p) {
 
@@ -192,10 +191,10 @@ void HerdLaunchOp::print(OpAsmPrinter &p) {
 
 ParseResult HerdLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
 
-  SmallVector<OpAsmParser::OperandType, 4> asyncDependencies;
-  SmallVector<OpAsmParser::OperandType, 4> tileArgs;
-  SmallVector<OpAsmParser::OperandType, 2> tileSize(2);
-  SmallVector<OpAsmParser::OperandType, 2> tileSizeRef(2);
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> asyncDependencies;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> tileArgs;
+  SmallVector<OpAsmParser::UnresolvedOperand, 2> tileSize(2);
+  SmallVector<OpAsmParser::UnresolvedOperand, 2> tileSizeRef(2);
 
   Type asyncTokenType = nullptr;
   if (parseAsyncDependencies(parser, asyncTokenType, asyncDependencies))
@@ -232,15 +231,15 @@ ParseResult HerdLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   parser.resolveOperands(asyncDependencies, tokenType, result.operands);
   parser.resolveOperands(tileSize, index, result.operands);
 
-  SmallVector<OpAsmParser::OperandType, 4> kernelOperands;
-  SmallVector<OpAsmParser::OperandType, 4> kernelArguments;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> kernelOperands;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> kernelArguments;
   SmallVector<Type, 4> types;
   if (succeeded(parser.parseOptionalKeyword("args"))) {
     if (parser.parseLParen())
       return failure();
     do {
-      OpAsmParser::OperandType argument;
-      OpAsmParser::OperandType operand;
+      OpAsmParser::UnresolvedOperand argument;
+      OpAsmParser::UnresolvedOperand operand;
       if (parser.parseRegionArgument(argument) || parser.parseEqual() ||
         parser.parseOperand(operand))
       return failure();
@@ -324,17 +323,17 @@ SmallVector<PipelineStageOp, 8> HerdPipelineOp::getStages() {
 ParseResult
 PipelineStageOp::parse(OpAsmParser &parser, OperationState &result) {
 
-  SmallVector<OpAsmParser::OperandType, 4> args;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> args;
 
-  SmallVector<OpAsmParser::OperandType, 4> kernelOperands;
-  SmallVector<OpAsmParser::OperandType, 4> kernelArguments;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> kernelOperands;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> kernelArguments;
   SmallVector<Type, 4> types;
   if (succeeded(parser.parseOptionalKeyword("args"))) {
     if (parser.parseLParen())
       return failure();
     do {
-      OpAsmParser::OperandType argument;
-      OpAsmParser::OperandType operand;
+      OpAsmParser::UnresolvedOperand argument;
+      OpAsmParser::UnresolvedOperand operand;
       if (parser.parseRegionArgument(argument) || parser.parseEqual() ||
         parser.parseOperand(operand))
       return failure();
@@ -369,9 +368,7 @@ PipelineStageOp::parse(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
-static LogicalResult verify(PipelineStageOp op) {
-  return success();
-}
+LogicalResult PipelineStageOp::verify() { return success(); }
 
 void PipelineStageOp::print(OpAsmPrinter &p) {
 
@@ -417,9 +414,9 @@ unsigned PipelineStageOp::getStageId() {
 // Asynchronous region
 //
 
-static LogicalResult verify(RegionOp op) {
-  assert(op.getOperation()->getNumRegions() == 1 && "RegionOp has zero region!");
-  assert(!op.body().empty() && "RegionOp should have non-empty body");
+LogicalResult RegionOp::verify() {
+  assert(getOperation()->getNumRegions() == 1 && "RegionOp has zero region!");
+  assert(!body().empty() && "RegionOp should have non-empty body");
 
   return success();
 }

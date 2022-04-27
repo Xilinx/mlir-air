@@ -3,8 +3,9 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/IR/OperationSupport.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/OperationSupport.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Debug.h"
@@ -138,8 +139,9 @@ void normalizeLoop(AffineForOp afo)
   return;
 }
 
-FuncOp getMangledFunction(ModuleOp module, std::string prefix, ArrayRef<Value> operands, ArrayRef<Type> retTys)
-{
+func::FuncOp getMangledFunction(ModuleOp module, std::string prefix,
+                                ArrayRef<Value> operands,
+                                ArrayRef<Type> retTys) {
   Builder builder(module);
 
   SmallVector<Type, 16> tys;
@@ -149,10 +151,10 @@ FuncOp getMangledFunction(ModuleOp module, std::string prefix, ArrayRef<Value> o
   auto fnTy = builder.getFunctionType(tys, retTys);
 
   std::string fnName = getMangledFuncName(module, prefix, fnTy);
-  auto fn = module.lookupSymbol<FuncOp>(fnName);
+  auto fn = module.lookupSymbol<func::FuncOp>(fnName);
 
   if (!fn) {
-    fn = FuncOp::create(builder.getUnknownLoc(), fnName, fnTy);
+    fn = func::FuncOp::create(builder.getUnknownLoc(), fnName, fnTy);
     fn.setPrivate();
     module.push_back(fn);
   }

@@ -91,7 +91,7 @@ public:
     // Herd assignment
     //
 
-    for (auto f : module.getOps<FuncOp>()) {
+    for (auto f : module.getOps<func::FuncOp>()) {
       std::vector<SmallVector<AffineForOp, 6>> bands;
       getTileableBands(f, &bands);
       for (auto &band : bands) {
@@ -105,7 +105,7 @@ public:
       }
     }
 
-    for (auto f : module.getOps<FuncOp>()) {
+    for (auto f : module.getOps<func::FuncOp>()) {
       std::vector<func::CallOp> kernelOps;
       f.walk([&](Operation *o) {
         if (auto co = dyn_cast<func::CallOp>(o)) {
