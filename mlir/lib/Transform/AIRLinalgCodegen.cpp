@@ -475,29 +475,29 @@ public:
       *this, "test-patterns", llvm::cl::desc("Test canonicalization patterns"),
       llvm::cl::init(false)};
 
-  ListOption<unsigned> clHerdSize{
-      *this, "herd-size", llvm::cl::desc("Herd size to target"),
-      llvm::cl::ZeroOrMore, llvm::cl::CommaSeparated};
+  ListOption<unsigned> clHerdSize{*this, "herd-size",
+                                  llvm::cl::desc("Herd size to target"),
+                                  llvm::cl::ZeroOrMore};
 
   ListOption<unsigned> clL1TileSize{
       *this, "l1-tile-size",
-      llvm::cl::desc("Tile factors to pass to L1 tiling"), llvm::cl::ZeroOrMore,
-      llvm::cl::CommaSeparated};
+      llvm::cl::desc("Tile factors to pass to L1 tiling"),
+      llvm::cl::ZeroOrMore};
 
   ListOption<unsigned> clL2TileSize{
       *this, "l2-tile-size",
-      llvm::cl::desc("Tile factors to pass to L2 tiling"), llvm::cl::ZeroOrMore,
-      llvm::cl::CommaSeparated};
+      llvm::cl::desc("Tile factors to pass to L2 tiling"),
+      llvm::cl::ZeroOrMore};
 
   ListOption<unsigned> clL1TileInterchange{
       *this, "l1-tile-permute",
       llvm::cl::desc("Tile permute vector to pass to L1 tiling"),
-      llvm::cl::ZeroOrMore, llvm::cl::CommaSeparated};
+      llvm::cl::ZeroOrMore};
 
   ListOption<unsigned> clL2TileInterchange{
       *this, "l2-tile-permute",
       llvm::cl::desc("Tile permute vector to pass to L2 tiling"),
-      llvm::cl::ZeroOrMore, llvm::cl::CommaSeparated};
+      llvm::cl::ZeroOrMore};
 
   Option<unsigned> clL1MaxSize{*this, "L1-size",
                                llvm::cl::desc("L1 allocation limit in bytes"),
@@ -516,7 +516,7 @@ public:
                     scf::SCFDialect, air::airDialect, func::FuncDialect>();
   }
 
-  void runTestPatterns(FuncOp funcOp) {
+  void runTestPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
     patterns.insert<RemoveSubViewOpsPattern, FoldSubViewOpsPattern,
@@ -633,7 +633,7 @@ public:
     adjustToDivisorsOfTripCounts(op, tileSizes, tripCounts);
   }
 
-  void runGenericPatterns(FuncOp funcOp) {
+  void runGenericPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
 
     SmallVector<linalg::GenericOp, 4> genericOps;
@@ -685,8 +685,9 @@ public:
       xilinx::air::AIROutliner olnr;
       func::CallOp call =
           olnr.outline(std::vector<Operation *>{genericOp}, "call_generic_op");
-      FuncOp called = funcOp->getParentOfType<ModuleOp>().lookupSymbol<FuncOp>(
-          call.getCallee());
+      func::FuncOp called =
+          funcOp->getParentOfType<ModuleOp>().lookupSymbol<func::FuncOp>(
+              call.getCallee());
 
       // L2 tiling
       if (tileForL2) {
@@ -812,7 +813,7 @@ public:
     }
   }
 
-  void runMatmulPatterns(FuncOp funcOp) {
+  void runMatmulPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
 
     SmallVector<linalg::MatmulOp, 4> matmulOps;
@@ -838,8 +839,9 @@ public:
       xilinx::air::AIROutliner olnr;
       func::CallOp call =
           olnr.outline(std::vector<Operation *>{matmulOp}, "call_mmult");
-      FuncOp called = funcOp->getParentOfType<ModuleOp>().lookupSymbol<FuncOp>(
-          call.getCallee());
+      func::FuncOp called =
+          funcOp->getParentOfType<ModuleOp>().lookupSymbol<func::FuncOp>(
+              call.getCallee());
 
       SmallVector<int64_t, 3> herd_size{2, 2, 2};
       SmallVector<int64_t, 3> l1_tile_size{32, 32, 32};
@@ -924,7 +926,7 @@ public:
     }
   }
 
-  void runConv2dPatterns(FuncOp funcOp) {
+  void runConv2dPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
 
     SmallVector<linalg::Conv2DNchwFchwOp, 4> conv2dOps;
@@ -935,8 +937,9 @@ public:
       xilinx::air::AIROutliner olnr;
       func::CallOp call =
           olnr.outline(std::vector<Operation *>{conv2dOp}, "call_conv_2d_nchw");
-      FuncOp called = funcOp->getParentOfType<ModuleOp>().lookupSymbol<FuncOp>(
-          call.getCallee());
+      func::FuncOp called =
+          funcOp->getParentOfType<ModuleOp>().lookupSymbol<func::FuncOp>(
+              call.getCallee());
 
       SmallVector<int64_t, 7> l1_tile_size{1, 32, 32, 32, 32, 3, 3};
       SmallVector<unsigned, 7> l1_tile_interchange{0, 1, 2, 3, 4, 5, 6};
@@ -1049,7 +1052,7 @@ public:
     }
   }
 
-  void runOnFunction(FuncOp f) {
+  void runOnFunction(func::FuncOp f) {
 
     //RewritePatternSet prePatterns(&getContext());
     //prePatterns.insert<RemoveAllocLinalgOpCopyPattern>(&getContext());
@@ -1065,8 +1068,8 @@ public:
 
   void runOnOperation() override {
     auto module = getOperation();
-    SmallVector<FuncOp, 4> funcOps;
-    module.walk([&](FuncOp op) { funcOps.push_back(op); });
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
     for (auto f : funcOps)
       runOnFunction(f);
   }
