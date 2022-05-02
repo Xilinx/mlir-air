@@ -1,8 +1,8 @@
 // (c) Copyright 2019-2022 Xilinx Inc. All Rights Reserved.
 
+#include "air/Util/Runner.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/CostModel.h"
-#include "air/Util/Runner.h"
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
@@ -11,10 +11,10 @@
 #include "llvm/Support/JSON.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Support/MathExtras.h"
@@ -186,15 +186,15 @@ class AIRRunner::AIRRunner_impl {
   }
 
   void decrementAsyncTokens(Operation *op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
+                            std::vector<llvm::Any> &out) {
 
-    for (unsigned i = 0, e=op->getNumResults(); i<e; i++) {
+    for (unsigned i = 0, e = op->getNumResults(); i < e; i++) {
       auto r = op->getResult(i);
       if (r.getType().isa<xilinx::air::AsyncTokenType>()) {
         valueMap[r] =
             llvm::any_cast<llvm::APInt>(valueMap[r]) - llvm::APInt(64, 1);
         assert(llvm::any_cast<llvm::APInt>(valueMap[r]).getSExtValue() >= 0);
-        //valueMap[r] = out[i];
+        // valueMap[r] = out[i];
       }
     }
   }
@@ -214,7 +214,7 @@ class AIRRunner::AIRRunner_impl {
 
   void executeOp(xilinx::air::RegionOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
-    //decrementAsyncTokens(op, in, out);
+    // decrementAsyncTokens(op, in, out);
   }
 
   void executeOp(xilinx::air::RegionTerminatorOp op, std::vector<llvm::Any> &in,
@@ -262,7 +262,7 @@ class AIRRunner::AIRRunner_impl {
     // else if (auto Op = dyn_cast<scf::ForOp>(op))
     //   executeOp(Op, inValues, outValues);
     // else if (auto Op = dyn_cast<scf::YieldOp>(op))
-      // executeOp(Op, inValues, outValues);
+    // executeOp(Op, inValues, outValues);
     else if (auto Op = dyn_cast<scf::ParallelOp>(op))
       executeOp(Op, inValues, outValues);
     else if (auto Op = dyn_cast<xilinx::air::RegionOp>(op))
@@ -281,13 +281,13 @@ class AIRRunner::AIRRunner_impl {
   }
 
   bool executeOp(Operation &op) {
-    //int i = 0;
+    // int i = 0;
     std::vector<llvm::Any> inValues(op.getNumOperands());
     std::vector<llvm::Any> outValues(op.getNumResults());
-    //LLVM_DEBUG(llvm::dbgs() << "OP:  " << op.getName() << "\n");
-    //for (Value in : op.getOperands()) {
-    //  inValues[i++] = valueMap[in];
-    //}
+    // LLVM_DEBUG(llvm::dbgs() << "OP:  " << op.getName() << "\n");
+    // for (Value in : op.getOperands()) {
+    //   inValues[i++] = valueMap[in];
+    // }
 
     if (!executeOpImpls(op, inValues, outValues))
       return false;
@@ -336,7 +336,8 @@ class AIRRunner::AIRRunner_impl {
   }
 
 public:
-  AIRRunner_impl(llvm::raw_ostream &trace_stream, llvm::json::Value &json_model, bool verbose=false)
+  AIRRunner_impl(llvm::raw_ostream &trace_stream, llvm::json::Value &json_model,
+                 bool verbose = false)
       : traceStream(trace_stream), jsonModel(json_model), time(1) {
 
     auto model = jsonModel.getAsObject();
@@ -364,7 +365,8 @@ public:
     unsigned ptr = store.size();
     store.resize(ptr + 1);
     store[ptr].resize(1 /*bytes*/);
-    LLVM_DEBUG(llvm::dbgs() << "alloc " << ptr << " space " << memorySpace << " size " << bytes << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "alloc " << ptr << " space " << memorySpace
+                            << " size " << bytes << "\n");
     // mlir::Type elementType = type.getElementType();
     // int width = elementType.getIntOrFloatBitWidth();
     //  for (int i = 0; i < bytes; i++) {
@@ -691,7 +693,7 @@ public:
         else if (skip.find(name) == std::string::npos)
           LLVM_DEBUG(llvm::dbgs() << name << " not counted\n");
       }
-      c.compute_xfer_cost = 0;//memory_op_count;
+      c.compute_xfer_cost = 0; // memory_op_count;
 
       if (compute_op_count) {
         // defaults
@@ -839,7 +841,8 @@ public:
         // running...
         LLVM_DEBUG(llvm::dbgs() << "running: '");
         LLVM_DEBUG(c.op->print(llvm::dbgs()));
-        LLVM_DEBUG(llvm::dbgs() << "' @ " << time << " - " << c.end_time << "\n");
+        LLVM_DEBUG(llvm::dbgs()
+                   << "' @ " << time << " - " << c.end_time << "\n");
         // in-order, return.
         return;
       }
@@ -861,7 +864,9 @@ public:
         if (!valueMap.count(in))
           ready = false;
         else if (llvm::any_cast<llvm::APInt>(valueMap[in]) != 0) {
-          LLVM_DEBUG(llvm::dbgs() << "count @ " << llvm::any_cast<llvm::APInt>(valueMap[in]) << "\n");
+          LLVM_DEBUG(llvm::dbgs()
+                     << "count @ " << llvm::any_cast<llvm::APInt>(valueMap[in])
+                     << "\n");
           ready = false;
         }
       }
@@ -878,7 +883,8 @@ public:
     c_next.end_time = time + modelOp(c_next);
     LLVM_DEBUG(llvm::dbgs() << "start: '");
     LLVM_DEBUG(c_next.op->print(llvm::dbgs()));
-    LLVM_DEBUG(llvm::dbgs() << "' @ " << time << " - " << c_next.end_time << "\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "' @ " << time << " - " << c_next.end_time << "\n");
 
     // emit trace event begin
     if (time > c_next.queue_ready_time) {
@@ -894,11 +900,10 @@ public:
     return;
   }
 
-  void
-  scheduleAIRRegion(xilinx::air::RegionOp &ro,
-                    std::deque<CommandQueueEntry> *programQueue,
-                    std::array<std::deque<CommandQueueEntry>, 32> *dispatchQueue,
-                    std::deque<CommandQueueEntry> tileQueue[16][16]) {
+  void scheduleAIRRegion(
+      xilinx::air::RegionOp &ro, std::deque<CommandQueueEntry> *programQueue,
+      std::array<std::deque<CommandQueueEntry>, 32> *dispatchQueue,
+      std::deque<CommandQueueEntry> tileQueue[16][16]) {
 
     for (auto r : ro->getResults()) {
       if (r.getType().isa<xilinx::air::AsyncTokenType>()) {
@@ -907,7 +912,8 @@ public:
     }
 
     programQueue->push_back(CommandQueueEntry(ro.getOperation()));
-    scheduleBlock(ro->getRegion(0).front(), programQueue, dispatchQueue, tileQueue);
+    scheduleBlock(ro->getRegion(0).front(), programQueue, dispatchQueue,
+                  tileQueue);
   }
 
   void
@@ -923,7 +929,7 @@ public:
     auto r = ub.value() - lb.value();
     auto trip_count = mlir::ceilDiv(r, step.value());
 
-    //programQueue->push_back(CommandQueueEntry(fo.getOperation()));
+    // programQueue->push_back(CommandQueueEntry(fo.getOperation()));
 
     for (auto r : fo->getResults()) {
       if (r.getType().isa<xilinx::air::AsyncTokenType>()) {
@@ -988,9 +994,8 @@ public:
             for (auto &o : spo.getRegion().front().getOperations()) {
               bldr.clone(o, map);
             }
-            scheduleBlock(
-                *bb, &(dispatchQueue->data()[i % dispatch_slots]),
-                dispatchQueue, tileQueues[i % herd_slots]);
+            scheduleBlock(*bb, &(dispatchQueue->data()[i % dispatch_slots]),
+                          dispatchQueue, tileQueues[i % herd_slots]);
           }
         }));
     return;
@@ -1016,7 +1021,7 @@ public:
         CommandQueueEntry(hlo.getOperation(), [=](Operation *op) {
           auto ho = cast<xilinx::air::HerdLaunchOp>(op);
           auto tokenTy = xilinx::air::AsyncTokenType::get(op->getContext());
-          //SmallVector<Value, 16> exit_tokens;
+          // SmallVector<Value, 16> exit_tokens;
           for (auto row = 0; row < rows; row++) {
             for (auto col = 0; col < cols; col++) {
               BlockAndValueMapping map;
@@ -1042,7 +1047,7 @@ public:
                 // When the wait_all runs it decrements the herd result event.
                 t = bldr.create<xilinx::air::WaitAllOp>(
                     op->getLoc(), SmallVector<Type, 1>{tokenTy}, exit_deps);
-                //exit_tokens.push_back(t.getResult(0));
+                // exit_tokens.push_back(t.getResult(0));
               }
               scheduleBlock(*bb, &tileQueue[col][row], dispatchQueue,
                             tileQueue);
@@ -1085,7 +1090,7 @@ public:
       } else if (isa<memref::AllocOp>(op) || isa<memref::DeallocOp>(op)) {
         programQueue->push_back(CommandQueueEntry(op));
       } else if (isa<xilinx::air::WaitAllOp>(op) ||
-                 isa<xilinx::air::DmaMemcpyInterface>(op)||
+                 isa<xilinx::air::DmaMemcpyInterface>(op) ||
                  isa<xilinx::air::RegionTerminatorOp>(op)) {
         scheduleAIRAsyncOp(op, programQueue);
       } else if (auto r = dyn_cast<xilinx::air::RegionOp>(op)) {
@@ -1192,7 +1197,7 @@ private:
   // (represented by a Value*) with it's corresponding value.
   llvm::DenseMap<Value, llvm::Any> valueMap;
   // The timeMap associates each value with the time it was created.
-  //llvm::DenseMap<Value, uint64_t> timeMap;
+  // llvm::DenseMap<Value, uint64_t> timeMap;
 
   std::deque<CommandQueueEntry> tileQueues[32][16][16];
 
@@ -1206,7 +1211,8 @@ private:
 
 }; // AIRRunner_impl
 
-AIRRunner::AIRRunner(llvm::raw_ostream &trace_stream, llvm::json::Value &json_model, bool verbose) {
+AIRRunner::AIRRunner(llvm::raw_ostream &trace_stream,
+                     llvm::json::Value &json_model, bool verbose) {
   impl = std::make_unique<AIRRunner_impl>(trace_stream, json_model, verbose);
   if (verbose) {
     llvm::DebugFlag = true;
@@ -1214,18 +1220,13 @@ AIRRunner::AIRRunner(llvm::raw_ostream &trace_stream, llvm::json::Value &json_mo
   }
 }
 
-AIRRunner::~AIRRunner() {
-}
+AIRRunner::~AIRRunner() {}
 
-void
-AIRRunner::emitTraceStart(llvm::raw_ostream &s) {
+void AIRRunner::emitTraceStart(llvm::raw_ostream &s) {
   impl->emitTraceStart(s);
 }
 
-void
-AIRRunner::emitTraceEnd(llvm::raw_ostream &s) {
-  impl->emitTraceEnd(s);
-}
+void AIRRunner::emitTraceEnd(llvm::raw_ostream &s) { impl->emitTraceEnd(s); }
 
 void AIRRunner::scheduleFunction(func::FuncOp &toplevel) {
   impl->scheduleFunction(toplevel);

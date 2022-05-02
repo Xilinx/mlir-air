@@ -12,9 +12,7 @@
 namespace xilinx {
 namespace air {
 
-void defineAIRRunnerModule(pybind11::module &m) {
-  m.def("run", airRunnerRun);
-}
+void defineAIRRunnerModule(pybind11::module &m) { m.def("run", airRunnerRun); }
 
 } // namespace air
 } // namespace xilinx

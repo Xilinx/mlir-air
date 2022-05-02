@@ -10,8 +10,8 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/ToolOutputFile.h"
 
-void airRunnerRun(MlirModule module, char *jsonFileName, char *outputFileName, char *topLevelFunction,
-                  bool verbose) {
+void airRunnerRun(MlirModule module, char *jsonFileName, char *outputFileName,
+                  char *topLevelFunction, bool verbose) {
   auto moduleOp = unwrap(module);
   moduleOp->dump();
 

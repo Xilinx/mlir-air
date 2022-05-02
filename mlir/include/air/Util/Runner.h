@@ -12,7 +12,8 @@ namespace air {
 
 struct AIRRunner {
 
-  AIRRunner(llvm::raw_ostream &trace_stream, llvm::json::Value &json_model, bool verbose=false);
+  AIRRunner(llvm::raw_ostream &trace_stream, llvm::json::Value &json_model,
+            bool verbose = false);
   ~AIRRunner();
 
   void emitTraceStart(llvm::raw_ostream &s);
