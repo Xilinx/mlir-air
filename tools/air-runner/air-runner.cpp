@@ -48,15 +48,6 @@ LogicalResult run(int argc, char **argv, llvm::StringRef toolName) {
                                        llvm::cl::value_desc("bool"),
                                        llvm::cl::init(false));
 
-  static llvm::cl::opt<unsigned> clDispatchSlots("dispatch-slots", llvm::cl::desc("dispatch slots"),
-                                       llvm::cl::value_desc("unsigned"),
-                                       llvm::cl::init(1));
-
-  static llvm::cl::opt<unsigned> clHerdSlots("herd-slots", llvm::cl::desc("herd slots"),
-                                       llvm::cl::value_desc("unsigned"),
-                                       llvm::cl::init(4));
-
-
   llvm::InitLLVM y(argc, argv);
   llvm::cl::ParseCommandLineOptions(argc, argv, toolName);
 
@@ -119,7 +110,7 @@ LogicalResult run(int argc, char **argv, llvm::StringRef toolName) {
     if (!jsonModel)
       llvm_unreachable("failed to parse model json\n");
 
-    xilinx::air::AIRRunner runner(os, *jsonModel);
+    xilinx::air::AIRRunner runner(os, *jsonModel, clVerbose);
 
     // The number of inputs to the function in the IR.
     unsigned numInputs = 0;

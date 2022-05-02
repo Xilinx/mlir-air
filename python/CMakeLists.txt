@@ -48,6 +48,7 @@ declare_mlir_python_extension(AirPythonExtensions.MLIR
   ROOT_DIR ../mlir/python
   SOURCES
     AIRMLIRModule.cpp
+    AIRRunnerModule.cpp
   EMBED_CAPI_LINK_LIBS
     AIRCAPI
   PRIVATE_LINK_LIBS
@@ -104,4 +105,8 @@ add_subdirectory(air/backend)
 
 add_dependencies(AirPythonModules AirCompilerPythonModules)
 add_subdirectory(air/compiler)
+
+add_dependencies(AirPythonModules AirRunnerPythonModules)
+add_subdirectory(air/runner)
+
 add_subdirectory(test)

@@ -9,6 +9,7 @@ include_directories(
 
 add_library(AIRMLIRPyExt SHARED
   AIRMLIRModule.cpp
+  AIRRunnerModule.cpp
 )
 
 set_target_properties(AIRMLIRPyExt PROPERTIES OUTPUT_NAME _airmlir)

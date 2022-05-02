@@ -30,10 +30,6 @@
 
 #define INDEX_WIDTH 32
 
-static bool verbose = false;
-static unsigned dispatch_slots = 1;
-static unsigned herd_slots = 1;
-
 using namespace mlir;
 
 namespace xilinx {
@@ -195,16 +191,12 @@ class AIRRunner::AIRRunner_impl {
     for (unsigned i = 0, e=op->getNumResults(); i<e; i++) {
       auto r = op->getResult(i);
       if (r.getType().isa<xilinx::air::AsyncTokenType>()) {
-        out[i] =
+        valueMap[r] =
             llvm::any_cast<llvm::APInt>(valueMap[r]) - llvm::APInt(64, 1);
-        valueMap[r] = out[i];
+        assert(llvm::any_cast<llvm::APInt>(valueMap[r]).getSExtValue() >= 0);
+        //valueMap[r] = out[i];
       }
     }
-  }
-
-  void executeOp(scf::ForOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    ;//decrementAsyncTokens(op, in, out);
   }
 
   void executeOp(scf::ParallelOp op, std::vector<llvm::Any> &in,
@@ -222,7 +214,7 @@ class AIRRunner::AIRRunner_impl {
 
   void executeOp(xilinx::air::RegionOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
-    decrementAsyncTokens(op, in, out);
+    //decrementAsyncTokens(op, in, out);
   }
 
   void executeOp(xilinx::air::RegionTerminatorOp op, std::vector<llvm::Any> &in,
@@ -267,8 +259,10 @@ class AIRRunner::AIRRunner_impl {
       executeOp(Op, inValues, outValues);
     else if (auto Op = dyn_cast<memref::DeallocOp>(op))
       executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<scf::ForOp>(op))
-      executeOp(Op, inValues, outValues);
+    // else if (auto Op = dyn_cast<scf::ForOp>(op))
+    //   executeOp(Op, inValues, outValues);
+    // else if (auto Op = dyn_cast<scf::YieldOp>(op))
+      // executeOp(Op, inValues, outValues);
     else if (auto Op = dyn_cast<scf::ParallelOp>(op))
       executeOp(Op, inValues, outValues);
     else if (auto Op = dyn_cast<xilinx::air::RegionOp>(op))
@@ -287,33 +281,25 @@ class AIRRunner::AIRRunner_impl {
   }
 
   bool executeOp(Operation &op) {
-    int i = 0;
+    //int i = 0;
     std::vector<llvm::Any> inValues(op.getNumOperands());
     std::vector<llvm::Any> outValues(op.getNumResults());
-    LLVM_DEBUG(llvm::dbgs() << "OP:  " << op.getName() << "\n");
-    for (Value in : op.getOperands()) {
-      inValues[i++] = valueMap[in];
-    }
+    //LLVM_DEBUG(llvm::dbgs() << "OP:  " << op.getName() << "\n");
+    //for (Value in : op.getOperands()) {
+    //  inValues[i++] = valueMap[in];
+    //}
 
     if (!executeOpImpls(op, inValues, outValues))
       return false;
 
     // record result in valuemap
-    i = 0;
-    for (Value out : op.getResults()) {
-      LLVM_DEBUG(debugArg("OUT", out, outValues[i], time));
-      valueMap[out] = outValues[i];
-      // timeMap[out] = time;
-      i++;
-    }
-
-    if (auto afo = dyn_cast<AffineForOp>(op)) {
-      valueMap[afo.getInductionVar()] = outValues[0];
-    }
-    if (auto apo = dyn_cast<AffineParallelOp>(op)) {
-      valueMap[apo.getIVs()[0]] = outValues[0];
-      valueMap[apo.getIVs()[1]] = outValues[1];
-    }
+    // i = 0;
+    // for (Value out : op.getResults()) {
+    //   LLVM_DEBUG(debugArg("OUT", out, outValues[i], time));
+    //   valueMap[out] = outValues[i];
+    //   timeMap[out] = time;
+    //   i++;
+    // }
 
     return true;
   }
@@ -350,8 +336,17 @@ class AIRRunner::AIRRunner_impl {
   }
 
 public:
-  AIRRunner_impl(llvm::raw_ostream &trace_stream, llvm::json::Value &json_model)
-      : traceStream(trace_stream), jsonModel(json_model), time(1) {}
+  AIRRunner_impl(llvm::raw_ostream &trace_stream, llvm::json::Value &json_model, bool verbose=false)
+      : traceStream(trace_stream), jsonModel(json_model), time(1), verbose(verbose) {
+
+    auto model = jsonModel.getAsObject();
+    if (auto ds = model->getNumber("num_dispatch_queues"))
+      dispatch_slots = (unsigned)(*ds);
+    if (auto hs = model->getNumber("num_herd_slots"))
+      herd_slots = (unsigned)(*hs);
+    LLVM_DEBUG(llvm::outs() << "herd slots: " << herd_slots << "\n");
+    LLVM_DEBUG(llvm::outs() << "dispatch slots: " << dispatch_slots << "\n");
+  }
 
   // Allocate a new matrix with dimensions given by the type, in the
   // given store.  Return the pseudo-pointer to the new matrix in the
@@ -915,17 +910,19 @@ public:
   }
 
   void
-  scheduleAIRRegion(xilinx::air::RegionOp &r,
+  scheduleAIRRegion(xilinx::air::RegionOp &ro,
                     std::deque<CommandQueueEntry> *programQueue,
                     std::array<std::deque<CommandQueueEntry>, 32> *dispatchQueue,
                     std::deque<CommandQueueEntry> tileQueue[16][16]) {
 
-    if (r->getNumResults() &&
-        r->getResult(0).getType().isa<xilinx::air::AsyncTokenType>())
-      valueMap[r->getResult(0)] = llvm::APInt(64, 2);
+    for (auto r : ro->getResults()) {
+      if (r.getType().isa<xilinx::air::AsyncTokenType>()) {
+        valueMap[r] = llvm::APInt(64, 1);
+      }
+    }
 
-    programQueue->push_back(CommandQueueEntry(r.getOperation()));
-    scheduleBlock(r->getRegion(0).front(), programQueue, dispatchQueue, tileQueue);
+    programQueue->push_back(CommandQueueEntry(ro.getOperation()));
+    scheduleBlock(ro->getRegion(0).front(), programQueue, dispatchQueue, tileQueue);
   }
 
   void
@@ -941,11 +938,11 @@ public:
     auto r = ub.value() - lb.value();
     auto trip_count = mlir::ceilDiv(r, step.value());
 
-    programQueue->push_back(CommandQueueEntry(fo.getOperation()));
+    //programQueue->push_back(CommandQueueEntry(fo.getOperation()));
 
     for (auto r : fo->getResults()) {
       if (r.getType().isa<xilinx::air::AsyncTokenType>()) {
-        valueMap[r] = APInt(64, 1);
+        valueMap[r] = llvm::APInt(64, 1);
       }
     }
 
@@ -968,13 +965,13 @@ public:
             map.map(std::get<0>(t), std::get<1>(t));
         }
       }
-      // replace the results of the scf.for with the operands of the
-      // final scf.yield operation
-      for (auto &a : fo.getIterOpOperands()) {
-        auto v = map.lookupOrNull(fo.getRegionIterArgForOpOperand(a));
-        fo.getResultForOpOperand(a).replaceAllUsesWith(v);
-      }
       scheduleBlock(*bb, programQueue, dispatchQueue, tileQueue);
+    }
+    // replace the results of the scf.for with the operands of the
+    // final scf.yield operation
+    for (auto &a : fo.getIterOpOperands()) {
+      auto v = map.lookupOrNull(fo.getRegionIterArgForOpOperand(a));
+      fo.getResultForOpOperand(a).replaceAllUsesWith(v);
     }
     return;
   }
@@ -1034,7 +1031,7 @@ public:
         CommandQueueEntry(hlo.getOperation(), [=](Operation *op) {
           auto ho = cast<xilinx::air::HerdLaunchOp>(op);
           auto tokenTy = xilinx::air::AsyncTokenType::get(op->getContext());
-          SmallVector<Value, 16> exit_tokens;
+          //SmallVector<Value, 16> exit_tokens;
           for (auto row = 0; row < rows; row++) {
             for (auto col = 0; col < cols; col++) {
               BlockAndValueMapping map;
@@ -1054,15 +1051,18 @@ public:
                   if (r.getType().isa<xilinx::air::AsyncTokenType>())
                     exit_deps.push_back(r);
               }
-              scheduleBlock(*bb, &tileQueue[col][row], dispatchQueue,
-                            tileQueue);
+              Operation *t = nullptr;
               if (ho->getNumResults()) {
                 // Create an async wait_all on all tokens created in the block.
                 // When the wait_all runs it decrements the herd result event.
-                auto t = bldr.create<xilinx::air::WaitAllOp>(
+                t = bldr.create<xilinx::air::WaitAllOp>(
                     op->getLoc(), SmallVector<Type, 1>{tokenTy}, exit_deps);
-                exit_tokens.push_back(t.getResult(0));
-                valueMap[t->getResult(0)] = APInt(64, 1);
+                //exit_tokens.push_back(t.getResult(0));
+              }
+              scheduleBlock(*bb, &tileQueue[col][row], dispatchQueue,
+                            tileQueue);
+              if (t) {
+                valueMap[t->getResult(0)] = APInt(64, 2);
                 tileQueue[col][row].push_back(
                     CommandQueueEntry(t, [=](Operation *tOp) {
                       valueMap[op->getResult(0)] =
@@ -1196,19 +1196,20 @@ public:
     llvm::outs() << "Finished at time " << time << "\n";
   }
 
-  // todo private:
-public:
+private:
+  llvm::raw_ostream &traceStream;
+  llvm::json::Value &jsonModel;
+  uint64_t time;
+  bool verbose;
+
+  std::vector<llvm::Any> results;
+  std::vector<uint64_t> resultTimes;
+
   // The valueMap associates each SSA statement in the program
   // (represented by a Value*) with it's corresponding value.
   llvm::DenseMap<Value, llvm::Any> valueMap;
-
   // The timeMap associates each value with the time it was created.
-  llvm::DenseMap<Value, uint64_t> timeMap;
-
-private:
-  llvm::raw_ostream &traceStream;
-  std::vector<llvm::Any> results;
-  std::vector<uint64_t> resultTimes;
+  //llvm::DenseMap<Value, uint64_t> timeMap;
 
   std::deque<CommandQueueEntry> tileQueues[32][16][16];
 
@@ -1217,13 +1218,17 @@ private:
   // accessed by it.
   std::vector<std::vector<llvm::Any>> store;
 
-  llvm::json::Value &jsonModel;
+  unsigned dispatch_slots;
+  unsigned herd_slots;
 
-  uint64_t time;
 }; // AIRRunner_impl
 
-AIRRunner::AIRRunner(llvm::raw_ostream &trace_stream, llvm::json::Value &json_model) {
-  impl = std::make_unique<AIRRunner_impl>(trace_stream, json_model);
+AIRRunner::AIRRunner(llvm::raw_ostream &trace_stream, llvm::json::Value &json_model, bool verbose) {
+  impl = std::make_unique<AIRRunner_impl>(trace_stream, json_model, verbose);
+  if (verbose) {
+    llvm::DebugFlag = true;
+    llvm::setCurrentDebugType(DEBUG_TYPE);
+  }
 }
 
 AIRRunner::~AIRRunner() {
