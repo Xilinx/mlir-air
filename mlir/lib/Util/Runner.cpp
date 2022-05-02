@@ -337,15 +337,15 @@ class AIRRunner::AIRRunner_impl {
 
 public:
   AIRRunner_impl(llvm::raw_ostream &trace_stream, llvm::json::Value &json_model, bool verbose=false)
-      : traceStream(trace_stream), jsonModel(json_model), time(1), verbose(verbose) {
+      : traceStream(trace_stream), jsonModel(json_model), time(1) {
 
     auto model = jsonModel.getAsObject();
     if (auto ds = model->getNumber("num_dispatch_queues"))
       dispatch_slots = (unsigned)(*ds);
     if (auto hs = model->getNumber("num_herd_slots"))
       herd_slots = (unsigned)(*hs);
-    LLVM_DEBUG(llvm::outs() << "herd slots: " << herd_slots << "\n");
-    LLVM_DEBUG(llvm::outs() << "dispatch slots: " << dispatch_slots << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "herd slots: " << herd_slots << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "dispatch slots: " << dispatch_slots << "\n");
   }
 
   // Allocate a new matrix with dimensions given by the type, in the
@@ -364,9 +364,7 @@ public:
     unsigned ptr = store.size();
     store.resize(ptr + 1);
     store[ptr].resize(1 /*bytes*/);
-    if (verbose)
-      llvm::outs() << "alloc " << ptr << " space " << memorySpace << " size "
-                   << bytes << "\n";
+    LLVM_DEBUG(llvm::dbgs() << "alloc " << ptr << " space " << memorySpace << " size " << bytes << "\n");
     // mlir::Type elementType = type.getElementType();
     // int width = elementType.getIntOrFloatBitWidth();
     //  for (int i = 0; i < bytes; i++) {
@@ -392,8 +390,7 @@ public:
     return;
     // assert(store[ptr].size());
     // auto allocationSize = store[ptr].size();
-    if (verbose)
-      llvm::outs() << "dealloc " << ptr << "\n";
+    LLVM_DEBUG(llvm::dbgs() << "dealloc " << ptr << "\n");
     store[ptr].resize(0);
     // emitTraceEvent(traceStream, "dealloc", "layer", "E", time, ptr,
     // TRACE_PID_ALLOC);
@@ -606,7 +603,7 @@ public:
 
     time = 0;
     for (int i = 0; i < num_mem; i++) {
-      // llvm::outs() << "memory[" << i << "] ld time: " << ld_xfer_time[i] << "
+      // llvm::dbgs() << "memory[" << i << "] ld time: " << ld_xfer_time[i] << "
       // st time: " << st_xfer_time[i] << "\n";
       auto mem = memories->getObject(std::to_string(i));
       if (!mem)
@@ -692,8 +689,7 @@ public:
         else if (cpuops.find(name) != std::string::npos)
           compute_op_count += count;
         else if (skip.find(name) == std::string::npos)
-          //if (verbose)
-            llvm::outs() << name << " not counted\n";
+          LLVM_DEBUG(llvm::dbgs() << name << " not counted\n");
       }
       c.compute_xfer_cost = 0;//memory_op_count;
 
@@ -747,9 +743,9 @@ public:
       }
       execution_time = std::max(c.compute_op_cost, c.compute_xfer_cost);
     } else {
-      LLVM_DEBUG(llvm::errs()
+      LLVM_DEBUG(llvm::dbgs()
                  << "WARNING: execution time not modeled for op: '");
-      LLVM_DEBUG(llvm::errs() << to_string(op) << "'\n");
+      LLVM_DEBUG(llvm::dbgs() << to_string(op) << "'\n");
       execution_time = 1;
     }
     return execution_time;
@@ -769,11 +765,9 @@ public:
 
     if (c.is_started()) {
       if (c.is_done(time)) {
-        if (verbose) {
-          llvm::outs() << "finish: '";
-          c.op->print(llvm::outs());
-          llvm::outs() << "' @ " << time << "\n";
-        }
+        LLVM_DEBUG(llvm::dbgs() << "finish: '");
+        LLVM_DEBUG(c.op->print(llvm::dbgs()));
+        LLVM_DEBUG(llvm::dbgs() << "' @ " << time << "\n");
 
         // execute
         executeOp(*c.op);
@@ -843,19 +837,16 @@ public:
         // return;
       } else {
         // running...
-        if (verbose) {
-          llvm::outs() << "running: '";
-          c.op->print(llvm::outs());
-          llvm::outs() << "' @ " << time << " - " << c.end_time << "\n";
-        }
+        LLVM_DEBUG(llvm::dbgs() << "running: '");
+        LLVM_DEBUG(c.op->print(llvm::dbgs()));
+        LLVM_DEBUG(llvm::dbgs() << "' @ " << time << " - " << c.end_time << "\n");
         // in-order, return.
         return;
       }
     }
 
     if (!q.size()) {
-      if (verbose)
-        llvm::outs() << "queue empty @ " << time << "\n";
+      LLVM_DEBUG(llvm::dbgs() << "queue empty @ " << time << "\n");
       return;
     }
 
@@ -870,30 +861,24 @@ public:
         if (!valueMap.count(in))
           ready = false;
         else if (llvm::any_cast<llvm::APInt>(valueMap[in]) != 0) {
-          if (verbose)
-            llvm::outs() << "count @ "
-                         << llvm::any_cast<llvm::APInt>(valueMap[in]) << "\n";
+          LLVM_DEBUG(llvm::dbgs() << "count @ " << llvm::any_cast<llvm::APInt>(valueMap[in]) << "\n");
           ready = false;
         }
       }
     }
 
     if (!ready) {
-      if (verbose) {
-        llvm::outs() << "not ready: '";
-        c_next.op->print(llvm::outs());
-        llvm::outs() << "' @ " << time << "\n";
-      }
+      LLVM_DEBUG(llvm::dbgs() << "not ready: '");
+      LLVM_DEBUG(c_next.op->print(llvm::dbgs()));
+      LLVM_DEBUG(llvm::dbgs() << "' @ " << time << "\n");
       return;
     }
 
     c_next.start_time = time;
     c_next.end_time = time + modelOp(c_next);
-    if (verbose) {
-      llvm::outs() << "start: '";
-      c_next.op->print(llvm::outs());
-      llvm::outs() << "' @ " << time << " - " << c_next.end_time << "\n";
-    }
+    LLVM_DEBUG(llvm::dbgs() << "start: '");
+    LLVM_DEBUG(c_next.op->print(llvm::dbgs()));
+    LLVM_DEBUG(llvm::dbgs() << "' @ " << time << " - " << c_next.end_time << "\n");
 
     // emit trace event begin
     if (time > c_next.queue_ready_time) {
@@ -1142,8 +1127,7 @@ public:
 
     bool running = true;
     while (running) {
-      if (verbose)
-        llvm::outs() << "time: " << time << "\n";
+      LLVM_DEBUG(llvm::dbgs() << "time: " << time << "\n");
 
       running = false;
       std::vector<uint64_t> next_times;
@@ -1193,14 +1177,13 @@ public:
         store[ptr].resize(0);
       }
     }
-    llvm::outs() << "Finished at time " << time << "\n";
+    llvm::dbgs() << "Finished at time " << time << "\n";
   }
 
 private:
   llvm::raw_ostream &traceStream;
   llvm::json::Value &jsonModel;
   uint64_t time;
-  bool verbose;
 
   std::vector<llvm::Any> results;
   std::vector<uint64_t> resultTimes;
