@@ -391,6 +391,7 @@ public:
            (src_space == (int)air::MemorySpace::L1 && dst_space == (int)air::MemorySpace::L3) ) {
 
         // copy between L1 and external memory, use shim dma
+        tile_channel = getTileDMAChannel(aie_module, dmaOpIf, x, y);
         AIE::TileOp shim_tile = shim_dma_alloc.getTile(aie_module, dmaOpIf, (int64_t)tile_channel, x, y);
         AIE::DMAChan shim_channel = shim_dma_alloc.getChannel(aie_module, dmaOpIf, (int64_t)tile_channel, x, y);
 
@@ -411,9 +412,11 @@ public:
       else if ( (src_space == (int)air::MemorySpace::L2 && dst_space == (int)air::MemorySpace::L1) ||
                 (src_space == (int)air::MemorySpace::L1 && dst_space == (int)air::MemorySpace::L2) ) {
         // copy between L1 and L2
-        int64_t tile_channel = (int64_t)getTileDMAChannel(aie_module, dmaOpIf, x, y);
-        AIE::TileOp l2_tile = l2_dma_alloc.getTile(aie_module, dmaOpIf, tile_channel, x, y);
-        AIE::DMAChan l2_channel = l2_dma_alloc.getChannel(aie_module, dmaOpIf, tile_channel, x, y);
+        tile_channel = getTileDMAChannel(aie_module, dmaOpIf, x, y);
+        AIE::TileOp l2_tile = l2_dma_alloc.getTile(aie_module, dmaOpIf,
+                                                   (int64_t)tile_channel, x, y);
+        AIE::DMAChan l2_channel = l2_dma_alloc.getChannel(
+            aie_module, dmaOpIf, (int64_t)tile_channel, x, y);
 
         OpBuilder builder(aie_module);
         builder.setInsertionPointToEnd(&(aie_module.getBodyRegion().front()));
@@ -466,6 +469,9 @@ public:
 
     int64_t herd_size_x = cast<arith::ConstantIndexOp>(herd_size.x.getDefiningOp())
                             .value();
+    int64_t herd_size_y =
+        cast<arith::ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
+
     auto aie_module = core->getParentOfType<ModuleOp>();
     // specialize pipeline stages for this core
     core.walk([&](air::HerdPipelineOp pipelineOp) {
@@ -473,20 +479,25 @@ public:
 
       auto stages = pipelineOp.getStages();
 
-      // TODO: dont assume 'horiz'
-      auto pipeline_size = herd_size_x;
+      auto direction = pipelineOp->getAttrOfType<StringAttr>("direction");
+      bool is_horiz = (direction.str() == "horiz");
+
+      auto pipeline_size = is_horiz ? herd_size_x : herd_size_y;
       if (stages.size() != (size_t)pipeline_size) {
         llvm::errs()
           << "ERROR: Herd size did not match pipeline size, giving up.\n";
         return;
       }
 
+      // the tile id in the pipelined dimension
+      auto dim_id = is_horiz ? x : y;
+
       for (int i=0; i<pipeline_size; i++) {
         auto stage = stages[i];
         // This is the stage for the current tile,
         // pull the operations out of the body and replace
         // the yield with a put to the next stage
-        if (i == x) {
+        if (i == dim_id) {
           Block &bb = stage.body().front();
           for (int i = 0, e=bb.getNumArguments(); i<e; i++) {
             bb.getArgument(i).replaceAllUsesWith(stage->getOperand(i));
@@ -498,26 +509,26 @@ public:
           stage->replaceAllUsesWith(yield->getOperands());
           builder.setInsertionPointAfter(stage);
           if (stage->getNumResults() && (i!=(pipeline_size-1)))
-            builder.create<air::PipelinePutOp>(stage.getLoc(),
-                                              yield->getResultTypes(),
-                                              getTileOp(aie_module,x+1,y),
-                                              yield->getOperands());
+            builder.create<air::PipelinePutOp>(
+                stage.getLoc(), yield->getResultTypes(),
+                getTileOp(aie_module, x + (is_horiz ? 1 : 0),
+                          y + (is_horiz ? 0 : 1)),
+                yield->getOperands());
           yield.erase();
         }
         // This is the stage for tile x-1, turn it into
         // a get from that stage
-        else if ((i == x-1) && stage->getNumResults()) {
+        else if ((i == dim_id - 1) && stage->getNumResults()) {
           builder.setInsertionPointAfter(stage);
-          stage.replaceAllUsesWith(
-              builder.create<air::PipelineGetOp>(stage.getLoc(),
-                                                stage->getResultTypes(),
-                                                getTileOp(aie_module,x-1,y))
-          );
+          stage.replaceAllUsesWith(builder.create<air::PipelineGetOp>(
+              stage.getLoc(), stage->getResultTypes(),
+              getTileOp(aie_module, x - (is_horiz ? 1 : 0),
+                        y - (is_horiz ? 0 : 1))));
           Block &bb = stage.body().front();
           bb.clear();
-      }
-      // otherwise get ride of the ops in the stage
-      else {
+        }
+        // otherwise erase the ops in the stage
+        else {
           Block &bb = stage.body().front();
           bb.clear();
         }
