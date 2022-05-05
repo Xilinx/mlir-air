@@ -3,8 +3,7 @@
 // RUN: air-opt %s -air-linalg-codegen='l1-tile-size=32,32,32 l2-tile-size=64,64,64' | FileCheck %s
 
 // CHECK-LABEL: matmul_on_memref
-// CHECK: scf.for %arg2 = %c0 to %c128 step %c64 {
-// CHECK: scf.for %arg3 = %c0 to %c128 step %c64 {
+// CHECK: scf.parallel (%arg2, %arg3) = (%c0, %c0) to (%c128, %c128) step (%c64, %c64) {
 // CHECK: scf.for %arg4 = %c0 to %c128 step %c64 {
 // CHECK: memref.copy {{.*}} : memref<{{.*}}> to memref<64x64xi32, 1>
 // CHECK: memref.copy {{.*}} : memref<{{.*}}> to memref<64x64xi32, 1>

@@ -499,6 +499,14 @@ public:
       llvm::cl::desc("Tile permute vector to pass to L2 tiling"),
       llvm::cl::ZeroOrMore};
 
+  Option<bool> clL1Promote{*this, "l1-promote",
+                           llvm::cl::desc("Promote tiles to L1 memory"),
+                           llvm::cl::init(true)};
+
+  Option<bool> clL2Promote{*this, "l2-promote",
+                           llvm::cl::desc("Promote tiles to L2 memory"),
+                           llvm::cl::init(true)};
+
   Option<unsigned> clL1MaxSize{*this, "L1-size",
                                llvm::cl::desc("L1 allocation limit in bytes"),
                                llvm::cl::init(32 * 1024)};
@@ -698,8 +706,9 @@ public:
                 .setTileSizes(l2_tile_size)
                 .setInterchange(l2_tile_interchange)
                 .setLoopType(linalg::LinalgTilingLoopType::Loops),
-            linalg::LinalgTransformationFilter(next_match,
-                                               StringAttr::get(ctx, "L2")));
+            linalg::LinalgTransformationFilter(
+                next_match,
+                StringAttr::get(ctx, clL2Promote ? "L2" : "L2_promoted")));
 
         stageL2Patterns
             .insert<linalg::LinalgPromotionPattern<linalg::GenericOp>>(
@@ -782,8 +791,9 @@ public:
                 .setTileSizes(l1_tile_size)
                 .setInterchange(l1_tile_interchange)
                 .setLoopType(linalg::LinalgTilingLoopType::Loops),
-            linalg::LinalgTransformationFilter(next_match,
-                                               StringAttr::get(ctx, "L1")));
+            linalg::LinalgTransformationFilter(
+                next_match,
+                StringAttr::get(ctx, clL1Promote ? "L1" : "L1_promoted")));
       }
       stageL1Patterns.insert<linalg::LinalgPromotionPattern<linalg::GenericOp>>(
           ctx, linalg::LinalgPromotionOptions(),
@@ -873,9 +883,10 @@ public:
             linalg::LinalgTilingOptions()
                 .setTileSizes(l2_tile_size)
                 .setInterchange(l2_tile_interchange)
-                .setLoopType(linalg::LinalgTilingLoopType::Loops),
-            linalg::LinalgTransformationFilter(next_match,
-                                               StringAttr::get(ctx, "L2")));
+                .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
+            linalg::LinalgTransformationFilter(
+                next_match,
+                StringAttr::get(ctx, clL2Promote ? "L2" : "L2_promoted")));
 
         stageL2Patterns
             .insert<linalg::LinalgPromotionPattern<linalg::MatmulOp>>(
@@ -899,8 +910,9 @@ public:
               .setTileSizes(l1_tile_size)
               .setInterchange(l1_tile_interchange)
               .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
-          linalg::LinalgTransformationFilter(next_match,
-                                             StringAttr::get(ctx, "L1")));
+          linalg::LinalgTransformationFilter(
+              next_match,
+              StringAttr::get(ctx, clL1Promote ? "L1" : "L1_promoted")));
 
       stageL1Patterns.insert<linalg::LinalgPromotionPattern<linalg::MatmulOp>>(
           ctx, linalg::LinalgPromotionOptions(),
