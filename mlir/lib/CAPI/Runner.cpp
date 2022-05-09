@@ -10,11 +10,9 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/ToolOutputFile.h"
 
-void airRunnerRun(MlirModule module, char *jsonFileName, char *outputFileName,
-                  char *topLevelFunction, bool verbose) {
+void airRunnerRun(MlirModule module, const char *jsonFileName, const char *outputFileName,
+                  const char *topLevelFunction, bool verbose) {
   auto moduleOp = unwrap(module);
-  moduleOp->dump();
-
   std::string errorMessage;
   auto json_file = mlir::openInputFile(jsonFileName, &errorMessage);
   if (!json_file) {

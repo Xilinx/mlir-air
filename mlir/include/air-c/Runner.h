@@ -10,8 +10,8 @@
 extern "C" {
 #endif
 
-void airRunnerRun(MlirModule module, char *json_file_name,
-                  char *output_file_name, char *function, bool verbose);
+void airRunnerRun(MlirModule module, const char *json_file_name,
+                  const char *output_file_name, const char *function, bool verbose);
 
 #ifdef __cplusplus
 }

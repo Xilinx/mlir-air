@@ -1,27 +1,32 @@
 
-all: mmult.air.mlir
+all: mmult.deps.mlir
 
 mmult.mlir: mmult.py
-	python3 $< > $@ 
+	python3 $< -dump-linalg > $@ 
 
 # change linalg on tensors into linalg on memrefs
 mmult.linalg-memrefs.mlir: mmult.mlir
 	mlir-opt \
-		--linalg-bufferize \
-		--func-bufferize \
-		--tensor-bufferize \
-		--finalizing-bufferize \
+		-linalg-bufferize \
+		-func-bufferize \
+		-tensor-bufferize \
+		-finalizing-bufferize \
+		-buffer-results-to-out-params \
 		-o $@ $<
 
-mmult.air.mlir: mmult.linalg-memrefs.mlir
+mmult.tiled.mlir: mmult.linalg-memrefs.mlir
 	air-opt -o $@ $< \
-			-buffer-results-to-out-params \
-			-air-linalg-codegen='l1-tile-size=32,32,32' \
+			-air-linalg-codegen='l1-tile-size=32,32,32'
+			
+mmult.air.mlir: mmult.tiled.mlir
+	air-opt -o $@ $< \
 			-affine-to-air \
+			-canonicalize -cse
+
+mmult.deps.mlir: mmult.air.mlir
+	air-opt -o $@ $< \
 			-air-dependency
 
-mmult.air.a: mmult.air.mlir
-	aircc.py -o $@ --sysroot=${SYSROOT} -row-offset=2 -col-offset=7 -v $<
-
 clean::
-	rm -rf air_project mmult.*mlir* *.elf *.exe *.o *.a
+	rm -rf mmult.*mlir* out.dot trace.out
+

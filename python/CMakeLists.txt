@@ -106,7 +106,4 @@ add_subdirectory(air/backend)
 add_dependencies(AirPythonModules AirCompilerPythonModules)
 add_subdirectory(air/compiler)
 
-add_dependencies(AirPythonModules AirRunnerPythonModules)
-add_subdirectory(air/runner)
-
 add_subdirectory(test)

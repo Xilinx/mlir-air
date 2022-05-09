@@ -1,0 +1,84 @@
+{
+  "clock": 1000000000,
+  "cores": 1,
+  "datatype": {
+    "bytes": 4,
+    "name": "fp32"
+  },
+  "devicename": "testdevice",
+  "interfaces": [
+    {
+      "bytes_per_second": 100000000000,
+      "dst": 1,
+      "src": 0
+    },
+    {
+      "bytes_per_second": 100000000000,
+      "dst": 0,
+      "src": 1
+    },
+    {
+      "bytes_per_second": 100000000000,
+      "dst": 2,
+      "src": 0
+    },
+    {
+      "bytes_per_second": 100000000000,
+      "dst": 0,
+      "src": 2
+    },
+    {
+      "bytes_per_second": 1.7976931348623157e+308,
+      "dst": 2,
+      "src": 1
+    },
+    {
+      "bytes_per_second": 1.7976931348623157e+308,
+      "dst": 1,
+      "src": 2
+    }
+  ],
+  "kernels": {
+    "linalg.copy": {
+      "efficiency": 1,
+      "name": "linalg.copy"
+    },
+    "linalg.fill": {
+      "efficiency": 1,
+      "name": "linalg.fill"
+    },
+    "linalg.matmul": {
+      "efficiency": 1,
+      "name": "linalg.matmul"
+    }
+  },
+  "memories": {
+    "0": {
+      "bytes": 34359738368,
+      "name": "offchip",
+      "read_bytes_per_second": 0,
+      "space": 0,
+      "type": "simplex",
+      "write_bytes_per_second": 0
+    },
+    "1": {
+      "bytes": 33554432,
+      "name": "onchip",
+      "read_bytes_per_second": 0,
+      "space": 1,
+      "type": "duplex",
+      "write_bytes_per_second": 0
+    },
+    "2": {
+      "bytes": 32768,
+      "name": "tile",
+      "read_bytes_per_second": 0,
+      "space": 2,
+      "type": "duplex",
+      "write_bytes_per_second": 0
+    }
+  },
+  "ops_per_core_per_cycle": 16,
+  "num_herd_slots": 4,
+  "num_dispatch_queues": 4
+}
