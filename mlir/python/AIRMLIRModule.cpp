@@ -1,5 +1,7 @@
 // (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
 
+#include "mlir/Bindings/Python/PybindAdaptors.h"
+
 #include "air-c/Dialects.h"
 #include "air-c/Registration.h"
 

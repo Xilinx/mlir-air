@@ -12,7 +12,6 @@ from air.mlir.ir import *
 from air.mlir.dialects import air as airdialect
 from air.mlir.dialects import arith
 from air.mlir.dialects import func
-from air.mlir.dialects import func
 
 with Context() as ctx, Location.unknown():
   airdialect.register_dialect(ctx)
