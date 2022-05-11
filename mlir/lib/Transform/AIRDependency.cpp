@@ -75,6 +75,7 @@ typedef std::map<unsigned, Graph::vertex_descriptor> operation_id_to_vertex_map;
 
 static uint64_t RegionOpID;
 static uint64_t HerdLaunchOpID;
+static uint64_t WaitAllOpID;
 
 class AIRDependency : public AIRDependencyBase<AIRDependency> {
 
@@ -389,179 +390,43 @@ public:
 
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
-        if (auto for_op = dyn_cast<scf::ForOp>(op)) {
-          // Check for nested for loops
-          unsigned number_of_nested_for_ops = getNumberOfNestedForOps(for_op);
+        if (scf::ForOp for_op = dyn_cast<scf::ForOp>(op)) {
 
           // Get async region in loop body
-          bool hasAsyncRegionsInBody = false;
+          bool hasAsyncTokensInBody = false;
           SmallVector<Value, 1> sinks_in_for_op;
           for (auto async_region_op : for_op.getOps<air::RegionOp>()){
-            hasAsyncRegionsInBody = true;
-            // Get sinks of dep graph
-            if (async_region_op.getResult(0).use_empty())
+            hasAsyncTokensInBody = true;
+            // Detect dep graph's leaves in loop body
+            if (isNotUsedInsideOfBlock(async_region_op.getResult(0), for_op.getBody()))
               sinks_in_for_op.push_back(async_region_op.getResult(0));
           }
           // Get async dma in loop body
           for (auto dma_op : for_op.getOps<air::DmaMemcpyInterface>()){
-            hasAsyncRegionsInBody = true;
-            // Get sinks of dep graph
-            if (dma_op.getOperation()->getResult(0).use_empty())
+            hasAsyncTokensInBody = true;
+            // Detect dep graph's leaves in loop body
+            if (isNotUsedInsideOfBlock(dma_op.getOperation()->getResult(0), for_op.getBody()))
               sinks_in_for_op.push_back(dma_op.getOperation()->getResult(0));
           }
           // Get async herd_launch in loop body
           for (auto hl_op : for_op.getOps<air::HerdLaunchOp>()){
-            hasAsyncRegionsInBody = true;
-            // Get sinks of dep graph
-            if (hl_op.getResult(0).use_empty())
+            hasAsyncTokensInBody = true;
+            // Detect dep graph's leaves in loop body
+            if (isNotUsedInsideOfBlock(hl_op.getResult(0), for_op.getBody()))
               sinks_in_for_op.push_back(hl_op.getResult(0));
           }
-          if (hasAsyncRegionsInBody){
-            // (1) Create one wait_all event at the end of current for loop body.
-            auto for_op_terminator = for_op.getBody()->getTerminator();
-            module_builder.setInsertionPoint(for_op_terminator);
-            auto wait_all_op_yielded = module_builder.create<xilinx::air::WaitAllOp>(module_builder.getUnknownLoc(), air::AsyncTokenType::get(for_op->getContext()), sinks_in_for_op);
-
-            // Update boost graph
-            auto wait_all_op_yielded_v = add_vertex(asyncRegionGraphTR);
-            asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventName = to_string(number_of_nested_for_ops);
-            asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventName += "d_for_loop_end";
-            asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventType = "wait_all";
-            asyncRegionGraphTR[wait_all_op_yielded_v].operationId = 0;
-            for (auto sink : sinks_in_for_op){
-              unsigned src_id = 0;
-              if (auto async_region_op = dyn_cast<air::RegionOp>(sink.getDefiningOp())){
-                src_id = getGraphGVertexFromAIROp(async_region_op);
-              }
-              else if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(sink.getDefiningOp())){
-                src_id = getGraphGVertexFromAIROp(dma_op);
-              }
-              else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(sink.getDefiningOp())){
-                src_id = getGraphGVertexFromAIROp(hl_op);
-              }
-              auto src = g_to_tr[src_id];
-              add_edge(src, wait_all_op_yielded_v, asyncRegionGraphTR);
+          // Get async for_op in loop body
+          for (auto child_for_op : for_op.getOps<scf::ForOp>()){
+            hasAsyncTokensInBody = true;
+            // Detect dep graph's leaves in loop body
+            if (auto v = child_for_op.getResult(0)){
+              if (isNotUsedInsideOfBlock(v, for_op.getBody()))
+                sinks_in_for_op.push_back(v);
             }
+          }
 
-            // (2) Create a new wait_all event before the for op which collects the incoming deps.
-            SmallVector<Value, 4> incoming_tokens;
-            SmallVector<Value, 4> constants;
-            llvm::SetVector<Value> region_args;
-            getUsedValuesDefinedAbove(for_op.getRegion(), region_args);
-            for (Value v : region_args) {
-              if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
-                constants.push_back(v);
-              else if (v.getDefiningOp()){
-                if (auto v_op = dyn_cast<air::RegionOp>(v.getDefiningOp())){
-                  if (v_op.getAsyncToken() == v)
-                    incoming_tokens.push_back(v);
-                }
-                else if (auto v_op = dyn_cast<air::DmaMemcpy2dOp>(v.getDefiningOp())){
-                  if (v_op.getAsyncToken() == v)
-                    incoming_tokens.push_back(v);
-                }
-                else if (auto v_op = dyn_cast<air::HerdLaunchOp>(v.getDefiningOp())){
-                  if (v_op.getAsyncToken() == v)
-                    incoming_tokens.push_back(v);
-                }
-              }
-            }
-            module_builder.setInsertionPoint(for_op);
-            auto wait_all_op_before_loop = module_builder.create<xilinx::air::WaitAllOp>(module_builder.getUnknownLoc(), air::AsyncTokenType::get(for_op->getContext()), incoming_tokens);
-            
-            // Update boost graph
-            auto wait_all_op_before_loop_v = add_vertex(asyncRegionGraphTR);
-            asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventName = to_string(number_of_nested_for_ops);
-            asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventName += "d_for_loop_begin";
-            asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventType = "wait_all";
-            asyncRegionGraphTR[wait_all_op_before_loop_v].operationId = 0;
-
-            // (3) Create new for op with iter_args.
-            SmallVector<Value, 4> merged_incoming_token;
-            merged_incoming_token.push_back(wait_all_op_before_loop.getResult(0));
-            auto new_for_op = module_builder.create<scf::ForOp>(for_op.getLoc(), for_op.getLowerBound(),
-                                         for_op.getUpperBound(), for_op.getStep(), merged_incoming_token);
-
-            if (auto attr = for_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-              new_for_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
-
-            // Splice the operations inside for op
-            auto &bb = new_for_op.getBody()->getOperations();
-            auto &body = for_op.getBody()->getOperations();
-            bb.splice(bb.begin(), body,
-                                      body.begin(), --body.end());
-
-            auto iv = for_op.getInductionVar();
-            iv.replaceAllUsesWith(new_for_op.getInductionVar());
-            module_builder.setInsertionPointToStart(new_for_op.getBody());
-            for (auto c : constants) {
-              replaceAllUsesInRegionWith(c,
-                                        module_builder.clone(*c.getDefiningOp())->getResult(0),
-                                        new_for_op.getRegion());
-            }
-            for (Value v : incoming_tokens) {
-
-              // Update boost graph
-              for (auto user : v.getUsers()){
-                unsigned src = 0;
-                unsigned dst = 0;
-                if (auto dst_op = dyn_cast<air::RegionOp>(user)){
-                  dst = g_to_tr[getGraphGVertexFromAIROp(dst_op)];
-                }
-                else if (auto dst_op = mlir::dyn_cast<air::DmaMemcpyInterface>(user)){
-                  dst = g_to_tr[getGraphGVertexFromAIROp(dst_op)];
-                }
-                else if (auto dst_op = dyn_cast<air::HerdLaunchOp>(user)){
-                  dst = g_to_tr[getGraphGVertexFromAIROp(dst_op)];
-                }
-                if (auto src_op = dyn_cast<air::RegionOp>(v.getDefiningOp())){
-                  src = g_to_tr[getGraphGVertexFromAIROp(src_op)];
-                }
-                else if (auto src_op = mlir::dyn_cast<air::DmaMemcpyInterface>(v.getDefiningOp())){
-                  src = g_to_tr[getGraphGVertexFromAIROp(src_op)];
-                }
-                else if (auto src_op = dyn_cast<air::HerdLaunchOp>(v.getDefiningOp())){
-                  src = g_to_tr[getGraphGVertexFromAIROp(src_op)];
-                }
-                if (edge(src, dst, asyncRegionGraphTR).second){ // if an edge exists
-                  remove_edge(src, dst, asyncRegionGraphTR);
-                  if (!edge(src, wait_all_op_before_loop_v, asyncRegionGraphTR).second)
-                    add_edge(src, wait_all_op_before_loop_v, asyncRegionGraphTR);
-                  if (!edge(wait_all_op_before_loop_v, dst, asyncRegionGraphTR).second)
-                    add_edge(wait_all_op_before_loop_v, dst, asyncRegionGraphTR);
-                }
-              }
-
-              replaceAllUsesInRegionWith(v,
-                                        new_for_op.getRegionIterArgs()[0],
-                                        new_for_op.getRegion());
-            }
-
-            // Connect sources in loop body with iter_args
-            for (auto async_region_op : new_for_op.getOps<air::RegionOp>()){
-              if (async_region_op.getAsyncDependencies().size() == 0){
-                async_region_op.addAsyncDependency(new_for_op.getRegionIterArgs()[0]);
-              }
-            }
-            for (auto dma_op : new_for_op.getOps<air::DmaMemcpyInterface>()){
-              auto async_op = mlir::dyn_cast<air::AsyncOpInterface>(dma_op.getOperation());
-              if (async_op.getAsyncDependencies().size() == 0){
-                async_op.addAsyncDependency(new_for_op.getRegionIterArgs()[0]);
-              }
-            }
-            for (auto hl_op : new_for_op.getOps<air::HerdLaunchOp>()){
-              if (hl_op.getAsyncDependencies().size() == 0){
-                hl_op.addAsyncDependency(new_for_op.getRegionIterArgs()[0]);
-              }
-            }
-
-            // Yield an async token
-            SmallVector<Value, 4> yield_token;
-            yield_token.push_back(wait_all_op_yielded.getResult(0));
-            module_builder.setInsertionPointToEnd(new_for_op.getBody());
-            module_builder.create<scf::YieldOp>(new_for_op.getLoc(), yield_token);
-
-            for_op.erase();
+          if (hasAsyncTokensInBody){
+            insertLoopCarriedDeps(module_builder, for_op, sinks_in_for_op);
           }
         }
       });
@@ -573,37 +438,14 @@ public:
 
 private:
 
+  //===----------------------------------------------------------------------===//
+  // Creating async events
+  //===----------------------------------------------------------------------===//
+
   // Air async op history
   std::vector<air::RegionOp> async_region_op_history;
   std::vector<air::DmaMemcpyInterface> dma_op_history;
   std::vector<air::HerdLaunchOp> hl_op_history;
-
-  struct partialMemref {
-    Value memrefValue;
-    unsigned numDims;
-    SmallVector<Value, 2> memrefIndices;
-  };
-
-  partialMemref createPartialMemref(mlir::Value memrefValue, unsigned numDims){
-    partialMemref tile;
-    tile.memrefValue = memrefValue;
-    tile.numDims = numDims;
-    for (unsigned i = 0; i < numDims; i++){
-      tile.memrefIndices.push_back(nullptr);
-    }
-    return tile;
-  }
-
-  partialMemref createPartialMemref(mlir::Value memrefValue, unsigned numDims, SmallVector<Value, 2> memrefIndices){
-    partialMemref tile;
-    tile.memrefValue = memrefValue;
-    tile.numDims = numDims;
-    for (unsigned i = 0; i < numDims; i++){
-      tile.memrefIndices.push_back(memrefIndices[i]);
-    }
-    return tile;
-  }
-
   
   // Create air region op with async interface (no ssa result returned); update graph
   air::RegionOp createAsyncRegion(OpBuilder &builder, Operation *op, std::string asyncEventName, uint64_t &RegionOpID){
@@ -786,25 +628,34 @@ private:
     return new_launch;
   }
 
-  bool foundAsyncOpUsesAboveCurrentLine(air::RegionOp *op){
-    if (!async_region_op_history.empty())
-      for (auto &iter : async_region_op_history)
-        if (iter.getResult(0) == op->getResult(0)) return true;
-    return false;
+  //===----------------------------------------------------------------------===//
+  // Data dependency tracing
+  //===----------------------------------------------------------------------===//
+
+  struct partialMemref {
+    Value memrefValue;
+    unsigned numDims;
+    SmallVector<Value, 2> memrefIndices;
+  };
+
+  partialMemref createPartialMemref(mlir::Value memrefValue, unsigned numDims){
+    partialMemref tile;
+    tile.memrefValue = memrefValue;
+    tile.numDims = numDims;
+    for (unsigned i = 0; i < numDims; i++){
+      tile.memrefIndices.push_back(nullptr);
+    }
+    return tile;
   }
 
-  bool foundAsyncOpUsesAboveCurrentLine(air::DmaMemcpyInterface *op){
-    if (!dma_op_history.empty())
-      for (auto &iter : dma_op_history)
-        if (iter->getResult(0) == op->getOperation()->getResult(0)) return true;
-    return false;
-  }
-
-  bool foundAsyncOpUsesAboveCurrentLine(air::HerdLaunchOp *op){
-    if (!hl_op_history.empty())
-      for (auto &iter : hl_op_history)
-        if (iter.getResult(0) == op->getResult(0)) return true;
-    return false;
+  partialMemref createPartialMemref(mlir::Value memrefValue, unsigned numDims, SmallVector<Value, 2> memrefIndices){
+    partialMemref tile;
+    tile.memrefValue = memrefValue;
+    tile.numDims = numDims;
+    for (unsigned i = 0; i < numDims; i++){
+      tile.memrefIndices.push_back(memrefIndices[i]);
+    }
+    return tile;
   }
   
   // Check if operand is returned from RegionOp (memref.alloc)
@@ -842,21 +693,6 @@ private:
         }
       }
     }
-  }
-
-  // Check if two partial memref tiles have identical indices
-  bool areEqualIndexPartialMemrefs(partialMemref *tile_0, partialMemref *tile_1){
-    if (tile_0->numDims != tile_1->numDims){
-      // Unequal # dimensions
-      return false;
-    }
-    else{
-      for (unsigned i = 0; i < tile_0->numDims; i++){
-        if (!areEqualIndices(tile_0->memrefIndices[i], tile_1->memrefIndices[i]))
-          return false;
-      }
-    }
-    return true;
   }
 
   // Trace operand's uses at current scope
@@ -938,6 +774,13 @@ private:
         }
       }
 
+      // If used in herd_launch op
+      else if (auto lh = dyn_cast<xilinx::air::HerdLaunchOp>(u.getOwner())){
+        if (foundAsyncOpUsesAboveCurrentLine(&lh)){
+          addNewAsyncDepToGraph<T>(lh.getResult(0), op);
+        }
+      }
+
       // If used in an unknown op
       else{
         auto unknownop = u.getOwner();
@@ -962,7 +805,7 @@ private:
       dep_tracing_mode = 'n';
     else assert(false && "Unknown dependency type");
 
-    // Detect RAW deps
+    // Detect deps
     for (auto operand : operands) {
       // Trace the defining op of sink op, RAW
       pushDefiningOpAsDep<T>(operand.memrefValue, sink_air_op);
@@ -972,23 +815,11 @@ private:
 
       // If sink op is in HerdLaunchOp
       if (auto lh = sink_air_op->template getParentOfType<xilinx::air::HerdLaunchOp>()){
-        // Search for dma deps outside (before) HerdLaunchOp
+        // Search for deps outside (before) HerdLaunchOp
         for (unsigned lh_operand_id = 0; lh_operand_id < lh.getNumKernelOperands(); lh_operand_id++){
           if (lh.getKernelArguments()[lh_operand_id] == operand.memrefValue){
             auto ancestor_op = lh.getKernelOperand(lh_operand_id);
             pushDepsAtCurrentScope<air::HerdLaunchOp>(ancestor_op, lh, dep_tracing_mode);
-          }
-        }
-      }
-
-      // If sink op is outside HerdLaunchOp
-      else {
-        // If the input memref was used inside HerdLaunchOp in the past
-        for (auto &u : operand.memrefValue.getUses()){
-          if (auto lh = dyn_cast<xilinx::air::HerdLaunchOp>(u.getOwner())){
-            if (foundAsyncOpUsesAboveCurrentLine(&lh)){
-              addNewAsyncDepToGraph<T>(lh.getResult(0), sink_air_op);
-            }
           }
         }
       }
@@ -1015,48 +846,227 @@ private:
     }
   }
 
-  bool areEqualIndices (mlir::Value index_0, mlir::Value index_1){
-    if (index_0 == nullptr || index_1 == nullptr) {
-      // Note: memref with index is subset to memref without index (i.e. the entire memref)
-      return true;
+  //===----------------------------------------------------------------------===//
+  // SCF for loop-carried dependency
+  //===----------------------------------------------------------------------===//
+
+  void insertVertexBetweenTwoOps(Operation *a, Operation *b, Graph::vertex_descriptor v){
+    unsigned v_a = 0;
+    unsigned v_b = 0;
+    if (auto op = dyn_cast<air::RegionOp>(a)){
+      v_a = g_to_tr[getGraphGVertexFromAIROp(op)];
     }
-    else {
-      if (index_0 == index_1) return true;
-      else if (!index_0.getDefiningOp()) return false;
-      else if (!index_1.getDefiningOp()) return false;
-      else {
-        auto index_0_const_op = dyn_cast<arith::ConstantOp>(index_0.getDefiningOp());
-        auto index_1_const_op = dyn_cast<arith::ConstantOp>(index_1.getDefiningOp());
-        if (index_0_const_op.getValue() == index_1_const_op.getValue()) return true;
-        else return false;
-      }
+    else if (auto op = mlir::dyn_cast<air::DmaMemcpyInterface>(a)){
+      v_a = g_to_tr[getGraphGVertexFromAIROp(op)];
+    }
+    else if (auto op = dyn_cast<air::HerdLaunchOp>(a)){
+      v_a = g_to_tr[getGraphGVertexFromAIROp(op)];
+    }
+    else if (auto op = dyn_cast<scf::ForOp>(a)){
+      v_a = getGraphGVertexFromAIROp(op); // g_to_tr not needed since wait_all created after TR
+    }
+    else if (auto op = dyn_cast<air::WaitAllOp>(a)){
+      v_a = getGraphGVertexFromAIROp(op);
+    }
+    if (auto op = dyn_cast<air::RegionOp>(b)){
+      v_b = g_to_tr[getGraphGVertexFromAIROp(op)];
+    }
+    else if (auto op = mlir::dyn_cast<air::DmaMemcpyInterface>(b)){
+      v_b = g_to_tr[getGraphGVertexFromAIROp(op)];
+    }
+    else if (auto op = dyn_cast<air::HerdLaunchOp>(b)){
+      v_b = g_to_tr[getGraphGVertexFromAIROp(op)];
+    }
+    else if (auto op = dyn_cast<scf::ForOp>(b)){
+      v_b = getGraphGVertexFromAIROp(op); // g_to_tr not needed since wait_all created after TR
+    }
+    else if (auto op = dyn_cast<air::WaitAllOp>(b)){
+      v_b = getGraphGVertexFromAIROp(op);
+    }
+    if (edge(v_a, v_b, asyncRegionGraphTR).second){ // if an edge exists
+      remove_edge(v_a, v_b, asyncRegionGraphTR);
+      if (!edge(v_a, v, asyncRegionGraphTR).second)
+        add_edge(v_a, v, asyncRegionGraphTR);
+      if (!edge(v, v_b, asyncRegionGraphTR).second)
+        add_edge(v, v_b, asyncRegionGraphTR);
     }
   }
 
-  template <typename T>
-  void addNewAsyncDepToGraph(Value dep, T op){
-    if (auto async_op = mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op.getOperation())){
-      for (auto old_dep : async_op.getAsyncDependencies())
-        if (old_dep == dep) return;
+  air::WaitAllOp insertWaitAllOpForLoopYield(OpBuilder &builder, scf::ForOp for_op, SmallVector<Value, 1> sinks_in_for_op){
+    // Create one wait_all event at the end of current for loop body.
+    // Output token of wait_all shall be yielded
+    auto for_op_terminator = for_op.getBody()->getTerminator();
+    builder.setInsertionPoint(for_op_terminator);
+    air::WaitAllOp wait_all_op_yielded = builder.create<xilinx::air::WaitAllOp>(builder.getUnknownLoc(), air::AsyncTokenType::get(for_op->getContext()), sinks_in_for_op);
+    wait_all_op_yielded->setAttr("id",
+            mlir::IntegerAttr::get(mlir::IntegerType::get(for_op->getContext(), 32),
+                    ++WaitAllOpID));
+    return wait_all_op_yielded;
+  }
 
-      // Add edge to boost graph, iff dep is async region (i.e. not a loop iterator)
-      if (auto srcOp = dep.getDefiningOp()) {
-        uint64_t srcNode;
-        if (auto region_op = dyn_cast<air::RegionOp>(srcOp)){
-          srcNode = getGraphGVertexFromAIROp(region_op);
-        }
-        else if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(srcOp)){
-          srcNode = getGraphGVertexFromAIROp(dma_op);
-        }
-        else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(srcOp)){
-          srcNode = getGraphGVertexFromAIROp(hl_op);
-        }
-        else assert(false && "dependency token should be generated by an async op");
-        uint64_t dstNode = getGraphGVertexFromAIROp(op);
-        add_edge(srcNode, dstNode, asyncRegionGraph);
+  Graph::vertex_descriptor addVertexWaitAllOpForLoopYield(SmallVector<Value, 1> sinks_in_for_op){
+    // Create vertex
+    Graph::vertex_descriptor wait_all_op_yielded_v = add_vertex(asyncRegionGraphTR);
+    asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventName = "scf::for_loop_end";
+    asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventType = "wait_all";
+    asyncRegionGraphTR[wait_all_op_yielded_v].operationId = 0;
+    // Update graph connectivity
+    for (auto sink : sinks_in_for_op){
+      unsigned src_id = 0;
+      if (auto async_region_op = dyn_cast<air::RegionOp>(sink.getDefiningOp())){
+        src_id = g_to_tr[getGraphGVertexFromAIROp(async_region_op)];
+      }
+      else if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(sink.getDefiningOp())){
+        src_id = g_to_tr[getGraphGVertexFromAIROp(dma_op)];
+      }
+      else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(sink.getDefiningOp())){
+        src_id = g_to_tr[getGraphGVertexFromAIROp(hl_op)];
+      }
+      else if (auto scf_for_op = dyn_cast<scf::ForOp>(sink.getDefiningOp())){
+        src_id = getGraphGVertexFromAIROp(scf_for_op); // g_to_tr not needed since wait_all created after TR
+      }
+      add_edge(src_id, wait_all_op_yielded_v, asyncRegionGraphTR);
+    }
+    return wait_all_op_yielded_v;
+  }
+  
+  air::WaitAllOp insertWaitAllOpForLoopBegin(OpBuilder &builder, scf::ForOp for_op, SmallVector<Value, 4> incoming_tokens, SmallVector<Value, 4> constants){
+    // Create a new wait_all event before the for op which collects the incoming deps.
+    // Output token of wait_all shall be the iter_arg of for op.
+    builder.setInsertionPoint(for_op);
+    air::WaitAllOp wait_all_op_before_loop = builder.create<xilinx::air::WaitAllOp>(builder.getUnknownLoc(), air::AsyncTokenType::get(for_op->getContext()), incoming_tokens);
+    wait_all_op_before_loop->setAttr("id",
+            mlir::IntegerAttr::get(mlir::IntegerType::get(for_op->getContext(), 32),
+                    ++WaitAllOpID));
+
+    // Create vertex
+    Graph::vertex_descriptor wait_all_op_before_loop_v = add_vertex(asyncRegionGraphTR);
+    asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventName = "scf::for_loop_begin";
+    asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventType = "wait_all";
+    asyncRegionGraphTR[wait_all_op_before_loop_v].operationId = 0;
+    // Update op-to-graph map
+    wa_to_g[wait_all_op_before_loop.getId()] = wait_all_op_before_loop_v;
+
+    // Update graph connectivity
+    for (Value v : incoming_tokens) {
+      for (auto user : v.getUsers()){
+        insertVertexBetweenTwoOps(v.getDefiningOp(), user, wait_all_op_before_loop_v);
       }
     }
-    else assert(false && "Operation has no async interface");
+
+    return wait_all_op_before_loop;
+  }
+
+  scf::ForOp replaceForOpWithYield(OpBuilder &builder, scf::ForOp for_op, air::WaitAllOp wait_all_op_before_loop, SmallVector<Value, 4> incoming_tokens, SmallVector<Value, 4> constants){
+    // Create new for op with iter_args.
+    SmallVector<Value, 4> merged_incoming_token;
+    merged_incoming_token.push_back(wait_all_op_before_loop.getResult(0));
+    scf::ForOp new_for_op = builder.create<scf::ForOp>(for_op.getLoc(), for_op.getLowerBound(),
+                                  for_op.getUpperBound(), for_op.getStep(), merged_incoming_token);
+
+    if (auto attr = for_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+      new_for_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
+
+    // Splice the operations inside for op
+    auto &bb = new_for_op.getBody()->getOperations();
+    auto &body = for_op.getBody()->getOperations();
+    bb.splice(bb.begin(), body,
+                              body.begin(), --body.end());
+
+    auto iv = for_op.getInductionVar();
+    iv.replaceAllUsesWith(new_for_op.getInductionVar());
+    builder.setInsertionPointToStart(new_for_op.getBody());
+    for (auto c : constants) {
+      replaceAllUsesInRegionWith(c,
+                                builder.clone(*c.getDefiningOp())->getResult(0),
+                                new_for_op.getRegion());
+    }
+
+    for (Value v : incoming_tokens) {
+      replaceAllUsesInRegionWith(v,
+                                new_for_op.getRegionIterArgs()[0],
+                                new_for_op.getRegion());
+    }
+
+    // Connect sources in loop body with iter_args
+    for (auto async_region_op : new_for_op.getOps<air::RegionOp>()){
+      if (async_region_op.getAsyncDependencies().size() == 0){
+        async_region_op.addAsyncDependency(new_for_op.getRegionIterArgs()[0]);
+      }
+    }
+    for (auto dma_op : new_for_op.getOps<air::DmaMemcpyInterface>()){
+      auto async_op = mlir::dyn_cast<air::AsyncOpInterface>(dma_op.getOperation());
+      if (async_op.getAsyncDependencies().size() == 0){
+        async_op.addAsyncDependency(new_for_op.getRegionIterArgs()[0]);
+      }
+    }
+    for (auto hl_op : new_for_op.getOps<air::HerdLaunchOp>()){
+      if (hl_op.getAsyncDependencies().size() == 0){
+        hl_op.addAsyncDependency(new_for_op.getRegionIterArgs()[0]);
+      }
+    }
+
+    return new_for_op;
+
+  }
+
+  void insertLoopCarriedDeps(OpBuilder &builder, scf::ForOp &for_op, SmallVector<Value, 1> sinks_in_for_op){
+    // (1) Create one wait_all event at the end of current for loop body.
+    air::WaitAllOp wait_all_op_yielded = insertWaitAllOpForLoopYield(builder, for_op, sinks_in_for_op);
+
+    // Update boost graph
+    Graph::vertex_descriptor wait_all_op_yielded_v = addVertexWaitAllOpForLoopYield(sinks_in_for_op);
+    // Update op-to-graph map for yield
+    wa_to_g[wait_all_op_yielded.getId()] = wait_all_op_yielded_v;
+
+    // (2) Create a new wait_all event before the for op which collects the incoming deps.
+    SmallVector<Value, 4> incoming_tokens;
+    SmallVector<Value, 4> constants;
+    llvm::SetVector<Value> region_args;
+    getUsedValuesDefinedAbove(for_op.getRegion(), region_args);
+    for (Value v : region_args) {
+      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
+        constants.push_back(v);
+      else if (v.getDefiningOp()){
+        if (auto v_op = mlir::dyn_cast<air::AsyncOpInterface>(v.getDefiningOp())){
+          if (v_op.getAsyncToken() == v)
+            incoming_tokens.push_back(v);
+        }
+        else if (auto v_op = dyn_cast<scf::ForOp>(v.getDefiningOp())){
+          if (v_op.getResult(0) == v)
+            incoming_tokens.push_back(v);
+        }
+      }
+    }
+    air::WaitAllOp wait_all_op_before_loop = insertWaitAllOpForLoopBegin(builder, for_op, incoming_tokens, constants);
+
+    // (3) Create new for op with iter_args.
+    scf::ForOp new_for_op = replaceForOpWithYield(builder, for_op, wait_all_op_before_loop, incoming_tokens, constants);
+
+    // Yield an async token
+    SmallVector<Value, 4> yield_token;
+    yield_token.push_back(wait_all_op_yielded.getResult(0));
+    builder.setInsertionPointToEnd(new_for_op.getBody());
+    builder.create<scf::YieldOp>(new_for_op.getLoc(), yield_token);
+    
+    // Elevating tokens from inside forOp body to the yielded token
+    for (Value v : sinks_in_for_op){
+      SmallPtrSet<Operation *, 1> keep;
+      for (auto u : v.getUsers()){
+        if (u->getBlock() == new_for_op.getBody()){
+          keep.insert(u);
+        }
+        else {
+          // Update graph connectivity
+          insertVertexBetweenTwoOps(v.getDefiningOp(), u, wait_all_op_yielded_v);
+        }
+      }
+      v.replaceAllUsesExcept(new_for_op.getResult(0), keep);
+    }
+    
+    for_op.erase();
+
+    for_op = new_for_op;
   }
 
   // Check if current for op is the single child in a parent for op
@@ -1084,6 +1094,10 @@ private:
     return number_of_nested_for_ops;
   }
 
+  //===----------------------------------------------------------------------===//
+  // Async event to Boost graph mapping
+  //===----------------------------------------------------------------------===//
+
   // Dependency graph constructed as Boost graph
   Graph asyncRegionGraph;
   Graph asyncRegionGraphTR;
@@ -1091,6 +1105,7 @@ private:
   operation_id_to_vertex_map region_to_g; // Map between air regions and vertices in graph
   operation_id_to_vertex_map dma_to_g; // Map between air dmamemcpy2d and vertices in graph
   operation_id_to_vertex_map hl_to_g; // Map between air herd_launch and vertices in graph
+  operation_id_to_vertex_map wa_to_g; // Map between air wait_all and vertices in graph
 
   // g vertex to air op mapping
   air::RegionOp getRegionOpFromVertex (Graph::vertex_descriptor v, Graph g){
@@ -1119,6 +1134,20 @@ private:
     return hl_to_g[op.getId()];
   }
 
+  Graph::vertex_descriptor getGraphGVertexFromAIROp (air::WaitAllOp op){
+    return wa_to_g[op.getId()];
+  }
+
+  Graph::vertex_descriptor getGraphGVertexFromAIROp (scf::ForOp op){
+    // Note: using forOp's last wait_all's id as the forOp's id
+    air::WaitAllOp last_wa_op;
+    // MLIR iterators cannot get the last element directly?
+    for (air::WaitAllOp wa_op : op.getOps<air::WaitAllOp>()){
+      last_wa_op = wa_op;
+    }
+    return wa_to_g[last_wa_op.getId()];
+  }
+
   // Fill in dep list of air async ops using graph tr's connectivity
   template <typename T>
   void fillAIRDepListUsingGraphTR(T op){
@@ -1139,12 +1168,111 @@ private:
     else assert(false && "Operation has no async interface");
   }
 
+  template <typename T>
+  void addNewAsyncDepToGraph(Value dep, T op){
+    if (auto async_op = mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op.getOperation())){
+      for (auto old_dep : async_op.getAsyncDependencies())
+        if (old_dep == dep) return;
+
+      // Add edge to boost graph, iff dep is async region (i.e. not a loop iterator)
+      if (auto srcOp = dep.getDefiningOp()) {
+        uint64_t srcNode;
+        if (auto region_op = dyn_cast<air::RegionOp>(srcOp)){
+          srcNode = getGraphGVertexFromAIROp(region_op);
+        }
+        else if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(srcOp)){
+          srcNode = getGraphGVertexFromAIROp(dma_op);
+        }
+        else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(srcOp)){
+          srcNode = getGraphGVertexFromAIROp(hl_op);
+        }
+        else assert(false && "dependency token should be generated by an async op");
+        uint64_t dstNode = getGraphGVertexFromAIROp(op);
+        add_edge(srcNode, dstNode, asyncRegionGraph);
+      }
+    }
+    else assert(false && "Operation has no async interface");
+  }
+
   // Dump graphviz
-  void dump_graph(char *filename)
+  void dump_graph(std::string filename)
   {
     std::ofstream ofs (filename, std::ofstream::out); 
     write_graphviz(ofs, asyncRegionGraphTR, boost::make_label_writer(boost::get(&regionNode::asyncEventName, asyncRegionGraphTR)));
-  };
+  }
+
+  //===----------------------------------------------------------------------===//
+  // Other utilities
+  //===----------------------------------------------------------------------===//
+
+  bool foundAsyncOpUsesAboveCurrentLine(air::RegionOp *op){
+    if (!async_region_op_history.empty())
+      for (auto &iter : async_region_op_history)
+        if (iter.getResult(0) == op->getResult(0)) return true;
+    return false;
+  }
+
+  bool foundAsyncOpUsesAboveCurrentLine(air::DmaMemcpyInterface *op){
+    if (!dma_op_history.empty())
+      for (auto &iter : dma_op_history)
+        if (iter->getResult(0) == op->getOperation()->getResult(0)) return true;
+    return false;
+  }
+
+  bool foundAsyncOpUsesAboveCurrentLine(air::HerdLaunchOp *op){
+    if (!hl_op_history.empty())
+      for (auto &iter : hl_op_history)
+        if (iter.getResult(0) == op->getResult(0)) return true;
+    return false;
+  }
+
+  // Check if two partial memref tiles have identical indices
+  bool areEqualIndexPartialMemrefs(partialMemref *tile_0, partialMemref *tile_1){
+    if (tile_0->numDims != tile_1->numDims){
+      // Unequal # dimensions
+      return false;
+    }
+    else{
+      for (unsigned i = 0; i < tile_0->numDims; i++){
+        if (!areEqualIndices(tile_0->memrefIndices[i], tile_1->memrefIndices[i]))
+          return false;
+      }
+    }
+    return true;
+  }
+
+  bool areEqualIndices (mlir::Value index_0, mlir::Value index_1){
+    if (index_0 == nullptr || index_1 == nullptr) {
+      // Note: memref with index is subset to memref without index (i.e. the entire memref)
+      return true;
+    }
+    else {
+      if (index_0 == index_1) return true;
+      else if (!index_0.getDefiningOp()) return false;
+      else if (!index_1.getDefiningOp()) return false;
+      else {
+        auto index_0_const_op = dyn_cast<arith::ConstantOp>(index_0.getDefiningOp());
+        auto index_1_const_op = dyn_cast<arith::ConstantOp>(index_1.getDefiningOp());
+        if (index_0_const_op.getValue() == index_1_const_op.getValue()) return true;
+        else return false;
+      }
+    }
+  }
+
+  // Check if a value is only used outside of a given block
+  bool isOnlyUsedOutsideOfBlock(Value v, Block *block){
+    for (auto u : v.getUsers())
+      if (u->getBlock() == block)
+        return false;
+    return true;
+  }
+
+  // Check if a value is not used inside a given block
+  bool isNotUsedInsideOfBlock(Value v, Block *block){
+    if (v.use_empty() || isOnlyUsedOutsideOfBlock(v, block))
+      return true;
+    else return false;
+  }
 
 };
 

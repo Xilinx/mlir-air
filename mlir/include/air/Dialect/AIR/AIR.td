@@ -358,6 +358,14 @@ def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
   let assemblyFormat = [{
     custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) attr-dict
   }];
+  let extraClassDeclaration = [{
+    int32_t getId() {
+      if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
+        return id_attr.getInt();
+      }
+      return -1;
+    }
+  }];
 }
 
 // AIR asynchronous region for dynamic event dispatching. WiP
