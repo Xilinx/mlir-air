@@ -695,6 +695,43 @@ private:
     }
   }
 
+  char checkOperandReadOrWrite(mlir::Value operand){
+    assert(operand.getType().isa<MemRefType>() && "operand being traced is not a memref");
+    bool foundWriteAccess = false;
+    bool foundReadAccess = false;
+    for (auto &u : operand.getUses()){
+      // If used in DmaMemcpy Op
+      if (auto dma = dyn_cast<xilinx::air::DmaMemcpyInterface>(u.getOwner())){
+        if (u.is(dma.getSrcMemref())){
+          foundReadAccess = true;
+        }
+        else if (u.is(dma.getDstMemref())){
+          foundWriteAccess = true;
+        }
+        else{
+          assert(false && "Unknown operand in air.dma");
+        }
+      }
+      // If used in a linalg op
+      else if (auto linalgop = mlir::dyn_cast<linalg::LinalgOp>(u.getOwner())){
+        if (u.getOperandNumber() < linalgop.getNumInputs() + linalgop.getNumOutputs()){
+          foundReadAccess = true;
+        }
+        else if (u.getOperandNumber() >= linalgop.getNumInputs() && u.getOperandNumber() - linalgop.getNumInputs() < linalgop.getNumOutputs()){
+          foundWriteAccess = true;
+        }
+        else{
+          assert(false && "Unknown operand in linalg op");
+        }
+      }
+      // If unknown op, then assume write access for safety
+      else foundWriteAccess = true;
+    }
+    if (foundWriteAccess) return 'w';
+    else if (foundReadAccess) return 'r';
+    else return 'w';
+  }
+
   // Trace operand's uses at current scope
   template <typename T>
   void pushDepsAtCurrentScope(mlir::Value operand, T op, char rw = 'n', partialMemref *tile = nullptr){
@@ -777,7 +814,16 @@ private:
       // If used in herd_launch op
       else if (auto lh = dyn_cast<xilinx::air::HerdLaunchOp>(u.getOwner())){
         if (foundAsyncOpUsesAboveCurrentLine(&lh)){
-          addNewAsyncDepToGraph<T>(lh.getResult(0), op);
+          // check if the use inside HerdLaunchOp matches with the tracing mode (r or w)
+          for (unsigned lh_argument_id = 0; lh_argument_id < lh.getNumKernelOperands(); lh_argument_id++){
+            if (u.is(lh.getKernelOperand(lh_argument_id))){
+              auto child_op = lh.getKernelArgument(lh_argument_id);
+              char rw_check = checkOperandReadOrWrite(child_op);
+              if (rw == 'n' || rw_check == rw){
+                addNewAsyncDepToGraph<T>(lh.getResult(0), op);
+              }
+            }
+          }
         }
       }
 
