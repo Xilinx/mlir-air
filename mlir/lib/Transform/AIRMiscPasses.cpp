@@ -299,6 +299,21 @@ void AIRSpecializeDma::runOnOperation() {
   });
 }
 
+
+class AIRPipelineReducePass
+    : public xilinx::air::AIRPipelineReducePassBase<AIRPipelineReducePass> {
+
+public:
+  AIRPipelineReducePass() = default;
+  AIRPipelineReducePass(const AIRPipelineReducePass &pass){};
+
+  void runOnOperation() override;
+
+private:
+};
+
+void AIRPipelineReducePass::runOnOperation() {}
+
 } // anonymous namespace
 
 namespace xilinx {
@@ -322,6 +337,10 @@ std::unique_ptr<Pass> createAIRLinalgNamePass() {
 
 std::unique_ptr<Pass> createAIRRemoveLinalgNamePass() {
   return std::make_unique<AIRRemoveLinalgNamePass>();
+}
+
+std::unique_ptr<Pass> createAIRPipelineReducePass() {
+  return std::make_unique<AIRPipelineReducePass>();
 }
 
 } // namespace air

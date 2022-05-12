@@ -13,6 +13,7 @@ std::unique_ptr<mlir::Pass> createAIRSpecializeDma();
 std::unique_ptr<mlir::Pass> createAIRPromoteUniformL1Dma();
 std::unique_ptr<mlir::Pass> createAIRLinalgNamePass();
 std::unique_ptr<mlir::Pass> createAIRRemoveLinalgNamePass();
+std::unique_ptr<mlir::Pass> createAIRPipelineReducePass();
 
 } // namespace air
 } // namespace xilinx
