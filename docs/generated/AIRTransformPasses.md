@@ -126,10 +126,240 @@ module  {
 -air-label       : Transform loops with the given label
 -air-post-label  : Label to apply to transformed loop nest
 ```
+### `-air-dependency`: AIR dependency analysis
+This pass analyzes dependencies among air.async_region ops, and constructs
+the dependency relationship between asynchronous events for scheduling. 
+The pass also generates a dot file which visualizes the dependency graph.
+
+Example 1: Simple data depdendency tracing
+
+`-air-dependency`
+
+Input:
+
+```mlir
+module  {
+  func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
+    %c1 = arith.constant 1 : index
+    %0 = memref.alloc() : memref<1024xi32, 1>
+    air.launch_herd tile (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%0, %arg7=%arg1) : memref<1024xi32, 1>,memref<1024xi32> {
+      %c0 = arith.constant 0 : index
+      %c16 = arith.constant 16 : index
+      %1 = memref.alloc() : memref<16xi32, 2>
+      air.dma_memcpy (%1, %arg6, [%c0], [%c16], %c16) {id = 1 : i32} : (memref<16xi32, 2>, memref<1024xi32, 1>, [index], [index], index) -> ()
+      air.dma_memcpy (%arg6, %1, [%c16], [%c0], %c16) {id = 2 : i32} : (memref<1024xi32, 1>, memref<16xi32, 2>, [index], [index], index) -> ()
+      air.herd_terminator
+    }
+    memref.dealloc %0 : memref<1024xi32, 1>
+    return
+  }
+}
+```
+
+Output:
+
+```mlir
+module {
+  func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
+    %c1 = arith.constant 1 : index
+    %asyncToken, %valOut = air.region async  {
+      %1 = memref.alloc() : memref<1024xi32, 1>
+      air.region_terminator %1 : memref<1024xi32, 1>
+    } {id = 1 : i32} : (memref<1024xi32, 1>)
+    %0 = air.launch_herd async  tile (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%valOut, %arg7=%arg1) : memref<1024xi32, 1>, memref<1024xi32> attributes {id = 1 : i32} {
+      %c0 = arith.constant 0 : index
+      %c16 = arith.constant 16 : index
+      %asyncToken_1, %valOut_2 = air.region async  {
+        %3 = memref.alloc() : memref<16xi32, 2>
+        air.region_terminator %3 : memref<16xi32, 2>
+      } {id = 2 : i32} : (memref<16xi32, 2>)
+      %1 = air.dma_memcpy async [%asyncToken_1] (%valOut_2, %arg6, [%c0], [%c16], %c16) {id = 1 : i32} : (memref<16xi32, 2>, memref<1024xi32, 1>, [index], [index], index) -> ()
+      %2 = air.dma_memcpy async [%1] (%arg6, %valOut_2, [%c16], [%c0], %c16) {id = 2 : i32} : (memref<1024xi32, 1>, memref<16xi32, 2>, [index], [index], index) -> ()
+      air.herd_terminator
+    }
+    %asyncToken_0 = air.region async [%0, %asyncToken]  : (!air.async.token, !air.async.token) {
+      memref.dealloc %valOut : memref<1024xi32, 1>
+      air.region_terminator
+    } {id = 3 : i32}
+    return
+  }
+}
+```
+
+Example 2: Loop-carried depdendency tracing
+
+`-air-dependency`
+
+Input:
+
+```mlir
+#map = affine_map<()[s0] -> (s0 * 32)>
+module attributes {torch.debug_module_name = "mmult"} {
+  func @forward(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1024xf32>, %arg2: memref<1024x1024xf32>) {
+    %c1024 = arith.constant 1024 : index
+    %cst = arith.constant 0.000000e+00 : f32
+    %c32 = arith.constant 32 : index
+    %c128 = arith.constant 128 : index
+    %c0 = arith.constant 0 : index
+    %c4 = arith.constant 4 : index
+    %0 = memref.alloc() {alignment = 128 : i64} : memref<1024x1024xf32>
+    %1 = memref.alloc() {alignment = 128 : i64} : memref<1024x1024xf32>
+    linalg.fill ins(%cst : f32) outs(%0 : memref<1024x1024xf32>)
+    memref.copy %0, %1 : memref<1024x1024xf32> to memref<1024x1024xf32>
+    scf.for %arg3 = %c0 to %c1024 step %c128 {
+      scf.for %arg4 = %c0 to %c1024 step %c128 {
+        scf.for %arg5 = %c0 to %c1024 step %c32 {
+          air.launch_herd  tile (%arg6, %arg7) in (%arg8=%c4, %arg9=%c4) args(%arg10=%arg3, %arg11=%arg5, %arg12=%arg0, %arg13=%arg4, %arg14=%arg1, %arg15=%1) : index, index, memref<1024x1024xf32>, index, memref<1024x1024xf32>, memref<1024x1024xf32> attributes {sym_name = "herd_0"} {
+            %c1 = arith.constant 1 : index
+            %c1024_0 = arith.constant 1024 : index
+            %c32_1 = arith.constant 32 : index
+            %2 = affine.apply #map()[%arg6]
+            %3 = affine.apply #map()[%arg7]
+            %4 = arith.addi %arg10, %2 : index
+            %5 = arith.addi %arg13, %3 : index
+            %6 = memref.alloc() : memref<32x32xf32, 2>
+            %7 = memref.alloc() : memref<32x32xf32, 2>
+            %8 = memref.alloc() : memref<32x32xf32, 2>
+            air.dma_memcpy_nd (%6[] [] [], %arg12[%4, %arg11] [%c32_1, %c32_1] [%c1024_0, %c1]) {id = 1 : i32} : (memref<32x32xf32, 2>, memref<1024x1024xf32>)
+            air.dma_memcpy_nd (%7[] [] [], %arg14[%arg11, %5] [%c32_1, %c32_1] [%c1024_0, %c1]) {id = 2 : i32} : (memref<32x32xf32, 2>, memref<1024x1024xf32>)
+            air.dma_memcpy_nd (%8[] [] [], %arg15[%4, %5] [%c32_1, %c32_1] [%c1024_0, %c1]) {id = 3 : i32} : (memref<32x32xf32, 2>, memref<1024x1024xf32>)
+            linalg.matmul ins(%6, %7 : memref<32x32xf32, 2>, memref<32x32xf32, 2>) outs(%8 : memref<32x32xf32, 2>)
+            air.dma_memcpy_nd (%arg15[%4, %5] [%c32_1, %c32_1] [%c1024_0, %c1], %8[] [] []) {id = 4 : i32} : (memref<1024x1024xf32>, memref<32x32xf32, 2>)
+            memref.dealloc %6 : memref<32x32xf32, 2>
+            memref.dealloc %7 : memref<32x32xf32, 2>
+            memref.dealloc %8 : memref<32x32xf32, 2>
+            air.herd_terminator
+          }
+        }
+        scf.yield
+      }
+    }
+    memref.copy %1, %arg2 : memref<1024x1024xf32> to memref<1024x1024xf32>
+    return
+  }
+}
+```
+
+Output:
+
+```mlir
+#map = affine_map<()[s0] -> (s0 * 32)>
+module attributes {torch.debug_module_name = "mmult"} {
+  func @forward(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1024xf32>, %arg2: memref<1024x1024xf32>) {
+    %c1024 = arith.constant 1024 : index
+    %cst = arith.constant 0.000000e+00 : f32
+    %c32 = arith.constant 32 : index
+    %c128 = arith.constant 128 : index
+    %c0 = arith.constant 0 : index
+    %c4 = arith.constant 4 : index
+    %asyncToken, %valOut = air.region async  {
+      %2 = memref.alloc() {alignment = 128 : i64} : memref<1024x1024xf32>
+      air.region_terminator %2 : memref<1024x1024xf32>
+    } {id = 1 : i32} : (memref<1024x1024xf32>)
+    %asyncToken_0, %valOut_1 = air.region async  {
+      %2 = memref.alloc() {alignment = 128 : i64} : memref<1024x1024xf32>
+      air.region_terminator %2 : memref<1024x1024xf32>
+    } {id = 2 : i32} : (memref<1024x1024xf32>)
+    %asyncToken_2 = air.region async [%asyncToken]  : (!air.async.token) {
+      linalg.fill ins(%cst : f32) outs(%valOut : memref<1024x1024xf32>)
+      air.region_terminator
+    } {id = 3 : i32}
+    %asyncToken_3 = air.region async [%asyncToken_0, %asyncToken_2]  : (!air.async.token, !air.async.token) {
+      memref.copy %valOut, %valOut_1 : memref<1024x1024xf32> to memref<1024x1024xf32>
+      air.region_terminator
+    } {id = 4 : i32}
+    %0 = air.wait_all async [%asyncToken_3]  {id = 6 : i32}
+    %1 = scf.for %arg3 = %c0 to %c1024 step %c128 iter_args(%arg4 = %0) -> (!air.async.token) {
+      %c0_5 = arith.constant 0 : index
+      %c1024_6 = arith.constant 1024 : index
+      %c128_7 = arith.constant 128 : index
+      %2 = air.wait_all async [%arg4]  {id = 4 : i32}
+      %3 = scf.for %arg5 = %c0_5 to %c1024_6 step %c128_7 iter_args(%arg6 = %2) -> (!air.async.token) {
+        %c0_8 = arith.constant 0 : index
+        %c1024_9 = arith.constant 1024 : index
+        %c32_10 = arith.constant 32 : index
+        %5 = air.wait_all async [%arg6]  {id = 2 : i32}
+        %6 = scf.for %arg7 = %c0_8 to %c1024_9 step %c32_10 iter_args(%arg8 = %5) -> (!air.async.token) {
+          %c4_11 = arith.constant 4 : index
+          %8 = air.launch_herd async [%arg8]  tile (%arg9, %arg10) in (%arg11=%c4_11, %arg12=%c4_11) args(%arg13=%arg3, %arg14=%arg7, %arg15=%arg0, %arg16=%arg5, %arg17=%arg1, %arg18=%valOut_1) : index, index, memref<1024x1024xf32>, index, memref<1024x1024xf32>, memref<1024x1024xf32> attributes {id = 1 : i32, sym_name = "herd_0"} {
+            %c1 = arith.constant 1 : index
+            %c1024_12 = arith.constant 1024 : index
+            %c32_13 = arith.constant 32 : index
+            %asyncToken_14, %valOut_15 = air.region async  {
+              %14 = affine.apply #map()[%arg9]
+              air.region_terminator %14 : index
+            } {id = 5 : i32} : (index)
+            %asyncToken_16, %valOut_17 = air.region async  {
+              %14 = affine.apply #map()[%arg10]
+              air.region_terminator %14 : index
+            } {id = 6 : i32} : (index)
+            %asyncToken_18, %valOut_19 = air.region async [%asyncToken_14]  : (!air.async.token) {
+              %14 = arith.addi %arg13, %valOut_15 : index
+              air.region_terminator %14 : index
+            } {id = 7 : i32} : (index)
+            %asyncToken_20, %valOut_21 = air.region async [%asyncToken_16]  : (!air.async.token) {
+              %14 = arith.addi %arg16, %valOut_17 : index
+              air.region_terminator %14 : index
+            } {id = 8 : i32} : (index)
+            %asyncToken_22, %valOut_23 = air.region async  {
+              %14 = memref.alloc() : memref<32x32xf32, 2>
+              air.region_terminator %14 : memref<32x32xf32, 2>
+            } {id = 9 : i32} : (memref<32x32xf32, 2>)
+            %asyncToken_24, %valOut_25 = air.region async  {
+              %14 = memref.alloc() : memref<32x32xf32, 2>
+              air.region_terminator %14 : memref<32x32xf32, 2>
+            } {id = 10 : i32} : (memref<32x32xf32, 2>)
+            %asyncToken_26, %valOut_27 = air.region async  {
+              %14 = memref.alloc() : memref<32x32xf32, 2>
+              air.region_terminator %14 : memref<32x32xf32, 2>
+            } {id = 11 : i32} : (memref<32x32xf32, 2>)
+            %10 = air.dma_memcpy_nd async [%asyncToken_22, %asyncToken_18] (%valOut_23[] [] [], %arg15[%valOut_19, %arg14] [%c32_13, %c32_13] [%c1024_12, %c1]) {id = 1 : i32} : (memref<32x32xf32, 2>, memref<1024x1024xf32>)
+            %11 = air.dma_memcpy_nd async [%asyncToken_24, %asyncToken_20] (%valOut_25[] [] [], %arg17[%arg14, %valOut_21] [%c32_13, %c32_13] [%c1024_12, %c1]) {id = 2 : i32} : (memref<32x32xf32, 2>, memref<1024x1024xf32>)
+            %12 = air.dma_memcpy_nd async [%asyncToken_26, %asyncToken_20, %asyncToken_18] (%valOut_27[] [] [], %arg18[%valOut_19, %valOut_21] [%c32_13, %c32_13] [%c1024_12, %c1]) {id = 3 : i32} : (memref<32x32xf32, 2>, memref<1024x1024xf32>)
+            %asyncToken_28 = air.region async [%11, %12, %10]  : (!air.async.token, !air.async.token, !air.async.token) {
+              linalg.matmul ins(%valOut_23, %valOut_25 : memref<32x32xf32, 2>, memref<32x32xf32, 2>) outs(%valOut_27 : memref<32x32xf32, 2>)
+              air.region_terminator
+            } {id = 12 : i32}
+            %13 = air.dma_memcpy_nd async [%asyncToken_28] (%arg18[%valOut_19, %valOut_21] [%c32_13, %c32_13] [%c1024_12, %c1], %valOut_27[] [] []) {id = 4 : i32} : (memref<1024x1024xf32>, memref<32x32xf32, 2>)
+            %asyncToken_29 = air.region async [%asyncToken_28]  : (!air.async.token) {
+              memref.dealloc %valOut_23 : memref<32x32xf32, 2>
+              air.region_terminator
+            } {id = 13 : i32}
+            %asyncToken_30 = air.region async [%asyncToken_28]  : (!air.async.token) {
+              memref.dealloc %valOut_25 : memref<32x32xf32, 2>
+              air.region_terminator
+            } {id = 14 : i32}
+            %asyncToken_31 = air.region async [%13]  : (!air.async.token) {
+              memref.dealloc %valOut_27 : memref<32x32xf32, 2>
+              air.region_terminator
+            } {id = 15 : i32}
+            air.herd_terminator
+          }
+          %9 = air.wait_all async [%8]  {id = 1 : i32}
+          scf.yield %9 : !air.async.token
+        }
+        %7 = air.wait_all async [%6]  {id = 3 : i32}
+        scf.yield %7 : !air.async.token
+      }
+      %4 = air.wait_all async [%3]  {id = 5 : i32}
+      scf.yield %4 : !air.async.token
+    }
+    %asyncToken_4 = air.region async [%1]  : (!air.async.token) {
+      memref.copy %valOut_1, %arg2 : memref<1024x1024xf32> to memref<1024x1024xf32>
+      air.region_terminator
+    } {id = 16 : i32}
+    return
+  }
+}
+```
+
+### `-air-example-pass`: Skeleton module op pass
 ### `-air-herd-assign`: Transfor affine.for to affine.parallel
 ### `-air-linalg-codegen`: AIR codegen strategies for linalg
 This pass implements some tiling strategies for linalg ops targeting AIR
 dialect.
+### `-air-linalg-name`: Give linalg ops a LinalgTransformMarker string attribute if they don't already have one
+### `-air-linalg-op-stats`: AIR linalg operation statistics
 ### `-air-loop-merging`: Merge several nested subloops into a single loop
 This pass transforms several perfectly nested subloops into a single 
 loop. The trip count of the new single loop is the product of all
@@ -276,7 +506,9 @@ module  {
 
 #### Options
 ```
--loop-order : The target loop permutation ordering
+-loop-order     : The target loop permutation ordering
+-air-label      : Transform loops with the given label
+-air-post-label : Label to apply to transformed loop nest
 ```
 ### `-air-lower-linalg-tensors`: Lowering from linalg on tensors to loops
 This pass implements a lowering pipeline from linalg on tensors to affine
@@ -288,6 +520,7 @@ are lowered to loops using `linalg::LinalgLoweringPattern`.
 
 The transforms are biased toward AIE.core regions and are intended
 to be run after the air-to-aie pass.
+### `-air-promote-dma`: promote uniform dma operations
 ### `-air-regularize-loop`: Move operations inside the innermost loop body to regularize loop nests
 This pass regularizes loop nests by moving intermediate operations between
 subloops in a loop nest inside the innermost loop body. The pass is 
@@ -365,3 +598,5 @@ module  {
 ```
 
 ### `-air-return-elimination`: Convert functions to return their values with out parameters
+### `-air-rm-linalg-name`: Remove LinalgTransformMarker string attributes from linalg ops
+### `-air-specialize-dma`: Specialize dma operations
