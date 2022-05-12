@@ -32,6 +32,8 @@ interface is provided to synchronize between operations.
 
 ### async token type
 
+
+
 ## Operation definition
 
 ### `air.dma_memcpy_2d` (xilinx::air::DmaMemcpy2dOp)
@@ -55,26 +57,28 @@ operation ::= `air.dma_memcpy_2d` custom<AsyncDependencies>(type($asyncToken), $
 
 dma operator
 
+Interfaces: air_AsyncOpInterface, air_DmaMemcpyInterface
+
 #### Operands:
 
 | Operand | Description |
 | :-----: | ----------- |
-`asyncDependencies` | async token type
-`dst` | memref of any type values
-`src` | memref of any type values
-`dst_d1` | index
-`dst_d0` | index
-`src_d1` | index
-`src_d0` | index
-`num` | index
-`stride` | index
-`elem_per_stride` | index
+| `asyncDependencies` | async token type
+| `dst` | memref of any type values
+| `src` | memref of any type values
+| `dst_d1` | index
+| `dst_d0` | index
+| `src_d1` | index
+| `src_d0` | index
+| `num` | index
+| `stride` | index
+| `elem_per_stride` | index
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-`asyncToken` | async token type
+| `asyncToken` | async token type
 
 ### `air.dma_memcpy_4d` (xilinx::air::DmaMemcpy4dOp)
 
@@ -97,30 +101,72 @@ operation ::= `air.dma_memcpy_4d` custom<AsyncDependencies>(type($asyncToken), $
 
 dma operator
 
+Interfaces: air_AsyncOpInterface, air_DmaMemcpyInterface
+
 #### Operands:
 
 | Operand | Description |
 | :-----: | ----------- |
-`asyncDependencies` | async token type
-`dst` | memref of any type values
-`src` | memref of any type values
-`dst_d3` | index
-`dst_d2` | index
-`dst_d1` | index
-`dst_d0` | index
-`src_d3` | index
-`src_d2` | index
-`src_d1` | index
-`src_d0` | index
-`num` | index
-`stride` | index
-`elem_per_stride` | index
+| `asyncDependencies` | async token type
+| `dst` | memref of any type values
+| `src` | memref of any type values
+| `dst_d3` | index
+| `dst_d2` | index
+| `dst_d1` | index
+| `dst_d0` | index
+| `src_d3` | index
+| `src_d2` | index
+| `src_d1` | index
+| `src_d0` | index
+| `num` | index
+| `stride` | index
+| `elem_per_stride` | index
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-`asyncToken` | async token type
+| `asyncToken` | async token type
+
+### `air.dma_memcpy_nd` (xilinx::air::DmaMemcpyNdOp)
+
+dma operator
+
+
+Syntax:
+
+```
+operation ::= `air.dma_memcpy_nd` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
+              `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `,`
+              $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)`  attr-dict `:`
+              `(` type($dst) `,` type($src) `)`
+```
+
+dma operator
+
+Traits: AttrSizedOperandSegments
+
+Interfaces: air_AsyncOpInterface, air_DmaMemcpyInterface
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `asyncDependencies` | async token type
+| `dst` | memref of any type values
+| `dst_offsets` | index
+| `dst_sizes` | index
+| `dst_strides` | index
+| `src` | memref of any type values
+| `src_offsets` | index
+| `src_sizes` | index
+| `src_strides` | index
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `asyncToken` | async token type
 
 ### `air.dma_memcpy` (xilinx::air::DmaMemcpyOp)
 
@@ -143,22 +189,24 @@ operation ::= `air.dma_memcpy` custom<AsyncDependencies>(type($asyncToken), $asy
 
 dma operator
 
+Interfaces: air_AsyncOpInterface, air_DmaMemcpyInterface
+
 #### Operands:
 
 | Operand | Description |
 | :-----: | ----------- |
-`asyncDependencies` | async token type
-`dst` | memref of any type values
-`src` | memref of any type values
-`dst_d0` | index
-`src_d0` | index
-`num` | index
+| `asyncDependencies` | async token type
+| `dst` | memref of any type values
+| `src` | memref of any type values
+| `dst_d0` | index
+| `src_d0` | index
+| `num` | index
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-`asyncToken` | async token type
+| `asyncToken` | async token type
 
 ### `air.launch_herd` (xilinx::air::HerdLaunchOp)
 
@@ -166,20 +214,24 @@ Launch a herd
 
 Define and run a 1D or 2D array of tiles as an AIR Herd.
 
+Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove
+
+Interfaces: air_AsyncOpInterface
+
 #### Operands:
 
 | Operand | Description |
 | :-----: | ----------- |
-`asyncDependencies` | async token type
-`herdSizeX` | index
-`herdSizeY` | index
-`operands` | any type
+| `asyncDependencies` | async token type
+| `herdSizeX` | index
+| `herdSizeY` | index
+| `operands` | any type
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-`asyncToken` | async token type
+| `asyncToken` | async token type
 
 ### `air.pipeline` (xilinx::air::HerdPipelineOp)
 
@@ -189,52 +241,211 @@ Define a pipeline
 Syntax:
 
 ```
-operation ::= `air.pipeline` `(` $opers `)` `:` type($opers) attr-dict $body `->` `(` type($returns) `)`
+operation ::= `air.pipeline` attr-dict $body
 ```
 
 Define a pipeline within an AIR Herd.
 
-
-
-#### Operands:
-
-| Operand | Description |
-| :-----: | ----------- |
-`opers` | any type
-
-#### Results:
-
-| Result | Description |
-| :----: | ----------- |
-`returns` | any type
+Traits: AffineScope, HasParent<HerdLaunchOp>
 
 ### `air.herd_terminator` (xilinx::air::HerdTerminatorOp)
 
 Terminator for air launch_herd regions.
 
-A terminator operation for regions that appear in the body of 
+
+Syntax:
+
+```
+operation ::= `air.herd_terminator` attr-dict
+```
+
+A terminator operation for regions that appear in the body of
 `air.launch_herd` operation.  These regions are not expected to return any
 value so the terminator takes no operands.
 
-### `air.pipeline.yield` (xilinx::air::PipelineYieldOp)
+Traits: HasParent<HerdLaunchOp>, Terminator
 
-Yield for air pipeline regions.
+Interfaces: NoSideEffect (MemoryEffectOpInterface)
+
+Effects: MemoryEffects::Effect{}
+
+### `air.pipeline.get` (xilinx::air::PipelineGetOp)
+
+Get for air pipeline stages.
 
 
 Syntax:
 
 ```
-operation ::= `air.pipeline.yield` `(` $opers `)`  attr-dict `->` `(` type($opers) `)`
+operation ::= `air.pipeline.get` $src attr-dict `:` type($src) `->` type($results)
 ```
 
-A terminator operation for regions that appear in the body of 
-`air.pipeline` operation.
+Experimental operation to represent copying data from another tile.
+Currently used internally by air-to-aie pass during pipeline lowering.
 
 #### Operands:
 
 | Operand | Description |
 | :-----: | ----------- |
-`opers` | any type
+| `src` | any type
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `results` | any type
+
+### `air.pipeline.put` (xilinx::air::PipelinePutOp)
+
+Put for air pipeline stages.
+
+
+Syntax:
+
+```
+operation ::= `air.pipeline.put` $dst (`,` $opers^)? attr-dict `:` type($dst) (`,` type($opers)^)?
+```
+
+Experimental operation to represent copying data to another tile.
+Currently used internally by air-to-aie pass during pipeline lowering.
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `dst` | any type
+| `opers` | any type
+
+### `air.pipeline.stage` (xilinx::air::PipelineStageOp)
+
+Pipeline stage
+
+Pipeline stage.
+
+Traits: HasParent<HerdPipelineOp>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `opers` | any type
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `results` | any type
+
+### `air.pipeline.terminator` (xilinx::air::PipelineTerminatorOp)
+
+Terminator for air pipeline regions.
+
+
+Syntax:
+
+```
+operation ::= `air.pipeline.terminator` attr-dict ($opers^ `:` type($opers))?
+```
+
+A terminator operation for regions that appear in the body of 
+`air.pipeline` operation.
+
+Traits: HasParent<HerdPipelineOp>, Terminator
+
+Interfaces: NoSideEffect (MemoryEffectOpInterface)
+
+Effects: MemoryEffects::Effect{}
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `opers` | any type
+
+### `air.pipeline.yield` (xilinx::air::PipelineYieldOp)
+
+Yield for air pipeline stages.
+
+
+Syntax:
+
+```
+operation ::= `air.pipeline.yield` ($opers^)? attr-dict (`:` type($opers)^)?
+```
+
+A terminator operation for regions that appear in the body of 
+`air.pipeline.stage` operation.
+
+Traits: HasParent<PipelineStageOp>, Terminator
+
+Interfaces: NoSideEffect (MemoryEffectOpInterface)
+
+Effects: MemoryEffects::Effect{}
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `opers` | any type
+
+### `air.region` (xilinx::air::RegionOp)
+
+Asynchronous code region
+
+
+Syntax:
+
+```
+operation ::= `air.region` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) (`:`
+              `(` type($asyncDependencies)^ `)`)? regions attr-dict (`:` `(` type($valOut)^ `)`)?
+```
+
+Defines a code region to be dispatched asynchronously at runtime. All operations in
+the region must be executed sequentially.
+
+Traits: AffineScope
+
+Interfaces: air_AsyncOpInterface
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `asyncDependencies` | any type
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `asyncToken` | async token type
+| `valOut` | any type
+
+### `air.region_terminator` (xilinx::air::RegionTerminatorOp)
+
+Terminator for air regions.
+
+
+Syntax:
+
+```
+operation ::= `air.region_terminator` attr-dict ($results^ `:` type($results))?
+```
+
+A terminator operation for regions that appear in the body of
+`air.region` operation.  These regions are not expected to return any
+value so the terminator takes no operands.
+
+Traits: HasParent<RegionOp>, ReturnLike, Terminator
+
+Interfaces: NoSideEffect (MemoryEffectOpInterface)
+
+Effects: MemoryEffects::Effect{}
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `results` | any type
 
 ### `air.wait_all` (xilinx::air::WaitAllOp)
 
@@ -247,17 +458,19 @@ Syntax:
 operation ::= `air.wait_all` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) attr-dict
 ```
 
-Block and wait for all async tokens before preceding.
+Wait for all async tokens before preceding.
+
+Interfaces: air_AsyncOpInterface
 
 #### Operands:
 
 | Operand | Description |
 | :-----: | ----------- |
-`asyncDependencies` | async token type
+| `asyncDependencies` | async token type
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-`asyncToken` | async token type
+| `asyncToken` | async token type
 
