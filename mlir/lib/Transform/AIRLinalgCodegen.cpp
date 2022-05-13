@@ -454,7 +454,7 @@ struct TileLinalgOpPattern : public RewritePattern {
       rewriter.eraseOp(op);
     else 
       rewriter.replaceOp(op, tiledLinalgOp->tensorResults);
-    
+
     return success();
   }
 
