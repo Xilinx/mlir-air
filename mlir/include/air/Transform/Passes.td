@@ -698,4 +698,10 @@ def AIRPipelineReducePass : Pass<"air-pipeline-reduce", "func::FuncOp"> {
   let constructor = "xilinx::air::createAIRPipelineReducePass()";
 }
 
+def AIRFuseParallelHerdLaunchPass : Pass<"air-fuse-parallel-launch", "ModuleOp"> {
+  let summary = "fuse parallel launch pass";
+  let constructor = "xilinx::air::createAIRFuseParallelHerdLaunchPass()";
+}
+
+
 #endif // AIR_CONVERSION_PASSES

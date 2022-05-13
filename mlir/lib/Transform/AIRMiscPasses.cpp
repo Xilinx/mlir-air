@@ -463,6 +463,19 @@ void AIRPipelineReducePass::runOnOperation() {
   (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
 }
 
+class AIRFuseParallelHerdLaunchPass : public xilinx::air::AIRFuseParallelHerdLaunchPassBase<AIRFuseParallelHerdLaunchPass> {
+
+public:
+  AIRFuseParallelHerdLaunchPass() = default;
+  AIRFuseParallelHerdLaunchPass(const AIRFuseParallelHerdLaunchPass &pass){};
+
+  void runOnOperation() override;
+
+private:
+};
+
+void AIRFuseParallelHerdLaunchPass::runOnOperation() {}
+
 } // anonymous namespace
 
 namespace xilinx {
@@ -491,6 +504,11 @@ std::unique_ptr<Pass> createAIRRemoveLinalgNamePass() {
 std::unique_ptr<Pass> createAIRPipelineReducePass() {
   return std::make_unique<AIRPipelineReducePass>();
 }
+
+std::unique_ptr<Pass> createAIRFuseParallelHerdLaunchPass() {
+  return std::make_unique<AIRFuseParallelHerdLaunchPass>();
+}
+
 
 } // namespace air
 } // namespace xilinx
