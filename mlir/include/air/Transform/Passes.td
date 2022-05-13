@@ -693,7 +693,7 @@ def AIRRemoveLinalgNamePass : Pass<"air-rm-linalg-name", "ModuleOp"> {
   let constructor = "xilinx::air::createAIRRemoveLinalgNamePass()";
 }
 
-def AIRPipelineReducePass : Pass<"air-pipeline-reduce-pass", "ModuleOp"> {
+def AIRPipelineReducePass : Pass<"air-pipeline-reduce", "func::FuncOp"> {
   let summary = "Turn a reduction dimension into a herd pipeline";
   let constructor = "xilinx::air::createAIRPipelineReducePass()";
 }

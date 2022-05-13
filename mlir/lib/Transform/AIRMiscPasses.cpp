@@ -19,6 +19,7 @@
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/Passes.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/Support/Debug.h"
 
@@ -299,6 +300,74 @@ void AIRSpecializeDma::runOnOperation() {
   });
 }
 
+FailureOr<xilinx::air::HerdLaunchOp> static pipelineLinalgOp(
+    PatternRewriter &b, linalg::LinalgOp op) {
+  OpBuilder::InsertionGuard g(b);
+  b.setInsertionPoint(op);
+
+  auto nLoops = op.getNumLoops();
+  SmallVector<Value, 4> tileSizeVector;
+  auto zero = b.create<arith::ConstantIndexOp>(op.getLoc(), 0);
+  tileSizeVector.append(nLoops - 1, zero);
+  tileSizeVector.push_back(b.create<arith::ConstantIndexOp>(op.getLoc(), 4));
+
+  auto iteratorTypes = llvm::to_vector<4>(op.iterator_types().getValue());
+  if (isParallelIterator(iteratorTypes.back()))
+    return failure();
+
+  auto allShapeSizes = op.createFlatListOfOperandDims(b, op.getLoc());
+  AffineMap shapeSizesToLoopsMap = op.getShapesToLoopsMap();
+  if (!shapeSizesToLoopsMap)
+    return failure();
+
+  SmallVector<Range, 4> loopRanges;
+  linalg::LoopIndexToRangeIndexMap loopIndexToRangeIndex;
+  std::tie(loopRanges, loopIndexToRangeIndex) = linalg::makeTiledLoopRanges(
+      b, op.getLoc(), shapeSizesToLoopsMap, allShapeSizes, tileSizeVector);
+
+  // create pipeline op
+  auto pipe = b.create<xilinx::air::HerdPipelineOp>(op.getLoc());
+  for (int i=0; i<4; i++) {
+    // OpBuilder::InsertionGuard ig(b);
+    // auto bb = &pipe.body().front();
+    // b.setInsertionPointToStart(bb);
+    // SmallVector<Type,1> retTys;
+    // SmallVector<Value,1> opers;
+    // b.create<xilinx::air::PipelineStageOp>(op.getLoc(),retTys,opers);
+  }
+  return failure();
+}
+
+struct PipelineReducePattern : public RewritePattern {
+  PipelineReducePattern(MLIRContext *context, linalg::LinalgTilingOptions options,
+                        linalg::LinalgTransformationFilter filter =
+                          linalg::LinalgTransformationFilter(),
+                        PatternBenefit benefit = 1)
+      : RewritePattern(MatchAnyOpTypeTag(), benefit, context), filter(filter),
+        options(options) {}
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    linalg::LinalgOp linalgOp = dyn_cast<linalg::LinalgOp>(op);
+    if (!linalgOp)
+      return failure();
+
+    if (failed(filter.checkAndNotify(rewriter, linalgOp)))
+      return failure();
+
+    auto result = pipelineLinalgOp(rewriter, linalgOp);
+    if (failed(result))
+      return failure();
+    
+    return failure();
+  }
+
+private:
+  /// LinalgTransformMarker handles special attribute manipulations.
+  linalg::LinalgTransformationFilter filter;
+  /// Options to control tiling;
+  linalg::LinalgTilingOptions options;
+};
 
 class AIRPipelineReducePass
     : public xilinx::air::AIRPipelineReducePassBase<AIRPipelineReducePass> {
@@ -312,7 +381,13 @@ public:
 private:
 };
 
-void AIRPipelineReducePass::runOnOperation() {}
+void AIRPipelineReducePass::runOnOperation() {
+  auto func = getOperation();
+  auto ctx = func.getContext();
+  RewritePatternSet patterns(ctx);
+  patterns.add<PipelineReducePattern>(ctx, linalg::LinalgTilingOptions());
+  (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
+}
 
 } // anonymous namespace
 
