@@ -54,9 +54,11 @@ with air.mlir.ir.Context():
         # "func.func(scf-parallel-loop-tiling{parallel-loop-tile-sizes=3,1})",
         # "canonicalize", "cse",
         # "scf-parallel-loop-collapsing{collapsed-indices-0=0 collapsed-indices-1=1 collapsed-indices-2=2,3}",
-        #"scf-parallel-loop-collapsing{collapsed-indices-0=0,1}",
         "canonicalize", "cse",
-        "func.func(air-pipeline-reduce)"
+        "func.func(air-pipeline-reduce)",
+        "canonicalize", "cse",
+        "scf-parallel-loop-collapsing{collapsed-indices-0=0,1}",
+        "canonicalize", "cse",
         
     ])
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
