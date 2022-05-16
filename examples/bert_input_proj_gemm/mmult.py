@@ -59,7 +59,10 @@ with air.mlir.ir.Context():
         "canonicalize", "cse",
         "scf-parallel-loop-collapsing{collapsed-indices-0=0,1}",
         "canonicalize", "cse",
-        
+        "air-fuse-parallel-launch",
+        "canonicalize", "cse",
+        "affine-to-air{herd-assign-depth=42}",
+        "canonicalize", "cse",
     ])
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
     pm.run(air_module)

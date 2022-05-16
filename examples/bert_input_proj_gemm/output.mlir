@@ -11,7 +11,6 @@ module attributes {torch.debug_module_name = "mmult"} {
     %c192 = arith.constant 192 : index
     %c256 = arith.constant 256 : index
     %c1024 = arith.constant 1024 : index
-    %c64 = arith.constant 64 : index
     %0 = memref.alloc() {alignment = 128 : i64} : memref<24576x1024xbf16>
     %1 = memref.alloc() {alignment = 128 : i64} : memref<24576x1024xbf16>
     linalg.fill ins(%cst : bf16) outs(%0 : memref<24576x1024xbf16>)
@@ -25,48 +24,45 @@ module attributes {torch.debug_module_name = "mmult"} {
       %7 = memref.subview %arg1[0, %4] [1024, 256] [1, 1] : memref<1024x1024xbf16> to memref<1024x256xbf16, #map0>
       %8 = memref.subview %1[%5, %4] [192, 256] [1, 1] : memref<24576x1024xbf16> to memref<192x256xbf16, #map0>
       scf.for %arg3 = %c0 to %c1024 step %c256 {
-        %9 = memref.subview %6[0, %arg3] [192, 256] [1, 1] : memref<192x1024xbf16, #map0> to memref<192x256xbf16, #map0>
-        %10 = memref.subview %7[%arg3, 0] [256, 256] [1, 1] : memref<1024x256xbf16, #map0> to memref<256x256xbf16, #map0>
-        %11 = memref.alloc() : memref<192x256xbf16, 1>
-        %12 = memref.alloc() : memref<256x256xbf16, 1>
-        memref.copy %9, %11 : memref<192x256xbf16, #map0> to memref<192x256xbf16, 1>
-        memref.copy %10, %12 : memref<256x256xbf16, #map0> to memref<256x256xbf16, 1>
-        scf.parallel (%arg4) = (%c0) to (%c12) step (%c1) {
-          %13 = arith.remsi %arg4, %c4 : index
-          %14 = arith.divsi %arg4, %c4 : index
-          %15 = arith.muli %13, %c64 : index
-          %16 = arith.muli %14, %c64 : index
-          %17 = memref.subview %11[%16, 0] [64, 256] [1, 1] : memref<192x256xbf16, 1> to memref<64x256xbf16, #map1, 1>
-          %18 = memref.subview %12[0, %15] [256, 64] [1, 1] : memref<256x256xbf16, 1> to memref<256x64xbf16, #map1, 1>
-          %19 = memref.subview %8[%16, %15] [64, 64] [1, 1] : memref<192x256xbf16, #map0> to memref<64x64xbf16, #map0>
-          air.launch_herd  tile (%arg5, %arg6) in (%arg7=%c4, %arg8=%c1) args(%arg9=%17, %arg10=%18, %arg11=%19) : memref<64x256xbf16, #map1, 1>, memref<256x64xbf16, #map1, 1>, memref<64x64xbf16, #map0> {
-            %20 = memref.subview %arg9[0, %arg5] [64, 64] [1, 1] : memref<64x256xbf16, #map1, 1> to memref<64x64xbf16, #map1, 1>
-            %21 = memref.subview %arg10[%arg5, 0] [64, 64] [1, 1] : memref<256x64xbf16, #map1, 1> to memref<64x64xbf16, #map1, 1>
-            air.pipeline {
-              %22 = air.pipeline.stage args(%arg12=%arg11) : memref<64x64xbf16, #map0> {
-                linalg.matmul ins(%20, %21 : memref<64x64xbf16, #map1, 1>, memref<64x64xbf16, #map1, 1>) outs(%arg12 : memref<64x64xbf16, #map0>)
-                air.pipeline.yield %arg12 : memref<64x64xbf16, #map0>
-              } : memref<64x64xbf16, #map0>
-              %23 = air.pipeline.stage args(%arg12=%22) : memref<64x64xbf16, #map0> {
-                linalg.matmul ins(%20, %21 : memref<64x64xbf16, #map1, 1>, memref<64x64xbf16, #map1, 1>) outs(%arg12 : memref<64x64xbf16, #map0>)
-                air.pipeline.yield %arg12 : memref<64x64xbf16, #map0>
-              } : memref<64x64xbf16, #map0>
-              %24 = air.pipeline.stage args(%arg12=%23) : memref<64x64xbf16, #map0> {
-                linalg.matmul ins(%20, %21 : memref<64x64xbf16, #map1, 1>, memref<64x64xbf16, #map1, 1>) outs(%arg12 : memref<64x64xbf16, #map0>)
-                air.pipeline.yield %arg12 : memref<64x64xbf16, #map0>
-              } : memref<64x64xbf16, #map0>
-              %25 = air.pipeline.stage args(%arg12=%24) : memref<64x64xbf16, #map0> {
-                linalg.matmul ins(%20, %21 : memref<64x64xbf16, #map1, 1>, memref<64x64xbf16, #map1, 1>) outs(%arg12 : memref<64x64xbf16, #map0>)
-                air.pipeline.yield %arg12 : memref<64x64xbf16, #map0>
-              } : memref<64x64xbf16, #map0>
-              air.pipeline.terminator
-            }
-            air.herd_terminator
+        %9 = memref.alloc() : memref<192x256xbf16, 1>
+        %10 = memref.alloc() : memref<256x256xbf16, 1>
+        air.dma_memcpy_nd (%9[] [] [], %6[%c0, %arg3] [%c192, %c256] [%c1024, %c1]) {id = 1 : i32} : (memref<192x256xbf16, 1>, memref<192x1024xbf16, #map0>)
+        air.dma_memcpy_nd (%10[] [] [], %7[%arg3, %c0] [%c256, %c256] [%c1024, %c1]) {id = 2 : i32} : (memref<256x256xbf16, 1>, memref<1024x256xbf16, #map0>)
+        air.launch_herd  tile (%arg4, %arg5) in (%arg6=%c4, %arg7=%c12) args(%arg8=%9, %arg9=%10, %arg10=%8) : memref<192x256xbf16, 1>, memref<256x256xbf16, 1>, memref<192x256xbf16, #map0> attributes {sym_name = "herd_0"} {
+          %c4_0 = arith.constant 4 : index
+          %c64 = arith.constant 64 : index
+          %11 = arith.remsi %arg6, %c4_0 : index
+          %12 = arith.divsi %arg6, %c4_0 : index
+          %13 = arith.muli %11, %c64 : index
+          %14 = arith.muli %12, %c64 : index
+          %15 = memref.subview %arg8[%14, 0] [64, 256] [1, 1] : memref<192x256xbf16, 1> to memref<64x256xbf16, #map1, 1>
+          %16 = memref.subview %arg9[0, %13] [256, 64] [1, 1] : memref<256x256xbf16, 1> to memref<256x64xbf16, #map1, 1>
+          %17 = memref.subview %arg10[%14, %13] [64, 64] [1, 1] : memref<192x256xbf16, #map0> to memref<64x64xbf16, #map0>
+          %18 = memref.subview %15[0, %arg4] [64, 64] [1, 1] : memref<64x256xbf16, #map1, 1> to memref<64x64xbf16, #map1, 1>
+          %19 = memref.subview %16[%arg4, 0] [64, 64] [1, 1] : memref<256x64xbf16, #map1, 1> to memref<64x64xbf16, #map1, 1>
+          air.pipeline {
+            %20 = air.pipeline.stage args(%arg11=%17) : memref<64x64xbf16, #map0> {
+              linalg.matmul ins(%18, %19 : memref<64x64xbf16, #map1, 1>, memref<64x64xbf16, #map1, 1>) outs(%arg11 : memref<64x64xbf16, #map0>)
+              air.pipeline.yield %arg11 : memref<64x64xbf16, #map0>
+            } : memref<64x64xbf16, #map0>
+            %21 = air.pipeline.stage args(%arg11=%20) : memref<64x64xbf16, #map0> {
+              linalg.matmul ins(%18, %19 : memref<64x64xbf16, #map1, 1>, memref<64x64xbf16, #map1, 1>) outs(%arg11 : memref<64x64xbf16, #map0>)
+              air.pipeline.yield %arg11 : memref<64x64xbf16, #map0>
+            } : memref<64x64xbf16, #map0>
+            %22 = air.pipeline.stage args(%arg11=%21) : memref<64x64xbf16, #map0> {
+              linalg.matmul ins(%18, %19 : memref<64x64xbf16, #map1, 1>, memref<64x64xbf16, #map1, 1>) outs(%arg11 : memref<64x64xbf16, #map0>)
+              air.pipeline.yield %arg11 : memref<64x64xbf16, #map0>
+            } : memref<64x64xbf16, #map0>
+            %23 = air.pipeline.stage args(%arg11=%22) : memref<64x64xbf16, #map0> {
+              linalg.matmul ins(%18, %19 : memref<64x64xbf16, #map1, 1>, memref<64x64xbf16, #map1, 1>) outs(%arg11 : memref<64x64xbf16, #map0>)
+              air.pipeline.yield %arg11 : memref<64x64xbf16, #map0>
+            } : memref<64x64xbf16, #map0>
+            air.pipeline.terminator
           }
-          scf.yield
+          air.herd_terminator
         }
-        memref.dealloc %11 : memref<192x256xbf16, 1>
-        memref.dealloc %12 : memref<256x256xbf16, 1>
+        memref.dealloc %9 : memref<192x256xbf16, 1>
+        memref.dealloc %10 : memref<256x256xbf16, 1>
       }
       scf.yield
     }

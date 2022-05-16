@@ -311,11 +311,6 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   if (isParallelIterator(iteratorTypes.back()))
     return failure();
 
-  // SmallVector<Range, 4> loopRanges;
-  // linalg::LoopIndexToRangeIndexMap loopIndexToRangeIndex;
-  // std::tie(loopRanges, loopIndexToRangeIndex) = linalg::makeTiledLoopRanges(
-  //     b, loc, shapeSizesToLoopsMap, allShapeSizes, tileSizeVector);
-
   xilinx::air::HerdDim2 dims{
       b.create<arith::ConstantIndexOp>(loc, 4),
       b.create<arith::ConstantIndexOp>(loc, 1)};
@@ -425,8 +420,8 @@ struct PipelineReducePattern : public RewritePattern {
     auto result = pipelineLinalgOp(rewriter, linalgOp);
     if (failed(result))
       return failure();
-
     //linalgOp->getParentOfType<xilinx::air::HerdLaunchOp>()->dump();
+
     //rewriter.replaceOp(op, result->tensorResults);
     rewriter.eraseOp(op);
     return success();
@@ -474,7 +469,97 @@ public:
 private:
 };
 
-void AIRFuseParallelHerdLaunchPass::runOnOperation() {}
+void AIRFuseParallelHerdLaunchPass::runOnOperation() {
+
+  auto module = getOperation();
+  auto ctx = module.getContext();
+
+  xilinx::air::HerdLaunchOp launchOp = nullptr;
+  scf::ParallelOp parOp = nullptr;
+
+  module.walk([&](xilinx::air::HerdLaunchOp launch) {
+
+    // launch must be enclosed by scf.parallel
+    parOp = launch->getParentOfType<scf::ParallelOp>();
+    if (!parOp)
+      return;
+
+    // launch must be at the top level of the scf.parallel
+    if (parOp.getBody() != launch->getBlock())
+      return;
+
+    // if the herd launch is size 1 in one dimension
+    // and the herd launch is enclosed by a 1-d scf.parallel
+    // then we try to fuse the scf.parallel onto the herd launch
+
+    launchOp = launch;
+  });
+
+  if (!launchOp || !parOp)
+    return;
+
+  OpBuilder b(parOp);
+
+  xilinx::air::HerdDim2 dims = {launchOp.getHerdSizeOperands().x, parOp.getUpperBound()[0]};
+  SmallVector<Value, 8> args;
+  SmallVector<Value, 4> constants;
+  llvm::SetVector<Value> region_args;
+
+  getUsedValuesDefinedAbove(parOp.getRegion(), region_args);
+  for (Value v : region_args) {
+    if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
+      constants.push_back(v);
+    else
+      args.push_back(v);
+  }
+
+  auto newLaunchOp = b.create<xilinx::air::HerdLaunchOp>(parOp.getLoc(), dims, args);
+
+  BlockAndValueMapping remap;
+  remap.map(parOp.getInductionVars()[0], newLaunchOp.getHerdSize().x);
+
+  b.setInsertionPointToStart(&newLaunchOp.body().front());
+
+  for (auto &o : *parOp.getBody()) {
+    if (isa<xilinx::air::HerdLaunchOp>(o)) {
+      int idx = 0;
+      remap.map(launchOp.getHerdSize().x, launchOp.getHerdSizeOperands().x);
+      remap.map(launchOp.getHerdSize().y, launchOp.getHerdSizeOperands().y);
+      remap.map(launchOp.getTileIds().x, newLaunchOp.getTileIds().x);
+      remap.map(launchOp.getTileIds().y, launchOp.getHerdSizeOperands().y);
+      for (auto &a : launchOp.getKernelArguments()) {
+        auto v = launchOp.getKernelOperand(idx++);
+        remap.map(a, remap.lookupOrDefault(v));
+      }
+      for (auto &ho : launchOp.body().front()) {
+        if (isa<xilinx::air::HerdTerminatorOp>(ho))
+          continue;
+        b.clone(ho, remap);
+      }
+    } else if (isa<scf::YieldOp>(o)) {
+      continue;
+    } else {
+      b.clone(o, remap);
+    }
+  }
+  b.create<xilinx::air::HerdTerminatorOp>(parOp.getLoc());
+
+  b.setInsertionPointToStart(&newLaunchOp.body().front());
+  for (auto c : constants) {
+    replaceAllUsesInRegionWith(
+          c, b.clone(*c.getDefiningOp())->getResult(0),
+          newLaunchOp.getRegion());
+  }
+
+
+  int idx = 0;
+  auto kernel_args = newLaunchOp.getKernelArguments();
+  for (Value v : args)
+    replaceAllUsesInRegionWith(v, kernel_args[idx++], newLaunchOp.getRegion());
+
+//  newLaunchOp.dump();
+  parOp.erase();
+}
 
 } // anonymous namespace
 
