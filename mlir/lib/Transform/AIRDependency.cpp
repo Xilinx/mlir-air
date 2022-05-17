@@ -873,12 +873,15 @@ private:
       else if (auto lh = dyn_cast<xilinx::air::HerdLaunchOp>(u.getOwner())){
         if (foundAsyncOpUsesAboveCurrentLine(&lh)){
           // check if the use inside HerdLaunchOp matches with the tracing mode (r or w)
+          // assert(false);
+          // addNewAsyncDepToGraph<T>(lh.getResult(0), op);
           for (unsigned lh_argument_id = 0; lh_argument_id < lh.getNumKernelOperands(); lh_argument_id++){
             if (u.is(lh.getKernelOperand(lh_argument_id))){
               auto child_op = lh.getKernelArgument(lh_argument_id);
               char rw_check = checkOperandReadOrWrite(child_op);
               if (rw == 'n' || rw_check == rw){
                 addNewAsyncDepToGraph<T>(lh.getResult(0), op);
+                // assert(false);
               }
             }
           }
@@ -924,6 +927,8 @@ private:
           if (lh.getKernelArguments()[lh_operand_id] == operand.memrefValue){
             auto ancestor_op = lh.getKernelOperand(lh_operand_id);
             pushDepsAtCurrentScope<air::HerdLaunchOp>(ancestor_op, lh, dep_tracing_mode);
+            // Trace the defining op of sink op, RAW
+            pushDefiningOpAsDep<air::HerdLaunchOp>(ancestor_op, lh);
           }
         }
       }
