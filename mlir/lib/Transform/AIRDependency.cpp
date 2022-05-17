@@ -996,26 +996,27 @@ private:
     }
   }
 
-  air::WaitAllOp insertWaitAllOpForLoopYield(OpBuilder &builder, scf::ForOp for_op, SmallVector<Value, 1> sinks_in_for_op){
-    // Create one wait_all event at the end of current for loop body.
+  template <typename T>
+  air::WaitAllOp insertWaitAllOpBeforeLoopYield(OpBuilder &builder, T loop_op, SmallVector<Value, 1> sinks_in_loop_op){
+    // Create one wait_all event at the end of current loop body.
     // Output token of wait_all shall be yielded
-    auto for_op_terminator = for_op.getBody()->getTerminator();
-    builder.setInsertionPoint(for_op_terminator);
-    air::WaitAllOp wait_all_op_yielded = builder.create<xilinx::air::WaitAllOp>(builder.getUnknownLoc(), air::AsyncTokenType::get(for_op->getContext()), sinks_in_for_op);
+    auto loop_op_terminator = loop_op.getBody()->getTerminator();
+    builder.setInsertionPoint(loop_op_terminator);
+    air::WaitAllOp wait_all_op_yielded = builder.create<xilinx::air::WaitAllOp>(builder.getUnknownLoc(), air::AsyncTokenType::get(loop_op->getContext()), sinks_in_loop_op);
     wait_all_op_yielded->setAttr("id",
-            mlir::IntegerAttr::get(mlir::IntegerType::get(for_op->getContext(), 32),
+            mlir::IntegerAttr::get(mlir::IntegerType::get(loop_op->getContext(), 32),
                     ++WaitAllOpID));
     return wait_all_op_yielded;
   }
 
-  Graph::vertex_descriptor addVertexWaitAllOpForLoopYield(SmallVector<Value, 1> sinks_in_for_op){
+  Graph::vertex_descriptor addVertexWaitAllOpBeforeLoopYield(SmallVector<Value, 1> sinks_in_loop_op){
     // Create vertex
     Graph::vertex_descriptor wait_all_op_yielded_v = add_vertex(asyncRegionGraphTR);
     asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventName = "scf::for_loop_end";
     asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventType = "wait_all";
     asyncRegionGraphTR[wait_all_op_yielded_v].operationId = 0;
     // Update graph connectivity
-    for (auto sink : sinks_in_for_op){
+    for (auto sink : sinks_in_loop_op){
       unsigned src_id = 0;
       if (auto async_region_op = dyn_cast<air::RegionOp>(sink.getDefiningOp())){
         src_id = g_to_tr[getGraphGVertexFromAIROp(async_region_op)];
@@ -1037,13 +1038,14 @@ private:
     return wait_all_op_yielded_v;
   }
   
-  air::WaitAllOp insertWaitAllOpForLoopBegin(OpBuilder &builder, scf::ForOp for_op, SmallVector<Value, 4> incoming_tokens, SmallVector<Value, 4> constants){
+  template <typename T>
+  air::WaitAllOp insertWaitAllOpAtLoopBegin(OpBuilder &builder, T loop_op, SmallVector<Value, 4> incoming_tokens, SmallVector<Value, 4> constants){
     // Create a new wait_all event before the for op which collects the incoming deps.
     // Output token of wait_all shall be the iter_arg of for op.
-    builder.setInsertionPoint(for_op);
-    air::WaitAllOp wait_all_op_before_loop = builder.create<xilinx::air::WaitAllOp>(builder.getUnknownLoc(), air::AsyncTokenType::get(for_op->getContext()), incoming_tokens);
+    builder.setInsertionPoint(loop_op);
+    air::WaitAllOp wait_all_op_before_loop = builder.create<xilinx::air::WaitAllOp>(builder.getUnknownLoc(), air::AsyncTokenType::get(loop_op->getContext()), incoming_tokens);
     wait_all_op_before_loop->setAttr("id",
-            mlir::IntegerAttr::get(mlir::IntegerType::get(for_op->getContext(), 32),
+            mlir::IntegerAttr::get(mlir::IntegerType::get(loop_op->getContext(), 32),
                     ++WaitAllOpID));
 
     // Create vertex
@@ -1064,73 +1066,133 @@ private:
     return wait_all_op_before_loop;
   }
 
-  scf::ForOp replaceForOpWithYield(OpBuilder &builder, scf::ForOp for_op, air::WaitAllOp wait_all_op_before_loop, SmallVector<Value, 4> incoming_tokens, SmallVector<Value, 4> constants){
+  scf::ForOp replaceLoopOpWithNewTerminator(OpBuilder &builder, scf::ForOp loop_op, air::WaitAllOp wait_all_op_before_loop, SmallVector<Value, 4> incoming_tokens, SmallVector<Value, 4> constants){
     // Create new for op with iter_args.
     SmallVector<Value, 4> merged_incoming_token;
     merged_incoming_token.push_back(wait_all_op_before_loop.getResult(0));
-    scf::ForOp new_for_op = builder.create<scf::ForOp>(for_op.getLoc(), for_op.getLowerBound(),
-                                  for_op.getUpperBound(), for_op.getStep(), merged_incoming_token);
+    scf::ForOp new_loop_op = builder.create<scf::ForOp>(loop_op.getLoc(), loop_op.getLowerBound(),
+                                  loop_op.getUpperBound(), loop_op.getStep(), merged_incoming_token);
 
-    if (auto attr = for_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-      new_for_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
+    if (auto attr = loop_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+      new_loop_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
 
-    // Splice the operations inside for op
-    auto &bb = new_for_op.getBody()->getOperations();
-    auto &body = for_op.getBody()->getOperations();
+    // Splice the operations inside loop op
+    auto &bb = new_loop_op.getBody()->getOperations();
+    auto &body = loop_op.getBody()->getOperations();
     bb.splice(bb.begin(), body,
                               body.begin(), --body.end());
 
-    auto iv = for_op.getInductionVar();
-    iv.replaceAllUsesWith(new_for_op.getInductionVar());
-    builder.setInsertionPointToStart(new_for_op.getBody());
+    auto iv = loop_op.getInductionVar();
+    iv.replaceAllUsesWith(new_loop_op.getInductionVar());
+    builder.setInsertionPointToStart(new_loop_op.getBody());
     for (auto c : constants) {
       replaceAllUsesInRegionWith(c,
                                 builder.clone(*c.getDefiningOp())->getResult(0),
-                                new_for_op.getRegion());
+                                new_loop_op.getRegion());
     }
 
     for (Value v : incoming_tokens) {
       replaceAllUsesInRegionWith(v,
-                                new_for_op.getRegionIterArgs()[0],
-                                new_for_op.getRegion());
+                                new_loop_op.getRegionIterArgs()[0],
+                                new_loop_op.getRegion());
     }
 
     // Connect sources in loop body with iter_args
-    for (auto async_region_op : new_for_op.getOps<air::RegionOp>()){
+    for (auto async_region_op : new_loop_op.getOps<air::RegionOp>()){
       if (async_region_op.getAsyncDependencies().size() == 0){
-        async_region_op.addAsyncDependency(new_for_op.getRegionIterArgs()[0]);
+        async_region_op.addAsyncDependency(new_loop_op.getRegionIterArgs()[0]);
       }
     }
-    for (auto dma_op : new_for_op.getOps<air::DmaMemcpyInterface>()){
+    for (auto dma_op : new_loop_op.getOps<air::DmaMemcpyInterface>()){
       auto async_op = mlir::dyn_cast<air::AsyncOpInterface>(dma_op.getOperation());
       if (async_op.getAsyncDependencies().size() == 0){
-        async_op.addAsyncDependency(new_for_op.getRegionIterArgs()[0]);
+        async_op.addAsyncDependency(new_loop_op.getRegionIterArgs()[0]);
       }
     }
-    for (auto hl_op : new_for_op.getOps<air::HerdLaunchOp>()){
+    for (auto hl_op : new_loop_op.getOps<air::HerdLaunchOp>()){
       if (hl_op.getAsyncDependencies().size() == 0){
-        hl_op.addAsyncDependency(new_for_op.getRegionIterArgs()[0]);
+        hl_op.addAsyncDependency(new_loop_op.getRegionIterArgs()[0]);
       }
     }
 
-    return new_for_op;
+    return new_loop_op;
 
   }
 
-  void insertLoopCarriedDeps(OpBuilder &builder, scf::ForOp &for_op, SmallVector<Value, 1> sinks_in_for_op){
+  scf::ParallelOp replaceLoopOpWithNewTerminator(OpBuilder &builder, scf::ParallelOp loop_op, air::WaitAllOp wait_all_op_before_loop, SmallVector<Value, 4> incoming_tokens, SmallVector<Value, 4> constants){
+    
+    assert(loop_op.getNumReductions() == 0 && "Currently only supporting input scf::ParallelOp with no reductions");
+
+    // Create new parallel op with init_val.
+    SmallVector<Value, 4> merged_incoming_token;
+    merged_incoming_token.push_back(wait_all_op_before_loop.getResult(0));
+    scf::ParallelOp new_loop_op = builder.create<scf::ParallelOp>(loop_op.getLoc(), loop_op.getLowerBound(),
+                                  loop_op.getUpperBound(), loop_op.getStep(), merged_incoming_token);
+
+    if (auto attr = loop_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+      new_loop_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
+
+    // Splice the operations inside loop op
+    auto &bb = new_loop_op.getBody()->getOperations();
+    auto &body = loop_op.getBody()->getOperations();
+    bb.splice(bb.begin(), body,
+                              body.begin(), --body.end());
+
+    for (unsigned i = 0; i < loop_op.getInductionVars().size(); i++){
+      auto iv_old = loop_op.getInductionVars()[i];
+      auto iv_new = new_loop_op.getInductionVars()[i];
+      iv_old.replaceAllUsesWith(iv_new);
+    }
+
+    builder.setInsertionPointToStart(new_loop_op.getBody());
+    for (auto c : constants) {
+      replaceAllUsesInRegionWith(c,
+                                builder.clone(*c.getDefiningOp())->getResult(0),
+                                new_loop_op.getRegion());
+    }
+
+    for (Value v : incoming_tokens) {
+      replaceAllUsesInRegionWith(v,
+                                new_loop_op.getInitVals()[0],
+                                new_loop_op.getRegion());
+    }
+
+    // Connect sources in loop body with init_val
+    for (auto async_region_op : new_loop_op.getOps<air::RegionOp>()){
+      if (async_region_op.getAsyncDependencies().size() == 0){
+        async_region_op.addAsyncDependency(new_loop_op.getInitVals()[0]);
+      }
+    }
+    for (auto dma_op : new_loop_op.getOps<air::DmaMemcpyInterface>()){
+      auto async_op = mlir::dyn_cast<air::AsyncOpInterface>(dma_op.getOperation());
+      if (async_op.getAsyncDependencies().size() == 0){
+        async_op.addAsyncDependency(new_loop_op.getInitVals()[0]);
+      }
+    }
+    for (auto hl_op : new_loop_op.getOps<air::HerdLaunchOp>()){
+      if (hl_op.getAsyncDependencies().size() == 0){
+        hl_op.addAsyncDependency(new_loop_op.getInitVals()[0]);
+      }
+    }
+
+    return new_loop_op;
+
+  }
+
+  void insertLoopCarriedDeps(OpBuilder &builder, scf::ForOp &loop_op, SmallVector<Value, 1> sinks_in_loop_op){
     // (1) Create one wait_all event at the end of current for loop body.
-    air::WaitAllOp wait_all_op_yielded = insertWaitAllOpForLoopYield(builder, for_op, sinks_in_for_op);
+    air::WaitAllOp wait_all_op_yielded = insertWaitAllOpBeforeLoopYield<scf::ForOp>(builder, loop_op, sinks_in_loop_op);
 
     // Update boost graph
-    Graph::vertex_descriptor wait_all_op_yielded_v = addVertexWaitAllOpForLoopYield(sinks_in_for_op);
-    // Update op-to-graph map for yield
+    Graph::vertex_descriptor wait_all_op_yielded_v = addVertexWaitAllOpBeforeLoopYield(sinks_in_loop_op);
+    // Update op-to-graph map for wait_all ops
     wa_to_g[wait_all_op_yielded.getId()] = wait_all_op_yielded_v;
 
     // (2) Create a new wait_all event before the for op which collects the incoming deps.
     SmallVector<Value, 4> incoming_tokens;
     SmallVector<Value, 4> constants;
     llvm::SetVector<Value> region_args;
-    getUsedValuesDefinedAbove(for_op.getRegion(), region_args);
+    getUsedValuesDefinedAbove(loop_op.getRegion(), region_args);
     for (Value v : region_args) {
       if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
         constants.push_back(v);
@@ -1149,22 +1211,22 @@ private:
         }
       }
     }
-    air::WaitAllOp wait_all_op_before_loop = insertWaitAllOpForLoopBegin(builder, for_op, incoming_tokens, constants);
+    air::WaitAllOp wait_all_op_before_loop = insertWaitAllOpAtLoopBegin<scf::ForOp>(builder, loop_op, incoming_tokens, constants);
 
     // (3) Create new for op with iter_args.
-    scf::ForOp new_for_op = replaceForOpWithYield(builder, for_op, wait_all_op_before_loop, incoming_tokens, constants);
+    scf::ForOp new_loop_op = replaceLoopOpWithNewTerminator(builder, loop_op, wait_all_op_before_loop, incoming_tokens, constants);
 
     // Yield an async token
     SmallVector<Value, 4> yield_token;
     yield_token.push_back(wait_all_op_yielded.getResult(0));
-    builder.setInsertionPointToEnd(new_for_op.getBody());
-    builder.create<scf::YieldOp>(new_for_op.getLoc(), yield_token);
+    builder.setInsertionPointToEnd(new_loop_op.getBody());
+    builder.create<scf::YieldOp>(new_loop_op.getLoc(), yield_token);
     
     // Elevating tokens from inside forOp body to the yielded token
-    for (Value v : sinks_in_for_op){
+    for (Value v : sinks_in_loop_op){
       SmallPtrSet<Operation *, 1> keep;
       for (auto u : v.getUsers()){
-        if (u->getBlock() == new_for_op.getBody()){
+        if (u->getBlock() == new_loop_op.getBody()){
           keep.insert(u);
         }
         else {
@@ -1172,132 +1234,28 @@ private:
           insertVertexBetweenTwoOps(v.getDefiningOp(), u, wait_all_op_yielded_v);
         }
       }
-      v.replaceAllUsesExcept(new_for_op.getResult(0), keep);
+      v.replaceAllUsesExcept(new_loop_op.getResult(0), keep);
     }
     
-    for_op.erase();
+    loop_op.erase();
 
-    for_op = new_for_op;
+    loop_op = new_loop_op;
   }
 
-  //////////////////////////////////////////////// scf::parallel
-
-  air::WaitAllOp insertWaitAllOpForLoopYield(OpBuilder &builder, scf::ParallelOp for_op, SmallVector<Value, 1> sinks_in_for_op){
-    // Create one wait_all event at the end of current for loop body.
-    // Output token of wait_all shall be yielded
-    auto for_op_terminator = for_op.getBody()->getTerminator();
-    builder.setInsertionPoint(for_op_terminator);
-    air::WaitAllOp wait_all_op_yielded = builder.create<xilinx::air::WaitAllOp>(builder.getUnknownLoc(), air::AsyncTokenType::get(for_op->getContext()), sinks_in_for_op);
-    wait_all_op_yielded->setAttr("id",
-            mlir::IntegerAttr::get(mlir::IntegerType::get(for_op->getContext(), 32),
-                    ++WaitAllOpID));
-    return wait_all_op_yielded;
-  }
-  
-  air::WaitAllOp insertWaitAllOpForLoopBegin(OpBuilder &builder, scf::ParallelOp for_op, SmallVector<Value, 4> incoming_tokens, SmallVector<Value, 4> constants){
-    // Create a new wait_all event before the for op which collects the incoming deps.
-    // Output token of wait_all shall be the iter_arg of for op.
-    builder.setInsertionPoint(for_op);
-    air::WaitAllOp wait_all_op_before_loop = builder.create<xilinx::air::WaitAllOp>(builder.getUnknownLoc(), air::AsyncTokenType::get(for_op->getContext()), incoming_tokens);
-    wait_all_op_before_loop->setAttr("id",
-            mlir::IntegerAttr::get(mlir::IntegerType::get(for_op->getContext(), 32),
-                    ++WaitAllOpID));
-
-    // Create vertex
-    Graph::vertex_descriptor wait_all_op_before_loop_v = add_vertex(asyncRegionGraphTR);
-    asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventName = "scf::for_loop_begin";
-    asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventType = "wait_all";
-    asyncRegionGraphTR[wait_all_op_before_loop_v].operationId = 0;
-    // Update op-to-graph map
-    wa_to_g[wait_all_op_before_loop.getId()] = wait_all_op_before_loop_v;
-
-    // Update graph connectivity
-    for (Value v : incoming_tokens) {
-      for (auto user : v.getUsers()){
-        insertVertexBetweenTwoOps(v.getDefiningOp(), user, wait_all_op_before_loop_v);
-      }
-    }
-
-    return wait_all_op_before_loop;
-  }
-
-  scf::ParallelOp replaceForOpWithYield(OpBuilder &builder, scf::ParallelOp for_op, air::WaitAllOp wait_all_op_before_loop, SmallVector<Value, 4> incoming_tokens, SmallVector<Value, 4> constants){
-    
-    assert(for_op.getNumReductions() == 0 && "Currently only supporting input scf::ParallelOp with no reductions");
-
-    // Create new for op with iter_args.
-    SmallVector<Value, 4> merged_incoming_token;
-    merged_incoming_token.push_back(wait_all_op_before_loop.getResult(0));
-    scf::ParallelOp new_for_op = builder.create<scf::ParallelOp>(for_op.getLoc(), for_op.getLowerBound(),
-                                  for_op.getUpperBound(), for_op.getStep(), merged_incoming_token);
-
-    if (auto attr = for_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-      new_for_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
-
-    // Splice the operations inside for op
-    auto &bb = new_for_op.getBody()->getOperations();
-    auto &body = for_op.getBody()->getOperations();
-    bb.splice(bb.begin(), body,
-                              body.begin(), --body.end());
-    // auto body_end_noYield = --body.end();
-    // bb.splice(bb.begin(), body,
-    //                           body.begin(), --body_end_noYield);
-
-    for (unsigned i = 0; i < for_op.getInductionVars().size(); i++){
-      auto iv_old = for_op.getInductionVars()[i];
-      auto iv_new = new_for_op.getInductionVars()[i];
-      iv_old.replaceAllUsesWith(iv_new);
-    }
-
-    builder.setInsertionPointToStart(new_for_op.getBody());
-    for (auto c : constants) {
-      replaceAllUsesInRegionWith(c,
-                                builder.clone(*c.getDefiningOp())->getResult(0),
-                                new_for_op.getRegion());
-    }
-
-    for (Value v : incoming_tokens) {
-      replaceAllUsesInRegionWith(v,
-                                new_for_op.getInitVals()[0],
-                                new_for_op.getRegion());
-    }
-
-    // Connect sources in loop body with init_val
-    for (auto async_region_op : new_for_op.getOps<air::RegionOp>()){
-      if (async_region_op.getAsyncDependencies().size() == 0){
-        async_region_op.addAsyncDependency(new_for_op.getInitVals()[0]);
-      }
-    }
-    for (auto dma_op : new_for_op.getOps<air::DmaMemcpyInterface>()){
-      auto async_op = mlir::dyn_cast<air::AsyncOpInterface>(dma_op.getOperation());
-      if (async_op.getAsyncDependencies().size() == 0){
-        async_op.addAsyncDependency(new_for_op.getInitVals()[0]);
-      }
-    }
-    for (auto hl_op : new_for_op.getOps<air::HerdLaunchOp>()){
-      if (hl_op.getAsyncDependencies().size() == 0){
-        hl_op.addAsyncDependency(new_for_op.getInitVals()[0]);
-      }
-    }
-
-    return new_for_op;
-
-  }
-
-  void insertLoopCarriedDeps(OpBuilder &builder, scf::ParallelOp &for_op, SmallVector<Value, 1> sinks_in_for_op){
+  void insertLoopCarriedDeps(OpBuilder &builder, scf::ParallelOp &loop_op, SmallVector<Value, 1> sinks_in_loop_op){
     // (1) Create one wait_all event at the end of current parallel loop body.
-    air::WaitAllOp wait_all_op_yielded = insertWaitAllOpForLoopYield(builder, for_op, sinks_in_for_op);
+    air::WaitAllOp wait_all_op_yielded = insertWaitAllOpBeforeLoopYield<scf::ParallelOp>(builder, loop_op, sinks_in_loop_op);
 
     // Update boost graph
-    Graph::vertex_descriptor wait_all_op_yielded_v = addVertexWaitAllOpForLoopYield(sinks_in_for_op);
-    // Update op-to-graph map for yield
+    Graph::vertex_descriptor wait_all_op_yielded_v = addVertexWaitAllOpBeforeLoopYield(sinks_in_loop_op);
+    // Update op-to-graph map for wait_all ops
     wa_to_g[wait_all_op_yielded.getId()] = wait_all_op_yielded_v;
 
     // (2) Create a new wait_all event before the parallel op which collects the incoming deps.
     SmallVector<Value, 4> incoming_tokens;
     SmallVector<Value, 4> constants;
     llvm::SetVector<Value> region_args;
-    getUsedValuesDefinedAbove(for_op.getRegion(), region_args);
+    getUsedValuesDefinedAbove(loop_op.getRegion(), region_args);
     for (Value v : region_args) {
       if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
         constants.push_back(v);
@@ -1316,32 +1274,32 @@ private:
         }
       }
     }
-    air::WaitAllOp wait_all_op_before_loop = insertWaitAllOpForLoopBegin(builder, for_op, incoming_tokens, constants);
+    air::WaitAllOp wait_all_op_before_loop = insertWaitAllOpAtLoopBegin<scf::ParallelOp>(builder, loop_op, incoming_tokens, constants);
 
-    // (3) Create new for op with iter_args.
-    scf::ParallelOp new_for_op = replaceForOpWithYield(builder, for_op, wait_all_op_before_loop, incoming_tokens, constants);
+    // (3) Create new parallel op with init_val.
+    scf::ParallelOp new_loop_op = replaceLoopOpWithNewTerminator(builder, loop_op, wait_all_op_before_loop, incoming_tokens, constants);
 
     // Remove the old scf::YieldOp
-    for (auto y_op : new_for_op.getOps<scf::YieldOp>()){
+    for (auto y_op : new_loop_op.getOps<scf::YieldOp>()){
       y_op.erase();
     }
     // Create scf::ReduceOp
-    builder.setInsertionPointToEnd(new_for_op.getBody());
-    auto reduce_op = builder.create<scf::ReduceOp>(new_for_op.getLoc(), wait_all_op_yielded.getResult(0));
+    builder.setInsertionPointToEnd(new_loop_op.getBody());
+    auto reduce_op = builder.create<scf::ReduceOp>(new_loop_op.getLoc(), wait_all_op_yielded.getResult(0));
     builder.setInsertionPointToStart(&reduce_op.getRegion().front());
     SmallVector<Value, 4> reduce_tokens;
     reduce_tokens.push_back(reduce_op.getRegion().front().getArgument(0));
     reduce_tokens.push_back(reduce_op.getRegion().front().getArgument(1));
-    auto reduce_res = builder.create<xilinx::air::WaitAllOp>(builder.getUnknownLoc(), air::AsyncTokenType::get(for_op->getContext()), reduce_tokens);
+    auto reduce_res = builder.create<xilinx::air::WaitAllOp>(builder.getUnknownLoc(), air::AsyncTokenType::get(loop_op->getContext()), reduce_tokens);
     builder.create<scf::ReduceReturnOp>(builder.getUnknownLoc(), reduce_res.getResult(0));
-    builder.setInsertionPointToEnd(new_for_op.getBody());
-    builder.create<scf::YieldOp>(new_for_op.getLoc());
+    builder.setInsertionPointToEnd(new_loop_op.getBody());
+    builder.create<scf::YieldOp>(new_loop_op.getLoc());
     
-    // Elevating tokens from inside forOp body to the returned token
-    for (Value v : sinks_in_for_op){
+    // Elevating tokens from inside loop body to the returned token
+    for (Value v : sinks_in_loop_op){
       SmallPtrSet<Operation *, 1> keep;
       for (auto u : v.getUsers()){
-        if (u->getBlock() == new_for_op.getBody()){
+        if (u->getBlock() == new_loop_op.getBody()){
           keep.insert(u);
         }
         else {
@@ -1349,12 +1307,12 @@ private:
           insertVertexBetweenTwoOps(v.getDefiningOp(), u, wait_all_op_yielded_v);
         }
       }
-      v.replaceAllUsesExcept(new_for_op.getResult(0), keep);
+      v.replaceAllUsesExcept(new_loop_op.getResult(0), keep);
     }
     
-    for_op.erase();
+    loop_op.erase();
 
-    for_op = new_for_op;
+    loop_op = new_loop_op;
   }
 
   // Check if current for op is the single child in a parent for op
