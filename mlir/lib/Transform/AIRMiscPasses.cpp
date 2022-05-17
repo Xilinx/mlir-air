@@ -302,10 +302,14 @@ void AIRSpecializeDma::runOnOperation() {
 }
 
 FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
-    PatternRewriter &b, linalg::LinalgOp op) {
+    PatternRewriter &b, linalg::LinalgOp op, unsigned int pipeline_depth, std::string pipeline_direction) {
+
   OpBuilder::InsertionGuard g(b);
   b.setInsertionPoint(op);
   auto loc = op.getLoc();
+
+  if (!(pipeline_direction == "vert" || pipeline_direction == "horiz"))
+    return failure();
 
   auto iteratorTypes = llvm::to_vector<4>(op.iterator_types().getValue());
   if (isParallelIterator(iteratorTypes.back()))
@@ -321,7 +325,6 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
 
   auto launch = b.create<xilinx::air::HerdLaunchOp>(loc, dims, args);
   b.setInsertionPointToStart(&launch.body().front());
-  // auto launch = op->getParentOfType<xilinx::air::HerdLaunchOp>();
 
   auto nLoops = op.getNumLoops();
   SmallVector<Value, 4> tileSizeVector;
@@ -338,14 +341,15 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
 
   SmallVector<Value, 2> tileIds = {launch.getTileIds().x};
   SmallVector<Value, 4> tiledOperands = linalg::makeTiledShapes(b, loc, op, args, tileIds, tileSizeVector, sizeBounds, true);
-  SmallVector<Type, 4> resultTensorTypes;
+  SmallVector<Type, 4> stageResultTypes;
   unsigned int resultIdx = 0;
   for (OpOperand *opOperand : op.getOutputOperands()) {
     resultIdx = opOperand->getOperandNumber();
-    resultTensorTypes.push_back(tiledOperands[resultIdx].getType());
+    stageResultTypes.push_back(tiledOperands[resultIdx].getType());
   }
 
   auto pipe = b.create<xilinx::air::HerdPipelineOp>(loc);
+  pipe->setAttr("direction", StringAttr::get(op->getContext(), pipeline_direction));
   Block *pipelineBlock = new Block();
   pipe.body().push_back(pipelineBlock);
   b.setInsertionPointToStart(pipelineBlock);
@@ -356,10 +360,10 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
     OpBuilder::InsertionGuard pipeline_guard(b);
     SmallVector<Value,1> opers{tiledOperands[resultIdx]};
 
-    auto stage = b.create<xilinx::air::PipelineStageOp>(loc, resultTensorTypes, opers);
+    auto stage = b.create<xilinx::air::PipelineStageOp>(loc, stageResultTypes, opers);
     Block *stageBlock = new Block();
     stage.body().push_back(stageBlock);
-    for (auto t : resultTensorTypes)
+    for (auto t : stageResultTypes)
       stageBlock->addArgument(t, loc);
 
     b.setInsertionPointToStart(stageBlock);
@@ -417,7 +421,7 @@ struct PipelineReducePattern : public RewritePattern {
     if (op->getParentOfType<xilinx::air::HerdPipelineOp>())
       return failure();
 
-    auto result = pipelineLinalgOp(rewriter, linalgOp);
+    auto result = pipelineLinalgOp(rewriter, linalgOp, 4, "horiz");
     if (failed(result))
       return failure();
     //linalgOp->getParentOfType<xilinx::air::HerdLaunchOp>()->dump();

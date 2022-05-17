@@ -37,7 +37,6 @@ def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,
     )>
   ];
   let hasCustomAssemblyFormat = 1;
-  let hasVerifier = 1;
   let extraClassDeclaration = [{
     HerdDim2 getTileIds();
     HerdDim2 getHerdSize();
@@ -77,7 +76,7 @@ def air_HerdPipelineOp : air_Op<"pipeline", [HasParent<"HerdLaunchOp">,
   }];
 
   let regions = (region AnyRegion:$body);
-
+  let hasVerifier = 1;
   let assemblyFormat = [{
     attr-dict $body
   }];
@@ -95,7 +94,6 @@ def air_PipelineStageOp : air_Op<"pipeline.stage", [HasParent<"HerdPipelineOp">]
     Pipeline stage.
   }];
   let hasCustomAssemblyFormat = 1;
-  let hasVerifier = 1;
   let extraClassDeclaration = [{
     // Return the offset of this stage in the pipeline"
     unsigned getStageId();

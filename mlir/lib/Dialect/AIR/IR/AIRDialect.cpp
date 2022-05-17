@@ -145,8 +145,6 @@ void HerdLaunchOp::build(OpBuilder &builder, OperationState &result,
   r->push_back(body);
 }
 
-LogicalResult HerdLaunchOp::verify() { return success(); }
-
 void HerdLaunchOp::print(OpAsmPrinter &p) {
 
   auto num_async_deps = asyncDependencies().size();
@@ -307,6 +305,14 @@ BlockArgument HerdLaunchOp::getKernelArgument(unsigned i) {
 // HerdPipelineOp
 //
 
+LogicalResult HerdPipelineOp::verify() {
+    auto direction = (*this)->getAttrOfType<StringAttr>("direction");
+    if (!direction)
+      return emitOpError() << "expects 'direction' attribute";
+
+    return success();
+}
+
 SmallVector<PipelineStageOp, 8> HerdPipelineOp::getStages() {
   SmallVector<PipelineStageOp, 8> stages;
   for (auto &o : body().front().getOperations()) {
@@ -367,8 +373,6 @@ PipelineStageOp::parse(OpAsmParser &parser, OperationState &result) {
   result.addTypes(retTypes);
   return success();
 }
-
-LogicalResult PipelineStageOp::verify() { return success(); }
 
 void PipelineStageOp::print(OpAsmPrinter &p) {
 
