@@ -44,16 +44,8 @@ with air.mlir.ir.Context():
     pm.run(air_module)
 
     pipeline = ",".join([
-        # "buffer-results-to-out-params",
-        # "air-linalg-codegen{l2-tile-size=0,0,256 l2-promote=false l1-tile-size=64,64,64 l1-promote=false}",
         "air-linalg-codegen{l1-tile-size=192,256,0 l1-promote=false}",
         "air-linalg-codegen{l2-tile-size=0,0,256 l2-promote=true l1-tile-size=64,64,256 l1-promote=false}",
-        "canonicalize", "cse",
-        # "func.func(scf-parallel-loop-tiling{parallel-loop-tile-sizes=1,4})",
-        # "canonicalize", "cse",
-        # "func.func(scf-parallel-loop-tiling{parallel-loop-tile-sizes=3,1})",
-        # "canonicalize", "cse",
-        # "scf-parallel-loop-collapsing{collapsed-indices-0=0 collapsed-indices-1=1 collapsed-indices-2=2,3}",
         "canonicalize", "cse",
         "func.func(air-pipeline-reduce)",
         "canonicalize", "cse",

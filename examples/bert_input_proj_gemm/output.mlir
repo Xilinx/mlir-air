@@ -7,10 +7,10 @@ module attributes {torch.debug_module_name = "mmult"} {
     %c1 = arith.constant 1 : index
     %c0 = arith.constant 0 : index
     %c4 = arith.constant 4 : index
-    %cst = arith.constant 0.000000e+00 : bf16
-    %c192 = arith.constant 192 : index
-    %c256 = arith.constant 256 : index
     %c1024 = arith.constant 1024 : index
+    %c256 = arith.constant 256 : index
+    %c192 = arith.constant 192 : index
+    %cst = arith.constant 0.000000e+00 : bf16
     %0 = memref.alloc() {alignment = 128 : i64} : memref<24576x1024xbf16>
     %1 = memref.alloc() {alignment = 128 : i64} : memref<24576x1024xbf16>
     linalg.fill ins(%cst : bf16) outs(%0 : memref<24576x1024xbf16>)
@@ -40,7 +40,7 @@ module attributes {torch.debug_module_name = "mmult"} {
           %17 = memref.subview %arg10[%14, %13] [64, 64] [1, 1] : memref<192x256xbf16, #map0> to memref<64x64xbf16, #map0>
           %18 = memref.subview %15[0, %arg4] [64, 64] [1, 1] : memref<64x256xbf16, #map1, 1> to memref<64x64xbf16, #map1, 1>
           %19 = memref.subview %16[%arg4, 0] [64, 64] [1, 1] : memref<256x64xbf16, #map1, 1> to memref<64x64xbf16, #map1, 1>
-          air.pipeline {
+          air.pipeline {direction = "horiz"} {
             %20 = air.pipeline.stage args(%arg11=%17) : memref<64x64xbf16, #map0> {
               linalg.matmul ins(%18, %19 : memref<64x64xbf16, #map1, 1>, memref<64x64xbf16, #map1, 1>) outs(%arg11 : memref<64x64xbf16, #map0>)
               air.pipeline.yield %arg11 : memref<64x64xbf16, #map0>
