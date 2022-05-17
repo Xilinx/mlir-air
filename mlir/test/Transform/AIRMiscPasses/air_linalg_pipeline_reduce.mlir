@@ -1,6 +1,7 @@
 // (c) Copyright 2022 AMD, Inc.
 
 // RUN: air-opt -air-pipeline-reduce %s | FileCheck %s
+// CHECK: air.pipeline
 
 module attributes {torch.debug_module_name = "mmult"} {
   func @forward(%arg0: memref<256x256xf32>, %arg1: memref<256x256xf32>, %arg2: memref<256x256xf32>) {
