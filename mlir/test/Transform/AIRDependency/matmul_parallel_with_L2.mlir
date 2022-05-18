@@ -2,8 +2,11 @@
 
 // RUN: air-opt %s -air-dependency | FileCheck %s
 
-// This currently fails with invalid IR
-// XFAIL: *
+// The scf.parallel should return an asynchronous token which memref.copy depends on
+// It should also generate an scf.reduce at the end of its body
+// CHECK: %[[EVENT0:.*]] = scf.parallel
+// CHECK: scf.reduce
+// CHECK: %[[EVENT1:.*]] = air.region async [{{.*}}%[[EVENT0]]{{.*}}]
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 module attributes {torch.debug_module_name = "mmult"} {

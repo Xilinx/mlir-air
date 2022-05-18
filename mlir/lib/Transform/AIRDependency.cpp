@@ -17,6 +17,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -443,26 +444,26 @@ public:
 
           // Get async region in loop body
           bool hasAsyncTokensInBody = false;
-          SmallVector<Value, 1> sinks_in_for_op;
+          SmallVector<Value, 1> sinks_in_parallel_op;
           for (auto async_region_op : for_op.getOps<air::RegionOp>()){
             hasAsyncTokensInBody = true;
             // Detect dep graph's leaves in loop body
             if (isNotUsedInsideOfBlock(async_region_op.getResult(0), for_op.getBody()))
-              sinks_in_for_op.push_back(async_region_op.getResult(0));
+              sinks_in_parallel_op.push_back(async_region_op.getResult(0));
           }
           // Get async dma in loop body
           for (auto dma_op : for_op.getOps<air::DmaMemcpyInterface>()){
             hasAsyncTokensInBody = true;
             // Detect dep graph's leaves in loop body
             if (isNotUsedInsideOfBlock(dma_op.getOperation()->getResult(0), for_op.getBody()))
-              sinks_in_for_op.push_back(dma_op.getOperation()->getResult(0));
+              sinks_in_parallel_op.push_back(dma_op.getOperation()->getResult(0));
           }
           // Get async herd_launch in loop body
           for (auto hl_op : for_op.getOps<air::HerdLaunchOp>()){
             hasAsyncTokensInBody = true;
             // Detect dep graph's leaves in loop body
             if (isNotUsedInsideOfBlock(hl_op.getResult(0), for_op.getBody()))
-              sinks_in_for_op.push_back(hl_op.getResult(0));
+              sinks_in_parallel_op.push_back(hl_op.getResult(0));
           }
           // Get async for_op in loop body
           for (auto child_for_op : for_op.getOps<scf::ForOp>()){
@@ -470,7 +471,7 @@ public:
             // Detect dep graph's leaves in loop body
             if (auto v = child_for_op.getResult(0)){
               if (isNotUsedInsideOfBlock(v, for_op.getBody()))
-                sinks_in_for_op.push_back(v);
+                sinks_in_parallel_op.push_back(v);
             }
           }
           // Get async parallel_op in loop body
@@ -479,12 +480,12 @@ public:
             // Detect dep graph's leaves in loop body
             if (auto v = child_parallel_op.getResult(0)){
               if (isNotUsedInsideOfBlock(v, for_op.getBody()))
-                sinks_in_for_op.push_back(v);
+                sinks_in_parallel_op.push_back(v);
             }
           }
 
           if (hasAsyncTokensInBody){
-            insertLoopCarriedDeps(module_builder, for_op, sinks_in_for_op);
+            insertLoopCarriedDeps(module_builder, for_op, sinks_in_parallel_op);
           }
         }
       });
@@ -873,15 +874,12 @@ private:
       else if (auto lh = dyn_cast<xilinx::air::HerdLaunchOp>(u.getOwner())){
         if (foundAsyncOpUsesAboveCurrentLine(&lh)){
           // check if the use inside HerdLaunchOp matches with the tracing mode (r or w)
-          // assert(false);
-          // addNewAsyncDepToGraph<T>(lh.getResult(0), op);
           for (unsigned lh_argument_id = 0; lh_argument_id < lh.getNumKernelOperands(); lh_argument_id++){
             if (u.is(lh.getKernelOperand(lh_argument_id))){
               auto child_op = lh.getKernelArgument(lh_argument_id);
               char rw_check = checkOperandReadOrWrite(child_op);
               if (rw == 'n' || rw_check == rw){
                 addNewAsyncDepToGraph<T>(lh.getResult(0), op);
-                // assert(false);
               }
             }
           }
@@ -1184,6 +1182,29 @@ private:
 
   }
 
+  // Elevating tokens from inside loop body to the yielded token, to maintain legal domination
+  // T: loop type (scf::ForOp or scf::ParallelOp)
+  // U: source op type
+  template <typename T, typename U>
+  void elevateAsyncTokens(T new_loop_op, Graph::vertex_descriptor wait_all_op){
+    for (auto source : new_loop_op.template getOps<U>()){
+      SmallPtrSet<Operation *, 1> keep;
+      if (source->getResult(0)){
+        for (auto sink : source->getResult(0).getUsers()){
+          // Keep token if source already dominates sink
+          if (source->getParentRegion() == sink->getParentRegion()){
+            keep.insert(sink);
+          }
+          else {
+            // Update graph connectivity
+            insertVertexBetweenTwoOps(source.getOperation(), sink, wait_all_op);
+          }
+        }
+      }
+      source->getResult(0).replaceAllUsesExcept(new_loop_op.getResult(0), keep);
+    }
+  }
+
   void insertLoopCarriedDeps(OpBuilder &builder, scf::ForOp &loop_op, SmallVector<Value, 1> sinks_in_loop_op){
     // (1) Create one wait_all event at the end of current for loop body.
     air::WaitAllOp wait_all_op_yielded = insertWaitAllOpBeforeLoopYield<scf::ForOp>(builder, loop_op, sinks_in_loop_op);
@@ -1227,20 +1248,10 @@ private:
     builder.setInsertionPointToEnd(new_loop_op.getBody());
     builder.create<scf::YieldOp>(new_loop_op.getLoc(), yield_token);
     
-    // Elevating tokens from inside forOp body to the yielded token
-    for (Value v : sinks_in_loop_op){
-      SmallPtrSet<Operation *, 1> keep;
-      for (auto u : v.getUsers()){
-        if (u->getBlock() == new_loop_op.getBody()){
-          keep.insert(u);
-        }
-        else {
-          // Update graph connectivity
-          insertVertexBetweenTwoOps(v.getDefiningOp(), u, wait_all_op_yielded_v);
-        }
-      }
-      v.replaceAllUsesExcept(new_loop_op.getResult(0), keep);
-    }
+    // Elevating tokens from inside forOp body to the yielded token, to maintain dominance
+    elevateAsyncTokens<scf::ForOp, air::AsyncOpInterface>(new_loop_op, wait_all_op_yielded_v);
+    elevateAsyncTokens<scf::ForOp, scf::ForOp>(new_loop_op, wait_all_op_yielded_v);
+    elevateAsyncTokens<scf::ForOp, scf::ParallelOp>(new_loop_op, wait_all_op_yielded_v);
     
     loop_op.erase();
 
@@ -1300,20 +1311,10 @@ private:
     builder.setInsertionPointToEnd(new_loop_op.getBody());
     builder.create<scf::YieldOp>(new_loop_op.getLoc());
     
-    // Elevating tokens from inside loop body to the returned token
-    for (Value v : sinks_in_loop_op){
-      SmallPtrSet<Operation *, 1> keep;
-      for (auto u : v.getUsers()){
-        if (u->getBlock() == new_loop_op.getBody()){
-          keep.insert(u);
-        }
-        else {
-          // Update graph connectivity
-          insertVertexBetweenTwoOps(v.getDefiningOp(), u, wait_all_op_yielded_v);
-        }
-      }
-      v.replaceAllUsesExcept(new_loop_op.getResult(0), keep);
-    }
+    // Elevating tokens from inside forOp body to the yielded token, to maintain dominance
+    elevateAsyncTokens<scf::ParallelOp, air::AsyncOpInterface>(new_loop_op, wait_all_op_yielded_v);
+    elevateAsyncTokens<scf::ParallelOp, scf::ForOp>(new_loop_op, wait_all_op_yielded_v);
+    elevateAsyncTokens<scf::ParallelOp, scf::ParallelOp>(new_loop_op, wait_all_op_yielded_v);
     
     loop_op.erase();
 
