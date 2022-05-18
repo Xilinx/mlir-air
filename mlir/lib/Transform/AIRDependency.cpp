@@ -17,7 +17,6 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/PatternMatch.h"
-#include "mlir/IR/Dominance.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -126,6 +125,10 @@ public:
         // Create async region for memref.dealloc
         else if (dyn_cast<memref::DeallocOp>(op))
           createAsyncRegion(module_builder, op, "memref::dealloc", RegionOpID);
+
+        // Create async region for memref.copy
+        else if (dyn_cast<memref::CopyOp>(op))
+          createAsyncRegion(module_builder, op, "memref::copy", RegionOpID);
 
         // Create async region for arith.muli
         else if (auto arith_op = dyn_cast<arith::MulIOp>(op))
@@ -236,6 +239,17 @@ public:
           partialMemref tile = createPartialMemref(sink_op_memdealloc.memref(), memRefRank);
           sink_op_memref_reads.push_back(tile);
           sink_op_memref_writes.push_back(tile); // dealloc erases (i.e. writes to) output memref
+        }
+        
+        // If the sink op is memref::copy
+        if (auto sink_op_memref_copy = dyn_cast<memref::CopyOp>(sink_op)){
+          unsigned memRefRankSrc = sink_op_memref_copy.source().getType().cast<MemRefType>().getRank();
+          partialMemref tileSrc = createPartialMemref(sink_op_memref_copy.source(), memRefRankSrc);
+          sink_op_memref_reads.push_back(tileSrc);
+          unsigned memRefRankDst = sink_op_memref_copy.target().getType().cast<MemRefType>().getRank();
+          partialMemref tileDst = createPartialMemref(sink_op_memref_copy.target(), memRefRankDst);
+          sink_op_memref_reads.push_back(tileDst);
+          sink_op_memref_writes.push_back(tileDst);
         }
         
         // If the sink op is an air::DmaMemcpy op
