@@ -1012,10 +1012,12 @@ private:
     return wait_all_op_yielded;
   }
 
-  Graph::vertex_descriptor addVertexWaitAllOpBeforeLoopYield(SmallVector<Value, 1> sinks_in_loop_op){
+  Graph::vertex_descriptor addVertexWaitAllOpBeforeLoopYield(SmallVector<Value, 1> sinks_in_loop_op, std::string loop_type){
     // Create vertex
     Graph::vertex_descriptor wait_all_op_yielded_v = add_vertex(asyncRegionGraphTR);
-    asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventName = "scf::for_loop_end";
+    asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventName = "scf::";
+    asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventName += loop_type;
+    asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventName += "_loop_end";
     asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventType = "wait_all";
     asyncRegionGraphTR[wait_all_op_yielded_v].operationId = 0;
     // Update graph connectivity
@@ -1042,7 +1044,7 @@ private:
   }
   
   template <typename T>
-  air::WaitAllOp insertWaitAllOpAtLoopBegin(OpBuilder &builder, T loop_op, SmallVector<Value, 4> incoming_tokens, SmallVector<Value, 4> constants){
+  air::WaitAllOp insertWaitAllOpAtLoopBegin(OpBuilder &builder, T loop_op, std::string loop_type, SmallVector<Value, 4> incoming_tokens, SmallVector<Value, 4> constants){
     // Create a new wait_all event before the for op which collects the incoming deps.
     // Output token of wait_all shall be the iter_arg of for op.
     builder.setInsertionPoint(loop_op);
@@ -1053,7 +1055,9 @@ private:
 
     // Create vertex
     Graph::vertex_descriptor wait_all_op_before_loop_v = add_vertex(asyncRegionGraphTR);
-    asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventName = "scf::for_loop_begin";
+    asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventName = "scf::";
+    asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventName += loop_type;
+    asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventName += "_loop_begin";
     asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventType = "wait_all";
     asyncRegionGraphTR[wait_all_op_before_loop_v].operationId = 0;
     // Update op-to-graph map
@@ -1210,7 +1214,7 @@ private:
     air::WaitAllOp wait_all_op_yielded = insertWaitAllOpBeforeLoopYield<scf::ForOp>(builder, loop_op, sinks_in_loop_op);
 
     // Update boost graph
-    Graph::vertex_descriptor wait_all_op_yielded_v = addVertexWaitAllOpBeforeLoopYield(sinks_in_loop_op);
+    Graph::vertex_descriptor wait_all_op_yielded_v = addVertexWaitAllOpBeforeLoopYield(sinks_in_loop_op, "for");
     // Update op-to-graph map for wait_all ops
     wa_to_g[wait_all_op_yielded.getId()] = wait_all_op_yielded_v;
 
@@ -1237,7 +1241,7 @@ private:
         }
       }
     }
-    air::WaitAllOp wait_all_op_before_loop = insertWaitAllOpAtLoopBegin<scf::ForOp>(builder, loop_op, incoming_tokens, constants);
+    air::WaitAllOp wait_all_op_before_loop = insertWaitAllOpAtLoopBegin<scf::ForOp>(builder, loop_op, "for", incoming_tokens, constants);
 
     // (3) Create new for op with iter_args.
     scf::ForOp new_loop_op = replaceLoopOpWithNewTerminator(builder, loop_op, wait_all_op_before_loop, incoming_tokens, constants);
@@ -1263,7 +1267,7 @@ private:
     air::WaitAllOp wait_all_op_yielded = insertWaitAllOpBeforeLoopYield<scf::ParallelOp>(builder, loop_op, sinks_in_loop_op);
 
     // Update boost graph
-    Graph::vertex_descriptor wait_all_op_yielded_v = addVertexWaitAllOpBeforeLoopYield(sinks_in_loop_op);
+    Graph::vertex_descriptor wait_all_op_yielded_v = addVertexWaitAllOpBeforeLoopYield(sinks_in_loop_op, "parallel");
     // Update op-to-graph map for wait_all ops
     wa_to_g[wait_all_op_yielded.getId()] = wait_all_op_yielded_v;
 
@@ -1290,7 +1294,7 @@ private:
         }
       }
     }
-    air::WaitAllOp wait_all_op_before_loop = insertWaitAllOpAtLoopBegin<scf::ParallelOp>(builder, loop_op, incoming_tokens, constants);
+    air::WaitAllOp wait_all_op_before_loop = insertWaitAllOpAtLoopBegin<scf::ParallelOp>(builder, loop_op, "parallel", incoming_tokens, constants);
 
     // (3) Create new parallel op with init_val.
     scf::ParallelOp new_loop_op = replaceLoopOpWithNewTerminator(builder, loop_op, wait_all_op_before_loop, incoming_tokens, constants);
