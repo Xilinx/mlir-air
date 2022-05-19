@@ -25,13 +25,10 @@ module attributes {torch.debug_module_name = "model"} {
     // CHECK: = air.region async
     // CHECK: air.region_terminator
     scf.for %arg3 = %c0 to %c1024 step %c64 {
-    // CHECK: = air.wait_all async
     // CHECK: = scf.for
       scf.for %arg4 = %c0 to %c1024 step %c64 {
-      // CHECK: = air.wait_all async
       // CHECK: = scf.for
         scf.for %arg5 = %c0 to %c1024 step %c64 {
-        // CHECK: = air.wait_all async
         // CHECK: = scf.for
           %2 = memref.subview %arg0[%arg3, %arg5] [64, 64] [1, 1] : memref<1024x1024xf32> to memref<64x64xf32, #map0>
           %3 = memref.subview %arg1[%arg5, %arg4] [64, 64] [1, 1] : memref<1024x1024xf32> to memref<64x64xf32, #map0>
@@ -147,10 +144,8 @@ module attributes {torch.debug_module_name = "model"} {
         // CHECK: = air.wait_all async
         // CHECK: scf.yield
       }
-      // CHECK: = air.wait_all async
       // CHECK: scf.yield
     }
-    // CHECK: = air.wait_all async
     // CHECK: scf.yield
     return
   }

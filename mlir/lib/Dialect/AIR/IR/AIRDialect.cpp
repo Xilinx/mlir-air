@@ -65,6 +65,23 @@ void addAsyncDependency(Operation *op, Value token) {
   op->setAttr(attrName, Builder(op->getContext()).getI32VectorAttr(sizes));
 }
 
+void eraseAsyncDependency(Operation *op, unsigned index) {
+  assert(index + 1 <= op->getNumOperands() && "Index out of range");
+  op->eraseOperands(index);
+  if (!op->template hasTrait<OpTrait::AttrSizedOperandSegments>())
+    return;
+  auto attrName =
+      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
+  auto sizeAttr = op->template getAttrOfType<DenseIntElementsAttr>(attrName);
+  if (!sizeAttr)
+    return; // Async dependencies is the only variadic operand.
+  SmallVector<int32_t, 8> sizes;
+  for (auto size : sizeAttr.getValues<APInt>())
+    sizes.push_back(size.getSExtValue());
+  --sizes.front();
+  op->setAttr(attrName, Builder(op->getContext()).getI32VectorAttr(sizes));
+}
+
 static ParseResult parseAsyncDependencies(
     OpAsmParser &parser, Type &asyncTokenType,
     SmallVectorImpl<OpAsmParser::UnresolvedOperand> &asyncDependencies) {

@@ -93,6 +93,14 @@ def air_AsyncOpInterface : OpInterface<"AsyncOpInterface"> {
       }]
     >,
     InterfaceMethod<[{
+        Erases a token from the list of async dependencies.
+      }],
+      "void", "eraseAsyncDependency", (ins "unsigned":$index),
+      [{}], [{
+        ::xilinx::air::eraseAsyncDependency(this->getOperation(), index);
+      }]
+    >,
+    InterfaceMethod<[{
         Query the result that represents the async token to depend on.
       }],
        "OpResult", "getAsyncToken", (ins), [{}], [{
