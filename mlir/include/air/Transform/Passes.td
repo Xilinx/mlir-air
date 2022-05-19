@@ -696,6 +696,15 @@ def AIRRemoveLinalgNamePass : Pass<"air-rm-linalg-name", "ModuleOp"> {
 def AIRPipelineReducePass : Pass<"air-pipeline-reduce", "func::FuncOp"> {
   let summary = "Turn a reduction dimension into a herd pipeline";
   let constructor = "xilinx::air::createAIRPipelineReducePass()";
+  let options = [
+    Option<"clTileSize", "tile-size", "int", /*default=*/"64",
+           "Tile size to use for reduction dimension">,
+    Option<"clPipelineDepth", "pipeline-depth", "int", /*default=*/"4",
+           "Pipeline depth to generate">,
+    Option<"clPipelineDirection", "pipeline-direction", "std::string", 
+            /*default=*/"\"horiz\"",
+            "Pipeline direction attribute to use. Can be 'vert' or 'horiz'">
+  ];
 }
 
 def AIRFuseParallelHerdLaunchPass : Pass<"air-fuse-parallel-launch", "ModuleOp"> {

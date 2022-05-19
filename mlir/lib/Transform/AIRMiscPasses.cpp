@@ -12,6 +12,7 @@
 #include "air/Transform/AIRTilingUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -301,9 +302,20 @@ void AIRSpecializeDma::runOnOperation() {
   });
 }
 
+static Optional<Value>
+allocBufferCallBack(const linalg::LinalgPromotionOptions &options,
+                    OpBuilder &builder, memref::SubViewOp subView,
+                    ArrayRef<Value> boundingSubViewSize,
+                    Optional<unsigned> alignment, DataLayout &layout) {
+  MemRefType viewType = subView.getType();
+  Value buffer =
+      builder.createOrFold<memref::AllocOp>(subView.getLoc(), viewType);
+  return buffer;
+}
+
 FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
-    PatternRewriter &b, linalg::LinalgOp op, unsigned int pipeline_depth,
-    std::string pipeline_direction) {
+    PatternRewriter &b, linalg::LinalgOp op, unsigned int tile_size,
+    unsigned int pipeline_depth, std::string pipeline_direction) {
 
   OpBuilder::InsertionGuard g(b);
   b.setInsertionPoint(op);
@@ -316,8 +328,11 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   if (isParallelIterator(iteratorTypes.back()))
     return failure();
 
-  xilinx::air::HerdDim2 dims{b.create<arith::ConstantIndexOp>(loc, 4),
-                             b.create<arith::ConstantIndexOp>(loc, 1)};
+  int new_herd_x = (pipeline_direction == "horiz") ? pipeline_depth : 1;
+  int new_herd_y = (pipeline_direction == "vert") ? pipeline_depth : 1;
+
+  xilinx::air::HerdDim2 dims{b.create<arith::ConstantIndexOp>(loc, new_herd_x),
+                             b.create<arith::ConstantIndexOp>(loc, new_herd_y)};
 
   SmallVector<Value, 4> args;
   for (auto o : op.getInputAndOutputOperands())
@@ -330,7 +345,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   SmallVector<Value, 4> tileSizeVector;
   auto zero = b.create<arith::ConstantIndexOp>(loc, 0);
   tileSizeVector.append(nLoops - 1, zero);
-  tileSizeVector.push_back(b.create<arith::ConstantIndexOp>(loc, 64));
+  tileSizeVector.push_back(b.create<arith::ConstantIndexOp>(loc, tile_size));
 
   auto allShapeSizes = op.createFlatListOfOperandDims(b, loc);
   AffineMap shapeSizesToLoopsMap = op.getShapesToLoopsMap();
@@ -346,7 +361,10 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   unsigned int resultIdx = 0;
   for (OpOperand *opOperand : op.getOutputOperands()) {
     resultIdx = opOperand->getOperandNumber();
-    stageResultTypes.push_back(tiledOperands[resultIdx].getType());
+    auto memrefType = tiledOperands[resultIdx].getType().cast<MemRefType>();
+    auto tensorType = RankedTensorType::get(memrefType.getShape(),
+                                            memrefType.getElementType());
+    stageResultTypes.push_back(tensorType);
   }
 
   auto pipe = b.create<xilinx::air::HerdPipelineOp>(loc);
@@ -356,37 +374,41 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   pipe.body().push_back(pipelineBlock);
   b.setInsertionPointToStart(pipelineBlock);
 
-  SmallVector<Value, 16> stageTensors;
-  stageTensors.push_back(tiledOperands[resultIdx]);
-  for (int i = 0; i < 4; i++) {
+  Value inputOperand = nullptr;
+  for (unsigned int i = 0; i < pipeline_depth; i++) {
     OpBuilder::InsertionGuard pipeline_guard(b);
-    SmallVector<Value, 1> opers{tiledOperands[resultIdx]};
+
+    SmallVector<Value, 1> opers;
+    if (inputOperand)
+      opers.push_back(inputOperand);
 
     auto stage =
         b.create<xilinx::air::PipelineStageOp>(loc, stageResultTypes, opers);
+
     Block *stageBlock = new Block();
     stage.body().push_back(stageBlock);
-    for (auto t : stageResultTypes)
-      stageBlock->addArgument(t, loc);
-
     b.setInsertionPointToStart(stageBlock);
 
-    tiledOperands[resultIdx] = stageBlock->getArgument(0);
-    linalg::LinalgOp tiledLinalgOp = op.clone(b, loc, {}, tiledOperands);
-    // b.create<xilinx::air::PipelineYieldOp>(loc, tiledLinalgOp->getResults());
-    b.create<xilinx::air::PipelineYieldOp>(loc, tiledOperands[resultIdx]);
+    for (auto o : opers) {
+      auto a = stageBlock->addArgument(o.getType(), loc);
+      if (!a.getType().isa<MemRefType>())
+        tiledOperands[resultIdx] =
+            b.create<bufferization::ToMemrefOp>(
+                 loc, tiledOperands[resultIdx].getType(), a)
+                .getResult();
+    }
 
-    tiledOperands[resultIdx] = stage->getResult(0);
-    stageTensors.push_back(tiledOperands[resultIdx]);
+    linalg::LinalgOp linalgOp = op.clone(b, loc, {}, tiledOperands);
+
+    // b.setInsertionPoint(linalgOp);
+    // linalg::promoteSubViews(b, linalgOp, linalg::LinalgPromotionOptions());
+
+    b.setInsertionPointToEnd(stageBlock);
+    auto t = b.create<bufferization::ToTensorOp>(loc, tiledOperands[resultIdx]);
+    b.create<xilinx::air::PipelineYieldOp>(loc, t.result());
+    inputOperand = stage.getResult(0);
   }
-  if (auto sliceOp = stageTensors[0].getDefiningOp<tensor::ExtractSliceOp>()) {
-    b.create<tensor::InsertSliceOp>(
-        loc, sliceOp.source().getType(), stageTensors.back(), sliceOp.source(),
-        sliceOp.offsets(), sliceOp.sizes(), sliceOp.strides(),
-        sliceOp.static_offsets(), sliceOp.static_sizes(),
-        sliceOp.static_strides());
-    tiledOperands[resultIdx] = sliceOp.source();
-  }
+
   SmallVector<Type, 1> pipeTys;
   SmallVector<Value, 1> pipeArgs;
   b.create<xilinx::air::PipelineTerminatorOp>(loc, pipeTys, pipeArgs);
@@ -397,18 +419,20 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   for (auto a : args) {
     replaceAllUsesInRegionWith(a, launch.getKernelArgument(i++), launch.body());
   }
-  // return linalg::TiledLinalgOp{op, {launch}, {tiledOperands[resultIdx]}};
+
   return linalg::TiledLinalgOp{op, {launch}, {}};
 }
 
 struct PipelineReducePattern : public RewritePattern {
   PipelineReducePattern(MLIRContext *context,
-                        linalg::LinalgTilingOptions options,
+                        linalg::LinalgTilingOptions options, int tile_size,
+                        int pipeline_depth, std::string &pipeline_direction,
                         linalg::LinalgTransformationFilter filter =
                             linalg::LinalgTransformationFilter(),
                         PatternBenefit benefit = 1)
       : RewritePattern(MatchAnyOpTypeTag(), benefit, context), filter(filter),
-        options(options) {}
+        options(options), tile_size(tile_size), pipeline_depth(pipeline_depth),
+        pipeline_direction(pipeline_direction) {}
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
@@ -419,18 +443,14 @@ struct PipelineReducePattern : public RewritePattern {
     if (failed(filter.checkAndNotify(rewriter, linalgOp)))
       return failure();
 
-    // if (!op->getParentOfType<xilinx::air::HerdLaunchOp>())
-    //   return failure();
-
     if (op->getParentOfType<xilinx::air::HerdPipelineOp>())
       return failure();
 
-    auto result = pipelineLinalgOp(rewriter, linalgOp, 4, "horiz");
+    auto result = pipelineLinalgOp(rewriter, linalgOp, tile_size,
+                                   pipeline_depth, pipeline_direction);
     if (failed(result))
       return failure();
-    // linalgOp->getParentOfType<xilinx::air::HerdLaunchOp>()->dump();
 
-    // rewriter.replaceOp(op, result->tensorResults);
     rewriter.eraseOp(op);
     return success();
   }
@@ -440,6 +460,9 @@ private:
   linalg::LinalgTransformationFilter filter;
   /// Options to control tiling;
   linalg::LinalgTilingOptions options;
+  unsigned int tile_size;
+  unsigned int pipeline_depth;
+  std::string pipeline_direction;
 };
 
 class AIRPipelineReducePass
@@ -452,7 +475,8 @@ public:
   void runOnOperation() override;
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<xilinx::air::airDialect>();
+    registry
+        .insert<xilinx::air::airDialect, bufferization::BufferizationDialect>();
   }
 
 private:
@@ -462,7 +486,10 @@ void AIRPipelineReducePass::runOnOperation() {
   auto func = getOperation();
   auto ctx = func.getContext();
   RewritePatternSet patterns(ctx);
-  patterns.add<PipelineReducePattern>(ctx, linalg::LinalgTilingOptions());
+  patterns.add<PipelineReducePattern>(ctx, linalg::LinalgTilingOptions(),
+                                      clTileSize, clPipelineDepth,
+                                      clPipelineDirection);
+
   (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
 }
 
@@ -482,7 +509,7 @@ private:
 void AIRFuseParallelHerdLaunchPass::runOnOperation() {
 
   auto module = getOperation();
-  auto ctx = module.getContext();
+  // auto ctx = module.getContext();
 
   xilinx::air::HerdLaunchOp launchOp = nullptr;
   scf::ParallelOp parOp = nullptr;
@@ -566,7 +593,6 @@ void AIRFuseParallelHerdLaunchPass::runOnOperation() {
   for (Value v : args)
     replaceAllUsesInRegionWith(v, kernel_args[idx++], newLaunchOp.getRegion());
 
-  //  newLaunchOp.dump();
   parOp.erase();
 }
 
