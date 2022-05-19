@@ -985,18 +985,35 @@ public:
 
     programQueue->push_back(
         CommandQueueEntry(po.getOperation(), [=](Operation *op) {
+          auto spo = cast<scf::ParallelOp>(op);
+
+          auto initOperands = spo.getInitVals();
+          Value lastResult = initOperands[0];
           for (auto i = 0; i < trip_count; i++) {
             BlockAndValueMapping map;
             auto bb = new mlir::Block();
-            auto spo = cast<scf::ParallelOp>(op);
             spo.getRegion().push_back(bb);
             auto bldr = OpBuilder::atBlockEnd(bb);
             for (auto &o : spo.getRegion().front().getOperations()) {
-              bldr.clone(o, map);
+              if (auto rop = dyn_cast<scf::ReduceOp>(o)) {
+                auto &rbb = rop.getRegion().front();
+                map.map(rbb.getArgument(0), lastResult);
+                map.map(rbb.getArgument(1), map.lookupOrDefault(rop.getOperand()));
+                for (auto &ro : rbb) {
+                  if (auto rrop = dyn_cast<scf::ReduceReturnOp>(ro))
+                    lastResult = map.lookupOrDefault(rrop.getOperand());
+                  else
+                    bldr.clone(ro, map);
+                }
+              } else {
+                bldr.clone(o, map);
+              }
+              bb->dump();
             }
             scheduleBlock(*bb, &(dispatchQueue->data()[i % dispatch_slots]),
                           dispatchQueue, tileQueues[i % herd_slots]);
           }
+          spo.getResult(0).replaceAllUsesWith({lastResult});
         }));
     return;
   }
