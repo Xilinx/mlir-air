@@ -554,7 +554,7 @@ void AIRFuseParallelHerdLaunchPass::runOnOperation() {
       b.create<xilinx::air::HerdLaunchOp>(parOp.getLoc(), dims, args);
 
   BlockAndValueMapping remap;
-  remap.map(parOp.getInductionVars()[0], newLaunchOp.getHerdSize().x);
+  remap.map(parOp.getInductionVars()[0], newLaunchOp.getTileIds().y);
 
   b.setInsertionPointToStart(&newLaunchOp.body().front());
 
