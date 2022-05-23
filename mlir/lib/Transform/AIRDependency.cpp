@@ -1359,9 +1359,10 @@ private:
     scf::ParallelOp new_loop_op = replaceLoopOpWithNewTerminator(builder, loop_op, wait_all_op_before_loop, incoming_tokens, constants);
 
     // Remove the old scf::YieldOp
-    for (auto y_op : new_loop_op.getOps<scf::YieldOp>()){
+    SmallVector<scf::YieldOp, 2> y_ops(new_loop_op.getOps<scf::YieldOp>());
+    for (auto y_op : y_ops)
       y_op.erase();
-    }
+
     // Create scf::ReduceOp
     builder.setInsertionPointToEnd(new_loop_op.getBody());
     auto reduce_op = builder.create<scf::ReduceOp>(new_loop_op.getLoc(), wait_all_op_yielded.getResult(0));
