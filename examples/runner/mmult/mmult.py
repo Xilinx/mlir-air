@@ -1,52 +1,59 @@
 # (c) Copyright 2022 Advanced Micro Devices Inc. All Rights Reserved.
 
-import torch
-import torch_mlir
-
-import air.mlir.ir
-import air.mlir.passmanager
 import air.compiler.util
+
+from air.mlir.dialects import func
+from air.mlir.dialects import linalg
+from air.mlir.ir import *
+import air.mlir.passmanager
 
 import sys
 
-class mmult(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
+def matmul_on_tensors(m, n, k, dtype):
+    module = Module.create()
+    with InsertionPoint(module.body):
+        @func.FuncOp.from_py_func(
+            RankedTensorType.get((m, k), dtype), RankedTensorType.get((k, n), dtype),
+            RankedTensorType.get((m, n), dtype))
+        def matmul(lhs, rhs, out):
+            linalg.matmul(lhs, rhs, outs=[out])
+    return module
 
-    def forward(self, a, b):
-        return torch.mm(a,b)
 
-program = mmult()
-mlir = torch_mlir.compile(program, (torch.ones(256,256), torch.ones(256,256)), output_type=torch_mlir.OutputType.LINALG_ON_TENSORS)
+with air.mlir.ir.Context(), Location.unknown():
 
-args = sys.argv[1:]
-if len(args) and args[0] == '-dump-linalg':
-    print(mlir)
-    exit(0)
-
-with air.mlir.ir.Context():
-    # convert torch_mlir.ir.Module to air.mlir.ir.Module
-    air_module = air.mlir.ir.Module.parse(str(mlir))
-
+    air_module = matmul_on_tensors(512, 512, 512, BF16Type.get())
+    
     # convert linalg on tensors to linalg on memrefs
     pm = air.mlir.passmanager.PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
     pm.run(air_module)
 
-    # tile, convert to air, generate dependencies
+    args = sys.argv[1:]
+    if len(args) and args[0] == '-dump-linalg':
+        print (air_module)
+        exit(0)
+
+    # tile and map to air
     pipeline = ",".join([
-        "buffer-results-to-out-params",
-        "air-linalg-codegen{l1-tile-size=32,32,32}",
-        "affine-to-air",
+        "air-linalg-codegen{l1-tile-size=32,32,32 l2-tile-size=64,64,64 l2-promote=true}",
+        "affine-to-air{herd-assign-depth=1}",
         "canonicalize", "cse",
-        "air-dependency"
     ])
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
     pm.run(air_module)
+    
+    print ("\nAIR Dialect Module\n")
+    print (air_module)
 
-print (air_module)
+    # generate dependency information for runner
+    pm = air.mlir.passmanager.PassManager.parse("air-dependency,canonicalize,cse")
+    pm.run(air_module)
+
+    print ("\nAIR Dialect Module (async)\n")
+    print (air_module)
 
 runner = air.compiler.util.Runner("arch.json")
-trace = runner.run(air_module, "forward")
+trace = runner.run(air_module, "matmul")
 
-with open("trace.out", "w") as f:
-    f.write(trace)
+with open("/work/trace.out", "w") as f:
+   f.write(trace)

@@ -153,40 +153,20 @@ class AIRRunner::AIRRunner_impl {
     ref[address] = in[0];
   }
 
-  // void executeOp(xilinx::air::DmaStoreOp op,
-  //                std::vector<llvm::Any> &in,
-  //                std::vector<llvm::Any> &out) {
-  //   return;
-  //   llvm::ArrayRef<int64_t> shape =
-  //   op.tensor().getType().cast<mlir::ShapedType>().getShape(); unsigned
-  //   address = 0; unsigned ptr = llvm::any_cast<unsigned>(in[1]); assert(ptr <
-  //   store.size()); auto &ref = store[ptr];
-  //   //  LLVM_DEBUG(llvm::dbgs() << "Store " << in[0] << " to " << ptr << "["
-  //   << address << "]\n"); assert(address < ref.size()); ref[address] = in[0];
-  // }
-
   void executeOp(memref::AllocOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
     out[0] = allocateMemRef(op.getType(), in);
-    // unsigned ptr = llvm::any_cast<unsigned>(out[0]);
+    //unsigned ptr = llvm::any_cast<unsigned>(out[0]);
   }
 
-  // void executeOp(xilinx::air::AllocOp op,
-  //                std::vector<llvm::Any> &in,
-  //                std::vector<llvm::Any> &out) {
-  //   out[0] = allocateMemRef(op.getType().cast<MemRefType>(), in);
-  //   //unsigned ptr = llvm::any_cast<unsigned>(out[0]);
-  // }
 
   void executeOp(memref::DeallocOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
-    return;
     unsigned ptr = llvm::any_cast<unsigned>(in[0]);
     deallocateMemRef(ptr);
   }
 
-  void decrementAsyncTokens(Operation *op, std::vector<llvm::Any> &in,
-                            std::vector<llvm::Any> &out) {
+  void decrementAsyncTokens(Operation *op) {
 
     for (unsigned i = 0, e = op->getNumResults(); i < e; i++) {
       auto r = op->getResult(i);
@@ -194,7 +174,6 @@ class AIRRunner::AIRRunner_impl {
         valueMap[r] =
             llvm::any_cast<llvm::APInt>(valueMap[r]) - llvm::APInt(64, 1);
         assert(llvm::any_cast<llvm::APInt>(valueMap[r]).getSExtValue() >= 0);
-        // valueMap[r] = out[i];
       }
     }
   }
@@ -204,29 +183,30 @@ class AIRRunner::AIRRunner_impl {
 
   void executeOp(xilinx::air::HerdLaunchOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
-    decrementAsyncTokens(op, in, out);
+    decrementAsyncTokens(op);
   }
 
   void executeOp(xilinx::air::DmaMemcpyInterface op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
-    decrementAsyncTokens(op, in, out);
-  }
-
-  void executeOp(xilinx::air::RegionOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    // decrementAsyncTokens(op, in, out);
+    decrementAsyncTokens(op);
   }
 
   void executeOp(xilinx::air::RegionTerminatorOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
     auto regionOp = op->getParentOfType<xilinx::air::RegionOp>();
-    std::vector<llvm::Any> v(regionOp->getNumResults(), llvm::APInt(64, 0));
-    decrementAsyncTokens(regionOp, v, v);
+    decrementAsyncTokens(regionOp);
+
+    for (unsigned i = 1, e = regionOp->getNumResults(); i < e; i++) {
+      auto r = regionOp->getResult(i);
+      if (!r.getType().isa<xilinx::air::AsyncTokenType>()) {
+        valueMap[r] = in[i-1];
+      }
+    }
   }
 
   void executeOp(xilinx::air::WaitAllOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
-    decrementAsyncTokens(op, in, out);
+    decrementAsyncTokens(op);
   }
 
   bool executeOpImpls(mlir::Operation &op, std::vector<llvm::Any> &inValues,
@@ -259,13 +239,7 @@ class AIRRunner::AIRRunner_impl {
       executeOp(Op, inValues, outValues);
     else if (auto Op = dyn_cast<memref::DeallocOp>(op))
       executeOp(Op, inValues, outValues);
-    // else if (auto Op = dyn_cast<scf::ForOp>(op))
-    //   executeOp(Op, inValues, outValues);
-    // else if (auto Op = dyn_cast<scf::YieldOp>(op))
-    // executeOp(Op, inValues, outValues);
     else if (auto Op = dyn_cast<scf::ParallelOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<xilinx::air::RegionOp>(op))
       executeOp(Op, inValues, outValues);
     else if (auto Op = dyn_cast<xilinx::air::RegionTerminatorOp>(op))
       executeOp(Op, inValues, outValues);
@@ -281,26 +255,25 @@ class AIRRunner::AIRRunner_impl {
   }
 
   bool executeOp(Operation &op) {
-    // int i = 0;
     std::vector<llvm::Any> inValues(op.getNumOperands());
     std::vector<llvm::Any> outValues(op.getNumResults());
     // LLVM_DEBUG(llvm::dbgs() << "OP:  " << op.getName() << "\n");
-    // for (Value in : op.getOperands()) {
-    //   inValues[i++] = valueMap[in];
-    // }
+    int i = 0;
+    for (Value in : op.getOperands()) {
+      inValues[i++] = valueMap[in];
+    }
 
     if (!executeOpImpls(op, inValues, outValues))
       return false;
 
     // record result in valuemap
-    // i = 0;
-    // for (Value out : op.getResults()) {
-    //   LLVM_DEBUG(debugArg("OUT", out, outValues[i], time));
-    //   valueMap[out] = outValues[i];
-    //   timeMap[out] = time;
-    //   i++;
-    // }
-
+    i = 0;
+    for (Value out : op.getResults()) {
+      if (!out.getType().isa<xilinx::air::AsyncTokenType>()) {
+        valueMap[out] = outValues[i];
+      }
+      i++;
+    }
     return true;
   }
 
@@ -355,12 +328,7 @@ public:
   unsigned allocateMemRef(mlir::MemRefType type, std::vector<llvm::Any> &in) {
     auto memorySpace = type.getMemorySpaceAsInt();
     auto volume = getTensorVolume(type);
-    auto model = jsonModel.getAsObject();
-    unsigned datawidth = 0;
-    if (auto dt = model->getObject("datatype"))
-      if (auto bytes = dt->getNumber("bytes"))
-        datawidth = *bytes;
-    assert(datawidth);
+    auto datawidth = type.getElementTypeBitWidth()/4;
     uint64_t bytes = volume * datawidth;
     unsigned ptr = store.size();
     store.resize(ptr + 1);
@@ -381,21 +349,20 @@ public:
     //    }
     //  }
     //  emitTraceEvent(traceStream,
-    //                 "tensor "+std::to_string(ptr)+" space
-    //                 "+std::to_string(memorySpace)+" size
-    //                 "+std::to_string(bytes), "layer", "B", time, ptr,
+    //                 "tensor "+std::to_string(ptr)+" space " \
+    //                 +std::to_string(memorySpace)+" size " \
+    //                 +std::to_string(bytes), "layer", "B", time, ptr,
     //                 TRACE_PID_ALLOC);
     return ptr;
   }
 
   void deallocateMemRef(unsigned ptr) {
-    return;
     // assert(store[ptr].size());
     // auto allocationSize = store[ptr].size();
     LLVM_DEBUG(llvm::dbgs() << "dealloc " << ptr << "\n");
     store[ptr].resize(0);
     // emitTraceEvent(traceStream, "dealloc", "layer", "E", time, ptr,
-    // TRACE_PID_ALLOC);
+    //   TRACE_PID_ALLOC);
   }
 
   std::string printAnyValueWithType(mlir::Type type, llvm::Any &value) {
@@ -410,21 +377,6 @@ public:
       return "none";
     } else {
       llvm_unreachable("Unknown result type!");
-    }
-  }
-
-  void scheduleIfNeeded(std::list<mlir::Operation *> &readyList,
-                        llvm::DenseMap<mlir::Value, llvm::Any> &valueMap,
-                        mlir::Operation *op) {
-    if (std::find(readyList.begin(), readyList.end(), op) == readyList.end()) {
-      readyList.push_back(op);
-    }
-  }
-  void scheduleUses(std::list<mlir::Operation *> &readyList,
-                    llvm::DenseMap<mlir::Value, llvm::Any> &valueMap,
-                    mlir::Value value) {
-    for (auto &use : value.getUses()) {
-      scheduleIfNeeded(readyList, valueMap, use.getOwner());
     }
   }
 
@@ -911,7 +863,7 @@ public:
       }
     }
 
-    programQueue->push_back(CommandQueueEntry(ro.getOperation()));
+    //programQueue->push_back(CommandQueueEntry(ro.getOperation()));
     scheduleBlock(ro->getRegion(0).front(), programQueue, dispatchQueue,
                   tileQueue);
   }
@@ -1008,7 +960,6 @@ public:
               } else {
                 bldr.clone(o, map);
               }
-              bb->dump();
             }
             scheduleBlock(*bb, &(dispatchQueue->data()[i % dispatch_slots]),
                           dispatchQueue, tileQueues[i % herd_slots]);

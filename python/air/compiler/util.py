@@ -5,6 +5,7 @@ import air.mlir.all_passes_registration
 import air.mlir._mlir_libs._airMlir
 import air.mlir._mlir_libs._airMlir.runner as runner
 
+import json
 import tempfile
 import os
 
@@ -49,23 +50,47 @@ class CostModel:
             os.unlink(name)
         return stats
 
-
 class Runner:
-    def __init__(self, json_filename, trace_filename=None, verbose=False):
-        self.json_filename = json_filename
+    def __init__(self, json_model, trace_filename=None, verbose=False):
+        self.json_model = json_model
         self.trace_filename = trace_filename
         self.verbose = verbose
 
     def run(self, module, function):
         air_module = _convert_module(module)
-        tmpfile = None
+
+        trace_tmpfile = None
         trace_filename = self.trace_filename
         if trace_filename is None:
-            tmpfile = tempfile.NamedTemporaryFile(delete=False)
-            trace_filename = tmpfile.name
-        runner.run(air_module, self.json_filename, trace_filename, function, self.verbose)
-        if tmpfile:
-            trace = open(trace_filename).read()
-            os.unlink(trace_filename)
-            return trace
-        return None
+            trace_tmpfile = tempfile.NamedTemporaryFile(delete=False)
+            trace_filename = trace_tmpfile.name
+        
+        # the json model can be:
+        #  1. json in string form
+        #  2. json in python object form
+        #  3. the name of a file containing (1)
+        json_model = self.json_model
+        if type(json_model) == str:
+            if '.json' in json_model:
+                with open(json_model) as f:
+                    json_model = json.loads(f.read())
+            else:
+                json_model = json.loads(json_model)
+
+        json_tmpfile = tempfile.NamedTemporaryFile(delete=False)
+        json_tmpfile.write(str.encode(json.dumps(json_model)))
+        json_tmpfile.close()
+
+        runner.run(air_module, json_tmpfile.name, trace_filename, function, self.verbose)
+
+        os.unlink(json_tmpfile.name)
+
+        # return the trace and remove the temporary file
+        # if the user didn't provide an output filename
+        return_trace = None
+        if trace_tmpfile:
+            return_trace = open(trace_tmpfile.name).read()
+            os.unlink(trace_tmpfile.name)
+
+        return return_trace
+

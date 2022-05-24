@@ -1,18 +1,18 @@
 
 all: mmult.deps.mlir
 
-mmult.mlir: mmult.py
+mmult.linalg-memrefs.mlir: mmult.py
 	python3 $< -dump-linalg > $@ 
 
 # change linalg on tensors into linalg on memrefs
-mmult.linalg-memrefs.mlir: mmult.mlir
-	mlir-opt \
-		-linalg-bufferize \
-		-func-bufferize \
-		-tensor-bufferize \
-		-finalizing-bufferize \
-		-buffer-results-to-out-params \
-		-o $@ $<
+# mmult.linalg-memrefs.mlir: mmult.mlir
+# 	air-opt \
+# 		-linalg-bufferize \
+# 		-func-bufferize \
+# 		-tensor-bufferize \
+# 		-finalizing-bufferize \
+# 		-buffer-results-to-out-params \
+# 		-o $@ $<
 
 mmult.tiled.mlir: mmult.linalg-memrefs.mlir
 	air-opt -o $@ $< \
