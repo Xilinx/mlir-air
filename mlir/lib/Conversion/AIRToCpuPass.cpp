@@ -205,7 +205,7 @@ public:
       remap.map(stageBlock.getArgument(i), operands[i]);
 
     rewriter.setInsertionPoint(aif);
-    auto idVal = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), id);
+    // auto idVal = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), id);
     // remap.map(dir ? x : y, idVal);
 
     stage.body().cloneInto(&aif.getBodyRegion(), aif.getBodyRegion().begin(),
@@ -289,8 +289,6 @@ convertOpToFunctionWithTileId(Operation *op, ArrayRef<Value> operands,
                               ConversionPatternRewriter &rewriter,
                               StringRef fnName) {
   auto loc = op->getLoc();
-  // op->print(llvm::outs());
-  // llvm::outs() << "\n";
   SmallVector<Value, 16> callops;
   SmallVector<Type, 1> retTys{};
 
@@ -331,10 +329,6 @@ convertOpToFunctionWithTileId(Operation *op, ArrayRef<Value> operands,
     }
   }
 
-  SmallVector<Type, 16> tys;
-  for (auto o : callops)
-    tys.push_back(o.getType());
-
   SmallVector<MemRefType, 16> real_result_tys;
   for (auto t : op->getResultTypes()) {
     if (auto memrefTy = t.dyn_cast<MemRefType>()) {
@@ -351,8 +345,10 @@ convertOpToFunctionWithTileId(Operation *op, ArrayRef<Value> operands,
 
   auto fn = xilinx::air::getMangledFunction(op->getParentOfType<ModuleOp>(),
                                             fnName.str(), callops, retTys);
+
   auto call = rewriter.create<func::CallOp>(op->getLoc(), retTys,
                                             SymbolRefAttr::get(fn), callops);
+
   int real_result_idx = 0;
   int result_idx = 0;
   for (auto r : op->getResults()) {
@@ -366,8 +362,7 @@ convertOpToFunctionWithTileId(Operation *op, ArrayRef<Value> operands,
     }
     result_idx++;
   }
-  // op->getParentOp()->print(llvm::outs());
-  // llvm::outs() << "\n";
+
   rewriter.eraseOp(op);
   return call;
 }
@@ -452,8 +447,7 @@ public:
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
-    auto call =
-        convertOpToFunctionWithTileId(op, operands, rewriter, "air_alloc");
+    auto call = convertOpToFunctionWithId(op, operands, rewriter, "air_alloc");
     if (call)
       return success();
     else
@@ -470,7 +464,7 @@ public:
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
     auto call =
-        convertOpToFunctionWithTileId(op, operands, rewriter, "air_dealloc");
+        convertOpToFunctionWithId(op, operands, rewriter, "air_dealloc");
     if (call)
       return success();
     else
@@ -602,6 +596,17 @@ public:
         memref::MemRefDialect, bufferization::BufferizationDialect,
         xilinx::airrt::AIRRtDialect>();
 
+    // air.memcpy_nd conversion
+    RewritePatternSet air_dma_patterns(context);
+
+    air_dma_patterns.add<AIRDmaMemcpyNdToMemcpyConversion>(context);
+
+    if (failed(applyPartialConversion(module, target,
+                                      std::move(air_dma_patterns)))) {
+      emitError(UnknownLoc::get(context), "error lowering air dialect\n");
+      signalPassFailure();
+    }
+
     // Replace the PipelineStageOps first, followed by the
     // HerdPipelineOps, then run the rest of the patterns.
     // This avoids creating invalid intermediate code with respect
@@ -626,11 +631,6 @@ public:
       signalPassFailure();
     }
 
-    // DMA and HerdLaunchOp conversion
-    RewritePatternSet air_mem_patterns(context);
-
-    // lower to cpu memcpy
-
     target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
       return (op.getType().getMemorySpaceAsInt() == 0);
     });
@@ -640,15 +640,10 @@ public:
               0);
     });
 
-    air_mem_patterns.add<AllocToCpuConversion, DeallocToCpuConversion,
-                         WaitAllOpConversion, AIRDmaMemcpyNdToMemcpyConversion>(
-        context);
-    // air_mem_patterns.insert<AIRDmaMemcpyToMemcpyConversion,
-    //                     AIRDmaMemcpy2dToMemcpyConversion,
-    //                     AIRDmaMemcpy4dToMemcpyConversion,
-    //                     AIRDmaMemcpyNdToMemcpyConversion,
-    //                     AllocToCpuConversion,
-    //                     DeallocToCpuConversion>(context);
+    RewritePatternSet air_mem_patterns(context);
+    air_mem_patterns
+        .add<AllocToCpuConversion, DeallocToCpuConversion, WaitAllOpConversion>(
+            context);
 
     if (failed(applyPartialConversion(module, target,
                                       std::move(air_mem_patterns)))) {
