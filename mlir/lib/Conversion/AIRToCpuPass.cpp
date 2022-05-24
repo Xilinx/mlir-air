@@ -447,7 +447,7 @@ public:
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
-    auto call = convertOpToFunctionWithId(op, operands, rewriter, "air_alloc");
+    auto call = convertOpToFunctionWithTileId(op, operands, rewriter, "air_alloc");
     if (call)
       return success();
     else
@@ -464,7 +464,7 @@ public:
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
     auto call =
-        convertOpToFunctionWithId(op, operands, rewriter, "air_dealloc");
+        convertOpToFunctionWithTileId(op, operands, rewriter, "air_dealloc");
     if (call)
       return success();
     else
