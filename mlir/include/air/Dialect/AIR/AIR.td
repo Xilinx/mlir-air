@@ -101,7 +101,7 @@ def air_PipelineStageOp : air_Op<"pipeline.stage", [HasParent<"HerdPipelineOp">]
 }
 
 def air_PipelineYieldOp : air_Op<"pipeline.yield", [HasParent<"PipelineStageOp">,
-                                          NoSideEffect, Terminator]>,
+                                          NoSideEffect, ReturnLike, Terminator]>,
     Arguments<(ins Variadic<AnyType>:$opers)>, Results<(outs)> {
   let summary = "Yield for air pipeline stages.";
   let description = [{
