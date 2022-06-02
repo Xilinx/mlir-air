@@ -1,0 +1,7 @@
+[submodule "segment-architecture"]
+	path = segment-architecture
+	url = https://gitenterprise.xilinx.com/XRLabs/segment-architecture.git
+	branch = shuffle
+[submodule "platforms/boards"]
+	path = platforms/boards
+	url = https://github.com/Xilinx/XilinxBoardStore.git
