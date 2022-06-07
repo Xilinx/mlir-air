@@ -5,6 +5,7 @@ AIRLoweringPass.cpp
 AIRRtToLLVMPass.cpp
 AIRToAIEPass.cpp
 AIRToCpuPass.cpp
+AIRPipeline.cpp
 Passes.cpp
 
 DEPENDS

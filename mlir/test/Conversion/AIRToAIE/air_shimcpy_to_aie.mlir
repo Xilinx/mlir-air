@@ -5,8 +5,8 @@
 module {
 
 // CHECK: module @aie.func0
-// CHECK:    %[[VAL_0:.*]] = AIE.tile(2, 0)
 // CHECK:         %[[VAL_2:.*]] = AIE.tile(2, 2)
+// CHECK:         %[[VAL_0:.*]] = AIE.tile(2, 0)
 // CHECK:         %[[VAL_4:.*]] = AIE.lock(%[[VAL_2]], 0)
 // CHECK:         %[[VAL_3:.*]] = AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<1024xi32, 2>
 
@@ -43,8 +43,8 @@ func @func0(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 }
 
 // CHECK: module @aie.func1
-// CHECK:    %[[VAL_10:.*]] = AIE.tile(2, 0)
 // CHECK:         %[[VAL_12:.*]] = AIE.tile(2, 2)
+// CHECK:         %[[VAL_10:.*]] = AIE.tile(2, 0)
 // CHECK:         %[[VAL_14:.*]] = AIE.lock(%[[VAL_12]], 0)
 // CHECK:         %[[VAL_13:.*]] = AIE.buffer(%[[VAL_12]]) {sym_name = {{.*}}} : memref<1024xi32, 2>
 

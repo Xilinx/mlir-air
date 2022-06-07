@@ -1,8 +1,12 @@
 // (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
 
-#include "llvm/Support/Debug.h"
-#include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/raw_ostream.h"
+#include "PassDetail.h"
+
+#include "air/Conversion/AIRPipeline.h"
+#include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Dialect/AIRRt/AIRRtDialect.h"
+#include "air/Dialect/AIRRt/AIRRtOps.h"
+#include "air/Util/Util.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
@@ -20,14 +24,11 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
+
 #include <vector>
-
-#include "PassDetail.h"
-
-#include "air/Dialect/AIR/AIRDialect.h"
-#include "air/Dialect/AIRRt/AIRRtDialect.h"
-#include "air/Dialect/AIRRt/AIRRtOps.h"
-#include "air/Util/Util.h"
 
 #define DEBUG_TYPE "air-to-cpu"
 
@@ -98,24 +99,37 @@ public:
 
     auto &entryBlock = *function.addEntryBlock();
 
-    int i = 0;
-    launch.getTileIds().x.replaceAllUsesWith(entryBlock.getArgument(i++));
-    launch.getTileIds().y.replaceAllUsesWith(entryBlock.getArgument(i++));
-    for (auto arg : launch.getKernelArguments()) {
-      arg.replaceAllUsesWith(entryBlock.getArgument(i++));
+    if (1) {
+      int i = 0;
+      launch.getTileIds().x.replaceAllUsesWith(entryBlock.getArgument(i++));
+      launch.getTileIds().y.replaceAllUsesWith(entryBlock.getArgument(i++));
+      for (auto arg : launch.getKernelArguments()) {
+        arg.replaceAllUsesWith(entryBlock.getArgument(i++));
+      }
+    } else {
+      launch.getTileIds().x.replaceAllUsesWith(outer.getInductionVar());
+      launch.getTileIds().y.replaceAllUsesWith(inner.getInductionVar());
     }
+    int i = 0;
+    for (auto arg : launch.getKernelArguments())
+      arg.replaceAllUsesWith(launch.getKernelOperand(i++));
 
     auto &body = launch.body().front().getOperations();
-    entryBlock.getOperations().splice(entryBlock.begin(), body, body.begin(),
-                                      --body.end());
+    if (1) {
+      entryBlock.getOperations().splice(entryBlock.begin(), body, body.begin(),
+                                        --body.end());
 
-    rewriter.setInsertionPointToStart(&inner.getBodyRegion().front());
-    rewriter.create<func::CallOp>(op->getLoc(), function, callops);
+      rewriter.setInsertionPointToStart(&inner.getBodyRegion().front());
+      rewriter.create<func::CallOp>(op->getLoc(), function, callops);
 
-    rewriter.setInsertionPointToEnd(&entryBlock);
-    rewriter.create<func::ReturnOp>(op->getLoc());
+      rewriter.setInsertionPointToEnd(&entryBlock);
+      rewriter.create<func::ReturnOp>(op->getLoc());
+      module.push_back(function);
+    } else {
+      inner.getBody()->getOperations().splice(inner.getBody()->begin(), body,
+                                            body.begin(), --body.end());
+    }
     rewriter.eraseOp(op);
-    module.push_back(function);
     return success();
   }
 };
@@ -138,88 +152,7 @@ public:
   }
 };
 
-class AIRPipeStageConversion : public ConversionPattern {
-public:
-  explicit AIRPipeStageConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::PipelineStageOp::getOperationName(), 10,
-                          context) {}
 
-  LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
-                  ConversionPatternRewriter &rewriter) const override {
-    xilinx::air::HerdPipelineOp pipeline =
-        op->getParentOfType<xilinx::air::HerdPipelineOp>();
-
-    auto direction = pipeline->getAttrOfType<StringAttr>("direction");
-
-    xilinx::air::HerdLaunchOp launch =
-        op->getParentOfType<xilinx::air::HerdLaunchOp>();
-    if (!launch) {
-      LLVM_DEBUG(llvm::errs() << "Failed to find herd op for air.pipeline\n");
-      return failure();
-    }
-
-    Value x = launch.getTileIds().x;
-    Value y = launch.getTileIds().y;
-
-    auto ctx = op->getContext();
-    auto stage = cast<xilinx::air::PipelineStageOp>(op);
-
-    // Create an affine.if to contain the code for this pipeline stage.
-    unsigned id = stage.getStageId();
-
-    bool dir = (direction.str() == "horiz");
-
-    SmallVector<AffineExpr, 2> constraints{getAffineDimExpr(dir ? 0 : 1, ctx) -
-                                               getAffineConstantExpr(id, ctx),
-                                           getAffineDimExpr(dir ? 1 : 0, ctx)};
-    SmallVector<bool, 2> eqflags{true, false};
-    auto int_set = IntegerSet::get(2, 0, constraints, eqflags);
-    SmallVector<Value, 2> int_set_args{x, y};
-    AffineIfOp aif = rewriter.create<AffineIfOp>(stage->getLoc(), int_set,
-                                                 int_set_args, false);
-
-    auto &stageBlock = stage.body().front();
-    auto &yield = stageBlock.getOperations().back();
-
-    // For each output of the pipeline stage, create a buffer + store
-    SmallVector<Value, 4> bufs;
-    for (auto o : yield.getOperands()) {
-      if (RankedTensorType tt = o.getType().dyn_cast<RankedTensorType>()) {
-        auto memrefTy = MemRefType::get(tt.getShape(), tt.getElementType());
-        rewriter.setInsertionPoint(aif);
-        auto buf = rewriter.create<memref::AllocOp>(op->getLoc(), memrefTy);
-        rewriter.setInsertionPoint(&yield);
-        rewriter.create<memref::TensorStoreOp>(yield.getLoc(), o, buf);
-        rewriter.setInsertionPointAfter(aif);
-        bufs.push_back(
-            rewriter.create<bufferization::ToTensorOp>(aif.getLoc(), buf)
-                .getResult());
-      }
-    }
-    rewriter.replaceOp(stage, bufs);
-
-    // Clone the region into the affine.if while remapping the args
-    BlockAndValueMapping remap;
-    for (int i = 0, e = stageBlock.getNumArguments(); i < e; i++)
-      remap.map(stageBlock.getArgument(i), operands[i]);
-
-    rewriter.setInsertionPoint(aif);
-    // auto idVal = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), id);
-    // remap.map(dir ? x : y, idVal);
-
-    stage.body().cloneInto(&aif.getBodyRegion(), aif.getBodyRegion().begin(),
-                           remap);
-    rewriter.eraseBlock(&aif.getBodyRegion().back());
-
-    // replace the pipeline.yield with affine.yield
-    rewriter.eraseOp(aif.getBodyRegion().front().getTerminator());
-    rewriter.setInsertionPointToEnd(&aif.getBodyRegion().front());
-    rewriter.create<AffineYieldOp>(aif.getLoc());
-
-    return success();
-  }
-};
 
 static func::CallOp
 convertOpToFunctionWithId(Operation *op, ArrayRef<Value> operands,
@@ -614,7 +547,7 @@ public:
 
     // PipelineStageOp conversion
     RewritePatternSet air_pipe_stage_patterns(context);
-    air_pipe_stage_patterns.insert<AIRPipeStageConversion>(context);
+    air_pipe_stage_patterns.insert<AIRPipeStageConversion>(context, AIRPipeStageConversion::LoweringType::AllocBuffer);
     if (failed(applyPartialConversion(module, target,
                                       std::move(air_pipe_stage_patterns)))) {
       emitError(UnknownLoc::get(context),

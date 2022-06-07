@@ -83,6 +83,10 @@ public:
   AIRDependency() = default;
   AIRDependency(const AIRDependency &pass) {}
 
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {  
+    registry.insert<scf::SCFDialect, air::airDialect>();
+  }
+
   void runOnOperation() override {
     auto module = getOperation();
     OpBuilder module_builder(module);
@@ -702,7 +706,7 @@ private:
       else
         args.push_back(v);
     }
-    air::HerdLaunchOp new_launch = builder.create<air::HerdLaunchOp>(loc, deps, dims, args);
+    air::HerdLaunchOp new_launch = builder.create<air::HerdLaunchOp>(loc, deps, dims, args, true);
     new_launch->setAttr("id",
             mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
             ++HerdLaunchOpID));

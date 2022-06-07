@@ -46,7 +46,14 @@ AIE::TileOp getPhysTileOp(ModuleOp aie_module, int col, int row) {
   if (t) return t;
 
   OpBuilder builder(aie_module);
+
   builder.setInsertionPointToStart(aie_module.getBody());
+  for (auto &o : aie_module.getBody()->getOperations()) {
+    if (isa<AIE::TileOp>(o))
+      builder.setInsertionPointAfter(&o);
+    else
+      break;
+  }
   return builder.create<AIE::TileOp>(UnknownLoc::get(aie_module.getContext()), col, row);
 }
 
@@ -230,8 +237,8 @@ public:
       buffer = map.lookupOrDefault(dmaOp.getDstMemref());
     }
     AIE::BufferOp bufferOp = buffer.getDefiningOp<AIE::BufferOp>();
-    if (!bufferOp)
-      buffer.dump();
+    // if (!bufferOp)
+    //   buffer.dump();
     return bufferOp;
   }
 
@@ -246,7 +253,10 @@ public:
     while (ids.count(new_id))
       new_id++;
     OpBuilder b(aie_module);
-    b.setInsertionPointAfter(tile);
+    Operation *t = tile.getOperation();
+    while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
+      t = t->getNextNode();
+    b.setInsertionPointAfter(t);
     return b.create<AIE::LockOp>(tile.getLoc(), tile, new_id);
   }
 
@@ -257,7 +267,10 @@ public:
   {
     static uint64_t BufferId = 0;
     OpBuilder builder(module);
-    builder.setInsertionPointAfter(tile);
+    Operation *t = tile.getOperation();
+    while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
+      t = t->getNextNode();
+    builder.setInsertionPointAfter(t);
     AIE::BufferOp bufferOp = builder.create<AIE::BufferOp>(tile->getLoc(),
                                                            memrefTy,
                                                            tile);
@@ -678,12 +691,10 @@ public:
               // make the AIE.tile
               auto tile = getTileOp(aie_module, x, y);
 
-              builder.setInsertionPointAfter(tile);
-
-              // make a AIE.mem for the tile dma
-              auto mem = tile.getMemOp();
-              if (!mem)
-                mem = builder.create<AIE::MemOp>(hloc, tile);
+              Operation *t = tile.getOperation();
+              while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
+                t = t->getNextNode();
+              builder.setInsertionPointAfter(t);
 
               // make the AIE.core for the tile core
               auto core = tile.getCoreOp();
@@ -695,7 +706,7 @@ public:
               }
 
               // the buffers and locks created below need to go before the core and mem
-              builder.setInsertionPoint(mem);
+              builder.setInsertionPoint(core);
 
               assert((h.body().getBlocks().size() == 1) &&
                     "Launch body can only contain one Block");
@@ -848,6 +859,12 @@ public:
               Block *channel_head = nullptr;
               Block *end_bb = nullptr;
 
+              // make a AIE.mem for the tile dma
+              auto mem = tile.getMemOp();
+              if (!mem) {
+                builder.setInsertionPoint(core);
+                mem = builder.create<AIE::MemOp>(hloc, tile);
+              }
               for (auto &p : tile_dma_copies) {
                 auto channel = p.first;
 

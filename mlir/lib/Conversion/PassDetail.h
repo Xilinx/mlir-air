@@ -1,6 +1,7 @@
 #ifndef AIR_CONVERSION_PASSDETAIL_H
 #define AIR_CONVERSION_PASSDETAIL_H
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 

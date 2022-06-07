@@ -35,6 +35,8 @@ with air.mlir.ir.Context(), Location.unknown():
         "air-specialize-dma",
         "air-promote-dma",
         "canonicalize", "cse",
+        "air-pipeline-to-affine",
+        "canonicalize", "cse",
     ])
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
     pm.run(air_module)

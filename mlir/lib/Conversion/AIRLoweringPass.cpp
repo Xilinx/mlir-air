@@ -1,9 +1,12 @@
 // (c) Copyright 2020 Xilinx Inc. All Rights Reserved.
 
+#include "PassDetail.h"
 
-#include "llvm/Support/Debug.h"
-#include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/raw_ostream.h"
+#include "air/Conversion/AIRPipeline.h"
+#include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Dialect/AIRRt/AIRRtDialect.h"
+#include "air/Dialect/AIRRt/AIRRtOps.h"
+#include "air/Util/Util.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
@@ -21,14 +24,11 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
+
 #include <vector>
-
-#include "PassDetail.h"
-
-#include "air/Dialect/AIR/AIRDialect.h"
-#include "air/Dialect/AIRRt/AIRRtDialect.h"
-#include "air/Dialect/AIRRt/AIRRtOps.h"
-#include "air/Util/Util.h"
 
 #define DEBUG_TYPE "air-lowering-pass"
 
@@ -97,88 +97,6 @@ public:
     bb.getOperations().splice(Block::iterator(op),
                               bb.getOperations());
     rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-class AIRPipeStageConversion : public ConversionPattern {
-public:
-  explicit AIRPipeStageConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::PipelineStageOp::getOperationName(), 10, context) {}
-
-  LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value > operands,
-                  ConversionPatternRewriter &rewriter) const override
-  {
-    xilinx::air::HerdPipelineOp pipeline =
-      op->getParentOfType<xilinx::air::HerdPipelineOp>();
-
-    auto direction = pipeline->getAttrOfType<StringAttr>("direction");
-
-    xilinx::air::HerdLaunchOp launch = 
-      op->getParentOfType<xilinx::air::HerdLaunchOp>();
-    if (!launch) {
-      LLVM_DEBUG(llvm::errs() << "Failed to find herd op for air.pipeline\n");
-      return failure();
-    }
-
-    Value x = launch.getTileIds().x;
-    Value y = launch.getTileIds().y;
-
-    auto ctx = op->getContext();
-    auto stage = cast<xilinx::air::PipelineStageOp>(op);
-
-    // Create an affine.if to contain the code for this pipeline stage.
-    unsigned id = stage.getStageId();
-
-    bool dir = (direction.str() == "horiz");
-
-    SmallVector<AffineExpr, 2> constraints{getAffineDimExpr(dir ? 0 : 1, ctx) -
-                                           getAffineConstantExpr(id, ctx),
-                                           getAffineDimExpr(dir ? 1 : 0, ctx)};
-    SmallVector<bool,2> eqflags{true, false};
-    auto int_set = IntegerSet::get(2, 0, constraints, eqflags);
-    SmallVector<Value, 2> int_set_args{x, y};
-    AffineIfOp aif = rewriter.create<AffineIfOp>(stage->getLoc(), int_set,
-                                                  int_set_args, false);
-
-    auto &stageBlock = stage.body().front();
-    auto &yield = stageBlock.getOperations().back();
-
-    // For each output of the pipeline stage, create a buffer + store
-    SmallVector<Value, 4> bufs;
-    for (auto o: yield.getOperands()) {
-      if (RankedTensorType tt = o.getType().dyn_cast<RankedTensorType>()) {
-        auto memrefTy = MemRefType::get(tt.getShape(), tt.getElementType());
-        rewriter.setInsertionPoint(aif);
-        auto buf = rewriter.create<memref::AllocOp>(op->getLoc(), memrefTy);
-        rewriter.setInsertionPoint(&yield);
-        rewriter.create<memref::TensorStoreOp>(yield.getLoc(), o, buf);
-        rewriter.setInsertionPointAfter(aif);
-        bufs.push_back(
-          rewriter.create<bufferization::ToTensorOp>(aif.getLoc(),buf).getResult());
-      }
-    }
-    rewriter.replaceOp(stage, bufs);
-
-    // Clone the region into the affine.if while remapping the args
-    BlockAndValueMapping remap;
-    for (int i = 0, e=stageBlock.getNumArguments(); i<e; i++)
-      remap.map(stageBlock.getArgument(i), operands[i]);
-    
-    rewriter.setInsertionPoint(aif);
-    auto idVal = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), id);
-    remap.map(dir ? x : y, idVal);
-
-    stage.body().cloneInto(&aif.getBodyRegion(),
-                            aif.getBodyRegion().begin(), remap);
-    rewriter.eraseBlock(&aif.getBodyRegion().back());
-
-    // replace the pipeline.yield with affine.yield
-    rewriter.eraseOp(aif.getBodyRegion().front().getTerminator());
-    rewriter.setInsertionPointToEnd(&aif.getBodyRegion().front());
-    rewriter.create<AffineYieldOp>(aif.getLoc());
-
     return success();
   }
 };
@@ -452,10 +370,11 @@ public:
       offsets[idx++] = rewriter.create<IndexCastOp>(
           op->getLoc(), IntegerType::get(ctx, 64), o);
     idx = 4 - dst.getRank();
-    for (auto o : isFromTile ? op.dst_strides().drop_back()
-                            : op.src_strides().drop_back())
-      strides[idx++] = rewriter.create<IndexCastOp>(
-          op->getLoc(), IntegerType::get(ctx, 64), o);
+    auto op_strides = isFromTile ? op.dst_strides() : op.src_strides();
+    if (op_strides.size())
+      for (auto o : op_strides.drop_back())
+        strides[idx++] = rewriter.create<IndexCastOp>(
+            op->getLoc(), IntegerType::get(ctx, 64), o);
     idx = 4 - src.getRank();
     for (auto o : isFromTile ? op.dst_sizes() : op.src_sizes())
       lengths[idx++] = rewriter.create<IndexCastOp>(
@@ -565,7 +484,7 @@ public:
 
     // PipelineStageOp conversion
     RewritePatternSet air_pipe_stage_patterns(context);
-    air_pipe_stage_patterns.insert<AIRPipeStageConversion>(context);
+    air_pipe_stage_patterns.insert<AIRPipeStageConversion>(context, AIRPipeStageConversion::LoweringType::AllocBuffer);
     if (failed(applyPartialConversion(module, target, std::move(air_pipe_stage_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air.pipeline.stage\n");
       signalPassFailure();
@@ -607,6 +526,57 @@ public:
   }
 };
 
+class AIRPipelineToAffinePass : public AIRPipelineToAffineBase<AIRPipelineToAffinePass> {
+
+public:
+
+  AIRPipelineToAffinePass() = default;
+  AIRPipelineToAffinePass(const AIRPipelineToAffinePass &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<AffineDialect>();
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    auto context = module.getContext();
+
+    ConversionTarget target(*context);
+
+    target.addLegalDialect<
+        LLVM::LLVMDialect, func::FuncDialect, arith::ArithmeticDialect,
+        AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
+        memref::MemRefDialect, bufferization::BufferizationDialect,
+        xilinx::airrt::AIRRtDialect, xilinx::air::airDialect>();
+
+    target.addIllegalOp<xilinx::air::PipelineStageOp, xilinx::air::PipelineYieldOp>();
+
+    // PipelineStageOp conversion
+    RewritePatternSet air_pipe_stage_patterns(context);
+    air_pipe_stage_patterns.insert<AIRPipeStageConversion>(context, AIRPipeStageConversion::LoweringType::AllocBuffer);
+    if (failed(applyPartialConversion(module, target, std::move(air_pipe_stage_patterns)))) {
+      emitError(UnknownLoc::get(context), "error lowering air.pipeline.stage\n");
+      signalPassFailure();
+    }
+
+    SmallVector<Operation *, 8> pipelines;
+    module.walk([&](xilinx::air::HerdPipelineOp p) {
+      pipelines.push_back(p);
+    });
+
+    for (auto p : pipelines) {
+      auto pipeOp = cast<xilinx::air::HerdPipelineOp>(p);
+      OpBuilder b(p);
+      Block &bb = pipeOp.body().front();
+      BlockAndValueMapping remap;
+      bb.getTerminator()->erase();
+      for (auto &o : bb)
+        b.clone(o, remap);
+      p->erase();
+    }
+  }
+};
+
 } // namespace
 
 namespace xilinx {
@@ -614,6 +584,10 @@ namespace air {
 
 std::unique_ptr<mlir::Pass> createAIRLoweringPass() {
   return std::make_unique<AIRLoweringPass>();
+}
+
+std::unique_ptr<mlir::Pass> createAIRPipelineToAffinePass() {
+  return std::make_unique<AIRPipelineToAffinePass>();
 }
 
 } // namespace air

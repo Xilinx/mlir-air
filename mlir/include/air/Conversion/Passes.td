@@ -243,4 +243,12 @@ def AIRRtToLLVM : Pass<"airrt-to-llvm", "ModuleOp"> {
   }];
 }
 
+def AIRPipelineToAffine : Pass<"air-pipeline-to-affine", "ModuleOp"> {
+  let summary = "Lower air.pipeline stages to affine.if";
+  let constructor = "xilinx::air::createAIRPipelineToAffinePass()";
+  let description =  [{
+    Lower air.pipeline stages to affine.if
+  }];
+}
+
 #endif
