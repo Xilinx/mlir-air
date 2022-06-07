@@ -2,9 +2,11 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 
 #include "mlir/IR/Attributes.h"
+#include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/FunctionImplementation.h"
+#include "mlir/IR/PatternMatch.h"
 
 #include "llvm/ADT/TypeSwitch.h"
 #include <iostream>
@@ -114,13 +116,17 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
 //
 
 void HerdLaunchOp::build(OpBuilder &builder, OperationState &result,
-                         HerdDim2 herdSize, ValueRange launchOperands) {
+                         ValueRange asyncDependencies, HerdDim2 herdSize,
+                         ValueRange launchOperands, bool isAsync) {
 
+  result.addOperands(asyncDependencies);
+  if (isAsync)
+    result.addTypes(air::AsyncTokenType::get(builder.getContext()));
   result.addOperands({herdSize.x, herdSize.y});
   result.addOperands(launchOperands);
 
   SmallVector<int32_t, 8> segmentSizes(4, 1);
-  segmentSizes.front() = 0; // Initially no async dependencies.
+  segmentSizes.front() = asyncDependencies.size();
   segmentSizes.back() = static_cast<int32_t>(launchOperands.size());
   result.addAttribute(getOperandSegmentSizeAttr(),
                       builder.getI32VectorAttr(segmentSizes));
@@ -137,29 +143,26 @@ void HerdLaunchOp::build(OpBuilder &builder, OperationState &result,
 }
 
 void HerdLaunchOp::build(OpBuilder &builder, OperationState &result,
-                         ValueRange asyncDependencies,
                          HerdDim2 herdSize, ValueRange launchOperands) {
 
-  result.addOperands(asyncDependencies);
-  result.addTypes(air::AsyncTokenType::get(builder.getContext()));
-  result.addOperands({herdSize.x, herdSize.y});
-  result.addOperands(launchOperands);
+  build(builder, result, {}, herdSize, launchOperands);
+  // result.addOperands({herdSize.x, herdSize.y});
+  // result.addOperands(launchOperands);
+  // SmallVector<int32_t, 8> segmentSizes(4, 1);
+  // segmentSizes.front() = 0; // Initially no async dependencies.
+  // segmentSizes.back() = static_cast<int32_t>(launchOperands.size());
+  // result.addAttribute(getOperandSegmentSizeAttr(),
+  //                     builder.getI32VectorAttr(segmentSizes));
 
-  SmallVector<int32_t, 8> segmentSizes(4, 1);
-  segmentSizes.front() = 0; // Initially no async dependencies.
-  segmentSizes.back() = static_cast<int32_t>(launchOperands.size());
-  result.addAttribute(getOperandSegmentSizeAttr(),
-                      builder.getI32VectorAttr(segmentSizes));
-
-  Region *r = result.addRegion();
-  Block *body = new Block();
-  SmallVector<Type, 4> argtypes(4, builder.getIndexType());
-  SmallVector<Location, 4> arglocs(4, builder.getUnknownLoc());
-  body->addArguments(argtypes, arglocs);
-  for (Value v : launchOperands) {
-    body->addArgument(v.getType(), builder.getUnknownLoc());
-  }
-  r->push_back(body);
+  // Region *r = result.addRegion();
+  // Block *body = new Block();
+  // SmallVector<Type, 4> argtypes(4, builder.getIndexType());
+  // SmallVector<Location, 4> arglocs(4, builder.getUnknownLoc());
+  // body->addArguments(argtypes, arglocs);
+  // for (Value v : launchOperands) {
+  //   body->addArgument(v.getType(), builder.getUnknownLoc());
+  // }
+  // r->push_back(body);
 }
 
 void HerdLaunchOp::print(OpAsmPrinter &p) {
@@ -285,6 +288,47 @@ ParseResult HerdLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   result.addAttribute(OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr(),
                       parser.getBuilder().getI32VectorAttr(segmentSizes));
   return success();
+}
+
+static LogicalResult removeUnusedArguments(HerdLaunchOp op,
+                                           PatternRewriter &rewriter) {
+  SmallVector<Value, 32> newOperands;
+  SmallVector<int, 32> newOperandsIdx;
+  for (int i = 0, e = op.getNumKernelOperands(); i < e; i++) {
+    auto arg = op.getKernelArgument(i);
+    llvm::outs() << arg << "\n";
+    if (!arg.getUsers().empty()) {
+      newOperands.push_back(op.getKernelOperand(i));
+      newOperandsIdx.push_back(i);
+    }
+  }
+  if (newOperands.size() == op.getNumKernelOperands())
+    return failure();
+
+  BlockAndValueMapping remap;
+  auto newOp = rewriter.create<HerdLaunchOp>(
+      op.getLoc(), op.getAsyncDependencies(), op.getHerdSizeOperands(),
+      newOperands, op->getNumResults() > 0);
+  rewriter.setInsertionPointToStart(&newOp.body().front());
+  remap.map(op.getHerdSize().x, newOp.getHerdSize().x);
+  remap.map(op.getHerdSize().y, newOp.getHerdSize().y);
+  remap.map(op.getTileIds().x, newOp.getTileIds().x);
+  remap.map(op.getTileIds().y, newOp.getTileIds().y);
+
+  int newIdx = 0;
+  for (int i : newOperandsIdx)
+    remap.map(op.getKernelArgument(i), newOp.getKernelArgument(newIdx++));
+
+  for (Operation &o : op.getRegion().front().getOperations())
+    rewriter.clone(o, remap);
+
+  rewriter.replaceOp(op, newOp->getResults());
+  return success();
+}
+
+void HerdLaunchOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                               MLIRContext *context) {
+  patterns.add(removeUnusedArguments);
 }
 
 HerdDim2 HerdLaunchOp::getTileIds() {

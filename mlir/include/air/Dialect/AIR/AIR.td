@@ -33,7 +33,8 @@ def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,
     OpBuilder<(ins "HerdDim2":$gridSize,"ValueRange":$kernelOperands)>,
     OpBuilder<(ins "ValueRange":$asyncDependencies,
       "HerdDim2":$gridSize,
-      "ValueRange":$kernelOperands
+      "ValueRange":$kernelOperands,
+      CArg<"bool", "false">:$isAsync
     )>
   ];
   let hasCustomAssemblyFormat = 1;
@@ -52,6 +53,7 @@ def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,
       return -1;
     }
   }];
+  let hasCanonicalizer  = 1;
 }
 
 def air_HerdTerminatorOp : air_Op<"herd_terminator", [HasParent<"HerdLaunchOp">,
