@@ -111,6 +111,7 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
 
 }
 }
+
 //
 // LaunchHerdOp
 //
@@ -146,23 +147,6 @@ void HerdLaunchOp::build(OpBuilder &builder, OperationState &result,
                          HerdDim2 herdSize, ValueRange launchOperands) {
 
   build(builder, result, {}, herdSize, launchOperands);
-  // result.addOperands({herdSize.x, herdSize.y});
-  // result.addOperands(launchOperands);
-  // SmallVector<int32_t, 8> segmentSizes(4, 1);
-  // segmentSizes.front() = 0; // Initially no async dependencies.
-  // segmentSizes.back() = static_cast<int32_t>(launchOperands.size());
-  // result.addAttribute(getOperandSegmentSizeAttr(),
-  //                     builder.getI32VectorAttr(segmentSizes));
-
-  // Region *r = result.addRegion();
-  // Block *body = new Block();
-  // SmallVector<Type, 4> argtypes(4, builder.getIndexType());
-  // SmallVector<Location, 4> arglocs(4, builder.getUnknownLoc());
-  // body->addArguments(argtypes, arglocs);
-  // for (Value v : launchOperands) {
-  //   body->addArgument(v.getType(), builder.getUnknownLoc());
-  // }
-  // r->push_back(body);
 }
 
 void HerdLaunchOp::print(OpAsmPrinter &p) {
@@ -296,7 +280,6 @@ static LogicalResult removeUnusedArguments(HerdLaunchOp op,
   SmallVector<int, 32> newOperandsIdx;
   for (int i = 0, e = op.getNumKernelOperands(); i < e; i++) {
     auto arg = op.getKernelArgument(i);
-    llvm::outs() << arg << "\n";
     if (!arg.getUsers().empty()) {
       newOperands.push_back(op.getKernelOperand(i));
       newOperandsIdx.push_back(i);

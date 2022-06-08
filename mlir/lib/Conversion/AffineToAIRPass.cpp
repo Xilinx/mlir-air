@@ -623,7 +623,6 @@ public:
       auto &body = op.getBody()->getOperations();
       innerLoop.getBody()->getOperations().splice(
           innerLoop.getBody()->begin(), body, body.begin(), --body.end());
-      op->getParentOp()->dump();
       op = innerLoop;
     }
 
