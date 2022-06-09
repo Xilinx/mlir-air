@@ -703,7 +703,10 @@ def AIRPipelineReducePass : Pass<"air-pipeline-reduce", "func::FuncOp"> {
            "Pipeline depth to generate">,
     Option<"clPipelineDirection", "pipeline-direction", "std::string", 
             /*default=*/"\"horiz\"",
-            "Pipeline direction attribute to use. Can be 'vert' or 'horiz'">
+            "Pipeline direction attribute to use. Can be 'vert' or 'horiz'">,
+    Option<"clPromoteSubViews", "promote", "bool", 
+            /*default=*/"\"false\"",
+            "Promote subviews to memory buffers and insert copies.">
   ];
 }
 

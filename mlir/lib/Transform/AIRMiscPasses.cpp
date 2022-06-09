@@ -302,20 +302,26 @@ void AIRSpecializeDma::runOnOperation() {
   });
 }
 
-static Optional<Value>
-allocBufferCallBack(const linalg::LinalgPromotionOptions &options,
-                    OpBuilder &builder, memref::SubViewOp subView,
-                    ArrayRef<Value> boundingSubViewSize,
-                    Optional<unsigned> alignment, DataLayout &layout) {
+static Optional<Value> allocBufferCallBack(OpBuilder &b,
+                                           memref::SubViewOp subView,
+                                           ArrayRef<Value> boundingSubViewSize,
+                                           DataLayout &layout) {
   MemRefType viewType = subView.getType();
-  Value buffer =
-      builder.createOrFold<memref::AllocOp>(subView.getLoc(), viewType);
+  MemRefType allocType =
+      MemRefType::get(viewType.getShape(), viewType.getElementType(), {},
+                      (unsigned)xilinx::air::MemorySpace::L1);
+  Value buffer = b.createOrFold<memref::AllocOp>(subView.getLoc(), allocType);
   return buffer;
+}
+
+static LogicalResult deallocBufferCallBack(OpBuilder &b, Value buffer) {
+  b.create<memref::DeallocOp>(buffer.getLoc(), buffer);
+  return success();
 }
 
 FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
     PatternRewriter &b, linalg::LinalgOp op, unsigned int tile_size,
-    unsigned int pipeline_depth, std::string pipeline_direction) {
+    unsigned int pipeline_depth, std::string pipeline_direction, bool promote) {
 
   OpBuilder::InsertionGuard g(b);
   b.setInsertionPoint(op);
@@ -328,8 +334,9 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   if (isParallelIterator(iteratorTypes.back()))
     return failure();
 
-  int new_herd_x = (pipeline_direction == "horiz") ? pipeline_depth : 1;
-  int new_herd_y = (pipeline_direction == "vert") ? pipeline_depth : 1;
+  bool isHoriz = pipeline_direction == "horiz";
+  int new_herd_x = isHoriz ? pipeline_depth : 1;
+  int new_herd_y = !isHoriz ? pipeline_depth : 1;
 
   xilinx::air::HerdDim2 dims{b.create<arith::ConstantIndexOp>(loc, new_herd_x),
                              b.create<arith::ConstantIndexOp>(loc, new_herd_y)};
@@ -345,7 +352,8 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   SmallVector<Value, 4> tileSizeVector;
   auto zero = b.create<arith::ConstantIndexOp>(loc, 0);
   tileSizeVector.append(nLoops - 1, zero);
-  tileSizeVector.push_back(b.create<arith::ConstantIndexOp>(loc, tile_size));
+  auto tileSizeValue = b.create<arith::ConstantIndexOp>(loc, tile_size);
+  tileSizeVector.push_back(tileSizeValue);
 
   auto allShapeSizes = op.createFlatListOfOperandDims(b, loc);
   AffineMap shapeSizesToLoopsMap = op.getShapesToLoopsMap();
@@ -354,7 +362,9 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   auto sizeBounds =
       applyMapToValues(b, loc, shapeSizesToLoopsMap, allShapeSizes);
 
-  SmallVector<Value, 2> tileIds = {launch.getTileIds().x};
+  SmallVector<Value, 2> tileIds = {b.create<arith::MulIOp>(
+      loc, isHoriz ? launch.getTileIds().x : launch.getTileIds().y,
+      tileSizeValue)};
   SmallVector<Value, 4> tiledOperands = linalg::makeTiledShapes(
       b, loc, op, args, tileIds, tileSizeVector, sizeBounds, true);
   SmallVector<Type, 4> stageResultTypes;
@@ -391,17 +401,24 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
 
     for (auto o : opers) {
       auto a = stageBlock->addArgument(o.getType(), loc);
-      if (!a.getType().isa<MemRefType>())
+      if (!a.getType().isa<MemRefType>()) {
+        auto ty = tiledOperands[resultIdx].getType().cast<MemRefType>();
         tiledOperands[resultIdx] =
             b.create<bufferization::ToMemrefOp>(
-                 loc, tiledOperands[resultIdx].getType(), a)
+                 loc, MemRefType::get(ty.getShape(), ty.getElementType()), a)
                 .getResult();
+      }
     }
 
     linalg::LinalgOp linalgOp = op.clone(b, loc, {}, tiledOperands);
 
-    // b.setInsertionPoint(linalgOp);
-    // linalg::promoteSubViews(b, linalgOp, linalg::LinalgPromotionOptions());
+    if (promote) {
+      b.setInsertionPoint(linalgOp);
+      linalg::promoteSubViews(
+          b, linalgOp,
+          linalg::LinalgPromotionOptions().setAllocationDeallocationFns(
+              allocBufferCallBack, deallocBufferCallBack));
+    }
 
     b.setInsertionPointToEnd(stageBlock);
     auto t = b.create<bufferization::ToTensorOp>(loc, tiledOperands[resultIdx]);
@@ -427,12 +444,13 @@ struct PipelineReducePattern : public RewritePattern {
   PipelineReducePattern(MLIRContext *context,
                         linalg::LinalgTilingOptions options, int tile_size,
                         int pipeline_depth, std::string &pipeline_direction,
+                        bool promote,
                         linalg::LinalgTransformationFilter filter =
                             linalg::LinalgTransformationFilter(),
                         PatternBenefit benefit = 1)
       : RewritePattern(MatchAnyOpTypeTag(), benefit, context), filter(filter),
         options(options), tile_size(tile_size), pipeline_depth(pipeline_depth),
-        pipeline_direction(pipeline_direction) {}
+        pipeline_direction(pipeline_direction), promote(promote) {}
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
@@ -447,7 +465,7 @@ struct PipelineReducePattern : public RewritePattern {
       return failure();
 
     auto result = pipelineLinalgOp(rewriter, linalgOp, tile_size,
-                                   pipeline_depth, pipeline_direction);
+                                   pipeline_depth, pipeline_direction, promote);
     if (failed(result))
       return failure();
 
@@ -463,6 +481,7 @@ private:
   unsigned int tile_size;
   unsigned int pipeline_depth;
   std::string pipeline_direction;
+  bool promote;
 };
 
 class AIRPipelineReducePass
@@ -488,7 +507,7 @@ void AIRPipelineReducePass::runOnOperation() {
   RewritePatternSet patterns(ctx);
   patterns.add<PipelineReducePattern>(ctx, linalg::LinalgTilingOptions(),
                                       clTileSize, clPipelineDepth,
-                                      clPipelineDirection);
+                                      clPipelineDirection, clPromoteSubViews);
 
   (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
 }
@@ -524,20 +543,30 @@ void AIRFuseParallelHerdLaunchPass::runOnOperation() {
     if (parOp.getBody() != launch->getBlock())
       return;
 
-    // if the herd launch is size 1 in one dimension
-    // and the herd launch is enclosed by a 1-d scf.parallel
-    // then we try to fuse the scf.parallel onto the herd launch
-
     launchOp = launch;
   });
 
   if (!launchOp || !parOp)
     return;
 
-  OpBuilder b(parOp);
+  // if the herd launch is size 1 in one dimension
+  // and the herd launch is enclosed by a 1-d scf.parallel
+  // then we try to fuse the scf.parallel onto the herd launch
+  auto herd_size = launchOp.getHerdSizeOperands();
+  int64_t herd_size_x =
+      cast<arith::ConstantIndexOp>(herd_size.x.getDefiningOp()).value();
+  int64_t herd_size_y =
+      cast<arith::ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
+  if (herd_size_x != 1 && herd_size_y != 1)
+    return;
 
-  xilinx::air::HerdDim2 dims = {launchOp.getHerdSizeOperands().x,
-                                parOp.getUpperBound()[0]};
+  OpBuilder b(parOp);
+  xilinx::air::HerdDim2 dims;
+  if (herd_size_x == 1)
+    dims = {parOp.getUpperBound()[0], herd_size.y};
+  else
+    dims = {herd_size.x, parOp.getUpperBound()[0]};
+
   SmallVector<Value, 8> args;
   SmallVector<Value, 4> constants;
   llvm::SetVector<Value> region_args;
@@ -554,7 +583,9 @@ void AIRFuseParallelHerdLaunchPass::runOnOperation() {
       b.create<xilinx::air::HerdLaunchOp>(parOp.getLoc(), dims, args);
 
   BlockAndValueMapping remap;
-  remap.map(parOp.getInductionVars()[0], newLaunchOp.getTileIds().y);
+  remap.map(parOp.getInductionVars()[0], (herd_size_x == 1)
+                                             ? newLaunchOp.getTileIds().x
+                                             : newLaunchOp.getTileIds().y);
 
   b.setInsertionPointToStart(&newLaunchOp.body().front());
 
@@ -563,8 +594,12 @@ void AIRFuseParallelHerdLaunchPass::runOnOperation() {
       int idx = 0;
       remap.map(launchOp.getHerdSize().x, launchOp.getHerdSizeOperands().x);
       remap.map(launchOp.getHerdSize().y, launchOp.getHerdSizeOperands().y);
-      remap.map(launchOp.getTileIds().x, newLaunchOp.getTileIds().x);
-      remap.map(launchOp.getTileIds().y, launchOp.getHerdSizeOperands().y);
+      remap.map(launchOp.getTileIds().x, (herd_size_x == 1)
+                                             ? launchOp.getHerdSizeOperands().x
+                                             : newLaunchOp.getTileIds().x);
+      remap.map(launchOp.getTileIds().y,
+                (herd_size_x == 1) ? newLaunchOp.getTileIds().y
+                                   : launchOp.getHerdSizeOperands().y);
       for (auto &a : launchOp.getKernelArguments()) {
         auto v = launchOp.getKernelOperand(idx++);
         remap.map(a, remap.lookupOrDefault(v));
