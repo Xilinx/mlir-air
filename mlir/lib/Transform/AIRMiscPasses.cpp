@@ -196,7 +196,6 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
   });
   for (auto e : erasedOps)
     e->erase();
-  // module.dump();
 }
 
 // return true if op is a function of v
@@ -384,16 +383,17 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   pipe.body().push_back(pipelineBlock);
   b.setInsertionPointToStart(pipelineBlock);
 
+  Value firstOutputOperand = tiledOperands[resultIdx];
   Value inputOperand = nullptr;
   for (unsigned int i = 0; i < pipeline_depth; i++) {
     OpBuilder::InsertionGuard pipeline_guard(b);
-
+    bool last_stage = i == pipeline_depth - 1;
     SmallVector<Value, 1> opers;
     if (inputOperand)
       opers.push_back(inputOperand);
 
-    auto stage =
-        b.create<xilinx::air::PipelineStageOp>(loc, stageResultTypes, opers);
+    auto stage = b.create<xilinx::air::PipelineStageOp>(
+        loc, last_stage ? SmallVector<Type, 1>() : stageResultTypes, opers);
 
     Block *stageBlock = new Block();
     stage.body().push_back(stageBlock);
@@ -410,7 +410,21 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
       }
     }
 
+    if (last_stage)
+      tiledOperands[resultIdx] = firstOutputOperand;
+
     linalg::LinalgOp linalgOp = op.clone(b, loc, {}, tiledOperands);
+
+    b.setInsertionPointToEnd(stageBlock);
+
+    if (last_stage) {
+      b.create<xilinx::air::PipelineYieldOp>(loc, SmallVector<Value, 1>());
+    } else {
+      auto t =
+          b.create<bufferization::ToTensorOp>(loc, tiledOperands[resultIdx]);
+      b.create<xilinx::air::PipelineYieldOp>(loc, t.result());
+      inputOperand = stage.getResult(0);
+    }
 
     if (promote) {
       b.setInsertionPoint(linalgOp);
@@ -419,11 +433,6 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
           linalg::LinalgPromotionOptions().setAllocationDeallocationFns(
               allocBufferCallBack, deallocBufferCallBack));
     }
-
-    b.setInsertionPointToEnd(stageBlock);
-    auto t = b.create<bufferization::ToTensorOp>(loc, tiledOperands[resultIdx]);
-    b.create<xilinx::air::PipelineYieldOp>(loc, t.result());
-    inputOperand = stage.getResult(0);
   }
 
   SmallVector<Type, 1> pipeTys;
