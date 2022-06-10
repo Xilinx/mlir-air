@@ -471,54 +471,6 @@ public:
   AIRLinalgCodegen() = default;
   AIRLinalgCodegen(const AIRLinalgCodegen &pass) {}
 
-  Option<bool> AIRLinalgCodegenTestPatterns{
-      *this, "test-patterns", llvm::cl::desc("Test canonicalization patterns"),
-      llvm::cl::init(false)};
-
-  ListOption<unsigned> clHerdSize{*this, "herd-size",
-                                  llvm::cl::desc("Herd size to target"),
-                                  llvm::cl::ZeroOrMore};
-
-  ListOption<unsigned> clL1TileSize{
-      *this, "l1-tile-size",
-      llvm::cl::desc("Tile factors to pass to L1 tiling"),
-      llvm::cl::ZeroOrMore};
-
-  ListOption<unsigned> clL2TileSize{
-      *this, "l2-tile-size",
-      llvm::cl::desc("Tile factors to pass to L2 tiling"),
-      llvm::cl::ZeroOrMore};
-
-  ListOption<unsigned> clL1TileInterchange{
-      *this, "l1-tile-permute",
-      llvm::cl::desc("Tile permute vector to pass to L1 tiling"),
-      llvm::cl::ZeroOrMore};
-
-  ListOption<unsigned> clL2TileInterchange{
-      *this, "l2-tile-permute",
-      llvm::cl::desc("Tile permute vector to pass to L2 tiling"),
-      llvm::cl::ZeroOrMore};
-
-  Option<bool> clL1Promote{*this, "l1-promote",
-                           llvm::cl::desc("Promote tiles to L1 memory"),
-                           llvm::cl::init(true)};
-
-  Option<bool> clL2Promote{*this, "l2-promote",
-                           llvm::cl::desc("Promote tiles to L2 memory"),
-                           llvm::cl::init(true)};
-
-  Option<unsigned> clL1MaxSize{*this, "L1-size",
-                               llvm::cl::desc("L1 allocation limit in bytes"),
-                               llvm::cl::init(32 * 1024)};
-
-  Option<unsigned> clL2MaxSize{*this, "L2-size",
-                               llvm::cl::desc("L2 allocation limit in bytes"),
-                               llvm::cl::init(/*256*1024*/ 0)};
-
-  Option<std::string> clInputFilter{*this, "input-filter",
-                                    llvm::cl::desc("Input filter"),
-                                    llvm::cl::init("")};
-
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<AffineDialect, memref::MemRefDialect, linalg::LinalgDialect,
                     scf::SCFDialect, air::airDialect, func::FuncDialect>();

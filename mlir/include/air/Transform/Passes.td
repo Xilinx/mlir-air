@@ -157,6 +157,36 @@ def AIRLinalgCodegen : Pass<"air-linalg-codegen", "ModuleOp"> {
     This pass implements some tiling strategies for linalg ops targeting AIR
     dialect.
   }];
+  let options = [
+    ListOption<"clHerdSize", "herd-size", "unsigned",
+               "Herd size to target", "llvm::cl::ZeroOrMore">,
+    ListOption<"clL1TileSize", "l1-tile-size", "unsigned",
+               "Tile factors to pass to L1 tiling",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clL2TileSize", "l2-tile-size", "unsigned",
+               "Tile factors to pass to L2 tiling",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clL1TileInterchange", "l1-tile-permute", "unsigned",
+               "Tile permute vector to pass to L1 tiling",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clL2TileInterchange", "l2-tile-permute", "unsigned",
+               "Tile permute vector to pass to L2 tiling",
+               "llvm::cl::ZeroOrMore">,
+    Option<"clL1Promote", "l1-promote", "bool", "true",
+           "Promote tiles to L1 memory">,
+    Option<"clL2Promote", "l2-promote", "bool", "true",
+           "Promote tiles to L2 memory">,
+    Option<"clL1MaxSize", "l1-size", "unsigned", "32768",
+           "L1 allocation limit in bytes">,
+    Option<"clL2MaxSize", "l2-size", "unsigned", "0",
+           "L2 allocation limit in bytes">,
+    Option<"clInputFilter", "input-filter", "std::string", 
+            /*default=*/"",
+            "Input filter for linalg transformations">,
+    Option<"AIRLinalgCodegenTestPatterns", "test-patterns", "bool",
+            "true", "test patterns">
+
+  ];
 }
 
 def AIRLinalgOpStats : Pass<"air-linalg-op-stats", "ModuleOp"> {
