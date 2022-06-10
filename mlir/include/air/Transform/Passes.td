@@ -172,6 +172,12 @@ def AIRLinalgCodegen : Pass<"air-linalg-codegen", "ModuleOp"> {
     ListOption<"clL2TileInterchange", "l2-tile-permute", "unsigned",
                "Tile permute vector to pass to L2 tiling",
                "llvm::cl::ZeroOrMore">,
+    ListOption<"clL1OperandsToPromote", "l1-promote-operands", "unsigned",
+               "Indices of subviews to promote",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clL2OperandsToPromote", "l2-promote-operands", "unsigned",
+               "Indices of subviews to promote",
+               "llvm::cl::ZeroOrMore">,
     Option<"clL1Promote", "l1-promote", "bool", "true",
            "Promote tiles to L1 memory">,
     Option<"clL2Promote", "l2-promote", "bool", "true",
@@ -184,7 +190,7 @@ def AIRLinalgCodegen : Pass<"air-linalg-codegen", "ModuleOp"> {
             /*default=*/"",
             "Input filter for linalg transformations">,
     Option<"AIRLinalgCodegenTestPatterns", "test-patterns", "bool",
-            "true", "test patterns">
+            "false", "test patterns">
 
   ];
 }
