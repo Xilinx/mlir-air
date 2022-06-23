@@ -1032,7 +1032,10 @@ private:
       v_a = g_to_tr[getGraphGVertexFromAIROp(op)];
     }
     else if (auto op = dyn_cast<scf::ForOp>(a)){
-      v_a = getGraphGVertexFromAIROp(op); // g_to_tr not needed since wait_all created after TR
+      v_a = getGraphGVertexFromAIROp(op); // g_to_tr not needed since wait_all is created after TR
+    }
+    else if (auto op = dyn_cast<scf::ParallelOp>(a)){
+      v_a = getGraphGVertexFromAIROp(op); // g_to_tr not needed since wait_all is created after TR
     }
     else if (auto op = dyn_cast<air::WaitAllOp>(a)){
       v_a = getGraphGVertexFromAIROp(op);
@@ -1047,7 +1050,10 @@ private:
       v_b = g_to_tr[getGraphGVertexFromAIROp(op)];
     }
     else if (auto op = dyn_cast<scf::ForOp>(b)){
-      v_b = getGraphGVertexFromAIROp(op); // g_to_tr not needed since wait_all created after TR
+      v_b = getGraphGVertexFromAIROp(op); // g_to_tr not needed since wait_all is created after TR
+    }
+    else if (auto op = dyn_cast<scf::ParallelOp>(b)){
+      v_b = getGraphGVertexFromAIROp(op); // g_to_tr not needed since wait_all is created after TR
     }
     else if (auto op = dyn_cast<air::WaitAllOp>(b)){
       v_b = getGraphGVertexFromAIROp(op);
