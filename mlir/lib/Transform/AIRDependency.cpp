@@ -508,21 +508,6 @@ public:
     }
 
     // Final traversal: Clean up
-    // Remove wait_all with single operand.
-    // Remove wait_all's id attribute.
-    for (auto f : module.getOps<func::FuncOp>()) {
-      f.walk([&](Operation *op) {
-        if (air::WaitAllOp wa_op = dyn_cast<air::WaitAllOp>(op)) {
-          if (wa_op.getAsyncDependencies().size() == 1){
-            wa_op.getAsyncToken().replaceAllUsesWith(wa_op.getAsyncDependencies()[0]);
-            wa_op.erase();
-          }
-          else{
-            wa_op->removeAttr("id");
-          }
-        }
-      });
-    }
     // Remove repetition in dependency list.
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
@@ -552,7 +537,21 @@ public:
       });
     }
 
-
+    // Remove wait_all with single operand.
+    // Remove wait_all's id attribute.
+    for (auto f : module.getOps<func::FuncOp>()) {
+      f.walk([&](Operation *op) {
+        if (air::WaitAllOp wa_op = dyn_cast<air::WaitAllOp>(op)) {
+          if (wa_op.getAsyncDependencies().size() == 1){
+            wa_op.getAsyncToken().replaceAllUsesWith(wa_op.getAsyncDependencies()[0]);
+            wa_op.erase();
+          }
+          else{
+            wa_op->removeAttr("id");
+          }
+        }
+      });
+    }
 
     // Dump graph
     dump_graph("out.dot");
