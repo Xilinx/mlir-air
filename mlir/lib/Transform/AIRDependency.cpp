@@ -986,11 +986,18 @@ private:
         for (unsigned lh_operand_id = 0; lh_operand_id < lh.getNumKernelOperands(); lh_operand_id++){
           if (lh.getKernelArguments()[lh_operand_id] == operand.memrefValue){
             auto ancestor_op = lh.getKernelOperand(lh_operand_id);
-            pushDepsAtCurrentScope<air::HerdLaunchOp>(ancestor_op, lh, dep_tracing_mode);
-            // Trace the defining op of sink op, RAW
-            pushDefiningOpAsDep<air::HerdLaunchOp>(ancestor_op, lh);
+            partialMemref ancestor_operand = createPartialMemref(ancestor_op, operand.numDims);
+            SmallVector<partialMemref, 1> ancestor_operands = {ancestor_operand};
+            traceDeps<air::HerdLaunchOp>(ancestor_operands, lh, dep_type);
           }
         }
+      }
+
+      // Check if operand is returned from memref.subview
+      if (auto subview = operand.memrefValue.getDefiningOp<memref::SubViewOp>()){
+        partialMemref subview_tile = createPartialMemref(subview.source(), subview.sizes().size(), subview.offsets());
+        SmallVector<partialMemref, 1> subview_operands = {subview_tile};
+        traceDeps<T>(subview_operands, sink_air_op, dep_type);
       }
     }
   }
