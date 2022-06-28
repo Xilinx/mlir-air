@@ -32,6 +32,7 @@
 #include "test_library.h"
 
 #include <stdlib.h>
+#include <string>
 
 extern "C" {
 
@@ -94,6 +95,10 @@ hsa_status_t air_packet_l2_dma(dispatch_packet_t *pkt, uint64_t stream, l2_dma_c
 hsa_status_t air_packet_cdma_memcpy(dispatch_packet_t *pkt, uint64_t dest,
                                     uint64_t source, uint32_t length);
 
+hsa_status_t air_packet_cdma_configure(dispatch_packet_t *pkt, uint64_t dest,
+                                       uint64_t source, uint32_t length);
+
+
 hsa_status_t air_packet_aie_lock_range(dispatch_packet_t *pkt, uint16_t herd_id,
                                  uint64_t lock_id, uint64_t acq_rel, uint64_t value,
                                  uint8_t start_col, uint8_t num_cols,
@@ -102,6 +107,10 @@ hsa_status_t air_packet_aie_lock_range(dispatch_packet_t *pkt, uint16_t herd_id,
 hsa_status_t air_packet_aie_lock(dispatch_packet_t *pkt, uint16_t herd_id,
                                  uint64_t lock_id, uint64_t acq_rel, uint64_t value,
                                  uint8_t col, uint8_t row);
+
+hsa_status_t air_packet_tile_status(dispatch_packet_t *pkt, uint8_t col, uint8_t row);
+hsa_status_t air_packet_dma_status(dispatch_packet_t *pkt, uint8_t col, uint8_t row);
+hsa_status_t air_packet_shimdma_status(dispatch_packet_t *pkt, uint8_t col);
 
 hsa_status_t air_packet_nd_memcpy(dispatch_packet_t *pkt, uint16_t herd_id,
                                  uint8_t col, uint8_t direction, uint8_t channel,
@@ -206,5 +215,9 @@ uint64_t air_mem_get_paddr(void *vaddr);
 int air_mem_free(void *vaddr, size_t size);
 
 }
+
+std::string air_get_ddr_bar();
+std::string air_get_aie_bar();
+std::string air_get_bram_bar();
 
 #endif // AIR_HOST_H

@@ -153,7 +153,8 @@ def run(mlir_module, args):
     do_call(['llvm-dis', aie_ctrl_llvm_opt_bc, '-o', aie_ctrl_llvm_opt_ir])
 
     aie_ctrl_obj = opts.tmpdir+'/'+air_mlir_filename+'.o'
-    do_call(['clang', '-Wno-override-module', '-fPIC', '--target=aarch64-linux-gnu', '-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
+    do_call(['clang', '-Wno-override-module', '-fPIC', '-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
+    #do_call(['clang', '-Wno-override-module', '-fPIC', '--target=aarch64-linux-gnu', '-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
 
     # make aie elf files and host .o files for each herd in the program
 
@@ -189,7 +190,8 @@ def run(mlir_module, args):
       with open(cpp_file, 'w') as f:
         f.write(emit_wrapper(herd, inc_file))
 
-      cmd = [opts.cc, '-std=c++11', '--target=aarch64-linux-gnu', '-g']
+      #cmd = [opts.cc, '-std=c++11', '--target=aarch64-linux-gnu', '-g']
+      cmd = [opts.cc, '-std=c++11', '-g']
       if opts.sysroot:
         cmd += ['--sysroot=%s' % opts.sysroot]
       cmd += ['-I.', f'-I{opts.sysroot}/opt/xaienginev2/include']
@@ -209,7 +211,8 @@ def run(mlir_module, args):
     if opts.shared:
       cmd = ['clang', '-shared']
       cmd += ['--sysroot', opts.sysroot] if opts.sysroot!="" else []
-      cmd += ['-fuse-ld=lld', '--target=aarch64-linux-gnu', '-o', lib_file] + obj_files
+      cmd += ['-fuse-ld=lld', '-o', lib_file] + obj_files
+      #cmd += ['-fuse-ld=lld', '--target=aarch64-linux-gnu', '-o', lib_file] + obj_files
     else:
       cmd = ['llvm-ar', 'rc', lib_file] + obj_files
     do_call(cmd)
@@ -264,7 +267,8 @@ def run_flow(opts):
     do_call(['llvm-dis', aie_ctrl_llvm_opt_bc, '-o', aie_ctrl_llvm_opt_ir])
 
     aie_ctrl_obj = opts.tmpdir+'/'+air_mlir_filename+'.o'
-    do_call(['clang', '-Wno-override-module', '-fPIC', '--target=aarch64-linux-gnu', '-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
+    #do_call(['clang', '-Wno-override-module', '-fPIC', '--target=aarch64-linux-gnu', '-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
+    do_call(['clang', '-Wno-override-module', '-fPIC', '-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
 
     t = do_run(['air-translate', '--airrt-generate-json', aie_ctrl_airrt])
 
@@ -293,7 +297,8 @@ def run_flow(opts):
       with open(cpp_file, 'w') as f:
         f.write(emit_wrapper(herd, inc_file))
 
-      cmd = [opts.cc, '-std=c++11', '--target=aarch64-linux-gnu', '-g']
+      #cmd = [opts.cc, '-std=c++11', '--target=aarch64-linux-gnu', '-g']
+      cmd = [opts.cc, '-std=c++11', '-g']
       if opts.sysroot:
         cmd += ['--sysroot=%s' % opts.sysroot]
       cmd += ['-I.', f'-I{opts.sysroot}/opt/xaienginev2/include']
@@ -311,7 +316,8 @@ def run_flow(opts):
     if opts.shared:
       cmd = ['clang', '-shared']
       cmd += ['--sysroot', opts.sysroot] if opts.sysroot!="" else []
-      cmd += ['-fuse-ld=lld', '--target=aarch64-linux-gnu', '-o', lib_file] + obj_files
+      cmd += ['-fuse-ld=lld', '-o', lib_file] + obj_files
+      #cmd += ['-fuse-ld=lld', '--target=aarch64-linux-gnu', '-o', lib_file] + obj_files
     else:
       cmd = ['llvm-ar', 'rc', lib_file] + obj_files
     do_call(cmd)

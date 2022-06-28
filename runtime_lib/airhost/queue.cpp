@@ -27,12 +27,14 @@
 #include <sys/mman.h>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 #include <cstdio>
 #include <vector>
 #include <iostream>
 
 #include "air_host.h"
+
 #include "acdc_queue.h"
 
 hsa_status_t air_get_agents(void *data) {
@@ -46,13 +48,23 @@ hsa_status_t air_get_agents(void *data) {
 
   uint64_t total_controllers = 0;
 
-  int fd = open("/dev/mem", O_RDWR | O_SYNC);
+//#ifdef AIR_PCIE
+  int fd = open("/sys/bus/pci/devices/0000:21:00.0/resource4", O_RDWR | O_SYNC);
   if (fd == -1)
     return HSA_STATUS_ERROR;
 
   uint64_t *bram_base =
       reinterpret_cast<uint64_t *>(mmap(NULL, 0x1000, PROT_READ | PROT_WRITE,
-                                        MAP_SHARED, fd, AIR_VCK190_SHMEM_BASE));
+                                        MAP_SHARED, fd, 0));
+//#else
+//  int fd = open("/dev/mem", O_RDWR | O_SYNC);
+//  if (fd == -1)
+//    return HSA_STATUS_ERROR;
+//
+//  uint64_t *bram_base =
+//      reinterpret_cast<uint64_t *>(mmap(NULL, 0x1000, PROT_READ | PROT_WRITE,
+//                                        MAP_SHARED, fd, AIR_VCK190_SHMEM_BASE));
+//#endif
 
   total_controllers = bram_base[65];
   if (total_controllers < 1) {
@@ -67,11 +79,11 @@ hsa_status_t air_get_agents(void *data) {
     pAgents->push_back(a);
   }
 
-  //auto res = munmap(bram_base, 0x1000);
-  //if (res) {
-  //  std::cerr << "Could not munmap" << std::endl;
-  //  return HSA_STATUS_ERROR;
-  //}
+  auto res = munmap(bram_base, 0x1000);
+  if (res) {
+    std::cerr << "Could not munmap" << std::endl;
+    return HSA_STATUS_ERROR;
+  }
 
   return HSA_STATUS_SUCCESS;
 }
@@ -104,20 +116,40 @@ hsa_status_t air_get_agent_info(queue_t *queue, air_agent_info_t attribute, void
 
 hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue, uint64_t paddr)
 {
-  int fd = open("/dev/mem", O_RDWR | O_SYNC);
+//#ifdef AIR_PCIE
+  std::string bar_dev_file = air_get_bram_bar();
+  int fd = open(bar_dev_file.c_str(), O_RDWR | O_SYNC);
   if (fd == -1)
     return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
-
+ 
+  paddr -= AIR_VCK190_SHMEM_BASE; 
   uint64_t paddr_aligned = paddr & 0xfffffffffffff000;
   uint64_t paddr_offset = paddr & 0x0000000000000fff;
-
-  uint64_t *bram_ptr = (uint64_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, paddr_aligned);
+ 
+  uint64_t *bram_ptr = (uint64_t *)mmap(NULL, 0x100000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, paddr_aligned);
 
   //printf("Opened shared memory paddr: %p vaddr: %p\n", paddr, bram_ptr);
-  uint64_t q_paddr = bram_ptr[paddr_offset/sizeof(uint64_t)];
-  uint64_t q_offset = q_paddr - paddr;
-  queue_t *q = (queue_t*)( ((size_t)bram_ptr) + q_offset + paddr_offset );
-  //printf("Queue location at paddr: %p vaddr: %p\n", bram_ptr[paddr_offset/sizeof(uint64_t)], q);
+  uint64_t q_paddr = bram_ptr[paddr_offset/sizeof(uint64_t)] - AIR_VCK190_SHMEM_BASE;
+  uint64_t q_offset = q_paddr;
+  queue_t *q = (queue_t*)( ((size_t)bram_ptr) + q_offset + paddr_offset);
+  //printf("Queue location at paddr: %p vaddr: %p\n", bram_ptr[paddr_offset/sizeof(uint64_t)]-AIR_VCK190_SHMEM_BASE, q);
+
+//#else
+//  int fd = open("/dev/mem", O_RDWR | O_SYNC);
+//  if (fd == -1)
+//    return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
+//
+//  uint64_t paddr_aligned = paddr & 0xfffffffffffff000;
+//  uint64_t paddr_offset = paddr & 0x0000000000000fff;
+//
+//  uint64_t *bram_ptr = (uint64_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, paddr_aligned);
+//
+//  //printf("Opened shared memory paddr: %p vaddr: %p\n", paddr, bram_ptr);
+//  uint64_t q_paddr = bram_ptr[paddr_offset/sizeof(uint64_t)];
+//  uint64_t q_offset = q_paddr - paddr;
+//  queue_t *q = (queue_t*)( ((size_t)bram_ptr) + q_offset + paddr_offset );
+//  //printf("Queue location at paddr: %p vaddr: %p\n", bram_ptr[paddr_offset/sizeof(uint64_t)], q);
+//#endif
 
   if (q->id !=  0xacdc) {
     //printf("%s error invalid id %x\n", __func__, q->id);
@@ -134,9 +166,15 @@ hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue, uin
     return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
   }
 
-  uint64_t base_address_offset = q->base_address - paddr_aligned;
+//#ifdef AIR_PCIE
+  uint64_t base_address_offset = q->base_address - AIR_VCK190_SHMEM_BASE;
   q->base_address_vaddr = ((size_t)bram_ptr) + base_address_offset;
   q->base_address_paddr = q->base_address;
+//#else
+//  uint64_t base_address_offset = q->base_address - paddr_aligned;
+//  q->base_address_vaddr = ((size_t)bram_ptr) + base_address_offset;
+//  q->base_address_paddr = q->base_address;
+//#endif
 
   *queue = q;
   return HSA_STATUS_SUCCESS;
@@ -233,6 +271,42 @@ hsa_status_t air_packet_hello(dispatch_packet_t *pkt, uint64_t value) {
   pkt->arg[0] = value;
 
   pkt->type  = AIR_PKT_TYPE_HELLO;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
+
+  return HSA_STATUS_SUCCESS;
+}
+
+hsa_status_t air_packet_tile_status(dispatch_packet_t *pkt, uint8_t col, uint8_t row) {
+  initialize_packet(pkt);
+
+  pkt->arg[0] = col;
+  pkt->arg[1] = row;
+
+  pkt->type  = AIR_PKT_TYPE_CORE_STATUS;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
+
+  return HSA_STATUS_SUCCESS;
+}
+
+hsa_status_t air_packet_dma_status(dispatch_packet_t *pkt, uint8_t col, uint8_t row) {
+  initialize_packet(pkt);
+
+  pkt->arg[0] = col;
+  pkt->arg[1] = row;
+
+  pkt->type  = AIR_PKT_TYPE_TDMA_STATUS;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
+
+  return HSA_STATUS_SUCCESS;
+}
+
+hsa_status_t air_packet_shimdma_status(dispatch_packet_t *pkt, uint8_t col) {
+  initialize_packet(pkt);
+
+  pkt->arg[0] = col;
+  pkt->arg[1] = 0;
+
+  pkt->type  = AIR_PKT_TYPE_SDMA_STATUS;
   pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
 
   return HSA_STATUS_SUCCESS;

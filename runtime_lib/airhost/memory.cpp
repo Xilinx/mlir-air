@@ -35,7 +35,7 @@
 #include <string.h>     /* for memset() */
 #include <fcntl.h>      /* for open() */
 
-#include <xaiengine.h>
+//#include <xaiengine.h>
 
 extern "C" {
 
@@ -125,7 +125,6 @@ int64_t shim_channel_data(air_herd_shim_desc_t *sd, int i, int j, int k) {
 
 }
 
-
 #define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
 #define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
 
@@ -144,19 +143,16 @@ void air_shim_memcpy4d_queue_impl(uint32_t id, uint64_t x, uint64_t y, void* t,
 
   tensor_t<uint32_t,4> *tt = (tensor_t<uint32_t,4> *)t;
 
-  // printf("Do queue transfer %p with id %ld of length %ld on behalf of x=%ld,
-  // y=%ld shim col %ld channel %ld, offset %ld,%ld,%ld,%ld, stride %ld, elem
-  // %ld\n",
-  //         tt->data, id, length, x, y, shim_col, shim_chan, offset_3,
-  //         offset_2, offset_1, offset_0, stride, elem_per_stride);
+  // printf("Do queue transfer %p with id %ld of length %ld on behalf of x=%ld, y=%ld shim col %ld channel %ld, offset %ld,%ld,%ld,%ld, stride %ld, elem %ld\n",
+  //         tt->data, id, length, x, y, shim_col, shim_chan, offset_3, offset_2, offset_1, offset_0, stride, elem_per_stride);
 
   uint32_t *bounce_buffer = _air_host_bram_ptr;
   bool isMM2S = shim_chan >= 2;
 
-  uint32_t *data_ptr = tt->data +
-                       (offset_3 * tt->shape[3] * tt->shape[2] * tt->shape[1]) +
-                       (offset_2 * tt->shape[3] * tt->shape[2]) +
-                       (offset_1 * tt->shape[3]) + offset_0;
+  uint32_t *data_ptr = tt->data + (offset_3 * tt->shape[3] * tt->shape[2] * tt->shape[1]) +
+                                (offset_2 * tt->shape[3] * tt->shape[2]) +
+                                (offset_1 * tt->shape[3]) + 
+                                offset_0;
   if (isMM2S) {
     shim_chan = shim_chan - 2;
     uint32_t *bounce_ptr = bounce_buffer;
@@ -209,10 +205,8 @@ void air_shim_memcpy2d_queue_impl(uint32_t id, uint64_t x, uint64_t y, void* t,
 
   tensor_t<uint32_t,2> *tt = (tensor_t<uint32_t,2> *)t;
 
-  // printf("Do queue transfer %p with id %ld of length %ld on behalf of x=%ld,
-  // y=%ld shim col %ld channel %ld, offset %ld,%ld, stride %ld, elem %ld\n",
-  //         tt->data, id, length, x, y, shim_col, shim_chan, offset_y,
-  //         offset_x, stride, elem_per_stride);
+  // printf("Do queue transfer %p with id %ld of length %ld on behalf of x=%ld, y=%ld shim col %ld channel %ld, offset %ld,%ld, stride %ld, elem %ld\n",
+  //         tt->data, id, length, x, y, shim_col, shim_chan, offset_y, offset_x, stride, elem_per_stride);
 
   uint32_t *bounce_buffer = _air_host_bram_ptr;
   bool isMM2S = shim_chan >= 2;
@@ -313,7 +307,7 @@ void air_mem_cdma_nd_memcpy_queue_impl(tensor_t<T0, R0>* t0, tensor_t<T1, R1>* t
   //assert(length_2d<=1 && length_3d<=1 && length_4d<=1 && "ERROR: CDMA memcpy only supports 1D DMAs");
 
   //printf("Do CDMA transfer dst %p src %p dst space %d, src space %d, offset [%ld,%ld,%ld,%ld], length [%ld,%ld,%ld,%ld], stride [%ld,%ld,%ld]\n",
-  //       t0->d, t1->d, space0, space1,
+  //       t0->data, t1->data, space0, space1,
   //       offset_3, offset_2, offset_1, offset_0,
   //       length_4d, length_3d, length_2d, length_1d,
   //       stride_4d, stride_3d, stride_2d);
@@ -408,11 +402,9 @@ void air_mem_shim_nd_memcpy_queue_impl(signal_t *s, uint32_t id, uint64_t x,
   auto shim_col = shim_location_data(shim_desc, id-1, x, y);
   auto shim_chan = shim_channel_data(shim_desc, id-1, x, y);
 
-  // printf("Do transfer %p with id %d on behalf of x=%ld, y=%ld space %d, col
-  // %d, dir %d, chan %d, offset [%ld,%ld,%ld,%ld], length [%ld,%ld,%ld,%ld],
-  // stride [%ld,%ld,%ld]\n",
-  //       t->data, id, x, y, space, shim_col, shim_chan>=2, (shim_chan>=2) ?
-  //       shim_chan-2 : shim_chan, offset_3, offset_2, offset_1, offset_0,
+  // printf("Do transfer %p with id %d on behalf of x=%ld, y=%ld space %d, col %d, dir %d, chan %d, offset [%ld,%ld,%ld,%ld], length [%ld,%ld,%ld,%ld], stride [%ld,%ld,%ld]\n",
+  //       t->data, id, x, y, space, shim_col, shim_chan>=2, (shim_chan>=2) ? shim_chan-2 : shim_chan,
+  //       offset_3, offset_2, offset_1, offset_0,
   //       length_4d, length_3d, length_2d, length_1d,
   //       stride_4d, stride_3d, stride_2d);
 
@@ -434,11 +426,8 @@ void air_mem_shim_nd_memcpy_queue_impl(signal_t *s, uint32_t id, uint64_t x,
     uint64_t packet_id = wr_idx % _air_host_active_herd.q->size;
 
     dispatch_packet_t *pkt = (dispatch_packet_t*)(_air_host_active_herd.q->base_address_vaddr) + packet_id;
-    air_packet_nd_memcpy(
-        pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S, shim_chan,
-        /*burst_len=*/4, /*memory_space=*/space, (uint64_t)t->data + offset,
-        length_1d * sizeof(T), length_2d, stride_2d * sizeof(T), length_3d,
-        stride_3d * sizeof(T), length_4d, stride_4d * sizeof(T));
+    air_packet_nd_memcpy(pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S, shim_chan, /*burst_len=*/4, /*memory_space=*/space,
+                         (uint64_t)t->data + offset, length_1d*sizeof(T), length_2d, stride_2d*sizeof(T), length_3d, stride_3d*sizeof(T), length_4d, stride_4d*sizeof(T));
     if (s) {
       air_queue_dispatch(_air_host_active_herd.q, wr_idx, pkt);
       uint64_t signal_offset = offsetof(dispatch_packet_t, completion_signal);
@@ -533,9 +522,7 @@ void air_mem_shim_nd_memcpy_impl(uint32_t id, uint64_t x, uint64_t y, tensor_t<T
                                 uint64_t length_4d, uint64_t length_3d, uint64_t length_2d, uint64_t length_1d,
                                 uint64_t stride_4d, uint64_t stride_3d, uint64_t stride_2d)
 {
-  // printf("Do transfer %p with id %d on behalf of x=%ld, y=%ld space %d,
-  // offset [%ld,%ld,%ld,%ld], length [%ld,%ld,%ld,%ld], stride
-  // [%ld,%ld,%ld]\n",
+  // printf("Do transfer %p with id %d on behalf of x=%ld, y=%ld space %d, offset [%ld,%ld,%ld,%ld], length [%ld,%ld,%ld,%ld], stride [%ld,%ld,%ld]\n",
   //        t->data, id, x, y, space,
   //        offset_3, offset_2, offset_1, offset_0,
   //        length_4d, length_3d, length_2d, length_1d,

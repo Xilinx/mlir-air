@@ -47,6 +47,8 @@ target_link_libraries(airhost
   dl
 )
 
+set(CMAKE_CXX_FLAGS "-DLIBXAIENGINEV2")
+
 set_target_properties(airhost PROPERTIES
          LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/runtime_lib)
 install(TARGETS airhost DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/airhost)
