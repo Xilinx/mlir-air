@@ -35,7 +35,7 @@ ParseResult ModuleMetadataOp::parse(OpAsmParser &parser,
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();
   auto *body = result.addRegion();
-  if (parser.parseRegion(*body, llvm::None, llvm::None))
+  if (parser.parseRegion(*body, llvm::None, false))
     return failure();
   ModuleMetadataOp::ensureTerminator(*body, parser.getBuilder(),
                                      result.location);

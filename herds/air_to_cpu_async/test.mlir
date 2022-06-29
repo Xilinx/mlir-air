@@ -1,6 +1,6 @@
 
 module attributes {torch.debug_module_name = "mmult"}  {
-  func @forward(%arg0: memref<1024x1024xi32>, %arg1: memref<1024x1024xi32>, %arg2: memref<?x?xi32>) {
+  func.func @forward(%arg0: memref<1024x1024xi32>, %arg1: memref<1024x1024xi32>, %arg2: memref<?x?xi32>) {
     %c0_i32 = arith.constant 0 : i32
     %c64 = arith.constant 64 : index
     %c512 = arith.constant 512 : index

@@ -3,7 +3,7 @@
 // RUN: air-opt %s | FileCheck %s
 // CHECK: module
 module  {
-  func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
+  func.func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
     %0 = airrt.alloc : memref<1024xi32, 1>
     affine.for %arg2 = 0 to 1 {
       affine.for %arg3 = 0 to 1 {
@@ -24,7 +24,7 @@ module  {
 
 // CHECK: module
 module  {
-  func @foo(%arg0: memref<256x256xi32>, %arg1: memref<128x128xi32, 1>) {
+  func.func @foo(%arg0: memref<256x256xi32>, %arg1: memref<128x128xi32, 1>) {
     affine.for %arg2 = 0 to 1 {
       affine.for %arg3 = 0 to 1 {
         %c16 = arith.constant 16 : index

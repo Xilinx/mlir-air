@@ -15,7 +15,7 @@
 // CHECK:         %[[VAL_18:.*]] = memref.subview %0{{\[}}%[[VAL_16]], %[[VAL_17]]] [16, 16] [1, 1] : memref<1024x1024xf32> to memref<16x16xf32, #map>
 #map = affine_map<(d0, d1)[s0] -> (d0 * 1024 + s0 + d1)>
 module  {
-  func @myFunc(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1024xf32>) -> memref<1024x1024xf32> {
+  func.func @myFunc(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1024xf32>) -> memref<1024x1024xf32> {
     %c16 = arith.constant 16 : index
     %c0 = arith.constant 0 : index
     %c1024 = arith.constant 1024 : index

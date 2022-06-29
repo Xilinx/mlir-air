@@ -1,6 +1,6 @@
 #map = affine_map<()[s0] -> (s0 * 32)>
 module attributes {torch.debug_module_name = "mmult"} {
-  func @forward(%arg0: memref<64x64xi32>, %arg1: memref<64x64xi32>, %arg2: memref<64x64xi32>) {
+  func.func @forward(%arg0: memref<64x64xi32>, %arg1: memref<64x64xi32>, %arg2: memref<64x64xi32>) {
     %c2 = arith.constant 2 : index
     %c0_i32 = arith.constant 0 : i32
     %0 = memref.alloc() {alignment = 128 : i64} : memref<64x64xi32>

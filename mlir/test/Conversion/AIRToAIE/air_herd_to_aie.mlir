@@ -3,7 +3,7 @@
 // RUN: air-opt %s -air-to-aie | FileCheck %s
 module {
 
-func @foo(%arg0: i32) {
+func.func @foo(%arg0: i32) {
   %cst1 = arith.constant 1 : index
   // CHECK-LABEL: module @aie.herd_0
   // CHECK: %[[VAR1:.*]] = AIE.tile(0, 0)

@@ -21,13 +21,9 @@ AIRDialect
 AIRRtDialect
 AIRUtil
 AIE
-MLIRAffine
 MLIRIR
-MLIRLinalg
 MLIRLinalgUtils
 MLIRLinalgTransforms
-MLIRLLVMIR
-MLIRSCF
 MLIRSupport
 MLIRTransforms
 )

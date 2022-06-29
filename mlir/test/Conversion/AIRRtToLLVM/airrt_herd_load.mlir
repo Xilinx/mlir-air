@@ -12,7 +12,7 @@ module {
         airrt.herd_metadata { sym_name = "elk", dma_allocations = [] }
         airrt.herd_metadata { sym_name = "deer", dma_allocations = [] }
     }
-    func @f() {
+    func.func @f() {
         %ret1 = airrt.herd_load "elk" : i64
         airrt.herd_load "deer" : i64
         return

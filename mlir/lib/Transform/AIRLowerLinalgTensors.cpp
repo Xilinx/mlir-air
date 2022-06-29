@@ -37,7 +37,7 @@ struct RemoveBufferCastPattern
     if (!load)
       return failure();
       
-    auto buffer = load.memref();
+    auto buffer = load.getMemref();
     if (!buffer)
       return failure();
     rewriter.replaceOp(op, buffer);
@@ -135,7 +135,7 @@ void AIRLowerLinalgTensors::runOnOperation() {
 
   bufferization::BufferizationOptions options =
       bufferization::getPartialBufferizationOptions();
-  options.allowDialectInFilter<linalg::LinalgDialect>();
+  options.opFilter.allowDialect<linalg::LinalgDialect>();
 
   if (failed(bufferizeOp(getOperation(), options)))
     signalPassFailure();

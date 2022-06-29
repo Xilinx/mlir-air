@@ -13,7 +13,7 @@
 #map1 = affine_map<() -> (0)>
 #map2 = affine_map<() -> (4)>
 module {
-  func @graph(%arg0: tensor<4x4xf32>) -> tensor<4x4xf32> {
+  func.func @graph(%arg0: tensor<4x4xf32>) -> tensor<4x4xf32> {
     %0 = arith.constant 1.0 : f32
     %1 = memref.alloc() : memref<4x4xf32>
     %2 = bufferization.to_memref %arg0 : memref<4x4xf32>

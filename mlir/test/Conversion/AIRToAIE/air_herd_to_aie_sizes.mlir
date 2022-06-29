@@ -2,7 +2,7 @@
 
 // RUN: air-opt -air-to-aie %s | FileCheck %s
 
-func @launch(%arg0: i32) {
+func.func @launch(%arg0: i32) {
   %cst2 = arith.constant 2 : index
   // CHECK: %[[TILE01:.*]] = AIE.tile(0, 1)
   // CHECK: {{.*}} = AIE.core(%[[TILE01]])  {

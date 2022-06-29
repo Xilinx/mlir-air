@@ -17,9 +17,6 @@ set(LIBS
   AIRTransformPasses
   AIRInitAll
   AIE
-  ${dialect_libs}
-  ${conversion_libs}
-  ${test_libs}
   MLIRAffineAnalysis
   MLIRAnalysis
   MLIRDialect

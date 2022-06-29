@@ -19,7 +19,7 @@ def AffineToAIR : Pass<"affine-to-air", "ModuleOp"> {
     ```mlir
     #map = affine_map<(d0, d1)[s0] -> (d0 * 64 + s0 + d1)>
     module  {
-      func @myFunc(%arg0: memref<64x64xf32>, %arg1: memref<64x64xf32>) -> memref<64x64xf32> {
+      func.func @myFunc(%arg0: memref<64x64xf32>, %arg1: memref<64x64xf32>) -> memref<64x64xf32> {
         %c64 = constant 64 : index
         %c16 = constant 16 : index
         %c0 = constant 0 : index
@@ -48,7 +48,7 @@ def AffineToAIR : Pass<"affine-to-air", "ModuleOp"> {
     ### Output
     ```mlir
     module  {
-      func @myFunc(%arg0: memref<64x64xf32>, %arg1: memref<64x64xf32>) -> memref<64x64xf32> {
+      func.func @myFunc(%arg0: memref<64x64xf32>, %arg1: memref<64x64xf32>) -> memref<64x64xf32> {
         %c4 = constant 4 : index
         %0 = memref.alloc() : memref<64x64xf32>
         air.launch_herd tile (%arg2, %arg3) in (%arg4=%c4, %arg5=%c4) args(%arg6=%arg0, %arg7=%arg1, %arg8=%0) : memref<64x64xf32>,memref<64x64xf32>,memref<64x64xf32>attributes {sym_name = "herd_0"} {
@@ -99,7 +99,7 @@ def AIRLowering : Pass<"air-to-std", "ModuleOp"> {
     ### Input
 
     ```mlir
-      func @foo(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
+      func.func @foo(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
         %herd_cols = constant 1 : index
         %herd_rows = constant 1 : index
         air.launch_herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<1024xi32>, memref<1024xi32> attributes { sym_name="foo"} {
@@ -117,7 +117,7 @@ def AIRLowering : Pass<"air-to-std", "ModuleOp"> {
     #### Output
 
     ```mlir
-      func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
+      func.func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
         %c1 = constant 1 : index
         %0 = airrt.herd_load "foo"() : () -> i32
         affine.for %arg2 = 0 to 1 {
@@ -159,7 +159,7 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
     ### Input
 
     ```mlir
-      func @foo(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
+      func.func @foo(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
         %herd_cols = constant 1 : index
         %herd_rows = constant 1 : index
         air.launch_herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<1024xi32>, memref<1024xi32> attributes { sym_name="foo"} {

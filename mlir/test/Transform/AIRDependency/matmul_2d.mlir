@@ -6,7 +6,7 @@
 #map1 = affine_map<()[s0] -> (s0 * 32)>
 #map2 = affine_map<(d0, d1)[s0] -> (d0 * 64 + s0 + d1)>
 module attributes {torch.debug_module_name = "model"} {
-  func @forward(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1024xf32>, %arg2: memref<?x?xf32>) {
+  func.func @forward(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1024xf32>, %arg2: memref<?x?xf32>) {
     %c0 = arith.constant 0 : index
     %c1024 = arith.constant 1024 : index
     %c64 = arith.constant 64 : index

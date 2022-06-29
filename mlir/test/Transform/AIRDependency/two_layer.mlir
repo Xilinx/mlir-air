@@ -9,7 +9,7 @@
 #map1 = affine_map<()[s0] -> (s0 * 64)>
 #map2 = affine_map<(d0, d1) -> (d0, d1)>
 module attributes {torch.debug_module_name = "MMult_Mult"} {
-  func @forward(%arg0: memref<128x128xf32>, %arg1: memref<128x128xf32>, %arg2: memref<128x128xf32>, %arg3: memref<128x128xf32>) {
+  func.func @forward(%arg0: memref<128x128xf32>, %arg1: memref<128x128xf32>, %arg2: memref<128x128xf32>, %arg3: memref<128x128xf32>) {
     %cst = arith.constant 0.000000e+00 : f32
     %c8 = arith.constant 8 : index
     %c1 = arith.constant 1 : index

@@ -6,7 +6,7 @@
 // CHECK: call @air_nd_memcpy_2d1i32_2d0i32({{.*}}) : (!llvm.ptr<i64>, memref<?x?xi32, 1>, memref<?x?xi32>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
 // CHECK: call @air_nd_memcpy_2d0i32_2d1i32({{.*}}) : (!llvm.ptr<i64>, memref<?x?xi32>, memref<?x?xi32, 1>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
 module attributes {torch.debug_module_name = "mmult"}  {
-  func @forward(%arg0: memref<64x64xi32>, %arg1: memref<64x64xi32>, %arg2: memref<?x?xi32>) {
+  func.func @forward(%arg0: memref<64x64xi32>, %arg1: memref<64x64xi32>, %arg2: memref<?x?xi32>) {
     %c7_i32 = arith.constant 7 : i32
     %c6_i32 = arith.constant 6 : i32
     %c5_i32 = arith.constant 5 : i32

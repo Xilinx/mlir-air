@@ -5,7 +5,7 @@
 module {
 
 // CHECK-LABEL: module
-func @memcpy_nd(%arg0: memref<4096xi32>) {
+func.func @memcpy_nd(%arg0: memref<4096xi32>) {
   %c0 = arith.constant 0 : index
   %c4096 = arith.constant 4096 : index
   %c128 = arith.constant 128 : index

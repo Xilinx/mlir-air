@@ -28,7 +28,7 @@ module {
 // CHECK:         }
 
 // CHECK:         AIE.flow(%[[VAL_0]], DMA : 0, %[[VAL_2]], DMA : 0)
-func @func0(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
+func.func @func0(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
   air.launch_herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<1024xi32>, memref<1024xi32> attributes { sym_name="func0"} {
@@ -66,7 +66,7 @@ func @func0(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         }
 
 // CHECK:         AIE.flow(%[[VAL_10]], DMA : 0, %[[VAL_12]], DMA : 0)
-func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
+func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
   air.launch_herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<1024xi32>, memref<1024xi32> attributes { sym_name="func1"} {

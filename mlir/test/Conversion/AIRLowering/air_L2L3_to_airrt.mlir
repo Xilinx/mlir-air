@@ -7,7 +7,7 @@
 // CHECK: %{{.*}} = airrt.herd_load "herd_0" : i64
 // CHECK: airrt.memcpy_nd({{.*}}) : (memref<64x64xi32>, memref<64x64xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
 module attributes {torch.debug_module_name = "mmult"}  {
-  func @forward(%arg0: memref<64x64xi32>, %arg1: memref<64x64xi32>, %arg2: memref<?x?xi32>) {
+  func.func @forward(%arg0: memref<64x64xi32>, %arg1: memref<64x64xi32>, %arg2: memref<?x?xi32>) {
     %c0_i32 = arith.constant 0 : i32
     %c2 = arith.constant 2 : index
     %c0 = arith.constant 0 : index

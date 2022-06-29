@@ -10,7 +10,7 @@
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 module attributes {torch.debug_module_name = "mmult"} {
-  func @forward(%arg0: memref<384x1024xf32>, %arg1: memref<1024x1024xf32>, %arg2: memref<384x1024xf32>) {
+  func.func @forward(%arg0: memref<384x1024xf32>, %arg1: memref<1024x1024xf32>, %arg2: memref<384x1024xf32>) {
     %c1 = arith.constant 1 : index
     %cst = arith.constant 0.000000e+00 : f32
     %c64 = arith.constant 64 : index

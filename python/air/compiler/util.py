@@ -17,7 +17,7 @@ __all__ = [
 LINALG_TENSOR_TO_MEMREF_PIPELINE = ",".join([
     # Bufferize.
     "func.func(scf-bufferize)",
-    "func.func(linalg-bufferize)",
+    "func.func(linalg-bufferize)", "cse",
     "func-bufferize",
     "arith-bufferize",
     "func.func(tensor-bufferize)",

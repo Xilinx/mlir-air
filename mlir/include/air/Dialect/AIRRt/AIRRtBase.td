@@ -13,6 +13,7 @@ The `airrt` dialect is an IR for interacting with the AIR runtime.
 It enapsulates data structures and functions available in the runtime and
 can be lowered to a combination of standard and LLVM dialects.
   }];
+  let useDefaultTypePrinterParser = 1;
 }
 
 def AIRRt_Event : DialectType<

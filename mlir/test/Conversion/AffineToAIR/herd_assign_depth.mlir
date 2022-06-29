@@ -6,7 +6,7 @@
 #map0 = affine_map<(d0) -> (-d0 + 32)>
 #map1 = affine_map<(d0, d1)[s0] -> (d0 * 1024 + s0 + d1)>
 module attributes {torch.debug_module_name = "mmult"} {
-  func @forward(%arg0: memref<1024x1024xi32>, %arg1: memref<1024x1024xi32>, %arg2: memref<?x?xi32>) {
+  func.func @forward(%arg0: memref<1024x1024xi32>, %arg1: memref<1024x1024xi32>, %arg2: memref<?x?xi32>) {
     %c0_i32 = arith.constant 0 : i32
     %0 = memref.alloc() : memref<1024x1024xi32>
     linalg.fill ins(%c0_i32 : i32) outs(%0 : memref<1024x1024xi32>)

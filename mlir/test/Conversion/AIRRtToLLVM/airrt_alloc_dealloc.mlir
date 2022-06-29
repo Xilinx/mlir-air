@@ -14,7 +14,7 @@
 // CHECK: call @air_dealloc_L2_3d1i32({{.*}}) : (memref<?x?x?xi32, 1>) -> ()
 // CHECK: call @air_dealloc_L2_4d1i32({{.*}}) : (memref<?x?x?x?xi32, 1>) -> ()
 module {
-  func @f() {
+  func.func @f() {
     %1 = airrt.alloc : memref<64xi32, 1>
     %2 = airrt.alloc : memref<5x5xi32, 1>
     %3 = airrt.alloc : memref<1x2x3xi32, 1>

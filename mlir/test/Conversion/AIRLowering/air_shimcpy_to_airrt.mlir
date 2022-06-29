@@ -5,12 +5,12 @@
 #map0 = affine_map<()[s0, s1] -> (s0 * 64 + s1 * 128)>
 #map1 = affine_map<(d0)[s0] -> (d0 + s0 * 16)>
 module  {
-  // CHECK: func @task0
+  // CHECK: func.func @task0
   // CHECK: airrt.dma_memcpy(%c1_i32, %{{.*}}, %{{.*}}, %3[%{{.*}}], %{{.*}}) : (i32, i64, i64, memref<256xi32>, [i64], i64)
   // CHECK: airrt.dma_memcpy_2d(%c2_i32, %{{.*}}, %{{.*}}, %2[%{{.*}}, %{{.*}}], %{{.*}}, %{{.*}}, %{{.*}}) : (i32, i64, i64, memref<256x256xi32>, [i64, i64], i64, i64, i64)
   // CHECK: airrt.dma_memcpy(%c3_i32, %{{.*}}, %{{.*}}, %1[%{{.*}}], %{{.*}}) : (i32, i64, i64, memref<256xi32>, [i64], i64)
   // CHECK: airrt.dma_memcpy_2d(%c4_i32, %{{.*}}, %{{.*}}, %0[%{{.*}}, %{{.*}}], %{{.*}}, %{{.*}}, %{{.*}}) : (i32, i64, i64, memref<256x256xi32>, [i64, i64], i64, i64, i64)
-  func @task0(%arg0: tensor<256x256xi32>, %arg1: tensor<256xi32>) -> tensor<256x256xi32> {
+  func.func @task0(%arg0: tensor<256x256xi32>, %arg1: tensor<256xi32>) -> tensor<256x256xi32> {
     %0 = memref.alloc() : memref<256x256xi32>
     %1 = memref.alloc() : memref<256xi32>
     %2 = bufferization.to_memref %arg0 : memref<256x256xi32>
@@ -57,10 +57,10 @@ module  {
     return %4 : tensor<256x256xi32>
   }
 
-  // CHECK: func @task1
+  // CHECK: func.func @task1
   // CHECK: airrt.dma_memcpy_4d(%c1_i32_0, %{{.*}}, %{{.*}}, %1[%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], %{{.*}}, %{{.*}}, %{{.*}}) : (i32, i64, i64, memref<32x32x32x32xi32>, [i64, i64, i64, i64], i64, i64, i64)
   // CHECK: airrt.dma_memcpy_4d(%c2_i32, %{{.*}}, %{{.*}}, %0[%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], %{{.*}}, %{{.*}}, %{{.*}}) : (i32, i64, i64, memref<32x32x32x32xi32>, [i64, i64, i64, i64], i64, i64, i64)
-  func @task1(%arg0: tensor<32x32x32x32xi32>) -> tensor<32x32x32x32xi32> {
+  func.func @task1(%arg0: tensor<32x32x32x32xi32>) -> tensor<32x32x32x32xi32> {
     %c2 = arith.constant 2 : index
     %0 = memref.alloc() : memref<32x32x32x32xi32>
     %1 = bufferization.to_memref %arg0 : memref<32x32x32x32xi32>
@@ -97,12 +97,12 @@ module  {
     return %2 : tensor<32x32x32x32xi32>
   }
 
-  // CHECK: func @task2
+  // CHECK: func.func @task2
   // CHECK: airrt.dma_memcpy_nd(%c1_i32, %{{.*}}, %{{.*}}, %arg0[%c0_i64, %{{.*}}, %{{.*}}, %{{.*}}], [%c1_i64, %{{.*}}, %{{.*}}, %{{.*}}], [%c0_i64, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<4096x1024x512xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
   // CHECK: airrt.dma_memcpy_nd(%c2_i32, %{{.*}}, %{{.*}}, %arg1[%c0_i64_2, %{{.*}}, %{{.*}}, %{{.*}}], [%c1_i64_3, %{{.*}}, %{{.*}}, %{{.*}}], [%c0_i64_2, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<4096x1024x512xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
   // CHECK: airrt.dma_memcpy_nd(%c3_i32, %{{.*}}, %{{.*}}, %arg2[%c0_i64_4, %{{.*}}, %{{.*}}, %{{.*}}], [%c1_i64_5, %{{.*}}, %{{.*}}, %{{.*}}], [%c0_i64_4, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<4096x1024x512xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
   // CHECK: airrt.dma_memcpy_nd(%c4_i32, %{{.*}}, %{{.*}}, %arg2[%c0_i64_6, %{{.*}}, %{{.*}}, %{{.*}}], [%c1_i64_7, %{{.*}}, %{{.*}}, %{{.*}}], [%c0_i64_6, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<4096x1024x512xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
-  func @task2(%arg0: memref<4096x1024x512xi32>, %arg1: memref<4096x1024x512xi32>, %arg2: memref<4096x1024x512xi32>) {
+  func.func @task2(%arg0: memref<4096x1024x512xi32>, %arg1: memref<4096x1024x512xi32>, %arg2: memref<4096x1024x512xi32>) {
     %c4 = arith.constant 4 : index
     %c128 = arith.constant 128 : index
     %c4096 = arith.constant 4096 : index

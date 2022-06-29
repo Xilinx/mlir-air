@@ -19,7 +19,7 @@
 #map1 = affine_map<(d0, d1) -> (d0 * 64 + d1)>
 #map2 = affine_map<(d0, d1) -> (d0 * 16 + d1)>
 module  {
-  func @myFunc(%arg0: memref<64x64xf32>, %arg1: memref<64x64xf32>) -> memref<64x64xf32> {
+  func.func @myFunc(%arg0: memref<64x64xf32>, %arg1: memref<64x64xf32>) -> memref<64x64xf32> {
     %c4096 = arith.constant 4096 : index
     %c64 = arith.constant 64 : index
     %c16 = arith.constant 16 : index

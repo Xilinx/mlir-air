@@ -33,6 +33,7 @@ def air_Dialect : Dialect {
     interface is provided to synchronize between operations.
 
   }];
+  let useDefaultTypePrinterParser = 1;
 }
 
 def air_AnyScalarOrTensor : TypeConstraint<Or<[AnySignlessInteger.predicate,

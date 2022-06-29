@@ -28,7 +28,6 @@ AIRDialect
 AIRRtDialect
 AIRUtil
 MLIRIR
-MLIRLinalg
 MLIRLinalgTransforms
 MLIRLinalgUtils
 MLIRSupport

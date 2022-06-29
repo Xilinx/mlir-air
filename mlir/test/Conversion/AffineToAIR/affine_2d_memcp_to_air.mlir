@@ -6,7 +6,7 @@
 #map0 = affine_map<(d0) -> (d0)>
 #map1 = affine_map<(d0, d1) -> (d0 + d1 * 2)>
 module  {
-  func @myAddOne(%arg0: tensor<256x256xi32>) -> tensor<256x256xi32> {
+  func.func @myAddOne(%arg0: tensor<256x256xi32>) -> tensor<256x256xi32> {
     %c4096 = arith.constant 4096 : index
     %c256 = arith.constant 256 : index
     %c64 = arith.constant 64 : index

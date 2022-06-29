@@ -4,7 +4,7 @@
 // CHECK: air.pipeline
 
 module attributes {torch.debug_module_name = "mmult"} {
-  func @forward(%arg0: memref<256x256xf32>, %arg1: memref<256x256xf32>, %arg2: memref<256x256xf32>) {
+  func.func @forward(%arg0: memref<256x256xf32>, %arg1: memref<256x256xf32>, %arg2: memref<256x256xf32>) {
     %cst = arith.constant 0.000000e+00 : f32
     %0 = memref.alloc() {alignment = 128 : i64} : memref<256x256xf32>
     %1 = memref.alloc() {alignment = 128 : i64} : memref<256x256xf32>

@@ -27,7 +27,7 @@ def AIRAutomaticTiling: Pass<"air-automatic-tiling", "func::FuncOp"> {
     Input:
     ```mlir
     module  {
-      func @task(%arg0: tensor<4096xi32>, %arg1: tensor<4096xi32>) -> tensor<4096xi32> {
+      func.func @task(%arg0: tensor<4096xi32>, %arg1: tensor<4096xi32>) -> tensor<4096xi32> {
         %0 = memref.alloc() : memref<4096xi32>
         %1 = "aten.type_cast"(%arg0) : (tensor<4096xi32>) -> memref<4096xi32>
         %2 = "aten.type_cast"(%arg1) : (tensor<4096xi32>) -> memref<4096xi32>
@@ -49,7 +49,7 @@ def AIRAutomaticTiling: Pass<"air-automatic-tiling", "func::FuncOp"> {
     ```mlir
     #map = affine_map<(d0, d1, d2, d3) -> (d0 + d1 * 64 + d2 * 128 + d3 * 256)>
     module  {
-      func @task(%arg0: tensor<4096xi32>, %arg1: tensor<4096xi32>) -> tensor<4096xi32> {
+      func.func @task(%arg0: tensor<4096xi32>, %arg1: tensor<4096xi32>) -> tensor<4096xi32> {
         %0 = memref.alloc() : memref<4096xi32>
         %1 = "aten.type_cast"(%arg0) : (tensor<4096xi32>) -> memref<4096xi32>
         %2 = "aten.type_cast"(%arg1) : (tensor<4096xi32>) -> memref<4096xi32>
@@ -80,7 +80,7 @@ def AIRAutomaticTiling: Pass<"air-automatic-tiling", "func::FuncOp"> {
 
     ```mlir
     module  {
-      func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+      func.func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
         %0 = memref.alloc() : memref<28x10xf32>
         %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
         %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
@@ -104,7 +104,7 @@ def AIRAutomaticTiling: Pass<"air-automatic-tiling", "func::FuncOp"> {
     #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
     #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
     module  {
-      func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+      func.func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
         %0 = memref.alloc() : memref<28x10xf32>
         %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
         %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
@@ -240,7 +240,7 @@ def AIRRegularizeLoop: Pass<"air-regularize-loop", "func::FuncOp"> {
     #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
     #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
     module  {
-      func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+      func.func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
         %0 = memref.alloc() : memref<28x10xf32>
         %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
         %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
@@ -272,7 +272,7 @@ def AIRRegularizeLoop: Pass<"air-regularize-loop", "func::FuncOp"> {
     #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
     #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
     module  {
-      func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+      func.func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
         %0 = memref.alloc() : memref<28x10xf32>
         %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
         %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
@@ -325,7 +325,7 @@ def AIRLoopPermutation: Pass<"air-loop-permutation", "func::FuncOp"> {
     #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
     #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
     module  {
-      func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+      func.func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
         %0 = memref.alloc() : memref<28x10xf32>
         %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
         %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
@@ -357,7 +357,7 @@ def AIRLoopPermutation: Pass<"air-loop-permutation", "func::FuncOp"> {
     #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
     #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
     module  {
-      func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+      func.func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
         %0 = memref.alloc() : memref<28x10xf32>
         %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
         %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
@@ -414,7 +414,7 @@ def AIRLoopMergingPass: Pass<"air-loop-merging", "func::FuncOp"> {
     #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
     #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
     module  {
-      func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+      func.func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
         %0 = memref.alloc() : memref<28x10xf32>
         %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
         %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
@@ -446,7 +446,7 @@ def AIRLoopMergingPass: Pass<"air-loop-merging", "func::FuncOp"> {
     #map0 = affine_map<(d0, d1) -> (d0 * 14 + d1 floordiv 2 - ((d1 floordiv 2) floordiv 7) * 7 + (d1 floordiv 14) * 7)>
     #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5 - (d1 floordiv 2) * 10)>
     module  {
-      func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+      func.func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
         %0 = memref.alloc() : memref<28x10xf32>
         %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
         %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
@@ -487,7 +487,7 @@ def AIRDependency : Pass<"air-dependency", "ModuleOp"> {
 
     ```mlir
     module  {
-      func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
+      func.func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
         %c1 = arith.constant 1 : index
         %0 = memref.alloc() : memref<1024xi32, 1>
         air.launch_herd tile (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%0, %arg7=%arg1) : memref<1024xi32, 1>,memref<1024xi32> {
@@ -508,7 +508,7 @@ def AIRDependency : Pass<"air-dependency", "ModuleOp"> {
 
     ```mlir
     module {
-      func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
+      func.func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
         %c1 = arith.constant 1 : index
         %asyncToken, %valOut = air.region async  {
           %1 = memref.alloc() : memref<1024xi32, 1>
@@ -543,7 +543,7 @@ def AIRDependency : Pass<"air-dependency", "ModuleOp"> {
     ```mlir
     #map = affine_map<()[s0] -> (s0 * 32)>
     module attributes {torch.debug_module_name = "mmult"} {
-      func @forward(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1024xf32>, %arg2: memref<1024x1024xf32>) {
+      func.func @forward(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1024xf32>, %arg2: memref<1024x1024xf32>) {
         %c1024 = arith.constant 1024 : index
         %cst = arith.constant 0.000000e+00 : f32
         %c32 = arith.constant 32 : index
@@ -593,7 +593,7 @@ def AIRDependency : Pass<"air-dependency", "ModuleOp"> {
     ```mlir
     #map = affine_map<()[s0] -> (s0 * 32)>
     module attributes {torch.debug_module_name = "mmult"} {
-      func @forward(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1024xf32>, %arg2: memref<1024x1024xf32>) {
+      func.func @forward(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1024xf32>, %arg2: memref<1024x1024xf32>) {
         %c1024 = arith.constant 1024 : index
         %cst = arith.constant 0.000000e+00 : f32
         %c32 = arith.constant 32 : index
@@ -740,8 +740,7 @@ def AIRPipelineReducePass : Pass<"air-pipeline-reduce", "func::FuncOp"> {
     Option<"clPipelineDirection", "pipeline-direction", "std::string", 
             /*default=*/"\"horiz\"",
             "Pipeline direction attribute to use. Can be 'vert' or 'horiz'">,
-    Option<"clPromoteSubViews", "promote", "bool", 
-            /*default=*/"\"false\"",
+    Option<"clPromoteSubViews", "promote", "bool", /*default=*/"false",
             "Promote subviews to memory buffers and insert copies.">
   ];
 }

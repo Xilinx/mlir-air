@@ -2,7 +2,7 @@
 
 module {
 
-func @graph(%arg0 : memref<256xi32>) -> () {
+func.func @graph(%arg0 : memref<256xi32>) -> () {
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
   air.launch_herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0) : memref<256xi32>attributes { sym_name="herd_0"} {

@@ -2,7 +2,7 @@
 
 module {
 
-func @graph(%arg0 : memref<512x512xi32>, %arg1 : memref<512x512xi32>, %arg2 : memref<512x512xi32>, %arg3 : memref<64x64xi32, 1>, %arg4 : memref<64x64xi32, 1>, %arg5 : memref<64x64xi32, 1>) -> () {
+func.func @graph(%arg0 : memref<512x512xi32>, %arg1 : memref<512x512xi32>, %arg2 : memref<512x512xi32>, %arg3 : memref<64x64xi32, 1>, %arg4 : memref<64x64xi32, 1>, %arg5 : memref<64x64xi32, 1>) -> () {
   %c0 = constant 0 : index
   %c512 = constant 512 : index
   %c64 = constant 64 : index

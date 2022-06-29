@@ -1,5 +1,5 @@
-module {
-  func @forward(%arg0: memref<1024x1024xi32>, %arg1: memref<1024x1024xi32>, %arg2: memref<1024x1024xi32>) {
+ocdmodule {
+  func.func @forward(%arg0: memref<1024x1024xi32>, %arg1: memref<1024x1024xi32>, %arg2: memref<1024x1024xi32>) {
     %c4096 = arith.constant 4096 : index
     %c2048 = arith.constant 2048 : index
     %c0 = arith.constant 0 : index
@@ -20,7 +20,7 @@ module {
     return
   }
 
-  func @test0(%arg0: memref<1024x1024xi32>, %arg1: memref<1024x1024xi32>, %arg2: memref<?x?xi32>) {
+  func.func @test0(%arg0: memref<1024x1024xi32>, %arg1: memref<1024x1024xi32>, %arg2: memref<?x?xi32>) {
     %c4096 = arith.constant 4096 : index
     %c2048 = arith.constant 2048 : index
     %c0 = arith.constant 0 : index
@@ -52,7 +52,7 @@ module {
     return
   }
 
-  func @test1(%arg0: memref<1024x1024xi32>, %arg1: memref<1024x1024xi32>, %arg2: memref<1024x1024xi32>) {
+  func.func @test1(%arg0: memref<1024x1024xi32>, %arg1: memref<1024x1024xi32>, %arg2: memref<1024x1024xi32>) {
     %c0_i32 = arith.constant 0 : i32
     linalg.fill(%c0_i32, %arg0) : i32, memref<1024x1024xi32> 
     linalg.copy(%arg1, %arg2) : memref<1024x1024xi32>, memref<1024x1024xi32> 

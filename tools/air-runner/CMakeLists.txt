@@ -16,20 +16,6 @@ AIRUtil
 AIRConversionPasses
 AIRTransformPasses
 AIRInitAll
-AIE
-${dialect_libs}
-${conversion_libs}
-${test_libs}
-MLIRAffineAnalysis
-MLIRAnalysis
-MLIRDialect
-MLIROptLib
-MLIRParser
-MLIRPass
-MLIRTransforms
-MLIRTransformUtils
-MLIRSupport
-MLIRIR
-  )
+)
 
 target_link_libraries(air-runner PRIVATE ${LIBS})

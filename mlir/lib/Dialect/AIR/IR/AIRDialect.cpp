@@ -194,9 +194,9 @@ void HerdLaunchOp::print(OpAsmPrinter &p) {
 ParseResult HerdLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
 
   SmallVector<OpAsmParser::UnresolvedOperand, 4> asyncDependencies;
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> tileArgs;
+  SmallVector<OpAsmParser::Argument, 4> tileArgs;
   SmallVector<OpAsmParser::UnresolvedOperand, 2> tileSize(2);
-  SmallVector<OpAsmParser::UnresolvedOperand, 2> tileSizeRef(2);
+  SmallVector<OpAsmParser::Argument, 2> tileSizeRef(2);
 
   Type asyncTokenType = nullptr;
   if (parseAsyncDependencies(parser, asyncTokenType, asyncDependencies))
@@ -207,15 +207,14 @@ ParseResult HerdLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parser.parseKeyword("tile"))
     return failure();
 
-  if (parser.parseRegionArgumentList(tileArgs, /*requiredOperandCount=*/2,
-                                     OpAsmParser::Delimiter::Paren) ||
+  if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
       parser.parseKeyword("in") || parser.parseLParen())
     return failure();
 
   for (int i = 0; i < 2; ++i) {
     if (i != 0 && parser.parseComma())
       return failure();
-    if (parser.parseRegionArgument(tileSizeRef[i]) || parser.parseEqual() ||
+    if (parser.parseArgument(tileSizeRef[i]) || parser.parseEqual() ||
         parser.parseOperand(tileSize[i]))
       return failure();
   }
@@ -223,26 +222,28 @@ ParseResult HerdLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parser.parseRParen())
     return failure();
 
-  Type index = parser.getBuilder().getIndexType();
-  SmallVector<Type, 4> dataTypes(4, index);
+  Type indexType = parser.getBuilder().getIndexType();
 
   tileArgs.push_back(tileSizeRef[0]);
   tileArgs.push_back(tileSizeRef[1]);
 
+  for (auto &a : tileArgs)
+    a.type = indexType;
+
   auto tokenType = xilinx::air::AsyncTokenType::get(parser.getBuilder().getContext());
   parser.resolveOperands(asyncDependencies, tokenType, result.operands);
-  parser.resolveOperands(tileSize, index, result.operands);
+  parser.resolveOperands(tileSize, indexType, result.operands);
 
   SmallVector<OpAsmParser::UnresolvedOperand, 4> kernelOperands;
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> kernelArguments;
+  SmallVector<OpAsmParser::Argument, 4> kernelArguments;
   SmallVector<Type, 4> types;
   if (succeeded(parser.parseOptionalKeyword("args"))) {
     if (parser.parseLParen())
       return failure();
     do {
-      OpAsmParser::UnresolvedOperand argument;
+      OpAsmParser::Argument argument;
       OpAsmParser::UnresolvedOperand operand;
-      if (parser.parseRegionArgument(argument) || parser.parseEqual() ||
+      if (parser.parseArgument(argument) || parser.parseEqual() ||
         parser.parseOperand(operand))
       return failure();
       kernelArguments.push_back(argument);
@@ -255,15 +256,15 @@ ParseResult HerdLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   }
 
   for (int i=0,e=kernelOperands.size(); i<e; i++) {
+    kernelArguments[i].type = types[i];
     tileArgs.push_back(kernelArguments[i]);
-    dataTypes.push_back(types[i]);
     parser.resolveOperand(kernelOperands[i], types[i], result.operands);
   }
 
   parser.parseOptionalAttrDictWithKeyword(result.attributes);
 
   Region *body = result.addRegion();
-  if (parser.parseRegion(*body, tileArgs, dataTypes))
+  if (parser.parseRegion(*body, tileArgs))
     return failure();
 
   SmallVector<int32_t, 8> segmentSizes(4, 1);
@@ -373,38 +374,24 @@ SmallVector<PipelineStageOp, 8> HerdPipelineOp::getStages() {
 ParseResult
 PipelineStageOp::parse(OpAsmParser &parser, OperationState &result) {
 
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> args;
-
   SmallVector<OpAsmParser::UnresolvedOperand, 4> kernelOperands;
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> kernelArguments;
+  SmallVector<OpAsmParser::Argument, 4> kernelArguments;
   SmallVector<Type, 4> types;
   if (succeeded(parser.parseOptionalKeyword("args"))) {
-    if (parser.parseLParen())
-      return failure();
-    do {
-      OpAsmParser::UnresolvedOperand argument;
-      OpAsmParser::UnresolvedOperand operand;
-      if (parser.parseRegionArgument(argument) || parser.parseEqual() ||
-        parser.parseOperand(operand))
-      return failure();
-      kernelArguments.push_back(argument);
-      kernelOperands.push_back(operand);
-    } while (succeeded(parser.parseOptionalComma()));
-    if (parser.parseRParen())
-      return failure();
+    parser.parseAssignmentList(kernelArguments, kernelOperands);
     if (parser.parseColonTypeList(types))
       return failure();
   }
 
   for (int i=0,e=kernelOperands.size(); i<e; i++) {
-    args.push_back(kernelArguments[i]);
+    kernelArguments[i].type = types[i];
     parser.resolveOperand(kernelOperands[i], types[i], result.operands);
   }
 
   parser.parseOptionalAttrDictWithKeyword(result.attributes);
 
   Region *body = result.addRegion();
-  if (parser.parseRegion(*body, args, types))
+  if (parser.parseRegion(*body, kernelArguments, false))
     return failure();
 
   SmallVector<Type, 4> retTypes;

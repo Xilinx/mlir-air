@@ -4,7 +4,7 @@
 
 module  {
 // CHECK-LABEL: module
-  func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
+  func.func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
     %c1 = arith.constant 1 : index
     %0 = memref.alloc() : memref<1024xi32, 1>
     // CHECK: %[[EVENT0:.*]], %[[EVENT1:.*]] = air.region async

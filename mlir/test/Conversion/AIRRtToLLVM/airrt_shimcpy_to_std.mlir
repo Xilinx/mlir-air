@@ -13,7 +13,7 @@
 #map0 = affine_map<()[s0, s1] -> (s0 * 64 + s1 * 128)>
 #map1 = affine_map<(d0)[s0] -> (d0 + s0 * 16)>
 module  {
-  func @task0(%arg0: tensor<256x256xi32>, %arg1: tensor<256xi32>) -> tensor<256x256xi32> {
+  func.func @task0(%arg0: tensor<256x256xi32>, %arg1: tensor<256xi32>) -> tensor<256x256xi32> {
     %0 = memref.alloc() : memref<256x256xi32>
     %1 = memref.alloc() : memref<256xi32>
     %2 = bufferization.to_memref %arg0 : memref<256x256xi32>
@@ -86,7 +86,7 @@ module  {
     %4 = bufferization.to_tensor %0 : memref<256x256xi32>
     return %4 : tensor<256x256xi32>
   }
-  func @task1(%arg0: tensor<32x32x32x32xi32>) -> tensor<32x32x32x32xi32> {
+  func.func @task1(%arg0: tensor<32x32x32x32xi32>) -> tensor<32x32x32x32xi32> {
     %c2 = arith.constant 2 : index
     %0 = memref.alloc() : memref<32x32x32x32xi32>
     %1 = bufferization.to_memref %arg0 : memref<32x32x32x32xi32>
@@ -144,7 +144,7 @@ module  {
     %3 = bufferization.to_tensor %0 : memref<32x32x32x32xi32>
     return %3 : tensor<32x32x32x32xi32>
   }
-  func @ndfoo(%arg0: memref<256x256xi32>, %arg1: memref<256xf32>) {
+  func.func @ndfoo(%arg0: memref<256x256xi32>, %arg1: memref<256xf32>) {
     %L2 = airrt.alloc : memref<512xf32, 1>
     affine.for %arg2 = 0 to 1 {
       affine.for %arg3 = 0 to 1 {

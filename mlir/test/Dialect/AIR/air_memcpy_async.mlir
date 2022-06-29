@@ -4,8 +4,8 @@
 module {
 
 // CHECK-LABEL: module
-// CHECK: func @foo
-func @foo(%arg0 : memref<16x16xf32>, %arg1 : memref<16x16xf32>) -> () {
+// CHECK: func.func @foo
+func.func @foo(%arg0 : memref<16x16xf32>, %arg1 : memref<16x16xf32>) -> () {
   %cst1 = arith.constant 1 : index
 
   air.launch_herd tile(%tx, %ty) in (%size_x = %cst1, %size_y = %cst1) args(%ext0 = %arg0, %ext1 = %arg1) : memref<16x16xf32>, memref<16x16xf32> attributes { "foo" = "bar" } {
@@ -29,8 +29,8 @@ func @foo(%arg0 : memref<16x16xf32>, %arg1 : memref<16x16xf32>) -> () {
   return
 }
 
-// CHECK: func @memcpy_nd
-func @memcpy_nd(%arg0: memref<4096xi32>) {
+// CHECK: func.func @memcpy_nd
+func.func @memcpy_nd(%arg0: memref<4096xi32>) {
   %c0 = arith.constant 0 : index
   %c4096 = arith.constant 4096 : index
   %c128 = arith.constant 128 : index

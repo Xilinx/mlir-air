@@ -14,7 +14,7 @@ The first passes to take the Python code and turn it into the ATen dialect are n
 
 ```llvm
 module  {
-  func @graph(%arg0: tensor<256xi32>) -> tensor<256xi32> {
+  func.func @graph(%arg0: tensor<256xi32>) -> tensor<256xi32> {
     %cst = constant dense<1> : tensor<i32>
     %c1_i64 = constant 1 : i64
     %0 = "aten.add"(%arg0, %cst, %c1_i64) : (tensor<256xi32>, tensor<i32>, i64) -> tensor<256xi32>

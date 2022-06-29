@@ -4,7 +4,7 @@
 // CHECK: module
 #map = affine_map<()[s0, s1] -> (s0 * 64 + s1 * 128)>
 module  {
-  func @myAddOne(%arg0: tensor<256x256xi32>) -> tensor<256x256xi32> {
+  func.func @myAddOne(%arg0: tensor<256x256xi32>) -> tensor<256x256xi32> {
     %0 = memref.alloc() : memref<256x256xi32>
     %1 = bufferization.to_memref %arg0 : memref<256x256xi32>
     affine.for %arg1 = 0 to 2 {

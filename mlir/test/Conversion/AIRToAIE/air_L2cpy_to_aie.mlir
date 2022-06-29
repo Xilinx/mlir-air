@@ -13,7 +13,7 @@
 // CHECK: AIE.flow({{.*}}, PLIO : 4, [[T]], DMA : 0)
 module {
 
-func @foo(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
+func.func @foo(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
   %buf0 = memref.alloc() : memref<1024xi32, 1>

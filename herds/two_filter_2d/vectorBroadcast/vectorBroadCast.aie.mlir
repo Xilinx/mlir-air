@@ -21,7 +21,7 @@ module @vectorBroadCast {
     %lock12_0 = AIE.lock(%tile12, 0)
     
     //single line generator filled with same value passed in as argument
-    func @generateLineVector(%value: i32, %lineOut:memref<16xi32>) -> () {
+    func.func @generateLineVector(%value: i32, %lineOut:memref<16xi32>) -> () {
         %c0 = constant 0 : index
         %lineWidth = constant 16 : index
         %c8 = constant 8 : index
@@ -36,7 +36,7 @@ module @vectorBroadCast {
     }
 
     //single line generator filled with same value passed in as argument
-    func @generateLineScalar(%value: i32, %lineOut:memref<16xi32>) -> () {
+    func.func @generateLineScalar(%value: i32, %lineOut:memref<16xi32>) -> () {
         %c0 = constant 0 : index
         %c1 = constant 1 : index
         %lineWidth = constant 16 : index

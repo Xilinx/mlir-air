@@ -3,7 +3,7 @@
 #define AIR_UTIL_COSTMODEL_H
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/SCF/SCF.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/Support/JSON.h"
 
 namespace xilinx {

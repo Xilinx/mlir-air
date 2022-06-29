@@ -2,7 +2,7 @@
 
 #map0 = affine_map<(d0) -> (d0)>
 module  {
-  func @launch(%m0: memref<1024xi32>, %m1: memref<1024xi32>, %m2: memref<1024xi32>) {
+  func.func @launch(%m0: memref<1024xi32>, %m1: memref<1024xi32>, %m2: memref<1024xi32>) {
     %c4 = arith.constant 4 : index
     %c1 = arith.constant 1 : index
     air.launch_herd tile (%x, %y) in (%sx=%c4, %sy=%c1) args(%op0=%m0, %op1=%m1, %op2=%m2) : memref<1024xi32>,memref<1024xi32>,memref<1024xi32> attributes {sym_name="herd_0"} {

@@ -23,12 +23,10 @@ set(LIBS
   AIRRtDialect
   AIRTargets
   AIE
-  ${dialect_libs}
   ${translation_libs}
   MLIRIR
   MLIRParser
   MLIRPass
-  MLIRSPIRV
   MLIRSupport
 )
 

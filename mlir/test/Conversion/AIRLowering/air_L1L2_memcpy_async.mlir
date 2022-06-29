@@ -8,7 +8,7 @@
 // CHECK: airrt.wait_all %[[E0]], %[[E1]]
 // CHECK: airrt.dealloc %[[M0]] : memref<1024xi32, 1>
 module  {
-  func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
+  func.func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
     %c1 = arith.constant 1 : index
     %0 = memref.alloc() : memref<1024xi32, 1>
     air.launch_herd tile (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%0, %arg7=%arg1) : memref<1024xi32, 1>,memref<1024xi32> {

@@ -5,8 +5,6 @@ add_mlir_library(AIRUtil
   Runner.cpp
 
   LINK_LIBS PUBLIC
-  MLIRAffine
-  MLIRLinalg
   MLIRIR
   MLIRTransforms
 )

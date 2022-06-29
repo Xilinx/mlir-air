@@ -1,7 +1,7 @@
 // (c) Copyright 2021 Xilinx Inc.
 
 // RUN: air-opt %s -affine-to-air -cse
-// CHECK: func @myFunc
+// CHECK: func.func @myFunc
 // CHECK: air.dma_memcpy_2d (%3, %arg6, [%c0, %c0], [%1, %c0], %c1024, %c64, %c64) {id = 1 : i32} : (memref<16x64xf32, 2>, memref<64x64xf32>, [index, index], [index, index], index, index, index) -> ()
 // CHECK: air.dma_memcpy_2d (%4, %arg7, [%c0, %c0], [%c0, %2], %c1024, %c64, %c16) {id = 2 : i32} : (memref<64x16xf32, 2>, memref<64x64xf32>, [index, index], [index, index], index, index, index) -> ()
 // CHECK: air.dma_memcpy_2d (%5, %arg8, [%c0, %c0], [%1, %2], %c256, %c64, %c16) {id = 3 : i32} : (memref<16x16xf32, 2>, memref<64x64xf32>, [index, index], [index, index], index, index, index) -> ()
@@ -10,7 +10,7 @@
 #map0 = affine_map<(d0, d1, d2)[s0] -> (d0 * 524288 + s0 + d1 * 512 + d2)>
 #map1 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
 module  {
-  func @myFunc(%arg0: memref<64x64xf32>, %arg1: memref<64x64xf32>) -> memref<64x64xf32> {
+  func.func @myFunc(%arg0: memref<64x64xf32>, %arg1: memref<64x64xf32>) -> memref<64x64xf32> {
     %c64 = arith.constant 64 : index
     %c16 = arith.constant 16 : index
     %c0 = arith.constant 0 : index
@@ -34,11 +34,11 @@ module  {
     }
     return %0 : memref<64x64xf32>
   }
-  // CHECK: func @call_linalg_generic
+  // CHECK: func.func @call_linalg_generic
   // CHECK: air.dma_memcpy_nd (%4[] [] [], %arg12[%2, %3, %arg13] [%c32, %c32, %c128_0] [%c524288, %c512_1, %c1]) {id = 5 : i32} : (memref<32x32x128xi32, 2>, memref<4096x1024x512xi32>)
   // CHECK: air.dma_memcpy_nd (%5[] [] [], %arg14[%2, %3, %arg13] [%c32, %c32, %c128_0] [%c524288, %c512_1, %c1]) {id = 6 : i32} : (memref<32x32x128xi32, 2>, memref<4096x1024x512xi32>)
   // CHECK: air.dma_memcpy_nd (%6[] [] [], %arg15[%2, %3, %arg13] [%c32, %c32, %c128_0] [%c524288, %c512_1, %c1]) {id = 7 : i32} : (memref<32x32x128xi32, 2>, memref<4096x1024x512xi32>)
-  func @call_linalg_generic(%arg0: memref<4096x1024x512xi32>, %arg1: memref<4096x1024x512xi32>, %arg2: memref<4096x1024x512xi32>) {
+  func.func @call_linalg_generic(%arg0: memref<4096x1024x512xi32>, %arg1: memref<4096x1024x512xi32>, %arg2: memref<4096x1024x512xi32>) {
     %c32 = arith.constant 32 : index
     %c0 = arith.constant 0 : index
     %c512 = arith.constant 512 : index

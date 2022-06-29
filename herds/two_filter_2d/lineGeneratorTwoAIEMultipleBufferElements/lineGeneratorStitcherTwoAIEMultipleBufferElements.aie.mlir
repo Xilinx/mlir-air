@@ -28,7 +28,7 @@ module @lineGeneratorStitcherTwoAIEMultipleBufferElements {
     %lock12_0 = AIE.lock(%tile12, 0)
     
     //single line generator filled with same value passed in as argument
-    func @generateLineScalar(%value: i32, %lineOut:memref<16xi32>) -> () {
+    func.func @generateLineScalar(%value: i32, %lineOut:memref<16xi32>) -> () {
         %c0 = constant 0 : index
         %c1 = constant 1 : index
         %lineWidth = constant 16 : index
@@ -39,7 +39,7 @@ module @lineGeneratorStitcherTwoAIEMultipleBufferElements {
         return
     }
     
-    func @generateLineVector(%value: i32, %lineOut:memref<16xi32>) -> () {
+    func.func @generateLineVector(%value: i32, %lineOut:memref<16xi32>) -> () {
         %c0 = constant 0 : index
         %lineWidth = constant 16 : index
         %c8 = constant 8 : index
@@ -95,7 +95,7 @@ module @lineGeneratorStitcherTwoAIEMultipleBufferElements {
     }
 
     //single line store function
-    func @storeLineScalar(%lineIn:memref<16xi32>, %row:index, %bufferOut:memref<10x16xi32>) -> () {
+    func.func @storeLineScalar(%lineIn:memref<16xi32>, %row:index, %bufferOut:memref<10x16xi32>) -> () {
         %c0 = constant 0 : index
         %c1 = constant 1 : index
         %lineWidth = constant 16 : index
@@ -107,7 +107,7 @@ module @lineGeneratorStitcherTwoAIEMultipleBufferElements {
         return
     }
     
-    func @storeLineVector(%lineIn:memref<16xi32>, %row:index, %bufferOut:memref<10x16xi32>) -> () {
+    func.func @storeLineVector(%lineIn:memref<16xi32>, %row:index, %bufferOut:memref<10x16xi32>) -> () {
         %c0 = constant 0 : index
         %lineWidth = constant 16 : index
         %c8 = constant 8 : index

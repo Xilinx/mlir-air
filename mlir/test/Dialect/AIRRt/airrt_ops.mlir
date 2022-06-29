@@ -7,7 +7,7 @@
 // CHECK: airrt.wait_all %[[E2]]
 module {
 
-func @f0() {
+func.func @f0() {
     %event1 = airrt.wait_all : !airrt.event
     %event2 = airrt.wait_all : !airrt.event
     %event3 = airrt.wait_all %event1, %event2 : !airrt.event

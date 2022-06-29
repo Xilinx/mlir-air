@@ -10,7 +10,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/SCF/SCF.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 
@@ -686,6 +686,46 @@ public:
     return success();
   }
 };
+
+class L1MemRefLoadOpConversion : public OpConversionPattern<memref::LoadOp> {
+public:
+  using OpConversionPattern<memref::LoadOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(memref::LoadOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    auto memrefTy = op.memref().getType().cast<MemRefType>();
+    if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
+      return failure();
+
+    // auto ty = adaptor.memref().getType();
+    auto load = rewriter.create<memref::LoadOp>(op.getLoc(), adaptor.memref(),
+                                              adaptor.indices());
+    rewriter.replaceOp(op, load.getResult());
+    return success();
+  }
+};
+
+class L1MemRefStoreOpConversion : public OpConversionPattern<memref::StoreOp> {
+public:
+  using OpConversionPattern<memref::StoreOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(memref::StoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    auto memrefTy = op.memref().getType().cast<MemRefType>();
+    if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
+      return failure();
+
+    rewriter.create<memref::StoreOp>(op.getLoc(), adaptor.value(),
+                                   adaptor.memref(), adaptor.indices());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 class L1AffineLoadOpConversion : public OpConversionPattern<AffineLoadOp> {
 public:
   using OpConversionPattern<AffineLoadOp>::OpConversionPattern;
@@ -882,7 +922,8 @@ public:
                  MemcpyNdToLLVMConversion, L2AllocOpConversion,
                  L2DeallocOpConversion>(context);
     patterns.add<L1AllocOpConversion, L1AffineLoadOpConversion,
-                 L1AffineStoreOpConversion, L1DeallocOpConversion,
+                 L1AffineStoreOpConversion, L1MemRefLoadOpConversion,
+                 L1MemRefStoreOpConversion, L1DeallocOpConversion,
                  WaitAllOpConversion>(converter, context);
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(patterns,
                                                                    converter);
@@ -908,6 +949,16 @@ public:
     });
 
     target.addDynamicallyLegalOp<AffineLoadOp>([&](AffineLoadOp op) {
+      return (op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
+              (int)xilinx::air::MemorySpace::L1);
+    });
+
+    target.addDynamicallyLegalOp<memref::StoreOp>([&](memref::StoreOp op) {
+      return (op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
+              (int)xilinx::air::MemorySpace::L1);
+    });
+
+    target.addDynamicallyLegalOp<memref::LoadOp>([&](memref::LoadOp op) {
       return (op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
               (int)xilinx::air::MemorySpace::L1);
     });

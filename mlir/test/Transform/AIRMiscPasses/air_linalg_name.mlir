@@ -5,7 +5,7 @@
 // CHECK: linalg.copy {__internal_linalg_transform__ = "linalg.copy1"} {{.*}}
 // CHECK: linalg.matmul {__internal_linalg_transform__ = "linalg.matmul2"}
 module attributes {torch.debug_module_name = "mmult"} {
-  func @forward(%arg0: memref<2304x1024xi32>, %arg1: memref<1024x1024xi32>) -> memref<?x?xi32> {
+  func.func @forward(%arg0: memref<2304x1024xi32>, %arg1: memref<1024x1024xi32>) -> memref<?x?xi32> {
     %c0_i32 = arith.constant 0 : i32
     %0 = memref.alloc() : memref<2304x1024xi32>
     linalg.fill ins(%c0_i32 : i32) outs(%0 : memref<2304x1024xi32>)

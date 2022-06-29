@@ -25,7 +25,7 @@
 module attributes {torch.debug_module_name = "Conv2D"}  {
   memref.global "private" constant @__constant_128xf32 : memref<128xf32> = dense<1.000000e+00>
   memref.global "private" constant @__constant_128x64x3x3xf32 : memref<128x64x3x3xf32> = dense<1.000000e+00>
-  func @forward(%arg0: memref<1x64x64x64xf32>, %arg1: memref<1x128x64x64xf32>) {
+  func.func @forward(%arg0: memref<1x64x64x64xf32>, %arg1: memref<1x128x64x64xf32>) {
     %cst = arith.constant 0.000000e+00 : f32
     %0 = memref.get_global @__constant_128x64x3x3xf32 : memref<128x64x3x3xf32>
     %1 = memref.get_global @__constant_128xf32 : memref<128xf32>

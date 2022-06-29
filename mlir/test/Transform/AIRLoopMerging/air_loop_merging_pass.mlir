@@ -17,7 +17,7 @@
 #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
 #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
 module  {
-  func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+  func.func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
     %0 = memref.alloc() : memref<28x10xf32>
     %1 = bufferization.to_memref %arg0 : memref<28x10xf32>
     affine.for %arg2 = 0 to 2 {
