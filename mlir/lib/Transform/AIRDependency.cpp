@@ -508,21 +508,6 @@ public:
     }
 
     // Final traversal: Clean up
-    // Remove wait_all with single operand.
-    // Remove wait_all's id attribute.
-    for (auto f : module.getOps<func::FuncOp>()) {
-      f.walk([&](Operation *op) {
-        if (air::WaitAllOp wa_op = dyn_cast<air::WaitAllOp>(op)) {
-          if (wa_op.getAsyncDependencies().size() == 1){
-            wa_op.getAsyncToken().replaceAllUsesWith(wa_op.getAsyncDependencies()[0]);
-            wa_op.erase();
-          }
-          else{
-            wa_op->removeAttr("id");
-          }
-        }
-      });
-    }
     // Remove repetition in dependency list.
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
@@ -552,7 +537,21 @@ public:
       });
     }
 
-
+    // Remove wait_all with single operand.
+    // Remove wait_all's id attribute.
+    for (auto f : module.getOps<func::FuncOp>()) {
+      f.walk([&](Operation *op) {
+        if (air::WaitAllOp wa_op = dyn_cast<air::WaitAllOp>(op)) {
+          if (wa_op.getAsyncDependencies().size() == 1){
+            wa_op.getAsyncToken().replaceAllUsesWith(wa_op.getAsyncDependencies()[0]);
+            wa_op.erase();
+          }
+          else{
+            wa_op->removeAttr("id");
+          }
+        }
+      });
+    }
 
     // Dump graph
     dump_graph("out.dot");
@@ -987,11 +986,18 @@ private:
         for (unsigned lh_operand_id = 0; lh_operand_id < lh.getNumKernelOperands(); lh_operand_id++){
           if (lh.getKernelArguments()[lh_operand_id] == operand.memrefValue){
             auto ancestor_op = lh.getKernelOperand(lh_operand_id);
-            pushDepsAtCurrentScope<air::HerdLaunchOp>(ancestor_op, lh, dep_tracing_mode);
-            // Trace the defining op of sink op, RAW
-            pushDefiningOpAsDep<air::HerdLaunchOp>(ancestor_op, lh);
+            partialMemref ancestor_operand = createPartialMemref(ancestor_op, operand.numDims);
+            SmallVector<partialMemref, 1> ancestor_operands = {ancestor_operand};
+            traceDeps<air::HerdLaunchOp>(ancestor_operands, lh, dep_type);
           }
         }
+      }
+
+      // Check if operand is returned from memref.subview
+      if (auto subview = operand.memrefValue.getDefiningOp<memref::SubViewOp>()){
+        partialMemref subview_tile = createPartialMemref(subview.source(), subview.sizes().size(), subview.offsets());
+        SmallVector<partialMemref, 1> subview_operands = {subview_tile};
+        traceDeps<T>(subview_operands, sink_air_op, dep_type);
       }
     }
   }
@@ -1033,7 +1039,10 @@ private:
       v_a = g_to_tr[getGraphGVertexFromAIROp(op)];
     }
     else if (auto op = dyn_cast<scf::ForOp>(a)){
-      v_a = getGraphGVertexFromAIROp(op); // g_to_tr not needed since wait_all created after TR
+      v_a = getGraphGVertexFromAIROp(op); // g_to_tr not needed since wait_all is created after TR
+    }
+    else if (auto op = dyn_cast<scf::ParallelOp>(a)){
+      v_a = getGraphGVertexFromAIROp(op); // g_to_tr not needed since wait_all is created after TR
     }
     else if (auto op = dyn_cast<air::WaitAllOp>(a)){
       v_a = getGraphGVertexFromAIROp(op);
@@ -1048,7 +1057,10 @@ private:
       v_b = g_to_tr[getGraphGVertexFromAIROp(op)];
     }
     else if (auto op = dyn_cast<scf::ForOp>(b)){
-      v_b = getGraphGVertexFromAIROp(op); // g_to_tr not needed since wait_all created after TR
+      v_b = getGraphGVertexFromAIROp(op); // g_to_tr not needed since wait_all is created after TR
+    }
+    else if (auto op = dyn_cast<scf::ParallelOp>(b)){
+      v_b = getGraphGVertexFromAIROp(op); // g_to_tr not needed since wait_all is created after TR
     }
     else if (auto op = dyn_cast<air::WaitAllOp>(b)){
       v_b = getGraphGVertexFromAIROp(op);
