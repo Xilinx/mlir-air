@@ -116,26 +116,26 @@ def air_PipelineYieldOp : air_Op<"pipeline.yield", [HasParent<"PipelineStageOp">
 }
 
 def air_PipelinePutOp : air_Op<"pipeline.put", []>,
-    Arguments<(ins AnyType:$dst, Variadic<AnyType>:$opers)>, Results<(outs)> {
+    Arguments<(ins AnyType:$dst0, AnyType:$dst1, Variadic<AnyType>:$opers)>, Results<(outs)> {
   let summary = "Put for air pipeline stages.";
   let description = [{
     Experimental operation to represent copying data to another tile.
     Currently used internally by air-to-aie pass during pipeline lowering.
   }];
   let assemblyFormat = [{
-    $dst (`,` $opers^)? attr-dict `:` type($dst) (`,` type($opers)^)?
+    $dst0 $dst1 (`,` $opers^)? attr-dict `:` type($dst0) `,` type($dst1) (`,` type($opers)^)?
   }];
 }
 
 def air_PipelineGetOp : air_Op<"pipeline.get", []>,
-    Arguments<(ins AnyType:$src)>, Results<(outs Variadic<AnyType>:$results)> {
+    Arguments<(ins AnyType:$src0, AnyType:$src1)>, Results<(outs Variadic<AnyType>:$results)> {
   let summary = "Get for air pipeline stages.";
   let description = [{
     Experimental operation to represent copying data from another tile.
     Currently used internally by air-to-aie pass during pipeline lowering.
   }];
   let assemblyFormat = [{
-    $src attr-dict `:` type($src) `->` type($results)
+    $src0 $src1 attr-dict `:` type($src0) `,` type($src1) `->` type($results)
   }];
 }
 

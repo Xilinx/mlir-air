@@ -101,6 +101,43 @@ public:
   }
 };
 
+class AIRPipelinePutConversion : public ConversionPattern {
+public:
+  explicit AIRPipelinePutConversion(MLIRContext *context)
+      : ConversionPattern(xilinx::air::PipelinePutOp::getOperationName(), 1,
+                          context) {}
+
+  LogicalResult
+  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+class AIRPipelineGetConversion : public ConversionPattern {
+public:
+  explicit AIRPipelineGetConversion(MLIRContext *context)
+      : ConversionPattern(xilinx::air::PipelineGetOp::getOperationName(), 1,
+                          context) {}
+
+  LogicalResult
+  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto getOp = cast<xilinx::air::PipelineGetOp>(op);
+    SmallVector<Value, 2> gets;
+    for (auto r : getOp.getResults()) {
+      if (auto ty = r.getType().dyn_cast<RankedTensorType>())
+        gets.push_back(rewriter.create<bufferization::AllocTensorOp>(
+            op->getLoc(), ty, ValueRange{}));
+      else
+        return failure();
+    }
+    rewriter.replaceOp(op, gets);
+    return success();
+  }
+};
+
 class AIRWaitAllToAIRRtConversion: public OpConversionPattern<xilinx::air::WaitAllOp> {
 public:
   using OpConversionPattern<xilinx::air::WaitAllOp>::OpConversionPattern;
@@ -492,7 +529,8 @@ public:
 
     // HerdPipelineOp conversion
     RewritePatternSet air_pipe_patterns(context);
-    air_pipe_patterns.insert<AIRPipelineConversion>(context);
+    air_pipe_patterns.insert<AIRPipelineConversion, AIRPipelineGetConversion,
+                             AIRPipelinePutConversion>(context);
     if (failed(applyPartialConversion(module, target, std::move(air_pipe_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air.pipeline\n");
       signalPassFailure();
@@ -553,7 +591,11 @@ public:
 
     // PipelineStageOp conversion
     RewritePatternSet air_pipe_stage_patterns(context);
-    air_pipe_stage_patterns.insert<AIRPipeStageConversion>(context, AIRPipeStageConversion::LoweringType::AllocBuffer);
+    auto loweringType = AIRPipeStageConversion::LoweringType::PipelineGetPut;
+    if (clLoweringType == "buffer")
+      loweringType = AIRPipeStageConversion::LoweringType::AllocBuffer;
+    air_pipe_stage_patterns.insert<AIRPipeStageConversion>(context,
+                                                           loweringType);
     if (failed(applyPartialConversion(module, target, std::move(air_pipe_stage_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air.pipeline.stage\n");
       signalPassFailure();

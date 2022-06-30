@@ -62,7 +62,9 @@ LogicalResult AIRPipeStageConversion::matchAndRewrite(
         rewriter.setInsertionPoint(aif);
         auto buf = rewriter.create<memref::AllocOp>(op->getLoc(), memrefTy);
         rewriter.setInsertionPoint(&yield);
-        rewriter.create<memref::TensorStoreOp>(yield.getLoc(), o, buf);
+        auto to_memref = rewriter.create<bufferization::ToMemrefOp>(
+            yield.getLoc(), buf.getType(), o);
+        rewriter.create<memref::CopyOp>(yield.getLoc(), to_memref, buf);
         rewriter.setInsertionPointAfter(aif);
         bufs.push_back(
             rewriter.create<bufferization::ToTensorOp>(aif.getLoc(), buf)
@@ -70,24 +72,53 @@ LogicalResult AIRPipeStageConversion::matchAndRewrite(
       }
     }
     rewriter.replaceOp(stage, bufs);
+  } else if (loweringType == LoweringType::PipelineGetPut) {
+    SmallVector<Value, 4> bufs;
+    rewriter.setInsertionPoint(aif);
+    for (auto o : yield.getOperands()) {
+      if (RankedTensorType tt = o.getType().dyn_cast<RankedTensorType>()) {
+        rewriter.setInsertionPoint(&yield);
+        auto idValPlus =
+            rewriter.create<arith::ConstantIndexOp>(op->getLoc(), id + 1);
+        rewriter.create<xilinx::air::PipelinePutOp>(
+            yield.getLoc(), dir ? idValPlus : x, dir ? y : idValPlus, o);
+        bufs.push_back(o);
+      }
+    }
+    rewriter.replaceOp(stage, bufs);
   }
 
   // Clone the region into the affine.if while remapping the args
   BlockAndValueMapping remap;
-  for (int i = 0, e = stageBlock.getNumArguments(); i < e; i++)
-    remap.map(stageBlock.getArgument(i), operands[i]);
-
   rewriter.setInsertionPoint(aif);
   auto idVal = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), id);
   remap.map(dir ? x : y, idVal);
 
-  stage.body().cloneInto(&aif.getBodyRegion(), aif.getBodyRegion().begin(),
-                         remap);
-  rewriter.eraseBlock(&aif.getBodyRegion().back());
+  for (int i = 0, e = stageBlock.getNumArguments(); i < e; i++) {
+    if (loweringType == LoweringType::AllocBuffer) {
+      remap.map(stageBlock.getArgument(i), operands[i]);
+    } else if (loweringType == LoweringType::PipelineGetPut) {
+      auto idValMinus =
+          rewriter.create<arith::ConstantIndexOp>(op->getLoc(), id - 1);
+      rewriter.setInsertionPointToStart(&aif.getBodyRegion().front());
+      auto get = rewriter.create<xilinx::air::PipelineGetOp>(
+          stage->getLoc(), operands[i].getType(), dir ? idValMinus : x,
+          dir ? y : idValMinus);
+      remap.map(stageBlock.getArgument(i), get.getResult(0));
+    }
+  }
+
+  auto &body_region = aif.getBodyRegion();
+  stage.body().cloneInto(&aif.getBodyRegion(), body_region.begin(), remap);
+  body_region.back().getOperations().back().erase();
+  body_region.front().getOperations().splice(
+      body_region.front().getOperations().begin(),
+      body_region.back().getOperations());
+  rewriter.eraseBlock(&body_region.back());
 
   // replace the pipeline.yield with affine.yield
-  rewriter.eraseOp(aif.getBodyRegion().front().getTerminator());
-  rewriter.setInsertionPointToEnd(&aif.getBodyRegion().front());
+  rewriter.eraseOp(body_region.front().getTerminator());
+  rewriter.setInsertionPointToEnd(&body_region.front());
   rewriter.create<AffineYieldOp>(aif.getLoc());
 
   return success();

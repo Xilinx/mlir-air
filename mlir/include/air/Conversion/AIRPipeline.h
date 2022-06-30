@@ -12,10 +12,9 @@ namespace air {
 
 class AIRPipeStageConversion : public ConversionPattern {
 public:
-  enum LoweringType { AllocBuffer = 0 };
+  enum LoweringType { AllocBuffer = 0, PipelineGetPut = 1 };
 
-  explicit AIRPipeStageConversion(MLIRContext *context,
-                                  LoweringType type)
+  explicit AIRPipeStageConversion(MLIRContext *context, LoweringType type)
       : ConversionPattern(xilinx::air::PipelineStageOp::getOperationName(), 10,
                           context),
         loweringType(type) {}

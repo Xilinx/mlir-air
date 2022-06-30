@@ -249,6 +249,11 @@ def AIRPipelineToAffine : Pass<"air-pipeline-to-affine", "ModuleOp"> {
   let description =  [{
     Lower air.pipeline stages to affine.if
   }];
+  let options = [
+    Option<"clLoweringType", "lowering-type", "std::string", 
+          /*default=*/"\"buffers\"",
+          "Type of lowering to use for core-to-core communication. Can be 'buffer' or 'getput'">
+  ];
 }
 
 #endif

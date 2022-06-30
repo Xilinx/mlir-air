@@ -6,12 +6,14 @@
 #include "aie/AIEDialect.h"
 #include "PassDetail.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BlockAndValueMapping.h"
+#include "mlir/IR/IntegerSet.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 
@@ -180,6 +182,8 @@ public:
 
   typedef std::vector< std::tuple<AIE::BufferOp, AIE::LockOp, AIE::DMAChan> > lock_allocation_list;
 
+  uint64_t BufferId;
+
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {  
     registry.insert<xilinx::air::airDialect>();
     registry.insert<xilinx::airrt::AIRRtDialect>();
@@ -260,12 +264,10 @@ public:
     return b.create<AIE::LockOp>(tile.getLoc(), tile, new_id);
   }
 
-  AIE::BufferOp allocateBufferOp(ModuleOp module,
-                                 MemRefType memrefTy, AIE::TileOp tile,
-                                 mlir::StringAttr attr=nullptr,
-                                 int x=-1, int y=-1)
-  {
-    static uint64_t BufferId = 0;
+  AIE::BufferOp allocateBufferOp(ModuleOp module, MemRefType memrefTy,
+                                 AIE::TileOp tile,
+                                 mlir::StringAttr attr = nullptr, int x = -1,
+                                 int y = -1) {
     OpBuilder builder(module);
     Operation *t = tile.getOperation();
     while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
@@ -467,6 +469,67 @@ public:
     return herd_meta;
   }
 
+  bool isInSet(int64_t x, int64_t y, AffineIfOp aif) {
+    auto is = aif.getIntegerSet();
+    if (is.getConstraints().size() != 2)
+      return false;
+
+    SmallVector<AffineExpr, 2> dims{
+        getAffineConstantExpr(x, aif->getContext()),
+        getAffineConstantExpr(y, aif->getContext()),
+    };
+
+    auto newIs = is.replaceDimsAndSymbols({}, dims, 0, 2);
+    auto constraints = newIs.getConstraints();
+    auto eqFlags = newIs.getEqFlags();
+
+    int i = 0;
+    for (auto c : constraints) {
+      auto expr = simplifyAffineExpr(c, 0, 1).dyn_cast<AffineConstantExpr>();
+      if (!expr)
+        return false;
+      if (eqFlags[i++]) {
+        if (expr.getValue() != 0)
+          return false;
+      } else {
+        if (expr.getValue() < 0)
+          return false;
+      }
+    }
+
+    return true;
+  }
+
+  void specializeHerdAffineIf(AIE::CoreOp core) {
+    SmallVector<Operation *, 8> erased;
+    core.walk([&](AffineIfOp aif) {
+      SmallVector<int64_t, 2> operands;
+      for (auto o : aif.getOperands()) {
+        auto v = dyn_cast<arith::ConstantIndexOp>(o.getDefiningOp());
+        if (!v)
+          return;
+        operands.push_back(v.value());
+      }
+      auto x = operands[0];
+      auto y = operands[1];
+      if (isInSet(x, y, aif)) {
+        aif->getBlock()->getOperations().splice(Block::iterator(aif),
+                                                aif.getBody()->getOperations());
+      }
+      erased.push_back(aif);
+    });
+    for (auto a : erased)
+      a->erase();
+    erased.clear();
+    core.walk([&](AffineYieldOp ay) {
+      if (!(ay->getParentOfType<AffineIfOp>() ||
+            ay->getParentOfType<AffineForOp>()))
+        erased.push_back(ay);
+    });
+    for (auto a : erased)
+      a->erase();
+  }
+
   // This function replaces the body of any air.pipeline in 'core' with the
   // air.pipeline.stage for tile ('x', 'y'). air.pipeline.get and
   // air.pipeline.get operations are generated for the args and yielded values
@@ -526,6 +589,7 @@ public:
                 stage.getLoc(), yield->getResultTypes(),
                 getTileOp(aie_module, x + (is_horiz ? 1 : 0),
                           y + (is_horiz ? 0 : 1)),
+                builder.create<arith::ConstantIndexOp>(stage.getLoc(), 0),
                 yield->getOperands());
           yield.erase();
         }
@@ -536,7 +600,8 @@ public:
           stage.replaceAllUsesWith(builder.create<air::PipelineGetOp>(
               stage.getLoc(), stage->getResultTypes(),
               getTileOp(aie_module, x - (is_horiz ? 1 : 0),
-                        y - (is_horiz ? 0 : 1))));
+                        y - (is_horiz ? 0 : 1)),
+              builder.create<arith::ConstantIndexOp>(stage.getLoc(), 0)));
           Block &bb = stage.body().front();
           bb.clear();
         }
@@ -564,14 +629,20 @@ public:
       auto core = putOp->getParentOfType<AIE::CoreOp>();
       assert(core);
 
-      auto other_core = cast<AIE::TileOp>(putOp.dst().getDefiningOp()).getCoreOp();
+      auto other_x = cast<arith::ConstantIndexOp>(putOp.dst0().getDefiningOp());
+      auto other_y = cast<arith::ConstantIndexOp>(putOp.dst1().getDefiningOp());
+      auto other_core =
+          getTileOp(aie_module, other_x.value(), other_y.value()).getCoreOp();
+      ;
+      // other_core.dump();
       air::PipelineGetOp getOp;
       other_core.walk([&](air::PipelineGetOp pgo) {
         getOp = pgo;
       });
-      assert(getOp && getOp->getNumResults() == (putOp->getNumOperands()-1));
+      assert(getOp && getOp->getNumResults() == (putOp->getNumOperands() - 2));
 
-      for (auto p : llvm::zip(putOp->getOperands().drop_front(1), getOp->getResults())) {
+      for (auto p :
+           llvm::zip(putOp->getOperands().drop_front(2), getOp->getResults())) {
         OpBuilder b(core);
         auto o = std::get<0>(p); // operand of put
         auto r = std::get<1>(p); // result of get
@@ -586,28 +657,22 @@ public:
                         StringAttr::get(aie_module.getContext(), "pipebuf"));
           auto lockOp = allocateLockOp(aie_module, core.getTileOp());
 
-          auto pipelineOp = putOp->getParentOfType<air::HerdPipelineOp>();
-
           // acquire the lock for write on the put side
-          b.setInsertionPointToStart(&pipelineOp.body().front());
-          b.create<AIE::UseLockOp>(putOp->getLoc(), lockOp, 0,
-                                  AIE::LockAction::Acquire);
-          b.setInsertionPoint(pipelineOp.body().front().getTerminator());
-          b.create<AIE::UseLockOp>(putOp->getLoc(), lockOp, 1,
-                                  AIE::LockAction::Release);
           b.setInsertionPoint(putOp);
+          b.create<AIE::UseLockOp>(putOp->getLoc(), lockOp, 0,
+                                   AIE::LockAction::Acquire);
           b.create<memref::TensorStoreOp>(putOp->getLoc(), o, buf);
+          b.create<AIE::UseLockOp>(putOp->getLoc(), lockOp, 1,
+                                   AIE::LockAction::Release);
 
           // acquire the lock for read on the get side
-          pipelineOp = getOp->getParentOfType<air::HerdPipelineOp>();
-          b.setInsertionPointToStart(&pipelineOp.body().front());
+          b.setInsertionPoint(getOp);
           b.create<AIE::UseLockOp>(getOp->getLoc(), lockOp, 1,
                                   AIE::LockAction::Acquire);
-          b.setInsertionPoint(pipelineOp.body().front().getTerminator());
+          auto loadOp =
+              b.create<bufferization::ToTensorOp>(getOp->getLoc(), buf);
           b.create<AIE::UseLockOp>(getOp->getLoc(), lockOp, 0,
-                                  AIE::LockAction::Release);
-          b.setInsertionPoint(getOp);
-          auto loadOp = b.create<bufferization::ToTensorOp>(getOp->getLoc(), buf);
+                                   AIE::LockAction::Release);
           r.replaceAllUsesWith(loadOp.getResult());
         }
         else {
@@ -636,6 +701,7 @@ public:
   void runOnOperation() override {
     auto module = getOperation();
     OpBuilder builder(module);
+    BufferId = 0;
 
     auto loc = builder.getUnknownLoc();
     builder.setInsertionPointToStart(module.getBody());
@@ -748,7 +814,8 @@ public:
                 op->erase();
               });
 
-              specializePipelineOps(x,y,h,core);
+              specializeHerdAffineIf(core);
+              // specializePipelineOps(x,y,h,core);
 
               // generate a buffer for each alloc into L1
               lock_allocation_list lock_allocs;
@@ -861,7 +928,7 @@ public:
 
               // make a AIE.mem for the tile dma
               auto mem = tile.getMemOp();
-              if (!mem) {
+              if (!mem && tile_dma_copies.size()) {
                 builder.setInsertionPoint(core);
                 mem = builder.create<AIE::MemOp>(hloc, tile);
               }
@@ -1010,12 +1077,14 @@ public:
               for (auto o : erase_ops)
                 o->erase();
 
-              if (mem.body().empty()) {
-                mem.body().push_back(new Block());
-                auto b = OpBuilder::atBlockEnd(&mem.body().front());
-                b.create<AIE::EndOp>(hloc);
-              } else {
-                mem.body().push_back(end_bb);
+              if (mem) {
+                if (mem.body().empty()) {
+                  mem.body().push_back(new Block());
+                  auto b = OpBuilder::atBlockEnd(&mem.body().front());
+                  b.create<AIE::EndOp>(hloc);
+                } else {
+                  mem.body().push_back(end_bb);
+                }
               }
 
               LLVM_DEBUG(aie_module.print(llvm::outs()));
@@ -1023,7 +1092,7 @@ public:
           } // for each y
 
           lowerPipelineGetPut(aie_module);
-          cleanupPipelineOps(aie_module);
+          // cleanupPipelineOps(aie_module);
 
           std::vector<Attribute> dma_allocations;
           for (auto &t : shimDmaAlloc.s2mm_allocs) {

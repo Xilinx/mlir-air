@@ -26,6 +26,7 @@
 #include "llvm/Support/Debug.h"
 
 #include <list>
+#include <numeric>
 
 #define DEBUG_TYPE "air-misc-passes"
 
@@ -129,17 +130,27 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
   // auto ctx = module.getContext();
 
   std::vector<Operation *> erasedOps;
+  int64_t max_id = -1;
+  SmallVector<xilinx::air::DmaMemcpyNdOp, 16> memCopies;
   module.walk([&](xilinx::air::DmaMemcpyNdOp memcpyOp) {
+    memCopies.push_back(memcpyOp);
+    IntegerAttr attr = memcpyOp->getAttrOfType<IntegerAttr>("id");
+    if (!attr)
+      return;
+    max_id = std::max(max_id, attr.getInt());
+  });
+
+  for (auto memcpyOp : memCopies) {
     auto pipeline = memcpyOp->getParentOfType<xilinx::air::HerdPipelineOp>();
     auto stage = memcpyOp->getParentOfType<xilinx::air::PipelineStageOp>();
     auto launch = memcpyOp->getParentOfType<xilinx::air::HerdLaunchOp>();
     if (!pipeline || !stage || !launch)
-      return;
+      continue;
 
     // auto direction = pipeline->getAttrOfType<StringAttr>("direction");
     auto uniform = stage->getAttrOfType<BoolAttr>("uniform");
     if (!uniform)
-      return;
+      continue;
 
     auto src_type = memcpyOp.src().getType().cast<MemRefType>();
     auto dst_type = memcpyOp.dst().getType().cast<MemRefType>();
@@ -154,7 +165,7 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
     else if (from_l1)
       ty = src_type;
     else
-      return;
+      continue;
 
     OpBuilder builder(launch);
     auto loc = memcpyOp->getLoc();
@@ -193,7 +204,7 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
         loc, SmallVector<Type, 1>{}, mt, to_l1 ? memcpyOp.dst() : a, mt, mt, mt,
         to_l1 ? a : memcpyOp.src(), mt, mt, mt);
     erasedOps.push_back(memcpyOp);
-  });
+  }
   for (auto e : erasedOps)
     e->erase();
 }
@@ -314,7 +325,7 @@ static Optional<Value> allocBufferCallBack(OpBuilder &b,
 }
 
 static LogicalResult deallocBufferCallBack(OpBuilder &b, Value buffer) {
-  b.create<memref::DeallocOp>(buffer.getLoc(), buffer);
+  // b.create<memref::DeallocOp>(buffer.getLoc(), buffer);
   return success();
 }
 
@@ -388,6 +399,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   for (unsigned int i = 0; i < pipeline_depth; i++) {
     OpBuilder::InsertionGuard pipeline_guard(b);
     bool last_stage = i == pipeline_depth - 1;
+    bool first_stage = i == 0;
     SmallVector<Value, 1> opers;
     if (inputOperand)
       opers.push_back(inputOperand);
@@ -415,24 +427,52 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
 
     linalg::LinalgOp linalgOp = op.clone(b, loc, {}, tiledOperands);
 
-    b.setInsertionPointToEnd(stageBlock);
+    if (promote) {
+      SmallVector<int64_t, 3> opers_to_promote(
+          linalgOp.getNumInputsAndOutputs() - 1);
+      std::iota(opers_to_promote.begin(), opers_to_promote.end(), 0);
+      if (first_stage || last_stage)
+        opers_to_promote.push_back(linalgOp.getNumInputsAndOutputs() - 1);
 
+      b.setInsertionPoint(linalgOp);
+      auto loc = linalgOp->getLoc();
+      auto defaultCopyCallBack = [loc](OpBuilder &b, Value src,
+                                       Value dst) -> LogicalResult {
+        b.create<memref::CopyOp>(loc, src, dst);
+        return success();
+      };
+      auto emptyCopyCallBack = [loc](OpBuilder &b, Value src,
+                                     Value dst) -> LogicalResult {
+        return success();
+      };
+      auto options = linalg::LinalgPromotionOptions()
+                         .setOperandsToPromote(opers_to_promote)
+                         .setAllocationDeallocationFns(allocBufferCallBack,
+                                                       deallocBufferCallBack);
+      if (first_stage)
+        options.setCopyInOutFns(defaultCopyCallBack, emptyCopyCallBack);
+      linalg::promoteSubViews(b, linalgOp, options);
+    }
+
+    memref::CopyOp erased = nullptr;
     if (last_stage) {
+      b.setInsertionPointToEnd(stageBlock);
       b.create<xilinx::air::PipelineYieldOp>(loc, SmallVector<Value, 1>());
     } else {
-      auto t =
-          b.create<bufferization::ToTensorOp>(loc, tiledOperands[resultIdx]);
-      b.create<xilinx::air::PipelineYieldOp>(loc, t.result());
+      auto mref = tiledOperands[resultIdx];
+      if (promote && first_stage) {
+        memref::SubViewOp sv = dyn_cast<memref::SubViewOp>(
+            linalgOp.getOutputOperand(0)->get().getDefiningOp());
+        mref = sv.source();
+        sv.replaceAllUsesWith(mref);
+      }
+
+      b.setInsertionPointToEnd(stageBlock);
+      auto t = b.create<bufferization::ToTensorOp>(loc, mref);
+      b.create<xilinx::air::PipelineYieldOp>(loc, t.getResult());
       inputOperand = stage.getResult(0);
     }
-
-    if (promote) {
-      b.setInsertionPoint(linalgOp);
-      linalg::promoteSubViews(
-          b, linalgOp,
-          linalg::LinalgPromotionOptions().setAllocationDeallocationFns(
-              allocBufferCallBack, deallocBufferCallBack));
-    }
+    // if (erased) erased.erase();
   }
 
   SmallVector<Type, 1> pipeTys;

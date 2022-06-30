@@ -102,7 +102,7 @@ def run(mlir_module, args):
     # lower the airrt control program to llvm dialect
 
     aie_ctrl_airrt = opts.tmpdir+'/airrt.'+air_mlir_filename
-    pass_pipeline = air_to_airrt_pass+',convert-vector-to-llvm,air-to-std,air-lower-linalg-tensors,canonicalize,cse'
+    pass_pipeline = air_to_airrt_pass+',convert-vector-to-llvm,lower-affine,air-to-std,air-lower-linalg-tensors,canonicalize,cse'
     run_passes(pass_pipeline, mlir_module, opts, aie_ctrl_airrt)
 
     aie_ctrl = opts.tmpdir+'/aie_ctrl.'+air_mlir_filename
@@ -200,6 +200,7 @@ def run_flow(opts):
     air_to_aie_pass = air_to_aie_pass + f' air-to-aie-output-prefix={opts.tmpdir}/'
     
     do_call(['air-opt', opts.air_mlir_file,
+             '-air-pipeline-to-affine=lowering-type=getput', '-canonicalize', '-cse',
              air_to_aie_pass, '-o', '/dev/null'])
 
     air_to_airrt_pass = '-air-to-aie=air-to-aie-emit-while-loop=false'
@@ -208,8 +209,10 @@ def run_flow(opts):
 
     _,air_mlir_filename = os.path.split(opts.air_mlir_file)
     aie_ctrl_airrt = opts.tmpdir+'/airrt.'+air_mlir_filename
-    do_call(['air-opt', opts.air_mlir_file, air_to_airrt_pass,
-            '-convert-vector-to-llvm', '-air-to-std',
+    do_call(['air-opt', opts.air_mlir_file,
+            '-air-pipeline-to-affine=lowering-type=getput', '-canonicalize', '-cse',
+            air_to_airrt_pass,
+            '-convert-vector-to-llvm', '--lower-affine', '-air-to-std',
             '-air-lower-linalg-tensors', '-canonicalize', '-cse',
             '-o', aie_ctrl_airrt])
 
