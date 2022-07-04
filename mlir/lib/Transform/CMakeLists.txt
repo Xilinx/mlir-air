@@ -12,6 +12,7 @@ AIRMiscPasses.cpp
 AIRRegularizeLoopPass.cpp
 AIRTilingUtils.cpp
 AIRDependency.cpp
+AIRDependencyScheduleOpt.cpp
 Passes.cpp
 ReturnEliminationPass.cpp
 
