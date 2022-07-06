@@ -28,12 +28,12 @@
       "src": 2
     },
     {
-      "bytes_per_second": 1.7976931348623157e+308,
+      "bytes_per_second": 100000000000,
       "dst": 2,
       "src": 1
     },
     {
-      "bytes_per_second": 1.7976931348623157e+308,
+      "bytes_per_second": 100000000000,
       "dst": 1,
       "src": 2
     }
@@ -78,7 +78,7 @@
       "write_bytes_per_second": 0
     }
   },
-  "ops_per_core_per_cycle": 16,
+  "ops_per_core_per_cycle": 512,
   "num_herd_slots": 4,
   "num_dispatch_queues": 4
 }
