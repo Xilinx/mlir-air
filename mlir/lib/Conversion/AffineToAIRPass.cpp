@@ -727,8 +727,18 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
     RewritePatternSet patterns(context);
     patterns.add<AffineParToHerdLaunchConversion>(context);
 
+    llvm::SmallVector<xilinx::air::HerdLaunchOp, 2> herdOps;
+    module.walk([&](xilinx::air::HerdLaunchOp op) {
+      herdOps.push_back(op);
+    });
+
     llvm::SmallSet<scf::ParallelOp, 2> filteredOps;
     module.walk([&](scf::ParallelOp op) {
+      if (op->getParentOfType<xilinx::air::HerdLaunchOp>())
+        return;
+      for (auto &h : herdOps)
+        if (op->isProperAncestor(h))
+          return;
       if (clHerdAssignDepth < 0) {
         filteredOps.insert(op);
         return;
