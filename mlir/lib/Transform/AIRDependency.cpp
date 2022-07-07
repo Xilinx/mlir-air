@@ -807,12 +807,6 @@ private:
           addNewAsyncDepToGraph<T>(tile_index, op);
         }
       }
-      // If created by scf.for (as loop iter)
-      else if (auto forloop = dyn_cast<scf::ForOp>(tile_index.getParentRegion()->getParentOp())){
-        if (forloop.getInductionVar() == tile_index){
-          addNewAsyncDepToGraph<T>(tile_index, op);
-        }
-      }
     }
   }
 
