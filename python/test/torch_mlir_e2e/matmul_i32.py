@@ -6,47 +6,38 @@
 import torch
 import numpy
 
-from torch_mlir.dialects.torch.importer.jit_ir import ClassAnnotator, ModuleBuilder
-from torch_mlir.dialects.torch.importer.jit_ir.torchscript_annotations import extract_annotations
-from torch_mlir_e2e_test.torchscript.annotations import annotate_args, export
 
-from torch_mlir.passmanager import PassManager
+import torch
+import torch_mlir
+import numpy
+
 from air.backend import linalg_on_tensors as backend
 
-SIZE = [64,64]
+shape = [64,64]
+dtype = torch.int32
 
 class mmult(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
-    @export
-    @annotate_args([
-        None,
-        (SIZE, torch.int32, True),
-        (SIZE, torch.int32, True)
-    ])
     def forward(self, a, b):
         return torch.mm(a,b)
 
 program = mmult()
-scripted = torch.jit.script(program)
+module = torch_mlir.compile(
+    program,
+    (torch.ones(shape, dtype=dtype), torch.ones(shape, dtype=dtype)),
+    output_type=torch_mlir.OutputType.LINALG_ON_TENSORS
+)
 
-class_annotator = ClassAnnotator()
-extract_annotations(program, scripted, class_annotator)
-
-mb = ModuleBuilder()
-mb.import_module(scripted._c, class_annotator)
-
-pm = PassManager.parse('torchscript-module-to-torch-backend-pipeline,torch-backend-to-linalg-on-tensors-backend-pipeline', mb.module.context)
-pm.run(mb.module)
-#print(mb.module)
+print(module)
 
 airbackend = backend.LinalgOnTensorsAirBackend()
-compiled = airbackend.compile(mb.module)
+compiled = airbackend.compile(module)
 jit_module = airbackend.load(compiled)
 
-a = torch.randint(100, SIZE, dtype=torch.int32)
-b = torch.randint(100, SIZE, dtype=torch.int32)
+a = torch.randint(100, shape, dtype=dtype)
+b = torch.randint(100, shape, dtype=dtype)
 c = torch.tensor(
     jit_module.forward(a.numpy(),b.numpy()))
 
