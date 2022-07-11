@@ -312,6 +312,136 @@ void AIRSpecializeDma::runOnOperation() {
   });
 }
 
+// AIRSpecializeDmaBroadcast
+class AIRSpecializeDmaBroadcast
+    : public xilinx::air::AIRSpecializeDmaBroadcastBase<AIRSpecializeDmaBroadcast> {
+
+public:
+  AIRSpecializeDmaBroadcast() = default;
+  AIRSpecializeDmaBroadcast(const AIRSpecializeDmaBroadcast &pass){};
+
+  void runOnOperation() override;
+
+private:
+};
+
+void AIRSpecializeDmaBroadcast::runOnOperation() {
+  auto module = getOperation();
+  auto ctx = module.getContext();
+
+  module.walk([&](xilinx::air::HerdLaunchOp launch) {
+    launch.walk([&](xilinx::air::DmaMemcpyNdOp memcpyOp) {
+      auto herd_size = launch.getHerdSizeOperands();
+      int64_t herd_size_x =
+          cast<arith::ConstantIndexOp>(herd_size.x.getDefiningOp()).value();
+      int64_t herd_size_y =
+          cast<arith::ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
+
+
+      auto herd_id = launch.getTileIds();
+      OpBuilder builder(memcpyOp);
+      auto loc = memcpyOp->getLoc();
+      auto broadcast_pattern = memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern");
+      auto ctx = memcpyOp->getContext();
+      if (broadcast_pattern){
+        auto is = broadcast_pattern.getValue();
+        auto constraints = is.getConstraints();
+        auto eqFlags = is.getEqFlags();
+
+        int numPartitions = 0;
+        // Get symbol range (i.e. partition range)
+        SmallVector<AffineExpr, 1> zero_syms{
+            getAffineConstantExpr(0, ctx),
+        };
+        for (auto c : constraints) {
+          if (c.isSymbolicOrConstant()){
+            auto newC = c.replaceSymbols(zero_syms);
+            auto expr = simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
+            if (!expr){
+              continue;
+            }
+            if (expr.getValue() != 0){
+              numPartitions = expr.getValue() + 1;
+            }
+          }
+        }
+        // Walk each partition set in the patition scheme
+        // Specialize affine set per partition
+        for (unsigned i = 0; i < numPartitions; i++){
+          SmallVector<AffineExpr, 2> newConstraints;
+          SmallVector<bool, 2> newEqflags;
+          SmallVector<AffineExpr, 1> i_syms{
+              getAffineConstantExpr(i, ctx),
+          };
+          SmallVector<AffineExpr, 2> syms{
+              getAffineSymbolExpr(0, ctx),
+              getAffineSymbolExpr(1, ctx),
+          };
+          int c_iter = 0;
+          for (auto c : constraints) {
+            if (!c.isSymbolicOrConstant()){
+              // Substitute partition id i_syms into inequalities
+              auto newC = c.replaceSymbols(i_syms);
+              // Replace all dims with symbols
+              newC = newC.replaceDims(syms);
+              newConstraints.push_back(newC);
+              newEqflags.push_back(eqFlags[c_iter]);
+            }
+            c_iter++;
+          }
+          auto int_set = IntegerSet::get(0, 2, newConstraints, newEqflags);
+          SmallVector<Value, 2> int_set_args{herd_id.x, herd_id.y};
+          // Duplicate dma ops per spatial partition
+          if (i == 0){
+            AffineIfOp aif = builder.create<AffineIfOp>(loc, 
+                    xilinx::air::AsyncTokenType::get(ctx), int_set,
+                    int_set_args, (i != numPartitions - 1));
+            builder.setInsertionPointToStart(aif.getThenBlock());
+            auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
+            memcpyOp_cloned->removeAttr("broadcast_pattern");
+            memcpyOp_cloned->setAttr("broadcast",
+                    mlir::IntegerSetAttr::get(int_set));
+            SmallVector<Value, 1> yield_token;
+            yield_token.push_back(dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
+            AffineYieldOp ayield = builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(), yield_token);
+            if (numPartitions != 1){
+              // If more than 1 spatial partitions, then move loc to else block
+              builder.setInsertionPointToStart(aif.getElseBlock());
+            }
+            // Reconnect dependency graph using the outermost affine.if's token
+            auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
+            async_memcpyOp.getAsyncToken().replaceAllUsesWith(aif.getResult(0));
+          }
+          else if (i < numPartitions - 1) {
+            AffineIfOp aif = builder.create<AffineIfOp>(builder.getUnknownLoc(), 
+                    xilinx::air::AsyncTokenType::get(ctx), int_set,
+                    int_set_args, (i != numPartitions - 1));
+            builder.setInsertionPointToStart(aif.getThenBlock());
+            auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
+            memcpyOp_cloned->removeAttr("broadcast_pattern");
+            memcpyOp_cloned->setAttr("broadcast",
+                    mlir::IntegerSetAttr::get(int_set));
+            SmallVector<Value, 1> yield_token;
+            yield_token.push_back(dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
+            AffineYieldOp ayield = builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(), yield_token);
+            builder.setInsertionPointToStart(aif.getElseBlock());
+          }
+          else {
+            auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
+            memcpyOp_cloned->removeAttr("broadcast_pattern");
+            memcpyOp_cloned->setAttr("broadcast",
+                    mlir::IntegerSetAttr::get(int_set));
+            SmallVector<Value, 1> yield_token;
+            yield_token.push_back(dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
+            AffineYieldOp ayield = builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(), yield_token);
+          }
+        }
+        memcpyOp.erase();
+      }
+    });
+  });
+}
+
 static Optional<Value> allocBufferCallBack(OpBuilder &b,
                                            memref::SubViewOp subView,
                                            ArrayRef<Value> boundingSubViewSize,
@@ -691,6 +821,10 @@ std::unique_ptr<Pass> createAIRExamplePass() {
 
 std::unique_ptr<Pass> createAIRSpecializeDma() {
   return std::make_unique<AIRSpecializeDma>();
+}
+
+std::unique_ptr<Pass> createAIRSpecializeDmaBroadcast() {
+  return std::make_unique<AIRSpecializeDmaBroadcast>();
 }
 
 std::unique_ptr<Pass> createAIRPromoteUniformL1Dma() {
