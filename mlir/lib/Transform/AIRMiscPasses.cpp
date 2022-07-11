@@ -327,17 +327,9 @@ private:
 
 void AIRSpecializeDmaBroadcast::runOnOperation() {
   auto module = getOperation();
-  auto ctx = module.getContext();
 
   module.walk([&](xilinx::air::HerdLaunchOp launch) {
     launch.walk([&](xilinx::air::DmaMemcpyNdOp memcpyOp) {
-      auto herd_size = launch.getHerdSizeOperands();
-      int64_t herd_size_x =
-          cast<arith::ConstantIndexOp>(herd_size.x.getDefiningOp()).value();
-      int64_t herd_size_y =
-          cast<arith::ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
-
-
       auto herd_id = launch.getTileIds();
       OpBuilder builder(memcpyOp);
       auto loc = memcpyOp->getLoc();
@@ -348,7 +340,7 @@ void AIRSpecializeDmaBroadcast::runOnOperation() {
         auto constraints = is.getConstraints();
         auto eqFlags = is.getEqFlags();
 
-        int numPartitions = 0;
+        unsigned numPartitions = 0;
         // Get symbol range (i.e. partition range)
         SmallVector<AffineExpr, 1> zero_syms{
             getAffineConstantExpr(0, ctx),
