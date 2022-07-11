@@ -3,10 +3,14 @@
 // RUN: air-opt %s -air-dependency -air-dependency-schedule-opt | FileCheck %s
 
 // The redundant L1-L2 DMA ops shall be hoisted to outside of scf.for loop
-// CHECK: %[[EVENT0:.*]] = air.wait_all async
-// CHECK: %[[EVENT1:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT0]]{{.*}}]
-// CHECK: %[[EVENT2:.*]] = scf.for {{.*}} iter_args({{.*}} = %[[EVENT1]])
-// CHECK: %[[EVENT3:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT2]]{{.*}}]
+// CHECK: %[[EVENT0:.*]] = air.dma_memcpy_nd async 
+// CHECK: %[[EVENT2:.*]] = scf.for {{.*}} iter_args(%[[EVENT1:.*]] = %[[EVENT0]])
+// CHECK: %[[EVENT3:.*]] = air.launch_herd async [{{.*}}%[[EVENT1]]{{.*}}]
+// CHECK: %[[EVENT4:.*]] = air.wait_all async
+// CHECK: %[[EVENT5:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT4]]{{.*}}]
+// CHECK: %[[EVENT6:.*]] = scf.for {{.*}} iter_args({{.*}} = %[[EVENT5]])
+// CHECK: %[[EVENT7:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT6]]{{.*}}]
+// CHECK: %[[EVENT8:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT2]]{{.*}}]
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 module {

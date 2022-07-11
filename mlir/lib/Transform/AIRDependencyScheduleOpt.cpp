@@ -51,7 +51,7 @@ namespace {
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override { 
 
-    if (for_op->getParentOfType<xilinx::air::HerdLaunchOp>()){
+    // if (for_op->getParentOfType<xilinx::air::HerdLaunchOp>()){
       // Only looking for loops inside of herd launch
       SmallVector<air::DmaMemcpyInterface, 1> dmamemcpy_incoming_history;
       SmallVector<air::DmaMemcpyInterface, 1> dmamemcpy_outgoing_history;
@@ -101,13 +101,21 @@ namespace {
             // Move const ops which produce op_2 operands
             // Note: moving consts of which op_1 depends on AFTER op_2 to maintain dominance if consts are shared by both
             for (auto op_2_operand : op_2->getOperands()){
-              if (op_2_operand.getDefiningOp() && isa<arith::ConstantOp>(op_2_operand.getDefiningOp()))
-                op_2_operand.getDefiningOp()->moveBefore(op_2);
+              if (op_2_operand.getDefiningOp() && isa<arith::ConstantOp>(op_2_operand.getDefiningOp())){
+                // op_2_operand.getDefiningOp()->moveBefore(op_2);
+                rewriter.setInsertionPoint(op_2);
+                auto newConstOp = rewriter.clone(*op_2_operand.getDefiningOp());
+                op_2->moveAfter(newConstOp);
+              }
             }
             // Move const ops which produce op_1 operands
             for (auto op_1_operand : op_1->getOperands()){
-              if (op_1_operand.getDefiningOp() && isa<arith::ConstantOp>(op_1_operand.getDefiningOp()))
-                op_1_operand.getDefiningOp()->moveBefore(op_1);
+              if (op_1_operand.getDefiningOp() && isa<arith::ConstantOp>(op_1_operand.getDefiningOp())){
+                // op_1_operand.getDefiningOp()->moveBefore(op_1);
+                rewriter.setInsertionPoint(op_1);
+                auto newConstOp = rewriter.clone(*op_1_operand.getDefiningOp());
+                op_1->moveAfter(newConstOp);
+              }
             }
             // return success();
           }
@@ -115,7 +123,7 @@ namespace {
         if (foundDmaPairForThisOp2) continue; // Ensure unique pairing
       }
       if (foundDmaPairToHoist) return success();
-    }
+    // }
     return failure();
   }
 
@@ -224,7 +232,11 @@ private:
       }
       auto for_op_iter_operand = for_op.getIterOperands()[0];
       dma_op->getResult(0).replaceAllUsesWith(for_op.getRegionIterArgs()[0]);
-      for_op_iter_operand.replaceAllUsesWith(dma_op->getResult(0));
+      // for_op_iter_operand.replaceAllUsesWith(dma_op->getResult(0));
+      
+      replaceAllUsesInRegionWith(for_op_iter_operand,
+                                  dma_op->getResult(0),
+                                  *for_op->getParentRegion());
       dma_async_op.addAsyncDependency(for_op_iter_operand);
     }
   }
