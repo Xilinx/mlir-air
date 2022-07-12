@@ -103,14 +103,14 @@ namespace {
             for (auto op_2_operand : op_2->getOperands()){
               if (op_2_operand.getDefiningOp() && isa<arith::ConstantOp>(op_2_operand.getDefiningOp())){
                 rewriter.setInsertionPoint(op_2);
-                auto newConstOp = rewriter.clone(*op_2_operand.getDefiningOp());
+                rewriter.clone(*op_2_operand.getDefiningOp());
               }
             }
             // Move const ops which produce op_1 operands
             for (auto op_1_operand : op_1->getOperands()){
               if (op_1_operand.getDefiningOp() && isa<arith::ConstantOp>(op_1_operand.getDefiningOp())){
                 rewriter.setInsertionPoint(op_1);
-                auto newConstOp = rewriter.clone(*op_1_operand.getDefiningOp());
+                rewriter.clone(*op_1_operand.getDefiningOp());
               }
             }
           }
@@ -410,28 +410,32 @@ public:
           //         mlir::StringAttr::get(dma_op->getContext(), "columns"));
           auto numColsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().y.getDefiningOp());
           auto numCols = numColsOp.value();
-          SmallVector<AffineExpr, 2> constraints{getAffineDimExpr(0, ctx),
-                                                getAffineDimExpr(1, ctx) - getAffineSymbolExpr(0, ctx),
-                                                getAffineSymbolExpr(0, ctx),
-                                                numCols - 1 - getAffineSymbolExpr(0, ctx)};
-          SmallVector<bool, 2> eqflags{false, true, false, false};
-          auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
-          dma_op->setAttr("broadcast_pattern",
-                  mlir::IntegerSetAttr::get(int_set));
+          if (numCols > 1){
+            SmallVector<AffineExpr, 2> constraints{getAffineDimExpr(0, ctx),
+                                                  getAffineDimExpr(1, ctx) - getAffineSymbolExpr(0, ctx),
+                                                  getAffineSymbolExpr(0, ctx),
+                                                  numCols - 1 - getAffineSymbolExpr(0, ctx)};
+            SmallVector<bool, 2> eqflags{false, true, false, false};
+            auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
+            dma_op->setAttr("broadcast_pattern",
+                    mlir::IntegerSetAttr::get(int_set));
+          }
       }
       else if (!hasDepInHerdRows && hasDepInHerdCols){
           // dma_op->setAttr("broadcast",
           //         mlir::StringAttr::get(dma_op->getContext(), "rows"));
           auto numRowsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().x.getDefiningOp());
           auto numRows = numRowsOp.value();
-          SmallVector<AffineExpr, 2> constraints{getAffineDimExpr(0, ctx) - getAffineSymbolExpr(0, ctx),
-                                                getAffineDimExpr(1, ctx),
-                                                getAffineSymbolExpr(0, ctx),
-                                                numRows - 1 - getAffineSymbolExpr(0, ctx)};
-          SmallVector<bool, 2> eqflags{true, false, false, false};
-          auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
-          dma_op->setAttr("broadcast_pattern",
-                  mlir::IntegerSetAttr::get(int_set));
+          if (numRows > 1){
+            SmallVector<AffineExpr, 2> constraints{getAffineDimExpr(0, ctx) - getAffineSymbolExpr(0, ctx),
+                                                  getAffineDimExpr(1, ctx),
+                                                  getAffineSymbolExpr(0, ctx),
+                                                  numRows - 1 - getAffineSymbolExpr(0, ctx)};
+            SmallVector<bool, 2> eqflags{true, false, false, false};
+            auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
+            dma_op->setAttr("broadcast_pattern",
+                    mlir::IntegerSetAttr::get(int_set));
+          }
       }
       else if (!hasDepInHerdRows && !hasDepInHerdCols)
           dma_op->setAttr("broadcast",
