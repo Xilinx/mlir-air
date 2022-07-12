@@ -395,7 +395,7 @@ void AIRSpecializeDmaBroadcast::runOnOperation() {
                     mlir::IntegerSetAttr::get(int_set));
             SmallVector<Value, 1> yield_token;
             yield_token.push_back(dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
-            AffineYieldOp ayield = builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(), yield_token);
+            builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(), yield_token);
             if (numPartitions != 1){
               // If more than 1 spatial partitions, then move loc to else block
               builder.setInsertionPointToStart(aif.getElseBlock());
@@ -415,7 +415,10 @@ void AIRSpecializeDmaBroadcast::runOnOperation() {
                     mlir::IntegerSetAttr::get(int_set));
             SmallVector<Value, 1> yield_token;
             yield_token.push_back(dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
-            AffineYieldOp ayield = builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(), yield_token);
+            builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(), yield_token);
+            builder.setInsertionPointAfter(aif);
+            SmallVector<Value, 1> parent_block_yield_token = {aif.getResult(0)};
+            builder.create<AffineYieldOp>(builder.getUnknownLoc(), parent_block_yield_token);
             builder.setInsertionPointToStart(aif.getElseBlock());
           }
           else {
@@ -425,7 +428,7 @@ void AIRSpecializeDmaBroadcast::runOnOperation() {
                     mlir::IntegerSetAttr::get(int_set));
             SmallVector<Value, 1> yield_token;
             yield_token.push_back(dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
-            AffineYieldOp ayield = builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(), yield_token);
+            builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(), yield_token);
           }
         }
         memcpyOp.erase();
