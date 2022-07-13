@@ -700,8 +700,10 @@ private:
     SmallVector<Value, 4> constants;
     for (unsigned i = 0; i < op.getNumKernelOperands(); i++){
       auto v = op.getKernelOperand(i);
-      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
+      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp())){
         constants.push_back(v);
+        args.push_back(v);
+      }
       else
         args.push_back(v);
     }
