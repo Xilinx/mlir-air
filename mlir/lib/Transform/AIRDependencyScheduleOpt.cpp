@@ -395,51 +395,40 @@ public:
       for (auto v : loop_dep){
         if (v == hl_op.getTileIds().x){
           hasDepInHerdRows = true;
-          // dma_op->setAttr("dma_dep_x",
-          //         mlir::StringAttr::get(dma_op->getContext(), "found"));
         }
         if (v == hl_op.getTileIds().y){
           hasDepInHerdCols = true;
-          // dma_op->setAttr("dma_dep_y",
-          //         mlir::StringAttr::get(dma_op->getContext(), "found"));
         }
       }
 
       if (hasDepInHerdRows && !hasDepInHerdCols){
-          // dma_op->setAttr("broadcast",
-          //         mlir::StringAttr::get(dma_op->getContext(), "columns"));
-          auto numColsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().y.getDefiningOp());
-          auto numCols = numColsOp.value();
-          if (numCols > 1){
-            SmallVector<AffineExpr, 2> constraints{getAffineDimExpr(0, ctx),
-                                                  getAffineDimExpr(1, ctx) - getAffineSymbolExpr(0, ctx),
-                                                  getAffineSymbolExpr(0, ctx),
-                                                  numCols - 1 - getAffineSymbolExpr(0, ctx)};
-            SmallVector<bool, 2> eqflags{false, true, false, false};
-            auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
-            dma_op->setAttr("broadcast_pattern",
-                    mlir::IntegerSetAttr::get(int_set));
-          }
+        auto numRowsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().x.getDefiningOp());
+        auto numRows = numRowsOp.value();
+        if (numRows > 1){
+          SmallVector<AffineExpr, 2> constraints{getAffineDimExpr(0, ctx) - getAffineSymbolExpr(0, ctx),
+                                                getAffineDimExpr(1, ctx),
+                                                getAffineSymbolExpr(0, ctx),
+                                                numRows - 1 - getAffineSymbolExpr(0, ctx)};
+          SmallVector<bool, 2> eqflags{true, false, false, false};
+          auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
+          dma_op->setAttr("broadcast_pattern",
+                  mlir::IntegerSetAttr::get(int_set));
+        }
       }
       else if (!hasDepInHerdRows && hasDepInHerdCols){
-          // dma_op->setAttr("broadcast",
-          //         mlir::StringAttr::get(dma_op->getContext(), "rows"));
-          auto numRowsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().x.getDefiningOp());
-          auto numRows = numRowsOp.value();
-          if (numRows > 1){
-            SmallVector<AffineExpr, 2> constraints{getAffineDimExpr(0, ctx) - getAffineSymbolExpr(0, ctx),
-                                                  getAffineDimExpr(1, ctx),
-                                                  getAffineSymbolExpr(0, ctx),
-                                                  numRows - 1 - getAffineSymbolExpr(0, ctx)};
-            SmallVector<bool, 2> eqflags{true, false, false, false};
-            auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
-            dma_op->setAttr("broadcast_pattern",
-                    mlir::IntegerSetAttr::get(int_set));
-          }
+        auto numColsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().y.getDefiningOp());
+        auto numCols = numColsOp.value();
+        if (numCols > 1){
+          SmallVector<AffineExpr, 2> constraints{getAffineDimExpr(0, ctx),
+                                                getAffineDimExpr(1, ctx) - getAffineSymbolExpr(0, ctx),
+                                                getAffineSymbolExpr(0, ctx),
+                                                numCols - 1 - getAffineSymbolExpr(0, ctx)};
+          SmallVector<bool, 2> eqflags{false, true, false, false};
+          auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
+          dma_op->setAttr("broadcast_pattern",
+                  mlir::IntegerSetAttr::get(int_set));
+        }
       }
-      else if (!hasDepInHerdRows && !hasDepInHerdCols)
-          dma_op->setAttr("broadcast",
-                  mlir::StringAttr::get(dma_op->getContext(), "both"));
     }
   }
 
