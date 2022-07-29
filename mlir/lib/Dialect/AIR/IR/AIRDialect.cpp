@@ -231,8 +231,10 @@ ParseResult HerdLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
     a.type = indexType;
 
   auto tokenType = xilinx::air::AsyncTokenType::get(parser.getBuilder().getContext());
-  parser.resolveOperands(asyncDependencies, tokenType, result.operands);
-  parser.resolveOperands(tileSize, indexType, result.operands);
+  if (parser.resolveOperands(asyncDependencies, tokenType, result.operands))
+    return failure();
+  if (parser.resolveOperands(tileSize, indexType, result.operands))
+    return failure();
 
   SmallVector<OpAsmParser::UnresolvedOperand, 4> kernelOperands;
   SmallVector<OpAsmParser::Argument, 4> kernelArguments;
@@ -258,10 +260,12 @@ ParseResult HerdLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   for (int i=0,e=kernelOperands.size(); i<e; i++) {
     kernelArguments[i].type = types[i];
     tileArgs.push_back(kernelArguments[i]);
-    parser.resolveOperand(kernelOperands[i], types[i], result.operands);
+    if (parser.resolveOperand(kernelOperands[i], types[i], result.operands))
+      return failure();
   }
 
-  parser.parseOptionalAttrDictWithKeyword(result.attributes);
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
 
   Region *body = result.addRegion();
   if (parser.parseRegion(*body, tileArgs))
@@ -378,17 +382,20 @@ PipelineStageOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::Argument, 4> kernelArguments;
   SmallVector<Type, 4> types;
   if (succeeded(parser.parseOptionalKeyword("args"))) {
-    parser.parseAssignmentList(kernelArguments, kernelOperands);
+    if (parser.parseAssignmentList(kernelArguments, kernelOperands))
+      return failure();
     if (parser.parseColonTypeList(types))
       return failure();
   }
 
   for (int i=0,e=kernelOperands.size(); i<e; i++) {
     kernelArguments[i].type = types[i];
-    parser.resolveOperand(kernelOperands[i], types[i], result.operands);
+    if (parser.resolveOperand(kernelOperands[i], types[i], result.operands))
+      return failure();
   }
 
-  parser.parseOptionalAttrDictWithKeyword(result.attributes);
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
 
   Region *body = result.addRegion();
   if (parser.parseRegion(*body, kernelArguments, false))

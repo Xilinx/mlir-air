@@ -666,7 +666,7 @@ public:
     QueueContext *ctx = newQueueContext("core");
     std::vector<std::string> ops{"air.dma_memcpy_nd"};
     std::vector<QueueContext*> ctxs;
-    for (int i = 0; i < core_dma_slots; i++)
+    for (unsigned i = 0; i < core_dma_slots; i++)
       ctxs.push_back(makeDmaContext());
     ctx->contexts.push_back({ops, ctxs});
     return ctx;
@@ -691,7 +691,7 @@ public:
     {
       std::vector<std::string> ops{"air.dma_memcpy_nd"};
       std::vector<QueueContext*> ctxs;
-      for (int i = 0; i < dispatch_dma_slots; i++)
+      for (unsigned i = 0; i < dispatch_dma_slots; i++)
         ctxs.push_back(makeDmaContext());
       ctx->contexts.push_back({ops, ctxs});
     }
@@ -704,7 +704,7 @@ public:
     // queues for top level parallel dispatch
     std::vector<std::string> ops{"scf.parallel"};
     std::vector<QueueContext*> ctxs;
-    for (int i=0; i<dispatch_slots; i++)
+    for (unsigned i=0; i < dispatch_slots; i++)
       ctxs.push_back(makeDispatchContext());
     ctx->contexts.push_back({ops, ctxs});
   

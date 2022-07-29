@@ -595,7 +595,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
         b.create<memref::CopyOp>(loc, src, dst);
         return success();
       };
-      auto emptyCopyCallBack = [loc](OpBuilder &b, Value src,
+      auto emptyCopyCallBack = [](OpBuilder &b, Value src,
                                      Value dst) -> LogicalResult {
         return success();
       };
@@ -605,10 +605,11 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
                                                        deallocBufferCallBack);
       if (first_stage)
         options.setCopyInOutFns(defaultCopyCallBack, emptyCopyCallBack);
-      linalg::promoteSubViews(b, linalgOp, options);
+      auto res = linalg::promoteSubViews(b, linalgOp, options);
+      if (failed(res))
+        return failure();
     }
 
-    memref::CopyOp erased = nullptr;
     if (last_stage) {
       b.setInsertionPointToEnd(stageBlock);
       b.create<xilinx::air::PipelineYieldOp>(loc, SmallVector<Value, 1>());
