@@ -312,12 +312,28 @@ public:
       : traceStream(trace_stream), jsonModel(json_model), time(1) {
 
     auto model = jsonModel.getAsObject();
+
+    dispatch_slots = 1;
     if (auto ds = model->getNumber("num_dispatch_queues"))
       dispatch_slots = (unsigned)(*ds);
+
+    dispatch_dma_slots = 1;
+    if (auto dd = model->getNumber("num_dispatch_dma_queues"))
+      dispatch_dma_slots = (unsigned)(*dd);
+
+    core_dma_slots = 1;
+    if (auto cd = model->getNumber("num_core_dma_queues"))
+      core_dma_slots = (unsigned)(*cd);
+
+    herd_slots = 1;
     if (auto hs = model->getNumber("num_herd_slots"))
       herd_slots = (unsigned)(*hs);
-    LLVM_DEBUG(llvm::dbgs() << "herd slots: " << herd_slots << "\n");
+
     LLVM_DEBUG(llvm::dbgs() << "dispatch slots: " << dispatch_slots << "\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "dispatch dma slots: " << dispatch_dma_slots << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "core dma slots: " << core_dma_slots << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "herd slots: " << herd_slots << "\n");
   }
 
   // Allocate a new matrix with dimensions given by the type, in the
@@ -650,7 +666,7 @@ public:
     QueueContext *ctx = newQueueContext("core");
     std::vector<std::string> ops{"air.dma_memcpy_nd"};
     std::vector<QueueContext*> ctxs;
-    for (int i=0; i<2; i++)
+    for (int i = 0; i < core_dma_slots; i++)
       ctxs.push_back(makeDmaContext());
     ctx->contexts.push_back({ops, ctxs});
     return ctx;
@@ -664,7 +680,7 @@ public:
   QueueContext *makeDispatchContext() {
     QueueContext *ctx = newQueueContext("dispatch");
 
-    // herd controller queues
+    // herd core queues
     {
       std::vector<std::string> ops{"air.launch_herd"};
       std::vector<QueueContext*> ctxs;
@@ -675,7 +691,7 @@ public:
     {
       std::vector<std::string> ops{"air.dma_memcpy_nd"};
       std::vector<QueueContext*> ctxs;
-      for (int i=0; i<2; i++)
+      for (int i = 0; i < dispatch_dma_slots; i++)
         ctxs.push_back(makeDmaContext());
       ctx->contexts.push_back({ops, ctxs});
     }
@@ -1228,6 +1244,8 @@ private:
   std::vector<std::vector<llvm::Any>> store;
 
   unsigned dispatch_slots;
+  unsigned dispatch_dma_slots;
+  unsigned core_dma_slots;
   unsigned herd_slots;
 
 }; // AIRRunner_impl
