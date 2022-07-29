@@ -46,9 +46,9 @@ main(int argc, char *argv[])
 
   tensor_t<uint32_t,1> output;
   output.shape[0] = DMA_COUNT;
-  output.d = (uint32_t*)malloc(sizeof(uint32_t)*DMA_COUNT);
+  output.alloc = output.data = (uint32_t *)malloc(sizeof(uint32_t) * DMA_COUNT);
   for (int i=0; i<output.shape[0]; i++) {
-    output.d[i] = i;
+    output.data[i] = i;
   }
 
   auto o = &output;
@@ -56,12 +56,14 @@ main(int argc, char *argv[])
 
   int errors = 0;
   for (int i=0; i<DMA_COUNT; i++) {
-    uint32_t d = output.d[i];
+    uint32_t d = output.data[i];
     if (d != (i+0x10)) {
       errors++;
       printf("mismatch %x != 0x10 + %x\n", d, i);
     }
   }
+
+  free(output.alloc);
 
   if (!errors) {
     printf("PASS!\n");

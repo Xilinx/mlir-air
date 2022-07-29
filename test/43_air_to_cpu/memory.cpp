@@ -21,14 +21,15 @@ void air_alloc_tensor(tensor_t<T, R> *t, size_t *shape) {
     t->stride[R - i - 1] = n;
     n = n * shape[i];
   }
-  t->d = t->aligned = (T *)malloc(sizeof(T) * n);
+  t->alloc = t->data = (T *)malloc(sizeof(T) * n);
   t->offset = 0;
 }
 
 template <typename T, int R> void air_dealloc_tensor(tensor_t<T, R> *t) {
-  if (t->d)
-    free(t->d);
-  t->d = 0;
+  if (t->alloc)
+    free(t->alloc);
+  t->data = nullptr;
+  t->alloc = nullptr;
 }
 
 template <typename T, int R>
@@ -42,7 +43,7 @@ void air_memcpy_nd_dst(tensor_t<T, R> *dst, tensor_t<T, R> *src, size_t *offset,
     for (size_t i = 0; i < size[0]; i++) {
       size_t idx =
           ((offset[1] + j) * stride[1]) + ((offset[0] + i) * stride[0]);
-      dst->d[idx] = src->d[src_offset++];
+      dst->data[idx] = src->data[src_offset++];
     }
 }
 
@@ -57,7 +58,7 @@ void air_memcpy_nd_src(tensor_t<T, R> *dst, tensor_t<T, R> *src, size_t *offset,
     for (size_t i = 0; i < size[0]; i++) {
       size_t idx =
           ((offset[1] + j) * stride[1]) + ((offset[0] + i) * stride[0]);
-      dst->d[dst_offset++] = src->d[idx];
+      dst->data[dst_offset++] = src->data[idx];
     }
 }
 

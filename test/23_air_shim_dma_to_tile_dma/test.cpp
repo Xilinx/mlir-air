@@ -42,12 +42,12 @@ main(int argc, char *argv[])
 
   tensor_t<uint32_t,1> input;
   input.shape[0] = 256;
-  input.d = (uint32_t*)malloc(sizeof(uint32_t)*256);
+  input.alloc = input.data = (uint32_t *)malloc(sizeof(uint32_t) * 256);
   for (int i=0; i<input.shape[0]; i++) {
-    input.d[i] = i;
+    input.data[i] = i;
   }
 
-  input.d[24] = 0xacdc;
+  input.data[24] = 0xacdc;
 
   auto i = &input;
   graph_fn(i);
@@ -56,6 +56,8 @@ main(int argc, char *argv[])
 
   uint32_t d = mlir_aie_read_buffer_buf0(xaie, 24);
   printf("ID %x\n", d);
+
+  free(input.alloc);
 
   if (d == 0xacdc) {
     printf("PASS!\n");
