@@ -21,10 +21,11 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <vector>
-#include <unordered_set>
+#include <algorithm>
 #include <numeric>
 #include <set>
+#include <unordered_set>
+#include <vector>
 
 #define DEBUG_TYPE "air-to-aie"
 
@@ -512,19 +513,21 @@ public:
       }
       auto x = operands[0];
       auto y = operands[1];
+      Block *bb = nullptr;
       if (isInSet(x, y, aif)) {
-        aif->getBlock()->getOperations().splice(Block::iterator(aif),
-                                                aif.getBody()->getOperations());
+        bb = aif.getThenBlock();
+      } else if (aif.hasElse()) {
+        bb = aif.getElseBlock();
+      }
+      if (bb) {
+        auto t = bb->getTerminator();
+        auto &ops = bb->getOperations();
+        aif->getBlock()->getOperations().splice(Block::iterator(aif), ops,
+                                                ops.begin(), --ops.end());
+        for (int i = 0, e = aif.getNumResults(); i < e; i++)
+          aif.getResult(i).replaceAllUsesWith(t->getOperand(i));
       }
       erased.push_back(aif);
-    });
-    for (auto a : erased)
-      a->erase();
-    erased.clear();
-    core.walk([&](AffineYieldOp ay) {
-      if (!(ay->getParentOfType<AffineIfOp>() ||
-            ay->getParentOfType<AffineForOp>()))
-        erased.push_back(ay);
     });
     for (auto a : erased)
       a->erase();
@@ -552,9 +555,10 @@ public:
         int resultIdx = 1;
         for (auto r : t->getOperands())
           rop.getResult(resultIdx++).replaceAllUsesWith(r);
-        erased.push_back(t);
       });
-      bb.getOperations().splice(Block::iterator(rop), bb.getOperations());
+      auto &ops = bb.getOperations();
+      rop->getBlock()->getOperations().splice(Block::iterator(rop), ops,
+                                                ops.begin(), --ops.end());
       erased.push_back(rop);
     });
     for (auto a : erased)
@@ -927,6 +931,7 @@ public:
                     }
                   }
                   if (need_unlock) {
+                    alloc.dump();
                     auto t = alloc.getParentBlock()->getTerminator();
                     builder.setInsertionPoint(t);
                     builder.create<AIE::UseLockOp>(
