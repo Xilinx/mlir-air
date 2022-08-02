@@ -368,7 +368,67 @@ def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
   }];
 }
 
-// AIR asynchronous region for dynamic event dispatching. WiP
+// AIR channel
+
+def air_ChannelOp : air_Op<"channel", []>,
+    Arguments<(ins FlatSymbolRefAttr:$name, 
+        Confined<I32Attr, [IntMinValue<0>]>:$countx,
+        Confined<I32Attr, [IntMinValue<0>]>:$county)> {
+  let assemblyFormat = [{
+    $name `{` `count_x` `=` $countx `,` `count_y` `=` $county `}` attr-dict 
+  }];
+  let summary = "Channel for data movement.";
+  let description = [{
+    Experimental operation to represent a channel representing the point-to-point connection
+    between two memrefs.
+  }];
+}
+
+def air_PushOp : air_Op<"push", [air_AsyncOpInterface, AttrSizedOperandSegments]>,
+    Arguments<(ins Variadic<air_AsyncToken>:$asyncDependencies, 
+        FlatSymbolRefAttr:$chan_name, 
+        Index:$chan_idx,
+        Index:$chan_idy,
+        AnyMemRef:$src,
+        Variadic<Index>:$src_offsets,
+        Variadic<Index>:$src_sizes,
+        Variadic<Index>:$src_strides)>, 
+    Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
+  let summary = "Push for air channels.";
+  let description = [{
+    Experimental operation to represent copying data into a channel.
+  }];
+  let assemblyFormat = [{
+    $chan_name `(` $chan_idx `,` $chan_idy `)`
+    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) 
+    `(` $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)`  attr-dict `:`
+    `(` type($src) `)`
+  }];
+}
+
+def air_PopOp : air_Op<"pop", [air_AsyncOpInterface, AttrSizedOperandSegments]>,
+    Arguments<(ins Variadic<air_AsyncToken>:$asyncDependencies, 
+        FlatSymbolRefAttr:$chan_name, 
+        Index:$chan_idx,
+        Index:$chan_idy,
+        AnyMemRef:$dst,
+        Variadic<Index>:$dst_offsets,
+        Variadic<Index>:$dst_sizes,
+        Variadic<Index>:$dst_strides)>, 
+    Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
+  let summary = "Pop for air channels.";
+  let description = [{
+    Experimental operation to represent copying data out of a channel.
+  }];
+  let assemblyFormat = [{
+    $chan_name `(` $chan_idx `,` $chan_idy `)`
+    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) 
+    `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `)`  attr-dict `:`
+    `(` type($dst) `)`
+  }];
+}
+
+// AIR asynchronous region for dynamic event dispatching.
 
 def air_RegionOp : air_Op<"region", [air_AsyncOpInterface, AffineScope]> {
   let arguments = (
