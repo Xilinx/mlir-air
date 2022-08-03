@@ -530,6 +530,37 @@ public:
       a->erase();
   }
 
+  // remove any remaining air.region, turning them
+  // back into sequential code
+  void lowerAirRegions(AIE::CoreOp core) {
+    SmallVector<Operation *, 8> erased;
+    core.walk([&](xilinx::air::RegionOp rop) {
+      auto &bb = rop.body().front();
+      unsigned idx = 0;
+      for (auto &arg : bb.getArguments()) {
+        arg.replaceAllUsesWith(rop.getOperand(idx));
+        idx++;
+      }
+      if (rop.getNumResults() > 0) {
+        OpBuilder builder(rop);
+        auto w = builder.create<xilinx::air::WaitAllOp>(
+            core.getLoc(), air::AsyncTokenType::get(rop->getContext()),
+            SmallVector<Value, 1>{});
+        rop.getResult(0).replaceAllUsesWith(w.getResult(0));
+      }
+      rop.walk([&](xilinx::air::RegionTerminatorOp t) {
+        int resultIdx = 1;
+        for (auto r : t->getOperands())
+          rop.getResult(resultIdx++).replaceAllUsesWith(r);
+        erased.push_back(t);
+      });
+      bb.getOperations().splice(Block::iterator(rop), bb.getOperations());
+      erased.push_back(rop);
+    });
+    for (auto a : erased)
+      a->erase();
+  }
+
   // This function replaces the body of any air.pipeline in 'core' with the
   // air.pipeline.stage for tile ('x', 'y'). air.pipeline.get and
   // air.pipeline.get operations are generated for the args and yielded values
@@ -816,6 +847,7 @@ public:
 
               specializeHerdAffineIf(core);
               // specializePipelineOps(x,y,h,core);
+              lowerAirRegions(core);
 
               // generate a buffer for each alloc into L1
               lock_allocation_list lock_allocs;
@@ -1042,8 +1074,15 @@ public:
 
               // erase the dma copy operations
               for (auto p : tile_dma_copies)
-                for (auto o : p.second)
+                for (auto o : p.second) {
+                  if (!o->use_empty())
+                    o->replaceAllUsesWith(
+                        builder.create<xilinx::air::WaitAllOp>(
+                            o->getLoc(),
+                            air::AsyncTokenType::get(o->getContext()),
+                            SmallVector<Value, 1>{}));
                   o->erase();
+                }
 
               std::vector<unsigned> erased_arg_idx;
               // erase the global memory references which were passed into the 
@@ -1192,10 +1231,12 @@ public:
       size_t n = 0;
       do {
         std::vector<Operation*> dead_code;
-        aie_module.walk([&](Operation *op) {
-          if (auto core = op->getParentOfType<AIE::CoreOp>()) {
+        aie_module.walk([&](AIE::CoreOp core) {
+          core.walk([&](Operation *op) {
             // this avoids terminators and loops
             if (op->getNumResults() == 0)
+              return;
+            if (op->getNumRegions())
               return;
             bool used = false;
             for (unsigned i = 0, e = op->getNumResults(); i != e; ++i)
@@ -1213,7 +1254,7 @@ public:
               }
               b.eraseArguments(erased_arg_idx);
             }
-          }
+          });
         });
         n = dead_code.size();
         for (auto op : dead_code) {

@@ -488,8 +488,11 @@ lowerNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
 
   auto dmaOp = cast<xilinx::airrt::MemcpyNdOp>(op);
   SmallVector<Type, 6> tys;
-  SmallVector<Type, 1> retTys;
   SmallVector<Value, 16> operands;
+
+  SmallVector<Type, 1> retTys(
+      op->getNumResults(),
+      LLVM::LLVMPointerType::get(IntegerType::get(ctx, 64)));
 
   auto i32Ty = IntegerType::get(ctx, 32);
   auto i64Ty = IntegerType::get(ctx, 64);
@@ -544,10 +547,10 @@ lowerNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
     module.push_back(fn);
   }
 
-  rewriter.create<func::CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn),
-                                operands);
+  auto call = rewriter.create<func::CallOp>(op->getLoc(), retTys,
+                                            SymbolRefAttr::get(fn), operands);
   if (op->getNumResults()) {
-    rewriter.replaceOp(op, operands[0]);
+    rewriter.replaceOp(op, call.getResults());
   } else {
     rewriter.eraseOp(op);
   }
@@ -857,7 +860,9 @@ public:
 
     SmallVector<Type, 8> tys(
         operands.size(), LLVM::LLVMPointerType::get(IntegerType::get(ctx, 64)));
-    SmallVector<Type, 1> retTys;
+    SmallVector<Type, 1> retTys(
+        op->getNumResults(),
+        LLVM::LLVMPointerType::get(IntegerType::get(ctx, 64)));
 
     std::string fnName = "air_wait_all";
     llvm::raw_string_ostream ss(fnName);
@@ -871,9 +876,8 @@ public:
       module.push_back(fn);
     }
 
-    rewriter.create<func::CallOp>(op->getLoc(), retTys, SymbolRefAttr::get(fn),
-                                  operands);
-    rewriter.eraseOp(op);
+    rewriter.replaceOpWithNewOp<func::CallOp>(op, retTys,
+                                              SymbolRefAttr::get(fn), operands);
     return success();
   }
 };
