@@ -379,8 +379,20 @@ def air_ChannelOp : air_Op<"channel", []>,
   }];
   let summary = "Channel for data movement.";
   let description = [{
-    Experimental operation to represent a channel representing the point-to-point connection
-    between two memrefs.
+    Experimental operation to represent a channel as a point-to-point connection between
+    two memrefs.
+  }];
+}
+
+def air_ForkOp : air_Op<"fork", []>,
+    Arguments<(ins FlatSymbolRefAttr:$chan_in_name, 
+        FlatSymbolRefAttr:$chan_out_name)> {
+  let assemblyFormat = [{
+    $chan_in_name $chan_out_name attr-dict 
+  }];
+  let summary = "Forked channel for broadcast data movement.";
+  let description = [{
+    Experimental operation to represent a channel fork creating a data broadcast.
   }];
 }
 
