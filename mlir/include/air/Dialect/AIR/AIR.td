@@ -396,6 +396,18 @@ def air_ForkOp : air_Op<"fork", []>,
   }];
 }
 
+def air_DistributeOp : air_Op<"distribute", []>,
+    Arguments<(ins FlatSymbolRefAttr:$chan_in_name, 
+        FlatSymbolRefAttr:$chan_out_name)> {
+  let assemblyFormat = [{
+    $chan_in_name $chan_out_name attr-dict 
+  }];
+  let summary = "Distributed channel for merge data movement.";
+  let description = [{
+    Experimental operation to represent a channel distribute creating a data merge.
+  }];
+}
+
 def air_PushOp : air_Op<"push", [air_AsyncOpInterface, AttrSizedOperandSegments]>,
     Arguments<(ins Variadic<air_AsyncToken>:$asyncDependencies, 
         FlatSymbolRefAttr:$chan_name, 
