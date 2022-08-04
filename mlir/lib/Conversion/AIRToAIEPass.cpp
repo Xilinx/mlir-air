@@ -565,6 +565,75 @@ public:
       a->erase();
   }
 
+  // remove air.async.token from scf.for
+  void lowerScfAirEvents(AIE::CoreOp core) {
+    SmallVector<Operation *, 8> erased;
+    core.walk([&](scf::ForOp fop) {
+      OpBuilder builder(fop);
+      if (!fop.getNumIterOperands())
+        return;
+      SmallVector<Value, 4> iter_args;
+      SmallVector<unsigned, 4> iter_args_idx;
+
+      // erase air.event from the iter args
+      for (OpOperand &oper : fop.getIterOpOperands()) {
+        Value v = oper.get();
+        BlockArgument block_arg = fop.getRegionIterArgForOpOperand(oper);
+        if (v.getType().isa<xilinx::air::AsyncTokenType>()) {
+          block_arg.replaceAllUsesWith(v);
+          iter_args_idx.push_back(block_arg.getArgNumber());
+        } else {
+          iter_args.push_back(v);
+        }
+      }
+
+      // if none of the iter args were air.async.token, return
+      if (iter_args.size() == fop.getNumIterOperands())
+        return;
+
+      // make a new scf.for without air.async.token
+      BlockAndValueMapping remap;
+      auto new_fop = builder.create<scf::ForOp>(
+          fop->getLoc(), fop.getLowerBound(), fop.getUpperBound(),
+          fop.getStep(), iter_args);
+      auto &new_region = new_fop.getRegion();
+      fop.getRegion().cloneInto(&new_region, new_region.begin(), remap);
+      new_region.back().erase();
+      new_region.front().eraseArguments(iter_args_idx);
+
+      // use the new for op's results
+      int idx = 0;
+      for (auto r : fop.getResults()) {
+        if (r.getType().isa<xilinx::air::AsyncTokenType>())
+          r.replaceAllUsesWith(
+              builder
+                  .create<xilinx::air::WaitAllOp>(
+                      fop->getLoc(),
+                      xilinx::air::AsyncTokenType::get(fop->getContext()),
+                      SmallVector<Value, 1>{})
+                  .getResult(0));
+        else
+          r.replaceAllUsesWith(new_fop.getResult(idx++));
+      }
+
+      // remove air.async.token from the yield op
+      auto yield = new_region.back().getTerminator();
+      assert(isa<scf::YieldOp>(yield));
+      builder.setInsertionPoint(yield);
+      SmallVector<Value, 4> yield_operands;
+      for (auto o : yield->getOperands()) {
+        if (!o.getType().isa<xilinx::air::AsyncTokenType>())
+          yield_operands.push_back(o);
+      }
+      builder.create<scf::YieldOp>(yield->getLoc(), yield_operands);
+      yield->erase();
+
+      erased.push_back(fop);
+    });
+    for (auto e : erased)
+      e->erase();
+  }
+
   // This function replaces the body of any air.pipeline in 'core' with the
   // air.pipeline.stage for tile ('x', 'y'). air.pipeline.get and
   // air.pipeline.get operations are generated for the args and yielded values
@@ -852,6 +921,7 @@ public:
               specializeHerdAffineIf(core);
               // specializePipelineOps(x,y,h,core);
               lowerAirRegions(core);
+              lowerScfAirEvents(core);
 
               // generate a buffer for each alloc into L1
               lock_allocation_list lock_allocs;
@@ -1080,12 +1150,12 @@ public:
               // erase the dma copy operations
               for (auto p : tile_dma_copies)
                 for (auto o : p.second) {
-                  if (!o->use_empty())
-                    o->replaceAllUsesWith(
-                        builder.create<xilinx::air::WaitAllOp>(
-                            o->getLoc(),
-                            air::AsyncTokenType::get(o->getContext()),
-                            SmallVector<Value, 1>{}));
+                  if (!o->use_empty()) {
+                    OpBuilder b(o);
+                    o->replaceAllUsesWith(b.create<xilinx::air::WaitAllOp>(
+                        o->getLoc(), air::AsyncTokenType::get(o->getContext()),
+                        SmallVector<Value, 1>{}));
+                  }
                   o->erase();
                 }
 
