@@ -113,6 +113,148 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
 }
 
 //
+// LaunchOp
+//
+
+void LaunchOp::build(OpBuilder &builder, OperationState &result,
+                     ValueRange asyncDependencies,
+                     ValueRange sizes, bool isAsync) {
+
+  result.addOperands(asyncDependencies);
+  if (isAsync)
+    result.addTypes(air::AsyncTokenType::get(builder.getContext()));
+  result.addOperands(sizes);
+
+  SmallVector<int32_t, 8> segmentSizes(2, 1);
+  segmentSizes.front() = asyncDependencies.size();
+  segmentSizes.back() = sizes.size();
+  result.addAttribute(getOperandSegmentSizeAttr(),
+                      builder.getI32VectorAttr(segmentSizes));
+
+  Region *r = result.addRegion();
+  Block *body = new Block();
+  for (Value v : sizes) {
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+  }
+  r->push_back(body);
+}
+
+void LaunchOp::build(OpBuilder &builder, OperationState &result,
+                         ValueRange sizes) {
+
+  build(builder, result, {}, sizes);
+}
+
+void LaunchOp::print(OpAsmPrinter &p) {
+
+  auto num_async_deps = asyncDependencies().size();
+  p << ' ';
+  printAsyncDependencies(p, *this, (asyncToken() ? asyncToken().getType() : Type()), asyncDependencies());
+  p << " (";
+  p.printOperands(getIds());
+  p << ") in (";
+  auto args = getSize();
+  auto opers = getSizeOperands();
+  for (int i=0,e=getNumSizeOperands(); i<e; i++) {
+    if (i) p << ", ";
+    p << args[i] << "=";
+    p << opers[i];
+  }
+  p << ")";
+
+  SmallVector<NamedAttribute, 8> filteredAttrs(
+        llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
+          return (OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr()
+            != attr.getName());
+        }));
+  p << " ";
+  if (filteredAttrs.size()) {
+    p << "attributes";
+    p.printOptionalAttrDict(filteredAttrs);
+    p << " ";
+  }
+  p.printRegion(body(), /*printEntryBlockArgs=*/false);
+}
+
+ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
+
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> asyncDependencies;
+  SmallVector<OpAsmParser::Argument, 4> tileArgs;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> tileSize;
+  SmallVector<OpAsmParser::Argument, 4> tileSizeRef;
+
+  Type asyncTokenType = nullptr;
+  if (parseAsyncDependencies(parser, asyncTokenType, asyncDependencies))
+    return failure();
+  if (asyncTokenType)
+    result.addTypes(asyncTokenType);
+
+  // if (parser.parseKeyword("tile"))
+  //   return failure();
+
+  if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
+      parser.parseKeyword("in") || parser.parseLParen())
+    return failure();
+
+  tileSize.resize(tileArgs.size());
+  tileSizeRef.resize(tileArgs.size());
+  for (int i = 0; i < tileArgs.size(); ++i) {
+    if (parser.parseArgument(tileSizeRef[i]) || parser.parseEqual() ||
+        parser.parseOperand(tileSize[i]))
+      return failure();
+    parser.parseOptionalComma();
+  }
+
+  if (parser.parseRParen())
+    return failure();
+
+  Type indexType = parser.getBuilder().getIndexType();
+
+  tileArgs.append(tileSizeRef);
+  for (auto &a : tileArgs)
+    a.type = indexType;
+
+  auto tokenType = xilinx::air::AsyncTokenType::get(parser.getBuilder().getContext());
+  if (parser.resolveOperands(asyncDependencies, tokenType, result.operands))
+    return failure();
+  if (parser.resolveOperands(tileSize, indexType, result.operands))
+    return failure();
+
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+
+  Region *body = result.addRegion();
+  if (parser.parseRegion(*body, tileArgs))
+    return failure();
+
+  SmallVector<int32_t, 8> segmentSizes(2, 1);
+  segmentSizes.front() = asyncDependencies.size();
+  segmentSizes.back() = tileSizeRef.size();
+  result.addAttribute(OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr(),
+                      parser.getBuilder().getI32VectorAttr(segmentSizes));
+  return success();
+}
+
+ArrayRef<BlockArgument> LaunchOp::getIds() {
+  auto s = body().front().getArguments();
+  return s.drop_back(s.size()/2);
+}
+
+ArrayRef<BlockArgument> LaunchOp::getSize() {
+  auto s = body().front().getArguments();
+  return s.drop_front(s.size()/2);
+}
+
+OperandRange LaunchOp::getSizeOperands() {
+  auto opers = getOperands().drop_front(asyncDependencies().size());
+  return opers;
+}
+
+unsigned LaunchOp::getNumSizeOperands() {
+  return getNumOperands() - asyncDependencies().size();
+}
+
+//
 // LaunchHerdOp
 //
 

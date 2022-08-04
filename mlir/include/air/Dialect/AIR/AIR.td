@@ -13,6 +13,46 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 class air_Op<string mnemonic, list<Trait> traits = []> :
     Op<air_Dialect, mnemonic, traits>;
 
+def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
+                                     AttrSizedOperandSegments,
+                                     AffineScope]>,
+                        Arguments<(ins Variadic<air_AsyncToken>:$asyncDependencies,
+                                       Variadic<Index>:$sizes)>,
+                        Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
+  let summary = "Launch";
+  let description = [{
+    Launch
+  }];
+
+  let regions = (region AnyRegion:$body);
+
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins "ValueRange":$sizes)>,
+    OpBuilder<(ins "ValueRange":$asyncDependencies,
+      "ValueRange":$sizes, CArg<"bool", "false">:$isAsync)>
+  ];
+  let hasCustomAssemblyFormat = 1;
+  let extraClassDeclaration = [{
+    ArrayRef<BlockArgument> getIds();
+    ArrayRef<BlockArgument> getSize();
+    OperandRange getSizeOperands();
+    unsigned getNumSizeOperands();
+  }];
+}
+
+def air_LaunchTerminatorOp : air_Op<"launch_terminator", [HasParent<"LaunchOp">,
+                                                      NoSideEffect, Terminator]>,
+    Arguments<(ins)>, Results<(outs)> {
+  let summary = "Terminator for air launch regions.";
+  let description = [{
+    A terminator operation for regions that appear in the body of
+    `air.launch` operation.  These regions are not expected to return any
+    value so the terminator takes no operands.
+  }];
+  let assemblyFormat = "attr-dict";
+}
+
 def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,
                                               AttrSizedOperandSegments,
                                               IsolatedFromAbove,
