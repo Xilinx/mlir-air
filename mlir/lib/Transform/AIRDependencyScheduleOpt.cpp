@@ -228,7 +228,6 @@ private:
       }
       auto for_op_iter_operand = for_op.getIterOperands()[0];
       dma_op->getResult(0).replaceAllUsesWith(for_op.getRegionIterArgs()[0]);
-      // for_op_iter_operand.replaceAllUsesWith(dma_op->getResult(0));
       
       replaceAllUsesInRegionWith(for_op_iter_operand,
                                   dma_op->getResult(0),
@@ -342,9 +341,10 @@ public:
         if (dma_op->getParentOfType<xilinx::air::HerdLaunchOp>()){
           // Start recursively tracing for loop induction variables
           dma_op_history.push_back(dma_op);
-          SmallVector<Value, 1> loop_dep;
-          traceDependentInductionVar(dma_op, loop_dep);
-          dma_op_loop_dep.push_back(loop_dep);
+          SmallVector<Value, 1> loop_dep_history;
+          std::vector<Operation *> op_history;
+          traceDependentInductionVar(dma_op, loop_dep_history, op_history);
+          dma_op_loop_dep_history.push_back(loop_dep_history);
         }
       }
     });
@@ -354,13 +354,13 @@ public:
   void broadcastDetection() {
     for (unsigned i = 0; i < dma_op_history.size(); i++){
       auto dma_op = dma_op_history[i];
-      SmallVector<Value, 1> loop_dep = dma_op_loop_dep[i];
+      SmallVector<Value, 1> loop_dep_history = dma_op_loop_dep_history[i];
       auto hl_op = dma_op->getParentOfType<air::HerdLaunchOp>();
       bool hasDepInHerdRows = false;
       bool hasDepInHerdCols = false;
       // Create an affine set to represent the broadcast pattern
       auto ctx = dma_op->getContext();
-      for (auto v : loop_dep){
+      for (auto v : loop_dep_history){
         if (v == hl_op.getTileIds().x){
           hasDepInHerdRows = true;
         }
@@ -375,9 +375,10 @@ public:
         if (numRows > 1){
           SmallVector<AffineExpr, 2> constraints{getAffineDimExpr(0, ctx) - getAffineSymbolExpr(0, ctx),
                                                 getAffineDimExpr(1, ctx),
+                                                numRows - 1 - getAffineDimExpr(1, ctx),
                                                 getAffineSymbolExpr(0, ctx),
                                                 numRows - 1 - getAffineSymbolExpr(0, ctx)};
-          SmallVector<bool, 2> eqflags{true, false, false, false};
+          SmallVector<bool, 2> eqflags{true, false, false, false, false};
           auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
           dma_op->setAttr("broadcast_pattern",
                   mlir::IntegerSetAttr::get(int_set));
@@ -388,10 +389,11 @@ public:
         auto numCols = numColsOp.value();
         if (numCols > 1){
           SmallVector<AffineExpr, 2> constraints{getAffineDimExpr(0, ctx),
+                                                numCols - 1 - getAffineDimExpr(0, ctx),
                                                 getAffineDimExpr(1, ctx) - getAffineSymbolExpr(0, ctx),
                                                 getAffineSymbolExpr(0, ctx),
                                                 numCols - 1 - getAffineSymbolExpr(0, ctx)};
-          SmallVector<bool, 2> eqflags{false, true, false, false};
+          SmallVector<bool, 2> eqflags{false, false, true, false, false};
           auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
           dma_op->setAttr("broadcast_pattern",
                   mlir::IntegerSetAttr::get(int_set));
@@ -431,7 +433,7 @@ private:
 
   // DMA dependency to loop induction variables
   std::vector<air::DmaMemcpyInterface> dma_op_history;
-  SmallVector<SmallVector<Value, 1>, 1> dma_op_loop_dep;
+  SmallVector<SmallVector<Value, 1>, 1> dma_op_loop_dep_history;
 
 };
 

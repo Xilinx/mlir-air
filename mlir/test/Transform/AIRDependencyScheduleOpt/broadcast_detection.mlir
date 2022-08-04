@@ -3,8 +3,8 @@
 // RUN: air-opt %s -air-dependency -air-dependency-schedule-opt | FileCheck %s
 
 // Detects broadcast pattern for DMAs
-// CHECK: [[$SET0:#set[0-9]+]] = affine_set<(d0, d1)[s0] : (d0 - s0 == 0, d1 >= 0, s0 >= 0, -s0 + 1 >= 0)>
-// CHECK: [[$SET1:#set[0-9]+]] = affine_set<(d0, d1)[s0] : (d0 >= 0, d1 - s0 == 0, s0 >= 0, -s0 + 1 >= 0)>
+// CHECK: [[$SET0:#set[0-9]+]] = affine_set<(d0, d1)[s0] : (d0 - s0 == 0, d1 >= 0, -d1 + 1 >= 0, s0 >= 0, -s0 + 1 >= 0)>
+// CHECK: [[$SET1:#set[0-9]+]] = affine_set<(d0, d1)[s0] : (d0 >= 0, -d0 + 1 >= 0, d1 - s0 == 0, s0 >= 0, -s0 + 1 >= 0)>
 // CHECK: %[[EVENT0:.*]] = air.dma_memcpy_nd {{.*}}broadcast_pattern = [[$SET0]]{{.*}}
 // CHECK: %[[EVENT1:.*]] = air.dma_memcpy_nd {{.*}}broadcast_pattern = [[$SET1]]{{.*}}
 

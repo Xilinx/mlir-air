@@ -10,6 +10,7 @@
 #include "PassDetail.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRTilingUtils.h"
+#include "air/Util/Dependency.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -331,7 +332,7 @@ public:
     // Specialize broadcastable DMA into affine.if regions
     specializeDmaBroadcastWithAffineIf(f);
     // Walk the affine.if's affine.set and simplify DMA source indices
-    // simplifyDmaIndices(f);
+    simplifyDmaIndices(f);
   }
 
 private:
@@ -447,14 +448,17 @@ private:
     });
   }
 
-  // void simplifyDmaIndices(func::FuncOp f) {
+  void simplifyDmaIndices(func::FuncOp f) {
 
-  //   f.walk([&](xilinx::air::DmaMemcpyInterface memcpyOp) {
-  //     if (auto broadcast_pattern = memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern")){
-
-  //     }
-  //   });
-  // }
+    f.walk([&](xilinx::air::DmaMemcpyInterface memcpyOp) {
+      if (auto broadcast_pattern = memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern")){
+        // Get all ops on the dependency connection between dma and herd launch
+        SmallVector<Value, 1> loop_dep_history;
+        std::vector<Operation *> op_history;
+        traceDependentInductionVar(memcpyOp, loop_dep_history, op_history);
+      }
+    });
+  }
 
 };
 

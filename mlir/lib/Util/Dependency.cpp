@@ -26,7 +26,7 @@ namespace air {
   }
 
   // Recursively check for dependency to loop induction vars arising from dma src
-  void traceDependentInductionVar (air::DmaMemcpyInterface async_op, SmallVector<Value, 1> &loop_dep) {
+  void traceDependentInductionVar (air::DmaMemcpyInterface async_op, SmallVector<Value, 1> &loop_dep_history, std::vector<Operation *> &op_history) {
     // Check for immediate dependency to loop induction vars
     SmallVector<Value, 1> candidate_scalar_operands;
     for (unsigned i = 0; i < async_op.getNumDims(); i++){
@@ -42,7 +42,7 @@ namespace air {
     for (auto operand : candidate_scalar_operands){
       // If parent loop op is an scf.for
       if (auto for_op = mlir::scf::getForInductionVarOwner(operand)){
-        loop_dep.push_back(for_op.getInductionVar());
+        loop_dep_history.push_back(for_op.getInductionVar());
       }
       // TODO: Assuming that src.parallel won't exist under herd launch
       // If parent loop op is an scf.parallel
@@ -50,10 +50,10 @@ namespace air {
       // If parent loop op is an air.launch_herd
       if (auto hl_op = getHerdLaunchTileIdOwner(operand)){
         if (operand == hl_op.getTileIds().x) {
-          loop_dep.push_back(hl_op.getTileIds().x);
+          loop_dep_history.push_back(hl_op.getTileIds().x);
         }
         else if (operand == hl_op.getTileIds().y) {
-          loop_dep.push_back(hl_op.getTileIds().y);
+          loop_dep_history.push_back(hl_op.getTileIds().y);
         }
       }
     }
@@ -63,14 +63,15 @@ namespace air {
       if (operand && operand.getType().isa<IndexType>()){ // Only tracing scalar operands
         if (operand.getDefiningOp() && mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())){
           auto ancestor_async_op = dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp());
-          traceDependentInductionVar(ancestor_async_op, loop_dep);
+          op_history.push_back(ancestor_async_op);
+          traceDependentInductionVar(ancestor_async_op, loop_dep_history, op_history);
         }
         else {
           // Trace dependency through a for loop
           if (auto for_op = getForRegionIterArgsOwner(operand)){
             for (auto iter_arg : for_op.getIterOperands()){
               if (operand == iter_arg) {
-                loop_dep.push_back(iter_arg);
+                loop_dep_history.push_back(iter_arg);
               }
             }
           }
@@ -82,7 +83,7 @@ namespace air {
   }
 
   // Recursively check for dependency to any loop induction vars
-  void traceDependentInductionVar (air::AsyncOpInterface async_op, SmallVector<Value, 1> &loop_dep) {
+  void traceDependentInductionVar (air::AsyncOpInterface async_op, SmallVector<Value, 1> &loop_dep_history, std::vector<Operation *> &op_history) {
     // Get child op if async_op is air.region
     Operation * op = nullptr;
     if (auto air_region_op = dyn_cast<air::RegionOp>(async_op.getOperation())){
@@ -100,23 +101,23 @@ namespace air {
     for (auto operand : op->getOperands()){
       // If parent loop op is an scf.for
       if (auto for_op = mlir::scf::getForInductionVarOwner(operand)){
-        loop_dep.push_back(for_op.getInductionVar());
+        loop_dep_history.push_back(for_op.getInductionVar());
       }
       // If parent loop op is an scf.parallel
       if (auto parallel_op = mlir::scf::getParallelForInductionVarOwner(operand)){
         for (auto induction_var : parallel_op.getInductionVars()){
           if (operand == induction_var) {
-            loop_dep.push_back(induction_var);
+            loop_dep_history.push_back(induction_var);
           }
         }
       }
       // If parent loop op is an air.launch_herd
       if (auto hl_op = getHerdLaunchTileIdOwner(operand)){
         if (operand == hl_op.getTileIds().x) {
-          loop_dep.push_back(hl_op.getTileIds().x);
+          loop_dep_history.push_back(hl_op.getTileIds().x);
         }
         else if (operand == hl_op.getTileIds().y) {
-          loop_dep.push_back(hl_op.getTileIds().y);
+          loop_dep_history.push_back(hl_op.getTileIds().y);
         }
       }
     }
@@ -126,14 +127,15 @@ namespace air {
       if (operand && operand.getType().isa<IndexType>()){ // Only tracing scalar operands
         if (operand.getDefiningOp() && mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())){
           auto ancestor_async_op = dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp());
-          traceDependentInductionVar(ancestor_async_op, loop_dep);
+          op_history.push_back(ancestor_async_op);
+          traceDependentInductionVar(ancestor_async_op, loop_dep_history, op_history);
         }
         else {
           // Trace dependency through a for loop
           if (auto for_op = getForRegionIterArgsOwner(operand)){
             for (auto iter_arg : for_op.getIterOperands()){
               if (operand == iter_arg) {
-                loop_dep.push_back(iter_arg);
+                loop_dep_history.push_back(iter_arg);
               }
             }
           }
