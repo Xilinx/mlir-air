@@ -3,6 +3,7 @@ add_mlir_library(AIRUtil
   Outliner.cpp
   CostModel.cpp
   Runner.cpp
+  Dependency.cpp
 
   LINK_LIBS PUBLIC
   MLIRIR
