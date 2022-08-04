@@ -1,3 +1,7 @@
+// (c) Copyright 2022 Xilinx Inc.
+
+// RUN: air-opt %s | FileCheck %s
+
 module {
 
 // CHECK-LABEL: module
