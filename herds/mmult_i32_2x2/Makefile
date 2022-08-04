@@ -7,7 +7,7 @@ all: herd.exe
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 %.exe: %.o test_library.o  mmult.air.a
-	$(CC) $(LDFLAGS) -o $@ $< test_library.o -Wl,--whole-archive mmult.air.a -Wl,--no-whole-archive
+	$(CC) $(LDFLAGS) -o $@ $< test_library.o -Wl,--whole-archive mmult.air.a -Wl,--no-whole-archive -lm
 
 mmult.mlir: mmult.py
 	python3 $< > $@ 
@@ -15,7 +15,7 @@ mmult.mlir: mmult.py
 # change linalg on tensors into linalg on memrefs
 mmult.linalg-memrefs.mlir: mmult.mlir
 	mlir-opt \
-		--linalg-bufferize \
+		--linalg-bufferize --cse \
 		--func-bufferize \
 		--tensor-bufferize \
 		--finalizing-bufferize \
@@ -29,7 +29,7 @@ mmult.air.mlir: mmult.linalg-memrefs.mlir
 			-convert-linalg-to-affine-loops
 
 mmult.air.a: mmult.air.mlir
-	aircc.py -o $@ --sysroot=${SYSROOT} -row-offset=2 -col-offset=7 -v $<
+	aircc.py -o $@ --sysroot=${SYSROOT} -row-offset=4 -col-offset=27 $<
 
 clean::
 	rm -rf air_project mmult.*mlir* *.elf *.exe *.o *.a

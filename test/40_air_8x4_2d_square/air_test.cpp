@@ -112,14 +112,16 @@ main(int argc, char *argv[])
   tensor_t<uint32_t,2> output;
 
   input.shape[0] = IMAGE_WIDTH; input.shape[1] = IMAGE_HEIGHT;
-  input.d = input.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input.shape[0]*input.shape[1]);
+  input.alloc = input.data =
+      (uint32_t *)malloc(sizeof(uint32_t) * input.shape[0] * input.shape[1]);
 
   output.shape[0] = IMAGE_WIDTH; output.shape[1] = IMAGE_HEIGHT;
-  output.d = output.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output.shape[0]*output.shape[1]);
+  output.alloc = output.data =
+      (uint32_t *)malloc(sizeof(uint32_t) * output.shape[0] * output.shape[1]);
 
   for (int i=0; i<IMAGE_SIZE; i++) {
-    input.d[i] = i+0x1000;
-    output.d[i] = 0xdecaf;
+    input.data[i] = i + 0x1000;
+    output.data[i] = 0xdecaf;
   }
 
   void *i, *o;
@@ -130,10 +132,11 @@ main(int argc, char *argv[])
   uint32_t errs = 0;
   // Check the memory we updated
   for (int i=0; i<IMAGE_SIZE; i++) {
-    uint32_t d = output.d[i];
+    uint32_t d = output.data[i];
     u32 r = i / IMAGE_WIDTH;
     u32 c = i % IMAGE_WIDTH;
-    uint32_t id = (r>=TILE_HEIGHT) ? input.d[i-IMAGE_WIDTH*TILE_HEIGHT] : 0;
+    uint32_t id =
+        (r >= TILE_HEIGHT) ? input.data[i - IMAGE_WIDTH * TILE_HEIGHT] : 0;
     if ((r >= TILE_HEIGHT)) {
       if (d != (id)) {
         printf("ERROR: copy idx %d Expected %08X, got %08X\n", i, id, d);
@@ -147,6 +150,9 @@ main(int argc, char *argv[])
       }
     }
   }
+
+  free(input.alloc);
+  free(output.alloc);
 
   if (errs == 0) {
     printf("PASS!\n");

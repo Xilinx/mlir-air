@@ -52,6 +52,17 @@ public:
       auto herd_name = attr.getValue().str();
       rewriter.create<xilinx::airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(), herd_name);
     }
+
+    SmallVector<Value, 4> deps;
+    for (auto &o : operands)
+      if (o.getType().isa<xilinx::airrt::EventType>())
+        deps.push_back(o);
+    if (op->getNumResults()) {
+      auto w = rewriter.create<xilinx::airrt::WaitAllOp>(
+          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
+      launch.getResult(0).replaceAllUsesWith(w.getResult(0));
+    }
+
     auto herd_size = launch.getHerdSizeOperands();
     int64_t herd_size_x = cast<ConstantIndexOp>(herd_size.x.getDefiningOp()).value();
     int64_t herd_size_y = cast<ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
@@ -75,6 +86,7 @@ public:
     auto &body = launch.body().front().getOperations();
     inner.getBody()->getOperations().splice(inner.getBody()->begin(), body,
                                             body.begin(), --body.end());
+
     rewriter.eraseOp(op);
     return success();
   }
@@ -319,6 +331,14 @@ public:
     auto loc = op->getLoc();
     auto ctx = op->getContext();
 
+    SmallVector<Value, 4> deps;
+    for (auto o : adaptor.getOperands())
+      if (o.getType().isa<xilinx::airrt::EventType>())
+        deps.push_back(o);
+    if (deps.size())
+      rewriter.create<xilinx::airrt::WaitAllOp>(
+          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
+
     MemRefType src = op.getSrcMemref().getType().cast<MemRefType>();
     MemRefType dst = op.getDstMemref().getType().cast<MemRefType>();
     bool isFromTile = false;
@@ -421,15 +441,16 @@ public:
     opers.append(lengths);
     opers.append(strides);
 
+    Operation *airrtOp = nullptr;
     SmallVector<Type, 1> tys;
       if (op->getNumResults())
         tys.push_back(xilinx::airrt::EventType::get(ctx));
     if (isFullMemcpy) {
-      rewriter.create<xilinx::airrt::MemcpyNdOp>(loc, tys, opers);
+      airrtOp = rewriter.create<xilinx::airrt::MemcpyNdOp>(loc, tys, opers);
     } else {
-      rewriter.create<xilinx::airrt::DmaMemcpyNdOp>(loc, tys, opers);
+      airrtOp = rewriter.create<xilinx::airrt::DmaMemcpyNdOp>(loc, tys, opers);
     }
-    rewriter.eraseOp(op);
+    rewriter.replaceOp(op, airrtOp->getResults());
     return success();
   }
 };
@@ -472,6 +493,41 @@ public:
   }
 };
 
+LogicalResult lowerAirRegions(Operation *op) {
+  ModuleOp module = dyn_cast<ModuleOp>(op);
+  if (!module)
+    return failure();
+
+  SmallVector<Operation *, 8> erased;
+  module->walk([&](xilinx::air::RegionOp rop) {
+    auto &bb = rop.body().front();
+    unsigned idx = 0;
+    for (auto &arg : bb.getArguments()) {
+      arg.replaceAllUsesWith(rop.getOperand(idx));
+      idx++;
+    }
+    if (rop.getNumResults() > 0) {
+      OpBuilder builder(rop);
+      auto w = builder.create<xilinx::air::WaitAllOp>(
+          op->getLoc(), xilinx::air::AsyncTokenType::get(rop->getContext()),
+          rop.asyncDependencies());
+      rop.getResult(0).replaceAllUsesWith(w.getResult(0));
+    }
+    rop.walk([&](xilinx::air::RegionTerminatorOp t) {
+      int resultIdx = 1;
+      for (auto r : t->getOperands())
+        rop.getResult(resultIdx++).replaceAllUsesWith(r);
+      erased.push_back(t);
+    });
+    rop->getBlock()->getOperations().splice(Block::iterator(rop),
+                                            bb.getOperations());
+    erased.push_back(rop);
+  });
+  for (auto a : erased)
+    a->erase();
+  return success();
+}
+
 class AIRLoweringPass : public AIRLoweringBase<AIRLoweringPass> {
 
 public:
@@ -513,6 +569,12 @@ public:
         AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
         memref::MemRefDialect, bufferization::BufferizationDialect,
         xilinx::airrt::AIRRtDialect>();
+
+    // AIR RegionOp conversion
+    if (failed(lowerAirRegions(module))) {
+      emitError(UnknownLoc::get(context), "error lowering air.region\n");
+      signalPassFailure();
+    }
 
     // Replace the PipelineStageOps first, followed by the 
     // HerdPipelineOps, then run the rest of the patterns.

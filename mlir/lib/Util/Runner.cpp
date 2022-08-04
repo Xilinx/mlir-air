@@ -156,9 +156,7 @@ class AIRRunner::AIRRunner_impl {
   void executeOp(memref::AllocOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
     out[0] = allocateMemRef(op.getType(), in);
-    //unsigned ptr = llvm::any_cast<unsigned>(out[0]);
   }
-
 
   void executeOp(memref::DeallocOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
@@ -199,7 +197,7 @@ class AIRRunner::AIRRunner_impl {
     for (unsigned i = 1, e = regionOp->getNumResults(); i < e; i++) {
       auto r = regionOp->getResult(i);
       if (!r.getType().isa<xilinx::air::AsyncTokenType>()) {
-        valueMap[r] = in[i-1];
+        valueMap[r] = in[i - 1];
       }
     }
   }
@@ -314,12 +312,28 @@ public:
       : traceStream(trace_stream), jsonModel(json_model), time(1) {
 
     auto model = jsonModel.getAsObject();
+
+    dispatch_slots = 1;
     if (auto ds = model->getNumber("num_dispatch_queues"))
       dispatch_slots = (unsigned)(*ds);
+
+    dispatch_dma_slots = 1;
+    if (auto dd = model->getNumber("num_dispatch_dma_queues"))
+      dispatch_dma_slots = (unsigned)(*dd);
+
+    core_dma_slots = 1;
+    if (auto cd = model->getNumber("num_core_dma_queues"))
+      core_dma_slots = (unsigned)(*cd);
+
+    herd_slots = 1;
     if (auto hs = model->getNumber("num_herd_slots"))
       herd_slots = (unsigned)(*hs);
-    LLVM_DEBUG(llvm::dbgs() << "herd slots: " << herd_slots << "\n");
+
     LLVM_DEBUG(llvm::dbgs() << "dispatch slots: " << dispatch_slots << "\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "dispatch dma slots: " << dispatch_dma_slots << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "core dma slots: " << core_dma_slots << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "herd slots: " << herd_slots << "\n");
   }
 
   // Allocate a new matrix with dimensions given by the type, in the
@@ -328,7 +342,7 @@ public:
   unsigned allocateMemRef(mlir::MemRefType type, std::vector<llvm::Any> &in) {
     auto memorySpace = type.getMemorySpaceAsInt();
     auto volume = getTensorVolume(type);
-    auto datawidth = type.getElementTypeBitWidth()/4;
+    auto datawidth = type.getElementTypeBitWidth() / 4;
     uint64_t bytes = volume * datawidth;
     unsigned ptr = store.size();
     store.resize(ptr + 1);
@@ -605,6 +619,98 @@ public:
     CommandQueueEntry &operator=(const CommandQueueEntry &) = delete;
   };
 
+  struct QueueContext {
+    std::string name;
+    std::deque<CommandQueueEntry> queue;
+    std::vector< std::pair< std::vector<std::string>, std::vector<QueueContext*> > > contexts;
+    std::map<std::vector<QueueContext*>*, size_t> rrmap;
+
+    QueueContext(std::string name) : name(name) {}
+
+    Optional<std::vector<QueueContext*>*> match(std::string str) {
+      for (auto &p : contexts) {
+        for (auto &s : std::get<0>(p)) {
+          if (s == str)
+            return &std::get<1>(p);
+        }
+      }
+      return Optional<std::vector<QueueContext*>*>();
+    }
+
+    // select a queue from the vector in a round-robin manner
+    QueueContext *getRR(std::vector<QueueContext*>* v) {
+      if (!rrmap.count(v)) {
+        rrmap.insert({v, 0});
+      }
+      auto idx = rrmap[v];
+      rrmap[v] = (idx+1) % v->size();
+      return v->at(idx);
+    }
+  };
+
+  std::vector<QueueContext*> queues;
+
+  QueueContext *newQueueContext(std::string name) {
+    QueueContext *q =  new QueueContext(name);
+    queues.push_back(q);
+    return q;
+  }
+
+  void deleteQueueContext( QueueContext *q) {
+    auto i = std::find(queues.begin(), queues.end(), q);
+    queues.erase(i);
+    delete q;
+  }
+
+  QueueContext *makeCoreContext() {
+    QueueContext *ctx = newQueueContext("core");
+    std::vector<std::string> ops{"air.dma_memcpy_nd"};
+    std::vector<QueueContext*> ctxs;
+    for (unsigned i = 0; i < core_dma_slots; i++)
+      ctxs.push_back(makeDmaContext());
+    ctx->contexts.push_back({ops, ctxs});
+    return ctx;
+  }
+
+  QueueContext *makeDmaContext() {
+    QueueContext *ctx = newQueueContext("dma");
+    return ctx;
+  }
+
+  QueueContext *makeDispatchContext() {
+    QueueContext *ctx = newQueueContext("dispatch");
+
+    // herd core queues
+    {
+      std::vector<std::string> ops{"air.launch_herd"};
+      std::vector<QueueContext*> ctxs;
+      for (int i=0; i<16; i++)
+        ctxs.push_back(makeCoreContext());
+      ctx->contexts.push_back({ops, ctxs});
+    }
+    {
+      std::vector<std::string> ops{"air.dma_memcpy_nd"};
+      std::vector<QueueContext*> ctxs;
+      for (unsigned i = 0; i < dispatch_dma_slots; i++)
+        ctxs.push_back(makeDmaContext());
+      ctx->contexts.push_back({ops, ctxs});
+    }
+    return ctx;
+  }
+
+  QueueContext *makeTopContext() {
+    QueueContext *ctx = newQueueContext("top");
+
+    // queues for top level parallel dispatch
+    std::vector<std::string> ops{"scf.parallel"};
+    std::vector<QueueContext*> ctxs;
+    for (unsigned i=0; i < dispatch_slots; i++)
+      ctxs.push_back(makeDispatchContext());
+    ctx->contexts.push_back({ops, ctxs});
+  
+    return ctx;
+  }
+
   uint64_t modelOp(CommandQueueEntry &c) {
     mlir::Operation *op = c.op;
     uint64_t execution_time = 1;
@@ -852,27 +958,19 @@ public:
     return;
   }
 
-  void scheduleAIRRegion(
-      xilinx::air::RegionOp &ro, std::deque<CommandQueueEntry> *programQueue,
-      std::array<std::deque<CommandQueueEntry>, 32> *dispatchQueue,
-      std::deque<CommandQueueEntry> tileQueue[16][16]) {
+  void scheduleAIRRegion(xilinx::air::RegionOp &ro, QueueContext *qctx) {
 
     for (auto r : ro->getResults()) {
       if (r.getType().isa<xilinx::air::AsyncTokenType>()) {
         valueMap[r] = llvm::APInt(64, 1);
       }
     }
-
-    //programQueue->push_back(CommandQueueEntry(ro.getOperation()));
-    scheduleBlock(ro->getRegion(0).front(), programQueue, dispatchQueue,
-                  tileQueue);
+    qctx->queue.push_back(
+        CommandQueueEntry(ro.getOperation()));
+    scheduleBlock(ro->getRegion(0).front(), qctx);
   }
 
-  void
-  scheduleScfFor(mlir::scf::ForOp &fo,
-                 std::deque<CommandQueueEntry> *programQueue,
-                 std::array<std::deque<CommandQueueEntry>, 32> *dispatchQueue,
-                 std::deque<CommandQueueEntry> tileQueue[16][16]) {
+  void scheduleScfFor(mlir::scf::ForOp &fo, QueueContext *qctx) {
     auto ub = fo.getUpperBound().getDefiningOp<arith::ConstantIndexOp>();
     auto lb = fo.getLowerBound().getDefiningOp<arith::ConstantIndexOp>();
     auto step = fo.getStep().getDefiningOp<arith::ConstantIndexOp>();
@@ -908,7 +1006,7 @@ public:
             map.map(std::get<0>(t), std::get<1>(t));
         }
       }
-      scheduleBlock(*bb, programQueue, dispatchQueue, tileQueue);
+      scheduleBlock(*bb, qctx);
     }
     // replace the results of the scf.for with the operands of the
     // final scf.yield operation
@@ -919,10 +1017,7 @@ public:
     return;
   }
 
-  void scheduleScfParallel(
-      mlir::scf::ParallelOp &po, std::deque<CommandQueueEntry> *programQueue,
-      std::array<std::deque<CommandQueueEntry>, 32> *dispatchQueue,
-      std::deque<CommandQueueEntry> tileQueue[16][16]) {
+  void scheduleScfParallel(mlir::scf::ParallelOp &po, QueueContext *qctx) {
 
     int64_t trip_count = 1;
     for (auto t :
@@ -935,7 +1030,7 @@ public:
       trip_count *= mlir::ceilDiv(r, step.value());
     }
 
-    programQueue->push_back(
+    qctx->queue.push_back(
         CommandQueueEntry(po.getOperation(), [=](Operation *op) {
           auto spo = cast<scf::ParallelOp>(op);
 
@@ -950,7 +1045,8 @@ public:
               if (auto rop = dyn_cast<scf::ReduceOp>(o)) {
                 auto &rbb = rop.getRegion().front();
                 map.map(rbb.getArgument(0), lastResult);
-                map.map(rbb.getArgument(1), map.lookupOrDefault(rop.getOperand()));
+                map.map(rbb.getArgument(1),
+                        map.lookupOrDefault(rop.getOperand()));
                 for (auto &ro : rbb) {
                   if (auto rrop = dyn_cast<scf::ReduceReturnOp>(ro))
                     lastResult = map.lookupOrDefault(rrop.getOperand());
@@ -961,19 +1057,19 @@ public:
                 bldr.clone(o, map);
               }
             }
-            scheduleBlock(*bb, &(dispatchQueue->data()[i % dispatch_slots]),
-                          dispatchQueue, tileQueues[i % herd_slots]);
+            QueueContext *ctx = qctx;
+            auto qs = qctx->match("scf.parallel");
+            if (qs) {
+              ctx = (*qs)->at(i % (*qs)->size());
+            }
+            scheduleBlock(*bb, ctx);
           }
           spo.getResult(0).replaceAllUsesWith({lastResult});
         }));
     return;
   }
 
-  void scheduleHerdLaunch(
-      xilinx::air::HerdLaunchOp &hlo,
-      std::deque<CommandQueueEntry> *programQueue,
-      std::array<std::deque<CommandQueueEntry>, 32> *dispatchQueue,
-      std::deque<CommandQueueEntry> tileQueue[16][16]) {
+  void scheduleHerdLaunch(xilinx::air::HerdLaunchOp &hlo, QueueContext *qctx) {
 
     int64_t cols = cast<arith::ConstantIndexOp>(
                        hlo.getHerdSizeOperands().x.getDefiningOp())
@@ -985,7 +1081,7 @@ public:
     if (hlo->getNumResults())
       valueMap[hlo->getResult(0)] = APInt(64, rows * cols + 1);
 
-    programQueue->push_back(
+    qctx->queue.push_back(
         CommandQueueEntry(hlo.getOperation(), [=](Operation *op) {
           auto ho = cast<xilinx::air::HerdLaunchOp>(op);
           auto tokenTy = xilinx::air::AsyncTokenType::get(op->getContext());
@@ -1017,11 +1113,14 @@ public:
                     op->getLoc(), SmallVector<Type, 1>{tokenTy}, exit_deps);
                 // exit_tokens.push_back(t.getResult(0));
               }
-              scheduleBlock(*bb, &tileQueue[col][row], dispatchQueue,
-                            tileQueue);
+              QueueContext *ctx = qctx;
+              auto qs = qctx->match("air.launch_herd");
+              if (qs)
+                ctx = (*qs)->at(col * 4 + row);
+              scheduleBlock(*bb, ctx);
               if (t) {
                 valueMap[t->getResult(0)] = APInt(64, 2);
-                tileQueue[col][row].push_back(
+                ctx->queue.push_back(
                     CommandQueueEntry(t, [=](Operation *tOp) {
                       valueMap[op->getResult(0)] =
                           llvm::any_cast<llvm::APInt>(
@@ -1043,10 +1142,7 @@ public:
     }
   }
 
-  void
-  scheduleBlock(mlir::Block &block, std::deque<CommandQueueEntry> *programQueue,
-                std::array<std::deque<CommandQueueEntry>, 32> *dispatchQueue,
-                std::deque<CommandQueueEntry> tileQueue[16][16]) {
+  void scheduleBlock(mlir::Block &block, QueueContext *qctx) {
     if (!block.getOperations().size())
       return;
     Operation &o = block.getOperations().front();
@@ -1056,21 +1152,26 @@ public:
       if (isa<arith::ConstantOp>(op) || isa<arith::ConstantIndexOp>(op)) {
         executeOp(*op);
       } else if (isa<memref::AllocOp>(op) || isa<memref::DeallocOp>(op)) {
-        programQueue->push_back(CommandQueueEntry(op));
+        qctx->queue.push_back(CommandQueueEntry(op));
+      } else if (isa<xilinx::air::DmaMemcpyInterface>(op)) {
+        QueueContext *ctx = qctx;
+        auto qs = qctx->match("air.dma_memcpy_nd");
+        if (qs)
+          ctx = qctx->getRR(*qs);
+        scheduleAIRAsyncOp(op, &ctx->queue);
       } else if (isa<xilinx::air::WaitAllOp>(op) ||
-                 isa<xilinx::air::DmaMemcpyInterface>(op) ||
                  isa<xilinx::air::RegionTerminatorOp>(op)) {
-        scheduleAIRAsyncOp(op, programQueue);
+        scheduleAIRAsyncOp(op, &qctx->queue);
       } else if (auto r = dyn_cast<xilinx::air::RegionOp>(op)) {
-        scheduleAIRRegion(r, programQueue, dispatchQueue, tileQueue);
+        scheduleAIRRegion(r, qctx);
       } else if (auto hlo = dyn_cast<xilinx::air::HerdLaunchOp>(op)) {
-        scheduleHerdLaunch(hlo, programQueue, dispatchQueue, tileQueue);
+        scheduleHerdLaunch(hlo, qctx);
       } else if (auto linalgOp = mlir::dyn_cast<linalg::LinalgOp>(op)) {
-        programQueue->push_back(CommandQueueEntry(op));
+        qctx->queue.push_back(CommandQueueEntry(op));
       } else if (auto sfo = dyn_cast<mlir::scf::ForOp>(op)) {
-        scheduleScfFor(sfo, programQueue, dispatchQueue, tileQueue);
+        scheduleScfFor(sfo, qctx);
       } else if (auto spo = dyn_cast<mlir::scf::ParallelOp>(op)) {
-        scheduleScfParallel(spo, programQueue, dispatchQueue, tileQueue);
+        scheduleScfParallel(spo, qctx);
       } else {
         ; // op->dump();
         ; // llvm_unreachable("unexpected operation");
@@ -1079,22 +1180,14 @@ public:
     }
   }
 
-  void
-  scheduleRegion(mlir::Region &region,
-                 std::deque<CommandQueueEntry> *programQueue,
-                 std::array<std::deque<CommandQueueEntry>, 32> *dispatchQueue,
-                 std::deque<CommandQueueEntry> tileQueue[16][16]) {
+  void scheduleRegion(mlir::Region &region, QueueContext *qctx) {
     for (auto &b : region.getBlocks())
-      scheduleBlock(b, programQueue, dispatchQueue, tileQueue);
+      scheduleBlock(b, qctx);
   }
 
   void scheduleFunction(func::FuncOp &toplevel) {
-    std::deque<CommandQueueEntry> programQueue;
-    std::array<std::deque<CommandQueueEntry>, 32> dispatchQueue;
-
-    // push everything onto the queues in program order
-    scheduleRegion(toplevel.getRegion(), &programQueue, &dispatchQueue,
-                   tileQueues[0]);
+    QueueContext *ctx = makeTopContext();
+    scheduleRegion(toplevel.getRegion(), ctx);
 
     uint64_t time = 1;
 
@@ -1105,33 +1198,13 @@ public:
       running = false;
       std::vector<uint64_t> next_times;
 
-      processQueue(programQueue, time);
-      if (programQueue.size()) {
-        running = true;
-        if (programQueue.front().is_started() &&
-            (programQueue.front().end_time))
-          next_times.push_back(programQueue.front().end_time);
-      }
-      for (unsigned i = 0; i < dispatchQueue.size(); i++) {
-        processQueue(dispatchQueue[i], time);
-        if (dispatchQueue[i].size()) {
+      for (auto *qctx : queues) {
+        auto &q = qctx->queue;
+        processQueue(q, time);
+        if (q.size()) {
           running = true;
-          if (dispatchQueue[i].front().is_started() &&
-              (dispatchQueue[i].front().end_time))
-            next_times.push_back(dispatchQueue[i].front().end_time);
-        }
-      }
-      for (int i = 0; i < 4; i++) {
-        for (int y = 0; y < 16; y++) {
-          for (int x = 0; x < 16; x++) {
-            processQueue(tileQueues[i][y][x], time);
-            if (tileQueues[i][y][x].size()) {
-              running = true;
-              if (tileQueues[i][y][x].front().is_started() &&
-                  (tileQueues[i][y][x].front().end_time))
-                next_times.push_back(tileQueues[i][y][x].front().end_time);
-            }
-          }
+          if (q.front().is_started() && q.front().end_time)
+            next_times.push_back(q.front().end_time);
         }
       }
 
@@ -1164,10 +1237,6 @@ private:
   // The valueMap associates each SSA statement in the program
   // (represented by a Value*) with it's corresponding value.
   llvm::DenseMap<Value, llvm::Any> valueMap;
-  // The timeMap associates each value with the time it was created.
-  // llvm::DenseMap<Value, uint64_t> timeMap;
-
-  std::deque<CommandQueueEntry> tileQueues[32][16][16];
 
   // The store associates each allocation in the program
   // (represented by a int) with a vector of values which can be
@@ -1175,6 +1244,8 @@ private:
   std::vector<std::vector<llvm::Any>> store;
 
   unsigned dispatch_slots;
+  unsigned dispatch_dma_slots;
+  unsigned core_dma_slots;
   unsigned herd_slots;
 
 }; // AIRRunner_impl

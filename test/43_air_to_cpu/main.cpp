@@ -20,11 +20,11 @@ void mm_out(tensor_t<T, 2> *a, tensor_t<T, 2> *b, tensor_t<T, 2> *r) {
   for (size_t i = 0; i < a_h; i++) {
     for (size_t j = 0; j < b_w; j++) {
       size_t idx = i * b_w + j;
-      r->d[idx] = (T)(0);
+      r->data[idx] = (T)(0);
       for (size_t k = 0, ke = a_w; k < a_w; k++) {
-        T _a = a->d[i * a_w + k];
-        T _b = b->d[k * b_w + j];
-        r->d[idx] += _a * _b;
+        T _a = a->data[i * a_w + k];
+        T _b = b->data[k * b_w + j];
+        r->data[idx] += _a * _b;
       }
     }
   }
@@ -41,30 +41,30 @@ int main(int argc, char *argv[]) {
   input0.shape[0] = input0.shape[1] = INPUT_SIZE;
   input0.stride[1] = 1;
   input0.stride[0] = 1024;
-  input0.d = input0.aligned =
+  input0.alloc = input0.data =
       (int32_t *)malloc(sizeof(int32_t) * input0.shape[0] * input0.shape[1]);
 
   input1.shape[0] = input1.shape[1] = INPUT_SIZE;
   input1.stride[1] = 1;
   input1.stride[0] = 1024;
-  input1.d = input1.aligned =
+  input1.alloc = input1.data =
       (int32_t *)malloc(sizeof(int32_t) * input1.shape[0] * input1.shape[1]);
 
   output.shape[0] = output.shape[1] = INPUT_SIZE;
   output.stride[1] = 1;
   output.stride[0] = 1024;
-  output.d = output.aligned =
+  output.alloc = output.data =
       (int32_t *)malloc(sizeof(int32_t) * output.shape[0] * output.shape[1]);
 
   output_ref.shape[0] = output_ref.shape[1] = INPUT_SIZE;
-  output_ref.d = output_ref.aligned = (int32_t *)malloc(
+  output_ref.alloc = output_ref.data = (int32_t *)malloc(
       sizeof(int32_t) * output_ref.shape[0] * output_ref.shape[1]);
 
   for (int i = 0; i < input0.shape[0] * input0.shape[1]; i++) {
-    input0.d[i] = ((int32_t)i % 3) + 1;
-    input1.d[i] = ((int32_t)i + 1) % 4 + 1;
-    output.d[i] = -1;
-    output_ref.d[i] = -1;
+    input0.data[i] = ((int32_t)i % 3) + 1;
+    input1.data[i] = ((int32_t)i + 1) % 4 + 1;
+    output.data[i] = -1;
+    output_ref.data[i] = -1;
   }
   mm_out(&input0, &input1, &output_ref);
 
@@ -73,14 +73,20 @@ int main(int argc, char *argv[]) {
   int errors = 0;
   auto output_size = output.shape[0] * output.shape[1];
   for (int i = 0; i < output_size; i++) {
-    auto d = output.d[i];
-    auto ref = output_ref.d[i];
+    auto d = output.data[i];
+    auto ref = output_ref.data[i];
     if (d != ref) {
       errors++;
       if (errors < 10)
         printf("%04X: mismatch %d != %d (output != ref)\n", i, d, ref);
     }
   }
+
+  free(input0.alloc);
+  free(input1.alloc);
+  free(output.alloc);
+  free(output_ref.alloc);
+
   if (!errors) {
     printf("PASS!\n");
   } else {

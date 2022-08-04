@@ -35,18 +35,21 @@ main(int argc, char *argv[])
   tensor_t<DATA_TYPE,1> input_a, input_b;
   tensor_t<DATA_TYPE,1> output;
   input_a.shape[0] = DATA_LENGTH;
-  input_a.d = input_a.aligned = (DATA_TYPE*)malloc(sizeof(DATA_TYPE)*input_a.shape[0]);
+  input_a.alloc = input_a.data =
+      (DATA_TYPE *)malloc(sizeof(DATA_TYPE) * input_a.shape[0]);
 
   input_b.shape[0] = DATA_LENGTH;
-  input_b.d = input_b.aligned = (DATA_TYPE*)malloc(sizeof(DATA_TYPE)*input_b.shape[0]);
+  input_b.alloc = input_b.data =
+      (DATA_TYPE *)malloc(sizeof(DATA_TYPE) * input_b.shape[0]);
 
   output.shape[0] = input_a.shape[0];
-  output.d = output.aligned = (DATA_TYPE*)malloc(sizeof(DATA_TYPE)*output.shape[0]);
+  output.alloc = output.data =
+      (DATA_TYPE *)malloc(sizeof(DATA_TYPE) * output.shape[0]);
   DATA_TYPE d = 1;
   for (int i=0; i<input_a.shape[0]; i++) {
-    input_a.d[i] = d;
-    input_b.d[i] = ((DATA_TYPE)DATA_LENGTH)+d;
-    output.d[i] = -1;
+    input_a.data[i] = d;
+    input_b.data[i] = ((DATA_TYPE)DATA_LENGTH) + d;
+    output.data[i] = -1;
     d += 1;
   }
 
@@ -62,12 +65,17 @@ main(int argc, char *argv[])
   int errors = 0;
 
   for (int i=0;i<DATA_LENGTH;i++) {
-    DATA_TYPE ref = (input_a.d[i]*input_b.d[i]) + (DATA_TYPE)1 + (DATA_TYPE)2 + (DATA_TYPE)3;
-    if (output.d[i] != ref) {
-      printf("output[%d] = %d (expected %d)\n", i, output.d[i], ref);
+    DATA_TYPE ref = (input_a.data[i] * input_b.data[i]) + (DATA_TYPE)1 +
+                    (DATA_TYPE)2 + (DATA_TYPE)3;
+    if (output.data[i] != ref) {
+      printf("output[%d] = %d (expected %d)\n", i, output.data[i], ref);
       errors++;
     }
   }
+
+  free(output.alloc);
+  free(input_a.alloc);
+  free(input_b.alloc);
 
   if (!errors) {
     printf("PASS!\n");

@@ -36,11 +36,11 @@ void mm_out(tensor_t<T,2> *a, tensor_t<T,2> *b, tensor_t<T,2> *r)
   for (size_t i=0; i<a_h; i++) {
     for (size_t j=0; j<b_w; j++) {
       size_t idx = i*b_w + j;
-      r->d[idx] = (T)(0);
+      r->aligned[idx] = (T)(0);
       for (size_t k=0, ke=a_w; k<a_w; k++) {
-        T _a = a->d[i*a_w + k];
-        T _b = b->d[k*b_w + j];
-        r->d[idx] += _a * _b;
+        T _a = a->aligned[i * a_w + k];
+        T _b = b->aligned[k * b_w + j];
+        r->aligned[idx] += _a * _b;
       }
     }
   }
@@ -50,7 +50,7 @@ void mm_out(tensor_t<T,2> *a, tensor_t<T,2> *b, tensor_t<T,2> *r)
 
 namespace air::herds::herd_0 {
 int32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t *, int);
-int32_t mlir_aie_read_buffer_buf1(aie_libxaie_ctx_t *, int);
+int32_t mlir_aie_read_buffer_buf11(aie_libxaie_ctx_t *, int);
 int32_t mlir_aie_read_buffer_buf2(aie_libxaie_ctx_t *, int);
 }
 using namespace air::herds::herd_0;
@@ -93,28 +93,32 @@ main(int argc, char *argv[])
   #define M_SIZE 64
 
   input_A.shape[0] = input_A.shape[1] = M_SIZE;
-  input_A.d = input_A.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input_A.shape[0]*input_A.shape[1]);
+  input_A.alloc = input_A.data = (uint32_t *)malloc(
+      sizeof(uint32_t) * input_A.shape[0] * input_A.shape[1]);
 
   input_B.shape[0] = input_B.shape[1] = M_SIZE;
-  input_B.d = input_B.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input_B.shape[0]*input_B.shape[1]);
+  input_B.alloc = input_B.data = (uint32_t *)malloc(
+      sizeof(uint32_t) * input_B.shape[0] * input_B.shape[1]);
 
   output.shape[0] = output.shape[1] = M_SIZE;
-  output.d = output.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output.shape[0]*output.shape[1]);
+  output.alloc = output.data = (uint32_t *)(size_t)malloc(
+      sizeof(uint32_t) * output.shape[0] * output.shape[1]);
 
   output_ref0.shape[0] = output_ref0.shape[1] = M_SIZE;
-  output_ref0.d = output_ref0.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output_ref0.shape[0]*output_ref0.shape[1]);
+  output_ref0.alloc = output_ref0.data = (uint32_t *)malloc(
+      sizeof(uint32_t) * output_ref0.shape[0] * output_ref0.shape[1]);
 
-  auto handle = air_module_load_from_file(nullptr,q);
+  auto handle = air_module_load_from_file(nullptr, q);
   assert(handle && "failed to open linked air module");
 
   auto herd_fn = (void (*)(void*,void *,void*))dlsym((void*)handle, "_mlir_ciface_forward");
   assert(herd_fn && "failed to locate _mlir_ciface_forward in .so");
 
   for (int i=0; i<input_A.shape[0]*input_A.shape[1]; i++) {
-    input_A.d[i] = ((uint32_t)i % 3) + 1;
-    input_B.d[i] = ((uint32_t)i+1) % 4 + 1;
-    output.d[i] = 0;
-    output_ref0.d[i] = 0;
+    input_A.data[i] = (rand() % 1024) + 1;
+    input_B.data[i] = (rand() % 1024) + 1;
+    output.data[i] = 0;
+    output_ref0.data[i] = 0;
   }
 
   mm_out(&input_A, &input_B, &output_ref0);
@@ -146,8 +150,8 @@ main(int argc, char *argv[])
   if (VERBOSE) {
     mlir_aie_print_tile_status(xaie,col,2);
     for (int i=0; i<64; i++) {
-      printf("%d\n", mlir_aie_read_buffer_buf0(xaie, i));
-      printf("%d\n", mlir_aie_read_buffer_buf1(xaie, i));
+      //      printf("%d ", mlir_aie_read_buffer_buf0(xaie, i));
+      //      printf("%d\n", mlir_aie_read_buffer_buf11(xaie, i));
       printf("%d\n", mlir_aie_read_buffer_buf2(xaie, i));
     }
   }
@@ -155,14 +159,20 @@ main(int argc, char *argv[])
   int errors = 0;
   auto output_size = output.shape[0]*output.shape[1];
   for (int i=0; i<output_size; i++) {
-    auto d = output.d[i];
-    auto ref = output_ref0.d[i];
+    auto d = output.data[i];
+    auto ref = output_ref0.data[i];
     if (d != ref) {
       errors++;
-      if (errors < 10)
-      printf("%04X: mismatch %d != %d\n", i, d, ref);
+      if (errors < 100)
+        printf("%04X: mismatch %d != %d\n", i, d, ref);
     }
   }
+
+  free(input_A.alloc);
+  free(input_B.alloc);
+  free(output.alloc);
+  free(output_ref0.alloc);
+
   if (!errors) {
     printf("PASS!\n");
   }

@@ -109,7 +109,7 @@ LogicalResult AIRPipeStageConversion::matchAndRewrite(
   }
 
   auto &body_region = aif.getBodyRegion();
-  stage.body().cloneInto(&aif.getBodyRegion(), body_region.begin(), remap);
+  stage.body().cloneInto(&body_region, body_region.begin(), remap);
   body_region.back().getOperations().back().erase();
   body_region.front().getOperations().splice(
       body_region.front().getOperations().begin(),

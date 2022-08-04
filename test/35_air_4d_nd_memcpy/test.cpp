@@ -62,11 +62,12 @@ main(int argc, char *argv[])
 
   input.shape[0] = TENSOR_1D; input.shape[1] = TENSOR_2D;
   input.shape[2] = TENSOR_3D; input.shape[3] = TENSOR_4D;
-  input.d = input.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input.shape[0]*
-                                              input.shape[1]*input.shape[2]*input.shape[3]);
+  input.alloc = input.data =
+      (uint32_t *)malloc(sizeof(uint32_t) * input.shape[0] * input.shape[1] *
+                         input.shape[2] * input.shape[3]);
 
   for (int i=0; i<TENSOR_SIZE; i++) {
-    input.d[i] = i;
+    input.data[i] = i;
   }
 
   void *i;
@@ -87,12 +88,14 @@ main(int argc, char *argv[])
     uint32_t zn = 64*((i/8)%2);
     uint32_t wn = 256*((i/16)%2);
     uint32_t a = xn + yn + zn + wn;
-    uint32_t vb = input.d[a];
+    uint32_t vb = input.data[a];
     if (!(rb == vb)) {
       printf("Tile Mem %d should be %08X, is %08X\n", i, vb, rb);
       errors++;
     }
   }
+
+  free(input.alloc);
 
   if (!errors) {
     printf("PASS!\n");

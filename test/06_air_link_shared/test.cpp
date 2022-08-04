@@ -46,14 +46,16 @@ main(int argc, char *argv[])
   tensor_t<uint32_t,2> output;
 
   input.shape[0] = 32; input.shape[1] = 16;
-  input.d = input.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input.shape[0]*input.shape[1]);
+  input.alloc = input.data =
+      (uint32_t *)malloc(sizeof(uint32_t) * input.shape[0] * input.shape[1]);
 
   output.shape[0] = 32; output.shape[1] = 16;
-  output.d = output.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output.shape[0]*output.shape[1]);
+  output.alloc = output.data =
+      (uint32_t *)malloc(sizeof(uint32_t) * output.shape[0] * output.shape[1]);
 
   for (int i=0; i<IMAGE_SIZE; i++) {
-    input.d[i] = i+0x1000;
-    output.d[i] = 0x00defaced;
+    input.data[i] = i + 0x1000;
+    output.data[i] = 0x00defaced;
   }
 
   void *i, *o;
@@ -77,7 +79,7 @@ main(int argc, char *argv[])
 
   // Now look at the image, should have the top left filled in
   for (int i=0;i<IMAGE_SIZE;i++) {
-    u32 rb = output.d[i];
+    u32 rb = output.data[i];
 
     u32 row = i / IMAGE_WIDTH;
     u32 col = i % IMAGE_WIDTH;
@@ -95,6 +97,9 @@ main(int argc, char *argv[])
       }
     }
   }
+
+  free(input.alloc);
+  free(output.alloc);
 
   if (!errors) {
     printf("PASS!\n");

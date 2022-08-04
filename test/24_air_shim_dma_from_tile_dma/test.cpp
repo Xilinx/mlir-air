@@ -56,9 +56,9 @@ main(int argc, char *argv[])
 
   tensor_t<uint32_t,1> input;
   input.shape[0] = DMA_COUNT;
-  input.d = (uint32_t*)malloc(sizeof(uint32_t)*DMA_COUNT);
+  input.alloc = input.data = (uint32_t *)malloc(sizeof(uint32_t) * DMA_COUNT);
   for (int i=0; i<input.shape[0]; i++) {
-    input.d[i] = i;
+    input.data[i] = i;
   }
 
   mlir_aie_print_dma_status(xaie, col, row);
@@ -77,6 +77,8 @@ main(int argc, char *argv[])
       printf("mismatch %x != 0x10 + %x\n", d, i);
     }
   }
+
+  free(input.alloc);
 
   if (!errors) {
     printf("PASS!\n");

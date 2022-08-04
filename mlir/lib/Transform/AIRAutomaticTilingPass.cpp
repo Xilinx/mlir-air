@@ -87,7 +87,8 @@ void AIRAutomaticTilingPass::runOnOperation() {
       // Normalize the loop space after tiling each dimension.
       func.walk([](Operation *op) {
         if (auto affineFor = dyn_cast<AffineForOp>(op))
-          normalizeAffineFor(affineFor);
+          if (failed(normalizeAffineFor(affineFor)))
+            return;
       });
     }
   } else { 
@@ -99,7 +100,8 @@ void AIRAutomaticTilingPass::runOnOperation() {
     // Normalize every loop before tiling.
     for (auto band: bands) 
       for (AffineForOp affineFor: band) 
-        normalizeAffineFor(affineFor);
+        if (failed(normalizeAffineFor(affineFor)))
+          continue;
 
     tileLoopsAutomatically(bands);
 
@@ -109,7 +111,8 @@ void AIRAutomaticTilingPass::runOnOperation() {
                      AIRAutomaticTilingPass::affineOptAttrName, AIRLabel);
     for (auto band: bands) 
       for (AffineForOp affineFor: band) 
-        normalizeAffineFor(affineFor);
+        if (failed(normalizeAffineFor(affineFor)))
+          continue;
   }
 }
 
