@@ -700,8 +700,10 @@ private:
     SmallVector<Value, 4> constants;
     for (unsigned i = 0; i < op.getNumKernelOperands(); i++){
       auto v = op.getKernelOperand(i);
-      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
+      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp())){
         constants.push_back(v);
+        args.push_back(v);
+      }
       else
         args.push_back(v);
     }
@@ -804,12 +806,6 @@ private:
       // If created by launch_herd (as loop iter)
       else if (auto lh = dyn_cast<air::HerdLaunchOp>(tile_index.getParentRegion()->getParentOp())){
         if (lh.getTileIds().x == tile_index || lh.getTileIds().y == tile_index){
-          addNewAsyncDepToGraph<T>(tile_index, op);
-        }
-      }
-      // If created by scf.for (as loop iter)
-      else if (auto forloop = dyn_cast<scf::ForOp>(tile_index.getParentRegion()->getParentOp())){
-        if (forloop.getInductionVar() == tile_index){
           addNewAsyncDepToGraph<T>(tile_index, op);
         }
       }
