@@ -79,6 +79,40 @@ def AffineToAIR : Pass<"affine-to-air", "ModuleOp"> {
   }];
 }
 
+def ParallelToHerd : Pass<"air-par-to-herd", "ModuleOp"> {
+  let summary = "Lower scf.parallel to air.launch_herd";
+  let constructor = "xilinx::air::createParallelToHerdPass()";
+  let description =  [{
+    Lower scf.parallel to air.launch_herd
+  }];
+  let options = [
+    Option<"clAssignDepth", "depth", "int",
+          /*default=*/"-1",
+          "Given a nest of parallel for loops, which depth to map to herd launch">
+  ];
+}
+
+def ParallelToLaunch : Pass<"air-par-to-launch", "ModuleOp"> {
+  let summary = "Lower scf.parallel to air.launch";
+  let constructor = "xilinx::air::createParallelToLaunchPass()";
+  let description =  [{
+    Lower scf.parallel to air.launch
+  }];
+  let options = [
+    Option<"clAssignDepth", "depth", "int",
+          /*default=*/"-1",
+          "Given a nest of parallel for loops, which depth to map to air.launch">
+  ];
+}
+
+def CopyToDma : Pass<"air-copy-to-dma", "ModuleOp"> {
+  let summary = "Convert memcpy to air.dma_memcpy_nd";
+  let constructor = "xilinx::air::createCopyToDmaPass()";
+  let description =  [{
+    Convert memcpy to air.dma_memcpy_nd
+  }];
+}
+
 def AIRToCpu : Pass<"air-to-cpu", "ModuleOp"> {
   let summary = "AIR dialect lowering";
   let constructor = "xilinx::air::createAIRToCpuPass()";

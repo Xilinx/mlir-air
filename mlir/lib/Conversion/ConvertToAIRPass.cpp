@@ -1,6 +1,6 @@
 // (c) Copyright 2019 Xilinx Inc. All Rights Reserved.
 
-#include "air/Conversion/AffineToAIRPass.h"
+#include "air/Conversion/ConvertToAIRPass.h"
 #include "PassDetail.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 
@@ -39,7 +39,7 @@ using namespace mlir;
 using namespace xilinx;
 using namespace xilinx::air;
 
-#define DEBUG_TYPE "affine-to-air"
+#define DEBUG_TYPE "convert-to-air"
 
 namespace {
 
@@ -513,6 +513,61 @@ public:
   }
 };
 
+LogicalResult normalizeScfParallel(scf::ParallelOp parOp,
+                                   PatternRewriter &rewriter) {
+  auto loc = parOp.getLoc();
+
+  // everything must be a constant
+  for (auto step : parOp.getStep()) {
+    if (!step.getDefiningOp<arith::ConstantIndexOp>())
+      return failure();
+  }
+  for (auto lowerBound : parOp.getLowerBound()) {
+    if (!lowerBound.getDefiningOp<arith::ConstantIndexOp>())
+      return failure();
+  }
+  for (auto upperBound : parOp.getUpperBound()) {
+    if (!upperBound.getDefiningOp<arith::ConstantIndexOp>())
+      return failure();
+  }
+
+  auto ivs = parOp.getInductionVars().begin();
+  auto step = parOp.getStep().begin();
+  auto lowerBound = parOp.getLowerBound().begin();
+  auto upperBound = parOp.getUpperBound().begin();
+
+  SmallVector<Value, 4> new_step;
+  SmallVector<Value, 4> new_ub;
+  SmallVector<Value, 4> new_lb;
+
+  auto builder = OpBuilder::atBlockBegin(parOp.getBody());
+  while (step != parOp.getStep().end()) {
+    Value sv = *step++;
+    Value lbv = *lowerBound++;
+    float s = sv.getDefiningOp<arith::ConstantIndexOp>().value();
+    float lb = lbv.getDefiningOp<arith::ConstantIndexOp>().value();
+    float ub = (*upperBound++).getDefiningOp<arith::ConstantIndexOp>().value();
+    new_ub.push_back(rewriter.create<arith::ConstantIndexOp>(
+        loc, (uint64_t)ceil((ub - lb) / s)));
+    new_lb.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
+    new_step.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 1));
+    auto iv = *ivs++;
+    AffineExpr d0 = builder.getAffineDimExpr(0);
+    AffineExpr mul = d0 * sv.getDefiningOp<arith::ConstantIndexOp>().value();
+    AffineExpr add = mul + lbv.getDefiningOp<arith::ConstantIndexOp>().value();
+    auto map = AffineMap::get(1, 0, add);
+    auto new_iv = builder.create<AffineApplyOp>(loc, map, iv);
+    SmallPtrSet<Operation *, 1> keep{new_iv};
+    iv.replaceAllUsesExcept(new_iv.getResult(), keep);
+  }
+
+  parOp.getLowerBoundMutable().assign(new_lb);
+  parOp.getUpperBoundMutable().assign(new_ub);
+  parOp.getStepMutable().assign(new_step);
+
+  return success();
+}
+
 class ScfParToHerdLaunchConversion : public OpRewritePattern<scf::ParallelOp> {
 public:
   using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
@@ -520,63 +575,6 @@ public:
   ScfParToHerdLaunchConversion(MLIRContext *ctx,
                                llvm::SmallSet<scf::ParallelOp, 2> &filteredOps)
       : OpRewritePattern(ctx), filteredOps(filteredOps){};
-
-  LogicalResult normalizeScfParallel(scf::ParallelOp parOp,
-                                     PatternRewriter &rewriter) const {
-    auto loc = parOp.getLoc();
-
-    // everything must be a constant
-    for (auto step : parOp.getStep()) {
-      if (!step.getDefiningOp<arith::ConstantIndexOp>())
-        return failure();
-    }
-    for (auto lowerBound : parOp.getLowerBound()) {
-      if (!lowerBound.getDefiningOp<arith::ConstantIndexOp>())
-        return failure();
-    }
-    for (auto upperBound : parOp.getUpperBound()) {
-      if (!upperBound.getDefiningOp<arith::ConstantIndexOp>())
-        return failure();
-    }
-
-    auto ivs = parOp.getInductionVars().begin();
-    auto step = parOp.getStep().begin();
-    auto lowerBound = parOp.getLowerBound().begin();
-    auto upperBound = parOp.getUpperBound().begin();
-
-    SmallVector<Value, 4> new_step;
-    SmallVector<Value, 4> new_ub;
-    SmallVector<Value, 4> new_lb;
-
-    auto builder = OpBuilder::atBlockBegin(parOp.getBody());
-    while (step != parOp.getStep().end()) {
-      Value sv = *step++;
-      Value lbv = *lowerBound++;
-      float s = sv.getDefiningOp<arith::ConstantIndexOp>().value();
-      float lb = lbv.getDefiningOp<arith::ConstantIndexOp>().value();
-      float ub =
-          (*upperBound++).getDefiningOp<arith::ConstantIndexOp>().value();
-      new_ub.push_back(rewriter.create<arith::ConstantIndexOp>(
-          loc, (uint64_t)ceil((ub - lb) / s)));
-      new_lb.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
-      new_step.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 1));
-      auto iv = *ivs++;
-      AffineExpr d0 = builder.getAffineDimExpr(0);
-      AffineExpr mul = d0 * sv.getDefiningOp<arith::ConstantIndexOp>().value();
-      AffineExpr add =
-          mul + lbv.getDefiningOp<arith::ConstantIndexOp>().value();
-      auto map = AffineMap::get(1, 0, add);
-      auto new_iv = builder.create<AffineApplyOp>(loc, map, iv);
-      SmallPtrSet<Operation *, 1> keep{new_iv};
-      iv.replaceAllUsesExcept(new_iv.getResult(), keep);
-    }
-
-    parOp.getLowerBoundMutable().assign(new_lb);
-    parOp.getUpperBoundMutable().assign(new_ub);
-    parOp.getStepMutable().assign(new_step);
-
-    return success();
-  }
 
   LogicalResult matchAndRewrite(scf::ParallelOp parOp,
                                 PatternRewriter &rewriter) const override {
@@ -701,6 +699,84 @@ private:
   llvm::SmallSet<scf::ParallelOp, 2> &filteredOps;
 };
 
+class ScfParToLaunchConversion : public OpRewritePattern<scf::ParallelOp> {
+public:
+  using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
+
+  ScfParToLaunchConversion(MLIRContext *ctx,
+                           llvm::SmallSet<scf::ParallelOp, 2> &filteredOps)
+      : OpRewritePattern(ctx), filteredOps(filteredOps){};
+
+  LogicalResult matchAndRewrite(scf::ParallelOp parOp,
+                                PatternRewriter &rewriter) const override {
+
+    scf::ParallelOp op = parOp;
+
+    if (!filteredOps.contains(op))
+      return failure();
+
+    if (failed(normalizeScfParallel(op, rewriter)))
+      return failure();
+
+    auto loc = op.getLoc();
+
+    SmallVector<int, 4> bounds(op.getNumLoops(), 1);
+    for (unsigned int i = 0; i < op.getNumLoops(); i++) {
+      auto lb = dyn_cast<arith::ConstantIndexOp>(
+          op.getLowerBound()[i].getDefiningOp());
+      auto ub = dyn_cast<arith::ConstantIndexOp>(
+          op.getUpperBound()[i].getDefiningOp());
+      auto step =
+          dyn_cast<arith::ConstantIndexOp>(op.getStep()[i].getDefiningOp());
+
+      // lowerBound, upperBound and step must be arith::ConstantIndexOps
+      if (!(lb && step && ub))
+        return failure();
+
+      auto ub_int = ub.value();
+      auto lb_int = lb.value();
+      auto step_int = step.value();
+
+      // must start at 0
+      if (lb_int)
+        return failure();
+
+      // step must divide upper bound evenly
+      if (ub_int % step_int)
+        return failure();
+
+      ub_int = ub_int / step_int;
+      bounds[i] = ub_int;
+    }
+
+    SmallVector<Value, 4> sizes;
+    for (auto b : bounds)
+      sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, b));
+    auto launch = rewriter.create<air::LaunchOp>(op.getLoc(), sizes);
+    auto &bb = launch.body().front();
+    auto ivs = op.getInductionVars();
+
+    for (int i = 0, e = ivs.size(); i < e; i++) {
+      ivs[i].replaceAllUsesWith(launch.getIds()[i]);
+    }
+
+    auto &body = op.getBody()->getOperations();
+    bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
+    rewriter.setInsertionPointToStart(&launch.getRegion().front());
+
+    auto builder = OpBuilder::atBlockEnd(&bb);
+    builder.create<air::LaunchTerminatorOp>(loc);
+
+    if (op != parOp)
+      op.erase();
+    rewriter.eraseOp(parOp);
+
+    return success();
+  }
+
+private:
+  llvm::SmallSet<scf::ParallelOp, 2> &filteredOps;
+};
 struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
 
   AffineToAIRPass() = default;
@@ -728,9 +804,7 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
     patterns.add<AffineParToHerdLaunchConversion>(context);
 
     llvm::SmallVector<xilinx::air::HerdLaunchOp, 2> herdOps;
-    module.walk([&](xilinx::air::HerdLaunchOp op) {
-      herdOps.push_back(op);
-    });
+    module.walk([&](xilinx::air::HerdLaunchOp op) { herdOps.push_back(op); });
 
     llvm::SmallSet<scf::ParallelOp, 2> filteredOps;
     module.walk([&](scf::ParallelOp op) {
@@ -847,6 +921,273 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
   }
 };
 
+struct CopyToDmaPass : public CopyToDmaBase<CopyToDmaPass> {
+
+  CopyToDmaPass() = default;
+  CopyToDmaPass(const CopyToDmaPass &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<xilinx::air::airDialect>();
+    registry.insert<linalg::LinalgDialect>();
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    auto context = module.getContext();
+
+    LLVM_DEBUG(llvm::outs() << "input\n");
+    LLVM_DEBUG(module.print(llvm::outs()));
+
+    ConversionTarget target(*context);
+
+    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
+                           xilinx::air::airDialect, arith::ArithmeticDialect>();
+
+    target.addLegalOp<AffineApplyOp, AffineForOp, AffineLoadOp, AffineStoreOp,
+                      AffineYieldOp, scf::YieldOp>();
+
+    DmaMemcpyOpID = 0;
+
+    // Simplify all the subviews so we can rewrite them easily.
+    // Mostly this is propagating constant sizes into dimensioned memref types.
+    RewritePatternSet stage1Patterns =
+        linalg::getLinalgTilingCanonicalizationPatterns(context);
+    memref::AllocOp::getCanonicalizationPatterns(stage1Patterns, context);
+    (void)applyPatternsAndFoldGreedily(module, std::move(stage1Patterns));
+
+    RewritePatternSet stage2Patterns(context);
+    stage2Patterns
+        .insert<AffineCopyToAIRDMAConversion, LinalgCopyToAIRDmaConversion,
+                MemrefCopyToAIRDmaConversion>(context);
+    if (failed(applyPartialConversion(module, target,
+                                      std::move(stage2Patterns)))) {
+      emitError(UnknownLoc::get(context), "error\n");
+      signalPassFailure();
+      assert(0);
+    }
+
+    std::vector<Operation *> waits;
+    for (auto f : module.getOps<func::FuncOp>()) {
+      f.walk([&](Operation *op) {
+        if (auto wo = dyn_cast<AffineDmaWaitOp>(op)) {
+          auto memref = wo.getTagMemRef();
+          for (auto u : memref.getUsers()) {
+            waits.push_back(u);
+          }
+        }
+      });
+    }
+    for (auto o : waits)
+      o->erase();
+
+    std::vector<std::string> herd_syms;
+    for (auto f : module.getOps<func::FuncOp>()) {
+      // record existing symbol names
+      f.walk([&](xilinx::air::HerdLaunchOp op) {
+        if (auto attr = op->getAttrOfType<StringAttr>(
+                SymbolTable::getSymbolAttrName())) {
+          std::string name = attr.getValue().str();
+          assert((std::find(herd_syms.begin(), herd_syms.end(), name) ==
+                  herd_syms.end()) &&
+                 "unexpected duplicate symbol");
+          herd_syms.push_back(name);
+        }
+      });
+      // generate missing symbol names
+      f.walk([&](xilinx::air::HerdLaunchOp op) {
+        if (!op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+          unsigned id = 0;
+          std::string name;
+          do {
+            std::stringstream ss;
+            ss << "herd_" << id++;
+            name = ss.str();
+          } while (std::find(herd_syms.begin(), herd_syms.end(), name) !=
+                   herd_syms.end());
+          herd_syms.push_back(name);
+          op->setAttr(SymbolTable::getSymbolAttrName(),
+                      StringAttr::get(op->getContext(), name));
+        }
+      });
+    }
+    LLVM_DEBUG(llvm::outs() << "output\n");
+    LLVM_DEBUG(module.print(llvm::outs()));
+  }
+};
+
+struct ParallelToHerdPass : public ParallelToHerdBase<ParallelToHerdPass> {
+
+  ParallelToHerdPass() = default;
+  ParallelToHerdPass(const ParallelToHerdPass &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<xilinx::air::airDialect>();
+    registry.insert<linalg::LinalgDialect>();
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    auto context = module.getContext();
+
+    LLVM_DEBUG(llvm::outs() << "input\n");
+    LLVM_DEBUG(module.print(llvm::outs()));
+
+    RewritePatternSet patterns(context);
+    patterns.add<AffineParToHerdLaunchConversion>(context);
+
+    llvm::SmallVector<xilinx::air::HerdLaunchOp, 2> herdOps;
+    module.walk([&](xilinx::air::HerdLaunchOp op) { herdOps.push_back(op); });
+    llvm::SmallVector<xilinx::air::LaunchOp, 2> launchOps;
+    module.walk([&](xilinx::air::LaunchOp op) { launchOps.push_back(op); });
+
+    llvm::SmallSet<scf::ParallelOp, 2> filteredOps;
+    module.walk([&](scf::ParallelOp op) {
+      if (op->getParentOfType<xilinx::air::HerdLaunchOp>())
+        return;
+      for (auto &h : herdOps)
+        if (op->isProperAncestor(h))
+          return;
+      for (auto &l : launchOps)
+        if (op->isProperAncestor(l))
+          return;
+      if (clAssignDepth < 0) {
+        filteredOps.insert(op);
+        return;
+      }
+      // the number of nested scf.parallel above this one
+      int parallel_depth = 0;
+      Operation *par = op.getOperation();
+      while ((par = par->getParentOp()))
+        if (isa<scf::ParallelOp>(par))
+          parallel_depth++;
+      if (parallel_depth != clAssignDepth)
+        return;
+      filteredOps.insert(op);
+    });
+    patterns.add<ScfParToHerdLaunchConversion>(context, filteredOps);
+
+    ConversionTarget target(*context);
+
+    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
+                           xilinx::air::airDialect, arith::ArithmeticDialect>();
+
+    target.addLegalOp<AffineApplyOp, AffineForOp, AffineLoadOp, AffineStoreOp,
+                      AffineYieldOp, scf::YieldOp>();
+
+    target.addDynamicallyLegalOp<scf::ParallelOp>(
+        [&](scf::ParallelOp p) { return !filteredOps.contains(p); });
+
+    if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
+      emitError(UnknownLoc::get(context), "error\n");
+      signalPassFailure();
+      assert(0);
+    }
+
+    std::vector<std::string> herd_syms;
+    for (auto f : module.getOps<func::FuncOp>()) {
+      // record existing symbol names
+      f.walk([&](xilinx::air::HerdLaunchOp op) {
+        if (auto attr = op->getAttrOfType<StringAttr>(
+                SymbolTable::getSymbolAttrName())) {
+          std::string name = attr.getValue().str();
+          assert((std::find(herd_syms.begin(), herd_syms.end(), name) ==
+                  herd_syms.end()) &&
+                 "unexpected duplicate symbol");
+          herd_syms.push_back(name);
+        }
+      });
+      // generate missing symbol names
+      f.walk([&](xilinx::air::HerdLaunchOp op) {
+        if (!op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+          unsigned id = 0;
+          std::string name;
+          do {
+            std::stringstream ss;
+            ss << "herd_" << id++;
+            name = ss.str();
+          } while (std::find(herd_syms.begin(), herd_syms.end(), name) !=
+                   herd_syms.end());
+          herd_syms.push_back(name);
+          op->setAttr(SymbolTable::getSymbolAttrName(),
+                      StringAttr::get(op->getContext(), name));
+        }
+      });
+    }
+    LLVM_DEBUG(llvm::outs() << "output\n");
+    LLVM_DEBUG(module.print(llvm::outs()));
+  }
+};
+
+struct ParallelToLaunchPass
+    : public ParallelToLaunchBase<ParallelToLaunchPass> {
+
+  ParallelToLaunchPass() = default;
+  ParallelToLaunchPass(const ParallelToLaunchPass &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<xilinx::air::airDialect>();
+    registry.insert<linalg::LinalgDialect>();
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    auto context = module.getContext();
+
+    LLVM_DEBUG(llvm::outs() << "input\n");
+    LLVM_DEBUG(module.print(llvm::outs()));
+
+    llvm::SmallVector<xilinx::air::LaunchOp, 2> launchOps;
+    module.walk([&](xilinx::air::LaunchOp op) { launchOps.push_back(op); });
+
+    llvm::SmallSet<scf::ParallelOp, 2> filteredOps;
+    module.walk([&](scf::ParallelOp op) {
+      if (op->getParentOfType<xilinx::air::HerdLaunchOp>())
+        return;
+      if (op->getParentOfType<xilinx::air::LaunchOp>())
+        return;
+      for (auto &l : launchOps)
+        if (op->isProperAncestor(l))
+          return;
+      if (clAssignDepth < 0) {
+        filteredOps.insert(op);
+        return;
+      }
+      // the number of nested scf.parallel above this one
+      int parallel_depth = 0;
+      Operation *par = op.getOperation();
+      while ((par = par->getParentOp()))
+        if (isa<scf::ParallelOp>(par))
+          parallel_depth++;
+      if (parallel_depth != clAssignDepth)
+        return;
+      filteredOps.insert(op);
+    });
+
+    RewritePatternSet patterns(context);
+    patterns.add<ScfParToLaunchConversion>(context, filteredOps);
+
+    ConversionTarget target(*context);
+
+    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
+                           xilinx::air::airDialect, arith::ArithmeticDialect>();
+
+    target.addLegalOp<AffineApplyOp, AffineForOp, AffineLoadOp, AffineStoreOp,
+                      AffineYieldOp, scf::YieldOp>();
+
+    target.addDynamicallyLegalOp<scf::ParallelOp>(
+        [&](scf::ParallelOp p) { return !filteredOps.contains(p); });
+
+    if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
+      emitError(UnknownLoc::get(context), "error\n");
+      signalPassFailure();
+      assert(0);
+    }
+
+    LLVM_DEBUG(llvm::outs() << "output\n");
+    LLVM_DEBUG(module.print(llvm::outs()));
+  }
+};
+
 } // namespace
 
 namespace xilinx {
@@ -854,6 +1195,18 @@ namespace air {
 
 std::unique_ptr<mlir::Pass> createAffineToAIRPass() {
   return std::make_unique<AffineToAIRPass>();
+}
+
+std::unique_ptr<mlir::Pass> createParallelToHerdPass() {
+  return std::make_unique<ParallelToHerdPass>();
+}
+
+std::unique_ptr<mlir::Pass> createParallelToLaunchPass() {
+  return std::make_unique<ParallelToLaunchPass>();
+}
+
+std::unique_ptr<mlir::Pass> createCopyToDmaPass() {
+  return std::make_unique<CopyToDmaPass>();
 }
 
 } // namespace air

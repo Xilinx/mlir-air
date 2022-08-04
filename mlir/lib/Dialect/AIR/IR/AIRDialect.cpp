@@ -135,6 +135,7 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
   Block *body = new Block();
   for (Value v : sizes) {
     body->addArgument(v.getType(), builder.getUnknownLoc());
+    body->addArgument(v.getType(), builder.getUnknownLoc());
   }
   r->push_back(body);
 }
@@ -142,7 +143,7 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
 void LaunchOp::build(OpBuilder &builder, OperationState &result,
                          ValueRange sizes) {
 
-  build(builder, result, {}, sizes);
+  build(builder, result, {}, sizes, false);
 }
 
 void LaunchOp::print(OpAsmPrinter &p) {

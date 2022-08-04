@@ -1,6 +1,6 @@
 
 add_air_library(AIRConversionPasses
-AffineToAIRPass.cpp
+ConvertToAIRPass.cpp
 AIRLoweringPass.cpp
 AIRRtToLLVMPass.cpp
 AIRToAIEPass.cpp
