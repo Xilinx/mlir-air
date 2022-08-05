@@ -1079,8 +1079,6 @@ public:
     int64_t trip_count = 1;
     for (auto s : lo.getSizeOperands()) {
       auto ub = s.getDefiningOp<arith::ConstantIndexOp>();
-      s.dump();
-      assert(ub);
       auto r = ub.value();
       trip_count *= r;
     }
