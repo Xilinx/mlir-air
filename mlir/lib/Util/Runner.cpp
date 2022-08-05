@@ -179,6 +179,9 @@ class AIRRunner::AIRRunner_impl {
   void executeOp(scf::ParallelOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {}
 
+  void executeOp(xilinx::air::LaunchOp op, std::vector<llvm::Any> &in,
+                 std::vector<llvm::Any> &out) {}
+
   void executeOp(xilinx::air::HerdLaunchOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
     decrementAsyncTokens(op);
@@ -238,6 +241,8 @@ class AIRRunner::AIRRunner_impl {
     else if (auto Op = dyn_cast<memref::DeallocOp>(op))
       executeOp(Op, inValues, outValues);
     else if (auto Op = dyn_cast<scf::ParallelOp>(op))
+      executeOp(Op, inValues, outValues);
+    else if (auto Op = dyn_cast<xilinx::air::LaunchOp>(op))
       executeOp(Op, inValues, outValues);
     else if (auto Op = dyn_cast<xilinx::air::RegionTerminatorOp>(op))
       executeOp(Op, inValues, outValues);
@@ -1069,6 +1074,40 @@ public:
     return;
   }
 
+  void scheduleAirLaunch(xilinx::air::LaunchOp &lo, QueueContext *qctx) {
+
+    int64_t trip_count = 1;
+    for (auto s : lo.getSizeOperands()) {
+      auto ub = s.getDefiningOp<arith::ConstantIndexOp>();
+      s.dump();
+      assert(ub);
+      auto r = ub.value();
+      trip_count *= r;
+    }
+
+    qctx->queue.push_back(
+        CommandQueueEntry(lo.getOperation(), [=](Operation *op) {
+          auto spo = cast<xilinx::air::LaunchOp>(op);
+
+          for (auto i = 0; i < trip_count; i++) {
+            BlockAndValueMapping map;
+            auto bb = new mlir::Block();
+            lo->getRegion(0).push_back(bb);
+            auto bldr = OpBuilder::atBlockEnd(bb);
+            for (auto &o : lo->getRegion(0).front().getOperations()) {
+              bldr.clone(o, map);
+            }
+            QueueContext *ctx = qctx;
+            auto qs = qctx->match("scf.parallel");
+            if (qs) {
+              ctx = (*qs)->at(i % (*qs)->size());
+            }
+            scheduleBlock(*bb, ctx);
+          }
+        }));
+    return;
+  }
+
   void scheduleHerdLaunch(xilinx::air::HerdLaunchOp &hlo, QueueContext *qctx) {
 
     int64_t cols = cast<arith::ConstantIndexOp>(
@@ -1172,6 +1211,8 @@ public:
         scheduleScfFor(sfo, qctx);
       } else if (auto spo = dyn_cast<mlir::scf::ParallelOp>(op)) {
         scheduleScfParallel(spo, qctx);
+      } else if (auto alo = dyn_cast<xilinx::air::LaunchOp>(op)) {
+        scheduleAirLaunch(alo, qctx);
       } else {
         ; // op->dump();
         ; // llvm_unreachable("unexpected operation");
