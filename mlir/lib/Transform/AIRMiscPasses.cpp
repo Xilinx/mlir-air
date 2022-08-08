@@ -332,7 +332,7 @@ public:
     // Specialize broadcastable DMA into affine.if regions
     specializeDmaBroadcastWithAffineIf(f);
     // Walk the affine.if's affine.set and simplify DMA source indices
-    simplifyDmaIndices(f);
+    simplifyDmaIndicesWithAffineSet(f);
   }
 
 private:
@@ -402,7 +402,7 @@ private:
               builder.setInsertionPointToStart(aif.getThenBlock());
               auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
               memcpyOp_cloned->removeAttr("broadcast_pattern");
-              memcpyOp_cloned->setAttr("broadcast",
+              memcpyOp_cloned->setAttr("broadcast_set",
                       mlir::IntegerSetAttr::get(int_set));
               SmallVector<Value, 1> yield_token;
               yield_token.push_back(dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
@@ -422,7 +422,7 @@ private:
               builder.setInsertionPointToStart(aif.getThenBlock());
               auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
               memcpyOp_cloned->removeAttr("broadcast_pattern");
-              memcpyOp_cloned->setAttr("broadcast",
+              memcpyOp_cloned->setAttr("broadcast_set",
                       mlir::IntegerSetAttr::get(int_set));
               SmallVector<Value, 1> yield_token;
               yield_token.push_back(dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
@@ -435,7 +435,7 @@ private:
             else {
               auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
               memcpyOp_cloned->removeAttr("broadcast_pattern");
-              memcpyOp_cloned->setAttr("broadcast",
+              memcpyOp_cloned->setAttr("broadcast_set",
                       mlir::IntegerSetAttr::get(int_set));
               SmallVector<Value, 1> yield_token;
               yield_token.push_back(dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
@@ -448,16 +448,218 @@ private:
     });
   }
 
-  void simplifyDmaIndices(func::FuncOp f) {
+  void simplifyDmaIndicesWithAffineSet(func::FuncOp f) {
 
     f.walk([&](xilinx::air::DmaMemcpyInterface memcpyOp) {
-      if (auto broadcast_pattern = memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern")){
+      auto ctx = memcpyOp->getContext();
+      if (auto broadcast_set = memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_set")){
         // Get all ops on the dependency connection between dma and herd launch
         SmallVector<Value, 1> loop_dep_history;
         std::vector<Operation *> op_history;
         traceDependentInductionVar(memcpyOp, loop_dep_history, op_history);
+
+        // Walk constraints in broadcast pattern, and get shape of the broadcast pattern
+        auto is = broadcast_set.getValue();
+        auto constraints = is.getConstraints();
+        auto eqFlags = is.getEqFlags();
+        unsigned numdims = 2; // Assuming 2D partition space
+
+        // SmallVector<SmallVector<AffineExpr, 1>, 1> broadcast_shape_expr;
+        // for (unsigned i = 0; i < numdims; i++){
+        //   broadcast_shape_expr.push_back({});
+        // }
+        // for (unsigned i = 0; i < constraints.size(); i++){
+        //   auto c = constraints[i];
+        //   for (unsigned dim = 0; dim < numdims; dim++){
+        //     if (c.isFunctionOfSymbol(dim)){
+        //       auto val = c.dyn_cast<AffineConstantExpr>().getValue();
+        //       broadcast_shape_expr[dim].push_back(getAffineConstantExpr(val, ctx));
+        //     }
+        //   }
+        // }
+        // for (auto &bounds : broadcast_shape_expr){
+        //   assert(bounds.size() > 2 && "more than two values used to describe a 1D bound (either a value or a min-max pair)");
+        //   assert(bounds.size() == 0 && "empty dimension bound");
+        //   if (bounds.size() == 2){
+        //     auto val0 = bounds[0].dyn_cast<AffineConstantExpr>().getValue();
+        //     auto val1 = bounds[1].dyn_cast<AffineConstantExpr>().getValue();
+        //     auto min = std::min(val0, val1);
+        //     auto max = std::max(val0, val1);
+        //     bounds = {getAffineConstantExpr(min, ctx), getAffineConstantExpr(max, ctx)};
+        //   }
+        // }
+
+        // // Get both tile ids of the dependent herd launch op
+        // Value hl_tile_idx = nullptr;
+        // Value hl_tile_idy = nullptr;
+        // for (auto v : loop_dep_history){
+        //   if (auto hl_op = xilinx::air::getHerdLaunchTileIdOwner(v)){
+        //     hl_tile_idx = hl_op.getTileIds().x;
+        //     hl_tile_idy = hl_op.getTileIds().y;
+        //   }
+        // }
+        // assert((hl_tile_idx || hl_tile_idy) && "DMA has broadcast pattern but no dependency to herd launch");
+
+        // // Evaluate broadcast pattern by propagating expr through scalar operations in op history, last-in-first-out
+        // SmallVector<AffineExpr, 1> current_shape_expr;
+        // for (unsigned dim = 0; dim < numdims; dim++){
+        //   auto bounds = broadcast_shape_expr[dim];
+        //   if (bounds.size() == 1){
+        //     current_shape_expr.push_back(bounds[0]);
+        //   }
+        //   else {
+        //     current_shape_expr.push_back(getAffineSymbolExpr(dim, ctx));
+        //   }
+        // }
+
+        // Value current_ssa_x = hl_tile_idx;
+        // Value current_ssa_y = hl_tile_idy;
+        // // std::vector<std::vector<unsigned>> current_shape = broadcast_shape_inclusive;
+        // for (std::vector<Operation *>::reverse_iterator i = op_history.rbegin(); i != op_history.rend(); ++i ) {
+        //   if (auto air_region_op = dyn_cast<xilinx::air::RegionOp>(*i)){
+        //     assert(air_region_op.body().front().getOperations().size() == 2 
+        //             && "air::RegionOp should have only one child operation beside the terminator");
+        //     // Get current scalar op
+        //     Operation * op = nullptr;
+        //     for (auto &child_op : air_region_op.body().front().getOperations()){
+        //       if (!dyn_cast<xilinx::air::RegionTerminatorOp>(child_op)) op = &child_op;
+        //     }
+        //     // Check which dimension op operates on
+        //     bool operates_on_x = false;
+        //     bool operates_on_y = false;
+        //     for (auto operand : op->getOperands()){
+        //       if (operand == current_ssa_x){
+        //         operates_on_x = true;
+        //         current_ssa_x = air_region_op.getResult(1);
+        //       }
+        //       else if (operand == current_ssa_y){
+        //         operates_on_y = true;
+        //         current_ssa_y = air_region_op.getResult(1);
+        //       }
+        //     }
+        //     assert(operates_on_x && operates_on_y && "TODO: add support for multi-result affine.map op in -air-dependency");
+        //     // If the async op is affine.apply
+        //     if (auto apply_op = dyn_cast<AffineApplyOp>(op)){
+        //       auto map = apply_op.getAffineMap();
+        //       if (operates_on_x){
+        //         auto newmap = map.replace(getAffineSymbolExpr(0, ctx), current_shape_expr[0], 0, 1);
+        //         auto const_id = simplifyAffineMap(newmap).getSingleConstantResult();
+        //         current_shape_expr[0] = getAffineConstantExpr(const_id, ctx);
+        //       }
+        //       else if (operates_on_y){
+        //         auto newmap = map.replace(getAffineSymbolExpr(1, ctx), current_shape_expr[1], 0, 1);
+        //         auto const_id = simplifyAffineMap(newmap).getSingleConstantResult();
+        //         current_shape_expr[1] = getAffineConstantExpr(const_id, ctx);
+        //       }
+        //     }
+
+        //     // If the async op is arith op
+        //     // TODO
+        //   }
+        // } 
+
+        // Check which dimension op operates on
+        bool hasDepInHerd = false;
+        int constScalarDimX = -1;
+        int constScalarDimY = -1;
+        for (auto v : loop_dep_history){
+          if (auto hl_op = xilinx::air::getHerdLaunchTileIdOwner(v)){
+            hasDepInHerd = true;
+            if (v == hl_op.getTileIds().x){
+              unsigned dim = 0;
+              for (unsigned i = 0; i < constraints.size(); i++){
+                auto c = constraints[i];
+                if (c.isFunctionOfSymbol(dim) && eqFlags[i]){
+                  constScalarDimX = evaluateSymbolEquality(c, ctx);
+                }
+              }
+            }
+            if (v == hl_op.getTileIds().y){
+              unsigned dim = 1;
+              for (unsigned i = 0; i < constraints.size(); i++){
+                auto c = constraints[i];
+                if (c.isFunctionOfSymbol(dim) && eqFlags[i]){
+                  constScalarDimY = evaluateSymbolEquality(c, ctx);
+                }
+              }
+            }
+          }
+        }
+
+        // Evaluate broadcast pattern by propagating expr through scalar operations in op history, last-in-first-out
+        SmallVector<AffineExpr, 2> current_shape_expr = {nullptr, nullptr};
+        if (hasDepInHerd && constScalarDimX > 0){
+          current_shape_expr[0] = getAffineConstantExpr(constScalarDimX, ctx);
+        }
+        if (hasDepInHerd && constScalarDimY > 0){
+          current_shape_expr[1] = getAffineConstantExpr(constScalarDimY, ctx);
+        }
+
+        for (std::vector<Operation *>::reverse_iterator i = op_history.rbegin(); i != op_history.rend(); ++i ) {
+          if (auto air_region_op = dyn_cast<xilinx::air::RegionOp>(*i)){
+            assert(air_region_op.body().front().getOperations().size() == 2 
+                    && "air::RegionOp should have only one child operation beside the terminator");
+            // Get current scalar op
+            Operation * op = nullptr;
+            for (auto &child_op : air_region_op.body().front().getOperations()){
+              if (!dyn_cast<xilinx::air::RegionTerminatorOp>(child_op)) op = &child_op;
+            }
+            // If the async op is affine.apply
+            if (auto apply_op = dyn_cast<AffineApplyOp>(op)){
+              auto map = apply_op.getAffineMap();
+              if (current_shape_expr[0]){
+                auto newmap = map.replace(getAffineSymbolExpr(0, ctx), current_shape_expr[0], 0, 1);
+                auto const_int = simplifyAffineMap(newmap).getSingleConstantResult();
+                current_shape_expr[0] = getAffineConstantExpr(const_int, ctx);
+              }
+              else if (current_shape_expr[1]){
+                auto newmap = map.replace(getAffineSymbolExpr(0, ctx), current_shape_expr[1], 0, 1);
+                auto const_int = simplifyAffineMap(newmap).getSingleConstantResult();
+                current_shape_expr[1] = getAffineConstantExpr(const_int, ctx);
+              }
+            }
+
+            // If the async op is arith op
+            // TODO
+          }
+        } 
+
+        // Replace memcpyOp's dependent operand with const
+        OpBuilder builder(memcpyOp);
+        builder.setInsertionPoint(memcpyOp);
+        auto loc = memcpyOp->getLoc();
+        auto memcpyNdOp = dyn_cast<xilinx::air::DmaMemcpyNdOp>(memcpyOp.getOperation());
+        auto dmaSrcOffsets = memcpyNdOp.getSrcOffsets();
+        for (unsigned i = 0; i < current_shape_expr.size(); i++){
+          if (current_shape_expr[i]){
+            auto val = current_shape_expr[i].dyn_cast<AffineConstantExpr>().getValue();
+            auto i64Ty = builder.getI64Type();
+            auto cop = builder.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, val));
+            dmaSrcOffsets[i] = cop;
+          }
+        }
+        // TODO: Currently only supporting DmaMemcpyNdOp
+        xilinx::air::DmaMemcpyNdOp newMemcpyOp = builder.create<xilinx::air::DmaMemcpyNdOp>(loc, xilinx::air::AsyncTokenType::get(memcpyNdOp->getContext()), 
+                memcpyNdOp.getAsyncDependencies(), memcpyNdOp.getDstMemref(), memcpyNdOp.getDstOffsets(), memcpyNdOp.getDstSizes(), memcpyNdOp.getDstStrides(), memcpyNdOp.getSrcMemref(), 
+                dmaSrcOffsets, memcpyNdOp.getSrcSizes(), memcpyNdOp.getSrcStrides()); 
+        newMemcpyOp->setAttr("broadcast_set", broadcast_set);
+        memcpyNdOp.getAsyncToken().replaceAllUsesWith(newMemcpyOp.getAsyncToken());
+        memcpyOp->erase();
+
+        // Remove dependence to scalar op if present
       }
     });
+  }
+
+  unsigned evaluateSymbolEquality(mlir::AffineExpr c, MLIRContext * ctx){
+    assert(c.isSymbolicOrConstant() && "constraint has dimension identifier");
+    SmallVector<AffineExpr, 2> zero_syms{
+        getAffineConstantExpr(0, ctx),
+        getAffineConstantExpr(0, ctx),
+    };
+    auto newC = c.replaceSymbols(zero_syms);
+    auto expr = simplifyAffineExpr(newC, 0, 2).dyn_cast<AffineConstantExpr>();
+    return expr.getValue();
   }
 
 };

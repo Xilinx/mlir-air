@@ -355,45 +355,65 @@ public:
     for (unsigned i = 0; i < dma_op_history.size(); i++){
       auto dma_op = dma_op_history[i];
       SmallVector<Value, 1> loop_dep_history = dma_op_loop_dep_history[i];
-      auto hl_op = dma_op->getParentOfType<air::HerdLaunchOp>();
+      air::HerdLaunchOp hl_op = nullptr;
       bool hasDepInHerdRows = false;
       bool hasDepInHerdCols = false;
       // Create an affine set to represent the broadcast pattern
       auto ctx = dma_op->getContext();
       for (auto v : loop_dep_history){
-        if (v == hl_op.getTileIds().x){
-          hasDepInHerdRows = true;
-        }
-        if (v == hl_op.getTileIds().y){
-          hasDepInHerdCols = true;
+        if (getHerdLaunchTileIdOwner(v)){
+          hl_op = getHerdLaunchTileIdOwner(v);
+          if (v == hl_op.getTileIds().x){
+            hasDepInHerdRows = true;
+          }
+          if (v == hl_op.getTileIds().y){
+            hasDepInHerdCols = true;
+          }
         }
       }
 
-      if (hasDepInHerdRows && !hasDepInHerdCols){
-        auto numRowsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().x.getDefiningOp());
-        auto numRows = numRowsOp.value();
-        if (numRows > 1){
-          SmallVector<AffineExpr, 2> constraints{getAffineDimExpr(0, ctx) - getAffineSymbolExpr(0, ctx),
+      if (hl_op && hasDepInHerdRows && !hasDepInHerdCols){
+        auto numColsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().y.getDefiningOp());
+        auto numCols = numColsOp.value();
+        if (numCols > 1){
+          SmallVector<AffineExpr, 5> constraints{getAffineDimExpr(0, ctx) - getAffineSymbolExpr(0, ctx),
                                                 getAffineDimExpr(1, ctx),
-                                                numRows - 1 - getAffineDimExpr(1, ctx),
+                                                numCols - 1 - getAffineDimExpr(1, ctx),
                                                 getAffineSymbolExpr(0, ctx),
-                                                numRows - 1 - getAffineSymbolExpr(0, ctx)};
-          SmallVector<bool, 2> eqflags{true, false, false, false, false};
+                                                numCols - 1 - getAffineSymbolExpr(0, ctx)};
+          SmallVector<bool, 5> eqflags{true, false, false, false, false};
           auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
           dma_op->setAttr("broadcast_pattern",
                   mlir::IntegerSetAttr::get(int_set));
         }
       }
-      else if (!hasDepInHerdRows && hasDepInHerdCols){
-        auto numColsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().y.getDefiningOp());
-        auto numCols = numColsOp.value();
-        if (numCols > 1){
-          SmallVector<AffineExpr, 2> constraints{getAffineDimExpr(0, ctx),
-                                                numCols - 1 - getAffineDimExpr(0, ctx),
+      else if (hl_op && !hasDepInHerdRows && hasDepInHerdCols){
+        auto numRowsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().x.getDefiningOp());
+        auto numRows = numRowsOp.value();
+        if (numRows > 1){
+          SmallVector<AffineExpr, 5> constraints{getAffineDimExpr(0, ctx),
+                                                numRows - 1 - getAffineDimExpr(0, ctx),
                                                 getAffineDimExpr(1, ctx) - getAffineSymbolExpr(0, ctx),
                                                 getAffineSymbolExpr(0, ctx),
-                                                numCols - 1 - getAffineSymbolExpr(0, ctx)};
-          SmallVector<bool, 2> eqflags{false, false, true, false, false};
+                                                numRows - 1 - getAffineSymbolExpr(0, ctx)};
+          SmallVector<bool, 5> eqflags{false, false, true, false, false};
+          auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
+          dma_op->setAttr("broadcast_pattern",
+                  mlir::IntegerSetAttr::get(int_set));
+        }
+      }
+      else if (hl_op && !hasDepInHerdRows && !hasDepInHerdCols){
+        auto numRowsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().x.getDefiningOp());
+        auto numRows = numRowsOp.value();
+        auto numColsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().y.getDefiningOp());
+        auto numCols = numColsOp.value();
+        if (numCols > 1 && numRows > 1){
+          SmallVector<AffineExpr, 5> constraints{getAffineDimExpr(0, ctx),
+                                                numRows - 1 - getAffineDimExpr(0, ctx),
+                                                getAffineDimExpr(1, ctx),
+                                                numCols - 1 - getAffineDimExpr(1, ctx),
+                                                getAffineSymbolExpr(0, ctx)};
+          SmallVector<bool, 5> eqflags{false, false, false, false, true};
           auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
           dma_op->setAttr("broadcast_pattern",
                   mlir::IntegerSetAttr::get(int_set));
