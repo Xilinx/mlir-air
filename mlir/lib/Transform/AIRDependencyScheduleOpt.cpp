@@ -220,12 +220,8 @@ private:
     air::AsyncOpInterface dma_async_op = dyn_cast<air::AsyncOpInterface>(current_op);
     auto dependency_list = dma_async_op.getAsyncDependencies();
     if (dependency_list.size()){
-      for (unsigned i = 0; i < dependency_list.size(); i++){
-        if (dependency_list[i] == for_op.getRegionIterArgs()[0]){
-          // Found scf.forOp in upstream dependency
-          dma_async_op.eraseAsyncDependency(i);
-        }
-      }
+      // Erase dependence to upstream scf.forOp
+      eraseAsyncDependencyFromAsyncOp(dyn_cast<air::AsyncOpInterface>(dma_async_op.getOperation()), for_op.getRegionIterArgs()[0]);
       auto for_op_iter_operand = for_op.getIterOperands()[0];
       dma_op->getResult(0).replaceAllUsesWith(for_op.getRegionIterArgs()[0]);
       
@@ -249,12 +245,7 @@ private:
         dma_async_op.eraseAsyncDependency(i);
       }
     }
-    dependency_list = wait_all_after_for.getAsyncDependencies();
-    for (unsigned i = 0; i < dependency_list.size(); i++){
-      if (dependency_list[i] == dealloc_op.getResult(0)){
-        wait_all_after_for.eraseAsyncDependency(i);
-      }
-    }
+    eraseAsyncDependencyFromAsyncOp(dyn_cast<air::AsyncOpInterface>(wait_all_after_for.getOperation()), dealloc_op.getAsyncToken());
     for_op.getResult(0).replaceAllUsesWith(dealloc_op.getResult(0));
     dma_async_op.addAsyncDependency(for_op.getResult(0));
   }

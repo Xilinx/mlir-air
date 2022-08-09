@@ -63,7 +63,7 @@ namespace air {
       if (operand && operand.getType().isa<IndexType>()){ // Only tracing scalar operands
         if (operand.getDefiningOp() && mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())){
           auto ancestor_async_op = dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp());
-          op_history.push_back(ancestor_async_op);
+          op_history.push_back(ancestor_async_op.getOperation());
           traceDependentInductionVar(ancestor_async_op, loop_dep_history, op_history);
         }
         else {
@@ -127,7 +127,7 @@ namespace air {
       if (operand && operand.getType().isa<IndexType>()){ // Only tracing scalar operands
         if (operand.getDefiningOp() && mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())){
           auto ancestor_async_op = dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp());
-          op_history.push_back(ancestor_async_op);
+          op_history.push_back(ancestor_async_op.getOperation());
           traceDependentInductionVar(ancestor_async_op, loop_dep_history, op_history);
         }
         else {
@@ -142,6 +142,17 @@ namespace air {
           // Trace dependency through a parallel loop
           // TODO: decide if parallel should exist in herd launch
         }
+      }
+    }
+  }
+
+  void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op, Value token){
+    assert(token && "input value is nullptr");
+    assert(token.getType().isa<air::AsyncTokenType>() && "ssa value is not an async token");
+    auto dependency_list = op.getAsyncDependencies();
+    for (int i = dependency_list.size() - 1; i >= 0; i--){
+      if (dependency_list[i] == token){
+        op.eraseAsyncDependency(i);
       }
     }
   }

@@ -22,6 +22,7 @@ namespace air {
 bool areEqualIndices (mlir::Value index_0, mlir::Value index_1);
 void traceDependentInductionVar (air::DmaMemcpyInterface async_op, SmallVector<Value, 1> &loop_dep_history, std::vector<Operation *> &op_history);
 void traceDependentInductionVar (air::AsyncOpInterface async_op, SmallVector<Value, 1> &loop_dep_history, std::vector<Operation *> &op_history);
+void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op, Value token);
 
 } // namespace air
 } // namespace xilinx
