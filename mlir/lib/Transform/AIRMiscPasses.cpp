@@ -462,105 +462,10 @@ private:
         auto is = broadcast_set.getValue();
         auto constraints = is.getConstraints();
         auto eqFlags = is.getEqFlags();
-        unsigned numdims = 2; // Assuming 2D partition space
-
-        // SmallVector<SmallVector<AffineExpr, 1>, 1> broadcast_shape_expr;
-        // for (unsigned i = 0; i < numdims; i++){
-        //   broadcast_shape_expr.push_back({});
-        // }
-        // for (unsigned i = 0; i < constraints.size(); i++){
-        //   auto c = constraints[i];
-        //   for (unsigned dim = 0; dim < numdims; dim++){
-        //     if (c.isFunctionOfSymbol(dim)){
-        //       auto val = c.dyn_cast<AffineConstantExpr>().getValue();
-        //       broadcast_shape_expr[dim].push_back(getAffineConstantExpr(val, ctx));
-        //     }
-        //   }
-        // }
-        // for (auto &bounds : broadcast_shape_expr){
-        //   assert(bounds.size() > 2 && "more than two values used to describe a 1D bound (either a value or a min-max pair)");
-        //   assert(bounds.size() == 0 && "empty dimension bound");
-        //   if (bounds.size() == 2){
-        //     auto val0 = bounds[0].dyn_cast<AffineConstantExpr>().getValue();
-        //     auto val1 = bounds[1].dyn_cast<AffineConstantExpr>().getValue();
-        //     auto min = std::min(val0, val1);
-        //     auto max = std::max(val0, val1);
-        //     bounds = {getAffineConstantExpr(min, ctx), getAffineConstantExpr(max, ctx)};
-        //   }
-        // }
-
-        // // Get both tile ids of the dependent herd launch op
-        // Value hl_tile_idx = nullptr;
-        // Value hl_tile_idy = nullptr;
-        // for (auto v : loop_dep_history){
-        //   if (auto hl_op = xilinx::air::getHerdLaunchTileIdOwner(v)){
-        //     hl_tile_idx = hl_op.getTileIds().x;
-        //     hl_tile_idy = hl_op.getTileIds().y;
-        //   }
-        // }
-        // assert((hl_tile_idx || hl_tile_idy) && "DMA has broadcast pattern but no dependency to herd launch");
-
-        // // Evaluate broadcast pattern by propagating expr through scalar operations in op history, last-in-first-out
-        // SmallVector<AffineExpr, 1> current_shape_expr;
-        // for (unsigned dim = 0; dim < numdims; dim++){
-        //   auto bounds = broadcast_shape_expr[dim];
-        //   if (bounds.size() == 1){
-        //     current_shape_expr.push_back(bounds[0]);
-        //   }
-        //   else {
-        //     current_shape_expr.push_back(getAffineSymbolExpr(dim, ctx));
-        //   }
-        // }
-
-        // Value current_ssa_x = hl_tile_idx;
-        // Value current_ssa_y = hl_tile_idy;
-        // // std::vector<std::vector<unsigned>> current_shape = broadcast_shape_inclusive;
-        // for (std::vector<Operation *>::reverse_iterator i = op_history.rbegin(); i != op_history.rend(); ++i ) {
-        //   if (auto air_region_op = dyn_cast<xilinx::air::RegionOp>(*i)){
-        //     assert(air_region_op.body().front().getOperations().size() == 2 
-        //             && "air::RegionOp should have only one child operation beside the terminator");
-        //     // Get current scalar op
-        //     Operation * op = nullptr;
-        //     for (auto &child_op : air_region_op.body().front().getOperations()){
-        //       if (!dyn_cast<xilinx::air::RegionTerminatorOp>(child_op)) op = &child_op;
-        //     }
-        //     // Check which dimension op operates on
-        //     bool operates_on_x = false;
-        //     bool operates_on_y = false;
-        //     for (auto operand : op->getOperands()){
-        //       if (operand == current_ssa_x){
-        //         operates_on_x = true;
-        //         current_ssa_x = air_region_op.getResult(1);
-        //       }
-        //       else if (operand == current_ssa_y){
-        //         operates_on_y = true;
-        //         current_ssa_y = air_region_op.getResult(1);
-        //       }
-        //     }
-        //     assert(operates_on_x && operates_on_y && "TODO: add support for multi-result affine.map op in -air-dependency");
-        //     // If the async op is affine.apply
-        //     if (auto apply_op = dyn_cast<AffineApplyOp>(op)){
-        //       auto map = apply_op.getAffineMap();
-        //       if (operates_on_x){
-        //         auto newmap = map.replace(getAffineSymbolExpr(0, ctx), current_shape_expr[0], 0, 1);
-        //         auto const_id = simplifyAffineMap(newmap).getSingleConstantResult();
-        //         current_shape_expr[0] = getAffineConstantExpr(const_id, ctx);
-        //       }
-        //       else if (operates_on_y){
-        //         auto newmap = map.replace(getAffineSymbolExpr(1, ctx), current_shape_expr[1], 0, 1);
-        //         auto const_id = simplifyAffineMap(newmap).getSingleConstantResult();
-        //         current_shape_expr[1] = getAffineConstantExpr(const_id, ctx);
-        //       }
-        //     }
-
-        //     // If the async op is arith op
-        //     // TODO
-        //   }
-        // } 
 
         // Check which dimension op operates on
         bool hasDepInHerd = false;
-        int constScalarDimX = -1;
+        int constScalarDimX = -1; // -1 set to be illegal dim
         int constScalarDimY = -1;
         for (auto v : loop_dep_history){
           if (auto hl_op = xilinx::air::getHerdLaunchTileIdOwner(v)){
@@ -570,7 +475,9 @@ private:
               for (unsigned i = 0; i < constraints.size(); i++){
                 auto c = constraints[i];
                 if (c.isFunctionOfSymbol(dim) && eqFlags[i]){
-                  constScalarDimX = evaluateSymbolEquality(c, ctx);
+                  auto eval = evaluateSymbolEqualityInSet(c, ctx);
+                  // Both + and - constant eval are legal in AffineExpr
+                  constScalarDimX = (eval >= 0) ? (eval) : (-eval);
                 }
               }
             }
@@ -579,7 +486,8 @@ private:
               for (unsigned i = 0; i < constraints.size(); i++){
                 auto c = constraints[i];
                 if (c.isFunctionOfSymbol(dim) && eqFlags[i]){
-                  constScalarDimY = evaluateSymbolEquality(c, ctx);
+                  auto eval = evaluateSymbolEqualityInSet(c, ctx);
+                  constScalarDimY = (eval >= 0) ? (eval) : (-eval);
                 }
               }
             }
@@ -588,10 +496,10 @@ private:
 
         // Evaluate broadcast pattern by propagating expr through scalar operations in op history, last-in-first-out
         SmallVector<AffineExpr, 2> current_shape_expr = {nullptr, nullptr};
-        if (hasDepInHerd && constScalarDimX > 0){
+        if (hasDepInHerd && constScalarDimX >= 0){
           current_shape_expr[0] = getAffineConstantExpr(constScalarDimX, ctx);
         }
-        if (hasDepInHerd && constScalarDimY > 0){
+        if (hasDepInHerd && constScalarDimY >= 0){
           current_shape_expr[1] = getAffineConstantExpr(constScalarDimY, ctx);
         }
 
@@ -608,14 +516,16 @@ private:
             if (auto apply_op = dyn_cast<AffineApplyOp>(op)){
               auto map = apply_op.getAffineMap();
               if (current_shape_expr[0]){
-                auto newmap = map.replace(getAffineSymbolExpr(0, ctx), current_shape_expr[0], 0, 1);
-                auto const_int = simplifyAffineMap(newmap).getSingleConstantResult();
-                current_shape_expr[0] = getAffineConstantExpr(const_int, ctx);
+                replaceSymbolAndEvaluateConstantInMap(map, current_shape_expr[0], ctx);
+                // Remove dependence from scalar op to memcpyOp if present
+                auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
+                eraseAsyncDependencyFromAsyncOp(async_memcpyOp, air_region_op.getAsyncToken());
               }
               else if (current_shape_expr[1]){
-                auto newmap = map.replace(getAffineSymbolExpr(0, ctx), current_shape_expr[1], 0, 1);
-                auto const_int = simplifyAffineMap(newmap).getSingleConstantResult();
-                current_shape_expr[1] = getAffineConstantExpr(const_int, ctx);
+                replaceSymbolAndEvaluateConstantInMap(map, current_shape_expr[1], ctx);
+                // Remove dependence from scalar op to memcpyOp if present
+                auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
+                eraseAsyncDependencyFromAsyncOp(async_memcpyOp, air_region_op.getAsyncToken());
               }
             }
 
@@ -633,8 +543,7 @@ private:
         for (unsigned i = 0; i < current_shape_expr.size(); i++){
           if (current_shape_expr[i]){
             auto val = current_shape_expr[i].dyn_cast<AffineConstantExpr>().getValue();
-            auto i64Ty = builder.getI64Type();
-            auto cop = builder.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, val));
+            auto cop = builder.create<arith::ConstantIndexOp>(loc, val);
             dmaSrcOffsets[i] = cop;
           }
         }
@@ -645,21 +554,26 @@ private:
         newMemcpyOp->setAttr("broadcast_set", broadcast_set);
         memcpyNdOp.getAsyncToken().replaceAllUsesWith(newMemcpyOp.getAsyncToken());
         memcpyOp->erase();
-
-        // Remove dependence to scalar op if present
       }
     });
   }
 
-  unsigned evaluateSymbolEquality(mlir::AffineExpr c, MLIRContext * ctx){
+  int evaluateSymbolEqualityInSet(mlir::AffineExpr c, MLIRContext * ctx){
     assert(c.isSymbolicOrConstant() && "constraint has dimension identifier");
     SmallVector<AffineExpr, 2> zero_syms{
         getAffineConstantExpr(0, ctx),
         getAffineConstantExpr(0, ctx),
     };
     auto newC = c.replaceSymbols(zero_syms);
-    auto expr = simplifyAffineExpr(newC, 0, 2).dyn_cast<AffineConstantExpr>();
+    auto expr = simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
+    assert(expr);
     return expr.getValue();
+  }
+
+  void replaceSymbolAndEvaluateConstantInMap(mlir::AffineMap map, mlir::AffineExpr &c, MLIRContext * ctx){
+    auto newmap = map.replace(getAffineSymbolExpr(0, ctx), c, 0, 1);
+    auto const_int = simplifyAffineMap(newmap).getSingleConstantResult();
+    c = getAffineConstantExpr(const_int, ctx);
   }
 
 };
