@@ -36,7 +36,9 @@ with air.mlir.ir.Context(), Location.unknown():
     # tile and map to air
     pipeline = ",".join([
         "air-linalg-codegen{l1-tile-size=32,32,32 l2-tile-size=64,64,64 l2-promote=true}",
-        "affine-to-air{herd-assign-depth=1}",
+        "air-par-to-herd{depth=1}",
+        "air-par-to-launch{depth=0}",
+        "air-copy-to-dma",
         "canonicalize", "cse",
     ])
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
@@ -52,7 +54,68 @@ with air.mlir.ir.Context(), Location.unknown():
     print ("\nAIR Dialect Module (async)\n")
     print (air_module)
 
-runner = air.compiler.util.Runner("arch.json")
+    arch = {
+    "clock": 1000000000,
+    "cores": 1,
+    "datatype": {
+        "bytes": 2,
+        "name": "fp16"
+    },
+    "devicename": "testdevice",
+    "interfaces": [
+        {
+        "bytes_per_second": 100000000000,
+        "dst": 1,
+        "src": 0
+        },
+        {
+        "bytes_per_second": 100000000000,
+        "dst": 0,
+        "src": 1
+        },
+        {
+        "bytes_per_second": 100000000000,
+        "dst": 2,
+        "src": 0
+        },
+        {
+        "bytes_per_second": 100000000000,
+        "dst": 0,
+        "src": 2
+        },
+        {
+        "bytes_per_second": 100000000000,
+        "dst": 2,
+        "src": 1
+        },
+        {
+        "bytes_per_second": 100000000000,
+        "dst": 1,
+        "src": 2
+        }
+    ],
+    "kernels": {
+        "linalg.copy": {
+        "efficiency": 1,
+        "name": "linalg.copy"
+        },
+        "linalg.fill": {
+        "efficiency": 1,
+        "name": "linalg.fill"
+        },
+        "linalg.matmul": {
+        "efficiency": 1,
+        "name": "linalg.matmul"
+        }
+    },
+    "ops_per_core_per_cycle": 512,
+    "num_herd_slots": 4,
+    "num_dispatch_queues": 8,
+    "num_dispatch_dma_queues" : 2,
+    "num_core_dma_queues" : 2
+    }
+
+runner = air.compiler.util.Runner(arch)
 trace = runner.run(air_module, "matmul")
 
 with open("/work/trace.out", "w") as f:

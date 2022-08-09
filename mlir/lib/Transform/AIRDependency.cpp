@@ -76,6 +76,7 @@ typedef std::map<unsigned, Graph::vertex_descriptor> operation_id_to_vertex_map;
 
 static uint64_t RegionOpID;
 static uint64_t HerdLaunchOpID;
+static uint64_t LaunchOpID;
 static uint64_t WaitAllOpID;
 
 class AIRDependency : public AIRDependencyBase<AIRDependency> {
@@ -94,6 +95,7 @@ public:
 
     RegionOpID = 0;
     HerdLaunchOpID = 0;
+    LaunchOpID = 0;
 
     // 1st traversal: create async ops with empty dep list.
 
@@ -147,9 +149,13 @@ public:
         else if (auto apply_op = dyn_cast<mlir::AffineApplyOp>(op))
           createAsyncRegion(module_builder, op, "affine::apply", RegionOpID, apply_op.getResult().getType());
 
-        // Create async region for air.herdlaunch.
+        // Create async region for air.launch_herd.
         else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(op))
           createAsyncHerdLaunch(module_builder, hl_op, HerdLaunchOpID);
+
+        // Create async region for air.launch.
+        else if (auto la_op = dyn_cast<air::LaunchOp>(op))
+          createAsyncLaunch(module_builder, la_op, LaunchOpID);
 
         // Create async region for an unknown op which has memref or index-type operands
         else {
@@ -191,6 +197,9 @@ public:
           sink_op = op;
         }
         else if (dyn_cast<air::HerdLaunchOp>(op)){
+          sink_op = op;
+        }
+        else if (dyn_cast<air::LaunchOp>(op)){
           sink_op = op;
         }
         else return;
@@ -239,7 +248,7 @@ public:
         }
         
         // If the sink op is memref::dealloc
-        if (auto sink_op_memdealloc = dyn_cast<memref::DeallocOp>(sink_op)){
+        else if (auto sink_op_memdealloc = dyn_cast<memref::DeallocOp>(sink_op)){
           unsigned memRefRank = sink_op_memdealloc.memref().getType().cast<MemRefType>().getRank();
           partialMemref tile = createPartialMemref(sink_op_memdealloc.memref(), memRefRank);
           sink_op_memref_reads.push_back(tile);
@@ -247,7 +256,7 @@ public:
         }
         
         // If the sink op is memref::copy
-        if (auto sink_op_memref_copy = dyn_cast<memref::CopyOp>(sink_op)){
+        else if (auto sink_op_memref_copy = dyn_cast<memref::CopyOp>(sink_op)){
           unsigned memRefRankSrc = sink_op_memref_copy.source().getType().cast<MemRefType>().getRank();
           partialMemref tileSrc = createPartialMemref(sink_op_memref_copy.source(), memRefRankSrc);
           sink_op_memref_reads.push_back(tileSrc);
@@ -368,6 +377,9 @@ public:
         else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(op)){
           hl_op_history.push_back(hl_op);
         }
+        else if (auto la_op = dyn_cast<air::LaunchOp>(op)){
+          la_op_history.push_back(la_op);
+        }
       });
     }
 
@@ -433,6 +445,13 @@ public:
             if (isNotUsedInsideOfBlock(hl_op.getResult(0), for_op.getBody()))
               sinks_in_for_op.push_back(hl_op.getResult(0));
           }
+          // Get async launch in loop body
+          for (auto la_op : for_op.getOps<air::LaunchOp>()){
+            hasAsyncTokensInBody = true;
+            // Detect dep graph's leaves in loop body
+            if (isNotUsedInsideOfBlock(la_op.getResult(0), for_op.getBody()))
+              sinks_in_for_op.push_back(la_op.getResult(0));
+          }
           // Get async for_op in loop body
           for (auto child_for_op : for_op.getOps<scf::ForOp>()){
             hasAsyncTokensInBody = true;
@@ -481,6 +500,13 @@ public:
             // Detect dep graph's leaves in loop body
             if (isNotUsedInsideOfBlock(hl_op.getResult(0), for_op.getBody()))
               sinks_in_parallel_op.push_back(hl_op.getResult(0));
+          }
+          // Get async launch in loop body
+          for (auto la_op : for_op.getOps<air::LaunchOp>()){
+            hasAsyncTokensInBody = true;
+            // Detect dep graph's leaves in loop body
+            if (isNotUsedInsideOfBlock(la_op.getResult(0), for_op.getBody()))
+              sinks_in_parallel_op.push_back(la_op.getResult(0));
           }
           // Get async for_op in loop body
           for (auto child_for_op : for_op.getOps<scf::ForOp>()){
@@ -568,6 +594,7 @@ private:
   std::vector<air::RegionOp> async_region_op_history;
   std::vector<air::DmaMemcpyInterface> dma_op_history;
   std::vector<air::HerdLaunchOp> hl_op_history;
+  std::vector<air::LaunchOp> la_op_history;
   
   // Create air region op with async interface (no ssa result returned); update graph
   air::RegionOp createAsyncRegion(OpBuilder &builder, Operation *op, std::string asyncEventName, uint64_t &RegionOpID){
@@ -746,6 +773,49 @@ private:
 
     // Update op-to-graph map
     hl_to_g[HerdLaunchOpID] = v;
+
+    // Erase op
+    op->erase();
+    return new_launch;
+  }
+
+  // Re-instantiate the launch op with async interface; update graph
+  air::LaunchOp createAsyncLaunch(OpBuilder &builder, air::LaunchOp op, uint64_t &LaunchOpID){
+    builder.setInsertionPoint(op);
+    auto loc = op->getLoc();
+    SmallVector<Value, 1> deps;
+    air::LaunchOp new_launch = builder.create<air::LaunchOp>(loc, deps, op.getSizeOperands(), true);
+    new_launch->setAttr("id",
+            mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
+            ++LaunchOpID));
+
+    if (auto attr = op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+      new_launch->setAttr(SymbolTable::getSymbolAttrName(), attr);
+
+    auto &bb = new_launch.body().front();
+    for (unsigned i = 0; i < op.getIds().size(); i++){
+      auto ivs = op.getIds()[i];
+      ivs.replaceAllUsesWith(new_launch.getIds()[i]);
+    }
+    for (unsigned i = 0; i < op.getSize().size(); i++){
+      auto s = op.getSize()[i];
+      s.replaceAllUsesWith(new_launch.getSize()[i]);
+    }
+    auto &body = op.body().front().getOperations();
+    bb.getOperations().splice(bb.begin(), body,
+                              body.begin(), --body.end());
+    builder.setInsertionPointToStart(&new_launch.getRegion().front());
+    builder.setInsertionPointToEnd(&bb);
+    builder.create<air::LaunchTerminatorOp>(loc);
+
+    // Create a vertex out of the current herd_launch op
+    auto v = add_vertex(asyncRegionGraph);
+    asyncRegionGraph[v].asyncEventName = "air::launch";
+    asyncRegionGraph[v].asyncEventType = "launch";
+    asyncRegionGraph[v].operationId = LaunchOpID;
+
+    // Update op-to-graph map
+    la_to_g[LaunchOpID] = v;
 
     // Erase op
     op->erase();
@@ -1434,6 +1504,7 @@ private:
   operation_id_to_vertex_map region_to_g; // Map between air regions and vertices in graph
   operation_id_to_vertex_map dma_to_g; // Map between air dmamemcpy2d and vertices in graph
   operation_id_to_vertex_map hl_to_g; // Map between air herd_launch and vertices in graph
+  operation_id_to_vertex_map la_to_g; // Map between air launch and vertices in graph
   operation_id_to_vertex_map wa_to_g; // Map between air wait_all and vertices in graph
 
   // g vertex to air op mapping
@@ -1449,6 +1520,10 @@ private:
     assert(g[v].asyncEventType == "herd_launch" && "This vertex is not a HerdLaunchOp");
     return hl_op_history[g[v].operationId - 1];
   }
+  air::LaunchOp getLAOpFromVertex (Graph::vertex_descriptor v, Graph g){
+    assert(g[v].asyncEventType == "launch" && "This vertex is not a LaunchOp");
+    return la_op_history[g[v].operationId - 1];
+  }
 
   // air region op to g vertex mapping
   Graph::vertex_descriptor getGraphGVertexFromAIROp (air::RegionOp op){
@@ -1461,6 +1536,10 @@ private:
 
   Graph::vertex_descriptor getGraphGVertexFromAIROp (air::HerdLaunchOp op){
     return hl_to_g[op.getId()];
+  }
+
+  Graph::vertex_descriptor getGraphGVertexFromAIROp (air::LaunchOp op){
+    return la_to_g[op.getId()];
   }
 
   Graph::vertex_descriptor getGraphGVertexFromAIROp (air::WaitAllOp op){
@@ -1561,6 +1640,13 @@ private:
   bool foundAsyncOpUsesAboveCurrentLine(air::HerdLaunchOp *op){
     if (!hl_op_history.empty())
       for (auto &iter : hl_op_history)
+        if (iter.getResult(0) == op->getResult(0)) return true;
+    return false;
+  }
+
+  bool foundAsyncOpUsesAboveCurrentLine(air::LaunchOp *op){
+    if (!la_op_history.empty())
+      for (auto &iter : la_op_history)
         if (iter.getResult(0) == op->getResult(0)) return true;
     return false;
   }
