@@ -38,6 +38,12 @@ def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
     ArrayRef<BlockArgument> getSize();
     OperandRange getSizeOperands();
     unsigned getNumSizeOperands();
+    int32_t getId() {
+      if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
+        return id_attr.getInt();
+      }
+      return -1;
+    }
   }];
 }
 
