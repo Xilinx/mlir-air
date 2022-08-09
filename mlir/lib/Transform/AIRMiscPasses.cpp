@@ -530,7 +530,34 @@ private:
             }
 
             // If the async op is arith op
-            // TODO
+            else if (auto arith_op = dyn_cast<arith::AddIOp>(op)){
+              propagateAFfineConstantExprThroughArithOp<arith::AddIOp>(arith_op, current_shape_expr, memcpyOp.getOperation(), ctx);
+            }
+            else if (auto arith_op = dyn_cast<arith::MulIOp>(op)){
+              propagateAFfineConstantExprThroughArithOp<arith::MulIOp>(arith_op, current_shape_expr, memcpyOp.getOperation(), ctx);
+            }
+            // else if (auto arith_op = dyn_cast<arith::AddIOp>(op)){
+            //   arith::ConstantIndexOp add_operand = nullptr;
+            //   if (arith_op.getLhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())){
+            //     add_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp());
+            //   }
+            //   else if (arith_op.getRhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp())){
+            //     add_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp());
+            //   }
+            //   else assert(false && "arith::AddIOp has no arith::ConstantIndexOp operand");
+            //   if (current_shape_expr[0]){
+            //     applyArithOpToAffineConstantExpr(add_operand, current_shape_expr[0], ctx);
+            //     // Remove dependence from scalar op to memcpyOp if present
+            //     auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
+            //     eraseAsyncDependencyFromAsyncOp(async_memcpyOp, air_region_op.getAsyncToken());
+            //   }
+            //   else if (current_shape_expr[1]){
+            //     applyArithOpToAffineConstantExpr(add_operand, current_shape_expr[1], ctx);
+            //     // Remove dependence from scalar op to memcpyOp if present
+            //     auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
+            //     eraseAsyncDependencyFromAsyncOp(async_memcpyOp, air_region_op.getAsyncToken());
+            //   }
+            // }
           }
         } 
 
@@ -558,6 +585,7 @@ private:
     });
   }
 
+  // Evaluate the integer value of affine set expression if the only symbolic identifier is replaced with zero
   int evaluateSymbolEqualityInSet(mlir::AffineExpr c, MLIRContext * ctx){
     assert(c.isSymbolicOrConstant() && "constraint has dimension identifier");
     SmallVector<AffineExpr, 2> zero_syms{
@@ -570,10 +598,69 @@ private:
     return expr.getValue();
   }
 
+  // Evaluate the affine expression of affine map if the only symbolic identifier is replaced with zero
   void replaceSymbolAndEvaluateConstantInMap(mlir::AffineMap map, mlir::AffineExpr &c, MLIRContext * ctx){
     auto newmap = map.replace(getAffineSymbolExpr(0, ctx), c, 0, 1);
     auto const_int = simplifyAffineMap(newmap).getSingleConstantResult();
     c = getAffineConstantExpr(const_int, ctx);
+  }
+
+  // AddI for AffineConstantExpr
+  void applyArithOpToAffineConstantExpr(arith::AddIOp arith_op, mlir::AffineExpr &c, MLIRContext * ctx){
+    arith::ConstantIndexOp add_operand = nullptr;
+    if (arith_op.getLhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())){
+      add_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp());
+    }
+    else if (arith_op.getRhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp())){
+      add_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp());
+    }
+    else assert(false && "arith::AddIOp has no arith::ConstantIndexOp operand");
+    auto acc = add_operand.value();
+    assert(c.dyn_cast<mlir::AffineConstantExpr>() && "non-constant affine expression");
+    acc += c.dyn_cast<mlir::AffineConstantExpr>().getValue();
+    c = getAffineConstantExpr(acc, ctx);
+  }
+
+  // MulI for AffineConstantExpr
+  void applyArithOpToAffineConstantExpr(arith::MulIOp arith_op, mlir::AffineExpr &c, MLIRContext * ctx){
+    arith::ConstantIndexOp mul_operand = nullptr;
+    if (arith_op.getLhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())){
+      mul_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp());
+    }
+    else if (arith_op.getRhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp())){
+      mul_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp());
+    }
+    else assert(false && "arith::MulIOp has no arith::ConstantIndexOp operand");
+    auto mul = mul_operand.value();
+    assert(c.dyn_cast<mlir::AffineConstantExpr>() && "non-constant affine expression");
+    mul *= c.dyn_cast<mlir::AffineConstantExpr>().getValue();
+    c = getAffineConstantExpr(mul, ctx);
+  }
+
+  // Propagate AffineConstantExpr through arith addi/muli op
+  template <typename T>
+  void propagateAFfineConstantExprThroughArithOp(T arith_op, SmallVector<AffineExpr, 2> &current_shape_expr, Operation * memcpyOp, MLIRContext * ctx){
+    xilinx::air::RegionOp parent_region_op = arith_op->template getParentOfType<xilinx::air::RegionOp>();
+    // arith::ConstantIndexOp add_operand = nullptr;
+    // if (arith_op.getLhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())){
+    //   add_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp());
+    // }
+    // else if (arith_op.getRhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp())){
+    //   add_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp());
+    // }
+    // else assert(false && "arith::AddIOp has no arith::ConstantIndexOp operand");
+    if (current_shape_expr[0]){
+      applyArithOpToAffineConstantExpr(arith_op, current_shape_expr[0], ctx);
+      // Remove dependence from scalar op to memcpyOp if present
+      auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp);
+      eraseAsyncDependencyFromAsyncOp(async_memcpyOp, parent_region_op.getAsyncToken());
+    }
+    else if (current_shape_expr[1]){
+      applyArithOpToAffineConstantExpr(arith_op, current_shape_expr[1], ctx);
+      // Remove dependence from scalar op to memcpyOp if present
+      auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp);
+      eraseAsyncDependencyFromAsyncOp(async_memcpyOp, parent_region_op.getAsyncToken());
+    }
   }
 
 };
