@@ -1,6 +1,6 @@
-SYSROOT = ../petalinux/build/petalinux/images/linux/sdk/sysroots/cortexa72-cortex53-xilinx-linux
-IMAGE   = ../petalinux/build/petalinux/images/linux/Image
-ROOTFS  = ../petalinux/build/petalinux/images/linux/rootfs.ext4
+SYSROOT = ../petalinux/sysroot/sysroots/cortexa72-cortexa53-xilinx-linux
+IMAGE   = ../petalinux/images/linux/Image
+ROOTFS  = ../petalinux/images/linux/rootfs.ext4
 
 
 #------------------------------------------------------------------------------
@@ -14,19 +14,19 @@ ROOT_DIR=$(realpath $(dir $(lastword $(MAKEFILE_LIST))))
 # Target: sw_comp
 # Copy PetaLinux genreated software components to platform preparation directory
 prep_sd_dir:
-	mkdir -p sd_dir && cp ../petalinux/build/petalinux/images/linux/boot.scr ./sd_dir/
+	mkdir -p sd_dir && cp ../petalinux/images/linux/boot.scr ./sd_dir/
 
 # Target: prep_sw_comp
 # Copy rootfs and kernel image to sw_comp directory
 prep_sw_comp:
 	mkdir -p sw_comp && \
-	cp ../petalinux/build/petalinux/images/linux/rootfs.ext4 ./sw_comp && \
-	cp ../petalinux/build/petalinux/images/linux/Image ./sw_comp
+	cp ../petalinux/images/linux/rootfs.ext4 ./sw_comp && \
+	cp ../petalinux/images/linux/Image ./sw_comp
 
 # Target: prep_sysroot
 # Install sysroot to sw_comp directory
-prep_sysroot: ../petalinux/build/petalinux/images/linux/sdk.sh
-	rm -rf ./sysroot && ../petalinux/build/petalinux/images/linux/sdk.sh -d ./sw_comp -y
+prep_sysroot: ../petalinux/images/linux/sdk.sh
+	rm -rf ./sysroot && ../petalinux/images/linux/sdk.sh -d ./sw_comp -y
 
 # Target: pfm
 # Generate the Vitis platform with XSCT
@@ -105,7 +105,7 @@ all: prep_sd_dir prep_sw_comp pfm prep_sysroot ${XCLBIN} ${HOST_EXE} prep_packag
 sd_card: prep_sd_card sd_card.img
 
 sd_card.img:
-	${XILINX_VITIS}/scripts/vitis/util/mkfsImage.sh -s ./sd_card/ -o ./sd_card.img -e ../petalinux/build/petalinux/images/linux/rootfs.ext4
+	${XILINX_VITIS}/scripts/vitis/util/mkfsImage.sh -s ./sd_card/ -o ./sd_card.img -e ../petalinux/images/linux/rootfs.ext4
 
 aie: guard-PLATFORM_REPO_PATHS ${LIBADF}
 ${LIBADF}: aie/*
@@ -142,10 +142,10 @@ prep_sd_card: ../bootgen/BOOT.BIN
 sd_card_clean:
 	rm -rf sd_card.img
 
-%.elf: ../petalinux/build/petalinux/images/linux/%.elf
+%.elf: ../petalinux/images/linux/%.elf
 	cp $< ./platform_repo/xilinx_vck190_air/export/xilinx_vck190_air/sw/ 
 
-%.dtb: ../petalinux/build/petalinux/images/linux/%.dtb
+%.dtb: ../petalinux/images/linux/%.dtb
 	cp $< ./platform_repo/xilinx_vck190_air/export/xilinx_vck190_air/sw/ 
 
 pdi/microblaze_reset.cdo: pdi/microblaze_reset.txt
