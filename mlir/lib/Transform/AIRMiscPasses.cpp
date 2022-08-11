@@ -10,6 +10,7 @@
 #include "PassDetail.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRTilingUtils.h"
+#include "air/Util/Dependency.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -319,122 +320,376 @@ public:
   AIRSpecializeDmaBroadcast() = default;
   AIRSpecializeDmaBroadcast(const AIRSpecializeDmaBroadcast &pass){};
 
-  void runOnOperation() override;
+  void runOnOperation() override {
+    auto module = getOperation();
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      runOnFunction(f);
+  }
+
+  void runOnFunction(func::FuncOp f) {
+    // Specialize broadcastable DMA into affine.if regions
+    specializeDmaBroadcastWithAffineIf(f);
+    // Walk the affine.if's affine.set and simplify DMA source indices
+    simplifyDmaIndicesWithAffineSet(f);
+  }
 
 private:
-};
 
-void AIRSpecializeDmaBroadcast::runOnOperation() {
-  auto module = getOperation();
+  void specializeDmaBroadcastWithAffineIf(func::FuncOp f) {
 
-  module.walk([&](xilinx::air::HerdLaunchOp launch) {
-    launch.walk([&](xilinx::air::DmaMemcpyNdOp memcpyOp) {
-      auto herd_id = launch.getTileIds();
-      OpBuilder builder(memcpyOp);
-      auto loc = memcpyOp->getLoc();
-      auto broadcast_pattern = memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern");
+    f.walk([&](xilinx::air::HerdLaunchOp launch) {
+      launch.walk([&](xilinx::air::DmaMemcpyInterface memcpyOp) {
+        auto herd_id = launch.getTileIds();
+        OpBuilder builder(memcpyOp);
+        auto loc = memcpyOp->getLoc();
+        auto broadcast_pattern = memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern");
+        auto ctx = memcpyOp->getContext();
+        if (broadcast_pattern){
+          auto is = broadcast_pattern.getValue();
+          auto constraints = is.getConstraints();
+          auto eqFlags = is.getEqFlags();
+
+          unsigned numPartitions = 0;
+          // Get symbol range (i.e. partition range)
+          SmallVector<AffineExpr, 1> zero_syms{
+              getAffineConstantExpr(0, ctx),
+          };
+          for (auto c : constraints) {
+            if (c.isSymbolicOrConstant()){
+              auto newC = c.replaceSymbols(zero_syms);
+              auto expr = simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
+              if (!expr){
+                continue;
+              }
+              if (expr.getValue() != 0){
+                numPartitions = expr.getValue() + 1;
+              }
+            }
+          }
+          // Walk each partition set in the patition scheme
+          // Specialize affine set per partition
+          for (unsigned i = 0; i < numPartitions; i++){
+            SmallVector<AffineExpr, 2> newConstraints;
+            SmallVector<bool, 2> newEqflags;
+            SmallVector<AffineExpr, 1> i_syms{
+                getAffineConstantExpr(i, ctx),
+            };
+            SmallVector<AffineExpr, 2> syms{
+                getAffineSymbolExpr(0, ctx),
+                getAffineSymbolExpr(1, ctx),
+            };
+            int c_iter = 0;
+            for (auto c : constraints) {
+              if (!c.isSymbolicOrConstant()){
+                // Substitute partition id i_syms into inequalities
+                auto newC = c.replaceSymbols(i_syms);
+                // Replace all dims with symbols
+                newC = newC.replaceDims(syms);
+                newConstraints.push_back(newC);
+                newEqflags.push_back(eqFlags[c_iter]);
+              }
+              c_iter++;
+            }
+            auto int_set = IntegerSet::get(0, 2, newConstraints, newEqflags);
+            SmallVector<Value, 2> int_set_args{herd_id.x, herd_id.y};
+            // Duplicate dma ops per spatial partition
+            if (i == 0){
+              AffineIfOp aif = builder.create<AffineIfOp>(loc, 
+                      xilinx::air::AsyncTokenType::get(ctx), int_set,
+                      int_set_args, (i != numPartitions - 1));
+              builder.setInsertionPointToStart(aif.getThenBlock());
+              auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
+              memcpyOp_cloned->removeAttr("broadcast_pattern");
+              memcpyOp_cloned->setAttr("broadcast_set",
+                      mlir::IntegerSetAttr::get(int_set));
+              SmallVector<Value, 1> yield_token;
+              yield_token.push_back(dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
+              builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(), yield_token);
+              if (numPartitions != 1){
+                // If more than 1 spatial partitions, then move loc to else block
+                builder.setInsertionPointToStart(aif.getElseBlock());
+              }
+              // Reconnect dependency graph using the outermost affine.if's token
+              auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
+              async_memcpyOp.getAsyncToken().replaceAllUsesWith(aif.getResult(0));
+            }
+            else if (i < numPartitions - 1) {
+              AffineIfOp aif = builder.create<AffineIfOp>(builder.getUnknownLoc(), 
+                      xilinx::air::AsyncTokenType::get(ctx), int_set,
+                      int_set_args, (i != numPartitions - 1));
+              builder.setInsertionPointToStart(aif.getThenBlock());
+              auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
+              memcpyOp_cloned->removeAttr("broadcast_pattern");
+              memcpyOp_cloned->setAttr("broadcast_set",
+                      mlir::IntegerSetAttr::get(int_set));
+              SmallVector<Value, 1> yield_token;
+              yield_token.push_back(dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
+              builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(), yield_token);
+              builder.setInsertionPointAfter(aif);
+              SmallVector<Value, 1> parent_block_yield_token = {aif.getResult(0)};
+              builder.create<AffineYieldOp>(builder.getUnknownLoc(), parent_block_yield_token);
+              builder.setInsertionPointToStart(aif.getElseBlock());
+            }
+            else {
+              auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
+              memcpyOp_cloned->removeAttr("broadcast_pattern");
+              memcpyOp_cloned->setAttr("broadcast_set",
+                      mlir::IntegerSetAttr::get(int_set));
+              SmallVector<Value, 1> yield_token;
+              yield_token.push_back(dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
+              builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(), yield_token);
+            }
+          }
+          memcpyOp.erase();
+        }
+      });
+    });
+  }
+
+  void simplifyDmaIndicesWithAffineSet(func::FuncOp f) {
+
+    f.walk([&](xilinx::air::DmaMemcpyInterface memcpyOp) {
       auto ctx = memcpyOp->getContext();
-      if (broadcast_pattern){
-        auto is = broadcast_pattern.getValue();
+      if (auto broadcast_set = memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_set")){
+        // Get all ops on the dependency connection between dma and herd launch
+        SmallVector<Value, 1> loop_dep_history;
+        std::vector<Operation *> op_history;
+        traceDependentInductionVar(memcpyOp, loop_dep_history, op_history);
+
+        // Walk constraints in broadcast pattern, and get shape of the broadcast pattern
+        auto is = broadcast_set.getValue();
         auto constraints = is.getConstraints();
         auto eqFlags = is.getEqFlags();
 
-        unsigned numPartitions = 0;
-        // Get symbol range (i.e. partition range)
-        SmallVector<AffineExpr, 1> zero_syms{
-            getAffineConstantExpr(0, ctx),
-        };
-        for (auto c : constraints) {
-          if (c.isSymbolicOrConstant()){
-            auto newC = c.replaceSymbols(zero_syms);
-            auto expr = simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
-            if (!expr){
-              continue;
+        // Check which dimension op operates on; initialize current_shape_expr
+        SmallVector<AffineExpr, 2> current_shape_expr = {nullptr, nullptr};
+        for (auto v : loop_dep_history){
+          if (auto hl_op = xilinx::air::getHerdLaunchTileIdOwner(v)){
+            if (v == hl_op.getTileIds().x){
+              unsigned dim = 0;
+              for (unsigned i = 0; i < constraints.size(); i++){
+                auto c = constraints[i];
+                if (c.isFunctionOfSymbol(dim) && eqFlags[i]){
+                  auto eval = evaluateSymbolEqualityInSet(c, ctx);
+                  current_shape_expr[0] = getAffineConstantExpr(eval, ctx);
+                }
+              }
             }
-            if (expr.getValue() != 0){
-              numPartitions = expr.getValue() + 1;
+            if (v == hl_op.getTileIds().y){
+              unsigned dim = 1;
+              for (unsigned i = 0; i < constraints.size(); i++){
+                auto c = constraints[i];
+                if (c.isFunctionOfSymbol(dim) && eqFlags[i]){
+                  auto eval = evaluateSymbolEqualityInSet(c, ctx);
+                  current_shape_expr[1] = getAffineConstantExpr(eval, ctx);
+                }
+              }
             }
           }
         }
-        // Walk each partition set in the patition scheme
-        // Specialize affine set per partition
-        for (unsigned i = 0; i < numPartitions; i++){
-          SmallVector<AffineExpr, 2> newConstraints;
-          SmallVector<bool, 2> newEqflags;
-          SmallVector<AffineExpr, 1> i_syms{
-              getAffineConstantExpr(i, ctx),
-          };
-          SmallVector<AffineExpr, 2> syms{
-              getAffineSymbolExpr(0, ctx),
-              getAffineSymbolExpr(1, ctx),
-          };
-          int c_iter = 0;
-          for (auto c : constraints) {
-            if (!c.isSymbolicOrConstant()){
-              // Substitute partition id i_syms into inequalities
-              auto newC = c.replaceSymbols(i_syms);
-              // Replace all dims with symbols
-              newC = newC.replaceDims(syms);
-              newConstraints.push_back(newC);
-              newEqflags.push_back(eqFlags[c_iter]);
+
+        // Evaluate broadcast pattern by propagating expr through scalar operations in op history, last-in-first-out
+        for (std::vector<Operation *>::reverse_iterator i = op_history.rbegin(); i != op_history.rend(); ++i ) {
+          if (auto air_region_op = dyn_cast<xilinx::air::RegionOp>(*i)){
+            assert(air_region_op.body().front().getOperations().size() == 2 
+                    && "air::RegionOp should have only one child operation beside the terminator");
+            // Get current scalar op
+            Operation * op = nullptr;
+            for (auto &child_op : air_region_op.body().front().getOperations()){
+              if (!dyn_cast<xilinx::air::RegionTerminatorOp>(child_op)) op = &child_op;
             }
-            c_iter++;
-          }
-          auto int_set = IntegerSet::get(0, 2, newConstraints, newEqflags);
-          SmallVector<Value, 2> int_set_args{herd_id.x, herd_id.y};
-          // Duplicate dma ops per spatial partition
-          if (i == 0){
-            AffineIfOp aif = builder.create<AffineIfOp>(loc, 
-                    xilinx::air::AsyncTokenType::get(ctx), int_set,
-                    int_set_args, (i != numPartitions - 1));
-            builder.setInsertionPointToStart(aif.getThenBlock());
-            auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
-            memcpyOp_cloned->removeAttr("broadcast_pattern");
-            memcpyOp_cloned->setAttr("broadcast",
-                    mlir::IntegerSetAttr::get(int_set));
-            SmallVector<Value, 1> yield_token;
-            yield_token.push_back(dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
-            builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(), yield_token);
-            if (numPartitions != 1){
-              // If more than 1 spatial partitions, then move loc to else block
-              builder.setInsertionPointToStart(aif.getElseBlock());
+            // If the async op is affine.apply
+            if (auto apply_op = dyn_cast<AffineApplyOp>(op)){
+              auto map = apply_op.getAffineMap();
+              if (current_shape_expr[0]){
+                replaceSymbolAndEvaluateConstantInMap(map, current_shape_expr[0], ctx);
+                // Remove dependence from scalar op to memcpyOp if present
+                auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
+                eraseAsyncDependencyFromAsyncOp(async_memcpyOp, air_region_op.getAsyncToken());
+              }
+              else if (current_shape_expr[1]){
+                replaceSymbolAndEvaluateConstantInMap(map, current_shape_expr[1], ctx);
+                // Remove dependence from scalar op to memcpyOp if present
+                auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
+                eraseAsyncDependencyFromAsyncOp(async_memcpyOp, air_region_op.getAsyncToken());
+              }
             }
-            // Reconnect dependency graph using the outermost affine.if's token
-            auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
-            async_memcpyOp.getAsyncToken().replaceAllUsesWith(aif.getResult(0));
+
+            // If the async op is arith op
+            else if (auto arith_op = dyn_cast<arith::AddIOp>(op)){
+              propagateAFfineConstantExprThroughArithOp<arith::AddIOp>(arith_op, current_shape_expr, memcpyOp.getOperation(), ctx);
+            }
+            else if (auto arith_op = dyn_cast<arith::MulIOp>(op)){
+              propagateAFfineConstantExprThroughArithOp<arith::MulIOp>(arith_op, current_shape_expr, memcpyOp.getOperation(), ctx);
+            }
           }
-          else if (i < numPartitions - 1) {
-            AffineIfOp aif = builder.create<AffineIfOp>(builder.getUnknownLoc(), 
-                    xilinx::air::AsyncTokenType::get(ctx), int_set,
-                    int_set_args, (i != numPartitions - 1));
-            builder.setInsertionPointToStart(aif.getThenBlock());
-            auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
-            memcpyOp_cloned->removeAttr("broadcast_pattern");
-            memcpyOp_cloned->setAttr("broadcast",
-                    mlir::IntegerSetAttr::get(int_set));
-            SmallVector<Value, 1> yield_token;
-            yield_token.push_back(dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
-            builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(), yield_token);
-            builder.setInsertionPointAfter(aif);
-            SmallVector<Value, 1> parent_block_yield_token = {aif.getResult(0)};
-            builder.create<AffineYieldOp>(builder.getUnknownLoc(), parent_block_yield_token);
-            builder.setInsertionPointToStart(aif.getElseBlock());
-          }
-          else {
-            auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
-            memcpyOp_cloned->removeAttr("broadcast_pattern");
-            memcpyOp_cloned->setAttr("broadcast",
-                    mlir::IntegerSetAttr::get(int_set));
-            SmallVector<Value, 1> yield_token;
-            yield_token.push_back(dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
-            builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(), yield_token);
-          }
-        }
-        memcpyOp.erase();
+        } 
+
+        // Replace memcpyOp's dependent operand with const
+        auto newMemcpyOp = replaceMemcpyOpWithSimplifiedOperands(memcpyOp, current_shape_expr);
+        auto asyncMemcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
+        auto asyncNewMemcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(newMemcpyOp);
+        newMemcpyOp->setAttr("broadcast_set", broadcast_set);
+        asyncMemcpyOp.getAsyncToken().replaceAllUsesWith(asyncNewMemcpyOp.getAsyncToken());
+        memcpyOp->erase();
       }
     });
-  });
-}
+  }
+
+  // Evaluate the integer value of affine set expression if the only symbolic identifier is replaced with zero
+  int evaluateSymbolEqualityInSet(mlir::AffineExpr c, MLIRContext * ctx){
+    assert(c.isSymbolicOrConstant() && "constraint has dimension identifier");
+    SmallVector<AffineExpr, 2> zero_syms{
+        getAffineConstantExpr(0, ctx),
+        getAffineConstantExpr(0, ctx),
+    };
+    auto newC = c.replaceSymbols(zero_syms);
+    auto expr = simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
+    assert(expr);
+    int result = expr.getValue();
+    // Both + and - constant eval are legal for AffineExpr
+    return (result >= 0) ? (result) : (-result);
+  }
+
+  // Evaluate the affine expression of affine map if the only symbolic identifier is replaced with zero
+  void replaceSymbolAndEvaluateConstantInMap(mlir::AffineMap map, mlir::AffineExpr &c, MLIRContext * ctx){
+    auto newmap = map.replace(getAffineSymbolExpr(0, ctx), c, 0, 1);
+    auto const_int = simplifyAffineMap(newmap).getSingleConstantResult();
+    c = getAffineConstantExpr(const_int, ctx);
+  }
+
+  // AddI for AffineConstantExpr
+  void applyArithOpToAffineConstantExpr(arith::AddIOp arith_op, mlir::AffineExpr &c, MLIRContext * ctx){
+    arith::ConstantIndexOp add_operand = nullptr;
+    if (arith_op.getLhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())){
+      add_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp());
+    }
+    else if (arith_op.getRhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp())){
+      add_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp());
+    }
+    else assert(false && "arith::AddIOp has no arith::ConstantIndexOp operand");
+    auto acc = add_operand.value();
+    assert(c.dyn_cast<mlir::AffineConstantExpr>() && "non-constant affine expression");
+    acc += c.dyn_cast<mlir::AffineConstantExpr>().getValue();
+    c = getAffineConstantExpr(acc, ctx);
+  }
+
+  // MulI for AffineConstantExpr
+  void applyArithOpToAffineConstantExpr(arith::MulIOp arith_op, mlir::AffineExpr &c, MLIRContext * ctx){
+    arith::ConstantIndexOp mul_operand = nullptr;
+    if (arith_op.getLhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())){
+      mul_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp());
+    }
+    else if (arith_op.getRhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp())){
+      mul_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp());
+    }
+    else assert(false && "arith::MulIOp has no arith::ConstantIndexOp operand");
+    auto mul = mul_operand.value();
+    assert(c.dyn_cast<mlir::AffineConstantExpr>() && "non-constant affine expression");
+    mul *= c.dyn_cast<mlir::AffineConstantExpr>().getValue();
+    c = getAffineConstantExpr(mul, ctx);
+  }
+
+  // Propagate AffineConstantExpr through arith addi/muli op
+  template <typename T>
+  void propagateAFfineConstantExprThroughArithOp(T arith_op, SmallVector<AffineExpr, 2> &current_shape_expr, Operation * memcpyOp, MLIRContext * ctx){
+    xilinx::air::RegionOp parent_region_op = arith_op->template getParentOfType<xilinx::air::RegionOp>();
+    if (current_shape_expr[0]){
+      applyArithOpToAffineConstantExpr(arith_op, current_shape_expr[0], ctx);
+      // Remove dependence from scalar op to memcpyOp if present
+      auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp);
+      eraseAsyncDependencyFromAsyncOp(async_memcpyOp, parent_region_op.getAsyncToken());
+    }
+    else if (current_shape_expr[1]){
+      applyArithOpToAffineConstantExpr(arith_op, current_shape_expr[1], ctx);
+      // Remove dependence from scalar op to memcpyOp if present
+      auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp);
+      eraseAsyncDependencyFromAsyncOp(async_memcpyOp, parent_region_op.getAsyncToken());
+    }
+  }
+
+  // Replace memcpyOp's dependent operand with const
+  Operation * replaceMemcpyOpWithSimplifiedOperands(xilinx::air::DmaMemcpyInterface &memcpyOp, SmallVector<AffineExpr, 2> current_shape_expr){
+    OpBuilder builder(memcpyOp);
+    builder.setInsertionPoint(memcpyOp);
+    auto loc = memcpyOp->getLoc();
+    SmallVector<Value, 1> srcMemrefDimsOrOffsets;
+    if (auto memcpyNdOp = dyn_cast<xilinx::air::DmaMemcpyNdOp>(memcpyOp.getOperation())){
+      for (unsigned i = 0; i < current_shape_expr.size(); i++){
+        if (current_shape_expr[i]){
+          auto val = current_shape_expr[i].template dyn_cast<AffineConstantExpr>().getValue();
+          auto cop = builder.create<arith::ConstantIndexOp>(loc, val);
+          srcMemrefDimsOrOffsets.push_back(cop);
+        }
+        else {
+          srcMemrefDimsOrOffsets.push_back(memcpyNdOp.getSrcOffsets()[i]);
+        }
+      }  
+      // Replace memcpyOp
+      return replaceMemcpyOp(memcpyNdOp, builder, srcMemrefDimsOrOffsets);
+    }
+    else {
+      for (unsigned i = 0; i < current_shape_expr.size(); i++){
+        if (current_shape_expr[i]){
+          auto val = current_shape_expr[i].template dyn_cast<AffineConstantExpr>().getValue();
+          auto cop = builder.create<arith::ConstantIndexOp>(loc, val);
+          srcMemrefDimsOrOffsets.push_back(cop);
+        }
+        else {
+          srcMemrefDimsOrOffsets.push_back(memcpyOp.getSrcMemrefDim(i));
+        }
+      }
+      // Replace memcpyOp
+      if (auto op = dyn_cast<xilinx::air::DmaMemcpyOp>(memcpyOp.getOperation()))
+        return replaceMemcpyOp(op, builder, srcMemrefDimsOrOffsets);
+      else if (auto op = dyn_cast<xilinx::air::DmaMemcpy2dOp>(memcpyOp.getOperation()))
+        return replaceMemcpyOp(op, builder, srcMemrefDimsOrOffsets);
+      else if (auto op = dyn_cast<xilinx::air::DmaMemcpy4dOp>(memcpyOp.getOperation()))
+        return replaceMemcpyOp(op, builder, srcMemrefDimsOrOffsets);
+      else return nullptr;
+    }
+
+  }
+
+  // Replace DmaMemcpyNdOp with updated src operands
+  Operation * replaceMemcpyOp (xilinx::air::DmaMemcpyNdOp op, OpBuilder &builder, SmallVector<Value, 1> srcMemrefDimsOrOffsets){
+    auto loc = op->getLoc();
+    xilinx::air::DmaMemcpyNdOp newMemcpyOp = builder.create<xilinx::air::DmaMemcpyNdOp>(loc, xilinx::air::AsyncTokenType::get(op->getContext()), 
+            op.getAsyncDependencies(), op.getDstMemref(), op.getDstOffsets(), op.getDstSizes(), op.getDstStrides(), op.getSrcMemref(), 
+            srcMemrefDimsOrOffsets, op.getSrcSizes(), op.getSrcStrides()); 
+    return newMemcpyOp.getOperation();
+  }
+
+  // Replace DmaMemcpyOp with updated src operands
+  Operation * replaceMemcpyOp (xilinx::air::DmaMemcpyOp op, OpBuilder &builder, SmallVector<Value, 1> srcMemrefDimsOrOffsets){
+    auto loc = op->getLoc();
+    xilinx::air::DmaMemcpyOp newMemcpyOp = builder.create<xilinx::air::DmaMemcpyOp>(loc, xilinx::air::AsyncTokenType::get(op->getContext()), 
+            op.getAsyncDependencies(), op.getDstMemref(), op.getSrcMemref(), op.getDstMemrefDim(0), srcMemrefDimsOrOffsets[0], op.getLength()); 
+    return newMemcpyOp.getOperation();
+  }
+
+  // Replace DmaMemcpy2dOp with updated src operands
+  Operation * replaceMemcpyOp (xilinx::air::DmaMemcpy2dOp op, OpBuilder &builder, SmallVector<Value, 1> srcMemrefDimsOrOffsets){
+    auto loc = op->getLoc();
+    xilinx::air::DmaMemcpy2dOp newMemcpyOp = builder.create<xilinx::air::DmaMemcpy2dOp>(loc, xilinx::air::AsyncTokenType::get(op->getContext()), 
+            op.getAsyncDependencies(), op.getDstMemref(), op.getSrcMemref(), op.getDstMemrefDim(0), op.getDstMemrefDim(1), 
+            srcMemrefDimsOrOffsets[0], srcMemrefDimsOrOffsets[1], op.getLength(), op.getStride(), op.getElemPerStride()); 
+    return newMemcpyOp.getOperation();
+  }
+
+  // Replace DmaMemcpy4dOp with updated src operands
+  Operation * replaceMemcpyOp (xilinx::air::DmaMemcpy4dOp op, OpBuilder &builder, SmallVector<Value, 1> srcMemrefDimsOrOffsets){
+    auto loc = op->getLoc();
+    xilinx::air::DmaMemcpy4dOp newMemcpyOp = builder.create<xilinx::air::DmaMemcpy4dOp>(loc, xilinx::air::AsyncTokenType::get(op->getContext()), 
+            op.getAsyncDependencies(), op.getDstMemref(), op.getSrcMemref(), op.getDstMemrefDim(0), op.getDstMemrefDim(1), op.getDstMemrefDim(2), 
+            op.getDstMemrefDim(3), srcMemrefDimsOrOffsets[0], srcMemrefDimsOrOffsets[1], srcMemrefDimsOrOffsets[2], srcMemrefDimsOrOffsets[3], 
+            op.getLength(), op.getStride(), op.getElemPerStride()); 
+    return newMemcpyOp.getOperation();
+  }
+
+};
 
 class AIRFuseParallelHerdLaunchPass
     : public xilinx::air::AIRFuseParallelHerdLaunchPassBase<

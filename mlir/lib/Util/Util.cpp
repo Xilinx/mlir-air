@@ -4,6 +4,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/OperationSupport.h"
 
@@ -180,6 +181,26 @@ uint64_t getTensorVolume(const Type ty) {
   else {
     return 1;
   }
+}
+
+// Get the parent scf.for op of an iter_arg
+scf::ForOp getForRegionIterArgsOwner(Value val) {
+  auto ivArg = val.dyn_cast<BlockArgument>();
+  if (!ivArg)
+    return scf::ForOp();
+  assert(ivArg.getOwner() && "unlinked block argument");
+  auto *containingOp = ivArg.getOwner()->getParentOp();
+  return dyn_cast<scf::ForOp>(containingOp);
+}
+
+// Get the parent air.launch_herd op of a tile id
+air::HerdLaunchOp getHerdLaunchTileIdOwner(Value val) {
+  auto ivArg = val.dyn_cast<BlockArgument>();
+  if (!ivArg)
+    return air::HerdLaunchOp();
+  assert(ivArg.getOwner() && "unlinked block argument");
+  auto *containingOp = ivArg.getOwner()->getParentOp();
+  return dyn_cast<air::HerdLaunchOp>(containingOp);
 }
 
 }

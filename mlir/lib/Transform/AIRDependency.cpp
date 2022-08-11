@@ -4,6 +4,7 @@
 
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRDependency.h"
+#include "air/Util/Dependency.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -1663,24 +1664,6 @@ private:
       }
     }
     return true;
-  }
-
-  bool areEqualIndices (mlir::Value index_0, mlir::Value index_1){
-    if (index_0 == nullptr || index_1 == nullptr) {
-      // Note: memref with index is subset to memref without index (i.e. the entire memref)
-      return true;
-    }
-    else {
-      if (index_0 == index_1) return true;
-      else if (!index_0.getDefiningOp()) return false;
-      else if (!index_1.getDefiningOp()) return false;
-      else {
-        auto index_0_const_op = dyn_cast<arith::ConstantOp>(index_0.getDefiningOp());
-        auto index_1_const_op = dyn_cast<arith::ConstantOp>(index_1.getDefiningOp());
-        if (index_0_const_op.getValue() == index_1_const_op.getValue()) return true;
-        else return false;
-      }
-    }
   }
 
   // Check if a value is only used outside of a given block

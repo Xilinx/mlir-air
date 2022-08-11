@@ -11,22 +11,22 @@
 // CHECK: [[$SET5:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 floordiv 2 + s1 * 2 - 5 == 0)>
 // CHECK: [[$SET6:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 floordiv 2 + s1 * 2 - 6 == 0)>
 // CHECK: [[$SET7:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 floordiv 2 + s1 * 2 - 7 == 0)>
-// CHECK: %[[EVENT0:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET0]]{{.*}}
-// CHECK: %[[EVENT1:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET1]]{{.*}}
-// CHECK: %[[EVENT2:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET2]]{{.*}}
-// CHECK: %[[EVENT3:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET3]]{{.*}}
-// CHECK: %[[EVENT4:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET4]]{{.*}}
-// CHECK: %[[EVENT5:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET5]]{{.*}}
-// CHECK: %[[EVENT6:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET6]]{{.*}}
-// CHECK: %[[EVENT7:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET7]]{{.*}}
-// CHECK: %[[EVENT8:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET0]]{{.*}}
-// CHECK: %[[EVENT9:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET1]]{{.*}}
-// CHECK: %[[EVENT10:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET2]]{{.*}}
-// CHECK: %[[EVENT11:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET3]]{{.*}}
-// CHECK: %[[EVENT12:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET4]]{{.*}}
-// CHECK: %[[EVENT13:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET5]]{{.*}}
-// CHECK: %[[EVENT14:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET6]]{{.*}}
-// CHECK: %[[EVENT15:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET7]]{{.*}}
+// CHECK: %[[EVENT0:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET0]]{{.*}}
+// CHECK: %[[EVENT1:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET1]]{{.*}}
+// CHECK: %[[EVENT2:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET2]]{{.*}}
+// CHECK: %[[EVENT3:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET3]]{{.*}}
+// CHECK: %[[EVENT4:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET4]]{{.*}}
+// CHECK: %[[EVENT5:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET5]]{{.*}}
+// CHECK: %[[EVENT6:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET6]]{{.*}}
+// CHECK: %[[EVENT7:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET7]]{{.*}}
+// CHECK: %[[EVENT8:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET0]]{{.*}}
+// CHECK: %[[EVENT9:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET1]]{{.*}}
+// CHECK: %[[EVENT10:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET2]]{{.*}}
+// CHECK: %[[EVENT11:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET3]]{{.*}}
+// CHECK: %[[EVENT12:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET4]]{{.*}}
+// CHECK: %[[EVENT13:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET5]]{{.*}}
+// CHECK: %[[EVENT14:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET6]]{{.*}}
+// CHECK: %[[EVENT15:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET7]]{{.*}}
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 #set0 = affine_set<(d0, d1)[s0] : (d0 floordiv 2 + d1 * 2 - s0 == 0, s0 >= 0, -s0 + 7 >= 0)>

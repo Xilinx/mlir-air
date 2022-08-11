@@ -4,6 +4,7 @@
 
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRDependencyScheduleOpt.h"
+#include "air/Util/Dependency.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -219,15 +220,10 @@ private:
     air::AsyncOpInterface dma_async_op = dyn_cast<air::AsyncOpInterface>(current_op);
     auto dependency_list = dma_async_op.getAsyncDependencies();
     if (dependency_list.size()){
-      for (unsigned i = 0; i < dependency_list.size(); i++){
-        if (dependency_list[i] == for_op.getRegionIterArgs()[0]){
-          // Found scf.forOp in upstream dependency
-          dma_async_op.eraseAsyncDependency(i);
-        }
-      }
+      // Erase dependence to upstream scf.forOp
+      eraseAsyncDependencyFromAsyncOp(dyn_cast<air::AsyncOpInterface>(dma_async_op.getOperation()), for_op.getRegionIterArgs()[0]);
       auto for_op_iter_operand = for_op.getIterOperands()[0];
       dma_op->getResult(0).replaceAllUsesWith(for_op.getRegionIterArgs()[0]);
-      // for_op_iter_operand.replaceAllUsesWith(dma_op->getResult(0));
       
       replaceAllUsesInRegionWith(for_op_iter_operand,
                                   dma_op->getResult(0),
@@ -249,32 +245,9 @@ private:
         dma_async_op.eraseAsyncDependency(i);
       }
     }
-    dependency_list = wait_all_after_for.getAsyncDependencies();
-    for (unsigned i = 0; i < dependency_list.size(); i++){
-      if (dependency_list[i] == dealloc_op.getResult(0)){
-        wait_all_after_for.eraseAsyncDependency(i);
-      }
-    }
+    eraseAsyncDependencyFromAsyncOp(dyn_cast<air::AsyncOpInterface>(wait_all_after_for.getOperation()), dealloc_op.getAsyncToken());
     for_op.getResult(0).replaceAllUsesWith(dealloc_op.getResult(0));
     dma_async_op.addAsyncDependency(for_op.getResult(0));
-  }
-
-  bool areEqualIndices (mlir::Value index_0, mlir::Value index_1) const {
-    if (index_0 == nullptr || index_1 == nullptr) {
-      // Note: memref with index is subset to memref without index (i.e. the entire memref)
-      return true;
-    }
-    else {
-      if (index_0 == index_1) return true;
-      else if (!index_0.getDefiningOp()) return false;
-      else if (!index_1.getDefiningOp()) return false;
-      else {
-        auto index_0_const_op = dyn_cast<arith::ConstantOp>(index_0.getDefiningOp());
-        auto index_1_const_op = dyn_cast<arith::ConstantOp>(index_1.getDefiningOp());
-        if (index_0_const_op.getValue() == index_1_const_op.getValue()) return true;
-        else return false;
-      }
-    }
   }
 
   // Check if an operation is invariant with respect to for loop iteration
@@ -359,25 +332,11 @@ public:
         if (dma_op->getParentOfType<xilinx::air::HerdLaunchOp>()){
           // Start recursively tracing for loop induction variables
           dma_op_history.push_back(dma_op);
-          SmallVector<Value, 1> loop_dep;
-          traceDependentInductionVar(dma_op, loop_dep);
-          dma_op_loop_dep.push_back(loop_dep);
+          SmallVector<Value, 1> loop_dep_history;
+          std::vector<Operation *> op_history;
+          traceDependentInductionVar(dma_op, loop_dep_history, op_history);
+          dma_op_loop_dep_history.push_back(loop_dep_history);
         }
-      }
-    });
-  }
-
-  // Collect all for, parallel and hl loops in funcOp
-  void pushLoopOpsToHistory(func::FuncOp f) {
-    f.walk([&](Operation *op) {
-      if (auto for_op = dyn_cast<scf::ForOp>(op)){
-        for_op_history.push_back(for_op);
-      }
-      else if (auto parallel_op = dyn_cast<scf::ParallelOp>(op)){
-        parallel_op_history.push_back(parallel_op);
-      }
-      else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(op)){
-        hl_op_history.push_back(hl_op);
       }
     });
   }
@@ -386,44 +345,66 @@ public:
   void broadcastDetection() {
     for (unsigned i = 0; i < dma_op_history.size(); i++){
       auto dma_op = dma_op_history[i];
-      SmallVector<Value, 1> loop_dep = dma_op_loop_dep[i];
-      auto hl_op = dma_op->getParentOfType<air::HerdLaunchOp>();
+      SmallVector<Value, 1> loop_dep_history = dma_op_loop_dep_history[i];
+      air::HerdLaunchOp hl_op = nullptr;
       bool hasDepInHerdRows = false;
       bool hasDepInHerdCols = false;
       // Create an affine set to represent the broadcast pattern
       auto ctx = dma_op->getContext();
-      for (auto v : loop_dep){
-        if (v == hl_op.getTileIds().x){
-          hasDepInHerdRows = true;
-        }
-        if (v == hl_op.getTileIds().y){
-          hasDepInHerdCols = true;
+      for (auto v : loop_dep_history){
+        if (getHerdLaunchTileIdOwner(v)){
+          hl_op = getHerdLaunchTileIdOwner(v);
+          if (v == hl_op.getTileIds().x){
+            hasDepInHerdRows = true;
+          }
+          if (v == hl_op.getTileIds().y){
+            hasDepInHerdCols = true;
+          }
         }
       }
 
-      if (hasDepInHerdRows && !hasDepInHerdCols){
-        auto numRowsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().x.getDefiningOp());
-        auto numRows = numRowsOp.value();
-        if (numRows > 1){
-          SmallVector<AffineExpr, 2> constraints{getAffineDimExpr(0, ctx) - getAffineSymbolExpr(0, ctx),
+      if (hl_op && hasDepInHerdRows && !hasDepInHerdCols){
+        auto numColsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().y.getDefiningOp());
+        auto numCols = numColsOp.value();
+        if (numCols > 1){
+          SmallVector<AffineExpr, 5> constraints{getAffineDimExpr(0, ctx) - getAffineSymbolExpr(0, ctx),
                                                 getAffineDimExpr(1, ctx),
+                                                numCols - 1 - getAffineDimExpr(1, ctx),
                                                 getAffineSymbolExpr(0, ctx),
-                                                numRows - 1 - getAffineSymbolExpr(0, ctx)};
-          SmallVector<bool, 2> eqflags{true, false, false, false};
+                                                numCols - 1 - getAffineSymbolExpr(0, ctx)};
+          SmallVector<bool, 5> eqflags{true, false, false, false, false};
           auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
           dma_op->setAttr("broadcast_pattern",
                   mlir::IntegerSetAttr::get(int_set));
         }
       }
-      else if (!hasDepInHerdRows && hasDepInHerdCols){
-        auto numColsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().y.getDefiningOp());
-        auto numCols = numColsOp.value();
-        if (numCols > 1){
-          SmallVector<AffineExpr, 2> constraints{getAffineDimExpr(0, ctx),
+      else if (hl_op && !hasDepInHerdRows && hasDepInHerdCols){
+        auto numRowsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().x.getDefiningOp());
+        auto numRows = numRowsOp.value();
+        if (numRows > 1){
+          SmallVector<AffineExpr, 5> constraints{getAffineDimExpr(0, ctx),
+                                                numRows - 1 - getAffineDimExpr(0, ctx),
                                                 getAffineDimExpr(1, ctx) - getAffineSymbolExpr(0, ctx),
                                                 getAffineSymbolExpr(0, ctx),
-                                                numCols - 1 - getAffineSymbolExpr(0, ctx)};
-          SmallVector<bool, 2> eqflags{false, true, false, false};
+                                                numRows - 1 - getAffineSymbolExpr(0, ctx)};
+          SmallVector<bool, 5> eqflags{false, false, true, false, false};
+          auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
+          dma_op->setAttr("broadcast_pattern",
+                  mlir::IntegerSetAttr::get(int_set));
+        }
+      }
+      else if (hl_op && !hasDepInHerdRows && !hasDepInHerdCols){
+        auto numRowsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().x.getDefiningOp());
+        auto numRows = numRowsOp.value();
+        auto numColsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().y.getDefiningOp());
+        auto numCols = numColsOp.value();
+        if (numCols > 1 && numRows > 1){
+          SmallVector<AffineExpr, 5> constraints{getAffineDimExpr(0, ctx),
+                                                numRows - 1 - getAffineDimExpr(0, ctx),
+                                                getAffineDimExpr(1, ctx),
+                                                numCols - 1 - getAffineDimExpr(1, ctx),
+                                                getAffineSymbolExpr(0, ctx)};
+          SmallVector<bool, 5> eqflags{false, false, false, false, true};
           auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
           dma_op->setAttr("broadcast_pattern",
                   mlir::IntegerSetAttr::get(int_set));
@@ -442,7 +423,6 @@ public:
   void runBroadcastPattern(func::FuncOp funcOp){
     // Trace dma ops' dependency to loop induction variables
     // This info will be used for broadcast detection
-    pushLoopOpsToHistory(funcOp);
     getDmaOpLoopDependency(funcOp);
     broadcastDetection();
   }
@@ -464,145 +444,7 @@ private:
 
   // DMA dependency to loop induction variables
   std::vector<air::DmaMemcpyInterface> dma_op_history;
-  SmallVector<SmallVector<Value, 1>, 1> dma_op_loop_dep;
-
-  // Loop op history
-  std::vector<scf::ForOp> for_op_history;
-  std::vector<scf::ParallelOp> parallel_op_history;
-  std::vector<air::HerdLaunchOp> hl_op_history;
-
-  // Recursively check for dependency to loop induction vars arising from dma src
-  void traceDependentInductionVar (air::DmaMemcpyInterface async_op, SmallVector<Value, 1> &loop_dep) {
-    // Check for immediate dependency to loop induction vars
-    SmallVector<Value, 1> candidate_scalar_operands;
-    for (unsigned i = 0; i < async_op.getNumDims(); i++){
-      candidate_scalar_operands.push_back(async_op.getSrcMemrefDim(i));
-    }
-    if (auto dmaNd_op = dyn_cast<air::DmaMemcpyNdOp>(async_op.getOperation())){
-      for (unsigned i = 0; i < dmaNd_op.getSrcOffsets().size(); i++){
-        candidate_scalar_operands.push_back(dmaNd_op.getSrcOffsets()[i]);
-        candidate_scalar_operands.push_back(dmaNd_op.getSrcSizes()[i]);
-        candidate_scalar_operands.push_back(dmaNd_op.getSrcStrides()[i]);
-      }
-    }
-    for (auto operand : candidate_scalar_operands){
-      // If parent loop op is an scf.for
-      for (auto for_op : for_op_history){
-        auto induction_var = for_op.getInductionVar();
-        if (operand == induction_var) {
-          loop_dep.push_back(induction_var);
-        }
-      }
-      // TODO: Assuming that src.parallel won't exist under herd launch
-      // If parent loop op is an scf.parallel
-      // for (auto parallel_op : parallel_op_history){
-      //   for (auto induction_var : parallel_op.getInductionVars()){
-      //     if (operand == induction_var) {
-      //       loop_dep.push_back(induction_var);
-      //       op->setAttr("debug_parallel",
-      //               mlir::StringAttr::get(op->getContext(), "found"));
-      //     }
-      //   }
-      // }
-      // If parent loop op is an air.launch_herd
-      for (auto hl_op : hl_op_history){
-        if (operand == hl_op.getTileIds().x) {
-          loop_dep.push_back(hl_op.getTileIds().x);
-        }
-        else if (operand == hl_op.getTileIds().y) {
-          loop_dep.push_back(hl_op.getTileIds().y);
-        }
-      }
-    }
-
-    // Recursively trace dependency to loop induction vars
-    for (auto operand : candidate_scalar_operands){
-      if (operand && operand.getType().isa<IndexType>()){ // Only tracing scalar operands
-        if (operand.getDefiningOp() && mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())){
-          auto ancestor_async_op = dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp());
-          traceDependentInductionVar(ancestor_async_op, loop_dep);
-        }
-        else {
-          // Trace dependency through a for loop
-          for (auto for_op : for_op_history){
-            if (operand == for_op.getRegionIterArgs()[0]){
-              auto ancestor_token = for_op.getIterOperands()[0];
-              auto ancestor_async_op = dyn_cast<air::AsyncOpInterface>(ancestor_token.getDefiningOp());
-              traceDependentInductionVar(ancestor_async_op, loop_dep);
-            }
-          }
-          // Trace dependency through a parallel loop
-          // TODO: decide if parallel should exist in herd launch
-        }
-      }
-    }
-  }
-
-  // Recursively check for dependency to any loop induction vars
-  void traceDependentInductionVar (air::AsyncOpInterface async_op, SmallVector<Value, 1> &loop_dep) {
-    // Get child op if async_op is air.region
-    Operation * op = nullptr;
-    if (auto air_region_op = dyn_cast<air::RegionOp>(async_op.getOperation())){
-      assert(air_region_op.body().front().getOperations().size() == 2 
-              && "air::RegionOp should have only one child operation beside the terminator");
-      for (auto &child_op : air_region_op.body().front().getOperations()){
-        if (!dyn_cast<air::RegionTerminatorOp>(child_op)) op = &child_op;
-      }
-    }
-    else {
-      op = async_op.getOperation();
-    }
-
-    // Check for immediate dependency to loop induction vars
-    for (auto operand : op->getOperands()){
-        // If parent loop op is an scf.for
-        for (auto for_op : for_op_history){
-          auto induction_var = for_op.getInductionVar();
-          if (operand == induction_var) {
-            loop_dep.push_back(induction_var);
-          }
-        }
-        // If parent loop op is an scf.parallel
-        for (auto parallel_op : parallel_op_history){
-          for (auto induction_var : parallel_op.getInductionVars()){
-            if (operand == induction_var) {
-              loop_dep.push_back(induction_var);
-            }
-          }
-        }
-        // If parent loop op is an air.launch_herd
-        for (auto hl_op : hl_op_history){
-          if (operand == hl_op.getTileIds().x) {
-            loop_dep.push_back(hl_op.getTileIds().x);
-          }
-          else if (operand == hl_op.getTileIds().y) {
-            loop_dep.push_back(hl_op.getTileIds().y);
-          }
-        }
-    }
-
-    // Recursively trace dependency to loop induction vars
-    for (auto operand : op->getOperands()){
-      if (operand && operand.getType().isa<IndexType>()){ // Only tracing scalar operands
-        if (operand.getDefiningOp() && mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())){
-          auto ancestor_async_op = dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp());
-          traceDependentInductionVar(ancestor_async_op, loop_dep);
-        }
-        else {
-          // Trace dependency through a for loop
-          for (auto for_op : for_op_history){
-            if (operand == for_op.getRegionIterArgs()[0]){
-              auto ancestor_token = for_op.getIterOperands()[0];
-              auto ancestor_async_op = dyn_cast<air::AsyncOpInterface>(ancestor_token.getDefiningOp());
-              traceDependentInductionVar(ancestor_async_op, loop_dep);
-            }
-          }
-          // Trace dependency through a parallel loop
-          // TODO: decide if parallel should exist in herd launch
-        }
-      }
-    }
-  }
+  SmallVector<SmallVector<Value, 1>, 1> dma_op_loop_dep_history;
 
 };
 

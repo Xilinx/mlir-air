@@ -3,40 +3,40 @@
 // RUN: air-opt %s -air-specialize-dma-broadcast | FileCheck %s
 
 // Lowers broadcastable DMAs using affine.if, with herd size 4x4
-// CHECK: [[$SET0:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 >= 0, s1 == 0)>
-// CHECK: [[$SET1:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 >= 0, s1 - 1 == 0)>
-// CHECK: [[$SET2:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 >= 0, s1 - 2 == 0)>
-// CHECK: [[$SET3:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 >= 0, s1 - 3 == 0)>
-// CHECK: [[$SET4:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0)>
-// CHECK: [[$SET5:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 - 1 == 0, s1 >= 0)>
-// CHECK: [[$SET6:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 - 2 == 0, s1 >= 0)>
-// CHECK: [[$SET7:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 - 3 == 0, s1 >= 0)>
+// CHECK: [[$SET0:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 3 >= 0)>
+// CHECK: [[$SET1:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 - 1 == 0, s1 >= 0, -s1 + 3 >= 0)>
+// CHECK: [[$SET2:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 - 2 == 0, s1 >= 0, -s1 + 3 >= 0)>
+// CHECK: [[$SET3:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 - 3 == 0, s1 >= 0, -s1 + 3 >= 0)>
+// CHECK: [[$SET4:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 == 0)>
+// CHECK: [[$SET5:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 - 1 == 0)>
+// CHECK: [[$SET6:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 - 2 == 0)>
+// CHECK: [[$SET7:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 3 >= 0, s1 - 3 == 0)>
 // CHECK: %[[EVENT0:.*]] = affine.if [[$SET0]]
-// CHECK: %[[EVENT1:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET0]]{{.*}}
+// CHECK: %[[EVENT1:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET0]]{{.*}}
 // CHECK: affine.yield %[[EVENT1]]
 // CHECK: %[[EVENT2:.*]] = affine.if [[$SET1]]
-// CHECK: %[[EVENT3:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET1]]{{.*}}
+// CHECK: %[[EVENT3:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET1]]{{.*}}
 // CHECK: affine.yield %[[EVENT3]]
 // CHECK: %[[EVENT4:.*]] = affine.if [[$SET2]]
-// CHECK: %[[EVENT5:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET2]]{{.*}}
+// CHECK: %[[EVENT5:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET2]]{{.*}}
 // CHECK: affine.yield %[[EVENT5]]
-// CHECK: %[[EVENT6:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET3]]{{.*}}
+// CHECK: %[[EVENT6:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET3]]{{.*}}
 // CHECK: affine.yield %[[EVENT6]]
 // CHECK: %[[EVENT7:.*]] = affine.if [[$SET4]]
-// CHECK: %[[EVENT8:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET4]]{{.*}}
+// CHECK: %[[EVENT8:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET4]]{{.*}}
 // CHECK: affine.yield %[[EVENT8]]
 // CHECK: %[[EVENT9:.*]] = affine.if [[$SET5]]
-// CHECK: %[[EVENT10:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET5]]{{.*}}
+// CHECK: %[[EVENT10:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET5]]{{.*}}
 // CHECK: affine.yield %[[EVENT10]]
 // CHECK: %[[EVENT11:.*]] = affine.if [[$SET6]]
-// CHECK: %[[EVENT12:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET6]]{{.*}}
+// CHECK: %[[EVENT12:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET6]]{{.*}}
 // CHECK: affine.yield %[[EVENT12]]
-// CHECK: %[[EVENT13:.*]] = air.dma_memcpy_nd {{.*}}broadcast = [[$SET7]]{{.*}}
+// CHECK: %[[EVENT13:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET7]]{{.*}}
 // CHECK: affine.yield %[[EVENT13]]
 
 #map = affine_map<()[s0] -> (s0 * 32)>
-#set0 = affine_set<(d0, d1)[s0] : (d0 >= 0, d1 - s0 == 0, s0 >= 0, -s0 + 3 >= 0)>
-#set1 = affine_set<(d0, d1)[s0] : (d0 - s0 == 0, d1 >= 0, s0 >= 0, -s0 + 3 >= 0)>
+#set0 = affine_set<(d0, d1)[s0] : (d0 - s0 == 0, d1 >= 0, -d1 + 3 >= 0, s0 >= 0, -s0 + 3 >= 0)>
+#set1 = affine_set<(d0, d1)[s0] : (d0 >= 0, -d0 + 3 >= 0, d1 - s0 == 0, s0 >= 0, -s0 + 3 >= 0)>
 module {
   func.func @matmul(%arg0: memref<512x512xbf16>, %arg1: memref<512x512xbf16>, %arg2: memref<512x512xbf16>) {
     %c1 = arith.constant 1 : index
