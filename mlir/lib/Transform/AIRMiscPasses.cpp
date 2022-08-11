@@ -528,24 +528,11 @@ private:
         } 
 
         // Replace memcpyOp's dependent operand with const
-        OpBuilder builder(memcpyOp);
-        builder.setInsertionPoint(memcpyOp);
-        auto loc = memcpyOp->getLoc();
-        auto memcpyNdOp = dyn_cast<xilinx::air::DmaMemcpyNdOp>(memcpyOp.getOperation());
-        auto dmaSrcOffsets = memcpyNdOp.getSrcOffsets();
-        for (unsigned i = 0; i < current_shape_expr.size(); i++){
-          if (current_shape_expr[i]){
-            auto val = current_shape_expr[i].dyn_cast<AffineConstantExpr>().getValue();
-            auto cop = builder.create<arith::ConstantIndexOp>(loc, val);
-            dmaSrcOffsets[i] = cop;
-          }
-        }
-        // TODO: Currently only supporting DmaMemcpyNdOp
-        xilinx::air::DmaMemcpyNdOp newMemcpyOp = builder.create<xilinx::air::DmaMemcpyNdOp>(loc, xilinx::air::AsyncTokenType::get(memcpyNdOp->getContext()), 
-                memcpyNdOp.getAsyncDependencies(), memcpyNdOp.getDstMemref(), memcpyNdOp.getDstOffsets(), memcpyNdOp.getDstSizes(), memcpyNdOp.getDstStrides(), memcpyNdOp.getSrcMemref(), 
-                dmaSrcOffsets, memcpyNdOp.getSrcSizes(), memcpyNdOp.getSrcStrides()); 
+        auto newMemcpyOp = replaceMemcpyOpWithSimplifiedOperands(memcpyOp, current_shape_expr);
+        auto asyncMemcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
+        auto asyncNewMemcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(newMemcpyOp);
         newMemcpyOp->setAttr("broadcast_set", broadcast_set);
-        memcpyNdOp.getAsyncToken().replaceAllUsesWith(newMemcpyOp.getAsyncToken());
+        asyncMemcpyOp.getAsyncToken().replaceAllUsesWith(asyncNewMemcpyOp.getAsyncToken());
         memcpyOp->erase();
       }
     });
@@ -621,6 +608,85 @@ private:
       auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp);
       eraseAsyncDependencyFromAsyncOp(async_memcpyOp, parent_region_op.getAsyncToken());
     }
+  }
+
+  // Replace memcpyOp's dependent operand with const
+  Operation * replaceMemcpyOpWithSimplifiedOperands(xilinx::air::DmaMemcpyInterface &memcpyOp, SmallVector<AffineExpr, 2> current_shape_expr){
+    OpBuilder builder(memcpyOp);
+    builder.setInsertionPoint(memcpyOp);
+    auto loc = memcpyOp->getLoc();
+    SmallVector<Value, 1> srcMemrefDimsOrOffsets;
+    if (auto memcpyNdOp = dyn_cast<xilinx::air::DmaMemcpyNdOp>(memcpyOp.getOperation())){
+      for (unsigned i = 0; i < current_shape_expr.size(); i++){
+        if (current_shape_expr[i]){
+          auto val = current_shape_expr[i].template dyn_cast<AffineConstantExpr>().getValue();
+          auto cop = builder.create<arith::ConstantIndexOp>(loc, val);
+          srcMemrefDimsOrOffsets.push_back(cop);
+        }
+        else {
+          srcMemrefDimsOrOffsets.push_back(memcpyNdOp.getSrcOffsets()[i]);
+        }
+      }  
+      // Replace memcpyOp
+      return replaceMemcpyOp(memcpyNdOp, builder, srcMemrefDimsOrOffsets);
+    }
+    else {
+      for (unsigned i = 0; i < current_shape_expr.size(); i++){
+        if (current_shape_expr[i]){
+          auto val = current_shape_expr[i].template dyn_cast<AffineConstantExpr>().getValue();
+          auto cop = builder.create<arith::ConstantIndexOp>(loc, val);
+          srcMemrefDimsOrOffsets.push_back(cop);
+        }
+        else {
+          srcMemrefDimsOrOffsets.push_back(memcpyOp.getSrcMemrefDim(i));
+        }
+      }
+      // Replace memcpyOp
+      if (auto op = dyn_cast<xilinx::air::DmaMemcpyOp>(memcpyOp.getOperation()))
+        return replaceMemcpyOp(op, builder, srcMemrefDimsOrOffsets);
+      else if (auto op = dyn_cast<xilinx::air::DmaMemcpy2dOp>(memcpyOp.getOperation()))
+        return replaceMemcpyOp(op, builder, srcMemrefDimsOrOffsets);
+      else if (auto op = dyn_cast<xilinx::air::DmaMemcpy4dOp>(memcpyOp.getOperation()))
+        return replaceMemcpyOp(op, builder, srcMemrefDimsOrOffsets);
+      else return nullptr;
+    }
+
+  }
+
+  // Replace DmaMemcpyNdOp with updated src operands
+  Operation * replaceMemcpyOp (xilinx::air::DmaMemcpyNdOp op, OpBuilder &builder, SmallVector<Value, 1> srcMemrefDimsOrOffsets){
+    auto loc = op->getLoc();
+    xilinx::air::DmaMemcpyNdOp newMemcpyOp = builder.create<xilinx::air::DmaMemcpyNdOp>(loc, xilinx::air::AsyncTokenType::get(op->getContext()), 
+            op.getAsyncDependencies(), op.getDstMemref(), op.getDstOffsets(), op.getDstSizes(), op.getDstStrides(), op.getSrcMemref(), 
+            srcMemrefDimsOrOffsets, op.getSrcSizes(), op.getSrcStrides()); 
+    return newMemcpyOp.getOperation();
+  }
+
+  // Replace DmaMemcpyOp with updated src operands
+  Operation * replaceMemcpyOp (xilinx::air::DmaMemcpyOp op, OpBuilder &builder, SmallVector<Value, 1> srcMemrefDimsOrOffsets){
+    auto loc = op->getLoc();
+    xilinx::air::DmaMemcpyOp newMemcpyOp = builder.create<xilinx::air::DmaMemcpyOp>(loc, xilinx::air::AsyncTokenType::get(op->getContext()), 
+            op.getAsyncDependencies(), op.getDstMemref(), op.getSrcMemref(), op.getDstMemrefDim(0), srcMemrefDimsOrOffsets[0], op.getLength()); 
+    return newMemcpyOp.getOperation();
+  }
+
+  // Replace DmaMemcpy2dOp with updated src operands
+  Operation * replaceMemcpyOp (xilinx::air::DmaMemcpy2dOp op, OpBuilder &builder, SmallVector<Value, 1> srcMemrefDimsOrOffsets){
+    auto loc = op->getLoc();
+    xilinx::air::DmaMemcpy2dOp newMemcpyOp = builder.create<xilinx::air::DmaMemcpy2dOp>(loc, xilinx::air::AsyncTokenType::get(op->getContext()), 
+            op.getAsyncDependencies(), op.getDstMemref(), op.getSrcMemref(), op.getDstMemrefDim(0), op.getDstMemrefDim(1), 
+            srcMemrefDimsOrOffsets[0], srcMemrefDimsOrOffsets[1], op.getLength(), op.getStride(), op.getElemPerStride()); 
+    return newMemcpyOp.getOperation();
+  }
+
+  // Replace DmaMemcpy4dOp with updated src operands
+  Operation * replaceMemcpyOp (xilinx::air::DmaMemcpy4dOp op, OpBuilder &builder, SmallVector<Value, 1> srcMemrefDimsOrOffsets){
+    auto loc = op->getLoc();
+    xilinx::air::DmaMemcpy4dOp newMemcpyOp = builder.create<xilinx::air::DmaMemcpy4dOp>(loc, xilinx::air::AsyncTokenType::get(op->getContext()), 
+            op.getAsyncDependencies(), op.getDstMemref(), op.getSrcMemref(), op.getDstMemrefDim(0), op.getDstMemrefDim(1), op.getDstMemrefDim(2), 
+            op.getDstMemrefDim(3), srcMemrefDimsOrOffsets[0], srcMemrefDimsOrOffsets[1], srcMemrefDimsOrOffsets[2], srcMemrefDimsOrOffsets[3], 
+            op.getLength(), op.getStride(), op.getElemPerStride()); 
+    return newMemcpyOp.getOperation();
   }
 
 };
