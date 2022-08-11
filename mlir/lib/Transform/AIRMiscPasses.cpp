@@ -463,21 +463,17 @@ private:
         auto constraints = is.getConstraints();
         auto eqFlags = is.getEqFlags();
 
-        // Check which dimension op operates on
-        bool hasDepInHerd = false;
-        int constScalarDimX = -1; // -1 set to be illegal dim
-        int constScalarDimY = -1;
+        // Check which dimension op operates on; initialize current_shape_expr
+        SmallVector<AffineExpr, 2> current_shape_expr = {nullptr, nullptr};
         for (auto v : loop_dep_history){
           if (auto hl_op = xilinx::air::getHerdLaunchTileIdOwner(v)){
-            hasDepInHerd = true;
             if (v == hl_op.getTileIds().x){
               unsigned dim = 0;
               for (unsigned i = 0; i < constraints.size(); i++){
                 auto c = constraints[i];
                 if (c.isFunctionOfSymbol(dim) && eqFlags[i]){
                   auto eval = evaluateSymbolEqualityInSet(c, ctx);
-                  // Both + and - constant eval are legal in AffineExpr
-                  constScalarDimX = (eval >= 0) ? (eval) : (-eval);
+                  current_shape_expr[0] = getAffineConstantExpr(eval, ctx);
                 }
               }
             }
@@ -487,7 +483,7 @@ private:
                 auto c = constraints[i];
                 if (c.isFunctionOfSymbol(dim) && eqFlags[i]){
                   auto eval = evaluateSymbolEqualityInSet(c, ctx);
-                  constScalarDimY = (eval >= 0) ? (eval) : (-eval);
+                  current_shape_expr[1] = getAffineConstantExpr(eval, ctx);
                 }
               }
             }
@@ -495,14 +491,6 @@ private:
         }
 
         // Evaluate broadcast pattern by propagating expr through scalar operations in op history, last-in-first-out
-        SmallVector<AffineExpr, 2> current_shape_expr = {nullptr, nullptr};
-        if (hasDepInHerd && constScalarDimX >= 0){
-          current_shape_expr[0] = getAffineConstantExpr(constScalarDimX, ctx);
-        }
-        if (hasDepInHerd && constScalarDimY >= 0){
-          current_shape_expr[1] = getAffineConstantExpr(constScalarDimY, ctx);
-        }
-
         for (std::vector<Operation *>::reverse_iterator i = op_history.rbegin(); i != op_history.rend(); ++i ) {
           if (auto air_region_op = dyn_cast<xilinx::air::RegionOp>(*i)){
             assert(air_region_op.body().front().getOperations().size() == 2 
@@ -536,28 +524,6 @@ private:
             else if (auto arith_op = dyn_cast<arith::MulIOp>(op)){
               propagateAFfineConstantExprThroughArithOp<arith::MulIOp>(arith_op, current_shape_expr, memcpyOp.getOperation(), ctx);
             }
-            // else if (auto arith_op = dyn_cast<arith::AddIOp>(op)){
-            //   arith::ConstantIndexOp add_operand = nullptr;
-            //   if (arith_op.getLhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())){
-            //     add_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp());
-            //   }
-            //   else if (arith_op.getRhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp())){
-            //     add_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp());
-            //   }
-            //   else assert(false && "arith::AddIOp has no arith::ConstantIndexOp operand");
-            //   if (current_shape_expr[0]){
-            //     applyArithOpToAffineConstantExpr(add_operand, current_shape_expr[0], ctx);
-            //     // Remove dependence from scalar op to memcpyOp if present
-            //     auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
-            //     eraseAsyncDependencyFromAsyncOp(async_memcpyOp, air_region_op.getAsyncToken());
-            //   }
-            //   else if (current_shape_expr[1]){
-            //     applyArithOpToAffineConstantExpr(add_operand, current_shape_expr[1], ctx);
-            //     // Remove dependence from scalar op to memcpyOp if present
-            //     auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
-            //     eraseAsyncDependencyFromAsyncOp(async_memcpyOp, air_region_op.getAsyncToken());
-            //   }
-            // }
           }
         } 
 
@@ -595,7 +561,9 @@ private:
     auto newC = c.replaceSymbols(zero_syms);
     auto expr = simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
     assert(expr);
-    return expr.getValue();
+    int result = expr.getValue();
+    // Both + and - constant eval are legal for AffineExpr
+    return (result >= 0) ? (result) : (-result);
   }
 
   // Evaluate the affine expression of affine map if the only symbolic identifier is replaced with zero
@@ -641,14 +609,6 @@ private:
   template <typename T>
   void propagateAFfineConstantExprThroughArithOp(T arith_op, SmallVector<AffineExpr, 2> &current_shape_expr, Operation * memcpyOp, MLIRContext * ctx){
     xilinx::air::RegionOp parent_region_op = arith_op->template getParentOfType<xilinx::air::RegionOp>();
-    // arith::ConstantIndexOp add_operand = nullptr;
-    // if (arith_op.getLhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())){
-    //   add_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp());
-    // }
-    // else if (arith_op.getRhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp())){
-    //   add_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp());
-    // }
-    // else assert(false && "arith::AddIOp has no arith::ConstantIndexOp operand");
     if (current_shape_expr[0]){
       applyArithOpToAffineConstantExpr(arith_op, current_shape_expr[0], ctx);
       // Remove dependence from scalar op to memcpyOp if present
