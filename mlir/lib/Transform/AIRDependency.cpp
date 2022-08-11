@@ -171,6 +171,10 @@ public:
           // No air region for subview ops
           if (mlir::dyn_cast<mlir::OffsetSizeAndStrideOpInterface>(op))
             isCandidateRegion = false;
+          // No air region for terminators
+          if (op->mightHaveTrait<OpTrait::IsTerminator>()){
+            isCandidateRegion = false;
+          }
           if (isCandidateRegion){
             if (op->getNumResults())
               createAsyncRegion(module_builder, op, "unknown", RegionOpID, op->getResults().front().getType());
