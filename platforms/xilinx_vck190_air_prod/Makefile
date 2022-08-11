@@ -2,10 +2,17 @@ PLATFORM ?= xilinx_vck190_air
 CWD=$(shell pwd)
 XSA_DIR ?= $(CWD)/vivado
 
-.phony: all
+#.phony: all xsa petalinux_build aie_platform 
+.PHONY: all xsa petalinux_build aie_platform pynq
 
 $(PLATOFORM): all
-all: $(PLATFORM)
+#all: $(PLATFORM)
+all: pynq
+
+pynq : xsa petalinux_build petalinux_bsp aie_platform bootbin 
+	-cp ./aie_platform/vck190_aie_base_graph_hw.xsa ../../pynq/vck190_air/xilinx_vck190_air.xsa
+	-cp ./petalinux/xilinx_vck190_air.bsp ../../pynq/vck190_air/vck190_air.bsp
+	@echo 'Pynq Platform build complete'
 
 $(PLATFORM): xsa petalinux_build aie_platform bootbin sd_card
 	@echo 'Platform build complete'
