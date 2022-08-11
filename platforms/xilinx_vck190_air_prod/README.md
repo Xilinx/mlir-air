@@ -23,7 +23,7 @@ This step involves cloning another gitenterprise repo but since it's connected t
 
 We will clone the custom PYNQ fork, download and copy the base bionic Ubuntu image and then run make. These build instructions are based off the ones described in Jeff's PYNQ fork [here](https://gitenterprise.xilinx.com/XRLabs/mlir-air/blob/main/docs/vck190_building_pynq.md). 
 
-Copy the refernce bionic Ubuntu base image from `/group/xrlabs2/pynq/public/v2.6.0_images/bionic.aarch64.2.6.0_2020_09_21.zip` and unzip it to `sdbuild/output` which you create.
+Copy the reference bionic Ubuntu base image (bionic.aarch64.2.6.0_2020_09_21.zip), or from `/group/xrlabs2/pynq/public/v2.6.0_images/bionic.aarch64.2.6.0_2020_09_21.zip` if you have access to local XSJ servers) and unzip it to `sdbuild/output` which you create.
 ```
 git clone https://gitenterprise.xilinx.com/jackl/PYNQ.git
 cd PYNQ/sdbuild
@@ -36,7 +36,7 @@ make PREBUILT=output/bionic.aarch64.*.img BOARDDIR=<path to mlir-air/pynq folder
 ```
 You may need to intervene in the beginning and in the middle to type in your password in order to run sudo fs commands.
 
-Now the final sd image file wil be saved to `mlir-air/sdbuild/output/bionic.img` which you can image onto an sd card and boot your vck190 production board with.
+Now the final sd image file wil be saved to `mlir-air/sdbuild/output/vck190_air-2.6.0.img` which you can image onto an sd card and boot your vck190 production board with.
 
 ---
 
