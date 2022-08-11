@@ -4,10 +4,10 @@
 
 // CHECK-LABEL: module @aie.herd_0
 // CHECK: buf8
-// CHECK: scratch_2_2
+// CHECK: scratch_0_0
 // ...
 // CHECK: buf0
-// CHECK: scratch_0_0
+// CHECK: scratch_2_2
 func.func @launch(%arg0: i32) {
   %cst2 = arith.constant 3 : index
   air.launch_herd tile (%x, %y) in (%sx=%cst2, %sy=%cst2) {
