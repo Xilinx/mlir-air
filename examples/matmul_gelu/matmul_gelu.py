@@ -54,4 +54,14 @@ with air.mlir.ir.Context():
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
     pm.run(air_module)
 
-print(air_module)
+    print(air_module) # prints output1.mlir
+
+    pipeline = ",".join([
+        "air-dependency",
+        "air-dependency-schedule-opt",
+        "air-specialize-dma-broadcast",
+    ])
+    pm = air.mlir.passmanager.PassManager.parse(pipeline)
+    pm.run(air_module)
+
+    print(air_module) # prints output2.mlir and out.dot
