@@ -1,0 +1,6 @@
+PETALINUX_VER=2021.2
+VALIDATE_HW_CHKSUM=1
+HARDWARE_PATH=/scratch2/jackl/ghe/jackl/mlir-air/platforms/xilinx_vck190_air_prod/vivado/xilinx_vck190_air.xsa
+HARDWARE_CHECKSUM=f307759dc78c9c8a7dc2bbf74f1db33c
+YOCTO_SDK=895fbcce2f0a15ac1ff1fbc579359da1
+RFSCONFIG_CHKSUM=82a7b9a20c3bcc708b1d7497391f3e15
