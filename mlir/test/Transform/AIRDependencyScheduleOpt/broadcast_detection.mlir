@@ -1,6 +1,6 @@
 // (c) Copyright 2022 Xilinx Inc.
 
-// RUN: air-opt %s -air-dependency -air-dependency-schedule-opt | FileCheck %s
+// RUN: air-opt %s -air-dependency -air-broadcast-detection | FileCheck %s
 
 // Detects broadcast pattern for DMAs
 // CHECK: [[$SET0:#set[0-9]+]] = affine_set<(d0, d1)[s0] : (d0 - s0 == 0, d1 >= 0, -d1 + 1 >= 0, s0 >= 0, -s0 + 1 >= 0)>
