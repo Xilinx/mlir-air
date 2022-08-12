@@ -138,12 +138,18 @@ public:
           createAsyncRegion(module_builder, op, "memref::copy", RegionOpID);
 
         // Create async region for arith.muli
-        else if (auto arith_op = dyn_cast<arith::MulIOp>(op))
-          createAsyncRegion(module_builder, op, "arith::muli", RegionOpID, arith_op.getResult().getType());
+        else if (auto arith_op = dyn_cast<arith::MulIOp>(op)){
+          if (arith_op.getResult().getType().isa<IndexType>()){
+            createAsyncRegion(module_builder, op, "arith::muli", RegionOpID, arith_op.getResult().getType());
+          }
+        }
 
         // Create async region for arith.addi
-        else if (auto arith_op = dyn_cast<arith::AddIOp>(op))
-          createAsyncRegion(module_builder, op, "arith::addi", RegionOpID, arith_op.getResult().getType());
+        else if (auto arith_op = dyn_cast<arith::AddIOp>(op)){
+          if (arith_op.getResult().getType().isa<IndexType>()){
+            createAsyncRegion(module_builder, op, "arith::addi", RegionOpID, arith_op.getResult().getType());
+          }
+        }
 
         // Create async region for affine.apply
         else if (auto apply_op = dyn_cast<mlir::AffineApplyOp>(op))
