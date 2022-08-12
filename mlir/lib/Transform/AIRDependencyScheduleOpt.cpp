@@ -46,8 +46,8 @@ using namespace xilinx::air;
 
 namespace {
 
-  struct HoistDmaInAccumPattern : public OpRewritePattern<scf::ForOp> {
-  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+struct HoistDmaInAccumPattern : public OpRewritePattern<scf::ForOp> {
+using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override { 
@@ -315,15 +315,9 @@ private:
   }
 };
 
-class AIRDependencyScheduleOpt : public AIRDependencyScheduleOptBase<AIRDependencyScheduleOpt> {
+struct BroadcastDetection {
 
 public:
-  AIRDependencyScheduleOpt() = default;
-  AIRDependencyScheduleOpt(const AIRDependencyScheduleOpt &pass) {}
-
-  void getDependentDialects(::mlir::DialectRegistry &registry) const override {  
-    registry.insert<scf::SCFDialect, air::airDialect>();
-  }
 
   // Trace dma ops' dependency to loop induction variables
   void getDmaOpLoopDependency(func::FuncOp f) {
@@ -413,13 +407,6 @@ public:
     }
   }
 
-  void runOptPatterns(func::FuncOp funcOp) {
-    MLIRContext *ctx = funcOp.getContext();
-    RewritePatternSet patterns(&getContext());
-    patterns.insert<HoistDmaInAccumPattern>(ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
-  }
-
   void runBroadcastPattern(func::FuncOp funcOp){
     // Trace dma ops' dependency to loop induction variables
     // This info will be used for broadcast detection
@@ -427,9 +414,79 @@ public:
     broadcastDetection();
   }
 
+private:
+
+  // DMA dependency to loop induction variables
+  std::vector<air::DmaMemcpyInterface> dma_op_history;
+  SmallVector<SmallVector<Value, 1>, 1> dma_op_loop_dep_history;
+
+};
+
+class AIRHoistDmaInAccumPattern : public xilinx::air::AIRHoistDmaInAccumPatternBase<AIRHoistDmaInAccumPattern> {
+
+public:
+  AIRHoistDmaInAccumPattern() = default;
+  AIRHoistDmaInAccumPattern(const AIRHoistDmaInAccumPattern &pass){};
+
+  void runOptPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<HoistDmaInAccumPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      runOptPatterns(f);
+  }
+
+private:
+};
+
+class AIRBroadcastDetection : public xilinx::air::AIRBroadcastDetectionBase<AIRBroadcastDetection> {
+
+public:
+  AIRBroadcastDetection() = default;
+  AIRBroadcastDetection(const AIRBroadcastDetection &pass){};
+
+  void runOnOperation() override {
+    BroadcastDetection b;
+    auto module = getOperation();
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      b.runBroadcastPattern(f);
+  }
+
+private:
+};
+
+class AIRDependencyScheduleOpt : public AIRDependencyScheduleOptBase<AIRDependencyScheduleOpt> {
+
+public:
+  AIRDependencyScheduleOpt() = default;
+  AIRDependencyScheduleOpt(const AIRDependencyScheduleOpt &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {  
+    registry.insert<scf::SCFDialect, air::airDialect>();
+  }
+
+  void runOptPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<HoistDmaInAccumPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
   void runOnFunction(func::FuncOp f) {
+    // HoistDmaInAccumPattern
     runOptPatterns(f);
-    runBroadcastPattern(f);
+    // BroadcastDetection
+    BroadcastDetection b;
+    b.runBroadcastPattern(f);
   }
 
   void runOnOperation() override {
@@ -442,16 +499,20 @@ public:
 
 private:
 
-  // DMA dependency to loop induction variables
-  std::vector<air::DmaMemcpyInterface> dma_op_history;
-  SmallVector<SmallVector<Value, 1>, 1> dma_op_loop_dep_history;
-
 };
 
 }// namespace
 
 namespace xilinx {
 namespace air {
+
+std::unique_ptr<Pass> createAIRHoistDmaInAccumPattern() {
+  return std::make_unique<AIRHoistDmaInAccumPattern>();
+}
+
+std::unique_ptr<Pass> createAIRBroadcastDetection() {
+  return std::make_unique<AIRBroadcastDetection>();
+}
 
 std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass() {
   return std::make_unique<AIRDependencyScheduleOpt>();
