@@ -466,7 +466,7 @@ private:
         // Check which dimension op operates on; initialize current_shape_expr
         SmallVector<AffineExpr, 2> current_shape_expr = {nullptr, nullptr};
         for (auto v : loop_dep_history){
-          if (auto hl_op = xilinx::air::getHerdLaunchTileIdOwner(v)){
+          if (auto hl_op = xilinx::air::getHerdLaunchArgOwner(v)){
             if (v == hl_op.getTileIds().x){
               unsigned dim = 0;
               for (unsigned i = 0; i < constraints.size(); i++){

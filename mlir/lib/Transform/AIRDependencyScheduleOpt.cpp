@@ -344,8 +344,8 @@ public:
       // Create an affine set to represent the broadcast pattern
       auto ctx = dma_op->getContext();
       for (auto v : loop_dep_history){
-        if (getHerdLaunchTileIdOwner(v)){
-          hl_op = getHerdLaunchTileIdOwner(v);
+        if (getHerdLaunchArgOwner(v)){
+          hl_op = getHerdLaunchArgOwner(v);
           if (v == hl_op.getTileIds().x){
             hasDepInHerdRows = true;
           }
@@ -426,44 +426,73 @@ public:
 
   void runLinalgGenericPattern(func::FuncOp funcOp){
     // Detect linalg.GenericOps with redundant input ports
-    std::vector<unsigned> non_input_generic_operands;
+    std::vector<OpOperand *> non_input_generic_operands;
     funcOp.walk([&](linalg::GenericOp generic_op) {
       getNonInputOperands(generic_op, non_input_generic_operands);
       // DMAs copying into these linalg.GenericOp input ports are redundant
-      air::RegionOp generic_region_op = generic_op->getParentOfType<air::RegionOp>();
-      auto dep_list = generic_region_op.getAsyncDependencies();
-      for (int i = dep_list.size() - 1; i >= 0; i--){
-        auto upstream_op = dep_list[i].getDefiningOp();
-        bool isRedundant = false;
-        if (upstream_op && dyn_cast<air::DmaMemcpyInterface>(upstream_op)){
-          auto upstream_dma = dyn_cast<air::DmaMemcpyInterface>(upstream_op);
-          for (unsigned j : non_input_generic_operands){
-            auto v = generic_op.getOperand(j);
-            if (v == upstream_dma.getDstMemref()){
-              generic_region_op.eraseAsyncDependency(i);
-              isRedundant = true;
-            }
-          }
-        }
-        if (isRedundant){
-          upstream_op->erase();
-        }
+      for (auto opoperand : non_input_generic_operands){
+        findAndPruneRedundantDma(opoperand);
       }
     });
   }
 
-  void getNonInputOperands(linalg::GenericOp generic_op, std::vector<unsigned> &operands_history){
-    for (auto &g_operand : generic_op->getOpOperands()){
+  void getNonInputOperands(linalg::GenericOp generic_op, std::vector<OpOperand *> &operands_history){
+    for (auto &g_opoperand : generic_op->getOpOperands()){
       bool isUsed = false;
       for (auto &op : generic_op.getBlock()->getOperations()){
         for (auto op_operand : op.getOperands()){
-          if (op_operand == generic_op.getTiedBlockArgument(&g_operand)){
+          if (op_operand == generic_op.getTiedBlockArgument(&g_opoperand)){
             isUsed = true;
           }
         }
       }
       if (!isUsed){
-        operands_history.push_back(g_operand.getOperandNumber());
+        operands_history.push_back(&g_opoperand);
+      }
+    }
+  }
+
+  void findAndPruneRedundantDma(mlir::OpOperand * opoperand){
+    // Elevate to operand of herd launch
+    unsigned operand_id = opoperand->getOperandNumber();
+    auto op = opoperand->getOwner();
+    auto v = op->getOperand(operand_id);
+    
+    air::AsyncOpInterface async_op;
+    if (air::RegionOp region_op = op->getParentOfType<air::RegionOp>()){
+      async_op = dyn_cast<air::AsyncOpInterface>(region_op.getOperation());
+    }
+    else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(op)){
+      async_op = dyn_cast<air::AsyncOpInterface>(hl_op.getOperation());
+    }
+    else {
+      return;
+    }
+    auto dep_list = async_op.getAsyncDependencies();
+    for (int i = dep_list.size() - 1; i >= 0; i--){
+      auto upstream_op = dep_list[i].getDefiningOp();
+      if (upstream_op && dyn_cast<air::DmaMemcpyInterface>(upstream_op)){
+        auto upstream_dma = dyn_cast<air::DmaMemcpyInterface>(upstream_op);
+        if (v == upstream_dma.getDstMemref()){
+          async_op.eraseAsyncDependency(i);
+          Value srcMemref = upstream_dma.getSrcMemref();
+          // Recursively trace upstream dma
+          for (unsigned j = 0; j < upstream_op->getNumOperands(); j++){
+            if (srcMemref == upstream_op->getOperand(j)){
+              findAndPruneRedundantDma(&upstream_op->getOpOperand(j));
+            }
+          }
+          // Elevate from argument to operand of herd launch
+          if (auto hl_op = getHerdLaunchArgOwner(srcMemref)){
+            for (unsigned i = 0; i < hl_op.getNumKernelOperands(); i++){
+              if (hl_op.getKernelArgument(i) == srcMemref){
+                auto &hl_opoperand = hl_op->getOpOperand(i + hl_op.getAsyncDependencies().size() + 2);
+                findAndPruneRedundantDma(&hl_opoperand);
+              }
+            }
+          }
+          upstream_dma->erase();
+        }
       }
     }
   }
@@ -555,6 +584,9 @@ public:
     // BroadcastDetection
     BroadcastDetection proc;
     proc.runBroadcastPattern(f);
+    // Remove redundant DMA copying into linalg.generic
+    PruneLinalgGenericInputDma proc_0;
+    proc_0.runLinalgGenericPattern(f);
   }
 
   void runOnOperation() override {

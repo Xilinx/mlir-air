@@ -194,7 +194,7 @@ scf::ForOp getForRegionIterArgsOwner(Value val) {
 }
 
 // Get the parent air.launch_herd op of a tile id
-air::HerdLaunchOp getHerdLaunchTileIdOwner(Value val) {
+air::HerdLaunchOp getHerdLaunchArgOwner(Value val) {
   auto ivArg = val.dyn_cast<BlockArgument>();
   if (!ivArg)
     return air::HerdLaunchOp();
