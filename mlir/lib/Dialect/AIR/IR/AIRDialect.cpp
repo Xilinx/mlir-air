@@ -196,7 +196,6 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
 
 void LaunchOp::print(OpAsmPrinter &p) {
 
-  auto num_async_deps = asyncDependencies().size();
   p << ' ';
   printAsyncDependencies(p, *this, (asyncToken() ? asyncToken().getType() : Type()), asyncDependencies());
   p << " (";
@@ -262,7 +261,7 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
 
   tileSize.resize(tileArgs.size());
   tileSizeRef.resize(tileArgs.size());
-  for (int i = 0; i < tileArgs.size(); ++i) {
+  for (unsigned i = 0; i < tileArgs.size(); ++i) {
     if (parser.parseArgument(tileSizeRef[i]) || parser.parseEqual() ||
         parser.parseOperand(tileSize[i]))
       return failure();
@@ -342,23 +341,23 @@ void LaunchOp::setNumLoops(unsigned numLoops){
                     IntegerAttr::get(IndexType::get(context), numLoops));
 }
 
-unsigned LaunchOp::getNumSizeOperands() {
-  return (*this)->getAttr(LaunchOp::getNumSizeOperandsAttrStrName()).cast<IntegerAttr>().getInt();
-}
-
 ArrayRef<BlockArgument> LaunchOp::getIds() {
   auto s = body().front().getArguments();
-  return s.take_front(getNumSizeOperands());
+  auto n = getNumSizeOperands();
+  return s.take_front(n);
 }
 
 ArrayRef<BlockArgument> LaunchOp::getSize() {
   auto s = body().front().getArguments();
-  return s.slice(getNumSizeOperands(), getNumSizeOperands());
+  auto n = getNumSizeOperands();
+  return s.slice(n, n);
 }
 
 OperandRange LaunchOp::getSizeOperands() {
   auto opers = getOperands().drop_front(asyncDependencies().size());
-  return opers.take_front(getNumSizeOperands());
+  auto start = asyncDependencies().size();
+  auto n = getNumSizeOperands();
+  return getOperands().slice(start, n);
 }
 
 unsigned LaunchOp::getNumKernelOperands() {
@@ -375,6 +374,13 @@ ArrayRef<BlockArgument> LaunchOp::getKernelArguments() {
 
 BlockArgument LaunchOp::getKernelArgument(unsigned i) {
   return getKernelArguments()[i];
+}
+
+unsigned LaunchOp::getNumSizeOperands() {
+  auto size_attr_name = OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
+  auto size_attr = (*this)->getAttrOfType<DenseIntElementsAttr>(size_attr_name);
+  SmallVector<APInt, 4> segment_sizes{size_attr.begin(), size_attr.end()};
+  return segment_sizes[1].getZExtValue();
 }
 
 //

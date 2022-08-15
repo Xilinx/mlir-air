@@ -475,7 +475,7 @@ void air_mem_cdma_nd_memcpy_queue_impl(tensor_t<T0, R0>* t0, tensor_t<T1, R1>* t
   std::vector<uint64_t> offsets{offset_0, offset_1, offset_2, offset_3};
   for (int i=0; i<R0; i++) {
     offset += offsets[i] * stride * sizeof(T0);
-    stride *= t->shape[i]; 
+    stride *= t->shape[R0 - i - 1];
   }
 
   uint64_t length = 0;
@@ -574,7 +574,7 @@ void air_mem_shim_nd_memcpy_queue_impl(signal_t *s, uint32_t id, uint64_t x,
     std::vector<uint64_t> offsets{offset_0, offset_1, offset_2, offset_3};
     for (int i=0; i<R; i++) {
       offset += offsets[i] * stride * sizeof(T);
-      stride *= t->shape[i];
+      stride *= t->shape[R - i - 1];
     }
 
     uint64_t wr_idx = queue_add_write_index(_air_host_active_herd.q, 1);
@@ -604,7 +604,7 @@ void air_mem_shim_nd_memcpy_queue_impl(signal_t *s, uint32_t id, uint64_t x,
     std::vector<uint64_t> offsets{offset_0, offset_1, offset_2, offset_3};
     for (int i=0; i<R; i++) {
       offset += offsets[i] * stride * sizeof(T);
-      stride *= t->shape[i];
+      stride *= t->shape[R - i - 1];
     }
 
     uint64_t length = 0;
@@ -693,7 +693,7 @@ void air_mem_shim_nd_memcpy_impl(uint32_t id, uint64_t x, uint64_t y, tensor_t<T
   std::vector<uint64_t> offsets{offset_0, offset_1, offset_2, offset_3};
   for (int i=0; i<R; i++) {
     offset += offsets[i] * stride;
-    stride *= t->shape[i];
+    stride *= t->shape[R - i - 1];
   }
   // printf("offset %d stride %d\n",offset, stride);
   size_t p = (size_t)t->data + offset;

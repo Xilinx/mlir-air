@@ -38,18 +38,19 @@ def run_test(dtype, shape):
 
     print(f"input:\n{a}\n{b}\noutput:\n{c}")
 
-    errs = (a+b == c)
-    print(numpy.unique(errs.numpy(), return_counts=True))
     if torch.equal(a+b,c):
         print("PASS!")
         return 1
     else:
+        errs = (a+b == c)
+        print(numpy.unique(errs.numpy(), return_counts=True))
         print("failed.")
     return 0
 
 sizes = [
+    [16,32,32,16],
     [4096],
-    [64,64,64],
+    [8,32,64],
     [128,128]
 ]
 
