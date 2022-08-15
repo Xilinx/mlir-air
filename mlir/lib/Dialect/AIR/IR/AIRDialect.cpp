@@ -244,9 +244,6 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   if (asyncTokenType)
     result.addTypes(asyncTokenType);
 
-  // if (parser.parseKeyword("tile"))
-  //   return failure();
-
   if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
       parser.parseKeyword("in") || parser.parseLParen())
     return failure();
@@ -465,16 +462,11 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
   if (asyncTokenType)
     result.addTypes(asyncTokenType);
 
-  // if (parser.parseKeyword("tile"))
-  //   return failure();
-
   Type indexType = parser.getBuilder().getIndexType();
 
   if (succeeded(parser.parseOptionalKeyword("unroll"))) {
     if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
         parser.parseKeyword("in") || parser.parseLParen())
-    // if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
-    //     parser.parseLParen())
       return failure();
 
     tileSize.resize(tileArgs.size());
