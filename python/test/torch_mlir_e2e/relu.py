@@ -1,16 +1,13 @@
 # (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
 
 # RUN: %PYTHON %s | FileCheck %s
-# CHECK: PASS
+# CHECK: PASSED
 
 import torch
 import torch_mlir
 import numpy
 
 from air.backend import linalg_on_tensors as backend
-
-shape = [10240]
-dtype = torch.float
 
 class model(torch.nn.Module):
     def __init__(self):
@@ -20,26 +17,52 @@ class model(torch.nn.Module):
         x = torch.relu(a)
         return x
 
-program = model()
-module = torch_mlir.compile(
+def run_test(dtype, shape):
+    program = model()
+    module = torch_mlir.compile(
         program,
         (torch.ones(shape, dtype=dtype)),
         output_type=torch_mlir.OutputType.LINALG_ON_TENSORS
-)
+    )
 
-print(module)
+    print(module)
 
-airbackend = backend.LinalgOnTensorsAirBackend()
-compiled = airbackend.compile(module)
-jit_module = airbackend.load(compiled)
+    airbackend = backend.LinalgOnTensorsAirBackend()
+    compiled = airbackend.compile(module)
+    jit_module = airbackend.load(compiled)
 
-a = torch.randint(-100, 100, shape, dtype=dtype)
-b = torch.tensor(
-    jit_module.forward(a.numpy()))
+    a = torch.randint(size = shape, low=1, high=100, dtype=dtype)
+    c = torch.tensor(
+        jit_module.forward(a.numpy()))
 
-print(f"input:\n{a}\noutput:\n{b}")
+    print(f"input:\n{a}\noutput:\n{c}")
 
-if torch.equal(torch.relu(a),b):
-    print("PASS!")
+    if torch.equal(torch.relu(a),c):
+        print("PASS!")
+        return 1
+    else:
+        errs = (torch.relu(a) == c)
+        print(numpy.unique(errs.numpy(), return_counts=True))
+        print("failed.")
+    return 0
+
+sizes = [
+    [10*1024],
+    [32,32,32,32],
+    [64,64]
+]
+
+dtypes = [
+    torch.float
+]
+
+passed = 0
+for t in dtypes:
+    for s in sizes:
+        passed = passed + run_test(t,s)
+
+num_tests = len(sizes)*len(dtypes)
+if passed != num_tests:
+    print (f"failed. {passed}/{num_tests}")
 else:
-    print("failed.")
+    print (f"PASSED! {passed}/{num_tests}")
