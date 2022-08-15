@@ -749,10 +749,21 @@ public:
       bounds[i] = ub_int;
     }
 
+    SmallVector<Value, 4> args;
+    SmallVector<Value, 4> constants;
+    llvm::SetVector<Value> region_args;
+    getUsedValuesDefinedAbove(op.getRegion(), region_args);
+    for (Value v : region_args) {
+      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
+        constants.push_back(v);
+      else
+        args.push_back(v);
+    }
+
     SmallVector<Value, 4> sizes;
     for (auto b : bounds)
       sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, b));
-    auto launch = rewriter.create<air::LaunchOp>(op.getLoc(), sizes);
+    auto launch = rewriter.create<air::LaunchOp>(op.getLoc(), sizes, args);
     auto &bb = launch.body().front();
     auto ivs = op.getInductionVars();
 
@@ -763,9 +774,19 @@ public:
     auto &body = op.getBody()->getOperations();
     bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
     rewriter.setInsertionPointToStart(&launch.getRegion().front());
+    for (auto c : constants) {
+      replaceAllUsesInRegionWith(
+          c, rewriter.clone(*c.getDefiningOp())->getResult(0),
+          launch.getRegion());
+    }
 
     auto builder = OpBuilder::atBlockEnd(&bb);
     builder.create<air::LaunchTerminatorOp>(loc);
+
+    int i = 0;
+    auto kernel_args = launch.getKernelArguments();
+    for (Value v : args)
+      replaceAllUsesInRegionWith(v, kernel_args[i++], launch.getRegion());
 
     if (op != parOp)
       op.erase();

@@ -788,7 +788,18 @@ private:
     builder.setInsertionPoint(op);
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
-    air::LaunchOp new_launch = builder.create<air::LaunchOp>(loc, deps, op.getSizeOperands(), true);
+    SmallVector<Value, 4> args;
+    SmallVector<Value, 4> constants;
+    for (unsigned i = 0; i < op.getNumKernelOperands(); i++){
+      auto v = op.getKernelOperand(i);
+      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp())){
+        constants.push_back(v);
+        args.push_back(v);
+      }
+      else
+        args.push_back(v);
+    }
+    air::LaunchOp new_launch = builder.create<air::LaunchOp>(loc, deps, op.getSizeOperands(), args, true);
     new_launch->setAttr("id",
             mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
             ++LaunchOpID));
@@ -809,8 +820,19 @@ private:
     bb.getOperations().splice(bb.begin(), body,
                               body.begin(), --body.end());
     builder.setInsertionPointToStart(&new_launch.getRegion().front());
+    for (auto c : constants) {
+      replaceAllUsesInRegionWith(c,
+                                  builder.clone(*c.getDefiningOp())->getResult(0),
+                                  new_launch.getRegion());
+    }
     builder.setInsertionPointToEnd(&bb);
     builder.create<air::LaunchTerminatorOp>(loc);
+
+    int i = 0;
+    auto old_kernel_args = op.getKernelArguments();
+    auto new_kernel_args = new_launch.getKernelArguments();
+    for (Value v : old_kernel_args)
+      replaceAllUsesInRegionWith(v, new_kernel_args[i++], new_launch.getRegion());
 
     // Create a vertex out of the current herd_launch op
     auto v = add_vertex(asyncRegionGraph);
