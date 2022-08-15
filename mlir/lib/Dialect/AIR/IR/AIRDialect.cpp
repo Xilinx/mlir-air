@@ -45,6 +45,41 @@ void airDialect::printType(Type type, DialectAsmPrinter &os) const {
       .Default([](Type) { llvm_unreachable("unexpected 'air' type"); });
 }
 
+static LogicalResult removeUnusedArguments(HerdLaunchOp op,
+                                           PatternRewriter &rewriter) {
+  SmallVector<Value, 32> newOperands;
+  SmallVector<int, 32> newOperandsIdx;
+  for (int i = 0, e = op.getNumKernelOperands(); i < e; i++) {
+    auto arg = op.getKernelArgument(i);
+    if (!arg.getUsers().empty()) {
+      newOperands.push_back(op.getKernelOperand(i));
+      newOperandsIdx.push_back(i);
+    }
+  }
+  if (newOperands.size() == op.getNumKernelOperands())
+    return failure();
+
+  BlockAndValueMapping remap;
+  auto newOp = rewriter.create<HerdLaunchOp>(
+      op.getLoc(), op.getAsyncDependencies(), op.getHerdSizeOperands(),
+      newOperands, op->getNumResults() > 0);
+  rewriter.setInsertionPointToStart(&newOp.body().front());
+  remap.map(op.getHerdSize().x, newOp.getHerdSize().x);
+  remap.map(op.getHerdSize().y, newOp.getHerdSize().y);
+  remap.map(op.getTileIds().x, newOp.getTileIds().x);
+  remap.map(op.getTileIds().y, newOp.getTileIds().y);
+
+  int newIdx = 0;
+  for (int i : newOperandsIdx)
+    remap.map(op.getKernelArgument(i), newOp.getKernelArgument(newIdx++));
+
+  for (Operation &o : op.getRegion().front().getOperations())
+    rewriter.clone(o, remap);
+
+  rewriter.replaceOp(op, newOp->getResults());
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // AsyncOpInterface
 //===----------------------------------------------------------------------===//
@@ -118,32 +153,45 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
 
 void LaunchOp::build(OpBuilder &builder, OperationState &result,
                      ValueRange asyncDependencies,
-                     ValueRange sizes, bool isAsync) {
+                     ValueRange sizes, ValueRange launchOperands, 
+                     bool isAsync) {
+
+  // Add an attribute for the number of dimensions.
+  result.addAttribute(LaunchOp::getNumSizeOperandsAttrStrName(),
+                      builder.getIntegerAttr(builder.getIndexType(), sizes.size()));
 
   result.addOperands(asyncDependencies);
   if (isAsync)
     result.addTypes(air::AsyncTokenType::get(builder.getContext()));
   result.addOperands(sizes);
+  result.addOperands(launchOperands);
 
-  SmallVector<int32_t, 8> segmentSizes(2, 1);
+  SmallVector<int32_t, 8> segmentSizes(3, 1);
   segmentSizes.front() = asyncDependencies.size();
-  segmentSizes.back() = sizes.size();
+  segmentSizes[1] = sizes.size();
+  segmentSizes.back() = static_cast<int32_t>(launchOperands.size());
   result.addAttribute(getOperandSegmentSizeAttr(),
                       builder.getI32VectorAttr(segmentSizes));
 
   Region *r = result.addRegion();
   Block *body = new Block();
-  for (Value v : sizes) {
-    body->addArgument(v.getType(), builder.getUnknownLoc());
+  SmallVector<Type, 4> argtypes(4, builder.getIndexType());
+  SmallVector<Location, 4> arglocs(4, builder.getUnknownLoc());
+  body->addArguments(argtypes, arglocs);
+  for (Value v : launchOperands) {
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
   r->push_back(body);
 }
 
 void LaunchOp::build(OpBuilder &builder, OperationState &result,
-                         ValueRange sizes) {
+                         ValueRange sizes, ValueRange launchOperands) {
 
-  build(builder, result, {}, sizes, false);
+  // Add an attribute for the number of dimensions.
+  result.addAttribute(LaunchOp::getNumSizeOperandsAttrStrName(),
+                      builder.getIntegerAttr(builder.getIndexType(), sizes.size()));
+
+  build(builder, result, {}, sizes, launchOperands, false);
 }
 
 void LaunchOp::print(OpAsmPrinter &p) {
@@ -154,14 +202,29 @@ void LaunchOp::print(OpAsmPrinter &p) {
   p << " (";
   p.printOperands(getIds());
   p << ") in (";
-  auto args = getSize();
-  auto opers = getSizeOperands();
+  auto sizeArgs = getSize();
+  auto sizeOpers = getSizeOperands();
   for (int i=0,e=getNumSizeOperands(); i<e; i++) {
     if (i) p << ", ";
-    p << args[i] << "=";
-    p << opers[i];
+    p << sizeArgs[i] << "=";
+    p << sizeOpers[i];
   }
   p << ")";
+
+  if (getNumKernelOperands()) {
+    auto args = getKernelArguments();
+    p << " args(";
+    for (int i=0,e=getNumKernelOperands(); i<e; i++) {
+      if (i) p << ", ";
+      p << args[i] << "=";
+      p << getKernelOperand(i);
+    }
+    p << ") : ";
+    for (int i=0,e=getNumKernelOperands(); i<e; i++) {
+      if (i) p << ", ";
+      p << getKernelOperand(i).getType();
+    }
+  }
 
   SmallVector<NamedAttribute, 8> filteredAttrs(
         llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
@@ -221,6 +284,34 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parser.resolveOperands(tileSize, indexType, result.operands))
     return failure();
 
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> kernelOperands;
+  SmallVector<OpAsmParser::Argument, 4> kernelArguments;
+  SmallVector<Type, 4> types;
+  if (succeeded(parser.parseOptionalKeyword("args"))) {
+    if (parser.parseLParen())
+      return failure();
+    do {
+      OpAsmParser::Argument argument;
+      OpAsmParser::UnresolvedOperand operand;
+      if (parser.parseArgument(argument) || parser.parseEqual() ||
+        parser.parseOperand(operand))
+      return failure();
+      kernelArguments.push_back(argument);
+      kernelOperands.push_back(operand);
+    } while (succeeded(parser.parseOptionalComma()));
+    if (parser.parseRParen())
+      return failure();
+    if (parser.parseColonTypeList(types))
+      return failure();
+  }
+
+  for (int i=0,e=kernelOperands.size(); i<e; i++) {
+    kernelArguments[i].type = types[i];
+    tileArgs.push_back(kernelArguments[i]);
+    if (parser.resolveOperand(kernelOperands[i], types[i], result.operands))
+      return failure();
+  }
+
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();
 
@@ -228,31 +319,62 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parser.parseRegion(*body, tileArgs))
     return failure();
 
-  SmallVector<int32_t, 8> segmentSizes(2, 1);
+  SmallVector<int32_t, 8> segmentSizes(3, 1);
   segmentSizes.front() = asyncDependencies.size();
-  segmentSizes.back() = tileSizeRef.size();
+  segmentSizes[1] = tileSize.size();
+  segmentSizes.back() = kernelOperands.size();
   result.addAttribute(OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr(),
                       parser.getBuilder().getI32VectorAttr(segmentSizes));
+  result.addAttribute(LaunchOp::getNumSizeOperandsAttrStrName(),
+                      parser.getBuilder().getIntegerAttr(parser.getBuilder().getIndexType(), tileSize.size()));
   return success();
+}
+
+void LaunchOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                               MLIRContext *context) {
+  patterns.add(removeUnusedArguments);
+}
+
+void LaunchOp::setNumLoops(unsigned numLoops){
+  assert(numLoops > 0 && "numLoops has to be a positive integer constant");
+  auto *context = (*this)->getContext();
+  (*this)->setAttr(StringAttr::get(context, LaunchOp::getNumSizeOperandsAttrStrName()),
+                    IntegerAttr::get(IndexType::get(context), numLoops));
+}
+
+unsigned LaunchOp::getNumSizeOperands() {
+  return (*this)->getAttr(LaunchOp::getNumSizeOperandsAttrStrName()).cast<IntegerAttr>().getInt();
 }
 
 ArrayRef<BlockArgument> LaunchOp::getIds() {
   auto s = body().front().getArguments();
-  return s.drop_back(s.size()/2);
+  return s.take_front(getNumSizeOperands());
 }
 
 ArrayRef<BlockArgument> LaunchOp::getSize() {
   auto s = body().front().getArguments();
-  return s.drop_front(s.size()/2);
+  return s.slice(getNumSizeOperands(), getNumSizeOperands());
 }
 
 OperandRange LaunchOp::getSizeOperands() {
   auto opers = getOperands().drop_front(asyncDependencies().size());
-  return opers;
+  return opers.take_front(getNumSizeOperands());
 }
 
-unsigned LaunchOp::getNumSizeOperands() {
-  return getNumOperands() - asyncDependencies().size();
+unsigned LaunchOp::getNumKernelOperands() {
+  return getNumOperands() - asyncDependencies().size() - getNumSizeOperands();
+}
+
+Value LaunchOp::getKernelOperand(unsigned i) {
+  return getOperand(asyncDependencies().size() + getNumSizeOperands() + i);
+}
+
+ArrayRef<BlockArgument> LaunchOp::getKernelArguments() {
+  return body().front().getArguments().drop_front(getNumSizeOperands() * 2);
+}
+
+BlockArgument LaunchOp::getKernelArgument(unsigned i) {
+  return getKernelArguments()[i];
 }
 
 //
@@ -419,41 +541,6 @@ ParseResult HerdLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   segmentSizes.back() = kernelOperands.size();
   result.addAttribute(OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr(),
                       parser.getBuilder().getI32VectorAttr(segmentSizes));
-  return success();
-}
-
-static LogicalResult removeUnusedArguments(HerdLaunchOp op,
-                                           PatternRewriter &rewriter) {
-  SmallVector<Value, 32> newOperands;
-  SmallVector<int, 32> newOperandsIdx;
-  for (int i = 0, e = op.getNumKernelOperands(); i < e; i++) {
-    auto arg = op.getKernelArgument(i);
-    if (!arg.getUsers().empty()) {
-      newOperands.push_back(op.getKernelOperand(i));
-      newOperandsIdx.push_back(i);
-    }
-  }
-  if (newOperands.size() == op.getNumKernelOperands())
-    return failure();
-
-  BlockAndValueMapping remap;
-  auto newOp = rewriter.create<HerdLaunchOp>(
-      op.getLoc(), op.getAsyncDependencies(), op.getHerdSizeOperands(),
-      newOperands, op->getNumResults() > 0);
-  rewriter.setInsertionPointToStart(&newOp.body().front());
-  remap.map(op.getHerdSize().x, newOp.getHerdSize().x);
-  remap.map(op.getHerdSize().y, newOp.getHerdSize().y);
-  remap.map(op.getTileIds().x, newOp.getTileIds().x);
-  remap.map(op.getTileIds().y, newOp.getTileIds().y);
-
-  int newIdx = 0;
-  for (int i : newOperandsIdx)
-    remap.map(op.getKernelArgument(i), newOp.getKernelArgument(newIdx++));
-
-  for (Operation &o : op.getRegion().front().getOperations())
-    rewriter.clone(o, remap);
-
-  rewriter.replaceOp(op, newOp->getResults());
   return success();
 }
 
