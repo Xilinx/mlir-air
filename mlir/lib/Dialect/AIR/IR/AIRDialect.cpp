@@ -367,6 +367,231 @@ unsigned LaunchOp::getNumDims() {
 }
 
 //
+// PartitionOp
+//
+
+void PartitionOp::build(OpBuilder &builder, OperationState &result,
+                     ValueRange asyncDependencies,
+                     ValueRange sizes, ValueRange partitionOperands, 
+                     bool isAsync) {
+
+  result.addOperands(asyncDependencies);
+  if (isAsync)
+    result.addTypes(air::AsyncTokenType::get(builder.getContext()));
+  result.addOperands(sizes);
+  result.addOperands(partitionOperands);
+
+  SmallVector<int32_t, 8> segmentSizes(3, 1);
+  segmentSizes.front() = asyncDependencies.size();
+  segmentSizes[1] = sizes.size();
+  segmentSizes.back() = static_cast<int32_t>(partitionOperands.size());
+  result.addAttribute(getOperandSegmentSizeAttr(),
+                      builder.getI32VectorAttr(segmentSizes));
+
+  Region *r = result.addRegion();
+  Block *body = new Block();
+  SmallVector<Type, 4> argtypes(4, builder.getIndexType());
+  SmallVector<Location, 4> arglocs(4, builder.getUnknownLoc());
+  body->addArguments(argtypes, arglocs);
+  for (Value v : partitionOperands) {
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+  }
+  r->push_back(body);
+}
+
+void PartitionOp::build(OpBuilder &builder, OperationState &result,
+                         ValueRange sizes, ValueRange partitionOperands) {
+
+  build(builder, result, {}, sizes, partitionOperands, false);
+}
+
+void PartitionOp::print(OpAsmPrinter &p) {
+  
+  if (getNumDims()){
+    p << ' ';
+    printAsyncDependencies(p, *this, (asyncToken() ? asyncToken().getType() : Type()), asyncDependencies());
+    p << " unroll(";
+    p.printOperands(getIds());
+    p << ") in (";
+    auto sizeArgs = getSize();
+    auto sizeOpers = getSizeOperands();
+    for (int i=0,e=getNumDims(); i<e; i++) {
+      if (i) p << ", ";
+      p << sizeArgs[i] << "=";
+      p << sizeOpers[i];
+    }
+    p << ")";
+  }
+
+  if (getNumKernelOperands()) {
+    auto args = getKernelArguments();
+    p << " args(";
+    for (int i=0,e=getNumKernelOperands(); i<e; i++) {
+      if (i) p << ", ";
+      p << args[i] << "=";
+      p << getKernelOperand(i);
+    }
+    p << ") : ";
+    for (int i=0,e=getNumKernelOperands(); i<e; i++) {
+      if (i) p << ", ";
+      p << getKernelOperand(i).getType();
+    }
+  }
+
+  SmallVector<NamedAttribute, 8> filteredAttrs(
+        llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
+          return (OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr()
+            != attr.getName());
+        }));
+  p << " ";
+  if (filteredAttrs.size()) {
+    p << "attributes";
+    p.printOptionalAttrDict(filteredAttrs);
+    p << " ";
+  }
+  p.printRegion(body(), /*printEntryBlockArgs=*/false);
+}
+
+ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
+
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> asyncDependencies;
+  SmallVector<OpAsmParser::Argument, 4> tileArgs;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> tileSize;
+  SmallVector<OpAsmParser::Argument, 4> tileSizeRef;
+
+  Type asyncTokenType = nullptr;
+  if (parseAsyncDependencies(parser, asyncTokenType, asyncDependencies))
+    return failure();
+  if (asyncTokenType)
+    result.addTypes(asyncTokenType);
+
+  // if (parser.parseKeyword("tile"))
+  //   return failure();
+
+  Type indexType = parser.getBuilder().getIndexType();
+
+  if (succeeded(parser.parseOptionalKeyword("unroll"))) {
+    if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
+        parser.parseKeyword("in") || parser.parseLParen())
+    // if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
+    //     parser.parseLParen())
+      return failure();
+
+    tileSize.resize(tileArgs.size());
+    tileSizeRef.resize(tileArgs.size());
+    for (unsigned i = 0; i < tileArgs.size(); ++i) {
+      if (parser.parseArgument(tileSizeRef[i]) || parser.parseEqual() ||
+          parser.parseOperand(tileSize[i]))
+        return failure();
+      parser.parseOptionalComma();
+    }
+
+    if (parser.parseRParen())
+      return failure();
+
+    tileArgs.append(tileSizeRef);
+    for (auto &a : tileArgs)
+      a.type = indexType;
+  }
+
+  auto tokenType = xilinx::air::AsyncTokenType::get(parser.getBuilder().getContext());
+  if (parser.resolveOperands(asyncDependencies, tokenType, result.operands))
+    return failure();
+  if (parser.resolveOperands(tileSize, indexType, result.operands))
+    return failure();
+
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> kernelOperands;
+  SmallVector<OpAsmParser::Argument, 4> kernelArguments;
+  SmallVector<Type, 4> types;
+  if (succeeded(parser.parseOptionalKeyword("args"))) {
+    if (parser.parseLParen())
+      return failure();
+    do {
+      OpAsmParser::Argument argument;
+      OpAsmParser::UnresolvedOperand operand;
+      if (parser.parseArgument(argument) || parser.parseEqual() ||
+        parser.parseOperand(operand))
+      return failure();
+      kernelArguments.push_back(argument);
+      kernelOperands.push_back(operand);
+    } while (succeeded(parser.parseOptionalComma()));
+    if (parser.parseRParen())
+      return failure();
+    if (parser.parseColonTypeList(types))
+      return failure();
+  }
+
+  for (int i=0,e=kernelOperands.size(); i<e; i++) {
+    kernelArguments[i].type = types[i];
+    tileArgs.push_back(kernelArguments[i]);
+    if (parser.resolveOperand(kernelOperands[i], types[i], result.operands))
+      return failure();
+  }
+
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+
+  Region *body = result.addRegion();
+  if (parser.parseRegion(*body, tileArgs))
+    return failure();
+
+  SmallVector<int32_t, 8> segmentSizes(3, 1);
+  segmentSizes.front() = asyncDependencies.size();
+  segmentSizes[1] = tileSize.size();
+  segmentSizes.back() = kernelOperands.size();
+  result.addAttribute(OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr(),
+                      parser.getBuilder().getI32VectorAttr(segmentSizes));
+  return success();
+}
+
+void PartitionOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                               MLIRContext *context) {
+  patterns.add(removeUnusedArguments);
+}
+
+ArrayRef<BlockArgument> PartitionOp::getIds() {
+  auto s = body().front().getArguments();
+  auto n = getNumDims();
+  return s.take_front(n);
+}
+
+ArrayRef<BlockArgument> PartitionOp::getSize() {
+  auto s = body().front().getArguments();
+  auto n = getNumDims();
+  return s.slice(n, n);
+}
+
+OperandRange PartitionOp::getSizeOperands() {
+  auto opers = getOperands().drop_front(asyncDependencies().size());
+  auto start = asyncDependencies().size();
+  auto n = getNumDims();
+  return getOperands().slice(start, n);
+}
+
+unsigned PartitionOp::getNumKernelOperands() {
+  return getNumOperands() - asyncDependencies().size() - getNumDims();
+}
+
+Value PartitionOp::getKernelOperand(unsigned i) {
+  return getOperand(asyncDependencies().size() + getNumDims() + i);
+}
+
+ArrayRef<BlockArgument> PartitionOp::getKernelArguments() {
+  return body().front().getArguments().drop_front(getNumDims() * 2);
+}
+
+BlockArgument PartitionOp::getKernelArgument(unsigned i) {
+  return getKernelArguments()[i];
+}
+
+unsigned PartitionOp::getNumDims() {
+  auto size_attr_name = OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
+  auto size_attr = (*this)->getAttrOfType<DenseIntElementsAttr>(size_attr_name);
+  SmallVector<APInt, 4> segment_sizes{size_attr.begin(), size_attr.end()};
+  return segment_sizes[1].getZExtValue();
+}
+
+//
 // LaunchHerdOp
 //
 
