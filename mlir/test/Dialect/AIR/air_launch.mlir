@@ -37,6 +37,14 @@ func.func @test(%arg0 : memref<16x16xf32>, %arg1 : memref<16x16xf32>) -> () {
     air.launch_terminator
   }
 
+  // CHECK: air.launch (%{{.*}}, %{{.*}}) in (%{{.*}}=%c4, %{{.*}}=%c1) args(%{{.*}}=%{{.*}}) : memref<16x16xf32> attributes {sym_name = "memcpy_nd"} {
+  air.launch (%arg2, %arg3) in (%size_x = %c4, %size_y = %c1) args(%arg4=%arg0) : memref<16x16xf32> attributes {sym_name = "memcpy_nd"} {
+    %1 = memref.alloc() : memref<16x16xf32>
+    air.dma_memcpy_nd (%1[] [] [], %arg4[] [] []) {id = 1 : i32} : (memref<16x16xf32>, memref<16x16xf32>)
+    memref.dealloc %1 : memref<16x16xf32>
+    air.launch_terminator
+  }
+
   return
 }
 
