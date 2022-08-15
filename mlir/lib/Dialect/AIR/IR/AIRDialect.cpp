@@ -156,10 +156,6 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
                      ValueRange sizes, ValueRange launchOperands, 
                      bool isAsync) {
 
-  // Add an attribute for the number of dimensions.
-  result.addAttribute(LaunchOp::getNumSizeOperandsAttrStrName(),
-                      builder.getIntegerAttr(builder.getIndexType(), sizes.size()));
-
   result.addOperands(asyncDependencies);
   if (isAsync)
     result.addTypes(air::AsyncTokenType::get(builder.getContext()));
@@ -187,10 +183,6 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
 void LaunchOp::build(OpBuilder &builder, OperationState &result,
                          ValueRange sizes, ValueRange launchOperands) {
 
-  // Add an attribute for the number of dimensions.
-  result.addAttribute(LaunchOp::getNumSizeOperandsAttrStrName(),
-                      builder.getIntegerAttr(builder.getIndexType(), sizes.size()));
-
   build(builder, result, {}, sizes, launchOperands, false);
 }
 
@@ -203,7 +195,7 @@ void LaunchOp::print(OpAsmPrinter &p) {
   p << ") in (";
   auto sizeArgs = getSize();
   auto sizeOpers = getSizeOperands();
-  for (int i=0,e=getNumSizeOperands(); i<e; i++) {
+  for (int i=0,e=getNumDims(); i<e; i++) {
     if (i) p << ", ";
     p << sizeArgs[i] << "=";
     p << sizeOpers[i];
@@ -324,8 +316,6 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   segmentSizes.back() = kernelOperands.size();
   result.addAttribute(OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr(),
                       parser.getBuilder().getI32VectorAttr(segmentSizes));
-  result.addAttribute(LaunchOp::getNumSizeOperandsAttrStrName(),
-                      parser.getBuilder().getIntegerAttr(parser.getBuilder().getIndexType(), tileSize.size()));
   return success();
 }
 
@@ -334,49 +324,42 @@ void LaunchOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
   patterns.add(removeUnusedArguments);
 }
 
-void LaunchOp::setNumLoops(unsigned numLoops){
-  assert(numLoops > 0 && "numLoops has to be a positive integer constant");
-  auto *context = (*this)->getContext();
-  (*this)->setAttr(StringAttr::get(context, LaunchOp::getNumSizeOperandsAttrStrName()),
-                    IntegerAttr::get(IndexType::get(context), numLoops));
-}
-
 ArrayRef<BlockArgument> LaunchOp::getIds() {
   auto s = body().front().getArguments();
-  auto n = getNumSizeOperands();
+  auto n = getNumDims();
   return s.take_front(n);
 }
 
 ArrayRef<BlockArgument> LaunchOp::getSize() {
   auto s = body().front().getArguments();
-  auto n = getNumSizeOperands();
+  auto n = getNumDims();
   return s.slice(n, n);
 }
 
 OperandRange LaunchOp::getSizeOperands() {
   auto opers = getOperands().drop_front(asyncDependencies().size());
   auto start = asyncDependencies().size();
-  auto n = getNumSizeOperands();
+  auto n = getNumDims();
   return getOperands().slice(start, n);
 }
 
 unsigned LaunchOp::getNumKernelOperands() {
-  return getNumOperands() - asyncDependencies().size() - getNumSizeOperands();
+  return getNumOperands() - asyncDependencies().size() - getNumDims();
 }
 
 Value LaunchOp::getKernelOperand(unsigned i) {
-  return getOperand(asyncDependencies().size() + getNumSizeOperands() + i);
+  return getOperand(asyncDependencies().size() + getNumDims() + i);
 }
 
 ArrayRef<BlockArgument> LaunchOp::getKernelArguments() {
-  return body().front().getArguments().drop_front(getNumSizeOperands() * 2);
+  return body().front().getArguments().drop_front(getNumDims() * 2);
 }
 
 BlockArgument LaunchOp::getKernelArgument(unsigned i) {
   return getKernelArguments()[i];
 }
 
-unsigned LaunchOp::getNumSizeOperands() {
+unsigned LaunchOp::getNumDims() {
   auto size_attr_name = OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
   auto size_attr = (*this)->getAttrOfType<DenseIntElementsAttr>(size_attr_name);
   SmallVector<APInt, 4> segment_sizes{size_attr.begin(), size_attr.end()};

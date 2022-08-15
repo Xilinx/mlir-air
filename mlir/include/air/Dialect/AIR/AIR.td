@@ -44,9 +44,7 @@ def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
     Value getKernelOperand(unsigned i);
     ArrayRef<BlockArgument> getKernelArguments();
     BlockArgument getKernelArgument(unsigned i);
-    unsigned getNumSizeOperands();
-    static StringRef getNumSizeOperandsAttrStrName() { return "dim"; };
-    void setNumLoops(unsigned numLoops);
+    unsigned getNumDims();
     int32_t getId() {
       if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
         return id_attr.getInt();
