@@ -16,8 +16,10 @@ class air_Op<string mnemonic, list<Trait> traits = []> :
 def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
                                      AttrSizedOperandSegments,
                                      IsolatedFromAbove,
-                                     AffineScope]>,
-                        Arguments<(ins Variadic<air_AsyncToken>:$asyncDependencies,
+                                     AffineScope,
+                                     SingleBlockImplicitTerminator<"LaunchTerminatorOp">]>,
+                        Arguments<(ins OptionalAttr<SymbolRefAttr>:$symbol,
+                                       Variadic<air_AsyncToken>:$asyncDependencies,
                                        Variadic<Index>:$sizes,
                                        Variadic<AnyType>:$operands)>,
                         Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
@@ -473,6 +475,34 @@ def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
       }
       return -1;
     }
+  }];
+}
+
+def air_AllocOp: air_Op<"alloc", [air_AsyncOpInterface]> {
+  let summary = "alloc operator";
+  let arguments = (
+    ins Variadic<air_AsyncToken>:$asyncDependencies
+  );
+  let results = (outs Optional<air_AsyncToken>:$asyncToken, AnyMemRef:$result);
+  let assemblyFormat = [{
+    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) attr-dict `:` type($result)
+  }];
+  let description = [{
+    Allocate memory
+  }];
+}
+
+def air_DeallocOp: air_Op<"dealloc", [air_AsyncOpInterface]> {
+  let summary = "dealloc operator";
+  let arguments = (
+    ins Variadic<air_AsyncToken>:$asyncDependencies, AnyMemRef:$memref
+  );
+  let results = (outs Optional<air_AsyncToken>:$asyncToken);
+  let assemblyFormat = [{
+    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) $memref attr-dict `:` type($memref)
+  }];
+  let description = [{
+    Deallocate memory
   }];
 }
 

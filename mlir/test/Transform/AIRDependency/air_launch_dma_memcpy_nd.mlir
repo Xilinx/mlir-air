@@ -12,7 +12,7 @@ func.func @memcpy_nd(%arg0: memref<4096xi32>) {
   %c4 = arith.constant 4 : index
   %c1 = arith.constant 1 : index
   air.launch (%arg1, %arg2) in (%size_x = %c4, %size_y = %c1) args(%arg3=%arg0) : memref<4096xi32> attributes {sym_name = "memcpy_nd"} {
-  // CHECK: %[[EVENT0:.*]] = air.launch async
+  // CHECK: %[[EVENT0:.*]] = air.launch @memcpy_nd async
     %c32 = arith.constant 32 : index
     %0 = arith.muli %arg1, %c32 : index
     // CHECK: %[[EVENT1:.*]], %[[EVENT2:.*]] = air.region async
