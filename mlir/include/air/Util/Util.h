@@ -28,7 +28,7 @@ uint64_t getTensorVolume(const Type ty);
 
 scf::ForOp getForRegionIterArgsOwner(Value val);
 
-air::HerdLaunchOp getHerdLaunchTileIdOwner(Value val);
+air::HerdLaunchOp getHerdLaunchArgOwner(Value val);
 
 }
 }

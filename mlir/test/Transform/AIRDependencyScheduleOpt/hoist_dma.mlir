@@ -1,6 +1,6 @@
 // (c) Copyright 2022 Xilinx Inc.
 
-// RUN: air-opt %s -air-dependency -air-dependency-schedule-opt | FileCheck %s
+// RUN: air-opt %s -air-dependency -air-hoist-dma-in-accum-pattern | FileCheck %s
 
 // The redundant L1-L2 DMA ops shall be hoisted to outside of scf.for loop
 // CHECK: %[[EVENT0:.*]] = air.dma_memcpy_nd async 

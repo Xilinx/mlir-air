@@ -46,80 +46,78 @@ using namespace xilinx::air;
 
 namespace {
 
-  struct HoistDmaInAccumPattern : public OpRewritePattern<scf::ForOp> {
-  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+struct HoistDmaInAccumPattern : public OpRewritePattern<scf::ForOp> {
+using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override { 
 
-    // if (for_op->getParentOfType<xilinx::air::HerdLaunchOp>()){
-      // Only looking for loops inside of herd launch
-      SmallVector<air::DmaMemcpyInterface, 1> dmamemcpy_incoming_history;
-      SmallVector<air::DmaMemcpyInterface, 1> dmamemcpy_outgoing_history;
-      for (auto dma_op : for_op.getOps<air::DmaMemcpyInterface>()){
-        if (isIncomingDmaOp(dma_op)){
-          dmamemcpy_incoming_history.push_back(dma_op);
-        }
-        if (isOutgoingDmaOp(dma_op)){
-          dmamemcpy_outgoing_history.push_back(dma_op);
-        }
+    // Only looking for loops inside of herd launch
+    SmallVector<air::DmaMemcpyInterface, 1> dmamemcpy_incoming_history;
+    SmallVector<air::DmaMemcpyInterface, 1> dmamemcpy_outgoing_history;
+    for (auto dma_op : for_op.getOps<air::DmaMemcpyInterface>()){
+      if (isIncomingDmaOp(dma_op)){
+        dmamemcpy_incoming_history.push_back(dma_op);
       }
-      bool foundDmaPairToHoist = false;
-      for (auto op_2 : dmamemcpy_outgoing_history){
-        bool foundDmaPairForThisOp2 = false;
-        for (auto op_1 : dmamemcpy_incoming_history){
-          bool areInvariantWRTForLoop = true;
-          // Check if the pair of dmas form symmetry in their src and dst
-          bool areSymmetric = areSymmetricDmaOps(op_1, op_2);
-          // Check if the pair of dmas are invariant with respect to for loop iterations
-          areInvariantWRTForLoop &= isInvariantWRTForLoop(op_1.getOperation(), for_op);
-          areInvariantWRTForLoop &= isInvariantWRTForLoop(op_2.getOperation(), for_op);
-          if (areSymmetric & areInvariantWRTForLoop){
-            foundDmaPairToHoist = true;
-            foundDmaPairForThisOp2 = true;
-            // Found a pair of dmas which cancel out each other 
-            air::RegionOp alloc_region_op = getRegionOfAllocOpForDmaOp(op_1);
-            air::RegionOp dealloc_region_op = getRegionOfDeallocOpForDmaOp(op_2);
-            assert(alloc_region_op.getAsyncDependencies().size() == 1 && "Alloc event having more than one dependant");
+      if (isOutgoingDmaOp(dma_op)){
+        dmamemcpy_outgoing_history.push_back(dma_op);
+      }
+    }
+    bool foundDmaPairToHoist = false;
+    for (auto op_2 : dmamemcpy_outgoing_history){
+      bool foundDmaPairForThisOp2 = false;
+      for (auto op_1 : dmamemcpy_incoming_history){
+        bool areInvariantWRTForLoop = true;
+        // Check if the pair of dmas form symmetry in their src and dst
+        bool areSymmetric = areSymmetricDmaOps(op_1, op_2);
+        // Check if the pair of dmas are invariant with respect to for loop iterations
+        areInvariantWRTForLoop &= isInvariantWRTForLoop(op_1.getOperation(), for_op);
+        areInvariantWRTForLoop &= isInvariantWRTForLoop(op_2.getOperation(), for_op);
+        if (areSymmetric & areInvariantWRTForLoop){
+          foundDmaPairToHoist = true;
+          foundDmaPairForThisOp2 = true;
+          // Found a pair of dmas which cancel out each other 
+          air::RegionOp alloc_region_op = getRegionOfAllocOpForDmaOp(op_1);
+          air::RegionOp dealloc_region_op = getRegionOfDeallocOpForDmaOp(op_2);
+          assert(alloc_region_op.getAsyncDependencies().size() == 1 && "Alloc event having more than one dependant");
 
-            // Reconnect incoming alloc event
-            alloc_region_op.eraseAsyncDependency(0);
-            // Reconnect incoming dma event
-            reconnectIncomingDma(op_1, for_op);
-            // Move ops to before the for loop
-            alloc_region_op->moveBefore(for_op); 
-            op_1->moveBefore(for_op);
+          // Reconnect incoming alloc event
+          alloc_region_op.eraseAsyncDependency(0);
+          // Reconnect incoming dma event
+          reconnectIncomingDma(op_1, for_op);
+          // Move ops to before the for loop
+          alloc_region_op->moveBefore(for_op); 
+          op_1->moveBefore(for_op);
 
-            // Reconnect outgoing dealloc event
-            // Reconnect outgoing dma event
-            scf::YieldOp yield_op = dyn_cast<scf::YieldOp>(for_op.getBody()->getTerminator());
-            air::WaitAllOp wait_all_after_for = dyn_cast<air::WaitAllOp>(yield_op->getOperand(0).getDefiningOp());
-            reconnectOutgoingEvents(op_2, dealloc_region_op, for_op, wait_all_after_for);
-            // Move ops to after the for loop
-            dealloc_region_op->moveAfter(for_op);
-            op_2->moveAfter(for_op);
-            
-            // Move const ops which produce op_2 operands
-            // Note: moving consts of which op_1 depends on AFTER op_2 to maintain dominance if consts are shared by both
-            for (auto op_2_operand : op_2->getOperands()){
-              if (op_2_operand.getDefiningOp() && isa<arith::ConstantOp>(op_2_operand.getDefiningOp())){
-                rewriter.setInsertionPoint(op_2);
-                rewriter.clone(*op_2_operand.getDefiningOp());
-              }
+          // Reconnect outgoing dealloc event
+          // Reconnect outgoing dma event
+          scf::YieldOp yield_op = dyn_cast<scf::YieldOp>(for_op.getBody()->getTerminator());
+          air::WaitAllOp wait_all_after_for = dyn_cast<air::WaitAllOp>(yield_op->getOperand(0).getDefiningOp());
+          reconnectOutgoingEvents(op_2, dealloc_region_op, for_op, wait_all_after_for);
+          // Move ops to after the for loop
+          dealloc_region_op->moveAfter(for_op);
+          op_2->moveAfter(for_op);
+          
+          // Move const ops which produce op_2 operands
+          // Note: moving consts of which op_1 depends on AFTER op_2 to maintain dominance if consts are shared by both
+          for (auto op_2_operand : op_2->getOperands()){
+            if (op_2_operand.getDefiningOp() && isa<arith::ConstantOp>(op_2_operand.getDefiningOp())){
+              rewriter.setInsertionPoint(op_2);
+              rewriter.clone(*op_2_operand.getDefiningOp());
             }
-            // Move const ops which produce op_1 operands
-            for (auto op_1_operand : op_1->getOperands()){
-              if (op_1_operand.getDefiningOp() && isa<arith::ConstantOp>(op_1_operand.getDefiningOp())){
-                rewriter.setInsertionPoint(op_1);
-                rewriter.clone(*op_1_operand.getDefiningOp());
-              }
+          }
+          // Move const ops which produce op_1 operands
+          for (auto op_1_operand : op_1->getOperands()){
+            if (op_1_operand.getDefiningOp() && isa<arith::ConstantOp>(op_1_operand.getDefiningOp())){
+              rewriter.setInsertionPoint(op_1);
+              rewriter.clone(*op_1_operand.getDefiningOp());
             }
           }
         }
-        if (foundDmaPairForThisOp2) continue; // Ensure unique pairing
       }
-      if (foundDmaPairToHoist) return success();
-    // }
+      if (foundDmaPairForThisOp2) continue; // Ensure unique pairing
+    }
+    if (foundDmaPairToHoist) return success();
     return failure();
   }
 
@@ -315,15 +313,9 @@ private:
   }
 };
 
-class AIRDependencyScheduleOpt : public AIRDependencyScheduleOptBase<AIRDependencyScheduleOpt> {
+struct BroadcastDetection {
 
 public:
-  AIRDependencyScheduleOpt() = default;
-  AIRDependencyScheduleOpt(const AIRDependencyScheduleOpt &pass) {}
-
-  void getDependentDialects(::mlir::DialectRegistry &registry) const override {  
-    registry.insert<scf::SCFDialect, air::airDialect>();
-  }
 
   // Trace dma ops' dependency to loop induction variables
   void getDmaOpLoopDependency(func::FuncOp f) {
@@ -352,8 +344,8 @@ public:
       // Create an affine set to represent the broadcast pattern
       auto ctx = dma_op->getContext();
       for (auto v : loop_dep_history){
-        if (getHerdLaunchTileIdOwner(v)){
-          hl_op = getHerdLaunchTileIdOwner(v);
+        if (getHerdLaunchArgOwner(v)){
+          hl_op = getHerdLaunchArgOwner(v);
           if (v == hl_op.getTileIds().x){
             hasDepInHerdRows = true;
           }
@@ -413,13 +405,6 @@ public:
     }
   }
 
-  void runOptPatterns(func::FuncOp funcOp) {
-    MLIRContext *ctx = funcOp.getContext();
-    RewritePatternSet patterns(&getContext());
-    patterns.insert<HoistDmaInAccumPattern>(ctx);
-    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
-  }
-
   void runBroadcastPattern(func::FuncOp funcOp){
     // Trace dma ops' dependency to loop induction variables
     // This info will be used for broadcast detection
@@ -427,9 +412,181 @@ public:
     broadcastDetection();
   }
 
+private:
+
+  // DMA dependency to loop induction variables
+  std::vector<air::DmaMemcpyInterface> dma_op_history;
+  SmallVector<SmallVector<Value, 1>, 1> dma_op_loop_dep_history;
+
+};
+
+struct PruneLinalgGenericInputDma {
+
+public:
+
+  void runLinalgGenericPattern(func::FuncOp funcOp){
+    // Detect linalg.GenericOps with redundant input ports
+    std::vector<OpOperand *> non_input_generic_operands;
+    funcOp.walk([&](linalg::GenericOp generic_op) {
+      getNonInputOperands(generic_op, non_input_generic_operands);
+      // DMAs copying into these linalg.GenericOp input ports are redundant
+      for (auto opoperand : non_input_generic_operands){
+        findAndPruneRedundantDma(opoperand);
+      }
+    });
+  }
+
+  void getNonInputOperands(linalg::GenericOp generic_op, std::vector<OpOperand *> &operands_history){
+    for (auto &g_opoperand : generic_op->getOpOperands()){
+      bool isUsed = false;
+      for (auto &op : generic_op.getBlock()->getOperations()){
+        for (auto op_operand : op.getOperands()){
+          if (op_operand == generic_op.getTiedBlockArgument(&g_opoperand)){
+            isUsed = true;
+          }
+        }
+      }
+      if (!isUsed){
+        operands_history.push_back(&g_opoperand);
+      }
+    }
+  }
+
+  void findAndPruneRedundantDma(mlir::OpOperand * opoperand){
+    // Elevate to operand of herd launch
+    unsigned operand_id = opoperand->getOperandNumber();
+    auto op = opoperand->getOwner();
+    auto v = op->getOperand(operand_id);
+    
+    air::AsyncOpInterface async_op;
+    if (air::RegionOp region_op = op->getParentOfType<air::RegionOp>()){
+      async_op = dyn_cast<air::AsyncOpInterface>(region_op.getOperation());
+    }
+    else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(op)){
+      async_op = dyn_cast<air::AsyncOpInterface>(hl_op.getOperation());
+    }
+    else {
+      return;
+    }
+    auto dep_list = async_op.getAsyncDependencies();
+    for (int i = dep_list.size() - 1; i >= 0; i--){
+      auto upstream_op = dep_list[i].getDefiningOp();
+      if (upstream_op && dyn_cast<air::DmaMemcpyInterface>(upstream_op)){
+        auto upstream_dma = dyn_cast<air::DmaMemcpyInterface>(upstream_op);
+        if (v == upstream_dma.getDstMemref()){
+          async_op.eraseAsyncDependency(i);
+          Value srcMemref = upstream_dma.getSrcMemref();
+          // Recursively trace upstream dma
+          for (unsigned j = 0; j < upstream_op->getNumOperands(); j++){
+            if (srcMemref == upstream_op->getOperand(j)){
+              findAndPruneRedundantDma(&upstream_op->getOpOperand(j));
+            }
+          }
+          // Elevate from argument to operand of herd launch
+          if (auto hl_op = getHerdLaunchArgOwner(srcMemref)){
+            for (unsigned i = 0; i < hl_op.getNumKernelOperands(); i++){
+              if (hl_op.getKernelArgument(i) == srcMemref){
+                auto &hl_opoperand = hl_op->getOpOperand(i + hl_op.getAsyncDependencies().size() + 2);
+                findAndPruneRedundantDma(&hl_opoperand);
+              }
+            }
+          }
+          upstream_dma->erase();
+        }
+      }
+    }
+  }
+
+private:
+
+};
+
+class AIRHoistDmaInAccumPattern : public xilinx::air::AIRHoistDmaInAccumPatternBase<AIRHoistDmaInAccumPattern> {
+
+public:
+  AIRHoistDmaInAccumPattern() = default;
+  AIRHoistDmaInAccumPattern(const AIRHoistDmaInAccumPattern &pass){};
+
+  void runOptPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<HoistDmaInAccumPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      runOptPatterns(f);
+  }
+
+private:
+};
+
+class AIRBroadcastDetection : public xilinx::air::AIRBroadcastDetectionBase<AIRBroadcastDetection> {
+
+public:
+  AIRBroadcastDetection() = default;
+  AIRBroadcastDetection(const AIRBroadcastDetection &pass){};
+
+  void runOnOperation() override {
+    BroadcastDetection proc;
+    auto module = getOperation();
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      proc.runBroadcastPattern(f);
+  }
+
+private:
+};
+
+class AIRPruneLinalgGenericInputDma : public xilinx::air::AIRPruneLinalgGenericInputDmaBase<AIRPruneLinalgGenericInputDma> {
+
+public:
+  AIRPruneLinalgGenericInputDma() = default;
+  AIRPruneLinalgGenericInputDma(const AIRPruneLinalgGenericInputDma &pass){};
+
+  void runOnOperation() override {
+    PruneLinalgGenericInputDma proc;
+    auto module = getOperation();
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      proc.runLinalgGenericPattern(f);
+  }
+
+private:
+};
+
+class AIRDependencyScheduleOpt : public AIRDependencyScheduleOptBase<AIRDependencyScheduleOpt> {
+
+public:
+  AIRDependencyScheduleOpt() = default;
+  AIRDependencyScheduleOpt(const AIRDependencyScheduleOpt &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {  
+    registry.insert<scf::SCFDialect, air::airDialect>();
+  }
+
+  void runOptPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<HoistDmaInAccumPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
   void runOnFunction(func::FuncOp f) {
+    // HoistDmaInAccumPattern
     runOptPatterns(f);
-    runBroadcastPattern(f);
+    // BroadcastDetection
+    BroadcastDetection proc;
+    proc.runBroadcastPattern(f);
+    // Remove redundant DMA copying into linalg.generic
+    PruneLinalgGenericInputDma proc_0;
+    proc_0.runLinalgGenericPattern(f);
   }
 
   void runOnOperation() override {
@@ -442,16 +599,24 @@ public:
 
 private:
 
-  // DMA dependency to loop induction variables
-  std::vector<air::DmaMemcpyInterface> dma_op_history;
-  SmallVector<SmallVector<Value, 1>, 1> dma_op_loop_dep_history;
-
 };
 
 }// namespace
 
 namespace xilinx {
 namespace air {
+
+std::unique_ptr<Pass> createAIRHoistDmaInAccumPattern() {
+  return std::make_unique<AIRHoistDmaInAccumPattern>();
+}
+
+std::unique_ptr<Pass> createAIRBroadcastDetection() {
+  return std::make_unique<AIRBroadcastDetection>();
+}
+
+std::unique_ptr<Pass> createAIRPruneLinalgGenericInputDma() {
+  return std::make_unique<AIRPruneLinalgGenericInputDma>();
+}
 
 std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass() {
   return std::make_unique<AIRDependencyScheduleOpt>();
