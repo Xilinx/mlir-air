@@ -764,10 +764,113 @@ public:
     for (auto b : bounds)
       sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, b));
     auto launch = rewriter.create<air::LaunchOp>(op.getLoc(), sizes, args);
+    auto &bb = launch.body().front();
+    auto ivs = op.getInductionVars();
+
+    for (int i = 0, e = ivs.size(); i < e; i++) {
+      ivs[i].replaceAllUsesWith(launch.getIds()[i]);
+    }
+
+    auto &body = op.getBody()->getOperations();
+    bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
+    rewriter.setInsertionPointToStart(&launch.getRegion().front());
+    for (auto c : constants) {
+      replaceAllUsesInRegionWith(
+          c, rewriter.clone(*c.getDefiningOp())->getResult(0),
+          launch.getRegion());
+    }
+
+    auto builder = OpBuilder::atBlockEnd(&bb);
+    builder.create<air::LaunchTerminatorOp>(loc);
+
+    int i = 0;
+    auto kernel_args = launch.getKernelArguments();
+    for (Value v : args)
+      replaceAllUsesInRegionWith(v, kernel_args[i++], launch.getRegion());
+
+    if (op != parOp)
+      op.erase();
+    rewriter.eraseOp(parOp);
+
+    return success();
+  }
+
+private:
+  llvm::SmallSet<scf::ParallelOp, 2> &filteredOps;
+};
+
+class ScfParToLaunchAndPartitionConversion : public OpRewritePattern<scf::ParallelOp> {
+public:
+  using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
+
+  ScfParToLaunchAndPartitionConversion(MLIRContext *ctx,
+                           llvm::SmallSet<scf::ParallelOp, 2> &filteredOps)
+      : OpRewritePattern(ctx), filteredOps(filteredOps){};
+
+  LogicalResult matchAndRewrite(scf::ParallelOp parOp,
+                                PatternRewriter &rewriter) const override {
+
+    scf::ParallelOp op = parOp;
+
+    if (!filteredOps.contains(op))
+      return failure();
+
+    if (failed(normalizeScfParallel(op, rewriter)))
+      return failure();
+
+    auto loc = op.getLoc();
+
+    SmallVector<int, 4> bounds(op.getNumLoops(), 1);
+    for (unsigned int i = 0; i < op.getNumLoops(); i++) {
+      auto lb = dyn_cast<arith::ConstantIndexOp>(
+          op.getLowerBound()[i].getDefiningOp());
+      auto ub = dyn_cast<arith::ConstantIndexOp>(
+          op.getUpperBound()[i].getDefiningOp());
+      auto step =
+          dyn_cast<arith::ConstantIndexOp>(op.getStep()[i].getDefiningOp());
+
+      // lowerBound, upperBound and step must be arith::ConstantIndexOps
+      if (!(lb && step && ub))
+        return failure();
+
+      auto ub_int = ub.value();
+      auto lb_int = lb.value();
+      auto step_int = step.value();
+
+      // must start at 0
+      if (lb_int)
+        return failure();
+
+      // step must divide upper bound evenly
+      if (ub_int % step_int)
+        return failure();
+
+      ub_int = ub_int / step_int;
+      bounds[i] = ub_int;
+    }
+
+    SmallVector<Value, 4> args;
+    SmallVector<Value, 4> constants;
+    llvm::SetVector<Value> region_args;
+    getUsedValuesDefinedAbove(op.getRegion(), region_args);
+    for (Value v : region_args) {
+      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
+        constants.push_back(v);
+      else
+        args.push_back(v);
+    }
+
+    SmallVector<Value, 4> sizes;
+    for (auto b : bounds)
+      sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, b));
+    auto launch = rewriter.create<air::LaunchOp>(op.getLoc(), sizes, args);
     rewriter.setInsertionPointToStart(&launch.getRegion().front());
     SmallVector<Value, 1> partitionSizes = {};
     SmallVector<Value, 4> partitionOpers;
     for (Value v : launch.getIds()) {
+      partitionOpers.push_back(v);
+    }
+    for (Value v : launch.getSize()) {
       partitionOpers.push_back(v);
     }
     for (Value v : launch.getKernelArguments()) {
@@ -797,7 +900,7 @@ public:
 
     int i = 0;
     auto kernel_args = partition.getKernelArguments();
-    kernel_args = kernel_args.drop_front(ivs.size()); // Launch's induction vars
+    kernel_args = kernel_args.drop_front(ivs.size() + launch.getSize().size()); // Launch's induction vars
     for (Value v : args)
       replaceAllUsesInRegionWith(v, kernel_args[i++], partition.getRegion());
 
@@ -1198,7 +1301,13 @@ struct ParallelToLaunchPass
     });
 
     RewritePatternSet patterns(context);
-    patterns.add<ScfParToLaunchConversion>(context, filteredOps);
+    if (clHasPartition){
+      patterns.add<ScfParToLaunchAndPartitionConversion>(context, filteredOps);
+    }
+    else {
+      patterns.add<ScfParToLaunchConversion>(context, filteredOps);
+  
+    }
 
     ConversionTarget target(*context);
 
