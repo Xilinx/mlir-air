@@ -56,7 +56,8 @@ $(DESIGN).air.mlir: $(DESIGN)_airin.mlir
 	air-opt  -o $@ $< \
 			-xten-to-linalg \
 			-air-linalg-codegen='herd-size=1,1' \
-			-affine-to-air \
+			-air-par-to-herd \
+			-air-copy-to-dma \
 			-convert-linalg-to-affine-loops
 				-o $@ $<
 

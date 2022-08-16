@@ -3,7 +3,7 @@
 
 include "mlir/Pass/PassBase.td"
 
-def AffineToAIR : Pass<"affine-to-air", "ModuleOp"> {
+def AffineToAIR : Pass<"affine-to-air-DEPRECATE", "ModuleOp"> {
   let summary = "Affine to AIR";
   let constructor = "xilinx::air::createAffineToAIRPass()";
   let description = [{

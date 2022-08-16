@@ -32,7 +32,7 @@ vecmul_tiled.mlir: vecmul.linalg-memrefs.mlir
 		-o $@ $<
 
 vecmul.air.mlir: vecmul_tiled.mlir
-	$(AIR_OPT) -affine-to-air \
+	$(AIR_OPT) -air-par-to-herd -air-copy-to-dma \
 				-cse \
 				-o $@ $<
 

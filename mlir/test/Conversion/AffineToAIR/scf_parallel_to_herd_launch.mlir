@@ -1,6 +1,6 @@
 // (c) Copyright 2021 Xilinx Inc.
 
-// RUN: air-opt -affine-to-air %s | FileCheck %s
+// RUN: air-opt -air-par-to-herd %s | FileCheck %s
 // CHECK-LABEL: func.func @f0
 // CHECK: %[[C0:.*]] = arith.constant 2 : index
 // CHECK air.launch_herd tile ({{.*}}, {{.*}}) in ({{.*}}=[[C0]], {{.*}}=[[C0]])

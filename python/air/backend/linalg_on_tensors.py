@@ -38,7 +38,8 @@ LINALG_MEMREF_TO_AIRRT_PIPELINE = ",".join([
     "air-linalg-codegen",
     "canonicalize",
     "cse",
-    "affine-to-air",
+    "air-par-to-herd",
+    "air-copy-to-dma",
     "canonicalize",
     "cse"
 ])

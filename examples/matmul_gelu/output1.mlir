@@ -93,4 +93,3 @@ module attributes {torch.debug_module_name = "mmult"} {
     return %2 : memref<24576x1024xbf16>
   }
 }
-

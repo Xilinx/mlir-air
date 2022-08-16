@@ -20,7 +20,8 @@ mmult.tiled.mlir: mmult.linalg-memrefs.mlir
 			
 mmult.air.mlir: mmult.tiled.mlir
 	air-opt -o $@ $< \
-			-affine-to-air \
+			-air-par-to-herd \
+			-air-copy-to-dma \
 			-canonicalize -cse
 
 mmult.deps.mlir: mmult.air.mlir

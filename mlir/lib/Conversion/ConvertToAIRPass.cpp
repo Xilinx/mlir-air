@@ -442,7 +442,7 @@ public:
           src_applies[2], src_applies[3], affine_dma_start.getNumElements(),
           stride, elem_per_stride);
     } else {
-      llvm::outs() << "unsupported memcpy in affine-to-air";
+      llvm::outs() << "unsupported memcpy in affine copy to air conversion";
       op->print(llvm::outs());
       return failure();
     }

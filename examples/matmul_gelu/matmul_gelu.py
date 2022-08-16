@@ -47,14 +47,16 @@ with air.mlir.ir.Context():
     pipeline = ",".join([
         "air-linalg-codegen{l2-tile-size=64,64,64 l2-promote=true l1-tile-size=32,32,32 l1-promote=true}",
         "canonicalize", "cse",
-        "affine-to-air{herd-assign-depth=1}", # matmul
-        "affine-to-air{herd-assign-depth=0}", # gelu
+        "air-par-to-herd{depth=1}", # matmul
+        "air-par-to-herd{depth=0}", # gelu
+        "air-copy-to-dma",
         "canonicalize", "cse",
     ])
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
     pm.run(air_module)
 
-    print(air_module) # prints output1.mlir
+    with open('output1.mlir', 'w') as f:
+        f.write(str(air_module))
 
     pipeline = ",".join([
         "air-dependency",
@@ -64,4 +66,5 @@ with air.mlir.ir.Context():
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
     pm.run(air_module)
 
-    print(air_module) # prints output2.mlir and out.dot
+    with open('output2.mlir', 'w') as f:
+        f.write(str(air_module))
