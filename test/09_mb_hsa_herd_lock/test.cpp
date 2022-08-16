@@ -55,7 +55,7 @@ int main(int argc, char *argv[])
   // herd_setup packet
   // Set up a 2x4 herd starting 7,2
   dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_herd_init(herd_pkt, 0, col, 2, row, 4);
+  air_packet_herd_init(herd_pkt, 0, col, num_cols, row, num_rows);
   //air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
 
   // reserve another packet in the queue
@@ -69,20 +69,17 @@ int main(int argc, char *argv[])
   air_queue_dispatch_and_wait(q, wr_idx, lock_pkt);
 
   u32 errors = 0;
-  for (int c = 6; c < 10; c++)
-    for (int r = 1; r < 7; r++) {
+  for (int c = col; c < col + num_cols; c++)
+    for (int r = row; r < row + num_rows; r++) {
       u32 locks = XAieGbl_Read32(xaie->TileInst[c][r].TileAddr + 0x0001EF00);
-      if ((c >= 7) && (c <= 8) && (r >=2) && (r <= 5)) {
-        if (locks != 0x1) errors++;
-      } else {
-        if (locks != 0x0) errors++;
-      }
+      if (locks != 0x1)
+        errors++;
     }
 
   if (errors) {
     printf("%d errors\n", errors);
-    for (int c = 6; c < 10 ; c++)
-      for (int r = 1; r < 7; r++) {
+    for (int c = col; c < col + num_cols; c++)
+      for (int r = row; r < row + num_rows; r++) {
         u32 locks = XAieGbl_Read32(xaie->TileInst[c][r].TileAddr + 0x0001EF00);
         printf("C[%d][%d] %08X\n", c, r, locks);
       }
@@ -97,20 +94,16 @@ int main(int argc, char *argv[])
                             /*value*/1, 0, num_cols, 0, num_rows);
     air_queue_dispatch_and_wait(q, wr_idx, release_pkt);
 
-    for (int c = 6; c < 10 ; c++)
-      for (int r = 1; r < 7; r++) {
+    for (int c = col; c < col + num_cols; c++)
+      for (int r = row; r < row + num_rows; r++) {
         u32 locks = XAieGbl_Read32(xaie->TileInst[c][r].TileAddr + 0x0001EF00);
-        if ((c >= 7) && (c <= 8) && (r >=2) && (r <= 5)) {
-          if (locks != 0x2) errors++;
-	      }
-        else {
-      	  if (locks != 0x0) errors++;
-        }
+        if (locks != 0x2)
+          errors++;
       }
 
     if (errors) {
-      for (int col = 6; col < 10 ; col++)
-        for (int row = 1; row < 7; row++) {
+      for (int c = col; c < col + num_cols; c++)
+        for (int r = row; r < row + num_rows; r++) {
           u32 locks = XAieGbl_Read32(xaie->TileInst[col][row].TileAddr + 0x0001EF00);
           printf("C[%d][%d] %08X\n", col, row, locks);
         }

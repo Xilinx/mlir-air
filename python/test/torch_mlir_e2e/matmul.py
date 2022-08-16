@@ -1,7 +1,11 @@
-# (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+# (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
 
 # RUN: %PYTHON %s | FileCheck %s
-# CHECK: PASSED
+# CHECK: PASS
+
+import torch
+import numpy
+
 
 import torch
 import torch_mlir
@@ -14,14 +18,13 @@ class model(torch.nn.Module):
         super().__init__()
 
     def forward(self, a, b):
-        x = a * b
-        return x
+        return torch.mm(a,b)
 
 def run_test(dtype, shape):
     program = model()
     module = torch_mlir.compile(
         program,
-        (torch.ones(shape, dtype=dtype), torch.ones(shape, dtype=dtype)),
+        (torch.ones([shape[0],shape[1]], dtype=dtype), torch.ones([shape[1],shape[2]], dtype=dtype)),
         output_type=torch_mlir.OutputType.LINALG_ON_TENSORS
     )
 
@@ -31,32 +34,35 @@ def run_test(dtype, shape):
     compiled = airbackend.compile(module)
     jit_module = airbackend.load(compiled)
 
-    a = torch.randint(size = shape, low=1, high=100, dtype=dtype)
-    b = torch.randint(size = shape, low=1, high=100, dtype=dtype)
+    a = torch.randint(100, [shape[0],shape[1]], dtype=dtype)
+    b = torch.randint(100, [shape[1],shape[2]], dtype=dtype)
     c = torch.tensor(
         jit_module.forward(a.numpy(),b.numpy()))
 
     print(f"input:\n{a}\n{b}\noutput:\n{c}")
 
-    if torch.equal(a*b,c):
+    errs = (torch.mm(a,b) == c)
+    unique, counts = numpy.unique(errs, return_counts=True)
+    d = dict(zip(unique, counts))
+    errs = d.get(False,0)
+    count = d.get(True,0)
+    if errs>0:
+        print(f"{count}/{errs+count} Correct\n")
+    if torch.equal(torch.mm(a,b),c):
         print("PASS!")
         return 1
     else:
-        errs = (a*b == c)
-        print(numpy.unique(errs.numpy(), return_counts=True))
         print("failed.")
-    return 0
+        return 0
 
 sizes = [
-    [64,64,32],
-    [16,32,8,64],
-    [4096],
-    [128,128]
+    [32,128,64],
+    [64,64,64],
+    [128,32,128],
 ]
-
 dtypes = [
-    torch.int32,
-    torch.float
+    torch.float,
+    torch.int32
 ]
 
 passed = 0

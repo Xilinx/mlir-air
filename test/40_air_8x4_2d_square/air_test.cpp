@@ -111,11 +111,13 @@ main(int argc, char *argv[])
   tensor_t<uint32_t,2> input;
   tensor_t<uint32_t,2> output;
 
-  input.shape[0] = IMAGE_WIDTH; input.shape[1] = IMAGE_HEIGHT;
+  input.shape[1] = IMAGE_WIDTH;
+  input.shape[0] = IMAGE_HEIGHT;
   input.alloc = input.data =
       (uint32_t *)malloc(sizeof(uint32_t) * input.shape[0] * input.shape[1]);
 
-  output.shape[0] = IMAGE_WIDTH; output.shape[1] = IMAGE_HEIGHT;
+  output.shape[1] = IMAGE_WIDTH;
+  output.shape[0] = IMAGE_HEIGHT;
   output.alloc = output.data =
       (uint32_t *)malloc(sizeof(uint32_t) * output.shape[0] * output.shape[1]);
 
