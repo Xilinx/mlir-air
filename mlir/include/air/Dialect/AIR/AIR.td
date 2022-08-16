@@ -15,9 +15,11 @@ class air_Op<string mnemonic, list<Trait> traits = []> :
 
 def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
                                      AttrSizedOperandSegments,
+                                     IsolatedFromAbove,
                                      AffineScope]>,
                         Arguments<(ins Variadic<air_AsyncToken>:$asyncDependencies,
-                                       Variadic<Index>:$sizes)>,
+                                       Variadic<Index>:$sizes,
+                                       Variadic<AnyType>:$operands)>,
                         Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
   let summary = "Launch";
   let description = [{
@@ -28,16 +30,21 @@ def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
 
   let skipDefaultBuilders = 1;
   let builders = [
-    OpBuilder<(ins "ValueRange":$sizes)>,
+    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$kernelOperands)>,
     OpBuilder<(ins "ValueRange":$asyncDependencies,
-      "ValueRange":$sizes, CArg<"bool", "false">:$isAsync)>
+      "ValueRange":$sizes,"ValueRange":$kernelOperands, 
+      CArg<"bool", "false">:$isAsync)>
   ];
   let hasCustomAssemblyFormat = 1;
   let extraClassDeclaration = [{
     ArrayRef<BlockArgument> getIds();
     ArrayRef<BlockArgument> getSize();
     OperandRange getSizeOperands();
-    unsigned getNumSizeOperands();
+    unsigned getNumKernelOperands();
+    Value getKernelOperand(unsigned i);
+    ArrayRef<BlockArgument> getKernelArguments();
+    BlockArgument getKernelArgument(unsigned i);
+    unsigned getNumDims();
     int32_t getId() {
       if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
         return id_attr.getInt();
@@ -45,6 +52,7 @@ def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
       return -1;
     }
   }];
+  let hasCanonicalizer  = 1;
 }
 
 def air_LaunchTerminatorOp : air_Op<"launch_terminator", [HasParent<"LaunchOp">,
@@ -54,6 +62,60 @@ def air_LaunchTerminatorOp : air_Op<"launch_terminator", [HasParent<"LaunchOp">,
   let description = [{
     A terminator operation for regions that appear in the body of
     `air.launch` operation.  These regions are not expected to return any
+    value so the terminator takes no operands.
+  }];
+  let assemblyFormat = "attr-dict";
+}
+
+def air_PartitionOp : air_Op<"partition", [air_AsyncOpInterface,
+                                     AttrSizedOperandSegments,
+                                     IsolatedFromAbove,
+                                     AffineScope]>,
+                        Arguments<(ins Variadic<air_AsyncToken>:$asyncDependencies,
+                                       Variadic<Index>:$sizes,
+                                       Variadic<AnyType>:$operands)>,
+                        Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
+  let summary = "Partition";
+  let description = [{
+    Partition
+  }];
+
+  let regions = (region AnyRegion:$body);
+
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$kernelOperands)>,
+    OpBuilder<(ins "ValueRange":$asyncDependencies,
+      "ValueRange":$sizes,"ValueRange":$kernelOperands, 
+      CArg<"bool", "false">:$isAsync)>
+  ];
+  let hasCustomAssemblyFormat = 1;
+  let extraClassDeclaration = [{
+    ArrayRef<BlockArgument> getIds();
+    ArrayRef<BlockArgument> getSize();
+    OperandRange getSizeOperands();
+    unsigned getNumKernelOperands();
+    Value getKernelOperand(unsigned i);
+    ArrayRef<BlockArgument> getKernelArguments();
+    BlockArgument getKernelArgument(unsigned i);
+    unsigned getNumDims();
+    int32_t getId() {
+      if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
+        return id_attr.getInt();
+      }
+      return -1;
+    }
+  }];
+  let hasCanonicalizer  = 1;
+}
+
+def air_PartitionTerminatorOp : air_Op<"partition_terminator", [HasParent<"PartitionOp">,
+                                                      NoSideEffect, Terminator]>,
+    Arguments<(ins)>, Results<(outs)> {
+  let summary = "Terminator for air partition regions.";
+  let description = [{
+    A terminator operation for regions that appear in the body of
+    `air.partition` operation.  These regions are not expected to return any
     value so the terminator takes no operands.
   }];
   let assemblyFormat = "attr-dict";

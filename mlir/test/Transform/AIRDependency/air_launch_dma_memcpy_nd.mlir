@@ -11,7 +11,7 @@ func.func @memcpy_nd(%arg0: memref<4096xi32>) {
   %c128 = arith.constant 128 : index
   %c4 = arith.constant 4 : index
   %c1 = arith.constant 1 : index
-  air.launch (%arg1, %arg2) in (%size_x = %c4, %size_y = %c1) attributes {sym_name = "memcpy_nd"} {
+  air.launch (%arg1, %arg2) in (%size_x = %c4, %size_y = %c1) args(%arg3=%arg0) : memref<4096xi32> attributes {sym_name = "memcpy_nd"} {
   // CHECK: %[[EVENT0:.*]] = air.launch async
     %c32 = arith.constant 32 : index
     %0 = arith.muli %arg1, %c32 : index
@@ -21,9 +21,9 @@ func.func @memcpy_nd(%arg0: memref<4096xi32>) {
     // CHECK: %[[EVENT3:.*]], %[[EVENT4:.*]] = air.region async
     // CHECK: air.region_terminator
     %c1_0 = arith.constant 1 : index
-    air.dma_memcpy_nd (%1[] [] [], %arg0[%0] [%c32] [%c1_0]) {id = 1 : i32} : (memref<32xi32, 2>, memref<4096xi32>)
+    air.dma_memcpy_nd (%1[] [] [], %arg3[%0] [%c32] [%c1_0]) {id = 1 : i32} : (memref<32xi32, 2>, memref<4096xi32>)
     // CHECK: %[[EVENT5:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT3]]{{.*}}, {{.*}}%[[EVENT1]]{{.*}}]
-    air.dma_memcpy_nd (%arg0[%0] [%c32] [%c1_0], %1[] [] []) {id = 2 : i32} : (memref<4096xi32>, memref<32xi32, 2>)
+    air.dma_memcpy_nd (%arg3[%0] [%c32] [%c1_0], %1[] [] []) {id = 2 : i32} : (memref<4096xi32>, memref<32xi32, 2>)
     // CHECK: %[[EVENT6:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT5]]{{.*}}]
     memref.dealloc %1 : memref<32xi32, 2>
     // CHECK: %[[EVENT7:.*]] = air.region async [{{.*}}%[[EVENT6]]{{.*}}]
