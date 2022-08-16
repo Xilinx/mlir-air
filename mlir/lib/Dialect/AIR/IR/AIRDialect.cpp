@@ -171,9 +171,10 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
 
   Region *r = result.addRegion();
   Block *body = new Block();
-  SmallVector<Type, 4> argtypes(4, builder.getIndexType());
-  SmallVector<Location, 4> arglocs(4, builder.getUnknownLoc());
-  body->addArguments(argtypes, arglocs);
+  for (Value v : sizes) {
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+  }
   for (Value v : launchOperands) {
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
@@ -387,9 +388,10 @@ void PartitionOp::build(OpBuilder &builder, OperationState &result,
 
   Region *r = result.addRegion();
   Block *body = new Block();
-  SmallVector<Type, 4> argtypes(4, builder.getIndexType());
-  SmallVector<Location, 4> arglocs(4, builder.getUnknownLoc());
-  body->addArguments(argtypes, arglocs);
+  for (Value v : sizes) {
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+  }
   for (Value v : partitionOperands) {
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
@@ -464,6 +466,10 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
 
   Type indexType = parser.getBuilder().getIndexType();
 
+  auto tokenType = xilinx::air::AsyncTokenType::get(parser.getBuilder().getContext());
+  if (parser.resolveOperands(asyncDependencies, tokenType, result.operands))
+    return failure();
+
   if (succeeded(parser.parseOptionalKeyword("unroll"))) {
     if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
         parser.parseKeyword("in") || parser.parseLParen())
@@ -484,13 +490,10 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
     tileArgs.append(tileSizeRef);
     for (auto &a : tileArgs)
       a.type = indexType;
-  }
 
-  auto tokenType = xilinx::air::AsyncTokenType::get(parser.getBuilder().getContext());
-  if (parser.resolveOperands(asyncDependencies, tokenType, result.operands))
-    return failure();
-  if (parser.resolveOperands(tileSize, indexType, result.operands))
-    return failure();
+    if (parser.resolveOperands(tileSize, indexType, result.operands))
+      return failure();
+  }
 
   SmallVector<OpAsmParser::UnresolvedOperand, 4> kernelOperands;
   SmallVector<OpAsmParser::Argument, 4> kernelArguments;
