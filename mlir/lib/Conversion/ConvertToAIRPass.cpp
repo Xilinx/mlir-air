@@ -764,29 +764,42 @@ public:
     for (auto b : bounds)
       sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, b));
     auto launch = rewriter.create<air::LaunchOp>(op.getLoc(), sizes, args);
-    auto &bb = launch.body().front();
+    rewriter.setInsertionPointToStart(&launch.getRegion().front());
+    SmallVector<Value, 1> partitionSizes = {};
+    SmallVector<Value, 4> partitionOpers;
+    for (Value v : launch.getIds()) {
+      partitionOpers.push_back(v);
+    }
+    for (Value v : launch.getKernelArguments()) {
+      partitionOpers.push_back(v);
+    }
+    auto partition = rewriter.create<air::PartitionOp>(op.getLoc(), partitionSizes, partitionOpers);
+    auto &bb = partition.body().front();
     auto ivs = op.getInductionVars();
 
     for (int i = 0, e = ivs.size(); i < e; i++) {
-      ivs[i].replaceAllUsesWith(launch.getIds()[i]);
+      ivs[i].replaceAllUsesWith(partition.getKernelArgument(i));
     }
 
     auto &body = op.getBody()->getOperations();
     bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
-    rewriter.setInsertionPointToStart(&launch.getRegion().front());
+    rewriter.setInsertionPointToStart(&partition.getRegion().front());
     for (auto c : constants) {
       replaceAllUsesInRegionWith(
           c, rewriter.clone(*c.getDefiningOp())->getResult(0),
-          launch.getRegion());
+          partition.getRegion());
     }
 
     auto builder = OpBuilder::atBlockEnd(&bb);
-    builder.create<air::LaunchTerminatorOp>(loc);
+    builder.create<air::PartitionTerminatorOp>(builder.getUnknownLoc());
+    builder = OpBuilder::atBlockEnd(&launch.body().front());
+    builder.create<air::LaunchTerminatorOp>(builder.getUnknownLoc());
 
     int i = 0;
-    auto kernel_args = launch.getKernelArguments();
+    auto kernel_args = partition.getKernelArguments();
+    kernel_args = kernel_args.drop_front(ivs.size()); // Launch's induction vars
     for (Value v : args)
-      replaceAllUsesInRegionWith(v, kernel_args[i++], launch.getRegion());
+      replaceAllUsesInRegionWith(v, kernel_args[i++], partition.getRegion());
 
     if (op != parOp)
       op.erase();
