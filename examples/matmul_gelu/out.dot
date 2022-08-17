@@ -52,10 +52,8 @@ digraph G {
 50[label="scf::for_loop_begin"];
 51[label="scf::parallel_loop_end"];
 52[label="scf::parallel_loop_begin"];
-53[label="scf::for_loop_end"];
-54[label="scf::for_loop_begin"];
-55[label="scf::for_loop_end"];
-56[label="scf::for_loop_begin"];
+53[label="scf::parallel_loop_end"];
+54[label="scf::parallel_loop_begin"];
 44->45 ;
 42->43 ;
 42->44 ;
@@ -115,10 +113,8 @@ digraph G {
 52->50 ;
 43->53 ;
 45->53 ;
+51->54 ;
 54->41 ;
+12->54 ;
 54->13 ;
-53->55 ;
-51->56 ;
-56->54 ;
-12->56 ;
 }
