@@ -429,9 +429,15 @@ void PartitionOp::build(OpBuilder &builder, OperationState &result,
 }
 
 void PartitionOp::print(OpAsmPrinter &p) {
+
+  p << ' ';
+  auto nameAttr = (*this)->getAttrOfType<StringAttr>(mlir::SymbolTable::getSymbolAttrName());
+  if (nameAttr) {
+    p.printSymbolName(nameAttr);
+    p << ' ';
+  }
   
   if (getNumDims()){
-    p << ' ';
     printAsyncDependencies(p, *this, (asyncToken() ? asyncToken().getType() : Type()), asyncDependencies());
     p << " unroll(";
     p.printOperands(getIds());
@@ -463,8 +469,11 @@ void PartitionOp::print(OpAsmPrinter &p) {
 
   SmallVector<NamedAttribute, 8> filteredAttrs(
         llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-          return (OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr()
-            != attr.getName());
+          if (attr.getName() == OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr())
+            return false;
+          if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
+            return false;
+          return true;
         }));
   p << " ";
   if (filteredAttrs.size()) {
@@ -472,6 +481,9 @@ void PartitionOp::print(OpAsmPrinter &p) {
     p.printOptionalAttrDict(filteredAttrs);
     p << " ";
   }
+  if (nameAttr &&
+    body().front().getOperations().size() == 1)
+  return;
   p.printRegion(body(), /*printEntryBlockArgs=*/false);
 }
 
@@ -481,6 +493,10 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::Argument, 4> tileArgs;
   SmallVector<OpAsmParser::UnresolvedOperand, 4> tileSize;
   SmallVector<OpAsmParser::Argument, 4> tileSizeRef;
+
+  StringAttr nameAttr;
+  (void)parser.parseOptionalSymbolName(nameAttr, mlir::SymbolTable::getSymbolAttrName(),
+                                    result.attributes);
 
   Type asyncTokenType = nullptr;
   if (parseAsyncDependencies(parser, asyncTokenType, asyncDependencies))
@@ -551,8 +567,15 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
 
   Region *body = result.addRegion();
-  if (parser.parseRegion(*body, tileArgs))
-    return failure();
+  auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
+  ensureTerminator(*body, parser.getBuilder(), result.location);
+
+  if (!regionResult.hasValue()) {
+    if (!nameAttr)
+      return failure();
+    for (auto ta : tileArgs)
+      body->addArgument(ta.type, result.location);
+  }
 
   SmallVector<int32_t, 8> segmentSizes(3, 1);
   segmentSizes.front() = asyncDependencies.size();
