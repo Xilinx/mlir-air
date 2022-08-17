@@ -1,6 +1,6 @@
 // (c) Copyright 2021 Xilinx Inc.
 
-// RUN: air-opt %s -affine-to-air -cse
+// RUN: air-opt %s -air-copy-to-dma -cse
 // CHECK: func.func @myFunc
 // CHECK: air.dma_memcpy_2d (%3, %arg6, [%c0, %c0], [%1, %c0], %c1024, %c64, %c64) {id = 1 : i32} : (memref<16x64xf32, 2>, memref<64x64xf32>, [index, index], [index, index], index, index, index) -> ()
 // CHECK: air.dma_memcpy_2d (%4, %arg7, [%c0, %c0], [%c0, %2], %c1024, %c64, %c16) {id = 2 : i32} : (memref<64x16xf32, 2>, memref<64x64xf32>, [index, index], [index, index], index, index, index) -> ()

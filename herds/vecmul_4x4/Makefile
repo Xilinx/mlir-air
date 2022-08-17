@@ -38,7 +38,7 @@ vecmul_tiled_2.mlir: vecmul_tiled_1.mlir
 
 vecmul.air.mlir: vecmul_tiled_2.mlir
 	$(AIR_OPT) -air-herd-assign=herd-assign-depth=0 \
-				-affine-to-air \
+				-air-copy-to-dma \
 				-cse \
 				-o $@ $<
 

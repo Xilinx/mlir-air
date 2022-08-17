@@ -34,7 +34,7 @@ conv2d.air.mlir: conv2d.linalg-memrefs.mlir
 	patch < 1.conv2d.air.patch
 	# this patch remove bias functionality to avoid linalg.generic op
 	$(AIR_OPT)  -o 2.$@ 1.$@ -air-linalg-codegen='herd-size=4,4 l1-tile-size=1,32,16,16,16,3,3 l1-tile-permute=0,3,1,2,4,5,6'
-	$(AIR_OPT)  -o $@ 2.$@ -affine-to-air -cse -canonicalize 
+	$(AIR_OPT)  -o $@ 2.$@ -air-par-to-herd -air-copy-to-dma -cse -canonicalize 
 
 clean:
 	rm -rf *.mlir

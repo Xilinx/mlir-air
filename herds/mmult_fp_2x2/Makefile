@@ -20,7 +20,7 @@ mmult.linalg.mlir: mmult.mlir
 mmult.air.mlir: mmult.linalg.mlir
 	$(AIR_OPT)  -o $@ $< \
 			-air-linalg-codegen='herd-size=2,2' \
-			-affine-to-air \
+			-air-par-to-herd -air-copy-to-dma \
 			-convert-linalg-to-affine-loops
 
 mmult.air.a: mmult.air.mlir

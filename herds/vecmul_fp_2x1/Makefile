@@ -51,7 +51,7 @@ vecmul_tiled_3.mlir: vecmul_tiled_2.mlir
 vecmul_air.mlir: vecmul_tiled_3.mlir
 	$(AIR_OPT) -air-herd-assign=herd-assign-depth=1 \
 				-affine-super-vectorize="virtual-vector-size=8" \
-				-affine-to-air \
+				-air-par-to-herd -air-copy-to-dma \
 				-cse \
 				-o $@ $<
 

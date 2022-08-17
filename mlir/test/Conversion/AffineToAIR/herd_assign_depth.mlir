@@ -1,6 +1,6 @@
 // (c) Copyright 2022 Xilinx Inc.
 
-// RUN: air-opt %s -affine-to-air='herd-assign-depth=1' | FileCheck %s
+// RUN: air-opt %s -air-par-to-herd='depth=1' | FileCheck %s
 // CHECK: scf.parallel
 // CHECK: air.launch_herd
 #map0 = affine_map<(d0) -> (-d0 + 32)>

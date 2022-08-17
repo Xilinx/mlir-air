@@ -58,7 +58,7 @@ add_one.tiled_2.mlir: add_one.tiled_1.mlir
 
 add_one.air.mlir: add_one.tiled_2.mlir
 	$(AIR_OPT) -air-herd-assign=herd-assign-depth=0 \
-				-affine-to-air \
+				-air-copy-to-dma \
 				-cse \
 				-o $@ $<
 

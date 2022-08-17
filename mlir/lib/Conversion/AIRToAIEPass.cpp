@@ -756,7 +756,7 @@ public:
             lockRelValue = 1;
             alloc = dmaOpIf.getSrcMemref();
           }
-          alloc.dump();
+
           if (auto bco =
                   dyn_cast<bufferization::ToMemrefOp>(alloc.getDefiningOp()))
             builder.setInsertionPoint(bco.getOperand().getDefiningOp());
@@ -781,7 +781,6 @@ public:
             }
           }
           if (need_unlock) {
-            alloc.dump();
             auto t = alloc.getParentBlock()->getTerminator();
             builder.setInsertionPoint(t);
             builder.create<AIE::UseLockOp>(t->getLoc(), lockOp, lockRelValue,
