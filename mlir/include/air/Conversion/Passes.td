@@ -101,7 +101,9 @@ def ParallelToLaunch : Pass<"air-par-to-launch", "ModuleOp"> {
   let options = [
     Option<"clAssignDepth", "depth", "int",
           /*default=*/"-1",
-          "Given a nest of parallel for loops, which depth to map to air.launch">
+          "Given a nest of parallel for loops, which depth to map to air.launch">,
+    Option<"clHasPartition", "has-air-partition", "bool", /*default=*/"false",
+           "Whether to create an air.partition op in air.launch's region">,
   ];
 }
 

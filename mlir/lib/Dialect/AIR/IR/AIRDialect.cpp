@@ -171,9 +171,10 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
 
   Region *r = result.addRegion();
   Block *body = new Block();
-  SmallVector<Type, 4> argtypes(4, builder.getIndexType());
-  SmallVector<Location, 4> arglocs(4, builder.getUnknownLoc());
-  body->addArguments(argtypes, arglocs);
+  for (Value v : sizes) {
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+  }
   for (Value v : launchOperands) {
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
@@ -411,9 +412,10 @@ void PartitionOp::build(OpBuilder &builder, OperationState &result,
 
   Region *r = result.addRegion();
   Block *body = new Block();
-  SmallVector<Type, 4> argtypes(4, builder.getIndexType());
-  SmallVector<Location, 4> arglocs(4, builder.getUnknownLoc());
-  body->addArguments(argtypes, arglocs);
+  for (Value v : sizes) {
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+  }
   for (Value v : partitionOperands) {
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
@@ -427,9 +429,15 @@ void PartitionOp::build(OpBuilder &builder, OperationState &result,
 }
 
 void PartitionOp::print(OpAsmPrinter &p) {
+
+  p << ' ';
+  auto nameAttr = (*this)->getAttrOfType<StringAttr>(mlir::SymbolTable::getSymbolAttrName());
+  if (nameAttr) {
+    p.printSymbolName(nameAttr);
+    p << ' ';
+  }
   
   if (getNumDims()){
-    p << ' ';
     printAsyncDependencies(p, *this, (asyncToken() ? asyncToken().getType() : Type()), asyncDependencies());
     p << " unroll(";
     p.printOperands(getIds());
@@ -461,8 +469,11 @@ void PartitionOp::print(OpAsmPrinter &p) {
 
   SmallVector<NamedAttribute, 8> filteredAttrs(
         llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-          return (OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr()
-            != attr.getName());
+          if (attr.getName() == OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr())
+            return false;
+          if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
+            return false;
+          return true;
         }));
   p << " ";
   if (filteredAttrs.size()) {
@@ -470,6 +481,9 @@ void PartitionOp::print(OpAsmPrinter &p) {
     p.printOptionalAttrDict(filteredAttrs);
     p << " ";
   }
+  if (nameAttr &&
+    body().front().getOperations().size() == 1)
+  return;
   p.printRegion(body(), /*printEntryBlockArgs=*/false);
 }
 
@@ -480,6 +494,10 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::UnresolvedOperand, 4> tileSize;
   SmallVector<OpAsmParser::Argument, 4> tileSizeRef;
 
+  StringAttr nameAttr;
+  (void)parser.parseOptionalSymbolName(nameAttr, mlir::SymbolTable::getSymbolAttrName(),
+                                    result.attributes);
+
   Type asyncTokenType = nullptr;
   if (parseAsyncDependencies(parser, asyncTokenType, asyncDependencies))
     return failure();
@@ -487,6 +505,10 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
     result.addTypes(asyncTokenType);
 
   Type indexType = parser.getBuilder().getIndexType();
+
+  auto tokenType = xilinx::air::AsyncTokenType::get(parser.getBuilder().getContext());
+  if (parser.resolveOperands(asyncDependencies, tokenType, result.operands))
+    return failure();
 
   if (succeeded(parser.parseOptionalKeyword("unroll"))) {
     if (parser.parseArgumentList(tileArgs, OpAsmParser::Delimiter::Paren) ||
@@ -508,13 +530,10 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
     tileArgs.append(tileSizeRef);
     for (auto &a : tileArgs)
       a.type = indexType;
-  }
 
-  auto tokenType = xilinx::air::AsyncTokenType::get(parser.getBuilder().getContext());
-  if (parser.resolveOperands(asyncDependencies, tokenType, result.operands))
-    return failure();
-  if (parser.resolveOperands(tileSize, indexType, result.operands))
-    return failure();
+    if (parser.resolveOperands(tileSize, indexType, result.operands))
+      return failure();
+  }
 
   SmallVector<OpAsmParser::UnresolvedOperand, 4> kernelOperands;
   SmallVector<OpAsmParser::Argument, 4> kernelArguments;
@@ -548,8 +567,15 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
 
   Region *body = result.addRegion();
-  if (parser.parseRegion(*body, tileArgs))
-    return failure();
+  auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
+  ensureTerminator(*body, parser.getBuilder(), result.location);
+
+  if (!regionResult.hasValue()) {
+    if (!nameAttr)
+      return failure();
+    for (auto ta : tileArgs)
+      body->addArgument(ta.type, result.location);
+  }
 
   SmallVector<int32_t, 8> segmentSizes(3, 1);
   segmentSizes.front() = asyncDependencies.size();
