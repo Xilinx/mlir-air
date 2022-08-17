@@ -26,7 +26,7 @@ namespace airrt {
 
 void ModuleMetadataOp::print(OpAsmPrinter &p) {
   p.printOptionalAttrDictWithKeyword((*this)->getAttrs());
-  p.printRegion(herds(), /*printEntryBlockArgs=*/false,
+  p.printRegion(partitions(), /*printEntryBlockArgs=*/false,
                 /*printBlockTerminators=*/false);
 }
 
@@ -39,6 +39,24 @@ ParseResult ModuleMetadataOp::parse(OpAsmParser &parser,
     return failure();
   ModuleMetadataOp::ensureTerminator(*body, parser.getBuilder(),
                                      result.location);
+  return success();
+}
+
+void PartitionMetadataOp::print(OpAsmPrinter &p) {
+  p.printOptionalAttrDictWithKeyword((*this)->getAttrs());
+  p.printRegion(herds(), /*printEntryBlockArgs=*/false,
+                /*printBlockTerminators=*/false);
+}
+
+ParseResult PartitionMetadataOp::parse(OpAsmParser &parser,
+                                       OperationState &result) {
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+  auto *body = result.addRegion();
+  if (parser.parseRegion(*body, llvm::None, false))
+    return failure();
+  PartitionMetadataOp::ensureTerminator(*body, parser.getBuilder(),
+                                        result.location);
   return success();
 }
 

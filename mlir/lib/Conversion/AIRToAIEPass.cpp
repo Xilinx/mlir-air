@@ -184,14 +184,16 @@ public:
 
   typedef std::vector< std::tuple<AIE::BufferOp, AIE::LockOp, AIE::DMAChan> > lock_allocation_list;
 
-  uint64_t BufferId;
-
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {  
     registry.insert<xilinx::air::airDialect>();
     registry.insert<xilinx::airrt::AIRRtDialect>();
     registry.insert<xilinx::AIE::AIEDialect>();
     registry.insert<LLVM::LLVMDialect>();
   }
+
+  uint64_t BufferId;
+  unsigned RowOffset;
+  unsigned ColOffset;
 
   const int tile_dma_channels = 2;
   std::vector<std::tuple<int32_t, int64_t, int64_t, int64_t>>
@@ -320,8 +322,8 @@ public:
 
   // get tileop using herd-relative coordinates
   AIE::TileOp getTileOp(ModuleOp aie_module, int herd_col, int herd_row) {
-    int col = herd_col + AIRToAIEColOffset;
-    int row = herd_row + AIRToAIERowOffset;
+    int col = herd_col + ColOffset;
+    int row = herd_row + RowOffset;
     return getPhysTileOp(aie_module, col, row);
   }
 
@@ -386,7 +388,7 @@ public:
     getAIRDmaMemcpyInRegion(core.body(), dma_memcpy_ops);
 
     auto aie_module = core->getParentOfType<ModuleOp>();
-    auto tile = getTileOp(aie_module, x, y);
+    auto tile = core.getTileOp();
 
     for (auto o : dma_memcpy_ops) {
 
@@ -457,16 +459,28 @@ public:
     return tile_dma_copies;
   }
 
-  airrt::HerdMetadataOp createHerdMetadata(airrt::ModuleMetadataOp module_meta, air::HerdOp herd)
+  airrt::HerdMetadataOp createHerdMetadata(airrt::ModuleMetadataOp module_meta, air::HerdLaunchOp herd)
   {
     auto builder = OpBuilder::atBlockTerminator(module_meta.getBody());
     auto loc = builder.getUnknownLoc();
+    auto partition_meta = builder.create<airrt::PartitionMetadataOp>(loc, name);
+    builder.createBlock(&partition_meta.herds());
+    builder.create<airrt::PartitionMetadataTerminatorOp>(loc);
 
-    std::string herd_name = "herd";
+    return partition_meta;
+  }
+
+  airrt::HerdMetadataOp
+  createHerdMetadata(airrt::PartitionMetadataOp partition_meta,
+                     air::HerdLaunchOp herd) {
+    auto builder = OpBuilder::atBlockTerminator(partition_meta.getBody());
+    auto loc = builder.getUnknownLoc();
+
+    std::string name = "herd";
     if (auto attr = herd->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-      herd_name = attr.getValue().str();
+      name = attr.getValue().str();
 
-    auto herd_meta = builder.create<airrt::HerdMetadataOp>(loc, herd_name);
+    auto herd_meta = builder.create<airrt::HerdMetadataOp>(loc, name);
     return herd_meta;
   }
 
@@ -722,8 +736,8 @@ public:
 
     for (AIE::CoreOp core : cores) {
       AIE::TileOp tile = core.getTileOp();
-      auto x = tile.col() - AIRToAIEColOffset;
-      auto y = tile.row() - AIRToAIERowOffset;
+      auto x = tile.col() - ColOffset;
+      auto y = tile.row() - RowOffset;
 
       // BlockAndValueMapping remap;
 
@@ -953,8 +967,6 @@ public:
 
     for (AIE::CoreOp core : cores) {
       AIE::TileOp tile = core.getTileOp();
-      auto x = tile.col() - AIRToAIEColOffset;
-      auto y = tile.row() - AIRToAIERowOffset;
       // generate a buffer for each alloc into L1
       core.walk([&](Operation *op) {
         auto alloc = dyn_cast<memref::AllocOp>(op);
@@ -975,8 +987,8 @@ public:
 
         auto buffer = allocateBufferOp(
             module, memrefTy, tile,
-            op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()), x,
-            y);
+            op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
+            tile.col(), tile.row());
         // map uses of the alloc to the new buffer
         remap.map(op->getResult(0), buffer);
 
@@ -1014,8 +1026,8 @@ public:
 
   void createAIEModulesAndOutlineCores(
       ModuleOp module,
-      std::vector<std::pair<ModuleOp, air::HerdOp>> &aie_modules) {
-    module.walk([&](xilinx::air::HerdOp h) {
+      std::vector<std::pair<ModuleOp, air::HerdLaunchOp>> &aie_modules) {
+    module.walk([&](xilinx::air::HerdLaunchOp h) {
       // if the herd has a symbol name, then the module is
       // named aie.symbol_name, otherwise it's aie.herd_N
       std::string herd_name;
@@ -1048,7 +1060,7 @@ public:
       int64_t herd_size_x =
           cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
       int64_t herd_size_y =
-          cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
+          cast<arith::ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
 
       // std::vector<AIE::TileOp> shim_dma_inits;
       // std::vector<AIE::TileOp> l2_dma_tiles;
@@ -1077,9 +1089,10 @@ public:
             std::string herd_name =
                 aie_module.getName()->str().substr(strlen("aie."));
             core->setAttr("elf_file",
-                          StringAttr::get(ctx, herd_name + "_core_" +
-                                                   std::to_string(x) + "_" +
-                                                   std::to_string(y) + ".elf"));
+                          StringAttr::get(
+                              ctx, herd_name + "_core_" +
+                                       std::to_string(ColOffset + x) + "_" +
+                                       std::to_string(RowOffset + y) + ".elf"));
           }
 
           // the buffers and locks created below need to go before the core and
@@ -1152,7 +1165,7 @@ public:
   }
 
   void cleanupAIEModules(
-      std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules) {
+      std::vector<std::pair<ModuleOp, air::HerdLaunchOp>> aie_modules) {
     for (auto p : aie_modules) {
       // quick n dirty dce
       auto aie_module = std::get<0>(p);
@@ -1202,19 +1215,27 @@ public:
 
     auto loc = builder.getUnknownLoc();
     auto module_meta = builder.create<airrt::ModuleMetadataOp>(loc);
-    builder.createBlock(&module_meta.herds());
+    builder.createBlock(&module_meta.partitions());
     builder.create<airrt::ModuleMetadataTerminatorOp>(loc);
 
     // If we have multiple herds then we must emit them into different aie
     // modules to avoid resource conflicts in the AIE physical dialect.
-    std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;
+    std::vector<std::pair<ModuleOp, air::HerdLaunchOp>> aie_modules;
 
     createAIEModulesAndOutlineCores(module, aie_modules);
 
+    std::set<ModuleOp> seen;
     for (auto &p : aie_modules) {
       ModuleOp m = std::get<0>(p);
-      xilinx::air::HerdOp h = std::get<1>(p);
+      xilinx::air::HerdLaunchOp h = std::get<1>(p);
       auto ctx = m->getContext();
+
+      ColOffset = AIRToAIEColOffset;
+      RowOffset = AIRToAIERowOffset;
+      if (auto a = h->getAttrOfType<IntegerAttr>("x_loc"))
+        ColOffset = a.getInt();
+      if (auto a = h->getAttrOfType<IntegerAttr>("y_loc"))
+        RowOffset = a.getInt();
 
       specializeHerdAffineIf(m);
       lowerAirRegions(m);
@@ -1250,6 +1271,7 @@ public:
       }
       lowerPipelineGetPut(m);
 
+      //      createAIRRtMetadata(module_meta, shimDmaAlloc, L2DmaAlloc);
       std::vector<Attribute> dma_allocations;
       for (auto &t : shimDmaAlloc.s2mm_allocs) {
         auto tileOp = t.dma_tile;
@@ -1335,18 +1357,25 @@ public:
           dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
         }
       }
-      auto herd_meta = createHerdMetadata(module_meta, h);
+      auto partition_meta = getOrCreatePartitionMetadata(
+          module_meta, h->getParentOfType<air::PartitionOp>());
+      auto herd_meta = createHerdMetadata(partition_meta, h);
       herd_meta->setAttr("dma_allocations",
                          ArrayAttr::get(ctx, dma_allocations));
       tile_dma_S2MM_allocs.clear();
       tile_dma_MM2S_allocs.clear();
     }
-
+    module_meta.dump();
     cleanupAIEModules(aie_modules);
 
     // emit aie_modules to files or to stdout
+    seen.clear();
     for (auto p : aie_modules) {
       auto aie_module = std::get<0>(p);
+      if (seen.find(aie_module) == seen.end())
+        seen.insert(aie_module);
+      else
+        continue;
       if (AIRToAIEModulePrefix != "-") {
         if (AIRToAIEModulePrefix != "/dev/null") {
           std::error_code EC;

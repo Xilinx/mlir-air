@@ -61,21 +61,34 @@ namespace {
 }
   void registerAIRRtTranslations() {
 
-    TranslateFromMLIRRegistration registrationMMap(
-        "airrt-generate-json",
-        [](ModuleOp module, raw_ostream &output) {
-          llvm::json::Object moduleJSON;
-          for (auto module_meta : module.getOps<airrt::ModuleMetadataOp>()) {
-            for (auto herd_meta : module_meta.getOps<airrt::HerdMetadataOp>()) {
+void registerAIRRtTranslations() {
+
+  TranslateFromMLIRRegistration registrationMMap(
+      "airrt-generate-json",
+      [](ModuleOp module, raw_ostream &output) {
+        llvm::json::Object moduleJSON;
+        for (auto module_meta : module.getOps<airrt::ModuleMetadataOp>()) {
+          llvm::json::Object partitionJSON;
+          for (auto partition_meta :
+               module_meta.getOps<airrt::PartitionMetadataOp>()) {
+            for (auto herd_meta :
+                 partition_meta.getOps<airrt::HerdMetadataOp>()) {
               llvm::json::Object herdJSON;
               for (auto a : herd_meta->getAttrs()) {
                 auto ident = a.getName();
                 auto attr = a.getValue();
                 herdJSON[ident.str()] = attrToJSON(attr);
               }
-              moduleJSON[herd_meta.sym_name()] =
+              partitionJSON[herd_meta.sym_name()] =
                   llvm::json::Value(std::move(herdJSON));
             }
+            for (auto a : partition_meta->getAttrs()) {
+              auto ident = a.getName();
+              auto attr = a.getValue();
+              partitionJSON[ident.str()] = attrToJSON(attr);
+            }
+            moduleJSON[partition_meta.sym_name()] =
+                llvm::json::Value(std::move(partitionJSON));
           }
           llvm::json::Value topv(std::move(moduleJSON));
           std::string ret;

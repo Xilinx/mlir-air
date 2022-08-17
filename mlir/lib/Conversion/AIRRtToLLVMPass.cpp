@@ -43,47 +43,101 @@ LLVM::LLVMStructType getShimDescriptorType(MLIRContext *ctx ) {
 }
 
 // struct herd_desc_t {
-//   int32_t name_length;
+//   int64_t name_length;
 //   char *name;
 //   shim_desc_t *shim_desc;
 // }
 LLVM::LLVMStructType getHerdDescriptorType(MLIRContext *ctx ) {
-  return LLVM::LLVMStructType::getLiteral(ctx,{
-    // int32_t name_length
-    IntegerType::get(ctx, 32),
-    // char *name
-    LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8)),
-    // shim_desc_t *shim_desc
-    LLVM::LLVMPointerType::get(getShimDescriptorType(ctx)),
-  });
+  return LLVM::LLVMStructType::getLiteral(
+      ctx, {
+               // int64_t name_length
+               IntegerType::get(ctx, 64),
+               // char *name
+               LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8)),
+               // shim_desc_t *shim_desc
+               LLVM::LLVMPointerType::get(getShimDescriptorType(ctx)),
+           });
 }
+
+// struct air_partition_desc_t {
+//   int64_t name_length;
+//   char *name;
+//   uint64_t herd_length;
+//   air_herd_desc_t **herd_descs;
+// };
+LLVM::LLVMStructType getPartitionDescriptorType(MLIRContext *ctx,
+                                                int64_t herd_length) {
+  return LLVM::LLVMStructType::getLiteral(
+      ctx, {
+               // int64_t name_length;
+               IntegerType::get(ctx, 64),
+               // char *name;
+               LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8)),
+               // uint64_t herd_length;
+               IntegerType::get(ctx, 64),
+               // air_herd_desc_t *herd_descs[herd_length];
+               LLVM::LLVMPointerType::get(LLVM::LLVMArrayType::get(
+                   LLVM::LLVMPointerType::get(getHerdDescriptorType(ctx)),
+                   herd_length)),
+           });
+};
 
 // struct module_desc_t {
 //   int64_t length;
 //   herd_desc_t *herd_descs[length];
 // }
-LLVM::LLVMStructType getModuleDescriptorType(MLIRContext *ctx, int64_t length) {
-  return LLVM::LLVMStructType::getLiteral(ctx,{
-    // int64_t length
-    IntegerType::get(ctx, 64),
-    // herd_desc_t *herd_descs[length]
-    LLVM::LLVMPointerType::get(LLVM::LLVMArrayType::get(
-      LLVM::LLVMPointerType::get(getHerdDescriptorType(ctx)),length)),
-  });
+LLVM::LLVMStructType getModuleDescriptorType(MLIRContext *ctx,
+                                             ArrayRef<int64_t> herd_count) {
+  auto max_herds = *std::max_element(herd_count.begin(), herd_count.end());
+  auto num_partitions = herd_count.size();
+  return LLVM::LLVMStructType::getLiteral(
+      ctx, {
+               // int64_t length
+               IntegerType::get(ctx, 64),
+               // herd_desc_t *herd_descs[length]
+               LLVM::LLVMPointerType::get(LLVM::LLVMArrayType::get(
+                   LLVM::LLVMPointerType::get(
+                       getPartitionDescriptorType(ctx, max_herds)),
+                   num_partitions)),
+           });
 }
 
-LLVM::GlobalOp createModuleDescriptor(OpBuilder builder,
-                                      ModuleOp module,
-                                      std::vector<LLVM::GlobalOp> &herd_descs)
-{
+LLVM::GlobalOp getOrCreateAIRString(OpBuilder builder, ModuleOp module,
+                                    StringRef str) {
+  std::string llvmSymbolName = std::string("__air_string_") + str.str();
+  auto global = module.lookupSymbol(llvmSymbolName);
+  if (!global) {
+    auto arrayTy = LLVM::LLVMArrayType::get(
+        IntegerType::get(builder.getContext(), 8), str.size());
+    auto loc = builder.getUnknownLoc();
+    global = builder.create<LLVM::GlobalOp>(
+        loc, arrayTy, /*isConstant=*/true, LLVM::Linkage::Internal,
+        llvmSymbolName, builder.getStringAttr(str));
+  }
+  return cast<LLVM::GlobalOp>(global);
+}
+
+LLVM::GlobalOp
+createPartitionDescriptor(OpBuilder builder, ModuleOp module,
+                          ArrayRef<LLVM::GlobalOp> herd_descs,
+                          xilinx::airrt::PartitionMetadataOp partition) {
   auto ctx = module.getContext();
   auto loc = builder.getUnknownLoc();
-  auto descTy = getModuleDescriptorType(ctx, herd_descs.size());
+
+  auto descTy = getPartitionDescriptorType(ctx, herd_descs.size());
+
+  std::string partition_name = "partition";
+  if (auto attr = partition->getAttrOfType<StringAttr>(
+          SymbolTable::getSymbolAttrName()))
+    partition_name = attr.getValue().str();
+
+  auto partitionName = getOrCreateAIRString(builder, module, partition_name);
+
   auto arrayTy =
     LLVM::LLVMArrayType::get(
       LLVM::LLVMPointerType::get(getHerdDescriptorType(ctx)),
                                  herd_descs.size());
-  std::string str_name = "__air_module_herd_descriptors";
+  std::string str_name = "__air_partition_herd_descriptors";
   int which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
@@ -101,8 +155,8 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder,
     }
     builder.create<LLVM::ReturnOp>(loc, data);
   }
-  
-  str_name = "__air_module_descriptor";
+
+  str_name = "__air_partition_descriptor";
   which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
@@ -114,6 +168,18 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder,
     builder.createBlock(&descGlobal.getInitializerRegion());
     Value desc = builder.create<LLVM::UndefOp>(loc, descTy);
 
+    auto partitionNameArray =
+        builder.create<LLVM::AddressOfOp>(loc, partitionName);
+    auto partitionNameLen = builder.create<LLVM::ConstantOp>(
+        loc, IntegerType::get(ctx, 64),
+        builder.getI32IntegerAttr(partition_name.size()));
+
+    auto c0 = builder.create<LLVM::ConstantOp>(loc, IntegerType::get(ctx, 32),
+                                               builder.getI32IntegerAttr(0));
+    auto partitionNamePtr = builder.create<LLVM::GEPOp>(
+        loc, LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8)),
+        partitionNameArray, ValueRange({c0, c0}));
+
     // length of the array of herd_desc_t
     auto herd_descs_len = 
       builder.create<LLVM::ConstantOp>(loc, IntegerType::get(ctx, 64),
@@ -121,31 +187,83 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder,
 
     auto herd_descs_global_addr = builder.create<LLVM::AddressOfOp>(loc, herd_descs_global);
 
-    desc = builder.create<LLVM::InsertValueOp>(loc, desc, herd_descs_len,
+    desc = builder.create<LLVM::InsertValueOp>(loc, desc, partitionNameLen,
                                                builder.getI32ArrayAttr(0));
 
-    desc = builder.create<LLVM::InsertValueOp>(loc, desc, herd_descs_global_addr,
+    desc = builder.create<LLVM::InsertValueOp>(loc, desc, partitionNamePtr,
                                                builder.getI32ArrayAttr(1));
 
+    desc = builder.create<LLVM::InsertValueOp>(loc, desc, herd_descs_len,
+                                               builder.getI32ArrayAttr(2));
+
+    desc = builder.create<LLVM::InsertValueOp>(
+        loc, desc, herd_descs_global_addr, builder.getI32ArrayAttr(3));
+
     builder.create<LLVM::ReturnOp>(loc, desc);
+    descGlobal.getInitializerRegion().front().dump();
   }
   return descGlobal;
 }
 
-LLVM::GlobalOp getOrCreateAIRString(OpBuilder builder, ModuleOp module, StringRef str)
-{
-  std::string llvmSymbolName = std::string("__air_string_") + str.str();
-  auto global = module.lookupSymbol(llvmSymbolName);
-  if (!global) {
-    auto arrayTy =
-      LLVM::LLVMArrayType::get(IntegerType::get(builder.getContext(), 8),
-                               str.size());
-    auto loc = builder.getUnknownLoc();
-    global = builder.create<LLVM::GlobalOp>(
-        loc, arrayTy, /*isConstant=*/true, LLVM::Linkage::Internal,
-        llvmSymbolName, builder.getStringAttr(str));
+LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
+                                      ArrayRef<LLVM::GlobalOp> partition_descs,
+                                      ArrayRef<int64_t> partition_herd_count) {
+  auto ctx = module.getContext();
+  auto loc = builder.getUnknownLoc();
+  auto descTy = getModuleDescriptorType(ctx, partition_herd_count);
+  auto max_herds = *std::max_element(partition_herd_count.begin(),
+                                     partition_herd_count.end());
+  auto arrayTy = LLVM::LLVMArrayType::get(
+      LLVM::LLVMPointerType::get(getPartitionDescriptorType(ctx, max_herds)),
+      partition_herd_count.size());
+  std::string str_name = "__air_module_partition_descriptors";
+  int which_try = 0;
+  while (module.lookupSymbol(str_name))
+    str_name = str_name + "_" + std::to_string(++which_try);
+  auto partition_descs_global = builder.create<LLVM::GlobalOp>(
+      loc, arrayTy, /*isConstant=*/true, LLVM::Linkage::Internal, str_name,
+      /*value=*/Attribute());
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.createBlock(&partition_descs_global.getInitializerRegion());
+    Value data = builder.create<LLVM::UndefOp>(loc, arrayTy);
+    for (int i = 0, e = partition_descs.size(); i < e; i++) {
+      auto a = builder.create<LLVM::AddressOfOp>(loc, partition_descs[i]);
+      data = builder.create<LLVM::InsertValueOp>(loc, data, a,
+                                                 builder.getI32ArrayAttr({i}));
+    }
+    builder.create<LLVM::ReturnOp>(loc, data);
   }
-  return cast<LLVM::GlobalOp>(global);
+
+  str_name = "__air_module_descriptor";
+  which_try = 0;
+  while (module.lookupSymbol(str_name))
+    str_name = str_name + "_" + std::to_string(++which_try);
+  auto descGlobal = builder.create<LLVM::GlobalOp>(
+      loc, descTy, /*isConstant=*/true, LLVM::Linkage::External, str_name,
+      /*value=*/Attribute());
+  if (1) {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.createBlock(&descGlobal.getInitializerRegion());
+    Value desc = builder.create<LLVM::UndefOp>(loc, descTy);
+
+    // length of the array of herd_desc_t
+    auto partition_descs_len = builder.create<LLVM::ConstantOp>(
+        loc, IntegerType::get(ctx, 64),
+        builder.getI64IntegerAttr(partition_descs.size()));
+
+    auto partition_descs_global_addr =
+        builder.create<LLVM::AddressOfOp>(loc, partition_descs_global);
+
+    desc = builder.create<LLVM::InsertValueOp>(loc, desc, partition_descs_len,
+                                               builder.getI32ArrayAttr(0));
+
+    desc = builder.create<LLVM::InsertValueOp>(
+        loc, desc, partition_descs_global_addr, builder.getI32ArrayAttr(1));
+
+    builder.create<LLVM::ReturnOp>(loc, desc);
+  }
+  return descGlobal;
 }
 
 LLVM::GlobalOp createHerdDescriptor(OpBuilder builder, ModuleOp module,
@@ -176,9 +294,9 @@ LLVM::GlobalOp createHerdDescriptor(OpBuilder builder, ModuleOp module,
 
   Value desc = builder.create<LLVM::UndefOp>(loc, descTy);
   auto herdNameArray = builder.create<LLVM::AddressOfOp>(loc, herdName);
-  auto herdNameLen = 
-    builder.create<LLVM::ConstantOp>(loc, IntegerType::get(ctx, 32),
-                                      builder.getI32IntegerAttr(herd_name.size()));
+  auto herdNameLen = builder.create<LLVM::ConstantOp>(
+      loc, IntegerType::get(ctx, 64),
+      builder.getI32IntegerAttr(herd_name.size()));
 
   auto c0 = builder.create<LLVM::ConstantOp>(loc, IntegerType::get(ctx, 32),
                                               builder.getI32IntegerAttr(0));
@@ -296,33 +414,47 @@ public:
                   PatternRewriter &rewriter) const override
   {
     auto module = op->getParentOfType<ModuleOp>();
-    std::vector<LLVM::GlobalOp> herd_descs;
-    for (auto &herd_op : op.herds().front()) {
-      auto herd_meta = dyn_cast<xilinx::airrt::HerdMetadataOp>(herd_op);
-      if (!herd_meta) continue;
+    SmallVector<LLVM::GlobalOp, 4> partition_descs;
+    SmallVector<int64_t, 4> partition_herd_count;
+    auto &partition_block = op.partitions().front();
+    for (auto partition_meta :
+         partition_block.getOps<xilinx::airrt::PartitionMetadataOp>()) {
 
-      int64_t cols[16][8][8] = {{{0}}};
-      int64_t chans[16][8][8] = {{{0}}};
+      SmallVector<LLVM::GlobalOp, 4> herd_descs;
+      auto &herd_block = partition_meta.herds().front();
+      for (auto herd_meta :
+           herd_block.getOps<xilinx::airrt::HerdMetadataOp>()) {
 
-      // "dma_allocations" attribute is an array of DictAttr
-      ArrayAttr shim_attr = herd_meta->getAttrOfType<ArrayAttr>("dma_allocations");
-      assert(shim_attr);
-      for (auto &shim_alloc : shim_attr) {
-        auto shim_alloc_dict = shim_alloc.cast<DictionaryAttr>();
-        auto id = shim_alloc_dict.get("id").cast<IntegerAttr>().getInt();
-        auto row = shim_alloc_dict.get("row").cast<IntegerAttr>().getInt();
-        auto col= shim_alloc_dict.get("col").cast<IntegerAttr>().getInt();
-        auto channel = shim_alloc_dict.get("channel").cast<IntegerAttr>().getInt();
-        auto location = shim_alloc_dict.get("location").cast<IntegerAttr>().getInt();
-        cols[id-1][row][col] = location;
-        chans[id-1][row][col] = channel;
+        int64_t cols[16][8][8] = {{{0}}};
+        int64_t chans[16][8][8] = {{{0}}};
+
+        // "dma_allocations" attribute is an array of DictAttr
+        ArrayAttr shim_attr =
+            herd_meta->getAttrOfType<ArrayAttr>("dma_allocations");
+        assert(shim_attr);
+        for (auto &shim_alloc : shim_attr) {
+          auto shim_alloc_dict = shim_alloc.cast<DictionaryAttr>();
+          auto id = shim_alloc_dict.get("id").cast<IntegerAttr>().getInt();
+          auto row = shim_alloc_dict.get("row").cast<IntegerAttr>().getInt();
+          auto col = shim_alloc_dict.get("col").cast<IntegerAttr>().getInt();
+          auto channel =
+              shim_alloc_dict.get("channel").cast<IntegerAttr>().getInt();
+          auto location =
+              shim_alloc_dict.get("location").cast<IntegerAttr>().getInt();
+          cols[id - 1][row][col] = location;
+          chans[id - 1][row][col] = channel;
+        }
+
+        auto shim_desc = createShimDescriptor(rewriter, module, cols, chans);
+        herd_descs.push_back(
+            createHerdDescriptor(rewriter, module, shim_desc, herd_meta));
       }
-
-      auto shim_desc = createShimDescriptor(rewriter, module, cols, chans);
-      herd_descs.push_back(
-        createHerdDescriptor(rewriter, module, shim_desc, herd_meta));
+      partition_herd_count.push_back(herd_descs.size());
+      partition_descs.push_back(createPartitionDescriptor(
+          rewriter, module, herd_descs, partition_meta));
     }
-    auto desc = createModuleDescriptor(rewriter, module, herd_descs);
+    auto desc = createModuleDescriptor(rewriter, module, partition_descs,
+                                       partition_herd_count);
     rewriter.replaceOp(op, desc->getResults());
 
     return success();

@@ -38,7 +38,7 @@ using namespace xilinx::air;
 
 namespace {
 
-class AIRHerdConversion : public ConversionPattern {
+class AIRHerdLaunchConversion : public ConversionPattern {
 public:
   explicit AIRHerdConversion(MLIRContext *context)
       : ConversionPattern(xilinx::air::HerdOp::getOperationName(), 1, context) {}
@@ -610,7 +610,7 @@ public:
               (int)xilinx::air::MemorySpace::L2);
     });
 
-    air_patterns.add<L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion, AIRHerdConversion>(context);
+    air_patterns.add<L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion, AIRHerdLaunchConversion>(context);
 
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(air_patterns,
                                                                    converter);
