@@ -437,8 +437,9 @@ void PartitionOp::print(OpAsmPrinter &p) {
     p << ' ';
   }
   
+  printAsyncDependencies(p, *this, (asyncToken() ? asyncToken().getType() : Type()), asyncDependencies());
+  
   if (getNumDims()){
-    printAsyncDependencies(p, *this, (asyncToken() ? asyncToken().getType() : Type()), asyncDependencies());
     p << " unroll(";
     p.printOperands(getIds());
     p << ") in (";
