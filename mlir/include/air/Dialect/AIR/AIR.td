@@ -14,6 +14,7 @@ class air_Op<string mnemonic, list<Trait> traits = []> :
     Op<air_Dialect, mnemonic, traits>;
 
 def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
+                                     air_HierarchyInterface,
                                      AttrSizedOperandSegments,
                                      IsolatedFromAbove,
                                      AffineScope,
@@ -70,6 +71,7 @@ def air_LaunchTerminatorOp : air_Op<"launch_terminator", [HasParent<"LaunchOp">,
 }
 
 def air_PartitionOp : air_Op<"partition", [air_AsyncOpInterface,
+                                     air_HierarchyInterface,
                                      AttrSizedOperandSegments,
                                      IsolatedFromAbove,
                                      AffineScope,
