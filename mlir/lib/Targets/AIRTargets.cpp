@@ -34,32 +34,28 @@ namespace air {
 
 namespace {
 
-   llvm::json::Value attrToJSON(Attribute &attr) {
-    if (auto a = attr.dyn_cast<StringAttr>()) {
-      return llvm::json::Value(a.getValue().str());
+llvm::json::Value attrToJSON(Attribute &attr) {
+  if (auto a = attr.dyn_cast<StringAttr>()) {
+    return llvm::json::Value(a.getValue().str());
+  } else if (auto array_attr = attr.dyn_cast<ArrayAttr>()) {
+    llvm::json::Array arrayJSON;
+    for (auto a : array_attr)
+      arrayJSON.push_back(attrToJSON(a));
+    return llvm::json::Value(std::move(arrayJSON));
+  } else if (auto dict_attr = attr.dyn_cast<DictionaryAttr>()) {
+    llvm::json::Object dictJSON;
+    for (auto a : dict_attr) {
+      auto ident = a.getName();
+      auto attr = a.getValue();
+      dictJSON[ident.str()] = attrToJSON(attr);
     }
-    else if (auto array_attr = attr.dyn_cast<ArrayAttr>() ) {
-      llvm::json::Array arrayJSON;
-      for (auto a : array_attr)
-        arrayJSON.push_back(attrToJSON(a));
-      return llvm::json::Value(std::move(arrayJSON));
-    }
-    else if (auto dict_attr = attr.dyn_cast<DictionaryAttr>()) {
-      llvm::json::Object dictJSON;
-      for (auto a : dict_attr) {
-        auto ident = a.getName();
-        auto attr = a.getValue();
-        dictJSON[ident.str()] = attrToJSON(attr);
-      }
-      return llvm::json::Value(std::move(dictJSON));
-    }
-    else if (auto int_attr = attr.dyn_cast<IntegerAttr>()) {
-      return llvm::json::Value(int_attr.getInt());
-    }
-    else return llvm::json::Value(std::string(""));
-  }
+    return llvm::json::Value(std::move(dictJSON));
+  } else if (auto int_attr = attr.dyn_cast<IntegerAttr>()) {
+    return llvm::json::Value(int_attr.getInt());
+  } else
+    return llvm::json::Value(std::string(""));
 }
-  void registerAIRRtTranslations() {
+} // namespace
 
 void registerAIRRtTranslations() {
 
@@ -90,20 +86,21 @@ void registerAIRRtTranslations() {
             moduleJSON[partition_meta.sym_name()] =
                 llvm::json::Value(std::move(partitionJSON));
           }
-          llvm::json::Value topv(std::move(moduleJSON));
-          std::string ret;
-          llvm::raw_string_ostream ss(ret);
-          ss << llvm::formatv("{0:2}", topv) << "\n";
-          output << ss.str();
-          return success();
-        },
-        [](DialectRegistry &registry) {
-          registry.insert<xilinx::air::airDialect, xilinx::airrt::AIRRtDialect,
-                          func::FuncDialect, cf::ControlFlowDialect,
-                          arith::ArithmeticDialect, memref::MemRefDialect,
-                          vector::VectorDialect, LLVM::LLVMDialect,
-                          scf::SCFDialect, AffineDialect>();
-        });
+        }
+        llvm::json::Value topv(std::move(moduleJSON));
+        std::string ret;
+        llvm::raw_string_ostream ss(ret);
+        ss << llvm::formatv("{0:2}", topv) << "\n";
+        output << ss.str();
+        return success();
+      },
+      [](DialectRegistry &registry) {
+        registry.insert<xilinx::air::airDialect, xilinx::airrt::AIRRtDialect,
+                        func::FuncDialect, cf::ControlFlowDialect,
+                        arith::ArithmeticDialect, memref::MemRefDialect,
+                        vector::VectorDialect, LLVM::LLVMDialect,
+                        scf::SCFDialect, AffineDialect>();
+      });
 }
 
 } // namespace air
