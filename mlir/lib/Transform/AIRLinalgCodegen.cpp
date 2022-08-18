@@ -907,7 +907,7 @@ public:
             linalg::LinalgTilingOptions()
                 .setTileSizes(l2_tile_size)
                 .setInterchange(l2_tile_interchange)
-                .setLoopType(linalg::LinalgTilingLoopType::Loops),
+                .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
             linalg::LinalgTransformationFilter(
                 next_match,
                 StringAttr::get(ctx, clL2Promote ? "L2" : "L2_promoted")));
