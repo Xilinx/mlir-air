@@ -36,6 +36,11 @@ func.func @test(%arg0 : memref<16x16xf32>, %arg1 : memref<16x16xf32>) -> () {
   %t1 = air.partition async [%t0] unroll (%tx) in (%size_x = %c2) {
     air.partition_terminator
   }
+  
+  // CHECK: %{{.*}} = air.partition @memcpy_nd async [%{{.*}}]
+  %t2 = air.partition async [%t1] attributes {sym_name = "memcpy_nd"} {
+    air.partition_terminator
+  }
 
   // CHECK: air.partition [%{{.*}}, %{{.*}}] unroll(%{{.*}}) in (%{{.*}}=%c3)
   air.partition [%t0, %t1] unroll (%tx) in (%size_x = %c3) {

@@ -203,5 +203,15 @@ air::HerdLaunchOp getHerdLaunchArgOwner(Value val) {
   return dyn_cast<air::HerdLaunchOp>(containingOp);
 }
 
+// Get the parent air.hierarchy op of a tile id
+air::HierarchyInterface getHierarchyArgOwner(Value val) {
+  auto ivArg = val.dyn_cast<BlockArgument>();
+  if (!ivArg)
+    return air::HierarchyInterface();
+  assert(ivArg.getOwner() && "unlinked block argument");
+  auto *containingOp = ivArg.getOwner()->getParentOp();
+  return dyn_cast<air::HierarchyInterface>(containingOp);
+}
+
 }
 }

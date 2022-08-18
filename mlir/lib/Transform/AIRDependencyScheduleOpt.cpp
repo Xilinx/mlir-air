@@ -465,6 +465,9 @@ public:
     else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(op)){
       async_op = dyn_cast<air::AsyncOpInterface>(hl_op.getOperation());
     }
+    else if (auto hier_op = dyn_cast<air::HierarchyInterface>(op)){
+      async_op = dyn_cast<air::AsyncOpInterface>(hier_op.getOperation());
+    }
     else {
       return;
     }
@@ -488,6 +491,16 @@ public:
               if (hl_op.getKernelArgument(i) == srcMemref){
                 auto &hl_opoperand = hl_op->getOpOperand(i + hl_op.getAsyncDependencies().size() + 2);
                 findAndPruneRedundantDma(&hl_opoperand);
+              }
+            }
+          }
+          // Elevate from argument to operand of hierarchy op
+          if (auto hier_op = getHierarchyArgOwner(srcMemref)){
+            auto dep_list = dyn_cast<air::AsyncOpInterface>(hier_op.getOperation()).getAsyncDependencies();
+            for (unsigned i = 0; i < hier_op.getNumKernelOperands(); i++){
+              if (hier_op.getKernelArgument(i) == srcMemref){
+                auto &hier_opoperand = hier_op->getOpOperand(i + dep_list.size() + hier_op.getNumDims());
+                findAndPruneRedundantDma(&hier_opoperand);
               }
             }
           }

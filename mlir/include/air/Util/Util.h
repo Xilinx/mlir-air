@@ -30,6 +30,8 @@ scf::ForOp getForRegionIterArgsOwner(Value val);
 
 air::HerdLaunchOp getHerdLaunchArgOwner(Value val);
 
+air::HierarchyInterface getHierarchyArgOwner(Value val);
+
 }
 }
 #endif // AIR_UTIL_UTIL_H
