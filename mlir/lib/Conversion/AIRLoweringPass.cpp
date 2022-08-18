@@ -38,6 +38,73 @@ using namespace xilinx::air;
 
 namespace {
 
+class AIRPartitionConversion : public ConversionPattern {
+public:
+  explicit AIRPartitionConversion(MLIRContext *context)
+      : ConversionPattern(xilinx::air::PartitionOp::getOperationName(), 1,
+                          context) {}
+
+  LogicalResult
+  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+    xilinx::air::PartitionOp partition = cast<xilinx::air::PartitionOp>(op);
+    if (auto attr =
+    op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+      auto partition_name = attr.getValue().str();
+      rewriter.create<xilinx::airrt::PartitionLoadOp>(op->getLoc(),
+      rewriter.getI64Type(), partition_name);
+    }
+
+    SmallVector<Value, 4> deps;
+    for (auto &o : operands)
+      if (o.getType().isa<xilinx::airrt::EventType>())
+        deps.push_back(o);
+    if (op->getNumResults()) {
+      auto w = rewriter.create<xilinx::airrt::WaitAllOp>(
+          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
+      partition.getResult(0).replaceAllUsesWith(w.getResult(0));
+    }
+
+    SmallVector<Value, 2> lbs, ubs, steps;
+    auto c0 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 0);
+    auto c1 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1);
+
+    // make scf.parallel to replace air.partition
+    for (auto d : partition.getSizeOperands()) {
+      lbs.push_back(c0);
+      ubs.push_back(d);
+      steps.push_back(c1);
+    }
+    if (lbs.empty()) {
+      lbs.push_back(c0);
+      ubs.push_back(c1);
+      steps.push_back(c1);
+    }
+    auto scfPar =
+        rewriter.create<scf::ParallelOp>(op->getLoc(), lbs, ubs, steps);
+
+    // map partition iteration space to scf.parallel ivs
+    for (auto p : llvm::zip(partition.getIds(), scfPar.getInductionVars()))
+      std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
+
+    // map partition size to scf.parallel upper bounds
+    for (auto p :
+         llvm::zip(partition.getSizeOperands(), scfPar.getUpperBound()))
+      std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
+
+    int i = 0;
+    for (auto arg : partition.getKernelArguments())
+      arg.replaceAllUsesWith(partition.getKernelOperand(i++));
+
+    auto &body = partition.body().front().getOperations();
+    scfPar.getBody()->getOperations().splice(scfPar.getBody()->begin(), body,
+                                             body.begin(), --body.end());
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 class AIRHerdLaunchConversion : public ConversionPattern {
 public:
   explicit AIRHerdConversion(MLIRContext *context)

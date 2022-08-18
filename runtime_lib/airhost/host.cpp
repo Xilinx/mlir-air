@@ -70,8 +70,9 @@ air_module_load_from_file(const char* filename, queue_t *q)
 
   auto module_desc = air_module_get_desc(_air_host_active_module);
 
-  if (module_desc->length)
-    _air_host_active_herd.herd_desc = module_desc->herd_descs[0];
+  if (module_desc->partition_length)
+    if (module_desc->partition_descs[0]->herd_length)
+      _air_host_active_herd.herd_desc = module_desc->partition_descs[0]->herd_descs[0];
   _air_host_active_herd.q = q;
 
   assert(_air_host_active_herd.herd_desc);
@@ -94,11 +95,13 @@ air_module_unload(air_module_handle_t handle)
     return -1;
 
   if (auto module_desc = air_module_get_desc(handle)) {
-    for (int i=0; i<module_desc->length; i++) {
-      auto herd_desc = module_desc->herd_descs[i];
-      if (herd_desc == _air_host_active_herd.herd_desc) {
-        _air_host_active_herd.herd_desc = nullptr;
-        _air_host_active_herd.q = nullptr;
+    for (int i=0; i<module_desc->partition_length; i++) {
+      for (int j=0; i<module_desc->partition_descs[i]->herd_length; j++) {
+        auto herd_desc = module_desc->partition_descs[i]->herd_descs[j];
+        if (herd_desc == _air_host_active_herd.herd_desc) {
+          _air_host_active_herd.herd_desc = nullptr;
+          _air_host_active_herd.q = nullptr;
+        }
       }
     }
   }
@@ -109,17 +112,38 @@ air_module_unload(air_module_handle_t handle)
 }
 
 air_herd_desc_t *
-air_herd_get_desc(air_module_handle_t handle, const char *herd_name)
+air_herd_get_desc(air_module_handle_t handle, air_partition_desc_t *partition_desc, const char *herd_name)
+{
+  if (!handle) return nullptr;
+  if (!partition_desc) return nullptr;
+
+  auto module_desc = air_module_get_desc(handle);
+  if (!module_desc)
+    return nullptr;
+
+  if (!air_partition_get_desc(handle, partition_desc->name))
+    return nullptr;
+
+  for (int i=0; i<partition_desc->herd_length; i++) {
+    auto herd_desc = partition_desc->herd_descs[i];
+    if (!strncmp(herd_name, herd_desc->name, herd_desc->name_length))
+      return herd_desc;
+  }
+  return nullptr;
+}
+
+air_partition_desc_t *
+air_partition_get_desc(air_module_handle_t handle, const char *partition_name)
 {
   if (!handle) return nullptr;
 
   auto module_desc = air_module_get_desc(handle);
   if (!module_desc) return nullptr;
 
-  for (int i=0; i<module_desc->length; i++) {
-    auto herd_desc = module_desc->herd_descs[i];
-    if (!strncmp(herd_name, herd_desc->name, herd_desc->name_length))
-      return herd_desc;
+  for (int i=0; i<module_desc->partition_length; i++) {
+    auto partition_desc = module_desc->partition_descs[i];
+    if (!strncmp(partition_name, partition_desc->name, partition_desc->name_length))
+      return partition_desc;
   }
   return nullptr;
 }

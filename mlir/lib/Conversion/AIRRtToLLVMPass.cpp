@@ -461,6 +461,45 @@ public:
   }
 };
 
+class PartitionLoadToLLVMConversion : public OpRewritePattern<xilinx::airrt::PartitionLoadOp> {
+public:
+  using OpRewritePattern<xilinx::airrt::PartitionLoadOp>::OpRewritePattern;
+
+  LogicalResult
+  matchAndRewrite(xilinx::airrt::PartitionLoadOp op,
+                  PatternRewriter &rewriter) const override
+  {
+    auto ctx = op->getContext();
+    auto retTy = IntegerType::get(ctx, 64);
+    SmallVector<Type, 1> tys{
+      LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8))};
+    auto functionTy = LLVM::LLVMFunctionType::get(retTy, tys);
+
+    auto module = op->getParentOfType<ModuleOp>();
+
+    rewriter.setInsertionPoint(op->getParentOfType<func::FuncOp>());
+    auto partition_name = getOrCreateAIRString(rewriter, module, op.sym_name());
+
+    auto funcOpSym = module.lookupSymbol("air_partition_load");
+    LLVM::LLVMFuncOp funcOp = nullptr;
+    if (funcOpSym)
+      funcOp = cast<LLVM::LLVMFuncOp>(funcOpSym);
+    else
+      funcOp = rewriter.create<LLVM::LLVMFuncOp>(op->getLoc(), "air_partition_load",
+                                        functionTy, LLVM::Linkage::External);
+    rewriter.setInsertionPoint(op);
+
+    auto partition_name_addr = rewriter.create<LLVM::AddressOfOp>(op->getLoc(), partition_name);
+    auto ptrTy = LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8));
+    auto partition_name_addr_cast = rewriter.create<LLVM::BitcastOp>(op->getLoc(), ptrTy, partition_name_addr);
+    SmallVector<Value, 2> operands{partition_name_addr_cast};
+
+    LLVM::CallOp call = rewriter.create<LLVM::CallOp>(op->getLoc(), funcOp, operands);
+    rewriter.replaceOp(op, call->getResults());
+    return success();
+  }
+};
+
 class HerdLoadToLLVMConversion : public OpRewritePattern<xilinx::airrt::HerdLoadOp> {
 public:
   using OpRewritePattern<xilinx::airrt::HerdLoadOp>::OpRewritePattern;
@@ -1052,7 +1091,7 @@ public:
     converter.addTargetMaterialization(addUnrealizedCast);
 
     RewritePatternSet patterns(context);
-    patterns.add<ModuleMetadataToLLVMConversion, HerdLoadToLLVMConversion,
+    patterns.add<ModuleMetadataToLLVMConversion, PartitionLoadToLLVMConversion, HerdLoadToLLVMConversion,
                  DmaMemcpyToLLVMConversion, DmaMemcpy2dToLLVMConversion,
                  DmaMemcpy4dToLLVMConversion, DmaMemcpyNdToLLVMConversion,
                  MemcpyNdToLLVMConversion, L2AllocOpConversion,
