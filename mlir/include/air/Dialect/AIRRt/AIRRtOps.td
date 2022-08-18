@@ -102,6 +102,15 @@ def AIRRt_HerdLoadOp : AIRRt_Op<"herd_load", []> {
     }];
 }
 
+def AIRRt_PartitionLoadOp : AIRRt_Op<"partition_load", []> {
+    let summary = "load a partition";
+    let arguments = (ins StrAttr:$sym_name);
+    let results = (outs I64:$p, Optional<AIRRt_Event>:$event);
+    let assemblyFormat = [{
+      $sym_name attr-dict `:` type($p) (`,` type($event)^)?
+    }];
+}
+
 def AIRRt_DmaMemcpyOp : AIRRt_Op<"dma_memcpy", []> {
   let summary = "dma operator";
   let arguments = (
