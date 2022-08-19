@@ -2,7 +2,7 @@
 
 // RUN: air-opt %s -air-par-to-herd='depth=1' | FileCheck %s
 // CHECK: scf.parallel
-// CHECK: air.launch_herd
+// CHECK: air.herd
 #map0 = affine_map<(d0) -> (-d0 + 32)>
 #map1 = affine_map<(d0, d1)[s0] -> (d0 * 1024 + s0 + d1)>
 module attributes {torch.debug_module_name = "mmult"} {

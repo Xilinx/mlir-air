@@ -41,7 +41,7 @@ module attributes {torch.debug_module_name = "mmult"} {
     %c0_i32 = arith.constant 0 : i32
     %0 = memref.alloc() {alignment = 128 : i64} : memref<64x64xi32>
     linalg.fill ins(%c0_i32 : i32) outs(%0 : memref<64x64xi32>)
-    air.launch_herd  tile (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) args(%arg7=%arg0, %arg8=%arg1, %arg9=%0) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> attributes {sym_name = "herd_0"} {
+    air.herd  tile (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) args(%arg7=%arg0, %arg8=%arg1, %arg9=%0) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> attributes {sym_name = "herd_0"} {
       %c1 = arith.constant 1 : index
       %c0 = arith.constant 0 : index
       %c64 = arith.constant 64 : index

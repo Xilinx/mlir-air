@@ -10,7 +10,7 @@ module  {
     affine.for %arg1 = 0 to 2 {
       affine.for %arg2 = 0 to 2 {
         %c2 = arith.constant 2 : index
-        air.launch_herd tile (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) args(%arg7=%arg1, %arg8=%arg2, %arg9=%1, %arg10=%0) : index,index,memref<256x256xi32>,memref<256x256xi32> {
+        air.herd tile (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) args(%arg7=%arg1, %arg8=%arg2, %arg9=%1, %arg10=%0) : index,index,memref<256x256xi32>,memref<256x256xi32> {
           %c0 = arith.constant 0 : index
           %c64 = arith.constant 64 : index
           %c256 = arith.constant 256 : index

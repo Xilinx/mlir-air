@@ -9,7 +9,7 @@ module  {
   func.func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
     %c1 = arith.constant 1 : index
     %0 = memref.alloc() : memref<1024xi32, 1>
-    air.launch_herd tile (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%0, %arg7=%arg1) : memref<1024xi32, 1>,memref<1024xi32> {
+    air.herd tile (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%0, %arg7=%arg1) : memref<1024xi32, 1>,memref<1024xi32> {
       %c0 = arith.constant 0 : index
       %c16 = arith.constant 16 : index
       %1 = memref.alloc() : memref<16xi32, 2>

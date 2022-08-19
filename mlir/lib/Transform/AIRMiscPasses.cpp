@@ -143,7 +143,7 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
   for (auto memcpyOp : memCopies) {
     auto pipeline = memcpyOp->getParentOfType<xilinx::air::HerdPipelineOp>();
     auto stage = memcpyOp->getParentOfType<xilinx::air::PipelineStageOp>();
-    auto launch = memcpyOp->getParentOfType<xilinx::air::HerdLaunchOp>();
+    auto launch = memcpyOp->getParentOfType<xilinx::air::HerdOp>();
     if (!pipeline || !stage || !launch)
       continue;
 
@@ -242,7 +242,7 @@ void AIRSpecializeDma::runOnOperation() {
   auto module = getOperation();
   auto ctx = module.getContext();
 
-  module.walk([&](xilinx::air::HerdLaunchOp launch) {
+  module.walk([&](xilinx::air::HerdOp launch) {
     launch.walk([&](xilinx::air::DmaMemcpyNdOp memcpyOp) {
       std::vector<Operation *> xOps, yOps;
       bool fn_x = isFuncOf(memcpyOp, launch.getIds()[0], xOps);
@@ -339,7 +339,7 @@ private:
 
   void specializeDmaBroadcastWithAffineIf(func::FuncOp f) {
 
-    f.walk([&](xilinx::air::HerdLaunchOp launch) {
+    f.walk([&](xilinx::air::HerdOp launch) {
       launch.walk([&](xilinx::air::DmaMemcpyInterface memcpyOp) {
         auto herd_id = launch.getIds();
         OpBuilder builder(memcpyOp);
@@ -466,7 +466,7 @@ private:
         // Check which dimension op operates on; initialize current_shape_expr
         SmallVector<AffineExpr, 2> current_shape_expr = {nullptr, nullptr};
         for (auto v : loop_dep_history){
-          if (auto hl_op = xilinx::air::getHerdLaunchArgOwner(v)){
+          if (auto hl_op = xilinx::air::getHerdArgOwner(v)){
             for (unsigned j = 0; j < current_shape_expr.size(); j++){
               if (v == hl_op.getIds()[j]){
                 for (unsigned i = 0; i < constraints.size(); i++){
@@ -674,28 +674,28 @@ private:
 
 };
 
-class AIRFuseParallelHerdLaunchPass
-    : public xilinx::air::AIRFuseParallelHerdLaunchPassBase<
-          AIRFuseParallelHerdLaunchPass> {
+class AIRFuseParallelHerdPass
+    : public xilinx::air::AIRFuseParallelHerdPassBase<
+          AIRFuseParallelHerdPass> {
 
 public:
-  AIRFuseParallelHerdLaunchPass() = default;
-  AIRFuseParallelHerdLaunchPass(const AIRFuseParallelHerdLaunchPass &pass){};
+  AIRFuseParallelHerdPass() = default;
+  AIRFuseParallelHerdPass(const AIRFuseParallelHerdPass &pass){};
 
   void runOnOperation() override;
 
 private:
 };
 
-void AIRFuseParallelHerdLaunchPass::runOnOperation() {
+void AIRFuseParallelHerdPass::runOnOperation() {
 
   auto module = getOperation();
   // auto ctx = module.getContext();
 
-  xilinx::air::HerdLaunchOp launchOp = nullptr;
+  xilinx::air::HerdOp launchOp = nullptr;
   scf::ParallelOp parOp = nullptr;
 
-  module.walk([&](xilinx::air::HerdLaunchOp launch) {
+  module.walk([&](xilinx::air::HerdOp launch) {
     // launch must be enclosed by scf.parallel
     parOp = launch->getParentOfType<scf::ParallelOp>();
     if (!parOp)
@@ -742,7 +742,7 @@ void AIRFuseParallelHerdLaunchPass::runOnOperation() {
   }
 
   auto newLaunchOp =
-      b.create<xilinx::air::HerdLaunchOp>(parOp.getLoc(), dims, args);
+      b.create<xilinx::air::HerdOp>(parOp.getLoc(), dims, args);
 
   BlockAndValueMapping remap;
   remap.map(parOp.getInductionVars()[0], (herd_size_x == 1)
@@ -752,7 +752,7 @@ void AIRFuseParallelHerdLaunchPass::runOnOperation() {
   b.setInsertionPointToStart(&newLaunchOp.body().front());
 
   for (auto &o : *parOp.getBody()) {
-    if (isa<xilinx::air::HerdLaunchOp>(o)) {
+    if (isa<xilinx::air::HerdOp>(o)) {
       int idx = 0;
       remap.map(launchOp.getSize()[0], launchOp.getSizeOperands()[0]);
       remap.map(launchOp.getSize()[1], launchOp.getSizeOperands()[1]);
@@ -824,8 +824,8 @@ std::unique_ptr<Pass> createAIRRemoveLinalgNamePass() {
   return std::make_unique<AIRRemoveLinalgNamePass>();
 }
 
-std::unique_ptr<Pass> createAIRFuseParallelHerdLaunchPass() {
-  return std::make_unique<AIRFuseParallelHerdLaunchPass>();
+std::unique_ptr<Pass> createAIRFuseParallelHerdPass() {
+  return std::make_unique<AIRFuseParallelHerdPass>();
 }
 
 } // namespace air

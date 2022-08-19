@@ -747,8 +747,8 @@ private:
       // Update op-to-graph map
       hier_to_g[HierarchyOpID] = v;
     }
-    else if (auto herd = dyn_cast<air::HerdLaunchOp>(op.getOperation())){
-      auto new_herd = createAsyncHierarchy<air::HerdLaunchOp>(builder, herd, HierarchyOpID, deps, args, constants);
+    else if (auto herd = dyn_cast<air::HerdOp>(op.getOperation())){
+      auto new_herd = createAsyncHierarchy<air::HerdOp>(builder, herd, HierarchyOpID, deps, args, constants);
       new_op = new_herd.getOperation();
       auto &bb = new_herd.body().front();
       builder.setInsertionPointToEnd(&bb);

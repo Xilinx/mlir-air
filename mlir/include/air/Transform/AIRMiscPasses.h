@@ -15,7 +15,7 @@ std::unique_ptr<mlir::Pass> createAIRPromoteUniformL1Dma();
 std::unique_ptr<mlir::Pass> createAIRLinalgNamePass();
 std::unique_ptr<mlir::Pass> createAIRRemoveLinalgNamePass();
 std::unique_ptr<mlir::Pass> createAIRPipelineReducePass();
-std::unique_ptr<mlir::Pass> createAIRFuseParallelHerdLaunchPass();
+std::unique_ptr<mlir::Pass> createAIRFuseParallelHerdPass();
 
 } // namespace air
 } // namespace xilinx

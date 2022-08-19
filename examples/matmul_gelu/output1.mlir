@@ -26,7 +26,7 @@ module attributes {torch.debug_module_name = "mmult"} {
           air.dma_memcpy_nd (%5[] [] [], %arg13[%3, %arg16] [%c64, %c64] [%c1024, %c1]) {id = 1 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
           air.dma_memcpy_nd (%6[] [] [], %arg14[%arg16, %4] [%c64, %c64] [%c1024, %c1]) {id = 2 : i32} : (memref<64x64xbf16, 1>, memref<1024x1024xbf16>)
           air.dma_memcpy_nd (%7[] [] [], %arg15[%3, %4] [%c64, %c64] [%c1024, %c1]) {id = 3 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
-          air.launch_herd  tile (%arg17, %arg18) in (%arg19=%c2, %arg20=%c2) args(%arg21=%5, %arg22=%6, %arg23=%7) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> attributes {sym_name = "herd_0"} {
+          air.herd @herd_0  tile (%arg17, %arg18) in (%arg19=%c2, %arg20=%c2) args(%arg21=%5, %arg22=%6, %arg23=%7) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
             %c1_0 = arith.constant 1 : index
             %c0_1 = arith.constant 0 : index
             %c64_2 = arith.constant 64 : index
@@ -70,7 +70,7 @@ module attributes {torch.debug_module_name = "mmult"} {
         %6 = memref.alloc() : memref<64x64xbf16, 1>
         air.dma_memcpy_nd (%5[] [] [], %arg12[%3, %4] [%c64, %c64] [%c1024, %c1]) {id = 9 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
         air.dma_memcpy_nd (%6[] [] [], %arg13[%3, %4] [%c64, %c64] [%c1024, %c1]) {id = 10 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
-        air.launch_herd  tile (%arg14, %arg15) in (%arg16=%c2, %arg17=%c2) args(%arg18=%5, %arg19=%6) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1> attributes {sym_name = "herd_1"} {
+        air.herd @herd_1  tile (%arg14, %arg15) in (%arg16=%c2, %arg17=%c2) args(%arg18=%5, %arg19=%6) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
           %c1_0 = arith.constant 1 : index
           %c64_1 = arith.constant 64 : index
           %c32 = arith.constant 32 : index

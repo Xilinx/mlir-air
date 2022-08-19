@@ -182,7 +182,7 @@ class AIRRunner::AIRRunner_impl {
   void executeOp(xilinx::air::LaunchOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {}
 
-  void executeOp(xilinx::air::HerdLaunchOp op, std::vector<llvm::Any> &in,
+  void executeOp(xilinx::air::HerdOp op, std::vector<llvm::Any> &in,
                  std::vector<llvm::Any> &out) {
     decrementAsyncTokens(op);
   }
@@ -246,7 +246,7 @@ class AIRRunner::AIRRunner_impl {
       executeOp(Op, inValues, outValues);
     else if (auto Op = dyn_cast<xilinx::air::RegionTerminatorOp>(op))
       executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<xilinx::air::HerdLaunchOp>(op))
+    else if (auto Op = dyn_cast<xilinx::air::HerdOp>(op))
       executeOp(Op, inValues, outValues);
     else if (auto Op = dyn_cast<xilinx::air::WaitAllOp>(op))
       executeOp(Op, inValues, outValues);
@@ -1106,7 +1106,7 @@ public:
     return;
   }
 
-  void scheduleHerdLaunch(xilinx::air::HerdLaunchOp &hlo, QueueContext *qctx) {
+  void scheduleHerd(xilinx::air::HerdOp &hlo, QueueContext *qctx) {
 
     int64_t cols = cast<arith::ConstantIndexOp>(
                        hlo.getSizeOperands()[0].getDefiningOp())
@@ -1120,7 +1120,7 @@ public:
 
     qctx->queue.push_back(
         CommandQueueEntry(hlo.getOperation(), [=](Operation *op) {
-          auto ho = cast<xilinx::air::HerdLaunchOp>(op);
+          auto ho = cast<xilinx::air::HerdOp>(op);
           auto tokenTy = xilinx::air::AsyncTokenType::get(op->getContext());
           // SmallVector<Value, 16> exit_tokens;
           for (auto row = 0; row < rows; row++) {
@@ -1201,8 +1201,8 @@ public:
         scheduleAIRAsyncOp(op, &qctx->queue);
       } else if (auto r = dyn_cast<xilinx::air::RegionOp>(op)) {
         scheduleAIRRegion(r, qctx);
-      } else if (auto hlo = dyn_cast<xilinx::air::HerdLaunchOp>(op)) {
-        scheduleHerdLaunch(hlo, qctx);
+      } else if (auto hlo = dyn_cast<xilinx::air::HerdOp>(op)) {
+        scheduleHerd(hlo, qctx);
       } else if (auto linalgOp = mlir::dyn_cast<linalg::LinalgOp>(op)) {
         qctx->queue.push_back(CommandQueueEntry(op));
       } else if (auto sfo = dyn_cast<mlir::scf::ForOp>(op)) {

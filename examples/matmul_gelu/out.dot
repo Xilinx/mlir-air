@@ -16,7 +16,7 @@ digraph G {
 14[label="affine::apply"];
 15[label="air::dmaNd"];
 16[label="air::dmaNd"];
-17[label="air::herd_launch"];
+17[label="air::herd"];
 18[label="memref::dealloc"];
 19[label="air::dmaNd"];
 20[label="memref::dealloc"];
@@ -43,7 +43,7 @@ digraph G {
 41[label="affine::apply"];
 42[label="air::dmaNd"];
 43[label="air::dmaNd"];
-44[label="air::herd_launch"];
+44[label="air::herd"];
 45[label="memref::dealloc"];
 46[label="memref::dealloc"];
 47[label="air::dmaNd"];

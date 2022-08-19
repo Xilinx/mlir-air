@@ -24,8 +24,8 @@ module  {
         // CHECK: %[[EVENT4:.*]], %[[VAL4:.*]] = air.region async
         air.dma_memcpy (%2, %arg7, [%c0_2], [%c0_2], %c0_2) {id = 2 : i32} : (memref<256xi32, 2>, memref<512xi32, 3>, [index], [index], index) -> ()
         // CHECK: %[[EVENT5:.*]] = air.dma_memcpy async [{{.*}}%[[EVENT4]]{{.*}}]
-        air.launch_herd tile (%arg8, %arg9) in (%arg10=%c1_2, %arg11=%c1_2) args(%arg12=%2) : memref<256xi32, 2> {
-        // CHECK: %[[EVENT6:.*]] = air.launch_herd async [{{.*}}%[[EVENT5]]{{.*}}]{{.*}}tile
+        air.herd tile (%arg8, %arg9) in (%arg10=%c1_2, %arg11=%c1_2) args(%arg12=%2) : memref<256xi32, 2> {
+        // CHECK: %[[EVENT6:.*]] = air.herd async [{{.*}}%[[EVENT5]]{{.*}}]{{.*}}tile
           %c0_3 = arith.constant 0 : index
           %3 = memref.alloc() : memref<128xi32, 1>
           // CHECK: %[[EVENT7:.*]], %[[VAL7:.*]] = air.region async

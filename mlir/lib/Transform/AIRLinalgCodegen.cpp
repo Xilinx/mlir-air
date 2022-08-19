@@ -128,7 +128,7 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
         op,
         MemRefType::get(shape, ty.getElementType(), nullptr, ty.getMemorySpace()));
     for (auto use : newOp.getUsers()) {
-      if (auto launch = dyn_cast<air::HerdLaunchOp>(use)) {
+      if (auto launch = dyn_cast<air::HerdOp>(use)) {
         assert(launch.getKernelArguments().size() == launch.operands().size());
         for (unsigned int i = 0; i < launch.getNumKernelOperands(); i++) {
           auto arg = launch.getKernelArguments()[i];
@@ -509,7 +509,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   for (auto o : op.getInputAndOutputOperands())
     args.push_back(o->get());
 
-  auto launch = b.create<xilinx::air::HerdLaunchOp>(loc, dims, args);
+  auto launch = b.create<xilinx::air::HerdOp>(loc, dims, args);
   b.setInsertionPointToStart(&launch.body().front());
 
   auto nLoops = op.getNumLoops();

@@ -9,8 +9,8 @@ module  {
     %0 = memref.alloc() : memref<1024xi32, 1>
     // CHECK: %[[EVENT0:.*]], %[[EVENT1:.*]] = air.region async
     // CHECK: air.region_terminator 
-    air.launch_herd tile (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%0, %arg7=%arg1) : memref<1024xi32, 1>,memref<1024xi32> {
-    //CHECK: %[[EVENT2:.*]] = air.launch_herd async [{{.*}}%[[EVENT0]]{{.*}}]
+    air.herd tile (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%0, %arg7=%arg1) : memref<1024xi32, 1>,memref<1024xi32> {
+    //CHECK: %[[EVENT2:.*]] = air.herd async [{{.*}}%[[EVENT0]]{{.*}}]
       %c0 = arith.constant 0 : index
       %c16 = arith.constant 16 : index
       %1 = memref.alloc() : memref<16xi32, 2>

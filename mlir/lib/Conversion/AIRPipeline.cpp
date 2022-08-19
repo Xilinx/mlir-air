@@ -23,8 +23,8 @@ LogicalResult AIRPipeStageConversion::matchAndRewrite(
 
   auto direction = pipeline->getAttrOfType<StringAttr>("direction");
 
-  xilinx::air::HerdLaunchOp launch =
-      op->getParentOfType<xilinx::air::HerdLaunchOp>();
+  xilinx::air::HerdOp launch =
+      op->getParentOfType<xilinx::air::HerdOp>();
   if (!launch) {
     LLVM_DEBUG(llvm::errs() << "Failed to find herd op for air.pipeline\n");
     return failure();

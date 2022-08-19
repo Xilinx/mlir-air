@@ -12,7 +12,7 @@ func.func @graph(%arg0 : memref<512x512xi32>, %arg1 : memref<512x512xi32>, %arg2
       air.dma_memcpy_nd (%arg4[][][], %arg1[%arg6, %arg7][%c64, %c64][%c512, %c0]) {id = 2 : i32} : (memref<64x64xi32, 1>, memref<512x512xi32>)
       %herd_cols = constant 1 : index
       %herd_rows = constant 1 : index
-      air.launch_herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg3, %ext1 = %arg4, %ext2 = %arg5) : memref<64x64xi32, 1>, memref<64x64xi32, 1>, memref<64x64xi32, 1> attributes { sym_name="herd_0"} {
+      air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg3, %ext1 = %arg4, %ext2 = %arg5) : memref<64x64xi32, 1>, memref<64x64xi32, 1>, memref<64x64xi32, 1> attributes { sym_name="herd_0"} {
         %d0 = constant 0 : index
         %c32 = constant 32 : index
         %d64 = constant 64 : index

@@ -39,16 +39,16 @@ using namespace xilinx::air;
 
 namespace {
 
-class AIRHerdLaunchToCpuConversion : public ConversionPattern {
+class AIRHerdToCpuConversion : public ConversionPattern {
 public:
-  explicit AIRHerdLaunchToCpuConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::HerdLaunchOp::getOperationName(), 1,
+  explicit AIRHerdToCpuConversion(MLIRContext *context)
+      : ConversionPattern(xilinx::air::HerdOp::getOperationName(), 1,
                           context) {}
 
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
-    xilinx::air::HerdLaunchOp launch = cast<xilinx::air::HerdLaunchOp>(op);
+    xilinx::air::HerdOp launch = cast<xilinx::air::HerdOp>(op);
     std::string herd_name = "herd";
     if (auto attr =
             op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
@@ -65,9 +65,9 @@ public:
     auto inner =
         outer_builder.create<AffineForOp>(launch.getLoc(), 0, herd_size_y);
 
-    outer->setAttr("air.herd_launch",
+    outer->setAttr("air.herd",
                    StringAttr::get(op->getContext(), "outer"));
-    inner->setAttr("air.herd_launch",
+    inner->setAttr("air.herd",
                    StringAttr::get(op->getContext(), "inner"));
 
     SmallVector<Value, 16> callops;
@@ -231,17 +231,17 @@ convertOpToFunctionWithTileId(Operation *op, ArrayRef<Value> operands,
     callops.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
   }
 
-  xilinx::air::HerdLaunchOp launch =
-      op->getParentOfType<xilinx::air::HerdLaunchOp>();
+  xilinx::air::HerdOp launch =
+      op->getParentOfType<xilinx::air::HerdOp>();
   if (!launch) {
     AffineForOp afo = op->getParentOfType<AffineForOp>();
-    while (afo && !afo->getAttr("air.herd_launch"))
+    while (afo && !afo->getAttr("air.herd"))
       afo = afo->getParentOfType<AffineForOp>();
     if (afo) {
       callops.push_back(afo.getInductionVar());
       afo = afo->getParentOfType<AffineForOp>();
     }
-    while (afo && !afo->getAttr("air.herd_launch"))
+    while (afo && !afo->getAttr("air.herd"))
       afo = afo->getParentOfType<AffineForOp>();
     if (afo)
       callops.push_back(afo.getInductionVar());
@@ -586,7 +586,7 @@ public:
     }
 
     RewritePatternSet air_herd_patterns(context);
-    air_herd_patterns.add<AIRHerdLaunchToCpuConversion>(context);
+    air_herd_patterns.add<AIRHerdToCpuConversion>(context);
     if (failed(applyPartialConversion(module, target,
                                       std::move(air_herd_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air.launch_herd\n");

@@ -38,16 +38,16 @@ using namespace xilinx::air;
 
 namespace {
 
-class AIRHerdLaunchConversion : public ConversionPattern {
+class AIRHerdConversion : public ConversionPattern {
 public:
-  explicit AIRHerdLaunchConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::HerdLaunchOp::getOperationName(), 1, context) {}
+  explicit AIRHerdConversion(MLIRContext *context)
+      : ConversionPattern(xilinx::air::HerdOp::getOperationName(), 1, context) {}
 
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value > operands,
                   ConversionPatternRewriter &rewriter) const override
   {
-    xilinx::air::HerdLaunchOp launch = cast<xilinx::air::HerdLaunchOp>(op);
+    xilinx::air::HerdOp launch = cast<xilinx::air::HerdOp>(op);
     if (auto attr = op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
       auto herd_name = attr.getValue().str();
       rewriter.create<xilinx::airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(), herd_name);
@@ -71,8 +71,8 @@ public:
     auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
     auto inner = outer_builder.create<AffineForOp>(launch.getLoc(), 0, herd_size_y);
 
-    outer->setAttr("air.herd_launch", StringAttr::get(op->getContext(), "outer"));
-    inner->setAttr("air.herd_launch", StringAttr::get(op->getContext(), "inner"));
+    outer->setAttr("air.herd", StringAttr::get(op->getContext(), "outer"));
+    inner->setAttr("air.herd", StringAttr::get(op->getContext(), "inner"));
 
     launch.getSize()[0].replaceAllUsesWith(herd_size[0]);
     launch.getSize()[1].replaceAllUsesWith(herd_size[1]);
@@ -203,17 +203,17 @@ Operation* convertDmaMemcpyToAirRt(Operation *op, ArrayRef<Value > operands,
     opers.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
   }
 
-  xilinx::air::HerdLaunchOp launch = op->getParentOfType<xilinx::air::HerdLaunchOp>();
+  xilinx::air::HerdOp launch = op->getParentOfType<xilinx::air::HerdOp>();
   if (!launch) {
 
     AffineForOp afo = op->getParentOfType<AffineForOp>();
-    while (afo && !afo->getAttr("air.herd_launch"))
+    while (afo && !afo->getAttr("air.herd"))
       afo = afo->getParentOfType<AffineForOp>();
     if (!afo) return nullptr;
     opers.push_back(afo.getInductionVar());
 
     afo = afo->getParentOfType<AffineForOp>();
-    while (afo && !afo->getAttr("air.herd_launch"))
+    while (afo && !afo->getAttr("air.herd"))
       afo = afo->getParentOfType<AffineForOp>();
     if (!afo) return nullptr;
     opers.push_back(afo.getInductionVar());
@@ -376,19 +376,19 @@ public:
             rewriter.create<arith::ConstantOp>(loc, idTy, IntegerAttr::get(idTy, 0)));
       }
 
-      xilinx::air::HerdLaunchOp launch =
-          op->getParentOfType<xilinx::air::HerdLaunchOp>();
+      xilinx::air::HerdOp launch =
+          op->getParentOfType<xilinx::air::HerdOp>();
       if (!launch) {
 
         AffineForOp afo = op->getParentOfType<AffineForOp>();
-        while (afo && !afo->getAttr("air.herd_launch"))
+        while (afo && !afo->getAttr("air.herd"))
           afo = afo->getParentOfType<AffineForOp>();
         if (!afo)
           return failure();
         opers.push_back(afo.getInductionVar());
 
         afo = afo->getParentOfType<AffineForOp>();
-        while (afo && !afo->getAttr("air.herd_launch"))
+        while (afo && !afo->getAttr("air.herd"))
           afo = afo->getParentOfType<AffineForOp>();
         if (!afo)
           return failure();
@@ -598,7 +598,7 @@ public:
       signalPassFailure();
     }
 
-    // DMA and HerdLaunchOp conversion
+    // DMA and HerdOp conversion
     RewritePatternSet air_patterns(context);
 
     target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
@@ -610,7 +610,7 @@ public:
               (int)xilinx::air::MemorySpace::L2);
     });
 
-    air_patterns.add<L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion, AIRHerdLaunchConversion>(context);
+    air_patterns.add<L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion, AIRHerdConversion>(context);
 
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(air_patterns,
                                                                    converter);

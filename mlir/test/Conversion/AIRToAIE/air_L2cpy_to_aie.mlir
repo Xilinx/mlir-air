@@ -17,7 +17,7 @@ func.func @foo(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
   %buf0 = memref.alloc() : memref<1024xi32, 1>
-  air.launch_herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %buf0, %ext1 = %arg1) : memref<1024xi32, 1>, memref<1024xi32> attributes { } {
+  air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %buf0, %ext1 = %arg1) : memref<1024xi32, 1>, memref<1024xi32> attributes { } {
     %c0 = arith.constant 0 : index
     %c1024 = arith.constant 0 : index
     %buf1 = memref.alloc() : memref<1024xi32, 2>

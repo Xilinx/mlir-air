@@ -2,9 +2,9 @@
 
 // RUN: air-opt %s -air-dependency | FileCheck %s
 
-// The second launch_herd should depend on the first
-// CHECK: %[[EVENT0:.*]] = air.launch_herd @herd_0 async
-// CHECK: %[[EVENT1:.*]] = air.launch_herd @herd_1 async [{{.*}}%[[EVENT0]]{{.*}}]
+// The second herd should depend on the first
+// CHECK: %[[EVENT0:.*]] = air.herd @herd_0 async
+// CHECK: %[[EVENT1:.*]] = air.herd @herd_1 async [{{.*}}%[[EVENT0]]{{.*}}]
 #map0 = affine_map<()[s0] -> (s0 * 16)>
 #map1 = affine_map<()[s0] -> (s0 * 64)>
 #map2 = affine_map<(d0, d1) -> (d0, d1)>
@@ -19,7 +19,7 @@ module attributes {torch.debug_module_name = "MMult_Mult"} {
     %2 = memref.alloc() {alignment = 128 : i64} : memref<128x128xf32>
     linalg.fill ins(%cst : f32) outs(%1 : memref<128x128xf32>)
     memref.copy %1, %2 : memref<128x128xf32> to memref<128x128xf32>
-    air.launch_herd  tile (%arg4, %arg5) in (%arg6=%c8, %arg7=%c2) args(%arg8=%arg1, %arg9=%arg2, %arg10=%2) : memref<128x128xf32>, memref<128x128xf32>, memref<128x128xf32> attributes {sym_name = "herd_0"} {
+    air.herd  tile (%arg4, %arg5) in (%arg6=%c8, %arg7=%c2) args(%arg8=%arg1, %arg9=%arg2, %arg10=%2) : memref<128x128xf32>, memref<128x128xf32>, memref<128x128xf32> attributes {sym_name = "herd_0"} {
       %c64 = arith.constant 64 : index
       %c1_0 = arith.constant 1 : index
       %c16 = arith.constant 16 : index
@@ -43,7 +43,7 @@ module attributes {torch.debug_module_name = "MMult_Mult"} {
       }
       air.herd_terminator
     }
-    air.launch_herd  tile (%arg4, %arg5) in (%arg6=%c8, %arg7=%c1) args(%arg8=%arg0, %arg9=%2, %arg10=%0) : memref<128x128xf32>, memref<128x128xf32>, memref<128x128xf32> attributes {sym_name = "herd_1"} {
+    air.herd  tile (%arg4, %arg5) in (%arg6=%c8, %arg7=%c1) args(%arg8=%arg0, %arg9=%2, %arg10=%0) : memref<128x128xf32>, memref<128x128xf32>, memref<128x128xf32> attributes {sym_name = "herd_1"} {
       %c1_0 = arith.constant 1 : index
       %c128 = arith.constant 128 : index
       %c16 = arith.constant 16 : index

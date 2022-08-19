@@ -5,7 +5,7 @@ try:
 except ImportError as e:
   raise RuntimeError("Error loading imports from extension module") from e
 
-class HerdLaunchOp:
+class HerdOp:
   """Specialization for herd_launch op class."""
 
   def __init__(self, name, sizes, operands, async_deps=[], loc=None, ip=None):

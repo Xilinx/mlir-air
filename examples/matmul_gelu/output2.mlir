@@ -26,8 +26,8 @@ module attributes {torch.debug_module_name = "mmult"} {
       memref.copy %valOut, %valOut_2 : memref<24576x1024xbf16> to memref<24576x1024xbf16>
       air.region_terminator
     } {id = 4 : i32}
-    %0 = air.launch async [%asyncToken_3] (%arg2, %arg3) in (%arg4=%c384, %arg5=%c16) args(%arg6=%arg0, %arg7=%arg1, %arg8=%valOut_2) : memref<24576x1024xbf16>, memref<1024x1024xbf16>, memref<24576x1024xbf16> attributes {id = 2 : i32} {
-      %2 = air.partition async  args(%arg9=%arg2, %arg10=%arg3, %arg11=%arg4, %arg12=%arg5, %arg13=%arg6, %arg14=%arg7, %arg15=%arg8) : index, index, index, index, memref<24576x1024xbf16>, memref<1024x1024xbf16>, memref<24576x1024xbf16> attributes {id = 1 : i32} {
+    %0 = air.launch async [%asyncToken_3] (%arg2, %arg3) in (%arg4=%c384, %arg5=%c16) args(%arg6=%arg0, %arg7=%arg1, %arg8=%valOut_2) : memref<24576x1024xbf16>, memref<1024x1024xbf16>, memref<24576x1024xbf16> attributes {id = 3 : i32} {
+      %2 = air.partition async  args(%arg9=%arg2, %arg10=%arg3, %arg11=%arg4, %arg12=%arg5, %arg13=%arg6, %arg14=%arg7, %arg15=%arg8) : index, index, index, index, memref<24576x1024xbf16>, memref<1024x1024xbf16>, memref<24576x1024xbf16> attributes {id = 2 : i32} {
         %c1 = arith.constant 1 : index
         %c2 = arith.constant 2 : index
         %c0 = arith.constant 0 : index
@@ -58,7 +58,7 @@ module attributes {torch.debug_module_name = "mmult"} {
           } {id = 8 : i32} : (memref<64x64xbf16, 1>)
           %7 = air.dma_memcpy_nd async [%asyncToken_13, %arg17] (%valOut_14[] [] [], %arg13[%valOut_7, %arg16] [%c64, %c64] [%c1024, %c1]) {id = 1 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
           %8 = air.dma_memcpy_nd async [%asyncToken_15, %arg17] (%valOut_16[] [] [], %arg14[%arg16, %valOut_9] [%c64, %c64] [%c1024, %c1]) {id = 2 : i32} : (memref<64x64xbf16, 1>, memref<1024x1024xbf16>)
-          %9 = air.launch_herd async [%8, %arg17, %7]  tile (%arg18, %arg19) in (%arg20=%c2, %arg21=%c2) args(%arg22=%valOut_14, %arg23=%valOut_16, %arg24=%valOut_11) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> attributes {id = 1 : i32, sym_name = "herd_0"} {
+          %9 = air.herd @herd_0 async [%8, %arg17, %7]  tile (%arg18, %arg19) in (%arg20=%c2, %arg21=%c2) args(%arg22=%valOut_14, %arg23=%valOut_16, %arg24=%valOut_11) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> attributes {id = 1 : i32} {
             %c1_19 = arith.constant 1 : index
             %c0_20 = arith.constant 0 : index
             %c64_21 = arith.constant 64 : index
@@ -150,8 +150,8 @@ module attributes {torch.debug_module_name = "mmult"} {
       %2 = memref.alloc() {alignment = 128 : i64} : memref<24576x1024xbf16>
       air.region_terminator %2 : memref<24576x1024xbf16>
     } {id = 22 : i32} : (memref<24576x1024xbf16>)
-    %1 = air.launch async [%asyncToken_4, %0] (%arg2, %arg3) in (%arg4=%c384, %arg5=%c16) args(%arg6=%valOut_2, %arg7=%valOut_5) : memref<24576x1024xbf16>, memref<24576x1024xbf16> attributes {id = 4 : i32} {
-      %2 = air.partition async  args(%arg8=%arg2, %arg9=%arg3, %arg10=%arg4, %arg11=%arg5, %arg12=%arg6, %arg13=%arg7) : index, index, index, index, memref<24576x1024xbf16>, memref<24576x1024xbf16> attributes {id = 3 : i32} {
+    %1 = air.launch async [%asyncToken_4, %0] (%arg2, %arg3) in (%arg4=%c384, %arg5=%c16) args(%arg6=%valOut_2, %arg7=%valOut_5) : memref<24576x1024xbf16>, memref<24576x1024xbf16> attributes {id = 6 : i32} {
+      %2 = air.partition async  args(%arg8=%arg2, %arg9=%arg3, %arg10=%arg4, %arg11=%arg5, %arg12=%arg6, %arg13=%arg7) : index, index, index, index, memref<24576x1024xbf16>, memref<24576x1024xbf16> attributes {id = 5 : i32} {
         %c1 = arith.constant 1 : index
         %c1024 = arith.constant 1024 : index
         %c64 = arith.constant 64 : index
@@ -173,7 +173,7 @@ module attributes {torch.debug_module_name = "mmult"} {
           air.region_terminator %6 : memref<64x64xbf16, 1>
         } {id = 26 : i32} : (memref<64x64xbf16, 1>)
         %3 = air.dma_memcpy_nd async [%asyncToken_10, %asyncToken_8, %asyncToken_6] (%valOut_11[] [] [], %arg12[%valOut_7, %valOut_9] [%c64, %c64] [%c1024, %c1]) {id = 9 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
-        %4 = air.launch_herd async [%3]  tile (%arg14, %arg15) in (%arg16=%c2, %arg17=%c2) args(%arg18=%valOut_11, %arg19=%valOut_13) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1> attributes {id = 2 : i32, sym_name = "herd_1"} {
+        %4 = air.herd @herd_1 async [%3]  tile (%arg14, %arg15) in (%arg16=%c2, %arg17=%c2) args(%arg18=%valOut_11, %arg19=%valOut_13) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1> attributes {id = 4 : i32} {
           %c1_16 = arith.constant 1 : index
           %c64_17 = arith.constant 64 : index
           %c32 = arith.constant 32 : index

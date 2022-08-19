@@ -8,7 +8,7 @@ module {
 func.func @foo(%arg0 : memref<16x16xf32>, %arg1 : memref<16x16xf32>) -> () {
   %cst1 = arith.constant 1 : index
 
-  air.launch_herd tile(%tx, %ty) in (%size_x = %cst1, %size_y = %cst1) args(%ext0 = %arg0, %ext1 = %arg1) : memref<16x16xf32>, memref<16x16xf32> attributes { "foo" = "bar" } {
+  air.herd tile(%tx, %ty) in (%size_x = %cst1, %size_y = %cst1) args(%ext0 = %arg0, %ext1 = %arg1) : memref<16x16xf32>, memref<16x16xf32> attributes { "foo" = "bar" } {
     %c0 = arith.constant 0 : index
     %c256 = arith.constant 256 : index
     %src0 = memref.alloc() : memref<16x16xf32, 2>
@@ -36,7 +36,7 @@ func.func @memcpy_nd(%arg0: memref<4096xi32>) {
   %c128 = arith.constant 128 : index
   %c4 = arith.constant 4 : index
   %c1 = arith.constant 1 : index
-  air.launch_herd tile (%arg1, %arg2) in (%arg3=%c4, %arg4=%c1) args(%arg5=%arg0) : memref<4096xi32>attributes {sym_name = "memcpy_nd"} {
+  air.herd tile (%arg1, %arg2) in (%arg3=%c4, %arg4=%c1) args(%arg5=%arg0) : memref<4096xi32>attributes {sym_name = "memcpy_nd"} {
     %c32 = arith.constant 32 : index
     %0 = arith.muli %arg1, %c32 : index
     %1 = memref.alloc() : memref<32xi32, 2>

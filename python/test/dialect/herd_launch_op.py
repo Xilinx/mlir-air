@@ -4,7 +4,7 @@
 # RUN: %PYTHON %s | FileCheck %s
 # CHECK: %[[C0:.*]] = arith.constant 2 : index
 # CHECK: %[[C1:.*]] = arith.constant 2 : index
-# CHECK: air.launch_herd @pyHerd tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%[[C0]], %{{.*}}=%[[C1]]) {
+# CHECK: air.herd @pyHerd tile (%{{.*}}, %{{.*}}) in (%{{.*}}=%[[C0]], %{{.*}}=%[[C1]]) {
 # CHECK:   %{{.*}} = arith.constant 1 : index
 # CHECK:   air.herd_terminator
 # CHECK: }
@@ -30,7 +30,7 @@ with Context() as ctx, Location.unknown():
       size_x = arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 2))
       size_y = arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 2))
       sizes = [size_x.result, size_y.result]
-      herd = airdialect.HerdLaunchOp("pyHerd", sizes, [])
+      herd = airdialect.HerdOp("pyHerd", sizes, [])
       with InsertionPoint(herd.body):
         arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 1))
         airdialect.HerdTerminatorOp()

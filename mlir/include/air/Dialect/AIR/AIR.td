@@ -127,7 +127,7 @@ def air_PartitionTerminatorOp : air_Op<"partition_terminator", [HasParent<"Parti
   let assemblyFormat = "attr-dict";
 }
 
-def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,
+def air_HerdOp : air_Op<"herd", [air_AsyncOpInterface,
                                               air_HierarchyInterface,
                                               AttrSizedOperandSegments,
                                               IsolatedFromAbove,
@@ -138,7 +138,7 @@ def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,
                                        Variadic<Index>:$sizes,
                                        Variadic<AnyType>:$operands)>,
                         Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
-  let summary = "Launch a herd";
+  let summary = "Herd";
   let description = [{
     Define and run a 1D or 2D array of tiles as an AIR Herd.
   }];
@@ -174,7 +174,7 @@ def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,
   let hasCanonicalizer  = 1;
 }
 
-def air_HerdTerminatorOp : air_Op<"herd_terminator", [HasParent<"HerdLaunchOp">,
+def air_HerdTerminatorOp : air_Op<"herd_terminator", [HasParent<"HerdOp">,
                                                       NoSideEffect, Terminator]>,
     Arguments<(ins)>, Results<(outs)> {
   let summary = "Terminator for air launch_herd regions.";
@@ -186,7 +186,7 @@ def air_HerdTerminatorOp : air_Op<"herd_terminator", [HasParent<"HerdLaunchOp">,
   let assemblyFormat = "attr-dict";
 }
 
-def air_HerdPipelineOp : air_Op<"pipeline", [HasParent<"HerdLaunchOp">,
+def air_HerdPipelineOp : air_Op<"pipeline", [HasParent<"HerdOp">,
                                              AffineScope]>,
                           Arguments<(ins)>,
                           Results<(outs)> {

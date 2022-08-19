@@ -321,7 +321,7 @@ public:
   void getDmaOpLoopDependency(func::FuncOp f) {
     f.walk([&](Operation *op) {
       if (auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op)){
-        if (dma_op->getParentOfType<xilinx::air::HerdLaunchOp>()){
+        if (dma_op->getParentOfType<xilinx::air::HerdOp>()){
           // Start recursively tracing for loop induction variables
           dma_op_history.push_back(dma_op);
           SmallVector<Value, 1> loop_dep_history;
@@ -338,14 +338,14 @@ public:
     for (unsigned i = 0; i < dma_op_history.size(); i++){
       auto dma_op = dma_op_history[i];
       SmallVector<Value, 1> loop_dep_history = dma_op_loop_dep_history[i];
-      air::HerdLaunchOp hl_op = nullptr;
+      air::HerdOp hl_op = nullptr;
       bool hasDepInHerdRows = false;
       bool hasDepInHerdCols = false;
       // Create an affine set to represent the broadcast pattern
       auto ctx = dma_op->getContext();
       for (auto v : loop_dep_history){
-        if (getHerdLaunchArgOwner(v)){
-          hl_op = getHerdLaunchArgOwner(v);
+        if (getHerdArgOwner(v)){
+          hl_op = getHerdArgOwner(v);
           if (v == hl_op.getIds()[0]){
             hasDepInHerdRows = true;
           }
@@ -462,7 +462,7 @@ public:
     if (air::RegionOp region_op = op->getParentOfType<air::RegionOp>()){
       async_op = dyn_cast<air::AsyncOpInterface>(region_op.getOperation());
     }
-    else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(op)){
+    else if (auto hl_op = dyn_cast<air::HerdOp>(op)){
       async_op = dyn_cast<air::AsyncOpInterface>(hl_op.getOperation());
     }
     else if (auto hier_op = dyn_cast<air::HierarchyInterface>(op)){
@@ -486,7 +486,7 @@ public:
             }
           }
           // Elevate from argument to operand of herd launch
-          if (auto hl_op = getHerdLaunchArgOwner(srcMemref)){
+          if (auto hl_op = getHerdArgOwner(srcMemref)){
             for (unsigned i = 0; i < hl_op.getNumKernelOperands(); i++){
               if (hl_op.getKernelArgument(i) == srcMemref){
                 auto &hl_opoperand = hl_op->getOpOperand(i + hl_op.getAsyncDependencies().size() + 2);

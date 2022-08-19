@@ -11,7 +11,7 @@ module attributes {torch.debug_module_name = "mmult"} {
       }
     }
     memref.copy %0, %1 : memref<64x64xi32> to memref<64x64xi32>
-    air.launch_herd  tile (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) args(%arg7=%arg0, %arg8=%arg1, %arg9=%1) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> attributes {sym_name = "herd_0"} {
+    air.herd  tile (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) args(%arg7=%arg0, %arg8=%arg1, %arg9=%1) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> attributes {sym_name = "herd_0"} {
       %c1 = arith.constant 1 : index
       %c0 = arith.constant 0 : index
       %c64 = arith.constant 64 : index

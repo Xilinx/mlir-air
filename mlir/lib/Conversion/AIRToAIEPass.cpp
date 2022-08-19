@@ -457,7 +457,7 @@ public:
     return tile_dma_copies;
   }
 
-  airrt::HerdMetadataOp createHerdMetadata(airrt::ModuleMetadataOp module_meta, air::HerdLaunchOp herd)
+  airrt::HerdMetadataOp createHerdMetadata(airrt::ModuleMetadataOp module_meta, air::HerdOp herd)
   {
     auto builder = OpBuilder::atBlockTerminator(module_meta.getBody());
     auto loc = builder.getUnknownLoc();
@@ -1014,8 +1014,8 @@ public:
 
   void createAIEModulesAndOutlineCores(
       ModuleOp module,
-      std::vector<std::pair<ModuleOp, air::HerdLaunchOp>> &aie_modules) {
-    module.walk([&](xilinx::air::HerdLaunchOp h) {
+      std::vector<std::pair<ModuleOp, air::HerdOp>> &aie_modules) {
+    module.walk([&](xilinx::air::HerdOp h) {
       // if the herd has a symbol name, then the module is
       // named aie.symbol_name, otherwise it's aie.herd_N
       std::string herd_name;
@@ -1033,7 +1033,7 @@ public:
 
     for (auto &p : aie_modules) {
       ModuleOp aie_module = std::get<0>(p);
-      xilinx::air::HerdLaunchOp h = std::get<1>(p);
+      xilinx::air::HerdOp h = std::get<1>(p);
 
       OpBuilder builder(aie_module);
       builder.setInsertionPointToStart(aie_module.getBody());
@@ -1152,7 +1152,7 @@ public:
   }
 
   void cleanupAIEModules(
-      std::vector<std::pair<ModuleOp, air::HerdLaunchOp>> aie_modules) {
+      std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules) {
     for (auto p : aie_modules) {
       // quick n dirty dce
       auto aie_module = std::get<0>(p);
@@ -1207,13 +1207,13 @@ public:
 
     // If we have multiple herds then we must emit them into different aie
     // modules to avoid resource conflicts in the AIE physical dialect.
-    std::vector<std::pair<ModuleOp, air::HerdLaunchOp>> aie_modules;
+    std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;
 
     createAIEModulesAndOutlineCores(module, aie_modules);
 
     for (auto &p : aie_modules) {
       ModuleOp m = std::get<0>(p);
-      xilinx::air::HerdLaunchOp h = std::get<1>(p);
+      xilinx::air::HerdOp h = std::get<1>(p);
       auto ctx = m->getContext();
 
       specializeHerdAffineIf(m);

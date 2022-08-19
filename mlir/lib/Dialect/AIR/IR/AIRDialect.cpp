@@ -45,7 +45,7 @@ void airDialect::printType(Type type, DialectAsmPrinter &os) const {
       .Default([](Type) { llvm_unreachable("unexpected 'air' type"); });
 }
 
-static LogicalResult removeUnusedArguments(HerdLaunchOp op,
+static LogicalResult removeUnusedArguments(HerdOp op,
                                            PatternRewriter &rewriter) {
   SmallVector<Value, 32> newOperands;
   SmallVector<int, 32> newOperandsIdx;
@@ -60,7 +60,7 @@ static LogicalResult removeUnusedArguments(HerdLaunchOp op,
     return failure();
 
   BlockAndValueMapping remap;
-  auto newOp = rewriter.create<HerdLaunchOp>(
+  auto newOp = rewriter.create<HerdOp>(
       op.getLoc(), op.getAsyncDependencies(), op.getSizeOperands(),
       newOperands, op->getNumResults() > 0);
   rewriter.setInsertionPointToStart(&newOp.body().front());
@@ -637,7 +637,7 @@ unsigned PartitionOp::getNumDims() {
 // LaunchHerdOp
 //
 
-void HerdLaunchOp::build(OpBuilder &builder, OperationState &result,
+void HerdOp::build(OpBuilder &builder, OperationState &result,
                          ValueRange asyncDependencies, ValueRange sizes,
                          ValueRange launchOperands, bool isAsync) {
 
@@ -666,13 +666,13 @@ void HerdLaunchOp::build(OpBuilder &builder, OperationState &result,
   r->push_back(body);
 }
 
-void HerdLaunchOp::build(OpBuilder &builder, OperationState &result,
+void HerdOp::build(OpBuilder &builder, OperationState &result,
                          ValueRange sizes, ValueRange launchOperands) {
 
   build(builder, result, {}, sizes, launchOperands);
 }
 
-void HerdLaunchOp::print(OpAsmPrinter &p) {
+void HerdOp::print(OpAsmPrinter &p) {
 
   p << ' ';
 
@@ -730,7 +730,7 @@ void HerdLaunchOp::print(OpAsmPrinter &p) {
   p.printRegion(body(), /*printEntryBlockArgs=*/false);
 }
 
-ParseResult HerdLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
+ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
 
   SmallVector<OpAsmParser::UnresolvedOperand, 4> asyncDependencies;
   SmallVector<OpAsmParser::Argument, 4> tileArgs;
@@ -830,46 +830,46 @@ ParseResult HerdLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
-void HerdLaunchOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+void HerdOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                                MLIRContext *context) {
   patterns.add(removeUnusedArguments);
 }
 
-ArrayRef<BlockArgument> HerdLaunchOp::getIds() {
+ArrayRef<BlockArgument> HerdOp::getIds() {
   auto s = body().front().getArguments();
   auto n = getNumDims();
   return s.take_front(n);
 }
 
-ArrayRef<BlockArgument> HerdLaunchOp::getSize() {
+ArrayRef<BlockArgument> HerdOp::getSize() {
   auto s = body().front().getArguments();
   auto n = getNumDims();
   return s.slice(n, n);
 }
 
-OperandRange HerdLaunchOp::getSizeOperands() {
+OperandRange HerdOp::getSizeOperands() {
   auto start = asyncDependencies().size();
   auto n = getNumDims();
   return getOperands().slice(start, n);
 }
 
-unsigned HerdLaunchOp::getNumKernelOperands() {
+unsigned HerdOp::getNumKernelOperands() {
   return getNumOperands() - asyncDependencies().size() - 2;
 }
 
-Value HerdLaunchOp::getKernelOperand(unsigned i) {
+Value HerdOp::getKernelOperand(unsigned i) {
   return getOperand(asyncDependencies().size() + 2 + i);
 }
 
-ArrayRef<BlockArgument> HerdLaunchOp::getKernelArguments() {
+ArrayRef<BlockArgument> HerdOp::getKernelArguments() {
   return body().front().getArguments().drop_front(4);
 }
 
-BlockArgument HerdLaunchOp::getKernelArgument(unsigned i) {
+BlockArgument HerdOp::getKernelArgument(unsigned i) {
   return getKernelArguments()[i];
 }
 
-unsigned HerdLaunchOp::getNumDims() {
+unsigned HerdOp::getNumDims() {
   auto size_attr_name = OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
   auto size_attr = (*this)->getAttrOfType<DenseIntElementsAttr>(size_attr_name);
   SmallVector<APInt, 4> segment_sizes{size_attr.begin(), size_attr.end()};
