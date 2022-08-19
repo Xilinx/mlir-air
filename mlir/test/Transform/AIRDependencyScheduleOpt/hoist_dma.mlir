@@ -5,7 +5,7 @@
 // The redundant L1-L2 DMA ops shall be hoisted to outside of scf.for loop
 // CHECK: %[[EVENT0:.*]] = air.dma_memcpy_nd async 
 // CHECK: %[[EVENT2:.*]] = scf.for {{.*}} iter_args(%[[EVENT1:.*]] = %[[EVENT0]])
-// CHECK: %[[EVENT3:.*]] = air.launch_herd async [{{.*}}%[[EVENT1]]{{.*}}]
+// CHECK: %[[EVENT3:.*]] = air.launch_herd @herd_0 async [{{.*}}%[[EVENT1]]{{.*}}]
 // CHECK: %[[EVENT4:.*]] = air.wait_all async
 // CHECK: %[[EVENT5:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT4]]{{.*}}]
 // CHECK: %[[EVENT6:.*]] = scf.for {{.*}} iter_args({{.*}} = %[[EVENT5]])

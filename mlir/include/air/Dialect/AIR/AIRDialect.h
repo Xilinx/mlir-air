@@ -28,11 +28,6 @@ namespace air {
 
 void registerAIRRtTranslations();
 
-struct HerdDim2 {
-  Value x;
-  Value y;
-};
-
 class AsyncTokenType
     : public Type::TypeBase<AsyncTokenType, Type, TypeStorage> {
 public:

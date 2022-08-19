@@ -8,17 +8,17 @@ except ImportError as e:
 class HerdLaunchOp:
   """Specialization for herd_launch op class."""
 
-  def __init__(self, name, size_x: Value, size_y: Value, operands, async_deps=[], loc=None, ip=None):
+  def __init__(self, name, sizes, operands, async_deps=[], loc=None, ip=None):
     results = []
     attributes = {}
     attributes["sym_name"] = StringAttr.get(str(name))
     super().__init__(self.build_generic(
       results=results,
-      operands=[async_deps,size_x,size_y,operands],
+      operands=[async_deps,sizes,operands],
       attributes=attributes,
       loc=loc,
       ip=ip))
-    operand_types = [IndexType.get()]*4 + \
+    operand_types = [s.type for s in sizes]*2 + \
                     [o.type for o in operands]
     self.regions[0].blocks.append(*operand_types)
 

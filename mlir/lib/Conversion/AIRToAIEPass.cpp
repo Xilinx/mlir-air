@@ -1038,17 +1038,17 @@ public:
       OpBuilder builder(aie_module);
       builder.setInsertionPointToStart(aie_module.getBody());
 
-      air::HerdDim2 herd_size = h.getHerdSizeOperands();
-      if (!isa<arith::ConstantIndexOp>(herd_size.x.getDefiningOp()) ||
-          !isa<arith::ConstantIndexOp>(herd_size.y.getDefiningOp())) {
+      SmallVector<Value, 1> herd_size = h.getSizeOperands();
+      if (!isa<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()) ||
+          !isa<arith::ConstantIndexOp>(herd_size[1].getDefiningOp())) {
         llvm::errs() << "Only constant sized herds are supported";
         return;
       }
 
       int64_t herd_size_x =
-          cast<arith::ConstantIndexOp>(herd_size.x.getDefiningOp()).value();
+          cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
       int64_t herd_size_y =
-          cast<arith::ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
+          cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
 
       // std::vector<AIE::TileOp> shim_dma_inits;
       // std::vector<AIE::TileOp> l2_dma_tiles;
@@ -1100,15 +1100,15 @@ public:
           core_builder.setInsertionPointToEnd(core_bb);
 
           // map the tile ids and herd size to constants
-          remap.map(h.getTileIds().x,
+          remap.map(h.getIds()[0],
                     core_builder.create<arith::ConstantIndexOp>(hloc, x));
-          remap.map(h.getTileIds().y,
+          remap.map(h.getIds()[1],
                     core_builder.create<arith::ConstantIndexOp>(hloc, y));
           remap.map(
-              h.getHerdSize().x,
+              h.getSize()[0],
               core_builder.create<arith::ConstantIndexOp>(hloc, herd_size_x));
           remap.map(
-              h.getHerdSize().y,
+              h.getSize()[1],
               core_builder.create<arith::ConstantIndexOp>(hloc, herd_size_y));
 
           for (auto a : h.getKernelArguments()) {

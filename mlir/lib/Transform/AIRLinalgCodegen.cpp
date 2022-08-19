@@ -502,7 +502,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   int new_herd_x = isHoriz ? pipeline_depth : 1;
   int new_herd_y = !isHoriz ? pipeline_depth : 1;
 
-  xilinx::air::HerdDim2 dims{b.create<arith::ConstantIndexOp>(loc, new_herd_x),
+  SmallVector<Value, 2> dims {b.create<arith::ConstantIndexOp>(loc, new_herd_x),
                              b.create<arith::ConstantIndexOp>(loc, new_herd_y)};
 
   SmallVector<Value, 4> args;
@@ -527,7 +527,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
       applyMapToValues(b, loc, shapeSizesToLoopsMap, allShapeSizes);
 
   SmallVector<Value, 2> tileIds = {b.create<arith::MulIOp>(
-      loc, isHoriz ? launch.getTileIds().x : launch.getTileIds().y,
+      loc, isHoriz ? launch.getIds()[0] : launch.getIds()[1],
       tileSizeValue)};
   SmallVector<Value, 4> tiledOperands = linalg::makeTiledShapes(
       b, loc, op, args, tileIds, tileSizeVector, sizeBounds, true);

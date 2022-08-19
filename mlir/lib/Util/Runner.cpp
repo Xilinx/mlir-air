@@ -1109,10 +1109,10 @@ public:
   void scheduleHerdLaunch(xilinx::air::HerdLaunchOp &hlo, QueueContext *qctx) {
 
     int64_t cols = cast<arith::ConstantIndexOp>(
-                       hlo.getHerdSizeOperands().x.getDefiningOp())
+                       hlo.getSizeOperands()[0].getDefiningOp())
                        .value();
     int64_t rows = cast<arith::ConstantIndexOp>(
-                       hlo.getHerdSizeOperands().y.getDefiningOp())
+                       hlo.getSizeOperands()[1].getDefiningOp())
                        .value();
 
     if (hlo->getNumResults())

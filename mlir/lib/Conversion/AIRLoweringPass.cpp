@@ -63,9 +63,9 @@ public:
       launch.getResult(0).replaceAllUsesWith(w.getResult(0));
     }
 
-    auto herd_size = launch.getHerdSizeOperands();
-    int64_t herd_size_x = cast<ConstantIndexOp>(herd_size.x.getDefiningOp()).value();
-    int64_t herd_size_y = cast<ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
+    auto herd_size = launch.getSizeOperands();
+    int64_t herd_size_x = cast<ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
+    int64_t herd_size_y = cast<ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
 
     auto outer = rewriter.create<AffineForOp>(launch.getLoc(), 0, herd_size_x);
     auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
@@ -74,10 +74,10 @@ public:
     outer->setAttr("air.herd_launch", StringAttr::get(op->getContext(), "outer"));
     inner->setAttr("air.herd_launch", StringAttr::get(op->getContext(), "inner"));
 
-    launch.getHerdSize().x.replaceAllUsesWith(herd_size.x);
-    launch.getHerdSize().y.replaceAllUsesWith(herd_size.y);
-    launch.getTileIds().x.replaceAllUsesWith(outer.getInductionVar());
-    launch.getTileIds().y.replaceAllUsesWith(inner.getInductionVar());
+    launch.getSize()[0].replaceAllUsesWith(herd_size[0]);
+    launch.getSize()[1].replaceAllUsesWith(herd_size[1]);
+    launch.getIds()[0].replaceAllUsesWith(outer.getInductionVar());
+    launch.getIds()[1].replaceAllUsesWith(inner.getInductionVar());
 
     int i=0;
     for (auto arg : launch.getKernelArguments())
@@ -219,9 +219,9 @@ Operation* convertDmaMemcpyToAirRt(Operation *op, ArrayRef<Value > operands,
     opers.push_back(afo.getInductionVar());
   }
   else {
-    auto tileIds = launch.getTileIds();
-    opers.push_back(tileIds.x);
-    opers.push_back(tileIds.y);
+    auto tileIds = launch.getIds();
+    opers.push_back(tileIds[0]);
+    opers.push_back(tileIds[1]);
   }
 
   SmallVector<Value, 4> deps;
@@ -394,9 +394,9 @@ public:
           return failure();
         opers.push_back(afo.getInductionVar());
       } else {
-        auto tileIds = launch.getTileIds();
-        opers.push_back(tileIds.x);
-        opers.push_back(tileIds.y);
+        auto tileIds = launch.getIds();
+        opers.push_back(tileIds[0]);
+        opers.push_back(tileIds[1]);
       }
       opers[1] = rewriter.create<IndexCastOp>(
           op->getLoc(), IntegerType::get(op->getContext(), 64), opers[1]);

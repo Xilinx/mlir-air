@@ -61,7 +61,7 @@ module attributes {torch.debug_module_name = "model"} {
           air.dma_memcpy_2d (%7, %1, [%c0_7, %c0_7], [%arg3, %arg4], %c4096_10, %c1024_8, %c64_9) {id = 3 : i32} : (memref<64x64xf32, 1>, memref<1024x1024xf32>, [index, index], [index, index], index, index, index) -> ()
           // CHECK: = air.dma_memcpy_2d async
           air.launch_herd tile (%arg6, %arg7) in (%arg8=%c2, %arg9=%c2) args(%arg10=%5, %arg11=%6, %arg12=%7) : memref<64x64xf32, 1>, memref<64x64xf32, 1>, memref<64x64xf32, 1> attributes {sym_name = "herd_0"} {
-          // CHECK: = air.launch_herd async
+          // CHECK: = air.launch_herd @herd_0 async
             %c0_15 = arith.constant 0 : index
             %c64_16 = arith.constant 64 : index
             %c32 = arith.constant 32 : index

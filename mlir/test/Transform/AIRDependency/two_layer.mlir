@@ -3,8 +3,8 @@
 // RUN: air-opt %s -air-dependency | FileCheck %s
 
 // The second launch_herd should depend on the first
-// CHECK: %[[EVENT0:.*]] = air.launch_herd async
-// CHECK: %[[EVENT1:.*]] = air.launch_herd async [{{.*}}%[[EVENT0]]{{.*}}]
+// CHECK: %[[EVENT0:.*]] = air.launch_herd @herd_0 async
+// CHECK: %[[EVENT1:.*]] = air.launch_herd @herd_1 async [{{.*}}%[[EVENT0]]{{.*}}]
 #map0 = affine_map<()[s0] -> (s0 * 16)>
 #map1 = affine_map<()[s0] -> (s0 * 64)>
 #map2 = affine_map<(d0, d1) -> (d0, d1)>

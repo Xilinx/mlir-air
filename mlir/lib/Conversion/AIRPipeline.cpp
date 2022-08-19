@@ -30,8 +30,8 @@ LogicalResult AIRPipeStageConversion::matchAndRewrite(
     return failure();
   }
 
-  Value x = launch.getTileIds().x;
-  Value y = launch.getTileIds().y;
+  Value x = launch.getIds()[0];
+  Value y = launch.getIds()[1];
 
   auto ctx = op->getContext();
   auto stage = cast<xilinx::air::PipelineStageOp>(op);

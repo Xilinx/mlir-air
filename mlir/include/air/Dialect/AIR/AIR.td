@@ -128,11 +128,14 @@ def air_PartitionTerminatorOp : air_Op<"partition_terminator", [HasParent<"Parti
 }
 
 def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,
+                                              air_HierarchyInterface,
                                               AttrSizedOperandSegments,
                                               IsolatedFromAbove,
-                                              AffineScope]>,
-                        Arguments<(ins Variadic<air_AsyncToken>:$asyncDependencies,
-                                       Index:$herdSizeX, Index:$herdSizeY,
+                                              AffineScope,
+                                              SingleBlockImplicitTerminator<"HerdTerminatorOp">]>,
+                        Arguments<(ins OptionalAttr<SymbolRefAttr>:$symbol,
+                                       Variadic<air_AsyncToken>:$asyncDependencies,
+                                       Variadic<Index>:$sizes,
                                        Variadic<AnyType>:$operands)>,
                         Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
   let summary = "Launch a herd";
@@ -144,22 +147,23 @@ def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,
 
   let skipDefaultBuilders = 1;
   let builders = [
-    OpBuilder<(ins "HerdDim2":$gridSize,"ValueRange":$kernelOperands)>,
+    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$kernelOperands)>,
     OpBuilder<(ins "ValueRange":$asyncDependencies,
-      "HerdDim2":$gridSize,
+      "ValueRange":$sizes,
       "ValueRange":$kernelOperands,
       CArg<"bool", "false">:$isAsync
     )>
   ];
   let hasCustomAssemblyFormat = 1;
   let extraClassDeclaration = [{
-    HerdDim2 getTileIds();
-    HerdDim2 getHerdSize();
-    HerdDim2 getHerdSizeOperands();
+    ArrayRef<BlockArgument> getIds();
+    ArrayRef<BlockArgument> getSize();
+    OperandRange getSizeOperands();
     unsigned getNumKernelOperands();
     Value getKernelOperand(unsigned i);
     ArrayRef<BlockArgument> getKernelArguments();
     BlockArgument getKernelArgument(unsigned i);
+    unsigned getNumDims();
     int32_t getId() {
       if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
         return id_attr.getInt();

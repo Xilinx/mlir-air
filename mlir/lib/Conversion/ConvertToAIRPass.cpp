@@ -476,7 +476,7 @@ public:
         else
           args.push_back(v);
       }
-      air::HerdDim2 dims{
+      SmallVector<Value, 2> dims{
           rewriter.create<arith::ConstantIndexOp>(loc, ub0.getValue()),
           rewriter.create<arith::ConstantIndexOp>(loc, ub1.getValue())};
       auto launch = rewriter.create<air::HerdLaunchOp>(op.getLoc(), dims, args);
@@ -487,8 +487,8 @@ public:
 
       auto &bb = launch.body().front();
       auto ivs = op.getIVs();
-      ivs[0].replaceAllUsesWith(launch.getTileIds().x);
-      ivs[1].replaceAllUsesWith(launch.getTileIds().y);
+      ivs[0].replaceAllUsesWith(launch.getIds()[0]);
+      ivs[1].replaceAllUsesWith(launch.getIds()[1]);
       auto &body = op.getBody()->getOperations();
       bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
       rewriter.setInsertionPointToStart(&launch.getRegion().front());
@@ -662,15 +662,15 @@ public:
       else
         args.push_back(v);
     }
-    air::HerdDim2 dims{rewriter.create<arith::ConstantIndexOp>(loc, bounds[0]),
+    SmallVector<Value, 2> dims{rewriter.create<arith::ConstantIndexOp>(loc, bounds[0]),
                        rewriter.create<arith::ConstantIndexOp>(loc, bounds[1])};
     auto launch = rewriter.create<air::HerdLaunchOp>(op.getLoc(), dims, args);
     auto &bb = launch.body().front();
     auto ivs = op.getInductionVars();
 
-    ivs[0].replaceAllUsesWith(launch.getTileIds().x);
+    ivs[0].replaceAllUsesWith(launch.getIds()[0]);
     if (op.getNumLoops() == 2)
-      ivs[1].replaceAllUsesWith(launch.getTileIds().y);
+      ivs[1].replaceAllUsesWith(launch.getIds()[1]);
 
     auto &body = op.getBody()->getOperations();
     bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());

@@ -346,17 +346,17 @@ public:
       for (auto v : loop_dep_history){
         if (getHerdLaunchArgOwner(v)){
           hl_op = getHerdLaunchArgOwner(v);
-          if (v == hl_op.getTileIds().x){
+          if (v == hl_op.getIds()[0]){
             hasDepInHerdRows = true;
           }
-          if (v == hl_op.getTileIds().y){
+          if (v == hl_op.getIds()[1]){
             hasDepInHerdCols = true;
           }
         }
       }
 
       if (hl_op && hasDepInHerdRows && !hasDepInHerdCols){
-        auto numColsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().y.getDefiningOp());
+        auto numColsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getSizeOperands()[1].getDefiningOp());
         auto numCols = numColsOp.value();
         if (numCols > 1){
           SmallVector<AffineExpr, 5> constraints{getAffineDimExpr(0, ctx) - getAffineSymbolExpr(0, ctx),
@@ -371,7 +371,7 @@ public:
         }
       }
       else if (hl_op && !hasDepInHerdRows && hasDepInHerdCols){
-        auto numRowsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().x.getDefiningOp());
+        auto numRowsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getSizeOperands()[0].getDefiningOp());
         auto numRows = numRowsOp.value();
         if (numRows > 1){
           SmallVector<AffineExpr, 5> constraints{getAffineDimExpr(0, ctx),
@@ -386,9 +386,9 @@ public:
         }
       }
       else if (hl_op && !hasDepInHerdRows && !hasDepInHerdCols){
-        auto numRowsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().x.getDefiningOp());
+        auto numRowsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getSizeOperands()[0].getDefiningOp());
         auto numRows = numRowsOp.value();
-        auto numColsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getHerdSizeOperands().y.getDefiningOp());
+        auto numColsOp = dyn_cast<arith::ConstantIndexOp>(hl_op.getSizeOperands()[1].getDefiningOp());
         auto numCols = numColsOp.value();
         if (numCols > 1 && numRows > 1){
           SmallVector<AffineExpr, 5> constraints{getAffineDimExpr(0, ctx),
