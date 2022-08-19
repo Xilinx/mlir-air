@@ -27,12 +27,30 @@ void defineAIRHostModule(pybind11::module &m) {
   });
 
   pybind11::class_<air_module_desc_t>(m, "ModuleDescriptor")
-    .def("getHerds", [](const air_module_desc_t &d) -> std::vector<air_herd_desc_t*> {
-      std::vector<air_herd_desc_t*> herds;
-      for (uint64_t i=0; i<d.length; i++)
-        herds.push_back(d.herd_descs[i]);
-      return herds;
-    }, pybind11::return_value_policy::reference);
+      .def(
+          "getPartitions",
+          [](const air_module_desc_t &d)
+              -> std::vector<air_partition_desc_t *> {
+            std::vector<air_partition_desc_t *> partitions;
+            for (uint64_t i = 0; i < d.partition_length; i++)
+              partitions.push_back(d.partition_descs[i]);
+            return partitions;
+          },
+          pybind11::return_value_policy::reference);
+
+  pybind11::class_<air_partition_desc_t>(m, "PartitionDescriptor")
+      .def(
+          "getHerds",
+          [](const air_partition_desc_t &d) -> std::vector<air_herd_desc_t *> {
+            std::vector<air_herd_desc_t *> herds;
+            for (uint64_t i = 0; i < d.herd_length; i++)
+              herds.push_back(d.herd_descs[i]);
+            return herds;
+          },
+          pybind11::return_value_policy::reference)
+      .def("getName", [](const air_partition_desc_t &d) -> std::string {
+        return std::string(d.name, d.name_length);
+      });
 
   pybind11::class_<air_herd_desc_t>(m, "HerdDescriptor")
     .def("getName", [](const air_herd_desc_t &d) -> std::string {
@@ -48,9 +66,9 @@ void defineAIRHostModule(pybind11::module &m) {
   m.def("get_module_descriptor", &air_module_get_desc,
         pybind11::return_value_policy::reference);
 
-  m.def("get_herd_descriptor", [](air_module_handle_t h, std::string name) {
-    return air_herd_get_desc(h, name.c_str());
-  }, pybind11::return_value_policy::reference);
+  // m.def("get_herd_descriptor", [](air_module_handle_t h, std::string name) {
+  //   return air_herd_get_desc(h, name.c_str());
+  // }, pybind11::return_value_policy::reference);
 
   pybind11::class_<queue_t>(m, "Queue");
 

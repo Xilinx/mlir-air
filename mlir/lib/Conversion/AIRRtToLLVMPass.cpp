@@ -200,7 +200,6 @@ createPartitionDescriptor(OpBuilder builder, ModuleOp module,
         loc, desc, herd_descs_global_addr, builder.getI32ArrayAttr(3));
 
     builder.create<LLVM::ReturnOp>(loc, desc);
-    descGlobal.getInitializerRegion().front().dump();
   }
   return descGlobal;
 }

@@ -1,6 +1,8 @@
 // RUN: air-opt %S/herd.airrt.mlir -airrt-to-llvm | mlir-translate --mlir-to-llvmir | llc --filetype=obj -o %T/herd.o
 // RUN: clang++ %S/test.cpp %T/herd.o -o %T/test.elf
 // RUN: %T/test.elf | FileCheck %s
+// CHECK: Num Partitions: 1
+// CHECK: Partition 0: partition_0
 // CHECK: Num Herds: 2
 // CHECK: Herd 0: herd_0
 // CHECK: Shim Channel : id 0, row 0, col 0, channel 1

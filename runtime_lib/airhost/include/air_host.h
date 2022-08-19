@@ -125,6 +125,11 @@ struct air_partition_desc_t {
   air_herd_desc_t **herd_descs;
 };
 
+struct air_rt_partition_desc_t {
+  queue_t *q;
+  air_partition_desc_t *partition_desc;
+};
+
 struct air_module_desc_t {
   uint64_t partition_length;
   air_partition_desc_t **partition_descs;
@@ -154,7 +159,9 @@ air_module_desc_t *air_module_get_desc(air_module_handle_t handle);
 
 air_partition_desc_t *air_partition_get_desc(air_module_handle_t handle, const char *name);
 
-air_herd_desc_t *air_herd_get_desc(air_module_handle_t handle, /*air_partition_desc_t *partition, */ const char *name);
+air_herd_desc_t *air_herd_get_desc(air_module_handle_t handle,
+                                   air_partition_desc_t *partition,
+                                   const char *name);
 
 uint64_t air_partition_load(const char *name);
 

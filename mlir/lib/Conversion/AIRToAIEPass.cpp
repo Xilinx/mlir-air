@@ -1024,8 +1024,26 @@ public:
 
   void createAIEModulesAndOutlineCores(
       ModuleOp module,
-      std::vector<std::pair<ModuleOp, air::HerdLaunchOp>> &aie_modules) {
-    module.walk([&](xilinx::air::HerdLaunchOp h) {
+      std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> &aie_modules,
+      std::map<AIE::TileOp, air::HerdOp> &coreToHerdMap) {
+
+    module.walk([&](xilinx::air::PartitionOp p) {
+      std::string partition_name;
+      if (auto attr =
+              p->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+        partition_name = attr.getValue().str();
+      else
+        partition_name = "partition_" + std::to_string(aie_modules.size());
+      std::string aie_module_name = "aie." + partition_name;
+      ModuleOp aie_module =
+          ModuleOp::create(module.getLoc(), StringRef(aie_module_name));
+
+      p.walk([&](xilinx::air::HerdLaunchOp h) {
+        aie_modules.push_back({aie_module, h});
+      });
+    });
+
+    module.walk([&](xilinx::air::HerdOp h) {
       // if the herd has a symbol name, then the module is
       // named aie.symbol_name, otherwise it's aie.herd_N
       std::string herd_name;
@@ -1060,21 +1078,31 @@ public:
       int64_t herd_size_y =
           cast<arith::ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
 
-      int64_t ColOffset = AIRToAIEColOffset;
-      int64_t RowOffset = AIRToAIERowOffset;
+      int64_t col_offset = AIRToAIEColOffset;
+      int64_t row_offset = AIRToAIERowOffset;
       if (auto a = h->getAttrOfType<IntegerAttr>("x_loc"))
-        ColOffset = a.getInt();
+        col_offset = a.getInt();
+      else
+        h->setAttr("x_loc",
+                   IntegerAttr::get(IntegerType::get(h->getContext(), 32),
+                                    col_offset));
       if (auto a = h->getAttrOfType<IntegerAttr>("y_loc"))
-        RowOffset = a.getInt();
+        row_offset = a.getInt();
+      else
+        h->setAttr("y_loc",
+                   IntegerAttr::get(IntegerType::get(h->getContext(), 32),
+                                    row_offset));
 
       auto ctx = module.getContext();
       for (auto y = 0; y < herd_size_y; y++) {
         for (auto x = 0; x < herd_size_x; x++) {
           auto hloc = h.getLoc();
           BlockAndValueMapping remap;
+          auto phys_x = x + col_offset;
+          auto phys_y = y + row_offset;
 
           // make the AIE.tile
-          auto tile = getTileOp(aie_module, x+ColOffset, y+RowOffset);
+          auto tile = getPhysTileOp(aie_module, phys_x, phys_y);
 
           Operation *t = tile.getOperation();
           while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
@@ -1085,13 +1113,14 @@ public:
           auto core = tile.getCoreOp();
           if (!core) {
             core = builder.create<AIE::CoreOp>(hloc, tile);
+            coreToHerdMap[tile] = h;
             std::string herd_name =
                 aie_module.getName()->str().substr(strlen("aie."));
-            core->setAttr("elf_file",
-                          StringAttr::get(
-                              ctx, herd_name + "_core_" +
-                                       std::to_string(ColOffset + x) + "_" +
-                                       std::to_string(RowOffset + y) + ".elf"));
+            core->setAttr(
+                "elf_file",
+                StringAttr::get(ctx, herd_name + "_core_" +
+                                         std::to_string(phys_x) + "_" +
+                                         std::to_string(phys_y) + ".elf"));
             if (auto a = h->getAttrOfType<StringAttr>("link_with"))
               core->setAttr("link_with", a);
           }
@@ -1235,7 +1264,8 @@ public:
     // modules to avoid resource conflicts in the AIE physical dialect.
     std::vector<std::pair<ModuleOp, air::HerdLaunchOp>> aie_modules;
 
-    createAIEModulesAndOutlineCores(module, aie_modules);
+    std::map<AIE::TileOp, air::HerdLaunchOp> coreToHerdMap;
+    createAIEModulesAndOutlineCores(module, aie_modules, coreToHerdMap);
 
     std::set<ModuleOp> seen;
     for (auto &p : aie_modules) {
@@ -1274,14 +1304,19 @@ public:
             if (auto dmaOp = dyn_cast<air::DmaMemcpyInterface>(o))
               dma_ids.insert(dmaOp.getId());
           });
+          int64_t col_offset =
+              herd->getAttrOfType<IntegerAttr>("x_loc").getInt();
+          int64_t row_offset =
+              herd->getAttrOfType<IntegerAttr>("y_loc").getInt();
 
           // createAIRRtMetadata(module_meta, shimDmaAlloc, L2DmaAlloc);
           std::vector<Attribute> dma_allocations;
           for (auto &t : shimDmaAlloc.s2mm_allocs) {
             auto tileOp = t.dma_tile;
-            int64_t col = t.col;
-            int64_t row = t.row;
+            int64_t col = t.col - col_offset;
+            int64_t row = t.row - row_offset;
             int64_t chan = t.dma_channel;
+
             for (int64_t id : t.dma_id) {
               if (dma_ids.count(id) == 0)
                 continue;
@@ -1302,8 +1337,8 @@ public:
           }
           for (auto &t : shimDmaAlloc.mm2s_allocs) {
             auto tileOp = t.dma_tile;
-            int64_t col = t.col;
-            int64_t row = t.row;
+            int64_t col = t.col - col_offset;
+            int64_t row = t.row - row_offset;
             int64_t chan = t.dma_channel;
             for (int64_t id : t.dma_id) {
               if (dma_ids.count(id) == 0)
@@ -1325,8 +1360,8 @@ public:
           }
           for (auto &t : L2DmaAlloc.s2mm_allocs) {
             auto tileOp = t.dma_tile;
-            int64_t col = t.col;
-            int64_t row = t.row;
+            int64_t col = t.col - col_offset;
+            int64_t row = t.row - row_offset;
             int64_t chan = t.dma_channel;
             for (int64_t id : t.dma_id) {
               if (dma_ids.count(id) == 0)
@@ -1348,8 +1383,8 @@ public:
           }
           for (auto &t : L2DmaAlloc.mm2s_allocs) {
             auto tileOp = t.dma_tile;
-            int64_t col = t.col;
-            int64_t row = t.row;
+            int64_t col = t.col - col_offset;
+            int64_t row = t.row - row_offset;
             int64_t chan = t.dma_channel;
             for (int64_t id : t.dma_id) {
               if (dma_ids.count(id) == 0)
@@ -1379,7 +1414,6 @@ public:
         tile_dma_MM2S_allocs.clear();
       }
     }
-    module_meta.dump();
     cleanupAIEModules(aie_modules);
 
     // emit aie_modules to files or to stdout
