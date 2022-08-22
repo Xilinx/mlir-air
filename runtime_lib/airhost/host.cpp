@@ -68,17 +68,8 @@ air_module_load_from_file(const char* filename, queue_t *q)
     return 0;
   }
   _air_host_active_module = (air_module_handle_t)_handle;
-
-  auto module_desc = air_module_get_desc(_air_host_active_module);
-
-  if (module_desc->partition_length)
-    if (module_desc->partition_descs[0]->herd_length) {
-      _air_host_active_partition = {q, module_desc->partition_descs[0]};
-      _air_host_active_herd = {q,
-                               module_desc->partition_descs[0]->herd_descs[0]};
-    }
-
-  assert(_air_host_active_herd.herd_desc);
+  _air_host_active_herd = {q, nullptr};
+  _air_host_active_partition = {q, nullptr};
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   assert(fd != -1 && "Failed to open /dev/mem");
@@ -190,48 +181,37 @@ uint64_t air_partition_load(const char *name) {
            partition_name.c_str());
     assert(0);
   }
+  _air_host_active_partition.partition_desc = partition_desc;
   return 0;
 }
 
 uint64_t
 air_herd_load(const char *name) {
+
+  // If no partition is loaded, load the partition associated with this herd
+  if (!_air_host_active_partition.partition_desc) {
+    bool loaded = false;
+    if (auto module_desc = air_module_get_desc(_air_host_active_module)) {
+      for (int i = 0; !loaded && i < module_desc->partition_length; i++) {
+        for (int j = 0;
+             !loaded && i < module_desc->partition_descs[i]->herd_length; j++) {
+          auto herd_desc = module_desc->partition_descs[i]->herd_descs[j];
+          // use the partition of the first herd with a matching name
+          if (!strncmp(name, herd_desc->name, herd_desc->name_length)) {
+            air_partition_load(module_desc->partition_descs[i]->name);
+            loaded = true; // break
+          }
+        }
+      }
+    }
+  }
   auto herd_desc = air_herd_get_desc(
       _air_host_active_module, _air_host_active_partition.partition_desc, name);
   if (!herd_desc) {
     printf("Failed to locate herd descriptor '%s'!\n",name);
     assert(0);
   }
-  std::string herd_name(herd_desc->name, herd_desc->name_length);
-
-  // bool configured = (_air_host_active_herd.herd_desc == herd_desc);
-  // if (configured) return 0;
-  
   _air_host_active_herd.herd_desc = herd_desc;
-
-  std::string func_name = "__airrt_" +
-                          herd_name +
-                          "_aie_functions";
-  air_rt_aie_functions_t *mlir = 
-    (air_rt_aie_functions_t *)dlsym((void*)_air_host_active_module,
-                                    func_name.c_str());
-
-  if (mlir) {
-    //printf("configuring herd: '%s'\n",herd_name.c_str());
-    assert(mlir->configure_cores);
-    assert(mlir->configure_switchboxes);
-    assert(mlir->initialize_locks);
-    assert(mlir->configure_dmas);
-    assert(mlir->start_cores);
-    mlir->configure_cores(_air_host_active_libxaie1);
-    mlir->configure_switchboxes(_air_host_active_libxaie1);
-    mlir->initialize_locks(_air_host_active_libxaie1);
-    mlir->configure_dmas(_air_host_active_libxaie1);
-    mlir->start_cores(_air_host_active_libxaie1);
-  }
-  else {
-    ; // printf("Failed to locate herd '%s' configuration
-      // functions!\n",herd_name.c_str());
-  }
 
   return 0;
 }

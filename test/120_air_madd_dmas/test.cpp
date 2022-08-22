@@ -28,15 +28,15 @@
 #define SUB_TILE_HEIGHT 32
 #define SUB_TILE_SIZE  (SUB_TILE_WIDTH * SUB_TILE_HEIGHT)
 
-namespace air::herds::herd_0 {
+namespace air::partitions::partition_0 {
 void mlir_aie_write_buffer_scratch_a_0_0(aie_libxaie_ctx_t*, int, int32_t);
 int32_t mlir_aie_read_buffer_scratch_a_0_0(aie_libxaie_ctx_t*, int);
 void mlir_aie_write_buffer_scratch_b_0_0(aie_libxaie_ctx_t*, int, int32_t);
 int32_t mlir_aie_read_buffer_scratch_b_0_0(aie_libxaie_ctx_t*, int);
 void mlir_aie_write_buffer_scratch_c_0_0(aie_libxaie_ctx_t*, int, int32_t);
 int32_t mlir_aie_read_buffer_scratch_c_0_0(aie_libxaie_ctx_t*, int);
-};
-using namespace air::herds::herd_0;
+}; // namespace air::partitions::partition_0
+using namespace air::partitions::partition_0;
 
 int
 main(int argc, char *argv[])
@@ -107,12 +107,15 @@ main(int argc, char *argv[])
   l2_b.shape[0] = TILE_WIDTH; l2_b.shape[1] = TILE_HEIGHT;
   l2_c.shape[0] = TILE_WIDTH; l2_c.shape[1] = TILE_HEIGHT;
 
-  input_a.d = input_a.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input_a.shape[0]*input_a.shape[1]);
-  uint32_t *a = (uint32_t*)input_a.d; 
-  input_b.d = input_b.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input_b.shape[0]*input_b.shape[1]);
-  uint32_t *b = (uint32_t*)input_b.d; 
-  inout_c.d = inout_c.aligned = (uint32_t*)malloc(sizeof(uint32_t)*inout_c.shape[0]*inout_c.shape[1]);
-  uint32_t *c = (uint32_t*)inout_c.d; 
+  input_a.alloc = input_a.data = (uint32_t *)malloc(
+      sizeof(uint32_t) * input_a.shape[0] * input_a.shape[1]);
+  uint32_t *a = (uint32_t *)input_a.data;
+  input_b.alloc = input_b.data = (uint32_t *)malloc(
+      sizeof(uint32_t) * input_b.shape[0] * input_b.shape[1]);
+  uint32_t *b = (uint32_t *)input_b.data;
+  inout_c.alloc = inout_c.data = (uint32_t *)malloc(
+      sizeof(uint32_t) * inout_c.shape[0] * inout_c.shape[1]);
+  uint32_t *c = (uint32_t *)inout_c.data;
 
   for (int i=0; i<IMAGE_SIZE; i++) {
     a[i] = i+1;
@@ -120,11 +123,11 @@ main(int argc, char *argv[])
     c[i] = 0;
   }
 
-  l2_a.d = l2_a.aligned = (uint32_t*)0;
+  l2_a.alloc = l2_a.data = (uint32_t *)0;
   uint32_t *l2a = (uint32_t*)&bank0_ptr[0];
-  l2_b.d = l2_b.aligned = (uint32_t*)0x20000;
+  l2_b.alloc = l2_b.data = (uint32_t *)0x20000;
   uint32_t *l2b = (uint32_t*)&bank1_ptr[0];
-  l2_c.d = l2_c.aligned = (uint32_t*)(TILE_SIZE*sizeof(uint32_t));
+  l2_c.alloc = l2_c.data = (uint32_t *)(TILE_SIZE * sizeof(uint32_t));
   uint32_t *l2c = (uint32_t*)&bank0_ptr[TILE_SIZE];
 
   for (int i=0; i<TILE_SIZE; i++) {
@@ -163,6 +166,10 @@ main(int argc, char *argv[])
   //  int32_t sc = mlir_aie_read_buffer_scratch_c_0_0(xaie,i); 
   //  printf("Tile A: %X B: %X C: %X\n",sa,sb,sc);
   //}
+
+  free(input_a.alloc);
+  free(input_b.alloc);
+  free(inout_c.alloc);
 
   if (!errors) {
     printf("PASS!\n");

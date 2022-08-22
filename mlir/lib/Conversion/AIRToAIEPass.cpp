@@ -457,8 +457,21 @@ public:
     return tile_dma_copies;
   }
 
-  airrt::HerdMetadataOp createHerdMetadata(airrt::ModuleMetadataOp module_meta, air::HerdLaunchOp herd)
-  {
+  airrt::PartitionMetadataOp
+  getOrCreatePartitionMetadata(airrt::ModuleMetadataOp module_meta,
+                               air::PartitionOp partition) {
+
+    std::string name = "partition_0";
+    if (partition)
+      if (auto attr = partition->getAttrOfType<StringAttr>(
+              SymbolTable::getSymbolAttrName()))
+        name = attr.getValue().str();
+
+    for (auto pm :
+         module_meta.partitions().front().getOps<airrt::PartitionMetadataOp>())
+      if (name == pm.sym_name().str())
+        return pm;
+
     auto builder = OpBuilder::atBlockTerminator(module_meta.getBody());
     auto loc = builder.getUnknownLoc();
     auto partition_meta = builder.create<airrt::PartitionMetadataOp>(loc, name);
@@ -470,7 +483,7 @@ public:
 
   airrt::HerdMetadataOp
   createHerdMetadata(airrt::PartitionMetadataOp partition_meta,
-                     air::HerdLaunchOp herd) {
+                     air::HerdOp herd) {
     auto builder = OpBuilder::atBlockTerminator(partition_meta.getBody());
     auto loc = builder.getUnknownLoc();
 
@@ -649,17 +662,27 @@ public:
   // This function replaces PipelinePutOp/PipelineGetOp pairs with a
   // shared AIE.buffer + AIE.lock. This is a single-buffered implementation
   // with exclusive access to the buffer controlled by the lock. i.e. FIXME.
-  void lowerPipelineGetPut(ModuleOp &aie_module) {
+  void lowerPipelineGetPut(ModuleOp &aie_module,
+                           std::map<AIE::TileOp, air::HerdOp> tileToHerdMap) {
     aie_module.walk([&](air::PipelinePutOp putOp) {
       auto core = putOp->getParentOfType<AIE::CoreOp>();
       assert(core);
 
+      auto herd = tileToHerdMap[core.getTileOp()];
+      int64_t col_offset = 0;
+      int64_t row_offset = 0;
+      if (auto a = herd->getAttrOfType<IntegerAttr>("x_loc"))
+        col_offset = a.getInt();
+      if (auto a = herd->getAttrOfType<IntegerAttr>("y_loc"))
+        row_offset = a.getInt();
+
       auto other_x = cast<arith::ConstantIndexOp>(putOp.dst0().getDefiningOp());
       auto other_y = cast<arith::ConstantIndexOp>(putOp.dst1().getDefiningOp());
-      auto other_core =
-          getPhysTileOp(aie_module, other_x.value(), other_y.value()).getCoreOp();
-      ;
-      // other_core.dump();
+      auto other_core = getPhysTileOp(aie_module, other_x.value() + col_offset,
+                                      other_y.value() + row_offset)
+                            .getCoreOp();
+      assert(other_core);
+
       air::PipelineGetOp getOp;
       other_core.walk([&](air::PipelineGetOp pgo) {
         getOp = pgo;
@@ -708,7 +731,7 @@ public:
       putOp->erase();
     });
   }
-  
+
   void cleanupPipelineOps(ModuleOp aie_module) {
     // erase air.pipeline.terminator ops
     aie_module.walk([&](air::PipelineTerminatorOp op) {
@@ -955,7 +978,8 @@ public:
     }
   }
 
-  void allocL1Buffers(ModuleOp module, BlockAndValueMapping &remap) {
+  void allocL1Buffers(ModuleOp module, BlockAndValueMapping &remap,
+                      std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap) {
 
     SmallVector<AIE::CoreOp, 32> cores;
     for (auto c : module.getOps<AIE::CoreOp>())
@@ -982,11 +1006,14 @@ public:
           return;
 
         builder.setInsertionPointAfter(tile);
+        auto herd = tileToHerdMap[core.getTileOp()];
+        int64_t col_offset = herd->getAttrOfType<IntegerAttr>("x_loc").getInt();
+        int64_t row_offset = herd->getAttrOfType<IntegerAttr>("y_loc").getInt();
 
         auto buffer = allocateBufferOp(
             module, memrefTy, tile,
             op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
-            tile.col(), tile.row());
+            tile.col() - col_offset, tile.row() - row_offset);
         // map uses of the alloc to the new buffer
         remap.map(op->getResult(0), buffer);
 
@@ -1025,7 +1052,7 @@ public:
   void createAIEModulesAndOutlineCores(
       ModuleOp module,
       std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> &aie_modules,
-      std::map<AIE::TileOp, air::HerdOp> &coreToHerdMap) {
+      std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap) {
 
     module.walk([&](xilinx::air::PartitionOp p) {
       std::string partition_name;
@@ -1038,21 +1065,15 @@ public:
       ModuleOp aie_module =
           ModuleOp::create(module.getLoc(), StringRef(aie_module_name));
 
-      p.walk([&](xilinx::air::HerdLaunchOp h) {
+      p.walk([&](xilinx::air::HerdOp h) {
         aie_modules.push_back({aie_module, h});
       });
     });
 
     module.walk([&](xilinx::air::HerdOp h) {
-      // if the herd has a symbol name, then the module is
-      // named aie.symbol_name, otherwise it's aie.herd_N
-      std::string herd_name;
-      if (auto attr =
-              h->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-        herd_name = attr.getValue().str();
-      else
-        herd_name = "herd_" + std::to_string(aie_modules.size());
-      std::string aie_module_name = "aie." + herd_name;
+      std::string partition_name;
+      partition_name = "partition_" + std::to_string(aie_modules.size());
+      std::string aie_module_name = "aie." + partition_name;
       ModuleOp aie_module =
           ModuleOp::create(module.getLoc(), StringRef(aie_module_name));
 
@@ -1066,7 +1087,7 @@ public:
       OpBuilder builder(aie_module);
       builder.setInsertionPointToStart(aie_module.getBody());
 
-      SmallVector<Value, 1> herd_size = h.getSizeOperands();
+      SmallVector<Value, 2> herd_size = h.getSizeOperands();
       if (!isa<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()) ||
           !isa<arith::ConstantIndexOp>(herd_size[1].getDefiningOp())) {
         llvm::errs() << "Only constant sized herds are supported";
@@ -1076,7 +1097,7 @@ public:
       int64_t herd_size_x =
           cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
       int64_t herd_size_y =
-          cast<arith::ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
+          cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
 
       int64_t col_offset = AIRToAIEColOffset;
       int64_t row_offset = AIRToAIERowOffset;
@@ -1113,7 +1134,7 @@ public:
           auto core = tile.getCoreOp();
           if (!core) {
             core = builder.create<AIE::CoreOp>(hloc, tile);
-            coreToHerdMap[tile] = h;
+            tileToHerdMap[tile] = h;
             std::string herd_name =
                 aie_module.getName()->str().substr(strlen("aie."));
             core->setAttr(
@@ -1206,8 +1227,8 @@ public:
     }
   }
 
-  void cleanupAIEModules(
-      std::vector<std::pair<ModuleOp, air::HerdLaunchOp>> aie_modules) {
+  void
+  cleanupAIEModules(std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules) {
     for (auto p : aie_modules) {
       // quick n dirty dce
       auto aie_module = std::get<0>(p);
@@ -1262,10 +1283,10 @@ public:
 
     // If we have multiple herds then we must emit them into different aie
     // modules to avoid resource conflicts in the AIE physical dialect.
-    std::vector<std::pair<ModuleOp, air::HerdLaunchOp>> aie_modules;
+    std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;
 
-    std::map<AIE::TileOp, air::HerdLaunchOp> coreToHerdMap;
-    createAIEModulesAndOutlineCores(module, aie_modules, coreToHerdMap);
+    std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
+    createAIEModulesAndOutlineCores(module, aie_modules, tileToHerdMap);
 
     std::set<ModuleOp> seen;
     for (auto &p : aie_modules) {
@@ -1282,17 +1303,17 @@ public:
 
         // buffer_map maps allocs to their AIE.buffer replacement
         BlockAndValueMapping buffer_map;
-        allocL1Buffers(m, buffer_map);
+        allocL1Buffers(m, buffer_map, tileToHerdMap);
 
         DMAAllocator shimDmaAlloc(shim_dma_cols, shim_dma_channels);
         DMAAllocator L2DmaAlloc(l2_dma_cols, l2_dma_channels);
 
         lowerAirDmaMemcpy(m, shimDmaAlloc, L2DmaAlloc, buffer_map);
-        lowerPipelineGetPut(m);
-      
-        SmallVector<air::HerdLaunchOp, 4> herds;
+        lowerPipelineGetPut(m, tileToHerdMap);
+
+        SmallVector<air::HerdOp, 4> herds;
         if (auto p = h->getParentOfType<air::PartitionOp>()) {
-          auto hops = p.getOps<air::HerdLaunchOp>();
+          auto hops = p.getOps<air::HerdOp>();
           herds.append(hops.begin(), hops.end());
         } else {
           herds.push_back(h);

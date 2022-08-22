@@ -14,10 +14,10 @@
 #include "air_host.h"
 #include "air_tensor.h"
 
-namespace air::herds::herd_0 {
+namespace air::partitions::partition_0 {
 int32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t*, int);
 };
-using namespace air::herds::herd_0;
+using namespace air::partitions::partition_0;
 
 int
 main(int argc, char *argv[])
@@ -48,7 +48,7 @@ main(int argc, char *argv[])
   auto i = &input;
   graph_fn(i);
 
-  mlir_aie_print_dma_status(xaie, 7, 2);
+  mlir_aie_print_dma_status(xaie, 5, 4);
 
   uint32_t d = mlir_aie_read_buffer_buf0(xaie, 24);
   printf("ID %x\n", d);

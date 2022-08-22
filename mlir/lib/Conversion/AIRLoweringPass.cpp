@@ -105,7 +105,7 @@ public:
   }
 };
 
-class AIRHerdLaunchConversion : public ConversionPattern {
+class AIRHerdConversion : public ConversionPattern {
 public:
   explicit AIRHerdConversion(MLIRContext *context)
       : ConversionPattern(xilinx::air::HerdOp::getOperationName(), 1, context) {}
@@ -157,7 +157,6 @@ public:
     rewriter.eraseOp(op);
     return success();
   }
-
 };
 
 class AIRPipelineConversion : public ConversionPattern {
@@ -677,7 +676,8 @@ public:
               (int)xilinx::air::MemorySpace::L2);
     });
 
-    air_patterns.add<L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion, AIRHerdLaunchConversion>(context);
+    air_patterns.add<L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion,
+                     AIRPartitionConversion, AIRHerdConversion>(context);
 
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(air_patterns,
                                                                    converter);

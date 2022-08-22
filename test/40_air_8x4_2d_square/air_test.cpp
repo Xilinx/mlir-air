@@ -20,7 +20,7 @@
 #define NUM_3D (IMAGE_WIDTH / TILE_WIDTH)
 #define NUM_4D (IMAGE_HEIGHT / TILE_HEIGHT)
 
-namespace air::herds::copyherd {
+namespace air::partitions::partition_0 {
 void mlir_aie_write_buffer_scratch_0_0(aie_libxaie_ctx_t*, int, int32_t);
 void mlir_aie_write_buffer_scratch_0_1(aie_libxaie_ctx_t*, int, int32_t);
 void mlir_aie_write_buffer_scratch_0_2(aie_libxaie_ctx_t*, int, int32_t);
@@ -53,8 +53,8 @@ void mlir_aie_write_buffer_scratch_7_0(aie_libxaie_ctx_t*, int, int32_t);
 void mlir_aie_write_buffer_scratch_7_1(aie_libxaie_ctx_t*, int, int32_t);
 void mlir_aie_write_buffer_scratch_7_2(aie_libxaie_ctx_t*, int, int32_t);
 void mlir_aie_write_buffer_scratch_7_3(aie_libxaie_ctx_t*, int, int32_t);
-};
-using namespace air::herds::copyherd;
+}; // namespace air::partitions::partition_0
+using namespace air::partitions::partition_0;
 
 int
 main(int argc, char *argv[])

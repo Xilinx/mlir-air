@@ -14,10 +14,10 @@
 
 #define DMA_COUNT 32
 
-namespace air::herds::herd_0 {
+namespace air::partitions::partition_0 {
 void mlir_aie_write_buffer_buf0(aie_libxaie_ctx_t*, int, int32_t);
 };
-using namespace air::herds::herd_0;
+using namespace air::partitions::partition_0;
 
 int main(int argc, char *argv[])
 {

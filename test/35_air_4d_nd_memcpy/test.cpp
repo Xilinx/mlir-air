@@ -30,11 +30,11 @@
 #define TILE_4D 2
 #define TILE_SIZE  (TILE_1D * TILE_2D * TILE_3D * TILE_4D)
 
-namespace air::herds::herd_0 {
+namespace air::partitions::partition_0 {
 int32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t*, int);
 void mlir_aie_write_buffer_buf0(aie_libxaie_ctx_t*, int, int32_t);
-};
-using namespace air::herds::herd_0;
+}; // namespace air::partitions::partition_0
+using namespace air::partitions::partition_0;
 
 int
 main(int argc, char *argv[])

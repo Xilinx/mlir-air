@@ -4,7 +4,7 @@
 
 module {
 
-// CHECK: module @aie.func0
+// CHECK: module @aie.partition_0
 // CHECK:         %[[VAL_2:.*]] = AIE.tile(2, 2)
 // CHECK:         %[[VAL_0:.*]] = AIE.tile(2, 0)
 // CHECK:         %[[VAL_4:.*]] = AIE.lock(%[[VAL_2]], 0)
@@ -42,7 +42,7 @@ func.func @func0(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   return
 }
 
-// CHECK: module @aie.func1
+// CHECK: module @aie.partition_1
 // CHECK:         %[[VAL_12:.*]] = AIE.tile(2, 2)
 // CHECK:         %[[VAL_10:.*]] = AIE.tile(2, 0)
 // CHECK:         %[[VAL_14:.*]] = AIE.lock(%[[VAL_12]], 0)
