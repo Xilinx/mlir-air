@@ -14,6 +14,7 @@ class air_Op<string mnemonic, list<Trait> traits = []> :
     Op<air_Dialect, mnemonic, traits>;
 
 def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
+                                     air_HierarchyInterface,
                                      AttrSizedOperandSegments,
                                      IsolatedFromAbove,
                                      AffineScope,
@@ -70,6 +71,7 @@ def air_LaunchTerminatorOp : air_Op<"launch_terminator", [HasParent<"LaunchOp">,
 }
 
 def air_PartitionOp : air_Op<"partition", [air_AsyncOpInterface,
+                                     air_HierarchyInterface,
                                      AttrSizedOperandSegments,
                                      IsolatedFromAbove,
                                      AffineScope,
@@ -125,15 +127,18 @@ def air_PartitionTerminatorOp : air_Op<"partition_terminator", [HasParent<"Parti
   let assemblyFormat = "attr-dict";
 }
 
-def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,
+def air_HerdOp : air_Op<"herd", [air_AsyncOpInterface,
+                                              air_HierarchyInterface,
                                               AttrSizedOperandSegments,
                                               IsolatedFromAbove,
-                                              AffineScope]>,
-                        Arguments<(ins Variadic<air_AsyncToken>:$asyncDependencies,
-                                       Index:$herdSizeX, Index:$herdSizeY,
+                                              AffineScope,
+                                              SingleBlockImplicitTerminator<"HerdTerminatorOp">]>,
+                        Arguments<(ins OptionalAttr<SymbolRefAttr>:$symbol,
+                                       Variadic<air_AsyncToken>:$asyncDependencies,
+                                       Variadic<Index>:$sizes,
                                        Variadic<AnyType>:$operands)>,
                         Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
-  let summary = "Launch a herd";
+  let summary = "Herd";
   let description = [{
     Define and run a 1D or 2D array of tiles as an AIR Herd.
   }];
@@ -142,22 +147,23 @@ def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,
 
   let skipDefaultBuilders = 1;
   let builders = [
-    OpBuilder<(ins "HerdDim2":$gridSize,"ValueRange":$kernelOperands)>,
+    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$kernelOperands)>,
     OpBuilder<(ins "ValueRange":$asyncDependencies,
-      "HerdDim2":$gridSize,
+      "ValueRange":$sizes,
       "ValueRange":$kernelOperands,
       CArg<"bool", "false">:$isAsync
     )>
   ];
   let hasCustomAssemblyFormat = 1;
   let extraClassDeclaration = [{
-    HerdDim2 getTileIds();
-    HerdDim2 getHerdSize();
-    HerdDim2 getHerdSizeOperands();
+    ArrayRef<BlockArgument> getIds();
+    ArrayRef<BlockArgument> getSize();
+    OperandRange getSizeOperands();
     unsigned getNumKernelOperands();
     Value getKernelOperand(unsigned i);
     ArrayRef<BlockArgument> getKernelArguments();
     BlockArgument getKernelArgument(unsigned i);
+    unsigned getNumDims();
     int32_t getId() {
       if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
         return id_attr.getInt();
@@ -168,7 +174,7 @@ def air_HerdLaunchOp : air_Op<"launch_herd", [air_AsyncOpInterface,
   let hasCanonicalizer  = 1;
 }
 
-def air_HerdTerminatorOp : air_Op<"herd_terminator", [HasParent<"HerdLaunchOp">,
+def air_HerdTerminatorOp : air_Op<"herd_terminator", [HasParent<"HerdOp">,
                                                       NoSideEffect, Terminator]>,
     Arguments<(ins)>, Results<(outs)> {
   let summary = "Terminator for air launch_herd regions.";
@@ -180,7 +186,7 @@ def air_HerdTerminatorOp : air_Op<"herd_terminator", [HasParent<"HerdLaunchOp">,
   let assemblyFormat = "attr-dict";
 }
 
-def air_HerdPipelineOp : air_Op<"pipeline", [HasParent<"HerdLaunchOp">,
+def air_HerdPipelineOp : air_Op<"pipeline", [HasParent<"HerdOp">,
                                              AffineScope]>,
                           Arguments<(ins)>,
                           Results<(outs)> {

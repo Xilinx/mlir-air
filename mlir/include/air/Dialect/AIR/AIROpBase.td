@@ -139,4 +139,38 @@ def air_DmaMemcpyInterface : OpInterface<"DmaMemcpyInterface"> {
     >,
   ];
 }
+
+def air_HierarchyInterface : OpInterface<"HierarchyInterface"> {
+  let description = [{}];
+  let cppNamespace = "xilinx::air";
+  let methods = [
+    InterfaceMethod<"description",
+    "ArrayRef<BlockArgument>", "getIds"
+    >,
+    InterfaceMethod<"description",
+    "ArrayRef<BlockArgument>", "getSize"
+    >,
+    InterfaceMethod<"description",
+    "OperandRange", "getSizeOperands"
+    >,
+    InterfaceMethod<"description",
+    "unsigned", "getNumKernelOperands"
+    >,
+    InterfaceMethod<"description",
+    "ArrayRef<BlockArgument>", "getKernelArguments"
+    >,
+    InterfaceMethod<"description",
+    "Value", "getKernelOperand", (ins "unsigned":$i)
+    >,
+    InterfaceMethod<"description",
+    "BlockArgument", "getKernelArgument", (ins "unsigned":$i)
+    >,
+    InterfaceMethod<"description",
+    "unsigned", "getNumDims"
+    >,
+    InterfaceMethod<"description",
+    "int32_t", "getId"
+    >,
+  ];
+}
 #endif

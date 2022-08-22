@@ -5,7 +5,7 @@
 // The redundant L1-L2 DMA ops shall be hoisted to outside of scf.for loop
 // CHECK: %[[EVENT0:.*]] = air.dma_memcpy_nd async 
 // CHECK: %[[EVENT2:.*]] = scf.for {{.*}} iter_args(%[[EVENT1:.*]] = %[[EVENT0]])
-// CHECK: %[[EVENT3:.*]] = air.launch_herd async [{{.*}}%[[EVENT1]]{{.*}}]
+// CHECK: %[[EVENT3:.*]] = air.herd @herd_0 async [{{.*}}%[[EVENT1]]{{.*}}]
 // CHECK: %[[EVENT4:.*]] = air.wait_all async
 // CHECK: %[[EVENT5:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT4]]{{.*}}]
 // CHECK: %[[EVENT6:.*]] = scf.for {{.*}} iter_args({{.*}} = %[[EVENT5]])
@@ -30,7 +30,7 @@ module {
         air.dma_memcpy_nd (%1[] [] [], %arg0[%arg3, %arg5] [%c64, %c64] [%c512, %c1]) {id = 1 : i32} : (memref<64x64xbf16, 1>, memref<512x512xbf16>)
         air.dma_memcpy_nd (%2[] [] [], %arg1[%arg5, %arg4] [%c64, %c64] [%c512, %c1]) {id = 2 : i32} : (memref<64x64xbf16, 1>, memref<512x512xbf16>)
         air.dma_memcpy_nd (%3[] [] [], %0[%arg3, %arg4] [%c64, %c64] [%c512, %c1]) {id = 3 : i32} : (memref<64x64xbf16, 1>, memref<512x512xbf16>)
-        air.launch_herd  tile (%arg6, %arg7) in (%arg8=%c2, %arg9=%c2) args(%arg10=%1, %arg11=%2, %arg12=%3) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> attributes {sym_name = "herd_0"} {
+        air.herd  tile (%arg6, %arg7) in (%arg8=%c2, %arg9=%c2) args(%arg10=%1, %arg11=%2, %arg12=%3) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> attributes {sym_name = "herd_0"} {
           %c1_0 = arith.constant 1 : index
           %c0_1 = arith.constant 0 : index
           %c64_2 = arith.constant 64 : index

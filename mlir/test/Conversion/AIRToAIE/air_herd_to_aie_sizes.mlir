@@ -8,7 +8,7 @@ func.func @launch(%arg0: i32) {
   // CHECK: {{.*}} = AIE.core(%[[TILE01]])  {
   // CHECK: memref.store {{.*}}, {{.*}}[{{.*}}] : memref<1024xindex, 2>
   // CHECK: AIE.end
-  air.launch_herd tile (%x, %y) in (%sx=%cst2, %sy=%cst2) {
+  air.herd tile (%x, %y) in (%sx=%cst2, %sy=%cst2) {
     %buf = memref.alloc() : memref<1024xindex,2>
     %0 = arith.addi %x, %y : index
     %1 = arith.muli %sx, %sy : index

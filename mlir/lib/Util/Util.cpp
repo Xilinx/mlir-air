@@ -194,13 +194,23 @@ scf::ForOp getForRegionIterArgsOwner(Value val) {
 }
 
 // Get the parent air.launch_herd op of a tile id
-air::HerdLaunchOp getHerdLaunchArgOwner(Value val) {
+air::HerdOp getHerdArgOwner(Value val) {
   auto ivArg = val.dyn_cast<BlockArgument>();
   if (!ivArg)
-    return air::HerdLaunchOp();
+    return air::HerdOp();
   assert(ivArg.getOwner() && "unlinked block argument");
   auto *containingOp = ivArg.getOwner()->getParentOp();
-  return dyn_cast<air::HerdLaunchOp>(containingOp);
+  return dyn_cast<air::HerdOp>(containingOp);
+}
+
+// Get the parent air.hierarchy op of a tile id
+air::HierarchyInterface getHierarchyArgOwner(Value val) {
+  auto ivArg = val.dyn_cast<BlockArgument>();
+  if (!ivArg)
+    return air::HierarchyInterface();
+  assert(ivArg.getOwner() && "unlinked block argument");
+  auto *containingOp = ivArg.getOwner()->getParentOp();
+  return dyn_cast<air::HierarchyInterface>(containingOp);
 }
 
 }

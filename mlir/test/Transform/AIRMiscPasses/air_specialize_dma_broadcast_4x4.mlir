@@ -57,7 +57,7 @@ module {
       %8 = memref.alloc() : memref<64x64xbf16, 1>
       air.region_terminator %8 : memref<64x64xbf16, 1>
     } {id = 5 : i32} : (memref<64x64xbf16, 1>)
-    %5 = air.launch_herd async [%asyncToken_1, %asyncToken_3, %asyncToken_5]  tile (%arg7, %arg8) in (%arg9=%c4, %arg10=%c4) args(%arg11=%valOut_2, %arg12=%valOut_4, %arg13=%valOut_6) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> attributes {id = 1 : i32, sym_name = "herd_0"} {
+    %5 = air.herd async [%asyncToken_1, %asyncToken_3, %asyncToken_5]  tile (%arg7, %arg8) in (%arg9=%c4, %arg10=%c4) args(%arg11=%valOut_2, %arg12=%valOut_4, %arg13=%valOut_6) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> attributes {id = 1 : i32, sym_name = "herd_0"} {
       %c1_10 = arith.constant 1 : index
       %c64_11 = arith.constant 64 : index
       %c32 = arith.constant 32 : index

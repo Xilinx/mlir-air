@@ -143,7 +143,7 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
   for (auto memcpyOp : memCopies) {
     auto pipeline = memcpyOp->getParentOfType<xilinx::air::HerdPipelineOp>();
     auto stage = memcpyOp->getParentOfType<xilinx::air::PipelineStageOp>();
-    auto launch = memcpyOp->getParentOfType<xilinx::air::HerdLaunchOp>();
+    auto launch = memcpyOp->getParentOfType<xilinx::air::HerdOp>();
     if (!pipeline || !stage || !launch)
       continue;
 
@@ -242,16 +242,16 @@ void AIRSpecializeDma::runOnOperation() {
   auto module = getOperation();
   auto ctx = module.getContext();
 
-  module.walk([&](xilinx::air::HerdLaunchOp launch) {
+  module.walk([&](xilinx::air::HerdOp launch) {
     launch.walk([&](xilinx::air::DmaMemcpyNdOp memcpyOp) {
       std::vector<Operation *> xOps, yOps;
-      bool fn_x = isFuncOf(memcpyOp, launch.getTileIds().x, xOps);
-      bool fn_y = isFuncOf(memcpyOp, launch.getTileIds().y, yOps);
-      auto herd_size = launch.getHerdSizeOperands();
+      bool fn_x = isFuncOf(memcpyOp, launch.getIds()[0], xOps);
+      bool fn_y = isFuncOf(memcpyOp, launch.getIds()[1], yOps);
+      auto herd_size = launch.getSizeOperands();
       int64_t herd_size_x =
-          cast<arith::ConstantIndexOp>(herd_size.x.getDefiningOp()).value();
+          cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
       int64_t herd_size_y =
-          cast<arith::ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
+          cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
       if (fn_x && !fn_y) {
         auto loc = memcpyOp->getLoc();
         OpBuilder builder(memcpyOp);
@@ -272,7 +272,7 @@ void AIRSpecializeDma::runOnOperation() {
           auto stage_builder = OpBuilder::atBlockEnd(stage_bb);
           auto c_x = stage_builder.create<arith::ConstantIndexOp>(loc, x);
           BlockAndValueMapping remap;
-          remap.map(launch.getTileIds().x, c_x);
+          remap.map(launch.getIds()[0], c_x);
           for (auto xop : xOps)
             stage_builder.clone(*xop, remap);
           stage_builder.create<xilinx::air::PipelineYieldOp>(
@@ -300,7 +300,7 @@ void AIRSpecializeDma::runOnOperation() {
           auto stage_builder = OpBuilder::atBlockEnd(stage_bb);
           auto c_y = stage_builder.create<arith::ConstantIndexOp>(loc, y);
           BlockAndValueMapping remap;
-          remap.map(launch.getTileIds().y, c_y);
+          remap.map(launch.getIds()[1], c_y);
           for (auto yop : yOps)
             stage_builder.clone(*yop, remap);
           stage_builder.create<xilinx::air::PipelineYieldOp>(
@@ -339,9 +339,9 @@ private:
 
   void specializeDmaBroadcastWithAffineIf(func::FuncOp f) {
 
-    f.walk([&](xilinx::air::HerdLaunchOp launch) {
+    f.walk([&](xilinx::air::HerdOp launch) {
       launch.walk([&](xilinx::air::DmaMemcpyInterface memcpyOp) {
-        auto herd_id = launch.getTileIds();
+        auto herd_id = launch.getIds();
         OpBuilder builder(memcpyOp);
         auto loc = memcpyOp->getLoc();
         auto broadcast_pattern = memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern");
@@ -368,8 +368,8 @@ private:
               }
             }
           }
-          // Walk each partition set in the patition scheme
-          // Specialize affine set per partition
+          // Walk each set in the patitioning scheme
+          // Specialize each affine set
           for (unsigned i = 0; i < numPartitions; i++){
             SmallVector<AffineExpr, 2> newConstraints;
             SmallVector<bool, 2> newEqflags;
@@ -393,7 +393,7 @@ private:
               c_iter++;
             }
             auto int_set = IntegerSet::get(0, 2, newConstraints, newEqflags);
-            SmallVector<Value, 2> int_set_args{herd_id.x, herd_id.y};
+            SmallVector<Value, 2> int_set_args{herd_id[0], herd_id[1]};
             // Duplicate dma ops per spatial partition
             if (i == 0){
               AffineIfOp aif = builder.create<AffineIfOp>(loc, 
@@ -466,24 +466,15 @@ private:
         // Check which dimension op operates on; initialize current_shape_expr
         SmallVector<AffineExpr, 2> current_shape_expr = {nullptr, nullptr};
         for (auto v : loop_dep_history){
-          if (auto hl_op = xilinx::air::getHerdLaunchArgOwner(v)){
-            if (v == hl_op.getTileIds().x){
-              unsigned dim = 0;
-              for (unsigned i = 0; i < constraints.size(); i++){
-                auto c = constraints[i];
-                if (c.isFunctionOfSymbol(dim) && eqFlags[i]){
-                  auto eval = evaluateSymbolEqualityInSet(c, ctx);
-                  current_shape_expr[0] = getAffineConstantExpr(eval, ctx);
-                }
-              }
-            }
-            if (v == hl_op.getTileIds().y){
-              unsigned dim = 1;
-              for (unsigned i = 0; i < constraints.size(); i++){
-                auto c = constraints[i];
-                if (c.isFunctionOfSymbol(dim) && eqFlags[i]){
-                  auto eval = evaluateSymbolEqualityInSet(c, ctx);
-                  current_shape_expr[1] = getAffineConstantExpr(eval, ctx);
+          if (auto hl_op = xilinx::air::getHerdArgOwner(v)){
+            for (unsigned j = 0; j < current_shape_expr.size(); j++){
+              if (v == hl_op.getIds()[j]){
+                for (unsigned i = 0; i < constraints.size(); i++){
+                  auto c = constraints[i];
+                  if (c.isFunctionOfSymbol(j) && eqFlags[i]){
+                    auto eval = evaluateSymbolEqualityInSet(c, ctx);
+                    current_shape_expr[j] = getAffineConstantExpr(eval, ctx);
+                  }
                 }
               }
             }
@@ -503,17 +494,13 @@ private:
             // If the async op is affine.apply
             if (auto apply_op = dyn_cast<AffineApplyOp>(op)){
               auto map = apply_op.getAffineMap();
-              if (current_shape_expr[0]){
-                replaceSymbolAndEvaluateConstantInMap(map, current_shape_expr[0], ctx);
-                // Remove dependence from scalar op to memcpyOp if present
-                auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
-                eraseAsyncDependencyFromAsyncOp(async_memcpyOp, air_region_op.getAsyncToken());
-              }
-              else if (current_shape_expr[1]){
-                replaceSymbolAndEvaluateConstantInMap(map, current_shape_expr[1], ctx);
-                // Remove dependence from scalar op to memcpyOp if present
-                auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
-                eraseAsyncDependencyFromAsyncOp(async_memcpyOp, air_region_op.getAsyncToken());
+              for (unsigned j = 0; j < current_shape_expr.size(); j++){
+                if (current_shape_expr[j]){
+                  replaceSymbolAndEvaluateConstantInMap(map, current_shape_expr[j], ctx);
+                  // Remove dependence from scalar op to memcpyOp if present
+                  auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
+                  eraseAsyncDependencyFromAsyncOp(async_memcpyOp, air_region_op.getAsyncToken());
+                }
               }
             }
 
@@ -596,17 +583,13 @@ private:
   template <typename T>
   void propagateAFfineConstantExprThroughArithOp(T arith_op, SmallVector<AffineExpr, 2> &current_shape_expr, Operation * memcpyOp, MLIRContext * ctx){
     xilinx::air::RegionOp parent_region_op = arith_op->template getParentOfType<xilinx::air::RegionOp>();
-    if (current_shape_expr[0]){
-      applyArithOpToAffineConstantExpr(arith_op, current_shape_expr[0], ctx);
-      // Remove dependence from scalar op to memcpyOp if present
-      auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp);
-      eraseAsyncDependencyFromAsyncOp(async_memcpyOp, parent_region_op.getAsyncToken());
-    }
-    else if (current_shape_expr[1]){
-      applyArithOpToAffineConstantExpr(arith_op, current_shape_expr[1], ctx);
-      // Remove dependence from scalar op to memcpyOp if present
-      auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp);
-      eraseAsyncDependencyFromAsyncOp(async_memcpyOp, parent_region_op.getAsyncToken());
+    for (unsigned j = 0; j < current_shape_expr.size(); j++){
+      if (current_shape_expr[j]){
+        applyArithOpToAffineConstantExpr(arith_op, current_shape_expr[j], ctx);
+        // Remove dependence from scalar op to memcpyOp if present
+        auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp);
+        eraseAsyncDependencyFromAsyncOp(async_memcpyOp, parent_region_op.getAsyncToken());
+      }
     }
   }
 
@@ -691,28 +674,28 @@ private:
 
 };
 
-class AIRFuseParallelHerdLaunchPass
-    : public xilinx::air::AIRFuseParallelHerdLaunchPassBase<
-          AIRFuseParallelHerdLaunchPass> {
+class AIRFuseParallelHerdPass
+    : public xilinx::air::AIRFuseParallelHerdPassBase<
+          AIRFuseParallelHerdPass> {
 
 public:
-  AIRFuseParallelHerdLaunchPass() = default;
-  AIRFuseParallelHerdLaunchPass(const AIRFuseParallelHerdLaunchPass &pass){};
+  AIRFuseParallelHerdPass() = default;
+  AIRFuseParallelHerdPass(const AIRFuseParallelHerdPass &pass){};
 
   void runOnOperation() override;
 
 private:
 };
 
-void AIRFuseParallelHerdLaunchPass::runOnOperation() {
+void AIRFuseParallelHerdPass::runOnOperation() {
 
   auto module = getOperation();
   // auto ctx = module.getContext();
 
-  xilinx::air::HerdLaunchOp launchOp = nullptr;
+  xilinx::air::HerdOp launchOp = nullptr;
   scf::ParallelOp parOp = nullptr;
 
-  module.walk([&](xilinx::air::HerdLaunchOp launch) {
+  module.walk([&](xilinx::air::HerdOp launch) {
     // launch must be enclosed by scf.parallel
     parOp = launch->getParentOfType<scf::ParallelOp>();
     if (!parOp)
@@ -731,20 +714,20 @@ void AIRFuseParallelHerdLaunchPass::runOnOperation() {
   // if the herd launch is size 1 in one dimension
   // and the herd launch is enclosed by a 1-d scf.parallel
   // then we try to fuse the scf.parallel onto the herd launch
-  auto herd_size = launchOp.getHerdSizeOperands();
+  auto herd_size = launchOp.getSizeOperands();
   int64_t herd_size_x =
-      cast<arith::ConstantIndexOp>(herd_size.x.getDefiningOp()).value();
+      cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
   int64_t herd_size_y =
-      cast<arith::ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
+      cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
   if (herd_size_x != 1 && herd_size_y != 1)
     return;
 
   OpBuilder b(parOp);
-  xilinx::air::HerdDim2 dims;
+  SmallVector<Value, 2> dims;
   if (herd_size_x == 1)
-    dims = {parOp.getUpperBound()[0], herd_size.y};
+    dims = {parOp.getUpperBound()[0], herd_size[1]};
   else
-    dims = {herd_size.x, parOp.getUpperBound()[0]};
+    dims = {herd_size[0], parOp.getUpperBound()[0]};
 
   SmallVector<Value, 8> args;
   SmallVector<Value, 4> constants;
@@ -759,26 +742,28 @@ void AIRFuseParallelHerdLaunchPass::runOnOperation() {
   }
 
   auto newLaunchOp =
-      b.create<xilinx::air::HerdLaunchOp>(parOp.getLoc(), dims, args);
+      b.create<xilinx::air::HerdOp>(parOp.getLoc(), dims, args);
 
   BlockAndValueMapping remap;
   remap.map(parOp.getInductionVars()[0], (herd_size_x == 1)
-                                             ? newLaunchOp.getTileIds().x
-                                             : newLaunchOp.getTileIds().y);
+                                             ? newLaunchOp.getIds()[0]
+                                             : newLaunchOp.getIds()[1]);
 
   b.setInsertionPointToStart(&newLaunchOp.body().front());
 
   for (auto &o : *parOp.getBody()) {
-    if (isa<xilinx::air::HerdLaunchOp>(o)) {
+    if (isa<xilinx::air::HerdOp>(o)) {
       int idx = 0;
-      remap.map(launchOp.getHerdSize().x, launchOp.getHerdSizeOperands().x);
-      remap.map(launchOp.getHerdSize().y, launchOp.getHerdSizeOperands().y);
-      remap.map(launchOp.getTileIds().x, (herd_size_x == 1)
-                                             ? launchOp.getHerdSizeOperands().x
-                                             : newLaunchOp.getTileIds().x);
-      remap.map(launchOp.getTileIds().y,
-                (herd_size_x == 1) ? newLaunchOp.getTileIds().y
-                                   : launchOp.getHerdSizeOperands().y);
+      remap.map(launchOp.getSize()[0], launchOp.getSizeOperands()[0]);
+      remap.map(launchOp.getSize()[1], launchOp.getSizeOperands()[1]);
+      if (herd_size_x == 1)
+        remap.map(launchOp.getIds()[0], launchOp.getSizeOperands()[0]);
+      else
+        remap.map(launchOp.getIds()[0], newLaunchOp.getIds()[0]);
+      if (herd_size_x == 1)
+        remap.map(launchOp.getIds()[1], newLaunchOp.getIds()[1]);
+      else
+        remap.map(launchOp.getIds()[1], launchOp.getSizeOperands()[1]);
       for (auto &a : launchOp.getKernelArguments()) {
         auto v = launchOp.getKernelOperand(idx++);
         remap.map(a, remap.lookupOrDefault(v));
@@ -839,8 +824,8 @@ std::unique_ptr<Pass> createAIRRemoveLinalgNamePass() {
   return std::make_unique<AIRRemoveLinalgNamePass>();
 }
 
-std::unique_ptr<Pass> createAIRFuseParallelHerdLaunchPass() {
-  return std::make_unique<AIRFuseParallelHerdLaunchPass>();
+std::unique_ptr<Pass> createAIRFuseParallelHerdPass() {
+  return std::make_unique<AIRFuseParallelHerdPass>();
 }
 
 } // namespace air

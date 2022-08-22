@@ -23,7 +23,7 @@ module attributes {torch.debug_module_name = "mmult"} {
     memref.copy %0, %1 : memref<1024x1024xf32> to memref<1024x1024xf32>
     scf.parallel (%arg3, %arg4) = (%c0, %c0) to (%c1024, %c1024) step (%c128, %c128) {
       scf.for %arg5 = %c0 to %c1024 step %c32 {
-        air.launch_herd  tile (%arg6, %arg7) in (%arg8=%c4, %arg9=%c4) args(%arg10=%arg3, %arg11=%arg5, %arg12=%arg0, %arg13=%arg4, %arg14=%arg1, %arg15=%1) : index, index, memref<1024x1024xf32>, index, memref<1024x1024xf32>, memref<1024x1024xf32> attributes {sym_name = "herd_0"} {
+        air.herd  tile (%arg6, %arg7) in (%arg8=%c4, %arg9=%c4) args(%arg10=%arg3, %arg11=%arg5, %arg12=%arg0, %arg13=%arg4, %arg14=%arg1, %arg15=%1) : index, index, memref<1024x1024xf32>, index, memref<1024x1024xf32>, memref<1024x1024xf32> attributes {sym_name = "herd_0"} {
           %c1 = arith.constant 1 : index
           %c1024_0 = arith.constant 1024 : index
           %c32_1 = arith.constant 32 : index

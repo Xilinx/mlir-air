@@ -10,7 +10,7 @@ func.func @foo(%arg0: i32) {
   // CHECK:   call @beefmaker_kernel(%1) : (memref<1024xi32, 2>) -> ()
   // CHECK:   AIE.end
   // CHECK: } {elf_file = "herd_0_core_0_0.elf", link_with = "beefmaker.o"}
-  air.launch_herd tile(%tx, %ty) in (%size_x = %cst1, %size_y = %cst1) attributes {link_with="beefmaker.o"} {
+  air.herd tile(%tx, %ty) in (%size_x = %cst1, %size_y = %cst1) attributes {link_with="beefmaker.o"} {
     %src0 = memref.alloc() : memref<1024xi32, 2>
     func.call @beefmaker_kernel(%src0) : (memref<1024xi32, 2>) -> ()
     air.herd_terminator

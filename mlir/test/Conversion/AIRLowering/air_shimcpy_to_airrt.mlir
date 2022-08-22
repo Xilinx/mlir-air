@@ -18,7 +18,7 @@ module  {
     affine.for %arg2 = 0 to 2 {
       affine.for %arg3 = 0 to 2 {
         %c2 = arith.constant 2 : index
-        air.launch_herd tile (%arg4, %arg5) in (%arg6=%c2, %arg7=%c2) args(%arg8=%arg2, %arg9=%arg3, %arg10=%2, %arg11=%0, %arg12=%3, %arg13=%1) : index,index,memref<256x256xi32>,memref<256x256xi32>,memref<256xi32>,memref<256xi32> {
+        air.herd tile (%arg4, %arg5) in (%arg6=%c2, %arg7=%c2) args(%arg8=%arg2, %arg9=%arg3, %arg10=%2, %arg11=%0, %arg12=%3, %arg13=%1) : index,index,memref<256x256xi32>,memref<256x256xi32>,memref<256xi32>,memref<256xi32> {
           %c0 = arith.constant 0 : index
           %c4096 = arith.constant 4096 : index
           %c64 = arith.constant 64 : index
@@ -64,7 +64,7 @@ module  {
     %c2 = arith.constant 2 : index
     %0 = memref.alloc() : memref<32x32x32x32xi32>
     %1 = bufferization.to_memref %arg0 : memref<32x32x32x32xi32>
-    air.launch_herd tile (%arg1, %arg2) in (%arg3=%c2, %arg4=%c2) args(%arg5=%1, %arg6=%0) : memref<32x32x32x32xi32>,memref<32x32x32x32xi32>attributes {sym_name = "herd_0"} {
+    air.herd tile (%arg1, %arg2) in (%arg3=%c2, %arg4=%c2) args(%arg5=%1, %arg6=%0) : memref<32x32x32x32xi32>,memref<32x32x32x32xi32>attributes {sym_name = "herd_0"} {
       %c0 = arith.constant 0 : index
       %c1024 = arith.constant 1024 : index
       %c1_i32 = arith.constant 1 : i32
@@ -112,7 +112,7 @@ module  {
     scf.for %arg3 = %c0 to %c4096 step %c128 {
       scf.for %arg4 = %c0 to %c1024 step %c128 {
         scf.for %arg5 = %c0 to %c512 step %c128 {
-          air.launch_herd tile (%arg6, %arg7) in (%arg8=%c4, %arg9=%c4) args(%arg10=%arg3, %arg11=%arg4, %arg12=%arg0, %arg13=%arg5, %arg14=%arg1, %arg15=%arg2) : index,index,memref<4096x1024x512xi32>,index,memref<4096x1024x512xi32>,memref<4096x1024x512xi32>attributes {sym_name = "herd_0"} {
+          air.herd tile (%arg6, %arg7) in (%arg8=%c4, %arg9=%c4) args(%arg10=%arg3, %arg11=%arg4, %arg12=%arg0, %arg13=%arg5, %arg14=%arg1, %arg15=%arg2) : index,index,memref<4096x1024x512xi32>,index,memref<4096x1024x512xi32>,memref<4096x1024x512xi32>attributes {sym_name = "herd_0"} {
             %c1 = arith.constant 1 : index
             %c512_0 = arith.constant 512 : index
             %c524288 = arith.constant 524288 : index

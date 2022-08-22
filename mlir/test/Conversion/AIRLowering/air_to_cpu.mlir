@@ -7,8 +7,8 @@
 // CHECK: affine.for %{{.*}} = 0 to 32 {
 // CHECK:   affine.for %{{.*}} = 0 to 32 {
 // CHECK:     call @herd_0_body_fn(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (index, index, memref<1024x1024xi32>, memref<1024x1024xi32>, memref<1024x1024xi32>) -> ()
-// CHECK:   } {air.herd_launch = "inner"}
-// CHECK: } {air.herd_launch = "outer"}
+// CHECK:   } {air.herd = "inner"}
+// CHECK: } {air.herd = "outer"}
 // CHECK: func.func @herd_0_body_fn(%{{.*}}: index, %{{.*}}: index, %{{.*}}: memref<1024x1024xi32>, %{{.*}}: memref<1024x1024xi32>, %{{.*}}: memref<1024x1024xi32>) attributes {llvm.emit_c_interface} {
 // CHECK: call @air_alloc_rM2D2I32_I64_I64
 // CHECK: call @air_memcpy_nd_I32_I64_I64_M2D2I32_M0D2I32_I64_I64_I64_I64_I64_I64
@@ -18,7 +18,7 @@
 module  {
   func.func @forward(%arg0: memref<1024x1024xi32>, %arg1: memref<1024x1024xi32>, %arg2: memref<1024x1024xi32>) {
     %c32 = arith.constant 32 : index
-    air.launch_herd tile (%arg3, %arg4) in (%arg5=%c32, %arg6=%c32) args(%arg7=%arg0, %arg8=%arg1, %arg9=%arg2) : memref<1024x1024xi32>, memref<1024x1024xi32>, memref<1024x1024xi32> attributes {sym_name = "herd_0"} {
+    air.herd tile (%arg3, %arg4) in (%arg5=%c32, %arg6=%c32) args(%arg7=%arg0, %arg8=%arg1, %arg9=%arg2) : memref<1024x1024xi32>, memref<1024x1024xi32>, memref<1024x1024xi32> attributes {sym_name = "herd_0"} {
       %c1 = arith.constant 1 : index
       %c1024 = arith.constant 1024 : index
       %c0 = arith.constant 0 : index

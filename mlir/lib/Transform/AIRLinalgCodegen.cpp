@@ -128,7 +128,7 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
         op,
         MemRefType::get(shape, ty.getElementType(), nullptr, ty.getMemorySpace()));
     for (auto use : newOp.getUsers()) {
-      if (auto launch = dyn_cast<air::HerdLaunchOp>(use)) {
+      if (auto launch = dyn_cast<air::HerdOp>(use)) {
         assert(launch.getKernelArguments().size() == launch.operands().size());
         for (unsigned int i = 0; i < launch.getNumKernelOperands(); i++) {
           auto arg = launch.getKernelArguments()[i];
@@ -502,14 +502,14 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   int new_herd_x = isHoriz ? pipeline_depth : 1;
   int new_herd_y = !isHoriz ? pipeline_depth : 1;
 
-  xilinx::air::HerdDim2 dims{b.create<arith::ConstantIndexOp>(loc, new_herd_x),
+  SmallVector<Value, 2> dims {b.create<arith::ConstantIndexOp>(loc, new_herd_x),
                              b.create<arith::ConstantIndexOp>(loc, new_herd_y)};
 
   SmallVector<Value, 4> args;
   for (auto o : op.getInputAndOutputOperands())
     args.push_back(o->get());
 
-  auto launch = b.create<xilinx::air::HerdLaunchOp>(loc, dims, args);
+  auto launch = b.create<xilinx::air::HerdOp>(loc, dims, args);
   b.setInsertionPointToStart(&launch.body().front());
 
   auto nLoops = op.getNumLoops();
@@ -527,7 +527,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
       applyMapToValues(b, loc, shapeSizesToLoopsMap, allShapeSizes);
 
   SmallVector<Value, 2> tileIds = {b.create<arith::MulIOp>(
-      loc, isHoriz ? launch.getTileIds().x : launch.getTileIds().y,
+      loc, isHoriz ? launch.getIds()[0] : launch.getIds()[1],
       tileSizeValue)};
   SmallVector<Value, 4> tiledOperands = linalg::makeTiledShapes(
       b, loc, op, args, tileIds, tileSizeVector, sizeBounds, true);

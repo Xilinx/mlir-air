@@ -48,12 +48,11 @@ namespace air {
       // If parent loop op is an scf.parallel
       
       // If parent loop op is an air.launch_herd
-      if (auto hl_op = getHerdLaunchArgOwner(operand)){
-        if (operand == hl_op.getTileIds().x) {
-          loop_dep_history.push_back(hl_op.getTileIds().x);
-        }
-        else if (operand == hl_op.getTileIds().y) {
-          loop_dep_history.push_back(hl_op.getTileIds().y);
+      if (auto hl_op = getHerdArgOwner(operand)){
+        for (auto id : hl_op.getIds()){
+          if (operand == id) {
+            loop_dep_history.push_back(id);
+          }
         }
       }
     }
@@ -112,12 +111,11 @@ namespace air {
         }
       }
       // If parent loop op is an air.launch_herd
-      if (auto hl_op = getHerdLaunchArgOwner(operand)){
-        if (operand == hl_op.getTileIds().x) {
-          loop_dep_history.push_back(hl_op.getTileIds().x);
-        }
-        else if (operand == hl_op.getTileIds().y) {
-          loop_dep_history.push_back(hl_op.getTileIds().y);
+      if (auto hl_op = getHerdArgOwner(operand)){
+        for (auto id : hl_op.getIds()){
+          if (operand == id) {
+            loop_dep_history.push_back(id);
+          }
         }
       }
     }

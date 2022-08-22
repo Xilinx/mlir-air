@@ -16,7 +16,7 @@ module  {
   func.func @launch(%m0: memref<1024xf32>, %m1: memref<1024xf32>, %m2: memref<1024xf32>) {
     %c4 = arith.constant 4 : index
     %c1 = arith.constant 1 : index
-    air.launch_herd tile (%x, %y) in (%sx=%c4, %sy=%c1) args(%op0=%m0, %op1=%m1, %op2=%m2) : memref<1024xf32>,memref<1024xf32>,memref<1024xf32> {
+    air.herd tile (%x, %y) in (%sx=%c4, %sy=%c1) args(%op0=%m0, %op1=%m1, %op2=%m2) : memref<1024xf32>,memref<1024xf32>,memref<1024xf32> {
       %c1_f32 = arith.constant 1.0 : f32
       %c0 = arith.constant 0 : index
       %c1024 = arith.constant 1024 : index

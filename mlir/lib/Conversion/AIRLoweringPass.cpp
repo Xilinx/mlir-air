@@ -38,16 +38,16 @@ using namespace xilinx::air;
 
 namespace {
 
-class AIRHerdLaunchConversion : public ConversionPattern {
+class AIRHerdConversion : public ConversionPattern {
 public:
-  explicit AIRHerdLaunchConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::HerdLaunchOp::getOperationName(), 1, context) {}
+  explicit AIRHerdConversion(MLIRContext *context)
+      : ConversionPattern(xilinx::air::HerdOp::getOperationName(), 1, context) {}
 
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value > operands,
                   ConversionPatternRewriter &rewriter) const override
   {
-    xilinx::air::HerdLaunchOp launch = cast<xilinx::air::HerdLaunchOp>(op);
+    xilinx::air::HerdOp launch = cast<xilinx::air::HerdOp>(op);
     if (auto attr = op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
       auto herd_name = attr.getValue().str();
       rewriter.create<xilinx::airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(), herd_name);
@@ -63,21 +63,21 @@ public:
       launch.getResult(0).replaceAllUsesWith(w.getResult(0));
     }
 
-    auto herd_size = launch.getHerdSizeOperands();
-    int64_t herd_size_x = cast<ConstantIndexOp>(herd_size.x.getDefiningOp()).value();
-    int64_t herd_size_y = cast<ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
+    auto herd_size = launch.getSizeOperands();
+    int64_t herd_size_x = cast<ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
+    int64_t herd_size_y = cast<ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
 
     auto outer = rewriter.create<AffineForOp>(launch.getLoc(), 0, herd_size_x);
     auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
     auto inner = outer_builder.create<AffineForOp>(launch.getLoc(), 0, herd_size_y);
 
-    outer->setAttr("air.herd_launch", StringAttr::get(op->getContext(), "outer"));
-    inner->setAttr("air.herd_launch", StringAttr::get(op->getContext(), "inner"));
+    outer->setAttr("air.herd", StringAttr::get(op->getContext(), "outer"));
+    inner->setAttr("air.herd", StringAttr::get(op->getContext(), "inner"));
 
-    launch.getHerdSize().x.replaceAllUsesWith(herd_size.x);
-    launch.getHerdSize().y.replaceAllUsesWith(herd_size.y);
-    launch.getTileIds().x.replaceAllUsesWith(outer.getInductionVar());
-    launch.getTileIds().y.replaceAllUsesWith(inner.getInductionVar());
+    launch.getSize()[0].replaceAllUsesWith(herd_size[0]);
+    launch.getSize()[1].replaceAllUsesWith(herd_size[1]);
+    launch.getIds()[0].replaceAllUsesWith(outer.getInductionVar());
+    launch.getIds()[1].replaceAllUsesWith(inner.getInductionVar());
 
     int i=0;
     for (auto arg : launch.getKernelArguments())
@@ -203,25 +203,25 @@ Operation* convertDmaMemcpyToAirRt(Operation *op, ArrayRef<Value > operands,
     opers.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
   }
 
-  xilinx::air::HerdLaunchOp launch = op->getParentOfType<xilinx::air::HerdLaunchOp>();
+  xilinx::air::HerdOp launch = op->getParentOfType<xilinx::air::HerdOp>();
   if (!launch) {
 
     AffineForOp afo = op->getParentOfType<AffineForOp>();
-    while (afo && !afo->getAttr("air.herd_launch"))
+    while (afo && !afo->getAttr("air.herd"))
       afo = afo->getParentOfType<AffineForOp>();
     if (!afo) return nullptr;
     opers.push_back(afo.getInductionVar());
 
     afo = afo->getParentOfType<AffineForOp>();
-    while (afo && !afo->getAttr("air.herd_launch"))
+    while (afo && !afo->getAttr("air.herd"))
       afo = afo->getParentOfType<AffineForOp>();
     if (!afo) return nullptr;
     opers.push_back(afo.getInductionVar());
   }
   else {
-    auto tileIds = launch.getTileIds();
-    opers.push_back(tileIds.x);
-    opers.push_back(tileIds.y);
+    auto tileIds = launch.getIds();
+    opers.push_back(tileIds[0]);
+    opers.push_back(tileIds[1]);
   }
 
   SmallVector<Value, 4> deps;
@@ -376,27 +376,27 @@ public:
             rewriter.create<arith::ConstantOp>(loc, idTy, IntegerAttr::get(idTy, 0)));
       }
 
-      xilinx::air::HerdLaunchOp launch =
-          op->getParentOfType<xilinx::air::HerdLaunchOp>();
+      xilinx::air::HerdOp launch =
+          op->getParentOfType<xilinx::air::HerdOp>();
       if (!launch) {
 
         AffineForOp afo = op->getParentOfType<AffineForOp>();
-        while (afo && !afo->getAttr("air.herd_launch"))
+        while (afo && !afo->getAttr("air.herd"))
           afo = afo->getParentOfType<AffineForOp>();
         if (!afo)
           return failure();
         opers.push_back(afo.getInductionVar());
 
         afo = afo->getParentOfType<AffineForOp>();
-        while (afo && !afo->getAttr("air.herd_launch"))
+        while (afo && !afo->getAttr("air.herd"))
           afo = afo->getParentOfType<AffineForOp>();
         if (!afo)
           return failure();
         opers.push_back(afo.getInductionVar());
       } else {
-        auto tileIds = launch.getTileIds();
-        opers.push_back(tileIds.x);
-        opers.push_back(tileIds.y);
+        auto tileIds = launch.getIds();
+        opers.push_back(tileIds[0]);
+        opers.push_back(tileIds[1]);
       }
       opers[1] = rewriter.create<IndexCastOp>(
           op->getLoc(), IntegerType::get(op->getContext(), 64), opers[1]);
@@ -598,7 +598,7 @@ public:
       signalPassFailure();
     }
 
-    // DMA and HerdLaunchOp conversion
+    // DMA and HerdOp conversion
     RewritePatternSet air_patterns(context);
 
     target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
@@ -610,7 +610,7 @@ public:
               (int)xilinx::air::MemorySpace::L2);
     });
 
-    air_patterns.add<L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion, AIRHerdLaunchConversion>(context);
+    air_patterns.add<L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion, AIRHerdConversion>(context);
 
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(air_patterns,
                                                                    converter);

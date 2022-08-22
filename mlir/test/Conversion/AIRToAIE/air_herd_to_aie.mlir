@@ -11,7 +11,7 @@ func.func @foo(%arg0: i32) {
   // CHECK: %[[BUF2:.*]] = AIE.buffer(%[[VAR1]]) {sym_name = {{.*}}} : memref<1xi32, 2>
   // CHECK: %[[BUF3:.*]] = AIE.buffer(%[[VAR1]]) {sym_name = {{.*}}} : memref<1xi32, 2>
   // CHECK: %[[VAR2:.*]] = AIE.core(%[[VAR1]])  {
-  air.launch_herd tile(%tx, %ty) in (%size_x = %cst1, %size_y = %cst1) {
+  air.herd tile(%tx, %ty) in (%size_x = %cst1, %size_y = %cst1) {
     %src0 = memref.alloc() : memref<1xi32, 2>
     %src1 = memref.alloc() : memref<1xi32, 2>
     %zero = arith.constant 0 : index

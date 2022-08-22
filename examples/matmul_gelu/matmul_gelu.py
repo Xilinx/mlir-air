@@ -50,6 +50,7 @@ with air.mlir.ir.Context():
         "air-par-to-herd{depth=1}", # matmul
         "air-par-to-herd{depth=0}", # gelu
         "air-copy-to-dma",
+        "air-par-to-launch{has-air-partition=true}",
         "canonicalize", "cse",
     ])
     pm = air.mlir.passmanager.PassManager.parse(pipeline)

@@ -75,8 +75,7 @@ typedef std::map<Graph::vertex_descriptor, Graph::vertex_descriptor> vertex_map;
 typedef std::map<unsigned, Graph::vertex_descriptor> operation_id_to_vertex_map;
 
 static uint64_t RegionOpID;
-static uint64_t HerdLaunchOpID;
-static uint64_t LaunchOpID;
+static uint64_t HierarchyOpID;
 static uint64_t WaitAllOpID;
 
 class AIRDependency : public AIRDependencyBase<AIRDependency> {
@@ -94,8 +93,7 @@ public:
     OpBuilder module_builder(module);
 
     RegionOpID = 0;
-    HerdLaunchOpID = 0;
-    LaunchOpID = 0;
+    HierarchyOpID = 0;
 
     // 1st traversal: create async ops with empty dep list.
 
@@ -155,13 +153,10 @@ public:
         else if (auto apply_op = dyn_cast<mlir::AffineApplyOp>(op))
           createAsyncRegion(module_builder, op, "affine::apply", RegionOpID, apply_op.getResult().getType());
 
-        // Create async region for air.launch_herd.
-        else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(op))
-          createAsyncHerdLaunch(module_builder, hl_op, HerdLaunchOpID);
-
-        // Create async region for air.launch.
-        else if (auto la_op = dyn_cast<air::LaunchOp>(op))
-          createAsyncLaunch(module_builder, la_op, LaunchOpID);
+        // Create async region for air hierarchy ops (air.launch and air.partition, TODO: air.herd).
+        else if (auto hierarchy_op = dyn_cast<air::HierarchyInterface>(op)){
+          createAsyncHierarchyImpls(module_builder, hierarchy_op, HierarchyOpID);
+        }  
 
         // Create async region for an unknown op which has memref or index-type operands
         else {
@@ -206,10 +201,7 @@ public:
         else if (mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op)){
           sink_op = op;
         }
-        else if (dyn_cast<air::HerdLaunchOp>(op)){
-          sink_op = op;
-        }
-        else if (dyn_cast<air::LaunchOp>(op)){
+        else if (dyn_cast<air::HierarchyInterface>(op)){
           sink_op = op;
         }
         else return;
@@ -384,11 +376,8 @@ public:
           traceTileIndices(sink_op_memref_reads, sink_op_memref_writes, sink_op_scalar_ins, sink_op_scalar_outs, dma_op);
           dma_op_history.push_back(dma_op);
         }
-        else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(op)){
-          hl_op_history.push_back(hl_op);
-        }
-        else if (auto la_op = dyn_cast<air::LaunchOp>(op)){
-          la_op_history.push_back(la_op);
+        else if (auto hier_op = dyn_cast<air::HierarchyInterface>(op)){
+          hier_op_history.push_back(hier_op);
         }
       });
     }
@@ -419,8 +408,8 @@ public:
         else if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(op)) {
           fillAIRDepListUsingGraphTR<air::DmaMemcpyInterface>(dma_op);
         }
-        else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(op)) {
-          fillAIRDepListUsingGraphTR<air::HerdLaunchOp>(hl_op);
+        else if (auto hier_op = dyn_cast<air::HierarchyInterface>(op)) {
+          fillAIRDepListUsingGraphTR<air::HierarchyInterface>(hier_op);
         }
       });
     }
@@ -448,19 +437,12 @@ public:
             if (isNotUsedInsideOfBlock(dma_op.getOperation()->getResult(0), for_op.getBody()))
               sinks_in_for_op.push_back(dma_op.getOperation()->getResult(0));
           }
-          // Get async herd_launch in loop body
-          for (auto hl_op : for_op.getOps<air::HerdLaunchOp>()){
+          // Get async hierarchy op in loop body
+          for (auto hier_op : for_op.getOps<air::HierarchyInterface>()){
             hasAsyncTokensInBody = true;
             // Detect dep graph's leaves in loop body
-            if (isNotUsedInsideOfBlock(hl_op.getResult(0), for_op.getBody()))
-              sinks_in_for_op.push_back(hl_op.getResult(0));
-          }
-          // Get async launch in loop body
-          for (auto la_op : for_op.getOps<air::LaunchOp>()){
-            hasAsyncTokensInBody = true;
-            // Detect dep graph's leaves in loop body
-            if (isNotUsedInsideOfBlock(la_op.getResult(0), for_op.getBody()))
-              sinks_in_for_op.push_back(la_op.getResult(0));
+            if (isNotUsedInsideOfBlock(hier_op.getOperation()->getResult(0), for_op.getBody()))
+              sinks_in_for_op.push_back(hier_op.getOperation()->getResult(0));
           }
           // Get async for_op in loop body
           for (auto child_for_op : for_op.getOps<scf::ForOp>()){
@@ -504,19 +486,12 @@ public:
             if (isNotUsedInsideOfBlock(dma_op.getOperation()->getResult(0), for_op.getBody()))
               sinks_in_parallel_op.push_back(dma_op.getOperation()->getResult(0));
           }
-          // Get async herd_launch in loop body
-          for (auto hl_op : for_op.getOps<air::HerdLaunchOp>()){
+          // Get async hierarchy op in loop body
+          for (auto hier_op : for_op.getOps<air::HierarchyInterface>()){
             hasAsyncTokensInBody = true;
             // Detect dep graph's leaves in loop body
-            if (isNotUsedInsideOfBlock(hl_op.getResult(0), for_op.getBody()))
-              sinks_in_parallel_op.push_back(hl_op.getResult(0));
-          }
-          // Get async launch in loop body
-          for (auto la_op : for_op.getOps<air::LaunchOp>()){
-            hasAsyncTokensInBody = true;
-            // Detect dep graph's leaves in loop body
-            if (isNotUsedInsideOfBlock(la_op.getResult(0), for_op.getBody()))
-              sinks_in_parallel_op.push_back(la_op.getResult(0));
+            if (isNotUsedInsideOfBlock(hier_op.getOperation()->getResult(0), for_op.getBody()))
+              sinks_in_parallel_op.push_back(hier_op.getOperation()->getResult(0));
           }
           // Get async for_op in loop body
           for (auto child_for_op : for_op.getOps<scf::ForOp>()){
@@ -603,8 +578,7 @@ private:
   // Air async op history
   std::vector<air::RegionOp> async_region_op_history;
   std::vector<air::DmaMemcpyInterface> dma_op_history;
-  std::vector<air::HerdLaunchOp> hl_op_history;
-  std::vector<air::LaunchOp> la_op_history;
+  std::vector<air::HierarchyInterface> hier_op_history;
   
   // Create air region op with async interface (no ssa result returned); update graph
   air::RegionOp createAsyncRegion(OpBuilder &builder, Operation *op, std::string asyncEventName, uint64_t &RegionOpID){
@@ -728,12 +702,11 @@ private:
     op->erase();
   }
 
-  // Re-instantiate the herd_launch op with async interface; update graph
-  air::HerdLaunchOp createAsyncHerdLaunch(OpBuilder &builder, air::HerdLaunchOp op, uint64_t &HerdLaunchOpID){
+  // Re-instantiate the hierarchy op with async interface; update graph
+  air::HierarchyInterface createAsyncHierarchyImpls(OpBuilder &builder, air::HierarchyInterface op, uint64_t &HierarchyOpID){
     builder.setInsertionPoint(op);
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
-    air::HerdDim2 dims{op.getHerdSizeOperands().x, op.getHerdSizeOperands().y};
     SmallVector<Value, 4> args;
     SmallVector<Value, 4> constants;
     for (unsigned i = 0; i < op.getNumKernelOperands(); i++){
@@ -745,113 +718,96 @@ private:
       else
         args.push_back(v);
     }
-    air::HerdLaunchOp new_launch = builder.create<air::HerdLaunchOp>(loc, deps, dims, args, true);
-    new_launch->setAttr("id",
-            mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
-            ++HerdLaunchOpID));
-
-    if (auto attr = op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-      new_launch->setAttr(SymbolTable::getSymbolAttrName(), attr);
-
-    auto &bb = new_launch.body().front();
-    auto ivs = op.getTileIds();
-    ivs.x.replaceAllUsesWith(new_launch.getTileIds().x);
-    ivs.y.replaceAllUsesWith(new_launch.getTileIds().y);
-    auto &body = op.body().front().getOperations();
-    bb.getOperations().splice(bb.begin(), body,
-                              body.begin(), --body.end());
-    builder.setInsertionPointToStart(&new_launch.getRegion().front());
-    for (auto c : constants) {
-      replaceAllUsesInRegionWith(c,
-                                  builder.clone(*c.getDefiningOp())->getResult(0),
-                                  new_launch.getRegion());
+    Operation * new_op = nullptr;
+    if (auto launch = dyn_cast<air::LaunchOp>(op.getOperation())){
+      auto new_launch = createAsyncHierarchy<air::LaunchOp>(builder, launch, HierarchyOpID, deps, args, constants);
+      new_op = new_launch.getOperation();
+      auto &bb = new_launch.body().front();
+      builder.setInsertionPointToEnd(&bb);
+      builder.create<air::LaunchTerminatorOp>(loc);
+      // Create a vertex out of the current hierarchy op
+      auto v = add_vertex(asyncRegionGraph);
+      asyncRegionGraph[v].asyncEventName = "air::launch";
+      asyncRegionGraph[v].asyncEventType = "hierarchy";
+      asyncRegionGraph[v].operationId = HierarchyOpID;
+      // Update op-to-graph map
+      hier_to_g[HierarchyOpID] = v;
     }
-    builder.setInsertionPointToEnd(&bb);
-    builder.create<air::HerdTerminatorOp>(loc);
-
-    int i = 0;
-    auto old_kernel_args = op.getKernelArguments();
-    auto new_kernel_args = new_launch.getKernelArguments();
-    for (Value v : old_kernel_args)
-      replaceAllUsesInRegionWith(v, new_kernel_args[i++], new_launch.getRegion());
-
-    // Create a vertex out of the current herd_launch op
-    auto v = add_vertex(asyncRegionGraph);
-    asyncRegionGraph[v].asyncEventName = "air::herd_launch";
-    asyncRegionGraph[v].asyncEventType = "herd_launch";
-    asyncRegionGraph[v].operationId = HerdLaunchOpID;
-
-    // Update op-to-graph map
-    hl_to_g[HerdLaunchOpID] = v;
+    else if (auto partition = dyn_cast<air::PartitionOp>(op.getOperation())){
+      auto new_partition = createAsyncHierarchy<air::PartitionOp>(builder, partition, HierarchyOpID, deps, args, constants);
+      new_op = new_partition.getOperation();
+      auto &bb = new_partition.body().front();
+      builder.setInsertionPointToEnd(&bb);
+      builder.create<air::PartitionTerminatorOp>(loc);
+      // Create a vertex out of the current hierarchy op
+      auto v = add_vertex(asyncRegionGraph);
+      asyncRegionGraph[v].asyncEventName = "air::partition";
+      asyncRegionGraph[v].asyncEventType = "hierarchy";
+      asyncRegionGraph[v].operationId = HierarchyOpID;
+      // Update op-to-graph map
+      hier_to_g[HierarchyOpID] = v;
+    }
+    else if (auto herd = dyn_cast<air::HerdOp>(op.getOperation())){
+      auto new_herd = createAsyncHierarchy<air::HerdOp>(builder, herd, HierarchyOpID, deps, args, constants);
+      new_op = new_herd.getOperation();
+      auto &bb = new_herd.body().front();
+      builder.setInsertionPointToEnd(&bb);
+      builder.create<air::HerdTerminatorOp>(loc);
+      // Create a vertex out of the current hierarchy op
+      auto v = add_vertex(asyncRegionGraph);
+      asyncRegionGraph[v].asyncEventName = "air::herd";
+      asyncRegionGraph[v].asyncEventType = "hierarchy";
+      asyncRegionGraph[v].operationId = HierarchyOpID;
+      // Update op-to-graph map
+      hier_to_g[HierarchyOpID] = v;
+    }
+    else {
+      assert(false && "Unknown hierarchy operation");
+    }
+    auto new_hier = dyn_cast<air::HierarchyInterface>(new_op);
 
     // Erase op
     op->erase();
-    return new_launch;
+    return new_hier;
   }
 
-  // Re-instantiate the launch op with async interface; update graph
-  air::LaunchOp createAsyncLaunch(OpBuilder &builder, air::LaunchOp op, uint64_t &LaunchOpID){
-    builder.setInsertionPoint(op);
+  template <typename T>
+  T createAsyncHierarchy(OpBuilder &builder, T op, uint64_t &OpID, SmallVector<Value, 1> deps, SmallVector<Value, 4> args, SmallVector<Value, 4> constants){
     auto loc = op->getLoc();
-    SmallVector<Value, 1> deps;
-    SmallVector<Value, 4> args;
-    SmallVector<Value, 4> constants;
-    for (unsigned i = 0; i < op.getNumKernelOperands(); i++){
-      auto v = op.getKernelOperand(i);
-      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp())){
-        constants.push_back(v);
-        args.push_back(v);
-      }
-      else
-        args.push_back(v);
-    }
-    air::LaunchOp new_launch = builder.create<air::LaunchOp>(loc, deps, op.getSizeOperands(), args, true);
-    new_launch->setAttr("id",
+    T new_op = builder.create<T>(loc, deps, op.getSizeOperands(), args, true);
+    new_op->setAttr("id",
             mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
-            ++LaunchOpID));
+            ++OpID));
 
-    if (auto attr = op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-      new_launch->setAttr(SymbolTable::getSymbolAttrName(), attr);
+    if (auto attr = op->template getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+      new_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
 
-    auto &bb = new_launch.body().front();
+    auto &bb = new_op.body().front();
     for (unsigned i = 0; i < op.getIds().size(); i++){
       auto ivs = op.getIds()[i];
-      ivs.replaceAllUsesWith(new_launch.getIds()[i]);
+      ivs.replaceAllUsesWith(new_op.getIds()[i]);
     }
     for (unsigned i = 0; i < op.getSize().size(); i++){
       auto s = op.getSize()[i];
-      s.replaceAllUsesWith(new_launch.getSize()[i]);
+      s.replaceAllUsesWith(new_op.getSize()[i]);
     }
     auto &body = op.body().front().getOperations();
     bb.getOperations().splice(bb.begin(), body,
                               body.begin(), --body.end());
-    builder.setInsertionPointToStart(&new_launch.getRegion().front());
+    builder.setInsertionPointToStart(&new_op.getRegion().front());
     for (auto c : constants) {
       replaceAllUsesInRegionWith(c,
                                   builder.clone(*c.getDefiningOp())->getResult(0),
-                                  new_launch.getRegion());
+                                  new_op.getRegion());
     }
-    builder.setInsertionPointToEnd(&bb);
-    builder.create<air::LaunchTerminatorOp>(loc);
 
     int i = 0;
     auto old_kernel_args = op.getKernelArguments();
-    auto new_kernel_args = new_launch.getKernelArguments();
+    auto new_kernel_args = new_op.getKernelArguments();
     for (Value v : old_kernel_args)
-      replaceAllUsesInRegionWith(v, new_kernel_args[i++], new_launch.getRegion());
+      replaceAllUsesInRegionWith(v, new_kernel_args[i++], new_op.getRegion());
 
-    // Create a vertex out of the current herd_launch op
-    auto v = add_vertex(asyncRegionGraph);
-    asyncRegionGraph[v].asyncEventName = "air::launch";
-    asyncRegionGraph[v].asyncEventType = "launch";
-    asyncRegionGraph[v].operationId = LaunchOpID;
-
-    // Update op-to-graph map
-    la_to_g[LaunchOpID] = v;
-
-    // Erase op
-    op->erase();
-    return new_launch;
+    return new_op;
   }
 
   //===----------------------------------------------------------------------===//
@@ -906,10 +862,12 @@ private:
           addNewAsyncDepToGraph<T>(defop.getResult(0), op);
         }
       }
-      // If created by launch_herd (as loop iter)
-      else if (auto lh = dyn_cast<air::HerdLaunchOp>(tile_index.getParentRegion()->getParentOp())){
-        if (lh.getTileIds().x == tile_index || lh.getTileIds().y == tile_index){
-          addNewAsyncDepToGraph<T>(tile_index, op);
+      // If created by hierarchy (as loop iter)
+      else if (auto hier = dyn_cast<air::HierarchyInterface>(tile_index.getParentRegion()->getParentOp())){
+        for (auto id : hier.getIds()){
+          if (id == tile_index){
+            addNewAsyncDepToGraph<T>(tile_index, op);
+          }
         }
       }
     }
@@ -1031,16 +989,16 @@ private:
         }
       }
 
-      // If used in herd_launch op
-      else if (auto lh = dyn_cast<xilinx::air::HerdLaunchOp>(u.getOwner())){
-        if (foundAsyncOpUsesAboveCurrentLine(&lh)){
-          // check if the use inside HerdLaunchOp matches with the tracing mode (r or w)
-          for (unsigned lh_argument_id = 0; lh_argument_id < lh.getNumKernelOperands(); lh_argument_id++){
-            if (u.is(lh.getKernelOperand(lh_argument_id))){
-              auto child_op = lh.getKernelArgument(lh_argument_id);
+      // If used in hierarchy op
+      else if (auto hier = dyn_cast<xilinx::air::HierarchyInterface>(u.getOwner())){
+        if (foundAsyncOpUsesAboveCurrentLine(&hier)){
+          // check if the use inside hierarchy op matches with the tracing mode (r or w)
+          for (unsigned hier_argument_id = 0; hier_argument_id < hier.getNumKernelOperands(); hier_argument_id++){
+            if (u.is(hier.getKernelOperand(hier_argument_id))){
+              auto child_op = hier.getKernelArgument(hier_argument_id);
               char rw_check = checkOperandReadOrWrite(child_op);
               if (rw == 'n' || rw_check == rw){
-                addNewAsyncDepToGraph<T>(lh.getResult(0), op);
+                addNewAsyncDepToGraph<T>(hier->getResult(0), op);
               }
             }
           }
@@ -1079,15 +1037,15 @@ private:
       // If sink op and operand's use are under the same scope
       pushDepsAtCurrentScope<T>(operand.memrefValue, sink_air_op, dep_tracing_mode, &operand);
 
-      // If sink op is in HerdLaunchOp
-      if (auto lh = sink_air_op->template getParentOfType<xilinx::air::HerdLaunchOp>()){
-        // Search for deps outside (before) HerdLaunchOp
-        for (unsigned lh_operand_id = 0; lh_operand_id < lh.getNumKernelOperands(); lh_operand_id++){
-          if (lh.getKernelArguments()[lh_operand_id] == operand.memrefValue){
-            auto ancestor_op = lh.getKernelOperand(lh_operand_id);
+      // If sink op is in hierarchy op
+      if (auto hier = sink_air_op->template getParentOfType<xilinx::air::HierarchyInterface>()){
+        // Search for deps outside (before) hierarchy op
+        for (unsigned hier_operand_id = 0; hier_operand_id < hier.getNumKernelOperands(); hier_operand_id++){
+          if (hier.getKernelArguments()[hier_operand_id] == operand.memrefValue){
+            auto ancestor_op = hier.getKernelOperand(hier_operand_id);
             partialMemref ancestor_operand = createPartialMemref(ancestor_op, operand.numDims);
             SmallVector<partialMemref, 1> ancestor_operands = {ancestor_operand};
-            traceDeps<air::HerdLaunchOp>(ancestor_operands, lh, dep_type);
+            traceDeps<air::HierarchyInterface>(ancestor_operands, hier, dep_type);
           }
         }
       }
@@ -1134,7 +1092,7 @@ private:
     else if (auto op = mlir::dyn_cast<air::DmaMemcpyInterface>(a)){
       v_a = g_to_tr[getGraphGVertexFromAIROp(op)];
     }
-    else if (auto op = dyn_cast<air::HerdLaunchOp>(a)){
+    else if (auto op = dyn_cast<air::HierarchyInterface>(a)){
       v_a = g_to_tr[getGraphGVertexFromAIROp(op)];
     }
     else if (auto op = dyn_cast<scf::ForOp>(a)){
@@ -1152,7 +1110,7 @@ private:
     else if (auto op = mlir::dyn_cast<air::DmaMemcpyInterface>(b)){
       v_b = g_to_tr[getGraphGVertexFromAIROp(op)];
     }
-    else if (auto op = dyn_cast<air::HerdLaunchOp>(b)){
+    else if (auto op = dyn_cast<air::HierarchyInterface>(b)){
       v_b = g_to_tr[getGraphGVertexFromAIROp(op)];
     }
     else if (auto op = dyn_cast<scf::ForOp>(b)){
@@ -1203,8 +1161,8 @@ private:
       else if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(sink.getDefiningOp())){
         src_id = g_to_tr[getGraphGVertexFromAIROp(dma_op)];
       }
-      else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(sink.getDefiningOp())){
-        src_id = g_to_tr[getGraphGVertexFromAIROp(hl_op)];
+      else if (auto hier_op = dyn_cast<air::HierarchyInterface>(sink.getDefiningOp())){
+        src_id = g_to_tr[getGraphGVertexFromAIROp(hier_op)];
       }
       else if (auto scf_for_op = dyn_cast<scf::ForOp>(sink.getDefiningOp())){
         src_id = getGraphGVertexFromAIROp(scf_for_op); // g_to_tr not needed since wait_all created after TR
@@ -1290,9 +1248,10 @@ private:
         async_op.addAsyncDependency(new_loop_op.getRegionIterArgs()[0]);
       }
     }
-    for (auto hl_op : new_loop_op.getOps<air::HerdLaunchOp>()){
-      if (hl_op.getAsyncDependencies().size() == 0){
-        hl_op.addAsyncDependency(new_loop_op.getRegionIterArgs()[0]);
+    for (auto hier_op : new_loop_op.getOps<air::HierarchyInterface>()){
+      auto async_op = mlir::dyn_cast<air::AsyncOpInterface>(hier_op.getOperation());
+      if (async_op.getAsyncDependencies().size() == 0){
+        async_op.addAsyncDependency(new_loop_op.getRegionIterArgs()[0]);
       }
     }
 
@@ -1350,9 +1309,10 @@ private:
         async_op.addAsyncDependency(new_loop_op.getInitVals()[0]);
       }
     }
-    for (auto hl_op : new_loop_op.getOps<air::HerdLaunchOp>()){
-      if (hl_op.getAsyncDependencies().size() == 0){
-        hl_op.addAsyncDependency(new_loop_op.getInitVals()[0]);
+    for (auto hier_op : new_loop_op.getOps<air::HierarchyInterface>()){
+      auto async_op = mlir::dyn_cast<air::AsyncOpInterface>(hier_op.getOperation());
+      if (async_op.getAsyncDependencies().size() == 0){
+        async_op.addAsyncDependency(new_loop_op.getInitVals()[0]);
       }
     }
 
@@ -1535,8 +1495,7 @@ private:
   vertex_map g_to_tr, tr_to_g; // Map between graph g and graph tr (post-tr graph)
   operation_id_to_vertex_map region_to_g; // Map between air regions and vertices in graph
   operation_id_to_vertex_map dma_to_g; // Map between air dmamemcpy2d and vertices in graph
-  operation_id_to_vertex_map hl_to_g; // Map between air herd_launch and vertices in graph
-  operation_id_to_vertex_map la_to_g; // Map between air launch and vertices in graph
+  operation_id_to_vertex_map hier_to_g; // Map between air hierarchy and vertices in graph
   operation_id_to_vertex_map wa_to_g; // Map between air wait_all and vertices in graph
 
   // g vertex to air op mapping
@@ -1548,13 +1507,9 @@ private:
     assert(g[v].asyncEventType == "dma" && "This vertex is not a DmaMemcpy op");
     return dma_op_history[g[v].operationId - 1];
   }
-  air::HerdLaunchOp getHLOpFromVertex (Graph::vertex_descriptor v, Graph g){
-    assert(g[v].asyncEventType == "herd_launch" && "This vertex is not a HerdLaunchOp");
-    return hl_op_history[g[v].operationId - 1];
-  }
-  air::LaunchOp getLAOpFromVertex (Graph::vertex_descriptor v, Graph g){
-    assert(g[v].asyncEventType == "launch" && "This vertex is not a LaunchOp");
-    return la_op_history[g[v].operationId - 1];
+  air::HierarchyInterface getHierOpFromVertex (Graph::vertex_descriptor v, Graph g){
+    assert(g[v].asyncEventType == "hierarchy" && "This vertex is not a Hierarchy op");
+    return hier_op_history[g[v].operationId - 1];
   }
 
   // air region op to g vertex mapping
@@ -1566,12 +1521,8 @@ private:
     return dma_to_g[op.getId()];
   }
 
-  Graph::vertex_descriptor getGraphGVertexFromAIROp (air::HerdLaunchOp op){
-    return hl_to_g[op.getId()];
-  }
-
-  Graph::vertex_descriptor getGraphGVertexFromAIROp (air::LaunchOp op){
-    return la_to_g[op.getId()];
+  Graph::vertex_descriptor getGraphGVertexFromAIROp (air::HierarchyInterface op){
+    return hier_to_g[op.getId()];
   }
 
   Graph::vertex_descriptor getGraphGVertexFromAIROp (air::WaitAllOp op){
@@ -1610,8 +1561,8 @@ private:
           async_op.addAsyncDependency(getRegionOpFromVertex(TRVertex, asyncRegionGraphTR).getResult(0));
         else if (asyncRegionGraphTR[TRVertex].asyncEventType == "dma")
           async_op.addAsyncDependency(getDmaOpFromVertex(TRVertex, asyncRegionGraphTR).getOperation()->getResult(0));
-        else if (asyncRegionGraphTR[TRVertex].asyncEventType == "herd_launch")
-          async_op.addAsyncDependency(getHLOpFromVertex(TRVertex, asyncRegionGraphTR).getResult(0));
+        else if (asyncRegionGraphTR[TRVertex].asyncEventType == "hierarchy")
+          async_op.addAsyncDependency(getHierOpFromVertex(TRVertex, asyncRegionGraphTR).getOperation()->getResult(0));
         else assert(false && "Unknown async event type");
       }
     }
@@ -1633,8 +1584,8 @@ private:
         else if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(srcOp)){
           srcNode = getGraphGVertexFromAIROp(dma_op);
         }
-        else if (auto hl_op = dyn_cast<air::HerdLaunchOp>(srcOp)){
-          srcNode = getGraphGVertexFromAIROp(hl_op);
+        else if (auto hier_op = dyn_cast<air::HierarchyInterface>(srcOp)){
+          srcNode = getGraphGVertexFromAIROp(hier_op);
         }
         else assert(false && "dependency token should be generated by an async op");
         uint64_t dstNode = getGraphGVertexFromAIROp(op);
@@ -1669,17 +1620,10 @@ private:
     return false;
   }
 
-  bool foundAsyncOpUsesAboveCurrentLine(air::HerdLaunchOp *op){
-    if (!hl_op_history.empty())
-      for (auto &iter : hl_op_history)
-        if (iter.getResult(0) == op->getResult(0)) return true;
-    return false;
-  }
-
-  bool foundAsyncOpUsesAboveCurrentLine(air::LaunchOp *op){
-    if (!la_op_history.empty())
-      for (auto &iter : la_op_history)
-        if (iter.getResult(0) == op->getResult(0)) return true;
+  bool foundAsyncOpUsesAboveCurrentLine(air::HierarchyInterface *op){
+    if (!hier_op_history.empty())
+      for (auto &iter : hier_op_history)
+        if (iter->getResult(0) == op->getOperation()->getResult(0)) return true;
     return false;
   }
 

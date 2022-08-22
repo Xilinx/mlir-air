@@ -6,48 +6,77 @@
 
 // CHECK-LABEL: module
 // CHECK: func.func @forward
-// CHECK: %[[EVENT0:.*]] = air.dma_memcpy_nd async 
-// CHECK: %[[EVENT1:.*]] = air.dma_memcpy_nd async 
-// CHECK: %[[EVENT2:.*]] = air.region async [%[[EVENT1]]{{.*}}%[[EVENT0]]]
 
-#map0 = affine_map<()[s0] -> (s0 * 128)>
-#map1 = affine_map<(d0, d1) -> (d0, d1)>
+#map0 = affine_map<()[s0] -> (s0 * 64)>
+#map1 = affine_map<()[s0] -> (s0 * 32)>
+#map2 = affine_map<(d0, d1) -> (d0, d1)>
 module attributes {torch.debug_module_name = "model"} {
-  func.func @forward(%arg0: memref<256x256xi32>, %arg1: memref<256x256xi32>) -> memref<256x256xi32> {
-    %c2 = arith.constant 2 : index
-    %0 = memref.alloc() {alignment = 128 : i64} : memref<256x256xi32>
-    air.launch_herd  tile (%arg2, %arg3) in (%arg4=%c2, %arg5=%c2) args(%arg6=%arg0, %arg7=%arg1, %arg8=%0) : memref<256x256xi32>, memref<256x256xi32>, memref<256x256xi32> attributes {sym_name = "herd_0"} {
+  func.func @forward(%arg0: memref<24576x1024xbf16>, %arg1: memref<24576x1024xbf16>) {
+    %c384 = arith.constant 384 : index
+    %c16 = arith.constant 16 : index
+    air.launch (%arg2, %arg3) in (%arg4=%c384, %arg5=%c16) args(%arg6=%arg0, %arg7=%arg1) : memref<24576x1024xbf16>, memref<24576x1024xbf16> {
       %c1 = arith.constant 1 : index
-      %c256 = arith.constant 256 : index
-      %c0 = arith.constant 0 : index
-      %c128 = arith.constant 128 : index
-      %c32 = arith.constant 32 : index
+      %c1024 = arith.constant 1024 : index
       %c64 = arith.constant 64 : index
-      %1 = affine.apply #map0()[%arg2]
-      %2 = affine.apply #map0()[%arg3]
-      scf.for %arg9 = %c0 to %c128 step %c64 {
-        scf.for %arg10 = %c0 to %c128 step %c32 {
-          %3 = arith.addi %1, %arg9 : index
-          %4 = arith.addi %2, %arg10 : index
-          %5 = memref.alloc() : memref<64x32xi32, 2>
-          %6 = memref.alloc() : memref<64x32xi32, 2>
-          %7 = memref.alloc() : memref<64x32xi32, 2>
-          air.dma_memcpy_nd (%5[] [] [], %arg6[%3, %4] [%c64, %c32] [%c256, %c1]) {id = 1 : i32} : (memref<64x32xi32, 2>, memref<256x256xi32>)
-          air.dma_memcpy_nd (%6[] [] [], %arg7[%3, %4] [%c64, %c32] [%c256, %c1]) {id = 2 : i32} : (memref<64x32xi32, 2>, memref<256x256xi32>)
-          air.dma_memcpy_nd (%7[] [] [], %arg8[%3, %4] [%c64, %c32] [%c256, %c1]) {id = 3 : i32} : (memref<64x32xi32, 2>, memref<256x256xi32>)
-          linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel", "parallel"]} ins(%5, %6 : memref<64x32xi32, 2>, memref<64x32xi32, 2>) outs(%7 : memref<64x32xi32, 2>) {
-          ^bb0(%arg11: i32, %arg12: i32, %arg13: i32):
-            %8 = arith.addi %arg11, %arg12 : i32
-            linalg.yield %8 : i32
+      %c2 = arith.constant 2 : index
+      %3 = affine.apply #map0()[%arg2]
+      %4 = affine.apply #map0()[%arg3]
+      %5 = memref.alloc() : memref<64x64xbf16, 1>
+      %6 = memref.alloc() : memref<64x64xbf16, 1>
+      air.dma_memcpy_nd (%5[] [] [], %arg6[%3, %4] [%c64, %c64] [%c1024, %c1]) {id = 1 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
+      air.dma_memcpy_nd (%6[] [] [], %arg7[%3, %4] [%c64, %c64] [%c1024, %c1]) {id = 2 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
+      air.partition args(%arg9=%arg2, %arg10=%arg3, %arg11=%arg4, %arg12=%arg5, %arg13=%5, %arg14=%6) : index, index, index, index, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
+      // CHECK: %[[EVENT0:.*]] = air.dma_memcpy_nd async 
+      // CHECK: %[[EVENT1:.*]] = air.partition async [%[[EVENT0]]]
+        %c1_1 = arith.constant 1 : index
+        %c2_0 = arith.constant 2 : index
+        %c64_2 = arith.constant 64 : index
+        %c1024_0 = arith.constant 1024 : index
+        %new_0 = memref.alloc() : memref<64x64xbf16, 1>
+        %new_1 = memref.alloc() : memref<64x64xbf16, 1>
+        air.dma_memcpy_nd (%new_0[] [] [], %arg13[%arg9, %arg10] [%c1_1, %c1_1] [%c1_1, %c1_1]) {id = 3 : i32} : (memref<64x64xbf16, 1>, memref<64x64xbf16, 1>)
+        air.dma_memcpy_nd (%new_1[] [] [], %arg14[%arg9, %arg10] [%c1_1, %c1_1] [%c1_1, %c1_1]) {id = 4 : i32} : (memref<64x64xbf16, 1>, memref<64x64xbf16, 1>)
+        air.herd  tile (%arg22, %arg23) in (%arg16=%c2_0, %arg17=%c2_0) args(%arg18=%new_0, %arg19=%new_1) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1> attributes {sym_name = "herd_1"} {
+        // CHECK: %[[EVENT2:.*]] = air.dma_memcpy_nd async 
+        // CHECK: %[[EVENT3:.*]] = air.herd @herd_1 async [%[[EVENT2]]]
+          %c1_0 = arith.constant 1 : index
+          %c64_1 = arith.constant 64 : index
+          %c32 = arith.constant 32 : index
+          %cst_2 = arith.constant 2.000000e+00 : bf16
+          %cst_3 = arith.constant 1.000000e+00 : bf16
+          %cst_4 = arith.constant 5.000000e-01 : bf16
+          %7 = affine.apply #map1()[%arg22]
+          %8 = affine.apply #map1()[%arg23]
+          %9 = memref.alloc() : memref<32x32xbf16, 2>
+          %10 = memref.alloc() : memref<32x32xbf16, 2>
+          air.dma_memcpy_nd (%9[] [] [], %arg18[%7, %8] [%c32, %c32] [%c64_1, %c1_0]) {id = 5 : i32} : (memref<32x32xbf16, 2>, memref<64x64xbf16, 1>)
+          air.dma_memcpy_nd (%10[] [] [], %arg19[%7, %8] [%c32, %c32] [%c64_1, %c1_0]) {id = 6 : i32} : (memref<32x32xbf16, 2>, memref<64x64xbf16, 1>)
+          linalg.generic {indexing_maps = [#map2, #map2], iterator_types = ["parallel", "parallel"]} ins(%9 : memref<32x32xbf16, 2>) outs(%10 : memref<32x32xbf16, 2>) {
+          ^bb0(%arg20: bf16, %arg21: bf16):
+            %11 = math.sqrt %cst_2 : bf16
+            %12 = arith.divf %arg20, %11 : bf16
+            %13 = math.erf %12 : bf16
+            %14 = arith.addf %13, %cst_3 : bf16
+            %15 = arith.mulf %14, %cst_4 : bf16
+            %16 = arith.mulf %arg20, %15 : bf16
+            linalg.yield %16 : bf16
           }
-          air.dma_memcpy_nd (%arg8[%3, %4] [%c64, %c32] [%c256, %c1], %7[] [] []) {id = 4 : i32} : (memref<256x256xi32>, memref<64x32xi32, 2>)
-          memref.dealloc %5 : memref<64x32xi32, 2>
-          memref.dealloc %6 : memref<64x32xi32, 2>
-          memref.dealloc %7 : memref<64x32xi32, 2>
+          // CHECK: %[[EVENT4:.*]] = air.dma_memcpy_nd async 
+          // CHECK: %[[EVENT5:.*]] = air.region async [%[[EVENT4]]]
+          air.dma_memcpy_nd (%arg19[%7, %8] [%c32, %c32] [%c64_1, %c1_0], %10[] [] []) {id = 7 : i32} : (memref<64x64xbf16, 1>, memref<32x32xbf16, 2>)
+          memref.dealloc %9 : memref<32x32xbf16, 2>
+          memref.dealloc %10 : memref<32x32xbf16, 2>
+          air.herd_terminator
         }
+        air.dma_memcpy_nd (%arg14[%arg9, %arg10] [%c64_2, %c64_2] [%c1024_0, %c1_1], %new_1[] [] []) {id = 8 : i32} : (memref<64x64xbf16, 1>, memref<64x64xbf16, 1>)
+        memref.dealloc %new_0 : memref<64x64xbf16, 1>
+        memref.dealloc %new_1 : memref<64x64xbf16, 1>
+        air.partition_terminator
       }
-      air.herd_terminator
+      memref.dealloc %5 : memref<64x64xbf16, 1>
+      memref.dealloc %6 : memref<64x64xbf16, 1>
+      air.launch_terminator
     }
-    return %0 : memref<256x256xi32>
+    return
   }
 }

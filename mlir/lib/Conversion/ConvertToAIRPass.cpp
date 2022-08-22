@@ -455,7 +455,7 @@ public:
   }
 };
 
-class AffineParToHerdLaunchConversion
+class AffineParToHerdConversion
     : public OpRewritePattern<AffineParallelOp> {
 public:
   using OpRewritePattern<AffineParallelOp>::OpRewritePattern;
@@ -476,10 +476,10 @@ public:
         else
           args.push_back(v);
       }
-      air::HerdDim2 dims{
+      SmallVector<Value, 2> dims{
           rewriter.create<arith::ConstantIndexOp>(loc, ub0.getValue()),
           rewriter.create<arith::ConstantIndexOp>(loc, ub1.getValue())};
-      auto launch = rewriter.create<air::HerdLaunchOp>(op.getLoc(), dims, args);
+      auto launch = rewriter.create<air::HerdOp>(op.getLoc(), dims, args);
 
       if (auto attr =
               op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
@@ -487,8 +487,8 @@ public:
 
       auto &bb = launch.body().front();
       auto ivs = op.getIVs();
-      ivs[0].replaceAllUsesWith(launch.getTileIds().x);
-      ivs[1].replaceAllUsesWith(launch.getTileIds().y);
+      ivs[0].replaceAllUsesWith(launch.getIds()[0]);
+      ivs[1].replaceAllUsesWith(launch.getIds()[1]);
       auto &body = op.getBody()->getOperations();
       bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
       rewriter.setInsertionPointToStart(&launch.getRegion().front());
@@ -568,11 +568,11 @@ LogicalResult normalizeScfParallel(scf::ParallelOp parOp,
   return success();
 }
 
-class ScfParToHerdLaunchConversion : public OpRewritePattern<scf::ParallelOp> {
+class ScfParToHerdConversion : public OpRewritePattern<scf::ParallelOp> {
 public:
   using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
 
-  ScfParToHerdLaunchConversion(MLIRContext *ctx,
+  ScfParToHerdConversion(MLIRContext *ctx,
                                llvm::SmallSet<scf::ParallelOp, 2> &filteredOps)
       : OpRewritePattern(ctx), filteredOps(filteredOps){};
 
@@ -662,15 +662,15 @@ public:
       else
         args.push_back(v);
     }
-    air::HerdDim2 dims{rewriter.create<arith::ConstantIndexOp>(loc, bounds[0]),
+    SmallVector<Value, 2> dims{rewriter.create<arith::ConstantIndexOp>(loc, bounds[0]),
                        rewriter.create<arith::ConstantIndexOp>(loc, bounds[1])};
-    auto launch = rewriter.create<air::HerdLaunchOp>(op.getLoc(), dims, args);
+    auto launch = rewriter.create<air::HerdOp>(op.getLoc(), dims, args);
     auto &bb = launch.body().front();
     auto ivs = op.getInductionVars();
 
-    ivs[0].replaceAllUsesWith(launch.getTileIds().x);
+    ivs[0].replaceAllUsesWith(launch.getIds()[0]);
     if (op.getNumLoops() == 2)
-      ivs[1].replaceAllUsesWith(launch.getTileIds().y);
+      ivs[1].replaceAllUsesWith(launch.getIds()[1]);
 
     auto &body = op.getBody()->getOperations();
     bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
@@ -938,14 +938,14 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
     LLVM_DEBUG(module.print(llvm::outs()));
 
     RewritePatternSet patterns(context);
-    patterns.add<AffineParToHerdLaunchConversion>(context);
+    patterns.add<AffineParToHerdConversion>(context);
 
-    llvm::SmallVector<xilinx::air::HerdLaunchOp, 2> herdOps;
-    module.walk([&](xilinx::air::HerdLaunchOp op) { herdOps.push_back(op); });
+    llvm::SmallVector<xilinx::air::HerdOp, 2> herdOps;
+    module.walk([&](xilinx::air::HerdOp op) { herdOps.push_back(op); });
 
     llvm::SmallSet<scf::ParallelOp, 2> filteredOps;
     module.walk([&](scf::ParallelOp op) {
-      if (op->getParentOfType<xilinx::air::HerdLaunchOp>())
+      if (op->getParentOfType<xilinx::air::HerdOp>())
         return;
       for (auto &h : herdOps)
         if (op->isProperAncestor(h))
@@ -964,7 +964,7 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
         return;
       filteredOps.insert(op);
     });
-    patterns.add<ScfParToHerdLaunchConversion>(context, filteredOps);
+    patterns.add<ScfParToHerdConversion>(context, filteredOps);
 
     ConversionTarget target(*context);
 
@@ -975,7 +975,7 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
     target.addLegalOp<xilinx::air::DmaMemcpy2dOp>();
     target.addLegalOp<xilinx::air::DmaMemcpy4dOp>();
     target.addLegalOp<xilinx::air::DmaMemcpyNdOp>();
-    target.addLegalOp<xilinx::air::HerdLaunchOp>();
+    target.addLegalOp<xilinx::air::HerdOp>();
 
     target.addLegalOp<AffineApplyOp, AffineForOp, AffineLoadOp, AffineStoreOp,
                       AffineYieldOp, scf::YieldOp>();
@@ -1026,7 +1026,7 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
     std::vector<std::string> herd_syms;
     for (auto f : module.getOps<func::FuncOp>()) {
       // record existing symbol names
-      f.walk([&](xilinx::air::HerdLaunchOp op) {
+      f.walk([&](xilinx::air::HerdOp op) {
         if (auto attr = op->getAttrOfType<StringAttr>(
                 SymbolTable::getSymbolAttrName())) {
           std::string name = attr.getValue().str();
@@ -1037,7 +1037,7 @@ struct AffineToAIRPass : public AffineToAIRBase<AffineToAIRPass> {
         }
       });
       // generate missing symbol names
-      f.walk([&](xilinx::air::HerdLaunchOp op) {
+      f.walk([&](xilinx::air::HerdOp op) {
         if (!op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
           unsigned id = 0;
           std::string name;
@@ -1120,7 +1120,7 @@ struct CopyToDmaPass : public CopyToDmaBase<CopyToDmaPass> {
     std::vector<std::string> herd_syms;
     for (auto f : module.getOps<func::FuncOp>()) {
       // record existing symbol names
-      f.walk([&](xilinx::air::HerdLaunchOp op) {
+      f.walk([&](xilinx::air::HerdOp op) {
         if (auto attr = op->getAttrOfType<StringAttr>(
                 SymbolTable::getSymbolAttrName())) {
           std::string name = attr.getValue().str();
@@ -1131,7 +1131,7 @@ struct CopyToDmaPass : public CopyToDmaBase<CopyToDmaPass> {
         }
       });
       // generate missing symbol names
-      f.walk([&](xilinx::air::HerdLaunchOp op) {
+      f.walk([&](xilinx::air::HerdOp op) {
         if (!op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
           unsigned id = 0;
           std::string name;
@@ -1170,16 +1170,16 @@ struct ParallelToHerdPass : public ParallelToHerdBase<ParallelToHerdPass> {
     LLVM_DEBUG(module.print(llvm::outs()));
 
     RewritePatternSet patterns(context);
-    patterns.add<AffineParToHerdLaunchConversion>(context);
+    patterns.add<AffineParToHerdConversion>(context);
 
-    llvm::SmallVector<xilinx::air::HerdLaunchOp, 2> herdOps;
-    module.walk([&](xilinx::air::HerdLaunchOp op) { herdOps.push_back(op); });
+    llvm::SmallVector<xilinx::air::HerdOp, 2> herdOps;
+    module.walk([&](xilinx::air::HerdOp op) { herdOps.push_back(op); });
     llvm::SmallVector<xilinx::air::LaunchOp, 2> launchOps;
     module.walk([&](xilinx::air::LaunchOp op) { launchOps.push_back(op); });
 
     llvm::SmallSet<scf::ParallelOp, 2> filteredOps;
     module.walk([&](scf::ParallelOp op) {
-      if (op->getParentOfType<xilinx::air::HerdLaunchOp>())
+      if (op->getParentOfType<xilinx::air::HerdOp>())
         return;
       for (auto &h : herdOps)
         if (op->isProperAncestor(h))
@@ -1201,7 +1201,7 @@ struct ParallelToHerdPass : public ParallelToHerdBase<ParallelToHerdPass> {
         return;
       filteredOps.insert(op);
     });
-    patterns.add<ScfParToHerdLaunchConversion>(context, filteredOps);
+    patterns.add<ScfParToHerdConversion>(context, filteredOps);
 
     ConversionTarget target(*context);
 
@@ -1223,7 +1223,7 @@ struct ParallelToHerdPass : public ParallelToHerdBase<ParallelToHerdPass> {
     std::vector<std::string> herd_syms;
     for (auto f : module.getOps<func::FuncOp>()) {
       // record existing symbol names
-      f.walk([&](xilinx::air::HerdLaunchOp op) {
+      f.walk([&](xilinx::air::HerdOp op) {
         if (auto attr = op->getAttrOfType<StringAttr>(
                 SymbolTable::getSymbolAttrName())) {
           std::string name = attr.getValue().str();
@@ -1234,7 +1234,7 @@ struct ParallelToHerdPass : public ParallelToHerdBase<ParallelToHerdPass> {
         }
       });
       // generate missing symbol names
-      f.walk([&](xilinx::air::HerdLaunchOp op) {
+      f.walk([&](xilinx::air::HerdOp op) {
         if (!op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
           unsigned id = 0;
           std::string name;
@@ -1278,7 +1278,7 @@ struct ParallelToLaunchPass
 
     llvm::SmallSet<scf::ParallelOp, 2> filteredOps;
     module.walk([&](scf::ParallelOp op) {
-      if (op->getParentOfType<xilinx::air::HerdLaunchOp>())
+      if (op->getParentOfType<xilinx::air::HerdOp>())
         return;
       if (op->getParentOfType<xilinx::air::LaunchOp>())
         return;

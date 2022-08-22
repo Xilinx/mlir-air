@@ -53,7 +53,7 @@ module {
         %2 = air.dma_memcpy_nd async [%asyncToken_1] (%valOut_2[] [] [], %arg0[%arg3, %arg5] [%c64, %c64] [%c512, %c1]) {id = 1 : i32} : (memref<64x64xbf16, 1>, memref<512x512xbf16>)
         %3 = air.dma_memcpy_nd async [%asyncToken_3] (%valOut_4[] [] [], %arg1[%arg5, %arg4] [%c64, %c64] [%c512, %c1]) {id = 2 : i32} : (memref<64x64xbf16, 1>, memref<512x512xbf16>)
         %4 = air.dma_memcpy_nd async [%asyncToken_5, %arg6] (%valOut_6[] [] [], %valOut[%arg3, %arg4] [%c64, %c64] [%c512, %c1]) {id = 3 : i32} : (memref<64x64xbf16, 1>, memref<512x512xbf16>)
-        %5 = air.launch_herd async [%3, %2, %4]  tile (%arg7, %arg8) in (%arg9=%c2, %arg10=%c2) args(%arg11=%valOut_2, %arg12=%valOut_4, %arg13=%valOut_6) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> attributes {id = 1 : i32, sym_name = "herd_0"} {
+        %5 = air.herd async [%3, %2, %4]  tile (%arg7, %arg8) in (%arg9=%c2, %arg10=%c2) args(%arg11=%valOut_2, %arg12=%valOut_4, %arg13=%valOut_6) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> attributes {id = 1 : i32, sym_name = "herd_0"} {
           %c1_10 = arith.constant 1 : index
           %c64_11 = arith.constant 64 : index
           %c32 = arith.constant 32 : index

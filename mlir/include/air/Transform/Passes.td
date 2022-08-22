@@ -789,9 +789,9 @@ def AIRPipelineReducePass : Pass<"air-pipeline-reduce", "func::FuncOp"> {
   ];
 }
 
-def AIRFuseParallelHerdLaunchPass : Pass<"air-fuse-parallel-launch", "ModuleOp"> {
+def AIRFuseParallelHerdPass : Pass<"air-fuse-parallel-launch", "ModuleOp"> {
   let summary = "fuse parallel launch pass";
-  let constructor = "xilinx::air::createAIRFuseParallelHerdLaunchPass()";
+  let constructor = "xilinx::air::createAIRFuseParallelHerdPass()";
 }
 
 

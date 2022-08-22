@@ -45,7 +45,7 @@ void airDialect::printType(Type type, DialectAsmPrinter &os) const {
       .Default([](Type) { llvm_unreachable("unexpected 'air' type"); });
 }
 
-static LogicalResult removeUnusedArguments(HerdLaunchOp op,
+static LogicalResult removeUnusedArguments(HerdOp op,
                                            PatternRewriter &rewriter) {
   SmallVector<Value, 32> newOperands;
   SmallVector<int, 32> newOperandsIdx;
@@ -60,14 +60,14 @@ static LogicalResult removeUnusedArguments(HerdLaunchOp op,
     return failure();
 
   BlockAndValueMapping remap;
-  auto newOp = rewriter.create<HerdLaunchOp>(
-      op.getLoc(), op.getAsyncDependencies(), op.getHerdSizeOperands(),
+  auto newOp = rewriter.create<HerdOp>(
+      op.getLoc(), op.getAsyncDependencies(), op.getSizeOperands(),
       newOperands, op->getNumResults() > 0);
   rewriter.setInsertionPointToStart(&newOp.body().front());
-  remap.map(op.getHerdSize().x, newOp.getHerdSize().x);
-  remap.map(op.getHerdSize().y, newOp.getHerdSize().y);
-  remap.map(op.getTileIds().x, newOp.getTileIds().x);
-  remap.map(op.getTileIds().y, newOp.getTileIds().y);
+  remap.map(op.getSize()[0], newOp.getSize()[0]);
+  remap.map(op.getSize()[1], newOp.getSize()[1]);
+  remap.map(op.getIds()[0], newOp.getIds()[0]);
+  remap.map(op.getIds()[1], newOp.getIds()[1]);
 
   int newIdx = 0;
   for (int i : newOperandsIdx)
@@ -437,8 +437,9 @@ void PartitionOp::print(OpAsmPrinter &p) {
     p << ' ';
   }
   
+  printAsyncDependencies(p, *this, (asyncToken() ? asyncToken().getType() : Type()), asyncDependencies());
+  
   if (getNumDims()){
-    printAsyncDependencies(p, *this, (asyncToken() ? asyncToken().getType() : Type()), asyncDependencies());
     p << " unroll(";
     p.printOperands(getIds());
     p << ") in (";
@@ -636,51 +637,63 @@ unsigned PartitionOp::getNumDims() {
 // LaunchHerdOp
 //
 
-void HerdLaunchOp::build(OpBuilder &builder, OperationState &result,
-                         ValueRange asyncDependencies, HerdDim2 herdSize,
+void HerdOp::build(OpBuilder &builder, OperationState &result,
+                         ValueRange asyncDependencies, ValueRange sizes,
                          ValueRange launchOperands, bool isAsync) {
 
   result.addOperands(asyncDependencies);
   if (isAsync)
     result.addTypes(air::AsyncTokenType::get(builder.getContext()));
-  result.addOperands({herdSize.x, herdSize.y});
+  result.addOperands(sizes);
   result.addOperands(launchOperands);
 
-  SmallVector<int32_t, 8> segmentSizes(4, 1);
+  SmallVector<int32_t, 8> segmentSizes(3, 1);
   segmentSizes.front() = asyncDependencies.size();
+  segmentSizes[1] = sizes.size();
   segmentSizes.back() = static_cast<int32_t>(launchOperands.size());
   result.addAttribute(getOperandSegmentSizeAttr(),
                       builder.getI32VectorAttr(segmentSizes));
 
   Region *r = result.addRegion();
   Block *body = new Block();
-  SmallVector<Type, 4> argtypes(4, builder.getIndexType());
-  SmallVector<Location, 4> arglocs(4, builder.getUnknownLoc());
-  body->addArguments(argtypes, arglocs);
+  for (Value v : sizes) {
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+    body->addArgument(v.getType(), builder.getUnknownLoc());
+  }
   for (Value v : launchOperands) {
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
   r->push_back(body);
 }
 
-void HerdLaunchOp::build(OpBuilder &builder, OperationState &result,
-                         HerdDim2 herdSize, ValueRange launchOperands) {
+void HerdOp::build(OpBuilder &builder, OperationState &result,
+                         ValueRange sizes, ValueRange launchOperands) {
 
-  build(builder, result, {}, herdSize, launchOperands);
+  build(builder, result, {}, sizes, launchOperands);
 }
 
-void HerdLaunchOp::print(OpAsmPrinter &p) {
+void HerdOp::print(OpAsmPrinter &p) {
 
-  auto num_async_deps = asyncDependencies().size();
   p << ' ';
+
+  auto nameAttr = (*this)->getAttrOfType<StringAttr>(mlir::SymbolTable::getSymbolAttrName());
+  if (nameAttr) {
+    p.printSymbolName(nameAttr);
+    p << ' ';
+  }
+
   printAsyncDependencies(p, *this, (asyncToken() ? asyncToken().getType() : Type()), asyncDependencies());
   p << " tile (";
-  p << getTileIds().x << ", ";
-  p << getTileIds().y << ") in (";
-  p << getHerdSize().x << "=";
-  p << getOperand(num_async_deps + 0) << ", ";
-  p << getHerdSize().y << "=";
-  p << getOperand(num_async_deps + 1) << ")";
+  p.printOperands(getIds());
+  p << ") in (";
+  auto sizeArgs = getSize();
+  auto sizeOpers = getSizeOperands();
+  for (int i=0,e=getNumDims(); i<e; i++) {
+    if (i) p << ", ";
+    p << sizeArgs[i] << "=";
+    p << sizeOpers[i];
+  }
+  p << ")";
 
   if (getNumKernelOperands()) {
     auto args = getKernelArguments();
@@ -699,8 +712,11 @@ void HerdLaunchOp::print(OpAsmPrinter &p) {
 
   SmallVector<NamedAttribute, 8> filteredAttrs(
         llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-          return (OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr()
-            != attr.getName());
+          if (attr.getName() == OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr())
+            return false;
+          if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
+            return false;
+          return true;
         }));
   p << " ";
   if (filteredAttrs.size()) {
@@ -708,15 +724,22 @@ void HerdLaunchOp::print(OpAsmPrinter &p) {
     p.printOptionalAttrDict(filteredAttrs);
     p << " ";
   }
+  if (nameAttr &&
+      body().front().getOperations().size() == 1)
+    return;
   p.printRegion(body(), /*printEntryBlockArgs=*/false);
 }
 
-ParseResult HerdLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
+ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
 
   SmallVector<OpAsmParser::UnresolvedOperand, 4> asyncDependencies;
   SmallVector<OpAsmParser::Argument, 4> tileArgs;
-  SmallVector<OpAsmParser::UnresolvedOperand, 2> tileSize(2);
-  SmallVector<OpAsmParser::Argument, 2> tileSizeRef(2);
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> tileSize;
+  SmallVector<OpAsmParser::Argument, 4> tileSizeRef;
+
+  StringAttr nameAttr;
+  (void)parser.parseOptionalSymbolName(nameAttr, mlir::SymbolTable::getSymbolAttrName(),
+                                    result.attributes);
 
   Type asyncTokenType = nullptr;
   if (parseAsyncDependencies(parser, asyncTokenType, asyncDependencies))
@@ -731,12 +754,13 @@ ParseResult HerdLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
       parser.parseKeyword("in") || parser.parseLParen())
     return failure();
 
-  for (int i = 0; i < 2; ++i) {
-    if (i != 0 && parser.parseComma())
-      return failure();
+  tileSize.resize(tileArgs.size());
+  tileSizeRef.resize(tileArgs.size());
+  for (unsigned i = 0; i < tileArgs.size(); ++i) {
     if (parser.parseArgument(tileSizeRef[i]) || parser.parseEqual() ||
         parser.parseOperand(tileSize[i]))
       return failure();
+    (void)parser.parseOptionalComma();
   }
 
   if (parser.parseRParen())
@@ -744,9 +768,7 @@ ParseResult HerdLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
 
   Type indexType = parser.getBuilder().getIndexType();
 
-  tileArgs.push_back(tileSizeRef[0]);
-  tileArgs.push_back(tileSizeRef[1]);
-
+  tileArgs.append(tileSizeRef);
   for (auto &a : tileArgs)
     a.type = indexType;
 
@@ -788,51 +810,70 @@ ParseResult HerdLaunchOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
 
   Region *body = result.addRegion();
-  if (parser.parseRegion(*body, tileArgs))
-    return failure();
 
-  SmallVector<int32_t, 8> segmentSizes(4, 1);
+  auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
+  ensureTerminator(*body, parser.getBuilder(), result.location);
+
+  if (!regionResult.hasValue()) {
+    if (!nameAttr)
+      return failure();
+    for (auto ta : tileArgs)
+      body->addArgument(ta.type, result.location);
+  }
+
+  SmallVector<int32_t, 8> segmentSizes(3, 1);
   segmentSizes.front() = asyncDependencies.size();
+  segmentSizes[1] = tileSize.size();
   segmentSizes.back() = kernelOperands.size();
   result.addAttribute(OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr(),
                       parser.getBuilder().getI32VectorAttr(segmentSizes));
   return success();
 }
 
-void HerdLaunchOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+void HerdOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                                MLIRContext *context) {
   patterns.add(removeUnusedArguments);
 }
 
-HerdDim2 HerdLaunchOp::getTileIds() {
-  auto args = body().front().getArguments();
-  return HerdDim2{args[0], args[1]};
+ArrayRef<BlockArgument> HerdOp::getIds() {
+  auto s = body().front().getArguments();
+  auto n = getNumDims();
+  return s.take_front(n);
 }
 
-HerdDim2 HerdLaunchOp::getHerdSize() {
-  auto args = body().front().getArguments();
-  return HerdDim2{args[2], args[3]};
+ArrayRef<BlockArgument> HerdOp::getSize() {
+  auto s = body().front().getArguments();
+  auto n = getNumDims();
+  return s.slice(n, n);
 }
 
-HerdDim2 HerdLaunchOp::getHerdSizeOperands() {
-  auto opers = getOperands().drop_front(asyncDependencies().size());
-  return HerdDim2{opers[0], opers[1]};
+OperandRange HerdOp::getSizeOperands() {
+  auto start = asyncDependencies().size();
+  auto n = getNumDims();
+  return getOperands().slice(start, n);
 }
 
-unsigned HerdLaunchOp::getNumKernelOperands() {
+unsigned HerdOp::getNumKernelOperands() {
   return getNumOperands() - asyncDependencies().size() - 2;
 }
 
-Value HerdLaunchOp::getKernelOperand(unsigned i) {
+Value HerdOp::getKernelOperand(unsigned i) {
   return getOperand(asyncDependencies().size() + 2 + i);
 }
 
-ArrayRef<BlockArgument> HerdLaunchOp::getKernelArguments() {
+ArrayRef<BlockArgument> HerdOp::getKernelArguments() {
   return body().front().getArguments().drop_front(4);
 }
 
-BlockArgument HerdLaunchOp::getKernelArgument(unsigned i) {
+BlockArgument HerdOp::getKernelArgument(unsigned i) {
   return getKernelArguments()[i];
+}
+
+unsigned HerdOp::getNumDims() {
+  auto size_attr_name = OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
+  auto size_attr = (*this)->getAttrOfType<DenseIntElementsAttr>(size_attr_name);
+  SmallVector<APInt, 4> segment_sizes{size_attr.begin(), size_attr.end()};
+  return segment_sizes[1].getZExtValue();
 }
 
 //

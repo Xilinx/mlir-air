@@ -457,7 +457,7 @@ public:
     return tile_dma_copies;
   }
 
-  airrt::HerdMetadataOp createHerdMetadata(airrt::ModuleMetadataOp module_meta, air::HerdLaunchOp herd)
+  airrt::HerdMetadataOp createHerdMetadata(airrt::ModuleMetadataOp module_meta, air::HerdOp herd)
   {
     auto builder = OpBuilder::atBlockTerminator(module_meta.getBody());
     auto loc = builder.getUnknownLoc();
@@ -1014,8 +1014,8 @@ public:
 
   void createAIEModulesAndOutlineCores(
       ModuleOp module,
-      std::vector<std::pair<ModuleOp, air::HerdLaunchOp>> &aie_modules) {
-    module.walk([&](xilinx::air::HerdLaunchOp h) {
+      std::vector<std::pair<ModuleOp, air::HerdOp>> &aie_modules) {
+    module.walk([&](xilinx::air::HerdOp h) {
       // if the herd has a symbol name, then the module is
       // named aie.symbol_name, otherwise it's aie.herd_N
       std::string herd_name;
@@ -1033,22 +1033,22 @@ public:
 
     for (auto &p : aie_modules) {
       ModuleOp aie_module = std::get<0>(p);
-      xilinx::air::HerdLaunchOp h = std::get<1>(p);
+      xilinx::air::HerdOp h = std::get<1>(p);
 
       OpBuilder builder(aie_module);
       builder.setInsertionPointToStart(aie_module.getBody());
 
-      air::HerdDim2 herd_size = h.getHerdSizeOperands();
-      if (!isa<arith::ConstantIndexOp>(herd_size.x.getDefiningOp()) ||
-          !isa<arith::ConstantIndexOp>(herd_size.y.getDefiningOp())) {
+      SmallVector<Value, 1> herd_size = h.getSizeOperands();
+      if (!isa<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()) ||
+          !isa<arith::ConstantIndexOp>(herd_size[1].getDefiningOp())) {
         llvm::errs() << "Only constant sized herds are supported";
         return;
       }
 
       int64_t herd_size_x =
-          cast<arith::ConstantIndexOp>(herd_size.x.getDefiningOp()).value();
+          cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
       int64_t herd_size_y =
-          cast<arith::ConstantIndexOp>(herd_size.y.getDefiningOp()).value();
+          cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
 
       // std::vector<AIE::TileOp> shim_dma_inits;
       // std::vector<AIE::TileOp> l2_dma_tiles;
@@ -1100,15 +1100,15 @@ public:
           core_builder.setInsertionPointToEnd(core_bb);
 
           // map the tile ids and herd size to constants
-          remap.map(h.getTileIds().x,
+          remap.map(h.getIds()[0],
                     core_builder.create<arith::ConstantIndexOp>(hloc, x));
-          remap.map(h.getTileIds().y,
+          remap.map(h.getIds()[1],
                     core_builder.create<arith::ConstantIndexOp>(hloc, y));
           remap.map(
-              h.getHerdSize().x,
+              h.getSize()[0],
               core_builder.create<arith::ConstantIndexOp>(hloc, herd_size_x));
           remap.map(
-              h.getHerdSize().y,
+              h.getSize()[1],
               core_builder.create<arith::ConstantIndexOp>(hloc, herd_size_y));
 
           for (auto a : h.getKernelArguments()) {
@@ -1152,7 +1152,7 @@ public:
   }
 
   void cleanupAIEModules(
-      std::vector<std::pair<ModuleOp, air::HerdLaunchOp>> aie_modules) {
+      std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules) {
     for (auto p : aie_modules) {
       // quick n dirty dce
       auto aie_module = std::get<0>(p);
@@ -1207,13 +1207,13 @@ public:
 
     // If we have multiple herds then we must emit them into different aie
     // modules to avoid resource conflicts in the AIE physical dialect.
-    std::vector<std::pair<ModuleOp, air::HerdLaunchOp>> aie_modules;
+    std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;
 
     createAIEModulesAndOutlineCores(module, aie_modules);
 
     for (auto &p : aie_modules) {
       ModuleOp m = std::get<0>(p);
-      xilinx::air::HerdLaunchOp h = std::get<1>(p);
+      xilinx::air::HerdOp h = std::get<1>(p);
       auto ctx = m->getContext();
 
       specializeHerdAffineIf(m);

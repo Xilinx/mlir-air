@@ -3,7 +3,7 @@
 // RUN: air-opt -air-par-to-herd %s | FileCheck %s
 // CHECK-LABEL: func.func @f0
 // CHECK: %[[C0:.*]] = arith.constant 2 : index
-// CHECK air.launch_herd tile ({{.*}}, {{.*}}) in ({{.*}}=[[C0]], {{.*}}=[[C0]])
+// CHECK air.herd tile ({{.*}}, {{.*}}) in ({{.*}}=[[C0]], {{.*}}=[[C0]])
 func.func @f0()  {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -18,7 +18,7 @@ func.func @f0()  {
 // CHECK-LABEL: func.func @f1
 // CHECK: %[[C1:.*]] = arith.constant 4 : index
 // CHECK: %[[C2:.*]] = arith.constant 1 : index
-// CHECK air.launch_herd tile ({{.*}}, {{.*}}) in ({{.*}}=[[C1]], {{.*}}=[[C2]])
+// CHECK air.herd tile ({{.*}}, {{.*}}) in ({{.*}}=[[C1]], {{.*}}=[[C2]])
 func.func @f1()  {
   %c0 = arith.constant 0 : index
   %c32 = arith.constant 32 : index

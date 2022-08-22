@@ -34,7 +34,7 @@ module {
     %c0 = arith.constant 0 : index
     %c512 = arith.constant 512 : index
     %c64 = arith.constant 64 : index
-    %5 = air.launch_herd async  tile (%arg7, %arg8) in (%arg9=%c2, %arg10=%c2) args(%arg11=%arg0, %arg12=%arg1, %arg13=%arg2) : memref<64x64xbf16>, memref<64x64xbf16>, memref<64x64xbf16> attributes {id = 1 : i32, sym_name = "herd_0"} {
+    %5 = air.herd async  tile (%arg7, %arg8) in (%arg9=%c2, %arg10=%c2) args(%arg11=%arg0, %arg12=%arg1, %arg13=%arg2) : memref<64x64xbf16>, memref<64x64xbf16>, memref<64x64xbf16> attributes {id = 1 : i32, sym_name = "herd_0"} {
         %c1_10 = arith.constant 1 : index
         %c64_11 = arith.constant 64 : index
         %c32 = arith.constant 32 : index
