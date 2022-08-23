@@ -62,7 +62,7 @@ $(DESIGN).air.mlir: $(DESIGN)_airin.mlir
 				-o $@ $<
 
 aie.mlir: $(DESIGN).air.mlir
-        $(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=./}" $< \
+        $(AIR_OPT) --pass-pipeline="air-to-aie{emit-while-loop=true row-offset=2 col-offset=7 output-prefix=./}" $< \
 
 peano.mlir: aie.mlir
 	$(AIR_OPT) -lower-affine -o $@ $< 
@@ -71,7 +71,7 @@ elfs: peano.mlir
 	$(AIECC) --no-xbridge peano.mlir
 
 aie_ctrl.mlir: $(DESIGN).air.mlir
-	$(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}"\
+	$(AIR_OPT) --pass-pipeline="air-to-aie{emit-while-loop=true row-offset=2 col-offset=7 output-prefix=/dev/null}"\
 				--convert-vector-to-llvm \
 				-air-to-std \
 				-airrt-to-llvm \

@@ -56,7 +56,7 @@ vecmul_air.mlir: vecmul_tiled_3.mlir
 				-o $@ $<
 
 aie.herd_0.mlir: vecmul_air.mlir
-	$(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=./}" $< \
+	$(AIR_OPT) --pass-pipeline="air-to-aie{emit-while-loop=true row-offset=2 col-offset=7 output-prefix=./}" $< \
 				-o /dev/null
 
 peano.mlir: aie.herd_0.mlir
@@ -67,7 +67,7 @@ elfs: peano.mlir
 
 
 aie_ctrl.mlir: vecmul_air.mlir
-	$(AIR_OPT) --pass-pipeline="air-to-aie{air-to-aie-emit-while-loop=true air-to-aie-row-offset=2 air-to-aie-col-offset=7 air-to-aie-output-prefix=/dev/null}"\
+	$(AIR_OPT) --pass-pipeline="air-to-aie{emit-while-loop=true row-offset=2 col-offset=7 output-prefix=/dev/null}"\
 				-air-to-std \
 				-airrt-to-llvm -func-bufferize -finalizing-bufferize \
 				$< | \

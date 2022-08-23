@@ -88,15 +88,15 @@ def run(mlir_module, args):
 
   with mlir_module.context as ctx:
     m = Module.parse(str(mlir_module))
-    air_to_aie_pass = 'air-to-aie{air-to-aie-emit-while-loop=false'
-    air_to_aie_pass = air_to_aie_pass + f' air-to-aie-row-offset={opts.row_offset} air-to-aie-col-offset={opts.col_offset}'
-    air_to_aie_pass = air_to_aie_pass + f' air-to-aie-output-prefix={opts.tmpdir}/' + '}'
+    air_to_aie_pass = 'air-to-aie{emit-while-loop=false'
+    air_to_aie_pass = air_to_aie_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
+    air_to_aie_pass = air_to_aie_pass + f' output-prefix={opts.tmpdir}/' + '}'
 
     run_passes(air_to_aie_pass+',func.func(convert-linalg-to-loops)',Module.parse(str(m)),opts)
 
-    air_to_airrt_pass = 'air-to-aie{air-to-aie-emit-while-loop=true'
-    air_to_airrt_pass = air_to_airrt_pass + f' air-to-aie-row-offset={opts.row_offset} air-to-aie-col-offset={opts.col_offset}'
-    air_to_airrt_pass = air_to_airrt_pass + f' air-to-aie-output-prefix={opts.tmpdir}/' + '}'
+    air_to_airrt_pass = 'air-to-aie{emit-while-loop=true'
+    air_to_airrt_pass = air_to_airrt_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
+    air_to_airrt_pass = air_to_airrt_pass + f' output-prefix={opts.tmpdir}/' + '}'
 
     _,air_mlir_filename = os.path.split(opts.air_mlir_file)
     air_mlir_filename = "torch.mlir"
@@ -197,17 +197,17 @@ def run(mlir_module, args):
 
 def run_flow(opts):
     thispath = os.path.dirname(os.path.realpath(__file__))
-    air_to_aie_pass = '-air-to-aie=air-to-aie-emit-while-loop=false'
-    air_to_aie_pass = air_to_aie_pass + f' air-to-aie-row-offset={opts.row_offset} air-to-aie-col-offset={opts.col_offset}'
-    air_to_aie_pass = air_to_aie_pass + f' air-to-aie-output-prefix={opts.tmpdir}/'
+    air_to_aie_pass = '-air-to-aie=emit-while-loop=false'
+    air_to_aie_pass = air_to_aie_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
+    air_to_aie_pass = air_to_aie_pass + f' output-prefix={opts.tmpdir}/'
     
     do_call(['air-opt', opts.air_mlir_file,
              '-air-pipeline-to-affine=lowering-type=getput', '-canonicalize', '-cse',
              air_to_aie_pass, '-o', '/dev/null'])
 
-    air_to_airrt_pass = '-air-to-aie=air-to-aie-emit-while-loop=false'
-    air_to_airrt_pass = air_to_airrt_pass + f' air-to-aie-row-offset={opts.row_offset} air-to-aie-col-offset={opts.col_offset}'
-    air_to_airrt_pass = air_to_airrt_pass + f' air-to-aie-output-prefix={opts.tmpdir}/'
+    air_to_airrt_pass = '-air-to-aie=emit-while-loop=false'
+    air_to_airrt_pass = air_to_airrt_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
+    air_to_airrt_pass = air_to_airrt_pass + f' output-prefix={opts.tmpdir}/'
 
     _,air_mlir_filename = os.path.split(opts.air_mlir_file)
     aie_ctrl_airrt = opts.tmpdir+'/airrt.'+air_mlir_filename

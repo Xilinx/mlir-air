@@ -172,25 +172,25 @@ public:
   AIRToAIEPass(const AIRToAIEPass &pass) {}
 
   Option<std::string> AIRToAIEModulePrefix{
-      *this, "air-to-aie-output-prefix",
+      *this, "output-prefix",
       llvm::cl::desc("Output filename prefix for AIE module"),
       llvm::cl::init("-")};
 
   Option<std::string> AIRToAIEELFFilename{
-      *this, "air-to-aie-elf-file",
+      *this, "elf-file",
       llvm::cl::desc("Specify elf file to add as an attribute of AIE.core"),
       llvm::cl::init("-")};
 
   Option<int> AIRToAIERowOffset{
-      *this, "air-to-aie-row-offset",
+      *this, "row-offset",
       llvm::cl::desc("The start row for any output herds"), llvm::cl::init(0)};
 
   Option<int> AIRToAIEColOffset{
-      *this, "air-to-aie-col-offset",
+      *this, "col-offset",
       llvm::cl::desc("The start col for any output herds"), llvm::cl::init(0)};
 
   Option<bool> AIRToAIEEmitWhileLoop{
-      *this, "air-to-aie-emit-while-loop",
+      *this, "emit-while-loop",
       llvm::cl::desc("Emit while(1) around AIE code"), llvm::cl::init(false)};
 
   typedef std::vector<std::tuple<AIE::BufferOp, AIE::LockOp, AIE::DMAChan>>
