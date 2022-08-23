@@ -23,17 +23,30 @@
 using namespace llvm;
 using namespace mlir;
 
+namespace test {
+void registerTestDialect(DialectRegistry &);
+void registerTestTransformDialectExtension(DialectRegistry &);
+} // namespace test
+
+namespace mlir {
+namespace test {
+void registerTestTransformDialectInterpreterPass();
+}
+} // namespace mlir
+
 int main(int argc, char **argv) {
   registerAllPasses();
   xilinx::air::registerAllPasses();
-
+  mlir::test::registerTestTransformDialectInterpreterPass();
   DialectRegistry registry;
   registerAllDialects(registry);
-  registry.insert<xilinx::air::airDialect,
-                  xilinx::airrt::AIRRtDialect,
-                  xilinx::AIE::AIEDialect>();
+  ::test::registerTestDialect(registry);
+  ::test::registerTestTransformDialectExtension(registry);
 
-  return failed(MlirOptMain(argc, argv, "MLIR modular optimizer driver\n",
+  xilinx::air::registerAllDialects(registry);
+  registry.insert<xilinx::AIE::AIEDialect>();
+
+  return failed(MlirOptMain(argc, argv, "MLIR-AIR modular optimizer driver\n",
                             registry,
                             /*preloadDialectsInContext=*/false));
 }

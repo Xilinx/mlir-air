@@ -1,3 +1,5 @@
+# (c) Copyright 2021 Xilinx Inc.
+
 add_subdirectory(CAPI)
 add_subdirectory(Conversion)
 add_subdirectory(Dialect)
@@ -18,6 +20,7 @@ add_air_library(AIRInitAll
   LINK_LIBS
   AIRConversionPasses
   AIRTransformPasses
+  AIRTransformOps
   AIRDialect
   AIRRtDialect
   AIRUtil

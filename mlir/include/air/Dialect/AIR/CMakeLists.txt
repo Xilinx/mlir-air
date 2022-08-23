@@ -1,3 +1,5 @@
+# (c) Copyright 2021 Xilinx Inc.
+
 set(dialect AIR)
 set(dialect_namespace air)
 set(LLVM_TARGET_DEFINITIONS ${dialect}.td)
@@ -20,3 +22,10 @@ add_public_tablegen_target(MLIRAIROpInterfacesIncGen)
 add_dependencies(mlir-generic-headers MLIRAIROpInterfacesIncGen)
 
 add_mlir_doc(AIR AIRDialect ./ -gen-dialect-doc)
+
+set(LLVM_TARGET_DEFINITIONS AIRTransformOps.td)
+mlir_tablegen(AIRTransformOps.h.inc -gen-op-decls)
+mlir_tablegen(AIRTransformOps.cpp.inc -gen-op-defs)
+add_public_tablegen_target(AIRTransformOpsIncGen)
+
+#add_mlir_doc(AIRTransformOps AIRTransformOps Dialects/ -gen-op-doc)

@@ -1,5 +1,5 @@
-# Find the libraries that correspond to the LLVM components
-# that we wish to use
+# (c) Copyright 2021 Xilinx Inc.
+
 llvm_map_components_to_libnames(llvm_libs support core irreader)
 
 # Now build our tools
@@ -27,6 +27,8 @@ set(LIBS
   MLIRTransformUtils
   MLIRSupport
   MLIRIR
+  MLIRTestTransformDialect
+  MLIRTestTransforms
   )
 
 target_link_libraries(air-opt PRIVATE ${LIBS})

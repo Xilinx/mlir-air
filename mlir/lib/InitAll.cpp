@@ -3,6 +3,7 @@
 
 #include "air/Conversion/Passes.h"
 #include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Dialect/AIR/AIRTransformOps.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Transform/Passes.h"
 #include "mlir/IR/Dialect.h"
@@ -10,6 +11,7 @@
 
 void xilinx::air::registerAllDialects(mlir::DialectRegistry &registry) {
   registry.insert<xilinx::air::airDialect, xilinx::airrt::AIRRtDialect>();
+  xilinx::air::registerTransformDialectExtension(registry);
 }
 
 void xilinx::air::registerAllPasses() {
