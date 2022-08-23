@@ -1,5 +1,5 @@
-# Find the libraries that correspond to the LLVM components
-# that we wish to use
+# (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 set(LLVM_LINK_COMPONENTS
   Support
   )

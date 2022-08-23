@@ -1,3 +1,5 @@
+# (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 declare_mlir_python_sources(AirCompilerPythonSources)
 
 declare_mlir_python_sources(AirCompilerPythonSources.Core

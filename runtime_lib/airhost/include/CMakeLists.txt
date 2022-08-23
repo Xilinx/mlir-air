@@ -1,3 +1,5 @@
+# (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 set(INSTALLS air_tensor.h air_host.h acdc_queue.h hsa_defs.h)
 # Stuff into the build area:
 add_custom_target(copy-runtime-includes ALL)

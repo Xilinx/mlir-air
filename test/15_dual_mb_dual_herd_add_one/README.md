@@ -9,3 +9,7 @@
 | Tile DMA | Both directions used in 2 tiles | 
 | Microblaze | Multiple queues to multiple herd controllers |
 | Microblaze | Asynchronous packet dispatch and wait |
+
+-----
+
+<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>

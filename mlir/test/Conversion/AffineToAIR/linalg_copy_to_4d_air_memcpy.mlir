@@ -1,3 +1,5 @@
+// (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 // RUN: air-opt %s -air-copy-to-dma  -cse -canonicalize | FileCheck %s
 // XFAIL: *
 //CHECK:          air.dma_memcpy_4d (%6, %{{.*}}, [%c0, %c0, %c0, %c0], [%c0, %arg10, %arg9, %4], %c5184, %c64, %c16) {id = 1 : i32} : (memref<1x16x18x18xf32, 2>, memref<1x64x66x66xf32>, [index, index, index, index], [index, index, index, index], index, index, index) -> ()

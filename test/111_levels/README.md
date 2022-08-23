@@ -10,3 +10,6 @@
 | Microblaze | CDMA packets used to progam CDMA |
 | Microblaze | Asynchronous packet dispatch and wait |
 
+-----
+
+<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>

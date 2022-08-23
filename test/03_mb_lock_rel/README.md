@@ -12,3 +12,7 @@
 | Microblaze | MicroBlaze used as packet processor |
 | Herd init | HSA packet used to initialize herd |
 | Lock commands | HSA packet release lock |
+
+-----
+
+<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>

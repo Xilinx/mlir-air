@@ -1,3 +1,5 @@
+// (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 // RUN: aie-opt --aie-create-pathfinder-flows --aie-find-flows --aie-assign-buffer-addresses %S/aie.mlir | aie-translate --aie-generate-xaie -o %T/aie_inc.cpp
 // RUN: aiecc.py --pathfinder  --sysroot=%VITIS_SYSROOT% %S/aie.mlir
 // RUN: %ARM_CLANG %S/test.cpp -I%VITIS_SYSROOT%/opt/xaiengine/include -I%T -L%VITIS_SYSROOT%/opt/xaiengine/lib -lxaiengine -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf

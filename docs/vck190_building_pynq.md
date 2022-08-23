@@ -54,3 +54,7 @@ is often easier to update just the BOOT.BIN on the SD Card.
 
 For hardware changes requiring device driver or device-tree modifications, it
 is best to update the Petalinux project and rebuild Pynq from scratch.
+
+-----
+
+<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>

@@ -1,2 +1,4 @@
+// (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 // RUN: %ARM_CLANG %S/test.cpp -I%VITIS_SYSROOT%/opt/xaiengine/include -L%VITIS_SYSROOT%/opt/xaiengine/lib -lxaiengine -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp %airhost_libs% -o %T/test.elf
 // RUN: %run_on_board %T/test.elf

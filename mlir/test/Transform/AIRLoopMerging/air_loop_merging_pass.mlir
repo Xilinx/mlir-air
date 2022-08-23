@@ -1,12 +1,4 @@
-//===- simple.mlir ---------------------------------------------*- MLIR -*-===//
-//
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
 // (c) Copyright 2021 Xilinx Inc.
-//
-//===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-loop-merging="loop-merge-levels=1,2 air-label=xten.binary_op" -affine-simplify-structures -cse | FileCheck %s
 // CHECK: affine.for {{.*}} = 0 to 7

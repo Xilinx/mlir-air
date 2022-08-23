@@ -82,3 +82,7 @@ Now build a test:
         -lopen_amp \
         -ldl \
         -o test.exe
+
+-----
+
+<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>

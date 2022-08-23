@@ -6,3 +6,6 @@ a broadcast manner.
 
 <img src="2x2.png" alt="Want to end up with this">
 
+-----
+
+<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>

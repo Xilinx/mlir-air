@@ -8,3 +8,7 @@
 | Logical dialect  | Flows are used to route to and from the bottom of herd |
 | Shim DMA | MM2S0 and S2MM0 used to move data to and from the herd |
 | Tile DMA | MM2S0 and S2MM0 used to move data between streams and the tile memory | 
+
+-----
+
+<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>

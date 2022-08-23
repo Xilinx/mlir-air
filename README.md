@@ -38,3 +38,7 @@ air
 #### [Building Pynq based SD card image for the VCK190 AIR platform](docs/vck190_building_pynq.md)
 #### [MicroBlaze firmware](docs/vck190_microblaze_firmware.md)
 #### [Building the VCK190 Production AIR platform](docs/vck190_production_building_platform.md)
+
+-----
+
+<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>

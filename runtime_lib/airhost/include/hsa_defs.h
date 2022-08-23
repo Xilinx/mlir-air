@@ -1,3 +1,5 @@
+// (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 #ifndef _HSA_DEFS_H_
 #define _HSA_DEFS_H_
 

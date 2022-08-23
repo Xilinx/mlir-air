@@ -116,3 +116,7 @@ To update the hardware with the new ELF with Vivado 2020.1 it is necessary to re
 
 1. Run make in the `air/platforms/xilinx_vck190_air/bootgen` directory
 2. Copy the resulting BOOT.BIN file to the boot partition of the Pynq SD card.
+
+-----
+
+<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>

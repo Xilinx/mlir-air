@@ -1,3 +1,5 @@
+// (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 module attributes {torch.debug_module_name = "mmult"}  {
   func.func @forward(%arg0: memref<1024x1024xi32>, %arg1: memref<1024x1024xi32>, %arg2: memref<?x?xi32>) {
     %c1 = arith.constant 1 : index

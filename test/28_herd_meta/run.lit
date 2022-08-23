@@ -1,3 +1,5 @@
+// (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 // RUN: air-opt %S/herd.airrt.mlir -airrt-to-llvm | mlir-translate --mlir-to-llvmir | llc --filetype=obj -o %T/herd.o
 // RUN: clang++ %S/test.cpp %T/herd.o -o %T/test.elf
 // RUN: %T/test.elf | FileCheck %s

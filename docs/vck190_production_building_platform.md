@@ -127,3 +127,6 @@ After building the AIE Platform:
 
 The sd_card image will be `air/platforms/xilinx_vck190_air_prod/aie_platform/sd_card.img`.
 
+-----
+
+<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>

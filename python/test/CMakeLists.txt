@@ -1,3 +1,4 @@
+# (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
 
 if(NOT AIE_BINARY_DIR)
   find_package(AIE REQUIRED CONFIG)

@@ -1,3 +1,5 @@
+// (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 #ifndef ACDC_QUEUE_H
 #define ACDC_QUEUE_H
 

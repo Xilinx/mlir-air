@@ -1,3 +1,5 @@
+// (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 // RUN: air-opt %S/test.mlir -o %T/test.llvmir.mlir -air-to-cpu -cse -convert-linalg-to-affine-loops -lower-affine -convert-scf-to-cf -convert-func-to-llvm -convert-cf-to-llvm -convert-memref-to-llvm -canonicalize -cse 
 // RUN: mlir-translate %T/test.llvmir.mlir --mlir-to-llvmir | opt -O3 -o %T/test.bc
 // RUN: clang -O3 -Wno-override-module -c %T/test.bc -o %T/test.o

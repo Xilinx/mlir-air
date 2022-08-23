@@ -1,3 +1,5 @@
+// (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 #map = affine_map<()[s0] -> (s0 * 32)>
 module attributes {torch.debug_module_name = "mmult"} {
   func.func @forward(%a0: memref<64x64xi32>, %a1: memref<64x64xi32>, %a2: memref<64x64xi32>) {

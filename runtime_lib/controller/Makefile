@@ -1,3 +1,5 @@
+# (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 #VITIS_BIN := /proj/xbuilds/SWIP/2020.1_0602_1208/installs/lin64/Vitis/2020.1/bin
 #VIVADO_BIN := /proj/xbuilds/SWIP/2020.1_0602_1208/installs/lin64/Vivado/2020.1/bin
 

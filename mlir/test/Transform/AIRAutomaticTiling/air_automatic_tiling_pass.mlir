@@ -1,12 +1,4 @@
-//===- air_automatic_tiling_pass.mlir -------------------------*- MLIR -*-===//
-//
-// This file is licensed under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-// (c) Copyright 2021 Xilinx Inc.
-//
-//===----------------------------------------------------------------------===//
+// (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
 
 // RUN: air-opt %s -air-automatic-tiling="air-label=xten.binary_op" -affine-simplify-structures -cse | FileCheck %s
 // CHECK: affine.for {{.*}} = 0 to 28

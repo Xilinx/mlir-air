@@ -12,7 +12,6 @@
 // GENERIC1: linalg.generic {{.*}} ins({{.*}} : memref<128x128xi32>, memref<128x128xi32>) outs({{.*}} : memref<128x128xi32>) attrs =  {__internal_linalg_transform__ = "generic0"} {
 // GENERIC1: linalg.generic {{.*}} ins({{.*}} : memref<64x32xi32, 2>, memref<64x32xi32, 2>) outs({{.*}} : memref<64x32xi32, 2>) {
 
-
 #map = affine_map<(d0, d1) -> (d0, d1)>
 module attributes {torch.debug_module_name = "mmult"} {
   func.func @forward(%arg0: memref<128x128xi32>, %arg1: memref<128x128xi32>, %arg2: memref<128x128xi32>, %arg3: memref<128x128xi32>) -> memref<?x?xi32> {

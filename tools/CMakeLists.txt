@@ -1,3 +1,5 @@
+# (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
 

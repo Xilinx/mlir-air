@@ -1,3 +1,5 @@
+// (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 // RUN: air-opt %s -air-linalg-codegen=test-patterns | FileCheck %s
 // CHECK: func.func @forward(%[[VAL_0:.*]]: memref<4096xi32>, %[[VAL_1:.*]]: memref<4096xi32>, %[[VAL_2:.*]]: memref<?xi32>) {
 // CHECK:   %[[VAL_3:.*]] = memref.cast %[[VAL_2]] : memref<?xi32> to memref<4096xi32>

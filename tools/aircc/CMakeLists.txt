@@ -1,3 +1,5 @@
+# (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 set(PYTHON_INSTALL_PATH ${CMAKE_INSTALL_PREFIX}/bin)
 
 set(AIRCC_FILES

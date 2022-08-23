@@ -1,3 +1,5 @@
+# (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 add_mlir_library(AIRUtil
   Util.cpp
   Outliner.cpp

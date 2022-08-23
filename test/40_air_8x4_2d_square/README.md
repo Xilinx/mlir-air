@@ -10,3 +10,6 @@
 | Tile DMA | Both directions used in 4 tiles | 
 | Microblaze Shim DMA Packet | Microblaze Shim ND DMA memcpy packet used to program Shim DMA. |
 
+-----
+
+<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>

@@ -1,4 +1,4 @@
-// (c) Copyright 2022 Advanced Micro Devices, Inc.
+// (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
 
 // RUN: air-opt %s -air-dependency | FileCheck %s
 

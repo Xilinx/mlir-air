@@ -1,3 +1,5 @@
+// (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 // RUN: air-opt %s -air-linalg-codegen='herd-size=4,4' | FileCheck %s
 // XFAIL: *
 // CHECK:    scf.parallel (%arg2, %arg3) = (%c0, %c0) to (%c64, %c128) step (%c16, %c32) {
@@ -17,9 +19,6 @@
 // CHECK:          memref.dealloc %7 : memref<1x16x18x18xf32, 2>
 // CHECK:          memref.dealloc %8 : memref<32x16x3x3xf32, 2>
 // CHECK:          memref.dealloc %9 : memref<1x32x16x16xf32, 2>
-
-
-
 
 #map0 = affine_map<(d0, d1, d2, d3) -> (d0 * 278784 + d1 * 4356 + d2 * 66 + d3 + 67)>
 module attributes {torch.debug_module_name = "Conv2D"}  {

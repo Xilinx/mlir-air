@@ -62,3 +62,7 @@ Below is an example of visualizing a flow from `aie_stubs.mlir`.
 
 
 ```
+
+-----
+
+<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>

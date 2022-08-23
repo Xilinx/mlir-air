@@ -1,9 +1,4 @@
 // (c) Copyright 2019 Xilinx Inc. All Rights Reserved.
-//===- AIRDialect.h - Dialect definition for the AIR IR ----------------===//
-//
-// Copyright 2020 Xilinx
-//
-//===---------------------------------------------------------------------===//
 
 #ifndef MLIR_AIR_DIALECT_H
 #define MLIR_AIR_DIALECT_H

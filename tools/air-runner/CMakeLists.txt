@@ -1,5 +1,5 @@
-# Find the libraries that correspond to the LLVM components
-# that we wish to use
+# (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 llvm_map_components_to_libnames(llvm_libs support core irreader)
 
 # Now build our tools

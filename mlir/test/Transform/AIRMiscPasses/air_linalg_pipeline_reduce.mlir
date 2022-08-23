@@ -1,4 +1,4 @@
-// (c) Copyright 2022 AMD, Inc.
+// (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
 
 // RUN: air-opt -air-pipeline-reduce %s | FileCheck %s
 // CHECK: air.pipeline

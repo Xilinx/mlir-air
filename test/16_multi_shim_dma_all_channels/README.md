@@ -10,3 +10,6 @@
 | Tile DMA | Both directions used in 4 tiles |
 | Microblaze | Two Shim DMAs are used |
  
+-----
+
+<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>

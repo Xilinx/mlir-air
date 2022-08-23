@@ -6,3 +6,7 @@
 | -------- | --- |
 | Physical dialect | elf is associated with a core |
 | ARM starting a core | The ARM starts the cores |
+
+-----
+
+<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>

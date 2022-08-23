@@ -8,3 +8,7 @@
 | Logical dialect  | Flows are used to route to bottom of herd |
 | Microblaze Shim DMA Packet| Microblaze Shim DMA memcpy packet used to program Shim DMA. MM2S0 used to pull data from the herd |
 | Tile DMA | S2MM0 used to push data to streams from the tile memory | 
+
+-----
+
+<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>

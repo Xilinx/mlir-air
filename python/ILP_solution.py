@@ -1,4 +1,7 @@
-#!/usr/bin/env python3 
+#!/usr/bin/env python3
+
+# (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 #===============================================================================#
 # This file implements ILP solver for automatic tiling space exploration.
 #===============================================================================#

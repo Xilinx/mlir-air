@@ -1,3 +1,5 @@
+// (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 #map0 = affine_map<()[s0] -> (s0 * 5120)>
 #map1 = affine_map<(d0) -> (d0)>
 module attributes {torch.debug_module_name = "test"} {

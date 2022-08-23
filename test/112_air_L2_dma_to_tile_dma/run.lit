@@ -1,4 +1,3 @@
-
 // (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
 
 // RUN: air-opt -air-to-aie='air-to-aie-col-offset=7 air-to-aie-row-offset=4 air-to-aie-output-prefix=%T/' %S/air.mlir

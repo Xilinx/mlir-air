@@ -10,3 +10,7 @@
 | Tile DMA | Both directions used in one tile | 
 | Tile DMA | 2D X and Y address generation used to transpose a matrix | 
 | Microblaze | ND memcpy packet is used |
+
+-----
+
+<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>

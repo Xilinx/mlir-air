@@ -1,5 +1,5 @@
 // (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
-//
+
 // ===---     AIRRegularizeLoopPass.cpp - Loop Regularization Pass      ---===//
 //
 // This pass regularizes loop nests by moving intermediate operations between

@@ -1,3 +1,5 @@
+// (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 // REQUIRES: valid_xchess_license
 // XFAIL: *
 // RUN: xchesscc -p me -P ${CARDANO}/data/cervino/lib -c %S/chess/beefmaker_kernel.cc

@@ -1,3 +1,5 @@
+# (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+
 cmake_minimum_required(VERSION 3.12)
 
 if(POLICY CMP0074)

@@ -53,3 +53,6 @@ lit_config.parallelism_groups["board"] = 1
 config.parallelism_group = "board"
 ```
 
+-----
+
+<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>
