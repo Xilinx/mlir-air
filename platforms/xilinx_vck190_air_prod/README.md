@@ -24,7 +24,7 @@ We will clone the custom PYNQ fork, download and copy the base bionic Ubuntu ima
 
 Copy the reference bionic Ubuntu base image (bionic.aarch64.2.6.0_2020_09_21.zip), or from `/group/xrlabs2/pynq/public/v2.6.0_images/bionic.aarch64.2.6.0_2020_09_21.zip` if you have access to local XSJ servers) and unzip it to `sdbuild/output` which you create.
 ```
-git clone https://gitenterprise.xilinx.com/jackl/PYNQ.git
+git clone https://gitenterprise.xilinx.com/jackl/PYNQ.git --branch versal_acdc-prod
 cd PYNQ/sdbuild
 mkdir output
 cp <unzipped bionic img file> ./output/.
