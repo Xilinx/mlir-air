@@ -16,6 +16,7 @@ add_air_library(AIRInitAll
   DEPENDS
   AIRDialect
   AIRRtDialect
+  AIRTransformOpsIncGen
 
   LINK_LIBS
   AIRConversionPasses
