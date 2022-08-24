@@ -727,57 +727,6 @@ lowerNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
   return success();
 }
 
-class DmaMemcpyToLLVMConversion : public OpRewritePattern<xilinx::airrt::DmaMemcpyOp> {
-public:
-  using OpRewritePattern<xilinx::airrt::DmaMemcpyOp>::OpRewritePattern;
-
-  LogicalResult
-  matchAndRewrite(xilinx::airrt::DmaMemcpyOp op,
-                  PatternRewriter &rewriter) const override
-  {
-    auto space = op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    if (space == (int)xilinx::air::MemorySpace::L3)
-      return lowerDmaMemcpy(op, rewriter, "air_shim_memcpy");
-    if (space == (int)xilinx::air::MemorySpace::L2)
-      return lowerDmaMemcpy(op, rewriter, "air_L1L2_memcpy");
-    return failure();
-  }
-};
-
-class DmaMemcpy2dToLLVMConversion : public OpRewritePattern<xilinx::airrt::DmaMemcpy2dOp> {
-public:
-  using OpRewritePattern<xilinx::airrt::DmaMemcpy2dOp>::OpRewritePattern;
-
-  LogicalResult
-  matchAndRewrite(xilinx::airrt::DmaMemcpy2dOp op,
-                  PatternRewriter &rewriter) const override
-  {
-    auto space = op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    if (space == (int)xilinx::air::MemorySpace::L3)
-      return lowerDmaMemcpy(op, rewriter, "air_shim_memcpy2d");
-    if (space == (int)xilinx::air::MemorySpace::L2)
-      return lowerDmaMemcpy(op, rewriter, "air_L1L2_memcpy2d");
-    return failure();
-  }
-};
-
-class DmaMemcpy4dToLLVMConversion : public OpRewritePattern<xilinx::airrt::DmaMemcpy4dOp> {
-public:
-  using OpRewritePattern<xilinx::airrt::DmaMemcpy4dOp>::OpRewritePattern;
-
-  LogicalResult
-  matchAndRewrite(xilinx::airrt::DmaMemcpy4dOp op,
-                  PatternRewriter &rewriter) const override
-  {
-    auto space = op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    if (space == (int)xilinx::air::MemorySpace::L3)
-      return lowerDmaMemcpy(op, rewriter, "air_shim_memcpy4d");
-    if (space == (int)xilinx::air::MemorySpace::L2)
-      return lowerDmaMemcpy(op, rewriter, "air_L1L2_memcpy4d");
-    return failure();
-  }
-};
-
 class DmaMemcpyNdToLLVMConversion : public OpRewritePattern<xilinx::airrt::DmaMemcpyNdOp> {
 public:
   using OpRewritePattern<xilinx::airrt::DmaMemcpyNdOp>::OpRewritePattern;
@@ -1090,9 +1039,8 @@ public:
     converter.addTargetMaterialization(addUnrealizedCast);
 
     RewritePatternSet patterns(context);
-    patterns.add<ModuleMetadataToLLVMConversion, PartitionLoadToLLVMConversion, HerdLoadToLLVMConversion,
-                 DmaMemcpyToLLVMConversion, DmaMemcpy2dToLLVMConversion,
-                 DmaMemcpy4dToLLVMConversion, DmaMemcpyNdToLLVMConversion,
+    patterns.add<ModuleMetadataToLLVMConversion, PartitionLoadToLLVMConversion,
+                 HerdLoadToLLVMConversion, DmaMemcpyNdToLLVMConversion,
                  MemcpyNdToLLVMConversion, L2AllocOpConversion,
                  L2DeallocOpConversion>(context);
     patterns.add<L1AllocOpConversion, L1AffineLoadOpConversion,

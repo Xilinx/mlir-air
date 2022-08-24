@@ -2,9 +2,9 @@
 
 // RUN: air-opt %s -air-to-std | FileCheck %s
 // CHECK: %[[M0:.*]] = airrt.alloc : memref<1024xi32, 1>
-// CHECK: %[[E0:.*]] = airrt.dma_memcpy(%c1_i32, {{.*}}, {{.*}}, %0[{{.*}}], {{.*}}) : (i32, i64, i64, memref<1024xi32, 1>, [i64], i64)
+// CHECK: %[[E0:.*]] = airrt.dma_memcpy_nd(%c1_i32, {{.*}}, {{.*}}, %0[{{.*}}], [{{.*}}], [{{.*}}]) : (i32, i64, i64, memref<1024xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
 // CHECK: airrt.wait_all %[[E0]]
-// CHECK: %[[E1:.*]] = airrt.dma_memcpy(%c2_i32, {{.*}}, {{.*}}, %0[{{.*}}], {{.*}}) : (i32, i64, i64, memref<1024xi32, 1>, [i64], i64)
+// CHECK: %[[E1:.*]] = airrt.dma_memcpy_nd(%c2_i32, {{.*}}, {{.*}}, %0[{{.*}}], [{{.*}}], [{{.*}}]) : (i32, i64, i64, memref<1024xi32, 1>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
 // CHECK: airrt.wait_all %[[E0]], %[[E1]]
 // CHECK: airrt.dealloc %[[M0]] : memref<1024xi32, 1>
 module  {
@@ -15,8 +15,8 @@ module  {
       %c0 = arith.constant 0 : index
       %c16 = arith.constant 16 : index
       %1 = memref.alloc() : memref<16xi32, 2>
-      %e0 = air.dma_memcpy async (%1, %arg6, [%c0], [%c16], %c16) {id = 1 : i32} : (memref<16xi32, 2>, memref<1024xi32, 1>, [index], [index], index) -> ()
-      %e1 = air.dma_memcpy async [%e0] (%arg6, %1, [%c16], [%c0], %c16) {id = 2 : i32} : (memref<1024xi32, 1>, memref<16xi32, 2>, [index], [index], index) -> ()
+      %e0 = air.dma_memcpy_nd async (%1[][][], %arg6[%c0][%c16][%c16]) {id = 1 : i32} : (memref<16xi32, 2>, memref<1024xi32, 1>)
+      %e1 = air.dma_memcpy_nd async [%e0] (%arg6[%c16][%c0][%c16], %1[][][]) {id = 2 : i32} : (memref<1024xi32, 1>, memref<16xi32, 2>)
       air.wait_all [%e0, %e1]
       air.herd_terminator
     }

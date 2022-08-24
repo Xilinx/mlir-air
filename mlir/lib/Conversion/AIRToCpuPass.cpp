@@ -301,60 +301,6 @@ convertOpToFunctionWithTileId(Operation *op, ArrayRef<Value> operands,
   return call;
 }
 
-class AIRDmaMemcpyToMemcpyConversion : public ConversionPattern {
-public:
-  explicit AIRDmaMemcpyToMemcpyConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::DmaMemcpyOp::getOperationName(), 1,
-                          context) {}
-
-  LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto call =
-        convertOpToFunctionWithTileId(op, operands, rewriter, "air_memcpy");
-    if (call)
-      return success();
-    else
-      return failure();
-  }
-};
-
-class AIRDmaMemcpy2dToMemcpyConversion : public ConversionPattern {
-public:
-  explicit AIRDmaMemcpy2dToMemcpyConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::DmaMemcpy2dOp::getOperationName(), 1,
-                          context) {}
-
-  LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto call =
-        convertOpToFunctionWithTileId(op, operands, rewriter, "air_memcpy2d");
-    if (call)
-      return success();
-    else
-      return failure();
-  }
-};
-
-class AIRDmaMemcpy4dToMemcpyConversion : public ConversionPattern {
-public:
-  explicit AIRDmaMemcpy4dToMemcpyConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::DmaMemcpy4dOp::getOperationName(), 1,
-                          context) {}
-
-  LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto call =
-        convertOpToFunctionWithTileId(op, operands, rewriter, "air_memcpy4d");
-    if (call)
-      return success();
-    else
-      return failure();
-  }
-};
-
 class AIRDmaMemcpyNdToMemcpyConversion
     : public OpConversionPattern<xilinx::air::DmaMemcpyNdOp> {
 public:

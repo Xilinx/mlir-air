@@ -614,24 +614,8 @@ private:
       return replaceMemcpyOp(memcpyNdOp, builder, srcMemrefDimsOrOffsets);
     }
     else {
-      for (unsigned i = 0; i < current_shape_expr.size(); i++){
-        if (current_shape_expr[i]){
-          auto val = current_shape_expr[i].template dyn_cast<AffineConstantExpr>().getValue();
-          auto cop = builder.create<arith::ConstantIndexOp>(loc, val);
-          srcMemrefDimsOrOffsets.push_back(cop);
-        }
-        else {
-          srcMemrefDimsOrOffsets.push_back(memcpyOp.getSrcMemrefDim(i));
-        }
-      }
-      // Replace memcpyOp
-      if (auto op = dyn_cast<xilinx::air::DmaMemcpyOp>(memcpyOp.getOperation()))
-        return replaceMemcpyOp(op, builder, srcMemrefDimsOrOffsets);
-      else if (auto op = dyn_cast<xilinx::air::DmaMemcpy2dOp>(memcpyOp.getOperation()))
-        return replaceMemcpyOp(op, builder, srcMemrefDimsOrOffsets);
-      else if (auto op = dyn_cast<xilinx::air::DmaMemcpy4dOp>(memcpyOp.getOperation()))
-        return replaceMemcpyOp(op, builder, srcMemrefDimsOrOffsets);
-      else return nullptr;
+      assert(false && "Unhandled DMAMemcpyInterface");
+      return nullptr;
     }
 
   }
@@ -644,34 +628,6 @@ private:
             srcMemrefDimsOrOffsets, op.getSrcSizes(), op.getSrcStrides()); 
     return newMemcpyOp.getOperation();
   }
-
-  // Replace DmaMemcpyOp with updated src operands
-  Operation * replaceMemcpyOp (xilinx::air::DmaMemcpyOp op, OpBuilder &builder, SmallVector<Value, 1> srcMemrefDimsOrOffsets){
-    auto loc = op->getLoc();
-    xilinx::air::DmaMemcpyOp newMemcpyOp = builder.create<xilinx::air::DmaMemcpyOp>(loc, xilinx::air::AsyncTokenType::get(op->getContext()), 
-            op.getAsyncDependencies(), op.getDstMemref(), op.getSrcMemref(), op.getDstMemrefDim(0), srcMemrefDimsOrOffsets[0], op.getLength()); 
-    return newMemcpyOp.getOperation();
-  }
-
-  // Replace DmaMemcpy2dOp with updated src operands
-  Operation * replaceMemcpyOp (xilinx::air::DmaMemcpy2dOp op, OpBuilder &builder, SmallVector<Value, 1> srcMemrefDimsOrOffsets){
-    auto loc = op->getLoc();
-    xilinx::air::DmaMemcpy2dOp newMemcpyOp = builder.create<xilinx::air::DmaMemcpy2dOp>(loc, xilinx::air::AsyncTokenType::get(op->getContext()), 
-            op.getAsyncDependencies(), op.getDstMemref(), op.getSrcMemref(), op.getDstMemrefDim(0), op.getDstMemrefDim(1), 
-            srcMemrefDimsOrOffsets[0], srcMemrefDimsOrOffsets[1], op.getLength(), op.getStride(), op.getElemPerStride()); 
-    return newMemcpyOp.getOperation();
-  }
-
-  // Replace DmaMemcpy4dOp with updated src operands
-  Operation * replaceMemcpyOp (xilinx::air::DmaMemcpy4dOp op, OpBuilder &builder, SmallVector<Value, 1> srcMemrefDimsOrOffsets){
-    auto loc = op->getLoc();
-    xilinx::air::DmaMemcpy4dOp newMemcpyOp = builder.create<xilinx::air::DmaMemcpy4dOp>(loc, xilinx::air::AsyncTokenType::get(op->getContext()), 
-            op.getAsyncDependencies(), op.getDstMemref(), op.getSrcMemref(), op.getDstMemrefDim(0), op.getDstMemrefDim(1), op.getDstMemrefDim(2), 
-            op.getDstMemrefDim(3), srcMemrefDimsOrOffsets[0], srcMemrefDimsOrOffsets[1], srcMemrefDimsOrOffsets[2], srcMemrefDimsOrOffsets[3], 
-            op.getLength(), op.getStride(), op.getElemPerStride()); 
-    return newMemcpyOp.getOperation();
-  }
-
 };
 
 class AIRFuseParallelHerdPass

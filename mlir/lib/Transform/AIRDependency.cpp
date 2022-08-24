@@ -612,7 +612,6 @@ private:
     return async_region;
   }
 
-  
   // Create air region op with async interface (with one ssa result returned); update graph
   air::RegionOp createAsyncRegion(OpBuilder &builder, Operation *op, std::string asyncEventName, uint64_t &RegionOpID, mlir::Type valueType){
     builder.setInsertionPoint(op);
@@ -632,7 +631,7 @@ private:
     SmallVector<Value, 1> returnVals;
     returnVals.push_back(async_region.getResult(1));
     op->replaceAllUsesWith(returnVals);
-    
+
     // Create a vertex out of the current async region
     auto v = add_vertex(asyncRegionGraph);
     asyncRegionGraph[v].asyncEventName = asyncEventName;
@@ -655,38 +654,13 @@ private:
     auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op);
     unsigned id = dma_op.getId();
     std::string event_name = "";
-    if (auto dma_op = dyn_cast<air::DmaMemcpyOp>(op)){
-      air::DmaMemcpyOp new_dma_op = builder.create<air::DmaMemcpyOp>(loc, air::AsyncTokenType::get(dma_op->getContext()), 
-              deps, dma_op.getDstMemref(), dma_op.getSrcMemref(), dma_op.getDstMemrefDim(0), dma_op.getSrcMemrefDim(0), dma_op.getLength()); 
-      new_dma_op->setAttr("id",
-              mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
-              id));
-    }
-    else if (auto dma2d_op = dyn_cast<air::DmaMemcpy2dOp>(op)){
-      air::DmaMemcpy2dOp new_dma2d_op = builder.create<air::DmaMemcpy2dOp>(loc, air::AsyncTokenType::get(dma2d_op->getContext()), 
-              deps, dma2d_op.getDstMemref(), dma2d_op.getSrcMemref(), dma2d_op.getDstMemrefDim(0), dma2d_op.getDstMemrefDim(1), 
-              dma2d_op.getSrcMemrefDim(0), dma2d_op.getSrcMemrefDim(1), dma2d_op.getLength(), dma2d_op.getStride(), dma2d_op.getElemPerStride()); 
-      new_dma2d_op->setAttr("id",
-              mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
-              id));
-      event_name = "2d";
-    }
-    else if (auto dma4d_op = dyn_cast<air::DmaMemcpy4dOp>(op)){
-      air::DmaMemcpy4dOp new_dma4d_op = builder.create<air::DmaMemcpy4dOp>(loc, air::AsyncTokenType::get(dma4d_op->getContext()), 
-              deps, dma4d_op.getDstMemref(), dma4d_op.getSrcMemref(), dma4d_op.getDstMemrefDim(0), dma4d_op.getDstMemrefDim(1), dma4d_op.getDstMemrefDim(2), dma4d_op.getDstMemrefDim(3),
-              dma4d_op.getSrcMemrefDim(0), dma4d_op.getSrcMemrefDim(1), dma4d_op.getSrcMemrefDim(2), dma4d_op.getSrcMemrefDim(3), dma4d_op.getLength(), dma4d_op.getStride(), dma4d_op.getElemPerStride()); 
-      new_dma4d_op->setAttr("id",
-              mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
-              id));
-      event_name = "4d";      
-    }
-    else if (auto dmaNd_op = dyn_cast<air::DmaMemcpyNdOp>(op)){
+    if (auto dmaNd_op = dyn_cast<air::DmaMemcpyNdOp>(op)) {
       air::DmaMemcpyNdOp new_dmaNd_op = builder.create<air::DmaMemcpyNdOp>(loc, air::AsyncTokenType::get(dmaNd_op->getContext()), 
               deps, dmaNd_op.getDstMemref(), dmaNd_op.getDstOffsets(), dmaNd_op.getDstSizes(), dmaNd_op.getDstStrides(), dmaNd_op.getSrcMemref(), dmaNd_op.getSrcOffsets(), dmaNd_op.getSrcSizes(), dmaNd_op.getSrcStrides()); 
       new_dmaNd_op->setAttr("id",
               mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
               id));
-      event_name = "Nd";      
+      event_name = "Nd";
     }
 
     // Create a vertex out of the current dmamemcpy2d op

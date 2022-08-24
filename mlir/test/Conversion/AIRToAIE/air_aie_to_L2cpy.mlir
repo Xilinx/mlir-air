@@ -21,7 +21,7 @@ func.func @bar(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
     %c0 = arith.constant 0 : index
     %c1024 = arith.constant 0 : index
     %buf1 = memref.alloc() : memref<1024xi32, 2>
-    air.dma_memcpy (%ext0, %buf1, [%c0], [%c0], %c1024) : (memref<1024xi32, 1>, memref<1024xi32, 2>, [index], [index], index) -> ()
+    air.dma_memcpy_nd (%ext0[%c0][%c0][%c1024], %buf1[][][] ) : (memref<1024xi32, 1>, memref<1024xi32, 2>)
     memref.dealloc %buf1 : memref<1024xi32, 2>
     air.herd_terminator
   }

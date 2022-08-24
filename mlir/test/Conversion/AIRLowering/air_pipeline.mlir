@@ -25,8 +25,8 @@ module  {
         %output1 = air.pipeline.stage {
           %a = memref.alloc() : memref<1024xf32, 2>
           %b = memref.alloc() : memref<1024xf32, 2>
-          air.dma_memcpy (%a, %op0, [%c0], [%c0], %c1024) {id = 1 : i32} : (memref<1024xf32, 2>, memref<1024xf32>, [index], [index], index) -> ()
-          air.dma_memcpy (%b, %op1, [%c0], [%c0], %c1024) {id = 2 : i32} : (memref<1024xf32, 2>, memref<1024xf32>, [index], [index], index) -> ()
+          air.dma_memcpy_nd (%a[][][], %op0[%c0] [%c0] [%c1024]) {id = 1 : i32} : (memref<1024xf32, 2>, memref<1024xf32>)
+          air.dma_memcpy_nd (%b[][][], %op1[%c0] [%c0] [%c1024]) {id = 2 : i32} : (memref<1024xf32, 2>, memref<1024xf32>)
           %init = linalg.init_tensor [1024] : tensor<1024xf32>
           %ta = bufferization.to_tensor %a : memref<1024xf32, 2>
           %tb = bufferization.to_tensor %b : memref<1024xf32, 2>
@@ -69,7 +69,7 @@ module  {
             linalg.yield %6 : f32
           } -> tensor<1024xf32>
           %c = bufferization.to_memref %5 : memref<1024xf32, 2>
-          air.dma_memcpy (%op2, %c, [%c0], [%c0], %c1024) {id = 3 : i32} : (memref<1024xf32>, memref<1024xf32, 2>, [index], [index], index) -> ()
+          air.dma_memcpy_nd (%op2[%c0] [%c0] [%c1024], %c[][][]) {id = 3 : i32} : (memref<1024xf32>, memref<1024xf32, 2>)
           air.pipeline.yield
         }
         air.pipeline.terminator
