@@ -9,7 +9,6 @@
 namespace xilinx {
 namespace air {
 
-std::unique_ptr<mlir::Pass> createAffineToAIRPass();
 std::unique_ptr<mlir::Pass> createParallelToHerdPass();
 std::unique_ptr<mlir::Pass> createParallelToLaunchPass();
 std::unique_ptr<mlir::Pass> createCopyToDmaPass();
