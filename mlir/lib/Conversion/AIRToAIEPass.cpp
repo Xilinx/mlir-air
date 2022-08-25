@@ -716,12 +716,8 @@ public:
       assert(core);
 
       auto herd = tileToHerdMap[core.getTileOp()];
-      int64_t col_offset = 0;
-      int64_t row_offset = 0;
-      if (auto a = herd->getAttrOfType<IntegerAttr>("x_loc"))
-        col_offset = a.getInt();
-      if (auto a = herd->getAttrOfType<IntegerAttr>("y_loc"))
-        row_offset = a.getInt();
+      int64_t col_offset = herd.getColOffset();
+      int64_t row_offset = herd.getRowOffset();
 
       auto other_x = cast<arith::ConstantIndexOp>(putOp.dst0().getDefiningOp());
       auto other_y = cast<arith::ConstantIndexOp>(putOp.dst1().getDefiningOp());
@@ -1049,8 +1045,8 @@ public:
 
         builder.setInsertionPointAfter(tile);
         auto herd = tileToHerdMap[core.getTileOp()];
-        int64_t col_offset = herd->getAttrOfType<IntegerAttr>("x_loc").getInt();
-        int64_t row_offset = herd->getAttrOfType<IntegerAttr>("y_loc").getInt();
+        int64_t col_offset = herd.getColOffset();
+        int64_t row_offset = herd.getRowOffset();
 
         auto buffer = allocateBufferOp(
             module, memrefTy, tile,
@@ -1141,18 +1137,21 @@ public:
       int64_t herd_size_y =
           cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
 
+      // use the command line offsets unless the attribute is present
       int64_t col_offset = AIRToAIEColOffset;
       int64_t row_offset = AIRToAIERowOffset;
-      if (auto a = h->getAttrOfType<IntegerAttr>("x_loc"))
-        col_offset = a.getInt();
+      auto col_name = xilinx::air::HerdOp::getColOffsetAttrName();
+      auto row_name = xilinx::air::HerdOp::getRowOffsetAttrName();
+      if (h->getAttrOfType<IntegerAttr>(col_name))
+        col_offset = h.getColOffset();
       else
-        h->setAttr("x_loc",
+        h->setAttr(col_name,
                    IntegerAttr::get(IntegerType::get(h->getContext(), 32),
                                     col_offset));
-      if (auto a = h->getAttrOfType<IntegerAttr>("y_loc"))
-        row_offset = a.getInt();
+      if (h->getAttrOfType<IntegerAttr>(row_name))
+        row_offset = h.getRowOffset();
       else
-        h->setAttr("y_loc",
+        h->setAttr(row_name,
                    IntegerAttr::get(IntegerType::get(h->getContext(), 32),
                                     row_offset));
 
@@ -1365,10 +1364,8 @@ public:
             if (auto dmaOp = dyn_cast<air::DmaMemcpyInterface>(o))
               dma_ids.insert(dmaOp.getId());
           });
-          int64_t col_offset =
-              herd->getAttrOfType<IntegerAttr>("x_loc").getInt();
-          int64_t row_offset =
-              herd->getAttrOfType<IntegerAttr>("y_loc").getInt();
+          int64_t col_offset = herd.getColOffset();
+          int64_t row_offset = herd.getRowOffset();
 
           // createAIRRtMetadata(module_meta, shimDmaAlloc, L2DmaAlloc);
           std::vector<Attribute> dma_allocations;

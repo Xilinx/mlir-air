@@ -170,6 +170,22 @@ def air_HerdOp : air_Op<"herd", [air_AsyncOpInterface,
       }
       return -1;
     }
+    static StringRef getColOffsetAttrName() { return "x_loc"; }
+    static StringRef getRowOffsetAttrName() { return "y_loc"; }
+    uint64_t getColOffset() {
+      auto name = getColOffsetAttrName();
+      if (auto a = (*this)->getAttrOfType<IntegerAttr>(name)) {
+        return a.getInt();
+      }
+      return 0;
+    }
+    uint64_t getRowOffset() {
+      auto name = getRowOffsetAttrName();
+      if (auto a = (*this)->getAttrOfType<IntegerAttr>(name)) {
+        return a.getInt();
+      }
+      return 0;
+    }
   }];
   let hasCanonicalizer  = 1;
 }
