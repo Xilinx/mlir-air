@@ -605,11 +605,11 @@ public:
       a->erase();
   }
 
-  // remove any remaining air.region, turning them
+  // remove any remaining air.execute, turning them
   // back into sequential code
   void lowerAirRegions(AIE::CoreOp core) {
     SmallVector<Operation *, 8> erased;
-    core.walk([&](xilinx::air::RegionOp rop) {
+    core.walk([&](xilinx::air::ExecuteOp rop) {
       auto &bb = rop.body().front();
       unsigned idx = 0;
       for (auto &arg : bb.getArguments()) {
@@ -623,7 +623,7 @@ public:
             SmallVector<Value, 1>{});
         rop.getResult(0).replaceAllUsesWith(w.getResult(0));
       }
-      rop.walk([&](xilinx::air::RegionTerminatorOp t) {
+      rop.walk([&](xilinx::air::ExecuteTerminatorOp t) {
         int resultIdx = 1;
         for (auto r : t->getOperands())
           rop.getResult(resultIdx++).replaceAllUsesWith(r);

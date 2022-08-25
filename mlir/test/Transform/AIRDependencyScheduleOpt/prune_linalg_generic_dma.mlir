@@ -62,7 +62,7 @@ module attributes {torch.debug_module_name = "model"} {
             linalg.yield %16 : bf16
           }
           // CHECK: %[[EVENT4:.*]] = air.dma_memcpy_nd async 
-          // CHECK: %[[EVENT5:.*]] = air.region async [%[[EVENT4]]]
+          // CHECK: %[[EVENT5:.*]] = air.execute async [%[[EVENT4]]]
           air.dma_memcpy_nd (%arg19[%7, %8] [%c32, %c32] [%c64_1, %c1_0], %10[] [] []) {id = 7 : i32} : (memref<64x64xbf16, 1>, memref<32x32xbf16, 2>)
           memref.dealloc %9 : memref<32x32xbf16, 2>
           memref.dealloc %10 : memref<32x32xbf16, 2>

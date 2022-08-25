@@ -982,9 +982,9 @@ unsigned PipelineStageOp::getStageId() {
 // Asynchronous region
 //
 
-LogicalResult RegionOp::verify() {
-  assert(getOperation()->getNumRegions() == 1 && "RegionOp has zero region!");
-  assert(!body().empty() && "RegionOp should have non-empty body");
+LogicalResult ExecuteOp::verify() {
+  assert(getOperation()->getNumRegions() == 1 && "ExecuteOp has zero region!");
+  assert(!body().empty() && "ExecuteOp should have non-empty body");
 
   return success();
 }

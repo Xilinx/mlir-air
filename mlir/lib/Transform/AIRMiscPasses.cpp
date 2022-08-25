@@ -483,13 +483,15 @@ private:
 
         // Evaluate broadcast pattern by propagating expr through scalar operations in op history, last-in-first-out
         for (std::vector<Operation *>::reverse_iterator i = op_history.rbegin(); i != op_history.rend(); ++i ) {
-          if (auto air_region_op = dyn_cast<xilinx::air::RegionOp>(*i)){
-            assert(air_region_op.body().front().getOperations().size() == 2 
-                    && "air::RegionOp should have only one child operation beside the terminator");
+          if (auto air_region_op = dyn_cast<xilinx::air::ExecuteOp>(*i)) {
+            assert(air_region_op.body().front().getOperations().size() == 2 &&
+                   "air::ExecuteOp should have only one child operation beside "
+                   "the terminator");
             // Get current scalar op
             Operation * op = nullptr;
             for (auto &child_op : air_region_op.body().front().getOperations()){
-              if (!dyn_cast<xilinx::air::RegionTerminatorOp>(child_op)) op = &child_op;
+              if (!dyn_cast<xilinx::air::ExecuteTerminatorOp>(child_op))
+                op = &child_op;
             }
             // If the async op is affine.apply
             if (auto apply_op = dyn_cast<AffineApplyOp>(op)){
@@ -582,7 +584,8 @@ private:
   // Propagate AffineConstantExpr through arith addi/muli op
   template <typename T>
   void propagateAFfineConstantExprThroughArithOp(T arith_op, SmallVector<AffineExpr, 2> &current_shape_expr, Operation * memcpyOp, MLIRContext * ctx){
-    xilinx::air::RegionOp parent_region_op = arith_op->template getParentOfType<xilinx::air::RegionOp>();
+    xilinx::air::ExecuteOp parent_region_op =
+        arith_op->template getParentOfType<xilinx::air::ExecuteOp>();
     for (unsigned j = 0; j < current_shape_expr.size(); j++){
       if (current_shape_expr[j]){
         applyArithOpToAffineConstantExpr(arith_op, current_shape_expr[j], ctx);

@@ -192,13 +192,13 @@ class AIRRunner::AIRRunner_impl {
     decrementAsyncTokens(op);
   }
 
-  void executeOp(xilinx::air::RegionTerminatorOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    auto regionOp = op->getParentOfType<xilinx::air::RegionOp>();
-    decrementAsyncTokens(regionOp);
+  void executeOp(xilinx::air::ExecuteTerminatorOp op,
+                 std::vector<llvm::Any> &in, std::vector<llvm::Any> &out) {
+    auto ExecuteOp = op->getParentOfType<xilinx::air::ExecuteOp>();
+    decrementAsyncTokens(ExecuteOp);
 
-    for (unsigned i = 1, e = regionOp->getNumResults(); i < e; i++) {
-      auto r = regionOp->getResult(i);
+    for (unsigned i = 1, e = ExecuteOp->getNumResults(); i < e; i++) {
+      auto r = ExecuteOp->getResult(i);
       if (!r.getType().isa<xilinx::air::AsyncTokenType>()) {
         valueMap[r] = in[i - 1];
       }
@@ -244,7 +244,7 @@ class AIRRunner::AIRRunner_impl {
       executeOp(Op, inValues, outValues);
     else if (auto Op = dyn_cast<xilinx::air::LaunchOp>(op))
       executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<xilinx::air::RegionTerminatorOp>(op))
+    else if (auto Op = dyn_cast<xilinx::air::ExecuteTerminatorOp>(op))
       executeOp(Op, inValues, outValues);
     else if (auto Op = dyn_cast<xilinx::air::HerdOp>(op))
       executeOp(Op, inValues, outValues);
@@ -963,7 +963,7 @@ public:
     return;
   }
 
-  void scheduleAIRRegion(xilinx::air::RegionOp &ro, QueueContext *qctx) {
+  void scheduleAIRRegion(xilinx::air::ExecuteOp &ro, QueueContext *qctx) {
 
     for (auto r : ro->getResults()) {
       if (r.getType().isa<xilinx::air::AsyncTokenType>()) {
@@ -1197,9 +1197,9 @@ public:
           ctx = qctx->getRR(*qs);
         scheduleAIRAsyncOp(op, &ctx->queue);
       } else if (isa<xilinx::air::WaitAllOp>(op) ||
-                 isa<xilinx::air::RegionTerminatorOp>(op)) {
+                 isa<xilinx::air::ExecuteTerminatorOp>(op)) {
         scheduleAIRAsyncOp(op, &qctx->queue);
-      } else if (auto r = dyn_cast<xilinx::air::RegionOp>(op)) {
+      } else if (auto r = dyn_cast<xilinx::air::ExecuteOp>(op)) {
         scheduleAIRRegion(r, qctx);
       } else if (auto hlo = dyn_cast<xilinx::air::HerdOp>(op)) {
         scheduleHerd(hlo, qctx);

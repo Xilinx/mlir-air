@@ -76,9 +76,9 @@ using OpRewritePattern<scf::ForOp>::OpRewritePattern;
         if (areSymmetric & areInvariantWRTForLoop){
           foundDmaPairToHoist = true;
           foundDmaPairForThisOp2 = true;
-          // Found a pair of dmas which cancel out each other 
-          air::RegionOp alloc_region_op = getRegionOfAllocOpForDmaOp(op_1);
-          air::RegionOp dealloc_region_op = getRegionOfDeallocOpForDmaOp(op_2);
+          // Found a pair of dmas which cancel out each other
+          air::ExecuteOp alloc_region_op = getRegionOfAllocOpForDmaOp(op_1);
+          air::ExecuteOp dealloc_region_op = getRegionOfDeallocOpForDmaOp(op_2);
           assert(alloc_region_op.getAsyncDependencies().size() == 1 && "Alloc event having more than one dependant");
 
           // Reconnect incoming alloc event
@@ -135,12 +135,12 @@ private:
         if (dep_op == current_op->getParentOfType<scf::ForOp>().getRegionIterArgs()[0]){
           // Found scf.forOp in upstream dependency
           foundScfForDep = true;
-        }
-        else if (auto region_op = dyn_cast<air::RegionOp>(dep_op.getDefiningOp())){
-          // Found air.regionOp in upstream dependency
+        } else if (auto region_op =
+                       dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp())) {
+          // Found air.ExecuteOp in upstream dependency
           auto child_op = &region_op.getRegion().front().getOperations().front();
           if (auto alloc_op = dyn_cast<memref::AllocOp>(child_op)){
-            // Found memref.allocOp inside air.regionOp
+            // Found memref.allocOp inside air.ExecuteOp
             foundMemrefAllocDep = true;
           }
         }
@@ -149,18 +149,20 @@ private:
     return foundScfForDep & foundMemrefAllocDep;
   }
 
-  // Return the air.region op in the dma's dep list which contains memref.alloc op
-  air::RegionOp getRegionOfAllocOpForDmaOp(air::DmaMemcpyInterface dma_op) const {
+  // Return the air.execute op in the dma's dep list which contains memref.alloc
+  // op
+  air::ExecuteOp
+  getRegionOfAllocOpForDmaOp(air::DmaMemcpyInterface dma_op) const {
     Operation *current_op = dma_op.getOperation();
     air::AsyncOpInterface current_async_op = dyn_cast<air::AsyncOpInterface>(current_op);
     auto dependency_list = current_async_op.getAsyncDependencies();
     if (dependency_list.size()){
       for (auto dep_op : dependency_list){
-        if (auto region_op = dyn_cast<air::RegionOp>(dep_op.getDefiningOp())){
-          // Found air.regionOp in upstream dependency
+        if (auto region_op = dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp())) {
+          // Found air.ExecuteOp in upstream dependency
           auto child_op = &region_op.getRegion().front().getOperations().front();
           if (auto alloc_op = dyn_cast<memref::AllocOp>(child_op)){
-            // Found memref.allocOp inside air.regionOp
+            // Found memref.allocOp inside air.ExecuteOp
             return region_op;
           }
         }
@@ -177,11 +179,11 @@ private:
     air::AsyncOpInterface current_async_op = dyn_cast<air::AsyncOpInterface>(current_op);
     auto dependency_token = current_async_op.getAsyncToken();
     for (auto user : dependency_token.getUsers()){
-      if (auto region_op = dyn_cast<air::RegionOp>(user)){
-        // Found air.regionOp in downstream dependency
+      if (auto region_op = dyn_cast<air::ExecuteOp>(user)) {
+        // Found air.ExecuteOp in downstream dependency
         auto child_op = &region_op.getRegion().front().getOperations().front();
         if (auto dealloc_op = dyn_cast<memref::DeallocOp>(child_op)){
-          // Found memref.deallocOp inside air.regionOp
+          // Found memref.deallocOp inside air.ExecuteOp
           foundDepToMemrefDealloc = true;
           for (auto descendant_user : region_op.getAsyncToken().getUsers()){
             if (dyn_cast<air::WaitAllOp>(descendant_user)){
@@ -194,17 +196,19 @@ private:
     return foundDepToWaitall & foundDepToMemrefDealloc;
   }
 
-  // Return the air.region op in the dma's downstream which contains memref.dealloc op
-  air::RegionOp getRegionOfDeallocOpForDmaOp(air::DmaMemcpyInterface dma_op) const {
+  // Return the air.execute op in the dma's downstream which contains
+  // memref.dealloc op
+  air::ExecuteOp
+  getRegionOfDeallocOpForDmaOp(air::DmaMemcpyInterface dma_op) const {
     Operation *current_op = dma_op.getOperation();
     air::AsyncOpInterface current_async_op = dyn_cast<air::AsyncOpInterface>(current_op);
     auto dependency_token = current_async_op.getAsyncToken();
     for (auto user : dependency_token.getUsers()){
-      if (auto region_op = dyn_cast<air::RegionOp>(user)){
-        // Found air.regionOp in downstream dependency
+      if (auto region_op = dyn_cast<air::ExecuteOp>(user)) {
+        // Found air.ExecuteOp in downstream dependency
         auto child_op = &region_op.getRegion().front().getOperations().front();
         if (auto dealloc_op = dyn_cast<memref::DeallocOp>(child_op)){
-          // Found memref.deallocOp inside air.regionOp
+          // Found memref.deallocOp inside air.ExecuteOp
           return region_op;
         }
       }
@@ -231,7 +235,9 @@ private:
   }
 
   // Reconnect outgoing DMA and dealloc events in the dependency graph
-  void reconnectOutgoingEvents(air::DmaMemcpyInterface dma_op, air::RegionOp dealloc_op, scf::ForOp for_op, air::WaitAllOp wait_all_after_for) const {
+  void reconnectOutgoingEvents(air::DmaMemcpyInterface dma_op,
+                               air::ExecuteOp dealloc_op, scf::ForOp for_op,
+                               air::WaitAllOp wait_all_after_for) const {
     Operation *current_op = dma_op.getOperation();
     air::AsyncOpInterface dma_async_op = dyn_cast<air::AsyncOpInterface>(current_op);
     auto dependency_list = dma_async_op.getAsyncDependencies();
@@ -459,7 +465,7 @@ public:
     auto v = op->getOperand(operand_id);
     
     air::AsyncOpInterface async_op;
-    if (air::RegionOp region_op = op->getParentOfType<air::RegionOp>()){
+    if (air::ExecuteOp region_op = op->getParentOfType<air::ExecuteOp>()) {
       async_op = dyn_cast<air::AsyncOpInterface>(region_op.getOperation());
     }
     else if (auto hl_op = dyn_cast<air::HerdOp>(op)){

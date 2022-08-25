@@ -413,7 +413,7 @@ LogicalResult lowerAirRegions(Operation *op) {
     return failure();
 
   SmallVector<Operation *, 8> erased;
-  module->walk([&](xilinx::air::RegionOp rop) {
+  module->walk([&](xilinx::air::ExecuteOp rop) {
     auto &bb = rop.body().front();
     unsigned idx = 0;
     for (auto &arg : bb.getArguments()) {
@@ -427,7 +427,7 @@ LogicalResult lowerAirRegions(Operation *op) {
           rop.asyncDependencies());
       rop.getResult(0).replaceAllUsesWith(w.getResult(0));
     }
-    rop.walk([&](xilinx::air::RegionTerminatorOp t) {
+    rop.walk([&](xilinx::air::ExecuteTerminatorOp t) {
       int resultIdx = 1;
       for (auto r : t->getOperands())
         rop.getResult(resultIdx++).replaceAllUsesWith(r);
@@ -484,9 +484,9 @@ public:
         memref::MemRefDialect, bufferization::BufferizationDialect,
         xilinx::airrt::AIRRtDialect>();
 
-    // AIR RegionOp conversion
+    // AIR ExecuteOp conversion
     if (failed(lowerAirRegions(module))) {
-      emitError(UnknownLoc::get(context), "error lowering air.region\n");
+      emitError(UnknownLoc::get(context), "error lowering air.execute\n");
       signalPassFailure();
     }
 

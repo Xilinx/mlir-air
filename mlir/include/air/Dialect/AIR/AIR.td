@@ -469,7 +469,7 @@ def air_PopOp : air_Op<"pop", [air_AsyncOpInterface, AttrSizedOperandSegments]>,
 
 // AIR asynchronous region for dynamic event dispatching.
 
-def air_RegionOp : air_Op<"region", [air_AsyncOpInterface, AffineScope]> {
+def air_ExecuteOp : air_Op<"execute", [air_AsyncOpInterface, AffineScope]> {
   let arguments = (
     ins Variadic<AnyType>:$asyncDependencies
   );
@@ -500,12 +500,12 @@ def air_RegionOp : air_Op<"region", [air_AsyncOpInterface, AffineScope]> {
   let hasVerifier = 1;
 }
 
-def air_RegionTerminatorOp : air_Op<"region_terminator", [HasParent<"RegionOp">,
+def air_ExecuteTerminatorOp : air_Op<"execute_terminator", [HasParent<"ExecuteOp">,
                                                       NoSideEffect, ReturnLike, Terminator]>{
   let summary = "Terminator for air regions.";
   let description = [{
     A terminator operation for regions that appear in the body of
-    `air.region` operation.  These regions are not expected to return any
+    `air.execute` operation.  These regions are not expected to return any
     value so the terminator takes no operands.
   }];
 

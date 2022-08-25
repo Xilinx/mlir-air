@@ -85,13 +85,16 @@ namespace air {
 
   // Recursively check for dependency to any loop induction vars
   void traceDependentInductionVar (air::AsyncOpInterface async_op, SmallVector<Value, 1> &loop_dep_history, std::vector<Operation *> &op_history) {
-    // Get child op if async_op is air.region
+    // Get child op if async_op is air.execute
     Operation * op = nullptr;
-    if (auto air_region_op = dyn_cast<air::RegionOp>(async_op.getOperation())){
-      assert(air_region_op.body().front().getOperations().size() == 2 
-              && "air::RegionOp should have only one child operation beside the terminator");
+    if (auto air_region_op =
+            dyn_cast<air::ExecuteOp>(async_op.getOperation())) {
+      assert(air_region_op.body().front().getOperations().size() == 2 &&
+             "air::ExecuteOp should have only one child operation beside the "
+             "terminator");
       for (auto &child_op : air_region_op.body().front().getOperations()){
-        if (!dyn_cast<air::RegionTerminatorOp>(child_op)) op = &child_op;
+        if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
+          op = &child_op;
       }
     }
     else {

@@ -30,50 +30,50 @@ module attributes {torch.debug_module_name = "mmult"} {
       %c0 = arith.constant 0 : index
       %c64 = arith.constant 64 : index
       %c32 = arith.constant 32 : index
-      %asyncToken, %valOut = air.region async  {
+      %asyncToken, %valOut = air.execute async  {
         %6 = affine.apply #map()[%arg3]
-        air.region_terminator %6 : index
+        air.execute_terminator %6 : index
       } {id = 5 : i32} : (index)
-      %asyncToken_0, %valOut_1 = air.region async  {
+      %asyncToken_0, %valOut_1 = air.execute async  {
         %6 = affine.apply #map()[%arg4]
-        air.region_terminator %6 : index
+        air.execute_terminator %6 : index
       } {id = 6 : i32} : (index)
       %2 = air.wait_all async [%asyncToken, %asyncToken_0] 
-      %asyncToken_2, %valOut_3 = air.region async  {
+      %asyncToken_2, %valOut_3 = air.execute async  {
         %6 = memref.alloc() : memref<32x32xi32, 2>
-        air.region_terminator %6 : memref<32x32xi32, 2>
+        air.execute_terminator %6 : memref<32x32xi32, 2>
       } {id = 9 : i32} : (memref<32x32xi32, 2>)
       %3 = air.dma_memcpy_nd async [%2, %asyncToken_2] (%valOut_3[] [] [], %arg9[%valOut, %valOut_1] [%c32, %c32] [%c64, %c1]) {id = 3 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
       %4 = scf.for %arg10 = %c0 to %c64 step %c32 iter_args(%arg11 = %3) -> (!air.async.token) {
-        %asyncToken_5, %valOut_6 = air.region async [%arg11]  : (!air.async.token) {
+        %asyncToken_5, %valOut_6 = air.execute async [%arg11]  : (!air.async.token) {
           %9 = memref.alloc() : memref<32x32xi32, 2>
-          air.region_terminator %9 : memref<32x32xi32, 2>
+          air.execute_terminator %9 : memref<32x32xi32, 2>
         } {id = 7 : i32} : (memref<32x32xi32, 2>)
-        %asyncToken_7, %valOut_8 = air.region async [%arg11]  : (!air.async.token) {
+        %asyncToken_7, %valOut_8 = air.execute async [%arg11]  : (!air.async.token) {
           %9 = memref.alloc() : memref<32x32xi32, 2>
-          air.region_terminator %9 : memref<32x32xi32, 2>
+          air.execute_terminator %9 : memref<32x32xi32, 2>
         } {id = 8 : i32} : (memref<32x32xi32, 2>)
         %6 = air.dma_memcpy_nd async [%asyncToken_5, %arg11] (%valOut_6[] [] [], %arg7[%valOut, %arg10] [%c32, %c32] [%c64, %c1]) {id = 1 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
         %7 = air.dma_memcpy_nd async [%asyncToken_7, %arg11] (%valOut_8[] [] [], %arg8[%arg10, %valOut_1] [%c32, %c32] [%c64, %c1]) {id = 2 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
-        %asyncToken_9 = air.region async [%7, %arg11, %6]  : (!air.async.token, !air.async.token, !air.async.token) {
+        %asyncToken_9 = air.execute async [%7, %arg11, %6]  : (!air.async.token, !air.async.token, !air.async.token) {
           linalg.matmul ins(%valOut_6, %valOut_8 : memref<32x32xi32, 2>, memref<32x32xi32, 2>) outs(%valOut_3 : memref<32x32xi32, 2>)
-          air.region_terminator
+          air.execute_terminator
         } {id = 12 : i32}
-        %asyncToken_10 = air.region async [%asyncToken_9]  : (!air.async.token) {
+        %asyncToken_10 = air.execute async [%asyncToken_9]  : (!air.async.token) {
           memref.dealloc %valOut_6 : memref<32x32xi32, 2>
-          air.region_terminator
+          air.execute_terminator
         } {id = 13 : i32}
-        %asyncToken_11 = air.region async [%asyncToken_9]  : (!air.async.token) {
+        %asyncToken_11 = air.execute async [%asyncToken_9]  : (!air.async.token) {
           memref.dealloc %valOut_8 : memref<32x32xi32, 2>
-          air.region_terminator
+          air.execute_terminator
         } {id = 14 : i32}
         %8 = air.wait_all async [%asyncToken_9, %asyncToken_10, %asyncToken_11] 
         scf.yield %8 : !air.async.token
       }
       %5 = air.dma_memcpy_nd async [%4] (%arg9[%valOut, %valOut_1] [%c32, %c32] [%c64, %c1], %valOut_3[] [] []) {id = 4 : i32} : (memref<64x64xi32>, memref<32x32xi32, 2>)
-      %asyncToken_4 = air.region async [%5]  : (!air.async.token) {
+      %asyncToken_4 = air.execute async [%5]  : (!air.async.token) {
         memref.dealloc %valOut_3 : memref<32x32xi32, 2>
-        air.region_terminator
+        air.execute_terminator
       } {id = 15 : i32}
       air.herd_terminator
     }
