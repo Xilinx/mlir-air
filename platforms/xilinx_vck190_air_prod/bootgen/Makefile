@@ -4,10 +4,10 @@ all: BOOT.BIN
 BOOT.BIN: bl31.elf bootgen.bif plm.elf psmfw.elf system.dtb u-boot.elf xilinx_vck190_air.pdi
 	bootgen -arch versal -image bootgen.bif -w -o BOOT.BIN
 
-%.elf: ../petalinux/build/petalinux/images/linux/%.elf
+%.elf: ../petalinux/images/linux/%.elf
 	cp $< $@
 
-%.dtb: ../petalinux/build/petalinux/images/linux/%.dtb
+%.dtb: ../petalinux/images/linux/%.dtb
 	cp $< $@
 
 xilinx_vck190_air.pdi: ../aie_platform/_x/link/vivado/vpl/prj/prj.runs/impl_1/project_1_wrapper.rcdo pdi/boot_image_mb.bif pdi/microblaze_reset.cdo
