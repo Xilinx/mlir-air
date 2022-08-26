@@ -97,14 +97,13 @@ air_module_load_from_file(const char* filename, queue_t *q)
   _air_host_active_herd = {q, nullptr};
   _air_host_active_partition = {q, nullptr};
 
-  //int fd = open("/dev/mem", O_RDWR | O_SYNC);
-  //assert(fd != -1 && "Failed to open /dev/mem");
+  int fd = open("/dev/mem", O_RDWR | O_SYNC);
+  assert(fd != -1 && "Failed to open /dev/mem");
 
-  //_air_host_bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE,
-  //                                      MAP_SHARED, fd,
-  //                                      AIR_VCK190_SHMEM_BASE+0x4000);
-  _air_host_bram_ptr = (uint32_t*)air_mem_alloc(0x200000);
-  _air_host_bram_paddr = air_mem_get_paddr((void*)_air_host_bram_ptr);
+  _air_host_bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE,
+                                        MAP_SHARED, fd,
+                                        AIR_BBUFF_BASE);
+  _air_host_bram_paddr = AIR_BBUFF_BASE;
   assert(_air_host_bram_ptr && "Failed to map scratch bram location");
 
   return (air_module_handle_t)_handle;
@@ -129,7 +128,7 @@ air_module_unload(air_module_handle_t handle)
   }
   if (_air_host_active_module == handle) {
     _air_host_active_module = (air_module_handle_t)nullptr;
-    air_mem_free(_air_host_bram_ptr,0x200000);
+    munmap(_air_host_bram_ptr,0x8000);
     _air_host_bram_paddr = 0;
   }
 

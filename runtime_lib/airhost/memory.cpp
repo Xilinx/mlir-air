@@ -50,36 +50,25 @@ unsigned long get_page_frame_number_of_address(void *addr) {
 
 /* This function is used to get the physical address of a buffer. */
 uint64_t air_mem_get_paddr(void *buff) {
-  //// Getting the page frame the buffer is in
-  //unsigned long page_frame_number = get_page_frame_number_of_address(buff);
-  //
-  //// Getting the offset of the buffer into the page
-  //unsigned int distance_from_page_boundary = (unsigned long)buff % getpagesize();
-  //uint64_t paddr = (uint64_t)(page_frame_number << PAGE_SHIFT) + (uint64_t)distance_from_page_boundary;
-  //
-  //return paddr;
-  return AIR_BBUFF_BASE;
+  // Getting the page frame the buffer is in
+  unsigned long page_frame_number = get_page_frame_number_of_address(buff);
+  
+  // Getting the offset of the buffer into the page
+  unsigned int distance_from_page_boundary = (unsigned long)buff % getpagesize();
+  uint64_t paddr = (uint64_t)(page_frame_number << PAGE_SHIFT) + (uint64_t)distance_from_page_boundary;
+  
+  return paddr;
 }
 
 void* air_mem_alloc(size_t size) {
   void *ptr = NULL;
 
-  int fd = open("/dev/mem", O_RDWR | O_SYNC);
-  if (fd != -1) {
-    ptr = mmap(NULL, 
-               size, 
-               PROT_READ|PROT_WRITE, 
-               MAP_SHARED, 
-               fd, 
-               AIR_BBUFF_BASE);
-  }
-
-  //ptr = (void*)mmap(NULL,
-  //          size,
-  //          PROT_READ | PROT_WRITE,
-  //          MAP_SHARED | MAP_ANONYMOUS | MAP_HUGETLB,
-  //          -1,
-  //          0);
+  ptr = (void*)mmap(NULL,
+            size,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED | MAP_ANONYMOUS | MAP_HUGETLB,
+            -1,
+            0);
 
   if (!ptr) {
     perror("mmap fails. ");
@@ -88,11 +77,11 @@ void* air_mem_alloc(size_t size) {
 
   /* obtain physical memory */
   //printf("obtain physical memory\n");
-  //memset(ptr, 1, size);
+  memset(ptr, 1, size);
 
   /* lock the allocated memory in RAM */
   //printf("lock physical memory\n");
-  //mlock(ptr, size);
+  mlock(ptr, size);
 
   return ptr;
 }
