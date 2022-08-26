@@ -35,7 +35,6 @@ main(int argc, char *argv[])
 
   uint32_t *bram_ptr;
 
-  #define BRAM_ADDR 0x020100000000LL
   #define DMA_COUNT 32
 
   // We're going to stamp over the memories
@@ -53,7 +52,7 @@ main(int argc, char *argv[])
   if (fd == -1)
     return -1;
 
-  bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd,  AIR_VCK190_SHMEM_BASE+0x4000);//BRAM_ADDR+(MB_QUEUE_SIZE*64));
+  bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd,  AIR_BBUFF_BASE);
   
   for (int i=0;i<DMA_COUNT;i++) {
     bram_ptr[i] = i;
@@ -75,48 +74,48 @@ main(int argc, char *argv[])
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_e = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_e, 0, 18, 1, 1, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000, DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt_e, 0, 18, 1, 1, 4, 2, AIR_BBUFF_BASE, DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_f = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_f, 0, 11, 1, 1, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000+(DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt_f, 0, 11, 1, 1, 4, 2, AIR_BBUFF_BASE+(DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
 
   // This completes the copying to the tiles, let's move the pattern back
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_g = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_g, 0, 18, 0, 1, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000+(4*DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt_g, 0, 18, 0, 1, 4, 2, AIR_BBUFF_BASE+(4*DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_h = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_h, 0, 11, 0, 1, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000+(5*DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt_h, 0, 11, 0, 1, 4, 2, AIR_BBUFF_BASE+(5*DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
  
   // This completes packets for first two cores, let's duplicate the effort
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_a = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_a, 0, 18, 1, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000, DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt_a, 0, 18, 1, 0, 4, 2, AIR_BBUFF_BASE, DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_b = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_b, 0, 11, 1, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000+(DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt_b, 0, 11, 1, 0, 4, 2, AIR_BBUFF_BASE+(DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
 
   // This completes the copying to the tiles, let's move the pattern back
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_c = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_c, 0, 18, 0, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000+(2*DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt_c, 0, 18, 0, 0, 4, 2, AIR_BBUFF_BASE+(2*DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_d = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_d, 0, 11, 0, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000+(3*DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt_d, 0, 11, 0, 0, 4, 2, AIR_BBUFF_BASE+(3*DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
   air_queue_dispatch_and_wait(q, wr_idx, pkt_d);
 
   mlir_aie_print_dma_status(xaie, 7, 2);

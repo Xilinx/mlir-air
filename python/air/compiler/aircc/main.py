@@ -154,7 +154,7 @@ def run(mlir_module, args):
               (['-v'] if opts.verbose else []) +
               (['--sysroot', opts.sysroot] if opts.sysroot!="" else []) +
               ['--tmpdir', aiecc_dir] +
-              ['--pathfinder'] +
+              ['--pathfinder', '--aie-generate-xaiev2'] +
               ['--no-xbridge', '--no-xchesscc', aiecc_file])
 
       inc_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.inc'
@@ -175,6 +175,7 @@ def run(mlir_module, args):
       thispath = os.path.dirname(os.path.realpath(__file__))
       cmd += [f'-I{thispath}/../../../../runtime_lib/airhost/include']
       cmd += [f'-I{thispath}/../../../../runtime_lib']
+      cmd += ['-DLIBXAIENGINEV2']
       cmd += ['-DAIE_LIBXAIE_ENABLE', '-fPIC', '-c']
       cmd += ['-o', obj_file, cpp_file]
       do_call(cmd)
@@ -259,7 +260,7 @@ def run_flow(opts):
               (['-v'] if opts.verbose else []) +
               (['--sysroot', opts.sysroot] if opts.sysroot!="" else []) +
               ['--tmpdir', aiecc_dir] +
-              ['--pathfinder'] +
+              ['--pathfinder', '--aie-generate-xaiev2'] +
               ['--no-xbridge', '--no-xchesscc', aiecc_file])
 
       inc_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.inc'
@@ -278,6 +279,7 @@ def run_flow(opts):
       cmd += [f'-I{thispath}/../../../../runtime_lib/airhost/include']
       cmd += [f'-I{thispath}/../../../../runtime_lib']
       cmd += [f'-I{thispath}/../../../../../aie/runtime_lib']
+      cmd += ['-DLIBXAIENGINEV2']
       cmd += ['-DAIE_LIBXAIE_ENABLE', '-fPIC', '-c']
       cmd += ['-o', obj_file, cpp_file]
       do_call(cmd)

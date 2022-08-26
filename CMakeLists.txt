@@ -118,7 +118,7 @@ ExternalProject_Add(air_runtime_lib
 		-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
 		-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
 		-Dpybind11_DIR=${pybind11_DIR}
-		-DLibXAIE_ROOT=${VitisSysroot}/opt/xaiengine
+		-DLibXAIE_ROOT=${VitisSysroot}/opt/xaienginev2
 		${ARM_TOOLCHAIN_OPT}
 	BUILD_ALWAYS true
 	STEP_TARGETS clean build install test

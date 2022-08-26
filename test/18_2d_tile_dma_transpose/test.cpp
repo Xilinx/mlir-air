@@ -45,7 +45,7 @@ main(int argc, char *argv[])
 
   uint32_t *bram_ptr;
 
-  #define BRAM_ADDR 0x4000+AIR_VCK190_SHMEM_BASE
+  #define BRAM_ADDR AIR_BBUFF_BASE
   #define DMA_COUNT 32
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);

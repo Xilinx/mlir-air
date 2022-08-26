@@ -35,7 +35,7 @@ main(int argc, char *argv[])
 
   uint32_t *bram_ptr;
 
-  #define BRAM_ADDR AIR_VCK190_SHMEM_BASE + 0x4000
+  #define BRAM_ADDR AIR_BBUFF_BASE
   #define DMA_COUNT 32
 
   // We're going to stamp over the memories
