@@ -92,7 +92,7 @@ air_module_unload(air_module_handle_t handle)
 
   if (auto module_desc = air_module_get_desc(handle)) {
     for (int i=0; i<module_desc->partition_length; i++) {
-      for (int j=0; i<module_desc->partition_descs[i]->herd_length; j++) {
+      for (int j=0; j<module_desc->partition_descs[i]->herd_length; j++) {
         auto herd_desc = module_desc->partition_descs[i]->herd_descs[j];
         if (herd_desc == _air_host_active_herd.herd_desc) {
           _air_host_active_herd = {nullptr, nullptr};
@@ -196,7 +196,7 @@ air_herd_load(const char *name) {
     if (auto module_desc = air_module_get_desc(_air_host_active_module)) {
       for (int i = 0; !loaded && i < module_desc->partition_length; i++) {
         for (int j = 0;
-             !loaded && i < module_desc->partition_descs[i]->herd_length; j++) {
+             !loaded && j < module_desc->partition_descs[i]->herd_length; j++) {
           auto herd_desc = module_desc->partition_descs[i]->herd_descs[j];
           // use the partition of the first herd with a matching name
           if (!strncmp(name, herd_desc->name, herd_desc->name_length)) {
