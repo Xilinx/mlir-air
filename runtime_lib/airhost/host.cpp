@@ -154,7 +154,7 @@ air_module_get_desc(air_module_handle_t handle)
 }
 
 uint64_t air_partition_load(const char *name) {
-  printf("load partition: '%s'\n", name);
+
   auto partition_desc = air_partition_get_desc(_air_host_active_module, name);
   if (!partition_desc) {
     printf("Failed to locate partition descriptor '%s'!\n", name);
@@ -167,7 +167,7 @@ uint64_t air_partition_load(const char *name) {
       (void *)_air_host_active_module, func_name.c_str());
 
   if (mlir) {
-    printf("configuring partition: '%s'\n", partition_name.c_str());
+    // printf("configuring partition: '%s'\n", partition_name.c_str());
     assert(mlir->configure_cores);
     assert(mlir->configure_switchboxes);
     assert(mlir->initialize_locks);
