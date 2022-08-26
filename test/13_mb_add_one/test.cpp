@@ -37,13 +37,13 @@ main(int argc, char *argv[])
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd != -1) {
-    bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_BBUFF_BASE;
+    bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_BBUFF_BASE);
   }
   if (bram_ptr) {
     for (int i=0; i<DMA_COUNT; i++) {
       bram_ptr[i] = i+1;
       bram_ptr[DMA_COUNT+i] = 0xdeface;
-      printf("bbuf %p 0x%lx %llx\n", &bram_ptr[i], bounce_buff + 4*i, bram_ptr[i]);
+      printf("bbuf %p 0x%lx %llx\n", &bram_ptr[i], AIR_BBUFF_BASE + 4*i, bram_ptr[i]);
     }
   } else return 1;
 
