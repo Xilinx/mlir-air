@@ -28,9 +28,9 @@
 // CHECK-LABEL:   llvm.mlir.global internal constant @__air_partition_herd_descriptors() : !llvm.array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>> {
 // CHECK:           %[[VAL_0:.*]] = llvm.mlir.undef : !llvm.array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>
 // CHECK:           %[[VAL_1:.*]] = llvm.mlir.addressof @__air_herd_descriptor : !llvm.ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>
-// CHECK:           %[[VAL_2:.*]] = llvm.insertvalue %[[VAL_1]], %[[VAL_0]][0 : i32] : !llvm.array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>
+// CHECK:           %[[VAL_2:.*]] = llvm.insertvalue %[[VAL_1]], %[[VAL_0]][0] : !llvm.array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>
 // CHECK:           %[[VAL_3:.*]] = llvm.mlir.addressof @__air_herd_descriptor_1 : !llvm.ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>
-// CHECK:           %[[VAL_4:.*]] = llvm.insertvalue %[[VAL_3]], %[[VAL_2]][1 : i32] : !llvm.array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>
+// CHECK:           %[[VAL_4:.*]] = llvm.insertvalue %[[VAL_3]], %[[VAL_2]][1] : !llvm.array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>
 // CHECK:           llvm.return %[[VAL_4]] : !llvm.array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>
 // CHECK:         }
 
@@ -38,8 +38,8 @@
 // CHECK:           %[[VAL_0:.*]] = llvm.mlir.undef : !llvm.struct<(i64, ptr<array<1 x ptr<struct<(i64, ptr<i8>, i64, ptr<array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>>)>>>>)>
 // CHECK:           %[[VAL_1:.*]] = llvm.mlir.constant(1 : i64) : i64
 // CHECK:           %[[VAL_2:.*]] = llvm.mlir.addressof @__air_module_partition_descriptors : !llvm.ptr<array<1 x ptr<struct<(i64, ptr<i8>, i64, ptr<array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>>)>>>>
-// CHECK:           %[[VAL_3:.*]] = llvm.insertvalue %[[VAL_1]], %[[VAL_0]][0 : i32] : !llvm.struct<(i64, ptr<array<1 x ptr<struct<(i64, ptr<i8>, i64, ptr<array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>>)>>>>)>
-// CHECK:           %[[VAL_4:.*]] = llvm.insertvalue %[[VAL_2]], %[[VAL_3]][1 : i32] : !llvm.struct<(i64, ptr<array<1 x ptr<struct<(i64, ptr<i8>, i64, ptr<array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>>)>>>>)>
+// CHECK:           %[[VAL_3:.*]] = llvm.insertvalue %[[VAL_1]], %[[VAL_0]][0] : !llvm.struct<(i64, ptr<array<1 x ptr<struct<(i64, ptr<i8>, i64, ptr<array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>>)>>>>)>
+// CHECK:           %[[VAL_4:.*]] = llvm.insertvalue %[[VAL_2]], %[[VAL_3]][1] : !llvm.struct<(i64, ptr<array<1 x ptr<struct<(i64, ptr<i8>, i64, ptr<array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>>)>>>>)>
 // CHECK:           llvm.return %[[VAL_4]] : !llvm.struct<(i64, ptr<array<1 x ptr<struct<(i64, ptr<i8>, i64, ptr<array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>>)>>>>)>
 // CHECK:         }
 module {

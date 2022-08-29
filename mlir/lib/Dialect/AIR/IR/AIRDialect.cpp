@@ -92,14 +92,14 @@ void addAsyncDependency(Operation *op, Value token) {
     return;
   auto attrName =
       OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
-  auto sizeAttr = op->template getAttrOfType<DenseIntElementsAttr>(attrName);
+  auto sizeAttr = op->template getAttrOfType<DenseI32ArrayAttr>(attrName);
   if (!sizeAttr)
     return; // Async dependencies is the only variadic operand.
   SmallVector<int32_t, 8> sizes;
-  for (auto size : sizeAttr.getValues<APInt>())
-    sizes.push_back(size.getSExtValue());
+  for (auto size : sizeAttr.asArrayRef())
+    sizes.push_back(size);
   ++sizes.front();
-  op->setAttr(attrName, Builder(op->getContext()).getI32VectorAttr(sizes));
+  op->setAttr(attrName, Builder(op->getContext()).getDenseI32ArrayAttr(sizes));
 }
 
 void eraseAsyncDependency(Operation *op, unsigned index) {
@@ -109,14 +109,14 @@ void eraseAsyncDependency(Operation *op, unsigned index) {
     return;
   auto attrName =
       OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
-  auto sizeAttr = op->template getAttrOfType<DenseIntElementsAttr>(attrName);
+  auto sizeAttr = op->template getAttrOfType<DenseI32ArrayAttr>(attrName);
   if (!sizeAttr)
     return; // Async dependencies is the only variadic operand.
   SmallVector<int32_t, 8> sizes;
-  for (auto size : sizeAttr.getValues<APInt>())
-    sizes.push_back(size.getSExtValue());
+  for (auto size : sizeAttr.asArrayRef())
+    sizes.push_back(size);
   --sizes.front();
-  op->setAttr(attrName, Builder(op->getContext()).getI32VectorAttr(sizes));
+  op->setAttr(attrName, Builder(op->getContext()).getDenseI32ArrayAttr(sizes));
 }
 
 static ParseResult parseAsyncDependencies(
@@ -167,7 +167,7 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
   segmentSizes[1] = sizes.size();
   segmentSizes.back() = static_cast<int32_t>(launchOperands.size());
   result.addAttribute(getOperandSegmentSizeAttr(),
-                      builder.getI32VectorAttr(segmentSizes));
+                      builder.getDenseI32ArrayAttr(segmentSizes));
 
   Region *r = result.addRegion();
   Block *body = new Block();
@@ -326,7 +326,7 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
   ensureTerminator(*body, parser.getBuilder(), result.location);
 
-  if (!regionResult.hasValue()) {
+  if (!regionResult.has_value()) {
     if (!nameAttr)
       return failure();
     for (auto ta : tileArgs)
@@ -337,8 +337,9 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   segmentSizes.front() = asyncDependencies.size();
   segmentSizes[1] = tileSize.size();
   segmentSizes.back() = kernelOperands.size();
-  result.addAttribute(OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr(),
-                      parser.getBuilder().getI32VectorAttr(segmentSizes));
+  result.addAttribute(
+      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr(),
+      parser.getBuilder().getDenseI32ArrayAttr(segmentSizes));
   return success();
 }
 
@@ -383,9 +384,9 @@ BlockArgument LaunchOp::getKernelArgument(unsigned i) {
 
 unsigned LaunchOp::getNumDims() {
   auto size_attr_name = OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
-  auto size_attr = (*this)->getAttrOfType<DenseIntElementsAttr>(size_attr_name);
-  SmallVector<APInt, 4> segment_sizes{size_attr.begin(), size_attr.end()};
-  return segment_sizes[1].getZExtValue();
+  auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
+  auto segment_sizes = size_attr.asArrayRef();
+  return segment_sizes[1];
 }
 
 //
@@ -408,7 +409,7 @@ void PartitionOp::build(OpBuilder &builder, OperationState &result,
   segmentSizes[1] = sizes.size();
   segmentSizes.back() = static_cast<int32_t>(partitionOperands.size());
   result.addAttribute(getOperandSegmentSizeAttr(),
-                      builder.getI32VectorAttr(segmentSizes));
+                      builder.getDenseI32ArrayAttr(segmentSizes));
 
   Region *r = result.addRegion();
   Block *body = new Block();
@@ -571,7 +572,7 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
   auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
   ensureTerminator(*body, parser.getBuilder(), result.location);
 
-  if (!regionResult.hasValue()) {
+  if (!regionResult.has_value()) {
     if (!nameAttr)
       return failure();
     for (auto ta : tileArgs)
@@ -582,8 +583,9 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
   segmentSizes.front() = asyncDependencies.size();
   segmentSizes[1] = tileSize.size();
   segmentSizes.back() = kernelOperands.size();
-  result.addAttribute(OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr(),
-                      parser.getBuilder().getI32VectorAttr(segmentSizes));
+  result.addAttribute(
+      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr(),
+      parser.getBuilder().getDenseI32ArrayAttr(segmentSizes));
   return success();
 }
 
@@ -628,13 +630,13 @@ BlockArgument PartitionOp::getKernelArgument(unsigned i) {
 
 unsigned PartitionOp::getNumDims() {
   auto size_attr_name = OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
-  auto size_attr = (*this)->getAttrOfType<DenseIntElementsAttr>(size_attr_name);
-  SmallVector<APInt, 4> segment_sizes{size_attr.begin(), size_attr.end()};
-  return segment_sizes[1].getZExtValue();
+  auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
+  auto segment_sizes = size_attr.asArrayRef();
+  return segment_sizes[1];
 }
 
 //
-// LaunchHerdOp
+// HerdOp
 //
 
 void HerdOp::build(OpBuilder &builder, OperationState &result,
@@ -652,7 +654,7 @@ void HerdOp::build(OpBuilder &builder, OperationState &result,
   segmentSizes[1] = sizes.size();
   segmentSizes.back() = static_cast<int32_t>(launchOperands.size());
   result.addAttribute(getOperandSegmentSizeAttr(),
-                      builder.getI32VectorAttr(segmentSizes));
+                      builder.getDenseI32ArrayAttr(segmentSizes));
 
   Region *r = result.addRegion();
   Block *body = new Block();
@@ -814,7 +816,7 @@ ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
   auto regionResult = parser.parseOptionalRegion(*body, tileArgs);
   ensureTerminator(*body, parser.getBuilder(), result.location);
 
-  if (!regionResult.hasValue()) {
+  if (!regionResult.has_value()) {
     if (!nameAttr)
       return failure();
     for (auto ta : tileArgs)
@@ -825,8 +827,9 @@ ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
   segmentSizes.front() = asyncDependencies.size();
   segmentSizes[1] = tileSize.size();
   segmentSizes.back() = kernelOperands.size();
-  result.addAttribute(OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr(),
-                      parser.getBuilder().getI32VectorAttr(segmentSizes));
+  result.addAttribute(
+      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr(),
+      parser.getBuilder().getDenseI32ArrayAttr(segmentSizes));
   return success();
 }
 
@@ -870,10 +873,11 @@ BlockArgument HerdOp::getKernelArgument(unsigned i) {
 }
 
 unsigned HerdOp::getNumDims() {
-  auto size_attr_name = OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
-  auto size_attr = (*this)->getAttrOfType<DenseIntElementsAttr>(size_attr_name);
-  SmallVector<APInt, 4> segment_sizes{size_attr.begin(), size_attr.end()};
-  return segment_sizes[1].getZExtValue();
+  auto size_attr_name =
+      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
+  auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
+  auto segment_sizes = size_attr.asArrayRef();
+  return segment_sizes[1];
 }
 
 //

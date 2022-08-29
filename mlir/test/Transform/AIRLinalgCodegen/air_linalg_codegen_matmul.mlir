@@ -9,9 +9,9 @@
 // CHECK:           %[[VAL_2:.*]] = bufferization.to_memref %[[VAL_0]] : memref<128x128xi32>
 // CHECK:           %[[VAL_3:.*]] = bufferization.to_memref %[[VAL_1]] : memref<128x128xi32>
 // CHECK:           %[[VAL_4:.*]] = memref.alloc() : memref<128x128xi32>
-// CHECK:           %[[VAL_5:.*]] = arith.constant 32 : index
-// CHECK:           %[[VAL_6:.*]] = arith.constant 128 : index
 // CHECK:           %[[VAL_7:.*]] = arith.constant 0 : index
+// CHECK:           %[[VAL_6:.*]] = arith.constant 128 : index
+// CHECK:           %[[VAL_5:.*]] = arith.constant 32 : index
 // CHECK:           scf.parallel (%[[VAL_8:.*]], %[[VAL_9:.*]]) = (%[[VAL_7]], %[[VAL_7]]) to (%[[VAL_6]], %[[VAL_6]]) step (%[[VAL_5]], %[[VAL_5]]) {
 // CHECK:             scf.for %[[VAL_10:.*]] = %[[VAL_7]] to %[[VAL_6]] step %[[VAL_5]] {
 // CHECK:               %[[VAL_11:.*]] = memref.subview %[[VAL_2]]{{\[}}%[[VAL_8]], %[[VAL_10]]] [32, 32] [1, 1] : memref<128x128xi32> to memref<32x32xi32, #map>

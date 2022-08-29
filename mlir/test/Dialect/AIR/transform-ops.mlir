@@ -24,7 +24,7 @@ transform.with_pdl_patterns {
     rewrite %op with "transform.dialect"
   }
 
-  sequence %arg0 {
+  sequence %arg0 failures(propagate) {
   ^bb1(%arg1: !pdl.operation):
     %0 = pdl_match @match_addi in %arg1
     // CHECK: = transform.air.get_partition_for

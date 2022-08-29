@@ -21,7 +21,7 @@ module  {
       %c0 = arith.constant 0 : index
       %c1024 = arith.constant 1024 : index
 
-      air.pipeline {direction = "horiz"} {
+      air.pipeline attributes {direction = "horiz"} {
         %output1 = air.pipeline.stage {
           %a = memref.alloc() : memref<1024xf32, 2>
           %b = memref.alloc() : memref<1024xf32, 2>

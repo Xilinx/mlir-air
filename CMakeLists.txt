@@ -25,7 +25,7 @@ endif()
 
 project(AIR LANGUAGES CXX C)
 
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 
 set(PEANO_INSTALL_DIR "<unset>" CACHE STRING "Location of Peano compiler")

@@ -164,13 +164,13 @@ bool checkInvarianceOfNestedIfOps(Operation *op, AffineForOp forOp,
   assert(isa<AffineIfOp>(op));
   auto ifOp = cast<AffineIfOp>(op);
 
-  if (!areAllOpsInTheBlockListInvariant(ifOp.thenRegion(), forOp, opsWithUsers,
-                                        opsToHoist)) {
+  if (!areAllOpsInTheBlockListInvariant(ifOp.getThenRegion(), forOp,
+                                        opsWithUsers, opsToHoist)) {
     return false;
   }
 
-  if (!areAllOpsInTheBlockListInvariant(ifOp.elseRegion(), forOp, opsWithUsers,
-                                        opsToHoist)) {
+  if (!areAllOpsInTheBlockListInvariant(ifOp.getElseRegion(), forOp,
+                                        opsWithUsers, opsToHoist)) {
     return false;
   }
 

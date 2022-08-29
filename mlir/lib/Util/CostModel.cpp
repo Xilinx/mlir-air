@@ -50,25 +50,35 @@ CostModel::getLinalgOpCounts(OpCountMap &map, linalg::LinalgOp op) {
   OpBuilder b(op);
   auto loc = op.getLoc();
 
-  // use getStaticLoopRanges instead?
   auto allShapeSizes = op.createFlatListOfOperandDims(b, loc);
   AffineMap shapeSizesToLoopsMap = op.getShapesToLoopsMap();
   if (!shapeSizesToLoopsMap)
     return;
 
-  auto shapeSizes =
-      applyMapToValues(b, loc, shapeSizesToLoopsMap, allShapeSizes);
+  SmallVector<OpFoldResult> shapeSizes =
+      makeComposedFoldedMultiResultAffineApply(b, loc, shapeSizesToLoopsMap,
+                                               allShapeSizes);
   int64_t iters = 1;
   int64_t reads = 0;
   int64_t writes = 0;
   uint64_t footprint = 0;
   for (auto size : shapeSizes) {
-    auto c = dyn_cast<arith::ConstantIndexOp>(size.getDefiningOp());
-    if (!c) {
-      LLVM_DEBUG(llvm::outs() << "Found non-constant dim!\n");
-      return;
+    if (auto v = size.dyn_cast<Value>()) {
+      auto c = dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp());
+      if (!c) {
+        LLVM_DEBUG(llvm::outs() << "Found non-constant dim!\n");
+        return;
+      }
+      iters *= c.value();
+    } else {
+      auto a = size.dyn_cast<Attribute>();
+      auto c = a.dyn_cast<IntegerAttr>();
+      if (!c) {
+        LLVM_DEBUG(llvm::outs() << "unhandled addr!\n");
+        return;
+      }
+      iters *= c.getInt();
     }
-    iters *= c.value();
   }
   Region &region = op.getOperation()->getRegion(0);
   region.walk([&](Operation *op) {

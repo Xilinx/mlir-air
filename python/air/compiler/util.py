@@ -2,7 +2,6 @@
 
 import air.mlir.ir
 import air.mlir.passmanager
-import air.mlir.all_passes_registration
 import air.mlir._mlir_libs._airMlir
 import air.mlir._mlir_libs._airMlir.runner as runner
 

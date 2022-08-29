@@ -18,7 +18,6 @@ declare_mlir_python_sources(AirPythonSources)
 declare_mlir_python_sources(AirPythonExtensions)
 
 declare_mlir_python_sources(AirPythonSources.Dialects
-  ROOT_DIR "${AIR_PYTHON_ROOT_DIR}"
   ADD_TO_PARENT AirPythonSources
 )
 
@@ -32,12 +31,6 @@ declare_mlir_dialect_python_bindings(
   DIALECT_NAME air
 )
 
-include_directories(
-  ${AIE_INCLUDE_DIRS}/../runtime_lib
-  ${CMAKE_CURRENT_SOURCE_DIR}/../runtime_lib/airhost/include
-)
-link_directories(${CMAKE_CURRENT_BINARY_DIR}/../runtime_lib/airhost)
-
 ################################################################################
 # Extensions
 ################################################################################
@@ -45,7 +38,7 @@ link_directories(${CMAKE_CURRENT_BINARY_DIR}/../runtime_lib/airhost)
 declare_mlir_python_extension(AirPythonExtensions.MLIR
   MODULE_NAME _airMlir
   ADD_TO_PARENT AirPythonExtensions
-  ROOT_DIR ../mlir/python
+  ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../mlir/python
   SOURCES
     AIRMLIRModule.cpp
     AIRRunnerModule.cpp
@@ -58,7 +51,7 @@ declare_mlir_python_extension(AirPythonExtensions.MLIR
 declare_mlir_python_extension(AirPythonExtensions.AIRRt
   MODULE_NAME _airRt
   ADD_TO_PARENT AirPythonExtensions
-  ROOT_DIR ../runtime_lib/python
+  ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../runtime_lib/python
   SOURCES
     Module.cpp
     LibAirHostModule.cpp
@@ -77,7 +70,7 @@ declare_mlir_python_extension(AirPythonExtensions.AIRRt
 set(_source_components
   MLIRPythonSources
   MLIRPythonExtension.Core
-  MLIRPythonExtension.AllPassesRegistration
+  MLIRPythonExtension.RegisterEverything
   MLIRPythonExtension.ExecutionEngine
   AirPythonSources
   AirPythonExtensions
@@ -85,7 +78,7 @@ set(_source_components
 
 add_mlir_python_common_capi_library(AirAggregateCAPI
   INSTALL_COMPONENT AirPythonModules
-  INSTALL_DESTINATION ${AIR_PYTHON_INSTALL_DIR}/air/mlir/_mlir_libs
+  INSTALL_DESTINATION python/air/mlir/_mlir_libs
   OUTPUT_DIRECTORY "${AIR_PYTHON_PACKAGES_DIR}/air/mlir/_mlir_libs"
   RELATIVE_INSTALL_ROOT "../../../.."
   DECLARED_SOURCES ${_source_components}
@@ -93,13 +86,18 @@ add_mlir_python_common_capi_library(AirAggregateCAPI
 
 add_mlir_python_modules(AirPythonModules
   ROOT_PREFIX "${AIR_PYTHON_PACKAGES_DIR}/air/mlir"
-  INSTALL_PREFIX "${AIR_PYTHON_INSTALL_DIR}/air/mlir"
+  INSTALL_PREFIX "python/air/mlir"
   DECLARED_SOURCES ${_source_components}
   COMMON_CAPI_LINK_LIBS
     AirAggregateCAPI
     AIRCAPI
   )
 
+  include_directories(
+    ${AIE_INCLUDE_DIRS}/../runtime_lib
+    ${CMAKE_CURRENT_SOURCE_DIR}/../runtime_lib/airhost/include
+  )
+  
 add_dependencies(AirPythonModules AirBackendPythonModules)
 add_subdirectory(air/backend)
 

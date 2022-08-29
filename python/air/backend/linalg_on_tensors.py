@@ -6,10 +6,6 @@ import torch_mlir.passmanager
 import air.mlir.ir
 import air.mlir.passmanager
 
-# Imported for side effects.
-import torch_mlir.all_passes_registration
-import air.mlir.all_passes_registration
-
 from torch_mlir_e2e_test.linalg_on_tensors_backends.refbackend import RefBackendLinalgOnTensorsBackend
 
 from .abc import AirBackend

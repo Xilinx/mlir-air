@@ -214,7 +214,7 @@ def air_HerdPipelineOp : air_Op<"pipeline", [HasParent<"HerdOp">,
   let regions = (region AnyRegion:$body);
   let hasVerifier = 1;
   let assemblyFormat = [{
-    attr-dict $body
+    attr-dict-with-keyword $body
   }];
   let extraClassDeclaration = [{
     // Return a vector of the air.pipeline.stage ops for this pipeline
@@ -387,8 +387,8 @@ def air_DeallocOp: air_Op<"dealloc", [air_AsyncOpInterface]> {
 
 def air_ChannelOp : air_Op<"channel", []>,
     Arguments<(ins FlatSymbolRefAttr:$name, 
-        Confined<I32Attr, [IntMinValue<0>]>:$countx,
-        Confined<I32Attr, [IntMinValue<0>]>:$county)> {
+        ConfinedAttr<I32Attr, [IntMinValue<0>]>:$countx,
+        ConfinedAttr<I32Attr, [IntMinValue<0>]>:$county)> {
   let assemblyFormat = [{
     $name `{` `count_x` `=` $countx `,` `count_y` `=` $county `}` attr-dict 
   }];

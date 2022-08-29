@@ -248,8 +248,8 @@ public:
                                 PatternRewriter &rewriter) const override {
     if (op.getNumDims() == 2) {
       auto loc = op.getLoc();
-      auto ub0 = op.upperBoundsMap().getResult(0).cast<AffineConstantExpr>();
-      auto ub1 = op.upperBoundsMap().getResult(1).cast<AffineConstantExpr>();
+      auto ub0 = op.getUpperBoundsMap().getResult(0).cast<AffineConstantExpr>();
+      auto ub1 = op.getUpperBoundsMap().getResult(1).cast<AffineConstantExpr>();
       SmallVector<Value, 4> args;
       SmallVector<Value, 4> constants;
       llvm::SetVector<Value> region_args;

@@ -151,7 +151,7 @@ createPartitionDescriptor(OpBuilder builder, ModuleOp module,
     for (int i=0,e=herd_descs.size(); i<e; i++) {
       auto a = builder.create<LLVM::AddressOfOp>(loc, herd_descs[i]);
       data = builder.create<LLVM::InsertValueOp>(
-              loc, data, a, builder.getI32ArrayAttr({i}));
+          loc, data, a, builder.getDenseI64ArrayAttr({i}));
     }
     builder.create<LLVM::ReturnOp>(loc, data);
   }
@@ -188,16 +188,16 @@ createPartitionDescriptor(OpBuilder builder, ModuleOp module,
     auto herd_descs_global_addr = builder.create<LLVM::AddressOfOp>(loc, herd_descs_global);
 
     desc = builder.create<LLVM::InsertValueOp>(loc, desc, partitionNameLen,
-                                               builder.getI32ArrayAttr(0));
+                                               builder.getDenseI64ArrayAttr(0));
 
     desc = builder.create<LLVM::InsertValueOp>(loc, desc, partitionNamePtr,
-                                               builder.getI32ArrayAttr(1));
+                                               builder.getDenseI64ArrayAttr(1));
 
     desc = builder.create<LLVM::InsertValueOp>(loc, desc, herd_descs_len,
-                                               builder.getI32ArrayAttr(2));
+                                               builder.getDenseI64ArrayAttr(2));
 
     desc = builder.create<LLVM::InsertValueOp>(
-        loc, desc, herd_descs_global_addr, builder.getI32ArrayAttr(3));
+        loc, desc, herd_descs_global_addr, builder.getDenseI64ArrayAttr(3));
 
     builder.create<LLVM::ReturnOp>(loc, desc);
   }
@@ -228,8 +228,8 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
     Value data = builder.create<LLVM::UndefOp>(loc, arrayTy);
     for (int i = 0, e = partition_descs.size(); i < e; i++) {
       auto a = builder.create<LLVM::AddressOfOp>(loc, partition_descs[i]);
-      data = builder.create<LLVM::InsertValueOp>(loc, data, a,
-                                                 builder.getI32ArrayAttr({i}));
+      data = builder.create<LLVM::InsertValueOp>(
+          loc, data, a, builder.getDenseI64ArrayAttr({i}));
     }
     builder.create<LLVM::ReturnOp>(loc, data);
   }
@@ -255,10 +255,11 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
         builder.create<LLVM::AddressOfOp>(loc, partition_descs_global);
 
     desc = builder.create<LLVM::InsertValueOp>(loc, desc, partition_descs_len,
-                                               builder.getI32ArrayAttr(0));
+                                               builder.getDenseI64ArrayAttr(0));
 
-    desc = builder.create<LLVM::InsertValueOp>(
-        loc, desc, partition_descs_global_addr, builder.getI32ArrayAttr(1));
+    desc = builder.create<LLVM::InsertValueOp>(loc, desc,
+                                               partition_descs_global_addr,
+                                               builder.getDenseI64ArrayAttr(1));
 
     builder.create<LLVM::ReturnOp>(loc, desc);
   }
@@ -304,13 +305,13 @@ LLVM::GlobalOp createHerdDescriptor(OpBuilder builder, ModuleOp module,
       ValueRange({c0, c0}));
 
   desc = builder.create<LLVM::InsertValueOp>(loc, desc, herdNameLen,
-                                              builder.getI64ArrayAttr({0}));
+                                             builder.getDenseI64ArrayAttr({0}));
   desc = builder.create<LLVM::InsertValueOp>(loc, desc, herdNamePtr,
-                                              builder.getI64ArrayAttr({1}));
+                                             builder.getDenseI64ArrayAttr({1}));
 
   Value shimDescPtr = builder.create<LLVM::AddressOfOp>(loc, shim_desc);
   desc = builder.create<LLVM::InsertValueOp>(loc, desc, shimDescPtr,
-                                              builder.getI64ArrayAttr({2}));
+                                             builder.getDenseI64ArrayAttr({2}));
 
   builder.create<LLVM::ReturnOp>(loc, desc);
   return descGlobal;
@@ -343,8 +344,9 @@ LLVM::GlobalOp createShimDescriptor(OpBuilder builder,
         for (int k=0; k<8; k++) {
           auto c = builder.create<LLVM::ConstantOp>(loc, IntegerType::get(ctx, 64),
                                                     builder.getI64IntegerAttr(cols[i][j][k]));
-          data = builder.create<LLVM::InsertValueOp>(loc, data, c,
-                                                      builder.getI64ArrayAttr({i*8*8+j*8+k}));
+          data = builder.create<LLVM::InsertValueOp>(
+              loc, data, c,
+              builder.getDenseI64ArrayAttr({i * 8 * 8 + j * 8 + k}));
         }
       }
     }
@@ -368,8 +370,9 @@ LLVM::GlobalOp createShimDescriptor(OpBuilder builder,
         for (int k=0; k<8; k++) {
           auto c = builder.create<LLVM::ConstantOp>(loc, IntegerType::get(ctx, 64),
                                                     builder.getI32IntegerAttr(chans[i][j][k]));
-          data = builder.create<LLVM::InsertValueOp>(loc, data, c,
-                                                      builder.getI32ArrayAttr({i*8*8+j*8+k}));
+          data = builder.create<LLVM::InsertValueOp>(
+              loc, data, c,
+              builder.getDenseI64ArrayAttr({i * 8 * 8 + j * 8 + k}));
         }
       }
     }
@@ -391,12 +394,12 @@ LLVM::GlobalOp createShimDescriptor(OpBuilder builder,
     Value desc = builder.create<LLVM::UndefOp>(loc, descTy);
 
     Value locArrayPtr = builder.create<LLVM::AddressOfOp>(loc, locArrayGlobal);
-    desc = builder.create<LLVM::InsertValueOp>(loc, desc, locArrayPtr,
-                                                builder.getI64ArrayAttr({0}));
+    desc = builder.create<LLVM::InsertValueOp>(
+        loc, desc, locArrayPtr, builder.getDenseI64ArrayAttr({0}));
 
     Value chanArrayPtr = builder.create<LLVM::AddressOfOp>(loc, chanArrayGlobal);
-    desc = builder.create<LLVM::InsertValueOp>(loc, desc, chanArrayPtr,
-                                                builder.getI64ArrayAttr({1}));
+    desc = builder.create<LLVM::InsertValueOp>(
+        loc, desc, chanArrayPtr, builder.getDenseI64ArrayAttr({1}));
 
     builder.create<LLVM::ReturnOp>(loc, desc);
   }
@@ -780,11 +783,11 @@ public:
   matchAndRewrite(memref::DeallocOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto memrefTy = op.memref().getType().cast<MemRefType>();
+    auto memrefTy = op.getMemref().getType().cast<MemRefType>();
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
-    rewriter.create<memref::DeallocOp>(op.getLoc(), adaptor.memref());
+    rewriter.create<memref::DeallocOp>(op.getLoc(), adaptor.getMemref());
     rewriter.eraseOp(op);
     return success();
   }
@@ -798,12 +801,12 @@ public:
   matchAndRewrite(AffineStoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto memrefTy = op.memref().getType().cast<MemRefType>();
+    auto memrefTy = op.getMemref().getType().cast<MemRefType>();
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
-    rewriter.create<AffineStoreOp>(op.getLoc(), adaptor.value(),
-                                   adaptor.memref(), adaptor.indices());
+    rewriter.create<AffineStoreOp>(op.getLoc(), adaptor.getValue(),
+                                   adaptor.getMemref(), adaptor.getIndices());
     rewriter.eraseOp(op);
     return success();
   }
@@ -817,13 +820,12 @@ public:
   matchAndRewrite(memref::LoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto memrefTy = op.memref().getType().cast<MemRefType>();
+    auto memrefTy = op.getMemref().getType().cast<MemRefType>();
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
-    // auto ty = adaptor.memref().getType();
-    auto load = rewriter.create<memref::LoadOp>(op.getLoc(), adaptor.memref(),
-                                              adaptor.indices());
+    auto load = rewriter.create<memref::LoadOp>(
+        op.getLoc(), adaptor.getMemref(), adaptor.getIndices());
     rewriter.replaceOp(op, load.getResult());
     return success();
   }
@@ -837,12 +839,12 @@ public:
   matchAndRewrite(memref::StoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto memrefTy = op.memref().getType().cast<MemRefType>();
+    auto memrefTy = op.getMemref().getType().cast<MemRefType>();
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
     rewriter.create<memref::StoreOp>(op.getLoc(), adaptor.value(),
-                                   adaptor.memref(), adaptor.indices());
+                                     adaptor.getMemref(), adaptor.getIndices());
     rewriter.eraseOp(op);
     return success();
   }
@@ -856,13 +858,12 @@ public:
   matchAndRewrite(AffineLoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
-    auto memrefTy = op.memref().getType().cast<MemRefType>();
+    auto memrefTy = op.getMemref().getType().cast<MemRefType>();
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
-    // auto ty = adaptor.memref().getType();
-    auto load = rewriter.create<AffineLoadOp>(op.getLoc(), adaptor.memref(),
-                                              adaptor.indices());
+    auto load = rewriter.create<AffineLoadOp>(op.getLoc(), adaptor.getMemref(),
+                                              adaptor.getIndices());
     rewriter.replaceOp(op, load.getResult());
     return success();
   }
@@ -1061,28 +1062,33 @@ public:
     });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-      return (op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt() ==
-              0);
+      return (
+          op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() ==
+          0);
     });
 
     target.addDynamicallyLegalOp<AffineStoreOp>([&](AffineStoreOp op) {
-      return (op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
-              (int)xilinx::air::MemorySpace::L1);
+      return (
+          op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
+          (int)xilinx::air::MemorySpace::L1);
     });
 
     target.addDynamicallyLegalOp<AffineLoadOp>([&](AffineLoadOp op) {
-      return (op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
-              (int)xilinx::air::MemorySpace::L1);
+      return (
+          op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
+          (int)xilinx::air::MemorySpace::L1);
     });
 
     target.addDynamicallyLegalOp<memref::StoreOp>([&](memref::StoreOp op) {
-      return (op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
-              (int)xilinx::air::MemorySpace::L1);
+      return (
+          op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
+          (int)xilinx::air::MemorySpace::L1);
     });
 
     target.addDynamicallyLegalOp<memref::LoadOp>([&](memref::LoadOp op) {
-      return (op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
-              (int)xilinx::air::MemorySpace::L1);
+      return (
+          op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
+          (int)xilinx::air::MemorySpace::L1);
     });
 
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {

@@ -6,8 +6,8 @@ module  {
     %c4 = arith.constant 4 : index
     air.herd tile (%arg1, %arg2) in (%arg3=%c4, %arg4=%c4) args(%arg5=%arg0, %arg6=%arg0) : i32,i32 {
       %c1_i32 = arith.constant 1 : i32
-      // CHECK: air.pipeline {direction = "horiz"} {
-      air.pipeline {direction = "horiz"} {
+      // CHECK: air.pipeline attributes {direction = "horiz"} {
+      air.pipeline attributes {direction = "horiz"} {
         // CHECK: %{{.*}} = air.pipeline.stage args(%{{.*}}=%{{.*}}) : i32 {
         // CHECK: air.pipeline.yield %{{.*}} : i32
         // CHECK: } : i32
