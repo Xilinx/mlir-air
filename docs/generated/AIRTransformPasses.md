@@ -15,7 +15,7 @@ Example 1: Manual tiling
 Input:
 ```mlir
 module  {
-  func @task(%arg0: tensor<4096xi32>, %arg1: tensor<4096xi32>) -> tensor<4096xi32> {
+  func.func @task(%arg0: tensor<4096xi32>, %arg1: tensor<4096xi32>) -> tensor<4096xi32> {
     %0 = memref.alloc() : memref<4096xi32>
     %1 = "aten.type_cast"(%arg0) : (tensor<4096xi32>) -> memref<4096xi32>
     %2 = "aten.type_cast"(%arg1) : (tensor<4096xi32>) -> memref<4096xi32>
@@ -37,7 +37,7 @@ Output:
 ```mlir
 #map = affine_map<(d0, d1, d2, d3) -> (d0 + d1 * 64 + d2 * 128 + d3 * 256)>
 module  {
-  func @task(%arg0: tensor<4096xi32>, %arg1: tensor<4096xi32>) -> tensor<4096xi32> {
+  func.func @task(%arg0: tensor<4096xi32>, %arg1: tensor<4096xi32>) -> tensor<4096xi32> {
     %0 = memref.alloc() : memref<4096xi32>
     %1 = "aten.type_cast"(%arg0) : (tensor<4096xi32>) -> memref<4096xi32>
     %2 = "aten.type_cast"(%arg1) : (tensor<4096xi32>) -> memref<4096xi32>
@@ -68,7 +68,7 @@ Input:
 
 ```mlir
 module  {
-  func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+  func.func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
     %0 = memref.alloc() : memref<28x10xf32>
     %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
     %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
@@ -92,7 +92,7 @@ Output:
 #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
 #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
 module  {
-  func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+  func.func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
     %0 = memref.alloc() : memref<28x10xf32>
     %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
     %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
@@ -126,6 +126,11 @@ module  {
 -air-label       : Transform loops with the given label
 -air-post-label  : Label to apply to transformed loop nest
 ```
+### `-air-broadcast-detection`: Detect DMA broadcast opportunities
+This pass detects DMA broadcast opportunities by tracing the source indices'
+dependence to the induction variables of any parent spatial loop space. Upon
+successful detection, the DMA shall be annotated by an affine set attribute 
+named 'broadcast_pattern'. 
 ### `-air-dependency`: AIR dependency analysis
 This pass analyzes dependencies among air.async_region ops, and constructs
 the dependency relationship between asynchronous events for scheduling. 
@@ -139,7 +144,7 @@ Input:
 
 ```mlir
 module  {
-  func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
+  func.func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
     %c1 = arith.constant 1 : index
     %0 = memref.alloc() : memref<1024xi32, 1>
     air.launch_herd tile (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%0, %arg7=%arg1) : memref<1024xi32, 1>,memref<1024xi32> {
@@ -160,26 +165,26 @@ Output:
 
 ```mlir
 module {
-  func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
+  func.func @foo(%arg0: memref<1024xi32>, %arg1: memref<1024xi32>) {
     %c1 = arith.constant 1 : index
-    %asyncToken, %valOut = air.region async  {
+    %asyncToken, %valOut = air.execute async  {
       %1 = memref.alloc() : memref<1024xi32, 1>
-      air.region_terminator %1 : memref<1024xi32, 1>
+      air.execute_terminator %1 : memref<1024xi32, 1>
     } {id = 1 : i32} : (memref<1024xi32, 1>)
     %0 = air.launch_herd async  tile (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%valOut, %arg7=%arg1) : memref<1024xi32, 1>, memref<1024xi32> attributes {id = 1 : i32} {
       %c0 = arith.constant 0 : index
       %c16 = arith.constant 16 : index
-      %asyncToken_1, %valOut_2 = air.region async  {
+      %asyncToken_1, %valOut_2 = air.execute async  {
         %3 = memref.alloc() : memref<16xi32, 2>
-        air.region_terminator %3 : memref<16xi32, 2>
+        air.execute_terminator %3 : memref<16xi32, 2>
       } {id = 2 : i32} : (memref<16xi32, 2>)
       %1 = air.dma_memcpy async [%asyncToken_1] (%valOut_2, %arg6, [%c0], [%c16], %c16) {id = 1 : i32} : (memref<16xi32, 2>, memref<1024xi32, 1>, [index], [index], index) -> ()
       %2 = air.dma_memcpy async [%1] (%arg6, %valOut_2, [%c16], [%c0], %c16) {id = 2 : i32} : (memref<1024xi32, 1>, memref<16xi32, 2>, [index], [index], index) -> ()
       air.herd_terminator
     }
-    %asyncToken_0 = air.region async [%0, %asyncToken]  : (!air.async.token, !air.async.token) {
+    %asyncToken_0 = air.execute async [%0, %asyncToken]  : (!air.async.token, !air.async.token) {
       memref.dealloc %valOut : memref<1024xi32, 1>
-      air.region_terminator
+      air.execute_terminator
     } {id = 3 : i32}
     return
   }
@@ -195,7 +200,7 @@ Input:
 ```mlir
 #map = affine_map<()[s0] -> (s0 * 32)>
 module attributes {torch.debug_module_name = "mmult"} {
-  func @forward(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1024xf32>, %arg2: memref<1024x1024xf32>) {
+  func.func @forward(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1024xf32>, %arg2: memref<1024x1024xf32>) {
     %c1024 = arith.constant 1024 : index
     %cst = arith.constant 0.000000e+00 : f32
     %c32 = arith.constant 32 : index
@@ -245,28 +250,28 @@ Output:
 ```mlir
 #map = affine_map<()[s0] -> (s0 * 32)>
 module attributes {torch.debug_module_name = "mmult"} {
-  func @forward(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1024xf32>, %arg2: memref<1024x1024xf32>) {
+  func.func @forward(%arg0: memref<1024x1024xf32>, %arg1: memref<1024x1024xf32>, %arg2: memref<1024x1024xf32>) {
     %c1024 = arith.constant 1024 : index
     %cst = arith.constant 0.000000e+00 : f32
     %c32 = arith.constant 32 : index
     %c128 = arith.constant 128 : index
     %c0 = arith.constant 0 : index
     %c4 = arith.constant 4 : index
-    %asyncToken, %valOut = air.region async  {
+    %asyncToken, %valOut = air.execute async  {
       %2 = memref.alloc() {alignment = 128 : i64} : memref<1024x1024xf32>
-      air.region_terminator %2 : memref<1024x1024xf32>
+      air.execute_terminator %2 : memref<1024x1024xf32>
     } {id = 1 : i32} : (memref<1024x1024xf32>)
-    %asyncToken_0, %valOut_1 = air.region async  {
+    %asyncToken_0, %valOut_1 = air.execute async  {
       %2 = memref.alloc() {alignment = 128 : i64} : memref<1024x1024xf32>
-      air.region_terminator %2 : memref<1024x1024xf32>
+      air.execute_terminator %2 : memref<1024x1024xf32>
     } {id = 2 : i32} : (memref<1024x1024xf32>)
-    %asyncToken_2 = air.region async [%asyncToken]  : (!air.async.token) {
+    %asyncToken_2 = air.execute async [%asyncToken]  : (!air.async.token) {
       linalg.fill ins(%cst : f32) outs(%valOut : memref<1024x1024xf32>)
-      air.region_terminator
+      air.execute_terminator
     } {id = 3 : i32}
-    %asyncToken_3 = air.region async [%asyncToken_0, %asyncToken_2]  : (!air.async.token, !air.async.token) {
+    %asyncToken_3 = air.execute async [%asyncToken_0, %asyncToken_2]  : (!air.async.token, !air.async.token) {
       memref.copy %valOut, %valOut_1 : memref<1024x1024xf32> to memref<1024x1024xf32>
-      air.region_terminator
+      air.execute_terminator
     } {id = 4 : i32}
     %0 = air.wait_all async [%asyncToken_3]  {id = 6 : i32}
     %1 = scf.for %arg3 = %c0 to %c1024 step %c128 iter_args(%arg4 = %0) -> (!air.async.token) {
@@ -285,53 +290,53 @@ module attributes {torch.debug_module_name = "mmult"} {
             %c1 = arith.constant 1 : index
             %c1024_12 = arith.constant 1024 : index
             %c32_13 = arith.constant 32 : index
-            %asyncToken_14, %valOut_15 = air.region async  {
+            %asyncToken_14, %valOut_15 = air.execute async  {
               %14 = affine.apply #map()[%arg9]
-              air.region_terminator %14 : index
+              air.execute_terminator %14 : index
             } {id = 5 : i32} : (index)
-            %asyncToken_16, %valOut_17 = air.region async  {
+            %asyncToken_16, %valOut_17 = air.execute async  {
               %14 = affine.apply #map()[%arg10]
-              air.region_terminator %14 : index
+              air.execute_terminator %14 : index
             } {id = 6 : i32} : (index)
-            %asyncToken_18, %valOut_19 = air.region async [%asyncToken_14]  : (!air.async.token) {
+            %asyncToken_18, %valOut_19 = air.execute async [%asyncToken_14]  : (!air.async.token) {
               %14 = arith.addi %arg13, %valOut_15 : index
-              air.region_terminator %14 : index
+              air.execute_terminator %14 : index
             } {id = 7 : i32} : (index)
-            %asyncToken_20, %valOut_21 = air.region async [%asyncToken_16]  : (!air.async.token) {
+            %asyncToken_20, %valOut_21 = air.execute async [%asyncToken_16]  : (!air.async.token) {
               %14 = arith.addi %arg16, %valOut_17 : index
-              air.region_terminator %14 : index
+              air.execute_terminator %14 : index
             } {id = 8 : i32} : (index)
-            %asyncToken_22, %valOut_23 = air.region async  {
+            %asyncToken_22, %valOut_23 = air.execute async  {
               %14 = memref.alloc() : memref<32x32xf32, 2>
-              air.region_terminator %14 : memref<32x32xf32, 2>
+              air.execute_terminator %14 : memref<32x32xf32, 2>
             } {id = 9 : i32} : (memref<32x32xf32, 2>)
-            %asyncToken_24, %valOut_25 = air.region async  {
+            %asyncToken_24, %valOut_25 = air.execute async  {
               %14 = memref.alloc() : memref<32x32xf32, 2>
-              air.region_terminator %14 : memref<32x32xf32, 2>
+              air.execute_terminator %14 : memref<32x32xf32, 2>
             } {id = 10 : i32} : (memref<32x32xf32, 2>)
-            %asyncToken_26, %valOut_27 = air.region async  {
+            %asyncToken_26, %valOut_27 = air.execute async  {
               %14 = memref.alloc() : memref<32x32xf32, 2>
-              air.region_terminator %14 : memref<32x32xf32, 2>
+              air.execute_terminator %14 : memref<32x32xf32, 2>
             } {id = 11 : i32} : (memref<32x32xf32, 2>)
             %10 = air.dma_memcpy_nd async [%asyncToken_22, %asyncToken_18] (%valOut_23[] [] [], %arg15[%valOut_19, %arg14] [%c32_13, %c32_13] [%c1024_12, %c1]) {id = 1 : i32} : (memref<32x32xf32, 2>, memref<1024x1024xf32>)
             %11 = air.dma_memcpy_nd async [%asyncToken_24, %asyncToken_20] (%valOut_25[] [] [], %arg17[%arg14, %valOut_21] [%c32_13, %c32_13] [%c1024_12, %c1]) {id = 2 : i32} : (memref<32x32xf32, 2>, memref<1024x1024xf32>)
             %12 = air.dma_memcpy_nd async [%asyncToken_26, %asyncToken_20, %asyncToken_18] (%valOut_27[] [] [], %arg18[%valOut_19, %valOut_21] [%c32_13, %c32_13] [%c1024_12, %c1]) {id = 3 : i32} : (memref<32x32xf32, 2>, memref<1024x1024xf32>)
-            %asyncToken_28 = air.region async [%11, %12, %10]  : (!air.async.token, !air.async.token, !air.async.token) {
+            %asyncToken_28 = air.execute async [%11, %12, %10]  : (!air.async.token, !air.async.token, !air.async.token) {
               linalg.matmul ins(%valOut_23, %valOut_25 : memref<32x32xf32, 2>, memref<32x32xf32, 2>) outs(%valOut_27 : memref<32x32xf32, 2>)
-              air.region_terminator
+              air.execute_terminator
             } {id = 12 : i32}
             %13 = air.dma_memcpy_nd async [%asyncToken_28] (%arg18[%valOut_19, %valOut_21] [%c32_13, %c32_13] [%c1024_12, %c1], %valOut_27[] [] []) {id = 4 : i32} : (memref<1024x1024xf32>, memref<32x32xf32, 2>)
-            %asyncToken_29 = air.region async [%asyncToken_28]  : (!air.async.token) {
+            %asyncToken_29 = air.execute async [%asyncToken_28]  : (!air.async.token) {
               memref.dealloc %valOut_23 : memref<32x32xf32, 2>
-              air.region_terminator
+              air.execute_terminator
             } {id = 13 : i32}
-            %asyncToken_30 = air.region async [%asyncToken_28]  : (!air.async.token) {
+            %asyncToken_30 = air.execute async [%asyncToken_28]  : (!air.async.token) {
               memref.dealloc %valOut_25 : memref<32x32xf32, 2>
-              air.region_terminator
+              air.execute_terminator
             } {id = 14 : i32}
-            %asyncToken_31 = air.region async [%13]  : (!air.async.token) {
+            %asyncToken_31 = air.execute async [%13]  : (!air.async.token) {
               memref.dealloc %valOut_27 : memref<32x32xf32, 2>
-              air.region_terminator
+              air.execute_terminator
             } {id = 15 : i32}
             air.herd_terminator
           }
@@ -344,20 +349,45 @@ module attributes {torch.debug_module_name = "mmult"} {
       %4 = air.wait_all async [%3]  {id = 5 : i32}
       scf.yield %4 : !air.async.token
     }
-    %asyncToken_4 = air.region async [%1]  : (!air.async.token) {
+    %asyncToken_4 = air.execute async [%1]  : (!air.async.token) {
       memref.copy %valOut_1, %arg2 : memref<1024x1024xf32> to memref<1024x1024xf32>
-      air.region_terminator
+      air.execute_terminator
     } {id = 16 : i32}
     return
   }
 }
 ```
 
+### `-air-dependency-schedule-opt`: Optimize scheduling based on air async dependency
+This pass contains multiple passes which optimize the schedule based on the
+dependency graph generated from -air-dependency pass.
 ### `-air-example-pass`: Skeleton module op pass
+### `-air-fuse-parallel-launch`: fuse parallel launch pass
 ### `-air-herd-assign`: Transfor affine.for to affine.parallel
+### `-air-hoist-dma-in-accum-pattern`: Hoist pairs of DMA ops out of for loop based on dependency graph
+This pass detects redundant DMA operations in scf.for loops based on AIR event
+dependency generated by -air-dependency pass, and optimize the for loop's
+performance by hoisting them out of for loop's body.
 ### `-air-linalg-codegen`: AIR codegen strategies for linalg
 This pass implements some tiling strategies for linalg ops targeting AIR
 dialect.
+
+#### Options
+```
+-herd-size           : Herd size to target
+-l1-tile-size        : Tile factors to pass to L1 tiling
+-l2-tile-size        : Tile factors to pass to L2 tiling
+-l1-tile-permute     : Tile permute vector to pass to L1 tiling
+-l2-tile-permute     : Tile permute vector to pass to L2 tiling
+-l1-promote-operands : Indices of subviews to promote
+-l2-promote-operands : Indices of subviews to promote
+-l1-promote          : Promote tiles to L1 memory
+-l2-promote          : Promote tiles to L2 memory
+-l1-size             : L1 allocation limit in bytes
+-l2-size             : L2 allocation limit in bytes
+-input-filter        : Input filter for linalg transformations
+-test-patterns       : test patterns
+```
 ### `-air-linalg-name`: Give linalg ops a LinalgTransformMarker string attribute if they don't already have one
 ### `-air-linalg-op-stats`: AIR linalg operation statistics
 ### `-air-loop-merging`: Merge several nested subloops into a single loop
@@ -375,7 +405,7 @@ Input:
 #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
 #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
 module  {
-  func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+  func.func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
     %0 = memref.alloc() : memref<28x10xf32>
     %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
     %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
@@ -407,7 +437,7 @@ Output:
 #map0 = affine_map<(d0, d1) -> (d0 * 14 + d1 floordiv 2 - ((d1 floordiv 2) floordiv 7) * 7 + (d1 floordiv 14) * 7)>
 #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5 - (d1 floordiv 2) * 10)>
 module  {
-  func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+  func.func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
     %0 = memref.alloc() : memref<28x10xf32>
     %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
     %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
@@ -445,7 +475,7 @@ Input:
 #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
 #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
 module  {
-  func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+  func.func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
     %0 = memref.alloc() : memref<28x10xf32>
     %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
     %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
@@ -477,7 +507,7 @@ Output:
 #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
 #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
 module  {
-  func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+  func.func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
     %0 = memref.alloc() : memref<28x10xf32>
     %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
     %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
@@ -520,7 +550,19 @@ are lowered to loops using `linalg::LinalgLoweringPattern`.
 
 The transforms are biased toward AIE.core regions and are intended
 to be run after the air-to-aie pass.
+### `-air-pipeline-reduce`: Turn a reduction dimension into a herd pipeline
+
+#### Options
+```
+-tile-size          : Tile size to use for reduction dimension
+-pipeline-depth     : Pipeline depth to generate
+-pipeline-direction : Pipeline direction attribute to use. Can be 'vert' or 'horiz'
+-promote            : Promote subviews to memory buffers and insert copies.
+```
 ### `-air-promote-dma`: promote uniform dma operations
+### `-air-prune-linalg-generic-input-dma`: Detect and prune redundant DMA into linalg generic
+This pass detects and prunes redundant DMA which copies into linalg generic
+input operands'. 
 ### `-air-regularize-loop`: Move operations inside the innermost loop body to regularize loop nests
 This pass regularizes loop nests by moving intermediate operations between
 subloops in a loop nest inside the innermost loop body. The pass is 
@@ -539,7 +581,7 @@ Input:
 #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
 #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
 module  {
-  func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+  func.func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
     %0 = memref.alloc() : memref<28x10xf32>
     %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
     %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
@@ -571,7 +613,7 @@ Output:
 #map0 = affine_map<(d0, d1, d2) -> (d0 + d1 * 7 + d2 * 14)>
 #map1 = affine_map<(d0, d1) -> (d0 + d1 * 5)>
 module  {
-  func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
+  func.func @task(%arg0: tensor<28x10xf32>, %arg1: tensor<28x10xf32>) -> tensor<28x10xf32> {
     %0 = memref.alloc() : memref<28x10xf32>
     %1 = "aten.type_cast"(%arg0) : (tensor<28x10xf32>) -> memref<28x10xf32>
     %2 = "aten.type_cast"(%arg1) : (tensor<28x10xf32>) -> memref<28x10xf32>
@@ -600,3 +642,4 @@ module  {
 ### `-air-return-elimination`: Convert functions to return their values with out parameters
 ### `-air-rm-linalg-name`: Remove LinalgTransformMarker string attributes from linalg ops
 ### `-air-specialize-dma`: Specialize dma operations
+### `-air-specialize-dma-broadcast`: Specialize dma operations for broadcast pattern

@@ -28,51 +28,79 @@ interface is provided to synchronize between operations.
 
 [TOC]
 
-## Type constraint definition
-
-### async token type
-
-
-
 ## Operation definition
 
-### `air.dma_memcpy_2d` (xilinx::air::DmaMemcpy2dOp)
+### `air.alloc` (xilinx::air::AllocOp)
 
-dma operator
+alloc operator
 
 
 Syntax:
 
 ```
-operation ::= `air.dma_memcpy_2d` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
-              `(`$dst`,` $src`,`
-              `[` $dst_d1`,` $dst_d0 `]` `,`
-              `[` $src_d1`,` $src_d0 `]` `,`
-              $num `,` $stride `,` $elem_per_stride `)` attr-dict `:`
-              `(` type($dst)`,` type($src)`,`
-              `[` type($dst_d1)`,` type($dst_d0) `]` `,`
-              `[` type($src_d1)`,` type($src_d0) `]` `,`
-              type($num) `,` type($stride) `,` type($elem_per_stride) `)`  `->` `(` `)`
+operation ::= `air.alloc` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) attr-dict `:` type($result)
 ```
 
-dma operator
+Allocate memory
 
-Interfaces: air_AsyncOpInterface, air_DmaMemcpyInterface
+Interfaces: air_AsyncOpInterface
 
 #### Operands:
 
 | Operand | Description |
 | :-----: | ----------- |
 | `asyncDependencies` | async token type
-| `dst` | memref of any type values
-| `src` | memref of any type values
-| `dst_d1` | index
-| `dst_d0` | index
-| `src_d1` | index
-| `src_d0` | index
-| `num` | index
-| `stride` | index
-| `elem_per_stride` | index
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `asyncToken` | async token type
+| `result` | memref of any type values
+
+### `air.channel` (xilinx::air::ChannelOp)
+
+Channel for data movement.
+
+
+Syntax:
+
+```
+operation ::= `air.channel` $name `{` `count_x` `=` $countx `,` `count_y` `=` $county `}` attr-dict
+```
+
+Experimental operation to represent a channel as a point-to-point connection between
+two memrefs.
+
+#### Attributes:
+
+| Attribute | MLIR Type | Description |
+| :-------: | :-------: | ----------- |
+| `name` | ::mlir::FlatSymbolRefAttr | flat symbol reference attribute
+| `countx` | ::mlir::IntegerAttr | 32-bit signless integer attribute whose minimum value is 0
+| `county` | ::mlir::IntegerAttr | 32-bit signless integer attribute whose minimum value is 0
+
+### `air.dealloc` (xilinx::air::DeallocOp)
+
+dealloc operator
+
+
+Syntax:
+
+```
+operation ::= `air.dealloc` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) $memref attr-dict `:` type($memref)
+```
+
+Deallocate memory
+
+Interfaces: air_AsyncOpInterface
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `asyncDependencies` | async token type
+| `memref` | memref of any type values
 
 #### Results:
 
@@ -80,53 +108,25 @@ Interfaces: air_AsyncOpInterface, air_DmaMemcpyInterface
 | :----: | ----------- |
 | `asyncToken` | async token type
 
-### `air.dma_memcpy_4d` (xilinx::air::DmaMemcpy4dOp)
+### `air.distribute` (xilinx::air::DistributeOp)
 
-dma operator
+Distributed channel for merge data movement.
 
 
 Syntax:
 
 ```
-operation ::= `air.dma_memcpy_4d` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
-              `(`$dst`,` $src`,`
-              `[` $dst_d3`,`$dst_d2`,`$dst_d1`,`$dst_d0 `]` `,`
-              `[` $src_d3`,`$src_d2`,`$src_d1`,`$src_d0 `]` `,`
-              $num `,` $stride `,` $elem_per_stride `)` attr-dict `:`
-              `(` type($dst)`,` type($src)`,`
-              `[` type($dst_d3)`,`type($dst_d2)`,`type($dst_d1)`,` type($dst_d0) `]` `,`
-              `[` type($src_d3)`,`type($src_d2)`,`type($src_d1)`,` type($src_d0) `]` `,`
-              type($num) `,` type($stride) `,` type($elem_per_stride) `)`  `->` `(` `)`
+operation ::= `air.distribute` $chan_in_name $chan_out_name attr-dict
 ```
 
-dma operator
+Experimental operation to represent a channel distribute creating a data merge.
 
-Interfaces: air_AsyncOpInterface, air_DmaMemcpyInterface
+#### Attributes:
 
-#### Operands:
-
-| Operand | Description |
-| :-----: | ----------- |
-| `asyncDependencies` | async token type
-| `dst` | memref of any type values
-| `src` | memref of any type values
-| `dst_d3` | index
-| `dst_d2` | index
-| `dst_d1` | index
-| `dst_d0` | index
-| `src_d3` | index
-| `src_d2` | index
-| `src_d1` | index
-| `src_d0` | index
-| `num` | index
-| `stride` | index
-| `elem_per_stride` | index
-
-#### Results:
-
-| Result | Description |
-| :----: | ----------- |
-| `asyncToken` | async token type
+| Attribute | MLIR Type | Description |
+| :-------: | :-------: | ----------- |
+| `chan_in_name` | ::mlir::FlatSymbolRefAttr | flat symbol reference attribute
+| `chan_out_name` | ::mlir::FlatSymbolRefAttr | flat symbol reference attribute
 
 ### `air.dma_memcpy_nd` (xilinx::air::DmaMemcpyNdOp)
 
@@ -168,53 +168,22 @@ Interfaces: air_AsyncOpInterface, air_DmaMemcpyInterface
 | :----: | ----------- |
 | `asyncToken` | async token type
 
-### `air.dma_memcpy` (xilinx::air::DmaMemcpyOp)
+### `air.execute` (xilinx::air::ExecuteOp)
 
-dma operator
+Asynchronous code region
 
 
 Syntax:
 
 ```
-operation ::= `air.dma_memcpy` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
-              `(`$dst`,` $src`,`
-              `[` $dst_d0 `]` `,`
-              `[` $src_d0 `]` `,`
-              $num `)`  attr-dict `:`
-              `(` type($dst)`,` type($src)`,`
-              `[` type($dst_d0) `]` `,`
-              `[` type($src_d0) `]` `,`
-              type($num) `)`  `->` `(` `)`
+operation ::= `air.execute` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) (`:`
+              `(` type($asyncDependencies)^ `)`)? regions attr-dict (`:` `(` type($valOut)^ `)`)?
 ```
 
-dma operator
+Defines a code region to be dispatched asynchronously at runtime. All operations in
+the region must be executed sequentially.
 
-Interfaces: air_AsyncOpInterface, air_DmaMemcpyInterface
-
-#### Operands:
-
-| Operand | Description |
-| :-----: | ----------- |
-| `asyncDependencies` | async token type
-| `dst` | memref of any type values
-| `src` | memref of any type values
-| `dst_d0` | index
-| `src_d0` | index
-| `num` | index
-
-#### Results:
-
-| Result | Description |
-| :----: | ----------- |
-| `asyncToken` | async token type
-
-### `air.launch_herd` (xilinx::air::HerdLaunchOp)
-
-Launch a herd
-
-Define and run a 1D or 2D array of tiles as an AIR Herd.
-
-Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove
+Traits: AffineScope
 
 Interfaces: air_AsyncOpInterface
 
@@ -222,9 +191,84 @@ Interfaces: air_AsyncOpInterface
 
 | Operand | Description |
 | :-----: | ----------- |
+| `asyncDependencies` | any type
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `asyncToken` | async token type
+| `valOut` | any type
+
+### `air.execute_terminator` (xilinx::air::ExecuteTerminatorOp)
+
+Terminator for air regions.
+
+
+Syntax:
+
+```
+operation ::= `air.execute_terminator` attr-dict ($results^ `:` type($results))?
+```
+
+A terminator operation for regions that appear in the body of
+`air.execute` operation.  These regions are not expected to return any
+value so the terminator takes no operands.
+
+Traits: HasParent<ExecuteOp>, ReturnLike, Terminator
+
+Interfaces: NoSideEffect (MemoryEffectOpInterface)
+
+Effects: MemoryEffects::Effect{}
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `results` | any type
+
+### `air.fork` (xilinx::air::ForkOp)
+
+Forked channel for broadcast data movement.
+
+
+Syntax:
+
+```
+operation ::= `air.fork` $chan_in_name $chan_out_name attr-dict
+```
+
+Experimental operation to represent a channel fork creating a data broadcast.
+
+#### Attributes:
+
+| Attribute | MLIR Type | Description |
+| :-------: | :-------: | ----------- |
+| `chan_in_name` | ::mlir::FlatSymbolRefAttr | flat symbol reference attribute
+| `chan_out_name` | ::mlir::FlatSymbolRefAttr | flat symbol reference attribute
+
+### `air.herd` (xilinx::air::HerdOp)
+
+Herd
+
+Define and run a 1D or 2D array of tiles as an AIR Herd.
+
+Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlockImplicitTerminator<HerdTerminatorOp>
+
+Interfaces: air_AsyncOpInterface, air_HierarchyInterface
+
+#### Attributes:
+
+| Attribute | MLIR Type | Description |
+| :-------: | :-------: | ----------- |
+| `symbol` | ::mlir::SymbolRefAttr | symbol reference attribute
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
 | `asyncDependencies` | async token type
-| `herdSizeX` | index
-| `herdSizeY` | index
+| `sizes` | index
 | `operands` | any type
 
 #### Results:
@@ -241,12 +285,12 @@ Define a pipeline
 Syntax:
 
 ```
-operation ::= `air.pipeline` attr-dict $body
+operation ::= `air.pipeline` attr-dict-with-keyword $body
 ```
 
 Define a pipeline within an AIR Herd.
 
-Traits: AffineScope, HasParent<HerdLaunchOp>
+Traits: AffineScope, HasParent<HerdOp>
 
 ### `air.herd_terminator` (xilinx::air::HerdTerminatorOp)
 
@@ -263,7 +307,109 @@ A terminator operation for regions that appear in the body of
 `air.launch_herd` operation.  These regions are not expected to return any
 value so the terminator takes no operands.
 
-Traits: HasParent<HerdLaunchOp>, Terminator
+Traits: HasParent<HerdOp>, Terminator
+
+Interfaces: NoSideEffect (MemoryEffectOpInterface)
+
+Effects: MemoryEffects::Effect{}
+
+### `air.launch` (xilinx::air::LaunchOp)
+
+Launch
+
+Launch
+
+Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlockImplicitTerminator<LaunchTerminatorOp>
+
+Interfaces: air_AsyncOpInterface, air_HierarchyInterface
+
+#### Attributes:
+
+| Attribute | MLIR Type | Description |
+| :-------: | :-------: | ----------- |
+| `symbol` | ::mlir::SymbolRefAttr | symbol reference attribute
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `asyncDependencies` | async token type
+| `sizes` | index
+| `operands` | any type
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `asyncToken` | async token type
+
+### `air.launch_terminator` (xilinx::air::LaunchTerminatorOp)
+
+Terminator for air launch regions.
+
+
+Syntax:
+
+```
+operation ::= `air.launch_terminator` attr-dict
+```
+
+A terminator operation for regions that appear in the body of
+`air.launch` operation.  These regions are not expected to return any
+value so the terminator takes no operands.
+
+Traits: HasParent<LaunchOp>, Terminator
+
+Interfaces: NoSideEffect (MemoryEffectOpInterface)
+
+Effects: MemoryEffects::Effect{}
+
+### `air.partition` (xilinx::air::PartitionOp)
+
+Partition
+
+Partition
+
+Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlockImplicitTerminator<PartitionTerminatorOp>
+
+Interfaces: air_AsyncOpInterface, air_HierarchyInterface
+
+#### Attributes:
+
+| Attribute | MLIR Type | Description |
+| :-------: | :-------: | ----------- |
+| `symbol` | ::mlir::SymbolRefAttr | symbol reference attribute
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `asyncDependencies` | async token type
+| `sizes` | index
+| `operands` | any type
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `asyncToken` | async token type
+
+### `air.partition_terminator` (xilinx::air::PartitionTerminatorOp)
+
+Terminator for air partition regions.
+
+
+Syntax:
+
+```
+operation ::= `air.partition_terminator` attr-dict
+```
+
+A terminator operation for regions that appear in the body of
+`air.partition` operation.  These regions are not expected to return any
+value so the terminator takes no operands.
+
+Traits: HasParent<PartitionOp>, Terminator
 
 Interfaces: NoSideEffect (MemoryEffectOpInterface)
 
@@ -277,7 +423,7 @@ Get for air pipeline stages.
 Syntax:
 
 ```
-operation ::= `air.pipeline.get` $src attr-dict `:` type($src) `->` type($results)
+operation ::= `air.pipeline.get` $src0 $src1 attr-dict `:` type($src0) `,` type($src1) `->` type($results)
 ```
 
 Experimental operation to represent copying data from another tile.
@@ -287,7 +433,8 @@ Currently used internally by air-to-aie pass during pipeline lowering.
 
 | Operand | Description |
 | :-----: | ----------- |
-| `src` | any type
+| `src0` | any type
+| `src1` | any type
 
 #### Results:
 
@@ -303,7 +450,7 @@ Put for air pipeline stages.
 Syntax:
 
 ```
-operation ::= `air.pipeline.put` $dst (`,` $opers^)? attr-dict `:` type($dst) (`,` type($opers)^)?
+operation ::= `air.pipeline.put` $dst0 $dst1 (`,` $opers^)? attr-dict `:` type($dst0) `,` type($dst1) (`,` type($opers)^)?
 ```
 
 Experimental operation to represent copying data to another tile.
@@ -313,7 +460,8 @@ Currently used internally by air-to-aie pass during pipeline lowering.
 
 | Operand | Description |
 | :-----: | ----------- |
-| `dst` | any type
+| `dst0` | any type
+| `dst1` | any type
 | `opers` | any type
 
 ### `air.pipeline.stage` (xilinx::air::PipelineStageOp)
@@ -376,7 +524,7 @@ operation ::= `air.pipeline.yield` ($opers^)? attr-dict (`:` type($opers)^)?
 A terminator operation for regions that appear in the body of 
 `air.pipeline.stage` operation.
 
-Traits: HasParent<PipelineStageOp>, Terminator
+Traits: HasParent<PipelineStageOp>, ReturnLike, Terminator
 
 Interfaces: NoSideEffect (MemoryEffectOpInterface)
 
@@ -388,64 +536,93 @@ Effects: MemoryEffects::Effect{}
 | :-----: | ----------- |
 | `opers` | any type
 
-### `air.region` (xilinx::air::RegionOp)
+### `air.pop` (xilinx::air::PopOp)
 
-Asynchronous code region
+Pop for air channels.
 
 
 Syntax:
 
 ```
-operation ::= `air.region` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) (`:`
-              `(` type($asyncDependencies)^ `)`)? regions attr-dict (`:` `(` type($valOut)^ `)`)?
+operation ::= `air.pop` $chan_name `(` $chan_idx `,` $chan_idy `)`
+              custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
+              `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `)`  attr-dict `:`
+              `(` type($dst) `)`
 ```
 
-Defines a code region to be dispatched asynchronously at runtime. All operations in
-the region must be executed sequentially.
+Experimental operation to represent copying data out of a channel.
 
-Traits: AffineScope
+Traits: AttrSizedOperandSegments
 
 Interfaces: air_AsyncOpInterface
+
+#### Attributes:
+
+| Attribute | MLIR Type | Description |
+| :-------: | :-------: | ----------- |
+| `chan_name` | ::mlir::FlatSymbolRefAttr | flat symbol reference attribute
 
 #### Operands:
 
 | Operand | Description |
 | :-----: | ----------- |
-| `asyncDependencies` | any type
+| `asyncDependencies` | async token type
+| `chan_idx` | index
+| `chan_idy` | index
+| `dst` | memref of any type values
+| `dst_offsets` | index
+| `dst_sizes` | index
+| `dst_strides` | index
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
 | `asyncToken` | async token type
-| `valOut` | any type
 
-### `air.region_terminator` (xilinx::air::RegionTerminatorOp)
+### `air.push` (xilinx::air::PushOp)
 
-Terminator for air regions.
+Push for air channels.
 
 
 Syntax:
 
 ```
-operation ::= `air.region_terminator` attr-dict ($results^ `:` type($results))?
+operation ::= `air.push` $chan_name `(` $chan_idx `,` $chan_idy `)`
+              custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
+              `(` $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)`  attr-dict `:`
+              `(` type($src) `)`
 ```
 
-A terminator operation for regions that appear in the body of
-`air.region` operation.  These regions are not expected to return any
-value so the terminator takes no operands.
+Experimental operation to represent copying data into a channel.
 
-Traits: HasParent<RegionOp>, ReturnLike, Terminator
+Traits: AttrSizedOperandSegments
 
-Interfaces: NoSideEffect (MemoryEffectOpInterface)
+Interfaces: air_AsyncOpInterface
 
-Effects: MemoryEffects::Effect{}
+#### Attributes:
+
+| Attribute | MLIR Type | Description |
+| :-------: | :-------: | ----------- |
+| `chan_name` | ::mlir::FlatSymbolRefAttr | flat symbol reference attribute
 
 #### Operands:
 
 | Operand | Description |
 | :-----: | ----------- |
-| `results` | any type
+| `asyncDependencies` | async token type
+| `chan_idx` | index
+| `chan_idy` | index
+| `src` | memref of any type values
+| `src_offsets` | index
+| `src_sizes` | index
+| `src_strides` | index
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `asyncToken` | async token type
 
 ### `air.wait_all` (xilinx::air::WaitAllOp)
 
@@ -473,4 +650,10 @@ Interfaces: air_AsyncOpInterface
 | Result | Description |
 | :----: | ----------- |
 | `asyncToken` | async token type
+
+## Type constraint definition
+
+### async token type
+
+
 

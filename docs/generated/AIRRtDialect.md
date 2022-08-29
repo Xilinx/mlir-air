@@ -26,7 +26,7 @@ AIRRt Allocation Op
 
 | Result | Description |
 | :----: | ----------- |
-`result` | memref of any type values
+| `result` | memref of any type values
 
 ### `airrt.dealloc` (xilinx::airrt::DeallocOp)
 
@@ -45,73 +45,7 @@ AIRRt Deallocation Op
 
 | Operand | Description |
 | :-----: | ----------- |
-`memref` | memref of any type values
-
-### `airrt.dma_memcpy_2d` (xilinx::airrt::DmaMemcpy2dOp)
-
-dma operator
-
-
-Syntax:
-
-```
-operation ::= `airrt.dma_memcpy_2d` `(` $id `,`$x `,`$y `,`$memref
-              `[` $offset1`,`$offset0 `]` `,`
-              $num `,` $stride `,` $elem_per_stride `)` attr-dict `:`
-              `(` type($id)`,`type($x)`,`type($y)`,`type($memref)`,`
-              `[` type($offset1)`,` type($offset0) `]` `,`
-              type($num) `,` type($stride) `,` type($elem_per_stride) `)`  `->` `(` `)`
-```
-
-2d half dma operator
-
-#### Operands:
-
-| Operand | Description |
-| :-----: | ----------- |
-`id` | 32-bit signless integer
-`x` | 64-bit signless integer
-`y` | 64-bit signless integer
-`memref` | memref of any type values
-`offset1` | 64-bit signless integer
-`offset0` | 64-bit signless integer
-`num` | 64-bit signless integer
-`stride` | 64-bit signless integer
-`elem_per_stride` | 64-bit signless integer
-
-### `airrt.dma_memcpy_4d` (xilinx::airrt::DmaMemcpy4dOp)
-
-dma operator
-
-
-Syntax:
-
-```
-operation ::= `airrt.dma_memcpy_4d` `(` $id `,`$x `,`$y `,`$memref
-              `[` $offset3`,`$offset2`,`$offset1`,`$offset0 `]` `,`
-              $num `,` $stride `,` $elem_per_stride `)` attr-dict `:`
-              `(` type($id)`,`type($x)`,`type($y)`,`type($memref)`,`
-              `[` type($offset3)`,`type($offset2)`,`type($offset1)`,` type($offset0) `]` `,`
-              type($num) `,` type($stride) `,` type($elem_per_stride) `)`  `->` `(` `)`
-```
-
-4d half dma operator
-
-#### Operands:
-
-| Operand | Description |
-| :-----: | ----------- |
-`id` | 32-bit signless integer
-`x` | 64-bit signless integer
-`y` | 64-bit signless integer
-`memref` | memref of any type values
-`offset3` | 64-bit signless integer
-`offset2` | 64-bit signless integer
-`offset1` | 64-bit signless integer
-`offset0` | 64-bit signless integer
-`num` | 64-bit signless integer
-`stride` | 64-bit signless integer
-`elem_per_stride` | 64-bit signless integer
+| `memref` | memref of any type values
 
 ### `airrt.dma_memcpy_nd` (xilinx::airrt::DmaMemcpyNdOp)
 
@@ -128,7 +62,7 @@ operation ::= `airrt.dma_memcpy_nd` `(` $id `,`$x `,`$y `,`$memref
               `(` type($id)`,`type($x)`,`type($y)`,`type($memref)`,`
               `[` type($offset3)`,`type($offset2)`,`type($offset1)`,` type($offset0) `]` `,`
               `[` type($length3)`,`type($length2)`,`type($length1)`,` type($length0) `]` `,`
-              `[` type($stride3)`,`type($stride2)`,`type($stride1) `]` `)`  `->` `(` `)`
+              `[` type($stride3)`,`type($stride2)`,`type($stride1) `]` `)` (`:` type($event)^)?
 ```
 
 nd half dma operator
@@ -137,50 +71,27 @@ nd half dma operator
 
 | Operand | Description |
 | :-----: | ----------- |
-`id` | 32-bit signless integer
-`x` | 64-bit signless integer
-`y` | 64-bit signless integer
-`memref` | memref of any type values
-`offset3` | 64-bit signless integer
-`offset2` | 64-bit signless integer
-`offset1` | 64-bit signless integer
-`offset0` | 64-bit signless integer
-`length3` | 64-bit signless integer
-`length2` | 64-bit signless integer
-`length1` | 64-bit signless integer
-`length0` | 64-bit signless integer
-`stride3` | 64-bit signless integer
-`stride2` | 64-bit signless integer
-`stride1` | 64-bit signless integer
+| `id` | 32-bit signless integer
+| `x` | 64-bit signless integer
+| `y` | 64-bit signless integer
+| `memref` | memref of any type values
+| `offset3` | 64-bit signless integer
+| `offset2` | 64-bit signless integer
+| `offset1` | 64-bit signless integer
+| `offset0` | 64-bit signless integer
+| `length3` | 64-bit signless integer
+| `length2` | 64-bit signless integer
+| `length1` | 64-bit signless integer
+| `length0` | 64-bit signless integer
+| `stride3` | 64-bit signless integer
+| `stride2` | 64-bit signless integer
+| `stride1` | 64-bit signless integer
 
-### `airrt.dma_memcpy` (xilinx::airrt::DmaMemcpyOp)
+#### Results:
 
-dma operator
-
-
-Syntax:
-
-```
-operation ::= `airrt.dma_memcpy` `(` $id `,`$x `,`$y `,`$memref
-              `[` $offset `]` `,`
-              $num `)`  attr-dict `:`
-              `(` type($id)`,`type($x)`,`type($y)`,`type($memref)`,`
-              `[` type($offset) `]` `,`
-              type($num) `)`  `->` `(` `)`
-```
-
-half dma operator
-
-#### Operands:
-
-| Operand | Description |
-| :-----: | ----------- |
-`id` | 32-bit signless integer
-`x` | 64-bit signless integer
-`y` | 64-bit signless integer
-`memref` | memref of any type values
-`offset` | 64-bit signless integer
-`num` | 64-bit signless integer
+| Result | Description |
+| :----: | ----------- |
+| `event` | event type
 
 ### `airrt.herd_load` (xilinx::airrt::HerdLoadOp)
 
@@ -190,7 +101,7 @@ load a herd
 Syntax:
 
 ```
-operation ::= `airrt.herd_load` $sym_name `(` $args `)` attr-dict `:` functional-type($args, results)
+operation ::= `airrt.herd_load` $sym_name attr-dict `:` type($h) (`,` type($event)^)?
 ```
 
 
@@ -198,19 +109,14 @@ operation ::= `airrt.herd_load` $sym_name `(` $args `)` attr-dict `:` functional
 
 | Attribute | MLIR Type | Description |
 | :-------: | :-------: | ----------- |
-`sym_name` | ::mlir::StringAttr | string attribute
-
-#### Operands:
-
-| Operand | Description |
-| :-----: | ----------- |
-`args` | any type
+| `sym_name` | ::mlir::StringAttr | string attribute
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-`ret` | 32-bit signless integer
+| `h` | 64-bit signless integer
+| `event` | event type
 
 ### `airrt.herd_metadata` (xilinx::airrt::HerdMetadataOp)
 
@@ -226,11 +132,13 @@ operation ::= `airrt.herd_metadata` attr-dict
 Runtime metadata for a single herd.
 
 
+Traits: HasParent<PartitionMetadataOp>, SingleBlockImplicitTerminator<HerdMetadataTerminatorOp>
+
 #### Attributes:
 
 | Attribute | MLIR Type | Description |
 | :-------: | :-------: | ----------- |
-`sym_name` | ::mlir::StringAttr | string attribute
+| `sym_name` | ::mlir::StringAttr | string attribute
 
 ### `airrt.herd_metadata_terminator` (xilinx::airrt::HerdMetadataTerminatorOp)
 
@@ -244,14 +152,62 @@ operation ::= `airrt.herd_metadata_terminator` attr-dict
 ```
 
 
+Traits: HasParent<HerdMetadataOp>, Terminator
+
+### `airrt.memcpy_nd` (xilinx::airrt::MemcpyNdOp)
+
+dma operator
+
+
+Syntax:
+
+```
+operation ::= `airrt.memcpy_nd` `(` $dst`,`$src`,`
+              `[` $offset3`,`$offset2`,`$offset1`,`$offset0 `]` `,`
+              `[` $length3`,`$length2`,`$length1`,`$length0 `]` `,`
+              `[` $stride3`,`$stride2`,`$stride1 `]` `)` attr-dict `:`
+              `(` type($dst)`,`type($src)`,`
+              `[` type($offset3)`,`type($offset2)`,`type($offset1)`,` type($offset0) `]` `,`
+              `[` type($length3)`,`type($length2)`,`type($length1)`,` type($length0) `]` `,`
+              `[` type($stride3)`,`type($stride2)`,`type($stride1) `]` `)`  (`:` type($event)^)?
+```
+
+nd memcpy operator
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `dst` | memref of any type values
+| `src` | memref of any type values
+| `offset3` | 64-bit signless integer
+| `offset2` | 64-bit signless integer
+| `offset1` | 64-bit signless integer
+| `offset0` | 64-bit signless integer
+| `length3` | 64-bit signless integer
+| `length2` | 64-bit signless integer
+| `length1` | 64-bit signless integer
+| `length0` | 64-bit signless integer
+| `stride3` | 64-bit signless integer
+| `stride2` | 64-bit signless integer
+| `stride1` | 64-bit signless integer
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `event` | event type
+
 ### `airrt.module_metadata` (xilinx::airrt::ModuleMetadataOp)
 
 Global metadata for the module
 
-This op contains a region containing airrt.herd_metadata ops,
-which give information about the herds in the module.
+This op contains a region containing airrt.partition_metadata ops,
+which give information about the partitions in the module.
 
 There is one of these per module.
+
+Traits: SingleBlockImplicitTerminator<ModuleMetadataTerminatorOp>
 
 ### `airrt.module_metadata_terminator` (xilinx::airrt::ModuleMetadataTerminatorOp)
 
@@ -263,5 +219,93 @@ Syntax:
 ```
 operation ::= `airrt.module_metadata_terminator` attr-dict
 ```
+
+
+Traits: HasParent<ModuleMetadataOp>, Terminator
+
+### `airrt.partition_load` (xilinx::airrt::PartitionLoadOp)
+
+load a partition
+
+
+Syntax:
+
+```
+operation ::= `airrt.partition_load` $sym_name attr-dict `:` type($p) (`,` type($event)^)?
+```
+
+
+#### Attributes:
+
+| Attribute | MLIR Type | Description |
+| :-------: | :-------: | ----------- |
+| `sym_name` | ::mlir::StringAttr | string attribute
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `p` | 64-bit signless integer
+| `event` | event type
+
+### `airrt.partition_metadata` (xilinx::airrt::PartitionMetadataOp)
+
+Runtime metadata for one air region
+
+This op contains a region containing airrt.herd_metadata ops,
+which give information about the herds in the module.
+
+Traits: HasParent<ModuleMetadataOp>, SingleBlockImplicitTerminator<PartitionMetadataTerminatorOp>
+
+#### Attributes:
+
+| Attribute | MLIR Type | Description |
+| :-------: | :-------: | ----------- |
+| `sym_name` | ::mlir::StringAttr | string attribute
+
+### `airrt.partition_metadata_terminator` (xilinx::airrt::PartitionMetadataTerminatorOp)
+
+Implicit terminator for PartitionMetadataOp's region
+
+
+Syntax:
+
+```
+operation ::= `airrt.partition_metadata_terminator` attr-dict
+```
+
+
+Traits: HasParent<PartitionMetadataOp>, Terminator
+
+### `airrt.wait_all` (xilinx::airrt::WaitAllOp)
+
+wait for all operator
+
+
+Syntax:
+
+```
+operation ::= `airrt.wait_all` ($events^)? attr-dict (`:` type($event)^)?
+```
+
+Block and wait for all events before preceding.
+Optionally return an event.
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `events` | event type
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `event` | event type
+
+## Type constraint definition
+
+### event type
+
 
 
