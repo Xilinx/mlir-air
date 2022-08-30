@@ -13,6 +13,8 @@ func.func @launch(%arg0: i32) {
   air.herd tile (%x, %y) in (%sx=%cst2, %sy=%cst2) {
     %buf0 = memref.alloc() {sym_name = "scratch"} : memref<10xindex,2>
     %buf1 = memref.alloc() : memref<10xindex,2>
+    memref.dealloc %buf0 : memref<10xindex,2>
+    memref.dealloc %buf1 : memref<10xindex,2>
     air.herd_terminator
   }
   return

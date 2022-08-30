@@ -6,26 +6,26 @@
 // CHECK: [[T_0_1:%.*]] = AIE.tile(0, 1)
 // CHECK: [[T_1_1:%.*]] = AIE.tile(1, 1)
 // CHECK: [[C_1_1:%.*]] = AIE.core([[T_1_1]])
-// CHECK: [[V0:%.*]] = arith.constant 10 : i32
 // CHECK: [[V1:%.*]] = arith.constant 6 : i32
+// CHECK: [[V0:%.*]] = arith.constant 10 : i32
 // CHECK: arith.addi %{{.*}}, [[V1]] : i32
 // CHECK: arith.addi %{{.*}}, [[V0]] : i32
 // CHECK: AIE.end
 // CHECK: [[C_0_1:%.*]] = AIE.core([[T_0_1]])
-// CHECK: [[V2:%.*]] = arith.constant 8 : i32
 // CHECK: [[V3:%.*]] = arith.constant 6 : i32
+// CHECK: [[V2:%.*]] = arith.constant 8 : i32
 // CHECK: arith.addi %{{.*}}, [[V3]] : i32
 // CHECK: arith.addi %{{.*}}, [[V2]] : i32
 // CHECK: AIE.end
 // CHECK: [[C_1_0:%.*]] = AIE.core([[T_1_0]])
-// CHECK: [[V4:%.*]] = arith.constant 10 : i32
 // CHECK: [[V5:%.*]] = arith.constant 4 : i32
+// CHECK: [[V4:%.*]] = arith.constant 10 : i32
 // CHECK: arith.addi %{{.*}}, [[V5]] : i32
 // CHECK: arith.addi %{{.*}}, [[V4]] : i32
 // CHECK: AIE.end
 // CHECK: [[C_0_0:%.*]] = AIE.core([[T_0_0]])
-// CHECK: [[V6:%.*]] = arith.constant 8 : i32
 // CHECK: [[V7:%.*]] = arith.constant 4 : i32
+// CHECK: [[V6:%.*]] = arith.constant 8 : i32
 // CHECK: arith.addi %{{.*}}, [[V7]] : i32
 // CHECK: arith.addi %{{.*}}, [[V6]] : i32
 // CHECK: AIE.end

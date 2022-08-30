@@ -17,6 +17,7 @@
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -165,6 +166,500 @@ struct DMAAllocator {
   }
 };
 
+struct AIRToAIEOptions {
+  int64_t col_offset;
+  int64_t row_offset;
+  bool emit_while; 
+};
+
+void outlineAIECores(OpBuilder &builder, ModuleOp aie_module, xilinx::air::HerdOp h,
+                     std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
+                      AIRToAIEOptions &options)
+{
+  builder.setInsertionPointToStart(aie_module.getBody());
+
+  SmallVector<Value, 2> herd_size = h.getSizeOperands();
+  if (!isa<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()) ||
+      !isa<arith::ConstantIndexOp>(herd_size[1].getDefiningOp())) {
+    llvm::errs() << "Only constant sized herds are supported";
+    return;
+  }
+
+  int64_t herd_size_x =
+      cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
+  int64_t herd_size_y =
+      cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
+
+  // use the command line offsets unless the attribute is present
+  int64_t col_offset = options.col_offset;
+  int64_t row_offset = options.row_offset;
+  auto col_name = xilinx::air::HerdOp::getColOffsetAttrName();
+  auto row_name = xilinx::air::HerdOp::getRowOffsetAttrName();
+  if (h->getAttrOfType<IntegerAttr>(col_name))
+    col_offset = h.getColOffset();
+  else
+    h->setAttr(col_name,
+                IntegerAttr::get(IntegerType::get(h->getContext(), 32),
+                                col_offset));
+  if (h->getAttrOfType<IntegerAttr>(row_name))
+    row_offset = h.getRowOffset();
+  else
+    h->setAttr(row_name,
+                IntegerAttr::get(IntegerType::get(h->getContext(), 32),
+                                row_offset));
+
+  for (auto y = 0; y < herd_size_y; y++) {
+    for (auto x = 0; x < herd_size_x; x++) {
+      auto hloc = h.getLoc();
+      BlockAndValueMapping remap;
+      auto phys_x = x + col_offset;
+      auto phys_y = y + row_offset;
+
+      // make the AIE.tile
+      auto tile = getPhysTileOp(aie_module, phys_x, phys_y);
+
+      Operation *t = tile.getOperation();
+      while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
+        t = t->getNextNode();
+      builder.setInsertionPointAfter(t);
+
+      // make the AIE.core for the tile core
+      auto core = tile.getCoreOp();
+      if (!core) {
+        core = builder.create<AIE::CoreOp>(hloc, tile);
+        tileToHerdMap[tile] = h;
+        std::string herd_name =
+            aie_module.getName()->str().substr(strlen("aie."));
+        core->setAttr(
+            "elf_file",
+            StringAttr::get(aie_module.getContext(), herd_name + "_core_" +
+                                      std::to_string(phys_x) + "_" +
+                                      std::to_string(phys_y) + ".elf"));
+        if (auto a = h->getAttrOfType<StringAttr>("link_with"))
+          core->setAttr("link_with", a);
+      }
+
+      // the buffers and locks created below need to go before the core and
+      // mem
+      builder.setInsertionPoint(core);
+
+      assert((h.body().getBlocks().size() == 1) &&
+              "Launch body can only contain one Block");
+
+      // generate the AIE.core body
+      //
+      OpBuilder core_builder(core);
+      Block *core_bb = core_builder.createBlock(&core.body());
+
+      Block *entry_bb = core_builder.createBlock(core_bb);
+      core_builder.setInsertionPointToEnd(entry_bb);
+      core_builder.create<cf::BranchOp>(hloc, core_bb);
+      core_builder.setInsertionPointToEnd(core_bb);
+
+      // map the tile ids and herd size to constants
+      remap.map(h.getIds()[0],
+                core_builder.create<arith::ConstantIndexOp>(hloc, x));
+      remap.map(h.getIds()[1],
+                core_builder.create<arith::ConstantIndexOp>(hloc, y));
+      remap.map(h.getSize()[0], core_builder.create<arith::ConstantIndexOp>(
+                                    hloc, herd_size_x));
+      remap.map(h.getSize()[1], core_builder.create<arith::ConstantIndexOp>(
+                                    hloc, herd_size_y));
+
+      for (auto a : h.getKernelArguments()) {
+        auto memrefTy = a.getType().dyn_cast<MemRefType>();
+        if (!memrefTy)
+          continue;
+
+        OpBuilder b(aie_module);
+        b.setInsertionPoint(core);
+
+        int which_try = 0;
+        std::string sym_name = "__air_herd_arg_0";
+        while (aie_module.lookupSymbol(sym_name))
+          sym_name = "__air_herd_arg_" + std::to_string(++which_try);
+        b.create<memref::GlobalOp>(builder.getUnknownLoc(), sym_name,
+                                    builder.getStringAttr("public"),
+                                    memrefTy, nullptr, false, nullptr);
+
+        auto m = core_builder.create<memref::GetGlobalOp>(
+            hloc, SmallVector<Type, 1>{a.getType()}, sym_name);
+        remap.map(a, m);
+      }
+
+      Region &r = h.getRegion();
+      r.cloneInto(&core.body(), remap);
+
+      Block *launch_bb = remap.lookup(&r.front());
+      core_builder.create<cf::BranchOp>(hloc, launch_bb);
+      core_builder.setInsertionPoint(launch_bb->getTerminator());
+
+      if (options.emit_while)
+        core_builder.create<cf::BranchOp>(hloc, core_bb);
+      else
+        core_builder.create<AIE::EndOp>(hloc);
+
+      core.walk([&](Operation *op) {
+        if (auto call = dyn_cast<func::CallOp>(op)) {
+          auto fn = aie_module.lookupSymbol<func::FuncOp>(call.getCallee());
+          if (!fn) {
+            fn = func::FuncOp::create(aie_module.getLoc(), call.getCallee(),
+                                      call.getCalleeType());
+            fn.setPrivate();
+            aie_module.push_back(fn);
+          }
+        }
+      });
+
+      // erase air.herd_termintor ops
+      launch_bb->walk([&](air::HerdTerminatorOp op) { op->erase(); });
+    }
+  }
+}
+
+void createAIEModulesAndOutlineCores(
+    ModuleOp module,
+    std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> &aie_modules,
+    std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap, AIRToAIEOptions &options) {
+
+  module.walk([&](xilinx::air::PartitionOp p) {
+    std::string partition_name;
+    if (auto attr =
+            p->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+      partition_name = attr.getValue().str();
+    else
+      partition_name = "partition_" + std::to_string(aie_modules.size());
+    std::string aie_module_name = "aie." + partition_name;
+    ModuleOp aie_module =
+        ModuleOp::create(module.getLoc(), StringRef(aie_module_name));
+
+    p.walk([&](xilinx::air::HerdOp h) {
+      aie_modules.push_back({aie_module, h});
+    });
+  });
+
+  module.walk([&](xilinx::air::HerdOp h) {
+    std::string partition_name;
+    partition_name = "partition_" + std::to_string(aie_modules.size());
+    std::string aie_module_name = "aie." + partition_name;
+    ModuleOp aie_module =
+        ModuleOp::create(module.getLoc(), StringRef(aie_module_name));
+
+    aie_modules.push_back({aie_module, h});
+  });
+
+  for (auto &p : aie_modules) {
+    ModuleOp aie_module = std::get<0>(p);
+    xilinx::air::HerdOp h = std::get<1>(p);
+    OpBuilder builder(aie_module);
+    outlineAIECores(builder, aie_module, h, tileToHerdMap, options);
+  }
+}
+
+AIE::BufferOp allocateBufferOp(MemRefType memrefTy,
+                                AIE::TileOp tile,
+                                mlir::StringAttr attr = nullptr, int x = -1,
+                                int y = -1) {
+  
+  static uint64_t BufferId = 0;
+
+  OpBuilder builder(tile);
+  Operation *t = tile.getOperation();
+  while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
+    t = t->getNextNode();
+  builder.setInsertionPointAfter(t);
+  AIE::BufferOp bufferOp =
+      builder.create<AIE::BufferOp>(tile->getLoc(), memrefTy, tile);
+
+  // if a symbol name was passed in, use it to make
+  // the buffer symbol name as "sym_name_x_y",
+  // otherwise we'll make a generic symbol name "bufN"
+  std::stringstream ss;
+  if (attr) {
+    if (x >= 0 && y >= 0)
+      ss << attr.getValue().str() << "_" << x << "_" << y;
+    else
+      ss << attr.getValue().str() << BufferId++;
+  } else {
+    ss << "buf" << BufferId++;
+  }
+  bufferOp->setAttr(SymbolTable::getSymbolAttrName(),
+                    StringAttr::get(tile->getContext(), ss.str()));
+
+  return bufferOp;
+}
+
+bool isInSet(IntegerSet is) {
+  auto constraints = is.getConstraints();
+  auto eqFlags = is.getEqFlags();
+
+  int i = 0;
+  for (auto c : constraints) {
+    auto expr = simplifyAffineExpr(c, 0, 1).dyn_cast<AffineConstantExpr>();
+    if (!expr)
+      return false;
+    if (eqFlags[i++]) {
+      if (expr.getValue() != 0)
+        return false;
+    } else {
+      if (expr.getValue() < 0)
+        return false;
+    }
+  }
+
+  return true;
+}
+
+bool isInSet(int64_t x, int64_t y, AffineIfOp aif) {
+  auto is = aif.getIntegerSet();
+  if (is.getConstraints().size() != 2)
+    return false;
+
+  SmallVector<AffineExpr, 2> dims{
+      getAffineConstantExpr(x, aif->getContext()),
+      getAffineConstantExpr(y, aif->getContext()),
+  };
+
+  auto newIs = is.replaceDimsAndSymbols({}, dims, 0, 2);
+  return isInSet(newIs);
+}
+
+struct  SpecializeAffineIfPattern : public OpRewritePattern<AffineIfOp> {
+  using OpRewritePattern<AffineIfOp>::OpRewritePattern;
+
+   SpecializeAffineIfPattern(MLIRContext *ctx) :
+    OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(AffineIfOp op,
+                                PatternRewriter &rewriter) const override {
+
+    auto core = op->getParentOfType<AIE::CoreOp>();
+    if (!core)
+      return failure();
+
+    bool in_set = false;
+    if (op.getNumOperands() == 2) {
+      SmallVector<int64_t, 2> operands;
+      for (auto o : op.getOperands()) {
+        auto v = dyn_cast<arith::ConstantIndexOp>(o.getDefiningOp());
+        if (!v)
+          return failure();
+        operands.push_back(v.value());
+      }
+      auto x = operands[0];
+      auto y = operands[1];
+      in_set = isInSet(x, y, op);
+    } else {
+      in_set = isInSet(op.getIntegerSet());
+    }
+
+    Block *bb = nullptr;
+    if (in_set) {
+      bb = op.getThenBlock();
+    } else if (op.hasElse()) {
+      bb = op.getElseBlock();
+    }
+    if (bb) {
+      auto t = bb->getTerminator();
+      auto &ops = bb->getOperations();
+      op->getBlock()->getOperations().splice(Block::iterator(op), ops,
+                                              ops.begin(), --ops.end());
+      for (int i = 0, e = op.getNumResults(); i < e; i++)
+        op.getResult(i).replaceAllUsesWith(t->getOperand(i));
+    }
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+void specializeHerdAffineIf(AIE::CoreOp core) {
+  SmallVector<Operation *, 8> erased;
+  core.walk([&](AffineIfOp aif) {
+    SmallVector<int64_t, 2> operands;
+    for (auto o : aif.getOperands()) {
+      auto v = dyn_cast<arith::ConstantIndexOp>(o.getDefiningOp());
+      if (!v)
+        return;
+      operands.push_back(v.value());
+    }
+    auto x = operands[0];
+    auto y = operands[1];
+    Block *bb = nullptr;
+    if (isInSet(x, y, aif)) {
+      bb = aif.getThenBlock();
+    } else if (aif.hasElse()) {
+      bb = aif.getElseBlock();
+    }
+    if (bb) {
+      auto t = bb->getTerminator();
+      auto &ops = bb->getOperations();
+      aif->getBlock()->getOperations().splice(Block::iterator(aif), ops,
+                                              ops.begin(), --ops.end());
+      for (int i = 0, e = aif.getNumResults(); i < e; i++)
+        aif.getResult(i).replaceAllUsesWith(t->getOperand(i));
+    }
+    erased.push_back(aif);
+  });
+  for (auto a : erased)
+    a->erase();
+}
+
+void specializeHerdAffineIf(ModuleOp module) {
+  SmallVector<AIE::CoreOp, 32> cores;
+  for (auto c : module.getOps<AIE::CoreOp>())
+    cores.push_back(c);
+  for (AIE::CoreOp core : cores)
+    specializeHerdAffineIf(core);
+}
+
+struct LowerAIRExecutePattern : public OpRewritePattern<air::ExecuteOp> {
+  using OpRewritePattern<air::ExecuteOp>::OpRewritePattern;
+
+  LowerAIRExecutePattern(MLIRContext *ctx) :
+    OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(air::ExecuteOp op,
+                                PatternRewriter &rewriter) const override {
+    auto &bb = op.body().front();
+    unsigned idx = 0;
+    for (auto &arg : bb.getArguments()) {
+      arg.replaceAllUsesWith(op.getOperand(idx));
+      idx++;
+    }
+    if (op.getAsyncDependencies().size()) {
+      rewriter.create<air::WaitAllOp>(
+          op->getLoc(), Type{}, op.getAsyncDependencies());
+    }
+    if (op.getNumResults() > 0) {
+      rewriter.setInsertionPointAfter(op);
+      auto w = rewriter.create<air::WaitAllOp>(
+          op->getLoc(), air::AsyncTokenType::get(op->getContext()),
+          SmallVector<Value, 1>{});
+      op.getResult(0).replaceAllUsesWith(w.getResult(0));
+    }
+    op.walk([&](air::ExecuteTerminatorOp t) {
+      int resultIdx = 1;
+      for (auto r : t->getOperands())
+        op.getResult(resultIdx++).replaceAllUsesWith(r);
+    });
+    auto &ops = bb.getOperations();
+    op->getBlock()->getOperations().splice(Block::iterator(op), ops,
+                                            ops.begin(), --ops.end());
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+void lowerAIRExecute(ModuleOp m) {
+  auto ctx = m->getContext();
+  RewritePatternSet patterns(ctx);
+  patterns.insert<LowerAIRExecutePattern>(ctx);
+  (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
+}
+
+struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
+  using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
+
+  AllocL1BuffersPattern(MLIRContext *ctx, std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap) :
+    OpRewritePattern(ctx), tileToHerdMap(tileToHerdMap) {}
+
+  LogicalResult matchAndRewrite(memref::AllocOp op,
+                                PatternRewriter &rewriter) const override {
+
+    AIE::CoreOp core = op->getParentOfType<AIE::CoreOp>();
+    if (!core)
+      return failure();
+
+    AIE::TileOp tile = core.getTileOp();
+    if (!tile)
+      return failure();
+
+    // generate a buffer for each alloc into L1
+    auto alloc = op;//dyn_cast<memref::AllocOp>(op);
+    // auto cast = dyn_cast<bufferization::ToMemrefOp>(op);
+    // if (!(alloc || cast))
+    //   return failure();
+
+    MemRefType memrefTy = nullptr;
+    if (alloc)
+      memrefTy = alloc.getType();
+    // if (cast)
+    //   memrefTy = cast.getType().cast<MemRefType>();
+
+    if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
+      return failure();
+
+    rewriter.setInsertionPointAfter(tile);
+    auto herd = tileToHerdMap[core.getTileOp()];
+    int64_t col_offset = herd.getColOffset();
+    int64_t row_offset = herd.getRowOffset();
+
+    auto buffer = allocateBufferOp(
+        memrefTy, tile,
+        op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
+        tile.col() - col_offset, tile.row() - row_offset);
+    // map uses of the alloc to the new buffer
+    // remap.map(op->getResult(0), buffer);
+    rewriter.setInsertionPoint(op);
+    // if (cast)
+    //   rewriter.create<memref::TensorStoreOp>(cast.getLoc(),
+    //                                         cast.getOperand(), buffer);
+    rewriter.replaceOp(op, buffer->getResults());
+    return success();
+  }
+
+private:
+  std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap;
+};
+
+void allocL1Buffers(ModuleOp module, BlockAndValueMapping &remap,
+                    std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap) {
+
+  SmallVector<AIE::CoreOp, 32> cores;
+  for (auto c : module.getOps<AIE::CoreOp>())
+    cores.push_back(c);
+
+  OpBuilder builder(module);
+
+  for (AIE::CoreOp core : cores) {
+    AIE::TileOp tile = core.getTileOp();
+    // generate a buffer for each alloc into L1
+    core.walk([&](Operation *op) {
+      auto alloc = dyn_cast<memref::AllocOp>(op);
+      auto cast = dyn_cast<bufferization::ToMemrefOp>(op);
+      if (!(alloc || cast))
+        return;
+
+      MemRefType memrefTy = nullptr;
+      if (alloc)
+        memrefTy = alloc.getType();
+      if (cast)
+        memrefTy = cast.getType().cast<MemRefType>();
+
+      if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
+        return;
+
+      builder.setInsertionPointAfter(tile);
+      auto herd = tileToHerdMap[core.getTileOp()];
+      int64_t col_offset = herd.getColOffset();
+      int64_t row_offset = herd.getRowOffset();
+
+      auto buffer = allocateBufferOp(
+          memrefTy, tile,
+          op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
+          tile.col() - col_offset, tile.row() - row_offset);
+      // map uses of the alloc to the new buffer
+      remap.map(op->getResult(0), buffer);
+
+      builder.setInsertionPoint(op);
+      if (cast)
+        builder.create<memref::TensorStoreOp>(cast.getLoc(),
+                                              cast.getOperand(), buffer);
+    });
+  }
+}
+
 class AIRToAIEPass : public AIRToAIEBase<AIRToAIEPass> {
 
 public:
@@ -193,6 +688,11 @@ public:
       *this, "emit-while-loop",
       llvm::cl::desc("Emit while(1) around AIE code"), llvm::cl::init(false)};
 
+  Option<std::string> AIRToAIETestPatterns{
+      *this, "test-patterns",
+      llvm::cl::desc("Test the given patterns"),
+      llvm::cl::init("")};
+
   typedef std::vector<std::tuple<AIE::BufferOp, AIE::LockOp, AIE::DMAChan>>
       lock_allocation_list;
 
@@ -203,7 +703,7 @@ public:
     registry.insert<LLVM::LLVMDialect>();
   }
 
-  uint64_t BufferId;
+  // uint64_t BufferId;
 
   const int tile_dma_channels = 2;
   std::vector<std::tuple<int32_t, int64_t, int64_t, int64_t>>
@@ -290,36 +790,6 @@ public:
       t = t->getNextNode();
     b.setInsertionPointAfter(t);
     return b.create<AIE::LockOp>(tile.getLoc(), tile, new_id);
-  }
-
-  AIE::BufferOp allocateBufferOp(ModuleOp module, MemRefType memrefTy,
-                                 AIE::TileOp tile,
-                                 mlir::StringAttr attr = nullptr, int x = -1,
-                                 int y = -1) {
-    OpBuilder builder(module);
-    Operation *t = tile.getOperation();
-    while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
-      t = t->getNextNode();
-    builder.setInsertionPointAfter(t);
-    AIE::BufferOp bufferOp =
-        builder.create<AIE::BufferOp>(tile->getLoc(), memrefTy, tile);
-
-    // if a symbol name was passed in, use it to make
-    // the buffer symbol name as "sym_name_x_y",
-    // otherwise we'll make a generic symbol name "bufN"
-    std::stringstream ss;
-    if (attr) {
-      if (x >= 0 && y >= 0)
-        ss << attr.getValue().str() << "_" << x << "_" << y;
-      else
-        ss << attr.getValue().str() << BufferId++;
-    } else {
-      ss << "buf" << BufferId++;
-    }
-    bufferOp->setAttr(SymbolTable::getSymbolAttrName(),
-                      StringAttr::get(module.getContext(), ss.str()));
-
-    return bufferOp;
   }
 
   AIE::LockOp getLockForTileDMA(ModuleOp aie_module,
@@ -542,101 +1012,6 @@ public:
     return herd_meta;
   }
 
-  bool isInSet(int64_t x, int64_t y, AffineIfOp aif) {
-    auto is = aif.getIntegerSet();
-    if (is.getConstraints().size() != 2)
-      return false;
-
-    SmallVector<AffineExpr, 2> dims{
-        getAffineConstantExpr(x, aif->getContext()),
-        getAffineConstantExpr(y, aif->getContext()),
-    };
-
-    auto newIs = is.replaceDimsAndSymbols({}, dims, 0, 2);
-    auto constraints = newIs.getConstraints();
-    auto eqFlags = newIs.getEqFlags();
-
-    int i = 0;
-    for (auto c : constraints) {
-      auto expr = simplifyAffineExpr(c, 0, 1).dyn_cast<AffineConstantExpr>();
-      if (!expr)
-        return false;
-      if (eqFlags[i++]) {
-        if (expr.getValue() != 0)
-          return false;
-      } else {
-        if (expr.getValue() < 0)
-          return false;
-      }
-    }
-
-    return true;
-  }
-
-  void specializeHerdAffineIf(AIE::CoreOp core) {
-    SmallVector<Operation *, 8> erased;
-    core.walk([&](AffineIfOp aif) {
-      SmallVector<int64_t, 2> operands;
-      for (auto o : aif.getOperands()) {
-        auto v = dyn_cast<arith::ConstantIndexOp>(o.getDefiningOp());
-        if (!v)
-          return;
-        operands.push_back(v.value());
-      }
-      auto x = operands[0];
-      auto y = operands[1];
-      Block *bb = nullptr;
-      if (isInSet(x, y, aif)) {
-        bb = aif.getThenBlock();
-      } else if (aif.hasElse()) {
-        bb = aif.getElseBlock();
-      }
-      if (bb) {
-        auto t = bb->getTerminator();
-        auto &ops = bb->getOperations();
-        aif->getBlock()->getOperations().splice(Block::iterator(aif), ops,
-                                                ops.begin(), --ops.end());
-        for (int i = 0, e = aif.getNumResults(); i < e; i++)
-          aif.getResult(i).replaceAllUsesWith(t->getOperand(i));
-      }
-      erased.push_back(aif);
-    });
-    for (auto a : erased)
-      a->erase();
-  }
-
-  // remove any remaining air.execute, turning them
-  // back into sequential code
-  void lowerAirRegions(AIE::CoreOp core) {
-    SmallVector<Operation *, 8> erased;
-    core.walk([&](xilinx::air::ExecuteOp rop) {
-      auto &bb = rop.body().front();
-      unsigned idx = 0;
-      for (auto &arg : bb.getArguments()) {
-        arg.replaceAllUsesWith(rop.getOperand(idx));
-        idx++;
-      }
-      if (rop.getNumResults() > 0) {
-        OpBuilder builder(rop);
-        auto w = builder.create<xilinx::air::WaitAllOp>(
-            core.getLoc(), air::AsyncTokenType::get(rop->getContext()),
-            SmallVector<Value, 1>{});
-        rop.getResult(0).replaceAllUsesWith(w.getResult(0));
-      }
-      rop.walk([&](xilinx::air::ExecuteTerminatorOp t) {
-        int resultIdx = 1;
-        for (auto r : t->getOperands())
-          rop.getResult(resultIdx++).replaceAllUsesWith(r);
-      });
-      auto &ops = bb.getOperations();
-      rop->getBlock()->getOperations().splice(Block::iterator(rop), ops,
-                                              ops.begin(), --ops.end());
-      erased.push_back(rop);
-    });
-    for (auto a : erased)
-      a->erase();
-  }
-
   // remove air.async.token from scf.for
   void lowerScfAirEvents(AIE::CoreOp core) {
     SmallVector<Operation *, 8> erased;
@@ -741,7 +1116,7 @@ public:
                                           {}, (int)air::MemorySpace::L1);
           // allocate buffer+lock
           auto buf = allocateBufferOp(
-              aie_module, memrefTy, core.getTileOp(),
+              memrefTy, core.getTileOp(),
               StringAttr::get(aie_module.getContext(), "pipebuf"));
           auto lockOp = allocateLockOp(aie_module, core.getTileOp());
 
@@ -1016,254 +1391,12 @@ public:
     }
   }
 
-  void allocL1Buffers(ModuleOp module, BlockAndValueMapping &remap,
-                      std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap) {
-
-    SmallVector<AIE::CoreOp, 32> cores;
-    for (auto c : module.getOps<AIE::CoreOp>())
-      cores.push_back(c);
-
-    OpBuilder builder(module);
-
-    for (AIE::CoreOp core : cores) {
-      AIE::TileOp tile = core.getTileOp();
-      // generate a buffer for each alloc into L1
-      core.walk([&](Operation *op) {
-        auto alloc = dyn_cast<memref::AllocOp>(op);
-        auto cast = dyn_cast<bufferization::ToMemrefOp>(op);
-        if (!(alloc || cast))
-          return;
-
-        MemRefType memrefTy = nullptr;
-        if (alloc)
-          memrefTy = alloc.getType();
-        if (cast)
-          memrefTy = cast.getType().cast<MemRefType>();
-
-        if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
-          return;
-
-        builder.setInsertionPointAfter(tile);
-        auto herd = tileToHerdMap[core.getTileOp()];
-        int64_t col_offset = herd.getColOffset();
-        int64_t row_offset = herd.getRowOffset();
-
-        auto buffer = allocateBufferOp(
-            module, memrefTy, tile,
-            op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
-            tile.col() - col_offset, tile.row() - row_offset);
-        // map uses of the alloc to the new buffer
-        remap.map(op->getResult(0), buffer);
-
-        builder.setInsertionPoint(op);
-        if (cast)
-          builder.create<memref::TensorStoreOp>(cast.getLoc(),
-                                                cast.getOperand(), buffer);
-      });
-    }
-  }
-
-  void specializeHerdAffineIf(ModuleOp module) {
-    SmallVector<AIE::CoreOp, 32> cores;
-    for (auto c : module.getOps<AIE::CoreOp>())
-      cores.push_back(c);
-    for (AIE::CoreOp core : cores)
-      specializeHerdAffineIf(core);
-  }
-
-  void lowerAirRegions(ModuleOp module) {
-    SmallVector<AIE::CoreOp, 32> cores;
-    for (auto c : module.getOps<AIE::CoreOp>())
-      cores.push_back(c);
-    for (AIE::CoreOp core : cores)
-      lowerAirRegions(core);
-  }
-
   void lowerScfAirEvents(ModuleOp module) {
     SmallVector<AIE::CoreOp, 32> cores;
     for (auto c : module.getOps<AIE::CoreOp>())
       cores.push_back(c);
     for (AIE::CoreOp core : cores)
       lowerScfAirEvents(core);
-  }
-
-  void createAIEModulesAndOutlineCores(
-      ModuleOp module,
-      std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> &aie_modules,
-      std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap) {
-
-    module.walk([&](xilinx::air::PartitionOp p) {
-      std::string partition_name;
-      if (auto attr =
-              p->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-        partition_name = attr.getValue().str();
-      else
-        partition_name = "partition_" + std::to_string(aie_modules.size());
-      std::string aie_module_name = "aie." + partition_name;
-      ModuleOp aie_module =
-          ModuleOp::create(module.getLoc(), StringRef(aie_module_name));
-
-      p.walk([&](xilinx::air::HerdOp h) {
-        aie_modules.push_back({aie_module, h});
-      });
-    });
-
-    module.walk([&](xilinx::air::HerdOp h) {
-      std::string partition_name;
-      partition_name = "partition_" + std::to_string(aie_modules.size());
-      std::string aie_module_name = "aie." + partition_name;
-      ModuleOp aie_module =
-          ModuleOp::create(module.getLoc(), StringRef(aie_module_name));
-
-      aie_modules.push_back({aie_module, h});
-    });
-
-    for (auto &p : aie_modules) {
-      ModuleOp aie_module = std::get<0>(p);
-      xilinx::air::HerdOp h = std::get<1>(p);
-
-      OpBuilder builder(aie_module);
-      builder.setInsertionPointToStart(aie_module.getBody());
-
-      SmallVector<Value, 2> herd_size = h.getSizeOperands();
-      if (!isa<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()) ||
-          !isa<arith::ConstantIndexOp>(herd_size[1].getDefiningOp())) {
-        llvm::errs() << "Only constant sized herds are supported";
-        return;
-      }
-
-      int64_t herd_size_x =
-          cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
-      int64_t herd_size_y =
-          cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
-
-      // use the command line offsets unless the attribute is present
-      int64_t col_offset = AIRToAIEColOffset;
-      int64_t row_offset = AIRToAIERowOffset;
-      auto col_name = xilinx::air::HerdOp::getColOffsetAttrName();
-      auto row_name = xilinx::air::HerdOp::getRowOffsetAttrName();
-      if (h->getAttrOfType<IntegerAttr>(col_name))
-        col_offset = h.getColOffset();
-      else
-        h->setAttr(col_name,
-                   IntegerAttr::get(IntegerType::get(h->getContext(), 32),
-                                    col_offset));
-      if (h->getAttrOfType<IntegerAttr>(row_name))
-        row_offset = h.getRowOffset();
-      else
-        h->setAttr(row_name,
-                   IntegerAttr::get(IntegerType::get(h->getContext(), 32),
-                                    row_offset));
-
-      auto ctx = module.getContext();
-      for (auto y = 0; y < herd_size_y; y++) {
-        for (auto x = 0; x < herd_size_x; x++) {
-          auto hloc = h.getLoc();
-          BlockAndValueMapping remap;
-          auto phys_x = x + col_offset;
-          auto phys_y = y + row_offset;
-
-          // make the AIE.tile
-          auto tile = getPhysTileOp(aie_module, phys_x, phys_y);
-
-          Operation *t = tile.getOperation();
-          while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
-            t = t->getNextNode();
-          builder.setInsertionPointAfter(t);
-
-          // make the AIE.core for the tile core
-          auto core = tile.getCoreOp();
-          if (!core) {
-            core = builder.create<AIE::CoreOp>(hloc, tile);
-            tileToHerdMap[tile] = h;
-            std::string herd_name =
-                aie_module.getName()->str().substr(strlen("aie."));
-            core->setAttr(
-                "elf_file",
-                StringAttr::get(ctx, herd_name + "_core_" +
-                                         std::to_string(phys_x) + "_" +
-                                         std::to_string(phys_y) + ".elf"));
-            if (auto a = h->getAttrOfType<StringAttr>("link_with"))
-              core->setAttr("link_with", a);
-          }
-
-          // the buffers and locks created below need to go before the core and
-          // mem
-          builder.setInsertionPoint(core);
-
-          assert((h.body().getBlocks().size() == 1) &&
-                 "Launch body can only contain one Block");
-
-          // generate the AIE.core body
-          //
-          OpBuilder core_builder(core);
-          Block *core_bb = core_builder.createBlock(&core.body());
-
-          Block *entry_bb = core_builder.createBlock(core_bb);
-          core_builder.setInsertionPointToEnd(entry_bb);
-          core_builder.create<cf::BranchOp>(hloc, core_bb);
-          core_builder.setInsertionPointToEnd(core_bb);
-
-          // map the tile ids and herd size to constants
-          remap.map(h.getIds()[0],
-                    core_builder.create<arith::ConstantIndexOp>(hloc, x));
-          remap.map(h.getIds()[1],
-                    core_builder.create<arith::ConstantIndexOp>(hloc, y));
-          remap.map(h.getSize()[0], core_builder.create<arith::ConstantIndexOp>(
-                                        hloc, herd_size_x));
-          remap.map(h.getSize()[1], core_builder.create<arith::ConstantIndexOp>(
-                                        hloc, herd_size_y));
-
-          for (auto a : h.getKernelArguments()) {
-            auto memrefTy = a.getType().dyn_cast<MemRefType>();
-            if (!memrefTy)
-              continue;
-
-            OpBuilder b(aie_module);
-            b.setInsertionPoint(core);
-
-            int which_try = 0;
-            std::string sym_name = "__air_herd_arg_0";
-            while (aie_module.lookupSymbol(sym_name))
-              sym_name = "__air_herd_arg_" + std::to_string(++which_try);
-            b.create<memref::GlobalOp>(builder.getUnknownLoc(), sym_name,
-                                       builder.getStringAttr("public"),
-                                       memrefTy, nullptr, false, nullptr);
-
-            auto m = core_builder.create<memref::GetGlobalOp>(
-                hloc, SmallVector<Type, 1>{a.getType()}, sym_name);
-            remap.map(a, m);
-          }
-
-          Region &r = h.getRegion();
-          r.cloneInto(&core.body(), remap);
-
-          Block *launch_bb = remap.lookup(&r.front());
-          core_builder.create<cf::BranchOp>(hloc, launch_bb);
-          core_builder.setInsertionPoint(launch_bb->getTerminator());
-
-          if (AIRToAIEEmitWhileLoop)
-            core_builder.create<cf::BranchOp>(hloc, core_bb);
-          else
-            core_builder.create<AIE::EndOp>(hloc);
-
-          core.walk([&](Operation *op) {
-            if (auto call = dyn_cast<func::CallOp>(op)) {
-              auto fn = aie_module.lookupSymbol<func::FuncOp>(call.getCallee());
-              if (!fn) {
-                fn = func::FuncOp::create(aie_module.getLoc(), call.getCallee(),
-                                          call.getCalleeType());
-                fn.setPrivate();
-                aie_module.push_back(fn);
-              }
-            }
-          });
-
-          // erase air.herd_termintor ops
-          launch_bb->walk([&](air::HerdTerminatorOp op) { op->erase(); });
-        }
-      }
-    }
   }
 
   void
@@ -1309,7 +1442,30 @@ public:
     }
   }
 
+  void runTestPatterns() {
+
+    auto m = getOperation();
+    auto ctx = m->getContext();
+
+    RewritePatternSet patterns(ctx);
+    std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
+
+    if (AIRToAIETestPatterns.find("lower-air-execute") != std::string::npos)
+      patterns.insert<LowerAIRExecutePattern>(ctx);
+    if (AIRToAIETestPatterns.find("alloc-l1-buffers") != std::string::npos)
+      patterns.insert<AllocL1BuffersPattern>(ctx, tileToHerdMap);
+    if (AIRToAIETestPatterns.find("specialize-affine-if") != std::string::npos)
+      patterns.insert<SpecializeAffineIfPattern>(ctx);
+  
+    (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
+  }
+
   void runOnOperation() override {
+
+    if (!AIRToAIETestPatterns.empty()) {
+      runTestPatterns();
+      return;
+    }
 
     auto module = getOperation();
     OpBuilder builder(module);
@@ -1325,7 +1481,12 @@ public:
     std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;
 
     std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
-    createAIEModulesAndOutlineCores(module, aie_modules, tileToHerdMap);
+    AIRToAIEOptions options = {
+      .col_offset = AIRToAIEColOffset,
+      .row_offset = AIRToAIERowOffset,
+      .emit_while = AIRToAIEEmitWhileLoop
+    };
+    createAIEModulesAndOutlineCores(module, aie_modules, tileToHerdMap, options);
 
     std::set<ModuleOp> seen;
     for (auto &p : aie_modules) {
@@ -1337,7 +1498,7 @@ public:
         seen.insert(m);
 
         specializeHerdAffineIf(m);
-        lowerAirRegions(m);
+        lowerAIRExecute(m);
         lowerScfAirEvents(m);
 
         // buffer_map maps allocs to their AIE.buffer replacement
@@ -1499,13 +1660,49 @@ public:
     }
   }
 
-private:
 };
 
 } // namespace
 
 namespace xilinx {
 namespace air {
+
+FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter, air::PartitionOp p) {
+  std::string partition_name = "partition_0";
+  if (auto attr =
+          p->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+    partition_name = attr.getValue().str();
+
+  std::string aie_module_name = "aie." + partition_name;
+  ModuleOp aie_module =
+      ModuleOp::create(rewriter.getUnknownLoc(), StringRef(aie_module_name));
+
+  AIRToAIEOptions options = {
+    .col_offset = 7,
+    .row_offset = 2,
+    .emit_while = false
+  };
+  std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> aie_modules;
+  p.walk([&](xilinx::air::HerdOp h) {
+    aie_modules.push_back({aie_module, h});
+  });
+  std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
+  for (auto &p : aie_modules) {
+    ModuleOp aie_module = std::get<0>(p);
+    xilinx::air::HerdOp h = std::get<1>(p);
+
+    outlineAIECores(rewriter, aie_module, h, tileToHerdMap, options);
+
+    auto ctx = aie_module->getContext();
+    RewritePatternSet patterns(ctx);
+    patterns.insert<SpecializeAffineIfPattern>(ctx);
+    patterns.insert<LowerAIRExecutePattern>(ctx);
+    patterns.insert<AllocL1BuffersPattern>(ctx, tileToHerdMap);
+    (void)applyPatternsAndFoldGreedily(aie_module, std::move(patterns));
+  }
+
+  return aie_module;
+}
 
 std::unique_ptr<mlir::Pass> createAIRToAIEPass() {
   return std::make_unique<AIRToAIEPass>();

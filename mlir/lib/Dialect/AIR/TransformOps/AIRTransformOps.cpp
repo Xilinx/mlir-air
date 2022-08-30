@@ -1,5 +1,6 @@
 // (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
 
+#include "air/Conversion/AIRToAIEPass.h"
 #include "air/Dialect/AIR/AIRTransformOps.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 
@@ -39,8 +40,44 @@ transform::GetPartitionForOp::apply(transform::TransformResults &results,
     partitions.insert(partition);
   }
   results.set(getResult().cast<OpResult>(), partitions.getArrayRef());
-  return DiagnosedSilenceableFailure::success();
+  return DiagnosedSilenceableFailure(success());
 }
+
+//===----------------------------------------------------------------------===//
+// PartitionToAIEOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+transform::PartitionToAIEOp::applyToOne(xilinx::air::PartitionOp target,
+                                   SmallVectorImpl<Operation *> &results,
+                                   transform::TransformState &state) {
+  SimpleRewriter rewriter(target->getContext());
+  FailureOr<ModuleOp> res =
+      convertAIRToAIE(rewriter, target);
+  if (failed(res))
+    return DiagnosedSilenceableFailure::definiteFailure();
+  results.push_back(res->getOperation());
+  return DiagnosedSilenceableFailure(success());
+}
+
+//===----------------------------------------------------------------------===//
+// MapSubviewsOp
+//===----------------------------------------------------------------------===//
+
+// DiagnosedSilenceableFailure
+// transform::MapSubviewsOp::apply(transform::TransformResults &results,
+//                                     transform::TransformState &state) {
+//   SetVector<Operation *> memrefs;
+//   for (Operation *target : state.getPayloadOps(getTarget())) {
+//     MLIRContext *ctx = target->getParentOfType<func::FuncOp>().getContext();
+//     RewritePatternSet patterns(ctx);
+//     patterns.insert<RemoveSubViewOpsPattern, FoldSubViewOpsPattern,
+//                     RemoveViewOpsPattern, HoistReduceBufferPattern>(ctx);
+//     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+//   }
+//   results.set(getResult().cast<OpResult>(), memrefs.getArrayRef());
+//   return DiagnosedSilenceableFailure::success();
+// }
 
 //===----------------------------------------------------------------------===//
 // Transform op registration

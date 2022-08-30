@@ -14,6 +14,12 @@ class FuncOp;
 } // namespace func
 } // namespace mlir
 
+namespace xilinx {
+namespace air {
+class PartitionOp;
+}
+}
+
 #define GET_OP_CLASSES
 #include "air/Dialect/AIR/AIRTransformOps.h.inc"
 

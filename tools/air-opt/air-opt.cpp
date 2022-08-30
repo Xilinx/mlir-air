@@ -34,18 +34,20 @@ void registerTestTransformDialectInterpreterPass();
 } // namespace mlir
 
 int main(int argc, char **argv) {
-  registerAllPasses();
-  xilinx::air::registerAllPasses();
-  mlir::test::registerTestTransformDialectInterpreterPass();
+
   DialectRegistry registry;
   registerAllDialects(registry);
-  ::test::registerTestDialect(registry);
-  ::test::registerTestTransformDialectExtension(registry);
-
   xilinx::air::registerAllDialects(registry);
   registry.insert<xilinx::AIE::AIEDialect>();
 
+  registerAllPasses();
+  xilinx::air::registerAllPasses();
+
+  mlir::test::registerTestTransformDialectInterpreterPass();
+  ::test::registerTestDialect(registry);
+  ::test::registerTestTransformDialectExtension(registry);
+
   return failed(MlirOptMain(argc, argv, "MLIR-AIR modular optimizer driver\n",
                             registry,
-                            /*preloadDialectsInContext=*/false));
+                            /*preloadDialectsInContext=*/true));
 }
