@@ -8,8 +8,8 @@ extern "C" {
 #include "xil_printf.h"
 #include "pvr.h"
 
-#include "xaiengine.h"
-#include "mb_interface.h"
+//#include "xaiengine.h"
+//#include "mb_interface.h"
 
 #include "acdc_queue.h"
 #include "hsa_defs.h"
@@ -20,6 +20,15 @@ extern "C" {
 #define XAIE_NUM_ROWS            8
 #define XAIE_NUM_COLS           50
 #define XAIE_ADDR_ARRAY_OFF     0x800
+
+#define XAIEGBL_TILE_ADDR_ARR_SHIFT         30U
+#define XAIEGBL_TILE_ADDR_ROW_SHIFT         18U
+#define XAIEGBL_TILE_ADDR_COL_SHIFT         23U
+
+#define XAIEDMA_SHIM_CHNUM_S2MM0      0U
+#define XAIEDMA_SHIM_CHNUM_S2MM1      1U
+#define XAIEDMA_SHIM_CHNUM_MM2S0      2U
+#define XAIEDMA_SHIM_CHNUM_MM2S1      3U
 
 #define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
 #define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
@@ -61,8 +70,6 @@ HerdConfig HerdCfgInst;
 
 namespace xaie {
 
-XAieGbl_Tile TempTileInst;
-
 u64 getTileAddr(u16 ColIdx, u16 RowIdx) 
 {
   u64 TileAddr = 0;
@@ -88,6 +95,36 @@ u64 getTileAddr(u16 ColIdx, u16 RowIdx)
   return TileAddr;
 }
 
+static inline u32 in32(u64 Addr)
+{
+  /* read 32 bit value from specified address */
+  return *(volatile u32 *) Addr;
+}
+
+static inline void out32(u64 Addr, u32 Value)
+{
+  /* write 32 bit value to specified address */
+  volatile u32 *LocalAddr = (volatile u32 *)Addr;
+  *LocalAddr = Value;
+}
+
+u32 maskpoll32(u64 Addr, u32 Mask, u32 Value, u32 TimeOut)
+{
+  u32 Ret = 1;
+
+  u32 Count = 10 + TimeOut;
+
+  while (Count > 0U) {
+    if ((in32(Addr) & Mask) == Value) {
+      Ret = 0;
+      break;
+    }
+    Count--;
+  }
+
+  return Ret;
+}
+
 } // namespace xaie
 
 
@@ -109,7 +146,7 @@ void xaie_shim_dma_wait_idle(uint64_t TileAddr, int direction, int channel) {
     shimDMAchannel += XAIEDMA_SHIM_CHNUM_MM2S0;
     status_register_offset = 0x1d164;
   }
-  while ((XAieGbl_Read32(TileAddr + status_register_offset) >> status_mask_shift) & 0b11);
+  while ((xaie::in32(TileAddr + status_register_offset) >> status_mask_shift) & 0b11);
 }
 
 uint32_t xaie_shim_dma_get_outstanding(uint64_t TileAddr, int direction, int channel) {
@@ -130,7 +167,7 @@ uint32_t xaie_shim_dma_get_outstanding(uint64_t TileAddr, int direction, int cha
     shimDMAchannel += XAIEDMA_SHIM_CHNUM_MM2S0;
     status_register_offset = 0x1d164;
   }
-  uint32_t outstanding = (XAieGbl_Read32(TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
+  uint32_t outstanding = (xaie::in32(TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
   return outstanding;
 }
 
@@ -188,7 +225,7 @@ int xaie_shim_dma_push_bd(uint64_t TileAddr, int direction, int channel, int col
   }
 
   uint32_t start_bd = 4*shimDMAchannel; // shimDMAchannel<<2;
-  uint32_t outstanding = (XAieGbl_Read32(TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
+  uint32_t outstanding = (xaie::in32(TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
   // If outstanding >=4, we're in trouble!!!!
   // Theoretically this should never occur due to check in do_packet_nd_memcpy 
   if (outstanding >=4) { // NOTE had this at 3? // What is proper 'stalled' threshold? 
@@ -196,7 +233,7 @@ int xaie_shim_dma_push_bd(uint64_t TileAddr, int direction, int channel, int col
       air_printf("\n\r *** BD OVERFLOW in shimDMA channel %d *** \n\r",shimDMAchannel);
     bool waiting = true;
     while (waiting) {
-      outstanding = (XAieGbl_Read32(TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
+      outstanding = (xaie::in32(TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
       waiting = (outstanding > 3); // NOTE maybe >= 3
       air_printf("*** Stalled in shimDMA channel %d outstanding = %d *** \n\r",shimDMAchannel,outstanding+1);
     } // WARNING this can lead to an endless loop 
@@ -214,30 +251,30 @@ int xaie_shim_dma_push_bd(uint64_t TileAddr, int direction, int channel, int col
   //uint32_t bd = start_bd+last_bd[shimDMAchannel][dma];
   //last_bd[shimDMAchannel][dma] = (last_bd[shimDMAchannel][dma]==3)?0:last_bd[shimDMAchannel][dma]+1;
   uint32_t bd_offset = bd*0x14;
-  XAieGbl_Write32(TileAddr + 0x0001D008+(bd_offset), 0x0);           // Mark the BD as invalid
+  xaie::out32(TileAddr + 0x0001D008+(bd_offset), 0x0);           // Mark the BD as invalid
 
   // Set the registers directly ...
   uint32_t base_address =  0x1d000 + bd_offset;
-  XAieGbl_Write32(TileAddr + base_address + 0x00, LOW_ADDR((u64)addr));
-  XAieGbl_Write32(TileAddr + base_address + 0x04, len >> 2); // We pass in bytes, but the shim DMA can ony deal with 32 bits
+  xaie::out32(TileAddr + base_address + 0x00, LOW_ADDR((u64)addr));
+  xaie::out32(TileAddr + base_address + 0x04, len >> 2); // We pass in bytes, but the shim DMA can ony deal with 32 bits
   u32 control = (HIGH_ADDR((u64)addr) << 16) | 1;
-  XAieGbl_Write32(TileAddr + base_address + 0x08, control);
-  XAieGbl_Write32(TileAddr + base_address + 0x0C, 0x410); // Burst len [10:9] = 2 (16)
+  xaie::out32(TileAddr + base_address + 0x08, control);
+  xaie::out32(TileAddr + base_address + 0x0C, 0x410); // Burst len [10:9] = 2 (16)
                                                                 // QoS [8:5] = 0 (best effort)
                                                                 // Secure bit [4] = 1 (set)
-  XAieGbl_Write32(TileAddr + base_address + 0x10, 0x0);
+  xaie::out32(TileAddr + base_address + 0x10, 0x0);
 
 
   // Check if the channel is running or not
-  uint32_t precheck_status = (XAieGbl_Read32(TileAddr + status_register_offset) >> status_mask_shift) & 0b11;
+  uint32_t precheck_status = (xaie::in32(TileAddr + status_register_offset) >> status_mask_shift) & 0b11;
   if (precheck_status == 0b00) {
-    XAieGbl_Write32(TileAddr + control_register_offset, 0xb001); // Stream traffic can run, we can issue AXI-MM, and the channel is enabled
+    xaie::out32(TileAddr + control_register_offset, 0xb001); // Stream traffic can run, we can issue AXI-MM, and the channel is enabled
   }
   // Now push into the queue
-  XAieGbl_Write32(TileAddr + start_queue_register_offset, bd);
+  xaie::out32(TileAddr + start_queue_register_offset, bd);
 
 #if CHATTY
-  outstanding = (XAieGbl_Read32(TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
+  outstanding = (xaie::in32(TileAddr + status_register_offset) >> start_queue_size_mask_shift) & 0b111;
   air_printf("Outstanding post: %d\n\r", outstanding);
   air_printf("bd pushed as bd %d\n\r",bd);
  
@@ -255,46 +292,48 @@ int xaie_shim_dma_push_bd(uint64_t TileAddr, int direction, int channel, int col
 
 int xaie_lock_release(u16 col, u16 row, u32 lock_id, u32 val)
 {
-  XAieGbl_Tile *tile = &xaie::TempTileInst;
-  tile->TileAddr = xaie::getTileAddr(col,row);
+  u64 Addr = xaie::getTileAddr(col,row);
+  u64 LockOfst = 0x0001E020;
   if (row != 0) 
-    tile->TileType = XAIEGBL_TILE_TYPE_AIETILE;
+    LockOfst = 0x0001E020 + 0x10*(val&0x1);
   else { 
     switch (col % 4) {
     case 0:
     case 1:
-      tile->TileType = XAIEGBL_TILE_TYPE_SHIMPL;
+      LockOfst = 0x00014020 + 0x10*(val&0x1);
       break;
     default:
-      tile->TileType = XAIEGBL_TILE_TYPE_SHIMNOC;
+      LockOfst = 0x00014020 + 0x10*(val&0x1);
       break;
     }
   }
-  XAieTile_LockRelease(tile, lock_id, val, 0);
+  xaie::maskpoll32(Addr + LockOfst + 0x80*lock_id, 0x1, 0x1, 0); 
+  //XAieTile_LockRelease(tile, lock_id, val, 0);
   return 1;
 }
 
 int xaie_lock_acquire_nb(u16 col, u16 row, u32 lock_id, u32 val)
 {
-  XAieGbl_Tile *tile = &xaie::TempTileInst;
-  tile->TileAddr = xaie::getTileAddr(col,row);
+  u64 Addr = xaie::getTileAddr(col,row);
+  u64 LockOfst = 0x0001E060;
   if (row != 0) 
-    tile->TileType = XAIEGBL_TILE_TYPE_AIETILE;
+    LockOfst = 0x0001E060 + 0x10*(val&0x1);
   else { 
     switch (col % 4) {
     case 0:
     case 1:
-      tile->TileType = XAIEGBL_TILE_TYPE_SHIMPL;
+      LockOfst = 0x00014060 + 0x10*(val&0x1);
       break;
     default:
-      tile->TileType = XAIEGBL_TILE_TYPE_SHIMNOC;
+      LockOfst = 0x00014060 + 0x10*(val&0x1);
       break;
     }
   }
   u8 lock_ret = 0;
   u32 loop = 0;
   while ((!lock_ret) && (loop < 512)) {
-    lock_ret = XAieTile_LockAcquire(tile, lock_id, val, 10000);
+    lock_ret = xaie::maskpoll32(Addr + LockOfst + 0x80*lock_id, 0x1, 0x1, 100);
+    //lock_ret = XAieTile_LockAcquire(tile, lock_id, val, 10000);
     loop++;
   }
   if (loop == 512) {
@@ -304,19 +343,14 @@ int xaie_lock_acquire_nb(u16 col, u16 row, u32 lock_id, u32 val)
   return 1;
 }
 
-void xaie_l2_dma_init(int col)
-{
-  // Configure PLIO enable and up/downsizer
-  XAieGbl_Write32(xaie::getTileAddr(col,0) + 0x00033008, 0xFF);
-}
 void xaie_shim_dma_init(int col)
 {
   // Invalidate all BDs by writing to their buffer control register
   for (int ch=0;ch<4;ch++) {
-    XAieGbl_Write32(xaie::getTileAddr(col,0) + 0x0001D140 + 0x8*ch, 0x00); // Disable all channels
+    xaie::out32(xaie::getTileAddr(col,0) + 0x0001D140 + 0x8*ch, 0x00); // Disable all channels
   }
   for (int bd=0;bd<16;bd++) {
-    XAieGbl_Write32(xaie::getTileAddr(col,0) + 0x0001D008 + 0x14*bd, 0);
+    xaie::out32(xaie::getTileAddr(col,0) + 0x0001D008 + 0x14*bd, 0);
   }
 }
 
@@ -339,10 +373,6 @@ void xaie_herd_init(int col_start, int num_cols, int row_start, int num_rows)
   HerdCfgInst.num_cols = num_cols;
   HerdCfgInst.row_start = row_start;
   HerdCfgInst.num_rows = num_rows;
-
-  for (int col=0; col<num_cols; col++) {
-    xaie_l2_dma_init(col+col_start);
-  }
 }
 
 } // namespace
@@ -419,82 +449,6 @@ int queue_create(uint32_t size, queue_t **queue, uint32_t mb_id)
   }
 
   memcpy((void*)queue, (void*)queue_address, sizeof(uint64_t));
-  return 0;
-}
-
-int32_t fsl_outstanding[NUM_COL_DMAS*4] = {0};
-
-void drain_fsls()
-{
-  register uint32_t d;
-  for (int i=0; i<(NUM_COL_DMAS*4); i++) {
-    bool done = false;
-    while (!done) {
-      uint32_t which_stream = 4;
-      if (fsl_outstanding[i]>0) which_stream = i/4;
-      else if (i==(NUM_COL_DMAS*4-1)) return;
-      else break;
-      switch (which_stream) {
-      case 0:
-        getfsl_interruptible(d, 0);
-        fsl_outstanding[i]--;
-        break;
-      case 1:
-        getfsl_interruptible(d, 1);
-        fsl_outstanding[i]--;
-        break;
-      case 2:
-        getfsl_interruptible(d, 2);
-        fsl_outstanding[i]--;
-        break;
-      case 3:
-        getfsl_interruptible(d, 3);
-        fsl_outstanding[i]--;
-        break;
-      default:
-        break;
-      }
-      air_printf("Drain fsl %d %d : id %d\n\r",which_stream,i,d);
-    }
-  }
-}
-
-int drain_fsl(int fsl)
-{
-  register uint32_t d;
-  register uint32_t v;
-  bool done = false;
-  while (!done) {
-    uint32_t which_stream = 4;
-    if (fsl_outstanding[fsl]>0) which_stream = fsl/4;
-    else return 0;
-    switch (which_stream) {
-    case 0:
-      ngetfsl(d, 0);
-      fsl_isinvalid(v);
-      break;
-    case 1:
-      ngetfsl(d, 1);
-      fsl_isinvalid(v);
-      break;
-    case 2:
-      ngetfsl(d, 2);
-      fsl_isinvalid(v);
-      break;
-    case 3:
-      ngetfsl(d, 3);
-      fsl_isinvalid(v);
-      break;
-    default:
-      break;
-    }
-    air_printf("Get fsl %d %d : invalid %d id %d\n\r",which_stream,fsl,v,d);
-    if (!v) { 
-      fsl_outstanding[fsl]--;
-    } else {
-      return 1;
-    }
-  }
   return 0;
 }
 
@@ -588,7 +542,7 @@ void handle_packet_get_info(dispatch_packet_t *pkt, uint32_t mb_id)
   int user1 = MICROBLAZE_PVR_USER1(pvr);
   int user2 = MICROBLAZE_PVR_USER2(pvr);
   char name[] = {'A','C','D','C','\0'};
-  char vend[] = {'X','i','l','i','n','x','\0'};
+  char vend[] = {'A','M','D','\0'};
 
   // TODO change this to use pkt->return_address
   switch(attribute) {
@@ -631,7 +585,7 @@ void handle_packet_get_info(dispatch_packet_t *pkt, uint32_t mb_id)
   }
 }
 
-uint64_t cdma_base = 0x0202C0000000UL;
+//uint64_t cdma_base = 0x0202C0000000UL;
 //uint64_t cdma_base1 = 0x020340000000UL;
 uint64_t cfg_cdma_base = 0x000044A00000UL;
 
@@ -671,27 +625,6 @@ void handle_packet_sg_cdma(dispatch_packet_t *pkt)
   //xil_printf("CDMA usec B %4u A %6u A-B %6u\n\r",before, after, (after - before));
 }
 
-void handle_packet_cdma(dispatch_packet_t *pkt)
-{
-  // packet is in active phase
-  packet_set_active(pkt, true);
-  volatile uint32_t *cdmab = (volatile uint32_t *)(cdma_base);
-  if (CHATTY) {
-    uint32_t status = cdmab[1];
-    air_printf("CMDA raw %x idle %x\n\r",status,status&2);
-  }
-  uint64_t daddr = (pkt->arg[0]);
-  uint64_t saddr = (pkt->arg[1]);
-  uint32_t bytes = (pkt->arg[2]);
-  cdmab[0] = 0x0; // unset SG mode 
-  cdmab[6] = saddr&0xffffffff; 
-  cdmab[7] = saddr>>32; 
-  cdmab[8] = daddr&0xffffffff; 
-  cdmab[9] = daddr>>32;  
-  cdmab[10] = bytes;
-  while (!(cdmab[1]&2)) air_printf("CMDA wait...\n\r");
-}
-
 void handle_packet_xaie_lock(dispatch_packet_t *pkt)
 {
   // packet is in active phase
@@ -712,77 +645,6 @@ void handle_packet_xaie_lock(dispatch_packet_t *pkt)
         xaie_lock_release(HerdCfgInst.col_start+start_col+col, HerdCfgInst.row_start+start_row+row, lock_id, val);
     }
   }
-}
-
-void handle_packet_put_stream(dispatch_packet_t *pkt)
-{
-  // packet is in active phase
-  packet_set_active(pkt, true);
-
-  uint64_t which_stream = pkt->arg[0];
-  uint64_t data = pkt->arg[1];
-
-  register uint32_t d0 = data & 0xffffffff;
-  register uint32_t d1 = data >> 32;
-
-  bool isdma = (d1 < 6); 
-  air_printf("Put fsl %d : id %d d0 %x d1 %x\n\r", which_stream, data & 0x1f, d0, d1);
- 
-  switch (which_stream) {
-  case 0:
-    putfsl(d0, 0);
-    cputfsl(d1, 0);
-    if (isdma) fsl_outstanding[0]++;
-    break;
-  case 1:
-    putfsl(d0, 1);
-    cputfsl(d1, 1);
-    if (isdma) fsl_outstanding[1]++;
-    break;
-  case 2:
-    putfsl(d0, 2);
-    cputfsl(d1, 2);
-    if (isdma) fsl_outstanding[2]++;
-    break;
-  case 3:
-    putfsl(d0, 3);
-    cputfsl(d1, 3);
-    if (isdma) fsl_outstanding[3]++;
-    break;
-  default:
-    break;
-  }
-  drain_fsls();
-}
-
-void handle_packet_get_stream(dispatch_packet_t *pkt)
-{
-  // packet is in active phase
-  packet_set_active(pkt, true);
-
-  uint64_t which_stream = pkt->arg[0];
-  register uint32_t d;
-
-  switch (which_stream) {
-  case 0:
-    ngetfsl(d, 0);
-    break;
-  case 1:
-    ngetfsl(d, 1);
-    break;
-  case 2:
-    ngetfsl(d, 2);
-    break;
-  case 3:
-    ngetfsl(d, 3);
-    break;
-  default:
-    break;
-  }
-
-  air_printf("Get fsl %d : id %d\n\r",which_stream,d);
-  uint32_t *ptr = (uint32_t *)(pkt->return_address);
-  *ptr = d;
 }
 
 void handle_packet_hello(dispatch_packet_t *pkt, uint32_t mb_id)
@@ -906,104 +768,9 @@ int do_packet_nd_memcpy(uint32_t slot)
   return 0;
 }
 
-int do_l2_nd_memcpy(uint32_t slot) {
-  dispatch_packet_t* a_pkt;
-  uint64_t paddr_3d;
-  uint64_t paddr_2d;
-  uint64_t paddr_1d;
-  uint32_t index_4d;
-  uint32_t index_3d;
-  uint32_t index_2d;
-  nd_dma_get_checkpoint(&a_pkt,slot,index_4d,index_3d,index_2d,paddr_3d,paddr_2d,paddr_1d);
-
-  uint32_t length_1d    = (a_pkt->arg[2] >>  0) & 0xffffffff;
-  uint32_t length_2d    = (a_pkt->arg[2] >> 32) & 0x0000ffff;
-  uint32_t stride_2d    = (a_pkt->arg[2] >> 48) & 0x0000ffff;
-  uint32_t length_3d    = (a_pkt->arg[3] >>  0) & 0x0000ffff;
-  uint32_t stride_3d    = (a_pkt->arg[3] >> 16) & 0x0000ffff;
-  uint32_t length_4d    = (a_pkt->arg[3] >> 32) & 0x0000ffff;
-  uint32_t stride_4d    = (a_pkt->arg[3] >> 48) & 0x0000ffff;
-
-  uint16_t channel      = (a_pkt->arg[0] >> 24) & 0x00ff;
-  uint16_t col          = (a_pkt->arg[0] >> 32) & 0x00ff;
-  uint16_t direction    = (a_pkt->arg[0] >> 60) & 0x000f;
-
-  uint64_t which_stream = col-7;
-  int fsl = 4*which_stream + 2*direction + channel;
-
-  direction = (direction==1) ? 0 : 1;
-  register uint32_t d1 = 2 + 2*direction + channel;
-  uint8_t id = fsl;
-
-  bool isdma = (d1 < 6); 
-  if (!isdma) return 0;
-
-  int max_out = (d1 > 3) ? 4 : 16; 
-  uint32_t length = length_1d & 0x3FFF0;
-  uint32_t s_length = length << 14;
-
-  for (;index_4d<length_4d;index_4d++) {
-    for (;index_3d<length_3d;index_3d++) {
-      for (;index_2d<length_2d;index_2d++) {
-        if (fsl_outstanding[fsl] >= max_out) {
-          if (drain_fsl(fsl)) {
-            nd_dma_put_checkpoint(&a_pkt,slot,index_4d,index_3d,index_2d,paddr_3d,paddr_2d,paddr_1d);
-	          return 1;
-          }
-        }
-        uint32_t uram_addr = paddr_1d & 0x1FFF0;
-
-        uint32_t d0 = 0;
-        //id++;
-        id &= 0x1F;
-        d0 |= s_length;
-        d0 |= uram_addr << 1;
-        d0 |= id;
-
-        air_printf("Put fsl %d dir %d ch %d: id %d d0 %x d1 %x\n\r", which_stream, direction, channel, id, d0, d1);
-
-        switch (which_stream) {
-        case 0:
-          putfsl(d0, 0);
-          cputfsl(d1, 0);
-          break;
-        case 1:
-          putfsl(d0, 1);
-          cputfsl(d1, 1);
-          break;
-        case 2:
-          putfsl(d0, 2);
-          cputfsl(d1, 2);
-          break;
-        case 3:
-          putfsl(d0, 3);
-          cputfsl(d1, 3);
-          break;
-        default:
-          break;
-        }
-        fsl_outstanding[fsl]++;
-        air_printf("FSL %d slot %d outs %d\n\r",fsl,slot-NUM_SHIM_DMAS*4,fsl_outstanding[fsl]);
-        paddr_1d += stride_2d;
-      }
-      index_2d = 0;
-      paddr_2d += stride_3d;
-      if (index_3d+1<length_3d) paddr_1d = paddr_2d;
-      else paddr_1d = paddr_3d + stride_4d;
-    }
-    index_3d = 0;
-    paddr_3d += stride_4d;
-    paddr_2d = paddr_3d;
-  }
-
-  drain_fsls();
-
-  return 0;
-}
-
 int do_packet_memcpy(uint32_t slot) {
   if (slot >= NUM_SHIM_DMAS*4) {
-    return do_l2_nd_memcpy(slot);
+    return 0;
   } else {
     return do_packet_nd_memcpy(slot);
   }
@@ -1020,7 +787,7 @@ int stage_packet_nd_memcpy(dispatch_packet_t *pkt, uint32_t slot, uint32_t memor
 
   uint64_t paddr        =  pkt->arg[1];
 
-  if (memory_space == 1 || memory_space == 2) {
+  if (memory_space == 2) {
     nd_dma_put_checkpoint(&pkt,slot,0,0,0,paddr,paddr,paddr);
     staged_nd_slot[slot].valid = 1; 
     return 0;
@@ -1061,24 +828,14 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id)
         if (slot == last_slot) break;
         air_printf("RR check slot: %d\n\r",slot);
         if (staged_nd_slot[slot].valid) {
-          if (slot >= NUM_SHIM_DMAS*4) {
-            dispatch_packet_t* a_pkt = staged_nd_slot[slot].pkt;
-            uint16_t channel      = (a_pkt->arg[0] >> 24) & 0x00ff;
-            uint16_t col          = (a_pkt->arg[0] >> 32) & 0x00ff;
-            uint16_t direction    = (a_pkt->arg[0] >> 60) & 0x000f;
-            active = packet_get_active(a_pkt);
-            int fsl = 4*(col-7) + 2*direction + channel;
-            stalled = drain_fsl(fsl); 
-          } else {
-            dispatch_packet_t* a_pkt = staged_nd_slot[slot].pkt;
-            uint16_t channel      = (a_pkt->arg[0] >> 24) & 0x00ff;
-            uint16_t col          = (a_pkt->arg[0] >> 32) & 0x00ff;
-            //uint16_t logical_col  = (a_pkt->arg[0] >> 32) & 0x00ff;
-            uint16_t direction    = (a_pkt->arg[0] >> 60) & 0x000f;
-            //uint16_t col          = mappedShimDMA[logical_col];
-            stalled = (xaie_shim_dma_get_outstanding(xaie::getTileAddr(col,0),direction,channel) >= 4); 
-            active = packet_get_active(a_pkt);
-          }
+          dispatch_packet_t* a_pkt = staged_nd_slot[slot].pkt;
+          uint16_t channel      = (a_pkt->arg[0] >> 24) & 0x00ff;
+          uint16_t col          = (a_pkt->arg[0] >> 32) & 0x00ff;
+          //uint16_t logical_col  = (a_pkt->arg[0] >> 32) & 0x00ff;
+          uint16_t direction    = (a_pkt->arg[0] >> 60) & 0x000f;
+          //uint16_t col          = mappedShimDMA[logical_col];
+          stalled = (xaie_shim_dma_get_outstanding(xaie::getTileAddr(col,0),direction,channel) >= 4); 
+          active = packet_get_active(a_pkt);
         } else {
           stalled = true;
           active = false;
@@ -1087,14 +844,6 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id)
       } while (!staged_nd_slot[slot].valid || stalled || !active); 
 
       if (slot==last_slot) { // Begin get next packet
-        if (slot >= NUM_SHIM_DMAS*4) { 
-          dispatch_packet_t* a_pkt = staged_nd_slot[slot].pkt;
-          uint16_t channel      = (a_pkt->arg[0] >> 24) & 0x00ff;
-          uint16_t col          = (a_pkt->arg[0] >> 32) & 0x00ff;
-          uint16_t direction    = (a_pkt->arg[0] >> 60) & 0x000f;
-          int fsl = 4*(col-7) + 2*direction + channel;
-          if (!drain_fsl(fsl)) goto found;
-        }
         rd_idx++; 
         pkt = &((dispatch_packet_t*)q->base_address)[mymod(rd_idx)];
         air_printf("HELLO NEW PACKET IN FLIGHT!\n\r");
@@ -1144,11 +893,6 @@ packet_op:
         packets_processed++;
         break;
 
-      case AIR_PKT_TYPE_CDMA:
-        handle_packet_cdma(pkt);
-        complete_agent_dispatch_packet(pkt);
-        packets_processed++;
-        break;
       case AIR_PKT_TYPE_CONFIGURE:
         handle_packet_sg_cdma(pkt);
         complete_agent_dispatch_packet(pkt);
@@ -1167,17 +911,6 @@ packet_op:
         break;
       case AIR_PKT_TYPE_GET_INFO:
         handle_packet_get_info(pkt, mb_id);
-        complete_agent_dispatch_packet(pkt);
-        packets_processed++;
-        break;
-
-      case AIR_PKT_TYPE_PUT_STREAM:
-        handle_packet_put_stream(pkt);
-        complete_agent_dispatch_packet(pkt);
-        packets_processed++;
-        break;
-      case AIR_PKT_TYPE_GET_STREAM:
-        handle_packet_get_stream(pkt);
         complete_agent_dispatch_packet(pkt);
         packets_processed++;
         break;
@@ -1353,7 +1086,6 @@ int main()
           default:
           case HSA_PACKET_TYPE_INVALID:
             if (setup) {
-              //drain_fsls();
               lock_uart(mb_id); air_printf("Waiting\n\r"); unlock_uart();
               setup = false;
             }
