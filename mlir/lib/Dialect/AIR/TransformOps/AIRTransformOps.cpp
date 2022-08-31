@@ -1,7 +1,7 @@
 // (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
 
-#include "air/Conversion/AIRToAIEPass.h"
 #include "air/Dialect/AIR/AIRTransformOps.h"
+#include "air/Conversion/AIRToAIEPass.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -49,11 +49,10 @@ transform::GetPartitionForOp::apply(transform::TransformResults &results,
 
 DiagnosedSilenceableFailure
 transform::PartitionToAIEOp::applyToOne(xilinx::air::PartitionOp target,
-                                   SmallVectorImpl<Operation *> &results,
-                                   transform::TransformState &state) {
+                                        SmallVectorImpl<Operation *> &results,
+                                        transform::TransformState &state) {
   SimpleRewriter rewriter(target->getContext());
-  FailureOr<ModuleOp> res =
-      convertAIRToAIE(rewriter, target);
+  FailureOr<ModuleOp> res = convertAIRToAIE(rewriter, target);
   if (failed(res))
     return DiagnosedSilenceableFailure::definiteFailure();
   results.push_back(res->getOperation());

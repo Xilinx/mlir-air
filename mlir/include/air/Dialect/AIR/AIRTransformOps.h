@@ -18,7 +18,7 @@ namespace xilinx {
 namespace air {
 class PartitionOp;
 }
-}
+} // namespace xilinx
 
 #define GET_OP_CLASSES
 #include "air/Dialect/AIR/AIRTransformOps.h.inc"
