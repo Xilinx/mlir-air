@@ -338,6 +338,8 @@ void createAIEModulesAndOutlineCores(
   });
 
   module.walk([&](xilinx::air::HerdOp h) {
+    if (h->getParentOfType<xilinx::air::PartitionOp>())
+      return;
     std::string partition_name;
     partition_name = "partition_" + std::to_string(aie_modules.size());
     std::string aie_module_name = "aie." + partition_name;
@@ -1445,6 +1447,25 @@ public:
 
     RewritePatternSet patterns(ctx);
     std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
+
+    if (AIRToAIETestPatterns.find("to-aie-mlir") != std::string::npos) {
+      std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;
+      std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
+      AIRToAIEOptions options = {.col_offset = AIRToAIEColOffset,
+                                 .row_offset = AIRToAIERowOffset,
+                                 .emit_while = AIRToAIEEmitWhileLoop};
+      createAIEModulesAndOutlineCores(m, aie_modules, tileToHerdMap, options);
+      std::set<ModuleOp> seen;
+      for (auto &p : aie_modules) {
+        ModuleOp m = std::get<0>(p);
+        if (seen.find(m) == seen.end()) {
+          seen.insert(m);
+          m.print(llvm::outs());
+          llvm::outs() << "\n";
+        }
+      }
+      return;
+    }
 
     if (AIRToAIETestPatterns.find("lower-air-execute") != std::string::npos)
       patterns.insert<LowerAIRExecutePattern>(ctx);
