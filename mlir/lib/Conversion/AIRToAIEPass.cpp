@@ -1,4 +1,5 @@
 // (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
+// (c) Copyright 2022 Advanced Micro Devices Inc. All Rights Reserved.
 
 #include "PassDetail.h"
 #include "aie/AIEDialect.h"
@@ -36,6 +37,12 @@ using namespace xilinx;
 using namespace xilinx::air;
 
 namespace {
+
+struct AIRToAIEOptions {
+  int64_t col_offset;
+  int64_t row_offset;
+  bool emit_while;
+};
 
 AIE::TileOp getPhysTileOpOrNull(ModuleOp aie_module, int col, int row) {
   for (auto t : aie_module.getOps<AIE::TileOp>()) {
@@ -166,11 +173,22 @@ struct DMAAllocator {
   }
 };
 
-struct AIRToAIEOptions {
-  int64_t col_offset;
-  int64_t row_offset;
-  bool emit_while;
-};
+AIE::LockOp allocateLockOp(ModuleOp aie_module, AIE::TileOp tile) {
+  std::set<int> ids;
+  aie_module.walk([&](AIE::LockOp lock) {
+    if (cast<xilinx::AIE::TileOp>(lock.tile().getDefiningOp()) == tile)
+      ids.insert(lock.getLockID());
+  });
+  int new_id = 0;
+  while (ids.count(new_id))
+    new_id++;
+  OpBuilder b(aie_module);
+  Operation *t = tile.getOperation();
+  while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
+    t = t->getNextNode();
+  b.setInsertionPointAfter(t);
+  return b.create<AIE::LockOp>(tile.getLoc(), tile, new_id);
+}
 
 void outlineAIECores(OpBuilder &builder, ModuleOp aie_module,
                      xilinx::air::HerdOp h,
@@ -516,10 +534,179 @@ struct LowerAIRExecutePattern : public OpRewritePattern<air::ExecuteOp> {
   }
 };
 
-void lowerAIRExecute(ModuleOp m) {
+void lowerAirExecute(ModuleOp m) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
   patterns.insert<LowerAIRExecutePattern>(ctx);
+  (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
+}
+
+struct LowerScfTokenPattern
+    : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LowerScfTokenPattern(MLIRContext *ctx)
+      : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(scf::ForOp fop,
+                                PatternRewriter &rewriter) const override {
+
+    if (!fop.getNumIterOperands())
+      return failure();
+
+    SmallVector<Value, 4> iter_args;
+    SmallVector<unsigned, 4> iter_args_idx;
+
+    // erase air.event from the iter args
+    for (OpOperand &oper : fop.getIterOpOperands()) {
+      Value v = oper.get();
+      BlockArgument block_arg = fop.getRegionIterArgForOpOperand(oper);
+      if (v.getType().isa<xilinx::air::AsyncTokenType>()) {
+        block_arg.replaceAllUsesWith(v);
+        iter_args_idx.push_back(block_arg.getArgNumber());
+      } else {
+        iter_args.push_back(v);
+      }
+    }
+
+    // if none of the iter args were air.async.token, return
+    if (iter_args.size() == fop.getNumIterOperands())
+      return failure();
+
+    // make a new scf.for without air.async.token
+    BlockAndValueMapping remap;
+    auto new_fop = rewriter.create<scf::ForOp>(
+        fop->getLoc(), fop.getLowerBound(), fop.getUpperBound(),
+        fop.getStep(), iter_args);
+    auto &new_region = new_fop.getRegion();
+    fop.getRegion().cloneInto(&new_region, new_region.begin(), remap);
+    new_region.back().erase();
+    new_region.front().eraseArguments(iter_args_idx);
+
+    // use the new for op's results
+    int idx = 0;
+    for (auto r : fop.getResults()) {
+      if (r.getType().isa<xilinx::air::AsyncTokenType>())
+        r.replaceAllUsesWith(
+            rewriter
+                .create<xilinx::air::WaitAllOp>(
+                    fop->getLoc(),
+                    xilinx::air::AsyncTokenType::get(fop->getContext()),
+                    SmallVector<Value, 1>{})
+                .getResult(0));
+      else
+        r.replaceAllUsesWith(new_fop.getResult(idx++));
+    }
+
+    // remove air.async.token from the yield op
+    auto yield = new_region.back().getTerminator();
+    assert(isa<scf::YieldOp>(yield));
+    rewriter.setInsertionPoint(yield);
+    SmallVector<Value, 4> yield_operands;
+    for (auto o : yield->getOperands()) {
+      if (!o.getType().isa<xilinx::air::AsyncTokenType>())
+        yield_operands.push_back(o);
+    }
+    rewriter.create<scf::YieldOp>(yield->getLoc(), yield_operands);
+    rewriter.eraseOp(yield);
+
+    rewriter.eraseOp(fop);
+    return success();
+  }
+};
+
+void lowerScfAirTokens(ModuleOp m) {
+  auto ctx = m->getContext();
+  RewritePatternSet patterns(ctx);
+  patterns.insert<LowerScfTokenPattern>(ctx);
+  (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
+}
+
+struct LowerPipeGetPutPattern
+    : public OpRewritePattern<air::PipelinePutOp> {
+  using OpRewritePattern<air::PipelinePutOp>::OpRewritePattern;
+
+  LowerPipeGetPutPattern(MLIRContext *ctx,
+                        std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap)
+      : OpRewritePattern(ctx), tileToHerdMap(tileToHerdMap) {}
+
+  LogicalResult matchAndRewrite(air::PipelinePutOp put,
+                                PatternRewriter &rewriter) const override {
+    auto aie_module = put->getParentOfType<ModuleOp>();
+    auto core = put->getParentOfType<AIE::CoreOp>();
+    assert(aie_module && core);
+
+    auto herd = tileToHerdMap[core.getTileOp()];
+    int64_t col_offset = herd.getColOffset();
+    int64_t row_offset = herd.getRowOffset();
+
+    auto other_x = cast<arith::ConstantIndexOp>(put.dst0().getDefiningOp());
+    auto other_y = cast<arith::ConstantIndexOp>(put.dst1().getDefiningOp());
+    auto other_core = getPhysTileOp(aie_module, other_x.value() + col_offset,
+                                    other_y.value() + row_offset)
+                          .getCoreOp();
+    assert(other_core);
+
+    air::PipelineGetOp get;
+    other_core.walk([&](air::PipelineGetOp pgo) { get = pgo; });
+    assert(get && get->getNumResults() == (put->getNumOperands() - 2));
+
+    for (auto p :
+          llvm::zip(put->getOperands().drop_front(2), get->getResults())) {
+      
+      auto o = std::get<0>(p); // operand of put
+      auto r = std::get<1>(p); // result of get
+      // for each ranked tensor put (yielded) by the tile
+      if (RankedTensorType tt = o.getType().dyn_cast<RankedTensorType>()) {
+        auto memrefTy = MemRefType::get(tt.getShape(), tt.getElementType(),
+                                        {}, (int)air::MemorySpace::L1);
+        // allocate buffer+lock
+        auto buf = allocateBufferOp(
+            memrefTy, core.getTileOp(),
+            StringAttr::get(aie_module.getContext(), "pipebuf"));
+        auto lockOp = allocateLockOp(aie_module, core.getTileOp());
+
+        // acquire the lock for write on the put side
+        rewriter.setInsertionPoint(put);
+        rewriter.create<AIE::UseLockOp>(put->getLoc(), lockOp, 0,
+                                  AIE::LockAction::Acquire);
+        rewriter.create<memref::TensorStoreOp>(put->getLoc(), o, buf);
+        rewriter.create<AIE::UseLockOp>(put->getLoc(), lockOp, 1,
+                                  AIE::LockAction::Release);
+
+        // acquire the lock for read on the get side
+        rewriter.setInsertionPoint(get);
+        rewriter.create<AIE::UseLockOp>(get->getLoc(), lockOp, 1,
+                                  AIE::LockAction::Acquire);
+        auto loadOp =
+            rewriter.create<bufferization::ToTensorOp>(get->getLoc(), buf);
+        rewriter.create<AIE::UseLockOp>(get->getLoc(), lockOp, 0,
+                                  AIE::LockAction::Release);
+        r.replaceAllUsesWith(loadOp.getResult());
+      } else {
+        llvm::errs()
+            << "error, unsupported air.pipeline.yield operand type\n";
+        assert(0 && "Unsupported");
+        return failure();
+      }
+    }
+    rewriter.eraseOp(get);
+    rewriter.eraseOp(put);
+    return success();
+  }
+  
+private:
+  std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap;
+};
+
+// This function replaces PipelinePutOp/PipelineGetOp pairs with a
+// shared AIE.buffer + AIE.lock. This is a single-buffered implementation
+// with exclusive access to the buffer controlled by the lock. i.e. FIXME.
+void lowerPipelineGetPut(ModuleOp &m,
+                          std::map<AIE::TileOp, air::HerdOp> tileToHerdMap) {
+  auto ctx = m->getContext();
+  RewritePatternSet patterns(ctx);
+  patterns.insert<LowerPipeGetPutPattern>(ctx, tileToHerdMap);
   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
 
@@ -663,8 +850,6 @@ public:
     registry.insert<LLVM::LLVMDialect>();
   }
 
-  // uint64_t BufferId;
-
   const int tile_dma_channels = 2;
   std::vector<std::tuple<int32_t, int64_t, int64_t, int64_t>>
       tile_dma_S2MM_allocs;
@@ -732,23 +917,6 @@ public:
     // if (!bufferOp)
     //   buffer.dump();
     return bufferOp;
-  }
-
-  AIE::LockOp allocateLockOp(ModuleOp aie_module, AIE::TileOp tile) {
-    std::set<int> ids;
-    aie_module.walk([&](AIE::LockOp lock) {
-      if (cast<xilinx::AIE::TileOp>(lock.tile().getDefiningOp()) == tile)
-        ids.insert(lock.getLockID());
-    });
-    int new_id = 0;
-    while (ids.count(new_id))
-      new_id++;
-    OpBuilder b(aie_module);
-    Operation *t = tile.getOperation();
-    while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
-      t = t->getNextNode();
-    b.setInsertionPointAfter(t);
-    return b.create<AIE::LockOp>(tile.getLoc(), tile, new_id);
   }
 
   AIE::LockOp getLockForTileDMA(ModuleOp aie_module,
@@ -969,152 +1137,6 @@ public:
     return herd_meta;
   }
 
-  // remove air.async.token from scf.for
-  void lowerScfAirEvents(AIE::CoreOp core) {
-    SmallVector<Operation *, 8> erased;
-    core.walk([&](scf::ForOp fop) {
-      OpBuilder builder(fop);
-      if (!fop.getNumIterOperands())
-        return;
-      SmallVector<Value, 4> iter_args;
-      SmallVector<unsigned, 4> iter_args_idx;
-
-      // erase air.event from the iter args
-      for (OpOperand &oper : fop.getIterOpOperands()) {
-        Value v = oper.get();
-        BlockArgument block_arg = fop.getRegionIterArgForOpOperand(oper);
-        if (v.getType().isa<xilinx::air::AsyncTokenType>()) {
-          block_arg.replaceAllUsesWith(v);
-          iter_args_idx.push_back(block_arg.getArgNumber());
-        } else {
-          iter_args.push_back(v);
-        }
-      }
-
-      // if none of the iter args were air.async.token, return
-      if (iter_args.size() == fop.getNumIterOperands())
-        return;
-
-      // make a new scf.for without air.async.token
-      BlockAndValueMapping remap;
-      auto new_fop = builder.create<scf::ForOp>(
-          fop->getLoc(), fop.getLowerBound(), fop.getUpperBound(),
-          fop.getStep(), iter_args);
-      auto &new_region = new_fop.getRegion();
-      fop.getRegion().cloneInto(&new_region, new_region.begin(), remap);
-      new_region.back().erase();
-      new_region.front().eraseArguments(iter_args_idx);
-
-      // use the new for op's results
-      int idx = 0;
-      for (auto r : fop.getResults()) {
-        if (r.getType().isa<xilinx::air::AsyncTokenType>())
-          r.replaceAllUsesWith(
-              builder
-                  .create<xilinx::air::WaitAllOp>(
-                      fop->getLoc(),
-                      xilinx::air::AsyncTokenType::get(fop->getContext()),
-                      SmallVector<Value, 1>{})
-                  .getResult(0));
-        else
-          r.replaceAllUsesWith(new_fop.getResult(idx++));
-      }
-
-      // remove air.async.token from the yield op
-      auto yield = new_region.back().getTerminator();
-      assert(isa<scf::YieldOp>(yield));
-      builder.setInsertionPoint(yield);
-      SmallVector<Value, 4> yield_operands;
-      for (auto o : yield->getOperands()) {
-        if (!o.getType().isa<xilinx::air::AsyncTokenType>())
-          yield_operands.push_back(o);
-      }
-      builder.create<scf::YieldOp>(yield->getLoc(), yield_operands);
-      yield->erase();
-
-      erased.push_back(fop);
-    });
-    for (auto e : erased)
-      e->erase();
-  }
-
-  // This function replaces PipelinePutOp/PipelineGetOp pairs with a
-  // shared AIE.buffer + AIE.lock. This is a single-buffered implementation
-  // with exclusive access to the buffer controlled by the lock. i.e. FIXME.
-  void lowerPipelineGetPut(ModuleOp &aie_module,
-                           std::map<AIE::TileOp, air::HerdOp> tileToHerdMap) {
-    aie_module.walk([&](air::PipelinePutOp putOp) {
-      auto core = putOp->getParentOfType<AIE::CoreOp>();
-      assert(core);
-
-      auto herd = tileToHerdMap[core.getTileOp()];
-      int64_t col_offset = herd.getColOffset();
-      int64_t row_offset = herd.getRowOffset();
-
-      auto other_x = cast<arith::ConstantIndexOp>(putOp.dst0().getDefiningOp());
-      auto other_y = cast<arith::ConstantIndexOp>(putOp.dst1().getDefiningOp());
-      auto other_core = getPhysTileOp(aie_module, other_x.value() + col_offset,
-                                      other_y.value() + row_offset)
-                            .getCoreOp();
-      assert(other_core);
-
-      air::PipelineGetOp getOp;
-      other_core.walk([&](air::PipelineGetOp pgo) { getOp = pgo; });
-      assert(getOp && getOp->getNumResults() == (putOp->getNumOperands() - 2));
-
-      for (auto p :
-           llvm::zip(putOp->getOperands().drop_front(2), getOp->getResults())) {
-        OpBuilder b(core);
-        auto o = std::get<0>(p); // operand of put
-        auto r = std::get<1>(p); // result of get
-        // for each ranked tensor put (yielded) by the tile
-        if (RankedTensorType tt = o.getType().dyn_cast<RankedTensorType>()) {
-          auto memrefTy = MemRefType::get(tt.getShape(), tt.getElementType(),
-                                          {}, (int)air::MemorySpace::L1);
-          // allocate buffer+lock
-          auto buf = allocateBufferOp(
-              memrefTy, core.getTileOp(),
-              StringAttr::get(aie_module.getContext(), "pipebuf"));
-          auto lockOp = allocateLockOp(aie_module, core.getTileOp());
-
-          // acquire the lock for write on the put side
-          b.setInsertionPoint(putOp);
-          b.create<AIE::UseLockOp>(putOp->getLoc(), lockOp, 0,
-                                   AIE::LockAction::Acquire);
-          b.create<memref::TensorStoreOp>(putOp->getLoc(), o, buf);
-          b.create<AIE::UseLockOp>(putOp->getLoc(), lockOp, 1,
-                                   AIE::LockAction::Release);
-
-          // acquire the lock for read on the get side
-          b.setInsertionPoint(getOp);
-          b.create<AIE::UseLockOp>(getOp->getLoc(), lockOp, 1,
-                                   AIE::LockAction::Acquire);
-          auto loadOp =
-              b.create<bufferization::ToTensorOp>(getOp->getLoc(), buf);
-          b.create<AIE::UseLockOp>(getOp->getLoc(), lockOp, 0,
-                                   AIE::LockAction::Release);
-          r.replaceAllUsesWith(loadOp.getResult());
-        } else {
-          llvm::errs()
-              << "error, unsupported air.pipeline.yield operand type\n";
-          assert(0 && "Unsupported");
-        }
-      }
-      putOp->erase();
-    });
-  }
-
-  void cleanupPipelineOps(ModuleOp aie_module) {
-    // erase air.pipeline.terminator ops
-    aie_module.walk([&](air::PipelineTerminatorOp op) { op->erase(); });
-
-    // yank the ops out of the pipeline op and erase it
-    aie_module.walk([&](air::HerdPipelineOp op) {
-      op->getBlock()->getOperations().splice(Block::iterator(op),
-                                             op.body().front().getOperations());
-      op->erase();
-    });
-  }
 
   void lowerAirDmaMemcpy(ModuleOp module, DMAAllocator &shimDmaAlloc,
                          DMAAllocator &L2DmaAlloc) {
@@ -1330,14 +1352,6 @@ public:
     }
   }
 
-  void lowerScfAirEvents(ModuleOp module) {
-    SmallVector<AIE::CoreOp, 32> cores;
-    for (auto c : module.getOps<AIE::CoreOp>())
-      cores.push_back(c);
-    for (AIE::CoreOp core : cores)
-      lowerScfAirEvents(core);
-  }
-
   void
   cleanupAIEModules(std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules) {
     for (auto p : aie_modules) {
@@ -1414,6 +1428,10 @@ public:
           ctx, tileToHerdMap);
     if (AIRToAIETestPatterns.find("specialize-affine-if") != std::string::npos)
       patterns.insert<SpecializeAffineIfPattern>(ctx);
+    if (AIRToAIETestPatterns.find("lower-pipe-get-put") != std::string::npos)
+      patterns.insert<LowerPipeGetPutPattern>(ctx, tileToHerdMap);
+    if (AIRToAIETestPatterns.find("lower-scf-tokens") != std::string::npos)
+      patterns.insert<LowerScfTokenPattern>(ctx);
 
     if (patterns.getNativePatterns().size())
       (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
@@ -1456,8 +1474,8 @@ public:
         seen.insert(m);
 
         specializeHerdAffineIf(m);
-        lowerAIRExecute(m);
-        lowerScfAirEvents(m);
+        lowerAirExecute(m);
+        lowerScfAirTokens(m);
 
         allocL1Buffers(m, tileToHerdMap);
 
@@ -1592,7 +1610,7 @@ public:
         tile_dma_MM2S_allocs.clear();
       }
     }
-    cleanupAIEModules(aie_modules);
+    ;//cleanupAIEModules(aie_modules);
 
     // emit aie_modules to files or to stdout
     seen.clear();
