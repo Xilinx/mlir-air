@@ -471,44 +471,11 @@ struct SpecializeAffineIfPattern : public OpRewritePattern<AffineIfOp> {
   }
 };
 
-void specializeHerdAffineIf(AIE::CoreOp core) {
-  SmallVector<Operation *, 8> erased;
-  core.walk([&](AffineIfOp aif) {
-    SmallVector<int64_t, 2> operands;
-    for (auto o : aif.getOperands()) {
-      auto v = dyn_cast<arith::ConstantIndexOp>(o.getDefiningOp());
-      if (!v)
-        return;
-      operands.push_back(v.value());
-    }
-    auto x = operands[0];
-    auto y = operands[1];
-    Block *bb = nullptr;
-    if (isInSet(x, y, aif)) {
-      bb = aif.getThenBlock();
-    } else if (aif.hasElse()) {
-      bb = aif.getElseBlock();
-    }
-    if (bb) {
-      auto t = bb->getTerminator();
-      auto &ops = bb->getOperations();
-      aif->getBlock()->getOperations().splice(Block::iterator(aif), ops,
-                                              ops.begin(), --ops.end());
-      for (int i = 0, e = aif.getNumResults(); i < e; i++)
-        aif.getResult(i).replaceAllUsesWith(t->getOperand(i));
-    }
-    erased.push_back(aif);
-  });
-  for (auto a : erased)
-    a->erase();
-}
-
-void specializeHerdAffineIf(ModuleOp module) {
-  SmallVector<AIE::CoreOp, 32> cores;
-  for (auto c : module.getOps<AIE::CoreOp>())
-    cores.push_back(c);
-  for (AIE::CoreOp core : cores)
-    specializeHerdAffineIf(core);
+void specializeHerdAffineIf(ModuleOp m) {
+  auto ctx = m->getContext();
+  RewritePatternSet patterns(ctx);
+  patterns.insert<SpecializeAffineIfPattern>(ctx);
+  (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
 
 struct LowerAIRExecutePattern : public OpRewritePattern<air::ExecuteOp> {
@@ -556,17 +523,18 @@ void lowerAIRExecute(ModuleOp m) {
   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
 
-struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
-  using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
+struct AllocL1TensorsPattern
+    : public OpRewritePattern<bufferization::ToMemrefOp> {
+  using OpRewritePattern<bufferization::ToMemrefOp>::OpRewritePattern;
 
-  AllocL1BuffersPattern(MLIRContext *ctx,
+  AllocL1TensorsPattern(MLIRContext *ctx,
                         std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap)
       : OpRewritePattern(ctx), tileToHerdMap(tileToHerdMap) {}
 
-  LogicalResult matchAndRewrite(memref::AllocOp op,
+  LogicalResult matchAndRewrite(bufferization::ToMemrefOp cast,
                                 PatternRewriter &rewriter) const override {
 
-    AIE::CoreOp core = op->getParentOfType<AIE::CoreOp>();
+    AIE::CoreOp core = cast->getParentOfType<AIE::CoreOp>();
     if (!core)
       return failure();
 
@@ -574,37 +542,26 @@ struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
     if (!tile)
       return failure();
 
-    // generate a buffer for each alloc into L1
-    auto alloc = op; // dyn_cast<memref::AllocOp>(op);
-    // auto cast = dyn_cast<bufferization::ToMemrefOp>(op);
-    // if (!(alloc || cast))
-    //   return failure();
-
     MemRefType memrefTy = nullptr;
-    if (alloc)
-      memrefTy = alloc.getType();
-    // if (cast)
-    //   memrefTy = cast.getType().cast<MemRefType>();
+    memrefTy = cast.getType().cast<MemRefType>();
 
     if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
       return failure();
 
     rewriter.setInsertionPointAfter(tile);
     auto herd = tileToHerdMap[core.getTileOp()];
-    int64_t col_offset = herd.getColOffset();
-    int64_t row_offset = herd.getRowOffset();
+    int64_t col_offset = herd ? herd.getColOffset() : 0;
+    int64_t row_offset = herd ? herd.getRowOffset() : 0;
 
     auto buffer = allocateBufferOp(
         memrefTy, tile,
-        op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
+        cast->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
         tile.col() - col_offset, tile.row() - row_offset);
-    // map uses of the alloc to the new buffer
-    // remap.map(op->getResult(0), buffer);
-    rewriter.setInsertionPoint(op);
-    // if (cast)
-    //   rewriter.create<memref::TensorStoreOp>(cast.getLoc(),
-    //                                         cast.getOperand(), buffer);
-    rewriter.replaceOp(op, buffer->getResults());
+
+    rewriter.setInsertionPoint(cast);
+    rewriter.create<memref::TensorStoreOp>(cast.getLoc(), cast.getOperand(),
+                                           buffer);
+    rewriter.replaceOp(cast, buffer->getResults());
     return success();
   }
 
@@ -612,51 +569,56 @@ private:
   std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap;
 };
 
-void allocL1Buffers(ModuleOp module, BlockAndValueMapping &remap,
-                    std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap) {
+struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
+  using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
 
-  SmallVector<AIE::CoreOp, 32> cores;
-  for (auto c : module.getOps<AIE::CoreOp>())
-    cores.push_back(c);
+  AllocL1BuffersPattern(MLIRContext *ctx,
+                        std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap)
+      : OpRewritePattern(ctx), tileToHerdMap(tileToHerdMap) {}
 
-  OpBuilder builder(module);
+  LogicalResult matchAndRewrite(memref::AllocOp alloc,
+                                PatternRewriter &rewriter) const override {
 
-  for (AIE::CoreOp core : cores) {
+    AIE::CoreOp core = alloc->getParentOfType<AIE::CoreOp>();
+    if (!core)
+      return failure();
+
     AIE::TileOp tile = core.getTileOp();
-    // generate a buffer for each alloc into L1
-    core.walk([&](Operation *op) {
-      auto alloc = dyn_cast<memref::AllocOp>(op);
-      auto cast = dyn_cast<bufferization::ToMemrefOp>(op);
-      if (!(alloc || cast))
-        return;
+    if (!tile)
+      return failure();
 
-      MemRefType memrefTy = nullptr;
-      if (alloc)
-        memrefTy = alloc.getType();
-      if (cast)
-        memrefTy = cast.getType().cast<MemRefType>();
+    MemRefType memrefTy = nullptr;
+    memrefTy = alloc.getType();
 
-      if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
-        return;
+    if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
+      return failure();
 
-      builder.setInsertionPointAfter(tile);
-      auto herd = tileToHerdMap[core.getTileOp()];
-      int64_t col_offset = herd.getColOffset();
-      int64_t row_offset = herd.getRowOffset();
+    rewriter.setInsertionPointAfter(tile);
+    auto herd = tileToHerdMap[core.getTileOp()];
+    int64_t col_offset = herd ? herd.getColOffset() : 0;
+    int64_t row_offset = herd ? herd.getRowOffset() : 0;
 
-      auto buffer = allocateBufferOp(
-          memrefTy, tile,
-          op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
-          tile.col() - col_offset, tile.row() - row_offset);
-      // map uses of the alloc to the new buffer
-      remap.map(op->getResult(0), buffer);
+    auto buffer = allocateBufferOp(
+        memrefTy, tile,
+        alloc->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
+        tile.col() - col_offset, tile.row() - row_offset);
 
-      builder.setInsertionPoint(op);
-      if (cast)
-        builder.create<memref::TensorStoreOp>(cast.getLoc(), cast.getOperand(),
-                                              buffer);
-    });
+    rewriter.setInsertionPoint(alloc);
+    rewriter.replaceOp(alloc, buffer->getResults());
+    return success();
   }
+
+private:
+  std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap;
+};
+
+void allocL1Buffers(ModuleOp m,
+                    std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap) {
+  auto ctx = m->getContext();
+  RewritePatternSet patterns(ctx);
+  patterns.insert<AllocL1BuffersPattern, AllocL1TensorsPattern>(ctx,
+                                                                tileToHerdMap);
+  (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
 
 class AIRToAIEPass : public AIRToAIEBase<AIRToAIEPass> {
@@ -757,15 +719,14 @@ public:
   }
 
   AIE::BufferOp getBufferForTileDMA(ModuleOp aie_module,
-                                    air::DmaMemcpyInterface &dmaOp,
-                                    BlockAndValueMapping &map, int col,
+                                    air::DmaMemcpyInterface &dmaOp, int col,
                                     int row) {
     AIE::DMAChan channel = getTileDMAChannel(aie_module, dmaOp, col, row);
     Value buffer;
     if (isMM2S(channel)) {
-      buffer = map.lookupOrDefault(dmaOp.getSrcMemref());
+      buffer = dmaOp.getSrcMemref();
     } else {
-      buffer = map.lookupOrDefault(dmaOp.getDstMemref());
+      buffer = dmaOp.getDstMemref();
     }
     AIE::BufferOp bufferOp = buffer.getDefiningOp<AIE::BufferOp>();
     // if (!bufferOp)
@@ -792,10 +753,8 @@ public:
 
   AIE::LockOp getLockForTileDMA(ModuleOp aie_module,
                                 air::DmaMemcpyInterface &dmaOp,
-                                lock_allocation_list &info,
-                                BlockAndValueMapping &map, int col, int row) {
-    AIE::BufferOp bufferOp =
-        getBufferForTileDMA(aie_module, dmaOp, map, col, row);
+                                lock_allocation_list &info, int col, int row) {
+    AIE::BufferOp bufferOp = getBufferForTileDMA(aie_module, dmaOp, col, row);
     AIE::DMAChan channel = getTileDMAChannel(aie_module, dmaOp, col, row);
     assert(bufferOp);
     AIE::LockOp lockOp = nullptr;
@@ -1158,8 +1117,7 @@ public:
   }
 
   void lowerAirDmaMemcpy(ModuleOp module, DMAAllocator &shimDmaAlloc,
-                         DMAAllocator &L2DmaAlloc,
-                         BlockAndValueMapping &remap) {
+                         DMAAllocator &L2DmaAlloc) {
     SmallVector<AIE::CoreOp, 32> cores;
     for (auto c : module.getOps<AIE::CoreOp>())
       cores.push_back(c);
@@ -1170,8 +1128,6 @@ public:
       AIE::TileOp tile = core.getTileOp();
       auto x = tile.col();
       auto y = tile.row();
-
-      // BlockAndValueMapping remap;
 
       std::vector<AIE::TileOp> shim_dma_inits;
       std::vector<AIE::TileOp> l2_dma_tiles;
@@ -1189,7 +1145,7 @@ public:
           auto dmaOpIf = cast<air::DmaMemcpyInterface>(o);
           AIE::DMAChan tile_channel = getTileDMAChannel(module, dmaOpIf, x, y);
           AIE::LockOp lockOp =
-              getLockForTileDMA(module, dmaOpIf, lock_allocs, remap, x, y);
+              getLockForTileDMA(module, dmaOpIf, lock_allocs, x, y);
           int64_t lockAqValue = -1;
           int64_t lockRelValue = -1;
           Value alloc = nullptr;
@@ -1206,9 +1162,10 @@ public:
           if (auto bco =
                   dyn_cast<bufferization::ToMemrefOp>(alloc.getDefiningOp()))
             builder.setInsertionPoint(bco.getOperand().getDefiningOp());
-          else
+          else if (auto a = dyn_cast<memref::AllocaOp>(alloc.getDefiningOp()))
             builder.setInsertionPoint(alloc.getDefiningOp());
-          //          builder.setInsertionPoint(dmaOpIf);
+          else
+            builder.setInsertionPoint(&dmaOpIf->getBlock()->front());
 
           builder.create<AIE::UseLockOp>(o->getLoc(), lockOp, lockAqValue,
                                          AIE::LockAction::Acquire);
@@ -1227,7 +1184,7 @@ public:
             }
           }
           if (need_unlock) {
-            auto t = alloc.getParentBlock()->getTerminator();
+            auto t = dmaOpIf->getBlock()->getTerminator();
             builder.setInsertionPoint(t);
             builder.create<AIE::UseLockOp>(t->getLoc(), lockOp, lockRelValue,
                                            AIE::LockAction::Release);
@@ -1237,12 +1194,12 @@ public:
       }
       for (auto o : allocs_to_remap) {
         Value alloc = o->getResult(0);
-        for (auto u : alloc.getUsers())
+        for (auto u : alloc.getUsers()) {
           if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
             dealloc.erase();
             break;
           }
-        alloc.replaceAllUsesWith(remap.lookup(alloc));
+        }
         if (isa<memref::AllocOp>(o))
           o->erase();
       }
@@ -1293,10 +1250,9 @@ public:
             mem.body().push_back(next_bd);
             b.create<cf::BranchOp>(loc, next_bd);
           }
-          AIE::BufferOp bufferOp =
-              getBufferForTileDMA(module, dmaOp, remap, x, y);
+          AIE::BufferOp bufferOp = getBufferForTileDMA(module, dmaOp, x, y);
           AIE::LockOp lockOp =
-              getLockForTileDMA(module, dmaOp, lock_allocs, remap, x, y);
+              getLockForTileDMA(module, dmaOp, lock_allocs, x, y);
           b.setInsertionPointToStart(bd);
           int64_t lockAqValue = -1;
           int64_t lockRelValue = -1;
@@ -1359,7 +1315,7 @@ public:
       }
 
       // erase the dma copy operations
-      for (auto p : tile_dma_copies)
+      for (auto p : tile_dma_copies) {
         for (auto o : p.second) {
           auto a = cast<xilinx::air::AsyncOpInterface>(o);
           if (a.getAsyncToken()) {
@@ -1370,22 +1326,7 @@ public:
           }
           o->erase();
         }
-
-      // replace all remaining uses of AllocOps with the
-      // corresponding AIE.buffer from the remapping.
-      // erase all AllocOps
-      std::vector<Operation *> erase_ops;
-      core.walk([&](Operation *op) {
-        if (auto alloc = dyn_cast<memref::AllocOp>(op)) {
-          if (alloc.getType().getMemorySpaceAsInt() ==
-              (int)air::MemorySpace::L1)
-            alloc->replaceAllUsesWith(
-                remap.lookup(alloc.getResult()).getDefiningOp());
-          erase_ops.push_back(op);
-        }
-      });
-      for (auto o : erase_ops)
-        o->erase();
+      }
     }
   }
 
@@ -1464,17 +1405,18 @@ public:
           llvm::outs() << "\n";
         }
       }
-      return;
     }
 
     if (AIRToAIETestPatterns.find("lower-air-execute") != std::string::npos)
       patterns.insert<LowerAIRExecutePattern>(ctx);
     if (AIRToAIETestPatterns.find("alloc-l1-buffers") != std::string::npos)
-      patterns.insert<AllocL1BuffersPattern>(ctx, tileToHerdMap);
+      patterns.insert<AllocL1BuffersPattern, AllocL1BuffersPattern>(
+          ctx, tileToHerdMap);
     if (AIRToAIETestPatterns.find("specialize-affine-if") != std::string::npos)
       patterns.insert<SpecializeAffineIfPattern>(ctx);
 
-    (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
+    if (patterns.getNativePatterns().size())
+      (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
   }
 
   void runOnOperation() override {
@@ -1517,14 +1459,12 @@ public:
         lowerAIRExecute(m);
         lowerScfAirEvents(m);
 
-        // buffer_map maps allocs to their AIE.buffer replacement
-        BlockAndValueMapping buffer_map;
-        allocL1Buffers(m, buffer_map, tileToHerdMap);
+        allocL1Buffers(m, tileToHerdMap);
 
         DMAAllocator shimDmaAlloc(shim_dma_cols, shim_dma_channels);
         DMAAllocator L2DmaAlloc(l2_dma_cols, l2_dma_channels);
 
-        lowerAirDmaMemcpy(m, shimDmaAlloc, L2DmaAlloc, buffer_map);
+        lowerAirDmaMemcpy(m, shimDmaAlloc, L2DmaAlloc);
         lowerPipelineGetPut(m, tileToHerdMap);
 
         SmallVector<air::HerdOp, 4> herds;

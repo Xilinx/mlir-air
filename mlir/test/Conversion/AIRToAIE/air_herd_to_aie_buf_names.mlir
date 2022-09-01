@@ -3,11 +3,11 @@
 // RUN: air-opt -air-to-aie %s | FileCheck %s
 
 // CHECK-LABEL: module @aie.partition_0
-// CHECK: buf8
-// CHECK: scratch_0_0
-// ...
-// CHECK: buf0
 // CHECK: scratch_2_2
+// CHECK: buf8
+// ...
+// CHECK: scratch_0_0
+// CHECK: buf0
 func.func @launch(%arg0: i32) {
   %cst2 = arith.constant 3 : index
   air.herd tile (%x, %y) in (%sx=%cst2, %sy=%cst2) {

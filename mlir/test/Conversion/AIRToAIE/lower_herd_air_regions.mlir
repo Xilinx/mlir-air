@@ -2,8 +2,8 @@
 
 // RUN: air-opt %s -air-to-aie -o /dev/null | air-opt | FileCheck %s
 // CHECK: AIE.core({{.*}}) {
-// CHECK: AIE.useLock({{.*}}, Acquire, 1)
 // CHECK: AIE.useLock({{.*}}, Acquire, 0)
+// CHECK: AIE.useLock({{.*}}, Acquire, 1)
 // CHECK: scf.for {{.*}} = {{.*}} to {{.*}} step {{.*}} {
 // CHECK:   AIE.useLock({{.*}}, Acquire, 1)
 // CHECK:   AIE.useLock({{.*}}, Acquire, 1)

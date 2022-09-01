@@ -15,13 +15,13 @@ func.func @foo(%arg0: i32) {
     %src0 = memref.alloc() : memref<1xi32, 2>
     %src1 = memref.alloc() : memref<1xi32, 2>
     %zero = arith.constant 0 : index
-    // CHECK: load %[[BUF3]]
+    // CHECK: load %[[BUF1]]
     %0 = memref.load %src0[%zero] : memref<1xi32, 2>
     // CHECK: load %[[BUF2]]
     %1 = memref.load %src1[%zero] : memref<1xi32, 2>
     %2 = arith.addi %0, %1 :  i32
     %dst0 = memref.alloc() : memref<1xi32, 2>
-    // CHECK: memref.store {{.*}}, %[[BUF1]]
+    // CHECK: memref.store {{.*}}, %[[BUF3]]
     memref.store %2, %dst0[%zero] : memref<1xi32, 2>
     air.herd_terminator
   }
