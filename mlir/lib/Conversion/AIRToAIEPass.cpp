@@ -541,12 +541,10 @@ void lowerAirExecute(ModuleOp m) {
   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
 
-struct LowerScfTokenPattern
-    : public OpRewritePattern<scf::ForOp> {
+struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
-  LowerScfTokenPattern(MLIRContext *ctx)
-      : OpRewritePattern(ctx) {}
+  LowerScfTokenPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
 
   LogicalResult matchAndRewrite(scf::ForOp fop,
                                 PatternRewriter &rewriter) const override {
@@ -576,8 +574,8 @@ struct LowerScfTokenPattern
     // make a new scf.for without air.async.token
     BlockAndValueMapping remap;
     auto new_fop = rewriter.create<scf::ForOp>(
-        fop->getLoc(), fop.getLowerBound(), fop.getUpperBound(),
-        fop.getStep(), iter_args);
+        fop->getLoc(), fop.getLowerBound(), fop.getUpperBound(), fop.getStep(),
+        iter_args);
     auto &new_region = new_fop.getRegion();
     fop.getRegion().cloneInto(&new_region, new_region.begin(), remap);
     new_region.back().erase();
@@ -622,12 +620,11 @@ void lowerScfAirTokens(ModuleOp m) {
   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
 
-struct LowerPipeGetPutPattern
-    : public OpRewritePattern<air::PipelinePutOp> {
+struct LowerPipeGetPutPattern : public OpRewritePattern<air::PipelinePutOp> {
   using OpRewritePattern<air::PipelinePutOp>::OpRewritePattern;
 
   LowerPipeGetPutPattern(MLIRContext *ctx,
-                        std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap)
+                         std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap)
       : OpRewritePattern(ctx), tileToHerdMap(tileToHerdMap) {}
 
   LogicalResult matchAndRewrite(air::PipelinePutOp put,
@@ -652,14 +649,14 @@ struct LowerPipeGetPutPattern
     assert(get && get->getNumResults() == (put->getNumOperands() - 2));
 
     for (auto p :
-          llvm::zip(put->getOperands().drop_front(2), get->getResults())) {
-      
+         llvm::zip(put->getOperands().drop_front(2), get->getResults())) {
+
       auto o = std::get<0>(p); // operand of put
       auto r = std::get<1>(p); // result of get
       // for each ranked tensor put (yielded) by the tile
       if (RankedTensorType tt = o.getType().dyn_cast<RankedTensorType>()) {
-        auto memrefTy = MemRefType::get(tt.getShape(), tt.getElementType(),
-                                        {}, (int)air::MemorySpace::L1);
+        auto memrefTy = MemRefType::get(tt.getShape(), tt.getElementType(), {},
+                                        (int)air::MemorySpace::L1);
         // allocate buffer+lock
         auto buf = allocateBufferOp(
             memrefTy, core.getTileOp(),
@@ -669,23 +666,22 @@ struct LowerPipeGetPutPattern
         // acquire the lock for write on the put side
         rewriter.setInsertionPoint(put);
         rewriter.create<AIE::UseLockOp>(put->getLoc(), lockOp, 0,
-                                  AIE::LockAction::Acquire);
+                                        AIE::LockAction::Acquire);
         rewriter.create<memref::TensorStoreOp>(put->getLoc(), o, buf);
         rewriter.create<AIE::UseLockOp>(put->getLoc(), lockOp, 1,
-                                  AIE::LockAction::Release);
+                                        AIE::LockAction::Release);
 
         // acquire the lock for read on the get side
         rewriter.setInsertionPoint(get);
         rewriter.create<AIE::UseLockOp>(get->getLoc(), lockOp, 1,
-                                  AIE::LockAction::Acquire);
+                                        AIE::LockAction::Acquire);
         auto loadOp =
             rewriter.create<bufferization::ToTensorOp>(get->getLoc(), buf);
         rewriter.create<AIE::UseLockOp>(get->getLoc(), lockOp, 0,
-                                  AIE::LockAction::Release);
+                                        AIE::LockAction::Release);
         r.replaceAllUsesWith(loadOp.getResult());
       } else {
-        llvm::errs()
-            << "error, unsupported air.pipeline.yield operand type\n";
+        llvm::errs() << "error, unsupported air.pipeline.yield operand type\n";
         assert(0 && "Unsupported");
         return failure();
       }
@@ -694,7 +690,7 @@ struct LowerPipeGetPutPattern
     rewriter.eraseOp(put);
     return success();
   }
-  
+
 private:
   std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap;
 };
@@ -703,7 +699,7 @@ private:
 // shared AIE.buffer + AIE.lock. This is a single-buffered implementation
 // with exclusive access to the buffer controlled by the lock. i.e. FIXME.
 void lowerPipelineGetPut(ModuleOp &m,
-                          std::map<AIE::TileOp, air::HerdOp> tileToHerdMap) {
+                         std::map<AIE::TileOp, air::HerdOp> tileToHerdMap) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
   patterns.insert<LowerPipeGetPutPattern>(ctx, tileToHerdMap);
@@ -1137,7 +1133,6 @@ public:
     return herd_meta;
   }
 
-
   void lowerAirDmaMemcpy(ModuleOp module, DMAAllocator &shimDmaAlloc,
                          DMAAllocator &L2DmaAlloc) {
     SmallVector<AIE::CoreOp, 32> cores;
@@ -1349,49 +1344,6 @@ public:
           o->erase();
         }
       }
-    }
-  }
-
-  void
-  cleanupAIEModules(std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules) {
-    for (auto p : aie_modules) {
-      // quick n dirty dce
-      auto aie_module = std::get<0>(p);
-      size_t n = 0;
-      do {
-        std::vector<Operation *> dead_code;
-        aie_module.walk([&](AIE::CoreOp core) {
-          core.walk([&](Operation *op) {
-            // this avoids terminators and loops
-            if (isa<xilinx::air::DmaMemcpyNdOp>(op))
-              return;
-            if (op->getNumResults() == 0)
-              return;
-            if (op->getNumRegions())
-              return;
-            bool used = false;
-            for (unsigned i = 0, e = op->getNumResults(); i != e; ++i)
-              used |= !op->getResult(i).use_empty();
-            if (!used) {
-              auto end = std::end(dead_code);
-              if (std::find(std::begin(dead_code), end, op) == end)
-                dead_code.push_back(op);
-            }
-            for (Block &b : core.getRegion().getBlocks()) {
-              std::vector<unsigned> erased_arg_idx;
-              for (int i = 0, e = b.getNumArguments(); i < e; i++) {
-                if (b.getArgument(i).use_empty())
-                  erased_arg_idx.push_back(i);
-              }
-              b.eraseArguments(erased_arg_idx);
-            }
-          });
-        });
-        n = dead_code.size();
-        for (auto op : dead_code) {
-          op->erase();
-        }
-      } while (n);
     }
   }
 
@@ -1609,8 +1561,7 @@ public:
         tile_dma_S2MM_allocs.clear();
         tile_dma_MM2S_allocs.clear();
       }
-    }
-    ;//cleanupAIEModules(aie_modules);
+    };
 
     // emit aie_modules to files or to stdout
     seen.clear();
