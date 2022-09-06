@@ -12,7 +12,7 @@
 #
 CXX = aarch64-linux-gnu-g++
 #SDKTARGETSYSROOT = /proj/xbuilds/2020.1_daily_latest/internal_platforms/sw/versal/xilinx-versal-common-v2020.1/sysroots/aarch64-xilinx-linux/
-SDKTARGETSYSROOT = /group/xrlabs2/jackl/proj/acdc/vitis_2021.2_bram_platform/sysroots/cortexa72-cortexa53-xilinx-linux
+SDKTARGETSYSROOT = ../../petalinux/sysroot/sysroots/cortexa72-cortexa53-xilinx-linux/
 
 HOST_EXE     = ../host.exe
 HOST_INC   = -I../ -I../aie
