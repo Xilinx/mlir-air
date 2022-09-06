@@ -601,10 +601,17 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
     assert(isa<scf::YieldOp>(yield));
     rewriter.setInsertionPoint(yield);
     SmallVector<Value, 4> yield_operands;
+    SmallVector<Value, 4> token_operands;
     for (auto o : yield->getOperands()) {
-      if (!o.getType().isa<xilinx::air::AsyncTokenType>())
+      if (o.getType().isa<xilinx::air::AsyncTokenType>())
+        token_operands.push_back(o);
+      else
         yield_operands.push_back(o);
     }
+    rewriter.create<xilinx::air::WaitAllOp>(
+                    fop->getLoc(),
+                    SmallVector<Type, 1>{},
+                    token_operands);
     rewriter.create<scf::YieldOp>(yield->getLoc(), yield_operands);
     rewriter.eraseOp(yield);
 
