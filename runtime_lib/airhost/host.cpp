@@ -62,9 +62,6 @@ air_init_libxaie1()
 
   XAie_CfgInitialize(&(xaie->DevInst), &(xaie->AieConfigPtr));
   XAie_PmRequestTiles(&(xaie->DevInst), NULL, 0);
-  XAie_Finish(&(xaie->DevInst));
-  XAie_CfgInitialize(&(xaie->DevInst), &(xaie->AieConfigPtr));
-  XAie_PmRequestTiles(&(xaie->DevInst), NULL, 0);
 
   _air_host_active_libxaie1 = xaie;
   return xaie;
@@ -182,6 +179,13 @@ air_module_get_desc(air_module_handle_t handle)
 }
 
 uint64_t air_partition_load(const char *name) {
+
+  assert(_air_host_active_libxaie1);
+
+  XAie_Finish(&(_air_host_active_libxaie1->DevInst));
+  XAie_CfgInitialize(&(_air_host_active_libxaie1->DevInst),
+                     &(_air_host_active_libxaie1->AieConfigPtr));
+  XAie_PmRequestTiles(&(_air_host_active_libxaie1->DevInst), NULL, 0);
 
   auto partition_desc = air_partition_get_desc(_air_host_active_module, name);
   if (!partition_desc) {
