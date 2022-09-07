@@ -171,7 +171,7 @@ def run(mlir_module, args):
       cmd = [opts.cc, '-std=c++11', '--target=aarch64-linux-gnu', '-g']
       if opts.sysroot:
         cmd += ['--sysroot=%s' % opts.sysroot]
-      cmd += ['-I.', f'-I{opts.sysroot}/opt/xaiengine/include']
+      cmd += ['-I.', f'-I{opts.sysroot}/opt/xaienginev2/include']
       thispath = os.path.dirname(os.path.realpath(__file__))
       cmd += [f'-I{thispath}/../../../../runtime_lib/airhost/include']
       cmd += [f'-I{thispath}/../../../../runtime_lib']
@@ -275,7 +275,7 @@ def run_flow(opts):
       cmd = [opts.cc, '-std=c++11', '--target=aarch64-linux-gnu', '-g']
       if opts.sysroot:
         cmd += ['--sysroot=%s' % opts.sysroot]
-      cmd += ['-I.', f'-I{opts.sysroot}/opt/xaiengine/include']
+      cmd += ['-I.', f'-I{opts.sysroot}/opt/xaienginev2/include']
       cmd += [f'-I{thispath}/../../../../runtime_lib/airhost/include']
       cmd += [f'-I{thispath}/../../../../runtime_lib']
       cmd += [f'-I{thispath}/../../../../../aie/runtime_lib']

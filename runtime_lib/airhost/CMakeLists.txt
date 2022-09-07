@@ -5,6 +5,8 @@ include_directories(
     ${AIE_INCLUDE_DIRS}/../runtime_lib
 )
 
+add_definitions(-DLIBXAIENGINEV2)
+
 if(LIBXAIE_FOUND)
 add_library(airhost STATIC
     memory.cpp
