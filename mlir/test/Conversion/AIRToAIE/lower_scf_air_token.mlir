@@ -11,7 +11,7 @@ module attributes {torch.debug_module_name = "mmult"} {
       %c32 = arith.constant 32 : index
       %c64 = arith.constant 64 : index
       %0 = air.wait_all async
-      // CHECK: scf.for %{{*.}} = %c0 to %c64 step %c32 {
+      // CHECK: scf.for %{{.*}} = %c0 to %c64 step %c32 {
       %1 = scf.for %arg10 = %c0 to %c64 step %c32 iter_args(%arg11 = %0) -> (!air.async.token) {
         %asyncToken = air.execute async [%arg11]  : (!air.async.token) {
           linalg.matmul ins(%arg7, %arg8 : memref<32x32xi32, 2>, memref<32x32xi32, 2>) outs(%arg9 : memref<32x32xi32, 2>)
