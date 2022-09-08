@@ -2,7 +2,7 @@
 
 AIR_ROOT = $(dir $(shell which air-opt))/..
 CC = clang-10
-CFLAGS += -O0 -std=c++17 -I$(AIR_ROOT)/runtime_lib/airhost/include
+CFLAGS += -O3 -std=c++17 -I$(AIR_ROOT)/runtime_lib/airhost/include
 
 all: test.exe
 

@@ -31,7 +31,7 @@ module attributes {torch.debug_module_name = "mmult"}  {
           %dma_event0 = air.dma_memcpy_nd async [%last_herd_event] (%2[] [] [], %arg0[%arg3, %arg5] [%c64, %c64] [%c1024, %c1]) {id = 1 : i32} : (memref<64x64xi32, 1>, memref<1024x1024xi32>)
           %dma_event1 = air.dma_memcpy_nd async [%last_herd_event] (%3[] [] [], %arg1[%arg5, %arg4] [%c64, %c64] [%c1024, %c1]) {id = 2 : i32} : (memref<64x64xi32, 1>, memref<1024x1024xi32>)
           %dma_event2 = air.dma_memcpy_nd async [%last_herd_event] (%4[] [] [], %1[%arg3, %arg4] [%c64, %c64] [%c1024, %c1]) {id = 3 : i32} : (memref<64x64xi32, 1>, memref<1024x1024xi32>)
-          air.launch_herd tile (%arg6, %arg7) in (%arg8=%c2, %arg9=%c2) args(%arg10=%2, %arg11=%3, %arg12=%4) : memref<64x64xi32, 1>,memref<64x64xi32, 1>,memref<64x64xi32, 1>attributes {sym_name = "herd_0"} {
+          air.herd tile (%arg6, %arg7) in (%arg8=%c2, %arg9=%c2) args(%arg10=%2, %arg11=%3, %arg12=%4) : memref<64x64xi32, 1>,memref<64x64xi32, 1>,memref<64x64xi32, 1>attributes {sym_name = "herd_0"} {
             %c32 = arith.constant 32 : index
             %c0_0 = arith.constant 0 : index
             %c64_1 = arith.constant 64 : index
