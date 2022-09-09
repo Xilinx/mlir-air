@@ -20,14 +20,14 @@ CFLAGS += -I../../../aie/runtime_lib -DAIR_LIBXAIE_ENABLE -DLIBXAIENGINEV2
 
 uname_p := $(shell uname -p)
 ifeq ($(uname_p),aarch64)
-	CFLAGS += -I/opt/xaiengine/include 
-	LDFLAGS += -L/opt/xaiengine/lib 
+	CFLAGS += -I/opt/xaienginev2/include 
+	LDFLAGS += -L/opt/xaienginev2/lib 
 else 
   SYSROOT = /group/xrlabs/platforms/pynq-vck190-sysroot/
   CC = clang
   CFLAGS += --target=aarch64-linux-gnu --sysroot=$(SYSROOT) -g 
-  CFLAGS += -I$(SYSROOT)/opt/xaiengine/include
-  LDFLAGS += --target=aarch64-linux-gnu --sysroot=$(SYSROOT) -L$(SYSROOT)/opt/xaiengine/lib
+  CFLAGS += -I$(SYSROOT)/opt/xaienginev2/include
+  LDFLAGS += --target=aarch64-linux-gnu --sysroot=$(SYSROOT) -L$(SYSROOT)/opt/xaienginev2/lib
 endif
 
 CFLAGS += -std=c++17 -I$(ACDC)/runtime_lib/airhost/include

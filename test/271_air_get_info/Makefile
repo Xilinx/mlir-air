@@ -2,7 +2,7 @@
 all: test run
 
 test.exe: test.cpp 
-	clang++ test.cpp -fPIC -ldl -I${ACDC}/runtime_lib/airhost/include -I/opt/xaiengine/include -I${ACDC}/runtime_lib ${ACDC}/runtime_lib/test_library.cpp -L${ACDC}/runtime_lib/airhost -L/opt/xaiengine/lib -lxaiengine -Wl,--whole-archive -lairhost -Wl,--no-whole-archive -o test.exe
+	clang++ test.cpp -fPIC -ldl -I${ACDC}/runtime_lib/airhost/include -I/opt/xaienginev2/include -I${ACDC}/runtime_lib ${ACDC}/runtime_lib/test_library.cpp -L${ACDC}/runtime_lib/airhost -L/opt/xaienginev2/lib -lxaiengine -Wl,--whole-archive -lairhost -Wl,--no-whole-archive -o test.exe
 
 .PHONY: test
 test: test.exe 
