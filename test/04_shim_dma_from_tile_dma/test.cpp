@@ -16,7 +16,7 @@
 #define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
 #define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
 
-#define BRAM_ADDR (AIR_VCK190_SHMEM_BASE+0x4000)
+#define BRAM_ADDR (AIR_BBUFF_BASE)
 #define DMA_COUNT 512
 
 #include "aie_inc.cpp"

@@ -39,11 +39,11 @@ air_runtime_lib = os.path.join(config.air_obj_root, "runtime_lib")
 config.substitutions.append(('%PATH%', config.environment['PATH']))
 config.substitutions.append(('%shlibext', config.llvm_shlib_ext))
 config.substitutions.append(('%PYTHON', config.python_executable))
-config.substitutions.append(('%ARM_CLANG', "clang++ --target=aarch64-linux-gnu -fuse-ld=lld --sysroot=" + config.vitis_sysroot))
+config.substitutions.append(('%ARM_CLANG', "clang++ --target=aarch64-linux-gnu -fuse-ld=lld -DLIBXAIENGINEV2 --sysroot=" + config.vitis_sysroot))
 config.substitutions.append(('%VITIS_SYSROOT%', config.vitis_sysroot))
 config.substitutions.append(('%aie_runtime_lib%', os.path.join(config.aie_obj_root, "runtime_lib")))
 config.substitutions.append(('%air_runtime_lib%', air_runtime_lib))
-config.substitutions.append(('%airhost_libs%', "-I" + air_runtime_lib + "/airhost/include -L" + air_runtime_lib + "/airhost -Wl,--whole-archive -lairhost -Wl,--no-whole-archive -lmetal -lopen_amp -lpthread -lstdc++ -lsysfs -ldl -lrt"))
+config.substitutions.append(('%airhost_libs%', "-I" + air_runtime_lib + "/airhost/include -L" + air_runtime_lib + "/airhost -Wl,--whole-archive -lairhost -Wl,--no-whole-archive -lpthread -lstdc++ -lsysfs -ldl -lrt"))
 
 if(config.enable_board_tests):
     config.substitutions.append(('%run_on_board', "sudo"))

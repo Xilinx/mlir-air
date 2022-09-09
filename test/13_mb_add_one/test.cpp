@@ -33,18 +33,19 @@ main(int argc, char *argv[])
 
   uint32_t *bram_ptr;
 
-  #define BRAM_ADDR 0x4000+AIR_VCK190_SHMEM_BASE
   #define DMA_COUNT 16
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd != -1) {
-    bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, BRAM_ADDR);
+    bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_BBUFF_BASE);
+  }
+  if (bram_ptr) {
     for (int i=0; i<DMA_COUNT; i++) {
       bram_ptr[i] = i+1;
       bram_ptr[DMA_COUNT+i] = 0xdeface;
-      printf("bbuf %p %llx\n", &bram_ptr[i], bram_ptr[i]);
+      printf("bbuf %p 0x%lx %llx\n", &bram_ptr[i], AIR_BBUFF_BASE + 4*i, bram_ptr[i]);
     }
-  }
+  } else return 1;
 
   for (int i=0; i<8; i++) {
     mlir_aie_write_buffer_ping_in(xaie, i, 0xabbaba00+i);
@@ -80,7 +81,8 @@ main(int argc, char *argv[])
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt, 0, col, 1, 0, 4, 2, BRAM_ADDR, DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt, 0, col, 1, 0, 4, 2, AIR_BBUFF_BASE, DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_queue_dispatch_and_wait(q, wr_idx, pkt);
 
   //
   // read the data
@@ -89,7 +91,7 @@ main(int argc, char *argv[])
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt2 = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt2, 0, col, 0, 0, 4, 2, BRAM_ADDR+(DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt2, 0, col, 0, 0, 4, 2, AIR_BBUFF_BASE+(DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
   air_queue_dispatch_and_wait(q, wr_idx, pkt2);
 
   int errors = 0;
@@ -102,7 +104,7 @@ main(int argc, char *argv[])
     if (d0+1 != d2) {
       printf("mismatch ping %x != %x\n", d0, d2);
       errors++;
-    }
+    } 
     if (d1+1 != d3) {
       printf("mismatch pong %x != %x\n", d1, d3);
       errors++;
@@ -116,6 +118,7 @@ main(int argc, char *argv[])
       printf("mismatch %x != 2 + %x\n", d, i);
     }
   }
+  air_mem_free(bram_ptr,2*DMA_COUNT*sizeof(float));
   if (!errors) {
     printf("PASS!\n");
     return 0;

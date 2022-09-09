@@ -43,9 +43,8 @@ main(int argc, char *argv[])
     else
       mlir_aie_write_buffer_b(xaie, i-(DMA_COUNT/2), i+2);
   }
-
-  XAieTile_LockRelease(&(xaie->TileInst[7][2]), 0, 0x1, 0);
-  XAieTile_LockRelease(&(xaie->TileInst[7][2]), 1, 0x1, 0);
+  mlir_aie_release_lock(xaie, 7, 2, 0, 0x1, 0);
+  mlir_aie_release_lock(xaie, 7, 2, 1, 0x1, 0);
 
   // create the queue
   queue_t *q = nullptr;
@@ -57,7 +56,7 @@ main(int argc, char *argv[])
   if (fd == -1)
     return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
 
-  bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_SHMEM_BASE+0x4000);
+  bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_BBUFF_BASE);
   // Lets stomp over it!
   for (int i=0;i<DMA_COUNT;i++) {
     bram_ptr[i] = 0xdeadbeef;
@@ -82,7 +81,7 @@ main(int argc, char *argv[])
   packet_id = wr_idx % q->size;
 
   dispatch_packet_t *cpypkt0 = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(cpypkt0, 0, col, 0, 0, 8, 2, AIR_VCK190_SHMEM_BASE+0x4000, DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(cpypkt0, 0, col, 0, 0, 8, 2, AIR_BBUFF_BASE, DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
   air_queue_dispatch_and_wait(q, wr_idx, cpypkt0);
 
   mlir_aie_print_dma_status(xaie, 7, 2);

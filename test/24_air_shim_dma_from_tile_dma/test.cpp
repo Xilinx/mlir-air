@@ -37,7 +37,7 @@ main(int argc, char *argv[])
   // use BRAM_ADDR + 0x4000 as the data address
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd != -1) {
-    bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_VCK190_SHMEM_BASE+0x4000);
+    bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_BBUFF_BASE);
     for (int i=0; i<DMA_COUNT; i++) {
       bram_ptr[i] = 0xdeadbeef;    }
   }

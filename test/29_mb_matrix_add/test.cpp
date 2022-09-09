@@ -16,7 +16,7 @@
 #include "acdc_queue.h"
 #include "hsa_defs.h"
 
-#define BRAM_ADDR 0x4000+AIR_VCK190_SHMEM_BASE
+#define BRAM_ADDR AIR_BBUFF_BASE
 
 #include "aie_inc.cpp"
 

@@ -69,7 +69,7 @@ main(int argc, char *argv[])
   if (fd == -1)
     return -1;
 
-  bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd,  AIR_VCK190_SHMEM_BASE+0x4000);
+  bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd,  AIR_BBUFF_BASE);
   
   for (int i=0;i<IMAGE_SIZE;i++) {
     bram_ptr[i] = i;
@@ -96,56 +96,56 @@ main(int argc, char *argv[])
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_c = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_c, 0, 3, 0, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000+(IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float)); 
+  air_packet_nd_memcpy(pkt_c, 0, 3, 0, 0, 4, 2, AIR_BBUFF_BASE+(IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float)); 
  
   // Core 7,4
   // Start by sending the packet to read from the tiles
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_d = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_d, 0, 19, 0, 1, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000+(2*IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float)); 
+  air_packet_nd_memcpy(pkt_d, 0, 19, 0, 1, 4, 2, AIR_BBUFF_BASE+(2*IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float)); 
 
   // Core 8,2
   // Start by sending the packet to read from the tiles
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_g = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_g, 0, 26, 0, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000+(3*IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float)); 
+  air_packet_nd_memcpy(pkt_g, 0, 26, 0, 0, 4, 2, AIR_BBUFF_BASE+(3*IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float)); 
 
   // Core 8,4
   // Start by sending the packet to read from the tiles
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_h = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_h, 0, 18, 0, 1, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000+(4*IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float)); 
+  air_packet_nd_memcpy(pkt_h, 0, 18, 0, 1, 4, 2, AIR_BBUFF_BASE+(4*IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float)); 
 
   // Core 7,2
   // Send the packet to write the tiles
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_a = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_a, 0, 7, 1, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float)); 
+  air_packet_nd_memcpy(pkt_a, 0, 7, 1, 0, 4, 2, AIR_BBUFF_BASE, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float)); 
 
   // Core 7,4
   // Send the packet to write the tiles
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_b = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_b, 0, 11, 1, 1, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float)); 
+  air_packet_nd_memcpy(pkt_b, 0, 11, 1, 1, 4, 2, AIR_BBUFF_BASE, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float)); 
 
   // Core 8,2
   // Send the packet to write the tiles
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_e = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_e, 0, 6, 1, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
+  air_packet_nd_memcpy(pkt_e, 0, 6, 1, 0, 4, 2, AIR_BBUFF_BASE, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
   
   // Core 8,4
   // Send the packet to write the tiles
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_f = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_f, 0, 10, 1, 1, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
+  air_packet_nd_memcpy(pkt_f, 0, 10, 1, 1, 4, 2, AIR_BBUFF_BASE, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
 
   air_queue_dispatch(q, wr_idx, pkt_f);
   air_queue_dispatch_and_wait(q, wr_idx, pkt_e);

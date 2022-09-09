@@ -41,8 +41,8 @@ int main(int argc, char *argv[]) {
   uint32_t *input_bram_ptr;
   uint32_t *output_bram_ptr;
 
-  #define INPUT_BRAM_ADDR (0x4000+0x020100000000LL)
-  #define OUTPUT_BRAM_ADDR (0xC000+0x020100000000LL)
+  #define INPUT_BRAM_ADDR AIR_BBUFF_BASE
+  #define OUTPUT_BRAM_ADDR AIR_BBUFF_BASE+0x2000
   #define DMA_COUNT 16
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);

@@ -15,7 +15,7 @@ extern "C" {
 #define AIR_VCK190_SHMEM_BASE  0x020100000000LL
 #define AIR_VCK190_L2_DMA_BASE 0x020240000000LL
 #define AIR_VCK190_DDR_BASE 0x2000LL
-
+#define AIR_BBUFF_BASE 0x81C000000LL
 // library operations
 
 aie_libxaie_ctx_t *air_init_libxaie1();
@@ -178,10 +178,9 @@ uint64_t air_herd_load(const char *name);
 
 void* air_mem_alloc(size_t size);
 
-void* air_mem_get_paddr(void *vaddr);
-void* air_mem_get_vaddr(void *paddr);
+uint64_t air_mem_get_paddr(void *vaddr);
 
-void air_mem_dealloc(void *vaddr);
+int air_mem_free(void *vaddr, size_t size);
 
 }
 

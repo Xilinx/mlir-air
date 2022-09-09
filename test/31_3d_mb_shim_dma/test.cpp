@@ -47,7 +47,6 @@ main(int argc, char *argv[])
   mlir_aie_configure_dmas(xaie);
   mlir_aie_start_cores(xaie);
 
-  XAieDma_Shim ShimDmaInst1;
   uint32_t *bram_ptr;
 
   // We're going to stamp over the memories
@@ -65,7 +64,7 @@ main(int argc, char *argv[])
   if (fd == -1)
     return -1;
 
-  bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd,  AIR_VCK190_SHMEM_BASE+0x4000);
+  bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd,  AIR_BBUFF_BASE);
   
   for (int i=0;i<IMAGE_SIZE;i++) {
     bram_ptr[i] = i;
@@ -89,7 +88,7 @@ main(int argc, char *argv[])
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_c = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_c, 0, col, 0, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000+(IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), 1, 0);
+  air_packet_nd_memcpy(pkt_c, 0, col, 0, 0, 4, 2, AIR_BBUFF_BASE+(IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), 1, 0);
   //air_queue_dispatch_and_wait(q, wr_idx, pkt_a);
 
   //printf("This completes the copying to the tiles, let's move the pattern back\n");
@@ -97,7 +96,7 @@ main(int argc, char *argv[])
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_a = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_a, 0, col, 1, 0, 4, 2, AIR_VCK190_SHMEM_BASE+0x4000, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), 1, 0);
+  air_packet_nd_memcpy(pkt_a, 0, col, 1, 0, 4, 2, AIR_BBUFF_BASE, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), 1, 0);
   air_queue_dispatch_and_wait(q, wr_idx-1, pkt_c);
 
   mlir_aie_print_dma_status(xaie, 7, 2);

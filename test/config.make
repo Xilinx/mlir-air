@@ -16,7 +16,7 @@ AIE_XLATE = aie-translate
 
 ACDC_AIR = ${ACDC}/air
 
-CFLAGS += -I../../../aie/runtime_lib -DAIR_LIBXAIE_ENABLE
+CFLAGS += -I../../../aie/runtime_lib -DAIR_LIBXAIE_ENABLE -DLIBXAIENGINEV2
 
 uname_p := $(shell uname -p)
 ifeq ($(uname_p),aarch64)

@@ -40,7 +40,7 @@ main(int argc, char *argv[])
   XAieDma_Shim ShimDmaInst1;
   uint32_t *bram_ptr;
 
-  #define BRAM_ADDR AIR_VCK190_SHMEM_BASE+0x4000
+  #define BRAM_ADDR AIR_BBUFF_BASE
   #define BUFFER_SIZE 256
   #define DMA_COUNT (BUFFER_SIZE*2)
 
