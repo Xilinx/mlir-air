@@ -22,12 +22,12 @@ int main(int argc, char *argv[])
   mlir_aie_configure_dmas(xaie);
   mlir_aie_start_cores(xaie);
 
-  XAieTile_LockRelease(&(xaie->TileInst[7][4]), 1, 0, 0);
-  auto lock_ret = XAieTile_LockAcquire(&(xaie->TileInst[7][4]), 1, 0, 10000);
+  mlir_aie_release_lock(xaie, 7, 4, 1, 0, 0);
+  auto lock_ret = mlir_aie_acquire_lock(xaie, 7, 4, 1, 0, 1000);
   assert(lock_ret);
 
-  XAieTile_LockRelease(&(xaie->TileInst[7][4]), 2, 1, 0);
-  auto lock_ret2 = XAieTile_LockAcquire(&(xaie->TileInst[7][4]), 2, 1, 10000);
+  mlir_aie_release_lock(xaie, 7, 4, 2, 0, 0);
+  auto lock_ret2 = mlir_aie_acquire_lock(xaie, 7, 4, 2, 0, 1000);
   assert(lock_ret2);
 
   for (int i=0; i<16; i++) {

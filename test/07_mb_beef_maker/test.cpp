@@ -68,7 +68,7 @@ main(int argc, char *argv[])
   air_queue_dispatch_and_wait(q, wr_idx, lock_pkt);
 
   auto count = 0;
-  while (!XAieTile_LockAcquire(&(xaie->TileInst[col][2]), 0, 0, 1000)) {
+  while (!mlir_aie_acquire_lock(xaie, col, 2, 0, 0, 1000)) {
     count++;
     if (!(count % 1000)) {
       printf("%d seconds\n",count/1000);

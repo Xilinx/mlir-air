@@ -2,8 +2,6 @@
 
 // Removed run on board for production vck190
 
-// RUN: air-opt -air-to-aie='col-offset=7 row-offset=4 output-prefix=%T/' %S/air.mlir
-// RUN: aie-opt --aie-create-pathfinder-flows --aie-find-flows --aie-assign-buffer-addresses %T/aie.partition_0.mlir | aie-translate --aie-generate-xaie -o %T/aie_inc.cpp
-// RUN: aiecc.py --aie-generate-xaiev2 --pathfinder  --sysroot=%VITIS_SYSROOT% %T/aie.partition_0.mlir
-// RUN: %ARM_CLANG %S/test.cpp -I%VITIS_SYSROOT%/opt/xaiengine/include -I%T -L%VITIS_SYSROOT%/opt/xaiengine/lib -lxaiengine -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
+// RUN: aircc.py --sysroot=%VITIS_SYSROOT% -row-offset=2 -col-offset=7 %T/air.mlir -o %T/air.a
+// RUN: %ARM_CLANG %S/test.cpp -I%VITIS_SYSROOT%/opt/xaiengine/include -I%T -L%VITIS_SYSROOT%/opt/xaiengine/lib -lxaiengine -I%T/air_project/herd_0 -Wl,--whole-archive air.a -Wl,--no-whole-archive -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
 // %run_on_board %T/test.elf

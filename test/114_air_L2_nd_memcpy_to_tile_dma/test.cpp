@@ -14,11 +14,13 @@
 
 #define DMA_COUNT 32
 
-namespace air::partitions::partition_0 {
-void mlir_aie_write_buffer_buf0(aie_libxaie_ctx_t*, int, int32_t);
-int32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t*, int);
-}; // namespace air::partitions::partition_0
-using namespace air::partitions::partition_0;
+#include "aie_inc.cpp"
+
+//namespace air::partitions::partition_0 {
+//void mlir_aie_write_buffer_buf0(aie_libxaie_ctx_t*, int, int32_t);
+//int32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t*, int);
+//}; // namespace air::partitions::partition_0
+//using namespace air::partitions::partition_0;
 
 int main(int argc, char *argv[])
 {
@@ -92,7 +94,7 @@ int main(int argc, char *argv[])
 
   tensor_t<uint32_t,1> input;
   input.shape[0] = DMA_COUNT;
-  input.d = input.aligned = (uint32_t*)(0);
+  input.data = input.alloc = (uint32_t*)(0);
 
   auto i = &input;
   graph_fn(i);
