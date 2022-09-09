@@ -43,9 +43,8 @@ main(int argc, char *argv[])
     else
       mlir_aie_write_buffer_b(xaie, i-(DMA_COUNT/2), i+2);
   }
-
-  XAieTile_LockRelease(&(xaie->TileInst[7][2]), 0, 0x1, 0);
-  XAieTile_LockRelease(&(xaie->TileInst[7][2]), 1, 0x1, 0);
+  mlir_aie_release_lock(xaie, 7, 2, 0, 0x1, 0);
+  mlir_aie_release_lock(xaie, 7, 2, 1, 0x1, 0);
 
   // create the queue
   queue_t *q = nullptr;
