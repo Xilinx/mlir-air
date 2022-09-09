@@ -2,6 +2,6 @@
 
 // Removed run on board for production vck190
 
-// RUN: aircc.py --sysroot=%VITIS_SYSROOT% -row-offset=2 -col-offset=7 %T/air.mlir -o %T/air.a
-// RUN: %ARM_CLANG %S/test.cpp -I%VITIS_SYSROOT%/opt/xaienginev2/include -I%T -L%VITIS_SYSROOT%/opt/xaienginev2/lib -lxaiengine -I%T/air_project/herd_0 -Wl,--whole-archive air.a -Wl,--no-whole-archive -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
+// RUN: aircc.py --sysroot=%VITIS_SYSROOT% -row-offset=2 -col-offset=7 %S/air.mlir -o %T/air.a
+// RUN: %ARM_CLANG %S/test.cpp -I%VITIS_SYSROOT%/opt/xaienginev2/include -I%T -L%VITIS_SYSROOT%/opt/xaienginev2/lib -lxaiengine -I%T/air_project/herd_0 -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
 // %run_on_board %T/test.elf

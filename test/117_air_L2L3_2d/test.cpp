@@ -89,10 +89,10 @@ main(int argc, char *argv[])
   input.shape[0] = DMA_1D*4; input.shape[1] = DMA_2D*2;
   output.shape[0] = DMA_1D*4; output.shape[1] = DMA_2D*2;
 
-  input.d = input.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input.shape[0]*input.shape[1]);
-  uint32_t *in = (uint32_t*)input.d; 
-  output.d = output.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output.shape[0]*output.shape[1]);
-  uint32_t *out = (uint32_t*)output.d;
+  input.data = input.alloc = (uint32_t*)malloc(sizeof(uint32_t)*input.shape[0]*input.shape[1]);
+  uint32_t *in = (uint32_t*)input.data; 
+  output.data = output.alloc = (uint32_t*)malloc(sizeof(uint32_t)*output.shape[0]*output.shape[1]);
+  uint32_t *out = (uint32_t*)output.data;
 
   for (int i=0; i<input.shape[0]*input.shape[1]; i++) {
     in[i] = i;
@@ -101,7 +101,7 @@ main(int argc, char *argv[])
 
   tensor_t<uint32_t,2> l2_input;
   l2_input.shape[0] = DMA_1D; l2_input.shape[1] = DMA_2D;
-  l2_input.d = l2_input.aligned = (uint32_t*)(0);
+  l2_input.data = l2_input.alloc = (uint32_t*)(0);
 
   auto i = &input;
   auto o = &output;

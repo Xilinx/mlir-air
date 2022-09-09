@@ -91,10 +91,10 @@ main(int argc, char *argv[])
   input.shape[0] = IMAGE_WIDTH; input.shape[1] = IMAGE_HEIGHT;
   output.shape[0] = IMAGE_WIDTH; output.shape[1] = IMAGE_HEIGHT;
 
-  input.d = input.aligned = (uint32_t*)0;
+  input.data = input.alloc = (uint32_t*)0;
   uint32_t *in = (uint32_t*)&bank0_ptr[0];
 
-  output.d = output.aligned = (uint32_t*)(IMAGE_SIZE*sizeof(uint32_t));
+  output.data = output.alloc = (uint32_t*)(IMAGE_SIZE*sizeof(uint32_t));
   uint32_t *out = (uint32_t*)&bank0_ptr[IMAGE_SIZE];
 
   for (int i=0; i<IMAGE_SIZE; i++) {
@@ -138,5 +138,8 @@ main(int argc, char *argv[])
     printf("fail %d/%d.\n", (TILE_SIZE+IMAGE_SIZE-errors), TILE_SIZE+IMAGE_SIZE);
     return -1;
   }
+
+  free(input.alloc);
+  free(output.alloc);
 
 }
