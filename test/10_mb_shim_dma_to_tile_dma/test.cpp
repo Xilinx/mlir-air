@@ -36,7 +36,6 @@ main(int argc, char *argv[])
   mlir_aie_configure_dmas(xaie);
   mlir_aie_start_cores(xaie);
 
-  XAieDma_Shim ShimDmaInst1;
   uint32_t *bram_ptr;
 
   #define DMA_COUNT 512

@@ -71,7 +71,7 @@ int main(int argc, char *argv[])
   u32 errors = 0;
   for (int c = col; c < col + num_cols; c++)
     for (int r = row; r < row + num_rows; r++) {
-      u32 locks = XAieGbl_Read32(xaie->TileInst[c][r].TileAddr + 0x0001EF00);
+      u32 locks = mlir_aie_read32(xaie, mlir_aie_get_tile_addr(xaie, c, r) + 0x0001EF00);
       if (locks != 0x1)
         errors++;
     }
@@ -80,7 +80,7 @@ int main(int argc, char *argv[])
     printf("%d errors\n", errors);
     for (int c = col; c < col + num_cols; c++)
       for (int r = row; r < row + num_rows; r++) {
-        u32 locks = XAieGbl_Read32(xaie->TileInst[c][r].TileAddr + 0x0001EF00);
+        u32 locks = mlir_aie_read32(xaie, mlir_aie_get_tile_addr(xaie, c, r) + 0x0001EF00);
         printf("C[%d][%d] %08X\n", c, r, locks);
       }
   }
@@ -96,7 +96,7 @@ int main(int argc, char *argv[])
 
     for (int c = col; c < col + num_cols; c++)
       for (int r = row; r < row + num_rows; r++) {
-        u32 locks = XAieGbl_Read32(xaie->TileInst[c][r].TileAddr + 0x0001EF00);
+	u32 locks = mlir_aie_read32(xaie, mlir_aie_get_tile_addr(xaie, c, r) + 0x0001EF00);
         if (locks != 0x2)
           errors++;
       }
@@ -104,7 +104,7 @@ int main(int argc, char *argv[])
     if (errors) {
       for (int c = col; c < col + num_cols; c++)
         for (int r = row; r < row + num_rows; r++) {
-          u32 locks = XAieGbl_Read32(xaie->TileInst[col][row].TileAddr + 0x0001EF00);
+	  u32 locks = mlir_aie_read32(xaie, mlir_aie_get_tile_addr(xaie, c, r) + 0x0001EF00);
           printf("C[%d][%d] %08X\n", col, row, locks);
         }
     }

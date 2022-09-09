@@ -2,7 +2,7 @@
 
 // Removed run on board for production vck190
 
-// RUN: aie-opt --aie-create-pathfinder-flows --aie-find-flows --aie-assign-buffer-addresses %S/aie.mlir | aie-translate --aie-generate-xaie -o %T/aie_inc.cpp
+// RUN: aie-opt --aie-create-pathfinder-flows --aie-find-flows --aie-assign-buffer-addresses %S/aie.mlir | aie-translate --aie-generate-xaie --xaie-target=v2 -o %T/aie_inc.cpp
 // RUN: aiecc.py --aie-generate-xaiev2 --pathfinder  --sysroot=%VITIS_SYSROOT% %S/aie.mlir
 // RUN: %ARM_CLANG %S/test.cpp -I%VITIS_SYSROOT%/opt/xaiengine/include -I%T -L%VITIS_SYSROOT%/opt/xaiengine/lib -lxaiengine -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
 // %run_on_board %T/test.elf

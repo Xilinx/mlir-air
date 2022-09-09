@@ -16,11 +16,13 @@
 
 #define DMA_COUNT 32
 
-namespace air::partitions::partition_0 {
-void mlir_aie_write_buffer_buf0(aie_libxaie_ctx_t*, int, int32_t);
-int32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t*, int);
-}; // namespace air::partitions::partition_0
-using namespace air::partitions::partition_0;
+#include "aie_inc.cpp"
+
+//namespace air::partitions::partition_0 {
+//void mlir_aie_write_buffer_buf0(aie_libxaie_ctx_t*, int, int32_t);
+//int32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t*, int);
+//}; // namespace air::partitions::partition_0
+//using namespace air::partitions::partition_0;
 
 int
 main(int argc, char *argv[])
@@ -98,10 +100,10 @@ main(int argc, char *argv[])
   input.shape[0] = DMA_COUNT;
   output.shape[0] = DMA_COUNT;
 
-  input.d = input.aligned = (uint32_t*)malloc(sizeof(uint32_t)*input.shape[0]);
-  uint32_t *in = (uint32_t*)input.d; 
-  output.d = output.aligned = (uint32_t*)malloc(sizeof(uint32_t)*output.shape[0]);
-  uint32_t *out = (uint32_t*)output.d;
+  input.data = input.alloc = (uint32_t*)malloc(sizeof(uint32_t)*input.shape[0]);
+  uint32_t *in = (uint32_t*)input.data; 
+  output.data = output.alloc = (uint32_t*)malloc(sizeof(uint32_t)*output.shape[0]);
+  uint32_t *out = (uint32_t*)output.data;
 
   for (int i=0; i<input.shape[0]; i++) {
     in[i] = i;
@@ -112,8 +114,8 @@ main(int argc, char *argv[])
   tensor_t<uint32_t,1> l2_output;
   l2_input.shape[0] = DMA_COUNT;
   l2_output.shape[0] = DMA_COUNT;
-  l2_input.d = l2_input.aligned = (uint32_t*)(0);
-  l2_output.d = l2_output.aligned = (uint32_t*)(sizeof(uint32_t)*input.shape[0]);
+  l2_input.data = l2_input.alloc = (uint32_t*)(0);
+  l2_output.data = l2_output.alloc = (uint32_t*)(sizeof(uint32_t)*input.shape[0]);
 
   auto i = &input;
   auto o = &output;
