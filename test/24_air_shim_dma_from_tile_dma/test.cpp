@@ -58,7 +58,7 @@ main(int argc, char *argv[])
   input.shape[0] = DMA_COUNT;
   input.alloc = input.data = (uint32_t *)malloc(sizeof(uint32_t) * DMA_COUNT);
   for (int i=0; i<input.shape[0]; i++) {
-    input.data[i] = i;
+    input.data[i] = i + 0x10;
   }
 
   mlir_aie_print_dma_status(xaie, col, row);
@@ -67,7 +67,7 @@ main(int argc, char *argv[])
   graph_fn(i);
 
   mlir_aie_print_dma_status(xaie, col, row);
-  mlir_aie_print_tile_status(xaie,col, row);
+  mlir_aie_print_tile_status(xaie, col, row);
 
   int errors = 0;
   for (int i=0; i<DMA_COUNT; i++) {
