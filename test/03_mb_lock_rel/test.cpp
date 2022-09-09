@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cassert>
+#include <unistd.h>
 #include <stdlib.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -32,8 +33,8 @@ int main(int argc, char *argv[])
   mlir_aie_configure_switchboxes(xaie);
   mlir_aie_initialize_locks(xaie);
 
-  XAieTile_LockRelease(&(xaie->TileInst[col][2]), 0, 1, 0);
-  auto lock_ret = XAieTile_LockAcquire(&(xaie->TileInst[col][2]), 0, 1, 10000);
+  mlir_aie_release_lock(xaie, col, 2, 0, 1, 0);
+  auto lock_ret = mlir_aie_acquire_lock(xaie, col, 2, 0, 1, 10000);
   assert(lock_ret);
 
   mlir_aie_configure_dmas(xaie);
@@ -44,23 +45,31 @@ int main(int argc, char *argv[])
   assert(ret == 0 && "failed to create queue!");
 
   // setup the shim dma descriptors
-  XAieDma_Shim ShimDmaInst1;
   uint32_t *bram_ptr;
+  mlir_aie_init_mems(xaie, 1);
+  bram_ptr = (uint32_t *)mlir_aie_mem_alloc(xaie, 0, AIR_BBUFF_BASE, 0x8000);
+
+  bram_ptr[24] = 0xacdc;
+  mlir_aie_sync_mem_dev(xaie, 0);
 
   #define DMA_COUNT 256
 
   auto burstlen = 4;
-  XAieDma_ShimInitialize(&(xaie->TileInst[col][0]), &ShimDmaInst1);
-  XAieDma_ShimBdSetAddr(&ShimDmaInst1, 1, HIGH_ADDR((u64)AIR_VCK190_SHMEM_BASE), LOW_ADDR((u64)AIR_VCK190_SHMEM_BASE+0x1000), sizeof(u32) * DMA_COUNT);
-  XAieDma_ShimBdSetAxi(&ShimDmaInst1, 1 , 0, burstlen, 0, 0, XAIE_ENABLE);
-  XAieDma_ShimBdWrite(&ShimDmaInst1, 1);
-  XAieDma_ShimSetStartBd((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_MM2S0, 1);
+  XAie_DmaDesc dma_bd;
+  XAie_DmaDescInit(&(xaie->DevInst), &dma_bd, XAie_TileLoc(col,0));
+  XAie_DmaSetAddrLen(&dma_bd, (u64)bram_ptr, sizeof(u32) * DMA_COUNT); 
+  XAie_DmaSetNextBd(&dma_bd, 1, XAIE_DISABLE); 
+  XAie_DmaSetAxi(&dma_bd, 0, burstlen, 0, 0, XAIE_ENABLE);
+  XAie_DmaEnableBd(&dma_bd);
+  XAie_DmaWriteBd(&(xaie->DevInst), &dma_bd, XAie_TileLoc(col,0), 1);
+  XAie_DmaChannelPushBdToQueue(&(xaie->DevInst), XAie_TileLoc(col,0), 0, DMA_MM2S, 1);
 
-  auto cnt = XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_MM2S0);
+  u8 cnt = 0;
+  XAie_DmaGetPendingBdCount(&(xaie->DevInst), XAie_TileLoc(col,0), 0, DMA_MM2S, &cnt);
   if (cnt)
     printf("%s %d Warn %d\n", __FUNCTION__, __LINE__, cnt);
 
-  XAieDma_ShimChControl((&ShimDmaInst1), XAIEDMA_SHIM_CHNUM_MM2S0, XAIE_DISABLE, XAIE_DISABLE, XAIE_ENABLE);
+  XAie_DmaChannelEnable(&(xaie->DevInst), XAie_TileLoc(col,0), 0, DMA_MM2S);
 
   uint32_t herd_id = 0;
   uint32_t lock_id = 0;
@@ -81,17 +90,19 @@ int main(int argc, char *argv[])
   air_packet_aie_lock(lock_pkt, herd_id, lock_id, /*acq_rel*/1, /*value*/0, 0, 0);
   air_queue_dispatch_and_wait(q, wr_idx, lock_pkt);
 
-  //XAieTile_LockRelease(&(xaie->TileInst[col][2]), 0, 0, 0);
+  //mlir_aie_release_lock(xaie, col, 2, 0, 0, 0);
 
   // wait for shim dma to finish
   auto count = 0;
-  while (XAieDma_ShimPendingBdCount(&ShimDmaInst1, XAIEDMA_SHIM_CHNUM_MM2S0)) {
-    XAieLib_usleep(1000);
+  XAie_DmaGetPendingBdCount(&(xaie->DevInst), XAie_TileLoc(col,0), 0, DMA_MM2S, &cnt);
+  while (cnt) {
+    sleep(1);
     count++;
     if (!(count % 1000)) {
       printf("%d seconds\n",count/1000);
       if (count == 2000) break;
     }
+    XAie_DmaGetPendingBdCount(&(xaie->DevInst), XAie_TileLoc(col,0), 0, DMA_MM2S, &cnt);
   }
 
   // we copied the start of the shared bram into tile memory,
