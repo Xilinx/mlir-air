@@ -118,5 +118,5 @@ with air.mlir.ir.Context(), Location.unknown():
 runner = air.compiler.util.Runner(arch)
 trace = runner.run(air_module, "matmul")
 
-with open("/work/trace.out", "w") as f:
+with open("trace.out", "w") as f:
    f.write(trace)
