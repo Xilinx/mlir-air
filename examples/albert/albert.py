@@ -19,17 +19,16 @@ class mmult(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, a, b, c, d, e, f):
-        qk = torch.mm(torch.mm(a,b),torch.mm(c,d))
-        qkv = torch.mm(torch.softmax(qk,dim=-1), torch.mm(e,f))
+    def forward(self, x, q, k, v):
+        qk = torch.mm(torch.mm(x,q),torch.mm(x,k))
+        qkv = torch.mm(F.softmax(qk,dim=-1), torch.mm(x,v))
         return qkv
 
 program = mmult()
 mlir = torch_mlir.compile(
     program,
     (torch.ones((M,K), dtype=dtype), torch.ones((K,N), dtype=dtype), 
-    torch.ones((M,K), dtype=dtype), torch.ones((K,N), dtype=dtype),
-    torch.ones((M,K), dtype=dtype), torch.ones((K,N), dtype=dtype)),
+    torch.ones((K,N), dtype=dtype), torch.ones((K,N), dtype=dtype)),
     output_type=torch_mlir.OutputType.LINALG_ON_TENSORS
 )
 
@@ -53,11 +52,7 @@ with air.mlir.ir.Context():
         "canonicalize", "cse",
         "air-copy-to-dma",
         "air-par-to-herd{depth=1}", # matmul
-        "air-par-to-herd{depth=1}", # matmul
-        "air-par-to-herd{depth=1}", # matmul
         "air-par-to-herd{depth=0}", # softmax
-        "air-par-to-herd{depth=1}", # matmul
-        "air-par-to-herd{depth=1}", # matmul
         "air-par-to-launch{has-air-partition=true}",
         "canonicalize", "cse",
     ])
