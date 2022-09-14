@@ -48,12 +48,16 @@ with air.mlir.ir.Context():
     pm.run(air_module)
 
 ##  Removed from pipeline for now:
-#        "air-par-to-herd{depth=1}", # matmul
-#        "air-par-to-herd{depth=0}", # gelu
     pipeline = ",".join([
         "air-linalg-codegen{l2-tile-size=64,64,64 l2-promote=true l1-tile-size=32,32,32 l1-promote=true}",
         "canonicalize", "cse",
         "air-copy-to-dma",
+        "air-par-to-herd{depth=1}", # matmul
+        "air-par-to-herd{depth=1}", # matmul
+        "air-par-to-herd{depth=1}", # matmul
+        "air-par-to-herd{depth=0}", # softmax
+        "air-par-to-herd{depth=1}", # matmul
+        "air-par-to-herd{depth=1}", # matmul
         "air-par-to-launch{has-air-partition=true}",
         "canonicalize", "cse",
     ])
