@@ -48,11 +48,21 @@ with air.mlir.ir.Context():
 
 ##  Removed from pipeline for now:
     pipeline = ",".join([
-        "air-linalg-codegen{l2-tile-size=64,64,64 l2-promote=true l1-tile-size=32,32,32 l1-promote=true}",
-        "canonicalize", "cse",
+        "air-linalg-name",
+        "air-linalg-codegen{input-filter=linalg.matmul1 herd-size=2,2 l1-tile-size=32,32,32}",
+        "air-linalg-codegen{input-filter=linalg.matmul3 herd-size=2,2 l1-tile-size=32,32,32}",
+        "air-linalg-codegen{input-filter=linalg.matmul5 herd-size=2,2 l1-tile-size=32,32,32}",
+        "air-linalg-codegen{input-filter=linalg.generic8 herd-size=1,1 l1-tile-size=64,64,64}",
+        "air-linalg-codegen{input-filter=linalg.generic9 herd-size=1,1 l1-tile-size=64,64,64}",
+        "air-linalg-codegen{input-filter=linalg.generic10 herd-size=1,1 l1-tile-size=64,64,64}",
+        "air-linalg-codegen{input-filter=linalg.generic12 herd-size=1,1 l1-tile-size=64,64,64}",
+        "air-linalg-codegen{input-filter=linalg.generic13 herd-size=1,1 l1-tile-size=64,64,64}",
+        "air-linalg-codegen{input-filter=linalg.matmul15 herd-size=2,2 l1-tile-size=32,32,32}",
+        "air-linalg-codegen{input-filter=linalg.matmul17 herd-size=2,2 l1-tile-size=32,32,32}",
+        "air-rm-linalg-name",
+        #"canonicalize", "cse",
+        "air-par-to-herd",
         "air-copy-to-dma",
-        "air-par-to-herd{depth=1}", # matmul
-        "air-par-to-herd{depth=0}", # softmax
         "air-par-to-launch{has-air-partition=true}",
         "canonicalize", "cse",
     ])
