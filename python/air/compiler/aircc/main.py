@@ -92,7 +92,7 @@ def run(mlir_module, args):
     air_to_aie_pass = air_to_aie_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
     air_to_aie_pass = air_to_aie_pass + f' output-prefix={opts.tmpdir}/' + '}'
 
-    run_passes('air-renumber-dma,'+air_to_aie_pass+',func.func(convert-linalg-to-loops)',Module.parse(str(m)),opts)
+    run_passes('func.func(air-renumber-dma),'+air_to_aie_pass+',func.func(convert-linalg-to-loops)',Module.parse(str(m)),opts)
 
     air_to_airrt_pass = 'air-to-aie{emit-while-loop=true'
     air_to_airrt_pass = air_to_airrt_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
@@ -104,7 +104,7 @@ def run(mlir_module, args):
     # lower the airrt control program to llvm dialect
 
     aie_ctrl_airrt = opts.tmpdir+'/airrt.'+air_mlir_filename
-    pass_pipeline = 'air-renumber-dma,'+air_to_airrt_pass+',convert-vector-to-llvm,convert-math-to-llvm,lower-affine,air-to-std,air-lower-linalg-tensors,canonicalize,cse'
+    pass_pipeline = 'func.func(air-renumber-dma),'+air_to_airrt_pass+',convert-vector-to-llvm,convert-math-to-llvm,lower-affine,air-to-std,air-lower-linalg-tensors,canonicalize,cse'
     run_passes(pass_pipeline, mlir_module, opts, aie_ctrl_airrt)
 
     aie_ctrl = opts.tmpdir+'/aie_ctrl.'+air_mlir_filename
@@ -112,7 +112,7 @@ def run(mlir_module, args):
     run_passes(pass_pipeline, mlir_module, opts, aie_ctrl)
 
     aie_ctrl_refback = opts.tmpdir+'/refback.'+air_mlir_filename
-    pass_pipeline = 'air-renumber-dma,convert-vector-to-llvm,convert-math-to-llvm,air-to-std,air-lower-linalg-tensors,canonicalize,cse,'+ \
+    pass_pipeline = 'func.func(air-renumber-dma),convert-vector-to-llvm,convert-math-to-llvm,air-to-std,air-lower-linalg-tensors,canonicalize,cse,'+ \
                     'airrt-to-llvm,canonicalize,cse'
     run_passes(pass_pipeline, Module.parse(str(m)), opts, aie_ctrl_refback)
 
