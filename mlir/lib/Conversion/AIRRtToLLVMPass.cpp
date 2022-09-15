@@ -806,7 +806,8 @@ public:
       return failure();
 
     rewriter.create<AffineStoreOp>(op.getLoc(), adaptor.getValue(),
-                                   adaptor.getMemref(), adaptor.getIndices());
+                                   adaptor.getMemref(), op.getAffineMap(),
+                                   adaptor.getIndices());
     rewriter.eraseOp(op);
     return success();
   }
@@ -824,8 +825,9 @@ public:
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
-    auto load = rewriter.create<memref::LoadOp>(
-        op.getLoc(), adaptor.getMemref(), adaptor.getIndices());
+    auto load =
+        rewriter.create<memref::LoadOp>(op.getLoc(), op->getResultTypes(),
+                                        adaptor.getOperands(), op->getAttrs());
     rewriter.replaceOp(op, load.getResult());
     return success();
   }
@@ -843,8 +845,8 @@ public:
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
-    rewriter.create<memref::StoreOp>(op.getLoc(), adaptor.value(),
-                                     adaptor.getMemref(), adaptor.getIndices());
+    rewriter.create<memref::StoreOp>(op.getLoc(), op->getResultTypes(),
+                                     adaptor.getOperands(), op->getAttrs());
     rewriter.eraseOp(op);
     return success();
   }
@@ -862,8 +864,9 @@ public:
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
-    auto load = rewriter.create<AffineLoadOp>(op.getLoc(), adaptor.getMemref(),
-                                              adaptor.getIndices());
+    auto load =
+        rewriter.create<AffineLoadOp>(op.getLoc(), op->getResultTypes(),
+                                      adaptor.getOperands(), op->getAttrs());
     rewriter.replaceOp(op, load.getResult());
     return success();
   }
