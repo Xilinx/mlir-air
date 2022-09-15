@@ -25,7 +25,7 @@ ifeq ($(uname_p), aarch64)
 	CFLAGS += -g -I/opt/xaienginev2/include
 	LDFLAGS += -L/opt/xaienginev2/lib
 else
-	SYSROOT = ../../../../acdc/DockerArm/sysroot
+	SYSROOT = ../../../../DockerArm/sysroot
 	CC = clang
 	CFLAGS += --target=aarch64-linux-gnu --sysroot=$(SYSROOT) -g 
 	CFLAGS += -I$(SYSROOT)/opt/xaienginev2/include
