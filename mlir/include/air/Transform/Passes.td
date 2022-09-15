@@ -797,4 +797,9 @@ def AIRFuseParallelHerdPass : Pass<"air-fuse-parallel-launch", "ModuleOp"> {
 }
 
 
+def AIRRenumberDmaIdPass : Pass<"air-renumber-dma", "func::FuncOp"> {
+  let summary = "Renumber air dma op ids";
+  let constructor = "xilinx::air::createAIRRenumberDmaIdPass()";
+}
+
 #endif // AIR_CONVERSION_PASSES

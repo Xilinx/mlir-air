@@ -754,6 +754,33 @@ void AIRFuseParallelHerdPass::runOnOperation() {
   parOp.erase();
 }
 
+class AIRRenumberDmaIdPass
+    : public xilinx::air::AIRRenumberDmaIdPassBase<AIRRenumberDmaIdPass> {
+
+public:
+  AIRRenumberDmaIdPass() = default;
+  AIRRenumberDmaIdPass(const AIRRenumberDmaIdPass &pass){};
+
+  void runOnOperation() override;
+
+private:
+};
+
+void AIRRenumberDmaIdPass::runOnOperation() {
+  auto func = getOperation();
+  auto ctx = func.getContext();
+
+  for (auto h : func.getOps<xilinx::air::HerdOp>()) {
+    unsigned id = 0;
+    h->walk([&](Operation *o) {
+      if (dyn_cast<xilinx::air::DmaMemcpyInterface>(o)) {
+        o->setAttr("id", mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
+                                                ++id));
+      }
+    });
+  }
+}
+
 } // anonymous namespace
 
 namespace xilinx {
@@ -785,6 +812,10 @@ std::unique_ptr<Pass> createAIRRemoveLinalgNamePass() {
 
 std::unique_ptr<Pass> createAIRFuseParallelHerdPass() {
   return std::make_unique<AIRFuseParallelHerdPass>();
+}
+
+std::unique_ptr<Pass> createAIRRenumberDmaIdPass() {
+  return std::make_unique<AIRRenumberDmaIdPass>();
 }
 
 } // namespace air
