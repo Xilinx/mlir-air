@@ -1103,13 +1103,7 @@ public:
 
   airrt::PartitionMetadataOp
   getOrCreatePartitionMetadata(airrt::ModuleMetadataOp module_meta,
-                               air::PartitionOp partition) {
-
-    std::string name = "partition_0";
-    if (partition)
-      if (auto attr = partition->getAttrOfType<StringAttr>(
-              SymbolTable::getSymbolAttrName()))
-        name = attr.getValue().str();
+                               StringRef name) {
 
     for (auto pm :
          module_meta.partitions().front().getOps<airrt::PartitionMetadataOp>())
@@ -1560,7 +1554,7 @@ public:
             }
           }
           auto partition_meta = getOrCreatePartitionMetadata(
-              module_meta, h->getParentOfType<air::PartitionOp>());
+              module_meta, m.getName()->split('.').second);
           auto herd_meta = createHerdMetadata(partition_meta, herd);
           herd_meta->setAttr("dma_allocations",
                              ArrayAttr::get(ctx, dma_allocations));

@@ -241,7 +241,13 @@ air_herd_load(const char *name) {
   }
   auto herd_desc = air_herd_get_desc(
       _air_host_active_module, _air_host_active_partition.partition_desc, name);
+  // In some scenarios load_partition is not called. This is a temporary hack
+  // to support that case.
   if (!herd_desc) {
+    if (_air_host_active_partition.partition_desc) {
+      _air_host_active_partition.partition_desc = 0;
+      return air_herd_load(name);
+    }
     printf("Failed to locate herd descriptor '%s'!\n",name);
     assert(0);
   }
