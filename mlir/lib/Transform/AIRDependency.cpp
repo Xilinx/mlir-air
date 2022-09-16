@@ -63,6 +63,9 @@ namespace {
 struct regionNode {
     std::string asyncEventName;
     std::string asyncEventType;
+    std::string color;
+    std::string shape;
+    std::string style;
     unsigned operationId;
 };
 
@@ -402,6 +405,8 @@ public:
       // Copy over graph properties
       asyncRegionGraphTR[i->second].asyncEventName = asyncRegionGraph[i->first].asyncEventName;
       asyncRegionGraphTR[i->second].asyncEventType = asyncRegionGraph[i->first].asyncEventType;
+      asyncRegionGraphTR[i->second].color = asyncRegionGraph[i->first].color;
+      asyncRegionGraphTR[i->second].shape = asyncRegionGraph[i->first].shape;
       asyncRegionGraphTR[i->second].operationId = asyncRegionGraph[i->first].operationId;
       // Build reverse map tr_to_g, for convenient vertex mapping
       tr_to_g[i->second] = i->first;
@@ -614,6 +619,8 @@ private:
     auto v = add_vertex(asyncRegionGraph);
     asyncRegionGraph[v].asyncEventName = asyncEventName;
     asyncRegionGraph[v].asyncEventType = "region";
+    asyncRegionGraph[v].color = "chartreuse";
+    asyncRegionGraph[v].shape = "oval";
     asyncRegionGraph[v].operationId = ExecuteOpID;
 
     // Update op-to-graph map
@@ -653,6 +660,8 @@ private:
     auto v = add_vertex(asyncRegionGraph);
     asyncRegionGraph[v].asyncEventName = asyncEventName;
     asyncRegionGraph[v].asyncEventType = "region";
+    asyncRegionGraph[v].color = "chartreuse";
+    asyncRegionGraph[v].shape = "oval";
     asyncRegionGraph[v].operationId = ExecuteOpID;
 
     // Update op-to-graph map
@@ -684,6 +693,8 @@ private:
     auto v = add_vertex(asyncRegionGraph);
     asyncRegionGraph[v].asyncEventName = "air::dma" + event_name;
     asyncRegionGraph[v].asyncEventType = "dma";
+    asyncRegionGraph[v].color = "cyan";
+    asyncRegionGraph[v].shape = "oval";
     asyncRegionGraph[v].operationId = id;
 
     // Update op-to-graph map
@@ -720,6 +731,8 @@ private:
       auto v = add_vertex(asyncRegionGraph);
       asyncRegionGraph[v].asyncEventName = "air::launch";
       asyncRegionGraph[v].asyncEventType = "hierarchy";
+      asyncRegionGraph[v].color = "yellow";
+      asyncRegionGraph[v].shape = "box";
       asyncRegionGraph[v].operationId = HierarchyOpID;
       // Update op-to-graph map
       hier_to_g[HierarchyOpID] = v;
@@ -734,6 +747,8 @@ private:
       auto v = add_vertex(asyncRegionGraph);
       asyncRegionGraph[v].asyncEventName = "air::partition";
       asyncRegionGraph[v].asyncEventType = "hierarchy";
+      asyncRegionGraph[v].color = "yellow";
+      asyncRegionGraph[v].shape = "box";
       asyncRegionGraph[v].operationId = HierarchyOpID;
       // Update op-to-graph map
       hier_to_g[HierarchyOpID] = v;
@@ -748,6 +763,8 @@ private:
       auto v = add_vertex(asyncRegionGraph);
       asyncRegionGraph[v].asyncEventName = "air::herd";
       asyncRegionGraph[v].asyncEventType = "hierarchy";
+      asyncRegionGraph[v].color = "yellow";
+      asyncRegionGraph[v].shape = "box";
       asyncRegionGraph[v].operationId = HierarchyOpID;
       // Update op-to-graph map
       hier_to_g[HierarchyOpID] = v;
@@ -1144,6 +1161,8 @@ private:
     asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventName += loop_type;
     asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventName += "_loop_end";
     asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventType = "wait_all";
+    asyncRegionGraphTR[wait_all_op_yielded_v].color = "crimson";
+    asyncRegionGraphTR[wait_all_op_yielded_v].shape = "oval";
     asyncRegionGraphTR[wait_all_op_yielded_v].operationId = 0;
     // Update graph connectivity
     for (auto sink : sinks_in_loop_op){
@@ -1185,6 +1204,8 @@ private:
     asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventName += loop_type;
     asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventName += "_loop_begin";
     asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventType = "wait_all";
+    asyncRegionGraphTR[wait_all_op_before_loop_v].color = "crimson";
+    asyncRegionGraphTR[wait_all_op_before_loop_v].shape = "oval";
     asyncRegionGraphTR[wait_all_op_before_loop_v].operationId = 0;
     // Update op-to-graph map
     wa_to_g[wait_all_op_before_loop.getId()] = wait_all_op_before_loop_v;
@@ -1595,7 +1616,13 @@ private:
   void dump_graph(std::string filename)
   {
     std::ofstream ofs (filename, std::ofstream::out); 
-    write_graphviz(ofs, asyncRegionGraphTR, boost::make_label_writer(boost::get(&regionNode::asyncEventName, asyncRegionGraphTR)));
+    boost::dynamic_properties dp;
+    dp.property("label", boost::get(&regionNode::asyncEventName, asyncRegionGraphTR));
+    dp.property("color", boost::get(&regionNode::color, asyncRegionGraphTR));
+    dp.property("shape", boost::get(&regionNode::shape, asyncRegionGraphTR));
+    dp.property("node_id", boost::get(boost::vertex_index, asyncRegionGraphTR));
+    dp.property("style", boost::make_constant_property<Graph::vertex_descriptor>(+"filled"));
+    write_graphviz_dp(ofs, asyncRegionGraphTR, dp);
   }
 
   //===----------------------------------------------------------------------===//
