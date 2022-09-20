@@ -60,7 +60,7 @@ namespace {
 
 // Construction of a dependency graph as a Boost graph
 
-struct regionNode {
+struct executeNode {
     std::string asyncEventName;
     std::string asyncEventType;
     std::string color;
@@ -69,7 +69,7 @@ struct regionNode {
     unsigned operationId;
 };
 
-typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::bidirectionalS, regionNode> Graph;
+typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::bidirectionalS, executeNode> Graph;
 typedef boost::graph_traits<Graph>::in_edge_iterator in_edge_iterator;
 typedef boost::graph_traits<Graph>::out_edge_iterator out_edge_iterator;
 typedef boost::graph_traits<Graph>::vertex_iterator vertex_iterator;
@@ -106,102 +106,106 @@ public:
         if (mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op))
           createAsyncDMA(module_builder, op);
 
-        // Create async region for linalg.matmul
+        // Create async execute region for linalg.matmul
         else if (dyn_cast<linalg::MatmulOp>(op))
-          createAsyncRegion(module_builder, op, "linalg::matmul", ExecuteOpID);
+          createAsyncExecute(module_builder, op, "linalg::matmul", ExecuteOpID);
 
-        // Create async region for linalg.fill
+        // Create async execute region for linalg.fill
         else if (dyn_cast<linalg::FillOp>(op))
-          createAsyncRegion(module_builder, op, "linalg::fill", ExecuteOpID);
+          createAsyncExecute(module_builder, op, "linalg::fill", ExecuteOpID);
 
-        // Create async region for linalg.copy
+        // Create async execute region for linalg.copy
         else if (dyn_cast<linalg::CopyOp>(op))
-          createAsyncRegion(module_builder, op, "linalg::copy", ExecuteOpID);
+          createAsyncExecute(module_builder, op, "linalg::copy", ExecuteOpID);
 
-        // Create async region for linalg op
+        // Create async execute region for linalg op
         else if (mlir::dyn_cast<linalg::LinalgOp>(op))
-          createAsyncRegion(module_builder, op, "linalg::unknown", ExecuteOpID);
+          createAsyncExecute(module_builder, op, "linalg::unknown", ExecuteOpID);
 
-        // Create async region for memref.alloc
+        // Create async execute region for memref.alloc
         else if (auto memalloc_op = dyn_cast<memref::AllocOp>(op))
-          createAsyncRegion(module_builder, op, "memref::alloc", ExecuteOpID,
+          createAsyncExecute(module_builder, op, "memref::alloc", ExecuteOpID,
                             memalloc_op.memref().getType());
 
-        // Create async region for memref.alloc
+        // Create async execute region for memref.alloc
         else if (auto memcast_op = dyn_cast<memref::CastOp>(op))
-          createAsyncRegion(module_builder, op, "memref::cast", ExecuteOpID,
+          createAsyncExecute(module_builder, op, "memref::cast", ExecuteOpID,
                             memcast_op.dest().getType());
 
-        // Create async region for memref.dealloc
+        // Create async execute region for memref.dealloc
         else if (dyn_cast<memref::DeallocOp>(op))
-          createAsyncRegion(module_builder, op, "memref::dealloc", ExecuteOpID);
+          createAsyncExecute(module_builder, op, "memref::dealloc", ExecuteOpID);
 
-        // Create async region for memref.copy
+        // Create async execute region for memref.copy
         else if (dyn_cast<memref::CopyOp>(op))
-          createAsyncRegion(module_builder, op, "memref::copy", ExecuteOpID);
+          createAsyncExecute(module_builder, op, "memref::copy", ExecuteOpID);
 
-        // Create async region for arith.muli
+        // Create async execute region for arith.muli
         else if (auto arith_op = dyn_cast<arith::MulIOp>(op)){
           if (arith_op.getResult().getType().isa<IndexType>()){
-            createAsyncRegion(module_builder, op, "arith::muli", ExecuteOpID,
+            createAsyncExecute(module_builder, op, "arith::muli", ExecuteOpID,
                               arith_op.getResult().getType());
           }
         }
 
-        // Create async region for arith.addi
+        // Create async execute region for arith.addi
         else if (auto arith_op = dyn_cast<arith::AddIOp>(op)){
           if (arith_op.getResult().getType().isa<IndexType>()){
-            createAsyncRegion(module_builder, op, "arith::addi", ExecuteOpID,
+            createAsyncExecute(module_builder, op, "arith::addi", ExecuteOpID,
                               arith_op.getResult().getType());
           }
         }
 
-        // Create async region for affine.apply
+        // Create async execute region for affine.apply
         else if (auto apply_op = dyn_cast<mlir::AffineApplyOp>(op))
-          createAsyncRegion(module_builder, op, "affine::apply", ExecuteOpID,
+          createAsyncExecute(module_builder, op, "affine::apply", ExecuteOpID,
                             apply_op.getResult().getType());
 
-        // Create async region for air hierarchy ops (air.launch and air.partition, TODO: air.herd).
+        // Create async execute region for air hierarchy ops (air.launch and air.partition, TODO: air.herd).
         else if (auto hierarchy_op = dyn_cast<air::HierarchyInterface>(op)){
           createAsyncHierarchyImpls(module_builder, hierarchy_op, HierarchyOpID);
         }  
 
-        // Create async region for an unknown op which has memref or index-type operands
+        // Create async execute region for an unknown op which has memref or index-type operands
         else {
-          bool isCandidateRegion = false;
+          bool isCandidateExecute = false;
           for (auto operand :  op->getOperands()){
             if (operand.getType().isa<MemRefType>() || operand.getType().isa<IndexType>()){
-              isCandidateRegion = true;
+              isCandidateExecute = true;
             }
           }
-          // No air region for loop ops
+          // No air execute for loop ops
           if (mlir::dyn_cast<mlir::LoopLikeOpInterface>(op))
-            isCandidateRegion = false;
-          // No air region for subview ops
+            isCandidateExecute = false;
+          // No air execute for subview ops
           if (mlir::dyn_cast<mlir::OffsetSizeAndStrideOpInterface>(op))
-            isCandidateRegion = false;
-          // No air region for terminators
+            isCandidateExecute = false;
+          // No air execute for terminators
           if (op->mightHaveTrait<OpTrait::IsTerminator>()){
-            isCandidateRegion = false;
+            isCandidateExecute = false;
           }
-          if (isCandidateRegion){
+          // No air execute in linalg.generic
+          if (op->getParentOfType<mlir::linalg::GenericOp>()){
+            isCandidateExecute = false;
+          }
+          if (isCandidateExecute){
             if (op->getNumResults())
-              createAsyncRegion(module_builder, op, "unknown", ExecuteOpID,
+              createAsyncExecute(module_builder, op, "unknown", ExecuteOpID,
                                 op->getResults().front().getType());
             else
-              createAsyncRegion(module_builder, op, "unknown", ExecuteOpID);
+              createAsyncExecute(module_builder, op, "unknown", ExecuteOpID);
           }
         }
       });
     }
 
-    // 2nd traversal: trace deps among async regions; build a boost dep graph.
+    // 2nd traversal: trace deps among async execute regions; build a boost dep graph.
 
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
         Operation* sink_op = nullptr;
-        if (auto async_region_op = dyn_cast<air::ExecuteOp>(op)) {
-          for (auto &bb : async_region_op.body()){
+        if (auto async_execute_op = dyn_cast<air::ExecuteOp>(op)) {
+          for (auto &bb : async_execute_op.body()){
             for (auto &child_op : bb.getOperations()){
               if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
                 sink_op = &child_op;
@@ -370,17 +374,17 @@ public:
         }
 
         // Detect dependencies
-        if (auto async_region_op = dyn_cast<air::ExecuteOp>(op)) {
+        if (auto async_execute_op = dyn_cast<air::ExecuteOp>(op)) {
           // Detect RAW deps
-          traceDeps<air::ExecuteOp>(sink_op_memref_reads, async_region_op,
+          traceDeps<air::ExecuteOp>(sink_op_memref_reads, async_execute_op,
                                     "RAW");
           // Detect WAW and WAR deps
-          traceDeps<air::ExecuteOp>(sink_op_memref_writes, async_region_op,
+          traceDeps<air::ExecuteOp>(sink_op_memref_writes, async_execute_op,
                                     "WAW/WAR");
           // Detect tile index deps
-          traceTileIndices(sink_op_memref_reads, sink_op_memref_writes, sink_op_scalar_ins, sink_op_scalar_outs, async_region_op);
-          // Keep track of processed async region ops. Deps should point to the past, not future.
-          async_region_op_history.push_back(async_region_op);
+          traceTileIndices(sink_op_memref_reads, sink_op_memref_writes, sink_op_scalar_ins, sink_op_scalar_outs, async_execute_op);
+          // Keep track of processed async execute region ops. Deps should point to the past, not future.
+          async_execute_op_history.push_back(async_execute_op);
         }
         else if (auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op)){
           traceDeps<air::DmaMemcpyInterface>(sink_op_memref_reads, dma_op, "RAW");
@@ -396,27 +400,27 @@ public:
 
     // 3rd traversal: perform transitive reduction on dependency graph.
 
-    std::vector<size_t> id_map(num_vertices(asyncRegionGraph));
+    std::vector<size_t> id_map(num_vertices(asyncExecuteGraph));
     std::iota(id_map.begin(), id_map.end(), 0u);
 
-    transitive_reduction(asyncRegionGraph, asyncRegionGraphTR, make_assoc_property_map(g_to_tr), id_map.data());
+    transitive_reduction(asyncExecuteGraph, asyncExecuteGraphTR, make_assoc_property_map(g_to_tr), id_map.data());
 
     for (vertex_map::iterator i = g_to_tr.begin(); i != g_to_tr.end(); ++i){
       // Copy over graph properties
-      asyncRegionGraphTR[i->second].asyncEventName = asyncRegionGraph[i->first].asyncEventName;
-      asyncRegionGraphTR[i->second].asyncEventType = asyncRegionGraph[i->first].asyncEventType;
-      asyncRegionGraphTR[i->second].color = asyncRegionGraph[i->first].color;
-      asyncRegionGraphTR[i->second].shape = asyncRegionGraph[i->first].shape;
-      asyncRegionGraphTR[i->second].operationId = asyncRegionGraph[i->first].operationId;
+      asyncExecuteGraphTR[i->second].asyncEventName = asyncExecuteGraph[i->first].asyncEventName;
+      asyncExecuteGraphTR[i->second].asyncEventType = asyncExecuteGraph[i->first].asyncEventType;
+      asyncExecuteGraphTR[i->second].color = asyncExecuteGraph[i->first].color;
+      asyncExecuteGraphTR[i->second].shape = asyncExecuteGraph[i->first].shape;
+      asyncExecuteGraphTR[i->second].operationId = asyncExecuteGraph[i->first].operationId;
       // Build reverse map tr_to_g, for convenient vertex mapping
       tr_to_g[i->second] = i->first;
     }
 
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
-        // Fill dep list of air region ops
-        if (auto async_region_op = dyn_cast<air::ExecuteOp>(op)) {
-          fillAIRDepListUsingGraphTR<air::ExecuteOp>(async_region_op);
+        // Fill dep list of air execute ops
+        if (auto async_execute_op = dyn_cast<air::ExecuteOp>(op)) {
+          fillAIRDepListUsingGraphTR<air::ExecuteOp>(async_execute_op);
         }
         // Fill dep list of air dmamemcpy2d ops
         else if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(op)) {
@@ -435,14 +439,14 @@ public:
       f.walk([&](Operation *op) {
         if (scf::ForOp for_op = dyn_cast<scf::ForOp>(op)) {
 
-          // Get async region in loop body
+          // Get async execute region in loop body
           bool hasAsyncTokensInBody = false;
           SmallVector<Value, 1> sinks_in_for_op;
-          for (auto async_region_op : for_op.getOps<air::ExecuteOp>()) {
+          for (auto async_execute_op : for_op.getOps<air::ExecuteOp>()) {
             hasAsyncTokensInBody = true;
             // Detect dep graph's leaves in loop body
-            if (isNotUsedInsideOfBlock(async_region_op.getResult(0), for_op.getBody()))
-              sinks_in_for_op.push_back(async_region_op.getResult(0));
+            if (isNotUsedInsideOfBlock(async_execute_op.getResult(0), for_op.getBody()))
+              sinks_in_for_op.push_back(async_execute_op.getResult(0));
           }
           // Get async dma in loop body
           for (auto dma_op : for_op.getOps<air::DmaMemcpyInterface>()){
@@ -484,14 +488,14 @@ public:
 
         else if (scf::ParallelOp for_op = dyn_cast<scf::ParallelOp>(op)) {
 
-          // Get async region in loop body
+          // Get async execute region in loop body
           bool hasAsyncTokensInBody = false;
           SmallVector<Value, 1> sinks_in_parallel_op;
-          for (auto async_region_op : for_op.getOps<air::ExecuteOp>()) {
+          for (auto async_execute_op : for_op.getOps<air::ExecuteOp>()) {
             hasAsyncTokensInBody = true;
             // Detect dep graph's leaves in loop body
-            if (isNotUsedInsideOfBlock(async_region_op.getResult(0), for_op.getBody()))
-              sinks_in_parallel_op.push_back(async_region_op.getResult(0));
+            if (isNotUsedInsideOfBlock(async_execute_op.getResult(0), for_op.getBody()))
+              sinks_in_parallel_op.push_back(async_execute_op.getResult(0));
           }
           // Get async dma in loop body
           for (auto dma_op : for_op.getOps<air::DmaMemcpyInterface>()){
@@ -590,12 +594,12 @@ private:
   //===----------------------------------------------------------------------===//
 
   // Air async op history
-  std::vector<air::ExecuteOp> async_region_op_history;
+  std::vector<air::ExecuteOp> async_execute_op_history;
   std::vector<air::DmaMemcpyInterface> dma_op_history;
   std::vector<air::HierarchyInterface> hier_op_history;
   
-  // Create air region op with async interface (no ssa result returned); update graph
-  air::ExecuteOp createAsyncRegion(OpBuilder &builder, Operation *op,
+  // Create air execute op with async interface (no ssa result returned); update graph
+  air::ExecuteOp createAsyncExecute(OpBuilder &builder, Operation *op,
                                    std::string asyncEventName,
                                    uint64_t &ExecuteOpID) {
     builder.setInsertionPoint(op);
@@ -608,20 +612,20 @@ private:
         "id", mlir::IntegerAttr::get(
                   mlir::IntegerType::get(op->getContext(), 32), ++ExecuteOpID));
 
-    // Insert op to the new async region's body.
+    // Insert op to the new async execute region's body.
     Block *async_region_bb = builder.createBlock(&async_region.body());
     builder.setInsertionPointToStart(async_region_bb);
 
     builder.clone(*op);
     builder.create<xilinx::air::ExecuteTerminatorOp>(builder.getUnknownLoc());
 
-    // Create a vertex out of the current async region
-    auto v = add_vertex(asyncRegionGraph);
-    asyncRegionGraph[v].asyncEventName = asyncEventName;
-    asyncRegionGraph[v].asyncEventType = "region";
-    asyncRegionGraph[v].color = "chartreuse";
-    asyncRegionGraph[v].shape = "oval";
-    asyncRegionGraph[v].operationId = ExecuteOpID;
+    // Create a vertex out of the current async execute region
+    auto v = add_vertex(asyncExecuteGraph);
+    asyncExecuteGraph[v].asyncEventName = asyncEventName;
+    asyncExecuteGraph[v].asyncEventType = "execute";
+    asyncExecuteGraph[v].color = "chartreuse";
+    asyncExecuteGraph[v].shape = "oval";
+    asyncExecuteGraph[v].operationId = ExecuteOpID;
 
     // Update op-to-graph map
     region_to_g[async_region.getId()] = v;
@@ -631,8 +635,8 @@ private:
     return async_region;
   }
 
-  // Create air region op with async interface (with one ssa result returned); update graph
-  air::ExecuteOp createAsyncRegion(OpBuilder &builder, Operation *op,
+  // Create air execute op with async interface (with one ssa result returned); update graph
+  air::ExecuteOp createAsyncExecute(OpBuilder &builder, Operation *op,
                                    std::string asyncEventName,
                                    uint64_t &ExecuteOpID,
                                    mlir::Type valueType) {
@@ -646,7 +650,7 @@ private:
         "id", mlir::IntegerAttr::get(
                   mlir::IntegerType::get(op->getContext(), 32), ++ExecuteOpID));
 
-    // Insert op to the new async region's body.
+    // Insert op to the new async execute region's body.
     Block *async_region_bb = builder.createBlock(&async_region.body());
     builder.setInsertionPointToStart(async_region_bb);
     auto op_cloned = builder.clone(*op);
@@ -656,13 +660,13 @@ private:
     returnVals.push_back(async_region.getResult(1));
     op->replaceAllUsesWith(returnVals);
 
-    // Create a vertex out of the current async region
-    auto v = add_vertex(asyncRegionGraph);
-    asyncRegionGraph[v].asyncEventName = asyncEventName;
-    asyncRegionGraph[v].asyncEventType = "region";
-    asyncRegionGraph[v].color = "chartreuse";
-    asyncRegionGraph[v].shape = "oval";
-    asyncRegionGraph[v].operationId = ExecuteOpID;
+    // Create a vertex out of the current async execute region
+    auto v = add_vertex(asyncExecuteGraph);
+    asyncExecuteGraph[v].asyncEventName = asyncEventName;
+    asyncExecuteGraph[v].asyncEventType = "execute";
+    asyncExecuteGraph[v].color = "chartreuse";
+    asyncExecuteGraph[v].shape = "oval";
+    asyncExecuteGraph[v].operationId = ExecuteOpID;
 
     // Update op-to-graph map
     region_to_g[async_region.getId()] = v;
@@ -690,12 +694,12 @@ private:
     }
 
     // Create a vertex out of the current dmamemcpy2d op
-    auto v = add_vertex(asyncRegionGraph);
-    asyncRegionGraph[v].asyncEventName = "air::dma" + event_name;
-    asyncRegionGraph[v].asyncEventType = "dma";
-    asyncRegionGraph[v].color = "cyan";
-    asyncRegionGraph[v].shape = "oval";
-    asyncRegionGraph[v].operationId = id;
+    auto v = add_vertex(asyncExecuteGraph);
+    asyncExecuteGraph[v].asyncEventName = "air::dma" + event_name;
+    asyncExecuteGraph[v].asyncEventType = "dma";
+    asyncExecuteGraph[v].color = "cyan";
+    asyncExecuteGraph[v].shape = "oval";
+    asyncExecuteGraph[v].operationId = id;
 
     // Update op-to-graph map
     dma_to_g[id] = v;
@@ -728,12 +732,12 @@ private:
       builder.setInsertionPointToEnd(&bb);
       builder.create<air::LaunchTerminatorOp>(loc);
       // Create a vertex out of the current hierarchy op
-      auto v = add_vertex(asyncRegionGraph);
-      asyncRegionGraph[v].asyncEventName = "air::launch";
-      asyncRegionGraph[v].asyncEventType = "hierarchy";
-      asyncRegionGraph[v].color = "yellow";
-      asyncRegionGraph[v].shape = "box";
-      asyncRegionGraph[v].operationId = HierarchyOpID;
+      auto v = add_vertex(asyncExecuteGraph);
+      asyncExecuteGraph[v].asyncEventName = "air::launch";
+      asyncExecuteGraph[v].asyncEventType = "hierarchy";
+      asyncExecuteGraph[v].color = "yellow";
+      asyncExecuteGraph[v].shape = "box";
+      asyncExecuteGraph[v].operationId = HierarchyOpID;
       // Update op-to-graph map
       hier_to_g[HierarchyOpID] = v;
     }
@@ -744,12 +748,12 @@ private:
       builder.setInsertionPointToEnd(&bb);
       builder.create<air::PartitionTerminatorOp>(loc);
       // Create a vertex out of the current hierarchy op
-      auto v = add_vertex(asyncRegionGraph);
-      asyncRegionGraph[v].asyncEventName = "air::partition";
-      asyncRegionGraph[v].asyncEventType = "hierarchy";
-      asyncRegionGraph[v].color = "yellow";
-      asyncRegionGraph[v].shape = "box";
-      asyncRegionGraph[v].operationId = HierarchyOpID;
+      auto v = add_vertex(asyncExecuteGraph);
+      asyncExecuteGraph[v].asyncEventName = "air::partition";
+      asyncExecuteGraph[v].asyncEventType = "hierarchy";
+      asyncExecuteGraph[v].color = "yellow";
+      asyncExecuteGraph[v].shape = "box";
+      asyncExecuteGraph[v].operationId = HierarchyOpID;
       // Update op-to-graph map
       hier_to_g[HierarchyOpID] = v;
     }
@@ -760,12 +764,12 @@ private:
       builder.setInsertionPointToEnd(&bb);
       builder.create<air::HerdTerminatorOp>(loc);
       // Create a vertex out of the current hierarchy op
-      auto v = add_vertex(asyncRegionGraph);
-      asyncRegionGraph[v].asyncEventName = "air::herd";
-      asyncRegionGraph[v].asyncEventType = "hierarchy";
-      asyncRegionGraph[v].color = "yellow";
-      asyncRegionGraph[v].shape = "box";
-      asyncRegionGraph[v].operationId = HierarchyOpID;
+      auto v = add_vertex(asyncExecuteGraph);
+      asyncExecuteGraph[v].asyncEventName = "air::herd";
+      asyncExecuteGraph[v].asyncEventType = "hierarchy";
+      asyncExecuteGraph[v].color = "yellow";
+      asyncExecuteGraph[v].shape = "box";
+      asyncExecuteGraph[v].operationId = HierarchyOpID;
       // Update op-to-graph map
       hier_to_g[HierarchyOpID] = v;
     }
@@ -1132,12 +1136,12 @@ private:
     else if (auto op = dyn_cast<air::WaitAllOp>(b)){
       v_b = getGraphGVertexFromAIROp(op);
     }
-    if (edge(v_a, v_b, asyncRegionGraphTR).second){ // if an edge exists
-      remove_edge(v_a, v_b, asyncRegionGraphTR);
-      if (!edge(v_a, v, asyncRegionGraphTR).second)
-        add_edge(v_a, v, asyncRegionGraphTR);
-      if (!edge(v, v_b, asyncRegionGraphTR).second)
-        add_edge(v, v_b, asyncRegionGraphTR);
+    if (edge(v_a, v_b, asyncExecuteGraphTR).second){ // if an edge exists
+      remove_edge(v_a, v_b, asyncExecuteGraphTR);
+      if (!edge(v_a, v, asyncExecuteGraphTR).second)
+        add_edge(v_a, v, asyncExecuteGraphTR);
+      if (!edge(v, v_b, asyncExecuteGraphTR).second)
+        add_edge(v, v_b, asyncExecuteGraphTR);
     }
   }
 
@@ -1156,20 +1160,20 @@ private:
 
   Graph::vertex_descriptor addVertexWaitAllOpBeforeLoopYield(SmallVector<Value, 1> sinks_in_loop_op, std::string loop_type){
     // Create vertex
-    Graph::vertex_descriptor wait_all_op_yielded_v = add_vertex(asyncRegionGraphTR);
-    asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventName = "scf::";
-    asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventName += loop_type;
-    asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventName += "_loop_end";
-    asyncRegionGraphTR[wait_all_op_yielded_v].asyncEventType = "wait_all";
-    asyncRegionGraphTR[wait_all_op_yielded_v].color = "crimson";
-    asyncRegionGraphTR[wait_all_op_yielded_v].shape = "oval";
-    asyncRegionGraphTR[wait_all_op_yielded_v].operationId = 0;
+    Graph::vertex_descriptor wait_all_op_yielded_v = add_vertex(asyncExecuteGraphTR);
+    asyncExecuteGraphTR[wait_all_op_yielded_v].asyncEventName = "scf::";
+    asyncExecuteGraphTR[wait_all_op_yielded_v].asyncEventName += loop_type;
+    asyncExecuteGraphTR[wait_all_op_yielded_v].asyncEventName += "_loop_end";
+    asyncExecuteGraphTR[wait_all_op_yielded_v].asyncEventType = "wait_all";
+    asyncExecuteGraphTR[wait_all_op_yielded_v].color = "crimson";
+    asyncExecuteGraphTR[wait_all_op_yielded_v].shape = "oval";
+    asyncExecuteGraphTR[wait_all_op_yielded_v].operationId = 0;
     // Update graph connectivity
     for (auto sink : sinks_in_loop_op){
       unsigned src_id = 0;
-      if (auto async_region_op =
+      if (auto async_execute_op =
               dyn_cast<air::ExecuteOp>(sink.getDefiningOp())) {
-        src_id = g_to_tr[getGraphGVertexFromAIROp(async_region_op)];
+        src_id = g_to_tr[getGraphGVertexFromAIROp(async_execute_op)];
       }
       else if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(sink.getDefiningOp())){
         src_id = g_to_tr[getGraphGVertexFromAIROp(dma_op)];
@@ -1183,7 +1187,7 @@ private:
       else if (auto scf_parallel_op = dyn_cast<scf::ParallelOp>(sink.getDefiningOp())){
         src_id = getGraphGVertexFromAIROp(scf_parallel_op); // g_to_tr not needed since wait_all created after TR
       }
-      add_edge(src_id, wait_all_op_yielded_v, asyncRegionGraphTR);
+      add_edge(src_id, wait_all_op_yielded_v, asyncExecuteGraphTR);
     }
     return wait_all_op_yielded_v;
   }
@@ -1199,14 +1203,14 @@ private:
                     ++WaitAllOpID));
 
     // Create vertex
-    Graph::vertex_descriptor wait_all_op_before_loop_v = add_vertex(asyncRegionGraphTR);
-    asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventName = "scf::";
-    asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventName += loop_type;
-    asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventName += "_loop_begin";
-    asyncRegionGraphTR[wait_all_op_before_loop_v].asyncEventType = "wait_all";
-    asyncRegionGraphTR[wait_all_op_before_loop_v].color = "crimson";
-    asyncRegionGraphTR[wait_all_op_before_loop_v].shape = "oval";
-    asyncRegionGraphTR[wait_all_op_before_loop_v].operationId = 0;
+    Graph::vertex_descriptor wait_all_op_before_loop_v = add_vertex(asyncExecuteGraphTR);
+    asyncExecuteGraphTR[wait_all_op_before_loop_v].asyncEventName = "scf::";
+    asyncExecuteGraphTR[wait_all_op_before_loop_v].asyncEventName += loop_type;
+    asyncExecuteGraphTR[wait_all_op_before_loop_v].asyncEventName += "_loop_begin";
+    asyncExecuteGraphTR[wait_all_op_before_loop_v].asyncEventType = "wait_all";
+    asyncExecuteGraphTR[wait_all_op_before_loop_v].color = "crimson";
+    asyncExecuteGraphTR[wait_all_op_before_loop_v].shape = "oval";
+    asyncExecuteGraphTR[wait_all_op_before_loop_v].operationId = 0;
     // Update op-to-graph map
     wa_to_g[wait_all_op_before_loop.getId()] = wait_all_op_before_loop_v;
 
@@ -1252,9 +1256,9 @@ private:
     }
 
     // Connect sources in loop body with iter_args
-    for (auto async_region_op : new_loop_op.getOps<air::ExecuteOp>()) {
-      if (async_region_op.getAsyncDependencies().size() == 0){
-        async_region_op.addAsyncDependency(new_loop_op.getRegionIterArgs()[0]);
+    for (auto async_execute_op : new_loop_op.getOps<air::ExecuteOp>()) {
+      if (async_execute_op.getAsyncDependencies().size() == 0){
+        async_execute_op.addAsyncDependency(new_loop_op.getRegionIterArgs()[0]);
       }
     }
     for (auto dma_op : new_loop_op.getOps<air::DmaMemcpyInterface>()){
@@ -1313,9 +1317,9 @@ private:
     }
 
     // Connect sources in loop body with init_val
-    for (auto async_region_op : new_loop_op.getOps<air::ExecuteOp>()) {
-      if (async_region_op.getAsyncDependencies().size() == 0){
-        async_region_op.addAsyncDependency(new_loop_op.getInitVals()[0]);
+    for (auto async_execute_op : new_loop_op.getOps<air::ExecuteOp>()) {
+      if (async_execute_op.getAsyncDependencies().size() == 0){
+        async_execute_op.addAsyncDependency(new_loop_op.getInitVals()[0]);
       }
     }
     for (auto dma_op : new_loop_op.getOps<air::DmaMemcpyInterface>()){
@@ -1505,18 +1509,18 @@ private:
   //===----------------------------------------------------------------------===//
 
   // Dependency graph constructed as Boost graph
-  Graph asyncRegionGraph;
-  Graph asyncRegionGraphTR;
+  Graph asyncExecuteGraph;
+  Graph asyncExecuteGraphTR;
   vertex_map g_to_tr, tr_to_g; // Map between graph g and graph tr (post-tr graph)
-  operation_id_to_vertex_map region_to_g; // Map between air regions and vertices in graph
+  operation_id_to_vertex_map region_to_g; // Map between air executes and vertices in graph
   operation_id_to_vertex_map dma_to_g; // Map between air dmamemcpy2d and vertices in graph
   operation_id_to_vertex_map hier_to_g; // Map between air hierarchy and vertices in graph
   operation_id_to_vertex_map wa_to_g; // Map between air wait_all and vertices in graph
 
   // g vertex to air op mapping
   air::ExecuteOp getExecuteOpFromVertex(Graph::vertex_descriptor v, Graph g) {
-    assert(g[v].asyncEventType == "region" && "This vertex is not a ExecuteOp");
-    return async_region_op_history[g[v].operationId - 1];
+    assert(g[v].asyncEventType == "execute" && "This vertex is not a ExecuteOp");
+    return async_execute_op_history[g[v].operationId - 1];
   }
   air::DmaMemcpyInterface getDmaOpFromVertex (Graph::vertex_descriptor v, Graph g){
     assert(g[v].asyncEventType == "dma" && "This vertex is not a DmaMemcpy op");
@@ -1527,7 +1531,7 @@ private:
     return hier_op_history[g[v].operationId - 1];
   }
 
-  // air region op to g vertex mapping
+  // air execute op to g vertex mapping
   Graph::vertex_descriptor getGraphGVertexFromAIROp(air::ExecuteOp op) {
     return region_to_g[op.getId()];
   }
@@ -1569,17 +1573,17 @@ private:
   void fillAIRDepListUsingGraphTR(T op){
     if (auto async_op = mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op.getOperation())){
       uint64_t dstTRVertex = g_to_tr[getGraphGVertexFromAIROp(op)];
-      auto incoming_deps = in_edges(dstTRVertex, asyncRegionGraphTR);
+      auto incoming_deps = in_edges(dstTRVertex, asyncExecuteGraphTR);
       for (in_edge_iterator it = incoming_deps.first; it != incoming_deps.second; it++) {
-        auto TRVertex = source(*it, asyncRegionGraphTR);
-        if (asyncRegionGraphTR[TRVertex].asyncEventType == "region")
+        auto TRVertex = source(*it, asyncExecuteGraphTR);
+        if (asyncExecuteGraphTR[TRVertex].asyncEventType == "execute")
           async_op.addAsyncDependency(
-              getExecuteOpFromVertex(TRVertex, asyncRegionGraphTR)
+              getExecuteOpFromVertex(TRVertex, asyncExecuteGraphTR)
                   .getResult(0));
-        else if (asyncRegionGraphTR[TRVertex].asyncEventType == "dma")
-          async_op.addAsyncDependency(getDmaOpFromVertex(TRVertex, asyncRegionGraphTR).getOperation()->getResult(0));
-        else if (asyncRegionGraphTR[TRVertex].asyncEventType == "hierarchy")
-          async_op.addAsyncDependency(getHierOpFromVertex(TRVertex, asyncRegionGraphTR).getOperation()->getResult(0));
+        else if (asyncExecuteGraphTR[TRVertex].asyncEventType == "dma")
+          async_op.addAsyncDependency(getDmaOpFromVertex(TRVertex, asyncExecuteGraphTR).getOperation()->getResult(0));
+        else if (asyncExecuteGraphTR[TRVertex].asyncEventType == "hierarchy")
+          async_op.addAsyncDependency(getHierOpFromVertex(TRVertex, asyncExecuteGraphTR).getOperation()->getResult(0));
         else assert(false && "Unknown async event type");
       }
     }
@@ -1592,11 +1596,11 @@ private:
       for (auto old_dep : async_op.getAsyncDependencies())
         if (old_dep == dep) return;
 
-      // Add edge to boost graph, iff dep is async region (i.e. not a loop iterator)
+      // Add edge to boost graph, iff dep is async execute region (i.e. not a loop iterator)
       if (auto srcOp = dep.getDefiningOp()) {
         uint64_t srcNode;
-        if (auto region_op = dyn_cast<air::ExecuteOp>(srcOp)) {
-          srcNode = getGraphGVertexFromAIROp(region_op);
+        if (auto execute_op = dyn_cast<air::ExecuteOp>(srcOp)) {
+          srcNode = getGraphGVertexFromAIROp(execute_op);
         }
         else if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(srcOp)){
           srcNode = getGraphGVertexFromAIROp(dma_op);
@@ -1606,7 +1610,7 @@ private:
         }
         else assert(false && "dependency token should be generated by an async op");
         uint64_t dstNode = getGraphGVertexFromAIROp(op);
-        add_edge(srcNode, dstNode, asyncRegionGraph);
+        add_edge(srcNode, dstNode, asyncExecuteGraph);
       }
     }
     else assert(false && "Operation has no async interface");
@@ -1617,12 +1621,12 @@ private:
   {
     std::ofstream ofs (filename, std::ofstream::out); 
     boost::dynamic_properties dp;
-    dp.property("label", boost::get(&regionNode::asyncEventName, asyncRegionGraphTR));
-    dp.property("color", boost::get(&regionNode::color, asyncRegionGraphTR));
-    dp.property("shape", boost::get(&regionNode::shape, asyncRegionGraphTR));
-    dp.property("node_id", boost::get(boost::vertex_index, asyncRegionGraphTR));
+    dp.property("label", boost::get(&executeNode::asyncEventName, asyncExecuteGraphTR));
+    dp.property("color", boost::get(&executeNode::color, asyncExecuteGraphTR));
+    dp.property("shape", boost::get(&executeNode::shape, asyncExecuteGraphTR));
+    dp.property("node_id", boost::get(boost::vertex_index, asyncExecuteGraphTR));
     dp.property("style", boost::make_constant_property<Graph::vertex_descriptor>(+"filled"));
-    write_graphviz_dp(ofs, asyncRegionGraphTR, dp);
+    write_graphviz_dp(ofs, asyncExecuteGraphTR, dp);
   }
 
   //===----------------------------------------------------------------------===//
@@ -1630,8 +1634,8 @@ private:
   //===----------------------------------------------------------------------===//
 
   bool foundAsyncOpUsesAboveCurrentLine(air::ExecuteOp *op) {
-    if (!async_region_op_history.empty())
-      for (auto &iter : async_region_op_history)
+    if (!async_execute_op_history.empty())
+      for (auto &iter : async_execute_op_history)
         if (iter.getResult(0) == op->getResult(0)) return true;
     return false;
   }
