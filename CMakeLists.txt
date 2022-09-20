@@ -105,6 +105,8 @@ add_custom_target(docs ALL)
 add_dependencies(docs mlir-doc)
 
 message("ARM_TOOLCHAIN_OPT=${ARM_TOOLCHAIN_OPT}")
+#message("VitisSysroot=${VitisSysroot}")
+#message("ArmSysroot=${ArmSysroot}")
 ExternalProject_Add(air_runtime_lib
 	PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp
 	SOURCE_DIR ${PROJECT_SOURCE_DIR}/runtime_lib
@@ -120,6 +122,7 @@ ExternalProject_Add(air_runtime_lib
 		-Dpybind11_DIR=${pybind11_DIR}
 		-DLibXAIE_ROOT=${VitisSysroot}/opt/xaienginev2
 		${ARM_TOOLCHAIN_OPT}
+		-DARM_SYSROOT=${ARM_SYSROOT}
 	BUILD_ALWAYS true
 	STEP_TARGETS clean build install test
 	USES_TERMINAL_CONFIGURE true
