@@ -1,4 +1,4 @@
-// (c) Copyright 2022 Xilinx Inc. All Rights Reserved.
+// Copyright (C) 2022, Advanced Micro Devices, Inc.
 
 #include "PassDetail.h"
 
