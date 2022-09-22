@@ -553,7 +553,7 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
       return failure();
 
     SmallVector<Value, 4> iter_args;
-    SmallVector<unsigned, 4> iter_args_idx;
+    BitVector iter_args_idx(fop.getNumOperands());
 
     // erase air.event from the iter args
     for (OpOperand &oper : fop.getIterOpOperands()) {
@@ -561,7 +561,7 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
       BlockArgument block_arg = fop.getRegionIterArgForOpOperand(oper);
       if (v.getType().isa<xilinx::air::AsyncTokenType>()) {
         block_arg.replaceAllUsesWith(v);
-        iter_args_idx.push_back(block_arg.getArgNumber());
+        iter_args_idx.set(block_arg.getArgNumber());
       } else {
         iter_args.push_back(v);
       }
