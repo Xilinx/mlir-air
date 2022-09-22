@@ -289,22 +289,10 @@ public:
           unsigned numDimsSrc = sink_op_dma.getNumDims();
           unsigned numDimsDst = sink_op_dma.getNumDims();
           // air.dmamemcpynd op has unknown # of dims (thus numdims defaults to 0)
-          if (numDimsSrc == 0)
+          if (numDimsSrc == 0){
             numDimsSrc = sink_op_dma.getSrcMemref().getType().cast<MemRefType>().getRank();
-          if (numDimsDst == 0)
             numDimsDst = sink_op_dma.getDstMemref().getType().cast<MemRefType>().getRank();
-          for (unsigned i = 0; i < numDimsSrc; i++){
-            src_indices.push_back(sink_op_dma.getSrcMemrefDim(i));
-            sink_op_scalar_ins.push_back(sink_op_dma.getSrcMemrefDim(i));
           }
-          for (unsigned i = 0; i < numDimsDst; i++){
-            dst_indices.push_back(sink_op_dma.getDstMemrefDim(i));
-            sink_op_scalar_outs.push_back(sink_op_dma.getDstMemrefDim(i));
-          }
-          partialMemref tile_in = createPartialMemref(sink_op_dma.getSrcMemref(), numDimsSrc, src_indices);
-          sink_op_memref_reads.push_back(tile_in);
-          partialMemref tile_out = createPartialMemref(sink_op_dma.getDstMemref(), numDimsDst, dst_indices);
-          sink_op_memref_writes.push_back(tile_out);
           // Special case with ND DMA op
           if (auto sink_op_nddma = dyn_cast<air::DmaMemcpyNdOp>(sink_op)){
             // air.dmamemcpynd op has extra scalar operands
@@ -320,7 +308,41 @@ public:
               sink_op_scalar_ins.push_back(sink_op_nddma.getSrcSizes()[i]);
             for (unsigned i = 0; i < sink_op_nddma.getSrcStrides().size(); i++)
               sink_op_scalar_ins.push_back(sink_op_nddma.getSrcStrides()[i]);
+            if (sink_op_nddma.getSrcOffsets().size()){
+              for (unsigned i = 0; i < numDimsSrc; i++){
+                src_indices.push_back(sink_op_nddma.getSrcOffsets()[i]);
+              }
+            }
+            else {
+              for (unsigned i = 0; i < numDimsSrc; i++){
+                src_indices.push_back(nullptr);
+              }
+            }
+            if (sink_op_nddma.getDstOffsets().size()){
+              for (unsigned i = 0; i < numDimsDst; i++){
+                dst_indices.push_back(sink_op_nddma.getDstOffsets()[i]);
+              }
+            }
+            else {
+              for (unsigned i = 0; i < numDimsDst; i++){
+                dst_indices.push_back(nullptr);
+              }
+            }
           }
+          else {
+            for (unsigned i = 0; i < numDimsSrc; i++){
+              sink_op_scalar_ins.push_back(sink_op_dma.getSrcMemrefDim(i));
+              src_indices.push_back(sink_op_dma.getSrcMemrefDim(i));
+            }
+            for (unsigned i = 0; i < numDimsDst; i++){
+              sink_op_scalar_outs.push_back(sink_op_dma.getDstMemrefDim(i));
+              dst_indices.push_back(sink_op_dma.getDstMemrefDim(i));
+            }
+          }
+          partialMemref tile_in = createPartialMemref(sink_op_dma.getSrcMemref(), numDimsSrc, src_indices);
+          sink_op_memref_reads.push_back(tile_in);
+          partialMemref tile_out = createPartialMemref(sink_op_dma.getDstMemref(), numDimsDst, dst_indices);
+          sink_op_memref_writes.push_back(tile_out);
         }
         
         // If the sink op is arith::MulIOp
@@ -939,11 +961,35 @@ private:
             numDimsDst = dma.getDstMemref().getType().cast<MemRefType>().getRank();
           SmallVector<Value, 2> src_indices;
           SmallVector<Value, 2> dst_indices;
-          for (unsigned i = 0; i < numDimsSrc; i++){
-            src_indices.push_back(dma.getSrcMemrefDim(i));
+          if (auto nddma = dyn_cast<xilinx::air::DmaMemcpyNdOp>(dma.getOperation())){
+            if (nddma.getSrcOffsets().size()){
+              for (unsigned i = 0; i < numDimsSrc; i++){
+                src_indices.push_back(nddma.getSrcOffsets()[i]);
+              }
+            }
+            else {
+              for (unsigned i = 0; i < numDimsSrc; i++){
+                src_indices.push_back(nullptr);
+              }
+            }
+            if (nddma.getDstOffsets().size()){
+              for (unsigned i = 0; i < numDimsDst; i++){
+                dst_indices.push_back(nddma.getDstOffsets()[i]);
+              }
+            }
+            else {
+              for (unsigned i = 0; i < numDimsDst; i++){
+                dst_indices.push_back(nullptr);
+              }
+            }
           }
-          for (unsigned i = 0; i < numDimsDst; i++){
-            dst_indices.push_back(dma.getDstMemrefDim(i));
+          else {
+            for (unsigned i = 0; i < numDimsSrc; i++){
+              src_indices.push_back(dma.getSrcMemrefDim(i));
+            }
+            for (unsigned i = 0; i < numDimsDst; i++){
+              dst_indices.push_back(dma.getDstMemrefDim(i));
+            }
           }
           partialMemref dma_src = createPartialMemref(dma.getSrcMemref(), numDimsSrc, src_indices);
           partialMemref dma_dst = createPartialMemref(dma.getDstMemref(), numDimsDst, dst_indices);
