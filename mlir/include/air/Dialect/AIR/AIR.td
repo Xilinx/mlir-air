@@ -402,11 +402,10 @@ def air_DeallocOp: air_Op<"dealloc", [air_AsyncOpInterface]> {
 // AIR channel
 
 def air_ChannelOp : air_Op<"channel", []>,
-    Arguments<(ins FlatSymbolRefAttr:$name, 
-        ConfinedAttr<I32Attr, [IntMinValue<0>]>:$countx,
-        ConfinedAttr<I32Attr, [IntMinValue<0>]>:$county)> {
+    Arguments<(ins FlatSymbolRefAttr:$name,
+                   DefaultValuedAttr<I64ArrayAttr, "{}">:$size)> {
   let assemblyFormat = [{
-    $name `{` `count_x` `=` $countx `,` `count_y` `=` $county `}` attr-dict 
+    $name $size attr-dict 
   }];
   let summary = "Channel for data movement.";
   let description = [{
@@ -415,35 +414,10 @@ def air_ChannelOp : air_Op<"channel", []>,
   }];
 }
 
-def air_ForkOp : air_Op<"fork", []>,
-    Arguments<(ins FlatSymbolRefAttr:$chan_in_name, 
-        FlatSymbolRefAttr:$chan_out_name)> {
-  let assemblyFormat = [{
-    $chan_in_name $chan_out_name attr-dict 
-  }];
-  let summary = "Forked channel for broadcast data movement.";
-  let description = [{
-    Experimental operation to represent a channel fork creating a data broadcast.
-  }];
-}
-
-def air_DistributeOp : air_Op<"distribute", []>,
-    Arguments<(ins FlatSymbolRefAttr:$chan_in_name, 
-        FlatSymbolRefAttr:$chan_out_name)> {
-  let assemblyFormat = [{
-    $chan_in_name $chan_out_name attr-dict 
-  }];
-  let summary = "Distributed channel for merge data movement.";
-  let description = [{
-    Experimental operation to represent a channel distribute creating a data merge.
-  }];
-}
-
-def air_PushOp : air_Op<"push", [air_AsyncOpInterface, AttrSizedOperandSegments]>,
+def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface, AttrSizedOperandSegments]>,
     Arguments<(ins Variadic<air_AsyncToken>:$asyncDependencies, 
         FlatSymbolRefAttr:$chan_name, 
-        Index:$chan_idx,
-        Index:$chan_idy,
+        Variadic<Index>:$indices,
         AnyMemRef:$src,
         Variadic<Index>:$src_offsets,
         Variadic<Index>:$src_sizes,
@@ -451,34 +425,33 @@ def air_PushOp : air_Op<"push", [air_AsyncOpInterface, AttrSizedOperandSegments]
     Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
   let summary = "Push for air channels.";
   let description = [{
-    Experimental operation to represent copying data into a channel.
+    Experimental operation to represent copying data from a memref to a channel.
   }];
   let assemblyFormat = [{
-    $chan_name `(` $chan_idx `,` $chan_idy `)`
     custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) 
-    `(` $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)`  attr-dict `:`
+    $chan_name `[` ($indices^)? `]`
+    `(` $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)` attr-dict `:`
     `(` type($src) `)`
   }];
 }
 
-def air_PopOp : air_Op<"pop", [air_AsyncOpInterface, AttrSizedOperandSegments]>,
+def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface, AttrSizedOperandSegments]>,
     Arguments<(ins Variadic<air_AsyncToken>:$asyncDependencies, 
-        FlatSymbolRefAttr:$chan_name, 
-        Index:$chan_idx,
-        Index:$chan_idy,
+        FlatSymbolRefAttr:$chan_name,
+        Variadic<Index>:$indices,
         AnyMemRef:$dst,
         Variadic<Index>:$dst_offsets,
         Variadic<Index>:$dst_sizes,
         Variadic<Index>:$dst_strides)>, 
     Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
-  let summary = "Pop for air channels.";
+  let summary = "Get for air channels.";
   let description = [{
-    Experimental operation to represent copying data out of a channel.
+    Experimental operation to represent copying from a channel to a memref.
   }];
   let assemblyFormat = [{
-    $chan_name `(` $chan_idx `,` $chan_idy `)`
     custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) 
-    `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `)`  attr-dict `:`
+    $chan_name `[` ($indices^)? `]`
+    `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `)` attr-dict `:`
     `(` type($dst) `)`
   }];
 }
