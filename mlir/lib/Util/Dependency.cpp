@@ -19,10 +19,12 @@ namespace air {
       else if (!index_0.getDefiningOp()) return false;
       else if (!index_1.getDefiningOp()) return false;
       else {
-        auto index_0_const_op = dyn_cast<arith::ConstantOp>(index_0.getDefiningOp());
-        auto index_1_const_op = dyn_cast<arith::ConstantOp>(index_1.getDefiningOp());
-        if (index_0_const_op.getValue() == index_1_const_op.getValue()) return true;
-        else return false;
+        if (auto index_0_const_op = dyn_cast<arith::ConstantOp>(index_0.getDefiningOp())){
+          if (auto index_1_const_op = dyn_cast<arith::ConstantOp>(index_1.getDefiningOp())){
+            if (index_0_const_op.getValue() == index_1_const_op.getValue()) return true;
+          }
+        }
+        return false;
       }
     }
   }
