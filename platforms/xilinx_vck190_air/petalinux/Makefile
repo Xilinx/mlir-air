@@ -1,6 +1,6 @@
 SYSROOT=./sysroot
 
-all: refresh_hw xrt zocl kernel_config rootfs_config linux bootimage
+all: refresh_hw xrt zocl kernel_config rootfs_config linux bootimage sysroot
 
 refresh_hw:
 	petalinux-config --get-hw-description=${XSA_DIR} --silentconfig
