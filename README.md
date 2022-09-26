@@ -9,18 +9,18 @@ Basic directory layout:
 air
 ├── cmake                     CMake files
 ├── docs                      Additional documentation
-├── herds                     Example herds
+├── examples                  Example code
 ├── mlir                      MLIR dialects and passes
 ├── platforms                 Hardware platforms
 │   └── xilinx_vck190_air
-│   └── xilinx_vck190_air_prod
 ├── pynq                      Board repo for building Pynq images
 │   └── vck190_air
 ├── python                    Python libraries and bindings
-├── runtime_libs              Runtime libraries for host and controllers
+├── runtime_lib               Runtime libraries for host and controllers
 ├── segment-architecture      Submodule containing AIR IP blocks
 ├── test                      In hardware tests of AIR components
-└── tools                     aircc.py, air-opt, air-translate
+├── tools                     aircc.py, air-opt, air-translate
+└── utils                     Utility scripts
 ```
 
 ## Documentation
