@@ -57,7 +57,9 @@ air_module_handle_t _air_host_active_module = (air_module_handle_t)nullptr;
 
 }
 
+#ifdef AIR_PCIE
 volatile void *_mapped_aie_base = nullptr;
+#endif
 
 aie_libxaie_ctx_t *
 air_init_libxaie1()
@@ -90,7 +92,7 @@ air_init_libxaie1()
   if (!_mapped_aie_base) return nullptr;
   xaie->AieConfigPtr.BaseAddr = (uint64_t)_mapped_aie_base;
 #else
-  xaie->AieConfigPtr.BaseAddr = (uint64_t)base_va;
+  xaie->AieConfigPtr.BaseAddr = XAIE_BASE_ADDR;
 #endif
   xaie->AieConfigPtr.ColShift = XAIE_COL_SHIFT;
   xaie->AieConfigPtr.RowShift = XAIE_ROW_SHIFT;
@@ -116,8 +118,10 @@ air_deinit_libxaie1(aie_libxaie_ctx_t *xaie)
 {
   if (xaie == _air_host_active_libxaie1) {
     XAie_Finish(&(xaie->DevInst));
+#ifdef AIR_PCIE
     munmap(const_cast<void*>(_mapped_aie_base),0x20000000);
     _mapped_aie_base = nullptr;
+#endif
     _air_host_active_libxaie1 = nullptr;
   }
   free(xaie);
@@ -140,7 +144,7 @@ air_module_load_from_file(const char* filename, queue_t *q)
   _air_host_active_herd = {q, nullptr};
   _air_host_active_partition = {q, nullptr};
 
-//#ifdef AIR_PCIE
+#ifdef AIR_PCIE
   int fd = open(air_get_bram_bar().c_str(), O_RDWR | O_SYNC);
   assert(fd != -1 && "Failed to open bram fd");
 
@@ -149,15 +153,16 @@ air_module_load_from_file(const char* filename, queue_t *q)
                                         AIR_BBUFF_BASE);
   _air_host_bram_paddr = AIR_BBUFF_BASE;
   assert(_air_host_bram_ptr && "Failed to map scratch bram location");
-//#else
-//  int fd = open("/dev/mem", O_RDWR | O_SYNC);
-//  assert(fd != -1 && "Failed to open bram fd");
-//
-//  _air_host_bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE,
-//                                        MAP_SHARED, fd,
-//                                        AIR_VCK190_SHMEM_BASE+0x4000);
-//  assert(_air_host_bram_ptr && "Failed to map scratch bram location");
-//#endif
+#else
+  int fd = open("/dev/mem", O_RDWR | O_SYNC);
+  assert(fd != -1 && "Failed to open bram fd");
+
+  _air_host_bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE,
+                                        MAP_SHARED, fd,
+                                        AIR_BBUFF_BASE);
+  _air_host_bram_paddr = AIR_BBUFF_BASE;
+  assert(_air_host_bram_ptr && "Failed to map scratch bram location");
+#endif
 
   return (air_module_handle_t)_handle;
 }

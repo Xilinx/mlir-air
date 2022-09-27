@@ -29,8 +29,11 @@
 
 extern "C" {
 #include "xil_printf.h"
+#ifdef ARM_CONTROLLER
 #include "xil_cache.h"
-//#include "pvr.h"
+#else
+#include "pvr.h"
+#endif
 
 //#include "xaiengine.h"
 //#include "mb_interface.h"
@@ -92,6 +95,7 @@ struct HerdConfig {
 
 HerdConfig HerdCfgInst;
 
+#ifdef ARM_CONTROLLER
 namespace xaie2 {
 
 struct aie_libxaie_ctx_t {
@@ -497,25 +501,37 @@ void mlir_aie_print_tile_status(aie_libxaie_ctx_t *ctx, int col, int row) {
 } // namespace xaie2
 
 xaie2::aie_libxaie_ctx_t *_xaie;
+#endif
 
 namespace xaie {
 
 u64 getTileAddr(u16 ColIdx, u16 RowIdx)
 {
-  //u64 TileAddr = 0;
-  //u64 ArrOffset = XAIE_ADDR_ARRAY_OFF;
-
-  //#ifdef XAIE_BASE_ARRAY_ADDR_OFFSET
-  //  ArrOffset = XAIE_BASE_ARRAY_ADDR_OFFSET;
-  //#endif
-
-  //TileAddr = (u64)((ArrOffset <<
-  //    XAIEGBL_TILE_ADDR_ARR_SHIFT) |
-	//(ColIdx << XAIEGBL_TILE_ADDR_COL_SHIFT) |
-  //  (RowIdx << XAIEGBL_TILE_ADDR_ROW_SHIFT));
-
-  //return TileAddr;
+#ifdef ARM_CONTROLLER
   return _XAie_GetTileAddr(&(_xaie->DevInst), RowIdx, ColIdx);
+#else
+  u64 TileAddr = 0;
+  u64 ArrOffset = XAIE_ADDR_ARRAY_OFF;
+
+  #ifdef XAIE_BASE_ARRAY_ADDR_OFFSET
+    ArrOffset = XAIE_BASE_ARRAY_ADDR_OFFSET;
+  #endif
+
+  /*
+    * Tile address format:
+    * --------------------------------------------
+    * |                7 bits  5 bits   18 bits  |
+    * --------------------------------------------
+    * | Array offset | Column | Row | Tile addr  |
+    * --------------------------------------------
+    */
+  TileAddr = (u64)((ArrOffset <<
+      XAIEGBL_TILE_ADDR_ARR_SHIFT) |
+    (ColIdx << XAIEGBL_TILE_ADDR_COL_SHIFT) |
+    (RowIdx << XAIEGBL_TILE_ADDR_ROW_SHIFT));
+
+  return TileAddr;
+#endif
 }
 
 static inline u32 in32(u64 Addr)
@@ -527,35 +543,12 @@ static inline u32 in32(u64 Addr)
 static inline void out32(u64 Addr, u32 Value)
 {
   /* write 32 bit value to specified address */
+#ifdef ARM_CONTROLLER
+  XAie_Write32(&(_xaie->DevInst), Addr, Value);
+#else
   volatile u32 *LocalAddr = (volatile u32 *)Addr;
   *LocalAddr = Value;
-}
-
-u32 maskpoll32(u64 Addr, u32 Mask, u32 Value, u32 TimeOut)
-{
-  u32 Ret = 1;
-
-  u32 Count = 10 + TimeOut;
-
-  while (Count > 0U) {
-    if ((in32(Addr) & Mask) == Value) {
-      Ret = 0;
-      break;
-    }
-    Count--;
-  }
-
-  return Ret;
-}
-
-} // namespace xaie
-
-static inline void out32(u64 Addr, u32 Value)
-{
-  XAie_Write32(&(_xaie->DevInst), Addr, Value);
-  /* write 32 bit value to specified address */
-  //volatile u32 *LocalAddr = (volatile u32 *)Addr;
-  //*LocalAddr = Value;
+#endif
 }
 
 u32 maskpoll32(u64 Addr, u32 Mask, u32 Value, u32 TimeOut)
@@ -977,7 +970,7 @@ int32_t fsl_outstanding[NUM_COL_DMAS*4] = {0};
 //      break;
 //    }
 //    air_printf("Get fsl %d %d : invalid %d id %d\n\r",which_stream,fsl,v,d);
-//    if (!v) { 
+//    if (!v) {
 //      fsl_outstanding[fsl]--;
 //    } else {
 //      return 1;
@@ -1049,11 +1042,15 @@ void handle_packet_get_capabilities(dispatch_packet_t *pkt, uint32_t mb_id)
   lock_uart(mb_id); air_printf("Writing to 0x%llx\n\r",(uint64_t)addr); unlock_uart();
   // We now write a capabilities structure to the address we were just passed
   // We've already done this once - should we just cache the results?
-  //pvr_t pvr;
-  //microblaze_get_pvr(&pvr);
-  int user1 = 1;//MICROBLAZE_PVR_USER1(pvr);
-  int user2 = 0;//MICROBLAZE_PVR_USER2(pvr);
-
+#if ARM_CONTROLLER
+  int user1 = 1;
+  int user2 = 0;
+#else
+  pvr_t pvr;
+  microblaze_get_pvr(&pvr);
+  int user1 = MICROBLAZE_PVR_USER1(pvr);
+  int user2 = MICROBLAZE_PVR_USER2(pvr);
+#endif
   addr[0] = (uint64_t)mb_id;           // region id
   addr[1] = (uint64_t)user1;           // num regions
   addr[2] = (uint64_t)(user2 >> 8);    // region controller firmware version
@@ -1071,10 +1068,15 @@ void handle_packet_get_info(dispatch_packet_t *pkt, uint32_t mb_id)
   uint64_t attribute = (pkt->arg[0]);
   uint64_t *addr = (uint64_t *)(&pkt->return_address); // FIXME when we can use a VA
 
-  //pvr_t pvr;
-  //microblaze_get_pvr(&pvr);
-  int user1 = 1;//MICROBLAZE_PVR_USER1(pvr);
-  int user2 = 0;//MICROBLAZE_PVR_USER2(pvr);
+#if ARM_CONTROLLER
+  int user1 = 1;
+  int user2 = 0;
+#else
+  pvr_t pvr;
+  microblaze_get_pvr(&pvr);
+  int user1 = MICROBLAZE_PVR_USER1(pvr);
+  int user2 = MICROBLAZE_PVR_USER2(pvr);
+#endif
   char name[] = {'A','C','D','C','\0'};
   char vend[] = {'A','M','D','\0'};
 
@@ -1121,7 +1123,11 @@ void handle_packet_get_info(dispatch_packet_t *pkt, uint32_t mb_id)
 
 //uint64_t cdma_base = 0x0202C0000000UL;
 //uint64_t cdma_base1 = 0x020340000000UL;
+#ifdef ARM_CONTROLLER
 uint64_t cfg_cdma_base = 0x0000A4000000UL;
+#else
+uint64_t cfg_cdma_base = 0x000044A00000UL;
+#endif
 
 void handle_packet_sg_cdma(dispatch_packet_t *pkt)
 {
@@ -1140,23 +1146,23 @@ void handle_packet_sg_cdma(dispatch_packet_t *pkt)
     for (uint r=start_row; r<start_row+num_rows; r++) {
       //int st = xaie::in32(xaie::getTileAddr(c,r) + 0x00032004);
       //if ((0x3&st) != 0x2) {
-        air_printf("Resetting col %d row %d. 0x%lx == 0x%lx\n\r",c,r,xaie::getTileAddr(c,r),_XAie_GetTileAddr(&(_xaie->DevInst), r, c));
+        //air_printf("Resetting col %d row %d. 0x%lx == 0x%lx\n\r",c,r,xaie::getTileAddr(c,r),_XAie_GetTileAddr(&(_xaie->DevInst), r, c));
         xaie::out32(xaie::getTileAddr(c,r) + 0x00032000, 0x2);
         air_printf("Done resetting col %d row %d.\n\r",c,r);
       //}
     }
-	air_printf("Resetting column %d.\n\r",c);
+    air_printf("Resetting column %d.\n\r",c);
     xaie::out32(xaie::getTileAddr(c,0) + 0x00036048, !!1); // 1 == ResetEnable
     xaie::out32(xaie::getTileAddr(c,0) + 0x00036048, !!0); // 0 == ResetDisable
-	air_printf("Done resetting column %d.\n\r",c);
+    air_printf("Done resetting column %d.\n\r",c);
   }
   air_printf("CDMA reset.\n\r");
   cdmab[0] |= 0x4;
   cdmab[0] &= 0x4;
   while (cdmab[0]&0x4);
-  air_printf("CDMA start.\n\r");
-  uint32_t status = cdmab[1];
-  air_printf("CMDA raw %x idle %x\n\r",status,status&2);
+  //air_printf("CDMA start.\n\r");
+  //uint32_t status = cdmab[1];
+  //air_printf("CMDA raw %x idle %x\n\r",status,status&2);
   //timerCtrl[0] = 1<<31;
   //before = timer[0];
 
@@ -1168,15 +1174,15 @@ void handle_packet_sg_cdma(dispatch_packet_t *pkt)
   cdmab[0] = 0x0; // unset SG mode 
   if (bytes >= 0xffffff) { // SG
     cdmab[0] = 0x8; // set SG mode 
-    cdmab[2] = saddr&0xffffffff; 
-    cdmab[3] = saddr>>32; 
-    cdmab[5] = daddr>>32;  
-    cdmab[4] = daddr&0xffffffff; 
+    cdmab[2] = saddr&0xffffffff;
+    cdmab[3] = saddr>>32;
+    cdmab[5] = daddr>>32;
+    cdmab[4] = daddr&0xffffffff;
   } else {
-    cdmab[6] = saddr&0xffffffff; 
-    cdmab[7] = saddr>>32; 
-    cdmab[8] = daddr&0xffffffff; 
-    cdmab[9] = daddr>>32;  
+    cdmab[6] = saddr&0xffffffff;
+    cdmab[7] = saddr>>32;
+    cdmab[8] = daddr&0xffffffff;
+    cdmab[9] = daddr>>32;
     cdmab[10] = bytes;
   }
   int cnt = 100;
@@ -1207,7 +1213,7 @@ void handle_packet_cdma(dispatch_packet_t *pkt)
       int st = xaie::in32(xaie::getTileAddr(c,r) + 0x00032004);
       air_printf("Status col %d row %d. 0x%x\n\r",c,r,st&0x3);
       if ((0x3&st) != 0x2) {
-        air_printf("Resetting col %d row %d. 0x%lx == 0x%lx\n\r",c,r,xaie::getTileAddr(c,r),_XAie_GetTileAddr(&(_xaie->DevInst), r, c));
+        //air_printf("Resetting col %d row %d. 0x%lx == 0x%lx\n\r",c,r,xaie::getTileAddr(c,r),_XAie_GetTileAddr(&(_xaie->DevInst), r, c));
         xaie::out32(xaie::getTileAddr(c,r) + 0x00032000, 0x2);
         air_printf("Done resetting col %d row %d.\n\r",c,r);
       }
@@ -1216,10 +1222,10 @@ void handle_packet_cdma(dispatch_packet_t *pkt)
   }
   if (op == 1) {
   for (uint c=start_col; c<start_col+num_cols; c++) {
-	air_printf("Resetting column %d.\n\r",c);
+    air_printf("Resetting column %d.\n\r",c);
     xaie::out32(xaie::getTileAddr(c,0) + 0x00036048, !!1); // 1 == ResetEnable
     xaie::out32(xaie::getTileAddr(c,0) + 0x00036048, !!0); // 0 == ResetDisable
-	air_printf("Done resetting column %d.\n\r",c);
+    air_printf("Done resetting column %d.\n\r",c);
   }
   }
   volatile uint32_t *cdmab = (volatile uint32_t *)(cfg_cdma_base);
@@ -1229,19 +1235,19 @@ void handle_packet_cdma(dispatch_packet_t *pkt)
   uint64_t saddr = (pkt->arg[1]);
   uint32_t bytes = (pkt->arg[2]);
   air_printf("CMDA dst %lx src %lx\n\r",daddr,saddr);
-  cdmab[0] = 0x0; // unset SG mode 
-  cdmab[6] = saddr&0xffffffff; 
-  cdmab[7] = saddr>>32; 
-  cdmab[8] = daddr&0xffffffff; 
-  cdmab[9] = daddr>>32;  
+  cdmab[0] = 0x0; // unset SG mode
+  cdmab[6] = saddr&0xffffffff;
+  cdmab[7] = saddr>>32;
+  cdmab[8] = daddr&0xffffffff;
+  cdmab[9] = daddr>>32;
   cdmab[10] = bytes;
   while (!(cdmab[1]&2)) air_printf("CMDA wait...\n\r");
   if (op == 2) {
   for (uint c=start_col; c<start_col+num_cols; c++) {
     for (uint r=start_row; r<=start_row+num_rows; r++) {
       for (int l=0; l<16; l++)
-        xaie::maskpoll32(xaie::getTileAddr(c,r) + 0x0001E020 + 0x80*l, 0x1, 0x1, 0); 
-      xaie::out32(xaie::getTileAddr(c,r) + 0x00032000, 0x1); 
+        xaie::maskpoll32(xaie::getTileAddr(c,r) + 0x0001E020 + 0x80*l, 0x1, 0x1, 0);
+      xaie::out32(xaie::getTileAddr(c,r) + 0x00032000, 0x1);
     }
   }
   }
@@ -1269,6 +1275,7 @@ void handle_packet_xaie_lock(dispatch_packet_t *pkt)
   }
 }
 
+#ifdef ARM_CONTROLLER
 void handle_packet_xaie_status(dispatch_packet_t *pkt, u32 type)
 {
   xil_printf("Reading status! %d %d %d\n\r",type,pkt->arg[0],pkt->arg[1]);
@@ -1280,6 +1287,7 @@ void handle_packet_xaie_status(dispatch_packet_t *pkt, u32 type)
     xaie2::mlir_aie_print_tile_status(_xaie,pkt->arg[0],pkt->arg[1]);
   }
 }
+#endif
 
 //void handle_packet_put_stream(dispatch_packet_t *pkt)
 //{
@@ -1292,9 +1300,9 @@ void handle_packet_xaie_status(dispatch_packet_t *pkt, u32 type)
 //  register uint32_t d0 = data & 0xffffffff;
 //  register uint32_t d1 = data >> 32;
 //
-//  bool isdma = (d1 < 6); 
+//  bool isdma = (d1 < 6);
 //  air_printf("Put fsl %d : id %d d0 %x d1 %x\n\r", which_stream, data & 0x1f, d0, d1);
-// 
+//
 //  switch (which_stream) {
 //  case 0:
 //    putfsl(d0, 0);
@@ -1468,7 +1476,7 @@ int do_packet_nd_memcpy(uint32_t slot)
   }
 
   // Wait check idle
-  xaie_shim_dma_wait_idle(xaie::getTileAddr(col,0),direction,channel);  
+  xaie_shim_dma_wait_idle(xaie::getTileAddr(col,0),direction,channel);
 
   return 0;
 }
@@ -1742,6 +1750,7 @@ packet_op:
       //  complete_agent_dispatch_packet(pkt);
       //  packets_processed++;
       //  break;
+#ifdef ARM_CONTROLLER
       case AIR_PKT_TYPE_SDMA_STATUS:
         handle_packet_xaie_status(pkt,1);
         complete_agent_dispatch_packet(pkt);
@@ -1757,6 +1766,7 @@ packet_op:
         complete_agent_dispatch_packet(pkt);
         packets_processed++;
         break;
+#endif
       case AIR_PKT_TYPE_XAIE_LOCK:
         handle_packet_xaie_lock(pkt);
         complete_agent_dispatch_packet(pkt);
@@ -1879,8 +1889,8 @@ void handle_barrier_or_packet(queue_t *q, uint32_t mb_id)
   
 int main()
 {
-  //pvr_t pvr;
   init_platform();
+#ifdef ARM_CONTROLLER
   Xil_DCacheDisable();
 
   xaie2::aie_libxaie_ctx_t ctx;
@@ -1888,11 +1898,15 @@ int main()
   xaie2::mlir_aie_init_libxaie(_xaie);
   int err = xaie2::mlir_aie_init_device(_xaie);
   if (err)
-	  xil_printf("ERROR initializing device.\n\r"); 
-
-  //microblaze_get_pvr(&pvr);
-  int user1 = 1;//MICROBLAZE_PVR_USER1(pvr);
-  int user2 = 0;//MICROBLAZE_PVR_USER2(pvr);
+    xil_printf("ERROR initializing device.\n\r"); 
+  int user1 = 1;
+  int user2 = 0;
+#else
+  pvr_t pvr;
+  microblaze_get_pvr(&pvr);
+  int user1 = MICROBLAZE_PVR_USER1(pvr);
+  int user2 = MICROBLAZE_PVR_USER2(pvr);
+#endif
   int mb_id = user2 & 0xff;  
   int maj   = (user2 >> 24) & 0xff;
   int min   = (user2 >> 16) & 0xff;
@@ -1906,7 +1920,11 @@ int main()
   if (mb_id==0) unlock_uart(); // NOTE: Initialize uart lock only from 'first' MB
 
   lock_uart(mb_id);
+#ifdef ARM_CONTROLLER
   xil_printf("ARM %d of %d firmware %d.%d.%d created on %s at %s GMT\n\r",mb_id+1,*num_mbs,maj,min,ver,__DATE__, __TIME__);
+#else
+  xil_printf("MB %d of %d firmware %d.%d.%d created on %s at %s GMT\n\r",mb_id+1,*num_mbs,maj,min,ver,__DATE__, __TIME__);
+#endif
   xil_printf("(c) Copyright 2020-2022 AMD, Inc. All rights reserved.\n\r");
   unlock_uart();
 

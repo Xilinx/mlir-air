@@ -54,12 +54,11 @@ main(int argc, char *argv[])
   mlir_aie_configure_dmas(xaie);
   mlir_aie_start_cores(xaie);
 
-  volatile uint32_t *bram_ptr;
+  uint32_t *bram_ptr;
 
   #define DMA_COUNT 16
 
-  int fd = open("/sys/bus/pci/devices/0000:21:00.0/resource0",
-               O_RDWR | O_SYNC);
+  int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd != -1) {
     bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, AIR_BBUFF_BASE);
   }
@@ -68,11 +67,6 @@ main(int argc, char *argv[])
       bram_ptr[i] = i+1;
       bram_ptr[DMA_COUNT+i] = 0xdeface;
       printf("bbuf %p 0x%lx %llx\n", &bram_ptr[i], AIR_BBUFF_BASE + 4*i, bram_ptr[i]);
-    // bram_ptr = (volatile uint32_t *)mmap(NULL, 0x2000000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
-    // for (int i=0; i<DMA_COUNT; i++) {
-    //   bram_ptr[i] = i+1;
-    //   bram_ptr[DMA_COUNT+i] = 0xdeface;
-      //printf("bbuf %p %u\n", &bram_ptr[i], bram_ptr[i]);
     }
   } else return 1;
 
@@ -89,11 +83,26 @@ main(int argc, char *argv[])
   assert(ret == 0 && "failed to create queue!");
 
   //
+  // Set up a 1x3 herd starting 7,0
+  //
+  uint64_t wr_idx = queue_add_write_index(q, 1);
+  uint64_t packet_id = wr_idx % q->size;
+  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  air_packet_herd_init(herd_pkt, 0, col, 1, row, 3);
+  air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
+
+  wr_idx = queue_add_write_index(q, 1);
+  packet_id = wr_idx % q->size;
+  dispatch_packet_t *shim_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  air_packet_device_init(shim_pkt,XAIE_NUM_COLS);
+  air_queue_dispatch_and_wait(q, wr_idx, shim_pkt);
+
+  //
   // send the data
   //
 
-  uint64_t wr_idx = queue_add_write_index(q, 1);
-  uint64_t packet_id = wr_idx % q->size;
+  wr_idx = queue_add_write_index(q, 1);
+  packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
   air_packet_nd_memcpy(pkt, 0, col, 1, 0, 4, 2, AIR_BBUFF_BASE, DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
   air_queue_dispatch_and_wait(q, wr_idx, pkt);
