@@ -127,4 +127,4 @@ The sd_card image will be `air/platforms/xilinx_vck190_air/aie_platform/sd_card.
 
 -----
 
-<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>
+<p align="center">Copyright&copy; 2019-2022 Advanced Micro Devices, Inc.</p>

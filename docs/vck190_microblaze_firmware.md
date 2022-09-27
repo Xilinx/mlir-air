@@ -119,4 +119,4 @@ To update the hardware with the new ELF with Vivado 2020.1 it is necessary to re
 
 -----
 
-<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>
+<p align="center">Copyright&copy; 2019-2022 Advanced Micro Devices, Inc.</p>
