@@ -236,5 +236,32 @@ air::HierarchyInterface getHierarchyArgOwner(Value val) {
   return dyn_cast<air::HierarchyInterface>(containingOp);
 }
 
+// Renumber the DMA ops
+void renumberDmaOps(func::FuncOp func, std::string mode = "herd"){
+  unsigned id = 0;
+  if (mode == "global") {
+    // Renumber DMA ops per entire module
+    func->walk([&](Operation *func_dma) {
+      if (dyn_cast<xilinx::air::DmaMemcpyInterface>(func_dma)) {
+        func_dma->setAttr("id", mlir::IntegerAttr::get(mlir::IntegerType::get(func_dma->getContext(), 32),
+                                                ++id));
+      }
+    });
+  }
+  else if (mode == "herd") {
+    for (auto herd : func.getOps<xilinx::air::HerdOp>()) {
+      id = 0;
+      // Renumber DMA ops per air herd
+      herd->walk([&](Operation *herd_dma) {
+        if (dyn_cast<xilinx::air::DmaMemcpyInterface>(herd_dma)) {
+          herd_dma->setAttr("id", mlir::IntegerAttr::get(mlir::IntegerType::get(herd_dma->getContext(), 32),
+                                                  ++id));
+        }
+      });
+    }
+  }
+  else assert(false && "Unknown dma renumber mode. Supported modes: global, herd");
+}
+
 }
 }

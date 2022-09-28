@@ -31,14 +31,14 @@
 // CHECK: [[$SET2:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 == 0)>
 // CHECK: [[$SET3:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 - 1 == 0)>
 // CHECK: %[[EVENT0:.*]] = affine.if [[$SET0]]
-// CHECK: %[[EVENT1:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET0]]{{.*}}
+// CHECK: %[[EVENT1:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET0]]{{.*}}id = [[#ID0:]]
 // CHECK: affine.yield %[[EVENT1]]
-// CHECK: %[[EVENT2:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET1]]{{.*}}
+// CHECK: %[[EVENT2:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET1]]{{.*}}id = [[#ID0+1]]
 // CHECK: affine.yield %[[EVENT2]]
 // CHECK: %[[EVENT3:.*]] = affine.if [[$SET2]]
-// CHECK: %[[EVENT4:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET2]]{{.*}}
+// CHECK: %[[EVENT4:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET2]]{{.*}}id = [[#ID1:]]
 // CHECK: affine.yield %[[EVENT4]]
-// CHECK: %[[EVENT5:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET3]]{{.*}}
+// CHECK: %[[EVENT5:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET3]]{{.*}}id = [[#ID1+1]]
 // CHECK: affine.yield %[[EVENT5]]
 
 #map = affine_map<()[s0] -> (s0 * 32)>

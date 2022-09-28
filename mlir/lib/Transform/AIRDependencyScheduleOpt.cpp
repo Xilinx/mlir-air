@@ -635,8 +635,11 @@ public:
     auto module = getOperation();
     SmallVector<func::FuncOp, 4> funcOps;
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
-    for (auto f : funcOps)
+    for (auto f : funcOps){
       runOnFunction(f);
+      // Renumber the air dma op ids
+      xilinx::air::renumberDmaOps(f, "global");
+    }
   }
 
 private:

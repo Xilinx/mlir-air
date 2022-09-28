@@ -115,12 +115,18 @@ public:
 
   void runOnOperation() override {
     auto module = getOperation();
+
+    // Preprocessing: renumber the air dma op ids
+    for (auto f : module.getOps<func::FuncOp>()) {
+      xilinx::air::renumberDmaOps(f, "global");
+    }
+
+    // 1st traversal: create async ops with empty dep list.
+    
     OpBuilder module_builder(module);
 
     ExecuteOpID = 0;
     HierarchyOpID = 0;
-
-    // 1st traversal: create async ops with empty dep list.
 
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
