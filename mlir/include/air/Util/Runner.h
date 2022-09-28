@@ -49,6 +49,10 @@ private:
   std::unique_ptr<AIRRunner_impl> impl;
 };
 
+struct commandNodeEntry;
+struct commandGraph;
+struct runnerNode;
+
 } // namespace air
 } // namespace xilinx
 

@@ -56,6 +56,8 @@ air::HerdOp getHerdArgOwner(Value val);
 
 air::HierarchyInterface getHierarchyArgOwner(Value val);
 
+int getIdAttr(Operation * op);
+
 }
 }
 #endif // AIR_UTIL_UTIL_H

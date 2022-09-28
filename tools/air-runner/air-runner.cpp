@@ -156,19 +156,6 @@ LogicalResult run(int argc, char **argv, llvm::StringRef toolName) {
 
     runner.emitTraceStart(os);
 
-    // for (unsigned i = 0; i < numInputs; i++) {
-    //   Type type = ftype.getInput(i);
-    //   if (auto tensorTy = type.dyn_cast<MemRefType>()) {
-    //     // We require this memref type to be fully specified.
-    //     std::vector<llvm::Any> nothing;
-    //     unsigned buffer = runner.allocateMemRef(tensorTy, nothing);
-    //     runner.valueMap[blockArgs[i]] = buffer;
-    //     // runner.timeMap[blockArgs[i]] = 0;
-    //   } else {
-    //     llvm_unreachable("Only memref arguments are supported.\n");
-    //   }
-    // }
-
     std::vector<llvm::Any> results(numOutputs);
     std::vector<uint64_t> resultTimes(numOutputs);
     if (func::FuncOp toplevel =
