@@ -17,7 +17,6 @@ air
 │   └── vck190_air
 ├── python                    Python libraries and bindings
 ├── runtime_lib               Runtime libraries for host and controllers
-├── segment-architecture      Submodule containing AIR IP blocks
 ├── test                      In hardware tests of AIR components
 ├── tools                     aircc.py, air-opt, air-translate
 └── utils                     Utility scripts
