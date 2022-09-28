@@ -39,3 +39,7 @@ Now the final sd image file wil be saved to `mlir-air/sdbuild/output/vck190_air-
 
 ## Step 3 - **(Current workaround)** Copy BOOT.BIN and image.ub
 As mentioned in Step 1, we need to replace the following two boot files on your sd card's primary parition with the one from  `platforms/xilinx_vck190_air_prod/bootgen/BOOT.BIN` and `platforms/xilinx_vck190_air_prod/petalinux/images/linux/image.ub`. This is necessary as a workaround because the correct boot files are not properly generated at the moment. This should be fixed soon. Plugging the sd card into a usb reader on your host machine, you can navigate to the primary parition of the sd card and copy the above files over the generated ones.
+
+-----
+
+<p align="center">Copyright&copy; 2019-2022 Advanced Micro Devices, Inc.</p>
