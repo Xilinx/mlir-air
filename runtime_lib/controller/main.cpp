@@ -1395,24 +1395,14 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id)
         if (slot == last_slot) break;
         air_printf("RR check slot: %d\n\r",slot);
         if (staged_nd_slot[slot].valid) {
-          if (slot >= NUM_SHIM_DMAS*4) {
-            dispatch_packet_t* a_pkt = staged_nd_slot[slot].pkt;
-            uint16_t channel      = (a_pkt->arg[0] >> 24) & 0x00ff;
-            uint16_t col          = (a_pkt->arg[0] >> 32) & 0x00ff;
-            uint16_t direction    = (a_pkt->arg[0] >> 60) & 0x000f;
-            active = packet_get_active(a_pkt);
-            //int fsl = 4*(col-7) + 2*direction + channel;
-            //stalled = drain_fsl(fsl); 
-          } else {
-            dispatch_packet_t* a_pkt = staged_nd_slot[slot].pkt;
-            uint16_t channel      = (a_pkt->arg[0] >> 24) & 0x00ff;
-            uint16_t col          = (a_pkt->arg[0] >> 32) & 0x00ff;
-            //uint16_t logical_col  = (a_pkt->arg[0] >> 32) & 0x00ff;
-            uint16_t direction    = (a_pkt->arg[0] >> 60) & 0x000f;
-            //uint16_t col          = mappedShimDMA[logical_col];
-            stalled = (xaie_shim_dma_get_outstanding(xaie::getTileAddr(col,0),direction,channel) >= 4); 
-            active = packet_get_active(a_pkt);
-          }
+          dispatch_packet_t* a_pkt = staged_nd_slot[slot].pkt;
+          uint16_t channel      = (a_pkt->arg[0] >> 24) & 0x00ff;
+          uint16_t col          = (a_pkt->arg[0] >> 32) & 0x00ff;
+          //uint16_t logical_col  = (a_pkt->arg[0] >> 32) & 0x00ff;
+          uint16_t direction    = (a_pkt->arg[0] >> 60) & 0x000f;
+          //uint16_t col          = mappedShimDMA[logical_col];
+          stalled = (xaie_shim_dma_get_outstanding(xaie::getTileAddr(col,0),direction,channel) >= 4); 
+          active = packet_get_active(a_pkt);
         } else {
           stalled = true;
           active = false;
@@ -1421,14 +1411,6 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id)
       } while (!staged_nd_slot[slot].valid || stalled || !active); 
 
       if (slot==last_slot) { // Begin get next packet
-        if (slot >= NUM_SHIM_DMAS*4) { 
-          dispatch_packet_t* a_pkt = staged_nd_slot[slot].pkt;
-          uint16_t channel      = (a_pkt->arg[0] >> 24) & 0x00ff;
-          uint16_t col          = (a_pkt->arg[0] >> 32) & 0x00ff;
-          uint16_t direction    = (a_pkt->arg[0] >> 60) & 0x000f;
-          //int fsl = 4*(col-7) + 2*direction + channel;
-          //if (!drain_fsl(fsl)) goto found;
-        }
         rd_idx++; 
         pkt = &((dispatch_packet_t*)q->base_address)[mymod(rd_idx)];
         air_printf("HELLO NEW PACKET IN FLIGHT!\n\r");
@@ -1458,7 +1440,7 @@ found:
 
 packet_op:
     auto op = pkt->type & 0xffff;
-    air_printf("Op is %04X\n\r",op);
+    //air_printf("Op is %04X\n\r",op);
     switch (op) {
       case AIR_PKT_TYPE_INVALID:
       default:
@@ -1499,33 +1481,6 @@ packet_op:
         complete_agent_dispatch_packet(pkt);
         packets_processed++;
         break;
-      //case AIR_PKT_TYPE_PUT_STREAM:
-      //  handle_packet_put_stream(pkt);
-      //  complete_agent_dispatch_packet(pkt);
-      //  packets_processed++;
-      //  break;
-      //case AIR_PKT_TYPE_GET_STREAM:
-      //  handle_packet_get_stream(pkt);
-      //  complete_agent_dispatch_packet(pkt);
-      //  packets_processed++;
-      //  break;
-#ifdef ARM_CONTROLLER
-      case AIR_PKT_TYPE_SDMA_STATUS:
-        handle_packet_xaie_status(pkt,1);
-        complete_agent_dispatch_packet(pkt);
-        packets_processed++;
-        break;
-      case AIR_PKT_TYPE_TDMA_STATUS:
-        handle_packet_xaie_status(pkt,2);
-        complete_agent_dispatch_packet(pkt);
-        packets_processed++;
-        break;
-      case AIR_PKT_TYPE_CORE_STATUS:
-        handle_packet_xaie_status(pkt,3);
-        complete_agent_dispatch_packet(pkt);
-        packets_processed++;
-        break;
-#endif
       case AIR_PKT_TYPE_XAIE_LOCK:
         handle_packet_xaie_lock(pkt);
         complete_agent_dispatch_packet(pkt);
