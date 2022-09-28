@@ -31,7 +31,6 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
-#include <string.h>
 
 #include <string>
 
@@ -58,6 +57,10 @@ air_module_handle_t _air_host_active_module = (air_module_handle_t)nullptr;
 
 }
 
+#ifdef AIR_PCIE
+volatile void *_mapped_aie_base = nullptr;
+#endif
+
 aie_libxaie_ctx_t *
 air_init_libxaie1()
 {
@@ -70,7 +73,27 @@ air_init_libxaie1()
     return 0;
 
   xaie->AieConfigPtr.AieGen = XAIE_DEV_GEN_AIE;
+#ifdef AIR_PCIE
+  std::string aie_bar = air_get_aie_bar();
+
+  int fda;
+  if((fda = open(aie_bar.c_str(), O_RDWR | O_SYNC)) == -1) {
+      printf("[ERROR] Failed to open device file\n");
+      return nullptr;
+  }
+
+  // Map the memory region into userspace
+  _mapped_aie_base = mmap(NULL,               // virtual address
+                      0x20000000,             // length
+                      PROT_READ | PROT_WRITE, // prot
+                      MAP_SHARED,             // flags
+                      fda,                    // device fd
+                      0);                     // offset
+  if (!_mapped_aie_base) return nullptr;
+  xaie->AieConfigPtr.BaseAddr = (uint64_t)_mapped_aie_base;
+#else
   xaie->AieConfigPtr.BaseAddr = XAIE_BASE_ADDR;
+#endif
   xaie->AieConfigPtr.ColShift = XAIE_COL_SHIFT;
   xaie->AieConfigPtr.RowShift = XAIE_ROW_SHIFT;
   xaie->AieConfigPtr.NumRows = XAIE_NUM_ROWS;
@@ -95,6 +118,10 @@ air_deinit_libxaie1(aie_libxaie_ctx_t *xaie)
 {
   if (xaie == _air_host_active_libxaie1) {
     XAie_Finish(&(xaie->DevInst));
+#ifdef AIR_PCIE
+    munmap(const_cast<void*>(_mapped_aie_base),0x20000000);
+    _mapped_aie_base = nullptr;
+#endif
     _air_host_active_libxaie1 = nullptr;
   }
   free(xaie);
@@ -117,14 +144,25 @@ air_module_load_from_file(const char* filename, queue_t *q)
   _air_host_active_herd = {q, nullptr};
   _air_host_active_partition = {q, nullptr};
 
-  int fd = open("/dev/mem", O_RDWR | O_SYNC);
-  assert(fd != -1 && "Failed to open /dev/mem");
+#ifdef AIR_PCIE
+  int fd = open(air_get_bram_bar().c_str(), O_RDWR | O_SYNC);
+  assert(fd != -1 && "Failed to open bram fd");
 
   _air_host_bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE,
                                         MAP_SHARED, fd,
                                         AIR_BBUFF_BASE);
   _air_host_bram_paddr = AIR_BBUFF_BASE;
   assert(_air_host_bram_ptr && "Failed to map scratch bram location");
+#else
+  int fd = open("/dev/mem", O_RDWR | O_SYNC);
+  assert(fd != -1 && "Failed to open bram fd");
+
+  _air_host_bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE,
+                                        MAP_SHARED, fd,
+                                        AIR_BBUFF_BASE);
+  _air_host_bram_paddr = AIR_BBUFF_BASE;
+  assert(_air_host_bram_ptr && "Failed to map scratch bram location");
+#endif
 
   return (air_module_handle_t)_handle;
 }
@@ -277,4 +315,14 @@ air_herd_load(const char *name) {
   _air_host_active_herd.herd_desc = herd_desc;
 
   return 0;
+}
+
+std::string air_get_ddr_bar() {
+  return "/sys/bus/pci/devices/0000:21:00.0/resource0";
+}
+std::string air_get_aie_bar() {
+  return "/sys/bus/pci/devices/0000:21:00.0/resource2";
+}
+std::string air_get_bram_bar() {
+  return "/sys/bus/pci/devices/0000:21:00.0/resource4";
 }

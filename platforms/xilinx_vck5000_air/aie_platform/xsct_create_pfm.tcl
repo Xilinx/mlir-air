@@ -1,4 +1,4 @@
-# Copyright (C) 2021-2022, Xilinx Inc.
+# Copyright (C) 2020-2022, Xilinx Inc.
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
@@ -19,44 +19,27 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-SYSROOT=./sysroot
+# Varoables
+set OUTPUT platform_repo
 
-all: refresh_hw xrt zocl kernel_config rootfs_config linux bootimage sysroot
+set platform_name [lindex $argv 0]
+puts "The platform name is \"$platform_name\"" 
 
-refresh_hw:
-	petalinux-config --get-hw-description=${XSA_DIR} --silentconfig
+set xsa_path [lindex $argv 1]
+puts "The xsa path is \"$xsa_path\"" 
 
-sw_config: xrt zocl kernel_config rootfs_config
+# XSCT commands
+setws ./build
 
-xrt:
-	petalinux-config -c xrt --silentconfig
+platform create -name $platform_name -desc "A custom platform VCK190 platform" -hw $xsa_path/${platform_name}.xsa -out ./$OUTPUT -no-boot-bsp 
 
-zocl:
-	petalinux-config -c zocl --silentconfig
+# AIE domain
+domain create -name aiengine -os aie_runtime -proc ai_engine
 
-kernel_config:
-	petalinux-config -c kernel --silentconfig
+# Linux domain
+domain create -name standalone_domain -proc psv_cortexa72_0 -os standalone -arch {64-bit} -runtime {cpp}
 
-rootfs_config:
-	petalinux-config -c rootfs --silentconfig
-
-linux:
-	petalinux-build
-
-bootimage:
-	@echo "BOOT image for base platforms"
-	petalinux-package --boot --plm --psmfw --uboot --dtb
-
-sysroot:
-	mkdir -p ${SYSROOT}
-	petalinux-build --sdk
-	petalinux-package --sysroot -d ${SYSROOT}
-
-bsp:
-	petalinux-package --bsp -o xilinx_vck190_air.bsp -p .
-
-clean:
-	$(RM) -r images/linux/*
-	petalinux-build -x cleanall || true
-	${RM} -r build ip_cache components
+# Generate Platform
+platform write
+platform generate
 

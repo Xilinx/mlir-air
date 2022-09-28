@@ -1,4 +1,4 @@
-# Copyright (C) 2021-2022, Xilinx Inc.
+# Copyright (C) 2022, Xilinx Inc.
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
@@ -19,44 +19,10 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-SYSROOT=./sysroot
-
-all: refresh_hw xrt zocl kernel_config rootfs_config linux bootimage sysroot
-
-refresh_hw:
-	petalinux-config --get-hw-description=${XSA_DIR} --silentconfig
-
-sw_config: xrt zocl kernel_config rootfs_config
-
-xrt:
-	petalinux-config -c xrt --silentconfig
-
-zocl:
-	petalinux-config -c zocl --silentconfig
-
-kernel_config:
-	petalinux-config -c kernel --silentconfig
-
-rootfs_config:
-	petalinux-config -c rootfs --silentconfig
-
-linux:
-	petalinux-build
-
-bootimage:
-	@echo "BOOT image for base platforms"
-	petalinux-package --boot --plm --psmfw --uboot --dtb
-
-sysroot:
-	mkdir -p ${SYSROOT}
-	petalinux-build --sdk
-	petalinux-package --sysroot -d ${SYSROOT}
-
-bsp:
-	petalinux-package --bsp -o xilinx_vck190_air.bsp -p .
-
-clean:
-	$(RM) -r images/linux/*
-	petalinux-build -x cleanall || true
-	${RM} -r build ip_cache components
-
+open_hw_manager
+connect_hw_server -url localhost:3121
+open_hw_target
+current_hw_device [get_hw_devices xcvc1902_1]
+refresh_hw_device -update_hw_probes false [lindex [get_hw_devices xcvc1902_1] 0]
+set_property PROGRAM.FILE {./final_vck5000.pdi} [get_hw_devices xcvc1902_1]
+program_hw_devices [get_hw_devices xcvc1902_1]
