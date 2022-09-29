@@ -25,14 +25,13 @@ set script_directory [file dirname [file normalize [info script]]]
 
 set root_directory [file normalize [file join $script_directory "../.."]]
 
-platform create -name "mb" -hw [file join ${root_directory} "platforms/xilinx_vck190_air/vivado/xilinx_vck190_air.xsa"]
+platform create -name "arm" -hw [file join ${root_directory} "platforms/xilinx_vck5000_air/vivado/xilinx_vck5000_air.xsa"]
 
-::common::get_property NAME [hsi::get_cells -filter {IP_TYPE==PROCESSOR}]
-domain create -name microblaze -proc microblaze_0 
+domain create -name airrt_arm -proc psv_cortexa72_0 -os standalone
 
 platform generate
 
-app create -lang c++ -name acdc_agent -platform mb -domain microblaze -template "Empty Application (C++)"
+app create -lang c++ -name acdc_agent -platform arm -domain airrt_arm -template "Empty Application (C++)"
 #app config -name acdc_agent build-config Release
 #app config -name acdc_agent compiler-misc {-O1}
 
