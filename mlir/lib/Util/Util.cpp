@@ -44,7 +44,7 @@ namespace xilinx {
 namespace air {
 
 namespace {
-  
+
 std::string getMangledType(const Type ty) {
   std::stringstream ret;
 
@@ -55,26 +55,20 @@ std::string getMangledType(const Type ty) {
       auto shape = mrt.getShape();
       for (auto s : shape)
         ret << s << "x";
-    }
-    else if (mrt.hasRank()) {
+    } else if (mrt.hasRank()) {
       ret << "D" << mrt.getRank();
     }
     const Type elem = mrt.getElementType();
     ret << getMangledType(elem);
-  }
-  else if (FloatType ft = ty.dyn_cast<FloatType>()) {
+  } else if (FloatType ft = ty.dyn_cast<FloatType>()) {
     ret << "F" << ft.getWidth();
-  }
-  else if (const IntegerType it = ty.dyn_cast<const IntegerType>()) {
+  } else if (const IntegerType it = ty.dyn_cast<const IntegerType>()) {
     ret << "I" << it.getWidth();
-  }
-  else if (const IndexType it = ty.dyn_cast<const IndexType>()) {
+  } else if (const IndexType it = ty.dyn_cast<const IndexType>()) {
     ret << "I64";
-  }
-  else if (ty.dyn_cast<air::AsyncTokenType>()) {
+  } else if (ty.dyn_cast<air::AsyncTokenType>()) {
     ret << "E";
-  }
-  else {
+  } else {
     Type t = ty;
     t.dump();
     assert(0 && "unhandled type in getMangledType");
@@ -82,7 +76,8 @@ std::string getMangledType(const Type ty) {
   return ret.str();
 }
 
-std::string getMangledFuncName(ModuleOp module, std::string prefix, FunctionType fnTy) {
+std::string getMangledFuncName(ModuleOp module, std::string prefix,
+                               FunctionType fnTy) {
   std::string sep = "_";
 
   auto resultTy = fnTy.getResults();
@@ -96,10 +91,9 @@ std::string getMangledFuncName(ModuleOp module, std::string prefix, FunctionType
 
   return ret;
 }
-}
+} // namespace
 
-void coalesceLoops(AffineForOp outer, AffineForOp inner)
-{
+void coalesceLoops(AffineForOp outer, AffineForOp inner) {
   auto ctx = outer.getContext();
   auto loc = outer.getLoc();
   auto builder = OpBuilder::atBlockBegin(outer.getBody());
@@ -115,13 +109,11 @@ void coalesceLoops(AffineForOp outer, AffineForOp inner)
 
   outer.setUpperBoundMap(AffineMap::get(0, 0, ub_new_expr));
   auto iv_new = outer.getInductionVar();
-  auto iv_new_inner = builder.create<AffineApplyOp>(loc,
-                                                    AffineMap::get(1, 0, iv_new_inner_expr),
-                                                    iv_new);
-  auto iv_new_outer = builder.create<AffineApplyOp>(loc,
-                                                    AffineMap::get(1, 0, iv_new_outer_expr),
-                                                    iv_new);
-  SmallPtrSet<Operation *, 2> keep{iv_new_inner,iv_new_outer};
+  auto iv_new_inner = builder.create<AffineApplyOp>(
+      loc, AffineMap::get(1, 0, iv_new_inner_expr), iv_new);
+  auto iv_new_outer = builder.create<AffineApplyOp>(
+      loc, AffineMap::get(1, 0, iv_new_outer_expr), iv_new);
+  SmallPtrSet<Operation *, 2> keep{iv_new_inner, iv_new_outer};
   iv_new.replaceAllUsesExcept(iv_new_outer, keep);
   inner.getInductionVar().replaceAllUsesWith(iv_new_inner);
   // erase terminator from inner loop's body
@@ -133,8 +125,7 @@ void coalesceLoops(AffineForOp outer, AffineForOp inner)
   return;
 }
 
-void normalizeLoop(AffineForOp afo)
-{
+void normalizeLoop(AffineForOp afo) {
   auto ubMap = afo.getUpperBoundMap();
   auto lbMap = afo.getLowerBoundMap();
   auto ctx = afo.getContext();
@@ -200,8 +191,7 @@ uint64_t getTensorVolume(const ShapedType ty) {
 uint64_t getTensorVolume(const Type ty) {
   if (auto t = ty.dyn_cast<ShapedType>()) {
     return getTensorVolume(t);
-  }
-  else {
+  } else {
     return 1;
   }
 }
@@ -237,31 +227,34 @@ air::HierarchyInterface getHierarchyArgOwner(Value val) {
 }
 
 // Renumber the DMA ops
-void renumberDmaOps(func::FuncOp func, std::string mode = "herd"){
+void renumberDmaOps(func::FuncOp func, std::string mode = "herd") {
   unsigned id = 0;
   if (mode == "global") {
     // Renumber DMA ops per entire module
     func->walk([&](Operation *func_dma) {
       if (dyn_cast<xilinx::air::DmaMemcpyInterface>(func_dma)) {
-        func_dma->setAttr("id", mlir::IntegerAttr::get(mlir::IntegerType::get(func_dma->getContext(), 32),
-                                                ++id));
+        func_dma->setAttr(
+            "id",
+            mlir::IntegerAttr::get(
+                mlir::IntegerType::get(func_dma->getContext(), 32), ++id));
       }
     });
-  }
-  else if (mode == "herd") {
+  } else if (mode == "herd") {
     for (auto herd : func.getOps<xilinx::air::HerdOp>()) {
       id = 0;
       // Renumber DMA ops per air herd
       herd->walk([&](Operation *herd_dma) {
         if (dyn_cast<xilinx::air::DmaMemcpyInterface>(herd_dma)) {
-          herd_dma->setAttr("id", mlir::IntegerAttr::get(mlir::IntegerType::get(herd_dma->getContext(), 32),
-                                                  ++id));
+          herd_dma->setAttr(
+              "id",
+              mlir::IntegerAttr::get(
+                  mlir::IntegerType::get(herd_dma->getContext(), 32), ++id));
         }
       });
     }
-  }
-  else assert(false && "Unknown dma renumber mode. Supported modes: global, herd");
+  } else
+    assert(false && "Unknown dma renumber mode. Supported modes: global, herd");
 }
 
-}
-}
+} // namespace air
+} // namespace xilinx

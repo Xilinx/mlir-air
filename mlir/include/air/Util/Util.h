@@ -28,8 +28,8 @@
 
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 
@@ -58,6 +58,6 @@ air::HierarchyInterface getHierarchyArgOwner(Value val);
 
 void renumberDmaOps(func::FuncOp func, std::string mode = "herd");
 
-}
-}
+} // namespace air
+} // namespace xilinx
 #endif // AIR_UTIL_UTIL_H
