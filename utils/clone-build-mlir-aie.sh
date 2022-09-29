@@ -36,7 +36,7 @@ popd
 
 mkdir -p $MLIR_AIE_DIR/$BUILD_DIR
 mkdir -p $MLIR_AIE_DIR/$INSTALL_DIR
-cd $MLIR_AIE_DIR/$BUILD_DIR
+pushd $MLIR_AIE_DIR/$BUILD_DIR
 
 cmake .. \
     -GNinja \
@@ -46,14 +46,15 @@ cmake .. \
     -DHOST_COMPILER=NONE \
     -DLLVM_ENABLE_ASSERTIONS=ON \
     -DCMAKE_MODULE_PATH=`pwd`/../cmakeModules \
-    -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
-    -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
+    -DMLIR_DIR=../../llvm/install/lib/cmake/mlir/ \
+    -DLLVM_DIR=../../llvm/install/lib/cmake/llvm/ \
     -DCMAKE_LINKER=lld \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_CXX_COMPILER=clang++ \
-    -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
+    -DLLVM_EXTERNAL_LIT=`pwd`/../../llvm/build/bin/llvm-lit \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-    -DLLVM_CCACHE_BUILD=ON \
     -DCMAKE_INSTALL_PREFIX=../$INSTALL_DIR
 
 cmake --build . --target install -- -j$(nproc)
+
+popd
