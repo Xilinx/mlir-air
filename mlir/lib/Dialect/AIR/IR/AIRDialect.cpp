@@ -810,19 +810,21 @@ ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
   if (succeeded(parser.parseOptionalKeyword("args"))) {
     if (parser.parseLParen())
       return failure();
-    do {
-      OpAsmParser::Argument argument;
-      OpAsmParser::UnresolvedOperand operand;
-      if (parser.parseArgument(argument) || parser.parseEqual() ||
-        parser.parseOperand(operand))
-      return failure();
-      kernelArguments.push_back(argument);
-      kernelOperands.push_back(operand);
-    } while (succeeded(parser.parseOptionalComma()));
-    if (parser.parseRParen())
-      return failure();
-    if (parser.parseColonTypeList(types))
-      return failure();
+    if (parser.parseOptionalRParen()) {
+      do {
+        OpAsmParser::Argument argument;
+        OpAsmParser::UnresolvedOperand operand;
+        if (parser.parseArgument(argument) || parser.parseEqual() ||
+          parser.parseOperand(operand))
+          return failure();
+        kernelArguments.push_back(argument);
+        kernelOperands.push_back(operand);
+      } while (succeeded(parser.parseOptionalComma()));
+      if (parser.parseRParen())
+        return failure();
+      if (parser.parseColonTypeList(types))
+        return failure();
+    }
   }
 
   for (int i=0,e=kernelOperands.size(); i<e; i++) {
