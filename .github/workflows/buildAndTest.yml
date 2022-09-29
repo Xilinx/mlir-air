@@ -72,14 +72,14 @@ jobs:
             -DCMAKE_MODULE_PATH=`pwd`/../cmakeModules \
             -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
-            -DAIE_DIR=../mlir-aie/install/lib/cmake/aie \
+            -DAIE_DIR=../mlir-aie/install/lib/cmake/aie/ \
             -DCMAKE_LINKER=lld \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
             -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           ninja
-          ninja check-aie
+          ninja check-all
 
       # Build the repo test target in release mode to build and test.
       - name: Build and test (Release)
@@ -92,13 +92,13 @@ jobs:
             -DCMAKE_MODULE_PATH=../cmakeModules \
             -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
-            -DAIE_DIR=../mlir-aie/install/lib/cmake/aie \
+            -DAIE_DIR=../mlir-aie/install/lib/cmake/aie/ \
             -DCMAKE_LINKER=lld \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
             -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit
           make -j$(nproc)
-          make check-aie
+          make check-all
 
   lint-repo:
     name: Check code format

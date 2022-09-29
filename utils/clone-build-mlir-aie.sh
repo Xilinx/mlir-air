@@ -53,6 +53,7 @@ cmake .. \
     -DCMAKE_CXX_COMPILER=clang++ \
     -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DLLVM_CCACHE_BUILD=ON \
     -DCMAKE_INSTALL_PREFIX=../$INSTALL_DIR
 
 cmake --build . --target install -- -j$(nproc)
