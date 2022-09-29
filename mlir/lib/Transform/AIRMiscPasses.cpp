@@ -347,8 +347,11 @@ public:
     auto module = getOperation();
     SmallVector<func::FuncOp, 4> funcOps;
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
-    for (auto f : funcOps)
+    for (auto f : funcOps){
       runOnFunction(f);
+      // Renumber the air dma op ids
+      xilinx::air::renumberDmaOps(f, "global");
+    }
   }
 
   void runOnFunction(func::FuncOp f) {
@@ -791,17 +794,7 @@ private:
 
 void AIRRenumberDmaIdPass::runOnOperation() {
   auto func = getOperation();
-  auto ctx = func.getContext();
-
-  for (auto h : func.getOps<xilinx::air::HerdOp>()) {
-    unsigned id = 0;
-    h->walk([&](Operation *o) {
-      if (dyn_cast<xilinx::air::DmaMemcpyInterface>(o)) {
-        o->setAttr("id", mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
-                                                ++id));
-      }
-    });
-  }
+  xilinx::air::renumberDmaOps(func, clMode);
 }
 
 } // anonymous namespace

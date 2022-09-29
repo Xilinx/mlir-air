@@ -823,6 +823,10 @@ def AIRFuseParallelHerdPass : Pass<"air-fuse-parallel-launch", "ModuleOp"> {
 def AIRRenumberDmaIdPass : Pass<"air-renumber-dma", "func::FuncOp"> {
   let summary = "Renumber air dma op ids";
   let constructor = "xilinx::air::createAIRRenumberDmaIdPass()";
+  let options = [
+    Option<"clMode", "mode", "std::string", /*default=*/"\"herd\"",
+           "In which hierarchy level to renumber the dma ops">,
+  ];
 }
 
 #endif // AIR_CONVERSION_PASSES
