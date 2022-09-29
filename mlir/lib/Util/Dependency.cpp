@@ -198,7 +198,7 @@ namespace air {
   // Dependency graph as a Boost graph object
   //===----------------------------------------------------------------------===//
 
-  void parseCommandGraphs(func::FuncOp &toplevel, dependencyGraph &global_graph, dependencyContext &dep_ctx) {
+  void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel, dependencyGraph &global_graph, dependencyContext &dep_ctx) {
 
     // Create vertices for graphs
     // Build up host graph
@@ -310,7 +310,7 @@ namespace air {
 
   }
 
-  Graph::vertex_descriptor addVertexFromOpImpls(Operation * op, Graph &G, dependencyContext &dep_ctx){
+  Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromOpImpls(Operation * op, Graph &G, dependencyContext &dep_ctx){
     if (auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op)){
       return addVertexFromDmaOp(dma_op, G, dep_ctx);
     }
@@ -336,7 +336,7 @@ namespace air {
   }
 
   // Create graph vertex from op
-  Graph::vertex_descriptor addVertexFromOp(Operation * op, uint64_t &id, std::string event_type, std::string event_name, std::string color, std::string shape, Graph &G, dependencyContext &dep_ctx, Operation * pointer_op){
+  Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromOp(Operation * op, uint64_t &id, std::string event_type, std::string event_name, std::string color, std::string shape, Graph &G, dependencyContext &dep_ctx, Operation * pointer_op){
     op->setAttr("id",
         mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
         ++id));
@@ -355,7 +355,7 @@ namespace air {
     return v;
   }
 
-  Graph::vertex_descriptor addVertexFromDmaOp(xilinx::air::DmaMemcpyInterface op, Graph &G, dependencyContext &dep_ctx){
+  Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromDmaOp(xilinx::air::DmaMemcpyInterface op, Graph &G, dependencyContext &dep_ctx){
     if (dyn_cast<xilinx::air::DmaMemcpyNdOp>(op.getOperation())){
       return addVertexFromOp(op, dep_ctx.DmaOpID, "dma", "DmaMemcpyNdOp", "cyan", "oval", G, dep_ctx);
     }
@@ -365,7 +365,7 @@ namespace air {
     }
   }
 
-  Graph::vertex_descriptor addVertexFromHierarchyOp(xilinx::air::HierarchyInterface op, Graph &G, dependencyContext &dep_ctx){
+  Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromHierarchyOp(xilinx::air::HierarchyInterface op, Graph &G, dependencyContext &dep_ctx){
     if (dyn_cast<xilinx::air::LaunchOp>(op.getOperation())){
       return addVertexFromOp(op, dep_ctx.HierarchyOpID, "hierarchy", "LaunchOp", "yellow", "box", G, dep_ctx);
     }
@@ -381,7 +381,7 @@ namespace air {
     }
   }
 
-  Graph::vertex_descriptor addVertexFromTerminatorOp(Operation * op, Graph &G, dependencyContext &dep_ctx){
+  Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromTerminatorOp(Operation * op, Graph &G, dependencyContext &dep_ctx){
     if (dyn_cast<xilinx::air::LaunchTerminatorOp>(op)){
       return addVertexFromOp(op, dep_ctx.TerminatorID, "hierarchy_terminator", "LaunchTerminator", "yellow", "box", G, dep_ctx);
     }
@@ -402,7 +402,7 @@ namespace air {
     return 0;
   }
 
-  Graph::vertex_descriptor addVertexFromExecuteOp(xilinx::air::ExecuteOp op, Graph &G, dependencyContext &dep_ctx){
+  Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromExecuteOp(xilinx::air::ExecuteOp op, Graph &G, dependencyContext &dep_ctx){
     int iter_count = 0;
     Graph::vertex_descriptor v_prev = 0;
     Graph::vertex_descriptor v = 0;
@@ -446,7 +446,7 @@ namespace air {
     return v;
   }
 
-  Graph::vertex_descriptor addVertexFromWaitAllOp(xilinx::air::WaitAllOp op, Graph &G, dependencyContext &dep_ctx){
+  Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromWaitAllOp(xilinx::air::WaitAllOp op, Graph &G, dependencyContext &dep_ctx){
     if (op.getAsyncToken().hasOneUse()){
       for (auto u : op.getAsyncToken().getUsers()){
         if (dyn_cast<scf::YieldOp>(u)){
@@ -461,7 +461,7 @@ namespace air {
   }
 
   // Get type-id pair from op, which will be used to look up vertex in op_to_v
-  std::pair<std::string, unsigned> getTypeIdPairFromOp(Operation * op){
+  std::pair<std::string, unsigned> dependencyCanonicalizer::getTypeIdPairFromOp(Operation * op){
     std::pair<std::string, unsigned> output;
     std::string type = getOpTypeFromOpImpls(op);
     output.first = type;
@@ -469,7 +469,7 @@ namespace air {
     return output;
   }
 
-  std::string getOpTypeFromOpImpls(Operation * op){
+  std::string dependencyCanonicalizer::getOpTypeFromOpImpls(Operation * op){
     if (mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op)){
       return "dma";
     }
@@ -508,7 +508,7 @@ namespace air {
   // Get vertex descriptor from op
   // "front_or_back": if op is an air.execute, then "front" returns the first op in region,
   // while "back" returns the terminator in region.
-  std::pair<Graph::vertex_descriptor, Graph *> getVertexFromOp(Operation * op, dependencyContext dep_ctx, std::string front_or_back){
+  std::pair<Graph::vertex_descriptor, Graph *> dependencyCanonicalizer::getVertexFromOp(Operation * op, dependencyContext dep_ctx, std::string front_or_back){
     std::pair<Graph::vertex_descriptor, Graph *> output;
     if (auto execute_op = dyn_cast<xilinx::air::ExecuteOp>(op)){
       if (front_or_back == "front"){
@@ -536,7 +536,7 @@ namespace air {
   }
 
   // Trace dependency of every op in a boost graph
-  void parseDependencyEdgesInGraph(Graph &g, dependencyContext dep_ctx){
+  void dependencyCanonicalizer::parseDependencyEdgesInGraph(Graph &g, dependencyContext dep_ctx){
     auto vp = boost::vertices(g);
     for (auto vit = vp.first; vit != vp.second; ++vit){
       auto op = g[*vit].op;
@@ -545,7 +545,7 @@ namespace air {
     }
   }
 
-  void connectOpToItsDepListImpls(Operation * op, Graph &g, dependencyContext dep_ctx){
+  void dependencyCanonicalizer::connectOpToItsDepListImpls(Operation * op, Graph &g, dependencyContext dep_ctx){
     SmallVector<Value, 1> dep_list;
     // air.asyncopinterface
     if (auto async_op = mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op)){
@@ -579,7 +579,7 @@ namespace air {
   }
 
   // Connect an async op to ops in its dependency list
-  void connectOpToItsDepList(Operation * op, SmallVector<Value, 1> dep_list, Graph &g, dependencyContext dep_ctx){
+  void dependencyCanonicalizer::connectOpToItsDepList(Operation * op, SmallVector<Value, 1> dep_list, Graph &g, dependencyContext dep_ctx){
     auto dst_v = getVertexFromOp(op, dep_ctx, "front").first;
     if (dep_list.size()){
       for (auto dep_token : dep_list){
@@ -597,7 +597,7 @@ namespace air {
   }
 
   // Trace op from a token in dependency list
-  std::vector<Operation *> traceOpFromToken(Value dep_token){
+  std::vector<Operation *> dependencyCanonicalizer::traceOpFromToken(Value dep_token){
     std::vector<Operation *> output;
     // If dependency token originates from async op
     if (dep_token.getDefiningOp() && mlir::dyn_cast<xilinx::air::AsyncOpInterface>(dep_token.getDefiningOp())){
@@ -646,7 +646,7 @@ namespace air {
   }
 
   // Connects launch, partition and herd terminators
-  void connectTerminatorInGraph(Graph &g){
+  void dependencyCanonicalizer::connectTerminatorInGraph(Graph &g){
     auto vp = boost::vertices(g);
     Graph::vertex_descriptor terminator_v = 0;
     for (auto vit = vp.first; vit != vp.second; ++vit){
@@ -664,7 +664,7 @@ namespace air {
   }
 
   // Create start node for graph
-  void connectStartNodeInCommandGraph (dependencyGraph &G){
+  void dependencyCanonicalizer::connectStartNodeInCommandGraph (dependencyGraph &G){
     auto v = G.start_vertex;
     auto vp = boost::vertices(G.g);
     for (auto vit = vp.first; vit != vp.second; ++vit){
@@ -675,7 +675,7 @@ namespace air {
   }
 
   // Adds pointer from command graph to launch, partition and herd terminators
-  void updatePointerFromGraphToHierarchyTerminator(dependencyGraph &G){
+  void dependencyCanonicalizer::updatePointerFromGraphToHierarchyTerminator(dependencyGraph &G){
     auto vp = boost::vertices(G.g);
     for (auto v = vp.first; v != vp.second; ++v){
       if (G.g[*v].asyncEventType == "hierarchy_terminator"){
@@ -686,7 +686,7 @@ namespace air {
   }
 
   // Adds pointer from hierarchy terminator to parent command graph
-  void updatePointerFromHierarchyTerminatorToGraph(dependencyGraph &G, dependencyGraph &subG){
+  void dependencyCanonicalizer::updatePointerFromHierarchyTerminatorToGraph(dependencyGraph &G, dependencyGraph &subG){
     auto vp = boost::vertices(subG.g);
     for (auto v = vp.first; v != vp.second; ++v){
       if (subG.g[*v].asyncEventType == "hierarchy_terminator"){
@@ -697,7 +697,7 @@ namespace air {
   }
 
   // Adds pointer from hierarchy op to sub command graph
-  void updatePointerFromHierarchyOpToGraph(dependencyGraph &G){
+  void dependencyCanonicalizer::updatePointerFromHierarchyOpToGraph(dependencyGraph &G){
     unsigned idx = 0;
     auto vp = boost::vertices(G.g);
     for (auto v = vp.first; v != vp.second; ++v){
@@ -710,7 +710,7 @@ namespace air {
   }
 
   // Dump graphviz
-  void dump_graph(std::string filename, Graph G)
+  void dependencyCanonicalizer::dump_graph(std::string filename, Graph G)
   {
     std::ofstream ofs (filename, std::ofstream::out); 
     boost::dynamic_properties dp;

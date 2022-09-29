@@ -130,27 +130,35 @@ struct dependencyContext{
     dependencyContext() : ExecuteOpID(0), DmaOpID(0), HierarchyOpID(0), WaitAllOpID(0), ForOpID(0), ParallelOpID(0), TerminatorID(0) {}
 };
 
-void parseCommandGraphs(func::FuncOp &toplevel, dependencyGraph &global_graph, dependencyContext &dep_ctx);
-Graph::vertex_descriptor addVertexFromOpImpls(Operation * op, Graph &G, dependencyContext &dep_ctx);
-Graph::vertex_descriptor addVertexFromOp(Operation * op, uint64_t &id, std::string event_type, std::string event_name, std::string color, std::string shape, Graph &G, dependencyContext &dep_ctx, Operation * pointer_op = nullptr);
-Graph::vertex_descriptor addVertexFromDmaOp(xilinx::air::DmaMemcpyInterface op, Graph &G, dependencyContext &dep_ctx);
-Graph::vertex_descriptor addVertexFromHierarchyOp(xilinx::air::HierarchyInterface op, Graph &G, dependencyContext &dep_ctx);
-Graph::vertex_descriptor addVertexFromTerminatorOp(Operation * op, Graph &G, dependencyContext &dep_ctx);
-Graph::vertex_descriptor addVertexFromExecuteOp(xilinx::air::ExecuteOp op, Graph &G, dependencyContext &dep_ctx);
-Graph::vertex_descriptor addVertexFromWaitAllOp(xilinx::air::WaitAllOp op, Graph &G, dependencyContext &dep_ctx);
-std::pair<std::string, unsigned> getTypeIdPairFromOp(Operation * op);
-std::string getOpTypeFromOpImpls(Operation * op);
-std::pair<Graph::vertex_descriptor, Graph *> getVertexFromOp(Operation * op, dependencyContext dep_ctx, std::string front_or_back = "front");
-void parseDependencyEdgesInGraph(Graph &g, dependencyContext dep_ctx);
-void connectOpToItsDepListImpls(Operation * op, Graph &g, dependencyContext dep_ctx);
-void connectOpToItsDepList(Operation * op, SmallVector<Value, 1> dep_list, Graph &g, dependencyContext dep_ctx);
-std::vector<Operation *> traceOpFromToken(Value dep_token);
-void connectTerminatorInGraph(Graph &g);
-void connectStartNodeInCommandGraph (dependencyGraph &G);
-void updatePointerFromGraphToHierarchyTerminator(dependencyGraph &G);
-void updatePointerFromHierarchyTerminatorToGraph(dependencyGraph &G, dependencyGraph &subG);
-void updatePointerFromHierarchyOpToGraph(dependencyGraph &G);
-void dump_graph(std::string filename, Graph G);
+class dependencyCanonicalizer{
+
+public:
+    
+    void parseCommandGraphs(func::FuncOp &toplevel, dependencyGraph &global_graph, dependencyContext &dep_ctx);
+
+private:
+
+    Graph::vertex_descriptor addVertexFromOpImpls(Operation * op, Graph &G, dependencyContext &dep_ctx);
+    Graph::vertex_descriptor addVertexFromOp(Operation * op, uint64_t &id, std::string event_type, std::string event_name, std::string color, std::string shape, Graph &G, dependencyContext &dep_ctx, Operation * pointer_op = nullptr);
+    Graph::vertex_descriptor addVertexFromDmaOp(xilinx::air::DmaMemcpyInterface op, Graph &G, dependencyContext &dep_ctx);
+    Graph::vertex_descriptor addVertexFromHierarchyOp(xilinx::air::HierarchyInterface op, Graph &G, dependencyContext &dep_ctx);
+    Graph::vertex_descriptor addVertexFromTerminatorOp(Operation * op, Graph &G, dependencyContext &dep_ctx);
+    Graph::vertex_descriptor addVertexFromExecuteOp(xilinx::air::ExecuteOp op, Graph &G, dependencyContext &dep_ctx);
+    Graph::vertex_descriptor addVertexFromWaitAllOp(xilinx::air::WaitAllOp op, Graph &G, dependencyContext &dep_ctx);
+    std::pair<std::string, unsigned> getTypeIdPairFromOp(Operation * op);
+    std::string getOpTypeFromOpImpls(Operation * op);
+    std::pair<Graph::vertex_descriptor, Graph *> getVertexFromOp(Operation * op, dependencyContext dep_ctx, std::string front_or_back = "front");
+    void parseDependencyEdgesInGraph(Graph &g, dependencyContext dep_ctx);
+    void connectOpToItsDepListImpls(Operation * op, Graph &g, dependencyContext dep_ctx);
+    void connectOpToItsDepList(Operation * op, SmallVector<Value, 1> dep_list, Graph &g, dependencyContext dep_ctx);
+    std::vector<Operation *> traceOpFromToken(Value dep_token);
+    void connectTerminatorInGraph(Graph &g);
+    void connectStartNodeInCommandGraph (dependencyGraph &G);
+    void updatePointerFromGraphToHierarchyTerminator(dependencyGraph &G);
+    void updatePointerFromHierarchyTerminatorToGraph(dependencyGraph &G, dependencyGraph &subG);
+    void updatePointerFromHierarchyOpToGraph(dependencyGraph &G);
+    void dump_graph(std::string filename, Graph G);
+};
 
 } // namespace air
 } // namespace xilinx

@@ -45,6 +45,8 @@ public:
   AIRDependencyCanonicalize() = default;
   AIRDependencyCanonicalize(const AIRDependencyCanonicalize &pass) {}
 
+  dependencyCanonicalizer canonicalizer;
+
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<scf::SCFDialect, air::airDialect>();
   }
@@ -53,7 +55,7 @@ public:
     auto func = getOperation();
 
     // Parse dependency graphs
-    xilinx::air::parseCommandGraphs(func, hostGraph, dep_ctx);
+    canonicalizer.parseCommandGraphs(func, hostGraph, dep_ctx);
 
   }
 
