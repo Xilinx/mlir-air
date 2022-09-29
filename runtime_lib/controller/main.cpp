@@ -130,16 +130,6 @@ void mlir_aie_init_libxaie(aie_libxaie_ctx_t *ctx) {
   ctx->AieConfigPtr.AieTileNumRows = XAIE_NUM_ROWS;
   ctx->AieConfigPtr.PartProp = {0};
   ctx->DevInst = {0};
-
-  /*
-    XAIEGBL_HWCFG_SET_CONFIG((&xaie->AieConfig),
-                             XAIE_NUM_ROWS, XAIE_NUM_COLS, 0x800);
-    XAieGbl_HwInit(&xaie->AieConfig);
-    xaie->AieConfigPtr = XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
-    XAieGbl_CfgInitialize(&xaie->AieInst,
-                          &xaie->TileInst[0][0], xaie->AieConfigPtr);
-    _air_host_active_libxaie1 = xaie;
-  */
 }
 
 int mlir_aie_init_device(aie_libxaie_ctx_t *ctx) {
@@ -294,8 +284,6 @@ void mlir_aie_print_dma_status(aie_libxaie_ctx_t *ctx, int col, int row) {
 }
 
 void mlir_aie_print_shimdma_status(aie_libxaie_ctx_t *ctx, int col, int row) {
-  // int col = loc.Col;
-  // int row = loc.Row;
   u64 tileAddr = _XAie_GetTileAddr(&(ctx->DevInst), row, col);
 
   u32 dma_mm2s_status;
@@ -433,8 +421,6 @@ void mlir_aie_print_shimdma_status(aie_libxaie_ctx_t *ctx, int col, int row) {
 /// Print the status of a core represented by the given tile, at the given
 /// coordinates.
 void mlir_aie_print_tile_status(aie_libxaie_ctx_t *ctx, int col, int row) {
-  // int col = loc.Col;
-  // int row = loc.Row;
   u64 tileAddr = _XAie_GetTileAddr(&(ctx->DevInst), row, col);
 
   u32 status, coreTimerLow, PC, LR, SP, locks, R0, R4;
@@ -1055,10 +1041,6 @@ uint64_t cfg_cdma_base = 0x000044A00000UL;
 
 void handle_packet_sg_cdma(dispatch_packet_t *pkt)
 {
-  //volatile uint32_t *timerCtrl = (volatile uint32_t *)(xaie::getTileAddr(7,1) + 0x00034000);
-  //volatile uint32_t *timer = (volatile uint32_t *)(xaie::getTileAddr(7,1) + 0x000340F8);
-  //uint32_t before = 0;
-  //uint32_t after = 0;
   // packet is in active phase
   packet_set_active(pkt, true);
   volatile uint32_t *cdmab = (volatile uint32_t *)(cfg_cdma_base);
@@ -1084,17 +1066,11 @@ void handle_packet_sg_cdma(dispatch_packet_t *pkt)
   cdmab[0] |= 0x4;
   cdmab[0] &= 0x4;
   while (cdmab[0]&0x4);
-  //air_printf("CDMA start.\n\r");
-  //uint32_t status = cdmab[1];
-  //air_printf("CMDA raw %x idle %x\n\r",status,status&2);
-  //timerCtrl[0] = 1<<31;
-  //before = timer[0];
-
+  air_printf("CDMA start.\n\r");
   uint64_t daddr = (pkt->arg[0]);
   uint64_t saddr = (pkt->arg[1]);
   uint32_t bytes = (pkt->arg[2]);
   air_printf("CMDA daddr 0x%016lx saddr 0x%016lx\n\r",daddr,saddr);
-  //after = timer[0];
   cdmab[0] = 0x0; // unset SG mode 
   if (bytes >= 0xffffff) { // SG
     cdmab[0] = 0x8; // set SG mode 
@@ -1119,7 +1095,6 @@ void handle_packet_sg_cdma(dispatch_packet_t *pkt)
     }
   }
   air_printf("CDMA done!\n\r");
-  //xil_printf("CDMA usec B %4u A %6u A-B %6u\n\r",before, after, (after - before));
 }
 
 void handle_packet_cdma(dispatch_packet_t *pkt)
