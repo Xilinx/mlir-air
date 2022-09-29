@@ -56,6 +56,8 @@ air::HerdOp getHerdArgOwner(Value val);
 
 air::HierarchyInterface getHierarchyArgOwner(Value val);
 
+int getIdAttr(Operation * op);
+
 void renumberDmaOps(func::FuncOp func, std::string mode = "herd");
 
 } // namespace air

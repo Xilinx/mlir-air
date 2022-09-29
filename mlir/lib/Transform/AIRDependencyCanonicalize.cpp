@@ -1,4 +1,4 @@
-//===- Passes.h -------------------------------------------------*- C++ -*-===//
+//===- AIRDependencyCanonicalize.cpp -----------------------------*- C++ -*-===//
 //
 // Copyright (C) 2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
@@ -23,31 +23,56 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef AIR_TRANSFORM_PASSES_H
-#define AIR_TRANSFORM_PASSES_H
+#include "PassDetail.h"
 
-#include "air/Transform/AIRAutomaticTilingPass.h"
-#include "air/Transform/AIRDependency.h"
-#include "air/Transform/AIRDependencyScheduleOpt.h"
+#include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRDependencyCanonicalize.h"
-#include "air/Transform/AIRHerdAssignPass.h"
-#include "air/Transform/AIRLinalgCodegen.h"
-#include "air/Transform/AIRLinalgOpStats.h"
-#include "air/Transform/AIRLoopMergingPass.h"
-#include "air/Transform/AIRLoopPermutationPass.h"
-#include "air/Transform/AIRLowerLinalgTensors.h"
-#include "air/Transform/AIRMiscPasses.h"
-#include "air/Transform/AIRRegularizeLoopPass.h"
-#include "air/Transform/AIRTilingUtils.h"
-#include "air/Transform/AffineLoopOptPass.h"
-#include "air/Transform/ReturnEliminationPass.h"
+#include "air/Util/Dependency.h"
+
+using namespace mlir;
+using namespace xilinx;
+using namespace xilinx::air;
+using namespace boost;
+
+#define DEBUG_TYPE "air-dependency-canonicalize"
+
+namespace {
+
+
+class AIRDependencyCanonicalize : public AIRDependencyCanonicalizeBase<AIRDependencyCanonicalize> {
+
+public:
+  AIRDependencyCanonicalize() = default;
+  AIRDependencyCanonicalize(const AIRDependencyCanonicalize &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<scf::SCFDialect, air::airDialect>();
+  }
+
+  void runOnOperation() override {
+    auto func = getOperation();
+
+    // Parse dependency graphs
+    xilinx::air::parseCommandGraphs(func, hostGraph, dep_ctx);
+
+  }
+
+private:
+  xilinx::air::dependencyGraph hostGraph;
+  xilinx::air::dependencyContext dep_ctx;
+
+
+};
+    
+
+} // namespace
 
 namespace xilinx {
 namespace air {
 
-void registerTransformPasses();
+std::unique_ptr<mlir::Pass> createAIRDependencyCanonicalizePass() {
+  return std::make_unique<AIRDependencyCanonicalize>();
+}
 
 } // namespace air
 } // namespace xilinx
-
-#endif // AIR_TRANSFORM_PASSES_H
