@@ -36,13 +36,13 @@
 #include <iostream>
 using namespace mlir;
 using namespace xilinx::air;
-//using namespace xilinx::xten;
+// using namespace xilinx::xten;
 
 #include "air/Dialect/AIR/AIRDialect.cpp.inc"
 
 void airDialect::initialize() {
-     addTypes<AsyncTokenType>();
-     addOperations<
+  addTypes<AsyncTokenType>();
+  addOperations<
 #define GET_OP_LIST
 #include "air/Dialect/AIR/AIR.cpp.inc"
       >();
@@ -84,9 +84,9 @@ static LogicalResult removeUnusedArguments(HerdOp op,
     return failure();
 
   BlockAndValueMapping remap;
-  auto newOp = rewriter.create<HerdOp>(
-      op.getLoc(), op.getAsyncDependencies(), op.getSizeOperands(),
-      newOperands, op->getNumResults() > 0);
+  auto newOp = rewriter.create<HerdOp>(op.getLoc(), op.getAsyncDependencies(),
+                                       op.getSizeOperands(), newOperands,
+                                       op->getNumResults() > 0);
   rewriter.setInsertionPointToStart(&newOp.body().front());
   remap.map(op.getSize()[0], newOp.getSize()[0]);
   remap.map(op.getSize()[1], newOp.getSize()[1]);
@@ -168,17 +168,16 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
   printer << "] ";
 }
 
-}
-}
+} // namespace air
+} // namespace xilinx
 
 //
 // LaunchOp
 //
 
 void LaunchOp::build(OpBuilder &builder, OperationState &result,
-                     ValueRange asyncDependencies,
-                     ValueRange sizes, ValueRange launchOperands, 
-                     bool isAsync) {
+                     ValueRange asyncDependencies, ValueRange sizes,
+                     ValueRange launchOperands, bool isAsync) {
 
   result.addOperands(asyncDependencies);
   if (isAsync)
@@ -206,7 +205,7 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
 }
 
 void LaunchOp::build(OpBuilder &builder, OperationState &result,
-                         ValueRange sizes, ValueRange launchOperands) {
+                     ValueRange sizes, ValueRange launchOperands) {
 
   build(builder, result, {}, sizes, launchOperands, false);
 }
@@ -215,20 +214,24 @@ void LaunchOp::print(OpAsmPrinter &p) {
 
   p << ' ';
 
-  auto nameAttr = (*this)->getAttrOfType<StringAttr>(mlir::SymbolTable::getSymbolAttrName());
+  auto nameAttr = (*this)->getAttrOfType<StringAttr>(
+      mlir::SymbolTable::getSymbolAttrName());
   if (nameAttr) {
     p.printSymbolName(nameAttr);
     p << ' ';
   }
 
-  printAsyncDependencies(p, *this, (asyncToken() ? asyncToken().getType() : Type()), asyncDependencies());
+  printAsyncDependencies(p, *this,
+                         (asyncToken() ? asyncToken().getType() : Type()),
+                         asyncDependencies());
   p << "(";
   p.printOperands(getIds());
   p << ") in (";
   auto sizeArgs = getSize();
   auto sizeOpers = getSizeOperands();
-  for (int i=0,e=getNumDims(); i<e; i++) {
-    if (i) p << ", ";
+  for (int i = 0, e = getNumDims(); i < e; i++) {
+    if (i)
+      p << ", ";
     p << sizeArgs[i] << "=";
     p << sizeOpers[i];
   }
@@ -237,34 +240,36 @@ void LaunchOp::print(OpAsmPrinter &p) {
   if (getNumKernelOperands()) {
     auto args = getKernelArguments();
     p << " args(";
-    for (int i=0,e=getNumKernelOperands(); i<e; i++) {
-      if (i) p << ", ";
+    for (int i = 0, e = getNumKernelOperands(); i < e; i++) {
+      if (i)
+        p << ", ";
       p << args[i] << "=";
       p << getKernelOperand(i);
     }
     p << ") : ";
-    for (int i=0,e=getNumKernelOperands(); i<e; i++) {
-      if (i) p << ", ";
+    for (int i = 0, e = getNumKernelOperands(); i < e; i++) {
+      if (i)
+        p << ", ";
       p << getKernelOperand(i).getType();
     }
   }
 
   SmallVector<NamedAttribute, 8> filteredAttrs(
-        llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-          if (attr.getName() == OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr())
-            return false;
-          if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
-            return false;
-          return true;
-        }));
+      llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
+        if (attr.getName() == OpTrait::AttrSizedOperandSegments<
+                                  void>::getOperandSegmentSizeAttr())
+          return false;
+        if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
+          return false;
+        return true;
+      }));
   p << " ";
   if (filteredAttrs.size()) {
     p << "attributes";
     p.printOptionalAttrDict(filteredAttrs);
     p << " ";
   }
-  if (nameAttr &&
-      body().front().getOperations().size() == 1)
+  if (nameAttr && body().front().getOperations().size() == 1)
     return;
   p.printRegion(body(), /*printEntryBlockArgs=*/false);
 }
@@ -277,8 +282,8 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::Argument, 4> tileSizeRef;
 
   StringAttr nameAttr;
-  (void)parser.parseOptionalSymbolName(nameAttr, mlir::SymbolTable::getSymbolAttrName(),
-                                    result.attributes);
+  (void)parser.parseOptionalSymbolName(
+      nameAttr, mlir::SymbolTable::getSymbolAttrName(), result.attributes);
 
   Type asyncTokenType = nullptr;
   if (parseAsyncDependencies(parser, asyncTokenType, asyncDependencies))
@@ -308,7 +313,8 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   for (auto &a : tileArgs)
     a.type = indexType;
 
-  auto tokenType = xilinx::air::AsyncTokenType::get(parser.getBuilder().getContext());
+  auto tokenType =
+      xilinx::air::AsyncTokenType::get(parser.getBuilder().getContext());
   if (parser.resolveOperands(asyncDependencies, tokenType, result.operands))
     return failure();
   if (parser.resolveOperands(tileSize, indexType, result.operands))
@@ -320,22 +326,24 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   if (succeeded(parser.parseOptionalKeyword("args"))) {
     if (parser.parseLParen())
       return failure();
-    do {
-      OpAsmParser::Argument argument;
-      OpAsmParser::UnresolvedOperand operand;
-      if (parser.parseArgument(argument) || parser.parseEqual() ||
-        parser.parseOperand(operand))
-      return failure();
-      kernelArguments.push_back(argument);
-      kernelOperands.push_back(operand);
-    } while (succeeded(parser.parseOptionalComma()));
-    if (parser.parseRParen())
-      return failure();
-    if (parser.parseColonTypeList(types))
-      return failure();
+    if (parser.parseOptionalRParen()) {
+      do {
+        OpAsmParser::Argument argument;
+        OpAsmParser::UnresolvedOperand operand;
+        if (parser.parseArgument(argument) || parser.parseEqual() ||
+            parser.parseOperand(operand))
+          return failure();
+        kernelArguments.push_back(argument);
+        kernelOperands.push_back(operand);
+      } while (succeeded(parser.parseOptionalComma()));
+      if (parser.parseRParen())
+        return failure();
+      if (parser.parseColonTypeList(types))
+        return failure();
+    }
   }
 
-  for (int i=0,e=kernelOperands.size(); i<e; i++) {
+  for (int i = 0, e = kernelOperands.size(); i < e; i++) {
     kernelArguments[i].type = types[i];
     tileArgs.push_back(kernelArguments[i]);
     if (parser.resolveOperand(kernelOperands[i], types[i], result.operands))
@@ -368,7 +376,7 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 void LaunchOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
-                                               MLIRContext *context) {
+                                           MLIRContext *context) {
   patterns.add(removeUnusedArguments);
 }
 
@@ -407,7 +415,8 @@ BlockArgument LaunchOp::getKernelArgument(unsigned i) {
 }
 
 unsigned LaunchOp::getNumDims() {
-  auto size_attr_name = OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
+  auto size_attr_name =
+      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
   auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
   auto segment_sizes = size_attr.asArrayRef();
   return segment_sizes[1];
@@ -418,9 +427,8 @@ unsigned LaunchOp::getNumDims() {
 //
 
 void PartitionOp::build(OpBuilder &builder, OperationState &result,
-                     ValueRange asyncDependencies,
-                     ValueRange sizes, ValueRange partitionOperands, 
-                     bool isAsync) {
+                        ValueRange asyncDependencies, ValueRange sizes,
+                        ValueRange partitionOperands, bool isAsync) {
 
   result.addOperands(asyncDependencies);
   if (isAsync)
@@ -448,7 +456,7 @@ void PartitionOp::build(OpBuilder &builder, OperationState &result,
 }
 
 void PartitionOp::build(OpBuilder &builder, OperationState &result,
-                         ValueRange sizes, ValueRange partitionOperands) {
+                        ValueRange sizes, ValueRange partitionOperands) {
 
   build(builder, result, {}, sizes, partitionOperands, false);
 }
@@ -456,22 +464,26 @@ void PartitionOp::build(OpBuilder &builder, OperationState &result,
 void PartitionOp::print(OpAsmPrinter &p) {
 
   p << ' ';
-  auto nameAttr = (*this)->getAttrOfType<StringAttr>(mlir::SymbolTable::getSymbolAttrName());
+  auto nameAttr = (*this)->getAttrOfType<StringAttr>(
+      mlir::SymbolTable::getSymbolAttrName());
   if (nameAttr) {
     p.printSymbolName(nameAttr);
     p << ' ';
   }
-  
-  printAsyncDependencies(p, *this, (asyncToken() ? asyncToken().getType() : Type()), asyncDependencies());
-  
-  if (getNumDims()){
+
+  printAsyncDependencies(p, *this,
+                         (asyncToken() ? asyncToken().getType() : Type()),
+                         asyncDependencies());
+
+  if (getNumDims()) {
     p << " unroll(";
     p.printOperands(getIds());
     p << ") in (";
     auto sizeArgs = getSize();
     auto sizeOpers = getSizeOperands();
-    for (int i=0,e=getNumDims(); i<e; i++) {
-      if (i) p << ", ";
+    for (int i = 0, e = getNumDims(); i < e; i++) {
+      if (i)
+        p << ", ";
       p << sizeArgs[i] << "=";
       p << sizeOpers[i];
     }
@@ -481,35 +493,37 @@ void PartitionOp::print(OpAsmPrinter &p) {
   if (getNumKernelOperands()) {
     auto args = getKernelArguments();
     p << " args(";
-    for (int i=0,e=getNumKernelOperands(); i<e; i++) {
-      if (i) p << ", ";
+    for (int i = 0, e = getNumKernelOperands(); i < e; i++) {
+      if (i)
+        p << ", ";
       p << args[i] << "=";
       p << getKernelOperand(i);
     }
     p << ") : ";
-    for (int i=0,e=getNumKernelOperands(); i<e; i++) {
-      if (i) p << ", ";
+    for (int i = 0, e = getNumKernelOperands(); i < e; i++) {
+      if (i)
+        p << ", ";
       p << getKernelOperand(i).getType();
     }
   }
 
   SmallVector<NamedAttribute, 8> filteredAttrs(
-        llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-          if (attr.getName() == OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr())
-            return false;
-          if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
-            return false;
-          return true;
-        }));
+      llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
+        if (attr.getName() == OpTrait::AttrSizedOperandSegments<
+                                  void>::getOperandSegmentSizeAttr())
+          return false;
+        if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
+          return false;
+        return true;
+      }));
   p << " ";
   if (filteredAttrs.size()) {
     p << "attributes";
     p.printOptionalAttrDict(filteredAttrs);
     p << " ";
   }
-  if (nameAttr &&
-    body().front().getOperations().size() == 1)
-  return;
+  if (nameAttr && body().front().getOperations().size() == 1)
+    return;
   p.printRegion(body(), /*printEntryBlockArgs=*/false);
 }
 
@@ -521,8 +535,8 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::Argument, 4> tileSizeRef;
 
   StringAttr nameAttr;
-  (void)parser.parseOptionalSymbolName(nameAttr, mlir::SymbolTable::getSymbolAttrName(),
-                                    result.attributes);
+  (void)parser.parseOptionalSymbolName(
+      nameAttr, mlir::SymbolTable::getSymbolAttrName(), result.attributes);
 
   Type asyncTokenType = nullptr;
   if (parseAsyncDependencies(parser, asyncTokenType, asyncDependencies))
@@ -532,7 +546,8 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
 
   Type indexType = parser.getBuilder().getIndexType();
 
-  auto tokenType = xilinx::air::AsyncTokenType::get(parser.getBuilder().getContext());
+  auto tokenType =
+      xilinx::air::AsyncTokenType::get(parser.getBuilder().getContext());
   if (parser.resolveOperands(asyncDependencies, tokenType, result.operands))
     return failure();
 
@@ -567,22 +582,24 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
   if (succeeded(parser.parseOptionalKeyword("args"))) {
     if (parser.parseLParen())
       return failure();
-    do {
-      OpAsmParser::Argument argument;
-      OpAsmParser::UnresolvedOperand operand;
-      if (parser.parseArgument(argument) || parser.parseEqual() ||
-        parser.parseOperand(operand))
-      return failure();
-      kernelArguments.push_back(argument);
-      kernelOperands.push_back(operand);
-    } while (succeeded(parser.parseOptionalComma()));
-    if (parser.parseRParen())
-      return failure();
-    if (parser.parseColonTypeList(types))
-      return failure();
+    if (parser.parseOptionalRParen()) {
+      do {
+        OpAsmParser::Argument argument;
+        OpAsmParser::UnresolvedOperand operand;
+        if (parser.parseArgument(argument) || parser.parseEqual() ||
+            parser.parseOperand(operand))
+          return failure();
+        kernelArguments.push_back(argument);
+        kernelOperands.push_back(operand);
+      } while (succeeded(parser.parseOptionalComma()));
+      if (parser.parseRParen())
+        return failure();
+      if (parser.parseColonTypeList(types))
+        return failure();
+    }
   }
 
-  for (int i=0,e=kernelOperands.size(); i<e; i++) {
+  for (int i = 0, e = kernelOperands.size(); i < e; i++) {
     kernelArguments[i].type = types[i];
     tileArgs.push_back(kernelArguments[i]);
     if (parser.resolveOperand(kernelOperands[i], types[i], result.operands))
@@ -614,7 +631,7 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 void PartitionOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
-                                               MLIRContext *context) {
+                                              MLIRContext *context) {
   patterns.add(removeUnusedArguments);
 }
 
@@ -653,7 +670,8 @@ BlockArgument PartitionOp::getKernelArgument(unsigned i) {
 }
 
 unsigned PartitionOp::getNumDims() {
-  auto size_attr_name = OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
+  auto size_attr_name =
+      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
   auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
   auto segment_sizes = size_attr.asArrayRef();
   return segment_sizes[1];
@@ -664,8 +682,8 @@ unsigned PartitionOp::getNumDims() {
 //
 
 void HerdOp::build(OpBuilder &builder, OperationState &result,
-                         ValueRange asyncDependencies, ValueRange sizes,
-                         ValueRange launchOperands, bool isAsync) {
+                   ValueRange asyncDependencies, ValueRange sizes,
+                   ValueRange launchOperands, bool isAsync) {
 
   result.addOperands(asyncDependencies);
   if (isAsync)
@@ -692,8 +710,8 @@ void HerdOp::build(OpBuilder &builder, OperationState &result,
   r->push_back(body);
 }
 
-void HerdOp::build(OpBuilder &builder, OperationState &result,
-                         ValueRange sizes, ValueRange launchOperands) {
+void HerdOp::build(OpBuilder &builder, OperationState &result, ValueRange sizes,
+                   ValueRange launchOperands) {
 
   build(builder, result, {}, sizes, launchOperands);
 }
@@ -702,20 +720,24 @@ void HerdOp::print(OpAsmPrinter &p) {
 
   p << ' ';
 
-  auto nameAttr = (*this)->getAttrOfType<StringAttr>(mlir::SymbolTable::getSymbolAttrName());
+  auto nameAttr = (*this)->getAttrOfType<StringAttr>(
+      mlir::SymbolTable::getSymbolAttrName());
   if (nameAttr) {
     p.printSymbolName(nameAttr);
     p << ' ';
   }
 
-  printAsyncDependencies(p, *this, (asyncToken() ? asyncToken().getType() : Type()), asyncDependencies());
+  printAsyncDependencies(p, *this,
+                         (asyncToken() ? asyncToken().getType() : Type()),
+                         asyncDependencies());
   p << " tile (";
   p.printOperands(getIds());
   p << ") in (";
   auto sizeArgs = getSize();
   auto sizeOpers = getSizeOperands();
-  for (int i=0,e=getNumDims(); i<e; i++) {
-    if (i) p << ", ";
+  for (int i = 0, e = getNumDims(); i < e; i++) {
+    if (i)
+      p << ", ";
     p << sizeArgs[i] << "=";
     p << sizeOpers[i];
   }
@@ -724,34 +746,36 @@ void HerdOp::print(OpAsmPrinter &p) {
   if (getNumKernelOperands()) {
     auto args = getKernelArguments();
     p << " args(";
-    for (int i=0,e=getNumKernelOperands(); i<e; i++) {
-      if (i) p << ", ";
+    for (int i = 0, e = getNumKernelOperands(); i < e; i++) {
+      if (i)
+        p << ", ";
       p << args[i] << "=";
       p << getKernelOperand(i);
     }
     p << ") : ";
-    for (int i=0,e=getNumKernelOperands(); i<e; i++) {
-      if (i) p << ", ";
+    for (int i = 0, e = getNumKernelOperands(); i < e; i++) {
+      if (i)
+        p << ", ";
       p << getKernelOperand(i).getType();
     }
   }
 
   SmallVector<NamedAttribute, 8> filteredAttrs(
-        llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-          if (attr.getName() == OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr())
-            return false;
-          if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
-            return false;
-          return true;
-        }));
+      llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
+        if (attr.getName() == OpTrait::AttrSizedOperandSegments<
+                                  void>::getOperandSegmentSizeAttr())
+          return false;
+        if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
+          return false;
+        return true;
+      }));
   p << " ";
   if (filteredAttrs.size()) {
     p << "attributes";
     p.printOptionalAttrDict(filteredAttrs);
     p << " ";
   }
-  if (nameAttr &&
-      body().front().getOperations().size() == 1)
+  if (nameAttr && body().front().getOperations().size() == 1)
     return;
   p.printRegion(body(), /*printEntryBlockArgs=*/false);
 }
@@ -764,8 +788,8 @@ ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
   SmallVector<OpAsmParser::Argument, 4> tileSizeRef;
 
   StringAttr nameAttr;
-  (void)parser.parseOptionalSymbolName(nameAttr, mlir::SymbolTable::getSymbolAttrName(),
-                                    result.attributes);
+  (void)parser.parseOptionalSymbolName(
+      nameAttr, mlir::SymbolTable::getSymbolAttrName(), result.attributes);
 
   Type asyncTokenType = nullptr;
   if (parseAsyncDependencies(parser, asyncTokenType, asyncDependencies))
@@ -798,7 +822,8 @@ ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
   for (auto &a : tileArgs)
     a.type = indexType;
 
-  auto tokenType = xilinx::air::AsyncTokenType::get(parser.getBuilder().getContext());
+  auto tokenType =
+      xilinx::air::AsyncTokenType::get(parser.getBuilder().getContext());
   if (parser.resolveOperands(asyncDependencies, tokenType, result.operands))
     return failure();
   if (parser.resolveOperands(tileSize, indexType, result.operands))
@@ -815,7 +840,7 @@ ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
         OpAsmParser::Argument argument;
         OpAsmParser::UnresolvedOperand operand;
         if (parser.parseArgument(argument) || parser.parseEqual() ||
-          parser.parseOperand(operand))
+            parser.parseOperand(operand))
           return failure();
         kernelArguments.push_back(argument);
         kernelOperands.push_back(operand);
@@ -827,7 +852,7 @@ ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
     }
   }
 
-  for (int i=0,e=kernelOperands.size(); i<e; i++) {
+  for (int i = 0, e = kernelOperands.size(); i < e; i++) {
     kernelArguments[i].type = types[i];
     tileArgs.push_back(kernelArguments[i]);
     if (parser.resolveOperand(kernelOperands[i], types[i], result.operands))
@@ -860,7 +885,7 @@ ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 void HerdOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
-                                               MLIRContext *context) {
+                                         MLIRContext *context) {
   patterns.add(removeUnusedArguments);
 }
 
@@ -911,11 +936,11 @@ unsigned HerdOp::getNumDims() {
 //
 
 LogicalResult HerdPipelineOp::verify() {
-    auto direction = (*this)->getAttrOfType<StringAttr>("direction");
-    if (!direction)
-      return emitOpError() << "expects 'direction' attribute";
+  auto direction = (*this)->getAttrOfType<StringAttr>("direction");
+  if (!direction)
+    return emitOpError() << "expects 'direction' attribute";
 
-    return success();
+  return success();
 }
 
 SmallVector<PipelineStageOp, 8> HerdPipelineOp::getStages() {
@@ -931,8 +956,8 @@ SmallVector<PipelineStageOp, 8> HerdPipelineOp::getStages() {
 // PipelineStageOp
 //
 
-ParseResult
-PipelineStageOp::parse(OpAsmParser &parser, OperationState &result) {
+ParseResult PipelineStageOp::parse(OpAsmParser &parser,
+                                   OperationState &result) {
 
   SmallVector<OpAsmParser::UnresolvedOperand, 4> kernelOperands;
   SmallVector<OpAsmParser::Argument, 4> kernelArguments;
@@ -944,7 +969,7 @@ PipelineStageOp::parse(OpAsmParser &parser, OperationState &result) {
       return failure();
   }
 
-  for (int i=0,e=kernelOperands.size(); i<e; i++) {
+  for (int i = 0, e = kernelOperands.size(); i < e; i++) {
     kernelArguments[i].type = types[i];
     if (parser.resolveOperand(kernelOperands[i], types[i], result.operands))
       return failure();
@@ -973,14 +998,16 @@ void PipelineStageOp::print(OpAsmPrinter &p) {
   if (getNumOperands()) {
     auto args = body().front().getArguments();
     p << " args(";
-    for (int i=0,e=getNumOperands(); i<e; i++) {
-      if (i) p << ", ";
+    for (int i = 0, e = getNumOperands(); i < e; i++) {
+      if (i)
+        p << ", ";
       p << args[i] << "=";
       p << getOperand(i);
     }
     p << ") : ";
-    for (int i=0,e=getNumOperands(); i<e; i++) {
-      if (i) p << ", ";
+    for (int i = 0, e = getNumOperands(); i < e; i++) {
+      if (i)
+        p << ", ";
       p << getOperand(i).getType();
     }
   }
@@ -1001,7 +1028,7 @@ void PipelineStageOp::print(OpAsmPrinter &p) {
 
 unsigned PipelineStageOp::getStageId() {
   auto stages = getOperation()->getParentOfType<HerdPipelineOp>().getStages();
-  for (unsigned idx = 0; idx<stages.size(); idx++)
+  for (unsigned idx = 0; idx < stages.size(); idx++)
     if (stages[idx] == *this)
       return idx;
   llvm_unreachable("Could not find stage in parent");
