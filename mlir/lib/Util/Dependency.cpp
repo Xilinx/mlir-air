@@ -207,7 +207,7 @@ namespace air {
         addVertexFromOpImpls(op, global_graph.g, dep_ctx);
         if (auto launch = dyn_cast<air::LaunchOp>(op)){
           // Build up launch graph
-          global_graph.subgraphs.push_back(dependencyGraph(launch.getOperation()));
+          global_graph.subgraphs.push_back(dependencyGraph(launch.getOperation(), true));
           dependencyGraph * current_launch_graph = &(global_graph.subgraphs.back());
 
           launch.walk([&](Operation *launch_childop) {
@@ -216,7 +216,7 @@ namespace air {
               addVertexFromOpImpls(launch_childop, current_launch_graph->g, dep_ctx);
               if (auto partition = dyn_cast<air::PartitionOp>(launch_childop)){
                 // Build up partition graph
-                current_launch_graph->subgraphs.push_back(dependencyGraph(partition.getOperation()));
+                current_launch_graph->subgraphs.push_back(dependencyGraph(partition.getOperation(), true));
                 dependencyGraph * current_part_graph = &(current_launch_graph->subgraphs.back());
 
                 partition.walk([&](Operation *part_childop) {  
@@ -225,7 +225,7 @@ namespace air {
                     addVertexFromOpImpls(part_childop, current_part_graph->g, dep_ctx);
                     if (auto herd = dyn_cast<air::HerdOp>(part_childop)){
                       // Build up herd graph
-                      current_part_graph->subgraphs.push_back(dependencyGraph(herd.getOperation()));
+                      current_part_graph->subgraphs.push_back(dependencyGraph(herd.getOperation(), true));
                       dependencyGraph * current_herd_graph = &(current_part_graph->subgraphs.back());
 
                       herd.walk([&](Operation *herd_childop) {
@@ -290,23 +290,23 @@ namespace air {
       }
     }
 
-    // Dump dot graphs
-    dump_graph("host.dot", global_graph.g);
-    int i = 0;
-    for (auto G_l : global_graph.subgraphs){
-      std::string name = "launch" + std::to_string(++i) + ".dot";
-      dump_graph(name, G_l.g);
-      int j = 0;
-      for (auto G_p : G_l.subgraphs){
-        std::string name = "partition" + std::to_string(i) + "_" + std::to_string(++j) + ".dot";
-        dump_graph(name, G_p.g);
-        int k = 0;
-        for (auto G_h : G_p.subgraphs){
-          std::string name = "herd" + std::to_string(i) + "_" + std::to_string(j) + "_" + std::to_string(++k) + ".dot";
-          dump_graph(name, G_h.g);
-        }
-      }
-    }
+    // // Dump dot graphs
+    // dump_graph("host.dot", global_graph.g);
+    // int i = 0;
+    // for (auto G_l : global_graph.subgraphs){
+    //   std::string name = "launch" + std::to_string(++i) + ".dot";
+    //   dump_graph(name, G_l.g);
+    //   int j = 0;
+    //   for (auto G_p : G_l.subgraphs){
+    //     std::string name = "partition" + std::to_string(i) + "_" + std::to_string(++j) + ".dot";
+    //     dump_graph(name, G_p.g);
+    //     int k = 0;
+    //     for (auto G_h : G_p.subgraphs){
+    //       std::string name = "herd" + std::to_string(i) + "_" + std::to_string(j) + "_" + std::to_string(++k) + ".dot";
+    //       dump_graph(name, G_h.g);
+    //     }
+    //   }
+    // }
 
   }
 
@@ -720,6 +720,116 @@ namespace air {
     dp.property("node_id", boost::get(boost::vertex_index, G));
     dp.property("style", boost::make_constant_property<Graph::vertex_descriptor>(+"filled"));
     write_graphviz_dp(ofs, G, dp);
+  }
+
+  // Perform transitive reduction to canonicalize the dependency graph
+  void dependencyCanonicalizer::canonicalizeGraphs(dependencyGraph &global_graph, dependencyGraph &tr_graph, vertex_to_vertex_map_tree &g_to_tr) {
+
+    // Construct empty post-canonicalization dependency graph, tr_graph
+    for (auto &launchGraph : global_graph.subgraphs){
+      tr_graph.subgraphs.push_back(dependencyGraph(launchGraph.hierarchyOp));
+      dependencyGraph * current_launch_graph = &(tr_graph.subgraphs.back());
+      g_to_tr.submaps.push_back(vertex_to_vertex_map_tree());
+      vertex_to_vertex_map_tree * current_launch_g_to_tr = &(g_to_tr.submaps.back());
+      for (auto &partitionGraph : launchGraph.subgraphs){
+        current_launch_graph->subgraphs.push_back(dependencyGraph(partitionGraph.hierarchyOp));
+        dependencyGraph * current_partition_graph = &(current_launch_graph->subgraphs.back());
+        current_launch_g_to_tr->submaps.push_back(vertex_to_vertex_map_tree());
+        vertex_to_vertex_map_tree * current_partition_g_to_tr = &(current_launch_g_to_tr->submaps.back());
+        for (auto &herdGraph : partitionGraph.subgraphs){
+          current_partition_graph->subgraphs.push_back(dependencyGraph(herdGraph.hierarchyOp));
+          current_partition_g_to_tr->submaps.push_back(vertex_to_vertex_map_tree());
+        }
+      }
+    }
+
+    // Transitive reduction
+    auto global_size = global_graph.subgraphs.size();
+    assert(global_size == tr_graph.subgraphs.size() && "graph tree size mismatch");
+    assert(global_size == g_to_tr.submaps.size() && "graph tree size and map size mismatch");
+    boostTransitiveReductionImpl(global_graph.g, tr_graph.g, g_to_tr.a_to_b, g_to_tr.b_to_a);
+    for (unsigned i = 0; i < global_size; i++){
+      auto &launchGraph = global_graph.subgraphs[i];
+      auto &trLaunchGraph = tr_graph.subgraphs[i];
+      auto launch_size = launchGraph.subgraphs.size();
+      auto launchMap = g_to_tr.submaps[i];
+      assert(launch_size == trLaunchGraph.subgraphs.size() && "graph tree size mismatch");
+      assert(launch_size == launchMap.submaps.size() && "graph tree size and map size mismatch");
+      boostTransitiveReductionImpl(launchGraph.g, trLaunchGraph.g, launchMap.a_to_b, launchMap.b_to_a);
+      for (unsigned j = 0; j < launch_size; j++){
+        auto &partitionGraph = launchGraph.subgraphs[j];
+        auto &trPartitionGraph = trLaunchGraph.subgraphs[j];
+        auto partition_size = partitionGraph.subgraphs.size();
+        auto partitionMap = launchMap.submaps[j];
+        assert(partition_size == trPartitionGraph.subgraphs.size() && "graph tree size mismatch");
+        assert(partition_size == partitionMap.submaps.size() && "graph tree size and map size mismatch");
+        boostTransitiveReductionImpl(partitionGraph.g, trPartitionGraph.g, partitionMap.a_to_b, partitionMap.b_to_a);
+        for (unsigned k = 0; k < partition_size; k++){
+          auto &herdGraph = partitionGraph.subgraphs[k];
+          auto &trHerdGraph = trPartitionGraph.subgraphs[k];
+          auto herdMap = partitionMap.submaps[k];
+          boostTransitiveReductionImpl(herdGraph.g, trHerdGraph.g, herdMap.a_to_b, herdMap.b_to_a);
+        }
+
+      }
+    }
+
+    // Dump dot graphs
+    dump_graph("host.dot", tr_graph.g);
+    int i = 0;
+    for (auto G_l : tr_graph.subgraphs){
+      std::string name = "launch" + std::to_string(++i) + ".dot";
+      dump_graph(name, G_l.g);
+      int j = 0;
+      for (auto G_p : G_l.subgraphs){
+        std::string name = "partition" + std::to_string(i) + "_" + std::to_string(++j) + ".dot";
+        dump_graph(name, G_p.g);
+        int k = 0;
+        for (auto G_h : G_p.subgraphs){
+          std::string name = "herd" + std::to_string(i) + "_" + std::to_string(j) + "_" + std::to_string(++k) + ".dot";
+          dump_graph(name, G_h.g);
+        }
+      }
+    }
+
+    // for (auto f : module.getOps<func::FuncOp>()) {
+    //   f.walk([&](Operation *op) {
+    //     // Fill dep list of air execute ops
+    //     if (auto async_execute_op = dyn_cast<air::ExecuteOp>(op)) {
+    //       fillAIRDepListUsingGraphTR<air::ExecuteOp>(async_execute_op);
+    //     }
+    //     // Fill dep list of air dmamemcpy2d ops
+    //     else if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(op)) {
+    //       fillAIRDepListUsingGraphTR<air::DmaMemcpyInterface>(dma_op);
+    //     } else if (auto hier_op = dyn_cast<air::HierarchyInterface>(op)) {
+    //       fillAIRDepListUsingGraphTR<air::HierarchyInterface>(hier_op);
+    //     }
+    //   });
+    // }
+  }
+
+  void dependencyCanonicalizer::boostTransitiveReductionImpl(Graph &asyncExecuteGraph, Graph &asyncExecuteGraphTR, vertex_to_vertex_map &g_to_tr, vertex_to_vertex_map &tr_to_g){
+
+    std::vector<size_t> id_map(num_vertices(asyncExecuteGraph));
+    std::iota(id_map.begin(), id_map.end(), 0u);
+
+    boost::transitive_reduction(asyncExecuteGraph, asyncExecuteGraphTR,
+                         boost::make_assoc_property_map(g_to_tr), id_map.data());
+
+    for (vertex_to_vertex_map::iterator i = g_to_tr.begin(); i != g_to_tr.end(); ++i) {
+      // Copy over graph properties
+      asyncExecuteGraphTR[i->second].asyncEventName =
+          asyncExecuteGraph[i->first].asyncEventName;
+      asyncExecuteGraphTR[i->second].asyncEventType =
+          asyncExecuteGraph[i->first].asyncEventType;
+      asyncExecuteGraphTR[i->second].color = asyncExecuteGraph[i->first].color;
+      asyncExecuteGraphTR[i->second].shape = asyncExecuteGraph[i->first].shape;
+      asyncExecuteGraphTR[i->second].operationId =
+          asyncExecuteGraph[i->first].operationId;
+      // Build reverse map tr_to_g, for convenient vertex mapping
+      tr_to_g[i->second] = i->first;
+    }
+
   }
 
 } // namespace air

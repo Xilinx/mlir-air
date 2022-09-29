@@ -23,12 +23,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-//===- AIRDependencyUtils.h - AIR Loop tiling utilities ------------------------===//
-//
-// This header file defines utility functions that are commonly used in passes,
-// primarily AIR dependency tracing passes.
-//===-----------------------------------------------------------------------===//
-
 #pragma once
 
 #include "air/Dialect/AIR/AIRDialect.h"
@@ -41,12 +35,14 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 
 #include <string>
+#include <numeric>
 
 // boost graph
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/graph_traits.hpp>
 #include <boost/graph/graphviz.hpp>
 #include <boost/graph/copy.hpp>
+#include <boost/graph/transitive_reduction.hpp>
 
 using namespace mlir;
 
@@ -91,6 +87,7 @@ typedef boost::graph_traits<Graph>::vertex_iterator vertex_iterator;
 
 typedef std::map<std::pair<std::string, unsigned>, Graph::vertex_descriptor> operation_to_vertex_map;
 typedef std::map<std::pair<std::string, unsigned>, Graph * > operation_to_graph_map;
+typedef std::map<Graph::vertex_descriptor, Graph::vertex_descriptor> vertex_to_vertex_map;
 
 struct dependencyGraph {
     Graph g;
@@ -99,21 +96,31 @@ struct dependencyGraph {
     Graph::vertex_descriptor start_vertex;
     Graph::vertex_descriptor terminator_vertex;
 
-    dependencyGraph(mlir::Operation * hierarchyOp = nullptr, Graph::vertex_descriptor terminator_vertex = 0)
-        : hierarchyOp(hierarchyOp), terminator_vertex(terminator_vertex) {
+    dependencyGraph(mlir::Operation * op = nullptr, bool initStartVertex = false) {
             g = Graph();
-            auto v = add_vertex(g);
-            g[v].asyncEventType = "start";
-            g[v].asyncEventName = "start";
-            g[v].color = "yellow";
-            g[v].shape = "box";
-            start_vertex = v;
+            hierarchyOp = op;
+            if (initStartVertex){
+                auto v = add_vertex(g);
+                g[v].asyncEventType = "start";
+                g[v].asyncEventName = "start";
+                g[v].color = "yellow";
+                g[v].shape = "box";
+                start_vertex = v;
+            }
     }
 
     ~dependencyGraph(){
         g.clear();
         subgraphs.clear();
     }
+};
+
+struct vertex_to_vertex_map_tree {
+    vertex_to_vertex_map a_to_b;
+    vertex_to_vertex_map b_to_a;
+    std::vector<vertex_to_vertex_map_tree> submaps;
+
+    vertex_to_vertex_map_tree() {}
 };
 
 struct dependencyContext{
@@ -135,6 +142,7 @@ class dependencyCanonicalizer{
 public:
     
     void parseCommandGraphs(func::FuncOp &toplevel, dependencyGraph &global_graph, dependencyContext &dep_ctx);
+    void canonicalizeGraphs(dependencyGraph &global_graph, dependencyGraph &tr_graph, vertex_to_vertex_map_tree &g_to_tr);
 
 private:
 
@@ -158,6 +166,7 @@ private:
     void updatePointerFromHierarchyTerminatorToGraph(dependencyGraph &G, dependencyGraph &subG);
     void updatePointerFromHierarchyOpToGraph(dependencyGraph &G);
     void dump_graph(std::string filename, Graph G);
+    void boostTransitiveReductionImpl(Graph &asyncExecuteGraph, Graph &asyncExecuteGraphTR, vertex_to_vertex_map &g_to_tr, vertex_to_vertex_map &tr_to_g);
 };
 
 } // namespace air
