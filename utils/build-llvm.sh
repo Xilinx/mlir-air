@@ -34,7 +34,7 @@ INSTALL_DIR=${2:-"install"}
 
 mkdir -p llvm/$BUILD_DIR
 mkdir -p llvm/$INSTALL_DIR
-cd llvm/$BUILD_DIR
+pushd llvm/$BUILD_DIR
 cmake ../llvm \
   -GNinja \
   -DLLVM_BUILD_EXAMPLES=OFF \
@@ -43,7 +43,7 @@ cmake ../llvm \
   -DLLVM_ENABLE_PROJECTS='mlir' \
   -DLLVM_OPTIMIZED_TABLEGEN=OFF \
   -DLLVM_ENABLE_OCAMLDOC=OFF \
-  -DLLVM_ENABLE_BINDINGS=OFF \
+  -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
   -DLLVM_INSTALL_UTILS=ON \
   -DCMAKE_C_COMPILER=clang \
   -DCMAKE_CXX_COMPILER=clang++ \
@@ -53,3 +53,4 @@ cmake ../llvm \
   -DLLVM_ENABLE_ASSERTIONS=ON
 
 cmake --build . --target install -- -j$(nproc)
+popd
