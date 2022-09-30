@@ -561,7 +561,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
     return failure();
 
   auto iteratorTypes = llvm::to_vector<4>(op.iterator_types().getValue());
-  if (isParallelIterator(iteratorTypes.back()))
+  if (linalg::isParallelIterator(iteratorTypes.back()))
     return failure();
 
   bool isHoriz = pipeline_direction == "horiz";
@@ -576,7 +576,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
     args.push_back(o->get());
 
   auto launch = b.create<xilinx::air::HerdOp>(loc, dims, args);
-  b.setInsertionPointToStart(&launch.body().front());
+  b.setInsertionPointToStart(&launch.getBody().front());
 
   auto nLoops = op.getNumLoops();
   SmallVector<OpFoldResult, 4> tileSizeVector;
@@ -614,7 +614,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   pipe->setAttr("direction",
                 StringAttr::get(op->getContext(), pipeline_direction));
   Block *pipelineBlock = new Block();
-  pipe.body().push_back(pipelineBlock);
+  pipe.getBody().push_back(pipelineBlock);
   b.setInsertionPointToStart(pipelineBlock);
 
   Value firstOutputOperand = tiledOperands[resultIdx];
@@ -631,7 +631,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
         loc, last_stage ? SmallVector<Type, 1>() : stageResultTypes, opers);
 
     Block *stageBlock = new Block();
-    stage.body().push_back(stageBlock);
+    stage.getBody().push_back(stageBlock);
     b.setInsertionPointToStart(stageBlock);
 
     for (auto o : opers) {
@@ -703,11 +703,11 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   SmallVector<Value, 1> pipeArgs;
   b.create<xilinx::air::PipelineTerminatorOp>(loc, pipeTys, pipeArgs);
 
-  b.setInsertionPointToEnd(&launch.body().front());
+  b.setInsertionPointToEnd(&launch.getBody().front());
   b.create<xilinx::air::HerdTerminatorOp>(loc);
   int i = 0;
   for (auto a : args) {
-    replaceAllUsesInRegionWith(a, launch.getKernelArgument(i++), launch.body());
+    replaceAllUsesInRegionWith(a, launch.getKernelArgument(i++), launch.getBody());
   }
 
   return linalg::TiledLinalgOp{op, {launch}, {}};

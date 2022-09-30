@@ -43,7 +43,7 @@ namespace airrt {
 
 void ModuleMetadataOp::print(OpAsmPrinter &p) {
   p.printOptionalAttrDictWithKeyword((*this)->getAttrs());
-  p.printRegion(partitions(), /*printEntryBlockArgs=*/false,
+  p.printRegion(getPartitions(), /*printEntryBlockArgs=*/false,
                 /*printBlockTerminators=*/false);
 }
 
@@ -61,7 +61,7 @@ ParseResult ModuleMetadataOp::parse(OpAsmParser &parser,
 
 void PartitionMetadataOp::print(OpAsmPrinter &p) {
   p.printOptionalAttrDictWithKeyword((*this)->getAttrs());
-  p.printRegion(herds(), /*printEntryBlockArgs=*/false,
+  p.printRegion(getHerds(), /*printEntryBlockArgs=*/false,
                 /*printBlockTerminators=*/false);
 }
 

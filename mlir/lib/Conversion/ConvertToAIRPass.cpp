@@ -292,7 +292,7 @@ public:
               op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
         launch->setAttr(SymbolTable::getSymbolAttrName(), attr);
 
-      auto &bb = launch.body().front();
+      auto &bb = launch.getBody().front();
       auto ivs = op.getIVs();
       ivs[0].replaceAllUsesWith(launch.getIds()[0]);
       ivs[1].replaceAllUsesWith(launch.getIds()[1]);
@@ -472,7 +472,7 @@ public:
     SmallVector<Value, 2> dims{rewriter.create<arith::ConstantIndexOp>(loc, bounds[0]),
                        rewriter.create<arith::ConstantIndexOp>(loc, bounds[1])};
     auto launch = rewriter.create<air::HerdOp>(op.getLoc(), dims, args);
-    auto &bb = launch.body().front();
+    auto &bb = launch.getBody().front();
     auto ivs = op.getInductionVars();
 
     ivs[0].replaceAllUsesWith(launch.getIds()[0]);
@@ -571,7 +571,7 @@ public:
     for (auto b : bounds)
       sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, b));
     auto launch = rewriter.create<air::LaunchOp>(op.getLoc(), sizes, args);
-    auto &bb = launch.body().front();
+    auto &bb = launch.getBody().front();
     auto ivs = op.getInductionVars();
 
     for (int i = 0, e = ivs.size(); i < e; i++) {
@@ -684,7 +684,7 @@ public:
       partitionOpers.push_back(v);
     }
     auto partition = rewriter.create<air::PartitionOp>(op.getLoc(), partitionSizes, partitionOpers);
-    auto &bb = partition.body().front();
+    auto &bb = partition.getBody().front();
     auto ivs = op.getInductionVars();
 
     for (int i = 0, e = ivs.size(); i < e; i++) {
@@ -702,7 +702,7 @@ public:
 
     auto builder = OpBuilder::atBlockEnd(&bb);
     builder.create<air::PartitionTerminatorOp>(builder.getUnknownLoc());
-    builder = OpBuilder::atBlockEnd(&launch.body().front());
+    builder = OpBuilder::atBlockEnd(&launch.getBody().front());
     builder.create<air::LaunchTerminatorOp>(builder.getUnknownLoc());
 
     int i = 0;

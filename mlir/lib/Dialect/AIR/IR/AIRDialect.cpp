@@ -87,7 +87,7 @@ static LogicalResult removeUnusedArguments(HerdOp op,
   auto newOp = rewriter.create<HerdOp>(op.getLoc(), op.getAsyncDependencies(),
                                        op.getSizeOperands(), newOperands,
                                        op->getNumResults() > 0);
-  rewriter.setInsertionPointToStart(&newOp.body().front());
+  rewriter.setInsertionPointToStart(&newOp.getBody().front());
   remap.map(op.getSize()[0], newOp.getSize()[0]);
   remap.map(op.getSize()[1], newOp.getSize()[1]);
   remap.map(op.getIds()[0], newOp.getIds()[0]);
@@ -222,8 +222,8 @@ void LaunchOp::print(OpAsmPrinter &p) {
   }
 
   printAsyncDependencies(p, *this,
-                         (asyncToken() ? asyncToken().getType() : Type()),
-                         asyncDependencies());
+                         (getAsyncToken() ? getAsyncToken().getType() : Type()),
+                         getAsyncDependencies());
   p << "(";
   p.printOperands(getIds());
   p << ") in (";
@@ -269,9 +269,9 @@ void LaunchOp::print(OpAsmPrinter &p) {
     p.printOptionalAttrDict(filteredAttrs);
     p << " ";
   }
-  if (nameAttr && body().front().getOperations().size() == 1)
+  if (nameAttr && getBody().front().getOperations().size() == 1)
     return;
-  p.printRegion(body(), /*printEntryBlockArgs=*/false);
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
 }
 
 ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -381,33 +381,33 @@ void LaunchOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 }
 
 ArrayRef<BlockArgument> LaunchOp::getIds() {
-  auto s = body().front().getArguments();
+  auto s = getBody().front().getArguments();
   auto n = getNumDims();
   return s.take_front(n);
 }
 
 ArrayRef<BlockArgument> LaunchOp::getSize() {
-  auto s = body().front().getArguments();
+  auto s = getBody().front().getArguments();
   auto n = getNumDims();
   return s.slice(n, n);
 }
 
 OperandRange LaunchOp::getSizeOperands() {
-  auto start = asyncDependencies().size();
+  auto start = getAsyncDependencies().size();
   auto n = getNumDims();
   return getOperands().slice(start, n);
 }
 
 unsigned LaunchOp::getNumKernelOperands() {
-  return getNumOperands() - asyncDependencies().size() - getNumDims();
+  return getNumOperands() - getAsyncDependencies().size() - getNumDims();
 }
 
 Value LaunchOp::getKernelOperand(unsigned i) {
-  return getOperand(asyncDependencies().size() + getNumDims() + i);
+  return getOperand(getAsyncDependencies().size() + getNumDims() + i);
 }
 
 ArrayRef<BlockArgument> LaunchOp::getKernelArguments() {
-  return body().front().getArguments().drop_front(getNumDims() * 2);
+  return getBody().front().getArguments().drop_front(getNumDims() * 2);
 }
 
 BlockArgument LaunchOp::getKernelArgument(unsigned i) {
@@ -472,8 +472,8 @@ void PartitionOp::print(OpAsmPrinter &p) {
   }
 
   printAsyncDependencies(p, *this,
-                         (asyncToken() ? asyncToken().getType() : Type()),
-                         asyncDependencies());
+                         (getAsyncToken() ? getAsyncToken().getType() : Type()),
+                         getAsyncDependencies());
 
   if (getNumDims()) {
     p << " unroll(";
@@ -522,9 +522,9 @@ void PartitionOp::print(OpAsmPrinter &p) {
     p.printOptionalAttrDict(filteredAttrs);
     p << " ";
   }
-  if (nameAttr && body().front().getOperations().size() == 1)
+  if (nameAttr && getBody().front().getOperations().size() == 1)
     return;
-  p.printRegion(body(), /*printEntryBlockArgs=*/false);
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
 }
 
 ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -636,33 +636,33 @@ void PartitionOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 }
 
 ArrayRef<BlockArgument> PartitionOp::getIds() {
-  auto s = body().front().getArguments();
+  auto s = getBody().front().getArguments();
   auto n = getNumDims();
   return s.take_front(n);
 }
 
 ArrayRef<BlockArgument> PartitionOp::getSize() {
-  auto s = body().front().getArguments();
+  auto s = getBody().front().getArguments();
   auto n = getNumDims();
   return s.slice(n, n);
 }
 
 OperandRange PartitionOp::getSizeOperands() {
-  auto start = asyncDependencies().size();
+  auto start = getAsyncDependencies().size();
   auto n = getNumDims();
   return getOperands().slice(start, n);
 }
 
 unsigned PartitionOp::getNumKernelOperands() {
-  return getNumOperands() - asyncDependencies().size() - getNumDims();
+  return getNumOperands() - getAsyncDependencies().size() - getNumDims();
 }
 
 Value PartitionOp::getKernelOperand(unsigned i) {
-  return getOperand(asyncDependencies().size() + getNumDims() + i);
+  return getOperand(getAsyncDependencies().size() + getNumDims() + i);
 }
 
 ArrayRef<BlockArgument> PartitionOp::getKernelArguments() {
-  return body().front().getArguments().drop_front(getNumDims() * 2);
+  return getBody().front().getArguments().drop_front(getNumDims() * 2);
 }
 
 BlockArgument PartitionOp::getKernelArgument(unsigned i) {
@@ -728,8 +728,8 @@ void HerdOp::print(OpAsmPrinter &p) {
   }
 
   printAsyncDependencies(p, *this,
-                         (asyncToken() ? asyncToken().getType() : Type()),
-                         asyncDependencies());
+                         (getAsyncToken() ? getAsyncToken().getType() : Type()),
+                         getAsyncDependencies());
   p << " tile (";
   p.printOperands(getIds());
   p << ") in (";
@@ -775,9 +775,9 @@ void HerdOp::print(OpAsmPrinter &p) {
     p.printOptionalAttrDict(filteredAttrs);
     p << " ";
   }
-  if (nameAttr && body().front().getOperations().size() == 1)
+  if (nameAttr && getBody().front().getOperations().size() == 1)
     return;
-  p.printRegion(body(), /*printEntryBlockArgs=*/false);
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
 }
 
 ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -890,33 +890,33 @@ void HerdOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 }
 
 ArrayRef<BlockArgument> HerdOp::getIds() {
-  auto s = body().front().getArguments();
+  auto s = getBody().front().getArguments();
   auto n = getNumDims();
   return s.take_front(n);
 }
 
 ArrayRef<BlockArgument> HerdOp::getSize() {
-  auto s = body().front().getArguments();
+  auto s = getBody().front().getArguments();
   auto n = getNumDims();
   return s.slice(n, n);
 }
 
 OperandRange HerdOp::getSizeOperands() {
-  auto start = asyncDependencies().size();
+  auto start = getAsyncDependencies().size();
   auto n = getNumDims();
   return getOperands().slice(start, n);
 }
 
 unsigned HerdOp::getNumKernelOperands() {
-  return getNumOperands() - asyncDependencies().size() - 2;
+  return getNumOperands() - getAsyncDependencies().size() - 2;
 }
 
 Value HerdOp::getKernelOperand(unsigned i) {
-  return getOperand(asyncDependencies().size() + 2 + i);
+  return getOperand(getAsyncDependencies().size() + 2 + i);
 }
 
 ArrayRef<BlockArgument> HerdOp::getKernelArguments() {
-  return body().front().getArguments().drop_front(4);
+  return getBody().front().getArguments().drop_front(4);
 }
 
 BlockArgument HerdOp::getKernelArgument(unsigned i) {
@@ -945,7 +945,7 @@ LogicalResult HerdPipelineOp::verify() {
 
 SmallVector<PipelineStageOp, 8> HerdPipelineOp::getStages() {
   SmallVector<PipelineStageOp, 8> stages;
-  for (auto &o : body().front().getOperations()) {
+  for (auto &o : getBody().front().getOperations()) {
     if (auto stage = dyn_cast<air::PipelineStageOp>(o))
       stages.push_back(stage);
   }
@@ -996,7 +996,7 @@ ParseResult PipelineStageOp::parse(OpAsmParser &parser,
 void PipelineStageOp::print(OpAsmPrinter &p) {
 
   if (getNumOperands()) {
-    auto args = body().front().getArguments();
+    auto args = getBody().front().getArguments();
     p << " args(";
     for (int i = 0, e = getNumOperands(); i < e; i++) {
       if (i)
@@ -1018,7 +1018,7 @@ void PipelineStageOp::print(OpAsmPrinter &p) {
     p.printOptionalAttrDict((*this)->getAttrs());
     p << " ";
   }
-  p.printRegion(body(), /*printEntryBlockArgs=*/false);
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
 
   if ((*this)->getNumResults())
     p << " : ";
@@ -1041,7 +1041,7 @@ unsigned PipelineStageOp::getStageId() {
 
 LogicalResult ExecuteOp::verify() {
   assert(getOperation()->getNumRegions() == 1 && "ExecuteOp has zero region!");
-  assert(!body().empty() && "ExecuteOp should have non-empty body");
+  assert(!getBody().empty() && "ExecuteOp should have non-empty body");
 
   return success();
 }

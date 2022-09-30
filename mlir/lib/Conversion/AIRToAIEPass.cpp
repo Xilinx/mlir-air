@@ -198,8 +198,8 @@ struct DMAAllocator {
 AIE::LockOp allocateLockOp(ModuleOp aie_module, AIE::TileOp tile) {
   std::set<int> ids;
   aie_module.walk([&](AIE::LockOp lock) {
-    if (cast<xilinx::AIE::TileOp>(lock.tile().getDefiningOp()) == tile)
-      ids.insert(lock.getLockID());
+    if (cast<xilinx::AIE::TileOp>(lock.getTile().getDefiningOp()) == tile)
+      ids.insert(lock.getLockIDValue());
   });
   int new_id = 0;
   while (ids.count(new_id))
@@ -281,13 +281,13 @@ void outlineAIECores(OpBuilder &builder, ModuleOp aie_module,
       // mem
       builder.setInsertionPoint(core);
 
-      assert((h.body().getBlocks().size() == 1) &&
+      assert((h.getBody().getBlocks().size() == 1) &&
              "Launch body can only contain one Block");
 
       // generate the AIE.core body
       //
       OpBuilder core_builder(core);
-      Block *core_bb = core_builder.createBlock(&core.body());
+      Block *core_bb = core_builder.createBlock(&core.getBody());
 
       Block *entry_bb = core_builder.createBlock(core_bb);
       core_builder.setInsertionPointToEnd(entry_bb);
@@ -326,7 +326,7 @@ void outlineAIECores(OpBuilder &builder, ModuleOp aie_module,
       }
 
       Region &r = h.getRegion();
-      r.cloneInto(&core.body(), remap);
+      r.cloneInto(&core.getBody(), remap);
 
       Block *launch_bb = remap.lookup(&r.front());
       core_builder.create<cf::BranchOp>(hloc, launch_bb);
@@ -525,7 +525,7 @@ struct LowerAIRExecutePattern : public OpRewritePattern<air::ExecuteOp> {
 
   LogicalResult matchAndRewrite(air::ExecuteOp op,
                                 PatternRewriter &rewriter) const override {
-    auto &bb = op.body().front();
+    auto &bb = op.getBody().front();
     unsigned idx = 0;
     for (auto &arg : bb.getArguments()) {
       arg.replaceAllUsesWith(op.getOperand(idx));
@@ -666,8 +666,8 @@ struct LowerPipeGetPutPattern : public OpRewritePattern<air::PipelinePutOp> {
     int64_t col_offset = herd.getColOffset();
     int64_t row_offset = herd.getRowOffset();
 
-    auto other_x = cast<arith::ConstantIndexOp>(put.dst0().getDefiningOp());
-    auto other_y = cast<arith::ConstantIndexOp>(put.dst1().getDefiningOp());
+    auto other_x = cast<arith::ConstantIndexOp>(put.getDst0().getDefiningOp());
+    auto other_y = cast<arith::ConstantIndexOp>(put.getDst1().getDefiningOp());
     auto other_core = getPhysTileOp(aie_module, other_x.value() + col_offset,
                                     other_y.value() + row_offset)
                           .getCoreOp();
@@ -768,7 +768,7 @@ struct AllocL1TensorsPattern
     auto buffer = allocateBufferOp(
         memrefTy, tile,
         cast->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
-        tile.col() - col_offset, tile.row() - row_offset);
+        tile.getCol() - col_offset, tile.getRow() - row_offset);
 
     rewriter.setInsertionPoint(cast);
     rewriter.create<memref::TensorStoreOp>(cast.getLoc(), cast.getOperand(),
@@ -813,7 +813,7 @@ struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
     auto buffer = allocateBufferOp(
         memrefTy, tile,
         alloc->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
-        tile.col() - col_offset, tile.row() - row_offset);
+        tile.getCol() - col_offset, tile.getRow() - row_offset);
 
     rewriter.setInsertionPoint(alloc);
     rewriter.replaceOp(alloc, buffer->getResults());
@@ -981,11 +981,11 @@ public:
     AIE::FlowOp flowOp = nullptr;
     aie_module.walk([&](Operation *op) {
       if (auto fop = dyn_cast<AIE::FlowOp>(op))
-        if (source == fop.source() && dest == fop.dest() &&
-            sourceBundle == fop.sourceBundle() &&
-            destBundle == fop.destBundle() &&
-            sourceChannel == fop.sourceChannel() &&
-            destChannel == fop.destChannel())
+        if (source == fop.getSource() && dest == fop.getDest() &&
+            sourceBundle == fop.getSourceBundle() &&
+            destBundle == fop.getDestBundle() &&
+            sourceChannel == fop.getSourceChannel() &&
+            destChannel == fop.getDestChannel())
           flowOp = fop;
     });
     if (flowOp)
@@ -1034,7 +1034,7 @@ public:
 
     std::map<AIE::DMAChan, std::vector<Operation *>> tile_dma_copies;
     std::vector<Operation *> dma_memcpy_ops;
-    getAIRDmaMemcpyInRegion(core.body(), dma_memcpy_ops);
+    getAIRDmaMemcpyInRegion(core.getBody(), dma_memcpy_ops);
 
     auto aie_module = core->getParentOfType<ModuleOp>();
     auto tile = core.getTileOp();
@@ -1128,14 +1128,14 @@ public:
                                StringRef name) {
 
     for (auto pm :
-         module_meta.partitions().front().getOps<airrt::PartitionMetadataOp>())
-      if (name == pm.sym_name().str())
+         module_meta.getPartitions().front().getOps<airrt::PartitionMetadataOp>())
+      if (name == pm.getSymName().str())
         return pm;
 
     auto builder = OpBuilder::atBlockTerminator(module_meta.getBody());
     auto loc = builder.getUnknownLoc();
     auto partition_meta = builder.create<airrt::PartitionMetadataOp>(loc, name);
-    builder.createBlock(&partition_meta.herds());
+    builder.createBlock(&partition_meta.getHerds());
     builder.create<airrt::PartitionMetadataTerminatorOp>(loc);
 
     return partition_meta;
@@ -1166,8 +1166,8 @@ public:
 
     for (AIE::CoreOp core : cores) {
       AIE::TileOp tile = core.getTileOp();
-      auto x = tile.col();
-      auto y = tile.row();
+      auto x = tile.getCol();
+      auto y = tile.getRow();
 
       std::vector<AIE::TileOp> shim_dma_inits;
       std::vector<AIE::TileOp> l2_dma_tiles;
@@ -1269,10 +1269,10 @@ public:
                                 << " for x=" << x << ", y=" << y << "\n");
 
         Block *start_bb = new Block();
-        mem.body().push_back(start_bb);
+        mem.getBody().push_back(start_bb);
 
         Block *first_bd = new Block();
-        mem.body().push_back(first_bd);
+        mem.getBody().push_back(first_bd);
         auto dmaOps = p.second;
         Block *next_bd = nullptr;
         for (size_t i = 0; i < dmaOps.size(); i++) {
@@ -1287,7 +1287,7 @@ public:
             b.create<cf::BranchOp>(loc, first_bd);
           } else {
             next_bd = new Block();
-            mem.body().push_back(next_bd);
+            mem.getBody().push_back(next_bd);
             b.create<cf::BranchOp>(loc, next_bd);
           }
           AIE::BufferOp bufferOp = getBufferForTileDMA(module, dmaOp, x, y);
@@ -1315,8 +1315,8 @@ public:
                                         .cast<MemRefType>()
                                         .getMemorySpaceAsInt();
             auto sizes = src_memory_space > dst_memory_space
-                             ? ndcpy.dst_sizes()
-                             : ndcpy.src_sizes();
+                             ? ndcpy.getDstSizes()
+                             : ndcpy.getSrcSizes();
             int64_t size = 1;
             for (auto s : sizes) {
               auto c = dyn_cast<arith::ConstantIndexOp>(s.getDefiningOp());
@@ -1340,7 +1340,7 @@ public:
         if (!channel_head) {
           channel_head = start_bb;
           end_bb = new Block();
-          mem.body().push_back(end_bb);
+          mem.getBody().push_back(end_bb);
           auto b = OpBuilder::atBlockBegin(channel_head);
           b.create<AIE::DMAStartOp>(loc, channel, first_bd, end_bb);
           b.setInsertionPointToEnd(end_bb);
@@ -1425,7 +1425,7 @@ public:
 
     auto loc = builder.getUnknownLoc();
     auto module_meta = builder.create<airrt::ModuleMetadataOp>(loc);
-    builder.createBlock(&module_meta.partitions());
+    builder.createBlock(&module_meta.getPartitions());
     builder.create<airrt::ModuleMetadataTerminatorOp>(loc);
 
     // If we have multiple herds then we must emit them into different aie
@@ -1499,7 +1499,7 @@ public:
                                              builder.getI64IntegerAttr(chan)));
               attrs.push_back(
                   NamedAttribute(StringAttr::get(ctx, "location"),
-                                 builder.getI64IntegerAttr(tileOp.col())));
+                                 builder.getI64IntegerAttr(tileOp.getCol())));
               dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
             }
           }
@@ -1523,7 +1523,7 @@ public:
                                  builder.getI64IntegerAttr(chan + 2)));
               attrs.push_back(
                   NamedAttribute(StringAttr::get(ctx, "location"),
-                                 builder.getI64IntegerAttr(tileOp.col())));
+                                 builder.getI64IntegerAttr(tileOp.getCol())));
               dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
             }
           }
@@ -1547,7 +1547,7 @@ public:
                                  builder.getI64IntegerAttr(chan + 2)));
               attrs.push_back(
                   NamedAttribute(StringAttr::get(ctx, "location"),
-                                 builder.getI64IntegerAttr(tileOp.col())));
+                                 builder.getI64IntegerAttr(tileOp.getCol())));
               dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
             }
           }
@@ -1571,7 +1571,7 @@ public:
                                  builder.getI64IntegerAttr(chan + 2)));
               attrs.push_back(
                   NamedAttribute(StringAttr::get(ctx, "location"),
-                                 builder.getI64IntegerAttr(tileOp.col())));
+                                 builder.getI64IntegerAttr(tileOp.getCol())));
               dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
             }
           }
