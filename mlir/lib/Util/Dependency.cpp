@@ -829,9 +829,7 @@ namespace air {
 
     // Cleanup op ids. Only leave dma, execute and hierarchy ids
     func.walk([&](Operation *op) {
-      if (auto async_execute_op = dyn_cast<air::ExecuteOp>(op)) {
-      }
-      else if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(op)) {
+      if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(op)) {
       } else if (auto hier_op = dyn_cast<air::HierarchyInterface>(op)) {
       }
       else {
