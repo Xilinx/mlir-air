@@ -358,6 +358,14 @@ module attributes {torch.debug_module_name = "mmult"} {
 }
 ```
 
+### `-air-dependency-canonicalize`: Canonicalize the dependency graph
+This pass optimizes the dependency graph in air by removing non-dominant
+dependency edges.
+
+#### Options
+```
+-dump-graph : Dump post-canonicalization dot graphs.
+```
 ### `-air-dependency-schedule-opt`: Optimize scheduling based on air async dependency
 This pass contains multiple passes which optimize the schedule based on the
 dependency graph generated from -air-dependency pass.
