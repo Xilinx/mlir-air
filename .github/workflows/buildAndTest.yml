@@ -92,15 +92,16 @@ jobs:
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_ENABLE_ASSERTIONS=OFF \
-            -DCMAKE_MODULE_PATH=../cmakeModules \
+            -DCMAKE_MODULE_PATH=`pwd`/../cmakeModules \
             -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
-            -DAIE_DIR=../mlir-aie/install/lib/cmake/aie/ \
+            -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
             -DCMAKE_LINKER=lld \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
+            -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
             -DAIR_BUILD_RUNTIME=OFF \
-            -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           make -j$(nproc)
           make check-air-mlir check-air-python
           popd

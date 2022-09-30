@@ -66,15 +66,15 @@ jobs:
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_ENABLE_ASSERTIONS=OFF \
-            -DCMAKE_MODULE_PATH=../cmakeModules \
+            -DCMAKE_MODULE_PATH=`pwd`/../cmakeModules \
             -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
-            -DAIE_DIR=../mlir-aie/install/lib/cmake/aie/ \
+            -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
             -DCMAKE_LINKER=lld \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
-            -DAIR_BUILD_RUNTIME=OFF \
-            -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit
+            -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
+            -DAIR_BUILD_RUNTIME=OFF
           make docs
           popd
           cp -r docs/* build_release/docs
