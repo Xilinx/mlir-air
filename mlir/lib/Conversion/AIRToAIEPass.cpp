@@ -1127,8 +1127,9 @@ public:
   getOrCreatePartitionMetadata(airrt::ModuleMetadataOp module_meta,
                                StringRef name) {
 
-    for (auto pm :
-         module_meta.getPartitions().front().getOps<airrt::PartitionMetadataOp>())
+    for (auto pm : module_meta.getPartitions()
+                       .front()
+                       .getOps<airrt::PartitionMetadataOp>())
       if (name == pm.getSymName().str())
         return pm;
 
