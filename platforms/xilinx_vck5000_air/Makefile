@@ -25,7 +25,7 @@ XSA_DIR ?= $(CWD)/vivado
 
 .phony: all
 
-$(PLATOFORM): all
+$(PLATFORM): all
 all: $(PLATFORM)
 
 $(PLATFORM): xsa platform
