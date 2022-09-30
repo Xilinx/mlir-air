@@ -50,6 +50,7 @@ cmake ../llvm \
   -DLLVM_CCACHE_BUILD=ON \
   -DLLVM_ENABLE_LLD=ON \
   -DCMAKE_BUILD_TYPE=Release \
+  -DLLVM_ENABLE_RTTI=ON \
   -DLLVM_ENABLE_ASSERTIONS=ON
 
 cmake --build . --target install -- -j$(nproc)
