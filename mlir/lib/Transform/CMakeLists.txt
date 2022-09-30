@@ -34,6 +34,7 @@ AIRRegularizeLoopPass.cpp
 AIRTilingUtils.cpp
 AIRDependency.cpp
 AIRDependencyScheduleOpt.cpp
+AIRDependencyCanonicalize.cpp
 Passes.cpp
 ReturnEliminationPass.cpp
 

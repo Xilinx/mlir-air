@@ -226,6 +226,13 @@ air::HierarchyInterface getHierarchyArgOwner(Value val) {
   return dyn_cast<air::HierarchyInterface>(containingOp);
 }
 
+// Get operation's "id" attribute
+int getIdAttr(Operation *op) {
+  auto idAttr = op->getAttrOfType<IntegerAttr>("id");
+  assert(idAttr && "op has no attribute named 'id'");
+  return idAttr.getInt();
+}
+
 // Renumber the DMA ops
 void renumberDmaOps(func::FuncOp func, std::string mode = "herd") {
   unsigned id = 0;

@@ -768,6 +768,19 @@ def AIRDependencyScheduleOpt: Pass<"air-dependency-schedule-opt", "ModuleOp"> {
   }];
 }
 
+def AIRDependencyCanonicalize: Pass<"air-dependency-canonicalize", "func::FuncOp"> {
+  let summary = "Canonicalize the dependency graph";
+  let constructor = "xilinx::air::createAIRDependencyCanonicalizePass()";
+  let description = [{
+    This pass optimizes the dependency graph in air by removing non-dominant
+    dependency edges.
+  }];
+  let options = [
+    Option<"clDumpGraph", "dump-graph", "bool", /*default=*/"false",
+            "Dump post-canonicalization dot graphs.">
+  ];
+}
+
 def AIRExamplePass : Pass<"air-example-pass", "ModuleOp"> {
   let summary = "Skeleton module op pass";
   let constructor = "xilinx::air::createAIRExamplePass()";

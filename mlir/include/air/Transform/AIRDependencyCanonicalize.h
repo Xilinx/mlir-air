@@ -1,6 +1,6 @@
-//===- Util.h ---------------------------------------------------*- C++ -*-===//
+//===- AIRDependencyCanonicalize.h ------------------------------*- C++ -*-===//
 //
-// Copyright (C) 2020-2022, Xilinx Inc.
+// Copyright (C) 2021-2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -23,43 +23,18 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef AIR_UTIL_UTIL_H
-#define AIR_UTIL_UTIL_H
+#ifndef AIR_DEPENDENCY_CANONICALIZE_H
+#define AIR_DEPENDENCY_CANONICALIZE_H
 
-#include "air/Dialect/AIR/AIRDialect.h"
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/BuiltinTypes.h"
-
-using namespace mlir;
+#include "mlir/Pass/Pass.h"
+#include <memory>
 
 namespace xilinx {
 namespace air {
 
-void coalesceLoops(AffineForOp outer, AffineForOp inner);
-
-void normalizeLoop(AffineForOp afo);
-
-func::FuncOp getMangledFunction(ModuleOp module, std::string fnName,
-                                ArrayRef<Value> operands,
-                                ArrayRef<Type> retTys);
-
-uint64_t getTensorVolume(const ShapedType ty);
-
-uint64_t getTensorVolume(const Type ty);
-
-scf::ForOp getForRegionIterArgsOwner(Value val);
-
-air::HerdOp getHerdArgOwner(Value val);
-
-air::HierarchyInterface getHierarchyArgOwner(Value val);
-
-int getIdAttr(Operation *op);
-
-void renumberDmaOps(func::FuncOp func, std::string mode = "herd");
+std::unique_ptr<mlir::Pass> createAIRDependencyCanonicalizePass();
 
 } // namespace air
 } // namespace xilinx
-#endif // AIR_UTIL_UTIL_H
+
+#endif // AIR_DEPENDENCY_CANONICALIZE_H
