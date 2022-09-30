@@ -1,4 +1,5 @@
-//===- AIRDependencyCanonicalize.cpp -----------------------------*- C++ -*-===//
+//===- AIRDependencyCanonicalize.cpp -----------------------------*- C++
+//-*-===//
 //
 // Copyright (C) 2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
@@ -38,8 +39,8 @@ using namespace boost;
 
 namespace {
 
-
-class AIRDependencyCanonicalize : public AIRDependencyCanonicalizeBase<AIRDependencyCanonicalize> {
+class AIRDependencyCanonicalize
+    : public AIRDependencyCanonicalizeBase<AIRDependencyCanonicalize> {
 
 public:
   AIRDependencyCanonicalize() = default;
@@ -60,20 +61,19 @@ public:
 
     // Transitive reduction
     xilinx::air::dependencyGraph trHostGraph;
-    canonicalizer.canonicalizeGraphs(hostGraph, trHostGraph, g_to_tr, clDumpGraph);
+    canonicalizer.canonicalizeGraphs(hostGraph, trHostGraph, g_to_tr,
+                                     clDumpGraph);
 
     // Update dependency list
     canonicalizer.updateDepList(func, trHostGraph);
-
   }
 
 private:
   xilinx::air::dependencyGraph hostGraph;
   xilinx::air::dependencyContext dep_ctx;
-  xilinx::air::vertex_to_vertex_map_tree g_to_tr; // Map between graph g and graph tr (post-tr graph)
-
+  xilinx::air::vertex_to_vertex_map_tree
+      g_to_tr; // Map between graph g and graph tr (post-tr graph)
 };
-    
 
 } // namespace
 
