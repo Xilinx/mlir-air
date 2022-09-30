@@ -12,7 +12,7 @@ VCK5000 board files\*: `vck5000_board_files_prod_si_20211201.zip`
 
 \* The board files can be downloaded from the [VCK5000 Early Access Site](https://www.xilinx.com/member/vck5000.html). They are referenced in the vivado xsa build process in: vivado/xilinx_vck5000_air_xsa.tcl on L84. You may need to modify this line to point to the directory where you have unpacked the board files.
 
-The pdi is loaded to the card over JTAG, the USB-JTAG cable must be connected to the micro-USB input on the VCK5000 card and a programming machine (this can be the x86 host). The Xilinx Cable drivers must be [installed](https://docs.xilinx.com/r/en-US/ug973-vivado-release-notes-install-license/Installing-Cable-Drivers) on the programming machie. 
+The pdi is loaded to the card over JTAG, the USB-JTAG cable must be connected to the micro-USB input on the VCK5000 card and a programming machine (this can be the x86 host). The Xilinx Cable drivers must be [installed](https://docs.xilinx.com/r/en-US/ug973-vivado-release-notes-install-license/Installing-Cable-Drivers) on the programming machine. 
 
 ## Build steps
 To build the .pdi of this design that can be loaded to the card, simply call:
@@ -21,7 +21,7 @@ make all
 ```
 
 ## Programming steps
-Once run the top level make, you should have generated aie_platform/final_vck5000.pdi containing the VCK5000 platform. The pdi can be loaded to the card by calling:
+Once run the top-level make completes, you should have generated aie_platform/final_vck5000.pdi containing the VCK5000 platform. The pdi can be loaded to the card by calling:
 ```
 cd aie_platform
 make program_vck5000
