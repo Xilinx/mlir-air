@@ -23,6 +23,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+//===- Dependency.h - AIR Dependency Tracing and Parsing utilities --------===//
+//
+// This header file defines utility functions that are commonly used in passes,
+// primarily AIR dependency tracing passes.
+//===----------------------------------------------------------------------===//
+
 #pragma once
 
 #include "air/Dialect/AIR/AIRDialect.h"

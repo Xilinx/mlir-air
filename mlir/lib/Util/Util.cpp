@@ -227,7 +227,7 @@ air::HierarchyInterface getHierarchyArgOwner(Value val) {
 }
 
 // Get operation's "id" attribute
-int getIdAttr(Operation * op){
+int getIdAttr(Operation *op) {
   auto idAttr = op->getAttrOfType<IntegerAttr>("id");
   assert(idAttr && "op has no attribute named 'id'");
   return idAttr.getInt();
