@@ -138,7 +138,7 @@ public:
     for (auto arg : launch.getKernelArguments())
       arg.replaceAllUsesWith(launch.getKernelOperand(i++));
 
-    auto &body = launch.body().front().getOperations();
+    auto &body = launch.getBody().front().getOperations();
     if (1) {
       entryBlock.getOperations().splice(entryBlock.begin(), body, body.begin(),
                                         --body.end());
@@ -168,8 +168,8 @@ public:
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
     auto pipeOp = cast<xilinx::air::HerdPipelineOp>(op);
-    Block &bb = pipeOp.body().front();
-    rewriter.eraseOp(pipeOp.body().back().getTerminator());
+    Block &bb = pipeOp.getBody().front();
+    rewriter.eraseOp(pipeOp.getBody().back().getTerminator());
     bb.getOperations().splice(Block::iterator(op), bb.getOperations());
     rewriter.eraseOp(op);
     return success();

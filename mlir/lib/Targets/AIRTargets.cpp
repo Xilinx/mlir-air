@@ -98,7 +98,7 @@ void registerAIRRtTranslations() {
                 auto attr = a.getValue();
                 herdJSON[ident.str()] = attrToJSON(attr);
               }
-              partitionJSON[herd_meta.sym_name()] =
+              partitionJSON[herd_meta.getSymName()] =
                   llvm::json::Value(std::move(herdJSON));
             }
             for (auto a : partition_meta->getAttrs()) {
@@ -106,7 +106,7 @@ void registerAIRRtTranslations() {
               auto attr = a.getValue();
               partitionJSON[ident.str()] = attrToJSON(attr);
             }
-            moduleJSON[partition_meta.sym_name()] =
+            moduleJSON[partition_meta.getSymName()] =
                 llvm::json::Value(std::move(partitionJSON));
           }
         }

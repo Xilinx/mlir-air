@@ -441,12 +441,12 @@ public:
     auto module = op->getParentOfType<ModuleOp>();
     SmallVector<LLVM::GlobalOp, 4> partition_descs;
     SmallVector<int64_t, 4> partition_herd_count;
-    auto &partition_block = op.partitions().front();
+    auto &partition_block = op.getPartitions().front();
     for (auto partition_meta :
          partition_block.getOps<xilinx::airrt::PartitionMetadataOp>()) {
 
       SmallVector<LLVM::GlobalOp, 4> herd_descs;
-      auto &herd_block = partition_meta.herds().front();
+      auto &herd_block = partition_meta.getHerds().front();
       for (auto herd_meta :
            herd_block.getOps<xilinx::airrt::HerdMetadataOp>()) {
 
@@ -503,7 +503,7 @@ public:
     auto module = op->getParentOfType<ModuleOp>();
 
     rewriter.setInsertionPoint(op->getParentOfType<func::FuncOp>());
-    auto partition_name = getOrCreateAIRString(rewriter, module, op.sym_name());
+    auto partition_name = getOrCreateAIRString(rewriter, module, op.getSymName());
 
     auto funcOpSym = module.lookupSymbol("air_partition_load");
     LLVM::LLVMFuncOp funcOp = nullptr;
@@ -542,7 +542,7 @@ public:
     auto module = op->getParentOfType<ModuleOp>();
 
     rewriter.setInsertionPoint(op->getParentOfType<func::FuncOp>());
-    auto herd_name = getOrCreateAIRString(rewriter, module, op.sym_name());
+    auto herd_name = getOrCreateAIRString(rewriter, module, op.getSymName());
 
     auto funcOpSym = module.lookupSymbol("air_herd_load");
     LLVM::LLVMFuncOp funcOp = nullptr;
@@ -703,8 +703,8 @@ lowerNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
     operands.push_back(nullV);
   }
 
-  MemRefType dstMemRefTy = dmaOp.dst().getType().cast<MemRefType>();
-  MemRefType srcMemRefTy = dmaOp.src().getType().cast<MemRefType>();
+  MemRefType dstMemRefTy = dmaOp.getDst().getType().cast<MemRefType>();
+  MemRefType srcMemRefTy = dmaOp.getSrc().getType().cast<MemRefType>();
 
   for (auto o : op->getOperands())
     operands.push_back(o);
@@ -958,7 +958,7 @@ public:
     SmallVector<Type, 1> retTys;
     auto ctx = op->getContext();
 
-    auto memrefTy = op.memref().getType().cast<MemRefType>();
+    auto memrefTy = op.getMemref().getType().cast<MemRefType>();
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L2)
       return failure();
 
@@ -966,7 +966,7 @@ public:
                            memrefTy.getElementType(),
                            memrefTy.getLayout(),
                            memrefTy.getMemorySpace()));
-    operands.push_back(rewriter.create<memref::CastOp>(op->getLoc(), tys[0], op.memref()));
+    operands.push_back(rewriter.create<memref::CastOp>(op->getLoc(), tys[0], op.getMemref()));
 
     auto module = op->getParentOfType<ModuleOp>();
 

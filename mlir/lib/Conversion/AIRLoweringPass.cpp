@@ -119,7 +119,7 @@ public:
     for (auto arg : partition.getKernelArguments())
       arg.replaceAllUsesWith(partition.getKernelOperand(i++));
 
-    auto &body = partition.body().front().getOperations();
+    auto &body = partition.getBody().front().getOperations();
     scfPar.getBody()->getOperations().splice(scfPar.getBody()->begin(), body,
                                              body.begin(), --body.end());
 
@@ -173,7 +173,7 @@ public:
     for (auto arg : launch.getKernelArguments())
       arg.replaceAllUsesWith(launch.getKernelOperand(i++));
 
-    auto &body = launch.body().front().getOperations();
+    auto &body = launch.getBody().front().getOperations();
     inner.getBody()->getOperations().splice(inner.getBody()->begin(), body,
                                             body.begin(), --body.end());
 
@@ -193,8 +193,8 @@ public:
                   ConversionPatternRewriter &rewriter) const override
   {
     auto pipeOp = cast<xilinx::air::HerdPipelineOp>(op);
-    Block &bb = pipeOp.body().front();
-    rewriter.eraseOp(pipeOp.body().back().getTerminator());
+    Block &bb = pipeOp.getBody().front();
+    rewriter.eraseOp(pipeOp.getBody().back().getTerminator());
     bb.getOperations().splice(Block::iterator(op),
                               bb.getOperations());
     rewriter.eraseOp(op);
@@ -360,17 +360,17 @@ public:
     SmallVector<Value, 3> strides(3, zero);
 
     int idx = 4 - src.getRank();
-    for (auto o : isFromTile ? op.dst_offsets() : op.src_offsets())
+    for (auto o : isFromTile ? op.getDstOffsets() : op.getSrcOffsets())
       offsets[idx++] = rewriter.create<IndexCastOp>(
           op->getLoc(), IntegerType::get(ctx, 64), o);
     idx = 4 - dst.getRank();
-    auto op_strides = isFromTile ? op.dst_strides() : op.src_strides();
+    auto op_strides = isFromTile ? op.getDstStrides() : op.getSrcStrides();
     if (op_strides.size())
       for (auto o : op_strides.drop_back())
         strides[idx++] = rewriter.create<IndexCastOp>(
             op->getLoc(), IntegerType::get(ctx, 64), o);
     idx = 4 - src.getRank();
-    for (auto o : isFromTile ? op.dst_sizes() : op.src_sizes())
+    for (auto o : isFromTile ? op.getDstSizes() : op.getSrcSizes())
       lengths[idx++] = rewriter.create<IndexCastOp>(
           op->getLoc(), IntegerType::get(ctx, 64), o);
 
@@ -437,7 +437,7 @@ LogicalResult lowerAirRegions(Operation *op) {
 
   SmallVector<Operation *, 8> erased;
   module->walk([&](xilinx::air::ExecuteOp rop) {
-    auto &bb = rop.body().front();
+    auto &bb = rop.getBody().front();
     unsigned idx = 0;
     for (auto &arg : bb.getArguments()) {
       arg.replaceAllUsesWith(rop.getOperand(idx));
@@ -447,7 +447,7 @@ LogicalResult lowerAirRegions(Operation *op) {
       OpBuilder builder(rop);
       auto w = builder.create<xilinx::air::WaitAllOp>(
           op->getLoc(), xilinx::air::AsyncTokenType::get(rop->getContext()),
-          rop.asyncDependencies());
+          rop.getAsyncDependencies());
       rop.getResult(0).replaceAllUsesWith(w.getResult(0));
     }
     rop.walk([&](xilinx::air::ExecuteTerminatorOp t) {
@@ -609,7 +609,7 @@ public:
     for (auto p : pipelines) {
       auto pipeOp = cast<xilinx::air::HerdPipelineOp>(p);
       OpBuilder b(p);
-      Block &bb = pipeOp.body().front();
+      Block &bb = pipeOp.getBody().front();
       BlockAndValueMapping remap;
       bb.getTerminator()->erase();
       for (auto &o : bb)

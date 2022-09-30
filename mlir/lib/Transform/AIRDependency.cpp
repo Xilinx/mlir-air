@@ -242,7 +242,7 @@ public:
       f.walk([&](Operation *op) {
         Operation *sink_op = nullptr;
         if (auto async_execute_op = dyn_cast<air::ExecuteOp>(op)) {
-          for (auto &bb : async_execute_op.body()) {
+          for (auto &bb : async_execute_op.getBody()) {
             for (auto &child_op : bb.getOperations()) {
               if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
                 sink_op = &child_op;
@@ -717,7 +717,7 @@ private:
                   mlir::IntegerType::get(op->getContext(), 32), ++ExecuteOpID));
 
     // Insert op to the new async execute region's body.
-    Block *async_region_bb = builder.createBlock(&async_region.body());
+    Block *async_region_bb = builder.createBlock(&async_region.getBody());
     builder.setInsertionPointToStart(async_region_bb);
 
     builder.clone(*op);
@@ -756,7 +756,7 @@ private:
                   mlir::IntegerType::get(op->getContext(), 32), ++ExecuteOpID));
 
     // Insert op to the new async execute region's body.
-    Block *async_region_bb = builder.createBlock(&async_region.body());
+    Block *async_region_bb = builder.createBlock(&async_region.getBody());
     builder.setInsertionPointToStart(async_region_bb);
     auto op_cloned = builder.clone(*op);
     builder.create<xilinx::air::ExecuteTerminatorOp>(
@@ -839,7 +839,7 @@ private:
       auto new_launch = createAsyncHierarchy<air::LaunchOp>(
           builder, launch, HierarchyOpID, deps, args, constants);
       new_op = new_launch.getOperation();
-      auto &bb = new_launch.body().front();
+      auto &bb = new_launch.getBody().front();
       builder.setInsertionPointToEnd(&bb);
       builder.create<air::LaunchTerminatorOp>(loc);
       // Create a vertex out of the current hierarchy op
@@ -855,7 +855,7 @@ private:
       auto new_partition = createAsyncHierarchy<air::PartitionOp>(
           builder, partition, HierarchyOpID, deps, args, constants);
       new_op = new_partition.getOperation();
-      auto &bb = new_partition.body().front();
+      auto &bb = new_partition.getBody().front();
       builder.setInsertionPointToEnd(&bb);
       builder.create<air::PartitionTerminatorOp>(loc);
       // Create a vertex out of the current hierarchy op
@@ -871,7 +871,7 @@ private:
       auto new_herd = createAsyncHierarchy<air::HerdOp>(
           builder, herd, HierarchyOpID, deps, args, constants);
       new_op = new_herd.getOperation();
-      auto &bb = new_herd.body().front();
+      auto &bb = new_herd.getBody().front();
       builder.setInsertionPointToEnd(&bb);
       builder.create<air::HerdTerminatorOp>(loc);
       // Create a vertex out of the current hierarchy op
@@ -907,7 +907,7 @@ private:
             SymbolTable::getSymbolAttrName()))
       new_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
 
-    auto &bb = new_op.body().front();
+    auto &bb = new_op.getBody().front();
     for (unsigned i = 0; i < op.getIds().size(); i++) {
       auto ivs = op.getIds()[i];
       ivs.replaceAllUsesWith(new_op.getIds()[i]);
@@ -916,7 +916,7 @@ private:
       auto s = op.getSize()[i];
       s.replaceAllUsesWith(new_op.getSize()[i]);
     }
-    auto &body = op.body().front().getOperations();
+    auto &body = op.getBody().front().getOperations();
     bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
     builder.setInsertionPointToStart(&new_op.getRegion().front());
     for (auto c : constants) {

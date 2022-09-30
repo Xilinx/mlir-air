@@ -129,10 +129,7 @@ def air_AsyncOpInterface : OpInterface<"AsyncOpInterface"> {
     InterfaceMethod<[{
         Query the result that represents the async token to depend on.
       }],
-       "OpResult", "getAsyncToken", (ins), [{}], [{
-        ConcreteOp op = cast<ConcreteOp>(this->getOperation());
-        return op.asyncToken().template dyn_cast_or_null<OpResult>();
-      }]
+      "Value", "getAsyncToken"
     >
   ];
 }

@@ -175,8 +175,8 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
     if (!uniform)
       continue;
 
-    auto src_type = memcpyOp.src().getType().cast<MemRefType>();
-    auto dst_type = memcpyOp.dst().getType().cast<MemRefType>();
+    auto src_type = memcpyOp.getSrc().getType().cast<MemRefType>();
+    auto dst_type = memcpyOp.getDst().getType().cast<MemRefType>();
     auto src_space = src_type.getMemorySpaceAsInt();
     auto dst_space = dst_type.getMemorySpaceAsInt();
 
@@ -203,7 +203,7 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
       remap.map(arg, oper);
     }
     if (to_l1)
-      remap.map(memcpyOp.dst(), alloc);
+      remap.map(memcpyOp.getDst(), alloc);
     do_clone(builder, memcpyOp.getOperation(), remap);
 
     launch_operands.insert(launch_operands.begin(),
@@ -211,7 +211,7 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
                            launch->getOperands().end());
     launch_operands.push_back(alloc.getResult());
     launch->setOperands(launch_operands);
-    launch.body().front().addArgument(alloc.getType(), loc);
+    launch.getBody().front().addArgument(alloc.getType(), loc);
     auto sizeAttr = launch->getAttr("operand_segment_sizes")
                         .cast<::mlir::DenseIntElementsAttr>();
     const uint32_t *it = &*sizeAttr.value_begin<uint32_t>();
@@ -224,8 +224,8 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
     SmallVector<Value, 2> mt;
     Value a = launch.getKernelArguments()[it[3]];
     builder.create<xilinx::air::DmaMemcpyNdOp>(
-        loc, SmallVector<Type, 1>{}, mt, to_l1 ? memcpyOp.dst() : a, mt, mt, mt,
-        to_l1 ? a : memcpyOp.src(), mt, mt, mt);
+        loc, SmallVector<Type, 1>{}, mt, to_l1 ? memcpyOp.getDst() : a, mt, mt, mt,
+        to_l1 ? a : memcpyOp.getSrc(), mt, mt, mt);
     erasedOps.push_back(memcpyOp);
   }
   for (auto e : erasedOps)
@@ -281,7 +281,7 @@ void AIRSpecializeDma::runOnOperation() {
         auto pipe = builder.create<xilinx::air::HerdPipelineOp>(loc);
         pipe->setAttr("direction", StringAttr::get(ctx, "horiz"));
         auto pipe_bb = new Block();
-        pipe.body().push_back(pipe_bb);
+        pipe.getBody().push_back(pipe_bb);
         builder.setInsertionPointToEnd(pipe_bb);
         builder.create<xilinx::air::PipelineTerminatorOp>(
             loc, SmallVector<Value, 1>{});
@@ -291,7 +291,7 @@ void AIRSpecializeDma::runOnOperation() {
               loc, SmallVector<Type, 1>{}, SmallVector<Value, 1>{});
           stage->setAttr("uniform", BoolAttr::get(ctx, true));
           auto stage_bb = new Block();
-          stage.body().push_back(stage_bb);
+          stage.getBody().push_back(stage_bb);
           auto stage_builder = OpBuilder::atBlockEnd(stage_bb);
           auto c_x = stage_builder.create<arith::ConstantIndexOp>(loc, x);
           BlockAndValueMapping remap;
@@ -309,7 +309,7 @@ void AIRSpecializeDma::runOnOperation() {
         auto pipe = builder.create<xilinx::air::HerdPipelineOp>(loc);
         pipe->setAttr("direction", StringAttr::get(ctx, "vert"));
         auto pipe_bb = new Block();
-        pipe.body().push_back(pipe_bb);
+        pipe.getBody().push_back(pipe_bb);
         builder.setInsertionPointToEnd(pipe_bb);
         builder.create<xilinx::air::PipelineTerminatorOp>(
             loc, SmallVector<Value, 1>{});
@@ -319,7 +319,7 @@ void AIRSpecializeDma::runOnOperation() {
               loc, SmallVector<Type, 1>{}, SmallVector<Value, 1>{});
           stage->setAttr("uniform", BoolAttr::get(ctx, true));
           auto stage_bb = new Block();
-          stage.body().push_back(stage_bb);
+          stage.getBody().push_back(stage_bb);
           auto stage_builder = OpBuilder::atBlockEnd(stage_bb);
           auto c_y = stage_builder.create<arith::ConstantIndexOp>(loc, y);
           BlockAndValueMapping remap;
@@ -530,13 +530,13 @@ private:
         for (std::vector<Operation *>::reverse_iterator i = op_history.rbegin();
              i != op_history.rend(); ++i) {
           if (auto air_region_op = dyn_cast<xilinx::air::ExecuteOp>(*i)) {
-            assert(air_region_op.body().front().getOperations().size() == 2 &&
+            assert(air_region_op.getBody().front().getOperations().size() == 2 &&
                    "air::ExecuteOp should have only one child operation beside "
                    "the terminator");
             // Get current scalar op
             Operation *op = nullptr;
             for (auto &child_op :
-                 air_region_op.body().front().getOperations()) {
+                 air_region_op.getBody().front().getOperations()) {
               if (!dyn_cast<xilinx::air::ExecuteTerminatorOp>(child_op))
                 op = &child_op;
             }
@@ -786,7 +786,7 @@ void AIRFuseParallelHerdPass::runOnOperation() {
                                              ? newLaunchOp.getIds()[0]
                                              : newLaunchOp.getIds()[1]);
 
-  b.setInsertionPointToStart(&newLaunchOp.body().front());
+  b.setInsertionPointToStart(&newLaunchOp.getBody().front());
 
   for (auto &o : *parOp.getBody()) {
     if (isa<xilinx::air::HerdOp>(o)) {
@@ -805,7 +805,7 @@ void AIRFuseParallelHerdPass::runOnOperation() {
         auto v = launchOp.getKernelOperand(idx++);
         remap.map(a, remap.lookupOrDefault(v));
       }
-      for (auto &ho : launchOp.body().front()) {
+      for (auto &ho : launchOp.getBody().front()) {
         if (isa<xilinx::air::HerdTerminatorOp>(ho))
           continue;
         b.clone(ho, remap);
@@ -818,7 +818,7 @@ void AIRFuseParallelHerdPass::runOnOperation() {
   }
   b.create<xilinx::air::HerdTerminatorOp>(parOp.getLoc());
 
-  b.setInsertionPointToStart(&newLaunchOp.body().front());
+  b.setInsertionPointToStart(&newLaunchOp.getBody().front());
   for (auto c : constants) {
     replaceAllUsesInRegionWith(c, b.clone(*c.getDefiningOp())->getResult(0),
                                newLaunchOp.getRegion());
