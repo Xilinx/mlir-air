@@ -290,24 +290,6 @@ namespace air {
       }
     }
 
-    // // Dump dot graphs
-    // dump_graph("host.dot", global_graph.g);
-    // int i = 0;
-    // for (auto G_l : global_graph.subgraphs){
-    //   std::string name = "launch" + std::to_string(++i) + ".dot";
-    //   dump_graph(name, G_l.g);
-    //   int j = 0;
-    //   for (auto G_p : G_l.subgraphs){
-    //     std::string name = "partition" + std::to_string(i) + "_" + std::to_string(++j) + ".dot";
-    //     dump_graph(name, G_p.g);
-    //     int k = 0;
-    //     for (auto G_h : G_p.subgraphs){
-    //       std::string name = "herd" + std::to_string(i) + "_" + std::to_string(j) + "_" + std::to_string(++k) + ".dot";
-    //       dump_graph(name, G_h.g);
-    //     }
-    //   }
-    // }
-
   }
 
   Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromOpImpls(Operation * op, Graph &G, dependencyContext &dep_ctx){
@@ -723,7 +705,7 @@ namespace air {
   }
 
   // Perform transitive reduction to canonicalize the dependency graph
-  void dependencyCanonicalizer::canonicalizeGraphs(dependencyGraph &global_graph, dependencyGraph &tr_graph, vertex_to_vertex_map_tree &g_to_tr) {
+  void dependencyCanonicalizer::canonicalizeGraphs(dependencyGraph &global_graph, dependencyGraph &tr_graph, vertex_to_vertex_map_tree &g_to_tr, bool dump_dot) {
 
     // Construct empty post-canonicalization dependency graph, tr_graph
     for (auto &launchGraph : global_graph.subgraphs){
@@ -774,38 +756,25 @@ namespace air {
       }
     }
 
-    // Dump dot graphs
-    dump_graph("host.dot", tr_graph.g);
-    int i = 0;
-    for (auto G_l : tr_graph.subgraphs){
-      std::string name = "launch" + std::to_string(++i) + ".dot";
-      dump_graph(name, G_l.g);
-      int j = 0;
-      for (auto G_p : G_l.subgraphs){
-        std::string name = "partition" + std::to_string(i) + "_" + std::to_string(++j) + ".dot";
-        dump_graph(name, G_p.g);
-        int k = 0;
-        for (auto G_h : G_p.subgraphs){
-          std::string name = "herd" + std::to_string(i) + "_" + std::to_string(j) + "_" + std::to_string(++k) + ".dot";
-          dump_graph(name, G_h.g);
+    if (dump_dot){
+      // Dump dot graphs
+      dump_graph("host.dot", tr_graph.g);
+      int i = 0;
+      for (auto G_l : tr_graph.subgraphs){
+        std::string name = "launch" + std::to_string(++i) + ".dot";
+        dump_graph(name, G_l.g);
+        int j = 0;
+        for (auto G_p : G_l.subgraphs){
+          std::string name = "partition" + std::to_string(i) + "_" + std::to_string(++j) + ".dot";
+          dump_graph(name, G_p.g);
+          int k = 0;
+          for (auto G_h : G_p.subgraphs){
+            std::string name = "herd" + std::to_string(i) + "_" + std::to_string(j) + "_" + std::to_string(++k) + ".dot";
+            dump_graph(name, G_h.g);
+          }
         }
       }
     }
-
-    // for (auto f : module.getOps<func::FuncOp>()) {
-    //   f.walk([&](Operation *op) {
-    //     // Fill dep list of air execute ops
-    //     if (auto async_execute_op = dyn_cast<air::ExecuteOp>(op)) {
-    //       fillAIRDepListUsingGraphTR<air::ExecuteOp>(async_execute_op);
-    //     }
-    //     // Fill dep list of air dmamemcpy2d ops
-    //     else if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(op)) {
-    //       fillAIRDepListUsingGraphTR<air::DmaMemcpyInterface>(dma_op);
-    //     } else if (auto hier_op = dyn_cast<air::HierarchyInterface>(op)) {
-    //       fillAIRDepListUsingGraphTR<air::HierarchyInterface>(hier_op);
-    //     }
-    //   });
-    // }
   }
 
   void dependencyCanonicalizer::boostTransitiveReductionImpl(Graph &asyncExecuteGraph, Graph &asyncExecuteGraphTR, vertex_to_vertex_map &g_to_tr, vertex_to_vertex_map &tr_to_g){
@@ -826,10 +795,99 @@ namespace air {
       asyncExecuteGraphTR[i->second].shape = asyncExecuteGraph[i->first].shape;
       asyncExecuteGraphTR[i->second].operationId =
           asyncExecuteGraph[i->first].operationId;
+      asyncExecuteGraphTR[i->second].op = asyncExecuteGraph[i->first].op;
       // Build reverse map tr_to_g, for convenient vertex mapping
       tr_to_g[i->second] = i->first;
     }
 
+  }
+
+  // Update dependency list based on transformed boost graph
+  void dependencyCanonicalizer::updateDepList(func::FuncOp func, dependencyGraph &global_graph) {
+    
+    // Purge dependency list
+    for (auto &launchGraph : global_graph.subgraphs){
+      purgeAIRDepList(launchGraph);
+      for (auto &partitionGraph : launchGraph.subgraphs){
+        purgeAIRDepList(partitionGraph);
+        for (auto &herdGraph : partitionGraph.subgraphs){
+          purgeAIRDepList(herdGraph);
+        }
+      }
+    }
+    
+    // Rewrite dependency list
+    for (auto &launchGraph : global_graph.subgraphs){
+      fillAIRDepListUsingGraphTR(launchGraph);
+      for (auto &partitionGraph : launchGraph.subgraphs){
+        fillAIRDepListUsingGraphTR(partitionGraph);
+        for (auto &herdGraph : partitionGraph.subgraphs){
+          fillAIRDepListUsingGraphTR(herdGraph);
+        }
+      }
+    }
+
+    // Cleanup op ids. Only leave dma, execute and hierarchy ids
+    func.walk([&](Operation *op) {
+      if (auto async_execute_op = dyn_cast<air::ExecuteOp>(op)) {
+      }
+      else if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(op)) {
+      } else if (auto hier_op = dyn_cast<air::HierarchyInterface>(op)) {
+      }
+      else {
+        op->removeAttr("id");
+      }
+    }); 
+
+  }
+  
+  void dependencyCanonicalizer::purgeAIRDepList(dependencyGraph &graph) {
+    auto vp = boost::vertices(graph.g);
+    for (auto dstTRVertex = vp.first; dstTRVertex != vp.second; ++dstTRVertex){
+      auto op = graph.g[*dstTRVertex].op;
+      if (!op) continue;
+      auto async_op = mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op);
+      if (!async_op) continue;
+      auto dependency_list = async_op.getAsyncDependencies();
+      for (int i = dependency_list.size() - 1; i >= 0; i--){
+        async_op.eraseAsyncDependency(i);
+      }
+    }
+  }
+  
+  void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(dependencyGraph &graph) {
+    auto vp = boost::vertices(graph.g);
+    for (auto dstTRVertex = vp.first; dstTRVertex != vp.second; ++dstTRVertex){
+      auto op = graph.g[*dstTRVertex].op;
+      if (!op) continue;
+      auto async_op = mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op);
+      if (!async_op) continue;
+      auto incoming_deps = in_edges(*dstTRVertex, graph.g);
+      for (in_edge_iterator it = incoming_deps.first;
+           it != incoming_deps.second; it++) {
+        auto TRVertex = source(*it, graph.g);
+        auto src_op = graph.g[TRVertex].op;
+        if (src_op && op != src_op){ // Avoid dep to itself
+          if (graph.g[TRVertex].asyncEventType == "for_loop"){
+            auto value = dyn_cast<scf::ForOp>(src_op).getRegionIterArgs()[0];
+            async_op.addAsyncDependency(value);
+          }
+          else if (graph.g[TRVertex].asyncEventType == "parallel_loop"){
+            auto value = dyn_cast<scf::ParallelOp>(src_op).getInitVals()[0];
+            async_op.addAsyncDependency(value);
+          }
+          else if (graph.g[TRVertex].asyncEventType == "terminator"){
+            auto parent_op = src_op->getParentOp();
+            auto value = parent_op->getResult(0);
+            async_op.addAsyncDependency(value);
+          }
+          else if (auto async_src_op = dyn_cast<xilinx::air::AsyncOpInterface>(src_op)){
+            async_op.addAsyncDependency(
+                src_op->getResult(0));
+          }
+        }
+      }
+    }
   }
 
 } // namespace air

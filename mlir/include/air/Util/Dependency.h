@@ -142,7 +142,8 @@ class dependencyCanonicalizer{
 public:
     
     void parseCommandGraphs(func::FuncOp &toplevel, dependencyGraph &global_graph, dependencyContext &dep_ctx);
-    void canonicalizeGraphs(dependencyGraph &global_graph, dependencyGraph &tr_graph, vertex_to_vertex_map_tree &g_to_tr);
+    void canonicalizeGraphs(dependencyGraph &global_graph, dependencyGraph &tr_graph, vertex_to_vertex_map_tree &g_to_tr, bool dump_graph = false);
+    void updateDepList(func::FuncOp func, dependencyGraph &global_graph);
 
 private:
 
@@ -167,6 +168,8 @@ private:
     void updatePointerFromHierarchyOpToGraph(dependencyGraph &G);
     void dump_graph(std::string filename, Graph G);
     void boostTransitiveReductionImpl(Graph &asyncExecuteGraph, Graph &asyncExecuteGraphTR, vertex_to_vertex_map &g_to_tr, vertex_to_vertex_map &tr_to_g);
+    void purgeAIRDepList(dependencyGraph &graph);
+    void fillAIRDepListUsingGraphTR(dependencyGraph &graph);
 };
 
 } // namespace air
