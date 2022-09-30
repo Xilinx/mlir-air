@@ -1,7 +1,4 @@
-#!/usr/bin/env bash
-
-##===- utils/clone-llvm.sh - Build LLVM for github workflow --*- Script -*-===##
-#
+# Copyright (C) 2022, Xilinx Inc.
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
@@ -22,19 +19,26 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-# 
-##===----------------------------------------------------------------------===##
-#
-# This script checks out LLVM.  We use this instead of a git submodule to avoid
-# excessive copies of the LLVM tree.
-#
-##===----------------------------------------------------------------------===##
+#VITIS_BIN := /proj/xbuilds/SWIP/2020.1_0602_1208/installs/lin64/Vitis/2020.1/bin
+#VIVADO_BIN := /proj/xbuilds/SWIP/2020.1_0602_1208/installs/lin64/Vivado/2020.1/bin
 
-export commithash=d2613d5bb5dca0624833e4747f67db6fe3236ce8
+PROJECT := ../../platforms/xilinx_vck5000_air/vivado/xilinx_vck5000_air.xsa
+PROJECT_SOURCES :=  ../../platforms/xilinx_vck5000_air/vivado/myproj/project_1.srcs/sources_1
 
-git clone --depth 1 https://github.com/llvm/llvm-project.git llvm
-pushd llvm
-git fetch --depth=1 origin $commithash
-git checkout $commithash
-popd
+# would be better if I stripped off the trailing /
+SCRIPT_DIR := $(dir $(realpath $(firstword $(MAKEFILE_LIST))))
+BUILD_DIR := build
+APP_NAME := acdc_agent
 
+all: ${BUILD_DIR}/${APP_NAME}/acdc_agent.elf fixup
+
+${BUILD_DIR}/${APP_NAME}/acdc_agent.elf : ../../platforms/xilinx_vck5000_air/vivado/xilinx_vck5000_air.xsa
+	rm -rf build && xsct build_arm.tcl
+
+fixup: ${BUILD_DIR}/${APP_NAME}/src/lscript.ld
+	echo -e "\nModifying $< to increase the stack and heap size\n"; \
+	sed -i 's/_SIZE : 0x2000/_SIZE : 0x4000/g' $<; \
+	cd ${BUILD_DIR}/${APP_NAME}/Debug && make acdc_agent.elf
+
+clean:
+	rm -rf build

@@ -38,14 +38,6 @@ config.air_runtime_lib_obj_root = "@AIR_BINARY_DIR@/runtime_lib"
 # test_exec_root: The root path where tests should be run.
 config.test_exec_root = "@CMAKE_CURRENT_BINARY_DIR@"
 
-# pass on vitis settings
-# config.enable_chess_tests = @CONFIG_ENABLE_CHESS_TESTS@
-config.enable_board_tests = @CONFIG_ENABLE_BOARD_TESTS@
-config.vitis_root = "@VITIS_ROOT@"
-config.vitis_aietools_dir = "@VITIS_AIETOOLS_DIR@"
-config.vitis_sysroot = "@VitisSysroot@"
-config.libxaie_dir = "@XILINX_XAIE_LIBS@"
-
 # Support substitution of the tools_dir with user parameters. This is
 # used when we can't determine the tool dir at configuration time.
 try:

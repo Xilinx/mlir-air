@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-##===- utils/clone-llvm.sh - Build LLVM for github workflow --*- Script -*-===##
-#
+##===- utils/build-mlir-aie.sh - Build mlir-aie --*- Script -*-===##
+# 
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
@@ -22,19 +22,39 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-# 
-##===----------------------------------------------------------------------===##
-#
-# This script checks out LLVM.  We use this instead of a git submodule to avoid
-# excessive copies of the LLVM tree.
-#
-##===----------------------------------------------------------------------===##
+MLIR_AIE_DIR="mlir-aie"
+BUILD_DIR="build"
+INSTALL_DIR="install"
 
-export commithash=d2613d5bb5dca0624833e4747f67db6fe3236ce8
+HASH=1077aae62e236d85ba2fcad623527ebb683d60a0
 
-git clone --depth 1 https://github.com/llvm/llvm-project.git llvm
-pushd llvm
-git fetch --depth=1 origin $commithash
-git checkout $commithash
+git clone --depth 1 https://github.com/Xilinx/mlir-aie.git $MLIR_AIE_DIR
+pushd $MLIR_AIE_DIR
+git fetch --depth=1 origin $HASH
+git checkout $HASH
 popd
 
+mkdir -p $MLIR_AIE_DIR/$BUILD_DIR
+mkdir -p $MLIR_AIE_DIR/$INSTALL_DIR
+pushd $MLIR_AIE_DIR/$BUILD_DIR
+
+cmake .. \
+    -GNinja \
+    -DCMAKE_BUILD_TYPE=Debug \
+    -DAIE_COMPILER=NONE \
+    -DAIE_LINKER=NONE \
+    -DHOST_COMPILER=NONE \
+    -DLLVM_ENABLE_ASSERTIONS=ON \
+    -DCMAKE_MODULE_PATH=`pwd`/../cmakeModules \
+    -DMLIR_DIR=../../llvm/install/lib/cmake/mlir/ \
+    -DLLVM_DIR=../../llvm/install/lib/cmake/llvm/ \
+    -DCMAKE_LINKER=lld \
+    -DCMAKE_C_COMPILER=clang \
+    -DCMAKE_CXX_COMPILER=clang++ \
+    -DLLVM_EXTERNAL_LIT=`pwd`/../../llvm/build/bin/llvm-lit \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DCMAKE_INSTALL_PREFIX=../$INSTALL_DIR
+
+cmake --build . --target install -- -j$(nproc)
+
+popd

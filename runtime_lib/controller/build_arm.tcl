@@ -1,7 +1,4 @@
-#!/usr/bin/env bash
-
-##===- utils/clone-llvm.sh - Build LLVM for github workflow --*- Script -*-===##
-#
+# Copyright (C) 2022, Xilinx Inc.
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
@@ -22,19 +19,23 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-# 
-##===----------------------------------------------------------------------===##
-#
-# This script checks out LLVM.  We use this instead of a git submodule to avoid
-# excessive copies of the LLVM tree.
-#
-##===----------------------------------------------------------------------===##
+setws build
 
-export commithash=d2613d5bb5dca0624833e4747f67db6fe3236ce8
+set script_directory [file dirname [file normalize [info script]]]
 
-git clone --depth 1 https://github.com/llvm/llvm-project.git llvm
-pushd llvm
-git fetch --depth=1 origin $commithash
-git checkout $commithash
-popd
+set root_directory [file normalize [file join $script_directory "../.."]]
 
+platform create -name "arm" -hw [file join ${root_directory} "platforms/xilinx_vck5000_air/vivado/xilinx_vck5000_air.xsa"]
+
+domain create -name airrt_arm -proc psv_cortexa72_0 -os standalone
+
+platform generate
+
+app create -lang c++ -name acdc_agent -platform arm -domain airrt_arm -template "Empty Application (C++)"
+#app config -name acdc_agent build-config Release
+#app config -name acdc_agent compiler-misc {-O1}
+
+importsources -name acdc_agent -soft-link -path [file join $root_directory "runtime_lib/controller"]
+app config -name acdc_agent include-path [file join $root_directory "runtime_lib/airhost/include"]
+
+app build -name acdc_agent

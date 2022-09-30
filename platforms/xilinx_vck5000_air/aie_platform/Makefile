@@ -156,7 +156,7 @@ pdi/microblaze_reset.cdo: pdi/microblaze_reset.txt
 
 prep_package: bl31.elf plm.elf psmfw.elf system.dtb u-boot.elf pdi/microblaze_reset.cdo
 
-program_vck5000:
+program_vck5000: final_vck5000.pdi
 	$(VIVADO) -mode batch -source program_vck5000.tcl 
 
 clean:

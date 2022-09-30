@@ -40,6 +40,11 @@ func.func @test(%arg0 : memref<16x16xf32>, %arg1 : memref<16x16xf32>) -> () {
     air.partition_terminator
   }
 
+  // CHECK: air.partition {
+  air.partition args() {
+    air.partition_terminator
+  }
+
   // CHECK: air.partition unroll(%{{.*}}, %{{.*}}) in (%{{.*}}=%c1, %{{.*}}=%c2) attributes {foo = "bar"} {
   air.partition unroll (%tx, %ty) in (%size_x = %c1, %size_y = %c2) attributes {foo = "bar"} {
     air.partition_terminator

@@ -77,7 +77,6 @@ cmake .. \
 	-DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \
 	-DAIE_DIR=${MLIR_AIE_DIR}/build/lib/cmake/aie \
 	-Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
-	-DTorch_DIR=${PYTHON_ROOT}/torch/share/cmake/Torch \
 	-DVitisSysroot=${SYSROOT_DIR} \
 	-DARM_TOOLCHAIN_OPT="-DCMAKE_TOOLCHAIN_FILE=../cmake/modules/toolchain_crosscomp_arm.cmake" \
 	-DBUILD_SHARED_LIBS=OFF \

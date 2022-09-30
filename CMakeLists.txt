@@ -124,34 +124,38 @@ add_custom_target(check-all)
 add_custom_target(docs ALL)
 add_dependencies(docs mlir-doc)
 
-message("ARM_TOOLCHAIN_OPT=${ARM_TOOLCHAIN_OPT}")
-#message("VitisSysroot=${VitisSysroot}")
-#message("ArmSysroot=${ArmSysroot}")
-ExternalProject_Add(air_runtime_lib
-	PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp
-	SOURCE_DIR ${PROJECT_SOURCE_DIR}/runtime_lib
-	BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib
-	CMAKE_ARGS
-		-DCMAKE_MODULE_PATH=${CMAKE_MODULE_PATH}
-		-DAIE_DIR=${AIE_DIR}
-		-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
-		-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
-		-DCMAKE_ASM_COMPILER=${CMAKE_ASM_COMPILER}
-		-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-		-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
-		-Dpybind11_DIR=${pybind11_DIR}
-		-DLibXAIE_ROOT=${VitisSysroot}/opt/xaienginev2
-		${ARM_TOOLCHAIN_OPT}
-		-DARM_SYSROOT=${ARM_SYSROOT}
-	BUILD_ALWAYS true
-	STEP_TARGETS clean build install test
-	USES_TERMINAL_CONFIGURE true
-	USES_TERMINAL_BUILD true
-	USES_TERMINAL_TEST true
-	USES_TERMINAL_INSTALL true
-	TEST_BEFORE_INSTALL true
-	TEST_EXCLUDE_FROM_MAIN true
-)
+option(AIR_BUILD_RUNTIME "Build the air runtime" ON)
+
+if(AIR_BUILD_RUNTIME)
+	message("ARM_TOOLCHAIN_OPT=${ARM_TOOLCHAIN_OPT}")
+	#message("VitisSysroot=${VitisSysroot}")
+	#message("ArmSysroot=${ArmSysroot}")
+	ExternalProject_Add(air_runtime_lib
+		PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp
+		SOURCE_DIR ${PROJECT_SOURCE_DIR}/runtime_lib
+		BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib
+		CMAKE_ARGS
+			-DCMAKE_MODULE_PATH=${CMAKE_MODULE_PATH}
+			-DAIE_DIR=${AIE_DIR}
+			-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+			-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+			-DCMAKE_ASM_COMPILER=${CMAKE_ASM_COMPILER}
+			-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+			-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
+			-Dpybind11_DIR=${pybind11_DIR}
+			-DLibXAIE_ROOT=${VitisSysroot}/opt/xaienginev2
+			${ARM_TOOLCHAIN_OPT}
+			-DARM_SYSROOT=${ARM_SYSROOT}
+		BUILD_ALWAYS true
+		STEP_TARGETS clean build install test
+		USES_TERMINAL_CONFIGURE true
+		USES_TERMINAL_BUILD true
+		USES_TERMINAL_TEST true
+		USES_TERMINAL_INSTALL true
+		TEST_BEFORE_INSTALL true
+		TEST_EXCLUDE_FROM_MAIN true
+	)
+endif()
 
 add_subdirectory(python)
 add_subdirectory(test)

@@ -71,8 +71,10 @@ func.func @test(%arg0 : memref<16x16xf32>, %arg1 : memref<16x16xf32>) -> () {
 
   // CHECK: %[[E:.*]] = air.launch @function0 async (%{{.*}}) in (%{{.*}}=%c1) args(%{{.*}}=%{{.*}}, %{{.*}}=%{{.*}})
   // CHECK: air.launch @function1 async [%[[E]]] (%{{.*}}, %{{.*}}) in (%{{.*}}=%c2, %{{.*}}=%c4) args(%{{.*}}=%{{.*}})
+  // CHECK: air.launch @function2 async [%[[E]]] (%{{.*}}, %{{.*}}) in (%{{.*}}=%c2, %{{.*}}=%c4)
   %f0 = air.launch @function0 async (%t) in (%s = %c1) args(%a=%arg0, %b=%arg1) : memref<16x16xf32>, memref<16x16xf32>
   %f1 = air.launch @function1 async [%f0] (%t0, %t1) in (%s0 = %c2, %s1=%c4) args(%a=%arg1) : memref<16x16xf32>
+  %f2 = air.launch @function2 async [%f0] (%t0, %t1) in (%s0 = %c2, %s1=%c4) args()
 
   return
 }
