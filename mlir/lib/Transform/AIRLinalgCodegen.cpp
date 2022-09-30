@@ -707,7 +707,8 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   b.create<xilinx::air::HerdTerminatorOp>(loc);
   int i = 0;
   for (auto a : args) {
-    replaceAllUsesInRegionWith(a, launch.getKernelArgument(i++), launch.getBody());
+    replaceAllUsesInRegionWith(a, launch.getKernelArgument(i++),
+                               launch.getBody());
   }
 
   return linalg::TiledLinalgOp{op, {launch}, {}};

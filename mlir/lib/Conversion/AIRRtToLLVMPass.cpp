@@ -503,7 +503,8 @@ public:
     auto module = op->getParentOfType<ModuleOp>();
 
     rewriter.setInsertionPoint(op->getParentOfType<func::FuncOp>());
-    auto partition_name = getOrCreateAIRString(rewriter, module, op.getSymName());
+    auto partition_name =
+        getOrCreateAIRString(rewriter, module, op.getSymName());
 
     auto funcOpSym = module.lookupSymbol("air_partition_load");
     LLVM::LLVMFuncOp funcOp = nullptr;
@@ -966,7 +967,8 @@ public:
                            memrefTy.getElementType(),
                            memrefTy.getLayout(),
                            memrefTy.getMemorySpace()));
-    operands.push_back(rewriter.create<memref::CastOp>(op->getLoc(), tys[0], op.getMemref()));
+    operands.push_back(
+        rewriter.create<memref::CastOp>(op->getLoc(), tys[0], op.getMemref()));
 
     auto module = op->getParentOfType<ModuleOp>();
 

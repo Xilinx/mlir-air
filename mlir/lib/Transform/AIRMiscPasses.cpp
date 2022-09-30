@@ -224,8 +224,8 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
     SmallVector<Value, 2> mt;
     Value a = launch.getKernelArguments()[it[3]];
     builder.create<xilinx::air::DmaMemcpyNdOp>(
-        loc, SmallVector<Type, 1>{}, mt, to_l1 ? memcpyOp.getDst() : a, mt, mt, mt,
-        to_l1 ? a : memcpyOp.getSrc(), mt, mt, mt);
+        loc, SmallVector<Type, 1>{}, mt, to_l1 ? memcpyOp.getDst() : a, mt, mt,
+        mt, to_l1 ? a : memcpyOp.getSrc(), mt, mt, mt);
     erasedOps.push_back(memcpyOp);
   }
   for (auto e : erasedOps)
@@ -530,7 +530,8 @@ private:
         for (std::vector<Operation *>::reverse_iterator i = op_history.rbegin();
              i != op_history.rend(); ++i) {
           if (auto air_region_op = dyn_cast<xilinx::air::ExecuteOp>(*i)) {
-            assert(air_region_op.getBody().front().getOperations().size() == 2 &&
+            assert(air_region_op.getBody().front().getOperations().size() ==
+                       2 &&
                    "air::ExecuteOp should have only one child operation beside "
                    "the terminator");
             // Get current scalar op
