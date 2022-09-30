@@ -77,9 +77,11 @@ jobs:
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
             -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
+            -DAIR_BUILD_RUNTIME=OFF \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           ninja
-          ninja check-all
+          ninja check-air-mlir
+          ninja check-air-python
           popd
 
       # Build the repo test target in release mode to build and test.
@@ -97,9 +99,10 @@ jobs:
             -DCMAKE_LINKER=lld \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
+            -DAIR_BUILD_RUNTIME=OFF \
             -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit
           make -j$(nproc)
-          make check-all
+          make check-air-mlir check-air-python
           popd
 
   lint-repo:
