@@ -27,6 +27,7 @@
 #include "PassDetail.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -165,6 +166,41 @@ class MemrefCopyToAIRDmaConversion : public OpRewritePattern<memref::CopyOp> {
   }
 };
 
+static void extractOperandsFromSubview(memref::SubViewOp subview, OpBuilder &builder,
+                                       SmallVector<Value, 4> &offsets, SmallVector<Value, 4> &sizes,
+                                       SmallVector<Value, 4> &strides) {
+  auto subview_offsets = subview.offsets().begin();
+  auto static_offsets = extractFromI64ArrayAttr(subview.static_offsets());
+  auto static_sizes = extractFromI64ArrayAttr(subview.static_sizes());
+  auto static_strides = extractFromI64ArrayAttr(subview.static_strides());
+  auto loc = subview.getLoc();
+
+  // get the strides and offsets from the memref type
+  auto inferredType = memref::SubViewOp::inferResultType(
+                          subview.getSourceType(), static_offsets,
+                          static_sizes, static_strides)
+                          .cast<MemRefType>();
+  int64_t offset;
+  SmallVector<int64_t, 4> layout_strides;
+  auto successStrides =
+      getStridesAndOffset(inferredType, layout_strides, offset);
+  if (failed(successStrides)) {
+    llvm::outs() << "Failed to get strides\n";
+    return; // failure();
+  }
+
+  for (auto o : static_offsets) {
+    if (o >= 0)
+      offsets.push_back(builder.create<arith::ConstantIndexOp>(loc, o));
+    else
+      offsets.push_back(*subview_offsets++);
+  }
+  for (auto s : static_sizes)
+    sizes.push_back(builder.create<arith::ConstantIndexOp>(loc, s));
+  for (auto s : layout_strides)
+    strides.push_back(builder.create<arith::ConstantIndexOp>(loc, s));
+}
+
 class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
   using OpRewritePattern<linalg::CopyOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(linalg::CopyOp op,
@@ -191,43 +227,9 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
     SmallVector<Value, 4> src_offsets, dst_offsets;
     SmallVector<Value, 4> src_strides, dst_strides;
     SmallVector<Value, 4> src_sizes, dst_sizes;
-    auto extractOperandsFromSubview = [&](memref::SubViewOp subview,
-                                          auto &offsets, auto &sizes,
-                                          auto &strides) {
-      auto subview_offsets = subview.offsets().begin();
-      auto static_offsets = extractFromI64ArrayAttr(subview.static_offsets());
-      auto static_sizes = extractFromI64ArrayAttr(subview.static_sizes());
-      auto static_strides = extractFromI64ArrayAttr(subview.static_strides());
-      auto loc = subview.getLoc();
-
-      // get the strides and offsets from the memref type
-      auto inferredType = memref::SubViewOp::inferResultType(
-                              subview.getSourceType(), static_offsets,
-                              static_sizes, static_strides)
-                              .cast<MemRefType>();
-      int64_t offset;
-      SmallVector<int64_t, 4> layout_strides;
-      auto successStrides =
-          getStridesAndOffset(inferredType, layout_strides, offset);
-      if (failed(successStrides)) {
-        llvm::outs() << "Failed to get strides\n";
-        return; // failure();
-      }
-
-      for (auto o : static_offsets) {
-        if (o >= 0)
-          offsets.push_back(rewriter.create<arith::ConstantIndexOp>(loc, o));
-        else
-          offsets.push_back(*subview_offsets++);
-      }
-      for (auto s : static_sizes)
-        sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, s));
-      for (auto s : layout_strides)
-        strides.push_back(rewriter.create<arith::ConstantIndexOp>(loc, s));
-    };
 
     if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
-      extractOperandsFromSubview(subview, src_offsets, src_sizes, src_strides);
+      extractOperandsFromSubview(subview, rewriter, src_offsets, src_sizes, src_strides);
 
       if (src_sizes.size() != rank)
         return failure();
@@ -238,7 +240,7 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
     }
 
     if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
-      extractOperandsFromSubview(subview, dst_offsets, dst_sizes, dst_strides);
+      extractOperandsFromSubview(subview, rewriter, dst_offsets, dst_sizes, dst_strides);
 
       if (dst_sizes.size() != rank)
         return failure();
@@ -258,6 +260,188 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
                            ++DmaMemcpyOpID));
 
     rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+class MemrefCopyToAIRChannelConversion
+    : public OpRewritePattern<memref::CopyOp> {
+  using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(memref::CopyOp op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto src = op.source();
+    auto dst = op.target();
+    auto ctx = op->getContext();
+
+    // It must already be a memref
+    auto src_type = src.getType().dyn_cast<MemRefType>();
+    auto dst_type = dst.getType().dyn_cast<MemRefType>();
+    if (!src_type)
+      return failure();
+
+    if ((src_type.getMemorySpaceAsInt() == (int)MemorySpace::L3) &&
+        (dst_type.getMemorySpaceAsInt() == (int)MemorySpace::L3))
+      return failure();
+
+    if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
+      return failure();
+
+    auto herd = op->getParentOfType<air::HerdOp>();
+    if (!herd)
+      return failure();
+
+    auto rank = src_type.getShape().size();
+
+    SmallVector<Value, 4> src_offsets, dst_offsets;
+    SmallVector<Value, 4> src_strides, dst_strides;
+    SmallVector<Value, 4> src_sizes, dst_sizes;
+
+    if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
+      extractOperandsFromSubview(subview, rewriter, src_offsets, src_sizes, src_strides);
+
+      if (src_sizes.size() != rank)
+        return failure();
+      if (src_strides.size() != rank)
+        return failure();
+
+      src = subview.source();
+    }
+
+    if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
+      extractOperandsFromSubview(subview, rewriter, dst_offsets, dst_sizes, dst_strides);
+
+      if (dst_sizes.size() != rank)
+        return failure();
+      if (dst_strides.size() != rank)
+        return failure();
+
+      dst = subview.source();
+    }
+
+    SmallVector<Value, 4> emptyDeps;
+    SmallVector<Type, 4> tys;
+    std::string new_cname = "channel_0";
+    std::string cname = "channel";
+    int which_try = 0;
+
+    auto module = op->getParentOfType<ModuleOp>();
+    while (module.lookupSymbol(new_cname))
+      new_cname = cname + "_" + std::to_string(++which_try);
+    cname = new_cname;
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      rewriter.create<air::ChannelOp>(
+          loc, cname,
+          mlir::ArrayAttr::get(
+              ctx, {mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 1)}));
+    }
+
+    std::set<Operation*> erased;
+    Operation *externalGetPut = nullptr;
+    SmallVector<Value, 1> channel_idx{
+        rewriter.create<arith::ConstantIndexOp>(loc, 1)};
+
+    if (dst_type.getMemorySpaceAsInt() == (int)MemorySpace::L1) {
+      rewriter.create<air::ChannelGetOp>(
+          loc, tys, emptyDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx, dst,
+          dst_offsets, dst_sizes, dst_strides);
+    }
+    else {
+      externalGetPut = rewriter.create<air::ChannelGetOp>(
+          loc, tys, emptyDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx, dst,
+          dst_offsets, dst_sizes, dst_strides);
+    }
+
+    if (src_type.getMemorySpaceAsInt() == (int)MemorySpace::L1) {
+      rewriter.create<air::ChannelPutOp>(
+          loc, tys, emptyDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx, src,
+          src_offsets, src_sizes, src_strides);
+    }
+    else {
+      externalGetPut = rewriter.create<air::ChannelPutOp>(
+          loc, tys, emptyDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx, src,
+          src_offsets, src_sizes, src_strides);
+    }
+
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+
+      externalGetPut->setAttr("air.channel",
+                  StringAttr::get(op->getContext(), "dst"));
+
+      SetVector<Operation *> backwardSlice;
+      getBackwardSlice(externalGetPut, &backwardSlice, [&](Operation *o) { return o != herd; });
+
+      for (auto parent = op->getParentOp(); !isa<air::HerdOp>(parent); parent = parent->getParentOp()) {
+        getBackwardSlice(parent, &backwardSlice, [&](Operation *o) { return o != herd; });
+        backwardSlice.insert(parent);
+      }
+
+      rewriter.setInsertionPoint(herd);
+      auto herd_size = herd.getSizeOperands();
+
+      auto lb = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+      auto step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      SmallVector<Value, 2> lbs{lb, lb};
+      SmallVector<Value, 2> ubs{herd_size[0], herd_size[1]};
+      SmallVector<Value, 2> steps{step, step};
+
+      auto exe = rewriter.create<xilinx::air::ExecuteOp>(
+        op->getLoc(), air::AsyncTokenType::get(op->getContext()), SmallVector<Value,1>{});
+      Block *exe_bb = rewriter.createBlock(&exe.getBody());
+      rewriter.setInsertionPointToStart(exe_bb);
+
+      auto scf_par = rewriter.create<scf::ParallelOp>(op.getLoc(), lbs, ubs, steps);
+      rewriter.create<air::ExecuteTerminatorOp>(op.getLoc());
+      rewriter.setInsertionPointAfter(herd);
+      SmallVector<Value, 1> deps{exe->getResult(0)};
+      rewriter.create<air::WaitAllOp>(op.getLoc(), SmallVector<Type,1>{}, deps);
+
+      scf_par->setAttr("air.channel",
+                    StringAttr::get(op->getContext(), "inner"));
+
+      for (auto b : backwardSlice) {
+        b->setAttr("air.channel",
+                    StringAttr::get(op->getContext(), "dep"));
+      }
+
+      BlockAndValueMapping remap;
+      rewriter.setInsertionPointToStart(scf_par.getBody());
+      for (Operation &o : herd.getRegion().front().getOperations()) {
+        if (isa<air::HerdTerminatorOp>(o))
+          continue;
+        auto herd_size = herd.getSizeOperands();
+        remap.map(herd.getSize()[0], herd_size[0]);
+        remap.map(herd.getSize()[1], herd_size[1]);
+        remap.map(herd.getIds()[0], scf_par.getInductionVars()[0]);
+        remap.map(herd.getIds()[1], scf_par.getInductionVars()[1]);
+        int arg_idx = 0;
+        for (auto arg : herd.getKernelArguments())
+          remap.map(arg, herd.getKernelOperand(arg_idx++));
+        rewriter.clone(o, remap);
+      }
+
+      scf_par.walk([&](mlir::Operation *o) {
+        if (o == o->getBlock()->getTerminator())
+          return;
+        if (!o->hasAttr("air.channel"))
+          erased.insert(o);
+        else
+          o->removeAttr("air.channel");
+      });
+      herd.walk([&](mlir::Operation *o) {
+        if (o->hasAttr("air.channel"))
+          o->removeAttr("air.channel");
+      });
+      erased.insert(externalGetPut);
+    }
+    erased.insert(op);
+    for (auto e : erased) {
+      rewriter.eraseOp(e);
+    }
+
     return success();
   }
 };
@@ -741,11 +925,17 @@ struct CopyToDmaPass : public CopyToDmaBase<CopyToDmaPass> {
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           xilinx::air::airDialect, arith::ArithmeticDialect>();
+    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect, scf::SCFDialect,
+                           xilinx::air::airDialect, arith::ArithmeticDialect, memref::MemRefDialect>();
 
     target.addLegalOp<AffineApplyOp, AffineForOp, AffineLoadOp, AffineStoreOp,
-                      AffineYieldOp, scf::YieldOp>();
+                      AffineYieldOp>();
+
+    target.addDynamicallyLegalOp<memref::CopyOp>([](memref::CopyOp co) {
+      auto src_type = co.source().getType().dyn_cast<MemRefType>();
+      auto dst_type = co.target().getType().dyn_cast<MemRefType>();
+      return src_type.getMemorySpaceAsInt() == dst_type.getMemorySpaceAsInt();
+    });
 
     DmaMemcpyOpID = 0;
 
@@ -757,9 +947,10 @@ struct CopyToDmaPass : public CopyToDmaBase<CopyToDmaPass> {
     (void)applyPatternsAndFoldGreedily(module, std::move(stage1Patterns));
 
     RewritePatternSet stage2Patterns(context);
-    stage2Patterns
-        .insert<LinalgCopyToAIRDmaConversion, MemrefCopyToAIRDmaConversion>(
-            context);
+    stage2Patterns.insert<
+        LinalgCopyToAIRDmaConversion,
+        MemrefCopyToAIRDmaConversion>(
+        context);
     if (failed(applyPartialConversion(module, target,
                                       std::move(stage2Patterns)))) {
       emitError(UnknownLoc::get(context), "error\n");
@@ -781,38 +972,53 @@ struct CopyToDmaPass : public CopyToDmaBase<CopyToDmaPass> {
     for (auto o : waits)
       o->erase();
 
-    std::vector<std::string> herd_syms;
-    for (auto f : module.getOps<func::FuncOp>()) {
-      // record existing symbol names
-      f.walk([&](xilinx::air::HerdOp op) {
-        if (auto attr = op->getAttrOfType<StringAttr>(
-                SymbolTable::getSymbolAttrName())) {
-          std::string name = attr.getValue().str();
-          assert((std::find(herd_syms.begin(), herd_syms.end(), name) ==
-                  herd_syms.end()) &&
-                 "unexpected duplicate symbol");
-          herd_syms.push_back(name);
-        }
-      });
-      // generate missing symbol names
-      f.walk([&](xilinx::air::HerdOp op) {
-        if (!op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
-          unsigned id = 0;
-          std::string name;
-          do {
-            std::stringstream ss;
-            ss << "herd_" << id++;
-            name = ss.str();
-          } while (std::find(herd_syms.begin(), herd_syms.end(), name) !=
-                   herd_syms.end());
-          herd_syms.push_back(name);
-          op->setAttr(SymbolTable::getSymbolAttrName(),
-                      StringAttr::get(op->getContext(), name));
-        }
-      });
-    }
     LLVM_DEBUG(llvm::outs() << "output\n");
     LLVM_DEBUG(module.print(llvm::outs()));
+  }
+};
+
+struct CopyToChannelPass : public CopyToChannelBase<CopyToChannelPass> {
+
+  CopyToChannelPass() = default;
+  CopyToChannelPass(const CopyToChannelPass &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<xilinx::air::airDialect>();
+    registry.insert<linalg::LinalgDialect>();
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    auto context = module.getContext();
+
+    ConversionTarget target(*context);
+
+    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect, scf::SCFDialect, AffineDialect,
+                           xilinx::air::airDialect, arith::ArithmeticDialect, memref::MemRefDialect>();
+
+    target.addDynamicallyLegalOp<memref::CopyOp>([](memref::CopyOp co) {
+      auto src_type = co.source().getType().dyn_cast<MemRefType>();
+      auto dst_type = co.target().getType().dyn_cast<MemRefType>();
+      return src_type.getMemorySpaceAsInt() == dst_type.getMemorySpaceAsInt();
+    });
+
+    // Simplify all the subviews so we can rewrite them easily.
+    // Mostly this is propagating constant sizes into dimensioned memref types.
+    RewritePatternSet stage1Patterns =
+        linalg::getLinalgTilingCanonicalizationPatterns(context);
+    memref::AllocOp::getCanonicalizationPatterns(stage1Patterns, context);
+    (void)applyPatternsAndFoldGreedily(module, std::move(stage1Patterns));
+
+    RewritePatternSet stage2Patterns(context);
+    stage2Patterns.insert<MemrefCopyToAIRChannelConversion>(
+        context);
+    if (failed(applyPartialConversion(module, target,
+                                      std::move(stage2Patterns)))) {
+      emitError(UnknownLoc::get(context), "error\n");
+      signalPassFailure();
+      assert(0);
+    }
+
   }
 };
 
@@ -1010,6 +1216,10 @@ std::unique_ptr<mlir::Pass> createParallelToLaunchPass() {
 
 std::unique_ptr<mlir::Pass> createCopyToDmaPass() {
   return std::make_unique<CopyToDmaPass>();
+}
+
+std::unique_ptr<mlir::Pass> createCopyToChannelPass() {
+  return std::make_unique<CopyToChannelPass>();
 }
 
 } // namespace air

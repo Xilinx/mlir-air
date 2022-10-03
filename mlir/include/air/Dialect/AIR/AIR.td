@@ -28,7 +28,7 @@
 
 include "mlir/IR/OpBase.td"
 include "air/Dialect/AIR/AIROpBase.td"
-
+include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
@@ -401,11 +401,11 @@ def air_DeallocOp: air_Op<"dealloc", [air_AsyncOpInterface]> {
 
 // AIR channel
 
-def air_ChannelOp : air_Op<"channel", []>,
-    Arguments<(ins FlatSymbolRefAttr:$name,
+def air_ChannelOp : air_Op<"channel", [Symbol]>,
+    Arguments<(ins SymbolNameAttr:$sym_name,
                    DefaultValuedAttr<I64ArrayAttr, "{}">:$size)> {
   let assemblyFormat = [{
-    $name $size attr-dict 
+    $sym_name $size attr-dict
   }];
   let summary = "Channel for data movement.";
   let description = [{
