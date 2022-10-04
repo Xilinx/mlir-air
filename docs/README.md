@@ -3,16 +3,17 @@
 This repository contains tools and libraries for building AIR platforms,
 runtimes and compilers.
 
-Basic directory layout:
+Basic repository layout:
 
 ```
 air
 ├── cmake                     CMake files
-├── docs                      Additional documentation
+├── docs                      Documentation
 ├── examples                  Example code
 ├── mlir                      MLIR dialects and passes
 ├── platforms                 Hardware platforms
-│   └── xilinx_vck190_air
+│   ├── xilinx_vck190_air     Platform files for vck190 development board
+│   └── xilinx_vck5000_air    Platform files for vck5000 PCIe card
 ├── pynq                      Board repo for building Pynq images
 │   └── vck190_air
 ├── python                    Python libraries and bindings
@@ -24,19 +25,18 @@ air
 
 ## Documentation
 
-### MLIR Compiler
-- [AIR Dialect](docs/generated/AIRDialect.md)
-- [AIRRt Dialect](docs/generated/AIRRtDialect.md)
-- [AIR Transform Passes](docs/generated/AIRTransformPasses.md)
-- [AIR Conversion Passes](docs/generated/AIRConversionPasses.md)
+### Generated MLIR Documentation
+- [AIR Dialect](AIRDialect.html)
+- [AIRRt Dialect](AIRRtDialect.html)
+- [AIR Transform Passes](AIRTransformPasses.html)
+- [AIR Conversion Passes](AIRConversionPasses.html)
 
 ### [Examples]() -- TODO: how to run examples and/or tests
-### [Testing](docs/testing.md)
-### VCK190 Platform
-#### [Building the VCK190 ES1 AIR platform](docs/vck190_building_platform.md)
-#### [Building Pynq based SD card image for the VCK190 AIR platform](docs/vck190_building_pynq.md)
-#### [MicroBlaze firmware](docs/vck190_microblaze_firmware.md)
-#### [Building the VCK190 Production AIR platform](docs/vck190_production_building_platform.md)
+### [Testing](testing.html)
+### VCK190 Platform Documentation
+#### [Building the VCK190 AIR platform](vck190_production_building_platform.html)
+#### [Building Pynq based SD card image for the VCK190 AIR platform](vck190_building_pynq.html)
+#### [MicroBlaze firmware](vck190_microblaze_firmware.html)
 
 -----
 
