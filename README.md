@@ -4,11 +4,9 @@ This repository contains tools and libraries for building AIR platforms,
 runtimes and compilers.
 
 
-![GitHub Workflow Status](https://img.shields.io/github/workflow/status/Xilinx/mlir-air/Build%20and%20Test)
-![GitHub Pull Requests](https://img.shields.io/github/issues-pr-raw/Xilinx/mlir-air)
+![GitHub Workflow Status](https://github.com/Xilinx/mlir-air/workflows/Build%20and%20Test/badge.svg)
 
 ![](https://mlir.llvm.org//mlir-logo.png)
-
 
 [Full Documentation](https://xilinx.github.io/mlir-air/)
 
