@@ -336,12 +336,6 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
     unsigned getNumDims() { return 0; }
     Value getSrcMemref() { return getSrc(); }
     Value getDstMemref() { return getDst(); }
-    // SmallVector<Value, 4> getDstOffsets(){ return dst_offsets(); }
-    // SmallVector<Value, 4> getSrcOffsets(){ return src_offsets(); }
-    // SmallVector<Value, 4> getDstSizes(){ return dst_sizes(); }
-    // SmallVector<Value, 4> getSrcSizes(){ return src_sizes(); }
-    // SmallVector<Value, 4> getDstStrides(){ return dst_strides(); }
-    // SmallVector<Value, 4> getSrcStrides(){ return src_strides(); }
     Value getSrcMemrefDim(unsigned i) { return nullptr; }
     Value getDstMemrefDim(unsigned i) { return nullptr; }
     Value getLength() { return nullptr; }
