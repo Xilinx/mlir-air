@@ -1,0 +1,21 @@
+# make artifacts
+CMakeFiles
+CMakeCache.txt
+
+# build artifacts
+*.jou
+*.log
+*.xsa
+.Xil
+.ipcache
+bootgen_log.txt
+final_vck5000.pdi
+_x
+vck5000_aie_base_graph_hw.ltx
+vck5000_aie_base_graph_hw.xsa.link_summary
+Work
+build
+platform_repo
+
+# build results
+libadf.a
