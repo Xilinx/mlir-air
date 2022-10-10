@@ -43,7 +43,7 @@ module @aie.0  {
   %19 = AIE.buffer(%ta4) {sym_name = "buf4"} : memref<16xi32, 2>
 
   %8 = AIE.mem(%t74)  {
-    %9 = AIE.dmaStart(MM2S, 0 ^bb1, ^bb4)
+    %9 = AIE.dmaStart(MM2S, 0, ^bb1, ^bb4)
   ^bb1: 
     cf.br ^bb2
   ^bb2: 
@@ -57,7 +57,7 @@ module @aie.0  {
     AIE.end
   }
   %12 = AIE.mem(%t84)  {
-    %13 = AIE.dmaStart(MM2S, 0 ^bb1, ^bb4)
+    %13 = AIE.dmaStart(MM2S, 0, ^bb1, ^bb4)
   ^bb1: 
     cf.br ^bb2
   ^bb2: 
@@ -71,7 +71,7 @@ module @aie.0  {
     AIE.end
   }
   %16 = AIE.mem(%t94)  {
-    %17 = AIE.dmaStart(MM2S, 0 ^bb1, ^bb4)
+    %17 = AIE.dmaStart(MM2S, 0, ^bb1, ^bb4)
   ^bb1: 
     cf.br ^bb2
   ^bb2: 
@@ -85,7 +85,7 @@ module @aie.0  {
     AIE.end
   }
   %20 = AIE.mem(%ta4)  {
-    %21 = AIE.dmaStart(MM2S, 0 ^bb1, ^bb4)
+    %21 = AIE.dmaStart(MM2S, 0, ^bb1, ^bb4)
   ^bb1: 
     cf.br ^bb2
   ^bb2: 

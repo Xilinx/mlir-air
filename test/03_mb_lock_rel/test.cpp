@@ -85,7 +85,7 @@ int main(int argc, char *argv[])
   XAie_DmaSetAxi(&dma_bd, 0, burstlen, 0, 0, XAIE_ENABLE);
   XAie_DmaEnableBd(&dma_bd);
   XAie_DmaWriteBd(&(xaie->DevInst), &dma_bd, XAie_TileLoc(col,0), 1);
-  XAie_DmaChannelPushBdToQueue(&(xaie->DevInst), XAie_TileLoc(col,0), 0, DMA_MM2S, 1);
+  XAie_DmaChannelPushBdToQueue(&(xaie->DevInst), XAie_TileLoc(col,0), 0, DMA_MM2S, 1,);
 
   u8 cnt = 0;
   XAie_DmaGetPendingBdCount(&(xaie->DevInst), XAie_TileLoc(col,0), 0, DMA_MM2S, &cnt);

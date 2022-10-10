@@ -40,9 +40,9 @@ module @aie.0  {
   %23 = AIE.buffer(%t74) {sym_name = "buf4"} : memref<512xi32, 2>
 
   %12 = AIE.mem(%t71)  {
-    %srcDma = AIE.dmaStart(S2MM, 0 ^bb2, ^dma0)
+    %srcDma = AIE.dmaStart(S2MM, 0, ^bb2, ^dma0)
   ^dma0:
-    %dstDma = AIE.dmaStart(MM2S, 0 ^bb3, ^end)
+    %dstDma = AIE.dmaStart(MM2S, 0, ^bb3, ^end)
   ^bb2: 
     AIE.useLock(%10, Acquire, 0)
     AIE.dmaBdPacket(0x1, 3)
@@ -59,9 +59,9 @@ module @aie.0  {
     AIE.end
   }
   %16 = AIE.mem(%t72)  {
-    %srcDma = AIE.dmaStart(S2MM, 0 ^bb2, ^dma0)
+    %srcDma = AIE.dmaStart(S2MM, 0, ^bb2, ^dma0)
   ^dma0:
-    %dstDma = AIE.dmaStart(MM2S, 0 ^bb3, ^end)
+    %dstDma = AIE.dmaStart(MM2S, 0, ^bb3, ^end)
   ^bb2: 
     AIE.useLock(%14, Acquire, 0)
     AIE.dmaBdPacket(0x2, 3)
@@ -78,9 +78,9 @@ module @aie.0  {
     AIE.end
   }
   %20 = AIE.mem(%t73)  {
-    %srcDma = AIE.dmaStart(S2MM, 0 ^bb2, ^dma0)
+    %srcDma = AIE.dmaStart(S2MM, 0, ^bb2, ^dma0)
   ^dma0:
-    %dstDma = AIE.dmaStart(MM2S, 0 ^bb3, ^end)
+    %dstDma = AIE.dmaStart(MM2S, 0, ^bb3, ^end)
   ^bb2: 
     AIE.useLock(%18, Acquire, 0)
     AIE.dmaBdPacket(0x3, 3)
@@ -97,9 +97,9 @@ module @aie.0  {
     AIE.end
   }
   %24 = AIE.mem(%t74)  {
-    %srcDma = AIE.dmaStart(S2MM, 0 ^bb2, ^dma0)
+    %srcDma = AIE.dmaStart(S2MM, 0, ^bb2, ^dma0)
   ^dma0:
-    %dstDma = AIE.dmaStart(MM2S, 0 ^bb3, ^end)
+    %dstDma = AIE.dmaStart(MM2S, 0, ^bb3, ^end)
   ^bb2: 
     AIE.useLock(%22, Acquire, 0)
     AIE.dmaBdPacket(0x4, 3)

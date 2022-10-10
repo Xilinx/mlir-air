@@ -33,7 +33,7 @@ module @aie.0  {
   %6 = AIE.lock(%3, 1)
   %7 = AIE.buffer(%3) {sym_name = "buf1"} : memref<16xi32, 2>
   %10 = AIE.mem(%3)  {
-    %14 = AIE.dmaStart(S2MM, 0 ^bb1, ^bb4)
+    %14 = AIE.dmaStart(S2MM, 0, ^bb1, ^bb4)
   ^bb1:  // 2 preds: ^bb0, ^bb3
     cf.br ^bb2
   ^bb2:  // pred: ^bb1

@@ -34,7 +34,7 @@ module @aie.0  {
   %26 = AIE.lock(%2, 1)
   %27 = AIE.buffer(%2) {sym_name = "buf4"} : memref<16xi32, 2>
   %30 = AIE.mem(%2)  {
-    %214 = AIE.dmaStart(S2MM, 0 ^bb1, ^bb4)
+    %214 = AIE.dmaStart(S2MM, 0, ^bb1, ^bb4)
   ^bb1:  // 2 preds: ^bb0, ^bb3
     cf.br ^bb2
   ^bb2:  // pred: ^bb1
@@ -64,7 +64,7 @@ module @aie.0  {
   %6 = AIE.lock(%3, 1)
   %7 = AIE.buffer(%3) {sym_name = "buf1"} : memref<16xi32, 2>
   %20 = AIE.mem(%3)  {
-    %14 = AIE.dmaStart(S2MM, 0 ^bb1, ^bb4)
+    %14 = AIE.dmaStart(S2MM, 0, ^bb1, ^bb4)
   ^bb1:  // 2 preds: ^bb0, ^bb3
     cf.br ^bb2
   ^bb2:  // pred: ^bb1
@@ -94,7 +94,7 @@ module @aie.0  {
   %46 = AIE.lock(%0, 1)
   %47 = AIE.buffer(%0) {sym_name = "buf7"} : memref<16xi32, 2>
   %40 = AIE.mem(%0)  {
-    %414 = AIE.dmaStart(S2MM, 0 ^bb1, ^bb4)
+    %414 = AIE.dmaStart(S2MM, 0, ^bb1, ^bb4)
   ^bb1:  // 2 preds: ^bb0, ^bb3
     cf.br ^bb2
   ^bb2:  // pred: ^bb1
@@ -124,7 +124,7 @@ module @aie.0  {
   %56 = AIE.lock(%99, 1)
   %57 = AIE.buffer(%99) {sym_name = "buf10"} : memref<16xi32, 2>
   %50 = AIE.mem(%99)  {
-    %514 = AIE.dmaStart(S2MM, 0 ^bb1, ^bb4)
+    %514 = AIE.dmaStart(S2MM, 0, ^bb1, ^bb4)
   ^bb1:  // 2 preds: ^bb0, ^bb3
     cf.br ^bb2
   ^bb2:  // pred: ^bb1
