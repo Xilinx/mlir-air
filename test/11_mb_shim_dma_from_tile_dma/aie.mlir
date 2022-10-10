@@ -35,7 +35,7 @@ module {
   %l72_1 = AIE.lock(%t72, 1)
 
   %m72 = AIE.mem(%t72) {
-      %srcDma = AIE.dmaStart("MM2S0", ^bd0, ^end)
+      %srcDma = AIE.dmaStart(MM2S, 0 ^bd0, ^end)
     ^bd0:
       AIE.useLock(%l72_0, "Acquire", 1)
       AIE.dmaBd(<%buf72_0 : memref<256xi32>, 0, 256>, 0)

@@ -35,9 +35,9 @@ module @aie.0  {
   %7 = AIE.buffer(%t74) {sym_name = "buf2"} : memref<64xi32, 2>
 
   %8 = AIE.mem(%t74)  {
-    %srcDma = AIE.dmaStart("S2MM0", ^bb2, ^dma0)
+    %srcDma = AIE.dmaStart(S2MM, 0 ^bb2, ^dma0)
   ^dma0:
-    %dstDma = AIE.dmaStart("MM2S0", ^bb3, ^end)
+    %dstDma = AIE.dmaStart(MM2S, 0 ^bb3, ^end)
   ^bb2: 
     AIE.useLock(%6, Acquire, 0)
     AIE.dmaBd(<%7 : memref<64xi32, 2>, 0, 64>, 0)
@@ -52,9 +52,9 @@ module @aie.0  {
     AIE.end
   }
   %12 = AIE.mem(%t73)  {
-    %srcDma = AIE.dmaStart("S2MM0", ^bb2, ^dma0)
+    %srcDma = AIE.dmaStart(S2MM, 0 ^bb2, ^dma0)
   ^dma0:
-    %dstDma = AIE.dmaStart("MM2S0", ^bb3, ^end)
+    %dstDma = AIE.dmaStart(MM2S, 0 ^bb3, ^end)
   ^bb2: 
     AIE.useLock(%10, Acquire, 0)
     AIE.dmaBd(<%11 : memref<64xi32, 2>, 0, 64>, 0)

@@ -66,7 +66,7 @@ module {
   %la2_1 = AIE.lock(%ta2, 1)
 
   %m72 = AIE.mem(%t72) {
-      %srcDma = AIE.dmaStart("S2MM0", ^bd2, ^end)
+      %srcDma = AIE.dmaStart(S2MM, 0 ^bd2, ^end)
     ^bd2:
       cf.br ^bd0
     ^bd0:
@@ -84,7 +84,7 @@ module {
   }
 
   %m82 = AIE.mem(%t82) {
-      %srcDma = AIE.dmaStart("S2MM0", ^bd2, ^end)
+      %srcDma = AIE.dmaStart(S2MM, 0 ^bd2, ^end)
     ^bd2:
       cf.br ^bd0
     ^bd0:
@@ -102,7 +102,7 @@ module {
   }
 
   %m92 = AIE.mem(%t92) {
-      %srcDma = AIE.dmaStart("S2MM0", ^bd2, ^end)
+      %srcDma = AIE.dmaStart(S2MM, 0 ^bd2, ^end)
     ^bd2:
       cf.br ^bd0
     ^bd0:
@@ -120,7 +120,7 @@ module {
   }
 
   %ma2 = AIE.mem(%ta2) {
-      %srcDma = AIE.dmaStart("S2MM0", ^bd2, ^end)
+      %srcDma = AIE.dmaStart(S2MM, 0 ^bd2, ^end)
     ^bd2:
       cf.br ^bd0
     ^bd0:

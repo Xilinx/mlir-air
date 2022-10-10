@@ -66,9 +66,9 @@ module {
     
 
  %m71 = AIE.mem(%t71) {
-    %dma71_a = AIE.dmaStart(S2MM0,^bb1,^dma1)
+    %dma71_a = AIE.dmaStart(S2MM, 0^bb1,^dma1)
   ^dma1:
-    %dma71_b = AIE.dmaStart(S2MM1,^bb2,^end)
+    %dma71_b = AIE.dmaStart(S2MM, 1^bb2,^end)
   ^bb1:
     AIE.useLock(%l71_a, Acquire, 0)
     AIE.dmaBd(<%buf71_a : memref<1024xi32>, 0, 1024>, 0)
@@ -100,9 +100,9 @@ module {
 }
 
 %m72 = AIE.mem(%t72) {
-    %dma72_a = AIE.dmaStart(S2MM0,^bb1,^dma1)
+    %dma72_a = AIE.dmaStart(S2MM, 0^bb1,^dma1)
   ^dma1:
-    %dma72_b = AIE.dmaStart(S2MM1,^bb2,^end)
+    %dma72_b = AIE.dmaStart(S2MM, 1^bb2,^end)
   ^bb1:
     AIE.useLock(%l72_a, Acquire, 0)
     AIE.dmaBd(<%buf72_a : memref<1024xi32>, 0, 1024>, 0)
@@ -134,9 +134,9 @@ module {
 
 
  %m81 = AIE.mem(%t81) {
-    %dma81_a = AIE.dmaStart(S2MM0,^bb1,^dma1)
+    %dma81_a = AIE.dmaStart(S2MM, 0^bb1,^dma1)
   ^dma1:
-    %dma81_b = AIE.dmaStart(S2MM1,^bb2,^end)
+    %dma81_b = AIE.dmaStart(S2MM, 1^bb2,^end)
   ^bb1:
     AIE.useLock(%l81_a, Acquire, 0)
     AIE.dmaBd(<%buf81_a : memref<1024xi32>, 0, 1024>, 0)
@@ -168,9 +168,9 @@ module {
 
 
  %m82 = AIE.mem(%t82) {
-    %dma82_a = AIE.dmaStart(S2MM0,^bb1,^dma1)
+    %dma82_a = AIE.dmaStart(S2MM, 0^bb1,^dma1)
   ^dma1:
-    %dma82_b = AIE.dmaStart(S2MM1,^bb2,^end)
+    %dma82_b = AIE.dmaStart(S2MM, 1^bb2,^end)
   ^bb1:
     AIE.useLock(%l82_a, Acquire, 0)
     AIE.dmaBd(<%buf82_a : memref<1024xi32>, 0, 1024>, 0)
