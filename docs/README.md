@@ -31,12 +31,10 @@ air
 - [AIR Transform Passes](AIRTransformPasses.html)
 - [AIR Conversion Passes](AIRConversionPasses.html)
 
-### [Examples]() -- TODO: how to run examples and/or tests
-### [Testing](testing.html)
-### VCK190 Platform Documentation
-#### [Building the VCK190 AIR platform](vck190_production_building_platform.html)
-#### [Building Pynq based SD card image for the VCK190 AIR platform](vck190_building_pynq.html)
-#### [MicroBlaze firmware](vck190_microblaze_firmware.html)
+### AIR Platform Documentation
+#### [VCK190 platform](platforms/xilinx_vck190_air)
+#### [VCK5000 platform](platforms/xilinx_vck5000_air)
+#### [Building MicroBlaze firmware](vck190_microblaze_firmware.html)
 
 -----
 

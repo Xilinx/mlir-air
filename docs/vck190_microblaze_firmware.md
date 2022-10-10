@@ -1,12 +1,10 @@
 
 # Building and updating VCK190 AIR MicroBlaze firmware
 
-#
 ## Prerequisites
 
 1. Build the XSA file. ([Documentation](vck190_building_platform.md))
 
-#
 ## Building
 
 After building the XSA:
@@ -98,7 +96,7 @@ Created queue @ 0x20100000040
 ```
 The update will be lost when the board is turned off.
 To make the update persist, it is necessary to update the hardware design.
-#
+
 ## Update hardware design with new ELF
 
 To update the hardware with the new ELF with Vivado 2020.1 it is necessary to rebuild the XSA:
@@ -111,7 +109,6 @@ To update the hardware with the new ELF with Vivado 2020.1 it is necessary to re
 
 2. Rebuild the XSA
 
-#
 ## Updating the SD Card with the new hardware design
 
 1. Run make in the `air/platforms/xilinx_vck190_air/bootgen` directory
