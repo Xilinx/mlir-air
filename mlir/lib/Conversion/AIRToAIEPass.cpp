@@ -155,8 +155,10 @@ struct DMAAllocator {
     return dma_tile;
   }
 
-  AIE::DMAChannel getChannel(ModuleOp aie_module, air::DmaMemcpyInterface &dmaOp,
-                        AIE::DMAChannel tile_channel, int64_t col, int64_t row) {
+  AIE::DMAChannel getChannel(ModuleOp aie_module,
+                             air::DmaMemcpyInterface &dmaOp,
+                             AIE::DMAChannel tile_channel, int64_t col,
+                             int64_t row) {
     auto src_memory_space =
         dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
     auto dst_memory_space =
@@ -628,9 +630,7 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
         yield_operands.push_back(o);
     }
     rewriter.create<xilinx::air::WaitAllOp>(
-                    fop->getLoc(),
-                    SmallVector<Type, 1>{},
-                    token_operands);
+        fop->getLoc(), SmallVector<Type, 1>{}, token_operands);
     rewriter.create<scf::YieldOp>(yield->getLoc(), yield_operands);
     rewriter.eraseOp(yield);
 
@@ -847,16 +847,16 @@ public:
       llvm::cl::init("-")};
 
   Option<int> AIRToAIERowOffset{
-      *this, "row-offset",
-      llvm::cl::desc("The start row for any output herds"), llvm::cl::init(0)};
+      *this, "row-offset", llvm::cl::desc("The start row for any output herds"),
+      llvm::cl::init(0)};
 
   Option<int> AIRToAIEColOffset{
-      *this, "col-offset",
-      llvm::cl::desc("The start col for any output herds"), llvm::cl::init(0)};
+      *this, "col-offset", llvm::cl::desc("The start col for any output herds"),
+      llvm::cl::init(0)};
 
   Option<bool> AIRToAIEEmitWhileLoop{
-      *this, "emit-while-loop",
-      llvm::cl::desc("Emit while(1) around AIE code"), llvm::cl::init(false)};
+      *this, "emit-while-loop", llvm::cl::desc("Emit while(1) around AIE code"),
+      llvm::cl::init(false)};
 
   Option<std::string> AIRToAIETestPatterns{
       *this, "test-patterns", llvm::cl::desc("Test the given patterns"),
@@ -1057,7 +1057,8 @@ public:
         continue;
       }
 
-      AIE::DMAChannel tile_channel = getTileDMAChannel(aie_module, dmaOpIf, x, y);
+      AIE::DMAChannel tile_channel =
+          getTileDMAChannel(aie_module, dmaOpIf, x, y);
 
       if ((src_space == (int)air::MemorySpace::L3 &&
            dst_space == (int)air::MemorySpace::L1) ||
@@ -1071,13 +1072,16 @@ public:
         AIE::DMAChannel shim_channel = shim_dma_alloc.getChannel(
             aie_module, dmaOpIf, (int64_t)tile_channel.second, x, y);
 
-        LLVM_DEBUG(llvm::outs() << "Shim channel is " << (uint64_t)shim_channel.second
-                                << " for x=" << x << ", y=" << y << "\n");
+        LLVM_DEBUG(llvm::outs()
+                   << "Shim channel is " << (uint64_t)shim_channel.second
+                   << " for x=" << x << ", y=" << y << "\n");
 
-        if (((uint64_t)shim_channel.first == (uint64_t)AIE::DMAChannelDir::S2MM) &&
+        if (((uint64_t)shim_channel.first ==
+             (uint64_t)AIE::DMAChannelDir::S2MM) &&
             ((uint64_t)shim_channel.second < (uint64_t)shim_dma_channels)) {
           getFlowOp(aie_module, tile, AIE::WireBundle::DMA,
-                    (uint32_t)tile_channel.second, shim_tile, AIE::WireBundle::DMA,
+                    (uint32_t)tile_channel.second, shim_tile,
+                    AIE::WireBundle::DMA,
                     ((uint32_t)shim_channel.second) % shim_dma_channels);
         } else {
           getFlowOp(aie_module, shim_tile, AIE::WireBundle::DMA,
@@ -1091,18 +1095,20 @@ public:
                   dst_space == (int)air::MemorySpace::L2)) {
         // copy between L1 and L2
         tile_channel = getTileDMAChannel(aie_module, dmaOpIf, x, y);
-        AIE::TileOp l2_tile = l2_dma_alloc.getTile(aie_module, dmaOpIf,
-                                                   (int64_t)tile_channel.second, x, y);
+        AIE::TileOp l2_tile = l2_dma_alloc.getTile(
+            aie_module, dmaOpIf, (int64_t)tile_channel.second, x, y);
         AIE::DMAChan l2_channel = l2_dma_alloc.getChannel(
             aie_module, dmaOpIf, (int64_t)tile_channel.second, x, y);
 
         OpBuilder builder(aie_module);
         builder.setInsertionPointToEnd(&(aie_module.getBodyRegion().front()));
 
-        if (((uint64_t)l2_channel.first == (uint64_t)AIE::DMAChannelDir::S2MM) &&
+        if (((uint64_t)l2_channel.first ==
+             (uint64_t)AIE::DMAChannelDir::S2MM) &&
             ((uint64_t)l2_channel.second < (uint64_t)l2_dma_channels)) {
           getFlowOp(aie_module, tile, AIE::WireBundle::DMA,
-                    (uint32_t)tile_channel.second, l2_tile, AIE::WireBundle::PLIO,
+                    (uint32_t)tile_channel.second, l2_tile,
+                    AIE::WireBundle::PLIO,
                     ((uint32_t)l2_channel.second) % l2_dma_channels);
         } else {
           getFlowOp(aie_module, l2_tile, AIE::WireBundle::PLIO,
@@ -1113,8 +1119,8 @@ public:
         llvm_unreachable("Unhandled dma transfer type");
       }
 
-      tile_dma_copies[((uint64_t)tile_channel.first) * 2 
-                      + tile_channel.second].push_back(dmaOpIf);
+      tile_dma_copies[((uint64_t)tile_channel.first) * 2 + tile_channel.second]
+          .push_back(dmaOpIf);
     }
     return tile_dma_copies;
   }
@@ -1180,7 +1186,8 @@ public:
       for (auto p : tile_dma_copies) {
         for (auto o : p.second) {
           auto dmaOpIf = cast<air::DmaMemcpyInterface>(o);
-          AIE::DMAChannel tile_channel = getTileDMAChannel(module, dmaOpIf, x, y);
+          AIE::DMAChannel tile_channel =
+              getTileDMAChannel(module, dmaOpIf, x, y);
           AIE::LockOp lockOp =
               getLockForTileDMA(module, dmaOpIf, lock_allocs, x, y);
           int64_t lockAqValue = -1;
@@ -1262,8 +1269,9 @@ public:
       for (auto &p : tile_dma_copies) {
         auto channel = p.first;
 
-        LLVM_DEBUG(llvm::outs() << " TILE dma channel is " << (uint64_t)channel.second
-                                << " for x=" << x << ", y=" << y << "\n");
+        LLVM_DEBUG(llvm::outs()
+                   << " TILE dma channel is " << (uint64_t)channel.second
+                   << " for x=" << x << ", y=" << y << "\n");
 
         Block *start_bb = new Block();
         mem.getBody().push_back(start_bb);
