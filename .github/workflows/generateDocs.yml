@@ -78,6 +78,10 @@ jobs:
           make docs
           popd
           cp -r docs/* build_release/docs
+          mkdir -p build_release/docs/platforms/xilinx_vck190_air
+          cp platforms/xilinx_vck190_air/README.md platforms/xilinx_vck190_air
+          mkdir -p build_release/docs/platforms/xilinx_vck5000_air
+          cp platforms/xilinx_vck5000_air/README.md platforms/xilinx_vck5000_air
 
       - name: Save LLVM Version
         run: |
