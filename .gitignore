@@ -16,6 +16,12 @@ vck5000_aie_base_graph_hw.xsa.link_summary
 Work
 build
 platform_repo
+myproj
+sw_comp
+sd_card
+sysroot
+components
+air_project
 
 # build results
 libadf.a
