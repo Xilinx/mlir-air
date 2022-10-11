@@ -34,7 +34,7 @@ module {
 // CHECK:         %[[VAL_13:.*]] = AIE.buffer(%[[VAL_12]]) {sym_name = {{.*}}} : memref<1024xi32, 2>
 
 // CHECK:    AIE.mem(%[[VAL_12]])  {
-// CHECK:           AIE.dmaStart(S2MM0, ^bb1, ^bb2)
+// CHECK:           AIE.dmaStart(S2MM, 0, ^bb1, ^bb2)
 // CHECK:         ^bb1:
 // CHECK:           AIE.useLock(%[[VAL_14]], Acquire, 0)
 // CHECK:           AIE.dmaBd(<%[[VAL_13]] : memref<1024xi32, 2>, 0, 0>, 0)
