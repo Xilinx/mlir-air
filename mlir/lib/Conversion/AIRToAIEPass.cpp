@@ -177,7 +177,7 @@ struct DMAAllocator {
         for (auto id : t.dma_id)
           if (dmaOp.getId() == id)
             chan = t.dma_channel;
-        if (tile_channel == t.tile_channel) {
+        if (tile_channel.second == t.tile_channel) {
           chan = t.dma_channel;
         }
       }
@@ -880,9 +880,9 @@ public:
 
   // A very simple scheme to allocate channels for dma operations:
   //  <description>
-  AIE::DMAChan getTileDMAChannel(ModuleOp aie_module,
-                                 air::DmaMemcpyInterface &dmaOp, int col,
-                                 int row) {
+  AIE::DMAChannel getTileDMAChannel(ModuleOp aie_module,
+                                    air::DmaMemcpyInterface &dmaOp, int col,
+                                    int row) {
     auto src_memory_space =
         dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
     auto dst_memory_space =
@@ -1069,8 +1069,8 @@ public:
         tile_channel = getTileDMAChannel(aie_module, dmaOpIf, x, y);
         AIE::TileOp shim_tile = shim_dma_alloc.getTile(
             aie_module, dmaOpIf, (int64_t)tile_channel.second, x, y);
-        AIE::DMAChannel shim_channel = shim_dma_alloc.getChannel(
-            aie_module, dmaOpIf, (int64_t)tile_channel.second, x, y);
+        AIE::DMAChannel shim_channel =
+            shim_dma_alloc.getChannel(aie_module, dmaOpIf, tile_channel, x, y);
 
         LLVM_DEBUG(llvm::outs()
                    << "Shim channel is " << (uint64_t)shim_channel.second
@@ -1097,8 +1097,8 @@ public:
         tile_channel = getTileDMAChannel(aie_module, dmaOpIf, x, y);
         AIE::TileOp l2_tile = l2_dma_alloc.getTile(
             aie_module, dmaOpIf, (int64_t)tile_channel.second, x, y);
-        AIE::DMAChan l2_channel = l2_dma_alloc.getChannel(
-            aie_module, dmaOpIf, (int64_t)tile_channel.second, x, y);
+        AIE::DMAChannel l2_channel =
+            l2_dma_alloc.getChannel(aie_module, dmaOpIf, tile_channel, x, y);
 
         OpBuilder builder(aie_module);
         builder.setInsertionPointToEnd(&(aie_module.getBodyRegion().front()));
@@ -1119,8 +1119,7 @@ public:
         llvm_unreachable("Unhandled dma transfer type");
       }
 
-      tile_dma_copies[((uint64_t)tile_channel.first) * 2 + tile_channel.second]
-          .push_back(dmaOpIf);
+      tile_dma_copies[tile_channel].push_back(dmaOpIf);
     }
     return tile_dma_copies;
   }
