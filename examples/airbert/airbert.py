@@ -1,4 +1,4 @@
-# ./examples/aibert/aibert.py -*- Python -*-
+# ./examples/airbert/airbert.py -*- Python -*-
 
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 #
