@@ -1076,8 +1076,7 @@ public:
                    << "Shim channel is " << (uint64_t)shim_channel.second
                    << " for x=" << x << ", y=" << y << "\n");
 
-        if (((uint64_t)shim_channel.first ==
-             (uint64_t)AIE::DMAChannelDir::S2MM) &&
+        if ((shim_channel.first == AIE::DMAChannelDir::S2MM) &&
             ((uint64_t)shim_channel.second < (uint64_t)shim_dma_channels)) {
           getFlowOp(aie_module, tile, AIE::WireBundle::DMA,
                     (uint32_t)tile_channel.second, shim_tile,
