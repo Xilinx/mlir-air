@@ -26,7 +26,7 @@
 
 // A single async air.execute op should be created around linalg.generic
 // No air.execute op should be created inside of linalg.generic block
-// CHECK: %[[EVENT0:.*]] = air.execute async [
+// CHECK: %[[EVENT0:.*]] = air.execute [
 // CHECK-NEXT: linalg.generic {
 // CHECK-NEXT: ^bb0(
 // CHECK-NEXT: %[[VALUE1:.*]] = linalg.index

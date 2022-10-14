@@ -44,16 +44,16 @@ module attributes {torch.debug_module_name = "mmult"} {
       %c32 = arith.constant 32 : index
       // CHECK: affine.apply #map()[%{{.*}}]
       // CHECK-NEXT: [[T0:%.*]] = air.wait_all async
-      %asyncToken, %valOut = air.execute async  {
+      %asyncToken, %valOut = air.execute -> (index) {
         %6 = affine.apply #map()[%arg3]
         air.execute_terminator %6 : index
-      } {id = 5 : i32} : (index)
+      } {id = 5 : i32}
       // CHECK-NEXT: affine.apply #map()[%{{.*}}]
       // CHECK-NEXT: [[T1:%.*]] = air.wait_all async
-      %asyncToken_0, %valOut_1 = air.execute async  {
+      %asyncToken_0, %valOut_1 = air.execute -> (index) {
         %6 = affine.apply #map()[%arg4]
         air.execute_terminator %6 : index
-      } {id = 6 : i32} : (index)
+      } {id = 6 : i32}
       // CHECK-NEXT: air.wait_all async [[[T0]], [[T1]]]
       %2 = air.wait_all async [%asyncToken, %asyncToken_0] 
       %6 = memref.alloc() : memref<32x32xi32, 2>
@@ -62,9 +62,8 @@ module attributes {torch.debug_module_name = "mmult"} {
       %4 = air.dma_memcpy_nd async [%2] (%6[] [] [], %arg9[%valOut, %valOut_1] [%c32, %c32] [%c64, %c1]) {id = 3 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
       %5 = air.dma_memcpy_nd async [%4] (%arg9[%valOut, %valOut_1] [%c32, %c32] [%c64, %c1], %6[] [] []) {id = 4 : i32} : (memref<64x64xi32>, memref<32x32xi32, 2>)
       // CHECK: air.wait_all [[[T2]], [[T3]]]
-      %asyncToken_4 = air.execute async [%4, %5]  : (!air.async.token, !air.async.token) {
+      %asyncToken_4 = air.execute [%4, %5] {
         memref.dealloc %6 : memref<32x32xi32, 2>
-        air.execute_terminator
       } {id = 15 : i32}
       air.herd_terminator
     }
