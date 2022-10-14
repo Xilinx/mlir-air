@@ -53,40 +53,40 @@ module attributes {torch.debug_module_name = "mmult"} {
       %c0 = arith.constant 0 : index
       %c64 = arith.constant 64 : index
       %c32 = arith.constant 32 : index
-      %asyncToken, %valOut = air.execute async  {
+      %asyncToken, %valOut = air.execute -> (index) {
         %6 = affine.apply #map()[%arg3]
         air.execute_terminator %6 : index
-      } {id = 5 : i32} : (index)
-      %asyncToken_0, %valOut_1 = air.execute async  {
+      } {id = 5 : i32}
+      %asyncToken_0, %valOut_1 = air.execute -> (index) {
         %6 = affine.apply #map()[%arg4]
         air.execute_terminator %6 : index
-      } {id = 6 : i32} : (index)
+      } {id = 6 : i32}
       %2 = air.wait_all async [%asyncToken, %asyncToken_0] 
-      %asyncToken_2, %valOut_3 = air.execute async  {
+      %asyncToken_2, %valOut_3 = air.execute -> (memref<32x32xi32, 2>) {
         %6 = memref.alloc() : memref<32x32xi32, 2>
         air.execute_terminator %6 : memref<32x32xi32, 2>
-      } {id = 9 : i32} : (memref<32x32xi32, 2>)
+      } {id = 9 : i32}
       %3 = air.dma_memcpy_nd async [%2, %asyncToken_2] (%valOut_3[] [] [], %arg9[%valOut, %valOut_1] [%c32, %c32] [%c64, %c1]) {id = 3 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
       %4 = scf.for %arg10 = %c0 to %c64 step %c32 iter_args(%arg11 = %3) -> (!air.async.token) {
-        %asyncToken_5, %valOut_6 = air.execute async [%arg11]  : (!air.async.token) {
+        %asyncToken_5, %valOut_6 = air.execute [%arg11] -> (memref<32x32xi32, 2>) {
           %9 = memref.alloc() : memref<32x32xi32, 2>
           air.execute_terminator %9 : memref<32x32xi32, 2>
-        } {id = 7 : i32} : (memref<32x32xi32, 2>)
-        %asyncToken_7, %valOut_8 = air.execute async [%arg11]  : (!air.async.token) {
+        } {id = 7 : i32}
+        %asyncToken_7, %valOut_8 = air.execute [%arg11] -> (memref<32x32xi32, 2>) {
           %9 = memref.alloc() : memref<32x32xi32, 2>
           air.execute_terminator %9 : memref<32x32xi32, 2>
-        } {id = 8 : i32} : (memref<32x32xi32, 2>)
+        } {id = 8 : i32}
         %6 = air.dma_memcpy_nd async [%asyncToken_5, %arg11] (%valOut_6[] [] [], %arg7[%valOut, %arg10] [%c32, %c32] [%c64, %c1]) {id = 1 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
         %7 = air.dma_memcpy_nd async [%asyncToken_7, %arg11] (%valOut_8[] [] [], %arg8[%arg10, %valOut_1] [%c32, %c32] [%c64, %c1]) {id = 2 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
-        %asyncToken_9 = air.execute async [%7, %arg11, %6]  : (!air.async.token, !air.async.token, !air.async.token) {
+        %asyncToken_9 = air.execute [%7, %arg11, %6] {
           linalg.matmul ins(%valOut_6, %valOut_8 : memref<32x32xi32, 2>, memref<32x32xi32, 2>) outs(%valOut_3 : memref<32x32xi32, 2>)
           air.execute_terminator
         } {id = 12 : i32}
-        %asyncToken_10 = air.execute async [%asyncToken_9]  : (!air.async.token) {
+        %asyncToken_10 = air.execute [%asyncToken_9] {
           memref.dealloc %valOut_6 : memref<32x32xi32, 2>
           air.execute_terminator
         } {id = 13 : i32}
-        %asyncToken_11 = air.execute async [%asyncToken_9]  : (!air.async.token) {
+        %asyncToken_11 = air.execute [%asyncToken_9] {
           memref.dealloc %valOut_8 : memref<32x32xi32, 2>
           air.execute_terminator
         } {id = 14 : i32}
@@ -94,7 +94,7 @@ module attributes {torch.debug_module_name = "mmult"} {
         scf.yield %8 : !air.async.token
       }
       %5 = air.dma_memcpy_nd async [%4] (%arg9[%valOut, %valOut_1] [%c32, %c32] [%c64, %c1], %valOut_3[] [] []) {id = 4 : i32} : (memref<64x64xi32>, memref<32x32xi32, 2>)
-      %asyncToken_4 = air.execute async [%5]  : (!air.async.token) {
+      %asyncToken_4 = air.execute [%5] {
         memref.dealloc %valOut_3 : memref<32x32xi32, 2>
         air.execute_terminator
       } {id = 15 : i32}
