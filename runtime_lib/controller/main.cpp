@@ -27,15 +27,19 @@
 #include <cstring>
 #include "unistd.h"
 
+#ifdef __aarch64__
+#define ARM_CONTROLLER 1
+#endif
+
 extern "C" {
 #include "xil_printf.h"
 #ifdef ARM_CONTROLLER
 #include "xil_cache.h"
+#include "xaiengine.h"
 #else
 #include "pvr.h"
 #endif
 
-//#include "xaiengine.h"
 //#include "mb_interface.h"
 
 #include "acdc_queue.h"
