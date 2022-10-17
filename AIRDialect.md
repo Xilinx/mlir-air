@@ -38,7 +38,7 @@ alloc operator
 Syntax:
 
 ```
-operation ::= `air.alloc` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) attr-dict `:` type($result)
+operation ::= `air.alloc` custom<AsyncDependencies>(type($async_token), $async_dependencies) attr-dict `:` type($result)
 ```
 
 Allocate memory
@@ -49,13 +49,13 @@ Interfaces: air_AsyncOpInterface
 
 | Operand | Description |
 | :-----: | ----------- |
-| `asyncDependencies` | async token type
+| `async_dependencies` | async token type
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `asyncToken` | async token type
+| `async_token` | async token type
 | `result` | memref of any type values
 
 ### `air.channel.get` (xilinx::air::ChannelGetOp)
@@ -66,7 +66,7 @@ Get for air channels.
 Syntax:
 
 ```
-operation ::= `air.channel.get` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
+operation ::= `air.channel.get` custom<AsyncDependencies>(type($async_token), $async_dependencies)
               $chan_name `[` ($indices^)? `]`
               `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `)` attr-dict `:`
               `(` type($dst) `)`
@@ -88,7 +88,7 @@ Interfaces: air_AsyncOpInterface
 
 | Operand | Description |
 | :-----: | ----------- |
-| `asyncDependencies` | async token type
+| `async_dependencies` | async token type
 | `indices` | index
 | `dst` | memref of any type values
 | `dst_offsets` | index
@@ -99,7 +99,7 @@ Interfaces: air_AsyncOpInterface
 
 | Result | Description |
 | :----: | ----------- |
-| `asyncToken` | async token type
+| `async_token` | async token type
 
 ### `air.channel` (xilinx::air::ChannelOp)
 
@@ -132,7 +132,7 @@ Push for air channels.
 Syntax:
 
 ```
-operation ::= `air.channel.put` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
+operation ::= `air.channel.put` custom<AsyncDependencies>(type($async_token), $async_dependencies)
               $chan_name `[` ($indices^)? `]`
               `(` $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)` attr-dict `:`
               `(` type($src) `)`
@@ -154,7 +154,7 @@ Interfaces: air_AsyncOpInterface
 
 | Operand | Description |
 | :-----: | ----------- |
-| `asyncDependencies` | async token type
+| `async_dependencies` | async token type
 | `indices` | index
 | `src` | memref of any type values
 | `src_offsets` | index
@@ -165,7 +165,7 @@ Interfaces: air_AsyncOpInterface
 
 | Result | Description |
 | :----: | ----------- |
-| `asyncToken` | async token type
+| `async_token` | async token type
 
 ### `air.dealloc` (xilinx::air::DeallocOp)
 
@@ -175,7 +175,7 @@ dealloc operator
 Syntax:
 
 ```
-operation ::= `air.dealloc` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) $memref attr-dict `:` type($memref)
+operation ::= `air.dealloc` custom<AsyncDependencies>(type($async_token), $async_dependencies) $memref attr-dict `:` type($memref)
 ```
 
 Deallocate memory
@@ -186,14 +186,14 @@ Interfaces: air_AsyncOpInterface
 
 | Operand | Description |
 | :-----: | ----------- |
-| `asyncDependencies` | async token type
+| `async_dependencies` | async token type
 | `memref` | memref of any type values
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `asyncToken` | async token type
+| `async_token` | async token type
 
 ### `air.dma_memcpy_nd` (xilinx::air::DmaMemcpyNdOp)
 
@@ -203,7 +203,7 @@ dma operator
 Syntax:
 
 ```
-operation ::= `air.dma_memcpy_nd` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
+operation ::= `air.dma_memcpy_nd` custom<AsyncDependencies>(type($async_token), $async_dependencies)
               `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `,`
               $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)`  attr-dict `:`
               `(` type($dst) `,` type($src) `)`
@@ -219,7 +219,7 @@ Interfaces: air_AsyncOpInterface, air_DmaMemcpyInterface
 
 | Operand | Description |
 | :-----: | ----------- |
-| `asyncDependencies` | async token type
+| `async_dependencies` | async token type
 | `dst` | memref of any type values
 | `dst_offsets` | index
 | `dst_sizes` | index
@@ -233,7 +233,7 @@ Interfaces: air_AsyncOpInterface, air_DmaMemcpyInterface
 
 | Result | Description |
 | :----: | ----------- |
-| `asyncToken` | async token type
+| `async_token` | async token type
 
 ### `air.execute` (xilinx::air::ExecuteOp)
 
@@ -243,14 +243,14 @@ Asynchronous code region
 Syntax:
 
 ```
-operation ::= `air.execute` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) (`:`
-              `(` type($asyncDependencies)^ `)`)? regions attr-dict (`:` `(` type($valOut)^ `)`)?
+operation ::= `air.execute` (` ``[` $async_dependencies^ `]`)?
+              (`->` `(` type($results)^ `)`)? regions attr-dict
 ```
 
 Defines a code region to be dispatched asynchronously at runtime. All operations in
 the region must be executed sequentially.
 
-Traits: AffineScope
+Traits: SingleBlockImplicitTerminator<ExecuteTerminatorOp>
 
 Interfaces: air_AsyncOpInterface
 
@@ -258,18 +258,18 @@ Interfaces: air_AsyncOpInterface
 
 | Operand | Description |
 | :-----: | ----------- |
-| `asyncDependencies` | any type
+| `async_dependencies` | async token type
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `asyncToken` | async token type
-| `valOut` | any type
+| `async_token` | async token type
+| `results` | any type
 
 ### `air.execute_terminator` (xilinx::air::ExecuteTerminatorOp)
 
-Terminator for air regions.
+Terminator for air execute.
 
 
 Syntax:
@@ -278,9 +278,10 @@ Syntax:
 operation ::= `air.execute_terminator` attr-dict ($results^ `:` type($results))?
 ```
 
-A terminator operation for regions that appear in the body of
-`air.execute` operation.  These regions are not expected to return any
-value so the terminator takes no operands.
+A terminator operation for code regions that appear in the body of
+`air.execute` operation. The operation takes variable number of
+operands and produces no results. The operand number and types must
+match the signature of the `air.execute` that contains the operation.
 
 Traits: HasParent<ExecuteOp>, ReturnLike, Terminator
 
@@ -314,7 +315,7 @@ Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 
 | Operand | Description |
 | :-----: | ----------- |
-| `asyncDependencies` | async token type
+| `async_dependencies` | async token type
 | `sizes` | index
 | `operands` | any type
 
@@ -322,7 +323,7 @@ Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 
 | Result | Description |
 | :----: | ----------- |
-| `asyncToken` | async token type
+| `async_token` | async token type
 
 ### `air.pipeline` (xilinx::air::HerdPipelineOp)
 
@@ -341,7 +342,7 @@ Traits: AffineScope, HasParent<HerdOp>
 
 ### `air.herd_terminator` (xilinx::air::HerdTerminatorOp)
 
-Terminator for air launch_herd regions.
+Terminator for air herd regions.
 
 
 Syntax:
@@ -350,9 +351,9 @@ Syntax:
 operation ::= `air.herd_terminator` attr-dict
 ```
 
-A terminator operation for regions that appear in the body of
-`air.launch_herd` operation.  These regions are not expected to return any
-value so the terminator takes no operands.
+A terminator operation for the body of `air.herd` operations.
+`air.herd` operations are not expected to return any value so the
+terminator takes no operands.
 
 Traits: HasParent<HerdOp>, Terminator
 
@@ -380,7 +381,7 @@ Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 
 | Operand | Description |
 | :-----: | ----------- |
-| `asyncDependencies` | async token type
+| `async_dependencies` | async token type
 | `sizes` | index
 | `operands` | any type
 
@@ -388,11 +389,11 @@ Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 
 | Result | Description |
 | :----: | ----------- |
-| `asyncToken` | async token type
+| `async_token` | async token type
 
 ### `air.launch_terminator` (xilinx::air::LaunchTerminatorOp)
 
-Terminator for air launch regions.
+Terminator for `air.launch`.
 
 
 Syntax:
@@ -401,9 +402,9 @@ Syntax:
 operation ::= `air.launch_terminator` attr-dict
 ```
 
-A terminator operation for regions that appear in the body of
-`air.launch` operation.  These regions are not expected to return any
-value so the terminator takes no operands.
+A terminator operation for the body of `air.launch` operations.
+`air.launch` operations are not expected to return any value so the
+terminator takes no operands.
 
 Traits: HasParent<LaunchOp>, Terminator
 
@@ -431,7 +432,7 @@ Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 
 | Operand | Description |
 | :-----: | ----------- |
-| `asyncDependencies` | async token type
+| `async_dependencies` | async token type
 | `sizes` | index
 | `operands` | any type
 
@@ -439,7 +440,7 @@ Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 
 | Result | Description |
 | :----: | ----------- |
-| `asyncToken` | async token type
+| `async_token` | async token type
 
 ### `air.partition_terminator` (xilinx::air::PartitionTerminatorOp)
 
@@ -452,9 +453,9 @@ Syntax:
 operation ::= `air.partition_terminator` attr-dict
 ```
 
-A terminator operation for regions that appear in the body of
-`air.partition` operation.  These regions are not expected to return any
-value so the terminator takes no operands.
+A terminator operation for the body of `air.partition` operations.
+`air.partition` operations are not expected to return any value so the
+terminator takes no operands.
 
 Traits: HasParent<PartitionOp>, Terminator
 
@@ -542,7 +543,7 @@ Syntax:
 operation ::= `air.pipeline.terminator` attr-dict ($opers^ `:` type($opers))?
 ```
 
-A terminator operation for regions that appear in the body of 
+A terminator operation for regions that appear in the body of
 `air.pipeline` operation.
 
 Traits: HasParent<HerdPipelineOp>, Terminator
@@ -568,8 +569,10 @@ Syntax:
 operation ::= `air.pipeline.yield` ($opers^)? attr-dict (`:` type($opers)^)?
 ```
 
-A terminator operation for regions that appear in the body of 
-`air.pipeline.stage` operation.
+A terminator operation for regions that appear in the body of
+`air.pipeline.stage` operation. The operation takes variable number of
+operands and produces no results. The operand number and types must
+match the signature of the `air.pipeline` that contains the operation.
 
 Traits: HasParent<PipelineStageOp>, ReturnLike, Terminator
 
@@ -591,7 +594,7 @@ wait for all operator
 Syntax:
 
 ```
-operation ::= `air.wait_all` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) attr-dict
+operation ::= `air.wait_all` custom<AsyncDependencies>(type($async_token), $async_dependencies) attr-dict
 ```
 
 Wait for all async tokens before preceding.
@@ -602,13 +605,13 @@ Interfaces: air_AsyncOpInterface
 
 | Operand | Description |
 | :-----: | ----------- |
-| `asyncDependencies` | async token type
+| `async_dependencies` | async token type
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `asyncToken` | async token type
+| `async_token` | async token type
 
 ## Type constraint definition
 
