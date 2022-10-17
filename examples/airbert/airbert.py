@@ -59,56 +59,29 @@ if len(args) and args[0] == '-dump-linalg':
     print(mlir)
     exit(0)
 
-# the custom compile function is needed to avoid generating herds for the linalg.generics
-def compile(imported_module: torch_mlir.ir.Module):
-    with air.mlir.ir.Context():
-        air_module = air.mlir.ir.Module.parse(str(imported_module))
-
-        # bufferize the linalg dialect
-        pm = air.mlir.passmanager.PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
-        pm.run(air_module)
-
-        # convert linalg dialect to air dialect
-        # CUSTOM: convert linalg dialect to air dialect
-        LINALG_MEMREF_TO_AIR_PIPELINE = ",".join([
-            "air-linalg-name",
-            "air-linalg-codegen{input-filter=linalg.matmul1 herd-size=2,2 l1-tile-size=32,32,32}",
-            "air-linalg-codegen{input-filter=linalg.matmul3 herd-size=2,2 l1-tile-size=32,32,32}",
-            "air-linalg-codegen{input-filter=linalg.matmul5 herd-size=2,2 l1-tile-size=32,32,32}",
-            # "air-linalg-codegen{input-filter=linalg.generic8 herd-size=1,1 l1-tile-size=64,64,64}",
-            # "air-linalg-codegen{input-filter=linalg.generic9 herd-size=1,1 l1-tile-size=64,64,64}",
-            # "air-linalg-codegen{input-filter=linalg.generic10 herd-size=1,1 l1-tile-size=64,64,64}",
-            # "air-linalg-codegen{input-filter=linalg.generic12 herd-size=1,1 l1-tile-size=64,64,64}",
-            # "air-linalg-codegen{input-filter=linalg.generic13 herd-size=1,1 l1-tile-size=64,64,64}",
-            "air-linalg-codegen{input-filter=linalg.matmul15 herd-size=2,2 l1-tile-size=32,32,32}",
-            "air-linalg-codegen{input-filter=linalg.matmul17 herd-size=2,2 l1-tile-size=32,32,32}",
-            "air-rm-linalg-name",
-            "canonicalize",
-            "cse",
-            "air-par-to-herd",
-            "air-copy-to-dma",
-            "canonicalize",
-            "cse"
-        ])
-
-        pm = air.mlir.passmanager.PassManager.parse(LINALG_MEMREF_TO_AIR_PIPELINE)
-        pm.run(air_module)
-
-        # print the air dialect mlir
-        print(air_module)
-
-        # run aircc to build the herds
-        # the loader expects the output to be called 'torch.mlir.so'
-        aircc.run(air_module,['--shared', '-o', 'torch.mlir.so', '--sysroot=/', '-row-offset=3', '-col-offset=20', 'torch.mlir'])
-
-        # generate a torch-mlir refbackend interface to the AIR control program so
-        # that we can reuse the refbackend's jit and object loader on the cpu.
-        with open('air_project/refback.torch.mlir') as f:
-            return_module = torch_mlir.ir.Module.parse(f.read(),imported_module.context)
-        return airbackend.refbackend.compile(return_module)
+lowering_pipeline = ",".join([
+    "air-linalg-name",
+    "air-linalg-codegen{input-filter=linalg.matmul1 herd-size=2,2 l1-tile-size=32,32,32}",
+    "air-linalg-codegen{input-filter=linalg.matmul3 herd-size=2,2 l1-tile-size=32,32,32}",
+    "air-linalg-codegen{input-filter=linalg.matmul5 herd-size=2,2 l1-tile-size=32,32,32}",
+    # "air-linalg-codegen{input-filter=linalg.generic8 herd-size=1,1 l1-tile-size=64,64,64}",
+    # "air-linalg-codegen{input-filter=linalg.generic9 herd-size=1,1 l1-tile-size=64,64,64}",
+    # "air-linalg-codegen{input-filter=linalg.generic10 herd-size=1,1 l1-tile-size=64,64,64}",
+    # "air-linalg-codegen{input-filter=linalg.generic12 herd-size=1,1 l1-tile-size=64,64,64}",
+    # "air-linalg-codegen{input-filter=linalg.generic13 herd-size=1,1 l1-tile-size=64,64,64}",
+    "air-linalg-codegen{input-filter=linalg.matmul15 herd-size=2,2 l1-tile-size=32,32,32}",
+    "air-linalg-codegen{input-filter=linalg.matmul17 herd-size=2,2 l1-tile-size=32,32,32}",
+    "air-rm-linalg-name",
+    "canonicalize",
+    "cse",
+    "air-par-to-herd",
+    "air-copy-to-dma",
+    "canonicalize",
+    "cse"
+])
 
 airbackend = backend.LinalgOnTensorsAirBackend()
-compiled = compile(mlir)
+compiled = airbackend.compile(mlir, lowering_pipeline)
 jit_module = airbackend.load(compiled)
 
 x = torch.rand((M,K), dtype=dtype)

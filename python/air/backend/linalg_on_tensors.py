@@ -48,7 +48,7 @@ __all__ = [
     "LinalgOnTensorsAirBackend",
 ]
 
-LINALG_MEMREF_TO_AIRRT_PIPELINE = ",".join([
+LINALG_MEMREF_TO_AIR_PIPELINE = ",".join([
     "air-linalg-codegen",
     "canonicalize",
     "cse",
@@ -71,22 +71,29 @@ class LinalgOnTensorsAirBackend(AirBackend):
     def __del__(self):
         self.unload()
 
-    def compile(self, imported_module: torch_mlir.ir.Module, verbose=False):
+    def compile(self, imported_module: torch_mlir.ir.Module, pipeline=None, verbose=False):
         """Compiles an imported module, with a flat list of functions.
         The module is expected to be in linalg-on-tensors + scalar code form.
         Args:
           imported_module: The MLIR module consisting of funcs in the torch
             dialect.
+          pipeline: The custom lowering pipeline to use for lowering. First
+            `air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE` is applied,
+            then `pipeline`.
+            The default is `air.backend.linalg_on_tensors.LINALG_MEMREF_TO_AIR_PIPELINE`
         Returns:
           An opaque, backend specific compiled artifact object that can be
           passed to `load`.
         """
 
+        if pipeline is None:
+            pipeline = LINALG_MEMREF_TO_AIR_PIPELINE
+
         with air.mlir.ir.Context():
             air_module = air.mlir.ir.Module.parse(str(imported_module))
             pm = air.mlir.passmanager.PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
             pm.run(air_module)
-            pm = air.mlir.passmanager.PassManager.parse(LINALG_MEMREF_TO_AIRRT_PIPELINE)
+            pm = air.mlir.passmanager.PassManager.parse(pipeline)
             pm.run(air_module)
             aircc.run(air_module,['--shared', '-o', 'torch.mlir.so', '--sysroot=/', '-row-offset=2', '-col-offset=7', 'torch.mlir'] + (['-v'] if verbose else []))
             with open('air_project/refback.torch.mlir') as f:
