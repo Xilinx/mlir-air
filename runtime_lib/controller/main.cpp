@@ -527,7 +527,13 @@ u64 getTileAddr(u16 ColIdx, u16 RowIdx)
 static inline u32 in32(u64 Addr)
 {
   /* read 32 bit value from specified address */
+#ifdef ARM_CONTROLLER
+  u32 Value = 0;
+  XAie_Read32(&(_xaie->DevInst), Addr, &Value);
+  return Value;
+#else
   return *(volatile u32 *) Addr;
+#endif
 }
 
 static inline void out32(u64 Addr, u32 Value)
