@@ -58,6 +58,49 @@ Interfaces: air_AsyncOpInterface
 | `asyncToken` | async token type
 | `result` | memref of any type values
 
+### `air.channel.get` (xilinx::air::ChannelGetOp)
+
+Get for air channels.
+
+
+Syntax:
+
+```
+operation ::= `air.channel.get` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
+              $chan_name `[` ($indices^)? `]`
+              `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `)` attr-dict `:`
+              `(` type($dst) `)`
+```
+
+Experimental operation to represent copying from a channel to a memref.
+
+Traits: AttrSizedOperandSegments
+
+Interfaces: air_AsyncOpInterface
+
+#### Attributes:
+
+| Attribute | MLIR Type | Description |
+| :-------: | :-------: | ----------- |
+| `chan_name` | ::mlir::FlatSymbolRefAttr | flat symbol reference attribute
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `asyncDependencies` | async token type
+| `indices` | index
+| `dst` | memref of any type values
+| `dst_offsets` | index
+| `dst_sizes` | index
+| `dst_strides` | index
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `asyncToken` | async token type
+
 ### `air.channel` (xilinx::air::ChannelOp)
 
 Channel for data movement.
@@ -66,19 +109,63 @@ Channel for data movement.
 Syntax:
 
 ```
-operation ::= `air.channel` $name `{` `count_x` `=` $countx `,` `count_y` `=` $county `}` attr-dict
+operation ::= `air.channel` $sym_name $size attr-dict
 ```
 
 Experimental operation to represent a channel as a point-to-point connection between
 two memrefs.
 
+Interfaces: Symbol
+
 #### Attributes:
 
 | Attribute | MLIR Type | Description |
 | :-------: | :-------: | ----------- |
-| `name` | ::mlir::FlatSymbolRefAttr | flat symbol reference attribute
-| `countx` | ::mlir::IntegerAttr | 32-bit signless integer attribute whose minimum value is 0
-| `county` | ::mlir::IntegerAttr | 32-bit signless integer attribute whose minimum value is 0
+| `sym_name` | ::mlir::StringAttr | string attribute
+| `size` | ::mlir::ArrayAttr | 64-bit integer array attribute
+
+### `air.channel.put` (xilinx::air::ChannelPutOp)
+
+Push for air channels.
+
+
+Syntax:
+
+```
+operation ::= `air.channel.put` custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
+              $chan_name `[` ($indices^)? `]`
+              `(` $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)` attr-dict `:`
+              `(` type($src) `)`
+```
+
+Experimental operation to represent copying data from a memref to a channel.
+
+Traits: AttrSizedOperandSegments
+
+Interfaces: air_AsyncOpInterface
+
+#### Attributes:
+
+| Attribute | MLIR Type | Description |
+| :-------: | :-------: | ----------- |
+| `chan_name` | ::mlir::FlatSymbolRefAttr | flat symbol reference attribute
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `asyncDependencies` | async token type
+| `indices` | index
+| `src` | memref of any type values
+| `src_offsets` | index
+| `src_sizes` | index
+| `src_strides` | index
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `asyncToken` | async token type
 
 ### `air.dealloc` (xilinx::air::DeallocOp)
 
@@ -107,26 +194,6 @@ Interfaces: air_AsyncOpInterface
 | Result | Description |
 | :----: | ----------- |
 | `asyncToken` | async token type
-
-### `air.distribute` (xilinx::air::DistributeOp)
-
-Distributed channel for merge data movement.
-
-
-Syntax:
-
-```
-operation ::= `air.distribute` $chan_in_name $chan_out_name attr-dict
-```
-
-Experimental operation to represent a channel distribute creating a data merge.
-
-#### Attributes:
-
-| Attribute | MLIR Type | Description |
-| :-------: | :-------: | ----------- |
-| `chan_in_name` | ::mlir::FlatSymbolRefAttr | flat symbol reference attribute
-| `chan_out_name` | ::mlir::FlatSymbolRefAttr | flat symbol reference attribute
 
 ### `air.dma_memcpy_nd` (xilinx::air::DmaMemcpyNdOp)
 
@@ -226,26 +293,6 @@ Effects: MemoryEffects::Effect{}
 | Operand | Description |
 | :-----: | ----------- |
 | `results` | any type
-
-### `air.fork` (xilinx::air::ForkOp)
-
-Forked channel for broadcast data movement.
-
-
-Syntax:
-
-```
-operation ::= `air.fork` $chan_in_name $chan_out_name attr-dict
-```
-
-Experimental operation to represent a channel fork creating a data broadcast.
-
-#### Attributes:
-
-| Attribute | MLIR Type | Description |
-| :-------: | :-------: | ----------- |
-| `chan_in_name` | ::mlir::FlatSymbolRefAttr | flat symbol reference attribute
-| `chan_out_name` | ::mlir::FlatSymbolRefAttr | flat symbol reference attribute
 
 ### `air.herd` (xilinx::air::HerdOp)
 
@@ -535,94 +582,6 @@ Effects: MemoryEffects::Effect{}
 | Operand | Description |
 | :-----: | ----------- |
 | `opers` | any type
-
-### `air.pop` (xilinx::air::PopOp)
-
-Pop for air channels.
-
-
-Syntax:
-
-```
-operation ::= `air.pop` $chan_name `(` $chan_idx `,` $chan_idy `)`
-              custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
-              `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `)`  attr-dict `:`
-              `(` type($dst) `)`
-```
-
-Experimental operation to represent copying data out of a channel.
-
-Traits: AttrSizedOperandSegments
-
-Interfaces: air_AsyncOpInterface
-
-#### Attributes:
-
-| Attribute | MLIR Type | Description |
-| :-------: | :-------: | ----------- |
-| `chan_name` | ::mlir::FlatSymbolRefAttr | flat symbol reference attribute
-
-#### Operands:
-
-| Operand | Description |
-| :-----: | ----------- |
-| `asyncDependencies` | async token type
-| `chan_idx` | index
-| `chan_idy` | index
-| `dst` | memref of any type values
-| `dst_offsets` | index
-| `dst_sizes` | index
-| `dst_strides` | index
-
-#### Results:
-
-| Result | Description |
-| :----: | ----------- |
-| `asyncToken` | async token type
-
-### `air.push` (xilinx::air::PushOp)
-
-Push for air channels.
-
-
-Syntax:
-
-```
-operation ::= `air.push` $chan_name `(` $chan_idx `,` $chan_idy `)`
-              custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
-              `(` $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)`  attr-dict `:`
-              `(` type($src) `)`
-```
-
-Experimental operation to represent copying data into a channel.
-
-Traits: AttrSizedOperandSegments
-
-Interfaces: air_AsyncOpInterface
-
-#### Attributes:
-
-| Attribute | MLIR Type | Description |
-| :-------: | :-------: | ----------- |
-| `chan_name` | ::mlir::FlatSymbolRefAttr | flat symbol reference attribute
-
-#### Operands:
-
-| Operand | Description |
-| :-----: | ----------- |
-| `asyncDependencies` | async token type
-| `chan_idx` | index
-| `chan_idy` | index
-| `src` | memref of any type values
-| `src_offsets` | index
-| `src_sizes` | index
-| `src_strides` | index
-
-#### Results:
-
-| Result | Description |
-| :----: | ----------- |
-| `asyncToken` | async token type
 
 ### `air.wait_all` (xilinx::air::WaitAllOp)
 
