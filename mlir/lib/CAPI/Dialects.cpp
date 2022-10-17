@@ -29,3 +29,15 @@
 #include "mlir/CAPI/Registration.h"
 
 MLIR_DEFINE_CAPI_DIALECT_REGISTRATION(AIR, air, xilinx::air::airDialect)
+
+//===---------------------------------------------------------------------===//
+// AsyncTokenType
+//===---------------------------------------------------------------------===//
+
+bool mlirTypeIsAIRAsyncTokenType(MlirType type) {
+  return unwrap(type).isa<xilinx::air::AsyncTokenType>();
+}
+
+MlirType mlirAIRAsyncTokenTypeGet(MlirContext ctx) {
+  return wrap(xilinx::air::AsyncTokenType::get(unwrap(ctx)));
+}

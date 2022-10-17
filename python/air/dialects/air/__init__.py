@@ -22,4 +22,4 @@
 # DEALINGS IN THE SOFTWARE.
 
 from .._air_ops_gen import *
-from ..._mlir_libs._airMlir import register_dialect
+from ...mlir._mlir_libs._airMlir import *

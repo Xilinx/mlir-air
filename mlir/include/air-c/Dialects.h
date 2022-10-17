@@ -34,6 +34,13 @@ extern "C" {
 
 MLIR_DECLARE_CAPI_DIALECT_REGISTRATION(AIR, air);
 
+//===---------------------------------------------------------------------===//
+// AsyncTokenType
+//===---------------------------------------------------------------------===//
+
+MLIR_CAPI_EXPORTED bool mlirTypeIsAIRAsyncTokenType(MlirType type);
+MLIR_CAPI_EXPORTED MlirType mlirAIRAsyncTokenTypeGet(MlirContext ctx);
+
 #ifdef __cplusplus
 }
 #endif

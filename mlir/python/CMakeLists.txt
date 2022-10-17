@@ -52,15 +52,6 @@ target_link_libraries(AIRMLIRPyExt
 
 set_target_properties(AIRMLIRPyExt PROPERTIES CXX_VISIBILITY_PRESET "hidden")
 
-# target_compile_options(AIRMLIRPyExt PRIVATE
-#   # Enable RTTI and exceptions.
-#   -frtti -fexceptions
-#   # Noisy pybind warnings
-#   -Wno-unused-value
-#   -Wno-covered-switch-default
-# )
-# mlir_check_all_link_libraries(AIRMLIRPyExt)
-
 install(TARGETS AIRMLIRPyExt
 LIBRARY DESTINATION python COMPONENT python
 ARCHIVE DESTINATION python COMPONENT python

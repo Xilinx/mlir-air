@@ -22,17 +22,14 @@
 # DEALINGS IN THE SOFTWARE.
 
 try:
-  from ..ir import *
+  from ..mlir.ir import *
 except ImportError as e:
   raise RuntimeError("Error loading imports from extension module") from e
 
-class HerdOp:
-  """Specialization for herd_launch op class."""
-
-  def __init__(self, name, sizes, operands, async_deps=[], loc=None, ip=None):
-    results = []
-    attributes = {}
-    attributes["sym_name"] = StringAttr.get(str(name))
+class AirHierarchyOp:
+  def __init__(self, name=None, sizes=[1,1], results=[], async_deps=[], operands=[], attributes={}, loc=None, ip=None):
+    if name:
+      attributes["sym_name"] = StringAttr.get(str(name))
     super().__init__(self.build_generic(
       results=results,
       operands=[async_deps,sizes,operands],
@@ -50,3 +47,18 @@ class HerdOp:
   @property
   def name(self) -> StringAttr:
     return StringAttr(self.attributes["sym_name"])
+
+class LaunchOp(AirHierarchyOp):
+  """Specialization for LaunchOp class."""
+  def __init__(self, name=None, sizes=[], results=[], async_deps=[], operands=[], attributes={}, loc=None, ip=None):
+    super().__init__(name, sizes, results, async_deps, operands, attributes, loc, ip)
+
+class PartitionOp(AirHierarchyOp):
+  """Specialization for PartitionOp class."""
+  def __init__(self, name=None, sizes=[], results=[], async_deps=[], operands=[], attributes={}, loc=None, ip=None):
+    super().__init__(name, sizes, results, async_deps, operands, attributes, loc, ip)
+
+class HerdOp(AirHierarchyOp):
+  """Specialization for HerdOp class."""
+  def __init__(self, name=None, sizes=[1,1], results=[], async_deps=[], operands=[], attributes={}, loc=None, ip=None):
+    super().__init__(name, sizes, results, async_deps, operands, attributes, loc, ip)
