@@ -31,21 +31,22 @@
 #include "AIRRunnerModule.h"
 
 namespace py = pybind11;
+using namespace mlir::python::adaptors;
 
 PYBIND11_MODULE(_airMlir, m) {
 
   ::airRegisterAllPasses();
 
   m.doc() = R"pbdoc(
-    Xilinx AIR MLIR Python bindings
+    AIR MLIR Python bindings
     --------------------------
 
-    .. currentmodule:: AIRMLIR_
+    .. currentmodule:: _airMlir
 
     .. autosummary::
         :toctree: _generate
   )pbdoc";
-  
+
   m.def(
       "register_dialect",
       [](MlirContext context, bool load) {
@@ -56,9 +57,22 @@ PYBIND11_MODULE(_airMlir, m) {
         }
       },
       py::arg("context"), py::arg("load") = true);
+
   m.def("_register_all_passes", ::airRegisterAllPasses);
+
+  // AIR types bindings
+  mlir_type_subclass(m, "AsyncTokenType", mlirTypeIsAIRAsyncTokenType)
+      .def_classmethod(
+          "get",
+          [](py::object cls, MlirContext ctx) {
+            return cls(mlirAIRAsyncTokenTypeGet(ctx));
+          },
+          "Get an instance of AsyncTokenType in given context.",
+          py::arg("self"), py::arg("ctx") = py::none());
+
   m.attr("__version__") = "dev";
 
+  // AIR Runner bindings
   auto air_runner = m.def_submodule("runner", "air-runner bindings");
   xilinx::air::defineAIRRunnerModule(air_runner);
 }
