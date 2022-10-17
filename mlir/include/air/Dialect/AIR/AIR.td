@@ -57,7 +57,7 @@ def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
   let builders = [
     OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$kernel_operands)>,
     OpBuilder<(ins "ValueRange":$async_dependencies,
-      "ValueRange":$sizes,"ValueRange":$kernel_operands, 
+      "ValueRange":$sizes,"ValueRange":$kernel_operands,
       CArg<"bool", "false">:$is_async)>
   ];
   let hasCustomAssemblyFormat = 1;
@@ -115,7 +115,7 @@ def air_PartitionOp : air_Op<"partition", [air_AsyncOpInterface,
   let builders = [
     OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$kernel_operands)>,
     OpBuilder<(ins "ValueRange":$async_dependencies,
-      "ValueRange":$sizes,"ValueRange":$kernel_operands, 
+      "ValueRange":$sizes,"ValueRange":$kernel_operands,
       CArg<"bool", "false">:$is_async)>
   ];
   let hasCustomAssemblyFormat = 1;
@@ -264,7 +264,7 @@ def air_PipelineYieldOp : air_Op<"pipeline.yield", [HasParent<"PipelineStageOp">
                                  Arguments<(ins Variadic<AnyType>:$opers)>, Results<(outs)> {
   let summary = "Yield for air pipeline stages.";
   let description = [{
-    A terminator operation for regions that appear in the body of 
+    A terminator operation for regions that appear in the body of
     `air.pipeline.stage` operation. The operation takes variable number of
     operands and produces no results. The operand number and types must
     match the signature of the `air.pipeline` that contains the operation.
@@ -303,7 +303,7 @@ def air_PipelineTerminatorOp : air_Op<"pipeline.terminator", [HasParent<"HerdPip
     Arguments<(ins Variadic<AnyType>:$opers)>, Results<(outs)> {
   let summary = "Terminator for air pipeline regions.";
   let description = [{
-    A terminator operation for regions that appear in the body of 
+    A terminator operation for regions that appear in the body of
     `air.pipeline` operation.
   }];
   let assemblyFormat = "attr-dict ($opers^ `:` type($opers))?";
@@ -327,8 +327,8 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
   );
   let results = (outs Optional<air_AsyncToken>:$async_token);
   let assemblyFormat = [{
-    custom<AsyncDependencies>(type($async_token), $async_dependencies) 
-    `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `,` 
+    custom<AsyncDependencies>(type($async_token), $async_dependencies)
+    `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `,`
         $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)`  attr-dict `:`
     `(` type($dst) `,` type($src) `)`
   }];
@@ -418,20 +418,20 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
 }
 
 def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface, AttrSizedOperandSegments]>,
-    Arguments<(ins Variadic<air_AsyncToken>:$asyncDependencies, 
-        FlatSymbolRefAttr:$chan_name, 
+    Arguments<(ins Variadic<air_AsyncToken>:$async_dependencies,
+        FlatSymbolRefAttr:$chan_name,
         Variadic<Index>:$indices,
         AnyMemRef:$src,
         Variadic<Index>:$src_offsets,
         Variadic<Index>:$src_sizes,
-        Variadic<Index>:$src_strides)>, 
+        Variadic<Index>:$src_strides)>,
     Results<(outs Optional<air_AsyncToken>:$async_token)> {
   let summary = "Push for air channels.";
   let description = [{
     Experimental operation to represent copying data from a memref to a channel.
   }];
   let assemblyFormat = [{
-    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) 
+    custom<AsyncDependencies>(type($async_token), $async_dependencies)
     $chan_name `[` ($indices^)? `]`
     `(` $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)` attr-dict `:`
     `(` type($src) `)`
@@ -439,20 +439,20 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface, AttrSizedOpe
 }
 
 def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface, AttrSizedOperandSegments]>,
-    Arguments<(ins Variadic<air_AsyncToken>:$asyncDependencies, 
+    Arguments<(ins Variadic<air_AsyncToken>:$async_dependencies,
         FlatSymbolRefAttr:$chan_name,
         Variadic<Index>:$indices,
         AnyMemRef:$dst,
         Variadic<Index>:$dst_offsets,
         Variadic<Index>:$dst_sizes,
-        Variadic<Index>:$dst_strides)>, 
-    Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
+        Variadic<Index>:$dst_strides)>,
+    Results<(outs Optional<air_AsyncToken>:$async_token)> {
   let summary = "Get for air channels.";
   let description = [{
     Experimental operation to represent copying from a channel to a memref.
   }];
   let assemblyFormat = [{
-    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) 
+    custom<AsyncDependencies>(type($async_token), $async_dependencies)
     $chan_name `[` ($indices^)? `]`
     `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `)` attr-dict `:`
     `(` type($dst) `)`
