@@ -19,7 +19,7 @@ jobs:
       # Clone the repo and its submodules. Do shallow clone to save clone
       # time.
       - name: Get repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           fetch-depth: 2
           submodules: "true"
@@ -46,7 +46,7 @@ jobs:
 
       - name: Get cmakeModules
         id: clone-cmakeModules
-        run: git clone --depth 1 https://github.com/Xilinx/cmakeModules.git
+        run: git clone --branch branch2021_2 --depth 1 https://github.com/Xilinx/cmakeModules.git
         shell: bash
 
       - name: Get LLVM
@@ -59,6 +59,9 @@ jobs:
 
       - name: Rebuild and Install mlir-aie
         run: utils/clone-build-mlir-aie.sh
+
+      - name: Rebuild and Install libxaie
+        run: utils/clone-build-libxaie.sh
 
       # Build the repo test target in debug mode to build and test.
       - name: Build and test (Assert)
@@ -77,12 +80,15 @@ jobs:
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
             -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
-            -DAIR_BUILD_RUNTIME=OFF \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_INSTALL_PREFIX=install
           ninja
           ninja check-air-mlir
           ninja check-air-python
           popd
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/aienginev2/install/lib
+          XAIENGINE_LOCAL_DIR: ${{ github.workspace }}/aienginev2/install
 
       # Build the repo test target in release mode to build and test.
       - name: Build and test (Release)
@@ -100,11 +106,14 @@ jobs:
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
             -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
-            -DAIR_BUILD_RUNTIME=OFF \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_INSTALL_PREFIX=install
           make -j$(nproc)
           make check-air-mlir check-air-python
           popd
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/aienginev2/install/lib
+          XAIENGINE_LOCAL_DIR: ${{ github.workspace }}/aienginev2/install
 
   lint-repo:
     name: Check code format
@@ -120,7 +129,7 @@ jobs:
       # Clone the repo and its submodules. Do shallow clone to save clone
       # time.
       - name: Get repo
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           fetch-depth: 2
           submodules: "true"
