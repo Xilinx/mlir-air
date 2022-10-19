@@ -24,5 +24,5 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: aircc.py -row-offset=2 -col-offset=7 %S/air.mlir -o air.mlir.a
-// RUN: %ARM_CLANG %S/test.cpp %aie_runtime_lib%/test_library.cpp -Wl,--whole-archive air.mlir.a -Wl,--no-whole-archive -g -I%VITIS_SYSROOT%/opt/xaienginev2/include -L%VITIS_SYSROOT%/opt/xaienginev2/lib -lxaiengine -I%aie_runtime_lib% -I%air_runtime_lib%/airhost/include -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
+// RUN: %CLANG %S/test.cpp %aie_runtime_lib%/test_library.cpp -Wl,--whole-archive air.mlir.a -Wl,--no-whole-archive -g -I%VITIS_SYSROOT%/opt/xaienginev2/include -L%VITIS_SYSROOT%/opt/xaienginev2/lib -lxaiengine -I%aie_runtime_lib% -I%air_runtime_lib%/airhost/include -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
 // RUN: %run_on_board %T/test.elf
