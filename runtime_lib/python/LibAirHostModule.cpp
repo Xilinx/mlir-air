@@ -96,13 +96,16 @@ void defineAIRHostModule(pybind11::module &m) {
 
   pybind11::class_<queue_t>(m, "Queue");
 
-  m.def("queue_create", []() -> queue_t* {
-    queue_t *q = nullptr;
-    auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
-    if (ret != 0)
-      return nullptr;
-    return q;
-  }, pybind11::return_value_policy::reference);
+  m.def("queue_create",
+        []() -> queue_t * {
+          queue_t *q = nullptr;
+          auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q,
+                                      AIR_VCK190_SHMEM_BASE);
+          if (ret != 0)
+            return nullptr;
+          return q;
+        },
+        pybind11::return_value_policy::reference);
 }
 
 }

@@ -37,7 +37,7 @@ namespace {
 } // namespace
 
 PYBIND11_MODULE(_airRt, m) {
-    m.doc() = R"pbdoc(
+  m.doc() = R"pbdoc(
         AIR Runtime Python bindings
         --------------------------
 
