@@ -23,5 +23,5 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: %CLANG %S/test.cpp -I%VITIS_SYSROOT%/opt/xaienginev2/include -L%VITIS_SYSROOT%/opt/xaienginev2/lib -lxaiengine -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
+// RUN: %CLANG %S/test.cpp -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
 // RUN: %run_on_board %T/test.elf

@@ -27,5 +27,5 @@
 
 // RUN: aie-opt --aie-create-packet-flows --aie-find-flows --aie-assign-buffer-addresses %S/aie.mlir | aie-translate --aie-generate-xaie --xaie-target=v2 -o %T/aie_inc.cpp
 // RUN: aiecc.py --aie-generate-xaiev2 --pathfinder  %S/aie.mlir
-// RUN: %CLANG %S/test.cpp -I%VITIS_SYSROOT%/opt/xaienginev2/include -I%T -L%VITIS_SYSROOT%/opt/xaienginev2/lib -lxaiengine -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
+// RUN: %CLANG %S/test.cpp -I%LIBXAIE_DIR%/include -I%T -L%LIBXAIE_DIR%/lib -lxaiengine -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
 // %run_on_board %T/test.elf
