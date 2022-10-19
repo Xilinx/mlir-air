@@ -62,6 +62,13 @@ def AIRToCpu : Pass<"air-to-cpu", "ModuleOp"> {
   }];
 }
 
+def AIRToAsync : Pass<"air-to-async", "ModuleOp"> {
+  let summary = "AIR dialect lowering";
+  let constructor = "xilinx::air::createAIRToAsyncPass()";
+  let description = [{
+  }];
+}
+
 def AIRLowering : Pass<"air-to-std", "ModuleOp"> {
   let summary = "AIR dialect lowering";
   let constructor = "xilinx::air::createAIRLoweringPass()";
