@@ -39,8 +39,8 @@ namespace xilinx {
 namespace air {
 
 void defineAIRHostModule(pybind11::module &m) {
-#ifdef AIE_LIBXAIE_ENABLE
 
+#ifdef AIE_LIBXAIE_ENABLE
   pybind11::class_<aie_libxaie_ctx_t>(m, "LibXAIEContext");
 
   m.def("init_libxaie", &air_init_libxaie1, pybind11::return_value_policy::reference);
@@ -48,6 +48,7 @@ void defineAIRHostModule(pybind11::module &m) {
   m.def("deinit_libxaie",[](aie_libxaie_ctx_t* ctx) -> void {
     air_deinit_libxaie1(ctx);
   });
+#endif
 
   pybind11::class_<air_module_desc_t>(m, "ModuleDescriptor")
       .def(
@@ -102,7 +103,6 @@ void defineAIRHostModule(pybind11::module &m) {
       return nullptr;
     return q;
   }, pybind11::return_value_policy::reference);
-#endif
 }
 
 }
