@@ -153,8 +153,9 @@ def run(mlir_module, args):
     do_call(['llvm-dis', aie_ctrl_llvm_opt_bc, '-o', aie_ctrl_llvm_opt_ir])
 
     aie_ctrl_obj = opts.tmpdir+'/'+air_mlir_filename+'.o'
-    #do_call(['clang', '-Wno-override-module', '-fPIC', '-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
-    do_call(['clang', '-Wno-override-module', '-fPIC', '--target=aarch64-linux-gnu', '-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
+    do_call(['clang', '-Wno-override-module', '-fPIC'] +
+            (['--target', opts.host_target] if opts.host_target else []) +
+            ['-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
 
     # make aie elf files and host .o files for each herd in the program
 
@@ -172,9 +173,14 @@ def run(mlir_module, args):
       aiecc_file = opts.tmpdir+'/aiecc.'+herd+'.mlir'
       aiecc_dir = opts.tmpdir+'/'+herd
       do_call(['air-opt', herd_file, '-air-lower-linalg-tensors', '--lower-affine', '-cse', '-o', aiecc_file])
+      if 'x86_64' in platform.uname()[5]:
+        aiecc_target = "x86_64-amd-linux-gnu"
+      else:
+        aiecc_target = "aarch64-linux-gnu"
       do_call(['aiecc.py'] +
               (['-v'] if opts.verbose else []) +
-              (['--sysroot', opts.sysroot] if opts.sysroot!="" else []) +
+              (['--sysroot', opts.sysroot] if opts.sysroot else ['--sysroot=/']) +
+              ['--host-target', opts.host_target if opts.host_target else aiecc_target]
               ['--tmpdir', aiecc_dir] +
               ['--pathfinder', '--aie-generate-xaiev2'] +
               ['--no-xbridge', '--no-xchesscc', aiecc_file])
@@ -190,10 +196,9 @@ def run(mlir_module, args):
       with open(cpp_file, 'w') as f:
         f.write(emit_wrapper(herd, inc_file))
 
-      cmd = [opts.cc, '-std=c++11', '--target=aarch64-linux-gnu', '-g']
-      #cmd = [opts.cc, '-std=c++11', '-g']
-      if opts.sysroot:
-        cmd += ['--sysroot=%s' % opts.sysroot]
+      cmd = [opts.cc, '-std=c++11', '-g']
+      cmd += ['--sysroot=%s' % opts.sysroot] if opts.sysroot else []
+      cmd += ['--target=%s' % opts.host_target] if opts.host_target else []
       cmd += ['-I.', f'-I{opts.sysroot}/opt/xaienginev2/include']
       thispath = os.path.dirname(os.path.realpath(__file__))
       cmd += [f'-I{thispath}/../../../../runtime_lib/airhost/include']
@@ -210,9 +215,9 @@ def run(mlir_module, args):
     lib_file = opts.tmpdir+'/'+opts.air_mlir_file+('.so' if opts.shared else '.a')
     if opts.shared:
       cmd = ['clang', '-shared']
-      cmd += ['--sysroot', opts.sysroot] if opts.sysroot!="" else []
-      #cmd += ['-fuse-ld=lld', '-o', lib_file] + obj_files
-      cmd += ['-fuse-ld=lld', '--target=aarch64-linux-gnu', '-o', lib_file] + obj_files
+      cmd += ['--sysroot', opts.sysroot] if opts.sysroot else []
+      cmd += ['--target', opts.host_target] if opts.host_target else []
+      cmd += ['-fuse-ld=lld', '-o', lib_file] + obj_files
     else:
       cmd = ['llvm-ar', 'rc', lib_file] + obj_files
     do_call(cmd)
@@ -267,8 +272,9 @@ def run_flow(opts):
     do_call(['llvm-dis', aie_ctrl_llvm_opt_bc, '-o', aie_ctrl_llvm_opt_ir])
 
     aie_ctrl_obj = opts.tmpdir+'/'+air_mlir_filename+'.o'
-    do_call(['clang', '-Wno-override-module', '-fPIC', '--target=aarch64-linux-gnu', '-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
-    #do_call(['clang', '-Wno-override-module', '-fPIC', '-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
+    do_call(['clang', '-Wno-override-module', '-fPIC'] +
+            (['--host_target', opts.host_target] if opts.host_target else []) +
+            ['-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
 
     t = do_run(['air-translate', '--airrt-generate-json', aie_ctrl_airrt])
 
@@ -281,9 +287,14 @@ def run_flow(opts):
       aiecc_file = opts.tmpdir+'/aiecc.'+herd+'.mlir'
       aiecc_dir = opts.tmpdir+'/'+herd
       do_call(['air-opt', herd_file, '-air-lower-linalg-tensors', '--lower-affine', '-cse', '-o', aiecc_file])
+      if 'x86_64' in platform.uname()[5]:
+        aiecc_target = "x86_64-amd-linux-gnu"
+      else:
+        aiecc_target = "aarch64-linux-gnu"
       do_call(['aiecc.py'] +
               (['-v'] if opts.verbose else []) +
-              (['--sysroot', opts.sysroot] if opts.sysroot!="" else []) +
+              (['--sysroot', opts.sysroot] if opts.sysroot else ['--sysroot=/']) +
+              ['--host-target', opts.host_target if opts.host_target else aiecc_target] +
               ['--tmpdir', aiecc_dir] +
               ['--pathfinder', '--aie-generate-xaiev2'] +
               ['--no-xbridge', '--no-xchesscc', aiecc_file])
@@ -297,10 +308,9 @@ def run_flow(opts):
       with open(cpp_file, 'w') as f:
         f.write(emit_wrapper(herd, inc_file))
 
-      cmd = [opts.cc, '-std=c++11', '--target=aarch64-linux-gnu', '-g']
-      #cmd = [opts.cc, '-std=c++11', '-g']
-      if opts.sysroot:
-        cmd += ['--sysroot=%s' % opts.sysroot]
+      cmd = [opts.cc, '-std=c++11', '-g']
+      cmd += ['--sysroot=%s' % opts.sysroot] if opts.sysroot else []
+      cmd += ['--target=%s' % opts.host_target] if opts.host_target else []
       cmd += ['-I.', f'-I{opts.sysroot}/opt/xaienginev2/include']
       cmd += [f'-I{thispath}/../../../../runtime_lib/airhost/include']
       cmd += [f'-I{thispath}/../../../../runtime_lib']
@@ -315,9 +325,9 @@ def run_flow(opts):
     lib_file = opts.air_mlir_file+('.so' if opts.shared else '.a')
     if opts.shared:
       cmd = ['clang', '-shared']
-      cmd += ['--sysroot', opts.sysroot] if opts.sysroot!="" else []
-      #cmd += ['-fuse-ld=lld', '-o', lib_file] + obj_files
-      cmd += ['-fuse-ld=lld', '--target=aarch64-linux-gnu', '-o', lib_file] + obj_files
+      cmd += ['--sysroot', opts.sysroot] if opts.sysroot else []
+      cmd += ['--target', opts.host_target] if opts.host_target else []
+      cmd += ['-fuse-ld=lld', '-o', lib_file] + obj_files
     else:
       cmd = ['llvm-ar', 'rc', lib_file] + obj_files
     do_call(cmd)

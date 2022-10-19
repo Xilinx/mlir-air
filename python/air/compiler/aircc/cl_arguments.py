@@ -60,6 +60,10 @@ def parse_args(args=None):
             metavar="sysroot",
             default="",
             help='sysroot for cross-compilation')
+    parser.add_argument('--host-target',
+            metavar="host_target",
+            default="",
+            help='Target architecture of the host program')
     parser.add_argument('--shared',
             dest="shared",
             default=False,
