@@ -43,6 +43,7 @@ if(POLICY CMP0116)
   cmake_policy(SET CMP0116 OLD)
 endif()
 
+
 project(AIR LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -51,9 +52,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(PEANO_INSTALL_DIR "<unset>" CACHE STRING "Location of Peano compiler")
 
 include(ExternalProject)
+
 find_package(MLIR REQUIRED CONFIG)
 find_package(AIE REQUIRED)
-
 find_package(LibXAIE)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
@@ -124,6 +125,10 @@ add_custom_target(docs ALL)
 add_dependencies(docs mlir-doc)
 
 option(AIR_BUILD_RUNTIME "Build the air runtime" ON)
+if (NOT LibXAIE_FOUND)
+	message(WARNING "LibXAIE not found, AIR runtime will not be built.")
+	set(AIR_BUILD_RUNTIME OFF)
+endif()
 
 if(AIR_BUILD_RUNTIME)
 	ExternalProject_Add(air_runtime_lib

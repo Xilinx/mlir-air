@@ -43,7 +43,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
 find_package(MLIR REQUIRED CONFIG)
 find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 
-# Eventually we need to have some configuration options to select LibXAIEV2
 find_package(LibXAIE)
 
 if(NOT AIE_BINARY_DIR)
@@ -54,7 +53,6 @@ if(NOT AIR_BINARY_DIR)
 find_package(AIR REQUIRED CONFIG)
 endif()
 
-find_package(Torch 1.8)
 find_package(Vitis)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
