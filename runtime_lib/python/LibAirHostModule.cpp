@@ -35,6 +35,7 @@
 #include "acdc_queue.h"
 #include "air_host.h"
 #endif
+
 namespace xilinx {
 namespace air {
 
@@ -48,28 +49,29 @@ void defineAIRHostModule(pybind11::module &m) {
 
   m.def("deinit_libxaie",
         [](aie_libxaie_ctx_t *ctx) -> void { air_deinit_libxaie1(ctx); });
-#endif
 
   pybind11::class_<air_module_desc_t>(m, "ModuleDescriptor")
-      .def("getPartitions",
-           [](const air_module_desc_t &d)
-               -> std::vector<air_partition_desc_t *> {
-             std::vector<air_partition_desc_t *> partitions;
-             for (uint64_t i = 0; i < d.partition_length; i++)
-               partitions.push_back(d.partition_descs[i]);
-             return partitions;
-           },
-           pybind11::return_value_policy::reference);
+      .def(
+          "getPartitions",
+          [](const air_module_desc_t &d)
+              -> std::vector<air_partition_desc_t *> {
+            std::vector<air_partition_desc_t *> partitions;
+            for (uint64_t i = 0; i < d.partition_length; i++)
+              partitions.push_back(d.partition_descs[i]);
+            return partitions;
+          },
+          pybind11::return_value_policy::reference);
 
   pybind11::class_<air_partition_desc_t>(m, "PartitionDescriptor")
-      .def("getHerds",
-           [](const air_partition_desc_t &d) -> std::vector<air_herd_desc_t *> {
-             std::vector<air_herd_desc_t *> herds;
-             for (uint64_t i = 0; i < d.herd_length; i++)
-               herds.push_back(d.herd_descs[i]);
-             return herds;
-           },
-           pybind11::return_value_policy::reference)
+      .def(
+          "getHerds",
+          [](const air_partition_desc_t &d) -> std::vector<air_herd_desc_t *> {
+            std::vector<air_herd_desc_t *> herds;
+            for (uint64_t i = 0; i < d.herd_length; i++)
+              herds.push_back(d.herd_descs[i]);
+            return herds;
+          },
+          pybind11::return_value_policy::reference)
       .def("getName", [](const air_partition_desc_t &d) -> std::string {
         return std::string(d.name, d.name_length);
       });
@@ -95,16 +97,18 @@ void defineAIRHostModule(pybind11::module &m) {
 
   pybind11::class_<queue_t>(m, "Queue");
 
-  m.def("queue_create",
-        []() -> queue_t * {
-          queue_t *q = nullptr;
-          auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q,
-                                      AIR_VCK190_SHMEM_BASE);
-          if (ret != 0)
-            return nullptr;
-          return q;
-        },
-        pybind11::return_value_policy::reference);
+  m.def(
+      "queue_create",
+      []() -> queue_t * {
+        queue_t *q = nullptr;
+        auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q,
+                                    AIR_VCK190_SHMEM_BASE);
+        if (ret != 0)
+          return nullptr;
+        return q;
+      },
+      pybind11::return_value_policy::reference);
+#endif
 }
 
 } // namespace air
