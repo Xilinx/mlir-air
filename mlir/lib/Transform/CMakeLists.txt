@@ -24,6 +24,7 @@ add_air_library(AIRTransformPasses
 AffineLoopOptPass.cpp
 AIRAutomaticTilingPass.cpp
 AIRHerdAssignPass.cpp
+AIRHerdPlacementPass.cpp
 AIRLinalgCodegen.cpp
 AIRLinalgOpStats.cpp
 AIRLoopMergingPass.cpp

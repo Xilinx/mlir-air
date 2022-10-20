@@ -26,6 +26,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -48,6 +49,8 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
+
+#include "AIRTargets.h"
 
 using namespace mlir;
 using namespace xilinx;
@@ -124,6 +127,16 @@ void registerAIRRtTranslations() {
                         vector::VectorDialect, LLVM::LLVMDialect,
                         scf::SCFDialect, AffineDialect>();
       });
+  TranslateFromMLIRRegistration registrationXJSON(
+      "air-herds-to-json",
+      [](ModuleOp module, raw_ostream &output) {
+          return AIRHerdsToJSON(module, output);
+        },
+        [](DialectRegistry &registry) {
+          registry.insert<air::airDialect, func::FuncDialect,
+          arith::ArithmeticDialect, memref::MemRefDialect,
+          scf::SCFDialect, AffineDialect, linalg::LinalgDialect>();
+        });
 }
 
 } // namespace air
