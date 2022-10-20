@@ -584,7 +584,19 @@ void xaie_shim_dma_wait_idle(uint64_t TileAddr, int direction, int channel) {
     shimDMAchannel += XAIEDMA_SHIM_CHNUM_MM2S0;
     status_register_offset = 0x1d164;
   }
-  while ((xaie::in32(TileAddr + status_register_offset) >> status_mask_shift) & 0b11);
+
+  // Will timeout if shim is busy
+  uint32_t timeout_count = 0;
+  uint32_t timeout_val = 100;
+  while ((xaie::in32(TileAddr + status_register_offset) >> status_mask_shift) & 0b11) {
+    if(timeout_count >= timeout_val) {
+      air_printf("[WARNING] xaie_shim_dma_wait_idle timed out\r\n");
+      return 1;
+    }
+    timeout_count++;
+  }
+
+  return 0;
 }
 
 uint32_t xaie_shim_dma_get_outstanding(uint64_t TileAddr, int direction, int channel) {
@@ -1314,9 +1326,14 @@ int do_packet_nd_memcpy(uint32_t slot)
   }
 
   // Wait check idle
-  xaie_shim_dma_wait_idle(xaie::getTileAddr(col,0),direction,channel);
+  int wait_idle_ret = xaie_shim_dma_wait_idle(xaie::getTileAddr(col,0),direction,channel);
 
-  return 0;
+  // If return 1 we timed out, BDs waiting on other BDs. Put checkpoint and return 1
+  if(wait_idle_ret) {
+    nd_dma_put_checkpoint(&a_pkt,slot,index_4d,index_3d,index_2d,paddr_3d,paddr_2d,paddr_1d);
+  }
+
+  return wait_idle_ret;
 }
 
 
