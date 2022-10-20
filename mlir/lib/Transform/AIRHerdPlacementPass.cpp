@@ -147,15 +147,14 @@ public:
       for (int j = col; j < herd->getNumCols() + col; j++) {
         // build down and to the right
 
-        // realistic
         if (i < 0 || j >= numCols) {
           return false;
         }
-        // unrealistic
+
         if (i >= numRows || j < 0) {
           return false;
         }
-        // if it's occupied
+
         if (grid[i][j] != -1) {
           return false;
         }
@@ -239,7 +238,6 @@ public:
     std::vector<std::unique_ptr<Herd>> placedHerds;
     naivePlacement(grid, unplacedHerds, placedHerds);
 
-    // TODO: exit gracefully
     if (unplacedHerds.size() != 0) {
       llvm::outs() << "Valid placement Not found." << "\n";
       for (uint32_t i = 0; i < unplacedHerds.size(); i++) {
@@ -251,8 +249,6 @@ public:
     auto col_name = xilinx::air::HerdOp::getColOffsetAttrName();
     auto row_name = xilinx::air::HerdOp::getRowOffsetAttrName();
 
-    // Can loop through and look for the sym_names, and see if the sym_name is already defined
-    // in the class
     for (uint32_t i = 0; i < herdOps.size(); i++) {
       for (uint32_t j = 0; j < placedHerds.size(); j++) {
         std::string herdName;
