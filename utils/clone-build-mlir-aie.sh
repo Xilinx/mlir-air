@@ -46,14 +46,14 @@ cmake .. \
     -DHOST_COMPILER=NONE \
     -DLLVM_ENABLE_ASSERTIONS=ON \
     -DCMAKE_MODULE_PATH=`pwd`/../cmakeModules \
-    -DMLIR_DIR=../../llvm/install/lib/cmake/mlir/ \
-    -DLLVM_DIR=../../llvm/install/lib/cmake/llvm/ \
+    -DMLIR_DIR=`pwd`/../../llvm/install/lib/cmake/mlir/ \
+    -DLLVM_DIR=`pwd`/../../llvm/install/lib/cmake/llvm/ \
     -DCMAKE_LINKER=lld \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_CXX_COMPILER=clang++ \
     -DLLVM_EXTERNAL_LIT=`pwd`/../../llvm/build/bin/llvm-lit \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-    -DCMAKE_INSTALL_PREFIX=../$INSTALL_DIR
+    -DCMAKE_INSTALL_PREFIX=`pwd`/../$INSTALL_DIR
 
 cmake --build . --target install -- -j$(nproc)
 
