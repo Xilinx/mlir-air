@@ -1,6 +1,8 @@
 # make artifacts
 CMakeFiles
 CMakeCache.txt
+platforms/scripts/env_config
+platforms/scripts/br_config
 
 # build artifacts
 *.jou
