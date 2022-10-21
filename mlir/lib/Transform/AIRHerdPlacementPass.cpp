@@ -252,21 +252,13 @@ public:
     auto row_name = xilinx::air::HerdOp::getRowOffsetAttrName();
 
     for (uint32_t i = 0; i < herdOps.size(); i++) {
-      for (uint32_t j = 0; j < placedHerds.size(); j++) {
-        std::string herdName;
-        if (auto attr =
-                herdOps[i]->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
-          herdName = attr.getValue().str();
-        }
-        if (herdName == placedHerds[j]->getName()) {
 
-          herdOps[i]->setAttr(row_name, IntegerAttr::get(IntegerType::get(herdOps[i]->getContext(), 64),
-                                          placedHerds[j]->getLocX()));
-          herdOps[i]->setAttr(col_name, IntegerAttr::get(IntegerType::get(herdOps[i]->getContext(), 64),
-                                          placedHerds[j]->getLocY()));
+          int32_t herdIndex = placedHerds[i]->getNumber();
+          herdOps[herdIndex]->setAttr(row_name, IntegerAttr::get(IntegerType::get(herdOps[herdIndex]->getContext(), 64),
+                                          placedHerds[i]->getLocX()));
+          herdOps[herdIndex]->setAttr(col_name, IntegerAttr::get(IntegerType::get(herdOps[herdIndex]->getContext(), 64),
+                                          placedHerds[i]->getLocY()));
         }
-      }
-    }
     return;
   }
 
