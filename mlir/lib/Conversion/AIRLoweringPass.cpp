@@ -72,10 +72,10 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     xilinx::air::PartitionOp partition = cast<xilinx::air::PartitionOp>(op);
     if (auto attr =
-    op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+            op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
       auto partition_name = attr.getValue().str();
-      rewriter.create<xilinx::airrt::PartitionLoadOp>(op->getLoc(),
-      rewriter.getI64Type(), partition_name);
+      rewriter.create<xilinx::airrt::PartitionLoadOp>(
+          op->getLoc(), rewriter.getI64Type(), partition_name);
     }
 
     SmallVector<Value, 4> deps;
@@ -131,16 +131,18 @@ public:
 class AIRHerdConversion : public ConversionPattern {
 public:
   explicit AIRHerdConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::HerdOp::getOperationName(), 1, context) {}
+      : ConversionPattern(xilinx::air::HerdOp::getOperationName(), 1, context) {
+  }
 
   LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value > operands,
-                  ConversionPatternRewriter &rewriter) const override
-  {
+  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
     xilinx::air::HerdOp launch = cast<xilinx::air::HerdOp>(op);
-    if (auto attr = op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+    if (auto attr =
+            op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
       auto herd_name = attr.getValue().str();
-      rewriter.create<xilinx::airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(), herd_name);
+      rewriter.create<xilinx::airrt::HerdLoadOp>(
+          op->getLoc(), rewriter.getI64Type(), herd_name);
     }
 
     SmallVector<Value, 4> deps;
@@ -154,12 +156,15 @@ public:
     }
 
     auto herd_size = launch.getSizeOperands();
-    int64_t herd_size_x = cast<ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
-    int64_t herd_size_y = cast<ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
+    int64_t herd_size_x =
+        cast<ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
+    int64_t herd_size_y =
+        cast<ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
 
     auto outer = rewriter.create<AffineForOp>(launch.getLoc(), 0, herd_size_x);
     auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
-    auto inner = outer_builder.create<AffineForOp>(launch.getLoc(), 0, herd_size_y);
+    auto inner =
+        outer_builder.create<AffineForOp>(launch.getLoc(), 0, herd_size_y);
 
     outer->setAttr("air.herd", StringAttr::get(op->getContext(), "outer"));
     inner->setAttr("air.herd", StringAttr::get(op->getContext(), "inner"));
@@ -169,7 +174,7 @@ public:
     launch.getIds()[0].replaceAllUsesWith(outer.getInductionVar());
     launch.getIds()[1].replaceAllUsesWith(inner.getInductionVar());
 
-    int i=0;
+    int i = 0;
     for (auto arg : launch.getKernelArguments())
       arg.replaceAllUsesWith(launch.getKernelOperand(i++));
 
@@ -185,18 +190,16 @@ public:
 class AIRPipelineConversion : public ConversionPattern {
 public:
   explicit AIRPipelineConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::HerdPipelineOp::getOperationName(),
-                          1, context) {}
+      : ConversionPattern(xilinx::air::HerdPipelineOp::getOperationName(), 1,
+                          context) {}
 
   LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value > operands,
-                  ConversionPatternRewriter &rewriter) const override
-  {
+  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
     auto pipeOp = cast<xilinx::air::HerdPipelineOp>(op);
     Block &bb = pipeOp.getBody().front();
     rewriter.eraseOp(pipeOp.getBody().back().getTerminator());
-    bb.getOperations().splice(Block::iterator(op),
-                              bb.getOperations());
+    bb.getOperations().splice(Block::iterator(op), bb.getOperations());
     rewriter.eraseOp(op);
     return success();
   }
@@ -239,31 +242,32 @@ public:
   }
 };
 
-class AIRWaitAllToAIRRtConversion: public OpConversionPattern<xilinx::air::WaitAllOp> {
+class AIRWaitAllToAIRRtConversion
+    : public OpConversionPattern<xilinx::air::WaitAllOp> {
 public:
   using OpConversionPattern<xilinx::air::WaitAllOp>::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(xilinx::air::WaitAllOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override
-  {
+                  ConversionPatternRewriter &rewriter) const override {
     SmallVector<Type, 1> tys;
     if (op->getNumResults())
       tys.push_back(xilinx::airrt::EventType::get(op->getContext()));
 
-    rewriter.replaceOpWithNewOp<xilinx::airrt::WaitAllOp>(op, tys, adaptor.getOperands());
+    rewriter.replaceOpWithNewOp<xilinx::airrt::WaitAllOp>(
+        op, tys, adaptor.getOperands());
     return success();
   }
 };
 
-class AIRDmaMemcpyNdToAIRRtConversion : public OpConversionPattern<xilinx::air::DmaMemcpyNdOp> {
+class AIRDmaMemcpyNdToAIRRtConversion
+    : public OpConversionPattern<xilinx::air::DmaMemcpyNdOp> {
 public:
   using OpConversionPattern<xilinx::air::DmaMemcpyNdOp>::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(xilinx::air::DmaMemcpyNdOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override
-  {
+                  ConversionPatternRewriter &rewriter) const override {
     auto loc = op->getLoc();
     auto ctx = op->getContext();
 
@@ -308,12 +312,11 @@ public:
       if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
         opers.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
       } else {
-        opers.push_back(
-            rewriter.create<arith::ConstantOp>(loc, idTy, IntegerAttr::get(idTy, 0)));
+        opers.push_back(rewriter.create<arith::ConstantOp>(
+            loc, idTy, IntegerAttr::get(idTy, 0)));
       }
 
-      xilinx::air::HerdOp launch =
-          op->getParentOfType<xilinx::air::HerdOp>();
+      xilinx::air::HerdOp launch = op->getParentOfType<xilinx::air::HerdOp>();
       if (!launch) {
 
         AffineForOp afo = op->getParentOfType<AffineForOp>();
@@ -343,16 +346,15 @@ public:
         opers.push_back(op.getDstMemref());
       else
         opers.push_back(op.getSrcMemref());
-    }
-    else {
+    } else {
       opers.push_back(op.getDstMemref());
       opers.push_back(op.getSrcMemref());
     }
     auto i64Ty = rewriter.getI64Type();
-    auto zero =
-        rewriter.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 0));
-    auto one =
-        rewriter.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 1));
+    auto zero = rewriter.create<arith::ConstantOp>(loc, i64Ty,
+                                                   IntegerAttr::get(i64Ty, 0));
+    auto one = rewriter.create<arith::ConstantOp>(loc, i64Ty,
+                                                  IntegerAttr::get(i64Ty, 1));
 
     SmallVector<Value, 4> offsets(4, zero);
     SmallVector<Value, 4> lengths(4, one);
@@ -379,8 +381,8 @@ public:
 
     Operation *airrtOp = nullptr;
     SmallVector<Type, 1> tys;
-      if (op->getNumResults())
-        tys.push_back(xilinx::airrt::EventType::get(ctx));
+    if (op->getNumResults())
+      tys.push_back(xilinx::airrt::EventType::get(ctx));
     if (isFullMemcpy) {
       airrtOp = rewriter.create<xilinx::airrt::MemcpyNdOp>(loc, tys, opers);
     } else {
@@ -397,9 +399,8 @@ public:
       : ConversionPattern(memref::AllocOp::getOperationName(), 1, context) {}
 
   LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value > operands,
-                  ConversionPatternRewriter &rewriter) const override
-  {
+  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
     auto alloc = cast<memref::AllocOp>(op);
     auto type = alloc.getType();
     if (type.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L2) {
@@ -416,13 +417,13 @@ public:
       : ConversionPattern(memref::DeallocOp::getOperationName(), 1, context) {}
 
   LogicalResult
-  matchAndRewrite(Operation *op, ArrayRef<Value > operands,
-                  ConversionPatternRewriter &rewriter) const override
-  {
+  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
     auto dealloc = cast<memref::DeallocOp>(op);
     auto type = dealloc.memref().getType().cast<MemRefType>();
     if (type.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L2) {
-      rewriter.replaceOpWithNewOp<xilinx::airrt::DeallocOp>(op, SmallVector<Type>{}, op->getOperands());
+      rewriter.replaceOpWithNewOp<xilinx::airrt::DeallocOp>(
+          op, SmallVector<Type>{}, op->getOperands());
       return success();
     }
     return failure();
@@ -438,12 +439,12 @@ LogicalResult lowerAirRegions(Operation *op) {
   module->walk([&](xilinx::air::ExecuteOp exe) {
     auto &bb = exe.getBody().front();
     unsigned idx = 0;
-    
+
     OpBuilder builder(exe);
     if (exe.getAsyncDependencies().size())
-      builder.create<xilinx::air::WaitAllOp>(
-          op->getLoc(), Type{}, exe.getAsyncDependencies());
-    
+      builder.create<xilinx::air::WaitAllOp>(op->getLoc(), Type{},
+                                             exe.getAsyncDependencies());
+
     for (auto &arg : bb.getArguments()) {
       arg.replaceAllUsesWith(exe.getOperand(idx));
       idx++;
@@ -497,7 +498,7 @@ public:
   LogicalResult
   matchAndRewrite(scf::IfOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    
+
     SmallVector<Type, 2> retTys;
     for (auto t : op->getResultTypes()) {
       if (t.isa<xilinx::air::AsyncTokenType>()) {
@@ -508,18 +509,21 @@ public:
     }
 
     bool hasElseBlock = op.elseBlock() != nullptr;
-    auto newIf = rewriter.replaceOpWithNewOp<scf::IfOp>(op, retTys, op.getCondition(), hasElseBlock);
+    auto newIf = rewriter.replaceOpWithNewOp<scf::IfOp>(
+        op, retTys, op.getCondition(), hasElseBlock);
 
     auto &thenOps = op.thenBlock()->getOperations();
     auto &newThenOps = newIf.thenBlock()->getOperations();
-    newThenOps.splice(newThenOps.begin(), thenOps, thenOps.begin(), thenOps.end());
+    newThenOps.splice(newThenOps.begin(), thenOps, thenOps.begin(),
+                      thenOps.end());
 
     if (!hasElseBlock)
       return success();
 
     auto &elseOps = op.elseBlock()->getOperations();
     auto &newElseOps = newIf.elseBlock()->getOperations();
-    newElseOps.splice(newElseOps.begin(), elseOps, elseOps.begin(), elseOps.end());
+    newElseOps.splice(newElseOps.begin(), elseOps, elseOps.begin(),
+                      elseOps.end());
 
     return success();
   }
@@ -552,13 +556,11 @@ public:
 class AIRLoweringPass : public AIRLoweringBase<AIRLoweringPass> {
 
 public:
-
   AIRLoweringPass() = default;
   AIRLoweringPass(const AIRLoweringPass &pass) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<AffineDialect,
-                    xilinx::airrt::AIRRtDialect,
+    registry.insert<AffineDialect, xilinx::airrt::AIRRtDialect,
                     LLVM::LLVMDialect>();
   }
 
@@ -597,16 +599,19 @@ public:
       signalPassFailure();
     }
 
-    // Replace the PipelineStageOps first, followed by the 
+    // Replace the PipelineStageOps first, followed by the
     // HerdPipelineOps, then run the rest of the patterns.
     // This avoids creating invalid intermediate code with respect
     // to the herd->pipeline->stages nesting requirements.
 
     // PipelineStageOp conversion
     RewritePatternSet air_pipe_stage_patterns(context);
-    air_pipe_stage_patterns.insert<AIRPipeStageConversion>(context, AIRPipeStageConversion::LoweringType::AllocBuffer);
-    if (failed(applyPartialConversion(module, target, std::move(air_pipe_stage_patterns)))) {
-      emitError(UnknownLoc::get(context), "error lowering air.pipeline.stage\n");
+    air_pipe_stage_patterns.insert<AIRPipeStageConversion>(
+        context, AIRPipeStageConversion::LoweringType::AllocBuffer);
+    if (failed(applyPartialConversion(module, target,
+                                      std::move(air_pipe_stage_patterns)))) {
+      emitError(UnknownLoc::get(context),
+                "error lowering air.pipeline.stage\n");
       signalPassFailure();
     }
 
@@ -614,7 +619,8 @@ public:
     RewritePatternSet air_pipe_patterns(context);
     air_pipe_patterns.insert<AIRPipelineConversion, AIRPipelineGetConversion,
                              AIRPipelinePutConversion>(context);
-    if (failed(applyPartialConversion(module, target, std::move(air_pipe_patterns)))) {
+    if (failed(applyPartialConversion(module, target,
+                                      std::move(air_pipe_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air.pipeline\n");
       signalPassFailure();
     }
@@ -623,7 +629,8 @@ public:
     RewritePatternSet air_patterns(context);
 
     target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
-      return (op.getType().getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L2);
+      return (op.getType().getMemorySpaceAsInt() !=
+              (int)xilinx::air::MemorySpace::L2);
     });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
@@ -655,8 +662,10 @@ public:
       return true;
     });
 
-    air_patterns.add<ScfYieldOpConversion, ScfIfOpConversion, ScfForOpConversion, L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion,
-                     AIRPartitionConversion, AIRHerdConversion>(context);
+    air_patterns
+        .add<ScfYieldOpConversion, ScfIfOpConversion, ScfForOpConversion,
+             L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion,
+             AIRPartitionConversion, AIRHerdConversion>(context);
 
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(air_patterns,
                                                                    converter);
@@ -665,17 +674,18 @@ public:
         .add<AIRDmaMemcpyNdToAIRRtConversion, AIRWaitAllToAIRRtConversion>(
             converter, context);
 
-    if (failed(applyPartialConversion(module, target, std::move(air_patterns)))) {
+    if (failed(
+            applyPartialConversion(module, target, std::move(air_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air dialect\n");
       signalPassFailure();
     }
   }
 };
 
-class AIRPipelineToAffinePass : public AIRPipelineToAffineBase<AIRPipelineToAffinePass> {
+class AIRPipelineToAffinePass
+    : public AIRPipelineToAffineBase<AIRPipelineToAffinePass> {
 
 public:
-
   AIRPipelineToAffinePass() = default;
   AIRPipelineToAffinePass(const AIRPipelineToAffinePass &pass) {}
 
@@ -695,7 +705,8 @@ public:
         memref::MemRefDialect, bufferization::BufferizationDialect,
         xilinx::airrt::AIRRtDialect, xilinx::air::airDialect>();
 
-    target.addIllegalOp<xilinx::air::PipelineStageOp, xilinx::air::PipelineYieldOp>();
+    target.addIllegalOp<xilinx::air::PipelineStageOp,
+                        xilinx::air::PipelineYieldOp>();
 
     // PipelineStageOp conversion
     RewritePatternSet air_pipe_stage_patterns(context);
@@ -704,15 +715,15 @@ public:
       loweringType = AIRPipeStageConversion::LoweringType::AllocBuffer;
     air_pipe_stage_patterns.insert<AIRPipeStageConversion>(context,
                                                            loweringType);
-    if (failed(applyPartialConversion(module, target, std::move(air_pipe_stage_patterns)))) {
-      emitError(UnknownLoc::get(context), "error lowering air.pipeline.stage\n");
+    if (failed(applyPartialConversion(module, target,
+                                      std::move(air_pipe_stage_patterns)))) {
+      emitError(UnknownLoc::get(context),
+                "error lowering air.pipeline.stage\n");
       signalPassFailure();
     }
 
     SmallVector<Operation *, 8> pipelines;
-    module.walk([&](xilinx::air::HerdPipelineOp p) {
-      pipelines.push_back(p);
-    });
+    module.walk([&](xilinx::air::HerdPipelineOp p) { pipelines.push_back(p); });
 
     for (auto p : pipelines) {
       auto pipeOp = cast<xilinx::air::HerdPipelineOp>(p);

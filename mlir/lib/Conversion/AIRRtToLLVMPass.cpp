@@ -1030,6 +1030,80 @@ public:
   }
 };
 
+class ScfYieldOpConversion : public OpConversionPattern<scf::YieldOp> {
+public:
+  using OpConversionPattern<scf::YieldOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::YieldOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value> operands{adaptor.getOperands()};
+    SmallVector<Type> retTys;
+    rewriter.replaceOpWithNewOp<scf::YieldOp>(op, retTys, operands);
+    return success();
+  }
+};
+
+class ScfForOpConversion : public OpConversionPattern<scf::ForOp> {
+public:
+  using OpConversionPattern<scf::ForOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::ForOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto newFor = rewriter.create<scf::ForOp>(
+        op->getLoc(), adaptor.getLowerBound(), adaptor.getUpperBound(), adaptor.getStep(),
+        adaptor.getInitArgs());
+    auto body = op.getBody();
+    auto newBody = newFor.getBody();
+
+    for (int i = 0, e = body->getNumArguments(); i < e; i++) {
+      body->getArgument(i).replaceAllUsesWith(newBody->getArgument(i));
+    }
+
+    auto &ops = body->getOperations();
+    auto &newOps = newBody->getOperations();
+    newOps.splice(newOps.begin(), ops, ops.begin(), ops.end());
+
+    rewriter.replaceOp(op, newFor.getResults());
+    return success();
+  }
+};
+
+class ScfIfOpConversion : public OpConversionPattern<scf::IfOp> {
+public:
+  using OpConversionPattern<scf::IfOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::IfOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    SmallVector<Type> retTys;
+    if (typeConverter->convertTypes(op.getResultTypes(), retTys).failed())
+      return failure();
+
+    bool hasElseBlock = op.elseBlock() != nullptr;
+    auto newIf = rewriter.create<scf::IfOp>(
+        op->getLoc(), retTys, op.getCondition(), hasElseBlock);
+
+    auto &thenOps = op.thenBlock()->getOperations();
+    auto &newThenOps = newIf.thenBlock()->getOperations();
+    newThenOps.splice(newThenOps.begin(), thenOps, thenOps.begin(),
+                      thenOps.end());
+
+    if (!hasElseBlock)
+      return success();
+
+    auto &elseOps = op.elseBlock()->getOperations();
+    auto &newElseOps = newIf.elseBlock()->getOperations();
+    newElseOps.splice(newElseOps.begin(), elseOps, elseOps.begin(),
+                      elseOps.end());
+
+    rewriter.replaceOp(op, newIf.getResults());
+    return success();
+  }
+};
+
 class AIRRtToLLVM : public AIRRtToLLVMBase<AIRRtToLLVM> {
 
 public:
