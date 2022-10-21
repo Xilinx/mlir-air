@@ -264,7 +264,6 @@ public:
   matchAndRewrite(xilinx::air::DmaMemcpyNdOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override
   {
-    SmallVector<Value, 8> operands{adaptor.getOperands()};
     auto loc = op->getLoc();
     auto ctx = op->getContext();
 
@@ -436,34 +435,119 @@ LogicalResult lowerAirRegions(Operation *op) {
     return failure();
 
   SmallVector<Operation *, 8> erased;
-  module->walk([&](xilinx::air::ExecuteOp rop) {
-    auto &bb = rop.getBody().front();
+  module->walk([&](xilinx::air::ExecuteOp exe) {
+    auto &bb = exe.getBody().front();
     unsigned idx = 0;
+    
+    OpBuilder builder(exe);
+    if (exe.getAsyncDependencies().size())
+      builder.create<xilinx::air::WaitAllOp>(
+          op->getLoc(), Type{}, exe.getAsyncDependencies());
+    
     for (auto &arg : bb.getArguments()) {
-      arg.replaceAllUsesWith(rop.getOperand(idx));
+      arg.replaceAllUsesWith(exe.getOperand(idx));
       idx++;
     }
-    if (rop.getNumResults() > 0) {
-      OpBuilder builder(rop);
-      auto w = builder.create<xilinx::air::WaitAllOp>(
-          op->getLoc(), xilinx::air::AsyncTokenType::get(rop->getContext()),
-          rop.getAsyncDependencies());
-      rop.getResult(0).replaceAllUsesWith(w.getResult(0));
-    }
-    rop.walk([&](xilinx::air::ExecuteTerminatorOp t) {
+    exe.walk([&](xilinx::air::ExecuteTerminatorOp t) {
       int resultIdx = 1;
       for (auto r : t->getOperands())
-        rop.getResult(resultIdx++).replaceAllUsesWith(r);
+        exe.getResult(resultIdx++).replaceAllUsesWith(r);
       erased.push_back(t);
     });
-    rop->getBlock()->getOperations().splice(Block::iterator(rop),
+    exe->getBlock()->getOperations().splice(Block::iterator(exe),
                                             bb.getOperations());
-    erased.push_back(rop);
+    if (exe.getNumResults() > 0) {
+      auto w = builder.create<xilinx::air::WaitAllOp>(
+          op->getLoc(), xilinx::air::AsyncTokenType::get(exe->getContext()),
+          SmallVector<Value>{});
+      exe.getResult(0).replaceAllUsesWith(w.getResult(0));
+    }
+    erased.push_back(exe);
   });
   for (auto a : erased)
     a->erase();
   return success();
 }
+
+class ScfYieldOpConversion : public OpConversionPattern<scf::YieldOp> {
+public:
+  using OpConversionPattern<scf::YieldOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::YieldOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value, 8> operands{adaptor.getOperands()};
+    SmallVector<Type, 2> retTys;
+    for (auto t : op->getResultTypes()) {
+      if (t.isa<xilinx::air::AsyncTokenType>()) {
+        retTys.push_back(xilinx::airrt::EventType::get(op->getContext()));
+      } else {
+        retTys.push_back(t);
+      }
+    }
+    rewriter.replaceOpWithNewOp<scf::YieldOp>(op, retTys, operands);
+    return success();
+  }
+};
+
+class ScfIfOpConversion : public OpConversionPattern<scf::IfOp> {
+public:
+  using OpConversionPattern<scf::IfOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::IfOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    
+    SmallVector<Type, 2> retTys;
+    for (auto t : op->getResultTypes()) {
+      if (t.isa<xilinx::air::AsyncTokenType>()) {
+        retTys.push_back(xilinx::airrt::EventType::get(op->getContext()));
+      } else {
+        retTys.push_back(t);
+      }
+    }
+
+    bool hasElseBlock = op.elseBlock() != nullptr;
+    auto newIf = rewriter.replaceOpWithNewOp<scf::IfOp>(op, retTys, op.getCondition(), hasElseBlock);
+
+    auto &thenOps = op.thenBlock()->getOperations();
+    auto &newThenOps = newIf.thenBlock()->getOperations();
+    newThenOps.splice(newThenOps.begin(), thenOps, thenOps.begin(), thenOps.end());
+
+    if (!hasElseBlock)
+      return success();
+
+    auto &elseOps = op.elseBlock()->getOperations();
+    auto &newElseOps = newIf.elseBlock()->getOperations();
+    newElseOps.splice(newElseOps.begin(), elseOps, elseOps.begin(), elseOps.end());
+
+    return success();
+  }
+};
+
+class ScfForOpConversion : public OpConversionPattern<scf::ForOp> {
+public:
+  using OpConversionPattern<scf::ForOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::ForOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto newOp = rewriter.replaceOpWithNewOp<scf::ForOp>(
+        op, adaptor.getLowerBound(), adaptor.getUpperBound(), adaptor.getStep(),
+        adaptor.getInitArgs());
+    auto body = op.getBody();
+    auto newBody = newOp.getBody();
+
+    for (int i = 0, e = body->getNumArguments(); i < e; i++) {
+      body->getArgument(i).replaceAllUsesWith(newBody->getArgument(i));
+    }
+
+    auto &ops = body->getOperations();
+    auto &newOps = newBody->getOperations();
+    newOps.splice(newOps.begin(), ops, ops.begin(), ops.end());
+    return success();
+  }
+};
 
 class AIRLoweringPass : public AIRLoweringBase<AIRLoweringPass> {
 
@@ -547,7 +631,31 @@ public:
               (int)xilinx::air::MemorySpace::L2);
     });
 
-    air_patterns.add<L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion,
+    target.addDynamicallyLegalOp<scf::ForOp>([&](scf::ForOp op) {
+      for (auto o : op.getRegionIterArgs()) {
+        if (o.getType().isa<xilinx::air::AsyncTokenType>())
+          return false;
+      }
+      return true;
+    });
+
+    target.addDynamicallyLegalOp<scf::YieldOp>([&](scf::YieldOp op) {
+      for (auto v : op.getResults()) {
+        if (v.getType().isa<xilinx::air::AsyncTokenType>())
+          return false;
+      }
+      return true;
+    });
+
+    target.addDynamicallyLegalOp<scf::IfOp>([&](scf::IfOp op) {
+      for (auto v : op.getResults()) {
+        if (v.getType().isa<xilinx::air::AsyncTokenType>())
+          return false;
+      }
+      return true;
+    });
+
+    air_patterns.add<ScfYieldOpConversion, ScfIfOpConversion, ScfForOpConversion, L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion,
                      AIRPartitionConversion, AIRHerdConversion>(context);
 
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(air_patterns,
