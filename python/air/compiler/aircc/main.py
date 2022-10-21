@@ -25,11 +25,9 @@
 aircc - AIR compiler driver for MLIR tools
 """
 
-import itertools
 import os
 import platform
 import sys
-import time
 import subprocess
 from joblib import Parallel, delayed
 import tempfile
@@ -113,7 +111,14 @@ def run(mlir_module, args):
     air_to_aie_pass = air_to_aie_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
     air_to_aie_pass = air_to_aie_pass + f' output-prefix={opts.tmpdir}/' + '}'
 
-    run_passes('func.func(air-renumber-dma),'+air_to_aie_pass+',func.func(convert-linalg-to-loops)',Module.parse(str(m)),opts)
+    pass_pipeline = ','.join([
+      'air-pipeline-to-affine{lowering-type=getput}',
+      'canonicalize', 'cse',
+      'func.func(air-renumber-dma)',
+      'func.func(convert-linalg-to-loops)',
+      air_to_aie_pass
+    ])
+    run_passes(pass_pipeline, Module.parse(str(m)), opts)
 
     air_to_airrt_pass = 'air-to-aie{emit-while-loop=true'
     air_to_airrt_pass = air_to_airrt_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
@@ -125,20 +130,54 @@ def run(mlir_module, args):
     # lower the airrt control program to llvm dialect
 
     aie_ctrl_airrt = opts.tmpdir+'/airrt.'+air_mlir_filename
-    pass_pipeline = 'func.func(air-renumber-dma),'+air_to_airrt_pass+',convert-vector-to-llvm,convert-math-to-llvm,lower-affine,air-to-std,air-lower-linalg-tensors,canonicalize,cse'
+    pass_pipeline = ','.join([
+      'air-pipeline-to-affine{lowering-type=getput}',
+      'canonicalize', 'cse',
+      'func.func(air-renumber-dma)',
+      air_to_airrt_pass,
+      'convert-vector-to-llvm',
+      'convert-math-to-llvm',
+      'lower-affine',
+      'air-to-std',
+      'air-lower-linalg-tensors',
+      'canonicalize', 'cse'
+    ])
     run_passes(pass_pipeline, mlir_module, opts, aie_ctrl_airrt)
 
     aie_ctrl = opts.tmpdir+'/aie_ctrl.'+air_mlir_filename
-    pass_pipeline = 'airrt-to-llvm,func-bufferize,func.func(finalizing-bufferize)'
+    pass_pipeline = ','.join([
+      'airrt-to-llvm',
+      'func-bufferize',
+      'func.func(finalizing-bufferize)'
+    ])
     run_passes(pass_pipeline, mlir_module, opts, aie_ctrl)
 
     aie_ctrl_refback = opts.tmpdir+'/refback.'+air_mlir_filename
-    pass_pipeline = 'func.func(air-renumber-dma),convert-vector-to-llvm,convert-math-to-llvm,air-to-std,air-lower-linalg-tensors,canonicalize,cse,'+ \
-                    'airrt-to-llvm,canonicalize,cse'
+    pass_pipeline = ','.join([
+      'air-pipeline-to-affine{lowering-type=getput}',
+      'canonicalize', 'cse',
+      'func.func(air-renumber-dma)',
+      'convert-vector-to-llvm',
+      'convert-math-to-llvm',
+      'lower-affine',
+      'air-to-std',
+      'air-lower-linalg-tensors',
+      'canonicalize', 'cse',
+      'airrt-to-llvm',
+      'canonicalize','cse'
+    ])
     run_passes(pass_pipeline, Module.parse(str(m)), opts, aie_ctrl_refback)
 
     aie_ctrl_llvm = opts.tmpdir+'/llvm.'+air_mlir_filename
-    pass_pipeline = 'lower-affine,convert-scf-to-cf,convert-memref-to-llvm,convert-func-to-llvm,convert-cf-to-llvm,canonicalize,cse'
+    pass_pipeline = ','.join([
+      #'air-return-elimination',
+      'lower-affine',
+      'convert-scf-to-cf',
+      'convert-memref-to-llvm',
+      'convert-func-to-llvm',
+      'convert-cf-to-llvm',
+      'canonicalize','cse'
+    ])
     run_passes(pass_pipeline, mlir_module, opts, aie_ctrl_llvm)
 
     # compile the llvm dialect into a .o object file
@@ -180,7 +219,7 @@ def run(mlir_module, args):
       do_call(['aiecc.py'] +
               (['-v'] if opts.verbose else []) +
               (['--sysroot', opts.sysroot] if opts.sysroot else ['--sysroot=/']) +
-              ['--host-target', opts.host_target if opts.host_target else aiecc_target]
+              ['--host-target', opts.host_target if opts.host_target else aiecc_target] +
               ['--tmpdir', aiecc_dir] +
               ['--pathfinder', '--aie-generate-xaiev2'] +
               ['--no-xbridge', '--no-xchesscc', aiecc_file])
@@ -273,7 +312,7 @@ def run_flow(opts):
 
     aie_ctrl_obj = opts.tmpdir+'/'+air_mlir_filename+'.o'
     do_call(['clang', '-Wno-override-module', '-fPIC'] +
-            (['--host_target', opts.host_target] if opts.host_target else []) +
+            (['--target', opts.host_target] if opts.host_target else []) +
             ['-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
 
     t = do_run(['air-translate', '--airrt-generate-json', aie_ctrl_airrt])
