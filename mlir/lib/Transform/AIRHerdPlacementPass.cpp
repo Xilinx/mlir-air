@@ -201,38 +201,40 @@ public:
 
   void runOnOperation() override {
 
-    mlir::func::FuncOp f1 = getOperation();
+    auto module = getOperation();
+
+    OpBuilder module_builder(module);
     
     // Number of the current herd
     uint32_t number = 0;
-    
     std::vector<std::unique_ptr<Herd>> unplacedHerds;
     std::vector<xilinx::air::HerdOp> herdOps;
-    f1.walk([&](Operation *op) {
-      if (auto herd = dyn_cast<xilinx::air::HerdOp>(op)) {
-        herdOps.push_back(herd);
-        std::string name = "herd";
-        if (auto attr =
-            herd->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-          name = attr.getValue().str();
-        SmallVector<Value, 2> herd_size = herd.getSizeOperands();
-        if (!isa<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()) ||
-            !isa<arith::ConstantIndexOp>(herd_size[1].getDefiningOp())) {
-          llvm::errs() << "Only constant sized herds are supported";
-          return;
-        }
-        int64_t herd_size_x =
-          cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
-        int64_t herd_size_y =
-          cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
-        
-        std::unique_ptr<Herd> herdPtr = std::make_unique<Herd>(herd_size_x, herd_size_y, number, name);
-        unplacedHerds.push_back(std::move(herdPtr));
+    for (auto f : module.getOps<func::FuncOp>()) {
+      f.walk([&](Operation *op) {
+        if (auto herd = dyn_cast<xilinx::air::HerdOp>(op)) {
+          herdOps.push_back(herd);
+          std::string name = "herd";
+          if (auto attr =
+              herd->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+            name = attr.getValue().str();
+          SmallVector<Value, 2> herd_size = herd.getSizeOperands();
+          if (!isa<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()) ||
+              !isa<arith::ConstantIndexOp>(herd_size[1].getDefiningOp())) {
+            llvm::errs() << "Only constant sized herds are supported";
+            return;
+          }
+          int64_t herd_size_x =
+            cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
+          int64_t herd_size_y =
+            cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
+          
+          std::unique_ptr<Herd> herdPtr = std::make_unique<Herd>(herd_size_x, herd_size_y, number, name);
+          unplacedHerds.push_back(std::move(herdPtr));
 
-        number++;
-        } 
-    });
-
+          number++;
+          }
+      });
+    }
     std::unique_ptr<Grid> grid = std::make_unique<Grid>(rowSize, colSize);
     std::sort(unplacedHerds.begin(), unplacedHerds.end(), HerdComparision());
     std::vector<std::unique_ptr<Herd>> placedHerds;

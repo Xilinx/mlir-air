@@ -175,7 +175,7 @@ def AIRHerdAssign : Pass<"air-herd-assign", "ModuleOp"> {
   let constructor = "xilinx::air::createAIRHerdAssignPass()";
 }
 
-def AIRHerdPlacementPass : Pass<"air-place-herds", "func::FuncOp"> {
+def AIRHerdPlacementPass : Pass<"air-place-herds", "ModuleOp"> {
   let summary = "Places herds onto a partition";
   let constructor = "xilinx::air::createAIRHerdPlacementPass()";
 
