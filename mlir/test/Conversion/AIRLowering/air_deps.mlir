@@ -24,6 +24,7 @@
 
 // RUN: air-opt -air-to-std %s | FileCheck %s
 
+// CHECK-LABEL: func.func @execute
 // CHECK: %[[V0:.*]] = memref.alloc() {alignment = 128 : i64} : memref<64x64xi32>
 // CHECK: %[[E0:.*]] = airrt.wait_all : !airrt.event
 // CHECK: airrt.wait_all %[[E0]]
@@ -42,6 +43,7 @@ func.func @execute() {
   return
 }
 
+// CHECK-LABEL: func.func @scf_for
 // CHECK: %[[V0:.*]] = airrt.wait_all : !airrt.event
 // CHECK: %[[V1:.*]] = scf.for %arg0 = %c0 to %c64 step %c1 iter_args(%[[V3:.*]] = %[[V0]]) -> (!airrt.event) {
 // CHECK:   %[[V2:.*]] = airrt.wait_all %[[V3]] : !airrt.event
@@ -60,6 +62,7 @@ func.func @scf_for() {
   return
 }
 
+// CHECK-LABEL: func.func @scf_if
 // CHECK: %[[V0:.*]] = scf.if {{.*}} -> (!airrt.event) {
 // CHECK:   %[[V1:.*]] = airrt.wait_all : !airrt.event
 // CHECK:   scf.yield %[[V1]] : !airrt.event
