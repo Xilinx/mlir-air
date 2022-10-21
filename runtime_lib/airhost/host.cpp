@@ -33,6 +33,7 @@
 #include <sys/mman.h>
 
 #include <string>
+#include <vector>
 
 #define XAIE_BASE_ADDR 0x20000000000
 #define XAIE_NUM_ROWS 9
@@ -326,3 +327,76 @@ std::string air_get_aie_bar() {
 std::string air_get_bram_bar() {
   return "/sys/bus/pci/devices/0000:21:00.0/resource4";
 }
+
+uint64_t air_wait_all(std::vector<uint64_t> &signals) {
+  queue_t *q = _air_host_active_partition.q;
+  if (!q) {
+    printf("WARNING: no queue provided, air_wait_all will return without "
+           "waiting\n");
+    return 0;
+  }
+
+  std::vector<dispatch_packet_t *> packets;
+  while (signals.size()) {
+    while (signals.size() < 5)
+      signals.push_back(0);
+
+    std::vector<uint64_t> addrs;
+    for (auto s : signals)
+      addrs.push_back(s ? ((signal_t*)s)->handle : s);
+
+    uint64_t wr_idx = queue_add_write_index(q, 1);
+    uint64_t packet_id = wr_idx % q->size;
+    dispatch_packet_t *barrier_pkt =
+        (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
+    air_packet_barrier_and((barrier_and_packet_t *)barrier_pkt, addrs[0],
+                           addrs[1], addrs[2], addrs[3], addrs[4]);
+    signal_create(1, 0, NULL, (signal_t *)&barrier_pkt->completion_signal);
+    air_queue_dispatch(q, wr_idx, barrier_pkt);
+    packets.push_back(barrier_pkt);
+    signals.resize(signals.size() - 5);
+  }
+
+  for (auto p : packets)
+    air_queue_wait(q, p);
+
+  return 0;
+}
+
+extern "C" {
+
+void _mlir_ciface_air_wait_all_0_0() { return; }
+void _mlir_ciface_air_wait_all_0_1(uint64_t e0) {
+  std::vector<uint64_t> events{e0};
+  air_wait_all(events);
+  return;
+}
+void _mlir_ciface_air_wait_all_0_2(uint64_t e0, uint64_t e1) {
+  std::vector<uint64_t> events{e0, e1};
+  air_wait_all(events);
+  return;
+}
+void _mlir_ciface_air_wait_all_0_3(uint64_t e0, uint64_t e1, uint64_t e2) {
+  std::vector<uint64_t> events{e0, e1, e2};
+  air_wait_all(events);
+  return;
+}
+
+uint64_t _mlir_ciface_air_wait_all_1_0() {
+  std::vector<uint64_t> events{};
+  return air_wait_all(events);
+}
+uint64_t _mlir_ciface_air_wait_all_1_1(uint64_t e0) {
+  std::vector<uint64_t> events{e0};
+  return air_wait_all(events);
+}
+uint64_t _mlir_ciface_air_wait_all_1_2(uint64_t e0, uint64_t e1) {
+  std::vector<uint64_t> events{e0, e1};
+  return air_wait_all(events);
+}
+uint64_t _mlir_ciface_air_wait_all_1_3(uint64_t e0, uint64_t e1, uint64_t e2) {
+  std::vector<uint64_t> events{e0, e1, e2};
+  return air_wait_all(events);
+}
+
+} // extern C
