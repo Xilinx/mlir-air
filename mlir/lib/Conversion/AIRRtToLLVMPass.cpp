@@ -1014,7 +1014,7 @@ public:
 
     std::string fnName = "air_wait_all";
     llvm::raw_string_ostream ss(fnName);
-    ss << "_" << operands.size();
+    ss << "_" << retTys.size() << "_" << operands.size();
 
     auto fn = module.lookupSymbol<func::FuncOp>(fnName);
     if (!fn) {
@@ -1146,7 +1146,8 @@ public:
                  HerdLoadToLLVMConversion, DmaMemcpyNdToLLVMConversion,
                  MemcpyNdToLLVMConversion, L2AllocOpConversion,
                  L2DeallocOpConversion>(context);
-    patterns.add<L1AllocOpConversion, L1AffineLoadOpConversion,
+    patterns.add<ScfIfOpConversion, ScfYieldOpConversion, ScfForOpConversion,
+                 L1AllocOpConversion, L1AffineLoadOpConversion,
                  L1AffineStoreOpConversion, L1MemRefLoadOpConversion,
                  L1MemRefStoreOpConversion, L1DeallocOpConversion,
                  WaitAllOpConversion>(converter, context);
@@ -1195,6 +1196,30 @@ public:
 
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
       return converter.isSignatureLegal(op.getFunctionType());
+    });
+
+    target.addDynamicallyLegalOp<scf::ForOp>([&](scf::ForOp op) {
+      for (auto o : op.getRegionIterArgs()) {
+        if (o.getType().isa<xilinx::airrt::EventType>())
+          return false;
+      }
+      return true;
+    });
+
+    target.addDynamicallyLegalOp<scf::YieldOp>([&](scf::YieldOp op) {
+      for (auto v : op.getOperands()) {
+        if (v.getType().isa<xilinx::airrt::EventType>())
+          return false;
+      }
+      return true;
+    });
+
+    target.addDynamicallyLegalOp<scf::IfOp>([&](scf::IfOp op) {
+      for (auto v : op.getResults()) {
+        if (v.getType().isa<xilinx::airrt::EventType>())
+          return false;
+      }
+      return true;
     });
 
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
