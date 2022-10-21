@@ -231,6 +231,7 @@ def AIRRt_WaitAllOp : AIRRt_Op<"wait_all", []> {
   let assemblyFormat = [{
     ($events^)? attr-dict (`:` type($event)^)?
   }];
+  let hasCanonicalizer  = 1;
 }
 
 #endif // #ifndef AIRRT_OPS
