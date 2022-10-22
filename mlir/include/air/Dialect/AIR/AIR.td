@@ -372,6 +372,7 @@ def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
       return -1;
     }
   }];
+  let hasCanonicalizer  = 1;
 }
 
 def air_AllocOp: air_Op<"alloc", [air_AsyncOpInterface]> {
