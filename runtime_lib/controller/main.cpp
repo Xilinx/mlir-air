@@ -566,7 +566,7 @@ u32 maskpoll32(u64 Addr, u32 Mask, u32 Value, u32 TimeOut) {
 
 } // namespace xaie
 
-void xaie_shim_dma_wait_idle(uint64_t TileAddr, int direction, int channel) {
+int xaie_shim_dma_wait_idle(uint64_t TileAddr, int direction, int channel) {
   uint32_t shimDMAchannel = channel;
   uint32_t status_register_offset;
   uint32_t status_mask_shift;
