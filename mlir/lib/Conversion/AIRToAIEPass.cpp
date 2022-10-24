@@ -1592,7 +1592,6 @@ public:
       RewritePatternSet patterns(ctx);
       air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
       (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
-
     };
 
     // emit aie_modules to files or to stdout

@@ -343,7 +343,7 @@ uint64_t air_wait_all(std::vector<uint64_t> &signals) {
 
     std::vector<uint64_t> addrs;
     for (auto s : signals)
-      addrs.push_back(s ? ((signal_t*)s)->handle : s);
+      addrs.push_back(s ? ((signal_t *)s)->handle : s);
 
     uint64_t wr_idx = queue_add_write_index(q, 1);
     uint64_t packet_id = wr_idx % q->size;
