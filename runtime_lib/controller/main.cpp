@@ -1584,6 +1584,9 @@ inline signal_value_t signal_wait(volatile signal_t *signal,
                                   signal_value_t compare_value,
                                   uint64_t timeout_hint,
                                   signal_value_t default_value) {
+  if (signal == 0)
+    return default_value;
+
   if (signal->handle == 0)
     return default_value;
   signal_value_t ret = 0;
