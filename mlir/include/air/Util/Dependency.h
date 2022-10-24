@@ -42,6 +42,7 @@
 
 #include <numeric>
 #include <string>
+#include <sys/stat.h>
 
 // boost graph
 #include <boost/graph/adjacency_list.hpp>
@@ -167,7 +168,8 @@ public:
   void canonicalizeGraphs(dependencyGraph &global_graph,
                           dependencyGraph &tr_graph,
                           vertex_to_vertex_map_tree &g_to_tr,
-                          bool dump_graph = false);
+                          bool dump_graph = false,
+                          std::string dump_dir = "");
   void updateDepList(func::FuncOp func, dependencyGraph &global_graph);
 
 private:

@@ -782,7 +782,7 @@ void dependencyCanonicalizer::dump_graph(std::string filename, Graph G) {
 // Perform transitive reduction to canonicalize the dependency graph
 void dependencyCanonicalizer::canonicalizeGraphs(
     dependencyGraph &global_graph, dependencyGraph &tr_graph,
-    vertex_to_vertex_map_tree &g_to_tr, bool dump_dot) {
+    vertex_to_vertex_map_tree &g_to_tr, bool dump_dot, std::string dump_dir) {
 
   // Construct empty post-canonicalization dependency graph, tr_graph
   for (auto &launchGraph : global_graph.subgraphs) {
@@ -850,22 +850,26 @@ void dependencyCanonicalizer::canonicalizeGraphs(
 
   if (dump_dot) {
     // Dump dot graphs
-    dump_graph("host.dot", tr_graph.g);
+    if (dump_dir != "") {
+      int status = mkdir(dump_dir.c_str(), 0777);
+      if ((status < 0) && (errno != EEXIST)) dump_dir = ""; // Failed to create dir
+    }
+    dump_graph(dump_dir + "host.dot", tr_graph.g);
     int i = 0;
     for (auto G_l : tr_graph.subgraphs) {
       std::string name = "launch" + std::to_string(++i) + ".dot";
-      dump_graph(name, G_l.g);
+      dump_graph(dump_dir + name, G_l.g);
       int j = 0;
       for (auto G_p : G_l.subgraphs) {
         std::string name = "partition" + std::to_string(i) + "_" +
                            std::to_string(++j) + ".dot";
-        dump_graph(name, G_p.g);
+        dump_graph(dump_dir + name, G_p.g);
         int k = 0;
         for (auto G_h : G_p.subgraphs) {
           std::string name = "herd" + std::to_string(i) + "_" +
                              std::to_string(j) + "_" + std::to_string(++k) +
                              ".dot";
-          dump_graph(name, G_h.g);
+          dump_graph(dump_dir + name, G_h.g);
         }
       }
     }

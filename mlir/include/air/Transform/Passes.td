@@ -777,7 +777,10 @@ def AIRDependencyCanonicalize: Pass<"air-dependency-canonicalize", "ModuleOp"> {
   }];
   let options = [
     Option<"clDumpGraph", "dump-graph", "bool", /*default=*/"false",
-            "Dump post-canonicalization dot graphs.">
+            "Dump post-canonicalization dot graphs.">,
+    Option<"clDumpDir", "output-dir", "std::string", 
+            /*default=*/"\"\"",
+            "Target directory to dump dot graphs.">
   ];
 }
 

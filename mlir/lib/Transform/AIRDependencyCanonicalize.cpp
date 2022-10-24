@@ -63,7 +63,7 @@ public:
       // Transitive reduction
       xilinx::air::dependencyGraph trHostGraph;
       canonicalizer.canonicalizeGraphs(hostGraph, trHostGraph, g_to_tr,
-                                      clDumpGraph);
+                                      clDumpGraph, clDumpDir);
 
       // Update dependency list
       canonicalizer.updateDepList(func, trHostGraph);
