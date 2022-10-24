@@ -263,5 +263,10 @@ void renumberDmaOps(func::FuncOp func, std::string mode = "herd") {
     assert(false && "Unknown dma renumber mode. Supported modes: global, herd");
 }
 
+// Get op type as string
+std::string to_string(Operation *op) {
+  return op->getName().getStringRef().str();
+}
+
 } // namespace air
 } // namespace xilinx

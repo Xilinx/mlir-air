@@ -857,16 +857,16 @@ void dependencyCanonicalizer::canonicalizeGraphs(
     dump_graph(dump_dir + "host.dot", tr_graph.g);
     int i = 0;
     for (auto G_l : tr_graph.subgraphs) {
-      std::string name = "launch" + std::to_string(++i) + ".dot";
+      std::string name = xilinx::air::to_string(G_l.hierarchyOp) + "_" + std::to_string(++i) + ".dot";
       dump_graph(dump_dir + name, G_l.g);
       int j = 0;
       for (auto G_p : G_l.subgraphs) {
-        std::string name = "partition" + std::to_string(i) + "_" +
+        std::string name = xilinx::air::to_string(G_p.hierarchyOp) + "_" + std::to_string(i) + "_" +
                            std::to_string(++j) + ".dot";
         dump_graph(dump_dir + name, G_p.g);
         int k = 0;
         for (auto G_h : G_p.subgraphs) {
-          std::string name = "herd" + std::to_string(i) + "_" +
+          std::string name = xilinx::air::to_string(G_h.hierarchyOp) + "_" + std::to_string(i) + "_" +
                              std::to_string(j) + "_" + std::to_string(++k) +
                              ".dot";
           dump_graph(dump_dir + name, G_h.g);

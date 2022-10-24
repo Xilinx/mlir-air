@@ -60,6 +60,8 @@ int getIdAttr(Operation *op);
 
 void renumberDmaOps(func::FuncOp func, std::string mode = "herd");
 
+std::string to_string(Operation *op);
+
 } // namespace air
 } // namespace xilinx
 #endif // AIR_UTIL_UTIL_H
