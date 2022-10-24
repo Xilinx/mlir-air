@@ -171,6 +171,9 @@ public:
   void updateDepList(func::FuncOp func, dependencyGraph &global_graph);
 
 private:
+  void addVerticesInHerd(std::vector<dependencyGraph> &herd_subgraphs, air::HerdOp herd, dependencyContext &dep_ctx);
+  void addVerticesInPartition(std::vector<dependencyGraph> &part_subgraphs, air::PartitionOp partition, dependencyContext &dep_ctx);
+  void addVerticesInLaunch(std::vector<dependencyGraph> &launch_subgraphs, air::LaunchOp launch, dependencyContext &dep_ctx);
   Graph::vertex_descriptor addVertexFromOpImpls(Operation *op, Graph &G,
                                                 dependencyContext &dep_ctx);
   Graph::vertex_descriptor addVertexFromOp(Operation *op, uint64_t &id,

@@ -221,51 +221,16 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
   // Create vertices for graphs
   // Build up host graph
   toplevel.walk([&](Operation *op) {
-    if (!op->getParentOfType<air::LaunchOp>()) {
+    if (!op->getParentOfType<air::HierarchyInterface>()) {
       addVertexFromOpImpls(op, global_graph.g, dep_ctx);
       if (auto launch = dyn_cast<air::LaunchOp>(op)) {
-        // Build up launch graph
-        global_graph.subgraphs.push_back(
-            dependencyGraph(launch.getOperation(), true));
-        dependencyGraph *current_launch_graph =
-            &(global_graph.subgraphs.back());
-
-        launch.walk([&](Operation *launch_childop) {
-          if (!launch_childop->getParentOfType<air::PartitionOp>() &&
-              !dyn_cast<air::LaunchOp>(launch_childop)) {
-            addVertexFromOpImpls(launch_childop, current_launch_graph->g,
-                                 dep_ctx);
-            if (auto partition = dyn_cast<air::PartitionOp>(launch_childop)) {
-              // Build up partition graph
-              current_launch_graph->subgraphs.push_back(
-                  dependencyGraph(partition.getOperation(), true));
-              dependencyGraph *current_part_graph =
-                  &(current_launch_graph->subgraphs.back());
-
-              partition.walk([&](Operation *part_childop) {
-                if (!part_childop->getParentOfType<air::HerdOp>() &&
-                    !dyn_cast<air::PartitionOp>(part_childop)) {
-                  addVertexFromOpImpls(part_childop, current_part_graph->g,
-                                       dep_ctx);
-                  if (auto herd = dyn_cast<air::HerdOp>(part_childop)) {
-                    // Build up herd graph
-                    current_part_graph->subgraphs.push_back(
-                        dependencyGraph(herd.getOperation(), true));
-                    dependencyGraph *current_herd_graph =
-                        &(current_part_graph->subgraphs.back());
-
-                    herd.walk([&](Operation *herd_childop) {
-                      if (!dyn_cast<air::HerdOp>(herd_childop)) {
-                        addVertexFromOpImpls(herd_childop,
-                                             current_herd_graph->g, dep_ctx);
-                      }
-                    });
-                  }
-                }
-              });
-            }
-          }
-        });
+        addVerticesInLaunch(global_graph.subgraphs, launch, dep_ctx);
+      }
+      else if (auto partition = dyn_cast<air::PartitionOp>(op)) {
+        addVerticesInPartition(global_graph.subgraphs, partition, dep_ctx);
+      }
+      else if (auto herd = dyn_cast<air::HerdOp>(op)) {
+        addVerticesInHerd(global_graph.subgraphs, herd, dep_ctx);
       }
     }
   });
@@ -314,6 +279,63 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
       }
     }
   }
+}
+
+
+void dependencyCanonicalizer::addVerticesInHerd(std::vector<dependencyGraph> &herd_subgraphs, air::HerdOp herd, dependencyContext &dep_ctx){
+  // Build up herd graph
+  herd_subgraphs.push_back(
+      dependencyGraph(herd.getOperation(), true));
+  dependencyGraph *current_herd_graph =
+      &(herd_subgraphs.back());
+
+  herd.walk([&](Operation *herd_childop) {
+    if (!dyn_cast<air::HerdOp>(herd_childop)) {
+      addVertexFromOpImpls(herd_childop,
+                            current_herd_graph->g, dep_ctx);
+    }
+  });
+}
+
+void dependencyCanonicalizer::addVerticesInPartition(std::vector<dependencyGraph> &part_subgraphs, air::PartitionOp partition, dependencyContext &dep_ctx){
+  // Build up partition graph
+  part_subgraphs.push_back(
+      dependencyGraph(partition.getOperation(), true));
+  dependencyGraph *current_part_graph =
+      &(part_subgraphs.back());
+
+  partition.walk([&](Operation *part_childop) {
+    if (!part_childop->getParentOfType<air::HerdOp>() &&
+        !dyn_cast<air::PartitionOp>(part_childop)) {
+      addVertexFromOpImpls(part_childop, current_part_graph->g,
+                            dep_ctx);
+      if (auto herd = dyn_cast<air::HerdOp>(part_childop)) {
+        addVerticesInHerd(current_part_graph->subgraphs, herd, dep_ctx);
+      }
+    }
+  });
+}
+
+void dependencyCanonicalizer::addVerticesInLaunch(std::vector<dependencyGraph> &launch_subgraphs, air::LaunchOp launch, dependencyContext &dep_ctx){
+  // Build up launch graph
+  launch_subgraphs.push_back(
+      dependencyGraph(launch.getOperation(), true));
+  dependencyGraph *current_launch_graph =
+      &(launch_subgraphs.back());
+
+  launch.walk([&](Operation *launch_childop) {
+    if (!launch_childop->getParentOfType<air::PartitionOp>() &&
+        !dyn_cast<air::LaunchOp>(launch_childop)) {
+      addVertexFromOpImpls(launch_childop, current_launch_graph->g,
+                            dep_ctx);
+      if (auto partition = dyn_cast<air::PartitionOp>(launch_childop)) {
+        addVerticesInPartition(current_launch_graph->subgraphs, partition, dep_ctx);
+      }
+      else if (auto herd = dyn_cast<air::HerdOp>(launch_childop)) {
+        addVerticesInHerd(current_launch_graph->subgraphs, herd, dep_ctx);
+      }
+    }
+  });
 }
 
 Graph::vertex_descriptor
