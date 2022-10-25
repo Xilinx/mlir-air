@@ -208,9 +208,10 @@ scf::ForOp getForRegionIterArgsOwner(Value val) {
 
 // Get the parent scf.parallel op of an init_val
 scf::ParallelOp getParallelRegionInitValsOwner(Operation *op, Value val) {
-  if (auto parent_parallel_op = op->getParentOfType<scf::ParallelOp>()){
-    for (auto init_val : parent_parallel_op.getInitVals()){
-      if (init_val == val) return parent_parallel_op;
+  if (auto parent_parallel_op = op->getParentOfType<scf::ParallelOp>()) {
+    for (auto init_val : parent_parallel_op.getInitVals()) {
+      if (init_val == val)
+        return parent_parallel_op;
     }
   }
   return scf::ParallelOp();

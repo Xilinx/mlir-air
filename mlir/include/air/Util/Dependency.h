@@ -164,21 +164,26 @@ class dependencyCanonicalizer {
 
 public:
   void parseCommandGraphs(func::FuncOp &toplevel, dependencyGraph &global_graph,
-                          dependencyContext &dep_ctx, bool dump_dot = false, std::string dump_dir = "");
+                          dependencyContext &dep_ctx, bool dump_dot = false,
+                          std::string dump_dir = "");
   void canonicalizeGraphs(dependencyGraph &global_graph,
                           dependencyGraph &tr_graph,
                           vertex_to_vertex_map_tree &g_to_tr,
-                          bool dump_graph = false,
-                          std::string dump_dir = "");
+                          bool dump_graph = false, std::string dump_dir = "");
   void updateDepList(func::FuncOp func, dependencyGraph &global_graph);
   void removeDepListRepitition(func::FuncOp func);
   void removeRedundantWaitAllOps(func::FuncOp func);
-  void dumpDotGraphFiles(dependencyGraph global_graph, std::string dump_dir = "");
+  void dumpDotGraphFiles(dependencyGraph global_graph,
+                         std::string dump_dir = "");
 
 private:
-  void addVerticesInHerd(std::vector<dependencyGraph> &herd_subgraphs, air::HerdOp herd, dependencyContext &dep_ctx);
-  void addVerticesInPartition(std::vector<dependencyGraph> &part_subgraphs, air::PartitionOp partition, dependencyContext &dep_ctx);
-  void addVerticesInLaunch(std::vector<dependencyGraph> &launch_subgraphs, air::LaunchOp launch, dependencyContext &dep_ctx);
+  void addVerticesInHerd(std::vector<dependencyGraph> &herd_subgraphs,
+                         air::HerdOp herd, dependencyContext &dep_ctx);
+  void addVerticesInPartition(std::vector<dependencyGraph> &part_subgraphs,
+                              air::PartitionOp partition,
+                              dependencyContext &dep_ctx);
+  void addVerticesInLaunch(std::vector<dependencyGraph> &launch_subgraphs,
+                           air::LaunchOp launch, dependencyContext &dep_ctx);
   Graph::vertex_descriptor addVertexFromOpImpls(Operation *op, Graph &G,
                                                 dependencyContext &dep_ctx);
   Graph::vertex_descriptor addVertexFromOp(Operation *op, uint64_t &id,
@@ -196,9 +201,8 @@ private:
   Graph::vertex_descriptor
   addVertexFromTerminatorOp(Operation *op, Graph &G,
                             dependencyContext &dep_ctx);
-  Graph::vertex_descriptor
-  addVertexFromReduceOp(Operation *op, Graph &G,
-                            dependencyContext &dep_ctx);
+  Graph::vertex_descriptor addVertexFromReduceOp(Operation *op, Graph &G,
+                                                 dependencyContext &dep_ctx);
   Graph::vertex_descriptor addVertexFromExecuteOp(xilinx::air::ExecuteOp op,
                                                   Graph &G,
                                                   dependencyContext &dep_ctx);
