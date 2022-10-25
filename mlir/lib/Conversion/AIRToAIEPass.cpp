@@ -1588,6 +1588,10 @@ public:
         tile_dma_S2MM_allocs.clear();
         tile_dma_MM2S_allocs.clear();
       }
+
+      RewritePatternSet patterns(ctx);
+      air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
+      (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
     };
 
     // emit aie_modules to files or to stdout
@@ -1647,6 +1651,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     patterns.insert<SpecializeAffineIfPattern>(ctx);
     patterns.insert<LowerAIRExecutePattern>(ctx);
     patterns.insert<AllocL1BuffersPattern>(ctx, tileToHerdMap);
+    air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
     (void)applyPatternsAndFoldGreedily(aie_module, std::move(patterns));
   }
 

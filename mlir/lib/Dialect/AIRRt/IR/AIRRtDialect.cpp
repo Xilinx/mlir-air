@@ -23,8 +23,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/IR/DialectImplementation.h"
 #include "llvm/ADT/TypeSwitch.h"
+
+#include "mlir/IR/DialectImplementation.h"
+#include "mlir/IR/PatternMatch.h"
 
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
@@ -62,4 +64,30 @@ void AIRRtDialect::printType(Type type, DialectAsmPrinter &os) const {
   TypeSwitch<Type>(type)
       .Case<EventType>([&](Type) { os << "event"; })
       .Default([](Type) { llvm_unreachable("unexpected 'airrt' type"); });
+}
+
+static LogicalResult FoldWaitAll(WaitAllOp op, PatternRewriter &rewriter) {
+  SmallVector<Value> operands = op->getOperands();
+  if (op.use_empty() && !operands.size()) {
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+  // If an operand of a wait_all is another wait_all, then the event has
+  // already completed. Remove it from the operand list.
+  for (auto i = operands.begin(), e = operands.end(); i != e; ++i) {
+    auto wa = dyn_cast_if_present<WaitAllOp>(i->getDefiningOp());
+    if (!wa)
+      continue;
+    operands.erase(i);
+    rewriter.replaceOpWithNewOp<WaitAllOp>(op, op.getResultTypes(), operands);
+    return success();
+  }
+
+  return failure();
+}
+
+void WaitAllOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                            MLIRContext *context) {
+  patterns.add(FoldWaitAll);
 }
