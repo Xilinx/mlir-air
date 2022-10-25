@@ -363,7 +363,10 @@ dependencyCanonicalizer::addVertexFromOpImpls(Operation *op, Graph &G,
     return addVertexFromHierarchyOp(hier_op, G, dep_ctx);
   } else if (op->mightHaveTrait<OpTrait::IsTerminator>()) {
     return addVertexFromTerminatorOp(op, G, dep_ctx);
-  } else
+  } 
+    else if (auto reduce_op = dyn_cast<scf::ReduceOp>(op)){
+      return addVertexFromReduceOp(reduce_op, G, dep_ctx);
+    }else
     return 0;
 }
 
@@ -433,15 +436,25 @@ dependencyCanonicalizer::addVertexFromTerminatorOp(Operation *op, Graph &G,
                            "HerdTerminator", "yellow", "box", G, dep_ctx);
   } else if (auto yieldop = dyn_cast<scf::YieldOp>(op)) {
     if (getScfParentOpFromYieldOp<scf::ParallelOp>(yieldop)) {
-      return addVertexFromOp(op, dep_ctx.TerminatorID, "terminator",
-                             "ScfParallelYieldOp", "crimson", "box", G,
-                             dep_ctx);
+      // Note: disabled parsing scf parallel yield op since it currently acts as a no-op
+      // return addVertexFromOp(op, dep_ctx.TerminatorID, "terminator",
+      //                        "ScfParallelYieldOp", "crimson", "box", G,
+      //                        dep_ctx);
     } else if (getScfParentOpFromYieldOp<scf::ForOp>(yieldop)) {
       return addVertexFromOp(op, dep_ctx.TerminatorID, "terminator",
                              "ScfForYieldOp", "crimson", "box", G, dep_ctx);
     }
   }
   return 0;
+}
+
+// Note: in the current scf parallel spec, reduce op takes the role of yielding the ssa value.
+// Hence, here we parse reduce op as a terminator.
+Graph::vertex_descriptor
+dependencyCanonicalizer::addVertexFromReduceOp(Operation *op, Graph &G,
+                                                   dependencyContext &dep_ctx) {
+  return addVertexFromOp(op, dep_ctx.TerminatorID, "terminator", "ScfReduceOp", "crimson",
+                            "box", G, dep_ctx);
 }
 
 Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromExecuteOp(
@@ -494,19 +507,14 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromExecuteOp(
 
 Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromWaitAllOp(
     xilinx::air::WaitAllOp op, Graph &G, dependencyContext &dep_ctx) {
-  if (op.getAsyncToken().hasOneUse()) {
-    for (auto u : op.getAsyncToken().getUsers()) {
-      if (dyn_cast<scf::YieldOp>(u)) {
-        return addVertexFromOp(op, dep_ctx.WaitAllOpID, "wait_all", "WaitAllOp",
-                               "crimson", "oval", G, dep_ctx);
-      } else if (dyn_cast<scf::ReduceReturnOp>(u)) {
-        return addVertexFromOp(op, dep_ctx.WaitAllOpID, "wait_all", "WaitAllOp",
-                               "crimson", "oval", G, dep_ctx);
-      }
+  // Note: disabled parsing wait_all op inside of reduce op
+  for (auto u : op.getAsyncToken().getUsers()) {
+    if (dyn_cast<scf::ReduceReturnOp>(u)) {
+      return 0;
     }
   }
   return addVertexFromOp(op, dep_ctx.WaitAllOpID, "wait_all", "WaitAllOp",
-                         "crimson", "oval", G, dep_ctx);
+                        "crimson", "oval", G, dep_ctx);
 }
 
 // Get type-id pair from op, which will be used to look up vertex in op_to_v
@@ -537,6 +545,8 @@ std::string dependencyCanonicalizer::getOpTypeFromOpImpls(Operation *op) {
   } else if (dyn_cast<xilinx::air::HerdTerminatorOp>(op)) {
     return "hierarchy_terminator";
   } else if (dyn_cast<scf::YieldOp>(op)) {
+    return "terminator";
+  } else if (dyn_cast<scf::ReduceOp>(op)) {
     return "terminator";
   } else {
     if (dyn_cast<xilinx::air::ExecuteOp>(op->getParentOp())) {
@@ -623,6 +633,13 @@ void dependencyCanonicalizer::connectOpToItsDepListImpls(
     }
     connectOpToItsDepList(op, dep_list, g, dep_ctx);
   }
+  // scf.reduce
+  else if (auto reduceop = dyn_cast<scf::ReduceOp>(op)) {
+    for (auto operand : reduceop->getOperands()) {
+      dep_list.push_back(operand);
+    }
+    connectOpToItsDepList(op, dep_list, g, dep_ctx);
+  }
 }
 
 // Connect an async op to ops in its dependency list
@@ -632,7 +649,7 @@ void dependencyCanonicalizer::connectOpToItsDepList(
   auto dst_v = getVertexFromOp(op, dep_ctx, "front").first;
   if (dep_list.size()) {
     for (auto dep_token : dep_list) {
-      auto src_vector = traceOpFromToken(dep_token);
+      auto src_vector = traceOpFromToken(op, dep_token);
       if (src_vector.size()) {
         for (auto src_op : src_vector) {
           auto src_v = getVertexFromOp(src_op, dep_ctx, "back").first;
@@ -647,10 +664,20 @@ void dependencyCanonicalizer::connectOpToItsDepList(
 
 // Trace op from a token in dependency list
 std::vector<Operation *>
-dependencyCanonicalizer::traceOpFromToken(Value dep_token) {
+dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
   std::vector<Operation *> output;
-  // If dependency token originates from async op
-  if (dep_token.getDefiningOp() &&
+  // If dependency token is the iter arg of an scf for loop
+  if (auto forop = getForRegionIterArgsOwner(dep_token)) {
+    output.push_back(forop);
+    return output;
+  }
+  // Else if dependency token is the init arg of an scf parallel loop
+  else if (auto parallelop = getParallelRegionInitValsOwner(op, dep_token)) {
+    output.push_back(parallelop);
+    return output;
+  }
+  // Else if dependency token originates from async op
+  else if (dep_token.getDefiningOp() &&
       mlir::dyn_cast<xilinx::air::AsyncOpInterface>(
           dep_token.getDefiningOp())) {
     output.push_back(dep_token.getDefiningOp());
@@ -674,11 +701,6 @@ dependencyCanonicalizer::traceOpFromToken(Value dep_token) {
       output.push_back(parallelop_terminator);
       return output;
     }
-  }
-  // Else if dependency token is the iter arg of an scf for loop
-  else if (auto forop = getForRegionIterArgsOwner(dep_token)) {
-    output.push_back(forop);
-    return output;
   }
   // Else if dependency token is from affine if (joint token from multiple ops)
   else if (dep_token.getDefiningOp() &&
@@ -919,6 +941,7 @@ void dependencyCanonicalizer::updateDepList(func::FuncOp func,
                                             dependencyGraph &global_graph) {
 
   // Purge dependency list
+  purgeAIRDepList(global_graph);
   for (auto &launchGraph : global_graph.subgraphs) {
     purgeAIRDepList(launchGraph);
     for (auto &partitionGraph : launchGraph.subgraphs) {
@@ -930,6 +953,7 @@ void dependencyCanonicalizer::updateDepList(func::FuncOp func,
   }
 
   // Rewrite dependency list
+  fillAIRDepListUsingGraphTR(global_graph);
   for (auto &launchGraph : global_graph.subgraphs) {
     fillAIRDepListUsingGraphTR(launchGraph);
     for (auto &partitionGraph : launchGraph.subgraphs) {

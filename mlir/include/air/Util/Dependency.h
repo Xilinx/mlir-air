@@ -196,6 +196,9 @@ private:
   Graph::vertex_descriptor
   addVertexFromTerminatorOp(Operation *op, Graph &G,
                             dependencyContext &dep_ctx);
+  Graph::vertex_descriptor
+  addVertexFromReduceOp(Operation *op, Graph &G,
+                            dependencyContext &dep_ctx);
   Graph::vertex_descriptor addVertexFromExecuteOp(xilinx::air::ExecuteOp op,
                                                   Graph &G,
                                                   dependencyContext &dep_ctx);
@@ -212,7 +215,7 @@ private:
                                   dependencyContext dep_ctx);
   void connectOpToItsDepList(Operation *op, SmallVector<Value, 1> dep_list,
                              Graph &g, dependencyContext dep_ctx);
-  std::vector<Operation *> traceOpFromToken(Value dep_token);
+  std::vector<Operation *> traceOpFromToken(Operation *op, Value dep_token);
   void connectTerminatorInGraph(Graph &g);
   void connectStartNodeInCommandGraph(dependencyGraph &G);
   void updatePointerFromGraphToHierarchyTerminator(dependencyGraph &G);

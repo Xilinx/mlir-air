@@ -52,6 +52,8 @@ uint64_t getTensorVolume(const Type ty);
 
 scf::ForOp getForRegionIterArgsOwner(Value val);
 
+scf::ParallelOp getParallelRegionInitValsOwner(Operation *op, Value val);
+
 air::HerdOp getHerdArgOwner(Value val);
 
 air::HierarchyInterface getHierarchyArgOwner(Value val);
