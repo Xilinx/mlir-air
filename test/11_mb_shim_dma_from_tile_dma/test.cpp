@@ -116,9 +116,9 @@ main(int argc, char *argv[])
 
   dispatch_packet_t *cpypkt0 =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(cpypkt0, 0, col, 0, 0, 8, 2,
-                       air_dev_mem_get_pa(dram_ptr), DMA_COUNT * sizeof(float),
-                       1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(cpypkt0, 0, col, 0, 0, 8, 2, /*packet_id=*/0,
+                       /*packet_type=*/0, air_dev_mem_get_pa(dram_ptr),
+                       DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
   air_queue_dispatch_and_wait(queues[0], wr_idx, cpypkt0);
 
   uint32_t errs = 0;

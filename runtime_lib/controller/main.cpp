@@ -623,7 +623,8 @@ uint32_t xaie_shim_dma_get_outstanding(uint64_t TileAddr, int direction,
 uint32_t last_bd[8] = {0};
 
 int xaie_shim_dma_push_bd(uint64_t TileAddr, int direction, int channel,
-                          int col, uint64_t addr, uint32_t len) {
+                          int col, int packet_type, int packet_id,
+                          uint64_t addr, uint32_t len) {
   uint32_t shimDMAchannel = channel; // Need
   uint32_t status_register_offset;
   uint32_t status_mask_shift;
@@ -721,6 +722,12 @@ int xaie_shim_dma_push_bd(uint64_t TileAddr, int direction, int channel,
 
   xaie::out32(TileAddr + base_address + 0x10, 0x0);
 
+  if ((direction == SHIM_DMA_MM2S) && (packet_type || packet_id)) {
+    uint32_t bd_packet = 0x80000000;
+    bd_packet |= ((uint32_t)packet_id & 0x001f);
+    bd_packet |= ((uint32_t)packet_type & 0x0007) << 12;
+    xaie::out32(TileAddr + 0x0001D010 + bd_offset, bd_packet);
+  }
   // u32 config = xaie::in32(TileAddr + base_address + 0xC);
   // xil_printf("New BD addr %08x ctrl %08x config
   // %08x\n\r",LOW_ADDR((u64)addr),control,config);
@@ -1325,6 +1332,8 @@ int do_packet_nd_memcpy(uint32_t slot) {
   nd_dma_get_checkpoint(&a_pkt, slot, index_4d, index_3d, index_2d, paddr_3d,
                         paddr_2d, paddr_1d);
 
+  uint8_t packet_id = a_pkt->arg[0] & 0x001f;
+  uint8_t packet_type = (a_pkt->arg[0] >> 5) & 0x0007;
   uint16_t channel = (a_pkt->arg[0] >> 24) & 0x00ff;
   uint16_t col = (a_pkt->arg[0] >> 32) & 0x00ff;
   // uint16_t logical_col  = (a_pkt->arg[0] >> 32) & 0x00ff;
@@ -1358,9 +1367,8 @@ int do_packet_nd_memcpy(uint32_t slot) {
           return 1;
         } else {
           xaie_shim_dma_push_bd(xaie::getTileAddr(col, 0), direction, channel,
-                                col, paddr_1d, length_1d);
-          // xaie_shim_dma_push_bd(&xaie::ShimTileInst[col], direction, channel,
-          // logical_col, paddr_1d, length_1d);
+                                col, packet_type, packet_id, paddr_1d,
+                                length_1d);
         }
         paddr_1d += stride_2d;
       }
@@ -1554,6 +1562,7 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id) {
       uint16_t channel = (pkt->arg[0] >> 24) & 0x00ff;
       uint16_t direction = (pkt->arg[0] >> 60) & 0x000f;
       uint16_t col = (pkt->arg[0] >> 32) & 0x00ff;
+      uint8_t type_id = pkt->arg[0] & 0xff;
       int slot = channel;
       slot += get_slot(col, memory_space);
       if (direction == SHIM_DMA_S2MM)

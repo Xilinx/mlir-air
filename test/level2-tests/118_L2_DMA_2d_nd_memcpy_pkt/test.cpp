@@ -113,9 +113,9 @@ int main(int argc, char *argv[]) {
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_a =
       (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_a, 0, 7, 1, 0, 4, /*space*/ 1, 0,
-                       TILE_WIDTH * sizeof(float), TILE_HEIGHT,
-                       IMAGE_WIDTH * sizeof(float), 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt_a, 0, 7, 1, 0, 4, /*space=*/1, /*packet_id=*/0,
+                       /*packet_type=*/0, 0, TILE_WIDTH * sizeof(float),
+                       TILE_HEIGHT, IMAGE_WIDTH * sizeof(float), 1, 0, 1, 0);
 
   //
   // read the data back
@@ -126,9 +126,10 @@ int main(int argc, char *argv[]) {
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_c =
       (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_c, 0, 7, 0, 1, 4, /*space*/ 1,
-                       IMAGE_SIZE * sizeof(float), TILE_WIDTH * sizeof(float),
-                       TILE_HEIGHT, IMAGE_WIDTH * sizeof(float), 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt_c, 0, 7, 0, 1, 4, /*space=*/1, /*packet_id=*/0,
+                       /*packet_type=*/0, IMAGE_SIZE * sizeof(float),
+                       TILE_WIDTH * sizeof(float), TILE_HEIGHT,
+                       IMAGE_WIDTH * sizeof(float), 1, 0, 1, 0);
 
   air_queue_dispatch_and_wait(q, wr_idx, pkt_c);
 

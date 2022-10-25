@@ -107,8 +107,9 @@ int main(int argc, char *argv[]) {
     packet_id = wr_idx % q->size;
     pkt = (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
 
-    air_packet_nd_memcpy(pkt, 0, 7, 1, sel, 4, 1, 0, XFR_SZ * sizeof(float), 1,
-                         0, 1, 0, 1, 0);
+    air_packet_nd_memcpy(pkt, 0, 7, 1, sel, 4, 1, /*packet_id=*/0,
+                         /*packet_type=*/0, 0, XFR_SZ * sizeof(float), 1, 0, 1,
+                         0, 1, 0);
 
     //
     // read the data back
@@ -117,7 +118,8 @@ int main(int argc, char *argv[]) {
     packet_id = wr_idx % q->size;
     pkt = (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
 
-    air_packet_nd_memcpy(pkt, 0, 7, 0, sel, 4, 1, XFR_SZ * sizeof(float),
+    air_packet_nd_memcpy(pkt, 0, 7, 0, sel, 4, 1, /*packet_id=*/0,
+                         /*packet_type=*/0, XFR_SZ * sizeof(float),
                          XFR_SZ * sizeof(float), 1, 0, 1, 0, 1, 0);
   }
 

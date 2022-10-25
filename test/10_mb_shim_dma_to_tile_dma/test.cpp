@@ -104,7 +104,8 @@ main(int argc, char *argv[])
 
   dispatch_packet_t *pkt =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt, 0, col, 1, 0, 4, 2, air_dev_mem_get_pa(dram_ptr),
+  air_packet_nd_memcpy(pkt, 0, col, 1, 0, 4, 2, /*packet_id=*/0,
+                       /*packet_type=*/0, air_dev_mem_get_pa(dram_ptr),
                        DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
   air_queue_dispatch_and_wait(queues[0], wr_idx, pkt);
 

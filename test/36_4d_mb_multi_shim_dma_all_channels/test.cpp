@@ -142,11 +142,11 @@ int main(int argc, char *argv[]) {
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_a =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_a, 0, 7, 1, 0, 4, 2, air_dev_mem_get_pa(dram_ptr_1),
-                       TILE_WIDTH * sizeof(float), TILE_HEIGHT,
-                       IMAGE_WIDTH * sizeof(float), NUM_3D,
-                       TILE_WIDTH * sizeof(float), NUM_4D,
-                       IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
+  air_packet_nd_memcpy(
+      pkt_a, 0, 7, 1, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
+      air_dev_mem_get_pa(dram_ptr_1), TILE_WIDTH * sizeof(float), TILE_HEIGHT,
+      IMAGE_WIDTH * sizeof(float), NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
   // air_queue_dispatch_and_wait(queues[0], wr_idx, pkt_a);
 
   // Core 7,4
@@ -156,11 +156,11 @@ int main(int argc, char *argv[]) {
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_b =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_b, 0, 7, 1, 1, 4, 2, air_dev_mem_get_pa(dram_ptr_1),
-                       TILE_WIDTH * sizeof(float), TILE_HEIGHT,
-                       IMAGE_WIDTH * sizeof(float), NUM_3D,
-                       TILE_WIDTH * sizeof(float), NUM_4D,
-                       IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
+  air_packet_nd_memcpy(
+      pkt_b, 0, 7, 1, 1, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
+      air_dev_mem_get_pa(dram_ptr_1), TILE_WIDTH * sizeof(float), TILE_HEIGHT,
+      IMAGE_WIDTH * sizeof(float), NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
   // air_queue_dispatch_and_wait(queues[0], wr_idx, pkt_b);
 
   // Core 8,2
@@ -170,11 +170,11 @@ int main(int argc, char *argv[]) {
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_e =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_e, 0, 6, 1, 0, 4, 2, air_dev_mem_get_pa(dram_ptr_1),
-                       TILE_WIDTH * sizeof(float), TILE_HEIGHT,
-                       IMAGE_WIDTH * sizeof(float), NUM_3D,
-                       TILE_WIDTH * sizeof(float), NUM_4D,
-                       IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
+  air_packet_nd_memcpy(
+      pkt_e, 0, 6, 1, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
+      air_dev_mem_get_pa(dram_ptr_1), TILE_WIDTH * sizeof(float), TILE_HEIGHT,
+      IMAGE_WIDTH * sizeof(float), NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
   // air_queue_dispatch_and_wait(queues[0], wr_idx, pkt_e);
 
   // Core 8,4
@@ -184,11 +184,11 @@ int main(int argc, char *argv[]) {
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_f =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_f, 0, 6, 1, 1, 4, 2, air_dev_mem_get_pa(dram_ptr_1),
-                       TILE_WIDTH * sizeof(float), TILE_HEIGHT,
-                       IMAGE_WIDTH * sizeof(float), NUM_3D,
-                       TILE_WIDTH * sizeof(float), NUM_4D,
-                       IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
+  air_packet_nd_memcpy(
+      pkt_f, 0, 6, 1, 1, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
+      air_dev_mem_get_pa(dram_ptr_1), TILE_WIDTH * sizeof(float), TILE_HEIGHT,
+      IMAGE_WIDTH * sizeof(float), NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
   // air_queue_dispatch_and_wait(queues[0], wr_idx, pkt_f);
 
   // Core 7,2
@@ -198,11 +198,11 @@ int main(int argc, char *argv[]) {
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_c =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_c, 0, 7, 0, 0, 4, 2, air_dev_mem_get_pa(dram_ptr_2),
-                       TILE_WIDTH * sizeof(float), TILE_HEIGHT,
-                       IMAGE_WIDTH * sizeof(float), NUM_3D,
-                       TILE_WIDTH * sizeof(float), NUM_4D,
-                       IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
+  air_packet_nd_memcpy(
+      pkt_c, 0, 7, 0, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
+      air_dev_mem_get_pa(dram_ptr_2), TILE_WIDTH * sizeof(float), TILE_HEIGHT,
+      IMAGE_WIDTH * sizeof(float), NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
   // air_queue_dispatch_and_wait(queues[0], wr_idx, pkt_c);
 
   // Core 7,4
@@ -212,11 +212,11 @@ int main(int argc, char *argv[]) {
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_d =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_d, 0, 7, 0, 1, 4, 2, air_dev_mem_get_pa(dram_ptr_3),
-                       TILE_WIDTH * sizeof(float), TILE_HEIGHT,
-                       IMAGE_WIDTH * sizeof(float), NUM_3D,
-                       TILE_WIDTH * sizeof(float), NUM_4D,
-                       IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
+  air_packet_nd_memcpy(
+      pkt_d, 0, 7, 0, 1, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
+      air_dev_mem_get_pa(dram_ptr_3), TILE_WIDTH * sizeof(float), TILE_HEIGHT,
+      IMAGE_WIDTH * sizeof(float), NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
   // air_queue_dispatch_and_wait(queues[0], wr_idx, pkt_d);
 
   // Core 8,2
@@ -226,11 +226,11 @@ int main(int argc, char *argv[]) {
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_g =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_g, 0, 6, 0, 0, 4, 2, air_dev_mem_get_pa(dram_ptr_4),
-                       TILE_WIDTH * sizeof(float), TILE_HEIGHT,
-                       IMAGE_WIDTH * sizeof(float), NUM_3D,
-                       TILE_WIDTH * sizeof(float), NUM_4D,
-                       IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
+  air_packet_nd_memcpy(
+      pkt_g, 0, 6, 0, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
+      air_dev_mem_get_pa(dram_ptr_4), TILE_WIDTH * sizeof(float), TILE_HEIGHT,
+      IMAGE_WIDTH * sizeof(float), NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
   // air_queue_dispatch_and_wait(queues[0], wr_idx, pkt_g);
 
   // Core 8,4
@@ -239,11 +239,11 @@ int main(int argc, char *argv[]) {
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_h =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_h, 0, 6, 0, 1, 4, 2, air_dev_mem_get_pa(dram_ptr_5),
-                       TILE_WIDTH * sizeof(float), TILE_HEIGHT,
-                       IMAGE_WIDTH * sizeof(float), NUM_3D,
-                       TILE_WIDTH * sizeof(float), NUM_4D,
-                       IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
+  air_packet_nd_memcpy(
+      pkt_h, 0, 6, 0, 1, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
+      air_dev_mem_get_pa(dram_ptr_5), TILE_WIDTH * sizeof(float), TILE_HEIGHT,
+      IMAGE_WIDTH * sizeof(float), NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
   air_queue_dispatch_and_wait(queues[0], wr_idx, pkt_h);
 
   uint32_t errs = 0;

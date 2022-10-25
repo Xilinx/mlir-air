@@ -149,7 +149,7 @@ main(int argc, char *argv[])
   dispatch_packet_t *pkt_c =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
   air_packet_nd_memcpy(
-      pkt_c, 0, col, 0, 0, 4, 2,
+      pkt_c, 0, col, 0, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
       air_dev_mem_get_pa(dram_ptr_3) /*BRAM_ADDR+(2*IMAGE_SIZE*sizeof(float))*/,
       TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
       NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
@@ -164,9 +164,10 @@ main(int argc, char *argv[])
   dispatch_packet_t *pkt_a =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
   air_packet_nd_memcpy(
-      pkt_a, 0, col, 1, 0, 4, 2, air_dev_mem_get_pa(dram_ptr_1) /*BRAM_ADDR*/,
-      TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
-      NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      pkt_a, 0, col, 1, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
+      air_dev_mem_get_pa(dram_ptr_1) /*BRAM_ADDR*/, TILE_WIDTH * sizeof(float),
+      TILE_HEIGHT, IMAGE_WIDTH * sizeof(float), NUM_3D,
+      TILE_WIDTH * sizeof(float), NUM_4D,
       IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
 
   wr_idx = queue_add_write_index(queues[0], 1);
@@ -174,7 +175,7 @@ main(int argc, char *argv[])
   dispatch_packet_t *pkt_b =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
   air_packet_nd_memcpy(
-      pkt_b, 0, col, 1, 1, 4, 2,
+      pkt_b, 0, col, 1, 1, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
       air_dev_mem_get_pa(dram_ptr_2) /*BRAM_ADDR+(IMAGE_SIZE*sizeof(float))*/,
       TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
       NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,

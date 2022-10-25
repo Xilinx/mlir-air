@@ -142,7 +142,8 @@ main(int argc, char *argv[])
       wr_idx = queue_add_write_index(queues[0], 1);
       packet_id = wr_idx % queues[0]->size;
       dispatch_packet_t *pkt1 = (dispatch_packet_t*)(queues[0]->base_address_vaddr) + packet_id;
-      air_packet_nd_memcpy(pkt1, 0, 2 + i, 1, 0 + j, 4, 2,
+      air_packet_nd_memcpy(pkt1, 0, 2 + i, 1, 0 + j, 4, 2, /*packet_id=*/0,
+                           /*packet_type=*/0,
                            air_dev_mem_get_pa(bram_ptr) +
                                ((2 * i + j) * DMA_COUNT * sizeof(float)),
                            DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
@@ -154,11 +155,11 @@ main(int argc, char *argv[])
       wr_idx = queue_add_write_index(queues[0], 1);
       packet_id = wr_idx % queues[0]->size;
       dispatch_packet_t *pkt2 = (dispatch_packet_t*)(queues[0]->base_address_vaddr) + packet_id;
-      air_packet_nd_memcpy(pkt2, 0, 2 + i, 0, 0 + j, 4, 2,
-                           air_dev_mem_get_pa(bram_ptr) +
-                               (4 * DMA_COUNT * sizeof(float)) +
-                               ((2 * i + j) * DMA_COUNT * sizeof(float)),
-                           DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
+      air_packet_nd_memcpy(
+          pkt2, 0, 2 + i, 0, 0 + j, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
+          air_dev_mem_get_pa(bram_ptr) + (4 * DMA_COUNT * sizeof(float)) +
+              ((2 * i + j) * DMA_COUNT * sizeof(float)),
+          DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
       signal_create(1, 0, NULL, (signal_t *)&pkt2->completion_signal);
 
       uint64_t s = queue_paddr_from_index(
@@ -190,10 +191,10 @@ main(int argc, char *argv[])
   wr_idx2 = queue_add_write_index(queues[1], 1);
   packet_id2 = wr_idx2 % queues[1]->size;
   dispatch_packet_t *pkt12 = (dispatch_packet_t*)(queues[1]->base_address_vaddr) + packet_id2;
-  air_packet_nd_memcpy(pkt12, 0, 6, 1, 0, 4, 2,
-                       air_dev_mem_get_pa(bram_ptr) +
-                           4 * DMA_COUNT * sizeof(float),
-                       4 * DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(
+      pkt12, 0, 6, 1, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
+      air_dev_mem_get_pa(bram_ptr) + 4 * DMA_COUNT * sizeof(float),
+      4 * DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
 
   //
   // read the data
@@ -202,10 +203,10 @@ main(int argc, char *argv[])
   wr_idx2 = queue_add_write_index(queues[1], 1);
   packet_id2 = wr_idx2 % queues[1]->size;
   dispatch_packet_t *pkt22 = (dispatch_packet_t*)(queues[1]->base_address_vaddr) + packet_id2;
-  air_packet_nd_memcpy(pkt22, 0, 6, 0, 0, 4, 2,
-                       air_dev_mem_get_pa(bram_ptr) +
-                           (8 * DMA_COUNT * sizeof(float)),
-                       4 * DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(
+      pkt22, 0, 6, 0, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
+      air_dev_mem_get_pa(bram_ptr) + (8 * DMA_COUNT * sizeof(float)),
+      4 * DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
 
   // start herd 1 (waiting on barrier)
   air_queue_dispatch(queues[1], wr_idx2, pkt22);

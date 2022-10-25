@@ -174,7 +174,8 @@ hsa_status_t air_packet_shimdma_status(dispatch_packet_t *pkt, uint8_t col);
 hsa_status_t
 air_packet_nd_memcpy(dispatch_packet_t *pkt, uint16_t herd_id, uint8_t col,
                      uint8_t direction, uint8_t channel, uint8_t burst_len,
-                     uint8_t memory_space, uint64_t phys_addr,
+                     uint8_t memory_space, uint8_t packet_type,
+                     uint8_t packet_id, uint64_t phys_addr,
                      uint32_t transfer_length1d, uint32_t transfer_length2d,
                      uint32_t transfer_stride2d, uint32_t transfer_length3d,
                      uint32_t transfer_stride3d, uint32_t transfer_length4d,

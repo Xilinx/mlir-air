@@ -120,7 +120,8 @@ main(int argc, char *argv[])
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_a =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_a, 0, 18, 1, 0, 4, 2,
+  air_packet_nd_memcpy(pkt_a, 0, 18, 1, 0, 4, 2, /*packet_id=*/0,
+                       /*packet_type=*/0,
                        air_dev_mem_get_pa(dram_ptr_1) /*AIR_BBUFF_BASE*/,
                        DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
   air_queue_dispatch_and_wait(queues[0], wr_idx, pkt_a);
@@ -130,7 +131,7 @@ main(int argc, char *argv[])
   dispatch_packet_t *pkt_b =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
   air_packet_nd_memcpy(
-      pkt_b, 0, 11, 1, 0, 4, 2,
+      pkt_b, 0, 11, 1, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
       air_dev_mem_get_pa(
           dram_ptr_2) /*AIR_BBUFF_BASE+(DMA_COUNT*sizeof(float))*/,
       DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
@@ -143,7 +144,7 @@ main(int argc, char *argv[])
   dispatch_packet_t *pkt_c =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
   air_packet_nd_memcpy(
-      pkt_c, 0, 18, 0, 0, 4, 2,
+      pkt_c, 0, 18, 0, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
       air_dev_mem_get_pa(
           dram_ptr_3) /*AIR_BBUFF_BASE+(2*DMA_COUNT*sizeof(float))*/,
       DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
@@ -154,7 +155,7 @@ main(int argc, char *argv[])
   dispatch_packet_t *pkt_d =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
   air_packet_nd_memcpy(
-      pkt_d, 0, 11, 0, 0, 4, 2,
+      pkt_d, 0, 11, 0, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
       air_dev_mem_get_pa(
           dram_ptr_4) /*AIR_BBUFF_BASE+(3*DMA_COUNT*sizeof(float))*/,
       DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);

@@ -148,12 +148,12 @@ int main(int argc, char *argv[]) {
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_a =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_a, 0, 7, 1, 0, 4, 2,
-                       air_dev_mem_get_pa(dram_ptr_1) /*AIR_BBUFF_BASE*/,
-                       TILE_WIDTH * sizeof(float), TILE_HEIGHT,
-                       IMAGE_WIDTH * sizeof(float), NUM_3D,
-                       TILE_WIDTH * sizeof(float), NUM_4D,
-                       IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
+  air_packet_nd_memcpy(
+      pkt_a, 0, 7, 1, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
+      air_dev_mem_get_pa(dram_ptr_1) /*AIR_BBUFF_BASE*/,
+      TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
+      NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
 
   // Core 7,4
   // Send the packet to write the tiles
@@ -161,12 +161,12 @@ int main(int argc, char *argv[]) {
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_b =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_b, 0, 11, 1, 1, 4, 2,
-                       air_dev_mem_get_pa(dram_ptr_1) /*AIR_BBUFF_BASE*/,
-                       TILE_WIDTH * sizeof(float), TILE_HEIGHT,
-                       IMAGE_WIDTH * sizeof(float), NUM_3D,
-                       TILE_WIDTH * sizeof(float), NUM_4D,
-                       IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
+  air_packet_nd_memcpy(
+      pkt_b, 0, 11, 1, 1, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
+      air_dev_mem_get_pa(dram_ptr_1) /*AIR_BBUFF_BASE*/,
+      TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
+      NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
 
   // Core 8,2
   // Send the packet to write the tiles
@@ -174,12 +174,12 @@ int main(int argc, char *argv[]) {
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_e =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_e, 0, 6, 1, 0, 4, 2,
-                       air_dev_mem_get_pa(dram_ptr_1) /*AIR_BBUFF_BASE*/,
-                       TILE_WIDTH * sizeof(float), TILE_HEIGHT,
-                       IMAGE_WIDTH * sizeof(float), NUM_3D,
-                       TILE_WIDTH * sizeof(float), NUM_4D,
-                       IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
+  air_packet_nd_memcpy(
+      pkt_e, 0, 6, 1, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
+      air_dev_mem_get_pa(dram_ptr_1) /*AIR_BBUFF_BASE*/,
+      TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
+      NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
 
   // Core 8,4
   // Send the packet to write the tiles
@@ -187,12 +187,12 @@ int main(int argc, char *argv[]) {
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_f =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_f, 0, 10, 1, 1, 4, 2,
-                       air_dev_mem_get_pa(dram_ptr_1) /*AIR_BBUFF_BASE*/,
-                       TILE_WIDTH * sizeof(float), TILE_HEIGHT,
-                       IMAGE_WIDTH * sizeof(float), NUM_3D,
-                       TILE_WIDTH * sizeof(float), NUM_4D,
-                       IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
+  air_packet_nd_memcpy(
+      pkt_f, 0, 10, 1, 1, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
+      air_dev_mem_get_pa(dram_ptr_1) /*AIR_BBUFF_BASE*/,
+      TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
+      NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
 
   // Core 7,2
   // Start by sending the packet to read from the tiles
@@ -201,7 +201,7 @@ int main(int argc, char *argv[]) {
   dispatch_packet_t *pkt_c =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
   air_packet_nd_memcpy(
-      pkt_c, 0, 3, 0, 0, 4, 2,
+      pkt_c, 0, 3, 0, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
       air_dev_mem_get_pa(
           dram_ptr_2) /*AIR_BBUFF_BASE+(IMAGE_SIZE*sizeof(float))*/,
       TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
@@ -215,7 +215,7 @@ int main(int argc, char *argv[]) {
   dispatch_packet_t *pkt_d =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
   air_packet_nd_memcpy(
-      pkt_d, 0, 19, 0, 1, 4, 2,
+      pkt_d, 0, 19, 0, 1, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
       air_dev_mem_get_pa(
           dram_ptr_3) /*AIR_BBUFF_BASE+(2*IMAGE_SIZE*sizeof(float))*/,
       TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
@@ -229,7 +229,7 @@ int main(int argc, char *argv[]) {
   dispatch_packet_t *pkt_g =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
   air_packet_nd_memcpy(
-      pkt_g, 0, 26, 0, 0, 4, 2,
+      pkt_g, 0, 26, 0, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
       air_dev_mem_get_pa(
           dram_ptr_4) /*AIR_BBUFF_BASE+(3*IMAGE_SIZE*sizeof(float))*/,
       TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
@@ -243,7 +243,7 @@ int main(int argc, char *argv[]) {
   dispatch_packet_t *pkt_h =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
   air_packet_nd_memcpy(
-      pkt_h, 0, 18, 0, 1, 4, 2,
+      pkt_h, 0, 18, 0, 1, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
       air_dev_mem_get_pa(
           dram_ptr_5) /*AIR_BBUFF_BASE+(4*IMAGE_SIZE*sizeof(float))*/,
       TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),

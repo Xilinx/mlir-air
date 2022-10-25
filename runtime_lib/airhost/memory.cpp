@@ -269,8 +269,10 @@ void air_shim_memcpy4d_queue_impl(uint32_t id, uint64_t x, uint64_t y, void* t,
   uint64_t packet_id = wr_idx % _air_host_active_herd.q->size;
 
   dispatch_packet_t *pkt = (dispatch_packet_t*)(_air_host_active_herd.q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S, shim_chan, /*burst_len=*/4, /*memory_space=*/2,
-                       _air_host_bram_paddr, length*sizeof(uint32_t), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S,
+                       shim_chan, /*burst_len=*/4, /*memory_space=*/2,
+                       /*packet_type=*/0, /*packet_id=*/0, _air_host_bram_paddr,
+                       length * sizeof(uint32_t), 1, 0, 1, 0, 1, 0);
   //if (s) {
   //  // TODO: don't block here
   //  air_queue_dispatch_and_wait(_air_host_active_herd.q, wr_idx, pkt);
@@ -330,8 +332,11 @@ void air_shim_memcpy2d_queue_impl(uint32_t id, uint64_t x, uint64_t y, void* t,
   uint64_t packet_id = wr_idx % _air_host_active_herd.q->size;
 
   dispatch_packet_t *pkt = (dispatch_packet_t*)(_air_host_active_herd.q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S, shim_chan, /*burst_len=*/4, /*memory_space=*/2,
-                       _air_host_bram_paddr, length*sizeof(uint32_t), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S,
+                       shim_chan,
+                       /*burst_len=*/4, /*memory_space=*/2,
+                       /*packet_type=*/0, /*packet_id=*/0, _air_host_bram_paddr,
+                       length * sizeof(uint32_t), 1, 0, 1, 0, 1, 0);
   //if (s) {
   //  // TODO: don't block here
   //  air_queue_dispatch_and_wait(_air_host_active_herd.q, wr_idx, pkt);
@@ -380,8 +385,10 @@ void air_shim_memcpy_queue_impl(signal_t *s, uint32_t id, uint64_t x,
   uint64_t packet_id = wr_idx % _air_host_active_herd.q->size;
 
   dispatch_packet_t *pkt = (dispatch_packet_t*)(_air_host_active_herd.q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S, shim_chan, /*burst_len=*/4, /*memory_space=*/2,
-                       _air_host_bram_paddr, length*sizeof(uint32_t), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S,
+                       shim_chan, /*burst_len=*/4, /*memory_space=*/2,
+                       /*packet_type=*/0, /*packet_id=*/0, _air_host_bram_paddr,
+                       length * sizeof(uint32_t), 1, 0, 1, 0, 1, 0);
   if (s) {
     // TODO: don't block here
     air_queue_dispatch_and_wait(_air_host_active_herd.q, wr_idx, pkt);
@@ -533,7 +540,8 @@ void air_mem_shim_nd_memcpy_queue_impl(signal_t *s, uint32_t id, uint64_t x,
     dispatch_packet_t *pkt = (dispatch_packet_t*)(_air_host_active_herd.q->base_address_vaddr) + packet_id;
     air_packet_nd_memcpy(
         pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S, shim_chan,
-        /*burst_len=*/4, /*memory_space=*/space, (uint64_t)t->data + offset,
+        /*burst_len=*/4, /*memory_space=*/space,
+        /*packet_type=*/0, /*packet_id=*/0, (uint64_t)t->data + offset,
         length_1d * sizeof(T), length_2d, stride_2d * sizeof(T), length_3d,
         stride_3d * sizeof(T), length_4d, stride_4d * sizeof(T));
     if (s) {
@@ -590,8 +598,11 @@ void air_mem_shim_nd_memcpy_queue_impl(signal_t *s, uint32_t id, uint64_t x,
     uint64_t packet_id = wr_idx % _air_host_active_herd.q->size;
 
     dispatch_packet_t *pkt = (dispatch_packet_t*)(_air_host_active_herd.q->base_address_vaddr) + packet_id;
-    air_packet_nd_memcpy(pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S, shim_chan, /*burst_len=*/4, /*memory_space=*/2,
-                         _air_host_bram_paddr, length*sizeof(T), 1, 0, 1, 0, 1, 0);
+    air_packet_nd_memcpy(
+        pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S, shim_chan,
+        /*burst_len=*/4, /*memory_space=*/2,
+        /*packet_type=*/0, /*packet_id=*/0, _air_host_bram_paddr,
+        length * sizeof(T), 1, 0, 1, 0, 1, 0);
     if (s) {
       // TODO: don't block here
       air_queue_dispatch_and_wait(_air_host_active_herd.q, wr_idx, pkt);
