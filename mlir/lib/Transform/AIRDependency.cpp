@@ -639,9 +639,6 @@ public:
         }
       });
     }
-
-    // Dump graph
-    dump_graph("out.dot");
   }
 
 private:
