@@ -164,7 +164,7 @@ class dependencyCanonicalizer {
 
 public:
   void parseCommandGraphs(func::FuncOp &toplevel, dependencyGraph &global_graph,
-                          dependencyContext &dep_ctx);
+                          dependencyContext &dep_ctx, bool dump_dot = false, std::string dump_dir = "");
   void canonicalizeGraphs(dependencyGraph &global_graph,
                           dependencyGraph &tr_graph,
                           vertex_to_vertex_map_tree &g_to_tr,
@@ -173,6 +173,7 @@ public:
   void updateDepList(func::FuncOp func, dependencyGraph &global_graph);
   void removeDepListRepitition(func::FuncOp func);
   void removeRedundantWaitAllOps(func::FuncOp func);
+  void dumpDotGraphFiles(dependencyGraph global_graph, std::string dump_dir = "");
 
 private:
   void addVerticesInHerd(std::vector<dependencyGraph> &herd_subgraphs, air::HerdOp herd, dependencyContext &dep_ctx);

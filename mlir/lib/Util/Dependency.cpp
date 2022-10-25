@@ -216,7 +216,7 @@ template <typename T> Operation *getScfParentOpFromYieldOp(scf::YieldOp op) {
 
 void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
                                                  dependencyGraph &global_graph,
-                                                 dependencyContext &dep_ctx) {
+                                                 dependencyContext &dep_ctx, bool dump_dot, std::string dump_dir) {
 
   // Create vertices for graphs
   // Build up host graph
@@ -278,6 +278,11 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
         updatePointerFromGraphToHierarchyTerminator(herdGraph);
       }
     }
+  }
+
+  if (dump_dot) {
+    // Dump dot graphs
+    dumpDotGraphFiles(global_graph, dump_dir);
   }
 }
 
@@ -850,27 +855,32 @@ void dependencyCanonicalizer::canonicalizeGraphs(
 
   if (dump_dot) {
     // Dump dot graphs
-    if (dump_dir != "") {
-      int status = mkdir(dump_dir.c_str(), 0777);
-      if ((status < 0) && (errno != EEXIST)) dump_dir = ""; // Failed to create dir
-    }
-    dump_graph(dump_dir + "host.dot", tr_graph.g);
-    int i = 0;
-    for (auto G_l : tr_graph.subgraphs) {
-      std::string name = xilinx::air::to_string(G_l.hierarchyOp) + "_" + std::to_string(++i) + ".dot";
-      dump_graph(dump_dir + name, G_l.g);
-      int j = 0;
-      for (auto G_p : G_l.subgraphs) {
-        std::string name = xilinx::air::to_string(G_p.hierarchyOp) + "_" + std::to_string(i) + "_" +
-                           std::to_string(++j) + ".dot";
-        dump_graph(dump_dir + name, G_p.g);
-        int k = 0;
-        for (auto G_h : G_p.subgraphs) {
-          std::string name = xilinx::air::to_string(G_h.hierarchyOp) + "_" + std::to_string(i) + "_" +
-                             std::to_string(j) + "_" + std::to_string(++k) +
-                             ".dot";
-          dump_graph(dump_dir + name, G_h.g);
-        }
+    dumpDotGraphFiles(tr_graph, dump_dir);
+  }
+}
+
+void dependencyCanonicalizer::dumpDotGraphFiles(dependencyGraph global_graph, std::string dump_dir){
+  // Dump dot graphs
+  if (dump_dir != "") {
+    int status = mkdir(dump_dir.c_str(), 0777);
+    if ((status < 0) && (errno != EEXIST)) dump_dir = ""; // Failed to create dir
+  }
+  dump_graph(dump_dir + "host.dot", global_graph.g);
+  int i = 0;
+  for (auto G_l : global_graph.subgraphs) {
+    std::string name = xilinx::air::to_string(G_l.hierarchyOp) + "_" + std::to_string(++i) + ".dot";
+    dump_graph(dump_dir + name, G_l.g);
+    int j = 0;
+    for (auto G_p : G_l.subgraphs) {
+      std::string name = xilinx::air::to_string(G_p.hierarchyOp) + "_" + std::to_string(i) + "_" +
+                          std::to_string(++j) + ".dot";
+      dump_graph(dump_dir + name, G_p.g);
+      int k = 0;
+      for (auto G_h : G_p.subgraphs) {
+        std::string name = xilinx::air::to_string(G_h.hierarchyOp) + "_" + std::to_string(i) + "_" +
+                            std::to_string(j) + "_" + std::to_string(++k) +
+                            ".dot";
+        dump_graph(dump_dir + name, G_h.g);
       }
     }
   }
