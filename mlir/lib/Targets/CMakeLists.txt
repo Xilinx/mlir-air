@@ -22,6 +22,7 @@
 
 add_air_library(AIRTargets
   AIRTargets.cpp
+  AIRHerdToJSON.cpp
 
   LINK_LIBS
 

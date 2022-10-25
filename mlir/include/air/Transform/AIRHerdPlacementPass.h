@@ -1,6 +1,6 @@
-//===- Passes.h -------------------------------------------------*- C++ -*-===//
+//===- AIRHerdPlacementPass.h ----------------------------------------*- C++ -*-===//
 //
-// Copyright (C) 2022, Xilinx Inc.
+// Copyright (C) 2020-2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -22,33 +22,18 @@
 // DEALINGS IN THE SOFTWARE.
 //
 //===----------------------------------------------------------------------===//
-
-#ifndef AIR_TRANSFORM_PASSES_H
-#define AIR_TRANSFORM_PASSES_H
-
-#include "air/Transform/AIRAutomaticTilingPass.h"
-#include "air/Transform/AIRDependency.h"
-#include "air/Transform/AIRDependencyCanonicalize.h"
-#include "air/Transform/AIRDependencyScheduleOpt.h"
-#include "air/Transform/AIRHerdAssignPass.h"
-#include "air/Transform/AIRHerdPlacementPass.h"
-#include "air/Transform/AIRLinalgCodegen.h"
-#include "air/Transform/AIRLinalgOpStats.h"
-#include "air/Transform/AIRLoopMergingPass.h"
-#include "air/Transform/AIRLoopPermutationPass.h"
-#include "air/Transform/AIRLowerLinalgTensors.h"
-#include "air/Transform/AIRMiscPasses.h"
-#include "air/Transform/AIRRegularizeLoopPass.h"
-#include "air/Transform/AIRTilingUtils.h"
-#include "air/Transform/AffineLoopOptPass.h"
-#include "air/Transform/ReturnEliminationPass.h"
+#ifndef AIR_PLACE_HERDS_H
+#define AIR_PLACE_HERDS_H
+ 
+#include "mlir/Pass/Pass.h"
+#include <memory>
 
 namespace xilinx {
 namespace air {
 
-void registerTransformPasses();
+std::unique_ptr<mlir::Pass> createAIRHerdPlacementPass();
 
 } // namespace air
 } // namespace xilinx
 
-#endif // AIR_TRANSFORM_PASSES_H
+#endif // AIR_PLACE_HERD_H
