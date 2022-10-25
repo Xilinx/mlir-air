@@ -1,4 +1,4 @@
-//===- matmul_gelu_shifted_anchor.mlir ------------------------------------------*- MLIR -*-===//
+//===- json_shifted_anchor.mlir ------------------------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
@@ -23,8 +23,23 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-place-herds="num-rows=6 num-cols=8 row-anchor=2 col-anchor=1" | air-translate -air-herds-to-json -num-rows=8 -num-rows=9 | FileCheck %s
+// RUN: air-opt %s -air-place-herds="num-rows=6 num-cols=8 row-anchor=2 col-anchor=1" | air-translate -air-herds-to-json -num-rows=8 -num-cols=9 | FileCheck %s
+// CHECK: "row": 7, 
+// CHECK: "col": 8
 // CHECK: partition
+// CHECK: [0, "matmul_herd_0", [3, 1], [3, 2], [2, 1], [2, 2]]
+// CHECK: [1, "matmul_herd_1", [3, 3], [3, 4], [2, 3], [2, 4]]
+// CHECK: [2, "matmul_herd_2", [3, 5], [3, 6], [2, 5], [2, 6]]
+// CHECK: [3, "matmul_herd_3", [3, 7], [3, 8], [2, 7], [2, 8]]
+// CHECK: [4, "matmul_herd_4", [5, 1], [5, 2], [4, 1], [4, 2]]
+// CHECK: [5, "matmul_herd_5", [5, 3], [5, 4], [4, 3], [4, 4]]
+// CHECK: [6, "matmul_herd_6", [5, 5], [5, 6], [4, 5], [4, 6]]
+// CHECK: [7, "matmul_herd_7", [5, 7], [5, 8], [4, 7], [4, 8]]
+// CHECK: [8, "gelu_herd_0", [7, 1], [7, 2], [6, 1], [6, 2]]
+// CHECK: [9, "gelu_herd_1", [7, 3], [7, 4], [6, 3], [6, 4]]
+// CHECK: [10, "gelu_herd_2", [7, 5], [7, 6], [6, 5], [6, 6]]
+// CHECK: [11, "gelu_herd_3", [7, 7], [7, 8], [6, 7], [6, 8]]
+
 
 #map0 = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 512)>
