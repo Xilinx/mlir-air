@@ -67,6 +67,10 @@ public:
 
       // Update dependency list
       canonicalizer.updateDepList(func, trHostGraph);
+
+      // Clean up
+      canonicalizer.removeDepListRepitition(func);
+      canonicalizer.removeRedundantWaitAllOps(func);
     }
   }
 

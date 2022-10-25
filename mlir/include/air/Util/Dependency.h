@@ -171,6 +171,8 @@ public:
                           bool dump_graph = false,
                           std::string dump_dir = "");
   void updateDepList(func::FuncOp func, dependencyGraph &global_graph);
+  void removeDepListRepitition(func::FuncOp func);
+  void removeRedundantWaitAllOps(func::FuncOp func);
 
 private:
   void addVerticesInHerd(std::vector<dependencyGraph> &herd_subgraphs, air::HerdOp herd, dependencyContext &dep_ctx);

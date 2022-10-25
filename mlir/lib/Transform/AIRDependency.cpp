@@ -640,53 +640,6 @@ public:
       });
     }
 
-    // Final traversal: Clean up
-    // Remove repetition in dependency list.
-    for (auto f : module.getOps<func::FuncOp>()) {
-      f.walk([&](Operation *op) {
-        if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
-          if (async_op.getAsyncDependencies().size() >= 1) {
-            auto dependency_list = async_op.getAsyncDependencies();
-            // Initialize repetition mask
-            std::vector<bool> hasRepeat;
-            for (auto i = dependency_list.begin(); i != dependency_list.end();
-                 ++i) {
-              hasRepeat.push_back(false);
-            }
-            // Iterate the dependency list
-            for (unsigned i = 0; i < dependency_list.size(); i++) {
-              for (unsigned j = i + 1; j < dependency_list.size(); j++) {
-                if (dependency_list[i] == dependency_list[j]) {
-                  hasRepeat[j] = true;
-                }
-              }
-            }
-            for (int i = dependency_list.size() - 1; i >= 0; i--) {
-              if (hasRepeat[i]) {
-                async_op.eraseAsyncDependency(i);
-              }
-            }
-          }
-        }
-      });
-    }
-
-    // Remove wait_all with single operand.
-    // Remove wait_all's id attribute.
-    for (auto f : module.getOps<func::FuncOp>()) {
-      f.walk([&](Operation *op) {
-        if (air::WaitAllOp wa_op = dyn_cast<air::WaitAllOp>(op)) {
-          if (wa_op.getAsyncDependencies().size() == 1) {
-            wa_op.getAsyncToken().replaceAllUsesWith(
-                wa_op.getAsyncDependencies()[0]);
-            wa_op.erase();
-          } else {
-            wa_op->removeAttr("id");
-          }
-        }
-      });
-    }
-
     // Dump graph
     dump_graph("out.dot");
   }

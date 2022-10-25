@@ -995,5 +995,51 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
   }
 }
 
+// Remove repetitions in dependency lists
+void dependencyCanonicalizer::removeDepListRepitition(func::FuncOp func){
+  func.walk([&](Operation *op) {
+    if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
+      if (async_op.getAsyncDependencies().size() >= 1) {
+        auto dependency_list = async_op.getAsyncDependencies();
+        // Initialize repetition mask
+        std::vector<bool> hasRepeat;
+        for (auto i = dependency_list.begin(); i != dependency_list.end();
+              ++i) {
+          hasRepeat.push_back(false);
+        }
+        // Iterate the dependency list
+        for (unsigned i = 0; i < dependency_list.size(); i++) {
+          for (unsigned j = i + 1; j < dependency_list.size(); j++) {
+            if (dependency_list[i] == dependency_list[j]) {
+              hasRepeat[j] = true;
+            }
+          }
+        }
+        for (int i = dependency_list.size() - 1; i >= 0; i--) {
+          if (hasRepeat[i]) {
+            async_op.eraseAsyncDependency(i);
+          }
+        }
+      }
+    }
+  });
+}
+
+// Remove wait_all ops which contain only a single operand
+void dependencyCanonicalizer::removeRedundantWaitAllOps(func::FuncOp func){
+  func.walk([&](Operation *op) {
+    if (air::WaitAllOp wa_op = dyn_cast<air::WaitAllOp>(op)) {
+      if (wa_op.getAsyncDependencies().size() == 1) {
+        wa_op.getAsyncToken().replaceAllUsesWith(
+            wa_op.getAsyncDependencies()[0]);
+        wa_op.erase();
+      } else {
+        wa_op->removeAttr("id");
+      }
+    }
+  });
+
+}
+
 } // namespace air
 } // namespace xilinx
