@@ -65,11 +65,6 @@ using namespace xilinx::air;
 
 namespace {
 
-// These should be determined by either looking up the grid dimensions or taking them 
-// right from the input; however, there is no operation defined yet.
-static const int32_t rowSize = 8;
-static const int32_t colSize = 10;
-
 class Herd {
 
 public:
@@ -132,11 +127,9 @@ private:
 };
 
 mlir::LogicalResult AIRHerdsToJSONTranslate(mlir::ModuleOp module, llvm::raw_ostream &outStream) {
-
   std::vector<std::unique_ptr<Herd>> herdOps;
   int32_t number = 0;
   auto status = success();
-
   for (auto f : module.getOps<func::FuncOp>()) {
     f.walk([&](Operation *op) {
          if (auto herd = dyn_cast<xilinx::air::HerdOp>(op)) {
@@ -179,12 +172,6 @@ mlir::LogicalResult AIRHerdsToJSONTranslate(mlir::ModuleOp module, llvm::raw_ost
         }
     });
   }
-
-  // boilerplate to give dimensions to the visualizer
-  outStream << "{\n\t\"switchbox00\": {\n\t\t\"row\": "
-            << rowSize - 1 << ", " << "\n\t\t\"col\": "
-            << colSize - 1 << "\n\t}, ";
-  outStream << "\n\t\"partition\": [ ";
 
   for (uint32_t i = 0; i < herdOps.size(); i++) {
       outStream << herdOps[i]->generateHerdString();

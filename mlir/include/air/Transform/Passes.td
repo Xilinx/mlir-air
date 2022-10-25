@@ -176,23 +176,32 @@ def AIRHerdAssign : Pass<"air-herd-assign", "ModuleOp"> {
 }
 
 def AIRHerdPlacementPass : Pass<"air-place-herds", "ModuleOp"> {
-  let summary = "Places herds onto a partition";
+  let summary = "Places herds onto a partition.";
   let constructor = "xilinx::air::createAIRHerdPlacementPass()";
+
+  let options = [
+    Option<"numRows", "num-rows", "int", /*default=*/"8",
+          "Number of rows of AIE tiles in a partition">,
+    Option<"numCols", "num-cols", "int", /*default=*/"10",
+          "Number of columns of AIE tiles in a partition">,
+    Option<"anchorPointRow", "row-anchor", "int", /*default=*/"0",
+          "Anchoring row number of partition">,
+    Option<"anchorPointCol", "col-anchor", "int", /*default=*/"0",
+          "Anchoring column number of a partition">
+  ];
 
   let description = [{
     This pass performs placement of air herds onto a partition with a 
-    specific number of rows and columns. The placement starts in the 
-    top left corner of the partition and tries to place the largest herd
-    as it moves to the right side of the row. If it can't place the largest
-    herd remaining in a given tile, it will try again with smaller and smaller 
-    herds. 
-
-    *Note: Currently, the number of rows and number of columns need to be specified 
-    in the AIRHerdPlacementPass.cpp and AIRHerdToJSON.cpp files.
+    specific number of rows and columns. Assumes partition
+    size (provided with an anchor point) will fit on physical board 
+    dimensions. The placement starts at the bottom left of the partition 
+    and tries to place the largest herd as it moves to the right side of 
+    the row. If it can't place the largest herd remaining in a given tile, 
+    it will try again with smaller and smaller herds. 
 
     Example with grid size set to 8 rows and 10 columns:
 
-    `-air-place-herds`
+    `-air-place-herds"num-rows=8 num-cols=10 row-anchor=0 col-anchor=0"`
 
   Input: 
     ```mlir 

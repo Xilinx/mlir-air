@@ -55,10 +55,18 @@
 using namespace mlir;
 using namespace xilinx;
 
+
 namespace xilinx {
 namespace air {
 
 namespace {
+
+static llvm::cl::opt<int>
+    gridNumRows("num-rows", llvm::cl::desc("Number of rows of AIEs in the grid"),
+            llvm::cl::init(0));
+static llvm::cl::opt<int>
+    gridNumCols("num-cols", llvm::cl::desc("Number of columns of AIEs in the grid"),
+            llvm::cl::init(0));
 
 llvm::json::Value attrToJSON(Attribute &attr) {
   if (auto a = attr.dyn_cast<StringAttr>()) {
@@ -130,6 +138,11 @@ void registerAIRRtTranslations() {
   TranslateFromMLIRRegistration registrationXJSON(
       "air-herds-to-json",
       [](ModuleOp module, raw_ostream &output) {
+          // boilerplate to give dimensions to the visualizer
+          output << "{\n\t\"switchbox00\": {\n\t\t\"row\": "
+                    << gridNumRows - 1 << ", " << "\n\t\t\"col\": "
+                    << gridNumCols - 1 << "\n\t}, ";
+          output << "\n\t\"partition\": [ ";
           return AIRHerdsToJSON(module, output);
         },
         [](DialectRegistry &registry) {

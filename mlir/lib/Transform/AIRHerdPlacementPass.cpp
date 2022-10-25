@@ -74,11 +74,6 @@ using namespace xilinx::air;
 
 namespace {
 
-    // These should be determined by either looking up the grid dimensions or taking them 
-    // right from the input; however, there is no operation defined yet.
-    static const int32_t rowSize = 8;
-    static const int32_t colSize = 10;
-
 class Herd {
 
 public:
@@ -128,10 +123,11 @@ struct HerdComparision {
   }
 };
 
-class Grid {
+class Partition {
 
 public:
-  Grid(int numRows, int numCols):numRows(numRows), numCols(numCols) {
+  Partition(int numRows, int numCols, int anchorPointRow, int anchorPointCol):
+    numRows(numRows), numCols(numCols), anchorPointRow(anchorPointRow), anchorPointCol(anchorPointCol) {
     grid.assign(numRows, std::vector<int>(numCols, -1));
   }
   
@@ -139,11 +135,13 @@ public:
 
   int32_t getNumRows() const { return numRows; }
   int32_t getNumCols() const { return numCols; }
+  int32_t getAnchorPointRow() const { return anchorPointRow; }
+  int32_t getAnchorPointCol() const { return anchorPointCol; }
   int32_t getLocX() const { return locX; }
   int32_t getLocY() const { return locY; }
 
   bool isLegalPlacement (std::unique_ptr<Herd> &herd, int32_t row, int32_t col) const {
-    for (int i = numRows - 1 - row; i < herd->getNumRows() + numRows - 1 - row; i++) {
+    for (int i = numRows - row - herd->getNumRows(); i < numRows - row; i++) {
       for (int j = col; j < herd->getNumCols() + col; j++) {
         // build down and to the right
 
@@ -165,18 +163,18 @@ public:
 
   // row and col refer to the top left corner location of the herd 
   void placeHerd(std::unique_ptr<Herd> &herd, int32_t row, int32_t col) {
-    for (int i = numRows - 1 - row; i < herd->getNumRows() + numRows - 1 - row; i++) {
+    for (int i = numRows - row - herd->getNumRows(); i < numRows - row; i++) {
       for (int j = col; j < herd->getNumCols() + col; j++) {
         grid[i][j] = herd->getNumber();
       }
     }
   }
 
-  void printGrid() const {
+  void printPartition() const {
     for (uint32_t i = 0; i < grid.size(); i++) {
       for (uint32_t j = 0; j < grid[i].size(); j++) {
         llvm::outs() << grid[i][j] << " ";
-      }    
+      }
       llvm::outs() << "\n";
     }
     llvm::outs() << "\n";
@@ -185,6 +183,8 @@ public:
 private:
   int32_t numRows;
   int32_t numCols;
+  int32_t anchorPointRow;
+  int32_t anchorPointCol;
   int32_t locX;
   int32_t locY;
 };
@@ -201,10 +201,14 @@ public:
 
   void runOnOperation() override {
 
+    if (numRows < 0 || numCols < 0 || anchorPointRow < 0 || anchorPointCol < 0) {
+      llvm::errs() << "Ensure all input parameters are greater than zero.\n";
+      return;
+    }
     auto module = getOperation();
 
     OpBuilder module_builder(module);
-    
+
     // Number of the current herd
     uint32_t number = 0;
     std::vector<std::unique_ptr<Herd>> unplacedHerds;
@@ -220,7 +224,7 @@ public:
           SmallVector<Value, 2> herd_size = herd.getSizeOperands();
           if (!isa<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()) ||
               !isa<arith::ConstantIndexOp>(herd_size[1].getDefiningOp())) {
-            llvm::errs() << "Only constant sized herds are supported";
+            llvm::errs() << "Only constant sized herds are supported\n";
             return;
           }
           int64_t herd_size_x =
@@ -235,50 +239,50 @@ public:
           }
       });
     }
-    std::unique_ptr<Grid> grid = std::make_unique<Grid>(rowSize, colSize);
+    std::unique_ptr<Partition> partition = std::make_unique<Partition>(numRows, numCols, anchorPointRow, anchorPointCol);
     std::sort(unplacedHerds.begin(), unplacedHerds.end(), HerdComparision());
     std::vector<std::unique_ptr<Herd>> placedHerds;
-    naivePlacement(grid, unplacedHerds, placedHerds);
+    naivePlacement(partition, unplacedHerds, placedHerds);
 
     if (unplacedHerds.size() != 0) {
-      llvm::outs() << "Valid placement Not found." << "\n";
+      module.emitError("No valid placement found.");
       for (uint32_t i = 0; i < unplacedHerds.size(); i++) {
-        unplacedHerds[i]->printHerd();
+        herdOps[unplacedHerds[i]->getNumber()]->emitOpError("\nUnplaced herd: ") 
+            << unplacedHerds[i]->getName() << "\n";
       }
       return;
     }
 
-    auto col_name = xilinx::air::HerdOp::getColOffsetAttrName();
-    auto row_name = xilinx::air::HerdOp::getRowOffsetAttrName();
+    auto xLocName = xilinx::air::HerdOp::getColOffsetAttrName();
+    auto yLocName = xilinx::air::HerdOp::getRowOffsetAttrName();
 
     for (uint32_t i = 0; i < herdOps.size(); i++) {
 
           int32_t herdIndex = placedHerds[i]->getNumber();
-          herdOps[herdIndex]->setAttr(row_name, IntegerAttr::get(IntegerType::get(herdOps[herdIndex]->getContext(), 64),
-                                          placedHerds[i]->getLocX()));
-          herdOps[herdIndex]->setAttr(col_name, IntegerAttr::get(IntegerType::get(herdOps[herdIndex]->getContext(), 64),
-                                          placedHerds[i]->getLocY()));
+          herdOps[herdIndex]->setAttr(yLocName, IntegerAttr::get(IntegerType::get(herdOps[herdIndex]->getContext(), 64),
+                                          placedHerds[i]->getLocY() + partition->getAnchorPointRow()));
+          herdOps[herdIndex]->setAttr(xLocName, IntegerAttr::get(IntegerType::get(herdOps[herdIndex]->getContext(), 64),
+                                          placedHerds[i]->getLocX() + partition->getAnchorPointCol()));
         }
     return;
   }
 
 private:
 
-  // Performs placement, trying to place the first herd in the file first, moving from top 
-  // left -> right, down a row, then left -> right again. Will try to place each remaining
+  // Performs placement, trying to place the first herd on the anchor point first, moving from 
+  // left -> right, up a row, then left -> right again. Will try to place each remaining
   // unplaced herd in each open partition tile.
-  void naivePlacement(std::unique_ptr<Grid> &grid, std::vector<std::unique_ptr<Herd>> &unplacedHerds,
+  void naivePlacement(std::unique_ptr<Partition> &partition, std::vector<std::unique_ptr<Herd>> &unplacedHerds,
                       std::vector<std::unique_ptr<Herd>> &placedHerds) {
-    // i starts at n - 1, not n
-    for (int64_t i = grid->getNumRows(); i-- > 0 ;) {
-      for (int64_t j = 0; j < grid->getNumCols(); j++) {
-        if (grid->grid[grid->getNumRows() - i - 1][j] == -1) {
+    for (int64_t i = 0; i < partition->getNumRows(); i++) {  
+      for (int64_t j = 0; j < partition->getNumCols(); j++) {
+        if (partition->grid[partition->getNumRows() - i - 1][j] == -1) {
           for (uint32_t k = 0; k < unplacedHerds.size(); k++) {
-            bool legalPlace = grid->isLegalPlacement(unplacedHerds[k], i, j);
+            bool legalPlace = partition->isLegalPlacement(unplacedHerds[k], i, j);
             if(legalPlace) {
-              grid->placeHerd(unplacedHerds[k], i, j);
-              unplacedHerds[k]->setLocX(i);
-              unplacedHerds[k]->setLocY(j);
+              partition->placeHerd(unplacedHerds[k], i, j);
+              unplacedHerds[k]->setLocX(j);
+              unplacedHerds[k]->setLocY(i + unplacedHerds[k]->getNumRows() - 1);
               placedHerds.push_back(std::move(unplacedHerds[k]));
               unplacedHerds.erase(unplacedHerds.begin() + k);
               if (unplacedHerds.size() == 0) {
