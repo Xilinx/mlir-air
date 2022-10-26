@@ -206,6 +206,17 @@ scf::ForOp getForRegionIterArgsOwner(Value val) {
   return dyn_cast<scf::ForOp>(containingOp);
 }
 
+// Get the parent scf.parallel op of an init_val
+scf::ParallelOp getParallelRegionInitValsOwner(Operation *op, Value val) {
+  if (auto parent_parallel_op = op->getParentOfType<scf::ParallelOp>()) {
+    for (auto init_val : parent_parallel_op.getInitVals()) {
+      if (init_val == val)
+        return parent_parallel_op;
+    }
+  }
+  return scf::ParallelOp();
+}
+
 // Get the parent air.launch_herd op of a tile id
 air::HerdOp getHerdArgOwner(Value val) {
   auto ivArg = val.dyn_cast<BlockArgument>();
@@ -261,6 +272,11 @@ void renumberDmaOps(func::FuncOp func, std::string mode = "herd") {
     }
   } else
     assert(false && "Unknown dma renumber mode. Supported modes: global, herd");
+}
+
+// Get op type as string
+std::string to_string(Operation *op) {
+  return op->getName().getStringRef().str();
 }
 
 } // namespace air

@@ -52,6 +52,8 @@ uint64_t getTensorVolume(const Type ty);
 
 scf::ForOp getForRegionIterArgsOwner(Value val);
 
+scf::ParallelOp getParallelRegionInitValsOwner(Operation *op, Value val);
+
 air::HerdOp getHerdArgOwner(Value val);
 
 air::HierarchyInterface getHierarchyArgOwner(Value val);
@@ -59,6 +61,8 @@ air::HierarchyInterface getHierarchyArgOwner(Value val);
 int getIdAttr(Operation *op);
 
 void renumberDmaOps(func::FuncOp func, std::string mode = "herd");
+
+std::string to_string(Operation *op);
 
 } // namespace air
 } // namespace xilinx

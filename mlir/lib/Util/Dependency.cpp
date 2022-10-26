@@ -24,6 +24,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Util/Dependency.h"
+#include <sys/stat.h>
 
 #define DEBUG_TYPE "air-dependency-util"
 
@@ -216,56 +217,21 @@ template <typename T> Operation *getScfParentOpFromYieldOp(scf::YieldOp op) {
 
 void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
                                                  dependencyGraph &global_graph,
-                                                 dependencyContext &dep_ctx) {
+                                                 dependencyContext &dep_ctx,
+                                                 bool dump_dot,
+                                                 std::string dump_dir) {
 
   // Create vertices for graphs
   // Build up host graph
   toplevel.walk([&](Operation *op) {
-    if (!op->getParentOfType<air::LaunchOp>()) {
+    if (!op->getParentOfType<air::HierarchyInterface>()) {
       addVertexFromOpImpls(op, global_graph.g, dep_ctx);
       if (auto launch = dyn_cast<air::LaunchOp>(op)) {
-        // Build up launch graph
-        global_graph.subgraphs.push_back(
-            dependencyGraph(launch.getOperation(), true));
-        dependencyGraph *current_launch_graph =
-            &(global_graph.subgraphs.back());
-
-        launch.walk([&](Operation *launch_childop) {
-          if (!launch_childop->getParentOfType<air::PartitionOp>() &&
-              !dyn_cast<air::LaunchOp>(launch_childop)) {
-            addVertexFromOpImpls(launch_childop, current_launch_graph->g,
-                                 dep_ctx);
-            if (auto partition = dyn_cast<air::PartitionOp>(launch_childop)) {
-              // Build up partition graph
-              current_launch_graph->subgraphs.push_back(
-                  dependencyGraph(partition.getOperation(), true));
-              dependencyGraph *current_part_graph =
-                  &(current_launch_graph->subgraphs.back());
-
-              partition.walk([&](Operation *part_childop) {
-                if (!part_childop->getParentOfType<air::HerdOp>() &&
-                    !dyn_cast<air::PartitionOp>(part_childop)) {
-                  addVertexFromOpImpls(part_childop, current_part_graph->g,
-                                       dep_ctx);
-                  if (auto herd = dyn_cast<air::HerdOp>(part_childop)) {
-                    // Build up herd graph
-                    current_part_graph->subgraphs.push_back(
-                        dependencyGraph(herd.getOperation(), true));
-                    dependencyGraph *current_herd_graph =
-                        &(current_part_graph->subgraphs.back());
-
-                    herd.walk([&](Operation *herd_childop) {
-                      if (!dyn_cast<air::HerdOp>(herd_childop)) {
-                        addVertexFromOpImpls(herd_childop,
-                                             current_herd_graph->g, dep_ctx);
-                      }
-                    });
-                  }
-                }
-              });
-            }
-          }
-        });
+        addVerticesInLaunch(global_graph.subgraphs, launch, dep_ctx);
+      } else if (auto partition = dyn_cast<air::PartitionOp>(op)) {
+        addVerticesInPartition(global_graph.subgraphs, partition, dep_ctx);
+      } else if (auto herd = dyn_cast<air::HerdOp>(op)) {
+        addVerticesInHerd(global_graph.subgraphs, herd, dep_ctx);
       }
     }
   });
@@ -314,6 +280,64 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
       }
     }
   }
+
+  if (dump_dot) {
+    // Dump dot graphs
+    dumpDotGraphFiles(global_graph, dump_dir);
+  }
+}
+
+void dependencyCanonicalizer::addVerticesInHerd(
+    std::vector<dependencyGraph> &herd_subgraphs, air::HerdOp herd,
+    dependencyContext &dep_ctx) {
+  // Build up herd graph
+  herd_subgraphs.push_back(dependencyGraph(herd.getOperation(), true));
+  dependencyGraph *current_herd_graph = &(herd_subgraphs.back());
+
+  herd.walk([&](Operation *herd_childop) {
+    if (!dyn_cast<air::HerdOp>(herd_childop)) {
+      addVertexFromOpImpls(herd_childop, current_herd_graph->g, dep_ctx);
+    }
+  });
+}
+
+void dependencyCanonicalizer::addVerticesInPartition(
+    std::vector<dependencyGraph> &part_subgraphs, air::PartitionOp partition,
+    dependencyContext &dep_ctx) {
+  // Build up partition graph
+  part_subgraphs.push_back(dependencyGraph(partition.getOperation(), true));
+  dependencyGraph *current_part_graph = &(part_subgraphs.back());
+
+  partition.walk([&](Operation *part_childop) {
+    if (!part_childop->getParentOfType<air::HerdOp>() &&
+        !dyn_cast<air::PartitionOp>(part_childop)) {
+      addVertexFromOpImpls(part_childop, current_part_graph->g, dep_ctx);
+      if (auto herd = dyn_cast<air::HerdOp>(part_childop)) {
+        addVerticesInHerd(current_part_graph->subgraphs, herd, dep_ctx);
+      }
+    }
+  });
+}
+
+void dependencyCanonicalizer::addVerticesInLaunch(
+    std::vector<dependencyGraph> &launch_subgraphs, air::LaunchOp launch,
+    dependencyContext &dep_ctx) {
+  // Build up launch graph
+  launch_subgraphs.push_back(dependencyGraph(launch.getOperation(), true));
+  dependencyGraph *current_launch_graph = &(launch_subgraphs.back());
+
+  launch.walk([&](Operation *launch_childop) {
+    if (!launch_childop->getParentOfType<air::PartitionOp>() &&
+        !dyn_cast<air::LaunchOp>(launch_childop)) {
+      addVertexFromOpImpls(launch_childop, current_launch_graph->g, dep_ctx);
+      if (auto partition = dyn_cast<air::PartitionOp>(launch_childop)) {
+        addVerticesInPartition(current_launch_graph->subgraphs, partition,
+                               dep_ctx);
+      } else if (auto herd = dyn_cast<air::HerdOp>(launch_childop)) {
+        addVerticesInHerd(current_launch_graph->subgraphs, herd, dep_ctx);
+      }
+    }
+  });
 }
 
 Graph::vertex_descriptor
@@ -336,6 +360,8 @@ dependencyCanonicalizer::addVertexFromOpImpls(Operation *op, Graph &G,
     return addVertexFromHierarchyOp(hier_op, G, dep_ctx);
   } else if (op->mightHaveTrait<OpTrait::IsTerminator>()) {
     return addVertexFromTerminatorOp(op, G, dep_ctx);
+  } else if (auto reduce_op = dyn_cast<scf::ReduceOp>(op)) {
+    return addVertexFromReduceOp(reduce_op, G, dep_ctx);
   } else
     return 0;
 }
@@ -406,15 +432,25 @@ dependencyCanonicalizer::addVertexFromTerminatorOp(Operation *op, Graph &G,
                            "HerdTerminator", "yellow", "box", G, dep_ctx);
   } else if (auto yieldop = dyn_cast<scf::YieldOp>(op)) {
     if (getScfParentOpFromYieldOp<scf::ParallelOp>(yieldop)) {
-      return addVertexFromOp(op, dep_ctx.TerminatorID, "terminator",
-                             "ScfParallelYieldOp", "crimson", "box", G,
-                             dep_ctx);
+      // Note: disabled parsing scf parallel yield op since it currently acts as
+      // a no-op return addVertexFromOp(op, dep_ctx.TerminatorID, "terminator",
+      //                        "ScfParallelYieldOp", "crimson", "box", G,
+      //                        dep_ctx);
     } else if (getScfParentOpFromYieldOp<scf::ForOp>(yieldop)) {
       return addVertexFromOp(op, dep_ctx.TerminatorID, "terminator",
                              "ScfForYieldOp", "crimson", "box", G, dep_ctx);
     }
   }
   return 0;
+}
+
+// Note: in the current scf parallel spec, reduce op takes the role of yielding
+// the ssa value. Hence, here we parse reduce op as a terminator.
+Graph::vertex_descriptor
+dependencyCanonicalizer::addVertexFromReduceOp(Operation *op, Graph &G,
+                                               dependencyContext &dep_ctx) {
+  return addVertexFromOp(op, dep_ctx.TerminatorID, "terminator", "ScfReduceOp",
+                         "crimson", "box", G, dep_ctx);
 }
 
 Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromExecuteOp(
@@ -467,15 +503,10 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromExecuteOp(
 
 Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromWaitAllOp(
     xilinx::air::WaitAllOp op, Graph &G, dependencyContext &dep_ctx) {
-  if (op.getAsyncToken().hasOneUse()) {
-    for (auto u : op.getAsyncToken().getUsers()) {
-      if (dyn_cast<scf::YieldOp>(u)) {
-        return addVertexFromOp(op, dep_ctx.WaitAllOpID, "wait_all", "WaitAllOp",
-                               "crimson", "oval", G, dep_ctx);
-      } else if (dyn_cast<scf::ReduceReturnOp>(u)) {
-        return addVertexFromOp(op, dep_ctx.WaitAllOpID, "wait_all", "WaitAllOp",
-                               "crimson", "oval", G, dep_ctx);
-      }
+  // Note: disabled parsing wait_all op inside of reduce op
+  for (auto u : op.getAsyncToken().getUsers()) {
+    if (dyn_cast<scf::ReduceReturnOp>(u)) {
+      return 0;
     }
   }
   return addVertexFromOp(op, dep_ctx.WaitAllOpID, "wait_all", "WaitAllOp",
@@ -510,6 +541,8 @@ std::string dependencyCanonicalizer::getOpTypeFromOpImpls(Operation *op) {
   } else if (dyn_cast<xilinx::air::HerdTerminatorOp>(op)) {
     return "hierarchy_terminator";
   } else if (dyn_cast<scf::YieldOp>(op)) {
+    return "terminator";
+  } else if (dyn_cast<scf::ReduceOp>(op)) {
     return "terminator";
   } else {
     if (dyn_cast<xilinx::air::ExecuteOp>(op->getParentOp())) {
@@ -596,6 +629,13 @@ void dependencyCanonicalizer::connectOpToItsDepListImpls(
     }
     connectOpToItsDepList(op, dep_list, g, dep_ctx);
   }
+  // scf.reduce
+  else if (auto reduceop = dyn_cast<scf::ReduceOp>(op)) {
+    for (auto operand : reduceop->getOperands()) {
+      dep_list.push_back(operand);
+    }
+    connectOpToItsDepList(op, dep_list, g, dep_ctx);
+  }
 }
 
 // Connect an async op to ops in its dependency list
@@ -605,7 +645,7 @@ void dependencyCanonicalizer::connectOpToItsDepList(
   auto dst_v = getVertexFromOp(op, dep_ctx, "front").first;
   if (dep_list.size()) {
     for (auto dep_token : dep_list) {
-      auto src_vector = traceOpFromToken(dep_token);
+      auto src_vector = traceOpFromToken(op, dep_token);
       if (src_vector.size()) {
         for (auto src_op : src_vector) {
           auto src_v = getVertexFromOp(src_op, dep_ctx, "back").first;
@@ -620,12 +660,22 @@ void dependencyCanonicalizer::connectOpToItsDepList(
 
 // Trace op from a token in dependency list
 std::vector<Operation *>
-dependencyCanonicalizer::traceOpFromToken(Value dep_token) {
+dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
   std::vector<Operation *> output;
-  // If dependency token originates from async op
-  if (dep_token.getDefiningOp() &&
-      mlir::dyn_cast<xilinx::air::AsyncOpInterface>(
-          dep_token.getDefiningOp())) {
+  // If dependency token is the iter arg of an scf for loop
+  if (auto forop = getForRegionIterArgsOwner(dep_token)) {
+    output.push_back(forop);
+    return output;
+  }
+  // Else if dependency token is the init arg of an scf parallel loop
+  else if (auto parallelop = getParallelRegionInitValsOwner(op, dep_token)) {
+    output.push_back(parallelop);
+    return output;
+  }
+  // Else if dependency token originates from async op
+  else if (dep_token.getDefiningOp() &&
+           mlir::dyn_cast<xilinx::air::AsyncOpInterface>(
+               dep_token.getDefiningOp())) {
     output.push_back(dep_token.getDefiningOp());
     return output;
   }
@@ -647,11 +697,6 @@ dependencyCanonicalizer::traceOpFromToken(Value dep_token) {
       output.push_back(parallelop_terminator);
       return output;
     }
-  }
-  // Else if dependency token is the iter arg of an scf for loop
-  else if (auto forop = getForRegionIterArgsOwner(dep_token)) {
-    output.push_back(forop);
-    return output;
   }
   // Else if dependency token is from affine if (joint token from multiple ops)
   else if (dep_token.getDefiningOp() &&
@@ -760,7 +805,7 @@ void dependencyCanonicalizer::dump_graph(std::string filename, Graph G) {
 // Perform transitive reduction to canonicalize the dependency graph
 void dependencyCanonicalizer::canonicalizeGraphs(
     dependencyGraph &global_graph, dependencyGraph &tr_graph,
-    vertex_to_vertex_map_tree &g_to_tr, bool dump_dot) {
+    vertex_to_vertex_map_tree &g_to_tr, bool dump_dot, std::string dump_dir) {
 
   // Construct empty post-canonicalization dependency graph, tr_graph
   for (auto &launchGraph : global_graph.subgraphs) {
@@ -828,23 +873,35 @@ void dependencyCanonicalizer::canonicalizeGraphs(
 
   if (dump_dot) {
     // Dump dot graphs
-    dump_graph("host.dot", tr_graph.g);
-    int i = 0;
-    for (auto G_l : tr_graph.subgraphs) {
-      std::string name = "launch" + std::to_string(++i) + ".dot";
-      dump_graph(name, G_l.g);
-      int j = 0;
-      for (auto G_p : G_l.subgraphs) {
-        std::string name = "partition" + std::to_string(i) + "_" +
-                           std::to_string(++j) + ".dot";
-        dump_graph(name, G_p.g);
-        int k = 0;
-        for (auto G_h : G_p.subgraphs) {
-          std::string name = "herd" + std::to_string(i) + "_" +
-                             std::to_string(j) + "_" + std::to_string(++k) +
-                             ".dot";
-          dump_graph(name, G_h.g);
-        }
+    dumpDotGraphFiles(tr_graph, dump_dir);
+  }
+}
+
+void dependencyCanonicalizer::dumpDotGraphFiles(dependencyGraph global_graph,
+                                                std::string dump_dir) {
+  // Dump dot graphs
+  if (dump_dir != "") {
+    int status = mkdir(dump_dir.c_str(), 0777);
+    if ((status < 0) && (errno != EEXIST))
+      dump_dir = ""; // Failed to create dir
+  }
+  dump_graph(dump_dir + "host.dot", global_graph.g);
+  int i = 0;
+  for (auto G_l : global_graph.subgraphs) {
+    std::string name = xilinx::air::to_string(G_l.hierarchyOp) + "_" +
+                       std::to_string(++i) + ".dot";
+    dump_graph(dump_dir + name, G_l.g);
+    int j = 0;
+    for (auto G_p : G_l.subgraphs) {
+      std::string name = xilinx::air::to_string(G_p.hierarchyOp) + "_" +
+                         std::to_string(i) + "_" + std::to_string(++j) + ".dot";
+      dump_graph(dump_dir + name, G_p.g);
+      int k = 0;
+      for (auto G_h : G_p.subgraphs) {
+        std::string name = xilinx::air::to_string(G_h.hierarchyOp) + "_" +
+                           std::to_string(i) + "_" + std::to_string(j) + "_" +
+                           std::to_string(++k) + ".dot";
+        dump_graph(dump_dir + name, G_h.g);
       }
     }
   }
@@ -883,6 +940,7 @@ void dependencyCanonicalizer::updateDepList(func::FuncOp func,
                                             dependencyGraph &global_graph) {
 
   // Purge dependency list
+  purgeAIRDepList(global_graph);
   for (auto &launchGraph : global_graph.subgraphs) {
     purgeAIRDepList(launchGraph);
     for (auto &partitionGraph : launchGraph.subgraphs) {
@@ -894,6 +952,7 @@ void dependencyCanonicalizer::updateDepList(func::FuncOp func,
   }
 
   // Rewrite dependency list
+  fillAIRDepListUsingGraphTR(global_graph);
   for (auto &launchGraph : global_graph.subgraphs) {
     fillAIRDepListUsingGraphTR(launchGraph);
     for (auto &partitionGraph : launchGraph.subgraphs) {
@@ -958,11 +1017,61 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
           async_op.addAsyncDependency(value);
         } else if (auto async_src_op =
                        dyn_cast<xilinx::air::AsyncOpInterface>(src_op)) {
+          // Elevate src token if src op is in affine if
+          if (auto parent_affine_if_op =
+                  dyn_cast<mlir::AffineIfOp>(src_op->getParentOp())) {
+            src_op = parent_affine_if_op.getOperation();
+          }
           async_op.addAsyncDependency(src_op->getResult(0));
         }
       }
     }
   }
+}
+
+// Remove repetitions in dependency lists
+void dependencyCanonicalizer::removeDepListRepitition(func::FuncOp func) {
+  func.walk([&](Operation *op) {
+    if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
+      if (async_op.getAsyncDependencies().size() >= 1) {
+        auto dependency_list = async_op.getAsyncDependencies();
+        // Initialize repetition mask
+        std::vector<bool> hasRepeat;
+        for (auto i = dependency_list.begin(); i != dependency_list.end();
+             ++i) {
+          hasRepeat.push_back(false);
+        }
+        // Iterate the dependency list
+        for (unsigned i = 0; i < dependency_list.size(); i++) {
+          for (unsigned j = i + 1; j < dependency_list.size(); j++) {
+            if (dependency_list[i] == dependency_list[j]) {
+              hasRepeat[j] = true;
+            }
+          }
+        }
+        for (int i = dependency_list.size() - 1; i >= 0; i--) {
+          if (hasRepeat[i]) {
+            async_op.eraseAsyncDependency(i);
+          }
+        }
+      }
+    }
+  });
+}
+
+// Remove wait_all ops which contain only a single operand
+void dependencyCanonicalizer::removeRedundantWaitAllOps(func::FuncOp func) {
+  func.walk([&](Operation *op) {
+    if (air::WaitAllOp wa_op = dyn_cast<air::WaitAllOp>(op)) {
+      if (wa_op.getAsyncDependencies().size() == 1) {
+        wa_op.getAsyncToken().replaceAllUsesWith(
+            wa_op.getAsyncDependencies()[0]);
+        wa_op.erase();
+      } else {
+        wa_op->removeAttr("id");
+      }
+    }
+  });
 }
 
 } // namespace air
