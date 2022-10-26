@@ -587,11 +587,11 @@ public:
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<
-        LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect,
-        AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
-        memref::MemRefDialect, bufferization::BufferizationDialect,
-        xilinx::airrt::AIRRtDialect>();
+    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
+                           arith::ArithDialect, AffineDialect, scf::SCFDialect,
+                           linalg::LinalgDialect, memref::MemRefDialect,
+                           bufferization::BufferizationDialect,
+                           xilinx::airrt::AIRRtDialect>();
 
     // AIR ExecuteOp conversion
     if (failed(lowerAirRegions(module))) {
@@ -634,8 +634,9 @@ public:
     });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-      return (op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
-              (int)xilinx::air::MemorySpace::L2);
+      return (
+          op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
+          (int)xilinx::air::MemorySpace::L2);
     });
 
     target.addDynamicallyLegalOp<scf::ForOp>([&](scf::ForOp op) {

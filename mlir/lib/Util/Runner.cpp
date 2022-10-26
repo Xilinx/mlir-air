@@ -583,7 +583,8 @@ public:
     //         //     ld_vol = stats.getResultTransferVolume(idx, false);
     //         //   }
     //         //   else {
-    //         //     st_vol = getTensorVolume(tensor_store.getMemref().getType());
+    //         //     st_vol =
+    //         getTensorVolume(tensor_store.getMemref().getType());
     //         //   }
     //         // } else {
     //           st_vol = getTensorVolume(tensor_store.getMemref().getType());

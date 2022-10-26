@@ -285,7 +285,7 @@ public:
             } else if (outs_value.getType().isa<IndexType>()) {
               sink_op_scalar_ins.push_back(
                   outs_value); // linalg op both reads and writes the output
-                                // memref
+                               // memref
               sink_op_scalar_outs.push_back(outs_value);
             }
           }
@@ -324,15 +324,15 @@ public:
                                        .getType()
                                        .cast<MemRefType>()
                                        .getRank();
-          partialMemref tileSrc =
-              createPartialMemref(sink_op_memref_copy.getSource(), memRefRankSrc);
+          partialMemref tileSrc = createPartialMemref(
+              sink_op_memref_copy.getSource(), memRefRankSrc);
           sink_op_memref_reads.push_back(tileSrc);
           unsigned memRefRankDst = sink_op_memref_copy.getTarget()
                                        .getType()
                                        .cast<MemRefType>()
                                        .getRank();
-          partialMemref tileDst =
-              createPartialMemref(sink_op_memref_copy.getTarget(), memRefRankDst);
+          partialMemref tileDst = createPartialMemref(
+              sink_op_memref_copy.getTarget(), memRefRankDst);
           sink_op_memref_reads.push_back(tileDst);
           sink_op_memref_writes.push_back(tileDst);
         }
