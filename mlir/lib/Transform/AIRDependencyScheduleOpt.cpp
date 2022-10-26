@@ -534,7 +534,14 @@ public:
       if (upstream_op && dyn_cast<air::DmaMemcpyInterface>(upstream_op)) {
         auto upstream_dma = dyn_cast<air::DmaMemcpyInterface>(upstream_op);
         if (v == upstream_dma.getDstMemref()) {
+          // Disconnect dependency between async op and upstream dma
           async_op.eraseAsyncDependency(i);
+          // Reconnect upstream dma's dep list to async op
+          auto upstream_dma_async =
+              dyn_cast<air::AsyncOpInterface>(upstream_dma.getOperation());
+          for (auto token : upstream_dma_async.getAsyncDependencies()) {
+            async_op.addAsyncDependency(token);
+          }
           Value srcMemref = upstream_dma.getSrcMemref();
           // Recursively trace upstream dma
           for (unsigned j = 0; j < upstream_op->getNumOperands(); j++) {

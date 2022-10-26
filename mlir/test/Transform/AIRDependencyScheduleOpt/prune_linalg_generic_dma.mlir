@@ -49,8 +49,12 @@ module attributes {torch.debug_module_name = "model"} {
       air.dma_memcpy_nd (%5[] [] [], %arg6[%3, %4] [%c64, %c64] [%c1024, %c1]) {id = 1 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
       air.dma_memcpy_nd (%6[] [] [], %arg7[%3, %4] [%c64, %c64] [%c1024, %c1]) {id = 2 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
       air.partition args(%arg9=%arg2, %arg10=%arg3, %arg11=%arg4, %arg12=%arg5, %arg13=%5, %arg14=%6) : index, index, index, index, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
-      // CHECK: %[[EVENT0:.*]] = air.dma_memcpy_nd async 
-      // CHECK: %[[EVENT1:.*]] = air.partition async [%[[EVENT0]]]
+      // CHECK: %[[EVENT0:.*]], %[[VALUE0:.*]] = air.execute
+      // CHECK: %[[EVENT1:.*]], %[[VALUE1:.*]] = air.execute
+      // CHECK: %[[EVENT2:.*]], %[[VALUE2:.*]] = air.execute
+      // CHECK: %[[EVENT3:.*]], %[[VALUE3:.*]] = air.execute
+      // CHECK: %[[EVENT4:.*]] = air.dma_memcpy_nd async 
+      // CHECK: %[[EVENT5:.*]] = air.partition async [%[[EVENT0]], %[[EVENT1]], %[[EVENT3]], %[[EVENT4]]]
         %c1_1 = arith.constant 1 : index
         %c2_0 = arith.constant 2 : index
         %c64_2 = arith.constant 64 : index
@@ -60,8 +64,10 @@ module attributes {torch.debug_module_name = "model"} {
         air.dma_memcpy_nd (%new_0[] [] [], %arg13[%arg9, %arg10] [%c1_1, %c1_1] [%c1_1, %c1_1]) {id = 3 : i32} : (memref<64x64xbf16, 1>, memref<64x64xbf16, 1>)
         air.dma_memcpy_nd (%new_1[] [] [], %arg14[%arg9, %arg10] [%c1_1, %c1_1] [%c1_1, %c1_1]) {id = 4 : i32} : (memref<64x64xbf16, 1>, memref<64x64xbf16, 1>)
         air.herd  tile (%arg22, %arg23) in (%arg16=%c2_0, %arg17=%c2_0) args(%arg18=%new_0, %arg19=%new_1) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1> attributes {sym_name = "herd_1"} {
-        // CHECK: %[[EVENT2:.*]] = air.dma_memcpy_nd async 
-        // CHECK: %[[EVENT3:.*]] = air.herd @herd_1 async [%[[EVENT2]]]
+        // CHECK: %[[EVENT6:.*]], %[[VALUE4:.*]] = air.execute
+        // CHECK: %[[EVENT7:.*]], %[[VALUE5:.*]] = air.execute
+        // CHECK: %[[EVENT8:.*]] = air.dma_memcpy_nd async 
+        // CHECK: %[[EVENT9:.*]] = air.herd @herd_1 async [%[[EVENT7]], %[[EVENT8]]]
           %c1_0 = arith.constant 1 : index
           %c64_1 = arith.constant 64 : index
           %c32 = arith.constant 32 : index
@@ -72,6 +78,7 @@ module attributes {torch.debug_module_name = "model"} {
           %8 = affine.apply #map1()[%arg23]
           %9 = memref.alloc() : memref<32x32xbf16, 2>
           %10 = memref.alloc() : memref<32x32xbf16, 2>
+          // CHECK: %[[EVENT10:.*]] = air.dma_memcpy_nd async 
           air.dma_memcpy_nd (%9[] [] [], %arg18[%7, %8] [%c32, %c32] [%c64_1, %c1_0]) {id = 5 : i32} : (memref<32x32xbf16, 2>, memref<64x64xbf16, 1>)
           air.dma_memcpy_nd (%10[] [] [], %arg19[%7, %8] [%c32, %c32] [%c64_1, %c1_0]) {id = 6 : i32} : (memref<32x32xbf16, 2>, memref<64x64xbf16, 1>)
           linalg.generic {indexing_maps = [#map2, #map2], iterator_types = ["parallel", "parallel"]} ins(%9 : memref<32x32xbf16, 2>) outs(%10 : memref<32x32xbf16, 2>) {
@@ -84,8 +91,8 @@ module attributes {torch.debug_module_name = "model"} {
             %16 = arith.mulf %arg20, %15 : bf16
             linalg.yield %16 : bf16
           }
-          // CHECK: %[[EVENT4:.*]] = air.dma_memcpy_nd async 
-          // CHECK: %[[EVENT5:.*]] = air.execute [%[[EVENT4]]]
+          // CHECK: %[[EVENT11:.*]] = air.dma_memcpy_nd async 
+          // CHECK: %[[EVENT12:.*]] = air.execute [%[[EVENT11]]]
           air.dma_memcpy_nd (%arg19[%7, %8] [%c32, %c32] [%c64_1, %c1_0], %10[] [] []) {id = 7 : i32} : (memref<64x64xbf16, 1>, memref<32x32xbf16, 2>)
           memref.dealloc %9 : memref<32x32xbf16, 2>
           memref.dealloc %10 : memref<32x32xbf16, 2>

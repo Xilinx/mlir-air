@@ -768,7 +768,7 @@ def AIRDependencyScheduleOpt: Pass<"air-dependency-schedule-opt", "ModuleOp"> {
   }];
 }
 
-def AIRDependencyCanonicalize: Pass<"air-dependency-canonicalize", "func::FuncOp"> {
+def AIRDependencyCanonicalize: Pass<"air-dependency-canonicalize", "ModuleOp"> {
   let summary = "Canonicalize the dependency graph";
   let constructor = "xilinx::air::createAIRDependencyCanonicalizePass()";
   let description = [{
@@ -777,7 +777,10 @@ def AIRDependencyCanonicalize: Pass<"air-dependency-canonicalize", "func::FuncOp
   }];
   let options = [
     Option<"clDumpGraph", "dump-graph", "bool", /*default=*/"false",
-            "Dump post-canonicalization dot graphs.">
+            "Dump post-canonicalization dot graphs.">,
+    Option<"clDumpDir", "output-dir", "std::string", 
+            /*default=*/"\"\"",
+            "Target directory to dump dot graphs.">
   ];
 }
 

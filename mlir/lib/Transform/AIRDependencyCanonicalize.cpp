@@ -53,19 +53,25 @@ public:
   }
 
   void runOnOperation() override {
-    auto func = getOperation();
+    auto module = getOperation();
 
-    // Parse dependency graphs
-    hostGraph = dependencyGraph(func, true);
-    canonicalizer.parseCommandGraphs(func, hostGraph, dep_ctx);
+    for (auto func : module.getOps<func::FuncOp>()) {
+      // Parse dependency graphs
+      hostGraph = dependencyGraph(func, true);
+      canonicalizer.parseCommandGraphs(func, hostGraph, dep_ctx);
 
-    // Transitive reduction
-    xilinx::air::dependencyGraph trHostGraph;
-    canonicalizer.canonicalizeGraphs(hostGraph, trHostGraph, g_to_tr,
-                                     clDumpGraph);
+      // Transitive reduction
+      xilinx::air::dependencyGraph trHostGraph;
+      canonicalizer.canonicalizeGraphs(hostGraph, trHostGraph, g_to_tr,
+                                       clDumpGraph, clDumpDir);
 
-    // Update dependency list
-    canonicalizer.updateDepList(func, trHostGraph);
+      // Update dependency list
+      canonicalizer.updateDepList(func, trHostGraph);
+
+      // Clean up
+      canonicalizer.removeDepListRepitition(func);
+      canonicalizer.removeRedundantWaitAllOps(func);
+    }
   }
 
 private:
