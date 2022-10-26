@@ -56,8 +56,7 @@ air_rt_partition_desc_t _air_host_active_partition = {nullptr, nullptr};
 aie_libxaie_ctx_t *_air_host_active_libxaie = nullptr;
 uint32_t *_air_host_bram_ptr = nullptr;
 uint64_t _air_host_bram_paddr = 0;
-air_module_handle_t _air_host_active_module = (air_module_handle_t)nullptr;
-
+air_module_handle_t _air_host_active_module = (air_module_handle_t) nullptr;
 }
 
 #ifdef AIR_PCIE
@@ -70,7 +69,7 @@ aie_libxaie_ctx_t *air_init_libxaie(uint32_t device_id) {
     return _air_host_active_libxaie;
 
   aie_libxaie_ctx_t *xaie =
-    (aie_libxaie_ctx_t*)malloc(sizeof(aie_libxaie_ctx_t));
+      (aie_libxaie_ctx_t *)malloc(sizeof(aie_libxaie_ctx_t));
   if (!xaie)
     return 0;
 
@@ -85,19 +84,20 @@ aie_libxaie_ctx_t *air_init_libxaie(uint32_t device_id) {
   std::string aie_bar = air_get_aie_bar(device_id);
 
   int fda;
-  if((fda = open(aie_bar.c_str(), O_RDWR | O_SYNC)) == -1) {
-      printf("[ERROR] Failed to open device file\n");
-      return nullptr;
+  if ((fda = open(aie_bar.c_str(), O_RDWR | O_SYNC)) == -1) {
+    printf("[ERROR] Failed to open device file\n");
+    return nullptr;
   }
 
   // Map the memory region into userspace
-  _mapped_aie_base = mmap(NULL,               // virtual address
-                      0x20000000,             // length
-                      PROT_READ | PROT_WRITE, // prot
-                      MAP_SHARED,             // flags
-                      fda,                    // device fd
-                      0);                     // offset
-  if (!_mapped_aie_base) return nullptr;
+  _mapped_aie_base = mmap(NULL,                   // virtual address
+                          0x20000000,             // length
+                          PROT_READ | PROT_WRITE, // prot
+                          MAP_SHARED,             // flags
+                          fda,                    // device fd
+                          0);                     // offset
+  if (!_mapped_aie_base)
+    return nullptr;
   xaie->AieConfigPtr.BaseAddr = (uint64_t)_mapped_aie_base;
 #else
   xaie->AieConfigPtr.BaseAddr = XAIE_BASE_ADDR;
@@ -125,9 +125,9 @@ aie_libxaie_ctx_t *air_init_libxaie(uint32_t device_id) {
 
 void air_deinit_libxaie(aie_libxaie_ctx_t *xaie) {
   if (xaie == _air_host_active_libxaie) {
-      XAie_Finish(&(xaie->DevInst));
+    XAie_Finish(&(xaie->DevInst));
 #ifdef AIR_PCIE
-    munmap(const_cast<void*>(_mapped_aie_base),0x20000000);
+    munmap(const_cast<void *>(_mapped_aie_base), 0x20000000);
     _mapped_aie_base = nullptr;
 #endif
     _air_host_active_libxaie = nullptr;
@@ -142,9 +142,9 @@ air_module_handle_t air_module_load_from_file(const char *filename, queue_t *q,
     air_module_unload(_air_host_active_module);
 
   air_module_handle_t handle;
-  void* _handle = dlopen(filename, RTLD_NOW);
+  void *_handle = dlopen(filename, RTLD_NOW);
   if (!_handle) {
-    printf("%s\n",dlerror());
+    printf("%s\n", dlerror());
     return 0;
   }
   _air_host_active_module = (air_module_handle_t)_handle;
@@ -176,9 +176,8 @@ air_module_handle_t air_module_load_from_file(const char *filename, queue_t *q,
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   assert(fd != -1 && "Failed to open bram fd");
 
-  _air_host_bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE,
-                                        MAP_SHARED, fd,
-                                        AIR_BBUFF_BASE);
+  _air_host_bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ | PROT_WRITE,
+                                        MAP_SHARED, fd, AIR_BBUFF_BASE);
   _air_host_bram_paddr = AIR_BBUFF_BASE;
   assert(_air_host_bram_ptr && "Failed to map scratch bram location");
 #endif
@@ -186,15 +185,13 @@ air_module_handle_t air_module_load_from_file(const char *filename, queue_t *q,
   return (air_module_handle_t)_handle;
 }
 
-int32_t
-air_module_unload(air_module_handle_t handle)
-{
+int32_t air_module_unload(air_module_handle_t handle) {
   if (!handle)
     return -1;
 
   if (auto module_desc = air_module_get_desc(handle)) {
-    for (int i=0; i<module_desc->partition_length; i++) {
-      for (int j=0; j<module_desc->partition_descs[i]->herd_length; j++) {
+    for (int i = 0; i < module_desc->partition_length; i++) {
+      for (int j = 0; j < module_desc->partition_descs[i]->herd_length; j++) {
         auto herd_desc = module_desc->partition_descs[i]->herd_descs[j];
         if (herd_desc == _air_host_active_herd.herd_desc) {
           _air_host_active_herd = {nullptr, nullptr};
@@ -204,19 +201,21 @@ air_module_unload(air_module_handle_t handle)
     }
   }
   if (_air_host_active_module == handle) {
-    _air_host_active_module = (air_module_handle_t)nullptr;
-    munmap(_air_host_bram_ptr,0x8000);
+    _air_host_active_module = (air_module_handle_t) nullptr;
+    munmap(_air_host_bram_ptr, 0x8000);
     _air_host_bram_paddr = 0;
   }
 
-  return dlclose((void*)handle);
+  return dlclose((void *)handle);
 }
 
-air_herd_desc_t *
-air_herd_get_desc(air_module_handle_t handle, air_partition_desc_t *partition_desc, const char *herd_name)
-{
-  if (!handle) return nullptr;
-  if (!partition_desc) return nullptr;
+air_herd_desc_t *air_herd_get_desc(air_module_handle_t handle,
+                                   air_partition_desc_t *partition_desc,
+                                   const char *herd_name) {
+  if (!handle)
+    return nullptr;
+  if (!partition_desc)
+    return nullptr;
 
   auto module_desc = air_module_get_desc(handle);
   if (!module_desc)
@@ -225,7 +224,7 @@ air_herd_get_desc(air_module_handle_t handle, air_partition_desc_t *partition_de
   if (!air_partition_get_desc(handle, partition_desc->name))
     return nullptr;
 
-  for (int i=0; i<partition_desc->herd_length; i++) {
+  for (int i = 0; i < partition_desc->herd_length; i++) {
     auto herd_desc = partition_desc->herd_descs[i];
     if (!strncmp(herd_name, herd_desc->name, herd_desc->name_length))
       return herd_desc;
@@ -233,15 +232,16 @@ air_herd_get_desc(air_module_handle_t handle, air_partition_desc_t *partition_de
   return nullptr;
 }
 
-air_partition_desc_t *
-air_partition_get_desc(air_module_handle_t handle, const char *partition_name)
-{
-  if (!handle) return nullptr;
+air_partition_desc_t *air_partition_get_desc(air_module_handle_t handle,
+                                             const char *partition_name) {
+  if (!handle)
+    return nullptr;
 
   auto module_desc = air_module_get_desc(handle);
-  if (!module_desc) return nullptr;
+  if (!module_desc)
+    return nullptr;
 
-  for (int i=0; i<module_desc->partition_length; i++) {
+  for (int i = 0; i < module_desc->partition_length; i++) {
     auto partition_desc = module_desc->partition_descs[i];
     if (!strncmp(partition_name, partition_desc->name,
                  partition_desc->name_length)) {
@@ -251,11 +251,10 @@ air_partition_get_desc(air_module_handle_t handle, const char *partition_name)
   return nullptr;
 }
 
-air_module_desc_t *
-air_module_get_desc(air_module_handle_t handle)
-{
-  if (!handle) return nullptr;
-  return (air_module_desc_t*)dlsym((void*)handle, "__air_module_descriptor");
+air_module_desc_t *air_module_get_desc(air_module_handle_t handle) {
+  if (!handle)
+    return nullptr;
+  return (air_module_desc_t *)dlsym((void *)handle, "__air_module_descriptor");
 }
 
 uint64_t air_partition_load(const char *name) {
@@ -321,8 +320,7 @@ uint64_t air_partition_load(const char *name) {
   return 0;
 }
 
-uint64_t
-air_herd_load(const char *name) {
+uint64_t air_herd_load(const char *name) {
 
   // If no partition is loaded, load the partition associated with this herd
   if (!_air_host_active_partition.partition_desc) {
@@ -350,7 +348,7 @@ air_herd_load(const char *name) {
       _air_host_active_partition.partition_desc = 0;
       return air_herd_load(name);
     }
-    printf("Failed to locate herd descriptor '%s'!\n",name);
+    printf("Failed to locate herd descriptor '%s'!\n", name);
     assert(0);
   }
   _air_host_active_herd.herd_desc = herd_desc;
