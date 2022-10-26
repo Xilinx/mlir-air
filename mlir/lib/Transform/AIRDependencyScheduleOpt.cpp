@@ -498,17 +498,8 @@ public:
   void getNonInputOperands(linalg::GenericOp generic_op,
                            std::vector<OpOperand *> &operands_history) {
     for (auto &g_opoperand : generic_op->getOpOperands()) {
-      bool isUsed = false;
-      for (auto &op : generic_op.getBlock()->getOperations()) {
-        for (auto op_operand : op.getOperands()) {
-          if (op_operand == generic_op.getTiedBlockArgument(&g_opoperand)) {
-            isUsed = true;
-          }
-        }
-      }
-      if (!isUsed) {
+      if (!generic_op.payloadUsesValueFromOperand(&g_opoperand))
         operands_history.push_back(&g_opoperand);
-      }
     }
   }
 

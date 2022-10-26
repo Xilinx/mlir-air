@@ -61,7 +61,7 @@ def matmul_l1_l2_2x2():
         RankedTensorType.get((128, 128), elemTy), RankedTensorType.get((128, 128), elemTy))
       def matmul_on_tensors(lhs, rhs):
         zero = arith.ConstantOp(elemTy, IntegerAttr.get(elemTy, 0))
-        init_tensor = linalg.InitTensorOp((128, 128), elemTy)
+        init_tensor = tensor.EmptyOp((128,128), elemTy)
         zero_tensor = linalg.fill(zero.result, outs=[init_tensor.result])
         out = linalg.matmul(lhs, rhs, outs=[zero_tensor])
         return out

@@ -30,8 +30,8 @@
 // CHECK:   affine.for %arg2 = 0 to 4 step 2 {
 //
 // check that the dma operations were generated and outlined
-// CHECK: affine.dma_start %1[%arg1, %arg2], %5[%c0_4, %c0_4], %6[%c0_4], %c4_1, %c4_2, %c2_3 : memref<4x4xf32>, memref<2x2xf32, 1>, memref<1xi32>
-// CHECK: affine.dma_start %7[%c0, %c0], %0[%arg1, %arg2], %8[%c0], %c4, %c4_0, %c2 : memref<2x2xf32, 1>, memref<4x4xf32>, memref<1xi32>
+// CHECK: affine.dma_start %{{.*}}[%arg1, %arg2], %{{.*}}[%c0_4, %c0_4], %{{.*}}[%c0_4], %c4_1, %c4_2, %c2_3 : memref<4x4xf32>, memref<2x2xf32, 1>, memref<1xi32>
+// CHECK: affine.dma_start %{{.*}}[%c0, %c0], %{{.*}}[%arg1, %arg2], %{{.*}}[%c0], %c4, %c4_0, %c2 : memref<2x2xf32, 1>, memref<4x4xf32>, memref<1xi32>
 #map0 = affine_map<(d0, d1) -> (d0, d1)>
 #map1 = affine_map<() -> (0)>
 #map2 = affine_map<() -> (4)>

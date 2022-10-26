@@ -37,7 +37,7 @@
 // CHECK:   }
 #map = affine_map<(d0, d1) -> (d0, d1)>
 module @aie.0  {
-  %0 = AIE.tile(0, 0)
+  %0 = AIE.tile(1, 1)
   %1 = AIE.lock(%0, 2)
   %2 = AIE.lock(%0, 1)
   %3 = AIE.lock(%0, 0)
@@ -52,7 +52,7 @@ module @aie.0  {
     AIE.useLock(%3, Acquire, 1)
     AIE.useLock(%2, Acquire, 1)
     AIE.useLock(%1, Acquire, 0)
-    %8 = linalg.init_tensor [32, 32] : tensor<32x32xi32>
+    %8 = tensor.empty () : tensor<32x32xi32>
     %9 = bufferization.to_tensor %6 : memref<32x32xi32, 2>
     %10 = bufferization.to_tensor %5 : memref<32x32xi32, 2>
     %11 = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%9, %10 : tensor<32x32xi32>, tensor<32x32xi32>) outs(%8 : tensor<32x32xi32>) {

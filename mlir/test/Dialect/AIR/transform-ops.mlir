@@ -41,17 +41,17 @@ func.func @get_partition_for_op(%arg0: i32, %arg1: i32) {
 transform.with_pdl_patterns {
 ^bb0(%arg0: !pdl.operation):
   pdl.pattern @match_addi : benefit(1) {
-    %args = operands
-    %results = types
-    %op = operation "arith.addi"(%args : !pdl.range<value>) -> (%results : !pdl.range<type>)
-    rewrite %op with "transform.dialect"
+    %args = pdl.operands
+    %results = pdl.types
+    %op = pdl.operation "arith.addi"(%args : !pdl.range<value>) -> (%results : !pdl.range<type>)
+    pdl.rewrite %op with "transform.dialect"
   }
 
-  sequence %arg0 failures(propagate) {
-  ^bb1(%arg1: !pdl.operation):
-    %0 = pdl_match @match_addi in %arg1
+  sequence %arg0 : !pdl.operation failures(propagate) {
+  ^bb1(%arg1 : !pdl.operation):
+    %0 = pdl_match @match_addi in %arg1 : (!pdl.operation) -> !pdl.operation
     // CHECK: = transform.air.get_partition_for
     %1 = transform.air.get_partition_for %0
-    transform.test_print_remark_at_operand %1, "found partition"
+    transform.test_print_remark_at_operand %1, "found partition" : !pdl.operation
   }
 }
