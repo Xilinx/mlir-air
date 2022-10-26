@@ -40,12 +40,14 @@
 extern "C" {
 
 extern air_rt_herd_desc_t _air_host_active_herd;
-extern aie_libxaie_ctx_t *_air_host_active_libxaie1;
+extern aie_libxaie_ctx_t *_air_host_active_libxaie;
 extern uint32_t *_air_host_bram_ptr;
 extern uint64_t _air_host_bram_paddr;
 
 }
 
+// Global variable
+air_dev_mem_allocator_t *dev_mem_allocator = NULL;
 
 #define PAGE_SHIFT 12
 #define PAGEMAP_LENGTH 8
@@ -111,6 +113,114 @@ void* air_mem_alloc(size_t size) {
 
 int air_mem_free(void *buff, size_t size) {
   return munmap(buff,size);
+}
+
+int air_init_dev_mem_allocator(uint64_t dev_mem_size, uint32_t device_id) {
+
+  // If already have a dev_mem_allocator just going to skip
+  // initializing
+  if (dev_mem_allocator != NULL) {
+    return 0;
+  }
+
+  dev_mem_allocator =
+      (air_dev_mem_allocator_t *)malloc(sizeof(air_dev_mem_allocator_t));
+  if (dev_mem_allocator == NULL) {
+    printf("[ERROR] Could not allocate dev_mem_allocator_t struct\n");
+    return 1;
+  }
+
+  // Initializing new struct
+  dev_mem_allocator->dev_mem_size = dev_mem_size;
+  dev_mem_allocator->dev_mem_ptr = 0;
+
+  // Getting userspace pointers to device memory
+#ifdef AIR_PCIE
+  int fd = open(air_get_ddr_bar(device_id).c_str(), O_RDWR | O_SYNC);
+  if (fd != -1) {
+    dev_mem_allocator->dev_mem =
+        (uint32_t *)mmap(NULL, dev_mem_size /*0x8000*/, PROT_READ | PROT_WRITE,
+                         MAP_SHARED, fd, 0x1C0000);
+  } else {
+    printf("[ERROR] Could not open DDR BAR\n");
+    return 1;
+  }
+#else
+
+#ifndef __aarch64__
+  printf("[ERROR] Attempting to map /dev/mem on x86. Please define AIR_PCIE "
+         "when compiling\n");
+  return 1;
+#endif
+
+  int fd = open("/dev/mem", O_RDWR | O_SYNC);
+  if (fd != -1) {
+    dev_mem_allocator->dev_mem =
+        (uint32_t *)mmap(NULL, dev_mem_size /*0x8000*/, PROT_READ | PROT_WRITE,
+                         MAP_SHARED, fd, AIR_BBUFF_BASE);
+  } else {
+    printf("[ERROR] Could not open /dev/mem\n");
+    return 1;
+  }
+#endif
+
+  return 0;
+}
+
+// Freeing the device_memory_allocator
+void air_dev_mem_allocator_free() {
+
+  munmap(dev_mem_allocator->dev_mem, dev_mem_allocator->dev_mem_size);
+  dev_mem_allocator = NULL;
+  free(dev_mem_allocator);
+}
+
+// Allocating memory on the device. Since we are treeting the memory just like a
+// stack, this is pretty straightforward as we are just giving the user the
+// next portion of memory equal to the size that they want.
+void *air_dev_mem_alloc(uint32_t size) {
+
+  // Making sure we have a real allocator
+  if (dev_mem_allocator == NULL) {
+    printf(
+        "[ERROR] Attempting to allocate device memory without a valid device "
+        "memory allocator. Call air_init_dev_mem_allocator() first\n");
+    return NULL;
+  }
+
+  // Making sure we have enough space on the device
+  if (size + dev_mem_allocator->dev_mem_ptr > dev_mem_allocator->dev_mem_size) {
+    printf("[ERROR] Device memory cannot accept this allocation due to lack of "
+           "space\n");
+    return NULL;
+  }
+
+  // Setting the user pointer equal to the next portion
+  // of available memory
+  void *user_ptr = (void *)((unsigned char *)dev_mem_allocator->dev_mem +
+                            dev_mem_allocator->dev_mem_ptr);
+
+  // Incrementing pointer by the size of memory allocated
+  dev_mem_allocator->dev_mem_ptr += size;
+
+  return user_ptr;
+}
+
+uint64_t air_dev_mem_get_pa(void *buff_va) {
+
+  // Making sure we have a real allocator
+  if (dev_mem_allocator == NULL) {
+    printf(
+        "[ERROR] Attempting to get a physical address without a valid device "
+        "memory allocator. Call air_init_dev_mem_allocator() first\n");
+    return NULL;
+  }
+
+  // Get the virtual address offset
+  uint64_t offset = (uint64_t)buff_va - (uint64_t)(dev_mem_allocator->dev_mem);
+
+  // Adding that offset to our base physical address
+  return offset + (uint64_t)AIR_BBUFF_BASE;
 }
 
 namespace {

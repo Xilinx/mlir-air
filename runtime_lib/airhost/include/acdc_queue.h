@@ -82,10 +82,6 @@ AIR_AGENT_INFO_TILE_PROG_MEM_SIZE = 9,
 AIR_AGENT_INFO_L2_MEM_SIZE = 10 // Per region
 } air_agent_info_t;
 
-typedef struct air_agent_s {
-  uint64_t handle;
-} air_agent_t;
-
 // Note below that "__attribute__((packed))" also asserts that the whole structure is
 // unaligned in some compilers.  This helps to silence errors from -waddress-of-packed-struct
 

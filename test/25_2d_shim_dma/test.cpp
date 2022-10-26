@@ -27,12 +27,14 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <thread>
-#include <stdlib.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/mman.h>
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <iostream>
+#include <stdlib.h>
+#include <sys/mman.h>
+#include <thread>
+#include <unistd.h>
+#include <vector>
 
 #include "air_host.h"
 #include "air_tensor.h"
@@ -58,18 +60,36 @@ main(int argc, char *argv[])
 {
   auto shim_col = 2;
 
-  aie_libxaie_ctx_t *xaie = air_init_libxaie1();
+  std::vector<air_agent_t> agents;
+  auto get_agents_ret = air_get_agents(&agents);
+  assert(get_agents_ret == 0 && "failed to get agents!");
 
-  // create the queue
-  queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
-  assert(ret == 0 && "failed to create queue!");
+  if (agents.empty()) {
+    std::cout << "fail." << std::endl;
+    return -1;
+  }
+
+  std::cout << "Found " << agents.size() << " agents" << std::endl;
+
+  std::vector<queue_t *> queues;
+  for (auto agent : agents) {
+    // create the queue
+    queue_t *q = nullptr;
+    auto create_queue_ret = air_queue_create(
+        MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, agent.handle);
+    assert(create_queue_ret == 0 && "failed to create queue!");
+    queues.push_back(q);
+  }
+
+  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+
+  queue_t *q = queues[0];
 
   for (int i=0; i<TILE_SIZE; i++)
     mlir_aie_write_buffer_scratch_0_0(xaie, i, 0xfadefade);
 
   printf("loading air module\n");
-  auto handle = air_module_load_from_file(nullptr);
+  auto handle = air_module_load_from_file(nullptr, q);
   assert(handle && "failed to load air module");
 
   auto graph_fn = (void (*)(void*,void *))dlsym((void*)handle, "_mlir_ciface_graph");
