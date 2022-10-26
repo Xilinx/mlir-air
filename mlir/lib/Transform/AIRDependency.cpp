@@ -136,6 +136,10 @@ public:
         if (mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op))
           createAsyncDMA(module_builder, op);
 
+        // // Create async interface for air.channel ops
+        // if (mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op))
+        //   createAsyncDMA(module_builder, op);
+
         // Create async execute region for linalg.matmul
         else if (dyn_cast<linalg::MatmulOp>(op))
           createAsyncExecute(module_builder, op, "linalg::matmul", ExecuteOpID);
