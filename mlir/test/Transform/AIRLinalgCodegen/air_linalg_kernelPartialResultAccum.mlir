@@ -24,24 +24,32 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-linalg-codegen=test-patterns | FileCheck %s
-// CHECK: scf.for %arg6 = %c0 to %c64 step %c16 {
-// CHECK:     %6 = memref.subview %arg1[0, %4, %arg6, %5] [1, 32, 16, 16] [1, 1, 1, 1] : memref<1x128x64x64xf32> to memref<1x32x16x16xf32, #map1>
-// CHECK:     %7 = memref.alloc() : memref<1x32x16x16xf32, 2>
-// CHECK:     linalg.copy ins(%6 : memref<1x32x16x16xf32, #map1>) outs(%7 : memref<1x32x16x16xf32, 2>)
-// CHECK:     scf.for %arg7 = %c0 to %c64 step %c16 {
-// CHECK:         %8 = memref.subview %2[0, %arg7, %arg6, %5] [1, 16, 18, 18] [1, 1, 1, 1] : memref<1x64x66x66xf32> to memref<1x16x18x18xf32, #map2>
-// CHECK:         %9 = memref.subview %0[%4, %arg7, 0, 0] [32, 16, 3, 3] [1, 1, 1, 1] : memref<128x64x3x3xf32> to memref<32x16x3x3xf32, #map3>
-// CHECK:         %10 = memref.alloc() : memref<1x16x18x18xf32, 2>
-// CHECK:         %11 = memref.alloc() : memref<32x16x3x3xf32, 2>
-// CHECK:         linalg.copy ins(%8 : memref<1x16x18x18xf32, #map2>) outs(%10 : memref<1x16x18x18xf32, 2>)
-// CHECK:         linalg.copy ins(%9 : memref<32x16x3x3xf32, #map3>) outs(%11 : memref<32x16x3x3xf32, 2>)
-// CHECK:         linalg.conv_2d_nchw_fchw {dilations = dense<1> : vector<2xi64>, strides = dense<1> : vector<2xi64>} ins(%10, %11 : memref<1x16x18x18xf32, 2>, memref<32x16x3x3xf32, 2>) outs(%7 : memref<1x32x16x16xf32, 2>)
-// CHECK:         memref.dealloc %10 : memref<1x16x18x18xf32, 2>
-// CHECK:         memref.dealloc %11 : memref<32x16x3x3xf32, 2>
-// CHECK:     }
-// CHECK:     linalg.copy ins(%7 : memref<1x32x16x16xf32, 2>) outs(%6 : memref<1x32x16x16xf32, #map1>)
-// CHECK:     memref.dealloc %7 : memref<1x32x16x16xf32, 2>
-// CHECK: }
+
+// CHECK-LABEL: scf.parallel
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK: scf.for
+// CHECK-SAME:          %[[VAL_0:.*]] =
+// CHECK-SAME:          %[[VAL_1:.*]] to
+// CHECK-SAME:          %[[VAL_2:.*]] step
+// CHECK-SAME:          %[[VAL_3:.*]] {
+// CHECK:         %[[VAL_4:.*]] = memref.subview %[[VAL_5:.*]][0, %[[VAL_6:.*]], %[[VAL_0]], %{{.*}}] [1, 32, 16, 16] [1, 1, 1, 1] : memref<1x128x64x64xf32> to memref<1x32x16x16xf32, #map1>
+// CHECK:         %[[VAL_7:.*]] = memref.alloc() : memref<1x32x16x16xf32, 2>
+// CHECK:         linalg.copy ins(%[[VAL_4]] : memref<1x32x16x16xf32, #map1>) outs(%[[VAL_7]] : memref<1x32x16x16xf32, 2>)
+// CHECK:         scf.for %[[VAL_8:.*]] = %[[VAL_1]] to %[[VAL_2]] step %[[VAL_3]] {
+// CHECK:           %[[VAL_9:.*]] = memref.subview %[[VAL_10:.*]][0, %[[VAL_8]], %[[VAL_0]], %{{.*}}] [1, 16, 18, 18] [1, 1, 1, 1] : memref<1x64x66x66xf32> to memref<1x16x18x18xf32, #map2>
+// CHECK:           %[[VAL_11:.*]] = memref.subview %[[VAL_12:.*]]{{\[}}%[[VAL_6]], %[[VAL_8]], 0, 0] [32, 16, 3, 3] [1, 1, 1, 1] : memref<128x64x3x3xf32> to memref<32x16x3x3xf32, #map3>
+// CHECK:           %[[VAL_13:.*]] = memref.alloc() : memref<1x16x18x18xf32, 2>
+// CHECK:           %[[VAL_14:.*]] = memref.alloc() : memref<32x16x3x3xf32, 2>
+// CHECK:           linalg.copy ins(%[[VAL_9]] : memref<1x16x18x18xf32, #map2>) outs(%[[VAL_13]] : memref<1x16x18x18xf32, 2>)
+// CHECK:           linalg.copy ins(%[[VAL_11]] : memref<32x16x3x3xf32, #map3>) outs(%[[VAL_14]] : memref<32x16x3x3xf32, 2>)
+// CHECK:           linalg.conv_2d_nchw_fchw {dilations = dense<1> : vector<2xi64>, strides = dense<1> : vector<2xi64>} ins(%[[VAL_13]], %[[VAL_14]] : memref<1x16x18x18xf32, 2>, memref<32x16x3x3xf32, 2>) outs(%[[VAL_7]] : memref<1x32x16x16xf32, 2>)
+// CHECK:           memref.dealloc %[[VAL_13]] : memref<1x16x18x18xf32, 2>
+// CHECK:           memref.dealloc %[[VAL_14]] : memref<32x16x3x3xf32, 2>
+// CHECK:         }
+// CHECK:         linalg.copy ins(%[[VAL_7]] : memref<1x32x16x16xf32, 2>) outs(%[[VAL_4]] : memref<1x32x16x16xf32, #map1>)
+// CHECK:         memref.dealloc %[[VAL_7]] : memref<1x32x16x16xf32, 2>
+// CHECK:       }
 
 #map0 = affine_map<(d0, d1, d2, d3) -> (d0 * 278784 + d1 * 4356 + d2 * 66 + d3 + 67)>
 #map1 = affine_map<(d0, d1, d2, d3)[s0] -> (d0 * 524288 + s0 + d1 * 4096 + d2 * 64 + d3)>

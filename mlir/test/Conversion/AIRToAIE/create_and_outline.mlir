@@ -25,10 +25,10 @@
 
 // RUN: air-opt %s -air-to-aie='test-patterns=to-aie-mlir' -o /dev/null | FileCheck %s
 
-// CHECK: [[T00:%.*]] = AIE.tile(0, 0)
-// CHECK: [[T10:%.*]] = AIE.tile(1, 0)
-// CHECK: [[T01:%.*]] = AIE.tile(0, 1)
-// CHECK: [[T11:%.*]] = AIE.tile(1, 1)
+// CHECK: [[T00:%.*]] = AIE.tile(1, 1)
+// CHECK: [[T10:%.*]] = AIE.tile(2, 1)
+// CHECK: [[T01:%.*]] = AIE.tile(1, 2)
+// CHECK: [[T11:%.*]] = AIE.tile(2, 2)
 // CHECK: AIE.core([[T11]])
 // CHECK: AIE.core([[T01]])
 // CHECK: AIE.core([[T10]])

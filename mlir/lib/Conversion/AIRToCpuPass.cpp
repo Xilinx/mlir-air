@@ -33,7 +33,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -494,7 +494,7 @@ public:
     ConversionTarget target(*context);
 
     target.addLegalDialect<
-        LLVM::LLVMDialect, func::FuncDialect, arith::ArithmeticDialect,
+        LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect,
         AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
         memref::MemRefDialect, bufferization::BufferizationDialect,
         xilinx::airrt::AIRRtDialect>();
@@ -539,7 +539,7 @@ public:
     });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-      return (op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt() ==
+      return (op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() ==
               0);
     });
 

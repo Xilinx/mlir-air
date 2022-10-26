@@ -29,13 +29,15 @@
 #include "air/Transform/AIRLinalgCodegen.h"
 #include "air/Util/CostModel.h"
 #include "air/Util/Outliner.h"
+#include "air/Util/Util.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/Linalg/Transforms/CodegenStrategy.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
+#include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/IR/PatternMatch.h"
@@ -61,10 +63,10 @@ struct FoldSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
 
   LogicalResult matchAndRewrite(memref::SubViewOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!dyn_cast_or_null<memref::SubViewOp>(op.source().getDefiningOp()))
+    if (!dyn_cast_or_null<memref::SubViewOp>(op.getSource().getDefiningOp()))
       return failure();
 
-    auto source_subview = cast<memref::SubViewOp>(op.source().getDefiningOp());
+    auto source_subview = cast<memref::SubViewOp>(op.getSource().getDefiningOp());
 
     // FIXME: do we still need this?
     // for (auto m : llvm::zip(source_subview.getType().getLayout(),
@@ -117,7 +119,7 @@ struct FoldSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
     }
 
     rewriter.replaceOpWithNewOp<memref::SubViewOp>(
-        op.getOperation(), op.getType(), source_subview.source(),
+        op.getOperation(), op.getType(), source_subview.getSource(),
         result_offsets, op.sizes(), op.strides(),
         rewriter.getI64ArrayAttr(result_static_offsets), op.static_sizes(),
         op.static_strides());
@@ -203,10 +205,10 @@ struct RemoveSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
 
   LogicalResult matchAndRewrite(memref::SubViewOp op,
                                 PatternRewriter &rewriter) const override {
-    auto view = op.source().getDefiningOp<memref::ViewOp>();
+    auto view = op.getSource().getDefiningOp<memref::ViewOp>();
     if (!view)
       return failure();
-    auto alloc = view.source().getDefiningOp<memref::AllocOp>();
+    auto alloc = view.getSource().getDefiningOp<memref::AllocOp>();
     if (!alloc)
       return failure();
 
@@ -231,7 +233,7 @@ struct RemoveViewOpsPattern : public OpRewritePattern<memref::ViewOp> {
 
   LogicalResult matchAndRewrite(memref::ViewOp op,
                                 PatternRewriter &rewriter) const override {
-    auto alloc = op.source().getDefiningOp<memref::AllocOp>();
+    auto alloc = op.getSource().getDefiningOp<memref::AllocOp>();
     if (!alloc)
       return failure();
 
@@ -240,7 +242,7 @@ struct RemoveViewOpsPattern : public OpRewritePattern<memref::ViewOp> {
         op,
         MemRefType::get(op.getType().getShape(), op.getType().getElementType(),
                         {}, fast_space),
-        op.sizes());
+        op.getSizes());
     alloc.replaceAllUsesWith(newOp);
     return success();
   }
@@ -372,7 +374,7 @@ struct HoistReduceBufferPattern : public OpRewritePattern<linalg::CopyOp> {
     // e. kernel parent op is a scf.for op
     // After matching those pattern, memref.alloc() & 2_linalg.copy move before inner scf.for loop
     // and 1_linalg.copy & memref.dealloc() move after inner scf.for loop.
-    for (Operation *userOp : op.inputs()[0].getUsers()) {
+    for (Operation *userOp : op.getInputs()[0].getUsers()) {
       if (isa<linalg::CopyOp>(userOp))
         otherCpy = userOp;
       else if (isa<linalg::LinalgOp>(userOp))
@@ -392,15 +394,15 @@ struct HoistReduceBufferPattern : public OpRewritePattern<linalg::CopyOp> {
     auto linalgCpy = dyn_cast<linalg::CopyOp>(otherCpy);
 
     // d. 2_linalg.copy input defining op is memref.subview
-    if (isa<memref::SubViewOp>(linalgCpy.inputs()[0].getDefiningOp()))
-      subviewOp = linalgCpy.inputs()[0].getDefiningOp();
+    if (isa<memref::SubViewOp>(linalgCpy.getInputs()[0].getDefiningOp()))
+      subviewOp = linalgCpy.getInputs()[0].getDefiningOp();
     else
       return failure();
 
     // 1_linalg.copy.input == 2_linalg.copy.output && 1_linalg.copy.output ==
     // 2_linalg.copy.input
-    if (op.inputs()[0] != linalgCpy.outputs()[0] ||
-        op.outputs()[0] != linalgCpy.inputs()[0])
+    if (op.getInputs()[0] != linalgCpy.getOutputs()[0] ||
+        op.getOutputs()[0] != linalgCpy.getInputs()[0])
       return failure();
 
     // 1_linalg.copy & 2_linalg.copy & kernel op are in same region
@@ -409,8 +411,8 @@ struct HoistReduceBufferPattern : public OpRewritePattern<linalg::CopyOp> {
       return failure();
 
     // c. defining op is memref.alloc()
-    if (isa<memref::AllocOp>(linalgCpy.outputs()[0].getDefiningOp()))
-      memrefAllocaOp = linalgCpy.outputs()[0].getDefiningOp();
+    if (isa<memref::AllocOp>(linalgCpy.getOutputs()[0].getDefiningOp()))
+      memrefAllocaOp = linalgCpy.getOutputs()[0].getDefiningOp();
     else
       return failure();
 
@@ -437,6 +439,123 @@ struct HoistReduceBufferPattern : public OpRewritePattern<linalg::CopyOp> {
   }
 };
 
+struct LinalgTransformationFilter {
+  using FilterFunction = std::function<LogicalResult(Operation *)>;
+
+  explicit LinalgTransformationFilter(
+      ArrayRef<StringAttr> matchDisjunction = {},
+      Optional<StringAttr> replacement = None);
+
+  explicit LinalgTransformationFilter(
+      const FilterFunction &f, ArrayRef<StringAttr> matchDisjunction = {},
+      Optional<StringAttr> replacement = None);
+
+  LinalgTransformationFilter(LinalgTransformationFilter &&) = default;
+  LinalgTransformationFilter(const LinalgTransformationFilter &) = default;
+  LogicalResult checkAndNotify(PatternRewriter &rewriter, Operation *op) const;
+  void replaceLinalgTransformationFilter(PatternRewriter &rewriter,
+                                         Operation *op) const;
+  bool hasReplacementFilter(Operation *op) const;
+
+  LinalgTransformationFilter &addFilter(const FilterFunction &f) {
+    if (f)
+      filters.push_back(f);
+    return *this;
+  }
+
+  template <typename... OpTypes>
+  LinalgTransformationFilter &addOpFilter() {
+    return addFilter(
+        [](Operation *op) { return success(isa<OpTypes...>(op)); });
+  }
+
+  LinalgTransformationFilter &addOpNameFilter(StringRef opName) {
+    return addFilter([opName](Operation *op) {
+      return success(op->getName().getStringRef() == opName);
+    });
+  }
+
+  LinalgTransformationFilter &setMatchByDefault() {
+    matchByDefault = true;
+    return *this;
+  }
+
+private:
+  SmallVector<FilterFunction> filters;
+  SmallVector<StringAttr> matchDisjunction;
+  Optional<StringAttr> replacement;
+  /// When set to true, if the attribute is not set, it will be treated as
+  /// a match. Default is false.
+  bool matchByDefault;
+};
+
+LinalgTransformationFilter::LinalgTransformationFilter(
+    ArrayRef<StringAttr> matchDisjunction, Optional<StringAttr> replacement)
+    : matchDisjunction(matchDisjunction.begin(), matchDisjunction.end()),
+      replacement(replacement), matchByDefault(false) {}
+
+LinalgTransformationFilter::LinalgTransformationFilter(
+    const FilterFunction &f, ArrayRef<StringAttr> matchDisjunction,
+    Optional<StringAttr> replacement)
+    : filters(),
+      matchDisjunction(matchDisjunction.begin(), matchDisjunction.end()),
+      replacement(replacement), matchByDefault(false) {
+  if (f)
+    filters.push_back(f);
+}
+
+LogicalResult LinalgTransformationFilter::checkAndNotify(
+    PatternRewriter &rewriter, Operation *op) const {
+  if (llvm::any_of(filters,
+                   [&](const FilterFunction &f) { return failed(f(op)); }))
+    return failure();
+
+  auto attr = op->template getAttrOfType<StringAttr>(
+      LinalgTransforms::kLinalgTransformMarker);
+
+  if (!attr) {
+    // 1. Has no filter case and matchDisjunction is empty.
+    if (matchDisjunction.empty() || matchByDefault)
+      return success();
+
+    // 2. Has no filter but was expecting a filter.
+    return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+      diag << " does not have any filter from list: ";
+      interleaveComma(matchDisjunction, diag);
+    });
+  }
+
+  // 4. Match explicit filter.
+  for (auto filter : matchDisjunction)
+    if (attr.getValue() == filter)
+      return success();
+
+  // 5. Fail to match.
+  return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+    diag << " does not have any filter from list: ";
+    interleaveComma(matchDisjunction, diag);
+  });
+}
+
+void LinalgTransformationFilter::
+    replaceLinalgTransformationFilter(PatternRewriter &rewriter,
+                                      Operation *op) const {
+  if (replacement.has_value())
+    op->setAttr(LinalgTransforms::kLinalgTransformMarker, replacement.value());
+  else
+    op->removeAttr(
+        rewriter.getStringAttr(LinalgTransforms::kLinalgTransformMarker));
+}
+
+bool LinalgTransformationFilter::hasReplacementFilter(
+    Operation *op) const {
+  if (!replacement)
+    return false;
+  auto attr = op->getAttr(LinalgTransforms::kLinalgTransformMarker)
+                  .dyn_cast<StringAttr>();
+  return attr && attr == *replacement;
+}
+
 RemoveSubViewOpsPattern::RemoveSubViewOpsPattern(MLIRContext *ctx,
                                                  unsigned int fast_memory_space)
     : OpRewritePattern(ctx), fast_space(fast_memory_space) {}
@@ -449,17 +568,17 @@ RemoveViewOpsPattern::RemoveViewOpsPattern(MLIRContext *ctx,
 // Custom LinalgOp tiling pattern
 //
 struct TileLinalgOpPattern : public RewritePattern {
-  TileLinalgOpPattern(MLIRContext *context, linalg::LinalgTilingOptions options,
-                      linalg::LinalgTransformationFilter filter =
-                          linalg::LinalgTransformationFilter(),
+  TileLinalgOpPattern(StringLiteral operation_name,
+                      MLIRContext *context,
+                      linalg::LinalgTilingOptions options,
+                      LinalgTransformationFilter filter =
+                          LinalgTransformationFilter(),
                       PatternBenefit benefit = 1)
-      : RewritePattern(MatchAnyOpTypeTag(), benefit, context), filter(filter),
+      : RewritePattern(operation_name, benefit, context), filter(filter),
         options(options) {}
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
-    if (!isa<linalg::GenericOp>(op))
-      return failure();
 
     linalg::LinalgOp linalgOp = dyn_cast<linalg::LinalgOp>(op);
     if (!linalgOp)
@@ -484,7 +603,7 @@ struct TileLinalgOpPattern : public RewritePattern {
 
 private:
   /// LinalgTransformMarker handles special attribute manipulations.
-  linalg::LinalgTransformationFilter filter;
+  LinalgTransformationFilter filter;
   /// Options to control tiling;
   linalg::LinalgTilingOptions options;
 };
@@ -495,8 +614,8 @@ private:
 struct PromoteLinalgOpPattern : public RewritePattern {
   PromoteLinalgOpPattern(MLIRContext *context,
                          linalg::LinalgPromotionOptions options,
-                         linalg::LinalgTransformationFilter filter =
-                             linalg::LinalgTransformationFilter(),
+                         LinalgTransformationFilter filter =
+                             LinalgTransformationFilter(),
                          PatternBenefit benefit = 1)
       : RewritePattern(MatchAnyOpTypeTag(), benefit, context), filter(filter),
         options(std::move(options)) {}
@@ -527,7 +646,7 @@ struct PromoteLinalgOpPattern : public RewritePattern {
 
 private:
   /// LinalgTransformMarker handles special attribute manipulations.
-  linalg::LinalgTransformationFilter filter;
+  LinalgTransformationFilter filter;
   /// Options to control promotion
   linalg::LinalgPromotionOptions options;
 };
@@ -560,7 +679,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   if (!(pipeline_direction == "vert" || pipeline_direction == "horiz"))
     return failure();
 
-  auto iteratorTypes = llvm::to_vector<4>(op.iterator_types().getValue());
+  auto iteratorTypes = op.getIteratorTypesArray();
   if (linalg::isParallelIterator(iteratorTypes.back()))
     return failure();
 
@@ -572,8 +691,8 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
                              b.create<arith::ConstantIndexOp>(loc, new_herd_y)};
 
   SmallVector<Value, 4> args;
-  for (auto o : op.getInputAndOutputOperands())
-    args.push_back(o->get());
+  for (auto o : op->getOperands())
+    args.push_back(o);
 
   auto launch = b.create<xilinx::air::HerdOp>(loc, dims, args);
   b.setInsertionPointToStart(&launch.getBody().front());
@@ -652,10 +771,10 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
 
     if (promote) {
       SmallVector<int64_t, 3> opers_to_promote(
-          linalgOp.getNumInputsAndOutputs() - 1);
+          linalgOp->getNumOperands() - 1);
       std::iota(opers_to_promote.begin(), opers_to_promote.end(), 0);
       if (first_stage || last_stage)
-        opers_to_promote.push_back(linalgOp.getNumInputsAndOutputs() - 1);
+        opers_to_promote.push_back(linalgOp->getNumOperands() - 1);
 
       b.setInsertionPoint(linalgOp);
       auto loc = linalgOp->getLoc();
@@ -687,7 +806,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
       if (promote && first_stage) {
         memref::SubViewOp sv = dyn_cast<memref::SubViewOp>(
             linalgOp.getOutputOperand(0)->get().getDefiningOp());
-        mref = sv.source();
+        mref = sv.getSource();
         sv.replaceAllUsesWith(mref);
       }
 
@@ -719,8 +838,8 @@ struct PipelineReducePattern : public RewritePattern {
                         linalg::LinalgTilingOptions options, int tile_size,
                         int pipeline_depth, std::string &pipeline_direction,
                         bool promote,
-                        linalg::LinalgTransformationFilter filter =
-                            linalg::LinalgTransformationFilter(),
+                        LinalgTransformationFilter filter =
+                            LinalgTransformationFilter(),
                         PatternBenefit benefit = 1)
       : RewritePattern(MatchAnyOpTypeTag(), benefit, context), filter(filter),
         options(options), tile_size(tile_size), pipeline_depth(pipeline_depth),
@@ -749,7 +868,7 @@ struct PipelineReducePattern : public RewritePattern {
 
 private:
   /// LinalgTransformMarker handles special attribute manipulations.
-  linalg::LinalgTransformationFilter filter;
+  LinalgTransformationFilter filter;
   /// Options to control tiling;
   linalg::LinalgTilingOptions options;
   unsigned int tile_size;
@@ -932,14 +1051,14 @@ public:
     for (auto genericOp : genericOps) {
 
       auto attr = genericOp->getAttrOfType<StringAttr>(
-          linalg::LinalgTransforms::kLinalgTransformMarker);
+          LinalgTransforms::kLinalgTransformMarker);
       if (!attr) {
         if (clInputFilter != "")
           continue;
-        genericOp->setAttr(linalg::LinalgTransforms::kLinalgTransformMarker,
+        genericOp->setAttr(LinalgTransforms::kLinalgTransformMarker,
                            StringAttr::get(ctx, ""));
         attr = genericOp->getAttrOfType<StringAttr>(
-            linalg::LinalgTransforms::kLinalgTransformMarker);
+            LinalgTransforms::kLinalgTransformMarker);
       } else if (clInputFilter != attr.str())
         continue;
       StringAttr next_match = attr;
@@ -982,18 +1101,19 @@ public:
       if (tileForL2) {
         RewritePatternSet stageL2Patterns(ctx);
         stageL2Patterns.insert<TileLinalgOpPattern>(
+            linalg::GenericOp::getOperationName(),
             ctx,
             linalg::LinalgTilingOptions()
                 .setTileSizes(l2_tile_size)
                 .setInterchange(l2_tile_interchange)
                 .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
-            linalg::LinalgTransformationFilter(
+            LinalgTransformationFilter(
                 next_match,
                 StringAttr::get(ctx, clL2Promote ? "L2" : "L2_promoted")));
 
         stageL2Patterns.insert<PromoteLinalgOpPattern>(
             ctx, linalg::LinalgPromotionOptions(),
-            linalg::LinalgTransformationFilter(
+            LinalgTransformationFilter(
                 StringAttr::get(ctx, "L2"),
                 StringAttr::get(ctx, "L2_promoted")));
         stageL2Patterns.insert<RemoveSubViewOpsPattern>(ctx, 1);
@@ -1049,11 +1169,12 @@ public:
 
       RewritePatternSet patterns(ctx);
       patterns.insert<TileLinalgOpPattern>(
+          linalg::GenericOp::getOperationName(),
           ctx,
           linalg::LinalgTilingOptions()
               .setTileSizes(herd_tile_size)
               .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
-          linalg::LinalgTransformationFilter(
+          LinalgTransformationFilter(
               next_match, StringAttr::get(ctx, "herd_tiling")));
       (void)applyPatternsAndFoldGreedily(called, std::move(patterns));
       next_match = StringAttr::get(ctx, "herd_tiling");
@@ -1066,18 +1187,19 @@ public:
       RewritePatternSet stageL1Patterns(ctx);
       if (needL1Tiling) {
         stageL1Patterns.insert<TileLinalgOpPattern>(
+            linalg::GenericOp::getOperationName(),
             ctx,
             linalg::LinalgTilingOptions()
                 .setTileSizes(l1_tile_size)
                 .setInterchange(l1_tile_interchange)
                 .setLoopType(linalg::LinalgTilingLoopType::Loops),
-            linalg::LinalgTransformationFilter(
+            LinalgTransformationFilter(
                 next_match,
                 StringAttr::get(ctx, clL1Promote ? "L1" : "L1_promoted")));
       }
       stageL1Patterns.insert<PromoteLinalgOpPattern>(
           ctx, linalg::LinalgPromotionOptions(),
-          linalg::LinalgTransformationFilter(
+          LinalgTransformationFilter(
               needL1Tiling ? StringAttr::get(ctx, "L1") : next_match,
               StringAttr::get(ctx, "L1_promoted")));
       stageL1Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
@@ -1093,7 +1215,7 @@ public:
       LLVM_DEBUG(called.print(llvm::outs()));
 
       called.walk([](linalg::LinalgOp op) {
-        op->removeAttr(linalg::LinalgTransforms::kLinalgTransformMarker);
+        op->removeAttr(LinalgTransforms::kLinalgTransformMarker);
       });
 
       InlinerInterface interface(&getContext());
@@ -1113,14 +1235,14 @@ public:
     for (auto matmulOp : matmulOps) {
 
       auto attr = matmulOp->getAttrOfType<StringAttr>(
-          linalg::LinalgTransforms::kLinalgTransformMarker);
+          LinalgTransforms::kLinalgTransformMarker);
       if (!attr) {
         if (clInputFilter != "")
           continue;
-        matmulOp->setAttr(linalg::LinalgTransforms::kLinalgTransformMarker,
+        matmulOp->setAttr(LinalgTransforms::kLinalgTransformMarker,
                           StringAttr::get(ctx, ""));
         attr = matmulOp->getAttrOfType<StringAttr>(
-            linalg::LinalgTransforms::kLinalgTransformMarker);
+            LinalgTransforms::kLinalgTransformMarker);
       } else if (clInputFilter != attr.str())
         continue;
 
@@ -1165,13 +1287,13 @@ public:
 
       if (tileForL2) {
         RewritePatternSet stageL2Patterns(ctx);
-        stageL2Patterns.insert<linalg::LinalgTilingPattern>(
+        stageL2Patterns.insert<TileLinalgOpPattern>(
             linalg::MatmulOp::getOperationName(), ctx,
             linalg::LinalgTilingOptions()
                 .setTileSizes(l2_tile_size)
                 .setInterchange(l2_tile_interchange)
                 .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
-            linalg::LinalgTransformationFilter(
+            LinalgTransformationFilter(
                 next_match,
                 StringAttr::get(ctx, clL2Promote ? "L2" : "L2_promoted")));
 
@@ -1180,7 +1302,7 @@ public:
           l2PromoteOptions.setOperandsToPromote(l2_promote_operands);
         stageL2Patterns.insert<PromoteLinalgOpPattern>(
             ctx, l2PromoteOptions,
-            linalg::LinalgTransformationFilter(
+            LinalgTransformationFilter(
                 StringAttr::get(ctx, "L2"),
                 StringAttr::get(ctx, "L2_promoted")));
         stageL2Patterns.insert<RemoveSubViewOpsPattern>(ctx, 1);
@@ -1193,13 +1315,13 @@ public:
 
       RewritePatternSet stageL1Patterns(ctx);
 
-      stageL1Patterns.insert<linalg::LinalgTilingPattern>(
+      stageL1Patterns.insert<TileLinalgOpPattern>(
           linalg::MatmulOp::getOperationName(), ctx,
           linalg::LinalgTilingOptions()
               .setTileSizes(l1_tile_size)
               .setInterchange(l1_tile_interchange)
               .setLoopType(linalg::LinalgTilingLoopType::ParallelLoops),
-          linalg::LinalgTransformationFilter(
+          LinalgTransformationFilter(
               next_match,
               StringAttr::get(ctx, clL1Promote ? "L1" : "L1_promoted")));
 
@@ -1208,7 +1330,7 @@ public:
         l1PromoteOptions.setOperandsToPromote(l1_promote_operands);
       stageL1Patterns.insert<PromoteLinalgOpPattern>(
           ctx, l1PromoteOptions,
-          linalg::LinalgTransformationFilter(
+          LinalgTransformationFilter(
               StringAttr::get(ctx, "L1"), StringAttr::get(ctx, "L1_promoted")));
 
       RewritePatternSet stage3Patterns(&getContext());
@@ -1220,7 +1342,7 @@ public:
       (void)applyPatternsAndFoldGreedily(called, std::move(stageL1Patterns));
       (void)applyPatternsAndFoldGreedily(called, std::move(stage3Patterns));
       called.walk([](linalg::LinalgOp op) {
-        op->removeAttr(linalg::LinalgTransforms::kLinalgTransformMarker);
+        op->removeAttr(LinalgTransforms::kLinalgTransformMarker);
       });
 
       InlinerInterface interface(&getContext());
@@ -1257,14 +1379,14 @@ public:
       RewritePatternSet stage1Patterns(&getContext());
     
       stage1Patterns
-          .insert<linalg::LinalgTilingPattern>(
+          .insert<TileLinalgOpPattern>(
               linalg::Conv2DNchwFchwOp::getOperationName(),
               ctx,
               linalg::LinalgTilingOptions()
                   .setTileSizes(l1_tile_size)
                   .setInterchange(l1_tile_interchange)
                   .setLoopType(linalg::LinalgTilingLoopType::Loops),
-              linalg::LinalgTransformationFilter(
+              LinalgTransformationFilter(
                   ArrayRef<StringAttr>{},
                   StringAttr::get(ctx, "promote_HERD")));
 
@@ -1272,7 +1394,7 @@ public:
           ctx,
           linalg::LinalgPromotionOptions().setOperandsToPromote(
               std::vector<int64_t>{0, 1, 2}),
-          linalg::LinalgTransformationFilter(
+          LinalgTransformationFilter(
               StringAttr::get(ctx, "promote_HERD"),
               StringAttr::get(ctx, "HERD")));
 
@@ -1344,7 +1466,7 @@ public:
 
       // Drop the marker.
       called.walk([](linalg::LinalgOp op) {
-        op->removeAttr(linalg::LinalgTransforms::kLinalgTransformMarker);
+        op->removeAttr(LinalgTransforms::kLinalgTransformMarker);
       });
       
       InlinerInterface interface(&getContext());
