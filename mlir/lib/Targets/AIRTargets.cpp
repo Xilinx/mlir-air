@@ -95,7 +95,7 @@ llvm::json::Value attrToJSON(Attribute &attr) {
 void registerAIRRtTranslations() {
 
   TranslateFromMLIRRegistration registrationMMap(
-      "airrt-generate-json",
+      "airrt-generate-json", "Transform airrt metadata to JSON",
       [](ModuleOp module, raw_ostream &output) {
         llvm::json::Object moduleJSON;
         for (auto module_meta : module.getOps<airrt::ModuleMetadataOp>()) {
@@ -132,7 +132,7 @@ void registerAIRRtTranslations() {
       [](DialectRegistry &registry) {
         registry.insert<xilinx::air::airDialect, xilinx::airrt::AIRRtDialect,
                         func::FuncDialect, cf::ControlFlowDialect,
-                        arith::ArithmeticDialect, memref::MemRefDialect,
+                        arith::ArithDialect, memref::MemRefDialect,
                         vector::VectorDialect, LLVM::LLVMDialect,
                         scf::SCFDialect, AffineDialect>();
       });

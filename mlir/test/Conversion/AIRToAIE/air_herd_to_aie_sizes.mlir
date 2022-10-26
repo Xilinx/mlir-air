@@ -27,7 +27,7 @@
 
 func.func @launch(%arg0: i32) {
   %cst2 = arith.constant 2 : index
-  // CHECK: %[[TILE01:.*]] = AIE.tile(0, 1)
+  // CHECK: %[[TILE01:.*]] = AIE.tile(1, 2)
   // CHECK: {{.*}} = AIE.core(%[[TILE01]])  {
   // CHECK: memref.store {{.*}}, {{.*}}[{{.*}}] : memref<1024xindex, 2>
   // CHECK: AIE.end

@@ -30,7 +30,7 @@
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -848,11 +848,11 @@ public:
 
   Option<int> AIRToAIERowOffset{
       *this, "row-offset", llvm::cl::desc("The start row for any output herds"),
-      llvm::cl::init(0)};
+      llvm::cl::init(1)};
 
   Option<int> AIRToAIEColOffset{
       *this, "col-offset", llvm::cl::desc("The start col for any output herds"),
-      llvm::cl::init(0)};
+      llvm::cl::init(1)};
 
   Option<bool> AIRToAIEEmitWhileLoop{
       *this, "emit-while-loop", llvm::cl::desc("Emit while(1) around AIE code"),

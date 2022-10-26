@@ -420,7 +420,7 @@ public:
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
     auto dealloc = cast<memref::DeallocOp>(op);
-    auto type = dealloc.memref().getType().cast<MemRefType>();
+    auto type = dealloc.getMemref().getType().cast<MemRefType>();
     if (type.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L2) {
       rewriter.replaceOpWithNewOp<xilinx::airrt::DeallocOp>(
           op, SmallVector<Type>{}, op->getOperands());
@@ -588,7 +588,7 @@ public:
     ConversionTarget target(*context);
 
     target.addLegalDialect<
-        LLVM::LLVMDialect, func::FuncDialect, arith::ArithmeticDialect,
+        LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect,
         AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
         memref::MemRefDialect, bufferization::BufferizationDialect,
         xilinx::airrt::AIRRtDialect>();
@@ -634,7 +634,7 @@ public:
     });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-      return (op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
+      return (op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
               (int)xilinx::air::MemorySpace::L2);
     });
 
@@ -700,7 +700,7 @@ public:
     ConversionTarget target(*context);
 
     target.addLegalDialect<
-        LLVM::LLVMDialect, func::FuncDialect, arith::ArithmeticDialect,
+        LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect,
         AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
         memref::MemRefDialect, bufferization::BufferizationDialect,
         xilinx::airrt::AIRRtDialect, xilinx::air::airDialect>();

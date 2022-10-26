@@ -1157,7 +1157,7 @@ public:
     ConversionTarget target(*context);
 
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           arith::ArithmeticDialect, AffineDialect,
+                           arith::ArithDialect, AffineDialect,
                            scf::SCFDialect, memref::MemRefDialect>();
 
     target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
