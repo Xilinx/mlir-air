@@ -42,7 +42,6 @@
 
 #include <numeric>
 #include <string>
-#include <sys/stat.h>
 
 // boost graph
 #include <boost/graph/adjacency_list.hpp>

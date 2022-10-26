@@ -24,6 +24,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Util/Dependency.h"
+#include <sys/stat.h>
 
 #define DEBUG_TYPE "air-dependency-util"
 
