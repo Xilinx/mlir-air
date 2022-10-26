@@ -31,10 +31,6 @@
 #define ARM_CONTROLLER 1
 #endif
 
-#ifdef __aarch64__
-#define ARM_CONTROLLER 1
-#endif
-
 extern "C" {
 #include "xil_printf.h"
 #ifdef ARM_CONTROLLER
