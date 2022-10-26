@@ -34,6 +34,11 @@
 #include <unistd.h>
 #include <vector>
 
+#include <dirent.h>
+#include <fstream> // ifstream
+#include <iomanip> // setbase()
+#include <sys/stat.h>
+
 #include <string>
 #include <vector>
 

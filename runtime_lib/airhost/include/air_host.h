@@ -34,11 +34,6 @@
 #include <stdlib.h>
 #include <string>
 
-#include <dirent.h>
-#include <fstream> // ifstream
-#include <iomanip> // setbase()
-#include <sys/stat.h>
-
 typedef struct air_agent_s {
   uint64_t handle;
 } air_agent_t;
