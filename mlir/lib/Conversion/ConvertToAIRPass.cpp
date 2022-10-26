@@ -1002,10 +1002,9 @@ struct CopyToChannelPass : public CopyToChannelBase<CopyToChannelPass> {
 
     ConversionTarget target(*context);
 
-    target
-        .addLegalDialect<LLVM::LLVMDialect, func::FuncDialect, scf::SCFDialect,
-                         AffineDialect, xilinx::air::airDialect,
-                         arith::ArithDialect, memref::MemRefDialect>();
+    target.addLegalDialect<
+        LLVM::LLVMDialect, func::FuncDialect, scf::SCFDialect, AffineDialect,
+        xilinx::air::airDialect, arith::ArithDialect, memref::MemRefDialect>();
 
     target.addDynamicallyLegalOp<memref::CopyOp>([](memref::CopyOp co) {
       auto src_type = co.getSource().getType().dyn_cast<MemRefType>();

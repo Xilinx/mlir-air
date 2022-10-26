@@ -493,11 +493,11 @@ public:
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<
-        LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect,
-        AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
-        memref::MemRefDialect, bufferization::BufferizationDialect,
-        xilinx::airrt::AIRRtDialect>();
+    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
+                           arith::ArithDialect, AffineDialect, scf::SCFDialect,
+                           linalg::LinalgDialect, memref::MemRefDialect,
+                           bufferization::BufferizationDialect,
+                           xilinx::airrt::AIRRtDialect>();
 
     // air.memcpy_nd conversion
     RewritePatternSet air_dma_patterns(context);
@@ -539,8 +539,9 @@ public:
     });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-      return (op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() ==
-              0);
+      return (
+          op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() ==
+          0);
     });
 
     RewritePatternSet air_mem_patterns(context);

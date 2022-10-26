@@ -148,7 +148,8 @@ void AIRLowerLinalgTensors::runOnOperation() {
   target.addLegalDialect<AIE::AIEDialect, AffineDialect, math::MathDialect,
                          memref::MemRefDialect, func::FuncDialect,
                          arith::ArithDialect>();
-  target.addIllegalOp<tensor::EmptyOp, tensor::ExtractSliceOp, tensor::InsertSliceOp>();
+  target.addIllegalOp<tensor::EmptyOp, tensor::ExtractSliceOp,
+                      tensor::InsertSliceOp>();
 
   // Mark all Linalg operations illegal as long as they work on tensors.
   auto isLegalOperation = [&](Operation *op) {
