@@ -50,7 +50,7 @@ void defineAIRHostModule(pybind11::module &m) {
       pybind11::return_value_policy::reference);
 
   m.def("deinit_libxaie",
-        [](aie_libxaie_ctx_t *ctx) -> void { air_deinit_libxaie1(ctx); });
+        [](aie_libxaie_ctx_t *ctx) -> void { air_deinit_libxaie(ctx); });
 
   pybind11::class_<air_module_desc_t>(m, "ModuleDescriptor")
       .def(
