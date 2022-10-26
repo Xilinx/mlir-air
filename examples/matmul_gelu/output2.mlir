@@ -164,7 +164,7 @@ module attributes {torch.debug_module_name = "mmult"} {
           air.execute_terminator %6 : memref<64x64xbf16, 1>
         }
         %3 = air.dma_memcpy_nd async [%async_token_10, %async_token_8, %async_token_6] (%results_11[] [] [], %arg12[%results_7, %results_9] [%c64, %c64] [%c1024, %c1]) {id = 11 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
-        %4 = air.herd @herd_1 async [%3]  tile (%arg14, %arg15) in (%arg16=%c2, %arg17=%c2) args(%arg18=%results_11, %arg19=%results_13) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1> attributes {id = 6 : i32} {
+        %4 = air.herd @herd_1 async [%async_token_12, %3]  tile (%arg14, %arg15) in (%arg16=%c2, %arg17=%c2) args(%arg18=%results_11, %arg19=%results_13) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1> attributes {id = 6 : i32} {
           %c1_16 = arith.constant 1 : index
           %c64_17 = arith.constant 64 : index
           %c32 = arith.constant 32 : index
@@ -188,7 +188,7 @@ module attributes {torch.debug_module_name = "mmult"} {
             air.execute_terminator %8 : memref<32x32xbf16, 2>
           }
           %6 = air.dma_memcpy_nd async [%async_token_25, %async_token_23, %async_token_21] (%results_26[] [] [], %arg18[%results_22, %results_24] [%c32, %c32] [%c64_17, %c1_16]) {id = 12 : i32} : (memref<32x32xbf16, 2>, memref<64x64xbf16, 1>)
-          %async_token_29 = air.execute [%6] {
+          %async_token_29 = air.execute [%async_token_27, %6] {
             linalg.generic {indexing_maps = [#map2, #map2], iterator_types = ["parallel", "parallel"]} ins(%results_26 : memref<32x32xbf16, 2>) outs(%results_28 : memref<32x32xbf16, 2>) {
             ^bb0(%arg20: bf16, %arg21: bf16):
               %8 = math.sqrt %cst_18 : bf16
