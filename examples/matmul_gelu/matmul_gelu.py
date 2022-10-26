@@ -84,6 +84,7 @@ with air.mlir.ir.Context():
         "air-dependency",
         "air-dependency-schedule-opt",
         "air-specialize-dma-broadcast",
+        "air-dependency-canonicalize{dump-graph=true output-dir=dot_graphs/}"
     ])
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
     pm.run(air_module)
