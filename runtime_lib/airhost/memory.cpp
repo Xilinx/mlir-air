@@ -115,6 +115,7 @@ int air_mem_free(void *buff, size_t size) {
   return munmap(buff,size);
 }
 
+// Initializing the runtime's handle on the device memory allocator
 int air_init_dev_mem_allocator(uint64_t dev_mem_size, uint32_t device_id) {
 
   // If already have a dev_mem_allocator just going to skip
@@ -177,7 +178,7 @@ void air_dev_mem_allocator_free() {
 
 // Allocating memory on the device. Since we are treeting the memory just like a
 // stack, this is pretty straightforward as we are just giving the user the
-// next portion of memory equal to the size that they want.
+// next portion of memory of size that they want.
 void *air_dev_mem_alloc(uint32_t size) {
 
   // Making sure we have a real allocator
@@ -206,6 +207,11 @@ void *air_dev_mem_alloc(uint32_t size) {
   return user_ptr;
 }
 
+// Used to get the physical address of device allocated through
+// the device memory allocator. Due to how memory is allocated
+// in both platforms, the offsets of the virtual and physical
+// address are the same, and we can directly convert between
+// the two.
 uint64_t air_dev_mem_get_pa(void *buff_va) {
 
   // Making sure we have a real allocator
