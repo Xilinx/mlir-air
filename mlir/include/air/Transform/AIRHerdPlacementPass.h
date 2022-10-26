@@ -1,4 +1,5 @@
-//===- AIRHerdPlacementPass.h ----------------------------------------*- C++ -*-===//
+//===- AIRHerdPlacementPass.h ----------------------------------------*- C++
+//-*-===//
 //
 // Copyright (C) 2020-2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
@@ -24,7 +25,7 @@
 //===----------------------------------------------------------------------===//
 #ifndef AIR_PLACE_HERDS_H
 #define AIR_PLACE_HERDS_H
- 
+
 #include "mlir/Pass/Pass.h"
 #include <memory>
 

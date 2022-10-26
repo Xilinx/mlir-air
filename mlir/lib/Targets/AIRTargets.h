@@ -34,4 +34,4 @@ mlir::LogicalResult AIRHerdsToJSON(mlir::ModuleOp module,
                                    llvm::raw_ostream &output);
 
 }
-}
+} // namespace xilinx

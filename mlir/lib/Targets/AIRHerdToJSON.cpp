@@ -43,8 +43,8 @@
 #include "mlir/Transforms/InliningUtils.h"
 #include "mlir/Transforms/RegionUtils.h"
 
-#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetVector.h"
 
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -52,10 +52,10 @@
 
 #include "air/Util/Util.h"
 
-#include <string>
-#include <vector>
 #include <iostream>
 #include <memory>
+#include <string>
+#include <vector>
 
 #define DEBUG_TYPE "air-herds-to-json"
 
@@ -68,11 +68,11 @@ namespace {
 class Herd {
 
 public:
-
-  Herd(int32_t numRows, int32_t numCols, int32_t locX, int32_t locY, int32_t number, std::string name):
-      numRows(numRows), numCols(numCols), locX(locX), locY(locY), number(number), name(name)
-  {
-      convertHerdToList();
+  Herd(int32_t numRows, int32_t numCols, int32_t locX, int32_t locY,
+       int32_t number, std::string name)
+      : numRows(numRows), numCols(numCols), locX(locX), locY(locY),
+        number(number), name(name) {
+    convertHerdToList();
   }
 
   int32_t getNumRows() const { return numRows; }
@@ -83,22 +83,18 @@ public:
   int32_t getLocY() const { return locY; }
 
   void printHerd() const {
-    llvm::outs() << "name: "    << name   
-                 << ", numRows: " << numRows
-                 << ", numCols: " << numCols 
-                 << ", x_loc: " << locX 
-                 << ", y_loc: " << locY
-                 << "\n";  
+    llvm::outs() << "name: " << name << ", numRows: " << numRows
+                 << ", numCols: " << numCols << ", x_loc: " << locX
+                 << ", y_loc: " << locY << "\n";
     return;
   }
 
   std::string generateHerdString() {
     std::ostringstream herdString;
-    herdString << "[" << number << ", " << 
-    "\""<< name << "\"";
+    herdString << "[" << number << ", "
+               << "\"" << name << "\"";
     for (uint32_t i = 0; i < herdList.size(); i++) {
-        herdString << ", [" << herdList[i][0] << ", "
-                    << herdList[i][1] << "]";
+      herdString << ", [" << herdList[i][0] << ", " << herdList[i][1] << "]";
     }
     herdString << "]";
     return herdString.str();
@@ -115,27 +111,28 @@ private:
 
   void convertHerdToList() {
     for (int32_t i = 0; i < numRows; i++) {
-        for (int32_t j = 0; j < numCols; j++) {
-            int32_t rowCoord = locY - i;
-            int32_t colCoord = locX + j;
-            std::vector<int32_t> coords = {rowCoord, colCoord};
-            herdList.push_back(coords);
-        }
+      for (int32_t j = 0; j < numCols; j++) {
+        int32_t rowCoord = locY - i;
+        int32_t colCoord = locX + j;
+        std::vector<int32_t> coords = {rowCoord, colCoord};
+        herdList.push_back(coords);
+      }
     }
     return;
   }
 };
 
-mlir::LogicalResult AIRHerdsToJSONTranslate(mlir::ModuleOp module, llvm::raw_ostream &outStream) {
+mlir::LogicalResult AIRHerdsToJSONTranslate(mlir::ModuleOp module,
+                                            llvm::raw_ostream &outStream) {
   std::vector<std::unique_ptr<Herd>> herdOps;
   int32_t number = 0;
   auto status = success();
   for (auto f : module.getOps<func::FuncOp>()) {
     f.walk([&](Operation *op) {
-         if (auto herd = dyn_cast<xilinx::air::HerdOp>(op)) {
+      if (auto herd = dyn_cast<xilinx::air::HerdOp>(op)) {
         std::string name = "herd";
-        if (auto attr =
-            herd->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+        if (auto attr = herd->getAttrOfType<StringAttr>(
+                SymbolTable::getSymbolAttrName())) {
           name = attr.getValue().str();
         }
         SmallVector<Value, 2> herd_size = herd.getSizeOperands();
@@ -145,41 +142,41 @@ mlir::LogicalResult AIRHerdsToJSONTranslate(mlir::ModuleOp module, llvm::raw_ost
           status = failure();
         }
         int32_t herd_size_x =
-          cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
+            cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
         int32_t herd_size_y =
-          cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
+            cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
 
         int32_t x_loc = -1;
         int32_t y_loc = -1;
 
-        if (auto attr =
-            herd->getAttrOfType<IntegerAttr>("x_loc")) {
+        if (auto attr = herd->getAttrOfType<IntegerAttr>("x_loc")) {
           x_loc = attr.getInt();
-            }
-        if (auto attr =
-            herd->getAttrOfType<IntegerAttr>("y_loc")) {
+        }
+        if (auto attr = herd->getAttrOfType<IntegerAttr>("y_loc")) {
           y_loc = attr.getInt();
-            }
- 
+        }
+
         if (x_loc < 0 || y_loc < 0) {
           llvm::errs() << "Invalid x or y location";
           status = failure();
         }
-        auto herdPtr = std::make_unique<Herd>(herd_size_x, herd_size_y, x_loc, y_loc, number, name);
+        auto herdPtr = std::make_unique<Herd>(herd_size_x, herd_size_y, x_loc,
+                                              y_loc, number, name);
         herdOps.push_back(std::move(herdPtr));
 
         number++;
-        }
+      }
     });
   }
 
   for (uint32_t i = 0; i < herdOps.size(); i++) {
-      outStream << herdOps[i]->generateHerdString();
-      if (i != herdOps.size() - 1) {
-        outStream << ",\n\t\t\t\t   ";
-      }
+    outStream << herdOps[i]->generateHerdString();
+    if (i != herdOps.size() - 1) {
+      outStream << ",\n\t\t\t\t   ";
+    }
   }
-  outStream << "\n\t]" << "\n}\n"; 
+  outStream << "\n\t]"
+            << "\n}\n";
   return status;
 
 }; // end class
