@@ -26,7 +26,7 @@ MLIR_AIE_DIR="mlir-aie"
 BUILD_DIR="build"
 INSTALL_DIR="install"
 
-HASH=8178816f2f13beccc072a2e0b1001abab548fd84
+HASH=6e82d809a33fcfa448499cfe90ecd1592e7102e5
 
 git clone --depth 1 https://github.com/Xilinx/mlir-aie.git $MLIR_AIE_DIR
 pushd $MLIR_AIE_DIR
