@@ -72,8 +72,7 @@ private:
 
 void AIRExamplePass::runOnOperation() {}
 
-class AIRLinalgNamePass
-    : public air::AIRLinalgNamePassBase<AIRLinalgNamePass> {
+class AIRLinalgNamePass : public air::AIRLinalgNamePassBase<AIRLinalgNamePass> {
 
 public:
   AIRLinalgNamePass() = default;
@@ -251,8 +250,7 @@ bool isFuncOf(Operation *op, Value v, std::vector<Operation *> &ops) {
 }
 
 // AIRSpecializeDma
-class AIRSpecializeDma
-    : public air::AIRSpecializeDmaBase<AIRSpecializeDma> {
+class AIRSpecializeDma : public air::AIRSpecializeDmaBase<AIRSpecializeDma> {
 
 public:
   AIRSpecializeDma() = default;
@@ -285,8 +283,7 @@ void AIRSpecializeDma::runOnOperation() {
         auto pipe_bb = new Block();
         pipe.getBody().push_back(pipe_bb);
         builder.setInsertionPointToEnd(pipe_bb);
-        builder.create<air::PipelineTerminatorOp>(
-            loc, SmallVector<Value, 1>{});
+        builder.create<air::PipelineTerminatorOp>(loc, SmallVector<Value, 1>{});
         builder.setInsertionPointToStart(pipe_bb);
         for (int x = 0; x < herd_size_x; x++) {
           auto stage = builder.create<air::PipelineStageOp>(
@@ -313,8 +310,7 @@ void AIRSpecializeDma::runOnOperation() {
         auto pipe_bb = new Block();
         pipe.getBody().push_back(pipe_bb);
         builder.setInsertionPointToEnd(pipe_bb);
-        builder.create<air::PipelineTerminatorOp>(
-            loc, SmallVector<Value, 1>{});
+        builder.create<air::PipelineTerminatorOp>(loc, SmallVector<Value, 1>{});
         builder.setInsertionPointToStart(pipe_bb);
         for (int y = 0; y < herd_size_y; y++) {
           auto stage = builder.create<air::PipelineStageOp>(
@@ -339,8 +335,7 @@ void AIRSpecializeDma::runOnOperation() {
 
 // AIRSpecializeDmaBroadcast
 class AIRSpecializeDmaBroadcast
-    : public air::AIRSpecializeDmaBroadcastBase<
-          AIRSpecializeDmaBroadcast> {
+    : public air::AIRSpecializeDmaBroadcastBase<AIRSpecializeDmaBroadcast> {
 
 public:
   AIRSpecializeDmaBroadcast() = default;
@@ -427,8 +422,8 @@ private:
             // Duplicate dma ops per spatial partition
             if (i == 0) {
               AffineIfOp aif = builder.create<AffineIfOp>(
-                  loc, air::AsyncTokenType::get(ctx), int_set,
-                  int_set_args, (i != numPartitions - 1));
+                  loc, air::AsyncTokenType::get(ctx), int_set, int_set_args,
+                  (i != numPartitions - 1));
               builder.setInsertionPointToStart(aif.getThenBlock());
               auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
               memcpyOp_cloned->removeAttr("broadcast_pattern");
@@ -447,15 +442,14 @@ private:
               }
               // Reconnect dependency graph using the outermost affine.if's
               // token
-              auto async_memcpyOp = dyn_cast<air::AsyncOpInterface>(
-                  memcpyOp.getOperation());
+              auto async_memcpyOp =
+                  dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
               async_memcpyOp.getAsyncToken().replaceAllUsesWith(
                   aif.getResult(0));
             } else if (i < numPartitions - 1) {
               AffineIfOp aif = builder.create<AffineIfOp>(
-                  builder.getUnknownLoc(),
-                  air::AsyncTokenType::get(ctx), int_set, int_set_args,
-                  (i != numPartitions - 1));
+                  builder.getUnknownLoc(), air::AsyncTokenType::get(ctx),
+                  int_set, int_set_args, (i != numPartitions - 1));
               builder.setInsertionPointToStart(aif.getThenBlock());
               auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
               memcpyOp_cloned->removeAttr("broadcast_pattern");
@@ -551,8 +545,8 @@ private:
                   replaceSymbolAndEvaluateConstantInMap(
                       map, current_shape_expr[j], ctx);
                   // Remove dependence from scalar op to memcpyOp if present
-                  auto async_memcpyOp = dyn_cast<air::AsyncOpInterface>(
-                      memcpyOp.getOperation());
+                  auto async_memcpyOp =
+                      dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
                   eraseAsyncDependencyFromAsyncOp(
                       async_memcpyOp, air_region_op.getAsyncToken());
                 }
@@ -575,8 +569,7 @@ private:
             replaceMemcpyOpWithSimplifiedOperands(memcpyOp, current_shape_expr);
         auto asyncMemcpyOp =
             dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
-        auto asyncNewMemcpyOp =
-            dyn_cast<air::AsyncOpInterface>(newMemcpyOp);
+        auto asyncNewMemcpyOp = dyn_cast<air::AsyncOpInterface>(newMemcpyOp);
         newMemcpyOp->setAttr("broadcast_set", broadcast_set);
         asyncMemcpyOp.getAsyncToken().replaceAllUsesWith(
             asyncNewMemcpyOp.getAsyncToken());
@@ -706,12 +699,11 @@ private:
   Operation *replaceMemcpyOp(air::DmaMemcpyNdOp op, OpBuilder &builder,
                              SmallVector<Value, 1> srcMemrefDimsOrOffsets) {
     auto loc = op->getLoc();
-    air::DmaMemcpyNdOp newMemcpyOp =
-        builder.create<air::DmaMemcpyNdOp>(
-            loc, air::AsyncTokenType::get(op->getContext()),
-            op.getAsyncDependencies(), op.getDstMemref(), op.getDstOffsets(),
-            op.getDstSizes(), op.getDstStrides(), op.getSrcMemref(),
-            srcMemrefDimsOrOffsets, op.getSrcSizes(), op.getSrcStrides());
+    air::DmaMemcpyNdOp newMemcpyOp = builder.create<air::DmaMemcpyNdOp>(
+        loc, air::AsyncTokenType::get(op->getContext()),
+        op.getAsyncDependencies(), op.getDstMemref(), op.getDstOffsets(),
+        op.getDstSizes(), op.getDstStrides(), op.getSrcMemref(),
+        srcMemrefDimsOrOffsets, op.getSrcSizes(), op.getSrcStrides());
     return newMemcpyOp.getOperation();
   }
 };
