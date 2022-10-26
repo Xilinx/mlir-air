@@ -26,12 +26,9 @@ include_directories(
 )
 
 add_definitions(-DLIBXAIENGINEV2)
-add_definitions(-DAIR_PCIE)
 
 if(BUILD_AIR_PCIE)
   message("BUILD_AIR_PCIE=${BUILD_AIR_PCIE}")
-  set(ARM_TOOLCHAIN_OPT "")
-  set(VitisSysroot "")
   add_definitions(-DAIR_PCIE)
 endif()
 

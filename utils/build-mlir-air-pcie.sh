@@ -64,7 +64,7 @@ mkdir -p $MLIR_AIR_DIR/$BUILD_DIR
 mkdir -p $MLIR_AIR_DIR/$INSTALL_DIR
 cd $MLIR_AIR_DIR/$BUILD_DIR
 
-PYTHON_ROOT=`pip3 show pybind11 | grep Location | awk '{print $1}'`
+PYTHON_ROOT=`pip3 show pybind11 | grep Location | awk '{print $2}'`
 
 cmake .. \
 	-GNinja \
