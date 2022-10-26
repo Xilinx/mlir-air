@@ -104,6 +104,7 @@ typedef std::map<unsigned, Graph::vertex_descriptor> operation_id_to_vertex_map;
 static uint64_t ExecuteOpID;
 static uint64_t HierarchyOpID;
 static uint64_t WaitAllOpID;
+static uint64_t ChannelOpID;
 
 class AIRDependency : public AIRDependencyBase<AIRDependency> {
 
@@ -129,6 +130,8 @@ public:
 
     ExecuteOpID = 0;
     HierarchyOpID = 0;
+    WaitAllOpID = 0;
+    ChannelOpID = 0;
 
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
@@ -136,9 +139,9 @@ public:
         if (mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op))
           createAsyncDMA(module_builder, op);
 
-        // // Create async interface for air.channel ops
-        // if (mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op))
-        //   createAsyncDMA(module_builder, op);
+        // Create async interface for air.channel ops
+        else if (mlir::dyn_cast<xilinx::air::ChannelInterface>(op))
+          createAsyncChannel(module_builder, op, ChannelOpID);
 
         // Create async execute region for linalg.matmul
         else if (dyn_cast<linalg::MatmulOp>(op))
@@ -253,6 +256,8 @@ public:
             }
           }
         } else if (mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op)) {
+          sink_op = op;
+        } else if (mlir::dyn_cast<xilinx::air::ChannelInterface>(op)) {
           sink_op = op;
         } else if (dyn_cast<air::HierarchyInterface>(op)) {
           sink_op = op;
@@ -409,6 +414,50 @@ public:
           sink_op_memref_writes.push_back(tile_out);
         }
 
+        // If the sink op is channel put
+        else if (auto sink_op_channel_put =
+                     dyn_cast<air::ChannelPutOp>(sink_op)) {
+          unsigned numDimsSrc = sink_op_channel_put.getSrcMemref()
+                                    .getType()
+                                    .cast<MemRefType>()
+                                    .getRank();
+          SmallVector<Value, 2> src_indices;
+          if (sink_op_channel_put.getSrcOffsets().size()) {
+            for (unsigned i = 0; i < numDimsSrc; i++) {
+              src_indices.push_back(sink_op_channel_put.getSrcOffsets()[i]);
+            }
+          } else {
+            for (unsigned i = 0; i < numDimsSrc; i++) {
+              src_indices.push_back(nullptr);
+            }
+          }
+          partialMemref tile_in = createPartialMemref(
+              sink_op_channel_put.getSrcMemref(), numDimsSrc, src_indices);
+          sink_op_memref_reads.push_back(tile_in);
+        }
+
+        // If the sink op is channel get
+        else if (auto sink_op_channel_get =
+                     dyn_cast<air::ChannelGetOp>(sink_op)) {
+          unsigned numDimsDst = sink_op_channel_get.getDstMemref()
+                                    .getType()
+                                    .cast<MemRefType>()
+                                    .getRank();
+          SmallVector<Value, 2> dst_indices;
+          if (sink_op_channel_get.getDstOffsets().size()) {
+            for (unsigned i = 0; i < numDimsDst; i++) {
+              dst_indices.push_back(sink_op_channel_get.getDstOffsets()[i]);
+            }
+          } else {
+            for (unsigned i = 0; i < numDimsDst; i++) {
+              dst_indices.push_back(nullptr);
+            }
+          }
+          partialMemref tile_out = createPartialMemref(
+              sink_op_channel_get.getDstMemref(), numDimsDst, dst_indices);
+          sink_op_memref_reads.push_back(tile_out);
+        }
+
         // If the sink op is arith::MulIOp
         else if (auto sink_op_arith = dyn_cast<arith::MulIOp>(sink_op)) {
           sink_op_scalar_ins.push_back(sink_op_arith.getLhs());
@@ -487,6 +536,15 @@ public:
           traceTileIndices(sink_op_memref_reads, sink_op_memref_writes,
                            sink_op_scalar_ins, sink_op_scalar_outs, dma_op);
           dma_op_history.push_back(dma_op);
+        } else if (auto channel_op =
+                       mlir::dyn_cast<xilinx::air::ChannelInterface>(op)) {
+          traceDeps<air::ChannelInterface>(sink_op_memref_reads, channel_op,
+                                           "RAW");
+          traceDeps<air::ChannelInterface>(sink_op_memref_writes, channel_op,
+                                           "WAW/WAR");
+          traceTileIndices(sink_op_memref_reads, sink_op_memref_writes,
+                           sink_op_scalar_ins, sink_op_scalar_outs, channel_op);
+          channel_op_history.push_back(channel_op);
         } else if (auto hier_op = dyn_cast<air::HierarchyInterface>(op)) {
           hier_op_history.push_back(hier_op);
         }
@@ -524,7 +582,13 @@ public:
         // Fill dep list of air dmamemcpy2d ops
         else if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(op)) {
           fillAIRDepListUsingGraphTR<air::DmaMemcpyInterface>(dma_op);
-        } else if (auto hier_op = dyn_cast<air::HierarchyInterface>(op)) {
+        }
+        // Fill dep list of air channel ops
+        else if (auto channel_op = dyn_cast<air::ChannelInterface>(op)) {
+          fillAIRDepListUsingGraphTR<air::ChannelInterface>(channel_op);
+        }
+        // Fill dep list of air hierarchy ops
+        else if (auto hier_op = dyn_cast<air::HierarchyInterface>(op)) {
           fillAIRDepListUsingGraphTR<air::HierarchyInterface>(hier_op);
         }
       });
@@ -555,6 +619,15 @@ public:
             if (isNotUsedInsideOfBlock(dma_op.getOperation()->getResult(0),
                                        for_op.getBody()))
               sinks_in_for_op.push_back(dma_op.getOperation()->getResult(0));
+          }
+          // Get async channel in loop body
+          for (auto channel_op : for_op.getOps<air::ChannelInterface>()) {
+            hasAsyncTokensInBody = true;
+            // Detect dep graph's leaves in loop body
+            if (isNotUsedInsideOfBlock(channel_op.getOperation()->getResult(0),
+                                       for_op.getBody()))
+              sinks_in_for_op.push_back(
+                  channel_op.getOperation()->getResult(0));
           }
           // Get async hierarchy op in loop body
           for (auto hier_op : for_op.getOps<air::HierarchyInterface>()) {
@@ -609,6 +682,15 @@ public:
               sinks_in_parallel_op.push_back(
                   dma_op.getOperation()->getResult(0));
           }
+          // Get async channel in loop body
+          for (auto channel_op : for_op.getOps<air::ChannelInterface>()) {
+            hasAsyncTokensInBody = true;
+            // Detect dep graph's leaves in loop body
+            if (isNotUsedInsideOfBlock(channel_op.getOperation()->getResult(0),
+                                       for_op.getBody()))
+              sinks_in_parallel_op.push_back(
+                  channel_op.getOperation()->getResult(0));
+          }
           // Get async hierarchy op in loop body
           for (auto hier_op : for_op.getOps<air::HierarchyInterface>()) {
             hasAsyncTokensInBody = true;
@@ -653,6 +735,7 @@ private:
   // Air async op history
   std::vector<air::ExecuteOp> async_execute_op_history;
   std::vector<air::DmaMemcpyInterface> dma_op_history;
+  std::vector<air::ChannelInterface> channel_op_history;
   std::vector<air::HierarchyInterface> hier_op_history;
 
   // Create air execute op with async interface (no ssa result returned); update
@@ -766,6 +849,54 @@ private:
 
     // Update op-to-graph map
     dma_to_g[id] = v;
+
+    // Erase op
+    op->erase();
+  }
+
+  // Re-instantiate the channel op with async interface; update graph
+  void createAsyncChannel(OpBuilder &builder, Operation *op,
+                          uint64_t &ChannelOpID) {
+    builder.setInsertionPoint(op);
+    auto loc = op->getLoc();
+    SmallVector<Value, 1> deps;
+    auto channel_op = mlir::dyn_cast<xilinx::air::ChannelInterface>(op);
+    std::string event_name = "";
+    if (auto channel_put_op = dyn_cast<air::ChannelPutOp>(op)) {
+      air::ChannelPutOp new_channel_put_op = builder.create<air::ChannelPutOp>(
+          loc, air::AsyncTokenType::get(channel_put_op->getContext()), deps,
+          channel_put_op.getChanName(), channel_put_op.getIndices(),
+          channel_put_op.getSrcMemref(), channel_put_op.getSrcOffsets(),
+          channel_put_op.getSrcSizes(), channel_put_op.getSrcStrides());
+      new_channel_put_op->setAttr(
+          "id",
+          mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
+                                 ++ChannelOpID));
+      event_name = "Put";
+    } else if (auto channel_get_op = dyn_cast<air::ChannelGetOp>(op)) {
+      air::ChannelGetOp new_channel_get_op = builder.create<air::ChannelGetOp>(
+          loc, air::AsyncTokenType::get(channel_get_op->getContext()), deps,
+          channel_get_op.getChanName(), channel_get_op.getIndices(),
+          channel_get_op.getDstMemref(), channel_get_op.getDstOffsets(),
+          channel_get_op.getDstSizes(), channel_get_op.getDstStrides());
+      new_channel_get_op->setAttr(
+          "id",
+          mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
+                                 ++ChannelOpID));
+      event_name = "Get";
+    } else
+      assert(false && "Unknown air channel op");
+
+    // Create a vertex out of the current channel op
+    auto v = add_vertex(asyncExecuteGraph);
+    asyncExecuteGraph[v].asyncEventName = "air::Channel" + event_name;
+    asyncExecuteGraph[v].asyncEventType = "channel";
+    asyncExecuteGraph[v].color = "cyan";
+    asyncExecuteGraph[v].shape = "oval";
+    asyncExecuteGraph[v].operationId = ChannelOpID;
+
+    // Update op-to-graph map
+    channel_to_g[ChannelOpID] = v;
 
     // Erase op
     op->erase();
@@ -1681,6 +1812,8 @@ private:
   operation_id_to_vertex_map
       dma_to_g; // Map between air dmamemcpy2d and vertices in graph
   operation_id_to_vertex_map
+      channel_to_g; // Map between air channel put/get and vertices in graph
+  operation_id_to_vertex_map
       hier_to_g; // Map between air hierarchy and vertices in graph
   operation_id_to_vertex_map
       wa_to_g; // Map between air wait_all and vertices in graph
@@ -1695,6 +1828,12 @@ private:
                                              Graph g) {
     assert(g[v].asyncEventType == "dma" && "This vertex is not a DmaMemcpy op");
     return dma_op_history[g[v].operationId - 1];
+  }
+  air::ChannelInterface getChannelOpFromVertex(Graph::vertex_descriptor v,
+                                               Graph g) {
+    assert(g[v].asyncEventType == "channel" &&
+           "This vertex is not a Channel op");
+    return channel_op_history[g[v].operationId - 1];
   }
   air::HierarchyInterface getHierOpFromVertex(Graph::vertex_descriptor v,
                                               Graph g) {
@@ -1711,6 +1850,10 @@ private:
   Graph::vertex_descriptor
   getGraphGVertexFromAIROp(air::DmaMemcpyInterface op) {
     return dma_to_g[op.getId()];
+  }
+
+  Graph::vertex_descriptor getGraphGVertexFromAIROp(air::ChannelInterface op) {
+    return channel_to_g[op.getId()];
   }
 
   Graph::vertex_descriptor
@@ -1830,6 +1973,14 @@ private:
   bool foundAsyncOpUsesAboveCurrentLine(air::DmaMemcpyInterface *op) {
     if (!dma_op_history.empty())
       for (auto &iter : dma_op_history)
+        if (iter->getResult(0) == op->getOperation()->getResult(0))
+          return true;
+    return false;
+  }
+
+  bool foundAsyncOpUsesAboveCurrentLine(air::ChannelInterface *op) {
+    if (!channel_op_history.empty())
+      for (auto &iter : channel_op_history)
         if (iter->getResult(0) == op->getOperation()->getResult(0))
           return true;
     return false;
