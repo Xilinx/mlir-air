@@ -77,24 +77,24 @@ hsa_status_t air_get_agent_info(queue_t *queue, air_agent_info_t attribute, void
 // device memory operations
 //
 
-/* Initializes the device memory allocator. On initialization, 
-the device memory allocator opens the DDR BAR of the device with the 
-corresponding device_id, which is the pool of memory that gets allocated. 
-Once initialized, the runtime creates a handle named `dev_mem_allocator` 
+/* Initializes the device memory allocator. On initialization,
+the device memory allocator opens the DDR BAR of the device with the
+corresponding device_id, which is the pool of memory that gets allocated.
+Once initialized, the runtime creates a handle named `dev_mem_allocator`
 which it can use to service calls the process makes to air_dev_mem_alloc() */
 int air_init_dev_mem_allocator(uint64_t dev_mem_size, uint32_t device_id = 0);
 
 /* Frees the handle to the device memory allocator held by the runtime */
 void air_dev_mem_allocator_free();
 
-/* Interface for the process to request allocations and obtain pointers 
+/* Interface for the process to request allocations and obtain pointers
 to device memory. Device memory is managed as a stack, where the allocator
 keeps track of the current stack pointer, and allocates a `size`-byte region
 of memory backed by the device DDR BAR and returns the virtual address to that
 region. */
 void *air_dev_mem_alloc(uint32_t size);
 
-/* Used to obtain the physical address of a buffer allocated using the 
+/* Used to obtain the physical address of a buffer allocated using the
 device memory allocator. */
 uint64_t air_dev_mem_get_pa(void *buff_va);
 
