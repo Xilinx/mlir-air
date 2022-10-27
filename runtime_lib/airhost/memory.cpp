@@ -219,7 +219,7 @@ uint64_t air_dev_mem_get_pa(void *buff_va) {
     printf(
         "[ERROR] Attempting to get a physical address without a valid device "
         "memory allocator. Call air_init_dev_mem_allocator() first\n");
-    return NULL;
+    return 0;
   }
 
   // Get the virtual address offset
