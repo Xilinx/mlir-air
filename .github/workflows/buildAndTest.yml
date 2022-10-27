@@ -46,7 +46,7 @@ jobs:
 
       - name: Get cmakeModules
         id: clone-cmakeModules
-        run: git clone --branch branch2021_2 --depth 1 https://github.com/Xilinx/cmakeModules.git
+        run: git clone --depth 1 https://github.com/Xilinx/cmakeModules.git
         shell: bash
 
       - name: Get LLVM
@@ -76,6 +76,7 @@ jobs:
             -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
+            -DLibXAIE_DIR=`pwd`/../aienginev2/install \
             -DCMAKE_LINKER=lld \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
@@ -88,7 +89,6 @@ jobs:
           popd
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/aienginev2/install/lib
-          XAIENGINE_LOCAL_DIR: ${{ github.workspace }}/aienginev2/install
 
       # Build the repo test target in release mode to build and test.
       - name: Build and test (Release)
@@ -102,6 +102,7 @@ jobs:
             -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
+            -DLibXAIE_DIR=`pwd`/../aienginev2/install \
             -DCMAKE_LINKER=lld \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
@@ -113,7 +114,6 @@ jobs:
           popd
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/aienginev2/install/lib
-          XAIENGINE_LOCAL_DIR: ${{ github.workspace }}/aienginev2/install
 
   lint-repo:
     name: Check code format
