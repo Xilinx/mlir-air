@@ -39,7 +39,7 @@ add_library(airhost_shared SHARED
     memory.cpp
     queue.cpp
     host.cpp
-    )
+)
 set_property(TARGET airhost_shared PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 target_link_libraries(airhost
