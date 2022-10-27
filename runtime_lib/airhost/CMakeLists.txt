@@ -37,6 +37,7 @@ add_library(airhost STATIC
     memory.cpp
     queue.cpp
     host.cpp
+    utility.cpp   
 )
 set_property(TARGET airhost PROPERTY POSITION_INDEPENDENT_CODE ON)
 
@@ -44,6 +45,7 @@ add_library(airhost_shared SHARED
     memory.cpp
     queue.cpp
     host.cpp
+    utility.cpp   
     )
 set_property(TARGET airhost_shared PROPERTY POSITION_INDEPENDENT_CODE ON)
 
@@ -75,7 +77,7 @@ foreach(file ${INSTALLS})
 endforeach()
 
 # Install files
-set(INSTALLS memory.cpp queue.cpp host.cpp)
+set(INSTALLS memory.cpp queue.cpp host.cpp utility.cpp)
 install(FILES ${INSTALLS} DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/airhost)
 
 else()
