@@ -37,9 +37,10 @@
 #include <xaiengine.h>
 
 #include "acdc_queue.h"
-#include "aie_inc.cpp"
 #include "air_host.h"
 #include "hsa_defs.h"
+
+#include "aie_inc.cpp"
 
 #define IMAGE_WIDTH 96
 #define IMAGE_HEIGHT 16

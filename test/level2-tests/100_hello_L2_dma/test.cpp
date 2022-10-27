@@ -47,10 +47,6 @@ int main(int argc, char *argv[]) {
       (uint64_t *)mmap(NULL, 0x20000, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
                        AIR_VCK190_L2_DMA_BASE + 0x20000);
 
-  // I have no idea if this does anything
-  __clear_cache((void *)bank0_ptr, (void *)(((size_t)bank0_ptr) + 0x20000));
-  __clear_cache((void *)bank1_ptr, (void *)(((size_t)bank1_ptr) + 0x20000));
-
   // Write a value
   bank0_ptr[0] = 0xf001ba11deadbeefL;
   bank0_ptr[1] = 0x00defaceL;

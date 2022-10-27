@@ -30,8 +30,9 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "aie_inc.cpp"
 #include "air_host.h"
+
+#include "aie_inc.cpp"
 
 int main(int argc, char *argv[]) {
 
