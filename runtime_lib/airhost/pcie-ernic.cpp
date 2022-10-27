@@ -40,8 +40,7 @@
 #include "include/pcie-ernic.h"
 
 /* This function clears the caches just by writing to a really large
-array. There must be a better way to do this with like CLFLUSH but
-this is easier to do for now */
+array. */
 void pcie_ernic_flush_cache() {
     char *cache_flush_array = (char *)malloc(FLUSH_CACHE_BUFF_SIZE);
     int i = 0;
@@ -218,8 +217,6 @@ void print_single_mrmac_stats(struct pcie_ernic_dev* dev, uint32_t offset) {
 
 void print_both_mrmac_stats(struct pcie_ernic_dev* dev) {
 
-    // TODO: Place check for device family and move u55c here as well
-
     // Printing the statistics from both MRMACs
     print_single_mrmac_stats(dev, dev->mac_0_csr_offset);
     print_single_mrmac_stats(dev, dev->mac_1_csr_offset); 
@@ -293,7 +290,6 @@ int read_sq_cidb_db(struct pcie_ernic_dev *dev, struct pcie_ernic_qp *qp, bool p
     /* our local sq_cidb will only increase by one if we poll, as it is assumed
     that it is waiting for a single RQE. If no polling, than just setting it 
     equal to the actual db with the assumption that they will handle it asynchronously */
-    // TODO: Not sure if this logic makes sense....too tired rn :/
     if(poll) {
         qp->sq_cidb++;        
     }
@@ -379,7 +375,7 @@ void *pcie_ernic_post_recv(struct pcie_ernic_dev *dev, struct pcie_ernic_qp *qp)
     }
 
     // Writing to the cidb .. TODO: Don't do this here as we are losing owenership 
-    // of the buffer. Think this is best left until we decide a better interface
+    // of the buffer. Fine for now but will mess up under a stress test
     write_rq_cidb_db(dev, qp, rq_pidb);
 
     return rqe;
@@ -414,46 +410,8 @@ void pcie_ernic_init_bdf(struct pcie_ernic_dev *dev, bool is_versal) {
     return;
 }
 
-
-/* Used to get the PFN of a virtual address */
-unsigned long get_page_frame_number_of_address(void *addr) {
-    
-    // Getting the pagemap file for the current process
-    FILE *pagemap = fopen("/proc/self/pagemap", "rb");
-
-    // Seek to the page that the buffer is on
-    unsigned long offset = (unsigned long)addr / getpagesize() * PAGEMAP_LENGTH;
-    if(fseek(pagemap, (unsigned long)offset, SEEK_SET) != 0) {
-        printf("[ERROR] Failed to seek pagemap to proper location\n");
-        exit(1);
-    }
- 
-    // The page frame number is in bits 0 - 54 so read the first 7 bytes and clear the 55th bit
-    unsigned long page_frame_number = 0;
-    fread(&page_frame_number, 1, PAGEMAP_LENGTH-1, pagemap);
-    page_frame_number &= 0x7FFFFFFFFFFFFF;
-
-    fclose(pagemap);
-    return page_frame_number;
-}
-
-/* This function is used to get the physical address of a buffer. */
-uint64_t get_buff_pa(void *buff) {
-    // Getting the page frame the buffer is in
-    unsigned long page_frame_number = get_page_frame_number_of_address(buff);
-    
-    // Getting the offset of the buffer into the page
-    unsigned int distance_from_page_boundary = (unsigned long)buff % getpagesize();
-    uint64_t paddr = (uint64_t)(page_frame_number << PAGE_SHIFT) + (uint64_t)distance_from_page_boundary;
-    
-    return paddr;
-}
-
-/* Allocates memory that can be used by the pcie_ernic library. 
-If on the host, as we are doing everything in userspace, we
-need to use huge pages and mlock() to ensure pages don't 
-move around. We can also use the device memory allocator to 
-allocate memory on the device */
+/* Allocates memory that can be used by the pcie_ernic library. Support host memory in standalone but not
+for AIR so removing that functionality */
 struct pcie_ernic_buff *pcie_ernic_malloc(struct pcie_ernic_dev *dev, uint32_t size, bool on_device) {
  
     struct pcie_ernic_buff *ret_struct = NULL;
@@ -484,28 +442,8 @@ struct pcie_ernic_buff *pcie_ernic_malloc(struct pcie_ernic_dev *dev, uint32_t s
 
     }
     else {
-
-        // Allocate the buffer
-        ret_struct->buff = mmap(NULL,
-                            size,
-                            PROT_READ | PROT_WRITE,
-                            MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
-                            -1,
-                            0);
-
-        if(ret_struct->buff == NULL) {
-            printf("[ERROR] Failed to allocate memory for buffer\n");
-            return NULL;
-        }
-
-        // Lock the buffer in physical memory
-        if(mlock(ret_struct->buff, size) == -1) {
-            printf("[ERROR] Failed to lock page in memory");
-            return NULL;
-        }
-        
-        // Get the physical address of the buffer
-        ret_struct->pa = get_buff_pa(ret_struct->buff);
+        printf("[ERROR] Don't currently support allocating host memory with PCIe ERNIC. Returning NULL\n");
+        return NULL;
     }
 
     return ret_struct;
@@ -770,9 +708,7 @@ struct pcie_ernic_qp *pcie_ernic_create_qp(struct pcie_ernic_dev *dev,
     // Configuring the elements of the queue pair struct
     struct pcie_ernic_qp *qp = (struct pcie_ernic_qp *)malloc(sizeof(struct pcie_ernic_qp));
     
-    /*Right now I am creating one 2MB page per queue...This is pretty inneficient. I could
-    be smarter and still pretty simple by just divying up a single page per qp, where each 
-    queue then gets 2MB / 3....should do that in the future. */
+    // Allocate RDMA QPs
     qp->sq                      = pcie_ernic_malloc(dev, 1 << PAGE_SHIFT, on_device);
     qp->sq_pidb                 = 0;
     qp->sq_cidb                 = 0;
@@ -828,8 +764,7 @@ struct pcie_ernic_qp *pcie_ernic_create_qp(struct pcie_ernic_dev *dev,
     dev->axil_bar[ERNIC_QP_ADDR(qpid, QPADVCONFi + dev->axil_bar_offset)      ] = 0x9bf1b002;  //38 // QP Advanced Configuration
     dev->axil_bar[ERNIC_QP_ADDR(qpid, STATQPi + dev->axil_bar_offset)         ] = 0x70000600;  //33 // Status QPI
     dev->axil_bar[ERNIC_QP_ADDR(qpid, STATMSNi + dev->axil_bar_offset)        ] = 0x004e503b;  //39// Status Message Sequence Number.
-    // For some reason when I uncomment this to configure the timeouts the system crashes. Really confused why that 
-    // is happening but will come back to it later
+    // For some reason when I configure the timeouts the system crashes. Think it is because ERNIC stops responding to MMIO. Need to debug.
     //dev->axil_bar[ERNIC_QP_ADDR(qpid, TIMEOUTCONFi + dev->axil_bar_offset)    ] = 0x00021714;  // Timeout configuration 
                                                                                                //   [5:0] Time Out Value (timeout = 4.096us * 2^TIMEOUTVAL)
                                                                                                //   [10:8] Maximum Retry Count 

@@ -32,10 +32,6 @@
 
 //#include "test_library.h"
 
-#include <stdlib.h>
-#include <map>
-#include <math.h>
-
 // Just putting this here for now
 struct tensor_to_qp_map_entry {
   uint32_t qp;

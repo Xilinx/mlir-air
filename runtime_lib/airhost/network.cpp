@@ -28,6 +28,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <map>
+#include <math.h>
 
 #include "include/air_network.h"
 #include "include/acdc_queue.h"
@@ -64,6 +66,9 @@ void init_world_view() {
   return;
 }
 
+// This is used to denote where remote buffers are going to be place.d
+// The runtime uses this information to determine the location of buffers
+// used in AIR.
 void init_data_placement() {
 
   data_placement["src"] = std::string("host_1");
@@ -72,16 +77,14 @@ void init_data_placement() {
   data_placement["host1_barrier_tensor"] = std::string("host_1");
 
   // Used for the message passing tests because we have multiple
-  // copies of the data. The only reason that we have these here
-  // is we have no other device memory allocator in AIR. Ideally
-  // these tensors aren't here
+  // copies of the data. 
+  // TODO: Replace these with the AIR device memory allocator
   data_placement["host0_src"] = std::string("host_0");
   data_placement["host0_dst"] = std::string("host_0");
   data_placement["host1_src"] = std::string("host_1");
   data_placement["host1_dst"] = std::string("host_1");
 
   return;
-
 }
 
 
@@ -102,7 +105,7 @@ hsa_status_t air_get_hostname(char hostname[100]) {
 hsa_status_t air_explore_world(uint32_t ernic_id, uint64_t dev_mem_offset, uint64_t bar_offset) {
 
   // Initializing all of the representations. This is just hardcoded right now, but should
-  // be passed by a master node
+  // be passed by an driver node through a file or a serialized object
   init_world_view();
   init_data_placement();
 

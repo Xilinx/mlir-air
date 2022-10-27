@@ -23,7 +23,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-
+// This is used by the ARM to be able to interact with the ERNIC
 
 #ifndef PCIE_ERNIC_DEFINES_H
 #define PCIE_ERNIC_DEFINSS_H
@@ -129,14 +129,13 @@
 #define SQ_CIDB_ADDR            0x00020000
 #define SQ_PIDB_ADDR            0x00000000
 
-
 // WQE Op codes
-#define OP_WRITE		        0
+#define OP_WRITE		            0
 #define OP_WRITE_IMMDT	        1
-#define OP_SEND			        2
-#define OP_SEND_IMMDT	        3
-#define OP_READ			        4
-#define OP_SEND_INV		        5
+#define OP_SEND			            2
+#define OP_SEND_IMMDT	          3
+#define OP_READ			            4
+#define OP_SEND_INV		          5
 
 #define RQE_SIZE                256 // Size in Bytes
 

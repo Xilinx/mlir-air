@@ -42,12 +42,6 @@
 
 #include "pcie-bdf.h"
 
-// Offset in the device memory map where the 
-// device memory sits
-//#define DEV_MEM_OFFSET 0x0000020100000000 // This is pointing at the BRAM that houses the HSA queue
-//#define DEV_MEM_OFFSET 0x0000000800000000
-//#define DEV_MEM_OFFSET 0x0000010000000000 // This was changed to work for the standalone. Just temporary as will pass this in
-
 // Defining our memory allocator. Right now going
 // to implement it as a stack, where we can just 
 // make arbitrary allocations to it, and it grows
