@@ -44,10 +44,6 @@ if(POLICY CMP0116)
 endif()
 
 
-if(CMAKE_USE_TOOLCHAIN)
-	set(CMAKE_TOOLCHAIN_FILE ${CMAKE_TOOLCHAIN_FILE_OPT})
-endif()
-	
 project(AIR LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -56,10 +52,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(PEANO_INSTALL_DIR "<unset>" CACHE STRING "Location of Peano compiler")
 
 include(ExternalProject)
+
 find_package(MLIR REQUIRED CONFIG)
 find_package(AIE REQUIRED)
-
-# Eventually we need to have some configuration options to select LibXAIEV2
 find_package(LibXAIE)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
@@ -130,37 +125,28 @@ add_custom_target(docs ALL)
 add_dependencies(docs mlir-doc)
 
 option(AIR_BUILD_RUNTIME "Build the air runtime" ON)
-
-if(CMAKE_USE_TOOLCHAIN_AIRHOST)
-	set(AIRHOST_TOOLCHAIN_OPT ${CMAKE_TOOLCHAIN_FILE_OPT})
-else()
-	set(AIRHOST_TOOLCHAIN_OPT "")
-endif() 
+if (NOT LibXAIE_FOUND)
+	message(WARNING "LibXAIE not found, AIR runtime will not be built.")
+	set(AIR_BUILD_RUNTIME OFF)
+endif()
 
 if(AIR_BUILD_RUNTIME)
-	message("AIRHOST_TOOLCHAIN_OPT=${AIRHOST_TOOLCHAIN_OPT}")
-	message("Sysroot=${Sysroot}")
-	#message("ArmSysroot=${ArmSysroot}")
 	ExternalProject_Add(air_runtime_lib
 		PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp
 		SOURCE_DIR ${PROJECT_SOURCE_DIR}/runtime_lib
 		BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib
 		CMAKE_ARGS
 			-DCMAKE_MODULE_PATH=${CMAKE_MODULE_PATH}
-			-DAIE_DIR=${AIE_DIR}
+			-DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
 			-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
 			-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
 			-DCMAKE_ASM_COMPILER=${CMAKE_ASM_COMPILER}
 			-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
 			-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
 			-Dpybind11_DIR=${pybind11_DIR}
-			-DLibXAIE_ROOT=${Sysroot}/opt/xaienginev2
-			-DCMAKE_TOOLCHAIN_FILE=${AIRHOST_TOOLCHAIN_OPT}
-#			-DARM_SYSROOT=${ARM_SYSROOT}
-			-DArch=${Arch}
-			-DgccVer=${gccVer}
-			-DSysroot=${Sysroot} 
-	BUILD_ALWAYS true
+			-DLibXAIE_DIR=${LibXAIE_DIR}
+			-DAIE_DIR=${AIE_DIR}
+		BUILD_ALWAYS true
 		STEP_TARGETS clean build install test
 		USES_TERMINAL_CONFIGURE true
 		USES_TERMINAL_BUILD true
