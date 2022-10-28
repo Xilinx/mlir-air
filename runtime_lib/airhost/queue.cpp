@@ -237,6 +237,38 @@ hsa_status_t air_packet_hello(dispatch_packet_t *pkt, uint64_t value) {
   return HSA_STATUS_SUCCESS;
 }
 
+hsa_status_t air_packet_post_rdma_wqe(dispatch_packet_t *pkt, uint64_t remote_vaddr, uint64_t local_paddr, uint32_t length, uint8_t op, uint8_t key, uint8_t qpid, uint8_t ernic_sel) {
+  initialize_packet(pkt);
+
+  // Creating the arguments localy and then writing over PCIe 
+  uint64_t arg2 = ((uint64_t)ernic_sel << 56) | ((uint64_t)qpid << 48) | ((uint64_t)key << 40) | ((uint64_t)op << 32) | ((uint64_t)length);
+
+  pkt->arg[0] = remote_vaddr;
+  pkt->arg[1] = local_paddr;
+  pkt->arg[2] = arg2;
+
+  pkt->type  = AIR_PKT_TYPE_POST_RDMA_WQE;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
+
+  return HSA_STATUS_SUCCESS;
+}
+
+hsa_status_t air_packet_post_rdma_recv(dispatch_packet_t *pkt, uint64_t local_paddr, uint32_t length, uint8_t qpid, uint8_t ernic_sel) {
+  initialize_packet(pkt);
+
+  // Creating the arguments localy and then writing over PCIe 
+  uint64_t arg1 = ((uint64_t)ernic_sel << 48) | ((uint64_t)length << 16) | ((uint64_t)qpid);
+
+  pkt->arg[0] = local_paddr;
+  pkt->arg[1] = arg1;
+
+  pkt->type  = AIR_PKT_TYPE_POST_RDMA_RECV;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
+
+  return HSA_STATUS_SUCCESS;
+}
+
+
 hsa_status_t air_packet_tile_status(dispatch_packet_t *pkt, uint8_t col, uint8_t row) {
   initialize_packet(pkt);
 

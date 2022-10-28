@@ -420,9 +420,9 @@ void *pcie_ernic_post_recv(struct pcie_ernic_dev *dev,
 
   // Pointing to the RQE
   if (rq_pidb == 0) {
-    rqe = qp->rq->buff + (qp->qdepth - 1) * RQE_SIZE;
+    rqe = (void *)((unsigned char *)qp->rq->buff + (qp->qdepth - 1) * RQE_SIZE);
   } else {
-    rqe = qp->rq->buff + (rq_pidb - 1) * RQE_SIZE;
+    rqe = (void *)((unsigned char *)qp->rq->buff + (rq_pidb - 1) * RQE_SIZE);
   }
 
   // Writing to the cidb .. TODO: Don't do this here as we are losing owenership
@@ -533,8 +533,8 @@ two bars into userspace in the pcie_ernic_dev struct,
 configure the BDFs with the correct function number,
 and then configure the global CSRs of the ERNIC */
 struct pcie_ernic_dev *pcie_ernic_open_dev(
-    char *axil_bar_filename, uint32_t axil_bar_size, uint32_t axil_bar_offset,
-    char *dev_mem_bar_filename, uint32_t dev_mem_bar_size,
+    const char *axil_bar_filename, uint32_t axil_bar_size, uint32_t axil_bar_offset,
+    const char *dev_mem_bar_filename, uint32_t dev_mem_bar_size,
     uint64_t dev_mem_global_offset, uint64_t dev_mem_partition_offset,
     uint64_t mrmac_reset_offset, uint64_t mac_0_csr_offset,
     uint64_t mac_1_csr_offset, uint32_t ernic_id, uint32_t ipv4_addr,
@@ -647,9 +647,9 @@ struct pcie_ernic_dev *pcie_ernic_open_dev(
 
 #ifdef VERBOSE_DEBUG
     printf("[INFO] Configuring MRMAC\n");
-    printf("\tMRMAC 0 Offset: 0x%x\n", mac_0_csr_offset);
-    printf("\tMRMAC 1 Offset: 0x%x\n", mac_1_csr_offset);
-    printf("\tMRMAC Reset Offset: 0x%x\n", mrmac_reset_offset);
+    printf("\tMRMAC 0 Offset: 0x%lx\n", mac_0_csr_offset);
+    printf("\tMRMAC 1 Offset: 0x%lx\n", mac_1_csr_offset);
+    printf("\tMRMAC Reset Offset: 0x%lx\n", mrmac_reset_offset);
 #endif
 
     // first double reset MRMAC xcrvrs and mrmac cores

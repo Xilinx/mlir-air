@@ -37,8 +37,8 @@
 #include <termios.h>
 #include <unistd.h>
 
-#include "../../airhost/include/pcie-bdf.h"
-#include "../../airhost/include/pcie-ernic.h"
+#include "pcie-bdf.h"
+#include "pcie-ernic.h"
 
 // Controlling what we print in the application
 #define PRINT_QP_STATE

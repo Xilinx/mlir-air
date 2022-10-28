@@ -34,13 +34,14 @@ What the software does:
                         Number of READ RESPONSE sent: 0
 
 Steps when running the software:
-    1. Run "lspci -vvv -s <BUS>.<DOMAIN>.*" to ensure that you can see the platform.
-    2. If the BARs of the device are disabled, run `make init_pci`.
-    3. Run `make`.
-    4. Run "sudo ./driver2" on one machine, this will poll on the ERNIC's RQ waiting to receive two RDMA SENDS.
-    5. Run "sudo ./driver1" on the other machine. Press [Enter] when prompted to generate two RDMA SENDS. You should then see driver 2 complete and print statistics from the ERNIC.
-    6. Press [Enter] on driver1 to complete and print statistics from the ERNIC
-    7. Verify that the statistics printed for each ERNIC is correct
+    1. Run `lspci -vvv -s <BUS>.<DOMAIN>.*` to ensure that you can see the platform.
+    2. If the BARs of the device are disabled, go to `/mlir-air/platforms/xilinx_vck5000_air_scale_out/utils/` and run `sudo ./init_pci.sh`.
+    3. Generate the `pcie-bdf.h` to point to the proper BAR addresses. Can be done by going to `/mlir-air/platforms/xilinx_vck5000_air_scale_out/utils/` and running `./dump_pci_bdf.sh ../../../runtime_lib/test/7_pcie_ernic_mrmac_standalone/`
+    4. Run `make`.
+    5. Run "sudo ./driver2" on one machine, this will poll on the ERNIC's RQ waiting to receive two RDMA SENDS.
+    6. Run "sudo ./driver1" on the other machine. Press [Enter] when prompted to generate two RDMA SENDS. You should then see driver 2 complete and print statistics from the ERNIC.
+    7. Press [Enter] on driver1 to complete and print statistics from the ERNIC
+    8. Verify that the statistics printed for each ERNIC is correct
 
 Successful driver1 output (Note this is after running 7 times so ERNIC registers may be different):
 ```

@@ -73,6 +73,9 @@ void air_deinit_libxaie(aie_libxaie_ctx_t *);
 
 hsa_status_t air_get_agents(void *data);
 hsa_status_t air_get_agent_info(queue_t *queue, air_agent_info_t attribute, void* data);
+#ifdef AIR_PCIE
+hsa_status_t air_get_physical_devices();
+#endif
 
 // device memory operations
 //
@@ -134,6 +137,11 @@ hsa_status_t air_packet_device_init(dispatch_packet_t *pkt, uint32_t num_cols);
 hsa_status_t air_packet_get_capabilities(dispatch_packet_t *pkt, uint64_t return_address);
 
 hsa_status_t air_packet_hello(dispatch_packet_t *pkt, uint64_t value);
+
+// RDMA operations for the AIR Scale out platform
+hsa_status_t air_packet_post_rdma_wqe(dispatch_packet_t *pkt, uint64_t remote_vaddr, uint64_t local_paddr, uint32_t length, uint8_t op, uint8_t key, uint8_t qpid, uint8_t ernic_sel);
+hsa_status_t air_packet_post_rdma_recv(dispatch_packet_t *pkt, uint64_t local_paddr, uint32_t length, uint8_t qpid, uint8_t ernic_sel);
+
 
 hsa_status_t air_packet_put_stream(dispatch_packet_t *pkt, uint64_t stream, uint64_t value);
 hsa_status_t air_packet_get_stream(dispatch_packet_t *pkt, uint64_t stream);

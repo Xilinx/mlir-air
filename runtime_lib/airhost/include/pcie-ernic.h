@@ -41,7 +41,7 @@
 #include <unistd.h>
 
 // Local includes
-#include "pcie-bdf.h"
+//#include "pcie-bdf.h"
 #include "pcie-ernic-dev-mem-allocator.h"
 
 // Control what debug information is
@@ -363,8 +363,8 @@ struct pcie_ernic_buff *pcie_ernic_malloc(struct pcie_ernic_dev *dev,
                                           uint32_t size, bool on_device);
 void pcie_ernic_free_buff(struct pcie_ernic_buff *buff);
 struct pcie_ernic_dev *pcie_ernic_open_dev(
-    char *axil_bar_filename, uint32_t axil_bar_size, uint32_t axil_bar_offset,
-    char *dev_mem_bar_filename, uint32_t dev_mem_bar_size,
+    const char *axil_bar_filename, uint32_t axil_bar_size, uint32_t axil_bar_offset,
+    const char *dev_mem_bar_filename, uint32_t dev_mem_bar_size,
     uint64_t dev_mem_global_offset, uint64_t dev_mem_partition_offset,
     uint64_t mrmac_reset_offset, uint64_t mrmac_0_csr_offset,
     uint64_t mrmac_1_csr_offset, uint32_t ernic_id, uint32_t ipv4_addr,

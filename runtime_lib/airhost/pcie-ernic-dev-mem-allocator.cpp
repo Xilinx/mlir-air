@@ -41,7 +41,7 @@
 #include "include/pcie-ernic-dev-mem-allocator.h"
 
 struct pcie_ernic_dev_mem_allocator *
-init_dev_mem_allocator(char *dev_mem_bar_filename, uint64_t dev_mem_bar_size,
+init_dev_mem_allocator(const char *dev_mem_bar_filename, uint64_t dev_mem_bar_size,
                        uint64_t dev_mem_global_offset,
                        uint64_t dev_mem_partition_offset) {
 
@@ -64,7 +64,7 @@ init_dev_mem_allocator(char *dev_mem_bar_filename, uint64_t dev_mem_bar_size,
     return NULL;
   }
 
-  printf("Opening %s with size %d\n", dev_mem_bar_filename, dev_mem_bar_size);
+  printf("Opening %s with size %lu\n", dev_mem_bar_filename, dev_mem_bar_size);
 
   allocator->dev_mem = mmap(NULL,                   // virtual address
                             dev_mem_bar_size,       // length
@@ -77,7 +77,7 @@ init_dev_mem_allocator(char *dev_mem_bar_filename, uint64_t dev_mem_bar_size,
   printf("\tVA: %p\n", allocator->dev_mem);
   printf("\tPartition Offset: 0x%lx\n", allocator->partition_offset);
   printf("\tGlobal Offset: 0x%lx\n", allocator->global_offset);
-  printf("\tSize: %d\n", allocator->dev_mem_size);
+  printf("\tSize: %lu\n", allocator->dev_mem_size);
 
   return allocator;
 }
@@ -131,8 +131,7 @@ void *dev_mem_alloc(struct pcie_ernic_dev_mem_allocator *allocator,
 
   // Setting the user pointer equal to the next portion
   // of available memory
-  void *user_ptr =
-      allocator->dev_mem + allocator->partition_offset + allocator->dev_mem_ptr;
+  void *user_ptr = (void *)((unsigned char *)allocator->dev_mem + allocator->partition_offset + allocator->dev_mem_ptr);
 
 #ifdef VERBOSE_DEBUG
   printf("Giving user %dB starting at dev_mem[0x%lx]\n", size,
