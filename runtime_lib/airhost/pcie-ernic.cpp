@@ -600,9 +600,8 @@ struct pcie_ernic_dev *pcie_ernic_open_dev(
   dev->axil_bar[(XRNICCONF + axil_bar_offset) >> 2] = 0xe348078b; // XRNIC Conf
   dev->axil_bar[(INTEN + axil_bar_offset) >> 2] =
       0x00000070; // Interrupt Enable
-  dev->axil_bar[(ERRBUFBA + axil_bar_offset) >> 2] =
-      (uint32_t)(dev->err_buff->pa &
-                 0x00000000FFFFFFFF); // Error buffer base address
+  dev->axil_bar[(ERRBUFBA + axil_bar_offset) >> 2] = (uint32_t)(
+      dev->err_buff->pa & 0x00000000FFFFFFFF); // Error buffer base address
   dev->axil_bar[(ERRBUFBAMSB + axil_bar_offset) >> 2] =
       (uint32_t)(dev->err_buff->pa >> 32); // Error buffer base address
   dev->axil_bar[(ERRBUFSZ + axil_bar_offset) >> 2] =
@@ -611,9 +610,8 @@ struct pcie_ernic_dev *pcie_ernic_open_dev(
   dev->axil_bar[(RESPERRPKTBA + axil_bar_offset) >> 2] =
       (uint32_t)(dev->resp_err_buff->pa &
                  0x00000000FFFFFFFF); // Response error pkt buffer base address
-  dev->axil_bar[(RESPERRPKTBAMSB + axil_bar_offset) >> 2] =
-      (uint32_t)(dev->resp_err_buff->pa >>
-                 32); // Response error pkt buffer base address
+  dev->axil_bar[(RESPERRPKTBAMSB + axil_bar_offset) >> 2] = (uint32_t)(
+      dev->resp_err_buff->pa >> 32); // Response error pkt buffer base address
   dev->axil_bar[(RESPERRSZ + axil_bar_offset) >> 2] =
       0x00200000; // Making 4KiB (TODO: I am not sure if this is the # of
                   // entries in the buffer or the size in bytes)
