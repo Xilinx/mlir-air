@@ -49,9 +49,7 @@
 #define TILE_HEIGHT 8
 #define TILE_SIZE  (TILE_WIDTH * TILE_HEIGHT)
 
-int
-main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
 
   std::vector<air_agent_t> agents;
   auto get_agents_ret = air_get_agents(agents);
@@ -155,5 +153,4 @@ main(int argc, char *argv[])
     printf("fail %d/%d.\n", (TILE_SIZE+IMAGE_SIZE-errors), TILE_SIZE+IMAGE_SIZE);
     return -1;
   }
-
 }

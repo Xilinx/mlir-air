@@ -27,12 +27,12 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <vector>
+#include <fcntl.h>
 #include <iostream>
 #include <stdlib.h>
-#include <unistd.h>
-#include <fcntl.h>
 #include <sys/mman.h>
+#include <unistd.h>
+#include <vector>
 
 #include "air.hpp"
 #include "test_library.h"

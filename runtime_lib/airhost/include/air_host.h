@@ -255,23 +255,7 @@ uint64_t air_partition_load(const char *name);
 
 uint64_t air_herd_load(const char *name);
 
-<<<<<<< HEAD
-// typedef uint32_t air_herd_status_t;
-// air_herd_status_t air_herd_status(air_herd_desc_t *herd_desc)
-// bool air_herd_is_loaded(air_herd_desc_t *herd_desc);
-
-// memory operations
-//
-
-void *air_mem_alloc(size_t size);
-
-uint64_t air_mem_get_paddr(void *vaddr);
-
-int air_mem_free(void *vaddr, size_t size);
 }
-=======
-} // extern "C"
->>>>>>> 6ee5db5 (A minor air runtime api cleanup)
 
 std::string air_get_ddr_bar(uint32_t device_id);
 std::string air_get_aie_bar(uint32_t device_id);
