@@ -20,7 +20,7 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-set(INSTALLS air_tensor.h air_host.h air_queue.h hsa_defs.h pcie-ernic.h pcie-ernic-dev-mem-allocator.h air_network.h air.hpp utility.hpp)
+set(INSTALLS air_tensor.h air_host.h air_host_impl.h air_queue.h hsa_defs.h pcie-ernic.h pcie-ernic-dev-mem-allocator.h air_network.h air.hpp utility.hpp)
 
 # Stuff into the build area:
 add_custom_target(copy-runtime-includes ALL)
