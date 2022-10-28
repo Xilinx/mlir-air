@@ -15,8 +15,8 @@
 
 //#include <xaiengine.h>
 
-#include "acdc_queue.h"
 #include "air_host.h"
+#include "air_queue.h"
 #include "hsa_defs.h"
 
 #include <sys/time.h>

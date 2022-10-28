@@ -42,7 +42,7 @@ extern "C" {
 
 //#include "mb_interface.h"
 
-#include "acdc_queue.h"
+#include "air_queue.h"
 #include "hsa_defs.h"
 }
 
