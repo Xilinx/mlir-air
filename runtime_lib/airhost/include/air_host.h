@@ -56,7 +56,9 @@ typedef struct air_agent_s {
   uint64_t handle;
 } air_agent_t;
 
-hsa_status_t air_iterate_agents(hsa_status_t(*callback)(air_agent_t agent, void* data),void *data);
+hsa_status_t air_iterate_agents(hsa_status_t (*callback)(air_agent_t agent,
+                                                         void *data),
+                                void *data);
 hsa_status_t air_get_agent_info(queue_t *queue, air_agent_info_t attribute, void* data);
 
 #ifdef AIR_PCIE
