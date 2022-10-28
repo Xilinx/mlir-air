@@ -179,7 +179,7 @@ hsa_status_t air_queue_dispatch_and_wait(queue_t *q, uint64_t doorbell,
   signal_store_release((signal_t *)&q->doorbell, doorbell);
 
   // wait for packet completion
- while (signal_wait_acquire((signal_t *)&pkt->completion_signal,
+  while (signal_wait_acquire((signal_t *)&pkt->completion_signal,
                              HSA_SIGNAL_CONDITION_EQ, 0, 0x80000,
                              HSA_WAIT_STATE_ACTIVE) != 0) {
     printf("packet completion signal timeout!\n");

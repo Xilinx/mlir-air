@@ -59,7 +59,8 @@ typedef struct air_agent_s {
 hsa_status_t air_iterate_agents(hsa_status_t (*callback)(air_agent_t agent,
                                                          void *data),
                                 void *data);
-hsa_status_t air_get_agent_info(queue_t *queue, air_agent_info_t attribute, void* data);
+hsa_status_t air_get_agent_info(queue_t *queue, air_agent_info_t attribute,
+                                void *data);
 
 #ifdef AIR_PCIE
 hsa_status_t air_get_physical_devices();
@@ -92,7 +93,7 @@ uint64_t air_dev_mem_get_pa(void *buff_va);
 // memory operations
 //
 
-void* air_mem_alloc(size_t size);
+void *air_mem_alloc(size_t size);
 int air_mem_free(void *vaddr, size_t size);
 
 uint64_t air_mem_get_paddr(void *vaddr);
@@ -255,7 +256,6 @@ air_herd_desc_t *air_herd_get_desc(air_module_handle_t handle,
 uint64_t air_partition_load(const char *name);
 
 uint64_t air_herd_load(const char *name);
-
 }
 
 std::string air_get_ddr_bar(uint32_t device_id);
