@@ -14,8 +14,8 @@
 #include <vector>
 //#include <xaiengine.h>
 
-#include "../../airhost/include/acdc_queue.h"
 #include "../../airhost/include/air_host.h"
+#include "../../airhost/include/air_queue.h"
 #include "../../airhost/include/hsa_defs.h"
 
 #define BRAM_ADDR 0x20100006000

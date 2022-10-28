@@ -26,6 +26,8 @@
 #ifndef AIR_TENSOR_H
 #define AIR_TENSOR_H
 
+#include <stdlib.h>
+
 template<typename T, int N>
 struct tensor_t {
   T *alloc;

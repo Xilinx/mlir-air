@@ -34,8 +34,8 @@
 
 #include "air.hpp"
 
-// Defined in acdc_queue.h
-//typedef enum {
+// Defined in air_queue.h
+// typedef enum {
 //  AIR_AGENT_INFO_NAME = 0,        // NUL-terminated char[8]
 //  AIR_AGENT_INFO_VENDOR_NAME = 1, // NUL-terminated char[8]
 //  AIR_AGENT_INFO_CONTROLLER_ID = 2,

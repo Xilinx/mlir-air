@@ -26,8 +26,7 @@
 #ifndef AIR_HOST_H
 #define AIR_HOST_H
 
-#include "hsa_defs.h"
-#include "acdc_queue.h"
+#include "air_queue.h"
 #include "air_tensor.h"
 
 #include <stdlib.h>
