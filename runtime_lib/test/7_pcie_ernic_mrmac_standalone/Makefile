@@ -1,5 +1,7 @@
+ACDC_AIR = $(dir $(shell which air-opt))/..
+
 CC=g++
-INCLUDES=-I../../../install-pcie/runtime_lib/airhost/include/ 
+INCLUDES=-I${ACDC_AIR}/runtime_lib/airhost/include/
 CFLAGS=${INCLUDES}
 OBJFILES=pcie-ernic.o pcie-ernic-dev-mem-allocator.o
 
@@ -20,10 +22,10 @@ driver1.o:
 	$(CC) ${CFLAGS} -c driver1.c
 
 pcie-ernic.o:
-	$(CC) ${CFLAGS} -c ../../../install-pcie/runtime_lib/airhost/pcie-ernic.cpp
+	$(CC) ${CFLAGS} -c ${ACDC_AIR}/runtime_lib/airhost/pcie-ernic.cpp
 
 pcie-ernic-dev-mem-allocator.o:
-	$(CC) ${CFLAGS} -c ../../../install-pcie/runtime_lib/airhost/pcie-ernic-dev-mem-allocator.cpp
+	$(CC) ${CFLAGS} -c ${ACDC_AIR}/runtime_lib/airhost/pcie-ernic-dev-mem-allocator.cpp
 
 clean:
 	rm -f driver1
