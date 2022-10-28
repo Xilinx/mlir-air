@@ -34,17 +34,13 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include <xaiengine.h>
 
-#include "air_host.h"
-
-#include "acdc_queue.h"
-#include "hsa_defs.h"
-
-#define BRAM_ADDR AIR_BBUFF_BASE
-#define DDR_ADDR  0x2000
+#include "air.hpp"
+#include "test_library.h"
 
 #include "aie_inc.cpp"
+
+#define DDR_ADDR  0x2000
 
 // test configuration
 #define IMAGE_WIDTH 192
@@ -65,8 +61,8 @@ main(int argc, char *argv[])
   uint64_t row = 0;
 
   std::vector<air_agent_t> agents;
-  auto get_agents_ret = air_get_agents(&agents);
-  assert(get_agents_ret == 0 && "failed to get agents!");
+  auto get_agents_ret = air_get_agents(agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
   if (agents.empty()) {
     std::cout << "fail." << std::endl;
@@ -94,7 +90,7 @@ main(int argc, char *argv[])
   air_packet_device_init(shim_pkt, XAIE_NUM_COLS);
   air_queue_dispatch_and_wait(q, wr_idx, shim_pkt);
 
-  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
 
   mlir_aie_print_dma_status(xaie, 7, 2);
 

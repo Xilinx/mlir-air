@@ -32,11 +32,12 @@
 #include <unistd.h>
 
 #include "air_host.h"
+#include "test_library.h"
 
 #include "aie_inc.cpp"
 
 int main(int argc, char *argv[]) {
-  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
 
   for (int i = 0; i < 32; i++) {
     mlir_aie_write_buffer_buf0(xaie, i, i + 0x0113);

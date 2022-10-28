@@ -1,6 +1,5 @@
-//===- test.cpp -------------------------------------------------*- C++ -*-===//
+//===- air.hpp -------------------------------------------------*- C++ -*-===//
 //
-// Copyright (C) 2021-2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -23,42 +22,21 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <assert.h>
-#include <cstdio>
-#include <fcntl.h>
-#include <iostream>
-#include <stdlib.h>
-#include <sys/mman.h>
+#ifndef AIR_HPP
+#define AIR_HPP
+
+#include "air_host.h"
+
 #include <vector>
 
-#include "air.hpp"
-
-int main(int argc, char *argv[]) {
-  std::vector<air_agent_t> agents;
-  auto ret = air_get_agents(agents);
-  assert(ret == 0 && "failed to get agents!");
-
-  if (agents.empty()) {
-    std::cout << "fail." << std::endl;
-    return -1;
-  }
-
-  std::vector<queue_t *> queues;
-  for (auto agent : agents) {
-    std::cout << "Creating queue using address found at paddr 0x"
-              << std::hex << agent.handle << std::endl;
-    // create the queue
-    queue_t *q = nullptr;
-    ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q,
-                           agent.handle);
-    assert(ret == 0 && "failed to create queue!");
-    queues.push_back(q);
-  }
-
-  for (auto queue : queues) {
-    std::cout << "Queue located at vaddr 0x" << queue << std::endl;
-  }
-
-  std::cout << "PASS!" << std::endl;
-  return 0;
+inline hsa_status_t air_get_agents(std::vector<air_agent_t> &agents) {
+  return air_iterate_agents(
+      [](air_agent_t a, void *d) {
+        auto *v = static_cast<std::vector<air_agent_t> *>(d);
+        v->push_back(a);
+        return HSA_STATUS_SUCCESS;
+      },
+      (void *)&agents);
 }
+
+#endif

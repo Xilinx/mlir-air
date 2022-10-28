@@ -32,12 +32,9 @@
 #include <unistd.h>
 #include <vector>
 
-#include <xaiengine.h>
 
-#include "air_host.h"
-
-#define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
-#define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
+#include "air.hpp"
+#include "test_library.h"
 
 #include "aie_inc.cpp"
 
@@ -49,8 +46,8 @@ int main(int argc, char *argv[])
   auto num_cols = 1;
 
   std::vector<air_agent_t> agents;
-  auto get_agents_ret = air_get_agents(&agents);
-  assert(get_agents_ret == 0 && "failed to get agents!");
+  auto get_agents_ret = air_get_agents(agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
   if (agents.empty()) {
     std::cout << "fail." << std::endl;
@@ -70,7 +67,7 @@ int main(int argc, char *argv[])
   air_packet_device_init(shim_pkt, XAIE_NUM_COLS);
   air_queue_dispatch_and_wait(q, wr_idx, shim_pkt);
 
-  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
 
   mlir_aie_print_tile_status(xaie, col, row);
 

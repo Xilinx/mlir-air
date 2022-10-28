@@ -31,9 +31,8 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "acdc_queue.h"
 #include "air_host.h"
-#include "hsa_defs.h"
+#include "test_library.h"
 
 #include "aie_inc.cpp"
 
@@ -41,7 +40,7 @@
 #define XFR_BYTES XFR_SIZE * 4
 
 int main(int argc, char *argv[]) {
-  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
 
   mlir_aie_configure_cores(xaie);
   mlir_aie_configure_switchboxes(xaie);

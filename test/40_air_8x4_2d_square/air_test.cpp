@@ -31,8 +31,8 @@
 #include <iostream>
 #include <vector>
 
-#include "air_host.h"
-#include "air_tensor.h"
+#include "air.hpp"
+#include "test_library.h"
 
 #define IMAGE_WIDTH 256  
 #define IMAGE_HEIGHT 16
@@ -85,8 +85,8 @@ int
 main(int argc, char *argv[])
 {
   std::vector<air_agent_t> agents;
-  auto get_agents_ret = air_get_agents(&agents);
-  assert(get_agents_ret == 0 && "failed to get agents!");
+  auto get_agents_ret = air_get_agents(agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
   if (agents.empty()) {
     std::cout << "fail." << std::endl;
@@ -105,7 +105,7 @@ main(int argc, char *argv[])
     queues.push_back(q);
   }
 
-  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
 
   queue_t *q = queues[0];
 

@@ -31,14 +31,8 @@
 #include <sys/mman.h>
 #include <vector>
 
-#include <xaiengine.h>
-
-#include "air_host.h"
-#include "acdc_queue.h"
-#include "hsa_defs.h"
-
-#define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
-#define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
+#include "air.hpp"
+#include "test_library.h"
 
 #include "aie_inc.cpp"
 
@@ -48,8 +42,8 @@ int main(int argc, char *argv[])
   auto row = 2;
 
   std::vector<air_agent_t> agents;
-  auto get_agents_ret = air_get_agents(&agents);
-  assert(get_agents_ret == 0 && "failed to get agents!");
+  auto get_agents_ret = air_get_agents(agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
   if (agents.empty()) {
     std::cout << "fail." << std::endl;
@@ -69,16 +63,11 @@ int main(int argc, char *argv[])
     queues.push_back(q);
   }
 
-  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
   if (xaie == NULL) {
     std::cout << "Error initializing libxaie" << std::endl;
     return -1;
   }
-
-  // create the queue
-  /*queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q,
-  SHMEM_BASE); assert(ret == 0 && "failed to create queue!");*/
 
   // reserve a packet in the queue
   uint64_t wr_idx = queue_add_write_index(queues[0], 1);

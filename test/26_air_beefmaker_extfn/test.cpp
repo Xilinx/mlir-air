@@ -32,17 +32,16 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
-#include <xaiengine.h>
 
 #include "air_host.h"
-#include "acdc_queue.h"
-#include "hsa_defs.h"
 
 #define XAIE_NUM_ROWS            8
 #define XAIE_NUM_COLS           50
 #define XAIE_ADDR_ARRAY_OFF     0x800
 
 #define SHMEM_BASE 0x020100000000LL
+
+#include "test_library.h"
 
 namespace {
 
@@ -151,7 +150,7 @@ main(int argc, char *argv[])
   signal_store_release((signal_t*)&q->doorbell, wr_idx);
 
   // wait for packet completion
-  while (signal_wait_aquire((signal_t*)&herd_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
+  while (signal_wait_acquire((signal_t*)&herd_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
     printf("packet completion signal timeout on herd initialization!\n");
     printf("%x\n", herd_pkt->header);
     printf("%x\n", herd_pkt->type);

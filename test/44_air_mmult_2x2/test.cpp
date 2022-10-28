@@ -35,14 +35,10 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
-
-#include <xaiengine.h>
-
-#include "air_host.h"
-#include "air_tensor.h"
-#include "test_library.h"
-
 #include <sys/time.h>
+
+#include "air.hpp"
+#include "test_library.h"
 
 #define VERBOSE 1
 #define PROFILE 0
@@ -84,8 +80,8 @@ int main(int argc, char *argv[]) {
   uint64_t row = 3;
 
   std::vector<air_agent_t> agents;
-  auto get_agents_ret = air_get_agents(&agents);
-  assert(get_agents_ret == 0 && "failed to get agents!");
+  auto get_agents_ret = air_get_agents(agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
   if (agents.empty()) {
     std::cout << "fail." << std::endl;
@@ -104,7 +100,7 @@ int main(int argc, char *argv[]) {
     queues.push_back(q);
   }
 
-  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
 
   queue_t *q = queues[0];
 

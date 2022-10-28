@@ -34,13 +34,13 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include <xaiengine.h>
 
-#include "air_host.h"
-
-#define SCRATCH_AREA 8
+#include "air.hpp"
+#include "test_library.h"
 
 #include "aie_inc.cpp"
+
+#define SCRATCH_AREA 8
 
 int
 main(int argc, char *argv[])
@@ -49,8 +49,8 @@ main(int argc, char *argv[])
   auto row = 2;
 
   std::vector<air_agent_t> agents;
-  auto get_agents_ret = air_get_agents(&agents);
-  assert(get_agents_ret == 0 && "failed to get agents!");
+  auto get_agents_ret = air_get_agents(agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
   if (agents.empty()) {
     std::cout << "fail." << std::endl;
@@ -70,7 +70,7 @@ main(int argc, char *argv[])
     queues.push_back(q);
   }
 
-  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
   if (xaie == NULL) {
     std::cout << "Error initializing libxaie" << std::endl;
     return -1;

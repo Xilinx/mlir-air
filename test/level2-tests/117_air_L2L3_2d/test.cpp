@@ -35,14 +35,14 @@
 #include <unistd.h>
 
 #include "air_host.h"
-#include "air_tensor.h"
+#include "test_library.h"
 
 #define DMA_1D 4
 #define DMA_2D 8
 #define DMA_COUNT DMA_1D *DMA_2D
 
 int main(int argc, char *argv[]) {
-  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
 
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd == -1)

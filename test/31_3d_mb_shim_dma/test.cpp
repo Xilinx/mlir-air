@@ -34,11 +34,9 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include <xaiengine.h>
 
-#include "acdc_queue.h"
-#include "air_host.h"
-#include "hsa_defs.h"
+#include "air.hpp"
+#include "test_library.h"
 
 #include "aie_inc.cpp"
 
@@ -59,8 +57,8 @@ main(int argc, char *argv[])
   uint64_t row = 0;
 
   std::vector<air_agent_t> agents;
-  auto get_agents_ret = air_get_agents(&agents);
-  assert(get_agents_ret == 0 && "failed to get agents!");
+  auto get_agents_ret = air_get_agents(agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
   if (agents.empty()) {
     std::cout << "fail." << std::endl;
@@ -80,7 +78,7 @@ main(int argc, char *argv[])
     queues.push_back(q);
   }
 
-  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
   if (xaie == NULL) {
     std::cout << "Error initializing libxaie" << std::endl;
     return -1;
@@ -140,7 +138,7 @@ main(int argc, char *argv[])
   dispatch_packet_t *pkt_a =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
   air_packet_nd_memcpy(
-      pkt_a, 0, col, 1, 0, 4, 2, air_dev_mem_get_pa(dram_ptr_1),
+      pkt_a, 0, col, 1, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0, air_dev_mem_get_pa(dram_ptr_1),
       TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
       NUM_3D, TILE_WIDTH * sizeof(float), 1, 0);
 
@@ -150,7 +148,7 @@ main(int argc, char *argv[])
   dispatch_packet_t *pkt_c =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
   air_packet_nd_memcpy(
-      pkt_c, 0, col, 0, 0, 4, 2, air_dev_mem_get_pa(dram_ptr_2),
+      pkt_c, 0, col, 0, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0, air_dev_mem_get_pa(dram_ptr_2),
       TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
       NUM_3D, TILE_WIDTH * sizeof(float), 1, 0);
   air_queue_dispatch_and_wait(queues[0], wr_idx, pkt_c);

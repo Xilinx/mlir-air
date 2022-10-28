@@ -42,6 +42,7 @@ def emit_wrapper(herd_name="partition", include_name="aie.inc"):
 #include "stdio.h"
 #include "assert.h"
 #include "air_host.h"
+#include "air_host_impl.h"
 
 namespace air {
 namespace partitions {

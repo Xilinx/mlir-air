@@ -33,10 +33,10 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
-#include <xaiengine.h>
 
-#include "air_host.h"
-#include "acdc_queue.h"
+#include "air.hpp"
+#include "test_library.h"
+
 #include "aie_inc.cpp"
 
 int
@@ -49,7 +49,7 @@ main(int argc, char *argv[])
   int col2 = 34;
 
   std::vector<air_agent_t> agents;
-  auto ret = air_get_agents(&agents);
+  auto ret = air_get_agents(agents);
   assert(ret == 0 && "failed to get agents!");
 
   if (agents.size() < 2) {
@@ -93,7 +93,7 @@ main(int argc, char *argv[])
   air_packet_device_init(shim_pkt, XAIE_NUM_COLS);
   air_queue_dispatch_and_wait(queues[0], wr_idx, shim_pkt);
 
-  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
 
   mlir_aie_configure_cores(xaie);
   mlir_aie_configure_switchboxes(xaie);
