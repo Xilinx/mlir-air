@@ -36,6 +36,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OperationSupport.h"
@@ -1739,7 +1740,7 @@ private:
       if (source->getResult(0)) {
         for (auto sink : source->getResult(0).getUsers()) {
           // Keep token if source already dominates sink
-          if (source->getParentRegion() == sink->getParentRegion()) {
+          if (source->getParentOp()->isAncestor(sink)){
             keep.insert(sink);
           } else {
             // Update graph connectivity
