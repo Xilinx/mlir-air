@@ -59,7 +59,7 @@ main(int argc, char *argv[])
 
   std::vector<air_agent_t> agents;
   auto get_agents_ret = air_get_agents(agents);
-  assert(get_agents_ret != HSA_STATUS_SUCCESS && "failed to get agents!");
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
   if (agents.empty()) {
     std::cout << "fail." << std::endl;

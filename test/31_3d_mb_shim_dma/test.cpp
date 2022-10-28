@@ -138,9 +138,9 @@ main(int argc, char *argv[])
   dispatch_packet_t *pkt_a =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
   air_packet_nd_memcpy(
-      pkt_a, 0, col, 1, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
-      air_dev_mem_get_pa(dram_ptr_1), TILE_WIDTH * sizeof(float), TILE_HEIGHT,
-      IMAGE_WIDTH * sizeof(float), NUM_3D, TILE_WIDTH * sizeof(float), 1, 0);
+      pkt_a, 0, col, 1, 0, 4, 2, air_dev_mem_get_pa(dram_ptr_1),
+      TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
+      NUM_3D, TILE_WIDTH * sizeof(float), 1, 0);
 
   // Send the packet to read from the tiles
   wr_idx = queue_add_write_index(queues[0], 1);
@@ -148,9 +148,9 @@ main(int argc, char *argv[])
   dispatch_packet_t *pkt_c =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
   air_packet_nd_memcpy(
-      pkt_c, 0, col, 0, 0, 4, 2, /*packet_id=*/0, /*packet_type=*/0,
-      air_dev_mem_get_pa(dram_ptr_2), TILE_WIDTH * sizeof(float), TILE_HEIGHT,
-      IMAGE_WIDTH * sizeof(float), NUM_3D, TILE_WIDTH * sizeof(float), 1, 0);
+      pkt_c, 0, col, 0, 0, 4, 2, air_dev_mem_get_pa(dram_ptr_2),
+      TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
+      NUM_3D, TILE_WIDTH * sizeof(float), 1, 0);
   air_queue_dispatch_and_wait(queues[0], wr_idx, pkt_c);
 
   uint32_t errs = 0;

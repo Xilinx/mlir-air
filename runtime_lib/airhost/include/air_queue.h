@@ -195,11 +195,11 @@ inline void signal_store_release(signal_t *signal, signal_value_t value) {
   signal->handle = (uint64_t)value;
 }
 
-inline signal_value_t signal_wait_aquire(volatile signal_t *signal,
-                                         hsa_signal_condition_t condition,
-                                         signal_value_t compare_value,
-                                         uint64_t timeout_hint,
-                                         hsa_wait_state_t wait_state_hint) {
+inline signal_value_t signal_wait_acquire(volatile signal_t *signal,
+                                          hsa_signal_condition_t condition,
+                                          signal_value_t compare_value,
+                                          uint64_t timeout_hint,
+                                          hsa_wait_state_t wait_state_hint) {
   signal_value_t ret = 0;
   uint64_t timeout = timeout_hint;
   do {
