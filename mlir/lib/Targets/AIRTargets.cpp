@@ -137,7 +137,7 @@ void registerAIRRtTranslations() {
                         scf::SCFDialect, AffineDialect>();
       });
   TranslateFromMLIRRegistration registrationXJSON(
-      "air-herds-to-json",
+      "air-herds-to-json", "Transform herd information to JSON",
       [](ModuleOp module, raw_ostream &output) {
         // boilerplate to give dimensions to the visualizer
         output << "{\n\t\"switchbox00\": {\n\t\t\"row\": " << gridNumRows - 1
@@ -149,7 +149,7 @@ void registerAIRRtTranslations() {
       [](DialectRegistry &registry) {
         registry
             .insert<air::airDialect, func::FuncDialect,
-                    arith::ArithmeticDialect, memref::MemRefDialect,
+                    arith::ArithDialect, memref::MemRefDialect,
                     scf::SCFDialect, AffineDialect, linalg::LinalgDialect>();
       });
 }
