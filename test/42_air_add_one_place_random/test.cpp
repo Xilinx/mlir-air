@@ -36,10 +36,8 @@
 #include <unistd.h>
 #include <vector>
 
-#include <xaiengine.h>
-
-#include "air_host.h"
-#include "air_tensor.h"
+#include "air.hpp"
+#include "test_library.h"
 
 namespace air::partitions::partition_0 {
 int32_t mlir_aie_read_buffer_scratch_0_0(aie_libxaie_ctx_t*, int);
@@ -55,8 +53,8 @@ int
 main(int argc, char *argv[])
 {
   std::vector<air_agent_t> agents;
-  auto get_agents_ret = air_get_agents(&agents);
-  assert(get_agents_ret == 0 && "failed to get agents!");
+  auto get_agents_ret = air_get_agents(agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
   if (agents.empty()) {
     std::cout << "fail." << std::endl;
@@ -75,7 +73,7 @@ main(int argc, char *argv[])
     queues.push_back(q);
   }
 
-  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
 
   queue_t *q = queues[0];
 

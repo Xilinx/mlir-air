@@ -36,18 +36,15 @@
 #include <unistd.h>
 #include <vector>
 
-#include <xaiengine.h>
-
-#include "air_host.h"
-#include "air_tensor.h"
+#include "air.hpp"
 
 int main(int argc, char *argv[]) {
   auto col = 3;
   auto row = 3;
 
   std::vector<air_agent_t> agents;
-  auto get_agents_ret = air_get_agents(&agents);
-  assert(get_agents_ret == 0 && "failed to get agents!");
+  auto get_agents_ret = air_get_agents(agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
   if (agents.empty()) {
     std::cout << "fail." << std::endl;
@@ -66,7 +63,8 @@ int main(int argc, char *argv[]) {
     queues.push_back(q);
   }
 
-  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  auto xaie = air_init_libxaie();
+  assert(xaie);
 
   queue_t *q = queues[0];
 

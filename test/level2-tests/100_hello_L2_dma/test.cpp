@@ -29,7 +29,6 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 
-#include "acdc_queue.h"
 #include "air_host.h"
 
 int main(int argc, char *argv[]) {

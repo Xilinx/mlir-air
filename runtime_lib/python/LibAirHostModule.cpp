@@ -31,26 +31,20 @@
 
 #include "LibAirHostModule.h"
 
-#ifdef AIE_LIBXAIE_ENABLE
-#include "acdc_queue.h"
-#include "air_host.h"
-#endif
+#include "air.hpp"
 
 namespace xilinx {
 namespace air {
 
 void defineAIRHostModule(pybind11::module &m) {
 
-#ifdef AIE_LIBXAIE_ENABLE
-  pybind11::class_<aie_libxaie_ctx_t>(m, "LibXAIEContext");
-
   m.def(
       "init_libxaie",
-      []() -> aie_libxaie_ctx_t * { return air_init_libxaie(); },
+      []() -> uint64_t { return (uint64_t)air_init_libxaie(); },
       pybind11::return_value_policy::reference);
 
   m.def("deinit_libxaie",
-        [](aie_libxaie_ctx_t *ctx) -> void { air_deinit_libxaie(ctx); });
+        [](uint64_t ctx) -> void { air_deinit_libxaie((air_libxaie_ctx_t)ctx); });
 
   pybind11::class_<air_module_desc_t>(m, "ModuleDescriptor")
       .def(
@@ -103,7 +97,7 @@ void defineAIRHostModule(pybind11::module &m) {
       "get_agents",
       []() -> std::vector<air_agent_t> {
         std::vector<air_agent_t> agents;
-        air_get_agents(&agents);
+        air_get_agents(agents);
         return agents;
       },
       pybind11::return_value_policy::reference);
@@ -121,7 +115,7 @@ void defineAIRHostModule(pybind11::module &m) {
         return q;
       },
       pybind11::return_value_policy::reference);
-#endif
+
 }
 
 } // namespace air

@@ -24,7 +24,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "air_host.h"
-#include "air_tensor.h"
+#include "air_host_impl.h"
 
 #include <cassert>
 #include <vector>
@@ -34,8 +34,6 @@
 #include <sys/mman.h>   /* for mlock() */
 #include <string.h>     /* for memset() */
 #include <fcntl.h>      /* for open() */
-
-#include <xaiengine.h>
 
 extern "C" {
 

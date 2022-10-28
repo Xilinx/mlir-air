@@ -29,14 +29,16 @@
 #include <vector>
 
 #include "air_host.h"
-#include "acdc_queue.h"
-#include "hsa_defs.h"
 
 int main(int argc, char *argv[]) {
 
   std::vector<air_agent_t> agents;
-  auto get_agents_ret = air_get_agents(&agents);
-  assert(get_agents_ret == 0 && "failed to get agents!");
+  auto get_agents_ret = air_iterate_agents([](air_agent_t a, void *d) {
+    auto *v = static_cast<std::vector<air_agent_t> *>(d);
+    v->push_back(a);
+    return HSA_STATUS_SUCCESS;
+  }, (void*)&agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
   if (agents.empty()) {
     std::cout << "fail." << std::endl;

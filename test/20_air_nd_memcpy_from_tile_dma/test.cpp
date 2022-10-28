@@ -33,12 +33,11 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <dlfcn.h>
-
 #include <iostream>
 #include <vector>
 
 #include "air_host.h"
-#include "air_tensor.h"
+#include "test_library.h"
 
 #define DMA_COUNT 256
 
@@ -54,8 +53,12 @@ main(int argc, char *argv[])
   uint64_t col = 5;
 
   std::vector<air_agent_t> agents;
-  auto get_agents_ret = air_get_agents(&agents);
-  assert(get_agents_ret == 0 && "failed to get agents!");
+  auto get_agents_ret = air_iterate_agents([](air_agent_t a, void *d) {
+    auto *v = static_cast<std::vector<air_agent_t> *>(d);
+    v->push_back(a);
+    return HSA_STATUS_SUCCESS;
+  }, (void*)&agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
   if (agents.empty()) {
     std::cout << "fail." << std::endl;
@@ -74,7 +77,7 @@ main(int argc, char *argv[])
     queues.push_back(q);
   }
 
-  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
 
   queue_t *q = queues[0];
 

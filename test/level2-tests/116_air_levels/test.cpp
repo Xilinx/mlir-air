@@ -35,20 +35,14 @@
 #include <unistd.h>
 
 #include "air_host.h"
-#include "air_tensor.h"
-
-#define DMA_COUNT 32
+#include "test_library.h"
 
 #include "aie_inc.cpp"
 
-// namespace air::partitions::partition_0 {
-// void mlir_aie_write_buffer_buf0(aie_libxaie_ctx_t*, int, int32_t);
-// int32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t*, int);
-// }; // namespace air::partitions::partition_0
-// using namespace air::partitions::partition_0;
+#define DMA_COUNT 32
 
 int main(int argc, char *argv[]) {
-  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
 
   for (int i = 0; i < DMA_COUNT; i++) {
     mlir_aie_write_buffer_buf0(xaie, i, 0xcfcfcfcf);

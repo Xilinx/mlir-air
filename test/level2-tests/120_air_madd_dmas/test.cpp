@@ -34,10 +34,8 @@
 #include <thread>
 #include <unistd.h>
 
-#include <xaiengine.h>
-
 #include "air_host.h"
-#include "air_tensor.h"
+#include "test_library.h"
 
 #define IMAGE_WIDTH 512
 #define IMAGE_HEIGHT 512
@@ -62,7 +60,7 @@ int32_t mlir_aie_read_buffer_scratch_c_0_0(aie_libxaie_ctx_t *, int);
 using namespace air::partitions::partition_0;
 
 int main(int argc, char *argv[]) {
-  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
 
   // create the queue
   queue_t *q = nullptr;

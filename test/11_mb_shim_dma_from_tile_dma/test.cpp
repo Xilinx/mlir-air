@@ -34,9 +34,9 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include <xaiengine.h>
 
-#include "air_host.h"
+#include "air.hpp"
+#include "test_library.h"
 
 #include "aie_inc.cpp"
 
@@ -47,8 +47,12 @@ main(int argc, char *argv[])
   uint64_t row = 0;
 
   std::vector<air_agent_t> agents;
-  auto get_agents_ret = air_get_agents(&agents);
-  assert(get_agents_ret == 0 && "failed to get agents!");
+  auto get_agents_ret = air_iterate_agents([](air_agent_t a, void *d) {
+    auto *v = static_cast<std::vector<air_agent_t> *>(d);
+    v->push_back(a);
+    return HSA_STATUS_SUCCESS;
+  }, (void*)&agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
   if (agents.empty()) {
     std::cout << "fail." << std::endl;
@@ -68,7 +72,7 @@ main(int argc, char *argv[])
     queues.push_back(q);
   }
 
-  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
   if (xaie == NULL) {
     std::cout << "Error initializing libxaie" << std::endl;
     return -1;

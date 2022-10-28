@@ -32,6 +32,7 @@
 #include <unistd.h>
 
 #include "air_host.h"
+#include "test_library.h"
 
 #include "aie_inc.cpp"
 
@@ -44,7 +45,7 @@
 #define TILE_SIZE (TILE_WIDTH * TILE_HEIGHT)
 
 int main(int argc, char *argv[]) {
-  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
 
   mlir_aie_configure_cores(xaie);
   mlir_aie_configure_switchboxes(xaie);
