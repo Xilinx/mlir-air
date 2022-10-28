@@ -68,7 +68,8 @@ main(int argc, char *argv[])
     queues.push_back(q);
   }
 
-  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie(0 /* device_id (optional)*/);
+  aie_libxaie_ctx_t *xaie =
+      (aie_libxaie_ctx_t *)air_init_libxaie(0 /* device_id (optional)*/);
   if (xaie == NULL) {
     std::cout << "Error initializing libxaie" << std::endl;
     return -1;

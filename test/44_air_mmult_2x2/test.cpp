@@ -32,10 +32,10 @@
 #include <iostream>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <sys/time.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include <sys/time.h>
 
 #include "air.hpp"
 #include "test_library.h"

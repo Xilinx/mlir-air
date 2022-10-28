@@ -27,13 +27,13 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <thread>
-#include <stdlib.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/mman.h>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <iostream>
+#include <stdlib.h>
+#include <sys/mman.h>
+#include <thread>
+#include <unistd.h>
 #include <vector>
 
 #include "air_host.h"
@@ -53,11 +53,13 @@ main(int argc, char *argv[])
   uint64_t col = 5;
 
   std::vector<air_agent_t> agents;
-  auto get_agents_ret = air_iterate_agents([](air_agent_t a, void *d) {
-    auto *v = static_cast<std::vector<air_agent_t> *>(d);
-    v->push_back(a);
-    return HSA_STATUS_SUCCESS;
-  }, (void*)&agents);
+  auto get_agents_ret = air_iterate_agents(
+      [](air_agent_t a, void *d) {
+        auto *v = static_cast<std::vector<air_agent_t> *>(d);
+        v->push_back(a);
+        return HSA_STATUS_SUCCESS;
+      },
+      (void *)&agents);
   assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
   if (agents.empty()) {

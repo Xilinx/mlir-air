@@ -32,17 +32,17 @@
 #endif
 
 #include <assert.h>
+#include <dirent.h>
 #include <dlfcn.h>
 #include <fcntl.h>
-#include <iostream>
-#include <stdio.h>
-#include <sys/mman.h>
-#include <unistd.h>
-#include <dirent.h>
 #include <fstream> // ifstream
 #include <iomanip> // setbase()
-#include <sys/stat.h>
+#include <iostream>
+#include <stdio.h>
 #include <string>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <vector>
 
 #define XAIE_BASE_ADDR 0x20000000000
@@ -79,14 +79,14 @@ air_libxaie_ctx_t air_init_libxaie(uint32_t device_id) {
   aie_libxaie_ctx_t *xaie =
       (aie_libxaie_ctx_t *)malloc(sizeof(aie_libxaie_ctx_t));
   if (!xaie)
-    return (air_libxaie_ctx_t)nullptr;
+    return (air_libxaie_ctx_t) nullptr;
 
   xaie->AieConfigPtr.AieGen = XAIE_DEV_GEN_AIE;
 #ifdef AIR_PCIE
 
   if (device_id >= physical_devices.size()) {
     printf("[ERROR] No device id %d in system\n", device_id);
-    return (air_libxaie_ctx_t)nullptr;
+    return (air_libxaie_ctx_t) nullptr;
   }
 
   std::string aie_bar = air_get_aie_bar(device_id);
@@ -94,7 +94,7 @@ air_libxaie_ctx_t air_init_libxaie(uint32_t device_id) {
   int fda;
   if ((fda = open(aie_bar.c_str(), O_RDWR | O_SYNC)) == -1) {
     printf("[ERROR] Failed to open device file\n");
-    return (air_libxaie_ctx_t)nullptr;
+    return (air_libxaie_ctx_t) nullptr;
   }
 
   // Map the memory region into userspace
@@ -105,7 +105,7 @@ air_libxaie_ctx_t air_init_libxaie(uint32_t device_id) {
                           fda,                    // device fd
                           0);                     // offset
   if (!_mapped_aie_base)
-    return (air_libxaie_ctx_t)nullptr;
+    return (air_libxaie_ctx_t) nullptr;
   xaie->AieConfigPtr.BaseAddr = (uint64_t)_mapped_aie_base;
 #else
   xaie->AieConfigPtr.BaseAddr = XAIE_BASE_ADDR;
@@ -132,7 +132,7 @@ air_libxaie_ctx_t air_init_libxaie(uint32_t device_id) {
 }
 
 void air_deinit_libxaie(air_libxaie_ctx_t _xaie) {
-  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t*)_xaie;
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)_xaie;
   if (xaie == _air_host_active_libxaie) {
     XAie_Finish(&(xaie->DevInst));
 #ifdef AIR_PCIE
@@ -429,7 +429,9 @@ hsa_status_t air_get_physical_devices() {
 }
 #endif
 
-hsa_status_t air_iterate_agents(hsa_status_t(*callback)(air_agent_t agent, void* data),void *data) {
+hsa_status_t air_iterate_agents(hsa_status_t (*callback)(air_agent_t agent,
+                                                         void *data),
+                                void *data) {
 
   uint64_t total_controllers = 0;
 

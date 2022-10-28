@@ -27,11 +27,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <thread>
-#include <stdlib.h>
-#include <unistd.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <sys/mman.h>
+#include <thread>
+#include <unistd.h>
 
 #include "air_host.h"
 
@@ -150,7 +150,9 @@ main(int argc, char *argv[])
   signal_store_release((signal_t*)&q->doorbell, wr_idx);
 
   // wait for packet completion
-  while (signal_wait_acquire((signal_t*)&herd_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
+  while (signal_wait_acquire((signal_t *)&herd_pkt->completion_signal,
+                             HSA_SIGNAL_CONDITION_EQ, 0, 0x80000,
+                             HSA_WAIT_STATE_ACTIVE) != 0) {
     printf("packet completion signal timeout on herd initialization!\n");
     printf("%x\n", herd_pkt->header);
     printf("%x\n", herd_pkt->type);

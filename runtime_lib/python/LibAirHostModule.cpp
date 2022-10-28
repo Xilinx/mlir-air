@@ -39,12 +39,12 @@ namespace air {
 void defineAIRHostModule(pybind11::module &m) {
 
   m.def(
-      "init_libxaie",
-      []() -> uint64_t { return (uint64_t)air_init_libxaie(); },
+      "init_libxaie", []() -> uint64_t { return (uint64_t)air_init_libxaie(); },
       pybind11::return_value_policy::reference);
 
-  m.def("deinit_libxaie",
-        [](uint64_t ctx) -> void { air_deinit_libxaie((air_libxaie_ctx_t)ctx); });
+  m.def("deinit_libxaie", [](uint64_t ctx) -> void {
+    air_deinit_libxaie((air_libxaie_ctx_t)ctx);
+  });
 
   pybind11::class_<air_module_desc_t>(m, "ModuleDescriptor")
       .def(
@@ -115,7 +115,6 @@ void defineAIRHostModule(pybind11::module &m) {
         return q;
       },
       pybind11::return_value_policy::reference);
-
 }
 
 } // namespace air
