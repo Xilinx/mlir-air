@@ -533,13 +533,13 @@ two bars into userspace in the pcie_ernic_dev struct,
 configure the BDFs with the correct function number,
 and then configure the global CSRs of the ERNIC */
 struct pcie_ernic_dev *pcie_ernic_open_dev(
-    const char *axil_bar_filename, uint32_t axil_bar_size, uint32_t axil_bar_offset,
-    const char *dev_mem_bar_filename, uint32_t dev_mem_bar_size,
-    uint64_t dev_mem_global_offset, uint64_t dev_mem_partition_offset,
-    uint64_t mrmac_reset_offset, uint64_t mac_0_csr_offset,
-    uint64_t mac_1_csr_offset, uint32_t ernic_id, uint32_t ipv4_addr,
-    uint32_t mac_addr_lsb, uint32_t mac_addr_msb, bool configure_cmac,
-    bool configure_bdf, bool is_versal, bool dual_reset) {
+    const char *axil_bar_filename, uint32_t axil_bar_size,
+    uint32_t axil_bar_offset, const char *dev_mem_bar_filename,
+    uint32_t dev_mem_bar_size, uint64_t dev_mem_global_offset,
+    uint64_t dev_mem_partition_offset, uint64_t mrmac_reset_offset,
+    uint64_t mac_0_csr_offset, uint64_t mac_1_csr_offset, uint32_t ernic_id,
+    uint32_t ipv4_addr, uint32_t mac_addr_lsb, uint32_t mac_addr_msb,
+    bool configure_cmac, bool configure_bdf, bool is_versal, bool dual_reset) {
 
   int i = 0;
   struct pcie_ernic_dev *dev = NULL;
@@ -600,8 +600,9 @@ struct pcie_ernic_dev *pcie_ernic_open_dev(
   dev->axil_bar[(XRNICCONF + axil_bar_offset) >> 2] = 0xe348078b; // XRNIC Conf
   dev->axil_bar[(INTEN + axil_bar_offset) >> 2] =
       0x00000070; // Interrupt Enable
-  dev->axil_bar[(ERRBUFBA + axil_bar_offset) >> 2] = (uint32_t)(
-      dev->err_buff->pa & 0x00000000FFFFFFFF); // Error buffer base address
+  dev->axil_bar[(ERRBUFBA + axil_bar_offset) >> 2] =
+      (uint32_t)(dev->err_buff->pa &
+                 0x00000000FFFFFFFF); // Error buffer base address
   dev->axil_bar[(ERRBUFBAMSB + axil_bar_offset) >> 2] =
       (uint32_t)(dev->err_buff->pa >> 32); // Error buffer base address
   dev->axil_bar[(ERRBUFSZ + axil_bar_offset) >> 2] =
@@ -610,8 +611,9 @@ struct pcie_ernic_dev *pcie_ernic_open_dev(
   dev->axil_bar[(RESPERRPKTBA + axil_bar_offset) >> 2] =
       (uint32_t)(dev->resp_err_buff->pa &
                  0x00000000FFFFFFFF); // Response error pkt buffer base address
-  dev->axil_bar[(RESPERRPKTBAMSB + axil_bar_offset) >> 2] = (uint32_t)(
-      dev->resp_err_buff->pa >> 32); // Response error pkt buffer base address
+  dev->axil_bar[(RESPERRPKTBAMSB + axil_bar_offset) >> 2] =
+      (uint32_t)(dev->resp_err_buff->pa >>
+                 32); // Response error pkt buffer base address
   dev->axil_bar[(RESPERRSZ + axil_bar_offset) >> 2] =
       0x00200000; // Making 4KiB (TODO: I am not sure if this is the # of
                   // entries in the buffer or the size in bytes)

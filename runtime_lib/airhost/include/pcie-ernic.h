@@ -41,7 +41,7 @@
 #include <unistd.h>
 
 // Local includes
-//#include "pcie-bdf.h"
+// #include "pcie-bdf.h"
 #include "pcie-ernic-dev-mem-allocator.h"
 
 // Control what debug information is
@@ -49,7 +49,7 @@
 // init functions
 #define DEBUG_MEMORY
 #define DEBUG_NETWORK
-//#define DEBUG_DB
+// #define DEBUG_DB
 #define DEBUG_PCIE
 
 // If this is defined, we will print in the functions
@@ -363,13 +363,13 @@ struct pcie_ernic_buff *pcie_ernic_malloc(struct pcie_ernic_dev *dev,
                                           uint32_t size, bool on_device);
 void pcie_ernic_free_buff(struct pcie_ernic_buff *buff);
 struct pcie_ernic_dev *pcie_ernic_open_dev(
-    const char *axil_bar_filename, uint32_t axil_bar_size, uint32_t axil_bar_offset,
-    const char *dev_mem_bar_filename, uint32_t dev_mem_bar_size,
-    uint64_t dev_mem_global_offset, uint64_t dev_mem_partition_offset,
-    uint64_t mrmac_reset_offset, uint64_t mrmac_0_csr_offset,
-    uint64_t mrmac_1_csr_offset, uint32_t ernic_id, uint32_t ipv4_addr,
-    uint32_t mac_addr_lsb, uint32_t mac_addr_msb, bool configure_cmac,
-    bool configure_bdf, bool is_versal, bool dual_reset);
+    const char *axil_bar_filename, uint32_t axil_bar_size,
+    uint32_t axil_bar_offset, const char *dev_mem_bar_filename,
+    uint32_t dev_mem_bar_size, uint64_t dev_mem_global_offset,
+    uint64_t dev_mem_partition_offset, uint64_t mrmac_reset_offset,
+    uint64_t mrmac_0_csr_offset, uint64_t mrmac_1_csr_offset, uint32_t ernic_id,
+    uint32_t ipv4_addr, uint32_t mac_addr_lsb, uint32_t mac_addr_msb,
+    bool configure_cmac, bool configure_bdf, bool is_versal, bool dual_reset);
 struct pcie_ernic_pd *pcie_ernic_alloc_pd(struct pcie_ernic_dev *dev,
                                           uint32_t pd_num);
 struct pcie_ernic_qp *

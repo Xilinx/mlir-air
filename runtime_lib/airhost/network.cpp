@@ -135,24 +135,24 @@ hsa_status_t air_explore_world(uint32_t ernic_id, uint64_t dev_mem_offset,
 
   // Initializing the ERNIC
   air_ernic_dev =
-      pcie_ernic_open_dev(air_get_bram_bar(0).c_str(),	// axil_bar_filename
-                          2097152,          		        // axil_bar_size
-                          bar_offset,                   // axil_bar_offset
-                          air_get_ddr_bar(0).c_str(),   // dev_mem_bar_filename
-                          67108864,                     // dev_mem_bar_size
-                          0x0000000800000000,           // dev_mem_global_offset
-                          dev_mem_offset,               // dev_mem_partition_offset
-                          0x00100000,                   // mrmac_reset_offset
-                          0x00110000,                   // mac_0_csr_offset
-                          0x00120000,                   // mac_1_csr_offset
-                          ernic_id,                     // ernic_id
-                          ip_addr,                      // ipv4 addr
-                          mac_addr_lsb,                 // mac_addr_lsb
-                          mac_addr_msb,                 // mac_addr_msb
-                          true,                         // configure_cmac
-                          false,                        // configure_bdf
-                          true,                         // is_versal
-                          true);                        // dual_reset
+      pcie_ernic_open_dev(air_get_bram_bar(0).c_str(), // axil_bar_filename
+                          2097152,                     // axil_bar_size
+                          bar_offset,                  // axil_bar_offset
+                          air_get_ddr_bar(0).c_str(),  // dev_mem_bar_filename
+                          67108864,                    // dev_mem_bar_size
+                          0x0000000800000000,          // dev_mem_global_offset
+                          dev_mem_offset, // dev_mem_partition_offset
+                          0x00100000,     // mrmac_reset_offset
+                          0x00110000,     // mac_0_csr_offset
+                          0x00120000,     // mac_1_csr_offset
+                          ernic_id,       // ernic_id
+                          ip_addr,        // ipv4 addr
+                          mac_addr_lsb,   // mac_addr_lsb
+                          mac_addr_msb,   // mac_addr_msb
+                          true,           // configure_cmac
+                          false,          // configure_bdf
+                          true,           // is_versal
+                          true);          // dual_reset
 
   if (air_ernic_dev == NULL) {
     printf("[ERROR] Failed to create pcie_ernic_dev structure\n");

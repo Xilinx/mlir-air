@@ -40,10 +40,9 @@
 
 #include "include/pcie-ernic-dev-mem-allocator.h"
 
-struct pcie_ernic_dev_mem_allocator *
-init_dev_mem_allocator(const char *dev_mem_bar_filename, uint64_t dev_mem_bar_size,
-                       uint64_t dev_mem_global_offset,
-                       uint64_t dev_mem_partition_offset) {
+struct pcie_ernic_dev_mem_allocator *init_dev_mem_allocator(
+    const char *dev_mem_bar_filename, uint64_t dev_mem_bar_size,
+    uint64_t dev_mem_global_offset, uint64_t dev_mem_partition_offset) {
 
   // Allocating memory for allocator structure
   struct pcie_ernic_dev_mem_allocator *allocator =
@@ -131,7 +130,9 @@ void *dev_mem_alloc(struct pcie_ernic_dev_mem_allocator *allocator,
 
   // Setting the user pointer equal to the next portion
   // of available memory
-  void *user_ptr = (void *)((unsigned char *)allocator->dev_mem + allocator->partition_offset + allocator->dev_mem_ptr);
+  void *user_ptr =
+      (void *)((unsigned char *)allocator->dev_mem +
+               allocator->partition_offset + allocator->dev_mem_ptr);
 
 #ifdef VERBOSE_DEBUG
   printf("Giving user %dB starting at dev_mem[0x%lx]\n", size,

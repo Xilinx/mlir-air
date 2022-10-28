@@ -36,14 +36,14 @@
 #include <termios.h>
 #include <unistd.h>
 
-#include "pcie-ernic.h"
 #include "pcie-bdf.h"
+#include "pcie-ernic.h"
 
 // Controlling what we print in the application
 #define PRINT_QP_STATE
 #define PRINT_DEV_STATE
-//#define PRINT_SQ
-//#define PRINT_CQ
+// #define PRINT_SQ
+// #define PRINT_CQ
 #define PRINT_BUFF
 
 // Function Defines
@@ -65,8 +65,8 @@
 #define QDEPTH 0x01000100
 
 int main() {
- 
-  // TODO: Use AIR functionality to find BARs of the PCIe device 
+
+  // TODO: Use AIR functionality to find BARs of the PCIe device
 
   /* Create the pcie_ernic_device. This will map the two BARs into the
   structure, program the BDF, and write to the global CSRs of the ERNIC. */

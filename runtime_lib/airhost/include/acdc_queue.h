@@ -26,8 +26,8 @@
 #ifndef ACDC_QUEUE_H
 #define ACDC_QUEUE_H
 
-#include <stdint.h>
 #include "hsa_defs.h"
+#include <stdint.h>
 
 // Define the number of HSA packets we can have in a queue
 #define MB_QUEUE_SIZE 48
@@ -36,29 +36,30 @@
 // This includes the queues, events, doorbells etc
 #define MB_SHMEM_SEGMENT_SIZE 0x1000
 
-// See https://confluence.xilinx.com/display/XRLABS/AIR+Controller+HSA+Packet+Formats
+// See
+// https://confluence.xilinx.com/display/XRLABS/AIR+Controller+HSA+Packet+Formats
 // All defined as longs, so we can shift them into 64 registers
 
-#define AIR_PKT_TYPE_INVALID         0x0000L
-#define AIR_PKT_TYPE_PUT_STREAM      0x0001L
-#define AIR_PKT_TYPE_GET_STREAM      0x0002L
-#define AIR_PKT_TYPE_SDMA_STATUS     0x0003L
-#define AIR_PKT_TYPE_TDMA_STATUS     0x0004L
-#define AIR_PKT_TYPE_CORE_STATUS     0x0005L
+#define AIR_PKT_TYPE_INVALID 0x0000L
+#define AIR_PKT_TYPE_PUT_STREAM 0x0001L
+#define AIR_PKT_TYPE_GET_STREAM 0x0002L
+#define AIR_PKT_TYPE_SDMA_STATUS 0x0003L
+#define AIR_PKT_TYPE_TDMA_STATUS 0x0004L
+#define AIR_PKT_TYPE_CORE_STATUS 0x0005L
 
-#define AIR_PKT_TYPE_DEVICE_INITIALIZE        0x0010L
-#define AIR_PKT_TYPE_HERD_INITIALIZE          0x0011L
-#define AIR_PKT_TYPE_HELLO                    0x0012L
-#define AIR_PKT_TYPE_ALLOCATE_HERD_SHIM_DMAS  0x0013L
-#define AIR_PKT_TYPE_GET_CAPABILITIES         0x0014L
-#define AIR_PKT_TYPE_GET_INFO                 0x0015L
+#define AIR_PKT_TYPE_DEVICE_INITIALIZE 0x0010L
+#define AIR_PKT_TYPE_HERD_INITIALIZE 0x0011L
+#define AIR_PKT_TYPE_HELLO 0x0012L
+#define AIR_PKT_TYPE_ALLOCATE_HERD_SHIM_DMAS 0x0013L
+#define AIR_PKT_TYPE_GET_CAPABILITIES 0x0014L
+#define AIR_PKT_TYPE_GET_INFO 0x0015L
 
 #define AIR_PKT_TYPE_XAIE_LOCK 0x0020L
 
 #define AIR_PKT_TYPE_CDMA 0x030L
 #define AIR_PKT_TYPE_CONFIGURE 0x031L
 
-#define AIR_PKT_TYPE_POST_RDMA_WQE  0x040L
+#define AIR_PKT_TYPE_POST_RDMA_WQE 0x040L
 #define AIR_PKT_TYPE_POST_RDMA_RECV 0x041L
 
 #define AIR_PKT_TYPE_SHIM_DMA_MEMCPY 0x0100L
@@ -66,27 +67,28 @@
 #define AIR_PKT_TYPE_HERD_SHIM_DMA_1D_STRIDED_MEMCPY 0x0102L
 #define AIR_PKT_TYPE_ND_MEMCPY 0x0103L
 
-#define AIR_ADDRESS_ABSOLUTE       0x0L
+#define AIR_ADDRESS_ABSOLUTE 0x0L
 #define AIR_ADDRESS_ABSOLUTE_RANGE 0x1L
-#define AIR_ADDRESS_HERD_RELATIVE  0x2L
+#define AIR_ADDRESS_HERD_RELATIVE 0x2L
 #define AIR_ADDRESS_HERD_RELATIVE_RANGE 0x3L
 
 typedef enum {
-AIR_AGENT_INFO_NAME = 0,        // NUL-terminated char[8]
-AIR_AGENT_INFO_VENDOR_NAME = 1, // NUL-terminated char[8]
-AIR_AGENT_INFO_CONTROLLER_ID = 2,
-AIR_AGENT_INFO_FIRMWARE_VER = 3,
-AIR_AGENT_INFO_NUM_REGIONS = 4,
-AIR_AGENT_INFO_HERD_SIZE = 5,
-AIR_AGENT_INFO_HERD_ROWS = 6,
-AIR_AGENT_INFO_HERD_COLS = 7,
-AIR_AGENT_INFO_TILE_DATA_MEM_SIZE = 8,
-AIR_AGENT_INFO_TILE_PROG_MEM_SIZE = 9,
-AIR_AGENT_INFO_L2_MEM_SIZE = 10 // Per region
+  AIR_AGENT_INFO_NAME = 0,        // NUL-terminated char[8]
+  AIR_AGENT_INFO_VENDOR_NAME = 1, // NUL-terminated char[8]
+  AIR_AGENT_INFO_CONTROLLER_ID = 2,
+  AIR_AGENT_INFO_FIRMWARE_VER = 3,
+  AIR_AGENT_INFO_NUM_REGIONS = 4,
+  AIR_AGENT_INFO_HERD_SIZE = 5,
+  AIR_AGENT_INFO_HERD_ROWS = 6,
+  AIR_AGENT_INFO_HERD_COLS = 7,
+  AIR_AGENT_INFO_TILE_DATA_MEM_SIZE = 8,
+  AIR_AGENT_INFO_TILE_PROG_MEM_SIZE = 9,
+  AIR_AGENT_INFO_L2_MEM_SIZE = 10 // Per region
 } air_agent_info_t;
 
-// Note below that "__attribute__((packed))" also asserts that the whole structure is
-// unaligned in some compilers.  This helps to silence errors from -waddress-of-packed-struct
+// Note below that "__attribute__((packed))" also asserts that the whole
+// structure is unaligned in some compilers.  This helps to silence errors from
+// -waddress-of-packed-struct
 
 typedef struct dispatch_packet_s {
 
@@ -99,7 +101,7 @@ typedef struct dispatch_packet_s {
   uint64_t reserved1;
   uint64_t completion_signal;
 
-} __attribute__((packed,aligned(__alignof__(uint64_t)))) dispatch_packet_t;
+} __attribute__((packed, aligned(__alignof__(uint64_t)))) dispatch_packet_t;
 
 typedef struct barrier_and_packet_s {
 
@@ -111,7 +113,7 @@ typedef struct barrier_and_packet_s {
   uint64_t reserved2;
   uint64_t completion_signal;
 
-} __attribute__((packed,aligned(__alignof__(uint64_t)))) barrier_and_packet_t;
+} __attribute__((packed, aligned(__alignof__(uint64_t)))) barrier_and_packet_t;
 
 typedef struct barrier_or_packet_s {
 
@@ -123,7 +125,7 @@ typedef struct barrier_or_packet_s {
   uint64_t reserved2;
   uint64_t completion_signal;
 
-} __attribute__((packed,aligned(__alignof__(uint64_t)))) barrier_or_packet_t;
+} __attribute__((packed, aligned(__alignof__(uint64_t)))) barrier_or_packet_t;
 
 typedef struct queue_s {
 
@@ -144,7 +146,7 @@ typedef struct queue_s {
   uint64_t base_address_paddr;
   uint64_t base_address_vaddr;
 
-} __attribute__((packed,aligned(__alignof__(uint64_t)))) queue_t;
+} __attribute__((packed, aligned(__alignof__(uint64_t)))) queue_t;
 
 typedef struct signal_s {
   uint64_t handle;
@@ -154,66 +156,54 @@ typedef uint64_t signal_value_t;
 
 namespace {
 
-inline uint64_t queue_add_write_index(queue_t *q, uint64_t v)
-{
+inline uint64_t queue_add_write_index(queue_t *q, uint64_t v) {
   auto r = q->write_index;
   q->write_index = r + v;
   return r;
 }
 
-inline uint64_t queue_add_read_index(queue_t *q, uint64_t v)
-{
+inline uint64_t queue_add_read_index(queue_t *q, uint64_t v) {
   auto r = q->read_index;
   q->read_index = r + v;
   return r;
 }
 
-inline uint64_t queue_load_read_index(queue_t *q)
-{
-  return q->read_index;
-}
+inline uint64_t queue_load_read_index(queue_t *q) { return q->read_index; }
 
-inline uint64_t queue_load_write_index(queue_t *q)
-{
-  return q->write_index;
-}
+inline uint64_t queue_load_write_index(queue_t *q) { return q->write_index; }
 
 inline uint64_t queue_paddr_from_index(queue_t *q, uint64_t idx) {
-  return q->base_address + idx; 
+  return q->base_address + idx;
 }
 
-inline bool packet_get_active(dispatch_packet_t *pkt)
-{
+inline bool packet_get_active(dispatch_packet_t *pkt) {
   return pkt->reserved1 & 0x1;
 }
 
-inline void packet_set_active(dispatch_packet_t *pkt, bool b)
-{
+inline void packet_set_active(dispatch_packet_t *pkt, bool b) {
   pkt->reserved1 = (pkt->reserved1 & ~0x1) | b;
 }
 
-inline void initialize_packet(dispatch_packet_t *pkt)
-{
+inline void initialize_packet(dispatch_packet_t *pkt) {
   pkt->header = HSA_PACKET_TYPE_INVALID;
-  //pkt->type = AIR_PKT_TYPE_INVALID;
+  // pkt->type = AIR_PKT_TYPE_INVALID;
 }
 
-inline hsa_status_t signal_create(signal_value_t initial_value, uint32_t num_consumers, void *consumers, signal_t *signal)
-{
-  //auto s = (signal_value_t*)malloc(sizeof(signal_value_t));
+inline hsa_status_t signal_create(signal_value_t initial_value,
+                                  uint32_t num_consumers, void *consumers,
+                                  signal_t *signal) {
+  // auto s = (signal_value_t*)malloc(sizeof(signal_value_t));
   //*s = initial_value;
   signal->handle = (uint64_t)initial_value;
   return HSA_STATUS_SUCCESS;
 }
 
-inline hsa_status_t signal_destroy(signal_t signal)
-{
-  //free((void*)signal.handle);
+inline hsa_status_t signal_destroy(signal_t signal) {
+  // free((void*)signal.handle);
   return HSA_STATUS_SUCCESS;
 }
 
-inline void signal_store_release(signal_t *signal, signal_value_t value)
-{
+inline void signal_store_release(signal_t *signal, signal_value_t value) {
   signal->handle = (uint64_t)value;
 }
 
@@ -221,8 +211,7 @@ inline signal_value_t signal_wait_aquire(volatile signal_t *signal,
                                          hsa_signal_condition_t condition,
                                          signal_value_t compare_value,
                                          uint64_t timeout_hint,
-                                         hsa_wait_state_t wait_state_hint)
-{
+                                         hsa_wait_state_t wait_state_hint) {
   signal_value_t ret = 0;
   uint64_t timeout = timeout_hint;
   do {
@@ -233,8 +222,7 @@ inline signal_value_t signal_wait_aquire(volatile signal_t *signal,
   return ret;
 }
 
-inline void signal_subtract_acq_rel(signal_t *signal, signal_value_t value)
-{
+inline void signal_subtract_acq_rel(signal_t *signal, signal_value_t value) {
   signal->handle = signal->handle - (uint64_t)value;
   // uint64_t i;
   // memcpy((void*)&i, (void*)signal, sizeof(signal_value_t));
@@ -242,6 +230,6 @@ inline void signal_subtract_acq_rel(signal_t *signal, signal_value_t value)
   // memcpy((void*)signal, (void*)&i, sizeof(signal_value_t));
 }
 
-}
+} // namespace
 
 #endif
