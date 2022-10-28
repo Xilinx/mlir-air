@@ -1,4 +1,3 @@
-
 # Copyright (C) 2022, Xilinx Inc.
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 #
@@ -20,17 +19,10 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-set(INSTALLS air_tensor.h air_host.h acdc_queue.h hsa_defs.h pcie-ernic.h pcie-ernic-dev-mem-allocator.h air_network.h utility.hpp)
-# Stuff into the build area:
-add_custom_target(copy-runtime-includes ALL)
-foreach(file ${INSTALLS})
-    add_custom_target(copy-runtime-includes-${file} ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/${file})
-    add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${file}
-                    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/${file}
-                    ${CMAKE_CURRENT_BINARY_DIR}/${file}
-                    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${file})
-    add_dependencies(copy-runtime-includes copy-runtime-includes-${file} )
-endforeach()
-
-# Install too
-install(FILES ${INSTALLS} DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/airhost/include)
+open_hw_manager
+connect_hw_server -url localhost:3121
+open_hw_target
+current_hw_device [get_hw_devices xcvc1902_1]
+refresh_hw_device -update_hw_probes false [lindex [get_hw_devices xcvc1902_1] 0]
+set_property PROGRAM.FILE {./final_vck5000.pdi} [get_hw_devices xcvc1902_1]
+program_hw_devices [get_hw_devices xcvc1902_1]
