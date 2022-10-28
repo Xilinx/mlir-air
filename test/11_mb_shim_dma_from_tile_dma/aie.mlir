@@ -24,9 +24,9 @@
 //===----------------------------------------------------------------------===//
 
 module {
-  %t70 = AIE.tile(7, 0)
-  %t71 = AIE.tile(7, 1)
-  %t72 = AIE.tile(7, 2)
+  %t70 = AIE.tile(6, 0)
+  %t71 = AIE.tile(6, 1)
+  %t72 = AIE.tile(6, 2)
 
   %buf72_0 = AIE.buffer(%t72) {sym_name="a"} : memref<256xi32>
   %buf72_1 = AIE.buffer(%t72) {sym_name="b"} : memref<256xi32>
@@ -50,4 +50,5 @@ module {
       AIE.end
   }
   AIE.flow(%t72, "DMA" : 0, %t70, "DMA" : 0)
+
 }

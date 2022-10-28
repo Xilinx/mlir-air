@@ -193,7 +193,7 @@ def run(mlir_module, args):
 
     aie_ctrl_obj = opts.tmpdir+'/'+air_mlir_filename+'.o'
     do_call(['clang', '-Wno-override-module', '-fPIC'] +
-            (['--target', opts.host_target] if opts.host_target else []) +
+            (['-target', opts.host_target] if opts.host_target else []) +
             ['-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
 
     # make aie elf files and host .o files for each herd in the program
@@ -255,7 +255,7 @@ def run(mlir_module, args):
     if opts.shared:
       cmd = ['clang', '-shared']
       cmd += ['--sysroot', opts.sysroot] if opts.sysroot else []
-      cmd += ['--target', opts.host_target] if opts.host_target else []
+      cmd += ['-target', opts.host_target] if opts.host_target else []
       cmd += ['-fuse-ld=lld', '-o', lib_file] + obj_files
     else:
       cmd = ['llvm-ar', 'rc', lib_file] + obj_files
@@ -312,7 +312,7 @@ def run_flow(opts):
 
     aie_ctrl_obj = opts.tmpdir+'/'+air_mlir_filename+'.o'
     do_call(['clang', '-Wno-override-module', '-fPIC'] +
-            (['--target', opts.host_target] if opts.host_target else []) +
+            (['-target', opts.host_target] if opts.host_target else []) +
             ['-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
 
     t = do_run(['air-translate', '--airrt-generate-json', aie_ctrl_airrt])
@@ -365,7 +365,7 @@ def run_flow(opts):
     if opts.shared:
       cmd = ['clang', '-shared']
       cmd += ['--sysroot', opts.sysroot] if opts.sysroot else []
-      cmd += ['--target', opts.host_target] if opts.host_target else []
+      cmd += ['-target', opts.host_target] if opts.host_target else []
       cmd += ['-fuse-ld=lld', '-o', lib_file] + obj_files
     else:
       cmd = ['llvm-ar', 'rc', lib_file] + obj_files

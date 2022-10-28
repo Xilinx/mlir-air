@@ -34,16 +34,39 @@
 #include <stdlib.h>
 #include <string>
 
+typedef struct air_agent_s {
+  uint64_t handle;
+} air_agent_t;
+
+typedef struct air_physical_device_s {
+  char aie_bar_path[128];
+  uint64_t aie_bar_size;
+  char dram_bar_path[128];
+  uint64_t dram_bar_size;
+  char bram_bar_path[128];
+  uint64_t bram_bar_size;
+} air_physical_device_t;
+
+typedef struct air_dev_mem_allocator_s {
+  void *dev_mem;
+  uint64_t dev_mem_ptr;
+  uint64_t dev_mem_size;
+} air_dev_mem_allocator_t;
+
 extern "C" {
 
 #define AIR_VCK190_SHMEM_BASE  0x020100000000LL
 #define AIR_VCK190_L2_DMA_BASE 0x020240000000LL
 #define AIR_VCK190_DDR_BASE 0x2000LL
+#ifdef AIR_PCIE
+#define AIR_BBUFF_BASE 0x8001C0000LL
+#else
 #define AIR_BBUFF_BASE 0x81C000000LL
+#endif
 // library operations
 
-aie_libxaie_ctx_t *air_init_libxaie1();
-void air_deinit_libxaie1(aie_libxaie_ctx_t*);
+aie_libxaie_ctx_t *air_init_libxaie(uint32_t device_id = 0);
+void air_deinit_libxaie(aie_libxaie_ctx_t *);
 
 // runtime operations
 //
@@ -51,10 +74,35 @@ void air_deinit_libxaie1(aie_libxaie_ctx_t*);
 hsa_status_t air_get_agents(void *data);
 hsa_status_t air_get_agent_info(queue_t *queue, air_agent_info_t attribute, void* data);
 
+// device memory operations
+//
+
+/* Initializes the device memory allocator. On initialization,
+the device memory allocator opens the DDR BAR of the device with the
+corresponding device_id, which is the pool of memory that gets allocated.
+Once initialized, the runtime creates a handle named `dev_mem_allocator`
+which it can use to service calls the process makes to air_dev_mem_alloc() */
+int air_init_dev_mem_allocator(uint64_t dev_mem_size, uint32_t device_id = 0);
+
+/* Frees the handle to the device memory allocator held by the runtime */
+void air_dev_mem_allocator_free();
+
+/* Interface for the process to request allocations and obtain pointers
+to device memory. Device memory is managed as a stack, where the allocator
+keeps track of the current stack pointer, and allocates a `size`-byte region
+of memory backed by the device DDR BAR and returns the virtual address to that
+region. */
+void *air_dev_mem_alloc(uint32_t size);
+
+/* Used to obtain the physical address of a buffer allocated using the
+device memory allocator. */
+uint64_t air_dev_mem_get_pa(void *buff_va);
+
 // queue operations
 //
 
-hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue, uint64_t paddr);
+hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue,
+                              uint64_t paddr, uint32_t device_id = 0);
 
 hsa_status_t air_queue_dispatch(queue_t *queue, uint64_t doorbell, dispatch_packet_t *pkt);
 hsa_status_t air_queue_wait(queue_t *queue, dispatch_packet_t *pkt);
@@ -184,7 +232,9 @@ struct air_rt_aie_functions_t {
 typedef size_t air_module_handle_t;
 
 // return 0 on failure, nonzero otherwise
-air_module_handle_t air_module_load_from_file(const char* filename, queue_t *q=0);
+air_module_handle_t air_module_load_from_file(const char *filename,
+                                              queue_t *q = 0,
+                                              uint32_t device_id = 0);
 
 // return 0 on success, nonzero otherwise
 int32_t air_module_unload(air_module_handle_t handle);
@@ -216,8 +266,8 @@ int air_mem_free(void *vaddr, size_t size);
 
 }
 
-std::string air_get_ddr_bar();
-std::string air_get_aie_bar();
-std::string air_get_bram_bar();
+std::string air_get_ddr_bar(uint32_t device_id);
+std::string air_get_aie_bar(uint32_t device_id);
+std::string air_get_bram_bar(uint32_t device_id);
 
 #endif // AIR_HOST_H

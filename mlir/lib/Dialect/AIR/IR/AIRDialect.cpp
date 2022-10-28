@@ -1060,7 +1060,7 @@ static LogicalResult FoldWaitAll(WaitAllOp op, PatternRewriter &rewriter) {
   // If an operand of a wait_all is a wait_all without operands,
   // then we can remove it from the operand list.
   for (auto i = operands.begin(), e = operands.end(); i != e; ++i) {
-    auto wa = dyn_cast_if_present<WaitAllOp>(i->getDefiningOp());
+    auto wa = llvm::dyn_cast_if_present<WaitAllOp>(i->getDefiningOp());
     if (!wa)
       continue;
     if (wa->getNumOperands())

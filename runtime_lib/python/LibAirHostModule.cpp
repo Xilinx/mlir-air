@@ -44,11 +44,13 @@ void defineAIRHostModule(pybind11::module &m) {
 #ifdef AIE_LIBXAIE_ENABLE
   pybind11::class_<aie_libxaie_ctx_t>(m, "LibXAIEContext");
 
-  m.def("init_libxaie", &air_init_libxaie1,
-        pybind11::return_value_policy::reference);
+  m.def(
+      "init_libxaie",
+      []() -> aie_libxaie_ctx_t * { return air_init_libxaie(); },
+      pybind11::return_value_policy::reference);
 
   m.def("deinit_libxaie",
-        [](aie_libxaie_ctx_t *ctx) -> void { air_deinit_libxaie1(ctx); });
+        [](aie_libxaie_ctx_t *ctx) -> void { air_deinit_libxaie(ctx); });
 
   pybind11::class_<air_module_desc_t>(m, "ModuleDescriptor")
       .def(
@@ -95,14 +97,25 @@ void defineAIRHostModule(pybind11::module &m) {
   //   return air_herd_get_desc(h, name.c_str());
   // }, pybind11::return_value_policy::reference);
 
+  pybind11::class_<air_agent_t>(m, "Agent");
+
+  m.def(
+      "get_agents",
+      []() -> std::vector<air_agent_t> {
+        std::vector<air_agent_t> agents;
+        air_get_agents(&agents);
+        return agents;
+      },
+      pybind11::return_value_policy::reference);
+
   pybind11::class_<queue_t>(m, "Queue");
 
   m.def(
       "queue_create",
-      []() -> queue_t * {
+      [](const air_agent_t &a) -> queue_t * {
         queue_t *q = nullptr;
         auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q,
-                                    AIR_VCK190_SHMEM_BASE);
+                                    a.handle);
         if (ret != 0)
           return nullptr;
         return q;

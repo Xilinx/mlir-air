@@ -20,7 +20,7 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-set(INSTALLS air_tensor.h air_host.h acdc_queue.h hsa_defs.h)
+set(INSTALLS air_tensor.h air_host.h acdc_queue.h hsa_defs.h utility.hpp)
 # Stuff into the build area:
 add_custom_target(copy-runtime-includes ALL)
 foreach(file ${INSTALLS})

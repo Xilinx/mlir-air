@@ -27,11 +27,17 @@ include_directories(
 
 add_definitions(-DLIBXAIENGINEV2)
 
+if(BUILD_AIR_PCIE)
+  message("BUILD_AIR_PCIE=${BUILD_AIR_PCIE}")
+  add_definitions(-DAIR_PCIE)
+endif()
+
 if(LIBXAIE_FOUND)
 add_library(airhost STATIC
     memory.cpp
     queue.cpp
     host.cpp
+    utility.cpp   
 )
 set_property(TARGET airhost PROPERTY POSITION_INDEPENDENT_CODE ON)
 
@@ -39,7 +45,8 @@ add_library(airhost_shared SHARED
     memory.cpp
     queue.cpp
     host.cpp
-    )
+    utility.cpp   
+)
 set_property(TARGET airhost_shared PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 target_link_libraries(airhost
@@ -70,7 +77,7 @@ foreach(file ${INSTALLS})
 endforeach()
 
 # Install files
-set(INSTALLS memory.cpp queue.cpp host.cpp)
+set(INSTALLS memory.cpp queue.cpp host.cpp utility.cpp)
 install(FILES ${INSTALLS} DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/airhost)
 
 else()

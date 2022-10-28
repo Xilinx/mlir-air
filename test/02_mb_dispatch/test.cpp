@@ -23,31 +23,51 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <cstdio>
 #include <cassert>
+#include <cstdio>
+#include <iostream>
+#include <vector>
 
 #include "air_host.h"
 #include "acdc_queue.h"
 #include "hsa_defs.h"
 
-int main(int argc, char *argv[])
-{
-  // create the queue
-  queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
-  assert(ret == 0 && "failed to create queue!");
+int main(int argc, char *argv[]) {
 
-  uint64_t wr_idx = queue_add_write_index(q, 1);
-  uint64_t packet_id = wr_idx % q->size;
+  std::vector<air_agent_t> agents;
+  auto get_agents_ret = air_get_agents(&agents);
+  assert(get_agents_ret == 0 && "failed to get agents!");
+
+  if (agents.empty()) {
+    std::cout << "fail." << std::endl;
+    return -1;
+  }
+
+  std::cout << "Found " << agents.size() << " agents" << std::endl;
+
+  std::vector<queue_t *> queues;
+  for (auto agent : agents) {
+    // create the queue
+    queue_t *q = nullptr;
+    auto create_queue_ret =
+        air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, agent.handle,
+                         0 /* device_id (optional) */);
+    assert(create_queue_ret == 0 && "failed to create queue!");
+    queues.push_back(q);
+  }
+
+  uint64_t wr_idx = queue_add_write_index(queues[0], 1);
+  uint64_t packet_id = wr_idx % queues[0]->size;
 
   auto row = 4;
   auto col = 13;
   auto num_rows = 1;
   auto num_cols = 1;
 
-  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  dispatch_packet_t *herd_pkt =
+      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
   air_packet_herd_init(herd_pkt, 0, col, num_cols, row, num_rows);
-  air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
+  air_queue_dispatch_and_wait(queues[0], wr_idx, herd_pkt);
 
   printf("PASS!\n");
   return 0;

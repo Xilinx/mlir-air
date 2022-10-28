@@ -27,11 +27,13 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <thread>
-#include <stdlib.h>
-#include <unistd.h>
 #include <fcntl.h>
+#include <iostream>
+#include <stdlib.h>
 #include <sys/mman.h>
+#include <thread>
+#include <unistd.h>
+#include <vector>
 #include <xaiengine.h>
 
 #include "air_host.h"
@@ -46,8 +48,64 @@ main(int argc, char *argv[])
   uint64_t col  = 7;
   uint64_t col2 = 34;
 
-  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
-  mlir_aie_init_device(xaie);
+  std::vector<air_agent_t> agents;
+  auto get_agents_ret = air_get_agents(&agents);
+  assert(get_agents_ret == 0 && "failed to get agents!");
+
+  if (agents.empty()) {
+    std::cout << "fail." << std::endl;
+    return -1;
+  }
+
+  std::cout << "Found " << agents.size() << " agents" << std::endl;
+
+  std::vector<queue_t *> queues;
+  for (auto agent : agents) {
+    // create the queue
+    queue_t *q = nullptr;
+    auto create_queue_ret =
+        air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, agent.handle,
+                         0 /* device_id (optional) */);
+    assert(create_queue_ret == 0 && "failed to create queue!");
+    queues.push_back(q);
+  }
+
+  if (queues.size() < 2) {
+    std::cout << "ERROR: test requires at least 2 agents" << std::endl;
+    return -1;
+  }
+
+  aie_libxaie_ctx_t *xaie = air_init_libxaie();
+  if (xaie == NULL) {
+    std::cout << "Error initializing libxaie" << std::endl;
+    return -1;
+  }
+
+  //
+  // Set up a 1x3 herd starting 7,0
+  //
+  uint64_t wr_idx = queue_add_write_index(queues[0], 1);
+  uint64_t packet_id = wr_idx % queues[0]->size;
+  dispatch_packet_t *herd_pkt =
+      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
+  air_packet_herd_init(herd_pkt, 0, col, 1, row, 3);
+  air_queue_dispatch_and_wait(queues[0], wr_idx, herd_pkt);
+  //
+  // Set up a 1x3 herd starting 34,0
+  //
+  uint64_t wr_idx2 = queue_add_write_index(queues[1], 1);
+  uint64_t packet_id2 = wr_idx2 % queues[1]->size;
+  dispatch_packet_t *herd_pkt2 =
+      (dispatch_packet_t *)(queues[1]->base_address_vaddr) + packet_id2;
+  air_packet_herd_init(herd_pkt2, 0, col2, 1, row, 3);
+  air_queue_dispatch_and_wait(queues[1], wr_idx2, herd_pkt2);
+
+  wr_idx = queue_add_write_index(queues[0], 1);
+  packet_id = wr_idx % queues[0]->size;
+  dispatch_packet_t *shim_pkt =
+      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
+  air_packet_device_init(shim_pkt, XAIE_NUM_COLS);
+  air_queue_dispatch_and_wait(queues[0], wr_idx, shim_pkt);
 
   mlir_aie_configure_cores(xaie);
   mlir_aie_configure_switchboxes(xaie);
@@ -55,14 +113,18 @@ main(int argc, char *argv[])
   mlir_aie_configure_dmas(xaie);
   mlir_aie_start_cores(xaie);
 
-  uint32_t *bram_ptr;
+  // Want to initializing the device memory allocator
+  if (air_init_dev_mem_allocator(0x8000 /* dev_mem_size */,
+                                 0 /* device_id (optional)*/)) {
+    std::cout << "Error creating device memory allocator" << std::endl;
+    return -1;
+  }
 
-  #define BRAM_ADDR AIR_BBUFF_BASE
-  #define DMA_COUNT 16
+#define DMA_COUNT 16
 
-  int fd = open("/dev/mem", O_RDWR | O_SYNC);
-  if (fd != -1) {
-    bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, BRAM_ADDR);
+  uint32_t *bram_ptr =
+      (uint32_t *)air_dev_mem_alloc(4 * DMA_COUNT * sizeof(uint32_t));
+  if (bram_ptr != NULL) {
     for (int i=0; i<DMA_COUNT; i++) {
       bram_ptr[i] = i+1;
       bram_ptr[DMA_COUNT+i]   = 0xdeface;
@@ -82,30 +144,8 @@ main(int argc, char *argv[])
   }
 
   // create the queues
-  uint64_t* qaddrs = (uint64_t*)AIR_VCK190_SHMEM_BASE;
-  queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, (uint64_t)&qaddrs[0]);
-  assert(ret == 0 && "failed to create queue!");
-  queue_t *q2 = nullptr;
-  ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q2, (uint64_t)&qaddrs[1]);
-  assert(ret == 0 && "failed to create queue!");
-
-  //
-  // Set up a 1x3 herd starting 7,0
-  //
-  uint64_t wr_idx = queue_add_write_index(q, 1);
-  uint64_t packet_id = wr_idx % q->size;
-  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_herd_init(herd_pkt, 0, col, 1, row, 3);
-  air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
-  //
-  // Set up a 1x3 herd starting 34,0
-  //
-  uint64_t wr_idx2 = queue_add_write_index(q2, 1);
-  uint64_t packet_id2 = wr_idx2 % q2->size;
-  dispatch_packet_t *herd_pkt2 = (dispatch_packet_t*)(q2->base_address_vaddr) + packet_id2;
-  air_packet_herd_init(herd_pkt2, 0, col2, 1, row, 3);
-  air_queue_dispatch_and_wait(q2, wr_idx2, herd_pkt2);
+  queue_t *q = queues[0];
+  queue_t *q2 = queues[1];
 
   //
   // send the data
@@ -114,7 +154,8 @@ main(int argc, char *argv[])
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt1 = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt1, 0, 7, 1, 0, 4, 2, BRAM_ADDR, DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt1, 0, 7, 1, 0, 4, 2, air_dev_mem_get_pa(bram_ptr),
+                       DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
 
   //
   // read the data
@@ -123,7 +164,10 @@ main(int argc, char *argv[])
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt2 = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt2, 0, 7, 0, 0, 4, 2, BRAM_ADDR+(DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt2, 0, 7, 0, 0, 4, 2,
+                       air_dev_mem_get_pa(bram_ptr) +
+                           (DMA_COUNT * sizeof(float)),
+                       DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
 
   //
   // send the data
@@ -132,7 +176,8 @@ main(int argc, char *argv[])
   wr_idx2 = queue_add_write_index(q2, 1);
   packet_id2 = wr_idx2 % q2->size;
   dispatch_packet_t *pkt12 = (dispatch_packet_t*)(q2->base_address_vaddr) + packet_id2;
-  air_packet_nd_memcpy(pkt12, 0, 34, 1, 0, 4, 2, BRAM_ADDR, DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt12, 0, 34, 1, 0, 4, 2, air_dev_mem_get_pa(bram_ptr),
+                       DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
 
   //
   // read the data
@@ -141,7 +186,10 @@ main(int argc, char *argv[])
   wr_idx2 = queue_add_write_index(q2, 1);
   packet_id2 = wr_idx2 % q2->size;
   dispatch_packet_t *pkt22 = (dispatch_packet_t*)(q2->base_address_vaddr) + packet_id2;
-  air_packet_nd_memcpy(pkt22, 0, 34, 0, 0, 4, 2, BRAM_ADDR+(2*DMA_COUNT*sizeof(float)), DMA_COUNT*sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt22, 0, 34, 0, 0, 4, 2,
+                       air_dev_mem_get_pa(bram_ptr) +
+                           (2 * DMA_COUNT * sizeof(float)),
+                       DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
 
   air_queue_dispatch(q, wr_idx, pkt2);
   air_queue_dispatch_and_wait(q2, wr_idx2, pkt22);
@@ -193,6 +241,9 @@ main(int argc, char *argv[])
       printf("2 mismatch %x != 2 + %x\n", d, i);
     }
   }
+
+  air_dev_mem_allocator_free();
+
   if (!errors) {
     printf("PASS!\n");
     return 0;
