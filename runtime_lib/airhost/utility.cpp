@@ -34,6 +34,11 @@
 
 #include "utility.hpp"
 
+#include <cstring>
+#include <dirent.h>
+#include <fstream> // ifstream
+#include <iomanip> // setbase()
+
 // Modified from
 // https://github.com/andre-richter/easy-pci-mmap/blob/master/utility.cpp
 void utility::get_pci_dbdf(std::vector<std::string> *bdf_vect, uint32_t vendor,
