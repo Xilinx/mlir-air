@@ -1,7 +1,5 @@
-//===- air_network.h ---------------------------------------------*- C++
-//-*-===//
+//===- air_network.h --------------------------------------------*- C++-*-===//
 //
-// Copyright (C) 2020-2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -27,13 +25,12 @@
 #ifndef AIR_NETWORK_H
 #define AIR_NETWORK_H
 
-#include "acdc_queue.h"
+#include "air_queue.h"
 #include "air_tensor.h"
 #include "hsa_defs.h"
 
-//#include "test_library.h"
+#include <stdint.h>
 
-// Just putting this here for now
 struct tensor_to_qp_map_entry {
   uint32_t qp;
   uint32_t rkey;

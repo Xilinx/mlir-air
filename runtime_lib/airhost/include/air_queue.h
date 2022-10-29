@@ -27,7 +27,6 @@
 #define ACDC_QUEUE_H
 
 #include "hsa_defs.h"
-#include <stdint.h>
 
 #include <stdint.h>
 

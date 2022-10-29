@@ -1,7 +1,5 @@
-//===- pcie-ernic-dev-mem-allocator.h ----------------------------*- C++
-//-*-===//
+//===- pcie-ernic-dev-mem-allocator.h --------------------------*- C++ -*-===//
 //
-// Copyright (C) 2020-2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a

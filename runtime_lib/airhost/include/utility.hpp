@@ -32,10 +32,8 @@
  *    Andre Richter, andre.richter@tum.de
  */
 
-#include <cstring>
-#include <dirent.h>
-#include <fstream> // ifstream
-#include <iomanip> // setbase()
+#include <stdint.h>
+#include <string>
 #include <vector>
 
 namespace utility {

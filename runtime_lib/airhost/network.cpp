@@ -1,7 +1,5 @@
-//===- network.cpp -----------------------------------------------*- C++
-//-*-===//
+//===- network.cpp ---------------------------------------------*- C++ -*-===//
 //
-// Copyright (C) 2020-2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -32,10 +30,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "include/acdc_queue.h"
-#include "include/air_host.h"
-#include "include/air_network.h"
-#include "include/pcie-ernic.h"
+#include "air_host.h"
+#include "pcie-ernic.h"
 
 #define QP_DEPTH 0x01000100
 
@@ -394,9 +390,9 @@ void air_recv(signal_t *s, tensor_t<uint32_t, 1> *t, uint32_t size,
       // Need to do this because otherwise the runtime will complain the packet
       // is timing out but it is supposed to be blocking
       air_queue_dispatch(q, wr_idx, pkt);
-      while (signal_wait_aquire((signal_t *)&pkt->completion_signal,
-                                HSA_SIGNAL_CONDITION_EQ, 0, 0x80000,
-                                HSA_WAIT_STATE_ACTIVE) != 0)
+      while (signal_wait_acquire((signal_t *)&pkt->completion_signal,
+                                 HSA_SIGNAL_CONDITION_EQ, 0, 0x80000,
+                                 HSA_WAIT_STATE_ACTIVE) != 0)
         ;
 
       // Calculating how much data we have to receive now and the new offset
@@ -508,9 +504,9 @@ void air_send(signal_t *s, tensor_t<uint32_t, 1> *t, uint32_t size,
     // Need to do this because otherwise the runtime will complain the packet is
     // timing out but it is supposed to be blocking
     air_queue_dispatch(q, wr_idx, pkt);
-    while (signal_wait_aquire((signal_t *)&pkt->completion_signal,
-                              HSA_SIGNAL_CONDITION_EQ, 0, 0x80000,
-                              HSA_WAIT_STATE_ACTIVE) != 0)
+    while (signal_wait_acquire((signal_t *)&pkt->completion_signal,
+                               HSA_SIGNAL_CONDITION_EQ, 0, 0x80000,
+                               HSA_WAIT_STATE_ACTIVE) != 0)
       ;
   }
 }
