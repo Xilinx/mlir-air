@@ -718,7 +718,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
       b, loc, op, args, tileIds, tileSizeVector, sizeBounds, true);
   SmallVector<Type, 4> stageResultTypes;
   unsigned int resultIdx = 0;
-  for (OpOperand *opOperand : op.getOutputOperands()) {
+  for (OpOperand *opOperand : op.getDpsInitOperands()) {
     resultIdx = opOperand->getOperandNumber();
     auto memrefType = tiledOperands[resultIdx].getType().cast<MemRefType>();
     auto tensorType = RankedTensorType::get(memrefType.getShape(),
@@ -801,7 +801,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
       auto mref = tiledOperands[resultIdx];
       if (promote && first_stage) {
         memref::SubViewOp sv = dyn_cast<memref::SubViewOp>(
-            linalgOp.getOutputOperand(0)->get().getDefiningOp());
+            linalgOp.getDpsInitOperand(0)->get().getDefiningOp());
         mref = sv.getSource();
         sv.replaceAllUsesWith(mref);
       }
