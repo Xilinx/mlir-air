@@ -14,7 +14,9 @@ if(BUILD_AIR_PCIE)
   add_definitions(-DAIR_PCIE)
 endif()
 
-if(LIBXAIE_FOUND)
+include_directories(${XILINX_XAIE_INCLUDE_DIR})
+link_libraries(${XILINX_XAIE_LIBS})
+
 add_library(airhost STATIC
     memory.cpp
     queue.cpp
@@ -67,7 +69,3 @@ endforeach()
 # Install files
 set(INSTALLS memory.cpp queue.cpp host.cpp utility.cpp pcie-ernic.cpp pcie-ernic-dev-mem-allocator.cpp network.cpp)
 install(FILES ${INSTALLS} DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/airhost)
-
-else()
-message("LIBXAIE_FOUND not set.  Skipping building airhost library")
-endif()
