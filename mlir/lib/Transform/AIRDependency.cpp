@@ -36,9 +36,9 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
-#include "mlir/IR/Dominance.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
@@ -422,12 +422,17 @@ public:
                                     .getType()
                                     .cast<MemRefType>()
                                     .getRank();
-          for (unsigned i = 0; i < sink_op_channel_put.getSrcOffsets().size(); i++)
-            sink_op_scalar_ins.push_back(sink_op_channel_put.getSrcOffsets()[i]);
-          for (unsigned i = 0; i < sink_op_channel_put.getSrcSizes().size(); i++)
+          for (unsigned i = 0; i < sink_op_channel_put.getSrcOffsets().size();
+               i++)
+            sink_op_scalar_ins.push_back(
+                sink_op_channel_put.getSrcOffsets()[i]);
+          for (unsigned i = 0; i < sink_op_channel_put.getSrcSizes().size();
+               i++)
             sink_op_scalar_ins.push_back(sink_op_channel_put.getSrcSizes()[i]);
-          for (unsigned i = 0; i < sink_op_channel_put.getSrcStrides().size(); i++)
-            sink_op_scalar_ins.push_back(sink_op_channel_put.getSrcStrides()[i]);
+          for (unsigned i = 0; i < sink_op_channel_put.getSrcStrides().size();
+               i++)
+            sink_op_scalar_ins.push_back(
+                sink_op_channel_put.getSrcStrides()[i]);
           SmallVector<Value, 2> src_indices;
           if (sink_op_channel_put.getSrcOffsets().size()) {
             for (unsigned i = 0; i < numDimsSrc; i++) {
@@ -450,12 +455,17 @@ public:
                                     .getType()
                                     .cast<MemRefType>()
                                     .getRank();
-          for (unsigned i = 0; i < sink_op_channel_get.getDstOffsets().size(); i++)
-            sink_op_scalar_outs.push_back(sink_op_channel_get.getDstOffsets()[i]);
-          for (unsigned i = 0; i < sink_op_channel_get.getDstSizes().size(); i++)
+          for (unsigned i = 0; i < sink_op_channel_get.getDstOffsets().size();
+               i++)
+            sink_op_scalar_outs.push_back(
+                sink_op_channel_get.getDstOffsets()[i]);
+          for (unsigned i = 0; i < sink_op_channel_get.getDstSizes().size();
+               i++)
             sink_op_scalar_outs.push_back(sink_op_channel_get.getDstSizes()[i]);
-          for (unsigned i = 0; i < sink_op_channel_get.getDstStrides().size(); i++)
-            sink_op_scalar_outs.push_back(sink_op_channel_get.getDstStrides()[i]);
+          for (unsigned i = 0; i < sink_op_channel_get.getDstStrides().size();
+               i++)
+            sink_op_scalar_outs.push_back(
+                sink_op_channel_get.getDstStrides()[i]);
           SmallVector<Value, 2> dst_indices;
           if (sink_op_channel_get.getDstOffsets().size()) {
             for (unsigned i = 0; i < numDimsDst; i++) {
@@ -1111,7 +1121,8 @@ private:
         }
       }
       // If used in Channel Put Op
-      else if (auto channel_put = dyn_cast<xilinx::air::ChannelPutOp>(u.getOwner())) {
+      else if (auto channel_put =
+                   dyn_cast<xilinx::air::ChannelPutOp>(u.getOwner())) {
         if (u.is(channel_put.getSrcMemref())) {
           foundReadAccess = true;
         } else {
@@ -1119,7 +1130,8 @@ private:
         }
       }
       // If used in Channel Get Op
-      else if (auto channel_get = dyn_cast<xilinx::air::ChannelGetOp>(u.getOwner())) {
+      else if (auto channel_get =
+                   dyn_cast<xilinx::air::ChannelGetOp>(u.getOwner())) {
         if (u.is(channel_get.getDstMemref())) {
           foundWriteAccess = true;
         } else {
@@ -1234,14 +1246,17 @@ private:
         }
       }
       // Else if used in Channel Op
-      else if (auto channel = dyn_cast<xilinx::air::ChannelInterface>(u.getOwner())) {
+      else if (auto channel =
+                   dyn_cast<xilinx::air::ChannelInterface>(u.getOwner())) {
         if (foundAsyncOpUsesAboveCurrentLine(
                 &channel)) { // If this use is above current line
           // Channel op: Need to check for overlapping partial memrefs in use
           if (auto channel_put =
                   dyn_cast<xilinx::air::ChannelPutOp>(channel.getOperation())) {
-            unsigned numDimsSrc =
-                  channel_put.getSrcMemref().getType().cast<MemRefType>().getRank();
+            unsigned numDimsSrc = channel_put.getSrcMemref()
+                                      .getType()
+                                      .cast<MemRefType>()
+                                      .getRank();
             SmallVector<Value, 2> src_indices;
             if (channel_put.getSrcOffsets().size()) {
               for (unsigned i = 0; i < numDimsSrc; i++) {
@@ -1252,29 +1267,35 @@ private:
                 src_indices.push_back(nullptr);
               }
             }
-            partialMemref channel_put_src =
-                createPartialMemref(channel_put.getSrcMemref(), numDimsSrc, src_indices);
+            partialMemref channel_put_src = createPartialMemref(
+                channel_put.getSrcMemref(), numDimsSrc, src_indices);
 
             if (rw == 'r') {
               if (u.is(channel_put.getSrcMemref())) {
                 if (tile == nullptr) {
-                  addNewAsyncDepToGraph<T>(channel_put.getOperation()->getResult(0), op);
+                  addNewAsyncDepToGraph<T>(
+                      channel_put.getOperation()->getResult(0), op);
                 } else if (areEqualIndexPartialMemrefs(tile, &channel_put_src))
-                  addNewAsyncDepToGraph<T>(channel_put.getOperation()->getResult(0), op);
+                  addNewAsyncDepToGraph<T>(
+                      channel_put.getOperation()->getResult(0), op);
               }
             } else if (rw == 'w') {
             } else {
               if (tile == nullptr) {
-                addNewAsyncDepToGraph<T>(channel_put.getOperation()->getResult(0), op);
+                addNewAsyncDepToGraph<T>(
+                    channel_put.getOperation()->getResult(0), op);
               } else if (u.is(channel_put.getSrcMemref())) {
                 if (areEqualIndexPartialMemrefs(tile, &channel_put_src))
-                  addNewAsyncDepToGraph<T>(channel_put.getOperation()->getResult(0), op);
+                  addNewAsyncDepToGraph<T>(
+                      channel_put.getOperation()->getResult(0), op);
               }
             }
-          }
-          else if (auto channel_get = dyn_cast<xilinx::air::ChannelGetOp>(channel.getOperation())){
-            unsigned numDimsDst =
-                channel_get.getDstMemref().getType().cast<MemRefType>().getRank();
+          } else if (auto channel_get = dyn_cast<xilinx::air::ChannelGetOp>(
+                         channel.getOperation())) {
+            unsigned numDimsDst = channel_get.getDstMemref()
+                                      .getType()
+                                      .cast<MemRefType>()
+                                      .getRank();
             SmallVector<Value, 2> dst_indices;
             if (channel_get.getDstOffsets().size()) {
               for (unsigned i = 0; i < numDimsDst; i++) {
@@ -1285,27 +1306,31 @@ private:
                 dst_indices.push_back(nullptr);
               }
             }
-            partialMemref channel_get_dst =
-                createPartialMemref(channel_get.getDstMemref(), numDimsDst, dst_indices);
+            partialMemref channel_get_dst = createPartialMemref(
+                channel_get.getDstMemref(), numDimsDst, dst_indices);
 
             if (rw == 'r') {
             } else if (rw == 'w') {
               if (u.is(channel_get.getDstMemref())) {
                 if (tile == nullptr) {
-                  addNewAsyncDepToGraph<T>(channel_get.getOperation()->getResult(0), op);
+                  addNewAsyncDepToGraph<T>(
+                      channel_get.getOperation()->getResult(0), op);
                 } else if (areEqualIndexPartialMemrefs(tile, &channel_get_dst))
-                  addNewAsyncDepToGraph<T>(channel_get.getOperation()->getResult(0), op);
+                  addNewAsyncDepToGraph<T>(
+                      channel_get.getOperation()->getResult(0), op);
               }
             } else {
               if (tile == nullptr) {
-                addNewAsyncDepToGraph<T>(channel_get.getOperation()->getResult(0), op);
+                addNewAsyncDepToGraph<T>(
+                    channel_get.getOperation()->getResult(0), op);
               } else if (u.is(channel_get.getDstMemref())) {
                 if (areEqualIndexPartialMemrefs(tile, &channel_get_dst))
-                  addNewAsyncDepToGraph<T>(channel_get.getOperation()->getResult(0), op);
+                  addNewAsyncDepToGraph<T>(
+                      channel_get.getOperation()->getResult(0), op);
               }
             }
-          } 
-          else assert(false && "Unknown air channel op");
+          } else
+            assert(false && "Unknown air channel op");
         }
       }
 
@@ -1740,7 +1765,7 @@ private:
       if (source->getResult(0)) {
         for (auto sink : source->getResult(0).getUsers()) {
           // Keep token if source already dominates sink
-          if (source->getParentOp()->isAncestor(sink)){
+          if (source->getParentOp()->isAncestor(sink)) {
             keep.insert(sink);
           } else {
             // Update graph connectivity

@@ -345,7 +345,8 @@ dependencyCanonicalizer::addVertexFromOpImpls(Operation *op, Graph &G,
                                               dependencyContext &dep_ctx) {
   if (auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op)) {
     return addVertexFromDmaOp(dma_op, G, dep_ctx);
-  } else if (auto channel_op = mlir::dyn_cast<xilinx::air::ChannelInterface>(op)) {
+  } else if (auto channel_op =
+                 mlir::dyn_cast<xilinx::air::ChannelInterface>(op)) {
     return addVertexFromChannelOp(channel_op, G, dep_ctx);
   } else if (auto execute_op = dyn_cast<xilinx::air::ExecuteOp>(op)) {
     return addVertexFromExecuteOp(execute_op, G, dep_ctx);
@@ -406,11 +407,11 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromDmaOp(
 Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
     xilinx::air::ChannelInterface op, Graph &G, dependencyContext &dep_ctx) {
   if (dyn_cast<xilinx::air::ChannelPutOp>(op.getOperation())) {
-    return addVertexFromOp(op, dep_ctx.DmaOpID, "channel", "ChannelPutOp", "cyan",
-                           "oval", G, dep_ctx);
+    return addVertexFromOp(op, dep_ctx.DmaOpID, "channel", "ChannelPutOp",
+                           "cyan", "oval", G, dep_ctx);
   } else if (dyn_cast<xilinx::air::ChannelGetOp>(op.getOperation())) {
-    return addVertexFromOp(op, dep_ctx.DmaOpID, "channel", "ChannelGetOp", "cyan",
-                           "oval", G, dep_ctx);
+    return addVertexFromOp(op, dep_ctx.DmaOpID, "channel", "ChannelGetOp",
+                           "cyan", "oval", G, dep_ctx);
   } else {
     assert(false && "Unknown channel op");
     return 0;
