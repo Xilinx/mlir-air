@@ -112,12 +112,12 @@ CostModel::getLinalgOpCounts(OpCountMap &map, linalg::LinalgOp op) {
       map.map.insert({s, 0});
     map[s] = map[s] + 1;
   });
-  for (auto &oper : op.getInputOperands()) {
+  for (auto &oper : op.getDpsInputOperands()) {
     if (op.payloadUsesValueFromOperand(oper))
       reads++;
     footprint += getTensorVolume(oper->get().getType());
   }
-  for (auto &oper : op.getOutputOperands()) {
+  for (auto &oper : op.getDpsInitOperands()) {
     if (op.payloadUsesValueFromOperand(oper))
       reads++;
     writes++;

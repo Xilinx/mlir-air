@@ -262,7 +262,7 @@ public:
 
         // If the sink op is linalg op
         if (auto sink_op_linalgop = dyn_cast<linalg::LinalgOp>(sink_op)) {
-          for (auto linalg_ins : sink_op_linalgop.getInputOperands()) {
+          for (auto linalg_ins : sink_op_linalgop.getDpsInputOperands()) {
             auto ins_value = linalg_ins->get();
             if (ins_value.getType().isa<MemRefType>()) {
               unsigned memRefRank =
@@ -273,7 +273,7 @@ public:
               sink_op_scalar_ins.push_back(ins_value);
             }
           }
-          for (auto linalg_outs : sink_op_linalgop.getOutputOperands()) {
+          for (auto linalg_outs : sink_op_linalgop.getDpsInitOperands()) {
             auto outs_value = linalg_outs->get();
             if (outs_value.getType().isa<MemRefType>()) {
               unsigned memRefRank =
@@ -968,11 +968,11 @@ private:
       // If used in a linalg op
       else if (auto linalgop = mlir::dyn_cast<linalg::LinalgOp>(u.getOwner())) {
         if (u.getOperandNumber() <
-            linalgop.getNumInputs() + linalgop.getNumOutputs()) {
+            linalgop.getNumDpsInputs() + linalgop.getNumDpsInits()) {
           foundReadAccess = true;
-        } else if (u.getOperandNumber() >= linalgop.getNumInputs() &&
-                   u.getOperandNumber() - linalgop.getNumInputs() <
-                       linalgop.getNumOutputs()) {
+        } else if (u.getOperandNumber() >= linalgop.getNumDpsInputs() &&
+                   u.getOperandNumber() - linalgop.getNumDpsInputs() <
+                       linalgop.getNumDpsInits()) {
           foundWriteAccess = true;
         } else {
           assert(false && "Unknown operand in linalg op");
@@ -1080,12 +1080,12 @@ private:
           if (foundAsyncOpUsesAboveCurrentLine(&ar)) {
             if (rw == 'r') {
               if (u.getOperandNumber() <
-                  linalgop.getNumInputs() + linalgop.getNumOutputs())
+                  linalgop.getNumDpsInputs() + linalgop.getNumDpsInits())
                 addNewAsyncDepToGraph<T>(ar.getResult(0), op);
             } else if (rw == 'w') {
-              if (u.getOperandNumber() >= linalgop.getNumInputs() &&
-                  u.getOperandNumber() - linalgop.getNumInputs() <
-                      linalgop.getNumOutputs())
+              if (u.getOperandNumber() >= linalgop.getNumDpsInputs() &&
+                  u.getOperandNumber() - linalgop.getNumDpsInputs() <
+                      linalgop.getNumDpsInits())
                 addNewAsyncDepToGraph<T>(ar.getResult(0), op);
             } else {
               addNewAsyncDepToGraph<T>(ar.getResult(0), op);
