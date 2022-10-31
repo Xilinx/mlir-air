@@ -565,8 +565,10 @@ std::string dependencyCanonicalizer::getOpTypeFromOpImpls(Operation *op) {
   } else {
     if (dyn_cast<xilinx::air::ExecuteOp>(op->getParentOp())) {
       return "execute";
-    } else
+    } else {
+      assert(false && "Unknown op type");
       return "";
+    }
   }
 }
 
@@ -710,9 +712,7 @@ dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
            dyn_cast<scf::ParallelOp>(dep_token.getDefiningOp())) {
     auto parallelop = dyn_cast<scf::ParallelOp>(dep_token.getDefiningOp());
     for (auto parallelop_reduceop : parallelop.getOps<scf::ReduceOp>()) {
-      auto parallelop_terminator =
-          parallelop_reduceop.getRegion().front().getTerminator();
-      output.push_back(parallelop_terminator);
+      output.push_back(parallelop_reduceop);
       return output;
     }
   }
