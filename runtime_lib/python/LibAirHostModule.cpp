@@ -87,10 +87,6 @@ void defineAIRHostModule(pybind11::module &m) {
   m.def("get_module_descriptor", &air_module_get_desc,
         pybind11::return_value_policy::reference);
 
-  // m.def("get_herd_descriptor", [](air_module_handle_t h, std::string name) {
-  //   return air_herd_get_desc(h, name.c_str());
-  // }, pybind11::return_value_policy::reference);
-
   pybind11::class_<air_agent_t>(m, "Agent");
 
   m.def(

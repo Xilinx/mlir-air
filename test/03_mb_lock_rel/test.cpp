@@ -84,7 +84,7 @@ int main(int argc, char *argv[])
   // setup the shim dma descriptors
   uint32_t *bram_ptr;
   mlir_aie_init_mems(xaie, 1);
-  bram_ptr = (uint32_t *)mlir_aie_mem_alloc(xaie, 0, AIR_BBUFF_BASE, 0x8000);
+  bram_ptr = (uint32_t *)mlir_aie_mem_alloc(xaie, 0, 0x8000);
 
   bram_ptr[24] = 0xacdc;
   mlir_aie_sync_mem_dev(xaie, 0);
