@@ -135,6 +135,20 @@ struct RemoveTensorLoadStorePattern
   }
 };
 
+struct LowerLinalgOpPattern : public OpRewritePattern<linalg::GenericOp> {
+  using OpRewritePattern<linalg::GenericOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(linalg::GenericOp op,
+                                PatternRewriter &rewriter) const override {
+
+    if (succeeded(linalg::linalgOpToAffineLoops(rewriter, op))) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+    return failure();
+  }
+};
+
 struct AIRLowerLinalgTensors : public AIRLowerLinalgTensorsBase<AIRLowerLinalgTensors> {
   void runOnOperation() override;
 };
@@ -172,6 +186,7 @@ void AIRLowerLinalgTensors::runOnOperation() {
 
   RewritePatternSet patterns2(&context);
   linalg::populateLinalgNamedOpsGeneralizationPatterns(patterns2);
+  patterns2.add<LowerLinalgOpPattern>(&context);
   (void)applyPatternsAndFoldGreedily(aie_module, std::move(patterns2));
 }
 
