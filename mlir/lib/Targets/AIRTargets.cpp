@@ -147,10 +147,9 @@ void registerAIRRtTranslations() {
         return AIRHerdsToJSON(module, output);
       },
       [](DialectRegistry &registry) {
-        registry
-            .insert<air::airDialect, func::FuncDialect,
-                    arith::ArithDialect, memref::MemRefDialect,
-                    scf::SCFDialect, AffineDialect, linalg::LinalgDialect>();
+        registry.insert<air::airDialect, func::FuncDialect, arith::ArithDialect,
+                        memref::MemRefDialect, scf::SCFDialect, AffineDialect,
+                        linalg::LinalgDialect>();
       });
 }
 
