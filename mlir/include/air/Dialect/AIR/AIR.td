@@ -418,7 +418,9 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
   }];
 }
 
-def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface, AttrSizedOperandSegments]>,
+def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface, 
+                                              air_ChannelInterface, 
+                                              AttrSizedOperandSegments]>,
     Arguments<(ins Variadic<air_AsyncToken>:$async_dependencies,
         FlatSymbolRefAttr:$chan_name,
         Variadic<Index>:$indices,
@@ -437,9 +439,20 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface, AttrSizedOpe
     `(` $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)` attr-dict `:`
     `(` type($src) `)`
   }];
+  let extraClassDeclaration = [{
+    Value getSrcMemref() { return getSrc(); }
+    int32_t getId() {
+      if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
+        return id_attr.getInt();
+      }
+      return -1;
+    }
+  }];
 }
 
-def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface, AttrSizedOperandSegments]>,
+def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface, 
+                                              air_ChannelInterface, 
+                                              AttrSizedOperandSegments]>,
     Arguments<(ins Variadic<air_AsyncToken>:$async_dependencies,
         FlatSymbolRefAttr:$chan_name,
         Variadic<Index>:$indices,
@@ -457,6 +470,15 @@ def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface, AttrSizedOpe
     $chan_name `[` ($indices^)? `]`
     `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `)` attr-dict `:`
     `(` type($dst) `)`
+  }];
+  let extraClassDeclaration = [{
+    Value getDstMemref() { return getDst(); }
+    int32_t getId() {
+      if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
+        return id_attr.getInt();
+      }
+      return -1;
+    }
   }];
 }
 
