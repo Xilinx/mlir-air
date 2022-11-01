@@ -283,9 +283,9 @@ A terminator operation for code regions that appear in the body of
 operands and produces no results. The operand number and types must
 match the signature of the `air.execute` that contains the operation.
 
-Traits: HasParent<ExecuteOp>, ReturnLike, Terminator
+Traits: AlwaysSpeculatableImplTrait, HasParent<ExecuteOp>, ReturnLike, Terminator
 
-Interfaces: NoSideEffect (MemoryEffectOpInterface)
+Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
 
 Effects: MemoryEffects::Effect{}
 
@@ -355,9 +355,9 @@ A terminator operation for the body of `air.herd` operations.
 `air.herd` operations are not expected to return any value so the
 terminator takes no operands.
 
-Traits: HasParent<HerdOp>, Terminator
+Traits: AlwaysSpeculatableImplTrait, HasParent<HerdOp>, Terminator
 
-Interfaces: NoSideEffect (MemoryEffectOpInterface)
+Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
 
 Effects: MemoryEffects::Effect{}
 
@@ -406,9 +406,9 @@ A terminator operation for the body of `air.launch` operations.
 `air.launch` operations are not expected to return any value so the
 terminator takes no operands.
 
-Traits: HasParent<LaunchOp>, Terminator
+Traits: AlwaysSpeculatableImplTrait, HasParent<LaunchOp>, Terminator
 
-Interfaces: NoSideEffect (MemoryEffectOpInterface)
+Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
 
 Effects: MemoryEffects::Effect{}
 
@@ -457,9 +457,9 @@ A terminator operation for the body of `air.partition` operations.
 `air.partition` operations are not expected to return any value so the
 terminator takes no operands.
 
-Traits: HasParent<PartitionOp>, Terminator
+Traits: AlwaysSpeculatableImplTrait, HasParent<PartitionOp>, Terminator
 
-Interfaces: NoSideEffect (MemoryEffectOpInterface)
+Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
 
 Effects: MemoryEffects::Effect{}
 
@@ -546,9 +546,9 @@ operation ::= `air.pipeline.terminator` attr-dict ($opers^ `:` type($opers))?
 A terminator operation for regions that appear in the body of
 `air.pipeline` operation.
 
-Traits: HasParent<HerdPipelineOp>, Terminator
+Traits: AlwaysSpeculatableImplTrait, HasParent<HerdPipelineOp>, Terminator
 
-Interfaces: NoSideEffect (MemoryEffectOpInterface)
+Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
 
 Effects: MemoryEffects::Effect{}
 
@@ -574,9 +574,9 @@ A terminator operation for regions that appear in the body of
 operands and produces no results. The operand number and types must
 match the signature of the `air.pipeline` that contains the operation.
 
-Traits: HasParent<PipelineStageOp>, ReturnLike, Terminator
+Traits: AlwaysSpeculatableImplTrait, HasParent<PipelineStageOp>, ReturnLike, Terminator
 
-Interfaces: NoSideEffect (MemoryEffectOpInterface)
+Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
 
 Effects: MemoryEffects::Effect{}
 
