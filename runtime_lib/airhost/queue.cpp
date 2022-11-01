@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "air_host.h"
+#include "air_host_impl.h"
 #include "air_queue.h"
 
 // Need access to the physical devices to determine where to
