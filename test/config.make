@@ -75,7 +75,7 @@ $(BUILD_CPP_FILES):  $(MLIR_CPP_FILES)
 		-o $@
 
 %.inc: %.mlir
-	$(AIE_OPT) --convert-scf-to-cf --aie-create-flows --aie-find-flows --aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
+	$(AIE_OPT) --convert-scf-to-cf --aie-create-pathfinder-flows --aie-find-flows --aie-assign-buffer-addresses $^ | $(AIE_XLATE) --aie-generate-xaie -o $@
 
 %.elf: $(AIE_SRC_DIR)/main.cc
 	cd ./$(AIE_SRC_DIR) && \
