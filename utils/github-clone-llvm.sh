@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-##===- utils/build-llvm.sh - Build LLVM for github workflow --*- Script -*-===##
-# 
+##===- utils/github-clone-llvm.sh ---------------------------*- Script -*-===##
+#
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
@@ -24,34 +24,18 @@
 
 ##===----------------------------------------------------------------------===##
 #
-# This script build LLVM with the standard options. Intended to be called from 
-# the github workflows.
+# This script checks out LLVM.  We use this instead of a git submodule to avoid
+# excessive copies of the LLVM tree.
+#
+# This script is intended to be called from the github workflows.
 #
 ##===----------------------------------------------------------------------===##
 
-BUILD_DIR=${1:-"build"}
-INSTALL_DIR=${2:-"install"}
+export commithash=74fb770de9399d7258a8eda974c93610cfde698e
 
-mkdir -p llvm/$BUILD_DIR
-mkdir -p llvm/$INSTALL_DIR
-pushd llvm/$BUILD_DIR
-cmake ../llvm \
-  -GNinja \
-  -DLLVM_BUILD_EXAMPLES=OFF \
-  -DLLVM_TARGETS_TO_BUILD="host" \
-  -DCMAKE_INSTALL_PREFIX=../$INSTALL_DIR \
-  -DLLVM_ENABLE_PROJECTS='mlir' \
-  -DLLVM_OPTIMIZED_TABLEGEN=OFF \
-  -DLLVM_ENABLE_OCAMLDOC=OFF \
-  -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-  -DLLVM_INSTALL_UTILS=ON \
-  -DCMAKE_C_COMPILER=clang \
-  -DCMAKE_CXX_COMPILER=clang++ \
-  -DLLVM_CCACHE_BUILD=ON \
-  -DLLVM_ENABLE_LLD=ON \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DLLVM_ENABLE_RTTI=ON \
-  -DLLVM_ENABLE_ASSERTIONS=ON
-
-cmake --build . --target install -- -j$(nproc)
+git clone --depth 1 https://github.com/llvm/llvm-project.git llvm
+pushd llvm
+git fetch --depth=1 origin $commithash
+git checkout $commithash
 popd
+
