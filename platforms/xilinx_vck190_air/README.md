@@ -49,7 +49,7 @@ Clone the PYNQ repository and checkout the v2.7 branch:
 Apply the AIR patch to the PYNQ repository:
 
     cd PYNQ
-    patch -p 1 < /path/to/mlir-air/pynq/vck190/pynq_v2.7_air.patch
+    patch -p 1 < /path/to/mlir-air/pynq/vck190_air/pynq_v2.7_air.patch
 
 We will build PYNQ using a
 [pre-built board-agnostic image](https://pynq.readthedocs.io/en/latest/pynq_sd_card.html#using-the-prebuilt-board-agnostic-imageCopy).
