@@ -222,7 +222,7 @@ def run(mlir_module, args):
               (['--sysroot', opts.sysroot] if opts.sysroot else ['--sysroot=/']) +
               ['--host-target', opts.host_target if opts.host_target else aiecc_target] +
               ['--tmpdir', aiecc_dir] +
-              ['--pathfinder', '--aie-generate-xaiev2'] +
+              ['--aie-generate-xaiev2'] +
               ['--no-xbridge', '--no-xchesscc', aiecc_file])
 
       inc_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.inc'
@@ -336,7 +336,7 @@ def run_flow(opts):
               (['--sysroot', opts.sysroot] if opts.sysroot else ['--sysroot=/']) +
               ['--host-target', opts.host_target if opts.host_target else aiecc_target] +
               ['--tmpdir', aiecc_dir] +
-              ['--pathfinder', '--aie-generate-xaiev2'] +
+              ['--aie-generate-xaiev2'] +
               ['--no-xbridge', '--no-xchesscc', aiecc_file])
 
       inc_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.inc'
