@@ -76,7 +76,7 @@ Experimental operation to represent copying from a channel to a memref.
 
 Traits: AttrSizedOperandSegments
 
-Interfaces: air_AsyncOpInterface
+Interfaces: air_AsyncOpInterface, air_ChannelInterface
 
 #### Attributes:
 
@@ -142,7 +142,7 @@ Experimental operation to represent copying data from a memref to a channel.
 
 Traits: AttrSizedOperandSegments
 
-Interfaces: air_AsyncOpInterface
+Interfaces: air_AsyncOpInterface, air_ChannelInterface
 
 #### Attributes:
 
