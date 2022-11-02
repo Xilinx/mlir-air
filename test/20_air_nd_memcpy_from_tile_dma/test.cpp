@@ -27,15 +27,17 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <thread>
-#include <stdlib.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/mman.h>
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <iostream>
+#include <stdlib.h>
+#include <sys/mman.h>
+#include <thread>
+#include <unistd.h>
+#include <vector>
 
 #include "air_host.h"
-#include "air_tensor.h"
+#include "test_library.h"
 
 #define DMA_COUNT 256
 
@@ -49,16 +51,40 @@ main(int argc, char *argv[])
 {
   uint64_t row = 4;
   uint64_t col = 5;
-  
-  aie_libxaie_ctx_t *xaie = air_init_libxaie1();
+
+  std::vector<air_agent_t> agents;
+  auto get_agents_ret = air_iterate_agents(
+      [](air_agent_t a, void *d) {
+        auto *v = static_cast<std::vector<air_agent_t> *>(d);
+        v->push_back(a);
+        return HSA_STATUS_SUCCESS;
+      },
+      (void *)&agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
+
+  if (agents.empty()) {
+    std::cout << "fail." << std::endl;
+    return -1;
+  }
+
+  std::cout << "Found " << agents.size() << " agents" << std::endl;
+
+  std::vector<queue_t *> queues;
+  for (auto agent : agents) {
+    // create the queue
+    queue_t *q = nullptr;
+    auto create_queue_ret = air_queue_create(
+        MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, agent.handle);
+    assert(create_queue_ret == 0 && "failed to create queue!");
+    queues.push_back(q);
+  }
+
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
+
+  queue_t *q = queues[0];
 
   for (int i=0; i<DMA_COUNT; i++)
     mlir_aie_write_buffer_buf0(xaie, i, i+0x10);
-
-  // create the queue
-  queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
-  assert(ret == 0 && "failed to create queue!");
 
   printf("loading aie_ctrl.so\n");
   auto handle = air_module_load_from_file(nullptr,q);

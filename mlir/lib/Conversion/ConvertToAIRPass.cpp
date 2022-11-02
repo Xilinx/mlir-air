@@ -34,7 +34,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/Linalg/Transforms/CodegenStrategy.h"
+#include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
@@ -74,8 +74,8 @@ class MemrefCopyToAIRDmaConversion : public OpRewritePattern<memref::CopyOp> {
   LogicalResult matchAndRewrite(memref::CopyOp op,
                                 PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    auto src = op.source();
-    auto dst = op.target();
+    auto src = op.getSource();
+    auto dst = op.getTarget();
 
     // It must already be a memref
     auto src_type = src.getType().dyn_cast<MemRefType>();
@@ -138,7 +138,7 @@ class MemrefCopyToAIRDmaConversion : public OpRewritePattern<memref::CopyOp> {
       if (src_strides.size() != rank)
         return failure();
 
-      src = subview.source();
+      src = subview.getSource();
     }
 
     if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
@@ -149,7 +149,7 @@ class MemrefCopyToAIRDmaConversion : public OpRewritePattern<memref::CopyOp> {
       if (dst_strides.size() != rank)
         return failure();
 
-      dst = subview.source();
+      dst = subview.getSource();
     }
 
     SmallVector<Value, 4> deps;
@@ -208,8 +208,8 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
   LogicalResult matchAndRewrite(linalg::CopyOp op,
                                 PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    auto src = op.inputs()[0];
-    auto dst = op.outputs()[0];
+    auto src = op.getInputs()[0];
+    auto dst = op.getOutputs()[0];
 
     // It must already be a memref
     auto src_type = src.getType().dyn_cast<MemRefType>();
@@ -239,7 +239,7 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
       if (src_strides.size() != rank)
         return failure();
 
-      src = subview.source();
+      src = subview.getSource();
     }
 
     if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
@@ -251,7 +251,7 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
       if (dst_strides.size() != rank)
         return failure();
 
-      dst = subview.source();
+      dst = subview.getSource();
     }
 
     SmallVector<Value, 4> deps;
@@ -274,8 +274,8 @@ class MemrefCopyToAIRChannelConversion
   LogicalResult matchAndRewrite(memref::CopyOp op,
                                 PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    auto src = op.source();
-    auto dst = op.target();
+    auto src = op.getSource();
+    auto dst = op.getTarget();
     auto ctx = op->getContext();
 
     // It must already be a memref
@@ -310,7 +310,7 @@ class MemrefCopyToAIRChannelConversion
       if (src_strides.size() != rank)
         return failure();
 
-      src = subview.source();
+      src = subview.getSource();
     }
 
     if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
@@ -322,7 +322,7 @@ class MemrefCopyToAIRChannelConversion
       if (dst_strides.size() != rank)
         return failure();
 
-      dst = subview.source();
+      dst = subview.getSource();
     }
 
     SmallVector<Value, 4> emptyDeps;
@@ -936,14 +936,14 @@ struct CopyToDmaPass : public CopyToDmaBase<CopyToDmaPass> {
 
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
                            scf::SCFDialect, xilinx::air::airDialect,
-                           arith::ArithmeticDialect, memref::MemRefDialect>();
+                           arith::ArithDialect, memref::MemRefDialect>();
 
     target.addLegalOp<AffineApplyOp, AffineForOp, AffineLoadOp, AffineStoreOp,
                       AffineYieldOp>();
 
     target.addDynamicallyLegalOp<memref::CopyOp>([](memref::CopyOp co) {
-      auto src_type = co.source().getType().dyn_cast<MemRefType>();
-      auto dst_type = co.target().getType().dyn_cast<MemRefType>();
+      auto src_type = co.getSource().getType().dyn_cast<MemRefType>();
+      auto dst_type = co.getTarget().getType().dyn_cast<MemRefType>();
       return src_type.getMemorySpaceAsInt() == dst_type.getMemorySpaceAsInt();
     });
 
@@ -1002,14 +1002,13 @@ struct CopyToChannelPass : public CopyToChannelBase<CopyToChannelPass> {
 
     ConversionTarget target(*context);
 
-    target
-        .addLegalDialect<LLVM::LLVMDialect, func::FuncDialect, scf::SCFDialect,
-                         AffineDialect, xilinx::air::airDialect,
-                         arith::ArithmeticDialect, memref::MemRefDialect>();
+    target.addLegalDialect<
+        LLVM::LLVMDialect, func::FuncDialect, scf::SCFDialect, AffineDialect,
+        xilinx::air::airDialect, arith::ArithDialect, memref::MemRefDialect>();
 
     target.addDynamicallyLegalOp<memref::CopyOp>([](memref::CopyOp co) {
-      auto src_type = co.source().getType().dyn_cast<MemRefType>();
-      auto dst_type = co.target().getType().dyn_cast<MemRefType>();
+      auto src_type = co.getSource().getType().dyn_cast<MemRefType>();
+      auto dst_type = co.getTarget().getType().dyn_cast<MemRefType>();
       return src_type.getMemorySpaceAsInt() == dst_type.getMemorySpaceAsInt();
     });
 
@@ -1085,7 +1084,7 @@ struct ParallelToHerdPass : public ParallelToHerdBase<ParallelToHerdPass> {
     ConversionTarget target(*context);
 
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           xilinx::air::airDialect, arith::ArithmeticDialect>();
+                           xilinx::air::airDialect, arith::ArithDialect>();
 
     target.addLegalOp<AffineApplyOp, AffineForOp, AffineLoadOp, AffineStoreOp,
                       AffineYieldOp, scf::YieldOp>();
@@ -1191,7 +1190,7 @@ struct ParallelToLaunchPass
     ConversionTarget target(*context);
 
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           xilinx::air::airDialect, arith::ArithmeticDialect>();
+                           xilinx::air::airDialect, arith::ArithDialect>();
 
     target.addLegalOp<AffineApplyOp, AffineForOp, AffineLoadOp, AffineStoreOp,
                       AffineYieldOp, scf::YieldOp>();

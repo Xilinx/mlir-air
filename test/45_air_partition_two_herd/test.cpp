@@ -29,26 +29,43 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <iostream>
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <thread>
 #include <unistd.h>
+#include <vector>
 
-#include <xaiengine.h>
-
-#include "air_host.h"
-#include "air_tensor.h"
+#include "air.hpp"
+#include "test_library.h"
 
 #define DATA_SIZE 10240
 
 int main(int argc, char *argv[]) {
-  queue_t *q = nullptr;
+  std::vector<air_agent_t> agents;
+  auto get_agents_ret = air_get_agents(agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
-  aie_libxaie_ctx_t *xaie = air_init_libxaie1();
+  if (agents.empty()) {
+    std::cout << "fail." << std::endl;
+    return -1;
+  }
 
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q,
-                              AIR_VCK190_SHMEM_BASE);
-  assert(ret == 0 && "failed to create queue!");
+  std::cout << "Found " << agents.size() << " agents" << std::endl;
+
+  std::vector<queue_t *> queues;
+  for (auto agent : agents) {
+    // create the queue
+    queue_t *q = nullptr;
+    auto create_queue_ret = air_queue_create(
+        MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, agent.handle);
+    assert(create_queue_ret == 0 && "failed to create queue!");
+    queues.push_back(q);
+  }
+
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
+
+  queue_t *q = queues[0];
 
   tensor_t<uint32_t, 1> input_A;
   tensor_t<uint32_t, 1> input_B;

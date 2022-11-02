@@ -27,5 +27,5 @@
 // XFAIL: *
 // RUN: xchesscc -p me -P ${CARDANO}/data/cervino/lib -c %S/chess/beefmaker_kernel.cc
 // RUN: air-opt %S/air.mlir -air-to-aie="output-prefix=./ row-offset=2 col-offset=7" -o /dev/null
-// RUN: aiecc.py --aie-generate-xaiev2 --pathfinder aie.partition_0.mlir --no-xbridge  %S/test.cpp -o %T/test.elf
+// RUN: aiecc.py --aie-generate-xaiev2 aie.partition_0.mlir --no-xbridge  %S/test.cpp -o %T/test.elf
 // RUN: %run_on_board %T/test.elf

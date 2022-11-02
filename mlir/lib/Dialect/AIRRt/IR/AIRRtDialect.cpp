@@ -76,7 +76,7 @@ static LogicalResult FoldWaitAll(WaitAllOp op, PatternRewriter &rewriter) {
   // If an operand of a wait_all is another wait_all, then the event has
   // already completed. Remove it from the operand list.
   for (auto i = operands.begin(), e = operands.end(); i != e; ++i) {
-    auto wa = dyn_cast_if_present<WaitAllOp>(i->getDefiningOp());
+    auto wa = llvm::dyn_cast_if_present<WaitAllOp>(i->getDefiningOp());
     if (!wa)
       continue;
     operands.erase(i);

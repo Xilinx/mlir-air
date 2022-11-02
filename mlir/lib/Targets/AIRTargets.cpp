@@ -27,6 +27,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
@@ -49,6 +50,8 @@
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 
+#include "AIRTargets.h"
+
 using namespace mlir;
 using namespace xilinx;
 
@@ -56,6 +59,15 @@ namespace xilinx {
 namespace air {
 
 namespace {
+
+static llvm::cl::opt<int>
+    gridNumRows("num-rows",
+                llvm::cl::desc("Number of rows of AIEs in the grid"),
+                llvm::cl::init(0));
+static llvm::cl::opt<int>
+    gridNumCols("num-cols",
+                llvm::cl::desc("Number of columns of AIEs in the grid"),
+                llvm::cl::init(0));
 
 llvm::json::Value attrToJSON(Attribute &attr) {
   if (auto a = attr.dyn_cast<StringAttr>()) {
@@ -83,7 +95,7 @@ llvm::json::Value attrToJSON(Attribute &attr) {
 void registerAIRRtTranslations() {
 
   TranslateFromMLIRRegistration registrationMMap(
-      "airrt-generate-json",
+      "airrt-generate-json", "Transform airrt metadata to JSON",
       [](ModuleOp module, raw_ostream &output) {
         llvm::json::Object moduleJSON;
         for (auto module_meta : module.getOps<airrt::ModuleMetadataOp>()) {
@@ -120,9 +132,24 @@ void registerAIRRtTranslations() {
       [](DialectRegistry &registry) {
         registry.insert<xilinx::air::airDialect, xilinx::airrt::AIRRtDialect,
                         func::FuncDialect, cf::ControlFlowDialect,
-                        arith::ArithmeticDialect, memref::MemRefDialect,
+                        arith::ArithDialect, memref::MemRefDialect,
                         vector::VectorDialect, LLVM::LLVMDialect,
                         scf::SCFDialect, AffineDialect>();
+      });
+  TranslateFromMLIRRegistration registrationXJSON(
+      "air-herds-to-json", "Transform herd information to JSON",
+      [](ModuleOp module, raw_ostream &output) {
+        // boilerplate to give dimensions to the visualizer
+        output << "{\n\t\"switchbox00\": {\n\t\t\"row\": " << gridNumRows - 1
+               << ", "
+               << "\n\t\t\"col\": " << gridNumCols - 1 << "\n\t}, ";
+        output << "\n\t\"partition\": [ ";
+        return AIRHerdsToJSON(module, output);
+      },
+      [](DialectRegistry &registry) {
+        registry.insert<air::airDialect, func::FuncDialect, arith::ArithDialect,
+                        memref::MemRefDialect, scf::SCFDialect, AffineDialect,
+                        linalg::LinalgDialect>();
       });
 }
 

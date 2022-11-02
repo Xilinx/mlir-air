@@ -40,7 +40,7 @@ module  {
           %b = memref.alloc() : memref<1024xi32, 2>
           air.dma_memcpy_nd (%a[][][], %op0[%c0][%c1024][%c1_1]) {id = 1 : i32} : (memref<1024xi32, 2>, memref<1024xi32>)
           air.dma_memcpy_nd (%b[][][], %op1[%c0][%c1024][%c1_1]) {id = 2 : i32} : (memref<1024xi32, 2>, memref<1024xi32>)
-          %init = linalg.init_tensor [1024] : tensor<1024xi32>
+          %init = tensor.empty () : tensor<1024xi32>
           %ta = bufferization.to_tensor %a : memref<1024xi32, 2>
           %tb = bufferization.to_tensor %b : memref<1024xi32, 2>
           %5 = linalg.generic {indexing_maps = [#map0, #map0, #map0], iterator_types = ["parallel"]} ins(%ta, %tb : tensor<1024xi32>, tensor<1024xi32>) outs(%init : tensor<1024xi32>) {
@@ -52,7 +52,7 @@ module  {
         } : tensor<1024xi32>
 
         %output2 = air.pipeline.stage args(%in = %output1) : tensor<1024xi32> {
-          %init = linalg.init_tensor [1024] : tensor<1024xi32>
+          %init = tensor.empty () : tensor<1024xi32>
           %5 = linalg.generic {indexing_maps = [#map0, #map0], iterator_types = ["parallel"]} ins(%in : tensor<1024xi32>) outs(%init : tensor<1024xi32>) {
           ^bb0(%a2: i32, %a3: i32):  // no predecessors
             %one = arith.constant 1 : i32
@@ -63,7 +63,7 @@ module  {
         } : tensor<1024xi32>
 
         %output3 = air.pipeline.stage args(%in = %output2) : tensor<1024xi32> {
-          %init = linalg.init_tensor [1024] : tensor<1024xi32>
+          %init = tensor.empty () : tensor<1024xi32>
           %5 = linalg.generic {indexing_maps = [#map0, #map0], iterator_types = ["parallel"]} ins(%in : tensor<1024xi32>) outs(%init : tensor<1024xi32>) {
           ^bb0(%a2: i32, %a3: i32):  // no predecessors
             %two = arith.constant 2 : i32
@@ -74,7 +74,7 @@ module  {
         } : tensor<1024xi32>
 
         air.pipeline.stage args(%in = %output3) : tensor<1024xi32> {
-          %init = linalg.init_tensor [1024] : tensor<1024xi32>
+          %init = tensor.empty () : tensor<1024xi32>
           %5 = linalg.generic {indexing_maps = [#map0, #map0], iterator_types = ["parallel"]} ins(%in : tensor<1024xi32>) outs(%init : tensor<1024xi32>) {
           ^bb0(%a2: i32, %a3: i32):  // no predecessors
             %three = arith.constant 3 : i32

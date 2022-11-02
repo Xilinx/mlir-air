@@ -31,13 +31,11 @@
 #include <sys/mman.h>
 #include <vector>
 
-#include "acdc_queue.h"
-#include "air_host.h"
-#include "hsa_defs.h"
+#include "air.hpp"
 
 int main(int argc, char *argv[]) {
   std::vector<air_agent_t> agents;
-  auto ret = air_get_agents(&agents);
+  auto ret = air_get_agents(agents);
   assert(ret == 0 && "failed to get agents!");
 
   if (agents.empty()) {

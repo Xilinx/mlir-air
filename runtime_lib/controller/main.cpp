@@ -42,7 +42,7 @@ extern "C" {
 
 //#include "mb_interface.h"
 
-#include "acdc_queue.h"
+#include "air_queue.h"
 #include "hsa_defs.h"
 }
 
@@ -109,14 +109,6 @@ namespace xaie2 {
 struct aie_libxaie_ctx_t {
   XAie_Config AieConfigPtr;
   XAie_DevInst DevInst;
-  /*
-    XAieGbl_Config *AieConfigPtr;
-    XAieGbl AieInst;
-    XAieGbl_HwCfg AieConfig;
-    XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
-    XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
-  */
-  XAie_MemInst **buffers;
 };
 
 void mlir_aie_init_libxaie(aie_libxaie_ctx_t *ctx) {
@@ -132,8 +124,6 @@ void mlir_aie_init_libxaie(aie_libxaie_ctx_t *ctx) {
   ctx->AieConfigPtr.ShimRowNum = 0;      // XAIE_SHIM_ROW;
   ctx->AieConfigPtr.MemTileRowStart = 0; // XAIE_RES_TILE_ROW_START;
   ctx->AieConfigPtr.MemTileNumRows = 0;  // XAIE_RES_TILE_NUM_ROWS;
-  // ctx->AieConfigPtr.ReservedRowStart = 0; //XAIE_RES_TILE_ROW_START;
-  // ctx->AieConfigPtr.ReservedNumRows  = 0; //XAIE_RES_TILE_NUM_ROWS;
   ctx->AieConfigPtr.AieTileRowStart = 1; // XAIE_AIE_TILE_ROW_START;
   ctx->AieConfigPtr.AieTileNumRows = XAIE_NUM_ROWS;
   ctx->AieConfigPtr.PartProp = {0};
@@ -156,6 +146,28 @@ int mlir_aie_init_device(aie_libxaie_ctx_t *ctx) {
   }
 
   // TODO Extra code to really teardown the partitions
+  RC = XAie_Finish(&(ctx->DevInst));
+  if (RC != XAIE_OK) {
+    xil_printf("Failed to finish tiles.\n\r");
+    return -1;
+  }
+  RC = XAie_CfgInitialize(&(ctx->DevInst), &(ctx->AieConfigPtr));
+  if (RC != XAIE_OK) {
+    xil_printf("Driver initialization failed.\n\r");
+    return -1;
+  }
+  RC = XAie_PmRequestTiles(&(ctx->DevInst), NULL, 0);
+  if (RC != XAIE_OK) {
+    xil_printf("Failed to request tiles.\n\r");
+    return -1;
+  }
+
+  return 0;
+}
+
+int mlir_aie_reinit_device(aie_libxaie_ctx_t *ctx) {
+  AieRC RC = XAIE_OK;
+
   RC = XAie_Finish(&(ctx->DevInst));
   if (RC != XAIE_OK) {
     xil_printf("Failed to finish tiles.\n\r");
@@ -834,6 +846,14 @@ void xaie_shim_dma_init(int col) {
 }
 
 void xaie_device_init(int num_cols) {
+  air_printf("Initializing device...\r\n");
+
+#ifdef ARM_CONTROLLER
+  int err = xaie2::mlir_aie_reinit_device(_xaie);
+  if (err)
+    xil_printf("ERROR initializing device.\n\r");
+#endif
+
   if (num_cols > NUM_SHIM_DMAS) {
     air_printf("WARN: attempt to initialize more shim DMAs than device has "
                "available!\n\r");
@@ -846,10 +866,10 @@ void xaie_device_init(int num_cols) {
 }
 
 // Initialize one herd with lower left corner at (col_start, row_start)
-void xaie_herd_init(int col_start, int num_cols, int row_start, int num_rows) {
-  HerdCfgInst.col_start = col_start;
+void xaie_herd_init(int start_col, int num_cols, int start_row, int num_rows) {
+  HerdCfgInst.col_start = start_col;
   HerdCfgInst.num_cols = num_cols;
-  HerdCfgInst.row_start = row_start;
+  HerdCfgInst.row_start = start_row;
   HerdCfgInst.num_rows = num_rows;
 }
 
@@ -949,15 +969,13 @@ void complete_barrier_packet(void *pkt) {
 
 void handle_packet_device_initialize(dispatch_packet_t *pkt) {
   packet_set_active(pkt, true);
-  air_printf(
-      "Called depricated function: handle_packet_device_initialize...\r\n");
-  air_printf("...but will still invalidate shim DMA bds\r\n");
   xaie_device_init(NUM_SHIM_DMAS);
 }
 
 void handle_packet_herd_initialize(dispatch_packet_t *pkt) {
   setup = true;
   packet_set_active(pkt, true);
+
   // Address mode here is absolute range
   if (((pkt->arg[0] >> 48) & 0xf) == AIR_ADDRESS_ABSOLUTE_RANGE) {
     u32 start_row = (pkt->arg[0] >> 16) & 0xff;
@@ -968,11 +986,13 @@ void handle_packet_herd_initialize(dispatch_packet_t *pkt) {
     u32 herd_id = pkt->arg[1] & 0xffff;
     u32 shimDMA0 = (pkt->arg[1] >> 16) & 0xff;
     u32 shimDMA1 = (pkt->arg[1] >> 24) & 0xff;
+    // TODO more checks on herd dimensions
+    if (start_row == 0)
+      start_row++;
     xaie_herd_init(start_col, num_cols, start_row, num_rows);
     air_printf("Initialized herd %d at (%d, %d) of size (%d,%d)\r\n", herd_id,
                start_col, start_row, num_cols, num_rows);
     // herd_id is ignored - current restriction is 1 herd -> 1 controller
-    xaie_device_init(NUM_SHIM_DMAS);
     // mappedShimDMA[0] = shimDMA0;
     // mappedShimDMA[1] = shimDMA1;
     // xaie_shim_dma_init(shimDMA0);

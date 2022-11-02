@@ -32,12 +32,10 @@
 #include <string.h>
 #include <vector>
 
-#include "acdc_queue.h"
-#include "air_host.h"
-#include "hsa_defs.h"
+#include "air.hpp"
 
-// Defined in acdc_queue.h
-//typedef enum {
+// Defined in air_queue.h
+// typedef enum {
 //  AIR_AGENT_INFO_NAME = 0,        // NUL-terminated char[8]
 //  AIR_AGENT_INFO_VENDOR_NAME = 1, // NUL-terminated char[8]
 //  AIR_AGENT_INFO_CONTROLLER_ID = 2,
@@ -53,7 +51,7 @@
 
 int main(int argc, char *argv[]) {
   std::vector<air_agent_t> agents;
-  auto ret = air_get_agents(&agents);
+  auto ret = air_get_agents(agents);
   assert(ret == 0 && "failed to get agents!");
 
   if (agents.empty()) {

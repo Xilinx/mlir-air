@@ -31,6 +31,7 @@
 #include "air/Transform/AIRDependencyCanonicalize.h"
 #include "air/Transform/AIRDependencyScheduleOpt.h"
 #include "air/Transform/AIRHerdAssignPass.h"
+#include "air/Transform/AIRHerdPlacementPass.h"
 #include "air/Transform/AIRLinalgCodegen.h"
 #include "air/Transform/AIRLinalgOpStats.h"
 #include "air/Transform/AIRLoopMergingPass.h"

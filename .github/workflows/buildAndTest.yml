@@ -35,7 +35,7 @@ jobs:
 
       - name: Get Submodule Hash
         id: get-submodule-hash
-        run: echo "::set-output name=hash::$(md5sum $(echo utils/clone-llvm.sh))"
+        run: echo "::set-output name=hash::$(md5sum $(echo utils/github-clone-llvm.sh))"
         shell: bash
 
       - name: Ccache for C++ compilation
@@ -46,22 +46,22 @@ jobs:
 
       - name: Get cmakeModules
         id: clone-cmakeModules
-        run: git clone --branch branch2021_2 --depth 1 https://github.com/Xilinx/cmakeModules.git
+        run: git clone --depth 1 https://github.com/Xilinx/cmakeModules.git
         shell: bash
 
       - name: Get LLVM
         id: clone-llvm
-        run: utils/clone-llvm.sh
+        run: utils/github-clone-llvm.sh
         shell: bash
         
       - name: Rebuild and Install LLVM
-        run: utils/build-llvm.sh
+        run: utils/github-build-llvm.sh
 
       - name: Rebuild and Install mlir-aie
-        run: utils/clone-build-mlir-aie.sh
+        run: utils/github-clone-build-mlir-aie.sh
 
       - name: Rebuild and Install libxaie
-        run: utils/clone-build-libxaie.sh
+        run: utils/github-clone-build-libxaie.sh
 
       # Build the repo test target in debug mode to build and test.
       - name: Build and test (Assert)
@@ -76,6 +76,7 @@ jobs:
             -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
+            -DLibXAIE_DIR=`pwd`/../aienginev2/install \
             -DCMAKE_LINKER=lld \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
@@ -88,7 +89,6 @@ jobs:
           popd
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/aienginev2/install/lib
-          XAIENGINE_LOCAL_DIR: ${{ github.workspace }}/aienginev2/install
 
       # Build the repo test target in release mode to build and test.
       - name: Build and test (Release)
@@ -102,6 +102,7 @@ jobs:
             -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
+            -DLibXAIE_DIR=`pwd`/../aienginev2/install \
             -DCMAKE_LINKER=lld \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
@@ -113,7 +114,6 @@ jobs:
           popd
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/aienginev2/install/lib
-          XAIENGINE_LOCAL_DIR: ${{ github.workspace }}/aienginev2/install
 
   lint-repo:
     name: Check code format

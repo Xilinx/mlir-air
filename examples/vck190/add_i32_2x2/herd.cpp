@@ -80,7 +80,7 @@ main(int argc, char *argv[])
 
   queue_t *q = nullptr;
 
-  aie_libxaie_ctx_t *xaie = air_init_libxaie1();
+  aie_libxaie_ctx_t *xaie = air_init_libxaie();
 
   if (VERBOSE)
     mlir_aie_print_tile_status(xaie,col,row);

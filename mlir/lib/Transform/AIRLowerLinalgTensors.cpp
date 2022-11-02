@@ -29,7 +29,7 @@
 
 #include "mlir/Conversion/LinalgToStandard/LinalgToStandard.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Bufferization/Transforms/Bufferize.h"
 #include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
@@ -89,7 +89,7 @@ struct RemoveAllocCopyPattern
 
     for (auto u : op->getUsers())
       if (auto copy = dyn_cast<linalg::CopyOp>(u)) {
-        memref = copy.inputs()[0];
+        memref = copy.getInputs()[0];
         rewriter.eraseOp(copy);
       }
 
@@ -127,11 +127,25 @@ struct RemoveTensorLoadStorePattern
     if (!store)
       return failure();
 
-    rewriter.replaceOp(alloc, store.memref());
+    rewriter.replaceOp(alloc, store.getMemref());
     rewriter.eraseOp(store);
     rewriter.eraseOp(op);
 
     return success();
+  }
+};
+
+struct LowerLinalgOpPattern : public OpRewritePattern<linalg::GenericOp> {
+  using OpRewritePattern<linalg::GenericOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(linalg::GenericOp op,
+                                PatternRewriter &rewriter) const override {
+
+    if (succeeded(linalg::linalgOpToAffineLoops(rewriter, op))) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+    return failure();
   }
 };
 
@@ -147,8 +161,9 @@ void AIRLowerLinalgTensors::runOnOperation() {
   bufferization::BufferizeTypeConverter typeConverter;
   target.addLegalDialect<AIE::AIEDialect, AffineDialect, math::MathDialect,
                          memref::MemRefDialect, func::FuncDialect,
-                         arith::ArithmeticDialect>();
-  target.addIllegalOp<linalg::InitTensorOp, tensor::ExtractSliceOp, tensor::InsertSliceOp>();
+                         arith::ArithDialect>();
+  target.addIllegalOp<tensor::EmptyOp, tensor::ExtractSliceOp,
+                      tensor::InsertSliceOp>();
 
   // Mark all Linalg operations illegal as long as they work on tensors.
   auto isLegalOperation = [&](Operation *op) {
@@ -171,14 +186,7 @@ void AIRLowerLinalgTensors::runOnOperation() {
 
   RewritePatternSet patterns2(&context);
   linalg::populateLinalgNamedOpsGeneralizationPatterns(patterns2);
-  if (1/*lower to loops*/) {
-    patterns2.add<linalg::LinalgLoweringPattern<linalg::GenericOp>>(
-        &context, linalg::LinalgLoweringType::AffineLoops);
-  } 
-  // else lower to function call
-  else {
-    linalg::populateLinalgToStandardConversionPatterns(patterns2);
-  }
+  patterns2.add<LowerLinalgOpPattern>(&context);
   (void)applyPatternsAndFoldGreedily(aie_module, std::move(patterns2));
 }
 

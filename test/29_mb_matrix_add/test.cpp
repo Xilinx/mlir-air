@@ -27,19 +27,16 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <thread>
-#include <stdlib.h>
-#include <unistd.h>
 #include <fcntl.h>
+#include <iostream>
+#include <stdlib.h>
 #include <sys/mman.h>
-#include <xaiengine.h>
+#include <thread>
+#include <unistd.h>
+#include <vector>
 
-#include "air_host.h"
-
-#include "acdc_queue.h"
-#include "hsa_defs.h"
-
-#define BRAM_ADDR AIR_BBUFF_BASE
+#include "air.hpp"
+#include "test_library.h"
 
 #include "aie_inc.cpp"
 
@@ -61,10 +58,57 @@ main(int argc, char *argv[])
   uint64_t col = 7;
   uint64_t row = 0;
 
-  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
-  mlir_aie_init_device(xaie);
+  std::vector<air_agent_t> agents;
+  auto get_agents_ret = air_get_agents(agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
-  mlir_aie_print_dma_status(xaie, 7, 2);
+  if (agents.empty()) {
+    std::cout << "fail." << std::endl;
+    return -1;
+  }
+
+  std::cout << "Found " << agents.size() << " agents" << std::endl;
+
+  std::vector<queue_t *> queues;
+  for (auto agent : agents) {
+    // create the queue
+    queue_t *q = nullptr;
+    auto create_queue_ret =
+        air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, agent.handle,
+                         0 /* device_id (optional) */);
+    assert(create_queue_ret == 0 && "failed to create queue!");
+    queues.push_back(q);
+  }
+
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
+  if (xaie == NULL) {
+    std::cout << "Error initializing libxaie" << std::endl;
+    return -1;
+  }
+
+  // Want to initializing the device memory allocator
+  if (air_init_dev_mem_allocator(0x8000 /* dev_mem_size */,
+                                 0 /* device_id (optional)*/)) {
+    std::cout << "Error creating device memory allocator" << std::endl;
+    return -1;
+  }
+
+  // setup the herd
+  uint64_t wr_idx = queue_add_write_index(queues[0], 1);
+  uint64_t packet_id = wr_idx % queues[0]->size;
+  dispatch_packet_t *herd_pkt =
+      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
+  air_packet_herd_init(herd_pkt, 0, col, 1, row, 3);
+  air_queue_dispatch_and_wait(queues[0], wr_idx, herd_pkt);
+
+  wr_idx = queue_add_write_index(queues[0], 1);
+  packet_id = wr_idx % queues[0]->size;
+  dispatch_packet_t *shim_pkt =
+      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
+  air_packet_device_init(shim_pkt, XAIE_NUM_COLS);
+  air_queue_dispatch_and_wait(queues[0], wr_idx, shim_pkt);
+
+  // mlir_aie_print_dma_status(xaie, 7, 2);
 
   mlir_aie_configure_cores(xaie);
   mlir_aie_configure_switchboxes(xaie);
@@ -72,18 +116,36 @@ main(int argc, char *argv[])
   mlir_aie_configure_dmas(xaie);
   mlir_aie_start_cores(xaie);
 
-  // setup images in memory
-  uint32_t *bram_ptr;
+  // int fd = open("/dev/mem", O_RDWR | O_SYNC);
+  // if (fd != -1) {
+  // bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED,
+  // fd, BRAM_ADDR);
+  uint32_t *dram_ptr_1 =
+      (uint32_t *)air_dev_mem_alloc(IMAGE_SIZE * sizeof(uint32_t));
+  uint32_t *dram_ptr_2 =
+      (uint32_t *)air_dev_mem_alloc(IMAGE_SIZE * sizeof(uint32_t));
+  uint32_t *dram_ptr_3 =
+      (uint32_t *)air_dev_mem_alloc(IMAGE_SIZE * sizeof(uint32_t));
 
-  int fd = open("/dev/mem", O_RDWR | O_SYNC);
-  if (fd != -1) {
-    bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ|PROT_WRITE, MAP_SHARED, fd, BRAM_ADDR);
-    for (int i=0; i<IMAGE_SIZE; i++) {
-      bram_ptr[i] = i+1;
-      bram_ptr[IMAGE_SIZE+i] = 1;
-      bram_ptr[2*IMAGE_SIZE+i] = 0xdeface;
-    }
-  } else return -1;
+  if (dram_ptr_1 == NULL || dram_ptr_2 == NULL || dram_ptr_3 == NULL) {
+    std::cout << "Couldn't allocate device memory" << std::endl;
+    return -1;
+  }
+
+  for (int i = 0; i < IMAGE_SIZE; i++) {
+    dram_ptr_1[i] = i + 1;
+    dram_ptr_2[i] = 1;
+    dram_ptr_3[i] = 0xdeface;
+  }
+  //} else return -1;
+
+  printf("Eddie Debug:\n");
+  printf("dram_ptr_1\tVA: %p\tPA: 0x%lx\n", dram_ptr_1,
+         air_dev_mem_get_pa(dram_ptr_1));
+  printf("dram_ptr_2\tVA: %p\tPA: 0x%lx\n", dram_ptr_2,
+         air_dev_mem_get_pa(dram_ptr_2));
+  printf("dram_ptr_3\tVA: %p\tPA: 0x%lx\n", dram_ptr_3,
+         air_dev_mem_get_pa(dram_ptr_3));
 
   // stamp over the aie tiles
   for (int i=0; i<TILE_SIZE; i++) {
@@ -95,52 +157,51 @@ main(int argc, char *argv[])
     mlir_aie_write_buffer_pong_c(xaie, i, 0x76543210+i);
   }
 
-  // create the queue
-  queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
-  assert(ret == 0 && "failed to create queue!");
-
-  // setup the herd
-  uint64_t wr_idx = queue_add_write_index(q, 1);
-  uint64_t packet_id = wr_idx % q->size;
-  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_herd_init(herd_pkt, 0, col, 1, row, 3);
-  air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
-
-  wr_idx = queue_add_write_index(q, 1);
-  packet_id = wr_idx % q->size;
-  dispatch_packet_t *shim_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_device_init(shim_pkt,XAIE_NUM_COLS);
-  air_queue_dispatch_and_wait(q, wr_idx, shim_pkt);
-
   //
   // packet to read the data
   //
 
-  wr_idx = queue_add_write_index(q, 1);
-  packet_id = wr_idx % q->size;
-  dispatch_packet_t *pkt_c = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_c, 0, col, 0, 0, 4, 2, BRAM_ADDR+(2*IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
+  wr_idx = queue_add_write_index(queues[0], 1);
+  packet_id = wr_idx % queues[0]->size;
+  dispatch_packet_t *pkt_c =
+      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
+  air_packet_nd_memcpy(
+      pkt_c, 0, col, 0, 0, 4, 2,
+      air_dev_mem_get_pa(dram_ptr_3) /*BRAM_ADDR+(2*IMAGE_SIZE*sizeof(float))*/,
+      TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
+      NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
 
   //
   // packet to send the data
   //
 
-  wr_idx = queue_add_write_index(q, 1);
-  packet_id = wr_idx % q->size;
-  dispatch_packet_t *pkt_a = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_a, 0, col, 1, 0, 4, 2, BRAM_ADDR, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
+  wr_idx = queue_add_write_index(queues[0], 1);
+  packet_id = wr_idx % queues[0]->size;
+  dispatch_packet_t *pkt_a =
+      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
+  air_packet_nd_memcpy(
+      pkt_a, 0, col, 1, 0, 4, 2, air_dev_mem_get_pa(dram_ptr_1) /*BRAM_ADDR*/,
+      TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
+      NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
 
-  wr_idx = queue_add_write_index(q, 1);
-  packet_id = wr_idx % q->size;
-  dispatch_packet_t *pkt_b = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_b, 0, col, 1, 1, 4, 2, BRAM_ADDR+(IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
+  wr_idx = queue_add_write_index(queues[0], 1);
+  packet_id = wr_idx % queues[0]->size;
+  dispatch_packet_t *pkt_b =
+      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
+  air_packet_nd_memcpy(
+      pkt_b, 0, col, 1, 1, 4, 2,
+      air_dev_mem_get_pa(dram_ptr_2) /*BRAM_ADDR+(IMAGE_SIZE*sizeof(float))*/,
+      TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
+      NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
 
   //
   // dispatch the packets to the MB
   //
 
-  air_queue_dispatch_and_wait(q, wr_idx-2, pkt_c);
+  air_queue_dispatch_and_wait(queues[0], wr_idx - 2, pkt_c);
 
   int errors = 0;
   // check the aie tiles
@@ -163,12 +224,15 @@ main(int argc, char *argv[])
 
   // check the output image
   for (int i=0; i<IMAGE_SIZE; i++) {
-    uint32_t d = bram_ptr[2*IMAGE_SIZE+i];
+    uint32_t d = dram_ptr_3[i];
     if (d != (i+2)) {
       errors++;
       printf("mismatch %x != 2 + %x\n", d, i);
     }
   }
+
+  air_dev_mem_allocator_free();
+
   if (!errors) {
     printf("PASS!\n");
     return 0;

@@ -81,7 +81,7 @@ def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
 }
 
 def air_LaunchTerminatorOp : air_Op<"launch_terminator", [HasParent<"LaunchOp">,
-                                                          NoSideEffect,
+                                                          Pure,
                                                           Terminator]>,
                                     Arguments<(ins)>, Results<(outs)> {
   let summary = "Terminator for `air.launch`.";
@@ -139,7 +139,7 @@ def air_PartitionOp : air_Op<"partition", [air_AsyncOpInterface,
 }
 
 def air_PartitionTerminatorOp : air_Op<"partition_terminator", [HasParent<"PartitionOp">,
-                                                      NoSideEffect, Terminator]>,
+                                                      Pure, Terminator]>,
     Arguments<(ins)>, Results<(outs)> {
   let summary = "Terminator for air partition regions.";
   let description = [{
@@ -214,7 +214,7 @@ def air_HerdOp : air_Op<"herd", [air_AsyncOpInterface,
 }
 
 def air_HerdTerminatorOp : air_Op<"herd_terminator", [HasParent<"HerdOp">,
-                                                      NoSideEffect, Terminator]>,
+                                                      Pure, Terminator]>,
                                    Arguments<(ins)>, Results<(outs)> {
   let summary = "Terminator for air herd regions.";
   let description = [{
@@ -260,7 +260,7 @@ def air_PipelineStageOp : air_Op<"pipeline.stage", [HasParent<"HerdPipelineOp">]
 }
 
 def air_PipelineYieldOp : air_Op<"pipeline.yield", [HasParent<"PipelineStageOp">,
-                                                    NoSideEffect, ReturnLike, Terminator]>,
+                                                    Pure, ReturnLike, Terminator]>,
                                  Arguments<(ins Variadic<AnyType>:$opers)>, Results<(outs)> {
   let summary = "Yield for air pipeline stages.";
   let description = [{
@@ -299,7 +299,7 @@ def air_PipelineGetOp : air_Op<"pipeline.get", []>,
 }
 
 def air_PipelineTerminatorOp : air_Op<"pipeline.terminator", [HasParent<"HerdPipelineOp">,
-                                          NoSideEffect, Terminator]>,
+                                          Pure, Terminator]>,
     Arguments<(ins Variadic<AnyType>:$opers)>, Results<(outs)> {
   let summary = "Terminator for air pipeline regions.";
   let description = [{
@@ -517,7 +517,7 @@ def air_ExecuteOp : air_Op<"execute", [SingleBlockImplicitTerminator<"ExecuteTer
 }
 
 def air_ExecuteTerminatorOp : air_Op<"execute_terminator", [HasParent<"ExecuteOp">,
-                                                      NoSideEffect, ReturnLike, Terminator]>{
+                                                      Pure, ReturnLike, Terminator]>{
   let summary = "Terminator for air execute.";
   let description = [{
     A terminator operation for code regions that appear in the body of

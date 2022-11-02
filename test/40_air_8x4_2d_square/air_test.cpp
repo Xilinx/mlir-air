@@ -28,9 +28,11 @@
 #include <cstdio>
 #include <cstring>
 #include <dlfcn.h>
+#include <iostream>
+#include <vector>
 
-#include "air_host.h"
-#include "air_tensor.h"
+#include "air.hpp"
+#include "test_library.h"
 
 #define IMAGE_WIDTH 256  
 #define IMAGE_HEIGHT 16
@@ -82,7 +84,30 @@ using namespace air::partitions::partition_0;
 int
 main(int argc, char *argv[])
 {
-  aie_libxaie_ctx_t *xaie = air_init_libxaie1();
+  std::vector<air_agent_t> agents;
+  auto get_agents_ret = air_get_agents(agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
+
+  if (agents.empty()) {
+    std::cout << "fail." << std::endl;
+    return -1;
+  }
+
+  std::cout << "Found " << agents.size() << " agents" << std::endl;
+
+  std::vector<queue_t *> queues;
+  for (auto agent : agents) {
+    // create the queue
+    queue_t *q = nullptr;
+    auto create_queue_ret = air_queue_create(
+        MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, agent.handle);
+    assert(create_queue_ret == 0 && "failed to create queue!");
+    queues.push_back(q);
+  }
+
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
+
+  queue_t *q = queues[0];
 
   for (int i=0; i<TILE_SIZE; i++) {
     mlir_aie_write_buffer_scratch_0_0(xaie,i,0xfade0000);
@@ -119,11 +144,6 @@ main(int argc, char *argv[])
     mlir_aie_write_buffer_scratch_7_3(xaie,i,0xfade0007);
   }
 
-  // create the queue
-  queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
-  assert(ret == 0 && "failed to create queue!");
-  
   printf("loading aie_ctrl.so\n");
   auto handle = air_module_load_from_file(nullptr,q);
   assert(handle && "failed to open aie_ctrl.so");

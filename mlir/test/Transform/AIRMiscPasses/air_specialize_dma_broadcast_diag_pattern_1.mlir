@@ -26,7 +26,7 @@
 // RUN: air-opt %s -air-specialize-dma-broadcast | FileCheck %s
 
 // Lowers broadcastable DMAs using affine.if, with herd size 4x4
-// CHECK: [[$SET0:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 floordiv 2 + s1 * 2 == 0)>
+// CHECK: [[$SET0:#set[0-9]*]] = affine_set<()[s0, s1] : (s0 floordiv 2 + s1 * 2 == 0)>
 // CHECK: [[$SET1:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 floordiv 2 + s1 * 2 - 1 == 0)>
 // CHECK: [[$SET2:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 floordiv 2 + s1 * 2 - 2 == 0)>
 // CHECK: [[$SET3:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 floordiv 2 + s1 * 2 - 3 == 0)>

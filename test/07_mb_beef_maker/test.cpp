@@ -27,18 +27,20 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <thread>
-#include <stdlib.h>
-#include <unistd.h>
 #include <fcntl.h>
+#include <iostream>
+#include <stdlib.h>
 #include <sys/mman.h>
-#include <xaiengine.h>
+#include <thread>
+#include <unistd.h>
+#include <vector>
 
-#include "air_host.h"
-
-#define SCRATCH_AREA 8
+#include "air.hpp"
+#include "test_library.h"
 
 #include "aie_inc.cpp"
+
+#define SCRATCH_AREA 8
 
 int
 main(int argc, char *argv[])
@@ -46,22 +48,56 @@ main(int argc, char *argv[])
   auto col = 7;
   auto row = 2;
 
-  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
-  mlir_aie_init_device(xaie);
+  std::vector<air_agent_t> agents;
+  auto get_agents_ret = air_get_agents(agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
+
+  if (agents.empty()) {
+    std::cout << "fail." << std::endl;
+    return -1;
+  }
+
+  std::cout << "Found " << agents.size() << " agents" << std::endl;
+
+  std::vector<queue_t *> queues;
+  for (auto agent : agents) {
+    // create the queue
+    queue_t *q = nullptr;
+    auto create_queue_ret =
+        air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, agent.handle,
+                         0 /* device_id (optional) */);
+    assert(create_queue_ret == 0 && "failed to create queue!");
+    queues.push_back(q);
+  }
+
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
+  if (xaie == NULL) {
+    std::cout << "Error initializing libxaie" << std::endl;
+    return -1;
+  }
 
   // create the queue
-  queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
-  assert(ret == 0 && "failed to create queue!");
+  /*queue_t *q = nullptr;
+  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q,
+  AIR_VCK190_SHMEM_BASE); assert(ret == 0 && "failed to create queue!");*/
 
   // reserve a packet in the queue
-  uint64_t wr_idx = queue_add_write_index(q, 1);
-  uint64_t packet_id = wr_idx % q->size;
+  uint64_t wr_idx = queue_add_write_index(queues[0], 1);
+  uint64_t packet_id = wr_idx % queues[0]->size;
 
   // herd_setup packet
-  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  dispatch_packet_t *herd_pkt =
+      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
   air_packet_herd_init(herd_pkt, 0, col, 1, row, 1);
-  air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
+  air_queue_dispatch_and_wait(queues[0], wr_idx, herd_pkt);
+
+  wr_idx = queue_add_write_index(queues[0], 1);
+  packet_id = wr_idx % queues[0]->size;
+
+  dispatch_packet_t *shim_pkt =
+      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
+  air_packet_device_init(shim_pkt, XAIE_NUM_COLS);
+  air_queue_dispatch_and_wait(queues[0], wr_idx, shim_pkt);
 
   mlir_aie_configure_cores(xaie);
   mlir_aie_configure_switchboxes(xaie);
@@ -69,7 +105,7 @@ main(int argc, char *argv[])
   mlir_aie_configure_dmas(xaie);
   mlir_aie_start_cores(xaie);
 
-  mlir_aie_print_tile_status(xaie, col, row);
+  // mlir_aie_print_tile_status(xaie, col, row);
 
   // We first write an ascending pattern into the area the AIE will write into
   for (int i=0; i<SCRATCH_AREA; i++) {
@@ -82,13 +118,14 @@ main(int argc, char *argv[])
 
   // We wrote data, so lets tell the MicroBlaze to toggle the job lock 0
   // reserve another packet in the queue
-  wr_idx = queue_add_write_index(q, 1);
-  packet_id = wr_idx % q->size;
+  wr_idx = queue_add_write_index(queues[0], 1);
+  packet_id = wr_idx % queues[0]->size;
 
   // lock packet
-  dispatch_packet_t *lock_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  dispatch_packet_t *lock_pkt =
+      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
   air_packet_aie_lock(lock_pkt, herd_id, lock_id, /*acq_rel*/1, /*value*/1, 0, 0);
-  air_queue_dispatch_and_wait(q, wr_idx, lock_pkt);
+  air_queue_dispatch_and_wait(queues[0], wr_idx, lock_pkt);
 
   auto count = 0;
   while (!mlir_aie_acquire_lock(xaie, col, 2, 0, 0, 1000)) {
