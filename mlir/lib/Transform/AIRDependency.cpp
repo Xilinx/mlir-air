@@ -627,125 +627,67 @@ public:
       f.walk([&](Operation *op) {
         if (scf::ForOp for_op = dyn_cast<scf::ForOp>(op)) {
 
-          // Get async execute region in loop body
           bool hasAsyncTokensInBody = false;
-          SmallVector<Value, 1> sinks_in_for_op;
-          for (auto async_execute_op : for_op.getOps<air::ExecuteOp>()) {
+          SmallVector<Value, 1> yielded_tokens_in_for_op;
+
+          // Conservative loop-carried dependency: no pipelining
+          // TODO: loop pipelining support
+          for (auto async_op : for_op.getOps<air::AsyncOpInterface>()) {
             hasAsyncTokensInBody = true;
-            // Detect dep graph's leaves in loop body
-            if (isNotUsedInsideOfBlock(async_execute_op.getResult(0),
-                                       for_op.getBody()))
-              sinks_in_for_op.push_back(async_execute_op.getResult(0));
-          }
-          // Get async dma in loop body
-          for (auto dma_op : for_op.getOps<air::DmaMemcpyInterface>()) {
-            hasAsyncTokensInBody = true;
-            // Detect dep graph's leaves in loop body
-            if (isNotUsedInsideOfBlock(dma_op.getOperation()->getResult(0),
-                                       for_op.getBody()))
-              sinks_in_for_op.push_back(dma_op.getOperation()->getResult(0));
-          }
-          // Get async channel in loop body
-          for (auto channel_op : for_op.getOps<air::ChannelInterface>()) {
-            hasAsyncTokensInBody = true;
-            // Detect dep graph's leaves in loop body
-            if (isNotUsedInsideOfBlock(channel_op.getOperation()->getResult(0),
-                                       for_op.getBody()))
-              sinks_in_for_op.push_back(
-                  channel_op.getOperation()->getResult(0));
-          }
-          // Get async hierarchy op in loop body
-          for (auto hier_op : for_op.getOps<air::HierarchyInterface>()) {
-            hasAsyncTokensInBody = true;
-            // Detect dep graph's leaves in loop body
-            if (isNotUsedInsideOfBlock(hier_op.getOperation()->getResult(0),
-                                       for_op.getBody()))
-              sinks_in_for_op.push_back(hier_op.getOperation()->getResult(0));
-          }
-          // Get async for_op in loop body
-          for (auto child_for_op : for_op.getOps<scf::ForOp>()) {
-            hasAsyncTokensInBody = true;
-            // Detect dep graph's leaves in loop body
-            if (auto v = child_for_op.getResult(0)) {
-              if (isNotUsedInsideOfBlock(v, for_op.getBody()))
-                sinks_in_for_op.push_back(v);
+            auto token = async_op.getOperation()->getResult(0);
+            if (!isNotLoopCarriedOp(async_op) && isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody())){
+              yielded_tokens_in_for_op.push_back(token);
             }
           }
-          // Get async parallel_op in loop body
+          for (auto child_for_op : for_op.getOps<scf::ForOp>()) {
+            hasAsyncTokensInBody = true;
+            if (auto token = child_for_op.getResult(0)) {
+              if (isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody()))
+                yielded_tokens_in_for_op.push_back(token);
+            }
+          }
           for (auto child_parallel_op : for_op.getOps<scf::ParallelOp>()) {
             hasAsyncTokensInBody = true;
-            // Detect dep graph's leaves in loop body
-            if (auto v = child_parallel_op.getResult(0)) {
-              if (isNotUsedInsideOfBlock(v, for_op.getBody()))
-                sinks_in_for_op.push_back(v);
+            if (auto token = child_parallel_op.getResult(0)) {
+              if (isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody()))
+                yielded_tokens_in_for_op.push_back(token);
             }
           }
 
           if (hasAsyncTokensInBody) {
-            insertLoopCarriedDeps(module_builder, for_op, sinks_in_for_op);
+            insertLoopCarriedDeps(module_builder, for_op, yielded_tokens_in_for_op);
           }
         }
 
         else if (scf::ParallelOp for_op = dyn_cast<scf::ParallelOp>(op)) {
 
-          // Get async execute region in loop body
           bool hasAsyncTokensInBody = false;
-          SmallVector<Value, 1> sinks_in_parallel_op;
-          for (auto async_execute_op : for_op.getOps<air::ExecuteOp>()) {
+          SmallVector<Value, 1> yielded_tokens_in_parallel_op;
+
+          for (auto async_op : for_op.getOps<air::AsyncOpInterface>()) {
             hasAsyncTokensInBody = true;
-            // Detect dep graph's leaves in loop body
-            if (isNotUsedInsideOfBlock(async_execute_op.getResult(0),
-                                       for_op.getBody()))
-              sinks_in_parallel_op.push_back(async_execute_op.getResult(0));
-          }
-          // Get async dma in loop body
-          for (auto dma_op : for_op.getOps<air::DmaMemcpyInterface>()) {
-            hasAsyncTokensInBody = true;
-            // Detect dep graph's leaves in loop body
-            if (isNotUsedInsideOfBlock(dma_op.getOperation()->getResult(0),
-                                       for_op.getBody()))
-              sinks_in_parallel_op.push_back(
-                  dma_op.getOperation()->getResult(0));
-          }
-          // Get async channel in loop body
-          for (auto channel_op : for_op.getOps<air::ChannelInterface>()) {
-            hasAsyncTokensInBody = true;
-            // Detect dep graph's leaves in loop body
-            if (isNotUsedInsideOfBlock(channel_op.getOperation()->getResult(0),
-                                       for_op.getBody()))
-              sinks_in_parallel_op.push_back(
-                  channel_op.getOperation()->getResult(0));
-          }
-          // Get async hierarchy op in loop body
-          for (auto hier_op : for_op.getOps<air::HierarchyInterface>()) {
-            hasAsyncTokensInBody = true;
-            // Detect dep graph's leaves in loop body
-            if (isNotUsedInsideOfBlock(hier_op.getOperation()->getResult(0),
-                                       for_op.getBody()))
-              sinks_in_parallel_op.push_back(
-                  hier_op.getOperation()->getResult(0));
-          }
-          // Get async for_op in loop body
-          for (auto child_for_op : for_op.getOps<scf::ForOp>()) {
-            hasAsyncTokensInBody = true;
-            // Detect dep graph's leaves in loop body
-            if (auto v = child_for_op.getResult(0)) {
-              if (isNotUsedInsideOfBlock(v, for_op.getBody()))
-                sinks_in_parallel_op.push_back(v);
+            auto token = async_op.getOperation()->getResult(0);
+            if (!isNotLoopCarriedOp(async_op) && isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody())){
+              yielded_tokens_in_parallel_op.push_back(token);
             }
           }
-          // Get async parallel_op in loop body
+          for (auto child_for_op : for_op.getOps<scf::ForOp>()) {
+            hasAsyncTokensInBody = true;
+            if (auto token = child_for_op.getResult(0)) {
+              if (isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody()))
+                yielded_tokens_in_parallel_op.push_back(token);
+            }
+          }
           for (auto child_parallel_op : for_op.getOps<scf::ParallelOp>()) {
             hasAsyncTokensInBody = true;
-            // Detect dep graph's leaves in loop body
-            if (auto v = child_parallel_op.getResult(0)) {
-              if (isNotUsedInsideOfBlock(v, for_op.getBody()))
-                sinks_in_parallel_op.push_back(v);
+            if (auto token = child_parallel_op.getResult(0)) {
+              if (isOnlyUsedByNoLoopCarryOpsInBlock(token, for_op.getBody()))
+                yielded_tokens_in_parallel_op.push_back(token);
             }
           }
 
           if (hasAsyncTokensInBody) {
-            insertLoopCarriedDeps(module_builder, for_op, sinks_in_parallel_op);
+            insertLoopCarriedDeps(module_builder, for_op, yielded_tokens_in_parallel_op);
           }
         }
       });
@@ -1518,14 +1460,14 @@ private:
   template <typename T>
   air::WaitAllOp
   insertWaitAllOpBeforeLoopYield(OpBuilder &builder, T loop_op,
-                                 SmallVector<Value, 1> sinks_in_loop_op) {
+                                 SmallVector<Value, 1> yielded_tokens_in_loop_op) {
     // Create one wait_all event at the end of current loop body.
     // Output token of wait_all shall be yielded
     auto loop_op_terminator = loop_op.getBody()->getTerminator();
     builder.setInsertionPoint(loop_op_terminator);
     air::WaitAllOp wait_all_op_yielded = builder.create<xilinx::air::WaitAllOp>(
         builder.getUnknownLoc(),
-        air::AsyncTokenType::get(loop_op->getContext()), sinks_in_loop_op);
+        air::AsyncTokenType::get(loop_op->getContext()), yielded_tokens_in_loop_op);
     wait_all_op_yielded->setAttr(
         "id",
         mlir::IntegerAttr::get(
@@ -1534,7 +1476,7 @@ private:
   }
 
   Graph::vertex_descriptor
-  addVertexWaitAllOpBeforeLoopYield(SmallVector<Value, 1> sinks_in_loop_op,
+  addVertexWaitAllOpBeforeLoopYield(SmallVector<Value, 1> yielded_tokens_in_loop_op,
                                     std::string loop_type) {
     // Create vertex
     Graph::vertex_descriptor wait_all_op_yielded_v =
@@ -1547,25 +1489,25 @@ private:
     asyncExecuteGraphTR[wait_all_op_yielded_v].shape = "oval";
     asyncExecuteGraphTR[wait_all_op_yielded_v].operationId = 0;
     // Update graph connectivity
-    for (auto sink : sinks_in_loop_op) {
+    for (auto token : yielded_tokens_in_loop_op) {
       unsigned src_id = 0;
       if (auto async_execute_op =
-              dyn_cast<air::ExecuteOp>(sink.getDefiningOp())) {
+              dyn_cast<air::ExecuteOp>(token.getDefiningOp())) {
         src_id = g_to_tr[getGraphGVertexFromAIROp(async_execute_op)];
       } else if (auto dma_op =
-                     dyn_cast<air::DmaMemcpyInterface>(sink.getDefiningOp())) {
+                     dyn_cast<air::DmaMemcpyInterface>(token.getDefiningOp())) {
         src_id = g_to_tr[getGraphGVertexFromAIROp(dma_op)];
       } else if (auto channel_op =
-                     dyn_cast<air::ChannelInterface>(sink.getDefiningOp())) {
+                     dyn_cast<air::ChannelInterface>(token.getDefiningOp())) {
         src_id = g_to_tr[getGraphGVertexFromAIROp(channel_op)];
       } else if (auto hier_op =
-                     dyn_cast<air::HierarchyInterface>(sink.getDefiningOp())) {
+                     dyn_cast<air::HierarchyInterface>(token.getDefiningOp())) {
         src_id = g_to_tr[getGraphGVertexFromAIROp(hier_op)];
-      } else if (auto scf_for_op = dyn_cast<scf::ForOp>(sink.getDefiningOp())) {
+      } else if (auto scf_for_op = dyn_cast<scf::ForOp>(token.getDefiningOp())) {
         src_id = getGraphGVertexFromAIROp(
             scf_for_op); // g_to_tr not needed since wait_all created after TR
       } else if (auto scf_parallel_op =
-                     dyn_cast<scf::ParallelOp>(sink.getDefiningOp())) {
+                     dyn_cast<scf::ParallelOp>(token.getDefiningOp())) {
         src_id = getGraphGVertexFromAIROp(
             scf_parallel_op); // g_to_tr not needed since wait_all created after
                               // TR
@@ -1780,15 +1722,15 @@ private:
   }
 
   void insertLoopCarriedDeps(OpBuilder &builder, scf::ForOp &loop_op,
-                             SmallVector<Value, 1> sinks_in_loop_op) {
+                             SmallVector<Value, 1> yielded_tokens_in_loop_op) {
     // (1) Create one wait_all event at the end of current for loop body.
     air::WaitAllOp wait_all_op_yielded =
         insertWaitAllOpBeforeLoopYield<scf::ForOp>(builder, loop_op,
-                                                   sinks_in_loop_op);
+                                                   yielded_tokens_in_loop_op);
 
     // Update boost graph
     Graph::vertex_descriptor wait_all_op_yielded_v =
-        addVertexWaitAllOpBeforeLoopYield(sinks_in_loop_op, "for");
+        addVertexWaitAllOpBeforeLoopYield(yielded_tokens_in_loop_op, "for");
     // Update op-to-graph map for wait_all ops
     wa_to_g[wait_all_op_yielded.getId()] = wait_all_op_yielded_v;
 
@@ -1844,15 +1786,15 @@ private:
   }
 
   void insertLoopCarriedDeps(OpBuilder &builder, scf::ParallelOp &loop_op,
-                             SmallVector<Value, 1> sinks_in_loop_op) {
+                             SmallVector<Value, 1> yielded_tokens_in_loop_op) {
     // (1) Create one wait_all event at the end of current parallel loop body.
     air::WaitAllOp wait_all_op_yielded =
         insertWaitAllOpBeforeLoopYield<scf::ParallelOp>(builder, loop_op,
-                                                        sinks_in_loop_op);
+                                                        yielded_tokens_in_loop_op);
 
     // Update boost graph
     Graph::vertex_descriptor wait_all_op_yielded_v =
-        addVertexWaitAllOpBeforeLoopYield(sinks_in_loop_op, "parallel");
+        addVertexWaitAllOpBeforeLoopYield(yielded_tokens_in_loop_op, "parallel");
     // Update op-to-graph map for wait_all ops
     wa_to_g[wait_all_op_yielded.getId()] = wait_all_op_yielded_v;
 
@@ -2182,6 +2124,43 @@ private:
       return true;
     else
       return false;
+  }
+  
+  // Check if op is not considered for loop-carried dependency
+  bool isNotLoopCarriedOp (Operation * op){
+    if (dyn_cast<memref::DeallocOp>(op)){
+      return true;
+    }
+    else if (dyn_cast<memref::AllocOp>(op)){
+      return true;
+    }
+    else return false;
+  }
+  bool isNotLoopCarriedOp (air::AsyncOpInterface op){
+    if (auto exec_op = dyn_cast<air::ExecuteOp>(op.getOperation())){
+      auto &bb = exec_op.getBody().front();
+      Operation &child_op = bb.getOperations().front();
+      return isNotLoopCarriedOp(&child_op);
+    }
+    else return false;
+  }
+
+  // Check if a value is not used inside a given block, or is only used by ops not considered for loop-carried dependency
+  bool isOnlyUsedByNoLoopCarryOpsInBlock(Value token, Block *block){
+    if (token.use_empty()) return true;
+    bool isOnlyUsedByNoCarryOps = true;
+    for (auto user : token.getUsers()){
+      if (user->getBlock() == block){
+        if (auto async_user = dyn_cast<air::ExecuteOp>(user)){
+          auto &bb = async_user.getBody().front();
+          Operation &child_op = bb.getOperations().front();
+          if (!isNotLoopCarriedOp(&child_op)) isOnlyUsedByNoCarryOps = false;
+        }
+        else isOnlyUsedByNoCarryOps = false;
+      }
+    }
+    if (isOnlyUsedByNoCarryOps) return true;
+    else return false;
   }
 };
 
