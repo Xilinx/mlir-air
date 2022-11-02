@@ -195,6 +195,9 @@ private:
   addVertexFromDmaOp(xilinx::air::DmaMemcpyInterface op, Graph &G,
                      dependencyContext &dep_ctx);
   Graph::vertex_descriptor
+  addVertexFromChannelOp(xilinx::air::ChannelInterface op, Graph &G,
+                         dependencyContext &dep_ctx);
+  Graph::vertex_descriptor
   addVertexFromHierarchyOp(xilinx::air::HierarchyInterface op, Graph &G,
                            dependencyContext &dep_ctx);
   Graph::vertex_descriptor

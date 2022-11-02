@@ -345,6 +345,9 @@ dependencyCanonicalizer::addVertexFromOpImpls(Operation *op, Graph &G,
                                               dependencyContext &dep_ctx) {
   if (auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op)) {
     return addVertexFromDmaOp(dma_op, G, dep_ctx);
+  } else if (auto channel_op =
+                 mlir::dyn_cast<xilinx::air::ChannelInterface>(op)) {
+    return addVertexFromChannelOp(channel_op, G, dep_ctx);
   } else if (auto execute_op = dyn_cast<xilinx::air::ExecuteOp>(op)) {
     return addVertexFromExecuteOp(execute_op, G, dep_ctx);
   } else if (auto wa_op = dyn_cast<xilinx::air::WaitAllOp>(op)) {
@@ -397,6 +400,20 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromDmaOp(
                            "oval", G, dep_ctx);
   } else {
     assert(false && "Unknown dma op");
+    return 0;
+  }
+}
+
+Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
+    xilinx::air::ChannelInterface op, Graph &G, dependencyContext &dep_ctx) {
+  if (dyn_cast<xilinx::air::ChannelPutOp>(op.getOperation())) {
+    return addVertexFromOp(op, dep_ctx.DmaOpID, "channel", "ChannelPutOp",
+                           "cyan", "oval", G, dep_ctx);
+  } else if (dyn_cast<xilinx::air::ChannelGetOp>(op.getOperation())) {
+    return addVertexFromOp(op, dep_ctx.DmaOpID, "channel", "ChannelGetOp",
+                           "cyan", "oval", G, dep_ctx);
+  } else {
+    assert(false && "Unknown channel op");
     return 0;
   }
 }
@@ -526,6 +543,8 @@ dependencyCanonicalizer::getTypeIdPairFromOp(Operation *op) {
 std::string dependencyCanonicalizer::getOpTypeFromOpImpls(Operation *op) {
   if (mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op)) {
     return "dma";
+  } else if (mlir::dyn_cast<xilinx::air::ChannelInterface>(op)) {
+    return "channel";
   } else if (dyn_cast<xilinx::air::WaitAllOp>(op)) {
     return "wait_all";
   } else if (dyn_cast<xilinx::air::HierarchyInterface>(op)) {
@@ -547,8 +566,10 @@ std::string dependencyCanonicalizer::getOpTypeFromOpImpls(Operation *op) {
   } else {
     if (dyn_cast<xilinx::air::ExecuteOp>(op->getParentOp())) {
       return "execute";
-    } else
+    } else {
+      assert(false && "Unknown op type");
       return "";
+    }
   }
 }
 
@@ -692,9 +713,7 @@ dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
            dyn_cast<scf::ParallelOp>(dep_token.getDefiningOp())) {
     auto parallelop = dyn_cast<scf::ParallelOp>(dep_token.getDefiningOp());
     for (auto parallelop_reduceop : parallelop.getOps<scf::ReduceOp>()) {
-      auto parallelop_terminator =
-          parallelop_reduceop.getRegion().front().getTerminator();
-      output.push_back(parallelop_terminator);
+      output.push_back(parallelop_reduceop);
       return output;
     }
   }
@@ -966,6 +985,7 @@ void dependencyCanonicalizer::updateDepList(func::FuncOp func,
   // Cleanup op ids. Only leave dma, execute and hierarchy ids
   func.walk([&](Operation *op) {
     if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(op)) {
+    } else if (auto channel_op = dyn_cast<air::ChannelInterface>(op)) {
     } else if (auto hier_op = dyn_cast<air::HierarchyInterface>(op)) {
     } else {
       op->removeAttr("id");
