@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-##===- utils/github-clone-llvm.sh ---------------------------*- Script -*-===##
+##===- utils/clone-llvm.sh - Clone LLVM ---------------------*- Script -*-===##
 #
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 #
@@ -27,7 +27,7 @@
 # This script checks out LLVM.  We use this instead of a git submodule to avoid
 # excessive copies of the LLVM tree.
 #
-# This script is intended to be called from the github workflows.
+# This script is called from the github workflows.
 #
 ##===----------------------------------------------------------------------===##
 
