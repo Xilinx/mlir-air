@@ -42,7 +42,7 @@ aie_inc.cpp: aie.mlir
 	aie-opt --aie-create-packet-flows --aie-assign-buffer-addresses $^ | aie-translate --aie-generate-xaie -o $@
 
 core_7_4.elf: aie.mlir
-	aiecc.py --pathfinder aie.mlir
+	aiecc.py aie.mlir
 
 clean::
 	rm -rf *.o *.exe aie_inc.cpp

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-##===- utils/build-mlir-aie.sh - Build mlir-aie --*- Script -*-===##
+##===- utils/github-clone-build-mlir-aie.sh -----------------*- Script -*-===##
 # 
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 #
@@ -22,11 +22,19 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
+##===----------------------------------------------------------------------===##
+#
+# This script checks out and builds a specific version of mlir-aie.
+#
+# This script is intended to be called from the github workflows.
+#
+##===----------------------------------------------------------------------===##
+
 MLIR_AIE_DIR="mlir-aie"
 BUILD_DIR="build"
 INSTALL_DIR="install"
 
-HASH=6e82d809a33fcfa448499cfe90ecd1592e7102e5
+HASH=ad2cbf5366a2470ae6b543cff53e80bed1179d79
 
 git clone --depth 1 https://github.com/Xilinx/mlir-aie.git $MLIR_AIE_DIR
 pushd $MLIR_AIE_DIR

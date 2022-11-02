@@ -26,7 +26,7 @@
 #include "air/Util/CostModel.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -112,12 +112,12 @@ CostModel::getLinalgOpCounts(OpCountMap &map, linalg::LinalgOp op) {
       map.map.insert({s, 0});
     map[s] = map[s] + 1;
   });
-  for (auto &oper : op.getInputOperands()) {
+  for (auto &oper : op.getDpsInputOperands()) {
     if (op.payloadUsesValueFromOperand(oper))
       reads++;
     footprint += getTensorVolume(oper->get().getType());
   }
-  for (auto &oper : op.getOutputOperands()) {
+  for (auto &oper : op.getDpsInitOperands()) {
     if (op.payloadUsesValueFromOperand(oper))
       reads++;
     writes++;

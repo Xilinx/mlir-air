@@ -104,7 +104,9 @@ hsa_status_t air_get_hostname(char hostname[100]) {
 // information, and create QPs for every remote AIR instance
 hsa_status_t air_explore_world(uint32_t ernic_id, uint64_t dev_mem_offset,
                                uint64_t bar_offset) {
-
+#ifndef AIR_PCIE
+  return HSA_STATUS_ERROR;
+#else
   // Initializing all of the representations. This is just hardcoded right now,
   // but should be passed by an driver node through a file or a serialized
   // object
@@ -208,6 +210,7 @@ hsa_status_t air_explore_world(uint32_t ernic_id, uint64_t dev_mem_offset,
   }
 
   return HSA_STATUS_SUCCESS;
+#endif // AIR_PCIE
 }
 
 hsa_status_t air_ernic_mem_alloc(char buff_name[100], uint32_t size, void *t,

@@ -95,7 +95,7 @@ llvm::json::Value attrToJSON(Attribute &attr) {
 void registerAIRRtTranslations() {
 
   TranslateFromMLIRRegistration registrationMMap(
-      "airrt-generate-json",
+      "airrt-generate-json", "Transform airrt metadata to JSON",
       [](ModuleOp module, raw_ostream &output) {
         llvm::json::Object moduleJSON;
         for (auto module_meta : module.getOps<airrt::ModuleMetadataOp>()) {
@@ -132,12 +132,12 @@ void registerAIRRtTranslations() {
       [](DialectRegistry &registry) {
         registry.insert<xilinx::air::airDialect, xilinx::airrt::AIRRtDialect,
                         func::FuncDialect, cf::ControlFlowDialect,
-                        arith::ArithmeticDialect, memref::MemRefDialect,
+                        arith::ArithDialect, memref::MemRefDialect,
                         vector::VectorDialect, LLVM::LLVMDialect,
                         scf::SCFDialect, AffineDialect>();
       });
   TranslateFromMLIRRegistration registrationXJSON(
-      "air-herds-to-json",
+      "air-herds-to-json", "Transform herd information to JSON",
       [](ModuleOp module, raw_ostream &output) {
         // boilerplate to give dimensions to the visualizer
         output << "{\n\t\"switchbox00\": {\n\t\t\"row\": " << gridNumRows - 1
@@ -147,10 +147,9 @@ void registerAIRRtTranslations() {
         return AIRHerdsToJSON(module, output);
       },
       [](DialectRegistry &registry) {
-        registry
-            .insert<air::airDialect, func::FuncDialect,
-                    arith::ArithmeticDialect, memref::MemRefDialect,
-                    scf::SCFDialect, AffineDialect, linalg::LinalgDialect>();
+        registry.insert<air::airDialect, func::FuncDialect, arith::ArithDialect,
+                        memref::MemRefDialect, scf::SCFDialect, AffineDialect,
+                        linalg::LinalgDialect>();
       });
 }
 

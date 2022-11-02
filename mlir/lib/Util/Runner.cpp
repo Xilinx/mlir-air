@@ -542,7 +542,7 @@ public:
     //     if (auto tensor_load =
     //     dyn_cast<xilinx::air::DmaLoadOp>(o.getDefiningOp())) {
     //       auto space =
-    //       tensor_load.memref().getType().cast<MemRefType>().getMemorySpace();
+    //       tensor_load.getMemref().getType().cast<MemRefType>().getMemorySpace();
     //       uint64_t ld_vol = 0;
     //       uint64_t st_vol = 0;
     //       // if (auto stats =
@@ -553,10 +553,10 @@ public:
     //       //     st_vol = stats.getOperandTransferVolume(idx, false);
     //       //   }
     //       //   else {
-    //       //     ld_vol = getTensorVolume(tensor_load.memref().getType());
+    //       //     ld_vol = getTensorVolume(tensor_load.getMemref().getType());
     //       //   }
     //       // } else {
-    //         ld_vol = getTensorVolume(tensor_load.memref().getType());
+    //         ld_vol = getTensorVolume(tensor_load.getMemref().getType());
     //       // }
     //       if (ld_vol) ld_xfer_time[space] += getTransferCost(space,
     //       space+1/*2*/, ld_vol); if (st_vol) st_xfer_time[space] +=
@@ -572,7 +572,7 @@ public:
     //     for (auto user : r.getUsers()) {
     //       if (auto tensor_store = dyn_cast<xilinx::air::DmaStoreOp>(user)) {
     //         auto space =
-    //         tensor_store.memref().getType().cast<MemRefType>().getMemorySpace();
+    //         tensor_store.getMemref().getType().cast<MemRefType>().getMemorySpace();
     //         uint64_t ld_vol = 0;
     //         uint64_t st_vol = 0;
     //         // if (auto stats =
@@ -583,10 +583,11 @@ public:
     //         //     ld_vol = stats.getResultTransferVolume(idx, false);
     //         //   }
     //         //   else {
-    //         //     st_vol = getTensorVolume(tensor_store.memref().getType());
+    //         //     st_vol =
+    //         getTensorVolume(tensor_store.getMemref().getType());
     //         //   }
     //         // } else {
-    //           st_vol = getTensorVolume(tensor_store.memref().getType());
+    //           st_vol = getTensorVolume(tensor_store.getMemref().getType());
     //         // }
     //         if (ld_vol) ld_xfer_time[space] += getTransferCost(space,
     //         space+1/*2*/, ld_vol); if (st_vol) st_xfer_time[space] +=

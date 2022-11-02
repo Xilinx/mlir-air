@@ -24,10 +24,10 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-to-aie -o /dev/null | air-opt | FileCheck %s
-// CHECK: [[T_0_0:%.*]] = AIE.tile(0, 0)
-// CHECK: [[T_1_0:%.*]] = AIE.tile(1, 0)
-// CHECK: [[T_0_1:%.*]] = AIE.tile(0, 1)
-// CHECK: [[T_1_1:%.*]] = AIE.tile(1, 1)
+// CHECK: [[T_0_0:%.*]] = AIE.tile(1, 1)
+// CHECK: [[T_1_0:%.*]] = AIE.tile(2, 1)
+// CHECK: [[T_0_1:%.*]] = AIE.tile(1, 2)
+// CHECK: [[T_1_1:%.*]] = AIE.tile(2, 2)
 // CHECK: [[C_1_1:%.*]] = AIE.core([[T_1_1]])
 // CHECK: [[V1:%.*]] = arith.constant 6 : i32
 // CHECK: [[V0:%.*]] = arith.constant 10 : i32

@@ -35,7 +35,7 @@ jobs:
 
       - name: Get Submodule Hash
         id: get-submodule-hash
-        run: echo "::set-output name=hash::$(md5sum $(echo utils/clone-llvm.sh))"
+        run: echo "::set-output name=hash::$(md5sum $(echo utils/github-clone-llvm.sh))"
         shell: bash
 
       - name: Ccache for C++ compilation
@@ -51,17 +51,17 @@ jobs:
 
       - name: Get LLVM
         id: clone-llvm
-        run: utils/clone-llvm.sh
+        run: utils/github-clone-llvm.sh
         shell: bash
         
       - name: Rebuild and Install LLVM
-        run: utils/build-llvm.sh
+        run: utils/github-build-llvm.sh
 
       - name: Rebuild and Install mlir-aie
-        run: utils/clone-build-mlir-aie.sh
+        run: utils/github-clone-build-mlir-aie.sh
 
       - name: Rebuild and Install libxaie
-        run: utils/clone-build-libxaie.sh
+        run: utils/github-clone-build-libxaie.sh
 
       # Build the repo test target in debug mode to build and test.
       - name: Build and test (Assert)

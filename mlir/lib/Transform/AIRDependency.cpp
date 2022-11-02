@@ -164,12 +164,12 @@ public:
         // Create async execute region for memref.alloc
         else if (auto memalloc_op = dyn_cast<memref::AllocOp>(op))
           createAsyncExecute(module_builder, op, "memref::alloc", ExecuteOpID,
-                             memalloc_op.memref().getType());
+                             memalloc_op.getMemref().getType());
 
         // Create async execute region for memref.alloc
         else if (auto memcast_op = dyn_cast<memref::CastOp>(op))
           createAsyncExecute(module_builder, op, "memref::cast", ExecuteOpID,
-                             memcast_op.dest().getType());
+                             memcast_op.getDest().getType());
 
         // Create async execute region for memref.dealloc
         else if (dyn_cast<memref::DeallocOp>(op))
@@ -272,29 +272,31 @@ public:
 
         // If the sink op is linalg op
         if (auto sink_op_linalgop = dyn_cast<linalg::LinalgOp>(sink_op)) {
-          for (auto linalg_ins : sink_op_linalgop.inputs()) {
-            if (linalg_ins.getType().isa<MemRefType>()) {
+          for (auto linalg_ins : sink_op_linalgop.getDpsInputOperands()) {
+            auto ins_value = linalg_ins->get();
+            if (ins_value.getType().isa<MemRefType>()) {
               unsigned memRefRank =
-                  linalg_ins.getType().cast<MemRefType>().getRank();
-              partialMemref tile = createPartialMemref(linalg_ins, memRefRank);
+                  ins_value.getType().cast<MemRefType>().getRank();
+              partialMemref tile = createPartialMemref(ins_value, memRefRank);
               sink_op_memref_reads.push_back(tile);
-            } else if (linalg_ins.getType().isa<IndexType>()) {
-              sink_op_scalar_ins.push_back(linalg_ins);
+            } else if (ins_value.getType().isa<IndexType>()) {
+              sink_op_scalar_ins.push_back(ins_value);
             }
           }
-          for (auto linalg_outs : sink_op_linalgop.outputs()) {
-            if (linalg_outs.getType().isa<MemRefType>()) {
+          for (auto linalg_outs : sink_op_linalgop.getDpsInitOperands()) {
+            auto outs_value = linalg_outs->get();
+            if (outs_value.getType().isa<MemRefType>()) {
               unsigned memRefRank =
-                  linalg_outs.getType().cast<MemRefType>().getRank();
-              partialMemref tile = createPartialMemref(linalg_outs, memRefRank);
+                  outs_value.getType().cast<MemRefType>().getRank();
+              partialMemref tile = createPartialMemref(outs_value, memRefRank);
               sink_op_memref_reads.push_back(
                   tile); // linalg op both reads and writes the output memref
               sink_op_memref_writes.push_back(tile);
-            } else if (linalg_outs.getType().isa<IndexType>()) {
+            } else if (outs_value.getType().isa<IndexType>()) {
               sink_op_scalar_ins.push_back(
-                  linalg_outs); // linalg op both reads and writes the output
-                                // memref
-              sink_op_scalar_outs.push_back(linalg_outs);
+                  outs_value); // linalg op both reads and writes the output
+                               // memref
+              sink_op_scalar_outs.push_back(outs_value);
             }
           }
           if (sink_op_linalgop->getNumResults()) {
@@ -315,12 +317,12 @@ public:
         // If the sink op is memref::dealloc
         else if (auto sink_op_memdealloc =
                      dyn_cast<memref::DeallocOp>(sink_op)) {
-          unsigned memRefRank = sink_op_memdealloc.memref()
+          unsigned memRefRank = sink_op_memdealloc.getMemref()
                                     .getType()
                                     .cast<MemRefType>()
                                     .getRank();
           partialMemref tile =
-              createPartialMemref(sink_op_memdealloc.memref(), memRefRank);
+              createPartialMemref(sink_op_memdealloc.getMemref(), memRefRank);
           sink_op_memref_reads.push_back(tile);
           sink_op_memref_writes.push_back(
               tile); // dealloc erases (i.e. writes to) output memref
@@ -328,19 +330,19 @@ public:
 
         // If the sink op is memref::copy
         else if (auto sink_op_memref_copy = dyn_cast<memref::CopyOp>(sink_op)) {
-          unsigned memRefRankSrc = sink_op_memref_copy.source()
+          unsigned memRefRankSrc = sink_op_memref_copy.getSource()
                                        .getType()
                                        .cast<MemRefType>()
                                        .getRank();
-          partialMemref tileSrc =
-              createPartialMemref(sink_op_memref_copy.source(), memRefRankSrc);
+          partialMemref tileSrc = createPartialMemref(
+              sink_op_memref_copy.getSource(), memRefRankSrc);
           sink_op_memref_reads.push_back(tileSrc);
-          unsigned memRefRankDst = sink_op_memref_copy.target()
+          unsigned memRefRankDst = sink_op_memref_copy.getTarget()
                                        .getType()
                                        .cast<MemRefType>()
                                        .getRank();
-          partialMemref tileDst =
-              createPartialMemref(sink_op_memref_copy.target(), memRefRankDst);
+          partialMemref tileDst = createPartialMemref(
+              sink_op_memref_copy.getTarget(), memRefRankDst);
           sink_op_memref_reads.push_back(tileDst);
           sink_op_memref_writes.push_back(tileDst);
         }
@@ -1141,11 +1143,11 @@ private:
       // If used in a linalg op
       else if (auto linalgop = mlir::dyn_cast<linalg::LinalgOp>(u.getOwner())) {
         if (u.getOperandNumber() <
-            linalgop.getNumInputs() + linalgop.getNumOutputs()) {
+            linalgop.getNumDpsInputs() + linalgop.getNumDpsInits()) {
           foundReadAccess = true;
-        } else if (u.getOperandNumber() >= linalgop.getNumInputs() &&
-                   u.getOperandNumber() - linalgop.getNumInputs() <
-                       linalgop.getNumOutputs()) {
+        } else if (u.getOperandNumber() >= linalgop.getNumDpsInputs() &&
+                   u.getOperandNumber() - linalgop.getNumDpsInputs() <
+                       linalgop.getNumDpsInits()) {
           foundWriteAccess = true;
         } else {
           assert(false && "Unknown operand in linalg op");
@@ -1341,12 +1343,12 @@ private:
           if (foundAsyncOpUsesAboveCurrentLine(&ar)) {
             if (rw == 'r') {
               if (u.getOperandNumber() <
-                  linalgop.getNumInputs() + linalgop.getNumOutputs())
+                  linalgop.getNumDpsInputs() + linalgop.getNumDpsInits())
                 addNewAsyncDepToGraph<T>(ar.getResult(0), op);
             } else if (rw == 'w') {
-              if (u.getOperandNumber() >= linalgop.getNumInputs() &&
-                  u.getOperandNumber() - linalgop.getNumInputs() <
-                      linalgop.getNumOutputs())
+              if (u.getOperandNumber() >= linalgop.getNumDpsInputs() &&
+                  u.getOperandNumber() - linalgop.getNumDpsInputs() <
+                      linalgop.getNumDpsInits())
                 addNewAsyncDepToGraph<T>(ar.getResult(0), op);
             } else {
               addNewAsyncDepToGraph<T>(ar.getResult(0), op);
@@ -1432,7 +1434,7 @@ private:
       if (auto subview =
               operand.memrefValue.getDefiningOp<memref::SubViewOp>()) {
         partialMemref subview_tile = createPartialMemref(
-            subview.source(), subview.sizes().size(), subview.offsets());
+            subview.getSource(), subview.sizes().size(), subview.offsets());
         SmallVector<partialMemref, 1> subview_operands = {subview_tile};
         traceDeps<T>(subview_operands, sink_air_op, dep_type);
       }

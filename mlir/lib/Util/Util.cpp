@@ -23,6 +23,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "air/Util/Util.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -42,6 +43,9 @@ using namespace mlir;
 
 namespace xilinx {
 namespace air {
+
+const StringLiteral LinalgTransforms::kLinalgTransformMarker =
+    "__internal_linalg_transform__";
 
 namespace {
 
@@ -245,7 +249,7 @@ int getIdAttr(Operation *op) {
 }
 
 // Renumber the DMA ops
-void renumberDmaOps(func::FuncOp func, std::string mode = "herd") {
+void renumberDmaOps(func::FuncOp func, std::string mode) {
   unsigned id = 0;
   if (mode == "global") {
     // Renumber DMA ops per entire module
