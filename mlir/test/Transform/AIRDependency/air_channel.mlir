@@ -83,26 +83,26 @@ module attributes {torch.debug_module_name = "mmult"} {
 
           %5 = memref.alloc() : memref<64x64xbf16, 1>
           %6 = memref.alloc() : memref<64x64xbf16, 1>
+// CHECK: %[[EVENT11:.*]] = air.channel.get async{{.*}}@channel_1[]
+          air.channel.get @channel_1[] (%5[] [] []) : (memref<64x64xbf16, 1>)
+// CHECK: %[[EVENT12:.*]] = air.channel.get async{{.*}}@channel_2[]
+          air.channel.get @channel_2[] (%6[] [] []) : (memref<64x64xbf16, 1>)
 
-// CHECK: %[[EVENT11:.*]] = scf.parallel
+// CHECK: %[[EVENT13:.*]] = scf.parallel
           scf.parallel (%arg17, %arg18) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) {
             %20 = affine.apply #map1()[%arg17]
             %21 = affine.apply #map1()[%arg18]
-// CHECK: %[[EVENT12:.*]] = scf.for{{.*}}iter_args(%[[EVENT13:.*]] = 
+// CHECK: %[[EVENT14:.*]] = scf.for{{.*}}iter_args(%[[EVENT15:.*]] = 
             scf.for %arg24 = %c0 to %c64 step %c32_new {
               air.channel.put @channel_5[%arg17, %arg18] (%5[%20, %arg24] [%c64, %c64] [%c1024, %c1]) : (memref<64x64xbf16, 1>)
-// CHECK: %[[EVENT14:.*]] = air.channel.put async [%[[EVENT13]]{{.*}}@channel_5[
+// CHECK: %[[EVENT16:.*]] = air.channel.put async [%[[EVENT15]]{{.*}}@channel_5[
               air.channel.put @channel_6[%arg17, %arg18] (%6[%arg24, %21] [%c64, %c64] [%c1024, %c1]) : (memref<64x64xbf16, 1>)
-// CHECK: %[[EVENT15:.*]] = air.channel.put async [%[[EVENT13]]{{.*}}@channel_6[
+// CHECK: %[[EVENT17:.*]] = air.channel.put async [%[[EVENT15]]{{.*}}@channel_6[
             }
-// CHECK: %[[EVENT16:.*]] = air.wait_all async [%[[EVENT14]], %[[EVENT15]]]
-// CHECK: %[[EVENT17:.*]] = air.channel.put async [{{.*}}@channel_7[
+// CHECK: %[[EVENT18:.*]] = air.wait_all async [%[[EVENT16]], %[[EVENT17]]]
+// CHECK: %[[EVENT19:.*]] = air.channel.put async [{{.*}}@channel_7[
             air.channel.put @channel_7[%arg17, %arg18] (%19[%20, %21] [%c32_new, %c32_new] [%c64, %c1]) : (memref<64x64xbf16, 1>)
           }
-// CHECK: %[[EVENT18:.*]] = air.channel.get async [%[[EVENT11]]]{{.*}}@channel_1[]
-          air.channel.get @channel_1[] (%5[] [] []) : (memref<64x64xbf16, 1>)
-// CHECK: %[[EVENT19:.*]] = air.channel.get async [%[[EVENT11]]]{{.*}}@channel_2[]
-          air.channel.get @channel_2[] (%6[] [] []) : (memref<64x64xbf16, 1>)
           air.herd @herd_0  tile (%arg17, %arg18) in (%arg19=%c2, %arg20=%c2) args(%arg21=%5, %arg22=%6, %arg23=%19) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
             %c1_0 = arith.constant 1 : index
             %c0_1 = arith.constant 0 : index
