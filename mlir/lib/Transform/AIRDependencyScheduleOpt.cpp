@@ -75,7 +75,6 @@ struct HoistDmaInAccumPattern : public OpRewritePattern<scf::ForOp> {
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
 
-    // Only looking for loops inside of herd launch
     SmallVector<air::DmaMemcpyInterface, 1> dmamemcpy_incoming_history;
     SmallVector<air::DmaMemcpyInterface, 1> dmamemcpy_outgoing_history;
     for (auto dma_op : for_op.getOps<air::DmaMemcpyInterface>()) {
@@ -124,6 +123,9 @@ struct HoistDmaInAccumPattern : public OpRewritePattern<scf::ForOp> {
               dyn_cast<air::WaitAllOp>(yield_op->getOperand(0).getDefiningOp());
           reconnectOutgoingEvents(op_2, dealloc_region_op, for_op,
                                   wait_all_after_for);
+          // If wait_all depends on outgoing dma, then erase this dependency
+          eraseAsyncDependencyFromAsyncOp(dyn_cast<air::AsyncOpInterface>(wait_all_after_for.getOperation()),
+                                     dyn_cast<air::AsyncOpInterface>(op_2.getOperation()).getAsyncToken());
           // Move ops to after the for loop
           dealloc_region_op->moveAfter(for_op);
           op_2->moveAfter(for_op);
@@ -227,12 +229,10 @@ private:
         if (auto dealloc_op = dyn_cast<memref::DeallocOp>(child_op)) {
           // Found memref.deallocOp inside air.ExecuteOp
           foundDepToMemrefDealloc = true;
-          for (auto descendant_user : region_op.getAsyncToken().getUsers()) {
-            if (dyn_cast<air::WaitAllOp>(descendant_user)) {
-              foundDepToWaitall = true;
-            }
-          }
         }
+      }
+      if (dyn_cast<air::WaitAllOp>(user)) {
+        foundDepToWaitall = true;
       }
     }
     return foundDepToWaitall & foundDepToMemrefDealloc;
