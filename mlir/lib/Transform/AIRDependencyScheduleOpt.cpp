@@ -108,7 +108,7 @@ struct HoistDmaInAccumPattern : public OpRewritePattern<scf::ForOp> {
                  "Alloc event having more than one dependant");
 
           // Reconnect incoming alloc event
-          if (alloc_region_op.getAsyncDependencies().size()){
+          if (alloc_region_op.getAsyncDependencies().size()) {
             alloc_region_op.eraseAsyncDependency(0);
           }
           // Reconnect incoming dma event
@@ -126,8 +126,11 @@ struct HoistDmaInAccumPattern : public OpRewritePattern<scf::ForOp> {
           reconnectOutgoingEvents(op_2, dealloc_region_op, for_op,
                                   wait_all_after_for);
           // If wait_all depends on outgoing dma, then erase this dependency
-          eraseAsyncDependencyFromAsyncOp(dyn_cast<air::AsyncOpInterface>(wait_all_after_for.getOperation()),
-                                     dyn_cast<air::AsyncOpInterface>(op_2.getOperation()).getAsyncToken());
+          eraseAsyncDependencyFromAsyncOp(
+              dyn_cast<air::AsyncOpInterface>(
+                  wait_all_after_for.getOperation()),
+              dyn_cast<air::AsyncOpInterface>(op_2.getOperation())
+                  .getAsyncToken());
           // Move ops to after the for loop
           dealloc_region_op->moveAfter(for_op);
           op_2->moveAfter(for_op);
