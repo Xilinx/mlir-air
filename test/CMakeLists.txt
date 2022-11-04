@@ -44,6 +44,8 @@ find_package(MLIR REQUIRED CONFIG)
 find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 
 find_package(LibXAIE)
+get_filename_component(XILINX_XAIE_LIB_DIR ${XILINX_XAIE_LIBS} DIRECTORY)
+get_filename_component(XILINX_XAIE_DIR ${XILINX_XAIE_LIB_DIR} DIRECTORY)
 
 if(NOT AIE_BINARY_DIR)
 find_package(AIE REQUIRED CONFIG)
