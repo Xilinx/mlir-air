@@ -551,7 +551,7 @@ uint64_t air_wait_all(std::vector<uint64_t> &signals) {
       dispatch_packet_t *barrier_pkt =
           (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
       air_packet_barrier_and((barrier_and_packet_t *)barrier_pkt, addrs[0],
-                            addrs[1], addrs[2], addrs[3], addrs[4]);
+                             addrs[1], addrs[2], addrs[3], addrs[4]);
       signal_create(1, 0, NULL, (signal_t *)&barrier_pkt->completion_signal);
       air_queue_dispatch(q, wr_idx, barrier_pkt);
       packets.push_back(barrier_pkt);
