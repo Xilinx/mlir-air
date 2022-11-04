@@ -1594,29 +1594,8 @@ private:
     }
 
     // Connect sources in loop body with iter_args
-    for (auto async_execute_op : new_loop_op.getOps<air::ExecuteOp>()) {
-      if (async_execute_op.getAsyncDependencies().size() == 0) {
-        async_execute_op.addAsyncDependency(new_loop_op.getRegionIterArgs()[0]);
-      }
-    }
-    for (auto dma_op : new_loop_op.getOps<air::DmaMemcpyInterface>()) {
-      auto async_op =
-          mlir::dyn_cast<air::AsyncOpInterface>(dma_op.getOperation());
-      if (async_op.getAsyncDependencies().size() == 0) {
-        async_op.addAsyncDependency(new_loop_op.getRegionIterArgs()[0]);
-      }
-    }
-    for (auto channel_op : new_loop_op.getOps<air::ChannelInterface>()) {
-      auto async_op =
-          mlir::dyn_cast<air::AsyncOpInterface>(channel_op.getOperation());
-      if (async_op.getAsyncDependencies().size() == 0) {
-        async_op.addAsyncDependency(new_loop_op.getRegionIterArgs()[0]);
-      }
-    }
-    for (auto hier_op : new_loop_op.getOps<air::HierarchyInterface>()) {
-      auto async_op =
-          mlir::dyn_cast<air::AsyncOpInterface>(hier_op.getOperation());
-      if (async_op.getAsyncDependencies().size() == 0) {
+    for (auto async_op : new_loop_op.getOps<air::AsyncOpInterface>()){
+      if ((!async_op.getAsyncDependencies().size()) && (!isNotLoopCarriedOp(async_op))) {
         async_op.addAsyncDependency(new_loop_op.getRegionIterArgs()[0]);
       }
     }

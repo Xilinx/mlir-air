@@ -104,11 +104,13 @@ struct HoistDmaInAccumPattern : public OpRewritePattern<scf::ForOp> {
           // Found a pair of dmas which cancel out each other
           air::ExecuteOp alloc_region_op = getRegionOfAllocOpForDmaOp(op_1);
           air::ExecuteOp dealloc_region_op = getRegionOfDeallocOpForDmaOp(op_2);
-          assert(alloc_region_op.getAsyncDependencies().size() == 1 &&
+          assert(alloc_region_op.getAsyncDependencies().size() <= 1 &&
                  "Alloc event having more than one dependant");
 
           // Reconnect incoming alloc event
-          alloc_region_op.eraseAsyncDependency(0);
+          if (alloc_region_op.getAsyncDependencies().size()){
+            alloc_region_op.eraseAsyncDependency(0);
+          }
           // Reconnect incoming dma event
           reconnectIncomingDma(op_1, for_op);
           // Move ops to before the for loop
