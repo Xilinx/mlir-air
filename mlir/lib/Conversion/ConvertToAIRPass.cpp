@@ -438,6 +438,16 @@ class MemrefCopyToAIRChannelConversion
   }
 };
 
+class AIRDmaToAIRChannelConversion
+    : public OpRewritePattern<air::DmaMemcpyNdOp> {
+  using OpRewritePattern<air::DmaMemcpyNdOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(air::DmaMemcpyNdOp op,
+                                PatternRewriter &rewriter) const override {
+
+    return success();
+  }
+};
+
 class AffineParToHerdConversion
     : public OpRewritePattern<AffineParallelOp> {
 public:
@@ -1013,6 +1023,50 @@ struct CopyToChannelPass : public CopyToChannelBase<CopyToChannelPass> {
   }
 };
 
+struct DmaToChannelPass : public DmaToChannelBase<DmaToChannelPass> {
+
+  DmaToChannelPass() = default;
+  DmaToChannelPass(const DmaToChannelPass &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<xilinx::air::airDialect>();
+    registry.insert<linalg::LinalgDialect>();
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    auto context = module.getContext();
+
+    ConversionTarget target(*context);
+
+    target.addLegalDialect<
+        LLVM::LLVMDialect, func::FuncDialect, scf::SCFDialect, AffineDialect,
+        xilinx::air::airDialect, arith::ArithDialect, memref::MemRefDialect>();
+
+    target.addDynamicallyLegalOp<memref::CopyOp>([](memref::CopyOp co) {
+      auto src_type = co.getSource().getType().dyn_cast<MemRefType>();
+      auto dst_type = co.getTarget().getType().dyn_cast<MemRefType>();
+      return src_type.getMemorySpaceAsInt() == dst_type.getMemorySpaceAsInt();
+    });
+
+    // Simplify all the subviews so we can rewrite them easily.
+    // Mostly this is propagating constant sizes into dimensioned memref types.
+    RewritePatternSet stage1Patterns =
+        linalg::getLinalgTilingCanonicalizationPatterns(context);
+    memref::AllocOp::getCanonicalizationPatterns(stage1Patterns, context);
+    (void)applyPatternsAndFoldGreedily(module, std::move(stage1Patterns));
+
+    RewritePatternSet stage2Patterns(context);
+    stage2Patterns.insert<AIRDmaToAIRChannelConversion>(context);
+    if (failed(applyPartialConversion(module, target,
+                                      std::move(stage2Patterns)))) {
+      emitError(UnknownLoc::get(context), "error\n");
+      signalPassFailure();
+      assert(0);
+    }
+  }
+};
+
 struct ParallelToHerdPass : public ParallelToHerdBase<ParallelToHerdPass> {
 
   ParallelToHerdPass() = default;
@@ -1211,6 +1265,10 @@ std::unique_ptr<mlir::Pass> createCopyToDmaPass() {
 
 std::unique_ptr<mlir::Pass> createCopyToChannelPass() {
   return std::make_unique<CopyToChannelPass>();
+}
+
+std::unique_ptr<mlir::Pass> createDmaToChannelPass() {
+  return std::make_unique<DmaToChannelPass>();
 }
 
 } // namespace air

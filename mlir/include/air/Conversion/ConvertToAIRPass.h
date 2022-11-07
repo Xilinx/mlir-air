@@ -19,6 +19,7 @@ std::unique_ptr<mlir::Pass> createParallelToHerdPass();
 std::unique_ptr<mlir::Pass> createParallelToLaunchPass();
 std::unique_ptr<mlir::Pass> createCopyToDmaPass();
 std::unique_ptr<mlir::Pass> createCopyToChannelPass();
+std::unique_ptr<mlir::Pass> createDmaToChannelPass();
 
 } // namespace air
 } // namespace xilinx
