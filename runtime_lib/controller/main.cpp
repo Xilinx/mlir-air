@@ -1700,8 +1700,13 @@ int main() {
   uint32_t *num_mbs = (uint32_t *)(shmem_base + 0x208);
   num_mbs[0] = user1;
 
-  if (mb_id == 0)
+  if (mb_id == 0) {
     unlock_uart(); // NOTE: Initialize uart lock only from 'first' MB
+    // initialize shared signals
+    uint64_t *s = (uint64_t *)(shmem_base + MB_SHMEM_SIGNAL_OFFSET);
+    for (uint64_t i = 0; i < (MB_SHMEM_SIGNAL_SIZE) / sizeof(uint64_t); i++)
+      s[i] = 0;
+  }
 
   lock_uart(mb_id);
 #ifdef ARM_CONTROLLER
