@@ -11,6 +11,8 @@
 # This script checks out MLIR-AIE.  We use this instead of a git submodule to 
 # manage commithash synchronization with LLVM.
 #
+# This script is called from the github workflows.
+#
 ##===----------------------------------------------------------------------===##
 
 export HASH=ad2cbf5366a2470ae6b543cff53e80bed1179d79
