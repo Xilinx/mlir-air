@@ -34,7 +34,7 @@ current_hw_target [lindex [get_hw_targets] $myidx]
 open_hw_target
 # Set the current target device. ID 1 for xcvc1902_*
 current_hw_device [lindex [get_hw_devices] 1]
-# Refresht the device and setup probes because that's what the GUI does
+# Refresh the device and setup probes because that's what the GUI does
 refresh_hw_device -update_hw_probes false [lindex [lindex [get_hw_devices] 1] 0]
 # Set the programming file to the final PDI with the firmware
 set_property PROGRAM.FILE {./final_vck5000.pdi} [lindex [get_hw_devices] 1]
