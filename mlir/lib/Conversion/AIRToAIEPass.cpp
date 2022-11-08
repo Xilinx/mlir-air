@@ -47,6 +47,7 @@ struct AIRToAIEOptions {
   int64_t col_offset;
   int64_t row_offset;
   bool emit_while;
+  bool emit_herd_lock;
 };
 
 AIE::TileOp getPhysTileOpOrNull(ModuleOp aie_module, int col, int row) {
@@ -177,15 +178,29 @@ struct DMAAllocator {
   }
 };
 
-AIE::LockOp allocateLockOp(ModuleOp aie_module, AIE::TileOp tile) {
+AIE::LockOp allocateLockOp(ModuleOp aie_module, AIE::TileOp tile, int id=-1) {
+  AIE::LockOp lock = nullptr;
   std::set<int> ids;
-  aie_module.walk([&](AIE::LockOp lock) {
-    if (cast<xilinx::AIE::TileOp>(lock.getTile().getDefiningOp()) == tile)
-      ids.insert(lock.getLockIDValue());
+  aie_module.walk([&](AIE::LockOp l) {
+    if (cast<AIE::TileOp>(l.getTile().getDefiningOp()) == tile) {
+      auto i = l.getLockIDValue();
+      if (i == id)
+        lock = l;
+      ids.insert(i);
+    }
   });
+
+  if (lock)
+    return lock;
+
   int new_id = 0;
-  while (ids.count(new_id))
-    new_id++;
+  if (id > 0)
+    new_id = id;
+  else {
+    while (ids.count(new_id))
+      new_id++;
+  }
+
   OpBuilder b(aie_module);
   Operation *t = tile.getOperation();
   while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
@@ -259,6 +274,10 @@ void outlineAIECores(OpBuilder &builder, ModuleOp aie_module,
           core->setAttr("link_with", a);
       }
 
+      Value herd_lock = nullptr;
+      if (options.emit_herd_lock)
+        herd_lock = allocateLockOp(aie_module, tile, 0);
+
       // the buffers and locks created below need to go before the core and
       // mem
       builder.setInsertionPoint(core);
@@ -307,12 +326,18 @@ void outlineAIECores(OpBuilder &builder, ModuleOp aie_module,
         remap.map(a, m);
       }
 
+      if (options.emit_herd_lock)
+        core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(), herd_lock, 0, AIE::LockAction::Acquire);
+
       Region &r = h.getRegion();
       r.cloneInto(&core.getBody(), remap);
 
       Block *launch_bb = remap.lookup(&r.front());
       core_builder.create<cf::BranchOp>(hloc, launch_bb);
       core_builder.setInsertionPoint(launch_bb->getTerminator());
+      if (options.emit_herd_lock)
+        core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(), herd_lock, 0,
+                                            AIE::LockAction::Release);
 
       if (options.emit_while)
         core_builder.create<cf::BranchOp>(hloc, core_bb);
@@ -839,6 +864,13 @@ public:
 
   Option<bool> AIRToAIEEmitWhileLoop{
       *this, "emit-while-loop", llvm::cl::desc("Emit while(1) around AIE code"),
+      llvm::cl::init(false)};
+
+  Option<bool> AIRToAIEEmitHerdLock{
+      *this, "emit-herd-lock",
+      llvm::cl::desc("Acquire and release a lock at the start and end of herd execution. "\
+                     "The default is to acquire lock 0 with value zero and release it with value 0. " \
+                     "There is currently no way to override the default behavior."),
       llvm::cl::init(false)};
 
   Option<std::string> AIRToAIETestPatterns{
@@ -1370,7 +1402,8 @@ public:
       std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
       AIRToAIEOptions options = {.col_offset = AIRToAIEColOffset,
                                  .row_offset = AIRToAIERowOffset,
-                                 .emit_while = AIRToAIEEmitWhileLoop};
+                                 .emit_while = AIRToAIEEmitWhileLoop,
+                                 .emit_herd_lock = AIRToAIEEmitHerdLock};
       createAIEModulesAndOutlineCores(m, aie_modules, tileToHerdMap, options);
       std::set<ModuleOp> seen;
       for (auto &p : aie_modules) {
@@ -1422,7 +1455,8 @@ public:
     std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
     AIRToAIEOptions options = {.col_offset = AIRToAIEColOffset,
                                .row_offset = AIRToAIERowOffset,
-                               .emit_while = AIRToAIEEmitWhileLoop};
+                               .emit_while = AIRToAIEEmitWhileLoop,
+                               .emit_herd_lock = AIRToAIEEmitHerdLock};
     createAIEModulesAndOutlineCores(module, aie_modules, tileToHerdMap,
                                     options);
 
