@@ -143,13 +143,12 @@ def AIRAutomaticTiling: Pass<"air-automatic-tiling", "func::FuncOp"> {
     ListOption<"loopTileSizes", "loop-tile-sizes", "unsigned",
                "A list of multi-dimensional loop tile sizes",
                "llvm::cl::ZeroOrMore">,
-    Option<"tileSeparate", "tile-separate", "bool", /*default=*/"false",
+    Option<"clTileSeparate", "tile-separate", "bool", /*default=*/"false",
            "AIR loop tiling separates full and partial tiles">,
-    Option<"AIRLabel", "air-label", "std::string", /*default=*/"",
+    Option<"clLabel", "air-label", "std::string", /*default=*/"",
            "Transform loops with the given label">,
-    Option<"AIRPostLabel", "air-post-label", "std::string", 
-            /*default=*/"",
-            "Label to apply to transformed loop nest">
+    Option<"clPostLabel", "air-post-label", "std::string", /*default=*/"",
+           "Label to apply to transformed loop nest">
   ];
 }
 
@@ -163,14 +162,14 @@ def AIRHerdPlacementPass : Pass<"air-place-herds", "ModuleOp"> {
   let constructor = "xilinx::air::createAIRHerdPlacementPass()";
 
   let options = [
-    Option<"numRows", "num-rows", "int", /*default=*/"8",
-          "Number of rows of AIE tiles in a partition">,
-    Option<"numCols", "num-cols", "int", /*default=*/"10",
-          "Number of columns of AIE tiles in a partition">,
-    Option<"anchorPointRow", "row-anchor", "int", /*default=*/"0",
-          "Anchoring row number of partition">,
-    Option<"anchorPointCol", "col-anchor", "int", /*default=*/"0",
-          "Anchoring column number of a partition">
+    Option<"clNumRows", "num-rows", "int", /*default=*/"8",
+           "Number of rows of AIE tiles in a partition">,
+    Option<"clNumCols", "num-cols", "int", /*default=*/"10",
+           "Number of columns of AIE tiles in a partition">,
+    Option<"clAnchorPointRow", "row-anchor", "int", /*default=*/"0",
+           "Anchoring row number of partitions">,
+    Option<"clAnchorPointCol", "col-anchor", "int", /*default=*/"0",
+           "Anchoring column number of partitions">
   ];
 
   let description = [{
@@ -300,7 +299,7 @@ def AIRLinalgCodegen : Pass<"air-linalg-codegen", "ModuleOp"> {
     Option<"clInputFilter", "input-filter", "std::string", 
             /*default=*/"",
             "Input filter for linalg transformations">,
-    Option<"AIRLinalgCodegenTestPatterns", "test-patterns", "bool",
+    Option<"clLinalgCodegenTestPatterns", "test-patterns", "bool",
             "false", "test patterns">
 
   ];
@@ -499,9 +498,9 @@ def AIRLoopPermutation: Pass<"air-loop-permutation", "func::FuncOp"> {
     ListOption<"loopOrder", "loop-order", "unsigned",
                "The target loop permutation ordering",
                "llvm::cl::OneOrMore">,
-    Option<"AIRLabel", "air-label", "std::string", /*default=*/"",
+    Option<"clLabel", "air-label", "std::string", /*default=*/"",
            "Transform loops with the given label">,
-    Option<"AIRPostLabel", "air-post-label", "std::string", 
+    Option<"clPostLabel", "air-post-label", "std::string", 
             /*default=*/"",
             "Label to apply to transformed loop nest">
   ];

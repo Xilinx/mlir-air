@@ -70,9 +70,8 @@ void AIRLoopPermutationPass::runOnOperation() {
   
   // Bands of loops to tile
   std::vector<SmallVector<AffineForOp, 6>> bands;
-  xilinx::air::getTileableBands(func, bands, 
-                                AIRLoopPermutationPass::affineOptAttrName,
-                                AIRLabel);
+  xilinx::air::getTileableBands(
+      func, bands, AIRLoopPermutationPass::affineOptAttrName, clLabel);
 
   for (auto band: bands) {
     // Save and erase the previous label
@@ -81,9 +80,11 @@ void AIRLoopPermutationPass::runOnOperation() {
     
     unsigned newOutermost = permuteLoops(band, loopOrder);
 
-    if (stringAttr) { 
-      StringAttr postLabel = AIRPostLabel.empty() ? 
-        stringAttr:StringAttr::get(AIRPostLabel, stringAttr.getType());
+    if (stringAttr) {
+      StringAttr postLabel =
+          clPostLabel.empty()
+              ? stringAttr
+              : StringAttr::get(clPostLabel, stringAttr.getType());
       band[newOutermost]->setAttr(
           AIRLoopPermutationPass::affineOptAttrName, postLabel);
     }
