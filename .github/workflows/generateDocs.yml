@@ -57,9 +57,14 @@ jobs:
         
       - name: Rebuild and Install LLVM
         run: utils/github-build-llvm.sh
-
+      
+      - name: Get mlir-aie
+        id: clone-mlir-aie
+        run: utils/clone-mlir-aie.sh
+        shell: bash
+        
       - name: Rebuild and Install mlir-aie
-        run: utils/github-clone-build-mlir-aie.sh
+        run: utils/github-build-mlir-aie.sh
 
       # Build the repo test target in release mode to build and test.
       - name: Build Docs
