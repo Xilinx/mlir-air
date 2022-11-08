@@ -29,6 +29,11 @@ void defineAIRHostModule(pybind11::module &m) {
     air_deinit_libxaie((air_libxaie_ctx_t)ctx);
   });
 
+  m.def("init", [](void) -> uint64_t { return (uint64_t)air_init(); });
+
+  m.def("shut_down",
+        [](void) -> uint64_t { return (uint64_t)air_shut_down(); });
+
   pybind11::class_<air_module_desc_t>(m, "ModuleDescriptor")
       .def(
           "getPartitions",

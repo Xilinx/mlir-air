@@ -55,6 +55,32 @@ volatile void *_mapped_aie_base = nullptr;
 std::vector<air_physical_device_t> physical_devices;
 #endif
 
+hsa_status_t air_init() {
+  if (_air_host_active_libxaie == nullptr)
+    air_init_libxaie();
+
+  if (_air_host_active_libxaie == nullptr)
+    return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
+
+  return HSA_STATUS_SUCCESS;
+}
+
+hsa_status_t air_shut_down() {
+  if (!_air_host_active_libxaie)
+    return HSA_STATUS_ERROR_NOT_INITIALIZED;
+
+  if (_air_host_active_module)
+    air_module_unload(_air_host_active_module);
+
+  if (_air_host_active_libxaie)
+    air_deinit_libxaie((air_libxaie_ctx_t)_air_host_active_libxaie);
+  return HSA_STATUS_SUCCESS;
+}
+
+air_libxaie_ctx_t air_get_libxaie_ctx() {
+  return (air_libxaie_ctx_t)_air_host_active_libxaie;
+}
+
 air_libxaie_ctx_t air_init_libxaie(uint32_t device_id) {
   if (_air_host_active_libxaie)
     return (air_libxaie_ctx_t)_air_host_active_libxaie;
