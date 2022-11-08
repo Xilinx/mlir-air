@@ -122,9 +122,9 @@ class LinalgOnTensorsAirBackend(AirBackend):
 
     def load(self, module):
         """Loads a compiled artifact into the runtime."""
+        airrt.host.init()
         a = airrt.host.get_agents()
         q = airrt.host.queue_create(a[0])
-        airrt.host.init_libxaie()
         self.handle = airrt.host.module_load_from_file("./torch.mlir.so", q)
         return self.refbackend.load(module)
 
@@ -132,3 +132,4 @@ class LinalgOnTensorsAirBackend(AirBackend):
         if self.handle:
             airrt.host.module_unload(self.handle)
         self.handle = None
+        airrt.host.shut_down()

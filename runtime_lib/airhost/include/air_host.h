@@ -27,11 +27,20 @@ extern "C" {
 #else
 #define AIR_BBUFF_BASE 0x81C000000LL
 #endif
-// library operations
+
+// init/deinit
+//
+
+hsa_status_t air_init();
+hsa_status_t air_shut_down();
+
+// libxaie context operations
+//
 
 typedef uint64_t air_libxaie_ctx_t;
 
 air_libxaie_ctx_t air_init_libxaie(uint32_t device_id = 0);
+air_libxaie_ctx_t air_get_libxaie_ctx();
 void air_deinit_libxaie(air_libxaie_ctx_t);
 
 // agent operations
