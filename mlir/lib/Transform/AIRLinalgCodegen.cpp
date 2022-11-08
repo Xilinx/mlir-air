@@ -1450,7 +1450,7 @@ public:
     //RewritePatternSet prePatterns(&getContext());
     //prePatterns.insert<RemoveAllocLinalgOpCopyPattern>(&getContext());
     //(void)applyPatternsAndFoldGreedily(f, std::move(prePatterns));
-    if (!AIRLinalgCodegenTestPatterns) {
+    if (!clLinalgCodegenTestPatterns) {
       runMatmulPatterns(f);
       runConv2dPatterns(f);
       runGenericPatterns(f);
