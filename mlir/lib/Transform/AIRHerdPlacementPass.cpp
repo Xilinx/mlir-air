@@ -215,7 +215,7 @@ public:
                   .value();
 
           std::unique_ptr<Herd> herdPtr =
-              std::make_unique<Herd>(herd_size_x, herd_size_y, number, name);
+              std::make_unique<Herd>(herd_size_y, herd_size_x, number, name);
           unplacedHerds.push_back(std::move(herdPtr));
 
           number++;

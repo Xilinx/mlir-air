@@ -143,7 +143,7 @@ mlir::LogicalResult AIRHerdsToJSONTranslate(mlir::ModuleOp module,
           llvm::errs() << "Invalid x or y location";
           status = failure();
         }
-        auto herdPtr = std::make_unique<Herd>(herd_size_x, herd_size_y, x_loc,
+        auto herdPtr = std::make_unique<Herd>(herd_size_y, herd_size_x, x_loc,
                                               y_loc, number, name);
         herdOps.push_back(std::move(herdPtr));
 

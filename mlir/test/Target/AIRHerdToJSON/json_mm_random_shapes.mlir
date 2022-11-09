@@ -1,17 +1,47 @@
-//===- matmul_gelu_overflow.mlir ------------------------------------------*- MLIR -*-===//
+//===- matmul_gelu_random_shapes.mlir ------------------------------------------*- MLIR -*-===//
 //
-// Copyright (C) 2022, Xilinx Inc. All rights reserved.
-// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
-// SPDX-License-Identifier: MIT
+// Copyright (C) 2022, Xilinx Inc.
+// Copyright (C) 2022, Advanced Micro Devices, Inc.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the "Software"),
+// to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the
+// Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-place-herds="num-rows=4 num-cols=11" |& FileCheck %s
-// CHECK: No valid placement found.
-// CHECK: Unplaced herd: matmul_herd_2
-// CHECK: Unplaced herd: gelu_herd_2
-// CHECK: Unplaced herd: matmul_herd_3
-// CHECK: Unplaced herd: matmul_herd_0
+// RUN: air-opt %s -air-place-herds="num-rows=6 num-cols=11" | air-translate -air-herds-to-json -num-rows=6 -num-cols=11 |& FileCheck %s
+
+// CHECK: "row": 5, 
+// CHECK: "col": 10
+// CHECK: partition
+
+// CHECK: [0, "matmul_herd_0", [5, 7], [4, 7]],
+// CHECK: [1, "matmul_herd_1", [3, 5], [3, 6], [2, 5], [2, 6]],
+// CHECK: [2, "matmul_herd_2", [4, 3], [4, 4], [3, 3], [3, 4], [2, 3], [2, 4]],
+// CHECK: [3, "matmul_herd_3", [5, 2], [4, 2], [3, 2]],
+// CHECK: [4, "matmul_herd_4", [2, 0], [2, 1], [2, 2], [1, 0], [1, 1], [1, 2], [0, 0], [0, 1], [0, 2]],
+// CHECK: [5, "matmul_herd_5", [4, 8], [4, 9]],
+// CHECK: [6, "matmul_herd_6", [1, 3], [1, 4], [1, 5], [1, 6], [0, 3], [0, 4], [0, 5], [0, 6]],
+// CHECK: [7, "matmul_herd_7", [3, 7], [3, 8], [2, 7], [2, 8]],
+// CHECK: [8, "gelu_herd_0", [3, 9], [3, 10], [2, 9], [2, 10]],
+// CHECK: [9, "gelu_herd_1", [4, 0], [4, 1], [3, 0], [3, 1]],
+// CHECK: [10, "gelu_herd_2", [5, 5], [5, 6], [4, 5], [4, 6]],
+// CHECK: [11, "gelu_herd_3", [1, 7], [1, 8], [1, 9], [1, 10], [0, 7], [0, 8], [0, 9], [0, 10]]
+
 
 #map0 = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 512)>
@@ -370,7 +400,7 @@ module attributes {torch.debug_module_name = "mmult"} {
           %15 = memref.alloc() : memref<64x64xbf16, 1>
           air.dma_memcpy_nd (%14[] [] [], %arg16[%13, %3] [%c64, %c64] [%c1024, %c1]) {id = 71 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
           air.dma_memcpy_nd (%15[] [] [], %arg17[%13, %3] [%c64, %c64] [%c1024, %c1]) {id = 72 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
-          air.herd @gelu_herd_1  tile (%arg19, %arg20) in (%arg21=%c2, %arg22=%c2) args(%arg23=%14, %arg24=%15) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1> { //expected-error-re {{asd;flads;fkdsa;lf}}
+          air.herd @gelu_herd_1  tile (%arg19, %arg20) in (%arg21=%c2, %arg22=%c2) args(%arg23=%14, %arg24=%15) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
             %c1_0 = arith.constant 1 : index
             %c64_1 = arith.constant 64 : index
             %c32 = arith.constant 32 : index
@@ -409,7 +439,6 @@ module attributes {torch.debug_module_name = "mmult"} {
           %15 = memref.alloc() : memref<64x64xbf16, 1>
           air.dma_memcpy_nd (%14[] [] [], %arg16[%13, %3] [%c64, %c64] [%c1024, %c1]) {id = 77 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
           air.dma_memcpy_nd (%15[] [] [], %arg17[%13, %3] [%c64, %c64] [%c1024, %c1]) {id = 78 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
-         
           air.herd @gelu_herd_2  tile (%arg19, %arg20) in (%arg21=%c2, %arg22=%c2) args(%arg23=%14, %arg24=%15) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
             %c1_0 = arith.constant 1 : index
             %c64_1 = arith.constant 64 : index
