@@ -215,30 +215,21 @@ void outlineAIECores(OpBuilder &builder, ModuleOp aie_module,
                      AIRToAIEOptions &options) {
   builder.setInsertionPointToStart(aie_module.getBody());
 
-  SmallVector<Value, 2> herd_size = h.getSizeOperands();
-  if (!isa<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()) ||
-      !isa<arith::ConstantIndexOp>(herd_size[1].getDefiningOp())) {
-    llvm::errs() << "Only constant sized herds are supported";
-    return;
-  }
-
-  int64_t herd_size_x =
-      cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
-  int64_t herd_size_y =
-      cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
+  int64_t herd_size_x = h.getNumCols();
+  int64_t herd_size_y = h.getNumRows();
 
   // use the command line offsets unless the attribute is present
   int64_t col_offset = options.col_offset;
   int64_t row_offset = options.row_offset;
   auto col_name = xilinx::air::HerdOp::getColOffsetAttrName();
   auto row_name = xilinx::air::HerdOp::getRowOffsetAttrName();
-  if (h->getAttrOfType<IntegerAttr>(col_name))
-    col_offset = h.getColOffset();
+  if (auto co = h.getColOffset())
+    col_offset = *co;
   else
     h->setAttr(col_name, IntegerAttr::get(IntegerType::get(h->getContext(), 32),
                                           col_offset));
-  if (h->getAttrOfType<IntegerAttr>(row_name))
-    row_offset = h.getRowOffset();
+  if (auto ro = h.getRowOffset())
+    row_offset = *ro;
   else
     h->setAttr(row_name, IntegerAttr::get(IntegerType::get(h->getContext(), 32),
                                           row_offset));
@@ -671,8 +662,10 @@ struct LowerPipeGetPutPattern : public OpRewritePattern<air::PipelinePutOp> {
     assert(aie_module && core);
 
     auto herd = tileToHerdMap[core.getTileOp()];
-    int64_t col_offset = herd.getColOffset();
-    int64_t row_offset = herd.getRowOffset();
+    auto c = herd.getColOffset();
+    auto r = herd.getRowOffset();
+    auto col_offset = c ? *c : 0;
+    auto row_offset = r ? *r : 0;
 
     auto other_x = cast<arith::ConstantIndexOp>(put.getDst0().getDefiningOp());
     auto other_y = cast<arith::ConstantIndexOp>(put.getDst1().getDefiningOp());
@@ -770,9 +763,14 @@ struct AllocL1TensorsPattern
 
     rewriter.setInsertionPointAfter(tile);
     auto herd = tileToHerdMap[core.getTileOp()];
-    int64_t col_offset = herd ? herd.getColOffset() : 0;
-    int64_t row_offset = herd ? herd.getRowOffset() : 0;
-
+    int64_t col_offset = 0;
+    int64_t row_offset = 0;
+    if (herd) {
+      auto c = herd.getColOffset();
+      auto r = herd.getRowOffset();
+      col_offset = c ? *c : 0;
+      row_offset = r ? *r : 0;
+    }
     auto buffer = allocateBufferOp(
         memrefTy, tile,
         cast->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
@@ -815,8 +813,14 @@ struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
 
     rewriter.setInsertionPointAfter(tile);
     auto herd = tileToHerdMap[core.getTileOp()];
-    int64_t col_offset = herd ? herd.getColOffset() : 0;
-    int64_t row_offset = herd ? herd.getRowOffset() : 0;
+    int64_t col_offset = 0;
+    int64_t row_offset = 0;
+    if (herd) {
+      auto c = herd.getColOffset();
+      auto r = herd.getRowOffset();
+      col_offset = c ? *c : 0;
+      row_offset = r ? *r : 0;
+    }
 
     auto buffer = allocateBufferOp(
         memrefTy, tile,
@@ -1500,8 +1504,10 @@ public:
             if (auto dmaOp = dyn_cast<air::DmaMemcpyInterface>(o))
               dma_ids.insert(dmaOp.getId());
           });
-          int64_t col_offset = herd.getColOffset();
-          int64_t row_offset = herd.getRowOffset();
+          auto c = herd.getColOffset();
+          auto r = herd.getRowOffset();
+          int64_t col_offset = c ? *c : 0;
+          int64_t row_offset = r ? *r : 0;
 
           // createAIRRtMetadata(module_meta, shimDmaAlloc, L2DmaAlloc);
           std::vector<Attribute> dma_allocations;

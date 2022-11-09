@@ -253,11 +253,8 @@ void AIRSpecializeDma::runOnOperation() {
       std::vector<Operation *> xOps, yOps;
       bool fn_x = isFuncOf(memcpyOp, launch.getIds()[0], xOps);
       bool fn_y = isFuncOf(memcpyOp, launch.getIds()[1], yOps);
-      auto herd_size = launch.getSizeOperands();
-      int64_t herd_size_x =
-          cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
-      int64_t herd_size_y =
-          cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
+      int64_t herd_size_x = launch.getNumCols();
+      int64_t herd_size_y = launch.getNumRows();
       if (fn_x && !fn_y) {
         auto loc = memcpyOp->getLoc();
         OpBuilder builder(memcpyOp);
@@ -731,10 +728,8 @@ void AIRFuseParallelHerdPass::runOnOperation() {
   // and the herd launch is enclosed by a 1-d scf.parallel
   // then we try to fuse the scf.parallel onto the herd launch
   auto herd_size = launchOp.getSizeOperands();
-  int64_t herd_size_x =
-      cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
-  int64_t herd_size_y =
-      cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
+  int64_t herd_size_x = launchOp.getNumCols();
+  int64_t herd_size_y = launchOp.getNumRows();
   if (herd_size_x != 1 && herd_size_y != 1)
     return;
 

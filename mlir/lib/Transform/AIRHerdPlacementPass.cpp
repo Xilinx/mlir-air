@@ -7,18 +7,10 @@
 
 #include "PassDetail.h"
 
-#include "air/Dialect/AIR/AIRDialect.h"
-#include "air/Transform/AIRDependency.h"
-#include "air/Util/Dependency.h"
+#include "air/Transform/AIRHerdPlacementPass.h"
+#include "air/Util/Util.h"
 
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/Linalg/Utils/Utils.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OperationSupport.h"
@@ -26,8 +18,6 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "mlir/Transforms/InliningUtils.h"
-#include "mlir/Transforms/RegionUtils.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
@@ -35,9 +25,6 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-
-#include "air/Transform/AIRHerdPlacementPass.h"
-#include "air/Util/Util.h"
 
 #include <algorithm>
 #include <iostream>
@@ -201,18 +188,9 @@ public:
           if (auto attr = herd->getAttrOfType<StringAttr>(
                   SymbolTable::getSymbolAttrName()))
             name = attr.getValue().str();
-          SmallVector<Value, 2> herd_size = herd.getSizeOperands();
-          if (!isa<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()) ||
-              !isa<arith::ConstantIndexOp>(herd_size[1].getDefiningOp())) {
-            llvm::errs() << "Only constant sized herds are supported\n";
-            return;
-          }
-          int64_t herd_size_x =
-              cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp())
-                  .value();
-          int64_t herd_size_y =
-              cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp())
-                  .value();
+
+          int64_t herd_size_x = herd.getNumCols();
+          int64_t herd_size_y = herd.getNumRows();
 
           std::unique_ptr<Herd> herdPtr =
               std::make_unique<Herd>(herd_size_y, herd_size_x, number, name);

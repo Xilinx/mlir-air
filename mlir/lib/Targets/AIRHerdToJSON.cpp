@@ -6,8 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 #include "air/Dialect/AIR/AIRDialect.h"
-#include "air/Transform/AIRDependency.h"
-#include "air/Util/Dependency.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -118,33 +116,19 @@ mlir::LogicalResult AIRHerdsToJSONTranslate(mlir::ModuleOp module,
                 SymbolTable::getSymbolAttrName())) {
           name = attr.getValue().str();
         }
-        SmallVector<Value, 2> herd_size = herd.getSizeOperands();
-        if (!isa<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()) ||
-            !isa<arith::ConstantIndexOp>(herd_size[1].getDefiningOp())) {
-          llvm::errs() << "Only constant sized herds are supported";
-          status = failure();
-        }
-        int32_t herd_size_x =
-            cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
-        int32_t herd_size_y =
-            cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
 
-        int32_t x_loc = -1;
-        int32_t y_loc = -1;
+        int32_t herd_size_x = herd.getNumCols();
+        int32_t herd_size_y = herd.getNumRows();
 
-        if (auto attr = herd->getAttrOfType<IntegerAttr>("x_loc")) {
-          x_loc = attr.getInt();
-        }
-        if (auto attr = herd->getAttrOfType<IntegerAttr>("y_loc")) {
-          y_loc = attr.getInt();
-        }
+        auto x_loc = herd.getColOffset();
+        auto y_loc = herd.getRowOffset();
 
-        if (x_loc < 0 || y_loc < 0) {
+        if (!x_loc || !y_loc) {
           llvm::errs() << "Invalid x or y location";
           status = failure();
         }
-        auto herdPtr = std::make_unique<Herd>(herd_size_y, herd_size_x, x_loc,
-                                              y_loc, number, name);
+        auto herdPtr = std::make_unique<Herd>(herd_size_y, herd_size_x, *x_loc,
+                                              *y_loc, number, name);
         herdOps.push_back(std::move(herdPtr));
 
         number++;
