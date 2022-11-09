@@ -367,6 +367,14 @@ dependency edges.
 -dump-graph : Dump post-canonicalization dot graphs.
 -output-dir : Target directory to dump dot graphs.
 ```
+### `-air-dependency-parse-graph`: Parse the dependency graph and dump dot files
+This pass parses the dependency graph into Boost::Graph format, and dump
+dot files for graph visualization.
+
+#### Options
+```
+-output-dir : Target directory to dump dot graphs.
+```
 ### `-air-dependency-schedule-opt`: Optimize scheduling based on air async dependency
 This pass contains multiple passes which optimize the schedule based on the
 dependency graph generated from -air-dependency pass.
