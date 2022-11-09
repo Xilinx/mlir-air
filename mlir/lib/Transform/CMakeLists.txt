@@ -18,6 +18,7 @@ AIRTilingUtils.cpp
 AIRDependency.cpp
 AIRDependencyScheduleOpt.cpp
 AIRDependencyCanonicalize.cpp
+AIRDependencyParseGraph.cpp
 Passes.cpp
 ReturnEliminationPass.cpp
 

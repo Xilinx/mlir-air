@@ -870,6 +870,20 @@ def AIRDependencyCanonicalize: Pass<"air-dependency-canonicalize", "ModuleOp"> {
   ];
 }
 
+def AIRDependencyParseGraph: Pass<"air-dependency-parse-graph", "ModuleOp"> {
+  let summary = "Parse the dependency graph and dump dot files";
+  let constructor = "xilinx::air::createAIRDependencyParseGraphPass()";
+  let description = [{
+    This pass parses the dependency graph into Boost::Graph format, and dump
+    dot files for graph visualization.
+  }];
+  let options = [
+    Option<"clDumpDir", "output-dir", "std::string", 
+            /*default=*/"\"\"",
+            "Target directory to dump dot graphs.">
+  ];
+}
+
 def AIRExamplePass : Pass<"air-example-pass", "ModuleOp"> {
   let summary = "Skeleton module op pass";
   let constructor = "xilinx::air::createAIRExamplePass()";

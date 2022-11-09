@@ -12,6 +12,7 @@
 #include "air/Transform/AIRAutomaticTilingPass.h"
 #include "air/Transform/AIRDependency.h"
 #include "air/Transform/AIRDependencyCanonicalize.h"
+#include "air/Transform/AIRDependencyParseGraph.h"
 #include "air/Transform/AIRDependencyScheduleOpt.h"
 #include "air/Transform/AIRHerdAssignPass.h"
 #include "air/Transform/AIRHerdPlacementPass.h"
