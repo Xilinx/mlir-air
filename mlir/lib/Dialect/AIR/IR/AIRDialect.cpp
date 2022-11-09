@@ -8,6 +8,7 @@
 
 #include "air/Dialect/AIR/AIRDialect.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -912,6 +913,16 @@ unsigned HerdOp::getNumDims() {
   auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
   auto segment_sizes = size_attr.asArrayRef();
   return segment_sizes[1];
+}
+
+uint64_t HerdOp::getNumCols() {
+  auto cols = getSizeOperands()[0].getDefiningOp();
+  return cast<arith::ConstantIndexOp>(cols).value();
+}
+
+uint64_t HerdOp::getNumRows() {
+  auto rows = getSizeOperands()[1].getDefiningOp();
+  return cast<arith::ConstantIndexOp>(rows).value();
 }
 
 //

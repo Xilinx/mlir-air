@@ -139,10 +139,8 @@ public:
     }
 
     auto herd_size = launch.getSizeOperands();
-    int64_t herd_size_x =
-        cast<ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
-    int64_t herd_size_y =
-        cast<ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
+    int64_t herd_size_x = launch.getNumCols();
+    int64_t herd_size_y = launch.getNumRows();
 
     auto outer = rewriter.create<AffineForOp>(launch.getLoc(), 0, herd_size_x);
     auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());

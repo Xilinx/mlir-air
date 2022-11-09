@@ -40,11 +40,7 @@ void mlir_aie_write_buffer_buf0(aie_libxaie_ctx_t*, int, int32_t);
 }; // namespace air::partitions::partition_0
 using namespace air::partitions::partition_0;
 
-int
-main(int argc, char *argv[])
-{
-  auto shim_col = 2;
-
+int main(int argc, char *argv[]) {
   std::vector<air_agent_t> agents;
   auto get_agents_ret = air_get_agents(agents);
   assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");

@@ -1115,12 +1115,8 @@ public:
 
   void scheduleHerd(xilinx::air::HerdOp &hlo, QueueContext *qctx) {
 
-    int64_t cols = cast<arith::ConstantIndexOp>(
-                       hlo.getSizeOperands()[0].getDefiningOp())
-                       .value();
-    int64_t rows = cast<arith::ConstantIndexOp>(
-                       hlo.getSizeOperands()[1].getDefiningOp())
-                       .value();
+    int64_t cols = hlo.getNumCols();
+    int64_t rows = hlo.getNumRows();
 
     if (hlo->getNumResults())
       valueMap[hlo->getResult(0)] = APInt(64, rows * cols + 1);
