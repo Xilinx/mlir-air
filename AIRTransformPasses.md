@@ -666,8 +666,8 @@ output:
 ```
 -num-rows   : Number of rows of AIE tiles in a partition
 -num-cols   : Number of columns of AIE tiles in a partition
--row-anchor : Anchoring row number of partition
--col-anchor : Anchoring column number of a partition
+-row-anchor : Anchoring row number of partitions
+-col-anchor : Anchoring column number of partitions
 ```
 ### `-air-promote-dma`: promote uniform dma operations
 ### `-air-prune-linalg-generic-input-dma`: Detect and prune redundant DMA into linalg generic
