@@ -67,7 +67,7 @@ int col_dma_cols[NUM_COL_DMAS] = {7, 8, 9, 10};
       xil_printf(fmt, ##__VA_ARGS__);                                          \
   } while (0)
 
-uint64_t mymod(uint64_t a) {
+inline uint64_t mymod(uint64_t a) {
   uint64_t result = a;
   while (result >= MB_QUEUE_SIZE) {
     result -= MB_QUEUE_SIZE;
@@ -1581,6 +1581,7 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id) {
   air_printf("Completing: %d packets processed.\n\r", packets_processed);
   unlock_uart();
   queue_add_read_index(q, packets_processed);
+  q->read_index = mymod(q->read_index);
 }
 
 inline signal_value_t signal_wait(volatile signal_t *signal,
@@ -1633,6 +1634,7 @@ void handle_barrier_and_packet(queue_t *q, uint32_t mb_id) {
 
   complete_barrier_packet(pkt);
   queue_add_read_index(q, 1);
+  q->read_index = mymod(q->read_index);
 }
 
 void handle_barrier_or_packet(queue_t *q, uint32_t mb_id) {
@@ -1669,6 +1671,7 @@ void handle_barrier_or_packet(queue_t *q, uint32_t mb_id) {
 
   complete_barrier_packet(pkt);
   queue_add_read_index(q, 1);
+  q->read_index = mymod(q->read_index);
 }
 
 int main() {
