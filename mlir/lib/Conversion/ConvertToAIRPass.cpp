@@ -468,32 +468,25 @@ class AIRDmaToAIRChannelConversion
 
     auto rank = src_type.getShape().size();
 
-    SmallVector<Value, 4> src_offsets, dst_offsets;
-    SmallVector<Value, 4> src_strides, dst_strides;
-    SmallVector<Value, 4> src_sizes, dst_sizes;
+    SmallVector<Value, 4> src_offsets = op.getSrcOffsets();
+    SmallVector<Value, 4> dst_offsets = op.getDstOffsets();
+    SmallVector<Value, 4> src_sizes = op.getSrcSizes();
+    SmallVector<Value, 4> dst_sizes = op.getDstSizes();
+    SmallVector<Value, 4> src_strides = op.getSrcStrides();
+    SmallVector<Value, 4> dst_strides = op.getDstStrides();
 
-    if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
-      extractOperandsFromSubview(subview, rewriter, src_offsets, src_sizes,
-                                 src_strides);
-
+    if (src_offsets.size()){
       if (src_sizes.size() != rank)
         return failure();
       if (src_strides.size() != rank)
         return failure();
-
-      src = subview.getSource();
     }
 
-    if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
-      extractOperandsFromSubview(subview, rewriter, dst_offsets, dst_sizes,
-                                 dst_strides);
-
+    if (dst_offsets.size()){
       if (dst_sizes.size() != rank)
         return failure();
       if (dst_strides.size() != rank)
         return failure();
-
-      dst = subview.getSource();
     }
 
     SmallVector<Value, 4> emptyDeps;
@@ -1221,26 +1214,14 @@ struct DmaToChannelPass : public DmaToChannelBase<DmaToChannelPass> {
         LLVM::LLVMDialect, func::FuncDialect, scf::SCFDialect, AffineDialect,
         xilinx::air::airDialect, arith::ArithDialect, memref::MemRefDialect>();
 
-    target.addDynamicallyLegalOp<air::DmaMemcpyNdOp>([](air::DmaMemcpyNdOp dma) {
-      auto src_type = dma.getSrcMemref().getType().dyn_cast<MemRefType>();
-      auto dst_type = dma.getDstMemref().getType().dyn_cast<MemRefType>();
-      return src_type.getMemorySpaceAsInt() == dst_type.getMemorySpaceAsInt();
-    });
+    target.addIllegalOp<air::DmaMemcpyNdOp>();
 
-    // Simplify all the subviews so we can rewrite them easily.
-    // Mostly this is propagating constant sizes into dimensioned memref types.
-    RewritePatternSet stage1Patterns =
-        linalg::getLinalgTilingCanonicalizationPatterns(context);
-    memref::AllocOp::getCanonicalizationPatterns(stage1Patterns, context);
-    (void)applyPatternsAndFoldGreedily(module, std::move(stage1Patterns));
-
-    RewritePatternSet stage2Patterns(context);
-    stage2Patterns.insert<AIRDmaToAIRChannelConversion>(context);
+    RewritePatternSet air_dma_patterns(context);
+    air_dma_patterns.add<AIRDmaToAIRChannelConversion>(context);
     if (failed(applyPartialConversion(module, target,
-                                      std::move(stage2Patterns)))) {
+                                      std::move(air_dma_patterns)))) {
       emitError(UnknownLoc::get(context), "error\n");
       signalPassFailure();
-      assert(0);
     }
   }
 };

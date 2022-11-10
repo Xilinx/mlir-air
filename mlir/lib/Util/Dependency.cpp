@@ -179,6 +179,7 @@ void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op,
   assert(token.getType().isa<air::AsyncTokenType>() &&
          "ssa value is not an async token");
   auto dependency_list = op.getAsyncDependencies();
+  if (!dependency_list.size()) assert(false && "dependency list is empty");
   for (int i = dependency_list.size() - 1; i >= 0; i--) {
     if (dependency_list[i] == token) {
       op.eraseAsyncDependency(i);
