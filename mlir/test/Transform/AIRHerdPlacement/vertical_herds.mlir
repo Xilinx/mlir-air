@@ -25,14 +25,14 @@
 
 // RUN: air-opt %s -air-place-herds="num-rows=10 num-cols=8" | FileCheck %s
 
-// CHECK: air.herd {{.*}} attributes {x_loc = 0 {{.*}} y_loc = 9
-// CHECK: air.herd {{.*}} attributes {x_loc = 1 {{.*}} y_loc = 9
-// CHECK: air.herd {{.*}} attributes {x_loc = 2 {{.*}} y_loc = 9
-// CHECK: air.herd {{.*}} attributes {x_loc = 3 {{.*}} y_loc = 9
-// CHECK: air.herd {{.*}} attributes {x_loc = 4 {{.*}} y_loc = 9
-// CHECK: air.herd {{.*}} attributes {x_loc = 5 {{.*}} y_loc = 9
-// CHECK: air.herd {{.*}} attributes {x_loc = 6 {{.*}} y_loc = 9
-// CHECK: air.herd {{.*}} attributes {x_loc = 7 {{.*}} y_loc = 9
+// CHECK: air.herd {{.*}} attributes {x_loc = 0 {{.*}} y_loc = 0
+// CHECK: air.herd {{.*}} attributes {x_loc = 1 {{.*}} y_loc = 0
+// CHECK: air.herd {{.*}} attributes {x_loc = 2 {{.*}} y_loc = 0
+// CHECK: air.herd {{.*}} attributes {x_loc = 3 {{.*}} y_loc = 0
+// CHECK: air.herd {{.*}} attributes {x_loc = 4 {{.*}} y_loc = 0
+// CHECK: air.herd {{.*}} attributes {x_loc = 5 {{.*}} y_loc = 0
+// CHECK: air.herd {{.*}} attributes {x_loc = 6 {{.*}} y_loc = 0
+// CHECK: air.herd {{.*}} attributes {x_loc = 7 {{.*}} y_loc = 0
 
 #map0 = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 512)>

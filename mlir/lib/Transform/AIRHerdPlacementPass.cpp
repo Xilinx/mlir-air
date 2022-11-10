@@ -273,7 +273,7 @@ private:
             if (legalPlace) {
               partition->placeHerd(unplacedHerds[k], i, j);
               unplacedHerds[k]->setLocX(j);
-              unplacedHerds[k]->setLocY(i + unplacedHerds[k]->getNumRows() - 1);
+              unplacedHerds[k]->setLocY(i);
               placedHerds.push_back(std::move(unplacedHerds[k]));
               unplacedHerds.erase(unplacedHerds.begin() + k);
               if (unplacedHerds.size() == 0) {

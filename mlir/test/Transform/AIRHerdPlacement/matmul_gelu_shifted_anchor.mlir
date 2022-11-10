@@ -8,20 +8,20 @@
 
 // RUN: air-opt %s -air-place-herds="num-rows=6 num-cols=8 row-anchor=2 col-anchor=1" | FileCheck %s
 
-// CHECK: air.herd {{.*}} attributes {x_loc = 1 {{.*}} y_loc = 3
-// CHECK: air.herd {{.*}} attributes {x_loc = 3 {{.*}} y_loc = 3
-// CHECK: air.herd {{.*}} attributes {x_loc = 5 {{.*}} y_loc = 3
-// CHECK: air.herd {{.*}} attributes {x_loc = 7 {{.*}} y_loc = 3
+// CHECK: air.herd {{.*}} attributes {x_loc = 1 {{.*}} y_loc = 2
+// CHECK: air.herd {{.*}} attributes {x_loc = 3 {{.*}} y_loc = 2
+// CHECK: air.herd {{.*}} attributes {x_loc = 5 {{.*}} y_loc = 2
+// CHECK: air.herd {{.*}} attributes {x_loc = 7 {{.*}} y_loc = 2
 
-// CHECK: air.herd {{.*}} attributes {x_loc = 1 {{.*}} y_loc = 5
-// CHECK: air.herd {{.*}} attributes {x_loc = 3 {{.*}} y_loc = 5
-// CHECK: air.herd {{.*}} attributes {x_loc = 5 {{.*}} y_loc = 5
-// CHECK: air.herd {{.*}} attributes {x_loc = 7 {{.*}} y_loc = 5
+// CHECK: air.herd {{.*}} attributes {x_loc = 1 {{.*}} y_loc = 4
+// CHECK: air.herd {{.*}} attributes {x_loc = 3 {{.*}} y_loc = 4
+// CHECK: air.herd {{.*}} attributes {x_loc = 5 {{.*}} y_loc = 4
+// CHECK: air.herd {{.*}} attributes {x_loc = 7 {{.*}} y_loc = 4
 
-// CHECK: air.herd {{.*}} attributes {x_loc = 1 {{.*}} y_loc = 7
-// CHECK: air.herd {{.*}} attributes {x_loc = 3 {{.*}} y_loc = 7
-// CHECK: air.herd {{.*}} attributes {x_loc = 5 {{.*}} y_loc = 7
-// CHECK: air.herd {{.*}} attributes {x_loc = 7 {{.*}} y_loc = 7
+// CHECK: air.herd {{.*}} attributes {x_loc = 1 {{.*}} y_loc = 6
+// CHECK: air.herd {{.*}} attributes {x_loc = 3 {{.*}} y_loc = 6
+// CHECK: air.herd {{.*}} attributes {x_loc = 5 {{.*}} y_loc = 6
+// CHECK: air.herd {{.*}} attributes {x_loc = 7 {{.*}} y_loc = 6
 
 #map0 = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 512)>

@@ -95,7 +95,7 @@ private:
   void convertHerdToList() {
     for (int32_t i = 0; i < numRows; i++) {
       for (int32_t j = 0; j < numCols; j++) {
-        int32_t rowCoord = locY - i;
+        int32_t rowCoord = locY + i;
         int32_t colCoord = locX + j;
         std::vector<int32_t> coords = {rowCoord, colCoord};
         herdList.push_back(coords);
