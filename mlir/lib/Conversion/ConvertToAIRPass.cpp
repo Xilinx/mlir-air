@@ -646,6 +646,35 @@ class AIRDmaToAIRChannelConversion
         rewriter.clone(o, remap);
       }
 
+      // Reconnect for loop-carried dependency to scf.yield
+      scf_par.walk([&](mlir::Operation *o) {
+        if (auto child_for_op = dyn_cast<scf::ForOp>(o)){
+          if (child_for_op->getNumResults()){ // Found async for loop
+            rewriter.setInsertionPointToEnd(child_for_op.getBody());
+            SmallVector<air::ChannelInterface, 1> channel_ops;
+            for (auto channel_op : child_for_op.getOps<air::ChannelInterface>()){
+              if (channel_op->hasAttr("air.channel")){
+                channel_ops.push_back(channel_op);
+              }
+            }
+            assert(channel_ops.size() <= 1 && "found multiple channel ops in one hoisted for loop");
+            SmallVector<Value, 1> yield_token;
+            if (channel_ops.size()){
+              assert(channel_ops[0]->getResult(0) && "found sync channel op in async for loop");
+              yield_token.push_back(channel_ops[0]->getResult(0));
+            }
+            else {
+              auto wa_op = rewriter.create<air::WaitAllOp>(rewriter.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
+                                          emptyDeps);
+              yield_token.push_back(wa_op.getAsyncToken());
+              wa_op->setAttr("air.channel",
+                                  StringAttr::get(op->getContext(), "dep"));
+            }
+            rewriter.create<scf::YieldOp>(rewriter.getUnknownLoc(), yield_token);
+          }
+        }
+      });
+
       scf_par.walk([&](mlir::Operation *o) {
         if (o == o->getBlock()->getTerminator())
           return;
