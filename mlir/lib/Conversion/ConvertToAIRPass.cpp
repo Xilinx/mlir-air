@@ -545,8 +545,17 @@ class AIRDmaToAIRChannelConversion
         return failure();
     }
 
-    // Channel get op shall inherit the dma op's dep list
-    SmallVector<Value, 4> getDeps = op.getAsyncDependencies();
+    // The internal channel op shall inherit the dma op's dep list
+    SmallVector<Value, 4> internalDeps = op.getAsyncDependencies();
+    // The external channel op shall inherit the loop-carried token only
+    SmallVector<Value, 4> externalDeps;
+    if (op->getParentOp() && dyn_cast<scf::ForOp>(op->getParentOp())){
+      auto parent_for = dyn_cast<scf::ForOp>(op->getParentOp());
+      if (parent_for.getRegionIterArgs().size()){
+        externalDeps.push_back(parent_for.getRegionIterArgs()[0]);
+      }
+    }
+
     SmallVector<Value, 4> emptyDeps;
     SmallVector<Type, 4> tys;
     if (auto op_token = op.getAsyncToken()){
@@ -579,21 +588,21 @@ class AIRDmaToAIRChannelConversion
     // Create channel put-get pair
     if (dst_type.getMemorySpaceAsInt() == (int)MemorySpace::L1) {
       internalGetPut = rewriter.create<air::ChannelGetOp>(
-          loc, tys, getDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx,
+          loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx,
           dst, dst_offsets, dst_sizes, dst_strides);
     } else {
       externalGetPut = rewriter.create<air::ChannelGetOp>(
-          loc, tys, emptyDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx,
+          loc, tys, externalDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx,
           dst, dst_offsets, dst_sizes, dst_strides);
     }
 
     if (src_type.getMemorySpaceAsInt() == (int)MemorySpace::L1) {
       internalGetPut = rewriter.create<air::ChannelPutOp>(
-          loc, tys, emptyDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx,
+          loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx,
           src, src_offsets, src_sizes, src_strides);
     } else {
       externalGetPut = rewriter.create<air::ChannelPutOp>(
-          loc, tys, getDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx,
+          loc, tys, externalDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx,
           src, src_offsets, src_sizes, src_strides);
     }
 
@@ -675,6 +684,33 @@ class AIRDmaToAIRChannelConversion
           }
         }
       });
+
+      
+    
+      // // Connect async dependency of external put/get scf parallel
+      // dependencyTracer depTracer;
+      // SmallVector<partialMemref, 1> sink_op_memref_reads;
+      // SmallVector<partialMemref, 1> sink_op_memref_writes;
+      // SmallVector<Value, 1> sink_op_scalar_ins;
+      // SmallVector<Value, 1> sink_op_scalar_outs;
+
+      // // auto scf_par = op->getParentOfType<scf::ParallelOp>();
+
+      // depTracer.getPartialMemrefFromOp(hoistedExternalPutGet, sink_op_memref_reads,
+      //   sink_op_memref_writes,
+      //   sink_op_scalar_ins,
+      //   sink_op_scalar_outs);
+
+      // assert(sink_op_memref_reads.size() || sink_op_memref_writes.size());
+
+      // auto sink_wait_all_op = dyn_cast<air::WaitAllOp>(scf_par.getInitVals()[0].getDefiningOp());
+
+      // // Detect RAW deps
+      // depTracer.template traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_reads, sink_wait_all_op,
+      //                           "RAW");
+      // // Detect WAW and WAR deps
+      // depTracer.template traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_writes, sink_wait_all_op,
+      //                           "WAW/WAR");
 
       scf_par.walk([&](mlir::Operation *o) {
         if (o == o->getBlock()->getTerminator())
@@ -1303,6 +1339,48 @@ struct DmaToChannelPass : public DmaToChannelBase<DmaToChannelPass> {
       emitError(UnknownLoc::get(context), "error\n");
       signalPassFailure();
     }
+
+    // Dep tracing
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps) {
+      updateDependencyOnFunction(f);
+    }
+  }
+
+  void updateDependencyOnFunction(func::FuncOp f){
+    dependencyTracer depTracer;
+    f.walk([&](Operation *op) {
+      if (auto channel_op = mlir::dyn_cast<xilinx::air::ChannelInterface>(op)) {
+        if (!channel_op->getParentOfType<xilinx::air::HerdOp>()) {
+          // Found external channel put/get
+    
+          // Connect async dependency of external put/get scf parallel
+          SmallVector<partialMemref, 1> sink_op_memref_reads;
+          SmallVector<partialMemref, 1> sink_op_memref_writes;
+          SmallVector<Value, 1> sink_op_scalar_ins;
+          SmallVector<Value, 1> sink_op_scalar_outs;
+
+          auto scf_par = op->getParentOfType<scf::ParallelOp>();
+          auto sink_wait_all_op = dyn_cast<air::WaitAllOp>(scf_par.getInitVals()[0].getDefiningOp());
+
+          depTracer.getPartialMemrefFromOp(channel_op.getOperation(), sink_op_memref_reads,
+            sink_op_memref_writes,
+            sink_op_scalar_ins,
+            sink_op_scalar_outs);
+
+          assert(sink_op_memref_reads.size() || sink_op_memref_writes.size() && "cannot read memref from channel op");
+
+          // Detect RAW deps
+          depTracer.template traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_reads, sink_wait_all_op,
+                                    "RAW");
+          // Detect WAW and WAR deps
+          depTracer.template traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_writes, sink_wait_all_op,
+                                    "WAW/WAR");
+        }
+      }
+    });
+
   }
 };
 
