@@ -180,8 +180,8 @@ public:
 
   void runOnOperation() override {
 
-    if (numRows < 0 || numCols < 0 || anchorPointRow < 0 ||
-        anchorPointCol < 0) {
+    if (clNumRows < 0 || clNumCols < 0 || clAnchorPointRow < 0 ||
+        clAnchorPointCol < 0) {
       llvm::errs() << "Ensure all input parameters are greater than zero.\n";
       return;
     }
@@ -215,7 +215,7 @@ public:
                   .value();
 
           std::unique_ptr<Herd> herdPtr =
-              std::make_unique<Herd>(herd_size_x, herd_size_y, number, name);
+              std::make_unique<Herd>(herd_size_y, herd_size_x, number, name);
           unplacedHerds.push_back(std::move(herdPtr));
 
           number++;
@@ -223,7 +223,7 @@ public:
       });
     }
     std::unique_ptr<Partition> partition = std::make_unique<Partition>(
-        numRows, numCols, anchorPointRow, anchorPointCol);
+        clNumRows, clNumCols, clAnchorPointRow, clAnchorPointCol);
     std::sort(unplacedHerds.begin(), unplacedHerds.end(), HerdComparision());
     std::vector<std::unique_ptr<Herd>> placedHerds;
     naivePlacement(partition, unplacedHerds, placedHerds);
@@ -273,7 +273,7 @@ private:
             if (legalPlace) {
               partition->placeHerd(unplacedHerds[k], i, j);
               unplacedHerds[k]->setLocX(j);
-              unplacedHerds[k]->setLocY(i + unplacedHerds[k]->getNumRows() - 1);
+              unplacedHerds[k]->setLocY(i);
               placedHerds.push_back(std::move(unplacedHerds[k]));
               unplacedHerds.erase(unplacedHerds.begin() + k);
               if (unplacedHerds.size() == 0) {

@@ -532,22 +532,30 @@ uint64_t air_wait_all(std::vector<uint64_t> &signals) {
 
   std::vector<dispatch_packet_t *> packets;
   while (signals.size()) {
-    while (signals.size() < 5)
-      signals.push_back(0);
+    if (signals.size() < 5)
+      signals.resize(5, 0);
 
     std::vector<uint64_t> addrs;
-    for (auto s : signals)
-      addrs.push_back(s ? ((signal_t *)s)->handle : s);
-
-    uint64_t wr_idx = queue_add_write_index(q, 1);
-    uint64_t packet_id = wr_idx % q->size;
-    dispatch_packet_t *barrier_pkt =
-        (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
-    air_packet_barrier_and((barrier_and_packet_t *)barrier_pkt, addrs[0],
-                           addrs[1], addrs[2], addrs[3], addrs[4]);
-    signal_create(1, 0, NULL, (signal_t *)&barrier_pkt->completion_signal);
-    air_queue_dispatch(q, wr_idx, barrier_pkt);
-    packets.push_back(barrier_pkt);
+    bool non_zero = false;
+    for (auto s : signals) {
+      if (s) {
+        addrs.push_back(((signal_t *)s)->handle);
+        non_zero = true;
+      } else {
+        addrs.push_back(AIR_VCK190_SHMEM_BASE + MB_SHMEM_SIGNAL_OFFSET);
+      }
+    }
+    if (non_zero) {
+      uint64_t wr_idx = queue_add_write_index(q, 1);
+      uint64_t packet_id = wr_idx % q->size;
+      dispatch_packet_t *barrier_pkt =
+          (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
+      air_packet_barrier_and((barrier_and_packet_t *)barrier_pkt, addrs[0],
+                             addrs[1], addrs[2], addrs[3], addrs[4]);
+      signal_create(1, 0, NULL, (signal_t *)&barrier_pkt->completion_signal);
+      air_queue_dispatch(q, wr_idx, barrier_pkt);
+      packets.push_back(barrier_pkt);
+    }
     signals.resize(signals.size() - 5);
   }
 
@@ -561,17 +569,17 @@ extern "C" {
 
 void _mlir_ciface_air_wait_all_0_0() { return; }
 void _mlir_ciface_air_wait_all_0_1(uint64_t e0) {
-  std::vector<uint64_t> events{e0};
+  std::vector<uint64_t> events{e0, 0, 0, 0, 0};
   air_wait_all(events);
   return;
 }
 void _mlir_ciface_air_wait_all_0_2(uint64_t e0, uint64_t e1) {
-  std::vector<uint64_t> events{e0, e1};
+  std::vector<uint64_t> events{e0, e1, 0, 0, 0};
   air_wait_all(events);
   return;
 }
 void _mlir_ciface_air_wait_all_0_3(uint64_t e0, uint64_t e1, uint64_t e2) {
-  std::vector<uint64_t> events{e0, e1, e2};
+  std::vector<uint64_t> events{e0, e1, e2, 0, 0};
   air_wait_all(events);
   return;
 }
@@ -581,15 +589,15 @@ uint64_t _mlir_ciface_air_wait_all_1_0() {
   return air_wait_all(events);
 }
 uint64_t _mlir_ciface_air_wait_all_1_1(uint64_t e0) {
-  std::vector<uint64_t> events{e0};
+  std::vector<uint64_t> events{e0, 0, 0, 0, 0};
   return air_wait_all(events);
 }
 uint64_t _mlir_ciface_air_wait_all_1_2(uint64_t e0, uint64_t e1) {
-  std::vector<uint64_t> events{e0, e1};
+  std::vector<uint64_t> events{e0, e1, 0, 0, 0};
   return air_wait_all(events);
 }
 uint64_t _mlir_ciface_air_wait_all_1_3(uint64_t e0, uint64_t e1, uint64_t e2) {
-  std::vector<uint64_t> events{e0, e1, e2};
+  std::vector<uint64_t> events{e0, e1, e2, 0, 0};
   return air_wait_all(events);
 }
 

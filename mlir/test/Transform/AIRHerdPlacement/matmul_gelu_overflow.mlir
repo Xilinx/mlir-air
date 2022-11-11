@@ -6,10 +6,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-place-herds="num-rows=5 num-cols=11" |& FileCheck %s
+// RUN: air-opt %s -air-place-herds="num-rows=4 num-cols=11" |& FileCheck %s
 // CHECK: No valid placement found.
-// CHECK: Unplaced herd: gelu_herd_1
+// CHECK: Unplaced herd: matmul_herd_2
 // CHECK: Unplaced herd: gelu_herd_2
+// CHECK: Unplaced herd: matmul_herd_3
+// CHECK: Unplaced herd: matmul_herd_0
 
 #map0 = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 512)>

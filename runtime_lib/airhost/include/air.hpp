@@ -10,6 +10,7 @@
 
 #include "air_host.h"
 
+#include <stdint.h>
 #include <vector>
 
 inline hsa_status_t air_get_agents(std::vector<air_agent_t> &agents) {
@@ -21,5 +22,7 @@ inline hsa_status_t air_get_agents(std::vector<air_agent_t> &agents) {
       },
       (void *)&agents);
 }
+
+uint64_t air_wait_all(std::vector<uint64_t> &signals);
 
 #endif

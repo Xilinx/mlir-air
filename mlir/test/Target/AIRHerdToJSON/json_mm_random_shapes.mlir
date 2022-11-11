@@ -1,27 +1,47 @@
-//===- matmul_gelu_shifted_anchor.mlir ------------------------------------------*- MLIR -*-===//
+//===- matmul_gelu_random_shapes.mlir ------------------------------------------*- MLIR -*-===//
 //
-// Copyright (C) 2022, Xilinx Inc. All rights reserved.
-// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
-// SPDX-License-Identifier: MIT
+// Copyright (C) 2022, Xilinx Inc.
+// Copyright (C) 2022, Advanced Micro Devices, Inc.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the "Software"),
+// to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the
+// Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-place-herds="num-rows=6 num-cols=8 row-anchor=2 col-anchor=1" | FileCheck %s
+// RUN: air-opt %s -air-place-herds="num-rows=6 num-cols=11" | air-translate -air-herds-to-json -num-rows=6 -num-cols=11 |& FileCheck %s
 
-// CHECK: air.herd {{.*}} attributes {x_loc = 1 {{.*}} y_loc = 2
-// CHECK: air.herd {{.*}} attributes {x_loc = 3 {{.*}} y_loc = 2
-// CHECK: air.herd {{.*}} attributes {x_loc = 5 {{.*}} y_loc = 2
-// CHECK: air.herd {{.*}} attributes {x_loc = 7 {{.*}} y_loc = 2
+// CHECK: "row": 5, 
+// CHECK: "col": 10
+// CHECK: partition
 
-// CHECK: air.herd {{.*}} attributes {x_loc = 1 {{.*}} y_loc = 4
-// CHECK: air.herd {{.*}} attributes {x_loc = 3 {{.*}} y_loc = 4
-// CHECK: air.herd {{.*}} attributes {x_loc = 5 {{.*}} y_loc = 4
-// CHECK: air.herd {{.*}} attributes {x_loc = 7 {{.*}} y_loc = 4
+// CHECK: [0, "matmul_herd_0", [4, 7], [5, 7]],
+// CHECK: [1, "matmul_herd_1", [2, 5], [2, 6], [3, 5], [3, 6]],
+// CHECK: [2, "matmul_herd_2", [2, 3], [2, 4], [3, 3], [3, 4], [4, 3], [4, 4]],
+// CHECK: [3, "matmul_herd_3", [3, 2], [4, 2], [5, 2]],
+// CHECK: [4, "matmul_herd_4", [0, 0], [0, 1], [0, 2], [1, 0], [1, 1], [1, 2], [2, 0], [2, 1], [2, 2]],
+// CHECK: [5, "matmul_herd_5", [4, 8], [4, 9]],
+// CHECK: [6, "matmul_herd_6", [0, 3], [0, 4], [0, 5], [0, 6], [1, 3], [1, 4], [1, 5], [1, 6]],
+// CHECK: [7, "matmul_herd_7", [2, 7], [2, 8], [3, 7], [3, 8]],
+// CHECK: [8, "gelu_herd_0", [2, 9], [2, 10], [3, 9], [3, 10]],
+// CHECK: [9, "gelu_herd_1", [3, 0], [3, 1], [4, 0], [4, 1]],
+// CHECK: [10, "gelu_herd_2", [4, 5], [4, 6], [5, 5], [5, 6]],
+// CHECK: [11, "gelu_herd_3", [0, 7], [0, 8], [0, 9], [0, 10], [1, 7], [1, 8], [1, 9], [1, 10]]
 
-// CHECK: air.herd {{.*}} attributes {x_loc = 1 {{.*}} y_loc = 6
-// CHECK: air.herd {{.*}} attributes {x_loc = 3 {{.*}} y_loc = 6
-// CHECK: air.herd {{.*}} attributes {x_loc = 5 {{.*}} y_loc = 6
-// CHECK: air.herd {{.*}} attributes {x_loc = 7 {{.*}} y_loc = 6
 
 #map0 = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 512)>
@@ -48,6 +68,8 @@ module attributes {torch.debug_module_name = "mmult"} {
       air.partition @partition_0  args(%arg10=%arg2, %arg11=%arg3, %arg12=%arg4, %arg13=%arg5, %arg14=%arg6, %arg15=%arg7, %arg16=%arg8, %arg17=%arg9) : index, index, index, index, memref<24576x1024xbf16>, memref<1024x1024xbf16>, memref<24576x1024xbf16>, memref<24576x1024xbf16> attributes {resource_type = "vckxyz", size_x = 3 : i64, size_y = 2 : i64} {
         %c1 = arith.constant 1 : index
         %c2 = arith.constant 2 : index
+        %c3 = arith.constant 3 : index
+        %c4 = arith.constant 4 : index
         %c0 = arith.constant 0 : index
         %c1024 = arith.constant 1024 : index
         %c64 = arith.constant 64 : index
@@ -60,7 +82,7 @@ module attributes {torch.debug_module_name = "mmult"} {
           air.dma_memcpy_nd (%12[] [] [], %arg14[%4, %arg18] [%c64, %c64] [%c1024, %c1]) {id = 1 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
           air.dma_memcpy_nd (%13[] [] [], %arg15[%arg18, %3] [%c64, %c64] [%c1024, %c1]) {id = 2 : i32} : (memref<64x64xbf16, 1>, memref<1024x1024xbf16>)
           air.dma_memcpy_nd (%14[] [] [], %arg16[%4, %3] [%c64, %c64] [%c1024, %c1]) {id = 3 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
-          air.herd @matmul_herd_0  tile (%arg19, %arg20) in (%arg21=%c2, %arg22=%c2) args(%arg23=%12, %arg24=%13, %arg25=%14) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
+          air.herd @matmul_herd_0  tile (%arg19, %arg20) in (%arg21=%c1, %arg22=%c2) args(%arg23=%12, %arg24=%13, %arg25=%14) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
             %c1_0 = arith.constant 1 : index
             %c0_1 = arith.constant 0 : index
             %c64_2 = arith.constant 64 : index
@@ -130,7 +152,7 @@ module attributes {torch.debug_module_name = "mmult"} {
           air.dma_memcpy_nd (%12[] [] [], %arg14[%6, %arg18] [%c64, %c64] [%c1024, %c1]) {id = 17 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
           air.dma_memcpy_nd (%13[] [] [], %arg15[%arg18, %3] [%c64, %c64] [%c1024, %c1]) {id = 18 : i32} : (memref<64x64xbf16, 1>, memref<1024x1024xbf16>)
           air.dma_memcpy_nd (%14[] [] [], %arg16[%6, %3] [%c64, %c64] [%c1024, %c1]) {id = 19 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
-          air.herd @matmul_herd_2  tile (%arg19, %arg20) in (%arg21=%c2, %arg22=%c2) args(%arg23=%12, %arg24=%13, %arg25=%14) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
+          air.herd @matmul_herd_2  tile (%arg19, %arg20) in (%arg21=%c2, %arg22=%c3) args(%arg23=%12, %arg24=%13, %arg25=%14) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
             %c1_0 = arith.constant 1 : index
             %c0_1 = arith.constant 0 : index
             %c64_2 = arith.constant 64 : index
@@ -165,7 +187,7 @@ module attributes {torch.debug_module_name = "mmult"} {
           air.dma_memcpy_nd (%12[] [] [], %arg14[%7, %arg18] [%c64, %c64] [%c1024, %c1]) {id = 25 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
           air.dma_memcpy_nd (%13[] [] [], %arg15[%arg18, %3] [%c64, %c64] [%c1024, %c1]) {id = 26 : i32} : (memref<64x64xbf16, 1>, memref<1024x1024xbf16>)
           air.dma_memcpy_nd (%14[] [] [], %arg16[%7, %3] [%c64, %c64] [%c1024, %c1]) {id = 27 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
-          air.herd @matmul_herd_3  tile (%arg19, %arg20) in (%arg21=%c2, %arg22=%c2) args(%arg23=%12, %arg24=%13, %arg25=%14) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
+          air.herd @matmul_herd_3  tile (%arg19, %arg20) in (%arg21=%c1, %arg22=%c3) args(%arg23=%12, %arg24=%13, %arg25=%14) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
             %c1_0 = arith.constant 1 : index
             %c0_1 = arith.constant 0 : index
             %c64_2 = arith.constant 64 : index
@@ -200,7 +222,7 @@ module attributes {torch.debug_module_name = "mmult"} {
           air.dma_memcpy_nd (%12[] [] [], %arg14[%8, %arg18] [%c64, %c64] [%c1024, %c1]) {id = 33 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
           air.dma_memcpy_nd (%13[] [] [], %arg15[%arg18, %3] [%c64, %c64] [%c1024, %c1]) {id = 34 : i32} : (memref<64x64xbf16, 1>, memref<1024x1024xbf16>)
           air.dma_memcpy_nd (%14[] [] [], %arg16[%8, %3] [%c64, %c64] [%c1024, %c1]) {id = 35 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
-          air.herd @matmul_herd_4  tile (%arg19, %arg20) in (%arg21=%c2, %arg22=%c2) args(%arg23=%12, %arg24=%13, %arg25=%14) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
+          air.herd @matmul_herd_4  tile (%arg19, %arg20) in (%arg21=%c3, %arg22=%c3) args(%arg23=%12, %arg24=%13, %arg25=%14) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
             %c1_0 = arith.constant 1 : index
             %c0_1 = arith.constant 0 : index
             %c64_2 = arith.constant 64 : index
@@ -235,7 +257,7 @@ module attributes {torch.debug_module_name = "mmult"} {
           air.dma_memcpy_nd (%12[] [] [], %arg14[%9, %arg18] [%c64, %c64] [%c1024, %c1]) {id = 41 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
           air.dma_memcpy_nd (%13[] [] [], %arg15[%arg18, %3] [%c64, %c64] [%c1024, %c1]) {id = 42 : i32} : (memref<64x64xbf16, 1>, memref<1024x1024xbf16>)
           air.dma_memcpy_nd (%14[] [] [], %arg16[%9, %3] [%c64, %c64] [%c1024, %c1]) {id = 43 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
-          air.herd @matmul_herd_5  tile (%arg19, %arg20) in (%arg21=%c2, %arg22=%c2) args(%arg23=%12, %arg24=%13, %arg25=%14) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
+          air.herd @matmul_herd_5  tile (%arg19, %arg20) in (%arg21=%c2, %arg22=%c1) args(%arg23=%12, %arg24=%13, %arg25=%14) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
             %c1_0 = arith.constant 1 : index
             %c0_1 = arith.constant 0 : index
             %c64_2 = arith.constant 64 : index
@@ -270,7 +292,7 @@ module attributes {torch.debug_module_name = "mmult"} {
           air.dma_memcpy_nd (%12[] [] [], %arg14[%10, %arg18] [%c64, %c64] [%c1024, %c1]) {id = 49 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
           air.dma_memcpy_nd (%13[] [] [], %arg15[%arg18, %3] [%c64, %c64] [%c1024, %c1]) {id = 50 : i32} : (memref<64x64xbf16, 1>, memref<1024x1024xbf16>)
           air.dma_memcpy_nd (%14[] [] [], %arg16[%10, %3] [%c64, %c64] [%c1024, %c1]) {id = 51 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
-          air.herd @matmul_herd_6  tile (%arg19, %arg20) in (%arg21=%c2, %arg22=%c2) args(%arg23=%12, %arg24=%13, %arg25=%14) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
+          air.herd @matmul_herd_6  tile (%arg19, %arg20) in (%arg21=%c4, %arg22=%c2) args(%arg23=%12, %arg24=%13, %arg25=%14) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
             %c1_0 = arith.constant 1 : index
             %c0_1 = arith.constant 0 : index
             %c64_2 = arith.constant 64 : index
@@ -456,7 +478,7 @@ module attributes {torch.debug_module_name = "mmult"} {
           %15 = memref.alloc() : memref<64x64xbf16, 1>
           air.dma_memcpy_nd (%14[] [] [], %arg16[%13, %3] [%c64, %c64] [%c1024, %c1]) {id = 83 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
           air.dma_memcpy_nd (%15[] [] [], %arg17[%13, %3] [%c64, %c64] [%c1024, %c1]) {id = 84 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
-          air.herd @gelu_herd_3  tile (%arg19, %arg20) in (%arg21=%c2, %arg22=%c2) args(%arg23=%14, %arg24=%15) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
+          air.herd @gelu_herd_3  tile (%arg19, %arg20) in (%arg21=%c4, %arg22=%c2) args(%arg23=%14, %arg24=%15) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
             %c1_0 = arith.constant 1 : index
             %c64_1 = arith.constant 64 : index
             %c32 = arith.constant 32 : index

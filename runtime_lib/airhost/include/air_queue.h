@@ -20,6 +20,11 @@
 // This includes the queues, events, doorbells etc
 #define MB_SHMEM_SEGMENT_SIZE 0x1000
 
+// A small area of memory that can be used for signals.
+// A controller will initialize these to zero.
+#define MB_SHMEM_SIGNAL_OFFSET 0x0300
+#define MB_SHMEM_SIGNAL_SIZE 0x0100
+
 // See
 // https://confluence.xilinx.com/display/XRLABS/AIR+Controller+HSA+Packet+Formats
 // All defined as longs, so we can shift them into 64 registers
