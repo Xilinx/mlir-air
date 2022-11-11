@@ -545,14 +545,6 @@ class AIRDmaToAIRChannelConversion
         return failure();
     }
 
-    // Disconnect any async dependencies to/from air.dma op
-    if (auto op_token = op.getAsyncToken()){
-      for (auto user : op_token.getUsers()){
-        if (auto async_user = dyn_cast<air::AsyncOpInterface>(user)){
-          eraseAsyncDependencyFromAsyncOp(async_user, op_token);
-        }
-      }
-    }
     // Channel get op shall inherit the dma op's dep list
     SmallVector<Value, 4> getDeps = op.getAsyncDependencies();
     SmallVector<Value, 4> emptyDeps;
@@ -564,6 +556,7 @@ class AIRDmaToAIRChannelConversion
     std::string cname = "channel";
     int which_try = 0;
 
+    // Create channel symbol
     auto module = op->getParentOfType<ModuleOp>();
     while (module.lookupSymbol(new_cname))
       new_cname = cname + "_" + std::to_string(++which_try);
@@ -579,11 +572,13 @@ class AIRDmaToAIRChannelConversion
 
     std::set<Operation *> erased;
     Operation *externalGetPut = nullptr;
+    Operation *internalGetPut = nullptr;
     SmallVector<Value, 1> channel_idx{
         rewriter.create<arith::ConstantIndexOp>(loc, 1)};
 
+    // Create channel put-get pair
     if (dst_type.getMemorySpaceAsInt() == (int)MemorySpace::L1) {
-      rewriter.create<air::ChannelGetOp>(
+      internalGetPut = rewriter.create<air::ChannelGetOp>(
           loc, tys, getDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx,
           dst, dst_offsets, dst_sizes, dst_strides);
     } else {
@@ -593,13 +588,19 @@ class AIRDmaToAIRChannelConversion
     }
 
     if (src_type.getMemorySpaceAsInt() == (int)MemorySpace::L1) {
-      rewriter.create<air::ChannelPutOp>(
+      internalGetPut = rewriter.create<air::ChannelPutOp>(
           loc, tys, emptyDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx,
           src, src_offsets, src_sizes, src_strides);
     } else {
       externalGetPut = rewriter.create<air::ChannelPutOp>(
           loc, tys, getDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx,
           src, src_offsets, src_sizes, src_strides);
+    }
+
+    // Replace all uses to dma token with internal put/get token
+    if (auto op_token = op.getAsyncToken()){
+      auto asyncInternalGetPut = dyn_cast<air::AsyncOpInterface>(internalGetPut);
+      op_token.replaceAllUsesWith(asyncInternalGetPut.getAsyncToken());
     }
 
     {
