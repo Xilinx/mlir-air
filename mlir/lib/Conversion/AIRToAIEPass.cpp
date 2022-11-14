@@ -178,7 +178,7 @@ struct DMAAllocator {
   }
 };
 
-AIE::LockOp allocateLockOp(ModuleOp aie_module, AIE::TileOp tile, int id=-1) {
+AIE::LockOp allocateLockOp(ModuleOp aie_module, AIE::TileOp tile, int id = -1) {
   AIE::LockOp lock = nullptr;
   std::set<int> ids;
   aie_module.walk([&](AIE::LockOp l) {
@@ -327,7 +327,9 @@ void outlineAIECores(OpBuilder &builder, ModuleOp aie_module,
       }
 
       if (options.emit_herd_lock)
-        core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(), herd_lock, 0, AIE::LockAction::Acquire);
+        core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(),
+                                            herd_lock, 0,
+                                            AIE::LockAction::Acquire);
 
       Region &r = h.getRegion();
       r.cloneInto(&core.getBody(), remap);
@@ -336,7 +338,8 @@ void outlineAIECores(OpBuilder &builder, ModuleOp aie_module,
       core_builder.create<cf::BranchOp>(hloc, launch_bb);
       core_builder.setInsertionPoint(launch_bb->getTerminator());
       if (options.emit_herd_lock)
-        core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(), herd_lock, 0,
+        core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(),
+                                            herd_lock, 0,
                                             AIE::LockAction::Release);
 
       if (options.emit_while)
@@ -868,9 +871,11 @@ public:
 
   Option<bool> AIRToAIEEmitHerdLock{
       *this, "emit-herd-lock",
-      llvm::cl::desc("Acquire and release a lock at the start and end of herd execution. "\
-                     "The default is to acquire lock 0 with value zero and release it with value 0. " \
-                     "There is currently no way to override the default behavior."),
+      llvm::cl::desc(
+          "Acquire and release a lock at the start and end of herd execution. "
+          "The default is to acquire lock 0 with value zero and release it "
+          "with value 0. "
+          "There is currently no way to override the default behavior."),
       llvm::cl::init(false)};
 
   Option<std::string> AIRToAIETestPatterns{
