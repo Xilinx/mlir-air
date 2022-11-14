@@ -239,6 +239,56 @@ static scf::ParallelOp hoistHerdToAsyncParallel(OpBuilder builder, Location loc,
   return scf_par;
 }
 
+static void updateUsesInScfFor(OpBuilder builder, scf::ForOp new_loop_op, scf::ForOp loop_op){
+  auto insertionCheckpoint = builder.saveInsertionPoint();
+  // Splice the operations inside loop op
+  SmallVector<Value, 4> incoming_tokens;
+  SmallVector<Value, 4> constants;
+  llvm::SetVector<Value> region_args;
+  getUsedValuesDefinedAbove(loop_op.getRegion(), region_args);
+  for (Value v : region_args) {
+    if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
+      constants.push_back(v);
+    else if (v.getDefiningOp()) {
+      if (auto v_op =
+              mlir::dyn_cast<air::AsyncOpInterface>(v.getDefiningOp())) {
+        if (v_op.getAsyncToken() == v)
+          incoming_tokens.push_back(v);
+      } else if (auto v_op = dyn_cast<scf::ForOp>(v.getDefiningOp())) {
+        if (v_op.getResult(0) == v)
+          incoming_tokens.push_back(v);
+      } else if (auto v_op = dyn_cast<scf::ParallelOp>(v.getDefiningOp())) {
+        if (v_op.getResult(0) == v)
+          incoming_tokens.push_back(v);
+      }
+    }
+  }
+
+  auto iv = loop_op.getInductionVar();
+  replaceAllUsesInRegionWith(iv, new_loop_op.getInductionVar(),
+                              new_loop_op.getRegion());
+  if (loop_op.getRegionIterArgs().size()){
+    for (unsigned i = 0; i < loop_op.getRegionIterArgs().size(); i++){
+      auto ia = loop_op.getRegionIterArgs()[i];
+      replaceAllUsesInRegionWith(ia, new_loop_op.getRegionIterArgs()[i],
+                                  new_loop_op.getRegion());
+    }
+  }
+  builder.setInsertionPointToStart(new_loop_op.getBody());
+  for (auto c : constants) {
+    replaceAllUsesInRegionWith(
+        c, builder.clone(*c.getDefiningOp())->getResult(0),
+        new_loop_op.getRegion());
+  }
+
+  for (Value v : incoming_tokens) {
+    replaceAllUsesInRegionWith(v, new_loop_op.getRegionIterArgs()[0],
+                              new_loop_op.getRegion());
+  }
+
+  builder.restoreInsertionPoint(insertionCheckpoint);
+}
+
 class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
   using OpRewritePattern<linalg::CopyOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(linalg::CopyOp op,
@@ -637,20 +687,47 @@ class AIRDmaToAIRChannelConversion
         }
       }
 
+      // Get mapping for remapped ssa values entering the hoisted scf.parallel
       BlockAndValueMapping remap;
+      auto herd_size = herd.getSizeOperands();
+      remap.map(herd.getSize()[0], herd_size[0]);
+      remap.map(herd.getSize()[1], herd_size[1]);
+      remap.map(herd.getIds()[0], scf_par.getInductionVars()[0]);
+      remap.map(herd.getIds()[1], scf_par.getInductionVars()[1]);
+      int arg_idx = 0;
+      for (auto arg : herd.getKernelArguments())
+        remap.map(arg, herd.getKernelOperand(arg_idx++));
+
+      // Clone ops into hoisted scf.parallel
       rewriter.setInsertionPointToStart(scf_par.getBody());
       for (Operation &o : herd.getRegion().front().getOperations()) {
         if (isa<air::HerdTerminatorOp>(o))
           continue;
-        auto herd_size = herd.getSizeOperands();
-        remap.map(herd.getSize()[0], herd_size[0]);
-        remap.map(herd.getSize()[1], herd_size[1]);
-        remap.map(herd.getIds()[0], scf_par.getInductionVars()[0]);
-        remap.map(herd.getIds()[1], scf_par.getInductionVars()[1]);
-        int arg_idx = 0;
-        for (auto arg : herd.getKernelArguments())
-          remap.map(arg, herd.getKernelOperand(arg_idx++));
-        rewriter.clone(o, remap);
+        if (o.hasAttr("air.channel") && dyn_cast<scf::ForOp>(o)){
+          auto loop_op = dyn_cast<scf::ForOp>(o);
+          SmallVector<Value, 1> remap_iter_operands;
+          for (auto iter_operand : loop_op.getIterOperands()){
+            remap_iter_operands.push_back(remap.lookupOrDefault(iter_operand));
+          }
+          scf::ForOp new_loop_op = rewriter.create<scf::ForOp>(
+                    rewriter.getUnknownLoc(), remap.lookupOrDefault(loop_op.getLowerBound()), remap.lookupOrDefault(loop_op.getUpperBound()),
+                    remap.lookupOrDefault(loop_op.getStep()), remap_iter_operands);
+          auto insertionCheckpoint = rewriter.saveInsertionPoint();
+          rewriter.setInsertionPointToStart(new_loop_op.getBody());
+          for (Operation &for_child_o : loop_op.getBody()->getOperations()){
+            if (for_child_o.hasAttr("air.channel")){
+              rewriter.clone(for_child_o, remap);
+            }
+          }
+          // Re-establish uses after hoisting
+          updateUsesInScfFor(rewriter, new_loop_op, loop_op);
+
+          new_loop_op->setAttr("air.channel", StringAttr::get(op->getContext(), "dep"));
+          rewriter.restoreInsertionPoint(insertionCheckpoint);
+        }
+        else if (o.hasAttr("air.channel")){
+          rewriter.clone(o, remap);
+        }
       }
 
       // Reconnect for loop-carried dependency to scf.yield
