@@ -230,9 +230,6 @@ static scf::ParallelOp hoistHerdToAsyncParallel(OpBuilder builder, Location loc,
   SmallVector<Value, 1> deps_in{wa_op.getAsyncToken()};
   auto scf_par = builder.create<scf::ParallelOp>(
       loc, lbs, ubs, steps, deps_in);
-  SmallVector<Value, 1> deps_out{scf_par->getResult(0)};
-  builder.create<air::WaitAllOp>(loc, SmallVector<Type, 1>{},
-                                  deps_out);
 
   addReduceOpToAsyncParallel(builder, scf_par, ctx);
 
@@ -671,7 +668,11 @@ class AIRDmaToAIRChannelConversion
             SmallVector<Value, 1> yield_token;
             if (channel_ops.size()){
               assert(channel_ops[0]->getResult(0) && "found sync channel op in async for loop");
-              yield_token.push_back(channel_ops[0]->getResult(0));
+              auto wa_op = rewriter.create<air::WaitAllOp>(rewriter.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
+                                          SmallVector<Value, 1>{channel_ops[0]->getResult(0)});  
+              yield_token.push_back(wa_op.getAsyncToken());
+              wa_op->setAttr("air.channel",
+                                  StringAttr::get(op->getContext(), "dep"));
             }
             else {
               auto wa_op = rewriter.create<air::WaitAllOp>(rewriter.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
@@ -684,33 +685,6 @@ class AIRDmaToAIRChannelConversion
           }
         }
       });
-
-      
-    
-      // // Connect async dependency of external put/get scf parallel
-      // dependencyTracer depTracer;
-      // SmallVector<partialMemref, 1> sink_op_memref_reads;
-      // SmallVector<partialMemref, 1> sink_op_memref_writes;
-      // SmallVector<Value, 1> sink_op_scalar_ins;
-      // SmallVector<Value, 1> sink_op_scalar_outs;
-
-      // // auto scf_par = op->getParentOfType<scf::ParallelOp>();
-
-      // depTracer.getPartialMemrefFromOp(hoistedExternalPutGet, sink_op_memref_reads,
-      //   sink_op_memref_writes,
-      //   sink_op_scalar_ins,
-      //   sink_op_scalar_outs);
-
-      // assert(sink_op_memref_reads.size() || sink_op_memref_writes.size());
-
-      // auto sink_wait_all_op = dyn_cast<air::WaitAllOp>(scf_par.getInitVals()[0].getDefiningOp());
-
-      // // Detect RAW deps
-      // depTracer.template traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_reads, sink_wait_all_op,
-      //                           "RAW");
-      // // Detect WAW and WAR deps
-      // depTracer.template traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_writes, sink_wait_all_op,
-      //                           "WAW/WAR");
 
       scf_par.walk([&](mlir::Operation *o) {
         if (o == o->getBlock()->getTerminator())
@@ -1354,6 +1328,10 @@ struct DmaToChannelPass : public DmaToChannelBase<DmaToChannelPass> {
       if (auto channel_op = mlir::dyn_cast<xilinx::air::ChannelInterface>(op)) {
         if (!channel_op->getParentOfType<xilinx::air::HerdOp>()) {
           // Found external channel put/get
+
+          // Start tracing dependency only if this put/get op is async
+          auto async_op = dyn_cast<air::AsyncOpInterface>(op);
+          if (!async_op.getAsyncToken()) return;
     
           // Connect async dependency of external put/get scf parallel
           SmallVector<partialMemref, 1> sink_op_memref_reads;
@@ -1377,6 +1355,9 @@ struct DmaToChannelPass : public DmaToChannelBase<DmaToChannelPass> {
           // Detect WAW and WAR deps
           depTracer.template traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_writes, sink_wait_all_op,
                                     "WAW/WAR");
+
+          // Rebuild loop-carried dependency in scf loop nest
+          depTracer.reconnectLoopCarriedDependencyFromOp(op);
         }
       }
     });

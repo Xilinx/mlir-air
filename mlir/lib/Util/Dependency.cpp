@@ -195,6 +195,50 @@ template <typename T> Operation *getScfParentOpFromYieldOp(scf::YieldOp op) {
   return nullptr;
 }
 
+// Get loop-carried dependency token from scf loop op
+Value getLoopCarriedTokenFromScfOp(scf::ParallelOp op){
+  assert(op.getInitVals().size());
+  auto token = op.getInitVals()[0];
+  assert(token.getType().isa<air::AsyncTokenType>() &&
+         "init value is not an async token");
+  return token;
+}
+Value getLoopCarriedTokenFromScfOp(scf::ForOp op, std::string operand_or_argument){
+  if (operand_or_argument == "operand"){
+    assert(op.getIterOperands().size());
+    auto token = op.getIterOperands()[0];
+    assert(token.getType().isa<air::AsyncTokenType>() &&
+          "iter operand is not an async token");
+    return token;
+  }
+  else if (operand_or_argument == "argument"){
+    assert(op.getRegionIterArgs().size());
+    auto token = op.getRegionIterArgs()[0];
+    assert(token.getType().isa<air::AsyncTokenType>() &&
+          "iter operand is not an async token");
+    return token;
+  }
+  else assert(false && "unknown string in operand_or_argument");
+}
+
+// Add async dependency to op if unique
+void addAsyncDependencyIfNew(air::AsyncOpInterface op, Value token){
+  assert(token.getType().isa<air::AsyncTokenType>() &&
+        "value is not an async token");
+  bool foundTokenInDepList = false;
+  if (op.getAsyncDependencies().size()){
+    for (auto old_dep : op.getAsyncDependencies())
+      if (old_dep == token)
+        foundTokenInDepList = true;
+    if (!foundTokenInDepList){
+      op.addAsyncDependency(token);
+    }
+  }
+  else{
+    op.addAsyncDependency(token);
+  }
+}
+
 //===----------------------------------------------------------------------===//
 // Dependency graph as a Boost graph object
 //===----------------------------------------------------------------------===//
@@ -1598,11 +1642,7 @@ void dependencyTracer::addDependencyBetweenOps(Operation * source, Operation * s
   assert(async_sink && "sink op has no async interface");
   if (source->getBlock() == sink->getBlock() && source->isBeforeInBlock(sink)) {
     if (auto async_source = dyn_cast<air::AsyncOpInterface>(source)){
-      // Check for repeated token in list
-      for (auto old_dep : async_sink.getAsyncDependencies())
-        if (old_dep == async_source.getAsyncToken())
-          return;
-      async_sink.addAsyncDependency(async_source.getAsyncToken());
+      addAsyncDependencyIfNew(async_sink, async_source.getAsyncToken());
       return;
     }
   }
@@ -1610,11 +1650,7 @@ void dependencyTracer::addDependencyBetweenOps(Operation * source, Operation * s
         parent = parent->getParentOp()) {
     if (parent->getBlock() == sink->getBlock() && parent->isBeforeInBlock(sink)) {
       if (auto async_source = dyn_cast<air::AsyncOpInterface>(parent)){
-        // Check for repeated token in list
-        for (auto old_dep : async_sink.getAsyncDependencies())
-          if (old_dep == async_source.getAsyncToken())
-            return;
-        async_sink.addAsyncDependency(async_source.getAsyncToken());
+        addAsyncDependencyIfNew(async_sink, async_source.getAsyncToken());
         return;
       }
     }
@@ -1696,6 +1732,71 @@ char dependencyTracer::checkOperandReadOrWrite(mlir::Value operand) {
     return 'r';
   else
     return 'w';
+}
+
+void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation * op){
+  // Get async sink op wrt op
+  air::AsyncOpInterface async_op = nullptr;
+  if (dyn_cast<air::AsyncOpInterface>(op)){
+    async_op = dyn_cast<air::AsyncOpInterface>(op);
+  }
+  else if (auto scf_par = dyn_cast<scf::ParallelOp>(op)){
+    auto token = getLoopCarriedTokenFromScfOp(scf_par);
+    assert(token.getDefiningOp());
+    async_op = dyn_cast<air::AsyncOpInterface>(token.getDefiningOp());
+  }
+  else if (auto scf_for = dyn_cast<scf::ForOp>(op)){
+    auto token = getLoopCarriedTokenFromScfOp(scf_for, "operand");
+    assert(token.getDefiningOp());
+    async_op = dyn_cast<air::AsyncOpInterface>(token.getDefiningOp());
+  }
+  else assert(false && "unsupported op for loop-carried dependency");
+
+  assert(async_op);
+
+  // Get parent scf loop op
+  auto parent = op->getParentOp();
+  if (auto scf_par = dyn_cast<scf::ParallelOp>(parent)){
+    // Get scf parallel's loop-carried token
+    auto token = getLoopCarriedTokenFromScfOp(scf_par);
+
+    // Connect dependency between op and token
+    addAsyncDependencyIfNew(async_op, token);
+
+    // Get scf parallel's wait_all op before reduce
+    SmallVector<scf::ReduceOp, 1> reduce_ops;
+    for (auto scf_par_reduce : scf_par.getOps<scf::ReduceOp>()){
+      reduce_ops.push_back(scf_par_reduce);
+    }
+    assert(reduce_ops.size() == 1);
+    auto reduce_wait_all = dyn_cast<air::WaitAllOp>(reduce_ops[0].getOperand().getDefiningOp());
+    assert(reduce_wait_all);
+
+    // Connect op's async token to scf reduce
+    addAsyncDependencyIfNew(reduce_wait_all, op->getResult(0));
+
+    // Recurse with parent
+    reconnectLoopCarriedDependencyFromOp(parent);
+  }
+  else if (auto scf_for = dyn_cast<scf::ForOp>(parent)){
+    // Get scf for's loop-carried token
+    auto token = getLoopCarriedTokenFromScfOp(scf_for, "argument");
+
+    // Connect dependency between op and token
+    addAsyncDependencyIfNew(async_op, token);
+
+    // Get scf for's wait_all op before yield
+    auto scf_for_yield = dyn_cast<scf::YieldOp>(scf_for.getBody()->getTerminator());
+    auto yield_wait_all = dyn_cast<air::WaitAllOp>(scf_for_yield.getOperand(0).getDefiningOp());
+    assert(yield_wait_all);
+
+    // Connect op's async token to scf reduce
+    addAsyncDependencyIfNew(yield_wait_all, op->getResult(0));
+
+    // Recurse with parent
+    reconnectLoopCarriedDependencyFromOp(parent);
+  }
+  else return;
 }
 
 } // namespace air

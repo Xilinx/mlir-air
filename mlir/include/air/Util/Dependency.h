@@ -51,6 +51,9 @@ void traceDependentInductionVar(air::AsyncOpInterface async_op,
                                 std::vector<Operation *> &op_history);
 void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op,
                                      Value token);
+Value getLoopCarriedTokenFromScfOp(scf::ParallelOp op);
+Value getLoopCarriedTokenFromScfOp(scf::ForOp op, std::string operand_or_argument = "operand");
+void addAsyncDependencyIfNew(air::AsyncOpInterface op, Value token);
 
 //===----------------------------------------------------------------------===//
 // Dependency graph parsed as a Boost graph object
@@ -262,6 +265,10 @@ public:
                                 dep_tracing_mode, &operand);
     }
   }
+
+  // Recursively reconnect loop-carried dependency in scf loop nest
+  void reconnectLoopCarriedDependencyFromOp(Operation * op);
+
 private:
 
   // Trace the defining op of sink op, RAW
