@@ -213,30 +213,31 @@ public:
                     IntegerAttr::get(intTy, num_cols));
     });
 
-    // Place herds not in partitions
-    std::unique_ptr<Partition> partition = std::make_unique<Partition>(
-        clNumRows, clNumCols, clAnchorPointRow, clAnchorPointCol);
+    module.walk([&](func::FuncOp f) {
+      // Place herds not in partitions
+      std::unique_ptr<Partition> partition = std::make_unique<Partition>(
+          clNumRows, clNumCols, clAnchorPointRow, clAnchorPointCol);
 
-    std::vector<std::unique_ptr<Herd>> unplacedHerds;
-    module.walk([&](air::HerdOp herd) {
-      if (herd->getParentOfType<air::PartitionOp>())
-        return;
+      std::vector<std::unique_ptr<Herd>> unplacedHerds;
+      f.walk([&](air::HerdOp herd) {
+        if (herd->getParentOfType<air::PartitionOp>())
+          return;
 
-      // Any pre-placed herds are assumed to be outside if the area being used
-      // by the placement pass.
-      if (herd.getRowOffset() && herd.getColOffset())
-        return;
+        // Any pre-placed herds are assumed to be outside if the area being used
+        // by the placement pass.
+        if (herd.getRowOffset() && herd.getColOffset())
+          return;
 
-      auto herd_size_x = herd.getNumCols();
-      auto herd_size_y = herd.getNumRows();
-      auto number = unplacedHerds.size();
-      std::unique_ptr<Herd> herdPtr =
-          std::make_unique<Herd>(herd, herd_size_y, herd_size_x, number);
-      unplacedHerds.push_back(std::move(herdPtr));
+        auto herd_size_x = herd.getNumCols();
+        auto herd_size_y = herd.getNumRows();
+        auto number = unplacedHerds.size();
+        std::unique_ptr<Herd> herdPtr =
+            std::make_unique<Herd>(herd, herd_size_y, herd_size_x, number);
+        unplacedHerds.push_back(std::move(herdPtr));
+      });
+
+      placeHerdsInPartition(unplacedHerds, partition);
     });
-
-    placeHerdsInPartition(unplacedHerds, partition);
-
     return;
   }
 
