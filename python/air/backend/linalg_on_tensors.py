@@ -65,18 +65,18 @@ class LinalgOnTensorsAirBackend(AirBackend):
             `air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE` is applied,
             then `pipeline`.
             The default is `air.backend.linalg_on_tensors.LINALG_MEMREF_TO_AIR_PIPELINE`
-          partition_offset: default location for generated partitions
-          partition_size: default size for generated partitions
+          partition_offset: default location for generated partitions as [colOffset, rowOffset]
+          partition_size: default size for generated partitions as [numCols, numRows]
         Returns:
           An opaque, backend specific compiled artifact object that can be
           passed to `load`.
         """
 
         if partition_offset is None:
-            partition_offset = [1,1]
+            partition_offset = [2, 2]
 
         if partition_size is None:
-            partition_size = [8, 8]
+            partition_size = [10, 6]
 
         if pipeline is None:
             pipeline = LINALG_MEMREF_TO_AIR_PIPELINE
@@ -102,9 +102,13 @@ class LinalgOnTensorsAirBackend(AirBackend):
                 print("AIR Module:")
                 print(air_module)
 
-            aircc_options = ['torch.mlir', '--shared', '-o', 'torch.mlir.so',
-                             f"-row-offset={partition_offset[0]}",
-                             f"-col-offset={partition_offset[1]}"]
+            aircc_options = ['torch.mlir', '--shared', '-o', 'torch.mlir.so']
+            aircc_options = aircc_options + \
+                             [f"-row-offset={partition_offset[1]}",
+                              f"-col-offset={partition_offset[0]}"]
+            aircc_options = aircc_options + \
+                             [f"-num-rows={partition_size[1]}",
+                              f"-num-cols={partition_size[0]}"]
 
             if verbose:
                 aircc_options = aircc_options + ['-v']
