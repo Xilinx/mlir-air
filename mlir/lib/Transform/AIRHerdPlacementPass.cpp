@@ -189,21 +189,42 @@ public:
 
       // If the size and offset attributes of the partition op are set then use
       // them. Otherwise use the values from the command line.
-      auto num_rows = part.getNumRows();
-      auto num_cols = part.getNumCols();
-      auto row_offset = part.getRowOffset();
-      auto col_offset = part.getColOffset();
-      auto partition = std::make_unique<Partition>(
-          num_rows ? *num_rows : clNumRows, num_cols ? *num_cols : clNumCols,
-          row_offset ? *row_offset : clAnchorPointRow,
-          col_offset ? *col_offset : clAnchorPointCol);
+      auto num_rows_op = part.getNumRows();
+      auto num_cols_op = part.getNumCols();
+      auto row_offset_op = part.getRowOffset();
+      auto col_offset_op = part.getColOffset();
+
+      auto num_rows = num_rows_op ? *num_rows_op : clNumRows;
+      auto num_cols = num_cols_op ? *num_cols_op : clNumCols;
+      auto row_offset = row_offset_op ? *row_offset_op : clAnchorPointRow;
+      auto col_offset = col_offset_op ? *col_offset_op : clAnchorPointCol;
+      auto partition = std::make_unique<Partition>(num_rows, num_cols,
+                                                   row_offset, col_offset);
       placeHerdsInPartition(partitionHerds, partition);
+
+      auto intTy = IntegerType::get(part->getContext(), 64);
+      part->setAttr(part.getRowOffsetAttrName(),
+                    IntegerAttr::get(intTy, row_offset));
+      part->setAttr(part.getColOffsetAttrName(),
+                    IntegerAttr::get(intTy, col_offset));
+      part->setAttr(part.getNumRowsAttrName(),
+                    IntegerAttr::get(intTy, num_rows));
+      part->setAttr(part.getNumColsAttrName(),
+                    IntegerAttr::get(intTy, num_cols));
     });
 
     // Place herds not in partitions
+    std::unique_ptr<Partition> partition = std::make_unique<Partition>(
+        clNumRows, clNumCols, clAnchorPointRow, clAnchorPointCol);
+
     std::vector<std::unique_ptr<Herd>> unplacedHerds;
     module.walk([&](air::HerdOp herd) {
       if (herd->getParentOfType<air::PartitionOp>())
+        return;
+
+      // Any pre-placed herds are assumed to be outside if the area being used
+      // by the placement pass.
+      if (herd.getRowOffset() && herd.getColOffset())
         return;
 
       auto herd_size_x = herd.getNumCols();
@@ -213,9 +234,6 @@ public:
           std::make_unique<Herd>(herd, herd_size_y, herd_size_x, number);
       unplacedHerds.push_back(std::move(herdPtr));
     });
-
-    std::unique_ptr<Partition> partition = std::make_unique<Partition>(
-        clNumRows, clNumCols, clAnchorPointRow, clAnchorPointCol);
 
     placeHerdsInPartition(unplacedHerds, partition);
 

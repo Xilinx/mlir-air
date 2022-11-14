@@ -54,7 +54,8 @@ class LinalgOnTensorsAirBackend(AirBackend):
     def __del__(self):
         self.unload()
 
-    def compile(self, imported_module: torch_mlir.ir.Module, pipeline=None, verbose=False):
+    def compile(self, imported_module: torch_mlir.ir.Module, pipeline=None,
+                verbose=False, partition_offset=None, partition_size=None):
         """Compiles an imported module, with a flat list of functions.
         The module is expected to be in linalg-on-tensors + scalar code form.
         Args:
@@ -64,21 +65,52 @@ class LinalgOnTensorsAirBackend(AirBackend):
             `air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE` is applied,
             then `pipeline`.
             The default is `air.backend.linalg_on_tensors.LINALG_MEMREF_TO_AIR_PIPELINE`
+          partition_offset: default location for generated partitions
+          partition_size: default size for generated partitions
         Returns:
           An opaque, backend specific compiled artifact object that can be
           passed to `load`.
         """
+
+        if partition_offset is None:
+            partition_offset = [1,1]
+
+        if partition_size is None:
+            partition_size = [8, 8]
 
         if pipeline is None:
             pipeline = LINALG_MEMREF_TO_AIR_PIPELINE
 
         with air.mlir.ir.Context():
             air_module = air.mlir.ir.Module.parse(str(imported_module))
-            pm = air.mlir.passmanager.PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
+            pm = air.mlir.passmanager.PassManager.parse(
+                air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
+
+            if verbose:
+                print("Running MLIR pass pipeline: ",
+                      air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
+
             pm.run(air_module)
+
+            if verbose:
+                print("Running MLIR pass pipeline: ", pipeline)
+
             pm = air.mlir.passmanager.PassManager.parse(pipeline)
             pm.run(air_module)
-            aircc.run(air_module,['--shared', '-o', 'torch.mlir.so', '-row-offset=2', '-col-offset=7', 'torch.mlir'] + (['-v'] if verbose else []))
+
+            if verbose:
+                print("AIR Module:")
+                print(air_module)
+
+            aircc_options = ['torch.mlir', '--shared', '-o', 'torch.mlir.so',
+                             f"-row-offset={partition_offset[0]}",
+                             f"-col-offset={partition_offset[1]}"]
+
+            if verbose:
+                aircc_options = aircc_options + ['-v']
+
+            aircc.run(air_module,aircc_options)
+
             with open('air_project/refback.torch.mlir') as f:
                 imported_module = torch_mlir.ir.Module.parse(f.read(),imported_module.context)
 

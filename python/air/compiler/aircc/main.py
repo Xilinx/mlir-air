@@ -250,23 +250,31 @@ def run(mlir_module, args):
 
 def run_flow(opts):
     thispath = os.path.dirname(os.path.realpath(__file__))
-    air_to_aie_pass = '-air-to-aie=emit-while-loop=false'
-    air_to_aie_pass = air_to_aie_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
-    air_to_aie_pass = air_to_aie_pass + f' output-prefix={opts.tmpdir}/'
-    
+
+    _,air_mlir_filename = os.path.split(opts.air_mlir_file)
+    air_place = opts.tmpdir+'/placed.'+air_mlir_filename
+    air_place_pass = f'-air-place-herds=' + \
+                     f'num-rows={opts.num_rows} ' + \
+                     f'num-cols={opts.num_cols} ' + \
+                     f'row-anchor={opts.row_offset} ' + \
+                     f'col-anchor={opts.col_offset}'
+
     do_call(['air-opt', opts.air_mlir_file,
              '-air-pipeline-to-affine=lowering-type=getput', '-canonicalize', '-cse',
-             '-air-renumber-dma', air_to_aie_pass, '-o', '/dev/null'])
+             '-air-renumber-dma', air_place_pass, '-o', air_place])
+
+    air_to_aie_pass = '-air-to-aie=emit-while-loop=false emit-herd-lock=true'
+    air_to_aie_pass = air_to_aie_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
+    air_to_aie_pass = air_to_aie_pass + f' output-prefix={opts.tmpdir}/'
+
+    do_call(['air-opt', air_place, air_to_aie_pass, '-o', '/dev/null'])
 
     air_to_airrt_pass = '-air-to-aie=emit-while-loop=false'
     air_to_airrt_pass = air_to_airrt_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
-    air_to_airrt_pass = air_to_airrt_pass + f' output-prefix={opts.tmpdir}/'
+    air_to_airrt_pass = air_to_airrt_pass + f' output-prefix=/dev/null'
 
-    _,air_mlir_filename = os.path.split(opts.air_mlir_file)
     aie_ctrl_airrt = opts.tmpdir+'/airrt.'+air_mlir_filename
-    do_call(['air-opt', opts.air_mlir_file,
-            '-air-pipeline-to-affine=lowering-type=getput', '-canonicalize', '-cse',
-            '-air-renumber-dma', air_to_airrt_pass,
+    do_call(['air-opt', air_place, air_to_airrt_pass,
             '-convert-vector-to-llvm', '-convert-math-to-llvm', '--lower-affine', '-air-to-std',
             '-air-lower-linalg-tensors', '-canonicalize', '-cse',
             '-o', aie_ctrl_airrt])
