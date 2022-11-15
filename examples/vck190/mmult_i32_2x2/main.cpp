@@ -6,23 +6,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "air_host.h"
+
 #include <cassert>
-#include <cmath>
 #include <cstdio>
-#include <cstring>
 #include <dlfcn.h>
-#include <fcntl.h>
 #include <stdlib.h>
-#include <sys/mman.h>
 #include <sys/time.h>
-#include <thread>
-#include <unistd.h>
 #include <vector>
 
-#include "air.hpp"
-#include "test_library.h"
-
 #define PROFILE 0
+
 namespace {
 
 template <typename T>
