@@ -1087,6 +1087,43 @@ public:
   }
 };
 
+class CallOpConversion : public OpConversionPattern<func::CallOp> {
+public:
+  using OpConversionPattern<func::CallOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(func::CallOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    SmallVector<Type> retTys;
+    if (typeConverter->convertTypes(op.getResultTypes(), retTys).failed())
+      return failure();
+
+    auto callee = adaptor.getCallee();
+    if (callee.starts_with("__airrt_"))
+      return failure();
+
+    auto module = op->getParentOfType<ModuleOp>();
+    auto sym = module.lookupSymbol(callee);
+    if (!sym)
+      return failure();
+
+    auto funcOp = dyn_cast<func::FuncOp>(sym);
+    if (!funcOp)
+      return failure();
+
+    if (retTys.size() == 0 && funcOp.isExternal()) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    auto callOp = rewriter.create<func::CallOp>(
+        op->getLoc(), adaptor.getCallee(), retTys, adaptor.getOperands());
+    rewriter.replaceOp(op, callOp.getResults());
+    return success();
+  }
+};
+
 class AIRRtToLLVM : public AIRRtToLLVMBase<AIRRtToLLVM> {
 
 public:
@@ -1132,7 +1169,7 @@ public:
                  L1AllocOpConversion, L1AffineLoadOpConversion,
                  L1AffineStoreOpConversion, L1MemRefLoadOpConversion,
                  L1MemRefStoreOpConversion, L1DeallocOpConversion,
-                 WaitAllOpConversion>(converter, context);
+                 WaitAllOpConversion, CallOpConversion>(converter, context);
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(patterns,
                                                                    converter);
 
@@ -1180,6 +1217,20 @@ public:
       return converter.isSignatureLegal(op.getFunctionType());
     });
 
+    target.addDynamicallyLegalOp<func::CallOp>([&](func::CallOp op) {
+      for (auto t : op.getOperandTypes()) {
+        if (auto mty = t.dyn_cast<MemRefType>())
+          if (mty.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1)
+            return false;
+      }
+      for (auto t : op.getResultTypes()) {
+        if (auto mty = t.dyn_cast<MemRefType>())
+          if (mty.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1)
+            return false;
+      }
+      return true;
+    });
+
     target.addDynamicallyLegalOp<scf::ForOp>([&](scf::ForOp op) {
       for (auto o : op.getRegionIterArgs()) {
         if (o.getType().isa<xilinx::airrt::EventType>())
@@ -1209,8 +1260,16 @@ public:
       signalPassFailure();
     }
 
-    for (auto func : module.getOps<func::FuncOp>())
-      func->setAttr("llvm.emit_c_interface", UnitAttr::get(func.getContext()));
+    SmallVector<func::FuncOp> erased_extern;
+    for (auto func : module.getOps<func::FuncOp>()) {
+      if (func.isExternal() && func.symbolKnownUseEmpty(module))
+        erased_extern.push_back(func);
+      else
+        func->setAttr("llvm.emit_c_interface",
+                      UnitAttr::get(func.getContext()));
+    }
+    for (auto e : erased_extern)
+      e.erase();
   }
 
 private:
