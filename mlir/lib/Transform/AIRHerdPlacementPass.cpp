@@ -45,14 +45,21 @@ namespace {
 class Herd {
 
 public:
-  Herd(int32_t numRows, int32_t numCols, uint32_t number, std::string name)
-      : numRows(numRows), numCols(numCols), number(number), name(name) {
+  Herd(air::HerdOp herd, int32_t numRows, int32_t numCols, uint32_t number)
+      : herdOp(herd), numRows(numRows), numCols(numCols), number(number) {
     size = numRows * numCols;
   }
 
+  HerdOp getHerdOp() const { return herdOp; }
   int32_t getNumRows() const { return numRows; }
   int32_t getNumCols() const { return numCols; }
-  std::string getName() const { return name; }
+  std::string getName() const {
+    std::string name = "herd";
+    if (auto attr =
+            herdOp->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+      name = attr.getValue().str();
+    return name;
+  }
   uint32_t getNumber() const { return number; }
   int32_t getLocX() const { return locX; }
   int32_t getLocY() const { return locY; }
@@ -62,28 +69,21 @@ public:
   void setLocY(int32_t y) { locY = y; }
 
   void printHerd() const {
-    llvm::outs() << "name: " << name << ", numRows: " << numRows
+    llvm::outs() << "name: " << getName() << ", numRows: " << numRows
                  << ", number: " << number << ", numCols: " << numCols
                  << ", x_loc: " << locX << ", y_loc: " << locY
                  << ", size: " << size << "\n";
   }
 
 private:
+  air::HerdOp herdOp;
   int32_t numRows;
   int32_t numCols;
   uint32_t number;
-  std::string name;
   int32_t size;
 
   int32_t locX = -1;
   int32_t locY = -1;
-};
-
-struct HerdComparision {
-  inline bool operator()(const std::unique_ptr<Herd> &l,
-                         const std::unique_ptr<Herd> &r) {
-    return l->getSize() > r->getSize();
-  }
 };
 
 class Partition {
@@ -172,44 +172,92 @@ public:
       llvm::errs() << "Ensure all input parameters are greater than zero.\n";
       return;
     }
+
     auto module = getOperation();
 
-    OpBuilder module_builder(module);
-
-    // Number of the current herd
-    uint32_t number = 0;
-    std::vector<std::unique_ptr<Herd>> unplacedHerds;
-    std::vector<xilinx::air::HerdOp> herdOps;
-    for (auto f : module.getOps<func::FuncOp>()) {
-      f.walk([&](Operation *op) {
-        if (auto herd = dyn_cast<xilinx::air::HerdOp>(op)) {
-          herdOps.push_back(herd);
-          std::string name = "herd";
-          if (auto attr = herd->getAttrOfType<StringAttr>(
-                  SymbolTable::getSymbolAttrName()))
-            name = attr.getValue().str();
-
-          int64_t herd_size_x = herd.getNumCols();
-          int64_t herd_size_y = herd.getNumRows();
-
-          std::unique_ptr<Herd> herdPtr =
-              std::make_unique<Herd>(herd_size_y, herd_size_x, number, name);
-          unplacedHerds.push_back(std::move(herdPtr));
-
-          number++;
-        }
+    // Place herds in partitions
+    module.walk([&](air::PartitionOp part) {
+      std::vector<std::unique_ptr<Herd>> partitionHerds;
+      part.walk([&](air::HerdOp herd) {
+        auto herd_size_x = herd.getNumCols();
+        auto herd_size_y = herd.getNumRows();
+        auto number = partitionHerds.size();
+        auto herdPtr =
+            std::make_unique<Herd>(herd, herd_size_y, herd_size_x, number);
+        partitionHerds.push_back(std::move(herdPtr));
       });
-    }
-    std::unique_ptr<Partition> partition = std::make_unique<Partition>(
-        clNumRows, clNumCols, clAnchorPointRow, clAnchorPointCol);
-    std::sort(unplacedHerds.begin(), unplacedHerds.end(), HerdComparision());
+
+      // If the size and offset attributes of the partition op are set then use
+      // them. Otherwise use the values from the command line.
+      auto num_rows_op = part.getNumRows();
+      auto num_cols_op = part.getNumCols();
+      auto row_offset_op = part.getRowOffset();
+      auto col_offset_op = part.getColOffset();
+
+      auto num_rows = num_rows_op ? *num_rows_op : clNumRows;
+      auto num_cols = num_cols_op ? *num_cols_op : clNumCols;
+      auto row_offset = row_offset_op ? *row_offset_op : clAnchorPointRow;
+      auto col_offset = col_offset_op ? *col_offset_op : clAnchorPointCol;
+      auto partition = std::make_unique<Partition>(num_rows, num_cols,
+                                                   row_offset, col_offset);
+      placeHerdsInPartition(partitionHerds, partition);
+
+      auto intTy = IntegerType::get(part->getContext(), 64);
+      part->setAttr(part.getRowOffsetAttrName(),
+                    IntegerAttr::get(intTy, row_offset));
+      part->setAttr(part.getColOffsetAttrName(),
+                    IntegerAttr::get(intTy, col_offset));
+      part->setAttr(part.getNumRowsAttrName(),
+                    IntegerAttr::get(intTy, num_rows));
+      part->setAttr(part.getNumColsAttrName(),
+                    IntegerAttr::get(intTy, num_cols));
+    });
+
+    module.walk([&](func::FuncOp f) {
+      // Place herds not in partitions
+      std::unique_ptr<Partition> partition = std::make_unique<Partition>(
+          clNumRows, clNumCols, clAnchorPointRow, clAnchorPointCol);
+
+      std::vector<std::unique_ptr<Herd>> unplacedHerds;
+      f.walk([&](air::HerdOp herd) {
+        if (herd->getParentOfType<air::PartitionOp>())
+          return;
+
+        // Any pre-placed herds are assumed to be outside if the area being used
+        // by the placement pass.
+        if (herd.getRowOffset() && herd.getColOffset())
+          return;
+
+        auto herd_size_x = herd.getNumCols();
+        auto herd_size_y = herd.getNumRows();
+        auto number = unplacedHerds.size();
+        std::unique_ptr<Herd> herdPtr =
+            std::make_unique<Herd>(herd, herd_size_y, herd_size_x, number);
+        unplacedHerds.push_back(std::move(herdPtr));
+      });
+
+      placeHerdsInPartition(unplacedHerds, partition);
+    });
+    return;
+  }
+
+private:
+  void placeHerdsInPartition(std::vector<std::unique_ptr<Herd>> &unplacedHerds,
+                             std::unique_ptr<Partition> &partition) {
+
+    std::sort(
+        unplacedHerds.begin(), unplacedHerds.end(),
+        [](const std::unique_ptr<Herd> &l, const std::unique_ptr<Herd> &r) {
+          return l->getSize() > r->getSize();
+        });
+
     std::vector<std::unique_ptr<Herd>> placedHerds;
     naivePlacement(partition, unplacedHerds, placedHerds);
 
     if (unplacedHerds.size() != 0) {
-      module.emitError("No valid placement found.");
+      getOperation().emitError("No valid placement found.");
       for (uint32_t i = 0; i < unplacedHerds.size(); i++) {
-        herdOps[unplacedHerds[i]->getNumber()]->emitOpError("\nUnplaced herd: ")
+        unplacedHerds[i]->getHerdOp()->emitOpError("\nUnplaced herd: ")
             << unplacedHerds[i]->getName() << "\n";
       }
       return;
@@ -218,24 +266,19 @@ public:
     auto xLocName = xilinx::air::HerdOp::getColOffsetAttrName();
     auto yLocName = xilinx::air::HerdOp::getRowOffsetAttrName();
 
-    for (uint32_t i = 0; i < herdOps.size(); i++) {
-
-      int32_t herdIndex = placedHerds[i]->getNumber();
-      herdOps[herdIndex]->setAttr(
+    for (auto &herd : placedHerds) {
+      auto herdOp = herd->getHerdOp();
+      herdOp->setAttr(
           yLocName,
-          IntegerAttr::get(
-              IntegerType::get(herdOps[herdIndex]->getContext(), 64),
-              placedHerds[i]->getLocY() + partition->getAnchorPointRow()));
-      herdOps[herdIndex]->setAttr(
+          IntegerAttr::get(IntegerType::get(herdOp->getContext(), 64),
+                           herd->getLocY() + partition->getAnchorPointRow()));
+      herdOp->setAttr(
           xLocName,
-          IntegerAttr::get(
-              IntegerType::get(herdOps[herdIndex]->getContext(), 64),
-              placedHerds[i]->getLocX() + partition->getAnchorPointCol()));
+          IntegerAttr::get(IntegerType::get(herdOp->getContext(), 64),
+                           herd->getLocX() + partition->getAnchorPointCol()));
     }
-    return;
   }
 
-private:
   // Performs placement, trying to place the first herd on the anchor point
   // first, moving from left -> right, up a row, then left -> right again. Will
   // try to place each remaining unplaced herd in each open partition tile.

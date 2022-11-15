@@ -90,34 +90,43 @@ def run(mlir_module, args):
       print('created temporary directory', tmpdirname)
 
   with mlir_module.context as ctx:
-    m = Module.parse(str(mlir_module))
-    air_to_aie_pass = 'air-to-aie{emit-while-loop=false'
-    air_to_aie_pass = air_to_aie_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
-    air_to_aie_pass = air_to_aie_pass + f' output-prefix={opts.tmpdir}/' + '}'
+    _,air_mlir_filename = os.path.split(opts.air_mlir_file)
+    air_place_pass = 'air-place-herds{' + \
+                     f'num-rows={opts.num_rows} ' + \
+                     f'num-cols={opts.num_cols} ' + \
+                     f'row-anchor={opts.row_offset} ' + \
+                     f'col-anchor={opts.col_offset}' + '}'
 
+    air_placed = opts.tmpdir+'/placed.'+air_mlir_filename
     pass_pipeline = ','.join([
       'air-pipeline-to-affine{lowering-type=getput}',
       'canonicalize', 'cse',
       'func.func(air-renumber-dma)',
       'func.func(convert-linalg-to-loops)',
+      air_place_pass
+    ])
+    air_placed_module = Module.parse(str(mlir_module))
+    run_passes(pass_pipeline, air_placed_module, opts, air_placed)
+
+    air_to_aie_pass = 'air-to-aie{emit-while-loop=false'
+    air_to_aie_pass = air_to_aie_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
+    air_to_aie_pass = air_to_aie_pass + f' output-prefix={opts.tmpdir}/' + '}'
+    pass_pipeline = ','.join([
       air_to_aie_pass
     ])
-    run_passes(pass_pipeline, Module.parse(str(m)), opts)
+    run_passes(pass_pipeline, Module.parse(str(air_placed_module)), opts)
 
     air_to_airrt_pass = 'air-to-aie{emit-while-loop=true'
     air_to_airrt_pass = air_to_airrt_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
-    air_to_airrt_pass = air_to_airrt_pass + f' output-prefix={opts.tmpdir}/' + '}'
+    air_to_airrt_pass = air_to_airrt_pass + f' output-prefix=/dev/null' + '}'
 
-    _,air_mlir_filename = os.path.split(opts.air_mlir_file)
     air_mlir_filename = "torch.mlir"
 
     # lower the airrt control program to llvm dialect
 
+    airrt_module = Module.parse(str(air_placed_module))
     aie_ctrl_airrt = opts.tmpdir+'/airrt.'+air_mlir_filename
     pass_pipeline = ','.join([
-      'air-pipeline-to-affine{lowering-type=getput}',
-      'canonicalize', 'cse',
-      'func.func(air-renumber-dma)',
       air_to_airrt_pass,
       'convert-vector-to-llvm',
       'convert-math-to-llvm',
@@ -126,7 +135,7 @@ def run(mlir_module, args):
       'air-lower-linalg-tensors',
       'canonicalize', 'cse'
     ])
-    run_passes(pass_pipeline, mlir_module, opts, aie_ctrl_airrt)
+    run_passes(pass_pipeline, airrt_module, opts, aie_ctrl_airrt)
 
     aie_ctrl = opts.tmpdir+'/aie_ctrl.'+air_mlir_filename
     pass_pipeline = ','.join([
@@ -134,13 +143,10 @@ def run(mlir_module, args):
       'func-bufferize',
       'func.func(finalizing-bufferize)'
     ])
-    run_passes(pass_pipeline, mlir_module, opts, aie_ctrl)
+    run_passes(pass_pipeline, airrt_module, opts, aie_ctrl)
 
     aie_ctrl_refback = opts.tmpdir+'/refback.'+air_mlir_filename
     pass_pipeline = ','.join([
-      'air-pipeline-to-affine{lowering-type=getput}',
-      'canonicalize', 'cse',
-      'func.func(air-renumber-dma)',
       'convert-vector-to-llvm',
       'convert-math-to-llvm',
       'lower-affine',
@@ -150,7 +156,7 @@ def run(mlir_module, args):
       'airrt-to-llvm',
       'canonicalize','cse'
     ])
-    run_passes(pass_pipeline, Module.parse(str(m)), opts, aie_ctrl_refback)
+    run_passes(pass_pipeline, Module.parse(str(air_placed_module)), opts, aie_ctrl_refback)
 
     aie_ctrl_llvm = opts.tmpdir+'/llvm.'+air_mlir_filename
     pass_pipeline = ','.join([
@@ -162,7 +168,7 @@ def run(mlir_module, args):
       'convert-cf-to-llvm',
       'canonicalize','cse'
     ])
-    run_passes(pass_pipeline, mlir_module, opts, aie_ctrl_llvm)
+    run_passes(pass_pipeline, airrt_module, opts, aie_ctrl_llvm)
 
     # compile the llvm dialect into a .o object file
 
@@ -250,23 +256,31 @@ def run(mlir_module, args):
 
 def run_flow(opts):
     thispath = os.path.dirname(os.path.realpath(__file__))
+
+    _,air_mlir_filename = os.path.split(opts.air_mlir_file)
+    air_place = opts.tmpdir+'/placed.'+air_mlir_filename
+    air_place_pass = f'-air-place-herds=' + \
+                     f'num-rows={opts.num_rows} ' + \
+                     f'num-cols={opts.num_cols} ' + \
+                     f'row-anchor={opts.row_offset} ' + \
+                     f'col-anchor={opts.col_offset}'
+
+    do_call(['air-opt', opts.air_mlir_file,
+             '-air-pipeline-to-affine=lowering-type=getput', '-canonicalize', '-cse',
+             '-air-renumber-dma', air_place_pass, '-o', air_place])
+
     air_to_aie_pass = '-air-to-aie=emit-while-loop=false'
     air_to_aie_pass = air_to_aie_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
     air_to_aie_pass = air_to_aie_pass + f' output-prefix={opts.tmpdir}/'
-    
-    do_call(['air-opt', opts.air_mlir_file,
-             '-air-pipeline-to-affine=lowering-type=getput', '-canonicalize', '-cse',
-             '-air-renumber-dma', air_to_aie_pass, '-o', '/dev/null'])
+
+    do_call(['air-opt', air_place, air_to_aie_pass, '-o', '/dev/null'])
 
     air_to_airrt_pass = '-air-to-aie=emit-while-loop=false'
     air_to_airrt_pass = air_to_airrt_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
-    air_to_airrt_pass = air_to_airrt_pass + f' output-prefix={opts.tmpdir}/'
+    air_to_airrt_pass = air_to_airrt_pass + f' output-prefix=/dev/null'
 
-    _,air_mlir_filename = os.path.split(opts.air_mlir_file)
     aie_ctrl_airrt = opts.tmpdir+'/airrt.'+air_mlir_filename
-    do_call(['air-opt', opts.air_mlir_file,
-            '-air-pipeline-to-affine=lowering-type=getput', '-canonicalize', '-cse',
-            '-air-renumber-dma', air_to_airrt_pass,
+    do_call(['air-opt', air_place, air_to_airrt_pass,
             '-convert-vector-to-llvm', '-convert-math-to-llvm', '--lower-affine', '-air-to-std',
             '-air-lower-linalg-tensors', '-canonicalize', '-cse',
             '-o', aie_ctrl_airrt])
