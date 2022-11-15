@@ -73,7 +73,7 @@ class LinalgOnTensorsAirBackend(AirBackend):
         """
 
         if partition_offset is None:
-            partition_offset = [2, 2]
+            partition_offset = [7, 2]
 
         if partition_size is None:
             partition_size = [10, 6]

@@ -33,7 +33,7 @@ def parse_args(args=None):
             help='Default row offset for generated partitions')
     parser.add_argument('-col-offset',
             dest="col_offset",
-            default=2,
+            default=7,
             help='Default column offset for generated partitions')
     parser.add_argument('-num-rows',
             dest="num_rows",
