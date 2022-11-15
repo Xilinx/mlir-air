@@ -212,7 +212,8 @@ def run(mlir_module, args):
               ['--host-target', opts.host_target if opts.host_target else aiecc_target] +
               ['--tmpdir', aiecc_dir] +
               ['--aie-generate-xaiev2'] +
-              ['--no-xbridge', '--no-xchesscc', aiecc_file])
+              ['--xbridge'] if opts.xbridge else ['--no-xbridge'] +
+              ['--no-xchesscc', aiecc_file])
 
       inc_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.inc'
       cpp_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.cpp'
@@ -334,7 +335,8 @@ def run_flow(opts):
               ['--host-target', opts.host_target if opts.host_target else aiecc_target] +
               ['--tmpdir', aiecc_dir] +
               ['--aie-generate-xaiev2'] +
-              ['--no-xbridge', '--no-xchesscc', aiecc_file])
+              ['--xbridge' if opts.xbridge else '--no-xbridge'] +
+              ['--no-xchesscc', aiecc_file])
 
       inc_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.inc'
       cpp_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.cpp'
@@ -347,6 +349,8 @@ def run_flow(opts):
 
       cmd = [opts.cc, '-std=c++11', '-g']
       cmd += ['--sysroot=%s' % opts.sysroot] if opts.sysroot else []
+      if opts.sysroot and 'aarch64-linux-gnu' in opts.host_target:
+        cmd += ['--gcc-toolchain=%s/usr' % opts.sysroot]
       cmd += ['--target=%s' % opts.host_target] if opts.host_target else []
       cmd += ['-I.', f'-I{opts.sysroot}/opt/xaienginev2/include']
       cmd += [f'-I{thispath}/../../../../runtime_lib/airhost/include']
