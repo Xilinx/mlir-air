@@ -6,14 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "air_host.h"
+
 #include <cassert>
 #include <cstdio>
 #include <dlfcn.h>
 #include <stdlib.h>
 #include <sys/time.h>
 #include <vector>
-
-#include "air_host.h"
 
 #define PROFILE 0
 

@@ -4,7 +4,7 @@
 
 include ../config.make
 
-all: herd.exe
+all: main.exe
 
 %.exe: %.o test_library.o mmult.air.a
 	$(CC) $(LDFLAGS) -o $@ $< test_library.o -Wl,--whole-archive mmult.air.a -Wl,--no-whole-archive -lm

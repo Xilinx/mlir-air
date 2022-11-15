@@ -4,7 +4,7 @@
 
 include ../config.make
 
-all: herd.exe
+all: main.exe
 
 %.o: %.cpp
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -33,7 +33,7 @@ mmult.air.mlir: mmult.linalg-memrefs.mlir
 			-convert-linalg-to-affine-loops
 
 mmult.air.a: mmult.air.mlir
-	aircc.py -v -o $@ --sysroot=${SYSROOT} $<
+	aircc.py -o $@ --sysroot=${SYSROOT} $<
 
 clean::
 	rm -rf air_project mmult.*mlir* *.elf *.exe *.o *.a
