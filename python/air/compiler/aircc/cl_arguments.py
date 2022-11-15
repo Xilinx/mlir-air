@@ -60,6 +60,11 @@ def parse_args(args=None):
             default=False,
             action='store_true',
             help='Generate a shared library (.so) instead of the default of a static library (.a)')
+    parser.add_argument('-xbridge',
+            dest="xbridge",
+            default=False,
+            action='store_true',
+            help='pass --xbridge to aiecc, otherwise pass --no-xbridge')
 
     opts = parser.parse_args(args)
     return opts
