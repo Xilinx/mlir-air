@@ -1564,6 +1564,16 @@ struct DmaToChannelPass : public DmaToChannelBase<DmaToChannelPass> {
           // Rebuild loop-carried dependency in scf loop nest
           depTracer.reconnectLoopCarriedDependencyFromOp(op);
 
+          // Trace dependency of external put/get within scf loop
+          depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(sink_op_memref_reads, dyn_cast<air::AsyncOpInterface>(channel_op.getOperation()),
+                                    "RAW");
+          depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(sink_op_memref_writes, dyn_cast<air::AsyncOpInterface>(channel_op.getOperation()),
+                                    "WAW/WAR");
+          // Detect tile index deps
+          depTracer.traceTileIndices(sink_op_memref_reads, sink_op_memref_writes,
+                           sink_op_scalar_ins, sink_op_scalar_outs,
+                           dyn_cast<air::AsyncOpInterface>(channel_op.getOperation()));
+
         }
       }
     });

@@ -1708,7 +1708,6 @@ void dependencyTracer::getPartialMemrefFromOp(Operation * sink_op, SmallVector<p
 
 // Add dependency edge
 void dependencyTracer::addDependencyBetweenOps(Operation * source, Operation * sink){
-  assert(!(dyn_cast<air::ChannelInterface>(source) && dyn_cast<air::ChannelInterface>(sink)));
   auto async_sink = dyn_cast<air::AsyncOpInterface>(sink);
   assert(async_sink && "sink op has no async interface");
   if (source->getBlock() == sink->getBlock() && source->isBeforeInBlock(sink)) {
@@ -1868,6 +1867,49 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation * op){
     reconnectLoopCarriedDependencyFromOp(parent);
   }
   else return;
+}
+
+// Trace tile index deps
+void dependencyTracer::traceTileIndices(SmallVector<partialMemref, 1> read_operands,
+                      SmallVector<partialMemref, 1> write_operands,
+                      SmallVector<Value, 1> in_scalars,
+                      SmallVector<Value, 1> out_scalars, air::AsyncOpInterface sink_air_op) {
+  for (auto operand : read_operands) {
+    for (unsigned i = 0; i < operand.numDims; i++) {
+      pushTileIndexAsDep(operand.memrefIndices[i], sink_air_op);
+    }
+  }
+  for (auto operand : write_operands) {
+    for (unsigned i = 0; i < operand.numDims; i++) {
+      pushTileIndexAsDep(operand.memrefIndices[i], sink_air_op);
+    }
+  }
+  for (auto scalar : in_scalars) {
+    pushTileIndexAsDep(scalar, sink_air_op);
+  }
+  for (auto scalar : out_scalars) {
+    pushTileIndexAsDep(scalar, sink_air_op);
+  }
+}
+
+// Add tile index deps to op
+void dependencyTracer::pushTileIndexAsDep(mlir::Value tile_index, air::AsyncOpInterface op) {
+  if (tile_index != nullptr) {
+    // If tile_index is not a nullptr
+    // If created by async_region
+    if (auto defop = tile_index.getDefiningOp<air::ExecuteOp>()) {
+      addAsyncDependencyIfNew(op, defop.getResult(0));
+    }
+    // If created by hierarchy (as loop iter)
+    else if (auto hier = dyn_cast<air::HierarchyInterface>(
+                  tile_index.getParentRegion()->getParentOp())) {
+      for (auto id : hier.getIds()) {
+        if (id == tile_index) {
+          addAsyncDependencyIfNew(op, tile_index);
+        }
+      }
+    }
+  }
 }
 
 } // namespace air

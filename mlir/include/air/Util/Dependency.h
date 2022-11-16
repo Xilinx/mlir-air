@@ -270,6 +270,12 @@ public:
 
   // Recursively reconnect loop-carried dependency in scf loop nest
   void reconnectLoopCarriedDependencyFromOp(Operation * op);
+  
+  // Trace tile index deps
+  void traceTileIndices(SmallVector<partialMemref, 1> read_operands,
+                        SmallVector<partialMemref, 1> write_operands,
+                        SmallVector<Value, 1> in_scalars,
+                        SmallVector<Value, 1> out_scalars, air::AsyncOpInterface sink_air_op);
 
 private:
 
@@ -299,6 +305,9 @@ private:
 
   // Add dependency edge
   void addDependencyBetweenOps(Operation * source, Operation * sink);
+
+  // Add tile index deps to op
+  void pushTileIndexAsDep(mlir::Value tile_index, air::AsyncOpInterface op);
 
   };
 
