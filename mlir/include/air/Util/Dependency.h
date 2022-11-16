@@ -54,6 +54,8 @@ void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op,
 Value getLoopCarriedTokenFromScfOp(scf::ParallelOp op);
 Value getLoopCarriedTokenFromScfOp(scf::ForOp op, std::string operand_or_argument = "operand");
 void addAsyncDependencyIfNew(air::AsyncOpInterface op, Value token);
+std::string getMemorySpaceAsString(Value memref);
+air::ChannelGetOp getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put);
 
 //===----------------------------------------------------------------------===//
 // Dependency graph parsed as a Boost graph object
