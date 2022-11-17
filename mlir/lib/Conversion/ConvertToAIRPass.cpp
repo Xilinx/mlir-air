@@ -241,36 +241,6 @@ static scf::ParallelOp hoistHerdToAsyncParallel(OpBuilder builder, Location loc,
   return scf_par;
 }
 
-static scf::ForOp hoistPartitionToAsyncFor(OpBuilder builder, Location loc, MLIRContext * ctx, air::PartitionOp partition, scf::ForOp scf_for){
-  
-  auto lb = builder.clone(*(scf_for.getLowerBound().getDefiningOp()))->getResult(0);
-  auto ub = builder.clone(*(scf_for.getUpperBound().getDefiningOp()))->getResult(0);
-  auto step = builder.clone(*(scf_for.getStep().getDefiningOp()))->getResult(0);
-
-  auto wa_op = builder.create<xilinx::air::WaitAllOp>(
-      loc, air::AsyncTokenType::get(ctx),
-      SmallVector<Value, 1>{});
-  SmallVector<Value, 1> deps_in{wa_op.getAsyncToken()};
-  scf::ForOp new_loop_op = builder.create<scf::ForOp>(
-            loc, lb, ub, step, deps_in);
-
-  builder.setInsertionPointToEnd(new_loop_op.getBody());
-  auto wa_yield_op = builder.create<air::WaitAllOp>(builder.getUnknownLoc(), air::AsyncTokenType::get(ctx),
-                              SmallVector<Value, 1>{}); 
-  SmallVector<Value, 1> yield_token;
-  yield_token.push_back(wa_yield_op.getAsyncToken());
-  wa_yield_op->setAttr("air.channel",
-                      StringAttr::get(ctx, "dep"));
-  builder.create<scf::YieldOp>(builder.getUnknownLoc(), yield_token);
-
-  new_loop_op->setAttr("air.channel",
-                    StringAttr::get(ctx, "inner"));
-  new_loop_op->setAttr("loop-carried-dep",
-                    StringAttr::get(ctx, "hoistedLoop"));
-  
-  return new_loop_op;
-}
-
 static void updateUsesInScfFor(OpBuilder builder, scf::ForOp new_loop_op, scf::ForOp loop_op){
   auto insertionCheckpoint = builder.saveInsertionPoint();
   // Splice the operations inside loop op
@@ -321,28 +291,6 @@ static void updateUsesInScfFor(OpBuilder builder, scf::ForOp new_loop_op, scf::F
   builder.restoreInsertionPoint(insertionCheckpoint);
 }
 
-void cloneForUsingRemap(OpBuilder builder, BlockAndValueMapping remap, scf::ForOp loop_op){
-  SmallVector<Value, 1> remap_iter_operands;
-  for (auto iter_operand : loop_op.getIterOperands()){
-    remap_iter_operands.push_back(remap.lookupOrDefault(iter_operand));
-  }
-  scf::ForOp new_loop_op = builder.create<scf::ForOp>(
-            builder.getUnknownLoc(), remap.lookupOrDefault(loop_op.getLowerBound()), remap.lookupOrDefault(loop_op.getUpperBound()),
-            remap.lookupOrDefault(loop_op.getStep()), remap_iter_operands);
-  auto insertionCheckpoint = builder.saveInsertionPoint();
-  builder.setInsertionPointToStart(new_loop_op.getBody());
-  for (Operation &for_child_op : loop_op.getBody()->getOperations()){
-    if (for_child_op.hasAttr("air.channel")){
-      builder.clone(for_child_op, remap);
-    }
-  }
-  // Re-establish uses after hoisting
-  updateUsesInScfFor(builder, new_loop_op, loop_op);
-
-  new_loop_op->setAttr("air.channel", StringAttr::get(loop_op->getContext(), "dep"));
-  builder.restoreInsertionPoint(insertionCheckpoint);
-}
-
 scf::YieldOp generateYieldOpFromChannelOp(OpBuilder builder, MLIRContext * ctx, scf::ForOp scf_for){
   auto insertionCheckpoint = builder.saveInsertionPoint();
   builder.setInsertionPointToEnd(scf_for.getBody());
@@ -372,6 +320,38 @@ scf::YieldOp generateYieldOpFromChannelOp(OpBuilder builder, MLIRContext * ctx, 
   scf::YieldOp output = builder.create<scf::YieldOp>(builder.getUnknownLoc(), yield_token);
   builder.restoreInsertionPoint(insertionCheckpoint);
   return output;
+}
+
+scf::ForOp cloneForUsingRemap(OpBuilder builder, BlockAndValueMapping remap, scf::ForOp loop_op){
+  SmallVector<Value, 1> remap_iter_operands;
+  for (auto iter_operand : loop_op.getIterOperands()){
+    remap_iter_operands.push_back(remap.lookupOrDefault(iter_operand));
+  }
+  scf::ForOp new_loop_op = builder.create<scf::ForOp>(
+            builder.getUnknownLoc(), remap.lookupOrDefault(loop_op.getLowerBound()), remap.lookupOrDefault(loop_op.getUpperBound()),
+            remap.lookupOrDefault(loop_op.getStep()), remap_iter_operands);
+  auto insertionCheckpoint = builder.saveInsertionPoint();
+  builder.setInsertionPointToStart(new_loop_op.getBody());
+  for (Operation &for_child_op : loop_op.getBody()->getOperations()){
+    if (for_child_op.hasAttr("air.channel")){
+      builder.clone(for_child_op, remap);
+    }
+  }
+  // Re-establish uses after hoisting
+  updateUsesInScfFor(builder, new_loop_op, loop_op);
+
+  new_loop_op->setAttr("air.channel", StringAttr::get(loop_op->getContext(), "inner"));
+  new_loop_op->setAttr("loop-carried-dep",
+                    StringAttr::get(loop_op->getContext(), "hoistedLoop"));
+
+  // Generate yield op if async for
+  if (remap_iter_operands.size()){
+    generateYieldOpFromChannelOp(builder, loop_op->getContext(), new_loop_op);
+  }
+
+  builder.restoreInsertionPoint(insertionCheckpoint);
+
+  return new_loop_op;
 }
 
 class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
@@ -775,21 +755,15 @@ class AIRDmaToAIRChannelConversion
 
       // Hoist hierarchy op into scf op
       Operation * scf_loop = nullptr;
-      scf::ForOp old_scf_for = nullptr; // To keep a record of the original for loop in partition
+      mlir::OpBuilder::InsertPoint insertionPointAtHierOp; // To keep a record of the insertion point as destination for hoisting
       rewriter.setInsertionPoint(hier_op);
       if (herd){
         scf::ParallelOp scf_par = hoistHerdToAsyncParallel(rewriter, loc, ctx, herd);
         scf_loop = scf_par.getOperation();
       }
       else if (partition){
-        for (auto child_for_op : partition.getRegion().front().getOps<scf::ForOp>()){
-          if (child_for_op->isProperAncestor(op)){
-            // Found scf for loop between partition and op
-            scf::ForOp scf_for = hoistPartitionToAsyncFor(rewriter, loc, ctx, partition, child_for_op);
-            scf_loop = scf_for.getOperation();
-            old_scf_for = child_for_op;
-          }
-        }
+        // Since partition doesn't have iteration space, it doesn't hoist a loop
+        insertionPointAtHierOp = rewriter.saveInsertionPoint();
       }
 
       for (auto b : backwardSlice) {
@@ -800,7 +774,7 @@ class AIRDmaToAIRChannelConversion
         }
       }
 
-      if (scf_loop && herd){
+      if (herd){
         auto scf_par = dyn_cast<scf::ParallelOp>(scf_loop);
         // Get mapping for remapped ssa values entering the hoisted scf.parallel
         BlockAndValueMapping remap;
@@ -825,50 +799,27 @@ class AIRDmaToAIRChannelConversion
             rewriter.clone(o, remap);
           }
         }
-
-        // Reconnect for loop-carried dependency to scf.yield
-        scf_par.walk([&](mlir::Operation *o) {
-          if (auto child_for_op = dyn_cast<scf::ForOp>(o)){
-            if (child_for_op->getNumResults()){ // Found async for loop
-              generateYieldOpFromChannelOp(rewriter, ctx, child_for_op);
-            }
-          }
-        });
       }
-      else if (scf_loop && partition){
-        auto scf_for = dyn_cast<scf::ForOp>(scf_loop);
+      else if (partition){
         // Get mapping for remapped ssa values entering the hoisted scf.for
         BlockAndValueMapping remap;
         int arg_idx = 0;
         for (auto arg : partition.getKernelArguments())
           remap.map(arg, partition.getKernelOperand(arg_idx++));
 
-        // Clone ops into hoisted scf.for
-        rewriter.setInsertionPointToStart(scf_for.getBody());
-        partition.walk([&](mlir::Operation * o) {
+        // Hoist ops
+        rewriter.restoreInsertionPoint(insertionPointAtHierOp);
+        for (Operation &o : partition->getRegions().front().getBlocks().front().getOperations()) {
           if (isa<air::PartitionTerminatorOp>(o))
-            return;
-          if (o->hasAttr("air.channel") && dyn_cast<scf::ForOp>(o)){
-            if (o->getParentOp() != partition){ // Skip the hoisted scf for loop
-              cloneForUsingRemap(rewriter, remap, dyn_cast<scf::ForOp>(o));
-            }
+            continue;
+          if (o.hasAttr("air.channel") && dyn_cast<scf::ForOp>(o)){
+            auto scf_for = cloneForUsingRemap(rewriter, remap, dyn_cast<scf::ForOp>(o));
+            scf_loop = scf_for.getOperation();
           }
-          else if (o->hasAttr("air.channel")){
-            rewriter.clone(*o, remap);
+          else if (o.hasAttr("air.channel")){
+            rewriter.clone(o, remap);
           }
-        });
-        // Re-establish uses after hoisting
-        updateUsesInScfFor(rewriter, scf_for, old_scf_for);
-
-        // Reconnect for loop-carried dependency to scf.yield
-        scf_loop->walk([&](scf::ForOp child_for_op) {
-          if (child_for_op != scf_loop && child_for_op->getNumResults()){
-            generateYieldOpFromChannelOp(rewriter, ctx, child_for_op);
-          }
-        });
-      }
-      else if (!scf_loop) {
-        // TODO: if air.dma op comes without scf loop as parent
+        }
       }
 
       if (scf_loop){
@@ -1512,6 +1463,7 @@ struct DmaToChannelPass : public DmaToChannelBase<DmaToChannelPass> {
     for (auto f : funcOps) {
       f.walk([&](Operation *op) {
         op->removeAttr("loop-carried-dep");
+        op->removeAttr("air.channel");
       });
     }
   }
