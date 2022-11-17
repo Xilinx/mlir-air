@@ -26,7 +26,6 @@ echo "script Path $script_path"
 . $script_path/env_config
 [[ $? != 0 ]] && exit -1
 
-ASSIGN="-device vfio-pci"
 
 # enable VFIO driver to bind to our device(s)
 for devid in "${devids[@]}"; do
@@ -43,10 +42,14 @@ for bdf in ${bdfs[*]}; do
 
 		# bind to VFIO driver
 		echo $bdf > /sys/bus/pci/drivers/vfio-pci/bind
-	fi
 
-	# add device assignment to QEMU command line
-	ASSIGN+=",host=$bdf_nodomain"
+		if [[ -z $ASSIGN ]]; then
+			ASSIGN="-device vfio-pci"
+		fi
+
+		# add device assignment to QEMU command line
+		ASSIGN+=",host=$bdf_nodomain"
+	fi
 done
 
 
@@ -69,6 +72,8 @@ done
 
 # unbind the device(s) from VFIO to allow the host to find them again
 for bdf in ${bdfs[*]}; do
-	echo "Unbinding $bdf"
-	echo $bdf > /sys/bus/pci/devices/$bdf/driver/unbind
+	if [[ -e /sys/bus/pci/devices/$bdf/driver/unbind ]]; then
+		echo "Unbinding $bdf"
+		echo $bdf > /sys/bus/pci/devices/$bdf/driver/unbind
+	fi
 done
