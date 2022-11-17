@@ -33,43 +33,38 @@
 ##===----------------------------------------------------------------------===##
 
 if [ "$#" -lt 5 ]; then
-    echo "ERROR: Needs at least 4 arguments for <sysroot dir>, <llvm dir>, "
-	echo "<cmakeModules dir> and <mlir-aie dir>."
+    echo "ERROR: Needs at least 5 arguments for <sysroot dir>, <llvm dir>, "
+    echo "<cmakeModules dir> and <mlir-aie dir>."
     exit 1
 fi
-SYSROOT_DIR=$1
-GCC_VER=$2
-LLVM_DIR=$3
-CMAKEMODULES_DIR=$4
+
+CMAKE_TOOLCHAIN_FILE=$1
+CMAKE_SYSROOT=$2
+CMAKEMODULES_DIR=$3
+LLVM_DIR=$4
 MLIR_AIE_DIR=$5
 
 MLIR_AIR_DIR=${6:-"mlir-air"}
-BUILD_DIR=${7:-"build"}
-INSTALL_DIR=${8:-"install"}
+BUILD_DIR=${7:-"build-aarch64"}
+INSTALL_DIR=${8:-"install-aarch64"}
 
 mkdir -p $MLIR_AIR_DIR/$BUILD_DIR
 mkdir -p $MLIR_AIR_DIR/$INSTALL_DIR
 cd $MLIR_AIR_DIR/$BUILD_DIR
 
-PYTHON_ROOT=`pip3 show pybind11 | grep Location | awk '{print $2}'`
-
 cmake .. \
-	-GNinja \
-	-DCMAKE_INSTALL_PREFIX=../${INSTALL_DIR} \
-	-DCMAKE_TOOLCHAIN_FILE_OPT=${CMAKEMODULES_DIR}/toolchain_clang_crosscomp_arm_petalinux.cmake \
-    -DSysroot=${SYSROOT_DIR} \
-    -DArch=arm64 \
-    -DgccVer=${GCC_VER} \
-	-DCMAKE_USE_TOOLCHAIN=FALSE \
-	-DCMAKE_USE_TOOLCHAIN_AIRHOST=TRUE \
-	-DLLVM_DIR=${LLVM_DIR}/build/lib/cmake/llvm \
-	-DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \
-	-DAIE_DIR=${MLIR_AIE_DIR}/build/lib/cmake/aie \
-	-Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
-	-DBUILD_SHARED_LIBS=OFF \
-	-DLLVM_USE_LINKER=lld \
-	-DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
-	|& tee cmake.log
+    -GNinja \
+    -DAIE_DIR=${MLIR_AIE_DIR}/build-aarch64/lib/cmake/aie \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=../${INSTALL_DIR} \
+    -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR} \
+    -DCMAKE_SYSROOT=${CMAKE_SYSROOT} \
+    -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE} \
+    -DCMAKE_USE_TOOLCHAIN_AIRHOST=TRUE \
+    -DLLVM_DIR=${LLVM_DIR}/build-aarch64/lib/cmake/llvm \
+    -DMLIR_DIR=${LLVM_DIR}/build-aarch64/lib/cmake/mlir \
+    |& tee cmake.log
 
 ninja |& tee ninja.log
 ninja install |& tee ninja-install.log

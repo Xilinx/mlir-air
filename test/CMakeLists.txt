@@ -23,7 +23,6 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 
 find_package(MLIR REQUIRED CONFIG)
-find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 
 find_package(LibXAIE)
 get_filename_component(XILINX_XAIE_LIB_DIR ${XILINX_XAIE_LIBS} DIRECTORY)
