@@ -47,14 +47,6 @@ def CopyToDma : Pass<"air-copy-to-dma", "ModuleOp"> {
   }];
 }
 
-def CopyToChannel : Pass<"air-copy-to-channel", "ModuleOp"> {
-  let summary = "Convert memcpy to air.channel";
-  let constructor = "xilinx::air::createCopyToChannelPass()";
-  let description =  [{
-    Convert memcpy to air.channel
-  }];
-}
-
 def DmaToChannel : Pass<"air-dma-to-channel", "ModuleOp"> {
   let summary = "Convert air.dma_memcpy_nd to air.channel";
   let constructor = "xilinx::air::createDmaToChannelPass()";
