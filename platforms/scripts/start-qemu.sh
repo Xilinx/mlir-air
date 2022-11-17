@@ -59,16 +59,32 @@ else
 	NIC="-net nic,model=virtio -net user"
 fi
 
+echo "guest $GUEST"
 # run QEMU
-$QEMU_PATH/qemu-system-x86_64 \
-	-machine q35,kernel-irqchip=split \
-	-m 1G \
-	-nographic \
-	-kernel $IMAGE_PATH/bzImage \
-	-drive file=$IMAGE_PATH/rootfs.ext2,if=virtio,format=raw \
-	-append "rootwait root=/dev/vda console=tty1 console=ttyS0" \
-	$ASSIGN  \
-	$NIC
+if [[ $GUEST == "buildroot" ]]; then
+	# force buildroot to use virtio
+	NIC="-net nic,model=virtio -net user"
+
+	$QEMU_PATH/qemu-system-x86_64 \
+		-machine q35,kernel-irqchip=split \
+		-m 1G \
+		-nographic \
+		-kernel $IMAGE_PATH/bzImage \
+		-drive file=$IMAGE_PATH/rootfs.ext2,if=virtio,format=raw \
+		-append "rootwait root=/dev/vda console=tty1 console=ttyS0" \
+		$ASSIGN  \
+		$NIC
+else
+	echo "Using ubuntu guest"
+	VM_IMAGE="-drive file=$IMAGE_PATH/ubuntu-20.04.qcow2,if=virtio,format=qcow2"
+	$QEMU_PATH/qemu-system-x86_64 \
+		-machine q35,kernel-irqchip=split \
+		-m 1G \
+		-nographic \
+		$VM_IMAGE \
+		$ASSIGN  \
+		$NIC
+fi
 
 # unregister the device IDs from VFIO
 for devid in "${devids[@]}"; do
