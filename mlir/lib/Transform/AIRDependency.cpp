@@ -1008,7 +1008,7 @@ private:
     // Check memref deps
     if (auto defop = operand.getDefiningOp<air::ExecuteOp>()) {
       if (foundAsyncOpUsesAboveCurrentLine(&defop)) {
-        addNewAsyncDepToGraph<T>(defop.getResult(0), op);
+        addAsyncDepToGraphIfNew<T>(defop.getResult(0), op);
       }
     }
   }
@@ -1020,7 +1020,7 @@ private:
       // If created by async_region
       if (auto defop = tile_index.getDefiningOp<air::ExecuteOp>()) {
         if (foundAsyncOpUsesAboveCurrentLine(&defop)) {
-          addNewAsyncDepToGraph<T>(defop.getResult(0), op);
+          addAsyncDepToGraphIfNew<T>(defop.getResult(0), op);
         }
       }
       // If created by hierarchy (as loop iter)
@@ -1028,7 +1028,7 @@ private:
                    tile_index.getParentRegion()->getParentOp())) {
         for (auto id : hier.getIds()) {
           if (id == tile_index) {
-            addNewAsyncDepToGraph<T>(tile_index, op);
+            addAsyncDepToGraphIfNew<T>(tile_index, op);
           }
         }
       }
@@ -1152,26 +1152,32 @@ private:
           if (rw == 'r') {
             if (u.is(dma.getSrcMemref())) {
               if (tile == nullptr) {
-                addNewAsyncDepToGraph<T>(dma.getOperation()->getResult(0), op);
+                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0),
+                                           op);
               } else if (areEqualIndexPartialMemrefs(tile, &dma_src))
-                addNewAsyncDepToGraph<T>(dma.getOperation()->getResult(0), op);
+                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0),
+                                           op);
             }
           } else if (rw == 'w') {
             if (u.is(dma.getDstMemref())) {
               if (tile == nullptr) {
-                addNewAsyncDepToGraph<T>(dma.getOperation()->getResult(0), op);
+                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0),
+                                           op);
               } else if (areEqualIndexPartialMemrefs(tile, &dma_dst))
-                addNewAsyncDepToGraph<T>(dma.getOperation()->getResult(0), op);
+                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0),
+                                           op);
             }
           } else {
             if (tile == nullptr) {
-              addNewAsyncDepToGraph<T>(dma.getOperation()->getResult(0), op);
+              addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0), op);
             } else if (u.is(dma.getDstMemref())) {
               if (areEqualIndexPartialMemrefs(tile, &dma_dst))
-                addNewAsyncDepToGraph<T>(dma.getOperation()->getResult(0), op);
+                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0),
+                                           op);
             } else if (u.is(dma.getSrcMemref())) {
               if (areEqualIndexPartialMemrefs(tile, &dma_src))
-                addNewAsyncDepToGraph<T>(dma.getOperation()->getResult(0), op);
+                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0),
+                                           op);
             }
           }
         }
@@ -1204,20 +1210,20 @@ private:
             if (rw == 'r') {
               if (u.is(channel_put.getSrcMemref())) {
                 if (tile == nullptr) {
-                  addNewAsyncDepToGraph<T>(
+                  addAsyncDepToGraphIfNew<T>(
                       channel_put.getOperation()->getResult(0), op);
                 } else if (areEqualIndexPartialMemrefs(tile, &channel_put_src))
-                  addNewAsyncDepToGraph<T>(
+                  addAsyncDepToGraphIfNew<T>(
                       channel_put.getOperation()->getResult(0), op);
               }
             } else if (rw == 'w') {
             } else {
               if (tile == nullptr) {
-                addNewAsyncDepToGraph<T>(
+                addAsyncDepToGraphIfNew<T>(
                     channel_put.getOperation()->getResult(0), op);
               } else if (u.is(channel_put.getSrcMemref())) {
                 if (areEqualIndexPartialMemrefs(tile, &channel_put_src))
-                  addNewAsyncDepToGraph<T>(
+                  addAsyncDepToGraphIfNew<T>(
                       channel_put.getOperation()->getResult(0), op);
               }
             }
@@ -1244,19 +1250,19 @@ private:
             } else if (rw == 'w') {
               if (u.is(channel_get.getDstMemref())) {
                 if (tile == nullptr) {
-                  addNewAsyncDepToGraph<T>(
+                  addAsyncDepToGraphIfNew<T>(
                       channel_get.getOperation()->getResult(0), op);
                 } else if (areEqualIndexPartialMemrefs(tile, &channel_get_dst))
-                  addNewAsyncDepToGraph<T>(
+                  addAsyncDepToGraphIfNew<T>(
                       channel_get.getOperation()->getResult(0), op);
               }
             } else {
               if (tile == nullptr) {
-                addNewAsyncDepToGraph<T>(
+                addAsyncDepToGraphIfNew<T>(
                     channel_get.getOperation()->getResult(0), op);
               } else if (u.is(channel_get.getDstMemref())) {
                 if (areEqualIndexPartialMemrefs(tile, &channel_get_dst))
-                  addNewAsyncDepToGraph<T>(
+                  addAsyncDepToGraphIfNew<T>(
                       channel_get.getOperation()->getResult(0), op);
               }
             }
@@ -1273,14 +1279,14 @@ private:
             if (rw == 'r') {
               if (u.getOperandNumber() <
                   linalgop.getNumDpsInputs() + linalgop.getNumDpsInits())
-                addNewAsyncDepToGraph<T>(ar.getResult(0), op);
+                addAsyncDepToGraphIfNew<T>(ar.getResult(0), op);
             } else if (rw == 'w') {
               if (u.getOperandNumber() >= linalgop.getNumDpsInputs() &&
                   u.getOperandNumber() - linalgop.getNumDpsInputs() <
                       linalgop.getNumDpsInits())
-                addNewAsyncDepToGraph<T>(ar.getResult(0), op);
+                addAsyncDepToGraphIfNew<T>(ar.getResult(0), op);
             } else {
-              addNewAsyncDepToGraph<T>(ar.getResult(0), op);
+              addAsyncDepToGraphIfNew<T>(ar.getResult(0), op);
             }
           }
         }
@@ -1299,7 +1305,7 @@ private:
               auto child_op = hier.getKernelArgument(hier_argument_id);
               char rw_check = checkOperandReadOrWrite(child_op);
               if (rw == 'n' || rw_check == rw) {
-                addNewAsyncDepToGraph<T>(hier->getResult(0), op);
+                addAsyncDepToGraphIfNew<T>(hier->getResult(0), op);
               }
             }
           }
@@ -1312,7 +1318,7 @@ private:
         if (auto ar =
                 dyn_cast<xilinx::air::ExecuteOp>(unknownop->getParentOp())) {
           if (foundAsyncOpUsesAboveCurrentLine(&ar)) {
-            addNewAsyncDepToGraph<T>(ar.getResult(0), op);
+            addAsyncDepToGraphIfNew<T>(ar.getResult(0), op);
           }
         }
       }
@@ -1982,7 +1988,7 @@ private:
       assert(false && "Operation has no async interface");
   }
 
-  template <typename T> void addNewAsyncDepToGraph(Value dep, T op) {
+  template <typename T> void addAsyncDepToGraphIfNew(Value dep, T op) {
     if (auto async_op =
             mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op.getOperation())) {
       for (auto old_dep : async_op.getAsyncDependencies())

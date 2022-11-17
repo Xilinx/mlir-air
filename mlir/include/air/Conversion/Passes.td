@@ -55,6 +55,14 @@ def CopyToChannel : Pass<"air-copy-to-channel", "ModuleOp"> {
   }];
 }
 
+def DmaToChannel : Pass<"air-dma-to-channel", "ModuleOp"> {
+  let summary = "Convert air.dma_memcpy_nd to air.channel";
+  let constructor = "xilinx::air::createDmaToChannelPass()";
+  let description =  [{
+    Convert air.dma_memcpy_nd to air.channel
+  }];
+}
+
 def AIRToCpu : Pass<"air-to-cpu", "ModuleOp"> {
   let summary = "AIR dialect lowering";
   let constructor = "xilinx::air::createAIRToCpuPass()";

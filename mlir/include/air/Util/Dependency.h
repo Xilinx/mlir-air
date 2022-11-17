@@ -51,6 +51,12 @@ void traceDependentInductionVar(air::AsyncOpInterface async_op,
                                 std::vector<Operation *> &op_history);
 void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op,
                                      Value token);
+Value getLoopCarriedTokenFromScfOp(scf::ParallelOp op);
+Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
+                                   std::string operand_or_argument = "operand");
+void addAsyncDependencyIfNew(air::AsyncOpInterface op, Value token);
+std::string getMemorySpaceAsString(Value memref);
+air::ChannelGetOp getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put);
 
 //===----------------------------------------------------------------------===//
 // Dependency graph parsed as a Boost graph object
@@ -218,6 +224,95 @@ private:
                                     vertex_to_vertex_map &tr_to_g);
   void purgeAIRDepList(dependencyGraph &graph);
   void fillAIRDepListUsingGraphTR(dependencyGraph &graph);
+};
+
+//===----------------------------------------------------------------------===//
+// Dependency tracing
+//===----------------------------------------------------------------------===//
+
+struct partialMemref {
+  Value memrefValue;
+  unsigned numDims;
+  SmallVector<Value, 2> memrefIndices;
+};
+
+class dependencyTracer {
+
+public:
+  // Get partial memref tiles from op
+  void
+  getPartialMemrefFromOp(Operation *sink_op,
+                         SmallVector<partialMemref, 1> &sink_op_memref_reads,
+                         SmallVector<partialMemref, 1> &sink_op_memref_writes,
+                         SmallVector<Value, 1> &sink_op_scalar_ins,
+                         SmallVector<Value, 1> &sink_op_scalar_outs);
+
+  // Trace dependency from op
+  template <typename T>
+  void traceDependencyFromOp(SmallVector<partialMemref, 1> operands,
+                             T sink_air_op, std::string dep_type) {
+
+    char dep_tracing_mode = 'n';
+    if (dep_type == "RAW")
+      dep_tracing_mode = 'w';
+    else if (dep_type == "WAW/WAR")
+      dep_tracing_mode = 'n';
+    else
+      assert(false && "Unknown dependency type");
+
+    // Detect deps
+    for (auto operand : operands) {
+      // Trace the defining op of sink op, RAW
+      traceDefiningOpAsDep<T>(operand.memrefValue, sink_air_op);
+
+      // If sink op and operand's use are under the same scope
+      auto async_op =
+          dyn_cast<air::AsyncOpInterface>(sink_air_op.getOperation());
+      pushDepsAtCurrentScope(operand.memrefValue, async_op, dep_tracing_mode,
+                             &operand);
+    }
+  }
+
+  // Recursively reconnect loop-carried dependency in scf loop nest
+  void reconnectLoopCarriedDependencyFromOp(Operation *op);
+
+  // Trace tile index deps
+  void traceTileIndices(SmallVector<partialMemref, 1> read_operands,
+                        SmallVector<partialMemref, 1> write_operands,
+                        SmallVector<Value, 1> in_scalars,
+                        SmallVector<Value, 1> out_scalars,
+                        air::AsyncOpInterface sink_air_op);
+
+private:
+  // Trace the defining op of sink op, RAW
+  template <typename T> void traceDefiningOpAsDep(Value operand, T op) {
+    // Check memref deps
+    if (auto defop = operand.getDefiningOp<air::ExecuteOp>()) {
+      // addNewAsyncDepToGraph<T>(defop.getResult(0), op);
+      op.addAsyncDependency(defop.getAsyncToken());
+    }
+  }
+
+  // If sink op and operand's use are under the same scope
+  void pushDepsAtCurrentScope(mlir::Value operand, air::AsyncOpInterface op,
+                              char rw = 'n', partialMemref *tile = nullptr);
+
+  // Create partial memref
+  partialMemref createPartialMemref(mlir::Value memrefValue, unsigned numDims);
+  partialMemref createPartialMemref(mlir::Value memrefValue, unsigned numDims,
+                                    SmallVector<Value, 2> memrefIndices);
+
+  // Check if two partial memref tiles have identical indices
+  bool areEqualIndexPartialMemrefs(partialMemref *tile_0,
+                                   partialMemref *tile_1);
+
+  char checkOperandReadOrWrite(mlir::Value operand);
+
+  // Add dependency edge
+  void addDependencyBetweenOps(Operation *source, Operation *sink);
+
+  // Add tile index deps to op
+  void pushTileIndexAsDep(mlir::Value tile_index, air::AsyncOpInterface op);
 };
 
 } // namespace air
