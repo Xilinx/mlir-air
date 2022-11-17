@@ -38,8 +38,6 @@ set(PEANO_INSTALL_DIR "<unset>" CACHE STRING "Location of Peano compiler")
 
 include(ExternalProject)
 
-find_package(Python3 3.8 EXACT COMPONENTS Interpreter Development)
-
 find_package(MLIR REQUIRED CONFIG)
 find_package(AIE REQUIRED)
 find_package(LibXAIE)
@@ -79,7 +77,7 @@ include(AddMLIR)
 include(HandleLLVMOptions)
 
 # setup python
-
+find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 include(MLIRDetectPythonEnv)
 mlir_detect_pybind11_install()
 find_package(pybind11 2.6 REQUIRED)
