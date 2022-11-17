@@ -12,16 +12,15 @@
 # look like:
 #
 # cross-build-mlir-aie.sh <toolchain file> <sysroot dir> <cmakeModules dir>
-#     <llvm dir> <mlir-aie dir> <build dir> <install dir>
+#     <llvm dir> <install dir> <mlir-aie dir> <build dir>
 #
 # <toolchain file> - absolute path to cmake toolchain file
-# <sysroot dir> - sysroot, absolute directory 
-# <cmakeModules dir> - cmakeModules, absolute directory 
-#                      (usually cmakeModules/cmakeModulesXilinx)
-# <llvm dir>    - llvm location, absolute directory
-# <mlir-aie dir> - optional, mlir-aie repo name, default is 'mlir-aie'
-# <build dir>    - optional, mlir-aie/build dir name, default is 'build'
-# <install dir>  - optional, mlir-aie/install dir name, default is 'install'
+# <sysroot dir> - sysroot, absolute directory
+# <cmakeModules dir> - cmakeModules, absolute directory
+# <llvm dir>     - llvm location, absolute directory
+# <install dir>  - optional, default is 'install-aarch64'
+# <mlir-aie dir> - optional, default is 'mlir-aie'
+# <build dir>    - optional, default is '<mlir-aie dir>/build-aarch64'
 #
 ##===----------------------------------------------------------------------===##
 
@@ -36,18 +35,21 @@ CMAKE_SYSROOT=$2
 CMAKEMODULES_DIR=$3
 LLVM_DIR=$4
 
-MLIR_AIE_DIR=${5:-"mlir-aie"}
-BUILD_DIR=${6:-"build-aarch64"}
-INSTALL_DIR=${7:-"install-aarch64"}
+INSTALL_DIR=${6:-"install-aarch64"}
+MLIR_AIE_DIR=${7:-"mlir-aie"}
+BUILD_DIR=${8:-"${MLIR_AIE_DIR}/build-aarch64"}
 
-mkdir -p $MLIR_AIE_DIR/$BUILD_DIR
-mkdir -p $MLIR_AIE_DIR/$INSTALL_DIR
-cd $MLIR_AIE_DIR/$BUILD_DIR
+BUILD_DIR=`realpath ${BUILD_DIR}`
+INSTALL_DIR=`realpath ${INSTALL_DIR}`
+
+mkdir -p $BUILD_DIR
+mkdir -p $INSTALL_DIR
+cd $BUILD_DIR
 
 cmake -GNinja \
     -DBUILD_SHARED_LIBS=OFF \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX=../${INSTALL_DIR} \
+    -DCMAKE_INSTALL_PREFIX=${INSTALL_DIR} \
     -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR} \
     -DCMAKE_SYSROOT=${CMAKE_SYSROOT} \
     -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE} \
