@@ -187,11 +187,13 @@ static void extractOperandsFromSubview(memref::SubViewOp subview,
     strides.push_back(builder.create<arith::ConstantIndexOp>(loc, s));
 }
 
-static void addReduceOpToAsyncParallel(OpBuilder builder, scf::ParallelOp scf_par, MLIRContext * ctx){
-                                  
+static void addReduceOpToAsyncParallel(OpBuilder builder,
+                                       scf::ParallelOp scf_par,
+                                       MLIRContext *ctx) {
+
   builder.setInsertionPointToEnd(scf_par.getBody());
-  auto wait_all_op_yielded = builder.create<air::WaitAllOp>(scf_par.getLoc(), air::AsyncTokenType::get(ctx),
-                                  SmallVector<Value, 1>{});
+  auto wait_all_op_yielded = builder.create<air::WaitAllOp>(
+      scf_par.getLoc(), air::AsyncTokenType::get(ctx), SmallVector<Value, 1>{});
   auto reduce_op = builder.create<scf::ReduceOp>(
       scf_par.getLoc(), wait_all_op_yielded.getResult(0));
   builder.setInsertionPointToStart(&reduce_op.getRegion().front());
@@ -199,23 +201,20 @@ static void addReduceOpToAsyncParallel(OpBuilder builder, scf::ParallelOp scf_pa
   reduce_tokens.push_back(reduce_op.getRegion().front().getArgument(0));
   reduce_tokens.push_back(reduce_op.getRegion().front().getArgument(1));
   auto reduce_res = builder.create<xilinx::air::WaitAllOp>(
-      builder.getUnknownLoc(),
-      air::AsyncTokenType::get(ctx), reduce_tokens);
+      builder.getUnknownLoc(), air::AsyncTokenType::get(ctx), reduce_tokens);
   builder.create<scf::ReduceReturnOp>(builder.getUnknownLoc(),
                                       reduce_res.getResult(0));
   builder.setInsertionPointToEnd(scf_par.getBody());
   builder.create<scf::YieldOp>(scf_par.getLoc());
 
-  wait_all_op_yielded->setAttr("air.channel",
-                    StringAttr::get(ctx, "dep"));
-  reduce_op->setAttr("air.channel",
-                    StringAttr::get(ctx, "dep"));
-  reduce_res->setAttr("air.channel",
-                    StringAttr::get(ctx, "dep"));
-
+  wait_all_op_yielded->setAttr("air.channel", StringAttr::get(ctx, "dep"));
+  reduce_op->setAttr("air.channel", StringAttr::get(ctx, "dep"));
+  reduce_res->setAttr("air.channel", StringAttr::get(ctx, "dep"));
 }
 
-static scf::ParallelOp hoistHerdToAsyncParallel(OpBuilder builder, Location loc, MLIRContext * ctx, air::HerdOp herd){
+static scf::ParallelOp hoistHerdToAsyncParallel(OpBuilder builder, Location loc,
+                                                MLIRContext *ctx,
+                                                air::HerdOp herd) {
   auto herd_size = herd.getSizeOperands();
 
   auto lb = builder.create<arith::ConstantIndexOp>(loc, 0);
@@ -223,25 +222,22 @@ static scf::ParallelOp hoistHerdToAsyncParallel(OpBuilder builder, Location loc,
   SmallVector<Value, 2> lbs{lb, lb};
   SmallVector<Value, 2> ubs{herd_size[0], herd_size[1]};
   SmallVector<Value, 2> steps{step, step};
-  
+
   auto wa_op = builder.create<xilinx::air::WaitAllOp>(
-      loc, air::AsyncTokenType::get(ctx),
-      SmallVector<Value, 1>{});
+      loc, air::AsyncTokenType::get(ctx), SmallVector<Value, 1>{});
   SmallVector<Value, 1> deps_in{wa_op.getAsyncToken()};
-  auto scf_par = builder.create<scf::ParallelOp>(
-      loc, lbs, ubs, steps, deps_in);
+  auto scf_par = builder.create<scf::ParallelOp>(loc, lbs, ubs, steps, deps_in);
 
   addReduceOpToAsyncParallel(builder, scf_par, ctx);
 
-  scf_par->setAttr("air.channel",
-                    StringAttr::get(ctx, "inner"));
-  scf_par->setAttr("loop-carried-dep",
-                    StringAttr::get(ctx, "hoistedLoop"));
-  
+  scf_par->setAttr("air.channel", StringAttr::get(ctx, "inner"));
+  scf_par->setAttr("loop-carried-dep", StringAttr::get(ctx, "hoistedLoop"));
+
   return scf_par;
 }
 
-static void updateUsesInScfFor(OpBuilder builder, scf::ForOp new_loop_op, scf::ForOp loop_op){
+static void updateUsesInScfFor(OpBuilder builder, scf::ForOp new_loop_op,
+                               scf::ForOp loop_op) {
   auto insertionCheckpoint = builder.saveInsertionPoint();
   // Splice the operations inside loop op
   SmallVector<Value, 4> incoming_tokens;
@@ -268,84 +264,90 @@ static void updateUsesInScfFor(OpBuilder builder, scf::ForOp new_loop_op, scf::F
 
   auto iv = loop_op.getInductionVar();
   replaceAllUsesInRegionWith(iv, new_loop_op.getInductionVar(),
-                              new_loop_op.getRegion());
-  if (loop_op.getRegionIterArgs().size()){
-    for (unsigned i = 0; i < loop_op.getRegionIterArgs().size(); i++){
+                             new_loop_op.getRegion());
+  if (loop_op.getRegionIterArgs().size()) {
+    for (unsigned i = 0; i < loop_op.getRegionIterArgs().size(); i++) {
       auto ia = loop_op.getRegionIterArgs()[i];
       replaceAllUsesInRegionWith(ia, new_loop_op.getRegionIterArgs()[i],
-                                  new_loop_op.getRegion());
+                                 new_loop_op.getRegion());
     }
   }
   builder.setInsertionPointToStart(new_loop_op.getBody());
   for (auto c : constants) {
-    replaceAllUsesInRegionWith(
-        c, builder.clone(*c.getDefiningOp())->getResult(0),
-        new_loop_op.getRegion());
+    replaceAllUsesInRegionWith(c,
+                               builder.clone(*c.getDefiningOp())->getResult(0),
+                               new_loop_op.getRegion());
   }
 
   for (Value v : incoming_tokens) {
     replaceAllUsesInRegionWith(v, new_loop_op.getRegionIterArgs()[0],
-                              new_loop_op.getRegion());
+                               new_loop_op.getRegion());
   }
 
   builder.restoreInsertionPoint(insertionCheckpoint);
 }
 
-scf::YieldOp generateYieldOpFromChannelOp(OpBuilder builder, MLIRContext * ctx, scf::ForOp scf_for){
+scf::YieldOp generateYieldOpFromChannelOp(OpBuilder builder, MLIRContext *ctx,
+                                          scf::ForOp scf_for) {
   auto insertionCheckpoint = builder.saveInsertionPoint();
   builder.setInsertionPointToEnd(scf_for.getBody());
   SmallVector<air::ChannelInterface, 1> channel_ops;
-  for (auto channel_op : scf_for.getOps<air::ChannelInterface>()){
-    if (channel_op->hasAttr("air.channel")){
+  for (auto channel_op : scf_for.getOps<air::ChannelInterface>()) {
+    if (channel_op->hasAttr("air.channel")) {
       channel_ops.push_back(channel_op);
     }
   }
-  assert(channel_ops.size() <= 1 && "found multiple channel ops in one hoisted for loop");
+  assert(channel_ops.size() <= 1 &&
+         "found multiple channel ops in one hoisted for loop");
   SmallVector<Value, 1> yield_token;
-  if (channel_ops.size()){
-    assert(channel_ops[0]->getResult(0) && "found sync channel op in async for loop");
-    auto wa_op = builder.create<air::WaitAllOp>(builder.getUnknownLoc(), air::AsyncTokenType::get(ctx),
-                                SmallVector<Value, 1>{channel_ops[0]->getResult(0)});  
+  if (channel_ops.size()) {
+    assert(channel_ops[0]->getResult(0) &&
+           "found sync channel op in async for loop");
+    auto wa_op = builder.create<air::WaitAllOp>(
+        builder.getUnknownLoc(), air::AsyncTokenType::get(ctx),
+        SmallVector<Value, 1>{channel_ops[0]->getResult(0)});
     yield_token.push_back(wa_op.getAsyncToken());
-    wa_op->setAttr("air.channel",
-                        StringAttr::get(ctx, "dep"));
-  }
-  else {
-    auto wa_op = builder.create<air::WaitAllOp>(builder.getUnknownLoc(), air::AsyncTokenType::get(ctx),
-                                SmallVector<Value, 1>{});
+    wa_op->setAttr("air.channel", StringAttr::get(ctx, "dep"));
+  } else {
+    auto wa_op = builder.create<air::WaitAllOp>(builder.getUnknownLoc(),
+                                                air::AsyncTokenType::get(ctx),
+                                                SmallVector<Value, 1>{});
     yield_token.push_back(wa_op.getAsyncToken());
-    wa_op->setAttr("air.channel",
-                        StringAttr::get(ctx, "dep"));
+    wa_op->setAttr("air.channel", StringAttr::get(ctx, "dep"));
   }
-  scf::YieldOp output = builder.create<scf::YieldOp>(builder.getUnknownLoc(), yield_token);
+  scf::YieldOp output =
+      builder.create<scf::YieldOp>(builder.getUnknownLoc(), yield_token);
   builder.restoreInsertionPoint(insertionCheckpoint);
   return output;
 }
 
-scf::ForOp cloneForUsingRemap(OpBuilder builder, BlockAndValueMapping remap, scf::ForOp loop_op){
+scf::ForOp cloneForUsingRemap(OpBuilder builder, BlockAndValueMapping remap,
+                              scf::ForOp loop_op) {
   SmallVector<Value, 1> remap_iter_operands;
-  for (auto iter_operand : loop_op.getIterOperands()){
+  for (auto iter_operand : loop_op.getIterOperands()) {
     remap_iter_operands.push_back(remap.lookupOrDefault(iter_operand));
   }
   scf::ForOp new_loop_op = builder.create<scf::ForOp>(
-            builder.getUnknownLoc(), remap.lookupOrDefault(loop_op.getLowerBound()), remap.lookupOrDefault(loop_op.getUpperBound()),
-            remap.lookupOrDefault(loop_op.getStep()), remap_iter_operands);
+      builder.getUnknownLoc(), remap.lookupOrDefault(loop_op.getLowerBound()),
+      remap.lookupOrDefault(loop_op.getUpperBound()),
+      remap.lookupOrDefault(loop_op.getStep()), remap_iter_operands);
   auto insertionCheckpoint = builder.saveInsertionPoint();
   builder.setInsertionPointToStart(new_loop_op.getBody());
-  for (Operation &for_child_op : loop_op.getBody()->getOperations()){
-    if (for_child_op.hasAttr("air.channel")){
+  for (Operation &for_child_op : loop_op.getBody()->getOperations()) {
+    if (for_child_op.hasAttr("air.channel")) {
       builder.clone(for_child_op, remap);
     }
   }
   // Re-establish uses after hoisting
   updateUsesInScfFor(builder, new_loop_op, loop_op);
 
-  new_loop_op->setAttr("air.channel", StringAttr::get(loop_op->getContext(), "inner"));
+  new_loop_op->setAttr("air.channel",
+                       StringAttr::get(loop_op->getContext(), "inner"));
   new_loop_op->setAttr("loop-carried-dep",
-                    StringAttr::get(loop_op->getContext(), "hoistedLoop"));
+                       StringAttr::get(loop_op->getContext(), "hoistedLoop"));
 
   // Generate yield op if async for
-  if (remap_iter_operands.size()){
+  if (remap_iter_operands.size()) {
     generateYieldOpFromChannelOp(builder, loop_op->getContext(), new_loop_op);
   }
 
@@ -634,15 +636,14 @@ class AIRDmaToAIRChannelConversion
     unsigned int innerMemorySpace = 0;
     auto herd = op->getParentOfType<air::HerdOp>();
     auto partition = op->getParentOfType<air::PartitionOp>();
-    if (herd){
+    if (herd) {
       hier_op = dyn_cast<air::HierarchyInterface>(herd.getOperation());
       innerMemorySpace = (int)MemorySpace::L1;
-    }
-    else if (partition){
+    } else if (partition) {
       hier_op = dyn_cast<air::HierarchyInterface>(partition.getOperation());
       innerMemorySpace = (int)MemorySpace::L2;
-    }
-    else return failure();
+    } else
+      return failure();
 
     auto rank = src_type.getShape().size();
 
@@ -653,14 +654,14 @@ class AIRDmaToAIRChannelConversion
     SmallVector<Value, 4> src_strides = op.getSrcStrides();
     SmallVector<Value, 4> dst_strides = op.getDstStrides();
 
-    if (src_offsets.size()){
+    if (src_offsets.size()) {
       if (src_sizes.size() != rank)
         return failure();
       if (src_strides.size() != rank)
         return failure();
     }
 
-    if (dst_offsets.size()){
+    if (dst_offsets.size()) {
       if (dst_sizes.size() != rank)
         return failure();
       if (dst_strides.size() != rank)
@@ -671,16 +672,16 @@ class AIRDmaToAIRChannelConversion
     SmallVector<Value, 4> internalDeps = op.getAsyncDependencies();
     // The external channel op shall inherit the loop-carried token only
     SmallVector<Value, 4> externalDeps;
-    if (op->getParentOp() && dyn_cast<scf::ForOp>(op->getParentOp())){
+    if (op->getParentOp() && dyn_cast<scf::ForOp>(op->getParentOp())) {
       auto parent_for = dyn_cast<scf::ForOp>(op->getParentOp());
-      if (parent_for.getRegionIterArgs().size()){
+      if (parent_for.getRegionIterArgs().size()) {
         externalDeps.push_back(parent_for.getRegionIterArgs()[0]);
       }
     }
 
     SmallVector<Value, 4> emptyDeps;
     SmallVector<Type, 4> tys;
-    if (auto op_token = op.getAsyncToken()){
+    if (auto op_token = op.getAsyncToken()) {
       tys.push_back(air::AsyncTokenType::get(ctx));
     }
     std::string new_cname = "channel_0";
@@ -710,27 +711,28 @@ class AIRDmaToAIRChannelConversion
     // Create channel put-get pair
     if (dst_type.getMemorySpaceAsInt() == innerMemorySpace) {
       internalGetPut = rewriter.create<air::ChannelGetOp>(
-          loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx,
-          dst, dst_offsets, dst_sizes, dst_strides);
+          loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname),
+          channel_idx, dst, dst_offsets, dst_sizes, dst_strides);
     } else {
       externalGetPut = rewriter.create<air::ChannelGetOp>(
-          loc, tys, externalDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx,
-          dst, dst_offsets, dst_sizes, dst_strides);
+          loc, tys, externalDeps, FlatSymbolRefAttr::get(ctx, cname),
+          channel_idx, dst, dst_offsets, dst_sizes, dst_strides);
     }
 
     if (src_type.getMemorySpaceAsInt() == innerMemorySpace) {
       internalGetPut = rewriter.create<air::ChannelPutOp>(
-          loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx,
-          src, src_offsets, src_sizes, src_strides);
+          loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname),
+          channel_idx, src, src_offsets, src_sizes, src_strides);
     } else {
       externalGetPut = rewriter.create<air::ChannelPutOp>(
-          loc, tys, externalDeps, FlatSymbolRefAttr::get(ctx, cname), channel_idx,
-          src, src_offsets, src_sizes, src_strides);
+          loc, tys, externalDeps, FlatSymbolRefAttr::get(ctx, cname),
+          channel_idx, src, src_offsets, src_sizes, src_strides);
     }
 
     // Replace all uses to dma token with internal put/get token
-    if (auto op_token = op.getAsyncToken()){
-      auto asyncInternalGetPut = dyn_cast<air::AsyncOpInterface>(internalGetPut);
+    if (auto op_token = op.getAsyncToken()) {
+      auto asyncInternalGetPut =
+          dyn_cast<air::AsyncOpInterface>(internalGetPut);
       op_token.replaceAllUsesWith(asyncInternalGetPut.getAsyncToken());
     }
 
@@ -739,14 +741,16 @@ class AIRDmaToAIRChannelConversion
 
       externalGetPut->setAttr("air.channel",
                               StringAttr::get(op->getContext(), "dep"));
-      externalGetPut->setAttr("loop-carried-dep",
-                              StringAttr::get(op->getContext(), "externalGetPut"));
+      externalGetPut->setAttr(
+          "loop-carried-dep",
+          StringAttr::get(op->getContext(), "externalGetPut"));
 
       SetVector<Operation *> backwardSlice;
       getBackwardSlice(externalGetPut, &backwardSlice,
                        [&](Operation *o) { return o != hier_op; });
 
-      for (auto parent = op->getParentOp(); !isa<air::HierarchyInterface>(parent);
+      for (auto parent = op->getParentOp();
+           !isa<air::HierarchyInterface>(parent);
            parent = parent->getParentOp()) {
         getBackwardSlice(parent, &backwardSlice,
                          [&](Operation *o) { return o != hier_op; });
@@ -754,27 +758,30 @@ class AIRDmaToAIRChannelConversion
       }
 
       // Hoist hierarchy op into scf op
-      Operation * scf_loop = nullptr;
-      mlir::OpBuilder::InsertPoint insertionPointAtHierOp; // To keep a record of the insertion point as destination for hoisting
+      Operation *scf_loop = nullptr;
+      mlir::OpBuilder::InsertPoint
+          insertionPointAtHierOp; // To keep a record of the insertion point as
+                                  // destination for hoisting
       rewriter.setInsertionPoint(hier_op);
-      if (herd){
-        scf::ParallelOp scf_par = hoistHerdToAsyncParallel(rewriter, loc, ctx, herd);
+      if (herd) {
+        scf::ParallelOp scf_par =
+            hoistHerdToAsyncParallel(rewriter, loc, ctx, herd);
         scf_loop = scf_par.getOperation();
-      }
-      else if (partition){
+      } else if (partition) {
         // Since partition doesn't have iteration space, it doesn't hoist a loop
         insertionPointAtHierOp = rewriter.saveInsertionPoint();
       }
 
       for (auto b : backwardSlice) {
         b->setAttr("air.channel", StringAttr::get(op->getContext(), "dep"));
-        if (dyn_cast<air::ExecuteOp>(b)){
+        if (dyn_cast<air::ExecuteOp>(b)) {
           auto child_op = &(*b->getRegions().front().op_begin());
-          child_op->setAttr("air.channel", StringAttr::get(op->getContext(), "dep"));
+          child_op->setAttr("air.channel",
+                            StringAttr::get(op->getContext(), "dep"));
         }
       }
 
-      if (herd){
+      if (herd) {
         auto scf_par = dyn_cast<scf::ParallelOp>(scf_loop);
         // Get mapping for remapped ssa values entering the hoisted scf.parallel
         BlockAndValueMapping remap;
@@ -789,18 +796,17 @@ class AIRDmaToAIRChannelConversion
 
         // Clone ops into hoisted scf.parallel
         rewriter.setInsertionPointToStart(scf_par.getBody());
-        for (Operation &o : herd->getRegions().front().getBlocks().front().getOperations()) {
+        for (Operation &o :
+             herd->getRegions().front().getBlocks().front().getOperations()) {
           if (isa<air::HerdTerminatorOp>(o))
             continue;
-          if (o.hasAttr("air.channel") && dyn_cast<scf::ForOp>(o)){
+          if (o.hasAttr("air.channel") && dyn_cast<scf::ForOp>(o)) {
             cloneForUsingRemap(rewriter, remap, dyn_cast<scf::ForOp>(o));
-          }
-          else if (o.hasAttr("air.channel")){
+          } else if (o.hasAttr("air.channel")) {
             rewriter.clone(o, remap);
           }
         }
-      }
-      else if (partition){
+      } else if (partition) {
         // Get mapping for remapped ssa values entering the hoisted scf.for
         BlockAndValueMapping remap;
         int arg_idx = 0;
@@ -809,20 +815,24 @@ class AIRDmaToAIRChannelConversion
 
         // Hoist ops
         rewriter.restoreInsertionPoint(insertionPointAtHierOp);
-        for (Operation &o : partition->getRegions().front().getBlocks().front().getOperations()) {
+        for (Operation &o : partition->getRegions()
+                                .front()
+                                .getBlocks()
+                                .front()
+                                .getOperations()) {
           if (isa<air::PartitionTerminatorOp>(o))
             continue;
-          if (o.hasAttr("air.channel") && dyn_cast<scf::ForOp>(o)){
-            auto scf_for = cloneForUsingRemap(rewriter, remap, dyn_cast<scf::ForOp>(o));
+          if (o.hasAttr("air.channel") && dyn_cast<scf::ForOp>(o)) {
+            auto scf_for =
+                cloneForUsingRemap(rewriter, remap, dyn_cast<scf::ForOp>(o));
             scf_loop = scf_for.getOperation();
-          }
-          else if (o.hasAttr("air.channel")){
+          } else if (o.hasAttr("air.channel")) {
             rewriter.clone(o, remap);
           }
         }
       }
 
-      if (scf_loop){
+      if (scf_loop) {
         scf_loop->walk([&](mlir::Operation *o) {
           if (o == o->getBlock()->getTerminator())
             return;
@@ -847,8 +857,7 @@ class AIRDmaToAIRChannelConversion
   }
 };
 
-class AffineParToHerdConversion
-    : public OpRewritePattern<AffineParallelOp> {
+class AffineParToHerdConversion : public OpRewritePattern<AffineParallelOp> {
 public:
   using OpRewritePattern<AffineParallelOp>::OpRewritePattern;
 
@@ -965,7 +974,7 @@ public:
   using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
 
   ScfParToHerdConversion(MLIRContext *ctx,
-                               llvm::SmallSet<scf::ParallelOp, 2> &filteredOps)
+                         llvm::SmallSet<scf::ParallelOp, 2> &filteredOps)
       : OpRewritePattern(ctx), filteredOps(filteredOps){};
 
   LogicalResult matchAndRewrite(scf::ParallelOp parOp,
@@ -1054,8 +1063,9 @@ public:
       else
         args.push_back(v);
     }
-    SmallVector<Value, 2> dims{rewriter.create<arith::ConstantIndexOp>(loc, bounds[0]),
-                       rewriter.create<arith::ConstantIndexOp>(loc, bounds[1])};
+    SmallVector<Value, 2> dims{
+        rewriter.create<arith::ConstantIndexOp>(loc, bounds[0]),
+        rewriter.create<arith::ConstantIndexOp>(loc, bounds[1])};
     auto launch = rewriter.create<air::HerdOp>(op.getLoc(), dims, args);
     auto &bb = launch.getBody().front();
     auto ivs = op.getInductionVars();
@@ -1191,12 +1201,13 @@ private:
   llvm::SmallSet<scf::ParallelOp, 2> &filteredOps;
 };
 
-class ScfParToLaunchAndPartitionConversion : public OpRewritePattern<scf::ParallelOp> {
+class ScfParToLaunchAndPartitionConversion
+    : public OpRewritePattern<scf::ParallelOp> {
 public:
   using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
 
-  ScfParToLaunchAndPartitionConversion(MLIRContext *ctx,
-                           llvm::SmallSet<scf::ParallelOp, 2> &filteredOps)
+  ScfParToLaunchAndPartitionConversion(
+      MLIRContext *ctx, llvm::SmallSet<scf::ParallelOp, 2> &filteredOps)
       : OpRewritePattern(ctx), filteredOps(filteredOps){};
 
   LogicalResult matchAndRewrite(scf::ParallelOp parOp,
@@ -1268,7 +1279,8 @@ public:
     for (Value v : launch.getKernelArguments()) {
       partitionOpers.push_back(v);
     }
-    auto partition = rewriter.create<air::PartitionOp>(op.getLoc(), partitionSizes, partitionOpers);
+    auto partition = rewriter.create<air::PartitionOp>(
+        op.getLoc(), partitionSizes, partitionOpers);
     auto &bb = partition.getBody().front();
     auto ivs = op.getInductionVars();
 
@@ -1292,7 +1304,8 @@ public:
 
     int i = 0;
     auto kernel_args = partition.getKernelArguments();
-    kernel_args = kernel_args.drop_front(ivs.size() + launch.getSize().size()); // Launch's induction vars
+    kernel_args = kernel_args.drop_front(
+        ivs.size() + launch.getSize().size()); // Launch's induction vars
     for (Value v : args)
       replaceAllUsesInRegionWith(v, kernel_args[i++], partition.getRegion());
 
@@ -1458,7 +1471,7 @@ struct DmaToChannelPass : public DmaToChannelBase<DmaToChannelPass> {
     for (auto f : funcOps) {
       updateDependencyOnFunction(f);
     }
-    
+
     // Clear channel attributes
     for (auto f : funcOps) {
       f.walk([&](Operation *op) {
@@ -1468,16 +1481,20 @@ struct DmaToChannelPass : public DmaToChannelBase<DmaToChannelPass> {
     }
   }
 
-  void updateDependencyOnFunction(func::FuncOp f){
+  void updateDependencyOnFunction(func::FuncOp f) {
     dependencyTracer depTracer;
     f.walk([&](Operation *op) {
       if (auto channel_op = mlir::dyn_cast<xilinx::air::ChannelInterface>(op)) {
-        if (channel_op->getAttrOfType<StringAttr>("loop-carried-dep") && channel_op->getAttrOfType<StringAttr>("loop-carried-dep").getValue().str() == "externalGetPut"){
+        if (channel_op->getAttrOfType<StringAttr>("loop-carried-dep") &&
+            channel_op->getAttrOfType<StringAttr>("loop-carried-dep")
+                    .getValue()
+                    .str() == "externalGetPut") {
 
           // Start tracing dependency only if this put/get op is async
           auto async_op = dyn_cast<air::AsyncOpInterface>(op);
-          if (!async_op.getAsyncToken()) return;
-    
+          if (!async_op.getAsyncToken())
+            return;
+
           // Connect async dependency of external put/get scf parallel
           SmallVector<partialMemref, 1> sink_op_memref_reads;
           SmallVector<partialMemref, 1> sink_op_memref_writes;
@@ -1486,50 +1503,57 @@ struct DmaToChannelPass : public DmaToChannelBase<DmaToChannelPass> {
 
           air::WaitAllOp sink_wait_all_op = nullptr;
           for (auto parent = op->getParentOp(); !isa<func::FuncOp>(parent);
-              parent = parent->getParentOp()) {
-            if (parent->getAttrOfType<StringAttr>("loop-carried-dep") && parent->getAttrOfType<StringAttr>("loop-carried-dep").getValue().str() == "hoistedLoop"){
-              if (auto scf_par = dyn_cast<scf::ParallelOp>(parent)){
-                sink_wait_all_op = dyn_cast<air::WaitAllOp>(scf_par.getInitVals()[0].getDefiningOp());
-              }
-              else if (auto scf_for = dyn_cast<scf::ForOp>(parent)){
-                sink_wait_all_op = dyn_cast<air::WaitAllOp>(scf_for.getIterOperands()[0].getDefiningOp());
+               parent = parent->getParentOp()) {
+            if (parent->getAttrOfType<StringAttr>("loop-carried-dep") &&
+                parent->getAttrOfType<StringAttr>("loop-carried-dep")
+                        .getValue()
+                        .str() == "hoistedLoop") {
+              if (auto scf_par = dyn_cast<scf::ParallelOp>(parent)) {
+                sink_wait_all_op = dyn_cast<air::WaitAllOp>(
+                    scf_par.getInitVals()[0].getDefiningOp());
+              } else if (auto scf_for = dyn_cast<scf::ForOp>(parent)) {
+                sink_wait_all_op = dyn_cast<air::WaitAllOp>(
+                    scf_for.getIterOperands()[0].getDefiningOp());
               }
             }
-
           }
           assert(sink_wait_all_op);
 
-          depTracer.getPartialMemrefFromOp(channel_op.getOperation(), sink_op_memref_reads,
-            sink_op_memref_writes,
-            sink_op_scalar_ins,
-            sink_op_scalar_outs);
+          depTracer.getPartialMemrefFromOp(
+              channel_op.getOperation(), sink_op_memref_reads,
+              sink_op_memref_writes, sink_op_scalar_ins, sink_op_scalar_outs);
 
-          assert(sink_op_memref_reads.size() || sink_op_memref_writes.size() && "cannot read memref from channel op");
+          assert(sink_op_memref_reads.size() ||
+                 sink_op_memref_writes.size() &&
+                     "cannot read memref from channel op");
 
           // Detect RAW deps
-          depTracer.template traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_reads, sink_wait_all_op,
-                                    "RAW");
+          depTracer.template traceDependencyFromOp<air::WaitAllOp>(
+              sink_op_memref_reads, sink_wait_all_op, "RAW");
           // Detect WAW and WAR deps
-          depTracer.template traceDependencyFromOp<air::WaitAllOp>(sink_op_memref_writes, sink_wait_all_op,
-                                    "WAW/WAR");
+          depTracer.template traceDependencyFromOp<air::WaitAllOp>(
+              sink_op_memref_writes, sink_wait_all_op, "WAW/WAR");
 
           // Rebuild loop-carried dependency in scf loop nest
           depTracer.reconnectLoopCarriedDependencyFromOp(op);
 
           // Trace dependency of external put/get within scf loop
-          depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(sink_op_memref_reads, dyn_cast<air::AsyncOpInterface>(channel_op.getOperation()),
-                                    "RAW");
-          depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(sink_op_memref_writes, dyn_cast<air::AsyncOpInterface>(channel_op.getOperation()),
-                                    "WAW/WAR");
+          depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+              sink_op_memref_reads,
+              dyn_cast<air::AsyncOpInterface>(channel_op.getOperation()),
+              "RAW");
+          depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+              sink_op_memref_writes,
+              dyn_cast<air::AsyncOpInterface>(channel_op.getOperation()),
+              "WAW/WAR");
           // Detect tile index deps
-          depTracer.traceTileIndices(sink_op_memref_reads, sink_op_memref_writes,
-                           sink_op_scalar_ins, sink_op_scalar_outs,
-                           dyn_cast<air::AsyncOpInterface>(channel_op.getOperation()));
-
+          depTracer.traceTileIndices(
+              sink_op_memref_reads, sink_op_memref_writes, sink_op_scalar_ins,
+              sink_op_scalar_outs,
+              dyn_cast<air::AsyncOpInterface>(channel_op.getOperation()));
         }
       }
     });
-
   }
 };
 
@@ -1682,12 +1706,10 @@ struct ParallelToLaunchPass
     });
 
     RewritePatternSet patterns(context);
-    if (clHasPartition){
+    if (clHasPartition) {
       patterns.add<ScfParToLaunchAndPartitionConversion>(context, filteredOps);
-    }
-    else {
+    } else {
       patterns.add<ScfParToLaunchConversion>(context, filteredOps);
-  
     }
 
     ConversionTarget target(*context);

@@ -1152,26 +1152,32 @@ private:
           if (rw == 'r') {
             if (u.is(dma.getSrcMemref())) {
               if (tile == nullptr) {
-                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0), op);
+                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0),
+                                           op);
               } else if (areEqualIndexPartialMemrefs(tile, &dma_src))
-                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0), op);
+                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0),
+                                           op);
             }
           } else if (rw == 'w') {
             if (u.is(dma.getDstMemref())) {
               if (tile == nullptr) {
-                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0), op);
+                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0),
+                                           op);
               } else if (areEqualIndexPartialMemrefs(tile, &dma_dst))
-                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0), op);
+                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0),
+                                           op);
             }
           } else {
             if (tile == nullptr) {
               addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0), op);
             } else if (u.is(dma.getDstMemref())) {
               if (areEqualIndexPartialMemrefs(tile, &dma_dst))
-                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0), op);
+                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0),
+                                           op);
             } else if (u.is(dma.getSrcMemref())) {
               if (areEqualIndexPartialMemrefs(tile, &dma_src))
-                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0), op);
+                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0),
+                                           op);
             }
           }
         }
