@@ -53,6 +53,12 @@ for bdf in ${bdfs[*]}; do
 done
 
 
+if [[ $EUID == 0 ]]; then
+	NIC="-net nic -net tap,ifname=tap0"
+else
+	NIC="-net nic,model=virtio -net user"
+fi
+
 # run QEMU
 $QEMU_PATH/qemu-system-x86_64 \
 	-machine q35,kernel-irqchip=split \
@@ -62,7 +68,7 @@ $QEMU_PATH/qemu-system-x86_64 \
 	-drive file=$IMAGE_PATH/rootfs.ext2,if=virtio,format=raw \
 	-append "rootwait root=/dev/vda console=tty1 console=ttyS0" \
 	$ASSIGN  \
-	-net nic,model=virtio -net user
+	$NIC
 
 # unregister the device IDs from VFIO
 for devid in "${devids[@]}"; do
