@@ -1286,7 +1286,6 @@ struct DmaToChannelPass : public DmaToChannelBase<DmaToChannelPass> {
               }
             }
           }
-          assert(sink_wait_all_op);
 
           depTracer.getPartialMemrefFromOp(
               channel_op.getOperation(), sink_op_memref_reads,
@@ -1296,15 +1295,17 @@ struct DmaToChannelPass : public DmaToChannelBase<DmaToChannelPass> {
                  sink_op_memref_writes.size() &&
                      "cannot read memref from channel op");
 
-          // Detect RAW deps
-          depTracer.template traceDependencyFromOp<air::WaitAllOp>(
-              sink_op_memref_reads, sink_wait_all_op, "RAW");
-          // Detect WAW and WAR deps
-          depTracer.template traceDependencyFromOp<air::WaitAllOp>(
-              sink_op_memref_writes, sink_wait_all_op, "WAW/WAR");
+          if (sink_wait_all_op){
+            // Detect RAW deps
+            depTracer.template traceDependencyFromOp<air::WaitAllOp>(
+                sink_op_memref_reads, sink_wait_all_op, "RAW");
+            // Detect WAW and WAR deps
+            depTracer.template traceDependencyFromOp<air::WaitAllOp>(
+                sink_op_memref_writes, sink_wait_all_op, "WAW/WAR");
 
-          // Rebuild loop-carried dependency in scf loop nest
-          depTracer.reconnectLoopCarriedDependencyFromOp(op);
+            // Rebuild loop-carried dependency in scf loop nest
+            depTracer.reconnectLoopCarriedDependencyFromOp(op);
+          }
 
           // Trace dependency of external put/get within scf loop
           depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
