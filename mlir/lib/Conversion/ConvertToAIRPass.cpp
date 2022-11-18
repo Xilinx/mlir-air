@@ -321,7 +321,21 @@ scf::YieldOp generateYieldOpFromChannelOp(OpBuilder builder, MLIRContext *ctx,
   return output;
 }
 
-scf::ForOp cloneForUsingRemap(OpBuilder builder, BlockAndValueMapping remap,
+// Clone with remap, but replaces channel op with wait_all op
+void replaceChannelOpWithWaitAllAndClone(OpBuilder builder, BlockAndValueMapping &remap, air::ChannelInterface op){
+  auto async_op = dyn_cast<air::AsyncOpInterface>(op.getOperation());
+  SmallVector<Value, 1> dep_list_remap;
+  for (auto dep : async_op.getAsyncDependencies()){
+    dep_list_remap.push_back(remap.lookup(dep));
+  }
+  auto wa_op = builder.create<air::WaitAllOp>(builder.getUnknownLoc(),
+                                              air::AsyncTokenType::get(op->getContext()),
+                                              dep_list_remap);
+  wa_op->setAttr("hoist-channel", StringAttr::get(op->getContext(), "dep"));
+  remap.map(async_op.getAsyncToken(), wa_op.getAsyncToken());
+}
+
+scf::ForOp cloneForUsingRemap(OpBuilder builder, BlockAndValueMapping &remap,
                               scf::ForOp loop_op) {
   SmallVector<Value, 1> remap_iter_operands;
   for (auto iter_operand : loop_op.getIterOperands()) {
@@ -335,7 +349,18 @@ scf::ForOp cloneForUsingRemap(OpBuilder builder, BlockAndValueMapping remap,
   builder.setInsertionPointToStart(new_loop_op.getBody());
   for (Operation &for_child_op : loop_op.getBody()->getOperations()) {
     if (for_child_op.hasAttr("hoist-channel")) {
-      builder.clone(for_child_op, remap);
+      if (auto channel_op = dyn_cast<air::ChannelInterface>(for_child_op)){
+        if (for_child_op.hasAttr("loop-carried-dep") && for_child_op.getAttrOfType<StringAttr>("loop-carried-dep").getValue().str() == "internalGetPut") {
+          // Found channel op labelled as "internalGetPut", which shouldn't be hoisted
+          replaceChannelOpWithWaitAllAndClone(builder, remap, channel_op);
+        }
+        else {
+          builder.clone(for_child_op, remap);
+        }
+      }
+      else {
+        builder.clone(for_child_op, remap);
+      }
     }
   }
   // Re-establish uses after hoisting
@@ -354,20 +379,6 @@ scf::ForOp cloneForUsingRemap(OpBuilder builder, BlockAndValueMapping remap,
   builder.restoreInsertionPoint(insertionCheckpoint);
 
   return new_loop_op;
-}
-
-// Clone with remap, but replaces channel op with wait_all op
-void replaceChannelOpWithWaitAllAndClone(OpBuilder builder, BlockAndValueMapping &remap, air::ChannelInterface op){
-  auto async_op = dyn_cast<air::AsyncOpInterface>(op.getOperation());
-  SmallVector<Value, 1> dep_list_remap;
-  for (auto dep : async_op.getAsyncDependencies()){
-    dep_list_remap.push_back(remap.lookup(dep));
-  }
-  auto wa_op = builder.create<air::WaitAllOp>(builder.getUnknownLoc(),
-                                              air::AsyncTokenType::get(op->getContext()),
-                                              dep_list_remap);
-  wa_op->setAttr("hoist-channel", StringAttr::get(op->getContext(), "dep"));
-  remap.map(async_op.getAsyncToken(), wa_op.getAsyncToken());
 }
 
 class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
