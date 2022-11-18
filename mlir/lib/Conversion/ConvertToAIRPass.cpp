@@ -207,9 +207,9 @@ static void addReduceOpToAsyncParallel(OpBuilder builder,
   builder.setInsertionPointToEnd(scf_par.getBody());
   builder.create<scf::YieldOp>(scf_par.getLoc());
 
-  wait_all_op_yielded->setAttr("air.channel", StringAttr::get(ctx, "dep"));
-  reduce_op->setAttr("air.channel", StringAttr::get(ctx, "dep"));
-  reduce_res->setAttr("air.channel", StringAttr::get(ctx, "dep"));
+  wait_all_op_yielded->setAttr("hoist-channel", StringAttr::get(ctx, "dep"));
+  reduce_op->setAttr("hoist-channel", StringAttr::get(ctx, "dep"));
+  reduce_res->setAttr("hoist-channel", StringAttr::get(ctx, "dep"));
 }
 
 static scf::ParallelOp hoistHerdToAsyncParallel(OpBuilder builder, Location loc,
@@ -230,7 +230,7 @@ static scf::ParallelOp hoistHerdToAsyncParallel(OpBuilder builder, Location loc,
 
   addReduceOpToAsyncParallel(builder, scf_par, ctx);
 
-  scf_par->setAttr("air.channel", StringAttr::get(ctx, "inner"));
+  scf_par->setAttr("hoist-channel", StringAttr::get(ctx, "hoistedLoop"));
   scf_par->setAttr("loop-carried-dep", StringAttr::get(ctx, "hoistedLoop"));
 
   return scf_par;
@@ -293,7 +293,7 @@ scf::YieldOp generateYieldOpFromChannelOp(OpBuilder builder, MLIRContext *ctx,
   builder.setInsertionPointToEnd(scf_for.getBody());
   SmallVector<air::ChannelInterface, 1> channel_ops;
   for (auto channel_op : scf_for.getOps<air::ChannelInterface>()) {
-    if (channel_op->hasAttr("air.channel")) {
+    if (channel_op->hasAttr("hoist-channel")) {
       channel_ops.push_back(channel_op);
     }
   }
@@ -307,13 +307,13 @@ scf::YieldOp generateYieldOpFromChannelOp(OpBuilder builder, MLIRContext *ctx,
         builder.getUnknownLoc(), air::AsyncTokenType::get(ctx),
         SmallVector<Value, 1>{channel_ops[0]->getResult(0)});
     yield_token.push_back(wa_op.getAsyncToken());
-    wa_op->setAttr("air.channel", StringAttr::get(ctx, "dep"));
+    wa_op->setAttr("hoist-channel", StringAttr::get(ctx, "dep"));
   } else {
     auto wa_op = builder.create<air::WaitAllOp>(builder.getUnknownLoc(),
                                                 air::AsyncTokenType::get(ctx),
                                                 SmallVector<Value, 1>{});
     yield_token.push_back(wa_op.getAsyncToken());
-    wa_op->setAttr("air.channel", StringAttr::get(ctx, "dep"));
+    wa_op->setAttr("hoist-channel", StringAttr::get(ctx, "dep"));
   }
   scf::YieldOp output =
       builder.create<scf::YieldOp>(builder.getUnknownLoc(), yield_token);
@@ -334,15 +334,15 @@ scf::ForOp cloneForUsingRemap(OpBuilder builder, BlockAndValueMapping remap,
   auto insertionCheckpoint = builder.saveInsertionPoint();
   builder.setInsertionPointToStart(new_loop_op.getBody());
   for (Operation &for_child_op : loop_op.getBody()->getOperations()) {
-    if (for_child_op.hasAttr("air.channel")) {
+    if (for_child_op.hasAttr("hoist-channel")) {
       builder.clone(for_child_op, remap);
     }
   }
   // Re-establish uses after hoisting
   updateUsesInScfFor(builder, new_loop_op, loop_op);
 
-  new_loop_op->setAttr("air.channel",
-                       StringAttr::get(loop_op->getContext(), "inner"));
+  new_loop_op->setAttr("hoist-channel",
+                       StringAttr::get(loop_op->getContext(), "hoistedLoop"));
   new_loop_op->setAttr("loop-carried-dep",
                        StringAttr::get(loop_op->getContext(), "hoistedLoop"));
 
@@ -354,6 +354,20 @@ scf::ForOp cloneForUsingRemap(OpBuilder builder, BlockAndValueMapping remap,
   builder.restoreInsertionPoint(insertionCheckpoint);
 
   return new_loop_op;
+}
+
+// Clone with remap, but replaces channel op with wait_all op
+void replaceChannelOpWithWaitAllAndClone(OpBuilder builder, BlockAndValueMapping &remap, air::ChannelInterface op){
+  auto async_op = dyn_cast<air::AsyncOpInterface>(op.getOperation());
+  SmallVector<Value, 1> dep_list_remap;
+  for (auto dep : async_op.getAsyncDependencies()){
+    dep_list_remap.push_back(remap.lookup(dep));
+  }
+  auto wa_op = builder.create<air::WaitAllOp>(builder.getUnknownLoc(),
+                                              air::AsyncTokenType::get(op->getContext()),
+                                              dep_list_remap);
+  wa_op->setAttr("hoist-channel", StringAttr::get(op->getContext(), "dep"));
+  remap.map(async_op.getAsyncToken(), wa_op.getAsyncToken());
 }
 
 class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
@@ -552,8 +566,11 @@ class AIRDmaToAIRChannelConversion
     {
       OpBuilder::InsertionGuard guard(rewriter);
 
-      externalGetPut->setAttr("air.channel",
+      externalGetPut->setAttr("hoist-channel",
                               StringAttr::get(op->getContext(), "dep"));
+      internalGetPut->setAttr(
+          "loop-carried-dep",
+          StringAttr::get(op->getContext(), "internalGetPut"));
       externalGetPut->setAttr(
           "loop-carried-dep",
           StringAttr::get(op->getContext(), "externalGetPut"));
@@ -586,10 +603,10 @@ class AIRDmaToAIRChannelConversion
       }
 
       for (auto b : backwardSlice) {
-        b->setAttr("air.channel", StringAttr::get(op->getContext(), "dep"));
+        b->setAttr("hoist-channel", StringAttr::get(op->getContext(), "dep"));
         if (dyn_cast<air::ExecuteOp>(b)) {
           auto child_op = &(*b->getRegions().front().op_begin());
-          child_op->setAttr("air.channel",
+          child_op->setAttr("hoist-channel",
                             StringAttr::get(op->getContext(), "dep"));
         }
       }
@@ -613,10 +630,22 @@ class AIRDmaToAIRChannelConversion
              herd->getRegions().front().getBlocks().front().getOperations()) {
           if (isa<air::HerdTerminatorOp>(o))
             continue;
-          if (o.hasAttr("air.channel") && dyn_cast<scf::ForOp>(o)) {
-            cloneForUsingRemap(rewriter, remap, dyn_cast<scf::ForOp>(o));
-          } else if (o.hasAttr("air.channel")) {
-            rewriter.clone(o, remap);
+          if (o.hasAttr("hoist-channel")){
+            if (dyn_cast<scf::ForOp>(o)){
+              cloneForUsingRemap(rewriter, remap, dyn_cast<scf::ForOp>(o));
+            }
+            else if (auto channel_op = dyn_cast<air::ChannelInterface>(o)){
+              if (o.hasAttr("loop-carried-dep") && o.getAttrOfType<StringAttr>("loop-carried-dep").getValue().str() == "internalGetPut") {
+                // Found channel op labelled as "internalGetPut", which shouldn't be hoisted
+                replaceChannelOpWithWaitAllAndClone(rewriter, remap, channel_op);
+              }
+              else {
+                rewriter.clone(o, remap);
+              }
+            }
+            else {
+              rewriter.clone(o, remap);
+            }
           }
         }
       } else if (partition) {
@@ -635,12 +664,23 @@ class AIRDmaToAIRChannelConversion
                                 .getOperations()) {
           if (isa<air::PartitionTerminatorOp>(o))
             continue;
-          if (o.hasAttr("air.channel") && dyn_cast<scf::ForOp>(o)) {
-            auto scf_for =
-                cloneForUsingRemap(rewriter, remap, dyn_cast<scf::ForOp>(o));
-            scf_loop = scf_for.getOperation();
-          } else if (o.hasAttr("air.channel")) {
-            rewriter.clone(o, remap);
+          if (o.hasAttr("hoist-channel")){
+            if (dyn_cast<scf::ForOp>(o)){
+              cloneForUsingRemap(rewriter, remap, dyn_cast<scf::ForOp>(o));
+            }
+            else if (auto channel_op = dyn_cast<air::ChannelInterface>(o)){
+              if (o.hasAttr("loop-carried-dep") && o.getAttrOfType<StringAttr>("loop-carried-dep").getValue().str() == "internalGetPut") {
+                // Found channel op labelled as "internalGetPut", which shouldn't be hoisted
+                replaceChannelOpWithWaitAllAndClone(rewriter, remap, channel_op);
+                // rewriter.clone(o, remap);
+              }
+              else {
+                rewriter.clone(o, remap);
+              }
+            }
+            else {
+              rewriter.clone(o, remap);
+            }
           }
         }
       }
@@ -649,15 +689,15 @@ class AIRDmaToAIRChannelConversion
         scf_loop->walk([&](mlir::Operation *o) {
           if (o == o->getBlock()->getTerminator())
             return;
-          if (!o->hasAttr("air.channel"))
+          if (!o->hasAttr("hoist-channel"))
             erased.insert(o);
           else
-            o->removeAttr("air.channel");
+            o->removeAttr("hoist-channel");
         });
       }
       hier_op.walk([&](mlir::Operation *o) {
-        if (o->hasAttr("air.channel"))
-          o->removeAttr("air.channel");
+        if (o->hasAttr("hoist-channel"))
+          o->removeAttr("hoist-channel");
       });
       erased.insert(externalGetPut);
     }
@@ -1245,7 +1285,7 @@ struct DmaToChannelPass : public DmaToChannelBase<DmaToChannelPass> {
     for (auto f : funcOps) {
       f.walk([&](Operation *op) {
         op->removeAttr("loop-carried-dep");
-        op->removeAttr("air.channel");
+        op->removeAttr("hoist-channel");
       });
     }
   }
