@@ -25,6 +25,11 @@ air
 
 ## Documentation
 
+### Getting Started
+
+- [Building](building.html)
+- [Running Examples](running.html)
+
 ### Generated MLIR Documentation
 - [AIR Dialect](AIRDialect.html)
 - [AIRRt Dialect](AIRRtDialect.html)
