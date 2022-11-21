@@ -352,11 +352,13 @@ mlir::AffineIfOp cloneAffineIfUsingRemap(OpBuilder builder, BlockAndValueMapping
   for (auto operand : if_op.getOperands()) {
     remap_operands.push_back(remap.lookupOrDefault(operand));
   }
+  assert(remap_operands.size() == 2);
   
   // mlir::IntegerSet int_set = if_op.getIntegerSet();
   mlir::AffineIfOp new_if_op = builder.create<mlir::AffineIfOp>(
       builder.getUnknownLoc(), tys, if_op.getIntegerSet(), remap_operands,
       if_op.hasElse());
+  assert(if_op.getIntegerSet().getNumDims() == 0);
 
   auto insertionCheckpoint = builder.saveInsertionPoint();
 
@@ -374,8 +376,8 @@ mlir::AffineIfOp cloneAffineIfUsingRemap(OpBuilder builder, BlockAndValueMapping
           // builder.clone(then_child_op, remap);
           if (externalGetPut) assert(false && "found multiple channel ops to hoist in affine if block");
           else {
-            builder.clone(then_child_op, remap);
-            externalGetPut = channel_op;
+            auto new_channel_op = builder.clone(then_child_op, remap);
+            externalGetPut = new_channel_op;
           }
         }
       }
@@ -389,6 +391,7 @@ mlir::AffineIfOp cloneAffineIfUsingRemap(OpBuilder builder, BlockAndValueMapping
 
   // Generate yield op if async affineif
   assert(externalGetPut);
+  assert(externalGetPut->hasAttr("loop-carried-dep") && externalGetPut->getAttrOfType<StringAttr>("loop-carried-dep").getValue().str() == "externalGetPut");
   auto yield_token = dyn_cast<air::AsyncOpInterface>(externalGetPut.getOperation()).getAsyncToken();
   if (tys.size()) {
     builder.create<mlir::AffineYieldOp>(builder.getUnknownLoc(),
@@ -410,8 +413,8 @@ mlir::AffineIfOp cloneAffineIfUsingRemap(OpBuilder builder, BlockAndValueMapping
             // builder.clone(else_child_op, remap);
             if (externalGetPut) assert(false && "found multiple channel ops to hoist in affine if block");
             else {
-              builder.clone(else_child_op, remap);
-              externalGetPut = channel_op;
+              auto new_channel_op = builder.clone(else_child_op, remap);
+              externalGetPut = new_channel_op;
             }
           }
         }
@@ -434,8 +437,8 @@ mlir::AffineIfOp cloneAffineIfUsingRemap(OpBuilder builder, BlockAndValueMapping
 
   new_if_op->setAttr("hoist-channel",
                        StringAttr::get(if_op->getContext(), "hoistedLoop"));
-  new_if_op->setAttr("loop-carried-dep",
-                       StringAttr::get(if_op->getContext(), "hoistedLoop"));
+  // new_if_op->setAttr("loop-carried-dep",
+  //                      StringAttr::get(if_op->getContext(), "hoistedLoop"));
 
   builder.restoreInsertionPoint(insertionCheckpoint);
 
@@ -465,9 +468,9 @@ scf::ForOp cloneForUsingRemap(OpBuilder builder, BlockAndValueMapping &remap,
           builder.clone(for_child_op, remap);
         }
       }
-      // else if (auto affine_if_op = dyn_cast<mlir::AffineIfOp>(for_child_op)) {
-      //   cloneAffineIfUsingRemap(builder, remap, affine_if_op);
-      // }
+      else if (auto affine_if_op = dyn_cast<mlir::AffineIfOp>(for_child_op)) {
+        cloneAffineIfUsingRemap(builder, remap, affine_if_op);
+      }
       else {
         builder.clone(for_child_op, remap);
       }
@@ -572,7 +575,7 @@ air::DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block * block){
   return air::DmaMemcpyNdOp();
 }
 
-void replaceAIRDmaWithAIRChannelPairs(OpBuilder &builder, unsigned innerMemorySpace, air::DmaMemcpyNdOp op, air::ChannelInterface &internalGetPut, air::ChannelInterface &externalGetPut){
+void replaceAIRDmaWithAIRChannelPairs(OpBuilder &builder, unsigned innerMemorySpace, air::DmaMemcpyNdOp op, SmallVector<air::ChannelInterface, 1> &internalGetPutVector, SmallVector<air::ChannelInterface, 1> &externalGetPutVector){
 
   auto loc = op->getLoc();
   auto src = op.getSrcMemref();
@@ -598,8 +601,8 @@ void replaceAIRDmaWithAIRChannelPairs(OpBuilder &builder, unsigned innerMemorySp
     }
   }
 
-  // Operation *externalGetPut = nullptr;
-  // Operation *internalGetPut = nullptr;
+  air::ChannelInterface externalGetPut = nullptr;
+  air::ChannelInterface internalGetPut = nullptr;
 
   SmallVector<Value, 4> emptyDeps;
   SmallVector<Type, 4> tys;
@@ -660,6 +663,19 @@ void replaceAIRDmaWithAIRChannelPairs(OpBuilder &builder, unsigned innerMemorySp
         dyn_cast<air::AsyncOpInterface>(internalGetPut.getOperation());
     op_token.replaceAllUsesWith(asyncInternalGetPut.getAsyncToken());
   }
+
+  // Add attributes to label internal/external channel ops
+  externalGetPut->setAttr("hoist-channel",
+                          StringAttr::get(op->getContext(), "dep"));
+  internalGetPut->setAttr(
+      "loop-carried-dep",
+      StringAttr::get(op->getContext(), "internalGetPut"));
+  externalGetPut->setAttr(
+      "loop-carried-dep",
+      StringAttr::get(op->getContext(), "externalGetPut"));
+
+  externalGetPutVector.push_back(externalGetPut);
+  internalGetPutVector.push_back(internalGetPut);
 }
 
 void HoistingAffineIf(mlir::AffineIfOp op){
@@ -691,10 +707,13 @@ void HoistingAffineIf(mlir::AffineIfOp op){
     else
       assert(false && "affine if op has no air.hierarchy as parent");
 
-    air::ChannelInterface externalGetPut = nullptr;
-    air::ChannelInterface internalGetPut = nullptr;
+    // air::ChannelInterface externalGetPut = nullptr;
+    // air::ChannelInterface internalGetPut = nullptr;
+    SmallVector<air::ChannelInterface, 1> externalGetPut;
+    SmallVector<air::ChannelInterface, 1> internalGetPut;
 
     // Recursively search for and replace air.dma ops
+    // TODO: Check recursion via unit tests with broadcast pattern bigger than 2x2
     auto module = op->getParentOfType<ModuleOp>();
     OpBuilder module_builder(module);
     // The first then block
@@ -717,157 +736,159 @@ void HoistingAffineIf(mlir::AffineIfOp op){
     module_builder.setInsertionPoint(else_block_dma);
     replaceAIRDmaWithAIRChannelPairs(module_builder, innerMemorySpace, else_block_dma, internalGetPut, externalGetPut);
 
-  //   {
-  //     OpBuilder::InsertionGuard guard(rewriter);
+    // Get dependent ops to hoist together with external get/put
+    SetVector<Operation *> backwardSlice;
+    // getBackwardSlice(externalGetPut, &backwardSlice,
+    //                   [&](Operation *o) { return o != hier_op; });
+    for (auto ext_channel_op : externalGetPut){
+      getBackwardSlice(ext_channel_op.getOperation(), &backwardSlice,
+                      [&](Operation *o) { return o != hier_op; });
 
-  //     externalGetPut->setAttr("hoist-channel",
-  //                             StringAttr::get(op->getContext(), "dep"));
-  //     internalGetPut->setAttr(
-  //         "loop-carried-dep",
-  //         StringAttr::get(op->getContext(), "internalGetPut"));
-  //     externalGetPut->setAttr(
-  //         "loop-carried-dep",
-  //         StringAttr::get(op->getContext(), "externalGetPut"));
+      for (auto parent = ext_channel_op->getParentOp();
+            !isa<air::HierarchyInterface>(parent);
+            parent = parent->getParentOp()) {
+        getBackwardSlice(parent, &backwardSlice,
+                          [&](Operation *o) { return o != hier_op; });
+        backwardSlice.insert(parent);
+      }
+    }
 
-  //     SetVector<Operation *> backwardSlice;
-  //     getBackwardSlice(externalGetPut, &backwardSlice,
-  //                      [&](Operation *o) { return o != hier_op; });
+    // for (auto parent = op->getParentOp();
+    //       !isa<air::HierarchyInterface>(parent);
+    //       parent = parent->getParentOp()) {
+    //   getBackwardSlice(parent, &backwardSlice,
+    //                     [&](Operation *o) { return o != hier_op; });
+    //   backwardSlice.insert(parent);
+    // }
 
-  //     for (auto parent = op->getParentOp();
-  //          !isa<air::HierarchyInterface>(parent);
-  //          parent = parent->getParentOp()) {
-  //       getBackwardSlice(parent, &backwardSlice,
-  //                        [&](Operation *o) { return o != hier_op; });
-  //       backwardSlice.insert(parent);
-  //     }
+    // Hoist hierarchy op into scf op
+    Operation *scf_loop = nullptr;
+    mlir::OpBuilder::InsertPoint
+        insertionPointAtHierOp; // To keep a record of the insertion point as
+                                // destination for hoisting
+    module_builder.setInsertionPoint(hier_op);
+    if (herd) {
+      scf::ParallelOp scf_par =
+          hoistHerdToAsyncParallel(module_builder, module_builder.getUnknownLoc(), op->getContext(), herd);
+      scf_loop = scf_par.getOperation();
+    } else if (partition) {
+      // Since partition doesn't have iteration space, it doesn't hoist a loop
+      insertionPointAtHierOp = module_builder.saveInsertionPoint();
+    }
 
-  //     // Hoist hierarchy op into scf op
-  //     Operation *scf_loop = nullptr;
-  //     mlir::OpBuilder::InsertPoint
-  //         insertionPointAtHierOp; // To keep a record of the insertion point as
-  //                                 // destination for hoisting
-  //     rewriter.setInsertionPoint(hier_op);
-  //     if (herd) {
-  //       scf::ParallelOp scf_par =
-  //           hoistHerdToAsyncParallel(rewriter, loc, ctx, herd);
-  //       scf_loop = scf_par.getOperation();
-  //     } else if (partition) {
-  //       // Since partition doesn't have iteration space, it doesn't hoist a loop
-  //       insertionPointAtHierOp = rewriter.saveInsertionPoint();
-  //     }
+    for (auto b : backwardSlice) {
+      b->setAttr("hoist-channel", StringAttr::get(op->getContext(), "dep"));
+      if (dyn_cast<air::ExecuteOp>(b)) {
+        auto child_op = &(*b->getRegions().front().op_begin());
+        child_op->setAttr("hoist-channel",
+                          StringAttr::get(op->getContext(), "dep"));
+      }
+    }
 
-  //     for (auto b : backwardSlice) {
-  //       b->setAttr("hoist-channel", StringAttr::get(op->getContext(), "dep"));
-  //       if (dyn_cast<air::ExecuteOp>(b)) {
-  //         auto child_op = &(*b->getRegions().front().op_begin());
-  //         child_op->setAttr("hoist-channel",
-  //                           StringAttr::get(op->getContext(), "dep"));
-  //       }
-  //     }
+    // Fill up hoisted scf op region with cloned ops
+    if (herd) {
+      auto scf_par = dyn_cast<scf::ParallelOp>(scf_loop);
+      // Get mapping for remapped ssa values entering the hoisted scf.parallel
+      BlockAndValueMapping remap;
+      auto herd_size = herd.getSizeOperands();
+      remap.map(herd.getSize()[0], herd_size[0]);
+      remap.map(herd.getSize()[1], herd_size[1]);
+      remap.map(herd.getIds()[0], scf_par.getInductionVars()[0]);
+      remap.map(herd.getIds()[1], scf_par.getInductionVars()[1]);
+      int arg_idx = 0;
+      for (auto arg : herd.getKernelArguments())
+        remap.map(arg, herd.getKernelOperand(arg_idx++));
 
-  //     if (herd) {
-  //       auto scf_par = dyn_cast<scf::ParallelOp>(scf_loop);
-  //       // Get mapping for remapped ssa values entering the hoisted scf.parallel
-  //       BlockAndValueMapping remap;
-  //       auto herd_size = herd.getSizeOperands();
-  //       remap.map(herd.getSize()[0], herd_size[0]);
-  //       remap.map(herd.getSize()[1], herd_size[1]);
-  //       remap.map(herd.getIds()[0], scf_par.getInductionVars()[0]);
-  //       remap.map(herd.getIds()[1], scf_par.getInductionVars()[1]);
-  //       int arg_idx = 0;
-  //       for (auto arg : herd.getKernelArguments())
-  //         remap.map(arg, herd.getKernelOperand(arg_idx++));
+      // Clone ops into hoisted scf.parallel
+      module_builder.setInsertionPointToStart(scf_par.getBody());
+      for (Operation &o :
+            herd->getRegions().front().getBlocks().front().getOperations()) {
+        if (isa<air::HerdTerminatorOp>(o))
+          continue;
+        if (o.hasAttr("hoist-channel")){
+          if (auto child_for_op = dyn_cast<scf::ForOp>(o)){
+            cloneForUsingRemap(module_builder, remap, child_for_op);
+          }
+          else if (auto child_if_op = dyn_cast<mlir::AffineIfOp>(o)){
+            cloneAffineIfUsingRemap(module_builder, remap, child_if_op);
+          }
+          else if (auto channel_op = dyn_cast<air::ChannelInterface>(o)){
+            if (o.hasAttr("loop-carried-dep") && o.getAttrOfType<StringAttr>("loop-carried-dep").getValue().str() == "internalGetPut") {
+              // Found channel op labelled as "internalGetPut", which shouldn't be hoisted
+              replaceChannelOpWithWaitAllAndClone(module_builder, remap, channel_op);
+            }
+            else {
+              module_builder.clone(o, remap);
+            }
+          }
+          else {
+            module_builder.clone(o, remap);
+          }
+        }
+      }
+    } 
+    // else if (partition) {
+    //   // Get mapping for remapped ssa values entering the hoisted scf.for
+    //   BlockAndValueMapping remap;
+    //   int arg_idx = 0;
+    //   for (auto arg : partition.getKernelArguments())
+    //     remap.map(arg, partition.getKernelOperand(arg_idx++));
 
-  //       // Clone ops into hoisted scf.parallel
-  //       rewriter.setInsertionPointToStart(scf_par.getBody());
-  //       for (Operation &o :
-  //            herd->getRegions().front().getBlocks().front().getOperations()) {
-  //         if (isa<air::HerdTerminatorOp>(o))
-  //           continue;
-  //         if (o.hasAttr("hoist-channel")){
-  //           if (auto child_for_op = dyn_cast<scf::ForOp>(o)){
-  //             cloneForUsingRemap(rewriter, remap, child_for_op);
-  //           }
-  //           // else if (auto child_if_op = dyn_cast<mlir::AffineIfOp>(o)){
-  //           //   cloneAffineIfUsingRemap(rewriter, remap, child_if_op);
-  //           // }
-  //           else if (auto channel_op = dyn_cast<air::ChannelInterface>(o)){
-  //             if (o.hasAttr("loop-carried-dep") && o.getAttrOfType<StringAttr>("loop-carried-dep").getValue().str() == "internalGetPut") {
-  //               // Found channel op labelled as "internalGetPut", which shouldn't be hoisted
-  //               replaceChannelOpWithWaitAllAndClone(rewriter, remap, channel_op);
-  //             }
-  //             else {
-  //               rewriter.clone(o, remap);
-  //             }
-  //           }
-  //           else {
-  //             rewriter.clone(o, remap);
-  //           }
-  //         }
-  //       }
-  //     } else if (partition) {
-  //       // Get mapping for remapped ssa values entering the hoisted scf.for
-  //       BlockAndValueMapping remap;
-  //       int arg_idx = 0;
-  //       for (auto arg : partition.getKernelArguments())
-  //         remap.map(arg, partition.getKernelOperand(arg_idx++));
+    //   // Hoist ops
+    //   module_builder.restoreInsertionPoint(insertionPointAtHierOp);
+    //   for (Operation &o : partition->getRegions()
+    //                           .front()
+    //                           .getBlocks()
+    //                           .front()
+    //                           .getOperations()) {
+    //     if (isa<air::PartitionTerminatorOp>(o))
+    //       continue;
+    //     if (o.hasAttr("hoist-channel")){
+    //       if (auto child_for_op = dyn_cast<scf::ForOp>(o)){
+    //         cloneForUsingRemap(module_builder, remap, child_for_op);
+    //       }
+    //       // else if (auto child_if_op = dyn_cast<mlir::AffineIfOp>(o)){
+    //       //   cloneAffineIfUsingRemap(rewriter, remap, child_if_op);
+    //       // }
+    //       else if (auto channel_op = dyn_cast<air::ChannelInterface>(o)){
+    //         if (o.hasAttr("loop-carried-dep") && o.getAttrOfType<StringAttr>("loop-carried-dep").getValue().str() == "internalGetPut") {
+    //           // Found channel op labelled as "internalGetPut", which shouldn't be hoisted
+    //           replaceChannelOpWithWaitAllAndClone(module_builder, remap, channel_op);
+    //           // rewriter.clone(o, remap);
+    //         }
+    //         else {
+    //           module_builder.clone(o, remap);
+    //         }
+    //       }
+    //       else {
+    //         module_builder.clone(o, remap);
+    //       }
+    //     }
+    //   }
+    // }
 
-  //       // Hoist ops
-  //       rewriter.restoreInsertionPoint(insertionPointAtHierOp);
-  //       for (Operation &o : partition->getRegions()
-  //                               .front()
-  //                               .getBlocks()
-  //                               .front()
-  //                               .getOperations()) {
-  //         if (isa<air::PartitionTerminatorOp>(o))
-  //           continue;
-  //         if (o.hasAttr("hoist-channel")){
-  //           if (auto child_for_op = dyn_cast<scf::ForOp>(o)){
-  //             cloneForUsingRemap(rewriter, remap, child_for_op);
-  //           }
-  //           // else if (auto child_if_op = dyn_cast<mlir::AffineIfOp>(o)){
-  //           //   cloneAffineIfUsingRemap(rewriter, remap, child_if_op);
-  //           // }
-  //           else if (auto channel_op = dyn_cast<air::ChannelInterface>(o)){
-  //             if (o.hasAttr("loop-carried-dep") && o.getAttrOfType<StringAttr>("loop-carried-dep").getValue().str() == "internalGetPut") {
-  //               // Found channel op labelled as "internalGetPut", which shouldn't be hoisted
-  //               replaceChannelOpWithWaitAllAndClone(rewriter, remap, channel_op);
-  //               // rewriter.clone(o, remap);
-  //             }
-  //             else {
-  //               rewriter.clone(o, remap);
-  //             }
-  //           }
-  //           else {
-  //             rewriter.clone(o, remap);
-  //           }
-  //         }
-  //       }
-  //     }
-
-  //     if (scf_loop) {
-  //       scf_loop->walk([&](mlir::Operation *o) {
-  //         if (o == o->getBlock()->getTerminator())
-  //           return;
-  //         if (!o->hasAttr("hoist-channel"))
-  //           erased.insert(o);
-  //         else
-  //           o->removeAttr("hoist-channel");
-  //       });
-  //     }
-  //     hier_op.walk([&](mlir::Operation *o) {
-  //       if (o->hasAttr("hoist-channel"))
-  //         o->removeAttr("hoist-channel");
-  //     });
-  //     erased.insert(externalGetPut);
-  //   }
-  //   erased.insert(op);
-  //   for (auto e : erased) {
-  //     rewriter.eraseOp(e);
-  //   }
-
-  //   return success();
-  // }
+    if (scf_loop) {
+      scf_loop->walk([&](mlir::Operation *o) {
+        if (o == o->getBlock()->getTerminator())
+          return;
+        if (!o->hasAttr("hoist-channel")){}
+          // o->erase();
+        else
+          o->removeAttr("hoist-channel");
+      });
+    }
+    hier_op.walk([&](mlir::Operation *o) {
+      if (o->hasAttr("hoist-channel"))
+        o->removeAttr("hoist-channel");
+      if (o->hasAttr("loop-carried-dep") && o->getAttrOfType<StringAttr>("loop-carried-dep").getValue().str() == "externalGetPut") {
+        o->erase();
+      }
+    });
+    // for (auto ext_channel_op : externalGetPut){
+    //   ext_channel_op->erase();
+    // }
+    then_dma->erase();
+    else_dma->erase();
 }
 
 class AIRDmaToAIRChannelConversion
@@ -931,8 +952,10 @@ class AIRDmaToAIRChannelConversion
     }
 
     std::set<Operation *> erased;
-    air::ChannelInterface externalGetPut = nullptr;
-    air::ChannelInterface internalGetPut = nullptr;
+    // air::ChannelInterface externalGetPut = nullptr;
+    // air::ChannelInterface internalGetPut = nullptr;
+    SmallVector<air::ChannelInterface, 1> externalGetPut;
+    SmallVector<air::ChannelInterface, 1> internalGetPut;
     // SmallVector<Value, 1> channel_idx{
     //     rewriter.create<arith::ConstantIndexOp>(loc, 1)};
 
@@ -941,18 +964,22 @@ class AIRDmaToAIRChannelConversion
     {
       OpBuilder::InsertionGuard guard(rewriter);
 
-      externalGetPut->setAttr("hoist-channel",
-                              StringAttr::get(op->getContext(), "dep"));
-      internalGetPut->setAttr(
-          "loop-carried-dep",
-          StringAttr::get(op->getContext(), "internalGetPut"));
-      externalGetPut->setAttr(
-          "loop-carried-dep",
-          StringAttr::get(op->getContext(), "externalGetPut"));
+      // externalGetPut->setAttr("hoist-channel",
+      //                         StringAttr::get(op->getContext(), "dep"));
+      // internalGetPut->setAttr(
+      //     "loop-carried-dep",
+      //     StringAttr::get(op->getContext(), "internalGetPut"));
+      // externalGetPut->setAttr(
+      //     "loop-carried-dep",
+      //     StringAttr::get(op->getContext(), "externalGetPut"));
 
       SetVector<Operation *> backwardSlice;
-      getBackwardSlice(externalGetPut, &backwardSlice,
-                       [&](Operation *o) { return o != hier_op; });
+      // getBackwardSlice(externalGetPut, &backwardSlice,
+      //                  [&](Operation *o) { return o != hier_op; });
+      for (auto ext_channel_op : externalGetPut){
+        getBackwardSlice(ext_channel_op.getOperation(), &backwardSlice,
+                        [&](Operation *o) { return o != hier_op; });
+      }
 
       for (auto parent = op->getParentOp();
            !isa<air::HierarchyInterface>(parent);
@@ -1079,7 +1106,10 @@ class AIRDmaToAIRChannelConversion
         if (o->hasAttr("hoist-channel"))
           o->removeAttr("hoist-channel");
       });
-      erased.insert(externalGetPut.getOperation());
+      for (auto ext_channel_op : externalGetPut){
+        erased.insert(ext_channel_op.getOperation());
+      }
+      // erased.insert(externalGetPut.getOperation());
     }
     erased.insert(op);
     for (auto e : erased) {
@@ -1641,44 +1671,44 @@ struct DmaToChannelPass : public DmaToChannelBase<DmaToChannelPass> {
     SmallVector<func::FuncOp, 4> funcOps;
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
 
-    // // Hoist broadcast pattern
-    // for (auto f : funcOps) {
-    //   f.walk([&](mlir::AffineIfOp op) {
-    //     if (!op->getParentOfType<mlir::AffineIfOp>()){
-    //       // Only hoist top-level affine if op with a nest of if ops
-    //       HoistingAffineIf(op);
-    //     }
-    //   });
-    // }
-
-    ConversionTarget target(*context);
-
-    target.addLegalDialect<
-        LLVM::LLVMDialect, func::FuncDialect, scf::SCFDialect, AffineDialect,
-        xilinx::air::airDialect, arith::ArithDialect, memref::MemRefDialect>();
-
-    target.addIllegalOp<air::DmaMemcpyNdOp>();
-
-    RewritePatternSet air_dma_patterns(context);
-    air_dma_patterns.add<AIRDmaToAIRChannelConversion>(context);
-    if (failed(applyPartialConversion(module, target,
-                                      std::move(air_dma_patterns)))) {
-      emitError(UnknownLoc::get(context), "error\n");
-      signalPassFailure();
-    }
-
-    // Dep tracing
+    // Hoist broadcast pattern
     for (auto f : funcOps) {
-      updateDependencyOnFunction(f);
-    }
-
-    // Clear channel attributes
-    for (auto f : funcOps) {
-      f.walk([&](Operation *op) {
-        op->removeAttr("loop-carried-dep");
-        op->removeAttr("hoist-channel");
+      f.walk([&](mlir::AffineIfOp op) {
+        if (!op->getParentOfType<mlir::AffineIfOp>()){
+          // Only hoist top-level affine if op with a nest of if ops
+          HoistingAffineIf(op);
+        }
       });
     }
+
+    // ConversionTarget target(*context);
+
+    // target.addLegalDialect<
+    //     LLVM::LLVMDialect, func::FuncDialect, scf::SCFDialect, AffineDialect,
+    //     xilinx::air::airDialect, arith::ArithDialect, memref::MemRefDialect>();
+
+    // target.addIllegalOp<air::DmaMemcpyNdOp>();
+
+    // RewritePatternSet air_dma_patterns(context);
+    // air_dma_patterns.add<AIRDmaToAIRChannelConversion>(context);
+    // if (failed(applyPartialConversion(module, target,
+    //                                   std::move(air_dma_patterns)))) {
+    //   emitError(UnknownLoc::get(context), "error\n");
+    //   signalPassFailure();
+    // }
+
+    // // Dep tracing
+    // for (auto f : funcOps) {
+    //   updateDependencyOnFunction(f);
+    // }
+
+    // // Clear channel attributes
+    // for (auto f : funcOps) {
+    //   f.walk([&](Operation *op) {
+    //     op->removeAttr("loop-carried-dep");
+    //     op->removeAttr("hoist-channel");
+    //   });
+    // }
   }
 
   void updateDependencyOnFunction(func::FuncOp f) {
