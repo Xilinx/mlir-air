@@ -18,7 +18,7 @@ __all__ = [
     "LINALG_TENSOR_TO_MEMREF_PIPELINE"
 ]
 
-LINALG_TENSOR_TO_MEMREF_PIPELINE = ",".join([
+LINALG_TENSOR_TO_MEMREF_PIPELINE = "builtin.module(" + ",".join([
     # Bufferize.
     "func.func(scf-bufferize)",
     "func.func(linalg-bufferize)", "cse",
@@ -28,7 +28,7 @@ LINALG_TENSOR_TO_MEMREF_PIPELINE = ",".join([
     "func.func(finalizing-bufferize)",
     "canonicalize",
     "cse"
-])
+]) + ")"
 
 def _convert_module(module):
     if not isinstance(module, air.mlir.ir.Module):
@@ -47,7 +47,7 @@ class CostModel:
         with tempfile.NamedTemporaryFile(delete=False) as tmpfile:
             name = tmpfile.name
             with air_module.context:
-                pipeline = f"air-linalg-op-stats{{outputfile={name}}}"
+                pipeline = f"builtin.module(air-linalg-op-stats{{outputfile={name}}})"
                 pm = air.mlir.passmanager.PassManager.parse(pipeline)
                 pm.run(air_module)
             stats = open(name).read()
