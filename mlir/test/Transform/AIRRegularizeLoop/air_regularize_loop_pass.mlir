@@ -8,7 +8,7 @@
 
 // RUN: air-opt %s -air-regularize-loop="air-label=xten.binary_op" | FileCheck %s
 // CHECK: affine.for {{.*}} = 0 to 7 {
-// CHECK: %{{.*}} = affine.apply #map(%arg4, %arg3, %arg2)
+// CHECK: %{{.*}} = affine.apply #{{.*}}(%arg4, %arg3, %arg2)
 // CHECK: } {affine_opt_label = "affine_opt"}
 // CHECK: affine.for {{.*}} = 0 to 7
 // CHECK: affine.for {{.*}} = 0 to 2

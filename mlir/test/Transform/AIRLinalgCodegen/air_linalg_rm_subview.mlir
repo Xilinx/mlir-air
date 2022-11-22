@@ -16,17 +16,17 @@
 // CHECK:           %[[VAL_4:.*]] = arith.constant 0 : index
 // CHECK:           %[[VAL_5:.*]] = memref.alloc() : memref<64x64xf32>
 // CHECK:           scf.parallel (%[[VAL_6:.*]], %[[VAL_7:.*]]) = (%[[VAL_4]], %[[VAL_4]]) to (%[[VAL_2]], %[[VAL_2]]) step (%[[VAL_3]], %[[VAL_3]]) {
-// CHECK:             %[[VAL_8:.*]] = memref.subview %[[VAL_0]]{{\[}}%[[VAL_6]], 0] [16, 64] [1, 1] : memref<64x64xf32> to memref<16x64xf32, #map>
-// CHECK:             %[[VAL_9:.*]] = memref.subview %[[VAL_1]][0, %[[VAL_7]]] [64, 16] [1, 1] : memref<64x64xf32> to memref<64x16xf32, #map>
-// CHECK:             %[[VAL_10:.*]] = memref.subview %[[VAL_5]]{{\[}}%[[VAL_6]], %[[VAL_7]]] [16, 16] [1, 1] : memref<64x64xf32> to memref<16x16xf32, #map>
+// CHECK:             %[[VAL_8:.*]] = memref.subview %[[VAL_0]]{{\[}}%[[VAL_6]], 0] [16, 64] [1, 1] : memref<64x64xf32> to memref<16x64xf32, #{{.*}}>
+// CHECK:             %[[VAL_9:.*]] = memref.subview %[[VAL_1]][0, %[[VAL_7]]] [64, 16] [1, 1] : memref<64x64xf32> to memref<64x16xf32, #{{.*}}>
+// CHECK:             %[[VAL_10:.*]] = memref.subview %[[VAL_5]]{{\[}}%[[VAL_6]], %[[VAL_7]]] [16, 16] [1, 1] : memref<64x64xf32> to memref<16x16xf32, #{{.*}}>
 // CHECK:             %[[VAL_11:.*]] = memref.alloc() : memref<16x64xf32, 1>
 // CHECK:             %[[VAL_12:.*]] = memref.alloc() : memref<64x16xf32, 1>
 // CHECK:             %[[VAL_13:.*]] = memref.alloc() : memref<16x16xf32, 1>
-// CHECK:             linalg.copy ins(%[[VAL_8]] : memref<16x64xf32, #map>) outs(%[[VAL_11]] : memref<16x64xf32, 1>)
-// CHECK:             linalg.copy ins(%[[VAL_9]] : memref<64x16xf32, #map>) outs(%[[VAL_12]] : memref<64x16xf32, 1>)
-// CHECK:             linalg.copy ins(%[[VAL_10]] : memref<16x16xf32, #map>) outs(%[[VAL_13]] : memref<16x16xf32, 1>)
+// CHECK:             linalg.copy ins(%[[VAL_8]] : memref<16x64xf32, #{{.*}}>) outs(%[[VAL_11]] : memref<16x64xf32, 1>)
+// CHECK:             linalg.copy ins(%[[VAL_9]] : memref<64x16xf32, #{{.*}}>) outs(%[[VAL_12]] : memref<64x16xf32, 1>)
+// CHECK:             linalg.copy ins(%[[VAL_10]] : memref<16x16xf32, #{{.*}}>) outs(%[[VAL_13]] : memref<16x16xf32, 1>)
 // CHECK:             linalg.matmul ins(%[[VAL_11]], %[[VAL_12]] : memref<16x64xf32, 1>, memref<64x16xf32, 1>) outs(%[[VAL_13]] : memref<16x16xf32, 1>)
-// CHECK:             linalg.copy ins(%[[VAL_13]] : memref<16x16xf32, 1>) outs(%[[VAL_10]] : memref<16x16xf32, #map>)
+// CHECK:             linalg.copy ins(%[[VAL_13]] : memref<16x16xf32, 1>) outs(%[[VAL_10]] : memref<16x16xf32, #{{.*}}>)
 // CHECK:             memref.dealloc %[[VAL_11]] : memref<16x64xf32, 1>
 // CHECK:             memref.dealloc %[[VAL_12]] : memref<64x16xf32, 1>
 // CHECK:             memref.dealloc %[[VAL_13]] : memref<16x16xf32, 1>
