@@ -505,7 +505,7 @@ air::DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block * block){
   return air::DmaMemcpyNdOp();
 }
 
-void getScfParDimsFromIntegerSet(MLIRContext * ctx, IntegerSet int_set, SmallVector<int, 2> &lbs_int, SmallVector<int, 2> &ubs_int){
+void getBCastSizesFromIntegerSet(MLIRContext * ctx, IntegerSet int_set, SmallVector<int, 2> &lbs_int, SmallVector<int, 2> &ubs_int){
   
   auto constraints = int_set.getConstraints();
   auto eqFlags = int_set.getEqFlags();
@@ -520,24 +520,105 @@ void getScfParDimsFromIntegerSet(MLIRContext * ctx, IntegerSet int_set, SmallVec
   for (unsigned i = 0; i < int_set.getNumSymbols(); i++){
     int c_iter = 0;
     for (auto c : constraints) {
-      auto newC = c.replaceSymbols(zero_syms);
-      auto expr = simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
-      int v = expr.getValue();
-      v = (v >= 0) ? (v) : (-v); // Both + and - constant eval are legal for AffineExpr
-      if (c.isFunctionOfSymbol(i)){
-        if (eqFlags[c_iter]){
-          lbs_int[i] = v;
-          ubs_int[i] = v;
-        }
-        else{
-          if (v) ubs_int[i] = v;
-          else lbs_int[i] = v;
+      if (c.isSymbolicOrConstant()){
+        auto newC = c.replaceSymbols(zero_syms);
+        auto expr = simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
+        int v = expr.getValue();
+        v = (v >= 0) ? (v) : (-v); // Both + and - constant eval are legal for AffineExpr
+        if (c.isFunctionOfSymbol(i)){
+          if (eqFlags[c_iter]){
+            lbs_int[i] = v;
+            ubs_int[i] = v;
+          }
+          else{
+            if (v) ubs_int[i] = v;
+            else lbs_int[i] = v;
+          }
         }
       }
       c_iter++;
     }
   }
 }
+
+unsigned getScfParDimIdFromBCastDma(air::DmaMemcpyInterface memcpyOp){
+  // Get all ops on the dependency connection between dma and herd launch
+  SmallVector<Value, 1> loop_dep_history;
+  std::vector<Operation *> op_history;
+  traceDependentInductionVar(memcpyOp, loop_dep_history, op_history);
+
+  // Walk constraints in broadcast pattern, and get shape of the broadcast
+  // pattern
+
+  // Check which dimension op operates on; initialize current_shape_expr
+  for (auto v : loop_dep_history) {
+    if (auto hl_op = air::getHerdArgOwner(v)) {
+      for (unsigned j = 0; j < hl_op.getNumDims(); j++) {
+        if (v == hl_op.getIds()[j]) {
+          return j;
+        }
+      }
+    }
+  }
+  assert(false && "cannot trace dependency to parent herd");
+  return 0;
+}
+
+// void getIntegerSetsFromBroadcastPattern(air::DmaMemcpyNdOp memcpyOp, SmallVector<mlir::IntegerSet, 1> &int_sets){
+//   assert(memcpyOp->hasAttr("broadcast_pattern"));
+//   auto broadcast_pattern =
+//       memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern");
+//   auto ctx = memcpyOp->getContext();
+//   auto is = broadcast_pattern.getValue();
+//   auto constraints = is.getConstraints();
+//   auto eqFlags = is.getEqFlags();
+
+//   unsigned numPartitions = 0;
+//   // Get symbol range (i.e. partition range)
+//   SmallVector<AffineExpr, 1> zero_syms{
+//       getAffineConstantExpr(0, ctx),
+//   };
+//   for (auto c : constraints) {
+//     if (c.isSymbolicOrConstant()) {
+//       auto newC = c.replaceSymbols(zero_syms);
+//       auto expr =
+//           simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
+//       if (!expr) {
+//         continue;
+//       }
+//       if (expr.getValue() != 0) {
+//         numPartitions = expr.getValue() + 1;
+//       }
+//     }
+//   }
+//   // Walk each set in the patitioning scheme
+//   // Specialize each affine set
+//   for (unsigned i = 0; i < numPartitions; i++) {
+//     SmallVector<AffineExpr, 2> newConstraints;
+//     SmallVector<bool, 2> newEqflags;
+//     SmallVector<AffineExpr, 1> i_syms{
+//         getAffineConstantExpr(i, ctx),
+//     };
+//     SmallVector<AffineExpr, 2> syms{
+//         getAffineSymbolExpr(0, ctx),
+//         getAffineSymbolExpr(1, ctx),
+//     };
+//     int c_iter = 0;
+//     for (auto c : constraints) {
+//       if (!c.isSymbolicOrConstant()) {
+//         // Substitute partition id i_syms into inequalities
+//         auto newC = c.replaceSymbols(i_syms);
+//         // Replace all dims with symbols
+//         newC = newC.replaceDims(syms);
+//         newConstraints.push_back(newC);
+//         newEqflags.push_back(eqFlags[c_iter]);
+//       }
+//       c_iter++;
+//     }
+//     auto int_set = IntegerSet::get(0, 2, newConstraints, newEqflags);
+//     int_sets.push_back(int_set);
+//   }
+// }
 
 void replaceAIRDmaWithAIRChannelPairs(OpBuilder &builder, unsigned innerMemorySpace, air::DmaMemcpyNdOp op, SmallVector<air::ChannelInterface, 1> &internalGetPutVector, SmallVector<air::ChannelInterface, 1> &externalGetPutVector){
 
@@ -587,21 +668,24 @@ void replaceAIRDmaWithAIRChannelPairs(OpBuilder &builder, unsigned innerMemorySp
   builder.setInsertionPointToStart(module.getBody());
 
   // Infer broadcast shape from integer set, if broadcast_set attribute is set
-  SmallVector<int32_t, 2> bcast_sizes;
   if (op->hasAttr("broadcast_set")){
     auto int_set = op->getAttrOfType<mlir::IntegerSetAttr>("broadcast_set").getValue();
-    SmallVector<int, 2> lbs_int;
-    SmallVector<int, 2> ubs_int;
-    // Initialize lbs and ubs vectors
-    for (unsigned i = 0; i < int_set.getNumSymbols(); i++){
-      lbs_int.push_back(-1);
-      ubs_int.push_back(-1);
-    }
-    getScfParDimsFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
-    for (unsigned i = 0; i < int_set.getNumSymbols(); i++){
-      auto v = ubs_int[i] - lbs_int[i] + 1;
-      bcast_sizes.push_back(v);
-    }
+    SmallVector<int, 2> lbs_int = {-1, -1};
+    SmallVector<int, 2> ubs_int = {-1, -1};
+    getBCastSizesFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
+    SmallVector<int32_t, 2> bcast_sizes = {ubs_int[0] - lbs_int[0] + 1, ubs_int[1] - lbs_int[1] + 1};
+    builder.create<air::ChannelOp>(
+        loc, cname,
+        mlir::ArrayAttr::get(ctx, {mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), bcast_sizes[0]), mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), bcast_sizes[1])}));
+  }
+  else if (op->hasAttr("broadcast_pattern")){
+    // Else if broadcast_pattern attribute is set, i.e. lowering a set of broadcast channels together
+    SmallVector<int, 2> lbs_int = {-1};
+    SmallVector<int, 2> ubs_int = {-1};
+    mlir::IntegerSet int_set = op->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern").getValue();
+    getBCastSizesFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
+    SmallVector<int32_t, 2> bcast_sizes = {1, 1};
+    bcast_sizes[getScfParDimIdFromBCastDma(dyn_cast<air::DmaMemcpyInterface>(op.getOperation()))] = ubs_int[0] - lbs_int[0] + 1;
     builder.create<air::ChannelOp>(
         loc, cname,
         mlir::ArrayAttr::get(ctx, {mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), bcast_sizes[0]), mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), bcast_sizes[1])}));
@@ -609,8 +693,7 @@ void replaceAIRDmaWithAIRChannelPairs(OpBuilder &builder, unsigned innerMemorySp
   else {
     builder.create<air::ChannelOp>(
         loc, cname,
-        mlir::ArrayAttr::get(ctx, {mlir::IntegerAttr::get(
-                                    mlir::IntegerType::get(ctx, 64), 1)}));
+        mlir::ArrayAttr::get(ctx, {}));
   }
   builder.restoreInsertionPoint(insertionCheckpoint);
 
@@ -621,6 +704,14 @@ void replaceAIRDmaWithAIRChannelPairs(OpBuilder &builder, unsigned innerMemorySp
     auto parent_affine_if_op = op->getParentOfType<mlir::AffineIfOp>();
     for (auto operand : parent_affine_if_op->getOperands()){
       channel_idx_internal.push_back(operand);
+    }
+  }
+  else if (op->hasAttr("broadcast_pattern")){
+    // Else if broadcast_pattern is set, let both channel ops inherit herd's induction variables
+    auto parent_herd_op = op->getParentOfType<air::HerdOp>();
+    for (auto iv : parent_herd_op.getIds()){
+      channel_idx_internal.push_back(iv);
+      channel_idx_external.push_back(iv);
     }
   }
 
@@ -908,8 +999,18 @@ class AIRDmaToAIRChannelConversion
                                   // destination for hoisting
       rewriter.setInsertionPoint(hier_op);
       if (herd) {
+        // Scf parallel shape is either herd shape, or channel set shape if broadcasting
+        SmallVector<int, 2> lbs;
+        SmallVector<int, 2> ubs;
+        auto module = op->getParentOfType<ModuleOp>();
+        auto channel_op = dyn_cast<air::ChannelOp>(module.lookupSymbol(externalGetPut[0].getChanName()));
+        auto size = extractFromI64ArrayAttr(channel_op.getSize());
+        for (auto s : size){
+          lbs.push_back(1);
+          ubs.push_back(s);
+        }
         scf::ParallelOp scf_par =
-            hoistHerdToAsyncParallel(rewriter, loc, ctx, herd, SmallVector<int, 1>{}, SmallVector<int, 1>{});
+            hoistHerdToAsyncParallel(rewriter, loc, ctx, herd, lbs, ubs);
         scf_loop = scf_par.getOperation();
       } else if (partition) {
         // Since partition doesn't have iteration space, it doesn't hoist a loop
