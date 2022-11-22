@@ -1,0 +1,10 @@
+//===- run.lit ------------------------------------------------------------===//
+//
+// Copyright (C) 2022, Xilinx Inc.
+// Copyright (C) 2022, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+
+// RUN: aiecc.py --aie-generate-xaiev2 %S/aie.mlir -I%air_runtime_lib%/airhost/include -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp -L%air_runtime_lib%/airhost %S/test.cpp -Wl,--whole-archive -lairhost -Wl,--no-whole-archive -lstdc++ -o %T/test.elf
+// RUN: %run_on_board %T/test.elf
