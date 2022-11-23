@@ -684,11 +684,19 @@ void replaceAIRDmaWithAIRChannelPairs(OpBuilder &builder, unsigned innerMemorySp
     SmallVector<int, 2> ubs_int = {-1};
     mlir::IntegerSet int_set = op->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern").getValue();
     getBCastSizesFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
-    SmallVector<int32_t, 2> bcast_sizes = {1, 1};
+    SmallVector<int64_t, 2> bcast_sizes = {1, 1};
     bcast_sizes[getScfParDimIdFromBCastDma(dyn_cast<air::DmaMemcpyInterface>(op.getOperation()))] = ubs_int[0] - lbs_int[0] + 1;
-    builder.create<air::ChannelOp>(
+    auto channel_op = builder.create<air::ChannelOp>(
         loc, cname,
-        mlir::ArrayAttr::get(ctx, {mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), bcast_sizes[0]), mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), bcast_sizes[1])}));
+        builder.getI64ArrayAttr(bcast_sizes));
+    // Annotate post-broadcast shape
+    auto parent_herd_op = op->getParentOfType<air::HerdOp>();
+    auto herd_size = parent_herd_op.getSizeOperands();
+    SmallVector<int64_t, 1> output_shape;
+    for (auto operand : herd_size){
+      output_shape.push_back(operand.getDefiningOp<arith::ConstantIndexOp>().value());
+    }
+    channel_op->setAttr("output_shape", builder.getI64ArrayAttr(output_shape));
   }
   else {
     builder.create<air::ChannelOp>(
