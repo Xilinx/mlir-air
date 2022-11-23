@@ -44,8 +44,7 @@ public:
 
       // Transitive reduction
       xilinx::air::dependencyGraph trHostGraph;
-      canonicalizer.canonicalizeGraphs(hostGraph, trHostGraph, g_to_tr,
-                                       clDumpGraph, clDumpDir);
+      canonicalizer.canonicalizeGraphs(hostGraph, trHostGraph, g_to_tr);
 
       // Update dependency list
       canonicalizer.updateDepList(func, trHostGraph);
@@ -53,6 +52,9 @@ public:
       // Clean up
       canonicalizer.removeDepListRepitition(func);
       canonicalizer.removeRedundantWaitAllOps(func);
+
+      // Dump graphs
+      canonicalizer.dumpDotGraphFiles(trHostGraph, clDumpDir);
     }
   }
 
