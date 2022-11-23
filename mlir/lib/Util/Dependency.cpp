@@ -331,10 +331,6 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
       addVertexFromOpImpls(op, global_graph.g, dep_ctx);
       if (auto launch = dyn_cast<air::LaunchOp>(op)) {
         addVerticesInLaunch(global_graph.subgraphs, launch, dep_ctx);
-      } else if (auto partition = dyn_cast<air::PartitionOp>(op)) {
-        addVerticesInPartition(global_graph.subgraphs, partition, dep_ctx);
-      } else if (auto herd = dyn_cast<air::HerdOp>(op)) {
-        addVerticesInHerd(global_graph.subgraphs, herd, dep_ctx);
       }
     }
   });
@@ -436,8 +432,6 @@ void dependencyCanonicalizer::addVerticesInLaunch(
       if (auto partition = dyn_cast<air::PartitionOp>(launch_childop)) {
         addVerticesInPartition(current_launch_graph->subgraphs, partition,
                                dep_ctx);
-      } else if (auto herd = dyn_cast<air::HerdOp>(launch_childop)) {
-        addVerticesInHerd(current_launch_graph->subgraphs, herd, dep_ctx);
       }
     }
   });
@@ -777,34 +771,32 @@ void dependencyCanonicalizer::connectOpToItsDepListImpls(
     for (auto dep_token : async_op.getAsyncDependencies()) {
       dep_list.push_back(dep_token);
     }
-    connectOpToItsDepList(op, dep_list, g, dep_ctx);
   }
   // scf.for
   else if (auto forop = dyn_cast<scf::ForOp>(op)) {
     for (auto iter_operand : forop.getIterOperands()) {
       dep_list.push_back(iter_operand);
     }
-    connectOpToItsDepList(op, dep_list, g, dep_ctx);
   }
   // scf.parallel
   else if (auto parallelop = dyn_cast<scf::ParallelOp>(op)) {
     for (auto operand : parallelop->getOperands()) {
       dep_list.push_back(operand);
     }
-    connectOpToItsDepList(op, dep_list, g, dep_ctx);
   }
   // scf.yield
   else if (auto yieldop = dyn_cast<scf::YieldOp>(op)) {
     for (auto operand : yieldop->getOperands()) {
       dep_list.push_back(operand);
     }
-    connectOpToItsDepList(op, dep_list, g, dep_ctx);
   }
   // scf.reduce
   else if (auto reduceop = dyn_cast<scf::ReduceOp>(op)) {
     for (auto operand : reduceop->getOperands()) {
       dep_list.push_back(operand);
     }
+  }
+  if (dep_list.size()){
     connectOpToItsDepList(op, dep_list, g, dep_ctx);
   }
 }
@@ -833,14 +825,15 @@ void dependencyCanonicalizer::connectOpToItsDepList(
 std::vector<Operation *>
 dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
   std::vector<Operation *> output;
-  // If dependency token is the iter arg of an scf for loop
-  if (auto forop = getForRegionIterArgsOwner(dep_token)) {
-    output.push_back(forop);
+  // If dependency token is the init arg of an scf parallel loop
+  // Note: checking for scf parallel first here, because its init_val is not its block argument
+  if (auto parallelop = getParallelRegionInitValsOwner(op, dep_token)) {
+    output.push_back(parallelop);
     return output;
   }
-  // Else if dependency token is the init arg of an scf parallel loop
-  else if (auto parallelop = getParallelRegionInitValsOwner(op, dep_token)) {
-    output.push_back(parallelop);
+  // Else if dependency token is the iter arg of an scf for loop
+  else if (auto forop = getForRegionIterArgsOwner(dep_token)) {
+    output.push_back(forop);
     return output;
   }
   // Else if dependency token originates from async op
