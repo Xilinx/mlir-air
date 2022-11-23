@@ -52,9 +52,14 @@ public:
       // Clean up
       canonicalizer.removeDepListRepitition(func);
       canonicalizer.removeRedundantWaitAllOps(func);
+      func.walk([&](Operation *op) {
+        op->removeAttr("id");
+      });
 
-      // Dump graphs
-      canonicalizer.dumpDotGraphFiles(trHostGraph, clDumpDir);
+      if (clDumpGraph){
+        // Dump graphs
+        canonicalizer.dumpDotGraphFiles(trHostGraph, clDumpDir);
+      }
     }
   }
 
