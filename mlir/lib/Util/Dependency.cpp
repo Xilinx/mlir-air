@@ -256,11 +256,18 @@ std::string getMemorySpaceAsString(Value memref) {
   return memorySpaceStr;
 }
 
+// Get channel declaration through channel symbol
+air::ChannelOp getChannelDeclarationThroughSymbol(air::ChannelInterface op){
+  auto module = op->getParentOfType<ModuleOp>();
+  return dyn_cast<air::ChannelOp>(module.lookupSymbol(op.getChanName()));
+}
+
 // Get the other channel op through channel symbol
 air::ChannelGetOp getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put) {
   auto module = put->getParentOfType<ModuleOp>();
-  auto channel_op =
-      dyn_cast<air::ChannelOp>(module.lookupSymbol(put.getChanName()));
+  // auto channel_op =
+  //     dyn_cast<air::ChannelOp>(module.lookupSymbol(put.getChanName()));
+  auto channel_op = getChannelDeclarationThroughSymbol(dyn_cast<air::ChannelInterface>(put.getOperation()));
   auto attr =
       channel_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
 
@@ -283,8 +290,9 @@ air::ChannelGetOp getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put) {
 }
 air::ChannelPutOp getTheOtherChannelOpThroughSymbol(air::ChannelGetOp get) {
   auto module = get->getParentOfType<ModuleOp>();
-  auto channel_op =
-      dyn_cast<air::ChannelOp>(module.lookupSymbol(get.getChanName()));
+  // auto channel_op =
+  //     dyn_cast<air::ChannelOp>(module.lookupSymbol(get.getChanName()));
+  auto channel_op = getChannelDeclarationThroughSymbol(dyn_cast<air::ChannelInterface>(get.getOperation()));
   auto attr =
       channel_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
 
@@ -509,10 +517,25 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
     assert(channel_get && "found channel op not in pairs");
     std::string memorySpaceDstStr =
         getMemorySpaceAsString(channel_get.getDstMemref());
-    return addVertexFromOp(op, dep_ctx.DmaOpID, "channel",
-                           "ChannelPutOp(" + memorySpaceSrcStr + "-->" +
-                               memorySpaceDstStr + ")",
-                           "cyan", "oval", G, dep_ctx);
+    std::string event_name = "ChannelPutOp(" + memorySpaceSrcStr + "-->" +
+                               memorySpaceDstStr + ")";
+    auto channel_op = getChannelDeclarationThroughSymbol(op);
+    if (channel_op->hasAttr("output_shape")){
+      auto size = extractFromI64ArrayAttr(channel_op.getSize());
+      event_name += "\n(broadcast[";
+      for (auto &s : size){
+        event_name += std::to_string(s);
+        if (&s != &size.back()) event_name += ",";
+      }
+      event_name += "]-->[";
+      auto bsize = extractFromI64ArrayAttr(channel_op->getAttrOfType<mlir::ArrayAttr>("output_shape"));
+      for (auto &s : bsize){
+        event_name += std::to_string(s);
+        if (&s != &bsize.back()) event_name += ",";
+      }
+      event_name += "])";
+    }
+    return addVertexFromOp(op, dep_ctx.DmaOpID, "channel", event_name, "cyan", "oval", G, dep_ctx);
   } else if (auto channel_get =
                  dyn_cast<xilinx::air::ChannelGetOp>(op.getOperation())) {
     std::string memorySpaceDstStr =
@@ -521,10 +544,24 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
     assert(channel_put && "found channel op not in pairs");
     std::string memorySpaceSrcStr =
         getMemorySpaceAsString(channel_put.getSrcMemref());
-    return addVertexFromOp(op, dep_ctx.DmaOpID, "channel",
-                           "ChannelGetOp(" + memorySpaceDstStr + "<--" +
-                               memorySpaceSrcStr + ")",
-                           "cyan", "oval", G, dep_ctx);
+    std::string event_name = "ChannelGetOp(" + memorySpaceDstStr + "<--" + memorySpaceSrcStr + ")";
+    auto channel_op = getChannelDeclarationThroughSymbol(op);
+    if (channel_op->hasAttr("output_shape")){
+      auto size = extractFromI64ArrayAttr(channel_op.getSize());
+      event_name += "\n(broadcast[";
+      for (auto &s : size){
+        event_name += std::to_string(s);
+        if (&s != &size.back()) event_name += ",";
+      }
+      event_name += "]-->[";
+      auto bsize = extractFromI64ArrayAttr(channel_op->getAttrOfType<mlir::ArrayAttr>("output_shape"));
+      for (auto &s : bsize){
+        event_name += std::to_string(s);
+        if (&s != &bsize.back()) event_name += ",";
+      }
+      event_name += "])";
+    }
+    return addVertexFromOp(op, dep_ctx.DmaOpID, "channel", event_name, "cyan", "oval", G, dep_ctx);
   } else {
     assert(false && "Unknown channel op");
     return 0;
