@@ -620,8 +620,42 @@ unsigned getScfParDimIdFromBCastDma(air::DmaMemcpyInterface memcpyOp){
 //   }
 // }
 
-void replaceAIRDmaWithAIRChannelPairs(OpBuilder &builder, unsigned innerMemorySpace, air::DmaMemcpyNdOp op, SmallVector<air::ChannelInterface, 1> &internalGetPutVector, SmallVector<air::ChannelInterface, 1> &externalGetPutVector){
+// Create channel name as string
+std::string createChannelName(ModuleOp module){
+  std::string new_cname = "channel_0";
+  std::string cname = "channel";
+  int which_try = 0;
+  while (module.lookupSymbol(new_cname))
+    new_cname = cname + "_" + std::to_string(++which_try);
+  cname = new_cname;
+  return cname;
+}
 
+// Create channel symbol
+air::ChannelOp createChannelOpWithBCast(OpBuilder builder, ModuleOp module, std::string cname, Location loc, SmallVector<int64_t, 2> bcast_sizes){
+  auto insertionCheckpoint = builder.saveInsertionPoint();
+  builder.setInsertionPointToStart(module.getBody());
+
+  auto channel_op = builder.create<air::ChannelOp>(
+      loc, cname,
+      builder.getI64ArrayAttr(bcast_sizes));
+
+  builder.restoreInsertionPoint(insertionCheckpoint);
+
+  return channel_op;
+}
+
+// Annotate post-broadcast shape
+void annotateChannelOpWithBCastShape(OpBuilder builder, air::ChannelOp channel_op, air::HerdOp herd){
+  auto herd_size = herd.getSizeOperands();
+  SmallVector<int64_t, 1> output_shape;
+  for (auto operand : herd_size){
+    output_shape.push_back(operand.getDefiningOp<arith::ConstantIndexOp>().value());
+  }
+  channel_op->setAttr("broadcast_shape", builder.getI64ArrayAttr(output_shape));
+}
+
+void replaceAIRDmaWithAIRChannelPairs(OpBuilder &builder, unsigned innerMemorySpace, air::DmaMemcpyNdOp op, SmallVector<air::ChannelInterface, 1> &internalGetPutVector, SmallVector<air::ChannelInterface, 1> &externalGetPutVector){
   auto loc = op->getLoc();
   auto src = op.getSrcMemref();
   auto dst = op.getDstMemref();
@@ -649,23 +683,9 @@ void replaceAIRDmaWithAIRChannelPairs(OpBuilder &builder, unsigned innerMemorySp
   air::ChannelInterface externalGetPut = nullptr;
   air::ChannelInterface internalGetPut = nullptr;
 
-  SmallVector<Value, 4> emptyDeps;
-  SmallVector<Type, 4> tys;
-  if (auto op_token = op.getAsyncToken()) {
-    tys.push_back(air::AsyncTokenType::get(ctx));
-  }
-  std::string new_cname = "channel_0";
-  std::string cname = "channel";
-  int which_try = 0;
-
   // Create channel symbol
   auto module = op->getParentOfType<ModuleOp>();
-  while (module.lookupSymbol(new_cname))
-    new_cname = cname + "_" + std::to_string(++which_try);
-  cname = new_cname;
-
-  auto insertionCheckpoint = builder.saveInsertionPoint();
-  builder.setInsertionPointToStart(module.getBody());
+  auto cname = createChannelName(module);
 
   // Infer broadcast shape from integer set, if broadcast_set attribute is set
   if (op->hasAttr("broadcast_set")){
@@ -673,10 +693,9 @@ void replaceAIRDmaWithAIRChannelPairs(OpBuilder &builder, unsigned innerMemorySp
     SmallVector<int, 2> lbs_int = {-1, -1};
     SmallVector<int, 2> ubs_int = {-1, -1};
     getBCastSizesFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
-    SmallVector<int32_t, 2> bcast_sizes = {ubs_int[0] - lbs_int[0] + 1, ubs_int[1] - lbs_int[1] + 1};
-    builder.create<air::ChannelOp>(
-        loc, cname,
-        mlir::ArrayAttr::get(ctx, {mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), bcast_sizes[0]), mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), bcast_sizes[1])}));
+    SmallVector<int64_t, 2> bcast_sizes = {ubs_int[0] - lbs_int[0] + 1, ubs_int[1] - lbs_int[1] + 1};
+    auto channel_op = createChannelOpWithBCast(builder, module, cname, loc, bcast_sizes);
+    annotateChannelOpWithBCastShape(builder, channel_op, op->getParentOfType<air::HerdOp>());
   }
   else if (op->hasAttr("broadcast_pattern")){
     // Else if broadcast_pattern attribute is set, i.e. lowering a set of broadcast channels together
@@ -686,24 +705,12 @@ void replaceAIRDmaWithAIRChannelPairs(OpBuilder &builder, unsigned innerMemorySp
     getBCastSizesFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
     SmallVector<int64_t, 2> bcast_sizes = {1, 1};
     bcast_sizes[getScfParDimIdFromBCastDma(dyn_cast<air::DmaMemcpyInterface>(op.getOperation()))] = ubs_int[0] - lbs_int[0] + 1;
-    auto channel_op = builder.create<air::ChannelOp>(
-        loc, cname,
-        builder.getI64ArrayAttr(bcast_sizes));
-    // Annotate post-broadcast shape
-    auto parent_herd_op = op->getParentOfType<air::HerdOp>();
-    auto herd_size = parent_herd_op.getSizeOperands();
-    SmallVector<int64_t, 1> output_shape;
-    for (auto operand : herd_size){
-      output_shape.push_back(operand.getDefiningOp<arith::ConstantIndexOp>().value());
-    }
-    channel_op->setAttr("output_shape", builder.getI64ArrayAttr(output_shape));
+    auto channel_op = createChannelOpWithBCast(builder, module, cname, loc, bcast_sizes);
+    annotateChannelOpWithBCastShape(builder, channel_op, op->getParentOfType<air::HerdOp>());
   }
   else {
-    builder.create<air::ChannelOp>(
-        loc, cname,
-        mlir::ArrayAttr::get(ctx, {}));
+    createChannelOpWithBCast(builder, module, cname, loc, SmallVector<int64_t, 2>{});
   }
-  builder.restoreInsertionPoint(insertionCheckpoint);
 
   SmallVector<Value, 1> channel_idx_internal{};
   SmallVector<Value, 1> channel_idx_external{};
@@ -724,6 +731,10 @@ void replaceAIRDmaWithAIRChannelPairs(OpBuilder &builder, unsigned innerMemorySp
   }
 
   // Create channel put-get pair
+  SmallVector<Type, 4> tys;
+  if (auto op_token = op.getAsyncToken()) {
+    tys.push_back(air::AsyncTokenType::get(ctx));
+  }
   if (dst_type.getMemorySpaceAsInt() == innerMemorySpace) {
     auto internal = builder.create<air::ChannelGetOp>(
         loc, tys, internalDeps, FlatSymbolRefAttr::get(ctx, cname),

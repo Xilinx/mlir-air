@@ -10,10 +10,10 @@
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 module attributes {torch.debug_module_name = "mmult"} {
-// CHECK: air.channel @channel_3 [1]
-// CHECK: air.channel @channel_2 [1]
-// CHECK: air.channel @channel_1 [1]
-// CHECK: air.channel @channel_0 [1]
+// CHECK: air.channel @channel_3 []
+// CHECK: air.channel @channel_2 []
+// CHECK: air.channel @channel_1 []
+// CHECK: air.channel @channel_0 []
 // CHECK-LABEL: func.func @mmult
   func.func @mmult(%arg0: memref<64x64xi32>, %arg1: memref<64x64xi32>) -> memref<64x64xi32> {
     %c2 = arith.constant 2 : index
