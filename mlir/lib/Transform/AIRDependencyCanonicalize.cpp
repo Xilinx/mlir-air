@@ -52,9 +52,6 @@ public:
       // Clean up
       canonicalizer.removeDepListRepitition(func);
       canonicalizer.removeRedundantWaitAllOps(func);
-      func.walk([&](Operation *op) {
-        op->removeAttr("id");
-      });
 
       if (clDumpGraph){
         // Dump graphs

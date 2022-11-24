@@ -331,6 +331,12 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
       addVertexFromOpImpls(op, global_graph.g, dep_ctx);
       if (auto launch = dyn_cast<air::LaunchOp>(op)) {
         addVerticesInLaunch(global_graph.subgraphs, launch, dep_ctx);
+      } else if (dyn_cast<air::PartitionOp>(op) && (!op->getParentOfType<air::LaunchOp>())) {
+        auto partition = dyn_cast<air::PartitionOp>(op);
+        addVerticesInPartition(global_graph.subgraphs, partition, dep_ctx);
+      } else if (dyn_cast<air::HerdOp>(op) && (!op->getParentOfType<air::LaunchOp>()) && (!op->getParentOfType<air::PartitionOp>())) {
+        auto herd = dyn_cast<air::HerdOp>(op);
+        addVerticesInHerd(global_graph.subgraphs, herd, dep_ctx);
       }
     }
   });
@@ -432,6 +438,10 @@ void dependencyCanonicalizer::addVerticesInLaunch(
       if (auto partition = dyn_cast<air::PartitionOp>(launch_childop)) {
         addVerticesInPartition(current_launch_graph->subgraphs, partition,
                                dep_ctx);
+      }
+      else if (dyn_cast<air::HerdOp>(launch_childop) && (!launch_childop->getParentOfType<air::PartitionOp>())) {
+        auto herd = dyn_cast<air::HerdOp>(launch_childop);
+        addVerticesInHerd(current_launch_graph->subgraphs, herd, dep_ctx);
       }
     }
   });
