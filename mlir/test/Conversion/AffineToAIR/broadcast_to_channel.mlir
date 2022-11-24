@@ -1,4 +1,4 @@
-//===- broadcast_to_channel_async.mlir -------------------------*- MLIR -*-===//
+//===- broadcast_to_channel.mlir -------------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2022, Xilinx Inc. All rights reserved.
 // Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
