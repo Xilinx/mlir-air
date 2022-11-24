@@ -192,12 +192,16 @@ static void addReduceOpToAsyncParallel(OpBuilder builder,
                                        scf::ParallelOp scf_par,
                                        MLIRContext *ctx) {
 
-  // Remove the old scf::YieldOp
+  // Check if scf::YieldOp already exists in scf parallel
   SmallVector<scf::YieldOp, 2> y_ops(scf_par.getOps<scf::YieldOp>());
-  for (auto y_op : y_ops)
-    y_op.erase();
+  if (y_ops.size()){
+    assert(y_ops.size() == 1);
+    builder.setInsertionPoint(y_ops[0]);
+  }
+  else {
+    builder.setInsertionPointToEnd(scf_par.getBody());
+  }
 
-  builder.setInsertionPointToEnd(scf_par.getBody());
   auto wait_all_op_yielded = builder.create<air::WaitAllOp>(
       scf_par.getLoc(), air::AsyncTokenType::get(ctx), SmallVector<Value, 1>{});
   auto reduce_op = builder.create<scf::ReduceOp>(
@@ -211,7 +215,6 @@ static void addReduceOpToAsyncParallel(OpBuilder builder,
   builder.create<scf::ReduceReturnOp>(builder.getUnknownLoc(),
                                       reduce_res.getResult(0));
   builder.setInsertionPointToEnd(scf_par.getBody());
-  builder.create<scf::YieldOp>(scf_par.getLoc());
 
   wait_all_op_yielded->setAttr("hoist-channel", StringAttr::get(ctx, "dep"));
   reduce_op->setAttr("hoist-channel", StringAttr::get(ctx, "dep"));
