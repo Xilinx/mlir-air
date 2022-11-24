@@ -694,8 +694,8 @@ void replaceAIRDmaWithAIRChannelPairs(OpBuilder &builder, unsigned innerMemorySp
     SmallVector<int, 2> ubs_int = {-1, -1};
     getBCastSizesFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
     SmallVector<int64_t, 2> bcast_sizes = {ubs_int[0] - lbs_int[0] + 1, ubs_int[1] - lbs_int[1] + 1};
-    auto channel_op = createChannelOpWithBCast(builder, module, cname, loc, bcast_sizes);
-    annotateChannelOpWithBCastShape(builder, channel_op, op->getParentOfType<air::HerdOp>());
+    auto channel_op = createChannelOpWithBCast(builder, module, cname, loc, SmallVector<int64_t, 2>{});
+    channel_op->setAttr("broadcast_shape", builder.getI64ArrayAttr(bcast_sizes));
   }
   else if (op->hasAttr("broadcast_pattern")){
     // Else if broadcast_pattern attribute is set, i.e. lowering a set of broadcast channels together
