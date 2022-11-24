@@ -47,6 +47,10 @@ void renumberDmaOps(func::FuncOp func, std::string mode = "herd");
 
 std::string to_string(Operation *op);
 
+mlir::AffineIfOp getAffineIfInBlock(mlir::Block *block);
+
+air::DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block);
+
 struct LinalgTransforms {
   static const StringLiteral kLinalgTransformMarker;
 };
