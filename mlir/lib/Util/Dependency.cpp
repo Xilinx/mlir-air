@@ -524,7 +524,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
     std::string event_name = "ChannelPutOp(" + memorySpaceSrcStr + "-->" +
                                memorySpaceDstStr + ")";
     auto channel_op = getChannelDeclarationThroughSymbol(op);
-    if (channel_op->hasAttr("output_shape")){
+    if (channel_op->hasAttr("broadcast_shape")){
       auto size = extractFromI64ArrayAttr(channel_op.getSize());
       event_name += "\n(broadcast[";
       for (auto &s : size){
@@ -532,7 +532,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
         if (&s != &size.back()) event_name += ",";
       }
       event_name += "]-->[";
-      auto bsize = extractFromI64ArrayAttr(channel_op->getAttrOfType<mlir::ArrayAttr>("output_shape"));
+      auto bsize = extractFromI64ArrayAttr(channel_op->getAttrOfType<mlir::ArrayAttr>("broadcast_shape"));
       for (auto &s : bsize){
         event_name += std::to_string(s);
         if (&s != &bsize.back()) event_name += ",";
@@ -550,7 +550,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
         getMemorySpaceAsString(channel_put.getSrcMemref());
     std::string event_name = "ChannelGetOp(" + memorySpaceDstStr + "<--" + memorySpaceSrcStr + ")";
     auto channel_op = getChannelDeclarationThroughSymbol(op);
-    if (channel_op->hasAttr("output_shape")){
+    if (channel_op->hasAttr("broadcast_shape")){
       auto size = extractFromI64ArrayAttr(channel_op.getSize());
       event_name += "\n(broadcast[";
       for (auto &s : size){
@@ -558,7 +558,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
         if (&s != &size.back()) event_name += ",";
       }
       event_name += "]-->[";
-      auto bsize = extractFromI64ArrayAttr(channel_op->getAttrOfType<mlir::ArrayAttr>("output_shape"));
+      auto bsize = extractFromI64ArrayAttr(channel_op->getAttrOfType<mlir::ArrayAttr>("broadcast_shape"));
       for (auto &s : bsize){
         event_name += std::to_string(s);
         if (&s != &bsize.back()) event_name += ",";
