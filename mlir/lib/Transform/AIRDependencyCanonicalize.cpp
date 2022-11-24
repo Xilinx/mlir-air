@@ -51,6 +51,7 @@ public:
 
       // Clean up
       canonicalizer.removeDepListRepitition(func);
+      canonicalizer.removeUnusedExecuteOp(func);
       canonicalizer.removeRedundantWaitAllOps(func);
 
       if (clDumpGraph){
