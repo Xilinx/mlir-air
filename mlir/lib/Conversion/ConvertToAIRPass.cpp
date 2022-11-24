@@ -492,22 +492,6 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
   }
 };
 
-// Returns the first affine if op in block; nullptr otherwise
-mlir::AffineIfOp getAffineIfInBlock(mlir::Block * block){
-  for (auto op : block->getOps<mlir::AffineIfOp>()){
-    return op;
-  }
-  return mlir::AffineIfOp();
-}
-
-// Returns the first air.dma op in block; nullptr otherwise
-air::DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block * block){
-  for (auto op : block->getOps<air::DmaMemcpyNdOp>()){
-    return op;
-  }
-  return air::DmaMemcpyNdOp();
-}
-
 void getBCastSizesFromIntegerSet(MLIRContext * ctx, IntegerSet int_set, SmallVector<int, 2> &lbs_int, SmallVector<int, 2> &ubs_int){
   
   auto constraints = int_set.getConstraints();
@@ -566,62 +550,6 @@ unsigned getScfParDimIdFromBCastDma(air::DmaMemcpyInterface memcpyOp){
   assert(false && "cannot trace dependency to parent herd");
   return 0;
 }
-
-// void getIntegerSetsFromBroadcastPattern(air::DmaMemcpyNdOp memcpyOp, SmallVector<mlir::IntegerSet, 1> &int_sets){
-//   assert(memcpyOp->hasAttr("broadcast_pattern"));
-//   auto broadcast_pattern =
-//       memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern");
-//   auto ctx = memcpyOp->getContext();
-//   auto is = broadcast_pattern.getValue();
-//   auto constraints = is.getConstraints();
-//   auto eqFlags = is.getEqFlags();
-
-//   unsigned numPartitions = 0;
-//   // Get symbol range (i.e. partition range)
-//   SmallVector<AffineExpr, 1> zero_syms{
-//       getAffineConstantExpr(0, ctx),
-//   };
-//   for (auto c : constraints) {
-//     if (c.isSymbolicOrConstant()) {
-//       auto newC = c.replaceSymbols(zero_syms);
-//       auto expr =
-//           simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
-//       if (!expr) {
-//         continue;
-//       }
-//       if (expr.getValue() != 0) {
-//         numPartitions = expr.getValue() + 1;
-//       }
-//     }
-//   }
-//   // Walk each set in the patitioning scheme
-//   // Specialize each affine set
-//   for (unsigned i = 0; i < numPartitions; i++) {
-//     SmallVector<AffineExpr, 2> newConstraints;
-//     SmallVector<bool, 2> newEqflags;
-//     SmallVector<AffineExpr, 1> i_syms{
-//         getAffineConstantExpr(i, ctx),
-//     };
-//     SmallVector<AffineExpr, 2> syms{
-//         getAffineSymbolExpr(0, ctx),
-//         getAffineSymbolExpr(1, ctx),
-//     };
-//     int c_iter = 0;
-//     for (auto c : constraints) {
-//       if (!c.isSymbolicOrConstant()) {
-//         // Substitute partition id i_syms into inequalities
-//         auto newC = c.replaceSymbols(i_syms);
-//         // Replace all dims with symbols
-//         newC = newC.replaceDims(syms);
-//         newConstraints.push_back(newC);
-//         newEqflags.push_back(eqFlags[c_iter]);
-//       }
-//       c_iter++;
-//     }
-//     auto int_set = IntegerSet::get(0, 2, newConstraints, newEqflags);
-//     int_sets.push_back(int_set);
-//   }
-// }
 
 // Create channel name as string
 std::string createChannelName(ModuleOp module){

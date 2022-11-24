@@ -874,14 +874,28 @@ dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
   else if (dep_token.getDefiningOp() &&
            dyn_cast<mlir::AffineIfOp>(dep_token.getDefiningOp())) {
     auto aifop = dyn_cast<mlir::AffineIfOp>(dep_token.getDefiningOp());
+    // The first then block
     auto then_terminator = aifop.getThenBlock()->getTerminator();
     for (auto operand : then_terminator->getOperands()) {
       if (auto op = operand.getDefiningOp()) {
         output.push_back(op);
       }
     }
-    auto else_terminator = aifop.getElseBlock()->getTerminator();
-    for (auto operand : else_terminator->getOperands()) {
+    // Recursion
+    mlir::AffineIfOp current_aif = aifop;
+    while(getAffineIfInBlock(current_aif.getElseBlock())){
+      auto child_aif_op = getAffineIfInBlock(current_aif.getElseBlock());
+      auto child_aif_terminator = child_aif_op.getThenBlock()->getTerminator();
+      for (auto operand : child_aif_terminator->getOperands()) {
+        if (auto op = operand.getDefiningOp()) {
+          output.push_back(op);
+        }
+      }
+      current_aif = child_aif_op;
+    }
+    // The last else block
+    auto last_else_terminator = current_aif.getElseBlock()->getTerminator();
+    for (auto operand : last_else_terminator->getOperands()) {
       if (auto op = operand.getDefiningOp()) {
         output.push_back(op);
       }
@@ -1191,8 +1205,12 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
         } else if (auto async_src_op =
                        dyn_cast<xilinx::air::AsyncOpInterface>(src_op)) {
           // Elevate src token if src op is in affine if
-          if (auto parent_affine_if_op =
-                  dyn_cast<mlir::AffineIfOp>(src_op->getParentOp())) {
+          // if (auto parent_affine_if_op =
+          //         dyn_cast<mlir::AffineIfOp>(src_op->getParentOp())) {
+          //   src_op = parent_affine_if_op.getOperation();
+          // }
+          while (dyn_cast<mlir::AffineIfOp>(src_op->getParentOp())){
+            auto parent_affine_if_op = dyn_cast<mlir::AffineIfOp>(src_op->getParentOp());
             src_op = parent_affine_if_op.getOperation();
           }
           async_op.addAsyncDependency(src_op->getResult(0));
