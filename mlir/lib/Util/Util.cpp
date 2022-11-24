@@ -267,16 +267,16 @@ std::string to_string(Operation *op) {
 }
 
 // Returns the first affine if op in block; nullptr otherwise
-mlir::AffineIfOp getAffineIfInBlock(mlir::Block * block){
-  for (auto op : block->getOps<mlir::AffineIfOp>()){
+mlir::AffineIfOp getAffineIfInBlock(mlir::Block *block) {
+  for (auto op : block->getOps<mlir::AffineIfOp>()) {
     return op;
   }
   return mlir::AffineIfOp();
 }
 
 // Returns the first air.dma op in block; nullptr otherwise
-air::DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block * block){
-  for (auto op : block->getOps<air::DmaMemcpyNdOp>()){
+air::DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block) {
+  for (auto op : block->getOps<air::DmaMemcpyNdOp>()) {
     return op;
   }
   return air::DmaMemcpyNdOp();

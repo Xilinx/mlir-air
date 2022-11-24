@@ -257,7 +257,7 @@ std::string getMemorySpaceAsString(Value memref) {
 }
 
 // Get channel declaration through channel symbol
-air::ChannelOp getChannelDeclarationThroughSymbol(air::ChannelInterface op){
+air::ChannelOp getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
   auto module = op->getParentOfType<ModuleOp>();
   return dyn_cast<air::ChannelOp>(module.lookupSymbol(op.getChanName()));
 }
@@ -267,7 +267,8 @@ air::ChannelGetOp getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put) {
   auto module = put->getParentOfType<ModuleOp>();
   // auto channel_op =
   //     dyn_cast<air::ChannelOp>(module.lookupSymbol(put.getChanName()));
-  auto channel_op = getChannelDeclarationThroughSymbol(dyn_cast<air::ChannelInterface>(put.getOperation()));
+  auto channel_op = getChannelDeclarationThroughSymbol(
+      dyn_cast<air::ChannelInterface>(put.getOperation()));
   auto attr =
       channel_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
 
@@ -292,7 +293,8 @@ air::ChannelPutOp getTheOtherChannelOpThroughSymbol(air::ChannelGetOp get) {
   auto module = get->getParentOfType<ModuleOp>();
   // auto channel_op =
   //     dyn_cast<air::ChannelOp>(module.lookupSymbol(get.getChanName()));
-  auto channel_op = getChannelDeclarationThroughSymbol(dyn_cast<air::ChannelInterface>(get.getOperation()));
+  auto channel_op = getChannelDeclarationThroughSymbol(
+      dyn_cast<air::ChannelInterface>(get.getOperation()));
   auto attr =
       channel_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
 
@@ -331,10 +333,13 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
       addVertexFromOpImpls(op, global_graph.g, dep_ctx);
       if (auto launch = dyn_cast<air::LaunchOp>(op)) {
         addVerticesInLaunch(global_graph.subgraphs, launch, dep_ctx);
-      } else if (dyn_cast<air::PartitionOp>(op) && (!op->getParentOfType<air::LaunchOp>())) {
+      } else if (dyn_cast<air::PartitionOp>(op) &&
+                 (!op->getParentOfType<air::LaunchOp>())) {
         auto partition = dyn_cast<air::PartitionOp>(op);
         addVerticesInPartition(global_graph.subgraphs, partition, dep_ctx);
-      } else if (dyn_cast<air::HerdOp>(op) && (!op->getParentOfType<air::LaunchOp>()) && (!op->getParentOfType<air::PartitionOp>())) {
+      } else if (dyn_cast<air::HerdOp>(op) &&
+                 (!op->getParentOfType<air::LaunchOp>()) &&
+                 (!op->getParentOfType<air::PartitionOp>())) {
         auto herd = dyn_cast<air::HerdOp>(op);
         addVerticesInHerd(global_graph.subgraphs, herd, dep_ctx);
       }
@@ -438,8 +443,8 @@ void dependencyCanonicalizer::addVerticesInLaunch(
       if (auto partition = dyn_cast<air::PartitionOp>(launch_childop)) {
         addVerticesInPartition(current_launch_graph->subgraphs, partition,
                                dep_ctx);
-      }
-      else if (dyn_cast<air::HerdOp>(launch_childop) && (!launch_childop->getParentOfType<air::PartitionOp>())) {
+      } else if (dyn_cast<air::HerdOp>(launch_childop) &&
+                 (!launch_childop->getParentOfType<air::PartitionOp>())) {
         auto herd = dyn_cast<air::HerdOp>(launch_childop);
         addVerticesInHerd(current_launch_graph->subgraphs, herd, dep_ctx);
       }
@@ -521,25 +526,29 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
     assert(channel_get && "found channel op not in pairs");
     std::string memorySpaceDstStr =
         getMemorySpaceAsString(channel_get.getDstMemref());
-    std::string event_name = "ChannelPutOp(" + memorySpaceSrcStr + "-->" +
-                               memorySpaceDstStr + ")";
+    std::string event_name =
+        "ChannelPutOp(" + memorySpaceSrcStr + "-->" + memorySpaceDstStr + ")";
     auto channel_op = getChannelDeclarationThroughSymbol(op);
-    if (channel_op->hasAttr("broadcast_shape")){
+    if (channel_op->hasAttr("broadcast_shape")) {
       auto size = extractFromI64ArrayAttr(channel_op.getSize());
       event_name += "\n(broadcast[";
-      for (auto &s : size){
+      for (auto &s : size) {
         event_name += std::to_string(s);
-        if (&s != &size.back()) event_name += ",";
+        if (&s != &size.back())
+          event_name += ",";
       }
       event_name += "]-->[";
-      auto bsize = extractFromI64ArrayAttr(channel_op->getAttrOfType<mlir::ArrayAttr>("broadcast_shape"));
-      for (auto &s : bsize){
+      auto bsize = extractFromI64ArrayAttr(
+          channel_op->getAttrOfType<mlir::ArrayAttr>("broadcast_shape"));
+      for (auto &s : bsize) {
         event_name += std::to_string(s);
-        if (&s != &bsize.back()) event_name += ",";
+        if (&s != &bsize.back())
+          event_name += ",";
       }
       event_name += "])";
     }
-    return addVertexFromOp(op, dep_ctx.DmaOpID, "channel", event_name, "cyan", "oval", G, dep_ctx);
+    return addVertexFromOp(op, dep_ctx.DmaOpID, "channel", event_name, "cyan",
+                           "oval", G, dep_ctx);
   } else if (auto channel_get =
                  dyn_cast<xilinx::air::ChannelGetOp>(op.getOperation())) {
     std::string memorySpaceDstStr =
@@ -548,24 +557,29 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
     assert(channel_put && "found channel op not in pairs");
     std::string memorySpaceSrcStr =
         getMemorySpaceAsString(channel_put.getSrcMemref());
-    std::string event_name = "ChannelGetOp(" + memorySpaceDstStr + "<--" + memorySpaceSrcStr + ")";
+    std::string event_name =
+        "ChannelGetOp(" + memorySpaceDstStr + "<--" + memorySpaceSrcStr + ")";
     auto channel_op = getChannelDeclarationThroughSymbol(op);
-    if (channel_op->hasAttr("broadcast_shape")){
+    if (channel_op->hasAttr("broadcast_shape")) {
       auto size = extractFromI64ArrayAttr(channel_op.getSize());
       event_name += "\n(broadcast[";
-      for (auto &s : size){
+      for (auto &s : size) {
         event_name += std::to_string(s);
-        if (&s != &size.back()) event_name += ",";
+        if (&s != &size.back())
+          event_name += ",";
       }
       event_name += "]-->[";
-      auto bsize = extractFromI64ArrayAttr(channel_op->getAttrOfType<mlir::ArrayAttr>("broadcast_shape"));
-      for (auto &s : bsize){
+      auto bsize = extractFromI64ArrayAttr(
+          channel_op->getAttrOfType<mlir::ArrayAttr>("broadcast_shape"));
+      for (auto &s : bsize) {
         event_name += std::to_string(s);
-        if (&s != &bsize.back()) event_name += ",";
+        if (&s != &bsize.back())
+          event_name += ",";
       }
       event_name += "])";
     }
-    return addVertexFromOp(op, dep_ctx.DmaOpID, "channel", event_name, "cyan", "oval", G, dep_ctx);
+    return addVertexFromOp(op, dep_ctx.DmaOpID, "channel", event_name, "cyan",
+                           "oval", G, dep_ctx);
   } else {
     assert(false && "Unknown channel op");
     return 0;
@@ -806,7 +820,7 @@ void dependencyCanonicalizer::connectOpToItsDepListImpls(
       dep_list.push_back(operand);
     }
   }
-  if (dep_list.size()){
+  if (dep_list.size()) {
     connectOpToItsDepList(op, dep_list, g, dep_ctx);
   }
 }
@@ -836,7 +850,8 @@ std::vector<Operation *>
 dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
   std::vector<Operation *> output;
   // If dependency token is the init arg of an scf parallel loop
-  // Note: checking for scf parallel first here, because its init_val is not its block argument
+  // Note: checking for scf parallel first here, because its init_val is not its
+  // block argument
   if (auto parallelop = getParallelRegionInitValsOwner(op, dep_token)) {
     output.push_back(parallelop);
     return output;
@@ -883,7 +898,7 @@ dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
     }
     // Recursion
     mlir::AffineIfOp current_aif = aifop;
-    while(getAffineIfInBlock(current_aif.getElseBlock())){
+    while (getAffineIfInBlock(current_aif.getElseBlock())) {
       auto child_aif_op = getAffineIfInBlock(current_aif.getElseBlock());
       auto child_aif_terminator = child_aif_op.getThenBlock()->getTerminator();
       for (auto operand : child_aif_terminator->getOperands()) {
@@ -1209,8 +1224,9 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
           //         dyn_cast<mlir::AffineIfOp>(src_op->getParentOp())) {
           //   src_op = parent_affine_if_op.getOperation();
           // }
-          while (dyn_cast<mlir::AffineIfOp>(src_op->getParentOp())){
-            auto parent_affine_if_op = dyn_cast<mlir::AffineIfOp>(src_op->getParentOp());
+          while (dyn_cast<mlir::AffineIfOp>(src_op->getParentOp())) {
+            auto parent_affine_if_op =
+                dyn_cast<mlir::AffineIfOp>(src_op->getParentOp());
             src_op = parent_affine_if_op.getOperation();
           }
           async_op.addAsyncDependency(src_op->getResult(0));
@@ -1254,17 +1270,17 @@ void dependencyCanonicalizer::removeDepListRepitition(func::FuncOp func) {
 void dependencyCanonicalizer::removeUnusedExecuteOp(func::FuncOp func) {
   SmallVector<air::ExecuteOp, 1> erased_ops;
   func.walk([&](air::ExecuteOp op) {
-    if (op->getNumResults() == 2){
+    if (op->getNumResults() == 2) {
       auto result = op->getResult(1);
-      if (result.use_empty()){
+      if (result.use_empty()) {
         erased_ops.push_back(op);
       }
     }
   });
-  
-  for (auto op : erased_ops){
-    for (auto user : op.getAsyncToken().getUsers()){
-      if (auto async_user = dyn_cast<air::AsyncOpInterface>(user)){
+
+  for (auto op : erased_ops) {
+    for (auto user : op.getAsyncToken().getUsers()) {
+      if (auto async_user = dyn_cast<air::AsyncOpInterface>(user)) {
         eraseAsyncDependencyFromAsyncOp(async_user, op.getAsyncToken());
       }
     }

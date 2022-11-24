@@ -42,9 +42,7 @@ public:
       canonicalizer.parseCommandGraphs(func, hostGraph, dep_ctx, true,
                                        clDumpDir);
       // Purge id attribute
-      func.walk([&](Operation *op) {
-        op->removeAttr("id");
-      });
+      func.walk([&](Operation *op) { op->removeAttr("id"); });
     }
   }
 

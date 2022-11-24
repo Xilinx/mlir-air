@@ -54,7 +54,7 @@ public:
       canonicalizer.removeUnusedExecuteOp(func);
       canonicalizer.removeRedundantWaitAllOps(func);
 
-      if (clDumpGraph){
+      if (clDumpGraph) {
         // Dump graphs
         canonicalizer.dumpDotGraphFiles(trHostGraph, clDumpDir);
       }
