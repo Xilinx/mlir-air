@@ -291,8 +291,6 @@ air::ChannelGetOp getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put) {
 }
 air::ChannelPutOp getTheOtherChannelOpThroughSymbol(air::ChannelGetOp get) {
   auto module = get->getParentOfType<ModuleOp>();
-  // auto channel_op =
-  //     dyn_cast<air::ChannelOp>(module.lookupSymbol(get.getChanName()));
   auto channel_op = getChannelDeclarationThroughSymbol(
       dyn_cast<air::ChannelInterface>(get.getOperation()));
   auto attr =
@@ -424,10 +422,36 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(func::F
     }
   }
 
-  boost::get_property(flat_g, boost::graph_name) = "host";
+  // AIR channel dependency edges, overlayed as a (non-cluster) subgraph
+  ChannelMap channel_map;
+  unsigned index = 0;
+  collectAIRChannelPutAndGetInGraph(global_graph.g, maps[index++], channel_map);
+  for (auto &G_l : global_graph.subgraphs) {
+    collectAIRChannelPutAndGetInGraph(G_l.g, maps[index++], channel_map);
+    for (auto &G_p : G_l.subgraphs) {
+      collectAIRChannelPutAndGetInGraph(G_p.g, maps[index++], channel_map);
+      for (auto &G_h : G_p.subgraphs) {
+        collectAIRChannelPutAndGetInGraph(G_h.g, maps[index++], channel_map);
+      }
+    }
+  }
+  FlatGraph& flat_subg_chan = flat_g.create_subgraph();
+  for (auto &map : channel_map){
+    if (map.second.first == std::numeric_limits<int>::max()){
+      assert(false && "incomplete channel op map");
+    }
+    else if (map.second.second == std::numeric_limits<int>::max()){
+      assert(false && "incomplete channel op map");
+    }
+    auto a = add_vertex(map.second.first, flat_subg_chan);
+    auto b = add_vertex(map.second.second, flat_subg_chan);
+    auto e = add_edge(a, b, flat_subg_chan).first;
+    put(get(boost::edge_attribute, flat_subg_chan), e, GraphvizAttributes{{"style", "dashed"}});
+  }
 
   // Create subgraphs
-  unsigned index = 1;
+  boost::get_property(flat_g, boost::graph_name) = "host";
+  index = 1;
   unsigned idx_l = 0;
   unsigned idx_p = 0;
   unsigned idx_h = 0;
@@ -452,6 +476,7 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(func::F
       }
     }
   }
+
   if (dump_dot) {
     // Dump dot graphs
     std::ofstream ofs(dump_dir + "test.dot", std::ofstream::out);
@@ -589,7 +614,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
     std::string memorySpaceDstStr =
         getMemorySpaceAsString(channel_get.getDstMemref());
     std::string event_name =
-        "ChannelPutOp(" + memorySpaceSrcStr + "-->" + memorySpaceDstStr + ")";
+        "ChannelPutOp@" + channel_put.getChanName().str() + "(" + memorySpaceSrcStr + "-->" + memorySpaceDstStr + ")";
     auto channel_op = getChannelDeclarationThroughSymbol(op);
     if (channel_op->hasAttr("broadcast_shape")) {
       auto size = extractFromI64ArrayAttr(channel_op.getSize());
@@ -620,7 +645,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
     std::string memorySpaceSrcStr =
         getMemorySpaceAsString(channel_put.getSrcMemref());
     std::string event_name =
-        "ChannelGetOp(" + memorySpaceDstStr + "<--" + memorySpaceSrcStr + ")";
+        "ChannelGetOp@" + channel_get.getChanName().str() + "(" + memorySpaceDstStr + "<--" + memorySpaceSrcStr + ")";
     auto channel_op = getChannelDeclarationThroughSymbol(op);
     if (channel_op->hasAttr("broadcast_shape")) {
       auto size = extractFromI64ArrayAttr(channel_op.getSize());
@@ -875,6 +900,29 @@ void dependencyCanonicalizer::updateSubgraphFromDependencyGraph(
         auto target_it = target(*it, subg_src);
         add_edge(subg_map[*vit], subg_map[target_it], subg_dst);
       }
+    }
+  }
+}
+
+// Collect air.channel put and get pairs
+void dependencyCanonicalizer::collectAIRChannelPutAndGetInGraph(Graph g, vertex_to_flat_vertex_map map, ChannelMap &channel_map) {
+  // Search for air.channep put/get
+  auto vp = boost::vertices(g);
+  for (auto vit = vp.first; vit != vp.second; ++vit) {
+    if (g[*vit].asyncEventType == "channel"){
+      auto channel_op = dyn_cast<air::ChannelInterface>(g[*vit].op);
+      auto chan_name = channel_op.getChanName().str();
+      if (channel_map.find(chan_name) == channel_map.end()){
+        // If key not found, then create map entry with given key
+        channel_map.insert(std::make_pair(chan_name, std::make_pair(std::numeric_limits<int>::max(), std::numeric_limits<int>::max())));
+      }
+      if (dyn_cast<air::ChannelPutOp>(g[*vit].op)){
+        channel_map[chan_name].first = map[*vit];
+      }
+      else if (dyn_cast<air::ChannelGetOp>(g[*vit].op)){
+        channel_map[chan_name].second = map[*vit];
+      }
+      else assert(false && "unknown air.channel op type");
     }
   }
 }

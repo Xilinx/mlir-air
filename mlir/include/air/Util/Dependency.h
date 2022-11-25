@@ -162,6 +162,7 @@ typedef boost::subgraph< boost::adjacency_list<boost::vecS, boost::vecS, boost::
 > FlatGraph;
 typedef std::map<Graph::vertex_descriptor, FlatGraph::vertex_descriptor>
     vertex_to_flat_vertex_map;
+typedef std::map<std::string, std::pair<FlatGraph::vertex_descriptor, FlatGraph::vertex_descriptor>> ChannelMap;
 
 class dependencyCanonicalizer {
 
@@ -246,6 +247,7 @@ private:
                                     vertex_to_vertex_map &tr_to_g);
   void purgeAIRDepList(dependencyGraph &graph);
   void fillAIRDepListUsingGraphTR(dependencyGraph &graph);
+  void collectAIRChannelPutAndGetInGraph(Graph g, vertex_to_flat_vertex_map map, ChannelMap &channel_map);
 };
 
 //===----------------------------------------------------------------------===//
