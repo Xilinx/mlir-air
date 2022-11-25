@@ -400,8 +400,6 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
 void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(func::FuncOp &toplevel, dependencyGraph &global_graph,
                         dependencyContext &dep_ctx, bool dump_dot,
                         std::string dump_dir){
-  // vertex_to_flat_vertex_map
-
   // Create FlatGraph
   FlatGraph flat_g;
   std::vector<vertex_to_flat_vertex_map> maps;
