@@ -39,10 +39,13 @@ public:
     for (auto func : module.getOps<func::FuncOp>()) {
       // Parse dependency graphs
       hostGraph = dependencyGraph(func, true);
-      canonicalizer.parseCommandGraphs(func, hostGraph, dep_ctx, true,
-                                       clDumpDir);
+      canonicalizer.parseCommandGraphs(func, hostGraph, dep_ctx);
       // Purge id attribute
       func.walk([&](Operation *op) { op->removeAttr("id"); });
+
+      // Visualize graph with flattened hierarchy
+      canonicalizer.copyDependencyGraphToFlatGraphAndVisualize(func, hostGraph, dep_ctx, true,
+                                       clDumpDir);
     }
   }
 
