@@ -190,6 +190,9 @@ def air_ChannelInterface : OpInterface<"ChannelInterface"> {
     InterfaceMethod<"description",
     "int32_t", "getId"
     >,
+    InterfaceMethod<"description",
+    "StringRef", "getChanName"
+    >,
   ];
 }
 #endif

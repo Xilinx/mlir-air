@@ -11,8 +11,8 @@
 #map = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 32)>
 module {
-// CHECK: air.channel @channel_1 [1]
-// CHECK: air.channel @channel_0 [1]
+// CHECK: air.channel @channel_1 []
+// CHECK: air.channel @channel_0 []
 // CHECK-LABEL: func.func @mmult
   func.func @mmult(%arg0: memref<512x512xbf16>) {
     %c8 = arith.constant 8 : index
