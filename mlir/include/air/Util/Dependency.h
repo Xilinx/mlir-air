@@ -228,7 +228,7 @@ private:
   void parseDependencyEdgesInGraph(Graph &g, dependencyContext dep_ctx);
   void copyFromDependencyGraphToFlatGraph(Graph g_src, FlatGraph &g_dst, vertex_to_flat_vertex_map &map, bool copyEdges = false);
   void updateSubgraphFromDependencyGraph(
-    Graph subg_src, FlatGraph &subg_dst, vertex_to_flat_vertex_map map, vertex_to_flat_vertex_map &subg_map, bool copyEdges = false);
+    Graph subg_src, FlatGraph &subg_dst, vertex_to_flat_vertex_map map, bool copyEdges = false);
   void connectOpToItsDepListImpls(Operation *op, Graph &g,
                                   dependencyContext dep_ctx);
   void connectOpToItsDepList(Operation *op, SmallVector<Value, 1> dep_list,

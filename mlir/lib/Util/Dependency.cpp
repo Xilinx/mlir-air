@@ -461,31 +461,37 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(func::F
     if (global_graph.g[*vit].asyncEventName == "LaunchOp"){
       auto G_l = *global_graph.g[*vit].nextDependencyGraph;
       FlatGraph& flat_subg_l = flat_g.create_subgraph();
-      vertex_to_flat_vertex_map map_l;
-      updateSubgraphFromDependencyGraph(G_l.g, flat_subg_l, maps[index], map_l, true);
+      updateSubgraphFromDependencyGraph(G_l.g, flat_subg_l, maps[index], true);
       boost::get_property(flat_subg_l, boost::graph_name) = "cluster" + std::to_string(index);
       boost::get_property(flat_subg_l, boost::graph_graph_attribute)["label"] = "launch" + std::to_string(idx_l++);
       // Connect host "launch" graph nodes with "start" of launch subgraph
-      auto start_l = maps[index++][G_l.start_vertex];
-      add_edge(maps[0][*vit], start_l, flat_g);
-      for (auto &G_p : G_l.subgraphs) {
-        FlatGraph& flat_subg_p = flat_g.create_subgraph();
-        vertex_to_flat_vertex_map map_p;
-        updateSubgraphFromDependencyGraph(G_p.g, flat_subg_p, maps[index], map_p, true);
-        boost::get_property(flat_subg_p, boost::graph_name) = "cluster" + std::to_string(index);
-        boost::get_property(flat_subg_p, boost::graph_graph_attribute)["label"] = "partition" + std::to_string(idx_p++);
-        // Connect host "launch" graph nodes with "start" of partition subgraph
-        auto start_p = maps[index++][G_p.start_vertex];
-        add_edge(maps[0][*vit], start_p, flat_g);
-        for (auto &G_h : G_p.subgraphs) {
-          FlatGraph& flat_subg_h = flat_g.create_subgraph();
-          vertex_to_flat_vertex_map map_h;
-          updateSubgraphFromDependencyGraph(G_h.g, flat_subg_h, maps[index], map_h, true);
-          boost::get_property(flat_subg_h, boost::graph_name) = "cluster" + std::to_string(index);
-          boost::get_property(flat_subg_h, boost::graph_graph_attribute)["label"] = "herd" + std::to_string(idx_h++);
-          // Connect host "launch" graph nodes with "start" of herd subgraph
-          auto start_h = maps[index++][G_h.start_vertex];
-          add_edge(maps[0][*vit], start_h, flat_g);
+      add_edge(maps[0][*vit], maps[index][G_l.start_vertex], flat_g);
+      
+      auto map_idx_launch = index++;
+      auto vp_l = boost::vertices(G_l.g);
+      for (auto vit_l = vp_l.first; vit_l != vp_l.second; ++vit_l) {
+        if (G_l.g[*vit_l].asyncEventName == "PartitionOp"){
+          auto G_p = *G_l.g[*vit_l].nextDependencyGraph;
+          FlatGraph& flat_subg_p = flat_subg_l.create_subgraph();
+          updateSubgraphFromDependencyGraph(G_p.g, flat_subg_p, maps[index], true);
+          boost::get_property(flat_subg_p, boost::graph_name) = "cluster" + std::to_string(index);
+          boost::get_property(flat_subg_p, boost::graph_graph_attribute)["label"] = "partition" + std::to_string(idx_p++);
+          // Connect host "launch" graph nodes with "start" of partition subgraph
+          add_edge(maps[map_idx_launch][*vit_l], maps[index][G_p.start_vertex], flat_g);
+      
+          auto map_idx_partition = index++;
+          auto vp_p = boost::vertices(G_p.g);
+          for (auto vit_p = vp_p.first; vit_p != vp_p.second; ++vit_p) {
+            if (G_p.g[*vit_p].asyncEventName == "HerdOp"){
+              auto G_h = *G_p.g[*vit_p].nextDependencyGraph;
+              FlatGraph& flat_subg_h = flat_subg_p.create_subgraph();
+              updateSubgraphFromDependencyGraph(G_h.g, flat_subg_h, maps[index], true);
+              boost::get_property(flat_subg_h, boost::graph_name) = "cluster" + std::to_string(index);
+              boost::get_property(flat_subg_h, boost::graph_graph_attribute)["label"] = "herd" + std::to_string(idx_h++);
+              // Connect host "launch" graph nodes with "start" of herd subgraph
+              add_edge(maps[map_idx_partition][*vit_p], maps[index++][G_h.start_vertex], flat_g);
+            }
+          }
         }
       }
     }
@@ -493,7 +499,7 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(func::F
 
   if (dump_dot) {
     // Dump dot graphs
-    std::ofstream ofs(dump_dir + "test.dot", std::ofstream::out);
+    std::ofstream ofs(dump_dir + "graph.dot", std::ofstream::out);
     write_graphviz(ofs, flat_g);
   }
 }
@@ -900,8 +906,9 @@ void dependencyCanonicalizer::copyFromDependencyGraphToFlatGraph(
 
 // Update subgraph in FlatGraph from dependencyGraph
 void dependencyCanonicalizer::updateSubgraphFromDependencyGraph(
-    Graph subg_src, FlatGraph &subg_dst, vertex_to_flat_vertex_map map, vertex_to_flat_vertex_map &subg_map, bool copyEdges) {
+    Graph subg_src, FlatGraph &subg_dst, vertex_to_flat_vertex_map map, bool copyEdges) {
   // Update vertices
+  vertex_to_flat_vertex_map subg_map;
   auto vp = boost::vertices(subg_src);
   for (auto vit = vp.first; vit != vp.second; ++vit) {
     auto new_v = add_vertex(map[*vit], subg_dst);
