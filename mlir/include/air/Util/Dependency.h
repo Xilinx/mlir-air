@@ -31,6 +31,7 @@
 #include <boost/graph/copy.hpp>
 #include <boost/graph/graph_traits.hpp>
 #include <boost/graph/graphviz.hpp>
+#include <boost/graph/subgraph.hpp>
 #include <boost/graph/transitive_reduction.hpp>
 
 using namespace mlir;
@@ -148,6 +149,28 @@ struct dependencyContext {
         ForOpID(0), ParallelOpID(0), TerminatorID(0) {}
 };
 
+// Flat boost graph for visualization
+typedef std::map<std::string, std::string> GraphvizAttributes;
+typedef boost::subgraph<boost::adjacency_list<
+    boost::vecS, boost::vecS, boost::directedS,
+    boost::property<boost::vertex_attribute_t, GraphvizAttributes>,
+    boost::property<
+        boost::edge_index_t, int,
+        boost::property<boost::edge_attribute_t, GraphvizAttributes>>,
+    boost::property<
+        boost::graph_name_t, std::string,
+        boost::property<
+            boost::graph_graph_attribute_t, GraphvizAttributes,
+            boost::property<boost::graph_vertex_attribute_t, GraphvizAttributes,
+                            boost::property<boost::graph_edge_attribute_t,
+                                            GraphvizAttributes>>>>>>
+    FlatGraph;
+typedef std::map<Graph::vertex_descriptor, FlatGraph::vertex_descriptor>
+    vertex_to_flat_vertex_map;
+typedef std::map<std::string, std::pair<FlatGraph::vertex_descriptor,
+                                        FlatGraph::vertex_descriptor>>
+    ChannelMap;
+
 class dependencyCanonicalizer {
 
 public:
@@ -164,6 +187,13 @@ public:
   void removeRedundantWaitAllOps(func::FuncOp func);
   void dumpDotGraphFiles(dependencyGraph global_graph,
                          std::string dump_dir = "");
+  void copyDependencyGraphToFlatGraphAndVisualize(func::FuncOp &toplevel,
+                                                  dependencyGraph &global_graph,
+                                                  dependencyContext &dep_ctx,
+                                                  bool dump_dot = false,
+                                                  std::string dump_dir = "");
+  void removeRedundantAIRHierarchyArgs(func::FuncOp func);
+  void canonicalizeAIRHierarchyDependency(func::FuncOp func);
 
 private:
   void addVerticesInHerd(std::vector<dependencyGraph> &herd_subgraphs,
@@ -207,6 +237,12 @@ private:
   getVertexFromOp(Operation *op, dependencyContext dep_ctx,
                   std::string front_or_back = "front");
   void parseDependencyEdgesInGraph(Graph &g, dependencyContext dep_ctx);
+  void copyFromDependencyGraphToFlatGraph(Graph g_src, FlatGraph &g_dst,
+                                          vertex_to_flat_vertex_map &map,
+                                          bool copyEdges = false);
+  void updateSubgraphFromDependencyGraph(Graph subg_src, FlatGraph &subg_dst,
+                                         vertex_to_flat_vertex_map map,
+                                         bool copyEdges = false);
   void connectOpToItsDepListImpls(Operation *op, Graph &g,
                                   dependencyContext dep_ctx);
   void connectOpToItsDepList(Operation *op, SmallVector<Value, 1> dep_list,
@@ -225,6 +261,8 @@ private:
                                     vertex_to_vertex_map &tr_to_g);
   void purgeAIRDepList(dependencyGraph &graph);
   void fillAIRDepListUsingGraphTR(dependencyGraph &graph);
+  void collectAIRChannelPutAndGetInGraph(Graph g, vertex_to_flat_vertex_map map,
+                                         ChannelMap &channel_map);
 };
 
 //===----------------------------------------------------------------------===//

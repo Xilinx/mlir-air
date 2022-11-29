@@ -282,5 +282,38 @@ air::DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block) {
   return air::DmaMemcpyNdOp();
 }
 
+// Erase a kernel operand from air.hierarchy op
+void eraseAIRHierarchyOperand(air::HierarchyInterface op, unsigned index) {
+  assert(index + 1 <= op->getNumOperands() && "Index out of range");
+  auto numAsyncDeps = dyn_cast<air::AsyncOpInterface>(op.getOperation())
+                          .getAsyncDependencies()
+                          .size();
+  auto removed_operand_index = index + numAsyncDeps + op.getNumDims();
+  op->eraseOperands(removed_operand_index);
+  if (!op->template hasTrait<OpTrait::AttrSizedOperandSegments>())
+    return;
+  auto attrName =
+      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
+  auto sizeAttr = op->template getAttrOfType<DenseI32ArrayAttr>(attrName);
+  if (!sizeAttr)
+    return; // Async dependencies is the only variadic operand.
+  SmallVector<int32_t, 8> sizes;
+  for (auto size : sizeAttr.asArrayRef()) {
+    sizes.push_back(size);
+  }
+  // Find which bin the erased operand belongs to in OperandSegmentSizes
+  int32_t sum = 0;
+  unsigned i = 0;
+  for (auto s : sizes) {
+    sum += s;
+    if (sum > removed_operand_index) {
+      sizes[i]--;
+      break;
+    }
+    i++;
+  }
+  op->setAttr(attrName, Builder(op->getContext()).getDenseI32ArrayAttr(sizes));
+}
+
 } // namespace air
 } // namespace xilinx
