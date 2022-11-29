@@ -434,6 +434,7 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(func::F
                         std::string dump_dir){
   // Create FlatGraph
   FlatGraph flat_g;
+  boost::get_property(flat_g, boost::graph_graph_attribute)["rankdir"] = "LR";
   std::vector<vertex_to_flat_vertex_map> maps;
 
   // Copy vertices and edges to flat graph
