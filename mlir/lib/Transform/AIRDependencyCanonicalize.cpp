@@ -50,11 +50,11 @@ public:
       canonicalizer.updateDepList(func, trHostGraph);
 
       // Clean up
-      canonicalizer.removeDepListRepitition(func);
       canonicalizer.removeUnusedExecuteOp(func);
       canonicalizer.removeRedundantWaitAllOps(func);
       canonicalizer.removeRedundantAIRHierarchyArgs(func);
       canonicalizer.canonicalizeAIRHierarchyDependency(func);
+      canonicalizer.removeDepListRepitition(func);
 
       if (clDumpGraph) {
         // Dump graphs
