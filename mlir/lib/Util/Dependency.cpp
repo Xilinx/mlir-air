@@ -179,30 +179,32 @@ void traceDependentScfLoopToken(air::AsyncOpInterface async_op,
                                 std::vector<Operation *> &op_history) {
 
   // Check for immediate dependency to control tokens
-  for (auto token : async_op.getAsyncDependencies()){
-    if (auto for_op = getForRegionIterArgsOwner(token)){
+  for (auto token : async_op.getAsyncDependencies()) {
+    if (auto for_op = getForRegionIterArgsOwner(token)) {
       control_token_history.push_back(token);
       return;
     }
-    if (auto parallel_op = getParallelRegionInitValsOwner(async_op.getOperation(), token)){
+    if (auto parallel_op =
+            getParallelRegionInitValsOwner(async_op.getOperation(), token)) {
       control_token_history.push_back(token);
       return;
     }
-    if (token.getDefiningOp() && dyn_cast<air::WaitAllOp>(token.getDefiningOp())){
+    if (token.getDefiningOp() &&
+        dyn_cast<air::WaitAllOp>(token.getDefiningOp())) {
       control_token_history.push_back(token);
       return;
     }
   }
 
   // Recursively trace dependency to scf loop tokens
-  for (auto token : async_op.getAsyncDependencies()){
+  for (auto token : async_op.getAsyncDependencies()) {
     if (token.getDefiningOp() &&
         mlir::dyn_cast<air::AsyncOpInterface>(token.getDefiningOp())) {
       auto ancestor_async_op =
           dyn_cast<air::AsyncOpInterface>(token.getDefiningOp());
       op_history.push_back(ancestor_async_op.getOperation());
       traceDependentScfLoopToken(ancestor_async_op, control_token_history,
-                                  op_history);
+                                 op_history);
     }
   }
 }
@@ -429,9 +431,9 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
   }
 }
 
-void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(func::FuncOp &toplevel, dependencyGraph &global_graph,
-                        dependencyContext &dep_ctx, bool dump_dot,
-                        std::string dump_dir){
+void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
+    func::FuncOp &toplevel, dependencyGraph &global_graph,
+    dependencyContext &dep_ctx, bool dump_dot, std::string dump_dir) {
   // Create FlatGraph
   FlatGraph flat_g;
   boost::get_property(flat_g, boost::graph_graph_attribute)["rankdir"] = "LR";
@@ -470,18 +472,18 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(func::F
       }
     }
   }
-  FlatGraph& flat_subg_chan = flat_g.create_subgraph();
-  for (auto &map : channel_map){
-    if (map.second.first == std::numeric_limits<int>::max()){
+  FlatGraph &flat_subg_chan = flat_g.create_subgraph();
+  for (auto &map : channel_map) {
+    if (map.second.first == std::numeric_limits<int>::max()) {
       assert(false && "incomplete channel op map");
-    }
-    else if (map.second.second == std::numeric_limits<int>::max()){
+    } else if (map.second.second == std::numeric_limits<int>::max()) {
       assert(false && "incomplete channel op map");
     }
     auto a = add_vertex(map.second.first, flat_subg_chan);
     auto b = add_vertex(map.second.second, flat_subg_chan);
     auto e = add_edge(a, b, flat_subg_chan).first;
-    put(get(boost::edge_attribute, flat_subg_chan), e, GraphvizAttributes{{"style", "dashed"}});
+    put(get(boost::edge_attribute, flat_subg_chan), e,
+        GraphvizAttributes{{"style", "dashed"}});
   }
 
   // Create subgraphs
@@ -493,38 +495,51 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(func::F
 
   auto vp = boost::vertices(global_graph.g);
   for (auto vit = vp.first; vit != vp.second; ++vit) {
-    if (global_graph.g[*vit].asyncEventName == "LaunchOp"){
+    if (global_graph.g[*vit].asyncEventName == "LaunchOp") {
       auto G_l = *global_graph.g[*vit].nextDependencyGraph;
-      FlatGraph& flat_subg_l = flat_g.create_subgraph();
+      FlatGraph &flat_subg_l = flat_g.create_subgraph();
       updateSubgraphFromDependencyGraph(G_l.g, flat_subg_l, maps[index], true);
-      boost::get_property(flat_subg_l, boost::graph_name) = "cluster" + std::to_string(index);
-      boost::get_property(flat_subg_l, boost::graph_graph_attribute)["label"] = "launch" + std::to_string(idx_l++);
+      boost::get_property(flat_subg_l, boost::graph_name) =
+          "cluster" + std::to_string(index);
+      boost::get_property(flat_subg_l, boost::graph_graph_attribute)["label"] =
+          "launch" + std::to_string(idx_l++);
       // Connect host "launch" graph nodes with "start" of launch subgraph
       add_edge(maps[0][*vit], maps[index][G_l.start_vertex], flat_g);
-      
+
       auto map_idx_launch = index++;
       auto vp_l = boost::vertices(G_l.g);
       for (auto vit_l = vp_l.first; vit_l != vp_l.second; ++vit_l) {
-        if (G_l.g[*vit_l].asyncEventName == "PartitionOp"){
+        if (G_l.g[*vit_l].asyncEventName == "PartitionOp") {
           auto G_p = *G_l.g[*vit_l].nextDependencyGraph;
-          FlatGraph& flat_subg_p = flat_subg_l.create_subgraph();
-          updateSubgraphFromDependencyGraph(G_p.g, flat_subg_p, maps[index], true);
-          boost::get_property(flat_subg_p, boost::graph_name) = "cluster" + std::to_string(index);
-          boost::get_property(flat_subg_p, boost::graph_graph_attribute)["label"] = "partition" + std::to_string(idx_p++);
-          // Connect host "launch" graph nodes with "start" of partition subgraph
-          add_edge(maps[map_idx_launch][*vit_l], maps[index][G_p.start_vertex], flat_g);
-      
+          FlatGraph &flat_subg_p = flat_subg_l.create_subgraph();
+          updateSubgraphFromDependencyGraph(G_p.g, flat_subg_p, maps[index],
+                                            true);
+          boost::get_property(flat_subg_p, boost::graph_name) =
+              "cluster" + std::to_string(index);
+          boost::get_property(flat_subg_p,
+                              boost::graph_graph_attribute)["label"] =
+              "partition" + std::to_string(idx_p++);
+          // Connect host "launch" graph nodes with "start" of partition
+          // subgraph
+          add_edge(maps[map_idx_launch][*vit_l], maps[index][G_p.start_vertex],
+                   flat_g);
+
           auto map_idx_partition = index++;
           auto vp_p = boost::vertices(G_p.g);
           for (auto vit_p = vp_p.first; vit_p != vp_p.second; ++vit_p) {
-            if (G_p.g[*vit_p].asyncEventName == "HerdOp"){
+            if (G_p.g[*vit_p].asyncEventName == "HerdOp") {
               auto G_h = *G_p.g[*vit_p].nextDependencyGraph;
-              FlatGraph& flat_subg_h = flat_subg_p.create_subgraph();
-              updateSubgraphFromDependencyGraph(G_h.g, flat_subg_h, maps[index], true);
-              boost::get_property(flat_subg_h, boost::graph_name) = "cluster" + std::to_string(index);
-              boost::get_property(flat_subg_h, boost::graph_graph_attribute)["label"] = "herd" + std::to_string(idx_h++);
+              FlatGraph &flat_subg_h = flat_subg_p.create_subgraph();
+              updateSubgraphFromDependencyGraph(G_h.g, flat_subg_h, maps[index],
+                                                true);
+              boost::get_property(flat_subg_h, boost::graph_name) =
+                  "cluster" + std::to_string(index);
+              boost::get_property(flat_subg_h,
+                                  boost::graph_graph_attribute)["label"] =
+                  "herd" + std::to_string(idx_h++);
               // Connect host "launch" graph nodes with "start" of herd subgraph
-              add_edge(maps[map_idx_partition][*vit_p], maps[index++][G_h.start_vertex], flat_g);
+              add_edge(maps[map_idx_partition][*vit_p],
+                       maps[index++][G_h.start_vertex], flat_g);
             }
           }
         }
@@ -668,8 +683,9 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
     assert(channel_get && "found channel op not in pairs");
     std::string memorySpaceDstStr =
         getMemorySpaceAsString(channel_get.getDstMemref());
-    std::string event_name =
-        "ChannelPutOp@" + channel_put.getChanName().str() + "(" + memorySpaceSrcStr + "-->" + memorySpaceDstStr + ")";
+    std::string event_name = "ChannelPutOp@" + channel_put.getChanName().str() +
+                             "(" + memorySpaceSrcStr + "-->" +
+                             memorySpaceDstStr + ")";
     auto channel_op = getChannelDeclarationThroughSymbol(op);
     if (channel_op->hasAttr("broadcast_shape")) {
       auto size = extractFromI64ArrayAttr(channel_op.getSize());
@@ -699,8 +715,9 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
     assert(channel_put && "found channel op not in pairs");
     std::string memorySpaceSrcStr =
         getMemorySpaceAsString(channel_put.getSrcMemref());
-    std::string event_name =
-        "ChannelGetOp@" + channel_get.getChanName().str() + "(" + memorySpaceDstStr + "<--" + memorySpaceSrcStr + ")";
+    std::string event_name = "ChannelGetOp@" + channel_get.getChanName().str() +
+                             "(" + memorySpaceDstStr + "<--" +
+                             memorySpaceSrcStr + ")";
     auto channel_op = getChannelDeclarationThroughSymbol(op);
     if (channel_op->hasAttr("broadcast_shape")) {
       auto size = extractFromI64ArrayAttr(channel_op.getSize());
@@ -919,19 +936,25 @@ dependencyCanonicalizer::getVertexFromOp(Operation *op,
 
 // Copy vertices and edges from dependencyGraph to FlatGraph
 void dependencyCanonicalizer::copyFromDependencyGraphToFlatGraph(
-    Graph g_src, FlatGraph &g_dst, vertex_to_flat_vertex_map &map, bool copyEdges) {
+    Graph g_src, FlatGraph &g_dst, vertex_to_flat_vertex_map &map,
+    bool copyEdges) {
   // Copy vertices
   auto vp = boost::vertices(g_src);
   for (auto vit = vp.first; vit != vp.second; ++vit) {
     auto new_v = add_vertex(g_dst);
     // Copy vertex asyncEventName
-    put(get(boost::vertex_attribute, g_dst), new_v, GraphvizAttributes{{"label", g_src[*vit].asyncEventName}, {"color", g_src[*vit].color}, {"shape", g_src[*vit].shape}, {"style", "filled"}});
+    put(get(boost::vertex_attribute, g_dst), new_v,
+        GraphvizAttributes{{"label", g_src[*vit].asyncEventName},
+                           {"color", g_src[*vit].color},
+                           {"shape", g_src[*vit].shape},
+                           {"style", "filled"}});
     map.insert(std::make_pair(*vit, new_v));
   }
-  if (copyEdges){
+  if (copyEdges) {
     // Copy edges
     for (auto vit = vp.first; vit != vp.second; ++vit) {
-      for (auto it = out_edges(*vit, g_src).first; it != out_edges(*vit, g_src).second; it++) {
+      for (auto it = out_edges(*vit, g_src).first;
+           it != out_edges(*vit, g_src).second; it++) {
         auto target_it = target(*it, g_src);
         add_edge(map[*vit], map[target_it], g_dst);
       }
@@ -941,7 +964,8 @@ void dependencyCanonicalizer::copyFromDependencyGraphToFlatGraph(
 
 // Update subgraph in FlatGraph from dependencyGraph
 void dependencyCanonicalizer::updateSubgraphFromDependencyGraph(
-    Graph subg_src, FlatGraph &subg_dst, vertex_to_flat_vertex_map map, bool copyEdges) {
+    Graph subg_src, FlatGraph &subg_dst, vertex_to_flat_vertex_map map,
+    bool copyEdges) {
   // Update vertices
   vertex_to_flat_vertex_map subg_map;
   auto vp = boost::vertices(subg_src);
@@ -949,10 +973,11 @@ void dependencyCanonicalizer::updateSubgraphFromDependencyGraph(
     auto new_v = add_vertex(map[*vit], subg_dst);
     subg_map.insert(std::make_pair(*vit, new_v));
   }
-  if (copyEdges){
+  if (copyEdges) {
     // Update edges
     for (auto vit = vp.first; vit != vp.second; ++vit) {
-      for (auto it = out_edges(*vit, subg_src).first; it != out_edges(*vit, subg_src).second; it++) {
+      for (auto it = out_edges(*vit, subg_src).first;
+           it != out_edges(*vit, subg_src).second; it++) {
         auto target_it = target(*it, subg_src);
         add_edge(subg_map[*vit], subg_map[target_it], subg_dst);
       }
@@ -961,24 +986,26 @@ void dependencyCanonicalizer::updateSubgraphFromDependencyGraph(
 }
 
 // Collect air.channel put and get pairs
-void dependencyCanonicalizer::collectAIRChannelPutAndGetInGraph(Graph g, vertex_to_flat_vertex_map map, ChannelMap &channel_map) {
+void dependencyCanonicalizer::collectAIRChannelPutAndGetInGraph(
+    Graph g, vertex_to_flat_vertex_map map, ChannelMap &channel_map) {
   // Search for air.channep put/get
   auto vp = boost::vertices(g);
   for (auto vit = vp.first; vit != vp.second; ++vit) {
-    if (g[*vit].asyncEventType == "channel"){
+    if (g[*vit].asyncEventType == "channel") {
       auto channel_op = dyn_cast<air::ChannelInterface>(g[*vit].op);
       auto chan_name = channel_op.getChanName().str();
-      if (channel_map.find(chan_name) == channel_map.end()){
+      if (channel_map.find(chan_name) == channel_map.end()) {
         // If key not found, then create map entry with given key
-        channel_map.insert(std::make_pair(chan_name, std::make_pair(std::numeric_limits<int>::max(), std::numeric_limits<int>::max())));
+        channel_map.insert(std::make_pair(
+            chan_name, std::make_pair(std::numeric_limits<int>::max(),
+                                      std::numeric_limits<int>::max())));
       }
-      if (dyn_cast<air::ChannelPutOp>(g[*vit].op)){
+      if (dyn_cast<air::ChannelPutOp>(g[*vit].op)) {
         channel_map[chan_name].first = map[*vit];
-      }
-      else if (dyn_cast<air::ChannelGetOp>(g[*vit].op)){
+      } else if (dyn_cast<air::ChannelGetOp>(g[*vit].op)) {
         channel_map[chan_name].second = map[*vit];
-      }
-      else assert(false && "unknown air.channel op type");
+      } else
+        assert(false && "unknown air.channel op type");
     }
   }
 }
@@ -1513,9 +1540,10 @@ void dependencyCanonicalizer::removeRedundantWaitAllOps(func::FuncOp func) {
 }
 
 // air.hierarchy ops should only depend on scf loop ops
-void dependencyCanonicalizer::canonicalizeAIRHierarchyDependency(func::FuncOp func){
+void dependencyCanonicalizer::canonicalizeAIRHierarchyDependency(
+    func::FuncOp func) {
   func.walk([&](air::HierarchyInterface hier) {
-    if (dyn_cast<air::LaunchOp>(hier.getOperation())){
+    if (dyn_cast<air::LaunchOp>(hier.getOperation())) {
       // air.launch is strictly synchronous
       return;
     }
@@ -1525,31 +1553,37 @@ void dependencyCanonicalizer::canonicalizeAIRHierarchyDependency(func::FuncOp fu
     SmallVector<Value, 1> control_token_history;
     std::vector<Operation *> op_history;
     traceDependentScfLoopToken(async_hier, control_token_history, op_history);
-    for (auto token : control_token_history){
+    for (auto token : control_token_history) {
       async_hier.addAsyncDependency(token);
     }
-    // Erase non-control dependencies; air hierarchy ops should only depend on control events
-    for (auto dep : async_hier.getAsyncDependencies()){
-      if ((!getForRegionIterArgsOwner(dep)) && (!getParallelRegionInitValsOwner(hier.getOperation(), dep))){
-        if (dep.getDefiningOp() && (!dyn_cast<air::WaitAllOp>(dep.getDefiningOp()))){
+    // Erase non-control dependencies; air hierarchy ops should only depend on
+    // control events
+    for (auto dep : async_hier.getAsyncDependencies()) {
+      if ((!getForRegionIterArgsOwner(dep)) &&
+          (!getParallelRegionInitValsOwner(hier.getOperation(), dep))) {
+        if (dep.getDefiningOp() &&
+            (!dyn_cast<air::WaitAllOp>(dep.getDefiningOp()))) {
           erased_tokens.push_back(dep);
         }
       }
     }
-    for (auto dep : erased_tokens){
+    for (auto dep : erased_tokens) {
       eraseAsyncDependencyFromAsyncOp(async_hier, dep);
     }
   });
 }
 
 // Remove unused air.hierarchy arguments
-void dependencyCanonicalizer::removeRedundantAIRHierarchyArgs(func::FuncOp func) {
+void dependencyCanonicalizer::removeRedundantAIRHierarchyArgs(
+    func::FuncOp func) {
   auto module = func->getParentOfType<ModuleOp>();
   OpBuilder builder(module);
   SmallVector<air::HierarchyInterface, 1> erased_ops;
   func.walk([&](air::HierarchyInterface hier) {
-    // for (unsigned hier_operand_id = 0; hier_operand_id < hier.getNumKernelOperands(); hier_operand_id++) {
-    for (int hier_operand_id = hier.getNumKernelOperands() - 1; hier_operand_id >= 0; hier_operand_id--) {
+    // for (unsigned hier_operand_id = 0; hier_operand_id <
+    // hier.getNumKernelOperands(); hier_operand_id++) {
+    for (int hier_operand_id = hier.getNumKernelOperands() - 1;
+         hier_operand_id >= 0; hier_operand_id--) {
       if (hier.getKernelArguments()[hier_operand_id].use_empty()) {
         eraseAIRHierarchyOperand(hier, hier_operand_id);
       }
