@@ -8,10 +8,10 @@
 // RUN: air-opt -airrt-to-llvm %s | FileCheck %s
 
 // CHECK-LABEL: func.func @wait
-// CHECK: %[[V0:.*]] = call @air_wait_all_1_0() : () -> !llvm.ptr<i64>
-// CHECK: call @air_wait_all_0_1(%[[V0]]) : (!llvm.ptr<i64>) -> ()
-// CHECK: %[[V1:.*]] = call @air_wait_all_1_1(%[[V0]]) : (!llvm.ptr<i64>) -> !llvm.ptr<i64>
-// CHECK: call @air_wait_all_0_2(%[[V0]], %[[V1]]) : (!llvm.ptr<i64>, !llvm.ptr<i64>) -> ()
+// CHECK: %[[V0:.*]] = call @__airrt_wait_all_1_0() : () -> !llvm.ptr<i64>
+// CHECK: call @__airrt_wait_all_0_1(%[[V0]]) : (!llvm.ptr<i64>) -> ()
+// CHECK: %[[V1:.*]] = call @__airrt_wait_all_1_1(%[[V0]]) : (!llvm.ptr<i64>) -> !llvm.ptr<i64>
+// CHECK: call @__airrt_wait_all_0_2(%[[V0]], %[[V1]]) : (!llvm.ptr<i64>, !llvm.ptr<i64>) -> ()
 func.func @wait() {
   %1 = airrt.wait_all : !airrt.event
   airrt.wait_all %1
@@ -21,11 +21,11 @@ func.func @wait() {
 }
 
 // CHECK-LABEL: func.func @scf_for
-// CHECK: %[[V0:.*]] = call @air_wait_all_1_0() : () -> !llvm.ptr<i64>
+// CHECK: %[[V0:.*]] = call @__airrt_wait_all_1_0() : () -> !llvm.ptr<i64>
 // CHECK: %[[V1:.*]] = scf.for {{.*}} iter_args(%[[V2:.*]] = %[[V0]]) -> (!llvm.ptr<i64>) {
-// CHECK:   %[[V3:.*]] = func.call @air_wait_all_1_1(%[[V2]]) : (!llvm.ptr<i64>) -> !llvm.ptr<i64>
+// CHECK:   %[[V3:.*]] = func.call @__airrt_wait_all_1_1(%[[V2]]) : (!llvm.ptr<i64>) -> !llvm.ptr<i64>
 // CHECK:   scf.yield %[[V3]] : !llvm.ptr<i64>
-// CHECK: call @air_wait_all_0_1(%[[V1]]) : (!llvm.ptr<i64>) -> ()
+// CHECK: call @__airrt_wait_all_0_1(%[[V1]]) : (!llvm.ptr<i64>) -> ()
 func.func @scf_for() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -41,12 +41,12 @@ func.func @scf_for() {
 
 // CHECK-LABEL: func.func @scf_if
 // CHECK: %[[V0:.*]] = scf.if {{.*}} -> (!llvm.ptr<i64>) {
-// CHECK:   %[[V1:.*]] = func.call @air_wait_all_1_0() : () -> !llvm.ptr<i64>
+// CHECK:   %[[V1:.*]] = func.call @__airrt_wait_all_1_0() : () -> !llvm.ptr<i64>
 // CHECK:   scf.yield %[[V1]] : !llvm.ptr<i64>
 // CHECK: } else {
-// CHECK:   %[[V1:.*]] = func.call @air_wait_all_1_0() : () -> !llvm.ptr<i64>
+// CHECK:   %[[V1:.*]] = func.call @__airrt_wait_all_1_0() : () -> !llvm.ptr<i64>
 // CHECK:   scf.yield %[[V1]] : !llvm.ptr<i64>
-// CHECK: call @air_wait_all_0_1(%[[V0]]) : (!llvm.ptr<i64>) -> ()
+// CHECK: call @__airrt_wait_all_0_1(%[[V0]]) : (!llvm.ptr<i64>) -> ()
 func.func @scf_if(%arg0: i1) {
   %0 = scf.if %arg0 -> (!airrt.event) {
     %1 = airrt.wait_all : !airrt.event

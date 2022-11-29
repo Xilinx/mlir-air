@@ -272,7 +272,8 @@ air_partition_desc_t *air_partition_get_desc(air_module_handle_t handle,
 air_module_desc_t *air_module_get_desc(air_module_handle_t handle) {
   if (!handle)
     return nullptr;
-  return (air_module_desc_t *)dlsym((void *)handle, "__air_module_descriptor");
+  return (air_module_desc_t *)dlsym((void *)handle,
+                                    "__airrt_module_descriptor");
 }
 
 uint64_t air_partition_load(const char *name) {
@@ -593,36 +594,45 @@ uint64_t air_wait_all(std::vector<uint64_t> &signals) {
 
 extern "C" {
 
-void _mlir_ciface_air_wait_all_0_0() { return; }
-void _mlir_ciface_air_wait_all_0_1(uint64_t e0) {
+uint64_t _mlir_ciface___airrt_herd_load(const char *name) {
+  return air_herd_load(name);
+}
+
+uint64_t _mlir_ciface___airrt_partition_load(const char *name) {
+  return air_partition_load(name);
+}
+
+void _mlir_ciface___airrt_wait_all_0_0() { return; }
+void _mlir_ciface___airrt_wait_all_0_1(uint64_t e0) {
   std::vector<uint64_t> events{e0, 0, 0, 0, 0};
   air_wait_all(events);
   return;
 }
-void _mlir_ciface_air_wait_all_0_2(uint64_t e0, uint64_t e1) {
+void _mlir_ciface___airrt_wait_all_0_2(uint64_t e0, uint64_t e1) {
   std::vector<uint64_t> events{e0, e1, 0, 0, 0};
   air_wait_all(events);
   return;
 }
-void _mlir_ciface_air_wait_all_0_3(uint64_t e0, uint64_t e1, uint64_t e2) {
+void _mlir_ciface___airrt_wait_all_0_3(uint64_t e0, uint64_t e1, uint64_t e2) {
   std::vector<uint64_t> events{e0, e1, e2, 0, 0};
   air_wait_all(events);
   return;
 }
 
-uint64_t _mlir_ciface_air_wait_all_1_0() {
+uint64_t _mlir_ciface___airrt_wait_all_1_0() {
   std::vector<uint64_t> events{};
   return air_wait_all(events);
 }
-uint64_t _mlir_ciface_air_wait_all_1_1(uint64_t e0) {
+uint64_t _mlir_ciface___airrt_wait_all_1_1(uint64_t e0) {
   std::vector<uint64_t> events{e0, 0, 0, 0, 0};
   return air_wait_all(events);
 }
-uint64_t _mlir_ciface_air_wait_all_1_2(uint64_t e0, uint64_t e1) {
+uint64_t _mlir_ciface___airrt_wait_all_1_2(uint64_t e0, uint64_t e1) {
   std::vector<uint64_t> events{e0, e1, 0, 0, 0};
   return air_wait_all(events);
 }
-uint64_t _mlir_ciface_air_wait_all_1_3(uint64_t e0, uint64_t e1, uint64_t e2) {
+uint64_t _mlir_ciface___airrt_wait_all_1_3(uint64_t e0, uint64_t e1,
+                                           uint64_t e2) {
   std::vector<uint64_t> events{e0, e1, e2, 0, 0};
   return air_wait_all(events);
 }
