@@ -111,7 +111,7 @@ LLVM::LLVMStructType getModuleDescriptorType(MLIRContext *ctx,
 
 LLVM::GlobalOp getOrCreateAIRString(OpBuilder builder, ModuleOp module,
                                     StringRef str) {
-  std::string llvmSymbolName = std::string("__air_string_") + str.str();
+  std::string llvmSymbolName = std::string("__airrt_string_") + str.str();
   auto global = module.lookupSymbol(llvmSymbolName);
   if (!global) {
     auto arrayTy = LLVM::LLVMArrayType::get(
@@ -143,7 +143,7 @@ createPartitionDescriptor(OpBuilder builder, ModuleOp module,
   auto arrayTy = LLVM::LLVMArrayType::get(
       LLVM::LLVMPointerType::get(getHerdDescriptorType(ctx)),
       herd_descs.size());
-  std::string str_name = "__air_partition_herd_descriptors";
+  std::string str_name = "__airrt_partition_herd_descriptors";
   int which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
@@ -162,7 +162,7 @@ createPartitionDescriptor(OpBuilder builder, ModuleOp module,
     builder.create<LLVM::ReturnOp>(loc, data);
   }
 
-  str_name = "__air_partition_descriptor";
+  str_name = "__airrt_partition_descriptor";
   which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
@@ -222,7 +222,7 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
   auto arrayTy = LLVM::LLVMArrayType::get(
       LLVM::LLVMPointerType::get(getPartitionDescriptorType(ctx, max_herds)),
       partition_herd_count.size());
-  std::string str_name = "__air_module_partition_descriptors";
+  std::string str_name = "__airrt_module_partition_descriptors";
   int which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
@@ -241,7 +241,7 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
     builder.create<LLVM::ReturnOp>(loc, data);
   }
 
-  str_name = "__air_module_descriptor";
+  str_name = "__airrt_module_descriptor";
   which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
@@ -289,7 +289,7 @@ LLVM::GlobalOp createHerdDescriptor(OpBuilder builder, ModuleOp module,
 
   auto herdName = getOrCreateAIRString(builder, module, herd_name);
 
-  std::string str_name = "__air_herd_descriptor";
+  std::string str_name = "__airrt_herd_descriptor";
   int which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
@@ -334,7 +334,7 @@ LLVM::GlobalOp createShimDescriptor(OpBuilder builder, ModuleOp module,
       LLVM::LLVMArrayType::get(IntegerType::get(ctx, 64), 16 * 8 * 8);
 
   // construct the location data global array + initializer
-  std::string str_name = "__air_shim_location_data";
+  std::string str_name = "__airrt_shim_location_data";
   int which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
@@ -361,7 +361,7 @@ LLVM::GlobalOp createShimDescriptor(OpBuilder builder, ModuleOp module,
   }
 
   // construct the channel data global array + initializer
-  str_name = "__air_shim_channel_data";
+  str_name = "__airrt_shim_channel_data";
   which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
@@ -388,7 +388,7 @@ LLVM::GlobalOp createShimDescriptor(OpBuilder builder, ModuleOp module,
   }
 
   // construct the shim descriptor + initializer
-  str_name = "__air_shim_descriptor";
+  str_name = "__airrt_shim_descriptor";
   which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
@@ -478,10 +478,10 @@ public:
   LogicalResult matchAndRewrite(xilinx::airrt::PartitionLoadOp op,
                                 PatternRewriter &rewriter) const override {
     auto ctx = op->getContext();
-    auto retTy = IntegerType::get(ctx, 64);
+    SmallVector<Type> retTys{IntegerType::get(ctx, 64)};
     SmallVector<Type, 1> tys{
         LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8))};
-    auto functionTy = LLVM::LLVMFunctionType::get(retTy, tys);
+    auto functionTy = FunctionType::get(ctx, tys, retTys);
 
     auto module = op->getParentOfType<ModuleOp>();
 
@@ -489,14 +489,13 @@ public:
     auto partition_name =
         getOrCreateAIRString(rewriter, module, op.getSymName());
 
-    auto funcOpSym = module.lookupSymbol("air_partition_load");
-    LLVM::LLVMFuncOp funcOp = nullptr;
-    if (funcOpSym)
-      funcOp = cast<LLVM::LLVMFuncOp>(funcOpSym);
-    else
-      funcOp = rewriter.create<LLVM::LLVMFuncOp>(
-          op->getLoc(), "air_partition_load", functionTy,
-          LLVM::Linkage::External);
+    auto funcOp = dyn_cast_if_present<func::FuncOp>(
+        module.lookupSymbol("__airrt_partition_load"));
+    if (!funcOp) {
+      funcOp = rewriter.create<func::FuncOp>(
+          op->getLoc(), "__airrt_partition_load", functionTy);
+      funcOp.setPrivate();
+    }
     rewriter.setInsertionPoint(op);
 
     auto partition_name_addr =
@@ -506,8 +505,8 @@ public:
         op->getLoc(), ptrTy, partition_name_addr);
     SmallVector<Value, 2> operands{partition_name_addr_cast};
 
-    LLVM::CallOp call =
-        rewriter.create<LLVM::CallOp>(op->getLoc(), funcOp, operands);
+    auto call = rewriter.create<func::CallOp>(
+        op->getLoc(), retTys, SymbolRefAttr::get(funcOp), operands);
     rewriter.replaceOp(op, call->getResults());
     return success();
   }
@@ -521,23 +520,23 @@ public:
   LogicalResult matchAndRewrite(xilinx::airrt::HerdLoadOp op,
                                 PatternRewriter &rewriter) const override {
     auto ctx = op->getContext();
-    auto retTy = IntegerType::get(ctx, 64);
+    SmallVector<Type> retTys{IntegerType::get(ctx, 64)};
     SmallVector<Type, 1> tys{
         LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8))};
-    auto functionTy = LLVM::LLVMFunctionType::get(retTy, tys);
+    auto functionTy = FunctionType::get(ctx, tys, retTys);
 
     auto module = op->getParentOfType<ModuleOp>();
 
     rewriter.setInsertionPoint(op->getParentOfType<func::FuncOp>());
     auto herd_name = getOrCreateAIRString(rewriter, module, op.getSymName());
 
-    auto funcOpSym = module.lookupSymbol("air_herd_load");
-    LLVM::LLVMFuncOp funcOp = nullptr;
-    if (funcOpSym)
-      funcOp = cast<LLVM::LLVMFuncOp>(funcOpSym);
-    else
-      funcOp = rewriter.create<LLVM::LLVMFuncOp>(
-          op->getLoc(), "air_herd_load", functionTy, LLVM::Linkage::External);
+    auto funcOp = dyn_cast_if_present<func::FuncOp>(
+        module.lookupSymbol("__airrt_herd_load"));
+    if (!funcOp) {
+      funcOp = rewriter.create<func::FuncOp>(op->getLoc(), "__airrt_herd_load",
+                                             functionTy);
+      funcOp.setPrivate();
+    }
     rewriter.setInsertionPoint(op);
 
     auto herd_name_addr =
@@ -547,8 +546,8 @@ public:
         rewriter.create<LLVM::BitcastOp>(op->getLoc(), ptrTy, herd_name_addr);
     SmallVector<Value, 2> operands{herd_name_addr_cast};
 
-    LLVM::CallOp call =
-        rewriter.create<LLVM::CallOp>(op->getLoc(), funcOp, operands);
+    auto call = rewriter.create<func::CallOp>(
+        op->getLoc(), retTys, SymbolRefAttr::get(funcOp), operands);
     rewriter.replaceOp(op, call->getResults());
     return success();
   }
@@ -747,7 +746,7 @@ public:
 
   LogicalResult matchAndRewrite(xilinx::airrt::DmaMemcpyNdOp op,
                                 PatternRewriter &rewriter) const override {
-    return lowerDmaNdMemcpy(op, rewriter, "air_dma_nd_memcpy");
+    return lowerDmaNdMemcpy(op, rewriter, "__airrt_dma_nd_memcpy");
   }
 };
 
@@ -758,7 +757,7 @@ public:
 
   LogicalResult matchAndRewrite(xilinx::airrt::MemcpyNdOp op,
                                 PatternRewriter &rewriter) const override {
-    return lowerNdMemcpy(op, rewriter, "air_nd_memcpy");
+    return lowerNdMemcpy(op, rewriter, "__airrt_nd_memcpy");
   }
 };
 
@@ -908,7 +907,7 @@ public:
 
     auto module = op->getParentOfType<ModuleOp>();
 
-    std::string fnName = "air_alloc_L2";
+    std::string fnName = "__airrt_alloc_L2";
     llvm::raw_string_ostream ss(fnName);
     ss << "_" << memrefTy.getRank();
     ss << "d" << memrefTy.getMemorySpaceAsInt();
@@ -956,7 +955,7 @@ public:
 
     auto module = op->getParentOfType<ModuleOp>();
 
-    std::string fnName = "air_dealloc_L2";
+    std::string fnName = "__airrt_dealloc_L2";
     llvm::raw_string_ostream ss(fnName);
     ss << "_" << memrefTy.getRank();
     ss << "d" << memrefTy.getMemorySpaceAsInt();
@@ -996,7 +995,7 @@ public:
         op->getNumResults(),
         LLVM::LLVMPointerType::get(IntegerType::get(ctx, 64)));
 
-    std::string fnName = "air_wait_all";
+    std::string fnName = "__airrt_wait_all";
     llvm::raw_string_ostream ss(fnName);
     ss << "_" << retTys.size() << "_" << operands.size();
 

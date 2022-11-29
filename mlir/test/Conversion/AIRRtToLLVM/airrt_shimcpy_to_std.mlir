@@ -7,9 +7,9 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -airrt-to-llvm | FileCheck %s
-// CHECK: call @air_dma_nd_memcpy_2d0i32(
-// CHECK: call @air_dma_nd_memcpy_1d1f32(
-// CHECK: call @air_dma_nd_memcpy_1d0f32(
+// CHECK: call @__airrt_dma_nd_memcpy_2d0i32(
+// CHECK: call @__airrt_dma_nd_memcpy_1d1f32(
+// CHECK: call @__airrt_dma_nd_memcpy_1d0f32(
 #map0 = affine_map<()[s0, s1] -> (s0 * 64 + s1 * 128)>
 #map1 = affine_map<(d0)[s0] -> (d0 + s0 * 16)>
 module  {

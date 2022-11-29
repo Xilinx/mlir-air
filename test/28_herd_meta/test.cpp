@@ -33,16 +33,16 @@ struct air_module_desc_t {
   air_partition_desc_t **partition_descs;
 };
 
-extern air_module_desc_t __air_module_descriptor;
+extern air_module_desc_t __airrt_module_descriptor;
 
 int
 main(int argc, char *argv[])
 {
-  int num_partitions = __air_module_descriptor.partition_length;
+  int num_partitions = __airrt_module_descriptor.partition_length;
   printf("Num Partitions: %d\n", (int)num_partitions);
   for (int j = 0; j < num_partitions; j++) {
 
-    auto partition_desc = __air_module_descriptor.partition_descs[j];
+    auto partition_desc = __airrt_module_descriptor.partition_descs[j];
     std::string partition_name(partition_desc->name,
                                partition_desc->name_length);
     printf("\tPartition %d: %s\n", j, partition_name.c_str());
