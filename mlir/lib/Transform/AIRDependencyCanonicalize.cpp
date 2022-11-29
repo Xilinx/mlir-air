@@ -53,6 +53,8 @@ public:
       canonicalizer.removeDepListRepitition(func);
       canonicalizer.removeUnusedExecuteOp(func);
       canonicalizer.removeRedundantWaitAllOps(func);
+      canonicalizer.removeRedundantAIRHierarchyArgs(func);
+      canonicalizer.canonicalizeAIRHierarchyDependency(func);
 
       if (clDumpGraph) {
         // Dump graphs

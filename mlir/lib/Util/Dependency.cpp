@@ -173,6 +173,40 @@ void traceDependentInductionVar(air::AsyncOpInterface async_op,
   }
 }
 
+// Recursively check for dependency to any control token (scf loop or wait all)
+void traceDependentScfLoopToken(air::AsyncOpInterface async_op,
+                                SmallVector<Value, 1> &control_token_history,
+                                std::vector<Operation *> &op_history) {
+
+  // Check for immediate dependency to control tokens
+  for (auto token : async_op.getAsyncDependencies()){
+    if (auto for_op = getForRegionIterArgsOwner(token)){
+      control_token_history.push_back(token);
+      return;
+    }
+    if (auto parallel_op = getParallelRegionInitValsOwner(async_op.getOperation(), token)){
+      control_token_history.push_back(token);
+      return;
+    }
+    if (token.getDefiningOp() && dyn_cast<air::WaitAllOp>(token.getDefiningOp())){
+      control_token_history.push_back(token);
+      return;
+    }
+  }
+
+  // Recursively trace dependency to scf loop tokens
+  for (auto token : async_op.getAsyncDependencies()){
+    if (token.getDefiningOp() &&
+        mlir::dyn_cast<air::AsyncOpInterface>(token.getDefiningOp())) {
+      auto ancestor_async_op =
+          dyn_cast<air::AsyncOpInterface>(token.getDefiningOp());
+      op_history.push_back(ancestor_async_op.getOperation());
+      traceDependentScfLoopToken(ancestor_async_op, control_token_history,
+                                  op_history);
+    }
+  }
+}
+
 void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op,
                                      Value token) {
   assert(token && "input value is nullptr");
@@ -1472,6 +1506,51 @@ void dependencyCanonicalizer::removeRedundantWaitAllOps(func::FuncOp func) {
         wa_op.erase();
       } else {
         wa_op->removeAttr("id");
+      }
+    }
+  });
+}
+
+// air.hierarchy ops should only depend on scf loop ops
+void dependencyCanonicalizer::canonicalizeAIRHierarchyDependency(func::FuncOp func){
+  func.walk([&](air::HierarchyInterface hier) {
+    if (dyn_cast<air::LaunchOp>(hier.getOperation())){
+      // air.launch is strictly synchronous
+      return;
+    }
+    auto async_hier = dyn_cast<air::AsyncOpInterface>(hier.getOperation());
+    SmallVector<Value, 1> erased_tokens;
+    // Add dependency to any control events involving this hierarchy op
+    SmallVector<Value, 1> control_token_history;
+    std::vector<Operation *> op_history;
+    traceDependentScfLoopToken(async_hier, control_token_history, op_history);
+    for (auto token : control_token_history){
+      async_hier.addAsyncDependency(token);
+    }
+    // Erase non-control dependencies; air hierarchy ops should only depend on control events
+    for (auto dep : async_hier.getAsyncDependencies()){
+      if ((!getForRegionIterArgsOwner(dep)) && (!getParallelRegionInitValsOwner(hier.getOperation(), dep))){
+        if (dep.getDefiningOp() && (!dyn_cast<air::WaitAllOp>(dep.getDefiningOp()))){
+          erased_tokens.push_back(dep);
+        }
+      }
+    }
+    for (auto dep : erased_tokens){
+      eraseAsyncDependencyFromAsyncOp(async_hier, dep);
+    }
+  });
+}
+
+// Remove unused air.hierarchy arguments
+void dependencyCanonicalizer::removeRedundantAIRHierarchyArgs(func::FuncOp func) {
+  auto module = func->getParentOfType<ModuleOp>();
+  OpBuilder builder(module);
+  SmallVector<air::HierarchyInterface, 1> erased_ops;
+  func.walk([&](air::HierarchyInterface hier) {
+    // for (unsigned hier_operand_id = 0; hier_operand_id < hier.getNumKernelOperands(); hier_operand_id++) {
+    for (int hier_operand_id = hier.getNumKernelOperands() - 1; hier_operand_id >= 0; hier_operand_id--) {
+      if (hier.getKernelArguments()[hier_operand_id].use_empty()) {
+        eraseAIRHierarchyOperand(hier, hier_operand_id);
       }
     }
   });

@@ -183,6 +183,8 @@ public:
   void copyDependencyGraphToFlatGraphAndVisualize(func::FuncOp &toplevel, dependencyGraph &global_graph,
                           dependencyContext &dep_ctx, bool dump_dot = false,
                           std::string dump_dir = "");
+  void removeRedundantAIRHierarchyArgs(func::FuncOp func);
+  void canonicalizeAIRHierarchyDependency(func::FuncOp func);
 
 private:
   void addVerticesInHerd(std::vector<dependencyGraph> &herd_subgraphs,
