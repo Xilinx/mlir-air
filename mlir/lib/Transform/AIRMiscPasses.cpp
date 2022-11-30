@@ -752,7 +752,9 @@ void AIRFuseParallelHerdPass::runOnOperation() {
       args.push_back(v);
   }
 
-  auto newLaunchOp = b.create<air::HerdOp>(parOp.getLoc(), dims, args);
+  auto newLaunchOp = b.create<air::HerdOp>(
+      parOp.getLoc(), launchOp.getAsyncDependencies(), dims, args,
+      launchOp->getNumResults() > 0, launchOp->getAttrs());
 
   BlockAndValueMapping remap;
   remap.map(parOp.getInductionVars()[0], (herd_size_x == 1)

@@ -41,7 +41,8 @@ def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
     OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$kernel_operands)>,
     OpBuilder<(ins "ValueRange":$async_dependencies,
       "ValueRange":$sizes,"ValueRange":$kernel_operands,
-      CArg<"bool", "false">:$is_async)>
+      CArg<"bool", "false">:$is_async,
+      CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>
   ];
   let hasCustomAssemblyFormat = 1;
   let extraClassDeclaration = [{
@@ -99,7 +100,8 @@ def air_PartitionOp : air_Op<"partition", [air_AsyncOpInterface,
     OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$kernel_operands)>,
     OpBuilder<(ins "ValueRange":$async_dependencies,
       "ValueRange":$sizes,"ValueRange":$kernel_operands,
-      CArg<"bool", "false">:$is_async)>
+      CArg<"bool", "false">:$is_async,
+      CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>
   ];
   let hasCustomAssemblyFormat = 1;
   let extraClassDeclaration = [{
@@ -189,8 +191,8 @@ def air_HerdOp : air_Op<"herd", [air_AsyncOpInterface,
     OpBuilder<(ins "ValueRange":$async_dependencies,
       "ValueRange":$sizes,
       "ValueRange":$kernel_operands,
-      CArg<"bool", "false">:$is_async
-    )>
+      CArg<"bool", "false">:$is_async,
+      CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>
   ];
   let hasCustomAssemblyFormat = 1;
   let extraClassDeclaration = [{
