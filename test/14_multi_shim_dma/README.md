@@ -12,4 +12,4 @@
 
 -----
 
-<p align="center">Copyright&copy; 2019-2022 AMD/Xilinx</p>
+<p align="center">Copyright&copy; 2019-2022 Advanced Micro Devices, Inc. All rights reserved.</p>
