@@ -41,6 +41,8 @@ mkdir -p $BUILD_DIR
 mkdir -p $INSTALL_DIR
 cd $BUILD_DIR
 
+set -o pipefail
+
 cmake ../llvm \
   -GNinja \
   -DCLANG_LINK_CLANG_DYLIB=OFF \
@@ -64,8 +66,20 @@ cmake ../llvm \
   -DLLVM_OPTIMIZED_TABLEGEN=OFF \
   -DLLVM_TARGET_ARCH="AArch64" \
   -DLLVM_TARGETS_TO_BUILD:STRING="ARM;AArch64" \
-  -DPython3_EXECUTABLE=/usr/bin/python3.8 \
   |& tee cmake.log
 
-ninja |& tee ninja.log
+ec=$?
+if [ $ec -ne 0 ]; then
+    echo "CMake Error"
+    exit $ec
+fi
+
 ninja install |& tee ninja-install.log
+
+ec=$?
+if [ $ec -ne 0 ]; then
+    echo "Build Error"
+    exit $ec
+fi
+
+exit 0
