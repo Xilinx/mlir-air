@@ -84,9 +84,9 @@ class MemrefCopyToAIRDmaConversion : public OpRewritePattern<memref::CopyOp> {
                                           auto &offsets, auto &sizes,
                                           auto &strides) {
       auto subview_offsets = subview.offsets().begin();
-      auto static_offsets = extractFromI64ArrayAttr(subview.static_offsets());
-      auto static_sizes = extractFromI64ArrayAttr(subview.static_sizes());
-      auto static_strides = extractFromI64ArrayAttr(subview.static_strides());
+      auto static_offsets = subview.getStaticOffsets();
+      auto static_sizes = subview.getStaticSizes();
+      auto static_strides = subview.getStaticStrides();
       auto loc = subview.getLoc();
 
       // get the strides and offsets from the memref type
@@ -157,9 +157,9 @@ static void extractOperandsFromSubview(memref::SubViewOp subview,
                                        SmallVector<Value, 4> &sizes,
                                        SmallVector<Value, 4> &strides) {
   auto subview_offsets = subview.offsets().begin();
-  auto static_offsets = extractFromI64ArrayAttr(subview.static_offsets());
-  auto static_sizes = extractFromI64ArrayAttr(subview.static_sizes());
-  auto static_strides = extractFromI64ArrayAttr(subview.static_strides());
+  auto static_offsets = subview.static_offsets();
+  auto static_sizes = subview.getStaticSizes();
+  auto static_strides = subview.getStaticStrides();
   auto loc = subview.getLoc();
 
   // get the strides and offsets from the memref type
