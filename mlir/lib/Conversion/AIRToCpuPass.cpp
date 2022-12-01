@@ -177,7 +177,7 @@ convertOpToFunctionWithId(Operation *op, ArrayRef<Value> operands,
   for (auto o : operands) {
     // erase the size to reduce the number of manglings
     if (auto memrefTy = o.getType().dyn_cast<MemRefType>()) {
-      auto t = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
+      auto t = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), ShapedType::kDynamic),
                                memrefTy.getElementType(), memrefTy.getLayout(),
                                memrefTy.getMemorySpace());
       callops.push_back(rewriter.create<memref::CastOp>(op->getLoc(), t, o));
@@ -259,7 +259,7 @@ convertOpToFunctionWithTileId(Operation *op, ArrayRef<Value> operands,
   for (auto o : operands) {
     // erase the size to reduce the number of manglings
     if (auto memrefTy = o.getType().dyn_cast<MemRefType>()) {
-      auto t = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
+      auto t = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), ShapedType::kDynamic),
                                memrefTy.getElementType(), memrefTy.getLayout(),
                                memrefTy.getMemorySpace());
       callops.push_back(rewriter.create<memref::CastOp>(op->getLoc(), t, o));
@@ -272,7 +272,7 @@ convertOpToFunctionWithTileId(Operation *op, ArrayRef<Value> operands,
   for (auto t : op->getResultTypes()) {
     if (auto memrefTy = t.dyn_cast<MemRefType>()) {
       auto mrt =
-          MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
+          MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), ShapedType::kDynamic),
                           memrefTy.getElementType(), memrefTy.getLayout(),
                           memrefTy.getMemorySpace());
       retTys.push_back(mrt);
