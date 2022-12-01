@@ -651,8 +651,8 @@ void replaceAIRDmaWithAIRChannelPairs(
     getBCastSizesFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
     SmallVector<int64_t, 2> bcast_sizes = {ubs_int[0] - lbs_int[0] + 1,
                                            ubs_int[1] - lbs_int[1] + 1};
-    auto channel_op = createChannelOpWithBCast(builder, module, cname, loc,
-                                               channel_sizes);
+    auto channel_op =
+        createChannelOpWithBCast(builder, module, cname, loc, channel_sizes);
     channel_op->setAttr("broadcast_shape",
                         builder.getI64ArrayAttr(bcast_sizes));
   } else if (op->hasAttr("broadcast_pattern")) {
@@ -672,8 +672,7 @@ void replaceAIRDmaWithAIRChannelPairs(
                                     op->getParentOfType<air::HerdOp>());
   } else {
     SmallVector<int64_t, 2> channel_sizes = {1, 1};
-    createChannelOpWithBCast(builder, module, cname, loc,
-                             channel_sizes);
+    createChannelOpWithBCast(builder, module, cname, loc, channel_sizes);
   }
 
   SmallVector<Value, 1> channel_idx_internal{};
