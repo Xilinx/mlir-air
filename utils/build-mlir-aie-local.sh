@@ -26,7 +26,7 @@
 
 if [ "$#" -lt 3 ]; then
     echo "ERROR: Needs at least 3 arguments for <sysroot dir>, <llvm dir> and <cmakeModules dir>."
-    exit 1
+    return
 fi
 SYSROOT_DIR=$1
 LLVM_DIR=$2

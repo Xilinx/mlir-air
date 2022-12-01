@@ -33,7 +33,7 @@
 if [ "$#" -lt 4 ]; then
     echo "ERROR: Needs at least 4 arguments for <sysroot dir>, <llvm dir>,"
     echo "<cmakeModules dir> and <mlir-aie dir>."
-    exit 1
+    return
 fi
 SYSROOT_DIR=$1
 LLVM_DIR=$2

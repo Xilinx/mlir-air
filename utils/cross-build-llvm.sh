@@ -24,7 +24,7 @@
 
 if [ "$#" -lt 2 ]; then
     echo "ERROR: Needs at least 2 arguments for <toolchain file>, <sysroot dir>."
-    exit 1
+    return
 fi
 
 CMAKE_TOOLCHAIN_FILE=$1

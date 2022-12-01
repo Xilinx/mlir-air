@@ -34,7 +34,7 @@
 if [ "$#" -lt 5 ]; then
     echo "ERROR: Needs at least 5 arguments for <sysroot dir>, <llvm dir>, "
     echo "<cmakeModules dir> and <mlir-aie dir>."
-    exit 1
+    return
 fi
 
 CMAKE_TOOLCHAIN_FILE=$1

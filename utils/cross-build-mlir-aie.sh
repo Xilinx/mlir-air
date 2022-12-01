@@ -27,7 +27,7 @@
 if [ "$#" -lt 4 ]; then
     echo "ERROR: Needs at least 4 arguments for <toolchain file>, <sysroot dir>, "
     echo "<cmakeModules dir>, <llvm dir>."
-    exit 1
+    return
 fi
 
 CMAKE_TOOLCHAIN_FILE=$1

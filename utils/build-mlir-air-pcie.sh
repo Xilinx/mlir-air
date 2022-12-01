@@ -30,7 +30,7 @@
 
 if [ "$#" -lt 3 ]; then
     echo "ERROR: Needs at least 3 arguments for <llvm dir>, <cmakeModules dir> and <mlir-aie dir>."
-    exit 1
+    return
 fi
 LLVM_DIR=$1
 CMAKEMODULES_DIR=$2
