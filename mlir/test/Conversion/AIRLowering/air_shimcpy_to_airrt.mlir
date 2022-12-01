@@ -1,38 +1,21 @@
 //===- air_shimcpy_to_airrt.mlir -------------------------------*- MLIR -*-===//
 //
-// Copyright (C) 2021-2022, Xilinx Inc.
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// Copyright (C) 2021-2022, Xilinx Inc. All rights reserved.
+// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-std | FileCheck %s
+// RUN: air-opt %s -air-to-std -cse | FileCheck %s
 
 #map0 = affine_map<()[s0, s1] -> (s0 * 64 + s1 * 128)>
 #map1 = affine_map<(d0)[s0] -> (d0 + s0 * 16)>
 module  {
   // CHECK: func.func @task2
   // CHECK: airrt.dma_memcpy_nd(%c1_i32, %{{.*}}, %{{.*}}, %arg0[%c0_i64, %{{.*}}, %{{.*}}, %{{.*}}], [%c1_i64, %{{.*}}, %{{.*}}, %{{.*}}], [%c0_i64, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<4096x1024x512xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
-  // CHECK: airrt.dma_memcpy_nd(%c2_i32, %{{.*}}, %{{.*}}, %arg1[%c0_i64_2, %{{.*}}, %{{.*}}, %{{.*}}], [%c1_i64_3, %{{.*}}, %{{.*}}, %{{.*}}], [%c0_i64_2, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<4096x1024x512xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
-  // CHECK: airrt.dma_memcpy_nd(%c3_i32, %{{.*}}, %{{.*}}, %arg2[%c0_i64_4, %{{.*}}, %{{.*}}, %{{.*}}], [%c1_i64_5, %{{.*}}, %{{.*}}, %{{.*}}], [%c0_i64_4, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<4096x1024x512xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
-  // CHECK: airrt.dma_memcpy_nd(%c4_i32, %{{.*}}, %{{.*}}, %arg2[%c0_i64_6, %{{.*}}, %{{.*}}, %{{.*}}], [%c1_i64_7, %{{.*}}, %{{.*}}, %{{.*}}], [%c0_i64_6, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<4096x1024x512xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+  // CHECK: airrt.dma_memcpy_nd(%c2_i32, %{{.*}}, %{{.*}}, %arg1[%c0_i64, %{{.*}}, %{{.*}}, %{{.*}}], [%c1_i64, %{{.*}}, %{{.*}}, %{{.*}}], [%c0_i64, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<4096x1024x512xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+  // CHECK: airrt.dma_memcpy_nd(%c3_i32, %{{.*}}, %{{.*}}, %arg2[%c0_i64, %{{.*}}, %{{.*}}, %{{.*}}], [%c1_i64, %{{.*}}, %{{.*}}, %{{.*}}], [%c0_i64, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<4096x1024x512xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+  // CHECK: airrt.dma_memcpy_nd(%c4_i32, %{{.*}}, %{{.*}}, %arg2[%c0_i64, %{{.*}}, %{{.*}}, %{{.*}}], [%c1_i64, %{{.*}}, %{{.*}}, %{{.*}}], [%c0_i64, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<4096x1024x512xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
   func.func @task2(%arg0: memref<4096x1024x512xi32>, %arg1: memref<4096x1024x512xi32>, %arg2: memref<4096x1024x512xi32>) {
     %c4 = arith.constant 4 : index
     %c128 = arith.constant 128 : index

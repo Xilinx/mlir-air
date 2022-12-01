@@ -1,25 +1,8 @@
 //===- AIRRtToLLVMPass.cpp --------------------------------------*- C++ -*-===//
 //
-// Copyright (C) 2021-2022, Xilinx Inc.
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// Copyright (C) 2021-2022, Xilinx Inc. All rights reserved.
+// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
@@ -54,15 +37,16 @@ namespace {
 //   int64_t *location_data;
 //   int64_t *channel_data;
 // }
-LLVM::LLVMStructType getShimDescriptorType(MLIRContext *ctx ) {
-  return LLVM::LLVMStructType::getLiteral(ctx,{
-    // int64_t[64]* location data
-    LLVM::LLVMPointerType::get(
-      LLVM::LLVMArrayType::get(IntegerType::get(ctx, 64), 16*8*8)),
-    // int64_t[64]* channel data
-    LLVM::LLVMPointerType::get(
-      LLVM::LLVMArrayType::get(IntegerType::get(ctx, 64), 16*8*8)),
-  });
+LLVM::LLVMStructType getShimDescriptorType(MLIRContext *ctx) {
+  return LLVM::LLVMStructType::getLiteral(
+      ctx, {
+               // int64_t[64]* location data
+               LLVM::LLVMPointerType::get(LLVM::LLVMArrayType::get(
+                   IntegerType::get(ctx, 64), 16 * 8 * 8)),
+               // int64_t[64]* channel data
+               LLVM::LLVMPointerType::get(LLVM::LLVMArrayType::get(
+                   IntegerType::get(ctx, 64), 16 * 8 * 8)),
+           });
 }
 
 // struct herd_desc_t {
@@ -70,7 +54,7 @@ LLVM::LLVMStructType getShimDescriptorType(MLIRContext *ctx ) {
 //   char *name;
 //   shim_desc_t *shim_desc;
 // }
-LLVM::LLVMStructType getHerdDescriptorType(MLIRContext *ctx ) {
+LLVM::LLVMStructType getHerdDescriptorType(MLIRContext *ctx) {
   return LLVM::LLVMStructType::getLiteral(
       ctx, {
                // int64_t name_length
@@ -127,7 +111,7 @@ LLVM::LLVMStructType getModuleDescriptorType(MLIRContext *ctx,
 
 LLVM::GlobalOp getOrCreateAIRString(OpBuilder builder, ModuleOp module,
                                     StringRef str) {
-  std::string llvmSymbolName = std::string("__air_string_") + str.str();
+  std::string llvmSymbolName = std::string("__airrt_string_") + str.str();
   auto global = module.lookupSymbol(llvmSymbolName);
   if (!global) {
     auto arrayTy = LLVM::LLVMArrayType::get(
@@ -156,22 +140,21 @@ createPartitionDescriptor(OpBuilder builder, ModuleOp module,
 
   auto partitionName = getOrCreateAIRString(builder, module, partition_name);
 
-  auto arrayTy =
-    LLVM::LLVMArrayType::get(
+  auto arrayTy = LLVM::LLVMArrayType::get(
       LLVM::LLVMPointerType::get(getHerdDescriptorType(ctx)),
-                                 herd_descs.size());
-  std::string str_name = "__air_partition_herd_descriptors";
+      herd_descs.size());
+  std::string str_name = "__airrt_partition_herd_descriptors";
   int which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
   auto herd_descs_global = builder.create<LLVM::GlobalOp>(
-      loc, arrayTy, /*isConstant=*/true, LLVM::Linkage::Internal,
-      str_name, /*value=*/Attribute());
+      loc, arrayTy, /*isConstant=*/true, LLVM::Linkage::Internal, str_name,
+      /*value=*/Attribute());
   {
     OpBuilder::InsertionGuard guard(builder);
     builder.createBlock(&herd_descs_global.getInitializerRegion());
     Value data = builder.create<LLVM::UndefOp>(loc, arrayTy);
-    for (int i=0,e=herd_descs.size(); i<e; i++) {
+    for (int i = 0, e = herd_descs.size(); i < e; i++) {
       auto a = builder.create<LLVM::AddressOfOp>(loc, herd_descs[i]);
       data = builder.create<LLVM::InsertValueOp>(
           loc, data, a, builder.getDenseI64ArrayAttr({i}));
@@ -179,13 +162,13 @@ createPartitionDescriptor(OpBuilder builder, ModuleOp module,
     builder.create<LLVM::ReturnOp>(loc, data);
   }
 
-  str_name = "__air_partition_descriptor";
+  str_name = "__airrt_partition_descriptor";
   which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
   auto descGlobal = builder.create<LLVM::GlobalOp>(
-    loc, descTy, /*isConstant=*/true, LLVM::Linkage::External,
-    str_name, /*value=*/Attribute());
+      loc, descTy, /*isConstant=*/true, LLVM::Linkage::External, str_name,
+      /*value=*/Attribute());
   if (1) {
     OpBuilder::InsertionGuard guard(builder);
     builder.createBlock(&descGlobal.getInitializerRegion());
@@ -204,11 +187,12 @@ createPartitionDescriptor(OpBuilder builder, ModuleOp module,
         partitionNameArray, ValueRange({c0, c0}));
 
     // length of the array of herd_desc_t
-    auto herd_descs_len = 
-      builder.create<LLVM::ConstantOp>(loc, IntegerType::get(ctx, 64),
-                                      builder.getI64IntegerAttr(herd_descs.size()));
+    auto herd_descs_len = builder.create<LLVM::ConstantOp>(
+        loc, IntegerType::get(ctx, 64),
+        builder.getI64IntegerAttr(herd_descs.size()));
 
-    auto herd_descs_global_addr = builder.create<LLVM::AddressOfOp>(loc, herd_descs_global);
+    auto herd_descs_global_addr =
+        builder.create<LLVM::AddressOfOp>(loc, herd_descs_global);
 
     desc = builder.create<LLVM::InsertValueOp>(loc, desc, partitionNameLen,
                                                builder.getDenseI64ArrayAttr(0));
@@ -238,7 +222,7 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
   auto arrayTy = LLVM::LLVMArrayType::get(
       LLVM::LLVMPointerType::get(getPartitionDescriptorType(ctx, max_herds)),
       partition_herd_count.size());
-  std::string str_name = "__air_module_partition_descriptors";
+  std::string str_name = "__airrt_module_partition_descriptors";
   int which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
@@ -257,7 +241,7 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
     builder.create<LLVM::ReturnOp>(loc, data);
   }
 
-  str_name = "__air_module_descriptor";
+  str_name = "__airrt_module_descriptor";
   which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
@@ -291,8 +275,7 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
 
 LLVM::GlobalOp createHerdDescriptor(OpBuilder builder, ModuleOp module,
                                     LLVM::GlobalOp shim_desc,
-                                    xilinx::airrt::HerdMetadataOp herd)
-{
+                                    xilinx::airrt::HerdMetadataOp herd) {
   auto ctx = module.getContext();
   builder.setInsertionPointAfter(shim_desc);
   auto loc = builder.getUnknownLoc();
@@ -300,18 +283,19 @@ LLVM::GlobalOp createHerdDescriptor(OpBuilder builder, ModuleOp module,
   auto descTy = getHerdDescriptorType(ctx);
 
   std::string herd_name = "herd";
-  if (auto attr = herd->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+  if (auto attr =
+          herd->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
     herd_name = attr.getValue().str();
 
   auto herdName = getOrCreateAIRString(builder, module, herd_name);
 
-  std::string str_name = "__air_herd_descriptor";
+  std::string str_name = "__airrt_herd_descriptor";
   int which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
   auto descGlobal = builder.create<LLVM::GlobalOp>(
-    loc, descTy, /*isConstant=*/true, LLVM::Linkage::External,
-    str_name, /*value=*/Attribute());
+      loc, descTy, /*isConstant=*/true, LLVM::Linkage::External, str_name,
+      /*value=*/Attribute());
 
   builder.createBlock(&descGlobal.getInitializerRegion());
 
@@ -322,7 +306,7 @@ LLVM::GlobalOp createHerdDescriptor(OpBuilder builder, ModuleOp module,
       builder.getI32IntegerAttr(herd_name.size()));
 
   auto c0 = builder.create<LLVM::ConstantOp>(loc, IntegerType::get(ctx, 32),
-                                              builder.getI32IntegerAttr(0));
+                                             builder.getI32IntegerAttr(0));
   auto herdNamePtr = builder.create<LLVM::GEPOp>(
       loc, LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8)), herdNameArray,
       ValueRange({c0, c0}));
@@ -340,33 +324,33 @@ LLVM::GlobalOp createHerdDescriptor(OpBuilder builder, ModuleOp module,
   return descGlobal;
 }
 
-LLVM::GlobalOp createShimDescriptor(OpBuilder builder,
-                                    ModuleOp module,
+LLVM::GlobalOp createShimDescriptor(OpBuilder builder, ModuleOp module,
                                     int64_t cols[16][8][8],
-                                    int64_t chans[16][8][8])
-{
+                                    int64_t chans[16][8][8]) {
   auto ctx = module.getContext();
   auto loc = builder.getUnknownLoc();
   auto descTy = getShimDescriptorType(ctx);
-  auto arrayTy = LLVM::LLVMArrayType::get(IntegerType::get(ctx, 64), 16*8*8);
+  auto arrayTy =
+      LLVM::LLVMArrayType::get(IntegerType::get(ctx, 64), 16 * 8 * 8);
 
   // construct the location data global array + initializer
-  std::string str_name = "__air_shim_location_data";
+  std::string str_name = "__airrt_shim_location_data";
   int which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
   auto locArrayGlobal = builder.create<LLVM::GlobalOp>(
-    loc, arrayTy, /*isConstant=*/true, LLVM::Linkage::Internal,
-    str_name, /*value=*/Attribute());
+      loc, arrayTy, /*isConstant=*/true, LLVM::Linkage::Internal, str_name,
+      /*value=*/Attribute());
   {
     OpBuilder::InsertionGuard guard(builder);
     builder.createBlock(&locArrayGlobal.getInitializerRegion());
     Value data = builder.create<LLVM::UndefOp>(loc, arrayTy);
-    for (int i=0; i<16; i++) {
-      for (int j=0; j<8; j++) {
-        for (int k=0; k<8; k++) {
-          auto c = builder.create<LLVM::ConstantOp>(loc, IntegerType::get(ctx, 64),
-                                                    builder.getI64IntegerAttr(cols[i][j][k]));
+    for (int i = 0; i < 16; i++) {
+      for (int j = 0; j < 8; j++) {
+        for (int k = 0; k < 8; k++) {
+          auto c = builder.create<LLVM::ConstantOp>(
+              loc, IntegerType::get(ctx, 64),
+              builder.getI64IntegerAttr(cols[i][j][k]));
           data = builder.create<LLVM::InsertValueOp>(
               loc, data, c,
               builder.getDenseI64ArrayAttr({i * 8 * 8 + j * 8 + k}));
@@ -377,22 +361,23 @@ LLVM::GlobalOp createShimDescriptor(OpBuilder builder,
   }
 
   // construct the channel data global array + initializer
-  str_name = "__air_shim_channel_data";
+  str_name = "__airrt_shim_channel_data";
   which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
   auto chanArrayGlobal = builder.create<LLVM::GlobalOp>(
-    loc, arrayTy, /*isConstant=*/true, LLVM::Linkage::Internal,
-    str_name, /*value=*/Attribute());
+      loc, arrayTy, /*isConstant=*/true, LLVM::Linkage::Internal, str_name,
+      /*value=*/Attribute());
   {
     OpBuilder::InsertionGuard guard(builder);
     builder.createBlock(&chanArrayGlobal.getInitializerRegion());
     Value data = builder.create<LLVM::UndefOp>(loc, arrayTy);
-    for (int i=0; i<16; i++) {
-      for (int j=0; j<8; j++) {
-        for (int k=0; k<8; k++) {
-          auto c = builder.create<LLVM::ConstantOp>(loc, IntegerType::get(ctx, 64),
-                                                    builder.getI32IntegerAttr(chans[i][j][k]));
+    for (int i = 0; i < 16; i++) {
+      for (int j = 0; j < 8; j++) {
+        for (int k = 0; k < 8; k++) {
+          auto c = builder.create<LLVM::ConstantOp>(
+              loc, IntegerType::get(ctx, 64),
+              builder.getI32IntegerAttr(chans[i][j][k]));
           data = builder.create<LLVM::InsertValueOp>(
               loc, data, c,
               builder.getDenseI64ArrayAttr({i * 8 * 8 + j * 8 + k}));
@@ -403,13 +388,13 @@ LLVM::GlobalOp createShimDescriptor(OpBuilder builder,
   }
 
   // construct the shim descriptor + initializer
-  str_name = "__air_shim_descriptor";
+  str_name = "__airrt_shim_descriptor";
   which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
   auto descGlobal = builder.create<LLVM::GlobalOp>(
-    loc, descTy, /*isConstant=*/true, LLVM::Linkage::Internal,
-    str_name, /*value=*/Attribute());
+      loc, descTy, /*isConstant=*/true, LLVM::Linkage::Internal, str_name,
+      /*value=*/Attribute());
   {
     OpBuilder::InsertionGuard guard(builder);
     builder.createBlock(&descGlobal.getInitializerRegion());
@@ -420,7 +405,8 @@ LLVM::GlobalOp createShimDescriptor(OpBuilder builder,
     desc = builder.create<LLVM::InsertValueOp>(
         loc, desc, locArrayPtr, builder.getDenseI64ArrayAttr({0}));
 
-    Value chanArrayPtr = builder.create<LLVM::AddressOfOp>(loc, chanArrayGlobal);
+    Value chanArrayPtr =
+        builder.create<LLVM::AddressOfOp>(loc, chanArrayGlobal);
     desc = builder.create<LLVM::InsertValueOp>(
         loc, desc, chanArrayPtr, builder.getDenseI64ArrayAttr({1}));
 
@@ -429,24 +415,22 @@ LLVM::GlobalOp createShimDescriptor(OpBuilder builder,
   return descGlobal;
 }
 
-
-class ModuleMetadataToLLVMConversion : public OpRewritePattern<xilinx::airrt::ModuleMetadataOp> {
+class ModuleMetadataToLLVMConversion
+    : public OpRewritePattern<xilinx::airrt::ModuleMetadataOp> {
 public:
   using OpRewritePattern<xilinx::airrt::ModuleMetadataOp>::OpRewritePattern;
 
-  LogicalResult
-  matchAndRewrite(xilinx::airrt::ModuleMetadataOp op,
-                  PatternRewriter &rewriter) const override
-  {
+  LogicalResult matchAndRewrite(xilinx::airrt::ModuleMetadataOp op,
+                                PatternRewriter &rewriter) const override {
     auto module = op->getParentOfType<ModuleOp>();
     SmallVector<LLVM::GlobalOp, 4> partition_descs;
     SmallVector<int64_t, 4> partition_herd_count;
-    auto &partition_block = op.partitions().front();
+    auto &partition_block = op.getPartitions().front();
     for (auto partition_meta :
          partition_block.getOps<xilinx::airrt::PartitionMetadataOp>()) {
 
       SmallVector<LLVM::GlobalOp, 4> herd_descs;
-      auto &herd_block = partition_meta.herds().front();
+      auto &herd_block = partition_meta.getHerds().front();
       for (auto herd_meta :
            herd_block.getOps<xilinx::airrt::HerdMetadataOp>()) {
 
@@ -486,87 +470,91 @@ public:
   }
 };
 
-class PartitionLoadToLLVMConversion : public OpRewritePattern<xilinx::airrt::PartitionLoadOp> {
+class PartitionLoadToLLVMConversion
+    : public OpRewritePattern<xilinx::airrt::PartitionLoadOp> {
 public:
   using OpRewritePattern<xilinx::airrt::PartitionLoadOp>::OpRewritePattern;
 
-  LogicalResult
-  matchAndRewrite(xilinx::airrt::PartitionLoadOp op,
-                  PatternRewriter &rewriter) const override
-  {
+  LogicalResult matchAndRewrite(xilinx::airrt::PartitionLoadOp op,
+                                PatternRewriter &rewriter) const override {
     auto ctx = op->getContext();
-    auto retTy = IntegerType::get(ctx, 64);
+    SmallVector<Type> retTys{IntegerType::get(ctx, 64)};
     SmallVector<Type, 1> tys{
-      LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8))};
-    auto functionTy = LLVM::LLVMFunctionType::get(retTy, tys);
+        LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8))};
+    auto functionTy = FunctionType::get(ctx, tys, retTys);
 
     auto module = op->getParentOfType<ModuleOp>();
 
     rewriter.setInsertionPoint(op->getParentOfType<func::FuncOp>());
-    auto partition_name = getOrCreateAIRString(rewriter, module, op.sym_name());
+    auto partition_name =
+        getOrCreateAIRString(rewriter, module, op.getSymName());
 
-    auto funcOpSym = module.lookupSymbol("air_partition_load");
-    LLVM::LLVMFuncOp funcOp = nullptr;
-    if (funcOpSym)
-      funcOp = cast<LLVM::LLVMFuncOp>(funcOpSym);
-    else
-      funcOp = rewriter.create<LLVM::LLVMFuncOp>(op->getLoc(), "air_partition_load",
-                                        functionTy, LLVM::Linkage::External);
+    auto funcOp = dyn_cast_if_present<func::FuncOp>(
+        module.lookupSymbol("__airrt_partition_load"));
+    if (!funcOp) {
+      funcOp = rewriter.create<func::FuncOp>(
+          op->getLoc(), "__airrt_partition_load", functionTy);
+      funcOp.setPrivate();
+    }
     rewriter.setInsertionPoint(op);
 
-    auto partition_name_addr = rewriter.create<LLVM::AddressOfOp>(op->getLoc(), partition_name);
+    auto partition_name_addr =
+        rewriter.create<LLVM::AddressOfOp>(op->getLoc(), partition_name);
     auto ptrTy = LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8));
-    auto partition_name_addr_cast = rewriter.create<LLVM::BitcastOp>(op->getLoc(), ptrTy, partition_name_addr);
+    auto partition_name_addr_cast = rewriter.create<LLVM::BitcastOp>(
+        op->getLoc(), ptrTy, partition_name_addr);
     SmallVector<Value, 2> operands{partition_name_addr_cast};
 
-    LLVM::CallOp call = rewriter.create<LLVM::CallOp>(op->getLoc(), funcOp, operands);
+    auto call = rewriter.create<func::CallOp>(
+        op->getLoc(), retTys, SymbolRefAttr::get(funcOp), operands);
     rewriter.replaceOp(op, call->getResults());
     return success();
   }
 };
 
-class HerdLoadToLLVMConversion : public OpRewritePattern<xilinx::airrt::HerdLoadOp> {
+class HerdLoadToLLVMConversion
+    : public OpRewritePattern<xilinx::airrt::HerdLoadOp> {
 public:
   using OpRewritePattern<xilinx::airrt::HerdLoadOp>::OpRewritePattern;
 
-  LogicalResult
-  matchAndRewrite(xilinx::airrt::HerdLoadOp op,
-                  PatternRewriter &rewriter) const override
-  {
+  LogicalResult matchAndRewrite(xilinx::airrt::HerdLoadOp op,
+                                PatternRewriter &rewriter) const override {
     auto ctx = op->getContext();
-    auto retTy = IntegerType::get(ctx, 64);
+    SmallVector<Type> retTys{IntegerType::get(ctx, 64)};
     SmallVector<Type, 1> tys{
-      LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8))};
-    auto functionTy = LLVM::LLVMFunctionType::get(retTy, tys);
+        LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8))};
+    auto functionTy = FunctionType::get(ctx, tys, retTys);
 
     auto module = op->getParentOfType<ModuleOp>();
 
     rewriter.setInsertionPoint(op->getParentOfType<func::FuncOp>());
-    auto herd_name = getOrCreateAIRString(rewriter, module, op.sym_name());
+    auto herd_name = getOrCreateAIRString(rewriter, module, op.getSymName());
 
-    auto funcOpSym = module.lookupSymbol("air_herd_load");
-    LLVM::LLVMFuncOp funcOp = nullptr;
-    if (funcOpSym)
-      funcOp = cast<LLVM::LLVMFuncOp>(funcOpSym);
-    else
-      funcOp = rewriter.create<LLVM::LLVMFuncOp>(op->getLoc(), "air_herd_load",
-                                        functionTy, LLVM::Linkage::External);
+    auto funcOp = dyn_cast_if_present<func::FuncOp>(
+        module.lookupSymbol("__airrt_herd_load"));
+    if (!funcOp) {
+      funcOp = rewriter.create<func::FuncOp>(op->getLoc(), "__airrt_herd_load",
+                                             functionTy);
+      funcOp.setPrivate();
+    }
     rewriter.setInsertionPoint(op);
 
-    auto herd_name_addr = rewriter.create<LLVM::AddressOfOp>(op->getLoc(), herd_name);
+    auto herd_name_addr =
+        rewriter.create<LLVM::AddressOfOp>(op->getLoc(), herd_name);
     auto ptrTy = LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8));
-    auto herd_name_addr_cast = rewriter.create<LLVM::BitcastOp>(op->getLoc(), ptrTy, herd_name_addr);
+    auto herd_name_addr_cast =
+        rewriter.create<LLVM::BitcastOp>(op->getLoc(), ptrTy, herd_name_addr);
     SmallVector<Value, 2> operands{herd_name_addr_cast};
 
-    LLVM::CallOp call = rewriter.create<LLVM::CallOp>(op->getLoc(), funcOp, operands);
+    auto call = rewriter.create<func::CallOp>(
+        op->getLoc(), retTys, SymbolRefAttr::get(funcOp), operands);
     rewriter.replaceOp(op, call->getResults());
     return success();
   }
 };
 
-LogicalResult
-lowerDmaMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
-{
+LogicalResult lowerDmaMemcpy(Operation *op, PatternRewriter &rewriter,
+                             std::string fnName) {
   auto ctx = op->getContext();
   auto loc = op->getLoc();
 
@@ -616,9 +604,8 @@ lowerDmaMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
   return success();
 }
 
-LogicalResult
-lowerDmaNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
-{
+LogicalResult lowerDmaNdMemcpy(Operation *op, PatternRewriter &rewriter,
+                               std::string fnName) {
   auto ctx = op->getContext();
   auto loc = op->getLoc();
 
@@ -676,9 +663,8 @@ lowerDmaNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
   return success();
 }
 
-LogicalResult
-lowerNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
-{
+LogicalResult lowerNdMemcpy(Operation *op, PatternRewriter &rewriter,
+                            std::string fnName) {
   auto ctx = op->getContext();
   auto loc = op->getLoc();
 
@@ -703,8 +689,8 @@ lowerNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
     operands.push_back(nullV);
   }
 
-  MemRefType dstMemRefTy = dmaOp.dst().getType().cast<MemRefType>();
-  MemRefType srcMemRefTy = dmaOp.src().getType().cast<MemRefType>();
+  MemRefType dstMemRefTy = dmaOp.getDst().getType().cast<MemRefType>();
+  MemRefType srcMemRefTy = dmaOp.getSrc().getType().cast<MemRefType>();
 
   for (auto o : op->getOperands())
     operands.push_back(o);
@@ -753,27 +739,25 @@ lowerNdMemcpy(Operation* op, PatternRewriter &rewriter, std::string fnName)
   return success();
 }
 
-class DmaMemcpyNdToLLVMConversion : public OpRewritePattern<xilinx::airrt::DmaMemcpyNdOp> {
+class DmaMemcpyNdToLLVMConversion
+    : public OpRewritePattern<xilinx::airrt::DmaMemcpyNdOp> {
 public:
   using OpRewritePattern<xilinx::airrt::DmaMemcpyNdOp>::OpRewritePattern;
 
-  LogicalResult
-  matchAndRewrite(xilinx::airrt::DmaMemcpyNdOp op,
-                  PatternRewriter &rewriter) const override
-  {
-    return lowerDmaNdMemcpy(op, rewriter, "air_dma_nd_memcpy");
+  LogicalResult matchAndRewrite(xilinx::airrt::DmaMemcpyNdOp op,
+                                PatternRewriter &rewriter) const override {
+    return lowerDmaNdMemcpy(op, rewriter, "__airrt_dma_nd_memcpy");
   }
 };
 
-class MemcpyNdToLLVMConversion : public OpRewritePattern<xilinx::airrt::MemcpyNdOp> {
+class MemcpyNdToLLVMConversion
+    : public OpRewritePattern<xilinx::airrt::MemcpyNdOp> {
 public:
   using OpRewritePattern<xilinx::airrt::MemcpyNdOp>::OpRewritePattern;
 
-  LogicalResult
-  matchAndRewrite(xilinx::airrt::MemcpyNdOp op,
-                  PatternRewriter &rewriter) const override
-  {
-    return lowerNdMemcpy(op, rewriter, "air_nd_memcpy");
+  LogicalResult matchAndRewrite(xilinx::airrt::MemcpyNdOp op,
+                                PatternRewriter &rewriter) const override {
+    return lowerNdMemcpy(op, rewriter, "__airrt_nd_memcpy");
   }
 };
 
@@ -913,17 +897,17 @@ public:
       return failure();
 
     tys.push_back(IndexType::get(ctx));
-    retTys.push_back(MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
-                           memrefTy.getElementType(),
-                           memrefTy.getLayout(),
-                           memrefTy.getMemorySpace()));
+    retTys.push_back(MemRefType::get(
+        std::vector<int64_t>(memrefTy.getRank(), -1), memrefTy.getElementType(),
+        memrefTy.getLayout(), memrefTy.getMemorySpace()));
 
     auto size = getTensorVolume(memrefTy);
-    operands.push_back(rewriter.create<arith::ConstantIndexOp>(op->getLoc(), size));
+    operands.push_back(
+        rewriter.create<arith::ConstantIndexOp>(op->getLoc(), size));
 
     auto module = op->getParentOfType<ModuleOp>();
 
-    std::string fnName = "air_alloc_L2";
+    std::string fnName = "__airrt_alloc_L2";
     llvm::raw_string_ostream ss(fnName);
     ss << "_" << memrefTy.getRank();
     ss << "d" << memrefTy.getMemorySpaceAsInt();
@@ -939,7 +923,8 @@ public:
 
     auto callOp = rewriter.create<func::CallOp>(
         op->getLoc(), retTys, SymbolRefAttr::get(fn), operands);
-    auto castOp = rewriter.create<memref::CastOp>(op->getLoc(), memrefTy, callOp.getResult(0));
+    auto castOp = rewriter.create<memref::CastOp>(op->getLoc(), memrefTy,
+                                                  callOp.getResult(0));
     rewriter.replaceOp(op, castOp->getResults());
     return success();
   }
@@ -958,19 +943,19 @@ public:
     SmallVector<Type, 1> retTys;
     auto ctx = op->getContext();
 
-    auto memrefTy = op.memref().getType().cast<MemRefType>();
+    auto memrefTy = op.getMemref().getType().cast<MemRefType>();
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L2)
       return failure();
 
-    tys.push_back(MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
-                           memrefTy.getElementType(),
-                           memrefTy.getLayout(),
-                           memrefTy.getMemorySpace()));
-    operands.push_back(rewriter.create<memref::CastOp>(op->getLoc(), tys[0], op.memref()));
+    tys.push_back(MemRefType::get(
+        std::vector<int64_t>(memrefTy.getRank(), -1), memrefTy.getElementType(),
+        memrefTy.getLayout(), memrefTy.getMemorySpace()));
+    operands.push_back(
+        rewriter.create<memref::CastOp>(op->getLoc(), tys[0], op.getMemref()));
 
     auto module = op->getParentOfType<ModuleOp>();
 
-    std::string fnName = "air_dealloc_L2";
+    std::string fnName = "__airrt_dealloc_L2";
     llvm::raw_string_ostream ss(fnName);
     ss << "_" << memrefTy.getRank();
     ss << "d" << memrefTy.getMemorySpaceAsInt();
@@ -1010,9 +995,9 @@ public:
         op->getNumResults(),
         LLVM::LLVMPointerType::get(IntegerType::get(ctx, 64)));
 
-    std::string fnName = "air_wait_all";
+    std::string fnName = "__airrt_wait_all";
     llvm::raw_string_ostream ss(fnName);
-    ss << "_" << operands.size();
+    ss << "_" << retTys.size() << "_" << operands.size();
 
     auto fn = module.lookupSymbol<func::FuncOp>(fnName);
     if (!fn) {
@@ -1028,14 +1013,124 @@ public:
   }
 };
 
+class ScfYieldOpConversion : public OpConversionPattern<scf::YieldOp> {
+public:
+  using OpConversionPattern<scf::YieldOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::YieldOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value> operands{adaptor.getOperands()};
+    SmallVector<Type> retTys;
+    rewriter.replaceOpWithNewOp<scf::YieldOp>(op, retTys, operands);
+    return success();
+  }
+};
+
+class ScfForOpConversion : public OpConversionPattern<scf::ForOp> {
+public:
+  using OpConversionPattern<scf::ForOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::ForOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto newFor = rewriter.create<scf::ForOp>(
+        op->getLoc(), adaptor.getLowerBound(), adaptor.getUpperBound(),
+        adaptor.getStep(), adaptor.getInitArgs());
+    auto body = op.getBody();
+    auto newBody = newFor.getBody();
+
+    for (int i = 0, e = body->getNumArguments(); i < e; i++) {
+      body->getArgument(i).replaceAllUsesWith(newBody->getArgument(i));
+    }
+
+    auto &ops = body->getOperations();
+    auto &newOps = newBody->getOperations();
+    newOps.splice(newOps.begin(), ops, ops.begin(), ops.end());
+
+    rewriter.replaceOp(op, newFor.getResults());
+    return success();
+  }
+};
+
+class ScfIfOpConversion : public OpConversionPattern<scf::IfOp> {
+public:
+  using OpConversionPattern<scf::IfOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::IfOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    SmallVector<Type> retTys;
+    if (typeConverter->convertTypes(op.getResultTypes(), retTys).failed())
+      return failure();
+
+    bool hasElseBlock = op.elseBlock() != nullptr;
+    auto newIf = rewriter.create<scf::IfOp>(op->getLoc(), retTys,
+                                            op.getCondition(), hasElseBlock);
+
+    auto &thenOps = op.thenBlock()->getOperations();
+    auto &newThenOps = newIf.thenBlock()->getOperations();
+    newThenOps.splice(newThenOps.begin(), thenOps, thenOps.begin(),
+                      thenOps.end());
+
+    if (!hasElseBlock)
+      return success();
+
+    auto &elseOps = op.elseBlock()->getOperations();
+    auto &newElseOps = newIf.elseBlock()->getOperations();
+    newElseOps.splice(newElseOps.begin(), elseOps, elseOps.begin(),
+                      elseOps.end());
+
+    rewriter.replaceOp(op, newIf.getResults());
+    return success();
+  }
+};
+
+class CallOpConversion : public OpConversionPattern<func::CallOp> {
+public:
+  using OpConversionPattern<func::CallOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(func::CallOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    SmallVector<Type> retTys;
+    if (typeConverter->convertTypes(op.getResultTypes(), retTys).failed())
+      return failure();
+
+    auto callee = adaptor.getCallee();
+    if (callee.starts_with("__airrt_"))
+      return failure();
+
+    auto module = op->getParentOfType<ModuleOp>();
+    auto sym = module.lookupSymbol(callee);
+    if (!sym)
+      return failure();
+
+    auto funcOp = dyn_cast<func::FuncOp>(sym);
+    if (!funcOp)
+      return failure();
+
+    if (retTys.size() == 0 && funcOp.isExternal()) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    auto callOp = rewriter.create<func::CallOp>(
+        op->getLoc(), adaptor.getCallee(), retTys, adaptor.getOperands());
+    rewriter.replaceOp(op, callOp.getResults());
+    return success();
+  }
+};
+
 class AIRRtToLLVM : public AIRRtToLLVMBase<AIRRtToLLVM> {
 
 public:
   AIRRtToLLVM() {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-     registry.insert<LLVM::LLVMDialect,
-                     memref::MemRefDialect>();
+    registry.insert<LLVM::LLVMDialect, memref::MemRefDialect>();
   }
 
   void runOnOperation() override {
@@ -1070,18 +1165,19 @@ public:
                  HerdLoadToLLVMConversion, DmaMemcpyNdToLLVMConversion,
                  MemcpyNdToLLVMConversion, L2AllocOpConversion,
                  L2DeallocOpConversion>(context);
-    patterns.add<L1AllocOpConversion, L1AffineLoadOpConversion,
+    patterns.add<ScfIfOpConversion, ScfYieldOpConversion, ScfForOpConversion,
+                 L1AllocOpConversion, L1AffineLoadOpConversion,
                  L1AffineStoreOpConversion, L1MemRefLoadOpConversion,
                  L1MemRefStoreOpConversion, L1DeallocOpConversion,
-                 WaitAllOpConversion>(converter, context);
+                 WaitAllOpConversion, CallOpConversion>(converter, context);
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(patterns,
                                                                    converter);
 
     ConversionTarget target(*context);
 
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           arith::ArithmeticDialect, AffineDialect,
-                           scf::SCFDialect, memref::MemRefDialect>();
+                           arith::ArithDialect, AffineDialect, scf::SCFDialect,
+                           memref::MemRefDialect>();
 
     target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
       return (op.getType().getMemorySpaceAsInt() == 0);
@@ -1121,17 +1217,62 @@ public:
       return converter.isSignatureLegal(op.getFunctionType());
     });
 
+    target.addDynamicallyLegalOp<func::CallOp>([&](func::CallOp op) {
+      for (auto t : op.getOperandTypes()) {
+        if (auto mty = t.dyn_cast<MemRefType>())
+          if (mty.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1)
+            return false;
+      }
+      for (auto t : op.getResultTypes()) {
+        if (auto mty = t.dyn_cast<MemRefType>())
+          if (mty.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1)
+            return false;
+      }
+      return true;
+    });
+
+    target.addDynamicallyLegalOp<scf::ForOp>([&](scf::ForOp op) {
+      for (auto o : op.getRegionIterArgs()) {
+        if (o.getType().isa<xilinx::airrt::EventType>())
+          return false;
+      }
+      return true;
+    });
+
+    target.addDynamicallyLegalOp<scf::YieldOp>([&](scf::YieldOp op) {
+      for (auto v : op.getOperands()) {
+        if (v.getType().isa<xilinx::airrt::EventType>())
+          return false;
+      }
+      return true;
+    });
+
+    target.addDynamicallyLegalOp<scf::IfOp>([&](scf::IfOp op) {
+      for (auto v : op.getResults()) {
+        if (v.getType().isa<xilinx::airrt::EventType>())
+          return false;
+      }
+      return true;
+    });
+
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering AIRRt\n");
       signalPassFailure();
     }
 
-    for (auto func : module.getOps<func::FuncOp>())
-      func->setAttr("llvm.emit_c_interface", UnitAttr::get(func.getContext()));
+    SmallVector<func::FuncOp> erased_extern;
+    for (auto func : module.getOps<func::FuncOp>()) {
+      if (func.isExternal() && func.symbolKnownUseEmpty(module))
+        erased_extern.push_back(func);
+      else
+        func->setAttr("llvm.emit_c_interface",
+                      UnitAttr::get(func.getContext()));
+    }
+    for (auto e : erased_extern)
+      e.erase();
   }
 
 private:
-
 };
 
 } // namespace

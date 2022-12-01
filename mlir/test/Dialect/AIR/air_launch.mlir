@@ -1,25 +1,8 @@
 //===- air_launch.mlir -----------------------------------------*- MLIR -*-===//
 //
-// Copyright (C) 2022, Xilinx Inc.
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// Copyright (C) 2022, Xilinx Inc. All rights reserved.
+// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
@@ -71,8 +54,10 @@ func.func @test(%arg0 : memref<16x16xf32>, %arg1 : memref<16x16xf32>) -> () {
 
   // CHECK: %[[E:.*]] = air.launch @function0 async (%{{.*}}) in (%{{.*}}=%c1) args(%{{.*}}=%{{.*}}, %{{.*}}=%{{.*}})
   // CHECK: air.launch @function1 async [%[[E]]] (%{{.*}}, %{{.*}}) in (%{{.*}}=%c2, %{{.*}}=%c4) args(%{{.*}}=%{{.*}})
+  // CHECK: air.launch @function2 async [%[[E]]] (%{{.*}}, %{{.*}}) in (%{{.*}}=%c2, %{{.*}}=%c4)
   %f0 = air.launch @function0 async (%t) in (%s = %c1) args(%a=%arg0, %b=%arg1) : memref<16x16xf32>, memref<16x16xf32>
   %f1 = air.launch @function1 async [%f0] (%t0, %t1) in (%s0 = %c2, %s1=%c4) args(%a=%arg1) : memref<16x16xf32>
+  %f2 = air.launch @function2 async [%f0] (%t0, %t1) in (%s0 = %c2, %s1=%c4) args()
 
   return
 }

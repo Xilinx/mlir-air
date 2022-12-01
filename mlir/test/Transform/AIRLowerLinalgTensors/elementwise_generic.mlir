@@ -1,25 +1,8 @@
 //===- elementwise_generic.mlir --------------------------------*- MLIR -*-===//
 //
-// Copyright (C) 2021-2022, Xilinx Inc.
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// Copyright (C) 2021-2022, Xilinx Inc. All rights reserved.
+// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,7 +20,7 @@
 // CHECK:   }
 #map = affine_map<(d0, d1) -> (d0, d1)>
 module @aie.0  {
-  %0 = AIE.tile(0, 0)
+  %0 = AIE.tile(1, 1)
   %1 = AIE.lock(%0, 2)
   %2 = AIE.lock(%0, 1)
   %3 = AIE.lock(%0, 0)
@@ -52,7 +35,7 @@ module @aie.0  {
     AIE.useLock(%3, Acquire, 1)
     AIE.useLock(%2, Acquire, 1)
     AIE.useLock(%1, Acquire, 0)
-    %8 = linalg.init_tensor [32, 32] : tensor<32x32xi32>
+    %8 = tensor.empty () : tensor<32x32xi32>
     %9 = bufferization.to_tensor %6 : memref<32x32xi32, 2>
     %10 = bufferization.to_tensor %5 : memref<32x32xi32, 2>
     %11 = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%9, %10 : tensor<32x32xi32>, tensor<32x32xi32>) outs(%8 : tensor<32x32xi32>) {

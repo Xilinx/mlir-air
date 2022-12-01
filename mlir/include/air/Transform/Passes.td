@@ -1,25 +1,8 @@
 //===- Passes.td -------------------------------------------*- tablegen -*-===//
 //
-// Copyright (C) 2022, Xilinx Inc.
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// Copyright (C) 2022, Xilinx Inc. All rights reserved.
+// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
@@ -160,19 +143,121 @@ def AIRAutomaticTiling: Pass<"air-automatic-tiling", "func::FuncOp"> {
     ListOption<"loopTileSizes", "loop-tile-sizes", "unsigned",
                "A list of multi-dimensional loop tile sizes",
                "llvm::cl::ZeroOrMore">,
-    Option<"tileSeparate", "tile-separate", "bool", /*default=*/"false",
+    Option<"clTileSeparate", "tile-separate", "bool", /*default=*/"false",
            "AIR loop tiling separates full and partial tiles">,
-    Option<"AIRLabel", "air-label", "std::string", /*default=*/"",
+    Option<"clLabel", "air-label", "std::string", /*default=*/"",
            "Transform loops with the given label">,
-    Option<"AIRPostLabel", "air-post-label", "std::string", 
-            /*default=*/"",
-            "Label to apply to transformed loop nest">
+    Option<"clPostLabel", "air-post-label", "std::string", /*default=*/"",
+           "Label to apply to transformed loop nest">
   ];
 }
 
 def AIRHerdAssign : Pass<"air-herd-assign", "ModuleOp"> {
   let summary = "Transfor affine.for to affine.parallel";
   let constructor = "xilinx::air::createAIRHerdAssignPass()";
+}
+
+def AIRHerdPlacementPass : Pass<"air-place-herds", "ModuleOp"> {
+  let summary = "Places herds onto a partition.";
+  let constructor = "xilinx::air::createAIRHerdPlacementPass()";
+
+  let options = [
+    Option<"clNumRows", "num-rows", "int", /*default=*/"8",
+           "Number of rows of AIE tiles in a partition">,
+    Option<"clNumCols", "num-cols", "int", /*default=*/"10",
+           "Number of columns of AIE tiles in a partition">,
+    Option<"clAnchorPointRow", "row-anchor", "int", /*default=*/"0",
+           "Anchoring row number of partitions">,
+    Option<"clAnchorPointCol", "col-anchor", "int", /*default=*/"0",
+           "Anchoring column number of partitions">
+  ];
+
+  let description = [{
+    This pass performs placement of air herds onto a partition with a 
+    specific number of rows and columns. Assumes partition
+    size (provided with an anchor point) will fit on physical board 
+    dimensions. The placement starts at the bottom left of the partition 
+    and tries to place the largest herd as it moves to the right side of 
+    the row. If it can't place the largest herd remaining in a given tile, 
+    it will try again with smaller and smaller herds. 
+
+    Example with grid size set to 8 rows and 10 columns:
+
+    `-air-place-herds"num-rows=8 num-cols=10 row-anchor=0 col-anchor=0"`
+
+  Input: 
+    ```mlir 
+    #map0 = affine_map<()[s0] -> (s0 * 64)>
+    #map1 = affine_map<()[s0] -> (s0 * 512)>
+    #map2 = affine_map<()[s0] -> (s0 * 32)>
+    module attributes {torch.debug_module_name = "mmult"} {
+      func.func @forward(%arg0: memref<24576x1024xbf16>, %arg1: memref<1024x1024xbf16>) -> memref<24576x1024xbf16> {
+        %c16 = arith.constant 16 : index
+        %c48 = arith.constant 48 : index
+        %cst = arith.constant 0.000000e+00 : bf16
+        %0 = memref.alloc() {alignment = 128 : i64} : memref<24576x1024xbf16>
+        linalg.fill ins(%cst : bf16) outs(%0 : memref<24576x1024xbf16>)
+        %1 = memref.alloc() {alignment = 128 : i64} : memref<24576x1024xbf16>
+        memref.copy %0, %1 : memref<24576x1024xbf16> to memref<24576x1024xbf16>
+        %2 = memref.alloc() {alignment = 128 : i64} : memref<24576x1024xbf16>
+        air.launch @launch_0 (%arg2, %arg3) in (%arg4=%c48, %arg5=%c16) args(%arg6=%arg0, %arg7=%arg1, %arg8=%1, %arg9=%2) : memref<24576x1024xbf16>, memref<1024x1024xbf16>, memref<24576x1024xbf16>, memref<24576x1024xbf16> attributes {resource_type = "vckxyz", size_x = 6 : i64, size_y = 2 : i64} {
+          air.partition @partition_0  args(%arg10=%arg2, %arg11=%arg3, %arg12=%arg4, %arg13=%arg5, %arg14=%arg6, %arg15=%arg7, %arg16=%arg8, %arg17=%arg9) : index, index, index, index, memref<24576x1024xbf16>, memref<1024x1024xbf16>, memref<24576x1024xbf16>, memref<24576x1024xbf16> attributes {resource_type = "vckxyz", size_x = 3 : i64, size_y = 2 : i64} {
+            %c1 = arith.constant 1 : index
+            %c2 = arith.constant 2 : index
+            %c0 = arith.constant 0 : index
+            %c1024 = arith.constant 1024 : index
+            %c64 = arith.constant 64 : index
+            %3 = affine.apply #map0()[%arg11]
+            %4 = affine.apply #map1()[%arg10]
+            scf.for %arg18 = %c0 to %c1024 step %c64 {
+              %12 = memref.alloc() : memref<64x64xbf16, 1>
+              %13 = memref.alloc() : memref<64x64xbf16, 1>
+              %14 = memref.alloc() : memref<64x64xbf16, 1>
+              air.dma_memcpy_nd (%12[] [] [], %arg14[%4, %arg18] [%c64, %c64] [%c1024, %c1]) {id = 1 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
+              air.dma_memcpy_nd (%13[] [] [], %arg15[%arg18, %3] [%c64, %c64] [%c1024, %c1]) {id = 2 : i32} : (memref<64x64xbf16, 1>, memref<1024x1024xbf16>)
+              air.dma_memcpy_nd (%14[] [] [], %arg16[%4, %3] [%c64, %c64] [%c1024, %c1]) {id = 3 : i32} : (memref<64x64xbf16, 1>, memref<24576x1024xbf16>)
+              air.herd @matmul_herd_0  tile (%arg19, %arg20) in (%arg21=%c2, %arg22=%c2) args(%arg23=%12, %arg24=%13, %arg25=%14) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> {
+                %c1_0 = arith.constant 1 : index
+                %c0_1 = arith.constant 0 : index
+                %c64_2 = arith.constant 64 : index
+                %c32 = arith.constant 32 : index
+                %15 = affine.apply #map2()[%arg19]
+                %16 = affine.apply #map2()[%arg20]
+                scf.for %arg26 = %c0_1 to %c64_2 step %c32 {
+                  %17 = memref.alloc() : memref<32x32xbf16, 2>
+                  %18 = memref.alloc() : memref<32x32xbf16, 2>
+                  %19 = memref.alloc() : memref<32x32xbf16, 2>
+                  air.dma_memcpy_nd (%17[] [] [], %arg23[%15, %arg26] [%c32, %c32] [%c64_2, %c1_0]) {id = 4 : i32} : (memref<32x32xbf16, 2>, memref<64x64xbf16, 1>)
+                  air.dma_memcpy_nd (%18[] [] [], %arg24[%arg26, %16] [%c32, %c32] [%c64_2, %c1_0]) {id = 5 : i32} : (memref<32x32xbf16, 2>, memref<64x64xbf16, 1>)
+                  air.dma_memcpy_nd (%19[] [] [], %arg25[%15, %16] [%c32, %c32] [%c64_2, %c1_0]) {id = 6 : i32} : (memref<32x32xbf16, 2>, memref<64x64xbf16, 1>)
+                  linalg.matmul ins(%17, %18 : memref<32x32xbf16, 2>, memref<32x32xbf16, 2>) outs(%19 : memref<32x32xbf16, 2>)
+                  air.dma_memcpy_nd (%arg25[%15, %16] [%c32, %c32] [%c64_2, %c1_0], %19[] [] []) {id = 7 : i32} : (memref<64x64xbf16, 1>, memref<32x32xbf16, 2>)
+                  memref.dealloc %17 : memref<32x32xbf16, 2>
+                  memref.dealloc %18 : memref<32x32xbf16, 2>
+                  memref.dealloc %19 : memref<32x32xbf16, 2>
+                }
+                air.herd_terminator
+              }
+              air.dma_memcpy_nd (%arg16[%4, %3] [%c64, %c64] [%c1024, %c1], %14[] [] []) {id = 8 : i32} : (memref<24576x1024xbf16>, memref<64x64xbf16, 1>)
+              memref.dealloc %12 : memref<64x64xbf16, 1>
+              memref.dealloc %13 : memref<64x64xbf16, 1>
+              memref.dealloc %14 : memref<64x64xbf16, 1>
+            }
+            air.partition_terminator
+          }
+          air.launch_terminator
+        }
+        return %2 : memref<24576x1024xbf16>
+      }
+    }
+    ```
+  output:
+    ```mlir
+    ....
+    air.herd @matmul_herd_0  tile (%arg19, %arg20) in (%arg21=%c2, %arg22=%c2) args(%arg23=%12, %arg24=%13, %arg25=%14) : memref<64x64xbf16, 1>, memref<64x64xbf16, 1>, memref<64x64xbf16, 1> attributes {x_loc = 0 : i64, y_loc = 7: i64} {
+    ...
+    ```
+  }];
 }
 
 def AIRLinalgCodegen : Pass<"air-linalg-codegen", "ModuleOp"> {
@@ -214,7 +299,7 @@ def AIRLinalgCodegen : Pass<"air-linalg-codegen", "ModuleOp"> {
     Option<"clInputFilter", "input-filter", "std::string", 
             /*default=*/"",
             "Input filter for linalg transformations">,
-    Option<"AIRLinalgCodegenTestPatterns", "test-patterns", "bool",
+    Option<"clLinalgCodegenTestPatterns", "test-patterns", "bool",
             "false", "test patterns">
 
   ];
@@ -413,9 +498,9 @@ def AIRLoopPermutation: Pass<"air-loop-permutation", "func::FuncOp"> {
     ListOption<"loopOrder", "loop-order", "unsigned",
                "The target loop permutation ordering",
                "llvm::cl::OneOrMore">,
-    Option<"AIRLabel", "air-label", "std::string", /*default=*/"",
+    Option<"clLabel", "air-label", "std::string", /*default=*/"",
            "Transform loops with the given label">,
-    Option<"AIRPostLabel", "air-post-label", "std::string", 
+    Option<"clPostLabel", "air-post-label", "std::string", 
             /*default=*/"",
             "Label to apply to transformed loop nest">
   ];
@@ -768,6 +853,36 @@ def AIRDependencyScheduleOpt: Pass<"air-dependency-schedule-opt", "ModuleOp"> {
   }];
 }
 
+def AIRDependencyCanonicalize: Pass<"air-dependency-canonicalize", "ModuleOp"> {
+  let summary = "Canonicalize the dependency graph";
+  let constructor = "xilinx::air::createAIRDependencyCanonicalizePass()";
+  let description = [{
+    This pass optimizes the dependency graph in air by removing non-dominant
+    dependency edges.
+  }];
+  let options = [
+    Option<"clDumpGraph", "dump-graph", "bool", /*default=*/"false",
+            "Dump post-canonicalization dot graphs.">,
+    Option<"clDumpDir", "output-dir", "std::string", 
+            /*default=*/"\"\"",
+            "Target directory to dump dot graphs.">
+  ];
+}
+
+def AIRDependencyParseGraph: Pass<"air-dependency-parse-graph", "ModuleOp"> {
+  let summary = "Parse the dependency graph and dump dot files";
+  let constructor = "xilinx::air::createAIRDependencyParseGraphPass()";
+  let description = [{
+    This pass parses the dependency graph into Boost::Graph format, and dump
+    dot files for graph visualization.
+  }];
+  let options = [
+    Option<"clDumpDir", "output-dir", "std::string", 
+            /*default=*/"\"\"",
+            "Target directory to dump dot graphs.">
+  ];
+}
+
 def AIRExamplePass : Pass<"air-example-pass", "ModuleOp"> {
   let summary = "Skeleton module op pass";
   let constructor = "xilinx::air::createAIRExamplePass()";
@@ -823,6 +938,10 @@ def AIRFuseParallelHerdPass : Pass<"air-fuse-parallel-launch", "ModuleOp"> {
 def AIRRenumberDmaIdPass : Pass<"air-renumber-dma", "func::FuncOp"> {
   let summary = "Renumber air dma op ids";
   let constructor = "xilinx::air::createAIRRenumberDmaIdPass()";
+  let options = [
+    Option<"clMode", "mode", "std::string", /*default=*/"\"herd\"",
+           "In which hierarchy level to renumber the dma ops">,
+  ];
 }
 
 #endif // AIR_CONVERSION_PASSES

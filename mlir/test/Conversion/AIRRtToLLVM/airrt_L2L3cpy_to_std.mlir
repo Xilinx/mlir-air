@@ -1,33 +1,16 @@
 //===- airrt_L2L3cpy_to_std.mlir -------------------------------*- MLIR -*-===//
 //
-// Copyright (C) 2021-2022, Xilinx Inc.
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// Copyright (C) 2021-2022, Xilinx Inc. All rights reserved.
+// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -airrt-to-llvm | FileCheck %s
-// CHECK: call @air_nd_memcpy_2d1i32_2d0i32({{.*}}) : (!llvm.ptr<i64>, memref<?x?xi32, 1>, memref<?x?xi32>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
-// CHECK: call @air_nd_memcpy_2d1i32_2d0i32({{.*}}) : (!llvm.ptr<i64>, memref<?x?xi32, 1>, memref<?x?xi32>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
-// CHECK: call @air_nd_memcpy_2d1i32_2d0i32({{.*}}) : (!llvm.ptr<i64>, memref<?x?xi32, 1>, memref<?x?xi32>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
-// CHECK: call @air_nd_memcpy_2d0i32_2d1i32({{.*}}) : (!llvm.ptr<i64>, memref<?x?xi32>, memref<?x?xi32, 1>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
+// CHECK: call @__airrt_nd_memcpy_2d1i32_2d0i32({{.*}}) : (!llvm.ptr<i64>, memref<?x?xi32, 1>, memref<?x?xi32>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
+// CHECK: call @__airrt_nd_memcpy_2d1i32_2d0i32({{.*}}) : (!llvm.ptr<i64>, memref<?x?xi32, 1>, memref<?x?xi32>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
+// CHECK: call @__airrt_nd_memcpy_2d1i32_2d0i32({{.*}}) : (!llvm.ptr<i64>, memref<?x?xi32, 1>, memref<?x?xi32>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
+// CHECK: call @__airrt_nd_memcpy_2d0i32_2d1i32({{.*}}) : (!llvm.ptr<i64>, memref<?x?xi32>, memref<?x?xi32, 1>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
 module attributes {torch.debug_module_name = "mmult"}  {
   func.func @forward(%arg0: memref<64x64xi32>, %arg1: memref<64x64xi32>, %arg2: memref<?x?xi32>) {
     %c7_i32 = arith.constant 7 : i32

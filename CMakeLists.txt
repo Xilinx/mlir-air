@@ -1,24 +1,6 @@
-
-# Copyright (C) 2022, Xilinx Inc.
-# Copyright (C) 2022, Advanced Micro Devices, Inc.
-#
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
+# Copyright (C) 2022, Xilinx Inc. All rights reserved.
+# Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
 
 cmake_minimum_required(VERSION 3.12)
 
@@ -43,6 +25,10 @@ if(POLICY CMP0116)
   cmake_policy(SET CMP0116 OLD)
 endif()
 
+if(CMAKE_USE_TOOLCHAIN)
+	set(CMAKE_TOOLCHAIN_FILE ${CMAKE_TOOLCHAIN_FILE_OPT})
+endif()
+
 project(AIR LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -51,10 +37,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
 set(PEANO_INSTALL_DIR "<unset>" CACHE STRING "Location of Peano compiler")
 
 include(ExternalProject)
+
 find_package(MLIR REQUIRED CONFIG)
 find_package(AIE REQUIRED)
-
-# Eventually we need to have some configuration options to select LibXAIEV2
 find_package(LibXAIE)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
@@ -124,37 +109,55 @@ add_custom_target(check-all)
 add_custom_target(docs ALL)
 add_dependencies(docs mlir-doc)
 
-message("ARM_TOOLCHAIN_OPT=${ARM_TOOLCHAIN_OPT}")
-#message("VitisSysroot=${VitisSysroot}")
-#message("ArmSysroot=${ArmSysroot}")
-ExternalProject_Add(air_runtime_lib
-	PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp
-	SOURCE_DIR ${PROJECT_SOURCE_DIR}/runtime_lib
-	BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib
-	CMAKE_ARGS
-		-DCMAKE_MODULE_PATH=${CMAKE_MODULE_PATH}
-		-DAIE_DIR=${AIE_DIR}
-		-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
-		-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
-		-DCMAKE_ASM_COMPILER=${CMAKE_ASM_COMPILER}
-		-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-		-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
-		-Dpybind11_DIR=${pybind11_DIR}
-		-DLibXAIE_ROOT=${VitisSysroot}/opt/xaienginev2
-		${ARM_TOOLCHAIN_OPT}
-		-DARM_SYSROOT=${ARM_SYSROOT}
-	BUILD_ALWAYS true
-	STEP_TARGETS clean build install test
-	USES_TERMINAL_CONFIGURE true
-	USES_TERMINAL_BUILD true
-	USES_TERMINAL_TEST true
-	USES_TERMINAL_INSTALL true
-	TEST_BEFORE_INSTALL true
-	TEST_EXCLUDE_FROM_MAIN true
-)
+option(AIR_BUILD_RUNTIME "Build the air runtime" ON)
+if (NOT LibXAIE_FOUND)
+	message(WARNING "LibXAIE not found, AIR runtime will not be built.")
+	set(AIR_BUILD_RUNTIME OFF)
+endif()
+
+if(CMAKE_USE_TOOLCHAIN_AIRHOST)
+	set(AIRHOST_TOOLCHAIN_OPT ${CMAKE_TOOLCHAIN_FILE_OPT})
+else()
+	set(AIRHOST_TOOLCHAIN_OPT ${CMAKE_TOOLCHAIN_FILE})
+endif() 
+
+if(AIR_BUILD_RUNTIME)
+	message("AIRHOST_TOOLCHAIN_OPT=${AIRHOST_TOOLCHAIN_OPT}")
+	message("Sysroot=${Sysroot}")
+	ExternalProject_Add(air_runtime_lib
+		PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp
+		SOURCE_DIR ${PROJECT_SOURCE_DIR}/runtime_lib
+		BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib
+		CMAKE_ARGS
+			-DCMAKE_MODULE_PATH=${CMAKE_MODULE_PATH}
+			-DCMAKE_TOOLCHAIN_FILE=${AIRHOST_TOOLCHAIN_OPT}
+			-DArch=${Arch}
+			-DgccVer=${gccVer}
+			-DSysroot=${Sysroot} 
+			-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+			-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+			-DCMAKE_ASM_COMPILER=${CMAKE_ASM_COMPILER}
+			-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+			-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
+			-Dpybind11_DIR=${pybind11_DIR}
+			-DLibXAIE_DIR=${LibXAIE_DIR}
+			-DAIE_DIR=${AIE_DIR}
+			-DBUILD_AIR_PCIE=${BUILD_AIR_PCIE}
+		BUILD_ALWAYS true
+		STEP_TARGETS clean build install test
+		USES_TERMINAL_CONFIGURE true
+		USES_TERMINAL_BUILD true
+		USES_TERMINAL_TEST true
+		USES_TERMINAL_INSTALL true
+		TEST_BEFORE_INSTALL true
+		TEST_EXCLUDE_FROM_MAIN true
+	)
+endif()
 
 add_subdirectory(python)
-add_subdirectory(test)
+if (LibXAIE_FOUND)
+	add_subdirectory(test)
+endif()
 add_subdirectory(tools)
 add_subdirectory(cmake/modules)
 add_subdirectory(mlir)

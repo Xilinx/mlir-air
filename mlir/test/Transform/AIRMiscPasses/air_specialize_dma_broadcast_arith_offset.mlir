@@ -1,32 +1,15 @@
 //===- air_specialize_dma_broadcast_arith_offset.mlir ----------*- MLIR -*-===//
 //
-// Copyright (C) 2022, Xilinx Inc.
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// Copyright (C) 2022, Xilinx Inc. All rights reserved.
+// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-specialize-dma-broadcast | FileCheck %s
 
 // Checks for affine_map simplification of src offset in a broadcast dma
-// CHECK: [[$SET0:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 1 >= 0)>
+// CHECK: [[$SET0:#set[0-9]*]] = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 1 >= 0)>
 // CHECK: [[$SET1:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 - 1 == 0, s1 >= 0, -s1 + 1 >= 0)>
 // CHECK: [[$SET2:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 == 0)>
 // CHECK: [[$SET3:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 - 1 == 0)>
@@ -62,62 +45,62 @@ module {
         %c64_11 = arith.constant 64 : index
         %c32 = arith.constant 32 : index
         %c0_12 = arith.constant 0 : index
-        %newAsyncToken_0, %newValOut_0 = air.execute async  {
+        %newAsyncToken_0, %newValOut_0 = air.execute -> (index) {
             %12 = affine.apply #map0()[%arg7]
             air.execute_terminator %12 : index
-        } {id = 6 : i32} : (index)
-        %newAsyncToken_1, %newValOut_1 = air.execute async [%newAsyncToken_0]  : (!air.async.token) {
+        } {id = 6 : i32}
+        %newAsyncToken_1, %newValOut_1 = air.execute [%newAsyncToken_0] -> (index) {
             %12 = affine.apply #map1()[%newValOut_0]
             air.execute_terminator %12 : index
-        } {id = 6 : i32} : (index)
-        %newAsyncToken_2, %newValOut_2 = air.execute async [%newAsyncToken_1]  : (!air.async.token) {
+        } {id = 6 : i32}
+        %newAsyncToken_2, %newValOut_2 = air.execute [%newAsyncToken_1] -> (index) {
             %12 = arith.addi %newValOut_1, %c1_10 : index
             air.execute_terminator %12 : index
-        } {id = 6 : i32} : (index)
-        %newAsyncToken_3, %newValOut_3 = air.execute async [%newAsyncToken_2]  : (!air.async.token) {
+        } {id = 6 : i32}
+        %newAsyncToken_3, %newValOut_3 = air.execute [%newAsyncToken_2] -> (index) {
             %12 = arith.addi %newValOut_2, %c64_11 : index
             air.execute_terminator %12 : index
-        } {id = 6 : i32} : (index)
-        %asyncToken_13, %valOut_14 = air.execute async [%newAsyncToken_3]  : (!air.async.token) {
+        } {id = 6 : i32}
+        %asyncToken_13, %valOut_14 = air.execute [%newAsyncToken_3] -> (index) {
             %12 = arith.muli %newValOut_3, %c32 : index
             air.execute_terminator %12 : index
-        } {id = 6 : i32} : (index)
-        %asyncToken_15, %valOut_16 = air.execute async  {
+        } {id = 6 : i32}
+        %asyncToken_15, %valOut_16 = air.execute -> (index) {
             %12 = affine.apply #map2()[%arg8]
             air.execute_terminator %12 : index
-        } {id = 7 : i32} : (index)
+        } {id = 7 : i32}
         %8 = air.wait_all async [%asyncToken_13, %asyncToken_15] 
-        %asyncToken_17, %valOut_18 = air.execute async  {
+        %asyncToken_17, %valOut_18 = air.execute -> (memref<32x32xbf16>) {
             %12 = memref.alloc() : memref<32x32xbf16>
             air.execute_terminator %12 : memref<32x32xbf16>
-        } {id = 10 : i32} : (memref<32x32xbf16>)
+        } {id = 10 : i32}
         %10 = scf.for %arg14 = %c0_12 to %c64_11 step %c32 iter_args(%arg15 = %8) -> (!air.async.token) {
-            %asyncToken_20, %valOut_21 = air.execute async [%arg15]  : (!air.async.token) {
+            %asyncToken_20, %valOut_21 = air.execute [%arg15] -> (memref<32x32xbf16>) {
                 %15 = memref.alloc() : memref<32x32xbf16>
                 air.execute_terminator %15 : memref<32x32xbf16>
-            } {id = 8 : i32} : (memref<32x32xbf16>)
-            %asyncToken_22, %valOut_23 = air.execute async [%arg15]  : (!air.async.token) {
+            } {id = 8 : i32}
+            %asyncToken_22, %valOut_23 = air.execute [%arg15] -> (memref<32x32xbf16>) {
                 %15 = memref.alloc() : memref<32x32xbf16>
                 air.execute_terminator %15 : memref<32x32xbf16>
-            } {id = 9 : i32} : (memref<32x32xbf16>)
+            } {id = 9 : i32}
             %12 = air.dma_memcpy_nd async [%asyncToken_20, %arg15] (%valOut_21[] [] [], %arg11[%valOut_14, %arg14] [%c32, %c32] [%c64_11, %c1_10]) {broadcast_pattern = #set0, id = 4 : i32} : (memref<32x32xbf16>, memref<64x64xbf16>)
             %13 = air.dma_memcpy_nd async [%asyncToken_22, %arg15] (%valOut_23[] [] [], %arg12[%arg14, %valOut_16] [%c32, %c32] [%c64_11, %c1_10]) {broadcast_pattern = #set1, id = 5 : i32} : (memref<32x32xbf16>, memref<64x64xbf16>)
-            %asyncToken_24 = air.execute async [%13, %arg15, %12]  : (!air.async.token, !air.async.token, !air.async.token) {
+            %asyncToken_24 = air.execute [%13, %arg15, %12] {
                 linalg.matmul {cast = #linalg.type_fn<cast_signed>} ins(%valOut_21, %valOut_23 : memref<32x32xbf16>, memref<32x32xbf16>) outs(%valOut_18 : memref<32x32xbf16>)
                 air.execute_terminator
             } {id = 11 : i32}
-            %asyncToken_25 = air.execute async [%asyncToken_24]  : (!air.async.token) {
+            %asyncToken_25 = air.execute [%asyncToken_24] {
                 memref.dealloc %valOut_21 : memref<32x32xbf16>
                 air.execute_terminator
             } {id = 12 : i32}
-            %asyncToken_26 = air.execute async [%asyncToken_24]  : (!air.async.token) {
+            %asyncToken_26 = air.execute [%asyncToken_24] {
                 memref.dealloc %valOut_23 : memref<32x32xbf16>
                 air.execute_terminator
             } {id = 13 : i32}
             %14 = air.wait_all async [%asyncToken_24, %asyncToken_25, %asyncToken_26] 
             scf.yield %14 : !air.async.token
         }
-        %asyncToken_19 = air.execute async [%10] : (!air.async.token) {
+        %asyncToken_19 = air.execute [%10] {
             memref.dealloc %valOut_18 : memref<32x32xbf16>
             air.execute_terminator
         } {id = 14 : i32}

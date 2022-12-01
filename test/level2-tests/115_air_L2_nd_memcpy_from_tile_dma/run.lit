@@ -1,0 +1,15 @@
+//===- run.lit ------------------------------------------------------------===//
+//
+// Copyright (C) 2021-2022, Xilinx Inc.
+// Copyright (C) 2022, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+
+// Removed run on board for production vck190
+
+// RUN: air-opt -air-to-aie='col-offset=7 row-offset=4 output-prefix=%T/' %S/air.mlir
+// RUN: aie-opt --aie-create-pathfinder-flows --aie-find-flows --aie-assign-buffer-addresses %T/aie.partition_0.mlir | aie-translate --aie-generate-xaie --xaie-target=v2 -o %T/aie_inc.cpp
+// RUN: aiecc.py --aie-generate-xaiev2  %T/aie.partition_0.mlir
+// RUN: %CLANG %S/test.cpp -I%LIBXAIE_DIR%/include -I%T -L%LIBXAIE_DIR%/lib -lxaiengine -I%aie_runtime_lib% %aie_runtime_lib%/test_library.cpp -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
+// %run_on_board %T/test.elf

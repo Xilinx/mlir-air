@@ -2,24 +2,7 @@
 //
 // Copyright (C) 2020-2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,22 +10,21 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <thread>
-#include <stdlib.h>
-#include <unistd.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <sys/mman.h>
-#include <xaiengine.h>
+#include <thread>
+#include <unistd.h>
 
 #include "air_host.h"
-#include "acdc_queue.h"
-#include "hsa_defs.h"
 
 #define XAIE_NUM_ROWS            8
 #define XAIE_NUM_COLS           50
 #define XAIE_ADDR_ARRAY_OFF     0x800
 
 #define SHMEM_BASE 0x020100000000LL
+
+#include "test_library.h"
 
 namespace {
 
@@ -151,7 +133,9 @@ main(int argc, char *argv[])
   signal_store_release((signal_t*)&q->doorbell, wr_idx);
 
   // wait for packet completion
-  while (signal_wait_aquire((signal_t*)&herd_pkt->completion_signal, HSA_SIGNAL_CONDITION_EQ, 0, 0x80000, HSA_WAIT_STATE_ACTIVE) != 0) {
+  while (signal_wait_acquire((signal_t *)&herd_pkt->completion_signal,
+                             HSA_SIGNAL_CONDITION_EQ, 0, 0x80000,
+                             HSA_WAIT_STATE_ACTIVE) != 0) {
     printf("packet completion signal timeout on herd initialization!\n");
     printf("%x\n", herd_pkt->header);
     printf("%x\n", herd_pkt->type);

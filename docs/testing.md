@@ -26,7 +26,7 @@ Note that CMAKE_MODULE_PATH needs to be an absolute path at the moment
 Most unit tests check the behavior of individual compilation passes.  In general, we follow [https://llvm.org/docs/TestingGuide.html] best practices from LLVM, such as `FileCheck`.
 
 ```
-// RUN: aie-opt --aie-create-flows --aie-find-flows %s | FileCheck %s
+// RUN: aie-opt --aie-create-pathfinder-flows --aie-find-flows %s | FileCheck %s
 // CHECK: %[[T23:.*]] = AIE.tile(2, 3)
 ```
 

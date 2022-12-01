@@ -2,24 +2,7 @@
 //
 // Copyright (C) 2021-2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
@@ -40,7 +23,7 @@ module  {
           %b = memref.alloc() : memref<1024xi32, 2>
           air.dma_memcpy_nd (%a[][][], %op0[%c0][%c1024][%c1_1]) {id = 1 : i32} : (memref<1024xi32, 2>, memref<1024xi32>)
           air.dma_memcpy_nd (%b[][][], %op1[%c0][%c1024][%c1_1]) {id = 2 : i32} : (memref<1024xi32, 2>, memref<1024xi32>)
-          %init = linalg.init_tensor [1024] : tensor<1024xi32>
+          %init = tensor.empty () : tensor<1024xi32>
           %ta = bufferization.to_tensor %a : memref<1024xi32, 2>
           %tb = bufferization.to_tensor %b : memref<1024xi32, 2>
           %5 = linalg.generic {indexing_maps = [#map0, #map0, #map0], iterator_types = ["parallel"]} ins(%ta, %tb : tensor<1024xi32>, tensor<1024xi32>) outs(%init : tensor<1024xi32>) {
@@ -52,7 +35,7 @@ module  {
         } : tensor<1024xi32>
 
         %output2 = air.pipeline.stage args(%in = %output1) : tensor<1024xi32> {
-          %init = linalg.init_tensor [1024] : tensor<1024xi32>
+          %init = tensor.empty () : tensor<1024xi32>
           %5 = linalg.generic {indexing_maps = [#map0, #map0], iterator_types = ["parallel"]} ins(%in : tensor<1024xi32>) outs(%init : tensor<1024xi32>) {
           ^bb0(%a2: i32, %a3: i32):  // no predecessors
             %one = arith.constant 1 : i32
@@ -63,7 +46,7 @@ module  {
         } : tensor<1024xi32>
 
         %output3 = air.pipeline.stage args(%in = %output2) : tensor<1024xi32> {
-          %init = linalg.init_tensor [1024] : tensor<1024xi32>
+          %init = tensor.empty () : tensor<1024xi32>
           %5 = linalg.generic {indexing_maps = [#map0, #map0], iterator_types = ["parallel"]} ins(%in : tensor<1024xi32>) outs(%init : tensor<1024xi32>) {
           ^bb0(%a2: i32, %a3: i32):  // no predecessors
             %two = arith.constant 2 : i32
@@ -74,7 +57,7 @@ module  {
         } : tensor<1024xi32>
 
         air.pipeline.stage args(%in = %output3) : tensor<1024xi32> {
-          %init = linalg.init_tensor [1024] : tensor<1024xi32>
+          %init = tensor.empty () : tensor<1024xi32>
           %5 = linalg.generic {indexing_maps = [#map0, #map0], iterator_types = ["parallel"]} ins(%in : tensor<1024xi32>) outs(%init : tensor<1024xi32>) {
           ^bb0(%a2: i32, %a3: i32):  // no predecessors
             %three = arith.constant 3 : i32

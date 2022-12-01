@@ -2,24 +2,7 @@
 //
 // Copyright (C) 2020-2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
@@ -50,16 +33,16 @@ struct air_module_desc_t {
   air_partition_desc_t **partition_descs;
 };
 
-extern air_module_desc_t __air_module_descriptor;
+extern air_module_desc_t __airrt_module_descriptor;
 
 int
 main(int argc, char *argv[])
 {
-  int num_partitions = __air_module_descriptor.partition_length;
+  int num_partitions = __airrt_module_descriptor.partition_length;
   printf("Num Partitions: %d\n", (int)num_partitions);
   for (int j = 0; j < num_partitions; j++) {
 
-    auto partition_desc = __air_module_descriptor.partition_descs[j];
+    auto partition_desc = __airrt_module_descriptor.partition_descs[j];
     std::string partition_name(partition_desc->name,
                                partition_desc->name_length);
     printf("\tPartition %d: %s\n", j, partition_name.c_str());

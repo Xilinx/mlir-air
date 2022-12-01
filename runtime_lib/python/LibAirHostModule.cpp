@@ -2,24 +2,7 @@
 //
 // Copyright (C) 2021-2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,23 +14,25 @@
 
 #include "LibAirHostModule.h"
 
-#ifdef AIE_LIBXAIE_ENABLE
-#include "air_host.h"
-#include "acdc_queue.h"
-#endif
+#include "air.hpp"
+
 namespace xilinx {
 namespace air {
 
 void defineAIRHostModule(pybind11::module &m) {
-#ifdef AIE_LIBXAIE_ENABLE
 
-  pybind11::class_<aie_libxaie_ctx_t>(m, "LibXAIEContext");
+  m.def(
+      "init_libxaie", []() -> uint64_t { return (uint64_t)air_init_libxaie(); },
+      pybind11::return_value_policy::reference);
 
-  m.def("init_libxaie", &air_init_libxaie1, pybind11::return_value_policy::reference);
-
-  m.def("deinit_libxaie",[](aie_libxaie_ctx_t* ctx) -> void {
-    air_deinit_libxaie1(ctx);
+  m.def("deinit_libxaie", [](uint64_t ctx) -> void {
+    air_deinit_libxaie((air_libxaie_ctx_t)ctx);
   });
+
+  m.def("init", [](void) -> uint64_t { return (uint64_t)air_init(); });
+
+  m.def("shut_down",
+        [](void) -> uint64_t { return (uint64_t)air_shut_down(); });
 
   pybind11::class_<air_module_desc_t>(m, "ModuleDescriptor")
       .def(
@@ -76,34 +61,45 @@ void defineAIRHostModule(pybind11::module &m) {
       });
 
   pybind11::class_<air_herd_desc_t>(m, "HerdDescriptor")
-    .def("getName", [](const air_herd_desc_t &d) -> std::string {
-      return std::string(d.name, d.name_length);
-    });
+      .def("getName", [](const air_herd_desc_t &d) -> std::string {
+        return std::string(d.name, d.name_length);
+      });
 
-  m.def("module_load_from_file", [](std::string filename, queue_t* q) -> air_module_handle_t {
-    return air_module_load_from_file(filename.c_str(), q);
-  });
+  m.def("module_load_from_file",
+        [](std::string filename, queue_t *q) -> air_module_handle_t {
+          return air_module_load_from_file(filename.c_str(), q);
+        });
 
   m.def("module_unload", &air_module_unload);
 
   m.def("get_module_descriptor", &air_module_get_desc,
         pybind11::return_value_policy::reference);
 
-  // m.def("get_herd_descriptor", [](air_module_handle_t h, std::string name) {
-  //   return air_herd_get_desc(h, name.c_str());
-  // }, pybind11::return_value_policy::reference);
+  pybind11::class_<air_agent_t>(m, "Agent");
+
+  m.def(
+      "get_agents",
+      []() -> std::vector<air_agent_t> {
+        std::vector<air_agent_t> agents;
+        air_get_agents(agents);
+        return agents;
+      },
+      pybind11::return_value_policy::reference);
 
   pybind11::class_<queue_t>(m, "Queue");
 
-  m.def("queue_create", []() -> queue_t* {
-    queue_t *q = nullptr;
-    auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
-    if (ret != 0)
-      return nullptr;
-    return q;
-  }, pybind11::return_value_policy::reference);
-#endif
+  m.def(
+      "queue_create",
+      [](const air_agent_t &a) -> queue_t * {
+        queue_t *q = nullptr;
+        auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q,
+                                    a.handle);
+        if (ret != 0)
+          return nullptr;
+        return q;
+      },
+      pybind11::return_value_policy::reference);
 }
 
-}
-}
+} // namespace air
+} // namespace xilinx

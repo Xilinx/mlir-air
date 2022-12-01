@@ -1,28 +1,12 @@
 //===- Util.cpp -------------------------------------------------*- C++ -*-===//
 //
-// Copyright (C) 2021-2022, Xilinx Inc.
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// Copyright (C) 2021-2022, Xilinx Inc. All rights reserved.
+// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
+#include "air/Util/Util.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -43,8 +27,11 @@ using namespace mlir;
 namespace xilinx {
 namespace air {
 
+const StringLiteral LinalgTransforms::kLinalgTransformMarker =
+    "__internal_linalg_transform__";
+
 namespace {
-  
+
 std::string getMangledType(const Type ty) {
   std::stringstream ret;
 
@@ -55,26 +42,20 @@ std::string getMangledType(const Type ty) {
       auto shape = mrt.getShape();
       for (auto s : shape)
         ret << s << "x";
-    }
-    else if (mrt.hasRank()) {
+    } else if (mrt.hasRank()) {
       ret << "D" << mrt.getRank();
     }
     const Type elem = mrt.getElementType();
     ret << getMangledType(elem);
-  }
-  else if (FloatType ft = ty.dyn_cast<FloatType>()) {
+  } else if (FloatType ft = ty.dyn_cast<FloatType>()) {
     ret << "F" << ft.getWidth();
-  }
-  else if (const IntegerType it = ty.dyn_cast<const IntegerType>()) {
+  } else if (const IntegerType it = ty.dyn_cast<const IntegerType>()) {
     ret << "I" << it.getWidth();
-  }
-  else if (const IndexType it = ty.dyn_cast<const IndexType>()) {
+  } else if (const IndexType it = ty.dyn_cast<const IndexType>()) {
     ret << "I64";
-  }
-  else if (ty.dyn_cast<air::AsyncTokenType>()) {
+  } else if (ty.dyn_cast<air::AsyncTokenType>()) {
     ret << "E";
-  }
-  else {
+  } else {
     Type t = ty;
     t.dump();
     assert(0 && "unhandled type in getMangledType");
@@ -82,7 +63,8 @@ std::string getMangledType(const Type ty) {
   return ret.str();
 }
 
-std::string getMangledFuncName(ModuleOp module, std::string prefix, FunctionType fnTy) {
+std::string getMangledFuncName(ModuleOp module, std::string prefix,
+                               FunctionType fnTy) {
   std::string sep = "_";
 
   auto resultTy = fnTy.getResults();
@@ -96,10 +78,9 @@ std::string getMangledFuncName(ModuleOp module, std::string prefix, FunctionType
 
   return ret;
 }
-}
+} // namespace
 
-void coalesceLoops(AffineForOp outer, AffineForOp inner)
-{
+void coalesceLoops(AffineForOp outer, AffineForOp inner) {
   auto ctx = outer.getContext();
   auto loc = outer.getLoc();
   auto builder = OpBuilder::atBlockBegin(outer.getBody());
@@ -115,13 +96,11 @@ void coalesceLoops(AffineForOp outer, AffineForOp inner)
 
   outer.setUpperBoundMap(AffineMap::get(0, 0, ub_new_expr));
   auto iv_new = outer.getInductionVar();
-  auto iv_new_inner = builder.create<AffineApplyOp>(loc,
-                                                    AffineMap::get(1, 0, iv_new_inner_expr),
-                                                    iv_new);
-  auto iv_new_outer = builder.create<AffineApplyOp>(loc,
-                                                    AffineMap::get(1, 0, iv_new_outer_expr),
-                                                    iv_new);
-  SmallPtrSet<Operation *, 2> keep{iv_new_inner,iv_new_outer};
+  auto iv_new_inner = builder.create<AffineApplyOp>(
+      loc, AffineMap::get(1, 0, iv_new_inner_expr), iv_new);
+  auto iv_new_outer = builder.create<AffineApplyOp>(
+      loc, AffineMap::get(1, 0, iv_new_outer_expr), iv_new);
+  SmallPtrSet<Operation *, 2> keep{iv_new_inner, iv_new_outer};
   iv_new.replaceAllUsesExcept(iv_new_outer, keep);
   inner.getInductionVar().replaceAllUsesWith(iv_new_inner);
   // erase terminator from inner loop's body
@@ -133,8 +112,7 @@ void coalesceLoops(AffineForOp outer, AffineForOp inner)
   return;
 }
 
-void normalizeLoop(AffineForOp afo)
-{
+void normalizeLoop(AffineForOp afo) {
   auto ubMap = afo.getUpperBoundMap();
   auto lbMap = afo.getLowerBoundMap();
   auto ctx = afo.getContext();
@@ -200,8 +178,7 @@ uint64_t getTensorVolume(const ShapedType ty) {
 uint64_t getTensorVolume(const Type ty) {
   if (auto t = ty.dyn_cast<ShapedType>()) {
     return getTensorVolume(t);
-  }
-  else {
+  } else {
     return 1;
   }
 }
@@ -214,6 +191,17 @@ scf::ForOp getForRegionIterArgsOwner(Value val) {
   assert(ivArg.getOwner() && "unlinked block argument");
   auto *containingOp = ivArg.getOwner()->getParentOp();
   return dyn_cast<scf::ForOp>(containingOp);
+}
+
+// Get the parent scf.parallel op of an init_val
+scf::ParallelOp getParallelRegionInitValsOwner(Operation *op, Value val) {
+  if (auto parent_parallel_op = op->getParentOfType<scf::ParallelOp>()) {
+    for (auto init_val : parent_parallel_op.getInitVals()) {
+      if (init_val == val)
+        return parent_parallel_op;
+    }
+  }
+  return scf::ParallelOp();
 }
 
 // Get the parent air.launch_herd op of a tile id
@@ -237,11 +225,95 @@ air::HierarchyInterface getHierarchyArgOwner(Value val) {
 }
 
 // Get operation's "id" attribute
-int getIdAttr(Operation * op){
+int getIdAttr(Operation *op) {
   auto idAttr = op->getAttrOfType<IntegerAttr>("id");
   assert(idAttr && "op has no attribute named 'id'");
   return idAttr.getInt();
 }
 
+// Renumber the DMA ops
+void renumberDmaOps(func::FuncOp func, std::string mode) {
+  unsigned id = 0;
+  if (mode == "global") {
+    // Renumber DMA ops per entire module
+    func->walk([&](Operation *func_dma) {
+      if (dyn_cast<xilinx::air::DmaMemcpyInterface>(func_dma)) {
+        func_dma->setAttr(
+            "id",
+            mlir::IntegerAttr::get(
+                mlir::IntegerType::get(func_dma->getContext(), 32), ++id));
+      }
+    });
+  } else if (mode == "herd") {
+    for (auto herd : func.getOps<xilinx::air::HerdOp>()) {
+      id = 0;
+      // Renumber DMA ops per air herd
+      herd->walk([&](Operation *herd_dma) {
+        if (dyn_cast<xilinx::air::DmaMemcpyInterface>(herd_dma)) {
+          herd_dma->setAttr(
+              "id",
+              mlir::IntegerAttr::get(
+                  mlir::IntegerType::get(herd_dma->getContext(), 32), ++id));
+        }
+      });
+    }
+  } else
+    assert(false && "Unknown dma renumber mode. Supported modes: global, herd");
 }
+
+// Get op type as string
+std::string to_string(Operation *op) {
+  return op->getName().getStringRef().str();
 }
+
+// Returns the first affine if op in block; nullptr otherwise
+mlir::AffineIfOp getAffineIfInBlock(mlir::Block *block) {
+  for (auto op : block->getOps<mlir::AffineIfOp>()) {
+    return op;
+  }
+  return mlir::AffineIfOp();
+}
+
+// Returns the first air.dma op in block; nullptr otherwise
+air::DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block) {
+  for (auto op : block->getOps<air::DmaMemcpyNdOp>()) {
+    return op;
+  }
+  return air::DmaMemcpyNdOp();
+}
+
+// Erase a kernel operand from air.hierarchy op
+void eraseAIRHierarchyOperand(air::HierarchyInterface op, unsigned index) {
+  assert(index + 1 <= op->getNumOperands() && "Index out of range");
+  auto numAsyncDeps = dyn_cast<air::AsyncOpInterface>(op.getOperation())
+                          .getAsyncDependencies()
+                          .size();
+  auto removed_operand_index = index + numAsyncDeps + op.getNumDims();
+  op->eraseOperands(removed_operand_index);
+  if (!op->template hasTrait<OpTrait::AttrSizedOperandSegments>())
+    return;
+  auto attrName =
+      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
+  auto sizeAttr = op->template getAttrOfType<DenseI32ArrayAttr>(attrName);
+  if (!sizeAttr)
+    return; // Async dependencies is the only variadic operand.
+  SmallVector<int32_t, 8> sizes;
+  for (auto size : sizeAttr.asArrayRef()) {
+    sizes.push_back(size);
+  }
+  // Find which bin the erased operand belongs to in OperandSegmentSizes
+  int32_t sum = 0;
+  unsigned i = 0;
+  for (auto s : sizes) {
+    sum += s;
+    if (sum > removed_operand_index) {
+      sizes[i]--;
+      break;
+    }
+    i++;
+  }
+  op->setAttr(attrName, Builder(op->getContext()).getDenseI32ArrayAttr(sizes));
+}
+
+} // namespace air
+} // namespace xilinx

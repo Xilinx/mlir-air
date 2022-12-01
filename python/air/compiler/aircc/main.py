@@ -1,35 +1,16 @@
 # ./python/air/compiler/aircc/main.py -*- Python -*-
-
+#
 # Copyright (C) 2022, Xilinx Inc.
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
-#
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
+# SPDX-License-Identifier: MIT
 
 """
 aircc - AIR compiler driver for MLIR tools
 """
 
-import itertools
 import os
 import platform
 import sys
-import time
 import subprocess
 from joblib import Parallel, delayed
 import tempfile
@@ -44,6 +25,7 @@ def emit_wrapper(herd_name="partition", include_name="aie.inc"):
 #include "stdio.h"
 #include "assert.h"
 #include "air_host.h"
+#include "air_host_impl.h"
 
 namespace air {
 namespace partitions {
@@ -108,38 +90,85 @@ def run(mlir_module, args):
       print('created temporary directory', tmpdirname)
 
   with mlir_module.context as ctx:
-    m = Module.parse(str(mlir_module))
+    _,air_mlir_filename = os.path.split(opts.air_mlir_file)
+    air_place_pass = 'air-place-herds{' + \
+                     f'num-rows={opts.num_rows} ' + \
+                     f'num-cols={opts.num_cols} ' + \
+                     f'row-anchor={opts.row_offset} ' + \
+                     f'col-anchor={opts.col_offset}' + '}'
+
+    air_placed = opts.tmpdir+'/placed.'+air_mlir_filename
+    pass_pipeline = ','.join([
+      'air-pipeline-to-affine{lowering-type=getput}',
+      'canonicalize', 'cse',
+      'func.func(air-renumber-dma)',
+      'func.func(convert-linalg-to-loops)',
+      air_place_pass
+    ])
+    air_placed_module = Module.parse(str(mlir_module))
+    run_passes(pass_pipeline, air_placed_module, opts, air_placed)
+
     air_to_aie_pass = 'air-to-aie{emit-while-loop=false'
     air_to_aie_pass = air_to_aie_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
     air_to_aie_pass = air_to_aie_pass + f' output-prefix={opts.tmpdir}/' + '}'
-
-    run_passes('func.func(air-renumber-dma),'+air_to_aie_pass+',func.func(convert-linalg-to-loops)',Module.parse(str(m)),opts)
+    pass_pipeline = ','.join([
+      air_to_aie_pass
+    ])
+    run_passes(pass_pipeline, Module.parse(str(air_placed_module)), opts)
 
     air_to_airrt_pass = 'air-to-aie{emit-while-loop=true'
     air_to_airrt_pass = air_to_airrt_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
-    air_to_airrt_pass = air_to_airrt_pass + f' output-prefix={opts.tmpdir}/' + '}'
+    air_to_airrt_pass = air_to_airrt_pass + f' output-prefix=/dev/null' + '}'
 
-    _,air_mlir_filename = os.path.split(opts.air_mlir_file)
     air_mlir_filename = "torch.mlir"
 
     # lower the airrt control program to llvm dialect
 
+    airrt_module = Module.parse(str(air_placed_module))
     aie_ctrl_airrt = opts.tmpdir+'/airrt.'+air_mlir_filename
-    pass_pipeline = 'func.func(air-renumber-dma),'+air_to_airrt_pass+',convert-vector-to-llvm,convert-math-to-llvm,lower-affine,air-to-std,air-lower-linalg-tensors,canonicalize,cse'
-    run_passes(pass_pipeline, mlir_module, opts, aie_ctrl_airrt)
+    pass_pipeline = ','.join([
+      air_to_airrt_pass,
+      'convert-vector-to-llvm',
+      'convert-math-to-llvm',
+      'lower-affine',
+      'air-to-std',
+      'air-lower-linalg-tensors',
+      'canonicalize', 'cse'
+    ])
+    run_passes(pass_pipeline, airrt_module, opts, aie_ctrl_airrt)
 
     aie_ctrl = opts.tmpdir+'/aie_ctrl.'+air_mlir_filename
-    pass_pipeline = 'airrt-to-llvm,func-bufferize,func.func(finalizing-bufferize)'
-    run_passes(pass_pipeline, mlir_module, opts, aie_ctrl)
+    pass_pipeline = ','.join([
+      'airrt-to-llvm',
+      'func-bufferize',
+      'func.func(finalizing-bufferize)'
+    ])
+    run_passes(pass_pipeline, airrt_module, opts, aie_ctrl)
 
     aie_ctrl_refback = opts.tmpdir+'/refback.'+air_mlir_filename
-    pass_pipeline = 'func.func(air-renumber-dma),convert-vector-to-llvm,convert-math-to-llvm,air-to-std,air-lower-linalg-tensors,canonicalize,cse,'+ \
-                    'airrt-to-llvm,canonicalize,cse'
-    run_passes(pass_pipeline, Module.parse(str(m)), opts, aie_ctrl_refback)
+    pass_pipeline = ','.join([
+      'convert-vector-to-llvm',
+      'convert-math-to-llvm',
+      'lower-affine',
+      'air-to-std',
+      'air-lower-linalg-tensors',
+      'canonicalize', 'cse',
+      'airrt-to-llvm',
+      'canonicalize','cse'
+    ])
+    run_passes(pass_pipeline, Module.parse(str(air_placed_module)), opts, aie_ctrl_refback)
 
     aie_ctrl_llvm = opts.tmpdir+'/llvm.'+air_mlir_filename
-    pass_pipeline = 'lower-affine,convert-scf-to-cf,convert-memref-to-llvm,convert-func-to-llvm,convert-cf-to-llvm,canonicalize,cse'
-    run_passes(pass_pipeline, mlir_module, opts, aie_ctrl_llvm)
+    pass_pipeline = ','.join([
+      #'air-return-elimination',
+      'lower-affine',
+      'convert-scf-to-cf',
+      'convert-memref-to-llvm',
+      'convert-func-to-llvm',
+      'convert-cf-to-llvm',
+      'canonicalize','cse'
+    ])
+    run_passes(pass_pipeline, airrt_module, opts, aie_ctrl_llvm)
 
     # compile the llvm dialect into a .o object file
 
@@ -153,7 +182,9 @@ def run(mlir_module, args):
     do_call(['llvm-dis', aie_ctrl_llvm_opt_bc, '-o', aie_ctrl_llvm_opt_ir])
 
     aie_ctrl_obj = opts.tmpdir+'/'+air_mlir_filename+'.o'
-    do_call(['clang', '-Wno-override-module', '-fPIC', '--target=aarch64-linux-gnu', '-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
+    do_call(['clang', '-Wno-override-module', '-fPIC'] +
+            (['-target', opts.host_target] if opts.host_target else []) +
+            ['-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
 
     # make aie elf files and host .o files for each herd in the program
 
@@ -171,12 +202,18 @@ def run(mlir_module, args):
       aiecc_file = opts.tmpdir+'/aiecc.'+herd+'.mlir'
       aiecc_dir = opts.tmpdir+'/'+herd
       do_call(['air-opt', herd_file, '-air-lower-linalg-tensors', '--lower-affine', '-cse', '-o', aiecc_file])
+      if 'x86_64' in platform.uname()[5]:
+        aiecc_target = "x86_64-amd-linux-gnu"
+      else:
+        aiecc_target = "aarch64-linux-gnu"
       do_call(['aiecc.py'] +
               (['-v'] if opts.verbose else []) +
-              (['--sysroot', opts.sysroot] if opts.sysroot!="" else []) +
+              (['--sysroot', opts.sysroot] if opts.sysroot else ['--sysroot=/']) +
+              ['--host-target', opts.host_target if opts.host_target else aiecc_target] +
               ['--tmpdir', aiecc_dir] +
-              ['--pathfinder', '--aie-generate-xaiev2'] +
-              ['--no-xbridge', '--no-xchesscc', aiecc_file])
+              ['--aie-generate-xaiev2'] +
+              ['--xbridge'] if opts.xbridge else ['--no-xbridge'] +
+              ['--no-xchesscc', aiecc_file])
 
       inc_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.inc'
       cpp_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.cpp'
@@ -189,9 +226,9 @@ def run(mlir_module, args):
       with open(cpp_file, 'w') as f:
         f.write(emit_wrapper(herd, inc_file))
 
-      cmd = [opts.cc, '-std=c++11', '--target=aarch64-linux-gnu', '-g']
-      if opts.sysroot:
-        cmd += ['--sysroot=%s' % opts.sysroot]
+      cmd = [opts.cc, '-std=c++11', '-g']
+      cmd += ['--sysroot=%s' % opts.sysroot] if opts.sysroot else []
+      cmd += ['--target=%s' % opts.host_target] if opts.host_target else []
       cmd += ['-I.', f'-I{opts.sysroot}/opt/xaienginev2/include']
       thispath = os.path.dirname(os.path.realpath(__file__))
       cmd += [f'-I{thispath}/../../../../runtime_lib/airhost/include']
@@ -208,8 +245,9 @@ def run(mlir_module, args):
     lib_file = opts.tmpdir+'/'+opts.air_mlir_file+('.so' if opts.shared else '.a')
     if opts.shared:
       cmd = ['clang', '-shared']
-      cmd += ['--sysroot', opts.sysroot] if opts.sysroot!="" else []
-      cmd += ['-fuse-ld=lld', '--target=aarch64-linux-gnu', '-o', lib_file] + obj_files
+      cmd += ['--sysroot', opts.sysroot] if opts.sysroot else []
+      cmd += ['-target', opts.host_target] if opts.host_target else []
+      cmd += ['-fuse-ld=lld', '-o', lib_file] + obj_files
     else:
       cmd = ['llvm-ar', 'rc', lib_file] + obj_files
     do_call(cmd)
@@ -219,23 +257,31 @@ def run(mlir_module, args):
 
 def run_flow(opts):
     thispath = os.path.dirname(os.path.realpath(__file__))
+
+    _,air_mlir_filename = os.path.split(opts.air_mlir_file)
+    air_place = opts.tmpdir+'/placed.'+air_mlir_filename
+    air_place_pass = f'-air-place-herds=' + \
+                     f'num-rows={opts.num_rows} ' + \
+                     f'num-cols={opts.num_cols} ' + \
+                     f'row-anchor={opts.row_offset} ' + \
+                     f'col-anchor={opts.col_offset}'
+
+    do_call(['air-opt', opts.air_mlir_file,
+             '-air-pipeline-to-affine=lowering-type=getput', '-canonicalize', '-cse',
+             '-air-renumber-dma', air_place_pass, '-o', air_place])
+
     air_to_aie_pass = '-air-to-aie=emit-while-loop=false'
     air_to_aie_pass = air_to_aie_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
     air_to_aie_pass = air_to_aie_pass + f' output-prefix={opts.tmpdir}/'
-    
-    do_call(['air-opt', opts.air_mlir_file,
-             '-air-pipeline-to-affine=lowering-type=getput', '-canonicalize', '-cse',
-             '-air-renumber-dma', air_to_aie_pass, '-o', '/dev/null'])
+
+    do_call(['air-opt', air_place, air_to_aie_pass, '-o', '/dev/null'])
 
     air_to_airrt_pass = '-air-to-aie=emit-while-loop=false'
     air_to_airrt_pass = air_to_airrt_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
-    air_to_airrt_pass = air_to_airrt_pass + f' output-prefix={opts.tmpdir}/'
+    air_to_airrt_pass = air_to_airrt_pass + f' output-prefix=/dev/null'
 
-    _,air_mlir_filename = os.path.split(opts.air_mlir_file)
     aie_ctrl_airrt = opts.tmpdir+'/airrt.'+air_mlir_filename
-    do_call(['air-opt', opts.air_mlir_file,
-            '-air-pipeline-to-affine=lowering-type=getput', '-canonicalize', '-cse',
-            '-air-renumber-dma', air_to_airrt_pass,
+    do_call(['air-opt', air_place, air_to_airrt_pass,
             '-convert-vector-to-llvm', '-convert-math-to-llvm', '--lower-affine', '-air-to-std',
             '-air-lower-linalg-tensors', '-canonicalize', '-cse',
             '-o', aie_ctrl_airrt])
@@ -264,7 +310,9 @@ def run_flow(opts):
     do_call(['llvm-dis', aie_ctrl_llvm_opt_bc, '-o', aie_ctrl_llvm_opt_ir])
 
     aie_ctrl_obj = opts.tmpdir+'/'+air_mlir_filename+'.o'
-    do_call(['clang', '-Wno-override-module', '-fPIC', '--target=aarch64-linux-gnu', '-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
+    do_call(['clang', '-Wno-override-module', '-fPIC'] +
+            (['-target', opts.host_target] if opts.host_target else []) +
+            ['-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
 
     t = do_run(['air-translate', '--airrt-generate-json', aie_ctrl_airrt])
 
@@ -277,12 +325,18 @@ def run_flow(opts):
       aiecc_file = opts.tmpdir+'/aiecc.'+herd+'.mlir'
       aiecc_dir = opts.tmpdir+'/'+herd
       do_call(['air-opt', herd_file, '-air-lower-linalg-tensors', '--lower-affine', '-cse', '-o', aiecc_file])
+      if 'x86_64' in platform.uname()[5]:
+        aiecc_target = "x86_64-amd-linux-gnu"
+      else:
+        aiecc_target = "aarch64-linux-gnu"
       do_call(['aiecc.py'] +
               (['-v'] if opts.verbose else []) +
-              (['--sysroot', opts.sysroot] if opts.sysroot!="" else []) +
+              (['--sysroot', opts.sysroot] if opts.sysroot else ['--sysroot=/']) +
+              ['--host-target', opts.host_target if opts.host_target else aiecc_target] +
               ['--tmpdir', aiecc_dir] +
-              ['--pathfinder', '--aie-generate-xaiev2'] +
-              ['--no-xbridge', '--no-xchesscc', aiecc_file])
+              ['--aie-generate-xaiev2'] +
+              ['--xbridge' if opts.xbridge else '--no-xbridge'] +
+              ['--no-xchesscc', aiecc_file])
 
       inc_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.inc'
       cpp_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.cpp'
@@ -293,9 +347,11 @@ def run_flow(opts):
       with open(cpp_file, 'w') as f:
         f.write(emit_wrapper(herd, inc_file))
 
-      cmd = [opts.cc, '-std=c++11', '--target=aarch64-linux-gnu', '-g']
-      if opts.sysroot:
-        cmd += ['--sysroot=%s' % opts.sysroot]
+      cmd = [opts.cc, '-std=c++11', '-g']
+      cmd += ['--sysroot=%s' % opts.sysroot] if opts.sysroot else []
+      if opts.sysroot and 'aarch64-linux-gnu' in opts.host_target:
+        cmd += ['--gcc-toolchain=%s/usr' % opts.sysroot]
+      cmd += ['--target=%s' % opts.host_target] if opts.host_target else []
       cmd += ['-I.', f'-I{opts.sysroot}/opt/xaienginev2/include']
       cmd += [f'-I{thispath}/../../../../runtime_lib/airhost/include']
       cmd += [f'-I{thispath}/../../../../runtime_lib']
@@ -310,8 +366,9 @@ def run_flow(opts):
     lib_file = opts.air_mlir_file+('.so' if opts.shared else '.a')
     if opts.shared:
       cmd = ['clang', '-shared']
-      cmd += ['--sysroot', opts.sysroot] if opts.sysroot!="" else []
-      cmd += ['-fuse-ld=lld', '--target=aarch64-linux-gnu', '-o', lib_file] + obj_files
+      cmd += ['--sysroot', opts.sysroot] if opts.sysroot else []
+      cmd += ['-target', opts.host_target] if opts.host_target else []
+      cmd += ['-fuse-ld=lld', '-o', lib_file] + obj_files
     else:
       cmd = ['llvm-ar', 'rc', lib_file] + obj_files
     do_call(cmd)

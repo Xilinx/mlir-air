@@ -2,40 +2,21 @@
 //
 // Copyright (C) 2020-2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
-#include <cstdio>
 #include <cassert>
-#include <unistd.h>
-#include <stdlib.h>
+#include <cstdio>
 #include <fcntl.h>
+#include <iostream>
+#include <stdlib.h>
 #include <sys/mman.h>
+#include <unistd.h>
+#include <vector>
 
-#include <xaiengine.h>
-
-#include "air_host.h"
-
-#define HIGH_ADDR(addr)	((addr & 0xffffffff00000000) >> 32)
-#define LOW_ADDR(addr)	(addr & 0x00000000ffffffff)
+#include "air.hpp"
+#include "test_library.h"
 
 #include "aie_inc.cpp"
 
@@ -46,8 +27,29 @@ int main(int argc, char *argv[])
   auto num_rows = 1;
   auto num_cols = 1;
 
-  aie_libxaie_ctx_t *xaie = mlir_aie_init_libxaie();
-  mlir_aie_init_device(xaie);
+  std::vector<air_agent_t> agents;
+  auto get_agents_ret = air_get_agents(agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
+
+  if (agents.empty()) {
+    std::cout << "fail." << std::endl;
+    return -1;
+  }
+
+  // create the queue
+  queue_t *q = nullptr;
+  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q,
+                              AIR_VCK190_SHMEM_BASE);
+  assert(ret == 0 && "failed to create queue!");
+
+  uint64_t wr_idx = queue_add_write_index(q, 1);
+  uint64_t packet_id = wr_idx % q->size;
+  dispatch_packet_t *shim_pkt =
+      (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
+  air_packet_device_init(shim_pkt, XAIE_NUM_COLS);
+  air_queue_dispatch_and_wait(q, wr_idx, shim_pkt);
+
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
 
   mlir_aie_print_tile_status(xaie, col, row);
 
@@ -62,15 +64,10 @@ int main(int argc, char *argv[])
 
   mlir_aie_configure_dmas(xaie);
 
-  // create the queue
-  queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, AIR_VCK190_SHMEM_BASE);
-  assert(ret == 0 && "failed to create queue!");
-
   // setup the shim dma descriptors
   uint32_t *bram_ptr;
   mlir_aie_init_mems(xaie, 1);
-  bram_ptr = (uint32_t *)mlir_aie_mem_alloc(xaie, 0, AIR_BBUFF_BASE, 0x8000);
+  bram_ptr = (uint32_t *)mlir_aie_mem_alloc(xaie, 0, 0x8000);
 
   bram_ptr[24] = 0xacdc;
   mlir_aie_sync_mem_dev(xaie, 0);
@@ -98,8 +95,9 @@ int main(int argc, char *argv[])
   uint32_t lock_id = 0;
 
   // reserve a packet in the queue
-  uint64_t wr_idx = queue_add_write_index(q, 1);
-  uint64_t packet_id = wr_idx % q->size;
+  wr_idx = queue_add_write_index(q, 1);
+  packet_id = wr_idx % q->size;
+
   // Set up the worlds smallest herd at 7,2
   dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
   air_packet_herd_init(herd_pkt, herd_id, col, num_cols, row, num_rows);

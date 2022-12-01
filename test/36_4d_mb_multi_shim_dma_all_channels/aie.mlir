@@ -2,24 +2,7 @@
 //
 // Copyright (C) 2020-2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
@@ -47,9 +30,9 @@ module {
   %l72_1 = AIE.lock(%t72, 1)
 
   %m72 = AIE.mem(%t72) {
-      %srcDma = AIE.dmaStart("S2MM0", ^bd0, ^dma0)
+      %srcDma = AIE.dmaStart(S2MM, 0, ^bd0, ^dma0)
     ^dma0:
-      %dstDma = AIE.dmaStart("MM2S0", ^bd2, ^end)
+      %dstDma = AIE.dmaStart(MM2S, 0, ^bd2, ^end)
     ^bd0:
       AIE.useLock(%l72_0, "Acquire", 0)
       AIE.dmaBd(<%buf72_0 : memref<128xi32>, 0, 128>, 0)
@@ -81,9 +64,9 @@ module {
   %l74_1 = AIE.lock(%t74, 1)
 
   %m74 = AIE.mem(%t74) {
-      %srcDma = AIE.dmaStart("S2MM0", ^bd0, ^dma0)
+      %srcDma = AIE.dmaStart(S2MM, 0, ^bd0, ^dma0)
     ^dma0:
-      %dstDma = AIE.dmaStart("MM2S0", ^bd2, ^end)
+      %dstDma = AIE.dmaStart(MM2S, 0, ^bd2, ^end)
     ^bd0:
       AIE.useLock(%l74_0, "Acquire", 0)
       AIE.dmaBd(<%buf74_0 : memref<128xi32>, 0, 128>, 0)
@@ -115,9 +98,9 @@ module {
   %l82_1 = AIE.lock(%t82, 1)
 
   %m82 = AIE.mem(%t82) {
-      %srcDma = AIE.dmaStart("S2MM0", ^bd0, ^dma0)
+      %srcDma = AIE.dmaStart(S2MM, 0, ^bd0, ^dma0)
     ^dma0:
-      %dstDma = AIE.dmaStart("MM2S0", ^bd2, ^end)
+      %dstDma = AIE.dmaStart(MM2S, 0, ^bd2, ^end)
     ^bd0:
       AIE.useLock(%l82_0, "Acquire", 0)
       AIE.dmaBd(<%buf82_0 : memref<128xi32>, 0, 128>, 0)
@@ -149,9 +132,9 @@ module {
   %l84_1 = AIE.lock(%t84, 1)
 
   %m84 = AIE.mem(%t84) {
-      %srcDma = AIE.dmaStart("S2MM0", ^bd0, ^dma0)
+      %srcDma = AIE.dmaStart(S2MM, 0, ^bd0, ^dma0)
     ^dma0:
-      %dstDma = AIE.dmaStart("MM2S0", ^bd2, ^end)
+      %dstDma = AIE.dmaStart(MM2S, 0, ^bd2, ^end)
     ^bd0:
       AIE.useLock(%l84_0, "Acquire", 0)
       AIE.dmaBd(<%buf84_0 : memref<128xi32>, 0, 128>, 0)

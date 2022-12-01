@@ -1,34 +1,17 @@
 //===- lower_affine_if_pattern.mlir ----------------------------*- MLIR -*-===//
 //
-// Copyright (C) 2022, Xilinx Inc.
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// Copyright (C) 2022, Xilinx Inc. All rights reserved.
+// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-to-aie='test-patterns=specialize-affine-if'| FileCheck %s
 
-// CHECK: [[T_0_0:%.*]] = AIE.tile(0, 0)
-// CHECK: [[T_1_0:%.*]] = AIE.tile(1, 0)
-// CHECK: [[T_0_1:%.*]] = AIE.tile(0, 1)
-// CHECK: [[T_1_1:%.*]] = AIE.tile(1, 1)
+// CHECK: [[T_0_0:%.*]] = AIE.tile(1, 1)
+// CHECK: [[T_1_0:%.*]] = AIE.tile(2, 1)
+// CHECK: [[T_0_1:%.*]] = AIE.tile(1, 2)
+// CHECK: [[T_1_1:%.*]] = AIE.tile(2, 2)
 // CHECK: [[C_1_1:%.*]] = AIE.core([[T_1_1]])
 // CHECK: [[V1:%.*]] = arith.constant 6 : i32
 // CHECK: [[V0:%.*]] = arith.constant 10 : i32
@@ -57,10 +40,10 @@
 #set0 = affine_set<()[s0, s1] : (s0 >= 0, s1 == 0)>
 #set1 = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0)>
 module @aie.partition_0 {
-  %0 = AIE.tile(0, 0)
-  %1 = AIE.tile(1, 0)
-  %2 = AIE.tile(0, 1)
-  %3 = AIE.tile(1, 1)
+  %0 = AIE.tile(1, 1)
+  %1 = AIE.tile(2, 1)
+  %2 = AIE.tile(1, 2)
+  %3 = AIE.tile(2, 2)
   memref.global "public" @__air_herd_arg_9 : memref<64x64xi32>
   memref.global "public" @__air_herd_arg_10 : memref<64x64xi32>
   memref.global "public" @__air_herd_arg_11 : memref<64x64xi32>

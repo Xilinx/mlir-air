@@ -1,25 +1,8 @@
 //===- AIR.td ----------------------------------------------*- tablegen -*-===//
 //
-// Copyright (C) 2020-2022, Xilinx Inc.
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// Copyright (C) 2020-2022, Xilinx Inc. All rights reserved.
+// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,7 +11,7 @@
 
 include "mlir/IR/OpBase.td"
 include "air/Dialect/AIR/AIROpBase.td"
-
+include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
@@ -41,24 +24,24 @@ def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
                                      IsolatedFromAbove,
                                      AffineScope,
                                      SingleBlockImplicitTerminator<"LaunchTerminatorOp">]>,
-                        Arguments<(ins OptionalAttr<SymbolRefAttr>:$symbol,
-                                       Variadic<air_AsyncToken>:$asyncDependencies,
-                                       Variadic<Index>:$sizes,
-                                       Variadic<AnyType>:$operands)>,
-                        Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
+                          Arguments<(ins OptionalAttr<SymbolRefAttr>:$symbol,
+                                         Variadic<air_AsyncToken>:$async_dependencies,
+                                         Variadic<Index>:$sizes,
+                                         Variadic<AnyType>:$operands)>,
+                          Results<(outs Optional<air_AsyncToken>:$async_token)> {
   let summary = "Launch";
   let description = [{
     Launch
   }];
 
-  let regions = (region AnyRegion:$body);
+  let regions = (region SizedRegion<1>:$body);
 
   let skipDefaultBuilders = 1;
   let builders = [
-    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$kernelOperands)>,
-    OpBuilder<(ins "ValueRange":$asyncDependencies,
-      "ValueRange":$sizes,"ValueRange":$kernelOperands, 
-      CArg<"bool", "false">:$isAsync)>
+    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$kernel_operands)>,
+    OpBuilder<(ins "ValueRange":$async_dependencies,
+      "ValueRange":$sizes,"ValueRange":$kernel_operands,
+      CArg<"bool", "false">:$is_async)>
   ];
   let hasCustomAssemblyFormat = 1;
   let extraClassDeclaration = [{
@@ -81,41 +64,42 @@ def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
 }
 
 def air_LaunchTerminatorOp : air_Op<"launch_terminator", [HasParent<"LaunchOp">,
-                                                      NoSideEffect, Terminator]>,
-    Arguments<(ins)>, Results<(outs)> {
-  let summary = "Terminator for air launch regions.";
+                                                          Pure,
+                                                          Terminator]>,
+                                    Arguments<(ins)>, Results<(outs)> {
+  let summary = "Terminator for `air.launch`.";
   let description = [{
-    A terminator operation for regions that appear in the body of
-    `air.launch` operation.  These regions are not expected to return any
-    value so the terminator takes no operands.
+    A terminator operation for the body of `air.launch` operations.
+    `air.launch` operations are not expected to return any value so the
+    terminator takes no operands.
   }];
   let assemblyFormat = "attr-dict";
 }
 
 def air_PartitionOp : air_Op<"partition", [air_AsyncOpInterface,
-                                     air_HierarchyInterface,
-                                     AttrSizedOperandSegments,
-                                     IsolatedFromAbove,
-                                     AffineScope,
-                                     SingleBlockImplicitTerminator<"PartitionTerminatorOp">]>,
+                                           air_HierarchyInterface,
+                                           AttrSizedOperandSegments,
+                                           IsolatedFromAbove,
+                                           AffineScope,
+                                           SingleBlockImplicitTerminator<"PartitionTerminatorOp">]>,
                         Arguments<(ins OptionalAttr<SymbolRefAttr>:$symbol,
-                                       Variadic<air_AsyncToken>:$asyncDependencies,
+                                       Variadic<air_AsyncToken>:$async_dependencies,
                                        Variadic<Index>:$sizes,
                                        Variadic<AnyType>:$operands)>,
-                        Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
+                        Results<(outs Optional<air_AsyncToken>:$async_token)> {
   let summary = "Partition";
   let description = [{
     Partition
   }];
 
-  let regions = (region AnyRegion:$body);
+  let regions = (region SizedRegion<1>:$body);
 
   let skipDefaultBuilders = 1;
   let builders = [
-    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$kernelOperands)>,
-    OpBuilder<(ins "ValueRange":$asyncDependencies,
-      "ValueRange":$sizes,"ValueRange":$kernelOperands, 
-      CArg<"bool", "false">:$isAsync)>
+    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$kernel_operands)>,
+    OpBuilder<(ins "ValueRange":$async_dependencies,
+      "ValueRange":$sizes,"ValueRange":$kernel_operands,
+      CArg<"bool", "false">:$is_async)>
   ];
   let hasCustomAssemblyFormat = 1;
   let extraClassDeclaration = [{
@@ -133,47 +117,79 @@ def air_PartitionOp : air_Op<"partition", [air_AsyncOpInterface,
       }
       return -1;
     }
+    static StringRef getColOffsetAttrName() { return "x_loc"; }
+    static StringRef getRowOffsetAttrName() { return "y_loc"; }
+    mlir::Optional<uint64_t> getColOffset() {
+      auto name = getColOffsetAttrName();
+      if (auto a = (*this)->getAttrOfType<IntegerAttr>(name)) {
+        return a.getInt();
+      }
+      return mlir::Optional<uint64_t>();
+    }
+    mlir::Optional<uint64_t> getRowOffset() {
+      auto name = getRowOffsetAttrName();
+      if (auto a = (*this)->getAttrOfType<IntegerAttr>(name)) {
+        return a.getInt();
+      }
+      return mlir::Optional<uint64_t>();
+    }
+    static StringRef getNumColsAttrName() { return "x_size"; }
+    static StringRef getNumRowsAttrName() { return "y_size"; }
+    mlir::Optional<uint64_t> getNumCols() {
+      auto name = getNumColsAttrName();
+      if (auto a = (*this)->getAttrOfType<IntegerAttr>(name)) {
+        return a.getInt();
+      }
+      return mlir::Optional<uint64_t>();
+    }
+    mlir::Optional<uint64_t> getNumRows() {
+      auto name = getNumRowsAttrName();
+      if (auto a = (*this)->getAttrOfType<IntegerAttr>(name)) {
+        return a.getInt();
+      }
+      return mlir::Optional<uint64_t>();
+    }
   }];
   let hasCanonicalizer  = 1;
 }
 
 def air_PartitionTerminatorOp : air_Op<"partition_terminator", [HasParent<"PartitionOp">,
-                                                      NoSideEffect, Terminator]>,
+                                                      Pure, Terminator]>,
     Arguments<(ins)>, Results<(outs)> {
   let summary = "Terminator for air partition regions.";
   let description = [{
-    A terminator operation for regions that appear in the body of
-    `air.partition` operation.  These regions are not expected to return any
-    value so the terminator takes no operands.
+    A terminator operation for the body of `air.partition` operations.
+    `air.partition` operations are not expected to return any value so the
+    terminator takes no operands.
   }];
   let assemblyFormat = "attr-dict";
 }
 
 def air_HerdOp : air_Op<"herd", [air_AsyncOpInterface,
-                                              air_HierarchyInterface,
-                                              AttrSizedOperandSegments,
-                                              IsolatedFromAbove,
-                                              AffineScope,
-                                              SingleBlockImplicitTerminator<"HerdTerminatorOp">]>,
+                                 air_HierarchyInterface,
+                                 AttrSizedOperandSegments,
+                                 IsolatedFromAbove,
+                                 AffineScope,
+                                 SingleBlockImplicitTerminator<"HerdTerminatorOp">]>,
                         Arguments<(ins OptionalAttr<SymbolRefAttr>:$symbol,
-                                       Variadic<air_AsyncToken>:$asyncDependencies,
+                                       Variadic<air_AsyncToken>:$async_dependencies,
                                        Variadic<Index>:$sizes,
                                        Variadic<AnyType>:$operands)>,
-                        Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
+                        Results<(outs Optional<air_AsyncToken>:$async_token)> {
   let summary = "Herd";
   let description = [{
     Define and run a 1D or 2D array of tiles as an AIR Herd.
   }];
 
-  let regions = (region AnyRegion:$body);
+  let regions = (region SizedRegion<1>:$body);
 
   let skipDefaultBuilders = 1;
   let builders = [
-    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$kernelOperands)>,
-    OpBuilder<(ins "ValueRange":$asyncDependencies,
+    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$kernel_operands)>,
+    OpBuilder<(ins "ValueRange":$async_dependencies,
       "ValueRange":$sizes,
-      "ValueRange":$kernelOperands,
-      CArg<"bool", "false">:$isAsync
+      "ValueRange":$kernel_operands,
+      CArg<"bool", "false">:$is_async
     )>
   ];
   let hasCustomAssemblyFormat = 1;
@@ -194,32 +210,34 @@ def air_HerdOp : air_Op<"herd", [air_AsyncOpInterface,
     }
     static StringRef getColOffsetAttrName() { return "x_loc"; }
     static StringRef getRowOffsetAttrName() { return "y_loc"; }
-    uint64_t getColOffset() {
+    mlir::Optional<uint64_t> getColOffset() {
       auto name = getColOffsetAttrName();
       if (auto a = (*this)->getAttrOfType<IntegerAttr>(name)) {
         return a.getInt();
       }
-      return 0;
+      return mlir::Optional<uint64_t>();
     }
-    uint64_t getRowOffset() {
+    mlir::Optional<uint64_t> getRowOffset() {
       auto name = getRowOffsetAttrName();
       if (auto a = (*this)->getAttrOfType<IntegerAttr>(name)) {
         return a.getInt();
       }
-      return 0;
+      return mlir::Optional<uint64_t>();
     }
+    uint64_t getNumCols();
+    uint64_t getNumRows();
   }];
   let hasCanonicalizer  = 1;
 }
 
 def air_HerdTerminatorOp : air_Op<"herd_terminator", [HasParent<"HerdOp">,
-                                                      NoSideEffect, Terminator]>,
-    Arguments<(ins)>, Results<(outs)> {
-  let summary = "Terminator for air launch_herd regions.";
+                                                      Pure, Terminator]>,
+                                   Arguments<(ins)>, Results<(outs)> {
+  let summary = "Terminator for air herd regions.";
   let description = [{
-    A terminator operation for regions that appear in the body of
-    `air.launch_herd` operation.  These regions are not expected to return any
-    value so the terminator takes no operands.
+    A terminator operation for the body of `air.herd` operations.
+    `air.herd` operations are not expected to return any value so the
+    terminator takes no operands.
   }];
   let assemblyFormat = "attr-dict";
 }
@@ -233,7 +251,7 @@ def air_HerdPipelineOp : air_Op<"pipeline", [HasParent<"HerdOp">,
     Define a pipeline within an AIR Herd.
   }];
 
-  let regions = (region AnyRegion:$body);
+  let regions = (region SizedRegion<1>:$body);
   let hasVerifier = 1;
   let assemblyFormat = [{
     attr-dict-with-keyword $body
@@ -247,7 +265,7 @@ def air_HerdPipelineOp : air_Op<"pipeline", [HasParent<"HerdOp">,
 def air_PipelineStageOp : air_Op<"pipeline.stage", [HasParent<"HerdPipelineOp">]>,
     Arguments<(ins Variadic<AnyType>:$opers)>, Results<(outs Variadic<AnyType>:$results)> {
   let summary = "Pipeline stage";
-  let regions = (region AnyRegion:$body);
+  let regions = (region SizedRegion<1>:$body);
   let description = [{
     Pipeline stage.
   }];
@@ -259,12 +277,14 @@ def air_PipelineStageOp : air_Op<"pipeline.stage", [HasParent<"HerdPipelineOp">]
 }
 
 def air_PipelineYieldOp : air_Op<"pipeline.yield", [HasParent<"PipelineStageOp">,
-                                          NoSideEffect, ReturnLike, Terminator]>,
-    Arguments<(ins Variadic<AnyType>:$opers)>, Results<(outs)> {
+                                                    Pure, ReturnLike, Terminator]>,
+                                 Arguments<(ins Variadic<AnyType>:$opers)>, Results<(outs)> {
   let summary = "Yield for air pipeline stages.";
   let description = [{
-    A terminator operation for regions that appear in the body of 
-    `air.pipeline.stage` operation.
+    A terminator operation for regions that appear in the body of
+    `air.pipeline.stage` operation. The operation takes variable number of
+    operands and produces no results. The operand number and types must
+    match the signature of the `air.pipeline` that contains the operation.
   }];
   let assemblyFormat = [{
     ($opers^)? attr-dict (`:` type($opers)^)?
@@ -296,11 +316,11 @@ def air_PipelineGetOp : air_Op<"pipeline.get", []>,
 }
 
 def air_PipelineTerminatorOp : air_Op<"pipeline.terminator", [HasParent<"HerdPipelineOp">,
-                                          NoSideEffect, Terminator]>,
+                                          Pure, Terminator]>,
     Arguments<(ins Variadic<AnyType>:$opers)>, Results<(outs)> {
   let summary = "Terminator for air pipeline regions.";
   let description = [{
-    A terminator operation for regions that appear in the body of 
+    A terminator operation for regions that appear in the body of
     `air.pipeline` operation.
   }];
   let assemblyFormat = "attr-dict ($opers^ `:` type($opers))?";
@@ -312,7 +332,7 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
                          AttrSizedOperandSegments]> {
   let summary = "dma operator";
   let arguments = (
-    ins Variadic<air_AsyncToken>:$asyncDependencies,
+    ins Variadic<air_AsyncToken>:$async_dependencies,
         AnyMemRef:$dst,
         Variadic<Index>:$dst_offsets,
         Variadic<Index>:$dst_sizes,
@@ -322,10 +342,10 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
         Variadic<Index>:$src_sizes,
         Variadic<Index>:$src_strides
   );
-  let results = (outs Optional<air_AsyncToken>:$asyncToken);
+  let results = (outs Optional<air_AsyncToken>:$async_token);
   let assemblyFormat = [{
-    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) 
-    `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `,` 
+    custom<AsyncDependencies>(type($async_token), $async_dependencies)
+    `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `,`
         $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)`  attr-dict `:`
     `(` type($dst) `,` type($src) `)`
   }];
@@ -334,14 +354,8 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
   }];
   let extraClassDeclaration = [{
     unsigned getNumDims() { return 0; }
-    Value getSrcMemref() { return src(); }
-    Value getDstMemref() { return dst(); }
-    SmallVector<Value, 4> getDstOffsets(){ return dst_offsets(); }
-    SmallVector<Value, 4> getSrcOffsets(){ return src_offsets(); }
-    SmallVector<Value, 4> getDstSizes(){ return dst_sizes(); }
-    SmallVector<Value, 4> getSrcSizes(){ return src_sizes(); }
-    SmallVector<Value, 4> getDstStrides(){ return dst_strides(); }
-    SmallVector<Value, 4> getSrcStrides(){ return src_strides(); }
+    Value getSrcMemref() { return getSrc(); }
+    Value getDstMemref() { return getDst(); }
     Value getSrcMemrefDim(unsigned i) { return nullptr; }
     Value getDstMemrefDim(unsigned i) { return nullptr; }
     Value getLength() { return nullptr; }
@@ -355,9 +369,9 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
 }
 
 def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
-  let arguments = (ins Variadic<air_AsyncToken>:$asyncDependencies);
+  let arguments = (ins Variadic<air_AsyncToken>:$async_dependencies);
   let results = (
-    outs Optional<air_AsyncToken>:$asyncToken
+    outs Optional<air_AsyncToken>:$async_token
   );
 
   let summary = "wait for all operator";
@@ -365,7 +379,7 @@ def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
     Wait for all async tokens before preceding.
   }];
   let assemblyFormat = [{
-    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) attr-dict
+    custom<AsyncDependencies>(type($async_token), $async_dependencies) attr-dict
   }];
   let extraClassDeclaration = [{
     int32_t getId() {
@@ -375,16 +389,17 @@ def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
       return -1;
     }
   }];
+  let hasCanonicalizer  = 1;
 }
 
 def air_AllocOp: air_Op<"alloc", [air_AsyncOpInterface]> {
   let summary = "alloc operator";
   let arguments = (
-    ins Variadic<air_AsyncToken>:$asyncDependencies
+    ins Variadic<air_AsyncToken>:$async_dependencies
   );
-  let results = (outs Optional<air_AsyncToken>:$asyncToken, AnyMemRef:$result);
+  let results = (outs Optional<air_AsyncToken>:$async_token, AnyMemRef:$result);
   let assemblyFormat = [{
-    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) attr-dict `:` type($result)
+    custom<AsyncDependencies>(type($async_token), $async_dependencies) attr-dict `:` type($result)
   }];
   let description = [{
     Allocate memory
@@ -394,11 +409,11 @@ def air_AllocOp: air_Op<"alloc", [air_AsyncOpInterface]> {
 def air_DeallocOp: air_Op<"dealloc", [air_AsyncOpInterface]> {
   let summary = "dealloc operator";
   let arguments = (
-    ins Variadic<air_AsyncToken>:$asyncDependencies, AnyMemRef:$memref
+    ins Variadic<air_AsyncToken>:$async_dependencies, AnyMemRef:$memref
   );
-  let results = (outs Optional<air_AsyncToken>:$asyncToken);
+  let results = (outs Optional<air_AsyncToken>:$async_token);
   let assemblyFormat = [{
-    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) $memref attr-dict `:` type($memref)
+    custom<AsyncDependencies>(type($async_token), $async_dependencies) $memref attr-dict `:` type($memref)
   }];
   let description = [{
     Deallocate memory
@@ -407,12 +422,11 @@ def air_DeallocOp: air_Op<"dealloc", [air_AsyncOpInterface]> {
 
 // AIR channel
 
-def air_ChannelOp : air_Op<"channel", []>,
-    Arguments<(ins FlatSymbolRefAttr:$name, 
-        ConfinedAttr<I32Attr, [IntMinValue<0>]>:$countx,
-        ConfinedAttr<I32Attr, [IntMinValue<0>]>:$county)> {
+def air_ChannelOp : air_Op<"channel", [Symbol]>,
+    Arguments<(ins SymbolNameAttr:$sym_name,
+                   DefaultValuedAttr<I64ArrayAttr, "{}">:$size)> {
   let assemblyFormat = [{
-    $name `{` `count_x` `=` $countx `,` `count_y` `=` $county `}` attr-dict 
+    $sym_name $size attr-dict
   }];
   let summary = "Channel for data movement.";
   let description = [{
@@ -421,94 +435,91 @@ def air_ChannelOp : air_Op<"channel", []>,
   }];
 }
 
-def air_ForkOp : air_Op<"fork", []>,
-    Arguments<(ins FlatSymbolRefAttr:$chan_in_name, 
-        FlatSymbolRefAttr:$chan_out_name)> {
-  let assemblyFormat = [{
-    $chan_in_name $chan_out_name attr-dict 
-  }];
-  let summary = "Forked channel for broadcast data movement.";
-  let description = [{
-    Experimental operation to represent a channel fork creating a data broadcast.
-  }];
-}
-
-def air_DistributeOp : air_Op<"distribute", []>,
-    Arguments<(ins FlatSymbolRefAttr:$chan_in_name, 
-        FlatSymbolRefAttr:$chan_out_name)> {
-  let assemblyFormat = [{
-    $chan_in_name $chan_out_name attr-dict 
-  }];
-  let summary = "Distributed channel for merge data movement.";
-  let description = [{
-    Experimental operation to represent a channel distribute creating a data merge.
-  }];
-}
-
-def air_PushOp : air_Op<"push", [air_AsyncOpInterface, AttrSizedOperandSegments]>,
-    Arguments<(ins Variadic<air_AsyncToken>:$asyncDependencies, 
-        FlatSymbolRefAttr:$chan_name, 
-        Index:$chan_idx,
-        Index:$chan_idy,
+def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface, 
+                                              air_ChannelInterface, 
+                                              AttrSizedOperandSegments]>,
+    Arguments<(ins Variadic<air_AsyncToken>:$async_dependencies,
+        FlatSymbolRefAttr:$chan_name,
+        Variadic<Index>:$indices,
         AnyMemRef:$src,
         Variadic<Index>:$src_offsets,
         Variadic<Index>:$src_sizes,
-        Variadic<Index>:$src_strides)>, 
-    Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
+        Variadic<Index>:$src_strides)>,
+    Results<(outs Optional<air_AsyncToken>:$async_token)> {
   let summary = "Push for air channels.";
   let description = [{
-    Experimental operation to represent copying data into a channel.
+    Experimental operation to represent copying data from a memref to a channel.
   }];
   let assemblyFormat = [{
-    $chan_name `(` $chan_idx `,` $chan_idy `)`
-    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) 
-    `(` $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)`  attr-dict `:`
+    custom<AsyncDependencies>(type($async_token), $async_dependencies)
+    $chan_name `[` ($indices^)? `]`
+    `(` $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)` attr-dict `:`
     `(` type($src) `)`
+  }];
+  let extraClassDeclaration = [{
+    Value getSrcMemref() { return getSrc(); }
+    int32_t getId() {
+      if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
+        return id_attr.getInt();
+      }
+      return -1;
+    }
   }];
 }
 
-def air_PopOp : air_Op<"pop", [air_AsyncOpInterface, AttrSizedOperandSegments]>,
-    Arguments<(ins Variadic<air_AsyncToken>:$asyncDependencies, 
-        FlatSymbolRefAttr:$chan_name, 
-        Index:$chan_idx,
-        Index:$chan_idy,
+def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface, 
+                                              air_ChannelInterface, 
+                                              AttrSizedOperandSegments]>,
+    Arguments<(ins Variadic<air_AsyncToken>:$async_dependencies,
+        FlatSymbolRefAttr:$chan_name,
+        Variadic<Index>:$indices,
         AnyMemRef:$dst,
         Variadic<Index>:$dst_offsets,
         Variadic<Index>:$dst_sizes,
-        Variadic<Index>:$dst_strides)>, 
-    Results<(outs Optional<air_AsyncToken>:$asyncToken)> {
-  let summary = "Pop for air channels.";
+        Variadic<Index>:$dst_strides)>,
+    Results<(outs Optional<air_AsyncToken>:$async_token)> {
+  let summary = "Get for air channels.";
   let description = [{
-    Experimental operation to represent copying data out of a channel.
+    Experimental operation to represent copying from a channel to a memref.
   }];
   let assemblyFormat = [{
-    $chan_name `(` $chan_idx `,` $chan_idy `)`
-    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) 
-    `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `)`  attr-dict `:`
+    custom<AsyncDependencies>(type($async_token), $async_dependencies)
+    $chan_name `[` ($indices^)? `]`
+    `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `)` attr-dict `:`
     `(` type($dst) `)`
+  }];
+  let extraClassDeclaration = [{
+    Value getDstMemref() { return getDst(); }
+    int32_t getId() {
+      if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
+        return id_attr.getInt();
+      }
+      return -1;
+    }
   }];
 }
 
 // AIR asynchronous region for dynamic event dispatching.
 
-def air_ExecuteOp : air_Op<"execute", [air_AsyncOpInterface, AffineScope]> {
+def air_ExecuteOp : air_Op<"execute", [SingleBlockImplicitTerminator<"ExecuteTerminatorOp">,
+                                       air_AsyncOpInterface]> {
   let arguments = (
-    ins Variadic<AnyType>:$asyncDependencies
+    ins Variadic<air_AsyncToken>:$async_dependencies
   );
   let results = (
-    outs  air_AsyncToken:$asyncToken,
-          Optional<AnyType>:$valOut
+    outs air_AsyncToken:$async_token,
+         Variadic<AnyType>:$results
   );
   let summary = "Asynchronous code region";
-  let regions = (region AnyRegion:$body);
+  let regions = (region SizedRegion<1>:$body);
   let description = [{
     Defines a code region to be dispatched asynchronously at runtime. All operations in
     the region must be executed sequentially.
   }];
 
   let assemblyFormat = [{
-    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) (`:` 
-    `(` type($asyncDependencies)^ `)`)? regions attr-dict (`:` `(` type($valOut)^ `)`)?
+    (` ``[` $async_dependencies^ `]`)?
+    (`->` `(` type($results)^ `)`)? regions attr-dict
   }];
   let extraClassDeclaration = [{
     int32_t getId() {
@@ -523,12 +534,13 @@ def air_ExecuteOp : air_Op<"execute", [air_AsyncOpInterface, AffineScope]> {
 }
 
 def air_ExecuteTerminatorOp : air_Op<"execute_terminator", [HasParent<"ExecuteOp">,
-                                                      NoSideEffect, ReturnLike, Terminator]>{
-  let summary = "Terminator for air regions.";
+                                                      Pure, ReturnLike, Terminator]>{
+  let summary = "Terminator for air execute.";
   let description = [{
-    A terminator operation for regions that appear in the body of
-    `air.execute` operation.  These regions are not expected to return any
-    value so the terminator takes no operands.
+    A terminator operation for code regions that appear in the body of
+    `air.execute` operation. The operation takes variable number of
+    operands and produces no results. The operand number and types must
+    match the signature of the `air.execute` that contains the operation.
   }];
 
   let arguments = (ins Variadic<AnyType>:$results);

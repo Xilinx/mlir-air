@@ -1,36 +1,19 @@
 //===- air_linalg_rm_view.mlir ---------------------------------*- MLIR -*-===//
 //
-// Copyright (C) 2021-2022, Xilinx Inc.
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// Copyright (C) 2021-2022, Xilinx Inc. All rights reserved.
+// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-linalg-codegen=test-patterns | FileCheck %s
-// CHECK:  %[[VAL_13:.*]] = memref.subview %{{.*}}[0, %{{.*}}, %{{.*}}, %{{.*}} [1, 16, 18, 18] [1, 1, 1, 1] : memref<1x64x66x66xf32> to memref<1x16x18x18xf32, #map0>
+// CHECK:  %[[VAL_13:.*]] = memref.subview %{{.*}}[0, %{{.*}}, %{{.*}}, %{{.*}} [1, 16, 18, 18] [1, 1, 1, 1] : memref<1x64x66x66xf32> to memref<1x16x18x18xf32, #map>
 // CHECK:  %[[VAL_14:.*]] = memref.subview %{{.*}}{{\[}}%{{.*}}, %{{.*}}, 0, 0] [32, 16, 3, 3] [1, 1, 1, 1] : memref<128x64x3x3xf32> to memref<32x16x3x3xf32, #map1>
 // CHECK:  %[[VAL_15:.*]] = memref.subview %{{.*}}[0, %{{.*}}, %{{.*}}, %{{.*}} [1, 32, 16, 16] [1, 1, 1, 1] : memref<1x128x64x64xf32> to memref<1x32x16x16xf32, #map2>
 // CHECK:  %[[VAL_16:.*]] = memref.alloc() : memref<1x16x18x18xf32, 1>
 // CHECK:  %[[VAL_17:.*]] = memref.alloc() : memref<32x16x3x3xf32, 1>
 // CHECK:  %[[VAL_18:.*]] = memref.alloc() : memref<1x32x16x16xf32, 1>
-// CHECK:  linalg.copy ins(%[[VAL_13]] : memref<1x16x18x18xf32, #map0>) outs(%[[VAL_16]] : memref<1x16x18x18xf32, 1>)
+// CHECK:  linalg.copy ins(%[[VAL_13]] : memref<1x16x18x18xf32, #map>) outs(%[[VAL_16]] : memref<1x16x18x18xf32, 1>)
 // CHECK:  linalg.copy ins(%[[VAL_14]] : memref<32x16x3x3xf32, #map1>) outs(%[[VAL_17]] : memref<32x16x3x3xf32, 1>)
 // CHECK:  linalg.copy ins(%[[VAL_15]] : memref<1x32x16x16xf32, #map2>) outs(%[[VAL_18]] : memref<1x32x16x16xf32, 1>)
 // CHECK:  linalg.conv_2d_nchw_fchw {dilations = dense<1> : vector<2xi64>, strides = dense<1> : vector<2xi64>} ins(%[[VAL_16]], %[[VAL_17]] : memref<1x16x18x18xf32, 1>, memref<32x16x3x3xf32, 1>) outs(%[[VAL_18]] : memref<1x32x16x16xf32, 1>)

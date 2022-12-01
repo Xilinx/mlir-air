@@ -1,25 +1,8 @@
 //===- AIROpBase.td ----------------------------------------*- tablegen -*-===//
 //
-// Copyright (C) 2021-2022, Xilinx Inc.
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// Copyright (C) 2021-2022, Xilinx Inc. All rights reserved.
+// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
@@ -129,10 +112,7 @@ def air_AsyncOpInterface : OpInterface<"AsyncOpInterface"> {
     InterfaceMethod<[{
         Query the result that represents the async token to depend on.
       }],
-       "OpResult", "getAsyncToken", (ins), [{}], [{
-        ConcreteOp op = cast<ConcreteOp>(this->getOperation());
-        return op.asyncToken().template dyn_cast_or_null<OpResult>();
-      }]
+      "Value", "getAsyncToken"
     >
   ];
 }
@@ -166,7 +146,9 @@ def air_DmaMemcpyInterface : OpInterface<"DmaMemcpyInterface"> {
 }
 
 def air_HierarchyInterface : OpInterface<"HierarchyInterface"> {
-  let description = [{}];
+  let description = [{
+    Interface for AIR hierarchy ops.
+  }];
   let cppNamespace = "xilinx::air";
   let methods = [
     InterfaceMethod<"description",
@@ -195,6 +177,21 @@ def air_HierarchyInterface : OpInterface<"HierarchyInterface"> {
     >,
     InterfaceMethod<"description",
     "int32_t", "getId"
+    >,
+  ];
+}
+
+def air_ChannelInterface : OpInterface<"ChannelInterface"> {
+  let description = [{
+    Interface for AIR channel ops.
+  }];
+  let cppNamespace = "xilinx::air";
+  let methods = [
+    InterfaceMethod<"description",
+    "int32_t", "getId"
+    >,
+    InterfaceMethod<"description",
+    "StringRef", "getChanName"
     >,
   ];
 }

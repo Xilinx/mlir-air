@@ -1,25 +1,8 @@
 # ./test/lit.cfg.py -*- Python -*-
-
+#
 # Copyright (C) 2022, Xilinx Inc.
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
-#
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
+# SPDX-License-Identifier: MIT
 
 # -*- Python -*-
 
@@ -60,8 +43,8 @@ air_runtime_lib = os.path.join(config.air_obj_root, "runtime_lib")
 config.substitutions.append(('%PATH%', config.environment['PATH']))
 config.substitutions.append(('%shlibext', config.llvm_shlib_ext))
 config.substitutions.append(('%PYTHON', config.python_executable))
-config.substitutions.append(('%ARM_CLANG', "clang++ --target=aarch64-linux-gnu -fuse-ld=lld -DLIBXAIENGINEV2 --sysroot=" + config.vitis_sysroot))
-config.substitutions.append(('%VITIS_SYSROOT%', config.vitis_sysroot))
+config.substitutions.append(('%CLANG', "clang++ -fuse-ld=lld -DLIBXAIENGINEV2"))
+config.substitutions.append(('%LIBXAIE_DIR%', config.libxaie_dir))
 config.substitutions.append(('%aie_runtime_lib%', os.path.join(config.aie_obj_root, "runtime_lib")))
 config.substitutions.append(('%air_runtime_lib%', air_runtime_lib))
 config.substitutions.append(('%airhost_libs%', "-I" + air_runtime_lib + "/airhost/include -L" + air_runtime_lib + "/airhost -Wl,--whole-archive -lairhost -Wl,--no-whole-archive -lpthread -lstdc++ -lsysfs -ldl -lrt"))

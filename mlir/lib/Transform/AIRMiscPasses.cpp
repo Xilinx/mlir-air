@@ -1,25 +1,8 @@
 //===- AIRMiscPasses.cpp ----------------------------------------*- C++ -*-===//
 //
-// Copyright (C) 2022, Xilinx Inc.
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// Copyright (C) 2022, Xilinx Inc. All rights reserved.
+// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
@@ -34,6 +17,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRTilingUtils.h"
 #include "air/Util/Dependency.h"
+#include "air/Util/Util.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -54,10 +38,11 @@
 #define DEBUG_TYPE "air-misc-passes"
 
 using namespace mlir;
+using namespace xilinx;
 
 namespace {
 
-class AIRExamplePass : public xilinx::air::AIRExamplePassBase<AIRExamplePass> {
+class AIRExamplePass : public air::AIRExamplePassBase<AIRExamplePass> {
 
 public:
   AIRExamplePass() = default;
@@ -70,8 +55,7 @@ private:
 
 void AIRExamplePass::runOnOperation() {}
 
-class AIRLinalgNamePass
-    : public xilinx::air::AIRLinalgNamePassBase<AIRLinalgNamePass> {
+class AIRLinalgNamePass : public air::AIRLinalgNamePassBase<AIRLinalgNamePass> {
 
 public:
   AIRLinalgNamePass() = default;
@@ -89,18 +73,18 @@ void AIRLinalgNamePass::runOnOperation() {
   unsigned id = 0;
   module.walk([&](linalg::LinalgOp op) {
     auto attr = op->getAttrOfType<StringAttr>(
-        linalg::LinalgTransforms::kLinalgTransformMarker);
+        air::LinalgTransforms::kLinalgTransformMarker);
     if (!attr) {
       std::string name =
           op->getName().getStringRef().str() + std::to_string(id++);
-      op->setAttr(linalg::LinalgTransforms::kLinalgTransformMarker,
+      op->setAttr(air::LinalgTransforms::kLinalgTransformMarker,
                   StringAttr::get(ctx, name));
     }
   });
 }
 
 class AIRRemoveLinalgNamePass
-    : public xilinx::air::AIRRemoveLinalgNamePassBase<AIRRemoveLinalgNamePass> {
+    : public air::AIRRemoveLinalgNamePassBase<AIRRemoveLinalgNamePass> {
 
 public:
   AIRRemoveLinalgNamePass() = default;
@@ -116,16 +100,16 @@ void AIRRemoveLinalgNamePass::runOnOperation() {
 
   module.walk([&](linalg::LinalgOp op) {
     auto attr = op->getAttrOfType<StringAttr>(
-        linalg::LinalgTransforms::kLinalgTransformMarker);
+        air::LinalgTransforms::kLinalgTransformMarker);
     if (attr) {
-      op->removeAttr(linalg::LinalgTransforms::kLinalgTransformMarker);
+      op->removeAttr(air::LinalgTransforms::kLinalgTransformMarker);
     }
   });
 }
 
 // AIRPromoteUniformL1Dma
 class AIRPromoteUniformL1Dma
-    : public xilinx::air::AIRPromoteUniformL1DmaBase<AIRPromoteUniformL1Dma> {
+    : public air::AIRPromoteUniformL1DmaBase<AIRPromoteUniformL1Dma> {
 
 public:
   AIRPromoteUniformL1Dma() = default;
@@ -154,8 +138,8 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
 
   std::vector<Operation *> erasedOps;
   int64_t max_id = -1;
-  SmallVector<xilinx::air::DmaMemcpyNdOp, 16> memCopies;
-  module.walk([&](xilinx::air::DmaMemcpyNdOp memcpyOp) {
+  SmallVector<air::DmaMemcpyNdOp, 16> memCopies;
+  module.walk([&](air::DmaMemcpyNdOp memcpyOp) {
     memCopies.push_back(memcpyOp);
     IntegerAttr attr = memcpyOp->getAttrOfType<IntegerAttr>("id");
     if (!attr)
@@ -164,9 +148,9 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
   });
 
   for (auto memcpyOp : memCopies) {
-    auto pipeline = memcpyOp->getParentOfType<xilinx::air::HerdPipelineOp>();
-    auto stage = memcpyOp->getParentOfType<xilinx::air::PipelineStageOp>();
-    auto launch = memcpyOp->getParentOfType<xilinx::air::HerdOp>();
+    auto pipeline = memcpyOp->getParentOfType<air::HerdPipelineOp>();
+    auto stage = memcpyOp->getParentOfType<air::PipelineStageOp>();
+    auto launch = memcpyOp->getParentOfType<air::HerdOp>();
     if (!pipeline || !stage || !launch)
       continue;
 
@@ -175,8 +159,8 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
     if (!uniform)
       continue;
 
-    auto src_type = memcpyOp.src().getType().cast<MemRefType>();
-    auto dst_type = memcpyOp.dst().getType().cast<MemRefType>();
+    auto src_type = memcpyOp.getSrc().getType().cast<MemRefType>();
+    auto dst_type = memcpyOp.getDst().getType().cast<MemRefType>();
     auto src_space = src_type.getMemorySpaceAsInt();
     auto dst_space = dst_type.getMemorySpaceAsInt();
 
@@ -203,7 +187,7 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
       remap.map(arg, oper);
     }
     if (to_l1)
-      remap.map(memcpyOp.dst(), alloc);
+      remap.map(memcpyOp.getDst(), alloc);
     do_clone(builder, memcpyOp.getOperation(), remap);
 
     launch_operands.insert(launch_operands.begin(),
@@ -211,7 +195,7 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
                            launch->getOperands().end());
     launch_operands.push_back(alloc.getResult());
     launch->setOperands(launch_operands);
-    launch.body().front().addArgument(alloc.getType(), loc);
+    launch.getBody().front().addArgument(alloc.getType(), loc);
     auto sizeAttr = launch->getAttr("operand_segment_sizes")
                         .cast<::mlir::DenseIntElementsAttr>();
     const uint32_t *it = &*sizeAttr.value_begin<uint32_t>();
@@ -223,9 +207,9 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
     SmallVector<Value, 2> opers{};
     SmallVector<Value, 2> mt;
     Value a = launch.getKernelArguments()[it[3]];
-    builder.create<xilinx::air::DmaMemcpyNdOp>(
-        loc, SmallVector<Type, 1>{}, mt, to_l1 ? memcpyOp.dst() : a, mt, mt, mt,
-        to_l1 ? a : memcpyOp.src(), mt, mt, mt);
+    builder.create<air::DmaMemcpyNdOp>(
+        loc, SmallVector<Type, 1>{}, mt, to_l1 ? memcpyOp.getDst() : a, mt, mt,
+        mt, to_l1 ? a : memcpyOp.getSrc(), mt, mt, mt);
     erasedOps.push_back(memcpyOp);
   }
   for (auto e : erasedOps)
@@ -249,8 +233,7 @@ bool isFuncOf(Operation *op, Value v, std::vector<Operation *> &ops) {
 }
 
 // AIRSpecializeDma
-class AIRSpecializeDma
-    : public xilinx::air::AIRSpecializeDmaBase<AIRSpecializeDma> {
+class AIRSpecializeDma : public air::AIRSpecializeDmaBase<AIRSpecializeDma> {
 
 public:
   AIRSpecializeDma() = default;
@@ -265,40 +248,36 @@ void AIRSpecializeDma::runOnOperation() {
   auto module = getOperation();
   auto ctx = module.getContext();
 
-  module.walk([&](xilinx::air::HerdOp launch) {
-    launch.walk([&](xilinx::air::DmaMemcpyNdOp memcpyOp) {
+  module.walk([&](air::HerdOp launch) {
+    launch.walk([&](air::DmaMemcpyNdOp memcpyOp) {
       std::vector<Operation *> xOps, yOps;
       bool fn_x = isFuncOf(memcpyOp, launch.getIds()[0], xOps);
       bool fn_y = isFuncOf(memcpyOp, launch.getIds()[1], yOps);
-      auto herd_size = launch.getSizeOperands();
-      int64_t herd_size_x =
-          cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
-      int64_t herd_size_y =
-          cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
+      int64_t herd_size_x = launch.getNumCols();
+      int64_t herd_size_y = launch.getNumRows();
       if (fn_x && !fn_y) {
         auto loc = memcpyOp->getLoc();
         OpBuilder builder(memcpyOp);
-        auto pipe = builder.create<xilinx::air::HerdPipelineOp>(loc);
+        auto pipe = builder.create<air::HerdPipelineOp>(loc);
         pipe->setAttr("direction", StringAttr::get(ctx, "horiz"));
         auto pipe_bb = new Block();
-        pipe.body().push_back(pipe_bb);
+        pipe.getBody().push_back(pipe_bb);
         builder.setInsertionPointToEnd(pipe_bb);
-        builder.create<xilinx::air::PipelineTerminatorOp>(
-            loc, SmallVector<Value, 1>{});
+        builder.create<air::PipelineTerminatorOp>(loc, SmallVector<Value, 1>{});
         builder.setInsertionPointToStart(pipe_bb);
         for (int x = 0; x < herd_size_x; x++) {
-          auto stage = builder.create<xilinx::air::PipelineStageOp>(
+          auto stage = builder.create<air::PipelineStageOp>(
               loc, SmallVector<Type, 1>{}, SmallVector<Value, 1>{});
           stage->setAttr("uniform", BoolAttr::get(ctx, true));
           auto stage_bb = new Block();
-          stage.body().push_back(stage_bb);
+          stage.getBody().push_back(stage_bb);
           auto stage_builder = OpBuilder::atBlockEnd(stage_bb);
           auto c_x = stage_builder.create<arith::ConstantIndexOp>(loc, x);
           BlockAndValueMapping remap;
           remap.map(launch.getIds()[0], c_x);
           for (auto xop : xOps)
             stage_builder.clone(*xop, remap);
-          stage_builder.create<xilinx::air::PipelineYieldOp>(
+          stage_builder.create<air::PipelineYieldOp>(
               loc, SmallVector<Type, 1>{}, SmallVector<Value, 1>{});
         }
         memcpyOp.erase();
@@ -306,27 +285,26 @@ void AIRSpecializeDma::runOnOperation() {
       if (fn_y && !fn_x) {
         auto loc = memcpyOp->getLoc();
         OpBuilder builder(memcpyOp);
-        auto pipe = builder.create<xilinx::air::HerdPipelineOp>(loc);
+        auto pipe = builder.create<air::HerdPipelineOp>(loc);
         pipe->setAttr("direction", StringAttr::get(ctx, "vert"));
         auto pipe_bb = new Block();
-        pipe.body().push_back(pipe_bb);
+        pipe.getBody().push_back(pipe_bb);
         builder.setInsertionPointToEnd(pipe_bb);
-        builder.create<xilinx::air::PipelineTerminatorOp>(
-            loc, SmallVector<Value, 1>{});
+        builder.create<air::PipelineTerminatorOp>(loc, SmallVector<Value, 1>{});
         builder.setInsertionPointToStart(pipe_bb);
         for (int y = 0; y < herd_size_y; y++) {
-          auto stage = builder.create<xilinx::air::PipelineStageOp>(
+          auto stage = builder.create<air::PipelineStageOp>(
               loc, SmallVector<Type, 1>{}, SmallVector<Value, 1>{});
           stage->setAttr("uniform", BoolAttr::get(ctx, true));
           auto stage_bb = new Block();
-          stage.body().push_back(stage_bb);
+          stage.getBody().push_back(stage_bb);
           auto stage_builder = OpBuilder::atBlockEnd(stage_bb);
           auto c_y = stage_builder.create<arith::ConstantIndexOp>(loc, y);
           BlockAndValueMapping remap;
           remap.map(launch.getIds()[1], c_y);
           for (auto yop : yOps)
             stage_builder.clone(*yop, remap);
-          stage_builder.create<xilinx::air::PipelineYieldOp>(
+          stage_builder.create<air::PipelineYieldOp>(
               loc, SmallVector<Type, 1>{}, SmallVector<Value, 1>{});
         }
         memcpyOp.erase();
@@ -337,7 +315,7 @@ void AIRSpecializeDma::runOnOperation() {
 
 // AIRSpecializeDmaBroadcast
 class AIRSpecializeDmaBroadcast
-    : public xilinx::air::AIRSpecializeDmaBroadcastBase<AIRSpecializeDmaBroadcast> {
+    : public air::AIRSpecializeDmaBroadcastBase<AIRSpecializeDmaBroadcast> {
 
 public:
   AIRSpecializeDmaBroadcast() = default;
@@ -347,8 +325,11 @@ public:
     auto module = getOperation();
     SmallVector<func::FuncOp, 4> funcOps;
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
-    for (auto f : funcOps)
+    for (auto f : funcOps) {
       runOnFunction(f);
+      // Renumber the air dma op ids
+      air::renumberDmaOps(f, "global");
+    }
   }
 
   void runOnFunction(func::FuncOp f) {
@@ -359,17 +340,17 @@ public:
   }
 
 private:
-
   void specializeDmaBroadcastWithAffineIf(func::FuncOp f) {
 
-    f.walk([&](xilinx::air::HerdOp launch) {
-      launch.walk([&](xilinx::air::DmaMemcpyInterface memcpyOp) {
+    f.walk([&](air::HerdOp launch) {
+      launch.walk([&](air::DmaMemcpyInterface memcpyOp) {
         auto herd_id = launch.getIds();
         OpBuilder builder(memcpyOp);
         auto loc = memcpyOp->getLoc();
-        auto broadcast_pattern = memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern");
+        auto broadcast_pattern =
+            memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern");
         auto ctx = memcpyOp->getContext();
-        if (broadcast_pattern){
+        if (broadcast_pattern) {
           auto is = broadcast_pattern.getValue();
           auto constraints = is.getConstraints();
           auto eqFlags = is.getEqFlags();
@@ -380,20 +361,21 @@ private:
               getAffineConstantExpr(0, ctx),
           };
           for (auto c : constraints) {
-            if (c.isSymbolicOrConstant()){
+            if (c.isSymbolicOrConstant()) {
               auto newC = c.replaceSymbols(zero_syms);
-              auto expr = simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
-              if (!expr){
+              auto expr =
+                  simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
+              if (!expr) {
                 continue;
               }
-              if (expr.getValue() != 0){
+              if (expr.getValue() != 0) {
                 numPartitions = expr.getValue() + 1;
               }
             }
           }
           // Walk each set in the patitioning scheme
           // Specialize each affine set
-          for (unsigned i = 0; i < numPartitions; i++){
+          for (unsigned i = 0; i < numPartitions; i++) {
             SmallVector<AffineExpr, 2> newConstraints;
             SmallVector<bool, 2> newEqflags;
             SmallVector<AffineExpr, 1> i_syms{
@@ -405,7 +387,7 @@ private:
             };
             int c_iter = 0;
             for (auto c : constraints) {
-              if (!c.isSymbolicOrConstant()){
+              if (!c.isSymbolicOrConstant()) {
                 // Substitute partition id i_syms into inequalities
                 auto newC = c.replaceSymbols(i_syms);
                 // Replace all dims with symbols
@@ -418,51 +400,64 @@ private:
             auto int_set = IntegerSet::get(0, 2, newConstraints, newEqflags);
             SmallVector<Value, 2> int_set_args{herd_id[0], herd_id[1]};
             // Duplicate dma ops per spatial partition
-            if (i == 0){
-              AffineIfOp aif = builder.create<AffineIfOp>(loc, 
-                      xilinx::air::AsyncTokenType::get(ctx), int_set,
-                      int_set_args, (i != numPartitions - 1));
+            if (i == 0) {
+              AffineIfOp aif = builder.create<AffineIfOp>(
+                  loc, air::AsyncTokenType::get(ctx), int_set, int_set_args,
+                  (i != numPartitions - 1));
               builder.setInsertionPointToStart(aif.getThenBlock());
               auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
               memcpyOp_cloned->removeAttr("broadcast_pattern");
               memcpyOp_cloned->setAttr("broadcast_set",
-                      mlir::IntegerSetAttr::get(int_set));
+                                       mlir::IntegerSetAttr::get(int_set));
               SmallVector<Value, 1> yield_token;
-              yield_token.push_back(dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
-              builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(), yield_token);
-              if (numPartitions != 1){
-                // If more than 1 spatial partitions, then move loc to else block
+              yield_token.push_back(
+                  dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
+                      .getAsyncToken());
+              builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(),
+                                            yield_token);
+              if (numPartitions != 1) {
+                // If more than 1 spatial partitions, then move loc to else
+                // block
                 builder.setInsertionPointToStart(aif.getElseBlock());
               }
-              // Reconnect dependency graph using the outermost affine.if's token
-              auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
-              async_memcpyOp.getAsyncToken().replaceAllUsesWith(aif.getResult(0));
-            }
-            else if (i < numPartitions - 1) {
-              AffineIfOp aif = builder.create<AffineIfOp>(builder.getUnknownLoc(), 
-                      xilinx::air::AsyncTokenType::get(ctx), int_set,
-                      int_set_args, (i != numPartitions - 1));
+              // Reconnect dependency graph using the outermost affine.if's
+              // token
+              auto async_memcpyOp =
+                  dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
+              async_memcpyOp.getAsyncToken().replaceAllUsesWith(
+                  aif.getResult(0));
+            } else if (i < numPartitions - 1) {
+              AffineIfOp aif = builder.create<AffineIfOp>(
+                  builder.getUnknownLoc(), air::AsyncTokenType::get(ctx),
+                  int_set, int_set_args, (i != numPartitions - 1));
               builder.setInsertionPointToStart(aif.getThenBlock());
               auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
               memcpyOp_cloned->removeAttr("broadcast_pattern");
               memcpyOp_cloned->setAttr("broadcast_set",
-                      mlir::IntegerSetAttr::get(int_set));
+                                       mlir::IntegerSetAttr::get(int_set));
               SmallVector<Value, 1> yield_token;
-              yield_token.push_back(dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
-              builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(), yield_token);
+              yield_token.push_back(
+                  dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
+                      .getAsyncToken());
+              builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(),
+                                            yield_token);
               builder.setInsertionPointAfter(aif);
-              SmallVector<Value, 1> parent_block_yield_token = {aif.getResult(0)};
-              builder.create<AffineYieldOp>(builder.getUnknownLoc(), parent_block_yield_token);
+              SmallVector<Value, 1> parent_block_yield_token = {
+                  aif.getResult(0)};
+              builder.create<AffineYieldOp>(builder.getUnknownLoc(),
+                                            parent_block_yield_token);
               builder.setInsertionPointToStart(aif.getElseBlock());
-            }
-            else {
+            } else {
               auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
               memcpyOp_cloned->removeAttr("broadcast_pattern");
               memcpyOp_cloned->setAttr("broadcast_set",
-                      mlir::IntegerSetAttr::get(int_set));
+                                       mlir::IntegerSetAttr::get(int_set));
               SmallVector<Value, 1> yield_token;
-              yield_token.push_back(dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp_cloned).getAsyncToken());
-              builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(), yield_token);
+              yield_token.push_back(
+                  dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
+                      .getAsyncToken());
+              builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(),
+                                            yield_token);
             }
           }
           memcpyOp.erase();
@@ -473,28 +468,30 @@ private:
 
   void simplifyDmaIndicesWithAffineSet(func::FuncOp f) {
 
-    f.walk([&](xilinx::air::DmaMemcpyInterface memcpyOp) {
+    f.walk([&](air::DmaMemcpyInterface memcpyOp) {
       auto ctx = memcpyOp->getContext();
-      if (auto broadcast_set = memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_set")){
+      if (auto broadcast_set =
+              memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_set")) {
         // Get all ops on the dependency connection between dma and herd launch
         SmallVector<Value, 1> loop_dep_history;
         std::vector<Operation *> op_history;
         traceDependentInductionVar(memcpyOp, loop_dep_history, op_history);
 
-        // Walk constraints in broadcast pattern, and get shape of the broadcast pattern
+        // Walk constraints in broadcast pattern, and get shape of the broadcast
+        // pattern
         auto is = broadcast_set.getValue();
         auto constraints = is.getConstraints();
         auto eqFlags = is.getEqFlags();
 
         // Check which dimension op operates on; initialize current_shape_expr
         SmallVector<AffineExpr, 2> current_shape_expr = {nullptr, nullptr};
-        for (auto v : loop_dep_history){
-          if (auto hl_op = xilinx::air::getHerdArgOwner(v)){
-            for (unsigned j = 0; j < current_shape_expr.size(); j++){
-              if (v == hl_op.getIds()[j]){
-                for (unsigned i = 0; i < constraints.size(); i++){
+        for (auto v : loop_dep_history) {
+          if (auto hl_op = air::getHerdArgOwner(v)) {
+            for (unsigned j = 0; j < current_shape_expr.size(); j++) {
+              if (v == hl_op.getIds()[j]) {
+                for (unsigned i = 0; i < constraints.size(); i++) {
                   auto c = constraints[i];
-                  if (c.isFunctionOfSymbol(j) && eqFlags[i]){
+                  if (c.isFunctionOfSymbol(j) && eqFlags[i]) {
                     auto eval = evaluateSymbolEqualityInSet(c, ctx);
                     current_shape_expr[j] = getAffineConstantExpr(eval, ctx);
                   }
@@ -504,54 +501,66 @@ private:
           }
         }
 
-        // Evaluate broadcast pattern by propagating expr through scalar operations in op history, last-in-first-out
-        for (std::vector<Operation *>::reverse_iterator i = op_history.rbegin(); i != op_history.rend(); ++i ) {
-          if (auto air_region_op = dyn_cast<xilinx::air::ExecuteOp>(*i)) {
-            assert(air_region_op.body().front().getOperations().size() == 2 &&
+        // Evaluate broadcast pattern by propagating expr through scalar
+        // operations in op history, last-in-first-out
+        for (std::vector<Operation *>::reverse_iterator i = op_history.rbegin();
+             i != op_history.rend(); ++i) {
+          if (auto air_region_op = dyn_cast<air::ExecuteOp>(*i)) {
+            assert(air_region_op.getBody().front().getOperations().size() ==
+                       2 &&
                    "air::ExecuteOp should have only one child operation beside "
                    "the terminator");
             // Get current scalar op
-            Operation * op = nullptr;
-            for (auto &child_op : air_region_op.body().front().getOperations()){
-              if (!dyn_cast<xilinx::air::ExecuteTerminatorOp>(child_op))
+            Operation *op = nullptr;
+            for (auto &child_op :
+                 air_region_op.getBody().front().getOperations()) {
+              if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
                 op = &child_op;
             }
             // If the async op is affine.apply
-            if (auto apply_op = dyn_cast<AffineApplyOp>(op)){
+            if (auto apply_op = dyn_cast<AffineApplyOp>(op)) {
               auto map = apply_op.getAffineMap();
-              for (unsigned j = 0; j < current_shape_expr.size(); j++){
-                if (current_shape_expr[j]){
-                  replaceSymbolAndEvaluateConstantInMap(map, current_shape_expr[j], ctx);
+              for (unsigned j = 0; j < current_shape_expr.size(); j++) {
+                if (current_shape_expr[j]) {
+                  replaceSymbolAndEvaluateConstantInMap(
+                      map, current_shape_expr[j], ctx);
                   // Remove dependence from scalar op to memcpyOp if present
-                  auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
-                  eraseAsyncDependencyFromAsyncOp(async_memcpyOp, air_region_op.getAsyncToken());
+                  auto async_memcpyOp =
+                      dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
+                  eraseAsyncDependencyFromAsyncOp(
+                      async_memcpyOp, air_region_op.getAsyncToken());
                 }
               }
             }
 
             // If the async op is arith op
-            else if (auto arith_op = dyn_cast<arith::AddIOp>(op)){
-              propagateAFfineConstantExprThroughArithOp<arith::AddIOp>(arith_op, current_shape_expr, memcpyOp.getOperation(), ctx);
-            }
-            else if (auto arith_op = dyn_cast<arith::MulIOp>(op)){
-              propagateAFfineConstantExprThroughArithOp<arith::MulIOp>(arith_op, current_shape_expr, memcpyOp.getOperation(), ctx);
+            else if (auto arith_op = dyn_cast<arith::AddIOp>(op)) {
+              propagateAFfineConstantExprThroughArithOp<arith::AddIOp>(
+                  arith_op, current_shape_expr, memcpyOp.getOperation(), ctx);
+            } else if (auto arith_op = dyn_cast<arith::MulIOp>(op)) {
+              propagateAFfineConstantExprThroughArithOp<arith::MulIOp>(
+                  arith_op, current_shape_expr, memcpyOp.getOperation(), ctx);
             }
           }
-        } 
+        }
 
         // Replace memcpyOp's dependent operand with const
-        auto newMemcpyOp = replaceMemcpyOpWithSimplifiedOperands(memcpyOp, current_shape_expr);
-        auto asyncMemcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp.getOperation());
-        auto asyncNewMemcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(newMemcpyOp);
+        auto newMemcpyOp =
+            replaceMemcpyOpWithSimplifiedOperands(memcpyOp, current_shape_expr);
+        auto asyncMemcpyOp =
+            dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
+        auto asyncNewMemcpyOp = dyn_cast<air::AsyncOpInterface>(newMemcpyOp);
         newMemcpyOp->setAttr("broadcast_set", broadcast_set);
-        asyncMemcpyOp.getAsyncToken().replaceAllUsesWith(asyncNewMemcpyOp.getAsyncToken());
+        asyncMemcpyOp.getAsyncToken().replaceAllUsesWith(
+            asyncNewMemcpyOp.getAsyncToken());
         memcpyOp->erase();
       }
     });
   }
 
-  // Evaluate the integer value of affine set expression if the only symbolic identifier is replaced with zero
-  int evaluateSymbolEqualityInSet(mlir::AffineExpr c, MLIRContext * ctx){
+  // Evaluate the integer value of affine set expression if the only symbolic
+  // identifier is replaced with zero
+  int evaluateSymbolEqualityInSet(mlir::AffineExpr c, MLIRContext *ctx) {
     assert(c.isSymbolicOrConstant() && "constraint has dimension identifier");
     SmallVector<AffineExpr, 2> zero_syms{
         getAffineConstantExpr(0, ctx),
@@ -565,100 +574,122 @@ private:
     return (result >= 0) ? (result) : (-result);
   }
 
-  // Evaluate the affine expression of affine map if the only symbolic identifier is replaced with zero
-  void replaceSymbolAndEvaluateConstantInMap(mlir::AffineMap map, mlir::AffineExpr &c, MLIRContext * ctx){
+  // Evaluate the affine expression of affine map if the only symbolic
+  // identifier is replaced with zero
+  void replaceSymbolAndEvaluateConstantInMap(mlir::AffineMap map,
+                                             mlir::AffineExpr &c,
+                                             MLIRContext *ctx) {
     auto newmap = map.replace(getAffineSymbolExpr(0, ctx), c, 0, 1);
     auto const_int = simplifyAffineMap(newmap).getSingleConstantResult();
     c = getAffineConstantExpr(const_int, ctx);
   }
 
   // AddI for AffineConstantExpr
-  void applyArithOpToAffineConstantExpr(arith::AddIOp arith_op, mlir::AffineExpr &c, MLIRContext * ctx){
+  void applyArithOpToAffineConstantExpr(arith::AddIOp arith_op,
+                                        mlir::AffineExpr &c, MLIRContext *ctx) {
     arith::ConstantIndexOp add_operand = nullptr;
-    if (arith_op.getLhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())){
-      add_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp());
-    }
-    else if (arith_op.getRhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp())){
-      add_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp());
-    }
-    else assert(false && "arith::AddIOp has no arith::ConstantIndexOp operand");
+    if (arith_op.getLhs().getDefiningOp() &&
+        dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())) {
+      add_operand =
+          dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp());
+    } else if (arith_op.getRhs().getDefiningOp() &&
+               dyn_cast<arith::ConstantIndexOp>(
+                   arith_op.getRhs().getDefiningOp())) {
+      add_operand =
+          dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp());
+    } else
+      assert(false && "arith::AddIOp has no arith::ConstantIndexOp operand");
     auto acc = add_operand.value();
-    assert(c.dyn_cast<mlir::AffineConstantExpr>() && "non-constant affine expression");
+    assert(c.dyn_cast<mlir::AffineConstantExpr>() &&
+           "non-constant affine expression");
     acc += c.dyn_cast<mlir::AffineConstantExpr>().getValue();
     c = getAffineConstantExpr(acc, ctx);
   }
 
   // MulI for AffineConstantExpr
-  void applyArithOpToAffineConstantExpr(arith::MulIOp arith_op, mlir::AffineExpr &c, MLIRContext * ctx){
+  void applyArithOpToAffineConstantExpr(arith::MulIOp arith_op,
+                                        mlir::AffineExpr &c, MLIRContext *ctx) {
     arith::ConstantIndexOp mul_operand = nullptr;
-    if (arith_op.getLhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())){
-      mul_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp());
-    }
-    else if (arith_op.getRhs().getDefiningOp() && dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp())){
-      mul_operand = dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp());
-    }
-    else assert(false && "arith::MulIOp has no arith::ConstantIndexOp operand");
+    if (arith_op.getLhs().getDefiningOp() &&
+        dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())) {
+      mul_operand =
+          dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp());
+    } else if (arith_op.getRhs().getDefiningOp() &&
+               dyn_cast<arith::ConstantIndexOp>(
+                   arith_op.getRhs().getDefiningOp())) {
+      mul_operand =
+          dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp());
+    } else
+      assert(false && "arith::MulIOp has no arith::ConstantIndexOp operand");
     auto mul = mul_operand.value();
-    assert(c.dyn_cast<mlir::AffineConstantExpr>() && "non-constant affine expression");
+    assert(c.dyn_cast<mlir::AffineConstantExpr>() &&
+           "non-constant affine expression");
     mul *= c.dyn_cast<mlir::AffineConstantExpr>().getValue();
     c = getAffineConstantExpr(mul, ctx);
   }
 
   // Propagate AffineConstantExpr through arith addi/muli op
   template <typename T>
-  void propagateAFfineConstantExprThroughArithOp(T arith_op, SmallVector<AffineExpr, 2> &current_shape_expr, Operation * memcpyOp, MLIRContext * ctx){
-    xilinx::air::ExecuteOp parent_region_op =
-        arith_op->template getParentOfType<xilinx::air::ExecuteOp>();
-    for (unsigned j = 0; j < current_shape_expr.size(); j++){
-      if (current_shape_expr[j]){
+  void propagateAFfineConstantExprThroughArithOp(
+      T arith_op, SmallVector<AffineExpr, 2> &current_shape_expr,
+      Operation *memcpyOp, MLIRContext *ctx) {
+    air::ExecuteOp parent_region_op =
+        arith_op->template getParentOfType<air::ExecuteOp>();
+    for (unsigned j = 0; j < current_shape_expr.size(); j++) {
+      if (current_shape_expr[j]) {
         applyArithOpToAffineConstantExpr(arith_op, current_shape_expr[j], ctx);
         // Remove dependence from scalar op to memcpyOp if present
-        auto async_memcpyOp = dyn_cast<xilinx::air::AsyncOpInterface>(memcpyOp);
-        eraseAsyncDependencyFromAsyncOp(async_memcpyOp, parent_region_op.getAsyncToken());
+        auto async_memcpyOp = dyn_cast<air::AsyncOpInterface>(memcpyOp);
+        eraseAsyncDependencyFromAsyncOp(async_memcpyOp,
+                                        parent_region_op.getAsyncToken());
       }
     }
   }
 
   // Replace memcpyOp's dependent operand with const
-  Operation * replaceMemcpyOpWithSimplifiedOperands(xilinx::air::DmaMemcpyInterface &memcpyOp, SmallVector<AffineExpr, 2> current_shape_expr){
+  Operation *replaceMemcpyOpWithSimplifiedOperands(
+      air::DmaMemcpyInterface &memcpyOp,
+      SmallVector<AffineExpr, 2> current_shape_expr) {
     OpBuilder builder(memcpyOp);
     builder.setInsertionPoint(memcpyOp);
     auto loc = memcpyOp->getLoc();
     SmallVector<Value, 1> srcMemrefDimsOrOffsets;
-    if (auto memcpyNdOp = dyn_cast<xilinx::air::DmaMemcpyNdOp>(memcpyOp.getOperation())){
-      for (unsigned i = 0; i < current_shape_expr.size(); i++){
-        if (current_shape_expr[i]){
-          auto val = current_shape_expr[i].template dyn_cast<AffineConstantExpr>().getValue();
+    if (auto memcpyNdOp =
+            dyn_cast<air::DmaMemcpyNdOp>(memcpyOp.getOperation())) {
+      for (unsigned i = 0; i < current_shape_expr.size(); i++) {
+        if (current_shape_expr[i]) {
+          auto val = current_shape_expr[i]
+                         .template dyn_cast<AffineConstantExpr>()
+                         .getValue();
           auto cop = builder.create<arith::ConstantIndexOp>(loc, val);
           srcMemrefDimsOrOffsets.push_back(cop);
-        }
-        else {
+        } else {
           srcMemrefDimsOrOffsets.push_back(memcpyNdOp.getSrcOffsets()[i]);
         }
-      }  
+      }
       // Replace memcpyOp
       return replaceMemcpyOp(memcpyNdOp, builder, srcMemrefDimsOrOffsets);
-    }
-    else {
+    } else {
       assert(false && "Unhandled DMAMemcpyInterface");
       return nullptr;
     }
-
   }
 
   // Replace DmaMemcpyNdOp with updated src operands
-  Operation * replaceMemcpyOp (xilinx::air::DmaMemcpyNdOp op, OpBuilder &builder, SmallVector<Value, 1> srcMemrefDimsOrOffsets){
+  Operation *replaceMemcpyOp(air::DmaMemcpyNdOp op, OpBuilder &builder,
+                             SmallVector<Value, 1> srcMemrefDimsOrOffsets) {
     auto loc = op->getLoc();
-    xilinx::air::DmaMemcpyNdOp newMemcpyOp = builder.create<xilinx::air::DmaMemcpyNdOp>(loc, xilinx::air::AsyncTokenType::get(op->getContext()), 
-            op.getAsyncDependencies(), op.getDstMemref(), op.getDstOffsets(), op.getDstSizes(), op.getDstStrides(), op.getSrcMemref(), 
-            srcMemrefDimsOrOffsets, op.getSrcSizes(), op.getSrcStrides()); 
+    air::DmaMemcpyNdOp newMemcpyOp = builder.create<air::DmaMemcpyNdOp>(
+        loc, air::AsyncTokenType::get(op->getContext()),
+        op.getAsyncDependencies(), op.getDstMemref(), op.getDstOffsets(),
+        op.getDstSizes(), op.getDstStrides(), op.getSrcMemref(),
+        srcMemrefDimsOrOffsets, op.getSrcSizes(), op.getSrcStrides());
     return newMemcpyOp.getOperation();
   }
 };
 
 class AIRFuseParallelHerdPass
-    : public xilinx::air::AIRFuseParallelHerdPassBase<
-          AIRFuseParallelHerdPass> {
+    : public air::AIRFuseParallelHerdPassBase<AIRFuseParallelHerdPass> {
 
 public:
   AIRFuseParallelHerdPass() = default;
@@ -674,10 +705,10 @@ void AIRFuseParallelHerdPass::runOnOperation() {
   auto module = getOperation();
   // auto ctx = module.getContext();
 
-  xilinx::air::HerdOp launchOp = nullptr;
+  air::HerdOp launchOp = nullptr;
   scf::ParallelOp parOp = nullptr;
 
-  module.walk([&](xilinx::air::HerdOp launch) {
+  module.walk([&](air::HerdOp launch) {
     // launch must be enclosed by scf.parallel
     parOp = launch->getParentOfType<scf::ParallelOp>();
     if (!parOp)
@@ -697,10 +728,8 @@ void AIRFuseParallelHerdPass::runOnOperation() {
   // and the herd launch is enclosed by a 1-d scf.parallel
   // then we try to fuse the scf.parallel onto the herd launch
   auto herd_size = launchOp.getSizeOperands();
-  int64_t herd_size_x =
-      cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
-  int64_t herd_size_y =
-      cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
+  int64_t herd_size_x = launchOp.getNumCols();
+  int64_t herd_size_y = launchOp.getNumRows();
   if (herd_size_x != 1 && herd_size_y != 1)
     return;
 
@@ -723,18 +752,17 @@ void AIRFuseParallelHerdPass::runOnOperation() {
       args.push_back(v);
   }
 
-  auto newLaunchOp =
-      b.create<xilinx::air::HerdOp>(parOp.getLoc(), dims, args);
+  auto newLaunchOp = b.create<air::HerdOp>(parOp.getLoc(), dims, args);
 
   BlockAndValueMapping remap;
   remap.map(parOp.getInductionVars()[0], (herd_size_x == 1)
                                              ? newLaunchOp.getIds()[0]
                                              : newLaunchOp.getIds()[1]);
 
-  b.setInsertionPointToStart(&newLaunchOp.body().front());
+  b.setInsertionPointToStart(&newLaunchOp.getBody().front());
 
   for (auto &o : *parOp.getBody()) {
-    if (isa<xilinx::air::HerdOp>(o)) {
+    if (isa<air::HerdOp>(o)) {
       int idx = 0;
       remap.map(launchOp.getSize()[0], launchOp.getSizeOperands()[0]);
       remap.map(launchOp.getSize()[1], launchOp.getSizeOperands()[1]);
@@ -750,8 +778,8 @@ void AIRFuseParallelHerdPass::runOnOperation() {
         auto v = launchOp.getKernelOperand(idx++);
         remap.map(a, remap.lookupOrDefault(v));
       }
-      for (auto &ho : launchOp.body().front()) {
-        if (isa<xilinx::air::HerdTerminatorOp>(ho))
+      for (auto &ho : launchOp.getBody().front()) {
+        if (isa<air::HerdTerminatorOp>(ho))
           continue;
         b.clone(ho, remap);
       }
@@ -761,9 +789,9 @@ void AIRFuseParallelHerdPass::runOnOperation() {
       b.clone(o, remap);
     }
   }
-  b.create<xilinx::air::HerdTerminatorOp>(parOp.getLoc());
+  b.create<air::HerdTerminatorOp>(parOp.getLoc());
 
-  b.setInsertionPointToStart(&newLaunchOp.body().front());
+  b.setInsertionPointToStart(&newLaunchOp.getBody().front());
   for (auto c : constants) {
     replaceAllUsesInRegionWith(c, b.clone(*c.getDefiningOp())->getResult(0),
                                newLaunchOp.getRegion());
@@ -778,7 +806,7 @@ void AIRFuseParallelHerdPass::runOnOperation() {
 }
 
 class AIRRenumberDmaIdPass
-    : public xilinx::air::AIRRenumberDmaIdPassBase<AIRRenumberDmaIdPass> {
+    : public air::AIRRenumberDmaIdPassBase<AIRRenumberDmaIdPass> {
 
 public:
   AIRRenumberDmaIdPass() = default;
@@ -791,17 +819,7 @@ private:
 
 void AIRRenumberDmaIdPass::runOnOperation() {
   auto func = getOperation();
-  auto ctx = func.getContext();
-
-  for (auto h : func.getOps<xilinx::air::HerdOp>()) {
-    unsigned id = 0;
-    h->walk([&](Operation *o) {
-      if (dyn_cast<xilinx::air::DmaMemcpyInterface>(o)) {
-        o->setAttr("id", mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
-                                                ++id));
-      }
-    });
-  }
+  air::renumberDmaOps(func, clMode);
 }
 
 } // anonymous namespace

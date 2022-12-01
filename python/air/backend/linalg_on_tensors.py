@@ -1,25 +1,8 @@
 # ./python/air/backend/linalg_on_tensors.py -*- Python -*-
-
+#
 # Copyright (C) 2022, Xilinx Inc.
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
-#
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
+# SPDX-License-Identifier: MIT
 
 import torch_mlir.ir
 import torch_mlir.passmanager
@@ -48,7 +31,7 @@ __all__ = [
     "LinalgOnTensorsAirBackend",
 ]
 
-LINALG_MEMREF_TO_AIRRT_PIPELINE = ",".join([
+LINALG_MEMREF_TO_AIR_PIPELINE = ",".join([
     "air-linalg-codegen",
     "canonicalize",
     "cse",
@@ -71,24 +54,67 @@ class LinalgOnTensorsAirBackend(AirBackend):
     def __del__(self):
         self.unload()
 
-    def compile(self, imported_module: torch_mlir.ir.Module, verbose=False):
+    def compile(self, imported_module: torch_mlir.ir.Module, pipeline=None,
+                verbose=False, partition_offset=None, partition_size=None):
         """Compiles an imported module, with a flat list of functions.
         The module is expected to be in linalg-on-tensors + scalar code form.
         Args:
           imported_module: The MLIR module consisting of funcs in the torch
             dialect.
+          pipeline: The custom lowering pipeline to use for lowering. First
+            `air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE` is applied,
+            then `pipeline`.
+            The default is `air.backend.linalg_on_tensors.LINALG_MEMREF_TO_AIR_PIPELINE`
+          partition_offset: default location for generated partitions as [colOffset, rowOffset]
+          partition_size: default size for generated partitions as [numCols, numRows]
         Returns:
           An opaque, backend specific compiled artifact object that can be
           passed to `load`.
         """
 
+        if partition_offset is None:
+            partition_offset = [7, 2]
+
+        if partition_size is None:
+            partition_size = [10, 6]
+
+        if pipeline is None:
+            pipeline = LINALG_MEMREF_TO_AIR_PIPELINE
+
         with air.mlir.ir.Context():
             air_module = air.mlir.ir.Module.parse(str(imported_module))
-            pm = air.mlir.passmanager.PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
+            pm = air.mlir.passmanager.PassManager.parse(
+                air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
+
+            if verbose:
+                print("Running MLIR pass pipeline: ",
+                      air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
+
             pm.run(air_module)
-            pm = air.mlir.passmanager.PassManager.parse(LINALG_MEMREF_TO_AIRRT_PIPELINE)
+
+            if verbose:
+                print("Running MLIR pass pipeline: ", pipeline)
+
+            pm = air.mlir.passmanager.PassManager.parse(pipeline)
             pm.run(air_module)
-            aircc.run(air_module,['--shared', '-o', 'torch.mlir.so', '--sysroot=/', '-row-offset=2', '-col-offset=7', 'torch.mlir'] + (['-v'] if verbose else []))
+
+            if verbose:
+                print("AIR Module:")
+                print(air_module)
+
+            aircc_options = ['torch.mlir', '--shared', '-o', 'torch.mlir.so']
+            aircc_options = aircc_options + \
+                             [f"-row-offset={partition_offset[1]}",
+                              f"-col-offset={partition_offset[0]}"]
+            aircc_options = aircc_options + \
+                             [f"-num-rows={partition_size[1]}",
+                              f"-num-cols={partition_size[0]}"]
+
+            if verbose:
+                aircc_options = aircc_options + ['-v']
+
+            aircc.run(air_module,aircc_options)
+
             with open('air_project/refback.torch.mlir') as f:
                 imported_module = torch_mlir.ir.Module.parse(f.read(),imported_module.context)
 
@@ -96,8 +122,9 @@ class LinalgOnTensorsAirBackend(AirBackend):
 
     def load(self, module):
         """Loads a compiled artifact into the runtime."""
-        airrt.host.init_libxaie()
-        q = airrt.host.queue_create()
+        airrt.host.init()
+        a = airrt.host.get_agents()
+        q = airrt.host.queue_create(a[0])
         self.handle = airrt.host.module_load_from_file("./torch.mlir.so", q)
         return self.refbackend.load(module)
 
@@ -105,3 +132,4 @@ class LinalgOnTensorsAirBackend(AirBackend):
         if self.handle:
             airrt.host.module_unload(self.handle)
         self.handle = None
+        airrt.host.shut_down()

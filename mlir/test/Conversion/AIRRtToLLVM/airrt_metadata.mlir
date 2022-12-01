@@ -1,66 +1,49 @@
 //===- airrt_metadata.mlir -------------------------------------*- MLIR -*-===//
 //
-// Copyright (C) 2021-2022, Xilinx Inc.
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// Copyright (C) 2021-2022, Xilinx Inc. All rights reserved.
+// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -airrt-to-llvm | FileCheck %s
 // Note this does not check the contents of the shim descriptors.
-// CHECK-LABEL:   llvm.mlir.global internal constant @__air_shim_descriptor_1() {addr_space = 0 : i32} : !llvm.struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)> {
+// CHECK-LABEL:   llvm.mlir.global internal constant @__airrt_shim_descriptor_1() {addr_space = 0 : i32} : !llvm.struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)> {
 // CHECK:           %[[VAL_0:.*]] = llvm.mlir.undef : !llvm.struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>
-// CHECK:           %[[VAL_1:.*]] = llvm.mlir.addressof @__air_shim_location_data_1 : !llvm.ptr<array<1024 x i64>>
+// CHECK:           %[[VAL_1:.*]] = llvm.mlir.addressof @__airrt_shim_location_data_1 : !llvm.ptr<array<1024 x i64>>
 // CHECK:           %[[VAL_2:.*]] = llvm.insertvalue %[[VAL_1]], %[[VAL_0]][0] : !llvm.struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>
-// CHECK:           %[[VAL_3:.*]] = llvm.mlir.addressof @__air_shim_channel_data_1 : !llvm.ptr<array<1024 x i64>>
+// CHECK:           %[[VAL_3:.*]] = llvm.mlir.addressof @__airrt_shim_channel_data_1 : !llvm.ptr<array<1024 x i64>>
 // CHECK:           %[[VAL_4:.*]] = llvm.insertvalue %[[VAL_3]], %[[VAL_2]][1] : !llvm.struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>
 // CHECK:           llvm.return %[[VAL_4]] : !llvm.struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>
 // CHECK:         }
-// CHECK:         llvm.mlir.global internal constant @__air_string_herd_1("herd_1")
+// CHECK:         llvm.mlir.global internal constant @__airrt_string_herd_1("herd_1")
 
-// CHECK-LABEL:   llvm.mlir.global external constant @__air_herd_descriptor_1() {addr_space = 0 : i32} : !llvm.struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)> {
+// CHECK-LABEL:   llvm.mlir.global external constant @__airrt_herd_descriptor_1() {addr_space = 0 : i32} : !llvm.struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)> {
 // CHECK:           %[[VAL_0:.*]] = llvm.mlir.undef : !llvm.struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>
-// CHECK:           %[[VAL_1:.*]] = llvm.mlir.addressof @__air_string_herd_1 : !llvm.ptr<array<6 x i8>>
+// CHECK:           %[[VAL_1:.*]] = llvm.mlir.addressof @__airrt_string_herd_1 : !llvm.ptr<array<6 x i8>>
 // CHECK:           %[[VAL_2:.*]] = llvm.mlir.constant(6 : i32) : i64
 // CHECK:           %[[VAL_3:.*]] = llvm.mlir.constant(0 : i32) : i32
 // CHECK:           %[[VAL_4:.*]] = llvm.getelementptr %[[VAL_1]]{{\[}}%[[VAL_3]], %[[VAL_3]]] : (!llvm.ptr<array<6 x i8>>, i32, i32) -> !llvm.ptr<i8>
 // CHECK:           %[[VAL_5:.*]] = llvm.insertvalue %[[VAL_2]], %[[VAL_0]][0] : !llvm.struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>
 // CHECK:           %[[VAL_6:.*]] = llvm.insertvalue %[[VAL_4]], %[[VAL_5]][1] : !llvm.struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>
-// CHECK:           %[[VAL_7:.*]] = llvm.mlir.addressof @__air_shim_descriptor_1 : !llvm.ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>
+// CHECK:           %[[VAL_7:.*]] = llvm.mlir.addressof @__airrt_shim_descriptor_1 : !llvm.ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>
 // CHECK:           %[[VAL_8:.*]] = llvm.insertvalue %[[VAL_7]], %[[VAL_6]][2] : !llvm.struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>
 // CHECK:           llvm.return %[[VAL_8]] : !llvm.struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>
 // CHECK:         }
 
-// CHECK-LABEL:   llvm.mlir.global internal constant @__air_partition_herd_descriptors() {addr_space = 0 : i32} : !llvm.array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>> {
+// CHECK-LABEL:   llvm.mlir.global internal constant @__airrt_partition_herd_descriptors() {addr_space = 0 : i32} : !llvm.array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>> {
 // CHECK:           %[[VAL_0:.*]] = llvm.mlir.undef : !llvm.array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>
-// CHECK:           %[[VAL_1:.*]] = llvm.mlir.addressof @__air_herd_descriptor : !llvm.ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>
+// CHECK:           %[[VAL_1:.*]] = llvm.mlir.addressof @__airrt_herd_descriptor : !llvm.ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>
 // CHECK:           %[[VAL_2:.*]] = llvm.insertvalue %[[VAL_1]], %[[VAL_0]][0] : !llvm.array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>
-// CHECK:           %[[VAL_3:.*]] = llvm.mlir.addressof @__air_herd_descriptor_1 : !llvm.ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>
+// CHECK:           %[[VAL_3:.*]] = llvm.mlir.addressof @__airrt_herd_descriptor_1 : !llvm.ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>
 // CHECK:           %[[VAL_4:.*]] = llvm.insertvalue %[[VAL_3]], %[[VAL_2]][1] : !llvm.array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>
 // CHECK:           llvm.return %[[VAL_4]] : !llvm.array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>
 // CHECK:         }
 
-// CHECK-LABEL:   llvm.mlir.global internal constant @__air_module_partition_descriptors() {addr_space = 0 : i32} : !llvm.array<1 x ptr<struct<(i64, ptr<i8>, i64, ptr<array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>>)>>> {
+// CHECK-LABEL:   llvm.mlir.global internal constant @__airrt_module_partition_descriptors() {addr_space = 0 : i32} : !llvm.array<1 x ptr<struct<(i64, ptr<i8>, i64, ptr<array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>>)>>> {
 // CHECK:           %[[VAL_0:.*]] = llvm.mlir.undef : !llvm.struct<(i64, ptr<array<1 x ptr<struct<(i64, ptr<i8>, i64, ptr<array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>>)>>>>)>
 // CHECK:           %[[VAL_1:.*]] = llvm.mlir.constant(1 : i64) : i64
-// CHECK:           %[[VAL_2:.*]] = llvm.mlir.addressof @__air_module_partition_descriptors : !llvm.ptr<array<1 x ptr<struct<(i64, ptr<i8>, i64, ptr<array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>>)>>>>
+// CHECK:           %[[VAL_2:.*]] = llvm.mlir.addressof @__airrt_module_partition_descriptors : !llvm.ptr<array<1 x ptr<struct<(i64, ptr<i8>, i64, ptr<array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>>)>>>>
 // CHECK:           %[[VAL_3:.*]] = llvm.insertvalue %[[VAL_1]], %[[VAL_0]][0] : !llvm.struct<(i64, ptr<array<1 x ptr<struct<(i64, ptr<i8>, i64, ptr<array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>>)>>>>)>
 // CHECK:           %[[VAL_4:.*]] = llvm.insertvalue %[[VAL_2]], %[[VAL_3]][1] : !llvm.struct<(i64, ptr<array<1 x ptr<struct<(i64, ptr<i8>, i64, ptr<array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>>)>>>>)>
 // CHECK:           llvm.return %[[VAL_4]] : !llvm.struct<(i64, ptr<array<1 x ptr<struct<(i64, ptr<i8>, i64, ptr<array<2 x ptr<struct<(i64, ptr<i8>, ptr<struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)>>)>>>>)>>>>)>

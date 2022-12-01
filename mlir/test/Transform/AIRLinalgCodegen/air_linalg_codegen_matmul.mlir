@@ -1,25 +1,8 @@
 //===- air_linalg_codegen_matmul.mlir --------------------------*- MLIR -*-===//
 //
-// Copyright (C) 2021-2022, Xilinx Inc.
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// Copyright (C) 2021-2022, Xilinx Inc. All rights reserved.
+// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,17 +20,17 @@
 // CHECK:           %[[VAL_5:.*]] = arith.constant 32 : index
 // CHECK:           scf.parallel (%[[VAL_8:.*]], %[[VAL_9:.*]]) = (%[[VAL_7]], %[[VAL_7]]) to (%[[VAL_6]], %[[VAL_6]]) step (%[[VAL_5]], %[[VAL_5]]) {
 // CHECK:             scf.for %[[VAL_10:.*]] = %[[VAL_7]] to %[[VAL_6]] step %[[VAL_5]] {
-// CHECK:               %[[VAL_11:.*]] = memref.subview %[[VAL_2]]{{\[}}%[[VAL_8]], %[[VAL_10]]] [32, 32] [1, 1] : memref<128x128xi32> to memref<32x32xi32, #map>
-// CHECK:               %[[VAL_12:.*]] = memref.subview %[[VAL_3]]{{\[}}%[[VAL_10]], %[[VAL_9]]] [32, 32] [1, 1] : memref<128x128xi32> to memref<32x32xi32, #map>
-// CHECK:               %[[VAL_13:.*]] = memref.subview %[[VAL_4]]{{\[}}%[[VAL_8]], %[[VAL_9]]] [32, 32] [1, 1] : memref<128x128xi32> to memref<32x32xi32, #map>
+// CHECK:               %[[VAL_11:.*]] = memref.subview %[[VAL_2]]{{\[}}%[[VAL_8]], %[[VAL_10]]] [32, 32] [1, 1] : memref<128x128xi32> to memref<32x32xi32, strided<[128, 1], offset: ?>>
+// CHECK:               %[[VAL_12:.*]] = memref.subview %[[VAL_3]]{{\[}}%[[VAL_10]], %[[VAL_9]]] [32, 32] [1, 1] : memref<128x128xi32> to memref<32x32xi32, strided<[128, 1], offset: ?>>
+// CHECK:               %[[VAL_13:.*]] = memref.subview %[[VAL_4]]{{\[}}%[[VAL_8]], %[[VAL_9]]] [32, 32] [1, 1] : memref<128x128xi32> to memref<32x32xi32, strided<[128, 1], offset: ?>>
 // CHECK:               %[[VAL_14:.*]] = memref.alloc() : memref<32x32xi32, 2>
 // CHECK:               %[[VAL_15:.*]] = memref.alloc() : memref<32x32xi32, 2>
 // CHECK:               %[[VAL_16:.*]] = memref.alloc() : memref<32x32xi32, 2>
-// CHECK:               memref.copy %[[VAL_11]], %[[VAL_14]] : memref<32x32xi32, #map> to memref<32x32xi32, 2>
-// CHECK:               memref.copy %[[VAL_12]], %[[VAL_15]] : memref<32x32xi32, #map> to memref<32x32xi32, 2>
-// CHECK:               memref.copy %[[VAL_13]], %[[VAL_16]] : memref<32x32xi32, #map> to memref<32x32xi32, 2>
+// CHECK:               memref.copy %[[VAL_11]], %[[VAL_14]] : memref<32x32xi32, strided<[128, 1], offset: ?>> to memref<32x32xi32, 2>
+// CHECK:               memref.copy %[[VAL_12]], %[[VAL_15]] : memref<32x32xi32, strided<[128, 1], offset: ?>> to memref<32x32xi32, 2>
+// CHECK:               memref.copy %[[VAL_13]], %[[VAL_16]] : memref<32x32xi32, strided<[128, 1], offset: ?>> to memref<32x32xi32, 2>
 // CHECK:               linalg.matmul ins(%[[VAL_14]], %[[VAL_15]] : memref<32x32xi32, 2>, memref<32x32xi32, 2>) outs(%[[VAL_16]] : memref<32x32xi32, 2>)
-// CHECK:               memref.copy %[[VAL_16]], %[[VAL_13]] : memref<32x32xi32, 2> to memref<32x32xi32, #map>
+// CHECK:               memref.copy %[[VAL_16]], %[[VAL_13]] : memref<32x32xi32, 2> to memref<32x32xi32, strided<[128, 1], offset: ?>>
 // CHECK:               memref.dealloc %[[VAL_14]] : memref<32x32xi32, 2>
 // CHECK:               memref.dealloc %[[VAL_15]] : memref<32x32xi32, 2>
 // CHECK:               memref.dealloc %[[VAL_16]] : memref<32x32xi32, 2>

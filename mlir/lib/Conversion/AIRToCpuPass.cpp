@@ -1,25 +1,8 @@
 //===- AIRToCpuPass.cpp -----------------------------------------*- C++ -*-===//
 //
-// Copyright (C) 2022, Xilinx Inc.
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a
-// copy of this software and associated documentation files (the "Software"),
-// to deal in the Software without restriction, including without limitation
-// the rights to use, copy, modify, merge, publish, distribute, sublicense,
-// and/or sell copies of the Software, and to permit persons to whom the
-// Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// Copyright (C) 2022, Xilinx Inc. All rights reserved.
+// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,7 +16,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -77,11 +60,10 @@ public:
             op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
       herd_name = attr.getValue().str();
     }
+
     auto herd_size = launch.getSizeOperands();
-    int64_t herd_size_x =
-        cast<arith::ConstantIndexOp>(herd_size[0].getDefiningOp()).value();
-    int64_t herd_size_y =
-        cast<arith::ConstantIndexOp>(herd_size[1].getDefiningOp()).value();
+    int64_t herd_size_x = launch.getNumCols();
+    int64_t herd_size_y = launch.getNumRows();
 
     auto outer = rewriter.create<AffineForOp>(launch.getLoc(), 0, herd_size_x);
     auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
@@ -138,7 +120,7 @@ public:
     for (auto arg : launch.getKernelArguments())
       arg.replaceAllUsesWith(launch.getKernelOperand(i++));
 
-    auto &body = launch.body().front().getOperations();
+    auto &body = launch.getBody().front().getOperations();
     if (1) {
       entryBlock.getOperations().splice(entryBlock.begin(), body, body.begin(),
                                         --body.end());
@@ -168,8 +150,8 @@ public:
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
     auto pipeOp = cast<xilinx::air::HerdPipelineOp>(op);
-    Block &bb = pipeOp.body().front();
-    rewriter.eraseOp(pipeOp.body().back().getTerminator());
+    Block &bb = pipeOp.getBody().front();
+    rewriter.eraseOp(pipeOp.getBody().back().getTerminator());
     bb.getOperations().splice(Block::iterator(op), bb.getOperations());
     rewriter.eraseOp(op);
     return success();
@@ -493,11 +475,11 @@ public:
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<
-        LLVM::LLVMDialect, func::FuncDialect, arith::ArithmeticDialect,
-        AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
-        memref::MemRefDialect, bufferization::BufferizationDialect,
-        xilinx::airrt::AIRRtDialect>();
+    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
+                           arith::ArithDialect, AffineDialect, scf::SCFDialect,
+                           linalg::LinalgDialect, memref::MemRefDialect,
+                           bufferization::BufferizationDialect,
+                           xilinx::airrt::AIRRtDialect>();
 
     // air.memcpy_nd conversion
     RewritePatternSet air_dma_patterns(context);
@@ -539,8 +521,9 @@ public:
     });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
-      return (op.memref().getType().cast<MemRefType>().getMemorySpaceAsInt() ==
-              0);
+      return (
+          op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() ==
+          0);
     });
 
     RewritePatternSet air_mem_patterns(context);

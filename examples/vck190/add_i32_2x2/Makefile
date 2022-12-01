@@ -1,27 +1,10 @@
 # Copyright (C) 2022, Xilinx Inc.
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
-#
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
+# SPDX-License-Identifier: MIT
 
 include ../config.make
 
-all: herd.exe
+all: main.exe
 
 %.o: %.cpp
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -30,7 +13,7 @@ all: herd.exe
 	$(CC) $(LDFLAGS) -o $@ $< test_library.o -Wl,--whole-archive add.air.a -Wl,--no-whole-archive -lm
 
 add.air.a: air.mlir
-	aircc.py -o $@ --sysroot=${SYSROOT} -row-offset=5 -col-offset=17 $<
+	aircc.py -o $@ --sysroot=${SYSROOT} $<
 
 clean::
 	rm -rf air_project *.elf *.exe *.o *.a

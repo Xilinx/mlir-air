@@ -1,24 +1,6 @@
-
-# Copyright (C) 2022, Xilinx Inc.
-# Copyright (C) 2022, Advanced Micro Devices, Inc.
-#
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
+# Copyright (C) 2022, Xilinx Inc. All rights reserved.
+# Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
 
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -27,11 +9,22 @@ include_directories(
 
 add_definitions(-DLIBXAIENGINEV2)
 
-if(LIBXAIE_FOUND)
+if(BUILD_AIR_PCIE)
+  message("BUILD_AIR_PCIE=${BUILD_AIR_PCIE}")
+  add_definitions(-DAIR_PCIE)
+endif()
+
+include_directories(${XILINX_XAIE_INCLUDE_DIR})
+link_libraries(${XILINX_XAIE_LIBS})
+
 add_library(airhost STATIC
     memory.cpp
     queue.cpp
     host.cpp
+    utility.cpp
+    pcie-ernic.cpp
+    pcie-ernic-dev-mem-allocator.cpp
+    network.cpp
 )
 set_property(TARGET airhost PROPERTY POSITION_INDEPENDENT_CODE ON)
 
@@ -39,7 +32,11 @@ add_library(airhost_shared SHARED
     memory.cpp
     queue.cpp
     host.cpp
-    )
+    utility.cpp
+    pcie-ernic.cpp
+    pcie-ernic-dev-mem-allocator.cpp
+    network.cpp
+   )
 set_property(TARGET airhost_shared PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 target_link_libraries(airhost
@@ -70,9 +67,5 @@ foreach(file ${INSTALLS})
 endforeach()
 
 # Install files
-set(INSTALLS memory.cpp queue.cpp host.cpp)
+set(INSTALLS memory.cpp queue.cpp host.cpp utility.cpp pcie-ernic.cpp pcie-ernic-dev-mem-allocator.cpp network.cpp)
 install(FILES ${INSTALLS} DESTINATION ${CMAKE_INSTALL_PREFIX}/runtime_lib/airhost)
-
-else()
-message("LIBXAIE_FOUND not set.  Skipping building airhost library")
-endif()
