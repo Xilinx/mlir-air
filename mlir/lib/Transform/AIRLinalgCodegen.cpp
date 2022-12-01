@@ -746,7 +746,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
     if (last_stage)
       tiledOperands[resultIdx] = firstOutputOperand;
 
-    linalg::LinalgOp linalgOp = op.clone(b, loc, {}, tiledOperands);
+    linalg::LinalgOp linalgOp = clone(b, op, {}, tiledOperands);
 
     if (promote) {
       SmallVector<int64_t, 3> opers_to_promote(linalgOp->getNumOperands() - 1);
