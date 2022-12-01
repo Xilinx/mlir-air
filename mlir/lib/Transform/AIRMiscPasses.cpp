@@ -597,8 +597,9 @@ private:
                    arith_op.getRhs().getDefiningOp())) {
       add_operand =
           dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp());
-    } else{
-      // arith::AddIOp has no arith::ConstantIndexOp operand. Abort trying to specialize the expr
+    } else {
+      // arith::AddIOp has no arith::ConstantIndexOp operand. Abort trying to
+      // specialize the expr
       c = nullptr;
       return;
     }
@@ -622,8 +623,9 @@ private:
                    arith_op.getRhs().getDefiningOp())) {
       mul_operand =
           dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp());
-    } else{
-      // arith::MulIOp has no arith::ConstantIndexOp operand. Abort trying to specialize the expr
+    } else {
+      // arith::MulIOp has no arith::ConstantIndexOp operand. Abort trying to
+      // specialize the expr
       c = nullptr;
       return;
     }
