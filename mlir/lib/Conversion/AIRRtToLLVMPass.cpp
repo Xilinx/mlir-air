@@ -582,7 +582,7 @@ LogicalResult lowerDmaMemcpy(Operation *op, PatternRewriter &rewriter,
   }
 
   MemRefType memrefTy = tys[4].cast<MemRefType>();
-  tys[4] = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
+  tys[4] = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), ShapedType::kDynamic),
                            memrefTy.getElementType(), memrefTy.getLayout(),
                            memrefTy.getMemorySpace());
   auto module = op->getParentOfType<ModuleOp>();
@@ -633,7 +633,7 @@ LogicalResult lowerDmaNdMemcpy(Operation *op, PatternRewriter &rewriter,
   }
 
   MemRefType memrefTy = tys[4].cast<MemRefType>();
-  tys[4] = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
+  tys[4] = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), ShapedType::kDynamic),
                            memrefTy.getElementType(), memrefTy.getLayout(),
                            memrefTy.getMemorySpace());
 
@@ -697,13 +697,13 @@ LogicalResult lowerNdMemcpy(Operation *op, PatternRewriter &rewriter,
 
   operands[1] = rewriter.create<memref::CastOp>(
       loc,
-      MemRefType::get(std::vector<int64_t>(dstMemRefTy.getRank(), -1),
+      MemRefType::get(std::vector<int64_t>(dstMemRefTy.getRank(), ShapedType::kDynamic),
                       dstMemRefTy.getElementType(), dstMemRefTy.getLayout(),
                       dstMemRefTy.getMemorySpace()),
       operands[1]);
   operands[2] = rewriter.create<memref::CastOp>(
       loc,
-      MemRefType::get(std::vector<int64_t>(srcMemRefTy.getRank(), -1),
+      MemRefType::get(std::vector<int64_t>(srcMemRefTy.getRank(), ShapedType::kDynamic),
                       srcMemRefTy.getElementType(), srcMemRefTy.getLayout(),
                       srcMemRefTy.getMemorySpace()),
       operands[2]);
@@ -898,7 +898,7 @@ public:
 
     tys.push_back(IndexType::get(ctx));
     retTys.push_back(MemRefType::get(
-        std::vector<int64_t>(memrefTy.getRank(), -1), memrefTy.getElementType(),
+        std::vector<int64_t>(memrefTy.getRank(), ShapedType::kDynamic), memrefTy.getElementType(),
         memrefTy.getLayout(), memrefTy.getMemorySpace()));
 
     auto size = getTensorVolume(memrefTy);
@@ -948,7 +948,7 @@ public:
       return failure();
 
     tys.push_back(MemRefType::get(
-        std::vector<int64_t>(memrefTy.getRank(), -1), memrefTy.getElementType(),
+        std::vector<int64_t>(memrefTy.getRank(), ShapedType::kDynamic), memrefTy.getElementType(),
         memrefTy.getLayout(), memrefTy.getMemorySpace()));
     operands.push_back(
         rewriter.create<memref::CastOp>(op->getLoc(), tys[0], op.getMemref()));
