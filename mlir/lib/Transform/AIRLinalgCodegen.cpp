@@ -62,9 +62,8 @@ struct FoldSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
     auto source_offsets = source_subview.offsets().begin();
     SmallVector<Value, 4> result_offsets;
 
-    auto static_offsets = extractFromI64ArrayAttr(op.static_offsets());
-    auto source_static_offsets =
-        extractFromI64ArrayAttr(source_subview.static_offsets());
+    auto static_offsets = op.getStaticOffsets();
+    auto source_static_offsets = source_subview.getStaticOffsets();
     SmallVector<int64_t, 4> result_static_offsets;
 
     for (auto p : llvm::zip(static_offsets, source_static_offsets)) {
@@ -105,8 +104,8 @@ struct FoldSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
     rewriter.replaceOpWithNewOp<memref::SubViewOp>(
         op.getOperation(), op.getType(), source_subview.getSource(),
         result_offsets, op.sizes(), op.strides(),
-        rewriter.getI64ArrayAttr(result_static_offsets), op.static_sizes(),
-        op.static_strides());
+        rewriter.getDenseI64ArrayAttr(result_static_offsets), op.getStaticSizes(),
+        op.getStaticStrides());
 
     return success();
   }
