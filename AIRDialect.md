@@ -112,8 +112,16 @@ Syntax:
 operation ::= `air.channel` $sym_name $size attr-dict
 ```
 
-Experimental operation to represent a channel as a point-to-point connection between
-two memrefs.
+Operation to represent a channel as a point-to-point connection between two memrefs. The array
+following the channel name symbol represents the channel sizes. If each channel is broadcasting
+to multiple destinations, then the optional 'broadcast_shape' attribute annotates the output 
+sizes after broadcasting.
+
+Example:
+
+```mlir
+air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
+```
 
 Interfaces: Symbol
 
