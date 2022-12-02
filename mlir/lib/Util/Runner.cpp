@@ -10,6 +10,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/CostModel.h"
 #include "air/Util/Util.h"
+#include "air/Util/Dependency.h"
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
@@ -55,63 +56,33 @@ using namespace boost;
 namespace xilinx {
 namespace air {
 
-// Construction of a dependency graph as a Boost graph
-
-struct commandNodeEntry {
-    std::string asyncEventName;
-    std::string asyncEventType;
-    std::string color;
-    std::string shape;
-    unsigned operationId;
-    mlir::Operation * op;
-    commandGraph * nextCommandGraph;
-    uint64_t start_time;
-    uint64_t end_time;
-
-    bool is_started() { return (start_time != 0) && (end_time != 0); }
-    bool is_done(uint64_t t) { return t >= end_time; }
-
-    commandNodeEntry(std::string asyncEventName = "", std::string asyncEventType = "", std::string color = "", std::string shape = "", unsigned operationId = 0, 
-        mlir::Operation * op = nullptr, commandGraph * nextCommandGraph = nullptr, uint64_t start_time = 0, uint64_t end_time = 0)
-        : asyncEventName(asyncEventName), asyncEventType(asyncEventType), color(color), shape(shape), operationId(operationId), 
-            op(op), nextCommandGraph(nextCommandGraph), start_time(start_time), end_time(end_time) {}
-};
-
-typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::bidirectionalS, commandNodeEntry> Graph;
-typedef boost::graph_traits<Graph>::in_edge_iterator in_edge_iterator;
-typedef boost::graph_traits<Graph>::out_edge_iterator out_edge_iterator;
-typedef boost::graph_traits<Graph>::vertex_iterator vertex_iterator;
-
-typedef std::map<std::pair<std::string, unsigned>, Graph::vertex_descriptor> operation_to_vertex_map;
-typedef std::map<std::pair<std::string, unsigned>, Graph * > operation_to_graph_map;
-
-struct commandGraph {
-  Graph g;
-  mlir::Operation * hierarchyOp;
-  std::vector<commandGraph> subgraphs;
+struct runnerGraph : dependencyGraph
+{
   runnerNode * runner_node;
-  Graph::vertex_descriptor start_vertex;
-  Graph::vertex_descriptor terminator_vertex;
+  std::vector<runnerGraph> subgraphs;
 
-  commandGraph(mlir::Operation * hierarchyOp = nullptr, runnerNode * runner_node = nullptr, Graph::vertex_descriptor terminator_vertex = 0)
-      : hierarchyOp(hierarchyOp), runner_node(runner_node), terminator_vertex(terminator_vertex) {
-        g = Graph();
-        auto v = add_vertex(g);
-        g[v].asyncEventType = "start";
-        g[v].asyncEventName = "start";
-        g[v].color = "yellow";
-        g[v].shape = "box";
-        start_vertex = v;
+  runnerGraph(mlir::Operation *op = nullptr, bool initStartVertex = false) {
+    g = Graph();
+    hierarchyOp = op;
+    runner_node = nullptr;
+    if (initStartVertex) {
+      auto v = add_vertex(g);
+      g[v].asyncEventType = "start";
+      g[v].asyncEventName = "start";
+      g[v].color = "yellow";
+      g[v].shape = "box";
+      start_vertex = v;
+    }
   }
 
-  ~commandGraph(){
+  ~runnerGraph() {
     g.clear();
     subgraphs.clear();
   }
 };
 
 struct runnerNode {
-  commandGraph * ctrl_g;
+  dependencyGraph * ctrl_g;
   std::string runner_node_type;
   // Each entry is an std::pair. First element is vertex, and second element is thread id
   std::vector<std::pair<Graph::vertex_descriptor, unsigned>> wavefront;
@@ -121,15 +92,15 @@ struct runnerNode {
   std::vector<runnerNode> sub_runner_nodes;
 
   // Private wavefront of each runner node, reserved to interface with resource model
-  std::vector<commandNodeEntry *> wavefrontNodes() {
-    std::vector<commandNodeEntry *> output;
+  std::vector<dependencyNodeEntry *> wavefrontNodes() {
+    std::vector<dependencyNodeEntry *> output;
     for (auto v : wavefront){
       output.push_back(&ctrl_g->g[v.first]);
     }
     return output;
   }
 
-  runnerNode(commandGraph * ctrl_g = nullptr, std::string runner_node_type = "")
+  runnerNode(dependencyGraph * ctrl_g = nullptr, std::string runner_node_type = "")
       : ctrl_g(ctrl_g), runner_node_type(runner_node_type) {}
 
   ~runnerNode(){
@@ -323,11 +294,11 @@ public:
       executeOp(c, it);
     }
     else if (auto Op = dyn_cast<xilinx::air::HierarchyInterface>(node.op)){
-      auto sub_command_graph = node.nextCommandGraph;
-      // assert(sub_command_graph);
-      // assert(sub_command_graph->terminator_vertex);
-      auto sub_runner_node = sub_command_graph->runner_node;
-      assert(sub_command_graph->g[sub_command_graph->start_vertex].asyncEventType == "start");
+      auto sub_dependency_graph = node.nextDependencyGraph;
+      // assert(sub_dependency_graph);
+      // assert(sub_dependency_graph->terminator_vertex);
+      auto sub_runner_node = sub_dependency_graph->runner_node;
+      assert(sub_dependency_graph->g[sub_dependency_graph->start_vertex].asyncEventType == "start");
       assert(sub_runner_node->ctrl_g);
       assert(sub_runner_node->ctrl_g->g[sub_runner_node->ctrl_g->start_vertex].asyncEventType == "start");
       executeOp(Op, time, sub_runner_node, c, it);
@@ -346,7 +317,7 @@ public:
     }
   }
 
-  unsigned modelOp(commandNodeEntry c){
+  unsigned modelOp(dependencyNodeEntry c){
     auto type = c.asyncEventType;
     auto name = c.asyncEventName;
     if (type == "terminator") return 1;
@@ -362,7 +333,7 @@ public:
 
   std::string to_string(Operation *op) { return op->getName().getStringRef().str(); }
 
-  std::string to_string(commandNodeEntry &c) { return to_string(c.op); }
+  std::string to_string(dependencyNodeEntry &c) { return to_string(c.op); }
 
   void processGraph(runnerNode &c, uint64_t time) {
 
@@ -401,11 +372,11 @@ public:
       auto inv_adj_set = boost::inv_adjacent_vertices(*it, G);
       bool dep_fulfilled = true;
       // Build it's dependency list
-      std::vector<commandNodeEntry *> dep_list;
+      std::vector<dependencyNodeEntry *> dep_list;
       for (auto inv_adj_v = inv_adj_set.first; inv_adj_v != inv_adj_set.second; ++inv_adj_v){
         // If dependent on a hierarchy op, then push its terminator into dep_list instead
         if (G[*inv_adj_v].asyncEventType == "hierarchy"){
-          auto sub_g = G[*inv_adj_v].nextCommandGraph;
+          auto sub_g = G[*inv_adj_v].nextDependencyGraph;
           auto terminator_v = sub_g->terminator_vertex;
           dep_list.push_back(&sub_g->g[terminator_v]);
         }
@@ -442,9 +413,11 @@ public:
 
   void scheduleFunction(func::FuncOp &toplevel) {
 
-    // Walk the launch op and create a boost graph
+    // Walk the launch op and create a boost graph using dependencyCanonicalizer intepreter
     hostGraph.hierarchyOp = toplevel.getOperation();
-    getCommandGraphs(toplevel, hostGraph);
+    dependencyCanonicalizer canonicalizer;
+    xilinx::air::dependencyContext dep_ctx;
+    canonicalizer.parseCommandGraphs(toplevel, hostGraph, dep_ctx);
 
     uint64_t time = 1;
     for (auto &launchGraph : hostGraph.subgraphs){
@@ -530,126 +503,6 @@ public:
     }
   }
 
-  void getCommandGraphs(func::FuncOp &toplevel, commandGraph &global_graph) {
-
-    ExecuteOpID = 0;
-    DmaOpID = 0;
-    HierarchyOpID = 0;
-    WaitAllOpID = 0;
-    ForOpID = 0;
-    ParallelOpID = 0;
-    TerminatorID = 0;
-
-    // Create vertices for graphs
-    // Build up host graph
-    toplevel.walk([&](Operation *op) {
-      if (!op->getParentOfType<air::LaunchOp>()){
-        addVertexFromOpImpls(op, global_graph.g);
-        if (auto launch = dyn_cast<air::LaunchOp>(op)){
-          // Build up launch graph
-          global_graph.subgraphs.push_back(commandGraph(launch.getOperation()));
-          commandGraph * current_launch_graph = &(global_graph.subgraphs.back());
-
-          launch.walk([&](Operation *launch_childop) {
-            if (!launch_childop->getParentOfType<air::PartitionOp>()
-                && !dyn_cast<air::LaunchOp>(launch_childop)){
-              addVertexFromOpImpls(launch_childop, current_launch_graph->g);
-              if (auto partition = dyn_cast<air::PartitionOp>(launch_childop)){
-                // Build up partition graph
-                current_launch_graph->subgraphs.push_back(commandGraph(partition.getOperation()));
-                commandGraph * current_part_graph = &(current_launch_graph->subgraphs.back());
-
-                partition.walk([&](Operation *part_childop) {  
-                  if (!part_childop->getParentOfType<air::HerdOp>()
-                      && !dyn_cast<air::PartitionOp>(part_childop)){
-                    addVertexFromOpImpls(part_childop, current_part_graph->g);
-                    if (auto herd = dyn_cast<air::HerdOp>(part_childop)){
-                      // Build up herd graph
-                      current_part_graph->subgraphs.push_back(commandGraph(herd.getOperation()));
-                      commandGraph * current_herd_graph = &(current_part_graph->subgraphs.back());
-
-                      herd.walk([&](Operation *herd_childop) {
-                        if (!dyn_cast<air::HerdOp>(herd_childop)){
-                          addVertexFromOpImpls(herd_childop, current_herd_graph->g);
-                        }
-                      });
-                    }
-                  }
-                });
-
-              }
-            }
-          });
-
-        } 
-      }
-    });
-
-    // Adds edges between async ops
-    traceDependencyInGraph(hostGraph.g);
-    for (auto &G_l : hostGraph.subgraphs){
-      traceDependencyInGraph(G_l.g);
-      for (auto &G_p : G_l.subgraphs){
-        traceDependencyInGraph(G_p.g);
-        for (auto &G_h : G_p.subgraphs){
-          traceDependencyInGraph(G_h.g);
-        }
-      }
-    }
-
-    // Connect leaf vertices to launch, partition and herd terminators
-    for (auto &G_l : hostGraph.subgraphs){
-      connectTerminatorInGraph(G_l.g);
-      for (auto &G_p : G_l.subgraphs){
-        connectTerminatorInGraph(G_p.g);
-        for (auto &G_h : G_p.subgraphs){
-          connectTerminatorInGraph(G_h.g);
-        }
-      }
-    }
-
-    // Connect the start node per graph as graph inception point;
-    // update pointer from graph to air.hierarchy op terminators
-    connectStartNodeInCommandGraph(global_graph);
-    updatePointerFromGraphToHierarchyTerminator(global_graph);
-    updatePointerFromHierarchyOpToGraph(global_graph);
-    for (auto &launchGraph : global_graph.subgraphs){
-      connectStartNodeInCommandGraph(launchGraph);
-      updatePointerFromGraphToHierarchyTerminator(launchGraph);
-      updatePointerFromHierarchyTerminatorToGraph(global_graph, launchGraph);
-      updatePointerFromHierarchyOpToGraph(launchGraph);
-      for (auto &partitionGraph : launchGraph.subgraphs){
-        connectStartNodeInCommandGraph(partitionGraph);
-        updatePointerFromGraphToHierarchyTerminator(partitionGraph);
-        updatePointerFromHierarchyTerminatorToGraph(launchGraph, partitionGraph);
-        updatePointerFromHierarchyOpToGraph(partitionGraph);
-        for (auto &herdGraph : partitionGraph.subgraphs){
-          connectStartNodeInCommandGraph(herdGraph);
-          updatePointerFromGraphToHierarchyTerminator(herdGraph);
-        }
-      }
-    }
-
-    // Dump dot graphs
-    dump_graph("host.dot", hostGraph.g);
-    int i = 0;
-    for (auto G_l : hostGraph.subgraphs){
-      std::string name = "launch" + std::to_string(++i) + ".dot";
-      dump_graph(name, G_l.g);
-      int j = 0;
-      for (auto G_p : G_l.subgraphs){
-        std::string name = "partition" + std::to_string(i) + "_" + std::to_string(++j) + ".dot";
-        dump_graph(name, G_p.g);
-        int k = 0;
-        for (auto G_h : G_p.subgraphs){
-          std::string name = "herd" + std::to_string(i) + "_" + std::to_string(j) + "_" + std::to_string(++k) + ".dot";
-          dump_graph(name, G_h.g);
-        }
-      }
-    }
-
-  }
-
 private:
   llvm::raw_ostream &traceStream;
   llvm::json::Value &jsonModel;
@@ -661,7 +514,7 @@ private:
   unsigned herd_slots;
 
   // Dependency graph constructed as Boost graph
-  commandGraph hostGraph;
+  dependencyGraph hostGraph;
   operation_to_vertex_map op_to_v; // Map between ops and vertices in graph
   operation_to_graph_map op_to_g; // Map between ops and graph
 
@@ -673,9 +526,9 @@ private:
   {
     std::ofstream ofs (filename, std::ofstream::out); 
     boost::dynamic_properties dp;
-    dp.property("label", boost::get(&commandNodeEntry::asyncEventName, G));
-    dp.property("color", boost::get(&commandNodeEntry::color, G));
-    dp.property("shape", boost::get(&commandNodeEntry::shape, G));
+    dp.property("label", boost::get(&dependencyNodeEntry::asyncEventName, G));
+    dp.property("color", boost::get(&dependencyNodeEntry::color, G));
+    dp.property("shape", boost::get(&dependencyNodeEntry::shape, G));
     dp.property("node_id", boost::get(boost::vertex_index, G));
     dp.property("style", boost::make_constant_property<Graph::vertex_descriptor>(+"filled"));
     write_graphviz_dp(ofs, G, dp);
@@ -972,7 +825,7 @@ private:
   }
 
   // Create start node for graph
-  void connectStartNodeInCommandGraph (commandGraph &G){
+  void connectStartNodeInDependencyGraph (dependencyGraph &G){
     auto v = G.start_vertex;
     auto vp = boost::vertices(G.g);
     for (auto vit = vp.first; vit != vp.second; ++vit){
@@ -983,7 +836,7 @@ private:
   }
 
   // Adds pointer from command graph to launch, partition and herd terminators
-  void updatePointerFromGraphToHierarchyTerminator(commandGraph &G){
+  void updatePointerFromGraphToHierarchyTerminator(dependencyGraph &G){
     auto vp = boost::vertices(G.g);
     for (auto v = vp.first; v != vp.second; ++v){
       if (G.g[*v].asyncEventType == "hierarchy_terminator"){
@@ -994,23 +847,23 @@ private:
   }
 
   // Adds pointer from hierarchy terminator to parent command graph
-  void updatePointerFromHierarchyTerminatorToGraph(commandGraph &G, commandGraph &subG){
+  void updatePointerFromHierarchyTerminatorToGraph(dependencyGraph &G, dependencyGraph &subG){
     auto vp = boost::vertices(subG.g);
     for (auto v = vp.first; v != vp.second; ++v){
       if (subG.g[*v].asyncEventType == "hierarchy_terminator"){
-        subG.g[*v].nextCommandGraph = &G;
+        subG.g[*v].nextDependencyGraph = &G;
         return;
       }
     }
   }
 
   // Adds pointer from hierarchy op to sub command graph
-  void updatePointerFromHierarchyOpToGraph(commandGraph &G){
+  void updatePointerFromHierarchyOpToGraph(dependencyGraph &G){
     unsigned idx = 0;
     auto vp = boost::vertices(G.g);
     for (auto v = vp.first; v != vp.second; ++v){
       if (G.g[*v].asyncEventType == "hierarchy"){
-        G.g[*v].nextCommandGraph = &(G.subgraphs[idx]);
+        G.g[*v].nextDependencyGraph = &(G.subgraphs[idx]);
         idx++;
       }
     }
@@ -1167,7 +1020,7 @@ private:
     }
     // If v is a hierarchy op, then recursively clear the entire subgraph
     if (G[start_v].asyncEventType == "hierarchy"){
-      auto sub_c = G[start_v].nextCommandGraph;
+      auto sub_c = G[start_v].nextDependencyGraph;
       auto start_v = sub_c->start_vertex;
       auto terminator_v = sub_c->terminator_vertex;
       auto sub_g = sub_c->g;
@@ -1177,7 +1030,7 @@ private:
   }
 
   // Initialize sub runner nodes from launch graph tree
-  void initRunnerNodesFromLaunchGraph(runnerNode &launch_runner_node, commandGraph &launchGraph){
+  void initRunnerNodesFromLaunchGraph(runnerNode &launch_runner_node, dependencyGraph &launchGraph){
     launchGraph.runner_node = &launch_runner_node;
     for (auto &partitionGraph : launchGraph.subgraphs){
       // Create partition runner node

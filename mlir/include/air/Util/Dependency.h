@@ -65,6 +65,7 @@ air::ChannelGetOp getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put);
 
 struct dependencyNodeEntry;
 struct dependencyGraph;
+struct runnerNode;
 
 struct dependencyNodeEntry {
   std::string asyncEventName;
@@ -74,15 +75,20 @@ struct dependencyNodeEntry {
   unsigned operationId;
   mlir::Operation *op;
   dependencyGraph *nextDependencyGraph;
+    uint64_t start_time;
+    uint64_t end_time;
+
+    bool is_started() { return (start_time != 0) && (end_time != 0); }
+    bool is_done(uint64_t t) { return t >= end_time; }
 
   dependencyNodeEntry(std::string asyncEventName = "",
                       std::string asyncEventType = "", std::string color = "",
                       std::string shape = "", unsigned operationId = 0,
                       mlir::Operation *op = nullptr,
-                      dependencyGraph *nextDependencyGraph = nullptr)
+                      dependencyGraph *nextDependencyGraph = nullptr, uint64_t start_time = 0, uint64_t end_time = 0)
       : asyncEventName(asyncEventName), asyncEventType(asyncEventType),
         color(color), shape(shape), operationId(operationId), op(op),
-        nextDependencyGraph(nextDependencyGraph) {}
+        nextDependencyGraph(nextDependencyGraph), start_time(start_time), end_time(end_time) {}
 };
 
 typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::bidirectionalS,
@@ -99,10 +105,13 @@ typedef std::map<std::pair<std::string, unsigned>, Graph *>
 typedef std::map<Graph::vertex_descriptor, Graph::vertex_descriptor>
     vertex_to_vertex_map;
 
+struct runnerNode; // Forward declaration of runner node struct for dependencyGraph pointer member
+
 struct dependencyGraph {
   Graph g;
   mlir::Operation *hierarchyOp;
   std::vector<dependencyGraph> subgraphs;
+  runnerNode * runner_node;
   Graph::vertex_descriptor start_vertex;
   Graph::vertex_descriptor terminator_vertex;
 
