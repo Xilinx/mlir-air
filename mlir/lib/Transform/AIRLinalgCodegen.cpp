@@ -104,8 +104,8 @@ struct FoldSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
     rewriter.replaceOpWithNewOp<memref::SubViewOp>(
         op.getOperation(), op.getType(), source_subview.getSource(),
         result_offsets, op.sizes(), op.strides(),
-        rewriter.getDenseI64ArrayAttr(result_static_offsets), op.getStaticSizes(),
-        op.getStaticStrides());
+        rewriter.getDenseI64ArrayAttr(result_static_offsets),
+        op.getStaticSizes(), op.getStaticStrides());
 
     return success();
   }
