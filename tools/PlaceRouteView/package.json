@@ -1,0 +1,59 @@
+{
+	"name": "prviewer",
+	"description": "Placement + Routing viewer for viewing JSON placements and routes.",
+	"version": "1.0.0",
+	"publisher": "Xilinx",
+	"private": true,
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Microsoft/vscode-extension-samples"
+	},
+	"engines": {
+		"vscode": "^1.47.0"
+	},
+	"categories": [
+		"Other"
+	],
+	"activationEvents": [
+		"onCommand:prviewer.start",
+		"onCommand:prviewer.drawRoutes",
+		"onWebviewPanel:prviewer"
+	],
+	"main": "./out/extension.js",
+	"contributes": {
+		"commands": [
+			{
+				"command": "prviewer.start",
+				"title": "Open Placement Webview",
+				"category": "Placement View"
+			},
+			{
+				"command": "prviewer.drawRoutes",
+				"title": "Open Routing Webview",
+				"category": "Routing View"
+			}
+		]
+	},
+	"scripts": {
+		"vscode:prepublish": "npm run compile",
+		"compile": "tsc -p ./",
+		"lint": "eslint . --ext .ts,.tsx",
+		"watch": "tsc -w -p ./"
+	},
+	"devDependencies": {
+		"@types/glob": "^8.0.0",
+		"@types/mocha": "^9.1.1",
+		"@types/node": "^16.11.49",
+		"@types/vscode": "^1.47.0",
+		"@types/vscode-webview": "^1.57.0",
+		"@typescript-eslint/eslint-plugin": "^5.30.0",
+		"@typescript-eslint/parser": "^5.30.0",
+		"eslint": "^8.13.0",
+		"typescript": "^4.7.2"
+	},
+	"dependencies": {
+		"glob": "^8.0.3",
+		"mocha": "^10.0.0"
+	}
+}
