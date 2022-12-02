@@ -79,7 +79,7 @@ Unfortunately, there is no easy way to view the names of individual routes (e.g.
 In order to run in debug mode, do the following:
 
 1. Open this folder in vscode
-2. Run ```npm install``
+2. Run ```npm install```
 3. Navigate to the Run and Debug menu, select "Run Extension" from the dropdown menu, and click run
 
 The commands should be available in the ctrl + shift + p menu that appears. The viewer extension.js file contains the source code for the viewer.
