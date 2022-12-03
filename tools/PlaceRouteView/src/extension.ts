@@ -1017,11 +1017,12 @@ function check_region_array_validity(region_array: Array<number>) {
   }
   // if (region_array.length === 3) {
   // 	if (typeof(region_array[2]) !== 'number') {
-  // 		return "Please ensure that all entries in the array are of an integer
-  // value."
+  // 		return "Please ensure that all entries in the array are of an
+  // integer value."
   // 	}
   // 	if (row_size % region_array[1] !== 0 || col_size % region_array[2] !==
-  // 0) { 		return "Please ensure region works given the grid dimensions."
+  // 0) { 		return "Please ensure region works given the grid
+  // dimensions."
   // 	}
   // }
   if (region_array.length === 2 && row_size % region_array[0] !== 0 ||
@@ -1043,8 +1044,8 @@ function check_region_array_validity(region_array: Array<number>) {
 // Return:
 //   colored_grid (array<array<string>>): Array of strings of colors for AIE
 //   tiles, also
-// 										  containing the strings of
-// the herd name (optional):
+// 										  containing the strings
+// of the herd name (optional):
 //                                        [[<color>, <name>], ...]
 function color_grid(partitions: any, max_rows: number, max_cols: number) {
 
