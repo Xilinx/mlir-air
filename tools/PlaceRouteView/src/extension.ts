@@ -1043,10 +1043,8 @@ function check_region_array_validity(region_array: Array<number>) {
 //   (integer): Number of columns in AIE grid
 // Return:
 //   colored_grid (array<array<string>>): Array of strings of colors for AIE
-//   tiles, also
-// 										  containing the strings
-// of the herd name (optional):
-//                                        [[<color>, <name>], ...]
+//   tiles, also containing the strings of the herd name
+//   (optional): [[<color>, <name>], ...]
 function color_grid(partitions: any, max_rows: number, max_cols: number) {
 
   var colored_grid: Array<Array<string>> = [];
