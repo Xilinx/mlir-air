@@ -16,16 +16,37 @@ Building mlir-air requires several other open source packages:
   - [Xilinx cmakeModules](https://github.com/Xilinx/cmakeModules)
   - [Xilinx embeddedsw](https://github.com/Xilinx/embeddedsw)
 
-## Building dependencies on X86
+## Building external projects on X86
+
+This mlir-air repository should already be cloned locally. 
+
+First, clone and build LLVM, with the ability to target AArch64 as a cross-compiler, and with MLIR enabled. In addition, we make some common build optimizations to use a linker ('lld' or 'gold') other than 'ld' (which tends to be quite slow on large link jobs) and to link against libLLVM.so and libClang so. You may find that other options are also useful. Note that due to changing MLIR APIs, only a particular revision is expected to work.
+
+To clone llvm and cmakeModules, see utils/clone-llvm.sh for the correct commithash. We point LLVM and subsequent tools to a common installation directory. 
 
 ```
 cd utils
-git clone https://github.com/Xilinx/cmakeModules.git
 ./clone-llvm.sh
 ./build-llvm-local.sh llvm build ../install
+```
+
+Next, clone and build MLIR-AIE with absolute paths to the sysroot, llvm, and cmakeModules repositories. Again, we use a common installation directory.
+
+```
+git clone https://github.com/Xilinx/cmakeModules.git
 ./clone-mlir-aie.sh
 ./build-mlir-aie-local.sh $SYSROOT /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/cmakeModules mlir-aie build ../install
 ```
+
+The MLIR-AIE tools will be able to generate binaries targetting AIEngines.
+
+Finally, build the MLIR-AIR tools for your desired use case: 
+
+- Building on x86
+- Building on x86 for deployment on a PCIe platform with AIEs
+- Building on x86 for deployment on an embedded platform with AIEs
+- Building on ARM for deployment on an embedded platform with AIEs
+
 ## Building on x86
 
 ```
