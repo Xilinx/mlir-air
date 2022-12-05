@@ -32,8 +32,8 @@ cmake .. \
     -DMLIR_DIR=`pwd`/../../llvm/install/lib/cmake/mlir/ \
     -DLLVM_DIR=`pwd`/../../llvm/install/lib/cmake/llvm/ \
     -DCMAKE_LINKER=lld \
-    -DCMAKE_C_COMPILER=clang \
-    -DCMAKE_CXX_COMPILER=clang++ \
+    -DCMAKE_C_COMPILER=clang-12 \
+    -DCMAKE_CXX_COMPILER=clang++-12 \
     -DLLVM_EXTERNAL_LIT=`pwd`/../../llvm/build/bin/llvm-lit \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DCMAKE_INSTALL_PREFIX=`pwd`/../$INSTALL_DIR

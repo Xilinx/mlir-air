@@ -86,8 +86,8 @@ jobs:
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
             -DLibXAIE_DIR=`pwd`/../aienginev2/install \
             -DCMAKE_LINKER=lld \
-            -DCMAKE_C_COMPILER=clang \
-            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_C_COMPILER=clang-12 \
+            -DCMAKE_CXX_COMPILER=clang++-12 \
             -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_INSTALL_PREFIX=install
@@ -112,8 +112,8 @@ jobs:
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
             -DLibXAIE_DIR=`pwd`/../aienginev2/install \
             -DCMAKE_LINKER=lld \
-            -DCMAKE_C_COMPILER=clang \
-            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_C_COMPILER=clang-12 \
+            -DCMAKE_CXX_COMPILER=clang++-12 \
             -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_INSTALL_PREFIX=install
@@ -127,12 +127,6 @@ jobs:
     name: Check code format
     runs-on: ubuntu-20.04
     steps:
-      # We'll be running clang-tidy later in this flow.
-      - name: Install clang-tidy
-        run: |
-          sudo apt-get install -y clang-tidy-9
-          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy \
-            /usr/bin/clang-tidy-9 100
 
       # Clone the repo and its submodules. Do shallow clone to save clone
       # time.
@@ -186,7 +180,7 @@ jobs:
         if: ${{ always() }}
         run: |
           # Run clang-format
-          git clang-format-11 $DIFF_COMMIT
+          git clang-format-12 $DIFF_COMMIT
           git diff --ignore-submodules > clang-format.patch
           if [ -s clang-format.patch ]; then
             echo "Clang-format found formatting problems in the following " \
@@ -204,7 +198,7 @@ jobs:
         if: ${{ always() }}
         run: |
           git diff -U0 $DIFF_COMMIT | \
-            clang-tidy-diff-9.py -path build_assert -p1 -fix
+            clang-tidy-diff-12.py -path build_assert -p1 -fix
           git diff --ignore-submodules > clang-tidy.patch
           if [ -s clang-tidy.patch ]; then
             echo "Clang-tidy problems in the following files. " \
