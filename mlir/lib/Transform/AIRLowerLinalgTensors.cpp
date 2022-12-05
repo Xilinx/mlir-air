@@ -8,7 +8,8 @@
 
 #include "PassDetail.h"
 #include "air/Transform/AIRLowerLinalgTensors.h"
-#include "aie/AIEDialect.h"
+
+#include "aie/Dialect/AIE/IR/AIEDialect.h"
 
 #include "mlir/Conversion/LinalgToStandard/LinalgToStandard.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"

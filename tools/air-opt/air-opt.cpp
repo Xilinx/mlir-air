@@ -6,6 +6,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Dialect/AIRRt/AIRRtDialect.h"
+#include "air/InitAll.h"
+
+#include "aie/Dialect/AIE/IR/AIEDialect.h"
+
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/InitAllDialects.h"
@@ -18,12 +24,6 @@
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ToolOutputFile.h"
-
-#include "air/Dialect/AIR/AIRDialect.h"
-#include "air/Dialect/AIRRt/AIRRtDialect.h"
-#include "air/InitAll.h"
-
-#include "aie/AIEDialect.h"
 
 using namespace llvm;
 using namespace mlir;
