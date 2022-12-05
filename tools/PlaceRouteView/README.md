@@ -1,3 +1,5 @@
+Copyright© 2022 Advanced Micro Devices, Inc.
+
 # Placement and Routing Viewer README
 
 This viewing extension can be used for viewing placed herds and / or routed herds. Files must be in .json format, as output by ```aie-translate -aie-flows-to-json``` or ```air-translate -air-herds-to-json```.

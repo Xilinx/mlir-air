@@ -1,3 +1,6 @@
+// Copyright (C) 2022, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+
 'use strict';
 
 import * as vscode from 'vscode';
@@ -308,18 +311,12 @@ export function activate(context: vscode.ExtensionContext) {
           const range = _document.getWordRangeAtPosition(_position);
           const word = _document.getText(range);
           if (word.includes("route")) {
-            // Encode URI is needed because it passes things in a weird format -
-            // can't just do drawRoutes('arg');
             const commentCommandUri =
                 vscode.Uri.parse(`command:prviewer.drawRoutes?${
                     encodeURIComponent(JSON.stringify(word))}`);
             const contents = new vscode.MarkdownString(
                 `[Display ${word}](${commentCommandUri})`);
 
-            // To enable command URIs in Markdown content, you must set the
-            // `isTrusted` flag. When creating trusted Markdown string, make
-            // sure to properly sanitize all the input content so that only
-            // expected command URIs can be executed
             contents.isTrusted = true;
             return new vscode.Hover(contents);
           }
@@ -335,18 +332,12 @@ export function activate(context: vscode.ExtensionContext) {
           const range = _document.getWordRangeAtPosition(_position);
           const word = _document.getText(range);
           if (word.includes("part")) {
-            // Encode URI is needed because it passes things in a weird format -
-            // can't just do start('arg');
             const commentCommandUri =
                 vscode.Uri.parse(`command:prviewer.start?${
                     encodeURIComponent(JSON.stringify(word))}`);
             const contents = new vscode.MarkdownString(
                 `[Display ${word}](${commentCommandUri})`);
 
-            // To enable command URIs in Markdown content, you must set the
-            // `isTrusted` flag. When creating trusted Markdown string, make
-            // sure to properly sanitize all the input content so that only
-            // expected command URIs can be executed
             contents.isTrusted = true;
             return new vscode.Hover(contents);
           }
@@ -442,10 +433,7 @@ export function activate(context: vscode.ExtensionContext) {
               `${passedInRoute} in ` +
                   currRouteFileName.substring(
                       currRouteFileName.lastIndexOf("/") + 1),
-              vscode.ViewColumn.Beside, {
-                // Enable scripts in the webview
-                enableScripts : true
-              });
+              vscode.ViewColumn.Beside, {enableScripts : true});
 
           if (!openFileRoutePanel.hasOwnProperty(currRouteFileName)) {
             openFileRoutePanel[currRouteFileName] = {};
@@ -485,10 +473,7 @@ export function activate(context: vscode.ExtensionContext) {
               'prviewer',
               `${drawName} in ` + currRouteFileName.substring(
                                       currRouteFileName.lastIndexOf("/") + 1),
-              vscode.ViewColumn.Beside, {
-                // Enable scripts in the webview
-                enableScripts : true
-              });
+              vscode.ViewColumn.Beside, {enableScripts : true});
 
           if (!openFileRoutePanel.hasOwnProperty(currRouteFileName)) {
             openFileRoutePanel[currRouteFileName] = {};
@@ -649,7 +634,7 @@ function update_window(document: vscode.TextDocument,
         routes_to_route.push(new_routes);
         routes_to_route = routes_to_route.flat();
         test += 1;
-        if (test > 1000) {
+        if (test > 10000) {
           vscode.window.showInformationMessage(
               "Something went wrong when trying to place nested routes. Please be a bit more gentle :)");
           return;
@@ -784,7 +769,8 @@ function sort_keys(json_list: Object) {
   var switchboxes = [];
   var route_routes = [];
   var partitions = [];
-  var regions = [] for (var i = 0; i < obj_keys.length; i++) {
+  var regions = [];
+  for (var i = 0; i < obj_keys.length; i++) {
     if (obj_keys[i].includes("switchbox")) {
       switchboxes.push(String(obj_keys[i]));
     } else if (obj_keys[i].includes("route")) {
@@ -956,17 +942,11 @@ function check_partition_array_validity(partition_array: any, max_row: number,
   // valid array dimensions
   // var used_partitions: Array<number> = [];
   var used_tile_locations = [];
-  // assert(partition_array.length > 0);
+
   for (var i = 0; i < partition_array.length; i++) {
-    // assert(typeof(partition_array[i][0]) === 'number');
     if (typeof (partition_array[i][0]) !== 'number') {
       return "invalid partition number: " + String(partition_array[i][0]);
     }
-    // assert(!used_partitions.includes(partition_array[i][0]));
-    // if (used_partitions.includes(partition_array[i][0])) {
-    // 	return "Reuse of partition number " + String(partition_array[i][0]);
-    // }
-    // used_partitions.push(partition_array[i][0]);
     if (partition_array[i].length > 1) {
       var j = 1;
       if (typeof (partition_array[i][1]) == 'string') {
@@ -1015,16 +995,6 @@ function check_region_array_validity(region_array: Array<number>) {
     return "Invalid length of region array. Please use the format [<color number>, <# AIEs per row \
 			of partition>, <# AIEs per column of partition>]."
   }
-  // if (region_array.length === 3) {
-  // 	if (typeof(region_array[2]) !== 'number') {
-  // 		return "Please ensure that all entries in the array are of an
-  // integer value."
-  // 	}
-  // 	if (row_size % region_array[1] !== 0 || col_size % region_array[2] !==
-  // 0) { 		return "Please ensure region works given the grid
-  // dimensions."
-  // 	}
-  // }
   if (region_array.length === 2 && row_size % region_array[0] !== 0 ||
       col_size % region_array[1] !== 0) {
     return "Please ensure region works given the grid dimensions."
@@ -1061,7 +1031,7 @@ function color_grid(partitions: any, max_rows: number, max_cols: number) {
     // This is a bit complex - the numbering for MLIR is a bit odd. The bottom
     // left tile is [1, 0] in the form <row, col>, as the shim is on the 0th
     // row. rows go up from there. Since the colors will be stored in a 1D grid,
-    // the index's need to be adjusted so that they end up in the right place.
+    // the indexies need to be adjusted so that they end up in the right place.
     const index = (max_rows - (curr_row + 1)) * max_cols + curr_col;
     colored_grid[index][0] = String(curr_color);
     if (partitions[i].length === 4) {
