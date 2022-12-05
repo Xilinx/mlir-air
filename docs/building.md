@@ -16,9 +16,35 @@ Building mlir-air requires several other open source packages:
   - [Xilinx cmakeModules](https://github.com/Xilinx/cmakeModules)
   - [Xilinx embeddedsw](https://github.com/Xilinx/embeddedsw)
 
-## Building on X86
+## Building dependencies on X86
 
-## Compiling Runtime for PCIe 
+```
+cd utils
+git clone https://github.com/Xilinx/cmakeModules.git
+./clone-llvm.sh
+./build-llvm-local.sh llvm build ../install
+./clone-mlir-aie.sh
+./build-mlir-aie-local.sh $SYSROOT /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/cmakeModules mlir-aie build ../install
+```
+## Building on x86
+
+```
+./build-mlir-air.sh $SYSROOT /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/mlir-aie ../../mlir-air build utils/install
+```
+
+## Building on x86 with runtime for PCIe 
+
+```
+./build-mlir-air-pcie.sh /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/mlir-aie ../../mlir-air build utils/install
+```
+
+## Environment setup
+
+```
+export PATH=/path/to/install/bin:${PATH}
+export PYTHONPATH=/path/to/install/python:${PYTHONPATH}
+export LD_LIBRARY_PATH=/path/to/install/lib:/opt/xaiengine/lib:${LD_LIBRARY_PATH}
+```
 
 ## Building a Sysroot
 
