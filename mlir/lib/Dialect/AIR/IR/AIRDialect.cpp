@@ -1119,7 +1119,11 @@ static LogicalResult FoldExecute(ExecuteOp op, PatternRewriter &rewriter) {
   // if we get here then only the async token result has uses.
   // if the execute body is empty, replace the execute with a wait_all no-op
   if (body.getOperations().size() == 1) {
-    op.getResult(0).replaceAllUsesWith(rewriter.create<WaitAllOp>(op->getLoc(), op->getResult(0).getType(), op->getOperands()).getResult(0));
+    op.getResult(0).replaceAllUsesWith(
+        rewriter
+            .create<WaitAllOp>(op->getLoc(), op->getResult(0).getType(),
+                               op->getOperands())
+            .getResult(0));
     return success();
   }
 
