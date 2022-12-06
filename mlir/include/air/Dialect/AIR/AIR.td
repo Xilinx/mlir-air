@@ -61,7 +61,7 @@ def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
       return -1;
     }
   }];
-  let hasCanonicalizer  = 1;
+  let hasCanonicalizer = 1;
 }
 
 def air_LaunchTerminatorOp : air_Op<"launch_terminator", [HasParent<"LaunchOp">,
@@ -152,7 +152,7 @@ def air_PartitionOp : air_Op<"partition", [air_AsyncOpInterface,
       return mlir::Optional<uint64_t>();
     }
   }];
-  let hasCanonicalizer  = 1;
+  let hasCanonicalizer = 1;
 }
 
 def air_PartitionTerminatorOp : air_Op<"partition_terminator", [HasParent<"PartitionOp">,
@@ -229,7 +229,7 @@ def air_HerdOp : air_Op<"herd", [air_AsyncOpInterface,
     uint64_t getNumCols();
     uint64_t getNumRows();
   }];
-  let hasCanonicalizer  = 1;
+  let hasCanonicalizer = 1;
 }
 
 def air_HerdTerminatorOp : air_Op<"herd_terminator", [HasParent<"HerdOp">,
@@ -391,7 +391,7 @@ def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
       return -1;
     }
   }];
-  let hasCanonicalizer  = 1;
+  let hasCanonicalizer = 1;
 }
 
 def air_AllocOp: air_Op<"alloc", [air_AsyncOpInterface]> {
@@ -541,6 +541,7 @@ def air_ExecuteOp : air_Op<"execute", [SingleBlockImplicitTerminator<"ExecuteTer
   }];
 
   let hasVerifier = 1;
+  let hasCanonicalizer = 1;
 }
 
 def air_ExecuteTerminatorOp : air_Op<"execute_terminator", [HasParent<"ExecuteOp">,
