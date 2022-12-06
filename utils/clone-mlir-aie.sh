@@ -15,7 +15,7 @@
 #
 ##===----------------------------------------------------------------------===##
 
-export HASH=25c7a76d548c370be89c3782ce9744b20c7f96cd
+export HASH=b99b36786df92ae5ea7199ba10a0605ad41d8e8d
 
 git clone --depth 1 https://github.com/Xilinx/mlir-aie.git mlir-aie
 pushd mlir-aie

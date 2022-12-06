@@ -936,14 +936,11 @@ private:
                          SmallVector<Value, 1> deps, SmallVector<Value, 4> args,
                          SmallVector<Value, 4> constants) {
     auto loc = op->getLoc();
-    T new_op = builder.create<T>(loc, deps, op.getSizeOperands(), args, true);
+    T new_op = builder.create<T>(loc, deps, op.getSizeOperands(), args, true,
+                                 op->getAttrs());
     new_op->setAttr("id",
                     mlir::IntegerAttr::get(
                         mlir::IntegerType::get(op->getContext(), 32), ++OpID));
-
-    if (auto attr = op->template getAttrOfType<StringAttr>(
-            SymbolTable::getSymbolAttrName()))
-      new_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
 
     auto &bb = new_op.getBody().front();
     for (unsigned i = 0; i < op.getIds().size(); i++) {

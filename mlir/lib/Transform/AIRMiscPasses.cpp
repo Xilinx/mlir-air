@@ -597,8 +597,12 @@ private:
                    arith_op.getRhs().getDefiningOp())) {
       add_operand =
           dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp());
-    } else
-      assert(false && "arith::AddIOp has no arith::ConstantIndexOp operand");
+    } else {
+      // arith::AddIOp has no arith::ConstantIndexOp operand. Abort trying to
+      // specialize the expr
+      c = nullptr;
+      return;
+    }
     auto acc = add_operand.value();
     assert(c.dyn_cast<mlir::AffineConstantExpr>() &&
            "non-constant affine expression");
@@ -619,8 +623,12 @@ private:
                    arith_op.getRhs().getDefiningOp())) {
       mul_operand =
           dyn_cast<arith::ConstantIndexOp>(arith_op.getRhs().getDefiningOp());
-    } else
-      assert(false && "arith::MulIOp has no arith::ConstantIndexOp operand");
+    } else {
+      // arith::MulIOp has no arith::ConstantIndexOp operand. Abort trying to
+      // specialize the expr
+      c = nullptr;
+      return;
+    }
     auto mul = mul_operand.value();
     assert(c.dyn_cast<mlir::AffineConstantExpr>() &&
            "non-constant affine expression");
@@ -752,7 +760,9 @@ void AIRFuseParallelHerdPass::runOnOperation() {
       args.push_back(v);
   }
 
-  auto newLaunchOp = b.create<air::HerdOp>(parOp.getLoc(), dims, args);
+  auto newLaunchOp = b.create<air::HerdOp>(
+      parOp.getLoc(), launchOp.getAsyncDependencies(), dims, args,
+      launchOp->getNumResults() > 0, launchOp->getAttrs());
 
   BlockAndValueMapping remap;
   remap.map(parOp.getInductionVars()[0], (herd_size_x == 1)
