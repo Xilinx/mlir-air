@@ -40,9 +40,74 @@
 
 using namespace mlir;
 using namespace mlir::arith;
+using namespace xilinx;
 using namespace xilinx::air;
 
 namespace {
+
+class AIRLaunchConversion : public ConversionPattern {
+public:
+  explicit AIRLaunchConversion(MLIRContext *context)
+      : ConversionPattern(air::LaunchOp::getOperationName(), 1, context) {}
+
+  LogicalResult
+  matchAndRewrite(Operation *op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+    air::LaunchOp launch = cast<air::LaunchOp>(op);
+
+    std::string launch_name("launch");
+    if (auto attr =
+            op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+      launch_name = attr.getValue().str();
+
+    SmallVector<Value> lbs, ubs, steps;
+    auto c0 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 0);
+    auto c1 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1);
+
+    // make scf.parallel to replace air.launch
+    for (auto d : launch.getSizeOperands()) {
+      lbs.push_back(c0);
+      ubs.push_back(d);
+      steps.push_back(c1);
+    }
+    if (lbs.empty()) {
+      lbs.push_back(c0);
+      ubs.push_back(c1);
+      steps.push_back(c1);
+    }
+    auto scfPar =
+        rewriter.create<scf::ParallelOp>(op->getLoc(), lbs, ubs, steps);
+
+    // map launch iteration space to scf.parallel ivs
+    for (auto p : llvm::zip(launch.getIds(), scfPar.getInductionVars()))
+      std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
+
+    // map launch size to scf.parallel upper bounds
+    for (auto p : llvm::zip(launch.getSizeOperands(), scfPar.getUpperBound()))
+      if (std::get<0>(p) != std::get<1>(p))
+        std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
+
+    int i = 0;
+    for (auto arg : launch.getKernelArguments())
+      arg.replaceAllUsesWith(launch.getKernelOperand(i++));
+
+    auto &body = launch.getBody().front().getOperations();
+    scfPar.getBody()->getOperations().splice(scfPar.getBody()->begin(), body,
+                                             body.begin(), --body.end());
+
+    if (op->getNumResults()) {
+      rewriter.setInsertionPoint(scfPar);
+      SmallVector<Value> deps;
+      for (auto &o : operands)
+        if (o.getType().isa<airrt::EventType>())
+          deps.push_back(o);
+      rewriter.replaceOpWithNewOp<airrt::WaitAllOp>(
+          op, airrt::EventType::get(op->getContext()), deps);
+    } else
+      rewriter.eraseOp(launch);
+    return success();
+  }
+};
 
 class AIRPartitionConversion : public ConversionPattern {
 public:
@@ -61,7 +126,7 @@ public:
           op->getLoc(), rewriter.getI64Type(), partition_name);
     }
 
-    SmallVector<Value, 4> deps;
+    SmallVector<Value> deps;
     for (auto &o : operands)
       if (o.getType().isa<xilinx::airrt::EventType>())
         deps.push_back(o);
@@ -71,7 +136,7 @@ public:
       partition.getResult(0).replaceAllUsesWith(w.getResult(0));
     }
 
-    SmallVector<Value, 2> lbs, ubs, steps;
+    SmallVector<Value> lbs, ubs, steps;
     auto c0 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 0);
     auto c1 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1);
 
@@ -411,7 +476,7 @@ public:
   }
 };
 
-LogicalResult lowerAirRegions(Operation *op) {
+LogicalResult lowerAirExecute(Operation *op) {
   ModuleOp module = dyn_cast<ModuleOp>(op);
   if (!module)
     return failure();
@@ -575,7 +640,7 @@ public:
                            xilinx::airrt::AIRRtDialect>();
 
     // AIR ExecuteOp conversion
-    if (failed(lowerAirRegions(module))) {
+    if (failed(lowerAirExecute(module))) {
       emitError(UnknownLoc::get(context), "error lowering air.execute\n");
       signalPassFailure();
     }
@@ -647,7 +712,8 @@ public:
     air_patterns
         .add<ScfYieldOpConversion, ScfIfOpConversion, ScfForOpConversion,
              L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion,
-             AIRPartitionConversion, AIRHerdConversion>(context);
+             AIRLaunchConversion, AIRPartitionConversion, AIRHerdConversion>(
+            context);
 
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(air_patterns,
                                                                    converter);
