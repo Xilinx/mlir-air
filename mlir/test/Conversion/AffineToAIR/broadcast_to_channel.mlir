@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-dma-to-channel -cse | FileCheck %s
+// RUN: air-opt %s -air-dma-to-channel -canonicalize -cse | FileCheck %s
 
 #map = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 32)>
@@ -18,7 +18,9 @@ module {
     %0 = air.launch async (%arg1, %arg2) in (%arg3=%c8, %arg4=%c8) args(%arg5=%arg0) : memref<512x512xbf16> attributes {id = 3 : i32} {
 // CHECK: %[[EVENT0:.*]] = air.partition async
       %1 = air.partition async  args(%arg6=%arg1, %arg7=%arg2, %arg8=%arg3, %arg9=%arg4, %arg10=%arg5) : index, index, index, index, memref<512x512xbf16> attributes {id = 2 : i32} {
-// CHECK: %[[CONST2:.*]] = arith.constant 2 : index
+// CHECK: %[[CONST1:.*]] = arith.constant 1 : index
+// CHECK: %[[CONST2:.*]] = arith.constant 2 : index   
+// CHECK: %[[CONST0:.*]] = arith.constant 0 : index   
         %c2 = arith.constant 2 : index
         %c0 = arith.constant 0 : index
         %c512 = arith.constant 512 : index
@@ -33,11 +35,10 @@ module {
           %async_token_0, %results_1 = air.execute -> (memref<64x64xbf16, 1>) {
             %alloc = memref.alloc() : memref<64x64xbf16, 1>
             air.execute_terminator %alloc : memref<64x64xbf16, 1>
-          } {id = 2 : i32}
-// CHECK: %[[CONST1:.*]] = arith.constant 1 : index          
-// CHECK: %[[EVENT2:.*]] = scf.parallel (%[[VALUE0:.*]], %[[VALUE1:.*]]) = (%[[CONST1]], %[[CONST1]]) to (%[[CONST2]], %[[CONST1]]) step (%[[CONST1]], %[[CONST1]])
+          } {id = 2 : i32}       
+// CHECK: %[[EVENT2:.*]] = scf.parallel (%[[VALUE0:.*]]) = (%[[CONST0]]) to (%[[CONST2]]) step (%[[CONST1]])
 // CHECK: %[[EVENT3:.*]] = scf.for
-// CHECK: %[[EVENT4:.*]] = air.channel.put async{{.*}}@channel_0[%[[VALUE0]], %[[VALUE1]]]
+// CHECK: %[[EVENT4:.*]] = air.channel.put async{{.*}}@channel_0[%[[VALUE0]], %[[CONST0]]]
 // CHECK: %[[EVENT5:.*]] = air.herd @herd_0 async{{.*}}tile (%[[VALUE2:.*]], %[[VALUE3:.*]]) in
 // CHECK: %[[EVENT6:.*]] = air.channel.get async{{.*}}@channel_0[%[[VALUE2]], %[[VALUE3]]]
           %4 = air.herd @herd_0 async  tile (%arg13, %arg14) in (%arg15=%c2, %arg16=%c2) args(%arg17=%results_1) : memref<64x64xbf16, 1> attributes {id = 1 : i32} {

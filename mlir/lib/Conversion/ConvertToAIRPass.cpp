@@ -763,7 +763,6 @@ void HoistingAffineIf(mlir::AffineIfOp op) {
   SmallVector<air::DmaMemcpyNdOp, 2> dmas;
 
   // Recursively search for and replace air.dma ops
-  // TODO: Check recursion via unit tests with broadcast pattern bigger than 2x2
   auto module = op->getParentOfType<ModuleOp>();
   OpBuilder module_builder(module);
   // The first then block
@@ -999,7 +998,7 @@ class AIRDmaToAIRChannelConversion
             module.lookupSymbol(externalGetPut[0].getChanName()));
         auto size = extractFromI64ArrayAttr(channel_op.getSize());
         for (auto s : size) {
-          lbs.push_back(1);
+          lbs.push_back(0);
           ubs.push_back(s);
         }
         scf::ParallelOp scf_par =
