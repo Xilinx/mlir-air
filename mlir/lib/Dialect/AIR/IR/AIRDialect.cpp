@@ -1085,6 +1085,56 @@ void WaitAllOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
   patterns.add(FoldWaitAll);
 }
 
+static LogicalResult FoldExecute(ExecuteOp op, PatternRewriter &rewriter) {
+
+  // if the terminator is the only thing in the ExecuteOp,
+  // and the op is unused, then it can be removed.
+  auto &body = op.getRegion().front();
+  auto et = body.getTerminator();
+  if (op.use_empty() && body.getOperations().size() == 1) {
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+  // replace returns of constants with the constant
+  int idx = 0;
+  for (auto v : et->getOperands()) {
+    idx++;
+    if (op.getResult(idx).use_empty())
+      continue;
+    auto o = v.getDefiningOp();
+    if (!o)
+      continue;
+    if (isa<arith::ConstantOp>(o)) {
+      op.getResult(idx).replaceAllUsesWith(rewriter.clone(*o)->getResult(0));
+      return success();
+    }
+  }
+
+  // if any of the results are used, return failure()
+  for (auto v : op->getResults().drop_front())
+    if (!v.use_empty())
+      return failure();
+
+  // if we get here then only the async token result has uses.
+  // if the execute body is empty, replace the execute with a wait_all no-op
+  if (body.getOperations().size() == 1) {
+    op.getResult(0).replaceAllUsesWith(
+        rewriter
+            .create<WaitAllOp>(op->getLoc(), op->getResult(0).getType(),
+                               op->getOperands())
+            .getResult(0));
+    return success();
+  }
+
+  return failure();
+}
+
+void ExecuteOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                            MLIRContext *context) {
+  patterns.add(FoldExecute);
+}
+
 #include "air/Dialect/AIR/AIROpInterfaces.cpp.inc"
 
 #define GET_OP_CLASSES
