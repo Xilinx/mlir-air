@@ -21,20 +21,44 @@ def air_Dialect : Dialect {
     Its primary features are collective operations for executing work on
     groups of AIE cores and multi-dimensional DMA copy operations.
 
-    ### Herds
-    A *herd* in the `air` dialect is a one or two dimensional array of adjacent
-    AIE cores executing the same code region.
+    ### Herd
+    A `herd` in the `air` dialect is a one or two dimensional array of adjacent
+    AIE cores executing the same code region. A `herd` operation defines an
+    iteration space representing the spatial parallelism of the array of cores.
+    Code within a `herd` can directly access L1 memory but must use DMA
+    operations or channels to access other levels of memory.
+
+    ### Partition
+    A `partition` in the `air` dialect represents a physically contiguous
+    grouping of AIE cores, L1 and L2 memory resources, and controllers
+    sufficient to implement the herds, memory allocations, data movement,
+    and synchronization contained in the `partition` code region. Code within
+    a `partition` can allocate L2 memory but must use DMA operations or
+    channels to access other levels of memory. A `partition` can optionally
+    define an iteration space which represents a spatial unroll of the
+    `partition`. That is, it allows the `partition` to be "stamped out" multiple
+    times, also multiplying the physical resources required by the `partition`.
+
+    ### Launch
+    A `launch` in the `air` dialect groups `partitions` and L3 allocations that
+    must be co-resident within a device when execution of the `launch`
+    code region begins. A `launch` operation can optionally define a parallel
+    iteration space.
 
     ### Memory Hierarchy
     There are three levels of memory in the air dialect:
-    - L1 memory corresponds to the AIE tile memory.
-    - L2 memory corresponds to pools of on-device memory such as of URAMs,
-      BRAMs, or other memory resources.
-    - L3 memory corresponds to off-chip memory such as DDR.
+    - `L1` memory corresponds to the AIE tile memory.
+    - `L2` memory corresponds to pools of on-device memory such as of URAMs,
+      memory tiles, or other memory resources.
+    - `L3` memory corresponds to off-chip memory such as DDR.
+    Each memory space has an enum defined in the air::MemorySpace namespace.
 
-    The individual cores of a herd have direct access to L1 memory with
-    standard load and store operations. Access to all other levels of memory
-    is through DMA copy operations only.
+    ### DMA Memory Copies
+    The `dma_memcpy_nd` operation in `air` dialect describes asynchronous
+    multi-dimensional copy operations between levels of memory.
+
+    ### Channels
+    A `channel` in the `air` dialect is a representation of data movement...
 
     ### Asynchronous operations
     Operations in air dialect can be asynchronous. An asynchronous token
@@ -147,7 +171,11 @@ def air_DmaMemcpyInterface : OpInterface<"DmaMemcpyInterface"> {
 
 def air_HierarchyInterface : OpInterface<"HierarchyInterface"> {
   let description = [{
-    Interface for AIR hierarchy ops.
+    Interface for AIR hierarchy ops `air.herd`, `air.partition` and `air.launch`
+
+    Operations implementing this interface define an iteration space, support
+    arguments for implementing "isolated from above" and have an integer `id`
+    attribute.
   }];
   let cppNamespace = "xilinx::air";
   let methods = [
