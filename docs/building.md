@@ -4,17 +4,39 @@
 
 **mlir-air** is built and tested on Ubuntu 20.04 with the following packages installed:
 ```
-  Xilinx Vitis 2021.2
-  clang/llvm 10
+  cmake 3.20.6
+  clang/llvm 10+
   python 3.8.x
-  ninja
-  cmake
+  ninja 1.10.0
+  Xilinx Vitis 2021.2 
 ```
+
+The minimum prerequisite tools and packages are:
+
+```
+clang/llvm 10+
+python 3.8.x
+pip3 install cmake ninja-build joblib psutil ipykernel numpy pybind11 PyYAML rich
+
+```
+
+In addition the following packages maybe useful: 
+
+```
+
+  Xilinx Vivado 2021.2/2022.1
+  Xilinx Vitis 2021.2/2022.1
+  Xilinx aienginev2 library from https://github.com/Xilinx/embeddedsw
+
+```
+Vivado and Vitis are used to build the platforms for available Xilinx cards with AIEs (VCK190 and VCK5000). Vitis also contains the AIE single core compiler xchesscc. The aienginev2 library is a driver backend used to configure the AIE array and used in building the AIR runtime.
+
+Note that you do not need the above additional Xilinx packages to make use of the AIR compiler passes. 
+
 Building mlir-air requires several other open source packages:
   - [mlir](https://github.com/llvm/llvm-project/tree/main/mlir)
   - [mlir-aie](https://github.com/Xilinx/mlir-aie)
   - [Xilinx cmakeModules](https://github.com/Xilinx/cmakeModules)
-  - [Xilinx embeddedsw](https://github.com/Xilinx/embeddedsw)
 
 ## Building external projects on X86
 
@@ -49,11 +71,15 @@ Finally, build the MLIR-AIR tools for your desired use case:
 
 ## Building on x86
 
+Use the following command to build the AIR tools to compile on x86:
+
 ```
 ./build-mlir-air.sh $SYSROOT /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/mlir-aie ../../mlir-air build install
 ```
 
 ## Building on x86 with runtime for PCIe 
+
+Use the following command to build the AIR tools to compile on x86 for PCIe cards (VCK5000):
 
 ```
 ./build-mlir-air-pcie.sh /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/mlir-aie ../../mlir-air build install
@@ -61,18 +87,47 @@ Finally, build the MLIR-AIR tools for your desired use case:
 
 ## Environment setup
 
+Set up your environment to use the tools you just built with the following commands:
+
 ```
 export PATH=/path/to/mlir-air/install/bin:${PATH}
 export PYTHONPATH=/path/to/mlir-air/install/python:${PYTHONPATH}
 export LD_LIBRARY_PATH=/path/to/install/mlir-air/lib:/opt/xaiengine/lib:${LD_LIBRARY_PATH}
 ```
 
+## Building hardware platforms
+
+
+
 ## Building a Sysroot
+
+Since the AIE tools are cross-compiling, in order to actually compile code, we need a 'sysroot' directory,
+containing an ARM rootfs.  This rootfs must match what will be available in the runtime environment.
+Note that copying the rootfs is often insufficient, since many root file systems include absolute links.
+Absolute symbolic links can be converted to relative symbolic links using [symlinks](https://github.com/brandt/symlinks).
+
+```sh
+cd /
+sudo symlinks -rc .
+```
+Following the [VCK190 platform build steps]() will also create a sysroot.
+
 
 ## Compiling Runtime for AArch64 (partial cross-compile)
 
+
+
 ## Compiling Tools and Runtime for AArch64 (full cross-compile)
 
+
+
+## Running end-to-end examples:
+
+TODO: document running one of the examples (ie. AIRBERT)
+
+## Using the AIR compiler passes: 
+
+TODO: document compiler passes demonstrated in mlir/tests
 
 -----
 
