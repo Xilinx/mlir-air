@@ -79,6 +79,16 @@ Use the following command to build the AIR tools to compile on x86:
 
 ## Building on x86 with runtime for PCIe 
 
+In order to build and run on PCIe cards, you first have to build and install the aienginev2 library:
+
+```
+git clone https://github.com/jgmelber/embeddedsw.git
+git checkout xlnx_rel_v2021.2-vck5000
+cd XilinxProcessorIPLib/drivers/aienginev2/src
+make -f Makefile.Linux
+sudo cp ../include/aiengine /opt/ 
+```
+
 Use the following command to build the AIR tools to compile on x86 for PCIe cards (VCK5000):
 
 ```
