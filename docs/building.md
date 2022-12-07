@@ -83,10 +83,13 @@ In order to build and run on PCIe cards, you first have to build and install the
 
 ```
 git clone https://github.com/jgmelber/embeddedsw.git
+cd embeddedsw
 git checkout xlnx_rel_v2021.2-vck5000
 cd XilinxProcessorIPLib/drivers/aienginev2/src
 make -f Makefile.Linux
-sudo cp ../include/aiengine /opt/ 
+sudo cp -r ../include /opt/aiengine/
+sudo cp libxaiengine.so* /opt/aiengine/lib/
+export LD_LIBRARY_PATH=/opt/xaiengine/lib:${LD_LIBRARY_PATH}
 ```
 
 Use the following command to build the AIR tools to compile on x86 for PCIe cards (VCK5000):
@@ -107,11 +110,15 @@ export LD_LIBRARY_PATH=/path/to/install/mlir-air/lib:/opt/xaiengine/lib:${LD_LIB
 
 ## Building hardware platforms
 
+The instructions for building the hardware platform designs are found in the mlir-air/platforms directory:
 
+- xilinx_vck190_air
+- xilinx_vck5000_air
+- xilinx_vck5000_air_scale_out
 
 ## Building a Sysroot
 
-Since the AIE tools are cross-compiling, in order to actually compile code, we need a 'sysroot' directory,
+Since the MLIR-AIE tools are cross-compiling, in order to actually compile code, we need a 'sysroot' directory,
 containing an ARM rootfs.  This rootfs must match what will be available in the runtime environment.
 Note that copying the rootfs is often insufficient, since many root file systems include absolute links.
 Absolute symbolic links can be converted to relative symbolic links using [symlinks](https://github.com/brandt/symlinks).
@@ -120,16 +127,28 @@ Absolute symbolic links can be converted to relative symbolic links using [symli
 cd /
 sudo symlinks -rc .
 ```
-Following the [VCK190 platform build steps]() will also create a sysroot.
-
+Following the VCK190 platform build steps will also create a sysroot.
 
 ## Compiling Runtime for AArch64 (partial cross-compile)
 
+Use the following command to build the AIR tools to build on x86 and cross-compile host code for ARM:
 
+```
+???
+```
 
 ## Compiling Tools and Runtime for AArch64 (full cross-compile)
 
+Use the following command to cross-compile the AIR tools for ARM:
 
+```
+cd utils
+./cross-build-llvm.sh ../install-aarch64
+./cross-build-mlir-aie.sh ../cmake/modules/toolchain_crosscomp_aarch54.cmake $SYSROOT /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/llvm ../install-aarch64 
+./cross-build-mlir-air.sh ../cmake/modules/toolchain_crosscomp_aarch54.cmake $SYSROOT /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/mlir-aie ../install-aarch64
+cd ..
+tar -cvf air_tools.tar.gz install-aarch64
+```
 
 ## Running end-to-end examples:
 
