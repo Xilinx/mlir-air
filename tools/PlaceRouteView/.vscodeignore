@@ -1,0 +1,23 @@
+# Copyright (C) 2022, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
+.vscode/**
+.vscode-test/**
+out/test/**
+out/*
+src/**
+node_modules/**
+.gitignore
+.yarnrc
+webpack.config.js
+vsc-extension-quickstart.md
+**/tsconfig.json
+tsconfig.json
+tslint.json
+*.vsix
+**/.eslintrc.json
+**/*.map
+**/*.ts
+!images/partition_view_example.png
+!images/routing_view_example.png
+

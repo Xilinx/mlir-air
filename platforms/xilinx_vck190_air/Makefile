@@ -1,3 +1,7 @@
+# Copyright (C) 2022, Xilinx Inc.
+# Copyright (C) 2022, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
 PLATFORM ?= xilinx_vck190_air
 CWD=$(shell pwd)
 XSA_DIR ?= $(CWD)/vivado

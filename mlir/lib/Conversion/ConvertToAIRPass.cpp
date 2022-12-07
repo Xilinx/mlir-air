@@ -647,11 +647,12 @@ void replaceAIRDmaWithAIRChannelPairs(
         op->getAttrOfType<mlir::IntegerSetAttr>("broadcast_set").getValue();
     SmallVector<int, 2> lbs_int = {-1, -1};
     SmallVector<int, 2> ubs_int = {-1, -1};
+    SmallVector<int64_t, 2> channel_sizes = {1, 1};
     getBCastSizesFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
     SmallVector<int64_t, 2> bcast_sizes = {ubs_int[0] - lbs_int[0] + 1,
                                            ubs_int[1] - lbs_int[1] + 1};
-    auto channel_op = createChannelOpWithBCast(builder, module, cname, loc,
-                                               SmallVector<int64_t, 2>{});
+    auto channel_op =
+        createChannelOpWithBCast(builder, module, cname, loc, channel_sizes);
     channel_op->setAttr("broadcast_shape",
                         builder.getI64ArrayAttr(bcast_sizes));
   } else if (op->hasAttr("broadcast_pattern")) {
@@ -662,16 +663,16 @@ void replaceAIRDmaWithAIRChannelPairs(
     mlir::IntegerSet int_set =
         op->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern").getValue();
     getBCastSizesFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
-    SmallVector<int64_t, 2> bcast_sizes = {1, 1};
-    bcast_sizes[getScfParDimIdFromBCastDma(dyn_cast<air::DmaMemcpyInterface>(
+    SmallVector<int64_t, 2> channel_sizes = {1, 1};
+    channel_sizes[getScfParDimIdFromBCastDma(dyn_cast<air::DmaMemcpyInterface>(
         op.getOperation()))] = ubs_int[0] - lbs_int[0] + 1;
     auto channel_op =
-        createChannelOpWithBCast(builder, module, cname, loc, bcast_sizes);
+        createChannelOpWithBCast(builder, module, cname, loc, channel_sizes);
     annotateChannelOpWithBCastShape(builder, channel_op,
                                     op->getParentOfType<air::HerdOp>());
   } else {
-    createChannelOpWithBCast(builder, module, cname, loc,
-                             SmallVector<int64_t, 2>{});
+    SmallVector<int64_t, 2> channel_sizes = {1, 1};
+    createChannelOpWithBCast(builder, module, cname, loc, channel_sizes);
   }
 
   SmallVector<Value, 1> channel_idx_internal{};
@@ -762,7 +763,6 @@ void HoistingAffineIf(mlir::AffineIfOp op) {
   SmallVector<air::DmaMemcpyNdOp, 2> dmas;
 
   // Recursively search for and replace air.dma ops
-  // TODO: Check recursion via unit tests with broadcast pattern bigger than 2x2
   auto module = op->getParentOfType<ModuleOp>();
   OpBuilder module_builder(module);
   // The first then block
@@ -998,7 +998,7 @@ class AIRDmaToAIRChannelConversion
             module.lookupSymbol(externalGetPut[0].getChanName()));
         auto size = extractFromI64ArrayAttr(channel_op.getSize());
         for (auto s : size) {
-          lbs.push_back(1);
+          lbs.push_back(0);
           ubs.push_back(s);
         }
         scf::ParallelOp scf_par =

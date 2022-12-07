@@ -70,7 +70,8 @@ static LogicalResult removeUnusedArguments(HerdOp op,
   BlockAndValueMapping remap;
   auto newOp = rewriter.create<HerdOp>(op.getLoc(), op.getAsyncDependencies(),
                                        op.getSizeOperands(), newOperands,
-                                       op->getNumResults() > 0);
+                                       op->getNumResults() > 0, op->getAttrs());
+
   rewriter.setInsertionPointToStart(&newOp.getBody().front());
   remap.map(op.getSize()[0], newOp.getSize()[0]);
   remap.map(op.getSize()[1], newOp.getSize()[1]);
@@ -161,7 +162,8 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
 
 void LaunchOp::build(OpBuilder &builder, OperationState &result,
                      ValueRange asyncDependencies, ValueRange sizes,
-                     ValueRange launchOperands, bool isAsync) {
+                     ValueRange launchOperands, bool isAsync,
+                     ArrayRef<NamedAttribute> attrs) {
 
   result.addOperands(asyncDependencies);
   if (isAsync)
@@ -175,6 +177,12 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
   segmentSizes.back() = static_cast<int32_t>(launchOperands.size());
   result.addAttribute(getOperandSegmentSizeAttr(),
                       builder.getDenseI32ArrayAttr(segmentSizes));
+
+  for (auto attr : attrs)
+    if (attr.getName() == getOperandSegmentSizeAttr())
+      continue;
+    else
+      result.addAttribute(attr.getName(), attr.getValue());
 
   Region *r = result.addRegion();
   Block *body = new Block();
@@ -240,8 +248,7 @@ void LaunchOp::print(OpAsmPrinter &p) {
 
   SmallVector<NamedAttribute, 8> filteredAttrs(
       llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-        if (attr.getName() == OpTrait::AttrSizedOperandSegments<
-                                  void>::getOperandSegmentSizeAttr())
+        if (attr.getName() == getOperandSegmentSizeAttr())
           return false;
         if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
           return false;
@@ -353,9 +360,8 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   segmentSizes.front() = asyncDependencies.size();
   segmentSizes[1] = tileSize.size();
   segmentSizes.back() = kernelOperands.size();
-  result.addAttribute(
-      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr(),
-      parser.getBuilder().getDenseI32ArrayAttr(segmentSizes));
+  result.addAttribute(getOperandSegmentSizeAttr(),
+                      parser.getBuilder().getDenseI32ArrayAttr(segmentSizes));
   return success();
 }
 
@@ -399,8 +405,7 @@ BlockArgument LaunchOp::getKernelArgument(unsigned i) {
 }
 
 unsigned LaunchOp::getNumDims() {
-  auto size_attr_name =
-      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
+  auto size_attr_name = getOperandSegmentSizeAttr();
   auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
   auto segment_sizes = size_attr.asArrayRef();
   return segment_sizes[1];
@@ -412,7 +417,8 @@ unsigned LaunchOp::getNumDims() {
 
 void PartitionOp::build(OpBuilder &builder, OperationState &result,
                         ValueRange asyncDependencies, ValueRange sizes,
-                        ValueRange partitionOperands, bool isAsync) {
+                        ValueRange partitionOperands, bool isAsync,
+                        ArrayRef<NamedAttribute> attrs) {
 
   result.addOperands(asyncDependencies);
   if (isAsync)
@@ -426,6 +432,12 @@ void PartitionOp::build(OpBuilder &builder, OperationState &result,
   segmentSizes.back() = static_cast<int32_t>(partitionOperands.size());
   result.addAttribute(getOperandSegmentSizeAttr(),
                       builder.getDenseI32ArrayAttr(segmentSizes));
+
+  for (auto attr : attrs)
+    if (attr.getName() == getOperandSegmentSizeAttr())
+      continue;
+    else
+      result.addAttribute(attr.getName(), attr.getValue());
 
   Region *r = result.addRegion();
   Block *body = new Block();
@@ -493,8 +505,7 @@ void PartitionOp::print(OpAsmPrinter &p) {
 
   SmallVector<NamedAttribute, 8> filteredAttrs(
       llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-        if (attr.getName() == OpTrait::AttrSizedOperandSegments<
-                                  void>::getOperandSegmentSizeAttr())
+        if (attr.getName() == getOperandSegmentSizeAttr())
           return false;
         if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
           return false;
@@ -608,9 +619,8 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
   segmentSizes.front() = asyncDependencies.size();
   segmentSizes[1] = tileSize.size();
   segmentSizes.back() = kernelOperands.size();
-  result.addAttribute(
-      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr(),
-      parser.getBuilder().getDenseI32ArrayAttr(segmentSizes));
+  result.addAttribute(getOperandSegmentSizeAttr(),
+                      parser.getBuilder().getDenseI32ArrayAttr(segmentSizes));
   return success();
 }
 
@@ -654,8 +664,7 @@ BlockArgument PartitionOp::getKernelArgument(unsigned i) {
 }
 
 unsigned PartitionOp::getNumDims() {
-  auto size_attr_name =
-      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
+  auto size_attr_name = getOperandSegmentSizeAttr();
   auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
   auto segment_sizes = size_attr.asArrayRef();
   return segment_sizes[1];
@@ -667,7 +676,8 @@ unsigned PartitionOp::getNumDims() {
 
 void HerdOp::build(OpBuilder &builder, OperationState &result,
                    ValueRange asyncDependencies, ValueRange sizes,
-                   ValueRange launchOperands, bool isAsync) {
+                   ValueRange launchOperands, bool isAsync,
+                   ArrayRef<NamedAttribute> attrs) {
 
   result.addOperands(asyncDependencies);
   if (isAsync)
@@ -681,6 +691,12 @@ void HerdOp::build(OpBuilder &builder, OperationState &result,
   segmentSizes.back() = static_cast<int32_t>(launchOperands.size());
   result.addAttribute(getOperandSegmentSizeAttr(),
                       builder.getDenseI32ArrayAttr(segmentSizes));
+
+  for (auto attr : attrs)
+    if (attr.getName() == getOperandSegmentSizeAttr())
+      continue;
+    else
+      result.addAttribute(attr.getName(), attr.getValue());
 
   Region *r = result.addRegion();
   Block *body = new Block();
@@ -746,8 +762,7 @@ void HerdOp::print(OpAsmPrinter &p) {
 
   SmallVector<NamedAttribute, 8> filteredAttrs(
       llvm::make_filter_range((*this)->getAttrs(), [&](NamedAttribute attr) {
-        if (attr.getName() == OpTrait::AttrSizedOperandSegments<
-                                  void>::getOperandSegmentSizeAttr())
+        if (attr.getName() == getOperandSegmentSizeAttr())
           return false;
         if (attr.getName() == mlir::SymbolTable::getSymbolAttrName())
           return false;
@@ -862,9 +877,8 @@ ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
   segmentSizes.front() = asyncDependencies.size();
   segmentSizes[1] = tileSize.size();
   segmentSizes.back() = kernelOperands.size();
-  result.addAttribute(
-      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr(),
-      parser.getBuilder().getDenseI32ArrayAttr(segmentSizes));
+  result.addAttribute(getOperandSegmentSizeAttr(),
+                      parser.getBuilder().getDenseI32ArrayAttr(segmentSizes));
   return success();
 }
 
@@ -908,8 +922,7 @@ BlockArgument HerdOp::getKernelArgument(unsigned i) {
 }
 
 unsigned HerdOp::getNumDims() {
-  auto size_attr_name =
-      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
+  auto size_attr_name = getOperandSegmentSizeAttr();
   auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
   auto segment_sizes = size_attr.asArrayRef();
   return segment_sizes[1];
@@ -1070,6 +1083,56 @@ static LogicalResult FoldWaitAll(WaitAllOp op, PatternRewriter &rewriter) {
 void WaitAllOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                             MLIRContext *context) {
   patterns.add(FoldWaitAll);
+}
+
+static LogicalResult FoldExecute(ExecuteOp op, PatternRewriter &rewriter) {
+
+  // if the terminator is the only thing in the ExecuteOp,
+  // and the op is unused, then it can be removed.
+  auto &body = op.getRegion().front();
+  auto et = body.getTerminator();
+  if (op.use_empty() && body.getOperations().size() == 1) {
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+  // replace returns of constants with the constant
+  int idx = 0;
+  for (auto v : et->getOperands()) {
+    idx++;
+    if (op.getResult(idx).use_empty())
+      continue;
+    auto o = v.getDefiningOp();
+    if (!o)
+      continue;
+    if (isa<arith::ConstantOp>(o)) {
+      op.getResult(idx).replaceAllUsesWith(rewriter.clone(*o)->getResult(0));
+      return success();
+    }
+  }
+
+  // if any of the results are used, return failure()
+  for (auto v : op->getResults().drop_front())
+    if (!v.use_empty())
+      return failure();
+
+  // if we get here then only the async token result has uses.
+  // if the execute body is empty, replace the execute with a wait_all no-op
+  if (body.getOperations().size() == 1) {
+    op.getResult(0).replaceAllUsesWith(
+        rewriter
+            .create<WaitAllOp>(op->getLoc(), op->getResult(0).getType(),
+                               op->getOperands())
+            .getResult(0));
+    return success();
+  }
+
+  return failure();
+}
+
+void ExecuteOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                            MLIRContext *context) {
+  patterns.add(FoldExecute);
 }
 
 #include "air/Dialect/AIR/AIROpInterfaces.cpp.inc"

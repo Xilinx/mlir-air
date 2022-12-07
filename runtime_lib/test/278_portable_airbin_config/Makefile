@@ -1,3 +1,7 @@
+# Copyright (C) 2022, Xilinx Inc.
+# Copyright (C) 2022, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
 CC=clang
 ACDC_AIR = $(dir $(shell which aie-opt))/..
 
