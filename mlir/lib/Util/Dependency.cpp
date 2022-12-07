@@ -1562,7 +1562,8 @@ void dependencyCanonicalizer::canonicalizeAIRHierarchyDependency(
       if ((!getForRegionIterArgsOwner(dep)) &&
           (!getParallelRegionInitValsOwner(hier.getOperation(), dep))) {
         if (dep.getDefiningOp() &&
-            (!dyn_cast<air::WaitAllOp>(dep.getDefiningOp()))) {
+            (!dyn_cast<air::WaitAllOp>(dep.getDefiningOp())) &&
+            (!dyn_cast<air::DmaMemcpyNdOp>(dep.getDefiningOp()))) {
           erased_tokens.push_back(dep);
         }
       }
