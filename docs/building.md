@@ -27,7 +27,7 @@ To clone llvm and cmakeModules, see utils/clone-llvm.sh for the correct commitha
 ```
 cd utils
 ./clone-llvm.sh
-./build-llvm-local.sh llvm build ../install
+./build-llvm-local.sh llvm build ../../install
 ```
 
 Next, clone and build MLIR-AIE with absolute paths to the sysroot, llvm, and cmakeModules repositories. Again, we use a common installation directory.
@@ -35,7 +35,7 @@ Next, clone and build MLIR-AIE with absolute paths to the sysroot, llvm, and cma
 ```
 git clone https://github.com/Xilinx/cmakeModules.git
 ./clone-mlir-aie.sh
-./build-mlir-aie-local.sh $SYSROOT /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/cmakeModules mlir-aie build ../install
+./build-mlir-aie-local.sh $SYSROOT /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/cmakeModules mlir-aie build ../../install
 ```
 
 The MLIR-AIE tools will be able to generate binaries targetting AIEngines.
@@ -50,21 +50,21 @@ Finally, build the MLIR-AIR tools for your desired use case:
 ## Building on x86
 
 ```
-./build-mlir-air.sh $SYSROOT /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/mlir-aie ../../mlir-air build utils/install
+./build-mlir-air.sh $SYSROOT /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/mlir-aie ../../mlir-air build install
 ```
 
 ## Building on x86 with runtime for PCIe 
 
 ```
-./build-mlir-air-pcie.sh /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/mlir-aie ../../mlir-air build utils/install
+./build-mlir-air-pcie.sh /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/mlir-aie ../../mlir-air build install
 ```
 
 ## Environment setup
 
 ```
-export PATH=/path/to/install/bin:${PATH}
-export PYTHONPATH=/path/to/install/python:${PYTHONPATH}
-export LD_LIBRARY_PATH=/path/to/install/lib:/opt/xaiengine/lib:${LD_LIBRARY_PATH}
+export PATH=/path/to/mlir-air/install/bin:${PATH}
+export PYTHONPATH=/path/to/mlir-air/install/python:${PYTHONPATH}
+export LD_LIBRARY_PATH=/path/to/install/mlir-air/lib:/opt/xaiengine/lib:${LD_LIBRARY_PATH}
 ```
 
 ## Building a Sysroot
