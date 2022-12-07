@@ -112,9 +112,9 @@ export LD_LIBRARY_PATH=/path/to/install/mlir-air/lib:/opt/xaiengine/lib:${LD_LIB
 
 The instructions for building the hardware platform designs are found in the mlir-air/platforms directory:
 
-- xilinx_vck190_air
-- xilinx_vck5000_air
-- xilinx_vck5000_air_scale_out
+- [xilinx_vck190_air](../platforms/xilinx_vck190_air)
+- [xilinx_vck5000_air](../platforms/xilinx_vck5000_air)
+- [xilinx_vck5000_air_scale_out](../platforms/xilinx_vck5000_air_scale_out)
 
 ## Building a Sysroot
 
@@ -144,8 +144,8 @@ Use the following command to cross-compile the AIR tools for ARM:
 ```
 cd utils
 ./cross-build-llvm.sh ../install-aarch64
-./cross-build-mlir-aie.sh ../cmake/modules/toolchain_crosscomp_aarch54.cmake $SYSROOT /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/llvm ../install-aarch64 
-./cross-build-mlir-air.sh ../cmake/modules/toolchain_crosscomp_aarch54.cmake $SYSROOT /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/mlir-aie ../install-aarch64
+./cross-build-mlir-aie.sh ../cmake/modules/toolchain_crosscomp_aarch64.cmake $SYSROOT /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/llvm ../install-aarch64 
+./cross-build-mlir-air.sh ../cmake/modules/toolchain_crosscomp_aarch64.cmake $SYSROOT /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/mlir-aie ../install-aarch64
 cd ..
 tar -cvf air_tools.tar.gz install-aarch64
 ```
