@@ -137,7 +137,8 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
         MemRefType::get(shape, ty.getElementType(), nullptr, ty.getMemorySpace()));
     for (auto use : newOp.getUsers()) {
       if (auto launch = dyn_cast<air::HerdOp>(use)) {
-        assert(launch.getKernelArguments().size() == launch.operands().size());
+        assert(launch.getKernelArguments().size() ==
+               launch.getOperands().size());
         for (unsigned int i = 0; i < launch.getNumKernelOperands(); i++) {
           auto arg = launch.getKernelArguments()[i];
           auto oper = launch.getKernelOperand(i);
