@@ -67,11 +67,45 @@ struct dependencyNodeEntry;
 struct dependencyGraph;
 struct runnerNode;
 
+// GraphViz node properties for visualization
+struct graphNodeProperties{
+  std::string color;
+  std::string shape;
+  std::string detailed_description;
+
+  graphNodeProperties(std::string color, std::string shape, std::string detailed_description) : color(color), shape(shape), detailed_description(detailed_description) {}
+  graphNodeProperties(std::string nodeType, std::string details = ""){
+    detailed_description = details;
+    if (nodeType == "hierarchy"){
+      color = "yellow";
+      shape = "box";
+    }
+    else if (nodeType == "control"){
+      color = "crimson";
+      shape = "box";
+    }
+    else if (nodeType == "data"){
+      color = "cyan";
+      shape = "oval";
+    }
+    else if (nodeType == "compute"){
+      color = "chartreuse";
+      shape = "oval";
+    }
+    else {
+      color = "";
+      shape = "";
+    }
+  }
+};
+
+// Node entry for dependency graph
 struct dependencyNodeEntry {
   std::string asyncEventName;
   std::string asyncEventType;
   std::string color;
   std::string shape;
+  std::string detailed_description;
   unsigned operationId;
   mlir::Operation *op;
   dependencyGraph *nextDependencyGraph;
@@ -83,14 +117,15 @@ struct dependencyNodeEntry {
 
   dependencyNodeEntry(std::string asyncEventName = "",
                       std::string asyncEventType = "", std::string color = "",
-                      std::string shape = "", unsigned operationId = 0,
+                      std::string shape = "", std::string detailed_description = "", unsigned operationId = 0,
                       mlir::Operation *op = nullptr,
                       dependencyGraph *nextDependencyGraph = nullptr, uint64_t start_time = 0, uint64_t end_time = 0)
       : asyncEventName(asyncEventName), asyncEventType(asyncEventType),
-        color(color), shape(shape), operationId(operationId), op(op),
+        color(color), shape(shape), detailed_description(detailed_description), operationId(operationId), op(op),
         nextDependencyGraph(nextDependencyGraph), start_time(start_time), end_time(end_time) {}
 };
 
+// Boost dependency graph
 typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::bidirectionalS,
                               dependencyNodeEntry>
     Graph;
@@ -107,6 +142,7 @@ typedef std::map<Graph::vertex_descriptor, Graph::vertex_descriptor>
 
 struct runnerNode; // Forward declaration of runner node struct for dependencyGraph pointer member
 
+// Dependency graph object
 struct dependencyGraph {
   Graph g;
   mlir::Operation *hierarchyOp;
@@ -220,7 +256,7 @@ private:
   Graph::vertex_descriptor addVertexFromOp(Operation *op, uint64_t &id,
                                            std::string event_type,
                                            std::string event_name,
-                                           std::string color, std::string shape,
+                                           graphNodeProperties properties,
                                            Graph &G, dependencyContext &dep_ctx,
                                            Operation *pointer_op = nullptr);
   Graph::vertex_descriptor
