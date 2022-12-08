@@ -203,6 +203,9 @@ public:
                                                   std::string dump_dir = "");
   void removeRedundantAIRHierarchyArgs(func::FuncOp func);
   void canonicalizeAIRHierarchyDependency(func::FuncOp func);
+  std::pair<Graph::vertex_descriptor, Graph *>
+  getVertexFromOp(Operation *op, dependencyContext dep_ctx,
+                  std::string front_or_back = "front");
 
 private:
   void addVerticesInHerd(std::vector<dependencyGraph> &herd_subgraphs,
@@ -242,9 +245,9 @@ private:
                                                   dependencyContext &dep_ctx);
   std::pair<std::string, unsigned> getTypeIdPairFromOp(Operation *op);
   std::string getOpTypeFromOpImpls(Operation *op);
-  std::pair<Graph::vertex_descriptor, Graph *>
-  getVertexFromOp(Operation *op, dependencyContext dep_ctx,
-                  std::string front_or_back = "front");
+  // std::pair<Graph::vertex_descriptor, Graph *>
+  // getVertexFromOp(Operation *op, dependencyContext dep_ctx,
+  //                 std::string front_or_back = "front");
   void parseDependencyEdgesInGraph(Graph &g, dependencyContext dep_ctx);
   void copyFromDependencyGraphToFlatGraph(Graph g_src, FlatGraph &g_dst,
                                           vertex_to_flat_vertex_map &map,
