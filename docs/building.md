@@ -143,20 +143,12 @@ Use the following command to cross-compile the AIR tools for ARM:
 
 ```
 cd utils
-./cross-build-llvm.sh ../install-aarch64
-./cross-build-mlir-aie.sh ../cmake/modules/toolchain_crosscomp_aarch64.cmake $SYSROOT /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/llvm ../install-aarch64 
-./cross-build-mlir-air.sh ../cmake/modules/toolchain_crosscomp_aarch64.cmake $SYSROOT /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/mlir-aie ../install-aarch64
+./cross-build-llvm.sh /full/path/to/mlir-air/install-aarch64
+./cross-build-mlir-aie.sh ../cmake/modules/toolchain_crosscomp_aarch64.cmake $SYSROOT /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/install-aarch64 
+./cross-build-mlir-air.sh ../cmake/modules/toolchain_crosscomp_aarch64.cmake $SYSROOT /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/mlir-aie /full/path/to/mlir-air/install-aarch64
 cd ..
 tar -cvf air_tools.tar.gz install-aarch64
 ```
-
-## Running end-to-end examples:
-
-TODO: document running one of the examples (ie. AIRBERT)
-
-## Using the AIR compiler passes: 
-
-TODO: document compiler passes demonstrated in mlir/tests
 
 -----
 
