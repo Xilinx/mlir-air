@@ -58,6 +58,7 @@ Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
 void addAsyncDependencyIfNew(air::AsyncOpInterface op, Value token);
 std::string getMemorySpaceAsString(Value memref);
 air::ChannelGetOp getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put);
+air::ChannelPutOp getTheOtherChannelOpThroughSymbol(air::ChannelGetOp get);
 
 //===----------------------------------------------------------------------===//
 // Dependency graph parsed as a Boost graph object

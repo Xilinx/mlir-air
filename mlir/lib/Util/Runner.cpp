@@ -320,6 +320,31 @@ public:
     else return 10;
   }
 
+  void buildVertexDependencyList(Graph::vertex_descriptor v, Graph G, std::vector<dependencyNodeEntry *> &dep_list){
+    auto inv_adj_set = boost::inv_adjacent_vertices(v, G);
+    // If current vertex is ChannelGet, then add implicit ChannelPut vertex to dep list 
+    if (air::ChannelGetOp channel_get = dyn_cast<air::ChannelGetOp>(G[v].op)) {
+      air::ChannelPutOp channel_put = air::getTheOtherChannelOpThroughSymbol(channel_get);
+      // Get ChannelPut node from op
+      auto channel_put_entry = canonicalizer.getVertexFromOp(channel_put.getOperation(), dep_ctx, "front");
+      auto channel_put_v = channel_put_entry.first;
+      auto channel_put_g = channel_put_entry.second;
+      auto channel_put_node = (*channel_put_g)[channel_put_v];
+      dep_list.push_back(&channel_put_node);
+    }
+    for (auto inv_adj_v = inv_adj_set.first; inv_adj_v != inv_adj_set.second; ++inv_adj_v){
+      // If dependent on a hierarchy op, then push its terminator into dep_list instead
+      if (G[*inv_adj_v].asyncEventType == "hierarchy"){
+        auto sub_g = G[*inv_adj_v].nextDependencyGraph;
+        auto terminator_v = sub_g->terminator_vertex;
+        dep_list.push_back(&sub_g->g[terminator_v]);
+      }
+      else {
+        dep_list.push_back(&G[*inv_adj_v]);
+      }
+    }
+  }
+
   std::string to_string(Operation *op) { return op->getName().getStringRef().str(); }
 
   std::string to_string(dependencyNodeEntry &c) { return to_string(c.op); }
@@ -362,17 +387,7 @@ public:
       bool dep_fulfilled = true;
       // Build it's dependency list
       std::vector<dependencyNodeEntry *> dep_list;
-      for (auto inv_adj_v = inv_adj_set.first; inv_adj_v != inv_adj_set.second; ++inv_adj_v){
-        // If dependent on a hierarchy op, then push its terminator into dep_list instead
-        if (G[*inv_adj_v].asyncEventType == "hierarchy"){
-          auto sub_g = G[*inv_adj_v].nextDependencyGraph;
-          auto terminator_v = sub_g->terminator_vertex;
-          dep_list.push_back(&sub_g->g[terminator_v]);
-        }
-        else {
-          dep_list.push_back(&G[*inv_adj_v]);
-        }
-      }
+      buildVertexDependencyList(*it, G, dep_list);
       // Check whether adj_v's dependency list is fulfulled
       for (auto dep : dep_list){
         if ((!dep->is_started()) || (!dep->is_done(time))){
