@@ -448,12 +448,15 @@ public:
 
   void scheduleLaunch(runnerNode &launch, uint64_t &time) {
 
-    bool running = true;
     auto start_v = launch.ctrl_g->start_vertex;
+    // Reset launch graph
+    launch.processed_vertices.clear();
+    resetGraphBetweenTwoVertices(start_v, launch.ctrl_g->terminator_vertex, launch.ctrl_g->g, launch);
+    // Start running launch
+    bool running = true;
     launch.ctrl_g->g[start_v].start_time = 1;
     launch.ctrl_g->g[start_v].end_time = 1;
     pushToWavefront(launch.wavefront, std::make_pair(start_v, 1));
-    launch.processed_vertices.clear();
     while (running) {
       LLVM_DEBUG(llvm::dbgs() << "time: " << time << "\n");
 
