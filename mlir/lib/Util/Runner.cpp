@@ -287,9 +287,6 @@ public:
     else if (auto Op = dyn_cast<xilinx::air::HierarchyInterface>(node.op)){
       auto sub_dependency_graph = node.nextDependencyGraph;
       auto sub_runner_node = sub_dependency_graph->runner_node;
-      assert(sub_dependency_graph->g[sub_dependency_graph->start_vertex].asyncEventType == "start");
-      assert(sub_runner_node->ctrl_g);
-      assert(sub_runner_node->ctrl_g->g[sub_runner_node->ctrl_g->start_vertex].asyncEventType == "start");
       executeOp(Op, time, sub_runner_node, c, it);
     }
     else if (auto Op = dyn_cast<scf::ForOp>(node.op)){
@@ -329,7 +326,7 @@ public:
       auto channel_put_entry = canonicalizer.getVertexFromOp(channel_put.getOperation(), dep_ctx, "front");
       auto channel_put_v = channel_put_entry.first;
       auto channel_put_g = channel_put_entry.second;
-      auto channel_put_node = (*channel_put_g)[channel_put_v];
+      auto &channel_put_node = channel_put_g->g[channel_put_v];
       dep_list.push_back(&channel_put_node);
     }
     for (auto inv_adj_v = inv_adj_set.first; inv_adj_v != inv_adj_set.second; ++inv_adj_v){
@@ -382,8 +379,6 @@ public:
     removeRepeatedVertices(next_vertex_set_candidates, getVectorOfFirstFromVectorOfPairs(c.wavefront));
 
     for (auto it = next_vertex_set_candidates.begin(); it != next_vertex_set_candidates.end(); ++it){
-      // inv_adj_set is the list of dependent tokens for each candidate op to wavefront
-      auto inv_adj_set = boost::inv_adjacent_vertices(*it, G);
       bool dep_fulfilled = true;
       // Build it's dependency list
       std::vector<dependencyNodeEntry *> dep_list;
@@ -520,8 +515,6 @@ private:
 
   // Dependency graph constructed as Boost graph
   dependencyGraph hostGraph;
-  operation_to_vertex_map op_to_v; // Map between ops and vertices in graph
-  operation_to_graph_map op_to_g; // Map between ops and graph
 
   // Host and segment runnerNodes
   runnerNode launch_runner_node;
