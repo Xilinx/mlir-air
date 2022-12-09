@@ -106,7 +106,7 @@ def run(mlir_module, args):
       air_place_pass
     ])
     air_placed_module = Module.parse(str(mlir_module))
-    run_passes(pass_pipeline, air_placed_module, opts, air_placed)
+    run_passes('builtin.module('+pass_pipeline+')', air_placed_module, opts, air_placed)
 
     air_to_aie_pass = 'air-to-aie{emit-while-loop=false'
     air_to_aie_pass = air_to_aie_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
@@ -114,7 +114,7 @@ def run(mlir_module, args):
     pass_pipeline = ','.join([
       air_to_aie_pass
     ])
-    run_passes(pass_pipeline, Module.parse(str(air_placed_module)), opts)
+    run_passes('builtin.module('+pass_pipeline+')', Module.parse(str(air_placed_module)), opts)
 
     air_to_airrt_pass = 'air-to-aie{emit-while-loop=true'
     air_to_airrt_pass = air_to_airrt_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
@@ -135,7 +135,7 @@ def run(mlir_module, args):
       'air-lower-linalg-tensors',
       'canonicalize', 'cse'
     ])
-    run_passes(pass_pipeline, airrt_module, opts, aie_ctrl_airrt)
+    run_passes('builtin.module('+pass_pipeline+')', airrt_module, opts, aie_ctrl_airrt)
 
     aie_ctrl = opts.tmpdir+'/aie_ctrl.'+air_mlir_filename
     pass_pipeline = ','.join([
@@ -143,7 +143,7 @@ def run(mlir_module, args):
       'func-bufferize',
       'func.func(finalizing-bufferize)'
     ])
-    run_passes(pass_pipeline, airrt_module, opts, aie_ctrl)
+    run_passes('builtin.module('+pass_pipeline+')', airrt_module, opts, aie_ctrl)
 
     aie_ctrl_refback = opts.tmpdir+'/refback.'+air_mlir_filename
     pass_pipeline = ','.join([
@@ -156,7 +156,7 @@ def run(mlir_module, args):
       'airrt-to-llvm',
       'canonicalize','cse'
     ])
-    run_passes(pass_pipeline, Module.parse(str(air_placed_module)), opts, aie_ctrl_refback)
+    run_passes('builtin.module('+pass_pipeline+')', Module.parse(str(air_placed_module)), opts, aie_ctrl_refback)
 
     aie_ctrl_llvm = opts.tmpdir+'/llvm.'+air_mlir_filename
     pass_pipeline = ','.join([
@@ -168,7 +168,7 @@ def run(mlir_module, args):
       'convert-cf-to-llvm',
       'canonicalize','cse'
     ])
-    run_passes(pass_pipeline, airrt_module, opts, aie_ctrl_llvm)
+    run_passes('builtin.module('+pass_pipeline+')', airrt_module, opts, aie_ctrl_llvm)
 
     # compile the llvm dialect into a .o object file
 

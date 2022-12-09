@@ -31,7 +31,7 @@ __all__ = [
     "LinalgOnTensorsAirBackend",
 ]
 
-LINALG_MEMREF_TO_AIR_PIPELINE = ",".join([
+LINALG_MEMREF_TO_AIR_PIPELINE = "builtin.module("+",".join([
     "air-linalg-codegen",
     "canonicalize",
     "cse",
@@ -39,7 +39,7 @@ LINALG_MEMREF_TO_AIR_PIPELINE = ",".join([
     "air-copy-to-dma",
     "canonicalize",
     "cse"
-])
+])+")"
 
 class LinalgOnTensorsAirBackend(AirBackend):
     """Main entry-point for the linalg-on-tensors based AIR backend.
@@ -81,6 +81,10 @@ class LinalgOnTensorsAirBackend(AirBackend):
         if pipeline is None:
             pipeline = LINALG_MEMREF_TO_AIR_PIPELINE
 
+        with imported_module.context:
+            pm = torch_mlir.passmanager.PassManager.parse('builtin.module(refback-mlprogram-bufferize)')
+            pm.run(imported_module)
+
         with air.mlir.ir.Context():
             air_module = air.mlir.ir.Module.parse(str(imported_module))
             pm = air.mlir.passmanager.PassManager.parse(
@@ -115,7 +119,7 @@ class LinalgOnTensorsAirBackend(AirBackend):
 
             aircc.run(air_module,aircc_options)
 
-            with open('air_project/refback.torch.mlir') as f:
+            with open("air_project/refback.torch.mlir") as f:
                 imported_module = torch_mlir.ir.Module.parse(f.read(),imported_module.context)
 
         return self.refbackend.compile(imported_module)
