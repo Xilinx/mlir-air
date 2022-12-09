@@ -314,6 +314,7 @@ public:
     else if (type == "execute" && name == "DeallocOp") return 1;
     else if (type == "execute" && name == "ExecuteTerminatorOp") return 1;
     else if (type == "wait_all") return 1;
+    else if (type == "channel" && (name.find("ChannelPutOp") != std::string::npos)) return 1;
     else return 10;
   }
 
@@ -360,7 +361,7 @@ public:
           
           auto runner_id = getIdAttr(c.ctrl_g->hierarchyOp);
           auto sub_tid = it->second;
-          emitTraceEvent(traceStream, G[it->first].asyncEventName, "layer", "E", time,
+          emitTraceEvent(traceStream, G[it->first].asyncEventName + G[it->first].detailed_description, "layer", "E", time,
                           sub_tid, runner_id);
         }
 
@@ -403,7 +404,7 @@ public:
       // emit trace event begin
       auto runner_id = getIdAttr(c.ctrl_g->hierarchyOp);
       auto sub_tid = c.wavefront.back().second;
-      emitTraceEvent(traceStream, G[next_vertex].asyncEventName, "layer", "B", time,
+      emitTraceEvent(traceStream, G[next_vertex].asyncEventName + G[next_vertex].detailed_description, "layer", "B", time,
                     sub_tid, runner_id);
     }
 
