@@ -17,7 +17,8 @@ mmult.mlir: mmult.py
 
 # change linalg on tensors into linalg on memrefs
 mmult.linalg-memrefs.mlir: mmult.mlir
-	mlir-opt \
+	torch-mlir-opt \
+		--refback-mlprogram-bufferize \
 		--linalg-bufferize --cse \
 		--func-bufferize \
 		--tensor-bufferize \
