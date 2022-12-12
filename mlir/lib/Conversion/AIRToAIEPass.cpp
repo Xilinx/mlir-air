@@ -851,41 +851,6 @@ public:
   AIRToAIEPass() = default;
   AIRToAIEPass(const AIRToAIEPass &pass) {}
 
-  Option<std::string> AIRToAIEModulePrefix{
-      *this, "output-prefix",
-      llvm::cl::desc("Output filename prefix for AIE module"),
-      llvm::cl::init("-")};
-
-  Option<std::string> AIRToAIEELFFilename{
-      *this, "elf-file",
-      llvm::cl::desc("Specify elf file to add as an attribute of AIE.core"),
-      llvm::cl::init("-")};
-
-  Option<int> AIRToAIERowOffset{
-      *this, "row-offset", llvm::cl::desc("The start row for any output herds"),
-      llvm::cl::init(1)};
-
-  Option<int> AIRToAIEColOffset{
-      *this, "col-offset", llvm::cl::desc("The start col for any output herds"),
-      llvm::cl::init(1)};
-
-  Option<bool> AIRToAIEEmitWhileLoop{
-      *this, "emit-while-loop", llvm::cl::desc("Emit while(1) around AIE code"),
-      llvm::cl::init(false)};
-
-  Option<bool> AIRToAIEEmitHerdLock{
-      *this, "emit-herd-lock",
-      llvm::cl::desc(
-          "Acquire and release a lock at the start and end of herd execution. "
-          "The default is to acquire lock 0 with value zero and release it "
-          "with value 0. "
-          "There is currently no way to override the default behavior."),
-      llvm::cl::init(false)};
-
-  Option<std::string> AIRToAIETestPatterns{
-      *this, "test-patterns", llvm::cl::desc("Test the given patterns"),
-      llvm::cl::init("")};
-
   typedef std::vector<std::tuple<AIE::BufferOp, AIE::LockOp, AIE::DMAChannel>>
       lock_allocation_list;
 
@@ -1406,13 +1371,13 @@ public:
     RewritePatternSet patterns(ctx);
     std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
 
-    if (AIRToAIETestPatterns.find("to-aie-mlir") != std::string::npos) {
+    if (clTestPatterns.find("to-aie-mlir") != std::string::npos) {
       std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;
       std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
-      AIRToAIEOptions options = {.col_offset = AIRToAIEColOffset,
-                                 .row_offset = AIRToAIERowOffset,
-                                 .emit_while = AIRToAIEEmitWhileLoop,
-                                 .emit_herd_lock = AIRToAIEEmitHerdLock};
+      AIRToAIEOptions options = {.col_offset = clColOffset,
+                                 .row_offset = clRowOffset,
+                                 .emit_while = clEmitWhileLoop,
+                                 .emit_herd_lock = clEmitHerdLock};
       createAIEModulesAndOutlineCores(m, aie_modules, tileToHerdMap, options);
       std::set<ModuleOp> seen;
       for (auto &p : aie_modules) {
@@ -1425,16 +1390,16 @@ public:
       }
     }
 
-    if (AIRToAIETestPatterns.find("lower-air-execute") != std::string::npos)
+    if (clTestPatterns.find("lower-air-execute") != std::string::npos)
       patterns.insert<LowerAIRExecutePattern>(ctx);
-    if (AIRToAIETestPatterns.find("alloc-l1-buffers") != std::string::npos)
+    if (clTestPatterns.find("alloc-l1-buffers") != std::string::npos)
       patterns.insert<AllocL1BuffersPattern, AllocL1BuffersPattern>(
           ctx, tileToHerdMap);
-    if (AIRToAIETestPatterns.find("specialize-affine-if") != std::string::npos)
+    if (clTestPatterns.find("specialize-affine-if") != std::string::npos)
       patterns.insert<SpecializeAffineIfPattern>(ctx);
-    if (AIRToAIETestPatterns.find("lower-pipe-get-put") != std::string::npos)
+    if (clTestPatterns.find("lower-pipe-get-put") != std::string::npos)
       patterns.insert<LowerPipeGetPutPattern>(ctx, tileToHerdMap);
-    if (AIRToAIETestPatterns.find("lower-scf-tokens") != std::string::npos)
+    if (clTestPatterns.find("lower-scf-tokens") != std::string::npos)
       patterns.insert<LowerScfTokenPattern>(ctx);
 
     if (patterns.getNativePatterns().size())
@@ -1443,7 +1408,7 @@ public:
 
   void runOnOperation() override {
 
-    if (!AIRToAIETestPatterns.empty()) {
+    if (!clTestPatterns.empty()) {
       runTestPatterns();
       return;
     }
@@ -1462,10 +1427,10 @@ public:
     std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;
 
     std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
-    AIRToAIEOptions options = {.col_offset = AIRToAIEColOffset,
-                               .row_offset = AIRToAIERowOffset,
-                               .emit_while = AIRToAIEEmitWhileLoop,
-                               .emit_herd_lock = AIRToAIEEmitHerdLock};
+    AIRToAIEOptions options = {.col_offset = clColOffset,
+                               .row_offset = clRowOffset,
+                               .emit_while = clEmitWhileLoop,
+                               .emit_herd_lock = clEmitHerdLock};
     createAIEModulesAndOutlineCores(module, aie_modules, tileToHerdMap,
                                     options);
 
@@ -1630,11 +1595,11 @@ public:
         seen.insert(aie_module);
       else
         continue;
-      if (AIRToAIEModulePrefix != "-") {
-        if (AIRToAIEModulePrefix != "/dev/null") {
+      if (clOutputPrefix != "-") {
+        if (clOutputPrefix != "/dev/null") {
           std::error_code EC;
           std::string fname =
-              AIRToAIEModulePrefix + aie_module.getName()->str() + ".mlir";
+              clOutputPrefix + aie_module.getName()->str() + ".mlir";
           llvm::raw_fd_ostream aie_ostream(fname, EC);
           aie_module.print(aie_ostream);
         }
