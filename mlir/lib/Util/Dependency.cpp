@@ -1574,24 +1574,6 @@ void dependencyCanonicalizer::canonicalizeAIRHierarchyDependency(
   });
 }
 
-// Remove unused air.hierarchy arguments
-void dependencyCanonicalizer::removeRedundantAIRHierarchyArgs(
-    func::FuncOp func) {
-  auto module = func->getParentOfType<ModuleOp>();
-  OpBuilder builder(module);
-  SmallVector<air::HierarchyInterface, 1> erased_ops;
-  func.walk([&](air::HierarchyInterface hier) {
-    // for (unsigned hier_operand_id = 0; hier_operand_id <
-    // hier.getNumKernelOperands(); hier_operand_id++) {
-    for (int hier_operand_id = hier.getNumKernelOperands() - 1;
-         hier_operand_id >= 0; hier_operand_id--) {
-      if (hier.getKernelArguments()[hier_operand_id].use_empty()) {
-        eraseAIRHierarchyOperand(hier, hier_operand_id);
-      }
-    }
-  });
-}
-
 //===----------------------------------------------------------------------===//
 // Dependency tracing
 //===----------------------------------------------------------------------===//

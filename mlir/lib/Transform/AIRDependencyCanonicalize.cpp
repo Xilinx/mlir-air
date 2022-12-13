@@ -52,7 +52,6 @@ public:
       // Clean up
       canonicalizer.removeUnusedExecuteOp(func);
       canonicalizer.removeRedundantWaitAllOps(func);
-      // canonicalizer.removeRedundantAIRHierarchyArgs(func);
       canonicalizer.canonicalizeAIRHierarchyDependency(func);
       canonicalizer.removeDepListRepitition(func);
 
