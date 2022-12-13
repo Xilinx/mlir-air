@@ -308,6 +308,7 @@ public:
     auto name = c.asyncEventName;
     if (type == "terminator") return 1;
     else if (type == "for_loop") return 1;
+    else if (type == "parallel_loop") return 1;
     else if (type == "hierarchy_terminator") return 1;
     else if (type == "hierarchy") return 1;
     else if (type == "execute" && name == "AllocOp") return 2;
