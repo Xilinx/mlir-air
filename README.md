@@ -29,6 +29,7 @@ air
 
 - [Building](building.html)
 - [Running Examples](running.html)
+- [AIRCC](aircc.html)
 
 ### Generated MLIR Documentation
 - [AIR Dialect](AIRDialect.html)
