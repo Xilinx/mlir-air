@@ -212,7 +212,7 @@ def run(mlir_module, args):
               ['--host-target', opts.host_target if opts.host_target else aiecc_target] +
               ['--tmpdir', aiecc_dir] +
               ['--aie-generate-xaiev2'] +
-              ['--xbridge'] if opts.xbridge else ['--no-xbridge'] +
+              (['--xbridge'] if opts.xbridge else ['--no-xbridge']) +
               ['--no-xchesscc', aiecc_file])
 
       inc_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.inc'

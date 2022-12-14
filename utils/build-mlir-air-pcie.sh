@@ -36,9 +36,6 @@ LLVM_DIR=$1
 CMAKEMODULES_DIR=$2
 MLIR_AIE_DIR=$3
 
-#LLVM_DIR=${2:-"./llvm"}
-#CMAKEMODULES_DIR=${3:-"./cmakeModules/cmakeModulesXilinx"}
-
 MLIR_AIR_DIR=${4:-"mlir-air"}
 BUILD_DIR=${5:-"build-pcie"}
 INSTALL_DIR=${6:-"install-pcie"}
@@ -51,7 +48,7 @@ PYTHON_ROOT=`pip3 show pybind11 | grep Location | awk '{print $2}'`
 
 cmake .. \
 	-GNinja \
-	-DCMAKE_INSTALL_PREFIX=../install-pcie \
+	-DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
 	-DCMAKE_TOOLCHAIN_FILE=../cmake/modules/toolchain_x86.cmake \
 	-DLLVM_DIR=${LLVM_DIR}/build/lib/cmake/llvm \
 	-DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \
