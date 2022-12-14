@@ -58,6 +58,7 @@ Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
 void addAsyncDependencyIfNew(air::AsyncOpInterface op, Value token);
 std::string getMemorySpaceAsString(Value memref);
 air::ChannelGetOp getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put);
+air::ChannelPutOp getTheOtherChannelOpThroughSymbol(air::ChannelGetOp get);
 
 //===----------------------------------------------------------------------===//
 // Dependency graph parsed as a Boost graph object
@@ -65,26 +66,70 @@ air::ChannelGetOp getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put);
 
 struct dependencyNodeEntry;
 struct dependencyGraph;
+struct runnerNode;
 
+// GraphViz node properties for visualization
+struct graphNodeProperties {
+  std::string color;
+  std::string shape;
+  std::string detailed_description;
+
+  graphNodeProperties(std::string color, std::string shape,
+                      std::string detailed_description)
+      : color(color), shape(shape), detailed_description(detailed_description) {
+  }
+  graphNodeProperties(std::string nodeType, std::string details = "") {
+    detailed_description = details;
+    if (nodeType == "hierarchy") {
+      color = "yellow";
+      shape = "box";
+    } else if (nodeType == "control") {
+      color = "crimson";
+      shape = "box";
+    } else if (nodeType == "data") {
+      color = "cyan";
+      shape = "oval";
+    } else if (nodeType == "compute") {
+      color = "chartreuse";
+      shape = "oval";
+    } else {
+      color = "";
+      shape = "";
+    }
+  }
+};
+
+// Node entry for dependency graph
 struct dependencyNodeEntry {
   std::string asyncEventName;
   std::string asyncEventType;
   std::string color;
   std::string shape;
+  std::string detailed_description;
   unsigned operationId;
   mlir::Operation *op;
   dependencyGraph *nextDependencyGraph;
+  uint64_t start_time;
+  uint64_t end_time;
+
+  bool is_started() { return (start_time != 0) && (end_time != 0); }
+  bool is_done(uint64_t t) { return t >= end_time; }
 
   dependencyNodeEntry(std::string asyncEventName = "",
                       std::string asyncEventType = "", std::string color = "",
-                      std::string shape = "", unsigned operationId = 0,
-                      mlir::Operation *op = nullptr,
-                      dependencyGraph *nextDependencyGraph = nullptr)
+                      std::string shape = "",
+                      std::string detailed_description = "",
+                      unsigned operationId = 0, mlir::Operation *op = nullptr,
+                      dependencyGraph *nextDependencyGraph = nullptr,
+                      uint64_t start_time = 0, uint64_t end_time = 0)
       : asyncEventName(asyncEventName), asyncEventType(asyncEventType),
-        color(color), shape(shape), operationId(operationId), op(op),
-        nextDependencyGraph(nextDependencyGraph) {}
+        color(color), shape(shape), detailed_description(detailed_description),
+        operationId(operationId), op(op),
+        nextDependencyGraph(nextDependencyGraph), start_time(start_time),
+        end_time(end_time) {}
 };
 
+// Boost dependency graph
 typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::bidirectionalS,
                               dependencyNodeEntry>
     Graph;
@@ -92,17 +137,15 @@ typedef boost::graph_traits<Graph>::in_edge_iterator in_edge_iterator;
 typedef boost::graph_traits<Graph>::out_edge_iterator out_edge_iterator;
 typedef boost::graph_traits<Graph>::vertex_iterator vertex_iterator;
 
-typedef std::map<std::pair<std::string, unsigned>, Graph::vertex_descriptor>
-    operation_to_vertex_map;
-typedef std::map<std::pair<std::string, unsigned>, Graph *>
-    operation_to_graph_map;
-typedef std::map<Graph::vertex_descriptor, Graph::vertex_descriptor>
-    vertex_to_vertex_map;
+struct runnerNode; // Forward declaration of runner node struct for
+                   // dependencyGraph pointer member
 
+// Dependency graph object
 struct dependencyGraph {
   Graph g;
   mlir::Operation *hierarchyOp;
   std::vector<dependencyGraph> subgraphs;
+  runnerNode *runner_node;
   Graph::vertex_descriptor start_vertex;
   Graph::vertex_descriptor terminator_vertex;
 
@@ -125,6 +168,14 @@ struct dependencyGraph {
   }
 };
 
+// Maps involving Graph and vertex
+typedef std::map<std::pair<std::string, unsigned>, Graph::vertex_descriptor>
+    operation_to_vertex_map;
+typedef std::map<std::pair<std::string, unsigned>, dependencyGraph *>
+    operation_to_graph_map;
+typedef std::map<Graph::vertex_descriptor, Graph::vertex_descriptor>
+    vertex_to_vertex_map;
+
 struct vertex_to_vertex_map_tree {
   vertex_to_vertex_map a_to_b;
   vertex_to_vertex_map b_to_a;
@@ -136,6 +187,7 @@ struct vertex_to_vertex_map_tree {
 struct dependencyContext {
   uint64_t ExecuteOpID;
   uint64_t DmaOpID;
+  uint64_t ChannelOpID;
   uint64_t HierarchyOpID;
   uint64_t WaitAllOpID;
   uint64_t ForOpID;
@@ -145,8 +197,8 @@ struct dependencyContext {
   operation_to_graph_map op_to_g;
 
   dependencyContext()
-      : ExecuteOpID(0), DmaOpID(0), HierarchyOpID(0), WaitAllOpID(0),
-        ForOpID(0), ParallelOpID(0), TerminatorID(0) {}
+      : ExecuteOpID(0), DmaOpID(0), ChannelOpID(0), HierarchyOpID(0),
+        WaitAllOpID(0), ForOpID(0), ParallelOpID(0), TerminatorID(0) {}
 };
 
 // Flat boost graph for visualization
@@ -194,6 +246,9 @@ public:
                                                   std::string dump_dir = "");
   void removeRedundantAIRHierarchyArgs(func::FuncOp func);
   void canonicalizeAIRHierarchyDependency(func::FuncOp func);
+  std::pair<Graph::vertex_descriptor, dependencyGraph *>
+  getVertexFromOp(Operation *op, dependencyContext dep_ctx,
+                  std::string front_or_back = "front");
 
 private:
   void addVerticesInHerd(std::vector<dependencyGraph> &herd_subgraphs,
@@ -203,39 +258,37 @@ private:
                               dependencyContext &dep_ctx);
   void addVerticesInLaunch(std::vector<dependencyGraph> &launch_subgraphs,
                            air::LaunchOp launch, dependencyContext &dep_ctx);
-  Graph::vertex_descriptor addVertexFromOpImpls(Operation *op, Graph &G,
+  Graph::vertex_descriptor addVertexFromOpImpls(Operation *op,
+                                                dependencyGraph *G,
                                                 dependencyContext &dep_ctx);
-  Graph::vertex_descriptor addVertexFromOp(Operation *op, uint64_t &id,
-                                           std::string event_type,
-                                           std::string event_name,
-                                           std::string color, std::string shape,
-                                           Graph &G, dependencyContext &dep_ctx,
-                                           Operation *pointer_op = nullptr);
   Graph::vertex_descriptor
-  addVertexFromDmaOp(xilinx::air::DmaMemcpyInterface op, Graph &G,
+  addVertexFromOp(Operation *op, uint64_t &id, std::string event_type,
+                  std::string event_name, graphNodeProperties properties,
+                  dependencyGraph *G, dependencyContext &dep_ctx,
+                  Operation *pointer_op = nullptr);
+  Graph::vertex_descriptor
+  addVertexFromDmaOp(xilinx::air::DmaMemcpyInterface op, dependencyGraph *G,
                      dependencyContext &dep_ctx);
   Graph::vertex_descriptor
-  addVertexFromChannelOp(xilinx::air::ChannelInterface op, Graph &G,
+  addVertexFromChannelOp(xilinx::air::ChannelInterface op, dependencyGraph *G,
                          dependencyContext &dep_ctx);
   Graph::vertex_descriptor
-  addVertexFromHierarchyOp(xilinx::air::HierarchyInterface op, Graph &G,
-                           dependencyContext &dep_ctx);
+  addVertexFromHierarchyOp(xilinx::air::HierarchyInterface op,
+                           dependencyGraph *G, dependencyContext &dep_ctx);
   Graph::vertex_descriptor
-  addVertexFromTerminatorOp(Operation *op, Graph &G,
+  addVertexFromTerminatorOp(Operation *op, dependencyGraph *G,
                             dependencyContext &dep_ctx);
-  Graph::vertex_descriptor addVertexFromReduceOp(Operation *op, Graph &G,
+  Graph::vertex_descriptor addVertexFromReduceOp(Operation *op,
+                                                 dependencyGraph *G,
                                                  dependencyContext &dep_ctx);
   Graph::vertex_descriptor addVertexFromExecuteOp(xilinx::air::ExecuteOp op,
-                                                  Graph &G,
+                                                  dependencyGraph *G,
                                                   dependencyContext &dep_ctx);
   Graph::vertex_descriptor addVertexFromWaitAllOp(xilinx::air::WaitAllOp op,
-                                                  Graph &G,
+                                                  dependencyGraph *G,
                                                   dependencyContext &dep_ctx);
   std::pair<std::string, unsigned> getTypeIdPairFromOp(Operation *op);
   std::string getOpTypeFromOpImpls(Operation *op);
-  std::pair<Graph::vertex_descriptor, Graph *>
-  getVertexFromOp(Operation *op, dependencyContext dep_ctx,
-                  std::string front_or_back = "front");
   void parseDependencyEdgesInGraph(Graph &g, dependencyContext dep_ctx);
   void copyFromDependencyGraphToFlatGraph(Graph g_src, FlatGraph &g_dst,
                                           vertex_to_flat_vertex_map &map,

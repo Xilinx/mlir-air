@@ -51,8 +51,6 @@ mlir::AffineIfOp getAffineIfInBlock(mlir::Block *block);
 
 air::DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block);
 
-void eraseAIRHierarchyOperand(air::HierarchyInterface op, unsigned index);
-
 struct LinalgTransforms {
   static const StringLiteral kLinalgTransformMarker;
 };

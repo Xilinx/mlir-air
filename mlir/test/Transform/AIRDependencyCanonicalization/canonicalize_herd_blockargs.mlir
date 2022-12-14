@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-dependency-canonicalize | FileCheck %s
+// XFAIL: *
 
 // Prune block arguments for air.herd and air.partition
 // CHECK: %[[EVENT0:.*]] = air.launch async{{.*}}args(%[[VALUE1:.*]]=%[[VALUE0:.*]])
