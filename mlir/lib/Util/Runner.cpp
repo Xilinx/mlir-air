@@ -313,6 +313,7 @@ public:
       execution_time = 1;
     } else if (type == "dma") {
       auto Op = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(c.op);
+      assert(Op);
       MemRefType srcTy = Op.getSrcMemref().getType().cast<MemRefType>();
       MemRefType dstTy = Op.getDstMemref().getType().cast<MemRefType>();
       auto srcSpace = srcTy.getMemorySpaceAsInt();
@@ -323,8 +324,23 @@ public:
         execution_time = getTransferCost(srcSpace, dstSpace, srcTy);
       else
         execution_time = getTransferCost(srcSpace, dstSpace, dstTy);
+    } else if (type == "channel" && (name.find("ChannelGetOp") != std::string::npos)) {
+      auto getOp = mlir::dyn_cast<xilinx::air::ChannelGetOp>(c.op);
+      assert(getOp);
+      MemRefType dstTy = getOp.getDstMemref().getType().cast<MemRefType>();
+      air::ChannelPutOp putOp = air::getTheOtherChannelOpThroughSymbol(getOp);
+      assert(putOp);
+      MemRefType srcTy = putOp.getSrcMemref().getType().cast<MemRefType>();
+      auto srcSpace = srcTy.getMemorySpaceAsInt();
+      auto dstSpace = dstTy.getMemorySpaceAsInt();
+      // if there is a size mismatch, it's because we're moving a tile of the
+      // larger tensor
+      if (getTensorVolume(srcTy) <= getTensorVolume(dstTy))
+        execution_time = getTransferCost(srcSpace, dstSpace, srcTy);
+      else
+        execution_time = getTransferCost(srcSpace, dstSpace, dstTy);
     } 
-    else if (type == "execute") {
+    else if (type == "execute" && name != "ExecuteTerminatorOp") {
       assert(dyn_cast<air::ExecuteOp>(c.op));
       auto child_op = &*(c.op->getRegions().front().getOps().begin());
       if (auto Op = mlir::dyn_cast<linalg::LinalgOp>(child_op)){
