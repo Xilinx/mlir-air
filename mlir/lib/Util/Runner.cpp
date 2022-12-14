@@ -303,20 +303,112 @@ public:
     }
   }
 
-  unsigned modelOp(dependencyNodeEntry c){
+  // Model each event's latency
+  uint64_t modelOp(dependencyNodeEntry &c) {
     auto type = c.asyncEventType;
     auto name = c.asyncEventName;
-    if (type == "terminator") return 1;
-    else if (type == "for_loop") return 1;
-    else if (type == "parallel_loop") return 1;
-    else if (type == "hierarchy_terminator") return 1;
-    else if (type == "hierarchy") return 1;
-    else if (type == "execute" && name == "AllocOp") return 2;
-    else if (type == "execute" && name == "DeallocOp") return 1;
-    else if (type == "execute" && name == "ExecuteTerminatorOp") return 1;
-    else if (type == "wait_all") return 1;
-    else if (type == "channel" && (name.find("ChannelPutOp") != std::string::npos)) return 1;
-    else return 10;
+    uint64_t execution_time = 1;
+
+    if (type == "wait_all") {
+      execution_time = 1;
+    } else if (type == "dma") {
+      auto Op = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(c.op);
+      MemRefType srcTy = Op.getSrcMemref().getType().cast<MemRefType>();
+      MemRefType dstTy = Op.getDstMemref().getType().cast<MemRefType>();
+      auto srcSpace = srcTy.getMemorySpaceAsInt();
+      auto dstSpace = dstTy.getMemorySpaceAsInt();
+      // if there is a size mismatch, it's because we're moving a tile of the
+      // larger tensor
+      if (getTensorVolume(srcTy) <= getTensorVolume(dstTy))
+        execution_time = getTransferCost(srcSpace, dstSpace, srcTy);
+      else
+        execution_time = getTransferCost(srcSpace, dstSpace, dstTy);
+    } 
+    else if (type == "execute") {
+      assert(dyn_cast<air::ExecuteOp>(c.op));
+      auto child_op = &*(c.op->getRegions().front().getOps().begin());
+      if (auto Op = mlir::dyn_cast<linalg::LinalgOp>(child_op)){
+        uint64_t compute_xfer_cost = 0;
+        uint64_t compute_op_cost = 0;
+        auto opCounts = xilinx::air::CostModel().getOpCounts(child_op);
+        std::string skip = "footprint";
+        std::string memops = "reads;writes;";
+        std::string cpuops = "math.rsqrt;";
+        cpuops += "arith.mulf;arith.divf;arith.addf;arith.subf;arith.truncf;"
+                  "arith.cmpf;arith.maxf;";
+        cpuops += "arith.muli;arith.divi;arith.addi;arith.subi;arith.trunci;"
+                  "arith.cmpi;arith.maxi";
+        cpuops += "std.select";
+        uint64_t memory_op_count = 0;
+        uint64_t compute_op_count = 0;
+        for (auto &p : opCounts.map) {
+          auto name = std::get<0>(p);
+          auto count = std::get<1>(p);
+          if (memops.find(name) != std::string::npos)
+            memory_op_count += count;
+          else if (cpuops.find(name) != std::string::npos)
+            compute_op_count += count;
+          else if (skip.find(name) == std::string::npos)
+            LLVM_DEBUG(llvm::dbgs() << name << " not counted\n");
+        }
+
+        if (compute_op_count) {
+          // defaults
+          double num_cores = 1;
+          double ops_per_core_per_cycle = 8; // vector width for this type
+          double cycles_per_second = 1e9;
+          double efficiency = 1.0f;
+
+          auto model = jsonModel.getAsObject();
+          assert(model);
+
+          // if kernels exists, assume everthing else exists
+          if (model && model->getObject("kernels")) {
+            // device level override of defaults
+            if (auto d = model->getNumber("cores"))
+              num_cores = *d;
+            if (auto d = model->getNumber("ops_per_core_per_cycle"))
+              ops_per_core_per_cycle = *d;
+            if (auto d = model->getNumber("clock"))
+              cycles_per_second = *d;
+            if (auto d = model->getNumber("efficiency"))
+              efficiency = *d;
+
+            // kernel level override of defaults
+            auto kernels = model->getObject("kernels");
+            assert(kernels && "kernels not found in JSON model");
+
+            if (kernels) {
+              auto kernel = kernels->getObject(child_op->getName().getStringRef());
+              if (kernel) {
+                if (auto d = kernel->getNumber("cores"))
+                  num_cores = *d;
+                if (auto d = kernel->getNumber("ops_per_core_per_cycle"))
+                  ops_per_core_per_cycle = *d;
+                if (auto d = kernel->getNumber("clock"))
+                  cycles_per_second = *d;
+                if (auto d = kernel->getNumber("efficiency"))
+                  efficiency = *d;
+              }
+            }
+          }
+
+          double ops_per_cycle = num_cores * ops_per_core_per_cycle * efficiency;
+          assert(ops_per_cycle > 0 &&
+                "ops per cycle in model must be greater than zero");
+
+          double cycles = ceil(compute_op_count / ops_per_cycle);
+          compute_op_cost = cycles;
+        }
+        execution_time = std::max(compute_op_cost, compute_xfer_cost);
+      }
+    } else {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "WARNING: execution time not modeled for op: '");
+      LLVM_DEBUG(llvm::dbgs() << to_string(c.op) << "'\n");
+      execution_time = 1;
+    }
+    return execution_time;
   }
 
   void buildVertexDependencyList(Graph::vertex_descriptor v, Graph G, std::vector<dependencyNodeEntry *> &dep_list){
@@ -836,6 +928,80 @@ private:
       }
     }
     wavefront.push_back(std::make_pair(v, tid));
+  }
+
+  uint64_t getTensorVolume(const mlir::ShapedType ty) {
+
+    if (!ty.hasRank())
+      return 1;
+
+    uint64_t volume = 1;
+    for (auto &d : ty.getShape())
+      volume *= d;
+    return volume;
+  }
+
+  uint64_t getTensorVolume(const mlir::Type ty) {
+    if (auto t = ty.dyn_cast<mlir::ShapedType>()) {
+      return getTensorVolume(t);
+    } else {
+      return 1;
+    }
+  }
+
+  uint64_t getTransferCost(unsigned srcSpace, unsigned dstSpace,
+                           mlir::Type ty) {
+    return getTransferCost(srcSpace, dstSpace, getTensorVolume(ty));
+  }
+
+  uint64_t getTransferCost(unsigned srcSpace, unsigned dstSpace,
+                           int64_t volume) {
+    std::map<std::pair<unsigned, unsigned>, double> interface_bw;
+
+    // defaults
+    interface_bw.insert({{0, 1}, 100});
+    interface_bw.insert({{1, 0}, 100});
+    interface_bw.insert({{1, 2}, DBL_MAX});
+    interface_bw.insert({{2, 1}, DBL_MAX});
+    double cps = 0.0f;
+
+    // override of defaults
+    auto model = jsonModel.getAsObject();
+    unsigned datawidth = 0;
+    // if interfaces exists, assume everthing else exists
+    if (model && model->getArray("interfaces")) {
+      auto interfaces = model->getArray("interfaces");
+      assert(interfaces);
+
+      for (auto it = interfaces->begin(), ie = interfaces->end(); it != ie;
+           ++it) {
+        llvm::json::Value jv = *it;
+        llvm::json::Object *interface = jv.getAsObject();
+        assert(interface);
+        auto srcSpace = interface->getNumber("src");
+        auto dstSpace = interface->getNumber("dst");
+        auto bps = interface->getNumber("bytes_per_second");
+        assert(srcSpace && dstSpace && bps);
+        unsigned s = *srcSpace;
+        unsigned d = *dstSpace;
+        double b = *bps;
+        if (interface_bw.count({s, d}))
+          interface_bw[{s, d}] = b;
+        else
+          interface_bw.insert({{s, d}, b});
+      }
+      if (auto d = model->getNumber("clock"))
+        cps = *d;
+      if (auto dt = model->getObject("datatype"))
+        if (auto bytes = dt->getNumber("bytes"))
+          datawidth = *bytes;
+    }
+    assert(cps != 0.0f && datawidth);
+
+    double bytes = volume * datawidth;
+    double bps = interface_bw[{srcSpace, dstSpace}];
+    double seconds = bytes / bps;
+    return (uint64_t)ceil(seconds * cps);
   }
   
 
