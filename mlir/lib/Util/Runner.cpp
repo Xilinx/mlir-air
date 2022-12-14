@@ -9,8 +9,8 @@
 #include "air/Util/Runner.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/CostModel.h"
-#include "air/Util/Util.h"
 #include "air/Util/Dependency.h"
+#include "air/Util/Util.h"
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
@@ -28,22 +28,22 @@
 #include "mlir/Support/MathExtras.h"
 #include "mlir/Transforms/RegionUtils.h"
 
+#include <algorithm>
 #include <deque>
 #include <float.h>
 #include <list>
 #include <map>
 #include <sstream>
 #include <vector>
-#include <algorithm>
 
 // boost graph
 #include <boost/graph/adjacency_list.hpp>
+#include <boost/graph/copy.hpp>
 #include <boost/graph/graph_traits.hpp>
 #include <boost/graph/graphviz.hpp>
-#include <boost/graph/copy.hpp>
 
 #include <algorithm>
-#include <numeric> 
+#include <numeric>
 #include <string>
 
 #define DEBUG_TYPE "air-runner"
@@ -56,9 +56,8 @@ using namespace boost;
 namespace xilinx {
 namespace air {
 
-struct runnerGraph : dependencyGraph
-{
-  runnerNode * runner_node;
+struct runnerGraph : dependencyGraph {
+  runnerNode *runner_node;
   std::vector<runnerGraph> subgraphs;
 
   runnerGraph(mlir::Operation *op = nullptr, bool initStartVertex = false) {
@@ -82,28 +81,32 @@ struct runnerGraph : dependencyGraph
 };
 
 struct runnerNode {
-  dependencyGraph * ctrl_g;
+  dependencyGraph *ctrl_g;
   std::string runner_node_type;
-  // Each entry is an std::pair. First element is vertex, and second element is thread id
+  // Each entry is an std::pair. First element is vertex, and second element is
+  // thread id
   std::vector<std::pair<Graph::vertex_descriptor, unsigned>> wavefront;
   std::vector<Graph::vertex_descriptor> processed_vertices;
-  // Each entry is an std::pair. First element is for op's id, and second element is counter
+  // Each entry is an std::pair. First element is for op's id, and second
+  // element is counter
   std::vector<std::pair<unsigned, unsigned>> loop_trip_count;
   std::vector<runnerNode> sub_runner_nodes;
 
-  // Private wavefront of each runner node, reserved to interface with resource model
+  // Private wavefront of each runner node, reserved to interface with resource
+  // model
   std::vector<dependencyNodeEntry *> wavefrontNodes() {
     std::vector<dependencyNodeEntry *> output;
-    for (auto v : wavefront){
+    for (auto v : wavefront) {
       output.push_back(&ctrl_g->g[v.first]);
     }
     return output;
   }
 
-  runnerNode(dependencyGraph * ctrl_g = nullptr, std::string runner_node_type = "")
+  runnerNode(dependencyGraph *ctrl_g = nullptr,
+             std::string runner_node_type = "")
       : ctrl_g(ctrl_g), runner_node_type(runner_node_type) {}
 
-  ~runnerNode(){
+  ~runnerNode() {
     wavefront.clear();
     processed_vertices.clear();
     loop_trip_count.clear();
@@ -200,12 +203,15 @@ public:
     s << "},\n";
   }
 
-  void executeOp(xilinx::air::HierarchyInterface op, uint64_t time, runnerNode * sub_runner_node, runnerNode &c, Graph::vertex_descriptor it) {
+  void executeOp(xilinx::air::HierarchyInterface op, uint64_t time,
+                 runnerNode *sub_runner_node, runnerNode &c,
+                 Graph::vertex_descriptor it) {
     // Initialize sub runner and sub graph prior to execution
     Graph &G = sub_runner_node->ctrl_g->g;
     auto sub_start_v = sub_runner_node->ctrl_g->start_vertex;
     auto sub_terminator_v = sub_runner_node->ctrl_g->terminator_vertex;
-    resetGraphBetweenTwoVertices(sub_start_v, sub_terminator_v, G, *sub_runner_node);
+    resetGraphBetweenTwoVertices(sub_start_v, sub_terminator_v, G,
+                                 *sub_runner_node);
     sub_runner_node->loop_trip_count.clear();
 
     // Start sub-runner node by pushing start node into its wavefront
@@ -219,21 +225,22 @@ public:
     c.processed_vertices.push_back(it);
   }
 
-  void executeOp(scf::YieldOp op, scf::ForOp for_op, runnerNode &c, Graph::vertex_descriptor it){
+  void executeOp(scf::YieldOp op, scf::ForOp for_op, runnerNode &c,
+                 Graph::vertex_descriptor it) {
     Graph &G = c.ctrl_g->g;
     auto node_entry = G[it];
 
     // For loop trip counter
     bool trip_count_fulfilled = false;
-    for (auto &count_entry : c.loop_trip_count){
-      if (count_entry.first == (unsigned)getIdAttr(for_op.getOperation())){
+    for (auto &count_entry : c.loop_trip_count) {
+      if (count_entry.first == (unsigned)getIdAttr(for_op.getOperation())) {
         // Decrement loop trip count
-        if (count_entry.second){
+        if (count_entry.second) {
           count_entry.second--;
         }
 
         // Only push yield op to processed_vertices when trip count fulfilled
-        if (!count_entry.second){
+        if (!count_entry.second) {
           c.processed_vertices.push_back(it);
           trip_count_fulfilled = true;
         }
@@ -245,15 +252,17 @@ public:
     // From processed_vertices, remove all ops which are in loop body.
     if (!trip_count_fulfilled) {
       // Get for op vertex
-      auto for_v = canonicalizer.getVertexFromOp(for_op.getOperation(), dep_ctx, "front").first;
+      auto for_v =
+          canonicalizer.getVertexFromOp(for_op.getOperation(), dep_ctx, "front")
+              .first;
       auto adj_set = boost::adjacent_vertices(for_v, G);
-      for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v){
+      for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
         resetGraphBetweenTwoVertices(*adj_v, it, G, c);
       }
     }
   }
 
-  void executeOp(scf::ForOp op, runnerNode &c, Graph::vertex_descriptor it){
+  void executeOp(scf::ForOp op, runnerNode &c, Graph::vertex_descriptor it) {
     Graph &G = c.ctrl_g->g;
     auto node_entry = G[it];
 
@@ -269,36 +278,36 @@ public:
     int64_t trip_count = (ubv - lbv + stepv - 1) / stepv;
 
     // Update for loop trip count
-    c.loop_trip_count.push_back(std::make_pair(getIdAttr(op.getOperation()), trip_count));
+    c.loop_trip_count.push_back(
+        std::make_pair(getIdAttr(op.getOperation()), trip_count));
 
     c.processed_vertices.push_back(it);
   }
 
-  void executeOp(runnerNode &c, Graph::vertex_descriptor it){
+  void executeOp(runnerNode &c, Graph::vertex_descriptor it) {
     c.processed_vertices.push_back(it);
   }
 
-  void executeOpImpls(runnerNode &c, Graph::vertex_descriptor it, uint64_t time) {
+  void executeOpImpls(runnerNode &c, Graph::vertex_descriptor it,
+                      uint64_t time) {
     Graph G = c.ctrl_g->g;
     auto node = G[it];
-    if (node.asyncEventType == "start"){
+    if (node.asyncEventType == "start") {
       executeOp(c, it);
-    }
-    else if (auto Op = dyn_cast<xilinx::air::HierarchyInterface>(node.op)){
+    } else if (auto Op = dyn_cast<xilinx::air::HierarchyInterface>(node.op)) {
       auto sub_dependency_graph = node.nextDependencyGraph;
       auto sub_runner_node = sub_dependency_graph->runner_node;
       executeOp(Op, time, sub_runner_node, c, it);
-    }
-    else if (auto Op = dyn_cast<scf::ForOp>(node.op)){
+    } else if (auto Op = dyn_cast<scf::ForOp>(node.op)) {
       executeOp(Op, c, it);
-    }
-    else if (dyn_cast<scf::YieldOp>(node.op)
-        && getScfParentOpFromYieldOp<scf::ForOp>(dyn_cast<scf::YieldOp>(node.op))){
+    } else if (dyn_cast<scf::YieldOp>(node.op) &&
+               getScfParentOpFromYieldOp<scf::ForOp>(
+                   dyn_cast<scf::YieldOp>(node.op))) {
       auto Op = dyn_cast<scf::YieldOp>(node.op);
-      auto parent_for_op = dyn_cast<scf::ForOp>(getScfParentOpFromYieldOp<scf::ForOp>(Op));
+      auto parent_for_op =
+          dyn_cast<scf::ForOp>(getScfParentOpFromYieldOp<scf::ForOp>(Op));
       executeOp(Op, parent_for_op, c, it);
-    }
-    else {
+    } else {
       executeOp(c, it);
     }
   }
@@ -324,7 +333,8 @@ public:
         execution_time = getTransferCost(srcSpace, dstSpace, srcTy);
       else
         execution_time = getTransferCost(srcSpace, dstSpace, dstTy);
-    } else if (type == "channel" && (name.find("ChannelGetOp") != std::string::npos)) {
+    } else if (type == "channel" &&
+               (name.find("ChannelGetOp") != std::string::npos)) {
       auto getOp = mlir::dyn_cast<xilinx::air::ChannelGetOp>(c.op);
       assert(getOp);
       MemRefType dstTy = getOp.getDstMemref().getType().cast<MemRefType>();
@@ -339,11 +349,10 @@ public:
         execution_time = getTransferCost(srcSpace, dstSpace, srcTy);
       else
         execution_time = getTransferCost(srcSpace, dstSpace, dstTy);
-    } 
-    else if (type == "execute" && name != "ExecuteTerminatorOp") {
+    } else if (type == "execute" && name != "ExecuteTerminatorOp") {
       assert(dyn_cast<air::ExecuteOp>(c.op));
       auto child_op = &*(c.op->getRegions().front().getOps().begin());
-      if (auto Op = mlir::dyn_cast<linalg::LinalgOp>(child_op)){
+      if (auto Op = mlir::dyn_cast<linalg::LinalgOp>(child_op)) {
         uint64_t compute_xfer_cost = 0;
         uint64_t compute_op_cost = 0;
         auto opCounts = xilinx::air::CostModel().getOpCounts(child_op);
@@ -395,7 +404,8 @@ public:
             assert(kernels && "kernels not found in JSON model");
 
             if (kernels) {
-              auto kernel = kernels->getObject(child_op->getName().getStringRef());
+              auto kernel =
+                  kernels->getObject(child_op->getName().getStringRef());
               if (kernel) {
                 if (auto d = kernel->getNumber("cores"))
                   num_cores = *d;
@@ -409,9 +419,10 @@ public:
             }
           }
 
-          double ops_per_cycle = num_cores * ops_per_core_per_cycle * efficiency;
+          double ops_per_cycle =
+              num_cores * ops_per_core_per_cycle * efficiency;
           assert(ops_per_cycle > 0 &&
-                "ops per cycle in model must be greater than zero");
+                 "ops per cycle in model must be greater than zero");
 
           double cycles = ceil(compute_op_count / ops_per_cycle);
           compute_op_cost = cycles;
@@ -427,56 +438,65 @@ public:
     return execution_time;
   }
 
-  void buildVertexDependencyList(Graph::vertex_descriptor v, Graph G, std::vector<dependencyNodeEntry *> &dep_list){
+  void buildVertexDependencyList(Graph::vertex_descriptor v, Graph G,
+                                 std::vector<dependencyNodeEntry *> &dep_list) {
     auto inv_adj_set = boost::inv_adjacent_vertices(v, G);
-    // If current vertex is ChannelGet, then add implicit ChannelPut vertex to dep list 
+    // If current vertex is ChannelGet, then add implicit ChannelPut vertex to
+    // dep list
     if (air::ChannelGetOp channel_get = dyn_cast<air::ChannelGetOp>(G[v].op)) {
-      air::ChannelPutOp channel_put = air::getTheOtherChannelOpThroughSymbol(channel_get);
+      air::ChannelPutOp channel_put =
+          air::getTheOtherChannelOpThroughSymbol(channel_get);
       // Get ChannelPut node from op
-      auto channel_put_entry = canonicalizer.getVertexFromOp(channel_put.getOperation(), dep_ctx, "front");
+      auto channel_put_entry = canonicalizer.getVertexFromOp(
+          channel_put.getOperation(), dep_ctx, "front");
       auto channel_put_v = channel_put_entry.first;
       auto channel_put_g = channel_put_entry.second;
       auto &channel_put_node = channel_put_g->g[channel_put_v];
       dep_list.push_back(&channel_put_node);
     }
-    for (auto inv_adj_v = inv_adj_set.first; inv_adj_v != inv_adj_set.second; ++inv_adj_v){
-      // If dependent on a hierarchy op, then push its terminator into dep_list instead
-      if (G[*inv_adj_v].asyncEventType == "hierarchy"){
+    for (auto inv_adj_v = inv_adj_set.first; inv_adj_v != inv_adj_set.second;
+         ++inv_adj_v) {
+      // If dependent on a hierarchy op, then push its terminator into dep_list
+      // instead
+      if (G[*inv_adj_v].asyncEventType == "hierarchy") {
         auto sub_g = G[*inv_adj_v].nextDependencyGraph;
         auto terminator_v = sub_g->terminator_vertex;
         dep_list.push_back(&sub_g->g[terminator_v]);
-      }
-      else {
+      } else {
         dep_list.push_back(&G[*inv_adj_v]);
       }
     }
   }
 
-  std::string to_string(Operation *op) { return op->getName().getStringRef().str(); }
+  std::string to_string(Operation *op) {
+    return op->getName().getStringRef().str();
+  }
 
   std::string to_string(dependencyNodeEntry &c) { return to_string(c.op); }
 
   void processGraph(runnerNode &c, uint64_t time) {
 
     Graph &G = c.ctrl_g->g;
-    
+
     // Update wavefront
     std::vector<Graph::vertex_descriptor> next_vertex_set_candidates;
     std::vector<Graph::vertex_descriptor> next_vertex_set;
-    for (auto it = c.wavefront.begin(); it != c.wavefront.end(); ++it){
-      if (G[it->first].is_started() && G[it->first].is_done(time)){
+    for (auto it = c.wavefront.begin(); it != c.wavefront.end(); ++it) {
+      if (G[it->first].is_started() && G[it->first].is_done(time)) {
 
-        if (G[it->first].asyncEventType != "start"){
-          
+        if (G[it->first].asyncEventType != "start") {
+
           auto runner_id = getIdAttr(c.ctrl_g->hierarchyOp);
           auto sub_tid = it->second;
-          emitTraceEvent(traceStream, G[it->first].asyncEventName + G[it->first].detailed_description, "layer", "E", time,
-                          sub_tid, runner_id);
+          emitTraceEvent(traceStream,
+                         G[it->first].asyncEventName +
+                             G[it->first].detailed_description,
+                         "layer", "E", time, sub_tid, runner_id);
         }
 
         // "ExecuteOp"
         executeOpImpls(c, it->first, time);
-        
+
         // Erase from wavefront
         c.wavefront.erase(it);
         it--;
@@ -486,26 +506,28 @@ public:
     // Get all adjacent vertices to the procssed vertices
     findAdjacentVertices(c.processed_vertices, next_vertex_set_candidates, &G);
     // Remove candidate vertices already on wavefront
-    removeRepeatedVertices(next_vertex_set_candidates, getVectorOfFirstFromVectorOfPairs(c.wavefront));
+    removeRepeatedVertices(next_vertex_set_candidates,
+                           getVectorOfFirstFromVectorOfPairs(c.wavefront));
 
-    for (auto it = next_vertex_set_candidates.begin(); it != next_vertex_set_candidates.end(); ++it){
+    for (auto it = next_vertex_set_candidates.begin();
+         it != next_vertex_set_candidates.end(); ++it) {
       bool dep_fulfilled = true;
       // Build it's dependency list
       std::vector<dependencyNodeEntry *> dep_list;
       buildVertexDependencyList(*it, G, dep_list);
       // Check whether adj_v's dependency list is fulfulled
-      for (auto dep : dep_list){
-        if ((!dep->is_started()) || (!dep->is_done(time))){
+      for (auto dep : dep_list) {
+        if ((!dep->is_started()) || (!dep->is_done(time))) {
           dep_fulfilled = false;
         }
       }
-      if (dep_fulfilled){
+      if (dep_fulfilled) {
         next_vertex_set.push_back(*it);
       }
     }
 
-    for (auto next_vertex : next_vertex_set){
-      
+    for (auto next_vertex : next_vertex_set) {
+
       pushToWavefront(c.wavefront, next_vertex);
 
       G[next_vertex].start_time = time;
@@ -513,8 +535,10 @@ public:
       // emit trace event begin
       auto runner_id = getIdAttr(c.ctrl_g->hierarchyOp);
       auto sub_tid = c.wavefront.back().second;
-      emitTraceEvent(traceStream, G[next_vertex].asyncEventName + G[next_vertex].detailed_description, "layer", "B", time,
-                    sub_tid, runner_id);
+      emitTraceEvent(traceStream,
+                     G[next_vertex].asyncEventName +
+                         G[next_vertex].detailed_description,
+                     "layer", "B", time, sub_tid, runner_id);
     }
 
     return;
@@ -522,38 +546,36 @@ public:
 
   void scheduleFunction(func::FuncOp &toplevel) {
 
-    // Walk the launch op and create a boost graph using dependencyCanonicalizer intepreter
+    // Walk the launch op and create a boost graph using dependencyCanonicalizer
+    // intepreter
     hostGraph.hierarchyOp = toplevel.getOperation();
     canonicalizer.parseCommandGraphs(toplevel, hostGraph, dep_ctx);
 
     uint64_t time = 1;
-    for (auto &launchGraph : hostGraph.subgraphs){
+    for (auto &launchGraph : hostGraph.subgraphs) {
 
       // air launch iteration space
       int64_t iter_count = 1;
       auto launch_op = dyn_cast<air::LaunchOp>(launchGraph.hierarchyOp);
-      for (auto s_op : launch_op.getSizeOperands()){
+      for (auto s_op : launch_op.getSizeOperands()) {
         int64_t s = cast<arith::ConstantIndexOp>(s_op.getDefiningOp()).value();
         iter_count *= s;
       }
 
-      for (unsigned i = 0; i < iter_count; i++){
-      
+      for (unsigned i = 0; i < iter_count; i++) {
+
         // Reset controllers
         launch_runner_node = runnerNode(&launchGraph, "launch");
         // Update pointer to launch runner node in launch graph
         launchGraph.runner_node = &launch_runner_node;
-        
+
         // Walk the launch graph and infer herd/partition runner nodes
         initRunnerNodesFromLaunchGraph(launch_runner_node, launchGraph);
 
         // Schedule launch runner node and its sub-runner nodes
         scheduleLaunch(launch_runner_node, time);
-
       }
-
     }
-
   }
 
   void scheduleLaunch(runnerNode &launch, uint64_t &time) {
@@ -561,7 +583,8 @@ public:
     auto start_v = launch.ctrl_g->start_vertex;
     // Reset launch graph
     launch.processed_vertices.clear();
-    resetGraphBetweenTwoVertices(start_v, launch.ctrl_g->terminator_vertex, launch.ctrl_g->g, launch);
+    resetGraphBetweenTwoVertices(start_v, launch.ctrl_g->terminator_vertex,
+                                 launch.ctrl_g->g, launch);
     // Start running launch
     bool running = true;
     launch.ctrl_g->g[start_v].start_time = 1;
@@ -579,13 +602,13 @@ public:
         // getTimeStampsFromWavefront(next_times, launch);
       }
 
-      for (auto &partition_runner_node : launch.sub_runner_nodes){
+      for (auto &partition_runner_node : launch.sub_runner_nodes) {
         processGraph(partition_runner_node, time);
         if (partition_runner_node.wavefront.size()) {
           running = true;
           // getTimeStampsFromWavefront(next_times, partition_runner_node);
         }
-        for (auto &herd_runner_node : partition_runner_node.sub_runner_nodes){
+        for (auto &herd_runner_node : partition_runner_node.sub_runner_nodes) {
           processGraph(herd_runner_node, time);
           if (herd_runner_node.wavefront.size()) {
             running = true;
@@ -594,11 +617,12 @@ public:
         }
       }
 
-      if (running){
+      if (running) {
         getTimeStampsFromWavefront(next_times, launch);
-        for (auto &partition_runner_node : launch.sub_runner_nodes){
+        for (auto &partition_runner_node : launch.sub_runner_nodes) {
           getTimeStampsFromWavefront(next_times, partition_runner_node);
-          for (auto &herd_runner_node : partition_runner_node.sub_runner_nodes){
+          for (auto &herd_runner_node :
+               partition_runner_node.sub_runner_nodes) {
             getTimeStampsFromWavefront(next_times, herd_runner_node);
           }
         }
@@ -633,59 +657,67 @@ private:
   runnerNode launch_runner_node;
 
   // Dump graphviz
-  void dump_graph(std::string filename, Graph G)
-  {
-    std::ofstream ofs (filename, std::ofstream::out); 
+  void dump_graph(std::string filename, Graph G) {
+    std::ofstream ofs(filename, std::ofstream::out);
     boost::dynamic_properties dp;
     dp.property("label", boost::get(&dependencyNodeEntry::asyncEventName, G));
     dp.property("color", boost::get(&dependencyNodeEntry::color, G));
     dp.property("shape", boost::get(&dependencyNodeEntry::shape, G));
     dp.property("node_id", boost::get(boost::vertex_index, G));
-    dp.property("style", boost::make_constant_property<Graph::vertex_descriptor>(+"filled"));
+    dp.property(
+        "style",
+        boost::make_constant_property<Graph::vertex_descriptor>(+"filled"));
     write_graphviz_dp(ofs, G, dp);
   }
 
   // Trace op from a token in dependency list
-  std::vector<Operation *> traceOpFromToken(Value dep_token){
+  std::vector<Operation *> traceOpFromToken(Value dep_token) {
     std::vector<Operation *> output;
     // If dependency token originates from async op
-    if (dep_token.getDefiningOp() && mlir::dyn_cast<xilinx::air::AsyncOpInterface>(dep_token.getDefiningOp())){
+    if (dep_token.getDefiningOp() &&
+        mlir::dyn_cast<xilinx::air::AsyncOpInterface>(
+            dep_token.getDefiningOp())) {
       output.push_back(dep_token.getDefiningOp());
       return output;
     }
     // Else if dependency token is yielded from scf.for
-    else if (dep_token.getDefiningOp() && dyn_cast<scf::ForOp>(dep_token.getDefiningOp())){
+    else if (dep_token.getDefiningOp() &&
+             dyn_cast<scf::ForOp>(dep_token.getDefiningOp())) {
       auto forop = dyn_cast<scf::ForOp>(dep_token.getDefiningOp());
       auto forop_terminator = forop.getBody()->getTerminator();
       output.push_back(forop_terminator);
       return output;
     }
     // Else if dependency token is yielded from scf.parallel
-    else if (dep_token.getDefiningOp() && dyn_cast<scf::ParallelOp>(dep_token.getDefiningOp())){
+    else if (dep_token.getDefiningOp() &&
+             dyn_cast<scf::ParallelOp>(dep_token.getDefiningOp())) {
       auto parallelop = dyn_cast<scf::ParallelOp>(dep_token.getDefiningOp());
-      for (auto parallelop_reduceop : parallelop.getOps<scf::ReduceOp>()){
-        auto parallelop_terminator = parallelop_reduceop.getRegion().front().getTerminator();
+      for (auto parallelop_reduceop : parallelop.getOps<scf::ReduceOp>()) {
+        auto parallelop_terminator =
+            parallelop_reduceop.getRegion().front().getTerminator();
         output.push_back(parallelop_terminator);
         return output;
       }
     }
     // Else if dependency token is the iter arg of an scf for loop
-    else if (auto forop = getForRegionIterArgsOwner(dep_token)){
+    else if (auto forop = getForRegionIterArgsOwner(dep_token)) {
       output.push_back(forop);
       return output;
     }
-    // Else if dependency token is from affine if (joint token from multiple ops)
-    else if (dep_token.getDefiningOp() && dyn_cast<mlir::AffineIfOp>(dep_token.getDefiningOp())){
+    // Else if dependency token is from affine if (joint token from multiple
+    // ops)
+    else if (dep_token.getDefiningOp() &&
+             dyn_cast<mlir::AffineIfOp>(dep_token.getDefiningOp())) {
       auto aifop = dyn_cast<mlir::AffineIfOp>(dep_token.getDefiningOp());
       auto then_terminator = aifop.getThenBlock()->getTerminator();
-      for (auto operand : then_terminator->getOperands()){
-        if (auto op = operand.getDefiningOp()){
+      for (auto operand : then_terminator->getOperands()) {
+        if (auto op = operand.getDefiningOp()) {
           output.push_back(op);
         }
       }
       auto else_terminator = aifop.getElseBlock()->getTerminator();
-      for (auto operand : else_terminator->getOperands()){
-        if (auto op = operand.getDefiningOp()){
+      for (auto operand : else_terminator->getOperands()) {
+        if (auto op = operand.getDefiningOp()) {
           output.push_back(op);
         }
       }
@@ -694,10 +726,13 @@ private:
     return output;
   }
 
-  // Insert a vertex v between two vertices a and b which were connected by an edge
-  void insertVertexBetweenTwoVertices(Graph::vertex_descriptor a, Graph::vertex_descriptor b, Graph::vertex_descriptor v, Graph &G){
-    if ((a != b) && (a != v) && (b != v)){
-      if (edge(a, b, G).second){ // if an edge exists
+  // Insert a vertex v between two vertices a and b which were connected by an
+  // edge
+  void insertVertexBetweenTwoVertices(Graph::vertex_descriptor a,
+                                      Graph::vertex_descriptor b,
+                                      Graph::vertex_descriptor v, Graph &G) {
+    if ((a != b) && (a != v) && (b != v)) {
+      if (edge(a, b, G).second) { // if an edge exists
         remove_edge(a, b, G);
         if (!edge(a, v, G).second)
           add_edge(a, v, G);
@@ -708,21 +743,21 @@ private:
   }
 
   // Create start node for graph
-  void connectStartNodeInDependencyGraph (dependencyGraph &G){
+  void connectStartNodeInDependencyGraph(dependencyGraph &G) {
     auto v = G.start_vertex;
     auto vp = boost::vertices(G.g);
-    for (auto vit = vp.first; vit != vp.second; ++vit){
-      if ((v != *vit) && !in_degree(*vit, G.g)){
+    for (auto vit = vp.first; vit != vp.second; ++vit) {
+      if ((v != *vit) && !in_degree(*vit, G.g)) {
         add_edge(v, *vit, G.g);
       }
     }
   }
 
   // Adds pointer from command graph to launch, partition and herd terminators
-  void updatePointerFromGraphToHierarchyTerminator(dependencyGraph &G){
+  void updatePointerFromGraphToHierarchyTerminator(dependencyGraph &G) {
     auto vp = boost::vertices(G.g);
-    for (auto v = vp.first; v != vp.second; ++v){
-      if (G.g[*v].asyncEventType == "hierarchy_terminator"){
+    for (auto v = vp.first; v != vp.second; ++v) {
+      if (G.g[*v].asyncEventType == "hierarchy_terminator") {
         G.terminator_vertex = *v;
         return;
       }
@@ -730,10 +765,11 @@ private:
   }
 
   // Adds pointer from hierarchy terminator to parent command graph
-  void updatePointerFromHierarchyTerminatorToGraph(dependencyGraph &G, dependencyGraph &subG){
+  void updatePointerFromHierarchyTerminatorToGraph(dependencyGraph &G,
+                                                   dependencyGraph &subG) {
     auto vp = boost::vertices(subG.g);
-    for (auto v = vp.first; v != vp.second; ++v){
-      if (subG.g[*v].asyncEventType == "hierarchy_terminator"){
+    for (auto v = vp.first; v != vp.second; ++v) {
+      if (subG.g[*v].asyncEventType == "hierarchy_terminator") {
         subG.g[*v].nextDependencyGraph = &G;
         return;
       }
@@ -741,63 +777,67 @@ private:
   }
 
   // Adds pointer from hierarchy op to sub command graph
-  void updatePointerFromHierarchyOpToGraph(dependencyGraph &G){
+  void updatePointerFromHierarchyOpToGraph(dependencyGraph &G) {
     unsigned idx = 0;
     auto vp = boost::vertices(G.g);
-    for (auto v = vp.first; v != vp.second; ++v){
-      if (G.g[*v].asyncEventType == "hierarchy"){
+    for (auto v = vp.first; v != vp.second; ++v) {
+      if (G.g[*v].asyncEventType == "hierarchy") {
         G.g[*v].nextDependencyGraph = &(G.subgraphs[idx]);
         idx++;
       }
     }
-    assert(idx == G.subgraphs.size() && "mismatch between # graphs and hierarchy ops");
+    assert(idx == G.subgraphs.size() &&
+           "mismatch between # graphs and hierarchy ops");
   }
 
   // Returns the scf parent op from scf.yield op
-  template <typename T>
-  Operation * getScfParentOpFromYieldOp(scf::YieldOp op){
-    if (auto scfop = dyn_cast<T>(op->getParentOp())){
+  template <typename T> Operation *getScfParentOpFromYieldOp(scf::YieldOp op) {
+    if (auto scfop = dyn_cast<T>(op->getParentOp())) {
       return scfop.getOperation();
     }
     return nullptr;
   }
 
   // Connects launch, partition and herd terminators
-  void connectTerminatorInGraph(Graph &g){
+  void connectTerminatorInGraph(Graph &g) {
     auto vp = boost::vertices(g);
     Graph::vertex_descriptor terminator_v = 0;
-    for (auto vit = vp.first; vit != vp.second; ++vit){
-      if (g[*vit].asyncEventType == "hierarchy_terminator"){
+    for (auto vit = vp.first; vit != vp.second; ++vit) {
+      if (g[*vit].asyncEventType == "hierarchy_terminator") {
         terminator_v = *vit;
       }
     }
-    if (terminator_v == 0) return;
-    for (auto vit = vp.first; vit != vp.second; ++vit){
-      if ((terminator_v != *vit) && !out_degree(*vit, g)
-          && (g[*vit].asyncEventType != "start")){
+    if (terminator_v == 0)
+      return;
+    for (auto vit = vp.first; vit != vp.second; ++vit) {
+      if ((terminator_v != *vit) && !out_degree(*vit, g) &&
+          (g[*vit].asyncEventType != "start")) {
         add_edge(*vit, terminator_v, g);
       }
     }
   }
 
   // Find all vertices adjacent to given vertices in graph
-  void findAdjacentVertices(std::vector<Graph::vertex_descriptor> vertices, std::vector<Graph::vertex_descriptor> &adjacent_vertices, Graph * G){
-    for (auto v : vertices){
+  void
+  findAdjacentVertices(std::vector<Graph::vertex_descriptor> vertices,
+                       std::vector<Graph::vertex_descriptor> &adjacent_vertices,
+                       Graph *G) {
+    for (auto v : vertices) {
       auto adj_set = boost::adjacent_vertices(v, *G);
-      for (auto v1 = adj_set.first; v1 != adj_set.second; ++v1){
+      for (auto v1 = adj_set.first; v1 != adj_set.second; ++v1) {
         bool found_duplicate = false;
-        for (auto v2 : adjacent_vertices){
-          if (*v1 == v2){
+        for (auto v2 : adjacent_vertices) {
+          if (*v1 == v2) {
             found_duplicate = true;
           }
         }
         bool is_in_vertices = false;
-        for (auto v3 : vertices){
-          if (*v1 == v3){
+        for (auto v3 : vertices) {
+          if (*v1 == v3) {
             is_in_vertices = true;
           }
         }
-        if (!found_duplicate && !is_in_vertices){
+        if (!found_duplicate && !is_in_vertices) {
           adjacent_vertices.push_back(*v1);
         }
       }
@@ -805,17 +845,19 @@ private:
   }
 
   // Remove vertices in vector a which already exist in vector b
-  void removeRepeatedVertices(std::vector<Graph::vertex_descriptor> &a, std::vector<Graph::vertex_descriptor> b){
-    for (auto v : b){
+  void removeRepeatedVertices(std::vector<Graph::vertex_descriptor> &a,
+                              std::vector<Graph::vertex_descriptor> b) {
+    for (auto v : b) {
       removeVertexFromVertices(a, v);
     }
   }
 
   // Remove a vertex from a vector of vertices
-  void removeVertexFromVertices(std::vector<Graph::vertex_descriptor> &vector, Graph::vertex_descriptor a){
-    if (vector.size()){
-      for (auto it = vector.begin(); it != vector.end(); ++it){
-        if (*it == a){
+  void removeVertexFromVertices(std::vector<Graph::vertex_descriptor> &vector,
+                                Graph::vertex_descriptor a) {
+    if (vector.size()) {
+      for (auto it = vector.begin(); it != vector.end(); ++it) {
+        if (*it == a) {
           vector.erase(it);
           it--;
         }
@@ -823,48 +865,52 @@ private:
     }
   }
 
-  bool hasPath(Graph::vertex_descriptor start_v, Graph::vertex_descriptor end_v, Graph &G, SmallVector<Graph::vertex_descriptor, 1>& vec){
-     
+  bool hasPath(Graph::vertex_descriptor start_v, Graph::vertex_descriptor end_v,
+               Graph &G, SmallVector<Graph::vertex_descriptor, 1> &vec) {
+
     vec.push_back(start_v);
-    if (start_v == end_v)   
-        return true;
+    if (start_v == end_v)
+      return true;
     int pathCount = 0;
     auto adj_set = boost::adjacent_vertices(start_v, G);
-    for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v){
+    for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
       SmallVector<Graph::vertex_descriptor, 1> tmp_vec;
-      if (hasPath(*adj_v, end_v, G, tmp_vec)){
+      if (hasPath(*adj_v, end_v, G, tmp_vec)) {
         pathCount++;
-        // Concatenate 
+        // Concatenate
         vec.insert(vec.end(), tmp_vec.begin(), tmp_vec.end());
       }
     }
     if (pathCount)
-        return true;
+      return true;
     vec.pop_back();
-    return false;        
+    return false;
   }
 
   // Recursively reset all vertices in for loop body
-  void resetGraphBetweenTwoVertices(Graph::vertex_descriptor start_v, Graph::vertex_descriptor end_v, Graph &G, runnerNode &c){
-    
+  void resetGraphBetweenTwoVertices(Graph::vertex_descriptor start_v,
+                                    Graph::vertex_descriptor end_v, Graph &G,
+                                    runnerNode &c) {
+
     // Remove start_v from processed_vertices
     removeVertexFromVertices(c.processed_vertices, start_v);
 
     // Reset start_time and end_time
     G[start_v].start_time = 0;
     G[start_v].end_time = 0;
-    
-    if (start_v == end_v) return;
+
+    if (start_v == end_v)
+      return;
 
     SmallVector<Graph::vertex_descriptor, 1> vertices;
-    if (hasPath(start_v, end_v, G, vertices)){
-      for (auto v : vertices){
+    if (hasPath(start_v, end_v, G, vertices)) {
+      for (auto v : vertices) {
         removeVertexFromVertices(c.processed_vertices, v);
         // Reset start_time and end_time
         G[v].start_time = 0;
         G[v].end_time = 0;
         // If v is a hierarchy op, then recursively clear the entire subgraph
-        if (G[v].asyncEventType == "hierarchy"){
+        if (G[v].asyncEventType == "hierarchy") {
           auto sub_c = G[v].nextDependencyGraph;
           auto start = sub_c->start_vertex;
           auto terminator_v = sub_c->terminator_vertex;
@@ -877,68 +923,80 @@ private:
   }
 
   // Initialize sub runner nodes from launch graph tree
-  void initRunnerNodesFromLaunchGraph(runnerNode &launch_runner_node, dependencyGraph &launchGraph){
+  void initRunnerNodesFromLaunchGraph(runnerNode &launch_runner_node,
+                                      dependencyGraph &launchGraph) {
     launchGraph.runner_node = &launch_runner_node;
-    for (auto &partitionGraph : launchGraph.subgraphs){
+    for (auto &partitionGraph : launchGraph.subgraphs) {
       // Create partition runner node
-      launch_runner_node.sub_runner_nodes.push_back(runnerNode(&partitionGraph, "partition"));
-      auto current_partition_node = &(launch_runner_node.sub_runner_nodes.back());
-      for (auto &herdGraph : partitionGraph.subgraphs){
+      launch_runner_node.sub_runner_nodes.push_back(
+          runnerNode(&partitionGraph, "partition"));
+      auto current_partition_node =
+          &(launch_runner_node.sub_runner_nodes.back());
+      for (auto &herdGraph : partitionGraph.subgraphs) {
         // Create herd runner node
-        current_partition_node->sub_runner_nodes.push_back(runnerNode(&herdGraph, "herd"));
+        current_partition_node->sub_runner_nodes.push_back(
+            runnerNode(&herdGraph, "herd"));
       }
     }
     addPointerBetweenSubRunnerNodeAndSubCommandGraph(launch_runner_node);
-    for (auto &partition_runner_node : launch_runner_node.sub_runner_nodes){
+    for (auto &partition_runner_node : launch_runner_node.sub_runner_nodes) {
       addPointerBetweenSubRunnerNodeAndSubCommandGraph(partition_runner_node);
     }
   }
 
   // Adds pointer between runner node and command graph
-  void addPointerBetweenSubRunnerNodeAndSubCommandGraph(runnerNode &R){
-    for (auto r_it = std::begin(R.sub_runner_nodes); r_it != std::end(R.sub_runner_nodes); ++r_it) {
+  void addPointerBetweenSubRunnerNodeAndSubCommandGraph(runnerNode &R) {
+    for (auto r_it = std::begin(R.sub_runner_nodes);
+         r_it != std::end(R.sub_runner_nodes); ++r_it) {
       r_it->ctrl_g->runner_node = &(*r_it);
     }
   }
 
   // Get time stamps from wavefront
-  void getTimeStampsFromWavefront(std::vector<uint64_t> &next_times, runnerNode runner_node){
-    for (auto it = runner_node.wavefront.begin(); it != runner_node.wavefront.end(); it++){
+  void getTimeStampsFromWavefront(std::vector<uint64_t> &next_times,
+                                  runnerNode runner_node) {
+    for (auto it = runner_node.wavefront.begin();
+         it != runner_node.wavefront.end(); it++) {
       auto command_node = runner_node.ctrl_g->g[it->first];
-      if (command_node.is_started() && (command_node.end_time)){
+      if (command_node.is_started() && (command_node.end_time)) {
         next_times.push_back(command_node.end_time);
       }
     }
   }
 
   // Get a vector of first elements from a vector of pairs
-  std::vector<Graph::vertex_descriptor> getVectorOfFirstFromVectorOfPairs(std::vector<std::pair<Graph::vertex_descriptor, unsigned>> pairs){
+  std::vector<Graph::vertex_descriptor> getVectorOfFirstFromVectorOfPairs(
+      std::vector<std::pair<Graph::vertex_descriptor, unsigned>> pairs) {
     std::vector<Graph::vertex_descriptor> items;
-    std::transform(pairs.begin(), 
-                pairs.end(), 
-                std::back_inserter(items), 
-                [](const std::pair<Graph::vertex_descriptor, unsigned>& p) { return p.first; });
+    std::transform(pairs.begin(), pairs.end(), std::back_inserter(items),
+                   [](const std::pair<Graph::vertex_descriptor, unsigned> &p) {
+                     return p.first;
+                   });
     return items;
   }
 
   // Push an entry into wavefront
-  void pushToWavefront(std::vector<std::pair<Graph::vertex_descriptor, unsigned>> &wavefront, std::pair<Graph::vertex_descriptor, unsigned> entry){
-    for (auto i : wavefront){
+  void pushToWavefront(
+      std::vector<std::pair<Graph::vertex_descriptor, unsigned>> &wavefront,
+      std::pair<Graph::vertex_descriptor, unsigned> entry) {
+    for (auto i : wavefront) {
       assert(i.second != entry.second && "queried thread is busy");
     }
     wavefront.push_back(entry);
   }
-  void pushToWavefront(std::vector<std::pair<Graph::vertex_descriptor, unsigned>> &wavefront, Graph::vertex_descriptor v){
+  void pushToWavefront(
+      std::vector<std::pair<Graph::vertex_descriptor, unsigned>> &wavefront,
+      Graph::vertex_descriptor v) {
     // Acquire available thread id for current op
     unsigned tid = 0;
-    for (unsigned i = 1; i < wavefront.size() + 2; i++){
+    for (unsigned i = 1; i < wavefront.size() + 2; i++) {
       bool tid_i_unavailable = false;
-      for (auto j : wavefront){
-        if (j.second == i){
+      for (auto j : wavefront) {
+        if (j.second == i) {
           tid_i_unavailable = true;
         }
       }
-      if (!tid_i_unavailable){
+      if (!tid_i_unavailable) {
         tid = i;
         break;
       }
@@ -1019,7 +1077,6 @@ private:
     double seconds = bytes / bps;
     return (uint64_t)ceil(seconds * cps);
   }
-  
 
 }; // AIRRunner_impl
 

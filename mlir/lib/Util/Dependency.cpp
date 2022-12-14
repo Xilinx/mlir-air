@@ -626,7 +626,8 @@ dependencyCanonicalizer::addVertexFromOpImpls(Operation *op, dependencyGraph *G,
                            graphNodeProperties("control"), G, dep_ctx);
   } else if (auto parallelop = dyn_cast<scf::ParallelOp>(op)) {
     return addVertexFromOp(op, dep_ctx.ParallelOpID, "parallel_loop",
-                           "ScfParallelOp", graphNodeProperties("control"), G, dep_ctx);
+                           "ScfParallelOp", graphNodeProperties("control"), G,
+                           dep_ctx);
   } else if (auto hier_op =
                  mlir::dyn_cast<xilinx::air::HierarchyInterface>(op)) {
     return addVertexFromHierarchyOp(hier_op, G, dep_ctx);
@@ -641,8 +642,8 @@ dependencyCanonicalizer::addVertexFromOpImpls(Operation *op, dependencyGraph *G,
 // Create graph vertex from op
 Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromOp(
     Operation *op, uint64_t &id, std::string event_type, std::string event_name,
-    graphNodeProperties properties, dependencyGraph *G, dependencyContext &dep_ctx,
-    Operation *pointer_op) {
+    graphNodeProperties properties, dependencyGraph *G,
+    dependencyContext &dep_ctx, Operation *pointer_op) {
   op->setAttr("id", mlir::IntegerAttr::get(
                         mlir::IntegerType::get(op->getContext(), 32), ++id));
   auto v = add_vertex(G->g);
@@ -663,10 +664,13 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromOp(
   return v;
 }
 
-Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromDmaOp(
-    xilinx::air::DmaMemcpyInterface op, dependencyGraph *G, dependencyContext &dep_ctx) {
+Graph::vertex_descriptor
+dependencyCanonicalizer::addVertexFromDmaOp(xilinx::air::DmaMemcpyInterface op,
+                                            dependencyGraph *G,
+                                            dependencyContext &dep_ctx) {
   if (dyn_cast<xilinx::air::DmaMemcpyNdOp>(op.getOperation())) {
-    return addVertexFromOp(op, dep_ctx.DmaOpID, "dma", "DmaMemcpyNdOp", graphNodeProperties("data"), G, dep_ctx);
+    return addVertexFromOp(op, dep_ctx.DmaOpID, "dma", "DmaMemcpyNdOp",
+                           graphNodeProperties("data"), G, dep_ctx);
   } else {
     assert(false && "Unknown dma op");
     return 0;
@@ -674,7 +678,8 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromDmaOp(
 }
 
 Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
-    xilinx::air::ChannelInterface op, dependencyGraph *G, dependencyContext &dep_ctx) {
+    xilinx::air::ChannelInterface op, dependencyGraph *G,
+    dependencyContext &dep_ctx) {
   if (auto channel_put =
           dyn_cast<xilinx::air::ChannelPutOp>(op.getOperation())) {
     std::string memorySpaceSrcStr =
@@ -706,7 +711,9 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
       }
       detailed_description += "])";
     }
-    return addVertexFromOp(op, dep_ctx.ChannelOpID, "channel", event_name, graphNodeProperties("data", detailed_description), G, dep_ctx);
+    return addVertexFromOp(op, dep_ctx.ChannelOpID, "channel", event_name,
+                           graphNodeProperties("data", detailed_description), G,
+                           dep_ctx);
   } else if (auto channel_get =
                  dyn_cast<xilinx::air::ChannelGetOp>(op.getOperation())) {
     std::string memorySpaceDstStr =
@@ -738,7 +745,9 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
       }
       detailed_description += "])";
     }
-    return addVertexFromOp(op, dep_ctx.ChannelOpID, "channel", event_name, graphNodeProperties("data", detailed_description), G, dep_ctx);
+    return addVertexFromOp(op, dep_ctx.ChannelOpID, "channel", event_name,
+                           graphNodeProperties("data", detailed_description), G,
+                           dep_ctx);
   } else {
     assert(false && "Unknown channel op");
     return 0;
@@ -746,13 +755,15 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
 }
 
 Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromHierarchyOp(
-    xilinx::air::HierarchyInterface op, dependencyGraph *G, dependencyContext &dep_ctx) {
+    xilinx::air::HierarchyInterface op, dependencyGraph *G,
+    dependencyContext &dep_ctx) {
   if (dyn_cast<xilinx::air::LaunchOp>(op.getOperation())) {
     return addVertexFromOp(op, dep_ctx.HierarchyOpID, "hierarchy", "LaunchOp",
                            graphNodeProperties("hierarchy"), G, dep_ctx);
   } else if (dyn_cast<xilinx::air::PartitionOp>(op.getOperation())) {
     return addVertexFromOp(op, dep_ctx.HierarchyOpID, "hierarchy",
-                           "PartitionOp", graphNodeProperties("hierarchy"), G, dep_ctx);
+                           "PartitionOp", graphNodeProperties("hierarchy"), G,
+                           dep_ctx);
   } else if (dyn_cast<xilinx::air::HerdOp>(op.getOperation())) {
     return addVertexFromOp(op, dep_ctx.HierarchyOpID, "hierarchy", "HerdOp",
                            graphNodeProperties("hierarchy"), G, dep_ctx);
@@ -762,18 +773,20 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromHierarchyOp(
   }
 }
 
-Graph::vertex_descriptor
-dependencyCanonicalizer::addVertexFromTerminatorOp(Operation *op, dependencyGraph *G,
-                                                   dependencyContext &dep_ctx) {
+Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromTerminatorOp(
+    Operation *op, dependencyGraph *G, dependencyContext &dep_ctx) {
   if (dyn_cast<xilinx::air::LaunchTerminatorOp>(op)) {
     return addVertexFromOp(op, dep_ctx.TerminatorID, "hierarchy_terminator",
-                           "LaunchTerminator", graphNodeProperties("hierarchy"), G, dep_ctx);
+                           "LaunchTerminator", graphNodeProperties("hierarchy"),
+                           G, dep_ctx);
   } else if (dyn_cast<xilinx::air::PartitionTerminatorOp>(op)) {
     return addVertexFromOp(op, dep_ctx.TerminatorID, "hierarchy_terminator",
-                           "PartitionTerminator", graphNodeProperties("hierarchy"), G, dep_ctx);
+                           "PartitionTerminator",
+                           graphNodeProperties("hierarchy"), G, dep_ctx);
   } else if (dyn_cast<xilinx::air::HerdTerminatorOp>(op)) {
     return addVertexFromOp(op, dep_ctx.TerminatorID, "hierarchy_terminator",
-                           "HerdTerminator", graphNodeProperties("hierarchy"), G, dep_ctx);
+                           "HerdTerminator", graphNodeProperties("hierarchy"),
+                           G, dep_ctx);
   } else if (auto yieldop = dyn_cast<scf::YieldOp>(op)) {
     if (getScfParentOpFromYieldOp<scf::ParallelOp>(yieldop)) {
       // Note: disabled parsing scf parallel yield op since it currently acts as
@@ -782,7 +795,8 @@ dependencyCanonicalizer::addVertexFromTerminatorOp(Operation *op, dependencyGrap
       //                        dep_ctx);
     } else if (getScfParentOpFromYieldOp<scf::ForOp>(yieldop)) {
       return addVertexFromOp(op, dep_ctx.TerminatorID, "terminator",
-                             "ScfForYieldOp", graphNodeProperties("control"), G, dep_ctx);
+                             "ScfForYieldOp", graphNodeProperties("control"), G,
+                             dep_ctx);
     }
   }
   return 0;
@@ -790,9 +804,8 @@ dependencyCanonicalizer::addVertexFromTerminatorOp(Operation *op, dependencyGrap
 
 // Note: in the current scf parallel spec, reduce op takes the role of yielding
 // the ssa value. Hence, here we parse reduce op as a terminator.
-Graph::vertex_descriptor
-dependencyCanonicalizer::addVertexFromReduceOp(Operation *op, dependencyGraph *G,
-                                               dependencyContext &dep_ctx) {
+Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromReduceOp(
+    Operation *op, dependencyGraph *G, dependencyContext &dep_ctx) {
   return addVertexFromOp(op, dep_ctx.TerminatorID, "terminator", "ScfReduceOp",
                          graphNodeProperties("control"), G, dep_ctx);
 }
@@ -806,31 +819,35 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromExecuteOp(
   for (auto &child_op : op->getRegions().front().getOps()) {
     if (dyn_cast<linalg::LinalgOp>(child_op)) {
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute", "LinalgOp",
-                          graphNodeProperties("compute"), G, dep_ctx, pointer_op);
+                          graphNodeProperties("compute"), G, dep_ctx,
+                          pointer_op);
     } else if (dyn_cast<memref::AllocOp>(child_op)) {
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute", "AllocOp",
-                          graphNodeProperties("compute"), G, dep_ctx, pointer_op);
+                          graphNodeProperties("compute"), G, dep_ctx,
+                          pointer_op);
     } else if (dyn_cast<memref::DeallocOp>(child_op)) {
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute",
-                          "DeallocOp", graphNodeProperties("compute"), G, dep_ctx,
-                          pointer_op);
+                          "DeallocOp", graphNodeProperties("compute"), G,
+                          dep_ctx, pointer_op);
     } else if (dyn_cast<memref::CopyOp>(child_op)) {
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute", "CopyOp",
                           graphNodeProperties("data"), G, dep_ctx, pointer_op);
     } else if (dyn_cast<mlir::AffineApplyOp>(child_op)) {
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute",
-                          "AffineApplyOp", graphNodeProperties("compute"), G, dep_ctx,
-                          pointer_op);
+                          "AffineApplyOp", graphNodeProperties("compute"), G,
+                          dep_ctx, pointer_op);
     } else if (dyn_cast<xilinx::air::ExecuteTerminatorOp>(child_op)) {
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute",
-                          "ExecuteTerminatorOp", graphNodeProperties("compute"), G,
-                          dep_ctx, pointer_op);
+                          "ExecuteTerminatorOp", graphNodeProperties("compute"),
+                          G, dep_ctx, pointer_op);
     } else if (dyn_cast<arith::MulIOp>(child_op)) {
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute", "MuliOp",
-                          graphNodeProperties("compute"), G, dep_ctx, pointer_op);
+                          graphNodeProperties("compute"), G, dep_ctx,
+                          pointer_op);
     } else if (dyn_cast<arith::AddIOp>(child_op)) {
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute", "AddIOp",
-                          graphNodeProperties("compute"), G, dep_ctx, pointer_op);
+                          graphNodeProperties("compute"), G, dep_ctx,
+                          pointer_op);
     } else {
       assert(false && "Unknown op in execute");
     }
@@ -944,7 +961,8 @@ void dependencyCanonicalizer::copyFromDependencyGraphToFlatGraph(
     auto new_v = add_vertex(g_dst);
     // Copy vertex asyncEventName
     put(get(boost::vertex_attribute, g_dst), new_v,
-        GraphvizAttributes{{"label", g_src[*vit].asyncEventName + "\n" +g_src[*vit].detailed_description},
+        GraphvizAttributes{{"label", g_src[*vit].asyncEventName + "\n" +
+                                         g_src[*vit].detailed_description},
                            {"color", g_src[*vit].color},
                            {"shape", g_src[*vit].shape},
                            {"style", "filled"}});
