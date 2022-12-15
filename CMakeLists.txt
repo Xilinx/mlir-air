@@ -40,6 +40,7 @@ include(ExternalProject)
 
 find_package(MLIR REQUIRED CONFIG)
 find_package(AIE REQUIRED)
+set(LibXAIE_ROOT ${Sysroot}/usr ${Sysroot}/opt/xaiengine ${Sysroot}/opt/xaienginev2)
 find_package(LibXAIE)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
@@ -109,38 +110,23 @@ add_custom_target(check-all)
 add_custom_target(docs ALL)
 add_dependencies(docs mlir-doc)
 
-option(AIR_BUILD_RUNTIME "Build the air runtime" ON)
-if (NOT LibXAIE_FOUND)
-	message(WARNING "LibXAIE not found, AIR runtime will not be built.")
-	set(AIR_BUILD_RUNTIME OFF)
-endif()
-
-if(CMAKE_USE_TOOLCHAIN_AIRHOST)
-	set(AIRHOST_TOOLCHAIN_OPT ${CMAKE_TOOLCHAIN_FILE_OPT})
-else()
-	set(AIRHOST_TOOLCHAIN_OPT ${CMAKE_TOOLCHAIN_FILE})
-endif() 
-
-if(AIR_BUILD_RUNTIME)
-	message("AIRHOST_TOOLCHAIN_OPT=${AIRHOST_TOOLCHAIN_OPT}")
-	message("Sysroot=${Sysroot}")
-	ExternalProject_Add(air_runtime_lib
-		PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp
+foreach(target ${AIR_RUNTIME_TARGETS})
+	message("Compiling AIR runtimes for ${target}")
+	message("TOOLCHAIN=${${target}_TOOLCHAIN_FILE}")
+	message("Sysroot=${${target}_Sysroot}")
+	ExternalProject_Add(air_runtime_lib_${target}
+		PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp/${target}
 		SOURCE_DIR ${PROJECT_SOURCE_DIR}/runtime_lib
-		BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib
+		BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib/${target}
 		CMAKE_ARGS
 			-DCMAKE_MODULE_PATH=${CMAKE_MODULE_PATH}
-			-DCMAKE_TOOLCHAIN_FILE=${AIRHOST_TOOLCHAIN_OPT}
-			-DArch=${Arch}
-			-DgccVer=${gccVer}
-			-DSysroot=${Sysroot} 
+			-DCMAKE_TOOLCHAIN_FILE=${${target}_TOOLCHAIN_FILE}
+			-DSysroot=${${target}_Sysroot}
 			-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
 			-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
 			-DCMAKE_ASM_COMPILER=${CMAKE_ASM_COMPILER}
 			-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
 			-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
-			-Dpybind11_DIR=${pybind11_DIR}
-			-DLibXAIE_DIR=${LibXAIE_DIR}
 			-DAIE_DIR=${AIE_DIR}
 			-DBUILD_AIR_PCIE=${BUILD_AIR_PCIE}
 		BUILD_ALWAYS true
@@ -152,7 +138,7 @@ if(AIR_BUILD_RUNTIME)
 		TEST_BEFORE_INSTALL true
 		TEST_EXCLUDE_FROM_MAIN true
 	)
-endif()
+endforeach()
 
 add_subdirectory(python)
 if (LibXAIE_FOUND)
