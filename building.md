@@ -112,9 +112,9 @@ export LD_LIBRARY_PATH=/path/to/install/mlir-air/lib:/opt/xaiengine/lib:${LD_LIB
 
 The instructions for building the hardware platform designs are found in the mlir-air/platforms directory:
 
-- [xilinx_vck190_air](../platforms/xilinx_vck190_air)
-- [xilinx_vck5000_air](../platforms/xilinx_vck5000_air)
-- [xilinx_vck5000_air_scale_out](../platforms/xilinx_vck5000_air_scale_out)
+- [xilinx_vck190_air](platforms/xilinx_vck190_air)
+- [xilinx_vck5000_air](platforms/xilinx_vck5000_air)
+- [xilinx_vck5000_air_scale_out](platforms/xilinx_vck5000_air_scale_out)
 
 ## Building a Sysroot
 
