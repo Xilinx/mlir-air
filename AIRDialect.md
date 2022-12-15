@@ -349,7 +349,7 @@ Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 | :-----: | ----------- |
 | `async_dependencies` | async token type
 | `sizes` | index
-| `operands` | any type
+| `herd_operands` | any type
 
 #### Results:
 
@@ -415,7 +415,7 @@ Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 | :-----: | ----------- |
 | `async_dependencies` | async token type
 | `sizes` | index
-| `operands` | any type
+| `launch_operands` | any type
 
 #### Results:
 
@@ -466,7 +466,7 @@ Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 | :-----: | ----------- |
 | `async_dependencies` | async token type
 | `sizes` | index
-| `operands` | any type
+| `partition_operands` | any type
 
 #### Results:
 
