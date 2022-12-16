@@ -48,7 +48,7 @@ with air.mlir.ir.Context():
         air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
     pm.run(air_module)
 
-    pipeline = ",".join([
+    pipeline = "builtin.module("+",".join([
         "air-linalg-codegen{l2-tile-size=64,64,64 l2-promote=true l1-tile-size=32,32,32 l1-promote=true}",
         "canonicalize", "cse",
         "air-par-to-herd{depth=1}", # matmul
@@ -56,19 +56,20 @@ with air.mlir.ir.Context():
         "air-copy-to-dma",
         "air-par-to-launch{has-air-partition=true}",
         "canonicalize", "cse",
-    ])
+    ])+')'
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
     pm.run(air_module)
 
     with open('output1.mlir', 'w') as f:
         f.write(str(air_module))
 
-    pipeline = ",".join([
+    pipeline = "builtin.module("+",".join([
         "air-dependency",
         "air-dependency-schedule-opt",
         "air-specialize-dma-broadcast",
-        "air-dependency-canonicalize{dump-graph=true output-dir=dot_graphs/}"
-    ])
+        "air-dependency-canonicalize",
+        "air-dependency-parse-graph{output-dir=dot_graphs/}",
+    ])+')'
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
     pm.run(air_module)
 

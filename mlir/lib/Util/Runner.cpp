@@ -9,6 +9,8 @@
 #include "air/Util/Runner.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/CostModel.h"
+#include "air/Util/Dependency.h"
+#include "air/Util/Util.h"
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
@@ -24,7 +26,9 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Support/MathExtras.h"
+#include "mlir/Transforms/RegionUtils.h"
 
+#include <algorithm>
 #include <deque>
 #include <float.h>
 #include <list>
@@ -32,259 +36,85 @@
 #include <sstream>
 #include <vector>
 
+// boost graph
+#include <boost/graph/adjacency_list.hpp>
+#include <boost/graph/copy.hpp>
+#include <boost/graph/graph_traits.hpp>
+#include <boost/graph/graphviz.hpp>
+
+#include <algorithm>
+#include <numeric>
+#include <string>
+
 #define DEBUG_TYPE "air-runner"
 
 #define INDEX_WIDTH 32
 
 using namespace mlir;
+using namespace boost;
 
 namespace xilinx {
 namespace air {
 
+struct runnerGraph : dependencyGraph {
+  runnerNode *runner_node;
+  std::vector<runnerGraph> subgraphs;
+
+  runnerGraph(mlir::Operation *op = nullptr, bool initStartVertex = false) {
+    g = Graph();
+    hierarchyOp = op;
+    runner_node = nullptr;
+    if (initStartVertex) {
+      auto v = add_vertex(g);
+      g[v].asyncEventType = "start";
+      g[v].asyncEventName = "start";
+      g[v].color = "yellow";
+      g[v].shape = "box";
+      start_vertex = v;
+    }
+  }
+
+  ~runnerGraph() {
+    g.clear();
+    subgraphs.clear();
+  }
+};
+
+struct runnerNode {
+  dependencyGraph *ctrl_g;
+  std::string runner_node_type;
+  // Each entry is an std::pair. First element is vertex, and second element is
+  // thread id
+  std::vector<std::pair<Graph::vertex_descriptor, unsigned>> wavefront;
+  std::vector<Graph::vertex_descriptor> processed_vertices;
+  // Each entry is an std::pair. First element is for op's id, and second
+  // element is counter
+  std::vector<std::pair<unsigned, unsigned>> loop_trip_count;
+  std::vector<runnerNode> sub_runner_nodes;
+
+  // Private wavefront of each runner node, reserved to interface with resource
+  // model
+  std::vector<dependencyNodeEntry *> wavefrontNodes() {
+    std::vector<dependencyNodeEntry *> output;
+    for (auto v : wavefront) {
+      output.push_back(&ctrl_g->g[v.first]);
+    }
+    return output;
+  }
+
+  runnerNode(dependencyGraph *ctrl_g = nullptr,
+             std::string runner_node_type = "")
+      : ctrl_g(ctrl_g), runner_node_type(runner_node_type) {}
+
+  ~runnerNode() {
+    wavefront.clear();
+    processed_vertices.clear();
+    loop_trip_count.clear();
+    sub_runner_nodes.clear();
+  }
+};
+
 class AIRRunner::AIRRunner_impl {
-
-  const int TRACE_PID_QUEUE = 0;
-  const int TRACE_PID_ALLOC = 1;
-  const int TRACE_PID_STATS = 2;
-
-  void executeOp(arith::ConstantIndexOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    auto attr = op->getAttrOfType<IntegerAttr>("value");
-    out[0] = attr.getValue().sextOrTrunc(INDEX_WIDTH);
-  }
-
-  void executeOp(arith::ConstantIntOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    auto attr = op->getAttrOfType<IntegerAttr>("value");
-    out[0] = attr.getValue();
-  }
-
-  void executeOp(arith::AddIOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    out[0] =
-        llvm::any_cast<llvm::APInt>(in[0]) + llvm::any_cast<llvm::APInt>(in[1]);
-  }
-
-  void executeOp(arith::AddFOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    out[0] = llvm::any_cast<llvm::APFloat>(in[0]) +
-             llvm::any_cast<llvm::APFloat>(in[1]);
-  }
-
-  void executeOp(arith::SubIOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    out[0] =
-        llvm::any_cast<llvm::APInt>(in[0]) - llvm::any_cast<llvm::APInt>(in[1]);
-  }
-
-  void executeOp(arith::SubFOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    out[0] = llvm::any_cast<llvm::APFloat>(in[0]) +
-             llvm::any_cast<llvm::APFloat>(in[1]);
-  }
-
-  void executeOp(arith::CmpIOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    assert(0 && "unsupported op");
-    llvm::APInt in0 = llvm::any_cast<llvm::APInt>(in[0]);
-    llvm::APInt in1 = llvm::any_cast<llvm::APInt>(in[1]);
-    llvm::APInt out0(1, applyCmpPredicate(op.getPredicate(), in0, in1));
-    out[0] = out0;
-  }
-
-  void executeOp(arith::CmpFOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    assert(0 && "unsupported op");
-    llvm::APFloat in0 = llvm::any_cast<llvm::APFloat>(in[0]);
-    llvm::APFloat in1 = llvm::any_cast<llvm::APFloat>(in[1]);
-    llvm::APInt out0(1, applyCmpPredicate(op.getPredicate(), in0, in1));
-    out[0] = out0;
-  }
-
-  void executeOp(arith::MulIOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    out[0] =
-        llvm::any_cast<llvm::APInt>(in[0]) * llvm::any_cast<llvm::APInt>(in[1]);
-  }
-
-  void executeOp(arith::MulFOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    out[0] = llvm::any_cast<llvm::APFloat>(in[0]) *
-             llvm::any_cast<llvm::APFloat>(in[1]);
-  }
-
-  void executeOp(arith::DivFOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    out[0] = llvm::any_cast<llvm::APFloat>(in[0]) /
-             llvm::any_cast<llvm::APFloat>(in[1]);
-  }
-
-  void executeOp(arith::IndexCastOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    out[0] = in[0];
-  }
-
-  void executeOp(memref::LoadOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    llvm::ArrayRef<int64_t> shape = op.getMemRefType().getShape();
-    unsigned address = 0;
-    for (unsigned i = 0; i < shape.size(); i++) {
-      address = address * shape[i] +
-                llvm::any_cast<llvm::APInt>(in[i + 1]).getZExtValue();
-    }
-    unsigned ptr = llvm::any_cast<unsigned>(in[0]);
-    assert(ptr < store.size());
-    auto &ref = store[ptr];
-    assert(address < ref.size());
-    //  LLVM_DEBUG(llvm::dbgs() << "Load " << ref[address] << " from " << ptr <<
-    //  "[" << address << "]\n");
-    llvm::Any result = ref[address];
-    out[0] = result;
-  }
-
-  void executeOp(memref::StoreOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    llvm::ArrayRef<int64_t> shape = op.getMemRefType().getShape();
-    unsigned address = 0;
-    for (unsigned i = 0; i < shape.size(); i++) {
-      address = address * shape[i] +
-                llvm::any_cast<llvm::APInt>(in[i + 2]).getZExtValue();
-    }
-    unsigned ptr = llvm::any_cast<unsigned>(in[1]);
-    assert(ptr < store.size());
-    auto &ref = store[ptr];
-    //  LLVM_DEBUG(llvm::dbgs() << "Store " << in[0] << " to " << ptr << "[" <<
-    //  address << "]\n");
-    assert(address < ref.size());
-    ref[address] = in[0];
-  }
-
-  void executeOp(memref::AllocOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    out[0] = allocateMemRef(op.getType(), in);
-  }
-
-  void executeOp(memref::DeallocOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    unsigned ptr = llvm::any_cast<unsigned>(in[0]);
-    deallocateMemRef(ptr);
-  }
-
-  void decrementAsyncTokens(Operation *op) {
-
-    for (unsigned i = 0, e = op->getNumResults(); i < e; i++) {
-      auto r = op->getResult(i);
-      if (r.getType().isa<xilinx::air::AsyncTokenType>()) {
-        valueMap[r] =
-            llvm::any_cast<llvm::APInt>(valueMap[r]) - llvm::APInt(64, 1);
-        assert(llvm::any_cast<llvm::APInt>(valueMap[r]).getSExtValue() >= 0);
-      }
-    }
-  }
-
-  void executeOp(scf::ParallelOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {}
-
-  void executeOp(xilinx::air::LaunchOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {}
-
-  void executeOp(xilinx::air::HerdOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    decrementAsyncTokens(op);
-  }
-
-  void executeOp(xilinx::air::DmaMemcpyInterface op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    decrementAsyncTokens(op);
-  }
-
-  void executeOp(xilinx::air::ExecuteTerminatorOp op,
-                 std::vector<llvm::Any> &in, std::vector<llvm::Any> &out) {
-    auto ExecuteOp = op->getParentOfType<xilinx::air::ExecuteOp>();
-    decrementAsyncTokens(ExecuteOp);
-
-    for (unsigned i = 1, e = ExecuteOp->getNumResults(); i < e; i++) {
-      auto r = ExecuteOp->getResult(i);
-      if (!r.getType().isa<xilinx::air::AsyncTokenType>()) {
-        valueMap[r] = in[i - 1];
-      }
-    }
-  }
-
-  void executeOp(xilinx::air::WaitAllOp op, std::vector<llvm::Any> &in,
-                 std::vector<llvm::Any> &out) {
-    decrementAsyncTokens(op);
-  }
-
-  bool executeOpImpls(mlir::Operation &op, std::vector<llvm::Any> &inValues,
-                      std::vector<llvm::Any> &outValues) {
-    if (auto Op = dyn_cast<arith::ConstantIndexOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<arith::ConstantIntOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<arith::AddIOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<arith::AddFOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<arith::SubIOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<arith::SubFOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<arith::CmpIOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<arith::CmpFOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<arith::MulIOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<arith::MulFOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<arith::DivFOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<arith::IndexCastOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<memref::AllocOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<memref::DeallocOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<scf::ParallelOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<xilinx::air::LaunchOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<xilinx::air::ExecuteTerminatorOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<xilinx::air::HerdOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<xilinx::air::WaitAllOp>(op))
-      executeOp(Op, inValues, outValues);
-    else if (auto Op = dyn_cast<xilinx::air::DmaMemcpyInterface>(op))
-      executeOp(Op, inValues, outValues);
-    else
-      return false;
-    return true;
-  }
-
-  bool executeOp(Operation &op) {
-    std::vector<llvm::Any> inValues(op.getNumOperands());
-    std::vector<llvm::Any> outValues(op.getNumResults());
-    // LLVM_DEBUG(llvm::dbgs() << "OP:  " << op.getName() << "\n");
-    int i = 0;
-    for (Value in : op.getOperands()) {
-      inValues[i++] = valueMap[in];
-    }
-
-    if (!executeOpImpls(op, inValues, outValues))
-      return false;
-
-    // record result in valuemap
-    i = 0;
-    for (Value out : op.getResults()) {
-      if (!out.getType().isa<xilinx::air::AsyncTokenType>()) {
-        valueMap[out] = outValues[i];
-      }
-      i++;
-    }
-    return true;
-  }
 
   void debugArg(const std::string &head, mlir::Value op,
                 const llvm::APInt &value, uint64_t time) {
@@ -347,64 +177,6 @@ public:
     LLVM_DEBUG(llvm::dbgs() << "herd slots: " << herd_slots << "\n");
   }
 
-  // Allocate a new matrix with dimensions given by the type, in the
-  // given store.  Return the pseudo-pointer to the new matrix in the
-  // store (i.e. the first dimension index)
-  unsigned allocateMemRef(mlir::MemRefType type, std::vector<llvm::Any> &in) {
-    auto memorySpace = type.getMemorySpaceAsInt();
-    auto volume = getTensorVolume(type);
-    auto datawidth = type.getElementTypeBitWidth() / 4;
-    uint64_t bytes = volume * datawidth;
-    unsigned ptr = store.size();
-    store.resize(ptr + 1);
-    store[ptr].resize(1 /*bytes*/);
-    LLVM_DEBUG(llvm::dbgs() << "alloc " << ptr << " space " << memorySpace
-                            << " size " << bytes << "\n");
-    // mlir::Type elementType = type.getElementType();
-    // int width = elementType.getIntOrFloatBitWidth();
-    //  for (int i = 0; i < bytes; i++) {
-    //    if (elementType.isa<mlir::IntegerType>()) {
-    //      store[ptr][i] = llvm::APInt(width, 0);
-    //    }
-    //    else if (elementType.isa<mlir::FloatType>()) {
-    //      store[ptr][i] = llvm::APFloat(0.0);
-    //    }
-    //    else {
-    //      llvm_unreachable("Unknown result type!\n");
-    //    }
-    //  }
-    //  emitTraceEvent(traceStream,
-    //                 "tensor "+std::to_string(ptr)+" space " \
-    //                 +std::to_string(memorySpace)+" size " \
-    //                 +std::to_string(bytes), "layer", "B", time, ptr,
-    //                 TRACE_PID_ALLOC);
-    return ptr;
-  }
-
-  void deallocateMemRef(unsigned ptr) {
-    // assert(store[ptr].size());
-    // auto allocationSize = store[ptr].size();
-    LLVM_DEBUG(llvm::dbgs() << "dealloc " << ptr << "\n");
-    store[ptr].resize(0);
-    // emitTraceEvent(traceStream, "dealloc", "layer", "E", time, ptr,
-    //   TRACE_PID_ALLOC);
-  }
-
-  std::string printAnyValueWithType(mlir::Type type, llvm::Any &value) {
-    std::stringstream out;
-    if (type.isa<mlir::IntegerType>() || type.isa<mlir::IndexType>()) {
-      out << llvm::any_cast<llvm::APInt>(value).getSExtValue();
-      return out.str();
-    } else if (type.isa<mlir::FloatType>()) {
-      out << llvm::any_cast<llvm::APFloat>(value).convertToDouble();
-      return out.str();
-    } else if (type.isa<mlir::NoneType>()) {
-      return "none";
-    } else {
-      llvm_unreachable("Unknown result type!");
-    }
-  }
-
   void emitTraceStart(llvm::raw_ostream &s) { s << "[\n"; }
 
   void emitTraceEnd(llvm::raw_ostream &s) { s << "{}]\n"; }
@@ -429,6 +201,807 @@ public:
       << ""
       << "\n";
     s << "},\n";
+  }
+
+  void executeOp(xilinx::air::HierarchyInterface op, uint64_t time,
+                 runnerNode *sub_runner_node, runnerNode &c,
+                 Graph::vertex_descriptor it) {
+    // Initialize sub runner and sub graph prior to execution
+    Graph &G = sub_runner_node->ctrl_g->g;
+    auto sub_start_v = sub_runner_node->ctrl_g->start_vertex;
+    auto sub_terminator_v = sub_runner_node->ctrl_g->terminator_vertex;
+    resetGraphBetweenTwoVertices(sub_start_v, sub_terminator_v, G,
+                                 *sub_runner_node);
+    sub_runner_node->loop_trip_count.clear();
+
+    // Start sub-runner node by pushing start node into its wavefront
+    sub_runner_node->ctrl_g->g[sub_start_v].start_time = time;
+    sub_runner_node->ctrl_g->g[sub_start_v].end_time = time;
+    assert(!sub_runner_node->wavefront.size() && "Sub runner node is busy");
+    pushToWavefront(sub_runner_node->wavefront, std::make_pair(sub_start_v, 1));
+
+    sub_runner_node->processed_vertices.clear();
+
+    c.processed_vertices.push_back(it);
+  }
+
+  void executeOp(scf::YieldOp op, scf::ForOp for_op, runnerNode &c,
+                 Graph::vertex_descriptor it) {
+    Graph &G = c.ctrl_g->g;
+    auto node_entry = G[it];
+
+    // For loop trip counter
+    bool trip_count_fulfilled = false;
+    for (auto &count_entry : c.loop_trip_count) {
+      if (count_entry.first == (unsigned)getIdAttr(for_op.getOperation())) {
+        // Decrement loop trip count
+        if (count_entry.second) {
+          count_entry.second--;
+        }
+
+        // Only push yield op to processed_vertices when trip count fulfilled
+        if (!count_entry.second) {
+          c.processed_vertices.push_back(it);
+          trip_count_fulfilled = true;
+        }
+      }
+    }
+
+    // If trip count unfulfilled, then iterate.
+    // Clear start_time and end_time of all ops in loop body.
+    // From processed_vertices, remove all ops which are in loop body.
+    if (!trip_count_fulfilled) {
+      // Get for op vertex
+      auto for_v =
+          canonicalizer.getVertexFromOp(for_op.getOperation(), dep_ctx, "front")
+              .first;
+      auto adj_set = boost::adjacent_vertices(for_v, G);
+      for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
+        resetGraphBetweenTwoVertices(*adj_v, it, G, c);
+      }
+    }
+  }
+
+  void executeOp(scf::ForOp op, runnerNode &c, Graph::vertex_descriptor it) {
+    Graph &G = c.ctrl_g->g;
+    auto node_entry = G[it];
+
+    // Get for loop trip count
+    auto lb = op.getLowerBound().getDefiningOp();
+    int64_t lbv = cast<arith::ConstantIndexOp>(lb).value();
+    auto ub = op.getUpperBound().getDefiningOp();
+    int64_t ubv = cast<arith::ConstantIndexOp>(ub).value();
+    auto step = op.getStep().getDefiningOp();
+    int64_t stepv = cast<arith::ConstantIndexOp>(step).value();
+
+    // (ubv - lbv) / stepv, fast round up
+    int64_t trip_count = (ubv - lbv + stepv - 1) / stepv;
+
+    // Update for loop trip count
+    c.loop_trip_count.push_back(
+        std::make_pair(getIdAttr(op.getOperation()), trip_count));
+
+    c.processed_vertices.push_back(it);
+  }
+
+  void executeOp(runnerNode &c, Graph::vertex_descriptor it) {
+    c.processed_vertices.push_back(it);
+  }
+
+  void executeOpImpls(runnerNode &c, Graph::vertex_descriptor it,
+                      uint64_t time) {
+    Graph G = c.ctrl_g->g;
+    auto node = G[it];
+    if (node.asyncEventType == "start") {
+      executeOp(c, it);
+    } else if (auto Op = dyn_cast<xilinx::air::HierarchyInterface>(node.op)) {
+      auto sub_dependency_graph = node.nextDependencyGraph;
+      auto sub_runner_node = sub_dependency_graph->runner_node;
+      executeOp(Op, time, sub_runner_node, c, it);
+    } else if (auto Op = dyn_cast<scf::ForOp>(node.op)) {
+      executeOp(Op, c, it);
+    } else if (dyn_cast<scf::YieldOp>(node.op) &&
+               getScfParentOpFromYieldOp<scf::ForOp>(
+                   dyn_cast<scf::YieldOp>(node.op))) {
+      auto Op = dyn_cast<scf::YieldOp>(node.op);
+      auto parent_for_op =
+          dyn_cast<scf::ForOp>(getScfParentOpFromYieldOp<scf::ForOp>(Op));
+      executeOp(Op, parent_for_op, c, it);
+    } else {
+      executeOp(c, it);
+    }
+  }
+
+  // Model each event's latency
+  uint64_t modelOp(dependencyNodeEntry &c) {
+    auto type = c.asyncEventType;
+    auto name = c.asyncEventName;
+    uint64_t execution_time = 1;
+
+    if (type == "wait_all") {
+      execution_time = 1;
+    } else if (type == "dma") {
+      auto Op = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(c.op);
+      assert(Op);
+      MemRefType srcTy = Op.getSrcMemref().getType().cast<MemRefType>();
+      MemRefType dstTy = Op.getDstMemref().getType().cast<MemRefType>();
+      auto srcSpace = srcTy.getMemorySpaceAsInt();
+      auto dstSpace = dstTy.getMemorySpaceAsInt();
+      // if there is a size mismatch, it's because we're moving a tile of the
+      // larger tensor
+      if (getTensorVolume(srcTy) <= getTensorVolume(dstTy))
+        execution_time = getTransferCost(srcSpace, dstSpace, srcTy);
+      else
+        execution_time = getTransferCost(srcSpace, dstSpace, dstTy);
+    } else if (type == "channel" &&
+               (name.find("ChannelGetOp") != std::string::npos)) {
+      auto getOp = mlir::dyn_cast<xilinx::air::ChannelGetOp>(c.op);
+      assert(getOp);
+      MemRefType dstTy = getOp.getDstMemref().getType().cast<MemRefType>();
+      air::ChannelPutOp putOp = air::getTheOtherChannelOpThroughSymbol(getOp);
+      assert(putOp);
+      MemRefType srcTy = putOp.getSrcMemref().getType().cast<MemRefType>();
+      auto srcSpace = srcTy.getMemorySpaceAsInt();
+      auto dstSpace = dstTy.getMemorySpaceAsInt();
+      // if there is a size mismatch, it's because we're moving a tile of the
+      // larger tensor
+      if (getTensorVolume(srcTy) <= getTensorVolume(dstTy))
+        execution_time = getTransferCost(srcSpace, dstSpace, srcTy);
+      else
+        execution_time = getTransferCost(srcSpace, dstSpace, dstTy);
+    } else if (type == "execute" && name != "ExecuteTerminatorOp") {
+      assert(dyn_cast<air::ExecuteOp>(c.op));
+      auto child_op = &*(c.op->getRegions().front().getOps().begin());
+      if (auto Op = mlir::dyn_cast<linalg::LinalgOp>(child_op)) {
+        uint64_t compute_xfer_cost = 0;
+        uint64_t compute_op_cost = 0;
+        auto opCounts = xilinx::air::CostModel().getOpCounts(child_op);
+        std::string skip = "footprint";
+        std::string memops = "reads;writes;";
+        std::string cpuops = "math.rsqrt;";
+        cpuops += "arith.mulf;arith.divf;arith.addf;arith.subf;arith.truncf;"
+                  "arith.cmpf;arith.maxf;";
+        cpuops += "arith.muli;arith.divi;arith.addi;arith.subi;arith.trunci;"
+                  "arith.cmpi;arith.maxi";
+        cpuops += "std.select";
+        uint64_t memory_op_count = 0;
+        uint64_t compute_op_count = 0;
+        for (auto &p : opCounts.map) {
+          auto name = std::get<0>(p);
+          auto count = std::get<1>(p);
+          if (memops.find(name) != std::string::npos)
+            memory_op_count += count;
+          else if (cpuops.find(name) != std::string::npos)
+            compute_op_count += count;
+          else if (skip.find(name) == std::string::npos)
+            LLVM_DEBUG(llvm::dbgs() << name << " not counted\n");
+        }
+
+        if (compute_op_count) {
+          // defaults
+          double num_cores = 1;
+          double ops_per_core_per_cycle = 8; // vector width for this type
+          double cycles_per_second = 1e9;
+          double efficiency = 1.0f;
+
+          auto model = jsonModel.getAsObject();
+          assert(model);
+
+          // if kernels exists, assume everthing else exists
+          if (model && model->getObject("kernels")) {
+            // device level override of defaults
+            if (auto d = model->getNumber("cores"))
+              num_cores = *d;
+            if (auto d = model->getNumber("ops_per_core_per_cycle"))
+              ops_per_core_per_cycle = *d;
+            if (auto d = model->getNumber("clock"))
+              cycles_per_second = *d;
+            if (auto d = model->getNumber("efficiency"))
+              efficiency = *d;
+
+            // kernel level override of defaults
+            auto kernels = model->getObject("kernels");
+            assert(kernels && "kernels not found in JSON model");
+
+            if (kernels) {
+              auto kernel =
+                  kernels->getObject(child_op->getName().getStringRef());
+              if (kernel) {
+                if (auto d = kernel->getNumber("cores"))
+                  num_cores = *d;
+                if (auto d = kernel->getNumber("ops_per_core_per_cycle"))
+                  ops_per_core_per_cycle = *d;
+                if (auto d = kernel->getNumber("clock"))
+                  cycles_per_second = *d;
+                if (auto d = kernel->getNumber("efficiency"))
+                  efficiency = *d;
+              }
+            }
+          }
+
+          double ops_per_cycle =
+              num_cores * ops_per_core_per_cycle * efficiency;
+          assert(ops_per_cycle > 0 &&
+                 "ops per cycle in model must be greater than zero");
+
+          double cycles = ceil(compute_op_count / ops_per_cycle);
+          compute_op_cost = cycles;
+        }
+        execution_time = std::max(compute_op_cost, compute_xfer_cost);
+      }
+    } else {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "WARNING: execution time not modeled for op: '");
+      LLVM_DEBUG(llvm::dbgs() << to_string(c.op) << "'\n");
+      execution_time = 1;
+    }
+    return execution_time;
+  }
+
+  void buildVertexDependencyList(Graph::vertex_descriptor v, Graph G,
+                                 std::vector<dependencyNodeEntry *> &dep_list) {
+    auto inv_adj_set = boost::inv_adjacent_vertices(v, G);
+    // If current vertex is ChannelGet, then add implicit ChannelPut vertex to
+    // dep list
+    if (air::ChannelGetOp channel_get = dyn_cast<air::ChannelGetOp>(G[v].op)) {
+      air::ChannelPutOp channel_put =
+          air::getTheOtherChannelOpThroughSymbol(channel_get);
+      // Get ChannelPut node from op
+      auto channel_put_entry = canonicalizer.getVertexFromOp(
+          channel_put.getOperation(), dep_ctx, "front");
+      auto channel_put_v = channel_put_entry.first;
+      auto channel_put_g = channel_put_entry.second;
+      auto &channel_put_node = channel_put_g->g[channel_put_v];
+      dep_list.push_back(&channel_put_node);
+    }
+    for (auto inv_adj_v = inv_adj_set.first; inv_adj_v != inv_adj_set.second;
+         ++inv_adj_v) {
+      // If dependent on a hierarchy op, then push its terminator into dep_list
+      // instead
+      if (G[*inv_adj_v].asyncEventType == "hierarchy") {
+        auto sub_g = G[*inv_adj_v].nextDependencyGraph;
+        auto terminator_v = sub_g->terminator_vertex;
+        dep_list.push_back(&sub_g->g[terminator_v]);
+      } else {
+        dep_list.push_back(&G[*inv_adj_v]);
+      }
+    }
+  }
+
+  std::string to_string(Operation *op) {
+    return op->getName().getStringRef().str();
+  }
+
+  std::string to_string(dependencyNodeEntry &c) { return to_string(c.op); }
+
+  void processGraph(runnerNode &c, uint64_t time) {
+
+    Graph &G = c.ctrl_g->g;
+
+    // Update wavefront
+    std::vector<Graph::vertex_descriptor> next_vertex_set_candidates;
+    std::vector<Graph::vertex_descriptor> next_vertex_set;
+    for (auto it = c.wavefront.begin(); it != c.wavefront.end(); ++it) {
+      if (G[it->first].is_started() && G[it->first].is_done(time)) {
+
+        if (G[it->first].asyncEventType != "start") {
+
+          auto runner_id = getIdAttr(c.ctrl_g->hierarchyOp);
+          auto sub_tid = it->second;
+          emitTraceEvent(traceStream,
+                         G[it->first].asyncEventName +
+                             G[it->first].detailed_description,
+                         "layer", "E", time, sub_tid, runner_id);
+        }
+
+        // "ExecuteOp"
+        executeOpImpls(c, it->first, time);
+
+        // Erase from wavefront
+        c.wavefront.erase(it);
+        it--;
+      }
+    }
+
+    // Get all adjacent vertices to the procssed vertices
+    findAdjacentVertices(c.processed_vertices, next_vertex_set_candidates, &G);
+    // Remove candidate vertices already on wavefront
+    removeRepeatedVertices(next_vertex_set_candidates,
+                           getVectorOfFirstFromVectorOfPairs(c.wavefront));
+
+    for (auto it = next_vertex_set_candidates.begin();
+         it != next_vertex_set_candidates.end(); ++it) {
+      bool dep_fulfilled = true;
+      // Build it's dependency list
+      std::vector<dependencyNodeEntry *> dep_list;
+      buildVertexDependencyList(*it, G, dep_list);
+      // Check whether adj_v's dependency list is fulfulled
+      for (auto dep : dep_list) {
+        if ((!dep->is_started()) || (!dep->is_done(time))) {
+          dep_fulfilled = false;
+        }
+      }
+      if (dep_fulfilled) {
+        next_vertex_set.push_back(*it);
+      }
+    }
+
+    for (auto next_vertex : next_vertex_set) {
+
+      pushToWavefront(c.wavefront, next_vertex);
+
+      G[next_vertex].start_time = time;
+      G[next_vertex].end_time = time + modelOp(G[next_vertex]);
+      // emit trace event begin
+      auto runner_id = getIdAttr(c.ctrl_g->hierarchyOp);
+      auto sub_tid = c.wavefront.back().second;
+      emitTraceEvent(traceStream,
+                     G[next_vertex].asyncEventName +
+                         G[next_vertex].detailed_description,
+                     "layer", "B", time, sub_tid, runner_id);
+    }
+
+    return;
+  }
+
+  void scheduleFunction(func::FuncOp &toplevel) {
+
+    // Walk the launch op and create a boost graph using dependencyCanonicalizer
+    // intepreter
+    hostGraph.hierarchyOp = toplevel.getOperation();
+    canonicalizer.parseCommandGraphs(toplevel, hostGraph, dep_ctx);
+
+    uint64_t time = 1;
+    for (auto &launchGraph : hostGraph.subgraphs) {
+
+      // air launch iteration space
+      int64_t iter_count = 1;
+      auto launch_op = dyn_cast<air::LaunchOp>(launchGraph.hierarchyOp);
+      for (auto s_op : launch_op.getSizeOperands()) {
+        int64_t s = cast<arith::ConstantIndexOp>(s_op.getDefiningOp()).value();
+        iter_count *= s;
+      }
+
+      for (unsigned i = 0; i < iter_count; i++) {
+
+        // Reset controllers
+        launch_runner_node = runnerNode(&launchGraph, "launch");
+        // Update pointer to launch runner node in launch graph
+        launchGraph.runner_node = &launch_runner_node;
+
+        // Walk the launch graph and infer herd/partition runner nodes
+        initRunnerNodesFromLaunchGraph(launch_runner_node, launchGraph);
+
+        // Schedule launch runner node and its sub-runner nodes
+        scheduleLaunch(launch_runner_node, time);
+      }
+    }
+  }
+
+  void scheduleLaunch(runnerNode &launch, uint64_t &time) {
+
+    auto start_v = launch.ctrl_g->start_vertex;
+    // Reset launch graph
+    launch.processed_vertices.clear();
+    resetGraphBetweenTwoVertices(start_v, launch.ctrl_g->terminator_vertex,
+                                 launch.ctrl_g->g, launch);
+    // Start running launch
+    bool running = true;
+    launch.ctrl_g->g[start_v].start_time = 1;
+    launch.ctrl_g->g[start_v].end_time = 1;
+    pushToWavefront(launch.wavefront, std::make_pair(start_v, 1));
+    while (running) {
+      LLVM_DEBUG(llvm::dbgs() << "time: " << time << "\n");
+
+      running = false;
+      std::vector<uint64_t> next_times;
+
+      processGraph(launch, time);
+      if (launch.wavefront.size()) {
+        running = true;
+        // getTimeStampsFromWavefront(next_times, launch);
+      }
+
+      for (auto &partition_runner_node : launch.sub_runner_nodes) {
+        processGraph(partition_runner_node, time);
+        if (partition_runner_node.wavefront.size()) {
+          running = true;
+          // getTimeStampsFromWavefront(next_times, partition_runner_node);
+        }
+        for (auto &herd_runner_node : partition_runner_node.sub_runner_nodes) {
+          processGraph(herd_runner_node, time);
+          if (herd_runner_node.wavefront.size()) {
+            running = true;
+            // getTimeStampsFromWavefront(next_times, herd_runner_node);
+          }
+        }
+      }
+
+      if (running) {
+        getTimeStampsFromWavefront(next_times, launch);
+        for (auto &partition_runner_node : launch.sub_runner_nodes) {
+          getTimeStampsFromWavefront(next_times, partition_runner_node);
+          for (auto &herd_runner_node :
+               partition_runner_node.sub_runner_nodes) {
+            getTimeStampsFromWavefront(next_times, herd_runner_node);
+          }
+        }
+      }
+
+      uint64_t next_time = 0;
+      if (next_times.size())
+        next_time = *std::min_element(next_times.begin(), next_times.end());
+      time = std::max(time + 1, next_time);
+      if (time > 5000000)
+        running = false;
+    }
+  }
+
+private:
+  dependencyCanonicalizer canonicalizer;
+  xilinx::air::dependencyContext dep_ctx;
+
+  llvm::raw_ostream &traceStream;
+  llvm::json::Value &jsonModel;
+  uint64_t time;
+
+  unsigned dispatch_slots;
+  unsigned dispatch_dma_slots;
+  unsigned core_dma_slots;
+  unsigned herd_slots;
+
+  // Dependency graph constructed as Boost graph
+  dependencyGraph hostGraph;
+
+  // Host and segment runnerNodes
+  runnerNode launch_runner_node;
+
+  // Dump graphviz
+  void dump_graph(std::string filename, Graph G) {
+    std::ofstream ofs(filename, std::ofstream::out);
+    boost::dynamic_properties dp;
+    dp.property("label", boost::get(&dependencyNodeEntry::asyncEventName, G));
+    dp.property("color", boost::get(&dependencyNodeEntry::color, G));
+    dp.property("shape", boost::get(&dependencyNodeEntry::shape, G));
+    dp.property("node_id", boost::get(boost::vertex_index, G));
+    dp.property(
+        "style",
+        boost::make_constant_property<Graph::vertex_descriptor>(+"filled"));
+    write_graphviz_dp(ofs, G, dp);
+  }
+
+  // Trace op from a token in dependency list
+  std::vector<Operation *> traceOpFromToken(Value dep_token) {
+    std::vector<Operation *> output;
+    // If dependency token originates from async op
+    if (dep_token.getDefiningOp() &&
+        mlir::dyn_cast<xilinx::air::AsyncOpInterface>(
+            dep_token.getDefiningOp())) {
+      output.push_back(dep_token.getDefiningOp());
+      return output;
+    }
+    // Else if dependency token is yielded from scf.for
+    else if (dep_token.getDefiningOp() &&
+             dyn_cast<scf::ForOp>(dep_token.getDefiningOp())) {
+      auto forop = dyn_cast<scf::ForOp>(dep_token.getDefiningOp());
+      auto forop_terminator = forop.getBody()->getTerminator();
+      output.push_back(forop_terminator);
+      return output;
+    }
+    // Else if dependency token is yielded from scf.parallel
+    else if (dep_token.getDefiningOp() &&
+             dyn_cast<scf::ParallelOp>(dep_token.getDefiningOp())) {
+      auto parallelop = dyn_cast<scf::ParallelOp>(dep_token.getDefiningOp());
+      for (auto parallelop_reduceop : parallelop.getOps<scf::ReduceOp>()) {
+        auto parallelop_terminator =
+            parallelop_reduceop.getRegion().front().getTerminator();
+        output.push_back(parallelop_terminator);
+        return output;
+      }
+    }
+    // Else if dependency token is the iter arg of an scf for loop
+    else if (auto forop = getForRegionIterArgsOwner(dep_token)) {
+      output.push_back(forop);
+      return output;
+    }
+    // Else if dependency token is from affine if (joint token from multiple
+    // ops)
+    else if (dep_token.getDefiningOp() &&
+             dyn_cast<mlir::AffineIfOp>(dep_token.getDefiningOp())) {
+      auto aifop = dyn_cast<mlir::AffineIfOp>(dep_token.getDefiningOp());
+      auto then_terminator = aifop.getThenBlock()->getTerminator();
+      for (auto operand : then_terminator->getOperands()) {
+        if (auto op = operand.getDefiningOp()) {
+          output.push_back(op);
+        }
+      }
+      auto else_terminator = aifop.getElseBlock()->getTerminator();
+      for (auto operand : else_terminator->getOperands()) {
+        if (auto op = operand.getDefiningOp()) {
+          output.push_back(op);
+        }
+      }
+      return output;
+    }
+    return output;
+  }
+
+  // Insert a vertex v between two vertices a and b which were connected by an
+  // edge
+  void insertVertexBetweenTwoVertices(Graph::vertex_descriptor a,
+                                      Graph::vertex_descriptor b,
+                                      Graph::vertex_descriptor v, Graph &G) {
+    if ((a != b) && (a != v) && (b != v)) {
+      if (edge(a, b, G).second) { // if an edge exists
+        remove_edge(a, b, G);
+        if (!edge(a, v, G).second)
+          add_edge(a, v, G);
+        if (!edge(v, b, G).second)
+          add_edge(v, b, G);
+      }
+    }
+  }
+
+  // Create start node for graph
+  void connectStartNodeInDependencyGraph(dependencyGraph &G) {
+    auto v = G.start_vertex;
+    auto vp = boost::vertices(G.g);
+    for (auto vit = vp.first; vit != vp.second; ++vit) {
+      if ((v != *vit) && !in_degree(*vit, G.g)) {
+        add_edge(v, *vit, G.g);
+      }
+    }
+  }
+
+  // Adds pointer from command graph to launch, partition and herd terminators
+  void updatePointerFromGraphToHierarchyTerminator(dependencyGraph &G) {
+    auto vp = boost::vertices(G.g);
+    for (auto v = vp.first; v != vp.second; ++v) {
+      if (G.g[*v].asyncEventType == "hierarchy_terminator") {
+        G.terminator_vertex = *v;
+        return;
+      }
+    }
+  }
+
+  // Adds pointer from hierarchy terminator to parent command graph
+  void updatePointerFromHierarchyTerminatorToGraph(dependencyGraph &G,
+                                                   dependencyGraph &subG) {
+    auto vp = boost::vertices(subG.g);
+    for (auto v = vp.first; v != vp.second; ++v) {
+      if (subG.g[*v].asyncEventType == "hierarchy_terminator") {
+        subG.g[*v].nextDependencyGraph = &G;
+        return;
+      }
+    }
+  }
+
+  // Adds pointer from hierarchy op to sub command graph
+  void updatePointerFromHierarchyOpToGraph(dependencyGraph &G) {
+    unsigned idx = 0;
+    auto vp = boost::vertices(G.g);
+    for (auto v = vp.first; v != vp.second; ++v) {
+      if (G.g[*v].asyncEventType == "hierarchy") {
+        G.g[*v].nextDependencyGraph = &(G.subgraphs[idx]);
+        idx++;
+      }
+    }
+    assert(idx == G.subgraphs.size() &&
+           "mismatch between # graphs and hierarchy ops");
+  }
+
+  // Returns the scf parent op from scf.yield op
+  template <typename T> Operation *getScfParentOpFromYieldOp(scf::YieldOp op) {
+    if (auto scfop = dyn_cast<T>(op->getParentOp())) {
+      return scfop.getOperation();
+    }
+    return nullptr;
+  }
+
+  // Connects launch, partition and herd terminators
+  void connectTerminatorInGraph(Graph &g) {
+    auto vp = boost::vertices(g);
+    Graph::vertex_descriptor terminator_v = 0;
+    for (auto vit = vp.first; vit != vp.second; ++vit) {
+      if (g[*vit].asyncEventType == "hierarchy_terminator") {
+        terminator_v = *vit;
+      }
+    }
+    if (terminator_v == 0)
+      return;
+    for (auto vit = vp.first; vit != vp.second; ++vit) {
+      if ((terminator_v != *vit) && !out_degree(*vit, g) &&
+          (g[*vit].asyncEventType != "start")) {
+        add_edge(*vit, terminator_v, g);
+      }
+    }
+  }
+
+  // Find all vertices adjacent to given vertices in graph
+  void
+  findAdjacentVertices(std::vector<Graph::vertex_descriptor> vertices,
+                       std::vector<Graph::vertex_descriptor> &adjacent_vertices,
+                       Graph *G) {
+    for (auto v : vertices) {
+      auto adj_set = boost::adjacent_vertices(v, *G);
+      for (auto v1 = adj_set.first; v1 != adj_set.second; ++v1) {
+        bool found_duplicate = false;
+        for (auto v2 : adjacent_vertices) {
+          if (*v1 == v2) {
+            found_duplicate = true;
+          }
+        }
+        bool is_in_vertices = false;
+        for (auto v3 : vertices) {
+          if (*v1 == v3) {
+            is_in_vertices = true;
+          }
+        }
+        if (!found_duplicate && !is_in_vertices) {
+          adjacent_vertices.push_back(*v1);
+        }
+      }
+    }
+  }
+
+  // Remove vertices in vector a which already exist in vector b
+  void removeRepeatedVertices(std::vector<Graph::vertex_descriptor> &a,
+                              std::vector<Graph::vertex_descriptor> b) {
+    for (auto v : b) {
+      removeVertexFromVertices(a, v);
+    }
+  }
+
+  // Remove a vertex from a vector of vertices
+  void removeVertexFromVertices(std::vector<Graph::vertex_descriptor> &vector,
+                                Graph::vertex_descriptor a) {
+    if (vector.size()) {
+      for (auto it = vector.begin(); it != vector.end(); ++it) {
+        if (*it == a) {
+          vector.erase(it);
+          it--;
+        }
+      }
+    }
+  }
+
+  bool hasPath(Graph::vertex_descriptor start_v, Graph::vertex_descriptor end_v,
+               Graph &G, SmallVector<Graph::vertex_descriptor, 1> &vec) {
+
+    vec.push_back(start_v);
+    if (start_v == end_v)
+      return true;
+    int pathCount = 0;
+    auto adj_set = boost::adjacent_vertices(start_v, G);
+    for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
+      SmallVector<Graph::vertex_descriptor, 1> tmp_vec;
+      if (hasPath(*adj_v, end_v, G, tmp_vec)) {
+        pathCount++;
+        // Concatenate
+        vec.insert(vec.end(), tmp_vec.begin(), tmp_vec.end());
+      }
+    }
+    if (pathCount)
+      return true;
+    vec.pop_back();
+    return false;
+  }
+
+  // Recursively reset all vertices in for loop body
+  void resetGraphBetweenTwoVertices(Graph::vertex_descriptor start_v,
+                                    Graph::vertex_descriptor end_v, Graph &G,
+                                    runnerNode &c) {
+
+    // Remove start_v from processed_vertices
+    removeVertexFromVertices(c.processed_vertices, start_v);
+
+    // Reset start_time and end_time
+    G[start_v].start_time = 0;
+    G[start_v].end_time = 0;
+
+    if (start_v == end_v)
+      return;
+
+    SmallVector<Graph::vertex_descriptor, 1> vertices;
+    if (hasPath(start_v, end_v, G, vertices)) {
+      for (auto v : vertices) {
+        removeVertexFromVertices(c.processed_vertices, v);
+        // Reset start_time and end_time
+        G[v].start_time = 0;
+        G[v].end_time = 0;
+        // If v is a hierarchy op, then recursively clear the entire subgraph
+        if (G[v].asyncEventType == "hierarchy") {
+          auto sub_c = G[v].nextDependencyGraph;
+          auto start = sub_c->start_vertex;
+          auto terminator_v = sub_c->terminator_vertex;
+          auto sub_g = sub_c->g;
+          auto sub_runner = sub_c->runner_node;
+          resetGraphBetweenTwoVertices(start, terminator_v, sub_g, *sub_runner);
+        }
+      }
+    }
+  }
+
+  // Initialize sub runner nodes from launch graph tree
+  void initRunnerNodesFromLaunchGraph(runnerNode &launch_runner_node,
+                                      dependencyGraph &launchGraph) {
+    launchGraph.runner_node = &launch_runner_node;
+    for (auto &partitionGraph : launchGraph.subgraphs) {
+      // Create partition runner node
+      launch_runner_node.sub_runner_nodes.push_back(
+          runnerNode(&partitionGraph, "partition"));
+      auto current_partition_node =
+          &(launch_runner_node.sub_runner_nodes.back());
+      for (auto &herdGraph : partitionGraph.subgraphs) {
+        // Create herd runner node
+        current_partition_node->sub_runner_nodes.push_back(
+            runnerNode(&herdGraph, "herd"));
+      }
+    }
+    addPointerBetweenSubRunnerNodeAndSubCommandGraph(launch_runner_node);
+    for (auto &partition_runner_node : launch_runner_node.sub_runner_nodes) {
+      addPointerBetweenSubRunnerNodeAndSubCommandGraph(partition_runner_node);
+    }
+  }
+
+  // Adds pointer between runner node and command graph
+  void addPointerBetweenSubRunnerNodeAndSubCommandGraph(runnerNode &R) {
+    for (auto r_it = std::begin(R.sub_runner_nodes);
+         r_it != std::end(R.sub_runner_nodes); ++r_it) {
+      r_it->ctrl_g->runner_node = &(*r_it);
+    }
+  }
+
+  // Get time stamps from wavefront
+  void getTimeStampsFromWavefront(std::vector<uint64_t> &next_times,
+                                  runnerNode runner_node) {
+    for (auto it = runner_node.wavefront.begin();
+         it != runner_node.wavefront.end(); it++) {
+      auto command_node = runner_node.ctrl_g->g[it->first];
+      if (command_node.is_started() && (command_node.end_time)) {
+        next_times.push_back(command_node.end_time);
+      }
+    }
+  }
+
+  // Get a vector of first elements from a vector of pairs
+  std::vector<Graph::vertex_descriptor> getVectorOfFirstFromVectorOfPairs(
+      std::vector<std::pair<Graph::vertex_descriptor, unsigned>> pairs) {
+    std::vector<Graph::vertex_descriptor> items;
+    std::transform(pairs.begin(), pairs.end(), std::back_inserter(items),
+                   [](const std::pair<Graph::vertex_descriptor, unsigned> &p) {
+                     return p.first;
+                   });
+    return items;
+  }
+
+  // Push an entry into wavefront
+  void pushToWavefront(
+      std::vector<std::pair<Graph::vertex_descriptor, unsigned>> &wavefront,
+      std::pair<Graph::vertex_descriptor, unsigned> entry) {
+    for (auto i : wavefront) {
+      assert(i.second != entry.second && "queried thread is busy");
+    }
+    wavefront.push_back(entry);
+  }
+  void pushToWavefront(
+      std::vector<std::pair<Graph::vertex_descriptor, unsigned>> &wavefront,
+      Graph::vertex_descriptor v) {
+    // Acquire available thread id for current op
+    unsigned tid = 0;
+    for (unsigned i = 1; i < wavefront.size() + 2; i++) {
+      bool tid_i_unavailable = false;
+      for (auto j : wavefront) {
+        if (j.second == i) {
+          tid_i_unavailable = true;
+        }
+      }
+      if (!tid_i_unavailable) {
+        tid = i;
+        break;
+      }
+    }
+    wavefront.push_back(std::make_pair(v, tid));
   }
 
   uint64_t getTensorVolume(const mlir::ShapedType ty) {
@@ -504,791 +1077,6 @@ public:
     double seconds = bytes / bps;
     return (uint64_t)ceil(seconds * cps);
   }
-
-  // model the memory tranfer time for a layer
-  std::tuple<uint64_t, std::vector<uint64_t>, std::vector<uint64_t>>
-  modelLayerMemoryTime(mlir::Operation *op) {
-    const int num_mem = 2;
-    std::vector<uint64_t> ld_xfer_time(num_mem, 0);
-    std::vector<uint64_t> st_xfer_time(num_mem, 0);
-
-    auto model = jsonModel.getAsObject();
-    if (!model)
-      assert(model);
-    auto memories = model->getObject("memories");
-    if (!memories)
-      assert(memories);
-
-    // unsigned idx = 0;
-    // for (Value o : op->getOperands()) {
-    //   if (auto tty = o.getType().dyn_cast<TensorType>()) {
-    //     if (auto tensor_load =
-    //     dyn_cast<xilinx::air::DmaLoadOp>(o.getDefiningOp())) {
-    //       auto space =
-    //       tensor_load.getMemref().getType().cast<MemRefType>().getMemorySpace();
-    //       uint64_t ld_vol = 0;
-    //       uint64_t st_vol = 0;
-    //       // if (auto stats =
-    //       mlir::dyn_cast<xilinx::aten::StatisticsOpInterface>(op)) {
-    //       //   // make the cost 1 for dram
-    //       //   if (space != 0) {
-    //       //     ld_vol = stats.getOperandTransferVolume(idx, true);
-    //       //     st_vol = stats.getOperandTransferVolume(idx, false);
-    //       //   }
-    //       //   else {
-    //       //     ld_vol = getTensorVolume(tensor_load.getMemref().getType());
-    //       //   }
-    //       // } else {
-    //         ld_vol = getTensorVolume(tensor_load.getMemref().getType());
-    //       // }
-    //       if (ld_vol) ld_xfer_time[space] += getTransferCost(space,
-    //       space+1/*2*/, ld_vol); if (st_vol) st_xfer_time[space] +=
-    //       getTransferCost(space+1/*2*/, space, st_vol);
-    //     }
-    //   }
-    //   idx++;
-    // }
-
-    // idx = 0;
-    // for (Value r : op->getResults()) {
-    //   if (auto tty = r.getType().dyn_cast<TensorType>()) {
-    //     for (auto user : r.getUsers()) {
-    //       if (auto tensor_store = dyn_cast<xilinx::air::DmaStoreOp>(user)) {
-    //         auto space =
-    //         tensor_store.getMemref().getType().cast<MemRefType>().getMemorySpace();
-    //         uint64_t ld_vol = 0;
-    //         uint64_t st_vol = 0;
-    //         // if (auto stats =
-    //         mlir::dyn_cast<xilinx::aten::StatisticsOpInterface>(op)) {
-    //         //   // make the cost 1 for dram
-    //         //   if (space != 0) {
-    //         //     st_vol = stats.getResultTransferVolume(idx, true);
-    //         //     ld_vol = stats.getResultTransferVolume(idx, false);
-    //         //   }
-    //         //   else {
-    //         //     st_vol =
-    //         getTensorVolume(tensor_store.getMemref().getType());
-    //         //   }
-    //         // } else {
-    //           st_vol = getTensorVolume(tensor_store.getMemref().getType());
-    //         // }
-    //         if (ld_vol) ld_xfer_time[space] += getTransferCost(space,
-    //         space+1/*2*/, ld_vol); if (st_vol) st_xfer_time[space] +=
-    //         getTransferCost(space+1/*2*/, space, st_vol);
-    //       }
-    //     }
-    //   }
-    //   idx++;
-    // }
-
-    time = 0;
-    for (int i = 0; i < num_mem; i++) {
-      // llvm::dbgs() << "memory[" << i << "] ld time: " << ld_xfer_time[i] << "
-      // st time: " << st_xfer_time[i] << "\n";
-      auto mem = memories->getObject(std::to_string(i));
-      if (!mem)
-        assert(mem);
-      auto type = mem->getString("type");
-      if (!type)
-        assert(type);
-
-      uint64_t t;
-      if (*type == "duplex")
-        t = std::max(st_xfer_time[i], ld_xfer_time[i]);
-      else if (*type == "simplex")
-        t = st_xfer_time[i] + ld_xfer_time[i];
-      else
-        llvm_unreachable("bad memory type in device model");
-
-      time = std::max(t, time);
-    }
-
-    return std::tie(time, ld_xfer_time, st_xfer_time);
-  }
-
-  struct CommandQueueEntry {
-    mlir::Operation *op;
-    uint64_t start_time;
-    uint64_t end_time;
-    uint64_t compute_op_cost;
-    uint64_t compute_xfer_cost;
-    uint64_t queue_ready_time;
-
-    using LaunchFn = std::function<void(Operation *)>;
-    LaunchFn launch_callback_fn;
-
-    std::vector<uint64_t> ld_xfer_time;
-    std::vector<uint64_t> st_xfer_time;
-
-    bool is_started() { return (start_time != 0) && (end_time != 0); }
-    bool is_done(uint64_t t) { return t >= end_time; }
-
-    CommandQueueEntry(mlir::Operation *o, LaunchFn launch_fn = nullptr)
-        : op(o), start_time(0), end_time(0), compute_op_cost(0),
-          compute_xfer_cost(0), queue_ready_time(0),
-          launch_callback_fn(launch_fn) {}
-
-    CommandQueueEntry &operator=(const CommandQueueEntry &) = delete;
-  };
-
-  struct QueueContext {
-    std::string name;
-    std::deque<CommandQueueEntry> queue;
-    std::vector< std::pair< std::vector<std::string>, std::vector<QueueContext*> > > contexts;
-    std::map<std::vector<QueueContext*>*, size_t> rrmap;
-
-    QueueContext(std::string name) : name(name) {}
-
-    Optional<std::vector<QueueContext*>*> match(std::string str) {
-      for (auto &p : contexts) {
-        for (auto &s : std::get<0>(p)) {
-          if (s == str)
-            return &std::get<1>(p);
-        }
-      }
-      return Optional<std::vector<QueueContext*>*>();
-    }
-
-    // select a queue from the vector in a round-robin manner
-    QueueContext *getRR(std::vector<QueueContext*>* v) {
-      if (!rrmap.count(v)) {
-        rrmap.insert({v, 0});
-      }
-      auto idx = rrmap[v];
-      rrmap[v] = (idx+1) % v->size();
-      return v->at(idx);
-    }
-  };
-
-  std::vector<QueueContext*> queues;
-
-  QueueContext *newQueueContext(std::string name) {
-    QueueContext *q =  new QueueContext(name);
-    queues.push_back(q);
-    return q;
-  }
-
-  void deleteQueueContext( QueueContext *q) {
-    auto i = std::find(queues.begin(), queues.end(), q);
-    queues.erase(i);
-    delete q;
-  }
-
-  QueueContext *makeCoreContext() {
-    QueueContext *ctx = newQueueContext("core");
-    std::vector<std::string> ops{"air.dma_memcpy_nd"};
-    std::vector<QueueContext*> ctxs;
-    for (unsigned i = 0; i < core_dma_slots; i++)
-      ctxs.push_back(makeDmaContext());
-    ctx->contexts.push_back({ops, ctxs});
-    return ctx;
-  }
-
-  QueueContext *makeDmaContext() {
-    QueueContext *ctx = newQueueContext("dma");
-    return ctx;
-  }
-
-  QueueContext *makeDispatchContext() {
-    QueueContext *ctx = newQueueContext("dispatch");
-
-    // herd core queues
-    {
-      std::vector<std::string> ops{"air.launch_herd"};
-      std::vector<QueueContext*> ctxs;
-      for (int i=0; i<16; i++)
-        ctxs.push_back(makeCoreContext());
-      ctx->contexts.push_back({ops, ctxs});
-    }
-    {
-      std::vector<std::string> ops{"air.dma_memcpy_nd"};
-      std::vector<QueueContext*> ctxs;
-      for (unsigned i = 0; i < dispatch_dma_slots; i++)
-        ctxs.push_back(makeDmaContext());
-      ctx->contexts.push_back({ops, ctxs});
-    }
-    return ctx;
-  }
-
-  QueueContext *makeTopContext() {
-    QueueContext *ctx = newQueueContext("top");
-
-    // queues for top level parallel dispatch
-    std::vector<std::string> ops{"scf.parallel"};
-    std::vector<QueueContext*> ctxs;
-    for (unsigned i=0; i < dispatch_slots; i++)
-      ctxs.push_back(makeDispatchContext());
-    ctx->contexts.push_back({ops, ctxs});
-  
-    return ctx;
-  }
-
-  uint64_t modelOp(CommandQueueEntry &c) {
-    mlir::Operation *op = c.op;
-    uint64_t execution_time = 1;
-
-    if (auto Op = mlir::dyn_cast<xilinx::air::WaitAllOp>(op)) {
-      execution_time = 1;
-    } else if (auto Op = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op)) {
-
-      MemRefType srcTy = Op.getSrcMemref().getType().cast<MemRefType>();
-      MemRefType dstTy = Op.getDstMemref().getType().cast<MemRefType>();
-      auto srcSpace = srcTy.getMemorySpaceAsInt();
-      auto dstSpace = dstTy.getMemorySpaceAsInt();
-      // if there is a size mismatch, it's because we're moving a tile of the
-      // larger tensor
-      if (getTensorVolume(srcTy) <= getTensorVolume(dstTy))
-        execution_time = getTransferCost(srcSpace, dstSpace, srcTy);
-      else
-        execution_time = getTransferCost(srcSpace, dstSpace, dstTy);
-    } else if (auto Op = mlir::dyn_cast<linalg::LinalgOp>(op)) {
-      auto opCounts = xilinx::air::CostModel().getOpCounts(op);
-      std::string skip = "footprint";
-      std::string memops = "reads;writes;";
-      std::string cpuops = "math.rsqrt;";
-      cpuops += "arith.mulf;arith.divf;arith.addf;arith.subf;arith.truncf;"
-                "arith.cmpf;arith.maxf;";
-      cpuops += "arith.muli;arith.divi;arith.addi;arith.subi;arith.trunci;"
-                "arith.cmpi;arith.maxi";
-      cpuops += "std.select";
-      uint64_t memory_op_count = 0;
-      uint64_t compute_op_count = 0;
-      for (auto &p : opCounts.map) {
-        auto name = std::get<0>(p);
-        auto count = std::get<1>(p);
-        if (memops.find(name) != std::string::npos)
-          memory_op_count += count;
-        else if (cpuops.find(name) != std::string::npos)
-          compute_op_count += count;
-        else if (skip.find(name) == std::string::npos)
-          LLVM_DEBUG(llvm::dbgs() << name << " not counted\n");
-      }
-      c.compute_xfer_cost = 0; // memory_op_count;
-
-      if (compute_op_count) {
-        // defaults
-        double num_cores = 1;
-        double ops_per_core_per_cycle = 8; // vector width for this type
-        double cycles_per_second = 1e9;
-        double efficiency = 1.0f;
-
-        auto model = jsonModel.getAsObject();
-        assert(model);
-
-        // if kernels exists, assume everthing else exists
-        if (model && model->getObject("kernels")) {
-          // device level override of defaults
-          if (auto d = model->getNumber("cores"))
-            num_cores = *d;
-          if (auto d = model->getNumber("ops_per_core_per_cycle"))
-            ops_per_core_per_cycle = *d;
-          if (auto d = model->getNumber("clock"))
-            cycles_per_second = *d;
-          if (auto d = model->getNumber("efficiency"))
-            efficiency = *d;
-
-          // kernel level override of defaults
-          auto kernels = model->getObject("kernels");
-          assert(kernels && "kernels not found in JSON model");
-
-          if (kernels) {
-            auto kernel = kernels->getObject(op->getName().getStringRef());
-            if (kernel) {
-              if (auto d = kernel->getNumber("cores"))
-                num_cores = *d;
-              if (auto d = kernel->getNumber("ops_per_core_per_cycle"))
-                ops_per_core_per_cycle = *d;
-              if (auto d = kernel->getNumber("clock"))
-                cycles_per_second = *d;
-              if (auto d = kernel->getNumber("efficiency"))
-                efficiency = *d;
-            }
-          }
-        }
-
-        double ops_per_cycle = num_cores * ops_per_core_per_cycle * efficiency;
-        assert(ops_per_cycle > 0 &&
-               "ops per cycle in model must be greater than zero");
-
-        double cycles = ceil(compute_op_count / ops_per_cycle);
-        c.compute_op_cost = cycles;
-      }
-      execution_time = std::max(c.compute_op_cost, c.compute_xfer_cost);
-    } else {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "WARNING: execution time not modeled for op: '");
-      LLVM_DEBUG(llvm::dbgs() << to_string(op) << "'\n");
-      execution_time = 1;
-    }
-    return execution_time;
-  }
-
-  std::string to_string(Operation *op) {
-    return op->getName().getStringRef().str();
-  }
-
-  std::string to_string(CommandQueueEntry &c) { return to_string(c.op); }
-
-  void processQueue(std::deque<CommandQueueEntry> &q, uint64_t time) {
-    if (q.size() == 0)
-      return;
-
-    CommandQueueEntry &c = q.front();
-
-    if (c.is_started()) {
-      if (c.is_done(time)) {
-        LLVM_DEBUG(llvm::dbgs() << "finish: '");
-        LLVM_DEBUG(c.op->print(llvm::dbgs()));
-        LLVM_DEBUG(llvm::dbgs() << "' @ " << time << "\n");
-
-        // execute
-        executeOp(*c.op);
-        if (c.launch_callback_fn)
-          c.launch_callback_fn(c.op);
-
-        // emit trace event end
-        emitTraceEvent(traceStream, to_string(c), "layer", "E", time,
-                       (size_t)(void *)&q, TRACE_PID_QUEUE);
-
-        if (c.compute_xfer_cost && c.compute_op_cost) {
-          if (c.compute_op_cost >= c.compute_xfer_cost) {
-            emitTraceEvent(traceStream, "compute_bound", "stats", "B",
-                           c.start_time, 0, TRACE_PID_STATS);
-            emitTraceEvent(traceStream, "compute_bound", "stats", "E",
-                           c.end_time, 0, TRACE_PID_STATS);
-          } else {
-            emitTraceEvent(traceStream, "memory_bound", "stats", "B",
-                           c.start_time, 0, TRACE_PID_STATS);
-            emitTraceEvent(traceStream, "memory_bound", "stats", "E",
-                           c.end_time, 0, TRACE_PID_STATS);
-          }
-          if (c.compute_op_cost) {
-            std::stringstream cat;
-            cat << "compute time";
-            emitTraceEvent(traceStream, cat.str(), "stats", "B", c.start_time,
-                           100, TRACE_PID_STATS);
-            emitTraceEvent(traceStream, cat.str(), "stats", "E",
-                           c.start_time + c.compute_op_cost, 100,
-                           TRACE_PID_STATS);
-          }
-          if (c.compute_xfer_cost) {
-            std::stringstream cat;
-            cat << "transfer time";
-            emitTraceEvent(traceStream, cat.str(), "stats", "B", c.start_time,
-                           101, TRACE_PID_STATS);
-            emitTraceEvent(traceStream, cat.str(), "stats", "E",
-                           c.start_time + c.compute_xfer_cost, 101,
-                           TRACE_PID_STATS);
-          }
-        }
-        for (int i = 0, e = c.ld_xfer_time.size(); i < e; i++) {
-          if (!c.ld_xfer_time[i])
-            continue;
-          std::stringstream cat;
-          cat << "mem " << i << " load";
-          emitTraceEvent(traceStream, cat.str(), "stats", "B", c.start_time,
-                         (i + 1) * 200, TRACE_PID_STATS);
-          emitTraceEvent(traceStream, cat.str(), "stats", "E",
-                         c.start_time + c.ld_xfer_time[i], (i + 1) * 200,
-                         TRACE_PID_STATS);
-        }
-        for (int i = 0, e = c.st_xfer_time.size(); i < e; i++) {
-          if (!c.st_xfer_time[i])
-            continue;
-          std::stringstream cat;
-          cat << "mem " << i << " store";
-          emitTraceEvent(traceStream, cat.str(), "stats", "B", c.start_time,
-                         (i + 1) * 200 + 1, TRACE_PID_STATS);
-          emitTraceEvent(traceStream, cat.str(), "stats", "E",
-                         c.start_time + c.st_xfer_time[i], (i + 1) * 200 + 1,
-                         TRACE_PID_STATS);
-        }
-
-        // done, return.
-        q.pop_front();
-        // return;
-      } else {
-        // running...
-        LLVM_DEBUG(llvm::dbgs() << "running: '");
-        LLVM_DEBUG(c.op->print(llvm::dbgs()));
-        LLVM_DEBUG(llvm::dbgs()
-                   << "' @ " << time << " - " << c.end_time << "\n");
-        // in-order, return.
-        return;
-      }
-    }
-
-    if (!q.size()) {
-      LLVM_DEBUG(llvm::dbgs() << "queue empty @ " << time << "\n");
-      return;
-    }
-
-    CommandQueueEntry &c_next = q.front();
-
-    if (!c_next.queue_ready_time)
-      c_next.queue_ready_time = time;
-
-    bool ready = true;
-    for (Value in : c_next.op->getOperands()) {
-      if (in.getType().isa<xilinx::air::AsyncTokenType>()) {
-        if (!valueMap.count(in))
-          ready = false;
-        else if (llvm::any_cast<llvm::APInt>(valueMap[in]) != 0) {
-          LLVM_DEBUG(llvm::dbgs()
-                     << "count @ " << llvm::any_cast<llvm::APInt>(valueMap[in])
-                     << "\n");
-          ready = false;
-        }
-      }
-    }
-
-    if (!ready) {
-      LLVM_DEBUG(llvm::dbgs() << "not ready: '");
-      LLVM_DEBUG(c_next.op->print(llvm::dbgs()));
-      LLVM_DEBUG(llvm::dbgs() << "' @ " << time << "\n");
-      return;
-    }
-
-    c_next.start_time = time;
-    c_next.end_time = time + modelOp(c_next);
-    LLVM_DEBUG(llvm::dbgs() << "start: '");
-    LLVM_DEBUG(c_next.op->print(llvm::dbgs()));
-    LLVM_DEBUG(llvm::dbgs()
-               << "' @ " << time << " - " << c_next.end_time << "\n");
-
-    // emit trace event begin
-    if (time > c_next.queue_ready_time) {
-      emitTraceEvent(traceStream, "stall", "layer", "B",
-                     c_next.queue_ready_time, (size_t)(void *)&q,
-                     TRACE_PID_QUEUE);
-      emitTraceEvent(traceStream, "stall", "layer", "E", time,
-                     (size_t)(void *)&q, TRACE_PID_QUEUE);
-    }
-    emitTraceEvent(traceStream, to_string(c_next), "layer", "B", time,
-                   (size_t)(void *)&q, TRACE_PID_QUEUE);
-
-    return;
-  }
-
-  void scheduleAIRRegion(xilinx::air::ExecuteOp &ro, QueueContext *qctx) {
-
-    for (auto r : ro->getResults()) {
-      if (r.getType().isa<xilinx::air::AsyncTokenType>()) {
-        valueMap[r] = llvm::APInt(64, 1);
-      }
-    }
-    qctx->queue.push_back(
-        CommandQueueEntry(ro.getOperation()));
-    scheduleBlock(ro->getRegion(0).front(), qctx);
-  }
-
-  void scheduleScfFor(mlir::scf::ForOp &fo, QueueContext *qctx) {
-    auto ub = fo.getUpperBound().getDefiningOp<arith::ConstantIndexOp>();
-    auto lb = fo.getLowerBound().getDefiningOp<arith::ConstantIndexOp>();
-    auto step = fo.getStep().getDefiningOp<arith::ConstantIndexOp>();
-
-    assert(ub && lb && step);
-    auto r = ub.value() - lb.value();
-    auto trip_count = mlir::ceilDiv(r, step.value());
-
-    // programQueue->push_back(CommandQueueEntry(fo.getOperation()));
-
-    for (auto r : fo->getResults()) {
-      if (r.getType().isa<xilinx::air::AsyncTokenType>()) {
-        valueMap[r] = llvm::APInt(64, 1);
-      }
-    }
-
-    BlockAndValueMapping map;
-    // for the first iteration of the loop, map the iter_args to the
-    // operands of the scf.for
-    for (auto t : llvm::zip(fo.getRegionIterArgs(), fo.getIterOperands()))
-      map.map(std::get<0>(t), std::get<1>(t));
-    for (auto i = 0; i < trip_count; i++) {
-      auto bb = new mlir::Block();
-      fo.getRegion().push_back(bb);
-      auto bldr = OpBuilder::atBlockEnd(bb);
-      for (auto &o : fo.getRegion().front()) {
-        auto c = bldr.clone(o, map);
-        // for the next iteration of the loop, map the iter_args to the
-        // operands of the scf.yield
-        if (isa<scf::YieldOp>(c)) {
-          map.clear();
-          for (auto t : llvm::zip(fo.getRegionIterArgs(), c->getOperands()))
-            map.map(std::get<0>(t), std::get<1>(t));
-        }
-      }
-      scheduleBlock(*bb, qctx);
-    }
-    // replace the results of the scf.for with the operands of the
-    // final scf.yield operation
-    for (auto &a : fo.getIterOpOperands()) {
-      auto v = map.lookupOrNull(fo.getRegionIterArgForOpOperand(a));
-      fo.getResultForOpOperand(a).replaceAllUsesWith(v);
-    }
-    return;
-  }
-
-  void scheduleScfParallel(mlir::scf::ParallelOp &po, QueueContext *qctx) {
-
-    int64_t trip_count = 1;
-    for (auto t :
-         llvm::zip(po.getLowerBound(), po.getUpperBound(), po.getStep())) {
-      auto lb = std::get<0>(t).getDefiningOp<arith::ConstantIndexOp>();
-      auto ub = std::get<1>(t).getDefiningOp<arith::ConstantIndexOp>();
-      auto step = std::get<2>(t).getDefiningOp<arith::ConstantIndexOp>();
-      assert(ub && lb && step);
-      auto r = ub.value() - lb.value();
-      trip_count *= mlir::ceilDiv(r, step.value());
-    }
-
-    qctx->queue.push_back(
-        CommandQueueEntry(po.getOperation(), [=](Operation *op) {
-          auto spo = cast<scf::ParallelOp>(op);
-
-          auto initOperands = spo.getInitVals();
-          Value lastResult = initOperands[0];
-          for (auto i = 0; i < trip_count; i++) {
-            BlockAndValueMapping map;
-            auto bb = new mlir::Block();
-            spo.getRegion().push_back(bb);
-            auto bldr = OpBuilder::atBlockEnd(bb);
-            for (auto &o : spo.getRegion().front().getOperations()) {
-              if (auto rop = dyn_cast<scf::ReduceOp>(o)) {
-                auto &rbb = rop.getRegion().front();
-                map.map(rbb.getArgument(0), lastResult);
-                map.map(rbb.getArgument(1),
-                        map.lookupOrDefault(rop.getOperand()));
-                for (auto &ro : rbb) {
-                  if (auto rrop = dyn_cast<scf::ReduceReturnOp>(ro))
-                    lastResult = map.lookupOrDefault(rrop.getOperand());
-                  else
-                    bldr.clone(ro, map);
-                }
-              } else {
-                bldr.clone(o, map);
-              }
-            }
-            QueueContext *ctx = qctx;
-            auto qs = qctx->match("scf.parallel");
-            if (qs) {
-              ctx = (*qs)->at(i % (*qs)->size());
-            }
-            scheduleBlock(*bb, ctx);
-          }
-          spo.getResult(0).replaceAllUsesWith({lastResult});
-        }));
-    return;
-  }
-
-  void scheduleAirLaunch(xilinx::air::LaunchOp &lo, QueueContext *qctx) {
-
-    int64_t trip_count = 1;
-    for (auto s : lo.getSizeOperands()) {
-      auto ub = s.getDefiningOp<arith::ConstantIndexOp>();
-      auto r = ub.value();
-      trip_count *= r;
-    }
-
-    qctx->queue.push_back(
-        CommandQueueEntry(lo.getOperation(), [=](Operation *op) {
-          auto spo = cast<xilinx::air::LaunchOp>(op);
-
-          for (auto i = 0; i < trip_count; i++) {
-            BlockAndValueMapping map;
-            auto bb = new mlir::Block();
-            lo->getRegion(0).push_back(bb);
-            auto bldr = OpBuilder::atBlockEnd(bb);
-            for (auto &o : lo->getRegion(0).front().getOperations()) {
-              bldr.clone(o, map);
-            }
-            QueueContext *ctx = qctx;
-            auto qs = qctx->match("scf.parallel");
-            if (qs) {
-              ctx = (*qs)->at(i % (*qs)->size());
-            }
-            scheduleBlock(*bb, ctx);
-          }
-        }));
-    return;
-  }
-
-  void scheduleHerd(xilinx::air::HerdOp &hlo, QueueContext *qctx) {
-
-    int64_t cols = hlo.getNumCols();
-    int64_t rows = hlo.getNumRows();
-
-    if (hlo->getNumResults())
-      valueMap[hlo->getResult(0)] = APInt(64, rows * cols + 1);
-
-    qctx->queue.push_back(
-        CommandQueueEntry(hlo.getOperation(), [=](Operation *op) {
-          auto ho = cast<xilinx::air::HerdOp>(op);
-          auto tokenTy = xilinx::air::AsyncTokenType::get(op->getContext());
-          // SmallVector<Value, 16> exit_tokens;
-          for (auto row = 0; row < rows; row++) {
-            for (auto col = 0; col < cols; col++) {
-              BlockAndValueMapping map;
-              auto bb = new mlir::Block();
-              ho.getRegion().push_back(bb);
-              auto bldr = OpBuilder::atBlockEnd(bb);
-              // insert a blocking wait on all input dependencies of the launch
-              // op
-              bldr.create<xilinx::air::WaitAllOp>(op->getLoc(),
-                                                  SmallVector<Type, 1>{},
-                                                  ho.getAsyncDependencies());
-              SmallVector<Value, 8> exit_deps;
-              for (auto &o : ho.getRegion().front()) {
-                auto c = bldr.clone(o, map);
-                // collect each token created in the block
-                for (auto r : c->getResults())
-                  if (r.getType().isa<xilinx::air::AsyncTokenType>())
-                    exit_deps.push_back(r);
-              }
-              Operation *t = nullptr;
-              if (ho->getNumResults()) {
-                // Create an async wait_all on all tokens created in the block.
-                // When the wait_all runs it decrements the herd result event.
-                t = bldr.create<xilinx::air::WaitAllOp>(
-                    op->getLoc(), SmallVector<Type, 1>{tokenTy}, exit_deps);
-                // exit_tokens.push_back(t.getResult(0));
-              }
-              QueueContext *ctx = qctx;
-              auto qs = qctx->match("air.launch_herd");
-              if (qs)
-                ctx = (*qs)->at(col * 4 + row);
-              scheduleBlock(*bb, ctx);
-              if (t) {
-                valueMap[t->getResult(0)] = APInt(64, 2);
-                ctx->queue.push_back(
-                    CommandQueueEntry(t, [=](Operation *tOp) {
-                      valueMap[op->getResult(0)] =
-                          llvm::any_cast<llvm::APInt>(
-                              valueMap[op->getResult(0)]) -
-                          llvm::APInt(64, 1);
-                    }));
-              }
-            }
-          }
-        }));
-  }
-
-  void scheduleAIRAsyncOp(Operation *op, std::deque<CommandQueueEntry> *q) {
-    q->push_back(CommandQueueEntry(op));
-    for (auto r : op->getResults()) {
-      if (r.getType().isa<xilinx::air::AsyncTokenType>()) {
-        valueMap[r] = APInt(64, 1);
-      }
-    }
-  }
-
-  void scheduleBlock(mlir::Block &block, QueueContext *qctx) {
-    if (!block.getOperations().size())
-      return;
-    Operation &o = block.getOperations().front();
-    Operation *op = &o;
-    while (op) {
-
-      if (isa<arith::ConstantOp>(op) || isa<arith::ConstantIndexOp>(op)) {
-        executeOp(*op);
-      } else if (isa<memref::AllocOp>(op) || isa<memref::DeallocOp>(op)) {
-        qctx->queue.push_back(CommandQueueEntry(op));
-      } else if (isa<xilinx::air::DmaMemcpyInterface>(op)) {
-        QueueContext *ctx = qctx;
-        auto qs = qctx->match("air.dma_memcpy_nd");
-        if (qs)
-          ctx = qctx->getRR(*qs);
-        scheduleAIRAsyncOp(op, &ctx->queue);
-      } else if (isa<xilinx::air::WaitAllOp>(op) ||
-                 isa<xilinx::air::ExecuteTerminatorOp>(op)) {
-        scheduleAIRAsyncOp(op, &qctx->queue);
-      } else if (auto r = dyn_cast<xilinx::air::ExecuteOp>(op)) {
-        scheduleAIRRegion(r, qctx);
-      } else if (auto hlo = dyn_cast<xilinx::air::HerdOp>(op)) {
-        scheduleHerd(hlo, qctx);
-      } else if (auto linalgOp = mlir::dyn_cast<linalg::LinalgOp>(op)) {
-        qctx->queue.push_back(CommandQueueEntry(op));
-      } else if (auto sfo = dyn_cast<mlir::scf::ForOp>(op)) {
-        scheduleScfFor(sfo, qctx);
-      } else if (auto spo = dyn_cast<mlir::scf::ParallelOp>(op)) {
-        scheduleScfParallel(spo, qctx);
-      } else if (auto alo = dyn_cast<xilinx::air::LaunchOp>(op)) {
-        scheduleAirLaunch(alo, qctx);
-      } else {
-        ; // op->dump();
-        ; // llvm_unreachable("unexpected operation");
-      }
-      op = op->getNextNode();
-    }
-  }
-
-  void scheduleRegion(mlir::Region &region, QueueContext *qctx) {
-    for (auto &b : region.getBlocks())
-      scheduleBlock(b, qctx);
-  }
-
-  void scheduleFunction(func::FuncOp &toplevel) {
-    QueueContext *ctx = makeTopContext();
-    scheduleRegion(toplevel.getRegion(), ctx);
-
-    uint64_t time = 1;
-
-    bool running = true;
-    while (running) {
-      LLVM_DEBUG(llvm::dbgs() << "time: " << time << "\n");
-
-      running = false;
-      std::vector<uint64_t> next_times;
-
-      for (auto *qctx : queues) {
-        auto &q = qctx->queue;
-        processQueue(q, time);
-        if (q.size()) {
-          running = true;
-          if (q.front().is_started() && q.front().end_time)
-            next_times.push_back(q.front().end_time);
-        }
-      }
-
-      uint64_t next_time = 0;
-      if (next_times.size())
-        next_time = *std::min_element(next_times.begin(), next_times.end());
-      time = std::max(time + 1, next_time);
-      // if (time > 5000000)
-      //   running = false;
-    }
-
-    for (unsigned ptr = 0, end = store.size(); ptr != end; ++ptr) {
-      if (store[ptr].size()) {
-        emitTraceEvent(traceStream, "dealloc", "layer", "E", time, ptr,
-                       TRACE_PID_ALLOC);
-        store[ptr].resize(0);
-      }
-    }
-    llvm::dbgs() << "Finished at time " << time << "\n";
-  }
-
-private:
-  llvm::raw_ostream &traceStream;
-  llvm::json::Value &jsonModel;
-  uint64_t time;
-
-  std::vector<llvm::Any> results;
-  std::vector<uint64_t> resultTimes;
-
-  // The valueMap associates each SSA statement in the program
-  // (represented by a Value*) with it's corresponding value.
-  llvm::DenseMap<Value, llvm::Any> valueMap;
-
-  // The store associates each allocation in the program
-  // (represented by a int) with a vector of values which can be
-  // accessed by it.
-  std::vector<std::vector<llvm::Any>> store;
-
-  unsigned dispatch_slots;
-  unsigned dispatch_dma_slots;
-  unsigned core_dma_slots;
-  unsigned herd_slots;
 
 }; // AIRRunner_impl
 

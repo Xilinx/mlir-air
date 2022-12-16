@@ -38,13 +38,14 @@ with air.mlir.ir.Context(), Location.unknown():
         exit(0)
 
     # tile and map to air
-    pipeline = ",".join([
-        "air-linalg-codegen{l1-tile-size=32,32,32 l2-tile-size=64,64,64 l2-promote=true}",
-        "air-par-to-herd{depth=1}",
-        "air-par-to-launch{depth=0}",
-        "air-copy-to-dma",
+    pipeline = "builtin.module("+",".join([
+        "air-linalg-codegen{l2-tile-size=64,64,64 l2-promote=true l1-tile-size=32,32,32 l1-promote=true}",
         "canonicalize", "cse",
-    ])
+        "air-par-to-herd{depth=1}",
+        "air-copy-to-dma",
+        "air-par-to-launch{has-air-partition=true}",
+        "canonicalize", "cse",
+    ])+')'
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
     pm.run(air_module)
     
@@ -52,7 +53,17 @@ with air.mlir.ir.Context(), Location.unknown():
     print (air_module)
 
     # generate dependency information for runner
-    pm = air.mlir.passmanager.PassManager.parse("air-dependency,canonicalize,cse")
+    pipeline = "builtin.module("+",".join([
+        "air-dependency",
+        "air-dependency-schedule-opt",
+        "air-specialize-dma-broadcast",
+        "air-dma-to-channel",
+        "canonicalize", "cse",
+        "air-dependency-canonicalize",
+        "air-dependency-parse-graph{output-dir=dot_graphs/}",
+        "canonicalize", "cse",
+    ])+')'
+    pm = air.mlir.passmanager.PassManager.parse(pipeline)
     pm.run(air_module)
 
     print ("\nAIR Dialect Module (async)\n")
