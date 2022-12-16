@@ -42,7 +42,7 @@ if len(args) and args[0] == '-dump-linalg':
     print(mlir)
     exit(0)
 
-lowering_pipeline = ",".join([
+lowering_pipeline = "builtin.module("+",".join([
     "air-linalg-name",
     "air-linalg-codegen{input-filter=linalg.matmul1 herd-size=2,2 l1-tile-size=32,32,32}",
     "air-linalg-codegen{input-filter=linalg.matmul3 herd-size=2,2 l1-tile-size=32,32,32}",
@@ -61,7 +61,7 @@ lowering_pipeline = ",".join([
     "air-copy-to-dma",
     "canonicalize",
     "cse"
-])
+])+')'
 
 airbackend = backend.LinalgOnTensorsAirBackend()
 compiled = airbackend.compile(mlir, lowering_pipeline)

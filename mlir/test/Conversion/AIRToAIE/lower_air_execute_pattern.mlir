@@ -25,13 +25,13 @@ module attributes {torch.debug_module_name = "mmult"} {
       %c0 = arith.constant 0 : index
       %c64 = arith.constant 64 : index
       %c32 = arith.constant 32 : index
-      // CHECK: affine.apply #map()[%{{.*}}]
+      // CHECK: affine.apply #{{.*}}()[%{{.*}}]
       // CHECK-NEXT: [[T0:%.*]] = air.wait_all async
       %asyncToken, %valOut = air.execute -> (index) {
         %6 = affine.apply #map()[%arg3]
         air.execute_terminator %6 : index
       } {id = 5 : i32}
-      // CHECK-NEXT: affine.apply #map()[%{{.*}}]
+      // CHECK-NEXT: affine.apply #{{.*}}()[%{{.*}}]
       // CHECK-NEXT: [[T1:%.*]] = air.wait_all async
       %asyncToken_0, %valOut_1 = air.execute -> (index) {
         %6 = affine.apply #map()[%arg4]

@@ -27,7 +27,7 @@ def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
                           Arguments<(ins OptionalAttr<SymbolRefAttr>:$symbol,
                                          Variadic<air_AsyncToken>:$async_dependencies,
                                          Variadic<Index>:$sizes,
-                                         Variadic<AnyType>:$operands)>,
+                                         Variadic<AnyType>:$launch_operands)>,
                           Results<(outs Optional<air_AsyncToken>:$async_token)> {
   let summary = "Launch";
   let description = [{
@@ -38,9 +38,9 @@ def air_LaunchOp : air_Op<"launch", [air_AsyncOpInterface,
 
   let skipDefaultBuilders = 1;
   let builders = [
-    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$kernel_operands)>,
+    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$launch_operands)>,
     OpBuilder<(ins "ValueRange":$async_dependencies,
-      "ValueRange":$sizes,"ValueRange":$kernel_operands,
+      "ValueRange":$sizes,"ValueRange":$launch_operands,
       CArg<"bool", "false">:$is_async,
       CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>
   ];
@@ -86,7 +86,7 @@ def air_PartitionOp : air_Op<"partition", [air_AsyncOpInterface,
                         Arguments<(ins OptionalAttr<SymbolRefAttr>:$symbol,
                                        Variadic<air_AsyncToken>:$async_dependencies,
                                        Variadic<Index>:$sizes,
-                                       Variadic<AnyType>:$operands)>,
+                                       Variadic<AnyType>:$partition_operands)>,
                         Results<(outs Optional<air_AsyncToken>:$async_token)> {
   let summary = "Partition";
   let description = [{
@@ -97,9 +97,9 @@ def air_PartitionOp : air_Op<"partition", [air_AsyncOpInterface,
 
   let skipDefaultBuilders = 1;
   let builders = [
-    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$kernel_operands)>,
+    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$partition_operands)>,
     OpBuilder<(ins "ValueRange":$async_dependencies,
-      "ValueRange":$sizes,"ValueRange":$kernel_operands,
+      "ValueRange":$sizes,"ValueRange":$partition_operands,
       CArg<"bool", "false">:$is_async,
       CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>
   ];
@@ -176,7 +176,7 @@ def air_HerdOp : air_Op<"herd", [air_AsyncOpInterface,
                         Arguments<(ins OptionalAttr<SymbolRefAttr>:$symbol,
                                        Variadic<air_AsyncToken>:$async_dependencies,
                                        Variadic<Index>:$sizes,
-                                       Variadic<AnyType>:$operands)>,
+                                       Variadic<AnyType>:$herd_operands)>,
                         Results<(outs Optional<air_AsyncToken>:$async_token)> {
   let summary = "Herd";
   let description = [{
@@ -187,10 +187,10 @@ def air_HerdOp : air_Op<"herd", [air_AsyncOpInterface,
 
   let skipDefaultBuilders = 1;
   let builders = [
-    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$kernel_operands)>,
+    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$herd_operands)>,
     OpBuilder<(ins "ValueRange":$async_dependencies,
       "ValueRange":$sizes,
-      "ValueRange":$kernel_operands,
+      "ValueRange":$herd_operands,
       CArg<"bool", "false">:$is_async,
       CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>
   ];
