@@ -177,9 +177,10 @@ convertOpToFunctionWithTileId(Operation *op, ArrayRef<Value> operands,
   for (auto o : operands) {
     // erase the size to reduce the number of manglings
     if (auto memrefTy = o.getType().dyn_cast<MemRefType>()) {
-      auto t = MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
-                               memrefTy.getElementType(), memrefTy.getLayout(),
-                               /*memrefTy.getMemorySpace()*/ 0);
+      auto t = MemRefType::get(
+          std::vector<int64_t>(memrefTy.getRank(), ShapedType::kDynamic),
+          memrefTy.getElementType(), memrefTy.getLayout(),
+          /*memrefTy.getMemorySpace()*/ 0);
       callops.push_back(
           rewriter.create<UnrealizedConversionCastOp>(op->getLoc(), t, o)
               .getResult(0));
@@ -194,10 +195,10 @@ convertOpToFunctionWithTileId(Operation *op, ArrayRef<Value> operands,
   SmallVector<Type, 1> token_result_tys;
   for (auto t : op->getResultTypes()) {
     if (auto memrefTy = t.dyn_cast<MemRefType>()) {
-      auto mrt =
-          MemRefType::get(std::vector<int64_t>(memrefTy.getRank(), -1),
-                          memrefTy.getElementType(), memrefTy.getLayout(),
-                          /*memrefTy.getMemorySpace()*/ 0);
+      auto mrt = MemRefType::get(
+          std::vector<int64_t>(memrefTy.getRank(), ShapedType::kDynamic),
+          memrefTy.getElementType(), memrefTy.getLayout(),
+          /*memrefTy.getMemorySpace()*/ 0);
       retTys.push_back(mrt);
       real_result_tys.push_back(memrefTy);
     } else if (t.isa<air::AsyncTokenType>()) {
