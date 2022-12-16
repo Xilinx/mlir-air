@@ -23,16 +23,12 @@
 #define DEBUG_TYPE "air-util"
 
 using namespace mlir;
+using namespace xilinx;
 
-namespace xilinx {
-namespace air {
-
-const StringLiteral LinalgTransforms::kLinalgTransformMarker =
+const StringLiteral air::LinalgTransforms::kLinalgTransformMarker =
     "__internal_linalg_transform__";
 
-namespace {
-
-std::string getMangledType(const Type ty) {
+static std::string getMangledType(const Type ty) {
   std::stringstream ret;
 
   if (const MemRefType mrt = ty.dyn_cast<const MemRefType>()) {
@@ -63,8 +59,8 @@ std::string getMangledType(const Type ty) {
   return ret.str();
 }
 
-std::string getMangledFuncName(ModuleOp module, std::string prefix,
-                               FunctionType fnTy) {
+static std::string getMangledFuncName(ModuleOp module, std::string prefix,
+                                      FunctionType fnTy) {
   std::string sep = "_";
 
   auto resultTy = fnTy.getResults();
@@ -78,41 +74,31 @@ std::string getMangledFuncName(ModuleOp module, std::string prefix,
 
   return ret;
 }
-} // namespace
 
-void coalesceLoops(AffineForOp outer, AffineForOp inner) {
-  auto ctx = outer.getContext();
-  auto loc = outer.getLoc();
-  auto builder = OpBuilder::atBlockBegin(outer.getBody());
-  // ub_new = ub_inner*ub_outer
-  // iv_new = 0...ub_new-1
-  // iv_new_inner = mod(iv_new, ub_inner)
-  // iv_new_outer = floordiv(iv_new, ub_inner)
-  auto ub_inner_expr = inner.getUpperBoundMap().getResult(0);
-  auto ub_outer_expr = outer.getUpperBoundMap().getResult(0);
-  auto ub_new_expr = ub_inner_expr * ub_outer_expr;
-  auto iv_new_inner_expr = getAffineDimExpr(0, ctx) % ub_inner_expr;
-  auto iv_new_outer_expr = getAffineDimExpr(0, ctx).floorDiv(ub_inner_expr);
+func::FuncOp air::getMangledFunction(ModuleOp module, std::string prefix,
+                                     ArrayRef<Value> operands,
+                                     ArrayRef<Type> retTys) {
+  Builder builder(module);
 
-  outer.setUpperBoundMap(AffineMap::get(0, 0, ub_new_expr));
-  auto iv_new = outer.getInductionVar();
-  auto iv_new_inner = builder.create<AffineApplyOp>(
-      loc, AffineMap::get(1, 0, iv_new_inner_expr), iv_new);
-  auto iv_new_outer = builder.create<AffineApplyOp>(
-      loc, AffineMap::get(1, 0, iv_new_outer_expr), iv_new);
-  SmallPtrSet<Operation *, 2> keep{iv_new_inner, iv_new_outer};
-  iv_new.replaceAllUsesExcept(iv_new_outer, keep);
-  inner.getInductionVar().replaceAllUsesWith(iv_new_inner);
-  // erase terminator from inner loop's body
-  inner.getBody()->back().erase();
-  // move inner loop's body to outer loop
-  outer.getBody()->getOperations().splice(Block::iterator(inner.getOperation()),
-                                          inner.getBody()->getOperations());
-  inner.erase();
-  return;
+  SmallVector<Type, 16> tys;
+  for (auto o : operands)
+    tys.push_back(o.getType());
+
+  auto fnTy = builder.getFunctionType(tys, retTys);
+
+  std::string fnName = getMangledFuncName(module, prefix, fnTy);
+  auto fn = module.lookupSymbol<func::FuncOp>(fnName);
+
+  if (!fn) {
+    fn = func::FuncOp::create(builder.getUnknownLoc(), fnName, fnTy);
+    fn.setPrivate();
+    module.push_back(fn);
+  }
+
+  return fn;
 }
 
-void normalizeLoop(AffineForOp afo) {
+void air::normalizeLoop(AffineForOp afo) {
   auto ubMap = afo.getUpperBoundMap();
   auto lbMap = afo.getLowerBoundMap();
   auto ctx = afo.getContext();
@@ -141,30 +127,7 @@ void normalizeLoop(AffineForOp afo) {
   return;
 }
 
-func::FuncOp getMangledFunction(ModuleOp module, std::string prefix,
-                                ArrayRef<Value> operands,
-                                ArrayRef<Type> retTys) {
-  Builder builder(module);
-
-  SmallVector<Type, 16> tys;
-  for (auto o : operands)
-    tys.push_back(o.getType());
-
-  auto fnTy = builder.getFunctionType(tys, retTys);
-
-  std::string fnName = getMangledFuncName(module, prefix, fnTy);
-  auto fn = module.lookupSymbol<func::FuncOp>(fnName);
-
-  if (!fn) {
-    fn = func::FuncOp::create(builder.getUnknownLoc(), fnName, fnTy);
-    fn.setPrivate();
-    module.push_back(fn);
-  }
-
-  return fn;
-}
-
-uint64_t getTensorVolume(const ShapedType ty) {
+uint64_t air::getTensorVolume(const ShapedType ty) {
 
   if (!ty.hasRank())
     return 1;
@@ -175,7 +138,7 @@ uint64_t getTensorVolume(const ShapedType ty) {
   return volume;
 }
 
-uint64_t getTensorVolume(const Type ty) {
+uint64_t air::getTensorVolume(const Type ty) {
   if (auto t = ty.dyn_cast<ShapedType>()) {
     return getTensorVolume(t);
   } else {
@@ -184,7 +147,7 @@ uint64_t getTensorVolume(const Type ty) {
 }
 
 // Get the parent scf.for op of an iter_arg
-scf::ForOp getForRegionIterArgsOwner(Value val) {
+scf::ForOp air::getForRegionIterArgsOwner(Value val) {
   auto ivArg = val.dyn_cast<BlockArgument>();
   if (!ivArg)
     return scf::ForOp();
@@ -194,7 +157,7 @@ scf::ForOp getForRegionIterArgsOwner(Value val) {
 }
 
 // Get the parent scf.parallel op of an init_val
-scf::ParallelOp getParallelRegionInitValsOwner(Operation *op, Value val) {
+scf::ParallelOp air::getParallelRegionInitValsOwner(Operation *op, Value val) {
   if (auto parent_parallel_op = op->getParentOfType<scf::ParallelOp>()) {
     for (auto init_val : parent_parallel_op.getInitVals()) {
       if (init_val == val)
@@ -205,7 +168,7 @@ scf::ParallelOp getParallelRegionInitValsOwner(Operation *op, Value val) {
 }
 
 // Get the parent air.launch_herd op of a tile id
-air::HerdOp getHerdArgOwner(Value val) {
+air::HerdOp air::getHerdArgOwner(Value val) {
   auto ivArg = val.dyn_cast<BlockArgument>();
   if (!ivArg)
     return air::HerdOp();
@@ -215,7 +178,7 @@ air::HerdOp getHerdArgOwner(Value val) {
 }
 
 // Get the parent air.hierarchy op of a tile id
-air::HierarchyInterface getHierarchyArgOwner(Value val) {
+air::HierarchyInterface air::getHierarchyArgOwner(Value val) {
   auto ivArg = val.dyn_cast<BlockArgument>();
   if (!ivArg)
     return air::HierarchyInterface();
@@ -225,14 +188,14 @@ air::HierarchyInterface getHierarchyArgOwner(Value val) {
 }
 
 // Get operation's "id" attribute
-int getIdAttr(Operation *op) {
+int air::getIdAttr(Operation *op) {
   auto idAttr = op->getAttrOfType<IntegerAttr>("id");
   assert(idAttr && "op has no attribute named 'id'");
   return idAttr.getInt();
 }
 
 // Renumber the DMA ops
-void renumberDmaOps(func::FuncOp func, std::string mode) {
+void air::renumberDmaOps(func::FuncOp func, std::string mode) {
   unsigned id = 0;
   if (mode == "global") {
     // Renumber DMA ops per entire module
@@ -261,13 +224,30 @@ void renumberDmaOps(func::FuncOp func, std::string mode) {
     assert(false && "Unknown dma renumber mode. Supported modes: global, herd");
 }
 
-// Get op type as string
-std::string to_string(Operation *op) {
+// Return op name as string
+std::string air::to_string(Operation *op) {
   return op->getName().getStringRef().str();
 }
 
+// Return memory space as string
+std::string air::getMemorySpaceAsString(Value memref) {
+  assert(memref.getType().isa<MemRefType>() && "value is not a memref");
+  auto memory_space_as_int =
+      memref.getType().dyn_cast<MemRefType>().getMemorySpaceAsInt();
+  std::string memorySpaceStr;
+  if (memory_space_as_int == (int)air::MemorySpace::L1) {
+    memorySpaceStr = "L1";
+  } else if (memory_space_as_int == (int)air::MemorySpace::L2) {
+    memorySpaceStr = "L2";
+  } else if (memory_space_as_int == (int)air::MemorySpace::L3) {
+    memorySpaceStr = "L3";
+  } else
+    assert(false && "unknown memory space");
+  return memorySpaceStr;
+}
+
 // Returns the first affine if op in block; nullptr otherwise
-mlir::AffineIfOp getAffineIfInBlock(mlir::Block *block) {
+mlir::AffineIfOp air::getAffineIfInBlock(mlir::Block *block) {
   for (auto op : block->getOps<mlir::AffineIfOp>()) {
     return op;
   }
@@ -275,7 +255,7 @@ mlir::AffineIfOp getAffineIfInBlock(mlir::Block *block) {
 }
 
 // Returns the first air.dma op in block; nullptr otherwise
-air::DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block) {
+air::DmaMemcpyNdOp air::getAIRDmaInBlock(mlir::Block *block) {
   for (auto op : block->getOps<air::DmaMemcpyNdOp>()) {
     return op;
   }
@@ -283,7 +263,7 @@ air::DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block) {
 }
 
 // Erase a kernel operand from air.hierarchy op
-void eraseAIRHierarchyOperand(air::HierarchyInterface op, unsigned index) {
+void air::eraseAIRHierarchyOperand(air::HierarchyInterface op, unsigned index) {
   assert(index + 1 <= op->getNumOperands() && "Index out of range");
   auto numAsyncDeps = dyn_cast<air::AsyncOpInterface>(op.getOperation())
                           .getAsyncDependencies()
@@ -315,5 +295,63 @@ void eraseAIRHierarchyOperand(air::HierarchyInterface op, unsigned index) {
   op->setAttr(attrName, Builder(op->getContext()).getDenseI32ArrayAttr(sizes));
 }
 
-} // namespace air
-} // namespace xilinx
+// Get channel declaration through channel symbol
+air::ChannelOp
+air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
+  auto module = op->getParentOfType<ModuleOp>();
+  return dyn_cast<air::ChannelOp>(module.lookupSymbol(op.getChanName()));
+}
+
+// Get the other channel op through channel symbol
+air::ChannelGetOp
+air::getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put) {
+  auto module = put->getParentOfType<ModuleOp>();
+  auto channel_op = getChannelDeclarationThroughSymbol(
+      dyn_cast<air::ChannelInterface>(put.getOperation()));
+  auto attr =
+      channel_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
+
+  air::ChannelGetOp output = nullptr;
+  module.walk([&](Operation *op) {
+    if (auto get = dyn_cast<air::ChannelGetOp>(op)) {
+      if (get.getChanName() == attr) {
+        if (output)
+          assert(false && "found multiple occurrences of channel get");
+        else
+          output = get;
+      }
+    }
+  });
+
+  if (output)
+    return output;
+  else
+    return ChannelGetOp();
+}
+
+// Get the other channel op through channel symbol
+air::ChannelPutOp
+air::getTheOtherChannelOpThroughSymbol(air::ChannelGetOp get) {
+  auto module = get->getParentOfType<ModuleOp>();
+  auto channel_op = getChannelDeclarationThroughSymbol(
+      dyn_cast<air::ChannelInterface>(get.getOperation()));
+  auto attr =
+      channel_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
+
+  air::ChannelPutOp output = nullptr;
+  module.walk([&](Operation *op) {
+    if (auto put = dyn_cast<ChannelPutOp>(op)) {
+      if (put.getChanName() == attr) {
+        if (output)
+          assert(false && "found multiple occurrences of channel put");
+        else
+          output = put;
+      }
+    }
+  });
+
+  if (output)
+    return output;
+  else
+    return ChannelPutOp();
+}
