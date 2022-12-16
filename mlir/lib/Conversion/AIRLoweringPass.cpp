@@ -438,6 +438,251 @@ public:
   }
 };
 
+class AIRChannelPutToAIRRtConversion
+    : public OpConversionPattern<xilinx::air::ChannelPutOp> {
+public:
+  using OpConversionPattern<xilinx::air::ChannelPutOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(xilinx::air::ChannelPutOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    auto ctx = op->getContext();
+
+    if (op->getParentOfType<air::HerdOp>())
+      return failure();
+
+    SmallVector<Value, 4> deps;
+    for (auto o : adaptor.getOperands())
+      if (o.getType().isa<xilinx::airrt::EventType>())
+        deps.push_back(o);
+    if (deps.size())
+      rewriter.create<xilinx::airrt::WaitAllOp>(
+          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
+
+    auto getOp = getTheOtherChannelOpThroughSymbol(op);
+
+    MemRefType srcType = op.getSrcMemref().getType().cast<MemRefType>();
+    MemRefType dstType = getOp.getDstMemref().getType().cast<MemRefType>();
+
+    bool isFromTile = false;
+    bool isFullMemcpy = false;
+    if (srcType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1 &&
+        dstType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3) {
+      isFromTile = true;
+    } else if (dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L1 &&
+               srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L3) {
+      isFromTile = false;
+    } else if (srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L1 &&
+               dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L2) {
+      isFromTile = true;
+    } else if (dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L1 &&
+               srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L2) {
+      isFromTile = false;
+    } else if (srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L3 &&
+               dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L2) {
+      isFullMemcpy = true;
+    } else if (dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L3 &&
+               srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L2) {
+      isFromTile = true;
+      isFullMemcpy = true;
+    } else
+      return failure();
+    assert(!isFromTile);
+    assert(!isFullMemcpy);
+
+    SmallVector<Value, 16> opers;
+
+    auto idTy = IntegerType::get(op->getContext(), 32);
+    if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
+      opers.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
+    } else {
+      opers.push_back(rewriter.create<arith::ConstantOp>(
+          loc, idTy, IntegerAttr::get(idTy, 0)));
+    }
+
+    auto i64Ty = rewriter.getI64Type();
+    auto zero = rewriter.create<arith::ConstantOp>(loc, i64Ty,
+                                                   IntegerAttr::get(i64Ty, 0));
+    auto one = rewriter.create<arith::ConstantOp>(loc, i64Ty,
+                                                  IntegerAttr::get(i64Ty, 1));
+
+    // tile ids
+    opers.push_back(zero.getResult());
+    opers.push_back(zero.getResult());
+
+    opers.push_back(op.getSrcMemref());
+
+    SmallVector<Value, 4> offsets(4, zero);
+    SmallVector<Value, 4> lengths(4, one);
+    SmallVector<Value, 3> strides(3, zero);
+
+    int idx = 4 - srcType.getRank();
+    for (auto o : op.getSrcOffsets())
+      offsets[idx++] = rewriter.create<IndexCastOp>(
+          op->getLoc(), IntegerType::get(ctx, 64), o);
+    idx = 4 - dstType.getRank();
+    auto op_strides = op.getSrcStrides();
+    if (op_strides.size())
+      for (auto o : op_strides.drop_back())
+        strides[idx++] = rewriter.create<IndexCastOp>(
+            op->getLoc(), IntegerType::get(ctx, 64), o);
+    idx = 4 - srcType.getRank();
+    for (auto o : op.getSrcSizes())
+      lengths[idx++] = rewriter.create<IndexCastOp>(
+          op->getLoc(), IntegerType::get(ctx, 64), o);
+
+    opers.append(offsets);
+    opers.append(lengths);
+    opers.append(strides);
+
+    Operation *airrtOp = nullptr;
+    SmallVector<Type, 1> tys;
+    if (op->getNumResults())
+      tys.push_back(xilinx::airrt::EventType::get(ctx));
+
+    airrtOp = rewriter.create<xilinx::airrt::DmaMemcpyNdOp>(loc, tys, opers);
+
+    rewriter.replaceOp(op, airrtOp->getResults());
+    return success();
+  }
+};
+
+class AIRChannelGetToAIRRtConversion
+    : public OpConversionPattern<xilinx::air::ChannelGetOp> {
+public:
+  using OpConversionPattern<xilinx::air::ChannelGetOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(xilinx::air::ChannelGetOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    auto ctx = op->getContext();
+
+    if (op->getParentOfType<air::HerdOp>())
+      return failure();
+
+    SmallVector<Value, 4> deps;
+    for (auto o : adaptor.getOperands())
+      if (o.getType().isa<xilinx::airrt::EventType>())
+        deps.push_back(o);
+    if (deps.size())
+      rewriter.create<xilinx::airrt::WaitAllOp>(
+          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
+
+    auto putOp = getTheOtherChannelOpThroughSymbol(op);
+
+    MemRefType srcType = putOp.getSrcMemref().getType().cast<MemRefType>();
+    MemRefType dstType = op.getDstMemref().getType().cast<MemRefType>();
+
+    bool isFromTile = false;
+    bool isFullMemcpy = false;
+    if (srcType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1 &&
+        dstType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3) {
+      isFromTile = true;
+    } else if (dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L1 &&
+               srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L3) {
+      isFromTile = false;
+    } else if (srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L1 &&
+               dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L2) {
+      isFromTile = true;
+    } else if (dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L1 &&
+               srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L2) {
+      isFromTile = false;
+    } else if (srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L3 &&
+               dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L2) {
+      isFullMemcpy = true;
+    } else if (dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L3 &&
+               srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L2) {
+      isFromTile = true;
+      isFullMemcpy = true;
+    } else
+      return failure();
+    assert(isFromTile);
+    assert(!isFullMemcpy);
+
+    SmallVector<Value, 16> opers;
+
+    auto idTy = IntegerType::get(op->getContext(), 32);
+    if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
+      opers.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
+    } else {
+      opers.push_back(rewriter.create<arith::ConstantOp>(
+          loc, idTy, IntegerAttr::get(idTy, 0)));
+    }
+
+    auto i64Ty = rewriter.getI64Type();
+    auto zero = rewriter.create<arith::ConstantOp>(loc, i64Ty,
+                                                   IntegerAttr::get(i64Ty, 0));
+    auto one = rewriter.create<arith::ConstantOp>(loc, i64Ty,
+                                                  IntegerAttr::get(i64Ty, 1));
+
+    // tile ids
+    opers.push_back(zero.getResult());
+    opers.push_back(zero.getResult());
+
+    opers[1] = rewriter.create<IndexCastOp>(
+        loc, IntegerType::get(op->getContext(), 64), opers[1]);
+    opers[2] = rewriter.create<IndexCastOp>(
+        loc, IntegerType::get(op->getContext(), 64), opers[2]);
+
+    opers.push_back(op.getDstMemref());
+
+    SmallVector<Value, 4> offsets(4, zero);
+    SmallVector<Value, 4> lengths(4, one);
+    SmallVector<Value, 3> strides(3, zero);
+
+    int idx = 4 - srcType.getRank();
+    for (auto o : op.getDstOffsets())
+      offsets[idx++] = rewriter.create<IndexCastOp>(
+          op->getLoc(), IntegerType::get(ctx, 64), o);
+    idx = 4 - dstType.getRank();
+    auto op_strides = op.getDstStrides();
+    if (op_strides.size())
+      for (auto o : op_strides.drop_back())
+        strides[idx++] = rewriter.create<IndexCastOp>(
+            op->getLoc(), IntegerType::get(ctx, 64), o);
+    idx = 4 - srcType.getRank();
+    for (auto o : op.getDstSizes())
+      lengths[idx++] = rewriter.create<IndexCastOp>(
+          op->getLoc(), IntegerType::get(ctx, 64), o);
+
+    opers.append(offsets);
+    opers.append(lengths);
+    opers.append(strides);
+
+    Operation *airrtOp = nullptr;
+    SmallVector<Type, 1> tys;
+    if (op->getNumResults())
+      tys.push_back(xilinx::airrt::EventType::get(ctx));
+
+    airrtOp = rewriter.create<xilinx::airrt::DmaMemcpyNdOp>(loc, tys, opers);
+
+    rewriter.replaceOp(op, airrtOp->getResults());
+    return success();
+  }
+};
+
 class L2AllocToAIRRtConversion : public ConversionPattern {
 public:
   explicit L2AllocToAIRRtConversion(MLIRContext *context)
@@ -716,7 +961,8 @@ public:
                                                                    converter);
 
     air_patterns
-        .add<AIRDmaMemcpyNdToAIRRtConversion, AIRWaitAllToAIRRtConversion>(
+        .add<AIRDmaMemcpyNdToAIRRtConversion, AIRChannelPutToAIRRtConversion,
+             AIRChannelGetToAIRRtConversion, AIRWaitAllToAIRRtConversion>(
             converter, context);
 
     if (failed(
