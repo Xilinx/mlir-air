@@ -21,8 +21,6 @@ using namespace mlir;
 namespace xilinx {
 namespace air {
 
-void coalesceLoops(AffineForOp outer, AffineForOp inner);
-
 void normalizeLoop(AffineForOp afo);
 
 func::FuncOp getMangledFunction(ModuleOp module, std::string fnName,
@@ -30,28 +28,41 @@ func::FuncOp getMangledFunction(ModuleOp module, std::string fnName,
                                 ArrayRef<Type> retTys);
 
 uint64_t getTensorVolume(const ShapedType ty);
-
 uint64_t getTensorVolume(const Type ty);
 
+// Get the parent scf.for op of an iter_arg
 scf::ForOp getForRegionIterArgsOwner(Value val);
-
+// Get the parent scf.parallel op of an init_val
 scf::ParallelOp getParallelRegionInitValsOwner(Operation *op, Value val);
+// Get the parent air.launch_herd op of a tile id
+HerdOp getHerdArgOwner(Value val);
+// Get the parent air.hierarchy op of a tile id
+HierarchyInterface getHierarchyArgOwner(Value val);
 
-air::HerdOp getHerdArgOwner(Value val);
+// Erase a kernel operand from air.hierarchy op
+void eraseAIRHierarchyOperand(HierarchyInterface op, unsigned index);
 
-air::HierarchyInterface getHierarchyArgOwner(Value val);
-
+// Get operation's "id" attribute
 int getIdAttr(Operation *op);
 
+// Renumber the DMA ops. Mode can be within a herd or global
 void renumberDmaOps(func::FuncOp func, std::string mode = "herd");
 
+// Return op name as string
 std::string to_string(Operation *op);
+// Return memory space as string
+std::string getMemorySpaceAsString(Value memref);
 
+// Returns the first affine if op in block; nullptr otherwise
 mlir::AffineIfOp getAffineIfInBlock(mlir::Block *block);
+// Returns the first air.dma op in block; nullptr otherwise
+DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block);
 
-air::DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block);
-
-void eraseAIRHierarchyOperand(air::HierarchyInterface op, unsigned index);
+// Get channel declaration through channel symbol
+ChannelOp getChannelDeclarationThroughSymbol(ChannelInterface op);
+// Get the other channel op through channel symbol
+ChannelGetOp getTheOtherChannelOpThroughSymbol(ChannelPutOp put);
+ChannelPutOp getTheOtherChannelOpThroughSymbol(ChannelGetOp get);
 
 struct LinalgTransforms {
   static const StringLiteral kLinalgTransformMarker;
@@ -59,4 +70,5 @@ struct LinalgTransforms {
 
 } // namespace air
 } // namespace xilinx
+
 #endif // AIR_UTIL_UTIL_H

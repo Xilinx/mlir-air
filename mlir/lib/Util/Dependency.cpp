@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Util/Dependency.h"
+#include "air/Util/Util.h"
 #include <sys/stat.h>
 
 #define DEBUG_TYPE "air-dependency-util"
@@ -273,81 +274,6 @@ void addAsyncDependencyIfNew(air::AsyncOpInterface op, Value token) {
   } else {
     op.addAsyncDependency(token);
   }
-}
-
-// Return memory space as string
-std::string getMemorySpaceAsString(Value memref) {
-  assert(memref.getType().isa<MemRefType>() && "value is not a memref");
-  auto memory_space_as_int =
-      memref.getType().dyn_cast<MemRefType>().getMemorySpaceAsInt();
-  std::string memorySpaceStr;
-  if (memory_space_as_int == (int)MemorySpace::L1) {
-    memorySpaceStr = "L1";
-  } else if (memory_space_as_int == (int)MemorySpace::L2) {
-    memorySpaceStr = "L2";
-  } else if (memory_space_as_int == (int)MemorySpace::L3) {
-    memorySpaceStr = "L3";
-  } else
-    assert(false && "unknown memory space");
-  return memorySpaceStr;
-}
-
-// Get channel declaration through channel symbol
-air::ChannelOp getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
-  auto module = op->getParentOfType<ModuleOp>();
-  return dyn_cast<air::ChannelOp>(module.lookupSymbol(op.getChanName()));
-}
-
-// Get the other channel op through channel symbol
-air::ChannelGetOp getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put) {
-  auto module = put->getParentOfType<ModuleOp>();
-  // auto channel_op =
-  //     dyn_cast<air::ChannelOp>(module.lookupSymbol(put.getChanName()));
-  auto channel_op = getChannelDeclarationThroughSymbol(
-      dyn_cast<air::ChannelInterface>(put.getOperation()));
-  auto attr =
-      channel_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
-
-  air::ChannelGetOp output = nullptr;
-  module.walk([&](Operation *op) {
-    if (auto get = dyn_cast<air::ChannelGetOp>(op)) {
-      if (get.getChanName() == attr) {
-        if (output)
-          assert(false && "found multiple occurrences of channel get");
-        else
-          output = get;
-      }
-    }
-  });
-
-  if (output)
-    return output;
-  else
-    return air::ChannelGetOp();
-}
-air::ChannelPutOp getTheOtherChannelOpThroughSymbol(air::ChannelGetOp get) {
-  auto module = get->getParentOfType<ModuleOp>();
-  auto channel_op = getChannelDeclarationThroughSymbol(
-      dyn_cast<air::ChannelInterface>(get.getOperation()));
-  auto attr =
-      channel_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
-
-  air::ChannelPutOp output = nullptr;
-  module.walk([&](Operation *op) {
-    if (auto put = dyn_cast<air::ChannelPutOp>(op)) {
-      if (put.getChanName() == attr) {
-        if (output)
-          assert(false && "found multiple occurrences of channel put");
-        else
-          output = put;
-      }
-    }
-  });
-
-  if (output)
-    return output;
-  else
-    return air::ChannelPutOp();
 }
 
 //===----------------------------------------------------------------------===//
