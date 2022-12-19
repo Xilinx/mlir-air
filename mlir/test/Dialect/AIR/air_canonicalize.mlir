@@ -10,8 +10,7 @@
 
 // CHECK-LABEL: func.func @herd
 // CHECK: air.herd tile ({{.*}}, {{.*}}) in ({{.*}}={{.*}}, {{.*}}={{.*}}) {
-// CHECK:   air.herd_terminator
-// CHECK: }
+// CHECK-NEXT:   air.herd_terminator
 func.func @herd(%arg0: i32) {
   %cst2 = arith.constant 2 : index
   air.herd tile (%x, %y) in (%sx=%cst2, %sy=%cst2) args (%op0=%arg0, %op1=%arg0, %op2=%arg0, %op3=%arg0) : i32, i32, i32, i32 attributes { } {
@@ -25,15 +24,44 @@ func.func @herd(%arg0: i32) {
 
 // CHECK-LABEL: func.func @herd_async
 // CHECK: air.herd async [{{.*}}] tile ({{.*}}, {{.*}}) in ({{.*}}={{.*}}, {{.*}}={{.*}}) attributes {attr_name = "attrValue"} {
-// CHECK:   air.herd_terminator
-// CHECK: }
-func.func @herd_async(%arg0: i32) {
+// CHECK-NEXT:   air.herd_terminator
+func.func @herd_async(%arg0: i32, %e0 : !air.async.token) {
   %cst2 = arith.constant 2 : index
-  %e0 = air.wait_all async
   %e1 = air.herd async [%e0] tile (%x, %y) in (%sx=%cst2, %sy=%cst2) args (%op0=%arg0, %op1=%arg0, %op2=%arg0, %op3=%arg0) : i32, i32, i32, i32 attributes { attr_name="attrValue" } {
     %0 = arith.addi %x, %y : index
     %1 = arith.muli %sx, %sy : index
     %2 = arith.addi %op0, %op1 : i32
+    air.herd_terminator
+  }
+  air.wait_all [%e1]
+  return
+}
+
+// CHECK-LABEL: herd_async_1
+// CHECK: air.herd async [%{{.*}}] tile (
+func.func @herd_async_1() {
+  %cst2 = arith.constant 2 : index
+  %t0, %results = air.execute -> (memref<1xi32>) {
+    %1 = memref.alloc() : memref<1xi32>
+    air.execute_terminator %1 : memref<1xi32>
+  }
+  %t1 = air.wait_all async [%t0]
+  %e0 = air.wait_all async [%t0, %t1]
+  %e1 = air.herd async [%t0, %t1, %e0] tile (%x, %y) in (%sx=%cst2, %sy=%cst2) {
+    air.herd_terminator
+  }
+  air.wait_all [%e1]
+  return
+}
+
+// CHECK-LABEL: herd_async_2
+// CHECK: air.herd async tile (
+func.func @herd_async_2() {
+  %cst2 = arith.constant 2 : index
+  %t0 = air.wait_all async
+  %t1 = air.wait_all async [%t0]
+  %e0 = air.wait_all async [%t0, %t1]
+  %e1 = air.herd async [%t0, %t1, %e0] tile (%x, %y) in (%sx=%cst2, %sy=%cst2) {
     air.herd_terminator
   }
   air.wait_all [%e1]
@@ -47,6 +75,21 @@ func.func @wait_all_0() {
   %1 = air.wait_all async [%0]
   air.wait_all [%0, %1]
   air.wait_all
+  return
+}
+
+// CHECK-LABEL: wait_all_1
+// CHECK: %[[T0:.*]], %{{.*}} = air.execute
+// CHECK: }
+// CHECK-NEXT: air.wait_all [%[[T0]]]
+// CHECK-NEXT: return
+func.func @wait_all_1() {
+  %async_token, %results = air.execute -> (memref<1xi32>) {
+    %1 = memref.alloc() : memref<1xi32>
+    air.execute_terminator %1 : memref<1xi32>
+  }
+  %0 = air.wait_all async [%async_token]
+  air.wait_all [%0]
   return
 }
 

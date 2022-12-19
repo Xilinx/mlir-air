@@ -8,6 +8,9 @@
 
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
+
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+
 #include <sys/stat.h>
 
 #define DEBUG_TYPE "air-dependency-util"
@@ -1416,7 +1419,7 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
 }
 
 // Remove repetitions in dependency lists
-void dependencyCanonicalizer::removeDepListRepitition(func::FuncOp func) {
+void dependencyCanonicalizer::removeDepListRepetition(func::FuncOp func) {
   func.walk([&](Operation *op) {
     if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
       if (async_op.getAsyncDependencies().size() >= 1) {
@@ -1470,17 +1473,10 @@ void dependencyCanonicalizer::removeUnusedExecuteOp(func::FuncOp func) {
 
 // Remove wait_all ops which contain only a single operand
 void dependencyCanonicalizer::removeRedundantWaitAllOps(func::FuncOp func) {
-  func.walk([&](Operation *op) {
-    if (air::WaitAllOp wa_op = dyn_cast<air::WaitAllOp>(op)) {
-      if (wa_op.getAsyncDependencies().size() == 1) {
-        wa_op.getAsyncToken().replaceAllUsesWith(
-            wa_op.getAsyncDependencies()[0]);
-        wa_op.erase();
-      } else {
-        wa_op->removeAttr("id");
-      }
-    }
-  });
+  auto ctx = func.getContext();
+  RewritePatternSet patterns(ctx);
+  air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
+  (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
 }
 
 // air.hierarchy ops should only depend on scf loop ops

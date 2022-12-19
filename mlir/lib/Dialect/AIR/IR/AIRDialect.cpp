@@ -17,10 +17,12 @@
 #include "mlir/IR/PatternMatch.h"
 
 #include "llvm/ADT/TypeSwitch.h"
+
 #include <iostream>
+
 using namespace mlir;
+using namespace xilinx;
 using namespace xilinx::air;
-// using namespace xilinx::xten;
 
 #include "air/Dialect/AIR/AIRDialect.cpp.inc"
 
@@ -53,30 +55,50 @@ void airDialect::printType(Type type, DialectAsmPrinter &os) const {
       .Default([](Type) { llvm_unreachable("unexpected 'air' type"); });
 }
 
-static LogicalResult removeUnusedArguments(HerdOp op,
-                                           PatternRewriter &rewriter) {
-  SmallVector<Value, 32> newOperands;
-  SmallVector<int, 32> newOperandsIdx;
+static template <class T>
+LogicalResult canonicalizeHierarchyOpArgs(T op, PatternRewriter &rewriter) {
+
+  // make a list of new hierarchy operands
+  SmallVector<Value> newOperands;
+  SmallVector<int> newOperandsIdx;
   for (int i = 0, e = op.getNumKernelOperands(); i < e; i++) {
     auto arg = op.getKernelArgument(i);
-    if (!arg.getUsers().empty()) {
-      newOperands.push_back(op.getKernelOperand(i));
-      newOperandsIdx.push_back(i);
-    }
+    // don't include unused operands
+    if (arg.getUsers().empty())
+      continue;
+    newOperands.push_back(op.getKernelOperand(i));
+    newOperandsIdx.push_back(i);
   }
-  if (newOperands.size() == op.getNumKernelOperands())
+
+  // make a list of new async token operands
+  SmallVector<Value> newAsyncDeps;
+  for (auto v : op.getAsyncDependencies()) {
+    // don't include duplicates
+    if (std::find(std::begin(newAsyncDeps), std::end(newAsyncDeps), v) !=
+        std::end(newAsyncDeps))
+      continue;
+    // don't include wait_all ops with no operands
+    if (auto wa = dyn_cast_if_present<WaitAllOp>(v.getDefiningOp()))
+      if (wa.getAsyncDependencies().size() == 0)
+        continue;
+    newAsyncDeps.push_back(v);
+  }
+
+  // if the operands won't change, return
+  if (newOperands.size() == op.getNumKernelOperands() &&
+      newAsyncDeps.size() == op.getAsyncDependencies().size())
     return failure();
 
   BlockAndValueMapping remap;
-  auto newOp = rewriter.create<HerdOp>(op.getLoc(), op.getAsyncDependencies(),
-                                       op.getSizeOperands(), newOperands,
-                                       op->getNumResults() > 0, op->getAttrs());
+  auto newOp =
+      rewriter.create<T>(op.getLoc(), newAsyncDeps, op.getSizeOperands(),
+                         newOperands, op->getNumResults() > 0, op->getAttrs());
 
   rewriter.setInsertionPointToStart(&newOp.getBody().front());
-  remap.map(op.getSize()[0], newOp.getSize()[0]);
-  remap.map(op.getSize()[1], newOp.getSize()[1]);
-  remap.map(op.getIds()[0], newOp.getIds()[0]);
-  remap.map(op.getIds()[1], newOp.getIds()[1]);
+  for (auto p : llvm::zip(op.getSize(), newOp.getSize()))
+    remap.map(std::get<0>(p), std::get<1>(p));
+  for (auto p : llvm::zip(op.getIds(), newOp.getIds()))
+    remap.map(std::get<0>(p), std::get<1>(p));
 
   int newIdx = 0;
   for (int i : newOperandsIdx)
@@ -92,10 +114,8 @@ static LogicalResult removeUnusedArguments(HerdOp op,
 //===----------------------------------------------------------------------===//
 // AsyncOpInterface
 //===----------------------------------------------------------------------===//
-namespace xilinx {
-namespace air {
 
-void addAsyncDependency(Operation *op, Value token) {
+void air::addAsyncDependency(Operation *op, Value token) {
   op->insertOperands(0, {token});
   if (!op->template hasTrait<OpTrait::AttrSizedOperandSegments>())
     return;
@@ -111,7 +131,7 @@ void addAsyncDependency(Operation *op, Value token) {
   op->setAttr(attrName, Builder(op->getContext()).getDenseI32ArrayAttr(sizes));
 }
 
-void eraseAsyncDependency(Operation *op, unsigned index) {
+void air::eraseAsyncDependency(Operation *op, unsigned index) {
   assert(index + 1 <= op->getNumOperands() && "Index out of range");
   op->eraseOperands(index);
   if (!op->template hasTrait<OpTrait::AttrSizedOperandSegments>())
@@ -153,9 +173,6 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
   printer << "] ";
 }
 
-} // namespace air
-} // namespace xilinx
-
 //
 // LaunchOp
 //
@@ -167,7 +184,7 @@ void LaunchOp::build(OpBuilder &builder, OperationState &result,
 
   result.addOperands(asyncDependencies);
   if (isAsync)
-    result.addTypes(air::AsyncTokenType::get(builder.getContext()));
+    result.addTypes(AsyncTokenType::get(builder.getContext()));
   result.addOperands(sizes);
   result.addOperands(launchOperands);
 
@@ -304,8 +321,7 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
   for (auto &a : tileArgs)
     a.type = indexType;
 
-  auto tokenType =
-      xilinx::air::AsyncTokenType::get(parser.getBuilder().getContext());
+  auto tokenType = AsyncTokenType::get(parser.getBuilder().getContext());
   if (parser.resolveOperands(asyncDependencies, tokenType, result.operands))
     return failure();
   if (parser.resolveOperands(tileSize, indexType, result.operands))
@@ -367,7 +383,7 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
 
 void LaunchOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                            MLIRContext *context) {
-  patterns.add(removeUnusedArguments);
+  patterns.add(canonicalizeHierarchyOpArgs<LaunchOp>);
 }
 
 ArrayRef<BlockArgument> LaunchOp::getIds() {
@@ -422,7 +438,7 @@ void PartitionOp::build(OpBuilder &builder, OperationState &result,
 
   result.addOperands(asyncDependencies);
   if (isAsync)
-    result.addTypes(air::AsyncTokenType::get(builder.getContext()));
+    result.addTypes(AsyncTokenType::get(builder.getContext()));
   result.addOperands(sizes);
   result.addOperands(partitionOperands);
 
@@ -541,8 +557,7 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
 
   Type indexType = parser.getBuilder().getIndexType();
 
-  auto tokenType =
-      xilinx::air::AsyncTokenType::get(parser.getBuilder().getContext());
+  auto tokenType = AsyncTokenType::get(parser.getBuilder().getContext());
   if (parser.resolveOperands(asyncDependencies, tokenType, result.operands))
     return failure();
 
@@ -626,7 +641,7 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
 
 void PartitionOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                               MLIRContext *context) {
-  patterns.add(removeUnusedArguments);
+  patterns.add(canonicalizeHierarchyOpArgs<PartitionOp>);
 }
 
 ArrayRef<BlockArgument> PartitionOp::getIds() {
@@ -681,7 +696,7 @@ void HerdOp::build(OpBuilder &builder, OperationState &result,
 
   result.addOperands(asyncDependencies);
   if (isAsync)
-    result.addTypes(air::AsyncTokenType::get(builder.getContext()));
+    result.addTypes(AsyncTokenType::get(builder.getContext()));
   result.addOperands(sizes);
   result.addOperands(launchOperands);
 
@@ -821,8 +836,7 @@ ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
   for (auto &a : tileArgs)
     a.type = indexType;
 
-  auto tokenType =
-      xilinx::air::AsyncTokenType::get(parser.getBuilder().getContext());
+  auto tokenType = AsyncTokenType::get(parser.getBuilder().getContext());
   if (parser.resolveOperands(asyncDependencies, tokenType, result.operands))
     return failure();
   if (parser.resolveOperands(tileSize, indexType, result.operands))
@@ -884,7 +898,7 @@ ParseResult HerdOp::parse(OpAsmParser &parser, OperationState &result) {
 
 void HerdOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                          MLIRContext *context) {
-  patterns.add(removeUnusedArguments);
+  patterns.add(canonicalizeHierarchyOpArgs<HerdOp>);
 }
 
 ArrayRef<BlockArgument> HerdOp::getIds() {
@@ -953,7 +967,7 @@ LogicalResult HerdPipelineOp::verify() {
 SmallVector<PipelineStageOp, 8> HerdPipelineOp::getStages() {
   SmallVector<PipelineStageOp, 8> stages;
   for (auto &o : getBody().front().getOperations()) {
-    if (auto stage = dyn_cast<air::PipelineStageOp>(o))
+    if (auto stage = dyn_cast<PipelineStageOp>(o))
       stages.push_back(stage);
   }
   return stages;
@@ -1058,9 +1072,20 @@ LogicalResult ExecuteOp::verify() {
 //
 
 static LogicalResult FoldWaitAll(WaitAllOp op, PatternRewriter &rewriter) {
-  SmallVector<Value> operands = op->getOperands();
+  SmallVector<Value> operands;
+  for (auto o : op->getOperands())
+    if (std::find(operands.begin(), operands.end(), o) == std::end(operands))
+      operands.push_back(o);
+
+  // Erase wait_all with no operands and no uses
   if (op.use_empty() && !operands.size()) {
     rewriter.eraseOp(op);
+    return success();
+  }
+
+  // remove duplicate operands
+  if (op->getNumOperands() != operands.size()) {
+    rewriter.replaceOpWithNewOp<WaitAllOp>(op, op.getResultTypes(), operands);
     return success();
   }
 
@@ -1074,6 +1099,12 @@ static LogicalResult FoldWaitAll(WaitAllOp op, PatternRewriter &rewriter) {
       continue;
     operands.erase(i);
     rewriter.replaceOpWithNewOp<WaitAllOp>(op, op.getResultTypes(), operands);
+    return success();
+  }
+
+  // If async wait_all has a single operand, forward it to any uses
+  if (op.getAsyncDependencies().size() == 1 && op.getResults().size() == 1) {
+    rewriter.replaceOp(op, op.getAsyncDependencies()[0]);
     return success();
   }
 
