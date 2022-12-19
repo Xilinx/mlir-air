@@ -13,7 +13,8 @@
 
 #include "mlir/ExecutionEngine/AsyncRuntime.h"
 
-extern "C" void mlirAsyncRuntimeExecute(mlir::runtime::CoroHandle, mlir::runtime::CoroResume);
+extern "C" void mlirAsyncRuntimeExecute(mlir::runtime::CoroHandle,
+                                        mlir::runtime::CoroResume);
 
 #include "air_tensor.h"
 
@@ -45,7 +46,7 @@ void mm_out(tensor_t<T, 2> *a, tensor_t<T, 2> *b, tensor_t<T, 2> *r) {
 #define INPUT_SIZE 1024
 
 int main(int argc, char *argv[]) {
-  
+
   tensor_t<uint32_t, 2> input_A;
   tensor_t<uint32_t, 2> input_B;
   tensor_t<uint32_t, 2> input_C;
@@ -98,7 +99,8 @@ int main(int argc, char *argv[]) {
   c = &input_C;
   o = &output;
 
-  _mlir_ciface_forward((void *)&input_A, (void *)&input_B, (void *)&input_C, (void *)&output);
+  _mlir_ciface_forward((void *)&input_A, (void *)&input_B, (void *)&input_C,
+                       (void *)&output);
 
   int errors = 0;
   auto output_size = output.shape[0] * output.shape[1];
@@ -107,7 +109,8 @@ int main(int argc, char *argv[]) {
     auto ref = output_ref1.data[i];
     if (d != ref) {
       errors++;
-      if (errors < 10) printf("%04X: mismatch %d != %d\n", i, d, ref);
+      if (errors < 10)
+        printf("%04X: mismatch %d != %d\n", i, d, ref);
     }
   }
   if (!errors) {

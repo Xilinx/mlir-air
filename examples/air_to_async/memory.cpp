@@ -7,7 +7,6 @@
 
 #include "air_tensor.h"
 
-
 #include <cstdint>
 #include <cstdio>
 
@@ -45,11 +44,13 @@ void air_memcpy_nd_src(tensor_t<T, R> *dst, tensor_t<T, R> *src, size_t *offset,
     }
 }
 
-}
+} // namespace
 
-extern "C" void _mlir_ciface_air_memcpy_nd_I32_I64_I64_M0D2I32_I64_I64_I64_I64_I64_I64_M0D2I32(
-    uint32_t id, uint64_t x, uint64_t y, void *d, uint64_t offset1, uint64_t offset0,
-    uint64_t size1, uint64_t size0, uint64_t stride1, uint64_t stride0, void *s) {
+extern "C" void
+_mlir_ciface_air_memcpy_nd_I32_I64_I64_M0D2I32_I64_I64_I64_I64_I64_I64_M0D2I32(
+    uint32_t id, uint64_t x, uint64_t y, void *d, uint64_t offset1,
+    uint64_t offset0, uint64_t size1, uint64_t size0, uint64_t stride1,
+    uint64_t stride0, void *s) {
   tensor_t<int32_t, 2> *dst = (tensor_t<int32_t, 2> *)d;
   tensor_t<int32_t, 2> *src = (tensor_t<int32_t, 2> *)s;
   size_t offset[2] = {offset0, offset1};
@@ -61,9 +62,11 @@ extern "C" void _mlir_ciface_air_memcpy_nd_I32_I64_I64_M0D2I32_I64_I64_I64_I64_I
   air_memcpy_nd_dst(dst, src, offset, size, stride);
 }
 
-extern "C" void _mlir_ciface_air_memcpy_nd_I32_I64_I64_M0D2I32_M0D2I32_I64_I64_I64_I64_I64_I64(
-    uint32_t id, uint64_t x, uint64_t y, void *d, void *s, uint64_t offset1, uint64_t offset0,
-    uint64_t size1, uint64_t size0, uint64_t stride1, uint64_t stride0) {
+extern "C" void
+_mlir_ciface_air_memcpy_nd_I32_I64_I64_M0D2I32_M0D2I32_I64_I64_I64_I64_I64_I64(
+    uint32_t id, uint64_t x, uint64_t y, void *d, void *s, uint64_t offset1,
+    uint64_t offset0, uint64_t size1, uint64_t size0, uint64_t stride1,
+    uint64_t stride0) {
   tensor_t<int32_t, 2> *dst = (tensor_t<int32_t, 2> *)d;
   tensor_t<int32_t, 2> *src = (tensor_t<int32_t, 2> *)s;
   size_t offset[2] = {offset0, offset1};
