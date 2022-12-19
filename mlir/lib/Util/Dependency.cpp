@@ -424,7 +424,8 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
     if (global_graph.g[*vit].asyncEventName == "LaunchOp") {
       auto G_l = *global_graph.g[*vit].nextDependencyGraph;
       FlatGraph &flat_subg_l = flat_g.create_subgraph();
-      updateSubgraphFromDependencyGraphAsGraphVizCluster(G_l, flat_subg_l, maps[index], index, idx_l, "launch");
+      updateSubgraphFromDependencyGraphAsGraphVizCluster(
+          G_l, flat_subg_l, maps[index], index, idx_l, "launch");
       // Connect parent graph's herarchy node with "start" of launch subgraph
       add_edge(maps[0][*vit], maps[index][G_l.start_vertex], flat_g);
 
@@ -434,8 +435,10 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
         if (G_l.g[*vit_l].asyncEventName == "PartitionOp") {
           auto G_p = *G_l.g[*vit_l].nextDependencyGraph;
           FlatGraph &flat_subg_p = flat_subg_l.create_subgraph();
-          updateSubgraphFromDependencyGraphAsGraphVizCluster(G_p, flat_subg_p, maps[index], index, idx_p, "partition");
-          // Connect parent graph's herarchy node with "start" of partition subgraph
+          updateSubgraphFromDependencyGraphAsGraphVizCluster(
+              G_p, flat_subg_p, maps[index], index, idx_p, "partition");
+          // Connect parent graph's herarchy node with "start" of partition
+          // subgraph
           add_edge(maps[map_idx_launch][*vit_l], maps[index][G_p.start_vertex],
                    flat_g);
 
@@ -445,30 +448,31 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
             if (G_p.g[*vit_p].asyncEventName == "HerdOp") {
               auto G_h = *G_p.g[*vit_p].nextDependencyGraph;
               FlatGraph &flat_subg_h = flat_subg_p.create_subgraph();
-              updateSubgraphFromDependencyGraphAsGraphVizCluster(G_h, flat_subg_h, maps[index], index, idx_h, "herd");
-              // Connect parent graph's herarchy node with "start" of herd subgraph
+              updateSubgraphFromDependencyGraphAsGraphVizCluster(
+                  G_h, flat_subg_h, maps[index], index, idx_h, "herd");
+              // Connect parent graph's herarchy node with "start" of herd
+              // subgraph
               add_edge(maps[map_idx_partition][*vit_p],
                        maps[index++][G_h.start_vertex], flat_g);
             }
           }
-        }
-        else if (G_l.g[*vit_l].asyncEventName == "HerdOp") {
+        } else if (G_l.g[*vit_l].asyncEventName == "HerdOp") {
           auto G_h = *G_l.g[*vit_l].nextDependencyGraph;
           FlatGraph &flat_subg_h = flat_subg_l.create_subgraph();
-          updateSubgraphFromDependencyGraphAsGraphVizCluster(G_h, flat_subg_h, maps[index], index, idx_h, "herd");
+          updateSubgraphFromDependencyGraphAsGraphVizCluster(
+              G_h, flat_subg_h, maps[index], index, idx_h, "herd");
           // Connect parent graph's herarchy node with "start" of herd subgraph
           add_edge(maps[map_idx_launch][*vit_l],
-                    maps[index++][G_h.start_vertex], flat_g);
+                   maps[index++][G_h.start_vertex], flat_g);
         }
       }
-    }
-    else if (global_graph.g[*vit].asyncEventName == "PartitionOp") {
+    } else if (global_graph.g[*vit].asyncEventName == "PartitionOp") {
       auto G_p = *global_graph.g[*vit].nextDependencyGraph;
       FlatGraph &flat_subg_p = flat_g.create_subgraph();
-      updateSubgraphFromDependencyGraphAsGraphVizCluster(G_p, flat_subg_p, maps[index], index, idx_p, "partition");
+      updateSubgraphFromDependencyGraphAsGraphVizCluster(
+          G_p, flat_subg_p, maps[index], index, idx_p, "partition");
       // Connect parent graph's herarchy node with "start" of partition subgraph
-      add_edge(maps[0][*vit], maps[index][G_p.start_vertex],
-                flat_g);
+      add_edge(maps[0][*vit], maps[index][G_p.start_vertex], flat_g);
 
       auto map_idx_partition = index++;
       auto vp_p = boost::vertices(G_p.g);
@@ -476,17 +480,18 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
         if (G_p.g[*vit_p].asyncEventName == "HerdOp") {
           auto G_h = *G_p.g[*vit_p].nextDependencyGraph;
           FlatGraph &flat_subg_h = flat_subg_p.create_subgraph();
-          updateSubgraphFromDependencyGraphAsGraphVizCluster(G_h, flat_subg_h, maps[index], index, idx_h, "herd");
+          updateSubgraphFromDependencyGraphAsGraphVizCluster(
+              G_h, flat_subg_h, maps[index], index, idx_h, "herd");
           // Connect parent graph's herarchy node with "start" of herd subgraph
           add_edge(maps[map_idx_partition][*vit_p],
-                    maps[index++][G_h.start_vertex], flat_g);
+                   maps[index++][G_h.start_vertex], flat_g);
         }
       }
-    }
-    else if (global_graph.g[*vit].asyncEventName == "HerdOp") {
+    } else if (global_graph.g[*vit].asyncEventName == "HerdOp") {
       auto G_h = *global_graph.g[*vit].nextDependencyGraph;
       FlatGraph &flat_subg_h = flat_g.create_subgraph();
-      updateSubgraphFromDependencyGraphAsGraphVizCluster(G_h, flat_subg_h, maps[index], index, idx_h, "herd");
+      updateSubgraphFromDependencyGraphAsGraphVizCluster(
+          G_h, flat_subg_h, maps[index], index, idx_h, "herd");
       // Connect parent graph's herarchy node with "start" of herd subgraph
       add_edge(maps[0][*vit], maps[index++][G_h.start_vertex], flat_g);
     }
@@ -499,13 +504,14 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
   }
 }
 
-void dependencyCanonicalizer::updateSubgraphFromDependencyGraphAsGraphVizCluster(dependencyGraph &G, FlatGraph &flat_subg, vertex_to_flat_vertex_map map, unsigned global_idx, unsigned &subg_idx, std::string hier_name){
-  updateSubgraphFromDependencyGraph(G.g, flat_subg, map,
-                                    true);
+void dependencyCanonicalizer::
+    updateSubgraphFromDependencyGraphAsGraphVizCluster(
+        dependencyGraph &G, FlatGraph &flat_subg, vertex_to_flat_vertex_map map,
+        unsigned global_idx, unsigned &subg_idx, std::string hier_name) {
+  updateSubgraphFromDependencyGraph(G.g, flat_subg, map, true);
   boost::get_property(flat_subg, boost::graph_name) =
       "cluster" + std::to_string(global_idx);
-  boost::get_property(flat_subg,
-                      boost::graph_graph_attribute)["label"] =
+  boost::get_property(flat_subg, boost::graph_graph_attribute)["label"] =
       hier_name + std::to_string(subg_idx++);
 }
 
