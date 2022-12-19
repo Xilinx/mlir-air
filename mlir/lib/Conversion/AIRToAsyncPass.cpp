@@ -114,6 +114,8 @@ public:
           r.create<async::AwaitAllOp>(loc, group);
           r.create<async::YieldOp>(loc, empty);
         });
+    rewriter.setInsertionPointAfter(herdExeOp);
+    rewriter.create<async::AwaitOp>(op->getLoc(), herdExeOp.getResult(0));
 
     if (auto t = launch.getAsyncToken())
       t.replaceAllUsesWith(herdExeOp.getResult(0));
