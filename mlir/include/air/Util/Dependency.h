@@ -316,6 +316,7 @@ private:
   void fillAIRDepListUsingGraphTR(dependencyGraph &graph);
   void collectAIRChannelPutAndGetInGraph(Graph g, vertex_to_flat_vertex_map map,
                                          ChannelMap &channel_map);
+  void updateSubgraphFromDependencyGraphAsGraphVizCluster(dependencyGraph &G, FlatGraph &flat_subg, vertex_to_flat_vertex_map map, unsigned global_idx, unsigned &subg_idx, std::string hier_name = "");
 };
 
 //===----------------------------------------------------------------------===//
