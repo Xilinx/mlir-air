@@ -1,4 +1,4 @@
-//===- canonicalize_herd_blockargs.mlir ------------------------*- MLIR -*-===//
+//===- canonicalize_hierarchy_args.mlir ------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2022, Xilinx Inc. All rights reserved.
 // Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
@@ -6,8 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-dependency-canonicalize | FileCheck %s
-// XFAIL: *
+// RUN: air-opt %s -canonicalize | FileCheck %s
 
 // Prune block arguments for air.herd and air.partition
 // CHECK: %[[EVENT0:.*]] = air.launch async{{.*}}args(%[[VALUE1:.*]]=%[[VALUE0:.*]])

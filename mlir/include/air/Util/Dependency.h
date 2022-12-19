@@ -56,9 +56,6 @@ Value getLoopCarriedTokenFromScfOp(scf::ParallelOp op);
 Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
                                    std::string operand_or_argument = "operand");
 void addAsyncDependencyIfNew(air::AsyncOpInterface op, Value token);
-std::string getMemorySpaceAsString(Value memref);
-air::ChannelGetOp getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put);
-air::ChannelPutOp getTheOtherChannelOpThroughSymbol(air::ChannelGetOp get);
 
 //===----------------------------------------------------------------------===//
 // Dependency graph parsed as a Boost graph object
@@ -234,7 +231,7 @@ public:
                           vertex_to_vertex_map_tree &g_to_tr,
                           bool dump_graph = false, std::string dump_dir = "");
   void updateDepList(func::FuncOp func, dependencyGraph &global_graph);
-  void removeDepListRepitition(func::FuncOp func);
+  void removeDepListRepetition(func::FuncOp func);
   void removeUnusedExecuteOp(func::FuncOp func);
   void removeRedundantWaitAllOps(func::FuncOp func);
   void dumpDotGraphFiles(dependencyGraph global_graph,
@@ -244,7 +241,6 @@ public:
                                                   dependencyContext &dep_ctx,
                                                   bool dump_dot = false,
                                                   std::string dump_dir = "");
-  void removeRedundantAIRHierarchyArgs(func::FuncOp func);
   void canonicalizeAIRHierarchyDependency(func::FuncOp func);
   std::pair<Graph::vertex_descriptor, dependencyGraph *>
   getVertexFromOp(Operation *op, dependencyContext dep_ctx,
