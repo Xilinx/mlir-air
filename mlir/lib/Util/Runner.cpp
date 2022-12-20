@@ -56,30 +56,6 @@ using namespace boost;
 namespace xilinx {
 namespace air {
 
-struct runnerGraph : dependencyGraph {
-  runnerNode *runner_node;
-  std::vector<runnerGraph> subgraphs;
-
-  runnerGraph(mlir::Operation *op = nullptr, bool initStartVertex = false) {
-    g = Graph();
-    hierarchyOp = op;
-    runner_node = nullptr;
-    if (initStartVertex) {
-      auto v = add_vertex(g);
-      g[v].asyncEventType = "start";
-      g[v].asyncEventName = "start";
-      g[v].color = "yellow";
-      g[v].shape = "box";
-      start_vertex = v;
-    }
-  }
-
-  ~runnerGraph() {
-    g.clear();
-    subgraphs.clear();
-  }
-};
-
 struct runnerNode {
   dependencyGraph *ctrl_g;
   std::string runner_node_type;
