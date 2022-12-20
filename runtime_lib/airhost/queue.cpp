@@ -19,6 +19,7 @@
 #include "air_host.h"
 #include "air_host_impl.h"
 #include "air_queue.h"
+#include "airbin.h"
 
 // Need access to the physical devices to determine where to
 // write the queue
@@ -358,12 +359,21 @@ hsa_status_t air_packet_l2_dma(dispatch_packet_t *pkt, uint64_t stream,
 }
 
 hsa_status_t air_packet_cdma_configure(dispatch_packet_t *pkt, uint64_t dest,
-                                       uint64_t source, uint32_t length) {
+                                       uint64_t source, uint32_t length,
+                                       airbin_size *airbin_data) {
   initialize_packet(pkt);
 
   pkt->arg[0] = dest;   // Destination (BD for SG mode)
   pkt->arg[1] = source; // Source (BD for SG mode)
   pkt->arg[2] = length; // Num Bytes (0xFFFFFFFF for SG mode)
+
+  pkt->arg[3] = 0;
+  if (airbin_data != nullptr) {
+    pkt->arg[3] |= ((uint64_t)(airbin_data->num_cols)) << 24u;
+    pkt->arg[3] |= ((uint64_t)(airbin_data->start_col)) << 16u;
+    pkt->arg[3] |= ((uint64_t)(airbin_data->num_rows)) << 8u;
+    pkt->arg[3] |= ((uint64_t)(airbin_data->start_row));
+  }
 
   pkt->type = AIR_PKT_TYPE_CONFIGURE;
   pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
@@ -478,4 +488,52 @@ hsa_status_t air_packet_barrier_or(barrier_or_packet_t *pkt,
   pkt->header = (HSA_PACKET_TYPE_BARRIER_OR << HSA_PACKET_HEADER_TYPE);
 
   return HSA_STATUS_SUCCESS;
+}
+
+int air_load_airbin(queue_t *q, const char *filename, uint8_t column,
+                    uint32_t device_id) {
+
+  // Initializing the device memory allocator
+  if (air_init_dev_mem_allocator(0x2000000 /* dev_mem_size */,
+                                 device_id /* device_id (optional)*/)) {
+    std::cout << "Error creating device memory allocator" << std::endl;
+    return -1;
+  }
+
+  auto *data_p = air_dev_mem_alloc(2 * 65536);
+  volatile uint32_t *bram_ptr = reinterpret_cast<volatile uint32_t *>(data_p);
+  auto *paddr = reinterpret_cast<uint32_t *>(air_dev_mem_get_pa(data_p));
+
+  auto *bd_p = air_dev_mem_alloc(0x8000);
+  volatile uint32_t *bd_ptr = reinterpret_cast<volatile uint32_t *>(bd_p);
+  auto bd_paddr = uint64_t(air_dev_mem_get_pa(bd_p));
+
+  std::ifstream infile{filename};
+
+  auto size = readairbinsize(infile, column);
+
+  // AIRBIN from file to memory
+  uint64_t last_td = airbin2mem(infile, bd_ptr, (uint32_t *)bd_paddr, bram_ptr,
+                                paddr, size.start_col);
+
+  // Send configuration packet
+  uint64_t wr_idx = queue_add_write_index(q, 1);
+  uint64_t packet_id = wr_idx % q->size;
+  dispatch_packet_t *pkt =
+      reinterpret_cast<dispatch_packet_t *>(q->base_address_vaddr) + packet_id;
+  air_packet_cdma_configure(pkt, last_td, uint64_t(bd_paddr), 0xffffffff,
+                            &size);
+
+  // struct timespec ts_start;
+  // struct timespec ts_end;
+  // clock_gettime(CLOCK_BOOTTIME, &ts_start);
+  air_queue_dispatch_and_wait(q, wr_idx, pkt);
+  // clock_gettime(CLOCK_BOOTTIME, &ts_end);
+
+  // auto time_spec_diff = [](struct timespec &start, struct timespec &end) {
+  //  return (end.tv_sec - start.tv_sec) + 1e-9 * (end.tv_nsec - start.tv_nsec);
+  //};
+
+  // printf("config time: %0.8f sec\n", time_spec_diff(ts_start, ts_end));
+  return 0;
 }

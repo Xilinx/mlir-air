@@ -1,9 +1,8 @@
-# Copyright (C) 2022, Xilinx Inc.
-# Copyright (C) 2022, Advanced Micro Devices, Inc.
-# SPDX-License-Identifier: MIT
+ACDC_AIE = $(dir $(shell which aie-opt))/..
+ACDC_AIR = $(dir $(shell which air-opt))/..
 
-CC=clang
-ACDC_AIR = $(dir $(shell which aie-opt))/..
+.PHONY: all
+all: test airbin
 
 LDFLAGS = -fuse-ld=lld -rdynamic \
     -DLIBXAIENGINEV2 \
@@ -19,18 +18,24 @@ CFLAGS += -std=c++17 -I$(ACDC_AIR)/runtime_lib/airhost/include -I$(ACDC_AIR)/run
 LDFLAGS += -L/opt/xaiengine/lib -Wl,-R/opt/xaiengine/lib
 LDFLAGS += -L$(ACDC_AIR)/runtime_lib/airhost
 
-.PHONY: all
-all: test
+test.exe: test.cpp
+	clang++ $< ${CFLAGS} ${LDFLAGS} -o $@
 
-test.exe: test.cpp 
-	$(CC) test.cpp $(CFLAGS) $(LDFLAGS) -o test.exe
+acdc_project/air.bin: aie.mlir
+	aiecc.py -v --aie-generate-airbin --no-compile-host --no-xchesscc --no-xbridge $<
+
+addone.airbin: acdc_project/air.bin
+	cp $< $@ ; rm -rf acdc_project core* 
 
 .PHONY: test
-test: test.exe 
+test: test.exe
 
-run: test.exe
+.PHONY: airbin
+airbin: addone.airbin
+
+run: test.exe addone.airbin
 	sudo ./test.exe
 
 clean::
-	rm -rf test.exe
+	rm -rf test.exe addone.airbin acdc_project core*
 

@@ -12,6 +12,7 @@
 #include "air_network.h"
 #include "air_queue.h"
 #include "air_tensor.h"
+#include "airbin.h"
 #include "hsa_defs.h"
 
 #include <stdlib.h>
@@ -153,7 +154,8 @@ hsa_status_t air_packet_cdma_memcpy(dispatch_packet_t *pkt, uint64_t dest,
                                     uint64_t source, uint32_t length);
 
 hsa_status_t air_packet_cdma_configure(dispatch_packet_t *pkt, uint64_t dest,
-                                       uint64_t source, uint32_t length);
+                                       uint64_t source, uint32_t length,
+                                       airbin_size *size);
 
 hsa_status_t air_packet_aie_lock_range(dispatch_packet_t *pkt, uint16_t herd_id,
                                        uint64_t lock_id, uint64_t acq_rel,
@@ -250,6 +252,9 @@ air_herd_desc_t *air_herd_get_desc(air_module_handle_t handle,
 uint64_t air_partition_load(const char *name);
 
 uint64_t air_herd_load(const char *name);
+
+int air_load_airbin(queue_t *, const char *filename, uint8_t col,
+                    uint32_t device_id = 0);
 }
 
 std::string air_get_ddr_bar(uint32_t device_id);
