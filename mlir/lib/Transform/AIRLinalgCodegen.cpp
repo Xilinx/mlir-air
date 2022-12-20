@@ -31,6 +31,7 @@
 #include "llvm/ADT/SetVector.h"
 
 #include <numeric>
+#include <optional>
 
 #define DEBUG_TYPE "air-linalg-codegen"
 
@@ -428,11 +429,11 @@ struct LinalgTransformationFilter {
 
   explicit LinalgTransformationFilter(
       ArrayRef<StringAttr> matchDisjunction = {},
-      Optional<StringAttr> replacement = None);
+      Optional<StringAttr> replacement = std::nullopt);
 
   explicit LinalgTransformationFilter(
       const FilterFunction &f, ArrayRef<StringAttr> matchDisjunction = {},
-      Optional<StringAttr> replacement = None);
+      Optional<StringAttr> replacement = std::nullopt);
 
   LinalgTransformationFilter(LinalgTransformationFilter &&) = default;
   LinalgTransformationFilter(const LinalgTransformationFilter &) = default;
@@ -523,8 +524,8 @@ LinalgTransformationFilter::checkAndNotify(PatternRewriter &rewriter,
 
 void LinalgTransformationFilter::replaceLinalgTransformationFilter(
     PatternRewriter &rewriter, Operation *op) const {
-  if (replacement.has_value())
-    op->setAttr(LinalgTransforms::kLinalgTransformMarker, replacement.value());
+  if (replacement)
+    op->setAttr(LinalgTransforms::kLinalgTransformMarker, *replacement);
   else
     op->removeAttr(
         rewriter.getStringAttr(LinalgTransforms::kLinalgTransformMarker));
@@ -631,7 +632,7 @@ private:
   linalg::LinalgPromotionOptions options;
 };
 
-static Optional<Value> allocBufferCallBack(OpBuilder &b,
+static std::optional<Value> allocBufferCallBack(OpBuilder &b,
                                            memref::SubViewOp subView,
                                            ArrayRef<Value> boundingSubViewSize,
                                            DataLayout &layout) {

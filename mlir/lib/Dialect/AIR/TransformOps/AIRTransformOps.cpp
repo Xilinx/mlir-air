@@ -46,7 +46,7 @@ transform::GetPartitionForOp::apply(transform::TransformResults &results,
     partitions.insert(partition);
   }
   results.set(getResult().cast<OpResult>(), partitions.getArrayRef());
-  return DiagnosedSilenceableFailure(success());
+  return DiagnosedSilenceableFailure::success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -62,7 +62,7 @@ transform::PartitionToAIEOp::applyToOne(xilinx::air::PartitionOp target,
   if (failed(res))
     return DiagnosedSilenceableFailure::definiteFailure();
   results.push_back(res->getOperation());
-  return DiagnosedSilenceableFailure(success());
+  return DiagnosedSilenceableFailure::success();
 }
 
 //===----------------------------------------------------------------------===//
