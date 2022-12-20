@@ -516,7 +516,7 @@ void dependencyCanonicalizer::
 }
 
 void dependencyCanonicalizer::addVerticesInHerd(
-    std::vector<dependencyGraph> &herd_subgraphs, air::HerdOp herd,
+    std::deque<dependencyGraph> &herd_subgraphs, air::HerdOp herd,
     dependencyContext &dep_ctx) {
   // Build up herd graph
   herd_subgraphs.push_back(dependencyGraph(herd.getOperation(), true));
@@ -530,7 +530,7 @@ void dependencyCanonicalizer::addVerticesInHerd(
 }
 
 void dependencyCanonicalizer::addVerticesInPartition(
-    std::vector<dependencyGraph> &part_subgraphs, air::PartitionOp partition,
+    std::deque<dependencyGraph> &part_subgraphs, air::PartitionOp partition,
     dependencyContext &dep_ctx) {
   // Build up partition graph
   part_subgraphs.push_back(dependencyGraph(partition.getOperation(), true));
@@ -548,7 +548,7 @@ void dependencyCanonicalizer::addVerticesInPartition(
 }
 
 void dependencyCanonicalizer::addVerticesInLaunch(
-    std::vector<dependencyGraph> &launch_subgraphs, air::LaunchOp launch,
+    std::deque<dependencyGraph> &launch_subgraphs, air::LaunchOp launch,
     dependencyContext &dep_ctx) {
   // Build up launch graph
   launch_subgraphs.push_back(dependencyGraph(launch.getOperation(), true));

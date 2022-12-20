@@ -144,7 +144,7 @@ struct runnerNode; // Forward declaration of runner node struct for
 struct dependencyGraph {
   Graph g;
   mlir::Operation *hierarchyOp;
-  std::vector<dependencyGraph> subgraphs;
+  std::deque<dependencyGraph> subgraphs;
   runnerNode *runner_node;
   Graph::vertex_descriptor start_vertex;
   Graph::vertex_descriptor terminator_vertex;
@@ -251,12 +251,12 @@ public:
                   std::string front_or_back = "front");
 
 private:
-  void addVerticesInHerd(std::vector<dependencyGraph> &herd_subgraphs,
+  void addVerticesInHerd(std::deque<dependencyGraph> &herd_subgraphs,
                          air::HerdOp herd, dependencyContext &dep_ctx);
-  void addVerticesInPartition(std::vector<dependencyGraph> &part_subgraphs,
+  void addVerticesInPartition(std::deque<dependencyGraph> &part_subgraphs,
                               air::PartitionOp partition,
                               dependencyContext &dep_ctx);
-  void addVerticesInLaunch(std::vector<dependencyGraph> &launch_subgraphs,
+  void addVerticesInLaunch(std::deque<dependencyGraph> &launch_subgraphs,
                            air::LaunchOp launch, dependencyContext &dep_ctx);
   Graph::vertex_descriptor addVertexFromOpImpls(Operation *op,
                                                 dependencyGraph *G,

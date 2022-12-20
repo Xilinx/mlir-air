@@ -90,7 +90,7 @@ struct runnerNode {
   // Each entry is an std::pair. First element is for op's id, and second
   // element is counter
   std::vector<std::pair<unsigned, unsigned>> loop_trip_count;
-  std::vector<runnerNode> sub_runner_nodes;
+  std::deque<runnerNode> sub_runner_nodes;
 
   // Private wavefront of each runner node, reserved to interface with resource
   // model
@@ -450,7 +450,7 @@ public:
       auto channel_put_entry = canonicalizer.getVertexFromOp(
           channel_put.getOperation(), dep_ctx, "front");
       auto channel_put_v = channel_put_entry.first;
-      auto channel_put_g = channel_put_entry.second;
+      auto &channel_put_g = channel_put_entry.second;
       auto &channel_put_node = channel_put_g->g[channel_put_v];
       dep_list.push_back(&channel_put_node);
     }
@@ -548,7 +548,7 @@ public:
 
     // Walk the launch op and create a boost graph using dependencyCanonicalizer
     // intepreter
-    hostGraph.hierarchyOp = toplevel.getOperation();
+    hostGraph = dependencyGraph(toplevel, true);
     canonicalizer.parseCommandGraphs(toplevel, hostGraph, dep_ctx);
 
     uint64_t time = 1;
