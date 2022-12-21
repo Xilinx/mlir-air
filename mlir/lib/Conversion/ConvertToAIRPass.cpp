@@ -399,7 +399,10 @@ scf::ForOp cloneForUsingRemap(OpBuilder builder, BlockAndValueMapping &remap,
   builder.setInsertionPointToStart(new_loop_op.getBody());
   for (Operation &for_child_op : loop_op.getBody()->getOperations()) {
     if (for_child_op.hasAttr("hoist-channel")) {
-      if (auto channel_op = dyn_cast<air::ChannelInterface>(for_child_op)) {
+      if (auto for_op = dyn_cast<scf::ForOp>(for_child_op)) {
+        cloneForUsingRemap(builder, remap, for_op, externalGetPut);
+      } else if (auto channel_op =
+                     dyn_cast<air::ChannelInterface>(for_child_op)) {
         if (for_child_op.hasAttr("loop-carried-dep") &&
             for_child_op.getAttrOfType<StringAttr>("loop-carried-dep")
                     .getValue()
@@ -1738,11 +1741,17 @@ struct DmaToChannelPass : public DmaToChannelBase<DmaToChannelPass> {
                         .getValue()
                         .str() == "hoistedLoop") {
               if (auto scf_par = dyn_cast<scf::ParallelOp>(parent)) {
-                sink_wait_all_op = dyn_cast<air::WaitAllOp>(
-                    scf_par.getInitVals()[0].getDefiningOp());
+                if (scf_par.getInitVals().size() &&
+                    scf_par.getInitVals()[0].getDefiningOp()) {
+                  sink_wait_all_op = dyn_cast<air::WaitAllOp>(
+                      scf_par.getInitVals()[0].getDefiningOp());
+                }
               } else if (auto scf_for = dyn_cast<scf::ForOp>(parent)) {
-                sink_wait_all_op = dyn_cast<air::WaitAllOp>(
-                    scf_for.getIterOperands()[0].getDefiningOp());
+                if (scf_for.getIterOperands().size() &&
+                    scf_for.getIterOperands()[0].getDefiningOp()) {
+                  sink_wait_all_op = dyn_cast<air::WaitAllOp>(
+                      scf_for.getIterOperands()[0].getDefiningOp());
+                }
               }
             }
           }
