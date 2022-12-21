@@ -6,16 +6,40 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-par-to-herd %s | FileCheck %s
-// CHECK-LABEL: func.func @foo
+// RUN: air-opt -split-input-file -verify-diagnostics -air-par-to-herd -cse %s | FileCheck %s
+
+// CHECK-LABEL: func.func @par0
 // CHECK: %[[C0:.*]] = arith.constant 1 : index
-// CHECK air.herd tile ({{.*}}, {{.*}}) in ({{.*}}=[[C0]], {{.*}}=[[C0]])
-module  {
-  func.func @foo()  {
-    affine.parallel (%x,%y) = (0,0) to (1,1) {
-      %2 = arith.addi %x, %y : index
-      affine.yield
-    }
-    return
+// CHECK: air.herd @herd_0 tile ({{.*}}, {{.*}}) in ({{.*}}=%[[C0]], {{.*}}=%[[C0]])
+func.func @par0()  {
+  affine.parallel (%x,%y) = (0,0) to (1,1) {
+    %2 = arith.addi %x, %y : index
+    affine.yield
   }
+  return
+}
+
+// -----
+
+func.func @par1()  {
+  // expected-error@+1 {{'affine.parallel' op failed conversion to 'air.herd': only 2d loops are supported}}
+  affine.parallel (%x,%y,%z) = (0,0,0) to (1,2,3) {
+    %2 = arith.addi %x, %y : index
+    affine.yield
+  }
+  return
+}
+
+// -----
+
+// CHECK-LABEL: func.func @par2
+func.func @par2()  {
+  // CHECK: %[[C0:.*]] = arith.constant 4 : index
+  // CHECK: %[[C1:.*]] = arith.constant 5 : index
+  // CHECK: air.herd @herd_0 tile ({{.*}}, {{.*}}) in ({{.*}}=%[[C0]], {{.*}}=%[[C1]])
+  affine.parallel (%x,%y) = (0,2) to (4,12) step (1,2) {
+    %2 = arith.addi %x, %y : index
+    affine.yield
+  }
+  return
 }

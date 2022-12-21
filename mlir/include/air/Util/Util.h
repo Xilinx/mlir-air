@@ -21,7 +21,7 @@ using namespace mlir;
 namespace xilinx {
 namespace air {
 
-void normalizeLoop(AffineForOp afo);
+LogicalResult normalizeLoop(AffineForOp afo);
 
 func::FuncOp getMangledFunction(ModuleOp module, std::string fnName,
                                 ArrayRef<Value> operands,
