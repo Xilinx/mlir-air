@@ -1483,29 +1483,6 @@ void dependencyCanonicalizer::removeDepListRepetition(func::FuncOp func) {
   });
 }
 
-// Remove unused air.execute ops
-void dependencyCanonicalizer::removeUnusedExecuteOp(func::FuncOp func) {
-  SmallVector<air::ExecuteOp, 1> erased_ops;
-  func.walk([&](air::ExecuteOp op) {
-    if (op->getNumResults() == 2) {
-      auto result = op->getResult(1);
-      if (result.use_empty()) {
-        erased_ops.push_back(op);
-      }
-    }
-  });
-
-  for (auto op : erased_ops) {
-    for (auto user : op.getAsyncToken().getUsers()) {
-      if (auto async_user = dyn_cast<air::AsyncOpInterface>(user)) {
-        eraseAsyncDependencyFromAsyncOp(async_user, op.getAsyncToken());
-      }
-    }
-    assert(op.getAsyncToken().use_empty());
-    op->erase();
-  }
-}
-
 // Remove wait_all ops which contain only a single operand
 void dependencyCanonicalizer::removeRedundantWaitAllOps(func::FuncOp func) {
   auto ctx = func.getContext();
