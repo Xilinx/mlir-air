@@ -347,8 +347,8 @@ def air_DmaMemcpyNdOp: air_Op<"dma_memcpy_nd",
   let results = (outs Optional<air_AsyncToken>:$async_token);
   let assemblyFormat = [{
     custom<AsyncDependencies>(type($async_token), $async_dependencies)
-    `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `,`
-        $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)`  attr-dict `:`
+    `(` $dst (`<` $dst_offsets^ `>`)? (`<` $dst_sizes^ `>`)? (`<` $dst_strides^ `>`)? `,`
+        $src (`<` $src_offsets^ `>`)? (`<` $src_sizes^ `>`)? (`<` $src_strides^ `>`)? `)`  attr-dict `:`
     `(` type($dst) `,` type($src) `)`
   }];
   let description = [{
@@ -463,7 +463,7 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface,
   let assemblyFormat = [{
     custom<AsyncDependencies>(type($async_token), $async_dependencies)
     $chan_name `[` ($indices^)? `]`
-    `(` $src `[` ($src_offsets^)? `]``[` ($src_sizes^)? `]``[` ($src_strides^)? `]` `)` attr-dict `:`
+    `(` $src (`<` $src_offsets^ `>`)? (`<` $src_sizes^ `>`)? (`<` $src_strides^ `>`)? `)` attr-dict `:`
     `(` type($src) `)`
   }];
   let extraClassDeclaration = [{
@@ -495,7 +495,7 @@ def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface,
   let assemblyFormat = [{
     custom<AsyncDependencies>(type($async_token), $async_dependencies)
     $chan_name `[` ($indices^)? `]`
-    `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `)` attr-dict `:`
+    `(` $dst (`<` $dst_offsets^ `>`)? (`<` $dst_sizes^ `>`)? (`<` $dst_strides^ `>`)? `)` attr-dict `:`
     `(` type($dst) `)`
   }];
   let extraClassDeclaration = [{
