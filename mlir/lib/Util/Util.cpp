@@ -98,7 +98,7 @@ func::FuncOp air::getMangledFunction(ModuleOp module, std::string prefix,
   return fn;
 }
 
-void air::normalizeLoop(AffineForOp afo) {
+LogicalResult air::normalizeLoop(AffineForOp afo) {
   auto ubMap = afo.getUpperBoundMap();
   auto lbMap = afo.getLowerBoundMap();
   auto ctx = afo.getContext();
@@ -124,7 +124,7 @@ void air::normalizeLoop(AffineForOp afo) {
   auto new_iv = builder.create<AffineApplyOp>(loc, iv_map, iv);
   SmallPtrSet<Operation *, 1> keep{new_iv};
   iv.replaceAllUsesExcept(new_iv, keep);
-  return;
+  return success();
 }
 
 uint64_t air::getTensorVolume(const ShapedType ty) {

@@ -56,8 +56,10 @@ public:
     AffineForOp outer = nest[depth];
     AffineForOp inner = nest[depth+1];
 
-    xilinx::air::normalizeLoop(inner);
-    xilinx::air::normalizeLoop(outer);
+    if (failed(xilinx::air::normalizeLoop(inner)))
+      return;
+    if (failed(xilinx::air::normalizeLoop(outer)))
+      return;
     {
       OpBuilder builder(outer);
       auto loc = outer.getLoc();
