@@ -1586,9 +1586,8 @@ private:
 
     // Connect sources in loop body with iter_args
     for (auto async_op : new_loop_op.getOps<air::AsyncOpInterface>()) {
-      if ((!async_op.getAsyncDependencies().size()) &&
-          (!isNotLoopCarriedOp(async_op))) {
-        async_op.addAsyncDependency(new_loop_op.getRegionIterArgs()[0]);
+      if (!isNotLoopCarriedOp(async_op)) {
+        addAsyncDependencyIfNew(async_op, new_loop_op.getRegionIterArgs()[0]);
       }
     }
 

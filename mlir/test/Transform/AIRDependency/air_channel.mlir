@@ -41,7 +41,7 @@ module attributes {torch.debug_module_name = "mmult"} {
 // CHECK: %[[EVENT3:.*]] = air.channel.put async [%[[EVENT1]]]{{.*}}@channel_2[]
         air.channel.put @channel_2[] (%arg7[%arg16, %18] [%c64_new, %c64_new] [%c1024_new, %c1_new]) : (memref<1024x1024xbf16>)
       }
-// CHECK: %[[EVENT4:.*]] = air.wait_all async [%[[EVENT2]], %[[EVENT3]]]
+// CHECK: %[[EVENT4:.*]] = air.wait_all async [%[[EVENT1]], %[[EVENT2]], %[[EVENT3]]]
 // CHECK: %[[EVENT5:.*]] = air.channel.put async [%[[EVENT6:.*]], %[[EVENT7:.*]]]{{.*}}@channel_3[]
       air.channel.put @channel_3[] (%arg8[%17, %18] [%c64_new, %c64_new] [%c1024_new, %c1_new]) : (memref<24576x1024xbf16>)
       
@@ -82,7 +82,7 @@ module attributes {torch.debug_module_name = "mmult"} {
               air.channel.put @channel_6[%arg17, %arg18] (%6[%arg24, %21] [%c64, %c64] [%c1024, %c1]) : (memref<64x64xbf16, 1>)
 // CHECK: %[[EVENT17:.*]] = air.channel.put async [%[[EVENT15]]{{.*}}@channel_6[
             }
-// CHECK: %[[EVENT18:.*]] = air.wait_all async [%[[EVENT16]], %[[EVENT17]]]
+// CHECK: %[[EVENT18:.*]] = air.wait_all async [%[[EVENT15]], %[[EVENT16]], %[[EVENT17]]]
 // CHECK: %[[EVENT19:.*]] = air.channel.put async [{{.*}}@channel_7[
             air.channel.put @channel_7[%arg17, %arg18] (%19[%20, %21] [%c32_new, %c32_new] [%c64, %c1]) : (memref<64x64xbf16, 1>)
           }
@@ -96,44 +96,44 @@ module attributes {torch.debug_module_name = "mmult"} {
 // CHECK: %[[EVENT21:.*]] = air.channel.get async [%[[EVENT20]]]{{.*}}@channel_7[
             air.channel.get @channel_7[%arg17, %arg18] (%12[] [] []) : (memref<32x32xbf16, 2>)
 // CHECK: %[[EVENT22:.*]] = air.wait_all async [%[[EVENT21]]]
-// CHECK: %[[EVENT23:.*]] = scf.for{{.*}}iter_args(
+// CHECK: %[[EVENT23:.*]] = scf.for{{.*}}iter_args(%[[EVENT24:.*]] = 
             scf.for %arg24 = %c0_1 to %c64_2 step %c32 {
-// CHECK: %[[EVENT24:.*]], %[[VALUE2:.*]] = air.execute
+// CHECK: %[[EVENT25:.*]], %[[VALUE2:.*]] = air.execute
               %10 = memref.alloc() : memref<32x32xbf16, 2>
-// CHECK: %[[EVENT25:.*]], %[[VALUE3:.*]] = air.execute
+// CHECK: %[[EVENT26:.*]], %[[VALUE3:.*]] = air.execute
               %11 = memref.alloc() : memref<32x32xbf16, 2>
-// CHECK: %[[EVENT26:.*]] = air.channel.get async [%[[EVENT24]]]{{.*}}@channel_5[
+// CHECK: %[[EVENT27:.*]] = air.channel.get async [%[[EVENT24]], %[[EVENT25]]]{{.*}}@channel_5[
               air.channel.get @channel_5[%arg17, %arg18] (%10[] [] []) : (memref<32x32xbf16, 2>)
-// CHECK: %[[EVENT27:.*]] = air.channel.get async [%[[EVENT25]]]{{.*}}@channel_6[
+// CHECK: %[[EVENT28:.*]] = air.channel.get async [%[[EVENT24]], %[[EVENT26]]]{{.*}}@channel_6[
               air.channel.get @channel_6[%arg17, %arg18] (%11[] [] []) : (memref<32x32xbf16, 2>)
-// CHECK: %[[EVENT28:.*]] = air.execute [%[[EVENT27]], %[[EVENT26]]
+// CHECK: %[[EVENT29:.*]] = air.execute [%[[EVENT28]], %[[EVENT27]]
               linalg.matmul ins(%10, %11 : memref<32x32xbf16, 2>, memref<32x32xbf16, 2>) outs(%12 : memref<32x32xbf16, 2>)
               memref.dealloc %10 : memref<32x32xbf16, 2>
               memref.dealloc %11 : memref<32x32xbf16, 2>
             }
-// CHECK: %[[EVENT29:.*]] = air.channel.put async [%[[EVENT23]]{{.*}}@channel_8[
+// CHECK: %[[EVENT30:.*]] = air.channel.put async [%[[EVENT23]]{{.*}}@channel_8[
             air.channel.put @channel_8[%arg17, %arg18] (%12[] [] []) : (memref<32x32xbf16, 2>)
-// CHECK: %[[EVENT30:.*]] = air.execute [%[[EVENT29]]]
+// CHECK: %[[EVENT31:.*]] = air.execute [%[[EVENT30]]]
             memref.dealloc %12 : memref<32x32xbf16, 2>
             air.herd_terminator
           }
           scf.parallel (%arg17, %arg18) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) {
             %20 = affine.apply #map1()[%arg17]
             %21 = affine.apply #map1()[%arg18]
-// CHECK: %[[EVENT31:.*]] = air.channel.get async{{.*}}@channel_8[
+// CHECK: %[[EVENT32:.*]] = air.channel.get async{{.*}}@channel_8[
             air.channel.get @channel_8[%arg17, %arg18] (%19[%20, %21] [%c64, %c64] [%c1024, %c1]) : (memref<64x64xbf16, 1>)
-// CHECK: %[[EVENT32:.*]] = air.wait_all async [%[[EVENT31]]]
+// CHECK: %[[EVENT33:.*]] = air.wait_all async [%[[EVENT32]]]
           }
           memref.dealloc %5 : memref<64x64xbf16, 1>
           memref.dealloc %6 : memref<64x64xbf16, 1>
         }
-// CHECK: %[[EVENT33:.*]] = air.channel.put async{{.*}}@channel_4[]
+// CHECK: %[[EVENT34:.*]] = air.channel.put async{{.*}}@channel_4[]
         air.channel.put @channel_4[] (%19[] [] []) : (memref<64x64xbf16, 1>)
         memref.dealloc %19 : memref<64x64xbf16, 1>
         air.partition_terminator
       }
 
-// CHECK: %[[EVENT34:.*]] = air.channel.get async{{.*}}@channel_4[]
+// CHECK: %[[EVENT35:.*]] = air.channel.get async{{.*}}@channel_4[]
       air.channel.get @channel_4[] (%arg8[%17, %18] [%c64_new, %c64_new] [%c1024_new, %c1_new]) : (memref<24576x1024xbf16>)
       
       air.launch_terminator
