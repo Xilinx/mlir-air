@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "air_host.h"
 #include "airbin.h"
+#include "air_host.h"
 #include "air_queue.h"
 #include <algorithm> // minmax_element, sort
 #include <cassert>
@@ -165,7 +165,7 @@ airbin_size readairbinsize(std::ifstream &infile, uint8_t column_offset) {
   result.num_rows = (minmax_rows.second->second - result.start_row) + 1u;
 
   return result;
- }
+}
 
 void readairbin(std::ifstream &infile) {
   unsigned char longnum[8] = {0};
