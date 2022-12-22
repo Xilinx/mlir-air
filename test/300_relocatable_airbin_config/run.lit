@@ -1,0 +1,12 @@
+//===- run.lit ------------------------------------------------------------===//
+//
+// Copyright (C) 2022, Xilinx Inc.
+// Copyright (C) 2022, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+
+// RUN: aiecc.py -v --aie-generate-airbin --no-compile-host --no-xchesscc --no-xbridge %S/aie_addone.mlir
+// RUN: cp %T/acdc_project/air.bin %T/addone.airbin
+// RUN: %CLANG %S/test.cpp %aie_runtime_lib%/test_library.cpp -g -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -DAIR_LIBXAIE_ENABLE -I%aie_runtime_lib% -I%air_runtime_lib%/airhost/include -rdynamic -lxaiengine %airhost_libs% -o %T/test.exe
+// RUN: %run_on_board %T/test.exe

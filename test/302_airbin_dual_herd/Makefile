@@ -42,7 +42,7 @@ addone: addone.airbin
 .PHONY: matadd
 matadd: matadd.airbin
 
-run: test.exe addone.airbin
+run: test.exe addone.airbin matadd.airbin
 	sudo ./test.exe
 
 clean::
