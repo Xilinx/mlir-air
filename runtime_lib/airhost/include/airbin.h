@@ -1,4 +1,4 @@
-//===- airbin.h __-----------------------------------------------*- C++ -*-===//
+//===- airbin.h -------------------------------------------------*- C++ -*-===//
 //
 // Copyright (C) 2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
@@ -9,12 +9,7 @@
 #ifndef AIRBIN_H
 #define AIRBIN_H
 
-#include <cstdint>
-#include <fstream>
-
-uint64_t airbin2mem(std::ifstream &infile, volatile uint32_t *tds_va,
-                    uint32_t *tds_pa, volatile uint32_t *data_va,
-                    uint32_t *data_pa, uint8_t col);
+#include <stdint.h>
 
 struct airbin_size {
   uint8_t start_col = 0;
@@ -22,7 +17,4 @@ struct airbin_size {
   uint8_t start_row = 1;
   uint8_t num_rows = 2;
 };
-
-airbin_size readairbinsize(std::ifstream &infile, uint8_t column_offset);
-void readairbin(std::ifstream &infile);
 #endif
