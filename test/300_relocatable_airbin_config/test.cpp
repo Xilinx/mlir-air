@@ -1,4 +1,10 @@
-// (c) Copyright 2021 Xilinx Inc. All Rights Reserved.
+//===- test.cpp -------------------------------------------------*- C++ -*-===//
+//
+// Copyright (C) 2020-2022, Xilinx Inc.
+// Copyright (C) 2022, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
 
 #include <cassert>
 #include <cstdint>  // uint64_t

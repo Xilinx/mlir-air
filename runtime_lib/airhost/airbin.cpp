@@ -1,3 +1,10 @@
+//===- airbin.cpp -----------------------------------------------*- C++ -*-===//
+//
+// Copyright (C) 2022, Xilinx Inc.
+// Copyright (C) 2022, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
 
 #include "airbin.h"
 #include "air_queue.h"
@@ -51,7 +58,7 @@ struct Air64_Chdr {
   uint64_t ch_size;
 };
 
-std::string to_air_cfg_name(uint32_t in) {
+static std::string to_air_cfg_name(uint32_t in) {
   switch (in) {
   case 1:
     return ".ssmast";
