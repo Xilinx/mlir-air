@@ -232,6 +232,7 @@ public:
                           bool dump_graph = false, std::string dump_dir = "");
   void updateDepList(func::FuncOp func, dependencyGraph &global_graph);
   void removeDepListRepetition(func::FuncOp func);
+  void removeUnusedExecuteOp(func::FuncOp func);
   void removeRedundantWaitAllOps(func::FuncOp func);
   void dumpDotGraphFiles(dependencyGraph global_graph,
                          std::string dump_dir = "");
