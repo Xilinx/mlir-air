@@ -502,6 +502,11 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
 
   if (dump_dot) {
     // Dump dot graphs
+    if (dump_dir != "") {
+      int status = mkdir(dump_dir.c_str(), 0777);
+      if ((status < 0) && (errno != EEXIST))
+        dump_dir = ""; // Failed to create dir
+    }
     std::ofstream ofs(dump_dir + "graph.dot", std::ofstream::out);
     write_graphviz(ofs, flat_g);
   }
