@@ -133,7 +133,8 @@ static Air64_Chdr read_section_header(std::ifstream &infile,
   return config_header;
 }
 
-airbin_size readairbinsize(std::ifstream &infile, uint8_t column_offset) {
+static airbin_size read_airbin_size(std::ifstream &infile,
+                                    uint8_t column_offset) {
   std::vector<std::pair<uint8_t, uint8_t>> tiles;
   uint32_t next_chcfg_idx = 0;
   Air64_Fhdr file_header = read_file_header(infile);
@@ -167,7 +168,7 @@ airbin_size readairbinsize(std::ifstream &infile, uint8_t column_offset) {
   return result;
 }
 
-void readairbin(std::ifstream &infile) {
+static void read_airbin(std::ifstream &infile) {
   unsigned char longnum[8] = {0};
   uint16_t f_type;
   uint16_t arch;
@@ -237,9 +238,9 @@ void readairbin(std::ifstream &infile) {
   }
 }
 
-uint64_t airbin2mem(std::ifstream &infile, volatile uint32_t *tds_va,
-                    uint32_t *tds_pa, volatile uint32_t *data_va,
-                    uint32_t *data_pa, uint8_t col) {
+static uint64_t airbin_to_mem(std::ifstream &infile, volatile uint32_t *tds_va,
+                              uint32_t *tds_pa, volatile uint32_t *data_va,
+                              uint32_t *data_pa, uint8_t col) {
   uint64_t last_td = 0;
 
   uint32_t next_chcfg_idx = 0;
@@ -319,11 +320,11 @@ int air_load_airbin(queue_t *q, const char *filename, uint8_t column,
 
   std::ifstream infile{filename};
 
-  auto size = readairbinsize(infile, column);
+  auto size = read_airbin_size(infile, column);
 
   // AIRBIN from file to memory
-  uint64_t last_td = airbin2mem(infile, bd_ptr, (uint32_t *)bd_paddr, bram_ptr,
-                                paddr, size.start_col);
+  static uint64_t last_td = airbin_to_mem(infile, bd_ptr, (uint32_t *)bd_paddr,
+                                          bram_ptr, paddr, size.start_col);
 
   // Send configuration packet
   uint64_t wr_idx = queue_add_write_index(q, 1);
