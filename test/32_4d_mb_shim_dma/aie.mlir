@@ -30,22 +30,22 @@ module {
       AIE.useLock(%l72_0, "Acquire", 0)
       AIE.dmaBd(<%buf72_0 : memref<128xi32>, 0, 128>, 0)
       AIE.useLock(%l72_0, "Release", 1)
-      cf.br ^bd1
+      AIE.nextBd ^bd1
     ^bd1:
       AIE.useLock(%l72_1, "Acquire", 0)
       AIE.dmaBd(<%buf72_1 : memref<128xi32>, 0, 128>, 0)
       AIE.useLock(%l72_1, "Release", 1)
-      cf.br ^bd0
+      AIE.nextBd ^bd0
     ^bd2:
       AIE.useLock(%l72_0, "Acquire", 1)
       AIE.dmaBd(<%buf72_0 : memref<128xi32>, 0, 128>, 0)
       AIE.useLock(%l72_0, "Release", 0)
-      cf.br ^bd3
+      AIE.nextBd ^bd3
     ^bd3:
       AIE.useLock(%l72_1, "Acquire", 1)
       AIE.dmaBd(<%buf72_1 : memref<128xi32>, 0, 128>, 0)
       AIE.useLock(%l72_1, "Release", 0)
-      cf.br ^bd2
+      AIE.nextBd ^bd2
     ^end:
       AIE.end
   }

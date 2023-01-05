@@ -19,17 +19,17 @@ module @aie.0  {
   %30 = AIE.mem(%2)  {
     %214 = AIE.dmaStart(S2MM, 0, ^bb1, ^bb4)
   ^bb1:  // 2 preds: ^bb0, ^bb3
-    cf.br ^bb2
+    AIE.nextBd ^bb2
   ^bb2:  // pred: ^bb1
     AIE.useLock(%26, Acquire, 0)
     AIE.dmaBd(<%27 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%26, Release, 1)
-    cf.br ^bb3
+    AIE.nextBd ^bb3
   ^bb3:  // pred: ^bb2
     AIE.useLock(%24, Acquire, 0)
     AIE.dmaBd(<%25 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%24, Release, 1)
-    cf.br ^bb1
+    AIE.nextBd ^bb1
   ^bb4:  // pred: ^bb0
     AIE.end
   }
@@ -49,17 +49,17 @@ module @aie.0  {
   %20 = AIE.mem(%3)  {
     %14 = AIE.dmaStart(S2MM, 0, ^bb1, ^bb4)
   ^bb1:  // 2 preds: ^bb0, ^bb3
-    cf.br ^bb2
+    AIE.nextBd ^bb2
   ^bb2:  // pred: ^bb1
     AIE.useLock(%6, Acquire, 0)
     AIE.dmaBd(<%7 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%6, Release, 1)
-    cf.br ^bb3
+    AIE.nextBd ^bb3
   ^bb3:  // pred: ^bb2
     AIE.useLock(%4, Acquire, 0)
     AIE.dmaBd(<%5 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%4, Release, 1)
-    cf.br ^bb1
+    AIE.nextBd ^bb1
   ^bb4:  // pred: ^bb0
     AIE.end
   }
@@ -79,17 +79,17 @@ module @aie.0  {
   %40 = AIE.mem(%0)  {
     %414 = AIE.dmaStart(S2MM, 0, ^bb1, ^bb4)
   ^bb1:  // 2 preds: ^bb0, ^bb3
-    cf.br ^bb2
+    AIE.nextBd ^bb2
   ^bb2:  // pred: ^bb1
     AIE.useLock(%46, Acquire, 0)
     AIE.dmaBd(<%47 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%46, Release, 1)
-    cf.br ^bb3
+    AIE.nextBd ^bb3
   ^bb3:  // pred: ^bb2
     AIE.useLock(%44, Acquire, 0)
     AIE.dmaBd(<%45 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%44, Release, 1)
-    cf.br ^bb1
+    AIE.nextBd ^bb1
   ^bb4:  // pred: ^bb0
     AIE.end
   }
@@ -109,17 +109,17 @@ module @aie.0  {
   %50 = AIE.mem(%99)  {
     %514 = AIE.dmaStart(S2MM, 0, ^bb1, ^bb4)
   ^bb1:  // 2 preds: ^bb0, ^bb3
-    cf.br ^bb2
+    AIE.nextBd ^bb2
   ^bb2:  // pred: ^bb1
     AIE.useLock(%56, Acquire, 0)
     AIE.dmaBd(<%57 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%56, Release, 1)
-    cf.br ^bb3
+    AIE.nextBd ^bb3
   ^bb3:  // pred: ^bb2
     AIE.useLock(%54, Acquire, 0)
     AIE.dmaBd(<%55 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%54, Release, 1)
-    cf.br ^bb1
+    AIE.nextBd ^bb1
   ^bb4:  // pred: ^bb0
     AIE.end
   }

@@ -28,56 +28,56 @@ module @aie.0  {
   %8 = AIE.mem(%t74)  {
     %9 = AIE.dmaStart(MM2S, 0, ^bb1, ^bb4)
   ^bb1: 
-    cf.br ^bb2
+    AIE.nextBd ^bb2
   ^bb2: 
     AIE.useLock(%6, Acquire, 1)
     AIE.dmaBd(<%7 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%6, Release, 0)
-    cf.br ^bb3
+    AIE.nextBd ^bb3
   ^bb3: 
-    cf.br ^bb1
+    AIE.nextBd ^bb1
   ^bb4: 
     AIE.end
   }
   %12 = AIE.mem(%t84)  {
     %13 = AIE.dmaStart(MM2S, 0, ^bb1, ^bb4)
   ^bb1: 
-    cf.br ^bb2
+    AIE.nextBd ^bb2
   ^bb2: 
     AIE.useLock(%10, Acquire, 1)
     AIE.dmaBd(<%11 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%10, Release, 0)
-    cf.br ^bb3
+    AIE.nextBd ^bb3
   ^bb3: 
-    cf.br ^bb1
+    AIE.nextBd ^bb1
   ^bb4: 
     AIE.end
   }
   %16 = AIE.mem(%t94)  {
     %17 = AIE.dmaStart(MM2S, 0, ^bb1, ^bb4)
   ^bb1: 
-    cf.br ^bb2
+    AIE.nextBd ^bb2
   ^bb2: 
     AIE.useLock(%14, Acquire, 1)
     AIE.dmaBd(<%15 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%14, Release, 0)
-    cf.br ^bb3
+    AIE.nextBd ^bb3
   ^bb3: 
-    cf.br ^bb1
+    AIE.nextBd ^bb1
   ^bb4: 
     AIE.end
   }
   %20 = AIE.mem(%ta4)  {
     %21 = AIE.dmaStart(MM2S, 0, ^bb1, ^bb4)
   ^bb1: 
-    cf.br ^bb2
+    AIE.nextBd ^bb2
   ^bb2: 
     AIE.useLock(%18, Acquire, 1)
     AIE.dmaBd(<%19 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%18, Release, 0)
-    cf.br ^bb3
+    AIE.nextBd ^bb3
   ^bb3: 
-    cf.br ^bb1
+    AIE.nextBd ^bb1
   ^bb4: 
     AIE.end
   }
