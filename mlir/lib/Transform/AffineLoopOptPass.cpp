@@ -98,7 +98,8 @@ public:
   // static const llvm::DenseMap<StringRef, unsigned> optConf;
 
   void tileLoops(std::vector<SmallVector<AffineForOp, 6>> *bands);
-  void generateDataCopyLoops(std::vector<SmallVector<AffineForOp, 6>> *bands, Optional<Value> filterMemRef = std::nullopt);
+  void generateDataCopyLoops(std::vector<SmallVector<AffineForOp, 6>> *bands,
+                             Optional<Value> filterMemRef = std::nullopt);
   void outlineDataCopyLoops();
 
   static void getTileableBands(func::FuncOp,
