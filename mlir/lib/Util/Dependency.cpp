@@ -1488,14 +1488,21 @@ void dependencyCanonicalizer::removeDepListRepetition(func::FuncOp func) {
   });
 }
 
-// Remove unused air.execute ops
+// Remove unused air.execute ops which have no side effects
 void dependencyCanonicalizer::removeUnusedExecuteOp(func::FuncOp func) {
   SmallVector<air::ExecuteOp, 1> erased_ops;
   func.walk([&](air::ExecuteOp op) {
-    if (op->getNumResults() == 2) {
-      auto result = op->getResult(1);
-      if (result.use_empty()) {
-        erased_ops.push_back(op);
+    // Check the type of op inside the execute. Only remove ops with no side
+    // effects
+    auto child_op = &(*op->getRegions().front().op_begin());
+    if (dyn_cast<memref::AllocOp>(child_op) ||
+        dyn_cast<mlir::AffineApplyOp>(child_op)) {
+      // The second result is the ssa value yielded from child op inside execute
+      if (op->getNumResults() == 2) {
+        auto result = op->getResult(1);
+        if (result.use_empty()) {
+          erased_ops.push_back(op);
+        }
       }
     }
   });

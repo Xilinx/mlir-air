@@ -399,7 +399,10 @@ scf::ForOp cloneForUsingRemap(OpBuilder builder, BlockAndValueMapping &remap,
   builder.setInsertionPointToStart(new_loop_op.getBody());
   for (Operation &for_child_op : loop_op.getBody()->getOperations()) {
     if (for_child_op.hasAttr("hoist-channel")) {
-      if (auto channel_op = dyn_cast<air::ChannelInterface>(for_child_op)) {
+      if (auto for_op = dyn_cast<scf::ForOp>(for_child_op)) {
+        cloneForUsingRemap(builder, remap, for_op, externalGetPut);
+      } else if (auto channel_op =
+                     dyn_cast<air::ChannelInterface>(for_child_op)) {
         if (for_child_op.hasAttr("loop-carried-dep") &&
             for_child_op.getAttrOfType<StringAttr>("loop-carried-dep")
                     .getValue()
@@ -656,8 +659,8 @@ void replaceAIRDmaWithAIRChannelPairs(
     channel_op->setAttr("broadcast_shape",
                         builder.getI64ArrayAttr(bcast_sizes));
   } else if (op->hasAttr("broadcast_pattern")) {
-    // Else if broadcast_pattern attribute is set, i.e. lowering a set of
-    // broadcast channels together
+    // Else if broadcast_pattern attribute is set, then infer channel's input
+    // and output shapes from the broadcast_pattern affine set
     SmallVector<int, 2> lbs_int = {-1};
     SmallVector<int, 2> ubs_int = {-1};
     mlir::IntegerSet int_set =
@@ -671,7 +674,15 @@ void replaceAIRDmaWithAIRChannelPairs(
     annotateChannelOpWithBCastShape(builder, channel_op,
                                     op->getParentOfType<air::HerdOp>());
   } else {
+    // Else, infer channel's input shape from parent herd, if within a herd
     SmallVector<int64_t, 2> channel_sizes = {1, 1};
+    if (auto parent_herd_op = op->getParentOfType<air::HerdOp>()) {
+      auto herd_size = parent_herd_op.getSizeOperands();
+      for (unsigned i = 0; i < herd_size.size(); i++) {
+        channel_sizes[i] =
+            herd_size[i].getDefiningOp<arith::ConstantIndexOp>().value();
+      }
+    }
     createChannelOpWithBCast(builder, module, cname, loc, channel_sizes);
   }
 
@@ -683,10 +694,8 @@ void replaceAIRDmaWithAIRChannelPairs(
     for (auto operand : parent_affine_if_op->getOperands()) {
       channel_idx_internal.push_back(operand);
     }
-  } else if (op->hasAttr("broadcast_pattern")) {
-    // Else if broadcast_pattern is set, let both channel ops inherit herd's
-    // induction variables
-    auto parent_herd_op = op->getParentOfType<air::HerdOp>();
+  } else if (auto parent_herd_op = op->getParentOfType<air::HerdOp>()) {
+    // Else, let both channel ops inherit herd's induction variables
     for (auto iv : parent_herd_op.getIds()) {
       channel_idx_internal.push_back(iv);
       channel_idx_external.push_back(iv);
@@ -1738,11 +1747,17 @@ struct DmaToChannelPass : public DmaToChannelBase<DmaToChannelPass> {
                         .getValue()
                         .str() == "hoistedLoop") {
               if (auto scf_par = dyn_cast<scf::ParallelOp>(parent)) {
-                sink_wait_all_op = dyn_cast<air::WaitAllOp>(
-                    scf_par.getInitVals()[0].getDefiningOp());
+                if (scf_par.getInitVals().size() &&
+                    scf_par.getInitVals()[0].getDefiningOp()) {
+                  sink_wait_all_op = dyn_cast<air::WaitAllOp>(
+                      scf_par.getInitVals()[0].getDefiningOp());
+                }
               } else if (auto scf_for = dyn_cast<scf::ForOp>(parent)) {
-                sink_wait_all_op = dyn_cast<air::WaitAllOp>(
-                    scf_for.getIterOperands()[0].getDefiningOp());
+                if (scf_for.getIterOperands().size() &&
+                    scf_for.getIterOperands()[0].getDefiningOp()) {
+                  sink_wait_all_op = dyn_cast<air::WaitAllOp>(
+                      scf_for.getIterOperands()[0].getDefiningOp());
+                }
               }
             }
           }

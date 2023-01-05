@@ -187,8 +187,10 @@ private:
     auto dependency_list = current_async_op.getAsyncDependencies();
     if (dependency_list.size()) {
       for (auto dep_op : dependency_list) {
-        if (auto region_op = dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp())) {
+        if (dep_op.getDefiningOp() &&
+            dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp())) {
           // Found air.ExecuteOp in upstream dependency
+          auto region_op = dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp());
           auto child_op =
               &region_op.getRegion().front().getOperations().front();
           if (auto alloc_op = dyn_cast<memref::AllocOp>(child_op)) {
@@ -280,7 +282,7 @@ private:
       for (unsigned i = 0; i < dependency_list.size(); i++) {
         wait_all_after_for.addAsyncDependency(dependency_list[i]);
       }
-      for (unsigned i = 0; i < dependency_list.size(); i++) {
+      for (int i = dependency_list.size() - 1; i >= 0; i--) {
         dma_async_op.eraseAsyncDependency(i);
       }
     }
