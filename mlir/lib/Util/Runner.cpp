@@ -894,11 +894,13 @@ private:
           auto sub_runner = sub_c->runner_node;
           resetGraphBetweenTwoVertices(start, terminator_v, sub_g, *sub_runner);
         }
-        // Else if v is an scf.for op, then clear the cached trip count from runner node
-        else if (G[v].asyncEventType == "for_loop"){
+        // Else if v is an scf.for op, then clear the cached trip count from
+        // runner node
+        else if (G[v].asyncEventType == "for_loop") {
           // Clear for loop trip count from runner node's cache
-          for(auto it = c.loop_trip_count.begin(); it != c.loop_trip_count.end(); it++){
-            if (it->first == (unsigned)getIdAttr(G[v].op)){
+          for (auto it = c.loop_trip_count.begin();
+               it != c.loop_trip_count.end(); it++) {
+            if (it->first == (unsigned)getIdAttr(G[v].op)) {
               c.loop_trip_count.erase(it);
               break;
             }
