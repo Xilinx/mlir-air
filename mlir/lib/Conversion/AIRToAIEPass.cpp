@@ -1276,11 +1276,11 @@ public:
             bd = next_bd;
           auto b = OpBuilder::atBlockEnd(bd);
           if (i == dmaOps.size() - 1) {
-            b.create<cf::BranchOp>(loc, first_bd);
+            b.create<AIE::NextBDOp>(loc, first_bd);
           } else {
             next_bd = new Block();
             mem.getBody().push_back(next_bd);
-            b.create<cf::BranchOp>(loc, next_bd);
+            b.create<AIE::NextBDOp>(loc, next_bd);
           }
           AIE::BufferOp bufferOp = getBufferForTileDMA(module, dmaOp, x, y);
           AIE::LockOp lockOp =

@@ -22,7 +22,7 @@ module {
 // CHECK:           AIE.useLock(%[[VAL_14]], Acquire, 0)
 // CHECK:           AIE.dmaBd(<%[[VAL_13]] : memref<1024xi32, 2>, 0, 0>, 0)
 // CHECK:           AIE.useLock(%[[VAL_14]], Release, 1)
-// CHECK:           br ^bb1
+// CHECK:           AIE.nextBd ^bb1
 // CHECK:         ^bb2:
 // CHECK:           AIE.end
 // CHECK:         }

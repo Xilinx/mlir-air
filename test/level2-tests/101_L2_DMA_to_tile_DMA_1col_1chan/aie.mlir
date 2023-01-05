@@ -18,17 +18,17 @@ module @aie.0  {
   %10 = AIE.mem(%3)  {
     %14 = AIE.dmaStart(S2MM, 0, ^bb1, ^bb4)
   ^bb1:  // 2 preds: ^bb0, ^bb3
-    cf.br ^bb2
+    AIE.nextBd ^bb2
   ^bb2:  // pred: ^bb1
     AIE.useLock(%6, Acquire, 0)
     AIE.dmaBd(<%7 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%6, Release, 1)
-    cf.br ^bb3
+    AIE.nextBd ^bb3
   ^bb3:  // pred: ^bb2
     AIE.useLock(%4, Acquire, 0)
     AIE.dmaBd(<%5 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%4, Release, 1)
-    cf.br ^bb1
+    AIE.nextBd ^bb1
   ^bb4:  // pred: ^bb0
     AIE.end
   }
