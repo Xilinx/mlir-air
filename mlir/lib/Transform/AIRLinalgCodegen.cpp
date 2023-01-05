@@ -632,10 +632,9 @@ private:
   linalg::LinalgPromotionOptions options;
 };
 
-static std::optional<Value> allocBufferCallBack(OpBuilder &b,
-                                           memref::SubViewOp subView,
-                                           ArrayRef<Value> boundingSubViewSize,
-                                           DataLayout &layout) {
+static std::optional<Value>
+allocBufferCallBack(OpBuilder &b, memref::SubViewOp subView,
+                    ArrayRef<Value> boundingSubViewSize, DataLayout &layout) {
   MemRefType viewType = subView.getType();
   MemRefType allocType =
       MemRefType::get(viewType.getShape(), viewType.getElementType(), {},
