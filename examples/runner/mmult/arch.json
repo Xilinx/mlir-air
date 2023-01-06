@@ -1,6 +1,5 @@
 {
   "clock": 1000000000,
-  "cores": 1,
   "datatype": {
     "bytes": 4,
     "name": "fp32"
