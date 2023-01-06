@@ -42,6 +42,12 @@
 void boost::throw_exception(std::exception const &e) {
   llvm_unreachable("boost exception");
 }
+#if BOOST_VERSION >= 107300
+void boost::throw_exception(std::exception const &e,
+                            boost::source_location const &) {
+  llvm_unreachable("boost exception");
+}
+#endif
 
 // boost graph
 #include <boost/graph/adjacency_list.hpp>
