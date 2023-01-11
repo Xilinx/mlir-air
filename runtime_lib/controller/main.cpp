@@ -59,7 +59,7 @@ int shim_dma_cols[NUM_SHIM_DMAS] = {2,  3,  6,  7,  10, 11, 18, 19,
 int col_dma_cols[NUM_COL_DMAS] = {7, 8, 9, 10};
 #define NUM_DMAS (NUM_SHIM_DMAS + NUM_COL_DMAS)
 
-#define CHATTY 0
+#define CHATTY 1
 
 #define air_printf(fmt, ...)                                                   \
   do {                                                                         \
