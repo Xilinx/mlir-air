@@ -23,7 +23,7 @@
 # # # #                            User Time Names / User Time Groups / Time Specs                                 # # # #
 ##########################################################################################################################
 create_clock -period 10.000 -name sys_clk [get_ports sys_clk_p]
-create_clock -name aclk -period 8 [get_nets aclk0_clk]
+#create_clock -name aclk -period 8 [get_nets aclk0_clk]
 #
 #set_property IOSTANDARD LVCMOS18 [get_ports sys_rst_n]
 #set_property PACKAGE_PIN K35 [get_ports sys_rst_n]
@@ -61,8 +61,10 @@ set_property LOC PCIE40_X0Y1 [get_cells qdma_ep_i/qdma_host_mem_support/pcie/ins
 set_property PACKAGE_PIN R36 [get_ports sys_clk_p]
 set_property PACKAGE_PIN R37 [get_ports sys_clk_n]
 
-set_property PACKAGE_PIN AB28 [get_ports {pci_exp_rxp[0]}]
-set_property PACKAGE_PIN AB39 [get_ports {pci_exp_rxn[0]}]
+#set_property PACKAGE_PIN AB28 [get_ports {pci_exp_rxp[0]}]
+set_property PACKAGE_PIN AC41 [get_ports {pci_exp_rxp[0]}]
+#set_property PACKAGE_PIN AB39 [get_ports {pci_exp_rxn[0]}]
+set_property PACKAGE_PIN AC42 [get_ports {pci_exp_rxn[0]}]
 set_property PACKAGE_PIN AB38 [get_ports {pci_exp_txp[0]}]
 set_property PACKAGE_PIN AB39 [get_ports {pci_exp_txn[0]}]
 set_property PACKAGE_PIN AA41 [get_ports {pci_exp_rxp[1]}]
@@ -76,7 +78,8 @@ set_property PACKAGE_PIN Y39 [get_ports {pci_exp_txn[2]}]
 set_property PACKAGE_PIN U41 [get_ports {pci_exp_rxp[3]}]
 set_property PACKAGE_PIN U42 [get_ports {pci_exp_rxn[3]}]
 set_property PACKAGE_PIN V38 [get_ports {pci_exp_txp[3]}]
-set_property PACKAGE_PIN V29  [get_ports {pci_exp_txn[3]}]
+#set_property PACKAGE_PIN V29  [get_ports {pci_exp_txn[3]}]
+set_property PACKAGE_PIN V39  [get_ports {pci_exp_txn[3]}]
 
 #########################################################################
 set_property BITSTREAM.GENERAL.COMPRESS true [current_design]
