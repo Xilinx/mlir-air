@@ -32,6 +32,8 @@ import air.mlir._mlir_libs._airRt as airrt
 
 __all__ = [
     "LinalgOnTensorsAirBackend",
+    "make_dynamo_backend",
+    "LINALG_MEMREF_TO_AIR_PIPELINE"
 ]
 
 LINALG_MEMREF_TO_AIR_PIPELINE = "builtin.module("+",".join([
@@ -47,7 +49,15 @@ LINALG_MEMREF_TO_AIR_PIPELINE = "builtin.module("+",".join([
 class LinalgOnTensorsAirBackend(AirBackend):
     """Main entry-point for the linalg-on-tensors based AIR backend.
 
-    This currently uses the linalg-on-tensors RefBackend for actual execution.
+    This currently uses the torch-mlir linalg-on-tensors RefBackend
+    for JIT execution. aircc produces a RefBackend compatible wrapper
+    function for AIR generated host code. The wrapper is compiled and
+    executed by RefBackend when invoked from python. The load method
+    ensures that the AIR runtime is initialized and that the AIR binary
+    is loaded into memory before any compiled functions are invoked.
+    The unload method should be called to unload the binary and release
+    runtime resources.
+
     """
     def __init__(self):
         super().__init__()
@@ -60,6 +70,7 @@ class LinalgOnTensorsAirBackend(AirBackend):
     def compile(self, imported_module: torch_mlir.ir.Module, pipeline=None,
                 verbose=False, partition_offset=None, partition_size=None):
         """Compiles an imported module, with a flat list of functions.
+
         The module is expected to be in linalg-on-tensors + scalar code form.
         Args:
           imported_module: The MLIR module consisting of funcs in the torch
@@ -128,7 +139,7 @@ class LinalgOnTensorsAirBackend(AirBackend):
         return self.refbackend.compile(imported_module)
 
     def load(self, module):
-        """Loads a compiled artifact into the runtime."""
+        """Load a compiled artifact into the air runtime."""
         airrt.host.init()
         a = airrt.host.get_agents()
         q = airrt.host.queue_create(a[0])
@@ -136,6 +147,7 @@ class LinalgOnTensorsAirBackend(AirBackend):
         return self.refbackend.load(module)
 
     def unload(self):
+        """Unload any loaded module and shutdown the air runtime."""
         if self.handle:
             airrt.host.module_unload(self.handle)
         self.handle = None
@@ -143,6 +155,19 @@ class LinalgOnTensorsAirBackend(AirBackend):
 
 def make_dynamo_backend(pipeline=None, verbose=False,
                         partition_offset=None, partition_size=None):
+    """Make a PyTorch dynamo backend using LinalgOnTensorsAirBackend.
+
+    Args:
+        pipeline: The custom lowering pipeline to use for lowering. First
+            `air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE` is applied,
+            then `pipeline`.
+            The default is `air.backend.linalg_on_tensors.LINALG_MEMREF_TO_AIR_PIPELINE`
+        verbose: enable verbose output
+        partition_offset: default location for generated partitions as [colOffset, rowOffset]
+        partition_size: default size for generated partitions as [numCols, numRows]
+    Returns:
+        A PyTorch dynamo backend
+    """
     backend = LinalgOnTensorsAirBackend()
     @make_simple_dynamo_backend
     def air_backend(fx_graph: torch.fx.GraphModule,
