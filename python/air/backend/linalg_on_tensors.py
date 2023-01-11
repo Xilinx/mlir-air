@@ -4,8 +4,10 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
+import torch
 import torch_mlir.ir
 import torch_mlir.passmanager
+from torch_mlir.dynamo import make_simple_dynamo_backend
 
 import air.mlir.ir
 import air.mlir.passmanager
@@ -19,6 +21,7 @@ import air.compiler.aircc.main as aircc
 
 import ctypes
 from pathlib import Path
+from typing import List
 
 path = Path(air.backend.__file__).resolve().parent
 try:
@@ -137,3 +140,30 @@ class LinalgOnTensorsAirBackend(AirBackend):
             airrt.host.module_unload(self.handle)
         self.handle = None
         airrt.host.shut_down()
+
+def make_dynamo_backend(pipeline=None, verbose=False,
+                        partition_offset=None, partition_size=None):
+    backend = LinalgOnTensorsAirBackend()
+    @make_simple_dynamo_backend
+    def air_backend(fx_graph: torch.fx.GraphModule,
+                    example_inputs: List[torch.Tensor]):
+        
+        # get the linalg mlir of the model from torch_mlir
+        mlir_module = torch_mlir.compile(
+            fx_graph, example_inputs,
+            output_type=torch_mlir.OutputType.LINALG_ON_TENSORS)
+
+        # compile the mlir model with aircc
+        compiled = backend.compile(mlir_module, pipeline=pipeline,
+            verbose=verbose, partition_offset=partition_offset,
+            partition_size=partition_size)
+
+        # return a function for invoking the compiled model
+        def compiled_callable(*inputs):
+            inputs = [x.numpy() for x in inputs]
+            loaded = backend.load(compiled)
+            result = loaded.forward(*inputs)
+            backend.unload()
+            return torch.from_numpy(result)
+        return compiled_callable
+    return air_backend
