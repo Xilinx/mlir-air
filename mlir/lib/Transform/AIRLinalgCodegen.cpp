@@ -23,6 +23,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
+#include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -812,6 +813,189 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   return linalg::TiledLinalgOp{op, {launch}, {}};
 }
 
+// Create channel name as string
+static std::string createChannelName(ModuleOp module) {
+  std::string new_cname = "channel_0";
+  std::string cname = "channel";
+  int which_try = 0;
+  while (module.lookupSymbol(new_cname))
+    new_cname = cname + "_" + std::to_string(++which_try);
+  cname = new_cname;
+  return cname;
+}
+
+FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
+    PatternRewriter &b, linalg::LinalgOp op, unsigned int tile_size,
+    unsigned int pipeline_depth, std::string pipeline_direction, bool promote) {
+
+  OpBuilder::InsertionGuard g(b);
+  b.setInsertionPoint(op);
+  auto loc = op.getLoc();
+  auto ctx = op.getContext();
+
+  if (!(pipeline_direction == "vert" || pipeline_direction == "horiz"))
+    return failure();
+
+  auto iteratorTypes = op.getIteratorTypesArray();
+  if (linalg::isParallelIterator(iteratorTypes.back()))
+    return failure();
+
+  bool isHoriz = pipeline_direction == "horiz";
+  int new_herd_x = isHoriz ? pipeline_depth : 1;
+  int new_herd_y = !isHoriz ? pipeline_depth : 1;
+
+  SmallVector<Value, 2> dims{b.create<arith::ConstantIndexOp>(loc, new_herd_x),
+                             b.create<arith::ConstantIndexOp>(loc, new_herd_y)};
+
+  SmallVector<Value, 4> args;
+  for (auto o : op->getOperands())
+    args.push_back(o);
+
+  auto herd = b.create<xilinx::air::HerdOp>(loc, dims, args);
+  b.setInsertionPointToStart(&herd.getBody().front());
+
+  Value x = herd.getIds()[0];
+  Value y = herd.getIds()[1];
+
+  auto nLoops = op.getNumLoops();
+  SmallVector<OpFoldResult, 4> tileSizeVector;
+  auto zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  tileSizeVector.append(nLoops - 1, zero.getResult());
+  auto tileSizeValue = b.create<arith::ConstantIndexOp>(loc, tile_size);
+  tileSizeVector.push_back(tileSizeValue.getResult());
+
+  auto allShapeSizes = op.createFlatListOfOperandDims(b, loc);
+  AffineMap shapeSizesToLoopsMap = op.getShapesToLoopsMap();
+  if (!shapeSizesToLoopsMap)
+    return failure();
+  SmallVector<OpFoldResult> sizeBounds =
+      makeComposedFoldedMultiResultAffineApply(b, loc, shapeSizesToLoopsMap,
+                                               allShapeSizes);
+
+  SmallVector<OpFoldResult, 2> tileIds = {
+      b.create<arith::MulIOp>(
+           loc, isHoriz ? herd.getIds()[0] : herd.getIds()[1], tileSizeValue)
+          .getResult()};
+  SmallVector<Value, 4> tiledOperands = linalg::makeTiledShapes(
+      b, loc, op, args, tileIds, tileSizeVector, sizeBounds, true);
+  SmallVector<Type, 4> stageResultTypes;
+  unsigned int resultIdx = 0;
+  for (OpOperand *opOperand : op.getDpsInitOperands()) {
+    resultIdx = opOperand->getOperandNumber();
+    auto memrefType = tiledOperands[resultIdx].getType().cast<MemRefType>();
+    auto tensorType = RankedTensorType::get(memrefType.getShape(),
+                                            memrefType.getElementType());
+    stageResultTypes.push_back(tensorType);
+  }
+
+  Value firstOutputOperand = tiledOperands[resultIdx];
+  air::ChannelOp inputChannel = nullptr;
+  for (unsigned int i = 0; i < pipeline_depth; i++) {
+    OpBuilder::InsertionGuard pipeline_guard(b);
+    bool last_stage = i == pipeline_depth - 1;
+    bool first_stage = i == 0;
+
+    SmallVector<AffineExpr, 2> constraints{
+        getAffineDimExpr(isHoriz ? 0 : 1, ctx) - getAffineConstantExpr(i, ctx),
+        getAffineDimExpr(isHoriz ? 1 : 0, ctx)};
+    SmallVector<bool, 2> eqflags{true, false};
+    auto int_set = IntegerSet::get(2, 0, constraints, eqflags);
+    SmallVector<Value, 2> int_set_args{x, y};
+    AffineIfOp aif =
+        b.create<AffineIfOp>(op->getLoc(), int_set, int_set_args, false);
+
+    Block *stageBlock = aif.getBody();
+    b.setInsertionPointToStart(stageBlock);
+
+    if (inputChannel) {
+      auto ty = tiledOperands[resultIdx].getType().cast<MemRefType>();
+      auto alloc = b.create<memref::AllocOp>(
+          loc, MemRefType::get(ty.getShape(), ty.getElementType(), AffineMap(),
+                               (int)air::MemorySpace::L1));
+      tiledOperands[resultIdx] = alloc.getResult();
+      SmallVector<Value> src_offsets;
+      SmallVector<Value> src_sizes;
+      SmallVector<Value> src_strides;
+      SmallVector<Value> channel_idx;
+      SmallVector<Value> deps;
+      SmallVector<Type> tys;
+      b.create<air::ChannelGetOp>(loc, tys, deps, inputChannel.getSymName(),
+                                  channel_idx, tiledOperands[resultIdx],
+                                  src_offsets, src_sizes, src_strides);
+    }
+
+    linalg::LinalgOp linalgOp = clone(b, op, {}, tiledOperands);
+
+    auto defaultCopyCallBack = [loc](OpBuilder &bldr, Value src,
+                                     Value dst) -> LogicalResult {
+      bldr.create<memref::CopyOp>(loc, src, dst);
+      return success();
+    };
+
+    if (promote) {
+      SmallVector<int64_t, 3> opers_to_promote(linalgOp->getNumOperands() - 1);
+      std::iota(opers_to_promote.begin(), opers_to_promote.end(), 0);
+      if (first_stage /* || last_stage*/)
+        opers_to_promote.push_back(linalgOp->getNumOperands() - 1);
+
+      auto emptyCopyCallBack = [](OpBuilder &bldr, Value src,
+                                  Value dst) -> LogicalResult {
+        return success();
+      };
+      b.setInsertionPoint(linalgOp);
+      auto options = linalg::LinalgPromotionOptions()
+                         .setOperandsToPromote(opers_to_promote)
+                         .setAllocationDeallocationFns(allocBufferCallBack,
+                                                       deallocBufferCallBack);
+      if (first_stage)
+        options.setCopyInOutFns(defaultCopyCallBack, emptyCopyCallBack);
+      auto res = linalg::promoteSubViews(b, linalgOp, options);
+      if (failed(res))
+        return failure();
+    }
+
+    if (last_stage) {
+      b.setInsertionPointAfter(linalgOp);
+      defaultCopyCallBack(b, tiledOperands[resultIdx], firstOutputOperand);
+      b.setInsertionPoint(stageBlock->getTerminator());
+    } else {
+      auto mref = tiledOperands[resultIdx];
+      if (promote && first_stage) {
+        memref::SubViewOp sv = dyn_cast<memref::SubViewOp>(
+            linalgOp.getDpsInitOperand(0)->get().getDefiningOp());
+        mref = sv.getSource();
+        sv.replaceAllUsesWith(mref);
+      }
+
+      auto module = op->getParentOfType<ModuleOp>();
+      auto cname = createChannelName(module);
+      b.setInsertionPointToStart(module.getBody());
+      auto channel_op =
+          b.create<air::ChannelOp>(loc, cname, b.getI64ArrayAttr({1}));
+      b.setInsertionPoint(stageBlock->getTerminator());
+      SmallVector<Value> src_offsets;
+      SmallVector<Value> src_sizes;
+      SmallVector<Value> src_strides;
+      SmallVector<Value> channel_idx;
+      SmallVector<Value> deps;
+      SmallVector<Type> tys;
+      b.create<air::ChannelPutOp>(
+          loc, tys, deps, FlatSymbolRefAttr::get(ctx, cname), channel_idx, mref,
+          src_offsets, src_sizes, src_strides);
+      inputChannel = channel_op;
+    }
+    // if (erased) erased.erase();
+  }
+
+  b.setInsertionPointToEnd(&herd.getBody().front());
+  b.create<xilinx::air::HerdTerminatorOp>(loc);
+  int i = 0;
+  for (auto a : args) {
+    replaceAllUsesInRegionWith(a, herd.getKernelArgument(i++), herd.getBody());
+  }
+  return linalg::TiledLinalgOp{op, {herd}, {}};
+}
+
 struct PipelineReducePattern : public RewritePattern {
   PipelineReducePattern(
       MLIRContext *context, linalg::LinalgTilingOptions options, int tile_size,
@@ -831,11 +1015,13 @@ struct PipelineReducePattern : public RewritePattern {
     if (failed(filter.checkAndNotify(rewriter, linalgOp)))
       return failure();
 
-    if (op->getParentOfType<xilinx::air::HerdPipelineOp>())
+    if (op->getParentOfType<xilinx::air::HerdOp>())
       return failure();
 
-    auto result = pipelineLinalgOp(rewriter, linalgOp, tile_size,
-                                   pipeline_depth, pipeline_direction, promote);
+    auto result =
+        pipelineReduceLinalgOp(rewriter, linalgOp, tile_size, pipeline_depth,
+                               pipeline_direction, promote);
+
     if (failed(result))
       return failure();
 
