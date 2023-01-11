@@ -28,6 +28,8 @@ extern "C" {
 #define AIR_BBUFF_BASE 0x81C000000LL
 #endif
 
+#define PLATFORM_VERSION_REG (128*1024)
+
 // init/deinit
 //
 
