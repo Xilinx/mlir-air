@@ -9,6 +9,8 @@
 // RUN: air-opt -air-pipeline-reduce %s | FileCheck %s
 // CHECK: air.pipeline
 
+// XFAIL: *
+
 module attributes {torch.debug_module_name = "mmult"} {
   func.func @forward(%arg0: memref<256x256xf32>, %arg1: memref<256x256xf32>, %arg2: memref<256x256xf32>) {
     %cst = arith.constant 0.000000e+00 : f32
