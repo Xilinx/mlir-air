@@ -64,8 +64,7 @@ if { [string first $scripts_vivado_version $current_vivado_version] == -1 } {
    return 1
 }
 
-#set_param board.repoPaths /wrk/xcohdnobkup1/jmelber/vck5000/boards/vck5000/production_silicon/1.1
-set_param board.repoPaths /group/xrlabs2/eddier/board_files/vck5000/production_silicon/1.1
+set_param board.repoPaths /group/xrlabs2/platforms/board_files/vck5000/production_silicon/1.1
 
 ################################################################
 # START
