@@ -1135,7 +1135,7 @@ void handle_packet_sg_cdma(dispatch_packet_t *pkt) {
   uint64_t daddr = (pkt->arg[0]);
   uint64_t saddr = (pkt->arg[1]);
   uint32_t bytes = (pkt->arg[2]);
-  air_printf("CMDA daddr 0x%016lx saddr 0x%016lx\n\r", daddr, saddr);
+  air_printf("CDMA daddr 0x%016lx saddr 0x%016lx\n\r", daddr, saddr);
   cdmab[0] = 0x0;          // unset SG mode
   if (bytes >= 0xffffff) { // SG
     cdmab[0] = 0x8;        // set SG mode
@@ -1199,11 +1199,11 @@ void handle_packet_cdma(dispatch_packet_t *pkt) {
   }
   volatile uint32_t *cdmab = (volatile uint32_t *)(cfg_cdma_base);
   uint32_t status = cdmab[1];
-  air_printf("CMDA raw %x idle %x\n\r", status, status & 2);
+  air_printf("CDMA raw %x idle %x\n\r", status, status & 2);
   uint64_t daddr = (pkt->arg[0]);
   uint64_t saddr = (pkt->arg[1]);
   uint32_t bytes = (pkt->arg[2]);
-  air_printf("CMDA dst %lx src %lx\n\r", daddr, saddr);
+  air_printf("CDMA dst %lx src %lx\n\r", daddr, saddr);
   cdmab[0] = 0x0; // unset SG mode
   cdmab[6] = saddr & 0xffffffff;
   cdmab[7] = saddr >> 32;
@@ -1211,7 +1211,7 @@ void handle_packet_cdma(dispatch_packet_t *pkt) {
   cdmab[9] = daddr >> 32;
   cdmab[10] = bytes;
   while (!(cdmab[1] & 2))
-    air_printf("CMDA wait...\n\r");
+    air_printf("CDMA wait...\n\r");
   if (op == 2) {
     for (uint c = start_col; c < start_col + num_cols; c++) {
       for (uint r = start_row; r <= start_row + num_rows; r++) {
