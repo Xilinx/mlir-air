@@ -61,6 +61,14 @@ int shim_dma_cols[NUM_SHIM_DMAS] = {2,  3,  6,  7,  10, 11, 18, 19,
 int col_dma_cols[NUM_COL_DMAS] = {7, 8, 9, 10};
 #define NUM_DMAS (NUM_SHIM_DMAS + NUM_COL_DMAS)
 
+/* Byte offsets into the BRAM */
+#define REG_HERD_CONTROLLER_COUNT 0x208
+
+#define ENCODE_VERSION(_major, _minor, _build) ((_major & 0xFF) << 24 | (_minor & 0xFF) << 16 | (_build & 0xFF) << 8)
+#define GET_VERSION_MAJOR(_x) ((_x >> 24) & 0xFF)
+#define GET_VERSION_MINOR(_x) ((_x >> 16) & 0xFF)
+#define GET_VERSION_BUILD(_x) ((_x >> 8) & 0xFF)
+
 #define CHATTY 0
 
 #define air_printf(fmt, ...)                                                   \
@@ -1702,7 +1710,7 @@ int main() {
   if (err)
     xil_printf("ERROR initializing device.\n\r");
   int user1 = 1;
-  int user2 = 0;
+  int user2 = ENCODE_VERSION(1, 0, 0);
 #else
   pvr_t pvr;
   microblaze_get_pvr(&pvr);
@@ -1710,13 +1718,13 @@ int main() {
   int user2 = MICROBLAZE_PVR_USER2(pvr);
 #endif
   int mb_id = user2 & 0xff;
-  int maj = (user2 >> 24) & 0xff;
-  int min = (user2 >> 16) & 0xff;
-  int ver = (user2 >> 8) & 0xff;
+  int maj = GET_VERSION_MAJOR(user2);
+  int min = GET_VERSION_MINOR(user2);
+  int ver = GET_VERSION_BUILD(user2);
 
   // Skip over the system wide shmem area, then find your own
   base_address = shmem_base + (1 + mb_id) * MB_SHMEM_SEGMENT_SIZE;
-  uint32_t *num_mbs = (uint32_t *)(shmem_base + 0x208);
+  uint32_t *num_mbs = (uint32_t *)(shmem_base + REG_HERD_CONTROLLER_COUNT);
   num_mbs[0] = user1;
 
   if (mb_id == 0) {
