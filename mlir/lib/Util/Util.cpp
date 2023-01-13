@@ -315,10 +315,7 @@ air::getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put) {
   module.walk([&](Operation *op) {
     if (auto get = dyn_cast<air::ChannelGetOp>(op)) {
       if (get.getChanName() == attr) {
-        if (output)
-          assert(false && "found multiple occurrences of channel get");
-        else
-          output = get;
+        output = get;
       }
     }
   });
@@ -342,10 +339,7 @@ air::getTheOtherChannelOpThroughSymbol(air::ChannelGetOp get) {
   module.walk([&](Operation *op) {
     if (auto put = dyn_cast<ChannelPutOp>(op)) {
       if (put.getChanName() == attr) {
-        if (output)
-          assert(false && "found multiple occurrences of channel put");
-        else
-          output = put;
+        output = put;
       }
     }
   });
