@@ -9,6 +9,7 @@
 #include "air/Conversion/ConvertToAIRPass.h"
 #include "PassDetail.h"
 #include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Dialect/AIR/AIRTransformOps.h"
 #include "air/Util/Dependency.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
@@ -21,6 +22,7 @@
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Transform/IR/TransformInterfaces.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OperationSupport.h"
@@ -50,106 +52,103 @@ using namespace xilinx::air;
 
 #define DEBUG_TYPE "convert-to-air"
 
-namespace {
-
 static uint64_t DmaMemcpyOpID;
 
-class MemrefCopyToAIRDmaConversion : public OpRewritePattern<memref::CopyOp> {
-  using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(memref::CopyOp op,
-                                PatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto src = op.getSource();
-    auto dst = op.getTarget();
+static FailureOr<air::DmaMemcpyNdOp>
+matchAndRewriteCopyOp(memref::CopyOp op, PatternRewriter &rewriter) {
+  auto loc = op.getLoc();
+  auto src = op.getSource();
+  auto dst = op.getTarget();
 
-    // It must already be a memref
-    auto src_type = src.getType().dyn_cast<MemRefType>();
-    auto dst_type = dst.getType().dyn_cast<MemRefType>();
-    if (!src_type)
-      return failure();
+  rewriter.setInsertionPoint(op);
 
-    if ((src_type.getMemorySpaceAsInt() == (int)MemorySpace::L3) &&
-        (dst_type.getMemorySpaceAsInt() == (int)MemorySpace::L3))
-      return failure();
+  // It must already be a memref
+  auto src_type = src.getType().dyn_cast<MemRefType>();
+  auto dst_type = dst.getType().dyn_cast<MemRefType>();
+  if (!src_type)
+    return failure();
 
-    if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
-      return failure();
+  if ((src_type.getMemorySpaceAsInt() == (int)MemorySpace::L3) &&
+      (dst_type.getMemorySpaceAsInt() == (int)MemorySpace::L3))
+    return failure();
 
-    auto rank = src_type.getShape().size();
+  if (!(src_type.hasStaticShape() || dst_type.hasStaticShape()))
+    return failure();
 
-    SmallVector<Value, 4> src_offsets, dst_offsets;
-    SmallVector<Value, 4> src_strides, dst_strides;
-    SmallVector<Value, 4> src_sizes, dst_sizes;
-    auto extractOperandsFromSubview = [&](memref::SubViewOp subview,
-                                          auto &offsets, auto &sizes,
-                                          auto &strides) {
-      auto subview_offsets = subview.offsets().begin();
-      auto static_offsets = subview.getStaticOffsets();
-      auto static_sizes = subview.getStaticSizes();
-      auto static_strides = subview.getStaticStrides();
-      auto loc = subview.getLoc();
+  auto rank = src_type.getShape().size();
 
-      // get the strides and offsets from the memref type
-      auto inferredType = memref::SubViewOp::inferResultType(
-                              subview.getSourceType(), static_offsets,
-                              static_sizes, static_strides)
-                              .cast<MemRefType>();
-      int64_t offset;
-      SmallVector<int64_t, 4> layout_strides;
-      auto successStrides =
-          getStridesAndOffset(inferredType, layout_strides, offset);
-      if (failed(successStrides)) {
-        llvm::outs() << "Failed to get strides\n";
-        return; // failure();
-      }
+  SmallVector<Value, 4> src_offsets, dst_offsets;
+  SmallVector<Value, 4> src_strides, dst_strides;
+  SmallVector<Value, 4> src_sizes, dst_sizes;
+  auto extractOperandsFromSubview = [&](memref::SubViewOp subview,
+                                        auto &offsets, auto &sizes,
+                                        auto &strides) {
+    auto subview_offsets = subview.offsets().begin();
+    auto static_offsets = subview.getStaticOffsets();
+    auto static_sizes = subview.getStaticSizes();
+    auto static_strides = subview.getStaticStrides();
+    auto loc = subview.getLoc();
 
-      for (auto o : static_offsets) {
-        if (o >= 0)
-          offsets.push_back(rewriter.create<arith::ConstantIndexOp>(loc, o));
-        else
-          offsets.push_back(*subview_offsets++);
-      }
-      for (auto s : static_sizes)
-        sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, s));
-      for (auto s : layout_strides)
-        strides.push_back(rewriter.create<arith::ConstantIndexOp>(loc, s));
-    };
-
-    if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
-      extractOperandsFromSubview(subview, src_offsets, src_sizes, src_strides);
-
-      if (src_sizes.size() != rank)
-        return failure();
-      if (src_strides.size() != rank)
-        return failure();
-
-      src = subview.getSource();
+    // get the strides and offsets from the memref type
+    auto inferredType = memref::SubViewOp::inferResultType(
+                            subview.getSourceType(), static_offsets,
+                            static_sizes, static_strides)
+                            .cast<MemRefType>();
+    int64_t offset;
+    SmallVector<int64_t, 4> layout_strides;
+    auto successStrides =
+        getStridesAndOffset(inferredType, layout_strides, offset);
+    if (failed(successStrides)) {
+      llvm::outs() << "Failed to get strides\n";
+      return; // failure();
     }
 
-    if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
-      extractOperandsFromSubview(subview, dst_offsets, dst_sizes, dst_strides);
-
-      if (dst_sizes.size() != rank)
-        return failure();
-      if (dst_strides.size() != rank)
-        return failure();
-
-      dst = subview.getSource();
+    for (auto o : static_offsets) {
+      if (o >= 0)
+        offsets.push_back(rewriter.create<arith::ConstantIndexOp>(loc, o));
+      else
+        offsets.push_back(*subview_offsets++);
     }
+    for (auto s : static_sizes)
+      sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, s));
+    for (auto s : layout_strides)
+      strides.push_back(rewriter.create<arith::ConstantIndexOp>(loc, s));
+  };
 
-    SmallVector<Value, 4> deps;
-    SmallVector<Type, 4> tys;
-    auto dma = rewriter.create<air::DmaMemcpyNdOp>(
-        loc, tys, deps, dst, dst_offsets, dst_sizes, dst_strides, src,
-        src_offsets, src_sizes, src_strides);
-    dma->setAttr("id", mlir::IntegerAttr::get(
-                           mlir::IntegerType::get(op->getContext(), 32),
-                           ++DmaMemcpyOpID));
+  if (auto subview = src.getDefiningOp<memref::SubViewOp>()) {
+    extractOperandsFromSubview(subview, src_offsets, src_sizes, src_strides);
 
-    rewriter.eraseOp(op);
-    return success();
+    if (src_sizes.size() != rank)
+      return failure();
+    if (src_strides.size() != rank)
+      return failure();
+
+    src = subview.getSource();
   }
-};
+
+  if (auto subview = dst.getDefiningOp<memref::SubViewOp>()) {
+    extractOperandsFromSubview(subview, dst_offsets, dst_sizes, dst_strides);
+
+    if (dst_sizes.size() != rank)
+      return failure();
+    if (dst_strides.size() != rank)
+      return failure();
+
+    dst = subview.getSource();
+  }
+
+  SmallVector<Value, 4> deps;
+  SmallVector<Type, 4> tys;
+  auto dma = rewriter.create<air::DmaMemcpyNdOp>(
+      loc, tys, deps, dst, dst_offsets, dst_sizes, dst_strides, src,
+      src_offsets, src_sizes, src_strides);
+  dma->setAttr(
+      "id", mlir::IntegerAttr::get(mlir::IntegerType::get(op->getContext(), 32),
+                                   ++DmaMemcpyOpID));
+
+  rewriter.eraseOp(op);
+  return dma;
+}
 
 static void extractOperandsFromSubview(memref::SubViewOp subview,
                                        OpBuilder &builder,
@@ -439,6 +438,18 @@ scf::ForOp cloneForUsingRemap(OpBuilder builder, BlockAndValueMapping &remap,
 
   return new_loop_op;
 }
+
+namespace {
+
+class MemrefCopyToAIRDmaConversion : public OpRewritePattern<memref::CopyOp> {
+  using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(memref::CopyOp op,
+                                PatternRewriter &rewriter) const override {
+    if (failed(matchAndRewriteCopyOp(op, rewriter)))
+      return failure();
+    return success();
+  }
+};
 
 class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
   using OpRewritePattern<linalg::CopyOp>::OpRewritePattern;
@@ -1271,8 +1282,10 @@ public:
   using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
 
   ScfParToHerdConversion(MLIRContext *ctx,
-                         SmallPtrSet<Operation *, 8> &filteredOps)
-      : OpRewritePattern(ctx), filteredOps(filteredOps){};
+                         SmallPtrSet<Operation *, 8> &filteredOps,
+                         llvm::SmallSet<air::HerdOp, 2> &replacementOps)
+      : OpRewritePattern(ctx), filteredOps(filteredOps),
+        replacementOps(replacementOps){};
 
   LogicalResult matchAndRewrite(scf::ParallelOp parOp,
                                 PatternRewriter &rewriter) const override {
@@ -1345,39 +1358,41 @@ public:
     SmallVector<Value, 2> dims{
         rewriter.create<arith::ConstantIndexOp>(loc, bounds[0]),
         rewriter.create<arith::ConstantIndexOp>(loc, bounds[1])};
-    auto launch = rewriter.create<air::HerdOp>(op.getLoc(), dims, args);
-    auto &bb = launch.getBody().front();
+    auto herdOp = rewriter.create<air::HerdOp>(op.getLoc(), dims, args);
+    auto &bb = herdOp.getBody().front();
     auto ivs = op.getInductionVars();
 
-    ivs[0].replaceAllUsesWith(launch.getIds()[0]);
+    ivs[0].replaceAllUsesWith(herdOp.getIds()[0]);
     if (op.getNumLoops() == 2)
-      ivs[1].replaceAllUsesWith(launch.getIds()[1]);
+      ivs[1].replaceAllUsesWith(herdOp.getIds()[1]);
 
     auto &body = op.getBody()->getOperations();
     bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
-    rewriter.setInsertionPointToStart(&launch.getRegion().front());
+    rewriter.setInsertionPointToStart(&herdOp.getRegion().front());
     for (auto c : constants) {
       replaceAllUsesInRegionWith(
           c, rewriter.clone(*c.getDefiningOp())->getResult(0),
-          launch.getRegion());
+          herdOp.getRegion());
     }
     auto builder = OpBuilder::atBlockEnd(&bb);
     builder.create<air::HerdTerminatorOp>(loc);
 
     int i = 0;
-    auto kernel_args = launch.getKernelArguments();
+    auto kernel_args = herdOp.getKernelArguments();
     for (Value v : args)
-      replaceAllUsesInRegionWith(v, kernel_args[i++], launch.getRegion());
+      replaceAllUsesInRegionWith(v, kernel_args[i++], herdOp.getRegion());
 
     if (op != parOp)
       op.erase();
     rewriter.eraseOp(parOp);
+    replacementOps.insert(herdOp);
 
     return success();
   }
 
 private:
   llvm::SmallPtrSet<Operation *, 8> filteredOps;
+  llvm::SmallSet<air::HerdOp, 2> &replacementOps;
 };
 
 class ScfParToLaunchConversion : public OpRewritePattern<scf::ParallelOp> {
@@ -1385,8 +1400,10 @@ public:
   using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
 
   ScfParToLaunchConversion(MLIRContext *ctx,
-                           llvm::SmallSet<scf::ParallelOp, 8> &filteredOps)
-      : OpRewritePattern(ctx), filteredOps(filteredOps){};
+                           llvm::SmallSet<scf::ParallelOp, 8> &filteredOps,
+                           llvm::SmallSet<air::LaunchOp, 2> &replacementOps)
+      : OpRewritePattern(ctx), filteredOps(filteredOps),
+        replacementOps(replacementOps){};
 
   LogicalResult matchAndRewrite(scf::ParallelOp parOp,
                                 PatternRewriter &rewriter) const override {
@@ -1472,12 +1489,14 @@ public:
     if (op != parOp)
       op.erase();
     rewriter.eraseOp(parOp);
+    replacementOps.insert(launch);
 
     return success();
   }
 
 private:
   llvm::SmallSet<scf::ParallelOp, 8> &filteredOps;
+  llvm::SmallSet<air::LaunchOp, 2> &replacementOps;
 };
 
 class ScfParToLaunchAndPartitionConversion
@@ -1831,6 +1850,7 @@ struct ParallelToHerdPass : public ParallelToHerdBase<ParallelToHerdPass> {
     module.walk([&](air::HierarchyInterface op) { hierOps.push_back(op); });
 
     SmallPtrSet<Operation *, 8> filteredOps;
+    llvm::SmallSet<air::HerdOp, 2> replacementOps;
     module.walk([&](Operation *op) {
       if (!isa<scf::ParallelOp, AffineParallelOp>(op))
         return;
@@ -1857,13 +1877,14 @@ struct ParallelToHerdPass : public ParallelToHerdBase<ParallelToHerdPass> {
     });
 
     RewritePatternSet patterns(context);
-    patterns.add<ScfParToHerdConversion, AffineParToHerdConversion>(
-        context, filteredOps);
+    patterns.add<AffineParToHerdConversion>(context);
+    patterns.add<ScfParToHerdConversion>(
+        context, filteredOps, replacementOps);
 
     ConversionTarget target(*context);
 
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           xilinx::air::airDialect, arith::ArithDialect>();
+                           air::airDialect, arith::ArithDialect>();
 
     target.addLegalOp<AffineApplyOp, AffineForOp, AffineLoadOp, AffineStoreOp,
                       AffineYieldOp, scf::YieldOp>();
@@ -1932,6 +1953,7 @@ struct ParallelToLaunchPass
     module.walk([&](air::LaunchOp op) { launchOps.push_back(op); });
 
     llvm::SmallSet<scf::ParallelOp, 8> filteredOps;
+    llvm::SmallSet<air::LaunchOp, 2> replacementOps;
     module.walk([&](scf::ParallelOp op) {
       if (op->getParentOfType<air::HerdOp>())
         return;
@@ -1959,7 +1981,8 @@ struct ParallelToLaunchPass
     if (clHasPartition) {
       patterns.add<ScfParToLaunchAndPartitionConversion>(context, filteredOps);
     } else {
-      patterns.add<ScfParToLaunchConversion>(context, filteredOps);
+      patterns.add<ScfParToLaunchConversion>(context, filteredOps,
+                                             replacementOps);
     }
 
     ConversionTarget target(*context);
@@ -1985,6 +2008,69 @@ struct ParallelToLaunchPass
 };
 
 } // namespace
+
+//===----------------------------------------------------------------------===//
+// ParToHerdOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+transform::ParToHerdOp::applyToOne(scf::ParallelOp target,
+                                   SmallVectorImpl<Operation *> &results,
+                                   transform::TransformState &state) {
+  auto ctx = target->getContext();
+  RewritePatternSet patterns(ctx);
+  llvm::SmallSet<air::HerdOp, 2> herdOps;
+  llvm::SmallSet<scf::ParallelOp, 2> filteredOps;
+  filteredOps.insert(target);
+  patterns.add<ScfParToHerdConversion>(ctx, filteredOps, herdOps);
+  (void)applyPatternsAndFoldGreedily(
+      target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
+      std::move(patterns));
+  for (auto h : herdOps)
+    results.push_back(h);
+  return DiagnosedSilenceableFailure::success();
+}
+
+DiagnosedSilenceableFailure
+transform::ParToLaunchOp::applyToOne(scf::ParallelOp target,
+                                     SmallVectorImpl<Operation *> &results,
+                                     transform::TransformState &state) {
+  auto ctx = target->getContext();
+  RewritePatternSet patterns(ctx);
+  llvm::SmallSet<air::LaunchOp, 2> launchOps;
+  llvm::SmallSet<scf::ParallelOp, 2> filteredOps;
+  filteredOps.insert(target);
+  patterns.add<ScfParToLaunchConversion>(ctx, filteredOps, launchOps);
+  (void)applyPatternsAndFoldGreedily(
+      target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
+      std::move(patterns));
+  for (auto l : launchOps)
+    results.push_back(l);
+  return DiagnosedSilenceableFailure::success();
+}
+
+class SimpleRewriter : public PatternRewriter {
+public:
+  SimpleRewriter(MLIRContext *context) : PatternRewriter(context) {}
+};
+
+DiagnosedSilenceableFailure
+transform::CopyToDmaOp::applyToOne(memref::CopyOp op,
+                                   SmallVectorImpl<Operation *> &results,
+                                   transform::TransformState &state) {
+  auto ctx = op->getContext();
+  // RewritePatternSet stage1Patterns =
+  //   linalg::getLinalgTilingCanonicalizationPatterns(ctx);
+  // memref::AllocOp::getCanonicalizationPatterns(stage1Patterns, ctx);
+  // (void)applyPatternsAndFoldGreedily(op->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
+  //                                    std::move(stage1Patterns));
+  SimpleRewriter rewriter(ctx);
+  auto res = matchAndRewriteCopyOp(op, rewriter);
+  if (failed(res))
+    return emitDefaultDefiniteFailure(op);
+  results.push_back(*res);
+  return DiagnosedSilenceableFailure::success();
+}
 
 namespace xilinx {
 namespace air {

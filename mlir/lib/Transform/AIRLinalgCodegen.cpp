@@ -1777,6 +1777,264 @@ transform::PipelineReduceOp::applyToOne(linalg::LinalgOp target,
   return DiagnosedSilenceableFailure::success();
 }
 
+//===----------------------------------------------------------------------===//
+// LinalgTileOp
+//===----------------------------------------------------------------------===//
+
+void transform::LinalgTileOp::build(OpBuilder &builder, OperationState &result,
+                                    Value target,
+                                    ArrayRef<int64_t> staticTileSizes,
+                                    ArrayRef<int64_t> interchange) {
+  return build(builder, result,
+               /*target=*/target,
+               /*mixedTileSizes=*/
+               getAsOpFoldResult(builder.getI64ArrayAttr(staticTileSizes)),
+               interchange);
+}
+
+void transform::LinalgTileOp::build(OpBuilder &builder, OperationState &result,
+                                    Value target,
+                                    ArrayRef<OpFoldResult> mixedTileSizes,
+                                    ArrayRef<int64_t> interchange) {
+  SmallVector<int64_t> staticTileSizes;
+  SmallVector<Value> dynamicTileSizes;
+  dispatchIndexOpFoldResults(mixedTileSizes, dynamicTileSizes, staticTileSizes);
+  // Call the default builder which sets up the proper operands segment sizes
+  // attributes for multiple variadic operands. In the absence of this, horrible
+  // bugs ensue.
+  MLIRContext *ctx = builder.getContext();
+  auto operationType = pdl::OperationType::get(ctx);
+  auto staticTileSizesAttr = builder.getDenseI64ArrayAttr(staticTileSizes);
+  build(builder, result,
+        /*resultTypes=*/TypeRange{operationType, operationType},
+        /*target=*/target,
+        /*dynamic_sizes=*/dynamicTileSizes,
+        /*static_sizes=*/staticTileSizesAttr,
+        /*interchange=*/builder.getDenseI64ArrayAttr(interchange));
+}
+
+DiagnosedSilenceableFailure
+transform::LinalgTileOp::apply(TransformResults &transformResults,
+                               TransformState &state) {
+  ArrayRef<int64_t> tileSizes = getStaticSizes();
+
+  ArrayRef<Operation *> targets = state.getPayloadOps(getTarget());
+  SmallVector<ArrayRef<Operation *>> dynamicSizeProducers;
+  dynamicSizeProducers.reserve(getDynamicSizes().size());
+  for (Value dynamicSizeProducerHandle : getDynamicSizes()) {
+    dynamicSizeProducers.push_back(
+        state.getPayloadOps(dynamicSizeProducerHandle));
+
+    if (dynamicSizeProducers.back().size() != targets.size()) {
+      DiagnosedSilenceableFailure diag =
+          emitSilenceableError()
+          << "expected as many dynamic size-producing operations ("
+          << dynamicSizeProducers.back().size() << ") as target ops ("
+          << targets.size() << ")";
+      diag.attachNote(dynamicSizeProducerHandle.getLoc()) << "for this handle";
+      return diag;
+    }
+
+    for (Operation *op : dynamicSizeProducers.back()) {
+      if (op->getNumResults() == 1 &&
+          op->getResult(0).getType().isa<IndexType>())
+        continue;
+      DiagnosedSilenceableFailure diag =
+          emitSilenceableError() << "expected sizes to be produced by ops "
+                                    "with a single index-type result";
+      diag.attachNote(op->getLoc()) << "size producer op";
+      diag.attachNote(dynamicSizeProducerHandle.getLoc()) << "for this handle";
+      return diag;
+    }
+  }
+
+  SmallVector<Operation *> tiled;
+  SmallVector<SmallVector<Operation *, 4>, 4> loops;
+  loops.resize(getLoops().size());
+  for (auto &en : llvm::enumerate(targets)) {
+    auto linalgOp = dyn_cast<linalg::LinalgOp>(en.value());
+    if (!linalgOp) {
+      DiagnosedSilenceableFailure diag = emitSilenceableError()
+                                         << "only linalg ops are supported";
+      diag.attachNote(en.value()->getLoc()) << "target op";
+      return diag;
+    }
+
+    linalg::LinalgTilingOptions tilingOptions;
+    tilingOptions.setLoopType(linalg::LinalgTilingLoopType::ParallelLoops);
+    unsigned index = en.index();
+    if (!tileSizes.empty()) {
+      tilingOptions.setTileSizeComputationFunction(
+          [&, index](OpBuilder &b, Operation *) {
+            SmallVector<Value, 4> sizes;
+            sizes.reserve(tileSizes.size());
+            unsigned dynamicIdx = 0;
+            for (OpFoldResult ofr : getMixedSizes()) {
+              if (auto attr = ofr.dyn_cast<Attribute>()) {
+                sizes.push_back(b.create<arith::ConstantIndexOp>(
+                    getLoc(), attr.cast<IntegerAttr>().getInt()));
+              } else {
+                sizes.push_back(
+                    dynamicSizeProducers[dynamicIdx++][index]->getResult(0));
+              }
+            }
+            return sizes;
+          });
+    }
+
+    SmallVector<unsigned int> inter(getInterchange());
+    tilingOptions.setInterchange(inter);
+    SimpleRewriter rewriter(linalgOp.getContext());
+    FailureOr<linalg::TiledLinalgOp> maybeTilingResult =
+        linalg::tileLinalgOp(rewriter, linalgOp, tilingOptions);
+    if (failed(maybeTilingResult))
+      return DiagnosedSilenceableFailure::definiteFailure();
+
+    if (linalgOp.hasBufferSemantics())
+      rewriter.eraseOp(linalgOp);
+    else
+      rewriter.replaceOp(linalgOp,
+                         maybeTilingResult->loops.front()->getResults());
+
+    tiled.push_back(maybeTilingResult->op);
+    for (const auto &en2 : llvm::enumerate(maybeTilingResult->loops))
+      loops[en2.index()].push_back(en2.value());
+  }
+
+  transformResults.set(getTiledLinalgOp().cast<OpResult>(), tiled);
+  for (const auto &en : llvm::enumerate(loops))
+    transformResults.set(getLoops()[en.index()].cast<OpResult>(), en.value());
+
+  return DiagnosedSilenceableFailure::success();
+}
+
+SmallVector<OpFoldResult> transform::LinalgTileOp::getMixedSizes() {
+  ValueRange dynamic = getDynamicSizes();
+  ArrayRef<int64_t> tileSizes = getStaticSizes();
+  SmallVector<OpFoldResult> results;
+  results.reserve(tileSizes.size());
+  unsigned dynamicPos = 0;
+  Builder builder(getContext());
+  for (int64_t size : tileSizes) {
+    if (size == ShapedType::kDynamic) {
+      results.push_back(dynamic[dynamicPos++]);
+    } else {
+      results.push_back(builder.getIndexAttr(size));
+    }
+  }
+  return results;
+}
+
+// We want to parse `DenseI64ArrayAttr` using the short form without the
+// `array` prefix to be consistent in the IR with `parseDynamicIndexList`.
+static ParseResult parseInterchange(OpAsmParser &parser,
+                                    OperationState &result) {
+  if (succeeded(parser.parseOptionalLBrace())) {
+    if (failed(parser.parseKeyword("interchange")))
+      return parser.emitError(parser.getNameLoc()) << "expect `interchange`";
+    if (failed(parser.parseEqual()))
+      return parser.emitError(parser.getNameLoc()) << "expect `=`";
+    result.addAttribute("interchange",
+                        DenseI64ArrayAttr::parse(parser, Type{}));
+    if (failed(parser.parseRBrace()))
+      return parser.emitError(parser.getNameLoc()) << "expect `}`";
+  }
+  return success();
+}
+
+static void printInterchange(OpAsmPrinter &p,
+                             ArrayRef<int64_t> interchangeVals) {
+  if (!interchangeVals.empty()) {
+    p << " {interchange = [";
+    llvm::interleaveComma(interchangeVals, p,
+                          [&](int64_t integer) { p << integer; });
+    p << "]}";
+  }
+}
+
+ParseResult transform::LinalgTileOp::parse(OpAsmParser &parser,
+                                           OperationState &result) {
+  OpAsmParser::UnresolvedOperand target;
+  SmallVector<OpAsmParser::UnresolvedOperand> dynamicSizes;
+  DenseI64ArrayAttr staticSizes;
+  auto pdlOperationType = pdl::OperationType::get(parser.getContext());
+  if (parser.parseOperand(target) ||
+      parser.resolveOperand(target, pdlOperationType, result.operands) ||
+      parseDynamicIndexList(parser, dynamicSizes, staticSizes) ||
+      parser.resolveOperands(dynamicSizes, pdlOperationType, result.operands))
+    return ParseResult::failure();
+
+  // Parse optional interchange.
+  if (failed(parseInterchange(parser, result)))
+    return ParseResult::failure();
+
+  result.addAttribute(getStaticSizesAttrName(result.name), staticSizes);
+  size_t numExpectedLoops =
+      staticSizes.size() - llvm::count(staticSizes.asArrayRef(), 0);
+  result.addTypes(SmallVector<Type>(numExpectedLoops + 1, pdlOperationType));
+  return success();
+}
+
+void transform::LinalgTileOp::print(OpAsmPrinter &p) {
+  p << ' ' << getTarget();
+  printDynamicIndexList(p, getOperation(), getDynamicSizes(), getStaticSizes());
+  printInterchange(p, getInterchange());
+}
+
+void transform::LinalgTileOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  consumesHandle(getTarget(), effects);
+  onlyReadsHandle(getDynamicSizes(), effects);
+  producesHandle(getTiledLinalgOp(), effects);
+  producesHandle(getLoops(), effects);
+  modifiesPayload(effects);
+}
+
+//===----------------------------------------------------------------------===//
+// LinalgPromoteOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+transform::LinalgPromoteOp::applyToOne(linalg::LinalgOp target,
+                                       SmallVectorImpl<Operation *> &results,
+                                       transform::TransformState &state) {
+  linalg::LinalgPromotionOptions promotionOptions;
+  if (!getOperandsToPromote().empty())
+    promotionOptions = promotionOptions.setOperandsToPromote(
+        extractFromI64ArrayAttr(getOperandsToPromote()));
+  if (getUseFullTilesByDefault())
+    promotionOptions = promotionOptions.setUseFullTileBuffersByDefault(
+        getUseFullTilesByDefault());
+  if (getUseAlloca())
+    promotionOptions = promotionOptions.setUseAlloca(getUseAlloca());
+  if (!getUseFullTileBuffers().empty())
+    promotionOptions = promotionOptions.setUseFullTileBuffers(
+        llvm::to_vector(getUseFullTileBuffers().getAsValueRange<BoolAttr>()));
+  if (getAlignment().has_value())
+    promotionOptions = promotionOptions.setAlignment(*getAlignment());
+
+  if (failed(promoteSubviewsPrecondition(target, promotionOptions)))
+    return emitDefaultDefiniteFailure(target);
+
+  auto ctx = target->getContext();
+  SimpleRewriter rewriter(ctx);
+  rewriter.setInsertionPoint(target);
+  FailureOr<linalg::LinalgOp> res =
+      promoteSubViews(rewriter, target, promotionOptions);
+  if (failed(res))
+    return emitDefaultDefiniteFailure(target);
+  results.push_back(target);
+
+  RewritePatternSet patterns(ctx);
+  patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
+  patterns.insert<FoldSubViewOpsPattern>(ctx);
+  patterns.insert<MemrefsPattern>(ctx);
+  scf::populateSCFForLoopCanonicalizationPatterns(patterns);
+  (void)applyPatternsAndFoldGreedily(target->getParentOfType<func::FuncOp>(),
+                                     std::move(patterns));
+  return DiagnosedSilenceableFailure::success();
+}
+
 namespace xilinx {
 namespace air {
 

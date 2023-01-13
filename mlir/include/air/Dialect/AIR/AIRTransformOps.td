@@ -57,6 +57,127 @@ def PipelineReduceOp : Op<Transform_Dialect, "air.pipeline_reduce",
   }];
 }
 
+def ParToHerdOp : Op<Transform_Dialect, "air.par_to_herd",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+    TransformOpInterface, TransformEachOpTrait]> {
+  let description = [{}];
+  let arguments =
+    (ins PDL_Operation:$target);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict";
+
+  let extraClassDeclaration = [{
+    ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::scf::ParallelOp target,
+        ::llvm::SmallVectorImpl<::mlir::Operation *> &results,
+        ::mlir::transform::TransformState &state);
+  }];
+}
+
+def ParToLaunchOp : Op<Transform_Dialect, "air.par_to_launch",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+    TransformOpInterface, TransformEachOpTrait]> {
+  let description = [{}];
+  let arguments =
+    (ins PDL_Operation:$target);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict";
+
+  let extraClassDeclaration = [{
+    ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::scf::ParallelOp target,
+        ::llvm::SmallVectorImpl<::mlir::Operation *> &results,
+        ::mlir::transform::TransformState &state);
+  }];
+}
+
+def CopyToDmaOp : Op<Transform_Dialect, "air.copy_to_dma",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+    TransformOpInterface, TransformEachOpTrait]> {
+  let description = [{}];
+  let arguments =
+    (ins PDL_Operation:$target);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict";
+
+  let extraClassDeclaration = [{
+    ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::memref::CopyOp target,
+        ::llvm::SmallVectorImpl<::mlir::Operation *> &results,
+        ::mlir::transform::TransformState &state);
+  }];
+}
+
+def LinalgPromoteOp : Op<Transform_Dialect, "air.linalg_promote",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+    TransformOpInterface, TransformEachOpTrait]> {
+  let description = [{
+    Promotes the specified operands of the target into a separate memory buffer.
+
+    At this point, this transform does not allow customizing alloc/dealloc
+    functions nor the behavior on copy in/out operations.
+
+    #### Return modes
+
+    This operation applies to a single Linalg op that satisfies the
+    `promoteSubviewsPrecondition`, otherwise it fails.
+
+    If the operations referred to by the `target` PDLOperation promote
+    properly, the transform succeeds.
+
+    When successful, the return handle points to the $target operation that
+    was modified inplace.
+  }];
+
+  let arguments = (ins PDL_Operation:$target,
+                       DefaultValuedAttr<I64ArrayAttr, "{}">:$operands_to_promote,
+                       DefaultValuedAttr<BoolArrayAttr, "{}">:$use_full_tile_buffers,
+                       UnitAttr:$use_full_tiles_by_default,
+                       UnitAttr:$use_alloca,
+                       OptionalAttr<I64Attr>:$alignment);
+  let results = (outs PDL_Operation:$transformed);
+
+  let assemblyFormat = "$target attr-dict";
+
+  let extraClassDeclaration = [{
+    ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::linalg::LinalgOp target,
+        ::llvm::SmallVectorImpl<::mlir::Operation *> &results,
+        ::mlir::transform::TransformState &state);
+  }];
+}
+
+def LinalgTileOp : Op<Transform_Dialect, "air.linalg_tile",
+       [DeclareOpInterfaceMethods<TransformOpInterface>,
+        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
+  let description = [{
+  }];
+
+  let arguments = (ins PDL_Operation:$target,
+                   Variadic<PDL_Operation>:$dynamic_sizes,
+                   DefaultValuedOptionalAttr<DenseI64ArrayAttr, "{}">:$static_sizes,
+                   DefaultValuedOptionalAttr<DenseI64ArrayAttr, "{}">:$interchange
+                   );
+  let results = (outs PDL_Operation:$tiled_linalg_op,
+                      Variadic<PDL_Operation>:$loops);
+  let builders = [
+    OpBuilder<(ins "Value":$target,
+                   "ArrayRef<int64_t>":$staticTileSizes,
+                   CArg<"ArrayRef<int64_t>", "{}">:$interchange)>,
+    OpBuilder<(ins "Value":$target,
+                   "ArrayRef<OpFoldResult>":$mixedTileSizes,
+                   CArg<"ArrayRef<int64_t>", "{}">:$interchange)>
+  ];
+
+  let hasCustomAssemblyFormat = 1;
+
+  let extraClassDeclaration = [{
+    /// Returns the list of tile sizes, which may be static (Attribute) or
+    /// dynamic (Value).
+    SmallVector<OpFoldResult> getMixedSizes();
+  }];
+}
+
 def PartitionToAIEOp : Op<Transform_Dialect, "air.partition_to_aie",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      TransformOpInterface, TransformEachOpTrait]> {
