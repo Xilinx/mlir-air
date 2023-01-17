@@ -48,6 +48,8 @@ aie_libxaie_ctx_t *_air_host_active_libxaie = nullptr;
 uint32_t *_air_host_bram_ptr = nullptr;
 uint64_t _air_host_bram_paddr = 0;
 air_module_handle_t _air_host_active_module = (air_module_handle_t) nullptr;
+
+const char vck5000_driver_name[] = "/dev/amdair";
 }
 
 #ifdef AIR_PCIE
@@ -56,6 +58,7 @@ std::vector<air_physical_device_t> physical_devices;
 #endif
 
 hsa_status_t air_init() {
+  printf("%s\n", __func__);
 #ifdef AIR_PCIE
   hsa_status_t hsa_ret = air_get_physical_devices();
 
@@ -110,7 +113,7 @@ air_libxaie_ctx_t air_init_libxaie(uint32_t device_id) {
   std::string aie_bar = air_get_aie_bar(device_id);
 
   int fda;
-  if ((fda = open(aie_bar.c_str(), O_RDWR | O_SYNC)) == -1) {
+  if ((fda = open(vck5000_driver_name, O_RDWR | O_SYNC)) == -1) {
     printf("[ERROR] Failed to open device file\n");
     return (air_libxaie_ctx_t) nullptr;
   }
@@ -121,9 +124,11 @@ air_libxaie_ctx_t air_init_libxaie(uint32_t device_id) {
                           PROT_READ | PROT_WRITE, // prot
                           MAP_SHARED,             // flags
                           fda,                    // device fd
-                          0);                     // offset
-  if (!_mapped_aie_base)
+                          0x100000);              // offset
+  if (_mapped_aie_base == MAP_FAILED) {
+    printf("[ERROR] Failed mapping AIE BAR\n");
     return (air_libxaie_ctx_t) nullptr;
+  }
   xaie->AieConfigPtr.BaseAddr = (uint64_t)_mapped_aie_base;
 #else
   xaie->AieConfigPtr.BaseAddr = XAIE_BASE_ADDR;
@@ -183,13 +188,12 @@ air_module_handle_t air_module_load_from_file(const char *filename, queue_t *q,
     return 0;
   }
 
-  int fd = open(air_get_ddr_bar(device_id).c_str(), O_RDWR | O_SYNC);
+  int fd = open(vck5000_driver_name, O_RDWR | O_SYNC);
   assert(fd != -1 && "Failed to open bram fd");
 
   _air_host_bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ | PROT_WRITE,
                                         MAP_SHARED, fd, 0x1C0000);
   _air_host_bram_paddr = AIR_BBUFF_BASE;
-  assert(_air_host_bram_ptr && "Failed to map scratch bram location");
 #else
 
 #ifndef __aarch64__
@@ -204,8 +208,9 @@ air_module_handle_t air_module_load_from_file(const char *filename, queue_t *q,
   _air_host_bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ | PROT_WRITE,
                                         MAP_SHARED, fd, AIR_BBUFF_BASE);
   _air_host_bram_paddr = AIR_BBUFF_BASE;
-  assert(_air_host_bram_ptr && "Failed to map scratch bram location");
 #endif
+  assert((_air_host_bram_ptr != MAP_FAILED) &&
+         "Failed to map scratch bram location");
 
   return (air_module_handle_t)_handle;
 }
@@ -385,66 +390,14 @@ uint64_t air_herd_load(const char *name) {
 #ifdef AIR_PCIE
 hsa_status_t air_get_physical_devices() {
 
+  struct stat st;
+
   // Skip device enumeration if it is already done
   if (physical_devices.size() != 0)
     return HSA_STATUS_SUCCESS;
 
-  // Right now just hardcode VCK5000 BDF
-  std::vector<std::string> bdf_vect;
-  utility::get_pci_dbdf(&bdf_vect, 0x000010ee, 0x0000b034, 0);
-
-  struct stat st;
-  for (std::string iter : bdf_vect) {
-    air_physical_device_t temp_physical_device;
-
-    // Creating the paths to all the BARs
-    std::string dram_bar = iter + "0";
-    std::string aie_bar = iter + "2";
-    std::string bram_bar = iter + "4";
-
-    // Copying the DRAM BAR
-    if (stat(dram_bar.c_str(), &st) == 0) {
-      temp_physical_device.dram_bar_size = st.st_size;
-      strcpy(temp_physical_device.dram_bar_path, dram_bar.c_str());
-    } else {
-      printf("[ERROR] Device file %s does not exist\n", dram_bar.c_str());
-      return HSA_STATUS_ERROR;
-    }
-
-    // Copying the AIE BAR
-    if (stat(aie_bar.c_str(), &st) == 0) {
-      temp_physical_device.aie_bar_size = st.st_size;
-      strcpy(temp_physical_device.aie_bar_path, aie_bar.c_str());
-    } else {
-      printf("[ERROR] Device file %s does not exist\n", aie_bar.c_str());
-      return HSA_STATUS_ERROR;
-    }
-
-    // Copying the BRAM BAR
-    if (stat(bram_bar.c_str(), &st) == 0) {
-      temp_physical_device.bram_bar_size = st.st_size;
-      strcpy(temp_physical_device.bram_bar_path, bram_bar.c_str());
-    } else {
-      printf("[ERROR] Device file %s does not exist\n", bram_bar.c_str());
-      return HSA_STATUS_ERROR;
-    }
-
-    // Adding to our list of
-    physical_devices.push_back(temp_physical_device);
-  }
-
-  printf("All BARs found:\n");
-  int physical_device_iter = 0;
-  for (air_physical_device_t temp_physical_device : physical_devices) {
-    printf("Device %d:\n", physical_device_iter);
-    printf("\tDRAM BAR: size 0x%lx at %s\n", temp_physical_device.dram_bar_size,
-           temp_physical_device.dram_bar_path);
-    printf("\tAIE BAR: size 0x%lx at %s\n", temp_physical_device.aie_bar_size,
-           temp_physical_device.aie_bar_path);
-    printf("\tBRAM BAR: size 0x%lx at %s\n", temp_physical_device.bram_bar_size,
-           temp_physical_device.bram_bar_path);
-    physical_device_iter++;
-  }
+  air_physical_device_t temp_physical_device;
+  physical_devices.push_back(temp_physical_device);
 
   return HSA_STATUS_SUCCESS;
 }
@@ -457,34 +410,10 @@ hsa_status_t air_iterate_agents(hsa_status_t (*callback)(air_agent_t agent,
   uint64_t total_controllers = 0;
 
 #ifdef AIR_PCIE
-  for (int i = 0; i < physical_devices.size(); i++) {
-    std::cout << "Discovering agents in device " << i << std::endl;
-    int fd = open(air_get_bram_bar(i).c_str(), O_RDWR | O_SYNC);
-    if (fd == -1)
-      return HSA_STATUS_ERROR;
-
-    uint64_t *bram_base = reinterpret_cast<uint64_t *>(
-        mmap(NULL, 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
-
-    total_controllers = bram_base[65];
-    if (total_controllers < 1) {
-      std::cerr << "No agents found" << std::endl;
-      return HSA_STATUS_ERROR;
-    }
-
-    uint64_t *base_addr = reinterpret_cast<uint64_t *>(AIR_VCK190_SHMEM_BASE);
-    for (int i = 0; i < total_controllers; i++) {
-      air_agent_t a;
-      a.handle = reinterpret_cast<uintptr_t>(&base_addr[i]);
-      callback(a, data);
-    }
-
-    auto res = munmap(bram_base, 0x1000);
-    if (res) {
-      std::cerr << "Could not munmap" << std::endl;
-      return HSA_STATUS_ERROR;
-    }
-  }
+  air_agent_t a;
+  a.handle = reinterpret_cast<uintptr_t>(0xBADF00DUL);
+  callback(a, data);
+  return HSA_STATUS_SUCCESS;
 #else
 
 #ifndef __aarch64__
@@ -500,6 +429,11 @@ hsa_status_t air_iterate_agents(hsa_status_t (*callback)(air_agent_t agent,
   uint64_t *bram_base =
       reinterpret_cast<uint64_t *>(mmap(NULL, 0x1000, PROT_READ | PROT_WRITE,
                                         MAP_SHARED, fd, AIR_VCK190_SHMEM_BASE));
+  if (bram_base == MAP_FAILED) {
+    printf("[ERROR] can't map BRAM\n");
+    return HSA_STATUS_ERROR;
+  }
+
   total_controllers = bram_base[65];
   if (total_controllers < 1) {
     std::cerr << "No agents found" << std::endl;
@@ -524,6 +458,8 @@ hsa_status_t air_iterate_agents(hsa_status_t (*callback)(air_agent_t agent,
 }
 
 #ifdef AIR_PCIE
+const char *air_get_driver_name(void) { return vck5000_driver_name; }
+
 std::string air_get_ddr_bar(uint32_t device_id) {
   if (device_id >= physical_devices.size()) {
     printf("[ERROR] Attempting to grab BAR of device %d which does not exist\n",

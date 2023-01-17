@@ -78,6 +78,7 @@ static const struct file_operations vck_fops = {
 	.mmap = vck_mmap,
 };
 
+extern bool enable_aie;
 static int chardev_major = -1;
 static struct class *vck5000_class;
 static struct device *vck5000_device;
@@ -216,6 +217,7 @@ static int vck_mmap(struct file *f, struct vm_area_struct *vma)
 {
 	struct pci_dev *pdev;
 	unsigned long pgoff = 0;
+	unsigned long bar;
 	size_t size = vma->vm_end - vma->vm_start;
 	loff_t offset = (loff_t)vma->vm_pgoff << PAGE_SHIFT;
 
@@ -229,24 +231,26 @@ static int vck_mmap(struct file *f, struct vm_area_struct *vma)
 		/* the herd private memory starts at 0x1000, and is 0x1000 long for each herd controller */
 		unsigned long herd_ctlr_offset =
 			HERD_CONTROLLER_BRAM_SIZE * (1 + herd_idx);
-		unsigned long bram = pci_resource_start(pdev, BRAM_BAR_INDEX) +
-				     herd_ctlr_offset;
+		bar = pci_resource_start(pdev, BRAM_BAR_INDEX) +
+		      herd_ctlr_offset;
 		size = HERD_CONTROLLER_BRAM_SIZE;
 		dev_warn(vck5000_device, "mapping %lx BRAM at 0x%lx to 0x%lx",
-			 size, bram, vma->vm_start);
-		pgoff = (bram >> PAGE_SHIFT);
+			 size, bar, vma->vm_start);
 	} else if (offset == 0x100000ULL) {
-		unsigned long aie = pci_resource_start(pdev, AIE_BAR_INDEX);
+		if (!enable_aie) {
+			dev_warn(vck5000_device,
+				 "mapping AIE BAR is not enabled");
+			return -EOPNOTSUPP;
+		}
+		bar = pci_resource_start(pdev, AIE_BAR_INDEX);
 		dev_warn(vck5000_device, "mapping %lx AIE at 0x%lx to 0x%lx",
-			 size, aie, vma->vm_start);
-		pgoff = (aie >> PAGE_SHIFT);
+			 size, bar, vma->vm_start);
 	} else {
-		unsigned long dram =
-			pci_resource_start(pdev, DRAM_BAR_INDEX) + offset;
+		bar = pci_resource_start(pdev, DRAM_BAR_INDEX) + offset;
 		dev_warn(vck5000_device, "mapping %lx DRAM at 0x%lx to 0x%lx",
-			 size, dram, vma->vm_start);
-		pgoff = (dram >> PAGE_SHIFT);
+			 size, bar, vma->vm_start);
 	}
+	pgoff = (bar >> PAGE_SHIFT);
 
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 

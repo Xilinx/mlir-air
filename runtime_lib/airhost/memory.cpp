@@ -74,7 +74,7 @@ void *air_mem_alloc(size_t size) {
   ptr = (void *)mmap(NULL, size, PROT_READ | PROT_WRITE,
                      MAP_SHARED | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
 
-  if (!ptr) {
+  if (ptr == MAP_FAILED) {
     perror("mmap fails. ");
     return NULL;
   }
@@ -114,13 +114,16 @@ int air_init_dev_mem_allocator(uint64_t dev_mem_size, uint32_t device_id) {
 
   // Getting userspace pointers to device memory
 #ifdef AIR_PCIE
-  int fd = open(air_get_ddr_bar(device_id).c_str(), O_RDWR | O_SYNC);
-  if (fd != -1) {
-    dev_mem_allocator->dev_mem =
-        (uint32_t *)mmap(NULL, dev_mem_size /*0x8000*/, PROT_READ | PROT_WRITE,
-                         MAP_SHARED, fd, 0x1C0000);
-  } else {
+  int fd = open(air_get_driver_name(), O_RDWR | O_SYNC);
+  if (fd < 0) {
     printf("[ERROR] Could not open DDR BAR\n");
+    return 1;
+  }
+  dev_mem_allocator->dev_mem =
+      (uint32_t *)mmap(NULL, dev_mem_size /*0x8000*/, PROT_READ | PROT_WRITE,
+                       MAP_SHARED, fd, 0x1C0000);
+  if (dev_mem_allocator->dev_mem == MAP_FAILED) {
+    printf("[ERROR] Could not map DDR BAR\n");
     return 1;
   }
 #else
