@@ -196,4 +196,45 @@ def PartitionToAIEOp : Op<Transform_Dialect, "air.partition_to_aie",
   }];
 }
 
+def FuseIntoContainingMemrefOp :
+    Op<Transform_Dialect, "air.fuse_into_containing_op",
+      [DeclareOpInterfaceMethods<TransformOpInterface>]> {
+  let summary = "Fuse a producer into a containing operation.";
+
+  let description = [{
+    Fuses the `producer_op` into the `containing_op`.
+    Returns a handle to the fused ops.
+
+    The producer is a subview slice of a tiled op. This transform computes the
+    accessed producer slice inside of the containing op ("tile and fuse").
+
+    The containing op handle must be associated with exactly one payload op. The
+    producer op handle may be associated with multiple payload ops. This
+    transform fuses exactly one producer.
+
+    #### Return modes
+
+    If the producer could not be fused, this operation fails silently.
+    This is the case when tiling fails or when the producer op has zero uses
+    within the containing op. I.e., "producers" that are not consumed within the containing
+    op are rejected by this operation.
+
+    This operation reads and frees the producer handle.
+    This operation reads the containing op handle.
+  }];
+
+  let arguments = (ins Arg<PDL_Operation, "",
+                           [TransformMappingRead,
+                            TransformMappingFree]>:$producer_op,
+                       Arg<PDL_Operation, "",
+                           [TransformMappingRead]>:$containing_op);
+  let results = (outs Res<PDL_Operation, "",
+                          [TransformMappingAlloc,
+                           TransformMappingWrite]>:$fused_op);
+  let assemblyFormat = "$producer_op `into` $containing_op attr-dict";
+
+  let builders = [
+    OpBuilder<(ins "Value":$producerOp, "Value":$containingOp)>
+  ];
+}
 #endif // AIR_TRANSFORM_OPS

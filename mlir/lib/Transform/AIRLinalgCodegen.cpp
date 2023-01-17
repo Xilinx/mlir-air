@@ -2035,6 +2035,333 @@ transform::LinalgPromoteOp::applyToOne(linalg::LinalgOp target,
   return DiagnosedSilenceableFailure::success();
 }
 
+//===----------------------------------------------------------------------===//
+// FuseIntoContainingMemrefOp
+//===----------------------------------------------------------------------===//
+
+void transform::FuseIntoContainingMemrefOp::build(OpBuilder &builder,
+                                                  OperationState &result,
+                                                  Value producerOp,
+                                                  Value containingOp) {
+  result.addOperands({producerOp, containingOp});
+  result.addTypes(pdl::OperationType::get(builder.getContext()));
+}
+
+static FailureOr<Value> generateResultTileValue(Operation *op, Operation *forOp,
+                                                OpBuilder &b,
+                                                ArrayRef<OpFoldResult> offsets,
+                                                ArrayRef<OpFoldResult> sizes) {
+  auto linalgOp = cast<linalg::LinalgOp>(op);
+  auto loc = op->getLoc();
+  SmallVector<Value> args;
+  for (auto o : op->getOperands())
+    args.push_back(o);
+  auto allShapeSizes = linalgOp.createFlatListOfOperandDims(b, loc);
+  AffineMap shapeSizesToLoopsMap = linalgOp.getShapesToLoopsMap();
+  if (!shapeSizesToLoopsMap)
+    return failure();
+  SmallVector<OpFoldResult> sizeBounds =
+      makeComposedFoldedMultiResultAffineApply(b, loc, shapeSizesToLoopsMap,
+                                               allShapeSizes);
+  SmallVector<OpFoldResult, 2> ivs =
+      cast<scf::ParallelOp>(forOp).getInductionVars();
+  SmallVector<Value> tiledOperands = linalg::makeTiledShapes(
+      b, op->getLoc(), linalgOp, args, ivs, sizes, sizeBounds, true);
+
+  SmallVector<Value> operands;
+  auto ti = tiledOperands.begin();
+  for (auto o : op->getOperands()) {
+    if (isa<MemRefType>(o.getType()))
+      operands.push_back(*ti);
+    else
+      operands.push_back(o);
+    ti++;
+  }
+
+  linalg::LinalgOp newLinalgOp = clone(b, op, {}, operands);
+  return newLinalgOp.getDpsInitOperand(0)->get();
+}
+
+/// Find the first subview user of `producerOp` and tile it right before its
+/// use. The tiled op is fused under the `containingOp`.
+/// Return this fused op on success or nullptr if anything fails.
+static Operation *tileAndFuseFirstExtractUse(RewriterBase &rewriter,
+                                             Diagnostic &diag,
+                                             Operation *producerOp,
+                                             Operation *containingOp) {
+  LLVM_DEBUG(llvm::dbgs() << "Try to fuse a direct extract use\n");
+  auto tileableProducer = dyn_cast<TilingInterface>(producerOp);
+  if (!tileableProducer) {
+    diag.attachNote(producerOp->getLoc())
+        << "producer is not a TileableInterface: " << *producerOp;
+    return nullptr;
+  }
+
+  linalg::LinalgOp producerLinalgOp = cast<linalg::LinalgOp>(producerOp);
+  auto users = producerLinalgOp.getDpsInitOperands()[0]->get().getUsers();
+  auto it = llvm::find_if(users, [&](Operation *user) {
+    auto sliceOp = dyn_cast<memref::SubViewOp>(user);
+    return sliceOp && containingOp->isProperAncestor(sliceOp);
+  });
+
+  // Find a fusion opportunity.
+  if (it == users.end()) {
+    diag.attachNote(tileableProducer->getLoc())
+        << "could not find fusion opportunity for: " << *tileableProducer;
+    return nullptr;
+  }
+  auto sliceOpToTile = cast<memref::SubViewOp>(*it);
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(sliceOpToTile);
+
+  // Tile the producer.
+  FailureOr<Value> tiledProducer = generateResultTileValue(
+      producerOp, containingOp, rewriter, sliceOpToTile.getMixedOffsets(),
+      sliceOpToTile.getMixedSizes());
+  if (failed(tiledProducer)) {
+    diag.attachNote(tileableProducer->getLoc())
+        << "failed to tile producer op: " << *tileableProducer;
+    return nullptr;
+  }
+  LLVM_DEBUG(llvm::dbgs() << "tiledProducer: " << *tiledProducer << "\n");
+
+  // Replace the extract op.
+  rewriter.replaceOp(sliceOpToTile, *tiledProducer);
+  return tiledProducer->getDefiningOp();
+}
+
+/// First, find the first "scf::ForeachThreadOp" user of `producerOp` and ensure
+/// it is exactly the `containingOp`, otherwise bail.
+/// Then, find the first "extract" user of the tied block argument and tile it
+/// right before its "extract" use. The tiled op is fused under the
+/// `containingOp`.
+/// Return this fused op on success or nullptr if anything fails.
+static Operation *tileAndFuseFirstExtractUseThroughContainingOpBlockArgument(
+    RewriterBase &rewriter, Diagnostic &diag, Operation *producerOp,
+    Operation *containingOp) {
+  LLVM_DEBUG(
+      llvm::dbgs() << "Try to fuse an extract use through block argument\n");
+
+  auto tileableProducer = dyn_cast<TilingInterface>(producerOp);
+  if (!tileableProducer) {
+    diag.attachNote(producerOp->getLoc())
+        << "producer is not a TileableInterface: " << *producerOp;
+    return nullptr;
+  }
+
+  // Search the first use by a "scf::ForeachThreadOp" user.
+  scf::ForeachThreadOp foreachThreadOp;
+  auto itProducerUses =
+      llvm::find_if(tileableProducer->getUses(), [&](OpOperand &use) {
+        foreachThreadOp = dyn_cast<scf::ForeachThreadOp>(use.getOwner());
+        return foreachThreadOp;
+      });
+  // If it's not from the containing op, return.
+  if (!foreachThreadOp || foreachThreadOp != containingOp) {
+    diag.attachNote(tileableProducer->getLoc())
+        << "could not find a use by the containing op: " << *tileableProducer;
+    return nullptr;
+  }
+
+  // Search the producer slices accessed within the containing
+  // operation.
+  // TODO: Generalize to more extract/insert/parallel_insert triples.
+  //   Maybe evolve into an interface.
+  OpOperand *pUse = &(*itProducerUses);
+  BlockArgument bbArg = foreachThreadOp.getTiedBlockArgument(pUse);
+
+  // Search the producer slices accessed within the containing operation.
+  // TODO: Generalize to more extract/insert/parallel_insert triples, maybe
+  // evolve into an interface.
+  auto itBBArgUsers = llvm::find_if(bbArg.getUsers(), [&](Operation *user) {
+    auto sliceOp = dyn_cast<tensor::ExtractSliceOp>(user);
+    return sliceOp && containingOp->isProperAncestor(sliceOp);
+  });
+
+  // Find a fusion opportunity.
+  if (itBBArgUsers == bbArg.getUsers().end()) {
+    diag.attachNote(containingOp->getLoc())
+        << "could not find fusion opportunity for bbArg: " << bbArg;
+    return nullptr;
+  }
+  auto sliceOpToTile = cast<tensor::ExtractSliceOp>(*itBBArgUsers);
+
+  // Try to fuse the producer in-place.
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(sliceOpToTile);
+
+  // Replace the use in the tileableProducer before tiling: clone, replace and
+  // then tile.
+  int64_t resultNumber = pUse->get().cast<OpResult>().getResultNumber();
+  LLVM_DEBUG(llvm::dbgs() << "resultNumber: " << resultNumber << "\n");
+
+  // Gather destination tensors.
+  SmallVector<Value> destinationTensors;
+  if (failed(tensor::getOrCreateDestinations(
+          rewriter, tileableProducer->getLoc(), tileableProducer,
+          destinationTensors))) {
+    diag.attachNote(tileableProducer->getLoc())
+        << "failed to get destination tensors for: " << *tileableProducer;
+    return nullptr;
+  }
+
+  BlockAndValueMapping bvm;
+  bvm.map(destinationTensors[resultNumber], bbArg);
+  auto tileableProducerClone =
+      cast<TilingInterface>(rewriter.clone(*tileableProducer, bvm));
+  auto scopeGuard =
+      llvm::make_scope_exit([&]() { rewriter.eraseOp(tileableProducerClone); });
+
+  // Tile the producer.
+  FailureOr<Value> tiledProducer =
+      tileableProducerClone.generateResultTileValue(
+          rewriter, resultNumber, sliceOpToTile.getMixedOffsets(),
+          sliceOpToTile.getMixedSizes());
+  if (failed(tiledProducer)) {
+    diag.attachNote(tileableProducer->getLoc())
+        << "failed to tile producer op: " << *tileableProducer;
+    return nullptr;
+  }
+  LLVM_DEBUG(llvm::dbgs() << "tiledProducer: " << *tiledProducer << "\n");
+
+  // Replace the extract op.
+  Operation *fusedOp = tiledProducer->getDefiningOp();
+  auto maybeRankReduced = tensor::ExtractSliceOp::rankReduceIfNeeded(
+      rewriter, sliceOpToTile->getLoc(), fusedOp->getResult(resultNumber),
+      sliceOpToTile->getResult(0)
+          .getType()
+          .cast<RankedTensorType>()
+          .getShape());
+  assert(succeeded(maybeRankReduced) && "unexpected shape");
+  rewriter.replaceOp(sliceOpToTile, *maybeRankReduced);
+
+  // Replace the use in containingOp.
+  rewriter.updateRootInPlace(containingOp, [&]() {
+    containingOp->setOperand(pUse->getOperandNumber(),
+                             destinationTensors.front());
+  });
+
+  return fusedOp;
+}
+
+static Operation *cloneAndFuseFirstUse(RewriterBase &rewriter, Diagnostic &diag,
+                                       Operation *producerOp,
+                                       Operation *containingOp) {
+  LLVM_DEBUG(llvm::dbgs() << "Try to fuse an use by cloning\n");
+
+  // Gather all uses inside the containing op.
+  SmallVector<OpOperand *> uses;
+  for (OpResult result : producerOp->getOpResults()) {
+    for (OpOperand &use : result.getUses()) {
+      if (containingOp->isProperAncestor(use.getOwner())) {
+        uses.push_back(&use);
+        continue;
+      }
+      // Cannot clone and fuse if the use is by the containing op itself: fail
+      // immediately.
+      if (containingOp == use.getOwner()) {
+        diag.attachNote(producerOp->getLoc())
+            << "producer op use by containing op cannot be fused by cloning";
+        return nullptr;
+      }
+    }
+  }
+
+  // Check for a non-empty list of fusion opportunities.
+  if (uses.empty()) {
+    diag.attachNote(producerOp->getLoc()) << "no fusion opportunity by cloning";
+    return nullptr;
+  }
+
+  // Clone and fuse inside the containing op.
+  Operation *fusedOp = nullptr;
+  OpOperand *use = uses.front();
+  // Parallel insert slice is not a valid clone destination.
+  // TODO: Generalize to other type of ops.
+  assert(!isa<tensor::ParallelInsertSliceOp>(use->getOwner()) &&
+         "Parallel insert slice is not a valid clone destination");
+  unsigned resultNumber = use->get().cast<OpResult>().getResultNumber();
+  LLVM_DEBUG(llvm::dbgs() << "resultNumber: " << resultNumber << "\n");
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(use->getOwner());
+  fusedOp = rewriter.clone(*producerOp);
+  rewriter.updateRootInPlace(
+      use->getOwner(), [&] { use->set(fusedOp->getOpResult(resultNumber)); });
+
+  return fusedOp;
+}
+
+DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
+    transform::TransformResults &results, transform::TransformState &state) {
+  SmallVector<Operation *> fusedOps;
+  ArrayRef<Operation *> producerOps = state.getPayloadOps(getProducerOp());
+  // If nothing to fuse, propagate success.
+  if (producerOps.empty()) {
+    results.set(getFusedOp().cast<OpResult>(),
+                SmallVector<mlir::Operation *>{});
+    return DiagnosedSilenceableFailure::success();
+  }
+  if (producerOps.size() != 1) {
+    return emitDefiniteFailure()
+           << "requires exactly one producer_op handle (got "
+           << producerOps.size() << ")";
+  }
+  Operation *producerOp = producerOps.front();
+
+  ArrayRef<Operation *> containingOps = state.getPayloadOps(getContainingOp());
+  if (containingOps.size() != 1) {
+    return emitDefiniteFailure()
+           << "requires exactly one containing_op handle (got "
+           << containingOps.size() << ")";
+  }
+  Operation *containingOp = containingOps.front();
+
+  linalg::LinalgOp producerLinalgOp = dyn_cast<linalg::LinalgOp>(producerOp);
+  if (!producerLinalgOp) {
+    return emitDefiniteFailure() << "requires producer_op to be LinalgOp";
+  }
+  if (producerLinalgOp.getNumDpsInits() != 1) {
+    return emitDefiniteFailure()
+           << "requires producer_op to have exactly one init operand (got "
+           << producerLinalgOp.getNumDpsInits() << ")";
+  }
+
+  auto initOperand = producerLinalgOp.getDpsInitOperands()[0]->get();
+  // The containing op may be a user of producerOp: use isAncestor.
+  int64_t numUsesInContainingOp =
+      llvm::count_if(initOperand.getUsers(), [&](Operation *op) {
+        return containingOp->isAncestor(op);
+      });
+  if (numUsesInContainingOp == 0) {
+    results.set(getFusedOp().cast<OpResult>(), ArrayRef<Operation *>());
+    Diagnostic diag(containingOp->getLoc(), DiagnosticSeverity::Remark);
+    diag << "producer_op does not have uses in the container";
+    return DiagnosedSilenceableFailure::silenceableFailure(std::move(diag));
+  }
+
+  // Default diagnostic, to be complemented with more failure information.
+  Diagnostic diag(producerOp->getLoc(), DiagnosticSeverity::Remark);
+  diag << "could not fuse " << *producerOp << " into " << *containingOp;
+
+  IRRewriter rewriter(getContext());
+  Operation *tiled =
+      tileAndFuseFirstExtractUse(rewriter, diag, producerOp, containingOp);
+  if (tiled) {
+    LLVM_DEBUG(llvm::dbgs() << "\nFused a direct extract use\n"
+                            << *containingOp);
+    fusedOps.push_back(tiled);
+    rewriter.eraseOp(producerOp);
+
+    results.set(getFusedOp().cast<OpResult>(), fusedOps);
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  results.set(getFusedOp().cast<OpResult>(), ArrayRef<Operation *>());
+  return DiagnosedSilenceableFailure::silenceableFailure(std::move(diag));
+}
+
 namespace xilinx {
 namespace air {
 
