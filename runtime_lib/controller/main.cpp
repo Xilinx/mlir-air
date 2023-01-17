@@ -897,7 +897,7 @@ void unlock_uart() {
 int queue_create(uint32_t size, queue_t **queue, uint32_t mb_id) {
   uint64_t queue_address[1] = {base_address + sizeof(dispatch_packet_t)};
   uint64_t queue_base_address[1] = {queue_address[0] +
-                                    sizeof(dispatch_packet_t)};
+                                    2 * sizeof(dispatch_packet_t)};
   lock_uart(mb_id);
   air_printf("setup_queue 0x%llx, %x bytes + %d 64 byte packets\n\r",
              (void *)queue_address, sizeof(queue_t), size);
@@ -1018,6 +1018,9 @@ void handle_packet_get_capabilities(dispatch_packet_t *pkt, uint32_t mb_id) {
   addr[7] = 0L;                     // L2 data memory per region
 }
 
+
+uint64_t platform_version = 0x0000020100020000UL;
+
 void handle_packet_get_info(dispatch_packet_t *pkt, uint32_t mb_id) {
   // packet is in active phase
   packet_set_active(pkt, true);
@@ -1071,6 +1074,9 @@ void handle_packet_get_info(dispatch_packet_t *pkt, uint32_t mb_id) {
     break;
   case AIR_AGENT_INFO_L2_MEM_SIZE: // L2 memory per region (cols * 256k)
     *addr = 262144L * HerdCfgInst.num_cols;
+    break;
+  case AIR_AGENT_INFO_PLATFORM_VER:
+    *addr = *(uint32_t *)(platform_version);
     break;
   default:
     *addr = 0;

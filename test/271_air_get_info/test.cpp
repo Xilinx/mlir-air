@@ -29,7 +29,8 @@
 //  AIR_AGENT_INFO_HERD_COLS = 7,
 //  AIR_AGENT_INFO_TILE_DATA_MEM_SIZE = 8,
 //  AIR_AGENT_INFO_TILE_PROG_MEM_SIZE = 9,
-//  AIR_AGENT_INFO_L2_MEM_SIZE = 10 // Per region
+//  AIR_AGENT_INFO_L2_MEM_SIZE = 10, // Per region
+//  AIR_AGENT_INFO_PLATFORM_VER = 11
 //} air_agent_info_t;
 
 int main(int argc, char *argv[]) {
@@ -55,7 +56,11 @@ int main(int argc, char *argv[]) {
   uint64_t data = -1;
   char vend[8];
   for (auto q : queues) {
-    std::cout << std::endl << "Requesting attribute: AIR_AGENT_INFO_CONTROLLER_ID... ";
+    std::cout << std::endl << "Requesting attribute: AIR_AGENT_INFO_PLATFORM_VER... ";
+    air_get_agent_info(q, AIR_AGENT_INFO_PLATFORM_VER, &data);
+    std::cout << "Platform Version: " << data << std::endl;
+
+    std::cout << "Requesting attribute: AIR_AGENT_INFO_CONTROLLER_ID... ";
     air_get_agent_info(q, AIR_AGENT_INFO_CONTROLLER_ID, &data);
     std::cout << "Agent ID is: " << data << std::endl;
 

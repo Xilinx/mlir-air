@@ -72,7 +72,8 @@ typedef enum {
   AIR_AGENT_INFO_HERD_COLS = 7,
   AIR_AGENT_INFO_TILE_DATA_MEM_SIZE = 8,
   AIR_AGENT_INFO_TILE_PROG_MEM_SIZE = 9,
-  AIR_AGENT_INFO_L2_MEM_SIZE = 10 // Per region
+  AIR_AGENT_INFO_L2_MEM_SIZE = 10, // Per region
+  AIR_AGENT_INFO_PLATFORM_VER = 11
 } air_agent_info_t;
 
 // Note below that "__attribute__((packed))" also asserts that the whole
