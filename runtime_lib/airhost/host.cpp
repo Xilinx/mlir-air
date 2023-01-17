@@ -464,10 +464,6 @@ hsa_status_t air_iterate_agents(hsa_status_t (*callback)(air_agent_t agent,
     uint64_t *bram_base = reinterpret_cast<uint64_t *>(
         mmap(NULL, 256*1024, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
 
-    // Platform version is a constant register after the BRAM
-    uint32_t platform_version = (uint32_t)bram_base[PLATFORM_VERSION_REG / sizeof(uint64_t)];
-    std::cout << "Platform version: " << platform_version << std::endl;
-
     total_controllers = bram_base[65];
     if (total_controllers < 1) {
       std::cerr << "No agents found" << std::endl;
