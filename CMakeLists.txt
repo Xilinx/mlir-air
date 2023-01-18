@@ -40,7 +40,6 @@ include(ExternalProject)
 
 find_package(MLIR REQUIRED CONFIG)
 find_package(AIE REQUIRED)
-set(LibXAIE_ROOT ${Sysroot}/usr ${Sysroot}/opt/xaiengine ${Sysroot}/opt/xaienginev2)
 find_package(LibXAIE)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
