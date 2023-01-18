@@ -66,7 +66,8 @@ struct runnerNode {
   // Each entry is an std::pair. First element is for op's id, and second
   // element is counter
   std::vector<std::pair<unsigned, unsigned>> loop_trip_count;
-  // Each entry is an std::pair. First element is symbolic token name, and second element is counter
+  // Each entry is an std::pair. First element is symbolic token name, and
+  // second element is counter
   std::vector<std::pair<std::string, unsigned>> sym_token_count;
   std::deque<runnerNode> sub_runner_nodes;
 
@@ -259,12 +260,13 @@ public:
     c.processed_vertices.push_back(it);
   }
 
-  void executeOp(air::ChannelPutOp op, runnerNode &c, Graph::vertex_descriptor it) {
+  void executeOp(air::ChannelPutOp op, runnerNode &c,
+                 Graph::vertex_descriptor it) {
     c.processed_vertices.push_back(it);
     // Acquire symbolic token by incrementing the count
-    for (auto &entry : c.sym_token_count){
-      if (entry.first == op.getChanName().str()){
-        entry.second ++;
+    for (auto &entry : c.sym_token_count) {
+      if (entry.first == op.getChanName().str()) {
+        entry.second++;
         return;
       }
     }
@@ -273,24 +275,26 @@ public:
     c.sym_token_count.push_back(std::make_pair(op.getChanName().str(), 1));
   }
 
-  void executeOp(air::ChannelGetOp op, runnerNode &c, Graph::vertex_descriptor it) {
+  void executeOp(air::ChannelGetOp op, runnerNode &c,
+                 Graph::vertex_descriptor it) {
     // Get put-side runner from get op
-    air::ChannelPutOp put =
-        air::getTheOtherChannelOpThroughSymbol(op);
-    auto put_entry = canonicalizer.getVertexFromOp(
-        put.getOperation(), dep_ctx, "front");
+    air::ChannelPutOp put = air::getTheOtherChannelOpThroughSymbol(op);
+    auto put_entry =
+        canonicalizer.getVertexFromOp(put.getOperation(), dep_ctx, "front");
     auto &put_g = put_entry.second;
     auto put_c = put_g->runner_node;
-    // Release symbolic token by decrementing the count (cached at put-side runner)
-    for (auto token_it = put_c->sym_token_count.begin(); token_it != put_c->sym_token_count.end(); ++token_it) {
-      if (token_it->first == op.getChanName().str()){
-        if (token_it->second){
-          token_it->second --;
+    // Release symbolic token by decrementing the count (cached at put-side
+    // runner)
+    for (auto token_it = put_c->sym_token_count.begin();
+         token_it != put_c->sym_token_count.end(); ++token_it) {
+      if (token_it->first == op.getChanName().str()) {
+        if (token_it->second) {
+          token_it->second--;
         }
 
-        if (!token_it->second){
+        if (!token_it->second) {
           put_c->sym_token_count.erase(token_it);
-          token_it --;
+          token_it--;
         }
       }
     }
@@ -535,27 +539,30 @@ public:
       buildVertexDependencyList(*it, G, dep_list);
       // Check whether adj_v's dependency list is fulfulled
       for (auto dep : dep_list) {
-        // If current op is get, and is dependent on a put, and put and get share the same symbolic channel
+        // If current op is get, and is dependent on a put, and put and get
+        // share the same symbolic channel
         bool sym_dep = false;
-        if (dep->op && dyn_cast<air::ChannelPutOp>(dep->op) && dyn_cast<air::ChannelGetOp>(G[*it].op)){
-          auto put_chan_name = dyn_cast<air::ChannelPutOp>(dep->op).getChanName().str();
-          auto get_chan_name = dyn_cast<air::ChannelGetOp>(G[*it].op).getChanName().str();
-          if (put_chan_name == get_chan_name){
+        if (dep->op && dyn_cast<air::ChannelPutOp>(dep->op) &&
+            dyn_cast<air::ChannelGetOp>(G[*it].op)) {
+          auto put_chan_name =
+              dyn_cast<air::ChannelPutOp>(dep->op).getChanName().str();
+          auto get_chan_name =
+              dyn_cast<air::ChannelGetOp>(G[*it].op).getChanName().str();
+          if (put_chan_name == get_chan_name) {
             sym_dep = true;
           }
         }
-        if (sym_dep){
+        if (sym_dep) {
           auto put = dep->op;
           auto chan_name = dyn_cast<air::ChannelPutOp>(put).getChanName().str();
           // Get put-side runner from get op
-          auto put_entry = canonicalizer.getVertexFromOp(
-              put, dep_ctx, "front");
+          auto put_entry = canonicalizer.getVertexFromOp(put, dep_ctx, "front");
           auto &put_g = put_entry.second;
           auto put_c = put_g->runner_node;
           bool found_sym_token = false;
-          for (auto &pair : put_c->sym_token_count){
-            if (pair.first == chan_name){
-              if (pair.second){
+          for (auto &pair : put_c->sym_token_count) {
+            if (pair.first == chan_name) {
+              if (pair.second) {
                 found_sym_token = true;
               }
             }
