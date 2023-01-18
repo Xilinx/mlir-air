@@ -33,8 +33,6 @@
 #include "xparameters.h"
 #include "xil_cache.h"
 
-#include "platform_config.h"
-
 /*
  * Uncomment one of the following two lines, depending on the target,
  * if ps7/psu init source files are added in the source directory for
