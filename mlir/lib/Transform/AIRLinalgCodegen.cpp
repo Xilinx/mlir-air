@@ -39,9 +39,7 @@
 #define DEBUG_TYPE "air-linalg-codegen"
 
 using namespace mlir;
-
 using namespace xilinx;
-using namespace xilinx::air;
 
 namespace {
 
@@ -499,7 +497,7 @@ LinalgTransformationFilter::checkAndNotify(PatternRewriter &rewriter,
     return failure();
 
   auto attr = op->template getAttrOfType<StringAttr>(
-      LinalgTransforms::kLinalgTransformMarker);
+      air::LinalgTransforms::kLinalgTransformMarker);
 
   if (!attr) {
     // 1. Has no filter case and matchDisjunction is empty.
@@ -528,16 +526,16 @@ LinalgTransformationFilter::checkAndNotify(PatternRewriter &rewriter,
 void LinalgTransformationFilter::replaceLinalgTransformationFilter(
     PatternRewriter &rewriter, Operation *op) const {
   if (replacement)
-    op->setAttr(LinalgTransforms::kLinalgTransformMarker, *replacement);
+    op->setAttr(air::LinalgTransforms::kLinalgTransformMarker, *replacement);
   else
     op->removeAttr(
-        rewriter.getStringAttr(LinalgTransforms::kLinalgTransformMarker));
+        rewriter.getStringAttr(air::LinalgTransforms::kLinalgTransformMarker));
 }
 
 bool LinalgTransformationFilter::hasReplacementFilter(Operation *op) const {
   if (!replacement)
     return false;
-  auto attr = op->getAttr(LinalgTransforms::kLinalgTransformMarker)
+  auto attr = op->getAttr(air::LinalgTransforms::kLinalgTransformMarker)
                   .dyn_cast<StringAttr>();
   return attr && attr == *replacement;
 }
@@ -641,7 +639,7 @@ allocBufferCallBack(OpBuilder &b, memref::SubViewOp subView,
   MemRefType viewType = subView.getType();
   MemRefType allocType =
       MemRefType::get(viewType.getShape(), viewType.getElementType(), {},
-                      (unsigned)xilinx::air::MemorySpace::L1);
+                      (unsigned)air::MemorySpace::L1);
   Value buffer = b.createOrFold<memref::AllocOp>(subView.getLoc(), allocType);
   return buffer;
 }
@@ -678,7 +676,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   for (auto o : op->getOperands())
     args.push_back(o);
 
-  auto launch = b.create<xilinx::air::HerdOp>(loc, dims, args);
+  auto launch = b.create<air::HerdOp>(loc, dims, args);
   b.setInsertionPointToStart(&launch.getBody().front());
 
   auto nLoops = op.getNumLoops();
@@ -718,7 +716,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
     stageResultTypes.push_back(tensorType);
   }
 
-  auto pipe = b.create<xilinx::air::HerdPipelineOp>(loc);
+  auto pipe = b.create<air::HerdPipelineOp>(loc);
   pipe->setAttr("direction",
                 StringAttr::get(op->getContext(), pipeline_direction));
   Block *pipelineBlock = new Block();
@@ -735,7 +733,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
     if (inputOperand)
       opers.push_back(inputOperand);
 
-    auto stage = b.create<xilinx::air::PipelineStageOp>(
+    auto stage = b.create<air::PipelineStageOp>(
         loc, last_stage ? SmallVector<Type, 1>() : stageResultTypes, opers);
 
     Block *stageBlock = new Block();
@@ -788,7 +786,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
 
     if (last_stage) {
       b.setInsertionPointToEnd(stageBlock);
-      b.create<xilinx::air::PipelineYieldOp>(loc, SmallVector<Value, 1>());
+      b.create<air::PipelineYieldOp>(loc, SmallVector<Value, 1>());
     } else {
       auto mref = tiledOperands[resultIdx];
       if (promote && first_stage) {
@@ -800,7 +798,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
 
       b.setInsertionPointToEnd(stageBlock);
       auto t = b.create<bufferization::ToTensorOp>(loc, mref);
-      b.create<xilinx::air::PipelineYieldOp>(loc, t.getResult());
+      b.create<air::PipelineYieldOp>(loc, t.getResult());
       inputOperand = stage.getResult(0);
     }
     // if (erased) erased.erase();
@@ -808,10 +806,10 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
 
   SmallVector<Type, 1> pipeTys;
   SmallVector<Value, 1> pipeArgs;
-  b.create<xilinx::air::PipelineTerminatorOp>(loc, pipeTys, pipeArgs);
+  b.create<air::PipelineTerminatorOp>(loc, pipeTys, pipeArgs);
 
   b.setInsertionPointToEnd(&launch.getBody().front());
-  b.create<xilinx::air::HerdTerminatorOp>(loc);
+  b.create<air::HerdTerminatorOp>(loc);
   int i = 0;
   for (auto a : args) {
     replaceAllUsesInRegionWith(a, launch.getKernelArgument(i++),
@@ -1000,7 +998,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
   }
 
   b.setInsertionPointToEnd(&herd.getBody().front());
-  b.create<xilinx::air::HerdTerminatorOp>(loc);
+  b.create<air::HerdTerminatorOp>(loc);
   int i = 0;
   for (auto a : args) {
     replaceAllUsesInRegionWith(a, herd.getKernelArgument(i++), herd.getBody());
@@ -1027,7 +1025,7 @@ struct PipelineReducePattern : public RewritePattern {
     if (failed(filter.checkAndNotify(rewriter, linalgOp)))
       return failure();
 
-    if (op->getParentOfType<xilinx::air::HerdOp>())
+    if (op->getParentOfType<air::HerdOp>())
       return failure();
 
     auto result =
@@ -1053,7 +1051,7 @@ private:
 };
 
 class AIRPipelineReducePass
-    : public xilinx::air::AIRPipelineReducePassBase<AIRPipelineReducePass> {
+    : public air::AIRPipelineReducePassBase<AIRPipelineReducePass> {
 
 public:
   AIRPipelineReducePass() = default;
@@ -1062,8 +1060,7 @@ public:
   void runOnOperation() override;
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry
-        .insert<xilinx::air::airDialect, bufferization::BufferizationDialect>();
+    registry.insert<air::airDialect, bufferization::BufferizationDialect>();
   }
 
 private:
@@ -1079,7 +1076,7 @@ void AIRPipelineReducePass::runOnOperation() {
 
   (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
 }
-class AIRLinalgCodegen : public AIRLinalgCodegenBase<AIRLinalgCodegen> {
+class AIRLinalgCodegen : public air::AIRLinalgCodegenBase<AIRLinalgCodegen> {
 
 public:
   AIRLinalgCodegen() = default;
@@ -1189,7 +1186,7 @@ public:
     auto nLoops = op.getNumLoops();
     tileSizes->resize(nLoops);
 
-    uint64_t fp = CostModel().getOpCounts(op)["footprint"];
+    uint64_t fp = air::CostModel().getOpCounts(op)["footprint"];
     LLVM_DEBUG(llvm::outs() << "Footprint: " << fp << "\n");
     LLVM_DEBUG(llvm::outs() << "Cache size: " << cacheSizeBytes << "\n");
     uint64_t excessFactor = llvm::divideCeil(fp, cacheSizeBytes);
@@ -1226,14 +1223,14 @@ public:
     for (auto genericOp : genericOps) {
 
       auto attr = genericOp->getAttrOfType<StringAttr>(
-          LinalgTransforms::kLinalgTransformMarker);
+          air::LinalgTransforms::kLinalgTransformMarker);
       if (!attr) {
         if (clInputFilter != "")
           continue;
-        genericOp->setAttr(LinalgTransforms::kLinalgTransformMarker,
+        genericOp->setAttr(air::LinalgTransforms::kLinalgTransformMarker,
                            StringAttr::get(ctx, ""));
         attr = genericOp->getAttrOfType<StringAttr>(
-            LinalgTransforms::kLinalgTransformMarker);
+            air::LinalgTransforms::kLinalgTransformMarker);
       } else if (clInputFilter != attr.str())
         continue;
       StringAttr next_match = attr;
@@ -1265,7 +1262,7 @@ public:
         herd_size[i] = clHerdSize[i];
 
       // outline the operation for convenience
-      xilinx::air::AIROutliner olnr;
+      air::AIROutliner olnr;
       func::CallOp call =
           olnr.outline(std::vector<Operation *>{genericOp}, "call_generic_op");
       func::FuncOp called =
@@ -1386,7 +1383,7 @@ public:
       LLVM_DEBUG(called.print(llvm::outs()));
 
       called.walk([](linalg::LinalgOp op) {
-        op->removeAttr(LinalgTransforms::kLinalgTransformMarker);
+        op->removeAttr(air::LinalgTransforms::kLinalgTransformMarker);
       });
 
       InlinerInterface interface(&getContext());
@@ -1406,20 +1403,20 @@ public:
     for (auto matmulOp : matmulOps) {
 
       auto attr = matmulOp->getAttrOfType<StringAttr>(
-          LinalgTransforms::kLinalgTransformMarker);
+          air::LinalgTransforms::kLinalgTransformMarker);
       if (!attr) {
         if (clInputFilter != "")
           continue;
-        matmulOp->setAttr(LinalgTransforms::kLinalgTransformMarker,
+        matmulOp->setAttr(air::LinalgTransforms::kLinalgTransformMarker,
                           StringAttr::get(ctx, ""));
         attr = matmulOp->getAttrOfType<StringAttr>(
-            LinalgTransforms::kLinalgTransformMarker);
+            air::LinalgTransforms::kLinalgTransformMarker);
       } else if (clInputFilter != attr.str())
         continue;
 
       StringAttr next_match = attr;
 
-      xilinx::air::AIROutliner olnr;
+      air::AIROutliner olnr;
       func::CallOp call =
           olnr.outline(std::vector<Operation *>{matmulOp}, "call_mmult");
       func::FuncOp called =
@@ -1512,7 +1509,7 @@ public:
       (void)applyPatternsAndFoldGreedily(called, std::move(stageL1Patterns));
       (void)applyPatternsAndFoldGreedily(called, std::move(stage3Patterns));
       called.walk([](linalg::LinalgOp op) {
-        op->removeAttr(LinalgTransforms::kLinalgTransformMarker);
+        op->removeAttr(air::LinalgTransforms::kLinalgTransformMarker);
       });
 
       InlinerInterface interface(&getContext());
@@ -1530,7 +1527,7 @@ public:
 
     // Conv2dOp
     for (auto conv2dOp : conv2dOps) {
-      xilinx::air::AIROutliner olnr;
+      air::AIROutliner olnr;
       func::CallOp call =
           olnr.outline(std::vector<Operation *>{conv2dOp}, "call_conv_2d_nchw");
       func::FuncOp called =
@@ -1632,7 +1629,7 @@ public:
 
       // Drop the marker.
       called.walk([](linalg::LinalgOp op) {
-        op->removeAttr(LinalgTransforms::kLinalgTransformMarker);
+        op->removeAttr(air::LinalgTransforms::kLinalgTransformMarker);
       });
 
       InlinerInterface interface(&getContext());
