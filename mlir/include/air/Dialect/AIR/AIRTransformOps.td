@@ -36,13 +36,23 @@ def GetPartitionForOp : Op<Transform_Dialect, "air.get_partition_for",
   let assemblyFormat = "$target attr-dict";
 }
 
-// def MapSubviewsOp : Op<Transform_Dialect, "air.map_subviews",
-//     [NavigationTransformOpTrait, MemoryEffectsOpInterface,
-//      DeclareOpInterfaceMethods<TransformOpInterface>]> {
-//   let summary = "";
-//   let description = [{
-    
-//   }];
+def PipelineReduceOp : Op<Transform_Dialect, "air.pipeline_reduce",
+    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
+    TransformOpInterface, TransformEachOpTrait]> {
+  let description = [{}];
+  let arguments =
+    (ins PDL_Operation:$target,
+         DefaultValuedAttr<I64ArrayAttr, "{}">:$tile_sizes);
+  let results = (outs PDL_Operation:$result);
+  let assemblyFormat = "$target attr-dict ";
+
+  let extraClassDeclaration = [{
+    ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::linalg::LinalgOp target,
+        ::llvm::SmallVectorImpl<::mlir::Operation *> &results,
+        ::mlir::transform::TransformState &state);
+  }];
+}
 
 def PartitionToAIEOp : Op<Transform_Dialect, "air.partition_to_aie",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,

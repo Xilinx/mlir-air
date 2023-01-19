@@ -9,6 +9,7 @@
 #include "PassDetail.h"
 
 #include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Dialect/AIR/AIRTransformOps.h"
 #include "air/Transform/AIRLinalgCodegen.h"
 #include "air/Util/CostModel.h"
 #include "air/Util/Outliner.h"
@@ -23,6 +24,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
+#include "mlir/Dialect/Transform/IR/TransformInterfaces.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
@@ -650,8 +652,9 @@ static LogicalResult deallocBufferCallBack(OpBuilder &b, Value buffer) {
 }
 
 FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
-    PatternRewriter &b, linalg::LinalgOp op, unsigned int tile_size,
-    unsigned int pipeline_depth, std::string pipeline_direction, bool promote) {
+    PatternRewriter &b, linalg::LinalgOp op,
+    ArrayRef<int64_t> static_tile_sizes, unsigned int pipeline_depth,
+    std::string pipeline_direction, bool promote) {
 
   OpBuilder::InsertionGuard g(b);
   b.setInsertionPoint(op);
@@ -681,9 +684,11 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   auto nLoops = op.getNumLoops();
   SmallVector<OpFoldResult, 4> tileSizeVector;
   auto zero = b.create<arith::ConstantIndexOp>(loc, 0);
-  tileSizeVector.append(nLoops - 1, zero.getResult());
-  auto tileSizeValue = b.create<arith::ConstantIndexOp>(loc, tile_size);
-  tileSizeVector.push_back(tileSizeValue.getResult());
+  for (auto s : static_tile_sizes)
+    tileSizeVector.push_back(
+        b.create<arith::ConstantIndexOp>(loc, s).getResult());
+  if (tileSizeVector.size() < nLoops)
+    tileSizeVector.append(nLoops - tileSizeVector.size(), zero.getResult());
 
   auto allShapeSizes = op.createFlatListOfOperandDims(b, loc);
   AffineMap shapeSizesToLoopsMap = op.getShapesToLoopsMap();
@@ -693,11 +698,14 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
       makeComposedFoldedMultiResultAffineApply(b, loc, shapeSizesToLoopsMap,
                                                allShapeSizes);
 
-  SmallVector<OpFoldResult, 2> tileIds = {
-      b.create<arith::MulIOp>(loc,
-                              isHoriz ? launch.getIds()[0] : launch.getIds()[1],
-                              tileSizeValue)
-          .getResult()};
+  SmallVector<OpFoldResult> tileIds;
+  for (int i = 0, e = static_tile_sizes.size(); i < e; i++) {
+    tileIds.push_back(b.create<arith::MulIOp>(loc,
+                                              isHoriz ? launch.getIds()[0]
+                                                      : launch.getIds()[1],
+                                              tileSizeVector[i].get<Value>())
+                          .getResult());
+  }
   SmallVector<Value, 4> tiledOperands = linalg::makeTiledShapes(
       b, loc, op, args, tileIds, tileSizeVector, sizeBounds, true);
   SmallVector<Type, 4> stageResultTypes;
@@ -825,8 +833,9 @@ static std::string createChannelName(ModuleOp module) {
 }
 
 FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
-    PatternRewriter &b, linalg::LinalgOp op, unsigned int tile_size,
-    unsigned int pipeline_depth, std::string pipeline_direction, bool promote) {
+    PatternRewriter &b, linalg::LinalgOp op,
+    ArrayRef<int64_t> static_tile_sizes, unsigned int pipeline_depth,
+    std::string pipeline_direction, bool promote) {
 
   OpBuilder::InsertionGuard g(b);
   b.setInsertionPoint(op);
@@ -851,7 +860,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
   for (auto o : op->getOperands())
     args.push_back(o);
 
-  auto herd = b.create<xilinx::air::HerdOp>(loc, dims, args);
+  auto herd = b.create<air::HerdOp>(loc, dims, args);
   b.setInsertionPointToStart(&herd.getBody().front());
 
   Value x = herd.getIds()[0];
@@ -860,9 +869,11 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
   auto nLoops = op.getNumLoops();
   SmallVector<OpFoldResult, 4> tileSizeVector;
   auto zero = b.create<arith::ConstantIndexOp>(loc, 0);
-  tileSizeVector.append(nLoops - 1, zero.getResult());
-  auto tileSizeValue = b.create<arith::ConstantIndexOp>(loc, tile_size);
-  tileSizeVector.push_back(tileSizeValue.getResult());
+  for (auto s : static_tile_sizes)
+    tileSizeVector.push_back(
+        b.create<arith::ConstantIndexOp>(loc, s).getResult());
+  if (tileSizeVector.size() < nLoops)
+    tileSizeVector.append(nLoops - tileSizeVector.size(), zero.getResult());
 
   auto allShapeSizes = op.createFlatListOfOperandDims(b, loc);
   AffineMap shapeSizesToLoopsMap = op.getShapesToLoopsMap();
@@ -872,20 +883,21 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
       makeComposedFoldedMultiResultAffineApply(b, loc, shapeSizesToLoopsMap,
                                                allShapeSizes);
 
-  SmallVector<OpFoldResult, 2> tileIds = {
-      b.create<arith::MulIOp>(
-           loc, isHoriz ? herd.getIds()[0] : herd.getIds()[1], tileSizeValue)
-          .getResult()};
+  SmallVector<OpFoldResult> tileIds;
+  for (int i = 0, e = static_tile_sizes.size(); i < e; i++) {
+    if (static_tile_sizes[i] == 0)
+      continue;
+    tileIds.push_back(b.create<arith::MulIOp>(
+                           loc, isHoriz ? herd.getIds()[0] : herd.getIds()[1],
+                           tileSizeVector[i].get<Value>())
+                          .getResult());
+  }
   SmallVector<Value, 4> tiledOperands = linalg::makeTiledShapes(
       b, loc, op, args, tileIds, tileSizeVector, sizeBounds, true);
-  SmallVector<Type, 4> stageResultTypes;
+
   unsigned int resultIdx = 0;
   for (OpOperand *opOperand : op.getDpsInitOperands()) {
     resultIdx = opOperand->getOperandNumber();
-    auto memrefType = tiledOperands[resultIdx].getType().cast<MemRefType>();
-    auto tensorType = RankedTensorType::get(memrefType.getShape(),
-                                            memrefType.getElementType());
-    stageResultTypes.push_back(tensorType);
   }
 
   Value firstOutputOperand = tiledOperands[resultIdx];
@@ -1657,6 +1669,32 @@ private:
 };
 
 } // namespace
+
+/// A simple pattern rewriter that implements no special logic.
+class SimpleRewriter : public PatternRewriter {
+public:
+  SimpleRewriter(MLIRContext *context) : PatternRewriter(context) {}
+};
+
+//===----------------------------------------------------------------------===//
+// PipelineReduceOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+transform::PipelineReduceOp::applyToOne(linalg::LinalgOp target,
+                                        SmallVectorImpl<Operation *> &results,
+                                        transform::TransformState &state) {
+  SimpleRewriter rewriter(getContext());
+  SmallVector<int64_t> tile_sizes;
+  auto result = pipelineReduceLinalgOp(rewriter, target,
+                                       extractFromI64ArrayAttr(getTileSizes()),
+                                       4, "horiz", false);
+  if (failed(result))
+    return emitDefiniteFailure() << "Failed";
+  results.push_back(result->op);
+  rewriter.eraseOp(target);
+  return DiagnosedSilenceableFailure::success();
+}
 
 namespace xilinx {
 namespace air {
