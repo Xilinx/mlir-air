@@ -2,26 +2,79 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-#VITIS_BIN := /proj/xbuilds/SWIP/2020.1_0602_1208/installs/lin64/Vitis/2020.1/bin
-#VIVADO_BIN := /proj/xbuilds/SWIP/2020.1_0602_1208/installs/lin64/Vivado/2020.1/bin
+LD_SRCS += \
+lscript.ld
 
-PROJECT := ../../platforms/xilinx_vck5000_air/vivado/xilinx_vck5000_air.xsa
-PROJECT_SOURCES :=  ../../platforms/xilinx_vck5000_air/vivado/myproj/project_1.srcs/sources_1
+CPP_SRCS += \
+main.cpp \
+platform.cpp
 
-# would be better if I stripped off the trailing /
-SCRIPT_DIR := $(dir $(realpath $(firstword $(MAKEFILE_LIST))))
-BUILD_DIR := build
-APP_NAME := acdc_agent
+OBJS += \
+./$(OUTPUT)/main.o \
+./$(OUTPUT)/platform.o
 
-all: ${BUILD_DIR}/${APP_NAME}/acdc_agent.elf fixup
+CPP_DEPS += \
+./$(OUTPUT)/main.d \
+./$(OUTPUT)/platform.d
 
-${BUILD_DIR}/${APP_NAME}/acdc_agent.elf : ../../platforms/xilinx_vck5000_air/vivado/xilinx_vck5000_air.xsa
-	rm -rf build && xsct build_arm.tcl
+CXX=aarch64-none-elf-g++
+CXXFLAGS := -Wall -O0 -g3 -c -fmessage-length=0 -mcpu=cortex-a72
+LIBS := -Wl,--start-group,-lxil,-lgcc,-lc,-lstdc++,--end-group
+OUTPUT := src
 
-fixup: ${BUILD_DIR}/${APP_NAME}/src/lscript.ld
-	echo -e "\nModifying $< to increase the stack and heap size\n"; \
-	sed -i 's/_SIZE : 0x2000/_SIZE : 0x4000/g' $<; \
-	cd ${BUILD_DIR}/${APP_NAME}/Debug && make acdc_agent.elf
+INCLUDES += -I../airhost/include -Ibsp/psv_cortexa72_0/include
 
+all: dirs vck5000.elf secondary-outputs
+
+# Each subdirectory must supply rules for building sources it contributes
+$(OUTPUT)/main.o: main.cpp
+	@echo 'Building file: $<'
+	@echo 'Invoking: ARM v8 g++ compiler'
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@)" -o "$@" "$<"
+	@echo 'Finished building: $<'
+	@echo ' '
+
+$(OUTPUT)/platform.o: platform.cpp
+	@echo 'Building file: $<'
+	@echo 'Invoking: ARM v8 g++ compiler'
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@)" -o "$@" "$<"
+	@echo 'Finished building: $<'
+	@echo ' '
+
+# Add inputs and outputs from these tool invocations to the build variables
+ELFSIZE += \
+vck5000.elf.size \
+
+# create output directory for .o and .d files
+dirs:
+	mkdir -p $(OUTPUT)
+
+# Tool invocations
+vck5000.elf: $(OBJS) lscript.ld bsp/psv_cortexa72_0/lib/libxil.a
+	@echo 'Building target: $@'
+	@echo 'Invoking: ARM v8 g++ linker'
+	$(CXX) -mcpu=cortex-a72 -Wl,-T -Wl,lscript.ld -Lbsp/psv_cortexa72_0/lib -o "vck5000.elf" $(OBJS) $(LIBS)
+	@echo 'Finished building target: $@'
+	@echo ' '
+
+vck5000.elf.size: vck5000.elf
+	@echo 'Invoking: ARM v8 Print Size'
+	aarch64-none-elf-size vck5000.elf  |tee "vck5000.elf.size"
+	@echo 'Finished building: $@'
+	@echo ' '
+
+bsp/psv_cortexa72_0/lib/libxil.a:
+	@echo 'Building BSP'
+	$(MAKE) -C bsp
+
+RM := rm -rf
+
+# Other Targets
 clean:
-	rm -rf build
+	-$(RM) $(CC_DEPS)$(EXECUTABLES)$(OBJS)$(C_UPPER_DEPS)$(CXX_DEPS)$(S_UPPER_DEPS)$(C_DEPS)$(CPP_DEPS)$(ELFSIZE) vck5000.elf
+	$(MAKE) -C bsp clean
+	-@echo ' '
+
+secondary-outputs: $(ELFSIZE)
+
+.PHONY: all clean
