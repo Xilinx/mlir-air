@@ -23,6 +23,7 @@ Passes.cpp
 ReturnEliminationPass.cpp
 
 DEPENDS
+AIRTransformOpsIncGen
 AIRTransformPassIncGen
 AIRDialect
 AIRRtDialect

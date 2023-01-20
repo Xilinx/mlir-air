@@ -39,6 +39,16 @@ declare_mlir_dialect_python_bindings(
   DIALECT_NAME air
 )
 
+declare_mlir_dialect_extension_python_bindings(
+  ADD_TO_PARENT AirPythonSources.Dialects
+  ROOT_DIR "${AIR_PYTHON_ROOT_DIR}"
+  TD_FILE dialects/AirExtensionBinding.td
+  SOURCES
+    dialects/_transform_ops_gen.py
+    dialects/_air_transform_ops_ext.py
+  DIALECT_NAME transform
+  EXTENSION_NAME air_transform)
+
 ################################################################################
 # Extensions
 ################################################################################

@@ -5,4 +5,5 @@
 # SPDX-License-Identifier: MIT
 
 from .._air_ops_gen import *
+from .._air_transform_ops_gen import *
 from ...mlir._mlir_libs._airMlir import *

@@ -30,4 +30,4 @@ mlir_tablegen(AIRTransformOps.h.inc -gen-op-decls)
 mlir_tablegen(AIRTransformOps.cpp.inc -gen-op-defs)
 add_public_tablegen_target(AIRTransformOpsIncGen)
 
-#add_mlir_doc(AIRTransformOps AIRTransformOps Dialects/ -gen-op-doc)
+add_mlir_doc(AIRTransformOps AIRTransformOps ./ -gen-op-doc)
