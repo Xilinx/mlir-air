@@ -259,7 +259,7 @@ public:
   void executeOp(air::ChannelPutOp op, runnerNode &c,
                  Graph::vertex_descriptor it) {
     Graph &G = c.ctrl_g->g;
-    G[it].sym_token_count ++;
+    G[it].sym_token_count++;
 
     c.processed_vertices.push_back(it);
   }
@@ -274,7 +274,7 @@ public:
     auto &put_g = put_entry.second;
     auto &put_node = put_g->g[put_v];
 
-    put_node.sym_token_count --;
+    put_node.sym_token_count--;
 
     c.processed_vertices.push_back(it);
   }
@@ -437,8 +437,9 @@ public:
     return execution_time;
   }
 
-  void buildVertexDependencyList(Graph::vertex_descriptor v, Graph G,
-                                 std::vector<std::pair<dependencyNodeEntry *, std::string>> &dep_list) {
+  void buildVertexDependencyList(
+      Graph::vertex_descriptor v, Graph G,
+      std::vector<std::pair<dependencyNodeEntry *, std::string>> &dep_list) {
     auto inv_adj_set = boost::inv_adjacent_vertices(v, G);
     // If current vertex is ChannelGet, then add implicit ChannelPut vertex to
     // dep list
@@ -511,22 +512,22 @@ public:
     for (auto it = next_vertex_set_candidates.begin();
          it != next_vertex_set_candidates.end(); ++it) {
       bool dep_fulfilled = true;
-      // Build it's dependency list. In each entry, the first field is a pointer to the node, and the second field is a string representing the type of this dependency, either "ssa" or "sym".
+      // Build it's dependency list. In each entry, the first field is a pointer
+      // to the node, and the second field is a string representing the type of
+      // this dependency, either "ssa" or "sym".
       std::vector<std::pair<dependencyNodeEntry *, std::string>> dep_list;
       buildVertexDependencyList(*it, G, dep_list);
       // Check whether adj_v's dependency list is fulfulled
       for (auto &dep : dep_list) {
         if (dep.second == "sym") {
-          if (!dep.first->sym_token_count){
+          if (!dep.first->sym_token_count) {
             dep_fulfilled = false;
           }
-        }
-        else if (dep.second == "ssa") {
+        } else if (dep.second == "ssa") {
           if ((!dep.first->is_started()) || (!dep.first->is_done(time))) {
             dep_fulfilled = false;
           }
-        }
-        else {
+        } else {
           assert(false && "Unknown async token type");
         }
       }
