@@ -180,324 +180,6 @@ int mlir_aie_reinit_device(aie_libxaie_ctx_t *ctx) {
   return 0;
 }
 
-void mlir_aie_print_dma_status(aie_libxaie_ctx_t *ctx, int col, int row) {
-  // int col = loc.Col;
-  // int row = loc.Row;
-  u64 tileAddr = _XAie_GetTileAddr(&(ctx->DevInst), row, col);
-
-  u32 dma_mm2s_status;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001DF10, &dma_mm2s_status);
-  u32 dma_s2mm_status;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001DF00, &dma_s2mm_status);
-  u32 dma_mm2s0_control;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001DE10, &dma_mm2s0_control);
-  u32 dma_mm2s1_control;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001DE18, &dma_mm2s1_control);
-  u32 dma_s2mm0_control;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001DE00, &dma_s2mm0_control);
-  u32 dma_s2mm1_control;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001DE08, &dma_s2mm1_control);
-  u32 dma_bd0_a;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D000, &dma_bd0_a);
-  u32 dma_bd0_control;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D018, &dma_bd0_control);
-  u32 dma_bd1_a;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D020, &dma_bd1_a);
-  u32 dma_bd1_control;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D038, &dma_bd1_control);
-
-  u32 s2mm_ch0_running = dma_s2mm_status & 0x3;
-  u32 s2mm_ch1_running = (dma_s2mm_status >> 2) & 0x3;
-  u32 mm2s_ch0_running = dma_mm2s_status & 0x3;
-  u32 mm2s_ch1_running = (dma_mm2s_status >> 2) & 0x3;
-
-  xil_printf("DMA [%d, %d] mm2s_status/0ctrl/1ctrl is %08X %02X %02X, "
-             "s2mm_status/0ctrl/1ctrl is %08X %02X %02X, BD0_Addr_A is %08X, "
-             "BD0_control is %08X, BD1_Addr_A is %08X, BD1_control is %08X\n\r",
-             col, row, dma_mm2s_status, dma_mm2s0_control, dma_mm2s1_control,
-             dma_s2mm_status, dma_s2mm0_control, dma_s2mm1_control, dma_bd0_a,
-             dma_bd0_control, dma_bd1_a, dma_bd1_control);
-  for (int bd = 0; bd < 8; bd++) {
-    u32 dma_bd_addr_a;
-    XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D000 + (0x20 * bd),
-                &dma_bd_addr_a);
-    u32 dma_bd_control;
-    XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D018 + (0x20 * bd),
-                &dma_bd_control);
-    if (dma_bd_control & 0x80000000) {
-      xil_printf("BD %d valid\n\r", bd);
-      int current_s2mm_ch0 = (dma_s2mm_status >> 16) & 0xf;
-      int current_s2mm_ch1 = (dma_s2mm_status >> 20) & 0xf;
-      int current_mm2s_ch0 = (dma_mm2s_status >> 16) & 0xf;
-      int current_mm2s_ch1 = (dma_mm2s_status >> 20) & 0xf;
-
-      if (s2mm_ch0_running && bd == current_s2mm_ch0) {
-        xil_printf(" * Current BD for s2mm channel 0\n\r");
-      }
-      if (s2mm_ch1_running && bd == current_s2mm_ch1) {
-        xil_printf(" * Current BD for s2mm channel 1\n\r");
-      }
-      if (mm2s_ch0_running && bd == current_mm2s_ch0) {
-        xil_printf(" * Current BD for mm2s channel 0\n\r");
-      }
-      if (mm2s_ch1_running && bd == current_mm2s_ch1) {
-        xil_printf(" * Current BD for mm2s channel 1\n\r");
-      }
-
-      if (dma_bd_control & 0x08000000) {
-        u32 dma_packet;
-        XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D010 + (0x20 * bd),
-                    &dma_packet);
-        xil_printf("   Packet mode: %02X\n\r", dma_packet & 0x1F);
-      }
-      int words_to_transfer = 1 + (dma_bd_control & 0x1FFF);
-      int base_address = dma_bd_addr_a & 0x1FFF;
-      xil_printf("   Transfering %d 32 bit words to/from %06X\n\r",
-                 words_to_transfer, base_address);
-
-      xil_printf("   ");
-      for (int w = 0; w < 7; w++) {
-        u32 tmpd;
-        XAie_DataMemRdWord(&(ctx->DevInst), XAie_TileLoc(col, row),
-                           (base_address + w) * 4, &tmpd);
-        xil_printf("%08X ", tmpd);
-      }
-      xil_printf("\n\r");
-      if (dma_bd_addr_a & 0x40000) {
-        u32 lock_id = (dma_bd_addr_a >> 22) & 0xf;
-        xil_printf("   Acquires lock %d ", lock_id);
-        if (dma_bd_addr_a & 0x10000)
-          xil_printf("with value %d ", (dma_bd_addr_a >> 17) & 0x1);
-
-        xil_printf("currently ");
-        u32 locks;
-        XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001EF00, &locks);
-        u32 two_bits = (locks >> (lock_id * 2)) & 0x3;
-        if (two_bits) {
-          u32 acquired = two_bits & 0x1;
-          u32 value = two_bits & 0x2;
-          if (acquired)
-            xil_printf("Acquired ");
-          xil_printf(value ? "1" : "0");
-        } else
-          xil_printf("0");
-        xil_printf("\n\r");
-      }
-      if (dma_bd_control & 0x30000000) { // FIFO MODE
-        int FIFO = (dma_bd_control >> 28) & 0x3;
-        u32 dma_fifo_counter;
-        XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001DF20, &dma_fifo_counter);
-        xil_printf("   Using FIFO Cnt%d : %08X\n\r", FIFO, dma_fifo_counter);
-      }
-      u32 nextBd = ((dma_bd_control >> 13) & 0xF);
-      u32 useNextBd = ((dma_bd_control >> 17) & 0x1);
-      xil_printf("   Next BD: %d, Use next BD: %d\n\r", nextBd, useNextBd);
-    }
-  }
-}
-
-void mlir_aie_print_shimdma_status(aie_libxaie_ctx_t *ctx, int col, int row) {
-  u64 tileAddr = _XAie_GetTileAddr(&(ctx->DevInst), row, col);
-
-  u32 dma_mm2s_status;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D164, &dma_mm2s_status);
-  u32 dma_s2mm_status;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D160, &dma_s2mm_status);
-
-  u32 dma_mm2s0_control;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D150, &dma_mm2s0_control);
-  u32 dma_mm2s1_control;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D158, &dma_mm2s1_control);
-
-  u32 dma_s2mm0_control;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D140, &dma_s2mm0_control);
-  u32 dma_s2mm1_control;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D148, &dma_s2mm1_control);
-
-  u32 dma_bd0_a;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D000, &dma_bd0_a);
-  u32 dma_bd0_control;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D008, &dma_bd0_control);
-
-  u32 s2mm_ch0_running = dma_s2mm_status & 0x3;
-  u32 s2mm_ch1_running = (dma_s2mm_status >> 2) & 0x3;
-  u32 mm2s_ch0_running = dma_mm2s_status & 0x3;
-  u32 mm2s_ch1_running = (dma_mm2s_status >> 2) & 0x3;
-
-  xil_printf("DMA [%d, %d] mm2s_status/0ctrl/1ctrl is %08X %02X %02X, "
-             "s2mm_status/0ctrl/1ctrl is %08X %02X %02X, BD0_Addr_A is %08X, "
-             "BD0_control is %08X\n\r",
-             col, row, dma_mm2s_status, dma_mm2s0_control, dma_mm2s1_control,
-             dma_s2mm_status, dma_s2mm0_control, dma_s2mm1_control, dma_bd0_a,
-             dma_bd0_control);
-  for (int bd = 0; bd < 8; bd++) {
-    u32 dma_bd_addr_a;
-    XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D000 + (0x14 * bd),
-                &dma_bd_addr_a);
-    u32 dma_bd_buffer_length;
-    XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D004 + (0x14 * bd),
-                &dma_bd_buffer_length);
-    u32 dma_bd_control;
-    XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D008 + (0x14 * bd),
-                &dma_bd_control);
-    if (dma_bd_control & 0x1) {
-      xil_printf("BD %d valid\n\r", bd);
-      int current_s2mm_ch0 = (dma_s2mm_status >> 16) & 0xf;
-      int current_s2mm_ch1 = (dma_s2mm_status >> 20) & 0xf;
-      int current_mm2s_ch0 = (dma_mm2s_status >> 16) & 0xf;
-      int current_mm2s_ch1 = (dma_mm2s_status >> 20) & 0xf;
-
-      if (s2mm_ch0_running && bd == current_s2mm_ch0) {
-        xil_printf(" * Current BD for s2mm channel 0\n\r");
-      }
-      if (s2mm_ch1_running && bd == current_s2mm_ch1) {
-        xil_printf(" * Current BD for s2mm channel 1\n\r");
-      }
-      if (mm2s_ch0_running && bd == current_mm2s_ch0) {
-        xil_printf(" * Current BD for mm2s channel 0\n\r");
-      }
-      if (mm2s_ch1_running && bd == current_mm2s_ch1) {
-        xil_printf(" * Current BD for mm2s channel 1\n\r");
-      }
-      /*
-            if (dma_bd_control & 0x08000000) {
-              u32 dma_packet;
-              XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D010 + (0x14 * bd),
-                          &dma_packet);
-              xil_printf("   Packet mode: %02X\n", dma_packet & 0x1F);
-            }
-      */
-      //      int words_to_transfer = 1 + (dma_bd_control & 0x1FFF);
-      int words_to_transfer = dma_bd_buffer_length;
-      //      int base_address = dma_bd_addr_a & 0x1FFF;
-      u64 base_address =
-          (u64)dma_bd_addr_a + ((u64)((dma_bd_control >> 16) & 0xFFFF) << 32);
-      xil_printf("   Transfering %d 32 bit words to/from %06X\n\r",
-                 words_to_transfer, (unsigned int)base_address);
-
-      int use_next_bd = ((dma_bd_control >> 15) & 0x1);
-      int next_bd = ((dma_bd_control >> 11) & 0xF);
-      int lockID = ((dma_bd_control >> 7) & 0xF);
-      int enable_lock_release = ((dma_bd_control >> 6) & 0x1);
-      int lock_release_val = ((dma_bd_control >> 5) & 0x1);
-      int use_release_val = ((dma_bd_control >> 4) & 0x1);
-      int enable_lock_acquire = ((dma_bd_control >> 3) & 0x1);
-      int lock_acquire_val = ((dma_bd_control >> 2) & 0x1);
-      int use_acquire_val = ((dma_bd_control >> 1) & 0x1);
-
-      xil_printf("next_bd: %d, use_next_bd: %d\n\r", next_bd, use_next_bd);
-      xil_printf(
-          "lock: %d, acq(en: %d, val: %d, use: %d), rel(en: %d, val: %d, "
-          "use: %d)\n\r",
-          lockID, enable_lock_acquire, lock_acquire_val, use_acquire_val,
-          enable_lock_release, lock_release_val, use_release_val);
-
-      xil_printf("   ");
-      /*
-            for (int w = 0; w < 7; w++) {
-              u32 tmpd;
-              XAie_DataMemRdWord(&(ctx->DevInst), XAie_TileLoc(col, row),
-                                 (base_address + w) * 4, &tmpd);
-              xil_printf("%08X ", tmpd);
-            }
-            xil_printf("\n");
-            if (dma_bd_addr_a & 0x40000) {
-              u32 lock_id = (dma_bd_addr_a >> 22) & 0xf;
-              xil_printf("   Acquires lock %d ", lock_id);
-              if (dma_bd_addr_a & 0x10000)
-                xil_printf("with value %d ", (dma_bd_addr_a >> 17) & 0x1);
-              xil_printf("currently ");
-              u32 locks;
-              XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001EF00, &locks);
-              u32 two_bits = (locks >> (lock_id * 2)) & 0x3;
-              if (two_bits) {
-                u32 acquired = two_bits & 0x1;
-                u32 value = two_bits & 0x2;
-                if (acquired)
-                  xil_printf("Acquired ");
-                xil_printf(value ? "1" : "0");
-              } else
-                xil_printf("0");
-              xil_printf("\n");
-            }
-            if (dma_bd_control & 0x30000000) { // FIFO MODE
-              int FIFO = (dma_bd_control >> 28) & 0x3;
-              u32 dma_fifo_counter;
-              XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001DF20,
-         &dma_fifo_counter); xil_printf("   Using FIFO Cnt%d : %08X\n", FIFO,
-         dma_fifo_counter);
-            }
-      */
-    }
-  }
-}
-
-/// Print the status of a core represented by the given tile, at the given
-/// coordinates.
-void mlir_aie_print_tile_status(aie_libxaie_ctx_t *ctx, int col, int row) {
-  u64 tileAddr = _XAie_GetTileAddr(&(ctx->DevInst), row, col);
-
-  u32 status, coreTimerLow, PC, LR, SP, locks, R0, R4;
-
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x032004, &status);
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0340F8, &coreTimerLow);
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x00030280, &PC);
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x000302B0, &LR);
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x000302A0, &SP);
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001EF00, &locks);
-  u32 trace_status;
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x000140D8, &trace_status);
-
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x00030000, &R0);
-  XAie_Read32(&(ctx->DevInst), tileAddr + 0x00030040, &R4);
-  xil_printf("Core [%d, %d] status is %08X, timer is %u, PC is %08X, locks are "
-             "%08X, LR is %08X, SP is %08X, R0 is %08X,R4 is %08X\n\r",
-             col, row, status, coreTimerLow, PC, locks, LR, SP, R0, R4);
-  xil_printf("Core [%d, %d] trace status is %08X\n\r", col, row, trace_status);
-  xil_printf("Core [%d, %d] addr is %08lX\n\r", col, row, tileAddr);
-
-  for (int lock = 0; lock < 16; lock++) {
-    u32 two_bits = (locks >> (lock * 2)) & 0x3;
-    if (two_bits) {
-      xil_printf("Lock %d: ", lock);
-      u32 acquired = two_bits & 0x1;
-      u32 value = two_bits & 0x2;
-      if (acquired)
-        xil_printf("Acquired ");
-      xil_printf(value ? "1" : "0");
-      xil_printf("\n\r");
-    }
-  }
-
-  const char *core_status_strings[] = {"Enabled",
-                                       "In Reset",
-                                       "Memory Stall S",
-                                       "Memory Stall W",
-                                       "Memory Stall N",
-                                       "Memory Stall E",
-                                       "Lock Stall S",
-                                       "Lock Stall W",
-                                       "Lock Stall N",
-                                       "Lock Stall E",
-                                       "Stream Stall S",
-                                       "Stream Stall W",
-                                       "Stream Stall N",
-                                       "Stream Stall E",
-                                       "Cascade Stall Master",
-                                       "Cascade Stall Slave",
-                                       "Debug Halt",
-                                       "ECC Error",
-                                       "ECC Scrubbing",
-                                       "Error Halt",
-                                       "Core Done"};
-  xil_printf("Core Status: ");
-  for (int i = 0; i <= 20; i++) {
-    if ((status >> i) & 0x1)
-      xil_printf("%s ", core_status_strings[i]);
-  }
-  xil_printf("\n\r");
-}
-
 } // namespace xaie2
 
 xaie2::aie_libxaie_ctx_t *_xaie;
@@ -822,11 +504,6 @@ int xaie_lock_acquire_nb(u16 col, u16 row, u32 lock_id, u32 val) {
   return 1;
 }
 
-void xaie_l2_dma_init(int col) {
-  // Configure PLIO enable and up/downsizer
-  xaie::out32(xaie::getTileAddr(col, 0) + 0x00033008, 0xFF);
-}
-
 void xaie_shim_dma_init(int col) {
   // Invalidate all BDs by writing to their buffer control register
   for (int ch = 0; ch < 4; ch++) {
@@ -991,8 +668,9 @@ void handle_packet_herd_initialize(dispatch_packet_t *pkt) {
     u32 num_cols = (pkt->arg[0] >> 40) & 0xff;
 
     u32 herd_id = pkt->arg[1] & 0xffff;
-    u32 shimDMA0 = (pkt->arg[1] >> 16) & 0xff;
-    u32 shimDMA1 = (pkt->arg[1] >> 24) & 0xff;
+    //u32 shimDMA0 = (pkt->arg[1] >> 16) & 0xff;
+    //u32 shimDMA1 = (pkt->arg[1] >> 24) & 0xff;
+
     // TODO more checks on herd dimensions
     if (start_row == 0)
       start_row++;
@@ -1058,16 +736,16 @@ void handle_packet_get_info(dispatch_packet_t *pkt, uint32_t mb_id) {
   int user1 = MICROBLAZE_PVR_USER1(pvr);
   int user2 = MICROBLAZE_PVR_USER2(pvr);
 #endif
-  char name[] = {'A', 'C', 'D', 'C', '\0'};
-  char vend[] = {'A', 'M', 'D', '\0'};
+  char name[] = "ACDC";
+  char vend[] = "AMD";
 
   // TODO change this to use pkt->return_address
   switch (attribute) {
   case AIR_AGENT_INFO_NAME:
-    memcpy(addr, name, 8);
+    memcpy(addr, name, strlen(name) + 1);
     break;
   case AIR_AGENT_INFO_VENDOR_NAME:
-    memcpy(addr, vend, 8);
+    memcpy(addr, vend, strlen(vend) + 1);
     break;
   case AIR_AGENT_INFO_CONTROLLER_ID:
     *addr = (uint64_t)mb_id; // region id
@@ -1172,66 +850,6 @@ void handle_packet_sg_cdma(dispatch_packet_t *pkt) {
   air_printf("CDMA done!\n\r");
 }
 
-void handle_packet_cdma(dispatch_packet_t *pkt) {
-  // packet is in active phase
-  packet_set_active(pkt, true);
-  u32 start_row = (pkt->arg[3] >> 0) & 0xff;
-  u32 num_rows = (pkt->arg[3] >> 8) & 0xff;
-  u32 start_col = (pkt->arg[3] >> 16) & 0xff;
-  u32 num_cols = (pkt->arg[3] >> 24) & 0xff;
-  u32 op = (pkt->arg[3] >> 32) & 0xff;
-  if (op == 2) {
-    for (uint c = start_col; c < start_col + num_cols; c++) {
-      for (uint r = start_row; r < start_row + num_rows; r++) {
-        int st = xaie::in32(xaie::getTileAddr(c, r) + 0x00032004);
-        air_printf("Status col %d row %d. 0x%x\n\r", c, r, st & 0x3);
-        if ((0x3 & st) != 0x2) {
-          // air_printf("Resetting col %d row %d. 0x%lx ==
-          // 0x%lx\n\r",c,r,xaie::getTileAddr(c,r),_XAie_GetTileAddr(&(_xaie->DevInst),
-          // r, c));
-          xaie::out32(xaie::getTileAddr(c, r) + 0x00032000, 0x2);
-          air_printf("Done resetting col %d row %d.\n\r", c, r);
-        }
-      }
-    }
-  }
-  if (op == 1) {
-    for (uint c = start_col; c < start_col + num_cols; c++) {
-      air_printf("Resetting column %d.\n\r", c);
-      xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048,
-                  !!1); // 1 == ResetEnable
-      xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048,
-                  !!0); // 0 == ResetDisable
-      air_printf("Done resetting column %d.\n\r", c);
-    }
-  }
-  volatile uint32_t *cdmab = (volatile uint32_t *)(cfg_cdma_base);
-  uint32_t status = cdmab[1];
-  air_printf("CDMA raw %x idle %x\n\r", status, status & 2);
-  uint64_t daddr = (pkt->arg[0]);
-  uint64_t saddr = (pkt->arg[1]);
-  uint32_t bytes = (pkt->arg[2]);
-  air_printf("CDMA dst %lx src %lx\n\r", daddr, saddr);
-  cdmab[0] = 0x0; // unset SG mode
-  cdmab[6] = saddr & 0xffffffff;
-  cdmab[7] = saddr >> 32;
-  cdmab[8] = daddr & 0xffffffff;
-  cdmab[9] = daddr >> 32;
-  cdmab[10] = bytes;
-  while (!(cdmab[1] & 2))
-    air_printf("CDMA wait...\n\r");
-  if (op == 2) {
-    for (uint c = start_col; c < start_col + num_cols; c++) {
-      for (uint r = start_row; r <= start_row + num_rows; r++) {
-        for (int l = 0; l < 16; l++)
-          xaie::maskpoll32(xaie::getTileAddr(c, r) + 0x0001E020 + 0x80 * l, 0x1,
-                           0x1, 0);
-        xaie::out32(xaie::getTileAddr(c, r) + 0x00032000, 0x1);
-      }
-    }
-  }
-}
-
 void handle_packet_xaie_lock(dispatch_packet_t *pkt) {
   // packet is in active phase
   packet_set_active(pkt, true);
@@ -1262,19 +880,6 @@ void handle_packet_xaie_lock(dispatch_packet_t *pkt) {
     }
   }
 }
-
-#ifdef ARM_CONTROLLER
-void handle_packet_xaie_status(dispatch_packet_t *pkt, u32 type) {
-  xil_printf("Reading status! %d %d %d\n\r", type, pkt->arg[0], pkt->arg[1]);
-  if (type == 1) {
-    xaie2::mlir_aie_print_shimdma_status(_xaie, pkt->arg[0], pkt->arg[1]);
-  } else if (type == 2) {
-    xaie2::mlir_aie_print_dma_status(_xaie, pkt->arg[0], pkt->arg[1]);
-  } else if (type == 3) {
-    xaie2::mlir_aie_print_tile_status(_xaie, pkt->arg[0], pkt->arg[1]);
-  }
-}
-#endif
 
 void handle_packet_hello(dispatch_packet_t *pkt, uint32_t mb_id) {
   packet_set_active(pkt, true);
@@ -1510,7 +1115,6 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id) {
       } // End get next packet
 
       // FOUND ND packet process here
-    found:
       last_slot = slot;
       int ret = do_packet_memcpy(slot);
       if (ret)
