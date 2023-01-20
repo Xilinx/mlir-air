@@ -214,7 +214,7 @@ public:
           count_entry.second--;
         }
 
-        // Only push yield op to processed_vertices when trip count fulfilled
+        // If trip count is fulfilled
         if (!count_entry.second) {
           c.processed_vertices.push_back(it);
           trip_count_fulfilled = true;

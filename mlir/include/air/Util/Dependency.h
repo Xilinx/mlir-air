@@ -119,7 +119,8 @@ struct dependencyNodeEntry {
                       std::string detailed_description = "",
                       unsigned operationId = 0, mlir::Operation *op = nullptr,
                       dependencyGraph *nextDependencyGraph = nullptr,
-                      uint64_t start_time = 0, uint64_t end_time = 0, uint64_t sym_token_count = 0)
+                      uint64_t start_time = 0, uint64_t end_time = 0,
+                      uint64_t sym_token_count = 0)
       : asyncEventName(asyncEventName), asyncEventType(asyncEventType),
         color(color), shape(shape), detailed_description(detailed_description),
         operationId(operationId), op(op),
