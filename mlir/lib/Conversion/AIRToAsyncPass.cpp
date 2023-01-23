@@ -508,6 +508,76 @@ struct CallOpConversion : public OpConversionPattern<func::CallOp> {
   }
 };
 
+struct ChannelOpConversion : public OpConversionPattern<air::ChannelOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(air::ChannelOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    auto memrefType =
+        MemRefType::get({}, IntegerType::get(op->getContext(), 64));
+    auto name = op.getSymName();
+    rewriter.eraseOp(op);
+
+    auto ptrType = rewriter.getIntegerType(64);
+    auto initialValue =
+        mlir::DenseElementsAttr::get(mlir::RankedTensorType::get({}, ptrType),
+                                     rewriter.getIntegerAttr(ptrType, 0));
+    rewriter.create<memref::GlobalOp>(op->getLoc(), name.str(),
+                                      rewriter.getStringAttr("private"),
+                                      memrefType, initialValue, false, nullptr);
+
+    return success();
+  }
+};
+
+class ChannelGetOpConversion : public OpConversionPattern<air::ChannelGetOp> {
+public:
+  using OpConversionPattern<air::ChannelGetOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(air::ChannelGetOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value> operands;
+    auto memrefType =
+        MemRefType::get({}, IntegerType::get(op->getContext(), 64));
+    auto channelPtr = rewriter.create<memref::GetGlobalOp>(
+        op->getLoc(), memrefType, op.getChanNameAttr());
+    operands.push_back(channelPtr);
+    operands.append(adaptor.getOperands().begin(), adaptor.getOperands().end());
+    auto call = convertOpToFunctionWithTileId(op, operands, rewriter,
+                                              "air_channel_get");
+    if (call)
+      return success();
+    else
+      return failure();
+  }
+};
+
+class ChannelPutOpConversion : public OpConversionPattern<air::ChannelPutOp> {
+public:
+  using OpConversionPattern<air::ChannelPutOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(air::ChannelPutOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value> operands;
+    auto memrefType =
+        MemRefType::get({}, IntegerType::get(op->getContext(), 64));
+    auto channelPtr = rewriter.create<memref::GetGlobalOp>(
+        op->getLoc(), memrefType, op.getChanNameAttr());
+    operands.push_back(channelPtr);
+    operands.append(adaptor.getOperands().begin(), adaptor.getOperands().end());
+    auto call = convertOpToFunctionWithTileId(op, operands, rewriter,
+                                              "air_channel_put");
+    if (call)
+      return success();
+    else
+      return failure();
+  }
+};
+
 class AIRToAsyncPass : public AIRToAsyncBase<AIRToAsyncPass> {
 
 public:
@@ -555,60 +625,13 @@ public:
     RewritePatternSet air_dma_patterns(context);
 
     air_dma_patterns.add<AIRDmaMemcpyNdToMemcpyConversion, ExecuteOpConversion,
-                         WaitAllOpConversion>(context);
+                         WaitAllOpConversion, ChannelOpConversion>(context);
 
     if (failed(applyPartialConversion(module, target,
                                       std::move(air_dma_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air dialect\n");
       signalPassFailure();
     }
-
-    // Replace the PipelineStageOps first, followed by the
-    // HerdPipelineOps, then run the rest of the patterns.
-    // This avoids creating invalid intermediate code with respect
-    // to the herd->pipeline->stages nesting requirements.
-
-    // PipelineStageOp conversion
-    // RewritePatternSet air_pipe_stage_patterns(context);
-    // air_pipe_stage_patterns.insert<AIRPipeStageConversion>(context,
-    // AIRPipeStageConversion::LoweringType::AllocBuffer); if
-    // (failed(applyPartialConversion(module, target,
-    //                                   std::move(air_pipe_stage_patterns)))) {
-    //   emitError(UnknownLoc::get(context),
-    //             "error lowering air.pipeline.stage\n");
-    //   signalPassFailure();
-    // }
-
-    // // HerdPipelineOp conversion
-    // RewritePatternSet air_pipe_patterns(context);
-    // air_pipe_patterns.insert<AIRPipelineConversion>(context);
-    // if (failed(applyPartialConversion(module, target,
-    //                                   std::move(air_pipe_patterns)))) {
-    //   emitError(UnknownLoc::get(context), "error lowering air.pipeline\n");
-    //   signalPassFailure();
-    // }
-
-    // target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
-    //   return (op.getType().getMemorySpaceAsInt() == 0);
-    // });
-
-    // target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op)
-    // {
-    //   return
-    //   (op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() ==
-    //           0);
-    // });
-
-    // RewritePatternSet air_mem_patterns(context);
-    // air_mem_patterns
-    //     .add<AllocToCpuConversion, DeallocToCpuConversion>(
-    //         context);
-
-    // if (failed(applyPartialConversion(module, target,
-    //                                   std::move(air_mem_patterns)))) {
-    //   emitError(UnknownLoc::get(context), "error lowering air dialect\n");
-    //   signalPassFailure();
-    // }
 
     RewritePatternSet air_herd_patterns(context);
     air_herd_patterns.add<AIRHerdToCpuConversion>(context);
@@ -666,8 +689,9 @@ public:
 
     typeConversionPatterns
         .add<ScfYieldOpConversion, ScfForOpConversion, AsyncCallOpConversion,
-             AllocOpConversion, DeallocOpConversion, CallOpConversion>(
-            converter, context);
+             AllocOpConversion, DeallocOpConversion, CallOpConversion,
+             ChannelGetOpConversion, ChannelPutOpConversion>(converter,
+                                                             context);
 
     if (failed(applyPartialConversion(module, target,
                                       std::move(typeConversionPatterns)))) {
