@@ -1,7 +1,7 @@
 //===- transform-ops.mlir --------------------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2022, Xilinx Inc. All rights reserved.
-// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2022-2023, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
@@ -36,5 +36,94 @@ transform.with_pdl_patterns {
     // CHECK: = transform.air.get_partition_for
     %1 = transform.air.get_partition_for %0
     transform.test_print_remark_at_operand %1, "found partition" : !pdl.operation
+  }
+}
+
+// -----
+
+// CHECK-LABEL: @air_fuse_into
+// CHECK: scf.parallel
+// CHECK: linalg.fill
+// CHECK: linalg.matmul
+#map0 = affine_map<(d0, d1) -> (d0, d1)>
+func.func @air_fuse_into(%A: memref<128x128xf32>, %B: memref<128x128xf32>, %D: memref<128x128xf32>) -> memref<128x128xf32>
+{
+  %cst = arith.constant 0.000000e+00 : f32
+  linalg.fill ins(%cst : f32) outs(%D : memref<128x128xf32>)
+  linalg.matmul ins(%A, %B : memref<128x128xf32>, memref<128x128xf32>) outs(%D : memref<128x128xf32>)
+  return %D : memref<128x128xf32>
+}
+
+transform.sequence failures(propagate) {
+^bb1(%arg1: !pdl.operation):
+  %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1
+  %fill = transform.structured.match ops{["linalg.fill"]} in %arg1
+  %matmul_1, %loops_1:2 = transform.air.linalg_tile %matmul [32, 32, 0]
+  %fill_1 = transform.air.fuse_into_containing_op %fill into %loops_1#0
+}
+
+// -----
+
+// CHECK-LABEL @air_par_to_launch
+// CHECK: air.launch
+func.func @air_par_to_launch() {
+  %c0 = arith.constant 0 : index
+  %c32 = arith.constant 4 : index
+  %c128 = arith.constant 128 : index
+  scf.parallel (%arg3, %arg4) = (%c0, %c0) to (%c128, %c128) step (%c32, %c32) {
+    %alloc = memref.alloc() : memref<1xi32>
+    %c = arith.constant 0 : i32
+    linalg.fill ins(%c : i32) outs(%alloc : memref<1xi32>)
+    scf.yield
+  }
+  return
+}
+
+transform.with_pdl_patterns {
+^bb0(%arg0: !pdl.operation):
+  pdl.pattern @match_par : benefit(1) {
+    %args = pdl.operands
+    %results = pdl.types
+    %op = pdl.operation "scf.parallel"(%args : !pdl.range<value>) -> (%results : !pdl.range<type>)
+    pdl.rewrite %op with "transform.dialect"
+  }
+
+  sequence %arg0 : !pdl.operation failures(propagate) {
+  ^bb1(%arg1 : !pdl.operation):
+      %0 = pdl_match @match_par in %arg1 : (!pdl.operation) -> !pdl.operation
+      %1 = transform.air.par_to_launch %0
+  }
+}
+
+// -----
+
+// CHECK-LABEL @air_par_to_herd
+// CHECK: air.herd
+func.func @air_par_to_herd() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  scf.parallel (%a) = (%c0) to (%c4) step (%c1) {
+    %alloc = memref.alloc() : memref<1xi32>
+    %c = arith.constant 0 : i32
+    linalg.fill ins(%c : i32) outs(%alloc : memref<1xi32>)
+    scf.yield
+  }
+  return
+}
+
+transform.with_pdl_patterns {
+^bb0(%arg0: !pdl.operation):
+  pdl.pattern @match_par : benefit(1) {
+    %args = pdl.operands
+    %results = pdl.types
+    %op = pdl.operation "scf.parallel"(%args : !pdl.range<value>) -> (%results : !pdl.range<type>)
+    pdl.rewrite %op with "transform.dialect"
+  }
+
+  sequence %arg0 : !pdl.operation failures(propagate) {
+  ^bb1(%arg1 : !pdl.operation):
+      %0 = pdl_match @match_par in %arg1 : (!pdl.operation) -> !pdl.operation
+      %1 = transform.air.par_to_herd %0
   }
 }
