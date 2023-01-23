@@ -1,3 +1,5 @@
+// Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
 
 // RUN: air-opt %s -air-pipeline-reduce='pipeline-depth=2 tile-size=16' | FileCheck %s
 

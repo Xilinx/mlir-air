@@ -830,6 +830,9 @@ static std::string createChannelName(ModuleOp module) {
   return cname;
 }
 
+// Split a linalg reduction into 'pipeline_depth' consecutive
+// stages, each one feeding partial reductions to the next stage.
+// Stages are mapped to Nx1 or Nx1 herd.
 FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
     PatternRewriter &b, linalg::LinalgOp op,
     ArrayRef<int64_t> static_tile_sizes, unsigned int pipeline_depth,
@@ -865,13 +868,16 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
   Value y = herd.getIds()[1];
 
   auto nLoops = op.getNumLoops();
+  auto tileSizes = static_tile_sizes.take_front(nLoops);
+
   SmallVector<OpFoldResult, 4> tileSizeVector;
-  auto zero = b.create<arith::ConstantIndexOp>(loc, 0);
-  for (auto s : static_tile_sizes)
+  for (auto s : tileSizes)
     tileSizeVector.push_back(
         b.create<arith::ConstantIndexOp>(loc, s).getResult());
-  if (tileSizeVector.size() < nLoops)
+  if (tileSizeVector.size() < nLoops) {
+    auto zero = b.create<arith::ConstantIndexOp>(loc, 0);
     tileSizeVector.append(nLoops - tileSizeVector.size(), zero.getResult());
+  }
 
   auto allShapeSizes = op.createFlatListOfOperandDims(b, loc);
   AffineMap shapeSizesToLoopsMap = op.getShapesToLoopsMap();
@@ -882,8 +888,8 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
                                                allShapeSizes);
 
   SmallVector<OpFoldResult> tileIds;
-  for (int i = 0, e = static_tile_sizes.size(); i < e; i++) {
-    if (static_tile_sizes[i] == 0)
+  for (auto s : tileSizes) {
+    if (s == 0)
       continue;
     AffineExpr d0 = b.getAffineDimExpr(0);
     auto map = AffineMap::get(1, 0, d0 * s);
@@ -898,10 +904,12 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
   unsigned int resultIdx = 0;
   for (OpOperand *opOperand : op.getDpsInitOperands()) {
     resultIdx = opOperand->getOperandNumber();
+    break;
   }
 
   Value firstOutputOperand = tiledOperands[resultIdx];
   air::ChannelOp inputChannel = nullptr;
+  SmallVector<air::ChannelOp> channels(pipeline_depth, nullptr);
   for (unsigned int i = 0; i < pipeline_depth; i++) {
     OpBuilder::InsertionGuard pipeline_guard(b);
     bool last_stage = i == pipeline_depth - 1;
@@ -919,7 +927,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
     Block *stageBlock = aif.getBody();
     b.setInsertionPointToStart(stageBlock);
 
-    if (inputChannel) {
+    if (i) {
       auto ty = tiledOperands[resultIdx].getType().cast<MemRefType>();
       auto alloc = b.create<memref::AllocOp>(
           loc, MemRefType::get(ty.getShape(), ty.getElementType(), AffineMap(),
@@ -931,7 +939,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
       SmallVector<Value> channel_idx;
       SmallVector<Value> deps;
       SmallVector<Type> tys;
-      b.create<air::ChannelGetOp>(loc, tys, deps, inputChannel.getSymName(),
+      b.create<air::ChannelGetOp>(loc, tys, deps, channels[i - 1].getSymName(),
                                   channel_idx, tiledOperands[resultIdx],
                                   src_offsets, src_sizes, src_strides);
     }
@@ -994,7 +1002,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
       b.create<air::ChannelPutOp>(
           loc, tys, deps, FlatSymbolRefAttr::get(ctx, cname), channel_idx, mref,
           src_offsets, src_sizes, src_strides);
-      inputChannel = channel_op;
+      channels[i] = channel_op;
     }
     // if (erased) erased.erase();
   }
@@ -1684,10 +1692,9 @@ transform::PipelineReduceOp::applyToOne(linalg::LinalgOp target,
                                         SmallVectorImpl<Operation *> &results,
                                         transform::TransformState &state) {
   SimpleRewriter rewriter(getContext());
-  SmallVector<int64_t> tile_sizes;
-  auto result = pipelineReduceLinalgOp(rewriter, target,
-                                       extractFromI64ArrayAttr(getTileSizes()),
-                                       4, "horiz", false);
+  auto result = pipelineReduceLinalgOp(
+      rewriter, target, extractFromI64ArrayAttr(getTileSize()),
+      getPipelineDepth(), getDirection().str(), getPromote());
   if (failed(result))
     return emitDefiniteFailure() << "Failed";
   results.push_back(result->op);
