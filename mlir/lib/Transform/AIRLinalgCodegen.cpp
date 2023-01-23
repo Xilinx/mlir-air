@@ -885,10 +885,12 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
   for (int i = 0, e = static_tile_sizes.size(); i < e; i++) {
     if (static_tile_sizes[i] == 0)
       continue;
-    tileIds.push_back(b.create<arith::MulIOp>(
-                           loc, isHoriz ? herd.getIds()[0] : herd.getIds()[1],
-                           tileSizeVector[i].get<Value>())
-                          .getResult());
+    AffineExpr d0 = b.getAffineDimExpr(0);
+    auto map = AffineMap::get(1, 0, d0 * s);
+    tileIds.push_back(
+        b.create<AffineApplyOp>(loc, map,
+                                isHoriz ? herd.getIds()[0] : herd.getIds()[1])
+            .getResult());
   }
   SmallVector<Value, 4> tiledOperands = linalg::makeTiledShapes(
       b, loc, op, args, tileIds, tileSizeVector, sizeBounds, true);
