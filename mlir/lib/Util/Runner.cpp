@@ -503,9 +503,8 @@ public:
   }
 
   // Check if a dependence has been fulfilled
-  bool
-  checkDependenceFulfillment(std::pair<dependencyNodeEntry *, std::string> dep,
-                             uint64_t time) {
+  bool checkEachDependenceFulfillment(
+      std::pair<dependencyNodeEntry *, std::string> dep, uint64_t time) {
     if (dep.second == "sym") {
       if (!dep.first->sym_token_count) {
         return false;
@@ -522,6 +521,27 @@ public:
 
   std::string to_string(Operation *op) {
     return op->getName().getStringRef().str();
+  }
+
+  // Check if all dependencies of an async op have been fulfilled
+  bool checkAllDependenciesFulfillment(
+      std::vector<std::pair<dependencyNodeEntry *, std::string>> dep_list,
+      uint64_t time, bool isBlocking) {
+    bool dep_fulfilled = true;
+    if (isBlocking) {
+      dep_fulfilled = true;
+      for (auto &dep : dep_list) {
+        dep_fulfilled =
+            dep_fulfilled && checkEachDependenceFulfillment(dep, time);
+      }
+    } else {
+      dep_fulfilled = false;
+      for (auto &dep : dep_list) {
+        dep_fulfilled =
+            dep_fulfilled || checkEachDependenceFulfillment(dep, time);
+      }
+    }
+    return dep_fulfilled;
   }
 
   std::string to_string(dependencyNodeEntry &c) { return to_string(c.op); }
@@ -570,16 +590,12 @@ public:
       std::vector<std::pair<dependencyNodeEntry *, std::string>> dep_list;
       buildVertexDependencyList(*it, G, dep_list);
       // Check whether adj_v's dependency list is fulfulled
-      for (auto &dep : dep_list) {
-        if (dyn_cast<scf::YieldOp>(G[*it].op)) {
-          // If op is non-blocking
-          dep_fulfilled =
-              dep_fulfilled || checkDependenceFulfillment(dep, time);
-        } else {
-          // Else if op is blocking
-          dep_fulfilled =
-              dep_fulfilled && checkDependenceFulfillment(dep, time);
-        }
+      if (dyn_cast<scf::YieldOp>(G[*it].op)) {
+        // If op is non-blocking
+        dep_fulfilled = checkAllDependenciesFulfillment(dep_list, time, false);
+      } else {
+        // Else (op is blocking)
+        dep_fulfilled = checkAllDependenciesFulfillment(dep_list, time, true);
       }
       if (dep_fulfilled) {
         next_vertex_set.push_back(*it);
@@ -1091,8 +1107,8 @@ private:
 
       // Check each token's dependence fulfillment at scf.yield
       std::string node_type = "ssa";
-      if (checkDependenceFulfillment(std::make_pair(&dep_node, node_type),
-                                     time)) {
+      if (checkEachDependenceFulfillment(std::make_pair(&dep_node, node_type),
+                                         time)) {
         token_ids.push_back(token_id);
       }
 
