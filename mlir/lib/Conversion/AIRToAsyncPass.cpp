@@ -143,37 +143,12 @@ public:
   }
 };
 
-static func::CallOp
-convertOpToFunctionWithTileId(Operation *op, ArrayRef<Value> operands,
-                              ConversionPatternRewriter &rewriter,
-                              StringRef fnName) {
+static func::CallOp convertOpToFunction(Operation *op, ArrayRef<Value> operands,
+                                        ConversionPatternRewriter &rewriter,
+                                        StringRef fnName) {
   auto loc = op->getLoc();
   SmallVector<Value, 16> callops;
   SmallVector<Type, 1> retTys{};
-
-  auto idTy = IntegerType::get(op->getContext(), 32);
-  if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
-    callops.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
-  }
-
-  air::HerdOp launch = op->getParentOfType<air::HerdOp>();
-  if (!launch) {
-    AffineForOp afo = op->getParentOfType<AffineForOp>();
-    while (afo && !afo->getAttr("air.herd"))
-      afo = afo->getParentOfType<AffineForOp>();
-    if (afo) {
-      callops.push_back(afo.getInductionVar());
-      afo = afo->getParentOfType<AffineForOp>();
-    }
-    while (afo && !afo->getAttr("air.herd"))
-      afo = afo->getParentOfType<AffineForOp>();
-    if (afo)
-      callops.push_back(afo.getInductionVar());
-  } else {
-    auto tileIds = launch.getIds();
-    callops.push_back(tileIds[0]);
-    callops.push_back(tileIds[1]);
-  }
 
   SmallVector<Value, 4> dependencies;
   for (auto o : operands) {
@@ -243,6 +218,41 @@ convertOpToFunctionWithTileId(Operation *op, ArrayRef<Value> operands,
 
   rewriter.replaceOp(op, results);
   return call;
+}
+
+static func::CallOp
+convertOpToFunctionWithTileId(Operation *op, ArrayRef<Value> operands,
+                              ConversionPatternRewriter &rewriter,
+                              StringRef fnName) {
+  auto loc = op->getLoc();
+  SmallVector<Value, 16> callops;
+
+  auto idTy = IntegerType::get(op->getContext(), 32);
+  if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
+    callops.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
+  }
+
+  air::HerdOp launch = op->getParentOfType<air::HerdOp>();
+  if (!launch) {
+    AffineForOp afo = op->getParentOfType<AffineForOp>();
+    while (afo && !afo->getAttr("air.herd"))
+      afo = afo->getParentOfType<AffineForOp>();
+    if (afo) {
+      callops.push_back(afo.getInductionVar());
+      afo = afo->getParentOfType<AffineForOp>();
+    }
+    while (afo && !afo->getAttr("air.herd"))
+      afo = afo->getParentOfType<AffineForOp>();
+    if (afo)
+      callops.push_back(afo.getInductionVar());
+  } else {
+    auto tileIds = launch.getIds();
+    callops.push_back(tileIds[0]);
+    callops.push_back(tileIds[1]);
+  }
+
+  callops.append(operands.begin(), operands.end());
+  return convertOpToFunction(op, callops, rewriter, fnName);
 }
 
 class AIRDmaMemcpyNdToMemcpyConversion
@@ -546,8 +556,7 @@ public:
         op->getLoc(), memrefType, op.getChanNameAttr());
     operands.push_back(channelPtr);
     operands.append(adaptor.getOperands().begin(), adaptor.getOperands().end());
-    auto call = convertOpToFunctionWithTileId(op, operands, rewriter,
-                                              "air_channel_get");
+    auto call = convertOpToFunction(op, operands, rewriter, "air_channel_get");
     if (call)
       return success();
     else
@@ -569,8 +578,7 @@ public:
         op->getLoc(), memrefType, op.getChanNameAttr());
     operands.push_back(channelPtr);
     operands.append(adaptor.getOperands().begin(), adaptor.getOperands().end());
-    auto call = convertOpToFunctionWithTileId(op, operands, rewriter,
-                                              "air_channel_put");
+    auto call = convertOpToFunction(op, operands, rewriter, "air_channel_put");
     if (call)
       return success();
     else

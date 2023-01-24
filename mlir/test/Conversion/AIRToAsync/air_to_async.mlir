@@ -121,3 +121,42 @@ func.func @herd_1(%arg0: i32, %arg1: i32) -> () {
   air.wait_all [%e2]
   return
 }
+
+// CHECK: memref.global "private" @channel_0 : memref<i64> = dense<0>
+// CHECK-LABEL: channel_get_put_0
+// CHECK: memref.get_global @channel_0 : memref<i64>
+// CHECK: %[[T0:.*]] = async.execute {
+// CHECK-NEXT: call @air_channel_get_M0I64_M0D2F32
+// CHECK-NEXT: async.yield
+// CHECK: async.await %[[T0]] : !async.token
+// CHECK: call @air_channel_put_M0I64_M0D2F32_I64_I64_I64_I64_I64_I64(
+air.channel @channel_0 [1]
+func.func @channel_get_put_0(%arg0 : memref<16x16xf32>, %arg1 : memref<16x16xf32>) -> () {
+  %alloc = memref.alloc() : memref<8x8xf32>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c8 = arith.constant 8 : index
+  %c16 = arith.constant 16 : index
+  %e = air.channel.get async @channel_0[] (%alloc[][][]) : (memref<8x8xf32>)
+  air.channel.put [%e] @channel_0[] (%arg0[%c0, %c0] [%c8, %c8] [%c16, %c1]) : (memref<16x16xf32>)
+  return
+}
+
+// CHECK: memref.global "private" @channel_1 : memref<i64> = dense<0>
+// CHECK-LABEL: channel_get_put_3_3
+// CHECK: memref.get_global @channel_1 : memref<i64>
+// CHECK: call @air_channel_get_M0I64_I64_I64_M0D2F32
+// CHECK: call @air_channel_put_M0I64_I64_I64_M0D2F32_I64_I64_I64_I64_I64_I64
+air.channel @channel_1 [3,3]
+func.func @channel_get_put_3_3(%arg0 : memref<9x9xf32>) -> () {
+  %c3 = arith.constant 1 : index
+  air.herd tile (%x, %y) in (%sx=%c3, %sy=%c3) args (%op0 = %arg0) :  memref<9x9xf32> {
+    %alloc = memref.alloc() : memref<3x3xf32>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c9 = arith.constant 9 : index
+    air.channel.get @channel_1[%x, %y] (%alloc[][][]) : (memref<3x3xf32>)
+    air.channel.put @channel_1[%x, %y] (%op0[%c0, %c0] [%sx, %sy] [%c9, %c1]) : (memref<9x9xf32>)
+  }
+  return
+}
