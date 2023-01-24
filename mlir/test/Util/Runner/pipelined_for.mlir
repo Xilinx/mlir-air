@@ -67,13 +67,16 @@ module {
           }
           %5 = air.channel.get async [%async_token_13]  @channel_0[%arg9, %arg10] (%results_14[] [] []) : (memref<128x128xbf16, 1>)
           %6 = air.channel.put async [%5]  @channel_1[%arg9, %arg10] (%results_14[] [] []) : (memref<128x128xbf16, 1>)
-          %async_token_15, %results_16 = air.execute [%arg13] -> (memref<128x128xbf16, 1>) {
+          %async_token_15 = air.execute [%6] {
+            memref.dealloc %results_14 : memref<128x128xbf16, 1>
+          }
+          %async_token_16, %results_17 = air.execute [%arg13] -> (memref<128x128xbf16, 1>) {
             %alloc = memref.alloc() : memref<128x128xbf16, 1>
             air.execute_terminator %alloc : memref<128x128xbf16, 1>
           }
-          %7 = air.channel.get async [%async_token_15]  @channel_1[%arg9, %arg10] (%results_16[] [] []) : (memref<128x128xbf16, 1>)
-          %async_token_17 = air.execute [%7] {
-            linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%results_16 : memref<128x128xbf16, 1>) outs(%results_12 : memref<128x128xbf16, 1>) {
+          %7 = air.channel.get async [%async_token_16]  @channel_1[%arg9, %arg10] (%results_17[] [] []) : (memref<128x128xbf16, 1>)
+          %async_token_18 = air.execute [%7] {
+            linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%results_17 : memref<128x128xbf16, 1>) outs(%results_12 : memref<128x128xbf16, 1>) {
             ^bb0(%in: bf16, %out: bf16):
               %8 = math.sqrt %cst_8 : bf16
               %9 = arith.divf %in, %8 : bf16
@@ -84,7 +87,10 @@ module {
               linalg.yield %13 : bf16
             }
           }
-          scf.yield %6, %async_token_17 : !air.async.token, !air.async.token
+          %async_token_19 = air.execute [%async_token_18] {
+            memref.dealloc %results_17 : memref<128x128xbf16, 1>
+          }
+          scf.yield %6, %async_token_18 : !air.async.token, !air.async.token
         }
         air.partition_terminator
       }
