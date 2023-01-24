@@ -63,9 +63,9 @@ struct runnerNode {
   // thread id
   std::vector<std::pair<Graph::vertex_descriptor, unsigned>> wavefront;
   std::vector<Graph::vertex_descriptor> processed_vertices;
-  // Each entry is an std::pair. First element is for op's id, and second
-  // element is counter
-  std::vector<std::pair<unsigned, unsigned>> loop_trip_count;
+  // Each entry is an std::tuple. First element is for op's id, second element
+  // is the loop's async token id, and third element is trip counter.
+  std::vector<std::tuple<unsigned, unsigned, unsigned>> loop_trip_count;
   std::deque<runnerNode> sub_runner_nodes;
 
   // Private wavefront of each runner node, reserved to interface with resource
@@ -201,38 +201,70 @@ public:
     c.processed_vertices.push_back(it);
   }
 
-  void executeOp(scf::YieldOp op, scf::ForOp for_op, runnerNode &c,
-                 Graph::vertex_descriptor it) {
+  void executeOp(scf::YieldOp op, uint64_t time, scf::ForOp for_op,
+                 runnerNode &c, Graph::vertex_descriptor it) {
     Graph &G = c.ctrl_g->g;
+
+    // Get async tokens ready to iterate at scf.yield
+    std::vector<unsigned> token_ids;
+    getReadyTokensAtScfYield(token_ids, op, time, G);
 
     // For loop trip counter
     bool trip_count_fulfilled = false;
     for (auto &count_entry : c.loop_trip_count) {
-      if (count_entry.first == (unsigned)getIdAttr(for_op.getOperation())) {
-        // Decrement loop trip count
-        if (count_entry.second) {
-          count_entry.second--;
-        }
-
-        // If trip count is fulfilled
-        if (!count_entry.second) {
-          c.processed_vertices.push_back(it);
-          trip_count_fulfilled = true;
+      if (std::get<0>(count_entry) ==
+          (unsigned)getIdAttr(for_op.getOperation())) {
+        for (auto token_id : token_ids) {
+          // Decrement loop trip count
+          if (std::get<1>(count_entry) == token_id &&
+              std::get<2>(count_entry)) {
+            std::get<2>(count_entry)--;
+          }
         }
       }
     }
 
-    // If trip count unfulfilled, then iterate.
-    // Clear start_time and end_time of all ops in loop body.
-    // From processed_vertices, remove all ops which are in loop body.
-    if (!trip_count_fulfilled) {
-      // Get for op vertex
-      auto for_v =
-          canonicalizer.getVertexFromOp(for_op.getOperation(), dep_ctx, "front")
-              .first;
-      auto adj_set = boost::adjacent_vertices(for_v, G);
-      for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
-        resetGraphBetweenTwoVertices(*adj_v, it, G, c);
+    // If all async tokens' trip counts are fulfilled
+    bool allAsyncTokensFulfilled = true;
+    for (auto &count_entry : c.loop_trip_count) {
+      if (std::get<0>(count_entry) ==
+          (unsigned)getIdAttr(for_op.getOperation())) {
+        if (std::get<2>(count_entry)) {
+          allAsyncTokensFulfilled = false;
+        }
+      }
+    }
+
+    if (allAsyncTokensFulfilled) {
+      c.processed_vertices.push_back(it);
+      trip_count_fulfilled = true;
+    } else {
+      // If trip count unfulfilled, then iterate.
+      // Clear start_time and end_time of all ops in loop body.
+      // From processed_vertices, remove all ops which are in loop body.
+      for (auto token_id : token_ids) {
+        // Get the yielded token in the next loop iteration (at the beginning of
+        // the loop)
+        auto next_iter_token = for_op.getRegionIterArgs()[token_id];
+        assert(next_iter_token);
+
+        // Search for vertices corresponding to the next-iteration incarnations
+        // of this token
+        auto for_v =
+            canonicalizer
+                .getVertexFromOp(for_op.getOperation(), dep_ctx, "front")
+                .first;
+        auto adj_set = boost::adjacent_vertices(for_v, G);
+        for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
+          auto adj_op = G[*adj_v].op;
+          assert(adj_op);
+          // Reset graph wrt to this token, to start the next loop iteration
+          for (auto d : adj_op->getOperands()) {
+            if (d == next_iter_token) {
+              resetGraphBetweenTwoVertices(*adj_v, it, G, c);
+            }
+          }
+        }
       }
     }
   }
@@ -249,9 +281,11 @@ public:
     // (ubv - lbv) / stepv, fast round up
     int64_t trip_count = (ubv - lbv + stepv - 1) / stepv;
 
-    // Update for loop trip count
-    c.loop_trip_count.push_back(
-        std::make_pair(getIdAttr(op.getOperation()), trip_count));
+    // Update for loop trip count per async token
+    for (unsigned i = 0; i < op.getRegionIterArgs().size(); i++) {
+      c.loop_trip_count.push_back(
+          std::make_tuple(getIdAttr(op.getOperation()), i, trip_count));
+    }
 
     c.processed_vertices.push_back(it);
   }
@@ -301,7 +335,7 @@ public:
       auto Op = dyn_cast<scf::YieldOp>(node.op);
       auto parent_for_op =
           dyn_cast<scf::ForOp>(getScfParentOpFromYieldOp<scf::ForOp>(Op));
-      executeOp(Op, parent_for_op, c, it);
+      executeOp(Op, time, parent_for_op, c, it);
     } else if (auto Op = dyn_cast<air::ChannelPutOp>(node.op)) {
       executeOp(Op, c, it);
     } else if (auto Op = dyn_cast<air::ChannelGetOp>(node.op)) {
@@ -468,6 +502,24 @@ public:
     }
   }
 
+  // Check if a dependence has been fulfilled
+  bool
+  checkDependenceFulfillment(std::pair<dependencyNodeEntry *, std::string> dep,
+                             uint64_t time) {
+    if (dep.second == "sym") {
+      if (!dep.first->sym_token_count) {
+        return false;
+      }
+    } else if (dep.second == "ssa") {
+      if ((!dep.first->is_started()) || (!dep.first->is_done(time))) {
+        return false;
+      }
+    } else {
+      assert(false && "Unknown async token type");
+    }
+    return true;
+  }
+
   std::string to_string(Operation *op) {
     return op->getName().getStringRef().str();
   }
@@ -519,16 +571,14 @@ public:
       buildVertexDependencyList(*it, G, dep_list);
       // Check whether adj_v's dependency list is fulfulled
       for (auto &dep : dep_list) {
-        if (dep.second == "sym") {
-          if (!dep.first->sym_token_count) {
-            dep_fulfilled = false;
-          }
-        } else if (dep.second == "ssa") {
-          if ((!dep.first->is_started()) || (!dep.first->is_done(time))) {
-            dep_fulfilled = false;
-          }
+        if (dyn_cast<scf::YieldOp>(G[*it].op)) {
+          // If op is non-blocking
+          dep_fulfilled =
+              dep_fulfilled || checkDependenceFulfillment(dep, time);
         } else {
-          assert(false && "Unknown async token type");
+          // Else if op is blocking
+          dep_fulfilled =
+              dep_fulfilled && checkDependenceFulfillment(dep, time);
         }
       }
       if (dep_fulfilled) {
@@ -934,7 +984,7 @@ private:
           // Clear for loop trip count from runner node's cache
           for (auto it = c.loop_trip_count.begin();
                it != c.loop_trip_count.end(); it++) {
-            if (it->first == (unsigned)getIdAttr(G[v].op)) {
+            if (std::get<0>(*it) == (unsigned)getIdAttr(G[v].op)) {
               c.loop_trip_count.erase(it);
               break;
             }
@@ -1026,6 +1076,31 @@ private:
     wavefront.push_back(std::make_pair(v, tid));
   }
 
+  // Get a vector of async tokens which are ready to advance to the next loop
+  // iteration at scf.yield
+  void getReadyTokensAtScfYield(std::vector<unsigned> &token_ids,
+                                scf::YieldOp op, uint64_t time, Graph &G) {
+
+    unsigned token_id = 0;
+    for (auto operand : op->getOperands()) {
+      // With scf.for possibly having multiple tokens, check for the token ids
+      // which are ready to advance to the next iteration
+      auto dep_op = operand.getDefiningOp();
+      auto dep_entry = canonicalizer.getVertexFromOp(dep_op, dep_ctx, "front");
+      auto &dep_node = G[dep_entry.first];
+
+      // Check each token's dependence fulfillment at scf.yield
+      std::string node_type = "ssa";
+      if (checkDependenceFulfillment(std::make_pair(&dep_node, node_type),
+                                     time)) {
+        token_ids.push_back(token_id);
+      }
+
+      token_id++;
+    }
+  }
+
+  // Util. functions to estimate event latency
   uint64_t getTensorVolume(const mlir::ShapedType ty) {
 
     if (!ty.hasRank())
