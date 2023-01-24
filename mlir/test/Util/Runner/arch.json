@@ -41,6 +41,11 @@
         "bytes_per_second": 100000000000,
         "dst": 1,
         "src": 1
+        },
+        {
+        "bytes_per_second": 100000000000,
+        "dst": 2,
+        "src": 2
         }
     ],
     "kernels": {
