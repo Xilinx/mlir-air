@@ -6,6 +6,7 @@
 ```
   cmake 3.20.6
   clang/llvm 10+
+  lld
   python 3.8.x
   ninja 1.10.0
   Xilinx Vitis 2021.2 
@@ -29,9 +30,15 @@ In addition the following packages maybe useful:
   Xilinx aienginev2 library from https://github.com/Xilinx/embeddedsw
 
 ```
-Vivado and Vitis are used to build the platforms for available Xilinx cards with AIEs (VCK190 and VCK5000). Vitis also contains the AIE single core compiler xchesscc. The aienginev2 library is a driver backend used to configure the AIE array and used in building the AIR runtime.
+Vivado and Vitis are used to build the platforms for available Xilinx cards with AIEs (VCK190 and VCK5000). Vitis also contains the AIE single core compiler xchesscc. The aienginev2 library is a driver backend used to configure the AIE array and used in building the AIR runtime. The aietools single core compiler and aienginev2 library are required to build binaries that run on AIE hardware.
 
-Note that you do not need the above additional Xilinx packages to make use of the AIR compiler passes. 
+NOTE: using the Vitis recommended settings64.sh script to set up your environement can cause tool conflicts. Setup your environment in the following order for aietools and Vitis:
+
+```
+export PATH=$PATH:<Vitis_install_path>/Vitis/2022.2/aietools/bin:<Vitis_install_path>/Vitis/2022.2/bin
+```
+
+NOTE: that you do not need the above additional Xilinx packages to make use of the AIR compiler passes. 
 
 Building mlir-air requires several other open source packages:
   - [mlir](https://github.com/llvm/llvm-project/tree/main/mlir)
@@ -40,9 +47,15 @@ Building mlir-air requires several other open source packages:
 
 ## Building external projects on X86
 
-This mlir-air repository should already be cloned locally. 
+The mlir-air repository should be cloned locally before beginning. 
 
-First, clone and build LLVM, with the ability to target AArch64 as a cross-compiler, and with MLIR enabled. In addition, we make some common build optimizations to use a linker ('lld' or 'gold') other than 'ld' (which tends to be quite slow on large link jobs) and to link against libLLVM.so and libClang so. You may find that other options are also useful. Note that due to changing MLIR APIs, only a particular revision is expected to work.
+First, run utils/setup_python_packages.sh to setup the prerequisite python packages. This script creates and installs the python packages listed in utils/requirements.txt in a virtual python environment called 'sandbox'.
+
+```
+source utils/setup_python_packages.sh
+```
+
+Next, clone and build LLVM, with the ability to target AArch64 as a cross-compiler, and with MLIR enabled. In addition, we make some common build optimizations to use a linker ('lld' or 'gold') other than 'ld' (which tends to be quite slow on large link jobs) and to link against libLLVM.so and libClang so. You may find that other options are also useful. Note that due to changing MLIR APIs, only a particular revision is expected to work.
 
 To clone llvm and cmakeModules, see utils/clone-llvm.sh for the correct commithash. We point LLVM and subsequent tools to a common installation directory. 
 
@@ -52,12 +65,11 @@ cd utils
 ./build-llvm-local.sh llvm build ../../install
 ```
 
-Next, clone and build MLIR-AIE with absolute paths to the sysroot, llvm, and cmakeModules repositories. Again, we use a common installation directory.
+Next, clone and build MLIR-AIE with paths to llvm, and cmakeModules repositories. Again, we use a common installation directory.
 
 ```
-git clone https://github.com/Xilinx/cmakeModules.git
 ./clone-mlir-aie.sh
-./build-mlir-aie-local.sh $SYSROOT /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/cmakeModules mlir-aie build ../../install
+./build-mlir-aie-local.sh llvm cmakeModules/cmakeModulesXilinx mlir-aie build ../../install
 ```
 
 The MLIR-AIE tools will be able to generate binaries targetting AIEngines.
@@ -95,7 +107,7 @@ export LD_LIBRARY_PATH=/opt/xaiengine/lib:${LD_LIBRARY_PATH}
 Use the following command to build the AIR tools to compile on x86 for PCIe cards (VCK5000):
 
 ```
-./build-mlir-air-pcie.sh /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/mlir-aie ../../mlir-air build install
+./build-mlir-air-pcie.sh utils/llvm utils/cmakeModules utils/mlir-aie build install
 ```
 
 ## Environment setup
