@@ -17,6 +17,9 @@
 
 export HASH=75fd6976fa8ed680b7f10b7baf1d29478732ae53
 
+git clone --depth 1 https://github.com/Xilinx/cmakeModules cmakeModules/cmakeModulesXilinx
+export CMAKE_MODULE_PATH=`pwd`/cmakeModules/cmakeModulesXilinx
+
 git clone --depth 1 https://github.com/Xilinx/mlir-aie.git mlir-aie
 pushd mlir-aie
 git fetch --depth=1 origin $HASH
