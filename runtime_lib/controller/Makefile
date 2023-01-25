@@ -2,21 +2,35 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-#VITIS_BIN := /proj/xbuilds/SWIP/2020.1_0602_1208/installs/lin64/Vitis/2020.1/bin
-#VIVADO_BIN := /proj/xbuilds/SWIP/2020.1_0602_1208/installs/lin64/Vivado/2020.1/bin
+# explicit list of known platforms
+platforms = vck190 vck5000
 
-PROJECT := ../../platforms/xilinx_vck190_air/vivado/xilinx_vck190_air.xsa
-PROJECT_SOURCES :=  ../../platforms/xilinx_vck190_air/vivado/myproj/project_1.srcs/sources_1
+# a specific platform can be built by calling:
+# make <platform>
+#
+# All platforms are built without any parameters:
+# make
+#
+# A specific platform can be cleaned by calling:
+# make <platform>-clean
+#
+# All platforms are cleaned by calling:
+# make clean
 
-# would be better if I stripped off the trailing /
-SCRIPT_DIR := $(dir $(realpath $(firstword $(MAKEFILE_LIST))))
-BUILD_DIR := build
-APP_NAME := acdc_agent
+.PHONY: all
+all: $(platforms)
 
-all: ${BUILD_DIR}/${APP_NAME}/acdc_agent.elf
+define PLATFORM_RULES =
+ $(1):
+	$(MAKE) -f Makefile.$(1)
+ $(1)-clean:
+	$(MAKE) -f Makefile.$(1) clean
+endef
 
-${BUILD_DIR}/${APP_NAME}/acdc_agent.elf : ../../platforms/xilinx_vck190_air/vivado/xilinx_vck190_air.xsa
-	rm -rf build && xsct build.tcl
+# This expands to dynamically create rules for each platform
+$(foreach prog,$(platforms),$(eval $(call PLATFORM_RULES,$(prog))))
 
-clean:
-	rm -rf build
+# This aggregates the 'clean' targets for all platforms
+clean_targets=$(foreach plat,$(platforms),$(plat)-clean)
+
+clean: $(clean_targets)
