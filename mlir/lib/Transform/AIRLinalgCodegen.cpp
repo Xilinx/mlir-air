@@ -1249,8 +1249,16 @@ public:
       SmallVector<int64_t, 2> herd_size{2, 2};
       SmallVector<int64_t, 4> l1_tile_size(nLoops, 1);
       SmallVector<unsigned, 4> l1_tile_interchange(nLoops, 0);
+      SmallVector<int64_t> l1_promote_operands;
       SmallVector<int64_t, 4> l2_tile_size(nLoops, 1);
       SmallVector<unsigned, 4> l2_tile_interchange(nLoops, 0);
+      SmallVector<int64_t> l2_promote_operands;
+
+      for (int i = 0, e = clL1OperandsToPromote.size(); i < e; i++)
+        l1_promote_operands.push_back(clL1OperandsToPromote[i]);
+
+      for (int i = 0, e = clL2OperandsToPromote.size(); i < e; i++)
+        l2_promote_operands.push_back(clL2OperandsToPromote[i]);
 
       auto tripCounts = getTripCounts(genericOp);
 
@@ -1292,8 +1300,11 @@ public:
                 next_match,
                 StringAttr::get(ctx, clL2Promote ? "L2" : "L2_promoted")));
 
+        linalg::LinalgPromotionOptions l2PromoteOptions;
+        if (l2_promote_operands.size())
+          l2PromoteOptions.setOperandsToPromote(l2_promote_operands);
         stageL2Patterns.insert<PromoteLinalgOpPattern>(
-            ctx, linalg::LinalgPromotionOptions(),
+            ctx, l2PromoteOptions,
             LinalgTransformationFilter(StringAttr::get(ctx, "L2"),
                                        StringAttr::get(ctx, "L2_promoted")));
         stageL2Patterns.insert<RemoveSubViewOpsPattern>(ctx, 1);
@@ -1375,8 +1386,12 @@ public:
                 next_match,
                 StringAttr::get(ctx, clL1Promote ? "L1" : "L1_promoted")));
       }
+
+      linalg::LinalgPromotionOptions l1PromoteOptions;
+      if (l1_promote_operands.size())
+        l1PromoteOptions.setOperandsToPromote(l1_promote_operands);
       stageL1Patterns.insert<PromoteLinalgOpPattern>(
-          ctx, linalg::LinalgPromotionOptions(),
+          ctx, l1PromoteOptions,
           LinalgTransformationFilter(needL1Tiling ? StringAttr::get(ctx, "L1")
                                                   : next_match,
                                      StringAttr::get(ctx, "L1_promoted")));
