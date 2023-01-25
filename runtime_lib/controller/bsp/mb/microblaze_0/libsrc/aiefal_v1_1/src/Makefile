@@ -28,9 +28,9 @@ xaiefal_includes: $(INCLUDEDIR) $(TDIRS) $(TINCLUDES)
 
 ifeq (0,$(IS_WIN))
 $(INCLUDEDIR):
-	mkdir $@
+	mkdir -p $@
 $(INCLUDEDIR)/%/: $(INCLUDEDIR)
-	mkdir $@
+	mkdir -p $@
 else
 $(INCLUDEDIR):
 	"mkdir" -p $(subst /,\,$@)

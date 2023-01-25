@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 LD_SRCS += \
-lscript.ld
+vck5000.ld
 
 CPP_SRCS += \
 main.cpp \
@@ -20,9 +20,12 @@ CPP_DEPS += \
 CXX=aarch64-none-elf-g++
 CXXFLAGS := -Wall -O0 -g3 -c -fmessage-length=0 -mcpu=cortex-a72
 LIBS := -Wl,--start-group,-lxil,-lgcc,-lc,-lstdc++,--end-group
-OUTPUT := src
+OUTPUT := vck5000_obj
+BSP_ARM := bsp/arm
+BSP_ARM_INCLUDE := $(BSP_ARM)/psv_cortexa72_0/include
+BSP_ARM_LIB := $(BSP_ARM)/psv_cortexa72_0/lib
 
-INCLUDES += -I../airhost/include -Ibsp/psv_cortexa72_0/include
+INCLUDES += -I../airhost/include -I$(BSP_ARM_INCLUDE)
 
 all: dirs vck5000.elf secondary-outputs
 
@@ -50,29 +53,29 @@ dirs:
 	mkdir -p $(OUTPUT)
 
 # Tool invocations
-vck5000.elf: $(OBJS) lscript.ld bsp/psv_cortexa72_0/lib/libxil.a
+vck5000.elf: $(OBJS) vck5000.ld $(BSP_ARM_LIB)/libxil.a
 	@echo 'Building target: $@'
 	@echo 'Invoking: ARM v8 g++ linker'
-	$(CXX) -mcpu=cortex-a72 -Wl,-T -Wl,lscript.ld -Lbsp/psv_cortexa72_0/lib -o "vck5000.elf" $(OBJS) $(LIBS)
+	$(CXX) -mcpu=cortex-a72 -Wl,-T -Wl,vck5000.ld -L$(BSP_ARM_LIB) -o "$@" $(OBJS) $(LIBS)
 	@echo 'Finished building target: $@'
 	@echo ' '
 
 vck5000.elf.size: vck5000.elf
 	@echo 'Invoking: ARM v8 Print Size'
-	aarch64-none-elf-size vck5000.elf  |tee "vck5000.elf.size"
+	aarch64-none-elf-size vck5000.elf  |tee "$@"
 	@echo 'Finished building: $@'
 	@echo ' '
 
-bsp/psv_cortexa72_0/lib/libxil.a:
+$(BSP_ARM_LIB)/libxil.a:
 	@echo 'Building BSP'
-	$(MAKE) -C bsp
+	$(MAKE) -C $(BSP_ARM)
 
 RM := rm -rf
 
 # Other Targets
 clean:
-	-$(RM) $(CC_DEPS)$(EXECUTABLES)$(OBJS)$(C_UPPER_DEPS)$(CXX_DEPS)$(S_UPPER_DEPS)$(C_DEPS)$(CPP_DEPS)$(ELFSIZE) vck5000.elf
-	$(MAKE) -C bsp clean
+	-$(RM) $(OBJS) $(ELFSIZE) $(OUTPUT) vck5000.elf
+	$(MAKE) -C $(BSP_ARM) clean
 	-@echo ' '
 
 secondary-outputs: $(ELFSIZE)

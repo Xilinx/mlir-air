@@ -1,0 +1,84 @@
+# Copyright (C) 2022, Xilinx Inc.
+# Copyright (C) 2022, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
+LD_SRCS = vck190.ld
+
+CPP_SRCS += \
+main.cpp \
+platform.cpp
+
+OBJS += \
+./$(OUTPUT)/main.o \
+./$(OUTPUT)/platform.o
+
+CPP_DEPS += \
+./$(OUTPUT)/main.d \
+./$(OUTPUT)/platform.d
+
+CXX=mb-g++
+CXXFLAGS := -Wall -O0 -g3 -m64 -mlittle-endian -mxl-barrel-shift -mcpu=v11.0 -mxl-soft-mul -ffunction-sections -fdata-sections 
+LDFLAGS := -m64 -Wl,-T -Wl,$(LD_SRCS) -mlittle-endian -mxl-barrel-shift -mcpu=v11.0 -mxl-soft-mul -Wl,--no-relax -Wl,--gc-sections
+LIBS := -Wl,--start-group,-lxil,-lgcc,-lc,-lstdc++,--end-group
+OUTPUT := vck190_obj
+BSP_MB := bsp/mb
+BSP_MB_INCLUDE := $(BSP_MB)/microblaze_0/include
+BSP_MB_LIB := $(BSP_MB)/microblaze_0/lib
+
+INCLUDES += -I../airhost/include -I$(BSP_MB_INCLUDE)
+LIBRARIES += -L$(BSP_MB_LIB)
+
+all: dirs vck190.elf secondary-outputs
+
+# Each subdirectory must supply rules for building sources it contributes
+$(OUTPUT)/main.o: main.cpp
+	@echo 'Building file: $<'
+	@echo 'Invoking: MicroBlaze g++ compiler'
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@)" -o "$@" -c "$<"
+	@echo 'Finished building: $<'
+	@echo ' '
+
+$(OUTPUT)/platform.o: platform.cpp
+	@echo 'Building file: $<'
+	@echo 'Invoking: MicroBlaze g++ compiler'
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@)" -o "$@" -c "$<"
+	@echo 'Finished building: $<'
+	@echo ' '
+
+# Add inputs and outputs from these tool invocations to the build variables
+ELFSIZE += \
+vck190.elf.size \
+
+# create output directory for .o and .d files
+dirs:
+	mkdir -p $(OUTPUT)
+
+# Tool invocations
+vck190.elf: $(OBJS) $(LD_SRCS) $(BSP_MB_LIB)/libxil.a
+	@echo 'Building target: $@'
+	@echo 'Invoking: MicroBlaze g++ linker'
+	$(CXX) $(LDFLAGS) -L$(BSP_MB_LIB) -o "$@" $(OBJS) $(LIBS)
+	@echo 'Finished building target: $@'
+	@echo ' '
+
+vck190.elf.size: vck190.elf
+	@echo 'Invoking: MicroBlaze Print Size'
+	mb-size vck190.elf  |tee "$@"
+	@echo 'Finished building: $@'
+	@echo ' '
+
+$(BSP_MB_LIB)/libxil.a:
+	@echo 'Building BSP'
+	$(MAKE) -C $(BSP_MB)
+
+RM := rm -rf
+
+# Other Targets
+clean:
+	-$(RM) $(CC_DEPS) $(OBJS) $(ELFSIZE) $(OUTPUT) vck190.elf
+	$(MAKE) -C $(BSP_MB) clean
+	-@echo ' '
+
+secondary-outputs: $(ELFSIZE)
+
+.PHONY: all clean
