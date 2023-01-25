@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-##===- utils/setup_python_packages.sh - Setup python packages for mlir-aie build --*- Script -*-===##
+##===- utils/setup_python_packages.sh - Setup python packages for mlir-air build --*- Script -*-===##
 # 
 # This file licensed under the Apache License v2.0 with LLVM Exceptions.
 # See https://llvm.org/LICENSE.txt for license information.
@@ -7,7 +7,7 @@
 # 
 ##===----------------------------------------------------------------------===##
 #
-# This script sets up and installs the required python packages to build mlir-aie.
+# This script sets up and installs the required python packages to build mlir-air.
 #
 # source ./setup_python_packages.sh
 #
