@@ -50,21 +50,21 @@ cd $BUILD_DIR
 PYTHON_ROOT=`pip3 show pybind11 | grep Location | awk '{print $2}'`
 
 cmake .. \
-	-GNinja \
-	-DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
-	-DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
-	-DCMAKE_TOOLCHAIN_FILE=../cmake/modules/toolchain_x86.cmake \
-	-DLLVM_DIR=${LLVM_DIR}/build/lib/cmake/llvm \
-	-DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \
-	-DAIE_DIR=${MLIR_AIE_DIR}/build/lib/cmake/aie \
-	-Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
-	-DVitisSysroot="" \
-  -DLibXAIE_DIR=${LibXAIE_DIR} \
-	-DARM_TOOLCHAIN_OPT="" \
-  -DBUILD_AIR_PCIE=ON \
-	-DBUILD_SHARED_LIBS=OFF \
-	-DLLVM_USE_LINKER=lld \
-	|& tee cmake.log
+    -GNinja \
+    -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
+    -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
+    -DCMAKE_TOOLCHAIN_FILE=../cmake/modules/toolchain_x86.cmake \
+    -DLLVM_DIR=${LLVM_DIR}/build/lib/cmake/llvm \
+    -DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \
+    -DAIE_DIR=${MLIR_AIE_DIR}/build/lib/cmake/aie \
+    -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
+    -DVitisSysroot="" \
+    -DLibXAIE_DIR=${LibXAIE_DIR} \
+    -DARM_TOOLCHAIN_OPT="" \
+    -DBUILD_AIR_PCIE=ON \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DLLVM_USE_LINKER=lld \
+    |& tee cmake.log
 
 
 ninja |& tee ninja.log

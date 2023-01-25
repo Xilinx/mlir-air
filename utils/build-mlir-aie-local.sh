@@ -37,6 +37,7 @@ INSTALL_DIR=${5:-"install"}
 mkdir -p $MLIR_AIE_DIR/$BUILD_DIR
 mkdir -p $MLIR_AIE_DIR/$INSTALL_DIR
 cd $MLIR_AIE_DIR/$BUILD_DIR
+
 cmake -GNinja \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_CXX_COMPILER=clang++ \

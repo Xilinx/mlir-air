@@ -50,23 +50,23 @@ cd $BUILD_DIR
 PYTHON_ROOT=`pip3 show pybind11 | grep Location | awk '{print $2}'`
 
 cmake .. \
-	-GNinja \
-  -DCMAKE_C_COMPILER=clang \
-  -DCMAKE_CXX_COMPILER=clang++ \
-  -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
-  -DCMAKE_TOOLCHAIN_FILE_OPT=${CMAKEMODULES_DIR}/toolchain_clang_crosscomp_arm_petalinux.cmake \
-  -DArch=arm64 \
-  -DgccVer=10.2.0 \
-  -DCMAKE_USE_TOOLCHAIN=FALSE \
-  -DCMAKE_USE_TOOLCHAIN_AIRHOST=TRUE \
-  -DLLVM_DIR=${LLVM_DIR}/build/lib/cmake/llvm \
-  -DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \
-  -DAIE_DIR=${MLIR_AIE_DIR}/build/lib/cmake/aie \
-  -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
-  -DBUILD_SHARED_LIBS=OFF \
-  -DLLVM_USE_LINKER=lld \
-  -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
-	|& tee cmake.log
+    -GNinja \
+    -DCMAKE_C_COMPILER=clang \
+    -DCMAKE_CXX_COMPILER=clang++ \
+    -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
+    -DCMAKE_TOOLCHAIN_FILE_OPT=${CMAKEMODULES_DIR}/toolchain_clang_crosscomp_arm_petalinux.cmake \
+    -DArch=arm64 \
+    -DgccVer=10.2.0 \
+    -DCMAKE_USE_TOOLCHAIN=FALSE \
+    -DCMAKE_USE_TOOLCHAIN_AIRHOST=TRUE \
+    -DLLVM_DIR=${LLVM_DIR}/build/lib/cmake/llvm \
+    -DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \
+    -DAIE_DIR=${MLIR_AIE_DIR}/build/lib/cmake/aie \
+    -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DLLVM_USE_LINKER=lld \
+    -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
+    |& tee cmake.log
 
 ninja |& tee ninja.log
 ninja install |& tee ninja-install.log
