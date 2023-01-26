@@ -317,14 +317,13 @@ struct RemoveAllocCopyLinalgOpCopyPattern
       return failure();
 
     // find the next linalg use in this block
-    auto iter = op->getIterator();
     linalg::LinalgOp linalgOp = nullptr;
     for (auto &u : allocOp->getResult(0).getUses()) {
       if (auto l = dyn_cast<linalg::LinalgOp>(u.getOwner())) {
         // bail without trying to resolve the ordering
         // if there's a linalg use in a different block
         if (l->getBlock() != op->getBlock())
-          failure();
+          return failure();
         if (l.payloadUsesValueFromOperand(&u))
           continue;
         // take the earliest use
@@ -967,7 +966,6 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
   }
 
   Value firstOutputOperand = tiledOperands[resultIdx];
-  air::ChannelOp inputChannel = nullptr;
   SmallVector<air::ChannelOp> channels(pipeline_depth, nullptr);
   for (unsigned int i = 0; i < pipeline_depth; i++) {
     OpBuilder::InsertionGuard pipeline_guard(b);
@@ -1035,7 +1033,8 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
 
     if (last_stage) {
       b.setInsertionPointAfter(linalgOp);
-      defaultCopyCallBack(b, tiledOperands[resultIdx], firstOutputOperand);
+      (void)defaultCopyCallBack(b, tiledOperands[resultIdx],
+                                firstOutputOperand);
       b.setInsertionPoint(stageBlock->getTerminator());
     } else {
       auto mref = tiledOperands[resultIdx];
