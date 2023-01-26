@@ -293,6 +293,66 @@ struct RemoveAllocLinalgOpCopyPattern
   }
 };
 
+// Replace a pattern like this:
+//  %sv = memref.subview ...
+//  %alloc = memref.alloc() : memref<...>
+//  memref.copy %sv, %alloc
+//  linalg.generic with outs(%alloc : memref<...>), does not read %alloc
+// with this:
+//  %sv = memref.subview ...
+//  %alloc = memref.alloc() : memref<...>
+//  linalg.generic with outs(%alloc : memref<...>), does not read %alloc
+// that is, remove the no-op copy.
+struct RemoveAllocCopyLinalgOpCopyPattern
+    : public OpRewritePattern<memref::CopyOp> {
+  using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::CopyOp op,
+                                PatternRewriter &rewriter) const override {
+
+    // the target of the copy is an alloc
+    Operation *allocOp =
+        dyn_cast<memref::AllocOp>(op.getTarget().getDefiningOp());
+    if (!allocOp)
+      return failure();
+
+    // find the next linalg use in this block
+    linalg::LinalgOp linalgOp = nullptr;
+    for (auto &u : allocOp->getResult(0).getUses()) {
+      if (auto l = dyn_cast<linalg::LinalgOp>(u.getOwner())) {
+        // bail without trying to resolve the ordering
+        // if there's a linalg use in a different block
+        if (l->getBlock() != op->getBlock())
+          return failure();
+        if (l.payloadUsesValueFromOperand(&u))
+          continue;
+        // take the earliest use
+        if (linalgOp && linalgOp->isBeforeInBlock(l))
+          continue;
+        linalgOp = l;
+      }
+    }
+    if (!linalgOp)
+      return failure();
+
+    for (auto &u : allocOp->getResult(0).getUses()) {
+      auto use = u.getOwner();
+      if (use == op)
+        continue;
+      // if there's a use between the copy and the linalg op
+      if (!isa<linalg::LinalgOp>(use)) {
+        if (use->getBlock() != op->getBlock())
+          continue;
+        if (use->isBeforeInBlock(linalgOp))
+          return failure();
+      }
+    }
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 // Loop invarient code motion pass doesn't move kernel op partial result (linalg.copy) memcpy outside loop
 // this patternMatch transform perform kernel op partial result accumulation modeling. This transformation
 // model mllib kernel library. 
@@ -548,9 +608,7 @@ RemoveViewOpsPattern::RemoveViewOpsPattern(MLIRContext *ctx,
                                                  unsigned int fast_memory_space)
     : OpRewritePattern(ctx), fast_space(fast_memory_space) {}
 
-
 // Custom LinalgOp tiling pattern
-//
 struct TileLinalgOpPattern : public RewritePattern {
   TileLinalgOpPattern(
       StringLiteral operation_name, MLIRContext *context,
@@ -908,7 +966,6 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
   }
 
   Value firstOutputOperand = tiledOperands[resultIdx];
-  air::ChannelOp inputChannel = nullptr;
   SmallVector<air::ChannelOp> channels(pipeline_depth, nullptr);
   for (unsigned int i = 0; i < pipeline_depth; i++) {
     OpBuilder::InsertionGuard pipeline_guard(b);
@@ -976,7 +1033,8 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
 
     if (last_stage) {
       b.setInsertionPointAfter(linalgOp);
-      defaultCopyCallBack(b, tiledOperands[resultIdx], firstOutputOperand);
+      (void)defaultCopyCallBack(b, tiledOperands[resultIdx],
+                                firstOutputOperand);
       b.setInsertionPoint(stageBlock->getTerminator());
     } else {
       auto mref = tiledOperands[resultIdx];
@@ -1101,7 +1159,8 @@ public:
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(ctx);
     patterns.insert<RemoveSubViewOpsPattern, FoldSubViewOpsPattern,
-                    RemoveViewOpsPattern, HoistReduceBufferPattern>(ctx);
+                    RemoveViewOpsPattern, HoistReduceBufferPattern,
+                    RemoveAllocCopyLinalgOpCopyPattern>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
   /// Collect perfectly nested loops starting from `rootForOps`.  Loops are
@@ -1402,6 +1461,7 @@ public:
 
       RewritePatternSet stage3Patterns(&getContext());
       stage3Patterns.insert<MemrefsPattern>(ctx);
+      stage3Patterns.insert<RemoveAllocCopyLinalgOpCopyPattern>(ctx);
       (void)applyPatternsAndFoldGreedily(called, std::move(stage3Patterns));
 
       LLVM_DEBUG(llvm::outs() << "After L1 Tiling\n");
