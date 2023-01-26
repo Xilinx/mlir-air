@@ -30,14 +30,7 @@ INCLUDES += -I../airhost/include -I$(BSP_ARM_INCLUDE)
 all: dirs vck5000.elf secondary-outputs
 
 # Each subdirectory must supply rules for building sources it contributes
-$(OUTPUT)/main.o: main.cpp
-	@echo 'Building file: $<'
-	@echo 'Invoking: ARM v8 g++ compiler'
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@)" -o "$@" "$<"
-	@echo 'Finished building: $<'
-	@echo ' '
-
-$(OUTPUT)/platform.o: platform.cpp
+$(OUTPUT)/%.o: %.cpp
 	@echo 'Building file: $<'
 	@echo 'Invoking: ARM v8 g++ compiler'
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@)" -o "$@" "$<"

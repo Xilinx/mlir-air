@@ -30,15 +30,8 @@ LIBRARIES += -L$(BSP_MB_LIB)
 
 all: dirs vck190.elf secondary-outputs
 
-# Each subdirectory must supply rules for building sources it contributes
-$(OUTPUT)/main.o: main.cpp
-	@echo 'Building file: $<'
-	@echo 'Invoking: MicroBlaze g++ compiler'
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@)" -o "$@" -c "$<"
-	@echo 'Finished building: $<'
-	@echo ' '
-
-$(OUTPUT)/platform.o: platform.cpp
+# Compile C++ file to .o
+$(OUTPUT)/%.o: %.cpp
 	@echo 'Building file: $<'
 	@echo 'Invoking: MicroBlaze g++ compiler'
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -MF"$(@:%.o=%.d)" -MT"$(@)" -o "$@" -c "$<"
