@@ -1526,41 +1526,6 @@ void dependencyCanonicalizer::removeRedundantWaitAllOps(func::FuncOp func) {
   (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
 }
 
-// air.hierarchy ops should only depend on scf loop ops
-void dependencyCanonicalizer::canonicalizeAIRHierarchyDependency(
-    func::FuncOp func) {
-  func.walk([&](air::HierarchyInterface hier) {
-    if (dyn_cast<air::LaunchOp>(hier.getOperation())) {
-      // air.launch is strictly synchronous
-      return;
-    }
-    auto async_hier = dyn_cast<air::AsyncOpInterface>(hier.getOperation());
-    SmallVector<Value, 1> erased_tokens;
-    // Add dependency to any control events involving this hierarchy op
-    SmallVector<Value, 1> control_token_history;
-    std::vector<Operation *> op_history;
-    traceDependentScfLoopToken(async_hier, control_token_history, op_history);
-    for (auto token : control_token_history) {
-      async_hier.addAsyncDependency(token);
-    }
-    // Erase non-control dependencies; air hierarchy ops should only depend on
-    // control events
-    for (auto dep : async_hier.getAsyncDependencies()) {
-      if ((!getForRegionIterArgsOwner(dep)) &&
-          (!getParallelRegionInitValsOwner(hier.getOperation(), dep))) {
-        if (dep.getDefiningOp() &&
-            (!dyn_cast<air::WaitAllOp>(dep.getDefiningOp())) &&
-            (!dyn_cast<air::DmaMemcpyNdOp>(dep.getDefiningOp()))) {
-          erased_tokens.push_back(dep);
-        }
-      }
-    }
-    for (auto dep : erased_tokens) {
-      eraseAsyncDependencyFromAsyncOp(async_hier, dep);
-    }
-  });
-}
-
 //===----------------------------------------------------------------------===//
 // Dependency tracing
 //===----------------------------------------------------------------------===//
