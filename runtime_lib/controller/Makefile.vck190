@@ -4,17 +4,9 @@
 
 LD_SRCS = vck190.ld
 
-CPP_SRCS += \
-main.cpp \
-platform.cpp
-
 OBJS += \
 ./$(OUTPUT)/main.o \
-./$(OUTPUT)/platform.o
-
-CPP_DEPS += \
-./$(OUTPUT)/main.d \
-./$(OUTPUT)/platform.d
+./$(OUTPUT)/plat_vck190.o \
 
 CXX=mb-g++
 CXXFLAGS := -Wall -O0 -g3 -m64 -mlittle-endian -mxl-barrel-shift -mcpu=v11.0 -mxl-soft-mul -ffunction-sections -fdata-sections 

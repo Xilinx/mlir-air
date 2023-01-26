@@ -33,7 +33,49 @@
 #ifndef __PLATFORM_H_
 #define __PLATFORM_H_
 
-void init_platform();
-void cleanup_platform();
+extern "C" {
+#include "xil_types.h"
+}
+
+#define XAIEGBL_TILE_ADDR_ARR_SHIFT 30U
+#define XAIEGBL_TILE_ADDR_ROW_SHIFT 18U
+#define XAIEGBL_TILE_ADDR_COL_SHIFT 23U
+
+#define ENCODE_VERSION(_major, _minor, _build) ((_major & 0xFF) << 24 | (_minor & 0xFF) << 16 | (_build & 0xFF) << 8)
+#define GET_VERSION_MAJOR(_x) ((_x >> 24) & 0xFF)
+#define GET_VERSION_MINOR(_x) ((_x >> 16) & 0xFF)
+#define GET_VERSION_BUILD(_x) ((_x >> 8) & 0xFF)
+
+struct platform_cfg
+{
+	int mb_count;			// Number of microblaze controllers
+	int version;			// encoded version number (see GET_VERSION_ macros)
+	uint64_t cdma_base;	// base address for CDMA ?
+	const char *platform_name; // name of the platform in C string form
+};
+
+/*
+	Platform-specific initialization
+
+	Must be called once at startup. Fills in the platform_cfg
+	with parameters for this platform.
+*/
+int init_platform(struct platform_cfg *cfg);
+
+/*
+	read 32 bit value from specified address
+*/
+u32 in32(u64 Addr);
+
+void out32(u64 Addr, u32 Value);
+
+u64 getTileAddr(u16 ColIdx, u16 RowIdx);
+
+/*
+	Platform-specific initialization of the device
+
+	Returns 0 on success, non-zero on error
+*/
+int plat_device_init(void);
 
 #endif

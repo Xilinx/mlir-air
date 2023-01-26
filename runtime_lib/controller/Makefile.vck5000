@@ -5,17 +5,9 @@
 LD_SRCS += \
 vck5000.ld
 
-CPP_SRCS += \
-main.cpp \
-platform.cpp
-
 OBJS += \
 ./$(OUTPUT)/main.o \
-./$(OUTPUT)/platform.o
-
-CPP_DEPS += \
-./$(OUTPUT)/main.d \
-./$(OUTPUT)/platform.d
+./$(OUTPUT)/plat_vck5000.o \
 
 CXX=aarch64-none-elf-g++
 CXXFLAGS := -Wall -O0 -g3 -c -fmessage-length=0 -mcpu=cortex-a72
