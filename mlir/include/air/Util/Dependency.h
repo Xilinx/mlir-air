@@ -243,7 +243,6 @@ public:
                                                   dependencyContext &dep_ctx,
                                                   bool dump_dot = false,
                                                   std::string dump_dir = "");
-  void canonicalizeAIRHierarchyDependency(func::FuncOp func);
   std::pair<Graph::vertex_descriptor, dependencyGraph *>
   getVertexFromOp(Operation *op, dependencyContext dep_ctx,
                   std::string front_or_back = "front");

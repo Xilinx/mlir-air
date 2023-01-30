@@ -71,7 +71,6 @@ with air.mlir.ir.Context(), Location.unknown():
 
     arch = {
     "clock": 1000000000,
-    "cores": 1,
     "datatype": {
         "bytes": 2,
         "name": "fp16"

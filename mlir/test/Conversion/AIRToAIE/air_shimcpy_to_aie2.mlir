@@ -24,7 +24,7 @@ module {
 // CHECK:           AIE.useLock(%[[VAL_14]], Acquire, 0)
 // CHECK:           AIE.dmaBd(<%[[VAL_13]] : memref<1024xi32, 2>, 0, 0>, 0)
 // CHECK:           AIE.useLock(%[[VAL_14]], Release, 1)
-// CHECK:           br ^bb1
+// CHECK:           AIE.nextBd ^bb1
 // CHECK:         ^bb2:
 // CHECK:           AIE.end
 // CHECK:         ^bb3:
@@ -33,7 +33,7 @@ module {
 // CHECK:           AIE.useLock(%[[VAL_15]], Acquire, 0)
 // CHECK:           AIE.dmaBd(<%[[VAL_16]] : memref<512xi32, 2>, 0, 0>, 0)
 // CHECK:           AIE.useLock(%[[VAL_15]], Release, 1)
-// CHECK:           cf.br ^bb4
+// CHECK:           AIE.nextBd ^bb4
 // CHECK:         }
 
 // CHECK:    AIE.core(%[[VAL_12]])  {

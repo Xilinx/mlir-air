@@ -417,14 +417,22 @@ public:
           double cycles_per_second = 1e9;
           double efficiency = 1.0f;
 
+          // get the number of cores in the herd
+          auto herd = c.op->getParentOfType<air::HerdOp>();
+          if (herd) {
+            auto herd_size = herd.getSizeOperands();
+            for (unsigned i = 0; i < herd_size.size(); i++) {
+              num_cores *=
+                  herd_size[i].getDefiningOp<arith::ConstantIndexOp>().value();
+            }
+          }
+
           auto model = jsonModel.getAsObject();
           assert(model);
 
           // if kernels exists, assume everthing else exists
           if (model && model->getObject("kernels")) {
             // device level override of defaults
-            if (auto d = model->getNumber("cores"))
-              num_cores = *d;
             if (auto d = model->getNumber("ops_per_core_per_cycle"))
               ops_per_core_per_cycle = *d;
             if (auto d = model->getNumber("clock"))
@@ -440,8 +448,6 @@ public:
               auto kernel =
                   kernels->getObject(child_op->getName().getStringRef());
               if (kernel) {
-                if (auto d = kernel->getNumber("cores"))
-                  num_cores = *d;
                 if (auto d = kernel->getNumber("ops_per_core_per_cycle"))
                   ops_per_core_per_cycle = *d;
                 if (auto d = kernel->getNumber("clock"))

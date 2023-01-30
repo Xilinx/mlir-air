@@ -35,9 +35,9 @@ CMAKE_SYSROOT=$2
 CMAKEMODULES_DIR=$3
 LLVM_DIR=$4
 
-INSTALL_DIR=${6:-"install-aarch64"}
-MLIR_AIE_DIR=${7:-"mlir-aie"}
-BUILD_DIR=${8:-"${MLIR_AIE_DIR}/build-aarch64"}
+INSTALL_DIR=${5:-"install-aarch64"}
+MLIR_AIE_DIR=${6:-"mlir-aie"}
+BUILD_DIR=${7:-"${MLIR_AIE_DIR}/build-aarch64"}
 
 BUILD_DIR=`realpath ${BUILD_DIR}`
 INSTALL_DIR=`realpath ${INSTALL_DIR}`
@@ -45,6 +45,8 @@ INSTALL_DIR=`realpath ${INSTALL_DIR}`
 mkdir -p $BUILD_DIR
 mkdir -p $INSTALL_DIR
 cd $BUILD_DIR
+
+set -o pipefail
 
 cmake -GNinja \
     -DBUILD_SHARED_LIBS=OFF \
@@ -58,5 +60,18 @@ cmake -GNinja \
     -DVitisSysroot=${CMAKE_SYSROOT} \
     .. |& tee cmake.log
 
-ninja |& tee ninja.log
+ec=$?
+if [ $ec -ne 0 ]; then
+    echo "CMake Error"
+    exit $ec
+fi
+
 ninja install |& tee ninja-install.log
+
+ec=$?
+if [ $ec -ne 0 ]; then
+    echo "Build Error"
+    exit $ec
+fi
+
+exit 0

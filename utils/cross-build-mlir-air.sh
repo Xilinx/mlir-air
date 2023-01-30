@@ -54,6 +54,8 @@ mkdir -p $BUILD_DIR
 mkdir -p $INSTALL_DIR
 cd $BUILD_DIR
 
+set -o pipefail
+
 cmake .. \
     -GNinja \
     -DAIE_DIR=${MLIR_AIE_DIR}/build-aarch64/lib/cmake/aie \
@@ -68,5 +70,16 @@ cmake .. \
     -DMLIR_DIR=${LLVM_DIR}/build-aarch64/lib/cmake/mlir \
     |& tee cmake.log
 
-ninja |& tee ninja.log
+ec=$?
+if [ $ec -ne 0 ]; then
+    echo "CMake Error"
+    exit $ec
+fi
+
 ninja install |& tee ninja-install.log
+
+ec=$?
+if [ $ec -ne 0 ]; then
+    echo "CMake Error"
+    exit $ec
+fi

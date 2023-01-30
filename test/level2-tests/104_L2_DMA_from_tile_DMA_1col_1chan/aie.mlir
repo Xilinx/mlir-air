@@ -16,14 +16,14 @@ module @aie.0  {
   %8 = AIE.mem(%t74)  {
     %9 = AIE.dmaStart(MM2S, 0, ^bb1, ^bb4)
   ^bb1: 
-    cf.br ^bb2
+    AIE.nextBd ^bb2
   ^bb2: 
     AIE.useLock(%6, Acquire, 1)
     AIE.dmaBd(<%7 : memref<16xi32, 2>, 0, 16>, 0)
     AIE.useLock(%6, Release, 0)
-    cf.br ^bb3
+    AIE.nextBd ^bb3
   ^bb3: 
-    cf.br ^bb1
+    AIE.nextBd ^bb1
   ^bb4: 
     AIE.end
   }

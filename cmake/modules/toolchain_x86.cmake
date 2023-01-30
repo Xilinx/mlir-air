@@ -4,8 +4,8 @@
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_LIST_DIR} ${CMAKE_CURRENT_LIST_DIR}/cmakeModulesXilinx)
 
-# specify the cross compiler
-set(CLANG_VER 8)
+# specify the compiler
+set(CLANG_VER 10)
 set(CMAKE_C_COMPILER clang-${CLANG_VER})
 set(CMAKE_CXX_COMPILER clang++-${CLANG_VER})
 set(CMAKE_ASM_COMPILER clang-${CLANG_VER})
