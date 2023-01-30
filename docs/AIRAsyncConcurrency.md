@@ -76,7 +76,6 @@ The CDFG which represents the MLIR-AIR program's asynchronous concurrency can be
 The generated dot file can be rendered using Graphviz.
 The rendered CDFG below is generated from the matrix multiplication example in previous section.
 
-![Alt text](air_cdfg_example.svg)
 <img src="air_cdfg_example.svg">
 
 ### Step three: CDFG optimization using `-air-dependency-schedule-opt`
