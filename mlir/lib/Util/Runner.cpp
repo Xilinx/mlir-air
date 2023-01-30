@@ -187,7 +187,7 @@ public:
     auto sub_start_v = sub_runner_node->ctrl_g->start_vertex;
     auto sub_terminator_v = sub_runner_node->ctrl_g->terminator_vertex;
     resetGraphBetweenTwoVertices(sub_start_v, sub_terminator_v, G,
-                                 *sub_runner_node);
+                                 *sub_runner_node, time);
     sub_runner_node->loop_trip_count.clear();
 
     // Start sub-runner node by pushing start node into its wavefront
@@ -261,7 +261,7 @@ public:
           // Reset graph wrt to this token, to start the next loop iteration
           for (auto d : adj_op->getOperands()) {
             if (d == next_iter_token) {
-              resetGraphBetweenTwoVertices(*adj_v, it, G, c);
+              resetGraphBetweenTwoVertices(*adj_v, it, G, c, time);
             }
           }
         }
@@ -657,7 +657,7 @@ public:
     // Reset launch graph
     launch.processed_vertices.clear();
     resetGraphBetweenTwoVertices(start_v, launch.ctrl_g->terminator_vertex,
-                                 launch.ctrl_g->g, launch);
+                                 launch.ctrl_g->g, launch, time);
     // Start running launch
     bool running = true;
     launch.ctrl_g->g[start_v].start_time = 1;
@@ -960,17 +960,27 @@ private:
     return false;
   }
 
+  // Reset a vertex in dependency graph
+  void resetVertex(Graph::vertex_descriptor v, Graph &G, runnerNode &c,
+                   uint64_t time) {
+
+    // Remove start_v from processed_vertices
+    removeVertexFromVertices(c.processed_vertices, v);
+
+    // Reset node's start_time and end_time, if the async event represented by
+    // the vertex is complete
+    if (G[v].is_started() && G[v].is_done(time)) {
+      G[v].start_time = 0;
+      G[v].end_time = 0;
+    }
+  }
+
   // Recursively reset all vertices in for loop body
   void resetGraphBetweenTwoVertices(Graph::vertex_descriptor start_v,
                                     Graph::vertex_descriptor end_v, Graph &G,
-                                    runnerNode &c) {
+                                    runnerNode &c, uint64_t time) {
 
-    // Remove start_v from processed_vertices
-    removeVertexFromVertices(c.processed_vertices, start_v);
-
-    // Reset start_time and end_time
-    G[start_v].start_time = 0;
-    G[start_v].end_time = 0;
+    resetVertex(start_v, G, c, time);
 
     if (start_v == end_v)
       return;
@@ -978,10 +988,7 @@ private:
     SmallVector<Graph::vertex_descriptor, 1> vertices;
     if (hasPath(start_v, end_v, G, vertices)) {
       for (auto v : vertices) {
-        removeVertexFromVertices(c.processed_vertices, v);
-        // Reset start_time and end_time
-        G[v].start_time = 0;
-        G[v].end_time = 0;
+        resetVertex(v, G, c, time);
         // If v is a hierarchy op, then recursively clear the entire subgraph
         if (G[v].asyncEventType == "hierarchy") {
           auto sub_c = G[v].nextDependencyGraph;
@@ -989,7 +996,8 @@ private:
           auto terminator_v = sub_c->terminator_vertex;
           auto sub_g = sub_c->g;
           auto sub_runner = sub_c->runner_node;
-          resetGraphBetweenTwoVertices(start, terminator_v, sub_g, *sub_runner);
+          resetGraphBetweenTwoVertices(start, terminator_v, sub_g, *sub_runner,
+                                       time);
         }
         // Else if v is an scf.for op, then clear the cached trip count from
         // runner node
