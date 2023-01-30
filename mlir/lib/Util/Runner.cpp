@@ -412,20 +412,11 @@ public:
 
         if (compute_op_count) {
           // defaults
-          double num_cores = 1;
+          double num_cores = 1; // one because the post-tiling code in
+                                // air.herd's body is for each core
           double ops_per_core_per_cycle = 8; // vector width for this type
           double cycles_per_second = 1e9;
           double efficiency = 1.0f;
-
-          // get the number of cores in the herd
-          auto herd = c.op->getParentOfType<air::HerdOp>();
-          if (herd) {
-            auto herd_size = herd.getSizeOperands();
-            for (unsigned i = 0; i < herd_size.size(); i++) {
-              num_cores *=
-                  herd_size[i].getDefiningOp<arith::ConstantIndexOp>().value();
-            }
-          }
 
           auto model = jsonModel.getAsObject();
           assert(model);
