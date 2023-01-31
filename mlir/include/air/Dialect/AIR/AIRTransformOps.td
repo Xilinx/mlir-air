@@ -45,7 +45,7 @@ def PipelineReduceOp : Op<Transform_Dialect, "air.pipeline_reduce",
          DefaultValuedAttr<I64ArrayAttr, "{}">:$tile_size,
          DefaultValuedAttr<I64Attr, "1">:$pipeline_depth,
          DefaultValuedAttr<StrAttr, "\"horiz\"">:$direction,
-         DefaultValuedAttr<UnitAttr, "false">:$promote);
+         UnitAttr:$promote);
   let results = (outs PDL_Operation:$result);
   let assemblyFormat = "$target attr-dict ";
 

@@ -260,6 +260,15 @@ def AIRHerdPlacementPass : Pass<"air-place-herds", "ModuleOp"> {
   }];
 }
 
+def AIRTransformInterpreterPass : Pass<"air-transform", "ModuleOp"> {
+  let summary = "Transform IR with transform dialect";
+  let constructor = "xilinx::air::createAIRTransformInterpreterPass()";
+  let options = [
+    Option<"clTransformFileName", "filename", "std::string",
+            /*default=*/"", "Transform Dialect filename">
+  ];
+}
+
 def AIRLinalgCodegen : Pass<"air-linalg-codegen", "ModuleOp"> {
   let summary = "AIR codegen strategies for linalg";
   let constructor = "xilinx::air::createAIRLinalgCodegenPass()";
@@ -296,7 +305,7 @@ def AIRLinalgCodegen : Pass<"air-linalg-codegen", "ModuleOp"> {
            "L1 allocation limit in bytes">,
     Option<"clL2MaxSize", "l2-size", "unsigned", "0",
            "L2 allocation limit in bytes">,
-    Option<"clInputFilter", "input-filter", "std::string", 
+    Option<"clInputFilter", "input-filter", "std::string",
             /*default=*/"",
             "Input filter for linalg transformations">,
     Option<"clLinalgCodegenTestPatterns", "test-patterns", "bool",

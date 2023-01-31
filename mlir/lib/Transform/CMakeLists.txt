@@ -15,6 +15,7 @@ AIRLowerLinalgTensors.cpp
 AIRMiscPasses.cpp
 AIRRegularizeLoopPass.cpp
 AIRTilingUtils.cpp
+AIRTransformInterpreter.cpp
 AIRDependency.cpp
 AIRDependencyScheduleOpt.cpp
 AIRDependencyCanonicalize.cpp
