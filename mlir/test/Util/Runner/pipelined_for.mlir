@@ -7,7 +7,7 @@
 
 // RUN: air-runner %s -f test -m %S/arch.json | FileCheck %s
 
-// Air channel ops
+// Pipelined for loop with multiple async tokens
 
 // CHECK-COUNT-32: ChannelGetOp
 
