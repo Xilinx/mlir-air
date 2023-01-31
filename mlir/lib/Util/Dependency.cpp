@@ -1442,10 +1442,6 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
         } else if (auto async_src_op =
                        dyn_cast<xilinx::air::AsyncOpInterface>(src_op)) {
           // Elevate src token if src op is in affine if
-          // if (auto parent_affine_if_op =
-          //         dyn_cast<mlir::AffineIfOp>(src_op->getParentOp())) {
-          //   src_op = parent_affine_if_op.getOperation();
-          // }
           while (dyn_cast<mlir::AffineIfOp>(src_op->getParentOp())) {
             auto parent_affine_if_op =
                 dyn_cast<mlir::AffineIfOp>(src_op->getParentOp());

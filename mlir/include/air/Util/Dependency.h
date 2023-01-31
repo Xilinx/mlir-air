@@ -108,6 +108,7 @@ struct dependencyNodeEntry {
   dependencyGraph *nextDependencyGraph;
   uint64_t start_time;
   uint64_t end_time;
+  uint64_t sym_token_count;
 
   bool is_started() { return (start_time != 0) && (end_time != 0); }
   bool is_done(uint64_t t) { return t >= end_time; }
@@ -118,12 +119,13 @@ struct dependencyNodeEntry {
                       std::string detailed_description = "",
                       unsigned operationId = 0, mlir::Operation *op = nullptr,
                       dependencyGraph *nextDependencyGraph = nullptr,
-                      uint64_t start_time = 0, uint64_t end_time = 0)
+                      uint64_t start_time = 0, uint64_t end_time = 0,
+                      uint64_t sym_token_count = 0)
       : asyncEventName(asyncEventName), asyncEventType(asyncEventType),
         color(color), shape(shape), detailed_description(detailed_description),
         operationId(operationId), op(op),
         nextDependencyGraph(nextDependencyGraph), start_time(start_time),
-        end_time(end_time) {}
+        end_time(end_time), sym_token_count(sym_token_count) {}
 };
 
 // Boost dependency graph

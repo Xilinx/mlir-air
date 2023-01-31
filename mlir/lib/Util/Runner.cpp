@@ -63,9 +63,9 @@ struct runnerNode {
   // thread id
   std::vector<std::pair<Graph::vertex_descriptor, unsigned>> wavefront;
   std::vector<Graph::vertex_descriptor> processed_vertices;
-  // Each entry is an std::pair. First element is for op's id, and second
-  // element is counter
-  std::vector<std::pair<unsigned, unsigned>> loop_trip_count;
+  // Each entry is an std::tuple. First element is for op's id, second element
+  // is the loop's async token id, and third element is trip counter.
+  std::vector<std::tuple<unsigned, unsigned, unsigned>> loop_trip_count;
   std::deque<runnerNode> sub_runner_nodes;
 
   // Private wavefront of each runner node, reserved to interface with resource
@@ -187,7 +187,7 @@ public:
     auto sub_start_v = sub_runner_node->ctrl_g->start_vertex;
     auto sub_terminator_v = sub_runner_node->ctrl_g->terminator_vertex;
     resetGraphBetweenTwoVertices(sub_start_v, sub_terminator_v, G,
-                                 *sub_runner_node);
+                                 *sub_runner_node, time);
     sub_runner_node->loop_trip_count.clear();
 
     // Start sub-runner node by pushing start node into its wavefront
@@ -201,47 +201,75 @@ public:
     c.processed_vertices.push_back(it);
   }
 
-  void executeOp(scf::YieldOp op, scf::ForOp for_op, runnerNode &c,
-                 Graph::vertex_descriptor it) {
+  void executeOp(scf::YieldOp op, uint64_t time, scf::ForOp for_op,
+                 runnerNode &c, Graph::vertex_descriptor it) {
     Graph &G = c.ctrl_g->g;
-    auto node_entry = G[it];
+
+    // Get async tokens ready to iterate at scf.yield
+    std::vector<unsigned> token_ids;
+    getReadyTokensAtScfYield(token_ids, op, time, G);
 
     // For loop trip counter
     bool trip_count_fulfilled = false;
     for (auto &count_entry : c.loop_trip_count) {
-      if (count_entry.first == (unsigned)getIdAttr(for_op.getOperation())) {
-        // Decrement loop trip count
-        if (count_entry.second) {
-          count_entry.second--;
-        }
-
-        // Only push yield op to processed_vertices when trip count fulfilled
-        if (!count_entry.second) {
-          c.processed_vertices.push_back(it);
-          trip_count_fulfilled = true;
+      if (std::get<0>(count_entry) ==
+          (unsigned)getIdAttr(for_op.getOperation())) {
+        for (auto token_id : token_ids) {
+          // Decrement loop trip count
+          if (std::get<1>(count_entry) == token_id &&
+              std::get<2>(count_entry)) {
+            std::get<2>(count_entry)--;
+          }
         }
       }
     }
 
-    // If trip count unfulfilled, then iterate.
-    // Clear start_time and end_time of all ops in loop body.
-    // From processed_vertices, remove all ops which are in loop body.
-    if (!trip_count_fulfilled) {
-      // Get for op vertex
-      auto for_v =
-          canonicalizer.getVertexFromOp(for_op.getOperation(), dep_ctx, "front")
-              .first;
-      auto adj_set = boost::adjacent_vertices(for_v, G);
-      for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
-        resetGraphBetweenTwoVertices(*adj_v, it, G, c);
+    // If all async tokens' trip counts are fulfilled
+    bool allAsyncTokensFulfilled = true;
+    for (auto &count_entry : c.loop_trip_count) {
+      if (std::get<0>(count_entry) ==
+          (unsigned)getIdAttr(for_op.getOperation())) {
+        if (std::get<2>(count_entry)) {
+          allAsyncTokensFulfilled = false;
+        }
+      }
+    }
+
+    if (allAsyncTokensFulfilled) {
+      c.processed_vertices.push_back(it);
+      trip_count_fulfilled = true;
+    } else {
+      // If trip count unfulfilled, then iterate.
+      // Clear start_time and end_time of all ops in loop body.
+      // From processed_vertices, remove all ops which are in loop body.
+      for (auto token_id : token_ids) {
+        // Get the yielded token in the next loop iteration (at the beginning of
+        // the loop)
+        auto next_iter_token = for_op.getRegionIterArgs()[token_id];
+        assert(next_iter_token);
+
+        // Search for vertices corresponding to the next-iteration incarnations
+        // of this token
+        auto for_v =
+            canonicalizer
+                .getVertexFromOp(for_op.getOperation(), dep_ctx, "front")
+                .first;
+        auto adj_set = boost::adjacent_vertices(for_v, G);
+        for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
+          auto adj_op = G[*adj_v].op;
+          assert(adj_op);
+          // Reset graph wrt to this token, to start the next loop iteration
+          for (auto d : adj_op->getOperands()) {
+            if (d == next_iter_token) {
+              resetGraphBetweenTwoVertices(*adj_v, it, G, c, time);
+            }
+          }
+        }
       }
     }
   }
 
   void executeOp(scf::ForOp op, runnerNode &c, Graph::vertex_descriptor it) {
-    Graph &G = c.ctrl_g->g;
-    auto node_entry = G[it];
-
     // Get for loop trip count
     auto lb = op.getLowerBound().getDefiningOp();
     int64_t lbv = cast<arith::ConstantIndexOp>(lb).value();
@@ -253,9 +281,34 @@ public:
     // (ubv - lbv) / stepv, fast round up
     int64_t trip_count = (ubv - lbv + stepv - 1) / stepv;
 
-    // Update for loop trip count
-    c.loop_trip_count.push_back(
-        std::make_pair(getIdAttr(op.getOperation()), trip_count));
+    // Update for loop trip count per async token
+    for (unsigned i = 0; i < op.getRegionIterArgs().size(); i++) {
+      c.loop_trip_count.push_back(
+          std::make_tuple(getIdAttr(op.getOperation()), i, trip_count));
+    }
+
+    c.processed_vertices.push_back(it);
+  }
+
+  void executeOp(air::ChannelPutOp op, runnerNode &c,
+                 Graph::vertex_descriptor it) {
+    Graph &G = c.ctrl_g->g;
+    G[it].sym_token_count++;
+
+    c.processed_vertices.push_back(it);
+  }
+
+  void executeOp(air::ChannelGetOp op, runnerNode &c,
+                 Graph::vertex_descriptor it) {
+    // Get put-side runner from get op
+    air::ChannelPutOp put = air::getTheOtherChannelOpThroughSymbol(op);
+    auto put_entry =
+        canonicalizer.getVertexFromOp(put.getOperation(), dep_ctx, "front");
+    auto put_v = put_entry.first;
+    auto &put_g = put_entry.second;
+    auto &put_node = put_g->g[put_v];
+
+    put_node.sym_token_count--;
 
     c.processed_vertices.push_back(it);
   }
@@ -282,7 +335,11 @@ public:
       auto Op = dyn_cast<scf::YieldOp>(node.op);
       auto parent_for_op =
           dyn_cast<scf::ForOp>(getScfParentOpFromYieldOp<scf::ForOp>(Op));
-      executeOp(Op, parent_for_op, c, it);
+      executeOp(Op, time, parent_for_op, c, it);
+    } else if (auto Op = dyn_cast<air::ChannelPutOp>(node.op)) {
+      executeOp(Op, c, it);
+    } else if (auto Op = dyn_cast<air::ChannelGetOp>(node.op)) {
+      executeOp(Op, c, it);
     } else {
       executeOp(c, it);
     }
@@ -355,20 +412,11 @@ public:
 
         if (compute_op_count) {
           // defaults
-          double num_cores = 1;
+          double num_cores = 1; // one because the post-tiling code in
+                                // air.herd's body is for each core
           double ops_per_core_per_cycle = 8; // vector width for this type
           double cycles_per_second = 1e9;
           double efficiency = 1.0f;
-
-          // get the number of cores in the herd
-          auto herd = c.op->getParentOfType<air::HerdOp>();
-          if (herd) {
-            auto herd_size = herd.getSizeOperands();
-            for (unsigned i = 0; i < herd_size.size(); i++) {
-              num_cores *=
-                  herd_size[i].getDefiningOp<arith::ConstantIndexOp>().value();
-            }
-          }
 
           auto model = jsonModel.getAsObject();
           assert(model);
@@ -420,8 +468,9 @@ public:
     return execution_time;
   }
 
-  void buildVertexDependencyList(Graph::vertex_descriptor v, Graph G,
-                                 std::vector<dependencyNodeEntry *> &dep_list) {
+  void buildVertexDependencyList(
+      Graph::vertex_descriptor v, Graph G,
+      std::vector<std::pair<dependencyNodeEntry *, std::string>> &dep_list) {
     auto inv_adj_set = boost::inv_adjacent_vertices(v, G);
     // If current vertex is ChannelGet, then add implicit ChannelPut vertex to
     // dep list
@@ -434,7 +483,7 @@ public:
       auto channel_put_v = channel_put_entry.first;
       auto &channel_put_g = channel_put_entry.second;
       auto &channel_put_node = channel_put_g->g[channel_put_v];
-      dep_list.push_back(&channel_put_node);
+      dep_list.push_back(std::make_pair(&channel_put_node, "sym"));
     }
     for (auto inv_adj_v = inv_adj_set.first; inv_adj_v != inv_adj_set.second;
          ++inv_adj_v) {
@@ -443,15 +492,53 @@ public:
       if (G[*inv_adj_v].asyncEventType == "hierarchy") {
         auto sub_g = G[*inv_adj_v].nextDependencyGraph;
         auto terminator_v = sub_g->terminator_vertex;
-        dep_list.push_back(&sub_g->g[terminator_v]);
+        dep_list.push_back(std::make_pair(&sub_g->g[terminator_v], "ssa"));
       } else {
-        dep_list.push_back(&G[*inv_adj_v]);
+        dep_list.push_back(std::make_pair(&G[*inv_adj_v], "ssa"));
       }
     }
   }
 
+  // Check if a dependence has been fulfilled
+  bool checkEachDependenceFulfillment(
+      std::pair<dependencyNodeEntry *, std::string> dep, uint64_t time) {
+    if (dep.second == "sym") {
+      if (!dep.first->sym_token_count) {
+        return false;
+      }
+    } else if (dep.second == "ssa") {
+      if ((!dep.first->is_started()) || (!dep.first->is_done(time))) {
+        return false;
+      }
+    } else {
+      assert(false && "Unknown async token type");
+    }
+    return true;
+  }
+
   std::string to_string(Operation *op) {
     return op->getName().getStringRef().str();
+  }
+
+  // Check if all dependencies of an async op have been fulfilled
+  bool checkAllDependenciesFulfillment(
+      std::vector<std::pair<dependencyNodeEntry *, std::string>> dep_list,
+      uint64_t time, bool isBlocking) {
+    bool dep_fulfilled = true;
+    if (isBlocking) {
+      dep_fulfilled = true;
+      for (auto &dep : dep_list) {
+        dep_fulfilled =
+            dep_fulfilled && checkEachDependenceFulfillment(dep, time);
+      }
+    } else {
+      dep_fulfilled = false;
+      for (auto &dep : dep_list) {
+        dep_fulfilled =
+            dep_fulfilled || checkEachDependenceFulfillment(dep, time);
+      }
+    }
+    return dep_fulfilled;
   }
 
   std::string to_string(dependencyNodeEntry &c) { return to_string(c.op); }
@@ -494,14 +581,18 @@ public:
     for (auto it = next_vertex_set_candidates.begin();
          it != next_vertex_set_candidates.end(); ++it) {
       bool dep_fulfilled = true;
-      // Build it's dependency list
-      std::vector<dependencyNodeEntry *> dep_list;
+      // Build it's dependency list. In each entry, the first field is a pointer
+      // to the node, and the second field is a string representing the type of
+      // this dependency, either "ssa" or "sym".
+      std::vector<std::pair<dependencyNodeEntry *, std::string>> dep_list;
       buildVertexDependencyList(*it, G, dep_list);
       // Check whether adj_v's dependency list is fulfulled
-      for (auto dep : dep_list) {
-        if ((!dep->is_started()) || (!dep->is_done(time))) {
-          dep_fulfilled = false;
-        }
+      if (dyn_cast<scf::YieldOp>(G[*it].op)) {
+        // If op is non-blocking
+        dep_fulfilled = checkAllDependenciesFulfillment(dep_list, time, false);
+      } else {
+        // Else (op is blocking)
+        dep_fulfilled = checkAllDependenciesFulfillment(dep_list, time, true);
       }
       if (dep_fulfilled) {
         next_vertex_set.push_back(*it);
@@ -566,7 +657,7 @@ public:
     // Reset launch graph
     launch.processed_vertices.clear();
     resetGraphBetweenTwoVertices(start_v, launch.ctrl_g->terminator_vertex,
-                                 launch.ctrl_g->g, launch);
+                                 launch.ctrl_g->g, launch, time);
     // Start running launch
     bool running = true;
     launch.ctrl_g->g[start_v].start_time = 1;
@@ -869,17 +960,27 @@ private:
     return false;
   }
 
+  // Reset a vertex in dependency graph
+  void resetVertex(Graph::vertex_descriptor v, Graph &G, runnerNode &c,
+                   uint64_t time) {
+
+    // Remove start_v from processed_vertices
+    removeVertexFromVertices(c.processed_vertices, v);
+
+    // Reset node's start_time and end_time, if the async event represented by
+    // the vertex is complete
+    if (G[v].is_started() && G[v].is_done(time)) {
+      G[v].start_time = 0;
+      G[v].end_time = 0;
+    }
+  }
+
   // Recursively reset all vertices in for loop body
   void resetGraphBetweenTwoVertices(Graph::vertex_descriptor start_v,
                                     Graph::vertex_descriptor end_v, Graph &G,
-                                    runnerNode &c) {
+                                    runnerNode &c, uint64_t time) {
 
-    // Remove start_v from processed_vertices
-    removeVertexFromVertices(c.processed_vertices, start_v);
-
-    // Reset start_time and end_time
-    G[start_v].start_time = 0;
-    G[start_v].end_time = 0;
+    resetVertex(start_v, G, c, time);
 
     if (start_v == end_v)
       return;
@@ -887,10 +988,7 @@ private:
     SmallVector<Graph::vertex_descriptor, 1> vertices;
     if (hasPath(start_v, end_v, G, vertices)) {
       for (auto v : vertices) {
-        removeVertexFromVertices(c.processed_vertices, v);
-        // Reset start_time and end_time
-        G[v].start_time = 0;
-        G[v].end_time = 0;
+        resetVertex(v, G, c, time);
         // If v is a hierarchy op, then recursively clear the entire subgraph
         if (G[v].asyncEventType == "hierarchy") {
           auto sub_c = G[v].nextDependencyGraph;
@@ -898,7 +996,8 @@ private:
           auto terminator_v = sub_c->terminator_vertex;
           auto sub_g = sub_c->g;
           auto sub_runner = sub_c->runner_node;
-          resetGraphBetweenTwoVertices(start, terminator_v, sub_g, *sub_runner);
+          resetGraphBetweenTwoVertices(start, terminator_v, sub_g, *sub_runner,
+                                       time);
         }
         // Else if v is an scf.for op, then clear the cached trip count from
         // runner node
@@ -906,7 +1005,7 @@ private:
           // Clear for loop trip count from runner node's cache
           for (auto it = c.loop_trip_count.begin();
                it != c.loop_trip_count.end(); it++) {
-            if (it->first == (unsigned)getIdAttr(G[v].op)) {
+            if (std::get<0>(*it) == (unsigned)getIdAttr(G[v].op)) {
               c.loop_trip_count.erase(it);
               break;
             }
@@ -998,6 +1097,31 @@ private:
     wavefront.push_back(std::make_pair(v, tid));
   }
 
+  // Get a vector of async tokens which are ready to advance to the next loop
+  // iteration at scf.yield
+  void getReadyTokensAtScfYield(std::vector<unsigned> &token_ids,
+                                scf::YieldOp op, uint64_t time, Graph &G) {
+
+    unsigned token_id = 0;
+    for (auto operand : op->getOperands()) {
+      // With scf.for possibly having multiple tokens, check for the token ids
+      // which are ready to advance to the next iteration
+      auto dep_op = operand.getDefiningOp();
+      auto dep_entry = canonicalizer.getVertexFromOp(dep_op, dep_ctx, "front");
+      auto &dep_node = G[dep_entry.first];
+
+      // Check each token's dependence fulfillment at scf.yield
+      std::string node_type = "ssa";
+      if (checkEachDependenceFulfillment(std::make_pair(&dep_node, node_type),
+                                         time)) {
+        token_ids.push_back(token_id);
+      }
+
+      token_id++;
+    }
+  }
+
+  // Util. functions to estimate event latency
   uint64_t getTensorVolume(const mlir::ShapedType ty) {
 
     if (!ty.hasRank())
