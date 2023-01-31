@@ -32,9 +32,7 @@ PYBIND11_MODULE(_airMlir, m) {
 
   m.def(
       "register_dialect",
-      [](MlirContext context, bool load) {
-        airRegisterAllDialects(context);
-      },
+      [](MlirContext context, bool load) { airRegisterAllDialects(context); },
       py::arg("context"), py::arg("load") = true);
 
   m.def("_register_all_passes", ::airRegisterAllPasses);
