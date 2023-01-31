@@ -107,7 +107,7 @@ export LD_LIBRARY_PATH=/opt/xaiengine/lib:${LD_LIBRARY_PATH}
 Use the following command to build the AIR tools to compile on x86 for PCIe cards (VCK5000):
 
 ```
-./build-mlir-air-pcie.sh utils/llvm utils/cmakeModules utils/mlir-aie build install
+./utils/build-mlir-air-pcie.sh utils/llvm/ utils/cmakeModules/cmakeModulesXilinx/ utils/mlir-aie/
 ```
 
 ## Environment setup
