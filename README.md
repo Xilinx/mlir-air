@@ -42,6 +42,10 @@ air
 #### [VCK5000 platform](platforms/xilinx_vck5000_air)
 #### [Building MicroBlaze firmware](vck190_microblaze_firmware.html)
 
+### Tutorials
+- [AIR Asynchronous Concurrency](AIRAsyncConcurrency.html)
+- [AIR Runner](AIRRunner.html)
+
 -----
 
 <p align="center">Copyright&copy; 2019-2022 Advanced Micro Devices, Inc.</p>
