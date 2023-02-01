@@ -378,6 +378,10 @@ uint64_t air_herd_load(const char *name) {
 #ifdef AIR_PCIE
 hsa_status_t air_get_physical_devices() {
 
+  // Skip device enumeration if it is already done
+  if (physical_devices.size() != 0)
+    return HSA_STATUS_SUCCESS;
+
   // Right now just hardcode VCK5000 BDF
   std::vector<std::string> bdf_vect;
   utility::get_pci_dbdf(&bdf_vect, 0x000010ee, 0x0000b034, 0);
