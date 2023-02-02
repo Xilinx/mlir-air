@@ -2031,6 +2031,10 @@ transform::ParToHerdOp::applyToOne(scf::ParallelOp target,
   return DiagnosedSilenceableFailure::success();
 }
 
+//===----------------------------------------------------------------------===//
+// ParToLaunchOp
+//===----------------------------------------------------------------------===//
+
 DiagnosedSilenceableFailure
 transform::ParToLaunchOp::applyToOne(scf::ParallelOp target,
                                      SmallVectorImpl<Operation *> &results,
@@ -2053,6 +2057,10 @@ class SimpleRewriter : public PatternRewriter {
 public:
   SimpleRewriter(MLIRContext *context) : PatternRewriter(context) {}
 };
+
+//===----------------------------------------------------------------------===//
+// CopyToDmaOp
+//===----------------------------------------------------------------------===//
 
 DiagnosedSilenceableFailure
 transform::CopyToDmaOp::applyToOne(memref::CopyOp op,

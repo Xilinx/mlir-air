@@ -66,25 +66,6 @@ transform::PartitionToAIEOp::applyToOne(xilinx::air::PartitionOp target,
 }
 
 //===----------------------------------------------------------------------===//
-// MapSubviewsOp
-//===----------------------------------------------------------------------===//
-
-// DiagnosedSilenceableFailure
-// transform::MapSubviewsOp::apply(transform::TransformResults &results,
-//                                     transform::TransformState &state) {
-//   SetVector<Operation *> memrefs;
-//   for (Operation *target : state.getPayloadOps(getTarget())) {
-//     MLIRContext *ctx = target->getParentOfType<func::FuncOp>().getContext();
-//     RewritePatternSet patterns(ctx);
-//     patterns.insert<RemoveSubViewOpsPattern, FoldSubViewOpsPattern,
-//                     RemoveViewOpsPattern, HoistReduceBufferPattern>(ctx);
-//     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
-//   }
-//   results.set(getResult().cast<OpResult>(), memrefs.getArrayRef());
-//   return DiagnosedSilenceableFailure::success();
-// }
-
-//===----------------------------------------------------------------------===//
 // Transform op registration
 //===----------------------------------------------------------------------===//
 

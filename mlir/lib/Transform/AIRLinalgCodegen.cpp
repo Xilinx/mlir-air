@@ -2013,6 +2013,16 @@ transform::LinalgPromoteOp::applyToOne(linalg::LinalgOp target,
   if (getAlignment().has_value())
     promotionOptions = promotionOptions.setAlignment(*getAlignment());
 
+  auto memorySpace = xilinx::air::MemorySpace::L1;
+  if (getMemorySpace() == "L1")
+    memorySpace = xilinx::air::MemorySpace::L1;
+  else if (getMemorySpace() == "L2")
+    memorySpace = xilinx::air::MemorySpace::L2;
+  else if (getMemorySpace() == "L3")
+    memorySpace = xilinx::air::MemorySpace::L3;
+  else
+    return emitDefaultDefiniteFailure(target);
+
   if (failed(promoteSubviewsPrecondition(target, promotionOptions)))
     return emitDefaultDefiniteFailure(target);
 
@@ -2026,7 +2036,7 @@ transform::LinalgPromoteOp::applyToOne(linalg::LinalgOp target,
   results.push_back(target);
 
   RewritePatternSet patterns(ctx);
-  patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
+  patterns.insert<RemoveSubViewOpsPattern>(ctx, (int)memorySpace);
   patterns.insert<FoldSubViewOpsPattern>(ctx);
   patterns.insert<MemrefsPattern>(ctx);
   scf::populateSCFForLoopCanonicalizationPatterns(patterns);
@@ -2047,10 +2057,10 @@ void transform::FuseIntoContainingMemrefOp::build(OpBuilder &builder,
   result.addTypes(pdl::OperationType::get(builder.getContext()));
 }
 
-static FailureOr<Value> generateResultTileValue(Operation *op, Operation *forOp,
-                                                OpBuilder &b,
-                                                ArrayRef<OpFoldResult> offsets,
-                                                ArrayRef<OpFoldResult> sizes) {
+static FailureOr<linalg::LinalgOp>
+generateResultTileValue(Operation *op, Operation *forOp, OpBuilder &b,
+                        ArrayRef<OpFoldResult> offsets,
+                        ArrayRef<OpFoldResult> sizes) {
   auto linalgOp = cast<linalg::LinalgOp>(op);
   auto loc = op->getLoc();
   SmallVector<Value> args;
@@ -2079,7 +2089,7 @@ static FailureOr<Value> generateResultTileValue(Operation *op, Operation *forOp,
   }
 
   linalg::LinalgOp newLinalgOp = clone(b, op, {}, operands);
-  return newLinalgOp.getDpsInitOperand(0)->get();
+  return newLinalgOp;
 }
 
 /// Find the first subview user of `producerOp` and tile it right before its
@@ -2116,7 +2126,7 @@ static Operation *tileAndFuseFirstExtractUse(RewriterBase &rewriter,
   rewriter.setInsertionPoint(sliceOpToTile);
 
   // Tile the producer.
-  FailureOr<Value> tiledProducer = generateResultTileValue(
+  FailureOr<linalg::LinalgOp> tiledProducer = generateResultTileValue(
       producerOp, containingOp, rewriter, sliceOpToTile.getMixedOffsets(),
       sliceOpToTile.getMixedSizes());
   if (failed(tiledProducer)) {
@@ -2127,8 +2137,9 @@ static Operation *tileAndFuseFirstExtractUse(RewriterBase &rewriter,
   LLVM_DEBUG(llvm::dbgs() << "tiledProducer: " << *tiledProducer << "\n");
 
   // Replace the extract op.
-  rewriter.replaceOp(sliceOpToTile, *tiledProducer);
-  return tiledProducer->getDefiningOp();
+  rewriter.replaceOp(sliceOpToTile,
+                     tiledProducer.value().getDpsInitOperand(0)->get());
+  return *tiledProducer;
 }
 
 /// First, find the first "scf::ForeachThreadOp" user of `producerOp` and ensure
