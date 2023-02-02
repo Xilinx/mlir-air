@@ -1878,8 +1878,7 @@ struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
 
     RewritePatternSet patterns(context);
     patterns.add<AffineParToHerdConversion>(context);
-    patterns.add<ScfParToHerdConversion>(
-        context, filteredOps, replacementOps);
+    patterns.add<ScfParToHerdConversion>(context, filteredOps, replacementOps);
 
     ConversionTarget target(*context);
 
