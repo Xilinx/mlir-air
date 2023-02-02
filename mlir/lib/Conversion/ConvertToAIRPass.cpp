@@ -2020,7 +2020,7 @@ transform::ParToHerdOp::applyToOne(scf::ParallelOp target,
   auto ctx = target->getContext();
   RewritePatternSet patterns(ctx);
   llvm::SmallSet<air::HerdOp, 2> herdOps;
-  llvm::SmallSet<scf::ParallelOp, 2> filteredOps;
+  llvm::SmallSet<Operation *, 8> filteredOps;
   filteredOps.insert(target);
   patterns.add<ScfParToHerdConversion>(ctx, filteredOps, herdOps);
   (void)applyPatternsAndFoldGreedily(
@@ -2038,7 +2038,7 @@ transform::ParToLaunchOp::applyToOne(scf::ParallelOp target,
   auto ctx = target->getContext();
   RewritePatternSet patterns(ctx);
   llvm::SmallSet<air::LaunchOp, 2> launchOps;
-  llvm::SmallSet<scf::ParallelOp, 2> filteredOps;
+  llvm::SmallSet<scf::ParallelOp, 8> filteredOps;
   filteredOps.insert(target);
   patterns.add<ScfParToLaunchConversion>(ctx, filteredOps, launchOps);
   (void)applyPatternsAndFoldGreedily(
