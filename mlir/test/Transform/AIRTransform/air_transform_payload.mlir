@@ -1,5 +1,9 @@
-// Copyright (C) 2023, Advanced Micro Devices, Inc.
+//===- air_transform_payload.mlir ------------------------------*- MLIR -*-===//
+//
+// Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
 
 // RUN: air-opt -air-transform='filename=%S/air_transform_ops.mlir' %s | FileCheck %s
 

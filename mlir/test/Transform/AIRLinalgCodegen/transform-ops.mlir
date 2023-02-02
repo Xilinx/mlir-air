@@ -71,10 +71,3 @@ transform.with_pdl_patterns {
     %1 = transform.air.linalg_promote %0 {operands_to_promote=[0]}
   }
 }
-
-// -----
-
-func.func @matmul_on_buffers(%arg0: memref<128x128xi32>, %arg1: memref<128x128xi32>, %arg2: memref<128x128xi32>) {
-  linalg.matmul {cast = #linalg.type_fn<cast_signed>} ins(%arg0, %arg1 : memref<128x128xi32>, memref<128x128xi32>) outs(%arg2 : memref<128x128xi32>)
-  return
-}
