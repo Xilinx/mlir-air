@@ -11,6 +11,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
+#include "air/Util/Util.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -845,6 +846,136 @@ void allocL1Buffers(ModuleOp m,
   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
 
+AIE::ObjectFifoCreateOp createObjectFifo(OpBuilder &builder,
+                                      AIE::AIEObjectFifoType datatype,
+                                      Value prodTile, Value consTile,
+                                      int depth) {
+  AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
+      builder.getUnknownLoc(), datatype, prodTile, consTile, depth);
+  return fifo;
+}
+
+struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelPutOp> {
+  using OpRewritePattern<air::ChannelPutOp>::OpRewritePattern;
+
+  LowerAIRChannelsPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(air::ChannelPutOp put,
+                                PatternRewriter &rewriter) const override {
+    // retrieve put/get of channel
+    ChannelGetOp get = getTheOtherChannelOpThroughSymbol(put);
+    ChannelOp channel = getChannelDeclarationThroughSymbol(dyn_cast<air::ChannelInterface>(put.getOperation()));
+    if (!channel) 
+      return failure();
+    if (!get) 
+      return failure();
+
+    // get memrefs of put/get, find memory hierarchy levels
+    auto srcMemref = put.getSrc().getType().cast<MemRefType>();
+    int src_space = srcMemref.getMemorySpaceAsInt();
+    auto dstMemref = get.getDst().getType().cast<MemRefType>();
+    int dst_space = dstMemref.getMemorySpaceAsInt();
+
+    // create aieTiles/shimTiles based on memory hierarchy levels
+    AIE::TileOp producerTile;
+    AIE::TileOp consumerTile;
+    if (src_space == (int)air::MemorySpace::L1 &&
+        dst_space == (int)air::MemorySpace::L1) {
+
+        AIE::CoreOp producerCore = put->getParentOfType<AIE::CoreOp>();
+        if (!producerCore)
+          return failure();
+        producerTile = producerCore.getTileOp();
+        if (!producerTile)
+          return failure();
+
+        AIE::CoreOp consumerCore = get->getParentOfType<AIE::CoreOp>();
+        if (!consumerCore)
+          return failure();
+        consumerTile = consumerCore.getTileOp();
+        if (!consumerTile)
+          return failure();
+
+    } else {
+      assert(false && "Unsupported data movement");
+    }
+
+    // create objFifo
+    // For now, number of memory elements in OF is hardcoded to 1 
+    // (single buffer). FIXME
+    rewriter.setInsertionPoint(channel);
+    auto datatype = AIE::AIEObjectFifoType::get(dstMemref);
+    AIE::ObjectFifoCreateOp objFifo = createObjectFifo(rewriter, datatype, producerTile, consumerTile, 1);
+    auto elementType = objFifo.getType().dyn_cast<AIE::AIEObjectFifoType>().getElementType();
+    auto acqType = AIE::AIEObjectFifoSubviewType::get(elementType);
+    
+    // replace put and the associated memref alloc
+    if (auto bco = dyn_cast<bufferization::ToMemrefOp>(put.getSrc().getDefiningOp()))
+      rewriter.setInsertionPoint(bco.getOperand().getDefiningOp());
+    else if (auto a = dyn_cast<memref::AllocaOp>(put.getSrc().getDefiningOp()))
+      rewriter.setInsertionPoint(put.getSrc().getDefiningOp());
+    else
+      rewriter.setInsertionPoint(&put->getBlock()->front());
+    AIE::ObjectFifoAcquireOp producerAcq = rewriter.create<AIE::ObjectFifoAcquireOp>(rewriter.getUnknownLoc(), acqType, AIE::ObjectFifoPort::Produce, objFifo, 1);
+    rewriter.setInsertionPointAfter(producerAcq);
+    AIE::ObjectFifoSubviewAccessOp producerAccess = rewriter.create<AIE::ObjectFifoSubviewAccessOp>(rewriter.getUnknownLoc(), elementType, producerAcq.getSubview(), rewriter.getIntegerAttr(rewriter.getI32Type(), 0));
+    
+    // replace uses of alloc with result of acquire
+    if (auto a = dyn_cast<memref::AllocOp>(put.getSrc().getDefiningOp()))
+      a.getMemref().replaceAllUsesWith(producerAccess.getOutput());
+    
+    // replace get and the associated memref alloc
+    if (auto bco = dyn_cast<bufferization::ToMemrefOp>(get.getDst().getDefiningOp()))
+      rewriter.setInsertionPoint(bco.getOperand().getDefiningOp());
+    else if (auto a = dyn_cast<memref::AllocaOp>(get.getDst().getDefiningOp()))
+      rewriter.setInsertionPoint(get.getDst().getDefiningOp());
+    else
+      rewriter.setInsertionPoint(&get->getBlock()->front());
+    AIE::ObjectFifoAcquireOp consumerAcq = rewriter.create<AIE::ObjectFifoAcquireOp>(rewriter.getUnknownLoc(), acqType, AIE::ObjectFifoPort::Consume, objFifo, 1);
+    rewriter.setInsertionPointAfter(consumerAcq);
+    AIE::ObjectFifoSubviewAccessOp consumerAccess = rewriter.create<AIE::ObjectFifoSubviewAccessOp>(rewriter.getUnknownLoc(), elementType, consumerAcq.getSubview(), rewriter.getIntegerAttr(rewriter.getI32Type(), 0));
+
+    // replace uses of alloc with result of acquire
+    if (auto a = dyn_cast<memref::AllocOp>(get.getDst().getDefiningOp()))
+      a.getMemref().replaceAllUsesWith(consumerAccess.getOutput());
+
+    // replace associated deallocs for put and get
+    for (auto u : put.getSrc().getDefiningOp()->getUsers()) {
+      if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
+          rewriter.setInsertionPoint(dealloc);
+          rewriter.create<AIE::ObjectFifoReleaseOp>(dealloc->getLoc(), 
+                                                  AIE::ObjectFifoPort::Produce, objFifo, 1);
+          dealloc.erase();
+      }
+    }
+    for (auto u : get.getDst().getDefiningOp()->getUsers()) {
+      if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
+          rewriter.setInsertionPoint(dealloc);
+          rewriter.create<AIE::ObjectFifoReleaseOp>(dealloc->getLoc(), 
+                                                  AIE::ObjectFifoPort::Consume, objFifo, 1);
+          dealloc.erase();
+      }
+    }
+
+    // erase the channel and its put/get
+    channel.erase();
+    put.erase();  
+    get.erase(); 
+    return success();               
+  }
+};
+
+// This function replaces ChannelPutOp/ChannelGetOp with AIE_CreateObjectFifoOps and
+// with ObjectFifoAcquireOp<Producer/Consumer>. It also erases memref allocs as 
+// the objFifo lowering allocates its own memory. It replaces the associated memref 
+// deallocs with ObjectFifoReleaseOps.
+// void lowerAIRChannels(ModuleOp &m) {
+//   auto ctx = m->getContext();
+//   RewritePatternSet patterns(ctx);
+//   patterns.insert<LowerAIRChannelsPattern>(ctx);
+//   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
+// }
+
 class AIRToAIEPass : public AIRToAIEBase<AIRToAIEPass> {
 
 public:
@@ -1401,6 +1532,8 @@ public:
       patterns.insert<LowerPipeGetPutPattern>(ctx, tileToHerdMap);
     if (clTestPatterns.find("lower-scf-tokens") != std::string::npos)
       patterns.insert<LowerScfTokenPattern>(ctx);
+    if (clTestPatterns.find("lower-air-channels") != std::string::npos)
+      patterns.insert<LowerAIRChannelsPattern>(ctx);
 
     if (patterns.getNativePatterns().size())
       (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
