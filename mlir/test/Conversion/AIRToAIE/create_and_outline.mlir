@@ -8,6 +8,7 @@
 
 // RUN: air-opt %s -air-to-aie='test-patterns=to-aie-mlir' -o /dev/null | FileCheck %s
 
+// CHECK-LABEL: @aie.partition0
 // CHECK: [[T00:%.*]] = AIE.tile(1, 1)
 // CHECK: [[T10:%.*]] = AIE.tile(2, 1)
 // CHECK: [[T01:%.*]] = AIE.tile(1, 2)
@@ -53,4 +54,18 @@ module attributes {torch.debug_module_name = "mmult"} {
     }
     return
   }
+}
+
+// CHECK-LABEL: @aie.partition_1
+// CHECK: air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
+air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
+func.func @f1() -> () {
+  %cst1 = arith.constant 1 : index
+  %cst4 = arith.constant 1 : index
+  air.herd tile(%tx, %ty) in (%size_x = %cst4, %size_y = %cst1) {
+    %src0 = memref.alloc() : memref<1xi32, 2>
+    air.channel.put @channel_0[] (%src0[] [] []) : (memref<1xi32, 2>)
+    air.herd_terminator
+  }
+  return
 }

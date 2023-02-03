@@ -11,6 +11,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
+#include "air/Util/Util.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -217,6 +218,13 @@ void outlineAIECores(OpBuilder &builder, ModuleOp aie_module,
 
   int64_t herd_size_x = h.getNumCols();
   int64_t herd_size_y = h.getNumRows();
+
+  h.walk([&](air::ChannelInterface op) {
+    if (!aie_module.lookupSymbol(op.getChanName())) {
+      auto ch = air::getChannelDeclarationThroughSymbol(op);
+      builder.clone(*ch.getOperation());
+    }
+  });
 
   // use the command line offsets unless the attribute is present
   int64_t col_offset = options.col_offset;
