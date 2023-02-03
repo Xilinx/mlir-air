@@ -942,7 +942,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelPutOp> {
 
     // replace uses of alloc with result of acquire
     if (auto a = dyn_cast<memref::AllocOp>(put.getSrc().getDefiningOp()))
-      rewriter.replaceOp (a.getOperation(), producerAccess.getOutput());
+      rewriter.replaceOp(a.getOperation(), producerAccess.getOutput());
 
     // replace get and the associated memref alloc
     if (auto bco =
@@ -964,7 +964,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelPutOp> {
 
     // replace uses of alloc with result of acquire
     if (auto a = dyn_cast<memref::AllocOp>(get.getDst().getDefiningOp()))
-      rewriter.replaceOp (a.getOperation(), consumerAccess.getOutput());
+      rewriter.replaceOp(a.getOperation(), consumerAccess.getOutput());
 
     // replace associated deallocs for put and get
     for (auto u : put.getSrc().getDefiningOp()->getUsers()) {
