@@ -759,3 +759,9 @@ module  {
 ### `-air-rm-linalg-name`: Remove LinalgTransformMarker string attributes from linalg ops
 ### `-air-specialize-dma`: Specialize dma operations
 ### `-air-specialize-dma-broadcast`: Specialize dma operations for broadcast pattern
+### `-air-transform`: Transform IR with transform dialect
+
+#### Options
+```
+-filename : Transform Dialect filename
+```
