@@ -869,6 +869,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelPutOp> {
 
   LogicalResult matchAndRewrite(air::ChannelPutOp put,
                                 PatternRewriter &rewriter) const override {
+    auto aie_module = put->getParentOfType<ModuleOp>();
     // retrieve put/get of channel
     ChannelOp channel = getChannelDeclarationThroughSymbol(
         dyn_cast<air::ChannelInterface>(put.getOperation()));
@@ -887,17 +888,19 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelPutOp> {
     // find AIE tiles and their cores based on memory hierarchy levels
     AIE::TileOp producerTile;
     AIE::TileOp consumerTile;
+    AIE::CoreOp producerCore;
+    AIE::CoreOp consumerCore;
     if (src_space == (int)air::MemorySpace::L1 &&
         dst_space == (int)air::MemorySpace::L1) {
 
-      AIE::CoreOp producerCore = put->getParentOfType<AIE::CoreOp>();
+      producerCore = put->getParentOfType<AIE::CoreOp>();
       if (!producerCore)
         return failure();
       producerTile = producerCore.getTileOp();
       if (!producerTile)
         return failure();
 
-      AIE::CoreOp consumerCore = get->getParentOfType<AIE::CoreOp>();
+      consumerCore = get->getParentOfType<AIE::CoreOp>();
       if (!consumerCore)
         return failure();
       consumerTile = consumerCore.getTileOp();
@@ -911,10 +914,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelPutOp> {
     // create objFifo
     // For now, number of memory elements in OF is hardcoded to 1
     // (single buffer). FIXME
-
-    // TODO: should be created after all tiles have been initialized
-    rewriter.setInsertionPoint(channel);
-
+    rewriter.setInsertionPoint(*(aie_module.getOps<AIE::CoreOp>().begin()));
     auto datatype = AIE::AIEObjectFifoType::get(dstMemref);
     AIE::ObjectFifoCreateOp objFifo =
         createObjectFifo(rewriter, datatype, producerTile, consumerTile, 1);
