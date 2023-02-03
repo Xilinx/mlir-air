@@ -1777,6 +1777,602 @@ transform::PipelineReduceOp::applyToOne(linalg::LinalgOp target,
   return DiagnosedSilenceableFailure::success();
 }
 
+//===----------------------------------------------------------------------===//
+// LinalgTileOp
+//===----------------------------------------------------------------------===//
+
+void transform::LinalgTileOp::build(OpBuilder &builder, OperationState &result,
+                                    Value target,
+                                    ArrayRef<int64_t> staticTileSizes,
+                                    ArrayRef<int64_t> interchange) {
+  return build(builder, result,
+               /*target=*/target,
+               /*mixedTileSizes=*/
+               getAsOpFoldResult(builder.getI64ArrayAttr(staticTileSizes)),
+               interchange);
+}
+
+void transform::LinalgTileOp::build(OpBuilder &builder, OperationState &result,
+                                    Value target,
+                                    ArrayRef<OpFoldResult> mixedTileSizes,
+                                    ArrayRef<int64_t> interchange) {
+  SmallVector<int64_t> staticTileSizes;
+  SmallVector<Value> dynamicTileSizes;
+  dispatchIndexOpFoldResults(mixedTileSizes, dynamicTileSizes, staticTileSizes);
+  // Call the default builder which sets up the proper operands segment sizes
+  // attributes for multiple variadic operands. In the absence of this, horrible
+  // bugs ensue.
+  MLIRContext *ctx = builder.getContext();
+  auto operationType = pdl::OperationType::get(ctx);
+  auto staticTileSizesAttr = builder.getDenseI64ArrayAttr(staticTileSizes);
+  build(builder, result,
+        /*resultTypes=*/TypeRange{operationType, operationType},
+        /*target=*/target,
+        /*dynamic_sizes=*/dynamicTileSizes,
+        /*static_sizes=*/staticTileSizesAttr,
+        /*interchange=*/builder.getDenseI64ArrayAttr(interchange));
+}
+
+DiagnosedSilenceableFailure
+transform::LinalgTileOp::apply(TransformResults &transformResults,
+                               TransformState &state) {
+  ArrayRef<int64_t> tileSizes = getStaticSizes();
+
+  ArrayRef<Operation *> targets = state.getPayloadOps(getTarget());
+  SmallVector<ArrayRef<Operation *>> dynamicSizeProducers;
+  dynamicSizeProducers.reserve(getDynamicSizes().size());
+  for (Value dynamicSizeProducerHandle : getDynamicSizes()) {
+    dynamicSizeProducers.push_back(
+        state.getPayloadOps(dynamicSizeProducerHandle));
+
+    if (dynamicSizeProducers.back().size() != targets.size()) {
+      DiagnosedSilenceableFailure diag =
+          emitSilenceableError()
+          << "expected as many dynamic size-producing operations ("
+          << dynamicSizeProducers.back().size() << ") as target ops ("
+          << targets.size() << ")";
+      diag.attachNote(dynamicSizeProducerHandle.getLoc()) << "for this handle";
+      return diag;
+    }
+
+    for (Operation *op : dynamicSizeProducers.back()) {
+      if (op->getNumResults() == 1 &&
+          op->getResult(0).getType().isa<IndexType>())
+        continue;
+      DiagnosedSilenceableFailure diag =
+          emitSilenceableError() << "expected sizes to be produced by ops "
+                                    "with a single index-type result";
+      diag.attachNote(op->getLoc()) << "size producer op";
+      diag.attachNote(dynamicSizeProducerHandle.getLoc()) << "for this handle";
+      return diag;
+    }
+  }
+
+  SmallVector<Operation *> tiled;
+  SmallVector<SmallVector<Operation *, 4>, 4> loops;
+  loops.resize(getLoops().size());
+  for (auto &en : llvm::enumerate(targets)) {
+    auto linalgOp = dyn_cast<linalg::LinalgOp>(en.value());
+    if (!linalgOp) {
+      DiagnosedSilenceableFailure diag = emitSilenceableError()
+                                         << "only linalg ops are supported";
+      diag.attachNote(en.value()->getLoc()) << "target op";
+      return diag;
+    }
+
+    linalg::LinalgTilingOptions tilingOptions;
+    tilingOptions.setLoopType(linalg::LinalgTilingLoopType::ParallelLoops);
+    unsigned index = en.index();
+    if (!tileSizes.empty()) {
+      tilingOptions.setTileSizeComputationFunction(
+          [&, index](OpBuilder &b, Operation *) {
+            SmallVector<Value, 4> sizes;
+            sizes.reserve(tileSizes.size());
+            unsigned dynamicIdx = 0;
+            for (OpFoldResult ofr : getMixedSizes()) {
+              if (auto attr = ofr.dyn_cast<Attribute>()) {
+                sizes.push_back(b.create<arith::ConstantIndexOp>(
+                    getLoc(), attr.cast<IntegerAttr>().getInt()));
+              } else {
+                sizes.push_back(
+                    dynamicSizeProducers[dynamicIdx++][index]->getResult(0));
+              }
+            }
+            return sizes;
+          });
+    }
+
+    SmallVector<unsigned int> inter(getInterchange());
+    tilingOptions.setInterchange(inter);
+    SimpleRewriter rewriter(linalgOp.getContext());
+    FailureOr<linalg::TiledLinalgOp> maybeTilingResult =
+        linalg::tileLinalgOp(rewriter, linalgOp, tilingOptions);
+    if (failed(maybeTilingResult))
+      return DiagnosedSilenceableFailure::definiteFailure();
+
+    if (linalgOp.hasBufferSemantics())
+      rewriter.eraseOp(linalgOp);
+    else
+      rewriter.replaceOp(linalgOp,
+                         maybeTilingResult->loops.front()->getResults());
+
+    tiled.push_back(maybeTilingResult->op);
+    for (const auto &en2 : llvm::enumerate(maybeTilingResult->loops))
+      loops[en2.index()].push_back(en2.value());
+  }
+
+  transformResults.set(getTiledLinalgOp().cast<OpResult>(), tiled);
+  for (const auto &en : llvm::enumerate(loops))
+    transformResults.set(getLoops()[en.index()].cast<OpResult>(), en.value());
+
+  return DiagnosedSilenceableFailure::success();
+}
+
+SmallVector<OpFoldResult> transform::LinalgTileOp::getMixedSizes() {
+  ValueRange dynamic = getDynamicSizes();
+  ArrayRef<int64_t> tileSizes = getStaticSizes();
+  SmallVector<OpFoldResult> results;
+  results.reserve(tileSizes.size());
+  unsigned dynamicPos = 0;
+  Builder builder(getContext());
+  for (int64_t size : tileSizes) {
+    if (size == ShapedType::kDynamic) {
+      results.push_back(dynamic[dynamicPos++]);
+    } else {
+      results.push_back(builder.getIndexAttr(size));
+    }
+  }
+  return results;
+}
+
+// We want to parse `DenseI64ArrayAttr` using the short form without the
+// `array` prefix to be consistent in the IR with `parseDynamicIndexList`.
+static ParseResult parseInterchange(OpAsmParser &parser,
+                                    OperationState &result) {
+  if (succeeded(parser.parseOptionalLBrace())) {
+    if (failed(parser.parseKeyword("interchange")))
+      return parser.emitError(parser.getNameLoc()) << "expect `interchange`";
+    if (failed(parser.parseEqual()))
+      return parser.emitError(parser.getNameLoc()) << "expect `=`";
+    result.addAttribute("interchange",
+                        DenseI64ArrayAttr::parse(parser, Type{}));
+    if (failed(parser.parseRBrace()))
+      return parser.emitError(parser.getNameLoc()) << "expect `}`";
+  }
+  return success();
+}
+
+static void printInterchange(OpAsmPrinter &p,
+                             ArrayRef<int64_t> interchangeVals) {
+  if (!interchangeVals.empty()) {
+    p << " {interchange = [";
+    llvm::interleaveComma(interchangeVals, p,
+                          [&](int64_t integer) { p << integer; });
+    p << "]}";
+  }
+}
+
+ParseResult transform::LinalgTileOp::parse(OpAsmParser &parser,
+                                           OperationState &result) {
+  OpAsmParser::UnresolvedOperand target;
+  SmallVector<OpAsmParser::UnresolvedOperand> dynamicSizes;
+  DenseI64ArrayAttr staticSizes;
+  auto pdlOperationType = pdl::OperationType::get(parser.getContext());
+  if (parser.parseOperand(target) ||
+      parser.resolveOperand(target, pdlOperationType, result.operands) ||
+      parseDynamicIndexList(parser, dynamicSizes, staticSizes) ||
+      parser.resolveOperands(dynamicSizes, pdlOperationType, result.operands))
+    return ParseResult::failure();
+
+  // Parse optional interchange.
+  if (failed(parseInterchange(parser, result)))
+    return ParseResult::failure();
+
+  result.addAttribute(getStaticSizesAttrName(result.name), staticSizes);
+  size_t numExpectedLoops =
+      staticSizes.size() - llvm::count(staticSizes.asArrayRef(), 0);
+  result.addTypes(SmallVector<Type>(numExpectedLoops + 1, pdlOperationType));
+  return success();
+}
+
+void transform::LinalgTileOp::print(OpAsmPrinter &p) {
+  p << ' ' << getTarget();
+  printDynamicIndexList(p, getOperation(), getDynamicSizes(), getStaticSizes());
+  printInterchange(p, getInterchange());
+}
+
+void transform::LinalgTileOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  consumesHandle(getTarget(), effects);
+  onlyReadsHandle(getDynamicSizes(), effects);
+  producesHandle(getTiledLinalgOp(), effects);
+  producesHandle(getLoops(), effects);
+  modifiesPayload(effects);
+}
+
+//===----------------------------------------------------------------------===//
+// LinalgPromoteOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+transform::LinalgPromoteOp::applyToOne(linalg::LinalgOp target,
+                                       SmallVectorImpl<Operation *> &results,
+                                       transform::TransformState &state) {
+  linalg::LinalgPromotionOptions promotionOptions;
+  if (!getOperandsToPromote().empty())
+    promotionOptions = promotionOptions.setOperandsToPromote(
+        extractFromI64ArrayAttr(getOperandsToPromote()));
+  if (getUseFullTilesByDefault())
+    promotionOptions = promotionOptions.setUseFullTileBuffersByDefault(
+        getUseFullTilesByDefault());
+  if (getUseAlloca())
+    promotionOptions = promotionOptions.setUseAlloca(getUseAlloca());
+  if (!getUseFullTileBuffers().empty())
+    promotionOptions = promotionOptions.setUseFullTileBuffers(
+        llvm::to_vector(getUseFullTileBuffers().getAsValueRange<BoolAttr>()));
+  if (getAlignment().has_value())
+    promotionOptions = promotionOptions.setAlignment(*getAlignment());
+
+  auto memorySpace = xilinx::air::MemorySpace::L1;
+  if (getMemorySpace() == "L1")
+    memorySpace = xilinx::air::MemorySpace::L1;
+  else if (getMemorySpace() == "L2")
+    memorySpace = xilinx::air::MemorySpace::L2;
+  else if (getMemorySpace() == "L3")
+    memorySpace = xilinx::air::MemorySpace::L3;
+  else
+    return emitDefaultDefiniteFailure(target);
+
+  if (failed(promoteSubviewsPrecondition(target, promotionOptions)))
+    return emitDefaultDefiniteFailure(target);
+
+  auto ctx = target->getContext();
+  SimpleRewriter rewriter(ctx);
+  rewriter.setInsertionPoint(target);
+  FailureOr<linalg::LinalgOp> res =
+      promoteSubViews(rewriter, target, promotionOptions);
+  if (failed(res))
+    return emitDefaultDefiniteFailure(target);
+  results.push_back(target);
+
+  RewritePatternSet patterns(ctx);
+  patterns.insert<RemoveSubViewOpsPattern>(ctx, (int)memorySpace);
+  patterns.insert<FoldSubViewOpsPattern>(ctx);
+  patterns.insert<MemrefsPattern>(ctx);
+  scf::populateSCFForLoopCanonicalizationPatterns(patterns);
+  (void)applyPatternsAndFoldGreedily(target->getParentOfType<func::FuncOp>(),
+                                     std::move(patterns));
+  return DiagnosedSilenceableFailure::success();
+}
+
+//===----------------------------------------------------------------------===//
+// FuseIntoContainingMemrefOp
+//===----------------------------------------------------------------------===//
+
+void transform::FuseIntoContainingMemrefOp::build(OpBuilder &builder,
+                                                  OperationState &result,
+                                                  Value producerOp,
+                                                  Value containingOp) {
+  result.addOperands({producerOp, containingOp});
+  result.addTypes(pdl::OperationType::get(builder.getContext()));
+}
+
+static FailureOr<linalg::LinalgOp>
+generateResultTileValue(Operation *op, Operation *forOp, OpBuilder &b,
+                        ArrayRef<OpFoldResult> offsets,
+                        ArrayRef<OpFoldResult> sizes) {
+  auto linalgOp = cast<linalg::LinalgOp>(op);
+  auto loc = op->getLoc();
+  SmallVector<Value> args;
+  for (auto o : op->getOperands())
+    args.push_back(o);
+  auto allShapeSizes = linalgOp.createFlatListOfOperandDims(b, loc);
+  AffineMap shapeSizesToLoopsMap = linalgOp.getShapesToLoopsMap();
+  if (!shapeSizesToLoopsMap)
+    return failure();
+  SmallVector<OpFoldResult> sizeBounds =
+      makeComposedFoldedMultiResultAffineApply(b, loc, shapeSizesToLoopsMap,
+                                               allShapeSizes);
+  SmallVector<OpFoldResult, 2> ivs =
+      cast<scf::ParallelOp>(forOp).getInductionVars();
+  SmallVector<Value> tiledOperands = linalg::makeTiledShapes(
+      b, op->getLoc(), linalgOp, args, ivs, sizes, sizeBounds, true);
+
+  SmallVector<Value> operands;
+  auto ti = tiledOperands.begin();
+  for (auto o : op->getOperands()) {
+    if (isa<MemRefType>(o.getType()))
+      operands.push_back(*ti);
+    else
+      operands.push_back(o);
+    ti++;
+  }
+
+  linalg::LinalgOp newLinalgOp = clone(b, op, {}, operands);
+  return newLinalgOp;
+}
+
+/// Find the first subview user of `producerOp` and tile it right before its
+/// use. The tiled op is fused under the `containingOp`.
+/// Return this fused op on success or nullptr if anything fails.
+static Operation *tileAndFuseFirstExtractUse(RewriterBase &rewriter,
+                                             Diagnostic &diag,
+                                             Operation *producerOp,
+                                             Operation *containingOp) {
+  LLVM_DEBUG(llvm::dbgs() << "Try to fuse a direct extract use\n");
+  auto tileableProducer = dyn_cast<TilingInterface>(producerOp);
+  if (!tileableProducer) {
+    diag.attachNote(producerOp->getLoc())
+        << "producer is not a TileableInterface: " << *producerOp;
+    return nullptr;
+  }
+
+  linalg::LinalgOp producerLinalgOp = cast<linalg::LinalgOp>(producerOp);
+  auto users = producerLinalgOp.getDpsInitOperands()[0]->get().getUsers();
+  auto it = llvm::find_if(users, [&](Operation *user) {
+    auto sliceOp = dyn_cast<memref::SubViewOp>(user);
+    return sliceOp && containingOp->isProperAncestor(sliceOp);
+  });
+
+  // Find a fusion opportunity.
+  if (it == users.end()) {
+    diag.attachNote(tileableProducer->getLoc())
+        << "could not find fusion opportunity for: " << *tileableProducer;
+    return nullptr;
+  }
+  auto sliceOpToTile = cast<memref::SubViewOp>(*it);
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(sliceOpToTile);
+
+  // Tile the producer.
+  FailureOr<linalg::LinalgOp> tiledProducer = generateResultTileValue(
+      producerOp, containingOp, rewriter, sliceOpToTile.getMixedOffsets(),
+      sliceOpToTile.getMixedSizes());
+  if (failed(tiledProducer)) {
+    diag.attachNote(tileableProducer->getLoc())
+        << "failed to tile producer op: " << *tileableProducer;
+    return nullptr;
+  }
+  LLVM_DEBUG(llvm::dbgs() << "tiledProducer: " << *tiledProducer << "\n");
+
+  // Replace the extract op.
+  rewriter.replaceOp(sliceOpToTile,
+                     tiledProducer.value().getDpsInitOperand(0)->get());
+  return *tiledProducer;
+}
+
+/// First, find the first "scf::ForeachThreadOp" user of `producerOp` and ensure
+/// it is exactly the `containingOp`, otherwise bail.
+/// Then, find the first "extract" user of the tied block argument and tile it
+/// right before its "extract" use. The tiled op is fused under the
+/// `containingOp`.
+/// Return this fused op on success or nullptr if anything fails.
+static Operation *tileAndFuseFirstExtractUseThroughContainingOpBlockArgument(
+    RewriterBase &rewriter, Diagnostic &diag, Operation *producerOp,
+    Operation *containingOp) {
+  LLVM_DEBUG(
+      llvm::dbgs() << "Try to fuse an extract use through block argument\n");
+
+  auto tileableProducer = dyn_cast<TilingInterface>(producerOp);
+  if (!tileableProducer) {
+    diag.attachNote(producerOp->getLoc())
+        << "producer is not a TileableInterface: " << *producerOp;
+    return nullptr;
+  }
+
+  // Search the first use by a "scf::ForeachThreadOp" user.
+  scf::ForeachThreadOp foreachThreadOp;
+  auto itProducerUses =
+      llvm::find_if(tileableProducer->getUses(), [&](OpOperand &use) {
+        foreachThreadOp = dyn_cast<scf::ForeachThreadOp>(use.getOwner());
+        return foreachThreadOp;
+      });
+  // If it's not from the containing op, return.
+  if (!foreachThreadOp || foreachThreadOp != containingOp) {
+    diag.attachNote(tileableProducer->getLoc())
+        << "could not find a use by the containing op: " << *tileableProducer;
+    return nullptr;
+  }
+
+  // Search the producer slices accessed within the containing
+  // operation.
+  // TODO: Generalize to more extract/insert/parallel_insert triples.
+  //   Maybe evolve into an interface.
+  OpOperand *pUse = &(*itProducerUses);
+  BlockArgument bbArg = foreachThreadOp.getTiedBlockArgument(pUse);
+
+  // Search the producer slices accessed within the containing operation.
+  // TODO: Generalize to more extract/insert/parallel_insert triples, maybe
+  // evolve into an interface.
+  auto itBBArgUsers = llvm::find_if(bbArg.getUsers(), [&](Operation *user) {
+    auto sliceOp = dyn_cast<tensor::ExtractSliceOp>(user);
+    return sliceOp && containingOp->isProperAncestor(sliceOp);
+  });
+
+  // Find a fusion opportunity.
+  if (itBBArgUsers == bbArg.getUsers().end()) {
+    diag.attachNote(containingOp->getLoc())
+        << "could not find fusion opportunity for bbArg: " << bbArg;
+    return nullptr;
+  }
+  auto sliceOpToTile = cast<tensor::ExtractSliceOp>(*itBBArgUsers);
+
+  // Try to fuse the producer in-place.
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(sliceOpToTile);
+
+  // Replace the use in the tileableProducer before tiling: clone, replace and
+  // then tile.
+  int64_t resultNumber = pUse->get().cast<OpResult>().getResultNumber();
+  LLVM_DEBUG(llvm::dbgs() << "resultNumber: " << resultNumber << "\n");
+
+  // Gather destination tensors.
+  SmallVector<Value> destinationTensors;
+  if (failed(tensor::getOrCreateDestinations(
+          rewriter, tileableProducer->getLoc(), tileableProducer,
+          destinationTensors))) {
+    diag.attachNote(tileableProducer->getLoc())
+        << "failed to get destination tensors for: " << *tileableProducer;
+    return nullptr;
+  }
+
+  BlockAndValueMapping bvm;
+  bvm.map(destinationTensors[resultNumber], bbArg);
+  auto tileableProducerClone =
+      cast<TilingInterface>(rewriter.clone(*tileableProducer, bvm));
+  auto scopeGuard =
+      llvm::make_scope_exit([&]() { rewriter.eraseOp(tileableProducerClone); });
+
+  // Tile the producer.
+  FailureOr<Value> tiledProducer =
+      tileableProducerClone.generateResultTileValue(
+          rewriter, resultNumber, sliceOpToTile.getMixedOffsets(),
+          sliceOpToTile.getMixedSizes());
+  if (failed(tiledProducer)) {
+    diag.attachNote(tileableProducer->getLoc())
+        << "failed to tile producer op: " << *tileableProducer;
+    return nullptr;
+  }
+  LLVM_DEBUG(llvm::dbgs() << "tiledProducer: " << *tiledProducer << "\n");
+
+  // Replace the extract op.
+  Operation *fusedOp = tiledProducer->getDefiningOp();
+  auto maybeRankReduced = tensor::ExtractSliceOp::rankReduceIfNeeded(
+      rewriter, sliceOpToTile->getLoc(), fusedOp->getResult(resultNumber),
+      sliceOpToTile->getResult(0)
+          .getType()
+          .cast<RankedTensorType>()
+          .getShape());
+  assert(succeeded(maybeRankReduced) && "unexpected shape");
+  rewriter.replaceOp(sliceOpToTile, *maybeRankReduced);
+
+  // Replace the use in containingOp.
+  rewriter.updateRootInPlace(containingOp, [&]() {
+    containingOp->setOperand(pUse->getOperandNumber(),
+                             destinationTensors.front());
+  });
+
+  return fusedOp;
+}
+
+static Operation *cloneAndFuseFirstUse(RewriterBase &rewriter, Diagnostic &diag,
+                                       Operation *producerOp,
+                                       Operation *containingOp) {
+  LLVM_DEBUG(llvm::dbgs() << "Try to fuse an use by cloning\n");
+
+  // Gather all uses inside the containing op.
+  SmallVector<OpOperand *> uses;
+  for (OpResult result : producerOp->getOpResults()) {
+    for (OpOperand &use : result.getUses()) {
+      if (containingOp->isProperAncestor(use.getOwner())) {
+        uses.push_back(&use);
+        continue;
+      }
+      // Cannot clone and fuse if the use is by the containing op itself: fail
+      // immediately.
+      if (containingOp == use.getOwner()) {
+        diag.attachNote(producerOp->getLoc())
+            << "producer op use by containing op cannot be fused by cloning";
+        return nullptr;
+      }
+    }
+  }
+
+  // Check for a non-empty list of fusion opportunities.
+  if (uses.empty()) {
+    diag.attachNote(producerOp->getLoc()) << "no fusion opportunity by cloning";
+    return nullptr;
+  }
+
+  // Clone and fuse inside the containing op.
+  Operation *fusedOp = nullptr;
+  OpOperand *use = uses.front();
+  // Parallel insert slice is not a valid clone destination.
+  // TODO: Generalize to other type of ops.
+  assert(!isa<tensor::ParallelInsertSliceOp>(use->getOwner()) &&
+         "Parallel insert slice is not a valid clone destination");
+  unsigned resultNumber = use->get().cast<OpResult>().getResultNumber();
+  LLVM_DEBUG(llvm::dbgs() << "resultNumber: " << resultNumber << "\n");
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(use->getOwner());
+  fusedOp = rewriter.clone(*producerOp);
+  rewriter.updateRootInPlace(
+      use->getOwner(), [&] { use->set(fusedOp->getOpResult(resultNumber)); });
+
+  return fusedOp;
+}
+
+DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
+    transform::TransformResults &results, transform::TransformState &state) {
+  SmallVector<Operation *> fusedOps;
+  ArrayRef<Operation *> producerOps = state.getPayloadOps(getProducerOp());
+  // If nothing to fuse, propagate success.
+  if (producerOps.empty()) {
+    results.set(getFusedOp().cast<OpResult>(),
+                SmallVector<mlir::Operation *>{});
+    return DiagnosedSilenceableFailure::success();
+  }
+  if (producerOps.size() != 1) {
+    return emitDefiniteFailure()
+           << "requires exactly one producer_op handle (got "
+           << producerOps.size() << ")";
+  }
+  Operation *producerOp = producerOps.front();
+
+  ArrayRef<Operation *> containingOps = state.getPayloadOps(getContainingOp());
+  if (containingOps.size() != 1) {
+    return emitDefiniteFailure()
+           << "requires exactly one containing_op handle (got "
+           << containingOps.size() << ")";
+  }
+  Operation *containingOp = containingOps.front();
+
+  linalg::LinalgOp producerLinalgOp = dyn_cast<linalg::LinalgOp>(producerOp);
+  if (!producerLinalgOp) {
+    return emitDefiniteFailure() << "requires producer_op to be LinalgOp";
+  }
+  if (producerLinalgOp.getNumDpsInits() != 1) {
+    return emitDefiniteFailure()
+           << "requires producer_op to have exactly one init operand (got "
+           << producerLinalgOp.getNumDpsInits() << ")";
+  }
+
+  auto initOperand = producerLinalgOp.getDpsInitOperands()[0]->get();
+  // The containing op may be a user of producerOp: use isAncestor.
+  int64_t numUsesInContainingOp =
+      llvm::count_if(initOperand.getUsers(), [&](Operation *op) {
+        return containingOp->isAncestor(op);
+      });
+  if (numUsesInContainingOp == 0) {
+    results.set(getFusedOp().cast<OpResult>(), ArrayRef<Operation *>());
+    Diagnostic diag(containingOp->getLoc(), DiagnosticSeverity::Remark);
+    diag << "producer_op does not have uses in the container";
+    return DiagnosedSilenceableFailure::silenceableFailure(std::move(diag));
+  }
+
+  // Default diagnostic, to be complemented with more failure information.
+  Diagnostic diag(producerOp->getLoc(), DiagnosticSeverity::Remark);
+  diag << "could not fuse " << *producerOp << " into " << *containingOp;
+
+  IRRewriter rewriter(getContext());
+  Operation *tiled =
+      tileAndFuseFirstExtractUse(rewriter, diag, producerOp, containingOp);
+  if (tiled) {
+    LLVM_DEBUG(llvm::dbgs() << "\nFused a direct extract use\n"
+                            << *containingOp);
+    fusedOps.push_back(tiled);
+    rewriter.eraseOp(producerOp);
+
+    results.set(getFusedOp().cast<OpResult>(), fusedOps);
+    return DiagnosedSilenceableFailure::success();
+  }
+
+  results.set(getFusedOp().cast<OpResult>(), ArrayRef<Operation *>());
+  return DiagnosedSilenceableFailure::silenceableFailure(std::move(diag));
+}
+
 namespace xilinx {
 namespace air {
 
