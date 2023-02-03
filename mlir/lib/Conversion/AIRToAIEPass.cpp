@@ -870,11 +870,11 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelPutOp> {
   LogicalResult matchAndRewrite(air::ChannelPutOp put,
                                 PatternRewriter &rewriter) const override {
     // retrieve put/get of channel
-    ChannelGetOp get = getTheOtherChannelOpThroughSymbol(put);
     ChannelOp channel = getChannelDeclarationThroughSymbol(
         dyn_cast<air::ChannelInterface>(put.getOperation()));
     if (!channel)
       return failure();
+    ChannelGetOp get = getTheOtherChannelOpThroughSymbol(put);
     if (!get)
       return failure();
 
@@ -884,7 +884,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelPutOp> {
     auto dstMemref = get.getDst().getType().cast<MemRefType>();
     int dst_space = dstMemref.getMemorySpaceAsInt();
 
-    // create aieTiles/shimTiles based on memory hierarchy levels
+    // find AIE tiles and their cores based on memory hierarchy levels
     AIE::TileOp producerTile;
     AIE::TileOp consumerTile;
     if (src_space == (int)air::MemorySpace::L1 &&
@@ -905,13 +905,16 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelPutOp> {
         return failure();
 
     } else {
-      assert(false && "Unsupported data movement");
+      return failure();
     }
 
     // create objFifo
     // For now, number of memory elements in OF is hardcoded to 1
     // (single buffer). FIXME
+
+    // TODO: should be created after all tiles have been initialized
     rewriter.setInsertionPoint(channel);
+
     auto datatype = AIE::AIEObjectFifoType::get(dstMemref);
     AIE::ObjectFifoCreateOp objFifo =
         createObjectFifo(rewriter, datatype, producerTile, consumerTile, 1);
@@ -939,7 +942,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelPutOp> {
 
     // replace uses of alloc with result of acquire
     if (auto a = dyn_cast<memref::AllocOp>(put.getSrc().getDefiningOp()))
-      a.getMemref().replaceAllUsesWith(producerAccess.getOutput());
+      rewriter.replaceOp (a.getOperation(), producerAccess.getOutput());
 
     // replace get and the associated memref alloc
     if (auto bco =
@@ -961,7 +964,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelPutOp> {
 
     // replace uses of alloc with result of acquire
     if (auto a = dyn_cast<memref::AllocOp>(get.getDst().getDefiningOp()))
-      a.getMemref().replaceAllUsesWith(consumerAccess.getOutput());
+      rewriter.replaceOp (a.getOperation(), consumerAccess.getOutput());
 
     // replace associated deallocs for put and get
     for (auto u : put.getSrc().getDefiningOp()->getUsers()) {
@@ -969,7 +972,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelPutOp> {
         rewriter.setInsertionPoint(dealloc);
         rewriter.create<AIE::ObjectFifoReleaseOp>(
             dealloc->getLoc(), AIE::ObjectFifoPort::Produce, objFifo, 1);
-        dealloc.erase();
+        rewriter.eraseOp(dealloc);
       }
     }
     for (auto u : get.getDst().getDefiningOp()->getUsers()) {
@@ -977,14 +980,14 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelPutOp> {
         rewriter.setInsertionPoint(dealloc);
         rewriter.create<AIE::ObjectFifoReleaseOp>(
             dealloc->getLoc(), AIE::ObjectFifoPort::Consume, objFifo, 1);
-        dealloc.erase();
+        rewriter.eraseOp(dealloc);
       }
     }
 
     // erase the channel and its put/get
-    channel.erase();
-    put.erase();
-    get.erase();
+    rewriter.eraseOp(channel);
+    rewriter.eraseOp(put);
+    rewriter.eraseOp(get);
     return success();
   }
 };
