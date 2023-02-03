@@ -17,6 +17,7 @@ vck5000_aie_base_graph_hw.ltx
 vck5000_aie_base_graph_hw.xsa.link_summary
 Work
 build
+install
 platform_repo
 myproj
 sw_comp
