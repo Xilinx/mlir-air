@@ -12,10 +12,15 @@
 include "mlir/Pass/PassBase.td"
 
 def ParallelToHerd : Pass<"air-par-to-herd", "ModuleOp"> {
-  let summary = "Lower scf.parallel to air.launch_herd";
+  let summary = "Convert parallel loops to air.herd";
   let constructor = "xilinx::air::createParallelToHerdPass()";
   let description =  [{
-    Lower scf.parallel to air.launch_herd
+    This pass converts parallel loop operations to air `herd` operations. The
+    parallel loops can be `scf.parallel` or `affine.parallel` operations with 1
+    or 2 dimensional iteration spaces. The iteration space of the parallel loop
+    will be normalized and will become the spacial iteration space of the new
+    `herd`. If nested parallel loops are present then the `depth` option can
+    to used to specify which loop depth to convert.
   }];
   let options = [
     Option<"clAssignDepth", "depth", "int",
@@ -25,17 +30,24 @@ def ParallelToHerd : Pass<"air-par-to-herd", "ModuleOp"> {
 }
 
 def ParallelToLaunch : Pass<"air-par-to-launch", "ModuleOp"> {
-  let summary = "Lower scf.parallel to air.launch";
+  let summary = "Convert parallel loops to air.launch";
   let constructor = "xilinx::air::createParallelToLaunchPass()";
   let description =  [{
-    Lower scf.parallel to air.launch
+    This pass converts parallel loop operations to air `launch` operations. The
+    parallel loops can be `scf.parallel` or `affine.parallel` operations. The
+    iteration space of the parallel loops will be normalized and will become the
+    iteration space of the new `launch`. If nested parallel loops are present
+    then the `depth` option can to used to specify which loop depth to convert.
+    An air `partition` operation can optionally be inserted at the top level of
+    the generated `launch` operations with the `has-air-partition` option.
   }];
   let options = [
     Option<"clAssignDepth", "depth", "int",
           /*default=*/"-1",
           "Given a nest of parallel for loops, which depth to map to air.launch">,
     Option<"clHasPartition", "has-air-partition", "bool", /*default=*/"false",
-           "Whether to create an air.partition op in air.launch's region">,
+           "Whether to create an air.partition op in generated air.launch "
+           "regions">,
   ];
 }
 
