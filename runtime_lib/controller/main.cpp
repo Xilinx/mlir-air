@@ -47,6 +47,8 @@ extern "C" {
 #define HIGH_ADDR(addr) ((addr & 0xffffffff00000000) >> 32)
 #define LOW_ADDR(addr) (addr & 0x00000000ffffffff)
 
+#define ALIGN(_x, _size) (((_x) + ((_size)-1)) & ~((_size)-1))
+
 #define LOGICAL_HERD_DMAS 16
 
 #define SHIM_DMA_S2MM 0
@@ -896,8 +898,8 @@ void unlock_uart() {
 
 int queue_create(uint32_t size, queue_t **queue, uint32_t mb_id) {
   uint64_t queue_address[1] = {base_address + sizeof(dispatch_packet_t)};
-  uint64_t queue_base_address[1] = {queue_address[0] +
-                                    sizeof(dispatch_packet_t)};
+  uint64_t queue_base_address[1] = {
+      ALIGN(queue_address[0] + sizeof(queue_t), sizeof(dispatch_packet_t))};
   lock_uart(mb_id);
   air_printf("setup_queue 0x%llx, %x bytes + %d 64 byte packets\n\r",
              (void *)queue_address, sizeof(queue_t), size);
