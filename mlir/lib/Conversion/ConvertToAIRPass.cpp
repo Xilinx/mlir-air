@@ -346,8 +346,7 @@ scf::YieldOp generateYieldOpFromChannelOp(OpBuilder builder, MLIRContext *ctx,
 }
 
 // Clone with remap, but replace async op with wait_all op
-void replaceAsyncOpWithWaitAllAndClone(OpBuilder builder,
-                                       IRMapping &remap,
+void replaceAsyncOpWithWaitAllAndClone(OpBuilder builder, IRMapping &remap,
                                        Operation *op,
                                        bool cloneDepList = true) {
   auto async_op = dyn_cast<air::AsyncOpInterface>(op);
@@ -367,8 +366,7 @@ void replaceAsyncOpWithWaitAllAndClone(OpBuilder builder,
 
 // Clone affine if's block with remap
 void replaceAffineIfOpWithChannelOpAndClone(
-    OpBuilder builder, IRMapping &remap,
-    air::ChannelInterface externalGetPut) {
+    OpBuilder builder, IRMapping &remap, air::ChannelInterface externalGetPut) {
   for (Operation &child_op : externalGetPut->getBlock()->getOperations()) {
     if (child_op.hasAttr("hoist-channel")) {
       if (child_op.hasAttr("loop-carried-dep") &&
@@ -2036,8 +2034,8 @@ transform::ParToHerdOp::applyToOne(scf::ParallelOp target,
 
 DiagnosedSilenceableFailure
 transform::ParToLaunchOp::applyToOne(scf::ParallelOp target,
-                                   transform::ApplyToEachResultList &results,
-                                   transform::TransformState &state) {
+                                     transform::ApplyToEachResultList &results,
+                                     transform::TransformState &state) {
   auto ctx = target->getContext();
   RewritePatternSet patterns(ctx);
   llvm::SmallSet<air::LaunchOp, 2> launchOps;

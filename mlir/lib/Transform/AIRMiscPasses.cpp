@@ -120,8 +120,7 @@ public:
 private:
 };
 
-void do_clone(OpBuilder &builder, Operation *op,
-              IRMapping &mapping) {
+void do_clone(OpBuilder &builder, Operation *op, IRMapping &mapping) {
   if (!op)
     return;
   for (auto o : op->getOperands()) {
