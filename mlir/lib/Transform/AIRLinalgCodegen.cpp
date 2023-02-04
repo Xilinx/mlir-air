@@ -31,7 +31,9 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/InliningUtils.h"
 #include "mlir/Transforms/RegionUtils.h"
+
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/ScopeExit.h"
 
 #include <numeric>
 #include <optional>
@@ -1764,7 +1766,7 @@ public:
 
 DiagnosedSilenceableFailure
 transform::PipelineReduceOp::applyToOne(linalg::LinalgOp target,
-                                        SmallVectorImpl<Operation *> &results,
+                                        transform::ApplyToEachResultList &results,
                                         transform::TransformState &state) {
   SimpleRewriter rewriter(getContext());
   auto result = pipelineReduceLinalgOp(
@@ -1996,7 +1998,7 @@ void transform::LinalgTileOp::getEffects(
 
 DiagnosedSilenceableFailure
 transform::LinalgPromoteOp::applyToOne(linalg::LinalgOp target,
-                                       SmallVectorImpl<Operation *> &results,
+                                       ::mlir::transform::ApplyToEachResultList &results,
                                        transform::TransformState &state) {
   linalg::LinalgPromotionOptions promotionOptions;
   if (!getOperandsToPromote().empty())
@@ -2217,7 +2219,7 @@ static Operation *tileAndFuseFirstExtractUseThroughContainingOpBlockArgument(
     return nullptr;
   }
 
-  BlockAndValueMapping bvm;
+  IRMapping bvm;
   bvm.map(destinationTensors[resultNumber], bbArg);
   auto tileableProducerClone =
       cast<TilingInterface>(rewriter.clone(*tileableProducer, bvm));
