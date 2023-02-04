@@ -409,7 +409,7 @@ scf::YieldOp generateYieldAndOrReduceToScfLoop(OpBuilder builder,
 
 // Clone with remap, but replace async op with wait_all op
 void replaceAsyncOpWithWaitAllAndClone(OpBuilder builder,
-                                       BlockAndValueMapping &remap,
+                                       IRMapping &remap,
                                        Operation *op,
                                        bool cloneDepList = true) {
   auto async_op = dyn_cast<air::AsyncOpInterface>(op);
@@ -429,7 +429,7 @@ void replaceAsyncOpWithWaitAllAndClone(OpBuilder builder,
 
 // Clone affine if's block with remap
 void replaceAffineIfOpWithChannelOpAndClone(
-    OpBuilder builder, BlockAndValueMapping &remap,
+    OpBuilder builder, IRMapping &remap,
     air::ChannelInterface externalGetPut) {
   for (Operation &child_op : externalGetPut->getBlock()->getOperations()) {
     if (child_op.hasAttr("hoist-channel")) {
@@ -444,12 +444,12 @@ void replaceAffineIfOpWithChannelOpAndClone(
   }
 }
 
-Value lookupOrDefaultRange(Value v, BlockAndValueMapping &remap) {
+Value lookupOrDefaultRange(Value v, IRMapping &remap) {
   return remap.lookupOrDefault(v);
 }
 
 SmallVector<Value, 1> lookupOrDefaultRange(SmallVector<Value, 1> vec,
-                                           BlockAndValueMapping &remap) {
+                                           IRMapping &remap) {
   SmallVector<Value, 1> output;
   for (auto v : vec) {
     output.push_back(remap.lookupOrDefault(v));
@@ -937,7 +937,7 @@ void HoistingAffineIf(mlir::AffineIfOp op) {
   unsigned dma_index = 0;
   for (auto dma : dmas) {
     // Get mapping for remapped ssa values entering the hoisted scf.parallel
-    BlockAndValueMapping remap;
+    IRMapping remap;
     remap.map(herd.getIds()[0], zero_const_op);
     remap.map(herd.getIds()[1], zero_const_op);
     int arg_idx = 0;
@@ -1127,7 +1127,7 @@ class AIRDmaToAIRChannelConversion
       if (herd) {
         auto scf_par = dyn_cast<scf::ParallelOp>(scf_loop);
         // Get mapping for remapped ssa values entering the hoisted scf.parallel
-        BlockAndValueMapping remap;
+        IRMapping remap;
         auto herd_size = herd.getSizeOperands();
         remap.map(herd.getSize()[0], herd_size[0]);
         remap.map(herd.getSize()[1], herd_size[1]);
@@ -1167,7 +1167,7 @@ class AIRDmaToAIRChannelConversion
         }
       } else if (partition) {
         // Get mapping for remapped ssa values entering the hoisted scf.for
-        BlockAndValueMapping remap;
+        IRMapping remap;
         int arg_idx = 0;
         for (auto arg : partition.getKernelArguments())
           remap.map(arg, partition.getKernelOperand(arg_idx++));
@@ -2096,7 +2096,7 @@ struct ParallelToLaunchPass
 
 DiagnosedSilenceableFailure
 transform::ParToHerdOp::applyToOne(scf::ParallelOp target,
-                                   SmallVectorImpl<Operation *> &results,
+                                   transform::ApplyToEachResultList &results,
                                    transform::TransformState &state) {
   auto ctx = target->getContext();
   RewritePatternSet patterns(ctx);
@@ -2118,8 +2118,8 @@ transform::ParToHerdOp::applyToOne(scf::ParallelOp target,
 
 DiagnosedSilenceableFailure
 transform::ParToLaunchOp::applyToOne(scf::ParallelOp target,
-                                     SmallVectorImpl<Operation *> &results,
-                                     transform::TransformState &state) {
+                                   transform::ApplyToEachResultList &results,
+                                   transform::TransformState &state) {
   auto ctx = target->getContext();
   RewritePatternSet patterns(ctx);
   llvm::SmallSet<air::LaunchOp, 2> launchOps;
@@ -2145,7 +2145,7 @@ public:
 
 DiagnosedSilenceableFailure
 transform::CopyToDmaOp::applyToOne(memref::CopyOp op,
-                                   SmallVectorImpl<Operation *> &results,
+                                   transform::ApplyToEachResultList &results,
                                    transform::TransformState &state) {
   auto ctx = op->getContext();
   // RewritePatternSet stage1Patterns =
