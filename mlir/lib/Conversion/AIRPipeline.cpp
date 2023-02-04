@@ -11,7 +11,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/IR/BlockAndValueMapping.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
 
 #include "llvm/Support/Debug.h"
@@ -96,7 +96,7 @@ LogicalResult AIRPipeStageConversion::matchAndRewrite(
   }
 
   // Clone the region into the affine.if while remapping the args
-  BlockAndValueMapping remap;
+  IRMapping remap;
   rewriter.setInsertionPoint(aif);
   auto idVal = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), id);
   remap.map(dir ? x : y, idVal);

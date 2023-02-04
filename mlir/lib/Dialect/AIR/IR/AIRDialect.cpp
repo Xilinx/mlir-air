@@ -10,7 +10,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Attributes.h"
-#include "mlir/IR/BlockAndValueMapping.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/FunctionImplementation.h"
@@ -89,7 +89,7 @@ LogicalResult canonicalizeHierarchyOpArgs(T op, PatternRewriter &rewriter) {
       newAsyncDeps.size() == op.getAsyncDependencies().size())
     return failure();
 
-  BlockAndValueMapping remap;
+  IRMapping remap;
   auto newOp =
       rewriter.create<T>(op.getLoc(), newAsyncDeps, op.getSizeOperands(),
                          newOperands, op->getNumResults() > 0, op->getAttrs());

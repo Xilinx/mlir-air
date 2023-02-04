@@ -20,7 +20,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/BlockAndValueMapping.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -245,7 +245,7 @@ void outlineAIECores(OpBuilder &builder, ModuleOp aie_module,
   for (auto y = 0; y < herd_size_y; y++) {
     for (auto x = 0; x < herd_size_x; x++) {
       auto hloc = h.getLoc();
-      BlockAndValueMapping remap;
+      IRMapping remap;
       auto phys_x = x + col_offset;
       auto phys_y = y + row_offset;
 
@@ -603,7 +603,7 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
       return failure();
 
     // make a new scf.for without air.async.token
-    BlockAndValueMapping remap;
+    IRMapping remap;
     auto new_fop = rewriter.create<scf::ForOp>(
         fop->getLoc(), fop.getLowerBound(), fop.getUpperBound(), fop.getStep(),
         iter_args);

@@ -22,7 +22,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/BlockAndValueMapping.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IntegerSet.h"
@@ -777,7 +777,7 @@ public:
       auto pipeOp = cast<xilinx::air::HerdPipelineOp>(p);
       OpBuilder b(p);
       Block &bb = pipeOp.getBody().front();
-      BlockAndValueMapping remap;
+      IRMapping remap;
       bb.getTerminator()->erase();
       for (auto &o : bb)
         b.clone(o, remap);

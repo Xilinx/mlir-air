@@ -8,7 +8,7 @@
 
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/IR/BlockAndValueMapping.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Transforms/RegionUtils.h"
@@ -69,7 +69,7 @@ func::CallOp AIROutliner::outline(AffineForOp forOp, std::string fname) {
 
   auto &entryBlock = *function.addEntryBlock();
 
-  BlockAndValueMapping mapper;
+  IRMapping mapper;
   int idx = 0;
   for (auto a : outline_args)
     mapper.map(a, entryBlock.getArgument(idx++));
@@ -132,7 +132,7 @@ func::CallOp AIROutliner::outline(std::vector<mlir::Operation *> ops,
 
   auto &entryBlock = *function.addEntryBlock();
 
-  BlockAndValueMapping mapper;
+  IRMapping mapper;
   int idx = 0;
   for (auto a : outline_args)
     mapper.map(a, entryBlock.getArgument(idx++));
