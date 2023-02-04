@@ -53,10 +53,9 @@ transform::GetPartitionForOp::apply(transform::TransformResults &results,
 // PartitionToAIEOp
 //===----------------------------------------------------------------------===//
 
-DiagnosedSilenceableFailure
-transform::PartitionToAIEOp::applyToOne(xilinx::air::PartitionOp target,
-                                        transform::ApplyToEachResultList &results,
-                                        transform::TransformState &state) {
+DiagnosedSilenceableFailure transform::PartitionToAIEOp::applyToOne(
+    xilinx::air::PartitionOp target, transform::ApplyToEachResultList &results,
+    transform::TransformState &state) {
   SimpleRewriter rewriter(target->getContext());
   FailureOr<ModuleOp> res = convertAIRToAIE(rewriter, target);
   if (failed(res))

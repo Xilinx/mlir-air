@@ -32,8 +32,8 @@
 #include "mlir/Transforms/InliningUtils.h"
 #include "mlir/Transforms/RegionUtils.h"
 
-#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/SetVector.h"
 
 #include <numeric>
 #include <optional>
@@ -1764,10 +1764,9 @@ public:
 // PipelineReduceOp
 //===----------------------------------------------------------------------===//
 
-DiagnosedSilenceableFailure
-transform::PipelineReduceOp::applyToOne(linalg::LinalgOp target,
-                                        transform::ApplyToEachResultList &results,
-                                        transform::TransformState &state) {
+DiagnosedSilenceableFailure transform::PipelineReduceOp::applyToOne(
+    linalg::LinalgOp target, transform::ApplyToEachResultList &results,
+    transform::TransformState &state) {
   SimpleRewriter rewriter(getContext());
   auto result = pipelineReduceLinalgOp(
       rewriter, target, extractFromI64ArrayAttr(getTileSize()),
@@ -1996,10 +1995,9 @@ void transform::LinalgTileOp::getEffects(
 // LinalgPromoteOp
 //===----------------------------------------------------------------------===//
 
-DiagnosedSilenceableFailure
-transform::LinalgPromoteOp::applyToOne(linalg::LinalgOp target,
-                                       ::mlir::transform::ApplyToEachResultList &results,
-                                       transform::TransformState &state) {
+DiagnosedSilenceableFailure transform::LinalgPromoteOp::applyToOne(
+    linalg::LinalgOp target, ::mlir::transform::ApplyToEachResultList &results,
+    transform::TransformState &state) {
   linalg::LinalgPromotionOptions promotionOptions;
   if (!getOperandsToPromote().empty())
     promotionOptions = promotionOptions.setOperandsToPromote(
