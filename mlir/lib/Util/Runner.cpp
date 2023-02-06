@@ -258,10 +258,13 @@ public:
         for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
           auto adj_op = G[*adj_v].op;
           assert(adj_op);
-          // Reset graph wrt to this token, to start the next loop iteration
           for (auto d : adj_op->getOperands()) {
             if (d == next_iter_token) {
+              // To start the next loop iteration:
+              // (1) reset graph wrt to this token
               resetGraphBetweenTwoVertices(*adj_v, it, G, c, time);
+              // (2) release the token locks
+              G[*adj_v].token_count++;
             }
           }
         }
@@ -287,13 +290,21 @@ public:
           std::make_tuple(getIdAttr(op.getOperation()), i, trip_count));
     }
 
+    // Release the locks for all async tokens adjacent to scf.for, to initiate
+    // the first iteration
+    Graph &G = c.ctrl_g->g;
+    auto adj_set = boost::adjacent_vertices(it, G);
+    for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
+      G[*adj_v].token_count++;
+    }
+
     c.processed_vertices.push_back(it);
   }
 
   void executeOp(air::ChannelPutOp op, runnerNode &c,
                  Graph::vertex_descriptor it) {
     Graph &G = c.ctrl_g->g;
-    G[it].sym_token_count++;
+    G[it].token_count++;
 
     c.processed_vertices.push_back(it);
   }
@@ -308,7 +319,7 @@ public:
     auto &put_g = put_entry.second;
     auto &put_node = put_g->g[put_v];
 
-    put_node.sym_token_count--;
+    put_node.token_count--;
 
     c.processed_vertices.push_back(it);
   }
@@ -342,6 +353,21 @@ public:
       executeOp(Op, c, it);
     } else {
       executeOp(c, it);
+    }
+  }
+
+  // Consume loop-carried token, so that loop iteration is blocked if
+  // loop-carried token isn't released yet
+  void executeLoopIteration(runnerNode &c, Graph::vertex_descriptor it) {
+
+    Graph &G = c.ctrl_g->g;
+    auto inv_adj_set = boost::inv_adjacent_vertices(it, G);
+    for (auto inv_adj_v = inv_adj_set.first; inv_adj_v != inv_adj_set.second;
+         ++inv_adj_v) {
+      if (G[*inv_adj_v].asyncEventType == "for_loop") {
+        G[it].token_count--;
+        return;
+      }
     }
   }
 
@@ -493,6 +519,10 @@ public:
         auto sub_g = G[*inv_adj_v].nextDependencyGraph;
         auto terminator_v = sub_g->terminator_vertex;
         dep_list.push_back(std::make_pair(&sub_g->g[terminator_v], "ssa"));
+      }
+      // Else if dependenct on a for op
+      else if (G[*inv_adj_v].asyncEventType == "for_loop") {
+        dep_list.push_back(std::make_pair(&G[*inv_adj_v], "ssa_loop_yield"));
       } else {
         dep_list.push_back(std::make_pair(&G[*inv_adj_v], "ssa"));
       }
@@ -501,13 +531,21 @@ public:
 
   // Check if a dependence has been fulfilled
   bool checkEachDependenceFulfillment(
-      std::pair<dependencyNodeEntry *, std::string> dep, uint64_t time) {
+      std::pair<dependencyNodeEntry *, std::string> dep,
+      dependencyNodeEntry *node, uint64_t time) {
     if (dep.second == "sym") {
-      if (!dep.first->sym_token_count) {
+      if (!dep.first->token_count) {
         return false;
       }
     } else if (dep.second == "ssa") {
       if ((!dep.first->is_started()) || (!dep.first->is_done(time))) {
+        return false;
+      }
+    } else if (dep.second == "ssa_loop_yield") {
+      if ((!dep.first->is_started()) || (!dep.first->is_done(time))) {
+        return false;
+      }
+      if (!node->token_count) {
         return false;
       }
     } else {
@@ -523,19 +561,19 @@ public:
   // Check if all dependencies of an async op have been fulfilled
   bool checkAllDependenciesFulfillment(
       std::vector<std::pair<dependencyNodeEntry *, std::string>> dep_list,
-      uint64_t time, bool isBlocking) {
+      dependencyNodeEntry *node, uint64_t time, bool isBlocking) {
     bool dep_fulfilled = true;
     if (isBlocking) {
       dep_fulfilled = true;
       for (auto &dep : dep_list) {
         dep_fulfilled =
-            dep_fulfilled && checkEachDependenceFulfillment(dep, time);
+            dep_fulfilled && checkEachDependenceFulfillment(dep, node, time);
       }
     } else {
       dep_fulfilled = false;
       for (auto &dep : dep_list) {
         dep_fulfilled =
-            dep_fulfilled || checkEachDependenceFulfillment(dep, time);
+            dep_fulfilled || checkEachDependenceFulfillment(dep, node, time);
       }
     }
     return dep_fulfilled;
@@ -566,6 +604,9 @@ public:
         // "ExecuteOp"
         executeOpImpls(c, it->first, time);
 
+        // Consume any loop-carried token
+        executeLoopIteration(c, it->first);
+
         // Erase from wavefront
         c.wavefront.erase(it);
         it--;
@@ -582,17 +623,20 @@ public:
          it != next_vertex_set_candidates.end(); ++it) {
       bool dep_fulfilled = true;
       // Build it's dependency list. In each entry, the first field is a pointer
-      // to the node, and the second field is a string representing the type of
-      // this dependency, either "ssa" or "sym".
+      // to the node, the second field is a string representing the type of
+      // this dependency, either "ssa" or "sym", and the third field is the
+      // token index, in case if op contains multiple tokens.
       std::vector<std::pair<dependencyNodeEntry *, std::string>> dep_list;
       buildVertexDependencyList(*it, G, dep_list);
       // Check whether adj_v's dependency list is fulfulled
       if (dyn_cast<scf::YieldOp>(G[*it].op)) {
         // If op is non-blocking
-        dep_fulfilled = checkAllDependenciesFulfillment(dep_list, time, false);
+        dep_fulfilled =
+            checkAllDependenciesFulfillment(dep_list, &G[*it], time, false);
       } else {
         // Else (op is blocking)
-        dep_fulfilled = checkAllDependenciesFulfillment(dep_list, time, true);
+        dep_fulfilled =
+            checkAllDependenciesFulfillment(dep_list, &G[*it], time, true);
       }
       if (dep_fulfilled) {
         next_vertex_set.push_back(*it);
@@ -1007,7 +1051,7 @@ private:
                it != c.loop_trip_count.end(); it++) {
             if (std::get<0>(*it) == (unsigned)getIdAttr(G[v].op)) {
               c.loop_trip_count.erase(it);
-              break;
+              it--;
             }
           }
         }
@@ -1113,7 +1157,7 @@ private:
       // Check each token's dependence fulfillment at scf.yield
       std::string node_type = "ssa";
       if (checkEachDependenceFulfillment(std::make_pair(&dep_node, node_type),
-                                         time)) {
+                                         nullptr, time)) {
         token_ids.push_back(token_id);
       }
 
