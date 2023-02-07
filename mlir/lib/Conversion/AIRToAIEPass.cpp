@@ -954,14 +954,14 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 
       } else {
         // get from L3 to L1/L2
-        producerTile = shimDmaAlloc.getTile(aie_module, src_space, dst_space, 1, consumerTile.getCol(), consumerTile.getRow(), 0);
-
         consumerCore = get->getParentOfType<AIE::CoreOp>();
         if (!consumerCore)
           return failure();
         consumerTile = consumerCore.getTileOp();
         if (!consumerTile)
           return failure();
+
+        producerTile = shimDmaAlloc.getTile(aie_module, src_space, dst_space, 1, consumerTile.getCol(), consumerTile.getRow(), 0);
       }
 
       // create objFifo
