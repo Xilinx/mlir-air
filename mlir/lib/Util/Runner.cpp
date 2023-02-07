@@ -179,6 +179,23 @@ public:
     s << "},\n";
   }
 
+  void emitTraceMetadataEvent(llvm::raw_ostream &s, std::string item_name,
+                              std::string arg_name, std::string arg_entry,
+                              std::string ph, int64_t pid) {
+    s << "{\n";
+    s << "  \"name\": \"" << item_name << "\","
+      << "\n";
+    s << "  \"ph\": \"" << ph << "\","
+      << "\n";
+    s << "  \"pid\": " << pid << ","
+      << "\n";
+    s << "  \"args\": {\n";
+    s << "    \"" << arg_name << "\": \"" << arg_entry << "\""
+      << "\n";
+    s << "  }\n";
+    s << "},\n";
+  }
+
   void executeOp(xilinx::air::HierarchyInterface op, uint64_t time,
                  runnerNode *sub_runner_node, runnerNode &c,
                  Graph::vertex_descriptor it) {
@@ -668,6 +685,9 @@ public:
     hostGraph = dependencyGraph(toplevel, true);
     canonicalizer.parseCommandGraphs(toplevel, hostGraph, dep_ctx);
 
+    // Walk the launch graph and write process name metadata in trace
+    writeTraceMetadataProcNames(hostGraph);
+
     uint64_t time = 1;
     for (auto &launchGraph : hostGraph.subgraphs) {
 
@@ -1078,6 +1098,39 @@ private:
     addPointerBetweenSubRunnerNodeAndSubCommandGraph(launch_runner_node);
     for (auto &partition_runner_node : launch_runner_node.sub_runner_nodes) {
       addPointerBetweenSubRunnerNodeAndSubCommandGraph(partition_runner_node);
+    }
+  }
+
+  // Write process names in trace metadata
+  void writeTraceMetadataProcNames(dependencyGraph &hostGraph) {
+    for (auto &launchGraph : hostGraph.subgraphs) {
+      // Write launch process name to trace metadata
+      emitTraceMetadataEvent(traceStream, "process_name", "name",
+                             to_string(launchGraph.hierarchyOp), "M",
+                             getIdAttr(launchGraph.hierarchyOp));
+      emitTraceMetadataEvent(traceStream, "process_sort_index", "sort_index",
+                             std::to_string(getIdAttr(launchGraph.hierarchyOp)),
+                             "M", getIdAttr(launchGraph.hierarchyOp));
+      for (auto &partitionGraph : launchGraph.subgraphs) {
+        // Write partition process name to trace metadata
+        emitTraceMetadataEvent(traceStream, "process_name", "name",
+                               to_string(partitionGraph.hierarchyOp), "M",
+                               getIdAttr(partitionGraph.hierarchyOp));
+        emitTraceMetadataEvent(
+            traceStream, "process_sort_index", "sort_index",
+            std::to_string(getIdAttr(partitionGraph.hierarchyOp)), "M",
+            getIdAttr(partitionGraph.hierarchyOp));
+        for (auto &herdGraph : partitionGraph.subgraphs) {
+          // Write herd process name to trace metadata
+          emitTraceMetadataEvent(traceStream, "process_name", "name",
+                                 to_string(herdGraph.hierarchyOp), "M",
+                                 getIdAttr(herdGraph.hierarchyOp));
+          emitTraceMetadataEvent(
+              traceStream, "process_sort_index", "sort_index",
+              std::to_string(getIdAttr(herdGraph.hierarchyOp)), "M",
+              getIdAttr(herdGraph.hierarchyOp));
+        }
+      }
     }
   }
 
