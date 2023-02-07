@@ -56,6 +56,15 @@ std::vector<air_physical_device_t> physical_devices;
 #endif
 
 hsa_status_t air_init() {
+#ifdef AIR_PCIE
+  hsa_status_t hsa_ret = air_get_physical_devices();
+
+  if (hsa_ret != HSA_STATUS_SUCCESS) {
+    std::cerr << "air_get_physical_devices failed" << std::endl;
+    return hsa_ret;
+  }
+#endif
+
   if (_air_host_active_libxaie == nullptr)
     air_init_libxaie();
 
@@ -132,9 +141,7 @@ air_libxaie_ctx_t air_init_libxaie(uint32_t device_id) {
   xaie->DevInst = {0};
 
   XAie_CfgInitialize(&(xaie->DevInst), &(xaie->AieConfigPtr));
-#ifndef AIR_PCIE
   XAie_PmRequestTiles(&(xaie->DevInst), NULL, 0);
-#endif
 
   _air_host_active_libxaie = xaie;
   return (air_libxaie_ctx_t)xaie;
@@ -277,7 +284,6 @@ air_module_desc_t *air_module_get_desc(air_module_handle_t handle) {
 }
 
 uint64_t air_partition_load(const char *name) {
-
   assert(_air_host_active_libxaie);
 
   auto partition_desc = air_partition_get_desc(_air_host_active_module, name);
@@ -287,6 +293,11 @@ uint64_t air_partition_load(const char *name) {
   }
 
 #ifdef AIR_PCIE
+  XAie_Finish(&(_air_host_active_libxaie->DevInst));
+  XAie_CfgInitialize(&(_air_host_active_libxaie->DevInst),
+                     &(_air_host_active_libxaie->AieConfigPtr));
+  XAie_PmRequestTiles(&(_air_host_active_libxaie->DevInst), NULL, 0);
+
   uint64_t wr_idx = queue_add_write_index(_air_host_active_partition.q, 1);
   uint64_t packet_id = wr_idx % _air_host_active_partition.q->size;
   dispatch_packet_t *shim_pkt =
@@ -302,9 +313,6 @@ uint64_t air_partition_load(const char *name) {
   air_packet_herd_init(herd_pkt, 0, 0, 50, 1, 8);
   air_queue_dispatch_and_wait(_air_host_active_partition.q, wr_idx, herd_pkt);
 
-  XAie_Finish(&(_air_host_active_libxaie->DevInst));
-  XAie_CfgInitialize(&(_air_host_active_libxaie->DevInst),
-                     &(_air_host_active_libxaie->AieConfigPtr));
 #else
   XAie_Finish(&(_air_host_active_libxaie->DevInst));
   XAie_CfgInitialize(&(_air_host_active_libxaie->DevInst),
@@ -340,7 +348,6 @@ uint64_t air_partition_load(const char *name) {
 }
 
 uint64_t air_herd_load(const char *name) {
-
   // If no partition is loaded, load the partition associated with this herd
   if (!_air_host_active_partition.partition_desc) {
     bool loaded = false;
@@ -450,15 +457,6 @@ hsa_status_t air_iterate_agents(hsa_status_t (*callback)(air_agent_t agent,
   uint64_t total_controllers = 0;
 
 #ifdef AIR_PCIE
-  hsa_status_t hsa_ret = air_get_physical_devices();
-  if (hsa_ret != HSA_STATUS_SUCCESS) {
-    std::cerr << "air_get_physical_devices failed" << std::endl;
-    return hsa_ret;
-  }
-
-  std::cout << "Found " << physical_devices.size() << " AIR devices"
-            << std::endl;
-
   for (int i = 0; i < physical_devices.size(); i++) {
     std::cout << "Discovering agents in device " << i << std::endl;
     int fd = open(air_get_bram_bar(i).c_str(), O_RDWR | O_SYNC);
