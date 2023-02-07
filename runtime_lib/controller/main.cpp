@@ -23,7 +23,7 @@ extern "C" {
 #include "pvr.h"
 #endif
 
-//#include "mb_interface.h"
+// #include "mb_interface.h"
 
 #include "air_queue.h"
 #include "hsa_defs.h"
@@ -859,11 +859,14 @@ void xaie_herd_init(int start_col, int num_cols, int start_row, int num_rows) {
 #ifdef ARM_CONTROLLER
   for (int c = start_col; c < start_col + num_cols; c++) {
     for (int r = start_row; r < start_row + num_rows; r++) {
-      xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048, !!1); // 1 == ResetEnable
-      xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048, !!0); // 0 == ResetDisable
-      //for (int l = 0; l < 16; l++)
-      //  xaie::maskpoll32(xaie::getTileAddr(c, r) + 0x0001E020 + 0x80 * l, 0x1,
-      //                   0x1, 0);
+      xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048,
+                  !!1); // 1 == ResetEnable
+      xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048,
+                  !!0); // 0 == ResetDisable
+      // for (int l = 0; l < 16; l++)
+      //   xaie::maskpoll32(xaie::getTileAddr(c, r) + 0x0001E020 + 0x80 * l,
+      //   0x1,
+      //                    0x1, 0);
     }
   }
 #endif
