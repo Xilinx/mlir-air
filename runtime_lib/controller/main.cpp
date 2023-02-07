@@ -856,6 +856,7 @@ void xaie_herd_init(int start_col, int num_cols, int start_row, int num_rows) {
   HerdCfgInst.num_cols = num_cols;
   HerdCfgInst.row_start = start_row;
   HerdCfgInst.num_rows = num_rows;
+#ifdef ARM_CONTROLLER
   for (int c = start_col; c < start_col + num_cols; c++) {
     for (int r = start_row; r < start_row + num_rows; r++) {
       xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048, !!1); // 1 == ResetEnable
@@ -865,6 +866,7 @@ void xaie_herd_init(int start_col, int num_cols, int start_row, int num_rows) {
       //                   0x1, 0);
     }
   }
+#endif
 }
 
 } // namespace
