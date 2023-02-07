@@ -302,6 +302,50 @@ air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
   return dyn_cast<air::ChannelOp>(module.lookupSymbol(op.getChanName()));
 }
 
+// Get ChannelPutOp through ChannelOp
+air::ChannelPutOp
+air::getChannelPutOpThroughSymbol(air::ChannelOp channel) {
+  auto module = channel->getParentOfType<ModuleOp>();
+  auto attr =
+      channel->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
+
+  air::ChannelPutOp output = nullptr;
+  module.walk([&](Operation *op) {
+    if (auto put = dyn_cast<air::ChannelPutOp>(op)) {
+      if (put.getChanName() == attr) {
+        output = put;
+      }
+    }
+  });
+
+  if (output)
+    return output;
+  else
+    return ChannelPutOp();
+}
+
+// Get ChannelGetOp through ChannelOp
+air::ChannelGetOp
+air::getChannelGetOpThroughSymbol(air::ChannelOp channel) {
+  auto module = channel->getParentOfType<ModuleOp>();
+  auto attr =
+      channel->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
+
+  air::ChannelGetOp output = nullptr;
+  module.walk([&](Operation *op) {
+    if (auto get = dyn_cast<air::ChannelGetOp>(op)) {
+      if (get.getChanName() == attr) {
+        output = get;
+      }
+    }
+  });
+
+  if (output)
+    return output;
+  else
+    return ChannelGetOp();
+}
+
 // Get the other channel op through channel symbol
 air::ChannelGetOp
 air::getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put) {
