@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 proc numberOfCPUs {} {
-    return 8
+    return 16
 
     # Windows puts it in an environment variable
     global tcl_platform env
@@ -64,7 +64,8 @@ if { [string first $scripts_vivado_version $current_vivado_version] == -1 } {
    return 1
 }
 
-set_param board.repoPaths /wrk/xcohdnobkup1/jmelber/vck5000/boards/vck5000/production_silicon/1.1
+#set_param board.repoPaths /wrk/xcohdnobkup1/jmelber/vck5000/boards/vck5000/production_silicon/1.1
+set_param board.repoPaths /scratch3/jmelber/VCK5000_board_files_cips/VCK5000_board_files_cips/vck5000/1.0
 
 ################################################################
 # START
