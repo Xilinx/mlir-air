@@ -26,7 +26,6 @@ echo "script Path $script_path"
 . $script_path/env_config
 [[ $? != 0 ]] && exit -1
 
-ASSIGN="-device vfio-pci"
 
 # enable VFIO driver to bind to our device(s)
 for devid in "${devids[@]}"; do
@@ -43,23 +42,49 @@ for bdf in ${bdfs[*]}; do
 
 		# bind to VFIO driver
 		echo $bdf > /sys/bus/pci/drivers/vfio-pci/bind
-	fi
 
-	# add device assignment to QEMU command line
-	ASSIGN+=",host=$bdf_nodomain"
+		if [[ -z $ASSIGN ]]; then
+			ASSIGN="-device vfio-pci"
+		fi
+
+		# add device assignment to QEMU command line
+		ASSIGN+=",host=$bdf_nodomain"
+	fi
 done
 
 
+if [[ $EUID == 0 ]]; then
+	NIC="-net nic -net tap,ifname=tap0"
+else
+	NIC="-net nic,model=virtio -net user"
+fi
+
+echo "guest $GUEST"
 # run QEMU
-$QEMU_PATH/qemu-system-x86_64 \
-	-machine q35,kernel-irqchip=split \
-	-m 1G \
-	-nographic \
-	-kernel $IMAGE_PATH/bzImage \
-	-drive file=$IMAGE_PATH/rootfs.ext2,if=virtio,format=raw \
-	-append "rootwait root=/dev/vda console=tty1 console=ttyS0" \
-	$ASSIGN  \
-	-net nic,model=virtio -net user
+if [[ $GUEST == "buildroot" ]]; then
+	# force buildroot to use virtio
+	NIC="-net nic,model=virtio -net user"
+
+	$QEMU_PATH/qemu-system-x86_64 \
+		-machine q35,kernel-irqchip=split \
+		-m 1G \
+		-nographic \
+		-kernel $IMAGE_PATH/bzImage \
+		-drive file=$IMAGE_PATH/rootfs.ext2,if=virtio,format=raw \
+		-append "rootwait root=/dev/vda console=tty1 console=ttyS0" \
+		$ASSIGN  \
+		$NIC
+else
+	echo "Using ubuntu guest"
+	VM_IMAGE="-drive file=$IMAGE_PATH/ubuntu-20.04.qcow2,if=virtio,format=qcow2"
+	$QEMU_PATH/qemu-system-x86_64 \
+		-machine q35,kernel-irqchip=split \
+		-m 1G \
+		-nographic \
+		$VM_IMAGE \
+		$ASSIGN  \
+		$NIC
+fi
 
 # unregister the device IDs from VFIO
 for devid in "${devids[@]}"; do
@@ -69,6 +94,8 @@ done
 
 # unbind the device(s) from VFIO to allow the host to find them again
 for bdf in ${bdfs[*]}; do
-	echo "Unbinding $bdf"
-	echo $bdf > /sys/bus/pci/devices/$bdf/driver/unbind
+	if [[ -e /sys/bus/pci/devices/$bdf/driver/unbind ]]; then
+		echo "Unbinding $bdf"
+		echo $bdf > /sys/bus/pci/devices/$bdf/driver/unbind
+	fi
 done
