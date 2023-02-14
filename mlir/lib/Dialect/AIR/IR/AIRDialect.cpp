@@ -55,8 +55,9 @@ void airDialect::printType(Type type, DialectAsmPrinter &os) const {
       .Default([](Type) { llvm_unreachable("unexpected 'air' type"); });
 }
 
-static template <class T>
-LogicalResult canonicalizeHierarchyOpArgs(T op, PatternRewriter &rewriter) {
+template <class T>
+static LogicalResult canonicalizeHierarchyOpArgs(T op,
+                                                 PatternRewriter &rewriter) {
 
   // make a list of new hierarchy operands
   SmallVector<Value> newOperands;

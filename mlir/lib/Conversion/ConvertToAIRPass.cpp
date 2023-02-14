@@ -933,7 +933,7 @@ void HoistingAffineIf(mlir::AffineIfOp op) {
 
   // Fill up hoisted scf op region with cloned ops
   unsigned dma_index = 0;
-  for (auto dma : dmas) {
+  for (size_t i = 0; i < dmas.size(); i++) {
     // Get mapping for remapped ssa values entering the hoisted scf.parallel
     IRMapping remap;
     remap.map(herd.getIds()[0], zero_const_op);
