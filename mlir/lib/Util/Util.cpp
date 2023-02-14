@@ -282,7 +282,7 @@ void air::eraseAIRHierarchyOperand(air::HierarchyInterface op, unsigned index) {
     sizes.push_back(size);
   }
   // Find which bin the erased operand belongs to in OperandSegmentSizes
-  int32_t sum = 0;
+  unsigned sum = 0;
   unsigned i = 0;
   for (auto s : sizes) {
     sum += s;
