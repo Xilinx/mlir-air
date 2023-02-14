@@ -8,6 +8,7 @@
 
 #include "PassDetail.h"
 
+#include "air/Conversion/AIRLoweringPass.h"
 #include "air/Conversion/AIRPipeline.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
@@ -39,9 +40,7 @@
 #define DEBUG_TYPE "air-lowering-pass"
 
 using namespace mlir;
-using namespace mlir::arith;
 using namespace xilinx;
-using namespace xilinx::air;
 
 namespace {
 
@@ -112,27 +111,26 @@ public:
 class AIRPartitionConversion : public ConversionPattern {
 public:
   explicit AIRPartitionConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::PartitionOp::getOperationName(), 1,
-                          context) {}
+      : ConversionPattern(air::PartitionOp::getOperationName(), 1, context) {}
 
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
-    xilinx::air::PartitionOp partition = cast<xilinx::air::PartitionOp>(op);
+    air::PartitionOp partition = cast<air::PartitionOp>(op);
     if (auto attr =
             op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
       auto partition_name = attr.getValue().str();
-      rewriter.create<xilinx::airrt::PartitionLoadOp>(
+      rewriter.create<airrt::PartitionLoadOp>(
           op->getLoc(), rewriter.getI64Type(), partition_name);
     }
 
     SmallVector<Value> deps;
     for (auto &o : operands)
-      if (o.getType().isa<xilinx::airrt::EventType>())
+      if (o.getType().isa<airrt::EventType>())
         deps.push_back(o);
     if (op->getNumResults()) {
-      auto w = rewriter.create<xilinx::airrt::WaitAllOp>(
-          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
+      auto w = rewriter.create<airrt::WaitAllOp>(
+          op->getLoc(), airrt::EventType::get(op->getContext()), deps);
       partition.getResult(0).replaceAllUsesWith(w.getResult(0));
     }
 
@@ -179,27 +177,26 @@ public:
 class AIRHerdConversion : public ConversionPattern {
 public:
   explicit AIRHerdConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::HerdOp::getOperationName(), 1, context) {
-  }
+      : ConversionPattern(air::HerdOp::getOperationName(), 1, context) {}
 
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
-    xilinx::air::HerdOp launch = cast<xilinx::air::HerdOp>(op);
+    air::HerdOp launch = cast<air::HerdOp>(op);
     if (auto attr =
             op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
       auto herd_name = attr.getValue().str();
-      rewriter.create<xilinx::airrt::HerdLoadOp>(
-          op->getLoc(), rewriter.getI64Type(), herd_name);
+      rewriter.create<airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(),
+                                         herd_name);
     }
 
     SmallVector<Value, 4> deps;
     for (auto &o : operands)
-      if (o.getType().isa<xilinx::airrt::EventType>())
+      if (o.getType().isa<airrt::EventType>())
         deps.push_back(o);
     if (op->getNumResults()) {
-      auto w = rewriter.create<xilinx::airrt::WaitAllOp>(
-          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
+      auto w = rewriter.create<airrt::WaitAllOp>(
+          op->getLoc(), airrt::EventType::get(op->getContext()), deps);
       launch.getResult(0).replaceAllUsesWith(w.getResult(0));
     }
 
@@ -236,13 +233,13 @@ public:
 class AIRPipelineConversion : public ConversionPattern {
 public:
   explicit AIRPipelineConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::HerdPipelineOp::getOperationName(), 1,
-                          context) {}
+      : ConversionPattern(air::HerdPipelineOp::getOperationName(), 1, context) {
+  }
 
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
-    auto pipeOp = cast<xilinx::air::HerdPipelineOp>(op);
+    auto pipeOp = cast<air::HerdPipelineOp>(op);
     Block &bb = pipeOp.getBody().front();
     rewriter.eraseOp(pipeOp.getBody().back().getTerminator());
     bb.getOperations().splice(Block::iterator(op), bb.getOperations());
@@ -254,8 +251,7 @@ public:
 class AIRPipelinePutConversion : public ConversionPattern {
 public:
   explicit AIRPipelinePutConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::PipelinePutOp::getOperationName(), 1,
-                          context) {}
+      : ConversionPattern(air::PipelinePutOp::getOperationName(), 1, context) {}
 
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
@@ -268,13 +264,12 @@ public:
 class AIRPipelineGetConversion : public ConversionPattern {
 public:
   explicit AIRPipelineGetConversion(MLIRContext *context)
-      : ConversionPattern(xilinx::air::PipelineGetOp::getOperationName(), 1,
-                          context) {}
+      : ConversionPattern(air::PipelineGetOp::getOperationName(), 1, context) {}
 
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
-    auto getOp = cast<xilinx::air::PipelineGetOp>(op);
+    auto getOp = cast<air::PipelineGetOp>(op);
     SmallVector<Value, 2> gets;
     for (auto r : getOp.getResults()) {
       if (auto ty = r.getType().dyn_cast<RankedTensorType>())
@@ -288,64 +283,63 @@ public:
   }
 };
 
-class AIRWaitAllToAIRRtConversion
-    : public OpConversionPattern<xilinx::air::WaitAllOp> {
+class AIRWaitAllToAIRRtConversion : public OpConversionPattern<air::WaitAllOp> {
 public:
-  using OpConversionPattern<xilinx::air::WaitAllOp>::OpConversionPattern;
+  using OpConversionPattern<air::WaitAllOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(xilinx::air::WaitAllOp op, OpAdaptor adaptor,
+  matchAndRewrite(air::WaitAllOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     SmallVector<Type, 1> tys;
     if (op->getNumResults())
-      tys.push_back(xilinx::airrt::EventType::get(op->getContext()));
+      tys.push_back(airrt::EventType::get(op->getContext()));
 
-    rewriter.replaceOpWithNewOp<xilinx::airrt::WaitAllOp>(
-        op, tys, adaptor.getOperands());
+    rewriter.replaceOpWithNewOp<airrt::WaitAllOp>(op, tys,
+                                                  adaptor.getOperands());
     return success();
   }
 };
 
 class AIRDmaMemcpyNdToAIRRtConversion
-    : public OpConversionPattern<xilinx::air::DmaMemcpyNdOp> {
+    : public OpConversionPattern<air::DmaMemcpyNdOp> {
 public:
-  using OpConversionPattern<xilinx::air::DmaMemcpyNdOp>::OpConversionPattern;
+  using OpConversionPattern<air::DmaMemcpyNdOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(xilinx::air::DmaMemcpyNdOp op, OpAdaptor adaptor,
+  matchAndRewrite(air::DmaMemcpyNdOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op->getLoc();
     auto ctx = op->getContext();
 
     SmallVector<Value, 4> deps;
     for (auto o : adaptor.getOperands())
-      if (o.getType().isa<xilinx::airrt::EventType>())
+      if (o.getType().isa<airrt::EventType>())
         deps.push_back(o);
     if (deps.size())
-      rewriter.create<xilinx::airrt::WaitAllOp>(
-          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
+      rewriter.create<airrt::WaitAllOp>(
+          op->getLoc(), airrt::EventType::get(op->getContext()), deps);
 
     MemRefType src = op.getSrcMemref().getType().cast<MemRefType>();
     MemRefType dst = op.getDstMemref().getType().cast<MemRefType>();
     bool isFromTile = false;
     bool isFullMemcpy = false;
-    if (src.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1 &&
-        dst.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3) {
+    if (src.getMemorySpaceAsInt() == (int)air::MemorySpace::L1 &&
+        dst.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) {
       isFromTile = true;
-    } else if (dst.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1 &&
-               src.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3) {
+    } else if (dst.getMemorySpaceAsInt() == (int)air::MemorySpace::L1 &&
+               src.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) {
       isFromTile = false;
-    } else if (src.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1 &&
-               dst.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L2) {
+    } else if (src.getMemorySpaceAsInt() == (int)air::MemorySpace::L1 &&
+               dst.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
       isFromTile = true;
-    } else if (dst.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1 &&
-               src.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L2) {
+    } else if (dst.getMemorySpaceAsInt() == (int)air::MemorySpace::L1 &&
+               src.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
       isFromTile = false;
-    } else if (src.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3 &&
-               dst.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L2) {
+    } else if (src.getMemorySpaceAsInt() == (int)air::MemorySpace::L3 &&
+               dst.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
       isFullMemcpy = true;
-    } else if (dst.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3 &&
-               src.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L2) {
+    } else if (dst.getMemorySpaceAsInt() == (int)air::MemorySpace::L3 &&
+               src.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
       isFromTile = true;
       isFullMemcpy = true;
     } else
@@ -362,7 +356,7 @@ public:
             loc, idTy, IntegerAttr::get(idTy, 0)));
       }
 
-      xilinx::air::HerdOp launch = op->getParentOfType<xilinx::air::HerdOp>();
+      air::HerdOp launch = op->getParentOfType<air::HerdOp>();
       if (!launch) {
 
         AffineForOp afo = op->getParentOfType<AffineForOp>();
@@ -383,9 +377,9 @@ public:
         opers.push_back(tileIds[0]);
         opers.push_back(tileIds[1]);
       }
-      opers[1] = rewriter.create<IndexCastOp>(
+      opers[1] = rewriter.create<arith::IndexCastOp>(
           op->getLoc(), IntegerType::get(op->getContext(), 64), opers[1]);
-      opers[2] = rewriter.create<IndexCastOp>(
+      opers[2] = rewriter.create<arith::IndexCastOp>(
           op->getLoc(), IntegerType::get(op->getContext(), 64), opers[2]);
 
       if (isFromTile)
@@ -408,17 +402,17 @@ public:
 
     int idx = 4 - src.getRank();
     for (auto o : isFromTile ? op.getDstOffsets() : op.getSrcOffsets())
-      offsets[idx++] = rewriter.create<IndexCastOp>(
+      offsets[idx++] = rewriter.create<arith::IndexCastOp>(
           op->getLoc(), IntegerType::get(ctx, 64), o);
     idx = 4 - dst.getRank();
     auto op_strides = isFromTile ? op.getDstStrides() : op.getSrcStrides();
     if (op_strides.size())
       for (auto o : op_strides.drop_back())
-        strides[idx++] = rewriter.create<IndexCastOp>(
+        strides[idx++] = rewriter.create<arith::IndexCastOp>(
             op->getLoc(), IntegerType::get(ctx, 64), o);
     idx = 4 - src.getRank();
     for (auto o : isFromTile ? op.getDstSizes() : op.getSrcSizes())
-      lengths[idx++] = rewriter.create<IndexCastOp>(
+      lengths[idx++] = rewriter.create<arith::IndexCastOp>(
           op->getLoc(), IntegerType::get(ctx, 64), o);
 
     opers.append(offsets);
@@ -428,11 +422,11 @@ public:
     Operation *airrtOp = nullptr;
     SmallVector<Type, 1> tys;
     if (op->getNumResults())
-      tys.push_back(xilinx::airrt::EventType::get(ctx));
+      tys.push_back(airrt::EventType::get(ctx));
     if (isFullMemcpy) {
-      airrtOp = rewriter.create<xilinx::airrt::MemcpyNdOp>(loc, tys, opers);
+      airrtOp = rewriter.create<airrt::MemcpyNdOp>(loc, tys, opers);
     } else {
-      airrtOp = rewriter.create<xilinx::airrt::DmaMemcpyNdOp>(loc, tys, opers);
+      airrtOp = rewriter.create<airrt::DmaMemcpyNdOp>(loc, tys, opers);
     }
     rewriter.replaceOp(op, airrtOp->getResults());
     return success();
@@ -449,8 +443,8 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto alloc = cast<memref::AllocOp>(op);
     auto type = alloc.getType();
-    if (type.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L2) {
-      rewriter.replaceOpWithNewOp<xilinx::airrt::AllocOp>(op, type);
+    if (type.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+      rewriter.replaceOpWithNewOp<airrt::AllocOp>(op, type);
       return success();
     }
     return failure();
@@ -467,9 +461,9 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto dealloc = cast<memref::DeallocOp>(op);
     auto type = dealloc.getMemref().getType().cast<MemRefType>();
-    if (type.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L2) {
-      rewriter.replaceOpWithNewOp<xilinx::airrt::DeallocOp>(
-          op, SmallVector<Type>{}, op->getOperands());
+    if (type.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+      rewriter.replaceOpWithNewOp<airrt::DeallocOp>(op, SmallVector<Type>{},
+                                                    op->getOperands());
       return success();
     }
     return failure();
@@ -482,20 +476,20 @@ LogicalResult lowerAirExecute(Operation *op) {
     return failure();
 
   SmallVector<Operation *, 8> erased;
-  module->walk([&](xilinx::air::ExecuteOp exe) {
+  module->walk([&](air::ExecuteOp exe) {
     auto &bb = exe.getBody().front();
     unsigned idx = 0;
 
     OpBuilder builder(exe);
     if (exe.getAsyncDependencies().size())
-      builder.create<xilinx::air::WaitAllOp>(op->getLoc(), Type{},
-                                             exe.getAsyncDependencies());
+      builder.create<air::WaitAllOp>(op->getLoc(), Type{},
+                                     exe.getAsyncDependencies());
 
     for (auto &arg : bb.getArguments()) {
       arg.replaceAllUsesWith(exe.getOperand(idx));
       idx++;
     }
-    exe.walk([&](xilinx::air::ExecuteTerminatorOp t) {
+    exe.walk([&](air::ExecuteTerminatorOp t) {
       int resultIdx = 1;
       for (auto r : t->getOperands())
         exe.getResult(resultIdx++).replaceAllUsesWith(r);
@@ -504,8 +498,8 @@ LogicalResult lowerAirExecute(Operation *op) {
     exe->getBlock()->getOperations().splice(Block::iterator(exe),
                                             bb.getOperations());
     if (exe.getNumResults() > 0) {
-      auto w = builder.create<xilinx::air::WaitAllOp>(
-          op->getLoc(), xilinx::air::AsyncTokenType::get(exe->getContext()),
+      auto w = builder.create<air::WaitAllOp>(
+          op->getLoc(), air::AsyncTokenType::get(exe->getContext()),
           SmallVector<Value>{});
       exe.getResult(0).replaceAllUsesWith(w.getResult(0));
     }
@@ -526,8 +520,8 @@ public:
     SmallVector<Value, 8> operands{adaptor.getOperands()};
     SmallVector<Type, 2> retTys;
     for (auto t : op->getResultTypes()) {
-      if (t.isa<xilinx::air::AsyncTokenType>()) {
-        retTys.push_back(xilinx::airrt::EventType::get(op->getContext()));
+      if (t.isa<air::AsyncTokenType>()) {
+        retTys.push_back(airrt::EventType::get(op->getContext()));
       } else {
         retTys.push_back(t);
       }
@@ -547,8 +541,8 @@ public:
 
     SmallVector<Type, 2> retTys;
     for (auto t : op->getResultTypes()) {
-      if (t.isa<xilinx::air::AsyncTokenType>()) {
-        retTys.push_back(xilinx::airrt::EventType::get(op->getContext()));
+      if (t.isa<air::AsyncTokenType>()) {
+        retTys.push_back(airrt::EventType::get(op->getContext()));
       } else {
         retTys.push_back(t);
       }
@@ -599,15 +593,14 @@ public:
   }
 };
 
-class AIRLoweringPass : public AIRLoweringBase<AIRLoweringPass> {
+class AIRLoweringPass : public air::AIRLoweringBase<AIRLoweringPass> {
 
 public:
   AIRLoweringPass() = default;
   AIRLoweringPass(const AIRLoweringPass &pass) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<AffineDialect, xilinx::airrt::AIRRtDialect,
-                    LLVM::LLVMDialect>();
+    registry.insert<AffineDialect, airrt::AIRRtDialect, LLVM::LLVMDialect>();
   }
 
   void runOnOperation() override {
@@ -618,8 +611,8 @@ public:
     TypeConverter converter;
     converter.addConversion([&](Type type) -> Optional<Type> {
       // convert !air.async.token to !airrt.event
-      if (auto t = type.dyn_cast<xilinx::air::AsyncTokenType>())
-        return xilinx::airrt::EventType::get(context);
+      if (auto t = type.dyn_cast<air::AsyncTokenType>())
+        return airrt::EventType::get(context);
       else
         return type;
     });
@@ -637,7 +630,7 @@ public:
                            arith::ArithDialect, AffineDialect, scf::SCFDialect,
                            linalg::LinalgDialect, memref::MemRefDialect,
                            bufferization::BufferizationDialect,
-                           xilinx::airrt::AIRRtDialect>();
+                           airrt::AIRRtDialect>();
 
     // AIR ExecuteOp conversion
     if (failed(lowerAirExecute(module))) {
@@ -652,8 +645,8 @@ public:
 
     // PipelineStageOp conversion
     RewritePatternSet air_pipe_stage_patterns(context);
-    air_pipe_stage_patterns.insert<AIRPipeStageConversion>(
-        context, AIRPipeStageConversion::LoweringType::AllocBuffer);
+    air_pipe_stage_patterns.insert<air::AIRPipeStageConversion>(
+        context, air::AIRPipeStageConversion::LoweringType::AllocBuffer);
     if (failed(applyPartialConversion(module, target,
                                       std::move(air_pipe_stage_patterns)))) {
       emitError(UnknownLoc::get(context),
@@ -675,19 +668,18 @@ public:
     RewritePatternSet air_patterns(context);
 
     target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
-      return (op.getType().getMemorySpaceAsInt() !=
-              (int)xilinx::air::MemorySpace::L2);
+      return (op.getType().getMemorySpaceAsInt() != (int)air::MemorySpace::L2);
     });
 
     target.addDynamicallyLegalOp<memref::DeallocOp>([&](memref::DeallocOp op) {
       return (
           op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
-          (int)xilinx::air::MemorySpace::L2);
+          (int)air::MemorySpace::L2);
     });
 
     target.addDynamicallyLegalOp<scf::ForOp>([&](scf::ForOp op) {
       for (auto o : op.getRegionIterArgs()) {
-        if (o.getType().isa<xilinx::air::AsyncTokenType>())
+        if (o.getType().isa<air::AsyncTokenType>())
           return false;
       }
       return true;
@@ -695,7 +687,7 @@ public:
 
     target.addDynamicallyLegalOp<scf::YieldOp>([&](scf::YieldOp op) {
       for (auto v : op.getResults()) {
-        if (v.getType().isa<xilinx::air::AsyncTokenType>())
+        if (v.getType().isa<air::AsyncTokenType>())
           return false;
       }
       return true;
@@ -703,7 +695,7 @@ public:
 
     target.addDynamicallyLegalOp<scf::IfOp>([&](scf::IfOp op) {
       for (auto v : op.getResults()) {
-        if (v.getType().isa<xilinx::air::AsyncTokenType>())
+        if (v.getType().isa<air::AsyncTokenType>())
           return false;
       }
       return true;
@@ -731,7 +723,7 @@ public:
 };
 
 class AIRPipelineToAffinePass
-    : public AIRPipelineToAffineBase<AIRPipelineToAffinePass> {
+    : public air::AIRPipelineToAffineBase<AIRPipelineToAffinePass> {
 
 public:
   AIRPipelineToAffinePass() = default;
@@ -747,22 +739,22 @@ public:
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<
-        LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect,
-        AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
-        memref::MemRefDialect, bufferization::BufferizationDialect,
-        xilinx::airrt::AIRRtDialect, xilinx::air::airDialect>();
+    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
+                           arith::ArithDialect, AffineDialect, scf::SCFDialect,
+                           linalg::LinalgDialect, memref::MemRefDialect,
+                           bufferization::BufferizationDialect,
+                           airrt::AIRRtDialect, air::airDialect>();
 
-    target.addIllegalOp<xilinx::air::PipelineStageOp,
-                        xilinx::air::PipelineYieldOp>();
+    target.addIllegalOp<air::PipelineStageOp, air::PipelineYieldOp>();
 
     // PipelineStageOp conversion
     RewritePatternSet air_pipe_stage_patterns(context);
-    auto loweringType = AIRPipeStageConversion::LoweringType::PipelineGetPut;
+    auto loweringType =
+        air::AIRPipeStageConversion::LoweringType::PipelineGetPut;
     if (clLoweringType == "buffer")
-      loweringType = AIRPipeStageConversion::LoweringType::AllocBuffer;
-    air_pipe_stage_patterns.insert<AIRPipeStageConversion>(context,
-                                                           loweringType);
+      loweringType = air::AIRPipeStageConversion::LoweringType::AllocBuffer;
+    air_pipe_stage_patterns.insert<air::AIRPipeStageConversion>(context,
+                                                                loweringType);
     if (failed(applyPartialConversion(module, target,
                                       std::move(air_pipe_stage_patterns)))) {
       emitError(UnknownLoc::get(context),
@@ -771,10 +763,10 @@ public:
     }
 
     SmallVector<Operation *, 8> pipelines;
-    module.walk([&](xilinx::air::HerdPipelineOp p) { pipelines.push_back(p); });
+    module.walk([&](air::HerdPipelineOp p) { pipelines.push_back(p); });
 
     for (auto p : pipelines) {
-      auto pipeOp = cast<xilinx::air::HerdPipelineOp>(p);
+      auto pipeOp = cast<air::HerdPipelineOp>(p);
       OpBuilder b(p);
       Block &bb = pipeOp.getBody().front();
       BlockAndValueMapping remap;
@@ -788,16 +780,10 @@ public:
 
 } // namespace
 
-namespace xilinx {
-namespace air {
-
-std::unique_ptr<mlir::Pass> createAIRLoweringPass() {
+std::unique_ptr<mlir::Pass> xilinx::air::createAIRLoweringPass() {
   return std::make_unique<AIRLoweringPass>();
 }
 
-std::unique_ptr<mlir::Pass> createAIRPipelineToAffinePass() {
+std::unique_ptr<mlir::Pass> xilinx::air::createAIRPipelineToAffinePass() {
   return std::make_unique<AIRPipelineToAffinePass>();
 }
-
-} // namespace air
-} // namespace xilinx
