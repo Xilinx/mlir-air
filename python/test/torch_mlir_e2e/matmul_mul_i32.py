@@ -8,10 +8,11 @@
 # CHECK: PASS
 
 import torch
-import torch_mlir
-import numpy
+import torch._dynamo as dynamo
 
 from air.backend import linalg_on_tensors as backend
+
+air_backend = backend.make_dynamo_backend()
 
 shape = [128,128]
 dtype = torch.int32
@@ -25,24 +26,13 @@ class mmult(torch.nn.Module):
         y = a*x
         return y
 
-program = mmult()
-module = torch_mlir.compile(
-        program,
-        (torch.ones(shape, dtype=dtype), torch.ones(shape, dtype=dtype), torch.ones(shape, dtype=dtype)),
-        output_type=torch_mlir.OutputType.LINALG_ON_TENSORS
-    )
-
-print(module)
-
-airbackend = backend.LinalgOnTensorsAirBackend()
-compiled = airbackend.compile(module)
-jit_module = airbackend.load(compiled)
+model = mmult()
+dynamo_model = dynamo.optimize(air_backend)(model)
 
 a = torch.randint(100, shape, dtype=dtype)
 b = torch.randint(100, shape, dtype=dtype)
 c = torch.randint(100, shape, dtype=dtype)
-d = torch.tensor(
-    jit_module.forward(a.numpy(),b.numpy(),c.numpy()))
+d = dynamo_model(a, b, c)
 
 print(f"input:\n{a}\n{b}\n{c}\noutput:\n{d}")
 

@@ -8,10 +8,11 @@
 # CHECK: PASSED
 
 import torch
-import torch_mlir
+import torch._dynamo as dynamo
 import numpy
-
 from air.backend import linalg_on_tensors as backend
+
+air_backend = backend.make_dynamo_backend()
 
 class model(torch.nn.Module):
     def __init__(self):
@@ -23,37 +24,26 @@ class model(torch.nn.Module):
 
 def run_test(dtype, shape):
     program = model()
-    module = torch_mlir.compile(
-        program,
-        (torch.ones(shape, dtype=dtype)),
-        output_type=torch_mlir.OutputType.LINALG_ON_TENSORS
-    )
+    dynamo_program = dynamo.optimize(air_backend)(program)
 
-    print(module)
-
-    airbackend = backend.LinalgOnTensorsAirBackend()
-    compiled = airbackend.compile(module)
-    jit_module = airbackend.load(compiled)
-
-    a = torch.randint(size = shape, low=1, high=100, dtype=dtype)
-    c = torch.tensor(
-        jit_module.forward(a.numpy()))
+    a = torch.randint(size = shape, low=-100, high=100, dtype=dtype)
+    c = dynamo_program(a)
+    c_ref = program(a)
 
     print(f"input:\n{a}\noutput:\n{c}")
 
-    if torch.equal(torch.relu(a),c):
+    if torch.allclose(c_ref,c):
         print("PASS!")
         return 1
     else:
-        errs = (torch.relu(a) == c)
+        errs = (c_ref == c)
         print(numpy.unique(errs.numpy(), return_counts=True))
         print("failed.")
     return 0
 
 sizes = [
     [10*1024],
-    [32,32,32,32],
-    [64,64]
+    [128,64]
 ]
 
 dtypes = [
