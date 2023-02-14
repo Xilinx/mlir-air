@@ -8,10 +8,11 @@
 # CHECK: PASSED
 
 import torch
-import torch_mlir
+import torch._dynamo as dynamo
 import numpy
-
 from air.backend import linalg_on_tensors as backend
+
+air_backend = backend.make_dynamo_backend()
 
 class model(torch.nn.Module):
     def __init__(self):
@@ -23,30 +24,20 @@ class model(torch.nn.Module):
 
 def run_test(dtype, shape):
     program = model()
-    module = torch_mlir.compile(
-        program,
-        (torch.ones(shape, dtype=dtype), torch.ones(shape, dtype=dtype)),
-        output_type=torch_mlir.OutputType.LINALG_ON_TENSORS
-    )
-
-    print(module)
-
-    airbackend = backend.LinalgOnTensorsAirBackend()
-    compiled = airbackend.compile(module)
-    jit_module = airbackend.load(compiled)
+    dynamo_program = dynamo.optimize(air_backend)(program)
 
     a = torch.randint(size = shape, low=1, high=100, dtype=dtype)
     b = torch.randint(size = shape, low=1, high=100, dtype=dtype)
-    c = torch.tensor(
-        jit_module.forward(a.numpy(),b.numpy()))
+    c = dynamo_program(a, b)
+    c_ref = program(a, b)
 
     print(f"input:\n{a}\n{b}\noutput:\n{c}")
 
-    if torch.equal(a*b,c):
+    if torch.allclose(c_ref,c):
         print("PASS!")
         return 1
     else:
-        errs = (a*b == c)
+        errs = (c_ref == c)
         print(numpy.unique(errs.numpy(), return_counts=True))
         print("failed.")
     return 0

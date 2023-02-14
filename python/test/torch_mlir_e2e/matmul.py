@@ -8,14 +8,11 @@
 # CHECK: PASS
 
 import torch
+import torch._dynamo as dynamo
 import numpy
-
-
-import torch
-import torch_mlir
-import numpy
-
 from air.backend import linalg_on_tensors as backend
+
+air_backend = backend.make_dynamo_backend()
 
 class model(torch.nn.Module):
     def __init__(self):
@@ -26,36 +23,20 @@ class model(torch.nn.Module):
 
 def run_test(dtype, shape):
     program = model()
-    module = torch_mlir.compile(
-        program,
-        (torch.ones([shape[0],shape[1]], dtype=dtype), torch.ones([shape[1],shape[2]], dtype=dtype)),
-        output_type=torch_mlir.OutputType.LINALG_ON_TENSORS
-    )
-
-    print(module)
-
-    airbackend = backend.LinalgOnTensorsAirBackend()
-    compiled = airbackend.compile(module)
-    jit_module = airbackend.load(compiled)
+    dynamo_program = dynamo.optimize(air_backend)(program)
 
     a = torch.randint(100, [shape[0],shape[1]], dtype=dtype)
     b = torch.randint(100, [shape[1],shape[2]], dtype=dtype)
-    c = torch.tensor(
-        jit_module.forward(a.numpy(),b.numpy()))
+    c = dynamo_program(a, b)
+    c_ref = program(a, b)
 
     print(f"input:\n{a}\n{b}\noutput:\n{c}")
 
-    errs = (torch.mm(a,b) == c)
-    unique, counts = numpy.unique(errs, return_counts=True)
-    d = dict(zip(unique, counts))
-    errs = d.get(False,0)
-    count = d.get(True,0)
-    if errs>0:
-        print(f"{count}/{errs+count} Correct\n")
-    if torch.equal(torch.mm(a,b),c):
+    if torch.allclose(c_ref,c):
         print("PASS!")
         return 1
     else:
+        print(numpy.unique(errs.numpy(), return_counts=True))
         print("failed.")
         return 0
 
