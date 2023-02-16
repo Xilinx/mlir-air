@@ -43,6 +43,14 @@ air_libxaie_ctx_t air_init_libxaie(uint32_t device_id = 0);
 air_libxaie_ctx_t air_get_libxaie_ctx();
 void air_deinit_libxaie(air_libxaie_ctx_t);
 
+// debug operations
+//
+
+uint64_t air_get_tile_addr(uint32_t col, uint32_t row);
+uint32_t air_read32(uint64_t addr);
+void air_write32(uint64_t addr, uint32_t val);
+
+
 // agent operations
 //
 
