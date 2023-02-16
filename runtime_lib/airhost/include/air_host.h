@@ -50,7 +50,6 @@ uint64_t air_get_tile_addr(uint32_t col, uint32_t row);
 uint32_t air_read32(uint64_t addr);
 void air_write32(uint64_t addr, uint32_t val);
 
-
 // agent operations
 //
 
