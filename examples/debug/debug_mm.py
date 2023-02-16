@@ -1,6 +1,6 @@
-# airbert.py -*- Python -*-
+# debug_mm.py -*- Python -*-
 #
-# Copyright (C) 2022, Advanced Micro Devices. All rights reserved.
+# Copyright (C) 2023, Advanced Micro Devices. All rights reserved.
 # SPDX-License-Identifier: MIT
 
 import torch
