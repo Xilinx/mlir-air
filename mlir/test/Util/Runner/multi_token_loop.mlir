@@ -1,4 +1,4 @@
-//===- pipelined_for.mlir --------------------------------------*- MLIR -*-===//
+//===- multi_token_loop.mlir -----------------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
