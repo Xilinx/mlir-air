@@ -234,15 +234,15 @@ public:
           (unsigned)getIdAttr(for_op.getOperation())) {
         for (int i = token_ids.size() - 1; i >= 0; i--) {
           if (std::get<1>(count_entry) == token_ids[i]) {
-            if (std::get<2>(count_entry)){
+            if (std::get<2>(count_entry)) {
               // Decrement token count if this token still needs to iterate
               std::get<2>(count_entry)--;
             }
             if (!std::get<2>(count_entry)) {
-              // If this token's iteration cound is fulfilled, then delete this token from ready token list
+              // If this token's iteration cound is fulfilled, then delete this
+              // token from ready token list
               token_is_still_iterating.push_back(false);
-            }
-            else {
+            } else {
               token_is_still_iterating.push_back(true);
             }
           }
@@ -290,7 +290,7 @@ public:
               // (1) reset graph wrt this token
               resetGraphBetweenTwoVertices(*adj_v, it, G, c, time);
               // (2) release the token locks, if the token is still iterating
-              if (token_is_still_iterating[i]){
+              if (token_is_still_iterating[i]) {
                 G[*adj_v].token_count++;
               }
             }
@@ -323,7 +323,8 @@ public:
     Graph &G = c.ctrl_g->g;
     auto adj_set = boost::adjacent_vertices(it, G);
     for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
-      G[*adj_v].token_count += tokenCountThresholdForExecution(G[*adj_v].op); // Lock number = number of dependent iter_args
+      G[*adj_v].token_count += tokenCountThresholdForExecution(
+          G[*adj_v].op); // Lock number = number of dependent iter_args
     }
 
     c.processed_vertices.push_back(it);
@@ -392,7 +393,8 @@ public:
     for (auto inv_adj_v = inv_adj_set.first; inv_adj_v != inv_adj_set.second;
          ++inv_adj_v) {
       if (G[*inv_adj_v].asyncEventType == "for_loop") {
-        unsigned th = tokenCountThresholdForExecution(G[it].op); // Consume all iter_arg tokens
+        unsigned th = tokenCountThresholdForExecution(
+            G[it].op); // Consume all iter_arg tokens
         assert(G[it].token_count >= th);
         G[it].token_count -= th;
         return;
@@ -565,22 +567,26 @@ public:
     if (dep.second == "ssa") {
       if ((!dep.first->is_started()) || (!dep.first->is_done(time))) {
         // If source and sink of dep are both under the same loop
-        if (node && dep.first && shareInnerMostForLoop(node->op, dep.first->op)){
-          // Check node's timestamp log, in case if it has executed in previous loop iterations
+        if (node && dep.first &&
+            shareInnerMostForLoop(node->op, dep.first->op)) {
+          // Check node's timestamp log, in case if it has executed in previous
+          // loop iterations
           unsigned dep_iter_count = dep.first->start_end_time_log.size();
           unsigned node_iter_count = node->start_end_time_log.size();
-          if (node->is_started() && node->is_done(time)) node_iter_count++;
-          if (dep_iter_count <= node_iter_count){
+          if (node->is_started() && node->is_done(time))
+            node_iter_count++;
+          if (dep_iter_count <= node_iter_count) {
             return false;
           }
-        }
-        else return false;
+        } else
+          return false;
       }
     } else if (dep.second == "ssa_loop_yield") {
       if ((!dep.first->is_started()) || (!dep.first->is_done(time))) {
         return false;
       }
-      // Threshold token_count for dep fulfillment = how many iter_args does node depend on
+      // Threshold token_count for dep fulfillment = how many iter_args does
+      // node depend on
       unsigned th = tokenCountThresholdForExecution(node->op);
       if (node->token_count < th) {
         return false;
@@ -670,7 +676,7 @@ public:
       std::vector<std::pair<dependencyNodeEntry *, std::string>> dep_list;
       buildVertexDependencyList(*it, G, dep_list);
       // Check whether adj_v's dependency list is fulfilled
-      if (isNonBlocking(G[*it].op)){
+      if (isNonBlocking(G[*it].op)) {
         // If op is non-blocking
         dep_fulfilled =
             checkAllDependenciesFulfillment(dep_list, &G[*it], time, false);
@@ -819,20 +825,20 @@ private:
   runnerNode launch_runner_node;
 
   // Check if op is a non-blocking event
-  bool isNonBlocking(Operation * op){
-    if (dyn_cast<scf::YieldOp>(op)){
+  bool isNonBlocking(Operation *op) {
+    if (dyn_cast<scf::YieldOp>(op)) {
       return true;
-    }
-    else return false;
+    } else
+      return false;
   }
 
   // Check if two ops are under the same scf for loop
-  bool shareInnerMostForLoop(Operation * a, Operation * b){
-    if (a){
-      if (auto a_parent_for = a->getParentOfType<scf::ForOp>()){
-        if (b){
-          if (auto b_parent_for = b->getParentOfType<scf::ForOp>()){
-            if (a_parent_for == b_parent_for){
+  bool shareInnerMostForLoop(Operation *a, Operation *b) {
+    if (a) {
+      if (auto a_parent_for = a->getParentOfType<scf::ForOp>()) {
+        if (b) {
+          if (auto b_parent_for = b->getParentOfType<scf::ForOp>()) {
+            if (a_parent_for == b_parent_for) {
               return true;
             }
           }
@@ -842,155 +848,22 @@ private:
     return false;
   }
 
-  // Async for loop race condition: calculate the minimum number of tokens required for dep fulfillment
-  unsigned tokenCountThresholdForExecution(Operation *op){
-    // Threshold token_count for dep fulfillment = how many iter_args does node depend on
+  // Async for loop race condition: calculate the minimum number of tokens
+  // required for dep fulfillment
+  unsigned tokenCountThresholdForExecution(Operation *op) {
+    // Threshold token_count for dep fulfillment = how many iter_args does node
+    // depend on
     unsigned th = 0;
-    if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)){
-      for (auto token : async_op.getAsyncDependencies()){
-        if (getForRegionIterArgsOwner(token)){
-          th ++;
+    if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
+      for (auto token : async_op.getAsyncDependencies()) {
+        if (getForRegionIterArgsOwner(token)) {
+          th++;
         }
       }
-    }
-    else {
+    } else {
       th = 1;
     }
     return th;
-  }
-
-  // Dump graphviz
-  void dump_graph(std::string filename, Graph G) {
-    std::ofstream ofs(filename, std::ofstream::out);
-    boost::dynamic_properties dp;
-    dp.property("label", boost::get(&dependencyNodeEntry::asyncEventName, G));
-    dp.property("color", boost::get(&dependencyNodeEntry::color, G));
-    dp.property("shape", boost::get(&dependencyNodeEntry::shape, G));
-    dp.property("node_id", boost::get(boost::vertex_index, G));
-    dp.property(
-        "style",
-        boost::make_constant_property<Graph::vertex_descriptor>(+"filled"));
-    write_graphviz_dp(ofs, G, dp);
-  }
-
-  // Trace op from a token in dependency list
-  std::vector<Operation *> traceOpFromToken(Value dep_token) {
-    std::vector<Operation *> output;
-    // If dependency token originates from async op
-    if (dep_token.getDefiningOp() &&
-        mlir::dyn_cast<xilinx::air::AsyncOpInterface>(
-            dep_token.getDefiningOp())) {
-      output.push_back(dep_token.getDefiningOp());
-      return output;
-    }
-    // Else if dependency token is yielded from scf.for
-    else if (dep_token.getDefiningOp() &&
-             dyn_cast<scf::ForOp>(dep_token.getDefiningOp())) {
-      auto forop = dyn_cast<scf::ForOp>(dep_token.getDefiningOp());
-      auto forop_terminator = forop.getBody()->getTerminator();
-      output.push_back(forop_terminator);
-      return output;
-    }
-    // Else if dependency token is yielded from scf.parallel
-    else if (dep_token.getDefiningOp() &&
-             dyn_cast<scf::ParallelOp>(dep_token.getDefiningOp())) {
-      auto parallelop = dyn_cast<scf::ParallelOp>(dep_token.getDefiningOp());
-      for (auto parallelop_reduceop : parallelop.getOps<scf::ReduceOp>()) {
-        auto parallelop_terminator =
-            parallelop_reduceop.getRegion().front().getTerminator();
-        output.push_back(parallelop_terminator);
-        return output;
-      }
-    }
-    // Else if dependency token is the iter arg of an scf for loop
-    else if (auto forop = getForRegionIterArgsOwner(dep_token)) {
-      output.push_back(forop);
-      return output;
-    }
-    // Else if dependency token is from affine if (joint token from multiple
-    // ops)
-    else if (dep_token.getDefiningOp() &&
-             dyn_cast<mlir::AffineIfOp>(dep_token.getDefiningOp())) {
-      auto aifop = dyn_cast<mlir::AffineIfOp>(dep_token.getDefiningOp());
-      auto then_terminator = aifop.getThenBlock()->getTerminator();
-      for (auto operand : then_terminator->getOperands()) {
-        if (auto op = operand.getDefiningOp()) {
-          output.push_back(op);
-        }
-      }
-      auto else_terminator = aifop.getElseBlock()->getTerminator();
-      for (auto operand : else_terminator->getOperands()) {
-        if (auto op = operand.getDefiningOp()) {
-          output.push_back(op);
-        }
-      }
-      return output;
-    }
-    return output;
-  }
-
-  // Insert a vertex v between two vertices a and b which were connected by an
-  // edge
-  void insertVertexBetweenTwoVertices(Graph::vertex_descriptor a,
-                                      Graph::vertex_descriptor b,
-                                      Graph::vertex_descriptor v, Graph &G) {
-    if ((a != b) && (a != v) && (b != v)) {
-      if (edge(a, b, G).second) { // if an edge exists
-        remove_edge(a, b, G);
-        if (!edge(a, v, G).second)
-          add_edge(a, v, G);
-        if (!edge(v, b, G).second)
-          add_edge(v, b, G);
-      }
-    }
-  }
-
-  // Create start node for graph
-  void connectStartNodeInDependencyGraph(dependencyGraph &G) {
-    auto v = G.start_vertex;
-    auto vp = boost::vertices(G.g);
-    for (auto vit = vp.first; vit != vp.second; ++vit) {
-      if ((v != *vit) && !in_degree(*vit, G.g)) {
-        add_edge(v, *vit, G.g);
-      }
-    }
-  }
-
-  // Adds pointer from command graph to launch, partition and herd terminators
-  void updatePointerFromGraphToHierarchyTerminator(dependencyGraph &G) {
-    auto vp = boost::vertices(G.g);
-    for (auto v = vp.first; v != vp.second; ++v) {
-      if (G.g[*v].asyncEventType == "hierarchy_terminator") {
-        G.terminator_vertex = *v;
-        return;
-      }
-    }
-  }
-
-  // Adds pointer from hierarchy terminator to parent command graph
-  void updatePointerFromHierarchyTerminatorToGraph(dependencyGraph &G,
-                                                   dependencyGraph &subG) {
-    auto vp = boost::vertices(subG.g);
-    for (auto v = vp.first; v != vp.second; ++v) {
-      if (subG.g[*v].asyncEventType == "hierarchy_terminator") {
-        subG.g[*v].nextDependencyGraph = &G;
-        return;
-      }
-    }
-  }
-
-  // Adds pointer from hierarchy op to sub command graph
-  void updatePointerFromHierarchyOpToGraph(dependencyGraph &G) {
-    unsigned idx = 0;
-    auto vp = boost::vertices(G.g);
-    for (auto v = vp.first; v != vp.second; ++v) {
-      if (G.g[*v].asyncEventType == "hierarchy") {
-        G.g[*v].nextDependencyGraph = &(G.subgraphs[idx]);
-        idx++;
-      }
-    }
-    assert(idx == G.subgraphs.size() &&
-           "mismatch between # graphs and hierarchy ops");
   }
 
   // Returns the scf parent op from scf.yield op
@@ -999,25 +872,6 @@ private:
       return scfop.getOperation();
     }
     return nullptr;
-  }
-
-  // Connects launch, partition and herd terminators
-  void connectTerminatorInGraph(Graph &g) {
-    auto vp = boost::vertices(g);
-    Graph::vertex_descriptor terminator_v = 0;
-    for (auto vit = vp.first; vit != vp.second; ++vit) {
-      if (g[*vit].asyncEventType == "hierarchy_terminator") {
-        terminator_v = *vit;
-      }
-    }
-    if (terminator_v == 0)
-      return;
-    for (auto vit = vp.first; vit != vp.second; ++vit) {
-      if ((terminator_v != *vit) && !out_degree(*vit, g) &&
-          (g[*vit].asyncEventType != "start")) {
-        add_edge(*vit, terminator_v, g);
-      }
-    }
   }
 
   // Find all vertices adjacent to given vertices in graph
@@ -1100,7 +954,8 @@ private:
     // Reset node's start_time and end_time, if the async event represented by
     // the vertex is complete
     if (G[v].is_started() && G[v].is_done(time)) {
-      G[v].start_end_time_log.push_back(std::make_pair(G[v].start_time, G[v].end_time));
+      G[v].start_end_time_log.push_back(
+          std::make_pair(G[v].start_time, G[v].end_time));
       G[v].start_time = 0;
       G[v].end_time = 0;
     }
