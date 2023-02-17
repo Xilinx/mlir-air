@@ -582,9 +582,6 @@ public:
           return false;
       }
     } else if (dep.second == "ssa_loop_yield") {
-      if ((!dep.first->is_started()) || (!dep.first->is_done(time))) {
-        return false;
-      }
       // Threshold token_count for dep fulfillment = how many iter_args does
       // node depend on
       unsigned th = tokenCountThresholdForExecution(node->op);
