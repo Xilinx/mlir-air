@@ -9,7 +9,7 @@
 
 // Race condition caused by for loop with multiple async tokens
 
-// CHECK-COUNT-148: "name": "DmaMemcpyNdOp",
+// CHECK-COUNT-132: "name": "DmaMemcpyNdOp",
 
 // CHECK: "name": "LaunchTerminator",
 // CHECK: "ph": "B",
