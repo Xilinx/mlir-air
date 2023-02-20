@@ -1030,11 +1030,17 @@ class AIRDmaToAIRChannelConversion
       }
 
       for (auto b : backwardSlice) {
-        b->setAttr("hoist-channel", StringAttr::get(ctx, "dep"));
         if (dyn_cast<air::ExecuteOp>(b)) {
-          auto child_op = &(*b->getRegions().front().op_begin());
-          child_op->setAttr("hoist-channel", StringAttr::get(ctx, "dep"));
+          for (auto &exec_child_op : b->getRegions().front().getOps()){
+            getBackwardSlice(&exec_child_op, &backwardSlice,
+                            [&](Operation *o) { return o != hier_op; });
+            backwardSlice.insert(&exec_child_op);
+          }
         }
+      }
+
+      for (auto b : backwardSlice) {
+        b->setAttr("hoist-channel", StringAttr::get(ctx, "dep"));
       }
 
       if (herd) {
@@ -1720,7 +1726,7 @@ struct DmaToChannelPass : public air::DmaToChannelBase<DmaToChannelPass> {
 
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
                            scf::SCFDialect, AffineDialect, air::airDialect,
-                           arith::ArithDialect, memref::MemRefDialect>();
+                           arith::ArithDialect, memref::MemRefDialect, linalg::LinalgDialect>();
 
     target.addIllegalOp<air::DmaMemcpyNdOp>();
 
