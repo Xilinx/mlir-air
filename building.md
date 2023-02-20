@@ -12,15 +12,6 @@
   Xilinx Vitis 2021.2 
 ```
 
-The minimum prerequisite tools and packages are:
-
-```
-clang/llvm 10+
-python 3.8.x
-pip3 install cmake ninja-build joblib psutil ipykernel numpy pybind11 PyYAML rich
-
-```
-
 In addition the following packages maybe useful: 
 
 ```
