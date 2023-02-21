@@ -18,9 +18,9 @@ if [ "$#" -ne 3 ]; then
 	return
 fi
 
-export MLIR_AIR_INSTALL_DIR=$1
-export MLIR_AIE_INSTALL_DIR=$2
-export LLVM_INSTALL_DIR=$3
+export MLIR_AIR_INSTALL_DIR=`realpath $1`
+export MLIR_AIE_INSTALL_DIR=`realpath $2`
+export LLVM_INSTALL_DIR=`realpath $3`
 
 export PATH=${MLIR_AIR_INSTALL_DIR}/bin:${MLIR_AIE_INSTALL_DIR}/bin:${LLVM_INSTALL_DIR}/bin:${PATH} 
 export PYTHONPATH=${MLIR_AIR_INSTALL_DIR}/python:${MLIR_AIE_INSTALL_DIR}/python:${PYTHONPATH} 
