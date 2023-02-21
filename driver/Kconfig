@@ -1,0 +1,3 @@
+CFLAGS += -DDEBUG
+obj-$(CONFIG_XILINX_VCK5000) := vck5000.o
+vck5000-y := main.o
