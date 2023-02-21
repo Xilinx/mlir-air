@@ -186,9 +186,9 @@ static void extractOperandsFromSubview(memref::SubViewOp subview,
     strides.push_back(builder.create<arith::ConstantIndexOp>(loc, s));
 }
 
-static void addReduceOpToAsyncParallel(OpBuilder builder,
-                                       scf::ParallelOp scf_par,
-                                       MLIRContext *ctx) {
+static void generateYieldAndOrReduceToScfLoop(OpBuilder builder,
+                                              MLIRContext *ctx,
+                                              scf::ParallelOp scf_par) {
 
   // Check if scf::YieldOp already exists in scf parallel
   SmallVector<scf::YieldOp, 2> y_ops(scf_par.getOps<scf::YieldOp>());
@@ -252,7 +252,7 @@ static scf::ParallelOp hoistHerdToAsyncParallel(OpBuilder builder, Location loc,
   SmallVector<Value, 1> deps_in{wa_op.getAsyncToken()};
   auto scf_par = builder.create<scf::ParallelOp>(loc, lbs, ubs, steps, deps_in);
 
-  addReduceOpToAsyncParallel(builder, scf_par, ctx);
+  generateYieldAndOrReduceToScfLoop(builder, ctx, scf_par);
 
   scf_par->setAttr("hoist-channel", StringAttr::get(ctx, "hoistedLoop"));
   scf_par->setAttr("loop-carried-dep", StringAttr::get(ctx, "hoistedLoop"));
@@ -260,8 +260,84 @@ static scf::ParallelOp hoistHerdToAsyncParallel(OpBuilder builder, Location loc,
   return scf_par;
 }
 
-static void updateUsesInScfFor(OpBuilder builder, scf::ForOp new_loop_op,
-                               scf::ForOp loop_op) {
+SmallVector<Value, 1> getLoopTokens(scf::ForOp loop) {
+  SmallVector<Value, 1> output;
+  for (auto v : loop.getIterOperands()) {
+    output.push_back(v);
+  }
+  return output;
+}
+
+SmallVector<Value, 1> getLoopTokens(scf::ParallelOp loop) {
+  SmallVector<Value, 1> output;
+  for (auto v : loop.getInitVals()) {
+    output.push_back(v);
+  }
+  return output;
+}
+
+void replaceAllUsesOfInductionVarsWith(scf::ForOp old_loop,
+                                       scf::ForOp new_loop) {
+  replaceAllUsesInRegionWith(old_loop.getInductionVar(),
+                             new_loop.getInductionVar(), new_loop.getRegion());
+}
+
+void replaceAllUsesOfInductionVarsWith(scf::ParallelOp old_loop,
+                                       scf::ParallelOp new_loop) {
+  for (unsigned i = 0; i < old_loop.getInductionVars().size(); i++) {
+    replaceAllUsesInRegionWith(old_loop.getInductionVars()[i],
+                               new_loop.getInductionVars()[i],
+                               new_loop.getRegion());
+  }
+}
+
+void replaceAllUsesOfLoopTokensWith(scf::ForOp old_loop, scf::ForOp new_loop) {
+  if (old_loop.getRegionIterArgs().size()) {
+    for (unsigned i = 0; i < old_loop.getRegionIterArgs().size(); i++) {
+      replaceAllUsesInRegionWith(old_loop.getRegionIterArgs()[i],
+                                 new_loop.getRegionIterArgs()[i],
+                                 new_loop.getRegion());
+    }
+  }
+}
+
+void replaceAllUsesOfLoopTokensWith(scf::ParallelOp old_loop,
+                                    scf::ParallelOp new_loop) {
+  if (old_loop.getInitVals().size()) {
+    for (unsigned i = 0; i < old_loop.getInitVals().size(); i++) {
+      replaceAllUsesInRegionWith(old_loop.getInitVals()[i],
+                                 new_loop.getInitVals()[i],
+                                 new_loop.getRegion());
+    }
+  }
+}
+
+void replaceAllUsesOfIncomingTokensWith(SmallVector<Value, 4> incoming_tokens,
+                                        scf::ForOp new_loop) {
+  for (Value v : incoming_tokens) {
+    replaceAllUsesInRegionWith(v, new_loop.getRegionIterArgs()[0],
+                               new_loop.getRegion());
+  }
+}
+
+void replaceAllUsesOfIncomingTokensWith(SmallVector<Value, 4> incoming_tokens,
+                                        scf::ParallelOp new_loop) {
+  for (Value v : incoming_tokens) {
+    replaceAllUsesInRegionWith(v, new_loop.getInitVals()[0],
+                               new_loop.getRegion());
+  }
+}
+
+void replaceAllUsesOfConstsInRegionWithNew(SmallVector<Value, 4> constants,
+                                           OpBuilder builder, Region &region) {
+  for (auto c : constants) {
+    replaceAllUsesInRegionWith(
+        c, builder.clone(*c.getDefiningOp())->getResult(0), region);
+  }
+}
+
+template <typename T>
+static void updateUsesInScfLoop(OpBuilder builder, T new_loop_op, T loop_op) {
   auto insertionCheckpoint = builder.saveInsertionPoint();
   // Splice the operations inside loop op
   SmallVector<Value, 4> incoming_tokens;
@@ -286,37 +362,23 @@ static void updateUsesInScfFor(OpBuilder builder, scf::ForOp new_loop_op,
     }
   }
 
-  auto iv = loop_op.getInductionVar();
-  replaceAllUsesInRegionWith(iv, new_loop_op.getInductionVar(),
-                             new_loop_op.getRegion());
-  if (loop_op.getRegionIterArgs().size()) {
-    for (unsigned i = 0; i < loop_op.getRegionIterArgs().size(); i++) {
-      auto ia = loop_op.getRegionIterArgs()[i];
-      replaceAllUsesInRegionWith(ia, new_loop_op.getRegionIterArgs()[i],
-                                 new_loop_op.getRegion());
-    }
-  }
+  replaceAllUsesOfInductionVarsWith(loop_op, new_loop_op);
+  replaceAllUsesOfLoopTokensWith(loop_op, new_loop_op);
   builder.setInsertionPointToStart(new_loop_op.getBody());
-  for (auto c : constants) {
-    replaceAllUsesInRegionWith(c,
-                               builder.clone(*c.getDefiningOp())->getResult(0),
-                               new_loop_op.getRegion());
-  }
-
-  for (Value v : incoming_tokens) {
-    replaceAllUsesInRegionWith(v, new_loop_op.getRegionIterArgs()[0],
-                               new_loop_op.getRegion());
-  }
+  replaceAllUsesOfConstsInRegionWithNew(constants, builder,
+                                        new_loop_op.getRegion());
+  replaceAllUsesOfIncomingTokensWith(incoming_tokens, new_loop_op);
 
   builder.restoreInsertionPoint(insertionCheckpoint);
 }
 
-scf::YieldOp generateYieldOpFromChannelOp(OpBuilder builder, MLIRContext *ctx,
-                                          scf::ForOp scf_for) {
+scf::YieldOp generateYieldAndOrReduceToScfLoop(OpBuilder builder,
+                                               MLIRContext *ctx,
+                                               scf::ForOp scf_loop) {
   auto insertionCheckpoint = builder.saveInsertionPoint();
-  builder.setInsertionPointToEnd(scf_for.getBody());
+  builder.setInsertionPointToEnd(scf_loop.getBody());
   SmallVector<air::ChannelInterface, 1> channel_ops;
-  for (auto channel_op : scf_for.getOps<air::ChannelInterface>()) {
+  for (auto channel_op : scf_loop.getOps<air::ChannelInterface>()) {
     if (channel_op->hasAttr("hoist-channel")) {
       channel_ops.push_back(channel_op);
     }
@@ -382,55 +444,70 @@ void replaceAffineIfOpWithChannelOpAndClone(
   }
 }
 
-scf::ForOp cloneForUsingRemap(OpBuilder builder, BlockAndValueMapping &remap,
-                              scf::ForOp loop_op,
-                              air::ChannelInterface externalGetPut = nullptr) {
-  SmallVector<Value, 1> remap_iter_operands;
-  for (auto iter_operand : loop_op.getIterOperands()) {
-    remap_iter_operands.push_back(remap.lookupOrDefault(iter_operand));
+Value lookupOrDefaultRange(Value v, BlockAndValueMapping &remap) {
+  return remap.lookupOrDefault(v);
+}
+
+SmallVector<Value, 1> lookupOrDefaultRange(SmallVector<Value, 1> vec,
+                                           BlockAndValueMapping &remap) {
+  SmallVector<Value, 1> output;
+  for (auto v : vec) {
+    output.push_back(remap.lookupOrDefault(v));
   }
-  scf::ForOp new_loop_op = builder.create<scf::ForOp>(
-      builder.getUnknownLoc(), remap.lookupOrDefault(loop_op.getLowerBound()),
-      remap.lookupOrDefault(loop_op.getUpperBound()),
-      remap.lookupOrDefault(loop_op.getStep()), remap_iter_operands);
+  return output;
+}
+
+template <typename T>
+T cloneScfLoopUsingRemap(OpBuilder builder, BlockAndValueMapping &remap,
+                         T loop_op,
+                         air::ChannelInterface externalGetPut = nullptr) {
+  T new_loop_op =
+      builder.create<T>(builder.getUnknownLoc(),
+                        lookupOrDefaultRange(loop_op.getLowerBound(), remap),
+                        lookupOrDefaultRange(loop_op.getUpperBound(), remap),
+                        lookupOrDefaultRange(loop_op.getStep(), remap),
+                        lookupOrDefaultRange(getLoopTokens(loop_op), remap));
   auto insertionCheckpoint = builder.saveInsertionPoint();
   builder.setInsertionPointToStart(new_loop_op.getBody());
-  for (Operation &for_child_op : loop_op.getBody()->getOperations()) {
-    if (for_child_op.hasAttr("hoist-channel")) {
-      if (auto for_op = dyn_cast<scf::ForOp>(for_child_op)) {
-        cloneForUsingRemap(builder, remap, for_op, externalGetPut);
-      } else if (auto channel_op =
-                     dyn_cast<air::ChannelInterface>(for_child_op)) {
-        if (for_child_op.hasAttr("loop-carried-dep") &&
-            for_child_op.getAttrOfType<StringAttr>("loop-carried-dep")
+  for (Operation &child_op : loop_op.getBody()->getOperations()) {
+    if (child_op.hasAttr("hoist-channel")) {
+      if (auto for_op = dyn_cast<scf::ForOp>(child_op)) {
+        cloneScfLoopUsingRemap<scf::ForOp>(builder, remap, for_op,
+                                           externalGetPut);
+      } else if (auto parallel_op = dyn_cast<scf::ParallelOp>(child_op)) {
+        cloneScfLoopUsingRemap<scf::ParallelOp>(builder, remap, parallel_op,
+                                                externalGetPut);
+      } else if (auto channel_op = dyn_cast<air::ChannelInterface>(child_op)) {
+        if (child_op.hasAttr("loop-carried-dep") &&
+            child_op.getAttrOfType<StringAttr>("loop-carried-dep")
                     .getValue()
                     .str() == "internalGetPut") {
           // Found channel op labelled as "internalGetPut", which shouldn't be
           // hoisted
-          replaceAsyncOpWithWaitAllAndClone(builder, remap, &for_child_op,
-                                            false);
+          replaceAsyncOpWithWaitAllAndClone(builder, remap, &child_op, false);
         } else {
-          builder.clone(for_child_op, remap);
+          builder.clone(child_op, remap);
         }
-      } else if (externalGetPut && dyn_cast<mlir::AffineIfOp>(for_child_op)) {
+      } else if (externalGetPut && dyn_cast<mlir::AffineIfOp>(child_op)) {
         // If externalGetPut is not nullptr, then broadcast lowering mode is on
         replaceAffineIfOpWithChannelOpAndClone(builder, remap, externalGetPut);
       } else {
-        builder.clone(for_child_op, remap);
+        builder.clone(child_op, remap);
       }
     }
   }
   // Re-establish uses after hoisting
-  updateUsesInScfFor(builder, new_loop_op, loop_op);
+  updateUsesInScfLoop<T>(builder, new_loop_op, loop_op);
 
   new_loop_op->setAttr("hoist-channel",
                        StringAttr::get(loop_op->getContext(), "hoistedLoop"));
   new_loop_op->setAttr("loop-carried-dep",
                        StringAttr::get(loop_op->getContext(), "hoistedLoop"));
 
-  // Generate yield op if async for
-  if (remap_iter_operands.size()) {
-    generateYieldOpFromChannelOp(builder, loop_op->getContext(), new_loop_op);
+  // Generate yield op and/or reduce op if async
+  if (getLoopTokens(loop_op).size()) {
+    generateYieldAndOrReduceToScfLoop(builder, loop_op->getContext(),
+                                      new_loop_op);
   }
 
   builder.restoreInsertionPoint(insertionCheckpoint);
@@ -875,8 +952,12 @@ void HoistingAffineIf(mlir::AffineIfOp op) {
         continue;
       if (o.hasAttr("hoist-channel")) {
         if (auto child_for_op = dyn_cast<scf::ForOp>(o)) {
-          cloneForUsingRemap(module_builder, remap, child_for_op,
-                             externalGetPut[dma_index]);
+          cloneScfLoopUsingRemap<scf::ForOp>(
+              module_builder, remap, child_for_op, externalGetPut[dma_index]);
+        } else if (auto child_parallel_op = dyn_cast<scf::ParallelOp>(o)) {
+          cloneScfLoopUsingRemap<scf::ParallelOp>(module_builder, remap,
+                                                  child_parallel_op,
+                                                  externalGetPut[dma_index]);
         } else if (dyn_cast<mlir::AffineIfOp>(o)) {
           replaceAffineIfOpWithChannelOpAndClone(module_builder, remap,
                                                  externalGetPut[dma_index]);
@@ -1030,11 +1111,17 @@ class AIRDmaToAIRChannelConversion
       }
 
       for (auto b : backwardSlice) {
-        b->setAttr("hoist-channel", StringAttr::get(ctx, "dep"));
         if (dyn_cast<air::ExecuteOp>(b)) {
-          auto child_op = &(*b->getRegions().front().op_begin());
-          child_op->setAttr("hoist-channel", StringAttr::get(ctx, "dep"));
+          for (auto &exec_child_op : b->getRegions().front().getOps()) {
+            getBackwardSlice(&exec_child_op, &backwardSlice,
+                             [&](Operation *o) { return o != hier_op; });
+            backwardSlice.insert(&exec_child_op);
+          }
         }
+      }
+
+      for (auto b : backwardSlice) {
+        b->setAttr("hoist-channel", StringAttr::get(ctx, "dep"));
       }
 
       if (herd) {
@@ -1058,7 +1145,10 @@ class AIRDmaToAIRChannelConversion
             continue;
           if (o.hasAttr("hoist-channel")) {
             if (auto child_for_op = dyn_cast<scf::ForOp>(o)) {
-              cloneForUsingRemap(rewriter, remap, child_for_op);
+              cloneScfLoopUsingRemap<scf::ForOp>(rewriter, remap, child_for_op);
+            } else if (auto child_parallel_op = dyn_cast<scf::ParallelOp>(o)) {
+              cloneScfLoopUsingRemap<scf::ParallelOp>(rewriter, remap,
+                                                      child_parallel_op);
             } else if (auto channel_op = dyn_cast<air::ChannelInterface>(o)) {
               if (o.hasAttr("loop-carried-dep") &&
                   o.getAttrOfType<StringAttr>("loop-carried-dep")
@@ -1093,7 +1183,10 @@ class AIRDmaToAIRChannelConversion
             continue;
           if (o.hasAttr("hoist-channel")) {
             if (auto child_for_op = dyn_cast<scf::ForOp>(o)) {
-              cloneForUsingRemap(rewriter, remap, child_for_op);
+              cloneScfLoopUsingRemap<scf::ForOp>(rewriter, remap, child_for_op);
+            } else if (auto child_parallel_op = dyn_cast<scf::ParallelOp>(o)) {
+              cloneScfLoopUsingRemap<scf::ParallelOp>(rewriter, remap,
+                                                      child_parallel_op);
             } else if (auto channel_op = dyn_cast<air::ChannelInterface>(o)) {
               if (o.hasAttr("loop-carried-dep") &&
                   o.getAttrOfType<StringAttr>("loop-carried-dep")
@@ -1194,11 +1287,8 @@ public:
     auto &body = op.getBody()->getOperations();
     bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
     rewriter.setInsertionPointToStart(&launch.getRegion().front());
-    for (auto c : constants) {
-      replaceAllUsesInRegionWith(
-          c, rewriter.clone(*c.getDefiningOp())->getResult(0),
-          launch.getRegion());
-    }
+    replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
+                                          launch.getRegion());
     auto builder = OpBuilder::atBlockEnd(&bb);
     builder.create<air::HerdTerminatorOp>(loc);
 
@@ -1345,8 +1435,8 @@ public:
       auto step_int = to_int(op.getStep()[i]);
       bounds[i] = ub_int / step_int;
     }
-    SmallVector<Value> args;
-    SmallVector<Value> constants;
+    SmallVector<Value, 4> args;
+    SmallVector<Value, 4> constants;
     llvm::SetVector<Value> region_args;
     getUsedValuesDefinedAbove(op.getRegion(), region_args);
     for (Value v : region_args) {
@@ -1369,11 +1459,8 @@ public:
     auto &body = op.getBody()->getOperations();
     bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
     rewriter.setInsertionPointToStart(&herdOp.getRegion().front());
-    for (auto c : constants) {
-      replaceAllUsesInRegionWith(
-          c, rewriter.clone(*c.getDefiningOp())->getResult(0),
-          herdOp.getRegion());
-    }
+    replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
+                                          herdOp.getRegion());
     auto builder = OpBuilder::atBlockEnd(&bb);
     builder.create<air::HerdTerminatorOp>(loc);
 
@@ -1472,11 +1559,8 @@ public:
     auto &body = op.getBody()->getOperations();
     bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
     rewriter.setInsertionPointToStart(&launch.getRegion().front());
-    for (auto c : constants) {
-      replaceAllUsesInRegionWith(
-          c, rewriter.clone(*c.getDefiningOp())->getResult(0),
-          launch.getRegion());
-    }
+    replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
+                                          launch.getRegion());
 
     auto builder = OpBuilder::atBlockEnd(&bb);
     builder.create<air::LaunchTerminatorOp>(loc);
@@ -1589,11 +1673,8 @@ public:
     auto &body = op.getBody()->getOperations();
     bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
     rewriter.setInsertionPointToStart(&partition.getRegion().front());
-    for (auto c : constants) {
-      replaceAllUsesInRegionWith(
-          c, rewriter.clone(*c.getDefiningOp())->getResult(0),
-          partition.getRegion());
-    }
+    replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
+                                          partition.getRegion());
 
     auto builder = OpBuilder::atBlockEnd(&bb);
     builder.create<air::PartitionTerminatorOp>(builder.getUnknownLoc());
@@ -1718,9 +1799,10 @@ struct DmaToChannelPass : public air::DmaToChannelBase<DmaToChannelPass> {
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           scf::SCFDialect, AffineDialect, air::airDialect,
-                           arith::ArithDialect, memref::MemRefDialect>();
+    target
+        .addLegalDialect<LLVM::LLVMDialect, func::FuncDialect, scf::SCFDialect,
+                         AffineDialect, air::airDialect, arith::ArithDialect,
+                         memref::MemRefDialect, linalg::LinalgDialect>();
 
     target.addIllegalOp<air::DmaMemcpyNdOp>();
 
