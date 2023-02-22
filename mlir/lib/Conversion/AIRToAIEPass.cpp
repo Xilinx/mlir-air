@@ -149,8 +149,14 @@ struct DMAAllocator {
   DMAAllocator(std::vector<int> cols, int channels)
       : dma_columns(cols), dma_channels(channels) {}
 
-  AIE::TileOp getTile(ModuleOp aie_module, int src_memory_space, int dst_memory_space,
-                      int64_t tile_channel, int64_t col, int64_t row, int32_t dmaID) {
+  AIE::TileOp getTile(ModuleOp aie_module, air::DmaMemcpyInterface &dmaOp,
+                      int64_t tile_channel, int64_t col, int64_t row) {
+    auto src_memory_space =
+      dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+    auto dst_memory_space =
+      dmaOp.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
+    auto dmaID = dmaOp.getId();
+    
     bool isMM2S = (src_memory_space < dst_memory_space);
     auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
 
@@ -180,16 +186,6 @@ struct DMAAllocator {
                             << ", l2 chan =" << dma_channel << "\n");
 
     return dma_tile;
-  }
-
-  AIE::TileOp getTileFromDMA(ModuleOp aie_module, air::DmaMemcpyInterface &dmaOp,
-                      int64_t tile_channel, int64_t col, int64_t row) {
-    auto src_memory_space =
-      dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    auto dst_memory_space =
-      dmaOp.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    auto dmaID = dmaOp.getId();
-    return getTile(aie_module, src_memory_space, dst_memory_space, tile_channel, col, row, dmaID);
   }
 
   AIE::DMAChannel getChannel(ModuleOp aie_module,
@@ -1271,7 +1267,7 @@ public:
 
         // copy between L1 and external memory, use shim dma
         tile_channel = getTileDMAChannel(aie_module, dmaOpIf, x, y);
-        AIE::TileOp shim_tile = shim_dma_alloc.getTileFromDMA(
+        AIE::TileOp shim_tile = shim_dma_alloc.getTile(
             aie_module, dmaOpIf, (int64_t)tile_channel.second, x, y);
         AIE::DMAChannel shim_channel =
             shim_dma_alloc.getChannel(aie_module, dmaOpIf, tile_channel, x, y);
@@ -1298,7 +1294,7 @@ public:
                   dst_space == (int)air::MemorySpace::L2)) {
         // copy between L1 and L2
         tile_channel = getTileDMAChannel(aie_module, dmaOpIf, x, y);
-        AIE::TileOp l2_tile = l2_dma_alloc.getTileFromDMA(
+        AIE::TileOp l2_tile = l2_dma_alloc.getTile(
             aie_module, dmaOpIf, (int64_t)tile_channel.second, x, y);
         AIE::DMAChannel l2_channel =
             l2_dma_alloc.getChannel(aie_module, dmaOpIf, tile_channel, x, y);
