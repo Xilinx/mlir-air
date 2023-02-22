@@ -92,6 +92,40 @@ AIE::TileOp getPhysTileOp(ModuleOp aie_module, int col, int row) {
                                      col, row);
 }
 
+struct ShimTileAllocator {
+
+  std::vector<int> shim_columns;
+  int shim_dma_channels;
+
+  struct shim_allocation_info_t {
+    AIE::TileOp shim_tile;
+    int available_channels;
+  };
+
+  std::vector<shim_allocation_info_t> mm2s_allocs, s2mm_allocs;
+
+  ShimTileAllocator(std::vector<int> cols, int channels)
+      : shim_columns(cols), shim_dma_channels(channels) {}
+
+  AIE::TileOp getShimTile(ModuleOp aie_module, int src_memory_space, int dst_memory_space) {
+    bool isMM2S = (src_memory_space < dst_memory_space);
+    auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
+
+    // return first available shim tile with a free channel
+    for (auto &t : *allocs) {
+      if (t.available_channels > 0) {
+        t.available_channels -= 1;
+        return t.shim_tile;
+      }
+    }
+    auto shim_col = shim_columns[allocs->size()];
+    auto shim_tile = getPhysTileOp(aie_module, shim_col, 0);
+    allocs->push_back({shim_tile, shim_dma_channels - 1});
+
+    return shim_tile;
+  }
+};
+
 bool isMM2S(AIE::DMAChannel channel) {
   return (channel.first == AIE::DMAChannelDir::MM2S);
 }
@@ -154,7 +188,6 @@ struct DMAAllocator {
       dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
     auto dst_memory_space =
       dmaOp.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    assert(src_memory_space != dst_memory_space);
     auto dmaID = dmaOp.getId();
     return getTile(aie_module, src_memory_space, dst_memory_space, tile_channel, col, row, dmaID);
   }
@@ -881,14 +914,47 @@ AIE::ObjectFifoCreateOp createObjectFifo(OpBuilder &builder,
   return fifo;
 }
 
+template <typename MyOp>
+void rewriteChannelAllocs(PatternRewriter &rewriter, MyOp op, AIE::ObjectFifoCreateOp objFifo, AIE::ObjectFifoPort port) {
+  auto elementType = objFifo.getType().dyn_cast<AIE::AIEObjectFifoType>().getElementType();
+  auto acqType = AIE::AIEObjectFifoSubviewType::get(elementType);
+
+  rewriter.setInsertionPoint(&op->getBlock()->front());
+  AIE::ObjectFifoAcquireOp producerAcq =
+      rewriter.create<AIE::ObjectFifoAcquireOp>(
+          rewriter.getUnknownLoc(), acqType, port,
+          objFifo, 1);
+  rewriter.setInsertionPointAfter(producerAcq);
+  AIE::ObjectFifoSubviewAccessOp producerAccess =
+      rewriter.create<AIE::ObjectFifoSubviewAccessOp>(
+          rewriter.getUnknownLoc(), elementType, producerAcq.getSubview(),
+          rewriter.getIntegerAttr(rewriter.getI32Type(), 0));
+
+  // replace uses of alloc with result of acquire
+  if (auto a = dyn_cast<memref::AllocOp>(op.getMemref().getDefiningOp()))
+    rewriter.replaceOp(a.getOperation(), producerAccess.getOutput());
+}
+
+template <typename MyOp>
+void rewriteChannelDeallocs(PatternRewriter &rewriter, MyOp op, AIE::ObjectFifoCreateOp objFifo, AIE::ObjectFifoPort port) {
+  for (auto u : op.getMemref().getDefiningOp()->getUsers()) {
+    if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
+      rewriter.setInsertionPoint(&op->getBlock()->back());
+      rewriter.create<AIE::ObjectFifoReleaseOp>(
+          dealloc->getLoc(), port, objFifo, 1);
+      rewriter.eraseOp(dealloc);
+    }
+  }
+}
+
 struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
   using OpRewritePattern<air::ChannelOp>::OpRewritePattern;
 
-  LowerAIRChannelsPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
+  LowerAIRChannelsPattern(MLIRContext *ctx, ShimTileAllocator &shimTileAlloc) 
+      : OpRewritePattern(ctx), shimTileAlloc(shimTileAlloc) {}
 
   LogicalResult matchAndRewrite(air::ChannelOp channel,
                                 PatternRewriter &rewriter) const override {
-    DMAAllocator shimDmaAlloc(shim_dma_cols, shim_dma_channels);
     auto aie_module = channel->getParentOfType<ModuleOp>();
     // retrieve put/get of channel
     bool putExists = true;
@@ -902,6 +968,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 
     if (putExists || getExists) {
       // get memrefs of put/get, find memory hierarchy levels
+      // put/get come in pairs, if one is missing then it's L3
       MemRefType srcMemref;
       int src_space = (int)air::MemorySpace::L3;
       MemRefType dstMemref;
@@ -915,7 +982,6 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
         dstMemref = get.getDst().getType().cast<MemRefType>();
         dst_space = dstMemref.getMemorySpaceAsInt();
       }
-
       // find AIE tiles and their cores based on memory hierarchy levels
       AIE::TileOp producerTile;
       AIE::TileOp consumerTile;
@@ -950,8 +1016,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
         if (!producerTile)
           return failure();
 
-        consumerTile = shimDmaAlloc.getTile(aie_module, src_space, dst_space, 1, producerTile.getCol(), producerTile.getRow(), 0);
-
+        consumerTile = shimTileAlloc.getShimTile(aie_module, src_space, dst_space);
       } else {
         // get from L3 to L1/L2
         consumerCore = get->getParentOfType<AIE::CoreOp>();
@@ -961,9 +1026,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
         if (!consumerTile)
           return failure();
 
-        producerTile = shimDmaAlloc.getTile(aie_module, src_space, dst_space, 1, consumerTile.getCol(), consumerTile.getRow(), 0);
+        producerTile = shimTileAlloc.getShimTile(aie_module, src_space, dst_space);
       }
-
       // create objFifo
       // For now, number of memory elements in OF is hardcoded to 1
       // (single buffer). FIXME
@@ -975,86 +1039,28 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
         datatype = AIE::AIEObjectFifoType::get(dstMemref);
       AIE::ObjectFifoCreateOp objFifo =
           createObjectFifo(rewriter, datatype, producerTile, consumerTile, 1);
-      auto elementType =
-          objFifo.getType().dyn_cast<AIE::AIEObjectFifoType>().getElementType();
-      auto acqType = AIE::AIEObjectFifoSubviewType::get(elementType);
 
-      // replace put and the associated memref alloc
+      // replace put and the associated memref alloc/dealloc
       if (putExists) {
-        if (auto bco =
-                dyn_cast<bufferization::ToMemrefOp>(put.getSrc().getDefiningOp()))
-          rewriter.setInsertionPoint(bco.getOperand().getDefiningOp());
-        else if (auto a = dyn_cast<memref::AllocaOp>(put.getSrc().getDefiningOp()))
-          rewriter.setInsertionPoint(put.getSrc().getDefiningOp());
-        else
-          rewriter.setInsertionPoint(&put->getBlock()->front());
-        AIE::ObjectFifoAcquireOp producerAcq =
-            rewriter.create<AIE::ObjectFifoAcquireOp>(
-                rewriter.getUnknownLoc(), acqType, AIE::ObjectFifoPort::Produce,
-                objFifo, 1);
-        rewriter.setInsertionPointAfter(producerAcq);
-        AIE::ObjectFifoSubviewAccessOp producerAccess =
-            rewriter.create<AIE::ObjectFifoSubviewAccessOp>(
-                rewriter.getUnknownLoc(), elementType, producerAcq.getSubview(),
-                rewriter.getIntegerAttr(rewriter.getI32Type(), 0));
-
-        // replace uses of alloc with result of acquire
-        if (auto a = dyn_cast<memref::AllocOp>(put.getSrc().getDefiningOp()))
-          rewriter.replaceOp(a.getOperation(), producerAccess.getOutput());
-
-        // replace associated deallocs for put
-        for (auto u : put.getSrc().getDefiningOp()->getUsers()) {
-          if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
-            rewriter.setInsertionPoint(&put->getBlock()->back());
-            rewriter.create<AIE::ObjectFifoReleaseOp>(
-                dealloc->getLoc(), AIE::ObjectFifoPort::Produce, objFifo, 1);
-            rewriter.eraseOp(dealloc);
-          }
-        }
+        rewriteChannelAllocs<ChannelPutOp>(rewriter, put, objFifo, AIE::ObjectFifoPort::Produce);
+        rewriteChannelDeallocs<ChannelPutOp>(rewriter, put, objFifo, AIE::ObjectFifoPort::Produce);
         // erase put
         rewriter.eraseOp(put);
       }
-      // replace get and the associated memref alloc
+      // replace get and the associated memref alloc/dealloc
       if (getExists) {
-        if (auto bco =
-                dyn_cast<bufferization::ToMemrefOp>(get.getDst().getDefiningOp()))
-          rewriter.setInsertionPoint(bco.getOperand().getDefiningOp());
-        else if (auto a = dyn_cast<memref::AllocaOp>(get.getDst().getDefiningOp()))
-          rewriter.setInsertionPoint(get.getDst().getDefiningOp());
-        else
-          rewriter.setInsertionPoint(&get->getBlock()->front());
-        AIE::ObjectFifoAcquireOp consumerAcq =
-            rewriter.create<AIE::ObjectFifoAcquireOp>(
-                rewriter.getUnknownLoc(), acqType, AIE::ObjectFifoPort::Consume,
-                objFifo, 1);
-        rewriter.setInsertionPointAfter(consumerAcq);
-        AIE::ObjectFifoSubviewAccessOp consumerAccess =
-            rewriter.create<AIE::ObjectFifoSubviewAccessOp>(
-                rewriter.getUnknownLoc(), elementType, consumerAcq.getSubview(),
-                rewriter.getIntegerAttr(rewriter.getI32Type(), 0));
-
-        // replace uses of alloc with result of acquire
-        if (auto a = dyn_cast<memref::AllocOp>(get.getDst().getDefiningOp()))
-          rewriter.replaceOp(a.getOperation(), consumerAccess.getOutput());
-
-        // replace associated deallocs for get
-        for (auto u : get.getDst().getDefiningOp()->getUsers()) {
-          if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
-            rewriter.setInsertionPoint(&get->getBlock()->back());
-            rewriter.create<AIE::ObjectFifoReleaseOp>(
-                dealloc->getLoc(), AIE::ObjectFifoPort::Consume, objFifo, 1);
-            rewriter.eraseOp(dealloc);
-          }
-        }
+        rewriteChannelAllocs<ChannelGetOp>(rewriter, get, objFifo, AIE::ObjectFifoPort::Consume);
+        rewriteChannelDeallocs<ChannelGetOp>(rewriter, get, objFifo, AIE::ObjectFifoPort::Consume);
         // erase get
         rewriter.eraseOp(get);
       }
     }
-
     // erase the channel
     rewriter.eraseOp(channel);
     return success();
   }
+  private:
+    ShimTileAllocator &shimTileAlloc;
 };
 
 // This function replaces ChannelPutOp/ChannelGetOp with AIE_CreateObjectFifoOps
@@ -1579,6 +1585,7 @@ public:
 
     RewritePatternSet patterns(ctx);
     std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
+    ShimTileAllocator shimTileAlloc(shim_dma_cols, shim_dma_channels);
 
     if (clTestPatterns.find("to-aie-mlir") != std::string::npos) {
       std::vector<std::pair<ModuleOp, air::HerdOp>> aie_modules;
@@ -1611,7 +1618,7 @@ public:
     if (clTestPatterns.find("lower-scf-tokens") != std::string::npos)
       patterns.insert<LowerScfTokenPattern>(ctx);
     if (clTestPatterns.find("lower-air-channels") != std::string::npos)
-      patterns.insert<LowerAIRChannelsPattern>(ctx);
+      patterns.insert<LowerAIRChannelsPattern>(ctx, shimTileAlloc);
 
     if (patterns.getNativePatterns().size())
       (void)applyPatternsAndFoldGreedily(m, std::move(patterns));

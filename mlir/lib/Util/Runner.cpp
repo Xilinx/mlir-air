@@ -396,10 +396,10 @@ public:
                (name.find("ChannelGetOp") != std::string::npos)) {
       auto getOp = mlir::dyn_cast<xilinx::air::ChannelGetOp>(c.op);
       assert(getOp);
-      MemRefType dstTy = getOp.getDstMemref().getType().cast<MemRefType>();
+      MemRefType dstTy = getOp.getDst().getType().cast<MemRefType>();
       air::ChannelPutOp putOp = air::getTheOtherChannelOpThroughSymbol(getOp);
       assert(putOp);
-      MemRefType srcTy = putOp.getSrcMemref().getType().cast<MemRefType>();
+      MemRefType srcTy = putOp.getSrc().getType().cast<MemRefType>();
       auto srcSpace = srcTy.getMemorySpaceAsInt();
       auto dstSpace = dstTy.getMemorySpaceAsInt();
       // if there is a size mismatch, it's because we're moving a tile of the
