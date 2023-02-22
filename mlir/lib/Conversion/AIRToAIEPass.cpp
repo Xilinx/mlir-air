@@ -51,9 +51,6 @@ struct AIRToAIEOptions {
   bool emit_herd_lock;
 };
 
-std::vector<int> l2_dma_cols{7, 8, 9, 10};
-const int l2_dma_channels = 2;
-
 // std::vector<int> s80_nmu_col_list{0, 0, 1, 1, 0, 0, 1, 1,
 //                                   0, 0, 1, 1, 0, 0, 0, 0,
 //                                   0, 0, 1, 1, 0, 0, 0, 0,
