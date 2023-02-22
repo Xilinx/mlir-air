@@ -2,8 +2,6 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_LIST_DIR} ${CMAKE_CURRENT_LIST_DIR}/cmakeModulesXilinx)
-
 # specify the compiler
 set(CLANG_VER 12)
 set(CMAKE_C_COMPILER clang-${CLANG_VER})
