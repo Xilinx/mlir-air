@@ -303,7 +303,8 @@ air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
 }
 
 // Get ChannelPutOp through ChannelOp
-std::vector<air::ChannelPutOp> air::getChannelPutOpThroughSymbol(air::ChannelOp channel) {
+std::vector<air::ChannelPutOp>
+air::getChannelPutOpThroughSymbol(air::ChannelOp channel) {
   auto module = channel->getParentOfType<ModuleOp>();
   auto attr =
       channel->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
@@ -321,7 +322,8 @@ std::vector<air::ChannelPutOp> air::getChannelPutOpThroughSymbol(air::ChannelOp 
 }
 
 // Get ChannelGetOps through ChannelOp
-std::vector<air::ChannelGetOp> air::getChannelGetOpThroughSymbol(air::ChannelOp channel) {
+std::vector<air::ChannelGetOp>
+air::getChannelGetOpThroughSymbol(air::ChannelOp channel) {
   auto module = channel->getParentOfType<ModuleOp>();
   auto attr =
       channel->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
@@ -339,49 +341,19 @@ std::vector<air::ChannelGetOp> air::getChannelGetOpThroughSymbol(air::ChannelOp 
 }
 
 // Get the other channel op through channel symbol
-air::ChannelGetOp
+std::vector<air::ChannelGetOp>
 air::getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put) {
   auto module = put->getParentOfType<ModuleOp>();
   auto channel_op = getChannelDeclarationThroughSymbol(
       dyn_cast<air::ChannelInterface>(put.getOperation()));
-  auto attr =
-      channel_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
-
-  air::ChannelGetOp output = nullptr;
-  module.walk([&](Operation *op) {
-    if (auto get = dyn_cast<air::ChannelGetOp>(op)) {
-      if (get.getChanName() == attr) {
-        output = get;
-      }
-    }
-  });
-
-  if (output)
-    return output;
-  else
-    return ChannelGetOp();
+  return getChannelGetOpThroughSymbol(channel_op);
 }
 
 // Get the other channel op through channel symbol
-air::ChannelPutOp
+std::vector<air::ChannelPutOp>
 air::getTheOtherChannelOpThroughSymbol(air::ChannelGetOp get) {
   auto module = get->getParentOfType<ModuleOp>();
   auto channel_op = getChannelDeclarationThroughSymbol(
       dyn_cast<air::ChannelInterface>(get.getOperation()));
-  auto attr =
-      channel_op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
-
-  air::ChannelPutOp output = nullptr;
-  module.walk([&](Operation *op) {
-    if (auto put = dyn_cast<ChannelPutOp>(op)) {
-      if (put.getChanName() == attr) {
-        output = put;
-      }
-    }
-  });
-
-  if (output)
-    return output;
-  else
-    return ChannelPutOp();
+  return getChannelPutOpThroughSymbol(channel_op);
 }
