@@ -60,10 +60,10 @@ DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block);
 
 // Get channel declaration through channel symbol
 ChannelOp getChannelDeclarationThroughSymbol(ChannelInterface op);
-// Get ChannelPutOp from ChannelOp
-ChannelPutOp getChannelPutOpThroughSymbol(ChannelOp channel);
-// Get ChannelGetOp from ChannelOp
-ChannelGetOp getChannelGetOpThroughSymbol(ChannelOp channel);
+// Get ChannelPutOps from ChannelOp
+std::vector<ChannelPutOp> getChannelPutOpThroughSymbol(ChannelOp channel);
+// Get ChannelGetOps from ChannelOp
+std::vector<ChannelGetOp> getChannelGetOpThroughSymbol(ChannelOp channel);
 // Get the other channel op through channel symbol
 ChannelGetOp getTheOtherChannelOpThroughSymbol(ChannelPutOp put);
 ChannelPutOp getTheOtherChannelOpThroughSymbol(ChannelGetOp get);
