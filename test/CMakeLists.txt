@@ -25,7 +25,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
 find_package(MLIR REQUIRED CONFIG)
 find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 
-set(LibXAIE_ROOT ${Sysroot}/usr ${Sysroot}/opt/xaiengine ${Sysroot}/opt/xaienginev2)
 find_package(LibXAIE)
 
 if(NOT AIE_BINARY_DIR)

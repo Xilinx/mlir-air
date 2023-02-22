@@ -85,6 +85,8 @@ jobs:
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
             -DLibXAIE_DIR=`pwd`/../aienginev2/install \
+            -DAIR_RUNTIME_TARGETS:STRING="x86" \
+            -Dx86_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86.cmake \
             -DCMAKE_LINKER=lld \
             -DCMAKE_C_COMPILER=clang-12 \
             -DCMAKE_CXX_COMPILER=clang++-12 \
