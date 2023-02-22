@@ -155,17 +155,18 @@ struct DMAAllocator {
         dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
     auto dst_memory_space =
         dmaOp.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-
+    assert(src_memory_space != dst_memory_space);
+    
     bool isMM2S = (src_memory_space < dst_memory_space);
     auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
 
     for (auto &t : *allocs) {
       if (col == t.col && row == t.row) {
         for (auto id : t.dma_id)
-          if (dmaOp.getId(); == id)
+          if (dmaOp.getId() == id)
             return t.dma_tile;
         if (tile_channel == t.tile_channel) {
-          t.dma_id.push_back(dmaOp.getId(););
+          t.dma_id.push_back(dmaOp.getId());
           return t.dma_tile;
         }
       }
@@ -178,8 +179,8 @@ struct DMAAllocator {
                        row,
                        (int64_t)dma_channel,
                        tile_channel,
-                       {dmaOp.getId();}});
-    LLVM_DEBUG(llvm::outs() << "isMM2S = " << isMM2S << " " << dmaOp.getId();
+                       {dmaOp.getId()}});
+    LLVM_DEBUG(llvm::outs() << "isMM2S = " << isMM2S << " " << dmaOp.getId()
                             << ", col =" << col << ", row = " << row
                             << ", l2 col =" << dma_col
                             << ", l2 chan =" << dma_channel << "\n");
