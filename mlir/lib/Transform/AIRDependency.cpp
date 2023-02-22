@@ -1193,10 +1193,8 @@ private:
           // Channel op: Need to check for overlapping partial memrefs in use
           if (auto channel_put =
                   dyn_cast<xilinx::air::ChannelPutOp>(channel.getOperation())) {
-            unsigned numDimsSrc = channel_put.getSrc()
-                                      .getType()
-                                      .cast<MemRefType>()
-                                      .getRank();
+            unsigned numDimsSrc =
+                channel_put.getSrc().getType().cast<MemRefType>().getRank();
             SmallVector<Value, 2> src_indices;
             if (channel_put.getSrcOffsets().size()) {
               for (unsigned i = 0; i < numDimsSrc; i++) {
@@ -1232,10 +1230,8 @@ private:
             }
           } else if (auto channel_get = dyn_cast<xilinx::air::ChannelGetOp>(
                          channel.getOperation())) {
-            unsigned numDimsDst = channel_get.getDst()
-                                      .getType()
-                                      .cast<MemRefType>()
-                                      .getRank();
+            unsigned numDimsDst =
+                channel_get.getDst().getType().cast<MemRefType>().getRank();
             SmallVector<Value, 2> dst_indices;
             if (channel_get.getDstOffsets().size()) {
               for (unsigned i = 0; i < numDimsDst; i++) {

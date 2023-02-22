@@ -1625,8 +1625,8 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
             src_indices.push_back(nullptr);
           }
         }
-        partialMemref channel_put_src = createPartialMemref(
-            channel_put.getSrc(), numDimsSrc, src_indices);
+        partialMemref channel_put_src =
+            createPartialMemref(channel_put.getSrc(), numDimsSrc, src_indices);
 
         if (rw == 'r') {
           if (u.is(channel_put.getSrc())) {
@@ -1664,8 +1664,8 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
             dst_indices.push_back(nullptr);
           }
         }
-        partialMemref channel_get_dst = createPartialMemref(
-            channel_get.getDst(), numDimsDst, dst_indices);
+        partialMemref channel_get_dst =
+            createPartialMemref(channel_get.getDst(), numDimsDst, dst_indices);
 
         if (rw == 'r') {
         } else if (rw == 'w') {
@@ -1905,10 +1905,8 @@ void dependencyTracer::getPartialMemrefFromOp(
 
   // If the sink op is channel put
   else if (auto sink_op_channel_put = dyn_cast<air::ChannelPutOp>(sink_op)) {
-    unsigned numDimsSrc = sink_op_channel_put.getSrc()
-                              .getType()
-                              .cast<MemRefType>()
-                              .getRank();
+    unsigned numDimsSrc =
+        sink_op_channel_put.getSrc().getType().cast<MemRefType>().getRank();
     for (unsigned i = 0; i < sink_op_channel_put.getSrcOffsets().size(); i++)
       sink_op_scalar_ins.push_back(sink_op_channel_put.getSrcOffsets()[i]);
     for (unsigned i = 0; i < sink_op_channel_put.getSrcSizes().size(); i++)
@@ -1925,17 +1923,15 @@ void dependencyTracer::getPartialMemrefFromOp(
         src_indices.push_back(nullptr);
       }
     }
-    partialMemref tile_in = createPartialMemref(
-        sink_op_channel_put.getSrc(), numDimsSrc, src_indices);
+    partialMemref tile_in = createPartialMemref(sink_op_channel_put.getSrc(),
+                                                numDimsSrc, src_indices);
     sink_op_memref_reads.push_back(tile_in);
   }
 
   // If the sink op is channel get
   else if (auto sink_op_channel_get = dyn_cast<air::ChannelGetOp>(sink_op)) {
-    unsigned numDimsDst = sink_op_channel_get.getDst()
-                              .getType()
-                              .cast<MemRefType>()
-                              .getRank();
+    unsigned numDimsDst =
+        sink_op_channel_get.getDst().getType().cast<MemRefType>().getRank();
     for (unsigned i = 0; i < sink_op_channel_get.getDstOffsets().size(); i++)
       sink_op_scalar_outs.push_back(sink_op_channel_get.getDstOffsets()[i]);
     for (unsigned i = 0; i < sink_op_channel_get.getDstSizes().size(); i++)
@@ -1952,8 +1948,8 @@ void dependencyTracer::getPartialMemrefFromOp(
         dst_indices.push_back(nullptr);
       }
     }
-    partialMemref tile_out = createPartialMemref(
-        sink_op_channel_get.getDst(), numDimsDst, dst_indices);
+    partialMemref tile_out = createPartialMemref(sink_op_channel_get.getDst(),
+                                                 numDimsDst, dst_indices);
     sink_op_memref_writes.push_back(tile_out);
   }
 

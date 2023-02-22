@@ -303,8 +303,7 @@ air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
 }
 
 // Get ChannelPutOp through ChannelOp
-air::ChannelPutOp
-air::getChannelPutOpThroughSymbol(air::ChannelOp channel) {
+air::ChannelPutOp air::getChannelPutOpThroughSymbol(air::ChannelOp channel) {
   auto module = channel->getParentOfType<ModuleOp>();
   auto attr =
       channel->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
@@ -325,8 +324,7 @@ air::getChannelPutOpThroughSymbol(air::ChannelOp channel) {
 }
 
 // Get ChannelGetOp through ChannelOp
-air::ChannelGetOp
-air::getChannelGetOpThroughSymbol(air::ChannelOp channel) {
+air::ChannelGetOp air::getChannelGetOpThroughSymbol(air::ChannelOp channel) {
   auto module = channel->getParentOfType<ModuleOp>();
   auto attr =
       channel->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
