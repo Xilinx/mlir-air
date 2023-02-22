@@ -25,10 +25,6 @@ if(POLICY CMP0116)
   cmake_policy(SET CMP0116 OLD)
 endif()
 
-if(CMAKE_USE_TOOLCHAIN)
-	set(CMAKE_TOOLCHAIN_FILE ${CMAKE_TOOLCHAIN_FILE_OPT})
-endif()
-
 project(AIR LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -110,15 +106,19 @@ add_custom_target(docs ALL)
 add_dependencies(docs mlir-doc)
 
 foreach(target ${AIR_RUNTIME_TARGETS})
-	message("Compiling AIR runtimes for ${target}")
+	message("Compiling AIR runtime for ${target}")
 	message("TOOLCHAIN=${${target}_TOOLCHAIN_FILE}")
 	message("Sysroot=${${target}_Sysroot}")
+	if (NOT EXISTS ${${target}_TOOLCHAIN_FILE})
+		message(FATAL_ERROR "Toolchain file ${${target}_TOOLCHAIN_FILE} not found! Cannot build target ${target}.")
+	endif()
 	ExternalProject_Add(air_runtime_lib_${target}
 		PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp/${target}
 		SOURCE_DIR ${PROJECT_SOURCE_DIR}/runtime_lib
 		BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib/${target}
+		CMAKE_CACHE_ARGS
+			-DCMAKE_MODULE_PATH:STRING=${CMAKE_MODULE_PATH}
 		CMAKE_ARGS
-			-DCMAKE_MODULE_PATH=${CMAKE_MODULE_PATH}
 			-DCMAKE_TOOLCHAIN_FILE=${${target}_TOOLCHAIN_FILE}
 			-DSysroot=${${target}_Sysroot}
 			-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
@@ -126,8 +126,8 @@ foreach(target ${AIR_RUNTIME_TARGETS})
 			-DCMAKE_ASM_COMPILER=${CMAKE_ASM_COMPILER}
 			-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
 			-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
+			-DLibXAIE_DIR=${LibXAIE_DIR}
 			-DAIE_DIR=${AIE_DIR}
-			-DBUILD_AIR_PCIE=${BUILD_AIR_PCIE}
 		BUILD_ALWAYS true
 		STEP_TARGETS clean build install test
 		USES_TERMINAL_CONFIGURE true
