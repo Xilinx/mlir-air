@@ -286,8 +286,20 @@ void addAsyncDependencyIfNew(air::AsyncOpInterface op, Value token) {
 void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
                                                  dependencyGraph &global_graph,
                                                  dependencyContext &dep_ctx,
+                                                 std::string granularity,
                                                  bool dump_dot,
                                                  std::string dump_dir) {
+  // Graph parsing granularity. Tuple format: <expandLaunch, expandPartition,
+  // expandHerd, expandCore>
+  graphGranularityProperties expandHier = {true, true, true, false};
+  if (granularity == "herd") {
+    std::get<2>(expandHier) = true;
+    std::get<3>(expandHier) = false;
+  } else if (granularity == "core") {
+    std::get<2>(expandHier) = true;
+    std::get<3>(expandHier) = true;
+  } else
+    assert(false && "Unknown graph parsing granularity");
 
   // Create vertices for graphs
   // Build up host graph
@@ -295,16 +307,18 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
     if (!op->getParentOfType<air::HierarchyInterface>()) {
       addVertexFromOpImpls(op, &global_graph, dep_ctx);
       if (auto launch = dyn_cast<air::LaunchOp>(op)) {
-        addVerticesInLaunch(global_graph.subgraphs, launch, dep_ctx);
+        addVerticesInLaunch(global_graph.subgraphs, launch, dep_ctx,
+                            expandHier);
       } else if (dyn_cast<air::PartitionOp>(op) &&
                  (!op->getParentOfType<air::LaunchOp>())) {
         auto partition = dyn_cast<air::PartitionOp>(op);
-        addVerticesInPartition(global_graph.subgraphs, partition, dep_ctx);
+        addVerticesInPartition(global_graph.subgraphs, partition, dep_ctx,
+                               expandHier);
       } else if (dyn_cast<air::HerdOp>(op) &&
                  (!op->getParentOfType<air::LaunchOp>()) &&
                  (!op->getParentOfType<air::PartitionOp>())) {
         auto herd = dyn_cast<air::HerdOp>(op);
-        addVerticesInHerd(global_graph.subgraphs, herd, dep_ctx);
+        addVerticesInHerd(global_graph.subgraphs, herd, dep_ctx, expandHier);
       }
     }
   });
@@ -425,7 +439,7 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
   auto vp = boost::vertices(global_graph.g);
   for (auto vit = vp.first; vit != vp.second; ++vit) {
     if (global_graph.g[*vit].asyncEventName == "LaunchOp") {
-      auto G_l = *global_graph.g[*vit].nextDependencyGraph;
+      auto G_l = *global_graph.g[*vit].nextDependencyGraphs[0];
       FlatGraph &flat_subg_l = flat_g.create_subgraph();
       updateSubgraphFromDependencyGraphAsGraphVizCluster(
           G_l, flat_subg_l, maps[index], index, idx_l, "launch");
@@ -436,7 +450,7 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
       auto vp_l = boost::vertices(G_l.g);
       for (auto vit_l = vp_l.first; vit_l != vp_l.second; ++vit_l) {
         if (G_l.g[*vit_l].asyncEventName == "PartitionOp") {
-          auto G_p = *G_l.g[*vit_l].nextDependencyGraph;
+          auto G_p = *G_l.g[*vit_l].nextDependencyGraphs[0];
           FlatGraph &flat_subg_p = flat_subg_l.create_subgraph();
           updateSubgraphFromDependencyGraphAsGraphVizCluster(
               G_p, flat_subg_p, maps[index], index, idx_p, "partition");
@@ -449,28 +463,33 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
           auto vp_p = boost::vertices(G_p.g);
           for (auto vit_p = vp_p.first; vit_p != vp_p.second; ++vit_p) {
             if (G_p.g[*vit_p].asyncEventName == "HerdOp") {
-              auto G_h = *G_p.g[*vit_p].nextDependencyGraph;
-              FlatGraph &flat_subg_h = flat_subg_p.create_subgraph();
-              updateSubgraphFromDependencyGraphAsGraphVizCluster(
-                  G_h, flat_subg_h, maps[index], index, idx_h, "herd");
-              // Connect parent graph's herarchy node with "start" of herd
-              // subgraph
-              add_edge(maps[map_idx_partition][*vit_p],
-                       maps[index++][G_h.start_vertex], flat_g);
+              for (auto G_h_ptr : G_p.g[*vit_p].nextDependencyGraphs) {
+                auto G_h = *G_h_ptr;
+                FlatGraph &flat_subg_h = flat_subg_p.create_subgraph();
+                updateSubgraphFromDependencyGraphAsGraphVizCluster(
+                    G_h, flat_subg_h, maps[index], index, idx_h, "herd");
+                // Connect parent graph's herarchy node with "start" of herd
+                // subgraph
+                add_edge(maps[map_idx_partition][*vit_p],
+                         maps[index++][G_h.start_vertex], flat_g);
+              }
             }
           }
         } else if (G_l.g[*vit_l].asyncEventName == "HerdOp") {
-          auto G_h = *G_l.g[*vit_l].nextDependencyGraph;
-          FlatGraph &flat_subg_h = flat_subg_l.create_subgraph();
-          updateSubgraphFromDependencyGraphAsGraphVizCluster(
-              G_h, flat_subg_h, maps[index], index, idx_h, "herd");
-          // Connect parent graph's herarchy node with "start" of herd subgraph
-          add_edge(maps[map_idx_launch][*vit_l],
-                   maps[index++][G_h.start_vertex], flat_g);
+          for (auto G_h_ptr : G_l.g[*vit_l].nextDependencyGraphs) {
+            auto G_h = *G_h_ptr;
+            FlatGraph &flat_subg_h = flat_subg_l.create_subgraph();
+            updateSubgraphFromDependencyGraphAsGraphVizCluster(
+                G_h, flat_subg_h, maps[index], index, idx_h, "herd");
+            // Connect parent graph's herarchy node with "start" of herd
+            // subgraph
+            add_edge(maps[map_idx_launch][*vit_l],
+                     maps[index++][G_h.start_vertex], flat_g);
+          }
         }
       }
     } else if (global_graph.g[*vit].asyncEventName == "PartitionOp") {
-      auto G_p = *global_graph.g[*vit].nextDependencyGraph;
+      auto G_p = *global_graph.g[*vit].nextDependencyGraphs[0];
       FlatGraph &flat_subg_p = flat_g.create_subgraph();
       updateSubgraphFromDependencyGraphAsGraphVizCluster(
           G_p, flat_subg_p, maps[index], index, idx_p, "partition");
@@ -481,22 +500,27 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
       auto vp_p = boost::vertices(G_p.g);
       for (auto vit_p = vp_p.first; vit_p != vp_p.second; ++vit_p) {
         if (G_p.g[*vit_p].asyncEventName == "HerdOp") {
-          auto G_h = *G_p.g[*vit_p].nextDependencyGraph;
-          FlatGraph &flat_subg_h = flat_subg_p.create_subgraph();
-          updateSubgraphFromDependencyGraphAsGraphVizCluster(
-              G_h, flat_subg_h, maps[index], index, idx_h, "herd");
-          // Connect parent graph's herarchy node with "start" of herd subgraph
-          add_edge(maps[map_idx_partition][*vit_p],
-                   maps[index++][G_h.start_vertex], flat_g);
+          for (auto G_h_ptr : G_p.g[*vit_p].nextDependencyGraphs) {
+            auto G_h = *G_h_ptr;
+            FlatGraph &flat_subg_h = flat_subg_p.create_subgraph();
+            updateSubgraphFromDependencyGraphAsGraphVizCluster(
+                G_h, flat_subg_h, maps[index], index, idx_h, "herd");
+            // Connect parent graph's herarchy node with "start" of herd
+            // subgraph
+            add_edge(maps[map_idx_partition][*vit_p],
+                     maps[index++][G_h.start_vertex], flat_g);
+          }
         }
       }
     } else if (global_graph.g[*vit].asyncEventName == "HerdOp") {
-      auto G_h = *global_graph.g[*vit].nextDependencyGraph;
-      FlatGraph &flat_subg_h = flat_g.create_subgraph();
-      updateSubgraphFromDependencyGraphAsGraphVizCluster(
-          G_h, flat_subg_h, maps[index], index, idx_h, "herd");
-      // Connect parent graph's herarchy node with "start" of herd subgraph
-      add_edge(maps[0][*vit], maps[index++][G_h.start_vertex], flat_g);
+      for (auto G_h_ptr : global_graph.g[*vit].nextDependencyGraphs) {
+        auto G_h = *G_h_ptr;
+        FlatGraph &flat_subg_h = flat_g.create_subgraph();
+        updateSubgraphFromDependencyGraphAsGraphVizCluster(
+            G_h, flat_subg_h, maps[index], index, idx_h, "herd");
+        // Connect parent graph's herarchy node with "start" of herd subgraph
+        add_edge(maps[0][*vit], maps[index++][G_h.start_vertex], flat_g);
+      }
     }
   }
 
@@ -525,21 +549,48 @@ void dependencyCanonicalizer::
 
 void dependencyCanonicalizer::addVerticesInHerd(
     std::deque<dependencyGraph> &herd_subgraphs, air::HerdOp herd,
-    dependencyContext &dep_ctx) {
+    dependencyContext &dep_ctx, graphGranularityProperties expandHier) {
   // Build up herd graph
-  herd_subgraphs.push_back(dependencyGraph(herd.getOperation(), true));
-  dependencyGraph *current_herd_graph = &(herd_subgraphs.back());
+  bool showCores = std::get<3>(expandHier);
+  if (showCores) {
+    for (unsigned i = 0; i < getNumberOfCoresInHerd(herd); i++) {
+      herd_subgraphs.push_back(dependencyGraph(herd.getOperation(), true));
+      dependencyGraph *current_herd_graph = &(herd_subgraphs.back());
 
-  herd.walk([&](Operation *herd_childop) {
-    if (!dyn_cast<air::HerdOp>(herd_childop)) {
-      addVertexFromOpImpls(herd_childop, current_herd_graph, dep_ctx);
+      // Core id
+      auto current_position = getPositionFromIterator(i, herd);
+      auto &position_ref = current_herd_graph->position;
+      // auto check_prod = 1;
+      for (auto id : current_position) {
+        position_ref.push_back(id);
+      }
+      // Write core position at "start" node
+      std::string position_str = "core position: ";
+      position_str += toPositionString(current_position);
+      current_herd_graph->g[current_herd_graph->start_vertex]
+          .detailed_description = position_str;
+
+      herd.walk([&](Operation *herd_childop) {
+        if (!dyn_cast<air::HerdOp>(herd_childop)) {
+          addVertexFromOpImpls(herd_childop, current_herd_graph, dep_ctx);
+        }
+      });
     }
-  });
+  } else {
+    herd_subgraphs.push_back(dependencyGraph(herd.getOperation(), true));
+    dependencyGraph *current_herd_graph = &(herd_subgraphs.back());
+
+    herd.walk([&](Operation *herd_childop) {
+      if (!dyn_cast<air::HerdOp>(herd_childop)) {
+        addVertexFromOpImpls(herd_childop, current_herd_graph, dep_ctx);
+      }
+    });
+  }
 }
 
 void dependencyCanonicalizer::addVerticesInPartition(
     std::deque<dependencyGraph> &part_subgraphs, air::PartitionOp partition,
-    dependencyContext &dep_ctx) {
+    dependencyContext &dep_ctx, graphGranularityProperties expandHier) {
   // Build up partition graph
   part_subgraphs.push_back(dependencyGraph(partition.getOperation(), true));
   dependencyGraph *current_part_graph = &(part_subgraphs.back());
@@ -549,7 +600,8 @@ void dependencyCanonicalizer::addVerticesInPartition(
         !dyn_cast<air::PartitionOp>(part_childop)) {
       addVertexFromOpImpls(part_childop, current_part_graph, dep_ctx);
       if (auto herd = dyn_cast<air::HerdOp>(part_childop)) {
-        addVerticesInHerd(current_part_graph->subgraphs, herd, dep_ctx);
+        addVerticesInHerd(current_part_graph->subgraphs, herd, dep_ctx,
+                          expandHier);
       }
     }
   });
@@ -557,7 +609,7 @@ void dependencyCanonicalizer::addVerticesInPartition(
 
 void dependencyCanonicalizer::addVerticesInLaunch(
     std::deque<dependencyGraph> &launch_subgraphs, air::LaunchOp launch,
-    dependencyContext &dep_ctx) {
+    dependencyContext &dep_ctx, graphGranularityProperties expandHier) {
   // Build up launch graph
   launch_subgraphs.push_back(dependencyGraph(launch.getOperation(), true));
   dependencyGraph *current_launch_graph = &(launch_subgraphs.back());
@@ -568,11 +620,12 @@ void dependencyCanonicalizer::addVerticesInLaunch(
       addVertexFromOpImpls(launch_childop, current_launch_graph, dep_ctx);
       if (auto partition = dyn_cast<air::PartitionOp>(launch_childop)) {
         addVerticesInPartition(current_launch_graph->subgraphs, partition,
-                               dep_ctx);
+                               dep_ctx, expandHier);
       } else if (dyn_cast<air::HerdOp>(launch_childop) &&
                  (!launch_childop->getParentOfType<air::PartitionOp>())) {
         auto herd = dyn_cast<air::HerdOp>(launch_childop);
-        addVerticesInHerd(current_launch_graph->subgraphs, herd, dep_ctx);
+        addVerticesInHerd(current_launch_graph->subgraphs, herd, dep_ctx,
+                          expandHier);
       }
     }
   });
@@ -752,18 +805,24 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromHierarchyOp(
 
 Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromTerminatorOp(
     Operation *op, dependencyGraph *G, dependencyContext &dep_ctx) {
+  std::string detailed_description = "";
   if (dyn_cast<xilinx::air::LaunchTerminatorOp>(op)) {
-    return addVertexFromOp(op, dep_ctx.TerminatorID, "hierarchy_terminator",
-                           "LaunchTerminator", graphNodeProperties("hierarchy"),
-                           G, dep_ctx);
+    return addVertexFromOp(
+        op, dep_ctx.TerminatorID, "hierarchy_terminator", "LaunchTerminator",
+        graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
   } else if (dyn_cast<xilinx::air::PartitionTerminatorOp>(op)) {
-    return addVertexFromOp(op, dep_ctx.TerminatorID, "hierarchy_terminator",
-                           "PartitionTerminator",
-                           graphNodeProperties("hierarchy"), G, dep_ctx);
+    return addVertexFromOp(
+        op, dep_ctx.TerminatorID, "hierarchy_terminator", "PartitionTerminator",
+        graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
   } else if (dyn_cast<xilinx::air::HerdTerminatorOp>(op)) {
-    return addVertexFromOp(op, dep_ctx.TerminatorID, "hierarchy_terminator",
-                           "HerdTerminator", graphNodeProperties("hierarchy"),
-                           G, dep_ctx);
+    // Annotate core id, if showing cores
+    if (auto numDims = G->position.size()) {
+      detailed_description += "core id: ";
+      detailed_description += toPositionString(G->position);
+    }
+    return addVertexFromOp(
+        op, dep_ctx.TerminatorID, "hierarchy_terminator", "HerdTerminator",
+        graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
   } else if (auto yieldop = dyn_cast<scf::YieldOp>(op)) {
     if (getScfParentOpFromYieldOp<scf::ParallelOp>(yieldop)) {
       // Note: disabled parsing scf parallel yield op since it currently acts as
@@ -771,9 +830,9 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromTerminatorOp(
       //                        "ScfParallelYieldOp", "crimson", "box", G,
       //                        dep_ctx);
     } else if (getScfParentOpFromYieldOp<scf::ForOp>(yieldop)) {
-      return addVertexFromOp(op, dep_ctx.TerminatorID, "terminator",
-                             "ScfForYieldOp", graphNodeProperties("control"), G,
-                             dep_ctx);
+      return addVertexFromOp(
+          op, dep_ctx.TerminatorID, "terminator", "ScfForYieldOp",
+          graphNodeProperties("control", detailed_description), G, dep_ctx);
     }
   }
   return 0;
@@ -828,24 +887,14 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromExecuteOp(
     } else if (dyn_cast<memref::CopyOp>(child_op)) {
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute", "CopyOp",
                           graphNodeProperties("data"), G, dep_ctx, pointer_op);
-    } else if (dyn_cast<mlir::AffineApplyOp>(child_op)) {
-      v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute",
-                          "AffineApplyOp", graphNodeProperties("compute"), G,
-                          dep_ctx, pointer_op);
     } else if (dyn_cast<xilinx::air::ExecuteTerminatorOp>(child_op)) {
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute",
                           "ExecuteTerminatorOp", graphNodeProperties("compute"),
                           G, dep_ctx, pointer_op);
-    } else if (dyn_cast<arith::MulIOp>(child_op)) {
-      v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute", "MuliOp",
-                          graphNodeProperties("compute"), G, dep_ctx,
-                          pointer_op);
-    } else if (dyn_cast<arith::AddIOp>(child_op)) {
-      v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute", "AddIOp",
-                          graphNodeProperties("compute"), G, dep_ctx,
-                          pointer_op);
     } else {
-      assert(false && "Unknown op in execute");
+      v = addVertexFromOp(
+          &child_op, dep_ctx.ExecuteOpID, "execute", air::to_string(&child_op),
+          graphNodeProperties("compute"), G, dep_ctx, pointer_op);
     }
     // Make connections within execute
     if (iter_count > 0) {
@@ -1002,7 +1051,7 @@ void dependencyCanonicalizer::updateSubgraphFromDependencyGraph(
 // Collect air.channel put and get pairs
 void dependencyCanonicalizer::collectAIRChannelPutAndGetInGraph(
     Graph g, vertex_to_flat_vertex_map map, ChannelMap &channel_map) {
-  // Search for air.channep put/get
+  // Search for air.channel put/get
   auto vp = boost::vertices(g);
   for (auto vit = vp.first; vit != vp.second; ++vit) {
     if (g[*vit].asyncEventType == "channel") {
@@ -1218,7 +1267,7 @@ void dependencyCanonicalizer::updatePointerFromHierarchyTerminatorToGraph(
   auto vp = boost::vertices(subG.g);
   for (auto v = vp.first; v != vp.second; ++v) {
     if (subG.g[*v].asyncEventType == "hierarchy_terminator") {
-      subG.g[*v].nextDependencyGraph = &G;
+      subG.g[*v].nextDependencyGraphs.push_back(&G);
       return;
     }
   }
@@ -1228,15 +1277,32 @@ void dependencyCanonicalizer::updatePointerFromHierarchyTerminatorToGraph(
 void dependencyCanonicalizer::updatePointerFromHierarchyOpToGraph(
     dependencyGraph &G) {
   unsigned idx = 0;
+  std::vector<vertex_iterator> hier_vs;
   auto vp = boost::vertices(G.g);
   for (auto v = vp.first; v != vp.second; ++v) {
     if (G.g[*v].asyncEventType == "hierarchy") {
-      G.g[*v].nextDependencyGraph = &(G.subgraphs[idx]);
+      hier_vs.push_back(v);
+    }
+  }
+  for (auto v : hier_vs) {
+    // If expand cores in herd
+    if (G.subgraphs[idx].position.size()) {
+      assert(dyn_cast<air::HerdOp>(G.g[*v].op) &&
+             "Found non-herd op with core id");
+      auto herd = dyn_cast<air::HerdOp>(G.g[*v].op);
+      for (unsigned i = 0; i < getNumberOfCoresInHerd(herd); i++) {
+        G.g[*v].nextDependencyGraphs.push_back(&(G.subgraphs[idx]));
+        assert(G.g[*v].op == G.subgraphs[idx].hierarchyOp &&
+               "mismatch between graph and hierarchy op");
+        idx++;
+      }
+    } else {
+      G.g[*v].nextDependencyGraphs.push_back(&(G.subgraphs[idx]));
+      assert(G.g[*v].op == G.subgraphs[idx].hierarchyOp &&
+             "mismatch between graph and hierarchy op");
       idx++;
     }
   }
-  assert(idx == G.subgraphs.size() &&
-         "mismatch between # graphs and hierarchy ops");
 }
 
 // Dump graphviz
@@ -1547,6 +1613,50 @@ void dependencyCanonicalizer::removeRedundantWaitAllOps(func::FuncOp func) {
   RewritePatternSet patterns(ctx);
   air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
   (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
+}
+
+// Get number of cores in herd
+unsigned dependencyCanonicalizer::getNumberOfCoresInHerd(air::HerdOp herd) {
+  auto herd_size = herd.getSizeOperands();
+  unsigned output = 1;
+  for (unsigned i = 0; i < herd_size.size(); i++) {
+    output *= herd_size[i].getDefiningOp<arith::ConstantIndexOp>().value();
+  }
+  return output;
+}
+
+// Write position of each core to dependency graph, if showing cores
+std::vector<unsigned>
+dependencyCanonicalizer::getPositionFromIterator(unsigned iter,
+                                                 air::HerdOp herd) {
+  auto herd_size = herd.getSizeOperands();
+  std::vector<unsigned> output;
+  for (int i = herd_size.size() - 1; i >= 0; i--) { // MSB first
+    unsigned denominator = 1;
+    for (int j = 0; j < i; j++) {
+      unsigned herd_size_j =
+          herd_size[j].getDefiningOp<arith::ConstantIndexOp>().value();
+      denominator *= herd_size_j;
+    }
+    unsigned herd_size_i =
+        herd_size[i].getDefiningOp<arith::ConstantIndexOp>().value();
+    output.push_back((iter / (denominator)) % herd_size_i);
+  }
+  return output;
+}
+
+// Write position in string
+std::string
+dependencyCanonicalizer::toPositionString(std::vector<unsigned> position) {
+  std::string output = "[";
+  for (unsigned i = 0; i < position.size(); i++) {
+    output += std::to_string(position[i]);
+    if (i < position.size() - 1) {
+      output += ",";
+    }
+  }
+  output += "]";
+  return output;
 }
 
 //===----------------------------------------------------------------------===//

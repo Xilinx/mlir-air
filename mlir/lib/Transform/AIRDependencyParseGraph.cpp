@@ -38,8 +38,10 @@ public:
 
     for (auto func : module.getOps<func::FuncOp>()) {
       // Parse dependency graphs
+      std::string graphGranularity = (clShowCores) ? ("core") : ("herd");
       hostGraph = dependencyGraph(func, true);
-      canonicalizer.parseCommandGraphs(func, hostGraph, dep_ctx);
+      canonicalizer.parseCommandGraphs(func, hostGraph, dep_ctx,
+                                       graphGranularity);
       // Purge id attribute
       func.walk([&](Operation *op) { op->removeAttr("id"); });
 

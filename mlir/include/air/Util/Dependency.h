@@ -105,7 +105,8 @@ struct dependencyNodeEntry {
   std::string detailed_description;
   unsigned operationId;
   mlir::Operation *op;
-  dependencyGraph *nextDependencyGraph;
+  std::vector<dependencyGraph *> nextDependencyGraphs;
+  // dependencyGraph *nextDependencyGraph;
   uint64_t start_time;
   uint64_t end_time;
   std::vector<std::pair<uint64_t, uint64_t>> start_end_time_log;
@@ -114,18 +115,30 @@ struct dependencyNodeEntry {
   bool is_started() { return (start_time != 0) && (end_time != 0); }
   bool is_done(uint64_t t) { return t >= end_time; }
 
+  // dependencyNodeEntry(std::string asyncEventName = "",
+  //                     std::string asyncEventType = "", std::string color =
+  //                     "", std::string shape = "", std::string
+  //                     detailed_description = "", unsigned operationId = 0,
+  //                     mlir::Operation *op = nullptr, dependencyGraph
+  //                     *nextDependencyGraph = nullptr, uint64_t start_time =
+  //                     0, uint64_t end_time = 0, uint64_t token_count = 0)
+  //     : asyncEventName(asyncEventName), asyncEventType(asyncEventType),
+  //       color(color), shape(shape),
+  //       detailed_description(detailed_description), operationId(operationId),
+  //       op(op), nextDependencyGraph(nextDependencyGraph),
+  //       start_time(start_time), end_time(end_time), token_count(token_count)
+  //       {}
+
   dependencyNodeEntry(std::string asyncEventName = "",
                       std::string asyncEventType = "", std::string color = "",
                       std::string shape = "",
                       std::string detailed_description = "",
                       unsigned operationId = 0, mlir::Operation *op = nullptr,
-                      dependencyGraph *nextDependencyGraph = nullptr,
                       uint64_t start_time = 0, uint64_t end_time = 0,
                       uint64_t token_count = 0)
       : asyncEventName(asyncEventName), asyncEventType(asyncEventType),
         color(color), shape(shape), detailed_description(detailed_description),
-        operationId(operationId), op(op),
-        nextDependencyGraph(nextDependencyGraph), start_time(start_time),
+        operationId(operationId), op(op), start_time(start_time),
         end_time(end_time), token_count(token_count) {}
 };
 
@@ -148,6 +161,8 @@ struct dependencyGraph {
   runnerNode *runner_node;
   Graph::vertex_descriptor start_vertex;
   Graph::vertex_descriptor terminator_vertex;
+  std::vector<unsigned>
+      position; // Position (coordinates) of each core in herd, if showing cores
 
   dependencyGraph(mlir::Operation *op = nullptr, bool initStartVertex = false) {
     g = Graph();
@@ -165,6 +180,7 @@ struct dependencyGraph {
   ~dependencyGraph() {
     g.clear();
     subgraphs.clear();
+    position.clear();
   }
 };
 
@@ -225,10 +241,13 @@ typedef std::map<std::string, std::pair<FlatGraph::vertex_descriptor,
 
 class dependencyCanonicalizer {
 
+  typedef std::tuple<bool, bool, bool, bool> graphGranularityProperties;
+
 public:
   void parseCommandGraphs(func::FuncOp &toplevel, dependencyGraph &global_graph,
-                          dependencyContext &dep_ctx, bool dump_dot = false,
-                          std::string dump_dir = "");
+                          dependencyContext &dep_ctx,
+                          std::string granularity = "herd",
+                          bool dump_dot = false, std::string dump_dir = "");
   void canonicalizeGraphs(dependencyGraph &global_graph,
                           dependencyGraph &tr_graph,
                           vertex_to_vertex_map_tree &g_to_tr,
@@ -250,12 +269,18 @@ public:
 
 private:
   void addVerticesInHerd(std::deque<dependencyGraph> &herd_subgraphs,
-                         air::HerdOp herd, dependencyContext &dep_ctx);
+                         air::HerdOp herd, dependencyContext &dep_ctx,
+                         graphGranularityProperties expandHier = {true, true,
+                                                                  true, false});
   void addVerticesInPartition(std::deque<dependencyGraph> &part_subgraphs,
                               air::PartitionOp partition,
-                              dependencyContext &dep_ctx);
+                              dependencyContext &dep_ctx,
+                              graphGranularityProperties expandHier = {
+                                  true, true, true, false});
   void addVerticesInLaunch(std::deque<dependencyGraph> &launch_subgraphs,
-                           air::LaunchOp launch, dependencyContext &dep_ctx);
+                           air::LaunchOp launch, dependencyContext &dep_ctx,
+                           graphGranularityProperties expandHier = {
+                               true, true, true, false});
   Graph::vertex_descriptor addVertexFromOpImpls(Operation *op,
                                                 dependencyGraph *G,
                                                 dependencyContext &dep_ctx);
@@ -317,6 +342,10 @@ private:
   void updateSubgraphFromDependencyGraphAsGraphVizCluster(
       dependencyGraph &G, FlatGraph &flat_subg, vertex_to_flat_vertex_map map,
       unsigned global_idx, unsigned &subg_idx, std::string hier_name = "");
+  unsigned getNumberOfCoresInHerd(air::HerdOp herd);
+  std::vector<unsigned> getPositionFromIterator(unsigned iter,
+                                                air::HerdOp herd);
+  std::string toPositionString(std::vector<unsigned> position);
 };
 
 //===----------------------------------------------------------------------===//

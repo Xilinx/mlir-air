@@ -364,9 +364,10 @@ public:
     if (node.asyncEventType == "start") {
       executeOp(c, it);
     } else if (auto Op = dyn_cast<xilinx::air::HierarchyInterface>(node.op)) {
-      auto sub_dependency_graph = node.nextDependencyGraph;
-      auto sub_runner_node = sub_dependency_graph->runner_node;
-      executeOp(Op, time, sub_runner_node, c, it);
+      for (auto sub_dependency_graph : node.nextDependencyGraphs) {
+        auto sub_runner_node = sub_dependency_graph->runner_node;
+        executeOp(Op, time, sub_runner_node, c, it);
+      }
     } else if (auto Op = dyn_cast<scf::ForOp>(node.op)) {
       executeOp(Op, c, it);
     } else if (dyn_cast<scf::YieldOp>(node.op) &&
@@ -547,9 +548,10 @@ public:
       // If dependent on a hierarchy op, then push its terminator into dep_list
       // instead
       if (G[*inv_adj_v].asyncEventType == "hierarchy") {
-        auto sub_g = G[*inv_adj_v].nextDependencyGraph;
-        auto terminator_v = sub_g->terminator_vertex;
-        dep_list.push_back(std::make_pair(&sub_g->g[terminator_v], "ssa"));
+        for (auto sub_g : G[*inv_adj_v].nextDependencyGraphs) {
+          auto terminator_v = sub_g->terminator_vertex;
+          dep_list.push_back(std::make_pair(&sub_g->g[terminator_v], "ssa"));
+        }
       }
       // Else if dependenct on a for op
       else if (G[*inv_adj_v].asyncEventType == "for_loop") {
@@ -974,13 +976,14 @@ private:
         resetVertex(v, G, c, time);
         // If v is a hierarchy op, then recursively clear the entire subgraph
         if (G[v].asyncEventType == "hierarchy") {
-          auto sub_c = G[v].nextDependencyGraph;
-          auto start = sub_c->start_vertex;
-          auto terminator_v = sub_c->terminator_vertex;
-          auto sub_g = sub_c->g;
-          auto sub_runner = sub_c->runner_node;
-          resetGraphBetweenTwoVertices(start, terminator_v, sub_g, *sub_runner,
-                                       time);
+          for (auto sub_c : G[v].nextDependencyGraphs) {
+            auto start = sub_c->start_vertex;
+            auto terminator_v = sub_c->terminator_vertex;
+            auto sub_g = sub_c->g;
+            auto sub_runner = sub_c->runner_node;
+            resetGraphBetweenTwoVertices(start, terminator_v, sub_g,
+                                         *sub_runner, time);
+          }
         }
         // Else if v is an scf.for op, then clear the cached trip count from
         // runner node
