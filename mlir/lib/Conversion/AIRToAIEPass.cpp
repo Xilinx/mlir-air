@@ -902,10 +902,9 @@ void allocL1Buffers(ModuleOp m,
   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
 
-AIE::ObjectFifoCreateOp createObjectFifo(OpBuilder &builder,
-                                         AIE::AIEObjectFifoType datatype,
-                                         Value prodTile, std::vector<Value> consTile,
-                                         int depth) {
+AIE::ObjectFifoCreateOp
+createObjectFifo(OpBuilder &builder, AIE::AIEObjectFifoType datatype,
+                 Value prodTile, std::vector<Value> consTile, int depth) {
   AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
       builder.getUnknownLoc(), datatype, prodTile, consTile, depth);
   return fifo;
@@ -957,8 +956,10 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
   LogicalResult matchAndRewrite(air::ChannelOp channel,
                                 PatternRewriter &rewriter) const override {
     auto aie_module = channel->getParentOfType<ModuleOp>();
-    std::vector<ChannelPutOp> channelPuts = getChannelPutOpThroughSymbol(channel);
-    std::vector<ChannelGetOp> channelGets = getChannelGetOpThroughSymbol(channel);
+    std::vector<ChannelPutOp> channelPuts =
+        getChannelPutOpThroughSymbol(channel);
+    std::vector<ChannelGetOp> channelGets =
+        getChannelGetOpThroughSymbol(channel);
 
     // put/get come in pairs, if one is missing then it's L3
     MemRefType srcMemref;
@@ -987,8 +988,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       }
     } else {
       // put from L3
-      producerTile =
-          shimTileAlloc.getShimTile(aie_module, src_space, (int)air::MemorySpace::L1);
+      producerTile = shimTileAlloc.getShimTile(aie_module, src_space,
+                                               (int)air::MemorySpace::L1);
     }
 
     // put/get come in pairs, if one is missing then it's L3
@@ -1014,11 +1015,11 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       }
     } else {
       // get from L3
-      consumerTile =
-          shimTileAlloc.getShimTile(aie_module, (int)air::MemorySpace::L1, dst_space);
+      consumerTile = shimTileAlloc.getShimTile(
+          aie_module, (int)air::MemorySpace::L1, dst_space);
     }
     consumers.push_back(consumerTile);
-                                
+
     // create objFifo
     // For now, number of memory elements in OF is hardcoded to 1
     // (single buffer). FIXME
@@ -1028,7 +1029,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       datatype = AIE::AIEObjectFifoType::get(srcMemref);
     else if (channelGets.size() > 0)
       datatype = AIE::AIEObjectFifoType::get(dstMemref);
-    else 
+    else
       return failure();
     AIE::ObjectFifoCreateOp objFifo =
         createObjectFifo(rewriter, datatype, producerTile, consumers, 1);
@@ -1036,17 +1037,17 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     // replace put/get and the associated memref alloc/dealloc
     for (auto put : channelPuts) {
       rewriteChannelAllocs<ChannelPutOp>(rewriter, put, objFifo,
-                                          AIE::ObjectFifoPort::Produce);
+                                         AIE::ObjectFifoPort::Produce);
       rewriteChannelDeallocs<ChannelPutOp>(rewriter, put, objFifo,
-                                            AIE::ObjectFifoPort::Produce);
+                                           AIE::ObjectFifoPort::Produce);
       // erase put
       rewriter.eraseOp(put);
     }
     for (auto get : channelGets) {
       rewriteChannelAllocs<ChannelGetOp>(rewriter, get, objFifo,
-                                          AIE::ObjectFifoPort::Consume);
+                                         AIE::ObjectFifoPort::Consume);
       rewriteChannelDeallocs<ChannelGetOp>(rewriter, get, objFifo,
-                                            AIE::ObjectFifoPort::Consume);
+                                           AIE::ObjectFifoPort::Consume);
       // erase get
       rewriter.eraseOp(get);
     }
@@ -1290,7 +1291,7 @@ public:
 
       } else if ((src_space == (int)air::MemorySpace::L2 &&
                   dst_space == (int)air::MemorySpace::L1) ||
-                (src_space == (int)air::MemorySpace::L1 &&
+                 (src_space == (int)air::MemorySpace::L1 &&
                   dst_space == (int)air::MemorySpace::L2)) {
         // copy between L1 and L2
         tile_channel = getTileDMAChannel(aie_module, dmaOpIf, x, y);
@@ -1303,7 +1304,7 @@ public:
         builder.setInsertionPointToEnd(&(aie_module.getBodyRegion().front()));
 
         if (((uint64_t)l2_channel.first ==
-            (uint64_t)AIE::DMAChannelDir::S2MM) &&
+             (uint64_t)AIE::DMAChannelDir::S2MM) &&
             ((uint64_t)l2_channel.second < (uint64_t)l2_dma_channels)) {
           getFlowOp(aie_module, tile, AIE::WireBundle::DMA,
                     (uint32_t)tile_channel.second, l2_tile,
@@ -1358,7 +1359,7 @@ public:
   }
 
   void lowerAirDmaMemcpy(ModuleOp module, DMAAllocator &shimDmaAlloc,
-                          DMAAllocator &L2DmaAlloc) {
+                         DMAAllocator &L2DmaAlloc) {
     SmallVector<AIE::CoreOp, 32> cores;
     for (auto c : module.getOps<AIE::CoreOp>())
       cores.push_back(c);
@@ -1376,7 +1377,7 @@ public:
       // collect dma operations and generate a schedule
       std::map<AIE::DMAChannel, std::vector<Operation *>> tile_dma_copies =
           getDmaSchedules(core, x, y, shimDmaAlloc, L2DmaAlloc, shim_dma_inits,
-                           l2_dma_tiles);
+                          l2_dma_tiles);
 
       // emit the acquire and release of the L1 buffer locks
       lock_allocation_list lock_allocs;
@@ -1748,17 +1749,17 @@ public:
                 continue;
               SmallVector<NamedAttribute, 5> attrs;
               attrs.push_back(NamedAttribute(StringAttr::get(ctx, "id"),
-                                            builder.getI64IntegerAttr(id)));
+                                             builder.getI64IntegerAttr(id)));
               attrs.push_back(NamedAttribute(StringAttr::get(ctx, "row"),
-                                            builder.getI64IntegerAttr(row)));
+                                             builder.getI64IntegerAttr(row)));
               attrs.push_back(NamedAttribute(StringAttr::get(ctx, "col"),
-                                            builder.getI64IntegerAttr(col)));
+                                             builder.getI64IntegerAttr(col)));
               attrs.push_back(
                   NamedAttribute(StringAttr::get(ctx, "channel"),
-                                builder.getI64IntegerAttr(chan + 2)));
+                                 builder.getI64IntegerAttr(chan + 2)));
               attrs.push_back(
                   NamedAttribute(StringAttr::get(ctx, "location"),
-                                builder.getI64IntegerAttr(tileOp.getCol())));
+                                 builder.getI64IntegerAttr(tileOp.getCol())));
               dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
             }
           }
@@ -1772,17 +1773,17 @@ public:
                 continue;
               SmallVector<NamedAttribute, 5> attrs;
               attrs.push_back(NamedAttribute(StringAttr::get(ctx, "id"),
-                                            builder.getI64IntegerAttr(id)));
+                                             builder.getI64IntegerAttr(id)));
               attrs.push_back(NamedAttribute(StringAttr::get(ctx, "row"),
-                                            builder.getI64IntegerAttr(row)));
+                                             builder.getI64IntegerAttr(row)));
               attrs.push_back(NamedAttribute(StringAttr::get(ctx, "col"),
-                                            builder.getI64IntegerAttr(col)));
+                                             builder.getI64IntegerAttr(col)));
               attrs.push_back(
                   NamedAttribute(StringAttr::get(ctx, "channel"),
-                                builder.getI64IntegerAttr(chan + 2)));
+                                 builder.getI64IntegerAttr(chan + 2)));
               attrs.push_back(
                   NamedAttribute(StringAttr::get(ctx, "location"),
-                                builder.getI64IntegerAttr(tileOp.getCol())));
+                                 builder.getI64IntegerAttr(tileOp.getCol())));
               dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
             }
           }
