@@ -443,6 +443,13 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
     air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
     ```
   }];
+  let extraClassDeclaration = [{
+    int getSubchannelSize() {
+      int size_x = getSize()[0].dyn_cast<IntegerAttr>().getInt();
+      int size_y = getSize()[1].dyn_cast<IntegerAttr>().getInt();
+      return size_x * size_y;
+    }
+  }];
 }
 
 def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface, 
@@ -467,7 +474,7 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface,
     `(` type($src) `)`
   }];
   let extraClassDeclaration = [{
-    Value getSrcMemref() { return getSrc(); }
+    Value getMemref() { return getSrc(); }
     int32_t getId() {
       if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
         return id_attr.getInt();
@@ -499,7 +506,7 @@ def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface,
     `(` type($dst) `)`
   }];
   let extraClassDeclaration = [{
-    Value getDstMemref() { return getDst(); }
+    Value getMemref() { return getDst(); }
     int32_t getId() {
       if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
         return id_attr.getInt();

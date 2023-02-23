@@ -409,7 +409,7 @@ public:
         // If the sink op is channel put
         else if (auto sink_op_channel_put =
                      dyn_cast<air::ChannelPutOp>(sink_op)) {
-          unsigned numDimsSrc = sink_op_channel_put.getSrcMemref()
+          unsigned numDimsSrc = sink_op_channel_put.getSrc()
                                     .getType()
                                     .cast<MemRefType>()
                                     .getRank();
@@ -435,14 +435,14 @@ public:
             }
           }
           partialMemref tile_in = createPartialMemref(
-              sink_op_channel_put.getSrcMemref(), numDimsSrc, src_indices);
+              sink_op_channel_put.getSrc(), numDimsSrc, src_indices);
           sink_op_memref_reads.push_back(tile_in);
         }
 
         // If the sink op is channel get
         else if (auto sink_op_channel_get =
                      dyn_cast<air::ChannelGetOp>(sink_op)) {
-          unsigned numDimsDst = sink_op_channel_get.getDstMemref()
+          unsigned numDimsDst = sink_op_channel_get.getDst()
                                     .getType()
                                     .cast<MemRefType>()
                                     .getRank();
@@ -468,7 +468,7 @@ public:
             }
           }
           partialMemref tile_out = createPartialMemref(
-              sink_op_channel_get.getDstMemref(), numDimsDst, dst_indices);
+              sink_op_channel_get.getDst(), numDimsDst, dst_indices);
           sink_op_memref_writes.push_back(tile_out);
         }
 
@@ -825,7 +825,7 @@ private:
       air::ChannelPutOp new_channel_put_op = builder.create<air::ChannelPutOp>(
           loc, air::AsyncTokenType::get(channel_put_op->getContext()), deps,
           channel_put_op.getChanName(), channel_put_op.getIndices(),
-          channel_put_op.getSrcMemref(), channel_put_op.getSrcOffsets(),
+          channel_put_op.getSrc(), channel_put_op.getSrcOffsets(),
           channel_put_op.getSrcSizes(), channel_put_op.getSrcStrides());
       new_channel_put_op->setAttr(
           "id",
@@ -836,7 +836,7 @@ private:
       air::ChannelGetOp new_channel_get_op = builder.create<air::ChannelGetOp>(
           loc, air::AsyncTokenType::get(channel_get_op->getContext()), deps,
           channel_get_op.getChanName(), channel_get_op.getIndices(),
-          channel_get_op.getDstMemref(), channel_get_op.getDstOffsets(),
+          channel_get_op.getDst(), channel_get_op.getDstOffsets(),
           channel_get_op.getDstSizes(), channel_get_op.getDstStrides());
       new_channel_get_op->setAttr(
           "id",
@@ -1057,7 +1057,7 @@ private:
       // If used in Channel Put Op
       else if (auto channel_put =
                    dyn_cast<xilinx::air::ChannelPutOp>(u.getOwner())) {
-        if (u.is(channel_put.getSrcMemref())) {
+        if (u.is(channel_put.getSrc())) {
           foundReadAccess = true;
         } else {
           assert(false && "Unknown operand in air.channel_put");
@@ -1066,7 +1066,7 @@ private:
       // If used in Channel Get Op
       else if (auto channel_get =
                    dyn_cast<xilinx::air::ChannelGetOp>(u.getOwner())) {
-        if (u.is(channel_get.getDstMemref())) {
+        if (u.is(channel_get.getDst())) {
           foundWriteAccess = true;
         } else {
           assert(false && "Unknown operand in air.channel_get");
@@ -1193,10 +1193,8 @@ private:
           // Channel op: Need to check for overlapping partial memrefs in use
           if (auto channel_put =
                   dyn_cast<xilinx::air::ChannelPutOp>(channel.getOperation())) {
-            unsigned numDimsSrc = channel_put.getSrcMemref()
-                                      .getType()
-                                      .cast<MemRefType>()
-                                      .getRank();
+            unsigned numDimsSrc =
+                channel_put.getSrc().getType().cast<MemRefType>().getRank();
             SmallVector<Value, 2> src_indices;
             if (channel_put.getSrcOffsets().size()) {
               for (unsigned i = 0; i < numDimsSrc; i++) {
@@ -1208,10 +1206,10 @@ private:
               }
             }
             partialMemref channel_put_src = createPartialMemref(
-                channel_put.getSrcMemref(), numDimsSrc, src_indices);
+                channel_put.getSrc(), numDimsSrc, src_indices);
 
             if (rw == 'r') {
-              if (u.is(channel_put.getSrcMemref())) {
+              if (u.is(channel_put.getSrc())) {
                 if (tile == nullptr) {
                   addAsyncDepToGraphIfNew<T>(
                       channel_put.getOperation()->getResult(0), op);
@@ -1224,7 +1222,7 @@ private:
               if (tile == nullptr) {
                 addAsyncDepToGraphIfNew<T>(
                     channel_put.getOperation()->getResult(0), op);
-              } else if (u.is(channel_put.getSrcMemref())) {
+              } else if (u.is(channel_put.getSrc())) {
                 if (areEqualIndexPartialMemrefs(tile, &channel_put_src))
                   addAsyncDepToGraphIfNew<T>(
                       channel_put.getOperation()->getResult(0), op);
@@ -1232,10 +1230,8 @@ private:
             }
           } else if (auto channel_get = dyn_cast<xilinx::air::ChannelGetOp>(
                          channel.getOperation())) {
-            unsigned numDimsDst = channel_get.getDstMemref()
-                                      .getType()
-                                      .cast<MemRefType>()
-                                      .getRank();
+            unsigned numDimsDst =
+                channel_get.getDst().getType().cast<MemRefType>().getRank();
             SmallVector<Value, 2> dst_indices;
             if (channel_get.getDstOffsets().size()) {
               for (unsigned i = 0; i < numDimsDst; i++) {
@@ -1247,11 +1243,11 @@ private:
               }
             }
             partialMemref channel_get_dst = createPartialMemref(
-                channel_get.getDstMemref(), numDimsDst, dst_indices);
+                channel_get.getDst(), numDimsDst, dst_indices);
 
             if (rw == 'r') {
             } else if (rw == 'w') {
-              if (u.is(channel_get.getDstMemref())) {
+              if (u.is(channel_get.getDst())) {
                 if (tile == nullptr) {
                   addAsyncDepToGraphIfNew<T>(
                       channel_get.getOperation()->getResult(0), op);
@@ -1263,7 +1259,7 @@ private:
               if (tile == nullptr) {
                 addAsyncDepToGraphIfNew<T>(
                     channel_get.getOperation()->getResult(0), op);
-              } else if (u.is(channel_get.getDstMemref())) {
+              } else if (u.is(channel_get.getDst())) {
                 if (areEqualIndexPartialMemrefs(tile, &channel_get_dst))
                   addAsyncDepToGraphIfNew<T>(
                       channel_get.getOperation()->getResult(0), op);

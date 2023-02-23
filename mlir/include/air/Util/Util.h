@@ -60,9 +60,13 @@ DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block);
 
 // Get channel declaration through channel symbol
 ChannelOp getChannelDeclarationThroughSymbol(ChannelInterface op);
+// Get ChannelPutOps from ChannelOp
+std::vector<ChannelPutOp> getChannelPutOpThroughSymbol(ChannelOp channel);
+// Get ChannelGetOps from ChannelOp
+std::vector<ChannelGetOp> getChannelGetOpThroughSymbol(ChannelOp channel);
 // Get the other channel op through channel symbol
-ChannelGetOp getTheOtherChannelOpThroughSymbol(ChannelPutOp put);
-ChannelPutOp getTheOtherChannelOpThroughSymbol(ChannelGetOp get);
+std::vector<ChannelGetOp> getTheOtherChannelOpThroughSymbol(ChannelPutOp put);
+std::vector<ChannelPutOp> getTheOtherChannelOpThroughSymbol(ChannelGetOp get);
 
 struct LinalgTransforms {
   static const StringLiteral kLinalgTransformMarker;

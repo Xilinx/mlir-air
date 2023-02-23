@@ -652,11 +652,12 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
   if (auto channel_put =
           dyn_cast<xilinx::air::ChannelPutOp>(op.getOperation())) {
     std::string memorySpaceSrcStr =
-        getMemorySpaceAsString(channel_put.getSrcMemref());
-    auto channel_get = getTheOtherChannelOpThroughSymbol(channel_put);
-    assert(channel_get && "found channel op not in pairs");
+        getMemorySpaceAsString(channel_put.getSrc());
+    std::vector<air::ChannelGetOp> channel_gets =
+        getTheOtherChannelOpThroughSymbol(channel_put);
+    assert(channel_gets.size() && "found channel op not in pairs");
     std::string memorySpaceDstStr =
-        getMemorySpaceAsString(channel_get.getDstMemref());
+        getMemorySpaceAsString(channel_gets[0].getDst());
     std::string event_name = "ChannelPutOp@" + channel_put.getChanName().str() +
                              "(" + memorySpaceSrcStr + "-->" +
                              memorySpaceDstStr + ")";
@@ -686,11 +687,12 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
   } else if (auto channel_get =
                  dyn_cast<xilinx::air::ChannelGetOp>(op.getOperation())) {
     std::string memorySpaceDstStr =
-        getMemorySpaceAsString(channel_get.getDstMemref());
-    auto channel_put = getTheOtherChannelOpThroughSymbol(channel_get);
-    assert(channel_put && "found channel op not in pairs");
+        getMemorySpaceAsString(channel_get.getDst());
+    std::vector<air::ChannelPutOp> channel_puts =
+        getTheOtherChannelOpThroughSymbol(channel_get);
+    assert(channel_puts.size() && "found channel op not in pairs");
     std::string memorySpaceSrcStr =
-        getMemorySpaceAsString(channel_put.getSrcMemref());
+        getMemorySpaceAsString(channel_puts[0].getSrc());
     std::string event_name = "ChannelGetOp@" + channel_get.getChanName().str() +
                              "(" + memorySpaceDstStr + "<--" +
                              memorySpaceSrcStr + ")";
@@ -1641,7 +1643,7 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
       if (auto channel_put =
               dyn_cast<xilinx::air::ChannelPutOp>(channel.getOperation())) {
         unsigned numDimsSrc =
-            channel_put.getSrcMemref().getType().cast<MemRefType>().getRank();
+            channel_put.getSrc().getType().cast<MemRefType>().getRank();
         SmallVector<Value, 2> src_indices;
         if (channel_put.getSrcOffsets().size()) {
           for (unsigned i = 0; i < numDimsSrc; i++) {
@@ -1652,11 +1654,11 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
             src_indices.push_back(nullptr);
           }
         }
-        partialMemref channel_put_src = createPartialMemref(
-            channel_put.getSrcMemref(), numDimsSrc, src_indices);
+        partialMemref channel_put_src =
+            createPartialMemref(channel_put.getSrc(), numDimsSrc, src_indices);
 
         if (rw == 'r') {
-          if (u.is(channel_put.getSrcMemref())) {
+          if (u.is(channel_put.getSrc())) {
             if (tile == nullptr) {
               addDependencyBetweenOps(channel_put.getOperation(),
                                       op.getOperation());
@@ -1670,7 +1672,7 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
           if (tile == nullptr) {
             addDependencyBetweenOps(channel_put.getOperation(),
                                     op.getOperation());
-          } else if (u.is(channel_put.getSrcMemref())) {
+          } else if (u.is(channel_put.getSrc())) {
             if (areEqualIndexPartialMemrefs(tile, &channel_put_src)) {
               addDependencyBetweenOps(channel_put.getOperation(),
                                       op.getOperation());
@@ -1680,7 +1682,7 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
       } else if (auto channel_get = dyn_cast<xilinx::air::ChannelGetOp>(
                      channel.getOperation())) {
         unsigned numDimsDst =
-            channel_get.getDstMemref().getType().cast<MemRefType>().getRank();
+            channel_get.getDst().getType().cast<MemRefType>().getRank();
         SmallVector<Value, 2> dst_indices;
         if (channel_get.getDstOffsets().size()) {
           for (unsigned i = 0; i < numDimsDst; i++) {
@@ -1691,12 +1693,12 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
             dst_indices.push_back(nullptr);
           }
         }
-        partialMemref channel_get_dst = createPartialMemref(
-            channel_get.getDstMemref(), numDimsDst, dst_indices);
+        partialMemref channel_get_dst =
+            createPartialMemref(channel_get.getDst(), numDimsDst, dst_indices);
 
         if (rw == 'r') {
         } else if (rw == 'w') {
-          if (u.is(channel_get.getDstMemref())) {
+          if (u.is(channel_get.getDst())) {
             if (tile == nullptr) {
               addDependencyBetweenOps(channel_get.getOperation(),
                                       op.getOperation());
@@ -1709,7 +1711,7 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
           if (tile == nullptr) {
             addDependencyBetweenOps(channel_get.getOperation(),
                                     op.getOperation());
-          } else if (u.is(channel_get.getDstMemref())) {
+          } else if (u.is(channel_get.getDst())) {
             if (areEqualIndexPartialMemrefs(tile, &channel_get_dst)) {
               addDependencyBetweenOps(channel_get.getOperation(),
                                       op.getOperation());
@@ -1932,10 +1934,8 @@ void dependencyTracer::getPartialMemrefFromOp(
 
   // If the sink op is channel put
   else if (auto sink_op_channel_put = dyn_cast<air::ChannelPutOp>(sink_op)) {
-    unsigned numDimsSrc = sink_op_channel_put.getSrcMemref()
-                              .getType()
-                              .cast<MemRefType>()
-                              .getRank();
+    unsigned numDimsSrc =
+        sink_op_channel_put.getSrc().getType().cast<MemRefType>().getRank();
     for (unsigned i = 0; i < sink_op_channel_put.getSrcOffsets().size(); i++)
       sink_op_scalar_ins.push_back(sink_op_channel_put.getSrcOffsets()[i]);
     for (unsigned i = 0; i < sink_op_channel_put.getSrcSizes().size(); i++)
@@ -1952,17 +1952,15 @@ void dependencyTracer::getPartialMemrefFromOp(
         src_indices.push_back(nullptr);
       }
     }
-    partialMemref tile_in = createPartialMemref(
-        sink_op_channel_put.getSrcMemref(), numDimsSrc, src_indices);
+    partialMemref tile_in = createPartialMemref(sink_op_channel_put.getSrc(),
+                                                numDimsSrc, src_indices);
     sink_op_memref_reads.push_back(tile_in);
   }
 
   // If the sink op is channel get
   else if (auto sink_op_channel_get = dyn_cast<air::ChannelGetOp>(sink_op)) {
-    unsigned numDimsDst = sink_op_channel_get.getDstMemref()
-                              .getType()
-                              .cast<MemRefType>()
-                              .getRank();
+    unsigned numDimsDst =
+        sink_op_channel_get.getDst().getType().cast<MemRefType>().getRank();
     for (unsigned i = 0; i < sink_op_channel_get.getDstOffsets().size(); i++)
       sink_op_scalar_outs.push_back(sink_op_channel_get.getDstOffsets()[i]);
     for (unsigned i = 0; i < sink_op_channel_get.getDstSizes().size(); i++)
@@ -1979,8 +1977,8 @@ void dependencyTracer::getPartialMemrefFromOp(
         dst_indices.push_back(nullptr);
       }
     }
-    partialMemref tile_out = createPartialMemref(
-        sink_op_channel_get.getDstMemref(), numDimsDst, dst_indices);
+    partialMemref tile_out = createPartialMemref(sink_op_channel_get.getDst(),
+                                                 numDimsDst, dst_indices);
     sink_op_memref_writes.push_back(tile_out);
   }
 
@@ -2093,7 +2091,7 @@ char dependencyTracer::checkOperandReadOrWrite(mlir::Value operand) {
     // If used in Channel Put Op
     else if (auto channel_put =
                  dyn_cast<xilinx::air::ChannelPutOp>(u.getOwner())) {
-      if (u.is(channel_put.getSrcMemref())) {
+      if (u.is(channel_put.getSrc())) {
         foundReadAccess = true;
       } else {
         assert(false && "Unknown operand in air.channel_put");
@@ -2102,7 +2100,7 @@ char dependencyTracer::checkOperandReadOrWrite(mlir::Value operand) {
     // If used in Channel Get Op
     else if (auto channel_get =
                  dyn_cast<xilinx::air::ChannelGetOp>(u.getOwner())) {
-      if (u.is(channel_get.getDstMemref())) {
+      if (u.is(channel_get.getDst())) {
         foundWriteAccess = true;
       } else {
         assert(false && "Unknown operand in air.channel_get");
