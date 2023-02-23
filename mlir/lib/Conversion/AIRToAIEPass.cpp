@@ -956,6 +956,9 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
   LogicalResult matchAndRewrite(air::ChannelOp channel,
                                 PatternRewriter &rewriter) const override {
     auto aie_module = channel->getParentOfType<ModuleOp>();
+    if (channel.getSubchannelSize() > 1)
+      return failure();
+
     std::vector<ChannelPutOp> channelPuts =
         getChannelPutOpThroughSymbol(channel);
     std::vector<ChannelGetOp> channelGets =
@@ -966,7 +969,6 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     int src_space = (int)air::MemorySpace::L3;
     Value producerTile;
     if (channelPuts.size() > 0) {
-
       // for now, objectFifo does not support many-to-one/many broadcast
       if (channelPuts.size() > 1)
         return failure();
@@ -998,6 +1000,10 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     int dst_space = (int)air::MemorySpace::L3;
     Value consumerTile;
     if (channelGets.size() > 0) {
+      // for now, we focus on one-to-one channels
+      if (channelGets.size() > 1)
+        return failure();
+
       for (auto get : channelGets) {
         // find AIE tiles and their cores based on memory hierarchy levels
         dstMemref = get.getDst().getType().cast<MemRefType>();
