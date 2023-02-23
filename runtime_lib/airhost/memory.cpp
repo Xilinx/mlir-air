@@ -246,8 +246,7 @@ void air_mem_shim_nd_memcpy_queue_impl(signal_t *s, uint32_t id, uint64_t x,
 
   bool isMM2S = shim_chan >= 2;
 
-  // NOTE: uses_pa previously for PL-L2 support, should be reused in the future
-  bool uses_pa = (space == 1);
+  bool uses_pa = (space == 1); // t->uses_pa;
   if (uses_pa) {
     if (isMM2S) shim_chan = shim_chan - 2;
 
@@ -389,5 +388,43 @@ mlir_air_dma_nd_memcpy(1d1f32, 1, 1, float);
 mlir_air_dma_nd_memcpy(2d1f32, 2, 1, float);
 mlir_air_dma_nd_memcpy(3d1f32, 3, 1, float);
 mlir_air_dma_nd_memcpy(4d1f32, 4, 1, float);
+
+} // extern "C"
+
+#define mlir_air_nd_memcpy(mangle, rank0, space0, type0, rank1, space1, type1) \
+  void _mlir_ciface___airrt_nd_memcpy_##mangle(                                \
+      void *t0, void *t1, uint64_t offset_3, uint64_t offset_2,                \
+      uint64_t offset_1, uint64_t offset_0, uint64_t length_3,                 \
+      uint64_t length_2, uint64_t length_1, uint64_t length_0,                 \
+      uint64_t stride_2, uint64_t stride_1, uint64_t stride_0) {               \
+    tensor_t<type0, rank0> *tt0 = (tensor_t<type0, rank0> *)t0;                \
+    tensor_t<type1, rank1> *tt1 = (tensor_t<type1, rank1> *)t1;                \
+    if (_air_host_active_herd.q) {                                             \
+      printf(                                                                  \
+          "WARNING: ND memcpy will not be performed.\n");                      \
+    } else {                                                                   \
+      printf(                                                                  \
+          "WARNING: no queue provided. ND memcpy will not be performed.\n");   \
+    }                                                                          \
+  }
+
+extern "C" {
+
+mlir_air_nd_memcpy(1d0i32_1d1i32, 1, 2, uint32_t, 1, 1, uint32_t);
+mlir_air_nd_memcpy(1d1i32_1d0i32, 1, 1, uint32_t, 1, 2, uint32_t);
+mlir_air_nd_memcpy(2d0i32_2d1i32, 2, 2, uint32_t, 2, 1, uint32_t);
+mlir_air_nd_memcpy(2d1i32_2d0i32, 2, 1, uint32_t, 2, 2, uint32_t);
+mlir_air_nd_memcpy(3d0i32_3d1i32, 3, 2, uint32_t, 3, 1, uint32_t);
+mlir_air_nd_memcpy(3d1i32_3d0i32, 3, 1, uint32_t, 3, 2, uint32_t);
+mlir_air_nd_memcpy(4d0i32_4d1i32, 4, 2, uint32_t, 4, 1, uint32_t);
+mlir_air_nd_memcpy(4d1i32_4d0i32, 4, 1, uint32_t, 4, 2, uint32_t);
+mlir_air_nd_memcpy(1d0f32_1d1f32, 1, 2, float, 1, 1, float);
+mlir_air_nd_memcpy(1d1f32_1d0f32, 1, 1, float, 1, 2, float);
+mlir_air_nd_memcpy(2d0f32_2d1f32, 2, 2, float, 2, 1, float);
+mlir_air_nd_memcpy(2d1f32_2d0f32, 2, 1, float, 2, 2, float);
+mlir_air_nd_memcpy(3d0f32_3d1f32, 3, 2, float, 3, 1, float);
+mlir_air_nd_memcpy(3d1f32_3d0f32, 3, 1, float, 3, 2, float);
+mlir_air_nd_memcpy(4d0f32_4d1f32, 4, 2, float, 4, 1, float);
+mlir_air_nd_memcpy(4d1f32_4d0f32, 4, 1, float, 4, 2, float);
 
 } // extern "C"
