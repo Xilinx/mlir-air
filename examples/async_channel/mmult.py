@@ -38,13 +38,13 @@ with air.mlir.ir.Context(), Location.unknown():
         exit(0)
 
     # tile and map to air
-    pipeline = ",".join([
+    pipeline = "builtin.module("+",".join([
         "air-linalg-codegen{l2-tile-size=64,64,64 l2-promote=true l1-tile-size=16,16,16 l1-promote=true}",
         "air-par-to-herd{depth=1}",
         "air-par-to-launch{depth=0 has-air-partition=true}",
         "air-copy-to-dma",
         "canonicalize", "cse",
-    ])
+    ])+')'
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
     pm.run(air_module)
 
@@ -52,14 +52,15 @@ with air.mlir.ir.Context(), Location.unknown():
         f.write(str(air_module))
 
     # async dep
-    pipeline = ",".join([
+    pipeline = "builtin.module("+",".join([
         "air-dependency",
         "air-dependency-schedule-opt",
         # "air-specialize-dma-broadcast", # Uncomment to lower to specialized channels
         "air-dma-to-channel",
+        "canonicalize", "cse",
         "air-dependency-canonicalize",
         "air-dependency-parse-graph{output-dir=dot_graphs/}"
-    ])
+    ])+')'
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
     pm.run(air_module)
 
