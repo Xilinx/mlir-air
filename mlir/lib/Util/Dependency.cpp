@@ -417,16 +417,20 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
   }
   FlatGraph &flat_subg_chan = flat_g.create_subgraph();
   for (auto &map : channel_map) {
-    if (map.second.first == std::numeric_limits<int>::max()) {
+    if (!map.second.first.size()) {
       assert(false && "incomplete channel op map");
-    } else if (map.second.second == std::numeric_limits<int>::max()) {
+    } else if (!map.second.second.size()) {
       assert(false && "incomplete channel op map");
     }
-    auto a = add_vertex(map.second.first, flat_subg_chan);
-    auto b = add_vertex(map.second.second, flat_subg_chan);
-    auto e = add_edge(a, b, flat_subg_chan).first;
-    put(get(boost::edge_attribute, flat_subg_chan), e,
-        GraphvizAttributes{{"style", "dashed"}});
+    for (auto a_entry : map.second.first){
+      auto a = add_vertex(a_entry, flat_subg_chan);
+      for (auto b_entry : map.second.second){
+        auto b = add_vertex(b_entry, flat_subg_chan);
+        auto e = add_edge(a, b, flat_subg_chan).first;
+        put(get(boost::edge_attribute, flat_subg_chan), e,
+            GraphvizAttributes{{"style", "dashed"}});
+      }
+    }
   }
 
   // Create subgraphs
@@ -1062,13 +1066,13 @@ void dependencyCanonicalizer::collectAIRChannelPutAndGetInGraph(
       if (channel_map.find(chan_name) == channel_map.end()) {
         // If key not found, then create map entry with given key
         channel_map.insert(std::make_pair(
-            chan_name, std::make_pair(std::numeric_limits<int>::max(),
-                                      std::numeric_limits<int>::max())));
+            chan_name, std::make_pair(std::vector<FlatGraph::vertex_descriptor>(),
+                                      std::vector<FlatGraph::vertex_descriptor>())));
       }
       if (dyn_cast<air::ChannelPutOp>(g[*vit].op)) {
-        channel_map[chan_name].first = map[*vit];
+        channel_map[chan_name].first.push_back(map[*vit]);
       } else if (dyn_cast<air::ChannelGetOp>(g[*vit].op)) {
-        channel_map[chan_name].second = map[*vit];
+        channel_map[chan_name].second.push_back(map[*vit]);
       } else
         assert(false && "unknown air.channel op type");
     }

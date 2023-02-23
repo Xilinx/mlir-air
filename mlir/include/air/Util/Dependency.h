@@ -235,8 +235,8 @@ typedef boost::subgraph<boost::adjacency_list<
     FlatGraph;
 typedef std::map<Graph::vertex_descriptor, FlatGraph::vertex_descriptor>
     vertex_to_flat_vertex_map;
-typedef std::map<std::string, std::pair<FlatGraph::vertex_descriptor,
-                                        FlatGraph::vertex_descriptor>>
+typedef std::map<std::string, std::pair<std::vector<FlatGraph::vertex_descriptor>,
+                                        std::vector<FlatGraph::vertex_descriptor>>>
     ChannelMap;
 
 class dependencyCanonicalizer {
