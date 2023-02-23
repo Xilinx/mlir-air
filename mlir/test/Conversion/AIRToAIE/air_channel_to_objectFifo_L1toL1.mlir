@@ -5,7 +5,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie='test-patterns=lower-air-channels' | FileCheck %s
+// RUN: air-opt %s --air-to-aie='test-patterns=lower-air-channels' | FileCheck %s
+
 // CHECK: module @aie.partition_0 {
 // CHECK:   %0 = AIE.tile(1, 1)
 // CHECK:   %1 = AIE.tile(1, 2)

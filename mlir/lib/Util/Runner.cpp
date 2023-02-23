@@ -341,14 +341,20 @@ public:
   void executeOp(air::ChannelGetOp op, runnerNode &c,
                  Graph::vertex_descriptor it) {
     // Get put-side runner from get op
-    air::ChannelPutOp put = air::getTheOtherChannelOpThroughSymbol(op);
-    auto put_entry =
-        canonicalizer.getVertexFromOp(put.getOperation(), dep_ctx, "front");
-    auto put_v = put_entry.first;
-    auto &put_g = put_entry.second;
-    auto &put_node = put_g->g[put_v];
-
-    put_node.token_count--;
+    std::vector<air::ChannelPutOp> puts =
+        air::getTheOtherChannelOpThroughSymbol(op);
+    // Go through put ops and consume token in order
+    for (auto put : puts) {
+      auto put_entry =
+          canonicalizer.getVertexFromOp(put.getOperation(), dep_ctx, "front");
+      auto put_v = put_entry.first;
+      auto &put_g = put_entry.second;
+      auto &put_node = put_g->g[put_v];
+      if (put_node.token_count) {
+        put_node.token_count--;
+        break;
+      }
+    }
 
     c.processed_vertices.push_back(it);
   }
@@ -428,10 +434,11 @@ public:
                (name.find("ChannelGetOp") != std::string::npos)) {
       auto getOp = mlir::dyn_cast<xilinx::air::ChannelGetOp>(c.op);
       assert(getOp);
-      MemRefType dstTy = getOp.getDstMemref().getType().cast<MemRefType>();
-      air::ChannelPutOp putOp = air::getTheOtherChannelOpThroughSymbol(getOp);
-      assert(putOp);
-      MemRefType srcTy = putOp.getSrcMemref().getType().cast<MemRefType>();
+      MemRefType dstTy = getOp.getDst().getType().cast<MemRefType>();
+      std::vector<air::ChannelPutOp> putOps =
+          air::getTheOtherChannelOpThroughSymbol(getOp);
+      assert(putOps.size());
+      MemRefType srcTy = putOps[0].getSrc().getType().cast<MemRefType>();
       auto srcSpace = srcTy.getMemorySpaceAsInt();
       auto dstSpace = dstTy.getMemorySpaceAsInt();
       // if there is a size mismatch, it's because we're moving a tile of the
@@ -533,15 +540,26 @@ public:
     // If current vertex is ChannelGet, then add implicit ChannelPut vertex to
     // dep list
     if (air::ChannelGetOp channel_get = dyn_cast<air::ChannelGetOp>(G[v].op)) {
-      air::ChannelPutOp channel_put =
+      std::vector<air::ChannelPutOp> channel_puts =
           air::getTheOtherChannelOpThroughSymbol(channel_get);
-      // Get ChannelPut node from op
-      auto channel_put_entry = canonicalizer.getVertexFromOp(
-          channel_put.getOperation(), dep_ctx, "front");
-      auto channel_put_v = channel_put_entry.first;
-      auto &channel_put_g = channel_put_entry.second;
-      auto &channel_put_node = channel_put_g->g[channel_put_v];
-      dep_list.push_back(std::make_pair(&channel_put_node, "sym"));
+      // Get any ChannelPut node with token. Otherwise push the last one to dep
+      // list
+      bool pushed_to_dep_list = false;
+      for (auto channel_put : channel_puts) {
+        auto channel_put_entry = canonicalizer.getVertexFromOp(
+            channel_put.getOperation(), dep_ctx, "front");
+        auto channel_put_v = channel_put_entry.first;
+        auto &channel_put_g = channel_put_entry.second;
+        auto &channel_put_node = channel_put_g->g[channel_put_v];
+        if (channel_put_node.token_count) {
+          dep_list.push_back(std::make_pair(&channel_put_node, "sym"));
+          pushed_to_dep_list = true;
+          break;
+        }
+        if (channel_put == channel_puts.back()) {
+          dep_list.push_back(std::make_pair(&channel_put_node, "sym"));
+        }
+      }
     }
     for (auto inv_adj_v = inv_adj_set.first; inv_adj_v != inv_adj_set.second;
          ++inv_adj_v) {
