@@ -35,6 +35,14 @@ main(int argc, char *argv[])
   uint64_t row = 4;
   uint64_t col = 5;
 
+  hsa_status_t init_status = air_init();
+
+  if(init_status != HSA_STATUS_SUCCESS) {
+    std::cout << "air_init() failed. Exiting" << std::endl;
+    return -1;
+  }
+
+
   std::vector<air_agent_t> agents;
   auto get_agents_ret = air_iterate_agents(
       [](air_agent_t a, void *d) {
@@ -46,7 +54,7 @@ main(int argc, char *argv[])
   assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
   if (agents.empty()) {
-    std::cout << "fail." << std::endl;
+    std::cout << "No agents found. Exiting." << std::endl;
     return -1;
   }
 
@@ -62,7 +70,7 @@ main(int argc, char *argv[])
     queues.push_back(q);
   }
 
-  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_get_libxaie_ctx();
 
   queue_t *q = queues[0];
 
