@@ -653,10 +653,11 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
           dyn_cast<xilinx::air::ChannelPutOp>(op.getOperation())) {
     std::string memorySpaceSrcStr =
         getMemorySpaceAsString(channel_put.getSrc());
-    auto channel_get = getTheOtherChannelOpThroughSymbol(channel_put);
-    assert(channel_get && "found channel op not in pairs");
+    std::vector<air::ChannelGetOp> channel_gets =
+        getTheOtherChannelOpThroughSymbol(channel_put);
+    assert(channel_gets.size() && "found channel op not in pairs");
     std::string memorySpaceDstStr =
-        getMemorySpaceAsString(channel_get.getDst());
+        getMemorySpaceAsString(channel_gets[0].getDst());
     std::string event_name = "ChannelPutOp@" + channel_put.getChanName().str() +
                              "(" + memorySpaceSrcStr + "-->" +
                              memorySpaceDstStr + ")";
@@ -687,10 +688,11 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
                  dyn_cast<xilinx::air::ChannelGetOp>(op.getOperation())) {
     std::string memorySpaceDstStr =
         getMemorySpaceAsString(channel_get.getDst());
-    auto channel_put = getTheOtherChannelOpThroughSymbol(channel_get);
-    assert(channel_put && "found channel op not in pairs");
+    std::vector<air::ChannelPutOp> channel_puts =
+        getTheOtherChannelOpThroughSymbol(channel_get);
+    assert(channel_puts.size() && "found channel op not in pairs");
     std::string memorySpaceSrcStr =
-        getMemorySpaceAsString(channel_put.getSrc());
+        getMemorySpaceAsString(channel_puts[0].getSrc());
     std::string event_name = "ChannelGetOp@" + channel_get.getChanName().str() +
                              "(" + memorySpaceDstStr + "<--" +
                              memorySpaceSrcStr + ")";
