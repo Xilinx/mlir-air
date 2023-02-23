@@ -51,6 +51,9 @@ struct AIRToAIEOptions {
   bool emit_herd_lock;
 };
 
+std::vector<int> l2_dma_cols{7, 8, 9, 10};
+const int l2_dma_channels = 2;
+
 // std::vector<int> s80_nmu_col_list{0, 0, 1, 1, 0, 0, 1, 1,
 //                                   0, 0, 1, 1, 0, 0, 0, 0,
 //                                   0, 0, 1, 1, 0, 0, 0, 0,
@@ -962,7 +965,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     int src_space = (int)air::MemorySpace::L3;
     Value producerTile;
     if (channelPuts.size() > 0) {
-      
+
       // for now, objectFifo does not support many-to-one/many broadcast
       if (channelPuts.size() > 1)
         return failure();
@@ -1222,7 +1225,9 @@ public:
 
   std::map<AIE::DMAChannel, std::vector<Operation *>>
   getDmaSchedules(AIE::CoreOp core, int x, int y, DMAAllocator &shim_dma_alloc,
-                  std::vector<AIE::TileOp> &shim_dma_inits) {
+                  DMAAllocator &l2_dma_alloc,
+                  std::vector<AIE::TileOp> &shim_dma_inits,
+                  std::vector<AIE::TileOp> &l2_dma_tiles) {
 
     std::map<AIE::DMAChannel, std::vector<Operation *>> tile_dma_copies;
     std::vector<Operation *> dma_memcpy_ops;
@@ -1283,6 +1288,32 @@ public:
                     AIE::WireBundle::DMA, (uint32_t)tile_channel.second);
         }
 
+      } else if ((src_space == (int)air::MemorySpace::L2 &&
+                  dst_space == (int)air::MemorySpace::L1) ||
+                (src_space == (int)air::MemorySpace::L1 &&
+                  dst_space == (int)air::MemorySpace::L2)) {
+        // copy between L1 and L2
+        tile_channel = getTileDMAChannel(aie_module, dmaOpIf, x, y);
+        AIE::TileOp l2_tile = l2_dma_alloc.getTile(
+            aie_module, dmaOpIf, (int64_t)tile_channel.second, x, y);
+        AIE::DMAChannel l2_channel =
+            l2_dma_alloc.getChannel(aie_module, dmaOpIf, tile_channel, x, y);
+
+        OpBuilder builder(aie_module);
+        builder.setInsertionPointToEnd(&(aie_module.getBodyRegion().front()));
+
+        if (((uint64_t)l2_channel.first ==
+            (uint64_t)AIE::DMAChannelDir::S2MM) &&
+            ((uint64_t)l2_channel.second < (uint64_t)l2_dma_channels)) {
+          getFlowOp(aie_module, tile, AIE::WireBundle::DMA,
+                    (uint32_t)tile_channel.second, l2_tile,
+                    AIE::WireBundle::PLIO,
+                    ((uint32_t)l2_channel.second) % l2_dma_channels);
+        } else {
+          getFlowOp(aie_module, l2_tile, AIE::WireBundle::PLIO,
+                    ((uint32_t)l2_channel.second) % l2_dma_channels + 4, tile,
+                    AIE::WireBundle::DMA, (uint32_t)tile_channel.second);
+        }
       } else {
         llvm_unreachable("Unhandled dma transfer type");
       }
@@ -1326,7 +1357,8 @@ public:
     return herd_meta;
   }
 
-  void lowerAirDmaMemcpy(ModuleOp module, DMAAllocator &shimDmaAlloc) {
+  void lowerAirDmaMemcpy(ModuleOp module, DMAAllocator &shimDmaAlloc,
+                          DMAAllocator &L2DmaAlloc) {
     SmallVector<AIE::CoreOp, 32> cores;
     for (auto c : module.getOps<AIE::CoreOp>())
       cores.push_back(c);
@@ -1339,10 +1371,12 @@ public:
       auto y = tile.getRow();
 
       std::vector<AIE::TileOp> shim_dma_inits;
+      std::vector<AIE::TileOp> l2_dma_tiles;
 
       // collect dma operations and generate a schedule
       std::map<AIE::DMAChannel, std::vector<Operation *>> tile_dma_copies =
-          getDmaSchedules(core, x, y, shimDmaAlloc, shim_dma_inits);
+          getDmaSchedules(core, x, y, shimDmaAlloc, L2DmaAlloc, shim_dma_inits,
+                           l2_dma_tiles);
 
       // emit the acquire and release of the L1 buffer locks
       lock_allocation_list lock_allocs;
@@ -1630,8 +1664,9 @@ public:
         allocL1Buffers(m, tileToHerdMap);
 
         DMAAllocator shimDmaAlloc(shim_dma_cols, shim_dma_channels);
+        DMAAllocator L2DmaAlloc(l2_dma_cols, l2_dma_channels);
 
-        lowerAirDmaMemcpy(m, shimDmaAlloc);
+        lowerAirDmaMemcpy(m, shimDmaAlloc, L2DmaAlloc);
         lowerPipelineGetPut(m, tileToHerdMap);
 
         SmallVector<air::HerdOp, 4> herds;
@@ -1700,6 +1735,54 @@ public:
               attrs.push_back(
                   NamedAttribute(StringAttr::get(ctx, "location"),
                                  builder.getI64IntegerAttr(tileOp.getCol())));
+              dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
+            }
+          }
+          for (auto &t : L2DmaAlloc.s2mm_allocs) {
+            auto tileOp = t.dma_tile;
+            int64_t col = t.col - col_offset;
+            int64_t row = t.row - row_offset;
+            int64_t chan = t.dma_channel;
+            for (int64_t id : t.dma_id) {
+              if (dma_ids.count(id) == 0)
+                continue;
+              SmallVector<NamedAttribute, 5> attrs;
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "id"),
+                                            builder.getI64IntegerAttr(id)));
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "row"),
+                                            builder.getI64IntegerAttr(row)));
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "col"),
+                                            builder.getI64IntegerAttr(col)));
+              attrs.push_back(
+                  NamedAttribute(StringAttr::get(ctx, "channel"),
+                                builder.getI64IntegerAttr(chan + 2)));
+              attrs.push_back(
+                  NamedAttribute(StringAttr::get(ctx, "location"),
+                                builder.getI64IntegerAttr(tileOp.getCol())));
+              dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
+            }
+          }
+          for (auto &t : L2DmaAlloc.mm2s_allocs) {
+            auto tileOp = t.dma_tile;
+            int64_t col = t.col - col_offset;
+            int64_t row = t.row - row_offset;
+            int64_t chan = t.dma_channel;
+            for (int64_t id : t.dma_id) {
+              if (dma_ids.count(id) == 0)
+                continue;
+              SmallVector<NamedAttribute, 5> attrs;
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "id"),
+                                            builder.getI64IntegerAttr(id)));
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "row"),
+                                            builder.getI64IntegerAttr(row)));
+              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "col"),
+                                            builder.getI64IntegerAttr(col)));
+              attrs.push_back(
+                  NamedAttribute(StringAttr::get(ctx, "channel"),
+                                builder.getI64IntegerAttr(chan + 2)));
+              attrs.push_back(
+                  NamedAttribute(StringAttr::get(ctx, "location"),
+                                builder.getI64IntegerAttr(tileOp.getCol())));
               dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
             }
           }
