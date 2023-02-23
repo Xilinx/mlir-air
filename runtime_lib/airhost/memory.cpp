@@ -400,8 +400,7 @@ mlir_air_dma_nd_memcpy(4d1f32, 4, 1, float);
     tensor_t<type0, rank0> *tt0 = (tensor_t<type0, rank0> *)t0;                \
     tensor_t<type1, rank1> *tt1 = (tensor_t<type1, rank1> *)t1;                \
     if (_air_host_active_herd.q) {                                             \
-      printf(                                                                  \
-          "WARNING: ND memcpy will not be performed.\n");                      \
+      printf("WARNING: ND memcpy will not be performed.\n");                   \
     } else {                                                                   \
       printf(                                                                  \
           "WARNING: no queue provided. ND memcpy will not be performed.\n");   \
