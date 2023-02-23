@@ -31,6 +31,7 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 
 # Eventually we need to have some configuration options to select LibXAIEV2
+set(LibXAIE_ROOT ${Sysroot}/usr ${Sysroot}/opt/xaiengine ${Sysroot}/opt/xaienginev2)
 find_package(LibXAIE REQUIRED)
 find_package(AIE REQUIRED CONFIG)
 

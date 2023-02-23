@@ -66,13 +66,33 @@ func.func @test_herd_attr() -> () {
 // CHECK-SAME: attributes {x_loc = 6 : i64, y_loc = 4 : i64}
 // CHECK: air.herd_terminator
 // CHECK: air.herd
-// CHECK-SAME: attributes {x_loc = 9 : i64, y_loc = 4 : i64}
+// CHECK-SAME: attributes {x_loc = 6 : i64, y_loc = 4 : i64}
 func.func @test_two_herd_cl() -> () {
   %c3 = arith.constant 3 : index
   air.herd tile (%x, %y) in (%sx=%c3, %sy=%c3) {
   }
   %c2 = arith.constant 2 : index
   air.herd tile (%x, %y) in (%sx=%c2, %sy=%c2) {
+  }
+  return
+}
+
+// Check that herd placement is per-function inside of partition ops
+// e.g. herds in test_two_herd_cl() are not placed with herd in test_herd_cl()
+// CHECK-LABEL: test_two_herd_cl_2
+// CHECK: air.herd
+// CHECK-SAME: attributes {x_loc = 6 : i64, y_loc = 4 : i64}
+// CHECK: air.herd_terminator
+// CHECK: air.herd
+// CHECK-SAME: attributes {x_loc = 9 : i64, y_loc = 4 : i64}
+func.func @test_two_herd_cl_2() -> () {
+  air.partition {
+    %c3 = arith.constant 3 : index
+    air.herd tile (%x, %y) in (%sx=%c3, %sy=%c3) {
+    }
+    %c2 = arith.constant 2 : index
+    air.herd tile (%x, %y) in (%sx=%c2, %sy=%c2) {
+    }
   }
   return
 }

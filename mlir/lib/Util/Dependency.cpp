@@ -726,16 +726,24 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
 Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromHierarchyOp(
     xilinx::air::HierarchyInterface op, dependencyGraph *G,
     dependencyContext &dep_ctx) {
+  std::string detailed_description = "";
+  auto nameAttr =
+      op->getAttrOfType<StringAttr>(mlir::SymbolTable::getSymbolAttrName());
+  // Annotate hierarchy op's symbolic name
+  if (nameAttr)
+    detailed_description += "(" + nameAttr.str() + ")";
   if (dyn_cast<xilinx::air::LaunchOp>(op.getOperation())) {
-    return addVertexFromOp(op, dep_ctx.HierarchyOpID, "hierarchy", "LaunchOp",
-                           graphNodeProperties("hierarchy"), G, dep_ctx);
+    return addVertexFromOp(
+        op, dep_ctx.HierarchyOpID, "hierarchy", "LaunchOp",
+        graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
   } else if (dyn_cast<xilinx::air::PartitionOp>(op.getOperation())) {
-    return addVertexFromOp(op, dep_ctx.HierarchyOpID, "hierarchy",
-                           "PartitionOp", graphNodeProperties("hierarchy"), G,
-                           dep_ctx);
+    return addVertexFromOp(
+        op, dep_ctx.HierarchyOpID, "hierarchy", "PartitionOp",
+        graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
   } else if (dyn_cast<xilinx::air::HerdOp>(op.getOperation())) {
-    return addVertexFromOp(op, dep_ctx.HierarchyOpID, "hierarchy", "HerdOp",
-                           graphNodeProperties("hierarchy"), G, dep_ctx);
+    return addVertexFromOp(
+        op, dep_ctx.HierarchyOpID, "hierarchy", "HerdOp",
+        graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
   } else {
     assert(false && "Unknown hierarchy op");
     return 0;
@@ -786,18 +794,37 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromExecuteOp(
   Graph::vertex_descriptor v = 0;
   Operation *pointer_op = op;
   for (auto &child_op : op->getRegions().front().getOps()) {
-    if (dyn_cast<linalg::LinalgOp>(child_op)) {
+    if (auto linalg_child_op = dyn_cast<linalg::LinalgOp>(child_op)) {
+      std::string detailed_description = "";
+      // Annotate linalg op's type
+      if (auto broadcast_pattern = linalg_child_op->getAttrOfType<StringAttr>(
+              "__internal_linalg_transform__")) {
+        detailed_description += "(" + broadcast_pattern.str() + ")";
+      } else {
+        detailed_description += "(" + to_string(&child_op) + ")";
+      }
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute", "LinalgOp",
-                          graphNodeProperties("compute"), G, dep_ctx,
-                          pointer_op);
-    } else if (dyn_cast<memref::AllocOp>(child_op)) {
+                          graphNodeProperties("compute", detailed_description),
+                          G, dep_ctx, pointer_op);
+    } else if (auto alloc_child_op = dyn_cast<memref::AllocOp>(child_op)) {
+      std::string detailed_description = "";
+      // Annotate memref's memory space
+      std::string memorySpaceStr =
+          getMemorySpaceAsString(alloc_child_op.getMemref());
+      detailed_description += "(" + memorySpaceStr + ")";
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute", "AllocOp",
-                          graphNodeProperties("compute"), G, dep_ctx,
-                          pointer_op);
-    } else if (dyn_cast<memref::DeallocOp>(child_op)) {
+                          graphNodeProperties("compute", detailed_description),
+                          G, dep_ctx, pointer_op);
+    } else if (auto dealloc_child_op = dyn_cast<memref::DeallocOp>(child_op)) {
+      std::string detailed_description = "";
+      // Annotate memref's memory space
+      std::string memorySpaceStr =
+          getMemorySpaceAsString(dealloc_child_op.getMemref());
+      detailed_description += "(" + memorySpaceStr + ")";
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute",
-                          "DeallocOp", graphNodeProperties("compute"), G,
-                          dep_ctx, pointer_op);
+                          "DeallocOp",
+                          graphNodeProperties("compute", detailed_description),
+                          G, dep_ctx, pointer_op);
     } else if (dyn_cast<memref::CopyOp>(child_op)) {
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute", "CopyOp",
                           graphNodeProperties("data"), G, dep_ctx, pointer_op);

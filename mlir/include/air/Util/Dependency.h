@@ -108,6 +108,7 @@ struct dependencyNodeEntry {
   dependencyGraph *nextDependencyGraph;
   uint64_t start_time;
   uint64_t end_time;
+  std::vector<std::pair<uint64_t, uint64_t>> start_end_time_log;
   uint64_t token_count;
 
   bool is_started() { return (start_time != 0) && (end_time != 0); }

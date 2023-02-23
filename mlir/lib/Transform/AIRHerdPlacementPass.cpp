@@ -214,12 +214,13 @@ public:
     });
 
     module.walk([&](func::FuncOp f) {
-      // Place herds not in partitions
-      std::unique_ptr<Partition> partition = std::make_unique<Partition>(
-          clNumRows, clNumCols, clAnchorPointRow, clAnchorPointCol);
-
-      std::vector<std::unique_ptr<Herd>> unplacedHerds;
       f.walk([&](air::HerdOp herd) {
+        std::vector<std::unique_ptr<Herd>> unplacedHerds;
+
+        // Place herds not in partitions
+        std::unique_ptr<Partition> partition = std::make_unique<Partition>(
+            clNumRows, clNumCols, clAnchorPointRow, clAnchorPointCol);
+
         if (herd->getParentOfType<air::PartitionOp>())
           return;
 
@@ -234,9 +235,9 @@ public:
         std::unique_ptr<Herd> herdPtr =
             std::make_unique<Herd>(herd, herd_size_y, herd_size_x, number);
         unplacedHerds.push_back(std::move(herdPtr));
-      });
 
-      placeHerdsInPartition(unplacedHerds, partition);
+        placeHerdsInPartition(unplacedHerds, partition);
+      });
     });
     return;
   }

@@ -65,6 +65,11 @@ def parse_args(args=None):
             default=False,
             action='store_true',
             help='pass --xbridge to aiecc, otherwise pass --no-xbridge')
+    parser.add_argument('-xchesscc',
+            dest="xchesscc",
+            default=False,
+            action='store_true',
+            help='pass --xchesscc to aiecc, otherwise pass --no-xchesscc')
 
     opts = parser.parse_args(args)
     return opts

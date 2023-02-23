@@ -212,8 +212,9 @@ def run(mlir_module, args):
               ['--host-target', opts.host_target if opts.host_target else aiecc_target] +
               ['--tmpdir', aiecc_dir] +
               ['--aie-generate-xaiev2'] +
-              (['--xbridge'] if opts.xbridge else ['--no-xbridge']) +
-              ['--no-xchesscc', aiecc_file])
+              ['--xbridge' if opts.xbridge else '--no-xbridge'] +
+              ['--xchesscc' if opts.xchesscc else '--no-xchesscc'] +
+              [aiecc_file])
 
       inc_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.inc'
       cpp_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.cpp'
@@ -336,7 +337,8 @@ def run_flow(opts):
               ['--tmpdir', aiecc_dir] +
               ['--aie-generate-xaiev2'] +
               ['--xbridge' if opts.xbridge else '--no-xbridge'] +
-              ['--no-xchesscc', aiecc_file])
+              ['--xchesscc' if opts.xchesscc else '--no-xchesscc'] +
+              [aiecc_file])
 
       inc_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.inc'
       cpp_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.cpp'

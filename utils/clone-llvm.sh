@@ -15,10 +15,10 @@
 ##===----------------------------------------------------------------------===##
 
 export commithash=7ccbb4dff10efe6c26219204e361ddb0264938b8
+branch=air-2022.12
 
 git clone --depth 1 https://github.com/llvm/llvm-project.git llvm
 pushd llvm
 git fetch --depth=1 origin $commithash
-git checkout $commithash
+git checkout $commithash -b $branch
 popd
-
