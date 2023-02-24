@@ -43,6 +43,14 @@ void mlir_aie_write_buffer_buf0(aie_libxaie_ctx_t*, int, int32_t);
 using namespace air::partitions::partition_0;
 
 int main(int argc, char *argv[]) {
+
+  hsa_status_t init_status = air_init();
+
+  if (init_status != HSA_STATUS_SUCCESS) {
+    std::cout << "air_init() failed. Exiting" << std::endl;
+    return -1;
+  }
+
   std::vector<air_agent_t> agents;
   auto get_agents_ret = air_get_agents(agents);
   assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
@@ -64,7 +72,7 @@ int main(int argc, char *argv[]) {
     queues.push_back(q);
   }
 
-  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_get_libxaie_ctx();
 
   queue_t *q = queues[0];
 
