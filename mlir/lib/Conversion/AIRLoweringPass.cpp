@@ -185,7 +185,7 @@ public:
     air::HerdOp launch = cast<air::HerdOp>(op);
 
     auto herd_name_attr =
-            op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
+        op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
     if (!herd_name_attr) {
       emitError(op->getLoc(),
                 "error lowering air.herd: herd name is undefined.\n");
@@ -193,7 +193,7 @@ public:
     }
 
     rewriter.create<airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(),
-                                         herd_name_attr.getValue().str());
+                                       herd_name_attr.getValue().str());
 
     SmallVector<Value, 4> deps;
     for (auto &o : operands)
