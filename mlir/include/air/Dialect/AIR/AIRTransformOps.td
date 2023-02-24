@@ -10,7 +10,6 @@
 #define AIR_TRANSFORM_OPS
 
 include "mlir/Dialect/Transform/IR/TransformDialect.td"
-include "mlir/Dialect/Transform/IR/TransformEffects.td"
 include "mlir/Dialect/Transform/IR/TransformInterfaces.td"
 include "mlir/Dialect/PDL/IR/PDLTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
@@ -230,7 +229,8 @@ def LinalgTileOp : Op<Transform_Dialect, "air.linalg_tile",
 
 def FuseIntoContainingMemrefOp :
     Op<Transform_Dialect, "air.fuse_into_containing_op",
-      [DeclareOpInterfaceMethods<TransformOpInterface>]> {
+      [DeclareOpInterfaceMethods<TransformOpInterface>,
+       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Fuse a producer into a containing operation.";
 
   let description = [{
@@ -255,14 +255,9 @@ def FuseIntoContainingMemrefOp :
     This operation reads the containing op handle.
   }];
 
-  let arguments = (ins Arg<PDL_Operation, "",
-                           [TransformMappingRead,
-                            TransformMappingFree]>:$producer_op,
-                       Arg<PDL_Operation, "",
-                           [TransformMappingRead]>:$containing_op);
-  let results = (outs Res<PDL_Operation, "",
-                          [TransformMappingAlloc,
-                           TransformMappingWrite]>:$fused_op);
+  let arguments = (ins PDL_Operation:$producer_op,
+                       PDL_Operation:$containing_op);
+  let results = (outs PDL_Operation:$fused_op);
   let assemblyFormat = "$producer_op `into` $containing_op attr-dict";
 
   let builders = [

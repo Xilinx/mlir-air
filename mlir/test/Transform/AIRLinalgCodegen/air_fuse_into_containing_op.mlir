@@ -32,8 +32,8 @@ func.func @test_fuse_into_par(%D: memref<128x128xf32>) -> memref<128x128xf32> {
 transform.sequence failures(propagate) {
 ^bb1(%arg1: !pdl.operation):
   // Find the consumer and producer.
-  %consumer = transform.structured.match attributes{"__consumer__"} in %arg1
-  %producers = transform.structured.match attributes{"__producer__"} in %arg1
+  %consumer = transform.structured.match attributes{"__consumer__"} in %arg1 : (!pdl.operation) -> !pdl.operation
+  %producers = transform.structured.match attributes{"__producer__"} in %arg1 : (!pdl.operation) -> !pdl.operation
   %1, %loops:2 = transform.air.linalg_tile %consumer [32, 32]
   transform.air.fuse_into_containing_op %producers into %loops#0
 }

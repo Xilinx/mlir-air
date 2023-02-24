@@ -456,8 +456,7 @@ SmallVector<Value, 1> lookupOrDefaultRange(SmallVector<Value, 1> vec,
 }
 
 template <typename T>
-T cloneScfLoopUsingRemap(OpBuilder builder, BlockAndValueMapping &remap,
-                         T loop_op,
+T cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
                          air::ChannelInterface externalGetPut = nullptr) {
   T new_loop_op =
       builder.create<T>(builder.getUnknownLoc(),
