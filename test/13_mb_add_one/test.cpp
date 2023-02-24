@@ -31,7 +31,7 @@ main(int argc, char *argv[])
 
   hsa_status_t init_status = air_init();
 
-  if(init_status != HSA_STATUS_SUCCESS) {
+  if (init_status != HSA_STATUS_SUCCESS) {
     std::cout << "air_init() failed. Exiting" << std::endl;
     return -1;
   }
@@ -58,8 +58,7 @@ main(int argc, char *argv[])
     queues.push_back(q);
   }
 
-  aie_libxaie_ctx_t *xaie =
-      (aie_libxaie_ctx_t *)air_get_libxaie_ctx();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_get_libxaie_ctx();
   if (xaie == NULL) {
     std::cout << "Error getting libxaie context" << std::endl;
     return -1;

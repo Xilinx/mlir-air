@@ -37,11 +37,10 @@ main(int argc, char *argv[])
 
   hsa_status_t init_status = air_init();
 
-  if(init_status != HSA_STATUS_SUCCESS) {
+  if (init_status != HSA_STATUS_SUCCESS) {
     std::cout << "air_init() failed. Exiting" << std::endl;
     return -1;
   }
-
 
   std::vector<air_agent_t> agents;
   auto get_agents_ret = air_iterate_agents(
