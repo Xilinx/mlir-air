@@ -314,7 +314,7 @@ struct RemoveAllocCopyLinalgOpCopyPattern
 
     // the target of the copy is an alloc
     Operation *allocOp =
-        dyn_cast<memref::AllocOp>(op.getTarget().getDefiningOp());
+        dyn_cast_if_present<memref::AllocOp>(op.getTarget().getDefiningOp());
     if (!allocOp)
       return failure();
 
