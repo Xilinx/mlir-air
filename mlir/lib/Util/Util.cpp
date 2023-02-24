@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/OperationSupport.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
@@ -356,4 +357,47 @@ air::getTheOtherChannelOpThroughSymbol(air::ChannelGetOp get) {
   auto channel_op = getChannelDeclarationThroughSymbol(
       dyn_cast<air::ChannelInterface>(get.getOperation()));
   return getChannelPutOpThroughSymbol(channel_op);
+}
+
+// Get sizes from integerset
+void air::getSizesFromIntegerSet(MLIRContext *ctx, IntegerSet int_set,
+                                 SmallVector<int, 2> &lbs_int,
+                                 SmallVector<int, 2> &ubs_int) {
+
+  auto constraints = int_set.getConstraints();
+  auto eqFlags = int_set.getEqFlags();
+
+  // Get an affine expression set made of zeros
+  SmallVector<AffineExpr, 2> zero_syms;
+  for (unsigned i = 0; i < int_set.getNumSymbols(); i++) {
+    zero_syms.push_back(getAffineConstantExpr(0, ctx));
+  }
+
+  // Fill in lbs and ubs vectors by evaluating affine set
+  for (unsigned i = 0; i < int_set.getNumSymbols(); i++) {
+    int c_iter = 0;
+    for (auto c : constraints) {
+      if (c.isSymbolicOrConstant()) {
+        auto newC = c.replaceSymbols(zero_syms);
+        auto expr =
+            simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
+        int v = expr.getValue();
+        v = (v >= 0)
+                ? (v)
+                : (-v); // Both + and - constant eval are legal for AffineExpr
+        if (c.isFunctionOfSymbol(i)) {
+          if (eqFlags[c_iter]) {
+            lbs_int[i] = v;
+            ubs_int[i] = v;
+          } else {
+            if (v)
+              ubs_int[i] = v;
+            else
+              lbs_int[i] = v;
+          }
+        }
+      }
+      c_iter++;
+    }
+  }
 }

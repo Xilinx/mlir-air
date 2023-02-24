@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Support/MathExtras.h"
@@ -125,8 +126,9 @@ class AIRRunner::AIRRunner_impl {
 
 public:
   AIRRunner_impl(llvm::raw_ostream &trace_stream, llvm::json::Value &json_model,
-                 bool verbose = false)
-      : traceStream(trace_stream), jsonModel(json_model), time(1) {
+                 std::string sim_granularity = "herd", bool verbose = false)
+      : traceStream(trace_stream), jsonModel(json_model),
+        sim_granularity(sim_granularity) {
 
     auto model = jsonModel.getAsObject();
 
@@ -291,7 +293,8 @@ public:
               resetGraphBetweenTwoVertices(*adj_v, it, G, c, time);
               // (2) release the token locks, if the token is still iterating
               if (token_is_still_iterating[i]) {
-                G[*adj_v].token_count++;
+                G[*adj_v].token_count +=
+                    tokenSpatialFactor(G[*adj_v].op, c.ctrl_g->position);
               }
             }
           }
@@ -323,8 +326,12 @@ public:
     Graph &G = c.ctrl_g->g;
     auto adj_set = boost::adjacent_vertices(it, G);
     for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
-      G[*adj_v].token_count += tokenCountThresholdForExecution(
-          G[*adj_v].op); // Lock number = number of dependent iter_args
+      G[*adj_v].token_count +=
+          tokenCountThresholdForExecution(G[*adj_v].op) *
+          tokenSpatialFactor(
+              G[*adj_v].op,
+              c.ctrl_g
+                  ->position); // Lock number = number of dependent iter_args
     }
 
     c.processed_vertices.push_back(it);
@@ -333,7 +340,8 @@ public:
   void executeOp(air::ChannelPutOp op, runnerNode &c,
                  Graph::vertex_descriptor it) {
     Graph &G = c.ctrl_g->g;
-    G[it].token_count++;
+    G[it].token_count +=
+        tokenSpatialFactor(op.getOperation(), c.ctrl_g->position);
 
     c.processed_vertices.push_back(it);
   }
@@ -351,7 +359,8 @@ public:
       auto &put_g = put_entry.second;
       auto &put_node = put_g->g[put_v];
       if (put_node.token_count) {
-        put_node.token_count--;
+        put_node.token_count -=
+            tokenSpatialFactor(op.getOperation(), c.ctrl_g->position);
         break;
       }
     }
@@ -402,8 +411,10 @@ public:
       if (G[*inv_adj_v].asyncEventType == "for_loop") {
         unsigned th = tokenCountThresholdForExecution(
             G[it].op); // Consume all iter_arg tokens
-        assert(G[it].token_count >= th);
-        G[it].token_count -= th;
+        assert(G[it].token_count >=
+               th * tokenSpatialFactor(G[it].op, c.ctrl_g->position));
+        G[it].token_count -=
+            th * tokenSpatialFactor(G[it].op, c.ctrl_g->position);
         return;
       }
     }
@@ -551,7 +562,7 @@ public:
         auto channel_put_v = channel_put_entry.first;
         auto &channel_put_g = channel_put_entry.second;
         auto &channel_put_node = channel_put_g->g[channel_put_v];
-        if (channel_put_node.token_count) {
+        if (channel_put_node.token_count > 0) {
           dep_list.push_back(std::make_pair(&channel_put_node, "sym"));
           pushed_to_dep_list = true;
           break;
@@ -570,9 +581,7 @@ public:
           auto terminator_v = sub_g->terminator_vertex;
           dep_list.push_back(std::make_pair(&sub_g->g[terminator_v], "ssa"));
         }
-      }
-      // Else if dependenct on a for op
-      else if (G[*inv_adj_v].asyncEventType == "for_loop") {
+      } else if (G[*inv_adj_v].asyncEventType == "for_loop") {
         dep_list.push_back(std::make_pair(&G[*inv_adj_v], "ssa_loop_yield"));
       } else {
         dep_list.push_back(std::make_pair(&G[*inv_adj_v], "ssa"));
@@ -605,11 +614,11 @@ public:
       // Threshold token_count for dep fulfillment = how many iter_args does
       // node depend on
       unsigned th = tokenCountThresholdForExecution(node->op);
-      if (node->token_count < th) {
+      if (node->token_count < th * tokenSpatialFactor(node->op, {})) {
         return false;
       }
     } else if (dep.second == "sym") {
-      if (!dep.first->token_count) {
+      if (dep.first->token_count <= 0) {
         return false;
       }
     } else {
@@ -658,11 +667,11 @@ public:
         if (G[it->first].asyncEventType != "start") {
 
           auto runner_id = getIdAttr(c.ctrl_g->hierarchyOp);
-          auto sub_tid = it->second;
+          auto tid = it->second;
           emitTraceEvent(traceStream,
                          G[it->first].asyncEventName +
                              G[it->first].detailed_description,
-                         "layer", "E", time, sub_tid, runner_id);
+                         "layer", "E", time, tid, runner_id);
         }
 
         // "ExecuteOp"
@@ -709,17 +718,20 @@ public:
 
     for (auto next_vertex : next_vertex_set) {
 
-      pushToWavefront(c.wavefront, next_vertex);
+      // Push to wavefront; check if showing cores
+      pushToWavefront(c.wavefront, next_vertex,
+                      canonicalizer.getIteratorFromPosition(
+                          c.ctrl_g->position, c.ctrl_g->hierarchyOp));
 
       G[next_vertex].start_time = time;
       G[next_vertex].end_time = time + modelOp(G[next_vertex]);
       // emit trace event begin
       auto runner_id = getIdAttr(c.ctrl_g->hierarchyOp);
-      auto sub_tid = c.wavefront.back().second;
+      auto tid = c.wavefront.back().second;
       emitTraceEvent(traceStream,
                      G[next_vertex].asyncEventName +
                          G[next_vertex].detailed_description,
-                     "layer", "B", time, sub_tid, runner_id);
+                     "layer", "B", time, tid, runner_id);
     }
 
     return;
@@ -731,7 +743,8 @@ public:
     // intepreter
     canonicalizer.removeDepListRepetition(toplevel);
     hostGraph = dependencyGraph(toplevel, true);
-    canonicalizer.parseCommandGraphs(toplevel, hostGraph, dep_ctx);
+    canonicalizer.parseCommandGraphs(toplevel, hostGraph, dep_ctx,
+                                     sim_granularity);
 
     // Walk the launch graph and write process name metadata in trace
     writeTraceMetadataProcNames(hostGraph);
@@ -828,7 +841,7 @@ private:
 
   llvm::raw_ostream &traceStream;
   llvm::json::Value &jsonModel;
-  uint64_t time;
+  std::string sim_granularity;
 
   unsigned dispatch_slots;
   unsigned dispatch_dma_slots;
@@ -881,6 +894,216 @@ private:
       th = 1;
     }
     return th;
+  }
+
+  // Walk affine.if then and else blocks and check if current core lies in
+  // condition
+  bool positionHitsAffineIfCondition(Operation *op, Operation *spatial_loop,
+                                     std::vector<Operation *> affine_if_nest,
+                                     std::vector<unsigned> position) {
+    SmallVector<int, 2> lbs_spatial;
+    SmallVector<int, 2> ubs_spatial;
+    if (auto scf_par = dyn_cast<scf::ParallelOp>(spatial_loop)) {
+      for (unsigned i = 0; i < scf_par.getLowerBound().size(); i++) {
+        auto lbCstOp =
+            scf_par.getLowerBound()[i].getDefiningOp<arith::ConstantIndexOp>();
+        auto ubCstOp =
+            scf_par.getUpperBound()[i].getDefiningOp<arith::ConstantIndexOp>();
+        auto stepCstOp =
+            scf_par.getStep()[i].getDefiningOp<arith::ConstantIndexOp>();
+        lbs_spatial.push_back(
+            mlir::ceilDiv(lbCstOp.value(), stepCstOp.value()) + 1);
+        ubs_spatial.push_back(
+            mlir::ceilDiv(ubCstOp.value(), stepCstOp.value()));
+      }
+    } else if (auto hier = dyn_cast<air::HierarchyInterface>(spatial_loop)) {
+      for (unsigned i = 0; i < hier.getSizeOperands().size(); i++) {
+        lbs_spatial.push_back(1);
+        ubs_spatial.push_back(hier.getSizeOperands()[i]
+                                  .getDefiningOp<arith::ConstantIndexOp>()
+                                  .value());
+      }
+    }
+
+    // Walk through affine.if nest (in reverse order through vector)
+    for (auto it = affine_if_nest.rbegin(); it != affine_if_nest.rend(); ++it) {
+      auto affine_if = dyn_cast<mlir::AffineIfOp>(*it);
+      // Get then integerset sizes
+      SmallVector<int, 2> lbs_int = {-1, -1};
+      SmallVector<int, 2> ubs_int = {-1, -1};
+      IntegerSet int_set = affine_if.getIntegerSet();
+      getSizesFromIntegerSet(affine_if->getContext(), int_set, lbs_int,
+                             ubs_int);
+      // If found then block containing op
+      if (affine_if.getThenBlock()->findAncestorOpInBlock(*op)) {
+        bool hit = true;
+        for (unsigned i = 0; i < lbs_int.size(); i++) {
+          if ((position[i] + 1 < lbs_int[i]) ||
+              (position[i] + 1 > ubs_int[i])) {
+            hit = false;
+          }
+        }
+        return hit;
+      }
+      // Else keep going, while updating the spatial sizes wrt else condition
+      else {
+        getElseSizesFromAffineIf(lbs_spatial, ubs_spatial, lbs_int, ubs_int);
+      }
+    }
+    // If op isn't in any then blocks in affine.if nest
+    bool hit = true;
+    for (unsigned i = 0; i < lbs_spatial.size(); i++) {
+      if ((position[i] + 1 < lbs_spatial[i]) ||
+          (position[i] + 1 > ubs_spatial[i])) {
+        hit = false;
+      }
+    }
+    return hit;
+  }
+
+  // Walk affine.if then and else blocks and infer block sizes of op's ancestor
+  unsigned getSizeThroughAffineIf(Operation *op, Operation *spatial_loop,
+                                  std::vector<Operation *> affine_if_nest) {
+    unsigned output = 1;
+    SmallVector<int, 2> lbs_spatial;
+    SmallVector<int, 2> ubs_spatial;
+    if (auto scf_par = dyn_cast<scf::ParallelOp>(spatial_loop)) {
+      for (unsigned i = 0; i < scf_par.getLowerBound().size(); i++) {
+        auto lbCstOp =
+            scf_par.getLowerBound()[i].getDefiningOp<arith::ConstantIndexOp>();
+        auto ubCstOp =
+            scf_par.getUpperBound()[i].getDefiningOp<arith::ConstantIndexOp>();
+        auto stepCstOp =
+            scf_par.getStep()[i].getDefiningOp<arith::ConstantIndexOp>();
+        lbs_spatial.push_back(
+            mlir::ceilDiv(lbCstOp.value(), stepCstOp.value()) + 1);
+        ubs_spatial.push_back(
+            mlir::ceilDiv(ubCstOp.value(), stepCstOp.value()));
+      }
+    } else if (auto hier = dyn_cast<air::HierarchyInterface>(spatial_loop)) {
+      for (unsigned i = 0; i < hier.getSizeOperands().size(); i++) {
+        lbs_spatial.push_back(1);
+        ubs_spatial.push_back(hier.getSizeOperands()[i]
+                                  .getDefiningOp<arith::ConstantIndexOp>()
+                                  .value());
+      }
+    }
+
+    // Walk through affine.if nest (in reverse order through vector)
+    for (auto it = affine_if_nest.rbegin(); it != affine_if_nest.rend(); ++it) {
+      auto affine_if = dyn_cast<mlir::AffineIfOp>(*it);
+      // Get then integerset sizes
+      SmallVector<int, 2> lbs_int = {-1, -1};
+      SmallVector<int, 2> ubs_int = {-1, -1};
+      IntegerSet int_set = affine_if.getIntegerSet();
+      getSizesFromIntegerSet(affine_if->getContext(), int_set, lbs_int,
+                             ubs_int);
+      // If found then block containing op
+      if (affine_if.getThenBlock()->findAncestorOpInBlock(*op)) {
+        for (unsigned i = 0; i < lbs_int.size(); i++) {
+          output *= ubs_int[i] - lbs_int[i] + 1;
+        }
+        return output;
+      }
+      // Else keep going, while updating the spatial sizes wrt else condition
+      else {
+        getElseSizesFromAffineIf(lbs_spatial, ubs_spatial, lbs_int, ubs_int);
+      }
+    }
+    // If op isn't in any then blocks in affine.if nest
+    for (unsigned i = 0; i < lbs_spatial.size(); i++) {
+      output *= ubs_spatial[i] - lbs_spatial[i] + 1;
+    }
+    return output;
+  }
+
+  // Get else sizes from affine.if. Assumption: rectangular input, then and else
+  // sizes only
+  void getElseSizesFromAffineIf(SmallVector<int, 2> &lbs_in,
+                                SmallVector<int, 2> &ubs_in,
+                                SmallVector<int, 2> &lbs_then,
+                                SmallVector<int, 2> &ubs_then) {
+    for (unsigned i = 0; i < lbs_in.size(); i++) {
+      if ((lbs_in[i] != lbs_then[i])) {
+        ubs_in[i] = lbs_then[i] - 1;
+        lbs_in[i] = lbs_in[i];
+        return;
+      } else if ((ubs_in[i] != ubs_then[i])) {
+        lbs_in[i] = ubs_then[i] + 1;
+        ubs_in[i] = ubs_in[i];
+        return;
+      }
+    }
+  }
+
+  // Calculate the number of spatially parallel tokens produced/consumed per op
+  unsigned tokenSpatialFactor(Operation *op, std::vector<unsigned> position) {
+    unsigned output = 1;
+    // If op is producer to a channel broadcast, then bump up token count by
+    // fanout
+    if (isa<air::ChannelPutOp>(op)) {
+      auto channel_op = dyn_cast<air::ChannelInterface>(op);
+      auto chan = getChannelDeclarationThroughSymbol(channel_op);
+      if (chan->hasAttr("broadcast_shape")) {
+        auto size = extractFromI64ArrayAttr(chan->getAttr("broadcast_shape"));
+        for (auto s : size) {
+          output *= s;
+        }
+        size = extractFromI64ArrayAttr(chan.getSize());
+        for (auto s : size) {
+          output /= s;
+        }
+      }
+    }
+    for (auto parent = op->getParentOp(); !isa<func::FuncOp>(parent);
+         parent = parent->getParentOp()) {
+      if (auto scf_par = dyn_cast<scf::ParallelOp>(parent)) {
+        for (unsigned i = 0; i < scf_par.getNumLoops(); i++) {
+          auto lbCstOp = scf_par.getLowerBound()[i]
+                             .getDefiningOp<arith::ConstantIndexOp>();
+          auto ubCstOp = scf_par.getUpperBound()[i]
+                             .getDefiningOp<arith::ConstantIndexOp>();
+          auto stepCstOp =
+              scf_par.getStep()[i].getDefiningOp<arith::ConstantIndexOp>();
+          int64_t tripCount = mlir::ceilDiv(ubCstOp.value() - lbCstOp.value(),
+                                            stepCstOp.value());
+          output *= tripCount;
+        }
+      } else if (auto hier = dyn_cast<air::HierarchyInterface>(parent)) {
+        if (sim_granularity == "core" && isa<air::HerdOp>(parent)) {
+        } else {
+          output *= canonicalizer.getTripCountInHierarchyOp(hier);
+        }
+      } else if (auto affine_if = dyn_cast<mlir::AffineIfOp>(parent)) {
+        // Fast forward through affine.if nest
+        std::vector<Operation *> affine_if_nest;
+        Operation *spatial_loop = nullptr;
+        while ((!isa<scf::ParallelOp>(parent)) &&
+               (!isa<air::HierarchyInterface>(parent))) {
+          if (isa<mlir::AffineIfOp>(parent)) {
+            affine_if_nest.push_back(parent);
+          }
+          parent = parent->getParentOp();
+        }
+        // Skip over the first parent hierarchy or parallel loop
+        spatial_loop = parent;
+        parent = parent->getParentOp();
+
+        // If showing cores
+        auto herd = dyn_cast<air::HerdOp>(spatial_loop);
+        if (herd && sim_granularity == "core") {
+          output = (positionHitsAffineIfCondition(op, spatial_loop,
+                                                  affine_if_nest, position))
+                       ? (output)
+                       : (0);
+        } else {
+          unsigned size =
+              getSizeThroughAffineIf(op, spatial_loop, affine_if_nest);
+          output *= size;
+        }
+      }
+    }
+    return output;
   }
 
   // Returns the scf parent op from scf.yield op
@@ -1116,10 +1339,13 @@ private:
   }
   void pushToWavefront(
       std::vector<std::pair<Graph::vertex_descriptor, unsigned>> &wavefront,
-      Graph::vertex_descriptor v) {
+      Graph::vertex_descriptor v, unsigned core_id = 0) {
     // Acquire available thread id for current op
+    unsigned max_num_threads_per_core =
+        10; // Hardcoded maximum number of threads per core
+    unsigned offset = core_id * max_num_threads_per_core;
     unsigned tid = 0;
-    for (unsigned i = 1; i < wavefront.size() + 2; i++) {
+    for (unsigned i = offset + 1; i < offset + wavefront.size() + 2; i++) {
       bool tid_i_unavailable = false;
       for (auto j : wavefront) {
         if (j.second == i) {
@@ -1236,8 +1462,10 @@ private:
 }; // AIRRunner_impl
 
 AIRRunner::AIRRunner(llvm::raw_ostream &trace_stream,
-                     llvm::json::Value &json_model, bool verbose) {
-  impl = std::make_unique<AIRRunner_impl>(trace_stream, json_model, verbose);
+                     llvm::json::Value &json_model, std::string sim_granularity,
+                     bool verbose) {
+  impl = std::make_unique<AIRRunner_impl>(trace_stream, json_model,
+                                          sim_granularity, verbose);
   if (verbose) {
     llvm::DebugFlag = true;
     llvm::setCurrentDebugType(DEBUG_TYPE);

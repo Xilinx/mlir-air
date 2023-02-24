@@ -19,11 +19,12 @@ namespace xilinx {
 namespace air {
 
 void defineAIRRunnerModule(pybind11::module &m) {
-  m.def("run", [](MlirModule module, std::string json, std::string outfile,
-                  std::string function, bool verbose) {
-    airRunnerRun(module, json.c_str(), outfile.c_str(), function.c_str(),
-                 verbose);
-  });
+  m.def("run",
+        [](MlirModule module, std::string json, std::string outfile,
+           std::string function, std::string sim_granularity, bool verbose) {
+          airRunnerRun(module, json.c_str(), outfile.c_str(), function.c_str(),
+                       sim_granularity.c_str(), verbose);
+        });
 }
 
 } // namespace air

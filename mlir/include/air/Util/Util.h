@@ -67,6 +67,9 @@ std::vector<ChannelGetOp> getChannelGetOpThroughSymbol(ChannelOp channel);
 // Get the other channel op through channel symbol
 std::vector<ChannelGetOp> getTheOtherChannelOpThroughSymbol(ChannelPutOp put);
 std::vector<ChannelPutOp> getTheOtherChannelOpThroughSymbol(ChannelGetOp get);
+void getSizesFromIntegerSet(MLIRContext *ctx, IntegerSet int_set,
+                            SmallVector<int, 2> &lbs_int,
+                            SmallVector<int, 2> &ubs_int);
 
 struct LinalgTransforms {
   static const StringLiteral kLinalgTransformMarker;

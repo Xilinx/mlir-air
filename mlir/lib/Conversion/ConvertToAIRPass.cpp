@@ -11,6 +11,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIR/AIRTransformOps.h"
 #include "air/Util/Dependency.h"
+#include "air/Util/Util.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -515,48 +516,6 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
   }
 };
 
-void getBCastSizesFromIntegerSet(MLIRContext *ctx, IntegerSet int_set,
-                                 SmallVector<int, 2> &lbs_int,
-                                 SmallVector<int, 2> &ubs_int) {
-
-  auto constraints = int_set.getConstraints();
-  auto eqFlags = int_set.getEqFlags();
-
-  // Get an affine expression set made of zeros
-  SmallVector<AffineExpr, 2> zero_syms;
-  for (unsigned i = 0; i < int_set.getNumSymbols(); i++) {
-    zero_syms.push_back(getAffineConstantExpr(0, ctx));
-  }
-
-  // Fill in lbs and ubs vectors by evaluating affine set
-  for (unsigned i = 0; i < int_set.getNumSymbols(); i++) {
-    int c_iter = 0;
-    for (auto c : constraints) {
-      if (c.isSymbolicOrConstant()) {
-        auto newC = c.replaceSymbols(zero_syms);
-        auto expr =
-            simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
-        int v = expr.getValue();
-        v = (v >= 0)
-                ? (v)
-                : (-v); // Both + and - constant eval are legal for AffineExpr
-        if (c.isFunctionOfSymbol(i)) {
-          if (eqFlags[c_iter]) {
-            lbs_int[i] = v;
-            ubs_int[i] = v;
-          } else {
-            if (v)
-              ubs_int[i] = v;
-            else
-              lbs_int[i] = v;
-          }
-        }
-      }
-      c_iter++;
-    }
-  }
-}
-
 unsigned getScfParDimIdFromBCastDma(air::DmaMemcpyInterface memcpyOp) {
   // Get all ops on the dependency connection between dma and herd launch
   SmallVector<Value, 1> loop_dep_history;
@@ -661,7 +620,7 @@ void replaceAIRDmaWithAIRChannelPairs(
     SmallVector<int, 2> lbs_int = {-1, -1};
     SmallVector<int, 2> ubs_int = {-1, -1};
     SmallVector<int64_t, 2> channel_sizes = {1, 1};
-    getBCastSizesFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
+    air::getSizesFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
     SmallVector<int64_t, 2> bcast_sizes = {ubs_int[0] - lbs_int[0] + 1,
                                            ubs_int[1] - lbs_int[1] + 1};
     auto channel_op =
@@ -675,7 +634,7 @@ void replaceAIRDmaWithAIRChannelPairs(
     SmallVector<int, 2> ubs_int = {-1};
     mlir::IntegerSet int_set =
         op->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern").getValue();
-    getBCastSizesFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
+    air::getSizesFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
     SmallVector<int64_t, 2> channel_sizes = {1, 1};
     channel_sizes[getScfParDimIdFromBCastDma(dyn_cast<air::DmaMemcpyInterface>(
         op.getOperation()))] = ubs_int[0] - lbs_int[0] + 1;

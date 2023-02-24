@@ -106,28 +106,13 @@ struct dependencyNodeEntry {
   unsigned operationId;
   mlir::Operation *op;
   std::vector<dependencyGraph *> nextDependencyGraphs;
-  // dependencyGraph *nextDependencyGraph;
   uint64_t start_time;
   uint64_t end_time;
   std::vector<std::pair<uint64_t, uint64_t>> start_end_time_log;
-  uint64_t token_count;
+  int token_count;
 
   bool is_started() { return (start_time != 0) && (end_time != 0); }
   bool is_done(uint64_t t) { return t >= end_time; }
-
-  // dependencyNodeEntry(std::string asyncEventName = "",
-  //                     std::string asyncEventType = "", std::string color =
-  //                     "", std::string shape = "", std::string
-  //                     detailed_description = "", unsigned operationId = 0,
-  //                     mlir::Operation *op = nullptr, dependencyGraph
-  //                     *nextDependencyGraph = nullptr, uint64_t start_time =
-  //                     0, uint64_t end_time = 0, uint64_t token_count = 0)
-  //     : asyncEventName(asyncEventName), asyncEventType(asyncEventType),
-  //       color(color), shape(shape),
-  //       detailed_description(detailed_description), operationId(operationId),
-  //       op(op), nextDependencyGraph(nextDependencyGraph),
-  //       start_time(start_time), end_time(end_time), token_count(token_count)
-  //       {}
 
   dependencyNodeEntry(std::string asyncEventName = "",
                       std::string asyncEventType = "", std::string color = "",
@@ -135,7 +120,7 @@ struct dependencyNodeEntry {
                       std::string detailed_description = "",
                       unsigned operationId = 0, mlir::Operation *op = nullptr,
                       uint64_t start_time = 0, uint64_t end_time = 0,
-                      uint64_t token_count = 0)
+                      int token_count = 0)
       : asyncEventName(asyncEventName), asyncEventType(asyncEventType),
         color(color), shape(shape), detailed_description(detailed_description),
         operationId(operationId), op(op), start_time(start_time),
@@ -235,8 +220,9 @@ typedef boost::subgraph<boost::adjacency_list<
     FlatGraph;
 typedef std::map<Graph::vertex_descriptor, FlatGraph::vertex_descriptor>
     vertex_to_flat_vertex_map;
-typedef std::map<std::string, std::pair<std::vector<FlatGraph::vertex_descriptor>,
-                                        std::vector<FlatGraph::vertex_descriptor>>>
+typedef std::map<std::string,
+                 std::pair<std::vector<FlatGraph::vertex_descriptor>,
+                           std::vector<FlatGraph::vertex_descriptor>>>
     ChannelMap;
 
 class dependencyCanonicalizer {
@@ -266,6 +252,13 @@ public:
   std::pair<Graph::vertex_descriptor, dependencyGraph *>
   getVertexFromOp(Operation *op, dependencyContext dep_ctx,
                   std::string front_or_back = "front");
+  // CDFG show cores in herd
+  unsigned getTripCountInHierarchyOp(air::HierarchyInterface hier);
+  std::vector<unsigned> getPositionFromIterator(unsigned iter,
+                                                air::HerdOp herd);
+  std::string toPositionString(std::vector<unsigned> position);
+  unsigned getIteratorFromPosition(std::vector<unsigned> position,
+                                   Operation *hier_op);
 
 private:
   void addVerticesInHerd(std::deque<dependencyGraph> &herd_subgraphs,
@@ -342,10 +335,6 @@ private:
   void updateSubgraphFromDependencyGraphAsGraphVizCluster(
       dependencyGraph &G, FlatGraph &flat_subg, vertex_to_flat_vertex_map map,
       unsigned global_idx, unsigned &subg_idx, std::string hier_name = "");
-  unsigned getNumberOfCoresInHerd(air::HerdOp herd);
-  std::vector<unsigned> getPositionFromIterator(unsigned iter,
-                                                air::HerdOp herd);
-  std::string toPositionString(std::vector<unsigned> position);
 };
 
 //===----------------------------------------------------------------------===//

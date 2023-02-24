@@ -422,9 +422,9 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
     } else if (!map.second.second.size()) {
       assert(false && "incomplete channel op map");
     }
-    for (auto a_entry : map.second.first){
+    for (auto a_entry : map.second.first) {
       auto a = add_vertex(a_entry, flat_subg_chan);
-      for (auto b_entry : map.second.second){
+      for (auto b_entry : map.second.second) {
         auto b = add_vertex(b_entry, flat_subg_chan);
         auto e = add_edge(a, b, flat_subg_chan).first;
         put(get(boost::edge_attribute, flat_subg_chan), e,
@@ -557,7 +557,8 @@ void dependencyCanonicalizer::addVerticesInHerd(
   // Build up herd graph
   bool showCores = std::get<3>(expandHier);
   if (showCores) {
-    for (unsigned i = 0; i < getNumberOfCoresInHerd(herd); i++) {
+    auto hier = dyn_cast<air::HierarchyInterface>(herd.getOperation());
+    for (unsigned i = 0; i < getTripCountInHierarchyOp(hier); i++) {
       herd_subgraphs.push_back(dependencyGraph(herd.getOperation(), true));
       dependencyGraph *current_herd_graph = &(herd_subgraphs.back());
 
@@ -1066,8 +1067,9 @@ void dependencyCanonicalizer::collectAIRChannelPutAndGetInGraph(
       if (channel_map.find(chan_name) == channel_map.end()) {
         // If key not found, then create map entry with given key
         channel_map.insert(std::make_pair(
-            chan_name, std::make_pair(std::vector<FlatGraph::vertex_descriptor>(),
-                                      std::vector<FlatGraph::vertex_descriptor>())));
+            chan_name,
+            std::make_pair(std::vector<FlatGraph::vertex_descriptor>(),
+                           std::vector<FlatGraph::vertex_descriptor>())));
       }
       if (dyn_cast<air::ChannelPutOp>(g[*vit].op)) {
         channel_map[chan_name].first.push_back(map[*vit]);
@@ -1295,8 +1297,8 @@ void dependencyCanonicalizer::updatePointerFromHierarchyOpToGraph(
     if (G.subgraphs[idx].position.size()) {
       assert(dyn_cast<air::HerdOp>(G.g[*v].op) &&
              "Found non-herd op with core id");
-      auto herd = dyn_cast<air::HerdOp>(G.g[*v].op);
-      for (unsigned i = 0; i < getNumberOfCoresInHerd(herd); i++) {
+      auto hier = dyn_cast<air::HierarchyInterface>(G.g[*v].op);
+      for (unsigned i = 0; i < getTripCountInHierarchyOp(hier); i++) {
         G.g[*v].nextDependencyGraphs.push_back(&(G.subgraphs[idx]));
         assert(G.g[*v].op == G.subgraphs[idx].hierarchyOp &&
                "mismatch between graph and hierarchy op");
@@ -1622,11 +1624,12 @@ void dependencyCanonicalizer::removeRedundantWaitAllOps(func::FuncOp func) {
 }
 
 // Get number of cores in herd
-unsigned dependencyCanonicalizer::getNumberOfCoresInHerd(air::HerdOp herd) {
-  auto herd_size = herd.getSizeOperands();
+unsigned dependencyCanonicalizer::getTripCountInHierarchyOp(
+    air::HierarchyInterface hier) {
+  auto sizes = hier.getSizeOperands();
   unsigned output = 1;
-  for (unsigned i = 0; i < herd_size.size(); i++) {
-    output *= herd_size[i].getDefiningOp<arith::ConstantIndexOp>().value();
+  for (unsigned i = 0; i < sizes.size(); i++) {
+    output *= sizes[i].getDefiningOp<arith::ConstantIndexOp>().value();
   }
   return output;
 }
@@ -1647,6 +1650,31 @@ dependencyCanonicalizer::getPositionFromIterator(unsigned iter,
     unsigned herd_size_i =
         herd_size[i].getDefiningOp<arith::ConstantIndexOp>().value();
     output.push_back((iter / (denominator)) % herd_size_i);
+  }
+  return output;
+}
+
+// Write position of each core to dependency graph, if showing cores
+unsigned
+dependencyCanonicalizer::getIteratorFromPosition(std::vector<unsigned> position,
+                                                 Operation *hier_op) {
+  auto herd = dyn_cast<air::HerdOp>(hier_op);
+  if (!herd) {
+    return 0;
+  }
+  if (!position.size()) {
+    return 0;
+  }
+  auto herd_size = herd.getSizeOperands();
+  unsigned output = 0;
+  for (int i = herd_size.size() - 1; i >= 0; i--) { // MSB first
+    unsigned scale_factor = 1;
+    for (unsigned j = i + 1; j < herd_size.size(); j++) {
+      unsigned herd_size_j =
+          herd_size[j].getDefiningOp<arith::ConstantIndexOp>().value();
+      scale_factor *= herd_size_j;
+    }
+    output += scale_factor * position[i];
   }
   return output;
 }
