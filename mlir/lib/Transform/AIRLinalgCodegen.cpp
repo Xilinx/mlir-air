@@ -1995,13 +1995,17 @@ void transform::LinalgTileOp::getEffects(
 // LinalgPromoteOp
 //===----------------------------------------------------------------------===//
 
-DiagnosedSilenceableFailure transform::LinalgPromoteOp::applyToOne(
-    linalg::LinalgOp target, ::mlir::transform::ApplyToEachResultList &results,
-    transform::TransformState &state) {
+DiagnosedSilenceableFailure
+transform::LinalgPromoteOp::apply(transform::TransformResults &results,
+                                  transform::TransformState &state) {
+
+  ArrayRef<Operation *> payloadOps = state.getPayloadOps(getTarget());
+  if (!payloadOps.size())
+    DiagnosedSilenceableFailure::success();
+
   linalg::LinalgPromotionOptions promotionOptions;
-  if (!getOperandsToPromote().empty())
-    promotionOptions = promotionOptions.setOperandsToPromote(
-        extractFromI64ArrayAttr(getOperandsToPromote()));
+  auto operandsToPromote = extractFromI64ArrayAttr(getOperandsToPromote());
+
   if (getUseFullTilesByDefault())
     promotionOptions = promotionOptions.setUseFullTileBuffersByDefault(
         getUseFullTilesByDefault());
@@ -2020,29 +2024,92 @@ DiagnosedSilenceableFailure transform::LinalgPromoteOp::applyToOne(
     memorySpace = xilinx::air::MemorySpace::L2;
   else if (getMemorySpace() == "L3")
     memorySpace = xilinx::air::MemorySpace::L3;
-  else
-    return emitDefaultDefiniteFailure(target);
+  else // TODO: emit message
+    return emitDefaultDefiniteFailure(payloadOps[0]);
 
-  if (failed(promoteSubviewsPrecondition(target, promotionOptions)))
-    return emitDefaultDefiniteFailure(target);
+  SetVector<Operation *> transformed;
+  int64_t operandOffset = 0;
 
-  auto ctx = target->getContext();
-  SimpleRewriter rewriter(ctx);
-  rewriter.setInsertionPoint(target);
-  FailureOr<linalg::LinalgOp> res =
-      promoteSubViews(rewriter, target, promotionOptions);
-  if (failed(res))
-    return emitDefaultDefiniteFailure(target);
-  results.push_back(target);
+  std::map<Operation*, Value> subViewMap;
+  auto allocCallBack = [&subViewMap, memorySpace] (OpBuilder &b, memref::SubViewOp subView,
+                        ArrayRef<Value> boundingSubViewSize, DataLayout &layout) -> std::optional<Value> {
+    
+    if (subViewMap.count(subView))
+      return subViewMap[subView];
 
+    MemRefType viewType = subView.getType();
+    MemRefType allocType =
+        MemRefType::get(viewType.getShape(), viewType.getElementType(), {},
+                        (unsigned)memorySpace);
+    Value buffer = b.createOrFold<memref::AllocOp>(subView.getLoc(), allocType);
+    subViewMap[subView] = buffer;
+    return buffer;
+  };
+
+  auto deallocCallBack = [](OpBuilder &b, Value buffer) -> LogicalResult {
+    // b.create<memref::DeallocOp>(buffer.getLoc(), buffer);
+    return success();
+  };
+
+  promotionOptions.setAllocationDeallocationFns(allocCallBack, deallocCallBack);
+
+  for (Operation *target : state.getPayloadOps(getTarget())) {
+    auto linalgOp = dyn_cast<linalg::LinalgOp>(target);
+    if (!linalgOp)
+      continue;
+
+    int64_t numOperands = linalgOp->getNumOperands();
+    SmallVector<int64_t, 4> opersToPromote;
+    for (auto &o : operandsToPromote) {
+      int64_t operand = o - operandOffset;
+      if (operand < 0)
+        continue;
+      if (operand >= numOperands)
+        continue;
+      opersToPromote.push_back(operand);
+    }
+    operandOffset += numOperands;
+
+    if (opersToPromote.empty())
+      continue;
+
+    promotionOptions.setOperandsToPromote(opersToPromote);
+
+    if (failed(promoteSubviewsPrecondition(target, promotionOptions)))
+      return emitDefaultDefiniteFailure(target);
+
+    auto ctx = target->getContext();
+    SimpleRewriter rewriter(ctx);
+    rewriter.setInsertionPoint(target);
+    FailureOr<linalg::LinalgOp> res =
+        promoteSubViews(rewriter, target, promotionOptions);
+    if (failed(res))
+      return emitDefaultDefiniteFailure(target);
+
+    transformed.insert(linalgOp);
+  }
+
+  auto ctx = payloadOps[0]->getContext();
   RewritePatternSet patterns(ctx);
   patterns.insert<RemoveSubViewOpsPattern>(ctx, (int)memorySpace);
   patterns.insert<FoldSubViewOpsPattern>(ctx);
   patterns.insert<MemrefsPattern>(ctx);
   scf::populateSCFForLoopCanonicalizationPatterns(patterns);
-  (void)applyPatternsAndFoldGreedily(target->getParentOfType<func::FuncOp>(),
-                                     std::move(patterns));
+  (void)applyPatternsAndFoldGreedily(payloadOps[0]->getParentOfType<func::FuncOp>(),
+                                    std::move(patterns));
+
+  if (!transformed.size())
+    return emitDefaultDefiniteFailure(payloadOps[0]);
+
+  results.set(getResult().cast<OpResult>(), transformed.getArrayRef());
   return DiagnosedSilenceableFailure::success();
+}
+
+void transform::LinalgPromoteOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  onlyReadsHandle(getTarget(), effects);
+  producesHandle(getResult(), effects);
+  modifiesPayload(effects);
 }
 
 //===----------------------------------------------------------------------===//

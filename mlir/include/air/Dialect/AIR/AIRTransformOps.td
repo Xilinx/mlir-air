@@ -145,8 +145,8 @@ def PipelineReduceOp : Op<Transform_Dialect, "air.pipeline_reduce",
 }
 
 def LinalgPromoteOp : Op<Transform_Dialect, "air.linalg_promote",
-    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
-    TransformOpInterface, TransformEachOpTrait]> {
+        [DeclareOpInterfaceMethods<TransformOpInterface>,
+         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let description = [{
     Promotes the specified operands of the target into a separate memory buffer
     using the `mlir::linalg::promoteSubViews` utility.
@@ -181,12 +181,6 @@ def LinalgPromoteOp : Op<Transform_Dialect, "air.linalg_promote",
 
   let assemblyFormat = "$target attr-dict";
 
-  let extraClassDeclaration = [{
-    ::mlir::DiagnosedSilenceableFailure applyToOne(
-        ::mlir::linalg::LinalgOp target,
-        ::mlir::transform::ApplyToEachResultList &results,
-        ::mlir::transform::TransformState &state);
-  }];
 }
 
 def LinalgTileOp : Op<Transform_Dialect, "air.linalg_tile",
