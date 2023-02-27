@@ -10,6 +10,7 @@
 
 #include "air-c/Dialects.h"
 #include "air-c/Registration.h"
+#include "air-c/Transform.h"
 
 #include "AIRRunnerModule.h"
 
@@ -46,6 +47,8 @@ PYBIND11_MODULE(_airMlir, m) {
           },
           "Get an instance of AsyncTokenType in given context.",
           py::arg("self"), py::arg("ctx") = py::none());
+
+  m.def("_run_air_transform", ::runTransform);
 
   m.attr("__version__") = "dev";
 
