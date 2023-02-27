@@ -443,6 +443,13 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
     air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
     ```
   }];
+  let extraClassDeclaration = [{
+    int getSubchannelSize() {
+      int size_x = getSize()[0].dyn_cast<IntegerAttr>().getInt();
+      int size_y = getSize()[1].dyn_cast<IntegerAttr>().getInt();
+      return size_x * size_y;
+    }
+  }];
 }
 
 def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface, 

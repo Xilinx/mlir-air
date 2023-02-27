@@ -43,6 +43,13 @@ main(int argc, char *argv[])
   uint64_t col = 7;
   uint64_t row = 0;
 
+  hsa_status_t init_status = air_init();
+
+  if (init_status != HSA_STATUS_SUCCESS) {
+    std::cout << "air_init() failed. Exiting" << std::endl;
+    return -1;
+  }
+
   std::vector<air_agent_t> agents;
   auto get_agents_ret = air_get_agents(agents);
   assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
@@ -73,7 +80,7 @@ main(int argc, char *argv[])
   air_packet_device_init(shim_pkt, XAIE_NUM_COLS);
   air_queue_dispatch_and_wait(q, wr_idx, shim_pkt);
 
-  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_get_libxaie_ctx();
 
   mlir_aie_print_dma_status(xaie, 7, 2);
 

@@ -25,10 +25,6 @@ if(POLICY CMP0116)
   cmake_policy(SET CMP0116 OLD)
 endif()
 
-if(CMAKE_USE_TOOLCHAIN)
-	set(CMAKE_TOOLCHAIN_FILE ${CMAKE_TOOLCHAIN_FILE_OPT})
-endif()
-
 project(AIR LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -109,40 +105,27 @@ add_custom_target(check-all)
 add_custom_target(docs ALL)
 add_dependencies(docs mlir-doc)
 
-option(AIR_BUILD_RUNTIME "Build the air runtime" ON)
-if (NOT LibXAIE_FOUND)
-	message(WARNING "LibXAIE not found, AIR runtime will not be built.")
-	set(AIR_BUILD_RUNTIME OFF)
-endif()
-
-if(CMAKE_USE_TOOLCHAIN_AIRHOST)
-	set(AIRHOST_TOOLCHAIN_OPT ${CMAKE_TOOLCHAIN_FILE_OPT})
-else()
-	set(AIRHOST_TOOLCHAIN_OPT ${CMAKE_TOOLCHAIN_FILE})
-endif() 
-
-if(AIR_BUILD_RUNTIME)
-	message("AIRHOST_TOOLCHAIN_OPT=${AIRHOST_TOOLCHAIN_OPT}")
-	message("Sysroot=${Sysroot}")
-	ExternalProject_Add(air_runtime_lib
-		PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp
+foreach(target ${AIR_RUNTIME_TARGETS})
+	message("Compiling AIR runtime for ${target}")
+	message("TOOLCHAIN=${${target}_TOOLCHAIN_FILE}")
+	if (NOT EXISTS ${${target}_TOOLCHAIN_FILE})
+		message(FATAL_ERROR "Toolchain file ${${target}_TOOLCHAIN_FILE} not found! Cannot build target ${target}.")
+	endif()
+	ExternalProject_Add(air_runtime_lib_${target}
+		PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp/${target}
 		SOURCE_DIR ${PROJECT_SOURCE_DIR}/runtime_lib
-		BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib
+		BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/runtime_lib/${target}
+		CMAKE_CACHE_ARGS
+			-DCMAKE_MODULE_PATH:STRING=${CMAKE_MODULE_PATH}
 		CMAKE_ARGS
-			-DCMAKE_MODULE_PATH=${CMAKE_MODULE_PATH}
-			-DCMAKE_TOOLCHAIN_FILE=${AIRHOST_TOOLCHAIN_OPT}
-			-DArch=${Arch}
-			-DgccVer=${gccVer}
-			-DSysroot=${Sysroot} 
+			-DCMAKE_TOOLCHAIN_FILE=${${target}_TOOLCHAIN_FILE}
 			-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
 			-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
 			-DCMAKE_ASM_COMPILER=${CMAKE_ASM_COMPILER}
 			-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
 			-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
-			-Dpybind11_DIR=${pybind11_DIR}
 			-DLibXAIE_DIR=${LibXAIE_DIR}
 			-DAIE_DIR=${AIE_DIR}
-			-DBUILD_AIR_PCIE=${BUILD_AIR_PCIE}
 		BUILD_ALWAYS true
 		STEP_TARGETS clean build install test
 		USES_TERMINAL_CONFIGURE true
@@ -152,7 +135,7 @@ if(AIR_BUILD_RUNTIME)
 		TEST_BEFORE_INSTALL true
 		TEST_EXCLUDE_FROM_MAIN true
 	)
-endif()
+endforeach()
 
 add_subdirectory(python)
 if (LibXAIE_FOUND)

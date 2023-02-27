@@ -358,6 +358,7 @@ def run_flow(opts):
       cmd += [f'-I{thispath}/../../../../runtime_lib/airhost/include']
       cmd += [f'-I{thispath}/../../../../runtime_lib']
       cmd += [f'-I{thispath}/../../../../../aie/runtime_lib']
+      cmd += [f'-I{thispath}/../../../../../utils/mlir-aie/runtime_lib']
       cmd += ['-DLIBXAIENGINEV2']
       cmd += ['-DAIE_LIBXAIE_ENABLE', '-fPIC', '-c']
       cmd += ['-o', obj_file, cpp_file]

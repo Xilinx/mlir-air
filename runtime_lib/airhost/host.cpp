@@ -594,6 +594,30 @@ uint64_t air_wait_all(std::vector<uint64_t> &signals) {
   return 0;
 }
 
+uint64_t air_get_tile_addr(uint32_t col, uint32_t row) {
+  if (_air_host_active_libxaie == NULL)
+    return -1;
+  return _XAie_GetTileAddr(&(_air_host_active_libxaie->DevInst), row, col);
+}
+
+/// Read the AIE registers at the given physical address.
+uint32_t air_read32(uint64_t addr) {
+  if (_air_host_active_libxaie == NULL)
+    return -1;
+  uint32_t val;
+  XAie_Read32(&(_air_host_active_libxaie->DevInst), addr, &val);
+  return val;
+}
+
+/// Write the AIE registers at the given physical address.
+/// It's almost always better to use some more indirect method of accessing
+/// configuration registers, but this is provided as a last resort.
+void air_write32(uint64_t addr, uint32_t val) {
+  if (_air_host_active_libxaie == NULL)
+    return;
+  XAie_Write32(&(_air_host_active_libxaie->DevInst), addr, val);
+}
+
 extern "C" {
 
 uint64_t _mlir_ciface___airrt_herd_load(const char *name) {

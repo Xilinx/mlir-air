@@ -5,6 +5,7 @@ platforms/scripts/env_config
 platforms/scripts/br_config
 
 # build artifacts
+*.cmd
 *.jou
 *.log
 *.xsa

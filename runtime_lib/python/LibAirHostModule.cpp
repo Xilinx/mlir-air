@@ -99,6 +99,21 @@ void defineAIRHostModule(pybind11::module &m) {
         return q;
       },
       pybind11::return_value_policy::reference);
+
+  m.def(
+      "read32", [](uint64_t addr) -> uint32_t { return air_read32(addr); },
+      pybind11::return_value_policy::copy);
+
+  m.def("write32", [](uint64_t addr, uint32_t val) -> void {
+    return air_write32(addr, val);
+  });
+
+  m.def(
+      "get_tile_addr",
+      [](uint32_t col, uint32_t row) -> uint64_t {
+        return air_get_tile_addr(col, row);
+      },
+      pybind11::return_value_policy::copy);
 }
 
 } // namespace air

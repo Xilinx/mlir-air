@@ -2,18 +2,29 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-.PHONY: all
-all: test
+CC=clang
+ACDC_AIE = $(dir $(shell which aie-opt))/..
+ACDC_AIR = $(dir $(shell which air-opt))/..
 
-test.exe: test.cpp 
-	clang++ test.cpp -fPIC -ldl -DLIBXAIENGINEV2 -I${ACDC}/runtime_lib/airhost/include -I/opt/xaiengine/include -I${ACDC}/runtime_lib ${ACDC}/runtime_lib/test_library.cpp -L${ACDC}/runtime_lib/airhost -L/opt/xaiengine/lib -Wl,-R/opt/xaiengine/lib -lxaiengine -Wl,--whole-archive -lairhost -Wl,--no-whole-archive -o test.exe
+LDFLAGS = -fuse-ld=lld -rdynamic \
+	  -DLIBXAIENGINEV2 \
+		-lxaiengine \
+		-Wl,--whole-archive -lairhost -Wl,--no-whole-archive \
+		-lstdc++ \
+		-lm \
+		-Wl,--no-as-needed -ldl
 
-.PHONY: test
-test: test.exe 
+CFLAGS += -g -I/opt/xaiengine/include
+CFLAGS += -std=c++17 -I$(ACDC_AIR)/runtime_lib/airhost/include -I$(ACDC_AIE)/runtime_lib \
+          -DAIR_LIBXAIE_ENABLE
+LDFLAGS += -L/opt/xaiengine/lib -Wl,-R/opt/xaiengine/lib
+LDFLAGS += -L$(ACDC_AIR)/runtime_lib/airhost
 
-run: test.exe
-	sudo ./test.exe
+all: test.exe
+
+%.exe: test.cpp
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(ACDC_AIE)/runtime_lib/test_library.cpp test.cpp -Wl,--whole-archive -Wl,--no-whole-archive
+
 
 clean::
-	rm -rf test.exe
-
+	rm -rf *.exe 

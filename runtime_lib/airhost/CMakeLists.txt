@@ -10,7 +10,7 @@ include_directories(
 add_definitions(-DLIBXAIENGINEV2)
 
 if(BUILD_AIR_PCIE)
-  message("BUILD_AIR_PCIE=${BUILD_AIR_PCIE}")
+  message("Building PCIe runtime (BUILD_AIR_PCIE=${BUILD_AIR_PCIE})")
   add_definitions(-DAIR_PCIE)
 endif()
 
