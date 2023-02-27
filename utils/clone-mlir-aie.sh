@@ -15,7 +15,7 @@
 #
 ##===----------------------------------------------------------------------===##
 
-export HASH=75fd6976fa8ed680b7f10b7baf1d29478732ae53
+export HASH=38774621ce5eba5477088e8370b6559f5e065d96
 
 git clone --depth 1 https://github.com/Xilinx/cmakeModules cmakeModules/cmakeModulesXilinx
 export CMAKE_MODULE_PATH=`pwd`/cmakeModules/cmakeModulesXilinx
