@@ -72,19 +72,27 @@ public:
       signalPassFailure();
       return;
     }
-
-    for (auto op : transformModule->getBody()
-                       ->getOps<transform::TransformOpInterface>()) {
-      if (failed(transform::applyTransforms(
-              payload, op, {},
-              transform::TransformOptions().enableExpensiveChecks(
-                  /*enableExpensiveChecks=*/true))))
-        continue;
+    if (failed(xilinx::air::runAIRTransform(transformModule.get(), payload))) {
+      signalPassFailure();
+      return;
     }
   }
 };
 
 } // namespace
+
+LogicalResult xilinx::air::runAIRTransform(ModuleOp transformModule,
+                                           ModuleOp payloadModule) {
+  for (auto op :
+       transformModule.getBody()->getOps<transform::TransformOpInterface>()) {
+    if (failed(transform::applyTransforms(
+            payloadModule, op, {},
+            transform::TransformOptions().enableExpensiveChecks(
+                /*enableExpensiveChecks=*/true))))
+      return failure();
+  }
+  return success();
+}
 
 std::unique_ptr<Pass> xilinx::air::createAIRTransformInterpreterPass() {
   return std::make_unique<AIRTransformInterpreterPass>();
