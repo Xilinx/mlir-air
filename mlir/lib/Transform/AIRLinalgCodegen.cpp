@@ -2024,34 +2024,9 @@ transform::LinalgPromoteOp::apply(transform::TransformResults &results,
     memorySpace = xilinx::air::MemorySpace::L2;
   else if (getMemorySpace() == "L3")
     memorySpace = xilinx::air::MemorySpace::L3;
-  else // TODO: emit message
-    return emitDefaultDefiniteFailure(payloadOps[0]);
 
   SetVector<Operation *> transformed;
   int64_t operandOffset = 0;
-
-  std::map<Operation*, Value> subViewMap;
-  auto allocCallBack = [&subViewMap, memorySpace] (OpBuilder &b, memref::SubViewOp subView,
-                        ArrayRef<Value> boundingSubViewSize, DataLayout &layout) -> std::optional<Value> {
-    
-    if (subViewMap.count(subView))
-      return subViewMap[subView];
-
-    MemRefType viewType = subView.getType();
-    MemRefType allocType =
-        MemRefType::get(viewType.getShape(), viewType.getElementType(), {},
-                        (unsigned)memorySpace);
-    Value buffer = b.createOrFold<memref::AllocOp>(subView.getLoc(), allocType);
-    subViewMap[subView] = buffer;
-    return buffer;
-  };
-
-  auto deallocCallBack = [](OpBuilder &b, Value buffer) -> LogicalResult {
-    // b.create<memref::DeallocOp>(buffer.getLoc(), buffer);
-    return success();
-  };
-
-  promotionOptions.setAllocationDeallocationFns(allocCallBack, deallocCallBack);
 
   for (Operation *target : state.getPayloadOps(getTarget())) {
     auto linalgOp = dyn_cast<linalg::LinalgOp>(target);
@@ -2060,13 +2035,19 @@ transform::LinalgPromoteOp::apply(transform::TransformResults &results,
 
     int64_t numOperands = linalgOp->getNumOperands();
     SmallVector<int64_t, 4> opersToPromote;
-    for (auto &o : operandsToPromote) {
-      int64_t operand = o - operandOffset;
-      if (operand < 0)
-        continue;
-      if (operand >= numOperands)
-        continue;
-      opersToPromote.push_back(operand);
+    if (!operandsToPromote.size()) {
+      opersToPromote.resize_for_overwrite(numOperands);
+      std::iota(opersToPromote.begin(), opersToPromote.end(), 0);
+    }
+    else {
+      for (auto &o : operandsToPromote) {
+        int64_t operand = o - operandOffset;
+        if (operand < 0)
+          continue;
+        if (operand >= numOperands)
+          continue;
+        opersToPromote.push_back(operand);
+      }
     }
     operandOffset += numOperands;
 
