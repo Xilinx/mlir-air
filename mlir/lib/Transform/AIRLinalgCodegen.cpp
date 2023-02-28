@@ -2038,8 +2038,7 @@ transform::LinalgPromoteOp::apply(transform::TransformResults &results,
     if (!operandsToPromote.size()) {
       opersToPromote.resize_for_overwrite(numOperands);
       std::iota(opersToPromote.begin(), opersToPromote.end(), 0);
-    }
-    else {
+    } else {
       for (auto &o : operandsToPromote) {
         int64_t operand = o - operandOffset;
         if (operand < 0)
@@ -2076,8 +2075,8 @@ transform::LinalgPromoteOp::apply(transform::TransformResults &results,
   patterns.insert<FoldSubViewOpsPattern>(ctx);
   patterns.insert<MemrefsPattern>(ctx);
   scf::populateSCFForLoopCanonicalizationPatterns(patterns);
-  (void)applyPatternsAndFoldGreedily(payloadOps[0]->getParentOfType<func::FuncOp>(),
-                                    std::move(patterns));
+  (void)applyPatternsAndFoldGreedily(
+      payloadOps[0]->getParentOfType<func::FuncOp>(), std::move(patterns));
 
   if (!transformed.size())
     return emitDefaultDefiniteFailure(payloadOps[0]);
