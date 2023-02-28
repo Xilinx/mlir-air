@@ -60,7 +60,7 @@ op are rejected by this operation.
 This operation reads and frees the producer handle.
 This operation reads the containing op handle.
 
-Interfaces: TransformOpInterface
+Interfaces: MemoryEffectOpInterface, TransformOpInterface
 
 #### Operands:
 
@@ -141,9 +141,7 @@ example:
 %1 = transform.air.linalg_promote %0 {memory_space="L2", operands_to_promote=[0]}
 ```
 
-Traits: FunctionalStyleTransformOpTrait, TransformEachOpTrait
-
-Interfaces: MemoryEffectsOpInterface, TransformOpInterface
+Interfaces: MemoryEffectOpInterface, TransformOpInterface
 
 #### Attributes:
 
