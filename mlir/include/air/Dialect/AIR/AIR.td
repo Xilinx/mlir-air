@@ -444,10 +444,21 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
     ```
   }];
   let extraClassDeclaration = [{
+    bool isBroadcast() {
+      if(auto attr = getOperation()->getAttrOfType<ArrayAttr>("broadcast_shape")) {
+        return true;
+      } else {
+        return false;
+      }
+    }
+    int getSizeX() {
+      return getSize()[0].dyn_cast<IntegerAttr>().getInt();
+    }
+    int getSizeY() {
+      return getSize()[1].dyn_cast<IntegerAttr>().getInt();
+    }
     int getSubchannelSize() {
-      int size_x = getSize()[0].dyn_cast<IntegerAttr>().getInt();
-      int size_y = getSize()[1].dyn_cast<IntegerAttr>().getInt();
-      return size_x * size_y;
+      return getSizeX() * getSizeY();
     }
   }];
 }
@@ -481,6 +492,8 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface,
       }
       return -1;
     }
+    int getSizeX();
+    int getSizeY();
   }];
 }
 
@@ -513,6 +526,8 @@ def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface,
       }
       return -1;
     }
+    int getSizeX();
+    int getSizeY();
   }];
 }
 

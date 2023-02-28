@@ -899,12 +899,21 @@ void allocL1Buffers(ModuleOp m,
   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
 
-AIE::ObjectFifoCreateOp
+void
 createObjectFifo(OpBuilder &builder, AIE::AIEObjectFifoType datatype,
-                 Value prodTile, std::vector<Value> consTile, int depth) {
-  AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
-      builder.getUnknownLoc(), datatype, prodTile, consTile, depth);
-  return fifo;
+                 std::map<std::pair<int, int>, AIE::ObjectFifoCreateOp> &objFifos,
+                 std::map<std::pair<int, int>, Value> &prodTiles, 
+                 std::map<std::pair<int, int>, Value> &consTiles, 
+                 int depth, bool broadcast) {
+  // channels and objFifos currently don't support many-to-many/one broadcast
+  if (broadcast && prodTiles.size() > 1)
+    return;
+  
+  for (auto const& [coord, tile] : prodTiles) {
+    AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
+      builder.getUnknownLoc(), datatype, prodTiles[coord], consTiles[coord], depth);
+    objFifos[coord] = fifo;
+  } 
 }
 
 template <typename MyOp>
@@ -952,28 +961,36 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 
   LogicalResult matchAndRewrite(air::ChannelOp channel,
                                 PatternRewriter &rewriter) const override {
-    auto aie_module = channel->getParentOfType<ModuleOp>();
-    if (channel.getSubchannelSize() > 1)
+    // for now, objectFifo does not support broadcast
+    if (channel.isBroadcast()) 
       return failure();
 
+    auto aie_module = channel->getParentOfType<ModuleOp>();
+    int numSubchannels = channel.getSubchannelSize();
     std::vector<ChannelPutOp> channelPuts =
         getChannelPutOpThroughSymbol(channel);
     std::vector<ChannelGetOp> channelGets =
         getChannelGetOpThroughSymbol(channel);
+
+    if ((int)channelPuts.size() > numSubchannels ||
+        (int)channelGets.size() > numSubchannels)
+        return failure(); // TODO: assert instead?
+
+    std::map<std::pair<int, int>, Value> producerTiles;
+    std::map<std::pair<int, int>, Value> consumerTiles;
+    std::map<std::pair<int, int>, AIE::ObjectFifoCreateOp> objFifos;
+    AIE::AIEObjectFifoType datatype;
 
     // put/get come in pairs, if one is missing then it's L3
     MemRefType srcMemref;
     int src_space = (int)air::MemorySpace::L3;
     Value producerTile;
     if (channelPuts.size() > 0) {
-      // for now, objectFifo does not support many-to-one/many broadcast
-      if (channelPuts.size() > 1)
-        return failure();
-
       for (auto put : channelPuts) {
         // find AIE tiles and their cores based on memory hierarchy levels
         srcMemref = put.getSrc().getType().cast<MemRefType>();
         src_space = srcMemref.getMemorySpaceAsInt();
+        datatype = AIE::AIEObjectFifoType::get(srcMemref);
         if (src_space == (int)air::MemorySpace::L1) {
           AIE::CoreOp producerCore = put->getParentOfType<AIE::CoreOp>();
           if (!producerCore)
@@ -981,18 +998,27 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
           producerTile = producerCore.getTileOp();
           if (!producerTile)
             return failure();
+          
+          int coord_x = 0;
+          int coord_y = 0;
+          if (put.getIndices().size() > 0) {
+            coord_x = put.getSizeX();
+            coord_y = put.getSizeY();
+          }
+          printf ("Coord put: %d %d \n", coord_x, coord_y);
+          producerTiles[std::make_pair(coord_x, coord_y)] = producerTile;
         } else {
           return failure();
         }
       }
     } else {
       // put from L3
-      producerTile = shimTileAlloc.getShimTile(aie_module, src_space,
-                                               (int)air::MemorySpace::L1);
+      producerTile = shimTileAlloc.getShimTile(
+          aie_module, src_space, (int)air::MemorySpace::L1);
+      producerTiles[{0, 0}] = producerTile;
     }
 
     // put/get come in pairs, if one is missing then it's L3
-    std::vector<Value> consumers;
     MemRefType dstMemref;
     int dst_space = (int)air::MemorySpace::L3;
     Value consumerTile;
@@ -1005,6 +1031,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
         // find AIE tiles and their cores based on memory hierarchy levels
         dstMemref = get.getDst().getType().cast<MemRefType>();
         dst_space = dstMemref.getMemorySpaceAsInt();
+        datatype = AIE::AIEObjectFifoType::get(dstMemref);
         if (dst_space == (int)air::MemorySpace::L1) {
           AIE::CoreOp consumerCore = get->getParentOfType<AIE::CoreOp>();
           if (!consumerCore)
@@ -1012,6 +1039,15 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
           consumerTile = consumerCore.getTileOp();
           if (!consumerTile)
             return failure();
+          
+          int coord_x = 0;
+          int coord_y = 0;
+          if (get.getIndices().size() > 0) {
+            coord_x = get.getSizeX();
+            coord_y = get.getSizeY();
+          }
+          printf ("Coord get: %d %d \n", coord_x, coord_y);
+          consumerTiles[std::make_pair(coord_x, coord_y)] = consumerTile;
         } else {
           return failure();
         }
@@ -1020,36 +1056,47 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       // get from L3
       consumerTile = shimTileAlloc.getShimTile(
           aie_module, (int)air::MemorySpace::L1, dst_space);
+      consumerTiles[{0, 0}] = consumerTile;
     }
-    consumers.push_back(consumerTile);
+
+    if (!datatype)
+      return failure();
 
     // create objFifo
     // For now, number of memory elements in OF is hardcoded to 1
     // (single buffer). FIXME
     rewriter.setInsertionPoint(*(aie_module.getOps<AIE::CoreOp>().begin()));
-    AIE::AIEObjectFifoType datatype;
-    if (channelPuts.size() > 0)
-      datatype = AIE::AIEObjectFifoType::get(srcMemref);
-    else if (channelGets.size() > 0)
-      datatype = AIE::AIEObjectFifoType::get(dstMemref);
-    else
-      return failure();
-    AIE::ObjectFifoCreateOp objFifo =
-        createObjectFifo(rewriter, datatype, producerTile, consumers, 1);
+    createObjectFifo(rewriter, datatype, objFifos, producerTiles, consumerTiles, 1, false);
 
     // replace put/get and the associated memref alloc/dealloc
     for (auto put : channelPuts) {
-      rewriteChannelAllocs<ChannelPutOp>(rewriter, put, objFifo,
+      int coord_x = 0;
+      int coord_y = 0;
+      if (put.getIndices().size() > 0) {
+        coord_x = put.getSizeX();
+        coord_y = put.getSizeY();
+      }
+      rewriteChannelAllocs<ChannelPutOp>(rewriter, put, 
+                                         objFifos[std::make_pair(coord_x, coord_y)],
                                          AIE::ObjectFifoPort::Produce);
-      rewriteChannelDeallocs<ChannelPutOp>(rewriter, put, objFifo,
+      rewriteChannelDeallocs<ChannelPutOp>(rewriter, put, 
+                                           objFifos[std::make_pair(coord_x, coord_y)],
                                            AIE::ObjectFifoPort::Produce);
       // erase put
       rewriter.eraseOp(put);
     }
     for (auto get : channelGets) {
-      rewriteChannelAllocs<ChannelGetOp>(rewriter, get, objFifo,
+      int coord_x = 0;
+      int coord_y = 0;
+      if (get.getIndices().size() > 0) {
+        coord_x = get.getSizeX();
+        coord_y = get.getSizeY();
+      }
+      rewriteChannelAllocs<ChannelGetOp>(rewriter, get, 
+                                         objFifos[std::make_pair(coord_x, coord_y)],
                                          AIE::ObjectFifoPort::Consume);
-      rewriteChannelDeallocs<ChannelGetOp>(rewriter, get, objFifo,
+      rewriteChannelDeallocs<ChannelGetOp>(rewriter, get, 
+                                           objFifos[std::make_pair(coord_x, coord_y)],
                                            AIE::ObjectFifoPort::Consume);
       // erase get
       rewriter.eraseOp(get);
