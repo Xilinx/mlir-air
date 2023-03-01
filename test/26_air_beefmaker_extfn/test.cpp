@@ -101,6 +101,13 @@ main(int argc, char *argv[])
 
   printCoreStatus(herd_col, herd_row, false, 0, 0);
 
+  hsa_status_t init_status = air_init();
+
+  if (init_status != HSA_STATUS_SUCCESS) {
+    std::cout << "air_init() failed. Exiting" << std::endl;
+    return -1;
+  }
+
   // create the queue
   queue_t *q = nullptr;
   auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, SHMEM_BASE);

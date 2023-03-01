@@ -33,12 +33,20 @@
 //} air_agent_info_t;
 
 int main(int argc, char *argv[]) {
+
+  hsa_status_t init_status = air_init();
+
+  if (init_status != HSA_STATUS_SUCCESS) {
+    std::cout << "air_init() failed. Exiting" << std::endl;
+    return -1;
+  }
+
   std::vector<air_agent_t> agents;
   auto ret = air_get_agents(agents);
   assert(ret == 0 && "failed to get agents!");
 
   if (agents.empty()) {
-    std::cout << "fail." << std::endl;
+    std::cout << "No agents found. Exiting." << std::endl;
     return -1;
   }
 

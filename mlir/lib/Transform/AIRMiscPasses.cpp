@@ -23,7 +23,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/IR/BlockAndValueMapping.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -120,8 +120,7 @@ public:
 private:
 };
 
-void do_clone(OpBuilder &builder, Operation *op,
-              BlockAndValueMapping &mapping) {
+void do_clone(OpBuilder &builder, Operation *op, IRMapping &mapping) {
   if (!op)
     return;
   for (auto o : op->getOperands()) {
@@ -180,7 +179,7 @@ void AIRPromoteUniformL1Dma::runOnOperation() {
         loc, MemRefType::get(ty.getShape(), ty.getElementType(),
                              ty.getLayout().getAffineMap(), 1));
     std::vector<Value> launch_operands;
-    BlockAndValueMapping remap;
+    IRMapping remap;
     for (unsigned int i = 0; i < launch.getNumKernelOperands(); i++) {
       auto arg = launch.getKernelArguments()[i];
       auto oper = launch.getKernelOperand(i);
@@ -273,7 +272,7 @@ void AIRSpecializeDma::runOnOperation() {
           stage.getBody().push_back(stage_bb);
           auto stage_builder = OpBuilder::atBlockEnd(stage_bb);
           auto c_x = stage_builder.create<arith::ConstantIndexOp>(loc, x);
-          BlockAndValueMapping remap;
+          IRMapping remap;
           remap.map(launch.getIds()[0], c_x);
           for (auto xop : xOps)
             stage_builder.clone(*xop, remap);
@@ -300,7 +299,7 @@ void AIRSpecializeDma::runOnOperation() {
           stage.getBody().push_back(stage_bb);
           auto stage_builder = OpBuilder::atBlockEnd(stage_bb);
           auto c_y = stage_builder.create<arith::ConstantIndexOp>(loc, y);
-          BlockAndValueMapping remap;
+          IRMapping remap;
           remap.map(launch.getIds()[1], c_y);
           for (auto yop : yOps)
             stage_builder.clone(*yop, remap);
@@ -764,7 +763,7 @@ void AIRFuseParallelHerdPass::runOnOperation() {
       parOp.getLoc(), launchOp.getAsyncDependencies(), dims, args,
       launchOp->getNumResults() > 0, launchOp->getAttrs());
 
-  BlockAndValueMapping remap;
+  IRMapping remap;
   remap.map(parOp.getInductionVars()[0], (herd_size_x == 1)
                                              ? newLaunchOp.getIds()[0]
                                              : newLaunchOp.getIds()[1]);

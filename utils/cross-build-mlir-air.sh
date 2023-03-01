@@ -65,7 +65,8 @@ cmake .. \
     -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR} \
     -DCMAKE_SYSROOT=${CMAKE_SYSROOT} \
     -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE} \
-    -DCMAKE_USE_TOOLCHAIN_AIRHOST=TRUE \
+    -DAIR_RUNTIME_TARGETS:STRING="aarch64" \
+    -Daarch64_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE} \
     -DLLVM_DIR=${LLVM_DIR}/build-aarch64/lib/cmake/llvm \
     -DMLIR_DIR=${LLVM_DIR}/build-aarch64/lib/cmake/mlir \
     |& tee cmake.log

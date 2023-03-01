@@ -10,10 +10,10 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Attributes.h"
-#include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/FunctionImplementation.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 
 #include "llvm/ADT/TypeSwitch.h"
@@ -55,8 +55,9 @@ void airDialect::printType(Type type, DialectAsmPrinter &os) const {
       .Default([](Type) { llvm_unreachable("unexpected 'air' type"); });
 }
 
-static template <class T>
-LogicalResult canonicalizeHierarchyOpArgs(T op, PatternRewriter &rewriter) {
+template <class T>
+static LogicalResult canonicalizeHierarchyOpArgs(T op,
+                                                 PatternRewriter &rewriter) {
 
   // make a list of new hierarchy operands
   SmallVector<Value> newOperands;
@@ -89,7 +90,7 @@ LogicalResult canonicalizeHierarchyOpArgs(T op, PatternRewriter &rewriter) {
       newAsyncDeps.size() == op.getAsyncDependencies().size())
     return failure();
 
-  BlockAndValueMapping remap;
+  IRMapping remap;
   auto newOp =
       rewriter.create<T>(op.getLoc(), newAsyncDeps, op.getSizeOperands(),
                          newOperands, op->getNumResults() > 0, op->getAttrs());

@@ -78,6 +78,7 @@ jobs:
           pushd build_assert
           cmake .. \
             -GNinja \
+            -DCMAKE_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86.cmake \
             -DCMAKE_BUILD_TYPE=Debug \
             -DLLVM_ENABLE_ASSERTIONS=ON \
             -DCMAKE_MODULE_PATH=`pwd`/../cmakeModules \
@@ -85,9 +86,8 @@ jobs:
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
             -DLibXAIE_DIR=`pwd`/../aienginev2/install \
-            -DCMAKE_LINKER=lld \
-            -DCMAKE_C_COMPILER=clang-12 \
-            -DCMAKE_CXX_COMPILER=clang++-12 \
+            -DAIR_RUNTIME_TARGETS:STRING="x86" \
+            -Dx86_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86.cmake \
             -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_INSTALL_PREFIX=install
@@ -104,6 +104,7 @@ jobs:
           mkdir build_release
           pushd build_release
           cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86.cmake \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_ENABLE_ASSERTIONS=OFF \
             -DCMAKE_MODULE_PATH=`pwd`/../cmakeModules \
@@ -111,9 +112,8 @@ jobs:
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
             -DLibXAIE_DIR=`pwd`/../aienginev2/install \
-            -DCMAKE_LINKER=lld \
-            -DCMAKE_C_COMPILER=clang-12 \
-            -DCMAKE_CXX_COMPILER=clang++-12 \
+            -DAIR_RUNTIME_TARGETS:STRING="x86" \
+            -Dx86_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86.cmake \
             -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_INSTALL_PREFIX=install

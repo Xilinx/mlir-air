@@ -163,7 +163,7 @@ def run(mlir_module, args):
       #'air-return-elimination',
       'lower-affine',
       'convert-scf-to-cf',
-      'convert-memref-to-llvm',
+      'finalize-memref-to-llvm',
       'convert-func-to-llvm',
       'convert-cf-to-llvm',
       'canonicalize','cse'
@@ -295,7 +295,7 @@ def run_flow(opts):
     aie_ctrl_llvm = opts.tmpdir+'/llvm.'+air_mlir_filename
     do_call(['air-opt', aie_ctrl,
             '-air-return-elimination','--lower-affine','--convert-scf-to-cf',
-            '--convert-memref-to-llvm',
+            '--finalize-memref-to-llvm',
             '--convert-func-to-llvm',
             '--convert-cf-to-llvm',
             '--canonicalize', '--cse',
@@ -358,6 +358,7 @@ def run_flow(opts):
       cmd += [f'-I{thispath}/../../../../runtime_lib/airhost/include']
       cmd += [f'-I{thispath}/../../../../runtime_lib']
       cmd += [f'-I{thispath}/../../../../../aie/runtime_lib']
+      cmd += [f'-I{thispath}/../../../../../utils/mlir-aie/runtime_lib']
       cmd += ['-DLIBXAIENGINEV2']
       cmd += ['-DAIE_LIBXAIE_ENABLE', '-fPIC', '-c']
       cmd += ['-o', obj_file, cpp_file]
