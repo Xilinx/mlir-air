@@ -10,20 +10,20 @@
 // CHECK: module @aie.partition_0 {
 // CHECK:   %0 = AIE.tile(1, 1)
 // CHECK:   %1 = AIE.tile(2, 0)
-// CHECK:   %2 = AIE.objectFifo.createObjectFifo(%0, {%1}, 1) : !AIE.objectFifo<memref<32xi32, 2>>
-// CHECK:   %3 = AIE.objectFifo.createObjectFifo(%1, {%0}, 1) : !AIE.objectFifo<memref<32xi32, 2>>
+// CHECK:   %2 = AIE.objectFifo.createObjectFifo(%0, {%1}, 1) : !AIE.objectFifo<memref<32xi32>>
+// CHECK:   %3 = AIE.objectFifo.createObjectFifo(%1, {%0}, 1) : !AIE.objectFifo<memref<32xi32>>
 // CHECK:   %4 = AIE.core(%0) {
 // CHECK:     affine.for %arg0 = 0 to 4096 step 32 {
-// CHECK:       %5 = AIE.objectFifo.acquire<Consume> (%3 : !AIE.objectFifo<memref<32xi32, 2>>, 1) : !AIE.objectFifoSubview<memref<32xi32, 2>>
-// CHECK:       %6 = AIE.objectFifo.subview.access %5[0] : !AIE.objectFifoSubview<memref<32xi32, 2>> -> memref<32xi32, 2>
-// CHECK:       %7 = AIE.objectFifo.acquire<Produce> (%2 : !AIE.objectFifo<memref<32xi32, 2>>, 1) : !AIE.objectFifoSubview<memref<32xi32, 2>>
-// CHECK:       %8 = AIE.objectFifo.subview.access %7[0] : !AIE.objectFifoSubview<memref<32xi32, 2>> -> memref<32xi32, 2>
+// CHECK:       %5 = AIE.objectFifo.acquire<Consume> (%3 : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
+// CHECK:       %6 = AIE.objectFifo.subview.access %5[0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:       %7 = AIE.objectFifo.acquire<Produce> (%2 : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
+// CHECK:       %8 = AIE.objectFifo.subview.access %7[0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
 // CHECK:       affine.for %arg1 = 0 to 32 {
-// CHECK:         %9 = affine.load %6[%arg1] : memref<32xi32, 2>
-// CHECK:         affine.store %9, %8[%arg1] : memref<32xi32, 2>
+// CHECK:         %9 = affine.load %6[%arg1] : memref<32xi32>
+// CHECK:         affine.store %9, %8[%arg1] : memref<32xi32>
 // CHECK:       }
-// CHECK:       AIE.objectFifo.release<Produce> (%2 : !AIE.objectFifo<memref<32xi32, 2>>, 1)
-// CHECK:       AIE.objectFifo.release<Consume> (%3 : !AIE.objectFifo<memref<32xi32, 2>>, 1)
+// CHECK:       AIE.objectFifo.release<Produce> (%2 : !AIE.objectFifo<memref<32xi32>>, 1)
+// CHECK:       AIE.objectFifo.release<Consume> (%3 : !AIE.objectFifo<memref<32xi32>>, 1)
 // CHECK:     }
 // CHECK:     AIE.end
 // CHECK:   } {elf_file = "partition_0_core_1_1.elf"}

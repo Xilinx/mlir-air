@@ -961,7 +961,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 
   LogicalResult matchAndRewrite(air::ChannelOp channel,
                                 PatternRewriter &rewriter) const override {
-    // for now, objectFifo does not support broadcast
+    // for now, the lowering does not support broadcast
     if (channel.isBroadcast()) 
       return failure();
 
@@ -990,7 +990,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
         // find AIE tiles and their cores based on memory hierarchy levels
         srcMemref = put.getSrc().getType().cast<MemRefType>();
         src_space = srcMemref.getMemorySpaceAsInt();
-        datatype = AIE::AIEObjectFifoType::get(srcMemref);
+        datatype = AIE::AIEObjectFifoType::get(MemRefType::get(srcMemref.getShape(), srcMemref.getElementType()));
         if (src_space == (int)air::MemorySpace::L1) {
           AIE::CoreOp producerCore = put->getParentOfType<AIE::CoreOp>();
           if (!producerCore)
@@ -1022,12 +1022,11 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     int dst_space = (int)air::MemorySpace::L3;
     Value consumerTile;
     if (channelGets.size() > 0) {
-      // for now, we focus on one-to-one channels
       for (auto get : channelGets) {
         // find AIE tiles and their cores based on memory hierarchy levels
         dstMemref = get.getDst().getType().cast<MemRefType>();
         dst_space = dstMemref.getMemorySpaceAsInt();
-        datatype = AIE::AIEObjectFifoType::get(dstMemref);
+        datatype = AIE::AIEObjectFifoType::get(MemRefType::get(dstMemref.getShape(), dstMemref.getElementType()));
         if (dst_space == (int)air::MemorySpace::L1) {
           AIE::CoreOp consumerCore = get->getParentOfType<AIE::CoreOp>();
           if (!consumerCore)
@@ -1042,7 +1041,6 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
             coord_x = get.getSizeX();
             coord_y = get.getSizeY();
           }
-          printf ("Coord get: %d %d \n", coord_x, coord_y);
           consumerTiles[std::make_pair(coord_x, coord_y)] = consumerTile;
         } else {
           return failure();
