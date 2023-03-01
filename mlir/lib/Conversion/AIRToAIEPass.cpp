@@ -1005,7 +1005,6 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
             coord_x = put.getSizeX();
             coord_y = put.getSizeY();
           }
-          printf ("Coord put: %d %d \n", coord_x, coord_y);
           producerTiles[std::make_pair(coord_x, coord_y)] = producerTile;
         } else {
           return failure();
@@ -1024,9 +1023,6 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     Value consumerTile;
     if (channelGets.size() > 0) {
       // for now, we focus on one-to-one channels
-      if (channelGets.size() > 1)
-        return failure();
-
       for (auto get : channelGets) {
         // find AIE tiles and their cores based on memory hierarchy levels
         dstMemref = get.getDst().getType().cast<MemRefType>();
