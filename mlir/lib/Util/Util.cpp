@@ -382,16 +382,16 @@ void air::getSizesFromIntegerSet(MLIRContext *ctx, IntegerSet int_set,
         auto expr =
             simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
         int v = expr.getValue();
-        v = (v >= 0)
-                ? (v)
-                : (-v); // Both + and - constant eval are legal for AffineExpr
         if (c.isFunctionOfSymbol(i)) {
           if (eqFlags[c_iter]) {
+            v = abs(v);
             lbs_int[i] = v;
             ubs_int[i] = v;
           } else {
-            if (v)
+            if (v > 0)
               ubs_int[i] = v;
+            else if (v < 0)
+              lbs_int[i] = -v;
             else
               lbs_int[i] = v;
           }

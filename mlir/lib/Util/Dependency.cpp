@@ -1640,7 +1640,7 @@ dependencyCanonicalizer::getPositionFromIterator(unsigned iter,
                                                  air::HerdOp herd) {
   auto herd_size = herd.getSizeOperands();
   std::vector<unsigned> output;
-  for (int i = herd_size.size() - 1; i >= 0; i--) { // MSB first
+  for (int i = herd_size.size() - 1; i >= 0; i--) { // reversed order
     unsigned denominator = 1;
     for (int j = 0; j < i; j++) {
       unsigned herd_size_j =
@@ -1651,6 +1651,8 @@ dependencyCanonicalizer::getPositionFromIterator(unsigned iter,
         herd_size[i].getDefiningOp<arith::ConstantIndexOp>().value();
     output.push_back((iter / (denominator)) % herd_size_i);
   }
+  // Reverse to original order
+  std::reverse(output.begin(), output.end());
   return output;
 }
 
@@ -1665,9 +1667,10 @@ dependencyCanonicalizer::getIteratorFromPosition(std::vector<unsigned> position,
   if (!position.size()) {
     return 0;
   }
+  std::reverse(position.begin(), position.end());
   auto herd_size = herd.getSizeOperands();
   unsigned output = 0;
-  for (int i = herd_size.size() - 1; i >= 0; i--) { // MSB first
+  for (int i = herd_size.size() - 1; i >= 0; i--) { // In reversed order
     unsigned scale_factor = 1;
     for (unsigned j = i + 1; j < herd_size.size(); j++) {
       unsigned herd_size_j =
