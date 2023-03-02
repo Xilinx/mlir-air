@@ -1,7 +1,6 @@
 //===- main.cpp -------------------------------------------------*- C++ -*-===//
 //
-// Copyright (C) 2022, Xilinx Inc. All rights reserved.
-// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
@@ -11,16 +10,10 @@
 #include <cstdlib>
 #include <unistd.h>
 
-#include "mlir/ExecutionEngine/AsyncRuntime.h"
-
-extern "C" void mlirAsyncRuntimeExecute(mlir::runtime::CoroHandle,
-                                        mlir::runtime::CoroResume);
-
 #include "air_tensor.h"
 
 extern "C" {
 void _mlir_ciface_forward(void *, void *, void *, void *);
-void dump_graph(char *);
 }
 
 template <typename T>
