@@ -11,7 +11,9 @@ import torch._dynamo as dynamo
 
 from air.backend import cpu_backend as backend
 
-class model(torch.nn.Module):
+verbose = False
+
+class model_mul(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
@@ -19,39 +21,46 @@ class model(torch.nn.Module):
         x = a * b
         return x
 
-air_backend = backend.make_dynamo_backend(verbose=False)
-def run_test(dtype, shape):
-    program = model()
+air_backend = backend.make_dynamo_backend(verbose=verbose)
 
-    dynamo_model = dynamo.optimize(air_backend)(program)
+def run_test(model, dtype, shape):
+    torch_model = model()
+    dynamo_model = dynamo.optimize(air_backend)(torch_model)
 
     a = torch.randint(size = shape, low=1, high=100, dtype=dtype)
     b = torch.randint(size = shape, low=1, high=100, dtype=dtype)
     c = dynamo_model(a, b)
+    c_ref = torch_model(a, b)
 
-    print(f"input:\n{a}\n{b}\noutput:\n{c}")
+    if (verbose):
+        print(f"input:\n{a}\n{b}\noutput:\n{c}")
 
-    if torch.equal(a*b,c):
+    if torch.allclose(c_ref,c):
         print("PASS!")
         return 1
     else:
-        errs = (a*b == c)
+        import numpy
+        errs = (c_ref == c)
         print(numpy.unique(errs.numpy(), return_counts=True))
         print("failed.")
     return 0
 
 sizes = [
+    [4,4,16,16],
+    [4,32,32],
+    [1024*10],
     [128,128]
 ]
 
 dtypes = [
-    torch.int32
+    torch.int32,
+    torch.float
 ]
 
 passed = 0
 for t in dtypes:
     for s in sizes:
-        passed = passed + run_test(t,s)
+        passed = passed + run_test(model_mul,t,s)
 
 num_tests = len(sizes)*len(dtypes)
 if passed != num_tests:

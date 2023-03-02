@@ -24,9 +24,9 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Pass/Pass.h"
@@ -88,7 +88,7 @@ public:
           inner->setAttr("air.herd",
                          StringAttr::get(op->getContext(), "inner"));
 
-          BlockAndValueMapping mapper;
+          IRMapping mapper;
           mapper.map(launch.getSize()[0], herd_size[0]);
           mapper.map(launch.getSize()[1], herd_size[1]);
 
@@ -230,25 +230,6 @@ convertOpToFunctionWithTileId(Operation *op, ArrayRef<Value> operands,
   auto idTy = IntegerType::get(op->getContext(), 32);
   if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
     callops.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
-  }
-
-  air::HerdOp launch = op->getParentOfType<air::HerdOp>();
-  if (!launch) {
-    AffineForOp afo = op->getParentOfType<AffineForOp>();
-    while (afo && !afo->getAttr("air.herd"))
-      afo = afo->getParentOfType<AffineForOp>();
-    if (afo) {
-      callops.push_back(afo.getInductionVar());
-      afo = afo->getParentOfType<AffineForOp>();
-    }
-    while (afo && !afo->getAttr("air.herd"))
-      afo = afo->getParentOfType<AffineForOp>();
-    if (afo)
-      callops.push_back(afo.getInductionVar());
-  } else {
-    auto tileIds = launch.getIds();
-    callops.push_back(tileIds[0]);
-    callops.push_back(tileIds[1]);
   }
 
   callops.append(operands.begin(), operands.end());
@@ -477,7 +458,7 @@ public:
     auto newOp = rewriter.create<async::ExecuteOp>(
         op->getLoc(), resultTypes, dependencies, operands,
         [&](OpBuilder &b, Location loc, ValueRange v) {
-          BlockAndValueMapping map;
+          IRMapping map;
           for (auto &o : op.getOps()) {
             if (isa<air::ExecuteTerminatorOp>(o)) {
               SmallVector<Value, 4> returnValues;

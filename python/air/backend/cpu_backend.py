@@ -19,10 +19,12 @@ from air.backend import linalg_on_tensors
 
 import ctypes
 from pathlib import Path
+
 from typing import List
 
-ctypes.CDLL(f"/work/acdc/air/python/test/torch_mlir_e2e/cpu_runtime.so", mode=ctypes.RTLD_GLOBAL)
-ctypes.CDLL(f"libmlir_async_runtime.so.16git", mode=ctypes.RTLD_GLOBAL)
+path = Path(air.backend.__file__).resolve().parent
+ctypes.CDLL(f"{path}/../../../runtime_lib/aircpu/libaircpu.so", mode=ctypes.RTLD_GLOBAL)
+ctypes.CDLL(f"/work/acdc/build/llvm/lib/libmlir_async_runtime.so.16git", mode=ctypes.RTLD_GLOBAL)
 
 __all__ = [
     "AirCpuBackend",
@@ -142,9 +144,9 @@ def make_dynamo_backend(pipeline=None, verbose=False):
 
         with air.mlir.ir.Context():
             air_module = air.mlir.ir.Module.parse(str(mlir_module))
+            pm = air.mlir.passmanager.PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
+            pm.run(air_module)
             if pipeline is None:
-                pm = air.mlir.passmanager.PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
-                pm.run(air_module)
                 pm = air.mlir.passmanager.PassManager.parse(linalg_on_tensors.LINALG_MEMREF_TO_AIR_PIPELINE)
                 pm.run(air_module)
             else:
