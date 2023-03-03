@@ -159,8 +159,7 @@ static func::CallOp convertOpToFunction(Operation *op, ArrayRef<Value> operands,
           memrefTy.getElementType(), memrefTy.getLayout(),
           /*memrefTy.getMemorySpace()*/ 0);
       callops.push_back(
-          rewriter.create<UnrealizedConversionCastOp>(op->getLoc(), t, o)
-              .getResult(0));
+          rewriter.create<UnrealizedConversionCastOp>(loc, t, o).getResult(0));
     } else if (o.getType().isa<async::TokenType>()) {
       dependencies.push_back(o);
     } else {

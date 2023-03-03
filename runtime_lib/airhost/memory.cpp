@@ -220,15 +220,13 @@ static int64_t shim_channel_data(air_herd_shim_desc_t *sd, int i, int j,
   return sd->channel_data[i*8*8 + j*8 + k];
 }
 
-static template <typename T, int R>
-void air_mem_shim_nd_memcpy_queue_impl(signal_t *s, uint32_t id, uint64_t x,
-                                       uint64_t y, tensor_t<T, R> *t,
-                                       uint32_t space, uint64_t offset_3,
-                                       uint64_t offset_2, uint64_t offset_1,
-                                       uint64_t offset_0, uint64_t length_4d,
-                                       uint64_t length_3d, uint64_t length_2d,
-                                       uint64_t length_1d, uint64_t stride_4d,
-                                       uint64_t stride_3d, uint64_t stride_2d) {
+template <typename T, int R>
+static void air_mem_shim_nd_memcpy_queue_impl(
+    signal_t *s, uint32_t id, uint64_t x, uint64_t y, tensor_t<T, R> *t,
+    uint32_t space, uint64_t offset_3, uint64_t offset_2, uint64_t offset_1,
+    uint64_t offset_0, uint64_t length_4d, uint64_t length_3d,
+    uint64_t length_2d, uint64_t length_1d, uint64_t stride_4d,
+    uint64_t stride_3d, uint64_t stride_2d) {
   assert(_air_host_active_herd.herd_desc && "cannot shim memcpy without active herd");
   assert(_air_host_active_herd.q && "cannot shim memcpy using a queue without active queue");
 
