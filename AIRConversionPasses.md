@@ -146,6 +146,7 @@ airrt.module_metadata{
 -emit-herd-lock  : Acquire and release a lock at the start and end of herd execution. The default is to acquire lock 0 with value zero and release it with value 0. There is currently no way to override the default behavior.
 -test-patterns   : Test the given patterns.
 ```
+### `-air-to-async`: AIR dialect lowering
 ### `-air-to-cpu`: AIR dialect lowering
 ### `-air-to-std`: AIR dialect lowering
 This pass converts AIR dialect herd launch operations into loop nests
