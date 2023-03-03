@@ -1078,8 +1078,9 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
 
 struct PipelineReducePattern : public RewritePattern {
   PipelineReducePattern(
-      MLIRContext *context, linalg::LinalgTilingOptions options, int tile_size,
-      int pipeline_depth, std::string &pipeline_direction, bool promote,
+      MLIRContext *context, linalg::LinalgTilingOptions options,
+      ArrayRef<int64_t> tile_size, int pipeline_depth,
+      std::string &pipeline_direction, bool promote,
       LinalgTransformationFilter filter = LinalgTransformationFilter(),
       PatternBenefit benefit = 1)
       : RewritePattern(MatchAnyOpTypeTag(), benefit, context), filter(filter),
@@ -1114,7 +1115,7 @@ private:
   LinalgTransformationFilter filter;
   /// Options to control tiling;
   linalg::LinalgTilingOptions options;
-  unsigned int tile_size;
+  SmallVector<int64_t, 4> tile_size;
   unsigned int pipeline_depth;
   std::string pipeline_direction;
   bool promote;
@@ -1140,9 +1141,13 @@ void AIRPipelineReducePass::runOnOperation() {
   auto func = getOperation();
   auto ctx = func.getContext();
   RewritePatternSet patterns(ctx);
-  patterns.add<PipelineReducePattern>(ctx, linalg::LinalgTilingOptions(),
-                                      clTileSize, clPipelineDepth,
-                                      clPipelineDirection, clPromoteSubViews);
+  SmallVector<int64_t, 4> sizes;
+  for (auto &s : clTileSize)
+    sizes.push_back(s);
+
+  patterns.add<PipelineReducePattern>(ctx, linalg::LinalgTilingOptions(), sizes,
+                                      clPipelineDepth, clPipelineDirection,
+                                      clPromoteSubViews);
 
   (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
 }
