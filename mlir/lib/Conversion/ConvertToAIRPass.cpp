@@ -1908,6 +1908,39 @@ struct DmaToChannelPass : public air::DmaToChannelBase<DmaToChannelPass> {
   }
 };
 
+static void getHerdNames(ModuleOp module) {
+  std::vector<std::string> herd_syms;
+  for (auto f : module.getOps<func::FuncOp>()) {
+    // record existing symbol names
+    f.walk([&](air::HerdOp op) {
+      if (auto attr =
+              op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+        std::string name = attr.getValue().str();
+        assert((std::find(herd_syms.begin(), herd_syms.end(), name) ==
+                herd_syms.end()) &&
+               "unexpected duplicate symbol");
+        herd_syms.push_back(name);
+      }
+    });
+    // generate missing symbol names
+    f.walk([&](air::HerdOp op) {
+      if (!op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+        unsigned id = 0;
+        std::string name;
+        do {
+          std::stringstream ss;
+          ss << "herd_" << id++;
+          name = ss.str();
+        } while (std::find(herd_syms.begin(), herd_syms.end(), name) !=
+                 herd_syms.end());
+        herd_syms.push_back(name);
+        op->setAttr(SymbolTable::getSymbolAttrName(),
+                    StringAttr::get(op->getContext(), name));
+      }
+    });
+  }
+}
+
 struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
 
   ParallelToHerdPass() = default;
@@ -1974,36 +2007,7 @@ struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
       signalPassFailure();
     }
 
-    std::vector<std::string> herd_syms;
-    for (auto f : module.getOps<func::FuncOp>()) {
-      // record existing symbol names
-      f.walk([&](air::HerdOp op) {
-        if (auto attr = op->getAttrOfType<StringAttr>(
-                SymbolTable::getSymbolAttrName())) {
-          std::string name = attr.getValue().str();
-          assert((std::find(herd_syms.begin(), herd_syms.end(), name) ==
-                  herd_syms.end()) &&
-                 "unexpected duplicate symbol");
-          herd_syms.push_back(name);
-        }
-      });
-      // generate missing symbol names
-      f.walk([&](air::HerdOp op) {
-        if (!op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
-          unsigned id = 0;
-          std::string name;
-          do {
-            std::stringstream ss;
-            ss << "herd_" << id++;
-            name = ss.str();
-          } while (std::find(herd_syms.begin(), herd_syms.end(), name) !=
-                   herd_syms.end());
-          herd_syms.push_back(name);
-          op->setAttr(SymbolTable::getSymbolAttrName(),
-                      StringAttr::get(op->getContext(), name));
-        }
-      });
-    }
+    getHerdNames(module);
     LLVM_DEBUG(llvm::outs() << "output\n");
     LLVM_DEBUG(module.print(llvm::outs()));
   }
@@ -2104,8 +2108,10 @@ transform::ParToHerdOp::applyToOne(scf::ParallelOp target,
   (void)applyPatternsAndFoldGreedily(
       target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
       std::move(patterns));
-  for (auto h : herdOps)
+  for (auto h : herdOps) {
+    getHerdNames(h->getParentOfType<ModuleOp>());
     results.push_back(h);
+  }
   return DiagnosedSilenceableFailure::success();
 }
 
