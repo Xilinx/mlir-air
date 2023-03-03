@@ -816,9 +816,6 @@ public:
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
-    rewriter.create<AffineStoreOp>(op.getLoc(), adaptor.getValue(),
-                                   adaptor.getMemref(), op.getAffineMap(),
-                                   adaptor.getIndices());
     rewriter.eraseOp(op);
     return success();
   }
@@ -856,8 +853,6 @@ public:
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
-    rewriter.create<memref::StoreOp>(op.getLoc(), op->getResultTypes(),
-                                     adaptor.getOperands(), op->getAttrs());
     rewriter.eraseOp(op);
     return success();
   }
