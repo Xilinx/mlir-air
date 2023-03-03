@@ -571,7 +571,7 @@ to be run after the air-to-aie pass.
 
 #### Options
 ```
--tile-size          : Tile size to use for reduction dimension
+-tile-size          : Tile factors to pass to L1 tiling
 -pipeline-depth     : Pipeline depth to generate
 -pipeline-direction : Pipeline direction attribute to use. Can be 'vert' or 'horiz'
 -promote            : Promote subviews to memory buffers and insert copies.
