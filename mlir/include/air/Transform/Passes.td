@@ -926,8 +926,9 @@ def AIRPipelineReducePass : Pass<"air-pipeline-reduce", "func::FuncOp"> {
   let summary = "Turn a reduction dimension into a herd pipeline";
   let constructor = "xilinx::air::createAIRPipelineReducePass()";
   let options = [
-    Option<"clTileSize", "tile-size", "int", /*default=*/"64",
-           "Tile size to use for reduction dimension">,
+    ListOption<"clTileSize", "tile-size", "unsigned",
+               "Tile factors to pass to L1 tiling",
+               "llvm::cl::ZeroOrMore">,
     Option<"clPipelineDepth", "pipeline-depth", "int", /*default=*/"4",
            "Pipeline depth to generate">,
     Option<"clPipelineDirection", "pipeline-direction", "std::string", 
