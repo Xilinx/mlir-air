@@ -67,13 +67,6 @@ def DmaToChannel : Pass<"air-dma-to-channel", "ModuleOp"> {
   }];
 }
 
-def AIRToCpu : Pass<"air-to-cpu", "ModuleOp"> {
-  let summary = "AIR dialect lowering";
-  let constructor = "xilinx::air::createAIRToCpuPass()";
-  let description = [{
-  }];
-}
-
 def AIRToAsync : Pass<"air-to-async", "ModuleOp"> {
   let summary = "AIR dialect lowering";
   let constructor = "xilinx::air::createAIRToAsyncPass()";
