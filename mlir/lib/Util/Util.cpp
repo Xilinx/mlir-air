@@ -16,6 +16,7 @@
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/OperationSupport.h"
 
+#include "mlir/Support/MathExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -400,4 +401,125 @@ void air::getSizesFromIntegerSet(MLIRContext *ctx, IntegerSet int_set,
       c_iter++;
     }
   }
+}
+
+// Get spatial sizes from spatial loop
+void air::getSizesFromSpatialLoop(Operation *spatial_loop,
+                                  SmallVector<int, 2> &lbs_spatial,
+                                  SmallVector<int, 2> &ubs_spatial) {
+  if (auto scf_par = dyn_cast<scf::ParallelOp>(spatial_loop)) {
+    for (unsigned i = 0; i < scf_par.getLowerBound().size(); i++) {
+      auto lbCstOp =
+          scf_par.getLowerBound()[i].getDefiningOp<arith::ConstantIndexOp>();
+      auto ubCstOp =
+          scf_par.getUpperBound()[i].getDefiningOp<arith::ConstantIndexOp>();
+      auto stepCstOp =
+          scf_par.getStep()[i].getDefiningOp<arith::ConstantIndexOp>();
+      lbs_spatial.push_back(mlir::ceilDiv(lbCstOp.value(), stepCstOp.value()));
+      ubs_spatial.push_back(mlir::ceilDiv(ubCstOp.value(), stepCstOp.value()) -
+                            1);
+    }
+  } else if (auto hier = dyn_cast<air::HierarchyInterface>(spatial_loop)) {
+    for (unsigned i = 0; i < hier.getSizeOperands().size(); i++) {
+      lbs_spatial.push_back(0);
+      ubs_spatial.push_back(hier.getSizeOperands()[i]
+                                .getDefiningOp<arith::ConstantIndexOp>()
+                                .value() -
+                            1);
+    }
+  }
+}
+
+// Get else sizes from affine.if. Assumption: rectangular input, then and else
+// sizes only
+void air::getElseSizesFromAffineIf(SmallVector<int, 2> &lbs_in,
+                                   SmallVector<int, 2> &ubs_in,
+                                   SmallVector<int, 2> &lbs_then,
+                                   SmallVector<int, 2> &ubs_then) {
+  for (unsigned i = 0; i < lbs_in.size(); i++) {
+    if ((lbs_in[i] != lbs_then[i])) {
+      ubs_in[i] = lbs_then[i] - 1;
+      lbs_in[i] = lbs_in[i];
+      return;
+    } else if ((ubs_in[i] != ubs_then[i])) {
+      lbs_in[i] = ubs_then[i] + 1;
+      ubs_in[i] = ubs_in[i];
+      return;
+    }
+  }
+}
+
+// Check if op hits affine.if condition
+bool air::positionHitsAffineIfCondition(Operation *op,
+                                        std::vector<unsigned> position) {
+  std::vector<Operation *> affine_if_nest;
+  Operation *spatial_loop = nullptr;
+  getAffineIfNestAndSpatialLoopFromOp(op, affine_if_nest, spatial_loop);
+  return positionHitsAffineIfCondition(op, spatial_loop, affine_if_nest,
+                                       position);
+}
+
+// Walk affine.if then and else blocks and check if current core lies in
+// condition
+bool air::positionHitsAffineIfCondition(Operation *op, Operation *spatial_loop,
+                                        std::vector<Operation *> affine_if_nest,
+                                        std::vector<unsigned> position) {
+  SmallVector<int, 2> lbs_spatial;
+  SmallVector<int, 2> ubs_spatial;
+  getSizesFromSpatialLoop(spatial_loop, lbs_spatial, ubs_spatial);
+
+  // Walk through affine.if nest (in reverse order through vector)
+  for (auto it = affine_if_nest.rbegin(); it != affine_if_nest.rend(); ++it) {
+    auto affine_if = dyn_cast<mlir::AffineIfOp>(*it);
+    // Get then integerset sizes
+    SmallVector<int, 2> lbs_int = {0, 0};
+    SmallVector<int, 2> ubs_int = {0, 0};
+    IntegerSet int_set = affine_if.getIntegerSet();
+    getSizesFromIntegerSet(affine_if->getContext(), int_set, lbs_int, ubs_int);
+    // If found then block containing op
+    if (affine_if.getThenBlock()->findAncestorOpInBlock(*op)) {
+      bool hit = true;
+      for (unsigned i = 0; i < lbs_int.size(); i++) {
+        if ((position[i] < lbs_int[i]) || (position[i] > ubs_int[i])) {
+          hit = false;
+        }
+      }
+      return hit;
+    }
+    // Else keep going, while updating the spatial sizes wrt else condition
+    else {
+      getElseSizesFromAffineIf(lbs_spatial, ubs_spatial, lbs_int, ubs_int);
+    }
+  }
+  // If op isn't in any then blocks in affine.if nest
+  bool hit = true;
+  for (unsigned i = 0; i < lbs_spatial.size(); i++) {
+    if ((position[i] < lbs_spatial[i]) || (position[i] > ubs_spatial[i])) {
+      hit = false;
+    }
+  }
+  return hit;
+}
+
+// Get parent affine.if nest and ancestor spatial loop from op
+Operation *air::getAffineIfNestAndSpatialLoopFromOp(
+    Operation *op, std::vector<Operation *> &affine_if_nest,
+    Operation *&spatial_loop) {
+  Operation *parent = op;
+  while ((!isa<scf::ParallelOp>(parent)) &&
+         (!isa<air::HierarchyInterface>(parent))) {
+    if (isa<mlir::AffineIfOp>(parent)) {
+      affine_if_nest.push_back(parent);
+    }
+    parent = parent->getParentOp();
+    if (isa<func::FuncOp>(parent)) {
+      // Found affine.if not filtering on a spatial loop (air.hierarchy or
+      // scf.parallel)
+      return nullptr;
+    }
+  }
+  // Skip over the first parent hierarchy or parallel loop
+  spatial_loop = parent;
+  parent = parent->getParentOp();
+  return parent;
 }

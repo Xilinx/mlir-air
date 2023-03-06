@@ -306,10 +306,14 @@ private:
   std::pair<std::string, unsigned> getTypeIdPairFromOp(Operation *op);
   std::string getOpTypeFromOpImpls(Operation *op);
   void parseDependencyEdgesInGraph(Graph &g, dependencyContext dep_ctx);
-  void copyFromDependencyGraphToFlatGraph(Graph g_src, FlatGraph &g_dst,
+  void copyFromDependencyGraphToFlatGraph(Graph g_src,
+                                          std::vector<unsigned> position,
+                                          FlatGraph &g_dst,
                                           vertex_to_flat_vertex_map &map,
                                           bool copyEdges = false);
-  void updateSubgraphFromDependencyGraph(Graph subg_src, FlatGraph &subg_dst,
+  void updateSubgraphFromDependencyGraph(Graph subg_src,
+                                         std::vector<unsigned> position,
+                                         FlatGraph &subg_dst,
                                          vertex_to_flat_vertex_map map,
                                          bool copyEdges = false);
   void connectOpToItsDepListImpls(Operation *op, Graph &g,
@@ -330,11 +334,15 @@ private:
                                     vertex_to_vertex_map &tr_to_g);
   void purgeAIRDepList(dependencyGraph &graph);
   void fillAIRDepListUsingGraphTR(dependencyGraph &graph);
-  void collectAIRChannelPutAndGetInGraph(Graph g, vertex_to_flat_vertex_map map,
+  void collectAIRChannelPutAndGetInGraph(Graph g,
+                                         std::vector<unsigned> position,
+                                         vertex_to_flat_vertex_map map,
                                          ChannelMap &channel_map);
   void updateSubgraphFromDependencyGraphAsGraphVizCluster(
       dependencyGraph &G, FlatGraph &flat_subg, vertex_to_flat_vertex_map map,
       unsigned global_idx, unsigned &subg_idx, std::string hier_name = "");
+  std::vector<Graph::vertex_descriptor>
+  getVerticesWithAffineIf(Graph g, std::vector<unsigned> position);
 };
 
 //===----------------------------------------------------------------------===//

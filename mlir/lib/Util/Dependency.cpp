@@ -384,19 +384,20 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
 
   // Copy vertices and edges to flat graph
   vertex_to_flat_vertex_map map;
-  copyFromDependencyGraphToFlatGraph(global_graph.g, flat_g, map, true);
+  copyFromDependencyGraphToFlatGraph(global_graph.g, global_graph.position,
+                                     flat_g, map, true);
   maps.push_back(map);
   for (auto &G_l : global_graph.subgraphs) {
     vertex_to_flat_vertex_map map_l;
-    copyFromDependencyGraphToFlatGraph(G_l.g, flat_g, map_l);
+    copyFromDependencyGraphToFlatGraph(G_l.g, G_l.position, flat_g, map_l);
     maps.push_back(map_l);
     for (auto &G_p : G_l.subgraphs) {
       vertex_to_flat_vertex_map map_p;
-      copyFromDependencyGraphToFlatGraph(G_p.g, flat_g, map_p);
+      copyFromDependencyGraphToFlatGraph(G_p.g, G_p.position, flat_g, map_p);
       maps.push_back(map_p);
       for (auto &G_h : G_p.subgraphs) {
         vertex_to_flat_vertex_map map_h;
-        copyFromDependencyGraphToFlatGraph(G_h.g, flat_g, map_h);
+        copyFromDependencyGraphToFlatGraph(G_h.g, G_h.position, flat_g, map_h);
         maps.push_back(map_h);
       }
     }
@@ -405,13 +406,17 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
   // AIR channel dependency edges, overlayed as a (non-cluster) subgraph
   ChannelMap channel_map;
   unsigned index = 0;
-  collectAIRChannelPutAndGetInGraph(global_graph.g, maps[index++], channel_map);
+  collectAIRChannelPutAndGetInGraph(global_graph.g, global_graph.position,
+                                    maps[index++], channel_map);
   for (auto &G_l : global_graph.subgraphs) {
-    collectAIRChannelPutAndGetInGraph(G_l.g, maps[index++], channel_map);
+    collectAIRChannelPutAndGetInGraph(G_l.g, G_l.position, maps[index++],
+                                      channel_map);
     for (auto &G_p : G_l.subgraphs) {
-      collectAIRChannelPutAndGetInGraph(G_p.g, maps[index++], channel_map);
+      collectAIRChannelPutAndGetInGraph(G_p.g, G_p.position, maps[index++],
+                                        channel_map);
       for (auto &G_h : G_p.subgraphs) {
-        collectAIRChannelPutAndGetInGraph(G_h.g, maps[index++], channel_map);
+        collectAIRChannelPutAndGetInGraph(G_h.g, G_h.position, maps[index++],
+                                          channel_map);
       }
     }
   }
@@ -440,90 +445,90 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
   unsigned idx_p = 0;
   unsigned idx_h = 0;
 
-  auto vp = boost::vertices(global_graph.g);
-  for (auto vit = vp.first; vit != vp.second; ++vit) {
-    if (global_graph.g[*vit].asyncEventName == "LaunchOp") {
-      auto G_l = *global_graph.g[*vit].nextDependencyGraphs[0];
+  auto vp = getVerticesWithAffineIf(global_graph.g, global_graph.position);
+  for (auto vit : vp) {
+    if (global_graph.g[vit].asyncEventName == "LaunchOp") {
+      auto G_l = *global_graph.g[vit].nextDependencyGraphs[0];
       FlatGraph &flat_subg_l = flat_g.create_subgraph();
       updateSubgraphFromDependencyGraphAsGraphVizCluster(
           G_l, flat_subg_l, maps[index], index, idx_l, "launch");
       // Connect parent graph's herarchy node with "start" of launch subgraph
-      add_edge(maps[0][*vit], maps[index][G_l.start_vertex], flat_g);
+      add_edge(maps[0][vit], maps[index][G_l.start_vertex], flat_g);
 
       auto map_idx_launch = index++;
-      auto vp_l = boost::vertices(G_l.g);
-      for (auto vit_l = vp_l.first; vit_l != vp_l.second; ++vit_l) {
-        if (G_l.g[*vit_l].asyncEventName == "PartitionOp") {
-          auto G_p = *G_l.g[*vit_l].nextDependencyGraphs[0];
+      auto vp_l = getVerticesWithAffineIf(G_l.g, G_l.position);
+      for (auto vit_l : vp_l) {
+        if (G_l.g[vit_l].asyncEventName == "PartitionOp") {
+          auto G_p = *G_l.g[vit_l].nextDependencyGraphs[0];
           FlatGraph &flat_subg_p = flat_subg_l.create_subgraph();
           updateSubgraphFromDependencyGraphAsGraphVizCluster(
               G_p, flat_subg_p, maps[index], index, idx_p, "partition");
           // Connect parent graph's herarchy node with "start" of partition
           // subgraph
-          add_edge(maps[map_idx_launch][*vit_l], maps[index][G_p.start_vertex],
+          add_edge(maps[map_idx_launch][vit_l], maps[index][G_p.start_vertex],
                    flat_g);
 
           auto map_idx_partition = index++;
-          auto vp_p = boost::vertices(G_p.g);
-          for (auto vit_p = vp_p.first; vit_p != vp_p.second; ++vit_p) {
-            if (G_p.g[*vit_p].asyncEventName == "HerdOp") {
-              for (auto G_h_ptr : G_p.g[*vit_p].nextDependencyGraphs) {
+          auto vp_p = getVerticesWithAffineIf(G_p.g, G_p.position);
+          for (auto vit_p : vp_p) {
+            if (G_p.g[vit_p].asyncEventName == "HerdOp") {
+              for (auto G_h_ptr : G_p.g[vit_p].nextDependencyGraphs) {
                 auto G_h = *G_h_ptr;
                 FlatGraph &flat_subg_h = flat_subg_p.create_subgraph();
                 updateSubgraphFromDependencyGraphAsGraphVizCluster(
                     G_h, flat_subg_h, maps[index], index, idx_h, "herd");
                 // Connect parent graph's herarchy node with "start" of herd
                 // subgraph
-                add_edge(maps[map_idx_partition][*vit_p],
+                add_edge(maps[map_idx_partition][vit_p],
                          maps[index++][G_h.start_vertex], flat_g);
               }
             }
           }
-        } else if (G_l.g[*vit_l].asyncEventName == "HerdOp") {
-          for (auto G_h_ptr : G_l.g[*vit_l].nextDependencyGraphs) {
+        } else if (G_l.g[vit_l].asyncEventName == "HerdOp") {
+          for (auto G_h_ptr : G_l.g[vit_l].nextDependencyGraphs) {
             auto G_h = *G_h_ptr;
             FlatGraph &flat_subg_h = flat_subg_l.create_subgraph();
             updateSubgraphFromDependencyGraphAsGraphVizCluster(
                 G_h, flat_subg_h, maps[index], index, idx_h, "herd");
             // Connect parent graph's herarchy node with "start" of herd
             // subgraph
-            add_edge(maps[map_idx_launch][*vit_l],
+            add_edge(maps[map_idx_launch][vit_l],
                      maps[index++][G_h.start_vertex], flat_g);
           }
         }
       }
-    } else if (global_graph.g[*vit].asyncEventName == "PartitionOp") {
-      auto G_p = *global_graph.g[*vit].nextDependencyGraphs[0];
+    } else if (global_graph.g[vit].asyncEventName == "PartitionOp") {
+      auto G_p = *global_graph.g[vit].nextDependencyGraphs[0];
       FlatGraph &flat_subg_p = flat_g.create_subgraph();
       updateSubgraphFromDependencyGraphAsGraphVizCluster(
           G_p, flat_subg_p, maps[index], index, idx_p, "partition");
       // Connect parent graph's herarchy node with "start" of partition subgraph
-      add_edge(maps[0][*vit], maps[index][G_p.start_vertex], flat_g);
+      add_edge(maps[0][vit], maps[index][G_p.start_vertex], flat_g);
 
       auto map_idx_partition = index++;
-      auto vp_p = boost::vertices(G_p.g);
-      for (auto vit_p = vp_p.first; vit_p != vp_p.second; ++vit_p) {
-        if (G_p.g[*vit_p].asyncEventName == "HerdOp") {
-          for (auto G_h_ptr : G_p.g[*vit_p].nextDependencyGraphs) {
+      auto vp_p = getVerticesWithAffineIf(G_p.g, G_p.position);
+      for (auto vit_p : vp_p) {
+        if (G_p.g[vit_p].asyncEventName == "HerdOp") {
+          for (auto G_h_ptr : G_p.g[vit_p].nextDependencyGraphs) {
             auto G_h = *G_h_ptr;
             FlatGraph &flat_subg_h = flat_subg_p.create_subgraph();
             updateSubgraphFromDependencyGraphAsGraphVizCluster(
                 G_h, flat_subg_h, maps[index], index, idx_h, "herd");
             // Connect parent graph's herarchy node with "start" of herd
             // subgraph
-            add_edge(maps[map_idx_partition][*vit_p],
+            add_edge(maps[map_idx_partition][vit_p],
                      maps[index++][G_h.start_vertex], flat_g);
           }
         }
       }
-    } else if (global_graph.g[*vit].asyncEventName == "HerdOp") {
-      for (auto G_h_ptr : global_graph.g[*vit].nextDependencyGraphs) {
+    } else if (global_graph.g[vit].asyncEventName == "HerdOp") {
+      for (auto G_h_ptr : global_graph.g[vit].nextDependencyGraphs) {
         auto G_h = *G_h_ptr;
         FlatGraph &flat_subg_h = flat_g.create_subgraph();
         updateSubgraphFromDependencyGraphAsGraphVizCluster(
             G_h, flat_subg_h, maps[index], index, idx_h, "herd");
         // Connect parent graph's herarchy node with "start" of herd subgraph
-        add_edge(maps[0][*vit], maps[index++][G_h.start_vertex], flat_g);
+        add_edge(maps[0][vit], maps[index++][G_h.start_vertex], flat_g);
       }
     }
   }
@@ -544,7 +549,7 @@ void dependencyCanonicalizer::
     updateSubgraphFromDependencyGraphAsGraphVizCluster(
         dependencyGraph &G, FlatGraph &flat_subg, vertex_to_flat_vertex_map map,
         unsigned global_idx, unsigned &subg_idx, std::string hier_name) {
-  updateSubgraphFromDependencyGraph(G.g, flat_subg, map, true);
+  updateSubgraphFromDependencyGraph(G.g, G.position, flat_subg, map, true);
   boost::get_property(flat_subg, boost::graph_name) =
       "cluster" + std::to_string(global_idx);
   boost::get_property(flat_subg, boost::graph_graph_attribute)["label"] =
@@ -1005,51 +1010,80 @@ dependencyCanonicalizer::getVertexFromOp(Operation *op,
 
 // Copy vertices and edges from dependencyGraph to FlatGraph
 void dependencyCanonicalizer::copyFromDependencyGraphToFlatGraph(
-    Graph g_src, FlatGraph &g_dst, vertex_to_flat_vertex_map &map,
-    bool copyEdges) {
+    Graph g_src, std::vector<unsigned> position, FlatGraph &g_dst,
+    vertex_to_flat_vertex_map &map, bool copyEdges) {
   // Copy vertices
-  auto vp = boost::vertices(g_src);
-  for (auto vit = vp.first; vit != vp.second; ++vit) {
+  auto vp = getVerticesWithAffineIf(g_src, position);
+  for (auto vit : vp) {
     auto new_v = add_vertex(g_dst);
     // Copy vertex asyncEventName
     put(get(boost::vertex_attribute, g_dst), new_v,
-        GraphvizAttributes{{"label", g_src[*vit].asyncEventName + "\n" +
-                                         g_src[*vit].detailed_description},
-                           {"color", g_src[*vit].color},
-                           {"shape", g_src[*vit].shape},
+        GraphvizAttributes{{"label", g_src[vit].asyncEventName + "\n" +
+                                         g_src[vit].detailed_description},
+                           {"color", g_src[vit].color},
+                           {"shape", g_src[vit].shape},
                            {"style", "filled"}});
-    map.insert(std::make_pair(*vit, new_v));
+    map.insert(std::make_pair(vit, new_v));
   }
   if (copyEdges) {
     // Copy edges
-    for (auto vit = vp.first; vit != vp.second; ++vit) {
-      for (auto it = out_edges(*vit, g_src).first;
-           it != out_edges(*vit, g_src).second; it++) {
+    for (auto vit : vp) {
+      for (auto it = out_edges(vit, g_src).first;
+           it != out_edges(vit, g_src).second; it++) {
         auto target_it = target(*it, g_src);
-        add_edge(map[*vit], map[target_it], g_dst);
+        if (std::count(vp.begin(), vp.end(), target_it)) {
+          add_edge(map[vit], map[target_it], g_dst);
+        }
       }
     }
   }
 }
 
+// Create a vector of vertices which remain after affine.if filtering, if
+// showing cores
+std::vector<Graph::vertex_descriptor>
+dependencyCanonicalizer::getVerticesWithAffineIf(
+    Graph g, std::vector<unsigned> position) {
+  std::vector<Graph::vertex_descriptor> output;
+  auto vp = boost::vertices(g);
+  if (position.size()) {
+    for (auto v = vp.first; v != vp.second; ++v) {
+      if (!g[*v].op) {
+        output.push_back(*v);
+      } else if (!g[*v].op->getParentOfType<mlir::AffineIfOp>()) {
+        output.push_back(*v);
+      } else if (positionHitsAffineIfCondition(g[*v].op, position)) {
+        output.push_back(*v);
+      }
+    }
+  } else {
+    for (auto v = vp.first; v != vp.second; ++v) {
+      output.push_back(*v);
+    }
+  }
+  return output;
+}
+
 // Update subgraph in FlatGraph from dependencyGraph
 void dependencyCanonicalizer::updateSubgraphFromDependencyGraph(
-    Graph subg_src, FlatGraph &subg_dst, vertex_to_flat_vertex_map map,
-    bool copyEdges) {
+    Graph subg_src, std::vector<unsigned> position, FlatGraph &subg_dst,
+    vertex_to_flat_vertex_map map, bool copyEdges) {
   // Update vertices
   vertex_to_flat_vertex_map subg_map;
-  auto vp = boost::vertices(subg_src);
-  for (auto vit = vp.first; vit != vp.second; ++vit) {
-    auto new_v = add_vertex(map[*vit], subg_dst);
-    subg_map.insert(std::make_pair(*vit, new_v));
+  auto vp = getVerticesWithAffineIf(subg_src, position);
+  for (auto vit : vp) {
+    auto new_v = add_vertex(map[vit], subg_dst);
+    subg_map.insert(std::make_pair(vit, new_v));
   }
   if (copyEdges) {
     // Update edges
-    for (auto vit = vp.first; vit != vp.second; ++vit) {
-      for (auto it = out_edges(*vit, subg_src).first;
-           it != out_edges(*vit, subg_src).second; it++) {
+    for (auto vit : vp) {
+      for (auto it = out_edges(vit, subg_src).first;
+           it != out_edges(vit, subg_src).second; it++) {
         auto target_it = target(*it, subg_src);
-        add_edge(subg_map[*vit], subg_map[target_it], subg_dst);
+        if (std::count(vp.begin(), vp.end(), target_it)) {
+          add_edge(subg_map[vit], subg_map[target_it], subg_dst);
+        }
       }
     }
   }
@@ -1057,12 +1091,13 @@ void dependencyCanonicalizer::updateSubgraphFromDependencyGraph(
 
 // Collect air.channel put and get pairs
 void dependencyCanonicalizer::collectAIRChannelPutAndGetInGraph(
-    Graph g, vertex_to_flat_vertex_map map, ChannelMap &channel_map) {
+    Graph g, std::vector<unsigned> position, vertex_to_flat_vertex_map map,
+    ChannelMap &channel_map) {
   // Search for air.channel put/get
-  auto vp = boost::vertices(g);
-  for (auto vit = vp.first; vit != vp.second; ++vit) {
-    if (g[*vit].asyncEventType == "channel") {
-      auto channel_op = dyn_cast<air::ChannelInterface>(g[*vit].op);
+  auto vp = getVerticesWithAffineIf(g, position);
+  for (auto vit : vp) {
+    if (g[vit].asyncEventType == "channel") {
+      auto channel_op = dyn_cast<air::ChannelInterface>(g[vit].op);
       auto chan_name = channel_op.getChanName().str();
       if (channel_map.find(chan_name) == channel_map.end()) {
         // If key not found, then create map entry with given key
@@ -1071,10 +1106,10 @@ void dependencyCanonicalizer::collectAIRChannelPutAndGetInGraph(
             std::make_pair(std::vector<FlatGraph::vertex_descriptor>(),
                            std::vector<FlatGraph::vertex_descriptor>())));
       }
-      if (dyn_cast<air::ChannelPutOp>(g[*vit].op)) {
-        channel_map[chan_name].first.push_back(map[*vit]);
-      } else if (dyn_cast<air::ChannelGetOp>(g[*vit].op)) {
-        channel_map[chan_name].second.push_back(map[*vit]);
+      if (dyn_cast<air::ChannelPutOp>(g[vit].op)) {
+        channel_map[chan_name].first.push_back(map[vit]);
+      } else if (dyn_cast<air::ChannelGetOp>(g[vit].op)) {
+        channel_map[chan_name].second.push_back(map[vit]);
       } else
         assert(false && "unknown air.channel op type");
     }
