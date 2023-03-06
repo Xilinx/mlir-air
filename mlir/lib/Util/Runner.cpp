@@ -67,6 +67,7 @@ struct runnerNode {
   // Each entry is an std::tuple. First element is for op's id, second element
   // is the loop's async token id, and third element is trip counter.
   std::vector<std::tuple<unsigned, unsigned, unsigned>> loop_trip_count;
+  std::vector<std::pair<std::string, unsigned>> channel_token_count;
   std::deque<runnerNode> sub_runner_nodes;
 
   // Private wavefront of each runner node, reserved to interface with resource
@@ -343,49 +344,37 @@ public:
 
   void executeOp(air::ChannelPutOp op, runnerNode &c,
                  Graph::vertex_descriptor it) {
-    Graph &G = c.ctrl_g->g;
-    G[it].token_count +=
+    auto spatial_factor =
         tokenSpatialFactor(op.getOperation(), c.ctrl_g->position);
+    bool found_entry = false;
+    for (auto &entry : launch_runner_node.channel_token_count) {
+      if ((!found_entry) && entry.first == op.getChanName().str()) {
+        entry.second += spatial_factor;
+        found_entry = true;
+      }
+    }
+    if (!found_entry) {
+      launch_runner_node.channel_token_count.push_back(
+          std::make_pair(op.getChanName().str(), spatial_factor));
+    }
 
     c.processed_vertices.push_back(it);
   }
 
   void executeOp(air::ChannelGetOp op, runnerNode &c,
                  Graph::vertex_descriptor it) {
-    // Get put-side runner from get op
-    std::vector<air::ChannelPutOp> puts =
-        air::getTheOtherChannelOpThroughSymbol(op);
     // Get spatial factor for op
     auto spatial_factor =
         tokenSpatialFactor(op.getOperation(), c.ctrl_g->position);
-    // Go through put ops and consume token in order
-    bool token_decremented = false;
-    for (auto put : puts) {
-      auto put_v =
-          canonicalizer.getVertexFromOp(put.getOperation(), dep_ctx, "front")
-              .first;
-      auto ancestor_hier_entry = canonicalizer.getVertexFromOp(
-          put->getParentOfType<air::HierarchyInterface>().getOperation(),
-          dep_ctx, "front");
-      auto ctrl_gs = ancestor_hier_entry.second->g[ancestor_hier_entry.first]
-                         .nextDependencyGraphs;
-      for (auto ctrl_g : ctrl_gs) {
-        auto &put_node = ctrl_g->g[put_v];
-        if (put_node.token_count >= spatial_factor) {
-          put_node.token_count -= spatial_factor;
-          token_decremented = true;
-          break;
-        }
-        // If found no put op with enough tokens to decrement, then force
-        // decrement the last put op to gracefully fail the trace
-        if (put == puts.back() && ctrl_g == ctrl_gs.back() &&
-            (!token_decremented)) {
-          put_node.token_count -= spatial_factor;
-        }
+
+    bool found_entry = false;
+    for (auto &entry : launch_runner_node.channel_token_count) {
+      if ((!found_entry) && entry.first == op.getChanName().str()) {
+        entry.second -= spatial_factor;
+        found_entry = true;
       }
-      if (token_decremented)
-        break;
     }
+    assert(found_entry && "Cannot find channel symbol name in launch runner");
 
     c.processed_vertices.push_back(it);
   }
@@ -554,61 +543,7 @@ public:
     // If current vertex is ChannelGet, then add implicit ChannelPut vertex to
     // dep list
     if (air::ChannelGetOp channel_get = dyn_cast<air::ChannelGetOp>(G[v].op)) {
-      std::vector<air::ChannelPutOp> channel_puts =
-          air::getTheOtherChannelOpThroughSymbol(channel_get);
-      // Get any ChannelPut node with token. Otherwise push the last one to dep
-      // list
-      bool pushed_to_dep_list = false;
-      for (auto channel_put : channel_puts) {
-        auto channel_put_v =
-            canonicalizer
-                .getVertexFromOp(channel_put.getOperation(), dep_ctx, "front")
-                .first;
-        auto ancestor_hier_entry = canonicalizer.getVertexFromOp(
-            channel_put->getParentOfType<air::HierarchyInterface>()
-                .getOperation(),
-            dep_ctx, "front");
-        auto ctrl_gs = ancestor_hier_entry.second->g[ancestor_hier_entry.first]
-                           .nextDependencyGraphs;
-        for (auto ctrl_g : ctrl_gs) {
-          auto &channel_put_node = ctrl_g->g[channel_put_v];
-          if (channel_put_node.token_count > 0 && !pushed_to_dep_list) {
-            pushed_to_dep_list =
-                pushed_to_dep_list ||
-                pushToDepListIfAffineIfHit(dep_list, channel_put_node,
-                                           ctrl_g->position, "sym");
-          }
-        }
-      }
-      // If still not pushed yet, then push one unfulfilled put op to block push
-      // op
-      if (!pushed_to_dep_list) {
-        for (auto channel_put : channel_puts) {
-          auto channel_put_v =
-              canonicalizer
-                  .getVertexFromOp(channel_put.getOperation(), dep_ctx, "front")
-                  .first;
-          auto ancestor_hier_entry = canonicalizer.getVertexFromOp(
-              channel_put->getParentOfType<air::HierarchyInterface>()
-                  .getOperation(),
-              dep_ctx, "front");
-          auto ctrl_gs =
-              ancestor_hier_entry.second->g[ancestor_hier_entry.first]
-                  .nextDependencyGraphs;
-          for (auto ctrl_g : ctrl_gs) {
-            auto &channel_put_node = ctrl_g->g[channel_put_v];
-            if (!pushed_to_dep_list && ctrl_g->position.size() &&
-                positionHitsAffineIfCondition(channel_put_node.op,
-                                              ctrl_g->position)) {
-              dep_list.push_back(std::make_pair(channel_put_node, "sym"));
-              pushed_to_dep_list = true;
-            } else if (!pushed_to_dep_list) {
-              dep_list.push_back(std::make_pair(channel_put_node, "sym"));
-              pushed_to_dep_list = true;
-            }
-          }
-        }
-      }
+      dep_list.push_back(std::make_pair(G[v], "sym"));
     }
     auto inv_adj_set = boost::inv_adjacent_vertices(v, G);
     for (auto inv_adj_v = inv_adj_set.first; inv_adj_v != inv_adj_set.second;
@@ -1546,6 +1481,29 @@ private:
     return pushed;
   }
 
+  // Check if a channel dependence has been fulfilled
+  bool checkChannelDependenceFulfillment(dependencyNodeEntry dep_node,
+                                         std::vector<unsigned> position) {
+    auto channel_op = dyn_cast<air::ChannelInterface>(dep_node.op);
+    assert(channel_op);
+    std::string chan_name = channel_op.getChanName().str();
+    unsigned th =
+        (position.size()) ? (tokenSpatialFactor(dep_node.op, position)) : (1);
+    bool found_entry = false;
+    for (auto entry : launch_runner_node.channel_token_count) {
+      if ((!found_entry) && entry.first == chan_name) {
+        found_entry = true;
+        if (entry.second < th) {
+          return false;
+        }
+      }
+    }
+    if (!found_entry) {
+      return false;
+    }
+    return true;
+  }
+
   // Check if a dependence has been fulfilled
   bool checkEachDependenceFulfillment(
       std::pair<dependencyNodeEntry, std::string> &dep,
@@ -1553,7 +1511,6 @@ private:
       uint64_t time) {
     dependencyNodeEntry &dep_node = dep.first;
     if (dep.second == "ssa") {
-      assert(dep_node.start_time >= 0);
       if ((!dep_node.is_started()) || (!dep_node.is_done(time))) {
         // If source and sink of dep are both under the same loop
         if (node.op && dep_node.op &&
@@ -1578,8 +1535,7 @@ private:
         return false;
       }
     } else if (dep.second == "sym") {
-      assert(isa<air::ChannelPutOp>(dep_node.op));
-      if (dep_node.token_count <= 0) {
+      if (!checkChannelDependenceFulfillment(dep_node, position)) {
         return false;
       }
     } else {
@@ -1602,7 +1558,8 @@ private:
       // node depend on
       return false;
     } else if (dep.second == "sym") {
-      if (dep.first.token_count <= 0) {
+      dependencyNodeEntry &dep_node = dep.first;
+      if (!checkChannelDependenceFulfillment(dep_node, {})) {
         return false;
       }
     } else {
@@ -1641,7 +1598,6 @@ private:
         // token
         return true;
       }
-      // return true;
     }
     return false;
   }
