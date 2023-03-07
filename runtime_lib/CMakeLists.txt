@@ -34,3 +34,4 @@ find_package(LibXAIE REQUIRED)
 find_package(AIE REQUIRED CONFIG)
 
 add_subdirectory(airhost)
+add_subdirectory(aircpu)

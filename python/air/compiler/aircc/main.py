@@ -161,9 +161,10 @@ def run(mlir_module, args):
     aie_ctrl_llvm = opts.tmpdir+'/llvm.'+air_mlir_filename
     pass_pipeline = ','.join([
       #'air-return-elimination',
+      'expand-strided-metadata',
       'lower-affine',
       'convert-scf-to-cf',
-      'convert-memref-to-llvm',
+      'finalize-memref-to-llvm',
       'convert-func-to-llvm',
       'convert-cf-to-llvm',
       'canonicalize','cse'
@@ -182,7 +183,7 @@ def run(mlir_module, args):
     do_call(['llvm-dis', aie_ctrl_llvm_opt_bc, '-o', aie_ctrl_llvm_opt_ir])
 
     aie_ctrl_obj = opts.tmpdir+'/'+air_mlir_filename+'.o'
-    do_call(['clang', '-Wno-override-module', '-fPIC'] +
+    do_call(['clang', '-O3', '-Wno-override-module', '-fPIC'] +
             (['-target', opts.host_target] if opts.host_target else []) +
             ['-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
 
@@ -211,7 +212,7 @@ def run(mlir_module, args):
               (['--sysroot', opts.sysroot] if opts.sysroot else ['--sysroot=/']) +
               ['--host-target', opts.host_target if opts.host_target else aiecc_target] +
               ['--tmpdir', aiecc_dir] +
-              ['--aie-generate-xaiev2'] +
+              ['--aie-generate-xaiev2', '--no-aiesim'] +
               ['--xbridge' if opts.xbridge else '--no-xbridge'] +
               ['--xchesscc' if opts.xchesscc else '--no-xchesscc'] +
               [aiecc_file])
@@ -229,6 +230,8 @@ def run(mlir_module, args):
 
       cmd = [opts.cc, '-std=c++11', '-g']
       cmd += ['--sysroot=%s' % opts.sysroot] if opts.sysroot else []
+      if opts.sysroot and 'aarch64-linux-gnu' in opts.host_target:
+        cmd += ['--gcc-toolchain=%s/usr' % opts.sysroot]
       cmd += ['--target=%s' % opts.host_target] if opts.host_target else []
       cmd += ['-I.', f'-I{opts.sysroot}/opt/xaienginev2/include']
       thispath = os.path.dirname(os.path.realpath(__file__))
@@ -294,8 +297,11 @@ def run_flow(opts):
 
     aie_ctrl_llvm = opts.tmpdir+'/llvm.'+air_mlir_filename
     do_call(['air-opt', aie_ctrl,
-            '-air-return-elimination','--lower-affine','--convert-scf-to-cf',
-            '--convert-memref-to-llvm',
+            '-air-return-elimination',
+            '--expand-strided-metadata',
+            '--lower-affine',
+            '--convert-scf-to-cf',
+            '--finalize-memref-to-llvm',
             '--convert-func-to-llvm',
             '--convert-cf-to-llvm',
             '--canonicalize', '--cse',
@@ -311,7 +317,7 @@ def run_flow(opts):
     do_call(['llvm-dis', aie_ctrl_llvm_opt_bc, '-o', aie_ctrl_llvm_opt_ir])
 
     aie_ctrl_obj = opts.tmpdir+'/'+air_mlir_filename+'.o'
-    do_call(['clang', '-Wno-override-module', '-fPIC'] +
+    do_call(['clang', '-O3', '-Wno-override-module', '-fPIC'] +
             (['-target', opts.host_target] if opts.host_target else []) +
             ['-c', aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
 
@@ -335,7 +341,7 @@ def run_flow(opts):
               (['--sysroot', opts.sysroot] if opts.sysroot else ['--sysroot=/']) +
               ['--host-target', opts.host_target if opts.host_target else aiecc_target] +
               ['--tmpdir', aiecc_dir] +
-              ['--aie-generate-xaiev2'] +
+              ['--aie-generate-xaiev2', '--no-aiesim'] +
               ['--xbridge' if opts.xbridge else '--no-xbridge'] +
               ['--xchesscc' if opts.xchesscc else '--no-xchesscc'] +
               [aiecc_file])

@@ -19,7 +19,7 @@ int main(int argc, char *argv[]) {
 
   air_init();
 
-  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
+  air_libxaie_ctx_t *xaie = (air_libxaie_ctx_t *)air_init_libxaie();
   if (xaie == NULL) {
     std::cout << "Error initializing libxaie" << std::endl;
     return -1;

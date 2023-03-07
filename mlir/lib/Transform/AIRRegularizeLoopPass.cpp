@@ -125,7 +125,7 @@ bool isIndependent(Operation *op, AffineForOp forOp,
              isa<AffineWriteOpInterface>(op))) {
           if (op != user) {
             SmallVector<AffineForOp, 8> userIVs;
-            getLoopIVs(*user, &userIVs);
+            getAffineForIVs(*user, &userIVs);
             // Check that userIVs don't contain the for loop around the op.
             if (llvm::is_contained(userIVs, getForInductionVarOwner(indVar))) {
               return false;

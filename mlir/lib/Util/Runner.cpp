@@ -112,11 +112,11 @@ class AIRRunner::AIRRunner_impl {
 
   void debugArg(const std::string &head, mlir::Value op, const llvm::Any &value,
                 uint64_t time) {
-    if (llvm::any_isa<llvm::APInt>(value)) {
+    if (llvm::any_cast<llvm::APInt>(&value) != nullptr) {
       debugArg(head, op, llvm::any_cast<llvm::APInt>(value), time);
-    } else if (llvm::any_isa<llvm::APFloat>(value)) {
+    } else if (llvm::any_cast<llvm::APFloat>(&value) != nullptr) {
       debugArg(head, op, llvm::any_cast<llvm::APFloat>(value), time);
-    } else if (llvm::any_isa<unsigned>(value)) {
+    } else if (llvm::any_cast<unsigned>(&value) != nullptr) {
       // Represents an allocated buffer.
       LLVM_DEBUG(llvm::dbgs() << "  " << head << ":  " << op << " = Buffer "
                               << llvm::any_cast<unsigned>(value) << "\n");

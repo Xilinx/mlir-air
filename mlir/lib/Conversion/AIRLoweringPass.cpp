@@ -23,9 +23,9 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Pass/Pass.h"
@@ -183,12 +183,17 @@ public:
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
     air::HerdOp launch = cast<air::HerdOp>(op);
-    if (auto attr =
-            op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
-      auto herd_name = attr.getValue().str();
-      rewriter.create<airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(),
-                                         herd_name);
+
+    auto herd_name_attr =
+        op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
+    if (!herd_name_attr) {
+      emitError(op->getLoc(),
+                "error lowering air.herd: herd name is undefined.\n");
+      return failure();
     }
+
+    rewriter.create<airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(),
+                                       herd_name_attr.getValue().str());
 
     SmallVector<Value, 4> deps;
     for (auto &o : operands)
@@ -769,7 +774,7 @@ public:
       auto pipeOp = cast<air::HerdPipelineOp>(p);
       OpBuilder b(p);
       Block &bb = pipeOp.getBody().front();
-      BlockAndValueMapping remap;
+      IRMapping remap;
       bb.getTerminator()->erase();
       for (auto &o : bb)
         b.clone(o, remap);

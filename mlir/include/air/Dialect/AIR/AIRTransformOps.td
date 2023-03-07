@@ -10,7 +10,6 @@
 #define AIR_TRANSFORM_OPS
 
 include "mlir/Dialect/Transform/IR/TransformDialect.td"
-include "mlir/Dialect/Transform/IR/TransformEffects.td"
 include "mlir/Dialect/Transform/IR/TransformInterfaces.td"
 include "mlir/Dialect/PDL/IR/PDLTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
@@ -49,7 +48,7 @@ def PartitionToAIEOp : Op<Transform_Dialect, "air.partition_to_aie",
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
         ::xilinx::air::PartitionOp target,
-        ::llvm::SmallVectorImpl<::mlir::Operation *> &results,
+        ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
   }];
 }
@@ -74,7 +73,7 @@ def ParToHerdOp : Op<Transform_Dialect, "air.par_to_herd",
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
         ::mlir::scf::ParallelOp target,
-        ::llvm::SmallVectorImpl<::mlir::Operation *> &results,
+        ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
   }];
 }
@@ -94,7 +93,7 @@ def ParToLaunchOp : Op<Transform_Dialect, "air.par_to_launch",
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
         ::mlir::scf::ParallelOp target,
-        ::llvm::SmallVectorImpl<::mlir::Operation *> &results,
+        ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
   }];
 }
@@ -114,7 +113,7 @@ def CopyToDmaOp : Op<Transform_Dialect, "air.copy_to_dma",
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
         ::mlir::memref::CopyOp target,
-        ::llvm::SmallVectorImpl<::mlir::Operation *> &results,
+        ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
   }];
 }
@@ -140,14 +139,14 @@ def PipelineReduceOp : Op<Transform_Dialect, "air.pipeline_reduce",
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
         ::mlir::linalg::LinalgOp target,
-        ::llvm::SmallVectorImpl<::mlir::Operation *> &results,
+        ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
   }];
 }
 
 def LinalgPromoteOp : Op<Transform_Dialect, "air.linalg_promote",
-    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
-    TransformOpInterface, TransformEachOpTrait]> {
+        [DeclareOpInterfaceMethods<TransformOpInterface>,
+         DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let description = [{
     Promotes the specified operands of the target into a separate memory buffer
     using the `mlir::linalg::promoteSubViews` utility.
@@ -182,12 +181,6 @@ def LinalgPromoteOp : Op<Transform_Dialect, "air.linalg_promote",
 
   let assemblyFormat = "$target attr-dict";
 
-  let extraClassDeclaration = [{
-    ::mlir::DiagnosedSilenceableFailure applyToOne(
-        ::mlir::linalg::LinalgOp target,
-        ::llvm::SmallVectorImpl<::mlir::Operation *> &results,
-        ::mlir::transform::TransformState &state);
-  }];
 }
 
 def LinalgTileOp : Op<Transform_Dialect, "air.linalg_tile",
@@ -230,7 +223,8 @@ def LinalgTileOp : Op<Transform_Dialect, "air.linalg_tile",
 
 def FuseIntoContainingMemrefOp :
     Op<Transform_Dialect, "air.fuse_into_containing_op",
-      [DeclareOpInterfaceMethods<TransformOpInterface>]> {
+      [DeclareOpInterfaceMethods<TransformOpInterface>,
+       DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Fuse a producer into a containing operation.";
 
   let description = [{
@@ -255,14 +249,9 @@ def FuseIntoContainingMemrefOp :
     This operation reads the containing op handle.
   }];
 
-  let arguments = (ins Arg<PDL_Operation, "",
-                           [TransformMappingRead,
-                            TransformMappingFree]>:$producer_op,
-                       Arg<PDL_Operation, "",
-                           [TransformMappingRead]>:$containing_op);
-  let results = (outs Res<PDL_Operation, "",
-                          [TransformMappingAlloc,
-                           TransformMappingWrite]>:$fused_op);
+  let arguments = (ins PDL_Operation:$producer_op,
+                       PDL_Operation:$containing_op);
+  let results = (outs PDL_Operation:$fused_op);
   let assemblyFormat = "$producer_op `into` $containing_op attr-dict";
 
   let builders = [
