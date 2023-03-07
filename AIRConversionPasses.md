@@ -147,7 +147,6 @@ airrt.module_metadata{
 -test-patterns   : Test the given patterns.
 ```
 ### `-air-to-async`: AIR dialect lowering
-### `-air-to-cpu`: AIR dialect lowering
 ### `-air-to-std`: AIR dialect lowering
 This pass converts AIR dialect herd launch operations into loop nests
 representing the host-side control program for the herd. It also converts
