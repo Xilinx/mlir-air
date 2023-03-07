@@ -460,10 +460,13 @@ public:
       rewriter.create<xilinx::airrt::WaitAllOp>(
           op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
 
-    auto getOp = getTheOtherChannelOpThroughSymbol(op);
+    auto getOps = getTheOtherChannelOpThroughSymbol(op);
+    if (getOps.size() > 1)
+      return failure();
+    auto getOp = getOps[0];
 
-    MemRefType srcType = op.getSrcMemref().getType().cast<MemRefType>();
-    MemRefType dstType = getOp.getDstMemref().getType().cast<MemRefType>();
+    MemRefType srcType = op.getSrc().getType().cast<MemRefType>();
+    MemRefType dstType = getOp.getDst().getType().cast<MemRefType>();
 
     bool isFromTile = false;
     bool isFullMemcpy = false;
@@ -521,7 +524,7 @@ public:
     opers.push_back(zero.getResult());
     opers.push_back(zero.getResult());
 
-    opers.push_back(op.getSrcMemref());
+    opers.push_back(op.getSrc());
 
     SmallVector<Value, 4> offsets(4, zero);
     SmallVector<Value, 4> lengths(4, one);
@@ -529,17 +532,17 @@ public:
 
     int idx = 4 - srcType.getRank();
     for (auto o : op.getSrcOffsets())
-      offsets[idx++] = rewriter.create<IndexCastOp>(
+      offsets[idx++] = rewriter.create<arith::IndexCastOp>(
           op->getLoc(), IntegerType::get(ctx, 64), o);
     idx = 4 - dstType.getRank();
     auto op_strides = op.getSrcStrides();
     if (op_strides.size())
       for (auto o : op_strides.drop_back())
-        strides[idx++] = rewriter.create<IndexCastOp>(
+        strides[idx++] = rewriter.create<arith::IndexCastOp>(
             op->getLoc(), IntegerType::get(ctx, 64), o);
     idx = 4 - srcType.getRank();
     for (auto o : op.getSrcSizes())
-      lengths[idx++] = rewriter.create<IndexCastOp>(
+      lengths[idx++] = rewriter.create<arith::IndexCastOp>(
           op->getLoc(), IntegerType::get(ctx, 64), o);
 
     opers.append(offsets);
@@ -580,10 +583,13 @@ public:
       rewriter.create<xilinx::airrt::WaitAllOp>(
           op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
 
-    auto putOp = getTheOtherChannelOpThroughSymbol(op);
+    auto putOps = getTheOtherChannelOpThroughSymbol(op);
+    if (putOps.size() > 1)
+      return failure();
+    auto putOp = putOps[0];
 
-    MemRefType srcType = putOp.getSrcMemref().getType().cast<MemRefType>();
-    MemRefType dstType = op.getDstMemref().getType().cast<MemRefType>();
+    MemRefType srcType = putOp.getSrc().getType().cast<MemRefType>();
+    MemRefType dstType = op.getDst().getType().cast<MemRefType>();
 
     bool isFromTile = false;
     bool isFullMemcpy = false;
@@ -641,12 +647,12 @@ public:
     opers.push_back(zero.getResult());
     opers.push_back(zero.getResult());
 
-    opers[1] = rewriter.create<IndexCastOp>(
+    opers[1] = rewriter.create<arith::IndexCastOp>(
         loc, IntegerType::get(op->getContext(), 64), opers[1]);
-    opers[2] = rewriter.create<IndexCastOp>(
+    opers[2] = rewriter.create<arith::IndexCastOp>(
         loc, IntegerType::get(op->getContext(), 64), opers[2]);
 
-    opers.push_back(op.getDstMemref());
+    opers.push_back(op.getDst());
 
     SmallVector<Value, 4> offsets(4, zero);
     SmallVector<Value, 4> lengths(4, one);
@@ -654,17 +660,17 @@ public:
 
     int idx = 4 - srcType.getRank();
     for (auto o : op.getDstOffsets())
-      offsets[idx++] = rewriter.create<IndexCastOp>(
+      offsets[idx++] = rewriter.create<arith::IndexCastOp>(
           op->getLoc(), IntegerType::get(ctx, 64), o);
     idx = 4 - dstType.getRank();
     auto op_strides = op.getDstStrides();
     if (op_strides.size())
       for (auto o : op_strides.drop_back())
-        strides[idx++] = rewriter.create<IndexCastOp>(
+        strides[idx++] = rewriter.create<arith::IndexCastOp>(
             op->getLoc(), IntegerType::get(ctx, 64), o);
     idx = 4 - srcType.getRank();
     for (auto o : op.getDstSizes())
-      lengths[idx++] = rewriter.create<IndexCastOp>(
+      lengths[idx++] = rewriter.create<arith::IndexCastOp>(
           op->getLoc(), IntegerType::get(ctx, 64), o);
 
     opers.append(offsets);
