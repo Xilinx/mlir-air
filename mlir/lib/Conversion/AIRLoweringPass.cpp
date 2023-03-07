@@ -619,7 +619,7 @@ public:
     } else if (dstType.getMemorySpaceAsInt() ==
                    (int)xilinx::air::MemorySpace::L3 &&
                srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L2) {
+                   (int)xilinx::air::MemorySpace::L1) {
       isFromTile = true;
       isFullMemcpy = true;
     } else
@@ -646,11 +646,6 @@ public:
     // tile ids
     opers.push_back(zero.getResult());
     opers.push_back(zero.getResult());
-
-    opers[1] = rewriter.create<arith::IndexCastOp>(
-        loc, IntegerType::get(op->getContext(), 64), opers[1]);
-    opers[2] = rewriter.create<arith::IndexCastOp>(
-        loc, IntegerType::get(op->getContext(), 64), opers[2]);
 
     opers.push_back(op.getDst());
 
