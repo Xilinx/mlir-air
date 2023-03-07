@@ -182,7 +182,7 @@ public:
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
-    air::HerdOp launch = cast<air::HerdOp>(op);
+    air::HerdOp herd = cast<air::HerdOp>(op);
 
     auto herd_name_attr =
         op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
@@ -202,34 +202,39 @@ public:
     if (op->getNumResults()) {
       auto w = rewriter.create<airrt::WaitAllOp>(
           op->getLoc(), airrt::EventType::get(op->getContext()), deps);
-      launch.getResult(0).replaceAllUsesWith(w.getResult(0));
+      herd.getResult(0).replaceAllUsesWith(w.getResult(0));
     }
 
-    auto herd_size = launch.getSizeOperands();
-    int64_t herd_size_x = launch.getNumCols();
-    int64_t herd_size_y = launch.getNumRows();
+    // If the herd doesn't contain a dma op, then it can be deleted
+    SmallVector<Operation *> herdOps;
+    herd.walk([&](air::DmaMemcpyInterface op) { herdOps.push_back(op); });
 
-    auto outer = rewriter.create<AffineForOp>(launch.getLoc(), 0, herd_size_x);
-    auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
-    auto inner =
-        outer_builder.create<AffineForOp>(launch.getLoc(), 0, herd_size_y);
+    if (herdOps.size()) {
+      auto herd_size = herd.getSizeOperands();
+      int64_t herd_size_x = herd.getNumCols();
+      int64_t herd_size_y = herd.getNumRows();
 
-    outer->setAttr("air.herd", StringAttr::get(op->getContext(), "outer"));
-    inner->setAttr("air.herd", StringAttr::get(op->getContext(), "inner"));
+      auto outer = rewriter.create<AffineForOp>(herd.getLoc(), 0, herd_size_x);
+      auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
+      auto inner =
+          outer_builder.create<AffineForOp>(herd.getLoc(), 0, herd_size_y);
 
-    launch.getSize()[0].replaceAllUsesWith(herd_size[0]);
-    launch.getSize()[1].replaceAllUsesWith(herd_size[1]);
-    launch.getIds()[0].replaceAllUsesWith(outer.getInductionVar());
-    launch.getIds()[1].replaceAllUsesWith(inner.getInductionVar());
+      outer->setAttr("air.herd", StringAttr::get(op->getContext(), "outer"));
+      inner->setAttr("air.herd", StringAttr::get(op->getContext(), "inner"));
 
-    int i = 0;
-    for (auto arg : launch.getKernelArguments())
-      arg.replaceAllUsesWith(launch.getKernelOperand(i++));
+      herd.getSize()[0].replaceAllUsesWith(herd_size[0]);
+      herd.getSize()[1].replaceAllUsesWith(herd_size[1]);
+      herd.getIds()[0].replaceAllUsesWith(outer.getInductionVar());
+      herd.getIds()[1].replaceAllUsesWith(inner.getInductionVar());
 
-    auto &body = launch.getBody().front().getOperations();
-    inner.getBody()->getOperations().splice(inner.getBody()->begin(), body,
-                                            body.begin(), --body.end());
+      int i = 0;
+      for (auto arg : herd.getKernelArguments())
+        arg.replaceAllUsesWith(herd.getKernelOperand(i++));
 
+      auto &body = herd.getBody().front().getOperations();
+      inner.getBody()->getOperations().splice(inner.getBody()->begin(), body,
+                                              body.begin(), --body.end());
+    }
     rewriter.eraseOp(op);
     return success();
   }
