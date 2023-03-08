@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Dialect/AIR/AIRDialect.h"
-#include "air/Util/Runner.h"
 #include "air/InitAll.h"
+#include "air/Util/Runner.h"
 
 #include "mlir/InitAllDialects.h"
 #include "mlir/Parser/Parser.h"
@@ -27,6 +27,7 @@
 #define DEBUG_TYPE "air-runner"
 
 static bool verbose = false;
+static std::string sim_granularity = "herd";
 
 using namespace mlir;
 
@@ -50,6 +51,12 @@ LogicalResult run(int argc, char **argv, llvm::StringRef toolName) {
       "f", llvm::cl::desc("top-level function name"),
       llvm::cl::value_desc("function"), llvm::cl::init("graph"));
 
+  static llvm::cl::opt<std::string> clSimGranularity(
+      "g",
+      llvm::cl::desc("lowest level architectural hierarchy to simulate (pick "
+                     "from herd and core)"),
+      llvm::cl::value_desc("string"), llvm::cl::init("herd"));
+
   static llvm::cl::opt<bool> clVerbose("v", llvm::cl::desc("verbose"),
                                        llvm::cl::value_desc("bool"),
                                        llvm::cl::init(false));
@@ -58,6 +65,7 @@ LogicalResult run(int argc, char **argv, llvm::StringRef toolName) {
   llvm::cl::ParseCommandLineOptions(argc, argv, toolName);
 
   verbose = clVerbose;
+  sim_granularity = clSimGranularity;
   // herd_slots = clHerdSlots;
   // dispatch_slots = clDispatchSlots;
 
@@ -116,7 +124,7 @@ LogicalResult run(int argc, char **argv, llvm::StringRef toolName) {
     if (!jsonModel)
       llvm_unreachable("failed to parse model json\n");
 
-    xilinx::air::AIRRunner runner(os, *jsonModel, clVerbose);
+    xilinx::air::AIRRunner runner(os, *jsonModel, sim_granularity, clVerbose);
 
     // The number of inputs to the function in the IR.
     unsigned numInputs = 0;

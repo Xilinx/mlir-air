@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Support/MathExtras.h"
@@ -66,6 +67,7 @@ struct runnerNode {
   // Each entry is an std::tuple. First element is for op's id, second element
   // is the loop's async token id, and third element is trip counter.
   std::vector<std::tuple<unsigned, unsigned, unsigned>> loop_trip_count;
+  std::vector<std::pair<std::string, unsigned>> channel_token_count;
   std::deque<runnerNode> sub_runner_nodes;
 
   // Private wavefront of each runner node, reserved to interface with resource
@@ -125,8 +127,9 @@ class AIRRunner::AIRRunner_impl {
 
 public:
   AIRRunner_impl(llvm::raw_ostream &trace_stream, llvm::json::Value &json_model,
-                 bool verbose = false)
-      : traceStream(trace_stream), jsonModel(json_model) {
+                 std::string sim_granularity = "herd", bool verbose = false)
+      : traceStream(trace_stream), jsonModel(json_model),
+        sim_granularity(sim_granularity) {
 
     auto model = jsonModel.getAsObject();
 
@@ -181,7 +184,7 @@ public:
 
   void emitTraceMetadataEvent(llvm::raw_ostream &s, std::string item_name,
                               std::string arg_name, std::string arg_entry,
-                              std::string ph, int64_t pid) {
+                              std::string ph, int64_t pid, int64_t tid = -1) {
     s << "{\n";
     s << "  \"name\": \"" << item_name << "\","
       << "\n";
@@ -189,6 +192,10 @@ public:
       << "\n";
     s << "  \"pid\": " << pid << ","
       << "\n";
+    if (tid != -1) {
+      s << "  \"tid\": " << tid << ","
+        << "\n";
+    }
     s << "  \"args\": {\n";
     s << "    \"" << arg_name << "\": \"" << arg_entry << "\""
       << "\n";
@@ -291,7 +298,8 @@ public:
               resetGraphBetweenTwoVertices(*adj_v, it, G, c, time);
               // (2) release the token locks, if the token is still iterating
               if (token_is_still_iterating[i]) {
-                G[*adj_v].token_count++;
+                G[*adj_v].token_count +=
+                    tokenSpatialFactor(G[*adj_v].op, c.ctrl_g->position);
               }
             }
           }
@@ -323,8 +331,12 @@ public:
     Graph &G = c.ctrl_g->g;
     auto adj_set = boost::adjacent_vertices(it, G);
     for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
-      G[*adj_v].token_count += tokenCountThresholdForExecution(
-          G[*adj_v].op); // Lock number = number of dependent iter_args
+      G[*adj_v].token_count +=
+          tokenCountThresholdForExecution(G[*adj_v].op) *
+          tokenSpatialFactor(
+              G[*adj_v].op,
+              c.ctrl_g
+                  ->position); // Lock number = number of dependent iter_args
     }
 
     c.processed_vertices.push_back(it);
@@ -332,29 +344,37 @@ public:
 
   void executeOp(air::ChannelPutOp op, runnerNode &c,
                  Graph::vertex_descriptor it) {
-    Graph &G = c.ctrl_g->g;
-    G[it].token_count++;
+    auto spatial_factor =
+        tokenSpatialFactor(op.getOperation(), c.ctrl_g->position);
+    bool found_entry = false;
+    for (auto &entry : launch_runner_node.channel_token_count) {
+      if ((!found_entry) && entry.first == op.getChanName().str()) {
+        entry.second += spatial_factor;
+        found_entry = true;
+      }
+    }
+    if (!found_entry) {
+      launch_runner_node.channel_token_count.push_back(
+          std::make_pair(op.getChanName().str(), spatial_factor));
+    }
 
     c.processed_vertices.push_back(it);
   }
 
   void executeOp(air::ChannelGetOp op, runnerNode &c,
                  Graph::vertex_descriptor it) {
-    // Get put-side runner from get op
-    std::vector<air::ChannelPutOp> puts =
-        air::getTheOtherChannelOpThroughSymbol(op);
-    // Go through put ops and consume token in order
-    for (auto put : puts) {
-      auto put_entry =
-          canonicalizer.getVertexFromOp(put.getOperation(), dep_ctx, "front");
-      auto put_v = put_entry.first;
-      auto &put_g = put_entry.second;
-      auto &put_node = put_g->g[put_v];
-      if (put_node.token_count) {
-        put_node.token_count--;
-        break;
+    // Get spatial factor for op
+    auto spatial_factor =
+        tokenSpatialFactor(op.getOperation(), c.ctrl_g->position);
+
+    bool found_entry = false;
+    for (auto &entry : launch_runner_node.channel_token_count) {
+      if ((!found_entry) && entry.first == op.getChanName().str()) {
+        entry.second -= spatial_factor;
+        found_entry = true;
       }
     }
+    assert(found_entry && "Cannot find channel symbol name in launch runner");
 
     c.processed_vertices.push_back(it);
   }
@@ -370,9 +390,10 @@ public:
     if (node.asyncEventType == "start") {
       executeOp(c, it);
     } else if (auto Op = dyn_cast<xilinx::air::HierarchyInterface>(node.op)) {
-      auto sub_dependency_graph = node.nextDependencyGraph;
-      auto sub_runner_node = sub_dependency_graph->runner_node;
-      executeOp(Op, time, sub_runner_node, c, it);
+      for (auto sub_dependency_graph : node.nextDependencyGraphs) {
+        auto sub_runner_node = sub_dependency_graph->runner_node;
+        executeOp(Op, time, sub_runner_node, c, it);
+      }
     } else if (auto Op = dyn_cast<scf::ForOp>(node.op)) {
       executeOp(Op, c, it);
     } else if (dyn_cast<scf::YieldOp>(node.op) &&
@@ -388,23 +409,6 @@ public:
       executeOp(Op, c, it);
     } else {
       executeOp(c, it);
-    }
-  }
-
-  // Consume tokens upon op execution
-  void consumeLoopYieldedTokens(runnerNode &c, Graph::vertex_descriptor it) {
-
-    Graph &G = c.ctrl_g->g;
-    auto inv_adj_set = boost::inv_adjacent_vertices(it, G);
-    for (auto inv_adj_v = inv_adj_set.first; inv_adj_v != inv_adj_set.second;
-         ++inv_adj_v) {
-      if (G[*inv_adj_v].asyncEventType == "for_loop") {
-        unsigned th = tokenCountThresholdForExecution(
-            G[it].op); // Consume all iter_arg tokens
-        assert(G[it].token_count >= th);
-        G[it].token_count -= th;
-        return;
-      }
     }
   }
 
@@ -534,114 +538,32 @@ public:
 
   void buildVertexDependencyList(
       Graph::vertex_descriptor v, Graph G,
-      std::vector<std::pair<dependencyNodeEntry *, std::string>> &dep_list) {
-    auto inv_adj_set = boost::inv_adjacent_vertices(v, G);
+      std::vector<std::pair<dependencyNodeEntry, std::string>> &dep_list,
+      std::vector<unsigned> position) {
     // If current vertex is ChannelGet, then add implicit ChannelPut vertex to
     // dep list
     if (air::ChannelGetOp channel_get = dyn_cast<air::ChannelGetOp>(G[v].op)) {
-      std::vector<air::ChannelPutOp> channel_puts =
-          air::getTheOtherChannelOpThroughSymbol(channel_get);
-      // Get any ChannelPut node with token. Otherwise push the last one to dep
-      // list
-      bool pushed_to_dep_list = false;
-      for (auto channel_put : channel_puts) {
-        auto channel_put_entry = canonicalizer.getVertexFromOp(
-            channel_put.getOperation(), dep_ctx, "front");
-        auto channel_put_v = channel_put_entry.first;
-        auto &channel_put_g = channel_put_entry.second;
-        auto &channel_put_node = channel_put_g->g[channel_put_v];
-        if (channel_put_node.token_count) {
-          dep_list.push_back(std::make_pair(&channel_put_node, "sym"));
-          pushed_to_dep_list = true;
-          break;
-        }
-        if (channel_put == channel_puts.back()) {
-          dep_list.push_back(std::make_pair(&channel_put_node, "sym"));
-        }
-      }
+      dep_list.push_back(std::make_pair(G[v], "sym"));
     }
+    auto inv_adj_set = boost::inv_adjacent_vertices(v, G);
     for (auto inv_adj_v = inv_adj_set.first; inv_adj_v != inv_adj_set.second;
          ++inv_adj_v) {
       // If dependent on a hierarchy op, then push its terminator into dep_list
       // instead
       if (G[*inv_adj_v].asyncEventType == "hierarchy") {
-        auto sub_g = G[*inv_adj_v].nextDependencyGraph;
-        auto terminator_v = sub_g->terminator_vertex;
-        dep_list.push_back(std::make_pair(&sub_g->g[terminator_v], "ssa"));
-      }
-      // Else if dependenct on a for op
-      else if (G[*inv_adj_v].asyncEventType == "for_loop") {
-        dep_list.push_back(std::make_pair(&G[*inv_adj_v], "ssa_loop_yield"));
+        for (auto sub_g : G[*inv_adj_v].nextDependencyGraphs) {
+          auto terminator_v = sub_g->terminator_vertex;
+          auto &terminator_node = sub_g->g[terminator_v];
+          dep_list.push_back(std::make_pair(terminator_node, "ssa"));
+        }
+      } else if (G[*inv_adj_v].asyncEventType == "for_loop") {
+        pushToDepListIfAffineIfHit(dep_list, G[*inv_adj_v], position,
+                                   "ssa_loop_yield");
       } else {
-        dep_list.push_back(std::make_pair(&G[*inv_adj_v], "ssa"));
+        pushToDepListIfAffineIfHit(dep_list, G[*inv_adj_v], position, "ssa");
       }
     }
   }
-
-  // Check if a dependence has been fulfilled
-  bool checkEachDependenceFulfillment(
-      std::pair<dependencyNodeEntry *, std::string> dep,
-      dependencyNodeEntry *node, uint64_t time) {
-    if (dep.second == "ssa") {
-      if ((!dep.first->is_started()) || (!dep.first->is_done(time))) {
-        // If source and sink of dep are both under the same loop
-        if (node && dep.first &&
-            shareInnerMostForLoop(node->op, dep.first->op)) {
-          // Check node's timestamp log, in case if it has executed in previous
-          // loop iterations
-          unsigned dep_iter_count = dep.first->start_end_time_log.size();
-          unsigned node_iter_count = node->start_end_time_log.size();
-          if (node->is_started() && node->is_done(time))
-            node_iter_count++;
-          if (dep_iter_count <= node_iter_count) {
-            return false;
-          }
-        } else
-          return false;
-      }
-    } else if (dep.second == "ssa_loop_yield") {
-      // Threshold token_count for dep fulfillment = how many iter_args does
-      // node depend on
-      unsigned th = tokenCountThresholdForExecution(node->op);
-      if (node->token_count < th) {
-        return false;
-      }
-    } else if (dep.second == "sym") {
-      if (!dep.first->token_count) {
-        return false;
-      }
-    } else {
-      assert(false && "Unknown async token type");
-    }
-    return true;
-  }
-
-  std::string to_string(Operation *op) {
-    return op->getName().getStringRef().str();
-  }
-
-  // Check if all dependencies of an async op have been fulfilled
-  bool checkAllDependenciesFulfillment(
-      std::vector<std::pair<dependencyNodeEntry *, std::string>> dep_list,
-      dependencyNodeEntry *node, uint64_t time, bool isBlocking) {
-    bool dep_fulfilled = true;
-    if (isBlocking) {
-      dep_fulfilled = true;
-      for (auto &dep : dep_list) {
-        dep_fulfilled =
-            dep_fulfilled && checkEachDependenceFulfillment(dep, node, time);
-      }
-    } else {
-      dep_fulfilled = false;
-      for (auto &dep : dep_list) {
-        dep_fulfilled =
-            dep_fulfilled || checkEachDependenceFulfillment(dep, node, time);
-      }
-    }
-    return dep_fulfilled;
-  }
-
-  std::string to_string(dependencyNodeEntry &c) { return to_string(c.op); }
 
   void processGraph(runnerNode &c, uint64_t time) {
 
@@ -656,11 +578,11 @@ public:
         if (G[it->first].asyncEventType != "start") {
 
           auto runner_id = getIdAttr(c.ctrl_g->hierarchyOp);
-          auto sub_tid = it->second;
+          auto tid = it->second;
           emitTraceEvent(traceStream,
                          G[it->first].asyncEventName +
                              G[it->first].detailed_description,
-                         "layer", "E", time, sub_tid, runner_id);
+                         "layer", "E", time, tid, runner_id);
         }
 
         // "ExecuteOp"
@@ -680,6 +602,11 @@ public:
     // Remove candidate vertices already on wavefront
     removeRepeatedVertices(next_vertex_set_candidates,
                            getVectorOfFirstFromVectorOfPairs(c.wavefront));
+    // Remove candidate vertices which are filtered out by an affine.if, if
+    // showing cores
+    if (sim_granularity == "core") {
+      removeOpsFilteredOutByAffineIf(c, next_vertex_set_candidates);
+    }
 
     for (auto it = next_vertex_set_candidates.begin();
          it != next_vertex_set_candidates.end(); ++it) {
@@ -688,17 +615,17 @@ public:
       // to the node, the second field is a string representing the type of
       // this dependency, either "ssa" or "sym", and the third field is the
       // token index, in case if op contains multiple tokens.
-      std::vector<std::pair<dependencyNodeEntry *, std::string>> dep_list;
-      buildVertexDependencyList(*it, G, dep_list);
+      std::vector<std::pair<dependencyNodeEntry, std::string>> dep_list;
+      buildVertexDependencyList(*it, G, dep_list, c.ctrl_g->position);
       // Check whether adj_v's dependency list is fulfilled
       if (isNonBlocking(G[*it].op)) {
         // If op is non-blocking
-        dep_fulfilled =
-            checkAllDependenciesFulfillment(dep_list, &G[*it], time, false);
+        dep_fulfilled = checkAllDependenciesFulfillment(
+            dep_list, G[*it], c.ctrl_g->position, time, false);
       } else {
         // Else (op is blocking)
-        dep_fulfilled =
-            checkAllDependenciesFulfillment(dep_list, &G[*it], time, true);
+        dep_fulfilled = checkAllDependenciesFulfillment(
+            dep_list, G[*it], c.ctrl_g->position, time, true);
       }
       if (dep_fulfilled) {
         next_vertex_set.push_back(*it);
@@ -707,17 +634,20 @@ public:
 
     for (auto next_vertex : next_vertex_set) {
 
-      pushToWavefront(c.wavefront, next_vertex);
+      // Push to wavefront; check if showing cores
+      pushToWavefront(c.wavefront, next_vertex,
+                      canonicalizer.getIteratorFromPosition(
+                          c.ctrl_g->position, c.ctrl_g->hierarchyOp));
 
       G[next_vertex].start_time = time;
       G[next_vertex].end_time = time + modelOp(G[next_vertex]);
       // emit trace event begin
       auto runner_id = getIdAttr(c.ctrl_g->hierarchyOp);
-      auto sub_tid = c.wavefront.back().second;
+      auto tid = c.wavefront.back().second;
       emitTraceEvent(traceStream,
                      G[next_vertex].asyncEventName +
                          G[next_vertex].detailed_description,
-                     "layer", "B", time, sub_tid, runner_id);
+                     "layer", "B", time, tid, runner_id);
     }
 
     return;
@@ -729,7 +659,8 @@ public:
     // intepreter
     canonicalizer.removeDepListRepetition(toplevel);
     hostGraph = dependencyGraph(toplevel, true);
-    canonicalizer.parseCommandGraphs(toplevel, hostGraph, dep_ctx);
+    canonicalizer.parseCommandGraphs(toplevel, hostGraph, dep_ctx,
+                                     sim_granularity);
 
     // Walk the launch graph and write process name metadata in trace
     writeTraceMetadataProcNames(hostGraph);
@@ -826,6 +757,7 @@ private:
 
   llvm::raw_ostream &traceStream;
   llvm::json::Value &jsonModel;
+  std::string sim_granularity;
 
   unsigned dispatch_slots;
   unsigned dispatch_dma_slots;
@@ -838,13 +770,9 @@ private:
   // Host and segment runnerNodes
   runnerNode launch_runner_node;
 
-  // Check if op is a non-blocking event
-  bool isNonBlocking(Operation *op) {
-    if (dyn_cast<scf::YieldOp>(op)) {
-      return true;
-    } else
-      return false;
-  }
+  //===----------------------------------------------------------------------===//
+  // Loop-carried async token helper functions
+  //===----------------------------------------------------------------------===//
 
   // Check if two ops are under the same scf for loop
   bool shareInnerMostForLoop(Operation *a, Operation *b) {
@@ -880,13 +808,173 @@ private:
     return th;
   }
 
-  // Returns the scf parent op from scf.yield op
-  template <typename T> Operation *getScfParentOpFromYieldOp(scf::YieldOp op) {
-    if (auto scfop = dyn_cast<T>(op->getParentOp())) {
-      return scfop.getOperation();
+  // Get a vector of async tokens which are ready to advance to the next loop
+  // iteration at scf.yield
+  void getReadyTokensAtScfYield(std::vector<unsigned> &token_ids,
+                                scf::YieldOp op, uint64_t time, Graph &G) {
+
+    unsigned token_id = 0;
+    for (auto operand : op->getOperands()) {
+      // With scf.for possibly having multiple tokens, check for the token ids
+      // which are ready to advance to the next iteration
+      auto dep_op = operand.getDefiningOp();
+      auto dep_entry = canonicalizer.getVertexFromOp(dep_op, dep_ctx, "front");
+      auto &dep_node = G[dep_entry.first];
+
+      // Check each token's dependence fulfillment at scf.yield
+      std::string node_type = "ssa";
+      auto dep_pair_entry = std::make_pair(dep_node, node_type);
+      if (checkEachDependenceFulfillment(dep_pair_entry, time)) {
+        token_ids.push_back(token_id);
+      }
+
+      token_id++;
     }
-    return nullptr;
   }
+
+  // Consume tokens upon op execution
+  void consumeLoopYieldedTokens(runnerNode &c, Graph::vertex_descriptor it) {
+
+    Graph &G = c.ctrl_g->g;
+    auto inv_adj_set = boost::inv_adjacent_vertices(it, G);
+    for (auto inv_adj_v = inv_adj_set.first; inv_adj_v != inv_adj_set.second;
+         ++inv_adj_v) {
+      if (G[*inv_adj_v].asyncEventType == "for_loop") {
+        unsigned th = tokenCountThresholdForExecution(
+            G[it].op); // Consume all iter_arg tokens
+        assert(G[it].token_count >=
+               th * tokenSpatialFactor(G[it].op, c.ctrl_g->position));
+        G[it].token_count -=
+            th * tokenSpatialFactor(G[it].op, c.ctrl_g->position);
+        return;
+      }
+    }
+  }
+
+  //===----------------------------------------------------------------------===//
+  // Affine if loop nest (filtering spatial positions) helper functions
+  //===----------------------------------------------------------------------===//
+
+  // Walk affine.if then and else blocks and infer block sizes of op's ancestor
+  unsigned getSizeThroughAffineIf(Operation *op, Operation *spatial_loop,
+                                  std::vector<Operation *> affine_if_nest) {
+    unsigned output = 1;
+    SmallVector<int, 2> lbs_spatial;
+    SmallVector<int, 2> ubs_spatial;
+    getSizesFromSpatialLoop(spatial_loop, lbs_spatial, ubs_spatial);
+
+    // Walk through affine.if nest (in reverse order through vector)
+    for (auto it = affine_if_nest.rbegin(); it != affine_if_nest.rend(); ++it) {
+      auto affine_if = dyn_cast<mlir::AffineIfOp>(*it);
+      // Get then integerset sizes
+      SmallVector<int, 2> lbs_int = {0, 0};
+      SmallVector<int, 2> ubs_int = {0, 0};
+      IntegerSet int_set = affine_if.getIntegerSet();
+      getSizesFromIntegerSet(affine_if->getContext(), int_set, lbs_int,
+                             ubs_int);
+      // If found then block containing op
+      if (affine_if.getThenBlock()->findAncestorOpInBlock(*op)) {
+        for (unsigned i = 0; i < lbs_int.size(); i++) {
+          output *= ubs_int[i] - lbs_int[i] + 1;
+        }
+        return output;
+      }
+      // Else keep going, while updating the spatial sizes wrt else condition
+      else {
+        getElseSizesFromAffineIf(lbs_spatial, ubs_spatial, lbs_int, ubs_int);
+      }
+    }
+    // If op isn't in any then blocks in affine.if nest
+    for (unsigned i = 0; i < lbs_spatial.size(); i++) {
+      output *= ubs_spatial[i] - lbs_spatial[i] + 1;
+    }
+    return output;
+  }
+
+  // Remove ops in affine.if which aren't running on this core
+  void removeOpsFilteredOutByAffineIf(
+      runnerNode &c, std::vector<Graph::vertex_descriptor> &candidates) {
+    Graph &G = c.ctrl_g->g;
+    for (auto it = candidates.begin(); it != candidates.end(); ++it) {
+      auto op = G[*it].op;
+      if (op->getParentOfType<mlir::AffineIfOp>()) {
+        std::vector<Operation *> affine_if_nest;
+        Operation *spatial_loop = nullptr;
+        getAffineIfNestAndSpatialLoopFromOp(op, affine_if_nest, spatial_loop);
+        if (!positionHitsAffineIfCondition(op, spatial_loop, affine_if_nest,
+                                           c.ctrl_g->position)) {
+          candidates.erase(it);
+          it--;
+        }
+      }
+    }
+  }
+
+  // Calculate the number of spatially parallel tokens produced/consumed per op
+  unsigned tokenSpatialFactor(Operation *op, std::vector<unsigned> position) {
+    unsigned output = 1;
+    // If op is producer to a channel broadcast, then bump up token count by
+    // fanout
+    if (isa<air::ChannelPutOp>(op)) {
+      auto channel_op = dyn_cast<air::ChannelInterface>(op);
+      auto chan = getChannelDeclarationThroughSymbol(channel_op);
+      if (chan->hasAttr("broadcast_shape")) {
+        auto size = extractFromI64ArrayAttr(chan->getAttr("broadcast_shape"));
+        for (auto s : size) {
+          output *= s;
+        }
+        size = extractFromI64ArrayAttr(chan.getSize());
+        for (auto s : size) {
+          output /= s;
+        }
+      }
+    }
+    for (auto parent = op->getParentOp(); !isa<func::FuncOp>(parent);
+         parent = parent->getParentOp()) {
+      if (auto scf_par = dyn_cast<scf::ParallelOp>(parent)) {
+        for (unsigned i = 0; i < scf_par.getNumLoops(); i++) {
+          auto lbCstOp = scf_par.getLowerBound()[i]
+                             .getDefiningOp<arith::ConstantIndexOp>();
+          auto ubCstOp = scf_par.getUpperBound()[i]
+                             .getDefiningOp<arith::ConstantIndexOp>();
+          auto stepCstOp =
+              scf_par.getStep()[i].getDefiningOp<arith::ConstantIndexOp>();
+          int64_t tripCount = mlir::ceilDiv(ubCstOp.value() - lbCstOp.value(),
+                                            stepCstOp.value());
+          output *= tripCount;
+        }
+      } else if (auto hier = dyn_cast<air::HierarchyInterface>(parent)) {
+        if (sim_granularity == "core" && isa<air::HerdOp>(parent)) {
+        } else {
+          output *= canonicalizer.getTripCountInHierarchyOp(hier);
+        }
+      } else if (auto affine_if = dyn_cast<mlir::AffineIfOp>(parent)) {
+        // Fast forward through affine.if nest
+        std::vector<Operation *> affine_if_nest;
+        Operation *spatial_loop = nullptr;
+        parent = getAffineIfNestAndSpatialLoopFromOp(parent, affine_if_nest,
+                                                     spatial_loop);
+
+        // If showing cores
+        auto herd = dyn_cast<air::HerdOp>(spatial_loop);
+        if (herd && sim_granularity == "core") {
+          output = (positionHitsAffineIfCondition(op, spatial_loop,
+                                                  affine_if_nest, position))
+                       ? (output)
+                       : (0);
+        } else {
+          unsigned size =
+              getSizeThroughAffineIf(op, spatial_loop, affine_if_nest);
+          output *= size;
+        }
+      }
+    }
+    return output;
+  }
+
+  //===----------------------------------------------------------------------===//
+  // Boost graph helper functions
+  //===----------------------------------------------------------------------===//
 
   // Find all vertices adjacent to given vertices in graph
   void
@@ -991,13 +1079,14 @@ private:
         resetVertex(v, G, c, time);
         // If v is a hierarchy op, then recursively clear the entire subgraph
         if (G[v].asyncEventType == "hierarchy") {
-          auto sub_c = G[v].nextDependencyGraph;
-          auto start = sub_c->start_vertex;
-          auto terminator_v = sub_c->terminator_vertex;
-          auto sub_g = sub_c->g;
-          auto sub_runner = sub_c->runner_node;
-          resetGraphBetweenTwoVertices(start, terminator_v, sub_g, *sub_runner,
-                                       time);
+          for (auto sub_c : G[v].nextDependencyGraphs) {
+            auto start = sub_c->start_vertex;
+            auto terminator_v = sub_c->terminator_vertex;
+            auto sub_g = sub_c->g;
+            auto sub_runner = sub_c->runner_node;
+            resetGraphBetweenTwoVertices(start, terminator_v, sub_g,
+                                         *sub_runner, time);
+          }
         }
         // Else if v is an scf.for op, then clear the cached trip count from
         // runner node
@@ -1014,6 +1103,10 @@ private:
       }
     }
   }
+
+  //===----------------------------------------------------------------------===//
+  // Runner nodes and wavefront helper functions
+  //===----------------------------------------------------------------------===//
 
   // Initialize sub runner nodes from launch graph tree
   void initRunnerNodesFromLaunchGraph(runnerNode &launch_runner_node,
@@ -1057,14 +1150,50 @@ private:
             std::to_string(getIdAttr(partitionGraph.hierarchyOp)), "M",
             getIdAttr(partitionGraph.hierarchyOp));
         for (auto &herdGraph : partitionGraph.subgraphs) {
-          // Write herd process name to trace metadata
-          emitTraceMetadataEvent(traceStream, "process_name", "name",
-                                 to_string(herdGraph.hierarchyOp), "M",
-                                 getIdAttr(herdGraph.hierarchyOp));
-          emitTraceMetadataEvent(
-              traceStream, "process_sort_index", "sort_index",
-              std::to_string(getIdAttr(herdGraph.hierarchyOp)), "M",
-              getIdAttr(herdGraph.hierarchyOp));
+          // Only write herd process name metadata once per herd
+          bool print_pid_metadata_for_herd = true;
+          // Write core thread name metadata if showing cores
+          bool print_tid_metadata_for_core = false;
+          if (herdGraph.position.size()) {
+            print_tid_metadata_for_core = true;
+            for (auto id : herdGraph.position) {
+              if (id != 0) {
+                print_pid_metadata_for_herd = false;
+              }
+            }
+          }
+          if (print_pid_metadata_for_herd) {
+            // Write herd process name to trace metadata
+            emitTraceMetadataEvent(traceStream, "process_name", "name",
+                                   to_string(herdGraph.hierarchyOp), "M",
+                                   getIdAttr(herdGraph.hierarchyOp));
+            emitTraceMetadataEvent(
+                traceStream, "process_sort_index", "sort_index",
+                std::to_string(getIdAttr(herdGraph.hierarchyOp)), "M",
+                getIdAttr(herdGraph.hierarchyOp));
+          }
+          if (print_tid_metadata_for_core) {
+            // Write herd process name to trace metadata
+            std::string thread_name =
+                "core [" + to_string(herdGraph.position) + "]";
+            // Hardcoded maximum number of threads per core
+            unsigned max_num_threads_per_core = 10;
+            unsigned core_id = canonicalizer.getIteratorFromPosition(
+                                   herdGraph.position, herdGraph.hierarchyOp) *
+                                   max_num_threads_per_core +
+                               1;
+            emitTraceMetadataEvent(traceStream, "thread_name", "name",
+                                   thread_name, "M",
+                                   getIdAttr(herdGraph.hierarchyOp), core_id);
+            // Iteratively write thread sort index for every possible thread in
+            // a core
+            for (unsigned i = 0; i < max_num_threads_per_core; i++) {
+              emitTraceMetadataEvent(traceStream, "thread_sort_index",
+                                     "sort_index", std::to_string(core_id + i),
+                                     "M", getIdAttr(herdGraph.hierarchyOp),
+                                     core_id + i);
+            }
+          }
         }
       }
     }
@@ -1090,17 +1219,6 @@ private:
     }
   }
 
-  // Get a vector of first elements from a vector of pairs
-  std::vector<Graph::vertex_descriptor> getVectorOfFirstFromVectorOfPairs(
-      std::vector<std::pair<Graph::vertex_descriptor, unsigned>> pairs) {
-    std::vector<Graph::vertex_descriptor> items;
-    std::transform(pairs.begin(), pairs.end(), std::back_inserter(items),
-                   [](const std::pair<Graph::vertex_descriptor, unsigned> &p) {
-                     return p.first;
-                   });
-    return items;
-  }
-
   // Push an entry into wavefront
   void pushToWavefront(
       std::vector<std::pair<Graph::vertex_descriptor, unsigned>> &wavefront,
@@ -1112,10 +1230,13 @@ private:
   }
   void pushToWavefront(
       std::vector<std::pair<Graph::vertex_descriptor, unsigned>> &wavefront,
-      Graph::vertex_descriptor v) {
+      Graph::vertex_descriptor v, unsigned core_id = 0) {
     // Acquire available thread id for current op
+    unsigned max_num_threads_per_core =
+        10; // Hardcoded maximum number of threads per core
+    unsigned offset = core_id * max_num_threads_per_core;
     unsigned tid = 0;
-    for (unsigned i = 1; i < wavefront.size() + 2; i++) {
+    for (unsigned i = offset + 1; i < offset + wavefront.size() + 2; i++) {
       bool tid_i_unavailable = false;
       for (auto j : wavefront) {
         if (j.second == i) {
@@ -1130,29 +1251,9 @@ private:
     wavefront.push_back(std::make_pair(v, tid));
   }
 
-  // Get a vector of async tokens which are ready to advance to the next loop
-  // iteration at scf.yield
-  void getReadyTokensAtScfYield(std::vector<unsigned> &token_ids,
-                                scf::YieldOp op, uint64_t time, Graph &G) {
-
-    unsigned token_id = 0;
-    for (auto operand : op->getOperands()) {
-      // With scf.for possibly having multiple tokens, check for the token ids
-      // which are ready to advance to the next iteration
-      auto dep_op = operand.getDefiningOp();
-      auto dep_entry = canonicalizer.getVertexFromOp(dep_op, dep_ctx, "front");
-      auto &dep_node = G[dep_entry.first];
-
-      // Check each token's dependence fulfillment at scf.yield
-      std::string node_type = "ssa";
-      if (checkEachDependenceFulfillment(std::make_pair(&dep_node, node_type),
-                                         nullptr, time)) {
-        token_ids.push_back(token_id);
-      }
-
-      token_id++;
-    }
-  }
+  //===----------------------------------------------------------------------===//
+  // Latency estimation helper functions
+  //===----------------------------------------------------------------------===//
 
   // Util. functions to estimate event latency
   uint64_t getTensorVolume(const mlir::ShapedType ty) {
@@ -1229,11 +1330,201 @@ private:
     return (uint64_t)ceil(seconds * cps);
   }
 
+  //===----------------------------------------------------------------------===//
+  // Dependency helper functions
+  //===----------------------------------------------------------------------===//
+
+  bool pushToDepListIfAffineIfHit(
+      std::vector<std::pair<dependencyNodeEntry, std::string>> &dep_list,
+      dependencyNodeEntry &node, std::vector<unsigned> position,
+      std::string dep_type = "") {
+    bool pushed = false;
+    if (sim_granularity == "core" && node.op &&
+        node.op->getParentOfType<mlir::AffineIfOp>()) {
+      std::vector<Operation *> affine_if_nest;
+      Operation *spatial_loop = nullptr;
+      getAffineIfNestAndSpatialLoopFromOp(node.op, affine_if_nest,
+                                          spatial_loop);
+      if (positionHitsAffineIfCondition(node.op, spatial_loop, affine_if_nest,
+                                        position)) {
+        dep_list.push_back(std::make_pair(node, dep_type));
+        pushed = true;
+      }
+    } else {
+      dep_list.push_back(std::make_pair(node, dep_type));
+      pushed = true;
+    }
+    return pushed;
+  }
+
+  // Check if a channel dependence has been fulfilled
+  bool checkChannelDependenceFulfillment(dependencyNodeEntry dep_node,
+                                         std::vector<unsigned> position) {
+    auto channel_op = dyn_cast<air::ChannelInterface>(dep_node.op);
+    assert(channel_op);
+    std::string chan_name = channel_op.getChanName().str();
+    unsigned th =
+        (position.size()) ? (tokenSpatialFactor(dep_node.op, position)) : (1);
+    bool found_entry = false;
+    for (auto entry : launch_runner_node.channel_token_count) {
+      if ((!found_entry) && entry.first == chan_name) {
+        found_entry = true;
+        if (entry.second < th) {
+          return false;
+        }
+      }
+    }
+    if (!found_entry) {
+      return false;
+    }
+    return true;
+  }
+
+  // Check if a dependence has been fulfilled
+  bool checkEachDependenceFulfillment(
+      std::pair<dependencyNodeEntry, std::string> &dep,
+      dependencyNodeEntry &node, std::vector<unsigned> position,
+      uint64_t time) {
+    dependencyNodeEntry &dep_node = dep.first;
+    if (dep.second == "ssa") {
+      if ((!dep_node.is_started()) || (!dep_node.is_done(time))) {
+        // If source and sink of dep are both under the same loop
+        if (node.op && dep_node.op &&
+            shareInnerMostForLoop(node.op, dep_node.op)) {
+          // Check node's timestamp log, in case if it has executed in previous
+          // loop iterations
+          unsigned dep_iter_count = dep_node.start_end_time_log.size();
+          unsigned node_iter_count = node.start_end_time_log.size();
+          if (node.is_started() && node.is_done(time))
+            node_iter_count++;
+          if (dep_iter_count <= node_iter_count) {
+            return false;
+          }
+        } else
+          return false;
+      }
+    } else if (dep.second == "ssa_loop_yield") {
+      // Threshold token_count for dep fulfillment = how many iter_args does
+      // node depend on
+      unsigned th = tokenCountThresholdForExecution(node.op);
+      if (node.token_count < th * tokenSpatialFactor(node.op, position)) {
+        return false;
+      }
+    } else if (dep.second == "sym") {
+      if (!checkChannelDependenceFulfillment(dep_node, position)) {
+        return false;
+      }
+    } else {
+      assert(false && "Unknown async token type");
+    }
+    return true;
+  }
+
+  // Check if a dependence has been fulfilled
+  bool checkEachDependenceFulfillment(
+      std::pair<dependencyNodeEntry, std::string> &dep, uint64_t time) {
+    if (dep.second == "ssa") {
+      assert(dep.first.start_time >= 0);
+      if ((!dep.first.is_started()) || (!dep.first.is_done(time))) {
+        // If source and sink of dep are both under the same loop
+        return false;
+      }
+    } else if (dep.second == "ssa_loop_yield") {
+      // Threshold token_count for dep fulfillment = how many iter_args does
+      // node depend on
+      return false;
+    } else if (dep.second == "sym") {
+      dependencyNodeEntry &dep_node = dep.first;
+      if (!checkChannelDependenceFulfillment(dep_node, {})) {
+        return false;
+      }
+    } else {
+      assert(false && "Unknown async token type");
+    }
+    return true;
+  }
+
+  // Check if all dependencies of an async op have been fulfilled
+  bool checkAllDependenciesFulfillment(
+      std::vector<std::pair<dependencyNodeEntry, std::string>> dep_list,
+      dependencyNodeEntry node, std::vector<unsigned> position, uint64_t time,
+      bool isBlocking) {
+    bool dep_fulfilled = true;
+    if (isBlocking) {
+      dep_fulfilled = true;
+      for (auto &dep : dep_list) {
+        dep_fulfilled = dep_fulfilled && checkEachDependenceFulfillment(
+                                             dep, node, position, time);
+      }
+    } else {
+      dep_fulfilled = false;
+      for (auto &dep : dep_list) {
+        dep_fulfilled = dep_fulfilled || checkEachDependenceFulfillment(
+                                             dep, node, position, time);
+      }
+    }
+    return dep_fulfilled;
+  }
+
+  // Check if op is a non-blocking event
+  bool isNonBlocking(Operation *op) {
+    if (auto yield = dyn_cast<scf::YieldOp>(op)) {
+      if (yield->getOperands().size() > 1) {
+        // Multi-token for loop requires scf.yield to be non-blocking per async
+        // token
+        return true;
+      }
+    }
+    return false;
+  }
+
+  //===----------------------------------------------------------------------===//
+  // Misc. helper functions
+  //===----------------------------------------------------------------------===//
+
+  // Get a vector of first elements from a vector of pairs
+  std::vector<Graph::vertex_descriptor> getVectorOfFirstFromVectorOfPairs(
+      std::vector<std::pair<Graph::vertex_descriptor, unsigned>> pairs) {
+    std::vector<Graph::vertex_descriptor> items;
+    std::transform(pairs.begin(), pairs.end(), std::back_inserter(items),
+                   [](const std::pair<Graph::vertex_descriptor, unsigned> &p) {
+                     return p.first;
+                   });
+    return items;
+  }
+
+  // Returns the scf parent op from scf.yield op
+  template <typename T> Operation *getScfParentOpFromYieldOp(scf::YieldOp op) {
+    if (auto scfop = dyn_cast<T>(op->getParentOp())) {
+      return scfop.getOperation();
+    }
+    return nullptr;
+  }
+
+  std::string to_string(Operation *op) {
+    return op->getName().getStringRef().str();
+  }
+
+  std::string to_string(std::vector<unsigned> vec) {
+    std::string output = "";
+    for (unsigned i = 0; i < vec.size(); i++) {
+      output += std::to_string(vec[i]);
+      if (i != vec.size() - 1) {
+        output += ",";
+      }
+    }
+    return output;
+  }
+
+  std::string to_string(dependencyNodeEntry &c) { return to_string(c.op); }
+
 }; // AIRRunner_impl
 
 AIRRunner::AIRRunner(llvm::raw_ostream &trace_stream,
-                     llvm::json::Value &json_model, bool verbose) {
-  impl = std::make_unique<AIRRunner_impl>(trace_stream, json_model, verbose);
+                     llvm::json::Value &json_model, std::string sim_granularity,
+                     bool verbose) {
+  impl = std::make_unique<AIRRunner_impl>(trace_stream, json_model,
+                                          sim_granularity, verbose);
   if (verbose) {
     llvm::DebugFlag = true;
     llvm::setCurrentDebugType(DEBUG_TYPE);

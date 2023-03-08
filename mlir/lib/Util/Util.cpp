@@ -13,8 +13,10 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/OperationSupport.h"
 
+#include "mlir/Support/MathExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -356,4 +358,168 @@ air::getTheOtherChannelOpThroughSymbol(air::ChannelGetOp get) {
   auto channel_op = getChannelDeclarationThroughSymbol(
       dyn_cast<air::ChannelInterface>(get.getOperation()));
   return getChannelPutOpThroughSymbol(channel_op);
+}
+
+// Get sizes from integerset
+void air::getSizesFromIntegerSet(MLIRContext *ctx, IntegerSet int_set,
+                                 SmallVector<int, 2> &lbs_int,
+                                 SmallVector<int, 2> &ubs_int) {
+
+  auto constraints = int_set.getConstraints();
+  auto eqFlags = int_set.getEqFlags();
+
+  // Get an affine expression set made of zeros
+  SmallVector<AffineExpr, 2> zero_syms;
+  for (unsigned i = 0; i < int_set.getNumSymbols(); i++) {
+    zero_syms.push_back(getAffineConstantExpr(0, ctx));
+  }
+
+  // Fill in lbs and ubs vectors by evaluating affine set
+  for (unsigned i = 0; i < int_set.getNumSymbols(); i++) {
+    int c_iter = 0;
+    for (auto c : constraints) {
+      if (c.isSymbolicOrConstant()) {
+        auto newC = c.replaceSymbols(zero_syms);
+        auto expr =
+            simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
+        int v = expr.getValue();
+        if (c.isFunctionOfSymbol(i)) {
+          if (eqFlags[c_iter]) {
+            v = abs(v);
+            lbs_int[i] = v;
+            ubs_int[i] = v;
+          } else {
+            if (v > 0)
+              ubs_int[i] = v;
+            else if (v < 0)
+              lbs_int[i] = -v;
+            else
+              lbs_int[i] = v;
+          }
+        }
+      }
+      c_iter++;
+    }
+  }
+}
+
+// Get spatial sizes from spatial loop
+void air::getSizesFromSpatialLoop(Operation *spatial_loop,
+                                  SmallVector<int, 2> &lbs_spatial,
+                                  SmallVector<int, 2> &ubs_spatial) {
+  if (auto scf_par = dyn_cast<scf::ParallelOp>(spatial_loop)) {
+    for (unsigned i = 0; i < scf_par.getLowerBound().size(); i++) {
+      auto lbCstOp =
+          scf_par.getLowerBound()[i].getDefiningOp<arith::ConstantIndexOp>();
+      auto ubCstOp =
+          scf_par.getUpperBound()[i].getDefiningOp<arith::ConstantIndexOp>();
+      auto stepCstOp =
+          scf_par.getStep()[i].getDefiningOp<arith::ConstantIndexOp>();
+      lbs_spatial.push_back(mlir::ceilDiv(lbCstOp.value(), stepCstOp.value()));
+      ubs_spatial.push_back(mlir::ceilDiv(ubCstOp.value(), stepCstOp.value()) -
+                            1);
+    }
+  } else if (auto hier = dyn_cast<air::HierarchyInterface>(spatial_loop)) {
+    for (unsigned i = 0; i < hier.getSizeOperands().size(); i++) {
+      lbs_spatial.push_back(0);
+      ubs_spatial.push_back(hier.getSizeOperands()[i]
+                                .getDefiningOp<arith::ConstantIndexOp>()
+                                .value() -
+                            1);
+    }
+  }
+}
+
+// Get else sizes from affine.if. Assumption: rectangular input, then and else
+// sizes only
+void air::getElseSizesFromAffineIf(SmallVector<int, 2> &lbs_in,
+                                   SmallVector<int, 2> &ubs_in,
+                                   SmallVector<int, 2> &lbs_then,
+                                   SmallVector<int, 2> &ubs_then) {
+  for (unsigned i = 0; i < lbs_in.size(); i++) {
+    if ((lbs_in[i] != lbs_then[i])) {
+      ubs_in[i] = lbs_then[i] - 1;
+      lbs_in[i] = lbs_in[i];
+      return;
+    } else if ((ubs_in[i] != ubs_then[i])) {
+      lbs_in[i] = ubs_then[i] + 1;
+      ubs_in[i] = ubs_in[i];
+      return;
+    }
+  }
+}
+
+// Check if op hits affine.if condition
+bool air::positionHitsAffineIfCondition(Operation *op,
+                                        std::vector<unsigned> position) {
+  std::vector<Operation *> affine_if_nest;
+  Operation *spatial_loop = nullptr;
+  getAffineIfNestAndSpatialLoopFromOp(op, affine_if_nest, spatial_loop);
+  return positionHitsAffineIfCondition(op, spatial_loop, affine_if_nest,
+                                       position);
+}
+
+// Walk affine.if then and else blocks and check if current core lies in
+// condition
+bool air::positionHitsAffineIfCondition(Operation *op, Operation *spatial_loop,
+                                        std::vector<Operation *> affine_if_nest,
+                                        std::vector<unsigned> position) {
+  SmallVector<int, 2> lbs_spatial;
+  SmallVector<int, 2> ubs_spatial;
+  getSizesFromSpatialLoop(spatial_loop, lbs_spatial, ubs_spatial);
+
+  // Walk through affine.if nest (in reverse order through vector)
+  for (auto it = affine_if_nest.rbegin(); it != affine_if_nest.rend(); ++it) {
+    auto affine_if = dyn_cast<mlir::AffineIfOp>(*it);
+    // Get then integerset sizes
+    SmallVector<int, 2> lbs_int = {0, 0};
+    SmallVector<int, 2> ubs_int = {0, 0};
+    IntegerSet int_set = affine_if.getIntegerSet();
+    getSizesFromIntegerSet(affine_if->getContext(), int_set, lbs_int, ubs_int);
+    // If found then block containing op
+    if (affine_if.getThenBlock()->findAncestorOpInBlock(*op)) {
+      bool hit = true;
+      for (unsigned i = 0; i < lbs_int.size(); i++) {
+        if ((position[i] < lbs_int[i]) || (position[i] > ubs_int[i])) {
+          hit = false;
+        }
+      }
+      return hit;
+    }
+    // Else keep going, while updating the spatial sizes wrt else condition
+    else {
+      getElseSizesFromAffineIf(lbs_spatial, ubs_spatial, lbs_int, ubs_int);
+    }
+  }
+  // If op isn't in any then blocks in affine.if nest
+  bool hit = true;
+  for (unsigned i = 0; i < lbs_spatial.size(); i++) {
+    if ((position[i] < lbs_spatial[i]) || (position[i] > ubs_spatial[i])) {
+      hit = false;
+    }
+  }
+  return hit;
+}
+
+// Get parent affine.if nest and ancestor spatial loop from op
+Operation *air::getAffineIfNestAndSpatialLoopFromOp(
+    Operation *op, std::vector<Operation *> &affine_if_nest,
+    Operation *&spatial_loop) {
+  Operation *parent = op;
+  while ((!isa<scf::ParallelOp>(parent)) &&
+         (!isa<air::HierarchyInterface>(parent))) {
+    if (isa<mlir::AffineIfOp>(parent)) {
+      affine_if_nest.push_back(parent);
+    }
+    parent = parent->getParentOp();
+    if (isa<func::FuncOp>(parent)) {
+      // Found affine.if not filtering on a spatial loop (air.hierarchy or
+      // scf.parallel)
+      return nullptr;
+    }
+  }
+  // Skip over the first parent hierarchy or parallel loop
+  spatial_loop = parent;
+  parent = parent->getParentOp();
+  return parent;
 }

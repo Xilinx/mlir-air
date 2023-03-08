@@ -18,7 +18,8 @@ extern "C" {
 #endif
 
 void airRunnerRun(MlirModule module, const char *json_file_name,
-                  const char *output_file_name, const char *function, bool verbose);
+                  const char *output_file_name, const char *function,
+                  const char *sim_granularity, bool verbose);
 
 #ifdef __cplusplus
 }

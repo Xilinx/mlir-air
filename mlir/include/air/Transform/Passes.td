@@ -888,7 +888,9 @@ def AIRDependencyParseGraph: Pass<"air-dependency-parse-graph", "ModuleOp"> {
   let options = [
     Option<"clDumpDir", "output-dir", "std::string", 
             /*default=*/"\"\"",
-            "Target directory to dump dot graphs.">
+            "Target directory to dump dot graphs.">,
+    Option<"clShowCores", "show-cores", "bool", /*default=*/"false",
+            "Show the graph of each AIE core.">
   ];
 }
 

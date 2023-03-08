@@ -5,11 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-runner %s -f test -m %S/arch.json | FileCheck %s
+// RUN: air-runner %s -f test -m %S/../arch.json -g core | FileCheck %s
 
-// Air channel ops with broadcast
+// Air channel ops with broadcast, running each core in a herd
 
-// CHECK-COUNT-160: "name": "ChannelGetOp@channel
+// CHECK-COUNT-544: "name": "ChannelGetOp@channel
 
 // CHECK: "name": "LaunchTerminator",
 // CHECK: "ph": "B",
@@ -117,3 +117,4 @@ module {
     return %results_2 : memref<256x1024xbf16>
   }
 }
+

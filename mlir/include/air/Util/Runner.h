@@ -19,7 +19,7 @@ namespace air {
 struct AIRRunner {
 
   AIRRunner(llvm::raw_ostream &trace_stream, llvm::json::Value &json_model,
-            bool verbose = false);
+            std::string sim_granularity = "herd", bool verbose = false);
   ~AIRRunner();
 
   void emitTraceStart(llvm::raw_ostream &s);
