@@ -374,6 +374,7 @@ dot files for graph visualization.
 #### Options
 ```
 -output-dir : Target directory to dump dot graphs.
+-show-cores : Show the graph of each AIE core.
 ```
 ### `-air-dependency-schedule-opt`: Optimize scheduling based on air async dependency
 This pass contains multiple passes which optimize the schedule based on the
