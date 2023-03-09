@@ -228,14 +228,6 @@ void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op,
   }
 }
 
-// Returns the scf parent op from scf.yield op
-template <typename T> Operation *getScfParentOpFromYieldOp(scf::YieldOp op) {
-  if (auto scfop = dyn_cast<T>(op->getParentOp())) {
-    return scfop.getOperation();
-  }
-  return nullptr;
-}
-
 // Get loop-carried dependency token from scf loop op
 Value getLoopCarriedTokenFromScfOp(scf::ParallelOp op) {
   assert(op.getInitVals().size());
