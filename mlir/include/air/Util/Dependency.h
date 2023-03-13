@@ -63,7 +63,7 @@ void addAsyncDependencyIfNew(air::AsyncOpInterface op, Value token);
 
 struct dependencyNodeEntry;
 struct dependencyGraph;
-struct runnerNode;
+class runnerNode;
 
 // GraphViz node properties for visualization
 struct graphNodeProperties {
@@ -134,9 +134,6 @@ typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::bidirectionalS,
 typedef boost::graph_traits<Graph>::in_edge_iterator in_edge_iterator;
 typedef boost::graph_traits<Graph>::out_edge_iterator out_edge_iterator;
 typedef boost::graph_traits<Graph>::vertex_iterator vertex_iterator;
-
-struct runnerNode; // Forward declaration of runner node struct for
-                   // dependencyGraph pointer member
 
 // Dependency graph object
 struct dependencyGraph {
