@@ -34,6 +34,8 @@
 #define NUM_3D (IMAGE_WIDTH / TILE_WIDTH)
 #define NUM_4D (IMAGE_HEIGHT / TILE_HEIGHT)
 
+#define VERBOSE 0
+
 int main(int argc, char *argv[]) {
   uint64_t col = 7;
   uint64_t row = 0;
@@ -144,7 +146,8 @@ int main(int argc, char *argv[]) {
 
   // Core 7,2
   // Send the packet to write the tiles
-  printf("[EDDIE DEBUG] Sending pkt_a\n");
+  if (VERBOSE)
+    printf("[DEBUG] Sending pkt_a\n");
   wr_idx = queue_add_write_index(queues[0], 1);
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_a =
@@ -158,7 +161,8 @@ int main(int argc, char *argv[]) {
 
   // Core 7,4
   // Send the packet to write the tiles
-  printf("[EDDIE DEBUG] Sending pkt_b\n");
+  if (VERBOSE)
+    printf("[DEBUG] Sending pkt_b\n");
   wr_idx = queue_add_write_index(queues[0], 1);
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_b =
@@ -172,7 +176,8 @@ int main(int argc, char *argv[]) {
 
   // Core 8,2
   // Send the packet to write the tiles
-  printf("[EDDIE DEBUG] Sending pkt_a\n");
+  if (VERBOSE)
+    printf("[DEBUG] Sending pkt_a\n");
   wr_idx = queue_add_write_index(queues[0], 1);
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_e =
@@ -186,7 +191,8 @@ int main(int argc, char *argv[]) {
 
   // Core 8,4
   // Send the packet to write the tiles
-  printf("[EDDIE DEBUG] Sending pkt_f\n");
+  if (VERBOSE)
+    printf("[DEBUG] Sending pkt_f\n");
   wr_idx = queue_add_write_index(queues[0], 1);
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_f =
@@ -200,7 +206,8 @@ int main(int argc, char *argv[]) {
 
   // Core 7,2
   // Start by sending the packet to read from the tiles
-  printf("[EDDIE DEBUG] Sending pkt_c\n");
+  if (VERBOSE)
+    printf("[DEBUG] Sending pkt_c\n");
   wr_idx = queue_add_write_index(queues[0], 1);
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_c =
@@ -214,7 +221,8 @@ int main(int argc, char *argv[]) {
 
   // Core 7,4
   // Start by sending the packet to read from the tiles
-  printf("[EDDIE DEBUG] Sending pkt_d\n");
+  if (VERBOSE)
+    printf("[DEBUG] Sending pkt_d\n");
   wr_idx = queue_add_write_index(queues[0], 1);
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_d =
@@ -228,7 +236,8 @@ int main(int argc, char *argv[]) {
 
   // Core 8,2
   // Start by sending the packet to read from the tiles
-  printf("[EDDIE DEBUG] Sending pkt_g\n");
+  if (VERBOSE)
+    printf("[DEBUG] Sending pkt_g\n");
   wr_idx = queue_add_write_index(queues[0], 1);
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt_g =

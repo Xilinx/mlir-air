@@ -6,22 +6,22 @@
 //
 //===----------------------------------------------------------------------===//
 
-module {
-
-func.func @graph(%arg0 : memref<256xi32>) -> () {
-  %herd_cols = arith.constant 1 : index
-  %herd_rows = arith.constant 1 : index
-  air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0) : memref<256xi32> attributes { sym_name="herd_0"} {
+func.func @graph(%arg0: memref<256xi32>) {
+  %c1 = arith.constant 1 : index
+  air.herd @herd_0  tile (%arg1, %arg2) in (%arg3=%c1, %arg4=%c1) args(%arg5=%arg0) : memref<256xi32> {
     %c0 = arith.constant 0 : index
+    %c1_0 = arith.constant 1 : index
     %c256 = arith.constant 256 : index
-    %buf0 = memref.alloc() : memref<256xi32, 2>
-    air.dma_memcpy_nd (%ext0[%c0][%c256][%c0], %buf0[%c0][%c256][%c0]) {id = 1 : i32} : (memref<256xi32>, memref<256xi32, 2>)
-    memref.dealloc %buf0 : memref<256xi32, 2>
+    %alloc = memref.alloc() : memref<256xi32, 2>
+    scf.for %arg6 = %c0 to %c256 step %c1_0 {
+      %0 = arith.index_cast %arg6 : index to i32
+      %c16_i32 = arith.constant 16 : i32
+      %1 = arith.addi %0, %c16_i32 : i32
+      memref.store %1, %alloc[%arg6] : memref<256xi32, 2>
+    }
+    air.dma_memcpy_nd (%arg5[%c0] [%c256] [%c0], %alloc[%c0] [%c256] [%c0]) {id = 1 : i32} : (memref<256xi32>, memref<256xi32, 2>)
+    memref.dealloc %alloc : memref<256xi32, 2>
     air.herd_terminator
   }
   return
 }
-
-}
-
-

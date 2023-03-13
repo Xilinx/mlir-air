@@ -73,9 +73,6 @@ main(int argc, char *argv[])
 
   queue_t *q = queues[0];
 
-  for (int i=0; i<DMA_COUNT; i++)
-    mlir_aie_write_buffer_buf0(xaie, i, i+0x10);
-
   printf("loading aie_ctrl.so\n");
   auto handle = air_module_load_from_file(nullptr,q);
   assert(handle && "failed to open aie_ctrl.so");
