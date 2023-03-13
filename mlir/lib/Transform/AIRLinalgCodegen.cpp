@@ -2189,6 +2189,8 @@ transform::LinalgPromoteOp::apply(transform::TransformResults &results,
   SetVector<Operation *> transformed;
   int64_t operandOffset = 0;
 
+  uint32_t group_size = getGroupSize();
+  uint32_t group = 0;
   for (Operation *target : state.getPayloadOps(getTarget())) {
     auto linalgOp = dyn_cast<linalg::LinalgOp>(target);
     if (!linalgOp)
@@ -2210,7 +2212,10 @@ transform::LinalgPromoteOp::apply(transform::TransformResults &results,
       }
     }
     operandOffset += numOperands;
-
+    if (++group == group_size) {
+      group = 0;
+      operandOffset = 0;
+    }
     if (opersToPromote.empty())
       continue;
 
