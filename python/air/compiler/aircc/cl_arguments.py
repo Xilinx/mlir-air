@@ -13,6 +13,7 @@ def parse_args(args=None):
     parser = argparse.ArgumentParser(prog='aircc')
     parser.add_argument('air_mlir_file',
             metavar="air_mlir_file",
+            default="air.mlir",
             help='AIR Dialect mlir file')
     parser.add_argument('-o',
             dest="output_file",
