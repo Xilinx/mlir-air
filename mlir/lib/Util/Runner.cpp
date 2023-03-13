@@ -46,7 +46,9 @@
 #include <numeric>
 #include <string>
 
+#include "./Runner/Resource.cpp"
 #include "./Runner/RunnerNode.cpp"
+// #include "./Runner/ResourceHierarchy.cpp"
 
 #define DEBUG_TYPE "air-runner"
 
@@ -392,6 +394,11 @@ public:
 
     // Walk the launch graph and write process name metadata in trace
     writeTraceMetadataProcNames(hostGraph);
+
+    // Walk the json file and create resource model
+    auto model = jsonModel.getAsObject();
+    assert(model);
+    auto device_hierarchy = device(model);
 
     uint64_t time = 1;
     for (auto &launchGraph : hostGraph.subgraphs) {
