@@ -172,7 +172,7 @@ public:
   }
 
   // Model each event's latency
-  uint64_t modelOp(dependencyNodeEntry &c) {
+  uint64_t modelOp(device &d, dependencyNodeEntry &c) {
     auto type = c.asyncEventType;
     auto name = c.asyncEventName;
     uint64_t execution_time = 1;
@@ -189,9 +189,9 @@ public:
       // if there is a size mismatch, it's because we're moving a tile of the
       // larger tensor
       if (getTensorVolume(srcTy) <= getTensorVolume(dstTy))
-        execution_time = getTransferCost(srcSpace, dstSpace, srcTy);
+        execution_time = getTransferCost(d, srcSpace, dstSpace, srcTy);
       else
-        execution_time = getTransferCost(srcSpace, dstSpace, dstTy);
+        execution_time = getTransferCost(d, srcSpace, dstSpace, dstTy);
     } else if (type == "channel" &&
                (name.find("ChannelGetOp") != std::string::npos)) {
       auto getOp = mlir::dyn_cast<xilinx::air::ChannelGetOp>(c.op);
@@ -206,84 +206,15 @@ public:
       // if there is a size mismatch, it's because we're moving a tile of the
       // larger tensor
       if (getTensorVolume(srcTy) <= getTensorVolume(dstTy))
-        execution_time = getTransferCost(srcSpace, dstSpace, srcTy);
+        execution_time = getTransferCost(d, srcSpace, dstSpace, srcTy);
       else
-        execution_time = getTransferCost(srcSpace, dstSpace, dstTy);
+        execution_time = getTransferCost(d, srcSpace, dstSpace, dstTy);
     } else if (type == "execute" && name != "ExecuteTerminatorOp") {
       assert(dyn_cast<air::ExecuteOp>(c.op));
       auto child_op = &*(c.op->getRegions().front().getOps().begin());
       if (auto Op = mlir::dyn_cast<linalg::LinalgOp>(child_op)) {
         uint64_t compute_xfer_cost = 0;
-        uint64_t compute_op_cost = 0;
-        auto opCounts = xilinx::air::CostModel().getOpCounts(child_op);
-        std::string skip = "footprint";
-        std::string memops = "reads;writes;";
-        std::string cpuops = "math.rsqrt;";
-        cpuops += "arith.mulf;arith.divf;arith.addf;arith.subf;arith.truncf;"
-                  "arith.cmpf;arith.maxf;";
-        cpuops += "arith.muli;arith.divi;arith.addi;arith.subi;arith.trunci;"
-                  "arith.cmpi;arith.maxi";
-        cpuops += "std.select";
-        uint64_t memory_op_count = 0;
-        uint64_t compute_op_count = 0;
-        for (auto &p : opCounts.map) {
-          auto name = std::get<0>(p);
-          auto count = std::get<1>(p);
-          if (memops.find(name) != std::string::npos)
-            memory_op_count += count;
-          else if (cpuops.find(name) != std::string::npos)
-            compute_op_count += count;
-          else if (skip.find(name) == std::string::npos)
-            LLVM_DEBUG(llvm::dbgs() << name << " not counted\n");
-        }
-
-        if (compute_op_count) {
-          // defaults
-          double num_cores = 1; // one because the post-tiling code in
-                                // air.herd's body is for each core
-          double ops_per_core_per_cycle = 8; // vector width for this type
-          double cycles_per_second = 1e9;
-          double efficiency = 1.0f;
-
-          auto model = jsonModel.getAsObject();
-          assert(model);
-
-          // if kernels exists, assume everthing else exists
-          if (model && model->getObject("kernels")) {
-            // device level override of defaults
-            if (auto d = model->getNumber("ops_per_core_per_cycle"))
-              ops_per_core_per_cycle = *d;
-            if (auto d = model->getNumber("clock"))
-              cycles_per_second = *d;
-            if (auto d = model->getNumber("efficiency"))
-              efficiency = *d;
-
-            // kernel level override of defaults
-            auto kernels = model->getObject("kernels");
-            assert(kernels && "kernels not found in JSON model");
-
-            if (kernels) {
-              auto kernel =
-                  kernels->getObject(child_op->getName().getStringRef());
-              if (kernel) {
-                if (auto d = kernel->getNumber("ops_per_core_per_cycle"))
-                  ops_per_core_per_cycle = *d;
-                if (auto d = kernel->getNumber("clock"))
-                  cycles_per_second = *d;
-                if (auto d = kernel->getNumber("efficiency"))
-                  efficiency = *d;
-              }
-            }
-          }
-
-          double ops_per_cycle =
-              num_cores * ops_per_core_per_cycle * efficiency;
-          assert(ops_per_cycle > 0 &&
-                 "ops per cycle in model must be greater than zero");
-
-          double cycles = ceil(compute_op_count / ops_per_cycle);
-          compute_op_cost = cycles;
-        }
+        uint64_t compute_op_cost = getComputeCost(d, child_op);
         execution_time = std::max(compute_op_cost, compute_xfer_cost);
       }
     } else {
@@ -295,7 +226,8 @@ public:
     return execution_time;
   }
 
-  void processGraph(runnerNode &c, uint64_t time) {
+  void processGraph(runnerNode &c, device &device_resource_node,
+                    uint64_t time) {
 
     Graph &G = c.ctrl_g->g;
 
@@ -370,7 +302,8 @@ public:
                             c.ctrl_g->position, c.ctrl_g->hierarchyOp));
 
       G[next_vertex].start_time = time;
-      G[next_vertex].end_time = time + modelOp(G[next_vertex]);
+      G[next_vertex].end_time =
+          time + modelOp(device_resource_node, G[next_vertex]);
       // emit trace event begin
       auto runner_id = getIdAttr(c.ctrl_g->hierarchyOp);
       auto tid = c.wavefront.back().second;
@@ -397,8 +330,8 @@ public:
 
     // Walk the json file and create resource model
     auto model = jsonModel.getAsObject();
-    assert(model);
-    auto device_hierarchy = device(model);
+    assert(model && "Failed to read JSON model");
+    auto device_resource_node = device(model);
 
     uint64_t time = 1;
     for (auto &launchGraph : hostGraph.subgraphs) {
@@ -423,12 +356,13 @@ public:
         launch_runner_node.initRunnerNodesFromLaunchGraph(launchGraph);
 
         // Schedule launch runner node and its sub-runner nodes
-        scheduleLaunch(launch_runner_node, time);
+        scheduleLaunch(launch_runner_node, device_resource_node, time);
       }
     }
   }
 
-  void scheduleLaunch(runnerNode &launch, uint64_t &time) {
+  void scheduleLaunch(runnerNode &launch, device &device_resource_node,
+                      uint64_t &time) {
 
     auto start_v = launch.ctrl_g->start_vertex;
     // Reset launch graph
@@ -446,20 +380,20 @@ public:
       running = false;
       std::vector<uint64_t> next_times;
 
-      processGraph(launch, time);
+      processGraph(launch, device_resource_node, time);
       if (launch.wavefront.size()) {
         running = true;
         // getTimeStampsFromWavefront(next_times, launch);
       }
 
       for (auto &partition_runner_node : launch.sub_runner_nodes) {
-        processGraph(partition_runner_node, time);
+        processGraph(partition_runner_node, device_resource_node, time);
         if (partition_runner_node.wavefront.size()) {
           running = true;
           // getTimeStampsFromWavefront(next_times, partition_runner_node);
         }
         for (auto &herd_runner_node : partition_runner_node.sub_runner_nodes) {
-          processGraph(herd_runner_node, time);
+          processGraph(herd_runner_node, device_resource_node, time);
           if (herd_runner_node.wavefront.size()) {
             running = true;
             // getTimeStampsFromWavefront(next_times, herd_runner_node);
@@ -603,59 +537,93 @@ private:
     }
   }
 
-  uint64_t getTransferCost(unsigned srcSpace, unsigned dstSpace,
-                           mlir::Type ty) {
-    return getTransferCost(srcSpace, dstSpace, getTensorVolume(ty));
+  std::string getElementTypeAsString(const mlir::Type ty) {
+    if (auto st = ty.dyn_cast<mlir::ShapedType>()) {
+      return to_string(st.getElementType());
+    } else {
+      return to_string(ty);
+    }
   }
 
-  uint64_t getTransferCost(unsigned srcSpace, unsigned dstSpace,
-                           int64_t volume) {
-    std::map<std::pair<unsigned, unsigned>, double> interface_bw;
+  uint64_t getTransferCost(device &d, unsigned srcSpace, unsigned dstSpace,
+                           mlir::Type ty) {
+    return getTransferCost(d, srcSpace, dstSpace, getTensorVolume(ty), ty);
+  }
 
-    // defaults
-    interface_bw.insert({{0, 1}, 100});
-    interface_bw.insert({{1, 0}, 100});
-    interface_bw.insert({{1, 2}, DBL_MAX});
-    interface_bw.insert({{2, 1}, DBL_MAX});
+  uint64_t getTransferCost(device &d, unsigned srcSpace, unsigned dstSpace,
+                           int64_t volume, mlir::Type ty) {
     double cps = 0.0f;
-
-    // override of defaults
-    auto model = jsonModel.getAsObject();
     unsigned datawidth = 0;
-    // if interfaces exists, assume everthing else exists
-    if (model && model->getArray("interfaces")) {
-      auto interfaces = model->getArray("interfaces");
-      assert(interfaces);
-
-      for (auto it = interfaces->begin(), ie = interfaces->end(); it != ie;
-           ++it) {
-        llvm::json::Value jv = *it;
-        llvm::json::Object *interface = jv.getAsObject();
-        assert(interface);
-        auto srcSpace = interface->getNumber("src");
-        auto dstSpace = interface->getNumber("dst");
-        auto bps = interface->getNumber("bytes_per_second");
-        assert(srcSpace && dstSpace && bps);
-        unsigned s = *srcSpace;
-        unsigned d = *dstSpace;
-        double b = *bps;
-        if (interface_bw.count({s, d}))
-          interface_bw[{s, d}] = b;
-        else
-          interface_bw.insert({{s, d}, b});
+    if (d.ports.size()) {
+      cps = d.clock;
+      if (auto bytes = d.datatypes[getElementTypeAsString(ty)]) {
+        datawidth = bytes;
+      } else {
+        assert(false && "data type not found in JSON model");
       }
-      if (auto d = model->getNumber("clock"))
-        cps = *d;
-      if (auto dt = model->getObject("datatype"))
-        if (auto bytes = dt->getNumber("bytes"))
-          datawidth = *bytes;
     }
     assert(cps != 0.0f && datawidth);
 
     double bytes = volume * datawidth;
-    double bps = interface_bw[{srcSpace, dstSpace}];
+    assert(d.ports[std::make_pair(srcSpace, dstSpace)].size());
+    double bps = d.ports[{srcSpace, dstSpace}][0]->data_rate;
     double seconds = bytes / bps;
     return (uint64_t)ceil(seconds * cps);
+  }
+
+  uint64_t getComputeCost(device &d, Operation *op) {
+    uint64_t compute_op_cost = 0;
+    auto opCounts = xilinx::air::CostModel().getOpCounts(op);
+    std::string skip = "footprint";
+    std::string memops = "reads;writes;";
+    std::string cpuops = "math.rsqrt;";
+    cpuops += "arith.mulf;arith.divf;arith.addf;arith.subf;arith.truncf;"
+              "arith.cmpf;arith.maxf;";
+    cpuops += "arith.muli;arith.divi;arith.addi;arith.subi;arith.trunci;"
+              "arith.cmpi;arith.maxi";
+    cpuops += "std.select";
+    uint64_t memory_op_count = 0;
+    uint64_t compute_op_count = 0;
+    for (auto &p : opCounts.map) {
+      auto name = std::get<0>(p);
+      auto count = std::get<1>(p);
+      if (memops.find(name) != std::string::npos)
+        memory_op_count += count;
+      else if (cpuops.find(name) != std::string::npos)
+        compute_op_count += count;
+      else if (skip.find(name) == std::string::npos)
+        LLVM_DEBUG(llvm::dbgs() << name << " not counted\n");
+    }
+
+    if (compute_op_count) {
+      // defaults
+      double num_cores = 1;              // one because the post-tiling code in
+                                         // air.herd's body is for each core
+      double ops_per_core_per_cycle = 8; // vector width for this type
+      double cycles_per_second = 1e9;
+      double efficiency = 1.0f;
+
+      auto model = jsonModel.getAsObject();
+      assert(model);
+      assert(d.kernels.size() && "kernels not found in JSON model");
+
+      // if kernels exists, assume everthing else exists
+      if (d.kernels.count(air::to_string(op))) {
+        ops_per_core_per_cycle =
+            d.kernels[air::to_string(op)]->ops_per_core_per_cycle;
+        cycles_per_second = d.clock;
+        cycles_per_second = d.kernels[air::to_string(op)]->efficiency;
+        cycles_per_second = d.clock;
+      }
+
+      double ops_per_cycle = num_cores * ops_per_core_per_cycle * efficiency;
+      assert(ops_per_cycle > 0 &&
+             "ops per cycle in model must be greater than zero");
+
+      double cycles = ceil(compute_op_count / ops_per_cycle);
+      compute_op_cost = cycles;
+    }
+    return compute_op_cost;
   }
 
   //===----------------------------------------------------------------------===//
@@ -701,6 +669,12 @@ private:
   }
 
   std::string to_string(dependencyNodeEntry &c) { return air::to_string(c.op); }
+  std::string to_string(mlir::Type t) {
+    std::string type_str;
+    llvm::raw_string_ostream rso(type_str);
+    t.print(rso);
+    return type_str;
+  }
 
 }; // AIRRunner_impl
 

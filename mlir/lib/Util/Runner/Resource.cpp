@@ -21,9 +21,10 @@ public:
   resource *parent;
 
   void set_name(llvm::json::Object *nameObject) {
-    if (nameObject) {
+    if (nameObject)
       this->set_name(nameObject->getString("devicename").value().str());
-    }
+    else
+      this->set_name("");
   }
 
   void set_name(std::string name) { this->name = name; }
@@ -40,6 +41,9 @@ private:
 
 class port : public resource {
 public:
+  double data_rate;
+  std::map<std::string, port> connected_ports;
+
   port() {}
 
   port(llvm::json::Object &json_template) {
@@ -58,22 +62,21 @@ public:
 
   port(resource *parent, unsigned src, unsigned dst, double data_rate,
        unsigned idx) {
-    this->name = "L" + std::to_string(src) + "_to_" + "L" +
-                 std::to_string(dst) + "_" + std::to_string(idx);
-    this->data_rate = data_rate;
-    this->parent = parent;
+    this->set_name("L" + std::to_string(src) + "_to_" + "L" +
+                   std::to_string(dst) + "_" + std::to_string(idx));
+    this->set_data_rate(data_rate);
+    this->set_parent(parent);
   }
 
   ~port() {}
 
   void add_connection(port *p) { connected_ports[p->name] = p; }
 
-  void set_data_rate(long bytes_per_cycle) { data_rate = bytes_per_cycle; }
+  void set_data_rate(long bytes_per_cycle) {
+    this->data_rate = bytes_per_cycle;
+  }
 
 private:
-  double data_rate;
-  std::map<std::string, port> connected_ports;
-
 }; // port
 
 class streamPort : port { // Do Ports need Master/Slave assignment? Probably...
@@ -92,13 +95,29 @@ public:
   resource *parent;
   std::string name;
   double efficiency;
+  int ops_per_core_per_cycle;
+
+  void set_vector_size(std::optional<int> vectorSize) {
+    if (vectorSize)
+      this->ops_per_core_per_cycle = *vectorSize;
+    else
+      this->ops_per_core_per_cycle = 0;
+  }
+
+  void set_efficiency(std::optional<double> eff) {
+    if (eff)
+      this->ops_per_core_per_cycle = *eff;
+    else
+      this->ops_per_core_per_cycle = 0;
+  }
 
   kernel() {}
 
   kernel(resource *parent, llvm::json::Object *kernelObject) {
     this->name = kernelObject->getString("name").value().str();
     this->parent = parent;
-    this->efficiency = kernelObject->getNumber("efficiency").value();
+    this->set_efficiency(kernelObject->getNumber("efficiency"));
+    this->set_vector_size(kernelObject->getInteger("ops_per_core_per_cycle"));
     // this->num_fmt = kernelObject->getString("format").value().str();
     // this->total_ops = kernelObject->getInteger("ops").value();
     // for(llvm::json::Value rgn : *kernelObject->getArray("supported_regions"))
@@ -112,10 +131,6 @@ public:
   ~kernel() {}
 
 private:
-  // unsigned total_ops;
-  // std::string num_fmt;
-  // std::map<std::string,float> efficiency;
-
 }; // kernel
 
 // Resource hierarchy node entry. Contains sub resources and sub hierarchies.
@@ -148,24 +163,26 @@ public:
   std::map<std::pair<unsigned, unsigned>, std::vector<port *>> ports;
   std::map<std::string, kernel *> kernels;
 
-  void set_clock(llvm::json::Object *clockObject) {
-    if (clockObject) {
-      this->set_clock(clockObject->getNumber("clock").value());
-    }
+  void set_clock(std::optional<double> clk) {
+    if (clk) {
+      this->set_clock(*clk);
+    } else
+      this->set_clock((unsigned)0);
   }
 
   void set_clock(unsigned clock) { this->clock = clock; }
 
-  // TODO: datatype shoud be array of objects, as a dictionary of supported
-  // datatypes
-  void set_datatypes(llvm::json::Object *datatypeObject) {
-    if (datatypeObject) {
-      if (datatypeObject->getObject("name")) {
-        if (datatypeObject->getObject("bytes")) {
-          std::string name = datatypeObject->getString("name").value().str();
-          double bytes = datatypeObject->getNumber("bytes").value();
-          this->datatypes.insert(std::make_pair(name, bytes));
-        }
+  void set_datatypes(llvm::json::Array *datatypeObjects) {
+    for (auto it = datatypeObjects->begin(), ie = datatypeObjects->end();
+         it != ie; ++it) {
+      llvm::json::Value jv = *it;
+      llvm::json::Object *datatypeObject = jv.getAsObject();
+      if (datatypeObject) {
+        assert(datatypeObject->getString("name") &&
+               datatypeObject->getNumber("bytes"));
+        std::string name = datatypeObject->getString("name").value().str();
+        double bytes = datatypeObject->getNumber("bytes").value();
+        this->datatypes.insert(std::make_pair(name, bytes));
       }
     }
   }
@@ -209,14 +226,14 @@ public:
   }
 
   void setup_device(llvm::json::Object *nameObject = nullptr,
-                    llvm::json::Object *clockObject = nullptr,
-                    llvm::json::Object *datatypeObject = nullptr,
+                    std::optional<double> clk = 0,
+                    llvm::json::Array *datatypeObjects = nullptr,
                     llvm::json::Array *portsObject = nullptr,
                     llvm::json::Object *kernelsObject = nullptr,
                     llvm::json::Object *parentObject = nullptr) {
     this->set_name(nameObject);
-    this->set_clock(clockObject);
-    this->set_datatypes(datatypeObject);
+    this->set_clock(clk);
+    this->set_datatypes(datatypeObjects);
     this->set_ports(portsObject);
     this->set_kernels(kernelsObject);
     // TODO: get parent from parentObject. But does device have parent?
@@ -229,16 +246,16 @@ public:
     this->set_clock(clock);
   }
 
-  device(llvm::json::Object *nameObject, llvm::json::Object *clockObject,
-         llvm::json::Object *datatypeObject, llvm::json::Array *portsObject,
+  device(llvm::json::Object *nameObject, std::optional<double> clk,
+         llvm::json::Array *datatypeObjects, llvm::json::Array *portsObject,
          llvm::json::Object *kernelsObject, llvm::json::Object *parentObject) {
-    this->setup_device(nameObject, clockObject, datatypeObject, portsObject,
+    this->setup_device(nameObject, clk, datatypeObjects, portsObject,
                        kernelsObject, parentObject);
   }
 
   device(llvm::json::Object *model) {
     this->setup_device(model->getObject("devicename"),
-                       model->getObject("clock"), model->getObject("datatype"),
+                       model->getNumber("clock"), model->getArray("datatypes"),
                        model->getArray("interfaces"),
                        model->getObject("kernels"), nullptr);
   }
