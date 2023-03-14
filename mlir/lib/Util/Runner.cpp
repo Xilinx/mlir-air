@@ -47,8 +47,8 @@
 #include <string>
 
 #include "./Runner/Resource.cpp"
+#include "./Runner/ResourceHierarchy.cpp"
 #include "./Runner/RunnerNode.cpp"
-// #include "./Runner/ResourceHierarchy.cpp"
 
 #define DEBUG_TYPE "air-runner"
 
