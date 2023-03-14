@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 
 ##===- utils/clone-mlir-aie.sh - Clone MLIR-AIE --------------*- Script -*-===##
