@@ -11,7 +11,24 @@
   ninja 1.10.0
   Xilinx Vitis 2021.2 
 ```
+### Regular packages
+```
+sudo apt install ninja-build clang-10 clang lld-10 lld
+```
+### cmake
+Ubuntu 20.04 is released with:
+cmake/focal,now 3.16.3-1ubuntu1 amd64 [installed]
 
+But we require:
+3.20.6 (or newer)
+```
+wget https://cmake.org/files/v3.20/cmake-3.20.6-linux-x86_64.sh
+chmod +x cmake-3.20.6-linux-x86_64.sh
+sudo ./cmake-3.20.6-linux-x86_64.sh --prefix=/usr/local
+cmake --version
+```
+
+## Additional Packages
 In addition the following packages maybe useful: 
 
 ```
@@ -23,7 +40,7 @@ In addition the following packages maybe useful:
 ```
 Vivado and Vitis are used to build the platforms for available Xilinx cards with AIEs (VCK190 and VCK5000). Vitis also contains the AIE single core compiler xchesscc. The aienginev2 library is a driver backend used to configure the AIE array and used in building the AIR runtime. The aietools single core compiler and aienginev2 library are required to build binaries that run on AIE hardware.
 
-NOTE: using the Vitis recommended settings64.sh script to set up your environement can cause tool conflicts. Setup your environment in the following order for aietools and Vitis:
+NOTE: using the Vitis recommended settings64.sh script to set up your environment can cause tool conflicts. Set up your environment in the following order for aietools and Vitis:
 
 ```
 export PATH=$PATH:<Vitis_install_path>/Vitis/2022.2/aietools/bin:<Vitis_install_path>/Vitis/2022.2/bin
