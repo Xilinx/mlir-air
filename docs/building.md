@@ -13,7 +13,7 @@
 ```
 ### Regular packages
 ```
-sudo apt install ninja-build clang-10 clang lld-10 lld
+sudo apt install ninja-build clang-10 clang lld-10 lld llvm
 ```
 ### cmake
 Ubuntu 20.04 is released with:
