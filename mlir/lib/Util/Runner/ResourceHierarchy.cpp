@@ -41,6 +41,7 @@ public:
   // Key pair: <src, dst>; mapped: vector of port pointers
   std::map<std::pair<unsigned, unsigned>, std::vector<port *>> ports;
   std::map<std::string, kernel *> kernels;
+  std::map<std::vector<unsigned>, column *> columns;
 
   void set_clock(std::optional<double> clk) {
     if (clk) {
@@ -104,18 +105,56 @@ public:
     }
   }
 
-  void setup_device(llvm::json::Object *nameObject = nullptr,
-                    std::optional<double> clk = 0,
-                    llvm::json::Array *datatypeObjects = nullptr,
-                    llvm::json::Array *portsObject = nullptr,
-                    llvm::json::Object *kernelsObject = nullptr,
-                    llvm::json::Object *parentObject = nullptr) {
+  void set_columns(llvm::json::Object *columnsObject) {
+    if (columnsObject) {
+      // Get total number of columns in device
+      unsigned total_count = 1;
+      std::vector<unsigned> counts;
+      std::vector<unsigned> coordinates;
+      auto countArray = columnsObject->getArray("count");
+      for (auto it = countArray->begin(), ie = countArray->end(); it != ie;
+           ++it) {
+        llvm::json::Value jv = *it;
+        llvm::json::Object *countObject = jv.getAsObject();
+        auto val = countObject->getInteger("num");
+        counts.push_back(*val);
+        total_count *= *val;
+        coordinates.push_back(0); // Zero initialization
+      }
+      for (unsigned i = 0; i < total_count; i++) {
+        column *new_col = new column(this, columnsObject, coordinates);
+        this->columns.insert(std::make_pair(coordinates, new_col));
+
+        // Keep track of coordinates
+        coordinates[0]++;
+        for (unsigned d = 0; d < coordinates.size() - 1; d++) {
+          if (coordinates[d] >= counts[d]) {
+            coordinates[d] = 0;
+            coordinates[d + 1]++;
+          }
+        }
+      }
+    } else {
+      assert(false);
+    }
+  }
+
+  void setup_device_parameters(llvm::json::Object *nameObject = nullptr,
+                               std::optional<double> clk = 0,
+                               llvm::json::Array *datatypeObjects = nullptr,
+                               llvm::json::Array *portsObject = nullptr,
+                               llvm::json::Object *kernelsObject = nullptr,
+                               llvm::json::Object *parentObject = nullptr) {
     this->set_name(nameObject);
     this->set_clock(clk);
     this->set_datatypes(datatypeObjects);
     this->set_ports(portsObject);
     this->set_kernels(kernelsObject);
     // TODO: get parent from parentObject. But does device have parent?
+  }
+
+  void setup_device_resources(llvm::json::Object *columnsObject = nullptr) {
+    this->set_columns(columnsObject);
   }
 
   device(std::string name = "", resource *parent = nullptr,
@@ -125,18 +164,12 @@ public:
     this->set_clock(clock);
   }
 
-  device(llvm::json::Object *nameObject, std::optional<double> clk,
-         llvm::json::Array *datatypeObjects, llvm::json::Array *portsObject,
-         llvm::json::Object *kernelsObject, llvm::json::Object *parentObject) {
-    this->setup_device(nameObject, clk, datatypeObjects, portsObject,
-                       kernelsObject, parentObject);
-  }
-
   device(llvm::json::Object *model) {
-    this->setup_device(model->getObject("devicename"),
-                       model->getNumber("clock"), model->getArray("datatypes"),
-                       model->getArray("interfaces"),
-                       model->getObject("kernels"), nullptr);
+    this->setup_device_parameters(
+        model->getObject("devicename"), model->getNumber("clock"),
+        model->getArray("datatypes"), model->getArray("interfaces"),
+        model->getObject("kernels"), nullptr);
+    this->setup_device_resources(model->getObject("columns"));
   }
 
   ~device() { sub_resource_hiers.clear(); }
