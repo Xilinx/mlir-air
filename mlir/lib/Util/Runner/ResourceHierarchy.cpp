@@ -23,12 +23,119 @@ public:
   resourceHierarchy(std::string name = "", resource *parent = nullptr) {
     this->set_name(name);
     this->set_parent(parent);
+    this->reset_reservation();
   }
 
   ~resourceHierarchy() { sub_resource_hiers.clear(); }
 
 private:
-};
+}; // resourceHierarchy
+
+class tile : public resourceHierarchy {
+
+public:
+  memory *tile_mem;
+  unsigned idx;
+
+  void set_tile_id(unsigned idx) { this->idx = idx; }
+
+  void set_memory(memory *mem) { this->tile_mem = mem; }
+
+  void set_memory(llvm::json::Object *memObject) {
+    if (memObject) {
+      auto ms = memObject->getInteger("memory_space");
+      auto bytes = memObject->getNumber("bytes");
+      assert(ms && bytes != 0.0f);
+      memory *mem = new memory(*ms, *bytes);
+      this->set_memory(mem);
+    } else {
+      this->tile_mem = nullptr;
+    }
+  }
+
+  tile(resource *parent, llvm::json::Object *tileObject, unsigned idx) {
+    this->set_tile_id(idx);
+    this->set_memory(tileObject->getObject("memory"));
+    this->reset_reservation();
+  }
+
+  ~tile() {}
+
+private:
+}; // tile
+
+class column : public resourceHierarchy {
+
+public:
+  memory *column_mem;
+  // std::map<std::vector<unsigned>, tile *> tiles;
+  std::vector<tile *> tiles;
+  // std::vector<unsigned> coordinates;
+  unsigned idx;
+
+  column() {}
+
+  column(resource *parent, llvm::json::Object *columnObject, unsigned idx) {
+    this->set_column_id(idx);
+    this->set_memory(columnObject->getObject("memory"));
+    this->set_tiles(columnObject->getObject("tiles"));
+    this->reset_reservation();
+  }
+
+  ~column() {}
+
+  // port* get_port(std::string port_name) {
+  //   return ports[port_name];
+  // }
+
+  void set_column_id(unsigned idx) { this->idx = idx; }
+
+  void set_memory(memory *mem) { this->column_mem = mem; }
+
+  void set_memory(llvm::json::Object *memObject) {
+    if (memObject) {
+      auto ms = memObject->getInteger("memory_space");
+      auto bytes = memObject->getNumber("bytes");
+      assert(ms && bytes != 0.0f);
+      memory *mem = new memory(*ms, *bytes);
+      this->set_memory(mem);
+    } else {
+      this->column_mem = nullptr;
+    }
+  }
+
+  void set_tiles(llvm::json::Object *tilesObject) {
+    if (tilesObject) {
+      // Get total number of tiles in device
+      unsigned total_count = 1;
+      auto tileArray = tilesObject->getArray("count");
+      for (auto it = tileArray->begin(), ie = tileArray->end(); it != ie;
+           ++it) {
+        llvm::json::Value jv = *it;
+        llvm::json::Object *tileObject = jv.getAsObject();
+        auto val = tileObject->getInteger("num");
+        total_count *= *val;
+      }
+      for (unsigned i = 0; i < total_count; i++) {
+        tile *new_tile = new tile(this, tilesObject, i);
+        this->tiles.push_back(new_tile);
+      }
+    } else {
+      assert(false);
+    }
+  }
+
+private:
+  // int config_speed; //Until we model prog mem as L3->L2->L1 dma memcopies,
+  //   //we can just map fixed-rate transfers onto the L1 progmem ports, no
+  //   other
+  //   //segments necessary.
+
+  // std::map<std::string, port*> ports;
+
+  // llvm::json::Array* connectivity_json;
+
+}; // column
 
 // Device hierarchy node entry.
 class device : public resourceHierarchy {
@@ -41,7 +148,7 @@ public:
   // Key pair: <src, dst>; mapped: vector of port pointers
   std::map<std::pair<unsigned, unsigned>, std::vector<port *>> ports;
   std::map<std::string, kernel *> kernels;
-  std::map<std::vector<unsigned>, column *> columns;
+  std::vector<column *> columns;
 
   void set_clock(std::optional<double> clk) {
     if (clk) {
@@ -109,30 +216,17 @@ public:
     if (columnsObject) {
       // Get total number of columns in device
       unsigned total_count = 1;
-      std::vector<unsigned> counts;
-      std::vector<unsigned> coordinates;
       auto countArray = columnsObject->getArray("count");
       for (auto it = countArray->begin(), ie = countArray->end(); it != ie;
            ++it) {
         llvm::json::Value jv = *it;
         llvm::json::Object *countObject = jv.getAsObject();
         auto val = countObject->getInteger("num");
-        counts.push_back(*val);
         total_count *= *val;
-        coordinates.push_back(0); // Zero initialization
       }
       for (unsigned i = 0; i < total_count; i++) {
-        column *new_col = new column(this, columnsObject, coordinates);
-        this->columns.insert(std::make_pair(coordinates, new_col));
-
-        // Keep track of coordinates
-        coordinates[0]++;
-        for (unsigned d = 0; d < coordinates.size() - 1; d++) {
-          if (coordinates[d] >= counts[d]) {
-            coordinates[d] = 0;
-            coordinates[d + 1]++;
-          }
-        }
+        column *new_col = new column(this, columnsObject, i);
+        this->columns.push_back(new_col);
       }
     } else {
       assert(false);
@@ -150,7 +244,7 @@ public:
     this->set_datatypes(datatypeObjects);
     this->set_ports(portsObject);
     this->set_kernels(kernelsObject);
-    // TODO: get parent from parentObject. But does device have parent?
+    // TODO: get parent from parentObject, for multi-device modelling.
   }
 
   void setup_device_resources(llvm::json::Object *columnsObject = nullptr) {
@@ -162,6 +256,7 @@ public:
     this->set_name(name);
     this->set_parent(parent);
     this->set_clock(clock);
+    this->reset_reservation();
   }
 
   device(llvm::json::Object *model) {
@@ -170,12 +265,13 @@ public:
         model->getArray("datatypes"), model->getArray("interfaces"),
         model->getObject("kernels"), nullptr);
     this->setup_device_resources(model->getObject("columns"));
+    this->reset_reservation();
   }
 
   ~device() { sub_resource_hiers.clear(); }
 
 private:
-};
+}; // device
 
 } // namespace air
 } // namespace xilinx

@@ -210,7 +210,8 @@ public:
       else
         execution_time = getTransferCost(d, srcSpace, dstSpace, dstTy);
     } else if (type == "execute" && name != "ExecuteTerminatorOp") {
-      assert(dyn_cast<air::ExecuteOp>(c.op));
+      assert(dyn_cast<air::ExecuteOp>(c.op) &&
+             "op type and node type do not match");
       auto child_op = &*(c.op->getRegions().front().getOps().begin());
       if (auto Op = mlir::dyn_cast<linalg::LinalgOp>(child_op)) {
         uint64_t compute_xfer_cost = 0;
@@ -234,24 +235,33 @@ public:
     // Update wavefront
     std::vector<Graph::vertex_descriptor> next_vertex_set_candidates;
     std::vector<Graph::vertex_descriptor> next_vertex_set;
+    // // Vector of vertices which are ready to be pushed to wavefront.
+    // // In each entry, the first element is vertex descriptor, and the second
+    // element is a vector of resources which need to be reserved for execution.
+    // std::vector<std::pair<Graph::vertex_descriptor, std::vector<resource *>>>
+    // next_vertex_set;
     for (auto it = c.wavefront.begin(); it != c.wavefront.end(); ++it) {
-      if (G[it->first].is_started() && G[it->first].is_done(time)) {
+      if (G[std::get<0>(*it)].is_started() &&
+          G[std::get<0>(*it)].is_done(time)) {
 
-        if (G[it->first].asyncEventType != "start") {
+        if (G[std::get<0>(*it)].asyncEventType != "start") {
 
           auto runner_id = getIdAttr(c.ctrl_g->hierarchyOp);
-          auto tid = it->second;
+          auto tid = std::get<2>(*it);
           emitTraceEvent(traceStream,
-                         G[it->first].asyncEventName +
-                             G[it->first].detailed_description,
+                         G[std::get<0>(*it)].asyncEventName +
+                             G[std::get<0>(*it)].detailed_description,
                          "layer", "E", time, tid, runner_id);
         }
 
         // "ExecuteOp"
-        c.executeOpImpls(it->first, time);
+        c.executeOpImpls(std::get<0>(*it), time);
 
         // Consume any loop-carried token
-        c.consumeLoopYieldedTokens(it->first);
+        c.consumeLoopYieldedTokens(std::get<0>(*it));
+
+        // Release resources
+        c.releaseResourceImpls(std::get<0>(*it), std::get<1>(*it));
 
         // Erase from wavefront
         c.wavefront.erase(it);
@@ -263,7 +273,7 @@ public:
     c.findAdjacentVerticesToProcessed(next_vertex_set_candidates);
     // Remove candidate vertices already on wavefront
     c.removeRepeatedVertices(next_vertex_set_candidates,
-                             getVectorOfFirstFromVectorOfPairs(c.wavefront));
+                             getVectorOfFirstFromVectorOfTuples(c.wavefront));
     // Remove candidate vertices which are filtered out by an affine.if, if
     // showing cores
     if (sim_granularity == "core") {
@@ -289,8 +299,13 @@ public:
         dep_fulfilled =
             c.checkAllDependenciesFulfillment(dep_list, G[*it], time, true);
       }
+      // Check whether adj_v's resource requirement can be fulfilled
+      bool res_fulfilled = false;
+      std::vector<resource *> reserved_resources;
+
       if (dep_fulfilled) {
         next_vertex_set.push_back(*it);
+        // next_vertex_set.push_back(std::make_pair(*it, reserved_resources));
       }
     }
 
@@ -306,7 +321,7 @@ public:
           time + modelOp(device_resource_node, G[next_vertex]);
       // emit trace event begin
       auto runner_id = getIdAttr(c.ctrl_g->hierarchyOp);
-      auto tid = c.wavefront.back().second;
+      auto tid = std::get<2>(c.wavefront.back());
       emitTraceEvent(traceStream,
                      G[next_vertex].asyncEventName +
                          G[next_vertex].detailed_description,
@@ -347,8 +362,8 @@ public:
       for (unsigned i = 0; i < iter_count; i++) {
 
         // Reset controllers
-        launch_runner_node =
-            runnerNode(&launchGraph, "launch", &dep_ctx, sim_granularity);
+        launch_runner_node = runnerNode(nullptr, &launchGraph, "launch",
+                                        &dep_ctx, sim_granularity);
         // Update pointer to launch runner node in launch graph
         launchGraph.runner_node = &launch_runner_node;
 
@@ -373,7 +388,10 @@ public:
     bool running = true;
     launch.ctrl_g->g[start_v].start_time = 1;
     launch.ctrl_g->g[start_v].end_time = 1;
-    launch.pushToWavefront(std::make_pair(start_v, 1));
+    launch.pushStartToWavefront(start_v);
+    // Consume devices upon launch
+    // TODO: multi-device modelling
+    launch.resource_hiers.push_back(&device_resource_node);
     while (running) {
       LLVM_DEBUG(llvm::dbgs() << "time: " << time << "\n");
 
@@ -646,14 +664,16 @@ private:
   // Misc. helper functions
   //===----------------------------------------------------------------------===//
 
-  // Get a vector of first elements from a vector of pairs
-  std::vector<Graph::vertex_descriptor> getVectorOfFirstFromVectorOfPairs(
-      std::vector<std::pair<Graph::vertex_descriptor, unsigned>> pairs) {
+  // Get a vector of first elements from a vector of tuples
+  std::vector<Graph::vertex_descriptor> getVectorOfFirstFromVectorOfTuples(
+      std::vector<std::tuple<Graph::vertex_descriptor, std::vector<resource *>,
+                             unsigned>>
+          tuples) {
     std::vector<Graph::vertex_descriptor> items;
-    std::transform(pairs.begin(), pairs.end(), std::back_inserter(items),
-                   [](const std::pair<Graph::vertex_descriptor, unsigned> &p) {
-                     return p.first;
-                   });
+    std::transform(
+        tuples.begin(), tuples.end(), std::back_inserter(items),
+        [](const std::tuple<Graph::vertex_descriptor, std::vector<resource *>,
+                            unsigned> &p) { return std::get<0>(p); });
     return items;
   }
 

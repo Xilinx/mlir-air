@@ -14,36 +14,54 @@ namespace air {
 class runnerNode {
 
 public:
+  // Parent runner node
+  runnerNode *parent;
   // Dependency graph that the current runner node processes
   dependencyGraph *ctrl_g;
   // Runner node hierarchy type
   std::string runner_node_type;
-  // Each entry is an std::pair. First element is vertex, and second element is
-  // thread id
-  std::vector<std::pair<Graph::vertex_descriptor, unsigned>> wavefront;
+  // // Each entry is an std::pair. First element is vertex, and second element
+  // is
+  // // thread id
+  // std::vector<std::pair<Graph::vertex_descriptor, unsigned>> wavefront;
+  // Each entry is an std::tuple. First element is vertex, second element is
+  // vector of resoruces consumed, and third element is thread id.
+  // TODO: Replace thread id with id which better reflects resource slots.
+  std::vector<
+      std::tuple<Graph::vertex_descriptor, std::vector<resource *>, unsigned>>
+      wavefront;
   // A vector of vertices processed by the current runner node
   std::vector<Graph::vertex_descriptor> processed_vertices;
   // Sub runner nodes to the current runner node
   std::deque<runnerNode> sub_runner_nodes;
+  // Reserved resource hierarchies
+  std::vector<resourceHierarchy *> resource_hiers;
 
   // Private wavefront of each runner node, reserved to interface with resource
   // model
   std::vector<dependencyNodeEntry *> wavefrontNodes() {
     std::vector<dependencyNodeEntry *> output;
     for (auto v : wavefront) {
-      output.push_back(&ctrl_g->g[v.first]);
+      // output.push_back(&ctrl_g->g[v.first]);
+      output.push_back(&ctrl_g->g[std::get<0>(v)]);
     }
     return output;
   }
 
-  // Push an entry into wavefront
-  void pushToWavefront(std::pair<Graph::vertex_descriptor, unsigned> entry) {
+  // Push runner "start" signal into wavefront
+  void pushStartToWavefront(Graph::vertex_descriptor v) {
+    std::vector<resource *> reserved_resources;
+    this->consumeResourceHiersWhenRunnerStarts(reserved_resources);
+    auto entry = std::make_tuple(v, reserved_resources, 1);
     for (auto i : this->wavefront) {
-      assert(i.second != entry.second && "queried thread is busy");
+      assert(std::get<2>(i) != std::get<2>(entry) && "queried thread is busy");
     }
     this->wavefront.push_back(entry);
   }
+
+  // Push an entry to wavefront
   void pushToWavefront(Graph::vertex_descriptor v, unsigned core_id = 0) {
+    std::vector<resource *> reserved_resources;
     // Acquire available thread id for current op
     unsigned max_num_threads_per_core =
         10; // Hardcoded maximum number of threads per core
@@ -53,7 +71,7 @@ public:
          i++) {
       bool tid_i_unavailable = false;
       for (auto j : this->wavefront) {
-        if (j.second == i) {
+        if (std::get<2>(j) == i) {
           tid_i_unavailable = true;
         }
       }
@@ -62,7 +80,7 @@ public:
         break;
       }
     }
-    this->wavefront.push_back(std::make_pair(v, tid));
+    this->wavefront.push_back(std::make_tuple(v, reserved_resources, tid));
   }
 
   // Initialize sub runner nodes from launch graph tree
@@ -72,14 +90,16 @@ public:
         &(launchGraph.runner_node->channel_token_counts);
     for (auto &partitionGraph : launchGraph.subgraphs) {
       // Create partition runner node
-      this->sub_runner_nodes.push_back(runnerNode(
-          &partitionGraph, "partition", this->dep_ctx, this->sim_granularity,
-          &(launchGraph.runner_node->channel_token_counts)));
+      this->sub_runner_nodes.push_back(
+          runnerNode(this, &partitionGraph, "partition", this->dep_ctx,
+                     this->sim_granularity,
+                     &(launchGraph.runner_node->channel_token_counts)));
       auto current_partition_node = &(this->sub_runner_nodes.back());
       for (auto &herdGraph : partitionGraph.subgraphs) {
         // Create herd runner node
         current_partition_node->sub_runner_nodes.push_back(
-            runnerNode(&herdGraph, "herd", this->dep_ctx, this->sim_granularity,
+            runnerNode(current_partition_node, &herdGraph, "herd",
+                       this->dep_ctx, this->sim_granularity,
                        &(launchGraph.runner_node->channel_token_counts)));
       }
     }
@@ -92,7 +112,7 @@ public:
   // Get time stamps from wavefront
   void getTimeStampsFromWavefront(std::vector<uint64_t> &next_times) {
     for (auto it = this->wavefront.begin(); it != this->wavefront.end(); it++) {
-      auto command_node = this->ctrl_g->g[it->first];
+      auto command_node = this->ctrl_g->g[std::get<0>(*it)];
       if (command_node.is_started() && (command_node.end_time)) {
         next_times.push_back(command_node.end_time);
       }
@@ -292,13 +312,35 @@ public:
     }
   }
 
-  runnerNode(
-      dependencyGraph *ctrl_g = nullptr, std::string runner_node_type = "",
-      dependencyContext *dep_ctx = nullptr, std::string sim_granularity = "",
-      std::vector<std::pair<std::string, unsigned>> *channel_token_counts_ptr =
-          nullptr)
-      : ctrl_g(ctrl_g), runner_node_type(runner_node_type), dep_ctx(dep_ctx),
-        sim_granularity(sim_granularity),
+  // Release reserved resources after event has been executed.
+  void releaseResourceImpls(Graph::vertex_descriptor it,
+                            std::vector<resource *> reserved_resources) {
+    Graph G = this->ctrl_g->g;
+    auto node = G[it];
+    if (node.asyncEventType == "start") {
+      // No resource to be released with "start" event
+    }
+    // Hierarchy terminator ops release resource hierarchies (devices, columns
+    // or tiles)
+    else if (auto Op = dyn_cast<air::PartitionTerminatorOp>(node.op)) {
+      for (auto res : this->resource_hiers) {
+        res->isReserved = false;
+      }
+    } else if (auto Op = dyn_cast<air::HerdTerminatorOp>(node.op)) {
+      for (auto res : this->resource_hiers) {
+        res->isReserved = false;
+      }
+    }
+  }
+
+  runnerNode(runnerNode *parent = nullptr, dependencyGraph *ctrl_g = nullptr,
+             std::string runner_node_type = "",
+             dependencyContext *dep_ctx = nullptr,
+             std::string sim_granularity = "",
+             std::vector<std::pair<std::string, unsigned>>
+                 *channel_token_counts_ptr = nullptr)
+      : parent(parent), ctrl_g(ctrl_g), runner_node_type(runner_node_type),
+        dep_ctx(dep_ctx), sim_granularity(sim_granularity),
         channel_token_counts_ptr(channel_token_counts_ptr) {}
 
   ~runnerNode() {
@@ -326,6 +368,114 @@ private:
   // below launch node use launch runner node's channel token count vector.
   std::vector<std::pair<std::string, unsigned>> *channel_token_counts_ptr;
 
+  // Get a pool of available resources
+  void getColumnsPool(std::vector<resource *> &resource_pool) {
+    auto parent_runner_node = this->parent;
+    for (auto res_hier : parent_runner_node->resource_hiers) {
+      auto dev = static_cast<device *>(res_hier);
+      for (auto column : dev->columns) {
+        if (!column->isReserved) {
+          resource_pool.push_back(column);
+        }
+      }
+    }
+  }
+  void getTilesPool(std::vector<resource *> &resource_pool) {
+    auto parent_runner_node = this->parent;
+    for (auto res_hier : parent_runner_node->resource_hiers) {
+      auto col = static_cast<column *>(res_hier);
+      for (auto tile : col->tiles) {
+        if (!tile->isReserved) {
+          resource_pool.push_back(tile);
+        }
+      }
+    }
+  }
+
+  // Get resource cost
+  unsigned getResourceCost(Operation *op, std::string attrName) {
+    unsigned usage_count = 1;
+    if (op->hasAttr(attrName)) {
+      auto size =
+          extractFromI64ArrayAttr(op->getAttrOfType<mlir::ArrayAttr>(attrName));
+      for (auto &s : size) {
+        usage_count *= s;
+      }
+      return usage_count;
+    }
+    // If no resource cost attr passed, then disable resource contention
+    // modelling
+    // TODO: this state will become an error once resource modelling is complete
+    else
+      return 0;
+  }
+
+  // Reserve resources
+  void reserveResources(std::vector<resource *> resource_pool,
+                        std::vector<resource *> &reserved_resources,
+                        unsigned usage_count) {
+    // TODO: this should emit errors instead
+    assert(usage_count <= resource_pool.size() &&
+           "failed to reserve resources");
+    for (unsigned i = 0; i < usage_count; i++) {
+      resource_pool[i]->isReserved = true;
+      reserved_resources.push_back(resource_pool[i]);
+      // Update current runner node's resource hierarchy reservation
+      if (auto hier = static_cast<resourceHierarchy *>(resource_pool[i])) {
+        this->resource_hiers.push_back(hier);
+      }
+    }
+  }
+
+  // Consume resource hierarchies when sub-runner starts
+  void consumeResourceHiersWhenRunnerStarts(
+      std::vector<resource *> &reserved_resources) {
+    auto parent_runner_node = this->parent;
+    std::string parent_runner_type = "";
+    if (parent_runner_node) {
+      parent_runner_type = parent_runner_node->runner_node_type;
+    } else {
+      parent_runner_type = "func";
+    }
+    std::vector<resource *> resource_hier_pool;
+    if (this->runner_node_type == "partition") {
+      // Get resource pool
+      assert(parent_runner_type == "launch" &&
+             "Launch runner node's sub-runner isn't partition runner");
+      this->getColumnsPool(resource_hier_pool);
+      // Get resource cost
+      auto hier_op = this->ctrl_g->hierarchyOp;
+      unsigned column_count = this->getResourceCost(hier_op, "column_usage");
+      // Reserve resource
+      this->reserveResources(resource_hier_pool, reserved_resources,
+                             column_count);
+    } else if (this->runner_node_type == "herd") {
+      // Get resource pool
+      assert(parent_runner_type == "partition" &&
+             "Partition runner node's sub-runner isn't herd runner");
+      this->getTilesPool(resource_hier_pool);
+      // Get resource cost
+      auto hier_op = this->ctrl_g->hierarchyOp;
+      unsigned tile_count = this->getResourceCost(hier_op, "tile_usage");
+      // Reserve resource
+      this->reserveResources(resource_hier_pool, reserved_resources,
+                             tile_count);
+    }
+  }
+
+  // // Try to reserve resources for an event
+  // bool tryReserveResourcesForOp(dependencyNodeEntry node,
+  // std::vector<resource *> &reserved_resources){
+  //   if (auto Op = dyn_cast<air::PartitionOp>(node.op)){
+  //     return this->tryReserveResourcesForOp(Op, reserved_resources);
+  //   }
+  // }
+
+  // bool tryReserveResourcesForOp(air::PartitionOp Op, std::vector<resource *>
+  // &reserved_resources){
+
+  // }
+
   void executeOp(xilinx::air::HierarchyInterface op, uint64_t time,
                  runnerNode *sub_runner_node, Graph::vertex_descriptor it) {
     // Initialize sub runner and sub graph prior to execution
@@ -340,7 +490,7 @@ private:
     sub_runner_node->ctrl_g->g[sub_start_v].start_time = time;
     sub_runner_node->ctrl_g->g[sub_start_v].end_time = time;
     assert(!sub_runner_node->wavefront.size() && "Sub runner node is busy");
-    sub_runner_node->pushToWavefront(std::make_pair(sub_start_v, 1));
+    sub_runner_node->pushStartToWavefront(sub_start_v);
 
     sub_runner_node->processed_vertices.clear();
 
