@@ -42,7 +42,6 @@ public:
   std::vector<dependencyNodeEntry *> wavefrontNodes() {
     std::vector<dependencyNodeEntry *> output;
     for (auto v : wavefront) {
-      // output.push_back(&ctrl_g->g[v.first]);
       output.push_back(&ctrl_g->g[std::get<0>(v)]);
     }
     return output;
@@ -312,6 +311,19 @@ public:
     }
   }
 
+  // Try to reserve resources for an event
+  bool checkResourceFulfillmentForOpImpls(dependencyNodeEntry node) {
+    return checkResourceFulfillmentForOpImpls(node.op);
+  }
+  bool checkResourceFulfillmentForOpImpls(Operation *op) {
+    if (auto Op = dyn_cast<air::PartitionOp>(op)) {
+      return this->checkResourceFulfillmentForOp(Op);
+    } else if (auto Op = dyn_cast<air::HerdOp>(op)) {
+      return this->checkResourceFulfillmentForOp(Op);
+    }
+    return true;
+  }
+
   // Release reserved resources after event has been executed.
   void releaseResourceImpls(Graph::vertex_descriptor it,
                             std::vector<resource *> reserved_resources) {
@@ -370,8 +382,7 @@ private:
 
   // Get a pool of available resources
   void getColumnsPool(std::vector<resource *> &resource_pool) {
-    auto parent_runner_node = this->parent;
-    for (auto res_hier : parent_runner_node->resource_hiers) {
+    for (auto res_hier : this->resource_hiers) {
       auto dev = static_cast<device *>(res_hier);
       for (auto column : dev->columns) {
         if (!column->isReserved) {
@@ -381,8 +392,7 @@ private:
     }
   }
   void getTilesPool(std::vector<resource *> &resource_pool) {
-    auto parent_runner_node = this->parent;
-    for (auto res_hier : parent_runner_node->resource_hiers) {
+    for (auto res_hier : this->resource_hiers) {
       auto col = static_cast<column *>(res_hier);
       for (auto tile : col->tiles) {
         if (!tile->isReserved) {
@@ -390,6 +400,14 @@ private:
         }
       }
     }
+  }
+  void getColumnsPoolFromParent(std::vector<resource *> &resource_pool) {
+    auto parent_runner_node = this->parent;
+    parent_runner_node->getColumnsPool(resource_pool);
+  }
+  void getTilesPoolFromParent(std::vector<resource *> &resource_pool) {
+    auto parent_runner_node = this->parent;
+    parent_runner_node->getTilesPool(resource_pool);
   }
 
   // Get resource cost
@@ -438,43 +456,72 @@ private:
       parent_runner_type = "func";
     }
     std::vector<resource *> resource_hier_pool;
-    if (this->runner_node_type == "partition") {
-      // Get resource pool
-      assert(parent_runner_type == "launch" &&
-             "Launch runner node's sub-runner isn't partition runner");
-      this->getColumnsPool(resource_hier_pool);
-      // Get resource cost
-      auto hier_op = this->ctrl_g->hierarchyOp;
-      unsigned column_count = this->getResourceCost(hier_op, "column_usage");
-      // Reserve resource
-      this->reserveResources(resource_hier_pool, reserved_resources,
-                             column_count);
-    } else if (this->runner_node_type == "herd") {
-      // Get resource pool
-      assert(parent_runner_type == "partition" &&
-             "Partition runner node's sub-runner isn't herd runner");
-      this->getTilesPool(resource_hier_pool);
-      // Get resource cost
-      auto hier_op = this->ctrl_g->hierarchyOp;
-      unsigned tile_count = this->getResourceCost(hier_op, "tile_usage");
-      // Reserve resource
-      this->reserveResources(resource_hier_pool, reserved_resources,
-                             tile_count);
+    auto status = parent_runner_node->checkResourceFulfillmentForOpImpls(
+        this->ctrl_g->hierarchyOp);
+    if (status) {
+      this->allocateEventToResourcesImpls(reserved_resources);
+    } else {
+      this->ctrl_g->hierarchyOp->emitError(
+          "Failed to allocate resources to dispatch hierarchy op");
     }
   }
 
-  // // Try to reserve resources for an event
-  // bool tryReserveResourcesForOp(dependencyNodeEntry node,
-  // std::vector<resource *> &reserved_resources){
-  //   if (auto Op = dyn_cast<air::PartitionOp>(node.op)){
-  //     return this->tryReserveResourcesForOp(Op, reserved_resources);
-  //   }
-  // }
+  // Try to reserve resources for an event
+  bool checkResourceFulfillmentForOp(air::PartitionOp Op) {
+    std::vector<resource *> resource_hier_pool;
+    this->getColumnsPool(resource_hier_pool);
+    // Get resource cost
+    unsigned column_count =
+        this->getResourceCost(Op.getOperation(), "column_usage");
+    if (column_count <= resource_hier_pool.size()) {
+      return true;
+    } else
+      return false;
+  }
+  bool checkResourceFulfillmentForOp(air::HerdOp Op) {
+    std::vector<resource *> resource_hier_pool;
+    this->getTilesPool(resource_hier_pool);
+    // Get resource cost
+    unsigned tile_count = this->getResourceUsageMultiplier(
+        Op.getOperation(), (this->sim_granularity == "core"));
+    if (tile_count <= resource_hier_pool.size()) {
+      return true;
+    } else
+      return false;
+  }
 
-  // bool tryReserveResourcesForOp(air::PartitionOp Op, std::vector<resource *>
-  // &reserved_resources){
-
-  // }
+  // Allocate event to resources
+  void
+  allocateEventToResourcesImpls(std::vector<resource *> &reserved_resources) {
+    if (auto Op = dyn_cast<air::PartitionOp>(this->ctrl_g->hierarchyOp)) {
+      this->allocateEventToResources(Op, reserved_resources);
+    } else if (auto Op = dyn_cast<air::HerdOp>(this->ctrl_g->hierarchyOp)) {
+      this->allocateEventToResources(Op, reserved_resources);
+    }
+  }
+  void allocateEventToResources(air::PartitionOp Op,
+                                std::vector<resource *> &reserved_resources) {
+    std::vector<resource *> resource_hier_pool;
+    // Get resource pool
+    this->getColumnsPoolFromParent(resource_hier_pool);
+    // Get resource cost
+    unsigned column_count = this->getResourceCost(Op, "column_usage");
+    // Reserve resource
+    this->reserveResources(resource_hier_pool, reserved_resources,
+                           column_count);
+  }
+  void allocateEventToResources(air::HerdOp Op,
+                                std::vector<resource *> &reserved_resources) {
+    std::vector<resource *> resource_hier_pool;
+    // Get resource pool
+    this->getTilesPoolFromParent(resource_hier_pool);
+    // Get resource cost
+    // unsigned tile_count = this->getResourceCost(Op, "tile_usage");
+    unsigned tile_count = this->getResourceUsageMultiplier(
+        Op.getOperation(), (this->sim_granularity == "core"));
+    // Reserve resource
+    this->reserveResources(resource_hier_pool, reserved_resources, tile_count);
+  }
 
   void executeOp(xilinx::air::HierarchyInterface op, uint64_t time,
                  runnerNode *sub_runner_node, Graph::vertex_descriptor it) {
@@ -1014,6 +1061,24 @@ private:
       output *= ubs_spatial[i] - lbs_spatial[i] + 1;
     }
     return output;
+  }
+
+  // Get dispatch size of spatial op
+  unsigned getResourceUsageMultiplier(Operation *op,
+                                      bool dispatchesSingleResource = true) {
+    unsigned resource_usage = 1;
+    if (dispatchesSingleResource) {
+      return resource_usage;
+    }
+    // Are iterations of an op dispatched individually?
+    // TODO: formalize for scf.parallel, air.launch, air.partition and air.herd.
+    SmallVector<int, 2> lbs_spatial;
+    SmallVector<int, 2> ubs_spatial;
+    getSizesFromSpatialLoop(op, lbs_spatial, ubs_spatial);
+    for (unsigned i = 0; i < lbs_spatial.size(); i++) {
+      resource_usage *= ubs_spatial[i] - lbs_spatial[i] + 1;
+    }
+    return resource_usage;
   }
 
   bool pushToDepListIfAffineIfHit(

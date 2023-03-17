@@ -299,11 +299,11 @@ public:
         dep_fulfilled =
             c.checkAllDependenciesFulfillment(dep_list, G[*it], time, true);
       }
-      // Check whether adj_v's resource requirement can be fulfilled
-      bool res_fulfilled = false;
-      std::vector<resource *> reserved_resources;
-
-      if (dep_fulfilled) {
+      // Check whether adj_v's resource requirement can be fulfilled. For events
+      // which will dispatch multiple times, check if it can be dispatched at
+      // least once.
+      bool res_fulfilled = c.checkResourceFulfillmentForOpImpls(G[*it]);
+      if (dep_fulfilled && res_fulfilled) {
         next_vertex_set.push_back(*it);
         // next_vertex_set.push_back(std::make_pair(*it, reserved_resources));
       }

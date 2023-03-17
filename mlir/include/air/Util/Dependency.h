@@ -109,6 +109,8 @@ struct dependencyNodeEntry {
   uint64_t start_time;
   uint64_t end_time;
   std::vector<std::pair<uint64_t, uint64_t>> start_end_time_log;
+  // Token count is used to synchronize operations which consumes/produces
+  // multiple async tokens.
   int token_count;
 
   bool is_started() { return (start_time != 0) && (end_time != 0); }
