@@ -123,7 +123,7 @@ operation ::= `transform.air.linalg_promote` $target attr-dict
 Promotes the specified operands of the target into a separate memory buffer
 using the `mlir::linalg::promoteSubViews` utility.
 
-This operation applies to a single Linalg op that satisfies the
+This operation applies to Linalg ops that satisfy the
 `mlir::linalg::promoteSubviewsPrecondition`, otherwise it fails.
 
 When successful, several optimization passes are run on the resulting IR.
@@ -141,6 +141,20 @@ example:
 %1 = transform.air.linalg_promote %0 {memory_space="L2", operands_to_promote=[0]}
 ```
 
+The `group_size` attribute is used to apply promotion to multiple
+linalg ops. When `group_size=N`, the `operands_to_promote` attribute refers to
+`N` payload operations at a time and the operand indices apply to the
+operands of the `N` operations in the order they appear in the target handle.
+
+For example,
+```mlir
+%m = transform.structured.match ops{["linalg.matmul"]} in %f : (!pdl.operation) -> !pdl.operation
+%f = transform.structured.match ops{["linalg.fill"]} in %f : (!pdl.operation) -> !pdl.operation
+%h = transform.merge_handles %f, %m : !pdl.operation
+// promote the input of the fill operation and the output of the matmul operation to L1 memory
+transform.air.linalg_promote %h {"group_size"=2, "operands_to_promote"=[1,4], "memory_space"="L1"}
+```
+
 Interfaces: MemoryEffectOpInterface, TransformOpInterface
 
 #### Attributes:
@@ -148,6 +162,7 @@ Interfaces: MemoryEffectOpInterface, TransformOpInterface
 | Attribute | MLIR Type | Description |
 | :-------: | :-------: | ----------- |
 | `operands_to_promote` | ::mlir::ArrayAttr | 64-bit integer array attribute
+| `group_size` | ::mlir::IntegerAttr | 64-bit signless integer attribute
 | `use_full_tile_buffers` | ::mlir::ArrayAttr | 1-bit boolean array attribute
 | `use_full_tiles_by_default` | ::mlir::UnitAttr | unit attribute
 | `use_alloca` | ::mlir::UnitAttr | unit attribute
