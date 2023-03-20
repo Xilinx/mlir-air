@@ -51,11 +51,11 @@ module {
         %2 = air.wait_all async  {id = 8 : i32}
         %3 = scf.for %arg10 = %c0 to %c256 step %c128 iter_args(%arg11 = %2) -> (!air.async.token) {
           %4 = scf.for %arg12 = %c0 to %c1024 step %c128 iter_args(%arg13 = %arg11) -> (!air.async.token) {
-            %async_token_5, %results_6 = air.execute -> (memref<128x128xbf16, 1>) {
+            %async_token_5, %results_6 = air.execute [%arg13] -> (memref<128x128xbf16, 1>) {
               %alloc = memref.alloc() : memref<128x128xbf16, 1>
               air.execute_terminator %alloc : memref<128x128xbf16, 1>
             }
-            %5 = air.dma_memcpy_nd async [%arg13, %async_token_5] (%results_6[] [] [], %arg9[%arg10, %arg12] [%c128, %c128] [%c1024, %c1_4]) : (memref<128x128xbf16, 1>, memref<256x1024xbf16>)
+            %5 = air.dma_memcpy_nd async [%async_token_5] (%results_6[] [] [], %arg9[%arg10, %arg12] [%c128, %c128] [%c1024, %c1_4]) : (memref<128x128xbf16, 1>, memref<256x1024xbf16>)
             %6 = air.herd @herd_0 async [%5]  tile (%arg14, %arg15) in (%arg16=%c4, %arg17=%c4) args(%arg18=%results_6) : memref<128x128xbf16, 1> {
               %c96 = arith.constant 96 : index
               %c64 = arith.constant 64 : index
@@ -86,9 +86,15 @@ module {
                 }
                 affine.yield %8 : !air.async.token
               }
+              %async_token_11 = air.execute [%7] {
+                memref.dealloc %results_11 : memref<32x32xbf16, 2>
+              }
               air.herd_terminator
             }
-            scf.yield %6 : !air.async.token
+            %async_token_12 = air.execute [%6] {
+              memref.dealloc %results_6 : memref<128x128xbf16, 1>
+            }
+            scf.yield %async_token_12 : !air.async.token
           }
           scf.yield %4 : !air.async.token
         }

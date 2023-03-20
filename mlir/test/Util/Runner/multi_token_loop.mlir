@@ -49,7 +49,7 @@ module {
         %4 = air.channel.put async [%arg10]  @channel_0[%arg4, %arg5] (%arg8[%c0, %arg9] [%c128, %c128] [%c1024, %c1_4]) : (memref<256x1024xbf16>)
         scf.yield %4 : !air.async.token
       }
-      %3 = air.partition async  args(%arg9=%arg4, %arg10=%arg5) : index, index {
+      %3 = air.partition async  args(%arg9=%arg4, %arg10=%arg5) : index, index attributes {column_usage = [1, 1]} {
         %c0_5 = arith.constant 0 : index
         %c1024_6 = arith.constant 1024 : index
         %c128_7 = arith.constant 128 : index
@@ -90,7 +90,10 @@ module {
           %async_token_19 = air.execute [%async_token_18] {
             memref.dealloc %results_17 : memref<128x128xbf16, 1>
           }
-          scf.yield %6, %async_token_18 : !air.async.token, !air.async.token
+          scf.yield %async_token_15, %async_token_19 : !air.async.token, !air.async.token
+        }
+        %async_token_20 = air.execute [%4#1] {
+          memref.dealloc %results_12 : memref<128x128xbf16, 1>
         }
         air.partition_terminator
       }

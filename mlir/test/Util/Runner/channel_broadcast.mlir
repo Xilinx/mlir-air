@@ -104,7 +104,13 @@ module {
                 }
                 affine.yield %14 : !air.async.token
               }
+              %async_token_14 = air.execute [%13] {
+                memref.dealloc %results_13 : memref<32x32xbf16, 2>
+              }
               air.herd_terminator
+            }
+            %async_token_15 = air.execute [%12] {
+              memref.dealloc %results_11 : memref<128x128xbf16, 1>
             }
             scf.yield %12 : !air.async.token
           }

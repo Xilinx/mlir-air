@@ -89,7 +89,7 @@
         ],
         "memory": {
             "memory_space": 1,
-            "bytes": 512
+            "bytes": 262144
         },
         "tiles": {
             "count": [
@@ -104,7 +104,7 @@
             ],
             "memory": {
                 "memory_space": 2,
-                "bytes": 8
+                "bytes": 32768
             }
         }
     }
