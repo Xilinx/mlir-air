@@ -422,6 +422,11 @@ private:
                          bool free_memory_only = true) {
     // If free_memory_only is true, then get free memory resources. If false,
     // then get used memory resources.
+    if (this->runner_node_type == "launch") {
+      // L3 is external memory, and is therefore not modelled in runner for
+      // memory size contention.
+      return DBL_MAX;
+    }
     double memory_pool = 0;
     for (auto res_hier : this->resource_hiers) {
       // Get L2 memories from columns
