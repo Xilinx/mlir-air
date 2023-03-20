@@ -145,15 +145,19 @@ class memory : public resource {
 public:
   unsigned memory_space;
   double bytes;
+  double bytes_used;
 
   void set_memory_space(unsigned ms) { this->memory_space = ms; }
 
   void set_bytes(double b) { this->bytes = b; }
 
+  void reset_usage() { this->bytes_used = 0; }
+
   memory(unsigned ms, double b) {
     this->set_memory_space(ms);
     this->set_bytes(b);
     this->reset_reservation();
+    this->reset_usage();
   }
 
   ~memory() {}

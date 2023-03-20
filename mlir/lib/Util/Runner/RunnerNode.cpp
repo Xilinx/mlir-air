@@ -20,10 +20,6 @@ public:
   dependencyGraph *ctrl_g;
   // Runner node hierarchy type
   std::string runner_node_type;
-  // // Each entry is an std::pair. First element is vertex, and second element
-  // is
-  // // thread id
-  // std::vector<std::pair<Graph::vertex_descriptor, unsigned>> wavefront;
   // Each entry is an std::tuple. First element is vertex, second element is
   // vector of resoruces consumed, and third element is thread id.
   // TODO: Replace thread id with id which better reflects resource slots.
@@ -50,8 +46,9 @@ public:
   // Push runner "start" signal into wavefront
   void pushStartToWavefront(Graph::vertex_descriptor v) {
     std::vector<resource *> reserved_resources;
+    // Allocate resources to this runner
     this->consumeResourceHiersWhenRunnerStarts(reserved_resources);
-    auto entry = std::make_tuple(v, reserved_resources, 1);
+    auto entry = std::make_tuple(v, reserved_resources, (unsigned)1);
     for (auto i : this->wavefront) {
       assert(std::get<2>(i) != std::get<2>(entry) && "queried thread is busy");
     }
@@ -61,6 +58,8 @@ public:
   // Push an entry to wavefront
   void pushToWavefront(Graph::vertex_descriptor v, unsigned core_id = 0) {
     std::vector<resource *> reserved_resources;
+    // Allocate resources to this event
+    this->consumeResources(reserved_resources, v);
     // Acquire available thread id for current op
     unsigned max_num_threads_per_core =
         10; // Hardcoded maximum number of threads per core
@@ -204,7 +203,7 @@ public:
     for (auto inv_adj_v = inv_adj_set.first; inv_adj_v != inv_adj_set.second;
          ++inv_adj_v) {
       if (G[*inv_adj_v].asyncEventType == "for_loop") {
-        unsigned th = this->tokenCountThresholdForExecution(
+        int th = this->tokenCountThresholdForExecution(
             G[it].op); // Consume all iter_arg tokens
         assert(G[it].token_count >= th * this->tokenSpatialFactor(G[it].op));
         G[it].token_count -= th * this->tokenSpatialFactor(G[it].op);
@@ -313,13 +312,23 @@ public:
 
   // Try to reserve resources for an event
   bool checkResourceFulfillmentForOpImpls(dependencyNodeEntry node) {
-    return checkResourceFulfillmentForOpImpls(node.op);
+    return checkResourceFulfillmentForOpImpls(node.op, node.asyncEventName);
   }
-  bool checkResourceFulfillmentForOpImpls(Operation *op) {
+  bool checkResourceFulfillmentForOpImpls(Operation *op,
+                                          std::string name = "") {
     if (auto Op = dyn_cast<air::PartitionOp>(op)) {
       return this->checkResourceFulfillmentForOp(Op);
     } else if (auto Op = dyn_cast<air::HerdOp>(op)) {
       return this->checkResourceFulfillmentForOp(Op);
+    } else if (isa<air::ExecuteOp>(op)) {
+      auto child_op = &*(op->getRegions().front().getOps().begin());
+      if (name == "AllocOp") {
+        auto Op = dyn_cast<memref::AllocOp>(child_op);
+        return this->checkResourceFulfillmentForOp(Op);
+      } else if (name == "DeallocOp") {
+        auto Op = dyn_cast<memref::DeallocOp>(child_op);
+        return this->checkResourceFulfillmentForOp(Op);
+      }
     }
     return true;
   }
@@ -409,6 +418,45 @@ private:
     auto parent_runner_node = this->parent;
     parent_runner_node->getTilesPool(resource_pool);
   }
+  double getMemoriesPool(std::vector<resource *> &resource_pool,
+                         bool free_memory_only = true) {
+    // If free_memory_only is true, then get free memory resources. If false,
+    // then get used memory resources.
+    double memory_pool = 0;
+    for (auto res_hier : this->resource_hiers) {
+      // Get L2 memories from columns
+      if (auto col = static_cast<column *>(res_hier)) {
+        auto col_mem = col->column_mem;
+        auto free_memory = col_mem->bytes - col_mem->bytes_used;
+        // If returning free memories
+        if (free_memory_only && free_memory > 0.0f) {
+          resource_pool.push_back(col_mem);
+          memory_pool += free_memory;
+        }
+        // Else if returning used memories
+        else if (!free_memory_only && col_mem->bytes_used > 0.0f) {
+          resource_pool.push_back(col_mem);
+          memory_pool += col_mem->bytes_used;
+        }
+      }
+      // Get L1 memories from tiles
+      else if (auto til = static_cast<tile *>(res_hier)) {
+        auto tile_mem = til->tile_mem;
+        auto free_memory = tile_mem->bytes - tile_mem->bytes_used;
+        // If returning free memories
+        if (free_memory_only && free_memory > 0.0f) {
+          resource_pool.push_back(tile_mem);
+          memory_pool += free_memory;
+        }
+        // Else if returning used memories
+        else if ((!free_memory_only) && tile_mem->bytes_used > 0.0f) {
+          resource_pool.push_back(tile_mem);
+          memory_pool += tile_mem->bytes_used;
+        }
+      }
+    }
+    return memory_pool;
+  }
 
   // Get resource cost
   unsigned getResourceCost(Operation *op, std::string attrName) {
@@ -427,20 +475,77 @@ private:
     else
       return 0;
   }
+  double getMemoryCostInBytes(MemRefType ty, Operation *op) {
+    // Get number of bytes per element in tensor
+    double datawidth = 0;
+    auto d = this->getDeviceHier();
+    assert(d);
+    if (auto bytes = d->datatypes[getElementTypeAsString(ty)]) {
+      datawidth = bytes;
+    } else {
+      assert(false && "data type not found in JSON model");
+    }
+    // Get resource usage multipler for spatial ops which are batch dispatched
+    auto spatial_op = this->getAncestorSpatialLoopFromOp(op);
+    unsigned usage_multiplier = this->getBatchDispatchCount(spatial_op);
+    return getTensorVolume(ty) * datawidth * usage_multiplier;
+  }
 
   // Reserve resources
-  void reserveResources(std::vector<resource *> resource_pool,
-                        std::vector<resource *> &reserved_resources,
-                        unsigned usage_count) {
-    // TODO: this should emit errors instead
+  void
+  allocateRunnerNodeToResourceHiers(std::vector<resource *> resource_pool,
+                                    std::vector<resource *> &reserved_resources,
+                                    unsigned usage_count) {
+    // A previously emitted error should have captured this
     assert(usage_count <= resource_pool.size() &&
            "failed to reserve resources");
     for (unsigned i = 0; i < usage_count; i++) {
       resource_pool[i]->isReserved = true;
       reserved_resources.push_back(resource_pool[i]);
-      // Update current runner node's resource hierarchy reservation
+      // Update current runner node's resource hierarchy allocation
       if (auto hier = static_cast<resourceHierarchy *>(resource_pool[i])) {
         this->resource_hiers.push_back(hier);
+      }
+    }
+  }
+  void allocateRunnerNodeToAllocateMemory(
+      std::vector<resource *> resource_pool,
+      std::vector<resource *> &reserved_resources, double memory_allocated) {
+    double remaining = memory_allocated;
+    for (auto res : resource_pool) {
+      auto mem = static_cast<memory *>(res);
+      assert(mem);
+      auto free_memory = mem->bytes - mem->bytes_used;
+      if (free_memory >= remaining) {
+        mem->bytes_used += remaining;
+        remaining = 0;
+        reserved_resources.push_back(res);
+        break;
+      } else {
+        mem->bytes_used = mem->bytes;
+        remaining -= free_memory;
+        reserved_resources.push_back(res);
+        // keep going, until all memory costs are deducted
+      }
+    }
+  }
+  void allocateRunnerNodeToDeallocateMemory(
+      std::vector<resource *> resource_pool,
+      std::vector<resource *> &reserved_resources, double memory_deallocated) {
+    double remaining = memory_deallocated;
+    for (auto res : resource_pool) {
+      auto mem = static_cast<memory *>(res);
+      assert(mem);
+      if (mem->bytes_used >= remaining) {
+        mem->bytes_used -= remaining;
+        remaining = 0;
+        reserved_resources.push_back(res);
+        break;
+      } else {
+        remaining -= mem->bytes_used;
+        mem->bytes_used = 0;
+        reserved_resources.push_back(res);
+        // keep going, until enough memory has been deallocated
       }
     }
   }
@@ -455,7 +560,6 @@ private:
     } else {
       parent_runner_type = "func";
     }
-    std::vector<resource *> resource_hier_pool;
     auto status = parent_runner_node->checkResourceFulfillmentForOpImpls(
         this->ctrl_g->hierarchyOp);
     if (status) {
@@ -463,6 +567,18 @@ private:
     } else {
       this->ctrl_g->hierarchyOp->emitError(
           "Failed to allocate resources to dispatch hierarchy op");
+    }
+  }
+  void consumeResources(std::vector<resource *> &reserved_resources,
+                        Graph::vertex_descriptor v) {
+    Graph &G = this->ctrl_g->g;
+    auto status = this->checkResourceFulfillmentForOpImpls(G[v]);
+    if (status) {
+      this->allocateEventToResourcesImpls(reserved_resources, G[v].op,
+                                          G[v].asyncEventName);
+    } else {
+      this->ctrl_g->hierarchyOp->emitError(
+          "Failed to allocate resources to dispatch op");
     }
   }
 
@@ -482,9 +598,33 @@ private:
     std::vector<resource *> resource_hier_pool;
     this->getTilesPool(resource_hier_pool);
     // Get resource cost
-    unsigned tile_count = this->getResourceUsageMultiplier(
-        Op.getOperation(), (this->sim_granularity == "core"));
+    unsigned tile_count = this->getBatchDispatchCount(Op.getOperation());
     if (tile_count <= resource_hier_pool.size()) {
+      return true;
+    } else
+      return false;
+  }
+  bool checkResourceFulfillmentForOp(memref::AllocOp Op) {
+    // Get a pool of free memories
+    std::vector<resource *> resource_pool;
+    double memory_pool = this->getMemoriesPool(resource_pool);
+    // Get memory allocation size
+    MemRefType ty = Op.getMemref().getType().cast<MemRefType>();
+    double memory_allocated = this->getMemoryCostInBytes(ty, Op.getOperation());
+    if (memory_allocated <= memory_pool) {
+      return true;
+    } else
+      return false;
+  }
+  bool checkResourceFulfillmentForOp(memref::DeallocOp Op) {
+    // Get a pool of used memories
+    std::vector<resource *> resource_pool;
+    double memory_pool = this->getMemoriesPool(resource_pool, false);
+    // Get memory allocation size
+    MemRefType ty = Op.getMemref().getType().cast<MemRefType>();
+    double memory_deallocated =
+        this->getMemoryCostInBytes(ty, Op.getOperation());
+    if (memory_deallocated <= memory_pool) {
       return true;
     } else
       return false;
@@ -492,11 +632,26 @@ private:
 
   // Allocate event to resources
   void
-  allocateEventToResourcesImpls(std::vector<resource *> &reserved_resources) {
-    if (auto Op = dyn_cast<air::PartitionOp>(this->ctrl_g->hierarchyOp)) {
-      this->allocateEventToResources(Op, reserved_resources);
-    } else if (auto Op = dyn_cast<air::HerdOp>(this->ctrl_g->hierarchyOp)) {
-      this->allocateEventToResources(Op, reserved_resources);
+  allocateEventToResourcesImpls(std::vector<resource *> &reserved_resources,
+                                Operation *op = nullptr,
+                                std::string name = "") {
+    if (op) {
+      if (isa<air::ExecuteOp>(op)) {
+        auto child_op = &*(op->getRegions().front().getOps().begin());
+        if (name == "AllocOp") {
+          auto Op = dyn_cast<memref::AllocOp>(child_op);
+          this->allocateEventToResources(Op, reserved_resources);
+        } else if (name == "DeallocOp") {
+          auto Op = dyn_cast<memref::DeallocOp>(child_op);
+          this->allocateEventToResources(Op, reserved_resources);
+        }
+      }
+    } else {
+      if (auto Op = dyn_cast<air::PartitionOp>(this->ctrl_g->hierarchyOp)) {
+        this->allocateEventToResources(Op, reserved_resources);
+      } else if (auto Op = dyn_cast<air::HerdOp>(this->ctrl_g->hierarchyOp)) {
+        this->allocateEventToResources(Op, reserved_resources);
+      }
     }
   }
   void allocateEventToResources(air::PartitionOp Op,
@@ -507,8 +662,8 @@ private:
     // Get resource cost
     unsigned column_count = this->getResourceCost(Op, "column_usage");
     // Reserve resource
-    this->reserveResources(resource_hier_pool, reserved_resources,
-                           column_count);
+    this->allocateRunnerNodeToResourceHiers(resource_hier_pool,
+                                            reserved_resources, column_count);
   }
   void allocateEventToResources(air::HerdOp Op,
                                 std::vector<resource *> &reserved_resources) {
@@ -516,11 +671,35 @@ private:
     // Get resource pool
     this->getTilesPoolFromParent(resource_hier_pool);
     // Get resource cost
-    // unsigned tile_count = this->getResourceCost(Op, "tile_usage");
-    unsigned tile_count = this->getResourceUsageMultiplier(
-        Op.getOperation(), (this->sim_granularity == "core"));
+    unsigned tile_count = this->getBatchDispatchCount(Op.getOperation());
     // Reserve resource
-    this->reserveResources(resource_hier_pool, reserved_resources, tile_count);
+    this->allocateRunnerNodeToResourceHiers(resource_hier_pool,
+                                            reserved_resources, tile_count);
+  }
+  void allocateEventToResources(memref::AllocOp Op,
+                                std::vector<resource *> &reserved_resources) {
+    // Get a pool of free memories
+    std::vector<resource *> resource_pool;
+    this->getMemoriesPool(resource_pool);
+    // Get memory size in bytes
+    MemRefType ty = Op.getMemref().getType().cast<MemRefType>();
+    double memory_allocated = this->getMemoryCostInBytes(ty, Op.getOperation());
+    // Reserve resource
+    this->allocateRunnerNodeToAllocateMemory(resource_pool, reserved_resources,
+                                             memory_allocated);
+  }
+  void allocateEventToResources(memref::DeallocOp Op,
+                                std::vector<resource *> &reserved_resources) {
+    // Get a pool of used memories
+    std::vector<resource *> resource_pool;
+    this->getMemoriesPool(resource_pool, false);
+    // Get memory size in bytes
+    MemRefType ty = Op.getMemref().getType().cast<MemRefType>();
+    double memory_deallocated =
+        this->getMemoryCostInBytes(ty, Op.getOperation());
+    // Reserve resource
+    this->allocateRunnerNodeToDeallocateMemory(
+        resource_pool, reserved_resources, memory_deallocated);
   }
 
   void executeOp(xilinx::air::HierarchyInterface op, uint64_t time,
@@ -830,7 +1009,7 @@ private:
     } else if (dep.second == "ssa_loop_yield") {
       // Threshold token_count for dep fulfillment = how many iter_args does
       // node depend on
-      unsigned th = this->tokenCountThresholdForExecution(node.op);
+      int th = this->tokenCountThresholdForExecution(node.op);
       if (node.token_count < th * this->tokenSpatialFactor(node.op, position)) {
         return false;
       }
@@ -1081,6 +1260,26 @@ private:
     return resource_usage;
   }
 
+  // Check if spatial op is batch-dispatched in current simulation granularity
+  unsigned getBatchDispatchCount(Operation *op) {
+    if (isa<air::HerdOp>(op)) {
+      if (this->sim_granularity == "core") {
+        return this->getResourceUsageMultiplier(op, true);
+      } else if (this->sim_granularity == "herd") {
+        return this->getResourceUsageMultiplier(op, false);
+      }
+      // TODO: add other simulation granularities
+    } else if (isa<air::PartitionOp>(op)) {
+      return 1;
+    } else if (isa<air::LaunchOp>(op)) {
+      return 1;
+    } else if (isa<scf::ParallelOp>(op)) {
+      return 1;
+    }
+    assert(false && "TODO: add other simulation granularities");
+    return 1;
+  }
+
   bool pushToDepListIfAffineIfHit(
       std::vector<std::pair<dependencyNodeEntry, std::string>> &dep_list,
       dependencyNodeEntry &node, std::vector<unsigned> position,
@@ -1102,6 +1301,41 @@ private:
       pushed = true;
     }
     return pushed;
+  }
+
+  // Get parent launch runner node
+  runnerNode *getParentLaunchRunner() {
+    runnerNode *parent_runner = this;
+    while (parent_runner->runner_node_type != "launch") {
+      if (!parent_runner->parent) {
+        return nullptr;
+      }
+      parent_runner = parent_runner->parent;
+    }
+    return parent_runner;
+  }
+
+  // Get device resource hierarchy
+  device *getDeviceHier() {
+    runnerNode *parent_launch = this->getParentLaunchRunner();
+    if (!parent_launch)
+      return nullptr;
+    // TODO: separate device properties (datatypes) from device resoruces
+    auto d = static_cast<device *>(parent_launch->resource_hiers[0]);
+    return d;
+  }
+
+  // Get ancestor spatial loop from op
+  Operation *getAncestorSpatialLoopFromOp(Operation *op) {
+    Operation *parent = op;
+    while ((!isa<scf::ParallelOp>(parent)) &&
+           (!isa<air::HierarchyInterface>(parent))) {
+      parent = parent->getParentOp();
+      if (isa<func::FuncOp>(parent)) {
+        return nullptr;
+      }
+    }
+    return parent;
   }
 
 }; // runnerNode

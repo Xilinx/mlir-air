@@ -9,7 +9,6 @@
 #include "air/Util/Runner.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/CostModel.h"
-#include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
 
 #include "llvm/ADT/APFloat.h"
@@ -299,33 +298,33 @@ public:
         dep_fulfilled =
             c.checkAllDependenciesFulfillment(dep_list, G[*it], time, true);
       }
-      // Check whether adj_v's resource requirement can be fulfilled. For events
-      // which will dispatch multiple times, check if it can be dispatched at
-      // least once.
-      bool res_fulfilled = c.checkResourceFulfillmentForOpImpls(G[*it]);
-      if (dep_fulfilled && res_fulfilled) {
+      if (dep_fulfilled) {
         next_vertex_set.push_back(*it);
-        // next_vertex_set.push_back(std::make_pair(*it, reserved_resources));
       }
     }
 
     for (auto next_vertex : next_vertex_set) {
 
-      // Push to wavefront; check if showing cores
-      c.pushToWavefront(next_vertex,
-                        canonicalizer.getIteratorFromPosition(
-                            c.ctrl_g->position, c.ctrl_g->hierarchyOp));
+      // Check whether adj_v's resource requirement has been fulfilled.
+      bool res_fulfilled = c.checkResourceFulfillmentForOpImpls(G[next_vertex]);
 
-      G[next_vertex].start_time = time;
-      G[next_vertex].end_time =
-          time + modelOp(device_resource_node, G[next_vertex]);
-      // emit trace event begin
-      auto runner_id = getIdAttr(c.ctrl_g->hierarchyOp);
-      auto tid = std::get<2>(c.wavefront.back());
-      emitTraceEvent(traceStream,
-                     G[next_vertex].asyncEventName +
-                         G[next_vertex].detailed_description,
-                     "layer", "B", time, tid, runner_id);
+      if (res_fulfilled) {
+        // Push to wavefront; check for sim. granularity
+        c.pushToWavefront(next_vertex,
+                          canonicalizer.getIteratorFromPosition(
+                              c.ctrl_g->position, c.ctrl_g->hierarchyOp));
+
+        G[next_vertex].start_time = time;
+        G[next_vertex].end_time =
+            time + modelOp(device_resource_node, G[next_vertex]);
+        // emit trace event begin
+        auto runner_id = getIdAttr(c.ctrl_g->hierarchyOp);
+        auto tid = std::get<2>(c.wavefront.back());
+        emitTraceEvent(traceStream,
+                       G[next_vertex].asyncEventName +
+                           G[next_vertex].detailed_description,
+                       "layer", "B", time, tid, runner_id);
+      }
     }
 
     return;
@@ -535,34 +534,6 @@ private:
   // Latency estimation helper functions
   //===----------------------------------------------------------------------===//
 
-  // Util. functions to estimate event latency
-  uint64_t getTensorVolume(const mlir::ShapedType ty) {
-
-    if (!ty.hasRank())
-      return 1;
-
-    uint64_t volume = 1;
-    for (auto &d : ty.getShape())
-      volume *= d;
-    return volume;
-  }
-
-  uint64_t getTensorVolume(const mlir::Type ty) {
-    if (auto t = ty.dyn_cast<mlir::ShapedType>()) {
-      return getTensorVolume(t);
-    } else {
-      return 1;
-    }
-  }
-
-  std::string getElementTypeAsString(const mlir::Type ty) {
-    if (auto st = ty.dyn_cast<mlir::ShapedType>()) {
-      return to_string(st.getElementType());
-    } else {
-      return to_string(ty);
-    }
-  }
-
   uint64_t getTransferCost(device &d, unsigned srcSpace, unsigned dstSpace,
                            mlir::Type ty) {
     return getTransferCost(d, srcSpace, dstSpace, getTensorVolume(ty), ty);
@@ -677,25 +648,6 @@ private:
     return items;
   }
 
-  std::string to_string(std::vector<unsigned> vec) {
-    std::string output = "";
-    for (unsigned i = 0; i < vec.size(); i++) {
-      output += std::to_string(vec[i]);
-      if (i != vec.size() - 1) {
-        output += ",";
-      }
-    }
-    return output;
-  }
-
-  std::string to_string(dependencyNodeEntry &c) { return air::to_string(c.op); }
-  std::string to_string(mlir::Type t) {
-    std::string type_str;
-    llvm::raw_string_ostream rso(type_str);
-    t.print(rso);
-    return type_str;
-  }
-
 }; // AIRRunner_impl
 
 AIRRunner::AIRRunner(llvm::raw_ostream &trace_stream,
@@ -719,6 +671,36 @@ void AIRRunner::emitTraceEnd(llvm::raw_ostream &s) { impl->emitTraceEnd(s); }
 
 void AIRRunner::scheduleFunction(func::FuncOp &toplevel) {
   impl->scheduleFunction(toplevel);
+}
+
+//===----------------------------------------------------------------------===//
+// Runner util. functions
+//===----------------------------------------------------------------------===//
+
+std::string to_string(std::vector<unsigned> vec) {
+  std::string output = "";
+  for (unsigned i = 0; i < vec.size(); i++) {
+    output += std::to_string(vec[i]);
+    if (i != vec.size() - 1) {
+      output += ",";
+    }
+  }
+  return output;
+}
+std::string to_string(dependencyNodeEntry &c) { return air::to_string(c.op); }
+std::string to_string(mlir::Type t) {
+  std::string type_str;
+  llvm::raw_string_ostream rso(type_str);
+  t.print(rso);
+  return type_str;
+}
+
+std::string getElementTypeAsString(const mlir::Type ty) {
+  if (auto st = ty.dyn_cast<mlir::ShapedType>()) {
+    return to_string(st.getElementType());
+  } else {
+    return to_string(ty);
+  }
 }
 
 } // namespace air
