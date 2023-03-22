@@ -316,10 +316,21 @@ public:
   }
   bool checkResourceFulfillmentForOpImpls(Operation *op,
                                           std::string name = "") {
+    // At any point in time, if partition or herd op fails to allocate enough
+    // resources, then the entire launch is invalid due to failing to allocate
+    // enough resources upon launch.
     if (auto Op = dyn_cast<air::PartitionOp>(op)) {
-      return this->checkResourceFulfillmentForOp(Op);
+      bool result = this->checkResourceFulfillmentForOp(Op);
+      if (!result) {
+        op->emitOpError("isn't allocated with enough resources to run");
+      }
+      return result;
     } else if (auto Op = dyn_cast<air::HerdOp>(op)) {
-      return this->checkResourceFulfillmentForOp(Op);
+      bool result = this->checkResourceFulfillmentForOp(Op);
+      if (!result) {
+        op->emitOpError("isn't allocated with enough resources to run");
+      }
+      return result;
     } else if (isa<air::ExecuteOp>(op)) {
       auto child_op = &*(op->getRegions().front().getOps().begin());
       if (name == "AllocOp") {
@@ -544,26 +555,13 @@ private:
     } else {
       parent_runner_type = "func";
     }
-    auto status = parent_runner_node->checkResourceFulfillmentForOpImpls(
-        this->ctrl_g->hierarchyOp);
-    if (status) {
-      this->allocateEventToResourcesImpls(reserved_resources);
-    } else {
-      this->ctrl_g->hierarchyOp->emitError(
-          "Failed to allocate resources to dispatch hierarchy op");
-    }
+    this->allocateEventToResourcesImpls(reserved_resources);
   }
   void consumeOrReleaseResources(std::vector<resource *> &reserved_resources,
-                        Graph::vertex_descriptor v) {
+                                 Graph::vertex_descriptor v) {
     Graph &G = this->ctrl_g->g;
-    auto status = this->checkResourceFulfillmentForOpImpls(G[v]);
-    if (status) {
-      this->allocateEventToResourcesImpls(reserved_resources, G[v].op,
-                                          G[v].asyncEventName);
-    } else {
-      this->ctrl_g->hierarchyOp->emitError(
-          "Failed to allocate resources to dispatch op");
-    }
+    this->allocateEventToResourcesImpls(reserved_resources, G[v].op,
+                                        G[v].asyncEventName);
   }
 
   // Try to reserve resources for an event
@@ -582,7 +580,9 @@ private:
     std::vector<resource *> resource_hier_pool;
     this->getTilesPool(resource_hier_pool);
     // Get resource cost
-    unsigned tile_count = this->getBatchDispatchCount(Op.getOperation());
+    // Note: forced to use dispatch multiplier to get tile count, since it is
+    // checking for the entire herd op.
+    unsigned tile_count = this->getBatchDispatchCount(Op.getOperation(), true);
     if (tile_count <= resource_hier_pool.size()) {
       return true;
     } else
@@ -1257,12 +1257,12 @@ private:
   }
 
   // Check if spatial op is batch-dispatched in current simulation granularity
-  unsigned getBatchDispatchCount(Operation *op) {
+  unsigned getBatchDispatchCount(Operation *op, bool use_multiplier = false) {
     if (isa<air::HerdOp>(op)) {
-      if (this->sim_granularity == "core") {
-        return this->getResourceUsageMultiplier(op, true);
-      } else if (this->sim_granularity == "herd") {
+      if (this->sim_granularity == "herd" || use_multiplier) {
         return this->getResourceUsageMultiplier(op, false);
+      } else if (this->sim_granularity == "core") {
+        return this->getResourceUsageMultiplier(op, true);
       }
       // TODO: add other simulation granularities
     } else if (isa<air::PartitionOp>(op)) {
