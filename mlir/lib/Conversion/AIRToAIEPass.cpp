@@ -1035,7 +1035,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     else
       return failure();
     AIE::ObjectFifoCreateOp objFifo =
-        createObjectFifo(rewriter, datatype, producerTile, consumers, channel.getBufferResources());
+        createObjectFifo(rewriter, datatype, producerTile, consumers,
+                         channel.getBufferResources());
 
     // replace put/get and the associated memref alloc/dealloc
     for (auto put : channelPuts) {
