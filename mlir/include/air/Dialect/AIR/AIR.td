@@ -444,10 +444,21 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
     ```
   }];
   let extraClassDeclaration = [{
-    int getSubchannelSize() {
-      int size_x = getSize()[0].dyn_cast<IntegerAttr>().getInt();
-      int size_y = getSize()[1].dyn_cast<IntegerAttr>().getInt();
-      return size_x * size_y;
+    int getBufferResources() {
+      if(auto attr = getOperation()->getAttrOfType<IntegerAttr>("buffer_resources")) {
+        return attr.dyn_cast<IntegerAttr>().getInt();
+      } else {
+        return 1;
+      }
+    }
+    int getSizeX() {
+      return getSize()[0].dyn_cast<IntegerAttr>().getInt();
+    }
+    int getSizeY() {
+      return getSize()[1].dyn_cast<IntegerAttr>().getInt();
+    }
+    int getBundleSize() {
+      return getSizeX() * getSizeY();
     }
   }];
 }
