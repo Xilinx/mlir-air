@@ -907,13 +907,25 @@ createObjectFifo(OpBuilder &builder, AIE::AIEObjectFifoType datatype,
                  int depth, bool broadcast) {
   // channels and objFifos currently don't support many-to-many/one broadcast
   if (broadcast && prodTiles.size() > 1)
-    return;
-  
-  for (auto const& [coord, tile] : prodTiles) {
+    return; // TODO: add return message
+  if (broadcast) {
+    std::vector<Value> consumers;
+    for (auto const& [coord, tile] : consTiles) {
+      consumers.push_back(tile);
+    }
     AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
-      builder.getUnknownLoc(), datatype, prodTiles[coord], consTiles[coord], depth);
-    objFifos[coord] = fifo;
-  } 
+        builder.getUnknownLoc(), datatype, prodTiles[std::make_pair(0, 0)], consumers, depth);
+    for (auto const& [coord, tile] : consTiles) {
+      // TODO: check that list of consumers size == broadcast shape of channel op (what if shim consumer?)
+      objFifos[coord] = fifo;
+    }
+  } else {
+    for (auto const& [coord, tile] : prodTiles) {
+      AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
+        builder.getUnknownLoc(), datatype, prodTiles[coord], consTiles[coord], depth);
+      objFifos[coord] = fifo;
+    } 
+  }
 }
 
 template <typename MyOp>
@@ -961,10 +973,6 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 
   LogicalResult matchAndRewrite(air::ChannelOp channel,
                                 PatternRewriter &rewriter) const override {
-    // for now, the lowering does not support broadcast
-    if (channel.isBroadcast()) 
-      return failure();
-
     auto aie_module = channel->getParentOfType<ModuleOp>();
     int numSubchannels = channel.getSubchannelSize();
     std::vector<ChannelPutOp> channelPuts =
@@ -1060,7 +1068,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     // For now, number of memory elements in OF is hardcoded to 1
     // (single buffer). FIXME
     rewriter.setInsertionPoint(*(aie_module.getOps<AIE::CoreOp>().begin()));
-    createObjectFifo(rewriter, datatype, objFifos, producerTiles, consumerTiles, 1, false);
+    createObjectFifo(rewriter, datatype, objFifos, producerTiles, consumerTiles, 1, channel.isBroadcast());
 
     // replace put/get and the associated memref alloc/dealloc
     for (auto put : channelPuts) {
