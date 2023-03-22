@@ -102,19 +102,17 @@ class kernel : public resource {
 public:
   double efficiency;
   int ops_per_core_per_cycle;
+  // Key: datatype name; mapped: pair <efficiency, ops_per_core_per_cycle>
+  std::map<std::string, std::pair<double, int>> datatypes;
 
-  void set_vector_size(std::optional<int> vectorSize) {
-    if (vectorSize)
-      this->ops_per_core_per_cycle = *vectorSize;
-    else
-      this->ops_per_core_per_cycle = 0;
-  }
-
-  void set_efficiency(std::optional<double> eff) {
-    if (eff)
-      this->ops_per_core_per_cycle = *eff;
-    else
-      this->ops_per_core_per_cycle = 0;
+  void push_to_datatypes(std::string datatype_name, std::optional<double> eff,
+                         std::optional<int> vectorSize) {
+    if (vectorSize && eff) {
+      this->datatypes.insert(
+          std::make_pair(datatype_name, std::make_pair(*eff, *vectorSize)));
+    } else
+      this->datatypes.insert(
+          std::make_pair(datatype_name, std::make_pair(0, 0)));
   }
 
   kernel() {}
@@ -122,9 +120,19 @@ public:
   kernel(resource *parent, llvm::json::Object *kernelObject) {
     this->name = kernelObject->getString("name").value().str();
     this->parent = parent;
-    this->set_efficiency(kernelObject->getNumber("efficiency"));
-    this->set_vector_size(kernelObject->getInteger("ops_per_core_per_cycle"));
-    this->reset_reservation();
+    auto datatypeObjects = kernelObject->getObject("datatypes");
+
+    for (auto it = datatypeObjects->begin(), ie = datatypeObjects->end();
+         it != ie; ++it) {
+      llvm::json::Object *datatypeObject = it->second.getAsObject();
+      if (datatypeObject) {
+        auto datatype_name = it->first.str();
+        this->push_to_datatypes(
+            datatype_name, datatypeObject->getNumber("efficiency"),
+            datatypeObject->getInteger("ops_per_core_per_cycle"));
+      }
+      this->reset_reservation();
+    }
     // this->num_fmt = kernelObject->getString("format").value().str();
     // this->total_ops = kernelObject->getInteger("ops").value();
     // for(llvm::json::Value rgn : *kernelObject->getArray("supported_regions"))

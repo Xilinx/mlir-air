@@ -1316,7 +1316,6 @@ private:
     runnerNode *parent_launch = this->getParentLaunchRunner();
     if (!parent_launch)
       return nullptr;
-    // TODO: separate device properties (datatypes) from device resoruces
     auto d = static_cast<device *>(parent_launch->resource_hiers[0]);
     return d;
   }

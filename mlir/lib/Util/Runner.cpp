@@ -594,13 +594,17 @@ private:
       assert(d.kernels.size() && "kernels not found in JSON model");
 
       // if kernels exists, assume everthing else exists
+      // Get operation datatype as the first operand's datatype
+      auto op_datatype = getElementTypeAsString(op->getOperandTypes()[0]);
       if (d.kernels.count(air::to_string(op))) {
-        ops_per_core_per_cycle =
-            d.kernels[air::to_string(op)]->ops_per_core_per_cycle;
-        cycles_per_second = d.clock;
-        cycles_per_second = d.kernels[air::to_string(op)]->efficiency;
-        cycles_per_second = d.clock;
+        if (d.kernels[air::to_string(op)]->datatypes.count(op_datatype)) {
+          ops_per_core_per_cycle =
+              d.kernels[air::to_string(op)]->datatypes[op_datatype].second;
+          efficiency =
+              d.kernels[air::to_string(op)]->datatypes[op_datatype].first;
+        }
       }
+      cycles_per_second = d.clock;
 
       double ops_per_cycle = num_cores * ops_per_core_per_cycle * efficiency;
       assert(ops_per_cycle > 0 &&
