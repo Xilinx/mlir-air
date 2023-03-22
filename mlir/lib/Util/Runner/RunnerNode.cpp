@@ -59,7 +59,7 @@ public:
   void pushToWavefront(Graph::vertex_descriptor v, unsigned core_id = 0) {
     std::vector<resource *> reserved_resources;
     // Allocate resources to this event
-    this->consumeResources(reserved_resources, v);
+    this->consumeOrReleaseResources(reserved_resources, v);
     // Acquire available thread id for current op
     unsigned max_num_threads_per_core =
         10; // Hardcoded maximum number of threads per core
@@ -333,27 +333,6 @@ public:
     return true;
   }
 
-  // Release reserved resources after event has been executed.
-  void releaseResourceImpls(Graph::vertex_descriptor it,
-                            std::vector<resource *> reserved_resources) {
-    Graph G = this->ctrl_g->g;
-    auto node = G[it];
-    if (node.asyncEventType == "start") {
-      // No resource to be released with "start" event
-    }
-    // Hierarchy terminator ops release resource hierarchies (devices, columns
-    // or tiles)
-    else if (auto Op = dyn_cast<air::PartitionTerminatorOp>(node.op)) {
-      for (auto res : this->resource_hiers) {
-        res->isReserved = false;
-      }
-    } else if (auto Op = dyn_cast<air::HerdTerminatorOp>(node.op)) {
-      for (auto res : this->resource_hiers) {
-        res->isReserved = false;
-      }
-    }
-  }
-
   runnerNode(runnerNode *parent = nullptr, dependencyGraph *ctrl_g = nullptr,
              std::string runner_node_type = "",
              dependencyContext *dep_ctx = nullptr,
@@ -574,7 +553,7 @@ private:
           "Failed to allocate resources to dispatch hierarchy op");
     }
   }
-  void consumeResources(std::vector<resource *> &reserved_resources,
+  void consumeOrReleaseResources(std::vector<resource *> &reserved_resources,
                         Graph::vertex_descriptor v) {
     Graph &G = this->ctrl_g->g;
     auto status = this->checkResourceFulfillmentForOpImpls(G[v]);
@@ -643,12 +622,24 @@ private:
     if (op) {
       if (isa<air::ExecuteOp>(op)) {
         auto child_op = &*(op->getRegions().front().getOps().begin());
+        // Memory allocation/deallocation
         if (name == "AllocOp") {
           auto Op = dyn_cast<memref::AllocOp>(child_op);
           this->allocateEventToResources(Op, reserved_resources);
         } else if (name == "DeallocOp") {
           auto Op = dyn_cast<memref::DeallocOp>(child_op);
           this->allocateEventToResources(Op, reserved_resources);
+        }
+      }
+      // Hierarchy terminator ops release resource hierarchies (devices, columns
+      // or tiles)
+      else if (isa<air::PartitionTerminatorOp>(op)) {
+        for (auto res : this->resource_hiers) {
+          res->isReserved = false;
+        }
+      } else if (isa<air::HerdTerminatorOp>(op)) {
+        for (auto res : this->resource_hiers) {
+          res->isReserved = false;
         }
       }
     } else {

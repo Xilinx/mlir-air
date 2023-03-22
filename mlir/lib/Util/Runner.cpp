@@ -259,9 +259,6 @@ public:
         // Consume any loop-carried token
         c.consumeLoopYieldedTokens(std::get<0>(*it));
 
-        // Release resources
-        c.releaseResourceImpls(std::get<0>(*it), std::get<1>(*it));
-
         // Erase from wavefront
         c.wavefront.erase(it);
         it--;
