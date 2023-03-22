@@ -56,19 +56,43 @@
     ],
     "kernels": {
         "linalg.copy": {
-        "ops_per_core_per_cycle": 8,
-        "efficiency": 1,
-        "name": "linalg.copy"
+            "datatypes": {
+                "bf16": {
+                    "ops_per_core_per_cycle": 8,
+                    "efficiency": 1
+                },
+                "f32": {
+                    "ops_per_core_per_cycle": 8,
+                    "efficiency": 1
+                }
+            },
+            "name": "linalg.copy"
         },
         "linalg.fill": {
-        "ops_per_core_per_cycle": 8,
-        "efficiency": 1,
-        "name": "linalg.fill"
+            "datatypes": {
+                "bf16": {
+                    "ops_per_core_per_cycle": 8,
+                    "efficiency": 1
+                },
+                "f32": {
+                    "ops_per_core_per_cycle": 8,
+                    "efficiency": 1
+                }
+            },
+            "name": "linalg.fill"
         },
         "linalg.matmul": {
-        "ops_per_core_per_cycle": 8,
-        "efficiency": 1,
-        "name": "linalg.matmul"
+            "datatypes": {
+                "bf16": {
+                    "ops_per_core_per_cycle": 8,
+                    "efficiency": 1
+                },
+                "f32": {
+                    "ops_per_core_per_cycle": 8,
+                    "efficiency": 1
+                }
+            },
+            "name": "linalg.matmul"
         }
     },
     "ops_per_core_per_cycle": 512,
