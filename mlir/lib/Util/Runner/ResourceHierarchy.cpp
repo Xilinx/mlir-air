@@ -36,6 +36,8 @@ class tile : public resourceHierarchy {
 public:
   memory *tile_mem;
   unsigned idx;
+  // Keys: memory space; mapped: vector of ports.
+  std::map<std::string, std::vector<port *>> ports;
 
   void set_tile_id(unsigned idx) { this->idx = idx; }
 
@@ -53,9 +55,31 @@ public:
     }
   }
 
+  void set_ports(llvm::json::Object *portsObject) {
+    if (portsObject) {
+      auto L1PortsObject = portsObject->getObject("L1");
+      if (L1PortsObject) {
+        auto l1_port_count = L1PortsObject->getInteger("count");
+        if (l1_port_count) {
+          std::vector<port *> l1_port_vec;
+          for (unsigned i = 0; i < *l1_port_count; i++) {
+            auto bytes_per_second =
+                L1PortsObject->getNumber("bytes_per_second");
+            port *new_port = new port(this, "L1", bytes_per_second, i);
+            l1_port_vec.push_back(new_port);
+          }
+          this->ports.insert(std::make_pair("L1", l1_port_vec));
+        }
+      }
+    } else {
+      assert(false);
+    }
+  }
+
   tile(resource *parent, llvm::json::Object *tileObject, unsigned idx) {
     this->set_tile_id(idx);
     this->set_memory(tileObject->getObject("memory"));
+    this->set_ports(tileObject->getObject("ports"));
     this->reset_reservation();
   }
 
@@ -68,9 +92,9 @@ class column : public resourceHierarchy {
 
 public:
   memory *column_mem;
-  // std::map<std::vector<unsigned>, tile *> tiles;
   std::vector<tile *> tiles;
-  // std::vector<unsigned> coordinates;
+  // Keys: memory space; mapped: vector of ports.
+  std::map<std::string, std::vector<port *>> ports;
   unsigned idx;
 
   column() {}
@@ -79,14 +103,11 @@ public:
     this->set_column_id(idx);
     this->set_memory(columnObject->getObject("memory"));
     this->set_tiles(columnObject->getObject("tiles"));
+    this->set_ports(columnObject->getObject("ports"));
     this->reset_reservation();
   }
 
   ~column() {}
-
-  // port* get_port(std::string port_name) {
-  //   return ports[port_name];
-  // }
 
   void set_column_id(unsigned idx) { this->idx = idx; }
 
@@ -119,6 +140,43 @@ public:
       for (unsigned i = 0; i < total_count; i++) {
         tile *new_tile = new tile(this, tilesObject, i);
         this->tiles.push_back(new_tile);
+      }
+    } else {
+      assert(false);
+    }
+  }
+
+  void set_ports(llvm::json::Object *portsObject) {
+    if (portsObject) {
+
+      auto L1PortsObject = portsObject->getObject("L1");
+      if (L1PortsObject) {
+        auto l1_port_count = L1PortsObject->getInteger("count");
+        if (l1_port_count) {
+          std::vector<port *> l1_port_vec;
+          for (unsigned i = 0; i < *l1_port_count; i++) {
+            auto bytes_per_second =
+                L1PortsObject->getNumber("bytes_per_second");
+            port *new_port = new port(this, "L1", bytes_per_second, i);
+            l1_port_vec.push_back(new_port);
+          }
+          this->ports.insert(std::make_pair("L1", l1_port_vec));
+        }
+      }
+
+      auto L2PortsObject = portsObject->getObject("L2");
+      if (L2PortsObject) {
+        auto l2_port_count = L2PortsObject->getInteger("count");
+        if (l2_port_count) {
+          std::vector<port *> l2_port_vec;
+          for (unsigned i = 0; i < *l2_port_count; i++) {
+            auto bytes_per_second =
+                L2PortsObject->getNumber("bytes_per_second");
+            port *new_port = new port(this, "L2", bytes_per_second, i);
+            l2_port_vec.push_back(new_port);
+          }
+          this->ports.insert(std::make_pair("L2", l2_port_vec));
+        }
       }
     } else {
       assert(false);

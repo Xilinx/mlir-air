@@ -115,6 +115,16 @@
             "memory_space": 1,
             "bytes": 262144
         },
+        "ports": {
+            "L1": {
+                "count": 4,
+                "bytes_per_second": 100000000000
+            },
+            "L2": {
+                "count": 4,
+                "bytes_per_second": 100000000000
+            }
+        },
         "tiles": {
             "count": [
                 {
@@ -129,6 +139,12 @@
             "memory": {
                 "memory_space": 2,
                 "bytes": 2048
+            },
+            "ports": {
+                "L1": {
+                    "count": 4,
+                    "bytes_per_second": 100000000000
+                }
             }
         }
     }

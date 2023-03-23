@@ -76,6 +76,16 @@ public:
     this->reset_reservation();
   }
 
+  port(resource *parent, std::string memory_space,
+       std::optional<double> bytes_per_second, unsigned idx) {
+    if (bytes_per_second) {
+      this->set_name(memory_space + "_" + std::to_string(idx));
+      this->set_data_rate(*bytes_per_second);
+      this->set_parent(parent);
+      this->reset_reservation();
+    }
+  }
+
   ~port() {}
 
   void add_connection(port *p) { connected_ports[p->name] = p; }
