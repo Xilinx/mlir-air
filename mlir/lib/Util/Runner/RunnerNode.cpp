@@ -131,11 +131,10 @@ public:
     } else if (auto Op = dyn_cast<scf::ForOp>(node.op)) {
       this->executeOp(Op, it);
     } else if (dyn_cast<scf::YieldOp>(node.op) &&
-               getScfParentOpFromYieldOp<scf::ForOp>(
-                   dyn_cast<scf::YieldOp>(node.op))) {
+               getScfParentOpFromYieldOp<scf::ForOp>(node.op)) {
       auto Op = dyn_cast<scf::YieldOp>(node.op);
       auto parent_for_op =
-          dyn_cast<scf::ForOp>(getScfParentOpFromYieldOp<scf::ForOp>(Op));
+          dyn_cast<scf::ForOp>(getScfParentOpFromYieldOp<scf::ForOp>(node.op));
       this->executeOp(Op, time, parent_for_op, it);
     } else if (auto Op = dyn_cast<air::ChannelPutOp>(node.op)) {
       this->executeOp(Op, it);

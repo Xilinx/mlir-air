@@ -827,13 +827,13 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromTerminatorOp(
     return addVertexFromOp(
         op, dep_ctx.TerminatorID, "hierarchy_terminator", "HerdTerminator",
         graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
-  } else if (auto yieldop = dyn_cast<scf::YieldOp>(op)) {
-    if (getScfParentOpFromYieldOp<scf::ParallelOp>(yieldop)) {
+  } else if (isa<scf::YieldOp>(op)) {
+    if (getScfParentOpFromYieldOp<scf::ParallelOp>(op)) {
       // Note: disabled parsing scf parallel yield op since it currently acts as
       // a no-op return addVertexFromOp(op, dep_ctx.TerminatorID, "terminator",
       //                        "ScfParallelYieldOp", "crimson", "box", G,
       //                        dep_ctx);
-    } else if (getScfParentOpFromYieldOp<scf::ForOp>(yieldop)) {
+    } else if (getScfParentOpFromYieldOp<scf::ForOp>(op)) {
       return addVertexFromOp(
           op, dep_ctx.TerminatorID, "terminator", "ScfForYieldOp",
           graphNodeProperties("control", detailed_description), G, dep_ctx);
