@@ -23,7 +23,7 @@
 #include "air.hpp"
 #include "test_library.h"
 
-#define VERBOSE 1
+#define VERBOSE 0
 #define PROFILE 0
 
 namespace {

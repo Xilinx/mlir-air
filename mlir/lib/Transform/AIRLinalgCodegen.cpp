@@ -240,6 +240,158 @@ private:
 };
 
 // Replace a pattern like this:
+//  linalg.fill %a
+//  ...
+//  %b = alloc
+//  copy %a -> %b
+//  linalg.op with init tensor %b
+//  ...
+//  %c = alloc
+//  copy %a -> %c
+//  linalg.op with init tensor %c
+//  ...
+// with this:
+//  %b = alloc
+//  linalg.fill %b
+//  linalg.op with init tensor %b
+//  ...
+//  %c = alloc
+//  linalg.fill %c
+//  linalg.op with init tensor %c
+struct RemoveFillCopyLinalgPattern : public OpRewritePattern<memref::CopyOp> {
+  using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::CopyOp copyOp,
+                                PatternRewriter &rewriter) const override {
+
+    auto iter = copyOp->getIterator();
+    auto linalgOp = dyn_cast<linalg::LinalgOp>(++iter);
+    if (!linalgOp)
+      return failure();
+
+    Value copyOper0 = copyOp->getOperand(0);
+    Value copyOper1 = copyOp->getOperand(1);
+
+    auto allocOp =
+        dyn_cast_if_present<memref::AllocOp>(copyOper0.getDefiningOp());
+    if (!allocOp)
+      return failure();
+
+    iter = allocOp->getIterator();
+    Operation *fillOp = dyn_cast<linalg::FillOp>(++iter);
+    if (!fillOp)
+      return failure();
+
+    auto num_uses = 0;
+    for (auto &u : copyOper0.getUses())
+      num_uses++;
+
+    IRMapping map;
+    map.map(copyOper0, copyOper1);
+    rewriter.clone(*fillOp, map);
+    rewriter.eraseOp(copyOp);
+    if (num_uses <= 2)
+      rewriter.eraseOp(fillOp);
+
+    return success();
+  }
+};
+
+// Replace a pattern like this:
+//  memref.copy %1, %2 : memref<?xi32> to memref<?xi32>
+//  linalg op with write to %1, no use of %2
+//  memref.copy %1, %2 : memref<?xi32> to memref<?xi32>
+// with this:
+//  linalg op with write to %1, no use of %2
+//  memref.copy %1, %2 : memref<?xi32> to memref<?xi32>
+struct RemoveDeadCopyPattern : public OpRewritePattern<memref::CopyOp> {
+  using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::CopyOp op,
+                                PatternRewriter &rewriter) const override {
+
+    auto iter = op->getIterator();
+    auto linalgOp = dyn_cast<linalg::LinalgOp>(++iter);
+    if (!linalgOp)
+      return failure();
+    auto copyOp = dyn_cast<memref::CopyOp>(++iter);
+    if (!copyOp)
+      return failure();
+
+    auto oper0 = copyOp->getOperand(0);
+    auto oper1 = copyOp->getOperand(1);
+    if (op.getOperand(0) != oper0)
+      return failure();
+    if (op.getOperand(1) != oper1)
+      return failure();
+
+    // no use of %2
+    auto lopers = linalgOp->getOperands();
+    if (std::find(lopers.begin(), lopers.end(), oper1) != lopers.end())
+      return failure();
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+// Replace a pattern like this:
+//  %alloc_1 = memref.alloc() : memref<?x?xi32, 2>
+//  ...
+//  memref.copy %alloc_1, %m : memref<?x?xi32, 2> to memref<?x?xi32, 2>
+//  memref.dealloc %alloc_1 : memref<?x?xi32, 2>
+//  %alloc_2 = memref.alloc() : memref<?x?xi32, 2>
+//  memref.copy %m, %alloc_2 : memref<?x?xi32, 2> to memref<?x?xi32, 2>
+// with this:
+//  %alloc_1 = memref.alloc() : memref<?x?xi32, 2>
+//  ...
+//  memref.copy %alloc_1, %m : memref<?x?xi32, 2> to memref<?x?xi32, 2>
+//  [ and replace uses of %alloc_2 with %alloc_1 ]
+struct RemoveExtraAllocPattern : public OpRewritePattern<memref::CopyOp> {
+  using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::CopyOp op,
+                                PatternRewriter &rewriter) const override {
+
+    auto existingAlloc =
+        dyn_cast<memref::AllocOp>(op.getOperand(0).getDefiningOp());
+    if (!existingAlloc)
+      return failure();
+
+    auto iter = op->getIterator();
+    auto deallocOp = dyn_cast<memref::DeallocOp>(++iter);
+    if (!deallocOp)
+      return failure();
+
+    auto allocOp = dyn_cast<memref::AllocOp>(++iter);
+    if (!allocOp)
+      return failure();
+    if (allocOp.getType() != existingAlloc.getType())
+      return failure();
+
+    auto copyOp = dyn_cast<memref::CopyOp>(++iter);
+    if (!copyOp)
+      return failure();
+
+    if (op.getOperand(0) != deallocOp.getOperand())
+      return failure();
+
+    if (op.getOperand(1) != copyOp.getOperand(0))
+      return failure();
+
+    if (allocOp.getResult() != copyOp.getOperand(1))
+      return failure();
+
+    rewriter.replaceAllUsesWith(allocOp.getResult(), {op.getOperand(0)});
+    rewriter.eraseOp(copyOp);
+    rewriter.eraseOp(allocOp);
+    rewriter.eraseOp(deallocOp);
+
+    return success();
+  }
+};
+
+// Replace a pattern like this:
 //  %0 = memref.alloc() : memref<4096xi32>
 //  linalg.generic with outs(%0 : memref<4096xi32>), does not read %0
 //  %1 = memref.cast %0 : memref<4096xi32> to memref<?xi32>
@@ -265,12 +417,13 @@ struct RemoveAllocLinalgOpCopyPattern
       if (auto c = dyn_cast<memref::CastOp>(u.getOwner()))
         castOp = c;
       else if (auto c = dyn_cast<memref::CopyOp>(u.getOwner()))
-        copyOp = c;
-      else if (auto l = dyn_cast<linalg::LinalgOp>(u.getOwner())) {
-        linalgOp = l;
-        if (l.isInitTensor(&u))
-          return failure();
-      }
+        if (u.getOperandNumber() == 0)
+          copyOp = c;
+        else if (auto l = dyn_cast<linalg::LinalgOp>(u.getOwner())) {
+          linalgOp = l;
+          if (l.isInitTensor(&u))
+            return failure();
+        }
     if (castOp && copyOp)
       return failure();
 
@@ -284,13 +437,13 @@ struct RemoveAllocLinalgOpCopyPattern
       if (!copyOp)
         return failure();
     }
-
+    auto copyOperand = copyOp->getOperand(1);
+    rewriter.setInsertionPointAfter(copyOperand.getDefiningOp());
     auto newOp = rewriter.create<memref::CastOp>(op->getLoc(), op.getType(),
-                                                 copyOp->getOperand(1));
+                                                 copyOperand);
     rewriter.replaceOp(op, newOp->getResults());
     rewriter.eraseOp(copyOp);
-    if (castOp)
-      rewriter.eraseOp(castOp);
+
     return success();
   }
 };
@@ -1167,9 +1320,12 @@ public:
     RewritePatternSet patterns(ctx);
     patterns.insert<RemoveSubViewOpsPattern, FoldSubViewOpsPattern,
                     RemoveViewOpsPattern, HoistReduceBufferPattern,
-                    RemoveAllocCopyLinalgOpCopyPattern>(ctx);
+                    RemoveAllocLinalgOpCopyPattern, RemoveExtraAllocPattern,
+                    RemoveAllocCopyLinalgOpCopyPattern, RemoveDeadCopyPattern,
+                    RemoveFillCopyLinalgPattern>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
+
   /// Collect perfectly nested loops starting from `rootForOps`.  Loops are
   /// perfectly nested if each loop is the first and only non-terminator operation
   /// in the parent loop.  Collect at most `maxLoops` loops and append them to
@@ -2033,6 +2189,8 @@ transform::LinalgPromoteOp::apply(transform::TransformResults &results,
   SetVector<Operation *> transformed;
   int64_t operandOffset = 0;
 
+  uint32_t group_size = getGroupSize();
+  uint32_t group = 0;
   for (Operation *target : state.getPayloadOps(getTarget())) {
     auto linalgOp = dyn_cast<linalg::LinalgOp>(target);
     if (!linalgOp)
@@ -2054,7 +2212,10 @@ transform::LinalgPromoteOp::apply(transform::TransformResults &results,
       }
     }
     operandOffset += numOperands;
-
+    if (++group == group_size) {
+      group = 0;
+      operandOffset = 0;
+    }
     if (opersToPromote.empty())
       continue;
 
@@ -2076,10 +2237,17 @@ transform::LinalgPromoteOp::apply(transform::TransformResults &results,
 
   auto ctx = payloadOps[0]->getContext();
   RewritePatternSet patterns(ctx);
+  // promoteSubViews generates extra copies and subviews, these patterns try to
+  // simplify them.
   patterns.insert<RemoveSubViewOpsPattern>(ctx, (int)memorySpace);
-  patterns.insert<FoldSubViewOpsPattern>(ctx);
-  patterns.insert<MemrefsPattern>(ctx);
-  scf::populateSCFForLoopCanonicalizationPatterns(patterns);
+  patterns.insert<FoldSubViewOpsPattern, RemoveViewOpsPattern>(ctx);
+  patterns.insert<RemoveExtraAllocPattern, RemoveDeadCopyPattern,
+                  RemoveAllocCopyLinalgOpCopyPattern>(ctx);
+  // canonicalize allocs like:
+  //  memref.alloc(%c32, %c32) : memref<?x?xi32, 2>
+  // to:
+  //  memref.alloc() : memref<32x32xi32, 2>
+  memref::AllocOp::getCanonicalizationPatterns(patterns, ctx);
   (void)applyPatternsAndFoldGreedily(
       payloadOps[0]->getParentOfType<func::FuncOp>(), std::move(patterns));
 
