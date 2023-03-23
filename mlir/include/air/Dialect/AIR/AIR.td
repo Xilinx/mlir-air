@@ -451,14 +451,12 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
         return 1;
       }
     }
-    int getSizeX() {
-      return getSize()[0].dyn_cast<IntegerAttr>().getInt();
-    }
-    int getSizeY() {
-      return getSize()[1].dyn_cast<IntegerAttr>().getInt();
-    }
     int getBundleSize() {
-      return getSizeX() * getSizeY();
+      int size = 1;
+      for (auto i : getSize()) {
+        size *= i.dyn_cast<IntegerAttr>().getInt();
+      }
+      return size;
     }
   }];
 }
