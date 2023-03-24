@@ -1,0 +1,124 @@
+# Copyright (C) 2022, Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: MIT
+
+TOP = $(shell git rev-parse --show-toplevel)
+
+# source the BP SDK toolchain
+export BP_SDK_DIR ?= $(TOP)/platforms/ip/black-parrot/bp-sdk
+export BP_SDK_BIN_DIR         := $(BP_SDK_DIR)/bin
+export BP_SDK_LIB_DIR         := $(BP_SDK_DIR)/lib
+export BP_SDK_INCLUDE_DIR     := $(BP_SDK_DIR)/include
+export PATH := $(BP_SDK_BIN_DIR):$(PATH)
+
+# setup cross-compilation
+export GCC           ?= gcc
+export RISCV_TARGET  ?= riscv64-unknown-elf-dramfs
+export CROSS_COMPILE ?= $(RISCV_TARGET)-
+
+# Directories, source files, and executables
+FW_DIR = $(TOP)/runtime_lib/controller
+BP_FW_DIR = $(FW_DIR)/bp
+BP_FW_EXE_DIR = $(BP_FW_DIR)/exe
+BP_FW_INC_DIR = $(BP_FW_DIR)/include
+BP_FW_LINK_DIR = $(BP_FW_DIR)/link
+BP_FW_PY_DIR = $(BP_FW_DIR)/py
+BP_FW_LIB_DIR = $(BP_FW_DIR)/lib
+BP_FW_LIB_BUILD_DIR = $(BP_FW_LIB_DIR)/build
+BP_FW_LIB_INC_DIR = $(BP_FW_LIB_DIR)/include
+BP_FW_LIB_SRC_DIR = $(BP_FW_LIB_DIR)/src
+XIL_EMB_SW_DIR = $(FW_DIR)/bp/lib/embeddedsw
+AIR_INC_DIR = $(TOP)/runtime_lib/airhost/include
+
+# include firmware lib makefile fragment that specifies required sources
+include $(BP_FW_LIB_DIR)/Makefile.frag
+
+BP_FW_LIB_SRC = $(BP_FW_LIB_OVERRIDE_SRC) $(XIL_LIB_SRC)
+BP_FW_LIB_OBJ_SRC = $(addprefix $(BP_FW_LIB_BUILD_DIR)/,$(notdir $(BP_FW_LIB_SRC)))
+BP_FW_LIB_OBJ = $(BP_FW_LIB_OBJ_SRC:.c=.o)
+BP_FW_LIB_A = $(BP_FW_LIB_BUILD_DIR)/libfw.a
+
+BP_FW_MAIN_SRC ?= main.cpp
+BP_FW_MAIN_RISCV = $(addprefix $(BP_FW_EXE_DIR)/, $(BP_FW_MAIN_SRC:.cpp=.riscv))
+BP_FW_MAIN_MEM = $(BP_FW_MAIN_RISCV:.riscv=.mem)
+BP_FW_MAIN_MEM_VIVADO = $(addsuffix _vivado.mem,$(basename $(BP_FW_MAIN_MEM)))
+BP_FW_MAIN_DUMP = $(BP_FW_MAIN_RISCV:.riscv=.dump)
+
+# Compiler executables and options
+RISCV_GCC           = $(CROSS_COMPILE)gcc
+RISCV_GPP           = $(CROSS_COMPILE)g++
+RISCV_AR            = $(CROSS_COMPILE)ar
+RISCV_OBJCOPY ?= $(CROSS_COMPILE)objcopy
+RISCV_OBJDUMP ?= $(CROSS_COMPILE)objdump
+
+RISCV_GCC_OPTS      = -march=rv64imafd -mabi=lp64 -mcmodel=medany
+RISCV_SDK_INC       = -I$(BP_SDK_INCLUDE_DIR)
+RISCV_FW_INC        = -I$(BP_FW_INC_DIR) -I$(BP_FW_LIB_INC_DIR) -I$(AIR_INC_DIR)
+RISCV_FW_INC        += -I$(XIL_BSP_DIR) -I$(XIL_UARTLITE_DIR) -I$(XIL_MUTEX_DIR)
+RISCV_LINK_OPTS     = -T$(BP_FW_LINK_DIR)/riscv.ld -L$(BP_SDK_LIB_DIR)
+RISCV_LINK_OPTS     += -Wl,--whole-archive -lperchbm -Wl,--no-whole-archive -nostartfiles
+RISCV_LINK_OPTS     += -L$(BP_FW_LIB_BUILD_DIR) -lfw
+
+# targets
+.PHONY: all firmware library
+
+all: library firmware
+
+crt0: $(BP_FW_LINK_DIR)/crt0.S
+$(BP_FW_LINK_DIR)/crt0.S:
+	wget https://raw.githubusercontent.com/bespoke-silicon-group/bsg_newlib_dramfs/ccc888e606cdebf830194af234cc37c103da104c/libgloss/dramfs/crt0.S
+	mv crt0.S $(BP_FW_LINK_DIR)/
+	sed -i 's/.align 20/.align 12/' $(BP_FW_LINK_DIR)/crt0.S
+
+checkout: | $(BP_FW_LINK_DIR)/crt0.S
+	git submodule update --init --checkout -- $(XIL_EMB_SW_DIR)
+
+deinit:
+	git submodule deinit -- $(XIL_EMB_SW_DIR)
+	rm -f $(BP_FW_LINK_DIR)/crt0.S
+
+$(BP_FW_LIB_BUILD_DIR)/%.o: $(BP_FW_LIB_SRC_DIR)/%.c | $(BP_FW_LIB_BUILD_DIR)
+	$(RISCV_GCC) -o $@ -c $< $(RISCV_GCC_OPTS) $(RISCV_FW_INC)
+
+$(BP_FW_LIB_BUILD_DIR)/%.o: $(XIL_BSP_DIR)/%.c | $(BP_FW_LIB_BUILD_DIR)
+	$(RISCV_GCC) -o $@ -c $< $(RISCV_GCC_OPTS) $(RISCV_FW_INC)
+
+$(BP_FW_LIB_BUILD_DIR)/%.o: $(XIL_MUTEX_DIR)/%.c | $(BP_FW_LIB_BUILD_DIR)
+	$(RISCV_GCC) -o $@ -c $< $(RISCV_GCC_OPTS) $(RISCV_FW_INC)
+
+$(BP_FW_LIB_BUILD_DIR)/%.o: $(XIL_UARTLITE_DIR)/%.c | $(BP_FW_LIB_BUILD_DIR)
+	$(RISCV_GCC) -o $@ -c $< $(RISCV_GCC_OPTS) $(RISCV_FW_INC)
+
+library: $(BP_FW_LIB_A) | $(BP_FW_LIB_BUILD_DIR)
+$(BP_FW_LIB_A): $(BP_FW_LIB_OBJ)
+	$(RISCV_AR) rcs $@ $^
+
+firmware: $(BP_FW_LIB_A) $(BP_FW_MAIN_RISCV) $(BP_FW_MAIN_MEM) $(BP_FW_MAIN_DUMP) reformat_mem
+
+reformat_mem:
+	python3 $(BP_FW_PY_DIR)/format_mem.py --mem $(BP_FW_MAIN_MEM) > $(BP_FW_MAIN_MEM_VIVADO)
+
+$(BP_FW_EXE_DIR):
+	mkdir -p $(BP_FW_EXE_DIR)
+
+$(BP_FW_LIB_BUILD_DIR):
+	mkdir -p $(BP_FW_LIB_BUILD_DIR)
+
+$(BP_FW_EXE_DIR)/%.riscv: $(FW_DIR)/%.cpp | $(BP_FW_EXE_DIR)
+	$(RISCV_GPP) -o $@ $< $(BP_FW_LINK_DIR)/crt0.S $(RISCV_GCC_OPTS) $(RISCV_SDK_INC) \
+    $(RISCV_FW_INC) $(RISCV_LINK_OPTS)
+
+$(BP_FW_EXE_DIR)/%.mem: $(BP_FW_EXE_DIR)/%.riscv
+	$(RISCV_OBJCOPY) -O verilog $< $@
+
+$(BP_FW_EXE_DIR)/%.dump: $(BP_FW_EXE_DIR)/%.riscv
+	$(RISCV_OBJDUMP) -dt $< > $@
+
+clean_lib:
+	rm -f $(BP_FW_LIB_A)
+	rm -rf $(BP_FW_LIB_BUILD_DIR)
+
+clean_fw:
+	rm -rf $(BP_FW_EXE_DIR)
+
+clean: clean_lib clean_fw
+

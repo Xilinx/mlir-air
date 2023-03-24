@@ -11,25 +11,39 @@
 #include <cstring>
 
 #ifdef __aarch64__
-#define ARM_CONTROLLER 1
+#define ARM_CONTROLLER
+#endif
+
+#if defined(__riscv)
+#define RISCV_CONTROLLER
 #endif
 
 extern "C" {
 #include "xil_printf.h"
+#ifndef RISCV_CONTROLLER
+#include "bp/lib/include/xmutex.h"
+#else
+#include "xmutex.h"
+#endif
+#include "air_queue.h"
+#include "hsa_defs.h"
+
 #ifdef ARM_CONTROLLER
 #include "xaiengine.h"
 #include "xil_cache.h"
+#elif defined(RISCV_CONTROLLER)
 #else
 #include "pvr.h"
 #endif
 
-// #include "mb_interface.h"
-
-#include "air_queue.h"
-#include "hsa_defs.h"
 }
 
+#ifndef RISCV_CONTROLLER
 #include "platform.h"
+#else
+#include "bp_utils.h"
+#include "bp_pl.h"
+#endif
 
 #define XAIE_NUM_ROWS 8
 #define XAIE_NUM_COLS 50
@@ -70,11 +84,15 @@ int col_dma_cols[NUM_COL_DMAS] = {7, 8, 9, 10};
   } while (0)
 
 inline uint64_t mymod(uint64_t a) {
+#ifdef RISCV_CONTROLLER
+  return (a % MB_QUEUE_SIZE);
+#else
   uint64_t result = a;
   while (result >= MB_QUEUE_SIZE) {
     result -= MB_QUEUE_SIZE;
   }
   return result;
+#endif
 }
 
 namespace {
@@ -876,78 +894,70 @@ void xaie_herd_init(int start_col, int num_cols, int start_row, int num_rows) {
 
 namespace {
 
-uint64_t shmem_base = 0x020100000000UL;
-uint64_t uart_lock_offset = 0x200;
-uint64_t base_address;
+const uint64_t shmem_base = 0x020100000000ULL;
+const uint64_t num_mb_offset = 0x208;
+const uint64_t global_barrier_offset = 0x210;
+
+XMutex xmutex;
+XMutex* xmutex_ptr = &xmutex;
+XMutex_Config* xmutex_cfg;
 
 bool setup;
 
 void lock_uart(uint32_t id) {
-  bool is_locked = false;
-  volatile uint32_t *ulb = (volatile uint32_t *)(shmem_base + uart_lock_offset);
-
-  while (!is_locked) {
-    uint32_t status = ulb[0];
-    if (status != 1) {
-      ulb[1] = id;
-      ulb[0] = 1;
-      // See if they stuck
-      uint32_t status = ulb[0];
-      uint32_t lockee = ulb[1];
-      if ((status == 1) && (lockee == id)) {
-        // air_printf("ULock @ %lx MB %02d: ",ulb, id);
-        is_locked = true;
-      }
-    }
-  }
+  XMutex_Lock(xmutex_ptr, XPAR_MUTEX_0_UART_LOCK, id);
 }
 
-// This looks unsafe, but its okay as long as we always aquire
-// the lock first
-void unlock_uart() {
-  volatile uint32_t *ulb = (volatile uint32_t *)(shmem_base + uart_lock_offset);
-  ulb[1] = 0;
-  ulb[0] = 0;
+void unlock_uart(uint32_t id) {
+  XMutex_Unlock(xmutex_ptr, XPAR_MUTEX_0_UART_LOCK, id);
 }
 
-int queue_create(uint32_t size, queue_t **queue, uint32_t mb_id) {
-  uint64_t queue_address[1] = {base_address + sizeof(dispatch_packet_t)};
-  uint64_t queue_base_address[1] = {
-      ALIGN(queue_address[0] + sizeof(queue_t), sizeof(dispatch_packet_t))};
+int queue_create(uintptr_t segment_base_address, uint32_t size, queue_t **queue, uint32_t mb_id) {
+  // address of queue_t struct in shared memory
+  // offset by one dispatch packet from segment base address
+  uintptr_t queue_address = segment_base_address + sizeof(dispatch_packet_t);
+  // address of dispatch packet buffer in shared memory
+  // must be aligned to size of dispatch packet and leave room for the queue_t struct
+  uintptr_t queue_base_address = ALIGN(queue_address + sizeof(queue_t), sizeof(dispatch_packet_t));
+
   lock_uart(mb_id);
-  air_printf("setup_queue 0x%llx, %x bytes + %d 64 byte packets\n\r",
+  air_printf("segment base address 0x%llx\n\r", segment_base_address);
+  air_printf("queue_t @ 0x%llx, %d bytes + %d 64 byte packets\n\r",
              (void *)queue_address, sizeof(queue_t), size);
-  air_printf("base address 0x%llx\n\r", base_address);
-  unlock_uart();
+  air_printf("dispatch packet buffer @ 0x%llx\n\r", (void *)queue_base_address);
+  unlock_uart(mb_id);
 
   // The address of the queue_t is stored @ shmem_base[mb_id]
-  memcpy((void *)(((uint64_t *)shmem_base) + mb_id), (void *)queue_address,
+  memcpy((void *)(((uint64_t *)shmem_base) + mb_id), (void *)&queue_address,
          sizeof(uint64_t));
 
   // Initialize the queue_t
   queue_t q;
   q.type = HSA_QUEUE_TYPE_SINGLE;
   q.features = HSA_QUEUE_FEATURE_AGENT_DISPATCH;
-
-  memcpy((void *)&q.base_address, (void *)queue_base_address, sizeof(uint64_t));
+  q.base_address = queue_base_address;
   q.doorbell = 0xffffffffffffffffUL;
   q.size = size;
   q.reserved0 = 0;
   q.id = 0xacdc;
-
   q.read_index = 0;
   q.write_index = 0;
   q.last_doorbell = 0;
+  q.base_address_paddr = 0;
+  q.base_address_vaddr = 0;
 
-  memcpy((void *)queue_address[0], (void *)&q, sizeof(queue_t));
+  // copy the queue_t struct into the shared memory
+  memcpy((void *)queue_address, (void *)&q, sizeof(queue_t));
 
   // Invalidate the packets in the queue
   for (uint32_t idx = 0; idx < size; idx++) {
-    dispatch_packet_t *pkt = &((dispatch_packet_t *)queue_base_address[0])[idx];
+    dispatch_packet_t *pkt = &((dispatch_packet_t *)queue_base_address)[idx];
     pkt->header = HSA_PACKET_TYPE_INVALID;
   }
 
-  memcpy((void *)queue, (void *)queue_address, sizeof(uint64_t));
+  // pass back the pointer to the queue_t in shared memory
+  *queue = (queue_t*)(queue_address);
+
   return 0;
 }
 
@@ -1012,11 +1022,14 @@ void handle_packet_get_capabilities(dispatch_packet_t *pkt, uint32_t mb_id) {
 
   lock_uart(mb_id);
   air_printf("Writing to 0x%llx\n\r", (uint64_t)addr);
-  unlock_uart();
+  unlock_uart(mb_id);
   // We now write a capabilities structure to the address we were just passed
   // We've already done this once - should we just cache the results?
-#if ARM_CONTROLLER
+#if defined(ARM_CONTROLLER)
   int user1 = 1;
+  int user2 = 0;
+#elif defined(RISCV_CONTROLLER)
+  int user1 = *((volatile uint32_t*)(shmem_base+num_mb_offset));
   int user2 = 0;
 #else
   pvr_t pvr;
@@ -1041,8 +1054,11 @@ void handle_packet_get_info(dispatch_packet_t *pkt, uint32_t mb_id) {
   uint64_t *addr =
       (uint64_t *)(&pkt->return_address); // FIXME when we can use a VA
 
-#if ARM_CONTROLLER
+#if defined(ARM_CONTROLLER)
   int user1 = 1;
+  int user2 = 0;
+#elif defined(RISCV_CONTROLLER)
+  int user1 = *((volatile uint32_t*)(shmem_base+num_mb_offset));
   int user2 = 0;
 #else
   pvr_t pvr;
@@ -1274,7 +1290,7 @@ void handle_packet_hello(dispatch_packet_t *pkt, uint32_t mb_id) {
   uint64_t say_what = pkt->arg[0];
   lock_uart(mb_id);
   xil_printf("MB %d : HELLO %08X\n\r", mb_id, (uint32_t)say_what);
-  unlock_uart();
+  unlock_uart(mb_id);
 }
 
 typedef struct staged_nd_memcpy_s {
@@ -1595,7 +1611,7 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id) {
   } while (num_active_packets > 1);
   lock_uart(mb_id);
   air_printf("Completing: %d packets processed.\n\r", packets_processed);
-  unlock_uart();
+  unlock_uart(mb_id);
   queue_add_read_index(q, packets_processed);
   q->read_index = mymod(q->read_index);
 }
@@ -1632,7 +1648,7 @@ void handle_barrier_and_packet(queue_t *q, uint32_t mb_id) {
   // for (int i = 0; i < 5; i++)
   //  air_printf("MB %d : dep_signal[%d] @ %p\n\r",mb_id,i,(uint64_t
   //  *)(pkt->dep_signal[i]));
-  // unlock_uart();
+  // unlock_uart(mb_id);
 
   while ((signal_wait(s0, 0, 0x80000, 0) != 0) ||
          (signal_wait(s1, 0, 0x80000, 0) != 0) ||
@@ -1645,7 +1661,7 @@ void handle_barrier_and_packet(queue_t *q, uint32_t mb_id) {
     for (int i = 0; i < 5; i++)
       air_printf("MB %d : dep_signal[%d] = %d\n\r", mb_id, i,
                  *((uint32_t *)(pkt->dep_signal[i])));
-    unlock_uart();
+    unlock_uart(mb_id);
   }
 
   complete_barrier_packet(pkt);
@@ -1669,7 +1685,7 @@ void handle_barrier_or_packet(queue_t *q, uint32_t mb_id) {
   // for (int i = 0; i < 5; i++)
   //  air_printf("MB %d : dep_signal[%d] @ %p\n\r",mb_id,i,(uint64_t
   //  *)(pkt->dep_signal[i]));
-  // unlock_uart();
+  // unlock_uart(mb_id);
 
   while ((signal_wait(s0, 0, 0x80000, 1) != 0) &&
          (signal_wait(s1, 0, 0x80000, 1) != 0) &&
@@ -1682,7 +1698,7 @@ void handle_barrier_or_packet(queue_t *q, uint32_t mb_id) {
     for (int i = 0; i < 5; i++)
       air_printf("MB %d : dep_signal[%d] = %d\n\r", mb_id, i,
                  *((uint32_t *)(pkt->dep_signal[i])));
-    unlock_uart();
+    unlock_uart(mb_id);
   }
 
   complete_barrier_packet(pkt);
@@ -1691,8 +1707,14 @@ void handle_barrier_or_packet(queue_t *q, uint32_t mb_id) {
 }
 
 int main() {
+#ifndef RISCV_CONTROLLER
   init_platform();
-#ifdef ARM_CONTROLLER
+#endif
+
+  volatile uint32_t *num_mbs = (volatile uint32_t *)(shmem_base + num_mb_offset);
+  volatile uint64_t* global_barrier = (volatile uint64_t*)(shmem_base + global_barrier_offset);
+
+#if defined(ARM_CONTROLLER)
   Xil_DCacheDisable();
 
   xaie2::aie_libxaie_ctx_t ctx;
@@ -1701,56 +1723,110 @@ int main() {
   int err = xaie2::mlir_aie_init_device(_xaie);
   if (err)
     xil_printf("ERROR initializing device.\n\r");
-  int user1 = 1;
+
+  // Setting the number of agents in the system
+  int user1 = NUM_HERD_CONTROLLERS + 1;
   int user2 = 0;
-#else
-  pvr_t pvr;
-  microblaze_get_pvr(&pvr);
-  int user1 = MICROBLAZE_PVR_USER1(pvr);
-  int user2 = MICROBLAZE_PVR_USER2(pvr);
-#endif
+
   int mb_id = user2 & 0xff;
   int maj = (user2 >> 24) & 0xff;
   int min = (user2 >> 16) & 0xff;
   int ver = (user2 >> 8) & 0xff;
+#elif defined(RISCV_CONTROLLER)
+  // HART ID is local per BP complex (i.e., 0 for a unicore BP)
+  // Global ID is a software configurable ID, which must be set prior to execution start
+  // most designs set a sane default from hardware so software does not need to set this
+  uint64_t user2 = bp_get_hart() + bp_get_global_id();
+  uint32_t mb_id = user2 & 0xff;
+  // MIMPID CSR is used to specify a tuple of {vendor, major, minor, patch} that describes
+  // the implementer and IP version of the processor hardware
+  uint64_t mimpid = bp_get_mimpid();
+  uint32_t vendor = (mimpid >> 48) & 0xffff;
+  uint32_t maj = (mimpid >> 32) & 0xffff;
+  uint32_t min = (mimpid >> 16) & 0xffff;
+  uint32_t ver = (mimpid) & 0xffff;
+#else
+  pvr_t pvr;
+  microblaze_get_pvr(&pvr);
+  uint32_t user2 = MICROBLAZE_PVR_USER2(pvr);
+  uint32_t mb_id = user2 & 0xff;
+  uint32_t maj = (user2 >> 24) & 0xff;
+  uint32_t min = (user2 >> 16) & 0xff;
+  uint32_t ver = (user2 >> 8) & 0xff;
+#endif
 
-  // Skip over the system wide shmem area, then find your own
-  base_address = shmem_base + (1 + mb_id) * MB_SHMEM_SEGMENT_SIZE;
-  uint32_t *num_mbs = (uint32_t *)(shmem_base + 0x208);
+  // initialize private view of the Mutex block
+  xmutex_cfg = XMutex_LookupConfig(XPAR_MUTEX_0_DEVICE_ID);
+  XMutex_CfgInitialize(xmutex_ptr, xmutex_cfg, xmutex_cfg->BaseAddress, mb_id);
+
+  // BP cores do not write this value, the host does
+  // Thinking we can just remove this for now
+#ifndef RISCV_CONTROLLER
   num_mbs[0] = user1;
+#endif
 
+  // leader core has an ID of 0 and does the following:
+  // - initializes the mutex IP block and the shared signals
+  // - writes a non-zero value to the global_barrier to release all other cores for execution
+  // necessarily, global_barrier must start with a value of 0
   if (mb_id == 0) {
-    unlock_uart(); // NOTE: Initialize uart lock only from 'first' MB
+    // unlock all locked mutex
+    uint32_t mutex_owner, mutex_locked;
+    for (uint32_t i = 0; i < xmutex_ptr->Config.NumMutex; i++) {
+      XMutex_GetStatus(xmutex_ptr, i, &mutex_locked, &mutex_owner);
+      if (mutex_locked) {
+        XMutex_Unlock(xmutex_ptr, i, mutex_owner);
+      }
+    }
+
     // initialize shared signals
     uint64_t *s = (uint64_t *)(shmem_base + MB_SHMEM_SIGNAL_OFFSET);
-    for (uint64_t i = 0; i < (MB_SHMEM_SIGNAL_SIZE) / sizeof(uint64_t); i++)
+    for (uint64_t i = 0; i < (MB_SHMEM_SIGNAL_SIZE) / sizeof(uint64_t); i++) {
       s[i] = 0;
+    }
+    *global_barrier = 1;
+  } else {
+    while (!(*global_barrier)) { }
   }
 
+  // Skip over the system wide shmem area and the signals page, then find your own
+  uintptr_t segment_base_address = shmem_base + ((1 + mb_id) * MB_SHMEM_SEGMENT_SIZE);
+
+  // all cores update num_mb field in shared BRAM
+  // requires each core's mb_id to be accurate and mutex locks to be initialized properly
+  XMutex_Lock(xmutex_ptr, XPAR_MUTEX_0_NUM_MB_LOCK, mb_id);
+  if (mb_id >= num_mbs[0]) {
+    num_mbs[0] = mb_id + 1;
+  }
+  XMutex_Unlock(xmutex_ptr, XPAR_MUTEX_0_NUM_MB_LOCK, mb_id);
+
   lock_uart(mb_id);
-#ifdef ARM_CONTROLLER
+#if defined(ARM_CONTROLLER)
   xil_printf("ARM %d of %d firmware %d.%d.%d created on %s at %s GMT\n\r",
+             mb_id + 1, *num_mbs, maj, min, ver, __DATE__, __TIME__);
+#elif defined(RISCV_CONTROLLER)
+  xil_printf("BP %d of %d firmware %d.%d.%d created on %s at %s GMT\n\r",
              mb_id + 1, *num_mbs, maj, min, ver, __DATE__, __TIME__);
 #else
   xil_printf("MB %d of %d firmware %d.%d.%d created on %s at %s GMT\n\r",
              mb_id + 1, *num_mbs, maj, min, ver, __DATE__, __TIME__);
 #endif
   xil_printf("(c) Copyright 2020-2022 AMD, Inc. All rights reserved.\n\r");
-  unlock_uart();
+  unlock_uart(mb_id);
 
   setup = false;
   queue_t *q = nullptr;
-  queue_create(MB_QUEUE_SIZE, &q, mb_id);
+  queue_create(segment_base_address, MB_QUEUE_SIZE, &q, mb_id);
   lock_uart(mb_id);
-  xil_printf("Created queue @ 0x%llx\n\r", (size_t)q);
-  unlock_uart();
+  xil_printf("Created queue @ 0x%p\n\r\n\r", q);
+  unlock_uart(mb_id);
 
   volatile bool done = false;
   while (!done) {
     if (q->doorbell + 1 > q->last_doorbell) {
       lock_uart(mb_id);
       air_printf("Ding Dong 0x%llx\n\r", q->doorbell + 1);
-      unlock_uart();
+      unlock_uart(mb_id);
 
       q->last_doorbell = q->doorbell + 1;
 
@@ -1772,7 +1848,7 @@ int main() {
           if (setup) {
             lock_uart(mb_id);
             air_printf("Waiting\n\r");
-            unlock_uart();
+            unlock_uart(mb_id);
             setup = false;
           }
           invalid = true;
@@ -1791,6 +1867,8 @@ int main() {
     }
   }
 
+#ifndef RISCV_CONTROLLER
   cleanup_platform();
+#endif
   return 0;
 }

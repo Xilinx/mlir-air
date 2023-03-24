@@ -31,6 +31,11 @@ Configure the environment for Vitis (Vivado) 2021.2 and petalinux 2021.2:
     $ source /path/to/Vitis/2021.2/settings64.sh
     $ source /path/to/petalinux/2021.2/settings.sh
 
+Build the BlackParrot IP and Firmware. See the READMEs and Makefiles in the following directories to prepare the BlackParrot IP block and its firmware.
+
+    mlir-air/platforms/ip/black-parrot
+    mlir-air/runtime_lib/controller
+
 Build the XSA and BSP files:
 
     cd mlir-air/platforms/xilinx_vck190_air

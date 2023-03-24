@@ -1,0 +1,21 @@
+# Copyright(C) 2022 Advanced Micro Devices, Inc. All Rights Reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# source files required to wrap BP core with AXI interfaces and package as IP block
+#
+
+$BLACKPARROT_SUB_DIR/axi/v/bsg_axi_pkg.v
+$BASEJUMP_STL_DIR/bsg_cache/bsg_cache_to_axi.v
+$BASEJUMP_STL_DIR/bsg_cache/bsg_cache_to_axi_rx.v
+$BASEJUMP_STL_DIR/bsg_cache/bsg_cache_to_axi_tx.v
+$BLACKPARROT_SUB_DIR/axi/v/bp_me_axil_master.sv
+$BLACKPARROT_SUB_DIR/axi/v/bp_me_axil_client.sv
+$BLACKPARROT_SUB_DIR/axi/v/bp_me_axil_to_burst.sv
+$BLACKPARROT_SUB_DIR/axi/v/bp_me_burst_to_axil.sv
+$BLACKPARROT_SUB_DIR/axi/v/bsg_axil_fifo_client.sv
+$BLACKPARROT_SUB_DIR/axi/v/bsg_axil_fifo_master.sv
+$BLACKPARROT_SUB_DIR/axi/v/bp_axi_top.sv
+$IP_SRC_DIR/blackparrot_wrapper.sv
+$IP_SRC_DIR/blackparrot.v
+

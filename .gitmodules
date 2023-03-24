@@ -1,3 +1,12 @@
 [submodule "platforms/boards"]
 	path = platforms/boards
 	url = https://github.com/Xilinx/XilinxBoardStore.git
+[submodule "platforms/ip/black-parrot/black-parrot"]
+	path = platforms/ip/black-parrot/black-parrot
+	url = https://github.com/black-parrot/black-parrot.git
+[submodule "platforms/ip/black-parrot/black-parrot-subsystems"]
+	path = platforms/ip/black-parrot/black-parrot-subsystems
+	url = https://github.com/black-parrot-hdk/black-parrot-subsystems.git
+[submodule "runtime_lib/controller/bp/lib/embeddedsw"]
+	path = runtime_lib/controller/bp/lib/embeddedsw
+	url = https://github.com/Xilinx/embeddedsw.git

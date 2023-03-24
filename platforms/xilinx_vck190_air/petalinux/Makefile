@@ -32,6 +32,7 @@ bootimage:
 	@echo "BOOT image for base platforms"
 	petalinux-package --boot --plm --psmfw --uboot --dtb
 
+.PHONY: sysroot
 sysroot:
 	mkdir -p ${SYSROOT}
 	petalinux-build --sdk
@@ -42,6 +43,7 @@ bsp:
 
 clean:
 	$(RM) -r images/linux/*
+	$(RM) -rf ${SYSROOT}
 	petalinux-build -x cleanall || true
 	${RM} -r build ip_cache components
 

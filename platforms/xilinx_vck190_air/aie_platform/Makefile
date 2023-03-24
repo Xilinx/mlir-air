@@ -73,6 +73,7 @@ EMU_CMD = ./launch_hw_emu.sh
 VCC      = v++
 VPP_SPEC =system.cfg
 VPP_FLAGS=--save-temps --verbose --config ${VPP_SPEC} 
+VPP_STRATEGY=--vivado.prop run.impl_1.strategy=Performance_ExplorePostRoutePhysOpt
 LDCLFLAGS=
 
 .PHONY: clean
@@ -122,7 +123,7 @@ xclbin: guard-PLATFORM_REPO_PATHS ${XCLBIN}
 
 
 ${XCLBIN}: ${LIBADF} ${VPP_SPEC} 
-	${VCC} -g -l --platform ${PLATFORM} ${LIBADF} -t ${TARGET} ${VPP_FLAGS} -o $@
+	${VCC} -g -l --platform ${PLATFORM} ${LIBADF} -t ${TARGET} ${VPP_FLAGS} ${VPP_STRATEGY} -o $@
 
 host: guard-CXX guard-SDKTARGETSYSROOT ${HOST_EXE}
 ${HOST_EXE}: ${GRAPH} ./Work/ps/c_rts/aie_control_xrt.cpp
