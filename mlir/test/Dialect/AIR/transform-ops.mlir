@@ -56,8 +56,8 @@ func.func @air_fuse_into(%A: memref<128x128xf32>, %B: memref<128x128xf32>, %D: m
 
 transform.sequence failures(propagate) {
 ^bb1(%arg1: !pdl.operation):
-  %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-  %fill = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+  %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1
+  %fill = transform.structured.match ops{["linalg.fill"]} in %arg1
   %matmul_1, %loops_1:2 = transform.air.linalg_tile %matmul [32, 32, 0]
   %fill_1 = transform.air.fuse_into_containing_op %fill into %loops_1#0
 }

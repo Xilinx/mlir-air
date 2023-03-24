@@ -42,7 +42,7 @@ def gemm_module():
         ^bb0(%arg0: !pdl.operation):
             transform.sequence %arg0 : !pdl.operation failures(propagate) {
             ^bb1(%arg1: !pdl.operation):
-                %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+                %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1
                 %matmul_1, %loops:3 = transform.air.linalg_tile %matmul [64, 64, 64]
             }
         }
