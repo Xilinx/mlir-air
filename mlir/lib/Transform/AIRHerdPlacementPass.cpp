@@ -198,8 +198,8 @@ public:
       auto num_cols = num_cols_op ? *num_cols_op : clNumCols;
       auto row_offset = row_offset_op ? *row_offset_op : clAnchorPointRow;
       auto col_offset = col_offset_op ? *col_offset_op : clAnchorPointCol;
-      auto segment = std::make_unique<Segment>(num_rows, num_cols,
-                                                   row_offset, col_offset);
+      auto segment =
+          std::make_unique<Segment>(num_rows, num_cols, row_offset, col_offset);
       placeHerdsInSegment(segmentHerds, segment);
 
       auto intTy = IntegerType::get(part->getContext(), 64);
@@ -244,7 +244,7 @@ public:
 
 private:
   void placeHerdsInSegment(std::vector<std::unique_ptr<Herd>> &unplacedHerds,
-                             std::unique_ptr<Segment> &segment) {
+                           std::unique_ptr<Segment> &segment) {
 
     std::sort(
         unplacedHerds.begin(), unplacedHerds.end(),
@@ -290,8 +290,7 @@ private:
       for (int64_t j = 0; j < segment->getNumCols(); j++) {
         if (segment->grid[segment->getNumRows() - i - 1][j] == -1) {
           for (uint32_t k = 0; k < unplacedHerds.size(); k++) {
-            bool legalPlace =
-                segment->isLegalPlacement(unplacedHerds[k], i, j);
+            bool legalPlace = segment->isLegalPlacement(unplacedHerds[k], i, j);
             if (legalPlace) {
               segment->placeHerd(unplacedHerds[k], i, j);
               unplacedHerds[k]->setLocX(j);

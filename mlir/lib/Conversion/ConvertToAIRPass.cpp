@@ -1617,8 +1617,8 @@ public:
     for (Value v : launch.getKernelArguments()) {
       segmentOpers.push_back(v);
     }
-    auto segment = rewriter.create<air::SegmentOp>(
-        op.getLoc(), segmentSizes, segmentOpers);
+    auto segment = rewriter.create<air::SegmentOp>(op.getLoc(), segmentSizes,
+                                                   segmentOpers);
     auto &bb = segment.getBody().front();
     auto ivs = op.getInductionVars();
 

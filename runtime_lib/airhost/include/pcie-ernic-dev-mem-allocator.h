@@ -36,7 +36,7 @@ struct pcie_ernic_dev_mem_allocator {
   uint64_t dev_mem_size; // The total size of the device memory so we can report
                          // errors when too much is requested
   uint64_t segment_offset; // Need an offset in case multiple processes are
-                             // using device memory
+                           // using device memory
   uint64_t global_offset; // This is the offset in the hardware memory map so we
                           // can directly address device memory
 };

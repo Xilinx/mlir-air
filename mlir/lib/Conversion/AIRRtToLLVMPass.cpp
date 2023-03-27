@@ -73,7 +73,7 @@ LLVM::LLVMStructType getHerdDescriptorType(MLIRContext *ctx) {
 //   air_herd_desc_t **herd_descs;
 // };
 LLVM::LLVMStructType getSegmentDescriptorType(MLIRContext *ctx,
-                                                int64_t herd_length) {
+                                              int64_t herd_length) {
   return LLVM::LLVMStructType::getLiteral(
       ctx, {
                // int64_t name_length;
@@ -126,16 +126,16 @@ LLVM::GlobalOp getOrCreateAIRString(OpBuilder builder, ModuleOp module,
 
 LLVM::GlobalOp
 createSegmentDescriptor(OpBuilder builder, ModuleOp module,
-                          ArrayRef<LLVM::GlobalOp> herd_descs,
-                          xilinx::airrt::SegmentMetadataOp segment) {
+                        ArrayRef<LLVM::GlobalOp> herd_descs,
+                        xilinx::airrt::SegmentMetadataOp segment) {
   auto ctx = module.getContext();
   auto loc = builder.getUnknownLoc();
 
   auto descTy = getSegmentDescriptorType(ctx, herd_descs.size());
 
   std::string segment_name = "segment";
-  if (auto attr = segment->getAttrOfType<StringAttr>(
-          SymbolTable::getSymbolAttrName()))
+  if (auto attr =
+          segment->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
     segment_name = attr.getValue().str();
 
   auto segmentName = getOrCreateAIRString(builder, module, segment_name);
@@ -174,8 +174,7 @@ createSegmentDescriptor(OpBuilder builder, ModuleOp module,
     builder.createBlock(&descGlobal.getInitializerRegion());
     Value desc = builder.create<LLVM::UndefOp>(loc, descTy);
 
-    auto segmentNameArray =
-        builder.create<LLVM::AddressOfOp>(loc, segmentName);
+    auto segmentNameArray = builder.create<LLVM::AddressOfOp>(loc, segmentName);
     auto segmentNameLen = builder.create<LLVM::ConstantOp>(
         loc, IntegerType::get(ctx, 64),
         builder.getI32IntegerAttr(segment_name.size()));
@@ -217,8 +216,8 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
   auto ctx = module.getContext();
   auto loc = builder.getUnknownLoc();
   auto descTy = getModuleDescriptorType(ctx, segment_herd_count);
-  auto max_herds = *std::max_element(segment_herd_count.begin(),
-                                     segment_herd_count.end());
+  auto max_herds =
+      *std::max_element(segment_herd_count.begin(), segment_herd_count.end());
   auto arrayTy = LLVM::LLVMArrayType::get(
       LLVM::LLVMPointerType::get(getSegmentDescriptorType(ctx, max_herds)),
       segment_herd_count.size());
@@ -264,9 +263,8 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
     desc = builder.create<LLVM::InsertValueOp>(loc, desc, segment_descs_len,
                                                builder.getDenseI64ArrayAttr(0));
 
-    desc = builder.create<LLVM::InsertValueOp>(loc, desc,
-                                               segment_descs_global_addr,
-                                               builder.getDenseI64ArrayAttr(1));
+    desc = builder.create<LLVM::InsertValueOp>(
+        loc, desc, segment_descs_global_addr, builder.getDenseI64ArrayAttr(1));
 
     builder.create<LLVM::ReturnOp>(loc, desc);
   }
@@ -459,8 +457,8 @@ public:
             createHerdDescriptor(rewriter, module, shim_desc, herd_meta));
       }
       segment_herd_count.push_back(herd_descs.size());
-      segment_descs.push_back(createSegmentDescriptor(
-          rewriter, module, herd_descs, segment_meta));
+      segment_descs.push_back(
+          createSegmentDescriptor(rewriter, module, herd_descs, segment_meta));
     }
     auto desc = createModuleDescriptor(rewriter, module, segment_descs,
                                        segment_herd_count);
@@ -486,8 +484,7 @@ public:
     auto module = op->getParentOfType<ModuleOp>();
 
     rewriter.setInsertionPoint(op->getParentOfType<func::FuncOp>());
-    auto segment_name =
-        getOrCreateAIRString(rewriter, module, op.getSymName());
+    auto segment_name = getOrCreateAIRString(rewriter, module, op.getSymName());
 
     auto funcOp = dyn_cast_if_present<func::FuncOp>(
         module.lookupSymbol("__airrt_segment_load"));

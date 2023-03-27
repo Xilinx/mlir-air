@@ -735,8 +735,7 @@ public:
         getTimeStampsFromWavefront(next_times, launch);
         for (auto &segment_runner_node : launch.sub_runner_nodes) {
           getTimeStampsFromWavefront(next_times, segment_runner_node);
-          for (auto &herd_runner_node :
-               segment_runner_node.sub_runner_nodes) {
+          for (auto &herd_runner_node : segment_runner_node.sub_runner_nodes) {
             getTimeStampsFromWavefront(next_times, herd_runner_node);
           }
         }
@@ -1116,8 +1115,7 @@ private:
       // Create segment runner node
       launch_runner_node.sub_runner_nodes.push_back(
           runnerNode(&segmentGraph, "segment"));
-      auto current_segment_node =
-          &(launch_runner_node.sub_runner_nodes.back());
+      auto current_segment_node = &(launch_runner_node.sub_runner_nodes.back());
       for (auto &herdGraph : segmentGraph.subgraphs) {
         // Create herd runner node
         current_segment_node->sub_runner_nodes.push_back(

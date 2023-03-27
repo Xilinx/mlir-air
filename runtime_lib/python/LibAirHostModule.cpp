@@ -37,8 +37,7 @@ void defineAIRHostModule(pybind11::module &m) {
   pybind11::class_<air_module_desc_t>(m, "ModuleDescriptor")
       .def(
           "getSegments",
-          [](const air_module_desc_t &d)
-              -> std::vector<air_segment_desc_t *> {
+          [](const air_module_desc_t &d) -> std::vector<air_segment_desc_t *> {
             std::vector<air_segment_desc_t *> segments;
             for (uint64_t i = 0; i < d.segment_length; i++)
               segments.push_back(d.segment_descs[i]);

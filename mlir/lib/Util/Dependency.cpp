@@ -313,7 +313,7 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
                  (!op->getParentOfType<air::LaunchOp>())) {
         auto segment = dyn_cast<air::SegmentOp>(op);
         addVerticesInSegment(global_graph.subgraphs, segment, dep_ctx,
-                               expandHier);
+                             expandHier);
       } else if (dyn_cast<air::HerdOp>(op) &&
                  (!op->getParentOfType<air::LaunchOp>()) &&
                  (!op->getParentOfType<air::SegmentOp>())) {
@@ -629,8 +629,8 @@ void dependencyCanonicalizer::addVerticesInLaunch(
         !dyn_cast<air::LaunchOp>(launch_childop)) {
       addVertexFromOpImpls(launch_childop, current_launch_graph, dep_ctx);
       if (auto segment = dyn_cast<air::SegmentOp>(launch_childop)) {
-        addVerticesInSegment(current_launch_graph->subgraphs, segment,
-                               dep_ctx, expandHier);
+        addVerticesInSegment(current_launch_graph->subgraphs, segment, dep_ctx,
+                             expandHier);
       } else if (dyn_cast<air::HerdOp>(launch_childop) &&
                  (!launch_childop->getParentOfType<air::SegmentOp>())) {
         auto herd = dyn_cast<air::HerdOp>(launch_childop);
@@ -1384,8 +1384,7 @@ void dependencyCanonicalizer::canonicalizeGraphs(
       for (auto &herdGraph : segmentGraph.subgraphs) {
         current_segment_graph->subgraphs.push_back(
             dependencyGraph(herdGraph.hierarchyOp));
-        current_segment_g_to_tr->submaps.push_back(
-            vertex_to_vertex_map_tree());
+        current_segment_g_to_tr->submaps.push_back(vertex_to_vertex_map_tree());
       }
     }
   }

@@ -258,7 +258,7 @@ air_herd_desc_t *air_herd_get_desc(air_module_handle_t handle,
 }
 
 air_segment_desc_t *air_segment_get_desc(air_module_handle_t handle,
-                                             const char *segment_name) {
+                                         const char *segment_name) {
   if (!handle)
     return nullptr;
 
@@ -268,8 +268,7 @@ air_segment_desc_t *air_segment_get_desc(air_module_handle_t handle,
 
   for (int i = 0; i < module_desc->segment_length; i++) {
     auto segment_desc = module_desc->segment_descs[i];
-    if (!strncmp(segment_name, segment_desc->name,
-                 segment_desc->name_length)) {
+    if (!strncmp(segment_name, segment_desc->name, segment_desc->name_length)) {
       return segment_desc;
     }
   }

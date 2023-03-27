@@ -111,9 +111,8 @@ void *dev_mem_alloc(struct pcie_ernic_dev_mem_allocator *allocator,
 
   // Setting the user pointer equal to the next portion
   // of available memory
-  void *user_ptr =
-      (void *)((unsigned char *)allocator->dev_mem +
-               allocator->segment_offset + allocator->dev_mem_ptr);
+  void *user_ptr = (void *)((unsigned char *)allocator->dev_mem +
+                            allocator->segment_offset + allocator->dev_mem_ptr);
 
 #ifdef VERBOSE_DEBUG
   printf("Giving user %dB starting at dev_mem[0x%lx]\n", size,

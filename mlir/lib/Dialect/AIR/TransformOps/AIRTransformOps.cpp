@@ -30,7 +30,7 @@ public:
 
 DiagnosedSilenceableFailure
 transform::GetSegmentForOp::apply(transform::TransformResults &results,
-                                    transform::TransformState &state) {
+                                  transform::TransformState &state) {
   SetVector<Operation *> segments;
   for (Operation *target : state.getPayloadOps(getTarget())) {
     xilinx::air::SegmentOp segment =
@@ -38,8 +38,8 @@ transform::GetSegmentForOp::apply(transform::TransformResults &results,
     if (!segment) {
       DiagnosedSilenceableFailure diag =
           emitSilenceableError()
-          << "could not find an '"
-          << xilinx::air::SegmentOp::getOperationName() << "' parent";
+          << "could not find an '" << xilinx::air::SegmentOp::getOperationName()
+          << "' parent";
       diag.attachNote(target->getLoc()) << "target op";
       return diag;
     }
@@ -53,9 +53,10 @@ transform::GetSegmentForOp::apply(transform::TransformResults &results,
 // SegmentToAIEOp
 //===----------------------------------------------------------------------===//
 
-DiagnosedSilenceableFailure transform::SegmentToAIEOp::applyToOne(
-    xilinx::air::SegmentOp target, transform::ApplyToEachResultList &results,
-    transform::TransformState &state) {
+DiagnosedSilenceableFailure
+transform::SegmentToAIEOp::applyToOne(xilinx::air::SegmentOp target,
+                                      transform::ApplyToEachResultList &results,
+                                      transform::TransformState &state) {
   SimpleRewriter rewriter(target->getContext());
   FailureOr<ModuleOp> res = convertAIRToAIE(rewriter, target);
   if (failed(res))

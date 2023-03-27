@@ -11,8 +11,8 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/TypeUtilities.h"
 
-#include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
+#include "air/Dialect/AIRRt/AIRRtOps.h"
 
 using namespace mlir;
 using namespace xilinx::airrt;
@@ -31,7 +31,7 @@ void ModuleMetadataOp::print(OpAsmPrinter &p) {
 }
 
 ParseResult ModuleMetadataOp::parse(OpAsmParser &parser,
-                                         OperationState &result) {
+                                    OperationState &result) {
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();
   auto *body = result.addRegion();
@@ -49,14 +49,14 @@ void SegmentMetadataOp::print(OpAsmPrinter &p) {
 }
 
 ParseResult SegmentMetadataOp::parse(OpAsmParser &parser,
-                                       OperationState &result) {
+                                     OperationState &result) {
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();
   auto *body = result.addRegion();
   if (parser.parseRegion(*body, std::nullopt, false))
     return failure();
   SegmentMetadataOp::ensureTerminator(*body, parser.getBuilder(),
-                                        result.location);
+                                      result.location);
   return success();
 }
 

@@ -938,7 +938,7 @@ function check_route_array_validity(route_array: any, max_row: number,
 // Outputs:
 //   null if valid, string if invalid
 function check_segment_array_validity(segment_array: any, max_row: number,
-                                        max_col: number) {
+                                      max_col: number) {
   // valid array dimensions
   // var used_segments: Array<number> = [];
   var used_tile_locations = [];
@@ -973,8 +973,8 @@ function check_segment_array_validity(segment_array: any, max_row: number,
                  String(i) + ", entry " + String(j);
         }
         if (segment_array[i][j][0] >= max_row ||
-            segment_array[i][j][1] >= max_col ||
-            segment_array[i][j][0] < 0 || segment_array[i][j][1] < 0) {
+            segment_array[i][j][1] >= max_col || segment_array[i][j][0] < 0 ||
+            segment_array[i][j][1] < 0) {
           return "Tile coordinates are outside of max range in segment " +
                  String(i) + ", entry " + String(j);
         }

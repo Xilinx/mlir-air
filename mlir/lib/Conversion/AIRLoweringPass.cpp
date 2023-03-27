@@ -120,8 +120,8 @@ public:
     if (auto attr =
             op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
       auto segment_name = attr.getValue().str();
-      rewriter.create<airrt::SegmentLoadOp>(
-          op->getLoc(), rewriter.getI64Type(), segment_name);
+      rewriter.create<airrt::SegmentLoadOp>(op->getLoc(), rewriter.getI64Type(),
+                                            segment_name);
     }
 
     SmallVector<Value> deps;
@@ -157,8 +157,7 @@ public:
       std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
 
     // map segment size to scf.parallel upper bounds
-    for (auto p :
-         llvm::zip(segment.getSizeOperands(), scfPar.getUpperBound()))
+    for (auto p : llvm::zip(segment.getSizeOperands(), scfPar.getUpperBound()))
       std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
 
     int i = 0;

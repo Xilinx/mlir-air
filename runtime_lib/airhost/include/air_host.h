@@ -248,7 +248,7 @@ int32_t air_module_unload(air_module_handle_t handle);
 air_module_desc_t *air_module_get_desc(air_module_handle_t handle);
 
 air_segment_desc_t *air_segment_get_desc(air_module_handle_t handle,
-                                             const char *name);
+                                         const char *name);
 
 air_herd_desc_t *air_herd_get_desc(air_module_handle_t handle,
                                    air_segment_desc_t *segment,

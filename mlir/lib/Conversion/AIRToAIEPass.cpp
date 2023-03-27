@@ -1305,11 +1305,10 @@ public:
 
   airrt::SegmentMetadataOp
   getOrCreateSegmentMetadata(airrt::ModuleMetadataOp module_meta,
-                               StringRef name) {
+                             StringRef name) {
 
-    for (auto pm : module_meta.getSegments()
-                       .front()
-                       .getOps<airrt::SegmentMetadataOp>())
+    for (auto pm :
+         module_meta.getSegments().front().getOps<airrt::SegmentMetadataOp>())
       if (name == pm.getSymName().str())
         return pm;
 
@@ -1323,8 +1322,7 @@ public:
   }
 
   airrt::HerdMetadataOp
-  createHerdMetadata(airrt::SegmentMetadataOp segment_meta,
-                     air::HerdOp herd) {
+  createHerdMetadata(airrt::SegmentMetadataOp segment_meta, air::HerdOp herd) {
     auto builder = OpBuilder::atBlockTerminator(segment_meta.getBody());
     auto loc = builder.getUnknownLoc();
 

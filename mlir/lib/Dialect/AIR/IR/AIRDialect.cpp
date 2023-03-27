@@ -433,9 +433,9 @@ unsigned LaunchOp::getNumDims() {
 //
 
 void SegmentOp::build(OpBuilder &builder, OperationState &result,
-                        ValueRange asyncDependencies, ValueRange sizes,
-                        ValueRange segmentOperands, bool isAsync,
-                        ArrayRef<NamedAttribute> attrs) {
+                      ValueRange asyncDependencies, ValueRange sizes,
+                      ValueRange segmentOperands, bool isAsync,
+                      ArrayRef<NamedAttribute> attrs) {
 
   result.addOperands(asyncDependencies);
   if (isAsync)
@@ -469,7 +469,7 @@ void SegmentOp::build(OpBuilder &builder, OperationState &result,
 }
 
 void SegmentOp::build(OpBuilder &builder, OperationState &result,
-                        ValueRange sizes, ValueRange segmentOperands) {
+                      ValueRange sizes, ValueRange segmentOperands) {
 
   build(builder, result, {}, sizes, segmentOperands, false);
 }
@@ -641,7 +641,7 @@ ParseResult SegmentOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 void SegmentOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
-                                              MLIRContext *context) {
+                                            MLIRContext *context) {
   patterns.add(canonicalizeHierarchyOpArgs<SegmentOp>);
 }
 
