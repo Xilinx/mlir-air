@@ -9,7 +9,7 @@
 // RUN: air-translate %s -air-herds-to-json -num-rows=6 -num-cols=8 | FileCheck %s
 // CHECK: "row": 5
 // CHECK: "col": 7
-// CHECK: partition
+// CHECK: segment
 // CHECK: [0, "matmul_herd_0", [0, 0], [0, 1], [1, 0], [1, 1]],
 // CHECK: [1, "matmul_herd_1", [0, 2], [0, 3], [1, 2], [1, 3]],
 // CHECK: [2, "matmul_herd_2", [0, 4], [0, 5], [1, 4], [1, 5]],
@@ -45,7 +45,7 @@ module attributes {torch.debug_module_name = "mmult"} {
     memref.copy %alloc, %alloc_0 : memref<24576x1024xbf16> to memref<24576x1024xbf16>
     %alloc_1 = memref.alloc() {alignment = 128 : i64} : memref<24576x1024xbf16>
     air.launch @launch_0 (%arg2, %arg3) in (%arg4=%c48, %arg5=%c16) args(%arg6=%arg0, %arg7=%arg1, %arg8=%alloc_0, %arg9=%alloc_1) : memref<24576x1024xbf16>, memref<1024x1024xbf16>, memref<24576x1024xbf16>, memref<24576x1024xbf16> attributes {resource_type = "vckxyz", size_x = 6 : i64, size_y = 2 : i64} {
-      air.partition @partition_0  args(%arg10=%arg2, %arg11=%arg3, %arg12=%arg4, %arg13=%arg5, %arg14=%arg6, %arg15=%arg7, %arg16=%arg8, %arg17=%arg9) : index, index, index, index, memref<24576x1024xbf16>, memref<1024x1024xbf16>, memref<24576x1024xbf16>, memref<24576x1024xbf16> attributes {resource_type = "vckxyz", size_x = 3 : i64, size_y = 2 : i64} {
+      air.segment @segment_0  args(%arg10=%arg2, %arg11=%arg3, %arg12=%arg4, %arg13=%arg5, %arg14=%arg6, %arg15=%arg7, %arg16=%arg8, %arg17=%arg9) : index, index, index, index, memref<24576x1024xbf16>, memref<1024x1024xbf16>, memref<24576x1024xbf16>, memref<24576x1024xbf16> attributes {resource_type = "vckxyz", size_x = 3 : i64, size_y = 2 : i64} {
         %c1 = arith.constant 1 : index
         %c2 = arith.constant 2 : index
         %c0 = arith.constant 0 : index
@@ -488,7 +488,7 @@ module attributes {torch.debug_module_name = "mmult"} {
           memref.dealloc %alloc_2 : memref<64x64xbf16, 1>
           memref.dealloc %alloc_3 : memref<64x64xbf16, 1>
         }
-        air.partition_terminator
+        air.segment_terminator
       }
       air.launch_terminator
     }

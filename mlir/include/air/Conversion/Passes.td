@@ -38,15 +38,15 @@ def ParallelToLaunch : Pass<"air-par-to-launch", "ModuleOp"> {
     iteration space of the parallel loops will be normalized and will become the
     iteration space of the new `launch`. If nested parallel loops are present
     then the `depth` option can to used to specify which loop depth to convert.
-    An air `partition` operation can optionally be inserted at the top level of
-    the generated `launch` operations with the `has-air-partition` option.
+    An air `segment` operation can optionally be inserted at the top level of
+    the generated `launch` operations with the `has-air-segment` option.
   }];
   let options = [
     Option<"clAssignDepth", "depth", "int",
           /*default=*/"-1",
           "Given a nest of parallel for loops, which depth to map to air.launch">,
-    Option<"clHasPartition", "has-air-partition", "bool", /*default=*/"false",
-           "Whether to create an air.partition op in generated air.launch "
+    Option<"clHasSegment", "has-air-segment", "bool", /*default=*/"false",
+           "Whether to create an air.segment op in generated air.launch "
            "regions">,
   ];
 }
@@ -151,14 +151,14 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
            "Test the given patterns.">,
   ];
   let description = [{
-    This pass converts AIR dialect `herd` and `partition` operations into AIE
+    This pass converts AIR dialect `herd` and `segment` operations into AIE
     dialect modules and AIRRt dialect metadata.
 
-    One AIE dialect module is generated for each `partition` in the input
-    module. Any `herd` without a parent `partition` will will also generate
-    an AIE dialect module as if the `herd` has an implicit partition.
+    One AIE dialect module is generated for each `segment` in the input
+    module. Any `herd` without a parent `segment` will will also generate
+    an AIE dialect module as if the `herd` has an implicit segment.
 
-    For each `herd` in a partition a 2d array of `AIE.tile` operations is
+    For each `herd` in a segment a 2d array of `AIE.tile` operations is
     generated. The physical placement of the tiles is specified using the
     `herd` operation placement attributes or with `row-offset` and `col-offset`
     options to the pass. `AIE.core` operations are generated for each `AIE.tile`
@@ -185,8 +185,8 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
     transformed into sequential code.
  
     The pass will insert AIRRt metadata into the original module to describe the
-    partitions, herds and DMA allocations that were generated in the AIE dialect
-    output modules. Runtime code for configuration and control of partitions is
+    segments, herds and DMA allocations that were generated in the AIE dialect
+    output modules. Runtime code for configuration and control of segments is
     generated from the AIRRt metadata by the `air-to-std` pass.
 
     ### Example - A 1x1 herd copying a 1024xi32 vector from L3 memory into an L1 buffer
@@ -210,7 +210,7 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
 
     The AIE resource allocation,
     ```mlir
-    module @aie.partition_0 {
+    module @aie.segment_0 {
       %0 = AIE.tile(1, 1)
       %1 = AIE.tile(2, 0)
       %2 = AIE.lock(%0, 0)
@@ -245,7 +245,7 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
     and the AIRRt metadata,
     ```mlir
     airrt.module_metadata{
-      airrt.partition_metadata attributes {sym_name = "partition_0"}{
+      airrt.segment_metadata attributes {sym_name = "segment_0"}{
         airrt.herd_metadata {dma_allocations = [{channel = 2 : i64, col = 0 : i64, id = 1 : i64, location = 2 : i64, row = 0 : i64} ], sym_name = "herd_0"}
       }
     }

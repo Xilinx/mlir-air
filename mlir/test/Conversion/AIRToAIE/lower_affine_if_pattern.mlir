@@ -39,7 +39,7 @@
 #map = affine_map<(d0, d1) -> (d0, d1)>
 #set0 = affine_set<()[s0, s1] : (s0 >= 0, s1 == 0)>
 #set1 = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0)>
-module @aie.partition_0 {
+module @aie.segment_0 {
   %0 = AIE.tile(1, 1)
   %1 = AIE.tile(2, 1)
   %2 = AIE.tile(1, 2)
@@ -87,7 +87,7 @@ module @aie.partition_0 {
       }
     }
     AIE.end
-  } {elf_file = "partition_0_core_1_1.elf"}
+  } {elf_file = "segment_0_core_1_1.elf"}
   memref.global "public" @__air_herd_arg_6 : memref<64x64xi32>
   memref.global "public" @__air_herd_arg_7 : memref<64x64xi32>
   memref.global "public" @__air_herd_arg_8 : memref<64x64xi32>
@@ -131,7 +131,7 @@ module @aie.partition_0 {
       }
     }
     AIE.end
-  } {elf_file = "partition_0_core_0_1.elf"}
+  } {elf_file = "segment_0_core_0_1.elf"}
   memref.global "public" @__air_herd_arg_3 : memref<64x64xi32>
   memref.global "public" @__air_herd_arg_4 : memref<64x64xi32>
   memref.global "public" @__air_herd_arg_5 : memref<64x64xi32>
@@ -175,7 +175,7 @@ module @aie.partition_0 {
       }
     }
     AIE.end
-  } {elf_file = "partition_0_core_1_0.elf"}
+  } {elf_file = "segment_0_core_1_0.elf"}
   memref.global "public" @__air_herd_arg_0 : memref<64x64xi32>
   memref.global "public" @__air_herd_arg_1 : memref<64x64xi32>
   memref.global "public" @__air_herd_arg_2 : memref<64x64xi32>
@@ -219,6 +219,6 @@ module @aie.partition_0 {
       }
     }
     AIE.end
-  } {elf_file = "partition_0_core_0_0.elf"}
+  } {elf_file = "segment_0_core_0_0.elf"}
 }
 

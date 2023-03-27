@@ -23,7 +23,7 @@
 
 struct pcie_ernic_dev_mem_allocator *init_dev_mem_allocator(
     const char *dev_mem_bar_filename, uint64_t dev_mem_bar_size,
-    uint64_t dev_mem_global_offset, uint64_t dev_mem_partition_offset) {
+    uint64_t dev_mem_global_offset, uint64_t dev_mem_segment_offset) {
 
   // Allocating memory for allocator structure
   struct pcie_ernic_dev_mem_allocator *allocator =
@@ -34,7 +34,7 @@ struct pcie_ernic_dev_mem_allocator *init_dev_mem_allocator(
   allocator->dev_mem_bar_filename = dev_mem_bar_filename;
   allocator->dev_mem_ptr = 0;
   allocator->dev_mem_size = dev_mem_bar_size;
-  allocator->partition_offset = dev_mem_partition_offset;
+  allocator->segment_offset = dev_mem_segment_offset;
   allocator->global_offset = dev_mem_global_offset;
 
   // Map the
@@ -55,7 +55,7 @@ struct pcie_ernic_dev_mem_allocator *init_dev_mem_allocator(
 
   printf("[INFO] Device memory mapped into userspace\n");
   printf("\tVA: %p\n", allocator->dev_mem);
-  printf("\tPartition Offset: 0x%lx\n", allocator->partition_offset);
+  printf("\tSegment Offset: 0x%lx\n", allocator->segment_offset);
   printf("\tGlobal Offset: 0x%lx\n", allocator->global_offset);
   printf("\tSize: %lu\n", allocator->dev_mem_size);
 
@@ -96,7 +96,7 @@ void *dev_mem_alloc(struct pcie_ernic_dev_mem_allocator *allocator,
   }
 
   // Making sure we have enough space on the device
-  if (size + allocator->dev_mem_ptr + allocator->partition_offset >
+  if (size + allocator->dev_mem_ptr + allocator->segment_offset >
       allocator->dev_mem_size) {
     printf("[ERROR] Device memory cannot accept this allocation due to lack of "
            "space\n");
@@ -105,7 +105,7 @@ void *dev_mem_alloc(struct pcie_ernic_dev_mem_allocator *allocator,
 
   // If user provided valid pointer, give the physical address
   if (pa != NULL) {
-    *pa = allocator->dev_mem_ptr + allocator->partition_offset +
+    *pa = allocator->dev_mem_ptr + allocator->segment_offset +
           allocator->global_offset /*DEV_MEM_OFFSET*/;
   }
 
@@ -113,11 +113,11 @@ void *dev_mem_alloc(struct pcie_ernic_dev_mem_allocator *allocator,
   // of available memory
   void *user_ptr =
       (void *)((unsigned char *)allocator->dev_mem +
-               allocator->partition_offset + allocator->dev_mem_ptr);
+               allocator->segment_offset + allocator->dev_mem_ptr);
 
 #ifdef VERBOSE_DEBUG
   printf("Giving user %dB starting at dev_mem[0x%lx]\n", size,
-         allocator->dev_mem_ptr + allocator->partition_offset);
+         allocator->dev_mem_ptr + allocator->segment_offset);
 #endif
 
   // Incrementing pointer by the size of memory allocated

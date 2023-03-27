@@ -31,19 +31,19 @@ def parse_args(args=None):
     parser.add_argument('-row-offset',
             dest="row_offset",
             default=2,
-            help='Default row offset for generated partitions')
+            help='Default row offset for generated segments')
     parser.add_argument('-col-offset',
             dest="col_offset",
             default=7,
-            help='Default column offset for generated partitions')
+            help='Default column offset for generated segments')
     parser.add_argument('-num-rows',
             dest="num_rows",
             default=6,
-            help='Default number of rows for generated partitions')
+            help='Default number of rows for generated segments')
     parser.add_argument('-num-cols',
             dest="num_cols",
             default=10,
-            help='Default number of rows for generated partitions')
+            help='Default number of rows for generated segments')
     parser.add_argument('-cc',
             dest="cc",
             default="clang",

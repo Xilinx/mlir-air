@@ -15,13 +15,13 @@ include "mlir/Dialect/PDL/IR/PDLTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/OpBase.td"
 
-def GetPartitionForOp : Op<Transform_Dialect, "air.get_partition_for",
+def GetSegmentForOp : Op<Transform_Dialect, "air.get_segment_for",
     [NavigationTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
-  let summary = "Gets a handle to the parent 'air.partition' of the given operation";
+  let summary = "Gets a handle to the parent 'air.segment' of the given operation";
   let description = [{
-    Produces a handle to the parent `air.partition` op for each payload IR
-    operation associated with the operand. Fails if a partition cannot be found.
+    Produces a handle to the parent `air.segment` op for each payload IR
+    operation associated with the operand. Fails if a segment cannot be found.
     The list of operations associated with the handle contains
     parent operations in the same order as the list associated with the operand,
     except for operations that are parents to more than one input which are only
@@ -35,11 +35,11 @@ def GetPartitionForOp : Op<Transform_Dialect, "air.get_partition_for",
   let assemblyFormat = "$target attr-dict";
 }
 
-def PartitionToAIEOp : Op<Transform_Dialect, "air.partition_to_aie",
+def SegmentToAIEOp : Op<Transform_Dialect, "air.segment_to_aie",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      TransformOpInterface, TransformEachOpTrait]> {
   let description = [{
-    Lower air.partition operations to mlir-aie modules.
+    Lower air.segment operations to mlir-aie modules.
   }];
   let arguments = (ins PDL_Operation:$target);
   let results = (outs PDL_Operation:$transformed);
@@ -47,7 +47,7 @@ def PartitionToAIEOp : Op<Transform_Dialect, "air.partition_to_aie",
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
-        ::xilinx::air::PartitionOp target,
+        ::xilinx::air::SegmentOp target,
         ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
   }];

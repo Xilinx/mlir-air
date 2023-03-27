@@ -800,13 +800,13 @@ void HoistingAffineIf(mlir::AffineIfOp op) {
   unsigned int innerMemorySpace = 0;
   auto herd = op->getParentOfType<air::HerdOp>();
   assert(herd && "affine if op has no air.herdOp as parent");
-  auto partition = op->getParentOfType<air::PartitionOp>();
+  auto segment = op->getParentOfType<air::SegmentOp>();
   if (herd) {
     hier_op = dyn_cast<air::HierarchyInterface>(herd.getOperation());
     innerMemorySpace = (int)air::MemorySpace::L1;
-  } else if (partition) {
+  } else if (segment) {
     assert(false &&
-           "broadcast lowering with air.partitionOp currently not supported");
+           "broadcast lowering with air.segmentOp currently not supported");
   } else
     assert(false && "affine if op has no air.hierarchy as parent");
 
@@ -982,12 +982,12 @@ class AIRDmaToAIRChannelConversion
     air::HierarchyInterface hier_op = nullptr;
     unsigned int innerMemorySpace = 0;
     auto herd = op->getParentOfType<air::HerdOp>();
-    auto partition = op->getParentOfType<air::PartitionOp>();
+    auto segment = op->getParentOfType<air::SegmentOp>();
     if (herd) {
       hier_op = dyn_cast<air::HierarchyInterface>(herd.getOperation());
       innerMemorySpace = (int)air::MemorySpace::L1;
-    } else if (partition) {
-      hier_op = dyn_cast<air::HierarchyInterface>(partition.getOperation());
+    } else if (segment) {
+      hier_op = dyn_cast<air::HierarchyInterface>(segment.getOperation());
       innerMemorySpace = (int)air::MemorySpace::L2;
     } else
       return failure();
@@ -1061,8 +1061,8 @@ class AIRDmaToAIRChannelConversion
         scf::ParallelOp scf_par =
             hoistHerdToAsyncParallel(rewriter, loc, ctx, herd, lbs, ubs);
         scf_loop = scf_par.getOperation();
-      } else if (partition) {
-        // Since partition doesn't have iteration space, it doesn't hoist a loop
+      } else if (segment) {
+        // Since segment doesn't have iteration space, it doesn't hoist a loop
         insertionPointAtHierOp = rewriter.saveInsertionPoint();
       }
 
@@ -1121,21 +1121,21 @@ class AIRDmaToAIRChannelConversion
             }
           }
         }
-      } else if (partition) {
+      } else if (segment) {
         // Get mapping for remapped ssa values entering the hoisted scf.for
         IRMapping remap;
         int arg_idx = 0;
-        for (auto arg : partition.getKernelArguments())
-          remap.map(arg, partition.getKernelOperand(arg_idx++));
+        for (auto arg : segment.getKernelArguments())
+          remap.map(arg, segment.getKernelOperand(arg_idx++));
 
         // Hoist ops
         rewriter.restoreInsertionPoint(insertionPointAtHierOp);
-        for (Operation &o : partition->getRegions()
+        for (Operation &o : segment->getRegions()
                                 .front()
                                 .getBlocks()
                                 .front()
                                 .getOperations()) {
-          if (isa<air::PartitionTerminatorOp>(o))
+          if (isa<air::SegmentTerminatorOp>(o))
             continue;
           if (o.hasAttr("hoist-channel")) {
             if (auto child_for_op = dyn_cast<scf::ForOp>(o)) {
@@ -1539,12 +1539,12 @@ private:
   llvm::SmallSet<air::LaunchOp, 2> &replacementOps;
 };
 
-class ScfParToLaunchAndPartitionConversion
+class ScfParToLaunchAndSegmentConversion
     : public OpRewritePattern<scf::ParallelOp> {
 public:
   using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
 
-  ScfParToLaunchAndPartitionConversion(
+  ScfParToLaunchAndSegmentConversion(
       MLIRContext *ctx, llvm::SmallSet<scf::ParallelOp, 8> &filteredOps)
       : OpRewritePattern(ctx), filteredOps(filteredOps){};
 
@@ -1606,43 +1606,43 @@ public:
       sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, b));
     auto launch = rewriter.create<air::LaunchOp>(op.getLoc(), sizes, args);
     rewriter.setInsertionPointToStart(&launch.getRegion().front());
-    SmallVector<Value, 1> partitionSizes = {};
-    SmallVector<Value, 4> partitionOpers;
+    SmallVector<Value, 1> segmentSizes = {};
+    SmallVector<Value, 4> segmentOpers;
     for (Value v : launch.getIds()) {
-      partitionOpers.push_back(v);
+      segmentOpers.push_back(v);
     }
     for (Value v : launch.getSize()) {
-      partitionOpers.push_back(v);
+      segmentOpers.push_back(v);
     }
     for (Value v : launch.getKernelArguments()) {
-      partitionOpers.push_back(v);
+      segmentOpers.push_back(v);
     }
-    auto partition = rewriter.create<air::PartitionOp>(
-        op.getLoc(), partitionSizes, partitionOpers);
-    auto &bb = partition.getBody().front();
+    auto segment = rewriter.create<air::SegmentOp>(
+        op.getLoc(), segmentSizes, segmentOpers);
+    auto &bb = segment.getBody().front();
     auto ivs = op.getInductionVars();
 
     for (int i = 0, e = ivs.size(); i < e; i++) {
-      ivs[i].replaceAllUsesWith(partition.getKernelArgument(i));
+      ivs[i].replaceAllUsesWith(segment.getKernelArgument(i));
     }
 
     auto &body = op.getBody()->getOperations();
     bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
-    rewriter.setInsertionPointToStart(&partition.getRegion().front());
+    rewriter.setInsertionPointToStart(&segment.getRegion().front());
     replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
-                                          partition.getRegion());
+                                          segment.getRegion());
 
     auto builder = OpBuilder::atBlockEnd(&bb);
-    builder.create<air::PartitionTerminatorOp>(builder.getUnknownLoc());
+    builder.create<air::SegmentTerminatorOp>(builder.getUnknownLoc());
     builder = OpBuilder::atBlockEnd(&launch.getBody().front());
     builder.create<air::LaunchTerminatorOp>(builder.getUnknownLoc());
 
     int i = 0;
-    auto kernel_args = partition.getKernelArguments();
+    auto kernel_args = segment.getKernelArguments();
     kernel_args = kernel_args.drop_front(
         ivs.size() + launch.getSize().size()); // Launch's induction vars
     for (Value v : args)
-      replaceAllUsesInRegionWith(v, kernel_args[i++], partition.getRegion());
+      replaceAllUsesInRegionWith(v, kernel_args[i++], segment.getRegion());
 
     if (op != parOp)
       op.erase();
@@ -1928,7 +1928,7 @@ struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
       // skip parallel op already inside herd
       if (op->getParentOfType<air::HerdOp>())
         return;
-      // skip parallel ops already containing herd/partition/launch
+      // skip parallel ops already containing herd/segment/launch
       for (auto &h : hierOps)
         if (op->isProperAncestor(h))
           return;
@@ -2019,8 +2019,8 @@ struct ParallelToLaunchPass
     });
 
     RewritePatternSet patterns(context);
-    if (clHasPartition) {
-      patterns.add<ScfParToLaunchAndPartitionConversion>(context, filteredOps);
+    if (clHasSegment) {
+      patterns.add<ScfParToLaunchAndSegmentConversion>(context, filteredOps);
     } else {
       patterns.add<ScfParToLaunchConversion>(context, filteredOps,
                                              replacementOps);

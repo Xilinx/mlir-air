@@ -265,8 +265,8 @@ private:
                          air::HerdOp herd, dependencyContext &dep_ctx,
                          graphGranularityProperties expandHier = {true, true,
                                                                   true, false});
-  void addVerticesInPartition(std::deque<dependencyGraph> &part_subgraphs,
-                              air::PartitionOp partition,
+  void addVerticesInSegment(std::deque<dependencyGraph> &part_subgraphs,
+                              air::SegmentOp segment,
                               dependencyContext &dep_ctx,
                               graphGranularityProperties expandHier = {
                                   true, true, true, false});

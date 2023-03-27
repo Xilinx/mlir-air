@@ -56,7 +56,7 @@ module attributes {torch.debug_module_name = "mmult"} {
       memref.copy %results, %results_8 : memref<512x512xf32> to memref<512x512xf32>
     } {id = 8 : i32}
     %0 = air.launch async [%async_token_9] (%arg4, %arg5) in (%arg6=%c1, %arg7=%c1) attributes {id = 7 : i32} {
-      %1 = air.partition async  attributes {id = 2 : i32} {
+      %1 = air.segment async  attributes {id = 2 : i32} {
         %c64 = arith.constant 64 : index
         %c32 = arith.constant 32 : index
         %c1_10 = arith.constant 1 : index
@@ -193,7 +193,7 @@ module attributes {torch.debug_module_name = "mmult"} {
           %8 = air.wait_all async [%6, %4, %7, %arg9] 
           scf.yield %8 : !air.async.token
         }
-        air.partition_terminator
+        air.segment_terminator
       }
       air.launch_terminator
     }

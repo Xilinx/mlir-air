@@ -58,7 +58,7 @@ module {
         }
         scf.yield %4 : !air.async.token
       }
-      %3 = air.partition async  {
+      %3 = air.segment async  {
         %c1_5 = arith.constant 1 : index
         %c4 = arith.constant 4 : index
         %c0_6 = arith.constant 0 : index
@@ -110,7 +110,7 @@ module {
           }
           scf.yield %6 : !air.async.token
         }
-        air.partition_terminator
+        air.segment_terminator
       }
       air.launch_terminator
     }

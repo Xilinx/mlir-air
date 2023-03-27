@@ -122,7 +122,7 @@ hsa_status_t air_explore_world(uint32_t ernic_id, uint64_t dev_mem_offset,
                           air_get_ddr_bar(0).c_str(),  // dev_mem_bar_filename
                           67108864,                    // dev_mem_bar_size
                           0x0000000800000000,          // dev_mem_global_offset
-                          dev_mem_offset, // dev_mem_partition_offset
+                          dev_mem_offset, // dev_mem_segment_offset
                           0x00100000,     // mrmac_reset_offset
                           0x00110000,     // mac_0_csr_offset
                           0x00120000,     // mac_1_csr_offset

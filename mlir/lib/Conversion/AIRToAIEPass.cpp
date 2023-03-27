@@ -416,14 +416,14 @@ void createAIEModulesAndOutlineCores(
     std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
     AIRToAIEOptions &options) {
 
-  module.walk([&](xilinx::air::PartitionOp p) {
-    std::string partition_name;
+  module.walk([&](xilinx::air::SegmentOp p) {
+    std::string segment_name;
     if (auto attr =
             p->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-      partition_name = attr.getValue().str();
+      segment_name = attr.getValue().str();
     else
-      partition_name = "partition_" + std::to_string(aie_modules.size());
-    std::string aie_module_name = "aie." + partition_name;
+      segment_name = "segment_" + std::to_string(aie_modules.size());
+    std::string aie_module_name = "aie." + segment_name;
     ModuleOp aie_module =
         ModuleOp::create(module.getLoc(), StringRef(aie_module_name));
 
@@ -433,11 +433,11 @@ void createAIEModulesAndOutlineCores(
   });
 
   module.walk([&](xilinx::air::HerdOp h) {
-    if (h->getParentOfType<xilinx::air::PartitionOp>())
+    if (h->getParentOfType<xilinx::air::SegmentOp>())
       return;
-    std::string partition_name;
-    partition_name = "partition_" + std::to_string(aie_modules.size());
-    std::string aie_module_name = "aie." + partition_name;
+    std::string segment_name;
+    segment_name = "segment_" + std::to_string(aie_modules.size());
+    std::string aie_module_name = "aie." + segment_name;
     ModuleOp aie_module =
         ModuleOp::create(module.getLoc(), StringRef(aie_module_name));
 
@@ -1181,7 +1181,7 @@ public:
     return lockOp;
   }
 
-  // get tileop using partition-relative coordinates
+  // get tileop using segment-relative coordinates
   AIE::TileOp getTileOp(ModuleOp aie_module, int herd_col, int herd_row) {
     int col = herd_col;
     int row = herd_row;
@@ -1302,29 +1302,29 @@ public:
     return tile_dma_copies;
   }
 
-  airrt::PartitionMetadataOp
-  getOrCreatePartitionMetadata(airrt::ModuleMetadataOp module_meta,
+  airrt::SegmentMetadataOp
+  getOrCreateSegmentMetadata(airrt::ModuleMetadataOp module_meta,
                                StringRef name) {
 
-    for (auto pm : module_meta.getPartitions()
+    for (auto pm : module_meta.getSegments()
                        .front()
-                       .getOps<airrt::PartitionMetadataOp>())
+                       .getOps<airrt::SegmentMetadataOp>())
       if (name == pm.getSymName().str())
         return pm;
 
     auto builder = OpBuilder::atBlockTerminator(module_meta.getBody());
     auto loc = builder.getUnknownLoc();
-    auto partition_meta = builder.create<airrt::PartitionMetadataOp>(loc, name);
-    builder.createBlock(&partition_meta.getHerds());
-    builder.create<airrt::PartitionMetadataTerminatorOp>(loc);
+    auto segment_meta = builder.create<airrt::SegmentMetadataOp>(loc, name);
+    builder.createBlock(&segment_meta.getHerds());
+    builder.create<airrt::SegmentMetadataTerminatorOp>(loc);
 
-    return partition_meta;
+    return segment_meta;
   }
 
   airrt::HerdMetadataOp
-  createHerdMetadata(airrt::PartitionMetadataOp partition_meta,
+  createHerdMetadata(airrt::SegmentMetadataOp segment_meta,
                      air::HerdOp herd) {
-    auto builder = OpBuilder::atBlockTerminator(partition_meta.getBody());
+    auto builder = OpBuilder::atBlockTerminator(segment_meta.getBody());
     auto loc = builder.getUnknownLoc();
 
     std::string name = "herd";
@@ -1609,7 +1609,7 @@ public:
 
     auto loc = builder.getUnknownLoc();
     auto module_meta = builder.create<airrt::ModuleMetadataOp>(loc);
-    builder.createBlock(&module_meta.getPartitions());
+    builder.createBlock(&module_meta.getSegments());
     builder.create<airrt::ModuleMetadataTerminatorOp>(loc);
 
     // If we have multiple herds then we must emit them into different aie
@@ -1645,7 +1645,7 @@ public:
         lowerPipelineGetPut(m, tileToHerdMap);
 
         SmallVector<air::HerdOp, 4> herds;
-        if (auto p = h->getParentOfType<air::PartitionOp>()) {
+        if (auto p = h->getParentOfType<air::SegmentOp>()) {
           auto hops = p.getOps<air::HerdOp>();
           herds.append(hops.begin(), hops.end());
         } else {
@@ -1713,9 +1713,9 @@ public:
               dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
             }
           }
-          auto partition_meta = getOrCreatePartitionMetadata(
+          auto segment_meta = getOrCreateSegmentMetadata(
               module_meta, m.getName()->split('.').second);
-          auto herd_meta = createHerdMetadata(partition_meta, herd);
+          auto herd_meta = createHerdMetadata(segment_meta, herd);
           herd_meta->setAttr("dma_allocations",
                              ArrayAttr::get(ctx, dma_allocations));
         }
@@ -1757,13 +1757,13 @@ namespace xilinx {
 namespace air {
 
 FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
-                                    air::PartitionOp p) {
-  std::string partition_name = "partition_0";
+                                    air::SegmentOp p) {
+  std::string segment_name = "segment_0";
   if (auto attr =
           p->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-    partition_name = attr.getValue().str();
+    segment_name = attr.getValue().str();
 
-  std::string aie_module_name = "aie." + partition_name;
+  std::string aie_module_name = "aie." + segment_name;
   ModuleOp aie_module =
       ModuleOp::create(rewriter.getUnknownLoc(), StringRef(aie_module_name));
 

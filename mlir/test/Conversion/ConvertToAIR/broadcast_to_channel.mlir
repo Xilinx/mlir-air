@@ -16,8 +16,8 @@ module {
   func.func @mmult(%arg0: memref<512x512xbf16>) {
     %c8 = arith.constant 8 : index
     %0 = air.launch async (%arg1, %arg2) in (%arg3=%c8, %arg4=%c8) args(%arg5=%arg0) : memref<512x512xbf16> attributes {id = 3 : i32} {
-// CHECK: %[[EVENT0:.*]] = air.partition async
-      %1 = air.partition async  args(%arg6=%arg1, %arg7=%arg2, %arg8=%arg3, %arg9=%arg4, %arg10=%arg5) : index, index, index, index, memref<512x512xbf16> attributes {id = 2 : i32} {
+// CHECK: %[[EVENT0:.*]] = air.segment async
+      %1 = air.segment async  args(%arg6=%arg1, %arg7=%arg2, %arg8=%arg3, %arg9=%arg4, %arg10=%arg5) : index, index, index, index, memref<512x512xbf16> attributes {id = 2 : i32} {
 // CHECK: %[[CONST1:.*]] = arith.constant 1 : index
 // CHECK: %[[CONST2:.*]] = arith.constant 2 : index   
 // CHECK: %[[CONST0:.*]] = arith.constant 0 : index   
@@ -71,7 +71,7 @@ module {
           %5 = air.wait_all async [%4]  {id = 3 : i32}
           scf.yield %5 : !air.async.token
         }
-        air.partition_terminator
+        air.segment_terminator
       }
       air.launch_terminator
     }

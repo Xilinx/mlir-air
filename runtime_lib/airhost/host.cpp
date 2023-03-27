@@ -43,7 +43,7 @@
 extern "C" {
 
 air_rt_herd_desc_t _air_host_active_herd = {nullptr, nullptr};
-air_rt_partition_desc_t _air_host_active_partition = {nullptr, nullptr};
+air_rt_segment_desc_t _air_host_active_segment = {nullptr, nullptr};
 aie_libxaie_ctx_t *_air_host_active_libxaie = nullptr;
 uint32_t *_air_host_bram_ptr = nullptr;
 uint64_t _air_host_bram_paddr = 0;
@@ -174,7 +174,7 @@ air_module_handle_t air_module_load_from_file(const char *filename, queue_t *q,
   }
   _air_host_active_module = (air_module_handle_t)_handle;
   _air_host_active_herd = {q, nullptr};
-  _air_host_active_partition = {q, nullptr};
+  _air_host_active_segment = {q, nullptr};
 
 #ifdef AIR_PCIE
 
@@ -215,12 +215,12 @@ int32_t air_module_unload(air_module_handle_t handle) {
     return -1;
 
   if (auto module_desc = air_module_get_desc(handle)) {
-    for (int i = 0; i < module_desc->partition_length; i++) {
-      for (int j = 0; j < module_desc->partition_descs[i]->herd_length; j++) {
-        auto herd_desc = module_desc->partition_descs[i]->herd_descs[j];
+    for (int i = 0; i < module_desc->segment_length; i++) {
+      for (int j = 0; j < module_desc->segment_descs[i]->herd_length; j++) {
+        auto herd_desc = module_desc->segment_descs[i]->herd_descs[j];
         if (herd_desc == _air_host_active_herd.herd_desc) {
           _air_host_active_herd = {nullptr, nullptr};
-          _air_host_active_partition = {nullptr, nullptr};
+          _air_host_active_segment = {nullptr, nullptr};
         }
       }
     }
@@ -235,30 +235,30 @@ int32_t air_module_unload(air_module_handle_t handle) {
 }
 
 air_herd_desc_t *air_herd_get_desc(air_module_handle_t handle,
-                                   air_partition_desc_t *partition_desc,
+                                   air_segment_desc_t *segment_desc,
                                    const char *herd_name) {
   if (!handle)
     return nullptr;
-  if (!partition_desc)
+  if (!segment_desc)
     return nullptr;
 
   auto module_desc = air_module_get_desc(handle);
   if (!module_desc)
     return nullptr;
 
-  if (!air_partition_get_desc(handle, partition_desc->name))
+  if (!air_segment_get_desc(handle, segment_desc->name))
     return nullptr;
 
-  for (int i = 0; i < partition_desc->herd_length; i++) {
-    auto herd_desc = partition_desc->herd_descs[i];
+  for (int i = 0; i < segment_desc->herd_length; i++) {
+    auto herd_desc = segment_desc->herd_descs[i];
     if (!strncmp(herd_name, herd_desc->name, herd_desc->name_length))
       return herd_desc;
   }
   return nullptr;
 }
 
-air_partition_desc_t *air_partition_get_desc(air_module_handle_t handle,
-                                             const char *partition_name) {
+air_segment_desc_t *air_segment_get_desc(air_module_handle_t handle,
+                                             const char *segment_name) {
   if (!handle)
     return nullptr;
 
@@ -266,11 +266,11 @@ air_partition_desc_t *air_partition_get_desc(air_module_handle_t handle,
   if (!module_desc)
     return nullptr;
 
-  for (int i = 0; i < module_desc->partition_length; i++) {
-    auto partition_desc = module_desc->partition_descs[i];
-    if (!strncmp(partition_name, partition_desc->name,
-                 partition_desc->name_length)) {
-      return partition_desc;
+  for (int i = 0; i < module_desc->segment_length; i++) {
+    auto segment_desc = module_desc->segment_descs[i];
+    if (!strncmp(segment_name, segment_desc->name,
+                 segment_desc->name_length)) {
+      return segment_desc;
     }
   }
   return nullptr;
@@ -283,12 +283,12 @@ air_module_desc_t *air_module_get_desc(air_module_handle_t handle) {
                                     "__airrt_module_descriptor");
 }
 
-uint64_t air_partition_load(const char *name) {
+uint64_t air_segment_load(const char *name) {
   assert(_air_host_active_libxaie);
 
-  auto partition_desc = air_partition_get_desc(_air_host_active_module, name);
-  if (!partition_desc) {
-    printf("Failed to locate partition descriptor '%s'!\n", name);
+  auto segment_desc = air_segment_get_desc(_air_host_active_module, name);
+  if (!segment_desc) {
+    printf("Failed to locate segment descriptor '%s'!\n", name);
     assert(0);
   }
 
@@ -298,20 +298,20 @@ uint64_t air_partition_load(const char *name) {
                      &(_air_host_active_libxaie->AieConfigPtr));
   XAie_PmRequestTiles(&(_air_host_active_libxaie->DevInst), NULL, 0);
 
-  uint64_t wr_idx = queue_add_write_index(_air_host_active_partition.q, 1);
-  uint64_t packet_id = wr_idx % _air_host_active_partition.q->size;
+  uint64_t wr_idx = queue_add_write_index(_air_host_active_segment.q, 1);
+  uint64_t packet_id = wr_idx % _air_host_active_segment.q->size;
   dispatch_packet_t *shim_pkt =
-      (dispatch_packet_t *)(_air_host_active_partition.q->base_address_vaddr) +
+      (dispatch_packet_t *)(_air_host_active_segment.q->base_address_vaddr) +
       packet_id;
   air_packet_device_init(shim_pkt, XAIE_NUM_COLS);
 
-  wr_idx = queue_add_write_index(_air_host_active_partition.q, 1);
-  packet_id = wr_idx % _air_host_active_partition.q->size;
+  wr_idx = queue_add_write_index(_air_host_active_segment.q, 1);
+  packet_id = wr_idx % _air_host_active_segment.q->size;
   dispatch_packet_t *herd_pkt =
-      (dispatch_packet_t *)(_air_host_active_partition.q->base_address_vaddr) +
+      (dispatch_packet_t *)(_air_host_active_segment.q->base_address_vaddr) +
       packet_id;
   air_packet_herd_init(herd_pkt, 0, 0, 50, 1, 8);
-  air_queue_dispatch_and_wait(_air_host_active_partition.q, wr_idx, herd_pkt);
+  air_queue_dispatch_and_wait(_air_host_active_segment.q, wr_idx, herd_pkt);
 
 #else
   XAie_Finish(&(_air_host_active_libxaie->DevInst));
@@ -320,14 +320,14 @@ uint64_t air_partition_load(const char *name) {
   XAie_PmRequestTiles(&(_air_host_active_libxaie->DevInst), NULL, 0);
 #endif
 
-  std::string partition_name(partition_desc->name, partition_desc->name_length);
+  std::string segment_name(segment_desc->name, segment_desc->name_length);
 
-  std::string func_name = "__airrt_" + partition_name + "_aie_functions";
+  std::string func_name = "__airrt_" + segment_name + "_aie_functions";
   air_rt_aie_functions_t *mlir = (air_rt_aie_functions_t *)dlsym(
       (void *)_air_host_active_module, func_name.c_str());
 
   if (mlir) {
-    // printf("configuring partition: '%s'\n", partition_name.c_str());
+    // printf("configuring segment: '%s'\n", segment_name.c_str());
     assert(mlir->configure_cores);
     assert(mlir->configure_switchboxes);
     assert(mlir->initialize_locks);
@@ -339,26 +339,26 @@ uint64_t air_partition_load(const char *name) {
     mlir->configure_dmas(_air_host_active_libxaie);
     mlir->start_cores(_air_host_active_libxaie);
   } else {
-    printf("Failed to locate partition '%s' configuration functions!\n",
-           partition_name.c_str());
+    printf("Failed to locate segment '%s' configuration functions!\n",
+           segment_name.c_str());
     assert(0);
   }
-  _air_host_active_partition.partition_desc = partition_desc;
+  _air_host_active_segment.segment_desc = segment_desc;
   return 0;
 }
 
 uint64_t air_herd_load(const char *name) {
-  // If no partition is loaded, load the partition associated with this herd
-  if (!_air_host_active_partition.partition_desc) {
+  // If no segment is loaded, load the segment associated with this herd
+  if (!_air_host_active_segment.segment_desc) {
     bool loaded = false;
     if (auto module_desc = air_module_get_desc(_air_host_active_module)) {
-      for (int i = 0; !loaded && i < module_desc->partition_length; i++) {
+      for (int i = 0; !loaded && i < module_desc->segment_length; i++) {
         for (int j = 0;
-             !loaded && j < module_desc->partition_descs[i]->herd_length; j++) {
-          auto herd_desc = module_desc->partition_descs[i]->herd_descs[j];
-          // use the partition of the first herd with a matching name
+             !loaded && j < module_desc->segment_descs[i]->herd_length; j++) {
+          auto herd_desc = module_desc->segment_descs[i]->herd_descs[j];
+          // use the segment of the first herd with a matching name
           if (!strncmp(name, herd_desc->name, herd_desc->name_length)) {
-            air_partition_load(module_desc->partition_descs[i]->name);
+            air_segment_load(module_desc->segment_descs[i]->name);
             loaded = true; // break
           }
         }
@@ -366,12 +366,12 @@ uint64_t air_herd_load(const char *name) {
     }
   }
   auto herd_desc = air_herd_get_desc(
-      _air_host_active_module, _air_host_active_partition.partition_desc, name);
-  // In some scenarios load_partition is not called. This is a temporary hack
+      _air_host_active_module, _air_host_active_segment.segment_desc, name);
+  // In some scenarios load_segment is not called. This is a temporary hack
   // to support that case.
   if (!herd_desc) {
-    if (_air_host_active_partition.partition_desc) {
-      _air_host_active_partition.partition_desc = 0;
+    if (_air_host_active_segment.segment_desc) {
+      _air_host_active_segment.segment_desc = 0;
       return air_herd_load(name);
     }
     printf("Failed to locate herd descriptor '%s'!\n", name);
@@ -552,7 +552,7 @@ std::string air_get_bram_bar(uint32_t device_id) {
 #endif
 
 uint64_t air_wait_all(std::vector<uint64_t> &signals) {
-  queue_t *q = _air_host_active_partition.q;
+  queue_t *q = _air_host_active_segment.q;
   if (!q) {
     printf("WARNING: no queue provided, air_wait_all will return without "
            "waiting\n");
@@ -624,8 +624,8 @@ uint64_t _mlir_ciface___airrt_herd_load(const char *name) {
   return air_herd_load(name);
 }
 
-uint64_t _mlir_ciface___airrt_partition_load(const char *name) {
-  return air_partition_load(name);
+uint64_t _mlir_ciface___airrt_segment_load(const char *name) {
+  return air_segment_load(name);
 }
 
 void _mlir_ciface___airrt_wait_all_0_0() { return; }

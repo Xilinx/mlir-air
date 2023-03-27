@@ -348,7 +348,7 @@ struct pcie_ernic_dev *pcie_ernic_open_dev(
     const char *axil_bar_filename, uint32_t axil_bar_size,
     uint32_t axil_bar_offset, const char *dev_mem_bar_filename,
     uint32_t dev_mem_bar_size, uint64_t dev_mem_global_offset,
-    uint64_t dev_mem_partition_offset, uint64_t mrmac_reset_offset,
+    uint64_t dev_mem_segment_offset, uint64_t mrmac_reset_offset,
     uint64_t mrmac_0_csr_offset, uint64_t mrmac_1_csr_offset, uint32_t ernic_id,
     uint32_t ipv4_addr, uint32_t mac_addr_lsb, uint32_t mac_addr_msb,
     bool configure_cmac, bool configure_bdf, bool is_versal, bool dual_reset);

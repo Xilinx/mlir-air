@@ -82,27 +82,27 @@ void registerAIRRtTranslations() {
       [](ModuleOp module, raw_ostream &output) {
         llvm::json::Object moduleJSON;
         for (auto module_meta : module.getOps<airrt::ModuleMetadataOp>()) {
-          llvm::json::Object partitionJSON;
-          for (auto partition_meta :
-               module_meta.getOps<airrt::PartitionMetadataOp>()) {
+          llvm::json::Object segmentJSON;
+          for (auto segment_meta :
+               module_meta.getOps<airrt::SegmentMetadataOp>()) {
             for (auto herd_meta :
-                 partition_meta.getOps<airrt::HerdMetadataOp>()) {
+                 segment_meta.getOps<airrt::HerdMetadataOp>()) {
               llvm::json::Object herdJSON;
               for (auto a : herd_meta->getAttrs()) {
                 auto ident = a.getName();
                 auto attr = a.getValue();
                 herdJSON[ident.str()] = attrToJSON(attr);
               }
-              partitionJSON[herd_meta.getSymName()] =
+              segmentJSON[herd_meta.getSymName()] =
                   llvm::json::Value(std::move(herdJSON));
             }
-            for (auto a : partition_meta->getAttrs()) {
+            for (auto a : segment_meta->getAttrs()) {
               auto ident = a.getName();
               auto attr = a.getValue();
-              partitionJSON[ident.str()] = attrToJSON(attr);
+              segmentJSON[ident.str()] = attrToJSON(attr);
             }
-            moduleJSON[partition_meta.getSymName()] =
-                llvm::json::Value(std::move(partitionJSON));
+            moduleJSON[segment_meta.getSymName()] =
+                llvm::json::Value(std::move(segmentJSON));
           }
         }
         llvm::json::Value topv(std::move(moduleJSON));
@@ -126,7 +126,7 @@ void registerAIRRtTranslations() {
         output << "{\n\t\"switchbox00\": {\n\t\t\"row\": " << gridNumRows - 1
                << ", "
                << "\n\t\t\"col\": " << gridNumCols - 1 << "\n\t}, ";
-        output << "\n\t\"partition\": [ ";
+        output << "\n\t\"segment\": [ ";
         return AIRHerdsToJSON(module, output);
       },
       [](DialectRegistry &registry) {

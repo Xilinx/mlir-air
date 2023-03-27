@@ -77,29 +77,29 @@ def air_LaunchTerminatorOp : air_Op<"launch_terminator", [HasParent<"LaunchOp">,
   let assemblyFormat = "attr-dict";
 }
 
-def air_PartitionOp : air_Op<"partition", [air_AsyncOpInterface,
+def air_SegmentOp : air_Op<"segment", [air_AsyncOpInterface,
                                            air_HierarchyInterface,
                                            AttrSizedOperandSegments,
                                            IsolatedFromAbove,
                                            AffineScope,
-                                           SingleBlockImplicitTerminator<"PartitionTerminatorOp">]>,
+                                           SingleBlockImplicitTerminator<"SegmentTerminatorOp">]>,
                         Arguments<(ins OptionalAttr<SymbolRefAttr>:$symbol,
                                        Variadic<air_AsyncToken>:$async_dependencies,
                                        Variadic<Index>:$sizes,
-                                       Variadic<AnyType>:$partition_operands)>,
+                                       Variadic<AnyType>:$segment_operands)>,
                         Results<(outs Optional<air_AsyncToken>:$async_token)> {
-  let summary = "Partition";
+  let summary = "Segment";
   let description = [{
-    Partition
+    Segment
   }];
 
   let regions = (region SizedRegion<1>:$body);
 
   let skipDefaultBuilders = 1;
   let builders = [
-    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$partition_operands)>,
+    OpBuilder<(ins "ValueRange":$sizes,"ValueRange":$segment_operands)>,
     OpBuilder<(ins "ValueRange":$async_dependencies,
-      "ValueRange":$sizes,"ValueRange":$partition_operands,
+      "ValueRange":$sizes,"ValueRange":$segment_operands,
       CArg<"bool", "false">:$is_async,
       CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>
   ];
@@ -155,13 +155,13 @@ def air_PartitionOp : air_Op<"partition", [air_AsyncOpInterface,
   let hasCanonicalizer = 1;
 }
 
-def air_PartitionTerminatorOp : air_Op<"partition_terminator", [HasParent<"PartitionOp">,
+def air_SegmentTerminatorOp : air_Op<"segment_terminator", [HasParent<"SegmentOp">,
                                                       Pure, Terminator]>,
     Arguments<(ins)>, Results<(outs)> {
-  let summary = "Terminator for air partition regions.";
+  let summary = "Terminator for air segment regions.";
   let description = [{
-    A terminator operation for the body of `air.partition` operations.
-    `air.partition` operations are not expected to return any value so the
+    A terminator operation for the body of `air.segment` operations.
+    `air.segment` operations are not expected to return any value so the
     terminator takes no operands.
   }];
   let assemblyFormat = "attr-dict";

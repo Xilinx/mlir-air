@@ -36,8 +36,8 @@ class LaunchOp(AirHierarchyOp):
   def __init__(self, name=None, sizes=[], results=[], async_deps=[], operands=[], attributes={}, loc=None, ip=None):
     super().__init__(name, sizes, results, async_deps, operands, attributes, loc, ip)
 
-class PartitionOp(AirHierarchyOp):
-  """Specialization for PartitionOp class."""
+class SegmentOp(AirHierarchyOp):
+  """Specialization for SegmentOp class."""
   def __init__(self, name=None, sizes=[], results=[], async_deps=[], operands=[], attributes={}, loc=None, ip=None):
     super().__init__(name, sizes, results, async_deps, operands, attributes, loc, ip)
 

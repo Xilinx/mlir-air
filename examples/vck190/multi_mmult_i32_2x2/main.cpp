@@ -44,11 +44,11 @@ void mm_out(tensor_t<T, 2> *a, tensor_t<T, 2> *b, tensor_t<T, 2> *r) {
 
 } // namespace
 
-namespace air::partitions::partition_1 {
+namespace air::segments::segment_1 {
 int32_t mlir_aie_read_buffer_buf48(aie_libxaie_ctx_t *ctx, int index);
 int32_t mlir_aie_read_buffer_buf49(aie_libxaie_ctx_t *ctx, int index);
 int32_t mlir_aie_read_buffer_buf50(aie_libxaie_ctx_t *ctx, int index);
-} // namespace air::partitions::partition_1
+} // namespace air::segments::segment_1
 
 int main(int argc, char *argv[]) {
   auto init_ret = air_init();
@@ -156,11 +156,11 @@ int main(int argc, char *argv[]) {
     mlir_aie_print_tile_status(xaie, col, row);
     for (int i = 0; i < 16; i++) {
       printf("%d\n",
-             air::partitions::partition_1::mlir_aie_read_buffer_buf48(xaie, i));
+             air::segments::segment_1::mlir_aie_read_buffer_buf48(xaie, i));
       printf("%d\n",
-             air::partitions::partition_1::mlir_aie_read_buffer_buf49(xaie, i));
+             air::segments::segment_1::mlir_aie_read_buffer_buf49(xaie, i));
       printf("%d\n",
-             air::partitions::partition_1::mlir_aie_read_buffer_buf50(xaie, i));
+             air::segments::segment_1::mlir_aie_read_buffer_buf50(xaie, i));
     }
   }
 
