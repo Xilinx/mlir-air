@@ -168,7 +168,7 @@ def run(mlir_module, args=None):
       'expand-strided-metadata',
       'lower-affine',
       'convert-scf-to-cf',
-      'finalize-memref-to-llvm',
+      'convert-memref-to-llvm',
       'convert-func-to-llvm',
       'convert-cf-to-llvm',
       'canonicalize','cse'

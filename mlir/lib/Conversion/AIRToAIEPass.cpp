@@ -953,7 +953,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
   LogicalResult matchAndRewrite(air::ChannelOp channel,
                                 PatternRewriter &rewriter) const override {
     auto aie_module = channel->getParentOfType<ModuleOp>();
-    if (channel.getSubchannelSize() > 1)
+    if (channel.getBundleSize() > 1)
       return failure();
 
     std::vector<ChannelPutOp> channelPuts =
@@ -1035,7 +1035,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     else
       return failure();
     AIE::ObjectFifoCreateOp objFifo =
-        createObjectFifo(rewriter, datatype, producerTile, consumers, 1);
+        createObjectFifo(rewriter, datatype, producerTile, consumers,
+                         channel.getBufferResources());
 
     // replace put/get and the associated memref alloc/dealloc
     for (auto put : channelPuts) {
