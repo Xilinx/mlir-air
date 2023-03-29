@@ -5,6 +5,7 @@
 #  -DCMAKE_SYSROOT="absolute path to the sysroot folder"
 
 #set (CMAKE_SYSROOT /path/to/sysroot)
+set (CMAKE_SYSROOT /group/xrlabs/platforms/vck190-pynq-v2.7/sysroot)
 
 # give the system information
 SET (CMAKE_SYSTEM_NAME Linux)

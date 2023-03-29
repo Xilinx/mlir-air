@@ -53,7 +53,7 @@ cmake .. \
     -GNinja \
     -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
     -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
-    -DCMAKE_TOOLCHAIN_FILE=../cmake/modules/toolchain_x86.cmake \
+    -Daarch64_TOOLCHAIN_FILE=../cmake/modules/toolchain_aarch64.cmake \
     -DLLVM_DIR=${LLVM_DIR}/build/lib/cmake/llvm \
     -DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \
     -DAIE_DIR=${MLIR_AIE_DIR}/build/lib/cmake/aie \
@@ -61,7 +61,7 @@ cmake .. \
     -DVitisSysroot="" \
     -DLibXAIE_DIR=${LibXAIE_DIR} \
     -DARM_TOOLCHAIN_OPT="" \
-	-DAIR_RUNTIME_TARGETS="x86" \
+    -DAIR_RUNTIME_TARGETS:STRING="aarch64" \
     -DBUILD_AIR_PCIE=ON \
     -DBUILD_SHARED_LIBS=OFF \
     -DLLVM_USE_LINKER=lld \
@@ -70,3 +70,6 @@ cmake .. \
 
 ninja |& tee ninja.log
 ninja install |& tee ninja-install.log
+
+	# -DAIR_RUNTIME_TARGETS="x86" \
+    # -DCMAKE_TOOLCHAIN_FILE=../cmake/modules/toolchain_x86.cmake \
