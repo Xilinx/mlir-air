@@ -13,19 +13,19 @@ iteration space representing the spatial parallelism of the array of cores.
 Code within a `herd` can directly access L1 memory but must use DMA
 operations or channels to access other levels of memory.
 
-### Partition
-A `partition` in the `air` dialect represents a physically contiguous
+### Segment
+A `segment` in the `air` dialect represents a physically contiguous
 grouping of AIE cores, L1 and L2 memory resources, and controllers
 sufficient to implement the herds, memory allocations, data movement,
-and synchronization contained in the `partition` code region. Code within
-a `partition` can allocate L2 memory but must use DMA operations or
-channels to access other levels of memory. A `partition` can optionally
+and synchronization contained in the `segment` code region. Code within
+a `segment` can allocate L2 memory but must use DMA operations or
+channels to access other levels of memory. A `segment` can optionally
 define an iteration space which represents a spatial unroll of the
-`partition`. That is, it allows the `partition` to be "stamped out" multiple
-times, also multiplying the physical resources required by the `partition`.
+`segment`. That is, it allows the `segment` to be "stamped out" multiple
+times, also multiplying the physical resources required by the `segment`.
 
 ### Launch
-A `launch` in the `air` dialect groups `partitions` and L3 allocations that
+A `launch` in the `air` dialect groups `segments` and L3 allocations that
 must be co-resident within a device when execution of the `launch`
 code region begins. A `launch` operation can optionally define a parallel
 iteration space.
@@ -444,57 +444,6 @@ Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
 
 Effects: MemoryEffects::Effect{}
 
-### `air.partition` (xilinx::air::PartitionOp)
-
-Partition
-
-Partition
-
-Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlockImplicitTerminator<PartitionTerminatorOp>
-
-Interfaces: air_AsyncOpInterface, air_HierarchyInterface
-
-#### Attributes:
-
-| Attribute | MLIR Type | Description |
-| :-------: | :-------: | ----------- |
-| `symbol` | ::mlir::SymbolRefAttr | symbol reference attribute
-
-#### Operands:
-
-| Operand | Description |
-| :-----: | ----------- |
-| `async_dependencies` | async token type
-| `sizes` | index
-| `partition_operands` | any type
-
-#### Results:
-
-| Result | Description |
-| :----: | ----------- |
-| `async_token` | async token type
-
-### `air.partition_terminator` (xilinx::air::PartitionTerminatorOp)
-
-Terminator for air partition regions.
-
-
-Syntax:
-
-```
-operation ::= `air.partition_terminator` attr-dict
-```
-
-A terminator operation for the body of `air.partition` operations.
-`air.partition` operations are not expected to return any value so the
-terminator takes no operands.
-
-Traits: AlwaysSpeculatableImplTrait, HasParent<PartitionOp>, Terminator
-
-Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
-
-Effects: MemoryEffects::Effect{}
-
 ### `air.pipeline.get` (xilinx::air::PipelineGetOp)
 
 Get for air pipeline stages.
@@ -617,6 +566,57 @@ Effects: MemoryEffects::Effect{}
 | Operand | Description |
 | :-----: | ----------- |
 | `opers` | any type
+
+### `air.segment` (xilinx::air::SegmentOp)
+
+Segment
+
+Segment
+
+Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlockImplicitTerminator<SegmentTerminatorOp>
+
+Interfaces: air_AsyncOpInterface, air_HierarchyInterface
+
+#### Attributes:
+
+| Attribute | MLIR Type | Description |
+| :-------: | :-------: | ----------- |
+| `symbol` | ::mlir::SymbolRefAttr | symbol reference attribute
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `async_dependencies` | async token type
+| `sizes` | index
+| `segment_operands` | any type
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `async_token` | async token type
+
+### `air.segment_terminator` (xilinx::air::SegmentTerminatorOp)
+
+Terminator for air segment regions.
+
+
+Syntax:
+
+```
+operation ::= `air.segment_terminator` attr-dict
+```
+
+A terminator operation for the body of `air.segment` operations.
+`air.segment` operations are not expected to return any value so the
+terminator takes no operands.
+
+Traits: AlwaysSpeculatableImplTrait, HasParent<SegmentOp>, Terminator
+
+Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
+
+Effects: MemoryEffects::Effect{}
 
 ### `air.wait_all` (xilinx::air::WaitAllOp)
 

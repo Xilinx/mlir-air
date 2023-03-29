@@ -132,7 +132,7 @@ operation ::= `airrt.herd_metadata` attr-dict
 Runtime metadata for a single herd.
 
 
-Traits: HasParent<PartitionMetadataOp>, SingleBlockImplicitTerminator<HerdMetadataTerminatorOp>
+Traits: HasParent<SegmentMetadataOp>, SingleBlockImplicitTerminator<HerdMetadataTerminatorOp>
 
 #### Attributes:
 
@@ -202,8 +202,8 @@ nd memcpy operator
 
 Global metadata for the module
 
-This op contains a region containing airrt.partition_metadata ops,
-which give information about the partitions in the module.
+This op contains a region containing airrt.segment_metadata ops,
+which give information about the segments in the module.
 
 There is one of these per module.
 
@@ -223,15 +223,15 @@ operation ::= `airrt.module_metadata_terminator` attr-dict
 
 Traits: HasParent<ModuleMetadataOp>, Terminator
 
-### `airrt.partition_load` (xilinx::airrt::PartitionLoadOp)
+### `airrt.segment_load` (xilinx::airrt::SegmentLoadOp)
 
-load a partition
+load a segment
 
 
 Syntax:
 
 ```
-operation ::= `airrt.partition_load` $sym_name attr-dict `:` type($p) (`,` type($event)^)?
+operation ::= `airrt.segment_load` $sym_name attr-dict `:` type($p) (`,` type($event)^)?
 ```
 
 
@@ -248,14 +248,14 @@ operation ::= `airrt.partition_load` $sym_name attr-dict `:` type($p) (`,` type(
 | `p` | 64-bit signless integer
 | `event` | event type
 
-### `airrt.partition_metadata` (xilinx::airrt::PartitionMetadataOp)
+### `airrt.segment_metadata` (xilinx::airrt::SegmentMetadataOp)
 
 Runtime metadata for one air region
 
 This op contains a region containing airrt.herd_metadata ops,
 which give information about the herds in the module.
 
-Traits: HasParent<ModuleMetadataOp>, SingleBlockImplicitTerminator<PartitionMetadataTerminatorOp>
+Traits: HasParent<ModuleMetadataOp>, SingleBlockImplicitTerminator<SegmentMetadataTerminatorOp>
 
 #### Attributes:
 
@@ -263,19 +263,19 @@ Traits: HasParent<ModuleMetadataOp>, SingleBlockImplicitTerminator<PartitionMeta
 | :-------: | :-------: | ----------- |
 | `sym_name` | ::mlir::StringAttr | string attribute
 
-### `airrt.partition_metadata_terminator` (xilinx::airrt::PartitionMetadataTerminatorOp)
+### `airrt.segment_metadata_terminator` (xilinx::airrt::SegmentMetadataTerminatorOp)
 
-Implicit terminator for PartitionMetadataOp's region
+Implicit terminator for SegmentMetadataOp's region
 
 
 Syntax:
 
 ```
-operation ::= `airrt.partition_metadata_terminator` attr-dict
+operation ::= `airrt.segment_metadata_terminator` attr-dict
 ```
 
 
-Traits: HasParent<PartitionMetadataOp>, Terminator
+Traits: HasParent<SegmentMetadataOp>, Terminator
 
 ### `airrt.wait_all` (xilinx::airrt::WaitAllOp)
 

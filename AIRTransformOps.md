@@ -75,19 +75,19 @@ Interfaces: MemoryEffectOpInterface, TransformOpInterface
 | :----: | ----------- |
 | `fused_op` | PDL handle to an `mlir::Operation *`
 
-### `transform.air.get_partition_for` (::mlir::transform::GetPartitionForOp)
+### `transform.air.get_segment_for` (::mlir::transform::GetSegmentForOp)
 
-Gets a handle to the parent 'air.partition' of the given operation
+Gets a handle to the parent 'air.segment' of the given operation
 
 
 Syntax:
 
 ```
-operation ::= `transform.air.get_partition_for` $target attr-dict
+operation ::= `transform.air.get_segment_for` $target attr-dict
 ```
 
-Produces a handle to the parent `air.partition` op for each payload IR
-operation associated with the operand. Fails if a partition cannot be found.
+Produces a handle to the parent `air.segment` op for each payload IR
+operation associated with the operand. Fails if a segment cannot be found.
 The list of operations associated with the handle contains
 parent operations in the same order as the list associated with the operand,
 except for operations that are parents to more than one input which are only
@@ -278,35 +278,6 @@ Interfaces: MemoryEffectsOpInterface, TransformOpInterface
 | :----: | ----------- |
 | `result` | PDL handle to an `mlir::Operation *`
 
-### `transform.air.partition_to_aie` (::mlir::transform::PartitionToAIEOp)
-
-
-
-
-Syntax:
-
-```
-operation ::= `transform.air.partition_to_aie` $target attr-dict
-```
-
-Lower air.partition operations to mlir-aie modules.
-
-Traits: FunctionalStyleTransformOpTrait, TransformEachOpTrait
-
-Interfaces: MemoryEffectsOpInterface, TransformOpInterface
-
-#### Operands:
-
-| Operand | Description |
-| :-----: | ----------- |
-| `target` | PDL handle to an `mlir::Operation *`
-
-#### Results:
-
-| Result | Description |
-| :----: | ----------- |
-| `transformed` | PDL handle to an `mlir::Operation *`
-
 ### `transform.air.pipeline_reduce` (::mlir::transform::PipelineReduceOp)
 
 
@@ -344,4 +315,33 @@ Interfaces: MemoryEffectsOpInterface, TransformOpInterface
 | Result | Description |
 | :----: | ----------- |
 | `result` | PDL handle to an `mlir::Operation *`
+
+### `transform.air.segment_to_aie` (::mlir::transform::SegmentToAIEOp)
+
+
+
+
+Syntax:
+
+```
+operation ::= `transform.air.segment_to_aie` $target attr-dict
+```
+
+Lower air.segment operations to mlir-aie modules.
+
+Traits: FunctionalStyleTransformOpTrait, TransformEachOpTrait
+
+Interfaces: MemoryEffectsOpInterface, TransformOpInterface
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `target` | PDL handle to an `mlir::Operation *`
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `transformed` | PDL handle to an `mlir::Operation *`
 
