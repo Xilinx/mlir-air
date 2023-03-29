@@ -130,7 +130,7 @@ int mlir_aie_init_device(aie_libxaie_ctx_t *ctx) {
     return -1;
   }
 
-  // TODO Extra code to really teardown the partitions
+  // TODO Extra code to really teardown the segments
   RC = XAie_Finish(&(ctx->DevInst));
   if (RC != XAIE_OK) {
     xil_printf("Failed to finish tiles.\n\r");

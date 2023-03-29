@@ -52,7 +52,7 @@ Successful driver1 output (Note this is after running 7 times so ERNIC registers
 Opening /sys/bus/pci/devices/0000:21:00.0/resource0 with size 67108864
 [INFO] Device memory mapped into userspace
         VA: 0x7f85f2b58000
-        Partition Offset: 0x40000
+        Segment Offset: 0x40000
         Global Offset: 0x800000000
         Size: 67108864
 [INFO] Configuring MRMAC
@@ -194,7 +194,7 @@ Successful driver2 output (Note this is after running 7 times so ERNIC registers
 Opening /sys/bus/pci/devices/0000:21:00.0/resource0 with size 67108864
 [INFO] Device memory mapped into userspace
         VA: 0x7f419b5f6000
-        Partition Offset: 0x20000
+        Segment Offset: 0x20000
         Global Offset: 0x800000000
         Size: 67108864
 [INFO] Configuring MRMAC

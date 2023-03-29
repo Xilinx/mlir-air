@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-par-to-launch='has-air-partition=false' -cse -canonicalize %s | FileCheck %s
+// RUN: air-opt -air-par-to-launch='has-air-segment=false' -cse -canonicalize %s | FileCheck %s
 // CHECK-LABEL: func.func @f0
 // CHECK: %[[C0:.*]] = arith.constant 2 : index
 // CHECK air.launch ({{.*}}, {{.*}}) in ({{.*}}=[[C0]], {{.*}}=[[C0]])

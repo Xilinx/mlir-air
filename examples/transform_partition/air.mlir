@@ -11,7 +11,7 @@
 #map = affine_map<()[s0] -> (s0 * 32)>
 module attributes {torch.debug_module_name = "mmult"} {
   func.func @forward(%a0: memref<64x64xi32>, %a1: memref<64x64xi32>, %a2: memref<64x64xi32>) {
-    air.partition @partition0 args(%arg0=%a0, %arg1=%a1, %arg2=%a2) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> {
+    air.segment @segment0 args(%arg0=%a0, %arg1=%a1, %arg2=%a2) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> {
       %c2 = arith.constant 2 : index
       %c0_i32 = arith.constant 0 : i32
       %0 = memref.alloc() {alignment = 128 : i64} : memref<64x64xi32>
@@ -41,7 +41,7 @@ module attributes {torch.debug_module_name = "mmult"} {
         air.herd_terminator
       }
       memref.copy %1, %arg2 : memref<64x64xi32> to memref<64x64xi32>
-      air.partition_terminator
+      air.segment_terminator
     }
     return
   }
@@ -49,17 +49,17 @@ module attributes {torch.debug_module_name = "mmult"} {
 
 transform.with_pdl_patterns {
 ^bb0(%arg0: !pdl.operation):
-  pdl.pattern @match_partitions : benefit(1) {
+  pdl.pattern @match_segments : benefit(1) {
     %args = operands
     %results = types
-    %op = operation "air.partition"(%args : !pdl.range<value>) -> (%results : !pdl.range<type>)
+    %op = operation "air.segment"(%args : !pdl.range<value>) -> (%results : !pdl.range<type>)
     rewrite %op with "transform.dialect"
   }
 
   sequence %arg0 failures(propagate) {
   ^bb1(%arg1: !pdl.operation):
-    %0 = pdl_match @match_partitions in %arg1
-    %1 = transform.air.partition_to_aie %0
-    transform.test_print_remark_at_operand %1, "found partition"
+    %0 = pdl_match @match_segments in %arg1
+    %1 = transform.air.segment_to_aie %0
+    transform.test_print_remark_at_operand %1, "found segment"
   }
 }

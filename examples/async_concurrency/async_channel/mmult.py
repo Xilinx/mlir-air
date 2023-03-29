@@ -41,7 +41,7 @@ with air.mlir.ir.Context(), Location.unknown():
     pipeline = "builtin.module("+",".join([
         "air-linalg-codegen{l2-tile-size=64,64,64 l2-promote=true l1-tile-size=16,16,16 l1-promote=true}",
         "air-par-to-herd{depth=1}",
-        "air-par-to-launch{depth=0 has-air-partition=true}",
+        "air-par-to-launch{depth=0 has-air-segment=true}",
         "air-copy-to-dma",
         "canonicalize", "cse",
     ])+')'

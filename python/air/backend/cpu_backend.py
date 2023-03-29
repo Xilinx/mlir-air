@@ -65,7 +65,7 @@ class AirCpuBackend(AirBackend):
         self.unload()
 
     def compile(self, air_module: air.mlir.ir.Module, pipeline=None,
-                verbose=False, partition_offset=None, partition_size=None):
+                verbose=False, segment_offset=None, segment_size=None):
         """Compiles an imported module, with a flat list of functions.
 
         The module is expected to be AIR dialect.
@@ -74,8 +74,8 @@ class AirCpuBackend(AirBackend):
             AIR dialect.
           pipeline: The custom lowering pipeline to use for lowering.
             The default is `air.backend.cpu_backend.DEFAULT_PIPELINE`
-          partition_offset: default location for generated partitions as [colOffset, rowOffset]
-          partition_size: default size for generated partitions as [numCols, numRows]
+          segment_offset: default location for generated segments as [colOffset, rowOffset]
+          segment_size: default size for generated segments as [numCols, numRows]
         Returns:
           An opaque, backend specific compiled artifact object that can be
           passed to `load`.
@@ -127,8 +127,8 @@ def make_dynamo_backend(pipeline=None, verbose=False):
             then `pipeline`.
             The default is `air.backend.linalg_on_tensors.LINALG_MEMREF_TO_AIR_PIPELINE`
         verbose: enable verbose output
-        partition_offset: default location for generated partitions as [colOffset, rowOffset]
-        partition_size: default size for generated partitions as [numCols, numRows]
+        segment_offset: default location for generated segments as [colOffset, rowOffset]
+        segment_size: default size for generated segments as [numCols, numRows]
     Returns:
         A PyTorch dynamo backend
     """

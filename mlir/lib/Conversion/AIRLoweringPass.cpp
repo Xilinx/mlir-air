@@ -108,20 +108,20 @@ public:
   }
 };
 
-class AIRPartitionConversion : public ConversionPattern {
+class AIRSegmentConversion : public ConversionPattern {
 public:
-  explicit AIRPartitionConversion(MLIRContext *context)
-      : ConversionPattern(air::PartitionOp::getOperationName(), 1, context) {}
+  explicit AIRSegmentConversion(MLIRContext *context)
+      : ConversionPattern(air::SegmentOp::getOperationName(), 1, context) {}
 
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
-    air::PartitionOp partition = cast<air::PartitionOp>(op);
+    air::SegmentOp segment = cast<air::SegmentOp>(op);
     if (auto attr =
             op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
-      auto partition_name = attr.getValue().str();
-      rewriter.create<airrt::PartitionLoadOp>(
-          op->getLoc(), rewriter.getI64Type(), partition_name);
+      auto segment_name = attr.getValue().str();
+      rewriter.create<airrt::SegmentLoadOp>(op->getLoc(), rewriter.getI64Type(),
+                                            segment_name);
     }
 
     SmallVector<Value> deps;
@@ -131,15 +131,15 @@ public:
     if (op->getNumResults()) {
       auto w = rewriter.create<airrt::WaitAllOp>(
           op->getLoc(), airrt::EventType::get(op->getContext()), deps);
-      partition.getResult(0).replaceAllUsesWith(w.getResult(0));
+      segment.getResult(0).replaceAllUsesWith(w.getResult(0));
     }
 
     SmallVector<Value> lbs, ubs, steps;
     auto c0 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 0);
     auto c1 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1);
 
-    // make scf.parallel to replace air.partition
-    for (auto d : partition.getSizeOperands()) {
+    // make scf.parallel to replace air.segment
+    for (auto d : segment.getSizeOperands()) {
       lbs.push_back(c0);
       ubs.push_back(d);
       steps.push_back(c1);
@@ -152,20 +152,19 @@ public:
     auto scfPar =
         rewriter.create<scf::ParallelOp>(op->getLoc(), lbs, ubs, steps);
 
-    // map partition iteration space to scf.parallel ivs
-    for (auto p : llvm::zip(partition.getIds(), scfPar.getInductionVars()))
+    // map segment iteration space to scf.parallel ivs
+    for (auto p : llvm::zip(segment.getIds(), scfPar.getInductionVars()))
       std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
 
-    // map partition size to scf.parallel upper bounds
-    for (auto p :
-         llvm::zip(partition.getSizeOperands(), scfPar.getUpperBound()))
+    // map segment size to scf.parallel upper bounds
+    for (auto p : llvm::zip(segment.getSizeOperands(), scfPar.getUpperBound()))
       std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
 
     int i = 0;
-    for (auto arg : partition.getKernelArguments())
-      arg.replaceAllUsesWith(partition.getKernelOperand(i++));
+    for (auto arg : segment.getKernelArguments())
+      arg.replaceAllUsesWith(segment.getKernelOperand(i++));
 
-    auto &body = partition.getBody().front().getOperations();
+    auto &body = segment.getBody().front().getOperations();
     scfPar.getBody()->getOperations().splice(scfPar.getBody()->begin(), body,
                                              body.begin(), --body.end());
 
@@ -960,7 +959,7 @@ public:
     air_patterns
         .add<ScfYieldOpConversion, ScfIfOpConversion, ScfForOpConversion,
              L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion,
-             AIRLaunchConversion, AIRPartitionConversion, AIRHerdConversion>(
+             AIRLaunchConversion, AIRSegmentConversion, AIRHerdConversion>(
             context);
 
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(air_patterns,
