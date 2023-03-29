@@ -106,7 +106,7 @@ add_custom_target(docs ALL)
 add_dependencies(docs mlir-doc)
 
 list(GET AIR_RUNTIME_TARGETS -1 AIR_RUNTIME_TEST_TARGET)
-message("Testing with AIR runtime target: '${AIR_RUNTIME_TEST_TARGET}"')
+message("Testing with AIR runtime target: '${AIR_RUNTIME_TEST_TARGET}'")
 
 foreach(target ${AIR_RUNTIME_TARGETS})
 	message("Compiling AIR runtime for ${target}")

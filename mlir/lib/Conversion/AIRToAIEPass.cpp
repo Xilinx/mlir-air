@@ -981,8 +981,9 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
         getChannelGetOpThroughSymbol(channel);
 
     if ((int)channelPuts.size() > numSubchannels ||
-        (int)channelGets.size() > numSubchannels)
-        return failure(); // TODO: assert instead?
+        (int)channelGets.size() > numSubchannels) {
+        return channel.emitOpError("too many put and/or get operations compared to declared channel indices");
+    }
 
     std::map<std::pair<int, int>, Value> producerTiles;
     std::map<std::pair<int, int>, Value> consumerTiles;
