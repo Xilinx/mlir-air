@@ -40,17 +40,17 @@ def launchOp():
     arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 1))
     airdialect.LaunchTerminatorOp()
 
-# CHECK-LABEL: TEST: partitionOp
-# CHECK: air.partition @pyPartition {
+# CHECK-LABEL: TEST: segmentOp
+# CHECK: air.segment @pySegment {
 # CHECK:   %{{.*}} = arith.constant 1 : index
-# CHECK:   air.partition_terminator
+# CHECK:   air.segment_terminator
 @constructAndPrintInFunc
-def partitionOp():
-  P = airdialect.PartitionOp("pyPartition")
+def segmentOp():
+  P = airdialect.SegmentOp("pySegment")
   with InsertionPoint(P.body):
     idx_ty = IndexType.get()
     arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 1))
-    airdialect.PartitionTerminatorOp()
+    airdialect.SegmentTerminatorOp()
 
 # CHECK-LABEL: TEST: herdOp
 # CHECK: %[[C0:.*]] = arith.constant 2 : index

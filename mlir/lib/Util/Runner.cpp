@@ -363,7 +363,7 @@ public:
         // Update pointer to launch runner node in launch graph
         launchGraph.runner_node = &launch_runner_node;
 
-        // Walk the launch graph and infer herd/partition runner nodes
+        // Walk the launch graph and infer herd/segment runner nodes
         launch_runner_node.initRunnerNodesFromLaunchGraph(launchGraph);
 
         // Schedule launch runner node and its sub-runner nodes
@@ -400,13 +400,13 @@ public:
         // getTimeStampsFromWavefront(next_times, launch);
       }
 
-      for (auto &partition_runner_node : launch.sub_runner_nodes) {
-        processGraph(partition_runner_node, device_resource_node, time);
-        if (partition_runner_node.wavefront.size()) {
+      for (auto &segment_runner_node : launch.sub_runner_nodes) {
+        processGraph(segment_runner_node, device_resource_node, time);
+        if (segment_runner_node.wavefront.size()) {
           running = true;
-          // getTimeStampsFromWavefront(next_times, partition_runner_node);
+          // getTimeStampsFromWavefront(next_times, segment_runner_node);
         }
-        for (auto &herd_runner_node : partition_runner_node.sub_runner_nodes) {
+        for (auto &herd_runner_node : segment_runner_node.sub_runner_nodes) {
           processGraph(herd_runner_node, device_resource_node, time);
           if (herd_runner_node.wavefront.size()) {
             running = true;
@@ -417,10 +417,10 @@ public:
 
       if (running) {
         launch.getTimeStampsFromWavefront(next_times);
-        for (auto &partition_runner_node : launch.sub_runner_nodes) {
-          partition_runner_node.getTimeStampsFromWavefront(next_times);
+        for (auto &segment_runner_node : launch.sub_runner_nodes) {
+          segment_runner_node.getTimeStampsFromWavefront(next_times);
           for (auto &herd_runner_node :
-               partition_runner_node.sub_runner_nodes) {
+               segment_runner_node.sub_runner_nodes) {
             herd_runner_node.getTimeStampsFromWavefront(next_times);
           }
         }
@@ -468,16 +468,16 @@ private:
       emitTraceMetadataEvent(traceStream, "process_sort_index", "sort_index",
                              std::to_string(getIdAttr(launchGraph.hierarchyOp)),
                              "M", getIdAttr(launchGraph.hierarchyOp));
-      for (auto &partitionGraph : launchGraph.subgraphs) {
-        // Write partition process name to trace metadata
+      for (auto &segmentGraph : launchGraph.subgraphs) {
+        // Write segment process name to trace metadata
         emitTraceMetadataEvent(traceStream, "process_name", "name",
-                               air::to_string(partitionGraph.hierarchyOp), "M",
-                               getIdAttr(partitionGraph.hierarchyOp));
+                               air::to_string(segmentGraph.hierarchyOp), "M",
+                               getIdAttr(segmentGraph.hierarchyOp));
         emitTraceMetadataEvent(
             traceStream, "process_sort_index", "sort_index",
-            std::to_string(getIdAttr(partitionGraph.hierarchyOp)), "M",
-            getIdAttr(partitionGraph.hierarchyOp));
-        for (auto &herdGraph : partitionGraph.subgraphs) {
+            std::to_string(getIdAttr(segmentGraph.hierarchyOp)), "M",
+            getIdAttr(segmentGraph.hierarchyOp));
+        for (auto &herdGraph : segmentGraph.subgraphs) {
           // Only write herd process name metadata once per herd
           bool print_pid_metadata_for_herd = true;
           // Write core thread name metadata if showing cores

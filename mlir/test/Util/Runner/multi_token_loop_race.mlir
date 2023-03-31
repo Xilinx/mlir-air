@@ -31,7 +31,7 @@ module {
       memref.copy %arg2, %results : memref<512x512xbf16> to memref<512x512xbf16>
     }
     %0 = air.launch async [%async_token_0] (%arg3, %arg4) in (%arg5=%c1, %arg6=%c1) args(%arg7=%arg0, %arg8=%arg1, %arg9=%results) : memref<512x512xbf16>, memref<512x512xbf16>, memref<512x512xbf16> attributes {id = 1 : i32} {
-      %1 = air.partition async  args(%arg10=%arg3, %arg11=%arg4, %arg12=%arg7, %arg13=%arg8, %arg14=%arg9) : index, index, memref<512x512xbf16>, memref<512x512xbf16>, memref<512x512xbf16> attributes {id = 2 : i32, column_usage = [4, 1]} {
+      %1 = air.segment async  args(%arg10=%arg3, %arg11=%arg4, %arg12=%arg7, %arg13=%arg8, %arg14=%arg9) : index, index, memref<512x512xbf16>, memref<512x512xbf16>, memref<512x512xbf16> attributes {id = 2 : i32, column_usage = [4, 1]} {
         %c1_1 = arith.constant 1 : index
         %c4 = arith.constant 4 : index
         %c0 = arith.constant 0 : index
@@ -145,7 +145,7 @@ module {
         %async_token_8 = air.execute [%5] {
           memref.dealloc %results_7 : memref<64x64xbf16, 1>
         }
-        air.partition_terminator
+        air.segment_terminator
       }
       air.launch_terminator
     }

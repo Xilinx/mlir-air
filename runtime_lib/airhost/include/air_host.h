@@ -215,21 +215,21 @@ struct air_rt_herd_desc_t {
   air_herd_desc_t *herd_desc;
 };
 
-struct air_partition_desc_t {
+struct air_segment_desc_t {
   int64_t name_length;
   char *name;
   uint64_t herd_length;
   air_herd_desc_t **herd_descs;
 };
 
-struct air_rt_partition_desc_t {
+struct air_rt_segment_desc_t {
   queue_t *q;
-  air_partition_desc_t *partition_desc;
+  air_segment_desc_t *segment_desc;
 };
 
 struct air_module_desc_t {
-  uint64_t partition_length;
-  air_partition_desc_t **partition_descs;
+  uint64_t segment_length;
+  air_segment_desc_t **segment_descs;
 };
 
 // AIR module shared library helpers
@@ -247,14 +247,14 @@ int32_t air_module_unload(air_module_handle_t handle);
 
 air_module_desc_t *air_module_get_desc(air_module_handle_t handle);
 
-air_partition_desc_t *air_partition_get_desc(air_module_handle_t handle,
-                                             const char *name);
+air_segment_desc_t *air_segment_get_desc(air_module_handle_t handle,
+                                         const char *name);
 
 air_herd_desc_t *air_herd_get_desc(air_module_handle_t handle,
-                                   air_partition_desc_t *partition,
+                                   air_segment_desc_t *segment,
                                    const char *name);
 
-uint64_t air_partition_load(const char *name);
+uint64_t air_segment_load(const char *name);
 
 uint64_t air_herd_load(const char *name);
 }

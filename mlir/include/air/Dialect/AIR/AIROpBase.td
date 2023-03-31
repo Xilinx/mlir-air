@@ -28,19 +28,19 @@ def air_Dialect : Dialect {
     Code within a `herd` can directly access L1 memory but must use DMA
     operations or channels to access other levels of memory.
 
-    ### Partition
-    A `partition` in the `air` dialect represents a physically contiguous
+    ### Segment
+    A `segment` in the `air` dialect represents a physically contiguous
     grouping of AIE cores, L1 and L2 memory resources, and controllers
     sufficient to implement the herds, memory allocations, data movement,
-    and synchronization contained in the `partition` code region. Code within
-    a `partition` can allocate L2 memory but must use DMA operations or
-    channels to access other levels of memory. A `partition` can optionally
+    and synchronization contained in the `segment` code region. Code within
+    a `segment` can allocate L2 memory but must use DMA operations or
+    channels to access other levels of memory. A `segment` can optionally
     define an iteration space which represents a spatial unroll of the
-    `partition`. That is, it allows the `partition` to be "stamped out" multiple
-    times, also multiplying the physical resources required by the `partition`.
+    `segment`. That is, it allows the `segment` to be "stamped out" multiple
+    times, also multiplying the physical resources required by the `segment`.
 
     ### Launch
-    A `launch` in the `air` dialect groups `partitions` and L3 allocations that
+    A `launch` in the `air` dialect groups `segments` and L3 allocations that
     must be co-resident within a device when execution of the `launch`
     code region begins. A `launch` operation can optionally define a parallel
     iteration space.
@@ -172,7 +172,7 @@ def air_DmaMemcpyInterface : OpInterface<"DmaMemcpyInterface"> {
 
 def air_HierarchyInterface : OpInterface<"HierarchyInterface"> {
   let description = [{
-    Interface for AIR hierarchy ops `air.herd`, `air.partition` and `air.launch`
+    Interface for AIR hierarchy ops `air.herd`, `air.segment` and `air.launch`
 
     Operations implementing this interface define an iteration space, support
     arguments for implementing "isolated from above" and have an integer `id`

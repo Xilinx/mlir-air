@@ -11,7 +11,7 @@
 module attributes {torch.debug_module_name = "test"} {
   func.func @forward(%arg0: memref<10240xi32>, %arg1: memref<10240xi32>, %arg2: memref<10240xi32>) -> memref<10240xi32> {
     %0 = memref.alloc() {alignment = 128 : i64} : memref<10240xi32>
-    air.partition @part0  args(%arg3=%arg0, %arg4=%arg1, %arg5=%arg2, %arg6=%0) : memref<10240xi32>, memref<10240xi32>, memref<10240xi32>, memref<10240xi32> {
+    air.segment @part0  args(%arg3=%arg0, %arg4=%arg1, %arg5=%arg2, %arg6=%0) : memref<10240xi32>, memref<10240xi32>, memref<10240xi32>, memref<10240xi32> {
       %c1 = arith.constant 1 : index
       %c2 = arith.constant 2 : index
       %1 = memref.alloc() {alignment = 128 : i64} : memref<10240xi32>
@@ -69,7 +69,7 @@ module attributes {torch.debug_module_name = "test"} {
         }
         air.herd_terminator
       }
-      air.partition_terminator
+      air.segment_terminator
     }
     return %0 : memref<10240xi32>
   }

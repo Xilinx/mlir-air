@@ -1,4 +1,4 @@
-//===- dma_to_channel_nested_for_in_partition.mlir -------------*- MLIR -*-===//
+//===- dma_to_channel_nested_for_in_segment.mlir -------------*- MLIR -*-===//
 //
 // Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
@@ -7,7 +7,7 @@
 
 // RUN: air-opt %s -air-dma-to-channel | FileCheck %s
 
-// Hoisting external channel put/get op out of a partition with nested for loops
+// Hoisting external channel put/get op out of a segment with nested for loops
 
 #map = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 32)>
@@ -20,7 +20,7 @@ module {
 // CHECK: %[[EVENT1:.*]] = scf.for
 // CHECK: %[[EVENT2:.*]] = scf.for
 // CHECK: %[[EVENT3:.*]] = air.channel.put{{.*}}@channel_0[]
-// CHECK: %[[EVENT4:.*]] = air.partition async
+// CHECK: %[[EVENT4:.*]] = air.segment async
 // CHECK: %[[EVENT5:.*]] = scf.for
 // CHECK: %[[EVENT6:.*]] = scf.for
 // CHECK: %[[EVENT7:.*]] = air.channel.get{{.*}}@channel_0[]
@@ -29,7 +29,7 @@ module {
 // CHECK: %[[EVENT10:.*]] = air.channel.put{{.*}}@channel_1[%[[VALUE0]], %[[VALUE1]]]
 // CHECK: %[[EVENT11:.*]] = air.herd @herd_0 async
     %0 = air.launch async (%arg1, %arg2) in (%arg3=%c1_0, %arg4=%c8) args(%arg5=%arg0) : memref<512x512xbf16> attributes {id = 3 : i32} {
-      %1 = air.partition async  args(%arg6=%arg1, %arg7=%arg2, %arg8=%arg3, %arg9=%arg4, %arg10=%arg5) : index, index, index, index, memref<512x512xbf16> attributes {id = 2 : i32} {
+      %1 = air.segment async  args(%arg6=%arg1, %arg7=%arg2, %arg8=%arg3, %arg9=%arg4, %arg10=%arg5) : index, index, index, index, memref<512x512xbf16> attributes {id = 2 : i32} {
         %c1 = arith.constant 1 : index
         %c2 = arith.constant 2 : index
         %c0 = arith.constant 0 : index
@@ -77,7 +77,7 @@ module {
             %newarg4 = air.wait_all async [%3]  {id = 3 : i32}
             scf.yield %newarg4 : !air.async.token
         }
-        air.partition_terminator
+        air.segment_terminator
       }
       air.launch_terminator
     }

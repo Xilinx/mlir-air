@@ -37,7 +37,7 @@ module {
       memref.copy %results, %results_2 : memref<256x1024xbf16> to memref<256x1024xbf16>
     } {id = 4 : i32}
     %0 = air.launch async [%async_token_3] (%arg4, %arg5) in (%arg6=%c1, %arg7=%c1) args(%arg8=%results_2) : memref<256x1024xbf16> {
-      %1 = air.partition async  args(%arg9=%arg8) : memref<256x1024xbf16> attributes {column_usage = [1, 1]} {
+      %1 = air.segment async  args(%arg9=%arg8) : memref<256x1024xbf16> attributes {column_usage = [1, 1]} {
         %c1_4 = arith.constant 1 : index
         %c0 = arith.constant 0 : index
         %c1024 = arith.constant 1024 : index
@@ -59,7 +59,7 @@ module {
           %5 = air.wait_all async [%arg11, %4] 
           scf.yield %5 : !air.async.token
         }
-        air.partition_terminator
+        air.segment_terminator
       }
       air.launch_terminator
     }

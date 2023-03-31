@@ -9,7 +9,7 @@
 // RUN: air-opt %s -air-dependency-canonicalize | FileCheck %s
 
 // Prune redundant dependency edges
-// CHECK: %[[EVENT0:.*]] = air.partition async
+// CHECK: %[[EVENT0:.*]] = air.segment async
 // CHECK: %[[EVENT1:.*]] = air.herd async
 // CHECK: %[[EVENT2:.*]] = air.dma_memcpy_nd async{{.*}}id = 3
 // CHECK-NEXT: %[[EVENT3:.*]] = air.execute [%[[EVENT2]]]
@@ -28,7 +28,7 @@ module {
         air.execute_terminator %3 : memref<512xi32>
       } {id = 1 : i32}
       %1 = air.dma_memcpy_nd async [%asyncToken] (%valOut[] [] [], %arg5[%c0_0] [%c0_0] [%c0_0]) {id = 1 : i32} : (memref<512xi32>, memref<1024xi32>)
-      %2 = air.partition async [%1]  unroll(%arg6, %arg7) in (%arg8=%c1_1, %arg9=%c1_1) args(%arg10=%valOut) : memref<512xi32> attributes {id = 2 : i32} {
+      %2 = air.segment async [%1]  unroll(%arg6, %arg7) in (%arg8=%c1_1, %arg9=%c1_1) args(%arg10=%valOut) : memref<512xi32> attributes {id = 2 : i32} {
         %c0_3 = arith.constant 0 : index
         %c1_4 = arith.constant 1 : index
         %asyncToken_5, %valOut_6 = air.execute -> (memref<256xi32, 1>) {
@@ -53,7 +53,7 @@ module {
           memref.dealloc %valOut_6 : memref<256xi32, 1>
           air.execute_terminator
         } {id = 5 : i32}
-        air.partition_terminator
+        air.segment_terminator
       }
       %asyncToken_2 = air.execute [%2, %1] {
         memref.dealloc %valOut : memref<512xi32>

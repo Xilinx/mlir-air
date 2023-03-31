@@ -18,6 +18,6 @@ tslint.json
 **/.eslintrc.json
 **/*.map
 **/*.ts
-!images/partition_view_example.png
+!images/segment_view_example.png
 !images/routing_view_example.png
 

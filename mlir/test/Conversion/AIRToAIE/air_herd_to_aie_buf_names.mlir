@@ -8,7 +8,7 @@
 
 // RUN: air-opt -air-to-aie %s | FileCheck %s
 
-// CHECK-LABEL: module @aie.partition_0
+// CHECK-LABEL: module @aie.segment_0
 // CHECK: scratch_2_2
 // CHECK: buf8
 // ...

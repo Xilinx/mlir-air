@@ -38,7 +38,7 @@ module {
         %2 = affine.apply #map()[%arg4]
         air.execute_terminator %2 : index
       }
-      %1 = air.partition async attributes {column_usage = [4, 1]} {
+      %1 = air.segment async attributes {column_usage = [4, 1]} {
         %c4 = arith.constant 4 : index
         %c0 = arith.constant 0 : index
         %c512 = arith.constant 512 : index
@@ -115,7 +115,7 @@ module {
         %async_token_31 = air.execute [%2] {
           memref.dealloc %results_6 : memref<128x128xbf16, 1>
         }
-        air.partition_terminator
+        air.segment_terminator
       }
       air.launch_terminator
     }

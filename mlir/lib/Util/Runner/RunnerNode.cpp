@@ -86,24 +86,24 @@ public:
     launchGraph.runner_node = this;
     launchGraph.runner_node->channel_token_counts_ptr =
         &(launchGraph.runner_node->channel_token_counts);
-    for (auto &partitionGraph : launchGraph.subgraphs) {
-      // Create partition runner node
+    for (auto &segmentGraph : launchGraph.subgraphs) {
+      // Create segment runner node
       this->sub_runner_nodes.push_back(
-          runnerNode(this, &partitionGraph, "partition", this->dep_ctx,
+          runnerNode(this, &segmentGraph, "segment", this->dep_ctx,
                      this->sim_granularity,
                      &(launchGraph.runner_node->channel_token_counts)));
-      auto current_partition_node = &(this->sub_runner_nodes.back());
-      for (auto &herdGraph : partitionGraph.subgraphs) {
+      auto current_segment_node = &(this->sub_runner_nodes.back());
+      for (auto &herdGraph : segmentGraph.subgraphs) {
         // Create herd runner node
-        current_partition_node->sub_runner_nodes.push_back(
-            runnerNode(current_partition_node, &herdGraph, "herd",
+        current_segment_node->sub_runner_nodes.push_back(
+            runnerNode(current_segment_node, &herdGraph, "herd",
                        this->dep_ctx, this->sim_granularity,
                        &(launchGraph.runner_node->channel_token_counts)));
       }
     }
     this->addPointerBetweenSubRunnerNodeAndSubCommandGraph();
-    for (auto &partition_runner_node : this->sub_runner_nodes) {
-      partition_runner_node.addPointerBetweenSubRunnerNodeAndSubCommandGraph();
+    for (auto &segment_runner_node : this->sub_runner_nodes) {
+      segment_runner_node.addPointerBetweenSubRunnerNodeAndSubCommandGraph();
     }
   }
 
@@ -315,10 +315,10 @@ public:
   }
   bool checkResourceFulfillmentForOpImpls(Operation *op,
                                           std::string name = "") {
-    // At any point in time, if partition or herd op fails to allocate enough
+    // At any point in time, if segment or herd op fails to allocate enough
     // resources, then the entire launch is invalid due to failing to allocate
     // enough resources upon launch.
-    if (auto Op = dyn_cast<air::PartitionOp>(op)) {
+    if (auto Op = dyn_cast<air::SegmentOp>(op)) {
       bool result = this->checkResourceFulfillmentForOp(Op);
       if (!result) {
         op->emitOpError("isn't allocated with enough resources to run");
@@ -433,7 +433,7 @@ private:
         }
       }
       // Get ports from columns
-      else if (this->runner_node_type == "partition") {
+      else if (this->runner_node_type == "segment") {
         auto col = static_cast<column *>(res_hier);
         auto col_ports = col->ports;
         for (auto p : col_ports[mem_str]){
@@ -619,7 +619,7 @@ private:
   }
 
   // Try to reserve resources for an event
-  bool checkResourceFulfillmentForOp(air::PartitionOp Op) {
+  bool checkResourceFulfillmentForOp(air::SegmentOp Op) {
     std::vector<resource *> resource_hier_pool;
     this->getColumnsPool(resource_hier_pool);
     // Get resource cost
@@ -716,7 +716,7 @@ private:
       }
       // Hierarchy terminator ops release resource hierarchies (devices, columns
       // or tiles)
-      else if (isa<air::PartitionTerminatorOp>(op)) {
+      else if (isa<air::SegmentTerminatorOp>(op)) {
         for (auto res : this->resource_hiers) {
           res->isReserved = false;
         }
@@ -732,14 +732,14 @@ private:
         this->allocateEventToResources(Op, reserved_resources);
       }
     } else {
-      if (auto Op = dyn_cast<air::PartitionOp>(this->ctrl_g->hierarchyOp)) {
+      if (auto Op = dyn_cast<air::SegmentOp>(this->ctrl_g->hierarchyOp)) {
         this->allocateEventToResources(Op, reserved_resources);
       } else if (auto Op = dyn_cast<air::HerdOp>(this->ctrl_g->hierarchyOp)) {
         this->allocateEventToResources(Op, reserved_resources);
       }
     }
   }
-  void allocateEventToResources(air::PartitionOp Op,
+  void allocateEventToResources(air::SegmentOp Op,
                                 std::vector<resource *> &reserved_resources) {
     std::vector<resource *> resource_hier_pool;
     // Get resource pool
@@ -1067,7 +1067,7 @@ private:
         p->isReserved = false;
         put_deallocate_count ++;
       }
-      if (deallocate_count == to_deallocate){
+      if (put_deallocate_count == to_deallocate){
         break;
       }
     }
@@ -1077,7 +1077,7 @@ private:
         g->isReserved = false;
         get_deallocate_count ++;
       }
-      if (deallocate_count == to_deallocate){
+      if (get_deallocate_count == to_deallocate){
         break;
       }
     }
@@ -1485,7 +1485,7 @@ private:
       return resource_usage;
     }
     // Are iterations of an op dispatched individually?
-    // TODO: formalize for scf.parallel, air.launch, air.partition and air.herd.
+    // TODO: formalize for scf.parallel, air.launch, air.segment and air.herd.
     SmallVector<int, 2> lbs_spatial;
     SmallVector<int, 2> ubs_spatial;
     getSizesFromSpatialLoop(op, lbs_spatial, ubs_spatial);
@@ -1504,7 +1504,7 @@ private:
         return this->getResourceUsageMultiplier(op, true);
       }
       // TODO: add other simulation granularities
-    } else if (isa<air::PartitionOp>(op)) {
+    } else if (isa<air::SegmentOp>(op)) {
       return 1;
     } else if (isa<air::LaunchOp>(op)) {
       return 1;
