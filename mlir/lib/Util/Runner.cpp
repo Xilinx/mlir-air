@@ -540,7 +540,7 @@ private:
                            int64_t volume, mlir::Type ty) {
     double cps = 0.0f;
     unsigned datawidth = 0;
-    if (d.ports.size()) {
+    if (d.interfaces.size()) {
       cps = d.clock;
       if (auto bytes = d.datatypes[getElementTypeAsString(ty)]) {
         datawidth = bytes;
@@ -551,8 +551,8 @@ private:
     assert(cps != 0.0f && datawidth);
 
     double bytes = volume * datawidth;
-    assert(d.ports[std::make_pair(srcSpace, dstSpace)].size());
-    double bps = d.ports[{srcSpace, dstSpace}][0]->data_rate;
+    assert(d.interfaces[std::make_pair(srcSpace, dstSpace)].size());
+    double bps = d.interfaces[{srcSpace, dstSpace}][0]->data_rate;
     double seconds = bytes / bps;
     return (uint64_t)ceil(seconds * cps);
   }
@@ -702,6 +702,20 @@ std::string getElementTypeAsString(const mlir::Type ty) {
   } else {
     return to_string(ty);
   }
+}
+
+std::string lookUpMemorySpaceFromInt(unsigned memory_space){
+  std::string output = "";
+  if (memory_space == 0) {
+    output += "L3";
+  }
+  else if (memory_space == 1) {
+    output += "L2";
+  }
+  else if (memory_space == 2) {
+    output += "L1";
+  }
+  return output;
 }
 
 } // namespace air

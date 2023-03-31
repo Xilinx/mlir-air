@@ -30,7 +30,7 @@ public:
   std::vector<Graph::vertex_descriptor> processed_vertices;
   // Sub runner nodes to the current runner node
   std::deque<runnerNode> sub_runner_nodes;
-  // Reserved resource hierarchies
+  // Resource hierarchies which are allocated to this runner node
   std::vector<resourceHierarchy *> resource_hiers;
 
   // Private wavefront of each runner node, reserved to interface with resource
@@ -330,7 +330,15 @@ public:
         op->emitOpError("isn't allocated with enough resources to run");
       }
       return result;
-    } else if (isa<air::ExecuteOp>(op)) {
+    }
+    // If the ops below fails to be allocated with enough resources, then defer their execution until enough resources are freed up.
+    else if (auto Op = dyn_cast<air::ChannelPutOp>(op)){
+      return (bool)this->checkResourceFulfillmentForOp(Op);
+    }
+    else if (auto Op = dyn_cast<air::ChannelGetOp>(op)){
+      return (bool)this->checkResourceFulfillmentForOp(Op);
+    }
+    else if (isa<air::ExecuteOp>(op)) {
       auto child_op = &*(op->getRegions().front().getOps().begin());
       if (name == "AllocOp") {
         auto Op = dyn_cast<memref::AllocOp>(child_op);
@@ -359,6 +367,7 @@ public:
     loop_trip_count.clear();
     sub_runner_nodes.clear();
     channel_token_counts.clear();
+    resource_hiers.clear();
   }
 
 private:
@@ -377,6 +386,9 @@ private:
   // Pointer to the channel token count vector. Currently, all runner nodes
   // below launch node use launch runner node's channel token count vector.
   std::vector<std::pair<std::string, unsigned>> *channel_token_counts_ptr;
+  // A log of operations which are partially dispatched due to resource contention.
+  // Keys: op pointer; mapped: # of ops dispatched.
+  std::map<Operation *, std::pair<unsigned, std::vector<resource *>>> ops_in_progress;
 
   // Get a pool of available resources
   void getColumnsPool(std::vector<resource *> &resource_pool) {
@@ -406,6 +418,41 @@ private:
   void getTilesPoolFromParent(std::vector<resource *> &resource_pool) {
     auto parent_runner_node = this->parent;
     parent_runner_node->getTilesPool(resource_pool);
+  }
+  void getPortsPool(std::vector<resource *> &resource_pool, unsigned memory_space_as_int) {
+    auto mem_str = lookUpMemorySpaceFromInt(memory_space_as_int);
+    for (auto res_hier : this->resource_hiers) {
+      // Get ports from devices
+      if (this->runner_node_type == "launch") {
+        auto dev = static_cast<device *>(res_hier);
+        auto dev_ports = dev->ports;
+        for (auto p : dev_ports[mem_str]){
+          if (!p->isReserved) {
+            resource_pool.push_back(p);
+          }
+        }
+      }
+      // Get ports from columns
+      else if (this->runner_node_type == "partition") {
+        auto col = static_cast<column *>(res_hier);
+        auto col_ports = col->ports;
+        for (auto p : col_ports[mem_str]){
+          if (!p->isReserved) {
+            resource_pool.push_back(p);
+          }
+        }
+      }
+      // Get ports from tiles
+      else if (this->runner_node_type == "herd") {
+        auto til = static_cast<tile *>(res_hier);
+        auto til_ports = til->ports;
+        for (auto p : til_ports[mem_str]){
+          if (!p->isReserved) {
+            resource_pool.push_back(p);
+          }
+        }
+      }
+    }
   }
   double getMemoriesPool(std::vector<resource *> &resource_pool,
                          bool free_memory_only = true) {
@@ -543,6 +590,14 @@ private:
       }
     }
   }
+  void allocateRunnerNodeToPorts(
+      std::vector<resource *> resource_pool,
+      std::vector<resource *> &reserved_resources, unsigned usage_count) {
+    for (unsigned i = 0; i < usage_count; i++) {
+      resource_pool[i]->isReserved = true;
+      reserved_resources.push_back(resource_pool[i]);
+    }
+  }
 
   // Consume resource hierarchies when sub-runner starts
   void consumeResourceHiersWhenRunnerStarts(
@@ -612,6 +667,35 @@ private:
     } else
       return false;
   }
+  // Return how many events can be dispatched at this point in time.
+  unsigned checkResourceFulfillmentForOp(air::ChannelPutOp putOp) {
+    // Get src memory spaces
+    MemRefType srcTy = putOp.getSrc().getType().cast<MemRefType>();
+    auto srcSpace = srcTy.getMemorySpaceAsInt();
+
+    // Get a pool of available ports from src
+    std::vector<resource *> src_resource_pool;
+    this->getPortsPool(src_resource_pool, srcSpace);
+
+    // Get the number of get events dispatched in parallel per op
+    auto parent = putOp->getParentOp();
+    unsigned spatial_factor = this->getBatchDispatchCountUpUntilType<air::HierarchyInterface>(parent);
+    return (spatial_factor <= src_resource_pool.size()) ? (spatial_factor) : (src_resource_pool.size());
+  }
+  unsigned checkResourceFulfillmentForOp(air::ChannelGetOp getOp) {
+    // Get dst memory spaces
+    MemRefType dstTy = getOp.getDst().getType().cast<MemRefType>();
+    auto dstSpace = dstTy.getMemorySpaceAsInt();
+
+    // Get a pool of available ports from dst
+    std::vector<resource *> dst_resource_pool;
+    this->getPortsPool(dst_resource_pool, dstSpace);
+
+    // Get the number of get events dispatched in parallel per op
+    auto parent = getOp->getParentOp();
+    unsigned spatial_factor = this->getBatchDispatchCountUpUntilType<air::HierarchyInterface>(parent);
+    return (spatial_factor <= dst_resource_pool.size()) ? (spatial_factor) : (dst_resource_pool.size());
+  }
 
   // Allocate event to resources
   void
@@ -640,6 +724,12 @@ private:
         for (auto res : this->resource_hiers) {
           res->isReserved = false;
         }
+      }
+      else if (auto Op = dyn_cast<air::ChannelPutOp>(op)){
+        this->allocateEventToResources(Op, reserved_resources);
+      }
+      else if (auto Op = dyn_cast<air::ChannelGetOp>(op)){
+        this->allocateEventToResources(Op, reserved_resources);
       }
     } else {
       if (auto Op = dyn_cast<air::PartitionOp>(this->ctrl_g->hierarchyOp)) {
@@ -695,6 +785,102 @@ private:
     // Reserve resource
     this->allocateRunnerNodeToDeallocateMemory(
         resource_pool, reserved_resources, memory_deallocated);
+  }
+  void allocateEventToResources(air::ChannelPutOp Op,
+                                std::vector<resource *> &reserved_resources){
+    // Get src memory spaces
+    MemRefType srcTy = Op.getSrc().getType().cast<MemRefType>();
+    auto srcSpace = srcTy.getMemorySpaceAsInt();
+    
+    auto chan_interface = dyn_cast<air::ChannelInterface>(Op.getOperation());
+    unsigned dispatched = 0;
+    unsigned total = 0;
+    this->allocateEventToResources(chan_interface, reserved_resources, srcSpace, total, dispatched);
+
+    // Update tokens
+    auto spatial_factor = this->tokenSpatialFactor(Op.getOperation());
+    // TODO: Unify tokenSpatialFactor with getBatchDispatchCountUpUntilType
+    // Current solution: use proportion of dispatch progress to discount token spatial factor
+    spatial_factor = spatial_factor * dispatched / total;
+    bool found_entry = false;
+    for (auto &entry : *channel_token_counts_ptr) {
+      if ((!found_entry) && entry.first == Op.getChanName().str()) {
+        entry.second += spatial_factor;
+        found_entry = true;
+      }
+    }
+    if (!found_entry) {
+      channel_token_counts_ptr->push_back(
+          std::make_pair(Op.getChanName().str(), spatial_factor));
+    }
+  }
+  void allocateEventToResources(air::ChannelGetOp Op,
+                                std::vector<resource *> &reserved_resources){
+    // Get dst memory spaces
+    MemRefType dstTy = Op.getDst().getType().cast<MemRefType>();
+    auto dstSpace = dstTy.getMemorySpaceAsInt();
+    
+    auto chan_interface = dyn_cast<air::ChannelInterface>(Op.getOperation());
+    unsigned dispatched = 0;
+    unsigned total = 0;
+    this->allocateEventToResources(chan_interface, reserved_resources, dstSpace, total, dispatched);
+
+    // Update tokens
+    auto spatial_factor = this->tokenSpatialFactor(Op.getOperation());
+    spatial_factor = spatial_factor * dispatched / total;
+
+    bool found_entry = false;
+    for (auto &entry : *channel_token_counts_ptr) {
+      if ((!found_entry) && entry.first == Op.getChanName().str()) {
+        entry.second -= spatial_factor;
+        found_entry = true;
+      }
+    }
+    assert(found_entry && "Cannot find channel symbol name in launch runner");
+  }
+
+  void allocateEventToResources(air::ChannelInterface Op,
+                                std::vector<resource *> &reserved_resources, unsigned memSpace, unsigned &total, unsigned &dispatched) {
+
+    // Get a pool of available ports
+    std::vector<resource *> resource_pool;
+    this->getPortsPool(resource_pool, memSpace);
+
+    // Check how many evnets need to be dispatched in this op
+    total = this->getBatchDispatchCountUpUntilType<air::HierarchyInterface>(Op->getParentOp());
+
+    // Get launch runner node
+    auto launch_runner = this;
+    while(launch_runner->runner_node_type != "launch"){
+      launch_runner = launch_runner->parent;
+    }
+
+    // Check how many events have been dispatched
+    unsigned already_dispatched = 0;
+    if (launch_runner->ops_in_progress.count(Op.getOperation())){
+      already_dispatched = launch_runner->ops_in_progress[Op.getOperation()].first;
+    }
+    unsigned remaining = total - already_dispatched;
+
+    // Check how many events can be dispatched at this time
+    dispatched = (remaining >= resource_pool.size()) ? (resource_pool.size()) : (remaining);
+
+    // Dispatch all events that can be dispatched
+    this->allocateRunnerNodeToPorts(
+        resource_pool, reserved_resources, dispatched);
+
+    // Keep track of how many remaining events to dispatch in this op
+    if (launch_runner->ops_in_progress.count(Op.getOperation())){
+      launch_runner->ops_in_progress[Op.getOperation()].first += dispatched;
+      for (auto res : reserved_resources){
+        launch_runner->ops_in_progress[Op.getOperation()].second.push_back(res);
+      }
+    }
+    else {
+      std::vector<resource *> res = reserved_resources;
+      auto entry = std::make_pair(dispatched, res);
+      launch_runner->ops_in_progress.insert(std::make_pair(Op.getOperation(), entry));
+    }
   }
 
   void executeOp(xilinx::air::HierarchyInterface op, uint64_t time,
@@ -833,37 +1019,91 @@ private:
   }
 
   void executeOp(air::ChannelPutOp op, Graph::vertex_descriptor it) {
-    auto spatial_factor = this->tokenSpatialFactor(op.getOperation());
-    bool found_entry = false;
-    for (auto &entry : *channel_token_counts_ptr) {
-      if ((!found_entry) && entry.first == op.getChanName().str()) {
-        entry.second += spatial_factor;
-        found_entry = true;
-      }
-    }
-    if (!found_entry) {
-      channel_token_counts_ptr->push_back(
-          std::make_pair(op.getChanName().str(), spatial_factor));
+    // Get launch runner node
+    auto launch_runner = this;
+    while(launch_runner->runner_node_type != "launch"){
+      launch_runner = launch_runner->parent;
     }
 
-    this->processed_vertices.push_back(it);
+    // Check if this op has been completely dispatched
+    unsigned processed = 1;
+    unsigned total_count = this->getBatchDispatchCountUpUntilType<air::HierarchyInterface>(op->getParentOp());
+    if (launch_runner->ops_in_progress.count(op.getOperation())){
+      processed = launch_runner->ops_in_progress[op.getOperation()].first;
+      if (processed == total_count){
+        this->processed_vertices.push_back(it);
+      }
+    }
+    else assert(false);
+    // this->processed_vertices.push_back(it);
   }
 
   void executeOp(air::ChannelGetOp op, Graph::vertex_descriptor it) {
-    // Get spatial factor for op
-    auto spatial_factor = this->tokenSpatialFactor(op.getOperation());
 
-    bool found_entry = false;
-    // for (auto &entry : launch_runner_node.channel_token_count) {
-    for (auto &entry : *channel_token_counts_ptr) {
-      if ((!found_entry) && entry.first == op.getChanName().str()) {
-        entry.second -= spatial_factor;
-        found_entry = true;
+    // Get launch runner node
+    auto launch_runner = this;
+    while((launch_runner->runner_node_type != "launch")){
+      launch_runner = launch_runner->parent;
+    }
+
+    // Deallocate src and dst ports
+    auto put = air::getTheOtherChannelOpThroughSymbol(op);
+    unsigned put_reserved_count = 0;
+    for (auto p : launch_runner->ops_in_progress[put[0].getOperation()].second){
+      if (p->isReserved){
+        put_reserved_count++;
       }
     }
-    assert(found_entry && "Cannot find channel symbol name in launch runner");
+    unsigned get_reserved_count = 0;
+    for (auto g : launch_runner->ops_in_progress[op.getOperation()].second){
+      if (g->isReserved){
+        get_reserved_count++;
+      }
+    }
+    unsigned to_deallocate = std::min(put_reserved_count, get_reserved_count);
+    unsigned put_deallocate_count = 0;
+    for (auto p : launch_runner->ops_in_progress[put[0].getOperation()].second){
+      if (p->isReserved){
+        p->isReserved = false;
+        put_deallocate_count ++;
+      }
+      if (deallocate_count == to_deallocate){
+        break;
+      }
+    }
+    unsigned get_deallocate_count = 0;
+    for (auto g : launch_runner->ops_in_progress[op.getOperation()].second){
+      if (g->isReserved){
+        g->isReserved = false;
+        get_deallocate_count ++;
+      }
+      if (deallocate_count == to_deallocate){
+        break;
+      }
+    }
 
-    this->processed_vertices.push_back(it);
+    // Get op progress
+    auto put_processed = launch_runner->ops_in_progress[put[0].getOperation()].first;
+    auto get_processed = 1;
+    if (launch_runner->ops_in_progress.count(op.getOperation())){
+      get_processed = launch_runner->ops_in_progress[op.getOperation()].first;
+    }
+    else assert(false);
+    unsigned total_count = this->getBatchDispatchCountUpUntilType<air::HierarchyInterface>(op->getParentOp());
+    if (op.getChanName().str() == "channel_1"){
+      assert(total_count == 16);
+      assert(this->getBatchDispatchCountUpUntilType<air::HierarchyInterface>(put[0]->getParentOp()) == 16);
+
+
+    }
+
+    // If data movement is complete, clear put and get progresses
+    if ((put_processed == total_count) && (get_processed == total_count)){
+      this->processed_vertices.push_back(it);
+      launch_runner->ops_in_progress.erase(op.getOperation());
+      launch_runner->ops_in_progress.erase(put[0].getOperation());
+    }
+    // this->processed_vertices.push_back(it);
   }
 
   void executeOp(Graph::vertex_descriptor it) {
@@ -1269,10 +1509,30 @@ private:
     } else if (isa<air::LaunchOp>(op)) {
       return 1;
     } else if (isa<scf::ParallelOp>(op)) {
-      return 1;
+      return this->getResourceUsageMultiplier(op, false);
     }
     assert(false && "TODO: add other simulation granularities");
     return 1;
+  }
+
+  // Get batch-dispatched count up until type
+  template <typename T>
+  unsigned getBatchDispatchCountUpUntilType(Operation *op) {
+    unsigned spatial_factor = 1;
+    while ((!isa<T>(op)) && !(isa<func::FuncOp>(op))){
+      if (isa<scf::ParallelOp>(op)){
+        spatial_factor *= this->getBatchDispatchCount(op);
+      }
+      else if (isa<air::HierarchyInterface>(op)){
+        spatial_factor *= this->getBatchDispatchCount(op);
+      }
+      op = op->getParentOp();
+    }
+    // If ending with hierarchy op, then the last op's spatial factor also needs to be incorporated
+    if (isa<air::HierarchyInterface>(op)){
+      spatial_factor *= this->getBatchDispatchCount(op);
+    }
+    return spatial_factor;
   }
 
   bool pushToDepListIfAffineIfHit(

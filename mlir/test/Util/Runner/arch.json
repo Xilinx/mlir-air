@@ -147,5 +147,15 @@
                 }
             }
         }
+    },
+    "noc": {
+        "L2": {
+            "count": 4,
+            "bytes_per_second": 100000000000
+        },
+        "L3": {
+            "count": 4,
+            "bytes_per_second": 100000000000
+        }
     }
   }

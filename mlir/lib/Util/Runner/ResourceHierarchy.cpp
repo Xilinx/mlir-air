@@ -204,9 +204,12 @@ public:
   std::vector<resource *> resources;
   std::map<std::string, double> datatypes;
   // Key pair: <src, dst>; mapped: vector of port pointers
-  std::map<std::pair<unsigned, unsigned>, std::vector<port *>> ports;
+  // TODO: deprecate this.
+  std::map<std::pair<unsigned, unsigned>, std::vector<port *>> interfaces;
   std::map<std::string, kernel *> kernels;
   std::vector<column *> columns;
+  // Keys: memory space; mapped: vector of ports.
+  std::map<std::string, std::vector<port *>> ports;
 
   void set_clock(std::optional<double> clk) {
     if (clk) {
@@ -232,7 +235,7 @@ public:
     }
   }
 
-  void set_ports(llvm::json::Array *portObjects) {
+  void set_interfaces(llvm::json::Array *portObjects) {
     for (auto it = portObjects->begin(), ie = portObjects->end(); it != ie;
          ++it) {
       llvm::json::Value jv = *it;
@@ -245,14 +248,14 @@ public:
         unsigned s = *srcSpace;
         unsigned d = *dstSpace;
         double b = *bps;
-        if (ports.count({s, d})) {
-          auto idx = ports[{s, d}].size() - 1;
+        if (interfaces.count({s, d})) {
+          auto idx = interfaces[{s, d}].size() - 1;
           port *new_port = new port(this, s, d, b, idx);
-          ports[{s, d}].push_back(new_port);
+          interfaces[{s, d}].push_back(new_port);
         } else {
-          ports.insert({{s, d}, {}});
+          interfaces.insert({{s, d}, {}});
           port *new_port = new port(this, s, d, b, 0);
-          ports[{s, d}].push_back(new_port);
+          interfaces[{s, d}].push_back(new_port);
         }
       }
     }
@@ -291,6 +294,43 @@ public:
     }
   }
 
+  void set_ports(llvm::json::Object *portsObject) {
+    if (portsObject) {
+
+      auto L2PortsObject = portsObject->getObject("L2");
+      if (L2PortsObject) {
+        auto l2_port_count = L2PortsObject->getInteger("count");
+        if (l2_port_count) {
+          std::vector<port *> l2_port_vec;
+          for (unsigned i = 0; i < *l2_port_count; i++) {
+            auto bytes_per_second =
+                L2PortsObject->getNumber("bytes_per_second");
+            port *new_port = new port(this, "L2", bytes_per_second, i);
+            l2_port_vec.push_back(new_port);
+          }
+          this->ports.insert(std::make_pair("L2", l2_port_vec));
+        }
+      }
+
+      auto L3PortsObject = portsObject->getObject("L3");
+      if (L3PortsObject) {
+        auto l3_port_count = L3PortsObject->getInteger("count");
+        if (l3_port_count) {
+          std::vector<port *> l3_port_vec;
+          for (unsigned i = 0; i < *l3_port_count; i++) {
+            auto bytes_per_second =
+                L3PortsObject->getNumber("bytes_per_second");
+            port *new_port = new port(this, "L3", bytes_per_second, i);
+            l3_port_vec.push_back(new_port);
+          }
+          this->ports.insert(std::make_pair("L3", l3_port_vec));
+        }
+      }
+    } else {
+      assert(false);
+    }
+  }
+
   void setup_device_parameters(llvm::json::Object *nameObject = nullptr,
                                std::optional<double> clk = 0,
                                llvm::json::Array *datatypeObjects = nullptr,
@@ -300,13 +340,14 @@ public:
     this->set_name(nameObject);
     this->set_clock(clk);
     this->set_datatypes(datatypeObjects);
-    this->set_ports(portsObject);
+    this->set_interfaces(portsObject);
     this->set_kernels(kernelsObject);
     // TODO: get parent from parentObject, for multi-device modelling.
   }
 
-  void setup_device_resources(llvm::json::Object *columnsObject = nullptr) {
+  void setup_device_resources(llvm::json::Object *columnsObject = nullptr, llvm::json::Object *portsObject = nullptr) {
     this->set_columns(columnsObject);
+    this->set_ports(portsObject);
   }
 
   device(std::string name = "", resource *parent = nullptr,
@@ -322,7 +363,7 @@ public:
         model->getObject("devicename"), model->getNumber("clock"),
         model->getArray("datatypes"), model->getArray("interfaces"),
         model->getObject("kernels"), nullptr);
-    this->setup_device_resources(model->getObject("columns"));
+    this->setup_device_resources(model->getObject("columns"), model->getObject("noc"));
     this->reset_reservation();
   }
 
