@@ -388,7 +388,12 @@ public:
     // Consume devices upon launch
     // TODO: multi-device modelling
     launch.resource_hiers.push_back(&device_resource_node);
-    while (running) {
+
+    // Allow to run for one more iteration before terminating
+    bool running_0 = true;
+    bool running_1 = true;
+
+    while (running_1) {
       LLVM_DEBUG(llvm::dbgs() << "time: " << time << "\n");
 
       running = false;
@@ -432,6 +437,10 @@ public:
       time = std::max(time + 1, next_time);
       if (time > 5000000)
         running = false;
+
+      // Allow to run for one more iteration before terminating
+      running_1 = running_0 || running;
+      running_0 = running;
     }
   }
 
