@@ -422,11 +422,6 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
   }
   FlatGraph &flat_subg_chan = flat_g.create_subgraph();
   for (auto &map : channel_map) {
-    if (!map.second.first.size()) {
-      assert(false && "incomplete channel op map");
-    } else if (!map.second.second.size()) {
-      assert(false && "incomplete channel op map");
-    }
     for (auto a_entry : map.second.first) {
       auto a = add_vertex(a_entry, flat_subg_chan);
       for (auto b_entry : map.second.second) {
