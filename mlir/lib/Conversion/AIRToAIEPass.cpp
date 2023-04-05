@@ -913,8 +913,8 @@ createObjectFifo(OpBuilder &builder, AIE::AIEObjectFifoType datatype,
                  std::map<std::vector<int>, Optional<Value>> &consTiles, 
                  int depth, bool broadcast) {
   // channels and objFifos currently don't support many-to-many/one broadcast
-  // if (broadcast && prodTiles.size() > 1)
-  //   return failure();
+  if (broadcast && prodTiles.size() > 1)
+    return failure();
 
   if (broadcast) {
     std::vector<Value> consumers;
