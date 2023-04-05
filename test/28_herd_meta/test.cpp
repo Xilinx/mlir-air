@@ -35,16 +35,13 @@ struct air_module_desc_t {
 
 extern air_module_desc_t __airrt_module_descriptor;
 
-int
-main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
   int num_segments = __airrt_module_descriptor.segment_length;
   printf("Num Segments: %d\n", (int)num_segments);
   for (int j = 0; j < num_segments; j++) {
 
     auto segment_desc = __airrt_module_descriptor.segment_descs[j];
-    std::string segment_name(segment_desc->name,
-                               segment_desc->name_length);
+    std::string segment_name(segment_desc->name, segment_desc->name_length);
     printf("\tSegment %d: %s\n", j, segment_name.c_str());
 
     int num_herds = segment_desc->herd_length;
