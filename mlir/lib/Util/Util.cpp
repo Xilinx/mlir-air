@@ -360,6 +360,61 @@ air::getTheOtherChannelOpThroughSymbol(air::ChannelGetOp get) {
   return getChannelPutOpThroughSymbol(channel_op);
 }
 
+// Get all possible channel indices from channel
+std::vector<std::vector<int>>
+air::getAllChannelIndices(air::ChannelOp channel) {
+  std::vector<std::vector<int>> channelIndices;
+  int bundleSize = channel.getBundleSize();
+  for (int i = 0; i < bundleSize; i++) {
+    std::vector<int> indices;
+    channelIndices.push_back(indices);
+  }
+  for (auto i : channel.getSize()) {
+    int index = 0;
+    auto dimMax = i.dyn_cast<IntegerAttr>().getInt();
+    for (int j = 0; j < bundleSize / dimMax; j++) 
+      for (int k = 0; k < dimMax; k++) {
+        channelIndices[index].push_back(k);
+        index++;
+      }
+  }
+  return channelIndices;
+}
+
+// Get channel indices from channel put
+std::vector<int>
+air::getChannelPutIndices(air::ChannelPutOp op, air::ChannelOp channel) {
+  if (op.getIndices().size() == 0) {
+    std::vector<int> indices(channel.getSize().size(), 0);
+    return indices;
+  }
+
+  std::vector<int> indices;
+  for (auto i : op.getIndices()) {
+    auto index = dyn_cast<arith::ConstantOp>(i.getDefiningOp()).getValue().template dyn_cast<IntegerAttr>().getInt();
+    indices.push_back(index);
+  }
+  
+  return indices;
+} 
+
+// Get channel indices from channel get
+std::vector<int>
+air::getChannelGetIndices(air::ChannelGetOp op, air::ChannelOp channel) {
+  if (op.getIndices().size() == 0) {
+    std::vector<int> indices(channel.getSize().size(), 0);
+    return indices;
+  }
+
+  std::vector<int> indices;
+  for (auto i : op.getIndices()) {
+    auto index = dyn_cast<arith::ConstantOp>(i.getDefiningOp()).getValue().template dyn_cast<IntegerAttr>().getInt();
+    indices.push_back(index);
+  }
+  
+  return indices;
+} 
+
 // Get sizes from integerset
 void air::getSizesFromIntegerSet(MLIRContext *ctx, IntegerSet int_set,
                                  SmallVector<int, 2> &lbs_int,

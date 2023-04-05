@@ -1058,30 +1058,6 @@ unsigned PipelineStageOp::getStageId() {
 }
 
 //
-// ChannelPutOp
-//
-
-int ChannelPutOp::getSizeX() {
-  return dyn_cast<arith::ConstantOp>(getIndices()[0].getDefiningOp()).getValue().dyn_cast<IntegerAttr>().getInt();
-}
-
-int ChannelPutOp::getSizeY() {
-  return dyn_cast<arith::ConstantOp>(getIndices()[1].getDefiningOp()).getValue().dyn_cast<IntegerAttr>().getInt();
-}
-
-//
-// ChannelGetOp
-//
-
-int ChannelGetOp::getSizeX() {
-  return dyn_cast<arith::ConstantOp>(getIndices()[0].getDefiningOp()).getValue().dyn_cast<IntegerAttr>().getInt();
-}
-
-int ChannelGetOp::getSizeY() {
-  return dyn_cast<arith::ConstantOp>(getIndices()[1].getDefiningOp()).getValue().dyn_cast<IntegerAttr>().getInt();
-}
-
-//
 // Asynchronous region
 //
 

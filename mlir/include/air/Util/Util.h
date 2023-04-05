@@ -67,6 +67,12 @@ std::vector<ChannelGetOp> getChannelGetOpThroughSymbol(ChannelOp channel);
 // Get the other channel op through channel symbol
 std::vector<ChannelGetOp> getTheOtherChannelOpThroughSymbol(ChannelPutOp put);
 std::vector<ChannelPutOp> getTheOtherChannelOpThroughSymbol(ChannelGetOp get);
+// Get all possible channel indices from channel
+std::vector<std::vector<int>> getAllChannelIndices(ChannelOp channel);
+// Get channel indices from channel put
+std::vector<int> getChannelPutIndices(ChannelPutOp op, ChannelOp channel);
+// Get channel indices from channel get
+std::vector<int> getChannelGetIndices(ChannelGetOp op, ChannelOp channel);
 void getSizesFromIntegerSet(MLIRContext *ctx, IntegerSet int_set,
                             SmallVector<int, 2> &lbs_int,
                             SmallVector<int, 2> &ubs_int);
