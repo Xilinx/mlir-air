@@ -66,14 +66,14 @@ LLVM::LLVMStructType getHerdDescriptorType(MLIRContext *ctx) {
            });
 }
 
-// struct air_partition_desc_t {
+// struct air_segment_desc_t {
 //   int64_t name_length;
 //   char *name;
 //   uint64_t herd_length;
 //   air_herd_desc_t **herd_descs;
 // };
-LLVM::LLVMStructType getPartitionDescriptorType(MLIRContext *ctx,
-                                                int64_t herd_length) {
+LLVM::LLVMStructType getSegmentDescriptorType(MLIRContext *ctx,
+                                              int64_t herd_length) {
   return LLVM::LLVMStructType::getLiteral(
       ctx, {
                // int64_t name_length;
@@ -96,7 +96,7 @@ LLVM::LLVMStructType getPartitionDescriptorType(MLIRContext *ctx,
 LLVM::LLVMStructType getModuleDescriptorType(MLIRContext *ctx,
                                              ArrayRef<int64_t> herd_count) {
   auto max_herds = *std::max_element(herd_count.begin(), herd_count.end());
-  auto num_partitions = herd_count.size();
+  auto num_segments = herd_count.size();
   return LLVM::LLVMStructType::getLiteral(
       ctx, {
                // int64_t length
@@ -104,8 +104,8 @@ LLVM::LLVMStructType getModuleDescriptorType(MLIRContext *ctx,
                // herd_desc_t *herd_descs[length]
                LLVM::LLVMPointerType::get(LLVM::LLVMArrayType::get(
                    LLVM::LLVMPointerType::get(
-                       getPartitionDescriptorType(ctx, max_herds)),
-                   num_partitions)),
+                       getSegmentDescriptorType(ctx, max_herds)),
+                   num_segments)),
            });
 }
 
@@ -125,25 +125,25 @@ LLVM::GlobalOp getOrCreateAIRString(OpBuilder builder, ModuleOp module,
 }
 
 LLVM::GlobalOp
-createPartitionDescriptor(OpBuilder builder, ModuleOp module,
-                          ArrayRef<LLVM::GlobalOp> herd_descs,
-                          xilinx::airrt::PartitionMetadataOp partition) {
+createSegmentDescriptor(OpBuilder builder, ModuleOp module,
+                        ArrayRef<LLVM::GlobalOp> herd_descs,
+                        xilinx::airrt::SegmentMetadataOp segment) {
   auto ctx = module.getContext();
   auto loc = builder.getUnknownLoc();
 
-  auto descTy = getPartitionDescriptorType(ctx, herd_descs.size());
+  auto descTy = getSegmentDescriptorType(ctx, herd_descs.size());
 
-  std::string partition_name = "partition";
-  if (auto attr = partition->getAttrOfType<StringAttr>(
-          SymbolTable::getSymbolAttrName()))
-    partition_name = attr.getValue().str();
+  std::string segment_name = "segment";
+  if (auto attr =
+          segment->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+    segment_name = attr.getValue().str();
 
-  auto partitionName = getOrCreateAIRString(builder, module, partition_name);
+  auto segmentName = getOrCreateAIRString(builder, module, segment_name);
 
   auto arrayTy = LLVM::LLVMArrayType::get(
       LLVM::LLVMPointerType::get(getHerdDescriptorType(ctx)),
       herd_descs.size());
-  std::string str_name = "__airrt_partition_herd_descriptors";
+  std::string str_name = "__airrt_segment_herd_descriptors";
   int which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
@@ -162,7 +162,7 @@ createPartitionDescriptor(OpBuilder builder, ModuleOp module,
     builder.create<LLVM::ReturnOp>(loc, data);
   }
 
-  str_name = "__airrt_partition_descriptor";
+  str_name = "__airrt_segment_descriptor";
   which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
@@ -174,17 +174,16 @@ createPartitionDescriptor(OpBuilder builder, ModuleOp module,
     builder.createBlock(&descGlobal.getInitializerRegion());
     Value desc = builder.create<LLVM::UndefOp>(loc, descTy);
 
-    auto partitionNameArray =
-        builder.create<LLVM::AddressOfOp>(loc, partitionName);
-    auto partitionNameLen = builder.create<LLVM::ConstantOp>(
+    auto segmentNameArray = builder.create<LLVM::AddressOfOp>(loc, segmentName);
+    auto segmentNameLen = builder.create<LLVM::ConstantOp>(
         loc, IntegerType::get(ctx, 64),
-        builder.getI32IntegerAttr(partition_name.size()));
+        builder.getI32IntegerAttr(segment_name.size()));
 
     auto c0 = builder.create<LLVM::ConstantOp>(loc, IntegerType::get(ctx, 32),
                                                builder.getI32IntegerAttr(0));
-    auto partitionNamePtr = builder.create<LLVM::GEPOp>(
+    auto segmentNamePtr = builder.create<LLVM::GEPOp>(
         loc, LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8)),
-        partitionNameArray, ValueRange({c0, c0}));
+        segmentNameArray, ValueRange({c0, c0}));
 
     // length of the array of herd_desc_t
     auto herd_descs_len = builder.create<LLVM::ConstantOp>(
@@ -194,10 +193,10 @@ createPartitionDescriptor(OpBuilder builder, ModuleOp module,
     auto herd_descs_global_addr =
         builder.create<LLVM::AddressOfOp>(loc, herd_descs_global);
 
-    desc = builder.create<LLVM::InsertValueOp>(loc, desc, partitionNameLen,
+    desc = builder.create<LLVM::InsertValueOp>(loc, desc, segmentNameLen,
                                                builder.getDenseI64ArrayAttr(0));
 
-    desc = builder.create<LLVM::InsertValueOp>(loc, desc, partitionNamePtr,
+    desc = builder.create<LLVM::InsertValueOp>(loc, desc, segmentNamePtr,
                                                builder.getDenseI64ArrayAttr(1));
 
     desc = builder.create<LLVM::InsertValueOp>(loc, desc, herd_descs_len,
@@ -212,29 +211,29 @@ createPartitionDescriptor(OpBuilder builder, ModuleOp module,
 }
 
 LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
-                                      ArrayRef<LLVM::GlobalOp> partition_descs,
-                                      ArrayRef<int64_t> partition_herd_count) {
+                                      ArrayRef<LLVM::GlobalOp> segment_descs,
+                                      ArrayRef<int64_t> segment_herd_count) {
   auto ctx = module.getContext();
   auto loc = builder.getUnknownLoc();
-  auto descTy = getModuleDescriptorType(ctx, partition_herd_count);
-  auto max_herds = *std::max_element(partition_herd_count.begin(),
-                                     partition_herd_count.end());
+  auto descTy = getModuleDescriptorType(ctx, segment_herd_count);
+  auto max_herds =
+      *std::max_element(segment_herd_count.begin(), segment_herd_count.end());
   auto arrayTy = LLVM::LLVMArrayType::get(
-      LLVM::LLVMPointerType::get(getPartitionDescriptorType(ctx, max_herds)),
-      partition_herd_count.size());
-  std::string str_name = "__airrt_module_partition_descriptors";
+      LLVM::LLVMPointerType::get(getSegmentDescriptorType(ctx, max_herds)),
+      segment_herd_count.size());
+  std::string str_name = "__airrt_module_segment_descriptors";
   int which_try = 0;
   while (module.lookupSymbol(str_name))
     str_name = str_name + "_" + std::to_string(++which_try);
-  auto partition_descs_global = builder.create<LLVM::GlobalOp>(
+  auto segment_descs_global = builder.create<LLVM::GlobalOp>(
       loc, arrayTy, /*isConstant=*/true, LLVM::Linkage::Internal, str_name,
       /*value=*/Attribute());
   {
     OpBuilder::InsertionGuard guard(builder);
-    builder.createBlock(&partition_descs_global.getInitializerRegion());
+    builder.createBlock(&segment_descs_global.getInitializerRegion());
     Value data = builder.create<LLVM::UndefOp>(loc, arrayTy);
-    for (int i = 0, e = partition_descs.size(); i < e; i++) {
-      auto a = builder.create<LLVM::AddressOfOp>(loc, partition_descs[i]);
+    for (int i = 0, e = segment_descs.size(); i < e; i++) {
+      auto a = builder.create<LLVM::AddressOfOp>(loc, segment_descs[i]);
       data = builder.create<LLVM::InsertValueOp>(
           loc, data, a, builder.getDenseI64ArrayAttr({i}));
     }
@@ -254,19 +253,18 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
     Value desc = builder.create<LLVM::UndefOp>(loc, descTy);
 
     // length of the array of herd_desc_t
-    auto partition_descs_len = builder.create<LLVM::ConstantOp>(
+    auto segment_descs_len = builder.create<LLVM::ConstantOp>(
         loc, IntegerType::get(ctx, 64),
-        builder.getI64IntegerAttr(partition_descs.size()));
+        builder.getI64IntegerAttr(segment_descs.size()));
 
-    auto partition_descs_global_addr =
-        builder.create<LLVM::AddressOfOp>(loc, partition_descs_global);
+    auto segment_descs_global_addr =
+        builder.create<LLVM::AddressOfOp>(loc, segment_descs_global);
 
-    desc = builder.create<LLVM::InsertValueOp>(loc, desc, partition_descs_len,
+    desc = builder.create<LLVM::InsertValueOp>(loc, desc, segment_descs_len,
                                                builder.getDenseI64ArrayAttr(0));
 
-    desc = builder.create<LLVM::InsertValueOp>(loc, desc,
-                                               partition_descs_global_addr,
-                                               builder.getDenseI64ArrayAttr(1));
+    desc = builder.create<LLVM::InsertValueOp>(
+        loc, desc, segment_descs_global_addr, builder.getDenseI64ArrayAttr(1));
 
     builder.create<LLVM::ReturnOp>(loc, desc);
   }
@@ -423,14 +421,14 @@ public:
   LogicalResult matchAndRewrite(xilinx::airrt::ModuleMetadataOp op,
                                 PatternRewriter &rewriter) const override {
     auto module = op->getParentOfType<ModuleOp>();
-    SmallVector<LLVM::GlobalOp, 4> partition_descs;
-    SmallVector<int64_t, 4> partition_herd_count;
-    auto &partition_block = op.getPartitions().front();
-    for (auto partition_meta :
-         partition_block.getOps<xilinx::airrt::PartitionMetadataOp>()) {
+    SmallVector<LLVM::GlobalOp, 4> segment_descs;
+    SmallVector<int64_t, 4> segment_herd_count;
+    auto &segment_block = op.getSegments().front();
+    for (auto segment_meta :
+         segment_block.getOps<xilinx::airrt::SegmentMetadataOp>()) {
 
       SmallVector<LLVM::GlobalOp, 4> herd_descs;
-      auto &herd_block = partition_meta.getHerds().front();
+      auto &herd_block = segment_meta.getHerds().front();
       for (auto herd_meta :
            herd_block.getOps<xilinx::airrt::HerdMetadataOp>()) {
 
@@ -458,24 +456,24 @@ public:
         herd_descs.push_back(
             createHerdDescriptor(rewriter, module, shim_desc, herd_meta));
       }
-      partition_herd_count.push_back(herd_descs.size());
-      partition_descs.push_back(createPartitionDescriptor(
-          rewriter, module, herd_descs, partition_meta));
+      segment_herd_count.push_back(herd_descs.size());
+      segment_descs.push_back(
+          createSegmentDescriptor(rewriter, module, herd_descs, segment_meta));
     }
-    auto desc = createModuleDescriptor(rewriter, module, partition_descs,
-                                       partition_herd_count);
+    auto desc = createModuleDescriptor(rewriter, module, segment_descs,
+                                       segment_herd_count);
     rewriter.replaceOp(op, desc->getResults());
 
     return success();
   }
 };
 
-class PartitionLoadToLLVMConversion
-    : public OpRewritePattern<xilinx::airrt::PartitionLoadOp> {
+class SegmentLoadToLLVMConversion
+    : public OpRewritePattern<xilinx::airrt::SegmentLoadOp> {
 public:
-  using OpRewritePattern<xilinx::airrt::PartitionLoadOp>::OpRewritePattern;
+  using OpRewritePattern<xilinx::airrt::SegmentLoadOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(xilinx::airrt::PartitionLoadOp op,
+  LogicalResult matchAndRewrite(xilinx::airrt::SegmentLoadOp op,
                                 PatternRewriter &rewriter) const override {
     auto ctx = op->getContext();
     SmallVector<Type> retTys{IntegerType::get(ctx, 64)};
@@ -486,24 +484,23 @@ public:
     auto module = op->getParentOfType<ModuleOp>();
 
     rewriter.setInsertionPoint(op->getParentOfType<func::FuncOp>());
-    auto partition_name =
-        getOrCreateAIRString(rewriter, module, op.getSymName());
+    auto segment_name = getOrCreateAIRString(rewriter, module, op.getSymName());
 
     auto funcOp = dyn_cast_if_present<func::FuncOp>(
-        module.lookupSymbol("__airrt_partition_load"));
+        module.lookupSymbol("__airrt_segment_load"));
     if (!funcOp) {
       funcOp = rewriter.create<func::FuncOp>(
-          op->getLoc(), "__airrt_partition_load", functionTy);
+          op->getLoc(), "__airrt_segment_load", functionTy);
       funcOp.setPrivate();
     }
     rewriter.setInsertionPoint(op);
 
-    auto partition_name_addr =
-        rewriter.create<LLVM::AddressOfOp>(op->getLoc(), partition_name);
+    auto segment_name_addr =
+        rewriter.create<LLVM::AddressOfOp>(op->getLoc(), segment_name);
     auto ptrTy = LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8));
-    auto partition_name_addr_cast = rewriter.create<LLVM::BitcastOp>(
-        op->getLoc(), ptrTy, partition_name_addr);
-    SmallVector<Value, 2> operands{partition_name_addr_cast};
+    auto segment_name_addr_cast = rewriter.create<LLVM::BitcastOp>(
+        op->getLoc(), ptrTy, segment_name_addr);
+    SmallVector<Value, 2> operands{segment_name_addr_cast};
 
     auto call = rewriter.create<func::CallOp>(
         op->getLoc(), retTys, SymbolRefAttr::get(funcOp), operands);
@@ -816,9 +813,6 @@ public:
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
-    rewriter.create<AffineStoreOp>(op.getLoc(), adaptor.getValue(),
-                                   adaptor.getMemref(), op.getAffineMap(),
-                                   adaptor.getIndices());
     rewriter.eraseOp(op);
     return success();
   }
@@ -856,8 +850,6 @@ public:
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
-    rewriter.create<memref::StoreOp>(op.getLoc(), op->getResultTypes(),
-                                     adaptor.getOperands(), op->getAttrs());
     rewriter.eraseOp(op);
     return success();
   }
@@ -1167,7 +1159,7 @@ public:
     converter.addTargetMaterialization(addUnrealizedCast);
 
     RewritePatternSet patterns(context);
-    patterns.add<ModuleMetadataToLLVMConversion, PartitionLoadToLLVMConversion,
+    patterns.add<ModuleMetadataToLLVMConversion, SegmentLoadToLLVMConversion,
                  HerdLoadToLLVMConversion, DmaMemcpyNdToLLVMConversion,
                  MemcpyNdToLLVMConversion, L2AllocOpConversion,
                  L2DeallocOpConversion>(context);

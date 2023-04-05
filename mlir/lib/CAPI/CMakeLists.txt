@@ -6,6 +6,7 @@ add_mlir_library(AIRCAPI
 Dialects.cpp
 Registration.cpp
 Runner.cpp
+Transform.cpp
 
 DEPENDS
 

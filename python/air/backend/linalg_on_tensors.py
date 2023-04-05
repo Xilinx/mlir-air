@@ -68,7 +68,7 @@ class LinalgOnTensorsAirBackend(AirBackend):
         self.unload()
 
     def compile(self, imported_module: torch_mlir.ir.Module, pipeline=None,
-                verbose=False, partition_offset=None, partition_size=None):
+                verbose=False, segment_offset=None, segment_size=None):
         """Compiles an imported module, with a flat list of functions.
 
         The module is expected to be in linalg-on-tensors + scalar code form.
@@ -79,18 +79,18 @@ class LinalgOnTensorsAirBackend(AirBackend):
             `air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE` is applied,
             then `pipeline`.
             The default is `air.backend.linalg_on_tensors.LINALG_MEMREF_TO_AIR_PIPELINE`
-          partition_offset: default location for generated partitions as [colOffset, rowOffset]
-          partition_size: default size for generated partitions as [numCols, numRows]
+          segment_offset: default location for generated segments as [colOffset, rowOffset]
+          segment_size: default size for generated segments as [numCols, numRows]
         Returns:
           An opaque, backend specific compiled artifact object that can be
           passed to `load`.
         """
 
-        if partition_offset is None:
-            partition_offset = [7, 2]
+        if segment_offset is None:
+            segment_offset = [7, 2]
 
-        if partition_size is None:
-            partition_size = [10, 6]
+        if segment_size is None:
+            segment_size = [10, 6]
 
         if pipeline is None:
             pipeline = LINALG_MEMREF_TO_AIR_PIPELINE
@@ -122,11 +122,11 @@ class LinalgOnTensorsAirBackend(AirBackend):
 
             aircc_options = ['torch.mlir', '--shared', '-o', 'torch.mlir.so']
             aircc_options = aircc_options + \
-                             [f"-row-offset={partition_offset[1]}",
-                              f"-col-offset={partition_offset[0]}"]
+                             [f"-row-offset={segment_offset[1]}",
+                              f"-col-offset={segment_offset[0]}"]
             aircc_options = aircc_options + \
-                             [f"-num-rows={partition_size[1]}",
-                              f"-num-cols={partition_size[0]}"]
+                             [f"-num-rows={segment_size[1]}",
+                              f"-num-cols={segment_size[0]}"]
 
             if verbose:
                 aircc_options = aircc_options + ['-v']
@@ -154,7 +154,7 @@ class LinalgOnTensorsAirBackend(AirBackend):
         airrt.host.shut_down()
 
 def make_dynamo_backend(pipeline=None, verbose=False,
-                        partition_offset=None, partition_size=None):
+                        segment_offset=None, segment_size=None):
     """Make a PyTorch dynamo backend using LinalgOnTensorsAirBackend.
 
     Args:
@@ -163,8 +163,8 @@ def make_dynamo_backend(pipeline=None, verbose=False,
             then `pipeline`.
             The default is `air.backend.linalg_on_tensors.LINALG_MEMREF_TO_AIR_PIPELINE`
         verbose: enable verbose output
-        partition_offset: default location for generated partitions as [colOffset, rowOffset]
-        partition_size: default size for generated partitions as [numCols, numRows]
+        segment_offset: default location for generated segments as [colOffset, rowOffset]
+        segment_size: default size for generated segments as [numCols, numRows]
     Returns:
         A PyTorch dynamo backend
     """
@@ -180,8 +180,8 @@ def make_dynamo_backend(pipeline=None, verbose=False,
 
         # compile the mlir model with aircc
         compiled = backend.compile(mlir_module, pipeline=pipeline,
-            verbose=verbose, partition_offset=partition_offset,
-            partition_size=partition_size)
+            verbose=verbose, segment_offset=segment_offset,
+            segment_size=segment_size)
 
         # return a function for invoking the compiled model
         def compiled_callable(*inputs):

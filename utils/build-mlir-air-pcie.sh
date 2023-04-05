@@ -53,7 +53,7 @@ cmake .. \
     -GNinja \
     -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
     -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
-    -DCMAKE_TOOLCHAIN_FILE=../cmake/modules/toolchain_x86.cmake \
+    -Dx86_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86.cmake \
     -DLLVM_DIR=${LLVM_DIR}/build/lib/cmake/llvm \
     -DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \
     -DAIE_DIR=${MLIR_AIE_DIR}/build/lib/cmake/aie \

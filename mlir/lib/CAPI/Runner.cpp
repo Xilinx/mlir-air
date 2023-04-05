@@ -18,8 +18,9 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/ToolOutputFile.h"
 
-void airRunnerRun(MlirModule module, const char *jsonFileName, const char *outputFileName,
-                  const char *topLevelFunction, bool verbose) {
+void airRunnerRun(MlirModule module, const char *jsonFileName,
+                  const char *outputFileName, const char *topLevelFunction,
+                  const char *simGranularity, bool verbose) {
   auto moduleOp = unwrap(module);
   std::string errorMessage;
   auto json_file = mlir::openInputFile(jsonFileName, &errorMessage);
@@ -42,7 +43,8 @@ void airRunnerRun(MlirModule module, const char *jsonFileName, const char *outpu
     return;
   }
 
-  xilinx::air::AIRRunner runner(output->os(), *jsonModel, verbose);
+  xilinx::air::AIRRunner runner(output->os(), *jsonModel, simGranularity,
+                                verbose);
 
   auto toplevel = moduleOp.lookupSymbol<mlir::func::FuncOp>(topLevelFunction);
   if (!toplevel) {

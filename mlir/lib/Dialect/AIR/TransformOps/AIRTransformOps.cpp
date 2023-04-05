@@ -25,37 +25,38 @@ public:
 } // namespace
 
 //===----------------------------------------------------------------------===//
-// GetPartitionForOp
+// GetSegmentForOp
 //===----------------------------------------------------------------------===//
 
 DiagnosedSilenceableFailure
-transform::GetPartitionForOp::apply(transform::TransformResults &results,
-                                    transform::TransformState &state) {
-  SetVector<Operation *> partitions;
+transform::GetSegmentForOp::apply(transform::TransformResults &results,
+                                  transform::TransformState &state) {
+  SetVector<Operation *> segments;
   for (Operation *target : state.getPayloadOps(getTarget())) {
-    xilinx::air::PartitionOp partition =
-        target->getParentOfType<xilinx::air::PartitionOp>();
-    if (!partition) {
+    xilinx::air::SegmentOp segment =
+        target->getParentOfType<xilinx::air::SegmentOp>();
+    if (!segment) {
       DiagnosedSilenceableFailure diag =
           emitSilenceableError()
-          << "could not find an '"
-          << xilinx::air::PartitionOp::getOperationName() << "' parent";
+          << "could not find an '" << xilinx::air::SegmentOp::getOperationName()
+          << "' parent";
       diag.attachNote(target->getLoc()) << "target op";
       return diag;
     }
-    partitions.insert(partition);
+    segments.insert(segment);
   }
-  results.set(getResult().cast<OpResult>(), partitions.getArrayRef());
+  results.set(getResult().cast<OpResult>(), segments.getArrayRef());
   return DiagnosedSilenceableFailure::success();
 }
 
 //===----------------------------------------------------------------------===//
-// PartitionToAIEOp
+// SegmentToAIEOp
 //===----------------------------------------------------------------------===//
 
-DiagnosedSilenceableFailure transform::PartitionToAIEOp::applyToOne(
-    xilinx::air::PartitionOp target, transform::ApplyToEachResultList &results,
-    transform::TransformState &state) {
+DiagnosedSilenceableFailure
+transform::SegmentToAIEOp::applyToOne(xilinx::air::SegmentOp target,
+                                      transform::ApplyToEachResultList &results,
+                                      transform::TransformState &state) {
   SimpleRewriter rewriter(target->getContext());
   FailureOr<ModuleOp> res = convertAIRToAIE(rewriter, target);
   if (failed(res))

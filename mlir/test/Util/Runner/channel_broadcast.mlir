@@ -1,4 +1,4 @@
-//===- dma_broadcast.mlir --------------------------------------*- MLIR -*-===//
+//===- channel_broadcast.mlir ----------------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
@@ -58,7 +58,7 @@ module {
         }
         scf.yield %4 : !air.async.token
       }
-      %3 = air.partition async  {
+      %3 = air.segment async  {
         %c1_5 = arith.constant 1 : index
         %c4 = arith.constant 4 : index
         %c0_6 = arith.constant 0 : index
@@ -110,11 +110,10 @@ module {
           }
           scf.yield %6 : !air.async.token
         }
-        air.partition_terminator
+        air.segment_terminator
       }
       air.launch_terminator
     }
     return %results_2 : memref<256x1024xbf16>
   }
 }
-

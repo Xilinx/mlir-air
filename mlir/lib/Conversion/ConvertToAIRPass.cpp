@@ -11,6 +11,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIR/AIRTransformOps.h"
 #include "air/Util/Dependency.h"
+#include "air/Util/Util.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -589,48 +590,6 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
   }
 };
 
-void getBCastSizesFromIntegerSet(MLIRContext *ctx, IntegerSet int_set,
-                                 SmallVector<int, 2> &lbs_int,
-                                 SmallVector<int, 2> &ubs_int) {
-
-  auto constraints = int_set.getConstraints();
-  auto eqFlags = int_set.getEqFlags();
-
-  // Get an affine expression set made of zeros
-  SmallVector<AffineExpr, 2> zero_syms;
-  for (unsigned i = 0; i < int_set.getNumSymbols(); i++) {
-    zero_syms.push_back(getAffineConstantExpr(0, ctx));
-  }
-
-  // Fill in lbs and ubs vectors by evaluating affine set
-  for (unsigned i = 0; i < int_set.getNumSymbols(); i++) {
-    int c_iter = 0;
-    for (auto c : constraints) {
-      if (c.isSymbolicOrConstant()) {
-        auto newC = c.replaceSymbols(zero_syms);
-        auto expr =
-            simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
-        int v = expr.getValue();
-        v = (v >= 0)
-                ? (v)
-                : (-v); // Both + and - constant eval are legal for AffineExpr
-        if (c.isFunctionOfSymbol(i)) {
-          if (eqFlags[c_iter]) {
-            lbs_int[i] = v;
-            ubs_int[i] = v;
-          } else {
-            if (v)
-              ubs_int[i] = v;
-            else
-              lbs_int[i] = v;
-          }
-        }
-      }
-      c_iter++;
-    }
-  }
-}
-
 unsigned getScfParDimIdFromBCastDma(air::DmaMemcpyInterface memcpyOp) {
   // Get all ops on the dependency connection between dma and herd launch
   SmallVector<Value, 1> loop_dep_history;
@@ -735,7 +694,7 @@ void replaceAIRDmaWithAIRChannelPairs(
     SmallVector<int, 2> lbs_int = {-1, -1};
     SmallVector<int, 2> ubs_int = {-1, -1};
     SmallVector<int64_t, 2> channel_sizes = {1, 1};
-    getBCastSizesFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
+    air::getSizesFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
     SmallVector<int64_t, 2> bcast_sizes = {ubs_int[0] - lbs_int[0] + 1,
                                            ubs_int[1] - lbs_int[1] + 1};
     auto channel_op =
@@ -749,7 +708,7 @@ void replaceAIRDmaWithAIRChannelPairs(
     SmallVector<int, 2> ubs_int = {-1};
     mlir::IntegerSet int_set =
         op->getAttrOfType<mlir::IntegerSetAttr>("broadcast_pattern").getValue();
-    getBCastSizesFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
+    air::getSizesFromIntegerSet(ctx, int_set, lbs_int, ubs_int);
     SmallVector<int64_t, 2> channel_sizes = {1, 1};
     channel_sizes[getScfParDimIdFromBCastDma(dyn_cast<air::DmaMemcpyInterface>(
         op.getOperation()))] = ubs_int[0] - lbs_int[0] + 1;
@@ -841,13 +800,13 @@ void HoistingAffineIf(mlir::AffineIfOp op) {
   unsigned int innerMemorySpace = 0;
   auto herd = op->getParentOfType<air::HerdOp>();
   assert(herd && "affine if op has no air.herdOp as parent");
-  auto partition = op->getParentOfType<air::PartitionOp>();
+  auto segment = op->getParentOfType<air::SegmentOp>();
   if (herd) {
     hier_op = dyn_cast<air::HierarchyInterface>(herd.getOperation());
     innerMemorySpace = (int)air::MemorySpace::L1;
-  } else if (partition) {
+  } else if (segment) {
     assert(false &&
-           "broadcast lowering with air.partitionOp currently not supported");
+           "broadcast lowering with air.segmentOp currently not supported");
   } else
     assert(false && "affine if op has no air.hierarchy as parent");
 
@@ -1023,12 +982,12 @@ class AIRDmaToAIRChannelConversion
     air::HierarchyInterface hier_op = nullptr;
     unsigned int innerMemorySpace = 0;
     auto herd = op->getParentOfType<air::HerdOp>();
-    auto partition = op->getParentOfType<air::PartitionOp>();
+    auto segment = op->getParentOfType<air::SegmentOp>();
     if (herd) {
       hier_op = dyn_cast<air::HierarchyInterface>(herd.getOperation());
       innerMemorySpace = (int)air::MemorySpace::L1;
-    } else if (partition) {
-      hier_op = dyn_cast<air::HierarchyInterface>(partition.getOperation());
+    } else if (segment) {
+      hier_op = dyn_cast<air::HierarchyInterface>(segment.getOperation());
       innerMemorySpace = (int)air::MemorySpace::L2;
     } else
       return failure();
@@ -1102,8 +1061,8 @@ class AIRDmaToAIRChannelConversion
         scf::ParallelOp scf_par =
             hoistHerdToAsyncParallel(rewriter, loc, ctx, herd, lbs, ubs);
         scf_loop = scf_par.getOperation();
-      } else if (partition) {
-        // Since partition doesn't have iteration space, it doesn't hoist a loop
+      } else if (segment) {
+        // Since segment doesn't have iteration space, it doesn't hoist a loop
         insertionPointAtHierOp = rewriter.saveInsertionPoint();
       }
 
@@ -1162,21 +1121,21 @@ class AIRDmaToAIRChannelConversion
             }
           }
         }
-      } else if (partition) {
+      } else if (segment) {
         // Get mapping for remapped ssa values entering the hoisted scf.for
         IRMapping remap;
         int arg_idx = 0;
-        for (auto arg : partition.getKernelArguments())
-          remap.map(arg, partition.getKernelOperand(arg_idx++));
+        for (auto arg : segment.getKernelArguments())
+          remap.map(arg, segment.getKernelOperand(arg_idx++));
 
         // Hoist ops
         rewriter.restoreInsertionPoint(insertionPointAtHierOp);
-        for (Operation &o : partition->getRegions()
+        for (Operation &o : segment->getRegions()
                                 .front()
                                 .getBlocks()
                                 .front()
                                 .getOperations()) {
-          if (isa<air::PartitionTerminatorOp>(o))
+          if (isa<air::SegmentTerminatorOp>(o))
             continue;
           if (o.hasAttr("hoist-channel")) {
             if (auto child_for_op = dyn_cast<scf::ForOp>(o)) {
@@ -1580,12 +1539,12 @@ private:
   llvm::SmallSet<air::LaunchOp, 2> &replacementOps;
 };
 
-class ScfParToLaunchAndPartitionConversion
+class ScfParToLaunchAndSegmentConversion
     : public OpRewritePattern<scf::ParallelOp> {
 public:
   using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
 
-  ScfParToLaunchAndPartitionConversion(
+  ScfParToLaunchAndSegmentConversion(
       MLIRContext *ctx, llvm::SmallSet<scf::ParallelOp, 8> &filteredOps)
       : OpRewritePattern(ctx), filteredOps(filteredOps){};
 
@@ -1647,43 +1606,43 @@ public:
       sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, b));
     auto launch = rewriter.create<air::LaunchOp>(op.getLoc(), sizes, args);
     rewriter.setInsertionPointToStart(&launch.getRegion().front());
-    SmallVector<Value, 1> partitionSizes = {};
-    SmallVector<Value, 4> partitionOpers;
+    SmallVector<Value, 1> segmentSizes = {};
+    SmallVector<Value, 4> segmentOpers;
     for (Value v : launch.getIds()) {
-      partitionOpers.push_back(v);
+      segmentOpers.push_back(v);
     }
     for (Value v : launch.getSize()) {
-      partitionOpers.push_back(v);
+      segmentOpers.push_back(v);
     }
     for (Value v : launch.getKernelArguments()) {
-      partitionOpers.push_back(v);
+      segmentOpers.push_back(v);
     }
-    auto partition = rewriter.create<air::PartitionOp>(
-        op.getLoc(), partitionSizes, partitionOpers);
-    auto &bb = partition.getBody().front();
+    auto segment = rewriter.create<air::SegmentOp>(op.getLoc(), segmentSizes,
+                                                   segmentOpers);
+    auto &bb = segment.getBody().front();
     auto ivs = op.getInductionVars();
 
     for (int i = 0, e = ivs.size(); i < e; i++) {
-      ivs[i].replaceAllUsesWith(partition.getKernelArgument(i));
+      ivs[i].replaceAllUsesWith(segment.getKernelArgument(i));
     }
 
     auto &body = op.getBody()->getOperations();
     bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
-    rewriter.setInsertionPointToStart(&partition.getRegion().front());
+    rewriter.setInsertionPointToStart(&segment.getRegion().front());
     replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
-                                          partition.getRegion());
+                                          segment.getRegion());
 
     auto builder = OpBuilder::atBlockEnd(&bb);
-    builder.create<air::PartitionTerminatorOp>(builder.getUnknownLoc());
+    builder.create<air::SegmentTerminatorOp>(builder.getUnknownLoc());
     builder = OpBuilder::atBlockEnd(&launch.getBody().front());
     builder.create<air::LaunchTerminatorOp>(builder.getUnknownLoc());
 
     int i = 0;
-    auto kernel_args = partition.getKernelArguments();
+    auto kernel_args = segment.getKernelArguments();
     kernel_args = kernel_args.drop_front(
         ivs.size() + launch.getSize().size()); // Launch's induction vars
     for (Value v : args)
-      replaceAllUsesInRegionWith(v, kernel_args[i++], partition.getRegion());
+      replaceAllUsesInRegionWith(v, kernel_args[i++], segment.getRegion());
 
     if (op != parOp)
       op.erase();
@@ -1908,6 +1867,39 @@ struct DmaToChannelPass : public air::DmaToChannelBase<DmaToChannelPass> {
   }
 };
 
+static void getHerdNames(ModuleOp module) {
+  std::vector<std::string> herd_syms;
+  for (auto f : module.getOps<func::FuncOp>()) {
+    // record existing symbol names
+    f.walk([&](air::HerdOp op) {
+      if (auto attr =
+              op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+        std::string name = attr.getValue().str();
+        assert((std::find(herd_syms.begin(), herd_syms.end(), name) ==
+                herd_syms.end()) &&
+               "unexpected duplicate symbol");
+        herd_syms.push_back(name);
+      }
+    });
+    // generate missing symbol names
+    f.walk([&](air::HerdOp op) {
+      if (!op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+        unsigned id = 0;
+        std::string name;
+        do {
+          std::stringstream ss;
+          ss << "herd_" << id++;
+          name = ss.str();
+        } while (std::find(herd_syms.begin(), herd_syms.end(), name) !=
+                 herd_syms.end());
+        herd_syms.push_back(name);
+        op->setAttr(SymbolTable::getSymbolAttrName(),
+                    StringAttr::get(op->getContext(), name));
+      }
+    });
+  }
+}
+
 struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
 
   ParallelToHerdPass() = default;
@@ -1936,7 +1928,7 @@ struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
       // skip parallel op already inside herd
       if (op->getParentOfType<air::HerdOp>())
         return;
-      // skip parallel ops already containing herd/partition/launch
+      // skip parallel ops already containing herd/segment/launch
       for (auto &h : hierOps)
         if (op->isProperAncestor(h))
           return;
@@ -1974,36 +1966,7 @@ struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
       signalPassFailure();
     }
 
-    std::vector<std::string> herd_syms;
-    for (auto f : module.getOps<func::FuncOp>()) {
-      // record existing symbol names
-      f.walk([&](air::HerdOp op) {
-        if (auto attr = op->getAttrOfType<StringAttr>(
-                SymbolTable::getSymbolAttrName())) {
-          std::string name = attr.getValue().str();
-          assert((std::find(herd_syms.begin(), herd_syms.end(), name) ==
-                  herd_syms.end()) &&
-                 "unexpected duplicate symbol");
-          herd_syms.push_back(name);
-        }
-      });
-      // generate missing symbol names
-      f.walk([&](air::HerdOp op) {
-        if (!op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
-          unsigned id = 0;
-          std::string name;
-          do {
-            std::stringstream ss;
-            ss << "herd_" << id++;
-            name = ss.str();
-          } while (std::find(herd_syms.begin(), herd_syms.end(), name) !=
-                   herd_syms.end());
-          herd_syms.push_back(name);
-          op->setAttr(SymbolTable::getSymbolAttrName(),
-                      StringAttr::get(op->getContext(), name));
-        }
-      });
-    }
+    getHerdNames(module);
     LLVM_DEBUG(llvm::outs() << "output\n");
     LLVM_DEBUG(module.print(llvm::outs()));
   }
@@ -2056,8 +2019,8 @@ struct ParallelToLaunchPass
     });
 
     RewritePatternSet patterns(context);
-    if (clHasPartition) {
-      patterns.add<ScfParToLaunchAndPartitionConversion>(context, filteredOps);
+    if (clHasSegment) {
+      patterns.add<ScfParToLaunchAndSegmentConversion>(context, filteredOps);
     } else {
       patterns.add<ScfParToLaunchConversion>(context, filteredOps,
                                              replacementOps);
@@ -2104,8 +2067,10 @@ transform::ParToHerdOp::applyToOne(scf::ParallelOp target,
   (void)applyPatternsAndFoldGreedily(
       target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
       std::move(patterns));
-  for (auto h : herdOps)
+  for (auto h : herdOps) {
+    getHerdNames(h->getParentOfType<ModuleOp>());
     results.push_back(h);
+  }
   return DiagnosedSilenceableFailure::success();
 }
 

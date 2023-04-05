@@ -416,14 +416,14 @@ void createAIEModulesAndOutlineCores(
     std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
     AIRToAIEOptions &options) {
 
-  module.walk([&](xilinx::air::PartitionOp p) {
-    std::string partition_name;
+  module.walk([&](xilinx::air::SegmentOp p) {
+    std::string segment_name;
     if (auto attr =
             p->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-      partition_name = attr.getValue().str();
+      segment_name = attr.getValue().str();
     else
-      partition_name = "partition_" + std::to_string(aie_modules.size());
-    std::string aie_module_name = "aie." + partition_name;
+      segment_name = "segment_" + std::to_string(aie_modules.size());
+    std::string aie_module_name = "aie." + segment_name;
     ModuleOp aie_module =
         ModuleOp::create(module.getLoc(), StringRef(aie_module_name));
 
@@ -433,11 +433,11 @@ void createAIEModulesAndOutlineCores(
   });
 
   module.walk([&](xilinx::air::HerdOp h) {
-    if (h->getParentOfType<xilinx::air::PartitionOp>())
+    if (h->getParentOfType<xilinx::air::SegmentOp>())
       return;
-    std::string partition_name;
-    partition_name = "partition_" + std::to_string(aie_modules.size());
-    std::string aie_module_name = "aie." + partition_name;
+    std::string segment_name;
+    segment_name = "segment_" + std::to_string(aie_modules.size());
+    std::string aie_module_name = "aie." + segment_name;
     ModuleOp aie_module =
         ModuleOp::create(module.getLoc(), StringRef(aie_module_name));
 
@@ -899,33 +899,47 @@ void allocL1Buffers(ModuleOp m,
   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
 
-void
+void 
+fillChannelMap(std::map<std::vector<int>, Optional<Value>> &map, 
+               std::vector<std::vector<int>> channelIndices) {
+  for (auto indices : channelIndices)
+    map[indices] = {};
+}
+
+LogicalResult
 createObjectFifo(OpBuilder &builder, AIE::AIEObjectFifoType datatype,
-                 std::map<std::pair<int, int>, AIE::ObjectFifoCreateOp> &objFifos,
-                 std::map<std::pair<int, int>, Value> &prodTiles, 
-                 std::map<std::pair<int, int>, Value> &consTiles, 
+                 std::map<std::vector<int>, AIE::ObjectFifoCreateOp> &objFifos,
+                 std::map<std::vector<int>, Optional<Value>> &prodTiles, 
+                 std::map<std::vector<int>, Optional<Value>> &consTiles, 
                  int depth, bool broadcast) {
   // channels and objFifos currently don't support many-to-many/one broadcast
-  if (broadcast && prodTiles.size() > 1)
-    return; // TODO: add return message
+  // if (broadcast && prodTiles.size() > 1)
+  //   return failure();
+
   if (broadcast) {
     std::vector<Value> consumers;
-    for (auto const& [coord, tile] : consTiles) {
-      consumers.push_back(tile);
+    for (auto const& [coord, tile] : consTiles)
+      if (tile)
+        consumers.push_back(*tile);
+
+    if (prodTiles.begin()->second) {
+      AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
+          builder.getUnknownLoc(), datatype, *(prodTiles.begin()->second), consumers, depth);
+      for (auto const& [coord, tile] : consTiles)
+        // TODO: check that list of consumers size == broadcast shape of channel op (what if shim consumer?)
+        objFifos[coord] = fifo;
     }
-    AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
-        builder.getUnknownLoc(), datatype, prodTiles[std::make_pair(0, 0)], consumers, depth);
-    for (auto const& [coord, tile] : consTiles) {
-      // TODO: check that list of consumers size == broadcast shape of channel op (what if shim consumer?)
-      objFifos[coord] = fifo;
-    }
+
   } else {
     for (auto const& [coord, tile] : prodTiles) {
-      AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
-        builder.getUnknownLoc(), datatype, prodTiles[coord], consTiles[coord], depth);
-      objFifos[coord] = fifo;
+      if (tile && consTiles[coord]) {
+        AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
+          builder.getUnknownLoc(), datatype, *tile, *(consTiles[coord]), depth);
+        objFifos[coord] = fifo;
+      }
     } 
   }
+  return success();
 }
 
 template <typename MyOp>
@@ -974,132 +988,116 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
   LogicalResult matchAndRewrite(air::ChannelOp channel,
                                 PatternRewriter &rewriter) const override {
     auto aie_module = channel->getParentOfType<ModuleOp>();
-    int numSubchannels = channel.getSubchannelSize();
+    int numSubchannels = channel.getBundleSize();
     std::vector<ChannelPutOp> channelPuts =
         getChannelPutOpThroughSymbol(channel);
     std::vector<ChannelGetOp> channelGets =
         getChannelGetOpThroughSymbol(channel);
+
 
     if ((int)channelPuts.size() > numSubchannels ||
         (int)channelGets.size() > numSubchannels) {
         return channel.emitOpError("too many put and/or get operations compared to declared channel indices");
     }
 
-    std::map<std::pair<int, int>, Value> producerTiles;
-    std::map<std::pair<int, int>, Value> consumerTiles;
-    std::map<std::pair<int, int>, AIE::ObjectFifoCreateOp> objFifos;
+    std::map<std::vector<int>, Optional<Value>> producerTiles;
+    std::map<std::vector<int>, Optional<Value>> consumerTiles;
+    std::map<std::vector<int>, AIE::ObjectFifoCreateOp> objFifos;
     AIE::AIEObjectFifoType datatype;
+
+    // fill maps with all expected entries for channel indices
+    std::vector<std::vector<int>> channelIndices = getAllChannelIndices(channel);
+    fillChannelMap(producerTiles, channelIndices);
+    fillChannelMap(consumerTiles, channelIndices);
 
     // put/get come in pairs, if one is missing then it's L3
     MemRefType srcMemref;
     int src_space = (int)air::MemorySpace::L3;
     Value producerTile;
-    if (channelPuts.size() > 0) {
-      for (auto put : channelPuts) {
-        // find AIE tiles and their cores based on memory hierarchy levels
-        srcMemref = put.getSrc().getType().cast<MemRefType>();
-        src_space = srcMemref.getMemorySpaceAsInt();
-        datatype = AIE::AIEObjectFifoType::get(MemRefType::get(srcMemref.getShape(), srcMemref.getElementType()));
-        if (src_space == (int)air::MemorySpace::L1) {
-          AIE::CoreOp producerCore = put->getParentOfType<AIE::CoreOp>();
-          if (!producerCore)
-            return failure();
-          producerTile = producerCore.getTileOp();
-          if (!producerTile)
-            return failure();
-          
-          int coord_x = 0;
-          int coord_y = 0;
-          if (put.getIndices().size() > 0) {
-            coord_x = put.getSizeX();
-            coord_y = put.getSizeY();
-          }
-          producerTiles[std::make_pair(coord_x, coord_y)] = producerTile;
-        } else {
+    for (auto put : channelPuts) {
+      // find AIE tiles and their cores based on memory hierarchy levels
+      srcMemref = put.getSrc().getType().cast<MemRefType>();
+      src_space = srcMemref.getMemorySpaceAsInt();
+      datatype = AIE::AIEObjectFifoType::get(MemRefType::get(srcMemref.getShape(), srcMemref.getElementType()));
+      if (src_space == (int)air::MemorySpace::L1) {
+        AIE::CoreOp producerCore = put->getParentOfType<AIE::CoreOp>();
+        if (!producerCore)
           return failure();
-        }
+        producerTile = producerCore.getTileOp();
+        if (!producerTile)
+          return failure();
+        
+        producerTiles[getChannelPutIndices(put, channel)] = producerTile;
+      } else {
+        return failure();
       }
-    } else {
-      // put from L3
-      producerTile = shimTileAlloc.getShimTile(
+    }
+    // fill in missing entries with L3
+    for (auto const& [key, tile] : producerTiles) {
+      if (!tile.has_value()) {
+        producerTile = shimTileAlloc.getShimTile(
           aie_module, src_space, (int)air::MemorySpace::L1);
-      producerTiles[{0, 0}] = producerTile;
+        producerTiles[key] = producerTile;
+      }
     }
 
     // put/get come in pairs, if one is missing then it's L3
     MemRefType dstMemref;
     int dst_space = (int)air::MemorySpace::L3;
     Value consumerTile;
-    if (channelGets.size() > 0) {
-      for (auto get : channelGets) {
-        // find AIE tiles and their cores based on memory hierarchy levels
-        dstMemref = get.getDst().getType().cast<MemRefType>();
-        dst_space = dstMemref.getMemorySpaceAsInt();
-        datatype = AIE::AIEObjectFifoType::get(MemRefType::get(dstMemref.getShape(), dstMemref.getElementType()));
-        if (dst_space == (int)air::MemorySpace::L1) {
-          AIE::CoreOp consumerCore = get->getParentOfType<AIE::CoreOp>();
-          if (!consumerCore)
-            return failure();
-          consumerTile = consumerCore.getTileOp();
-          if (!consumerTile)
-            return failure();
-          
-          int coord_x = 0;
-          int coord_y = 0;
-          if (get.getIndices().size() > 0) {
-            coord_x = get.getSizeX();
-            coord_y = get.getSizeY();
-          }
-          consumerTiles[std::make_pair(coord_x, coord_y)] = consumerTile;
-        } else {
+    for (auto get : channelGets) {
+      // find AIE tiles and their cores based on memory hierarchy levels
+      dstMemref = get.getDst().getType().cast<MemRefType>();
+      dst_space = dstMemref.getMemorySpaceAsInt();
+      datatype = AIE::AIEObjectFifoType::get(MemRefType::get(dstMemref.getShape(), dstMemref.getElementType()));
+      if (dst_space == (int)air::MemorySpace::L1) {
+        AIE::CoreOp consumerCore = get->getParentOfType<AIE::CoreOp>();
+        if (!consumerCore)
           return failure();
-        }
+        consumerTile = consumerCore.getTileOp();
+        if (!consumerTile)
+          return failure();
+          
+        consumerTiles[getChannelGetIndices(get, channel)] = consumerTile;
+      } else {
+        return failure();
       }
-    } else {
-      // get from L3
-      consumerTile = shimTileAlloc.getShimTile(
+    }
+    // fill in missing entries with L3
+    for (auto const& [key, tile] : consumerTiles) {
+      if (!tile.has_value()) {
+        consumerTile = shimTileAlloc.getShimTile(
           aie_module, (int)air::MemorySpace::L1, dst_space);
-      consumerTiles[{0, 0}] = consumerTile;
+        consumerTiles[key] = consumerTile;
+      }
     }
 
     if (!datatype)
       return failure();
 
     // create objFifo
-    // For now, number of memory elements in OF is hardcoded to 1
-    // (single buffer). FIXME
     rewriter.setInsertionPoint(*(aie_module.getOps<AIE::CoreOp>().begin()));
-    createObjectFifo(rewriter, datatype, objFifos, producerTiles, consumerTiles, 1, channel.isBroadcast());
+    auto res = createObjectFifo(rewriter, datatype, objFifos, producerTiles, consumerTiles, channel.getBufferResources(), channel.isBroadcast());
+    if (res.failed())
+      return channel.emitOpError("has multiple producers, objFifo lowering currently doesn't support many-to-many/one broadcast");
 
     // replace put/get and the associated memref alloc/dealloc
     for (auto put : channelPuts) {
-      int coord_x = 0;
-      int coord_y = 0;
-      if (put.getIndices().size() > 0) {
-        coord_x = put.getSizeX();
-        coord_y = put.getSizeY();
-      }
       rewriteChannelAllocs<ChannelPutOp>(rewriter, put, 
-                                         objFifos[std::make_pair(coord_x, coord_y)],
+                                         objFifos[getChannelPutIndices(put, channel)],
                                          AIE::ObjectFifoPort::Produce);
       rewriteChannelDeallocs<ChannelPutOp>(rewriter, put, 
-                                           objFifos[std::make_pair(coord_x, coord_y)],
+                                           objFifos[getChannelPutIndices(put, channel)],
                                            AIE::ObjectFifoPort::Produce);
       // erase put
       rewriter.eraseOp(put);
     }
     for (auto get : channelGets) {
-      int coord_x = 0;
-      int coord_y = 0;
-      if (get.getIndices().size() > 0) {
-        coord_x = get.getSizeX();
-        coord_y = get.getSizeY();
-      }
       rewriteChannelAllocs<ChannelGetOp>(rewriter, get, 
-                                         objFifos[std::make_pair(coord_x, coord_y)],
+                                         objFifos[getChannelGetIndices(get, channel)],
                                          AIE::ObjectFifoPort::Consume);
       rewriteChannelDeallocs<ChannelGetOp>(rewriter, get, 
-                                           objFifos[std::make_pair(coord_x, coord_y)],
+                                           objFifos[getChannelGetIndices(get, channel)],
                                            AIE::ObjectFifoPort::Consume);
       // erase get
       rewriter.eraseOp(get);
@@ -1231,7 +1229,7 @@ public:
     return lockOp;
   }
 
-  // get tileop using partition-relative coordinates
+  // get tileop using segment-relative coordinates
   AIE::TileOp getTileOp(ModuleOp aie_module, int herd_col, int herd_row) {
     int col = herd_col;
     int row = herd_row;
@@ -1352,29 +1350,27 @@ public:
     return tile_dma_copies;
   }
 
-  airrt::PartitionMetadataOp
-  getOrCreatePartitionMetadata(airrt::ModuleMetadataOp module_meta,
+  airrt::SegmentMetadataOp
+  getOrCreateSegmentMetadata(airrt::ModuleMetadataOp module_meta,
                                StringRef name) {
 
-    for (auto pm : module_meta.getPartitions()
-                       .front()
-                       .getOps<airrt::PartitionMetadataOp>())
+    for (auto pm :
+         module_meta.getSegments().front().getOps<airrt::SegmentMetadataOp>())
       if (name == pm.getSymName().str())
         return pm;
 
     auto builder = OpBuilder::atBlockTerminator(module_meta.getBody());
     auto loc = builder.getUnknownLoc();
-    auto partition_meta = builder.create<airrt::PartitionMetadataOp>(loc, name);
-    builder.createBlock(&partition_meta.getHerds());
-    builder.create<airrt::PartitionMetadataTerminatorOp>(loc);
+    auto segment_meta = builder.create<airrt::SegmentMetadataOp>(loc, name);
+    builder.createBlock(&segment_meta.getHerds());
+    builder.create<airrt::SegmentMetadataTerminatorOp>(loc);
 
-    return partition_meta;
+    return segment_meta;
   }
 
   airrt::HerdMetadataOp
-  createHerdMetadata(airrt::PartitionMetadataOp partition_meta,
-                     air::HerdOp herd) {
-    auto builder = OpBuilder::atBlockTerminator(partition_meta.getBody());
+  createHerdMetadata(airrt::SegmentMetadataOp segment_meta, air::HerdOp herd) {
+    auto builder = OpBuilder::atBlockTerminator(segment_meta.getBody());
     auto loc = builder.getUnknownLoc();
 
     std::string name = "herd";
@@ -1659,7 +1655,7 @@ public:
 
     auto loc = builder.getUnknownLoc();
     auto module_meta = builder.create<airrt::ModuleMetadataOp>(loc);
-    builder.createBlock(&module_meta.getPartitions());
+    builder.createBlock(&module_meta.getSegments());
     builder.create<airrt::ModuleMetadataTerminatorOp>(loc);
 
     // If we have multiple herds then we must emit them into different aie
@@ -1695,7 +1691,7 @@ public:
         lowerPipelineGetPut(m, tileToHerdMap);
 
         SmallVector<air::HerdOp, 4> herds;
-        if (auto p = h->getParentOfType<air::PartitionOp>()) {
+        if (auto p = h->getParentOfType<air::SegmentOp>()) {
           auto hops = p.getOps<air::HerdOp>();
           herds.append(hops.begin(), hops.end());
         } else {
@@ -1763,9 +1759,9 @@ public:
               dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
             }
           }
-          auto partition_meta = getOrCreatePartitionMetadata(
+          auto segment_meta = getOrCreateSegmentMetadata(
               module_meta, m.getName()->split('.').second);
-          auto herd_meta = createHerdMetadata(partition_meta, herd);
+          auto herd_meta = createHerdMetadata(segment_meta, herd);
           herd_meta->setAttr("dma_allocations",
                              ArrayAttr::get(ctx, dma_allocations));
         }
@@ -1807,13 +1803,13 @@ namespace xilinx {
 namespace air {
 
 FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
-                                    air::PartitionOp p) {
-  std::string partition_name = "partition_0";
+                                    air::SegmentOp p) {
+  std::string segment_name = "segment_0";
   if (auto attr =
           p->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
-    partition_name = attr.getValue().str();
+    segment_name = attr.getValue().str();
 
-  std::string aie_module_name = "aie." + partition_name;
+  std::string aie_module_name = "aie." + segment_name;
   ModuleOp aie_module =
       ModuleOp::create(rewriter.getUnknownLoc(), StringRef(aie_module_name));
 

@@ -105,11 +105,11 @@ struct dependencyNodeEntry {
   std::string detailed_description;
   unsigned operationId;
   mlir::Operation *op;
-  dependencyGraph *nextDependencyGraph;
+  std::vector<dependencyGraph *> nextDependencyGraphs;
   uint64_t start_time;
   uint64_t end_time;
   std::vector<std::pair<uint64_t, uint64_t>> start_end_time_log;
-  uint64_t token_count;
+  int token_count;
 
   bool is_started() { return (start_time != 0) && (end_time != 0); }
   bool is_done(uint64_t t) { return t >= end_time; }
@@ -119,13 +119,11 @@ struct dependencyNodeEntry {
                       std::string shape = "",
                       std::string detailed_description = "",
                       unsigned operationId = 0, mlir::Operation *op = nullptr,
-                      dependencyGraph *nextDependencyGraph = nullptr,
                       uint64_t start_time = 0, uint64_t end_time = 0,
-                      uint64_t token_count = 0)
+                      int token_count = 0)
       : asyncEventName(asyncEventName), asyncEventType(asyncEventType),
         color(color), shape(shape), detailed_description(detailed_description),
-        operationId(operationId), op(op),
-        nextDependencyGraph(nextDependencyGraph), start_time(start_time),
+        operationId(operationId), op(op), start_time(start_time),
         end_time(end_time), token_count(token_count) {}
 };
 
@@ -148,6 +146,8 @@ struct dependencyGraph {
   runnerNode *runner_node;
   Graph::vertex_descriptor start_vertex;
   Graph::vertex_descriptor terminator_vertex;
+  std::vector<unsigned>
+      position; // Position (coordinates) of each core in herd, if showing cores
 
   dependencyGraph(mlir::Operation *op = nullptr, bool initStartVertex = false) {
     g = Graph();
@@ -165,6 +165,7 @@ struct dependencyGraph {
   ~dependencyGraph() {
     g.clear();
     subgraphs.clear();
+    position.clear();
   }
 };
 
@@ -219,16 +220,20 @@ typedef boost::subgraph<boost::adjacency_list<
     FlatGraph;
 typedef std::map<Graph::vertex_descriptor, FlatGraph::vertex_descriptor>
     vertex_to_flat_vertex_map;
-typedef std::map<std::string, std::pair<FlatGraph::vertex_descriptor,
-                                        FlatGraph::vertex_descriptor>>
+typedef std::map<std::string,
+                 std::pair<std::vector<FlatGraph::vertex_descriptor>,
+                           std::vector<FlatGraph::vertex_descriptor>>>
     ChannelMap;
 
 class dependencyCanonicalizer {
 
+  typedef std::tuple<bool, bool, bool, bool> graphGranularityProperties;
+
 public:
   void parseCommandGraphs(func::FuncOp &toplevel, dependencyGraph &global_graph,
-                          dependencyContext &dep_ctx, bool dump_dot = false,
-                          std::string dump_dir = "");
+                          dependencyContext &dep_ctx,
+                          std::string granularity = "herd",
+                          bool dump_dot = false, std::string dump_dir = "");
   void canonicalizeGraphs(dependencyGraph &global_graph,
                           dependencyGraph &tr_graph,
                           vertex_to_vertex_map_tree &g_to_tr,
@@ -247,15 +252,27 @@ public:
   std::pair<Graph::vertex_descriptor, dependencyGraph *>
   getVertexFromOp(Operation *op, dependencyContext dep_ctx,
                   std::string front_or_back = "front");
+  // CDFG show cores in herd
+  unsigned getTripCountInHierarchyOp(air::HierarchyInterface hier);
+  std::vector<unsigned> getPositionFromIterator(unsigned iter,
+                                                air::HerdOp herd);
+  std::string toPositionString(std::vector<unsigned> position);
+  unsigned getIteratorFromPosition(std::vector<unsigned> position,
+                                   Operation *hier_op);
 
 private:
   void addVerticesInHerd(std::deque<dependencyGraph> &herd_subgraphs,
-                         air::HerdOp herd, dependencyContext &dep_ctx);
-  void addVerticesInPartition(std::deque<dependencyGraph> &part_subgraphs,
-                              air::PartitionOp partition,
-                              dependencyContext &dep_ctx);
+                         air::HerdOp herd, dependencyContext &dep_ctx,
+                         graphGranularityProperties expandHier = {true, true,
+                                                                  true, false});
+  void addVerticesInSegment(std::deque<dependencyGraph> &part_subgraphs,
+                            air::SegmentOp segment, dependencyContext &dep_ctx,
+                            graphGranularityProperties expandHier = {
+                                true, true, true, false});
   void addVerticesInLaunch(std::deque<dependencyGraph> &launch_subgraphs,
-                           air::LaunchOp launch, dependencyContext &dep_ctx);
+                           air::LaunchOp launch, dependencyContext &dep_ctx,
+                           graphGranularityProperties expandHier = {
+                               true, true, true, false});
   Graph::vertex_descriptor addVertexFromOpImpls(Operation *op,
                                                 dependencyGraph *G,
                                                 dependencyContext &dep_ctx);
@@ -288,10 +305,14 @@ private:
   std::pair<std::string, unsigned> getTypeIdPairFromOp(Operation *op);
   std::string getOpTypeFromOpImpls(Operation *op);
   void parseDependencyEdgesInGraph(Graph &g, dependencyContext dep_ctx);
-  void copyFromDependencyGraphToFlatGraph(Graph g_src, FlatGraph &g_dst,
+  void copyFromDependencyGraphToFlatGraph(Graph g_src,
+                                          std::vector<unsigned> position,
+                                          FlatGraph &g_dst,
                                           vertex_to_flat_vertex_map &map,
                                           bool copyEdges = false);
-  void updateSubgraphFromDependencyGraph(Graph subg_src, FlatGraph &subg_dst,
+  void updateSubgraphFromDependencyGraph(Graph subg_src,
+                                         std::vector<unsigned> position,
+                                         FlatGraph &subg_dst,
                                          vertex_to_flat_vertex_map map,
                                          bool copyEdges = false);
   void connectOpToItsDepListImpls(Operation *op, Graph &g,
@@ -312,11 +333,15 @@ private:
                                     vertex_to_vertex_map &tr_to_g);
   void purgeAIRDepList(dependencyGraph &graph);
   void fillAIRDepListUsingGraphTR(dependencyGraph &graph);
-  void collectAIRChannelPutAndGetInGraph(Graph g, vertex_to_flat_vertex_map map,
+  void collectAIRChannelPutAndGetInGraph(Graph g,
+                                         std::vector<unsigned> position,
+                                         vertex_to_flat_vertex_map map,
                                          ChannelMap &channel_map);
   void updateSubgraphFromDependencyGraphAsGraphVizCluster(
       dependencyGraph &G, FlatGraph &flat_subg, vertex_to_flat_vertex_map map,
       unsigned global_idx, unsigned &subg_idx, std::string hier_name = "");
+  std::vector<Graph::vertex_descriptor>
+  getVerticesWithAffineIf(Graph g, std::vector<unsigned> position);
 };
 
 //===----------------------------------------------------------------------===//

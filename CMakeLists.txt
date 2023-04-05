@@ -105,15 +105,22 @@ add_custom_target(check-all)
 add_custom_target(docs ALL)
 add_dependencies(docs mlir-doc)
 
-list(GET AIR_RUNTIME_TARGETS -1 AIR_RUNTIME_TEST_TARGET)
-message("Testing with AIR runtime target: '${AIR_RUNTIME_TEST_TARGET}'")
+set(AIR_RUNTIME_TARGETS "" CACHE STRING "Architectures to compile the runtime libraries for.")
+set(AIR_RUNTIME_TEST_TARGET "" CACHE STRING "Runtime architecture to test with.")
+set(AIR_RUNTIME_TEST_TARGET_VAL ${AIR_RUNTIME_TEST_TARGET})
 
 foreach(target ${AIR_RUNTIME_TARGETS})
-	message("Compiling AIR runtime for ${target}")
-	message("TOOLCHAIN=${${target}_TOOLCHAIN_FILE}")
+	# By default, we test the first architecture in AIR_RUNTIME_TARGETS.
+	# Alternatively, this can be defined to force testing with a particular architecture.
+	if (NOT AIR_RUNTIME_TEST_TARGET_VAL)
+		set(AIR_RUNTIME_TEST_TARGET_VAL ${target})
+		message("Testing with AIR runtime target: ${AIR_RUNTIME_TEST_TARGET_VAL}")
+	endif()
+
 	if (NOT EXISTS ${${target}_TOOLCHAIN_FILE})
 		message(FATAL_ERROR "Toolchain file ${${target}_TOOLCHAIN_FILE} not found! Cannot build target ${target}.")
 	endif()
+	message("Building AIR runtime for ${target} with TOOLCHAIN=${${target}_TOOLCHAIN_FILE}")
 	ExternalProject_Add(air_runtime_lib_${target}
 		PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp/${target}
 		SOURCE_DIR ${PROJECT_SOURCE_DIR}/runtime_lib
@@ -141,7 +148,11 @@ foreach(target ${AIR_RUNTIME_TARGETS})
 endforeach()
 
 add_subdirectory(python)
-if (LibXAIE_FOUND)
+if (NOT AIR_RUNTIME_TEST_TARGET_VAL)
+	message("Skipping tests: No Runtime architecture found. Please configure AIR_RUNTIME_TARGETS.")
+elseif (NOT LibXAIE_FOUND)
+	message("Skipping tests: LibXAIE not found.")
+else()
 	add_subdirectory(test)
 endif()
 add_subdirectory(tools)

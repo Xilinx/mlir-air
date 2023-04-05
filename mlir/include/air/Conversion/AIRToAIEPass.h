@@ -21,10 +21,10 @@ class RewriterBase;
 
 namespace xilinx {
 namespace air {
-class PartitionOp;
+class SegmentOp;
 
 mlir::FailureOr<mlir::ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
-                                                air::PartitionOp partition);
+                                                air::SegmentOp segment);
 std::unique_ptr<mlir::Pass> createAIRToAIEPass();
 
 } // namespace air

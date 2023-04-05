@@ -7,7 +7,7 @@ ConvertToAIRPass.cpp
 AIRLoweringPass.cpp
 AIRRtToLLVMPass.cpp
 AIRToAIEPass.cpp
-AIRToCpuPass.cpp
+AIRToAsyncPass.cpp
 AIRPipeline.cpp
 Passes.cpp
 

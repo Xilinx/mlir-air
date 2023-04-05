@@ -47,7 +47,7 @@ config.enable_board_tests = @CONFIG_ENABLE_BOARD_TESTS@
 config.vitis_root = "@VITIS_ROOT@"
 config.vitis_aietools_dir = "@VITIS_AIETOOLS_DIR@"
 config.libxaie_dir = "@XILINX_XAIE_DIR@"
-config.test_arch = "@AIR_RUNTIME_TEST_TARGET@"
+config.test_arch = "@AIR_RUNTIME_TEST_TARGET_VAL@"
 
 # Support substitution of the tools_dir with user parameters. This is
 # used when we can't determine the tool dir at configuration time.

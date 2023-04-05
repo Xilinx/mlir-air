@@ -7,7 +7,7 @@
 
 // RUN: air-opt %s --air-to-aie='test-patterns=lower-air-channels' | FileCheck %s
 
-// CHECK: module @aie.partition_0 {
+// CHECK: module @aie.segment_0 {
 // CHECK:   %0 = AIE.tile(1, 1)
 // CHECK:   %1 = AIE.tile(2, 0)
 // CHECK:   %2 = AIE.objectFifo.createObjectFifo(%0, {%1}, 1) : !AIE.objectFifo<memref<32xi32>>
@@ -26,10 +26,10 @@
 // CHECK:       AIE.objectFifo.release<Consume> (%3 : !AIE.objectFifo<memref<32xi32>>, 1)
 // CHECK:     }
 // CHECK:     AIE.end
-// CHECK:   } {elf_file = "partition_0_core_1_1.elf"}
+// CHECK:   } {elf_file = "segment_0_core_1_1.elf"}
 // CHECK: }
 
-module @aie.partition_0 {
+module @aie.segment_0 {
   %0 = AIE.tile(1, 1)
   %1 = AIE.core(%0) {
     %c32 = arith.constant 32 : index
@@ -47,7 +47,7 @@ module @aie.partition_0 {
     memref.dealloc %alloc_0 : memref<32xi32, 2>
     memref.dealloc %alloc : memref<32xi32, 2>
     AIE.end
-  } {elf_file = "partition_0_core_1_1.elf"}
+  } {elf_file = "segment_0_core_1_1.elf"}
   air.channel @channel_0 [1, 1]
   air.channel @channel_1 [1, 1]
 }

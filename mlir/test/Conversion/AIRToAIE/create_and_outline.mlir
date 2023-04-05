@@ -8,7 +8,7 @@
 
 // RUN: air-opt %s -air-to-aie='test-patterns=to-aie-mlir' -o /dev/null | FileCheck %s
 
-// CHECK-LABEL: @aie.partition0
+// CHECK-LABEL: @aie.segment0
 // CHECK: [[T00:%.*]] = AIE.tile(1, 1)
 // CHECK: [[T10:%.*]] = AIE.tile(2, 1)
 // CHECK: [[T01:%.*]] = AIE.tile(1, 2)
@@ -20,7 +20,7 @@
 #map = affine_map<()[s0] -> (s0 * 32)>
 module attributes {torch.debug_module_name = "mmult"} {
   func.func @forward(%a0: memref<64x64xi32>, %a1: memref<64x64xi32>, %a2: memref<64x64xi32>) {
-    air.partition @partition0 args(%arg0=%a0, %arg1=%a1, %arg2=%a2) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> {
+    air.segment @segment0 args(%arg0=%a0, %arg1=%a1, %arg2=%a2) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> {
       %c2 = arith.constant 2 : index
       %c0_i32 = arith.constant 0 : i32
       %0 = memref.alloc() {alignment = 128 : i64} : memref<64x64xi32>
@@ -50,13 +50,13 @@ module attributes {torch.debug_module_name = "mmult"} {
         air.herd_terminator
       }
       memref.copy %1, %arg2 : memref<64x64xi32> to memref<64x64xi32>
-      air.partition_terminator
+      air.segment_terminator
     }
     return
   }
 }
 
-// CHECK-LABEL: @aie.partition_1
+// CHECK-LABEL: @aie.segment_1
 // CHECK: air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
 air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
 func.func @f1() -> () {

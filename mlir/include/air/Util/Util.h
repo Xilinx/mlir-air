@@ -67,6 +67,30 @@ std::vector<ChannelGetOp> getChannelGetOpThroughSymbol(ChannelOp channel);
 // Get the other channel op through channel symbol
 std::vector<ChannelGetOp> getTheOtherChannelOpThroughSymbol(ChannelPutOp put);
 std::vector<ChannelPutOp> getTheOtherChannelOpThroughSymbol(ChannelGetOp get);
+void getSizesFromIntegerSet(MLIRContext *ctx, IntegerSet int_set,
+                            SmallVector<int, 2> &lbs_int,
+                            SmallVector<int, 2> &ubs_int);
+// Get spatial sizes from spatial loop (scf.parallel or air.hierarchy)
+void getSizesFromSpatialLoop(Operation *spatial_loop,
+                             SmallVector<int, 2> &lbs_spatial,
+                             SmallVector<int, 2> &ubs_spatial);
+// Get else sizes from affine.if. Assumption: rectangular input, then and else
+// sizes only
+void getElseSizesFromAffineIf(SmallVector<int, 2> &lbs_in,
+                              SmallVector<int, 2> &ubs_in,
+                              SmallVector<int, 2> &lbs_then,
+                              SmallVector<int, 2> &ubs_then);
+// Walk affine.if then and else blocks and check if current core lies in
+// condition
+bool positionHitsAffineIfCondition(Operation *op,
+                                   std::vector<unsigned> position);
+bool positionHitsAffineIfCondition(Operation *op, Operation *spatial_loop,
+                                   std::vector<Operation *> affine_if_nest,
+                                   std::vector<unsigned> position);
+Operation *
+getAffineIfNestAndSpatialLoopFromOp(Operation *op,
+                                    std::vector<Operation *> &affine_if_nest,
+                                    Operation *&spatial_loop);
 
 struct LinalgTransforms {
   static const StringLiteral kLinalgTransformMarker;
