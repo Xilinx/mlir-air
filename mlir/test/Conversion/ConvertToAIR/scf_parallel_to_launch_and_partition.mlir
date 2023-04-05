@@ -1,4 +1,4 @@
-//===- scf_parallel_to_launch_and_partition.mlir ---------------*- MLIR -*-===//
+//===- scf_parallel_to_launch_and_segment.mlir ---------------*- MLIR -*-===//
 //
 // Copyright (C) 2022, Xilinx Inc. All rights reserved.
 // Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
@@ -6,11 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-par-to-launch='has-air-partition=true' -cse -canonicalize %s | FileCheck %s
+// RUN: air-opt -air-par-to-launch='has-air-segment=true' -cse -canonicalize %s | FileCheck %s
 // CHECK-LABEL: func.func @f0
 // CHECK: %[[C0:.*]] = arith.constant 2 : index
 // CHECK air.launch (%[[V0:.*]], %[[V1:.*]]) in (%[[V2:.*]]=[[C0]], %[[V3:.*]]=[[C0]])
-// CHECK air.partition args({{.*}}=[[V0]], {{.*}}=[[V1]], {{.*}}=[[V2]], {{.*}}=[[V3]])
+// CHECK air.segment args({{.*}}=[[V0]], {{.*}}=[[V1]], {{.*}}=[[V2]], {{.*}}=[[V3]])
 func.func @f0()  {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -25,7 +25,7 @@ func.func @f0()  {
 // CHECK-LABEL: func.func @f1
 // CHECK: %[[C1:.*]] = arith.constant 4 : index
 // CHECK air.launch (%[[V0:.*]]) in (%[[V1:.*]]=[[C1]])
-// CHECK air.partition args({{.*}}=[[V0]], {{.*}}=[[V1]])
+// CHECK air.segment args({{.*}}=[[V0]], {{.*}}=[[V1]])
 func.func @f1()  {
   %c0 = arith.constant 0 : index
   %c32 = arith.constant 32 : index

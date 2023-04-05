@@ -24,8 +24,8 @@ module {
 // CHECK: %[[EVENT5:.*]] = air.channel.put async{{.*}}%[[EVENT4]]{{.*}}@channel_0
 // CHECK: %[[EVENT6:.*]] = air.wait_all async [%[[EVENT5]]]
 // CHECK: scf.yield %[[EVENT6]]
-      %1 = air.partition async  args(%arg6=%arg1, %arg7=%arg2, %arg8=%arg3, %arg9=%arg4, %arg10=%arg5) : index, index, index, index, memref<512x512xbf16> attributes {id = 2 : i32} {
-// CHECK: %[[EVENT7:.*]] = air.partition async
+      %1 = air.segment async  args(%arg6=%arg1, %arg7=%arg2, %arg8=%arg3, %arg9=%arg4, %arg10=%arg5) : index, index, index, index, memref<512x512xbf16> attributes {id = 2 : i32} {
+// CHECK: %[[EVENT7:.*]] = air.segment async
         %c1 = arith.constant 1 : index
         %c2 = arith.constant 2 : index
         %c0 = arith.constant 0 : index
@@ -92,7 +92,7 @@ module {
           %6 = air.wait_all async [%5]  {id = 3 : i32}
           scf.yield %6 : !air.async.token
         }
-        air.partition_terminator
+        air.segment_terminator
       }
       air.launch_terminator
     }

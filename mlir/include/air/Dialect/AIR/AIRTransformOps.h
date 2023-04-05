@@ -25,7 +25,7 @@ class FuncOp;
 
 namespace xilinx {
 namespace air {
-class PartitionOp;
+class SegmentOp;
 }
 } // namespace xilinx
 

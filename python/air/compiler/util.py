@@ -55,9 +55,10 @@ class CostModel:
         return stats
 
 class Runner:
-    def __init__(self, json_model, trace_filename=None, verbose=False):
+    def __init__(self, json_model, trace_filename=None, sim_granularity="herd", verbose=False):
         self.json_model = json_model
         self.trace_filename = trace_filename
+        self.sim_granularity = sim_granularity
         self.verbose = verbose
 
     def run(self, module, function):
@@ -85,7 +86,7 @@ class Runner:
         json_tmpfile.write(str.encode(json.dumps(json_model)))
         json_tmpfile.close()
 
-        runner.run(air_module, json_tmpfile.name, trace_filename, function, self.verbose)
+        runner.run(air_module, json_tmpfile.name, trace_filename, function, self.sim_granularity, self.verbose)
 
         os.unlink(json_tmpfile.name)
 

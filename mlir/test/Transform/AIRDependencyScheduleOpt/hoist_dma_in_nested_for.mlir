@@ -14,7 +14,7 @@ module attributes {torch.debug_module_name = "mmult"} {
   func.func @forward(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x1024xbf16>, %arg2: memref<256x1024xbf16>) {
     %c1 = arith.constant 1 : index
     air.launch (%arg3, %arg4) in (%arg5=%c1, %arg6=%c1) args(%arg7=%arg0, %arg8=%arg1, %arg9=%arg2) : memref<256x1024xbf16>, memref<1024x1024xbf16>, memref<256x1024xbf16> {
-      air.partition  args(%arg10=%arg7, %arg11=%arg8, %arg12=%arg9) : memref<256x1024xbf16>, memref<1024x1024xbf16>, memref<256x1024xbf16> {
+      air.segment  args(%arg10=%arg7, %arg11=%arg8, %arg12=%arg9) : memref<256x1024xbf16>, memref<1024x1024xbf16>, memref<256x1024xbf16> {
         %c1_0 = arith.constant 1 : index
         %c0 = arith.constant 0 : index
         %c1024 = arith.constant 1024 : index
@@ -83,7 +83,7 @@ module attributes {torch.debug_module_name = "mmult"} {
 // CHECK: scf.yield
         }
 // CHECK: scf.yield
-        air.partition_terminator
+        air.segment_terminator
       }
       air.launch_terminator
     }

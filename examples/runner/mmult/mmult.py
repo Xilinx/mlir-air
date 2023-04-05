@@ -43,7 +43,7 @@ with air.mlir.ir.Context(), Location.unknown():
         "canonicalize", "cse",
         "air-par-to-herd{depth=1}",
         "air-copy-to-dma",
-        "air-par-to-launch{has-air-partition=true}",
+        "air-par-to-launch{has-air-segment=true}",
         "canonicalize", "cse",
     ])+')'
     pm = air.mlir.passmanager.PassManager.parse(pipeline)

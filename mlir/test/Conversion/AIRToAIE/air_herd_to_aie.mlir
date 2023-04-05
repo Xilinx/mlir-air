@@ -11,7 +11,7 @@ module {
 
 func.func @foo(%arg0: i32) {
   %cst1 = arith.constant 1 : index
-  // CHECK-LABEL: module @aie.partition_0
+  // CHECK-LABEL: module @aie.segment_0
   // CHECK: %[[VAR1:.*]] = AIE.tile(1, 1)
   // CHECK: %[[BUF1:.*]] = AIE.buffer(%[[VAR1]]) {sym_name = {{.*}}} : memref<1xi32, 2>
   // CHECK: %[[BUF2:.*]] = AIE.buffer(%[[VAR1]]) {sym_name = {{.*}}} : memref<1xi32, 2>

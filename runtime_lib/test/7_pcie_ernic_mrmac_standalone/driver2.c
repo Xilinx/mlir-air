@@ -66,7 +66,7 @@ int main() {
                           BAR0_DEV_FILE,      // dev_mem_bar_filename
                           BAR0_SIZE,          // dev_mem_bar_size
                           0x0000000800000000, // dev_mem_global_offset
-                          0x00020000,         // dev_mem_partition_offset
+                          0x00020000,         // dev_mem_segment_offset
                           0x00100000,         // mrmac_reset_offset
                           0x00110000,         // mac_0_csr_offset
                           0x00120000,         // mac_1_csr_offset

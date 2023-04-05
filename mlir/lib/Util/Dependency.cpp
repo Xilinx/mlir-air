@@ -289,7 +289,7 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
                                                  std::string granularity,
                                                  bool dump_dot,
                                                  std::string dump_dir) {
-  // Graph parsing granularity. Tuple format: <expandLaunch, expandPartition,
+  // Graph parsing granularity. Tuple format: <expandLaunch, expandSegment,
   // expandHerd, expandCore>
   graphGranularityProperties expandHier = {true, true, true, false};
   if (granularity == "herd") {
@@ -309,14 +309,14 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
       if (auto launch = dyn_cast<air::LaunchOp>(op)) {
         addVerticesInLaunch(global_graph.subgraphs, launch, dep_ctx,
                             expandHier);
-      } else if (dyn_cast<air::PartitionOp>(op) &&
+      } else if (dyn_cast<air::SegmentOp>(op) &&
                  (!op->getParentOfType<air::LaunchOp>())) {
-        auto partition = dyn_cast<air::PartitionOp>(op);
-        addVerticesInPartition(global_graph.subgraphs, partition, dep_ctx,
-                               expandHier);
+        auto segment = dyn_cast<air::SegmentOp>(op);
+        addVerticesInSegment(global_graph.subgraphs, segment, dep_ctx,
+                             expandHier);
       } else if (dyn_cast<air::HerdOp>(op) &&
                  (!op->getParentOfType<air::LaunchOp>()) &&
-                 (!op->getParentOfType<air::PartitionOp>())) {
+                 (!op->getParentOfType<air::SegmentOp>())) {
         auto herd = dyn_cast<air::HerdOp>(op);
         addVerticesInHerd(global_graph.subgraphs, herd, dep_ctx, expandHier);
       }
@@ -335,7 +335,7 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
     }
   }
 
-  // Connect leaf vertices to launch, partition and herd terminators
+  // Connect leaf vertices to launch, segment and herd terminators
   for (auto &G_l : global_graph.subgraphs) {
     connectTerminatorInGraph(G_l.g);
     for (auto &G_p : G_l.subgraphs) {
@@ -356,12 +356,12 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
     updatePointerFromGraphToHierarchyTerminator(launchGraph);
     updatePointerFromHierarchyTerminatorToGraph(global_graph, launchGraph);
     updatePointerFromHierarchyOpToGraph(launchGraph);
-    for (auto &partitionGraph : launchGraph.subgraphs) {
-      connectStartNodeInCommandGraph(partitionGraph);
-      updatePointerFromGraphToHierarchyTerminator(partitionGraph);
-      updatePointerFromHierarchyTerminatorToGraph(launchGraph, partitionGraph);
-      updatePointerFromHierarchyOpToGraph(partitionGraph);
-      for (auto &herdGraph : partitionGraph.subgraphs) {
+    for (auto &segmentGraph : launchGraph.subgraphs) {
+      connectStartNodeInCommandGraph(segmentGraph);
+      updatePointerFromGraphToHierarchyTerminator(segmentGraph);
+      updatePointerFromHierarchyTerminatorToGraph(launchGraph, segmentGraph);
+      updatePointerFromHierarchyOpToGraph(segmentGraph);
+      for (auto &herdGraph : segmentGraph.subgraphs) {
         connectStartNodeInCommandGraph(herdGraph);
         updatePointerFromGraphToHierarchyTerminator(herdGraph);
       }
@@ -458,17 +458,17 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
       auto map_idx_launch = index++;
       auto vp_l = getVerticesWithAffineIf(G_l.g, G_l.position);
       for (auto vit_l : vp_l) {
-        if (G_l.g[vit_l].asyncEventName == "PartitionOp") {
+        if (G_l.g[vit_l].asyncEventName == "SegmentOp") {
           auto G_p = *G_l.g[vit_l].nextDependencyGraphs[0];
           FlatGraph &flat_subg_p = flat_subg_l.create_subgraph();
           updateSubgraphFromDependencyGraphAsGraphVizCluster(
-              G_p, flat_subg_p, maps[index], index, idx_p, "partition");
-          // Connect parent graph's herarchy node with "start" of partition
+              G_p, flat_subg_p, maps[index], index, idx_p, "segment");
+          // Connect parent graph's herarchy node with "start" of segment
           // subgraph
           add_edge(maps[map_idx_launch][vit_l], maps[index][G_p.start_vertex],
                    flat_g);
 
-          auto map_idx_partition = index++;
+          auto map_idx_segment = index++;
           auto vp_p = getVerticesWithAffineIf(G_p.g, G_p.position);
           for (auto vit_p : vp_p) {
             if (G_p.g[vit_p].asyncEventName == "HerdOp") {
@@ -479,7 +479,7 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
                     G_h, flat_subg_h, maps[index], index, idx_h, "herd");
                 // Connect parent graph's herarchy node with "start" of herd
                 // subgraph
-                add_edge(maps[map_idx_partition][vit_p],
+                add_edge(maps[map_idx_segment][vit_p],
                          maps[index++][G_h.start_vertex], flat_g);
               }
             }
@@ -497,15 +497,15 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
           }
         }
       }
-    } else if (global_graph.g[vit].asyncEventName == "PartitionOp") {
+    } else if (global_graph.g[vit].asyncEventName == "SegmentOp") {
       auto G_p = *global_graph.g[vit].nextDependencyGraphs[0];
       FlatGraph &flat_subg_p = flat_g.create_subgraph();
       updateSubgraphFromDependencyGraphAsGraphVizCluster(
-          G_p, flat_subg_p, maps[index], index, idx_p, "partition");
-      // Connect parent graph's herarchy node with "start" of partition subgraph
+          G_p, flat_subg_p, maps[index], index, idx_p, "segment");
+      // Connect parent graph's herarchy node with "start" of segment subgraph
       add_edge(maps[0][vit], maps[index][G_p.start_vertex], flat_g);
 
-      auto map_idx_partition = index++;
+      auto map_idx_segment = index++;
       auto vp_p = getVerticesWithAffineIf(G_p.g, G_p.position);
       for (auto vit_p : vp_p) {
         if (G_p.g[vit_p].asyncEventName == "HerdOp") {
@@ -516,7 +516,7 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
                 G_h, flat_subg_h, maps[index], index, idx_h, "herd");
             // Connect parent graph's herarchy node with "start" of herd
             // subgraph
-            add_edge(maps[map_idx_partition][vit_p],
+            add_edge(maps[map_idx_segment][vit_p],
                      maps[index++][G_h.start_vertex], flat_g);
           }
         }
@@ -598,16 +598,16 @@ void dependencyCanonicalizer::addVerticesInHerd(
   }
 }
 
-void dependencyCanonicalizer::addVerticesInPartition(
-    std::deque<dependencyGraph> &part_subgraphs, air::PartitionOp partition,
+void dependencyCanonicalizer::addVerticesInSegment(
+    std::deque<dependencyGraph> &part_subgraphs, air::SegmentOp segment,
     dependencyContext &dep_ctx, graphGranularityProperties expandHier) {
-  // Build up partition graph
-  part_subgraphs.push_back(dependencyGraph(partition.getOperation(), true));
+  // Build up segment graph
+  part_subgraphs.push_back(dependencyGraph(segment.getOperation(), true));
   dependencyGraph *current_part_graph = &(part_subgraphs.back());
 
-  partition.walk([&](Operation *part_childop) {
+  segment.walk([&](Operation *part_childop) {
     if (!part_childop->getParentOfType<air::HerdOp>() &&
-        !dyn_cast<air::PartitionOp>(part_childop)) {
+        !dyn_cast<air::SegmentOp>(part_childop)) {
       addVertexFromOpImpls(part_childop, current_part_graph, dep_ctx);
       if (auto herd = dyn_cast<air::HerdOp>(part_childop)) {
         addVerticesInHerd(current_part_graph->subgraphs, herd, dep_ctx,
@@ -625,14 +625,14 @@ void dependencyCanonicalizer::addVerticesInLaunch(
   dependencyGraph *current_launch_graph = &(launch_subgraphs.back());
 
   launch.walk([&](Operation *launch_childop) {
-    if (!launch_childop->getParentOfType<air::PartitionOp>() &&
+    if (!launch_childop->getParentOfType<air::SegmentOp>() &&
         !dyn_cast<air::LaunchOp>(launch_childop)) {
       addVertexFromOpImpls(launch_childop, current_launch_graph, dep_ctx);
-      if (auto partition = dyn_cast<air::PartitionOp>(launch_childop)) {
-        addVerticesInPartition(current_launch_graph->subgraphs, partition,
-                               dep_ctx, expandHier);
+      if (auto segment = dyn_cast<air::SegmentOp>(launch_childop)) {
+        addVerticesInSegment(current_launch_graph->subgraphs, segment, dep_ctx,
+                             expandHier);
       } else if (dyn_cast<air::HerdOp>(launch_childop) &&
-                 (!launch_childop->getParentOfType<air::PartitionOp>())) {
+                 (!launch_childop->getParentOfType<air::SegmentOp>())) {
         auto herd = dyn_cast<air::HerdOp>(launch_childop);
         addVerticesInHerd(current_launch_graph->subgraphs, herd, dep_ctx,
                           expandHier);
@@ -801,9 +801,9 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromHierarchyOp(
     return addVertexFromOp(
         op, dep_ctx.HierarchyOpID, "hierarchy", "LaunchOp",
         graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
-  } else if (dyn_cast<xilinx::air::PartitionOp>(op.getOperation())) {
+  } else if (dyn_cast<xilinx::air::SegmentOp>(op.getOperation())) {
     return addVertexFromOp(
-        op, dep_ctx.HierarchyOpID, "hierarchy", "PartitionOp",
+        op, dep_ctx.HierarchyOpID, "hierarchy", "SegmentOp",
         graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
   } else if (dyn_cast<xilinx::air::HerdOp>(op.getOperation())) {
     return addVertexFromOp(
@@ -822,9 +822,9 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromTerminatorOp(
     return addVertexFromOp(
         op, dep_ctx.TerminatorID, "hierarchy_terminator", "LaunchTerminator",
         graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
-  } else if (dyn_cast<xilinx::air::PartitionTerminatorOp>(op)) {
+  } else if (dyn_cast<xilinx::air::SegmentTerminatorOp>(op)) {
     return addVertexFromOp(
-        op, dep_ctx.TerminatorID, "hierarchy_terminator", "PartitionTerminator",
+        op, dep_ctx.TerminatorID, "hierarchy_terminator", "SegmentTerminator",
         graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
   } else if (dyn_cast<xilinx::air::HerdTerminatorOp>(op)) {
     // Annotate core id, if showing cores
@@ -956,7 +956,7 @@ std::string dependencyCanonicalizer::getOpTypeFromOpImpls(Operation *op) {
     return "parallel_loop";
   } else if (dyn_cast<xilinx::air::LaunchTerminatorOp>(op)) {
     return "hierarchy_terminator";
-  } else if (dyn_cast<xilinx::air::PartitionTerminatorOp>(op)) {
+  } else if (dyn_cast<xilinx::air::SegmentTerminatorOp>(op)) {
     return "hierarchy_terminator";
   } else if (dyn_cast<xilinx::air::HerdTerminatorOp>(op)) {
     return "hierarchy_terminator";
@@ -1261,7 +1261,7 @@ dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
   return output;
 }
 
-// Connects launch, partition and herd terminators
+// Connects launch, segment and herd terminators
 void dependencyCanonicalizer::connectTerminatorInGraph(Graph &g) {
   auto vp = boost::vertices(g);
   Graph::vertex_descriptor terminator_v = 0;
@@ -1292,7 +1292,7 @@ void dependencyCanonicalizer::connectStartNodeInCommandGraph(
   }
 }
 
-// Adds pointer from command graph to launch, partition and herd terminators
+// Adds pointer from command graph to launch, segment and herd terminators
 void dependencyCanonicalizer::updatePointerFromGraphToHierarchyTerminator(
     dependencyGraph &G) {
   auto vp = boost::vertices(G.g);
@@ -1373,19 +1373,18 @@ void dependencyCanonicalizer::canonicalizeGraphs(
     g_to_tr.submaps.push_back(vertex_to_vertex_map_tree());
     vertex_to_vertex_map_tree *current_launch_g_to_tr =
         &(g_to_tr.submaps.back());
-    for (auto &partitionGraph : launchGraph.subgraphs) {
+    for (auto &segmentGraph : launchGraph.subgraphs) {
       current_launch_graph->subgraphs.push_back(
-          dependencyGraph(partitionGraph.hierarchyOp));
-      dependencyGraph *current_partition_graph =
+          dependencyGraph(segmentGraph.hierarchyOp));
+      dependencyGraph *current_segment_graph =
           &(current_launch_graph->subgraphs.back());
       current_launch_g_to_tr->submaps.push_back(vertex_to_vertex_map_tree());
-      vertex_to_vertex_map_tree *current_partition_g_to_tr =
+      vertex_to_vertex_map_tree *current_segment_g_to_tr =
           &(current_launch_g_to_tr->submaps.back());
-      for (auto &herdGraph : partitionGraph.subgraphs) {
-        current_partition_graph->subgraphs.push_back(
+      for (auto &herdGraph : segmentGraph.subgraphs) {
+        current_segment_graph->subgraphs.push_back(
             dependencyGraph(herdGraph.hierarchyOp));
-        current_partition_g_to_tr->submaps.push_back(
-            vertex_to_vertex_map_tree());
+        current_segment_g_to_tr->submaps.push_back(vertex_to_vertex_map_tree());
       }
     }
   }
@@ -1410,20 +1409,20 @@ void dependencyCanonicalizer::canonicalizeGraphs(
     boostTransitiveReductionImpl(launchGraph.g, trLaunchGraph.g,
                                  launchMap.a_to_b, launchMap.b_to_a);
     for (unsigned j = 0; j < launch_size; j++) {
-      auto &partitionGraph = launchGraph.subgraphs[j];
-      auto &trPartitionGraph = trLaunchGraph.subgraphs[j];
-      auto partition_size = partitionGraph.subgraphs.size();
-      auto partitionMap = launchMap.submaps[j];
-      assert(partition_size == trPartitionGraph.subgraphs.size() &&
+      auto &segmentGraph = launchGraph.subgraphs[j];
+      auto &trSegmentGraph = trLaunchGraph.subgraphs[j];
+      auto segment_size = segmentGraph.subgraphs.size();
+      auto segmentMap = launchMap.submaps[j];
+      assert(segment_size == trSegmentGraph.subgraphs.size() &&
              "graph tree size mismatch");
-      assert(partition_size == partitionMap.submaps.size() &&
+      assert(segment_size == segmentMap.submaps.size() &&
              "graph tree size and map size mismatch");
-      boostTransitiveReductionImpl(partitionGraph.g, trPartitionGraph.g,
-                                   partitionMap.a_to_b, partitionMap.b_to_a);
-      for (unsigned k = 0; k < partition_size; k++) {
-        auto &herdGraph = partitionGraph.subgraphs[k];
-        auto &trHerdGraph = trPartitionGraph.subgraphs[k];
-        auto herdMap = partitionMap.submaps[k];
+      boostTransitiveReductionImpl(segmentGraph.g, trSegmentGraph.g,
+                                   segmentMap.a_to_b, segmentMap.b_to_a);
+      for (unsigned k = 0; k < segment_size; k++) {
+        auto &herdGraph = segmentGraph.subgraphs[k];
+        auto &trHerdGraph = trSegmentGraph.subgraphs[k];
+        auto herdMap = segmentMap.submaps[k];
         boostTransitiveReductionImpl(herdGraph.g, trHerdGraph.g, herdMap.a_to_b,
                                      herdMap.b_to_a);
       }
@@ -1502,9 +1501,9 @@ void dependencyCanonicalizer::updateDepList(func::FuncOp func,
   purgeAIRDepList(global_graph);
   for (auto &launchGraph : global_graph.subgraphs) {
     purgeAIRDepList(launchGraph);
-    for (auto &partitionGraph : launchGraph.subgraphs) {
-      purgeAIRDepList(partitionGraph);
-      for (auto &herdGraph : partitionGraph.subgraphs) {
+    for (auto &segmentGraph : launchGraph.subgraphs) {
+      purgeAIRDepList(segmentGraph);
+      for (auto &herdGraph : segmentGraph.subgraphs) {
         purgeAIRDepList(herdGraph);
       }
     }
@@ -1514,9 +1513,9 @@ void dependencyCanonicalizer::updateDepList(func::FuncOp func,
   fillAIRDepListUsingGraphTR(global_graph);
   for (auto &launchGraph : global_graph.subgraphs) {
     fillAIRDepListUsingGraphTR(launchGraph);
-    for (auto &partitionGraph : launchGraph.subgraphs) {
-      fillAIRDepListUsingGraphTR(partitionGraph);
-      for (auto &herdGraph : partitionGraph.subgraphs) {
+    for (auto &segmentGraph : launchGraph.subgraphs) {
+      fillAIRDepListUsingGraphTR(segmentGraph);
+      for (auto &herdGraph : segmentGraph.subgraphs) {
         fillAIRDepListUsingGraphTR(herdGraph);
       }
     }

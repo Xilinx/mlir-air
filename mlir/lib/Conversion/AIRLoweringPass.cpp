@@ -108,20 +108,20 @@ public:
   }
 };
 
-class AIRPartitionConversion : public ConversionPattern {
+class AIRSegmentConversion : public ConversionPattern {
 public:
-  explicit AIRPartitionConversion(MLIRContext *context)
-      : ConversionPattern(air::PartitionOp::getOperationName(), 1, context) {}
+  explicit AIRSegmentConversion(MLIRContext *context)
+      : ConversionPattern(air::SegmentOp::getOperationName(), 1, context) {}
 
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
-    air::PartitionOp partition = cast<air::PartitionOp>(op);
+    air::SegmentOp segment = cast<air::SegmentOp>(op);
     if (auto attr =
             op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
-      auto partition_name = attr.getValue().str();
-      rewriter.create<airrt::PartitionLoadOp>(
-          op->getLoc(), rewriter.getI64Type(), partition_name);
+      auto segment_name = attr.getValue().str();
+      rewriter.create<airrt::SegmentLoadOp>(op->getLoc(), rewriter.getI64Type(),
+                                            segment_name);
     }
 
     SmallVector<Value> deps;
@@ -131,15 +131,15 @@ public:
     if (op->getNumResults()) {
       auto w = rewriter.create<airrt::WaitAllOp>(
           op->getLoc(), airrt::EventType::get(op->getContext()), deps);
-      partition.getResult(0).replaceAllUsesWith(w.getResult(0));
+      segment.getResult(0).replaceAllUsesWith(w.getResult(0));
     }
 
     SmallVector<Value> lbs, ubs, steps;
     auto c0 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 0);
     auto c1 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1);
 
-    // make scf.parallel to replace air.partition
-    for (auto d : partition.getSizeOperands()) {
+    // make scf.parallel to replace air.segment
+    for (auto d : segment.getSizeOperands()) {
       lbs.push_back(c0);
       ubs.push_back(d);
       steps.push_back(c1);
@@ -152,20 +152,19 @@ public:
     auto scfPar =
         rewriter.create<scf::ParallelOp>(op->getLoc(), lbs, ubs, steps);
 
-    // map partition iteration space to scf.parallel ivs
-    for (auto p : llvm::zip(partition.getIds(), scfPar.getInductionVars()))
+    // map segment iteration space to scf.parallel ivs
+    for (auto p : llvm::zip(segment.getIds(), scfPar.getInductionVars()))
       std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
 
-    // map partition size to scf.parallel upper bounds
-    for (auto p :
-         llvm::zip(partition.getSizeOperands(), scfPar.getUpperBound()))
+    // map segment size to scf.parallel upper bounds
+    for (auto p : llvm::zip(segment.getSizeOperands(), scfPar.getUpperBound()))
       std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
 
     int i = 0;
-    for (auto arg : partition.getKernelArguments())
-      arg.replaceAllUsesWith(partition.getKernelOperand(i++));
+    for (auto arg : segment.getKernelArguments())
+      arg.replaceAllUsesWith(segment.getKernelOperand(i++));
 
-    auto &body = partition.getBody().front().getOperations();
+    auto &body = segment.getBody().front().getOperations();
     scfPar.getBody()->getOperations().splice(scfPar.getBody()->begin(), body,
                                              body.begin(), --body.end());
 
@@ -182,7 +181,7 @@ public:
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
-    air::HerdOp launch = cast<air::HerdOp>(op);
+    air::HerdOp herd = cast<air::HerdOp>(op);
 
     auto herd_name_attr =
         op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
@@ -202,34 +201,39 @@ public:
     if (op->getNumResults()) {
       auto w = rewriter.create<airrt::WaitAllOp>(
           op->getLoc(), airrt::EventType::get(op->getContext()), deps);
-      launch.getResult(0).replaceAllUsesWith(w.getResult(0));
+      herd.getResult(0).replaceAllUsesWith(w.getResult(0));
     }
 
-    auto herd_size = launch.getSizeOperands();
-    int64_t herd_size_x = launch.getNumCols();
-    int64_t herd_size_y = launch.getNumRows();
+    // If the herd doesn't contain a dma op, then it can be deleted
+    SmallVector<Operation *> herdOps;
+    herd.walk([&](air::DmaMemcpyInterface op) { herdOps.push_back(op); });
 
-    auto outer = rewriter.create<AffineForOp>(launch.getLoc(), 0, herd_size_x);
-    auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
-    auto inner =
-        outer_builder.create<AffineForOp>(launch.getLoc(), 0, herd_size_y);
+    if (herdOps.size()) {
+      auto herd_size = herd.getSizeOperands();
+      int64_t herd_size_x = herd.getNumCols();
+      int64_t herd_size_y = herd.getNumRows();
 
-    outer->setAttr("air.herd", StringAttr::get(op->getContext(), "outer"));
-    inner->setAttr("air.herd", StringAttr::get(op->getContext(), "inner"));
+      auto outer = rewriter.create<AffineForOp>(herd.getLoc(), 0, herd_size_x);
+      auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
+      auto inner =
+          outer_builder.create<AffineForOp>(herd.getLoc(), 0, herd_size_y);
 
-    launch.getSize()[0].replaceAllUsesWith(herd_size[0]);
-    launch.getSize()[1].replaceAllUsesWith(herd_size[1]);
-    launch.getIds()[0].replaceAllUsesWith(outer.getInductionVar());
-    launch.getIds()[1].replaceAllUsesWith(inner.getInductionVar());
+      outer->setAttr("air.herd", StringAttr::get(op->getContext(), "outer"));
+      inner->setAttr("air.herd", StringAttr::get(op->getContext(), "inner"));
 
-    int i = 0;
-    for (auto arg : launch.getKernelArguments())
-      arg.replaceAllUsesWith(launch.getKernelOperand(i++));
+      herd.getSize()[0].replaceAllUsesWith(herd_size[0]);
+      herd.getSize()[1].replaceAllUsesWith(herd_size[1]);
+      herd.getIds()[0].replaceAllUsesWith(outer.getInductionVar());
+      herd.getIds()[1].replaceAllUsesWith(inner.getInductionVar());
 
-    auto &body = launch.getBody().front().getOperations();
-    inner.getBody()->getOperations().splice(inner.getBody()->begin(), body,
-                                            body.begin(), --body.end());
+      int i = 0;
+      for (auto arg : herd.getKernelArguments())
+        arg.replaceAllUsesWith(herd.getKernelOperand(i++));
 
+      auto &body = herd.getBody().front().getOperations();
+      inner.getBody()->getOperations().splice(inner.getBody()->begin(), body,
+                                              body.begin(), --body.end());
+    }
     rewriter.eraseOp(op);
     return success();
   }
@@ -433,6 +437,252 @@ public:
     } else {
       airrtOp = rewriter.create<airrt::DmaMemcpyNdOp>(loc, tys, opers);
     }
+    rewriter.replaceOp(op, airrtOp->getResults());
+    return success();
+  }
+};
+
+class AIRChannelPutToAIRRtConversion
+    : public OpConversionPattern<xilinx::air::ChannelPutOp> {
+public:
+  using OpConversionPattern<xilinx::air::ChannelPutOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(xilinx::air::ChannelPutOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    auto ctx = op->getContext();
+
+    if (op->getParentOfType<air::HerdOp>())
+      return failure();
+
+    SmallVector<Value, 4> deps;
+    for (auto o : adaptor.getOperands())
+      if (o.getType().isa<xilinx::airrt::EventType>())
+        deps.push_back(o);
+    if (deps.size())
+      rewriter.create<xilinx::airrt::WaitAllOp>(
+          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
+
+    auto getOps = getTheOtherChannelOpThroughSymbol(op);
+    if (getOps.size() > 1)
+      return failure();
+    auto getOp = getOps[0];
+
+    MemRefType srcType = op.getSrc().getType().cast<MemRefType>();
+    MemRefType dstType = getOp.getDst().getType().cast<MemRefType>();
+
+    bool isFromTile = false;
+    bool isFullMemcpy = false;
+    if (srcType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1 &&
+        dstType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3) {
+      isFromTile = true;
+    } else if (dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L1 &&
+               srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L3) {
+      isFromTile = false;
+    } else if (srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L1 &&
+               dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L2) {
+      isFromTile = true;
+    } else if (dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L1 &&
+               srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L2) {
+      isFromTile = false;
+    } else if (srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L3 &&
+               dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L2) {
+      isFullMemcpy = true;
+    } else if (dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L3 &&
+               srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L2) {
+      isFromTile = true;
+      isFullMemcpy = true;
+    } else
+      return failure();
+    assert(!isFromTile);
+    assert(!isFullMemcpy);
+
+    SmallVector<Value, 16> opers;
+
+    auto idTy = IntegerType::get(op->getContext(), 32);
+    if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
+      opers.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
+    } else {
+      opers.push_back(rewriter.create<arith::ConstantOp>(
+          loc, idTy, IntegerAttr::get(idTy, 0)));
+    }
+
+    auto i64Ty = rewriter.getI64Type();
+    auto zero = rewriter.create<arith::ConstantOp>(loc, i64Ty,
+                                                   IntegerAttr::get(i64Ty, 0));
+    auto one = rewriter.create<arith::ConstantOp>(loc, i64Ty,
+                                                  IntegerAttr::get(i64Ty, 1));
+
+    // tile ids
+    opers.push_back(zero.getResult());
+    opers.push_back(zero.getResult());
+
+    opers.push_back(op.getSrc());
+
+    SmallVector<Value, 4> offsets(4, zero);
+    SmallVector<Value, 4> lengths(4, one);
+    SmallVector<Value, 3> strides(3, zero);
+
+    int idx = 4 - srcType.getRank();
+    for (auto o : op.getSrcOffsets())
+      offsets[idx++] = rewriter.create<arith::IndexCastOp>(
+          op->getLoc(), IntegerType::get(ctx, 64), o);
+    idx = 4 - dstType.getRank();
+    auto op_strides = op.getSrcStrides();
+    if (op_strides.size())
+      for (auto o : op_strides.drop_back())
+        strides[idx++] = rewriter.create<arith::IndexCastOp>(
+            op->getLoc(), IntegerType::get(ctx, 64), o);
+    idx = 4 - srcType.getRank();
+    for (auto o : op.getSrcSizes())
+      lengths[idx++] = rewriter.create<arith::IndexCastOp>(
+          op->getLoc(), IntegerType::get(ctx, 64), o);
+
+    opers.append(offsets);
+    opers.append(lengths);
+    opers.append(strides);
+
+    Operation *airrtOp = nullptr;
+    SmallVector<Type, 1> tys;
+    if (op->getNumResults())
+      tys.push_back(xilinx::airrt::EventType::get(ctx));
+
+    airrtOp = rewriter.create<xilinx::airrt::DmaMemcpyNdOp>(loc, tys, opers);
+
+    rewriter.replaceOp(op, airrtOp->getResults());
+    return success();
+  }
+};
+
+class AIRChannelGetToAIRRtConversion
+    : public OpConversionPattern<xilinx::air::ChannelGetOp> {
+public:
+  using OpConversionPattern<xilinx::air::ChannelGetOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(xilinx::air::ChannelGetOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    auto ctx = op->getContext();
+
+    if (op->getParentOfType<air::HerdOp>())
+      return failure();
+
+    SmallVector<Value, 4> deps;
+    for (auto o : adaptor.getOperands())
+      if (o.getType().isa<xilinx::airrt::EventType>())
+        deps.push_back(o);
+    if (deps.size())
+      rewriter.create<xilinx::airrt::WaitAllOp>(
+          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
+
+    auto putOps = getTheOtherChannelOpThroughSymbol(op);
+    if (putOps.size() > 1)
+      return failure();
+    auto putOp = putOps[0];
+
+    MemRefType srcType = putOp.getSrc().getType().cast<MemRefType>();
+    MemRefType dstType = op.getDst().getType().cast<MemRefType>();
+
+    bool isFromTile = false;
+    bool isFullMemcpy = false;
+    if (srcType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1 &&
+        dstType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3) {
+      isFromTile = true;
+    } else if (dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L1 &&
+               srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L3) {
+      isFromTile = false;
+    } else if (srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L1 &&
+               dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L2) {
+      isFromTile = true;
+    } else if (dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L1 &&
+               srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L2) {
+      isFromTile = false;
+    } else if (srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L3 &&
+               dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L2) {
+      isFullMemcpy = true;
+    } else if (dstType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L3 &&
+               srcType.getMemorySpaceAsInt() ==
+                   (int)xilinx::air::MemorySpace::L1) {
+      isFromTile = true;
+      isFullMemcpy = true;
+    } else
+      return failure();
+    assert(isFromTile);
+    assert(!isFullMemcpy);
+
+    SmallVector<Value, 16> opers;
+
+    auto idTy = IntegerType::get(op->getContext(), 32);
+    if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
+      opers.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
+    } else {
+      opers.push_back(rewriter.create<arith::ConstantOp>(
+          loc, idTy, IntegerAttr::get(idTy, 0)));
+    }
+
+    auto i64Ty = rewriter.getI64Type();
+    auto zero = rewriter.create<arith::ConstantOp>(loc, i64Ty,
+                                                   IntegerAttr::get(i64Ty, 0));
+    auto one = rewriter.create<arith::ConstantOp>(loc, i64Ty,
+                                                  IntegerAttr::get(i64Ty, 1));
+
+    // tile ids
+    opers.push_back(zero.getResult());
+    opers.push_back(zero.getResult());
+
+    opers.push_back(op.getDst());
+
+    SmallVector<Value, 4> offsets(4, zero);
+    SmallVector<Value, 4> lengths(4, one);
+    SmallVector<Value, 3> strides(3, zero);
+
+    int idx = 4 - srcType.getRank();
+    for (auto o : op.getDstOffsets())
+      offsets[idx++] = rewriter.create<arith::IndexCastOp>(
+          op->getLoc(), IntegerType::get(ctx, 64), o);
+    idx = 4 - dstType.getRank();
+    auto op_strides = op.getDstStrides();
+    if (op_strides.size())
+      for (auto o : op_strides.drop_back())
+        strides[idx++] = rewriter.create<arith::IndexCastOp>(
+            op->getLoc(), IntegerType::get(ctx, 64), o);
+    idx = 4 - srcType.getRank();
+    for (auto o : op.getDstSizes())
+      lengths[idx++] = rewriter.create<arith::IndexCastOp>(
+          op->getLoc(), IntegerType::get(ctx, 64), o);
+
+    opers.append(offsets);
+    opers.append(lengths);
+    opers.append(strides);
+
+    Operation *airrtOp = nullptr;
+    SmallVector<Type, 1> tys;
+    if (op->getNumResults())
+      tys.push_back(xilinx::airrt::EventType::get(ctx));
+
+    airrtOp = rewriter.create<xilinx::airrt::DmaMemcpyNdOp>(loc, tys, opers);
+
     rewriter.replaceOp(op, airrtOp->getResults());
     return success();
   }
@@ -709,14 +959,15 @@ public:
     air_patterns
         .add<ScfYieldOpConversion, ScfIfOpConversion, ScfForOpConversion,
              L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion,
-             AIRLaunchConversion, AIRPartitionConversion, AIRHerdConversion>(
+             AIRLaunchConversion, AIRSegmentConversion, AIRHerdConversion>(
             context);
 
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(air_patterns,
                                                                    converter);
 
     air_patterns
-        .add<AIRDmaMemcpyNdToAIRRtConversion, AIRWaitAllToAIRRtConversion>(
+        .add<AIRDmaMemcpyNdToAIRRtConversion, AIRChannelPutToAIRRtConversion,
+             AIRChannelGetToAIRRtConversion, AIRWaitAllToAIRRtConversion>(
             converter, context);
 
     if (failed(

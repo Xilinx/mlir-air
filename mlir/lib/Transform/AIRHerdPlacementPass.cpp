@@ -86,10 +86,10 @@ private:
   int32_t locY = -1;
 };
 
-class Partition {
+class Segment {
 
 public:
-  Partition(int numRows, int numCols, int anchorPointRow, int anchorPointCol)
+  Segment(int numRows, int numCols, int anchorPointRow, int anchorPointCol)
       : numRows(numRows), numCols(numCols), anchorPointRow(anchorPointRow),
         anchorPointCol(anchorPointCol) {
     grid.assign(numRows, std::vector<int>(numCols, -1));
@@ -135,7 +135,7 @@ public:
     }
   }
 
-  void printPartition() const {
+  void printSegment() const {
     for (uint32_t i = 0; i < grid.size(); i++) {
       for (uint32_t j = 0; j < grid[i].size(); j++) {
         llvm::outs() << grid[i][j] << " ";
@@ -175,19 +175,19 @@ public:
 
     auto module = getOperation();
 
-    // Place herds in partitions
-    module.walk([&](air::PartitionOp part) {
-      std::vector<std::unique_ptr<Herd>> partitionHerds;
+    // Place herds in segments
+    module.walk([&](air::SegmentOp part) {
+      std::vector<std::unique_ptr<Herd>> segmentHerds;
       part.walk([&](air::HerdOp herd) {
         auto herd_size_x = herd.getNumCols();
         auto herd_size_y = herd.getNumRows();
-        auto number = partitionHerds.size();
+        auto number = segmentHerds.size();
         auto herdPtr =
             std::make_unique<Herd>(herd, herd_size_y, herd_size_x, number);
-        partitionHerds.push_back(std::move(herdPtr));
+        segmentHerds.push_back(std::move(herdPtr));
       });
 
-      // If the size and offset attributes of the partition op are set then use
+      // If the size and offset attributes of the segment op are set then use
       // them. Otherwise use the values from the command line.
       auto num_rows_op = part.getNumRows();
       auto num_cols_op = part.getNumCols();
@@ -198,9 +198,9 @@ public:
       auto num_cols = num_cols_op ? *num_cols_op : clNumCols;
       auto row_offset = row_offset_op ? *row_offset_op : clAnchorPointRow;
       auto col_offset = col_offset_op ? *col_offset_op : clAnchorPointCol;
-      auto partition = std::make_unique<Partition>(num_rows, num_cols,
-                                                   row_offset, col_offset);
-      placeHerdsInPartition(partitionHerds, partition);
+      auto segment =
+          std::make_unique<Segment>(num_rows, num_cols, row_offset, col_offset);
+      placeHerdsInSegment(segmentHerds, segment);
 
       auto intTy = IntegerType::get(part->getContext(), 64);
       part->setAttr(part.getRowOffsetAttrName(),
@@ -217,11 +217,11 @@ public:
       f.walk([&](air::HerdOp herd) {
         std::vector<std::unique_ptr<Herd>> unplacedHerds;
 
-        // Place herds not in partitions
-        std::unique_ptr<Partition> partition = std::make_unique<Partition>(
+        // Place herds not in segments
+        std::unique_ptr<Segment> segment = std::make_unique<Segment>(
             clNumRows, clNumCols, clAnchorPointRow, clAnchorPointCol);
 
-        if (herd->getParentOfType<air::PartitionOp>())
+        if (herd->getParentOfType<air::SegmentOp>())
           return;
 
         // Any pre-placed herds are assumed to be outside if the area being used
@@ -236,15 +236,15 @@ public:
             std::make_unique<Herd>(herd, herd_size_y, herd_size_x, number);
         unplacedHerds.push_back(std::move(herdPtr));
 
-        placeHerdsInPartition(unplacedHerds, partition);
+        placeHerdsInSegment(unplacedHerds, segment);
       });
     });
     return;
   }
 
 private:
-  void placeHerdsInPartition(std::vector<std::unique_ptr<Herd>> &unplacedHerds,
-                             std::unique_ptr<Partition> &partition) {
+  void placeHerdsInSegment(std::vector<std::unique_ptr<Herd>> &unplacedHerds,
+                           std::unique_ptr<Segment> &segment) {
 
     std::sort(
         unplacedHerds.begin(), unplacedHerds.end(),
@@ -253,7 +253,7 @@ private:
         });
 
     std::vector<std::unique_ptr<Herd>> placedHerds;
-    naivePlacement(partition, unplacedHerds, placedHerds);
+    naivePlacement(segment, unplacedHerds, placedHerds);
 
     if (unplacedHerds.size() != 0) {
       getOperation().emitError("No valid placement found.");
@@ -272,28 +272,27 @@ private:
       herdOp->setAttr(
           yLocName,
           IntegerAttr::get(IntegerType::get(herdOp->getContext(), 64),
-                           herd->getLocY() + partition->getAnchorPointRow()));
+                           herd->getLocY() + segment->getAnchorPointRow()));
       herdOp->setAttr(
           xLocName,
           IntegerAttr::get(IntegerType::get(herdOp->getContext(), 64),
-                           herd->getLocX() + partition->getAnchorPointCol()));
+                           herd->getLocX() + segment->getAnchorPointCol()));
     }
   }
 
   // Performs placement, trying to place the first herd on the anchor point
   // first, moving from left -> right, up a row, then left -> right again. Will
-  // try to place each remaining unplaced herd in each open partition tile.
-  void naivePlacement(std::unique_ptr<Partition> &partition,
+  // try to place each remaining unplaced herd in each open segment tile.
+  void naivePlacement(std::unique_ptr<Segment> &segment,
                       std::vector<std::unique_ptr<Herd>> &unplacedHerds,
                       std::vector<std::unique_ptr<Herd>> &placedHerds) {
-    for (int64_t i = 0; i < partition->getNumRows(); i++) {
-      for (int64_t j = 0; j < partition->getNumCols(); j++) {
-        if (partition->grid[partition->getNumRows() - i - 1][j] == -1) {
+    for (int64_t i = 0; i < segment->getNumRows(); i++) {
+      for (int64_t j = 0; j < segment->getNumCols(); j++) {
+        if (segment->grid[segment->getNumRows() - i - 1][j] == -1) {
           for (uint32_t k = 0; k < unplacedHerds.size(); k++) {
-            bool legalPlace =
-                partition->isLegalPlacement(unplacedHerds[k], i, j);
+            bool legalPlace = segment->isLegalPlacement(unplacedHerds[k], i, j);
             if (legalPlace) {
-              partition->placeHerd(unplacedHerds[k], i, j);
+              segment->placeHerd(unplacedHerds[k], i, j);
               unplacedHerds[k]->setLocX(j);
               unplacedHerds[k]->setLocY(i);
               placedHerds.push_back(std::move(unplacedHerds[k]));

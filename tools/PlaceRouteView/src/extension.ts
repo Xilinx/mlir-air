@@ -143,7 +143,7 @@ var row_size = -1;
 var col_size = -1;
 
 export function activate(context: vscode.ExtensionContext) {
-  // Partition pannel
+  // Segment pannel
   let openFilePartPanel: any = {};
   let currPartFileName: string;
 
@@ -152,7 +152,7 @@ export function activate(context: vscode.ExtensionContext) {
   let currRouteFileName: string;
 
   context.subscriptions.push(
-      // sets up the webview (visual representation of a partition)
+      // sets up the webview (visual representation of a segment)
       vscode.commands.registerCommand('prviewer.start', (passedInPart: string|
                                                          undefined) => {
         const editor = vscode.window.activeTextEditor;
@@ -265,7 +265,7 @@ export function activate(context: vscode.ExtensionContext) {
           const drawName = getFirstPart(json_object);
           if (!drawName) {
             vscode.window.showInformationMessage(
-                "Please add a partition to the file before running the Part command.");
+                "Please add a segment to the file before running the Part command.");
             return;
           }
 
@@ -323,7 +323,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
       })());
 
-  // Show the desired partition when hovering
+  // Show the desired segment when hovering
   vscode.languages.registerHoverProvider(
       'json', new (class implements vscode.HoverProvider {
         provideHover(_document: vscode.TextDocument, _position: vscode.Position,
@@ -345,7 +345,7 @@ export function activate(context: vscode.ExtensionContext) {
       })());
 
   context.subscriptions.push(
-      // sets up the webview (visual representation of a partition)
+      // sets up the webview (visual representation of a segment)
       vscode.commands.registerCommand('prviewer.drawRoutes', (passedInRoute:
                                                                   string|
                                                               undefined) => {
@@ -542,16 +542,16 @@ function update_window(document: vscode.TextDocument,
                        json_object: any, currPartName: string|undefined) {
 
   const switchbox_dict_keys: Array<Array<string>> = sort_keys(json_object);
-  // if we don't have a partition field
+  // if we don't have a segment field
   if (isPart && switchbox_dict_keys[1].length === 0) {
-    vscode.window.showInformationMessage(`No partitioning field was found.
-		Please ensure that the .json file has a valid partitioning field in the
-		form: "partition<xx>": [[<partition#>, <partition name>, [<row#>, <col#>], ...], ...]`);
+    vscode.window.showInformationMessage(`No segmenting field was found.
+		Please ensure that the .json file has a valid segmenting field in the
+		form: "segment<xx>": [[<segment#>, <segment name>, [<row#>, <col#>], ...], ...]`);
     return;
   }
   if (isRoute && switchbox_dict_keys[2].length === 0) {
     vscode.window.showInformationMessage(`No routing field was found.
-		Please ensure that the .json file has a valid partitioning field in the
+		Please ensure that the .json file has a valid segmenting field in the
 		form: "Route<xx>": [[[AIE_col, AIE_row], [<Direction or DMA>, ...]] ... [] ]`);
   }
 
@@ -569,22 +569,22 @@ function update_window(document: vscode.TextDocument,
   }
 
   if (isPart) {
-    var partition_array;
+    var segment_array;
     if (typeof (currPartName) === 'undefined') {
-      partition_array = get_partition(json_object, switchbox_dict_keys[1]);
+      segment_array = get_segment(json_object, switchbox_dict_keys[1]);
       panel.title =
           `${switchbox_dict_keys[1][0]} in ` +
           document.fileName.substring(document.fileName.lastIndexOf("/") + 1);
     } else {
-      partition_array = get_partition(json_object, [ currPartName ]);
+      segment_array = get_segment(json_object, [ currPartName ]);
     }
     const format_check_part =
-        check_partition_array_validity(partition_array, row_size, col_size);
+        check_segment_array_validity(segment_array, row_size, col_size);
     if (format_check_part) {
       vscode.window.showInformationMessage(format_check_part);
       return;
     }
-    const sorted_partiton_array = rearrange_partition(partition_array);
+    const sorted_partiton_array = rearrange_segment(segment_array);
     const colored_grid = color_grid(sorted_partiton_array, row_size, col_size);
     var region_array: Array<number> = [];
 
@@ -682,7 +682,7 @@ function match(array: any, str: string) {
 // Gets first instance of route name in .json object
 function getFirstPart(json_object: any) {
   for (var key in json_object) {
-    if (key.includes("partition")) {
+    if (key.includes("segment")) {
       return key;
     }
   }
@@ -731,8 +731,8 @@ function getSwitchboxes(json_file: any, keys: Array<string>) {
   return target_elements;
 }
 
-// get_partition
-function get_partition(json_file: any, keys: Array<string>) {
+// get_segment
+function get_segment(json_file: any, keys: Array<string>) {
   const target_elements = json_file[keys[0]];
   return target_elements;
 }
@@ -762,28 +762,28 @@ function get_max_key_value(element_list: any, value: string) {
 //   json_list (object): Parsed JSON object
 // Returns:
 //   all_sorted_labels (array): 2d Array containing arrays of relevant key names
-//                              e.g. [[<switchbox names>], [<partitions>],
+//                              e.g. [[<switchbox names>], [<segments>],
 //                              [<routes>], [<regions>]]
 function sort_keys(json_list: Object) {
   const obj_keys = Object.keys(json_list);
   var switchboxes = [];
   var route_routes = [];
-  var partitions = [];
+  var segments = [];
   var regions = [];
   for (var i = 0; i < obj_keys.length; i++) {
     if (obj_keys[i].includes("switchbox")) {
       switchboxes.push(String(obj_keys[i]));
     } else if (obj_keys[i].includes("route")) {
       route_routes.push(obj_keys[i]);
-    } else if (obj_keys[i].includes("partition")) {
-      partitions.push(obj_keys[i]);
+    } else if (obj_keys[i].includes("segment")) {
+      segments.push(obj_keys[i]);
     } else if (obj_keys[i].includes("region")) {
       regions.push(obj_keys[i]);
     }
   }
   var all_sorted_labels = [];
   all_sorted_labels.push(switchboxes);
-  all_sorted_labels.push(partitions);
+  all_sorted_labels.push(segments);
   all_sorted_labels.push(route_routes);
   all_sorted_labels.push(regions);
   return all_sorted_labels;
@@ -802,7 +802,7 @@ function sort_keys(json_list: Object) {
 // Inputs:
 //   max_row (integer): the number of rows
 //   max_col (integer): the number of columns
-//   partition_array (object): Array of the partitions in the form:
+//   segment_array (object): Array of the segments in the form:
 //                             [ [[<AIE_col #>, <AIE_row #>], ["<direction or
 //                             DMA>", ...]], ... [] ]
 // Outputs:
@@ -924,7 +924,7 @@ function check_route_array_validity(route_array: any, max_row: number,
   return null;
 }
 
-// Ensures that the array of values we have is valid for partitions
+// Ensures that the array of values we have is valid for segments
 //
 // Examples:
 //   [ [2, [1, 1], [0, 1]], [1, [1, 0]] ] - valid
@@ -933,49 +933,49 @@ function check_route_array_validity(route_array: any, max_row: number,
 // Inputs:
 //   max_row (integer): the number of rows
 //   max_col (integer): the number of columns
-//   partition_array (object): Array of the partitions in the form [ [Partititon
+//   segment_array (object): Array of the segments in the form [ [Partititon
 //   #, [AIE_row, AIE_col]] ]
 // Outputs:
 //   null if valid, string if invalid
-function check_partition_array_validity(partition_array: any, max_row: number,
-                                        max_col: number) {
+function check_segment_array_validity(segment_array: any, max_row: number,
+                                      max_col: number) {
   // valid array dimensions
-  // var used_partitions: Array<number> = [];
+  // var used_segments: Array<number> = [];
   var used_tile_locations = [];
 
-  for (var i = 0; i < partition_array.length; i++) {
-    if (typeof (partition_array[i][0]) !== 'number') {
-      return "invalid partition number: " + String(partition_array[i][0]);
+  for (var i = 0; i < segment_array.length; i++) {
+    if (typeof (segment_array[i][0]) !== 'number') {
+      return "invalid segment number: " + String(segment_array[i][0]);
     }
-    if (partition_array[i].length > 1) {
+    if (segment_array[i].length > 1) {
       var j = 1;
-      if (typeof (partition_array[i][1]) == 'string') {
+      if (typeof (segment_array[i][1]) == 'string') {
         var j = 2;
-      } else if (typeof (partition_array[i][1]) !== 'object') {
-        return "Incorrect string value: the second value in a partition must be either a string\
+      } else if (typeof (segment_array[i][1]) !== 'object') {
+        return "Incorrect string value: the second value in a segment must be either a string\
 				        or a list."
       }
-      for (j; j < partition_array[i].length; j++) {
+      for (j; j < segment_array[i].length; j++) {
         var a = JSON.stringify(used_tile_locations);
-        var b = JSON.stringify(partition_array[i][j]);
+        var b = JSON.stringify(segment_array[i][j]);
         if (a.indexOf(b) !== -1) {
           return "Repeat use of tile assignment: " + String(b);
         }
-        used_tile_locations.push(partition_array[i][j]);
-        if (typeof (partition_array[i][j]) !== 'object' ||
-            partition_array[i][j].length !== 2) {
-          return "Invalid [x, y] array at partition " + String(i) + ", entry " +
+        used_tile_locations.push(segment_array[i][j]);
+        if (typeof (segment_array[i][j]) !== 'object' ||
+            segment_array[i][j].length !== 2) {
+          return "Invalid [x, y] array at segment " + String(i) + ", entry " +
                  String(j);
         }
-        if (typeof (partition_array[i][j][0]) !== 'number' ||
-            typeof (partition_array[i][j][1]) !== 'number') {
-          return "Arguments in [x, y] tile are not integers at partition " +
+        if (typeof (segment_array[i][j][0]) !== 'number' ||
+            typeof (segment_array[i][j][1]) !== 'number') {
+          return "Arguments in [x, y] tile are not integers at segment " +
                  String(i) + ", entry " + String(j);
         }
-        if (partition_array[i][j][0] >= max_row ||
-            partition_array[i][j][1] >= max_col ||
-            partition_array[i][j][0] < 0 || partition_array[i][j][1] < 0) {
-          return "Tile coordinates are outside of max range in partition " +
+        if (segment_array[i][j][0] >= max_row ||
+            segment_array[i][j][1] >= max_col || segment_array[i][j][0] < 0 ||
+            segment_array[i][j][1] < 0) {
+          return "Tile coordinates are outside of max range in segment " +
                  String(i) + ", entry " + String(j);
         }
       }
@@ -988,12 +988,12 @@ function check_partition_array_validity(partition_array: any, max_row: number,
 function check_region_array_validity(region_array: Array<number>) {
   if (region_array.length !== 2) {
     return "Invalid length of region array. Please use the format [<color number>, <# AIEs per row \
-			of partition>, <# AIEs per column of partition>]."
+			of segment>, <# AIEs per column of segment>]."
   }
   if (typeof (region_array[0]) !== 'number' ||
       typeof (region_array[1]) !== 'number') {
     return "Invalid length of region array. Please use the format [<color number>, <# AIEs per row \
-			of partition>, <# AIEs per column of partition>]."
+			of segment>, <# AIEs per column of segment>]."
   }
   if (region_array.length === 2 && row_size % region_array[0] !== 0 ||
       col_size % region_array[1] !== 0) {
@@ -1003,19 +1003,19 @@ function check_region_array_validity(region_array: Array<number>) {
 
 // Translates the partitoned AIEs to an array of colors
 // Example:
-//   partitions: [[1, 0, 1], [1, 1, 1], [2, 0, 1], [2, 1, 0]]
+//   segments: [[1, 0, 1], [1, 1, 1], [2, 0, 1], [2, 1, 0]]
 //   max_rows = 2
 //   max_cols = 2 ->
 //   [cyan, purple, cyan, cyan]
 // Inputs:
-//   partitions (array): Array of the AIE partitions [[partition #, row #, col
+//   segments (array): Array of the AIE segments [[segment #, row #, col
 //   #],[...]] max_rows (integer): Number of rows in AIE grid max_cols
 //   (integer): Number of columns in AIE grid
 // Return:
 //   colored_grid (array<array<string>>): Array of strings of colors for AIE
 //   tiles, also containing the strings of the herd name
 //   (optional): [[<color>, <name>], ...]
-function color_grid(partitions: any, max_rows: number, max_cols: number) {
+function color_grid(segments: any, max_rows: number, max_cols: number) {
 
   var colored_grid: Array<Array<string>> = [];
   for (var x = 0; x < max_cols * max_rows; x++) {
@@ -1023,10 +1023,10 @@ function color_grid(partitions: any, max_rows: number, max_cols: number) {
     colored_grid[x][0] = "white";
     colored_grid[x][1] = "";
   }
-  for (var i = 0; i < partitions.length; i++) {
-    const curr_row = partitions[i][1];
-    const curr_col = partitions[i][2];
-    const curr_color = select_color(partitions[i][0]);
+  for (var i = 0; i < segments.length; i++) {
+    const curr_row = segments[i][1];
+    const curr_col = segments[i][2];
+    const curr_color = select_color(segments[i][0]);
 
     // This is a bit complex - the numbering for MLIR is a bit odd. The bottom
     // left tile is [1, 0] in the form <row, col>, as the shim is on the 0th
@@ -1034,8 +1034,8 @@ function color_grid(partitions: any, max_rows: number, max_cols: number) {
     // the indexies need to be adjusted so that they end up in the right place.
     const index = (max_rows - (curr_row + 1)) * max_cols + curr_col;
     colored_grid[index][0] = String(curr_color);
-    if (partitions[i].length === 4) {
-      const name = adjust_name_size(partitions[i][3])
+    if (segments[i].length === 4) {
+      const name = adjust_name_size(segments[i][3])
       colored_grid[index][1] = name;
     }
   }
@@ -1058,26 +1058,26 @@ function adjust_name_size(name: string) {
 // Example: [ [0, [1, 0], [2, 0], [3, 0]], [1, [1, 1], [2, 1]] ] ->
 //          [ [0, 1, 0], [0, 2, 0], [0, 3, 0], [1, 1, 1], [1, 2, 1] ]
 // Inputs:
-//   partitions (Array): array of partitions: [ [Part #, [row, col] ...] ...]
+//   segments (Array): array of segments: [ [Part #, [row, col] ...] ...]
 // Outputs:
 //   organized_array (Array<Array<int>>): organized array [ [part #, row, col]
 //   ... ]
-function rearrange_partition(partitions: any) {
+function rearrange_segment(segments: any) {
   var organized_array = [];
-  for (var i = 0; i < partitions.length; i++) {
-    const current_part = partitions[i][0];
+  for (var i = 0; i < segments.length; i++) {
+    const current_part = segments[i][0];
     var j = 1
     var has_name = false;
-    if (typeof (partitions[i][1]) === 'string') {
+    if (typeof (segments[i][1]) === 'string') {
       j = 2
       has_name = true;
     }
-    for (j; j < partitions[i].length; j++) {
+    for (j; j < segments[i].length; j++) {
       var temp_array = [ current_part ];
-      temp_array.push(partitions[i][j][0]);
-      temp_array.push(partitions[i][j][1]);
+      temp_array.push(segments[i][j][0]);
+      temp_array.push(segments[i][j][1]);
       if (has_name) {
-        temp_array.push(partitions[i][1]);
+        temp_array.push(segments[i][1]);
       }
       organized_array.push(temp_array);
     }
@@ -1085,21 +1085,21 @@ function rearrange_partition(partitions: any) {
   return organized_array;
 }
 
-// Selects the background color based on a partition number
+// Selects the background color based on a segment number
 // Example:
-//   partition: 1 -> 'purple'
-function select_color(partition: number) {
-  if (partition > 127) {
-    partition = partition % 127
+//   segment: 1 -> 'purple'
+function select_color(segment: number) {
+  if (segment > 127) {
+    segment = segment % 127
   }
-  if (partition === -1) {
+  if (segment === -1) {
     return 'white'
   } else {
-    return CSS_COLOR_NAMES[partition]
+    return CSS_COLOR_NAMES[segment]
   }
 }
 
-// creates the page of the partitions
+// creates the page of the segments
 function getWebviewContent(colored_grid: Array<Array<string>>|undefined,
                            region: Array<number>, routes: any,
                            route_number: number) {
@@ -1120,7 +1120,7 @@ function getWebviewContent(colored_grid: Array<Array<string>>|undefined,
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Partition View</title>
+      <title>Segment View</title>
       <style>
         :root {
           --grid-cols: 1;

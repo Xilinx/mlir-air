@@ -35,15 +35,15 @@ struct pcie_ernic_dev_mem_allocator {
   uint64_t dev_mem_ptr;             // Points to the top of the device memory
   uint64_t dev_mem_size; // The total size of the device memory so we can report
                          // errors when too much is requested
-  uint64_t partition_offset; // Need an offset in case multiple processes are
-                             // using device memory
+  uint64_t segment_offset; // Need an offset in case multiple processes are
+                           // using device memory
   uint64_t global_offset; // This is the offset in the hardware memory map so we
                           // can directly address device memory
 };
 
 struct pcie_ernic_dev_mem_allocator *init_dev_mem_allocator(
     const char *dev_mem_bar_filename, uint64_t dev_mem_bar_size,
-    uint64_t dev_mem_global_offset, uint64_t dev_mem_partition_offset);
+    uint64_t dev_mem_global_offset, uint64_t dev_mem_segment_offset);
 void free_dev_mem_allocator(struct pcie_ernic_dev_mem_allocator *allocator);
 void *dev_mem_alloc(struct pcie_ernic_dev_mem_allocator *allocator,
                     uint32_t size, uint64_t *pa);

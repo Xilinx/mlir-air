@@ -22,8 +22,8 @@ module  {
       // CHECK: %[[EVENT1:.*]], %[[VAL1:.*]] = air.execute
       air.dma_memcpy_nd (%1[][][], %arg4[%c0_1][%c0_1][%c0_1]) {id = 1 : i32} : (memref<512xi32, 3>, memref<1024xi32>)
       // CHECK: %[[EVENT2:.*]] = air.dma_memcpy_nd async [{{.*}}%[[EVENT1]]{{.*}}]
-      air.partition unroll (%arg5, %arg6) in (%size_x2 = %c1_1, %size_y2 = %c1_1) args(%arg7 = %1) : memref<512xi32, 3> {
-      // CHECK: %[[EVENT3:.*]] = air.partition async [{{.*}}%[[EVENT2]]{{.*}}]{{.*}}unroll
+      air.segment unroll (%arg5, %arg6) in (%size_x2 = %c1_1, %size_y2 = %c1_1) args(%arg7 = %1) : memref<512xi32, 3> {
+      // CHECK: %[[EVENT3:.*]] = air.segment async [{{.*}}%[[EVENT2]]{{.*}}]{{.*}}unroll
         %c0_2 = arith.constant 0 : index
         %c1_2 = arith.constant 1 : index
         %2 = memref.alloc() : memref<256xi32, 2>
@@ -43,7 +43,7 @@ module  {
         }
         memref.dealloc %2 : memref<256xi32, 2>
         // CHECK: %[[EVENT10:.*]] = air.execute [{{.*}}%[[EVENT6]]{{.*}}]
-        air.partition_terminator
+        air.segment_terminator
       }
       memref.dealloc %1 : memref<512xi32, 3>
       // CHECK: %[[EVENT11:.*]] = air.execute [{{.*}}%[[EVENT3]]{{.*}}]

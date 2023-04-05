@@ -429,24 +429,24 @@ unsigned LaunchOp::getNumDims() {
 }
 
 //
-// PartitionOp
+// SegmentOp
 //
 
-void PartitionOp::build(OpBuilder &builder, OperationState &result,
-                        ValueRange asyncDependencies, ValueRange sizes,
-                        ValueRange partitionOperands, bool isAsync,
-                        ArrayRef<NamedAttribute> attrs) {
+void SegmentOp::build(OpBuilder &builder, OperationState &result,
+                      ValueRange asyncDependencies, ValueRange sizes,
+                      ValueRange segmentOperands, bool isAsync,
+                      ArrayRef<NamedAttribute> attrs) {
 
   result.addOperands(asyncDependencies);
   if (isAsync)
     result.addTypes(AsyncTokenType::get(builder.getContext()));
   result.addOperands(sizes);
-  result.addOperands(partitionOperands);
+  result.addOperands(segmentOperands);
 
   SmallVector<int32_t, 8> segmentSizes(3, 1);
   segmentSizes.front() = asyncDependencies.size();
   segmentSizes[1] = sizes.size();
-  segmentSizes.back() = static_cast<int32_t>(partitionOperands.size());
+  segmentSizes.back() = static_cast<int32_t>(segmentOperands.size());
   result.addAttribute(getOperandSegmentSizeAttr(),
                       builder.getDenseI32ArrayAttr(segmentSizes));
 
@@ -462,19 +462,19 @@ void PartitionOp::build(OpBuilder &builder, OperationState &result,
     body->addArgument(v.getType(), builder.getUnknownLoc());
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
-  for (Value v : partitionOperands) {
+  for (Value v : segmentOperands) {
     body->addArgument(v.getType(), builder.getUnknownLoc());
   }
   r->push_back(body);
 }
 
-void PartitionOp::build(OpBuilder &builder, OperationState &result,
-                        ValueRange sizes, ValueRange partitionOperands) {
+void SegmentOp::build(OpBuilder &builder, OperationState &result,
+                      ValueRange sizes, ValueRange segmentOperands) {
 
-  build(builder, result, {}, sizes, partitionOperands, false);
+  build(builder, result, {}, sizes, segmentOperands, false);
 }
 
-void PartitionOp::print(OpAsmPrinter &p) {
+void SegmentOp::print(OpAsmPrinter &p) {
 
   p << ' ';
   auto nameAttr = (*this)->getAttrOfType<StringAttr>(
@@ -539,7 +539,7 @@ void PartitionOp::print(OpAsmPrinter &p) {
   p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
 }
 
-ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
+ParseResult SegmentOp::parse(OpAsmParser &parser, OperationState &result) {
 
   SmallVector<OpAsmParser::UnresolvedOperand, 4> asyncDependencies;
   SmallVector<OpAsmParser::Argument, 4> tileArgs;
@@ -640,46 +640,46 @@ ParseResult PartitionOp::parse(OpAsmParser &parser, OperationState &result) {
   return success();
 }
 
-void PartitionOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
-                                              MLIRContext *context) {
-  patterns.add(canonicalizeHierarchyOpArgs<PartitionOp>);
+void SegmentOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                            MLIRContext *context) {
+  patterns.add(canonicalizeHierarchyOpArgs<SegmentOp>);
 }
 
-ArrayRef<BlockArgument> PartitionOp::getIds() {
+ArrayRef<BlockArgument> SegmentOp::getIds() {
   auto s = getBody().front().getArguments();
   auto n = getNumDims();
   return s.take_front(n);
 }
 
-ArrayRef<BlockArgument> PartitionOp::getSize() {
+ArrayRef<BlockArgument> SegmentOp::getSize() {
   auto s = getBody().front().getArguments();
   auto n = getNumDims();
   return s.slice(n, n);
 }
 
-OperandRange PartitionOp::getSizeOperands() {
+OperandRange SegmentOp::getSizeOperands() {
   auto start = getAsyncDependencies().size();
   auto n = getNumDims();
   return getOperands().slice(start, n);
 }
 
-unsigned PartitionOp::getNumKernelOperands() {
+unsigned SegmentOp::getNumKernelOperands() {
   return getNumOperands() - getAsyncDependencies().size() - getNumDims();
 }
 
-Value PartitionOp::getKernelOperand(unsigned i) {
+Value SegmentOp::getKernelOperand(unsigned i) {
   return getOperand(getAsyncDependencies().size() + getNumDims() + i);
 }
 
-ArrayRef<BlockArgument> PartitionOp::getKernelArguments() {
+ArrayRef<BlockArgument> SegmentOp::getKernelArguments() {
   return getBody().front().getArguments().drop_front(getNumDims() * 2);
 }
 
-BlockArgument PartitionOp::getKernelArgument(unsigned i) {
+BlockArgument SegmentOp::getKernelArgument(unsigned i) {
   return getKernelArguments()[i];
 }
 
-unsigned PartitionOp::getNumDims() {
+unsigned SegmentOp::getNumDims() {
   auto size_attr_name = getOperandSegmentSizeAttr();
   auto size_attr = (*this)->getAttrOfType<DenseI32ArrayAttr>(size_attr_name);
   auto segment_sizes = size_attr.asArrayRef();

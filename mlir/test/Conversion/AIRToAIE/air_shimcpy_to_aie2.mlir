@@ -10,7 +10,7 @@
 
 module {
 
-// CHECK: module @aie.partition_0
+// CHECK: module @aie.segment_0
 // CHECK:         %[[VAL_12:.*]] = AIE.tile(2, 2)
 // CHECK:         %[[VAL_10:.*]] = AIE.tile(2, 0)
 // CHECK:         %[[VAL_15:.*]] = AIE.lock(%[[VAL_12]], 1)

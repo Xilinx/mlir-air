@@ -354,8 +354,8 @@ private:
           auto constraints = is.getConstraints();
           auto eqFlags = is.getEqFlags();
 
-          unsigned numPartitions = 0;
-          // Get symbol range (i.e. partition range)
+          unsigned numSegments = 0;
+          // Get symbol range (i.e. segment range)
           SmallVector<AffineExpr, 1> zero_syms{
               getAffineConstantExpr(0, ctx),
           };
@@ -368,13 +368,13 @@ private:
                 continue;
               }
               if (expr.getValue() != 0) {
-                numPartitions = expr.getValue() + 1;
+                numSegments = expr.getValue() + 1;
               }
             }
           }
           // Walk each set in the patitioning scheme
           // Specialize each affine set
-          for (unsigned i = 0; i < numPartitions; i++) {
+          for (unsigned i = 0; i < numSegments; i++) {
             SmallVector<AffineExpr, 2> newConstraints;
             SmallVector<bool, 2> newEqflags;
             SmallVector<AffineExpr, 1> i_syms{
@@ -387,7 +387,7 @@ private:
             int c_iter = 0;
             for (auto c : constraints) {
               if (!c.isSymbolicOrConstant()) {
-                // Substitute partition id i_syms into inequalities
+                // Substitute segment id i_syms into inequalities
                 auto newC = c.replaceSymbols(i_syms);
                 // Replace all dims with symbols
                 newC = newC.replaceDims(syms);
@@ -398,11 +398,11 @@ private:
             }
             auto int_set = IntegerSet::get(0, 2, newConstraints, newEqflags);
             SmallVector<Value, 2> int_set_args{herd_id[0], herd_id[1]};
-            // Duplicate dma ops per spatial partition
+            // Duplicate dma ops per spatial segment
             if (i == 0) {
               AffineIfOp aif = builder.create<AffineIfOp>(
                   loc, air::AsyncTokenType::get(ctx), int_set, int_set_args,
-                  (i != numPartitions - 1));
+                  (i != numSegments - 1));
               builder.setInsertionPointToStart(aif.getThenBlock());
               auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
               memcpyOp_cloned->removeAttr("broadcast_pattern");
@@ -414,8 +414,8 @@ private:
                       .getAsyncToken());
               builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(),
                                             yield_token);
-              if (numPartitions != 1) {
-                // If more than 1 spatial partitions, then move loc to else
+              if (numSegments != 1) {
+                // If more than 1 spatial segments, then move loc to else
                 // block
                 builder.setInsertionPointToStart(aif.getElseBlock());
               }
@@ -425,10 +425,10 @@ private:
                   dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
               async_memcpyOp.getAsyncToken().replaceAllUsesWith(
                   aif.getResult(0));
-            } else if (i < numPartitions - 1) {
+            } else if (i < numSegments - 1) {
               AffineIfOp aif = builder.create<AffineIfOp>(
                   builder.getUnknownLoc(), air::AsyncTokenType::get(ctx),
-                  int_set, int_set_args, (i != numPartitions - 1));
+                  int_set, int_set_args, (i != numSegments - 1));
               builder.setInsertionPointToStart(aif.getThenBlock());
               auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
               memcpyOp_cloned->removeAttr("broadcast_pattern");

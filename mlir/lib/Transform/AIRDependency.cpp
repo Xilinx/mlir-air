@@ -191,7 +191,7 @@ public:
                              apply_op.getResult().getType());
 
         // Create async execute region for air hierarchy ops (air.launch and
-        // air.partition, TODO: air.herd).
+        // air.segment, TODO: air.herd).
         else if (auto hierarchy_op = dyn_cast<air::HierarchyInterface>(op)) {
           createAsyncHierarchyImpls(module_builder, hierarchy_op,
                                     HierarchyOpID);
@@ -895,16 +895,16 @@ private:
       asyncExecuteGraph[v].operationId = HierarchyOpID;
       // Update op-to-graph map
       hier_to_g[HierarchyOpID] = v;
-    } else if (auto partition = dyn_cast<air::PartitionOp>(op.getOperation())) {
-      auto new_partition = createAsyncHierarchy<air::PartitionOp>(
-          builder, partition, HierarchyOpID, deps, args, constants);
-      new_op = new_partition.getOperation();
-      auto &bb = new_partition.getBody().front();
+    } else if (auto segment = dyn_cast<air::SegmentOp>(op.getOperation())) {
+      auto new_segment = createAsyncHierarchy<air::SegmentOp>(
+          builder, segment, HierarchyOpID, deps, args, constants);
+      new_op = new_segment.getOperation();
+      auto &bb = new_segment.getBody().front();
       builder.setInsertionPointToEnd(&bb);
-      builder.create<air::PartitionTerminatorOp>(loc);
+      builder.create<air::SegmentTerminatorOp>(loc);
       // Create a vertex out of the current hierarchy op
       auto v = add_vertex(asyncExecuteGraph);
-      asyncExecuteGraph[v].asyncEventName = "air::partition";
+      asyncExecuteGraph[v].asyncEventName = "air::segment";
       asyncExecuteGraph[v].asyncEventType = "hierarchy";
       asyncExecuteGraph[v].color = "yellow";
       asyncExecuteGraph[v].shape = "box";

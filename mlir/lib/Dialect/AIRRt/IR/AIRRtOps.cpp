@@ -11,8 +11,8 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/TypeUtilities.h"
 
-#include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
+#include "air/Dialect/AIRRt/AIRRtOps.h"
 
 using namespace mlir;
 using namespace xilinx::airrt;
@@ -26,12 +26,12 @@ namespace airrt {
 
 void ModuleMetadataOp::print(OpAsmPrinter &p) {
   p.printOptionalAttrDictWithKeyword((*this)->getAttrs());
-  p.printRegion(getPartitions(), /*printEntryBlockArgs=*/false,
+  p.printRegion(getSegments(), /*printEntryBlockArgs=*/false,
                 /*printBlockTerminators=*/false);
 }
 
 ParseResult ModuleMetadataOp::parse(OpAsmParser &parser,
-                                         OperationState &result) {
+                                    OperationState &result) {
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();
   auto *body = result.addRegion();
@@ -42,21 +42,21 @@ ParseResult ModuleMetadataOp::parse(OpAsmParser &parser,
   return success();
 }
 
-void PartitionMetadataOp::print(OpAsmPrinter &p) {
+void SegmentMetadataOp::print(OpAsmPrinter &p) {
   p.printOptionalAttrDictWithKeyword((*this)->getAttrs());
   p.printRegion(getHerds(), /*printEntryBlockArgs=*/false,
                 /*printBlockTerminators=*/false);
 }
 
-ParseResult PartitionMetadataOp::parse(OpAsmParser &parser,
-                                       OperationState &result) {
+ParseResult SegmentMetadataOp::parse(OpAsmParser &parser,
+                                     OperationState &result) {
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();
   auto *body = result.addRegion();
   if (parser.parseRegion(*body, std::nullopt, false))
     return failure();
-  PartitionMetadataOp::ensureTerminator(*body, parser.getBuilder(),
-                                        result.location);
+  SegmentMetadataOp::ensureTerminator(*body, parser.getBuilder(),
+                                      result.location);
   return success();
 }
 

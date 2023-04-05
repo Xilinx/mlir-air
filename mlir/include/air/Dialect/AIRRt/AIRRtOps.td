@@ -21,14 +21,14 @@ def AIRRt_ModuleMetadataOp : AIRRt_Op<"module_metadata", [
 ]> {
   let summary = "Global metadata for the module";
   let description = [{
-    This op contains a region containing airrt.partition_metadata ops,
-    which give information about the partitions in the module.
+    This op contains a region containing airrt.segment_metadata ops,
+    which give information about the segments in the module.
 
     There is one of these per module.
   }];
   let arguments = (ins);
   let results = (outs);
-  let regions = (region SizedRegion<1>:$partitions);
+  let regions = (region SizedRegion<1>:$segments);
   let hasCustomAssemblyFormat = 1;
 }
 
@@ -41,9 +41,9 @@ def AIRRt_ModuleMetadataTerminatorOp
   let assemblyFormat = "attr-dict";
 }
 
-def AIRRt_PartitionMetadataOp : AIRRt_Op<"partition_metadata", [
+def AIRRt_SegmentMetadataOp : AIRRt_Op<"segment_metadata", [
   HasParent<"ModuleMetadataOp">,
-  SingleBlockImplicitTerminator<"PartitionMetadataTerminatorOp">
+  SingleBlockImplicitTerminator<"SegmentMetadataTerminatorOp">
 ]> {
   let summary = "Runtime metadata for one air region";
   let description = [{
@@ -58,10 +58,10 @@ def AIRRt_PartitionMetadataOp : AIRRt_Op<"partition_metadata", [
   let hasCustomAssemblyFormat = 1;
 }
 
-def AIRRt_PartitionMetadataTerminatorOp
-    : AIRRt_Op<"partition_metadata_terminator",
-               [Terminator, HasParent<"PartitionMetadataOp">]> {
-  let summary = "Implicit terminator for PartitionMetadataOp's region";
+def AIRRt_SegmentMetadataTerminatorOp
+    : AIRRt_Op<"segment_metadata_terminator",
+               [Terminator, HasParent<"SegmentMetadataOp">]> {
+  let summary = "Implicit terminator for SegmentMetadataOp's region";
   let arguments = (ins);
   let results = (outs);
   let assemblyFormat = "attr-dict";
@@ -69,7 +69,7 @@ def AIRRt_PartitionMetadataTerminatorOp
 
 def AIRRt_HerdMetadataOp
     : AIRRt_Op<"herd_metadata", [
-        HasParent<"PartitionMetadataOp">,
+        HasParent<"SegmentMetadataOp">,
         SingleBlockImplicitTerminator<"HerdMetadataTerminatorOp">
       ]> {
   let summary = "Runtime metadata for a single herd";
@@ -102,8 +102,8 @@ def AIRRt_HerdLoadOp : AIRRt_Op<"herd_load", []> {
     }];
 }
 
-def AIRRt_PartitionLoadOp : AIRRt_Op<"partition_load", []> {
-    let summary = "load a partition";
+def AIRRt_SegmentLoadOp : AIRRt_Op<"segment_load", []> {
+    let summary = "load a segment";
     let arguments = (ins StrAttr:$sym_name);
     let results = (outs I64:$p, Optional<AIRRt_Event>:$event);
     let assemblyFormat = [{

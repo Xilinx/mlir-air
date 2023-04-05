@@ -36,13 +36,13 @@ Note that the size of the grid is determined by the largest row and column value
 
 Placement View: Open Placement Webview
 
-Shows a webview visualization of the placement field on the active file window. The file format must be ".json". The webview updates each time the .json file is saved, each time the ctrl + shift + p command is run, and each time the partition is clicked in the .json file.
+Shows a webview visualization of the placement field on the active file window. The file format must be ".json". The webview updates each time the .json file is saved, each time the ctrl + shift + p command is run, and each time the segment is clicked in the .json file.
 
-![Partition View Example](images/partition_view_example.png)
+![Segment View Example](images/segment_view_example.png)
 
-The partition field must be formatted in either of the the following ways: \
-``` "partition": [[<herd #>, [AIE_Row, AIE_col] ...] ...] ``` \ or \
-``` "partition": [[<herd #>, "<herd>", [AIE_Row, AIE_col] ...] ...] ```  \
+The segment field must be formatted in either of the the following ways: \
+``` "segment": [[<herd #>, [AIE_Row, AIE_col] ...] ...] ``` \ or \
+``` "segment": [[<herd #>, "<herd>", [AIE_Row, AIE_col] ...] ...] ```  \
 part_test_full.json provides an example file.
 
 Note that the white blocks represent those tiles that are not in a herd. The colors of specific herds can be changed by changing the herd number. Note that there are only 128 colors available - if this number is exceeded, the colors will repeat.

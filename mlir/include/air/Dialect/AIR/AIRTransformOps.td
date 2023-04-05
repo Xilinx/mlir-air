@@ -15,13 +15,13 @@ include "mlir/Dialect/PDL/IR/PDLTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/OpBase.td"
 
-def GetPartitionForOp : Op<Transform_Dialect, "air.get_partition_for",
+def GetSegmentForOp : Op<Transform_Dialect, "air.get_segment_for",
     [NavigationTransformOpTrait, MemoryEffectsOpInterface,
      DeclareOpInterfaceMethods<TransformOpInterface>]> {
-  let summary = "Gets a handle to the parent 'air.partition' of the given operation";
+  let summary = "Gets a handle to the parent 'air.segment' of the given operation";
   let description = [{
-    Produces a handle to the parent `air.partition` op for each payload IR
-    operation associated with the operand. Fails if a partition cannot be found.
+    Produces a handle to the parent `air.segment` op for each payload IR
+    operation associated with the operand. Fails if a segment cannot be found.
     The list of operations associated with the handle contains
     parent operations in the same order as the list associated with the operand,
     except for operations that are parents to more than one input which are only
@@ -35,11 +35,11 @@ def GetPartitionForOp : Op<Transform_Dialect, "air.get_partition_for",
   let assemblyFormat = "$target attr-dict";
 }
 
-def PartitionToAIEOp : Op<Transform_Dialect, "air.partition_to_aie",
+def SegmentToAIEOp : Op<Transform_Dialect, "air.segment_to_aie",
     [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
      TransformOpInterface, TransformEachOpTrait]> {
   let description = [{
-    Lower air.partition operations to mlir-aie modules.
+    Lower air.segment operations to mlir-aie modules.
   }];
   let arguments = (ins PDL_Operation:$target);
   let results = (outs PDL_Operation:$transformed);
@@ -47,7 +47,7 @@ def PartitionToAIEOp : Op<Transform_Dialect, "air.partition_to_aie",
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
-        ::xilinx::air::PartitionOp target,
+        ::xilinx::air::SegmentOp target,
         ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
   }];
@@ -151,7 +151,7 @@ def LinalgPromoteOp : Op<Transform_Dialect, "air.linalg_promote",
     Promotes the specified operands of the target into a separate memory buffer
     using the `mlir::linalg::promoteSubViews` utility.
 
-    This operation applies to a single Linalg op that satisfies the
+    This operation applies to Linalg ops that satisfy the
     `mlir::linalg::promoteSubviewsPrecondition`, otherwise it fails.
 
     When successful, several optimization passes are run on the resulting IR.
@@ -168,10 +168,25 @@ def LinalgPromoteOp : Op<Transform_Dialect, "air.linalg_promote",
     %0 = transform.structured.match ops{["linalg.matmul"]} in %code
     %1 = transform.air.linalg_promote %0 {memory_space="L2", operands_to_promote=[0]}
     ```
+
+    The `group_size` attribute is used to apply promotion to multiple
+    linalg ops. When `group_size=N`, the `operands_to_promote` attribute refers to
+    `N` payload operations at a time and the operand indices apply to the
+    operands of the `N` operations in the order they appear in the target handle.
+
+    For example,
+    ```mlir
+    %m = transform.structured.match ops{["linalg.matmul"]} in %f : (!pdl.operation) -> !pdl.operation
+    %f = transform.structured.match ops{["linalg.fill"]} in %f : (!pdl.operation) -> !pdl.operation
+    %h = transform.merge_handles %f, %m : !pdl.operation
+    // promote the input of the fill operation and the output of the matmul operation to L1 memory
+    transform.air.linalg_promote %h {"group_size"=2, "operands_to_promote"=[1,4], "memory_space"="L1"}
+    ```
   }];
 
   let arguments = (ins PDL_Operation:$target,
                    DefaultValuedAttr<I64ArrayAttr, "{}">:$operands_to_promote,
+                   DefaultValuedAttr<I64Attr, "1">:$group_size,
                    DefaultValuedAttr<BoolArrayAttr, "{}">:$use_full_tile_buffers,
                    UnitAttr:$use_full_tiles_by_default,
                    UnitAttr:$use_alloca,
