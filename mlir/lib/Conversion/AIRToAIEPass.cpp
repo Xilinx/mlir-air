@@ -906,9 +906,16 @@ fillChannelMap(std::map<std::vector<int>, Optional<Value>> &map,
     map[indices] = {};
 }
 
+void 
+fillObjectFifoMap(std::map<std::vector<int>, Optional<AIE::ObjectFifoCreateOp>> &map, 
+               std::vector<std::vector<int>> channelIndices) {
+  for (auto indices : channelIndices)
+    map[indices] = {};
+}
+
 LogicalResult
 createObjectFifo(OpBuilder &builder, AIE::AIEObjectFifoType datatype,
-                 std::map<std::vector<int>, AIE::ObjectFifoCreateOp> &objFifos,
+                 std::map<std::vector<int>, Optional<AIE::ObjectFifoCreateOp>> &objFifos,
                  std::map<std::vector<int>, Optional<Value>> &prodTiles, 
                  std::map<std::vector<int>, Optional<Value>> &consTiles, 
                  int depth, bool broadcast) {
@@ -926,15 +933,14 @@ createObjectFifo(OpBuilder &builder, AIE::AIEObjectFifoType datatype,
       AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
           builder.getUnknownLoc(), datatype, *(prodTiles.begin()->second), consumers, depth);
       for (auto const& [coord, tile] : consTiles)
-        // TODO: check that list of consumers size == broadcast shape of channel op (what if shim consumer?)
         objFifos[coord] = fifo;
     }
 
   } else {
-    for (auto const& [coord, tile] : prodTiles) {
-      if (tile && consTiles[coord]) {
+    for (auto const& [coord, objfifo] : objFifos) {
+      if (prodTiles[coord] && consTiles[coord]) {
         AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
-          builder.getUnknownLoc(), datatype, *tile, *(consTiles[coord]), depth);
+          builder.getUnknownLoc(), datatype, *(prodTiles[coord]), *(consTiles[coord]), depth);
         objFifos[coord] = fifo;
       }
     } 
@@ -1002,13 +1008,21 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 
     std::map<std::vector<int>, Optional<Value>> producerTiles;
     std::map<std::vector<int>, Optional<Value>> consumerTiles;
-    std::map<std::vector<int>, AIE::ObjectFifoCreateOp> objFifos;
+    std::map<std::vector<int>, Optional<AIE::ObjectFifoCreateOp>> objFifos;
     AIE::AIEObjectFifoType datatype;
 
     // fill maps with all expected entries for channel indices
     std::vector<std::vector<int>> channelIndices = getAllChannelIndices(channel);
-    fillChannelMap(producerTiles, channelIndices);
+    if (channel.isBroadcast()) {
+      std::vector<int> indices(channel.getSize().size(), 0);
+      std::vector<std::vector<int>> channelBroadcastIndices;
+      channelBroadcastIndices.push_back(indices);
+      fillChannelMap(producerTiles, channelBroadcastIndices);
+    } else {
+      fillChannelMap(producerTiles, channelIndices);
+    }
     fillChannelMap(consumerTiles, channelIndices);
+    fillObjectFifoMap(objFifos, channelIndices);
 
     // put/get come in pairs, if one is missing then it's L3
     MemRefType srcMemref;
@@ -1022,19 +1036,19 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       if (src_space == (int)air::MemorySpace::L1) {
         AIE::CoreOp producerCore = put->getParentOfType<AIE::CoreOp>();
         if (!producerCore)
-          return failure();
+          return put.emitOpError("cannot retrieve parent CoreOp");
         producerTile = producerCore.getTileOp();
         if (!producerTile)
-          return failure();
+          return put.emitOpError("cannot retrieve TileOp of parent CoreOp");
         
         producerTiles[getChannelPutIndices(put, channel)] = producerTile;
       } else {
-        return failure();
+        return put.emitOpError("unsupported memory space");
       }
     }
     // fill in missing entries with L3
     for (auto const& [key, tile] : producerTiles) {
-      if (!tile.has_value()) {
+      if (!tile) {
         producerTile = shimTileAlloc.getShimTile(
           aie_module, src_space, (int)air::MemorySpace::L1);
         producerTiles[key] = producerTile;
@@ -1053,19 +1067,19 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       if (dst_space == (int)air::MemorySpace::L1) {
         AIE::CoreOp consumerCore = get->getParentOfType<AIE::CoreOp>();
         if (!consumerCore)
-          return failure();
+          return get.emitOpError("cannot retrieve parent CoreOp");
         consumerTile = consumerCore.getTileOp();
         if (!consumerTile)
-          return failure();
+          return get.emitOpError("cannot retrieve TileOp of parent CoreOp");
           
         consumerTiles[getChannelGetIndices(get, channel)] = consumerTile;
       } else {
-        return failure();
+        return get.emitOpError("unsupported memory space");
       }
     }
     // fill in missing entries with L3
     for (auto const& [key, tile] : consumerTiles) {
-      if (!tile.has_value()) {
+      if (!tile) {
         consumerTile = shimTileAlloc.getShimTile(
           aie_module, (int)air::MemorySpace::L1, dst_space);
         consumerTiles[key] = consumerTile;
@@ -1080,25 +1094,31 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     auto res = createObjectFifo(rewriter, datatype, objFifos, producerTiles, consumerTiles, channel.getBufferResources(), channel.isBroadcast());
     if (res.failed())
       return channel.emitOpError("has multiple producers, objFifo lowering currently doesn't support many-to-many/one broadcast");
+    
+    printf("objfifo map size: %d\n", objFifos.size());
 
     // replace put/get and the associated memref alloc/dealloc
     for (auto put : channelPuts) {
-      rewriteChannelAllocs<ChannelPutOp>(rewriter, put, 
-                                         objFifos[getChannelPutIndices(put, channel)],
-                                         AIE::ObjectFifoPort::Produce);
-      rewriteChannelDeallocs<ChannelPutOp>(rewriter, put, 
-                                           objFifos[getChannelPutIndices(put, channel)],
-                                           AIE::ObjectFifoPort::Produce);
+      if (objFifos[getChannelPutIndices(put, channel)]) {
+        rewriteChannelAllocs<ChannelPutOp>(rewriter, put, 
+                                          *(objFifos[getChannelPutIndices(put, channel)]),
+                                          AIE::ObjectFifoPort::Produce);
+        rewriteChannelDeallocs<ChannelPutOp>(rewriter, put, 
+                                            *(objFifos[getChannelPutIndices(put, channel)]),
+                                            AIE::ObjectFifoPort::Produce);
+      }
       // erase put
       rewriter.eraseOp(put);
     }
     for (auto get : channelGets) {
-      rewriteChannelAllocs<ChannelGetOp>(rewriter, get, 
-                                         objFifos[getChannelGetIndices(get, channel)],
-                                         AIE::ObjectFifoPort::Consume);
-      rewriteChannelDeallocs<ChannelGetOp>(rewriter, get, 
-                                           objFifos[getChannelGetIndices(get, channel)],
-                                           AIE::ObjectFifoPort::Consume);
+      if (objFifos[getChannelGetIndices(get, channel)]) {
+        rewriteChannelAllocs<ChannelGetOp>(rewriter, get, 
+                                          *(objFifos[getChannelGetIndices(get, channel)]),
+                                          AIE::ObjectFifoPort::Consume);
+        rewriteChannelDeallocs<ChannelGetOp>(rewriter, get, 
+                                            *(objFifos[getChannelGetIndices(get, channel)]),
+                                            AIE::ObjectFifoPort::Consume);
+      }
       // erase get
       rewriter.eraseOp(get);
     }

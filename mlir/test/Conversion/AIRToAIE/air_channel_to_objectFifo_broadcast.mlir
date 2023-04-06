@@ -12,30 +12,29 @@
 // CHECK:   %1 = AIE.tile(2, 1)
 // CHECK:   %2 = AIE.tile(1, 2)
 // CHECK:   %3 = AIE.tile(2, 2)
-// CHECK:   %4 = AIE.tile(2, 0)
-// CHECK:   %5 = AIE.objectFifo.createObjectFifo(%0, {%1, %2, %3}, 1) : !AIE.objectFifo<memref<32xi32>>
-// CHECK:   %6 = AIE.core(%3) {
-// CHECK:     %10 = AIE.objectFifo.acquire<Consume> (%5 : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
-// CHECK:     %11 = AIE.objectFifo.subview.access %10[0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:     AIE.objectFifo.release<Consume> (%5 : !AIE.objectFifo<memref<32xi32>>, 1)
+// CHECK:   %4 = AIE.objectFifo.createObjectFifo(%0, {%1, %2, %3}, 1) : !AIE.objectFifo<memref<32xi32>>
+// CHECK:   %5 = AIE.core(%3) {
+// CHECK:     %9 = AIE.objectFifo.acquire<Consume> (%4 : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
+// CHECK:     %10 = AIE.objectFifo.subview.access %9[0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     AIE.objectFifo.release<Consume> (%4 : !AIE.objectFifo<memref<32xi32>>, 1)
 // CHECK:     AIE.end
 // CHECK:   } {elf_file = "partition_0_core_2_2.elf"}
-// CHECK:   %7 = AIE.core(%2) {
-// CHECK:     %10 = AIE.objectFifo.acquire<Consume> (%5 : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
-// CHECK:     %11 = AIE.objectFifo.subview.access %10[0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:     AIE.objectFifo.release<Consume> (%5 : !AIE.objectFifo<memref<32xi32>>, 1)
+// CHECK:   %6 = AIE.core(%2) {
+// CHECK:     %9 = AIE.objectFifo.acquire<Consume> (%4 : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
+// CHECK:     %10 = AIE.objectFifo.subview.access %9[0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     AIE.objectFifo.release<Consume> (%4 : !AIE.objectFifo<memref<32xi32>>, 1)
 // CHECK:     AIE.end
 // CHECK:   } {elf_file = "partition_0_core_1_2.elf"}
-// CHECK:   %8 = AIE.core(%1) {
-// CHECK:     %10 = AIE.objectFifo.acquire<Consume> (%5 : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
-// CHECK:     %11 = AIE.objectFifo.subview.access %10[0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:     AIE.objectFifo.release<Consume> (%5 : !AIE.objectFifo<memref<32xi32>>, 1)
+// CHECK:   %7 = AIE.core(%1) {
+// CHECK:     %9 = AIE.objectFifo.acquire<Consume> (%4 : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
+// CHECK:     %10 = AIE.objectFifo.subview.access %9[0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     AIE.objectFifo.release<Consume> (%4 : !AIE.objectFifo<memref<32xi32>>, 1)
 // CHECK:     AIE.end
 // CHECK:   } {elf_file = "partition_0_core_2_1.elf"}
-// CHECK:   %9 = AIE.core(%0) {
-// CHECK:     %10 = AIE.objectFifo.acquire<Produce> (%5 : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
-// CHECK:     %11 = AIE.objectFifo.subview.access %10[0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:    AIE.objectFifo.release<Produce> (%5 : !AIE.objectFifo<memref<32xi32>>, 1)
+// CHECK:   %8 = AIE.core(%0) {
+// CHECK:     %9 = AIE.objectFifo.acquire<Produce> (%4 : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
+// CHECK:     %10 = AIE.objectFifo.subview.access %9[0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     AIE.objectFifo.release<Produce> (%4 : !AIE.objectFifo<memref<32xi32>>, 1)
 // CHECK:     AIE.end
 // CHECK:   } {elf_file = "partition_0_core_1_1.elf"}
 // CHECK: }

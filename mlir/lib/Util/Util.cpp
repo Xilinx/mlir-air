@@ -384,35 +384,35 @@ air::getAllChannelIndices(air::ChannelOp channel) {
 // Get channel indices from channel put
 std::vector<int>
 air::getChannelPutIndices(air::ChannelPutOp op, air::ChannelOp channel) {
-  if (op.getIndices().size() == 0) {
+  if (op.getIndices().size() > 0) {
+    std::vector<int> indices;
+    for (auto i : op.getIndices()) {
+      auto index = dyn_cast<arith::ConstantOp>(i.getDefiningOp()).getValue().template dyn_cast<IntegerAttr>().getInt();
+      indices.push_back(index);
+    }
+    return indices;
+
+  } else {
     std::vector<int> indices(channel.getSize().size(), 0);
     return indices;
   }
-
-  std::vector<int> indices;
-  for (auto i : op.getIndices()) {
-    auto index = dyn_cast<arith::ConstantOp>(i.getDefiningOp()).getValue().template dyn_cast<IntegerAttr>().getInt();
-    indices.push_back(index);
-  }
-  
-  return indices;
 } 
 
 // Get channel indices from channel get
 std::vector<int>
 air::getChannelGetIndices(air::ChannelGetOp op, air::ChannelOp channel) {
-  if (op.getIndices().size() == 0) {
+  if (op.getIndices().size() > 0) {
+    std::vector<int> indices;
+    for (auto i : op.getIndices()) {
+      auto index = dyn_cast<arith::ConstantOp>(i.getDefiningOp()).getValue().template dyn_cast<IntegerAttr>().getInt();
+      indices.push_back(index);
+    }
+    return indices;
+
+  } else {
     std::vector<int> indices(channel.getSize().size(), 0);
     return indices;
   }
-
-  std::vector<int> indices;
-  for (auto i : op.getIndices()) {
-    auto index = dyn_cast<arith::ConstantOp>(i.getDefiningOp()).getValue().template dyn_cast<IntegerAttr>().getInt();
-    indices.push_back(index);
-  }
-  
-  return indices;
 } 
 
 // Get sizes from integerset

@@ -31,6 +31,8 @@
 
 module @aie.segment_0 {
   %0 = AIE.tile(1, 1)
+  air.channel @channel_0 [1, 1]
+  air.channel @channel_1 [1, 1]
   %1 = AIE.core(%0) {
     %c32 = arith.constant 32 : index
     %c0 = arith.constant 0 : index
@@ -48,6 +50,4 @@ module @aie.segment_0 {
     memref.dealloc %alloc : memref<32xi32, 2>
     AIE.end
   } {elf_file = "segment_0_core_1_1.elf"}
-  air.channel @channel_0 [1, 1]
-  air.channel @channel_1 [1, 1]
 }
