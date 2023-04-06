@@ -34,6 +34,8 @@
 module @aie.partition_0 {
   %0 = AIE.tile(1, 1)
   %1 = AIE.tile(1, 2)
+  air.channel @channel_0 [1, 1]
+  air.channel @channel_1 [1, 1] {buffer_resources = 2}
   %2 = AIE.core(%1) {
     %c32 = arith.constant 32 : index
     %c0 = arith.constant 0 : index
@@ -50,10 +52,8 @@ module @aie.partition_0 {
     %alloc = memref.alloc() {sym_name = "scratch"} : memref<32xi32, 2>
     %alloc2 = memref.alloc() {sym_name = "scratch2"} : memref<32xi32, 2>
     air.channel.put  @channel_0[] (%alloc[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
-    air.channel.put  @channel_1[] (%alloc[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
+    air.channel.put  @channel_1[] (%alloc2[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
     memref.dealloc %alloc : memref<32xi32, 2>
     AIE.end
   } {elf_file = "partition_0_core_1_1.elf"}
-  air.channel @channel_0 [1, 1]
-  air.channel @channel_1 [1, 1] {buffer_resources = 2}
 }

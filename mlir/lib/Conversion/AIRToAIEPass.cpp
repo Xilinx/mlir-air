@@ -1094,8 +1094,6 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     auto res = createObjectFifo(rewriter, datatype, objFifos, producerTiles, consumerTiles, channel.getBufferResources(), channel.isBroadcast());
     if (res.failed())
       return channel.emitOpError("has multiple producers, objFifo lowering currently doesn't support many-to-many/one broadcast");
-    
-    printf("objfifo map size: %d\n", objFifos.size());
 
     // replace put/get and the associated memref alloc/dealloc
     for (auto put : channelPuts) {
