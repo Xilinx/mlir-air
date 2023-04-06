@@ -10,13 +10,13 @@
 #include "air_host_impl.h"
 
 #include <cassert>
-#include <vector>
 #include <cstdio>
 #include <cstring>
-#include <unistd.h>     /* for getpagesize() */
-#include <sys/mman.h>   /* for mlock() */
-#include <string.h>     /* for memset() */
-#include <fcntl.h>      /* for open() */
+#include <fcntl.h>    /* for open() */
+#include <string.h>   /* for memset() */
+#include <sys/mman.h> /* for mlock() */
+#include <unistd.h>   /* for getpagesize() */
+#include <vector>
 
 extern "C" {
 
@@ -24,7 +24,6 @@ extern air_rt_herd_desc_t _air_host_active_herd;
 extern aie_libxaie_ctx_t *_air_host_active_libxaie;
 extern uint32_t *_air_host_bram_ptr;
 extern uint64_t _air_host_bram_paddr;
-
 }
 
 // Global variable
@@ -40,14 +39,15 @@ unsigned long get_page_frame_number_of_address(void *addr) {
 
   // Seek to the page that the buffer is on
   unsigned long offset = (unsigned long)addr / getpagesize() * PAGEMAP_LENGTH;
-  if(fseek(pagemap, (unsigned long)offset, SEEK_SET) != 0) { 
-      printf("[ERROR] Failed to seek pagemap to proper location\n");
-      exit(1);
-  } 
+  if (fseek(pagemap, (unsigned long)offset, SEEK_SET) != 0) {
+    printf("[ERROR] Failed to seek pagemap to proper location\n");
+    exit(1);
+  }
 
-  // The page frame number is in bits 0 - 54 so read the first 7 bytes and clear the 55th bit
+  // The page frame number is in bits 0 - 54 so read the first 7 bytes and clear
+  // the 55th bit
   unsigned long page_frame_number = 0;
-  fread(&page_frame_number, 1, PAGEMAP_LENGTH-1, pagemap);
+  fread(&page_frame_number, 1, PAGEMAP_LENGTH - 1, pagemap);
   page_frame_number &= 0x7FFFFFFFFFFFFF;
 
   fclose(pagemap);
@@ -58,43 +58,39 @@ unsigned long get_page_frame_number_of_address(void *addr) {
 uint64_t air_mem_get_paddr(void *buff) {
   // Getting the page frame the buffer is in
   unsigned long page_frame_number = get_page_frame_number_of_address(buff);
-  
+
   // Getting the offset of the buffer into the page
-  unsigned int distance_from_page_boundary = (unsigned long)buff % getpagesize();
-  uint64_t paddr = (uint64_t)(page_frame_number << PAGE_SHIFT) + (uint64_t)distance_from_page_boundary;
-  
+  unsigned int distance_from_page_boundary =
+      (unsigned long)buff % getpagesize();
+  uint64_t paddr = (uint64_t)(page_frame_number << PAGE_SHIFT) +
+                   (uint64_t)distance_from_page_boundary;
+
   return paddr;
 }
 
-void* air_mem_alloc(size_t size) {
+void *air_mem_alloc(size_t size) {
   void *ptr = NULL;
 
-  ptr = (void*)mmap(NULL,
-            size,
-            PROT_READ | PROT_WRITE,
-            MAP_SHARED | MAP_ANONYMOUS | MAP_HUGETLB,
-            -1,
-            0);
+  ptr = (void *)mmap(NULL, size, PROT_READ | PROT_WRITE,
+                     MAP_SHARED | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
 
-  if (!ptr) {
+  if (ptr == MAP_FAILED) {
     perror("mmap fails. ");
     return NULL;
   }
 
   /* obtain physical memory */
-  //printf("obtain physical memory\n");
+  // printf("obtain physical memory\n");
   memset(ptr, 1, size);
 
   /* lock the allocated memory in RAM */
-  //printf("lock physical memory\n");
+  // printf("lock physical memory\n");
   mlock(ptr, size);
 
   return ptr;
 }
 
-int air_mem_free(void *buff, size_t size) {
-  return munmap(buff,size);
-}
+int air_mem_free(void *buff, size_t size) { return munmap(buff, size); }
 
 // Initializing the runtime's handle on the device memory allocator
 int air_init_dev_mem_allocator(uint64_t dev_mem_size, uint32_t device_id) {
@@ -118,13 +114,16 @@ int air_init_dev_mem_allocator(uint64_t dev_mem_size, uint32_t device_id) {
 
   // Getting userspace pointers to device memory
 #ifdef AIR_PCIE
-  int fd = open(air_get_ddr_bar(device_id).c_str(), O_RDWR | O_SYNC);
-  if (fd != -1) {
-    dev_mem_allocator->dev_mem =
-        (uint32_t *)mmap(NULL, dev_mem_size /*0x8000*/, PROT_READ | PROT_WRITE,
-                         MAP_SHARED, fd, 0x1C0000);
-  } else {
+  int fd = open(air_get_driver_name(), O_RDWR | O_SYNC);
+  if (fd < 0) {
     printf("[ERROR] Could not open DDR BAR\n");
+    return 1;
+  }
+  dev_mem_allocator->dev_mem =
+      (uint32_t *)mmap(NULL, dev_mem_size /*0x8000*/, PROT_READ | PROT_WRITE,
+                       MAP_SHARED, fd, 0x1C0000);
+  if (dev_mem_allocator->dev_mem == MAP_FAILED) {
+    printf("[ERROR] Could not map DDR BAR\n");
     return 1;
   }
 #else
@@ -212,12 +211,12 @@ uint64_t air_dev_mem_get_pa(void *buff_va) {
 
 static int64_t shim_location_data(air_herd_shim_desc_t *sd, int i, int j,
                                   int k) {
-  return sd->location_data[i*8*8 + j*8 + k];
+  return sd->location_data[i * 8 * 8 + j * 8 + k];
 }
 
 static int64_t shim_channel_data(air_herd_shim_desc_t *sd, int i, int j,
                                  int k) {
-  return sd->channel_data[i*8*8 + j*8 + k];
+  return sd->channel_data[i * 8 * 8 + j * 8 + k];
 }
 
 template <typename T, int R>
@@ -227,12 +226,14 @@ static void air_mem_shim_nd_memcpy_queue_impl(
     uint64_t offset_0, uint64_t length_4d, uint64_t length_3d,
     uint64_t length_2d, uint64_t length_1d, uint64_t stride_4d,
     uint64_t stride_3d, uint64_t stride_2d) {
-  assert(_air_host_active_herd.herd_desc && "cannot shim memcpy without active herd");
-  assert(_air_host_active_herd.q && "cannot shim memcpy using a queue without active queue");
+  assert(_air_host_active_herd.herd_desc &&
+         "cannot shim memcpy without active herd");
+  assert(_air_host_active_herd.q &&
+         "cannot shim memcpy using a queue without active queue");
 
   auto shim_desc = _air_host_active_herd.herd_desc->shim_desc;
-  auto shim_col = shim_location_data(shim_desc, id-1, x, y);
-  auto shim_chan = shim_channel_data(shim_desc, id-1, x, y);
+  auto shim_col = shim_location_data(shim_desc, id - 1, x, y);
+  auto shim_chan = shim_channel_data(shim_desc, id - 1, x, y);
 
   // printf("Do transfer %p with id %d on behalf of x=%ld, y=%ld space %d, col
   // %d, dir %d, chan %d, offset [%ld,%ld,%ld,%ld], length [%ld,%ld,%ld,%ld],
@@ -246,12 +247,13 @@ static void air_mem_shim_nd_memcpy_queue_impl(
 
   bool uses_pa = (space == 1); // t->uses_pa;
   if (uses_pa) {
-    if (isMM2S) shim_chan = shim_chan - 2;
+    if (isMM2S)
+      shim_chan = shim_chan - 2;
 
     size_t stride = 1;
     size_t offset = 0;
     std::vector<uint64_t> offsets{offset_0, offset_1, offset_2, offset_3};
-    for (int i=0; i<R; i++) {
+    for (int i = 0; i < R; i++) {
       offset += offsets[i] * stride * sizeof(T);
       stride *= t->shape[R - i - 1];
     }
@@ -259,7 +261,9 @@ static void air_mem_shim_nd_memcpy_queue_impl(
     uint64_t wr_idx = queue_add_write_index(_air_host_active_herd.q, 1);
     uint64_t packet_id = wr_idx % _air_host_active_herd.q->size;
 
-    dispatch_packet_t *pkt = (dispatch_packet_t*)(_air_host_active_herd.q->base_address_vaddr) + packet_id;
+    dispatch_packet_t *pkt =
+        (dispatch_packet_t *)(_air_host_active_herd.q->base_address_vaddr) +
+        packet_id;
     air_packet_nd_memcpy(
         pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S, shim_chan,
         /*burst_len=*/4, /*memory_space=*/space, (uint64_t)t->data + offset,
@@ -281,15 +285,15 @@ static void air_mem_shim_nd_memcpy_queue_impl(
     size_t stride = 1;
     size_t offset = 0;
     std::vector<uint64_t> offsets{offset_0, offset_1, offset_2, offset_3};
-    for (int i=0; i<R; i++) {
+    for (int i = 0; i < R; i++) {
       offset += offsets[i] * stride * sizeof(T);
       stride *= t->shape[R - i - 1];
     }
 
     uint64_t length = 0;
-    for (uint32_t index_4d=0;index_4d<length_4d;index_4d++)
-      for (uint32_t index_3d=0;index_3d<length_3d;index_3d++)
-        for (uint32_t index_2d=0;index_2d<length_2d;index_2d++)
+    for (uint32_t index_4d = 0; index_4d < length_4d; index_4d++)
+      for (uint32_t index_3d = 0; index_3d < length_3d; index_3d++)
+        for (uint32_t index_2d = 0; index_2d < length_2d; index_2d++)
           length += length_1d;
 
     size_t p = (size_t)t->data + offset;
@@ -300,27 +304,32 @@ static void air_mem_shim_nd_memcpy_queue_impl(
 
     if (isMM2S) {
       shim_chan = shim_chan - 2;
-      for (uint32_t index_4d=0;index_4d<length_4d;index_4d++) {
+      for (uint32_t index_4d = 0; index_4d < length_4d; index_4d++) {
         paddr_2d = paddr_3d;
-        for (uint32_t index_3d=0;index_3d<length_3d;index_3d++) {
+        for (uint32_t index_3d = 0; index_3d < length_3d; index_3d++) {
           paddr_1d = paddr_2d;
-          for (uint32_t index_2d=0;index_2d<length_2d;index_2d++) {
-            memcpy((size_t*)bounce_buffer, (size_t*)paddr_1d, length_1d*sizeof(T));
+          for (uint32_t index_2d = 0; index_2d < length_2d; index_2d++) {
+            memcpy((size_t *)bounce_buffer, (size_t *)paddr_1d,
+                   length_1d * sizeof(T));
             bounce_buffer += length_1d;
-            paddr_1d += stride_2d*sizeof(T);
+            paddr_1d += stride_2d * sizeof(T);
           }
-          paddr_2d += stride_3d*sizeof(T);
+          paddr_2d += stride_3d * sizeof(T);
         }
-        paddr_3d += stride_4d*sizeof(T);
+        paddr_3d += stride_4d * sizeof(T);
       }
     }
 
     uint64_t wr_idx = queue_add_write_index(_air_host_active_herd.q, 1);
     uint64_t packet_id = wr_idx % _air_host_active_herd.q->size;
 
-    dispatch_packet_t *pkt = (dispatch_packet_t*)(_air_host_active_herd.q->base_address_vaddr) + packet_id;
-    air_packet_nd_memcpy(pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S, shim_chan, /*burst_len=*/4, /*memory_space=*/2,
-                         _air_host_bram_paddr, length*sizeof(T), 1, 0, 1, 0, 1, 0);
+    dispatch_packet_t *pkt =
+        (dispatch_packet_t *)(_air_host_active_herd.q->base_address_vaddr) +
+        packet_id;
+    air_packet_nd_memcpy(pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S,
+                         shim_chan, /*burst_len=*/4, /*memory_space=*/2,
+                         _air_host_bram_paddr, length * sizeof(T), 1, 0, 1, 0,
+                         1, 0);
     if (s) {
       // TODO: don't block here
       air_queue_dispatch_and_wait(_air_host_active_herd.q, wr_idx, pkt);
@@ -332,18 +341,19 @@ static void air_mem_shim_nd_memcpy_queue_impl(
       air_queue_dispatch_and_wait(_air_host_active_herd.q, wr_idx, pkt);
     }
     if (!isMM2S) {
-      for (uint32_t index_4d=0;index_4d<length_4d;index_4d++) {
+      for (uint32_t index_4d = 0; index_4d < length_4d; index_4d++) {
         paddr_2d = paddr_3d;
-        for (uint32_t index_3d=0;index_3d<length_3d;index_3d++) {
+        for (uint32_t index_3d = 0; index_3d < length_3d; index_3d++) {
           paddr_1d = paddr_2d;
-          for (uint32_t index_2d=0;index_2d<length_2d;index_2d++) {
-            memcpy((size_t*)paddr_1d, (size_t*)bounce_buffer, length_1d*sizeof(T));
+          for (uint32_t index_2d = 0; index_2d < length_2d; index_2d++) {
+            memcpy((size_t *)paddr_1d, (size_t *)bounce_buffer,
+                   length_1d * sizeof(T));
             bounce_buffer += length_1d;
-            paddr_1d += stride_2d*sizeof(T);
+            paddr_1d += stride_2d * sizeof(T);
           }
-          paddr_2d += stride_3d*sizeof(T);
+          paddr_2d += stride_3d * sizeof(T);
         }
-        paddr_3d += stride_4d*sizeof(T);
+        paddr_3d += stride_4d * sizeof(T);
       }
     }
   }

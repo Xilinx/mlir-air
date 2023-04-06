@@ -34,4 +34,12 @@ struct air_rt_aie_functions_t {
   void (*start_cores)(aie_libxaie_ctx_t *);
 };
 
+/*
+        Get the name of the device driver
+
+        Use this to device to map various device memory regions into the host
+   address space
+*/
+const char *air_get_driver_name(void);
+
 #endif
