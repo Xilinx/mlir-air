@@ -17,6 +17,7 @@
 // CHECK:     %7 = AIE.objectFifo.subview.access %6[0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
 // CHECK:     %8 = AIE.objectFifo.acquire<Consume> (%2 : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
 // CHECK:     %9 = AIE.objectFifo.subview.access %8[0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     AIE.objectFifo.release<Consume> (%2 : !AIE.objectFifo<memref<32xi32>>, 1)
 // CHECK:     AIE.objectFifo.release<Consume> (%3 : !AIE.objectFifo<memref<32xi32>>, 1)
 // CHECK:     AIE.end
 // CHECK:   } {elf_file = "partition_0_core_1_2.elf"}
@@ -26,6 +27,7 @@
 // CHECK:     %8 = AIE.objectFifo.acquire<Produce> (%2 : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
 // CHECK:     %9 = AIE.objectFifo.subview.access %8[0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
 // CHECK:     AIE.objectFifo.release<Produce> (%2 : !AIE.objectFifo<memref<32xi32>>, 1)
+// CHECK:     AIE.objectFifo.release<Produce> (%3 : !AIE.objectFifo<memref<32xi32>>, 1)
 // CHECK:     AIE.end
 // CHECK:   } {elf_file = "partition_0_core_1_1.elf"}
 // CHECK: }
@@ -43,6 +45,7 @@ module @aie.partition_0 {
     air.channel.get  @channel_0[] (%alloc[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
     air.channel.get  @channel_1[] (%alloc2[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
     memref.dealloc %alloc : memref<32xi32, 2>
+    memref.dealloc %alloc2 : memref<32xi32, 2>
     AIE.end
   } {elf_file = "partition_0_core_1_2.elf"}
   %3 = AIE.core(%0) {
@@ -53,6 +56,7 @@ module @aie.partition_0 {
     air.channel.put  @channel_0[] (%alloc[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
     air.channel.put  @channel_1[] (%alloc2[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
     memref.dealloc %alloc : memref<32xi32, 2>
+    memref.dealloc %alloc2 : memref<32xi32, 2>
     AIE.end
   } {elf_file = "partition_0_core_1_1.elf"}
 }
