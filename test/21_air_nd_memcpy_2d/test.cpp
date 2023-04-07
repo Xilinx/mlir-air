@@ -30,10 +30,10 @@
 #define TILE_HEIGHT 8
 #define TILE_SIZE  (TILE_WIDTH * TILE_HEIGHT)
 
-namespace air::partitions::partition_0 {
+namespace air::segments::segment_0 {
 void mlir_aie_write_buffer_scratch_0_0(aie_libxaie_ctx_t*, int, int32_t);
 };
-using namespace air::partitions::partition_0;
+using namespace air::segments::segment_0;
 
 int
 main(int argc, char *argv[])
