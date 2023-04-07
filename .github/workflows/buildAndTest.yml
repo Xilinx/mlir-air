@@ -49,7 +49,11 @@ jobs:
 
       - name: Get cmakeModules
         id: clone-cmakeModules
-        run: git clone --depth 1 https://github.com/Xilinx/cmakeModules.git
+        run: |
+          git clone https://github.com/Xilinx/cmakeModules.git
+          pushd cmakeModules
+          git checkout -b air b0d8828f71bf61db5860843cb16cf8d068c862e4
+          popd
         shell: bash
 
       - name: Get LLVM
@@ -85,7 +89,7 @@ jobs:
             -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
-            -DLibXAIE_DIR=`pwd`/../aienginev2/install \
+            -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
             -DAIR_RUNTIME_TARGETS:STRING="x86" \
             -Dx86_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86.cmake \
             -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
@@ -111,7 +115,7 @@ jobs:
             -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
-            -DLibXAIE_DIR=`pwd`/../aienginev2/install \
+            -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
             -DAIR_RUNTIME_TARGETS:STRING="x86" \
             -Dx86_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86.cmake \
             -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
