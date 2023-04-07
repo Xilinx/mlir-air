@@ -37,14 +37,14 @@ mmult.air.mlir: mmult.linalg-memrefs.mlir
 		-canonicalize -cse
 
 mmult.async.mlir: mmult.air.mlir
-	air-opt -air-to-async -o $@ $<
+	air-opt -buffer-results-to-out-params -air-to-async -o $@ $<
 
 mmult.async.llvm.mlir: mmult.async.mlir
 	air-opt -o $@ $< \
 		-async-to-async-runtime -async-runtime-ref-counting \
 		-async-runtime-ref-counting-opt -convert-linalg-to-affine-loops \
-		-expand-strided-metadata \-lower-affine -convert-scf-to-cf \
-		-convert-async-to-llvm -finalize-memref-to-llvm -convert-cf-to-llvm \
+		-expand-strided-metadata -lower-affine -convert-scf-to-cf \
+		-convert-async-to-llvm -convert-memref-to-llvm -convert-cf-to-llvm \
 		-convert-func-to-llvm -canonicalize -cse
 
 mmult.async.ll: mmult.async.llvm.mlir
