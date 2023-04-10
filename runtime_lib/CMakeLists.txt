@@ -33,5 +33,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
 find_package(LibXAIE REQUIRED)
 find_package(AIE REQUIRED CONFIG)
 
+set(AIR_RUNTIME_TARGET "" CACHE STRING "Architecture to compile the runtime libraries for.")
+
 add_subdirectory(airhost)
 add_subdirectory(aircpu)
