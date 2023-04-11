@@ -26,7 +26,7 @@
 #include "chardev.h"
 
 static const char air_dev_name[] = "amdair";
-static bool enable_aie;
+bool enable_aie;
 
 static struct pci_device_id vck5000_id_table[] = { { PCI_DEVICE(0x10EE,
 								0xB034) },
@@ -116,8 +116,7 @@ static int vck5000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		return err;
 	}
 	drv_priv->dram_bar = pcim_iomap_table(pdev)[DRAM_BAR_INDEX];
-	if (enable_aie)
-		drv_priv->aie_bar = pcim_iomap_table(pdev)[AIE_BAR_INDEX];
+	drv_priv->aie_bar = pcim_iomap_table(pdev)[AIE_BAR_INDEX];
 	drv_priv->bram_bar = pcim_iomap_table(pdev)[BRAM_BAR_INDEX];
 	dev_warn(&pdev->dev, "bar 0: 0x%lx", (unsigned long)drv_priv->dram_bar);
 	dev_warn(&pdev->dev, "bar 2: 0x%lx", (unsigned long)drv_priv->aie_bar);

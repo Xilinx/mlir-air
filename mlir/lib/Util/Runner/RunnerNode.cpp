@@ -1075,22 +1075,26 @@ private:
                          .getVertexFromOp(for_op.getOperation(),
                                           *(this->dep_ctx), "front")
                          .first;
-        auto adj_set = boost::adjacent_vertices(for_v, G);
-        for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
-          auto adj_op = G[*adj_v].op;
-          assert(adj_op);
-          for (auto d : adj_op->getOperands()) {
-            if (d == next_iter_token) {
-              // To start the next loop iteration:
-              // (1) reset graph wrt this token
-              this->resetGraphBetweenTwoVertices(*adj_v, it, G, time);
-              // (2) release the token locks, if the token is still iterating
-              if (token_is_still_iterating[i]) {
-                G[*adj_v].token_count += this->tokenSpatialFactorForDependency(G[*adj_v].op);
-              }
-            }
+
+        // To start the next loop iteration:
+        // reset graph wrt this token
+        std::vector<Graph::vertex_descriptor> reset_vertices_start;
+        // Get vertices adjacent to the next-iteration-incarnation of this
+        // yielded token
+        this->getVerticesAdjToNextIterToken(reset_vertices_start, G, for_v,
+                                      next_iter_token);
+        // Get vertex inversely adjacent to this yielded token
+        auto reset_vertices_end =
+            this->getVertexInvAdjToLoopYieldedToken(op->getOperands()[token_ids[i]]);
+        for (auto adj_v : reset_vertices_start) {
+          this->resetGraphBetweenTwoVertices(adj_v, reset_vertices_end, G, time);
+          // release the token locks, if the token is still iterating
+          if (token_is_still_iterating[i]) {
+            G[adj_v].token_count += this->tokenSpatialFactorForDependency(G[adj_v].op);
           }
         }
+        // Reset scf.yield
+        this->resetVertex(it, G, time);
       }
     }
   }
@@ -1309,6 +1313,44 @@ private:
 
       token_id++;
     }
+  }
+
+  // Get vertices adjacent to the next-iteration-incarnation of a yielded async
+  // token
+  void
+  getVerticesAdjToNextIterToken(std::vector<Graph::vertex_descriptor> &adj_vs,
+                                Graph &G, Graph::vertex_descriptor v,
+                                Value next_iter_token) {
+    auto adj_set = boost::adjacent_vertices(v, G);
+    for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
+      auto adj_op = G[*adj_v].op;
+      assert(adj_op);
+      for (auto d : adj_op->getOperands()) {
+        if (d == next_iter_token) {
+          adj_vs.push_back(*adj_v);
+        }
+      }
+    }
+  }
+
+  // Get vertex inversely adjacent to this yielded token
+  Graph::vertex_descriptor getVertexInvAdjToLoopYieldedToken(Value token) {
+    // If vertex is air.execute, then return the terminator using "back" flag
+    auto token_op = token.getDefiningOp();
+    Graph::vertex_descriptor reset_vertices_end;
+    if (isa<air::ExecuteOp>(token_op)) {
+      reset_vertices_end =
+          canonicalizer.getVertexFromOp(token_op, *(this->dep_ctx), "back").first;
+    } else if (auto forop = dyn_cast<scf::ForOp>(token_op)) {
+      auto forop_terminator = forop.getBody()->getTerminator();
+      reset_vertices_end =
+          canonicalizer.getVertexFromOp(forop_terminator, *(this->dep_ctx), "back")
+              .first;
+    } else {
+      reset_vertices_end =
+          canonicalizer.getVertexFromOp(token_op, *(this->dep_ctx), "back").first;
+    }
+    return reset_vertices_end;
   }
 
   // Check if a channel dependence has been fulfilled

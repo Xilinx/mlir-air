@@ -20,6 +20,8 @@
 #include "air_host_impl.h"
 #include "air_queue.h"
 
+#define ALIGN(_x, _size) (((_x) + ((_size)-1)) & ~((_size)-1))
+
 // Need access to the physical devices to determine where to
 // write the queue
 #ifdef AIR_PCIE
@@ -65,26 +67,22 @@ hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue,
   }
 
   // Right now assuming single device
-  std::string bar_dev_file = air_get_bram_bar(device_id);
-  int fd = open(bar_dev_file.c_str(), O_RDWR | O_SYNC);
-  if (fd == -1)
+  int fd = open(air_get_driver_name(), O_RDWR | O_SYNC);
+  if (fd == -1) {
+    printf("Error opening %s\n", air_get_driver_name());
     return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
+  }
 
-  paddr -= AIR_VCK190_SHMEM_BASE;
-  uint64_t paddr_aligned = paddr & 0xfffffffffffff000;
-  uint64_t paddr_offset = paddr & 0x0000000000000fff;
-
-  uint64_t *bram_ptr = (uint64_t *)mmap(NULL, 0x100000, PROT_READ | PROT_WRITE,
-                                        MAP_SHARED, fd, paddr_aligned);
-
-  // printf("Opened shared memory paddr: %p vaddr: %p\n", paddr, bram_ptr);
-  uint64_t q_paddr =
-      bram_ptr[paddr_offset / sizeof(uint64_t)] - AIR_VCK190_SHMEM_BASE;
-  uint64_t q_offset = q_paddr;
-  queue_t *q = (queue_t *)(((size_t)bram_ptr) + q_offset + paddr_offset);
-  // printf("Queue location at paddr: %p vaddr: %p\n",
-  // bram_ptr[paddr_offset/sizeof(uint64_t)]-AIR_VCK190_SHMEM_BASE, q);
-
+  // map memory for herd 0 and calculate queue address
+  uint8_t *herd_ptr = (uint8_t *)mmap(NULL, 0x1000, PROT_READ | PROT_WRITE,
+                                      MAP_SHARED, fd, 0x8000000ULL);
+  if (herd_ptr == MAP_FAILED) {
+    printf("Error mapping BRAM\n");
+    return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
+  }
+  queue_t *q = (queue_t *)(herd_ptr + sizeof(dispatch_packet_t));
+  q->base_address_vaddr =
+      ALIGN(((uint64_t)q) + sizeof(queue_t), sizeof(dispatch_packet_t));
 #else
   int fd = open("/dev/mem", O_RDWR | O_SYNC);
   if (fd == -1)
@@ -105,24 +103,21 @@ hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue,
 #endif
 
   if (q->id != 0xacdc) {
-    // printf("%s error invalid id %x\n", __func__, q->id);
+    printf("%s error invalid id %lx\n", __func__, q->id);
     return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
   }
 
   if (q->size != size) {
-    // printf("%s error size mismatch %d\n", __func__, q->size);
+    printf("%s error size mismatch %d\n", __func__, q->size);
     return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
   }
 
   if (q->type != type) {
-    // printf("%s error type mismatch %d\n", __func__, q->type);
+    printf("%s error type mismatch %d\n", __func__, q->type);
     return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
   }
 
 #ifdef AIR_PCIE
-  uint64_t base_address_offset = q->base_address - AIR_VCK190_SHMEM_BASE;
-  q->base_address_vaddr = ((size_t)bram_ptr) + base_address_offset;
-  q->base_address_paddr = q->base_address;
 #else
   uint64_t base_address_offset = q->base_address - paddr_aligned;
   q->base_address_vaddr = ((size_t)bram_ptr) + base_address_offset;

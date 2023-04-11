@@ -47,9 +47,9 @@ using namespace xilinx::air;
 
 namespace {
 
-class AIRHerdToCpuConversion : public ConversionPattern {
+class AIRHerdOpConversion : public ConversionPattern {
 public:
-  explicit AIRHerdToCpuConversion(MLIRContext *context)
+  explicit AIRHerdOpConversion(MLIRContext *context)
       : ConversionPattern(air::HerdOp::getOperationName(), 1, context) {}
 
   LogicalResult
@@ -440,6 +440,98 @@ public:
   }
 };
 
+class ScfParallelOpConversion : public OpConversionPattern<scf::ParallelOp> {
+public:
+  using OpConversionPattern<scf::ParallelOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::ParallelOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    SmallVector<Value> empty;
+    SmallVector<Type> retTy; // TODO
+    SmallVector<Value> deps; // TODO
+
+    // compute the total number of iterations and check that the bounds are
+    // constants
+    uint64_t total_size = 1;
+    auto ivs = op.getInductionVars().begin();
+    auto step = op.getStep().begin();
+    auto lowerBound = op.getLowerBound().begin();
+    auto upperBound = op.getUpperBound().begin();
+    for (int i = 0, e = op.getNumLoops(); i < e; i++) {
+      Value sv = *step++;
+      Value lbv = *lowerBound++;
+      Value ubv = *upperBound++;
+      auto si = sv.getDefiningOp<arith::ConstantIndexOp>();
+      auto lbi = lbv.getDefiningOp<arith::ConstantIndexOp>();
+      auto ubi = ubv.getDefiningOp<arith::ConstantIndexOp>();
+      if (!si || !lbi || !ubi)
+        return failure();
+      auto s = si.value();
+      auto lb = lbi.value();
+      auto ub = ubi.value();
+      auto new_ub_int = (ub - lb) / s;
+      if ((new_ub_int * s) != (ub - lb))
+        return op->emitOpError()
+               << "failed to normalize: step '" << s
+               << "' does not evenly divide range '" << (ub - lb) << "'";
+      total_size *= new_ub_int;
+    }
+
+    auto topExeOp = rewriter.create<async::ExecuteOp>(
+        op->getLoc(), retTy, deps, empty,
+        [&](OpBuilder &r, Location loc, ValueRange v) {
+          IRMapping mapper;
+
+          auto size = r.create<arith::ConstantIndexOp>(loc, total_size);
+          auto group = r.create<async::CreateGroupOp>(loc, size);
+
+          // create nested for loops
+          auto ivs = op.getInductionVars().begin();
+          auto step = op.getStep().begin();
+          auto lowerBound = op.getLowerBound().begin();
+          auto upperBound = op.getUpperBound().begin();
+          SmallVector<scf::ForOp> loops;
+          for (int i = 0, e = op.getNumLoops(); i < e; i++) {
+            Value sv = *step++;
+            Value lbv = *lowerBound++;
+            Value ubv = *upperBound++;
+            Value iv = *ivs++;
+            auto l = r.create<scf::ForOp>(loc, lbv, ubv, sv);
+            mapper.map(lbv, l.getLowerBound());
+            mapper.map(ubv, l.getUpperBound());
+            mapper.map(sv, l.getStep());
+            mapper.map(iv, l.getInductionVar());
+            r.setInsertionPointToStart(l.getBody());
+            loops.push_back(l);
+          }
+
+          // create an async.execute and clone the scf.parallel body into it
+          auto coreExeOp = r.create<async::ExecuteOp>(
+              loc, retTy, empty, empty,
+              [&](OpBuilder &b, Location loc, ValueRange v) {
+                for (auto &o : op.getBody()->getOperations())
+                  if (!isa<scf::YieldOp, scf::ReduceOp>(o))
+                    b.clone(o, mapper);
+                b.create<async::YieldOp>(loc, empty);
+              });
+          r.create<async::AddToGroupOp>(loc, coreExeOp.getResult(0), group);
+          r.setInsertionPointAfter(loops[0]);
+
+          r.create<async::AwaitAllOp>(loc, group);
+          r.create<async::YieldOp>(loc, empty);
+        });
+    rewriter.create<async::AwaitOp>(op->getLoc(), topExeOp.getResult(0));
+    if (op.getInitVals().size())
+      rewriter.replaceOp(op, topExeOp.getResults());
+    else
+      rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
 class ExecuteOpConversion : public OpConversionPattern<air::ExecuteOp> {
 public:
   using OpConversionPattern<air::ExecuteOp>::OpConversionPattern;
@@ -622,7 +714,7 @@ public:
     }
 
     RewritePatternSet air_herd_patterns(context);
-    air_herd_patterns.add<AIRHerdToCpuConversion>(context);
+    air_herd_patterns.add<AIRHerdOpConversion>(context);
     if (failed(applyPartialConversion(module, target,
                                       std::move(air_herd_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air.herd\n");
@@ -653,6 +745,15 @@ public:
       return true;
     });
 
+    target.addDynamicallyLegalOp<scf::ParallelOp>([&](scf::ParallelOp op) {
+      // for (auto o : op.getRegionIterArgs()) {
+      //   if (o.getType().isa<air::AsyncTokenType>())
+      //     return false;
+      // }
+      // return true;
+      return false;
+    });
+
     target.addDynamicallyLegalOp<scf::YieldOp>([&](scf::YieldOp op) {
       for (auto v : op.getResults()) {
         if (v.getType().isa<air::AsyncTokenType>())
@@ -676,10 +777,10 @@ public:
         typeConversionPatterns, converter);
 
     typeConversionPatterns
-        .add<ScfYieldOpConversion, ScfForOpConversion, AsyncCallOpConversion,
-             AllocOpConversion, DeallocOpConversion, CallOpConversion,
-             ChannelGetOpConversion, ChannelPutOpConversion>(converter,
-                                                             context);
+        .add<ScfYieldOpConversion, ScfForOpConversion, ScfParallelOpConversion,
+             AsyncCallOpConversion, AllocOpConversion, DeallocOpConversion,
+             CallOpConversion, ChannelGetOpConversion, ChannelPutOpConversion>(
+            converter, context);
 
     if (failed(applyPartialConversion(module, target,
                                       std::move(typeConversionPatterns)))) {

@@ -160,3 +160,35 @@ func.func @channel_get_put_3_3(%arg0 : memref<9x9xf32>) -> () {
   }
   return
 }
+
+// CHECK-LABEL: @scf_par
+// CHECK: %[[C0:.*]] = arith.constant 0 : index
+// CHECK: %[[C32:.*]] = arith.constant 32 : index
+// CHECK: %[[C128:.*]] = arith.constant 128 : index
+// CHECK: %[[T0:.*]] = async.execute {
+// CHECK: %[[C16:.*]] = arith.constant 16 : index
+// CHECK: %[[G0:.*]] = async.create_group %[[C16]] : !async.group
+// CHECK: scf.for %[[IV0:.*]] = %[[C0]] to %[[C128]] step %[[C32]] {
+// CHECK: scf.for %[[IV1:.*]] = %[[C0]] to %[[C128]] step %[[C32]] {
+// CHECK: %[[T1:.*]] = async.execute {
+// CHECK: %{{.*}} = memref.subview %{{.*}}[%[[IV0]], %[[IV1]]
+// CHECK: %3 = async.add_to_group %[[T1]], %[[G0]] : !async.token
+// CHECK: async.await_all %[[G0]]
+// CHECK: async.await %[[T0]] : !async.token
+func.func @scf_par(%arg0: memref<256x256xf32>) {
+  %c1 = arith.constant 1 : index
+  air.herd @herd_0  tile (%arg1, %arg2) in (%arg3=%c1, %arg4=%c1) args(%arg5=%arg0) : memref<256x256xf32> {
+    %c0 = arith.constant 0 : index
+    %c32 = arith.constant 32 : index
+    %c128 = arith.constant 128 : index
+    scf.parallel (%arg6, %arg7) = (%c0, %c0) to (%c128, %c128) step (%c32, %c32) {
+      %subview = memref.subview %arg5[%arg6, %arg7] [32, 32] [1, 1] : memref<256x256xf32> to memref<32x32xf32, strided<[256, 1], offset: ?>>
+      %alloc = memref.alloc() : memref<32x32xf32, 2>
+      memref.copy %subview, %alloc : memref<32x32xf32, strided<[256, 1], offset: ?>> to memref<32x32xf32, 2>
+      memref.dealloc %alloc : memref<32x32xf32, 2>
+      scf.yield
+    }
+    air.herd_terminator
+  }
+  return
+}
