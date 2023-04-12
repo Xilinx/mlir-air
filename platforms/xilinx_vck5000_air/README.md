@@ -49,6 +49,9 @@ The output should match the following (perhaps with a different bus ID):
         Capabilities: [1f0] Virtual Channel
 ```
 
+## Driver
+After programming the card, rebooting the host, and verifying the the card has been programmed properly, the [AIR PCIe driver](https://github.com/Xilinx/mlir-air/tree/main/driver) must be loaded to communicate with the card.
+
 -----
 
 <p align="center">Copyright&copy; 2019-2022 Advanced Micro Devices, Inc.</p>

@@ -111,6 +111,11 @@ export PYTHONPATH=/path/to/mlir-air/install/python:${PYTHONPATH}
 export LD_LIBRARY_PATH=/path/to/install/mlir-air/lib:/opt/xaiengine/lib:${LD_LIBRARY_PATH}
 ```
 
+Note that if you are running on x86 with the PCIe runtime, the following path should be added to your path rather than `/path/to/mlir-air/install/bin`. 
+```
+export PATH=/path/to/mlir-air/install-pcie/bin:${PATH}
+```
+
 ## Building hardware platforms
 
 The instructions for building the hardware platform designs are found in the mlir-air/platforms directory:
