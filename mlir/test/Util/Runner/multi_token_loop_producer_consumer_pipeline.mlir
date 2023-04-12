@@ -196,14 +196,10 @@ module attributes {torch.debug_module_name = "mmult"} {
           %8 = air.wait_all async [%6, %4, %7, %arg9] 
           scf.yield %8 : !air.async.token
         }
-<<<<<<< HEAD
         %async_token_13 = air.execute [%2] {
           memref.dealloc %results_12 : memref<128x128xf32, 1>
         } {id = 24 : i32}
-        air.partition_terminator
-=======
         air.segment_terminator
->>>>>>> 0e7d30dab506796a6cd897330baafc1fce2a5944
       }
       air.launch_terminator
     }
