@@ -670,7 +670,7 @@ private:
   // Return how many events can be dispatched at this point in time.
   unsigned checkResourceFulfillmentForOp(air::ChannelPutOp putOp) {
 
-    std::cout << "Start checking for put\n";
+    // std::cout << "Start checking for put\n";
 
     // Get src memory spaces
     MemRefType srcTy = putOp.getSrc().getType().cast<MemRefType>();
@@ -689,16 +689,16 @@ private:
     // Check how many remaining dispatches are there for this dynamically dispatched event
     unsigned remaining = launch_runner->getRemainingDispatchesForDynamicDispatch(putOp.getOperation());
 
-    std::cout << "remaining: " << remaining << "\n";
-    std::cout << "pool size: " << src_resource_pool.size() << "\n";
+    // std::cout << "remaining: " << remaining << "\n";
+    // std::cout << "pool size: " << src_resource_pool.size() << "\n";
 
-    std::cout << "Finish checking for put\n";
+    // std::cout << "Finish checking for put\n";
 
     return std::min(remaining, (unsigned)src_resource_pool.size());
   }
   unsigned checkResourceFulfillmentForOp(air::ChannelGetOp getOp) {
 
-    std::cout << "Start checking for get\n";
+    // std::cout << "Start checking for get\n";
 
     // Get dst memory spaces
     MemRefType dstTy = getOp.getDst().getType().cast<MemRefType>();
@@ -716,10 +716,10 @@ private:
 
     unsigned remaining = launch_runner->getRemainingDispatchesForDynamicDispatch(getOp);
 
-    std::cout << "remaining: " << remaining << "\n";
-    std::cout << "pool size: " << dst_resource_pool.size() << "\n";
+    // std::cout << "remaining: " << remaining << "\n";
+    // std::cout << "pool size: " << dst_resource_pool.size() << "\n";
 
-    std::cout << "Finish checking for get\n";
+    // std::cout << "Finish checking for get\n";
 
     return std::min(remaining, (unsigned)dst_resource_pool.size());
   }
@@ -873,10 +873,10 @@ private:
                                 std::vector<resource *> &reserved_resources, unsigned memSpace, unsigned &dispatched) {
     
     if (isa<air::ChannelPutOp>(Op.getOperation())){
-      std::cout << "Start allocating to put\n";
+      // std::cout << "Start allocating to put\n";
     }
     if (isa<air::ChannelGetOp>(Op.getOperation())){
-      std::cout << "Start allocating to get\n";
+      // std::cout << "Start allocating to get\n";
     }
 
     // Get a pool of available ports
@@ -902,7 +902,7 @@ private:
     dispatched = std::min(remaining, (int)resource_pool.size());
 
     if (isa<air::ChannelGetOp>(Op.getOperation())){
-      std::cout << "remaining: " << remaining << "\n";
+      // std::cout << "remaining: " << remaining << "\n";
     }
 
     // Dispatch all events that can be dispatched
@@ -922,7 +922,7 @@ private:
       launch_runner->ops_in_progress.insert(std::make_pair(Op.getOperation(), entry));
     }
 
-    std::cout << "Finish allocating to chan\n";
+    // std::cout << "Finish allocating to chan\n";
   }
 
   // Get broadcast size from channel declaration
@@ -968,7 +968,7 @@ private:
     // Check how many events in total
     unsigned total = this->tokenSpatialFactorForResource<air::HierarchyInterface>(op, {});
     unsigned already_dispatched = this->getAlreadyDispatchedForDynamicDispatch(op);
-    std::cout << air::to_string(op) << " in depth: already_dispatched = " << already_dispatched << "\n";
+    // std::cout << air::to_string(op) << " in depth: already_dispatched = " << already_dispatched << "\n";
 
     // Check how many remaining evnets need to be dispatched in this op
     unsigned remaining = total - already_dispatched;
@@ -1152,7 +1152,7 @@ private:
 
   void executeOp(air::ChannelGetOp op, Graph::vertex_descriptor it) {
 
-    std::cout << "Start executing get\n";
+    // std::cout << "Start executing get\n";
 
     // Get launch runner node
     auto launch_runner = this;
@@ -1160,8 +1160,14 @@ private:
       launch_runner = launch_runner->parent;
     }
 
-    // Deallocate src and dst ports
+    // Get op progress
     auto put = air::getTheOtherChannelOpThroughSymbol(op);
+    auto put_processed = launch_runner->getAlreadyDispatchedForDynamicDispatch(put[0].getOperation());
+    auto get_processed = launch_runner->getAlreadyDispatchedForDynamicDispatch(op.getOperation());
+    unsigned bcast_factor = launch_runner->getBCastSizeFromChannelDeclaration(op.getOperation());
+    unsigned total_count = this->tokenSpatialFactorForResource<air::HierarchyInterface>(op, {});
+
+    // Calculate how many src and dst ports to deallocate
     unsigned put_reserved_count = 0;
     for (auto p : launch_runner->ops_in_progress[put[0].getOperation()].second){
       if (p->isReserved){
@@ -1176,14 +1182,29 @@ private:
       }
     }
     // std::cout << "get_reserved count: " << get_reserved_count << "\n";
-    unsigned to_deallocate = std::min(put_reserved_count, get_reserved_count);
+
+    unsigned put_to_deallocate = 0;
+    unsigned get_to_deallocate = 0;
+    if (put_reserved_count * bcast_factor > get_reserved_count){
+      put_to_deallocate = mlir::floorDiv(get_reserved_count, bcast_factor);
+      get_to_deallocate = get_reserved_count;
+    }
+    else {
+      put_to_deallocate = put_reserved_count;
+      get_to_deallocate = put_reserved_count * bcast_factor;
+    }
+
+
+
+    // Deallocate src and dst ports
+    // unsigned to_deallocate = std::min(put_reserved_count, get_reserved_count);
     unsigned put_deallocate_count = 0;
     for (auto p : launch_runner->ops_in_progress[put[0].getOperation()].second){
       if (p->isReserved){
         p->isReserved = false;
         put_deallocate_count ++;
       }
-      if (put_deallocate_count == to_deallocate){
+      if (put_deallocate_count == put_to_deallocate){
         break;
       }
     }
@@ -1193,26 +1214,17 @@ private:
         g->isReserved = false;
         get_deallocate_count ++;
       }
-      if (get_deallocate_count == to_deallocate){
+      if (get_deallocate_count == get_to_deallocate){
         break;
       }
     }
 
-    // Get op progress
-    auto put_processed = launch_runner->getAlreadyDispatchedForDynamicDispatch(put[0].getOperation());
-    auto get_processed = launch_runner->getAlreadyDispatchedForDynamicDispatch(op.getOperation());
-    unsigned bcast_factor = launch_runner->getBCastSizeFromChannelDeclaration(op.getOperation());
-    unsigned total_count = this->tokenSpatialFactorForResource<air::HierarchyInterface>(op, {});
-    
-    // Scale count values with broadcast factors
-    put_processed *= bcast_factor;
-
-    std::cout << "put_processed count: " << put_processed << "\n";
-    std::cout << "get_processed count: " << get_processed << "\n";
-    std::cout << "total count: " << total_count << "\n";
+    // std::cout << "put_processed count: " << put_processed << "\n";
+    // std::cout << "get_processed count: " << get_processed << "\n";
+    // std::cout << "total count: " << total_count << "\n";
 
     // If data movement is complete, clear put and get progresses
-    if ((put_processed == total_count) && (get_processed == total_count)){
+    if ((put_processed * bcast_factor == total_count) && (get_processed == total_count)){
       this->processed_vertices.push_back(it);
       launch_runner->ops_in_progress[op.getOperation()].first = 0;
       launch_runner->ops_in_progress[op.getOperation()].second.clear();
@@ -1221,10 +1233,12 @@ private:
     }
     // Else, continue dispatching get events
     else{
-      launch_runner->ops_in_progress[op.getOperation()].first = to_deallocate;
+      // launch_runner->ops_in_progress[op.getOperation()].first = to_deallocate;
+      launch_runner->ops_in_progress[op.getOperation()].first = total_count - get_deallocate_count;
+      launch_runner->ops_in_progress[put[0].getOperation()].first = mlir::floorDiv(total_count, bcast_factor) - put_deallocate_count;
     }
 
-    std::cout << "Finish executing get\n";
+    // std::cout << "Finish executing get\n";
   }
 
   void executeOp(Graph::vertex_descriptor it) {
