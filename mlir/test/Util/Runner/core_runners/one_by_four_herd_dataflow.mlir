@@ -35,15 +35,15 @@
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME3]],
 
+// CHECK: "name": "ChannelGetOp@channel_1(L1<--L1)",
+// CHECK-NEXT: "cat": "layer",
+// CHECK-NEXT: "ph": "B",
+// CHECK-NEXT: "ts": [[TIME3]],
+
 // CHECK: "name": "ChannelPutOp@channel_1(L1-->L1)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "E",
 // CHECK-NEXT: "ts": [[TIME4:.*]],
-
-// CHECK: "name": "ChannelGetOp@channel_1(L1<--L1)",
-// CHECK-NEXT: "cat": "layer",
-// CHECK-NEXT: "ph": "B",
-// CHECK-NEXT: "ts": [[TIME4]],
 
 // CHECK: "name": "ChannelGetOp@channel_1(L1<--L1)",
 // CHECK-NEXT: "cat": "layer",
@@ -55,15 +55,15 @@
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME5]],
 
+// CHECK: "name": "ChannelGetOp@channel_2(L1<--L1)",
+// CHECK-NEXT: "cat": "layer",
+// CHECK-NEXT: "ph": "B",
+// CHECK-NEXT: "ts": [[TIME5]],
+
 // CHECK: "name": "ChannelPutOp@channel_2(L1-->L1)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "E",
 // CHECK-NEXT: "ts": [[TIME6:.*]],
-
-// CHECK: "name": "ChannelGetOp@channel_2(L1<--L1)",
-// CHECK-NEXT: "cat": "layer",
-// CHECK-NEXT: "ph": "B",
-// CHECK-NEXT: "ts": [[TIME6]],
 
 // CHECK: "name": "ChannelGetOp@channel_2(L1<--L1)",
 // CHECK-NEXT: "cat": "layer",
@@ -75,15 +75,15 @@
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME7]],
 
+// CHECK: "name": "ChannelGetOp@channel_3(L1<--L1)",
+// CHECK-NEXT: "cat": "layer",
+// CHECK-NEXT: "ph": "B",
+// CHECK-NEXT: "ts": [[TIME7]],
+
 // CHECK: "name": "ChannelPutOp@channel_3(L1-->L1)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "E",
 // CHECK-NEXT: "ts": [[TIME8:.*]],
-
-// CHECK: "name": "ChannelGetOp@channel_3(L1<--L1)",
-// CHECK-NEXT: "cat": "layer",
-// CHECK-NEXT: "ph": "B",
-// CHECK-NEXT: "ts": [[TIME8]],
 
 // CHECK: "name": "ChannelGetOp@channel_3(L1<--L1)",
 // CHECK-NEXT: "cat": "layer",
