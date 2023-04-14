@@ -345,7 +345,8 @@ public:
     // TODO: get parent from parentObject, for multi-device modelling.
   }
 
-  void setup_device_resources(llvm::json::Object *columnsObject = nullptr, llvm::json::Object *portsObject = nullptr) {
+  void setup_device_resources(llvm::json::Object *columnsObject = nullptr,
+                              llvm::json::Object *portsObject = nullptr) {
     this->set_columns(columnsObject);
     this->set_ports(portsObject);
   }
@@ -363,7 +364,8 @@ public:
         model->getObject("devicename"), model->getNumber("clock"),
         model->getArray("datatypes"), model->getArray("interfaces"),
         model->getObject("kernels"), nullptr);
-    this->setup_device_resources(model->getObject("columns"), model->getObject("noc"));
+    this->setup_device_resources(model->getObject("columns"),
+                                 model->getObject("noc"));
     this->reset_reservation();
   }
 
