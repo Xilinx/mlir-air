@@ -43,6 +43,7 @@ std::string to_string(dependencyNodeEntry &c);
 std::string to_string(mlir::Type t);
 std::string getElementTypeAsString(const mlir::Type ty);
 std::string lookUpMemorySpaceFromInt(unsigned memory_space);
+unsigned lookUpMemorySpaceIntFromString(std::string memory_space);
 
 } // namespace air
 } // namespace xilinx

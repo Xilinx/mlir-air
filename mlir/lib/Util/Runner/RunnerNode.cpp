@@ -423,14 +423,13 @@ private:
     parent_runner_node->getTilesPool(resource_pool);
   }
   void getPortsPool(std::vector<resource *> &resource_pool,
-                    unsigned memory_space_as_int) {
-    auto mem_str = lookUpMemorySpaceFromInt(memory_space_as_int);
+                    std::string port_direction) {
     for (auto res_hier : this->resource_hiers) {
       // Get ports from devices
       if (this->runner_node_type == "launch") {
         auto dev = static_cast<device *>(res_hier);
         auto dev_ports = dev->ports;
-        for (auto p : dev_ports[mem_str]) {
+        for (auto p : dev_ports[port_direction]) {
           if (!p->isReserved) {
             resource_pool.push_back(p);
           }
@@ -440,7 +439,7 @@ private:
       else if (this->runner_node_type == "segment") {
         auto col = static_cast<column *>(res_hier);
         auto col_ports = col->ports;
-        for (auto p : col_ports[mem_str]) {
+        for (auto p : col_ports[port_direction]) {
           if (!p->isReserved) {
             resource_pool.push_back(p);
           }
@@ -450,7 +449,7 @@ private:
       else if (this->runner_node_type == "herd") {
         auto til = static_cast<tile *>(res_hier);
         auto til_ports = til->ports;
-        for (auto p : til_ports[mem_str]) {
+        for (auto p : til_ports[port_direction]) {
           if (!p->isReserved) {
             resource_pool.push_back(p);
           }
@@ -680,7 +679,7 @@ private:
 
     // Get a pool of available ports from src
     std::vector<resource *> src_resource_pool;
-    this->getPortsPool(src_resource_pool, srcSpace);
+    this->getPortsPool(src_resource_pool, "outbound");
 
     // Get launch runner node
     auto launch_runner = this;
@@ -703,7 +702,7 @@ private:
 
     // Get a pool of available ports from dst
     std::vector<resource *> dst_resource_pool;
-    this->getPortsPool(dst_resource_pool, dstSpace);
+    this->getPortsPool(dst_resource_pool, "inbound");
 
     // Get launch runner node
     auto launch_runner = this;
@@ -806,10 +805,6 @@ private:
   }
   void allocateEventToResources(air::ChannelPutOp Op,
                                 std::vector<resource *> &reserved_resources) {
-    // Get src memory spaces
-    MemRefType srcTy = Op.getSrc().getType().cast<MemRefType>();
-    auto srcSpace = srcTy.getMemorySpaceAsInt();
-
     auto chan_interface = dyn_cast<air::ChannelInterface>(Op.getOperation());
     unsigned dispatched = 0;
 
@@ -817,8 +812,8 @@ private:
     unsigned total =
         this->tokenSpatialFactorForResource<air::HierarchyInterface>(
             Op.getOperation(), {});
-    this->allocateEventToResources(chan_interface, reserved_resources, srcSpace,
-                                   dispatched);
+    this->allocateEventToResources(chan_interface, reserved_resources,
+                                   "outbound", dispatched);
 
     // Update tokens
     auto spatial_factor =
@@ -844,18 +839,14 @@ private:
   }
   void allocateEventToResources(air::ChannelGetOp Op,
                                 std::vector<resource *> &reserved_resources) {
-    // Get dst memory spaces
-    MemRefType dstTy = Op.getDst().getType().cast<MemRefType>();
-    auto dstSpace = dstTy.getMemorySpaceAsInt();
-
     auto chan_interface = dyn_cast<air::ChannelInterface>(Op.getOperation());
     unsigned dispatched = 0;
     // Check how many evnets need to be dispatched in this op
     unsigned total =
         this->tokenSpatialFactorForResource<air::HierarchyInterface>(
             Op.getOperation(), {});
-    this->allocateEventToResources(chan_interface, reserved_resources, dstSpace,
-                                   dispatched);
+    this->allocateEventToResources(chan_interface, reserved_resources,
+                                   "inbound", dispatched);
 
     // Update tokens
     auto spatial_factor =
@@ -877,11 +868,12 @@ private:
 
   void allocateEventToResources(air::ChannelInterface Op,
                                 std::vector<resource *> &reserved_resources,
-                                unsigned memSpace, unsigned &dispatched) {
+                                std::string port_direction,
+                                unsigned &dispatched) {
 
     // Get a pool of available ports
     std::vector<resource *> resource_pool;
-    this->getPortsPool(resource_pool, memSpace);
+    this->getPortsPool(resource_pool, port_direction);
 
     // Get launch runner node
     auto launch_runner = this;

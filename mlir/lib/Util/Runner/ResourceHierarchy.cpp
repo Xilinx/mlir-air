@@ -36,7 +36,7 @@ class tile : public resourceHierarchy {
 public:
   memory *tile_mem;
   unsigned idx;
-  // Keys: memory space; mapped: vector of ports.
+  // Keys: port direction (inbound/outbound); mapped: vector of ports.
   std::map<std::string, std::vector<port *>> ports;
 
   void set_tile_id(unsigned idx) { this->idx = idx; }
@@ -45,10 +45,10 @@ public:
 
   void set_memory(llvm::json::Object *memObject) {
     if (memObject) {
-      auto ms = memObject->getInteger("memory_space");
+      auto ms = memObject->getString("memory_space");
       auto bytes = memObject->getNumber("bytes");
       assert(ms && bytes != 0.0f);
-      memory *mem = new memory(*ms, *bytes);
+      memory *mem = new memory(ms.value().str(), *bytes);
       this->set_memory(mem);
     } else {
       this->tile_mem = nullptr;
@@ -57,18 +57,33 @@ public:
 
   void set_ports(llvm::json::Object *portsObject) {
     if (portsObject) {
-      auto L1PortsObject = portsObject->getObject("L1");
-      if (L1PortsObject) {
-        auto l1_port_count = L1PortsObject->getInteger("count");
-        if (l1_port_count) {
-          std::vector<port *> l1_port_vec;
-          for (unsigned i = 0; i < *l1_port_count; i++) {
+      auto inboundPortsObject = portsObject->getObject("inbound");
+      if (inboundPortsObject) {
+        auto inbound_port_count = inboundPortsObject->getInteger("count");
+        if (inbound_port_count) {
+          std::vector<port *> inbound_port_vec;
+          for (unsigned i = 0; i < *inbound_port_count; i++) {
             auto bytes_per_second =
-                L1PortsObject->getNumber("bytes_per_second");
-            port *new_port = new port(this, "L1", bytes_per_second, i);
-            l1_port_vec.push_back(new_port);
+                inboundPortsObject->getNumber("bytes_per_second");
+            port *new_port = new port(this, "L1_inbound", bytes_per_second, i);
+            inbound_port_vec.push_back(new_port);
           }
-          this->ports.insert(std::make_pair("L1", l1_port_vec));
+          this->ports.insert(std::make_pair("inbound", inbound_port_vec));
+        }
+      }
+
+      auto outboundPortsObject = portsObject->getObject("outbound");
+      if (outboundPortsObject) {
+        auto outbound_port_count = outboundPortsObject->getInteger("count");
+        if (outbound_port_count) {
+          std::vector<port *> outbound_port_vec;
+          for (unsigned i = 0; i < *outbound_port_count; i++) {
+            auto bytes_per_second =
+                outboundPortsObject->getNumber("bytes_per_second");
+            port *new_port = new port(this, "L1_outbound", bytes_per_second, i);
+            outbound_port_vec.push_back(new_port);
+          }
+          this->ports.insert(std::make_pair("outbound", outbound_port_vec));
         }
       }
     } else {
@@ -93,7 +108,7 @@ class column : public resourceHierarchy {
 public:
   memory *column_mem;
   std::vector<tile *> tiles;
-  // Keys: memory space; mapped: vector of ports.
+  // Keys: port direction (inbound/outbound); mapped: vector of ports.
   std::map<std::string, std::vector<port *>> ports;
   unsigned idx;
 
@@ -115,10 +130,10 @@ public:
 
   void set_memory(llvm::json::Object *memObject) {
     if (memObject) {
-      auto ms = memObject->getInteger("memory_space");
+      auto ms = memObject->getString("memory_space");
       auto bytes = memObject->getNumber("bytes");
       assert(ms && bytes != 0.0f);
-      memory *mem = new memory(*ms, *bytes);
+      memory *mem = new memory(ms.value().str(), *bytes);
       this->set_memory(mem);
     } else {
       this->column_mem = nullptr;
@@ -148,34 +163,33 @@ public:
 
   void set_ports(llvm::json::Object *portsObject) {
     if (portsObject) {
-
-      auto L1PortsObject = portsObject->getObject("L1");
-      if (L1PortsObject) {
-        auto l1_port_count = L1PortsObject->getInteger("count");
-        if (l1_port_count) {
-          std::vector<port *> l1_port_vec;
-          for (unsigned i = 0; i < *l1_port_count; i++) {
+      auto inboundPortsObject = portsObject->getObject("inbound");
+      if (inboundPortsObject) {
+        auto inbound_port_count = inboundPortsObject->getInteger("count");
+        if (inbound_port_count) {
+          std::vector<port *> inbound_port_vec;
+          for (unsigned i = 0; i < *inbound_port_count; i++) {
             auto bytes_per_second =
-                L1PortsObject->getNumber("bytes_per_second");
-            port *new_port = new port(this, "L1", bytes_per_second, i);
-            l1_port_vec.push_back(new_port);
+                inboundPortsObject->getNumber("bytes_per_second");
+            port *new_port = new port(this, "L2_inbound", bytes_per_second, i);
+            inbound_port_vec.push_back(new_port);
           }
-          this->ports.insert(std::make_pair("L1", l1_port_vec));
+          this->ports.insert(std::make_pair("inbound", inbound_port_vec));
         }
       }
 
-      auto L2PortsObject = portsObject->getObject("L2");
-      if (L2PortsObject) {
-        auto l2_port_count = L2PortsObject->getInteger("count");
-        if (l2_port_count) {
-          std::vector<port *> l2_port_vec;
-          for (unsigned i = 0; i < *l2_port_count; i++) {
+      auto outboundPortsObject = portsObject->getObject("outbound");
+      if (outboundPortsObject) {
+        auto outbound_port_count = outboundPortsObject->getInteger("count");
+        if (outbound_port_count) {
+          std::vector<port *> outbound_port_vec;
+          for (unsigned i = 0; i < *outbound_port_count; i++) {
             auto bytes_per_second =
-                L2PortsObject->getNumber("bytes_per_second");
-            port *new_port = new port(this, "L2", bytes_per_second, i);
-            l2_port_vec.push_back(new_port);
+                outboundPortsObject->getNumber("bytes_per_second");
+            port *new_port = new port(this, "L2_outbound", bytes_per_second, i);
+            outbound_port_vec.push_back(new_port);
           }
-          this->ports.insert(std::make_pair("L2", l2_port_vec));
+          this->ports.insert(std::make_pair("outbound", outbound_port_vec));
         }
       }
     } else {
@@ -296,34 +310,33 @@ public:
 
   void set_ports(llvm::json::Object *portsObject) {
     if (portsObject) {
-
-      auto L2PortsObject = portsObject->getObject("L2");
-      if (L2PortsObject) {
-        auto l2_port_count = L2PortsObject->getInteger("count");
-        if (l2_port_count) {
-          std::vector<port *> l2_port_vec;
-          for (unsigned i = 0; i < *l2_port_count; i++) {
+      auto inboundPortsObject = portsObject->getObject("inbound");
+      if (inboundPortsObject) {
+        auto inbound_port_count = inboundPortsObject->getInteger("count");
+        if (inbound_port_count) {
+          std::vector<port *> inbound_port_vec;
+          for (unsigned i = 0; i < *inbound_port_count; i++) {
             auto bytes_per_second =
-                L2PortsObject->getNumber("bytes_per_second");
-            port *new_port = new port(this, "L2", bytes_per_second, i);
-            l2_port_vec.push_back(new_port);
+                inboundPortsObject->getNumber("bytes_per_second");
+            port *new_port = new port(this, "L3_inbound", bytes_per_second, i);
+            inbound_port_vec.push_back(new_port);
           }
-          this->ports.insert(std::make_pair("L2", l2_port_vec));
+          this->ports.insert(std::make_pair("inbound", inbound_port_vec));
         }
       }
 
-      auto L3PortsObject = portsObject->getObject("L3");
-      if (L3PortsObject) {
-        auto l3_port_count = L3PortsObject->getInteger("count");
-        if (l3_port_count) {
-          std::vector<port *> l3_port_vec;
-          for (unsigned i = 0; i < *l3_port_count; i++) {
+      auto outboundPortsObject = portsObject->getObject("outbound");
+      if (outboundPortsObject) {
+        auto outbound_port_count = outboundPortsObject->getInteger("count");
+        if (outbound_port_count) {
+          std::vector<port *> outbound_port_vec;
+          for (unsigned i = 0; i < *outbound_port_count; i++) {
             auto bytes_per_second =
-                L3PortsObject->getNumber("bytes_per_second");
-            port *new_port = new port(this, "L3", bytes_per_second, i);
-            l3_port_vec.push_back(new_port);
+                outboundPortsObject->getNumber("bytes_per_second");
+            port *new_port = new port(this, "L3_outbound", bytes_per_second, i);
+            outbound_port_vec.push_back(new_port);
           }
-          this->ports.insert(std::make_pair("L3", l3_port_vec));
+          this->ports.insert(std::make_pair("outbound", outbound_port_vec));
         }
       }
     } else {

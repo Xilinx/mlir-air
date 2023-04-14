@@ -76,10 +76,10 @@ public:
     this->reset_reservation();
   }
 
-  port(resource *parent, std::string memory_space,
+  port(resource *parent, std::string ms_n_dir,
        std::optional<double> bytes_per_second, unsigned idx) {
     if (bytes_per_second) {
-      this->set_name(memory_space + "_" + std::to_string(idx));
+      this->set_name(ms_n_dir + "_" + std::to_string(idx));
       this->set_data_rate(*bytes_per_second);
       this->set_parent(parent);
       this->reset_reservation();
@@ -173,6 +173,13 @@ public:
 
   memory(unsigned ms, double b) {
     this->set_memory_space(ms);
+    this->set_bytes(b);
+    this->reset_reservation();
+    this->reset_usage();
+  }
+
+  memory(std::string ms, double b) {
+    this->set_memory_space(lookUpMemorySpaceIntFromString(ms));
     this->set_bytes(b);
     this->reset_reservation();
     this->reset_usage();
