@@ -67,10 +67,9 @@ public:
     // need to copy while copying regions/tiles etc.
   }
 
-  port(resource *parent, unsigned src, unsigned dst, double data_rate,
-       unsigned idx) {
+  port(resource *parent, unsigned src, unsigned dst, double data_rate) {
     this->set_name("L" + std::to_string(src) + "_to_" + "L" +
-                   std::to_string(dst) + "_" + std::to_string(idx));
+                   std::to_string(dst));
     this->set_data_rate(data_rate);
     this->set_parent(parent);
     this->reset_reservation();

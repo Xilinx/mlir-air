@@ -219,10 +219,10 @@ public:
   std::map<std::string, double> datatypes;
   // Key pair: <src, dst>; mapped: vector of port pointers
   // TODO: deprecate this.
-  std::map<std::pair<unsigned, unsigned>, std::vector<port *>> interfaces;
+  std::map<std::pair<unsigned, unsigned>, port *> interfaces;
   std::map<std::string, kernel *> kernels;
   std::vector<column *> columns;
-  // Keys: memory space; mapped: vector of ports.
+  // Keys: port direction (inbound/outbound); mapped: vector of ports.
   std::map<std::string, std::vector<port *>> ports;
 
   void set_clock(std::optional<double> clk) {
@@ -249,28 +249,14 @@ public:
     }
   }
 
-  void set_interfaces(llvm::json::Array *portObjects) {
-    for (auto it = portObjects->begin(), ie = portObjects->end(); it != ie;
-         ++it) {
-      llvm::json::Value jv = *it;
-      llvm::json::Object *portObject = jv.getAsObject();
-      if (portObject) {
-        auto srcSpace = portObject->getNumber("src");
-        auto dstSpace = portObject->getNumber("dst");
-        auto bps = portObject->getNumber("bytes_per_second");
-        assert(srcSpace && dstSpace && bps);
-        unsigned s = *srcSpace;
-        unsigned d = *dstSpace;
-        double b = *bps;
-        if (interfaces.count({s, d})) {
-          auto idx = interfaces[{s, d}].size() - 1;
-          port *new_port = new port(this, s, d, b, idx);
-          interfaces[{s, d}].push_back(new_port);
-        } else {
-          interfaces.insert({{s, d}, {}});
-          port *new_port = new port(this, s, d, b, 0);
-          interfaces[{s, d}].push_back(new_port);
-        }
+  void set_interfaces() {
+    for (unsigned s = 0; s < 3; s++) {
+      for (unsigned d = 0; d < 3; d++) {
+        double b_s = this->getDataRateFromMemorySpace(s, "outbound");
+        double b_d = this->getDataRateFromMemorySpace(d, "inbound");
+        double b = std::min(b_s, b_d);
+        port *new_port = new port(this, s, d, b);
+        this->interfaces.insert({{s, d}, new_port});
       }
     }
   }
@@ -347,13 +333,12 @@ public:
   void setup_device_parameters(llvm::json::Object *nameObject = nullptr,
                                std::optional<double> clk = 0,
                                llvm::json::Array *datatypeObjects = nullptr,
-                               llvm::json::Array *portsObject = nullptr,
                                llvm::json::Object *kernelsObject = nullptr,
                                llvm::json::Object *parentObject = nullptr) {
     this->set_name(nameObject);
     this->set_clock(clk);
     this->set_datatypes(datatypeObjects);
-    this->set_interfaces(portsObject);
+    this->set_interfaces();
     this->set_kernels(kernelsObject);
     // TODO: get parent from parentObject, for multi-device modelling.
   }
@@ -362,6 +347,38 @@ public:
                               llvm::json::Object *portsObject = nullptr) {
     this->set_columns(columnsObject);
     this->set_ports(portsObject);
+  }
+
+  double getDataRateFromMemorySpace(unsigned memory_space,
+                                    std::string port_direction) {
+    if (lookUpMemorySpaceFromInt(memory_space) == "L3") {
+      if (this->ports.count(port_direction))
+        return this->ports[port_direction][0]->data_rate;
+      else
+        return 0;
+    } else if (lookUpMemorySpaceFromInt(memory_space) == "L2") {
+      if (this->columns.size()) {
+        if (this->columns[0]->ports.count(port_direction))
+          return this->columns[0]->ports[port_direction][0]->data_rate;
+        else
+          return 0;
+      } else
+        return 0;
+    } else if (lookUpMemorySpaceFromInt(memory_space) == "L1") {
+      if (this->columns.size()) {
+        if (this->columns[0]->tiles.size()) {
+          if (this->columns[0]->tiles[0]->ports.count(port_direction))
+            return this->columns[0]
+                ->tiles[0]
+                ->ports[port_direction][0]
+                ->data_rate;
+          else
+            return 0;
+        } else
+          return 0;
+      } else
+        return 0;
+    }
   }
 
   device(std::string name = "", resource *parent = nullptr,
@@ -373,12 +390,11 @@ public:
   }
 
   device(llvm::json::Object *model) {
-    this->setup_device_parameters(
-        model->getObject("devicename"), model->getNumber("clock"),
-        model->getArray("datatypes"), model->getArray("interfaces"),
-        model->getObject("kernels"), nullptr);
     this->setup_device_resources(model->getObject("columns"),
                                  model->getObject("noc"));
+    this->setup_device_parameters(
+        model->getObject("devicename"), model->getNumber("clock"),
+        model->getArray("datatypes"), model->getObject("kernels"), nullptr);
     this->reset_reservation();
   }
 

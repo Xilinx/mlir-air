@@ -12,48 +12,6 @@
         }
     ],
     "devicename": "testdevice",
-    "interfaces": [
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 1,
-        "src": 0
-        },
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 0,
-        "src": 1
-        },
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 2,
-        "src": 0
-        },
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 0,
-        "src": 2
-        },
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 2,
-        "src": 1
-        },
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 1,
-        "src": 2
-        },
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 1,
-        "src": 1
-        },
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 2,
-        "src": 2
-        }
-    ],
     "kernels": {
         "linalg.copy": {
             "datatypes": {
