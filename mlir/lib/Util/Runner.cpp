@@ -424,8 +424,7 @@ public:
         launch.getTimeStampsFromWavefront(next_times);
         for (auto &segment_runner_node : launch.sub_runner_nodes) {
           segment_runner_node.getTimeStampsFromWavefront(next_times);
-          for (auto &herd_runner_node :
-               segment_runner_node.sub_runner_nodes) {
+          for (auto &herd_runner_node : segment_runner_node.sub_runner_nodes) {
             herd_runner_node.getTimeStampsFromWavefront(next_times);
           }
         }
@@ -713,15 +712,13 @@ std::string getElementTypeAsString(const mlir::Type ty) {
   }
 }
 
-std::string lookUpMemorySpaceFromInt(unsigned memory_space){
+std::string lookUpMemorySpaceFromInt(unsigned memory_space) {
   std::string output = "";
   if (memory_space == 0) {
     output += "L3";
-  }
-  else if (memory_space == 1) {
+  } else if (memory_space == 1) {
     output += "L2";
-  }
-  else if (memory_space == 2) {
+  } else if (memory_space == 2) {
     output += "L1";
   }
   return output;
