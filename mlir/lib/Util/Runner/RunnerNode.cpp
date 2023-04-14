@@ -1256,12 +1256,14 @@ private:
              !launch_runner->channel_ops_in_progress[put_key].first) {
       this->processed_vertices.push_back(it);
     }
+    // Else if under per-core simulation mode, then complete the work for this
+    // core
+    else if (this->sim_granularity == "core" &&
+             op->getParentOfType<air::HerdOp>()) {
+      this->processed_vertices.push_back(it);
+    }
     // Else, continue dispatching get events
     else {
-      launch_runner->channel_ops_in_progress[get_key].first =
-          total_count - get_deallocate_count;
-      launch_runner->channel_ops_in_progress[put_key].first =
-          mlir::floorDiv(total_count, bcast_factor) - put_deallocate_count;
     }
   }
 
