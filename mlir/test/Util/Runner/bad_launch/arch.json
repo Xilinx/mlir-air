@@ -112,7 +112,7 @@
             }
         ],
         "memory": {
-            "memory_space": 1,
+            "memory_space": "L2",
             "bytes": 262144
         },
         "ports": {
@@ -137,7 +137,7 @@
                 }
             ],
             "memory": {
-                "memory_space": 2,
+                "memory_space": "L1",
                 "bytes": 2048
             },
             "ports": {

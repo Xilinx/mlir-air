@@ -112,15 +112,15 @@
             }
         ],
         "memory": {
-            "memory_space": 1,
+            "memory_space": "L2",
             "bytes": 262144
         },
         "ports": {
-            "L1": {
+            "outbound": {
                 "count": 4,
                 "bytes_per_second": 100000000000
             },
-            "L2": {
+            "inbound": {
                 "count": 4,
                 "bytes_per_second": 100000000000
             }
@@ -137,11 +137,15 @@
                 }
             ],
             "memory": {
-                "memory_space": 2,
+                "memory_space": "L1",
                 "bytes": 32768
             },
             "ports": {
-                "L1": {
+                "outbound": {
+                    "count": 4,
+                    "bytes_per_second": 100000000000
+                },
+                "inbound": {
                     "count": 4,
                     "bytes_per_second": 100000000000
                 }
@@ -149,11 +153,11 @@
         }
     },
     "noc": {
-        "L2": {
+        "outbound": {
             "count": 4,
             "bytes_per_second": 100000000000
         },
-        "L3": {
+        "inbound": {
             "count": 4,
             "bytes_per_second": 100000000000
         }
