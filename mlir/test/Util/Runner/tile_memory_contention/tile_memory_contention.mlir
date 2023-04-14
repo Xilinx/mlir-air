@@ -1,4 +1,4 @@
-//===- hierarchy.mlir ------------------------------------------*- MLIR -*-===//
+//===- tile_memory_contention.mlir -----------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
@@ -7,62 +7,30 @@
 
 // RUN: air-runner %s -f test -m %S/arch.json | FileCheck %s
 
-// Test air hierarchy support
+// Check for correct event serialization with memory contention
 
-// CHECK: "name": "SegmentOp",
-// CHECK: "ph": "B",
-// CHECK: "ts": 1,
-// CHECK: "name": "SegmentOp",
-// CHECK: "ph": "E",
-// CHECK: "ts": 2,
-
-// CHECK: "name": "HerdOp(herd_0)",
-// CHECK: "ph": "B",
-// CHECK: "ts": 2,
-// CHECK: "name": "HerdOp(herd_0)",
-// CHECK: "ph": "E",
-// CHECK: "ts": 3,
-
-// CHECK: "name": "AllocOp(L1)",
-// CHECK: "ph": "B",
-// CHECK: "ts": 3,
-// CHECK: "name": "AllocOp(L1)",
-// CHECK: "ph": "E",
-// CHECK: "ts": 4,
 
 // CHECK: "name": "DeallocOp(L1)",
-// CHECK: "ph": "B",
-// CHECK: "ts": 5,
+// CHECK-NEXT: "cat": "layer",
+// CHECK-NEXT: "ph": "B",
+
 // CHECK: "name": "DeallocOp(L1)",
-// CHECK: "ph": "E",
-// CHECK: "ts": 6,
+// CHECK-NEXT: "cat": "layer",
+// CHECK-NEXT: "ph": "E",
+// CHECK-NEXT: "ts": [[TIME0:.*]],
 
-// CHECK: "name": "HerdTerminator",
-// CHECK: "ph": "B",
-// CHECK: "ts": 7,
-
-// CHECK: "name": "SegmentTerminator",
-// CHECK: "ph": "B",
-// CHECK: "ts": 8,
-
-// CHECK: "name": "HerdTerminator",
-// CHECK: "ph": "E",
-// CHECK: "ts": 8,
+// CHECK: "name": "AllocOp(L1)",
+// CHECK-NEXT: "cat": "layer",
+// CHECK-NEXT: "ph": "B",
+// CHECK-NEXT: "ts": [[TIME0]],
 
 // CHECK: "name": "LaunchTerminator",
 // CHECK: "ph": "B",
-// CHECK: "ts": 9,
-
-// CHECK: "name": "SegmentTerminator",
-// CHECK: "ph": "E",
-// CHECK: "ts": 9,
 
 // CHECK: "name": "LaunchTerminator",
 // CHECK: "ph": "E",
-// CHECK: "ts": 10,
 
 module {
-  ml_program.global private mutable @global_seed(dense<0> : tensor<i64>) : tensor<i64>
   func.func @test(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x1024xbf16>, %arg2: memref<1024x1024xbf16>, %arg3: memref<1024x1024xbf16>) -> memref<256x1024xbf16> {
     %c1 = arith.constant 1 : index
     %async_token_1, %results_2 = air.execute -> (memref<256x1024xbf16>) {
@@ -77,8 +45,15 @@ module {
             %alloc = memref.alloc() : memref<32x32xbf16, 2>
             air.execute_terminator %alloc : memref<32x32xbf16, 2>
           }
-          %async_token_5 = air.execute [%async_token_3] {
+          %async_token_5, %results_6 = air.execute -> (memref<32x32xbf16, 2>) {
+            %alloc = memref.alloc() : memref<32x32xbf16, 2>
+            air.execute_terminator %alloc : memref<32x32xbf16, 2>
+          }
+          %async_token_7 = air.execute [%async_token_3] {
             memref.dealloc %results_4 : memref<32x32xbf16, 2>
+          }
+          %async_token_8 = air.execute [%async_token_5] {
+            memref.dealloc %results_6 : memref<32x32xbf16, 2>
           }
           air.herd_terminator
         }
@@ -89,4 +64,3 @@ module {
     return %results_2 : memref<256x1024xbf16>
   }
 }
-

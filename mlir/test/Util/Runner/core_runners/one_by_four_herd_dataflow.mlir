@@ -35,15 +35,15 @@
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME3]],
 
+// CHECK: "name": "ChannelGetOp@channel_1(L1<--L1)",
+// CHECK-NEXT: "cat": "layer",
+// CHECK-NEXT: "ph": "B",
+// CHECK-NEXT: "ts": [[TIME3]],
+
 // CHECK: "name": "ChannelPutOp@channel_1(L1-->L1)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "E",
 // CHECK-NEXT: "ts": [[TIME4:.*]],
-
-// CHECK: "name": "ChannelGetOp@channel_1(L1<--L1)",
-// CHECK-NEXT: "cat": "layer",
-// CHECK-NEXT: "ph": "B",
-// CHECK-NEXT: "ts": [[TIME4]],
 
 // CHECK: "name": "ChannelGetOp@channel_1(L1<--L1)",
 // CHECK-NEXT: "cat": "layer",
@@ -55,15 +55,15 @@
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME5]],
 
+// CHECK: "name": "ChannelGetOp@channel_2(L1<--L1)",
+// CHECK-NEXT: "cat": "layer",
+// CHECK-NEXT: "ph": "B",
+// CHECK-NEXT: "ts": [[TIME5]],
+
 // CHECK: "name": "ChannelPutOp@channel_2(L1-->L1)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "E",
 // CHECK-NEXT: "ts": [[TIME6:.*]],
-
-// CHECK: "name": "ChannelGetOp@channel_2(L1<--L1)",
-// CHECK-NEXT: "cat": "layer",
-// CHECK-NEXT: "ph": "B",
-// CHECK-NEXT: "ts": [[TIME6]],
 
 // CHECK: "name": "ChannelGetOp@channel_2(L1<--L1)",
 // CHECK-NEXT: "cat": "layer",
@@ -75,15 +75,15 @@
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME7]],
 
+// CHECK: "name": "ChannelGetOp@channel_3(L1<--L1)",
+// CHECK-NEXT: "cat": "layer",
+// CHECK-NEXT: "ph": "B",
+// CHECK-NEXT: "ts": [[TIME7]],
+
 // CHECK: "name": "ChannelPutOp@channel_3(L1-->L1)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "E",
 // CHECK-NEXT: "ts": [[TIME8:.*]],
-
-// CHECK: "name": "ChannelGetOp@channel_3(L1<--L1)",
-// CHECK-NEXT: "cat": "layer",
-// CHECK-NEXT: "ph": "B",
-// CHECK-NEXT: "ts": [[TIME8]],
 
 // CHECK: "name": "ChannelGetOp@channel_3(L1<--L1)",
 // CHECK-NEXT: "cat": "layer",
@@ -143,7 +143,7 @@ module {
       memref.copy %results, %results_2 : memref<256x1024xbf16> to memref<256x1024xbf16>
     } {id = 4 : i32}
     %0 = air.launch async [%async_token_3] (%arg4, %arg5) in (%arg6=%c1, %arg7=%c1) {
-      %1 = air.segment async  {
+      %1 = air.segment async attributes {column_usage = [1, 1]} {
         %c1_4 = arith.constant 1 : index
         %c4 = arith.constant 4 : index
         %c0 = arith.constant 0 : index

@@ -1,68 +1,19 @@
-//===- hierarchy.mlir ------------------------------------------*- MLIR -*-===//
+//===- bad_segment_per_core.mlir -------------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-runner %s -f test -m %S/arch.json | FileCheck %s
+// RUN: air-runner %s -f test -m %S/arch.json -g core |& FileCheck %s
 
-// Test air hierarchy support
+// Check for error emission when not enough resources are allocated to run a segment.
+// Trace simulation mode set to per-core granularity.
 
-// CHECK: "name": "SegmentOp",
-// CHECK: "ph": "B",
-// CHECK: "ts": 1,
-// CHECK: "name": "SegmentOp",
-// CHECK: "ph": "E",
-// CHECK: "ts": 2,
-
-// CHECK: "name": "HerdOp(herd_0)",
-// CHECK: "ph": "B",
-// CHECK: "ts": 2,
-// CHECK: "name": "HerdOp(herd_0)",
-// CHECK: "ph": "E",
-// CHECK: "ts": 3,
-
-// CHECK: "name": "AllocOp(L1)",
-// CHECK: "ph": "B",
-// CHECK: "ts": 3,
-// CHECK: "name": "AllocOp(L1)",
-// CHECK: "ph": "E",
-// CHECK: "ts": 4,
-
-// CHECK: "name": "DeallocOp(L1)",
-// CHECK: "ph": "B",
-// CHECK: "ts": 5,
-// CHECK: "name": "DeallocOp(L1)",
-// CHECK: "ph": "E",
-// CHECK: "ts": 6,
-
-// CHECK: "name": "HerdTerminator",
-// CHECK: "ph": "B",
-// CHECK: "ts": 7,
-
-// CHECK: "name": "SegmentTerminator",
-// CHECK: "ph": "B",
-// CHECK: "ts": 8,
-
-// CHECK: "name": "HerdTerminator",
-// CHECK: "ph": "E",
-// CHECK: "ts": 8,
-
-// CHECK: "name": "LaunchTerminator",
-// CHECK: "ph": "B",
-// CHECK: "ts": 9,
-
-// CHECK: "name": "SegmentTerminator",
-// CHECK: "ph": "E",
-// CHECK: "ts": 9,
-
-// CHECK: "name": "LaunchTerminator",
-// CHECK: "ph": "E",
-// CHECK: "ts": 10,
+// CHECK: error: 'air.segment' op isn't allocated with enough resources to run
+// CHECK-NOT: "name": "LaunchTerminator",
 
 module {
-  ml_program.global private mutable @global_seed(dense<0> : tensor<i64>) : tensor<i64>
   func.func @test(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x1024xbf16>, %arg2: memref<1024x1024xbf16>, %arg3: memref<1024x1024xbf16>) -> memref<256x1024xbf16> {
     %c1 = arith.constant 1 : index
     %async_token_1, %results_2 = air.execute -> (memref<256x1024xbf16>) {
@@ -89,4 +40,3 @@ module {
     return %results_2 : memref<256x1024xbf16>
   }
 }
-

@@ -58,7 +58,7 @@ module {
         }
         scf.yield %4 : !air.async.token
       }
-      %3 = air.segment async  {
+      %3 = air.segment async attributes {column_usage = [4, 1]} {
         %c1_5 = arith.constant 1 : index
         %c4 = arith.constant 4 : index
         %c0_6 = arith.constant 0 : index
@@ -104,7 +104,13 @@ module {
                 }
                 affine.yield %14 : !air.async.token
               }
+              %async_token_14 = air.execute [%13] {
+                memref.dealloc %results_13 : memref<32x32xbf16, 2>
+              }
               air.herd_terminator
+            }
+            %async_token_15 = air.execute [%12] {
+              memref.dealloc %results_11 : memref<128x128xbf16, 1>
             }
             scf.yield %12 : !air.async.token
           }

@@ -121,7 +121,7 @@
                 "bytes_per_second": 100000000000
             },
             "L2": {
-                "count": 4,
+                "count": 1,
                 "bytes_per_second": 100000000000
             }
         },
@@ -138,11 +138,11 @@
             ],
             "memory": {
                 "memory_space": 2,
-                "bytes": 32768
+                "bytes": 2048
             },
             "ports": {
                 "L1": {
-                    "count": 4,
+                    "count": 1,
                     "bytes_per_second": 100000000000
                 }
             }
