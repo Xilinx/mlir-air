@@ -103,30 +103,30 @@ public:
 private:
 }; // tile
 
-class column : public resourceHierarchy {
+class du : public resourceHierarchy {
 
 public:
-  memory *column_mem;
+  memory *du_mem;
   std::vector<tile *> tiles;
   // Keys: port direction (inbound/outbound); mapped: vector of ports.
   std::map<std::string, std::vector<port *>> ports;
   unsigned idx;
 
-  column() {}
+  du() {}
 
-  column(resource *parent, llvm::json::Object *columnObject, unsigned idx) {
-    this->set_column_id(idx);
-    this->set_memory(columnObject->getObject("memory"));
-    this->set_tiles(columnObject->getObject("tiles"));
-    this->set_ports(columnObject->getObject("ports"));
+  du(resource *parent, llvm::json::Object *duObject, unsigned idx) {
+    this->set_du_id(idx);
+    this->set_memory(duObject->getObject("memory"));
+    this->set_tiles(duObject->getObject("tiles"));
+    this->set_ports(duObject->getObject("ports"));
     this->reset_reservation();
   }
 
-  ~column() {}
+  ~du() {}
 
-  void set_column_id(unsigned idx) { this->idx = idx; }
+  void set_du_id(unsigned idx) { this->idx = idx; }
 
-  void set_memory(memory *mem) { this->column_mem = mem; }
+  void set_memory(memory *mem) { this->du_mem = mem; }
 
   void set_memory(llvm::json::Object *memObject) {
     if (memObject) {
@@ -136,7 +136,7 @@ public:
       memory *mem = new memory(ms.value().str(), *bytes);
       this->set_memory(mem);
     } else {
-      this->column_mem = nullptr;
+      this->du_mem = nullptr;
     }
   }
 
@@ -206,7 +206,7 @@ private:
 
   // llvm::json::Array* connectivity_json;
 
-}; // column
+}; // du
 
 // Device hierarchy node entry.
 class device : public resourceHierarchy {
@@ -220,7 +220,7 @@ public:
   // TODO: deprecate this.
   std::map<std::pair<unsigned, unsigned>, port *> interfaces;
   std::map<std::string, kernel *> kernels;
-  std::vector<column *> columns;
+  std::vector<du *> dus;
   // Keys: port direction (inbound/outbound); mapped: vector of ports.
   std::map<std::string, std::vector<port *>> ports;
 
@@ -272,11 +272,11 @@ public:
     }
   }
 
-  void set_columns(llvm::json::Object *columnsObject) {
-    if (columnsObject) {
-      // Get total number of columns in device
+  void set_dus(llvm::json::Object *dusObject) {
+    if (dusObject) {
+      // Get total number of dus in device
       unsigned total_count = 1;
-      auto countArray = columnsObject->getArray("count");
+      auto countArray = dusObject->getArray("count");
       for (auto it = countArray->begin(), ie = countArray->end(); it != ie;
            ++it) {
         llvm::json::Value jv = *it;
@@ -284,8 +284,8 @@ public:
         total_count *= *val;
       }
       for (unsigned i = 0; i < total_count; i++) {
-        column *new_col = new column(this, columnsObject, i);
-        this->columns.push_back(new_col);
+        du *new_col = new du(this, dusObject, i);
+        this->dus.push_back(new_col);
       }
     } else {
       assert(false);
@@ -341,9 +341,9 @@ public:
     // TODO: get parent from parentObject, for multi-device modelling.
   }
 
-  void setup_device_resources(llvm::json::Object *columnsObject = nullptr,
+  void setup_device_resources(llvm::json::Object *dusObject = nullptr,
                               llvm::json::Object *portsObject = nullptr) {
-    this->set_columns(columnsObject);
+    this->set_dus(dusObject);
     this->set_ports(portsObject);
   }
 
@@ -355,21 +355,18 @@ public:
       else
         return 0;
     } else if (lookUpMemorySpaceFromInt(memory_space) == "L2") {
-      if (this->columns.size()) {
-        if (this->columns[0]->ports.count(port_direction))
-          return this->columns[0]->ports[port_direction][0]->data_rate;
+      if (this->dus.size()) {
+        if (this->dus[0]->ports.count(port_direction))
+          return this->dus[0]->ports[port_direction][0]->data_rate;
         else
           return 0;
       } else
         return 0;
     } else if (lookUpMemorySpaceFromInt(memory_space) == "L1") {
-      if (this->columns.size()) {
-        if (this->columns[0]->tiles.size()) {
-          if (this->columns[0]->tiles[0]->ports.count(port_direction))
-            return this->columns[0]
-                ->tiles[0]
-                ->ports[port_direction][0]
-                ->data_rate;
+      if (this->dus.size()) {
+        if (this->dus[0]->tiles.size()) {
+          if (this->dus[0]->tiles[0]->ports.count(port_direction))
+            return this->dus[0]->tiles[0]->ports[port_direction][0]->data_rate;
           else
             return 0;
         } else
@@ -389,7 +386,7 @@ public:
   }
 
   device(llvm::json::Object *model) {
-    this->setup_device_resources(model->getObject("columns"),
+    this->setup_device_resources(model->getObject("dus"),
                                  model->getObject("noc"));
     this->setup_device_parameters(
         model->getObject("devicename"), model->getNumber("clock"),

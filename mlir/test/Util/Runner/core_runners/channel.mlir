@@ -53,7 +53,7 @@ module {
         }
         scf.yield %4 : !air.async.token
       }
-      %3 = air.segment async attributes {column_usage = [4, 1]} {
+      %3 = air.segment async attributes {du_usage = [4, 1]} {
         %c32 = arith.constant 32 : index
         %c1_5 = arith.constant 1 : index
         %c4 = arith.constant 4 : index

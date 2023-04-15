@@ -56,7 +56,7 @@ module attributes {torch.debug_module_name = "mmult"} {
       memref.copy %results, %results_8 : memref<512x512xf32> to memref<512x512xf32>
     } {id = 8 : i32}
     %0 = air.launch async [%async_token_9] (%arg4, %arg5) in (%arg6=%c1, %arg7=%c1) attributes {id = 7 : i32} {
-      %1 = air.segment async  attributes {column_usage = [4, 1], id = 2 : i32} {
+      %1 = air.segment async  attributes {du_usage = [4, 1], id = 2 : i32} {
         %c64 = arith.constant 64 : index
         %c32 = arith.constant 32 : index
         %c1_10 = arith.constant 1 : index

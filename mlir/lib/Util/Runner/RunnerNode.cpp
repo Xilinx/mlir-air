@@ -394,19 +394,19 @@ private:
       channel_ops_in_progress;
 
   // Get a pool of available resources
-  void getColumnsPool(std::vector<resource *> &resource_pool) {
+  void getDUsPool(std::vector<resource *> &resource_pool) {
     for (auto res_hier : this->resource_hiers) {
       auto dev = static_cast<device *>(res_hier);
-      for (auto column : dev->columns) {
-        if (!column->isReserved) {
-          resource_pool.push_back(column);
+      for (auto du : dev->dus) {
+        if (!du->isReserved) {
+          resource_pool.push_back(du);
         }
       }
     }
   }
   void getTilesPool(std::vector<resource *> &resource_pool) {
     for (auto res_hier : this->resource_hiers) {
-      auto col = static_cast<column *>(res_hier);
+      auto col = static_cast<du *>(res_hier);
       for (auto tile : col->tiles) {
         if (!tile->isReserved) {
           resource_pool.push_back(tile);
@@ -414,9 +414,9 @@ private:
       }
     }
   }
-  void getColumnsPoolFromParent(std::vector<resource *> &resource_pool) {
+  void getDUsPoolFromParent(std::vector<resource *> &resource_pool) {
     auto parent_runner_node = this->parent;
-    parent_runner_node->getColumnsPool(resource_pool);
+    parent_runner_node->getDUsPool(resource_pool);
   }
   void getTilesPoolFromParent(std::vector<resource *> &resource_pool) {
     auto parent_runner_node = this->parent;
@@ -435,9 +435,9 @@ private:
           }
         }
       }
-      // Get ports from columns
+      // Get ports from dus
       else if (this->runner_node_type == "segment") {
-        auto col = static_cast<column *>(res_hier);
+        auto col = static_cast<du *>(res_hier);
         auto col_ports = col->ports;
         for (auto p : col_ports[port_direction]) {
           if (!p->isReserved) {
@@ -468,9 +468,9 @@ private:
     }
     double memory_pool = 0;
     for (auto res_hier : this->resource_hiers) {
-      // Get L2 memories from columns
-      if (auto col = static_cast<column *>(res_hier)) {
-        auto col_mem = col->column_mem;
+      // Get L2 memories from dus
+      if (auto col = static_cast<du *>(res_hier)) {
+        auto col_mem = col->du_mem;
         auto free_memory = col_mem->bytes - col_mem->bytes_used;
         // If returning free memories
         if (free_memory_only && free_memory > 0.0f) {
@@ -624,11 +624,10 @@ private:
   // Try to reserve resources for an event
   bool checkResourceFulfillmentForOp(air::SegmentOp Op) {
     std::vector<resource *> resource_hier_pool;
-    this->getColumnsPool(resource_hier_pool);
+    this->getDUsPool(resource_hier_pool);
     // Get resource cost
-    unsigned column_count =
-        this->getResourceCost(Op.getOperation(), "column_usage");
-    if (column_count <= resource_hier_pool.size()) {
+    unsigned du_count = this->getResourceCost(Op.getOperation(), "du_usage");
+    if (du_count <= resource_hier_pool.size()) {
       return true;
     } else
       return false;
@@ -725,7 +724,7 @@ private:
           this->allocateEventToResources(Op, reserved_resources);
         }
       }
-      // Hierarchy terminator ops release resource hierarchies (devices, columns
+      // Hierarchy terminator ops release resource hierarchies (devices, dus
       // or tiles)
       else if (isa<air::SegmentTerminatorOp>(op)) {
         for (auto res : this->resource_hiers) {
@@ -752,12 +751,12 @@ private:
                                 std::vector<resource *> &reserved_resources) {
     std::vector<resource *> resource_hier_pool;
     // Get resource pool
-    this->getColumnsPoolFromParent(resource_hier_pool);
+    this->getDUsPoolFromParent(resource_hier_pool);
     // Get resource cost
-    unsigned column_count = this->getResourceCost(Op, "column_usage");
+    unsigned du_count = this->getResourceCost(Op, "du_usage");
     // Reserve resource
     this->allocateRunnerNodeToResourceHiers(resource_hier_pool,
-                                            reserved_resources, column_count);
+                                            reserved_resources, du_count);
   }
   void allocateEventToResources(air::HerdOp Op,
                                 std::vector<resource *> &reserved_resources) {

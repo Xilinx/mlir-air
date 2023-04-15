@@ -58,7 +58,7 @@
     "num_dispatch_queues": 8,
     "num_dispatch_dma_queues" : 2,
     "num_core_dma_queues" : 2,
-    "columns": {
+    "dus": {
         "count": [4, 4],
         "memory": {
             "memory_space": "L2",
