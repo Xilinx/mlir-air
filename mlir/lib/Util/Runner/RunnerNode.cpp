@@ -673,10 +673,6 @@ private:
   // Return how many events can be dispatched at this point in time.
   unsigned checkResourceFulfillmentForOp(air::ChannelPutOp putOp) {
 
-    // Get src memory spaces
-    MemRefType srcTy = putOp.getSrc().getType().cast<MemRefType>();
-    auto srcSpace = srcTy.getMemorySpaceAsInt();
-
     // Get a pool of available ports from src
     std::vector<resource *> src_resource_pool;
     this->getPortsPool(src_resource_pool, "outbound");
@@ -695,10 +691,6 @@ private:
     return std::min(remaining, (unsigned)src_resource_pool.size());
   }
   unsigned checkResourceFulfillmentForOp(air::ChannelGetOp getOp) {
-
-    // Get dst memory spaces
-    MemRefType dstTy = getOp.getDst().getType().cast<MemRefType>();
-    auto dstSpace = dstTy.getMemorySpaceAsInt();
 
     // Get a pool of available ports from dst
     std::vector<resource *> dst_resource_pool;

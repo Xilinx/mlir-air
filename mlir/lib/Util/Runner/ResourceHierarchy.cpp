@@ -148,8 +148,7 @@ public:
       for (auto it = tileArray->begin(), ie = tileArray->end(); it != ie;
            ++it) {
         llvm::json::Value jv = *it;
-        llvm::json::Object *tileObject = jv.getAsObject();
-        auto val = tileObject->getInteger("num");
+        auto val = jv.getAsInteger();
         total_count *= *val;
       }
       for (unsigned i = 0; i < total_count; i++) {
@@ -281,8 +280,7 @@ public:
       for (auto it = countArray->begin(), ie = countArray->end(); it != ie;
            ++it) {
         llvm::json::Value jv = *it;
-        llvm::json::Object *countObject = jv.getAsObject();
-        auto val = countObject->getInteger("num");
+        auto val = jv.getAsInteger();
         total_count *= *val;
       }
       for (unsigned i = 0; i < total_count; i++) {
@@ -378,7 +376,8 @@ public:
           return 0;
       } else
         return 0;
-    }
+    } else
+      return 0;
   }
 
   device(std::string name = "", resource *parent = nullptr,

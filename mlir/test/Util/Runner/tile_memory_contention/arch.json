@@ -59,16 +59,7 @@
     "num_dispatch_dma_queues" : 2,
     "num_core_dma_queues" : 2,
     "columns": {
-        "count": [
-            {
-                "dim": 0,
-                "num": 4
-            },
-            {
-                "dim": 1,
-                "num": 4
-            }
-        ],
+        "count": [4, 4],
         "memory": {
             "memory_space": "L2",
             "bytes": 262144
@@ -84,16 +75,7 @@
             }
         },
         "tiles": {
-            "count": [
-                {
-                    "dim": 0,
-                    "num": 1
-                },
-                {
-                    "dim": 1,
-                    "num": 4
-                }
-            ],
+            "count": [1, 4],
             "memory": {
                 "memory_space": "L1",
                 "bytes": 2048
