@@ -11,55 +11,55 @@
 
 // CHECK: "name": "SegmentOp",
 // CHECK: "ph": "B",
-// CHECK: "ts": 1,
+// CHECK: "ts": 0.001,
 // CHECK: "name": "SegmentOp",
 // CHECK: "ph": "E",
-// CHECK: "ts": 2,
+// CHECK: "ts": 0.002,
 
 // CHECK: "name": "HerdOp(herd_0)",
 // CHECK: "ph": "B",
-// CHECK: "ts": 2,
+// CHECK: "ts": 0.002,
 // CHECK: "name": "HerdOp(herd_0)",
 // CHECK: "ph": "E",
-// CHECK: "ts": 3,
+// CHECK: "ts": 0.003,
 
 // CHECK: "name": "AllocOp(L1)",
 // CHECK: "ph": "B",
-// CHECK: "ts": 3,
+// CHECK: "ts": 0.003,
 // CHECK: "name": "AllocOp(L1)",
 // CHECK: "ph": "E",
-// CHECK: "ts": 4,
+// CHECK: "ts": 0.004,
 
 // CHECK: "name": "DeallocOp(L1)",
 // CHECK: "ph": "B",
-// CHECK: "ts": 5,
+// CHECK: "ts": 0.005,
 // CHECK: "name": "DeallocOp(L1)",
 // CHECK: "ph": "E",
-// CHECK: "ts": 6,
+// CHECK: "ts": 0.006,
 
 // CHECK: "name": "HerdTerminator",
 // CHECK: "ph": "B",
-// CHECK: "ts": 7,
+// CHECK: "ts": 0.007,
 
 // CHECK: "name": "SegmentTerminator",
 // CHECK: "ph": "B",
-// CHECK: "ts": 8,
+// CHECK: "ts": 0.008,
 
 // CHECK: "name": "HerdTerminator",
 // CHECK: "ph": "E",
-// CHECK: "ts": 8,
+// CHECK: "ts": 0.008,
 
 // CHECK: "name": "LaunchTerminator",
 // CHECK: "ph": "B",
-// CHECK: "ts": 9,
+// CHECK: "ts": 0.009,
 
 // CHECK: "name": "SegmentTerminator",
 // CHECK: "ph": "E",
-// CHECK: "ts": 9,
+// CHECK: "ts": 0.009,
 
 // CHECK: "name": "LaunchTerminator",
 // CHECK: "ph": "E",
-// CHECK: "ts": 10,
+// CHECK: "ts": 0.010,
 
 module {
   ml_program.global private mutable @global_seed(dense<0> : tensor<i64>) : tensor<i64>

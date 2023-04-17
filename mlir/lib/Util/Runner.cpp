@@ -128,7 +128,15 @@ public:
   void emitTraceEnd(llvm::raw_ostream &s) { s << "{}]\n"; }
 
   void emitTraceEvent(llvm::raw_ostream &s, std::string name, std::string cat,
-                      std::string ph, uint64_t ts, int64_t tid, int64_t pid) {
+                      std::string ph, std::pair<uint64_t, uint64_t> ts,
+                      int64_t tid, int64_t pid) {
+    // Chrome trace event format fixes time stamp (ts) with a granularity of
+    // 1ms. Our simulation granularity is 1ns. Thus 3 decimal places are needed.
+    std::string zero_fill = "";
+    if (ts.second < 10)
+      zero_fill = "00";
+    else if (ts.second < 100)
+      zero_fill = "0";
     s << "{\n";
     s << "  \"name\": \"" << name << "\","
       << "\n";
@@ -136,7 +144,7 @@ public:
       << "\n";
     s << "  \"ph\": \"" << ph << "\","
       << "\n";
-    s << "  \"ts\": " << ts << ","
+    s << "  \"ts\": " << ts.first << "." << zero_fill << ts.second << ","
       << "\n";
     s << "  \"pid\": " << pid << ","
       << "\n";
@@ -234,11 +242,6 @@ public:
     // Update wavefront
     std::vector<Graph::vertex_descriptor> next_vertex_set_candidates;
     std::vector<Graph::vertex_descriptor> next_vertex_set;
-    // // Vector of vertices which are ready to be pushed to wavefront.
-    // // In each entry, the first element is vertex descriptor, and the second
-    // element is a vector of resources which need to be reserved for execution.
-    // std::vector<std::pair<Graph::vertex_descriptor, std::vector<resource *>>>
-    // next_vertex_set;
     for (auto it = c.wavefront.begin(); it != c.wavefront.end(); ++it) {
       if (G[std::get<0>(*it)].is_started() &&
           G[std::get<0>(*it)].is_done(time)) {
@@ -250,7 +253,9 @@ public:
           emitTraceEvent(traceStream,
                          G[std::get<0>(*it)].asyncEventName +
                              G[std::get<0>(*it)].detailed_description,
-                         "layer", "E", time, tid, runner_id);
+                         "layer", "E",
+                         convertToTimeStamp(time, device_resource_node), tid,
+                         runner_id);
         }
 
         // "ExecuteOp"
@@ -317,10 +322,11 @@ public:
         // emit trace event begin
         auto runner_id = getIdAttr(c.ctrl_g->hierarchyOp);
         auto tid = std::get<2>(c.wavefront.back());
-        emitTraceEvent(traceStream,
-                       G[next_vertex].asyncEventName +
-                           G[next_vertex].detailed_description,
-                       "layer", "B", time, tid, runner_id);
+        emitTraceEvent(
+            traceStream,
+            G[next_vertex].asyncEventName + G[next_vertex].detailed_description,
+            "layer", "B", convertToTimeStamp(time, device_resource_node), tid,
+            runner_id);
       }
     }
 
@@ -434,7 +440,7 @@ public:
       if (next_times.size())
         next_time = *std::min_element(next_times.begin(), next_times.end());
       time = std::max(time + 1, next_time);
-      if (time > 5000000)
+      if (time > 5000000000)
         running = false;
 
       // Allow to run for one more iteration before terminating
@@ -533,6 +539,15 @@ private:
         }
       }
     }
+  }
+
+  // Convert time from cycle count to time stamp in ms (with 3 d.p.)
+  std::pair<uint64_t, uint64_t> convertToTimeStamp(uint64_t time, device &d) {
+    uint64_t time_in_ns =
+        (uint64_t)std::round(((double)time) / (1000000000.0 / (double)d.clock));
+    std::pair<uint64_t, uint64_t> ts = std::make_pair(
+        (uint64_t)(time_in_ns / 1000), (uint64_t)(time_in_ns % 1000));
+    return ts;
   }
 
   //===----------------------------------------------------------------------===//
