@@ -1631,7 +1631,9 @@ private:
                                             stepCstOp.value());
           output *= tripCount;
         }
-      } else if (auto hier = dyn_cast<air::HierarchyInterface>(parent)) {
+      } else if (isa<air::HierarchyInterface>(parent) &&
+                 !isa<air::LaunchOp>(parent)) {
+        auto hier = dyn_cast<air::HierarchyInterface>(parent);
         output *= this->canonicalizer.getTripCountInHierarchyOp(hier);
       } else if (auto affine_if = dyn_cast<mlir::AffineIfOp>(parent)) {
         // Fast forward through affine.if nest
