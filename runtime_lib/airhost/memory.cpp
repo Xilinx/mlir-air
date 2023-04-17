@@ -8,6 +8,7 @@
 
 #include "air_host.h"
 #include "air_host_impl.h"
+#include "pcie-ernic.h"
 
 #include <cassert>
 #include <vector>
@@ -29,6 +30,12 @@ extern uint64_t _air_host_bram_paddr;
 
 // Global variable
 air_dev_mem_allocator_t *dev_mem_allocator = NULL;
+
+// Data structure internal to the runtime to map air tensors 
+// to the information to access a remote buffer
+#ifdef AIR_PCIE
+extern std::map<void*, tensor_to_qp_map_entry*>tensor_to_qp_map;
+#endif
 
 #define PAGE_SHIFT 12
 #define PAGEMAP_LENGTH 8
@@ -242,6 +249,20 @@ static void air_mem_shim_nd_memcpy_queue_impl(
   //       length_4d, length_3d, length_2d, length_1d,
   //       stride_4d, stride_3d, stride_2d);
 
+#ifdef AIR_PCIE
+  // Checking our internal representation to determine if the buffer is 
+  // remote or local. If we don't find anything in our map, we say it 
+  // is local
+  struct tensor_to_qp_map_entry *rdma_entry = tensor_to_qp_map[t->alloc];
+  bool is_local = true;
+  if(rdma_entry != NULL) {
+    is_local = (rdma_entry->qp == 0);
+  }
+  else {
+    is_local = true; // If not in our map make it local
+  }
+#endif
+
   bool isMM2S = shim_chan >= 2;
 
   bool uses_pa = (space == 1); // t->uses_pa;
@@ -278,6 +299,12 @@ static void air_mem_shim_nd_memcpy_queue_impl(
   } else {
     uint32_t *bounce_buffer = _air_host_bram_ptr;
 
+#ifdef AIR_PCIE
+    // Only used for RDMA requests so only defining when 
+    // using PCIe
+    uint64_t bounce_buffer_pa = _air_host_bram_paddr;
+#endif
+
     size_t stride = 1;
     size_t offset = 0;
     std::vector<uint64_t> offsets{offset_0, offset_1, offset_2, offset_3};
@@ -292,11 +319,29 @@ static void air_mem_shim_nd_memcpy_queue_impl(
         for (uint32_t index_2d=0;index_2d<length_2d;index_2d++)
           length += length_1d;
 
+
+#ifdef AIR_PCIE
+    size_t p;
+
+    // Setting the virtual address depending on 
+    // if the buffer is local or remote
+    if(is_local) {
+      p = (size_t)t->data + offset;
+    }
+    else {
+      p = (size_t)rdma_entry->vaddr + offset;
+    }
+#else
     size_t p = (size_t)t->data + offset;
+#endif
+
     uint64_t paddr_4d = p;
     uint64_t paddr_3d = p;
     uint64_t paddr_2d = p;
     uint64_t paddr_1d = p;
+
+    uint64_t wr_idx, packet_id;
+    dispatch_packet_t *pkt;
 
     if (isMM2S) {
       shim_chan = shim_chan - 2;
@@ -305,7 +350,31 @@ static void air_mem_shim_nd_memcpy_queue_impl(
         for (uint32_t index_3d=0;index_3d<length_3d;index_3d++) {
           paddr_1d = paddr_2d;
           for (uint32_t index_2d=0;index_2d<length_2d;index_2d++) {
+#ifdef AIR_PCIE
+            if(is_local) {
+              memcpy((size_t*)bounce_buffer, (size_t*)paddr_1d, length_1d*sizeof(T));
+            }
+            else {
+              wr_idx = queue_add_write_index(_air_host_active_herd.q, 1);
+              packet_id = wr_idx % _air_host_active_herd.q->size;
+              pkt = (dispatch_packet_t*)(_air_host_active_herd.q->base_address_vaddr) + packet_id;
+              air_packet_post_rdma_wqe(pkt,
+                                      (uint64_t)paddr_1d,
+                                      (uint64_t)bounce_buffer_pa,
+                                      (uint32_t)length_1d*sizeof(T),
+                                      (uint8_t)OP_READ,
+                                      (uint8_t)rdma_entry->rkey,
+                                      (uint8_t)rdma_entry->qp,
+                                      (uint8_t)0);
+              air_queue_dispatch_and_wait(_air_host_active_herd.q, wr_idx, pkt);
+            }
+
+            // Update physical address of the bounce buffer we are writing to
+            bounce_buffer_pa += length_1d * sizeof(T);
+#else
             memcpy((size_t*)bounce_buffer, (size_t*)paddr_1d, length_1d*sizeof(T));
+#endif
+
             bounce_buffer += length_1d;
             paddr_1d += stride_2d*sizeof(T);
           }
@@ -315,10 +384,10 @@ static void air_mem_shim_nd_memcpy_queue_impl(
       }
     }
 
-    uint64_t wr_idx = queue_add_write_index(_air_host_active_herd.q, 1);
-    uint64_t packet_id = wr_idx % _air_host_active_herd.q->size;
+    wr_idx = queue_add_write_index(_air_host_active_herd.q, 1);
+    packet_id = wr_idx % _air_host_active_herd.q->size;
 
-    dispatch_packet_t *pkt = (dispatch_packet_t*)(_air_host_active_herd.q->base_address_vaddr) + packet_id;
+    pkt = (dispatch_packet_t*)(_air_host_active_herd.q->base_address_vaddr) + packet_id;
     air_packet_nd_memcpy(pkt, /*herd_id=*/0, shim_col, /*direction=*/isMM2S, shim_chan, /*burst_len=*/4, /*memory_space=*/2,
                          _air_host_bram_paddr, length*sizeof(T), 1, 0, 1, 0, 1, 0);
     if (s) {
@@ -337,7 +406,30 @@ static void air_mem_shim_nd_memcpy_queue_impl(
         for (uint32_t index_3d=0;index_3d<length_3d;index_3d++) {
           paddr_1d = paddr_2d;
           for (uint32_t index_2d=0;index_2d<length_2d;index_2d++) {
+#ifdef AIR_PCIE
+            if(is_local) {
+              memcpy((size_t*)paddr_1d, (size_t*)bounce_buffer, length_1d*sizeof(T));
+            }
+            else {
+              wr_idx = queue_add_write_index(_air_host_active_herd.q, 1);
+              packet_id = wr_idx % _air_host_active_herd.q->size;
+              pkt = (dispatch_packet_t*)(_air_host_active_herd.q->base_address_vaddr) + packet_id;
+              air_packet_post_rdma_wqe(pkt,
+                                      (uint64_t)paddr_1d,
+                                      (uint64_t)bounce_buffer_pa,
+                                      (uint32_t)length_1d*sizeof(T),
+                                      (uint8_t)OP_WRITE,
+                                      (uint8_t)rdma_entry->rkey,
+                                      (uint8_t)rdma_entry->qp,
+                                      (uint8_t)0);
+
+              air_queue_dispatch_and_wait(_air_host_active_herd.q, wr_idx, pkt);
+            }
+
+            bounce_buffer_pa += length_1d * sizeof(T);
+#else
             memcpy((size_t*)paddr_1d, (size_t*)bounce_buffer, length_1d*sizeof(T));
+#endif
             bounce_buffer += length_1d;
             paddr_1d += stride_2d*sizeof(T);
           }

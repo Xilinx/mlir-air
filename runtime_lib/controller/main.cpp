@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+
 #include "unistd.h"
 #include <cstdint>
 #include <cstring>
@@ -28,7 +29,12 @@ extern "C" {
 #include "air_queue.h"
 #include "hsa_defs.h"
 
+// Right now, only ARM can control ERNICs
 #ifdef ARM_CONTROLLER
+#include "pcie-ernic-defines.h"
+#endif
+
+#if defined(ARM_CONTROLLER)
 #include "xaiengine.h"
 #include "xil_cache.h"
 #elif defined(RISCV_CONTROLLER)
@@ -43,6 +49,10 @@ extern "C" {
 #else
 #include "bp_utils.h"
 #include "bp_pl.h"
+#endif
+
+#ifdef ARM_CONTROLLER
+#include "arm_bp_intf.h"
 #endif
 
 #define XAIE_NUM_ROWS 8
@@ -902,14 +912,26 @@ XMutex xmutex;
 XMutex* xmutex_ptr = &xmutex;
 XMutex_Config* xmutex_cfg;
 
+// Have to define some parameters for the arm here
+#ifndef RISCV_CONTROLLER
+#define XPAR_MUTEX_0_UART_LOCK    0U
+#define XPAR_MUTEX_0_NUM_MB_LOCK  1U
+#endif
+
 bool setup;
 
 void lock_uart(uint32_t id) {
+// ARM has seperate UART so doesn't use lock
+#ifndef ARM_CONTROLLER
   XMutex_Lock(xmutex_ptr, XPAR_MUTEX_0_UART_LOCK, id);
+#endif
 }
 
 void unlock_uart(uint32_t id) {
+// ARM has seperate UART so doesn't use lock
+#ifndef ARM_CONTROLLER
   XMutex_Unlock(xmutex_ptr, XPAR_MUTEX_0_UART_LOCK, id);
+#endif
 }
 
 int queue_create(uintptr_t segment_base_address, uint32_t size, queue_t **queue, uint32_t mb_id) {
@@ -1109,6 +1131,150 @@ void handle_packet_get_info(dispatch_packet_t *pkt, uint32_t mb_id) {
     break;
   }
 }
+
+#ifdef ARM_CONTROLLER
+
+/* Hardcoded . If the platform memory map changes 
+these will have to change */
+uint64_t ernic_0_base = 0x0000020100080000UL;
+uint64_t ernic_1_base = 0x00000201000C0000UL;
+
+/* Used for the device controller to poll on an 
+incoming RDMA SEND, and copy the payload to some 
+buffer in memory */
+void handle_packet_rdma_post_recv(dispatch_packet_t *pkt) {
+
+  // Need to do this before processing the packet
+  packet_set_active(pkt,true);
+
+  // Parsing the packet
+  uint64_t local_physical_address = pkt->arg[0];
+  uint8_t  qpid                 = pkt->arg[1] & 0xFF;
+  uint8_t  tag                  = (pkt->arg[1] >> 8)  & 0xFF; // Currently don't use tag
+  uint32_t length               = (pkt->arg[1] >> 16) & 0xFFFF;
+  uint8_t  ernic_sel            = (pkt->arg[1] >> 48) & 0xFF;
+
+  // Pointing to the proper ERNIC 
+  volatile uint32_t *ernic_csr = NULL;
+  if(ernic_sel == 0) {
+    ernic_csr = (volatile uint32_t *)ernic_0_base;
+  }
+  else {
+    ernic_csr = (volatile uint32_t *)ernic_1_base;
+  }
+
+  // Can print without grabbing the lock because running on the ARM in the ARM
+  // which has sole use of the UART (BPs use JTAG UART)
+  air_printf("Packet:\r\n");
+  air_printf("\tlocal_physical_address: 0x%lx\r\n", local_physical_address);
+  air_printf("\tlength: 0x%x\r\n", length);
+  air_printf("\tqpid: 0x%x\r\n", qpid);
+  air_printf("\ternic_sel: 0x%x\r\n", ernic_sel);
+
+  // Determine base address of the RQ to read the RQE
+  uint32_t rq_base_address_low    = ernic_csr[ERNIC_QP_ADDR(qpid, RQBAi)];
+  uint32_t rq_base_address_high   = ernic_csr[ERNIC_QP_ADDR(qpid, RQBAMSBi)];
+  uint64_t rq_base_address        = (((uint64_t)rq_base_address_high) << 32) | ((uint64_t)rq_base_address_low);
+  air_printf("\trq_base_address: 0x%lx\r\n", rq_base_address);
+
+  // Wait for RQPIDB to be greater than RQCIDB
+  uint32_t rq_ci_db = ernic_csr[ERNIC_QP_ADDR(qpid, RQCIi)];
+  uint32_t rq_pi_db = ernic_csr[ERNIC_QP_ADDR(qpid, STATRQPIDBi)];
+  air_printf("Polling onon rq_pi_db to be greater than 0x%x. Read: 0x%x\r\n", rq_ci_db, rq_pi_db);
+  while(rq_pi_db <= rq_ci_db) {
+      rq_pi_db = ernic_csr[ERNIC_QP_ADDR(qpid, STATRQPIDBi)];
+  }
+  air_printf("Observed aSEND. Copying to local buffer\r\n");
+
+  // Copy what RQ PIDB is pointing at to local_physical_address
+  void *rqe = (void *)(rq_base_address + (rq_pi_db - 1) * RQE_SIZE);
+  air_printf("rqe is at %p and copying to 0x%lx\r\n", rqe, local_physical_address);
+  memcpy((size_t *)local_physical_address, (size_t *)rqe, length);
+
+  // Increment RQ CIDB so it knows that it can overwrite it
+  ernic_csr[ERNIC_QP_ADDR(qpid, RQCIi)] = rq_ci_db + 1;
+
+}
+
+/* Used for the device controller to post an RDMA WQE
+to the ERNIC. This can be used to initiate either
+one-sided or two-sided communication. */
+void handle_packet_rdma_post_wqe(dispatch_packet_t *pkt) {
+
+  // Need to do this before processing the packet
+  packet_set_active(pkt, true);
+
+  // Parsing the packet
+  uint64_t remote_virtual_address = pkt->arg[0];
+  uint64_t local_physical_address = pkt->arg[1];
+  uint32_t length                 = pkt->arg[2] & 0xFFFF;
+  uint8_t  op                     = (pkt->arg[2] >> 32) & 0xFF;
+  uint8_t  key                    = (pkt->arg[2] >> 40) & 0xFF;
+  uint8_t  qpid                   = (pkt->arg[2] >> 48) & 0xFF;
+  uint8_t  ernic_sel              = (pkt->arg[2] >> 56) & 0xFF;
+
+  // Pointing to the proper ERNIC 
+  volatile uint32_t *ernic_csr = NULL;
+  if(ernic_sel == 0) {
+    ernic_csr = (volatile uint32_t *)ernic_0_base;
+  }
+  else {
+    ernic_csr = (volatile uint32_t *)ernic_1_base;
+  }
+
+  // Can print without grabbing the lock because running on the ARM in the ARM
+  // which has sole use of the UART (BPs use JTAG UART)
+  air_printf("Packet:\r\n");
+  air_printf("\tremote_virtual_address: 0x%lx\r\n", remote_virtual_address);
+  air_printf("\tlocal_physical_address: 0x%lx\r\n", local_physical_address);
+  air_printf("\tlength: 0x%x\r\n", length);
+  air_printf("\top: 0x%x\r\n", op);
+  air_printf("\tkey: 0x%x\r\n", key);
+  air_printf("\tqpid: 0x%x\r\n", qpid);
+  air_printf("\ternic_sel: 0x%x\r\n", ernic_sel);
+
+  uint32_t sq_base_address_low    = ernic_csr[ERNIC_QP_ADDR(qpid, SQBAi)];
+  uint32_t sq_base_address_high   = ernic_csr[ERNIC_QP_ADDR(qpid, SQBAMSBi)];
+  uint64_t sq_base_address        = (((uint64_t)sq_base_address_high) << 32) | ((uint64_t)sq_base_address_low);
+  air_printf("\tsq_base_address: 0x%lx\r\n", sq_base_address);
+
+  // Read the doorbell to determine where to put the WQE
+  uint32_t sq_pi_db = ernic_csr[ERNIC_QP_ADDR(qpid, SQPIi)];
+  air_printf("\tsq_pi_db: 0x%x\r\n", sq_pi_db);
+
+  // Write the WQE to the SQ
+  struct pcie_ernic_wqe *wqe = &(((struct pcie_ernic_wqe *)(sq_base_address))[sq_pi_db]);
+  air_printf("Starting writing WQE to %p\r\n", wqe);
+  wqe->wrid           = 0xe0a6 & 0x0000FFFF; // Just hardcoding the ID for now
+  wqe->laddr_lo       = (uint32_t)(local_physical_address & 0x00000000FFFFFFFF);
+  wqe->laddr_hi       = (uint32_t)(local_physical_address >> 32);
+  wqe->length         = length;
+  wqe->op             = op & 0x000000FF;
+  wqe->offset_lo      = (uint32_t)(remote_virtual_address & 0x00000000FFFFFFFF);
+  wqe->offset_hi      = (uint32_t)(remote_virtual_address >> 32);
+  wqe->rtag           = key;
+  wqe->send_data_dw_0 = 0;
+  wqe->send_data_dw_1 = 0;
+  wqe->send_data_dw_2 = 0;
+  wqe->send_data_dw_3 = 0;
+  wqe->immdt_data     = 0;
+  wqe->reserved_1     = 0;
+  wqe->reserved_2     = 0;
+  wqe->reserved_3     = 0;
+  air_printf("Done writing WQE\r\n");
+
+  // Ring the doorbell
+  ernic_csr[ERNIC_QP_ADDR(qpid, SQPIi)] = sq_pi_db + 1;
+
+  // Poll on the completion
+  uint32_t cq_ci_db = ernic_csr[ERNIC_QP_ADDR(qpid, CQHEADi)];
+  while(cq_ci_db != (sq_pi_db + 1) ) {
+      air_printf("Polling on on CQHEADi to be 0x%x. Read: 0x%x\r\n", sq_pi_db + 1, cq_ci_db);
+      cq_ci_db = ernic_csr[ERNIC_QP_ADDR(qpid, CQHEADi)];
+  }
+}
+#endif
+
 
 // uint64_t cdma_base = 0x0202C0000000UL;
 // uint64_t cdma_base1 = 0x020340000000UL;
@@ -1560,6 +1726,20 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id) {
       packets_processed++;
       break;
 
+#ifdef ARM_CONTROLLER
+    case AIR_PKT_TYPE_POST_RDMA_WQE:
+      handle_packet_rdma_post_wqe(pkt);
+      complete_agent_dispatch_packet(pkt);
+      packets_processed++;
+      break;
+
+    case AIR_PKT_TYPE_POST_RDMA_RECV:
+      handle_packet_rdma_post_recv(pkt);
+      complete_agent_dispatch_packet(pkt);
+      packets_processed++;
+      break;
+#endif
+
     case AIR_PKT_TYPE_HELLO:
       handle_packet_hello(pkt, mb_id);
       complete_agent_dispatch_packet(pkt);
@@ -1580,6 +1760,13 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id) {
       complete_agent_dispatch_packet(pkt);
       packets_processed++;
       break;
+#ifdef ARM_CONTROLLER
+    case AIR_PKT_TYPE_PROG_FIRMWARE:
+      handle_packet_prog_firmware(pkt);
+      complete_agent_dispatch_packet(pkt);
+      packets_processed++;
+      break;
+#endif
 
     case AIR_PKT_TYPE_ND_MEMCPY: // Only arrive here the first try.
       uint16_t memory_space = (pkt->arg[0] >> 16) & 0x00ff;
@@ -1820,6 +2007,10 @@ int main() {
   lock_uart(mb_id);
   xil_printf("Created queue @ 0x%p\n\r\n\r", q);
   unlock_uart(mb_id);
+
+#if defined(ARM_CONTROLLER)
+  start_bps();
+#endif
 
   volatile bool done = false;
   while (!done) {

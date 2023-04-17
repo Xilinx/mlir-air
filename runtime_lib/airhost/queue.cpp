@@ -81,7 +81,8 @@ hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue,
   uint64_t q_paddr =
       bram_ptr[paddr_offset / sizeof(uint64_t)] - AIR_VCK190_SHMEM_BASE;
   uint64_t q_offset = q_paddr;
-  queue_t *q = (queue_t *)(((size_t)bram_ptr) + q_offset + paddr_offset);
+
+  queue_t *q = (queue_t *)(((size_t)bram_ptr) + q_offset);
   // printf("Queue location at paddr: %p vaddr: %p\n",
   // bram_ptr[paddr_offset/sizeof(uint64_t)]-AIR_VCK190_SHMEM_BASE, q);
 

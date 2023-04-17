@@ -7,11 +7,9 @@
 
 #include <cstdio>
 #include <iostream>
-#include <map>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include "air_host.h"
 #include "pcie-ernic.h"
@@ -25,50 +23,6 @@ std::map<std::string, int> hostname_to_qp_map;
 std::map<void *, tensor_to_qp_map_entry *> tensor_to_qp_map;
 std::map<std::string, world_view_entry *> world_view;
 std::map<std::string, std::string> data_placement;
-
-// Storing these as state in the runtime
-void init_world_view() {
-
-  // Creating host_1 network information
-  world_view["host_0"] =
-      (struct world_view_entry *)malloc(sizeof(world_view_entry));
-  strcpy(world_view["host_0"]->ip, "610c6007");
-  strcpy(world_view["host_0"]->mac, "000016C450560F2E");
-  world_view["host_0"]->rank = 0;
-  world_view["host_0"]->qps[1] =
-      2; // Setting that we will use QP 2 to communicate with host_1
-
-  // Creating host_0 network information
-  world_view["host_1"] =
-      (struct world_view_entry *)malloc(sizeof(world_view_entry));
-  strcpy(world_view["host_1"]->ip, "f38590ba");
-  strcpy(world_view["host_1"]->mac, "00002F7617DC5E9A");
-  world_view["host_1"]->rank = 1;
-  world_view["host_1"]->qps[0] = 2;
-
-  return;
-}
-
-// This is used to denote where remote buffers are going to be place.d
-// The runtime uses this information to determine the location of buffers
-// used in AIR.
-void init_data_placement() {
-
-  data_placement["src"] = std::string("host_1");
-  data_placement["dst"] = std::string("host_0");
-  data_placement["host0_barrier_tensor"] = std::string("host_0");
-  data_placement["host1_barrier_tensor"] = std::string("host_1");
-
-  // Used for the message passing tests because we have multiple
-  // copies of the data.
-  // TODO: Replace these with the AIR device memory allocator
-  data_placement["host0_src"] = std::string("host_0");
-  data_placement["host0_dst"] = std::string("host_0");
-  data_placement["host1_src"] = std::string("host_1");
-  data_placement["host1_dst"] = std::string("host_1");
-
-  return;
-}
 
 // Used to set this hosts hostname
 hsa_status_t air_set_hostname(char hostname[100]) {
@@ -85,16 +39,13 @@ hsa_status_t air_get_hostname(char hostname[100]) {
 // This is a part of the bootstraping process, where we have a file that shows
 // us all the AIR instances, and we want to initialize the ERNIC with our own
 // information, and create QPs for every remote AIR instance
-hsa_status_t air_explore_world(uint32_t ernic_id, uint64_t dev_mem_offset,
-                               uint64_t bar_offset) {
+hsa_status_t air_explore_world(uint32_t ernic_id, uint64_t dev_mem_offset, uint64_t bar_offset, std::map<std::string, world_view_entry *> pass_world_view, std::map<std::string, std::string> pass_data_placement) {
 #ifndef AIR_PCIE
   return HSA_STATUS_ERROR;
 #else
-  // Initializing all of the representations. This is just hardcoded right now,
-  // but should be passed by an driver node through a file or a serialized
-  // object
-  init_world_view();
-  init_data_placement();
+  // Storing the representation of the distributed system
+  world_view = pass_world_view; 
+  data_placement = pass_data_placement; 
 
   // Reading the world view to get our own IP and MAC address
   uint32_t ip_addr =
@@ -196,6 +147,13 @@ hsa_status_t air_explore_world(uint32_t ernic_id, uint64_t dev_mem_offset,
 #endif // AIR_PCIE
 }
 
+/* Conditionally allocates and/or registers memory depending on 
+the location memory. This function should be called to initialize
+all remote or local buffers that are accessed remotely. If the 
+buffer is local, the memory is allocated and the virtual address
+and key are advertised to all AIR instances. If the buffer is 
+remote, we poll on receiving the virtual address and key
+from the remote instance who is hosting the memory */
 hsa_status_t air_ernic_mem_alloc(char buff_name[100], uint32_t size, void *t,
                                  bool register_mem) {
 
@@ -289,6 +247,7 @@ hsa_status_t air_ernic_mem_alloc(char buff_name[100], uint32_t size, void *t,
   return HSA_STATUS_SUCCESS;
 }
 
+// Should be called at the end of the application
 hsa_status_t air_ernic_free() {
 
   pcie_ernic_free_dev(air_ernic_dev);
@@ -296,7 +255,11 @@ hsa_status_t air_ernic_free() {
   return HSA_STATUS_SUCCESS;
 }
 
-// template <typename T, int R>
+/* Performs a message passing receive. We first poll on receiving an
+RDMA SEND which contains the data, which is then copied to the provided
+tensor t. We then send a synchronizing SEND back to remote agent. This
+function is capable of performing a non-blocking SEND by passing an
+HSA signal as a handle*/
 void air_recv(signal_t *s, tensor_t<uint32_t, 1> *t, uint32_t size,
               uint32_t offset, uint32_t src_rank, queue_t *q,
               uint8_t ernic_sel) {
@@ -405,6 +368,12 @@ void air_recv(signal_t *s, tensor_t<uint32_t, 1> *t, uint32_t size,
   }
 }
 
+/* Performs an SEND operation of the data in the provided tensor t.
+It first performs an RDMA SEND of the data, and then must poll
+on a synchronizing SEND which reports the data was received.
+We then send a synchronizing SEND back to remote agent. This
+function is capable of performing a non-blocking SEND by 
+passing an HSA signal as a handle */
 void air_send(signal_t *s, tensor_t<uint32_t, 1> *t, uint32_t size,
               uint32_t offset, uint32_t dst_rank, queue_t *q,
               uint8_t ernic_sel) {
@@ -497,6 +466,11 @@ void air_send(signal_t *s, tensor_t<uint32_t, 1> *t, uint32_t size,
   }
 }
 
+/* Provides a very simplistic barrier for remote AIR instances. 
+This barrier uses rank 0 as the coordinater, which receives an 
+incoming send from every non-zero rank AIR instance. Then, 
+it perform an air_send to every non-zero rank AIR instance 
+which allows them to proceed. */
 void air_barrier(tensor_t<uint32_t, 1> *dummy_tensor, queue_t *q,
                  uint8_t ernic_sel) {
 

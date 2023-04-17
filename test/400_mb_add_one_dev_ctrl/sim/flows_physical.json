@@ -1,0 +1,39 @@
+{
+"switchbox60": {
+"col": 6,
+"row": 0,
+"source_count": 2,
+"destination_count": 2,
+"northbound": 2,
+"eastbound": 0,
+"southbound": 2,
+"westbound": 0
+},
+"switchbox61": {
+"col": 6,
+"row": 1,
+"source_count": 0,
+"destination_count": 0,
+"northbound": 2,
+"eastbound": 0,
+"southbound": 2,
+"westbound": 0
+},
+"switchbox62": {
+"col": 6,
+"row": 2,
+"source_count": 2,
+"destination_count": 2,
+"northbound": 0,
+"eastbound": 0,
+"southbound": 2,
+"westbound": 0
+},
+"route0": [ [[6, 0], ["North"]], [[6, 1], ["North"]], [[6, 2], ["DMA"]], [] ],
+"route1": [ [[6, 0], ["North"]], [[6, 1], ["North"]], [[6, 2], ["DMA"]], [] ],
+"route2": [ [[6, 2], ["South"]], [[6, 1], ["South"]], [[6, 0], ["South"]], [] ],
+"route3": [ [[6, 2], ["South"]], [[6, 1], ["South"]], [[6, 0], ["South"]], [] ],
+"route_all": [],
+
+"end json": 0
+}

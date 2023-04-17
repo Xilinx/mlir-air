@@ -136,7 +136,7 @@ aiesim: ${LIBADF}
 xclbin: guard-PLATFORM_REPO_PATHS ${XCLBIN}
 
 ${XCLBIN}: ${LIBADF} ${VPP_SPEC} 
-	${VCC} -g -l --platform ${PLATFORM} ${LIBADF} -t ${TARGET} ${VPP_STRATEGY} ${VPP_FLAGS} -o $@
+	${VCC} -g -l --platform ${PLATFORM} ${LIBADF} -t ${TARGET} ${VPP_STRATEGY} ${VPP_FLAGS} -o $@ --vivado.prop run.project_1_ernic_0_0_synth_1.STEPS.SYNTH_DESIGN.ARGS.MAX_BRAM_CASCADE_HEIGHT=1 --vivado.prop run.project_1_ernic_1_0_synth_1.STEPS.SYNTH_DESIGN.ARGS.MAX_BRAM_CASCADE_HEIGHT=1
 
 host: guard-CXX guard-SDKTARGETSYSROOT ${HOST_EXE}
 ${HOST_EXE}: ${GRAPH} ./Work/ps/c_rts/aie_control_xrt.cpp

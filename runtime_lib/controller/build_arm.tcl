@@ -18,7 +18,13 @@ app create -lang c++ -name acdc_agent -platform arm -domain airrt_arm -template 
 #app config -name acdc_agent build-config Release
 #app config -name acdc_agent compiler-misc {-O1}
 
-importsources -name acdc_agent -soft-link -path [file join $root_directory "runtime_lib/controller"]
+importsources -name acdc_agent -soft-link -path [file join $root_directory "runtime_lib/controller/main.cpp"]
+importsources -name acdc_agent -soft-link -path [file join $root_directory "runtime_lib/controller/platform.cpp"]
+importsources -name acdc_agent -soft-link -path [file join $root_directory "runtime_lib/controller/platform.h"]
+importsources -name acdc_agent -soft-link -path [file join $root_directory "runtime_lib/controller/platform_config.h"]
+importsources -name acdc_agent -soft-link -path [file join $root_directory "runtime_lib/controller/arm_bp_intf.cpp"]
+importsources -name acdc_agent -soft-link -path [file join $root_directory "runtime_lib/controller/arm_bp_intf.h"]
 app config -name acdc_agent include-path [file join $root_directory "runtime_lib/airhost/include"]
+app config -name acdc_agent include-path [file join $root_directory "runtime_lib/controller/bp/include/"]
 
 app build -name acdc_agent

@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<POWERDATA data="AI-Engine Compiler" dataVersion="2022.2" design="graph" date="2023">
+ <DEVICE part="xcvc1902" grade="extended" package="vsva2197" speed="-2MP" process="typical" vid="No"></DEVICE>
+  <AIE status="COMPILER_OUTPUT">
+    <AIE_MODULE name="graph" num_tiles="3" clk_freq="1250">
+      <TILE name="CR(6,0)" type="int16" int_core_load="1.0" fp_core_load="0" mem_banks="0" mem_rw_rate="0.2" stream_util="0.0" coordinates="6,1">
+      </TILE>
+      <TILE name="CR(6,1)" type="int16" int_core_load="1.0" fp_core_load="0" mem_banks="0" mem_rw_rate="0.2" stream_util="0.0" coordinates="6,2">
+        <KERNEL name="i0" int_core_load="1" fp_core_load="0"></KERNEL>
+      </TILE>
+    </AIE_MODULE>
+  </AIE>
+</POWERDATA>

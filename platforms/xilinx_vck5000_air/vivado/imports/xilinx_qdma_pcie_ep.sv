@@ -1,4 +1,5 @@
-// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2022, Xilinx Inc.
+// Copyright (C) 2022, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 
 `timescale 1ps / 1ps
@@ -128,6 +129,23 @@ module xilinx_qdma_pcie_ep #
     inout [7:0]ddr4_sdram_c3_dqs_t,
     output ddr4_sdram_c3_odt,
     output ddr4_sdram_c3_reset_n,
+    
+    
+    // IO for MRMAC 0
+    input  wire [3:0] mrmac_0_gt_rxn_in,
+    input  wire [3:0] mrmac_0_gt_rxp_in,   
+    output wire [3:0] mrmac_0_gt_txn_out,   
+    output wire [3:0] mrmac_0_gt_txp_out,                                            
+    input  wire       mrmac_0_gt_ref_clk_p, 
+    input  wire       mrmac_0_gt_ref_clk_n, 
+
+    // IO for MRMAC 1
+    input  wire [3:0] mrmac_1_gt_rxn_in,   
+    input  wire [3:0] mrmac_1_gt_rxp_in,   
+    output wire [3:0] mrmac_1_gt_txn_out,   
+    output wire [3:0] mrmac_1_gt_txp_out,   
+    input  wire       mrmac_1_gt_ref_clk_p, 
+    input  wire       mrmac_1_gt_ref_clk_n,
 
     input   sys_clk_p,
     input   sys_clk_n
@@ -778,6 +796,129 @@ module xilinx_qdma_pcie_ep #
   wire  [83:0]  pipe_tx_13_sigs_i;
   wire  [83:0]  pipe_tx_14_sigs_i;
   wire  [83:0]  pipe_tx_15_sigs_i;
+  
+  reg  [31:0]     axi_read_data;
+    reg  [63:0]     tx_total_pkt_0, tx_total_bytes_0, tx_total_good_pkts_0, tx_total_good_bytes_0; // use only lsb 48 bits
+    reg  [63:0]     rx_total_pkt_0, rx_total_bytes_0, rx_total_good_pkts_0, rx_total_good_bytes_0; // use only lsb 48 bits
+    reg  [63:0]     tx_total_pkt_1, tx_total_bytes_1, tx_total_good_pkts_1, tx_total_good_bytes_1; // use only lsb 48 bits
+    reg  [63:0]     rx_total_pkt_1, rx_total_bytes_1, rx_total_good_pkts_1, rx_total_good_bytes_1; // use only lsb 48 bits 
+    reg  [63:0]     tx_total_pkt_2, tx_total_bytes_2, tx_total_good_pkts_2, tx_total_good_bytes_2; // use only lsb 48 bits
+    reg  [63:0]     rx_total_pkt_2, rx_total_bytes_2, rx_total_good_pkts_2, rx_total_good_bytes_2; // use only lsb 48 bits   
+    reg  [63:0]     tx_total_pkt_3, tx_total_bytes_3, tx_total_good_pkts_3, tx_total_good_bytes_3; // use only lsb 48 bits
+    reg  [63:0]     rx_total_pkt_3, rx_total_bytes_3, rx_total_good_pkts_3, rx_total_good_bytes_3; // use only lsb 48 bits  
+
+    //////// GT Rate port Control.
+    // Power on Default gt_line_rate = 8'b00000000;
+    // 1x100GE Test     gt_line_rate = 8'b00000010;
+    // 1x50GE Test      gt_line_rate = 8'b00000010;	  
+    // 1x40GE Test      gt_line_rate = 8'b00000001;	  
+    // 4x25GE Test      gt_line_rate = 8'b00000010;	  
+    // 4x10GE Test      gt_line_rate = 8'b00000001;
+    
+    
+   // ***************   Axi lite interface from QDMA ***************  
+    wire 			    s_axil_mrmac_0_arready;
+    wire  [31:0] 	s_axil_mrmac_0_araddr;
+    wire 			    s_axil_mrmac_0_arvalid; 
+    wire 			    s_axil_mrmac_0_awready;
+    wire  [31:0] 	s_axil_mrmac_0_awaddr;
+    wire 			    s_axil_mrmac_0_awvalid;  
+    wire 			    s_axil_mrmac_0_bready;
+    wire [1:0] 		s_axil_mrmac_0_bresp;
+    wire 			    s_axil_mrmac_0_bvalid;
+    wire			    s_axil_mrmac_0_rready;
+    wire [31:0] 	s_axil_mrmac_0_rdata;
+    wire [1:0] 		s_axil_mrmac_0_rresp;
+    wire 			    s_axil_mrmac_0_rvalid;
+    wire 			    s_axil_mrmac_0_wready;
+    wire [31:0] 	s_axil_mrmac_0_wdata;
+    wire 			    s_axil_mrmac_0_wvalid;
+
+    wire 			    s_axil_mrmac_1_arready;
+    wire  [31:0] 	s_axil_mrmac_1_araddr;
+    wire 			    s_axil_mrmac_1_arvalid; 
+    wire 			    s_axil_mrmac_1_awready;
+    wire  [31:0] 	s_axil_mrmac_1_awaddr;
+    wire 			    s_axil_mrmac_1_awvalid;  
+    wire 			    s_axil_mrmac_1_bready;
+    wire [1:0] 		s_axil_mrmac_1_bresp;
+    wire 			    s_axil_mrmac_1_bvalid;
+    wire			    s_axil_mrmac_1_rready;
+    wire [31:0] 	s_axil_mrmac_1_rdata;
+    wire [1:0] 		s_axil_mrmac_1_rresp;
+    wire 			    s_axil_mrmac_1_rvalid;
+    wire 			    s_axil_mrmac_1_wready;
+    wire [31:0] 	s_axil_mrmac_1_wdata;
+    wire 			    s_axil_mrmac_1_wvalid; 
+    
+    //************* MRMAC streaming buses TX / RX *******************
+
+
+    wire          mrmac_0_rx_axis_clk; 
+    wire          mrmac_0_rx_axis_rst; 
+    wire          mrmac_0_rx_axis_rstn;
+    wire          mrmac_0_tx_axis_clk;
+    wire          mrmac_0_tx_axis_rst;
+    wire          mrmac_0_tx_axis_rstn;
+
+    wire [383:0]  mrmac_0_rx_axis_tdata;
+    wire [47:0]   mrmac_0_rx_axis_tkeep;
+    wire          mrmac_0_rx_axis_tlast;
+    wire          mrmac_0_rx_axis_tvalid; 
+
+    wire [383:0]  mrmac_0_tx_axis_tdata;
+    wire [47:0]   mrmac_0_tx_axis_tkeep;
+    wire          mrmac_0_tx_axis_tlast;
+    wire          mrmac_0_tx_axis_tvalid;
+    wire          mrmac_0_tx_axis_tready;  
+
+    wire [8:0]    mrmac_0_ctl_tx_port0_ctl_tx_pause_req;
+    wire          mrmac_0_ctl_tx_port0_ctl_tx_resend_pause;
+    wire [8:0]    mrmac_0_stat_rx_port0_stat_rx_pause_req;
+
+    wire          mrmac_1_rx_axis_clk; 
+    wire          mrmac_1_rx_axis_rst; 
+    wire          mrmac_1_rx_axis_rstn;
+    wire          mrmac_1_tx_axis_clk;
+    wire          mrmac_1_tx_axis_rst;
+    wire          mrmac_1_tx_axis_rstn;
+
+    wire [383:0]  mrmac_1_rx_axis_tdata;
+    wire [47:0]   mrmac_1_rx_axis_tkeep;
+    wire          mrmac_1_rx_axis_tlast;
+    wire          mrmac_1_rx_axis_tvalid; 
+
+    wire [383:0]  mrmac_1_tx_axis_tdata;
+    wire [47:0]   mrmac_1_tx_axis_tkeep;
+    wire          mrmac_1_tx_axis_tlast;
+    wire          mrmac_1_tx_axis_tvalid;
+    wire          mrmac_1_tx_axis_tready;  
+
+    wire [8:0]    mrmac_1_ctl_tx_port0_ctl_tx_pause_req;
+    wire          mrmac_1_ctl_tx_port0_ctl_tx_resend_pause;
+    wire [8:0]    mrmac_1_stat_rx_port0_stat_rx_pause_req;
+         
+    wire [30:0]   gnd_30bits;
+
+    wire          pl_resetn_gpio;  
+
+    wire [3:0]    mrmac_0_stat_mst_reset_done;
+    wire [3:0]    mrmac_1_stat_mst_reset_done;
+    wire [31:0]   qdma_gpio_out;
+    wire [31:0]   qdma_gpio2_in;
+
+    wire          pl_resetn;   
+
+    wire [3:0]    gt_reset_all_in;	
+    //assign        gt_reset_all_in = 4'b0;
+
+	assign        gnd_24bits = 24'b0;
+	//assign        gt_reset_all_in = gt_reset_all_tb ||  qdma_gpio_out[3:0];   //qdma  
+	assign        gt_reset_all_in = qdma_gpio_out[3:0];   //qdma  
+    assign        pl_resetn_gpio    = ! qdma_gpio_out[4];
+	assign        qdma_gpio2_in  = {gnd_24bits,mrmac_1_stat_mst_reset_done,mrmac_0_stat_mst_reset_done};
+	assign        c0_trig_in      = qdma_gpio_out[16];
+    wire        pl_clk;
 
 
 // synthesis translate_off
@@ -932,6 +1073,91 @@ endgenerate
     // test bench pattern gen start controls
     //.core_ext_start_0 (core_ext_start_0),
     //.core_ext_start_1 (core_ext_start_1),
+    
+    //---------------------------------------------------//
+    //  MRMAC internal connections                       //
+    //---------------------------------------------------//
+
+    .cmac_rx_clk_0              (mrmac_0_rx_axis_clk), 
+    .cmac_rx_rst_0              (mrmac_0_rx_axis_rst),                  
+    .cmac_tx_clk_0              (mrmac_0_tx_axis_clk),
+    .cmac_tx_rst_0              (mrmac_0_tx_axis_rst),
+   
+    .cmac_rx_clk_1              (mrmac_1_rx_axis_clk),
+    .cmac_rx_rst_1              (mrmac_1_rx_axis_rst),     
+    .cmac_tx_clk_1              (mrmac_1_tx_axis_clk),    
+    .cmac_tx_rst_1              (mrmac_1_tx_axis_rst),
+    
+    //.qdma_pcie_axi_aresetn      (pl_resetn),
+    .qdma_pcie_axi_aresetn      (),
+    .qdma_wiz_100mhz_clk_out1   (pl_clk),
+    .peripheral_aresetn         (),    
+    .GPIO_0_tri_o               (qdma_gpio_out),
+    .GPIO2_0_tri_i              (qdma_gpio2_in), 
+
+   .m_axil_mrmac_0_araddr   (s_axil_mrmac_0_araddr  ),     
+   .m_axil_mrmac_0_arprot   (),    
+   .m_axil_mrmac_0_arready  (s_axil_mrmac_0_arready ),    
+   .m_axil_mrmac_0_arvalid  (s_axil_mrmac_0_arvalid ),     
+   .m_axil_mrmac_0_awaddr   (s_axil_mrmac_0_awaddr  ),    
+   .m_axil_mrmac_0_awprot   (),    
+   .m_axil_mrmac_0_awready  (s_axil_mrmac_0_awready ),    
+   .m_axil_mrmac_0_awvalid  (s_axil_mrmac_0_awvalid ),    
+   .m_axil_mrmac_0_bready   (s_axil_mrmac_0_bready  ),    
+   .m_axil_mrmac_0_bresp    (s_axil_mrmac_0_bresp   ),    
+   .m_axil_mrmac_0_bvalid   (s_axil_mrmac_0_bvalid  ),    
+   .m_axil_mrmac_0_rdata    (s_axil_mrmac_0_rdata   ),    
+   .m_axil_mrmac_0_rready   (s_axil_mrmac_0_rready  ),    
+   .m_axil_mrmac_0_rresp    (s_axil_mrmac_0_rresp   ),    
+   .m_axil_mrmac_0_rvalid   (s_axil_mrmac_0_rvalid  ),    
+   .m_axil_mrmac_0_wdata    (s_axil_mrmac_0_wdata   ),    
+   .m_axil_mrmac_0_wready   (s_axil_mrmac_0_wready  ),    
+   .m_axil_mrmac_0_wstrb    (),     
+   .m_axil_mrmac_0_wvalid   (s_axil_mrmac_0_wvalid  ),
+   
+   .m_axil_mrmac_1_araddr   (s_axil_mrmac_1_araddr  ),     
+   .m_axil_mrmac_1_arprot   (),    
+   .m_axil_mrmac_1_arready  (s_axil_mrmac_1_arready ),    
+   .m_axil_mrmac_1_arvalid  (s_axil_mrmac_1_arvalid ),     
+   .m_axil_mrmac_1_awaddr   (s_axil_mrmac_1_awaddr  ),    
+   .m_axil_mrmac_1_awprot   (),    
+   .m_axil_mrmac_1_awready  (s_axil_mrmac_1_awready ),    
+   .m_axil_mrmac_1_awvalid  (s_axil_mrmac_1_awvalid ),    
+   .m_axil_mrmac_1_bready   (s_axil_mrmac_1_bready  ),    
+   .m_axil_mrmac_1_bresp    (s_axil_mrmac_1_bresp   ),    
+   .m_axil_mrmac_1_bvalid   (s_axil_mrmac_1_bvalid  ),    
+   .m_axil_mrmac_1_rdata    (s_axil_mrmac_1_rdata   ),    
+   .m_axil_mrmac_1_rready   (s_axil_mrmac_1_rready  ),    
+   .m_axil_mrmac_1_rresp    (s_axil_mrmac_1_rresp   ),    
+   .m_axil_mrmac_1_rvalid   (s_axil_mrmac_1_rvalid  ),    
+   .m_axil_mrmac_1_wdata    (s_axil_mrmac_1_wdata   ),    
+   .m_axil_mrmac_1_wready   (s_axil_mrmac_1_wready  ),    
+   .m_axil_mrmac_1_wstrb    (),     
+   .m_axil_mrmac_1_wvalid   (s_axil_mrmac_1_wvalid  ),
+      
+   .m_axis_tx_mrmac_0_tdata  (mrmac_0_tx_axis_tdata ),
+   .m_axis_tx_mrmac_0_tkeep  (mrmac_0_tx_axis_tkeep ),
+   .m_axis_tx_mrmac_0_tlast  (mrmac_0_tx_axis_tlast ),
+   .m_axis_tx_mrmac_0_tready (mrmac_0_tx_axis_tready),
+   .m_axis_tx_mrmac_0_tvalid (mrmac_0_tx_axis_tvalid),
+    
+   .m_axis_tx_mrmac_1_tdata  (mrmac_1_tx_axis_tdata ),
+   .m_axis_tx_mrmac_1_tkeep  (mrmac_1_tx_axis_tkeep ),
+   .m_axis_tx_mrmac_1_tlast  (mrmac_1_tx_axis_tlast ),
+   .m_axis_tx_mrmac_1_tready (mrmac_1_tx_axis_tready),
+   .m_axis_tx_mrmac_1_tvalid (mrmac_1_tx_axis_tvalid),
+    
+   .s_axis_rx_mrmac_0_tdata  (mrmac_0_rx_axis_tdata ),
+   .s_axis_rx_mrmac_0_tkeep  (mrmac_0_rx_axis_tkeep ),
+   .s_axis_rx_mrmac_0_tlast  (mrmac_0_rx_axis_tlast ),
+   .s_axis_rx_mrmac_0_tready (mrmac_0_rx_axis_tready),
+   .s_axis_rx_mrmac_0_tvalid (mrmac_0_rx_axis_tvalid), 
+    
+   .s_axis_rx_mrmac_1_tdata  (mrmac_1_rx_axis_tdata ),
+   .s_axis_rx_mrmac_1_tkeep  (mrmac_1_rx_axis_tkeep ),
+   .s_axis_rx_mrmac_1_tlast  (mrmac_1_rx_axis_tlast ),
+   .s_axis_rx_mrmac_1_tready (mrmac_1_rx_axis_tready),
+   .s_axis_rx_mrmac_1_tvalid (mrmac_1_rx_axis_tvalid),
 
 /*
      // AXI MM Interface
@@ -1157,6 +1383,171 @@ endgenerate
     .user_lnk_up (user_lnk_up)    
    */
    );
+
+mrmac_0_exdes inst_mrmac_0
+(
+
+  .s_axi_aclk               (pl_clk),
+  //.s_axi_aresetn            (pl_resetn),
+  //.s_axi_aresetn            (pl_resetn_tb),
+  .s_axi_aresetn            (pl_resetn_gpio),
+  
+  .s_axi_araddr             (s_axil_mrmac_0_araddr ),
+  .s_axi_arready            (s_axil_mrmac_0_arready),
+  .s_axi_arvalid            (s_axil_mrmac_0_arvalid),
+  .s_axi_awaddr             (s_axil_mrmac_0_awaddr ),
+  .s_axi_awready            (s_axil_mrmac_0_awready),
+  .s_axi_awvalid            (s_axil_mrmac_0_awvalid),
+  .s_axi_bready             (s_axil_mrmac_0_bready ),
+  .s_axi_bresp              (s_axil_mrmac_0_bresp  ),
+  .s_axi_bvalid             (s_axil_mrmac_0_bvalid ),
+  .s_axi_rdata              (s_axil_mrmac_0_rdata  ),
+  .s_axi_rready             (s_axil_mrmac_0_rready ),
+  .s_axi_rresp              (s_axil_mrmac_0_rresp  ),
+  .s_axi_rvalid             (s_axil_mrmac_0_rvalid ),
+  .s_axi_wdata              (s_axil_mrmac_0_wdata  ),
+  .s_axi_wready             (s_axil_mrmac_0_wready ),
+  .s_axi_wvalid             (s_axil_mrmac_0_wvalid ),
+
+  .rx_axis_tdata            (mrmac_0_rx_axis_tdata ),
+  .rx_axis_tkeep            (mrmac_0_rx_axis_tkeep ),
+  .rx_axis_tlast            (mrmac_0_rx_axis_tlast ),
+  .rx_axis_tvalid           (mrmac_0_rx_axis_tvalid),
+  .rx_axis_clk              (mrmac_0_rx_axis_clk  ),
+  .rx_axis_rst              (mrmac_0_rx_axis_rst  ),
+  .rx_axis_rstn             (mrmac_0_rx_axis_rstn ),                 
+                                                     
+  .tx_axis_tdata            (mrmac_0_tx_axis_tdata ),
+  .tx_axis_tkeep            (mrmac_0_tx_axis_tkeep ),
+  .tx_axis_tlast            (mrmac_0_tx_axis_tlast ),
+  .tx_axis_tvalid           (mrmac_0_tx_axis_tvalid),                 
+  .tx_axis_tready           (mrmac_0_tx_axis_tready),
+  .tx_axis_clk              (mrmac_0_tx_axis_clk  ),
+  .tx_axis_rst              (mrmac_0_tx_axis_rst  ),
+  .tx_axis_rstn             (mrmac_0_tx_axis_rstn ),
+  //.ctl_tx_port0_ctl_tx_pause_req    (8'b0),                                      
+  //.ctl_tx_port0_ctl_tx_resend_pause (1'b0),                                                             
+  //.stat_rx_port0_stat_rx_pause_req  (),                        
+                                                               
+  .stat_mst_reset_done      (mrmac_0_stat_mst_reset_done),             
+  .gt_reset_all_in          (gt_reset_all_in),
+  .gt_line_rate 		        (8'b00000000),	        //4x25GE Test      gt_line_rate = 8'b00000000;
+  //.gt_reset_tx_datapath_in  (4'b0000),
+  //.gt_reset_rx_datapath_in  (4'b0000),
+  .pl_resetn                (pl_resetn_gpio),
+  .pl_clk                   (pl_clk),
+  // ***** connections to top level I/O  
+  .gt_ref_clk_p             (mrmac_0_gt_ref_clk_p),
+  .gt_ref_clk_n             (mrmac_0_gt_ref_clk_n),
+  .gt_rxn_in                (mrmac_0_gt_rxn_in   ),
+  .gt_rxp_in                (mrmac_0_gt_rxp_in   ),
+  .gt_txn_out               (mrmac_0_gt_txn_out  ),
+  .gt_txp_out               (mrmac_0_gt_txp_out  )
+
+  //  .c0_top_ctl_muxes         (3'b000),
+  //  .c0_number_of_segments    (3'b101 ),
+  //  .c0_ten_gb_mode           (3'b000 ),
+  //  .c0_trig_in               (c0_trig_in),
+  //  .c0_top_ctl_data_rate     (3'b100),		
+  //                            
+  //  .c1_number_of_segments    (3'b010),
+  //  .c1_ten_gb_mode           (1'b0),
+  //  .c1_trig_in               (1'b0),
+  //  .c1_top_ctl_data_rate     (3'b001),	
+  //                            
+  //  .c2_number_of_segments    (3'b010),             
+  //  .c2_ten_gb_mode           (1'b0),               
+  //  .c2_trig_in               (1'b0),              
+  //  .c2_top_ctl_data_rate     (3'b001),             
+  //                            
+  //  .c3_number_of_segments    (3'b010),            
+  //  .c3_ten_gb_mode           (1'b0),              
+  //  .c3_trig_in               (1'b0),              
+  //  .c3_top_ctl_data_rate     (3'b001),            	
+
+);
+
+mrmac_1_exdes inst_mrmac_1
+(
+
+  .s_axi_aclk               (pl_clk),
+  //.s_axi_aresetn            (pl_resetn),
+  //.s_axi_aresetn            (pl_resetn_tb),
+  .s_axi_aresetn            (pl_resetn_gpio),
+  
+  .s_axi_araddr             (s_axil_mrmac_1_araddr ),
+  .s_axi_arready            (s_axil_mrmac_1_arready),
+  .s_axi_arvalid            (s_axil_mrmac_1_arvalid),
+  .s_axi_awaddr             (s_axil_mrmac_1_awaddr ),
+  .s_axi_awready            (s_axil_mrmac_1_awready),
+  .s_axi_awvalid            (s_axil_mrmac_1_awvalid),
+  .s_axi_bready             (s_axil_mrmac_1_bready ),
+  .s_axi_bresp              (s_axil_mrmac_1_bresp  ),
+  .s_axi_bvalid             (s_axil_mrmac_1_bvalid ),
+  .s_axi_rdata              (s_axil_mrmac_1_rdata  ),
+  .s_axi_rready             (s_axil_mrmac_1_rready ),
+  .s_axi_rresp              (s_axil_mrmac_1_rresp  ),
+  .s_axi_rvalid             (s_axil_mrmac_1_rvalid ),
+  .s_axi_wdata              (s_axil_mrmac_1_wdata  ),
+  .s_axi_wready             (s_axil_mrmac_1_wready ),
+  .s_axi_wvalid             (s_axil_mrmac_1_wvalid ),
+
+  .rx_axis_tdata            (mrmac_1_rx_axis_tdata ),
+  .rx_axis_tkeep            (mrmac_1_rx_axis_tkeep ),
+  .rx_axis_tlast            (mrmac_1_rx_axis_tlast ),
+  .rx_axis_tvalid           (mrmac_1_rx_axis_tvalid),
+  .rx_axis_clk              (mrmac_1_rx_axis_clk  ),
+  .rx_axis_rst              (mrmac_1_rx_axis_rst  ),
+  .rx_axis_rstn             (mrmac_1_rx_axis_rstn ),                 
+                                                     
+  .tx_axis_tdata            (mrmac_1_tx_axis_tdata ),
+  .tx_axis_tkeep            (mrmac_1_tx_axis_tkeep ),
+  .tx_axis_tlast            (mrmac_1_tx_axis_tlast ),
+  .tx_axis_tvalid           (mrmac_1_tx_axis_tvalid),                 
+  .tx_axis_tready           (mrmac_1_tx_axis_tready),
+  .tx_axis_clk              (mrmac_1_tx_axis_clk  ),
+  .tx_axis_rst              (mrmac_1_tx_axis_rst  ),
+  .tx_axis_rstn             (mrmac_1_tx_axis_rstn ),
+  //.ctl_tx_port0_ctl_tx_pause_req    (8'b0),
+  //.ctl_tx_port0_ctl_tx_resend_pause (1'b0),
+  //.stat_rx_port0_stat_rx_pause_req  (),
+    
+  .stat_mst_reset_done      (mrmac_1_stat_mst_reset_done),
+  //.gt_reset_tx_datapath_in  (4'b0000),
+  //.gt_reset_rx_datapath_in  (4'b0000),
+  .pl_resetn                (pl_resetn_gpio),
+  .gt_reset_all_in          (gt_reset_all_in),
+  .gt_line_rate 		        (8'b00000000),	//4x25GE Test      gt_line_rate = 8'b00000000;
+   .pl_clk                   (pl_clk), 	
+  // ***** connections to top level I/O
+  .gt_ref_clk_p             (mrmac_1_gt_ref_clk_p),
+  .gt_ref_clk_n             (mrmac_1_gt_ref_clk_n),
+  .gt_rxn_in                (mrmac_1_gt_rxn_in   ),
+  .gt_rxp_in                (mrmac_1_gt_rxp_in   ),
+  .gt_txn_out               (mrmac_1_gt_txn_out  ),
+  .gt_txp_out               (mrmac_1_gt_txp_out  )
+
+  //  .c0_top_ctl_muxes         (3'b000),
+  //  .c0_number_of_segments    (3'b101 ),
+  //  .c0_ten_gb_mode           (3'b000 ),
+  //  .c0_trig_in               (c0_trig_in),
+  //  .c0_top_ctl_data_rate     (3'b100),		
+  //                            
+  //  .c1_number_of_segments    (3'b010),
+  //  .c1_ten_gb_mode           (1'b0),
+  //  .c1_trig_in               (1'b0),
+  //  .c1_top_ctl_data_rate     (3'b001),	
+  //                            
+  //  .c2_number_of_segments    (3'b010),             
+  //  .c2_ten_gb_mode           (1'b0),               
+  //  .c2_trig_in               (1'b0),              
+  //  .c2_top_ctl_data_rate     (3'b001),             
+  //                            
+  //  .c3_number_of_segments    (3'b010),            
+  //  .c3_ten_gb_mode           (1'b0),              
+  //  .c3_trig_in               (1'b0),              
+  //  .c3_top_ctl_data_rate     (3'b001),            	
+);
 
 
 
