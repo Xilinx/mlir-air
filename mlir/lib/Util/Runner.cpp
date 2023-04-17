@@ -188,9 +188,9 @@ public:
       // if there is a size mismatch, it's because we're moving a tile of the
       // larger tensor
       if (getTensorVolume(srcTy) <= getTensorVolume(dstTy))
-        execution_time = getTransferCost(d, srcSpace, dstSpace, srcTy);
+        execution_time = getTransferCost(d, c.op, srcSpace, dstSpace, srcTy);
       else
-        execution_time = getTransferCost(d, srcSpace, dstSpace, dstTy);
+        execution_time = getTransferCost(d, c.op, srcSpace, dstSpace, dstTy);
     } else if (type == "channel" &&
                (name.find("ChannelGetOp") != std::string::npos)) {
       auto getOp = mlir::dyn_cast<xilinx::air::ChannelGetOp>(c.op);
@@ -205,9 +205,9 @@ public:
       // if there is a size mismatch, it's because we're moving a tile of the
       // larger tensor
       if (getTensorVolume(srcTy) <= getTensorVolume(dstTy))
-        execution_time = getTransferCost(d, srcSpace, dstSpace, srcTy);
+        execution_time = getTransferCost(d, c.op, srcSpace, dstSpace, srcTy);
       else
-        execution_time = getTransferCost(d, srcSpace, dstSpace, dstTy);
+        execution_time = getTransferCost(d, c.op, srcSpace, dstSpace, dstTy);
     } else if (type == "execute" && name != "ExecuteTerminatorOp") {
       assert(dyn_cast<air::ExecuteOp>(c.op) &&
              "op type and node type do not match");
@@ -539,28 +539,31 @@ private:
   // Latency estimation helper functions
   //===----------------------------------------------------------------------===//
 
-  uint64_t getTransferCost(device &d, unsigned srcSpace, unsigned dstSpace,
-                           mlir::Type ty) {
-    return getTransferCost(d, srcSpace, dstSpace, getTensorVolume(ty), ty);
+  uint64_t getTransferCost(device &d, Operation *op, unsigned srcSpace,
+                           unsigned dstSpace, mlir::Type ty) {
+    return getTransferCost(d, op, srcSpace, dstSpace, getTensorVolume(ty), ty);
   }
 
-  uint64_t getTransferCost(device &d, unsigned srcSpace, unsigned dstSpace,
-                           int64_t volume, mlir::Type ty) {
-    double cps = 0.0f;
-    unsigned datawidth = 0;
-    if (d.interfaces.size()) {
-      cps = d.clock;
-      if (auto bytes = d.datatypes[getElementTypeAsString(ty)]) {
-        datawidth = bytes;
-      } else {
-        assert(false && "data type not found in JSON model");
-      }
+  uint64_t getTransferCost(device &d, Operation *op, unsigned srcSpace,
+                           unsigned dstSpace, int64_t volume, mlir::Type ty) {
+    double cps = d.clock;
+    if (cps == 0.0f) {
+      op->emitError("device clock frequency not found in JSON model");
     }
-    assert(cps != 0.0f && datawidth);
+    unsigned datawidth = 0;
+    if (auto bytes = d.datatypes[getElementTypeAsString(ty)]) {
+      datawidth = bytes;
+      if (!datawidth)
+        op->emitOpError("found data type with zero width in JSON model");
+    } else
+      op->emitOpError(
+          "is data movement with data type not found in JSON model");
 
     double bytes = volume * datawidth;
-    assert(d.interfaces[std::make_pair(srcSpace, dstSpace)].size());
-    double bps = d.interfaces[{srcSpace, dstSpace}][0]->data_rate;
+    double bps = d.interfaces[{srcSpace, dstSpace}]->data_rate;
+    if (bps == 0.0f)
+      op->emitOpError(
+          "is data movement with data rate not found in JSON model");
     double seconds = bytes / bps;
     return (uint64_t)ceil(seconds * cps);
   }
@@ -720,6 +723,18 @@ std::string lookUpMemorySpaceFromInt(unsigned memory_space) {
     output += "L2";
   } else if (memory_space == 2) {
     output += "L1";
+  }
+  return output;
+}
+
+unsigned lookUpMemorySpaceIntFromString(std::string memory_space) {
+  unsigned output = 0;
+  if (memory_space == "L3") {
+    output = 0;
+  } else if (memory_space == "L2") {
+    output = 1;
+  } else if (memory_space == "L1") {
+    output = 2;
   }
   return output;
 }

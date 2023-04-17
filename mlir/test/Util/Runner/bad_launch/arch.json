@@ -12,48 +12,6 @@
         }
     ],
     "devicename": "testdevice",
-    "interfaces": [
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 1,
-        "src": 0
-        },
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 0,
-        "src": 1
-        },
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 2,
-        "src": 0
-        },
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 0,
-        "src": 2
-        },
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 2,
-        "src": 1
-        },
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 1,
-        "src": 2
-        },
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 1,
-        "src": 1
-        },
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 2,
-        "src": 2
-        }
-    ],
     "kernels": {
         "linalg.copy": {
             "datatypes": {
@@ -100,48 +58,34 @@
     "num_dispatch_queues": 8,
     "num_dispatch_dma_queues" : 2,
     "num_core_dma_queues" : 2,
-    "columns": {
-        "count": [
-            {
-                "dim": 0,
-                "num": 3
-            },
-            {
-                "dim": 1,
-                "num": 1
-            }
-        ],
+    "dus": {
+        "count": [3, 1],
         "memory": {
-            "memory_space": 1,
+            "memory_space": "L2",
             "bytes": 262144
         },
         "ports": {
-            "L1": {
+            "outbound": {
                 "count": 4,
                 "bytes_per_second": 100000000000
             },
-            "L2": {
+            "inbound": {
                 "count": 4,
                 "bytes_per_second": 100000000000
             }
         },
         "tiles": {
-            "count": [
-                {
-                    "dim": 0,
-                    "num": 1
-                },
-                {
-                    "dim": 1,
-                    "num": 4
-                }
-            ],
+            "count": [1, 4],
             "memory": {
-                "memory_space": 2,
+                "memory_space": "L1",
                 "bytes": 2048
             },
             "ports": {
-                "L1": {
+                "outbound": {
+                    "count": 4,
+                    "bytes_per_second": 100000000000
+                },
+                "inbound": {
                     "count": 4,
                     "bytes_per_second": 100000000000
                 }
@@ -149,11 +93,11 @@
         }
     },
     "noc": {
-        "L2": {
+        "outbound": {
             "count": 4,
             "bytes_per_second": 100000000000
         },
-        "L3": {
+        "inbound": {
             "count": 4,
             "bytes_per_second": 100000000000
         }

@@ -67,19 +67,18 @@ public:
     // need to copy while copying regions/tiles etc.
   }
 
-  port(resource *parent, unsigned src, unsigned dst, double data_rate,
-       unsigned idx) {
+  port(resource *parent, unsigned src, unsigned dst, double data_rate) {
     this->set_name("L" + std::to_string(src) + "_to_" + "L" +
-                   std::to_string(dst) + "_" + std::to_string(idx));
+                   std::to_string(dst));
     this->set_data_rate(data_rate);
     this->set_parent(parent);
     this->reset_reservation();
   }
 
-  port(resource *parent, std::string memory_space,
+  port(resource *parent, std::string ms_n_dir,
        std::optional<double> bytes_per_second, unsigned idx) {
     if (bytes_per_second) {
-      this->set_name(memory_space + "_" + std::to_string(idx));
+      this->set_name(ms_n_dir + "_" + std::to_string(idx));
       this->set_data_rate(*bytes_per_second);
       this->set_parent(parent);
       this->reset_reservation();
@@ -173,6 +172,13 @@ public:
 
   memory(unsigned ms, double b) {
     this->set_memory_space(ms);
+    this->set_bytes(b);
+    this->reset_reservation();
+    this->reset_usage();
+  }
+
+  memory(std::string ms, double b) {
+    this->set_memory_space(lookUpMemorySpaceIntFromString(ms));
     this->set_bytes(b);
     this->reset_reservation();
     this->reset_usage();

@@ -27,7 +27,7 @@ module {
   func.func @test() {
     %c1 = arith.constant 1 : index
     %0 = air.launch async (%arg0, %arg1) in (%arg2=%c1, %arg3=%c1) {
-      %1 = air.segment async attributes {column_usage = [1, 1]} {
+      %1 = air.segment async attributes {du_usage = [1, 1]} {
         %c1_0 = arith.constant 1 : index
         %c4 = arith.constant 4 : index
         %2 = air.herd @herd_0 async  tile (%arg4, %arg5) in (%arg6=%c1_0, %arg7=%c4) {
