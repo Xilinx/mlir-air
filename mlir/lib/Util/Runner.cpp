@@ -128,15 +128,8 @@ public:
   void emitTraceEnd(llvm::raw_ostream &s) { s << "{}]\n"; }
 
   void emitTraceEvent(llvm::raw_ostream &s, std::string name, std::string cat,
-                      std::string ph, std::pair<uint64_t, uint64_t> ts,
-                      int64_t tid, int64_t pid) {
-    // Chrome trace event format fixes time stamp (ts) with a granularity of
-    // 1ms. Our simulation granularity is 1ns. Thus 3 decimal places are needed.
-    std::string zero_fill = "";
-    if (ts.second < 10)
-      zero_fill = "00";
-    else if (ts.second < 100)
-      zero_fill = "0";
+                      std::string ph, std::string ts, int64_t tid,
+                      int64_t pid) {
     s << "{\n";
     s << "  \"name\": \"" << name << "\","
       << "\n";
@@ -144,7 +137,7 @@ public:
       << "\n";
     s << "  \"ph\": \"" << ph << "\","
       << "\n";
-    s << "  \"ts\": " << ts.first << "." << zero_fill << ts.second << ","
+    s << "  \"ts\": " << ts << ","
       << "\n";
     s << "  \"pid\": " << pid << ","
       << "\n";
@@ -254,8 +247,8 @@ public:
                          G[std::get<0>(*it)].asyncEventName +
                              G[std::get<0>(*it)].detailed_description,
                          "layer", "E",
-                         convertToTimeStamp(time, device_resource_node), tid,
-                         runner_id);
+                         convertToTimeStampInStr(time, device_resource_node),
+                         tid, runner_id);
         }
 
         // "ExecuteOp"
@@ -325,8 +318,8 @@ public:
         emitTraceEvent(
             traceStream,
             G[next_vertex].asyncEventName + G[next_vertex].detailed_description,
-            "layer", "B", convertToTimeStamp(time, device_resource_node), tid,
-            runner_id);
+            "layer", "B", convertToTimeStampInStr(time, device_resource_node),
+            tid, runner_id);
       }
     }
 
@@ -376,6 +369,10 @@ public:
         scheduleLaunch(launch_runner_node, device_resource_node, time);
       }
     }
+
+    // Simulation performance report
+    std::string end_ts = convertToTimeStampInStr(time, device_resource_node);
+    std::cout << "Latency: " << end_ts << "ms\n";
   }
 
   void scheduleLaunch(runnerNode &launch, device &device_resource_node,
@@ -542,12 +539,18 @@ private:
   }
 
   // Convert time from cycle count to time stamp in ms (with 3 d.p.)
-  std::pair<uint64_t, uint64_t> convertToTimeStamp(uint64_t time, device &d) {
+  std::string convertToTimeStampInStr(uint64_t time, device &d) {
     uint64_t time_in_ns =
         (uint64_t)std::round(((double)time) / (1000000000.0 / (double)d.clock));
-    std::pair<uint64_t, uint64_t> ts = std::make_pair(
-        (uint64_t)(time_in_ns / 1000), (uint64_t)(time_in_ns % 1000));
-    return ts;
+    uint64_t int_part = (uint64_t)(time_in_ns / 1000);
+    uint64_t frac_part = (uint64_t)(time_in_ns % 1000);
+    std::string zero_fill = "";
+    if (frac_part < 10)
+      zero_fill = "00";
+    else if (frac_part < 100)
+      zero_fill = "0";
+    return std::to_string(int_part) + "." + zero_fill +
+           std::to_string(frac_part);
   }
 
   //===----------------------------------------------------------------------===//
