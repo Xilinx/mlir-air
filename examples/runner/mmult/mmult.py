@@ -125,11 +125,6 @@ with air.mlir.ir.Context(), Location.unknown():
             "name": "linalg.matmul"
         }
     },
-    "ops_per_core_per_cycle": 512,
-    "num_herd_slots": 4,
-    "num_dispatch_queues": 8,
-    "num_dispatch_dma_queues" : 2,
-    "num_core_dma_queues" : 2,
     "dus": {
         "count": [4, 1],
         "memory": {
