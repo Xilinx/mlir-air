@@ -108,6 +108,7 @@ class du : public resourceHierarchy {
 public:
   memory *du_mem;
   std::vector<tile *> tiles;
+  std::vector<unsigned> shape;
   // Keys: port direction (inbound/outbound); mapped: vector of ports.
   std::map<std::string, std::vector<port *>> ports;
   unsigned idx;
@@ -119,6 +120,7 @@ public:
     this->set_memory(duObject->getObject("memory"));
     this->set_tiles(duObject->getObject("tiles"));
     this->set_ports(duObject->getObject("ports"));
+    this->set_shape(duObject->getObject("tiles")->getArray("count"));
     this->reset_reservation();
   }
 
@@ -193,6 +195,16 @@ public:
       }
     } else {
       assert(false);
+    }
+  }
+
+  // Get the shape of each DU (in tiles)
+  void set_shape(llvm::json::Array *sizesObject) {
+    for (auto it = sizesObject->begin(), ie = sizesObject->end(); it != ie;
+         ++it) {
+      llvm::json::Value jv = *it;
+      auto val = jv.getAsInteger();
+      this->shape.push_back(*val);
     }
   }
 
