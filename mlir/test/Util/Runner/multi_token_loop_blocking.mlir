@@ -38,7 +38,7 @@ module {
         %2 = affine.apply #map()[%arg4]
         air.execute_terminator %2 : index
       }
-      %1 = air.segment async attributes {du_usage = [4, 1]} {
+      %1 = air.segment async attributes {x_loc = 0 : i64, x_size = 4 : i64, y_loc = 0 : i64, y_size = 4 : i64} {
         %c4 = arith.constant 4 : index
         %c0 = arith.constant 0 : index
         %c512 = arith.constant 512 : index
