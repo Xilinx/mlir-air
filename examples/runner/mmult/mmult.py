@@ -62,6 +62,7 @@ with air.mlir.ir.Context(), Location.unknown():
         "air-dependency-canonicalize",
         "air-dependency-parse-graph{output-dir=dot_graphs/}",
         "canonicalize", "cse",
+        "air-place-herds{num-rows=2 num-cols=2 row-anchor=0 col-anchor=0}"
     ])+')'
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
     pm.run(air_module)
@@ -71,63 +72,104 @@ with air.mlir.ir.Context(), Location.unknown():
 
     arch = {
     "clock": 1000000000,
-    "datatype": {
+    "cores": 1,
+    "datatypes": [
+        {
         "bytes": 2,
-        "name": "fp16"
-    },
-    "devicename": "testdevice",
-    "interfaces": [
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 1,
-        "src": 0
+        "name": "bf16"
         },
         {
-        "bytes_per_second": 100000000000,
-        "dst": 0,
-        "src": 1
-        },
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 2,
-        "src": 0
-        },
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 0,
-        "src": 2
-        },
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 2,
-        "src": 1
-        },
-        {
-        "bytes_per_second": 100000000000,
-        "dst": 1,
-        "src": 2
+        "bytes": 4,
+        "name": "f32"
         }
     ],
+    "devicename": "testdevice",
     "kernels": {
         "linalg.copy": {
-        "efficiency": 1,
-        "name": "linalg.copy"
+            "datatypes": {
+                "bf16": {
+                    "ops_per_core_per_cycle": 8,
+                    "efficiency": 1
+                },
+                "f32": {
+                    "ops_per_core_per_cycle": 8,
+                    "efficiency": 1
+                }
+            },
+            "name": "linalg.copy"
         },
         "linalg.fill": {
-        "efficiency": 1,
-        "name": "linalg.fill"
+            "datatypes": {
+                "bf16": {
+                    "ops_per_core_per_cycle": 8,
+                    "efficiency": 1
+                },
+                "f32": {
+                    "ops_per_core_per_cycle": 8,
+                    "efficiency": 1
+                }
+            },
+            "name": "linalg.fill"
         },
         "linalg.matmul": {
-        "efficiency": 1,
-        "name": "linalg.matmul"
+            "datatypes": {
+                "bf16": {
+                    "ops_per_core_per_cycle": 8,
+                    "efficiency": 1
+                },
+                "f32": {
+                    "ops_per_core_per_cycle": 8,
+                    "efficiency": 1
+                }
+            },
+            "name": "linalg.matmul"
         }
     },
-    "ops_per_core_per_cycle": 512,
-    "num_herd_slots": 4,
-    "num_dispatch_queues": 8,
-    "num_dispatch_dma_queues" : 2,
-    "num_core_dma_queues" : 2
+    "dus": {
+        "count": [4, 1],
+        "memory": {
+            "memory_space": "L2",
+            "bytes": 524288
+        },
+        "ports": {
+            "outbound": {
+                "count": 6,
+                "bytes_per_second": 100000000000
+            },
+            "inbound": {
+                "count": 6,
+                "bytes_per_second": 100000000000
+            }
+        },
+        "tiles": {
+            "count": [1, 4],
+            "memory": {
+                "memory_space": "L1",
+                "bytes": 65536
+            },
+            "ports": {
+                "outbound": {
+                    "count": 2,
+                    "bytes_per_second": 100000000000
+                },
+                "inbound": {
+                    "count": 2,
+                    "bytes_per_second": 100000000000
+                }
+            }
+        }
+    },
+    "noc": {
+        "outbound": {
+            "count": 4,
+            "bytes_per_second": 100000000000
+        },
+        "inbound": {
+            "count": 4,
+            "bytes_per_second": 100000000000
+        }
     }
+  }
 
 runner = air.compiler.util.Runner(arch)
 trace = runner.run(air_module, "matmul")

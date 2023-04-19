@@ -503,21 +503,37 @@ private:
   }
 
   // Get resource cost
-  unsigned getResourceCost(Operation *op, std::string attrName) {
+  unsigned getResourceCost(air::SegmentOp op) {
     unsigned usage_count = 1;
-    if (op->hasAttr(attrName)) {
-      auto size =
-          extractFromI64ArrayAttr(op->getAttrOfType<mlir::ArrayAttr>(attrName));
-      for (auto &s : size) {
-        usage_count *= s;
+
+    // Get the size of each DU
+    unsigned du_size_x = 0;
+    unsigned du_size_y = 0;
+    if (this->resource_hiers.size()) {
+      auto dev = static_cast<device *>(this->resource_hiers[0]);
+      if (dev->dus.size()) {
+        auto du = dev->dus[0];
+        du_size_x = du->shape[0];
+        du_size_y = du->shape[1];
       }
-      return usage_count;
     }
-    // If no resource cost attr passed, then disable resource contention
-    // modelling
-    // TODO: this state will become an error once resource modelling is complete
-    else
+
+    // Get the size of segment in tiles
+    auto num_rows = op.getNumRows();
+    auto num_cols = op.getNumCols();
+    if (num_rows) {
+      if (num_cols) {
+        usage_count *= mlir::ceilDiv(*num_rows, du_size_x);
+        usage_count *= mlir::ceilDiv(*num_cols, du_size_y);
+        return usage_count;
+      } else {
+        op->emitOpError("Segment has no placed AIE cores");
+        return 0;
+      }
+    } else {
+      op->emitOpError("Segment has no placed AIE cores");
       return 0;
+    }
   }
   double getMemoryCostInBytes(MemRefType ty, Operation *op) {
     // Get number of bytes per element in tensor
@@ -626,7 +642,7 @@ private:
     std::vector<resource *> resource_hier_pool;
     this->getDUsPool(resource_hier_pool);
     // Get resource cost
-    unsigned du_count = this->getResourceCost(Op.getOperation(), "du_usage");
+    unsigned du_count = this->getResourceCost(Op);
     if (du_count <= resource_hier_pool.size()) {
       return true;
     } else
@@ -753,7 +769,7 @@ private:
     // Get resource pool
     this->getDUsPoolFromParent(resource_hier_pool);
     // Get resource cost
-    unsigned du_count = this->getResourceCost(Op, "du_usage");
+    unsigned du_count = this->parent->getResourceCost(Op);
     // Reserve resource
     this->allocateRunnerNodeToResourceHiers(resource_hier_pool,
                                             reserved_resources, du_count);
@@ -1631,7 +1647,9 @@ private:
                                             stepCstOp.value());
           output *= tripCount;
         }
-      } else if (auto hier = dyn_cast<air::HierarchyInterface>(parent)) {
+      } else if (isa<air::HierarchyInterface>(parent) &&
+                 !isa<air::LaunchOp>(parent)) {
+        auto hier = dyn_cast<air::HierarchyInterface>(parent);
         output *= this->canonicalizer.getTripCountInHierarchyOp(hier);
       } else if (auto affine_if = dyn_cast<mlir::AffineIfOp>(parent)) {
         // Fast forward through affine.if nest

@@ -126,7 +126,7 @@ module {
       %c128 = arith.constant 128 : index
       %c256 = arith.constant 256 : index
       %1 = air.channel.put async  @channel_0[] (%arg8[] [] []) : (memref<128x128xbf16>)
-      %3 = air.segment async attributes {du_usage = [4, 1]} {
+      %3 = air.segment async attributes {x_loc = 0 : i64, x_size = 4 : i64, y_loc = 0 : i64, y_size = 4 : i64} {
         %c32 = arith.constant 32 : index
         %c1_5 = arith.constant 1 : index
         %c4 = arith.constant 4 : index
