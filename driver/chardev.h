@@ -1,24 +1,5 @@
-/*
- * Copyright 2023 Advanced Micro Devices, Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
- */
+// Copyright (C) 2023, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: GPL-2.0
 
 #ifndef VCK5000_CHARDEV_H_
 #define VCK5000_CHARDEV_H_
@@ -53,12 +34,12 @@ struct vck5000_device {
 
 	uint64_t total_controllers;
 
-	/* device memory can be accessed indirectly through sysfs.
+	/* AIE memory can be accessed indirectly through sysfs.
 		It is a two-step protocol:
 		(1) write the memory address to:
-		/sys/class/amdair/<id>/aie/address
+		/sys/class/amdair/amdair/<id>/address
 		(2) Read (or write) the value from:
-		/sys/class/amdair/<id>/aie/value
+		/sys/class/amdair/amdair/<id>/value
 	*/
 	uint64_t mem_addr; /* address for indirect memory access */
 };
