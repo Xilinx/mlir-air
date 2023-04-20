@@ -405,35 +405,21 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
       return failure();
 
     // Reconnect alloc dependency
-    SmallVector<Value> new_deps;
-    auto alloc_deps = alloc_exec.getAsyncDependencies();
-    for (int i = alloc_deps.size() - 1; i >= 0; i--) {
-      for (unsigned j = 0; j < for_op.getRegionIterArgs().size(); j++) {
-        if (alloc_deps[i] == for_op.getRegionIterArgs()[j]) {
-          new_deps.push_back(for_op.getIterOperands()[j]);
-        }
-        alloc_exec.eraseAsyncDependency(i);
-      }
-    }
-    for (auto new_dep : new_deps) {
-      alloc_exec.addAsyncDependency(new_dep);
-      for_op->replaceUsesOfWith(new_dep, alloc_exec.getAsyncToken());
+    skipOverOpInDependencyGraph(rewriter, alloc_exec.getOperation(),
+                                for_op.getRegion());
+
+    for (auto ia : for_op.getIterOperands()) {
+      alloc_exec.addAsyncDependency(ia);
+      for_op->replaceUsesOfWith(ia, alloc_exec.getAsyncToken());
     }
 
     // Reconnect dealloc dependency
-    rewriter.setInsertionPoint(dealloc_exec);
-    air::WaitAllOp wa = rewriter.create<xilinx::air::WaitAllOp>(
-        dealloc_exec->getLoc(),
-        air::AsyncTokenType::get(dealloc_exec->getContext()),
-        dealloc_exec.getAsyncDependencies());
-    replaceAllUsesInRegionWith(dealloc_exec.getAsyncToken(), wa.getAsyncToken(),
-                               for_op.getRegion());
+    skipOverOpInDependencyGraph(rewriter, dealloc_exec.getOperation(),
+                                for_op.getRegion());
 
-    auto dealloc_deps = dealloc_exec.getAsyncDependencies();
-    for (int i = dealloc_deps.size() - 1; i >= 0; i--) {
-      dealloc_exec.eraseAsyncDependency(i);
+    for (auto for_op_token : for_op->getResults()) {
+      dealloc_exec.addAsyncDependency(for_op_token);
     }
-    dealloc_exec.addAsyncDependency(for_op.getResults()[0]);
 
     // Hoist alloc and dealloc out of for loop
     alloc_exec->moveBefore(for_op);
@@ -446,6 +432,37 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
   }
 
 private:
+  void skipOverOpInDependencyGraph(OpBuilder &builder, Operation *op,
+                                   mlir::Region &region) const {
+
+    auto async_op = dyn_cast<air::AsyncOpInterface>(op);
+    if (!async_op)
+      return;
+
+    auto deps = async_op.getAsyncDependencies();
+
+    for (int i = deps.size() - 1; i >= 0; i--) {
+      for (auto user : async_op.getAsyncToken().getUsers()) {
+        if (auto async_user = dyn_cast<air::AsyncOpInterface>(user)) {
+          eraseAsyncDependencyFromAsyncOp(async_user, async_op.getAsyncToken());
+          addAsyncDependencyIfNew(async_user, deps[i]);
+        }
+        // Else if user is not an air op, and alloc depends on multiple tokens
+        else if (deps.size() > 1) {
+          builder.setInsertionPoint(async_op);
+          air::WaitAllOp wa = builder.create<xilinx::air::WaitAllOp>(
+              async_op->getLoc(),
+              air::AsyncTokenType::get(async_op->getContext()),
+              async_op.getAsyncDependencies());
+          replaceAllUsesInRegionWith(async_op.getAsyncToken(),
+                                     wa.getAsyncToken(), region);
+        } else {
+          replaceAllUsesInRegionWith(async_op.getAsyncToken(), deps[0], region);
+        }
+      }
+      async_op.eraseAsyncDependency(i);
+    }
+  }
 };
 
 struct BroadcastDetection {
@@ -752,7 +769,10 @@ public:
       if (for_op->hasAttr("unroll")) {
         uint64_t unroll_factor =
             for_op->getAttrOfType<IntegerAttr>("unroll").getInt();
-        (void)loopUnrollByFactor(for_op, unroll_factor);
+        auto annotateFn = [](unsigned i, Operation *op, OpBuilder b) {
+          op->setAttr("unrolled_iteration", b.getUI32IntegerAttr(i));
+        };
+        (void)loopUnrollByFactor(for_op, unroll_factor, annotateFn);
       }
     });
   }
