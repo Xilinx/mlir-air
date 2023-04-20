@@ -365,6 +365,88 @@ private:
   }
 };
 
+struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
+  using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::AllocOp alloc_op,
+                                PatternRewriter &rewriter) const override {
+
+    // Find parent air.execute
+    auto alloc_exec = alloc_op->getParentOfType<air::ExecuteOp>();
+    if (!alloc_exec)
+      return failure();
+
+    // Find dealloc
+    Operation *dealloc_op = nullptr;
+    auto alloc_exec_memref = alloc_exec->getResults()[1];
+    assert(alloc_exec_memref.getType().isa<MemRefType>() &&
+           "the ssa value yielded from execute is not memref");
+    for (auto user : alloc_exec_memref.getUsers()) {
+      if (isa<memref::DeallocOp>(user)) {
+        dealloc_op = user;
+      }
+    }
+    if (!dealloc_op)
+      return failure();
+    auto dealloc_exec = dealloc_op->getParentOfType<air::ExecuteOp>();
+    if (!dealloc_exec)
+      return failure();
+
+    // Check if alloc is the target
+    if (!alloc_op->hasAttr("hoist_alloc"))
+      return failure();
+
+    // Get parent for loop
+    auto for_op = alloc_exec->getParentOfType<scf::ForOp>();
+    if (!for_op)
+      return failure();
+    if (for_op.getOperation() != alloc_exec->getParentOp())
+      return failure();
+
+    // Reconnect alloc dependency
+    SmallVector<Value> new_deps;
+    auto alloc_deps = alloc_exec.getAsyncDependencies();
+    for (int i = alloc_deps.size() - 1; i >= 0; i--) {
+      for (unsigned j = 0; j < for_op.getRegionIterArgs().size(); j++) {
+        if (alloc_deps[i] == for_op.getRegionIterArgs()[j]) {
+          new_deps.push_back(for_op.getIterOperands()[j]);
+        }
+        alloc_exec.eraseAsyncDependency(i);
+      }
+    }
+    for (auto new_dep : new_deps) {
+      alloc_exec.addAsyncDependency(new_dep);
+      for_op->replaceUsesOfWith(new_dep, alloc_exec.getAsyncToken());
+    }
+
+    // Reconnect dealloc dependency
+    rewriter.setInsertionPoint(dealloc_exec);
+    air::WaitAllOp wa = rewriter.create<xilinx::air::WaitAllOp>(
+        dealloc_exec->getLoc(),
+        air::AsyncTokenType::get(dealloc_exec->getContext()),
+        dealloc_exec.getAsyncDependencies());
+    replaceAllUsesInRegionWith(dealloc_exec.getAsyncToken(), wa.getAsyncToken(),
+                               for_op.getRegion());
+
+    auto dealloc_deps = dealloc_exec.getAsyncDependencies();
+    for (int i = dealloc_deps.size() - 1; i >= 0; i--) {
+      dealloc_exec.eraseAsyncDependency(i);
+    }
+    dealloc_exec.addAsyncDependency(for_op.getResults()[0]);
+
+    // Hoist alloc and dealloc out of for loop
+    alloc_exec->moveBefore(for_op);
+    dealloc_exec->moveAfter(for_op);
+
+    // Erase alloc hoisting attr
+    alloc_op->removeAttr("hoist_alloc");
+
+    return success();
+  }
+
+private:
+};
+
 struct BroadcastDetection {
 
 public:
@@ -627,6 +709,58 @@ public:
 private:
 };
 
+class AIRHoistMemallocInForPattern
+    : public xilinx::air::AIRHoistMemallocInForPatternBase<
+          AIRHoistMemallocInForPattern> {
+
+public:
+  AIRHoistMemallocInForPattern() = default;
+  AIRHoistMemallocInForPattern(const AIRHoistMemallocInForPattern &pass){};
+
+  void runOptPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<HoistMemallocInForPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      runOptPatterns(f);
+  }
+
+private:
+};
+
+class AIRPipelineLoweringPattern
+    : public xilinx::air::AIRPipelineLoweringPatternBase<
+          AIRPipelineLoweringPattern> {
+
+public:
+  AIRPipelineLoweringPattern() = default;
+  AIRPipelineLoweringPattern(const AIRPipelineLoweringPattern &pass){};
+
+  void runOptPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<HoistMemallocInForPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      runOptPatterns(f);
+  }
+
+private:
+};
+
 class AIRDependencyScheduleOpt
     : public AIRDependencyScheduleOptBase<AIRDependencyScheduleOpt> {
 
@@ -679,12 +813,20 @@ std::unique_ptr<Pass> createAIRHoistDmaInAccumPattern() {
   return std::make_unique<AIRHoistDmaInAccumPattern>();
 }
 
+std::unique_ptr<Pass> createAIRHoistMemallocInForPattern() {
+  return std::make_unique<AIRHoistMemallocInForPattern>();
+}
+
 std::unique_ptr<Pass> createAIRBroadcastDetection() {
   return std::make_unique<AIRBroadcastDetection>();
 }
 
 std::unique_ptr<Pass> createAIRPruneLinalgGenericInputDma() {
   return std::make_unique<AIRPruneLinalgGenericInputDma>();
+}
+
+std::unique_ptr<Pass> createAIRPipelineLoweringPattern() {
+  return std::make_unique<AIRPipelineLoweringPattern>();
 }
 
 std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass() {

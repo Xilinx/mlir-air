@@ -849,7 +849,23 @@ def AIRPruneLinalgGenericInputDma: Pass<"air-prune-linalg-generic-input-dma", "M
   let constructor = "xilinx::air::createAIRPruneLinalgGenericInputDma()";
   let description = [{
     This pass detects and prunes redundant DMA which copies into linalg generic
-    input operands'. 
+    input operands. 
+  }];
+}
+
+def AIRHoistMemallocInForPattern: Pass<"air-hoist-alloc-in-for-pattern", "ModuleOp"> {
+  let summary = "Hoist pairs of alloc and dealloc ops out of for loop";
+  let constructor = "xilinx::air::createAIRHoistMemallocInForPattern()";
+  let description = [{
+    This pass Hoist pairs of alloc and dealloc ops out of a for loop body.
+  }];
+}
+
+def AIRPipelineLoweringPattern: Pass<"air-pipeline-lowering", "ModuleOp"> {
+  let summary = "Lower to pipelining pattern";
+  let constructor = "xilinx::air::createAIRPipelineLoweringPattern()";
+  let description = [{
+    This pass lowers to pipelining pattern. 
   }];
 }
 
