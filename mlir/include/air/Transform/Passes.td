@@ -861,6 +861,14 @@ def AIRHoistMemallocInForPattern: Pass<"air-hoist-alloc-in-for-pattern", "Module
   }];
 }
 
+def AIRUnrollLoopForPipeliningPattern: Pass<"air-unroll-loop-for-pipelining-pattern", "ModuleOp"> {
+  let summary = "Unroll loop by an integer factor";
+  let constructor = "xilinx::air::createAIRUnrollLoopForPipeliningPattern()";
+  let description = [{
+    This pass unrolls a loop by an integer factor.
+  }];
+}
+
 def AIRPipelineLoweringPattern: Pass<"air-pipeline-lowering", "ModuleOp"> {
   let summary = "Lower to pipelining pattern";
   let constructor = "xilinx::air::createAIRPipelineLoweringPattern()";

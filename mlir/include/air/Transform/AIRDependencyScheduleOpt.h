@@ -19,6 +19,8 @@ std::unique_ptr<mlir::Pass> createAIRHoistDmaInAccumPattern();
 
 std::unique_ptr<mlir::Pass> createAIRHoistMemallocInForPattern();
 
+std::unique_ptr<mlir::Pass> createAIRUnrollLoopForPipeliningPattern();
+
 std::unique_ptr<mlir::Pass> createAIRBroadcastDetection();
 
 std::unique_ptr<mlir::Pass> createAIRPruneLinalgGenericInputDma();

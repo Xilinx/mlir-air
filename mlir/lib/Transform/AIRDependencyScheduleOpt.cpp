@@ -20,6 +20,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
+#include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IntegerSet.h"
@@ -735,6 +736,30 @@ public:
 private:
 };
 
+class AIRUnrollLoopForPipeliningPattern
+    : public xilinx::air::AIRUnrollLoopForPipeliningPatternBase<
+          AIRUnrollLoopForPipeliningPattern> {
+
+public:
+  AIRUnrollLoopForPipeliningPattern() = default;
+  AIRUnrollLoopForPipeliningPattern(
+      const AIRUnrollLoopForPipeliningPattern &pass){};
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    module.walk([&](scf::ForOp for_op) {
+      // Check if loop is the target
+      if (for_op->hasAttr("unroll")) {
+        uint64_t unroll_factor =
+            for_op->getAttrOfType<IntegerAttr>("unroll").getInt();
+        (void)loopUnrollByFactor(for_op, unroll_factor);
+      }
+    });
+  }
+
+private:
+};
+
 class AIRPipelineLoweringPattern
     : public xilinx::air::AIRPipelineLoweringPatternBase<
           AIRPipelineLoweringPattern> {
@@ -815,6 +840,10 @@ std::unique_ptr<Pass> createAIRHoistDmaInAccumPattern() {
 
 std::unique_ptr<Pass> createAIRHoistMemallocInForPattern() {
   return std::make_unique<AIRHoistMemallocInForPattern>();
+}
+
+std::unique_ptr<Pass> createAIRUnrollLoopForPipeliningPattern() {
+  return std::make_unique<AIRUnrollLoopForPipeliningPattern>();
 }
 
 std::unique_ptr<Pass> createAIRBroadcastDetection() {
