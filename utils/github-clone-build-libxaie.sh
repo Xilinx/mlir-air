@@ -16,9 +16,9 @@
 LIBXAIE_DIR="aienginev2"
 INSTALL_DIR="install"
 
-HASH="xlnx_rel_v2021.2"
+HASH="vck5000"
 
-git clone --branch $HASH --depth 1 https://github.com/Xilinx/embeddedsw.git $LIBXAIE_DIR
+git clone --branch $HASH --depth 1 https://github.com/jnider/embeddedsw.git $LIBXAIE_DIR
 
 mkdir -p $LIBXAIE_DIR/$INSTALL_DIR/lib
 
