@@ -23,7 +23,7 @@ git clone --branch $HASH --depth 1 https://github.com/jnider/embeddedsw.git $LIB
 mkdir -p $LIBXAIE_DIR/$INSTALL_DIR/lib
 
 pushd $LIBXAIE_DIR/XilinxProcessorIPLib/drivers/aienginev2/src/
-make -f Makefile.Linux CFLAGS="-D__AIELINUX__"
+make -f Makefile.Linux CFLAGS="-D__AIELINUX__ -D__AIESYSFS__"
 popd
 
 cp -v $LIBXAIE_DIR/XilinxProcessorIPLib/drivers/aienginev2/src/*.so* $LIBXAIE_DIR/$INSTALL_DIR/lib
