@@ -5,8 +5,10 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include "chardev.h"
+#include "device.h"
 
-#define MAX_HERD_CONTROLLERS 64
+/* Physical address of the BRAM */
+#define BRAM_PA 0x20100000000ULL
 
 /* Offsets into BRAM BAR */
 #define HERD_CONTROLLER_BASE_ADDR(_base, _x)                                   \
@@ -14,8 +16,14 @@
 	 ioread32(_base + (_x * sizeof(uint64_t) + 0)))
 #define REG_HERD_CONTROLLER_COUNT 0x208
 
+struct vck5000_device_list {
+	struct vck5000_device *next;
+	struct list_head list;
+};
+
 static const char air_dev_name[] = "amdair";
 static int dev_idx; /* linear index of managed devices */
+static struct vck5000_device_list device_list;
 bool enable_aie;
 
 static int vck5000_probe(struct pci_dev *pdev, const struct pci_device_id *ent);
@@ -35,6 +43,63 @@ static struct pci_driver vck5000 = { .name = air_dev_name,
 				     .probe = vck5000_probe,
 				     .remove = vck5000_remove };
 
+struct vck5000_device *get_device_by_id(uint32_t device_id)
+{
+	struct vck5000_device *dev;
+	list_for_each_entry (dev, &device_list.list, list) {
+		if (dev->device_id == device_id)
+			return dev;
+	}
+
+	return NULL;
+}
+
+uint32_t get_controller_count(struct vck5000_device *dev)
+{
+	return dev->controller_count;
+}
+
+/*
+	Read the address that the controller is polling on
+	Subtract the base address of the physical memory to get an offset that is
+	valid over PCIe. The offset can be passed to mmap()
+*/
+uint64_t get_controller_base_address(struct vck5000_device *dev,
+				     uint32_t ctrlr_idx)
+{
+	return HERD_CONTROLLER_BASE_ADDR(dev->bram_bar, ctrlr_idx) - BRAM_PA;
+}
+
+/*
+	Find a controller belonging to the specified device that does not have its
+	queue allocated yet. Return the total number of controllers if there are
+	none free.
+*/
+uint32_t find_free_controller(struct vck5000_device *dev)
+{
+	uint32_t idx;
+
+	for (idx = 0; idx < dev->controller_count; idx++) {
+		if (!(dev->queue_used & (1ULL << idx))) {
+			printk("Controller %u has a free queue\n", idx);
+			return idx;
+		}
+	}
+
+	return dev->controller_count;
+}
+
+void mark_controller_busy(struct vck5000_device *dev, uint32_t ctrlr_idx,
+			  pid_t pid)
+{
+	if (dev->queue_used & (1ULL << ctrlr_idx)) {
+		printk("Controller %u is already busy!\n", ctrlr_idx);
+	}
+
+	dev->queue_used |= (1ULL << ctrlr_idx);
+	dev->queue_owner[ctrlr_idx] = pid;
+}
+
 /*
 	Register the driver with the PCI subsystem
 */
@@ -42,6 +107,8 @@ static int __init vck5000_init(void)
 {
 	if (enable_aie)
 		printk("%s: AIE bar access enabled\n", air_dev_name);
+
+	INIT_LIST_HEAD(&device_list.list);
 
 	return pci_register_driver(&vck5000);
 }
@@ -76,6 +143,7 @@ static int vck5000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		return -ENOMEM;
 	}
 	dev_priv->mem_addr = 0xbadbeef;
+	dev_priv->queue_used = 0;
 
 	/* Find all memory BARs. We are expecting 3 64-bit BARs */
 	bar_mask = pci_select_bars(pdev, IORESOURCE_MEM);
@@ -128,7 +196,7 @@ static int vck5000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		return -EINVAL;
 	}
 
-	dev_priv->total_controllers = controller_count;
+	dev_priv->controller_count = controller_count;
 
 	/* Each herd controller has a private memory region */
 	for (idx = 0; idx < controller_count; idx++) {
@@ -137,6 +205,12 @@ static int vck5000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		dev_warn(&pdev->dev, "Controller %u base address: 0x%llx", idx,
 			 controller_base);
 	}
+
+	/* take queue 0 for exclusive use by driver */
+	mark_controller_busy(dev_priv, 0, 0);
+
+	dev_priv->device_id = dev_idx;
+	list_add_tail(&dev_priv->list, &device_list.list);
 
 	/* Create sysfs files for accessing AIE memory region */
 	create_aie_mem_sysfs(dev_priv, dev_idx);

@@ -8,6 +8,7 @@
 
 #include "air_host.h"
 #include "air_host_impl.h"
+#include "amdair_ioctl.h"
 
 #include <cassert>
 #include <cstdio>
@@ -116,14 +117,14 @@ int air_init_dev_mem_allocator(uint64_t dev_mem_size, uint32_t device_id) {
 #ifdef AIR_PCIE
   int fd = open(air_get_driver_name(), O_RDWR | O_SYNC);
   if (fd < 0) {
-    printf("[ERROR] Could not open DDR BAR\n");
+    printf("[ERROR] Could not open DRAM BAR\n");
     return 1;
   }
-  dev_mem_allocator->dev_mem =
-      (uint32_t *)mmap(NULL, dev_mem_size /*0x8000*/, PROT_READ | PROT_WRITE,
-                       MAP_SHARED, fd, 0x1C0000);
+  dev_mem_allocator->dev_mem = (uint32_t *)mmap(
+      NULL, dev_mem_size /*0x8000*/, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
+      AMDAIR_MMAP_ENCODE_OFFSET(DRAM, 0x1C0000, device_id));
   if (dev_mem_allocator->dev_mem == MAP_FAILED) {
-    printf("[ERROR] Could not map DDR BAR\n");
+    printf("[ERROR] Could not map DRAM BAR\n");
     return 1;
   }
 #else

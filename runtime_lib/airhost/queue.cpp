@@ -10,6 +10,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <string>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 
 #include <cstdio>
@@ -19,6 +20,7 @@
 #include "air_host.h"
 #include "air_host_impl.h"
 #include "air_queue.h"
+#include "amdair_ioctl.h"
 
 #define ALIGN(_x, _size) (((_x) + ((_size)-1)) & ~((_size)-1))
 
@@ -73,13 +75,28 @@ hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue,
     return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
   }
 
-  // map memory for herd 0 and calculate queue address
-  uint8_t *herd_ptr = (uint8_t *)mmap(NULL, 0x1000, PROT_READ | PROT_WRITE,
-                                      MAP_SHARED, fd, 0x8000000ULL);
-  if (herd_ptr == MAP_FAILED) {
-    printf("Error mapping BRAM\n");
+  printf("Creating queue\n");
+  struct amdair_create_queue_args create_queue_args = {
+      .ring_size = MB_QUEUE_SIZE,
+      .device_id = device_id,
+      .queue_type = AMDAIR_QUEUE_DEVICE,
+  };
+
+  /* When creating a queue of type AMDAIR_QUEUE_DEVICE, the driver
+     will allocate a new queue and then map the address directly,
+     returning the mapped address in 'ring_base_address'.
+  */
+  if (ioctl(fd, AMDAIR_IOC_CREATE_QUEUE, &create_queue_args) == -1) {
+    printf("Kernel error in create queue\n");
     return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
   }
+
+  printf("Queue %u created at address 0x%lx\n", create_queue_args.queue_id,
+         create_queue_args.ring_base_address);
+
+  uint8_t *herd_ptr = (uint8_t *)create_queue_args.ring_base_address;
+
+  // calculate the offset for packet memory
   queue_t *q = (queue_t *)(herd_ptr + sizeof(dispatch_packet_t));
   q->base_address_vaddr =
       ALIGN(((uint64_t)q) + sizeof(queue_t), sizeof(dispatch_packet_t));

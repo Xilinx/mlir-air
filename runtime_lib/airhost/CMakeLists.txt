@@ -5,6 +5,7 @@
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${AIE_INCLUDE_DIRS}/../runtime_lib
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../driver
 )
 
 add_definitions(-DLIBXAIENGINEV2)

@@ -19,12 +19,14 @@
 #include <linux/fdtable.h>
 #include <linux/processor.h>
 #include <linux/pci.h>
-#include <uapi/linux/kfd_ioctl.h>
 #include "chardev.h"
+#include "amdair_ioctl.h"
 
-#define DEVICE_INDEX_STR_MAX 15
-
-#define VCK5000_IOCTL_DEF(ioctl, _func, _flags)                                \
+/*
+	Define an entry in the ioctl table
+	The entry's index equals the ioctl number
+*/
+#define AMDAIR_IOCTL_DEF(ioctl, _func, _flags)                                 \
 	[_IOC_NR(ioctl)] = { .cmd = ioctl,                                     \
 			     .func = _func,                                    \
 			     .flags = _flags,                                  \
@@ -76,9 +78,9 @@ static int vck_open(struct inode *, struct file *);
 static int vck_release(struct inode *, struct file *);
 static int vck_mmap(struct file *, struct vm_area_struct *);
 
-static int vck5000_ioctl_get_version(struct file *filep, void *data);
-static int vck5000_ioctl_create_queue(struct file *filep, void *data);
-static int vck5000_ioctl_destroy_queue(struct file *filp, void *data);
+static int amdair_ioctl_get_version(struct file *filep, void *data);
+static int amdair_ioctl_create_queue(struct file *filep, void *data);
+static int amdair_ioctl_destroy_queue(struct file *filp, void *data);
 
 /* define sysfs attributes */
 struct amdair_attribute aie_attr_address = __ATTR_RW(address);
@@ -112,15 +114,13 @@ static int chardev_major = -1;
 static struct class *vck5000_class;
 static struct device *vck5000_chardev;
 
-/** Ioctl table */
-static const struct vck5000_ioctl_desc vck5000_ioctls[] = {
-	VCK5000_IOCTL_DEF(AMDKFD_IOC_GET_VERSION, vck5000_ioctl_get_version, 0),
+static const struct vck5000_ioctl_desc amdair_ioctl_table[] = {
+	AMDAIR_IOCTL_DEF(AMDAIR_IOC_GET_VERSION, amdair_ioctl_get_version, 0),
 
-	VCK5000_IOCTL_DEF(AMDKFD_IOC_CREATE_QUEUE, vck5000_ioctl_create_queue,
-			  0),
+	AMDAIR_IOCTL_DEF(AMDAIR_IOC_CREATE_QUEUE, amdair_ioctl_create_queue, 0),
 
-	VCK5000_IOCTL_DEF(AMDKFD_IOC_DESTROY_QUEUE, vck5000_ioctl_destroy_queue,
-			  0),
+	AMDAIR_IOCTL_DEF(AMDAIR_IOC_DESTROY_QUEUE, amdair_ioctl_destroy_queue,
+			 0),
 };
 
 int vck5000_chardev_init(struct pci_dev *pdev)
@@ -167,6 +167,41 @@ void vck5000_chardev_exit(void)
 	vck5000_chardev = NULL;
 }
 
+/*
+	Allocate a queue in device memory
+
+	This allocates some BRAM or DRAM and returns the base address to the caller
+	Each controller can have only one queue at the moment. Find a controller
+	that is free, and return its statically allocated address.
+*/
+static int alloc_device_queue(uint32_t device_id, pid_t pid, uint32_t *queue_id,
+			      uint64_t *base_address)
+{
+	uint32_t ctrlr_idx;
+	struct vck5000_device *dev = get_device_by_id(device_id);
+
+	if (!dev) {
+		printk("Can't find device id %u\n", device_id);
+		return -EINVAL;
+	}
+
+	ctrlr_idx = find_free_controller(dev);
+	if (ctrlr_idx == get_controller_count(dev)) {
+		printk("All controllers are busy\n");
+		return -EBUSY;
+	}
+
+	mark_controller_busy(dev, ctrlr_idx, pid);
+
+	/* queue id is global (i.e. across all controllers) and there is only one
+		queue per controller at this time, so queue id == controller id
+	*/
+	*queue_id = ctrlr_idx;
+	*base_address = get_controller_base_address(dev, ctrlr_idx);
+
+	return 0;
+}
+
 static long vck_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 {
 	uint32_t amdkfd_size;
@@ -178,12 +213,14 @@ static long vck_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 	unsigned int nr = _IOC_NR(cmd);
 	int ret;
 
-	if ((nr < AMDKFD_COMMAND_START) || (nr >= AMDKFD_COMMAND_END)) {
+	dev_warn(vck5000_chardev, "%s %u", __func__, nr);
+
+	if ((nr < AMDAIR_COMMAND_START) || (nr > AMDAIR_COMMAND_END)) {
 		dev_warn(vck5000_chardev, "%s invalid %u", __func__, nr);
 		return 0;
 	}
 
-	ioctl = &vck5000_ioctls[nr];
+	ioctl = &amdair_ioctl_table[nr];
 
 	amdkfd_size = _IOC_SIZE(ioctl->cmd);
 	usize = asize = _IOC_SIZE(cmd);
@@ -209,6 +246,8 @@ static long vck_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 		if (copy_from_user(kdata, (void __user *)arg, usize) != 0) {
 			if (kdata != stack_kdata)
 				kfree(kdata);
+			dev_warn(vck5000_chardev, "Missing data in ioctl %u",
+				 nr);
 			return -EFAULT;
 		}
 	} else if (cmd & IOC_OUT) {
@@ -232,6 +271,10 @@ static int vck_open(struct inode *node, struct file *f)
 	return 0;
 }
 
+/*
+	Called when userspace closes the handle to the driver
+	Release all queues and clean up
+*/
 static int vck_release(struct inode *node, struct file *f)
 {
 	dev_warn(vck5000_chardev, "%s", __func__);
@@ -242,40 +285,66 @@ static int vck_mmap(struct file *f, struct vm_area_struct *vma)
 {
 	struct pci_dev *pdev;
 	unsigned long pgoff = 0;
-	unsigned long bar;
+	unsigned long start, end;
+	uint64_t devid, range;
 	size_t size = vma->vm_end - vma->vm_start;
 	loff_t offset = (loff_t)vma->vm_pgoff << PAGE_SHIFT;
 
 	pdev = dev_get_drvdata(vck5000_chardev);
 
-	dev_warn(vck5000_chardev, "%s start %lx end %lx offset %llx", __func__,
-		 vma->vm_start, vma->vm_end, offset);
+	devid = AMDAIR_MMAP_DECODE_OFFSET_DEVID(offset);
+	range = AMDAIR_MMAP_DECODE_OFFSET_RANGE(offset);
+	offset = AMDAIR_MMAP_DECODE_OFFSET(offset);
 
-	if (offset >= MMAP_OFFSET_BRAM) {
-		unsigned int herd_idx = 0;
-		/* the herd private memory starts at 0x1000, and is 0x1000 long for each herd controller */
-		unsigned long herd_ctlr_offset =
-			HERD_CONTROLLER_BRAM_SIZE * (1 + herd_idx);
-		bar = pci_resource_start(pdev, BRAM_BAR_INDEX) +
-		      herd_ctlr_offset;
-		size = HERD_CONTROLLER_BRAM_SIZE;
-		dev_warn(vck5000_chardev, "mapping %lx BRAM at 0x%lx to 0x%lx",
-			 size, bar, vma->vm_start);
-	} else if (offset == MMAP_OFFSET_AIE) {
+	dev_warn(
+		vck5000_chardev,
+		"%s start 0x%lx end 0x%lx devid %llu range 0x%llx offset 0x%llx",
+		__func__, vma->vm_start, vma->vm_end, devid, range, offset);
+
+	switch (range) {
+	case AMDAIR_MMAP_RANGE_AIE:
 		if (!enable_aie) {
 			dev_warn(vck5000_chardev,
 				 "mapping AIE BAR is not enabled");
 			return -EOPNOTSUPP;
 		}
-		bar = pci_resource_start(pdev, AIE_BAR_INDEX);
-		dev_warn(vck5000_chardev, "mapping %lx AIE at 0x%lx to 0x%lx",
-			 size, bar, vma->vm_start);
-	} else {
-		bar = pci_resource_start(pdev, DRAM_BAR_INDEX) + offset;
-		dev_warn(vck5000_chardev, "mapping %lx DRAM at 0x%lx to 0x%lx",
-			 size, bar, vma->vm_start);
+		start = pci_resource_start(pdev, AIE_BAR_INDEX) + offset;
+		end = pci_resource_end(pdev, AIE_BAR_INDEX);
+		dev_warn(vck5000_chardev, "mapping 0x%lx AIE at 0x%lx to 0x%lx",
+			 size, start, vma->vm_start);
+		break;
+
+	case AMDAIR_MMAP_RANGE_DRAM:
+		start = pci_resource_start(pdev, DRAM_BAR_INDEX) + offset;
+		end = pci_resource_end(pdev, DRAM_BAR_INDEX);
+		dev_warn(vck5000_chardev,
+			 "mapping 0x%lx DRAM at 0x%lx to 0x%lx", size, start,
+			 vma->vm_start);
+		break;
+
+	case AMDAIR_MMAP_RANGE_BRAM:
+		start = pci_resource_start(pdev, BRAM_BAR_INDEX) + offset;
+		end = pci_resource_end(pdev, BRAM_BAR_INDEX);
+		size = HERD_CONTROLLER_BRAM_SIZE;
+		dev_warn(vck5000_chardev,
+			 "mapping 0x%lx BRAM at 0x%lx to 0x%lx", size, start,
+			 vma->vm_start);
+		break;
+
+	default:
+		dev_warn(vck5000_chardev, "Unrecognized mmap range 0x%llx",
+			 range);
+		return -EOPNOTSUPP;
 	}
-	pgoff = (bar >> PAGE_SHIFT);
+
+	if ((start + size) >= end) {
+		dev_err(vck5000_chardev,
+			"size 0x%lx starting at 0x%lx exceeds BAR", size,
+			start);
+		return -EINVAL;
+	}
+
+	pgoff = (start >> PAGE_SHIFT);
 
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 
@@ -288,24 +357,61 @@ static int vck_mmap(struct file *f, struct vm_area_struct *vma)
 	return 0;
 }
 
-static int vck5000_ioctl_get_version(struct file *filep, void *data)
+static int amdair_ioctl_get_version(struct file *filep, void *data)
 {
-	struct kfd_ioctl_get_version_args *args = data;
+	struct amdair_get_version_args *args = data;
 
-	dev_warn(vck5000_chardev, "%s %u.%u", __func__, KFD_IOCTL_MAJOR_VERSION,
-		 KFD_IOCTL_MINOR_VERSION);
-	args->major_version = KFD_IOCTL_MAJOR_VERSION;
-	args->minor_version = KFD_IOCTL_MINOR_VERSION;
+	dev_warn(vck5000_chardev, "%s %u.%u", __func__,
+		 AMDAIR_IOCTL_MAJOR_VERSION, AMDAIR_IOCTL_MINOR_VERSION);
+	args->major_version = AMDAIR_IOCTL_MAJOR_VERSION;
+	args->minor_version = AMDAIR_IOCTL_MINOR_VERSION;
 
 	return 0;
 }
 
 /*
-	This shouldn't be used (yet) - use mmap instead
+	Allocate a queue of a specified device to the pid of the caller
+	It will create a new queue and map the device address range into
+	the address space of the caller using mmap.
 */
-static int vck5000_ioctl_create_queue(struct file *filep, void *data)
+static int amdair_ioctl_create_queue(struct file *filep, void *data)
 {
-	dev_warn(vck5000_chardev, "%s", __func__);
+	int ret;
+	uint32_t queue_id;
+	uint64_t offset, base;
+	struct amdair_create_queue_args *args =
+		(struct amdair_create_queue_args *)data;
+	uint64_t size = HERD_CONTROLLER_BRAM_SIZE;
+
+	dev_warn(vck5000_chardev, "%s from pid %u", __func__, current->pid);
+
+	switch (args->queue_type) {
+	case AMDAIR_QUEUE_HOST:
+		dev_warn(vck5000_chardev, "Host queues not supported yet!");
+		break;
+
+	case AMDAIR_QUEUE_DEVICE:
+		ret = alloc_device_queue(args->device_id, current->pid,
+					 &queue_id, &offset);
+		if (ret == 0) {
+			/* encode offset to pass device ID and memory type */
+			offset = AMDAIR_MMAP_ENCODE_OFFSET(BRAM, offset,
+							   args->device_id);
+			base = vm_mmap(filep, 0, size, PROT_READ | PROT_WRITE,
+				       MAP_SHARED, offset);
+			args->write_pointer_address = 0xbad0;
+			args->read_pointer_address = 0xbad1;
+			args->doorbell_offset = 0xbad2;
+			args->ring_base_address = base;
+			args->queue_id = queue_id;
+		}
+		break;
+
+	case AMDAIR_QUEUE_3RD_PARTY:
+		dev_warn(vck5000_chardev,
+			 "3rd party queues not supported yet!");
+		break;
+	}
 
 	return 0;
 }
@@ -313,10 +419,10 @@ static int vck5000_ioctl_create_queue(struct file *filep, void *data)
 /*
 	This shouldn't be used either
 */
-static int vck5000_ioctl_destroy_queue(struct file *filp, void *data)
+static int amdair_ioctl_destroy_queue(struct file *filp, void *data)
 {
 	int retval = 0;
-	dev_warn(vck5000_chardev, "%s", __func__);
+	dev_warn(vck5000_chardev, "%s from pid %u", __func__, current->pid);
 
 	return retval;
 }

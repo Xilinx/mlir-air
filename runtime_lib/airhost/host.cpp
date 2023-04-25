@@ -8,6 +8,7 @@
 
 #include "air_host.h"
 #include "air_host_impl.h"
+#include "amdair_ioctl.h"
 #include "test_library.h"
 
 #ifdef AIR_PCIE
@@ -150,7 +151,7 @@ For a non-PCIe device, memory map the base address directly.
                          PROT_READ | PROT_WRITE, // prot
                          MAP_SHARED,             // flags
                          fda,                    // device fd
-                         0x100000);              // offset
+                         AMDAIR_MMAP_ENCODE_OFFSET(AIE, 0, device_id));
 
   XAie_BackendType backend;
   if (mapped_aie_base == MAP_FAILED) {
@@ -218,8 +219,9 @@ air_module_handle_t air_module_load_from_file(const char *filename, queue_t *q,
   int fd = open(vck5000_driver_name, O_RDWR | O_SYNC);
   assert(fd != -1 && "Failed to open bram fd");
 
-  _air_host_bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ | PROT_WRITE,
-                                        MAP_SHARED, fd, 0x1C0000);
+  _air_host_bram_ptr =
+      (uint32_t *)mmap(NULL, 0x8000, PROT_READ | PROT_WRITE, MAP_SHARED, fd,
+                       AMDAIR_MMAP_ENCODE_OFFSET(BRAM, 0x1C0000, device_id));
   _air_host_bram_paddr = AIR_BBUFF_BASE;
 #else
 
