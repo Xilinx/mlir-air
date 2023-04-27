@@ -56,7 +56,7 @@ deinit:
 
 patch_bp:
 	cd $(BLACKPARROT_DIR) && git apply $(BLACKPARROT_PATCH)
-	cd $(BLACKPARROT_SUB_DIR) && git cherry-pick 760a888 && git apply $(BLACKPARROT_SUBSYSTEMS_PATCH)
+	cd $(BLACKPARROT_SUB_DIR) && git apply $(BLACKPARROT_SUBSYSTEMS_PATCH)
 
 bleach_patch:
 	cd $(BLACKPARROT_DIR) && git restore .

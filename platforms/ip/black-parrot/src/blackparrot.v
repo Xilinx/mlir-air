@@ -17,6 +17,8 @@ module blackparrot
     , parameter integer C_M01_AXI_DATA_WIDTH = 64
     , parameter integer C_M01_AXI_ADDR_WIDTH = 32
     , parameter integer C_M01_AXI_ID_WIDTH   = 6
+    // Device ID
+    , parameter integer C_DEVICE_ID          = 0
     )
    (// external reset for core
     input wire                                   resetn
@@ -121,6 +123,7 @@ module blackparrot
       ,.C_M01_AXI_DATA_WIDTH(C_M01_AXI_DATA_WIDTH)
       ,.C_M01_AXI_ADDR_WIDTH(C_M01_AXI_ADDR_WIDTH)
       ,.C_M01_AXI_ID_WIDTH(C_M01_AXI_ID_WIDTH)
+      ,.C_DEVICE_ID(C_DEVICE_ID)
       )
      blackparrot_wrapper_inst
      (.resetn          (resetn)

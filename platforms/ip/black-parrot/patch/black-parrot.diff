@@ -1,8 +1,8 @@
 diff --git a/bp_common/src/include/bp_common_aviary_pkgdef.svh b/bp_common/src/include/bp_common_aviary_pkgdef.svh
-index b8356830..a316df56 100644
+index 9d967175..1abbade7 100644
 --- a/bp_common/src/include/bp_common_aviary_pkgdef.svh
 +++ b/bp_common/src/include/bp_common_aviary_pkgdef.svh
-@@ -7,6 +7,27 @@
+@@ -7,6 +7,26 @@
    // Default configuration is unicore
    localparam bp_proc_param_s bp_unicore_cfg_p = bp_default_cfg_p;
  
@@ -17,8 +17,7 @@ index b8356830..a316df56 100644
 +      ,dcache_assoc       : 1
 +      ,dcache_block_width : 64
 +
-+      ,l2_en          : 0
-+      ,l2_amo_support : '0
++      ,l2_features : (1 << e_cfg_writeback) | (1 << e_cfg_word_tracking)
 +
 +      ,default : "inv"
 +      };
@@ -27,10 +26,10 @@ index b8356830..a316df56 100644
 +                        ,bp_unicore_cfg_p
 +                        );
 +
-   localparam bp_proc_param_s bp_unicore_no_l2_override_p =
-     '{l2_en : 0
-       ,default : "inv"
-@@ -534,8 +555,11 @@
+   localparam bp_proc_param_s bp_unicore_megaparrot_override_p =
+     '{paddr_width : 56
+       ,daddr_width: 55
+@@ -470,8 +490,11 @@
    /* verilator lint_off WIDTH */
    parameter bp_proc_param_s [max_cfgs-1:0] all_cfgs_gp =
    {
@@ -43,38 +42,29 @@ index b8356830..a316df56 100644
      ,bp_multicore_2_l2e_cfg_p
      ,bp_multicore_1_l2e_cfg_p
  
-@@ -598,8 +622,11 @@
+@@ -521,8 +544,11 @@
    // This enum MUST be kept up to date with the parameter array above
    typedef enum bit [lg_max_cfgs-1:0]
    {
 +    // AIR configurations
-+    e_bp_unicore_air_cfg                            = 46
++    e_bp_unicore_air_cfg                            = 33
 +
      // L2 extension configurations
--    e_bp_multicore_4_l2e_cfg                        = 45
-+    ,e_bp_multicore_4_l2e_cfg                       = 45
-     ,e_bp_multicore_2_l2e_cfg                       = 44
-     ,e_bp_multicore_1_l2e_cfg                       = 43
+-    e_bp_multicore_4_l2e_cfg                        = 32
++    ,e_bp_multicore_4_l2e_cfg                       = 32
+     ,e_bp_multicore_2_l2e_cfg                       = 31
+     ,e_bp_multicore_1_l2e_cfg                       = 30
  
-diff --git a/bp_top/src/v/bp_unicore_lite.sv b/bp_top/src/v/bp_unicore_lite.sv
-index 463b0c62..c42dbd66 100644
---- a/bp_top/src/v/bp_unicore_lite.sv
-+++ b/bp_top/src/v/bp_unicore_lite.sv
-@@ -268,7 +268,7 @@ module bp_unicore_lite
-   //   but bsg_deff_reset is more heavy_weight. It's possible that FPGAs would prefer
-   //   the alternate implementation as well. But ASICs will appreciate the time-borrowing
-   // Synchronize back to posedge clk
+diff --git a/bp_common/src/v/bsg_edge_extend.v b/bp_common/src/v/bsg_edge_extend.v
+index e0c012f1..2343dd4c 100644
+--- a/bp_common/src/v/bsg_edge_extend.v
++++ b/bp_common/src/v/bsg_edge_extend.v
+@@ -11,7 +11,7 @@ module bsg_edge_extend #(parameter `BSG_INV_PARAM(width_p))
+    , output logic [width_p-1:0] data_o
+    );
+ 
 -`ifdef VERILATOR
 +`ifndef SIMULATION
    bsg_deff_reset
-    #(.width_p($bits(bp_bedrock_mem_header_s)+uce_fill_width_p+3))
-    posedge_latch
-@@ -289,7 +289,7 @@ module bp_unicore_lite
-      );
- 
-   // Synchronize back to negedge clk
--`ifdef VERILATOR
-+`ifndef SIMULATION
-   bsg_deff_reset
-    #(.width_p($bits(bp_bedrock_mem_header_s)+uce_fill_width_p+3))
-    negedge_latch
+    #(.width_p(width_p))
+    edge_deff

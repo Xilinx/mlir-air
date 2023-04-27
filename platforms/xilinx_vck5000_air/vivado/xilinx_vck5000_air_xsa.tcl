@@ -8609,35 +8609,44 @@ proc create_root_design_ernic_mrmac { parentCell } {
 
   # Create instance: blackparrot_0, and set properties
   set blackparrot_0 [ create_bd_cell -type ip -vlnv amd.com:ip:blackparrot:1.0 blackparrot_0 ]
+  set_property -dict [ list \
+   CONFIG.C_S00_AXI_BASEADDR {0x80000000000} \
+   CONFIG.C_DEVICE_ID {1} \
+ ] $blackparrot_0
 
   # Create instance: blackparrot_1, and set properties
   set blackparrot_1 [ create_bd_cell -type ip -vlnv amd.com:ip:blackparrot:1.0 blackparrot_1 ]
   set_property -dict [ list \
    CONFIG.C_S00_AXI_BASEADDR {0x80100000000} \
+   CONFIG.C_DEVICE_ID {2} \
  ] $blackparrot_1
 
   # Create instance: blackparrot_2, and set properties
   set blackparrot_2 [ create_bd_cell -type ip -vlnv amd.com:ip:blackparrot:1.0 blackparrot_2 ]
   set_property -dict [ list \
    CONFIG.C_S00_AXI_BASEADDR {0x80200000000} \
+   CONFIG.C_DEVICE_ID {3} \
  ] $blackparrot_2
 
   # Create instance: blackparrot_3, and set properties
   set blackparrot_3 [ create_bd_cell -type ip -vlnv amd.com:ip:blackparrot:1.0 blackparrot_3 ]
   set_property -dict [ list \
    CONFIG.C_S00_AXI_BASEADDR {0x80300000000} \
+   CONFIG.C_DEVICE_ID {4} \
  ] $blackparrot_3
 
   # Create instance: blackparrot_4, and set properties
   set blackparrot_4 [ create_bd_cell -type ip -vlnv amd.com:ip:blackparrot:1.0 blackparrot_4 ]
   set_property -dict [ list \
    CONFIG.C_S00_AXI_BASEADDR {0x80400000000} \
+   CONFIG.C_DEVICE_ID {5} \
  ] $blackparrot_4
 
   # Create instance: blackparrot_5, and set properties
   set blackparrot_5 [ create_bd_cell -type ip -vlnv amd.com:ip:blackparrot:1.0 blackparrot_5 ]
   set_property -dict [ list \
    CONFIG.C_S00_AXI_BASEADDR {0x80500000000} \
+   CONFIG.C_DEVICE_ID {6} \
  ] $blackparrot_5
 
   # Create instance: cips_0, and set properties

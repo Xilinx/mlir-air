@@ -7,7 +7,7 @@
 #include "bp.h"
 
 uint32_t bp_get_global_id() {
-  uint32_t* p = (uint32_t*)(BP_ID_OFFSET);
+  uint32_t* p = (uint32_t*)(BP_CFG_OFFSET + BP_CFG_DID_OFFSET);
   return *p;
 }
 

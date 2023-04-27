@@ -266,12 +266,6 @@ proc create_blackparrot_hier_cell { parentCell nameHier } {
    CONFIG.SINGLE_PORT_BRAM {0} \
  ] $axi_bram_ctrl_0
 
-  # Create instance: axi_gpio_0, and set properties
-  set axi_gpio_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_gpio:2.0 axi_gpio_0 ]
-  set_property -dict [ list \
-   CONFIG.C_ALL_INPUTS {1} \
- ] $axi_gpio_0
-
   # Create instance: blackparrot_0, and set properties
   set blackparrot_0 [ create_bd_cell -type ip -vlnv amd.com:ip:blackparrot:1.0 blackparrot_0 ]
 
@@ -299,35 +293,18 @@ proc create_blackparrot_hier_cell { parentCell nameHier } {
    CONFIG.WRITE_MODE_B {NO_CHANGE} \
  ] $emb_mem_gen_0
 
-  # Create instance: smartconnect_0, and set properties
-  set smartconnect_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 smartconnect_0 ]
-  set_property -dict [ list \
-   CONFIG.NUM_MI {2} \
-   CONFIG.NUM_SI {1} \
- ] $smartconnect_0
-
-  # Create instance: xlconstant_0, and set properties
-  set xlconstant_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 xlconstant_0 ]
-  set_property -dict [ list \
-   CONFIG.CONST_VAL {0} \
-   CONFIG.CONST_WIDTH {32} \
- ] $xlconstant_0
-
   # Create interface connections
   connect_bd_intf_net -intf_net Conn1 [get_bd_intf_pins S00_AXI] [get_bd_intf_pins blackparrot_0/s00_axi]
-  connect_bd_intf_net -intf_net Conn2 [get_bd_intf_pins M00_AXI] [get_bd_intf_pins smartconnect_0/M00_AXI]
   connect_bd_intf_net -intf_net axi_bram_ctrl_0_BRAM_PORTA [get_bd_intf_pins axi_bram_ctrl_0/BRAM_PORTA] [get_bd_intf_pins emb_mem_gen_0/BRAM_PORTA]
   connect_bd_intf_net -intf_net axi_bram_ctrl_0_BRAM_PORTB [get_bd_intf_pins axi_bram_ctrl_0/BRAM_PORTB] [get_bd_intf_pins emb_mem_gen_0/BRAM_PORTB]
-  connect_bd_intf_net -intf_net blackparrot_0_m00_axi [get_bd_intf_pins blackparrot_0/m00_axi] [get_bd_intf_pins smartconnect_0/S00_AXI]
+  connect_bd_intf_net -intf_net blackparrot_0_m00_axi [get_bd_intf_pins blackparrot_0/m00_axi] [get_bd_intf_pins M00_AXI]
   connect_bd_intf_net -intf_net blackparrot_0_m01_axi [get_bd_intf_pins axi_bram_ctrl_0/S_AXI] [get_bd_intf_pins blackparrot_0/m01_axi]
-  connect_bd_intf_net -intf_net smartconnect_0_M01_AXI [get_bd_intf_pins axi_gpio_0/S_AXI] [get_bd_intf_pins smartconnect_0/M01_AXI]
 
   # Create port connections
   connect_bd_net -net core_reset_1 [get_bd_pins core_reset] [get_bd_pins blackparrot_0/core_reset]
   connect_bd_net -net resetn_1 [get_bd_pins resetn] [get_bd_pins blackparrot_0/resetn]
-  connect_bd_net -net s00_axi_aclk_1 [get_bd_pins s00_axi_aclk] [get_bd_pins axi_bram_ctrl_0/s_axi_aclk] [get_bd_pins axi_gpio_0/s_axi_aclk] [get_bd_pins blackparrot_0/m00_axi_aclk] [get_bd_pins blackparrot_0/m01_axi_aclk] [get_bd_pins blackparrot_0/s00_axi_aclk] [get_bd_pins smartconnect_0/aclk]
-  connect_bd_net -net s00_axi_aresetn_1 [get_bd_pins s00_axi_aresetn] [get_bd_pins axi_bram_ctrl_0/s_axi_aresetn] [get_bd_pins axi_gpio_0/s_axi_aresetn] [get_bd_pins blackparrot_0/m00_axi_aresetn] [get_bd_pins blackparrot_0/m01_axi_aresetn] [get_bd_pins blackparrot_0/s00_axi_aresetn] [get_bd_pins smartconnect_0/aresetn]
-  connect_bd_net -net xlconstant_0_dout [get_bd_pins axi_gpio_0/gpio_io_i] [get_bd_pins xlconstant_0/dout]
+  connect_bd_net -net s00_axi_aclk_1 [get_bd_pins s00_axi_aclk] [get_bd_pins axi_bram_ctrl_0/s_axi_aclk] [get_bd_pins blackparrot_0/m00_axi_aclk] [get_bd_pins blackparrot_0/m01_axi_aclk] [get_bd_pins blackparrot_0/s00_axi_aclk] [get_bd_pins smartconnect_0/aclk]
+  connect_bd_net -net s00_axi_aresetn_1 [get_bd_pins s00_axi_aresetn] [get_bd_pins axi_bram_ctrl_0/s_axi_aresetn] [get_bd_pins blackparrot_0/m00_axi_aresetn] [get_bd_pins blackparrot_0/m01_axi_aresetn] [get_bd_pins blackparrot_0/s00_axi_aresetn] [get_bd_pins smartconnect_0/aresetn]
 
   # Restore current instance
   current_bd_instance $oldCurInst
@@ -765,14 +742,14 @@ proc create_root_design { parentCell } {
   create_blackparrot_hier_cell [current_bd_instance .] blackparrot_hier_7
 
   # configure ID for each BP core
-  set_property CONFIG.CONST_VAL {0} [get_bd_cells blackparrot_hier_0/xlconstant_0]
-  set_property CONFIG.CONST_VAL {1} [get_bd_cells blackparrot_hier_1/xlconstant_0]
-  set_property CONFIG.CONST_VAL {2} [get_bd_cells blackparrot_hier_2/xlconstant_0]
-  set_property CONFIG.CONST_VAL {3} [get_bd_cells blackparrot_hier_3/xlconstant_0]
-  set_property CONFIG.CONST_VAL {4} [get_bd_cells blackparrot_hier_4/xlconstant_0]
-  set_property CONFIG.CONST_VAL {5} [get_bd_cells blackparrot_hier_5/xlconstant_0]
-  set_property CONFIG.CONST_VAL {6} [get_bd_cells blackparrot_hier_6/xlconstant_0]
-  set_property CONFIG.CONST_VAL {7} [get_bd_cells blackparrot_hier_7/xlconstant_0]
+  set_property CONFIG.C_DEVICE_ID {0} [get_bd_cells blackparrot_hier_0/blackparrot_0]
+  set_property CONFIG.C_DEVICE_ID {1} [get_bd_cells blackparrot_hier_1/blackparrot_0]
+  set_property CONFIG.C_DEVICE_ID {2} [get_bd_cells blackparrot_hier_2/blackparrot_0]
+  set_property CONFIG.C_DEVICE_ID {3} [get_bd_cells blackparrot_hier_3/blackparrot_0]
+  set_property CONFIG.C_DEVICE_ID {4} [get_bd_cells blackparrot_hier_4/blackparrot_0]
+  set_property CONFIG.C_DEVICE_ID {5} [get_bd_cells blackparrot_hier_5/blackparrot_0]
+  set_property CONFIG.C_DEVICE_ID {6} [get_bd_cells blackparrot_hier_6/blackparrot_0]
+  set_property CONFIG.C_DEVICE_ID {7} [get_bd_cells blackparrot_hier_7/blackparrot_0]
 
   # configure AXI offset for each BP core
   set_property CONFIG.C_S00_AXI_BASEADDR {0x80000000000} [get_bd_cells blackparrot_hier_0/blackparrot_0]
@@ -1063,7 +1040,6 @@ proc create_root_design { parentCell } {
   assign_bd_address -offset 0x80000000 -range 0x00080000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m01_axi] [get_bd_addr_segs blackparrot_hier_0/axi_bram_ctrl_0/S_AXI/Mem0] -force
   assign_bd_address -offset 0x44A00000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs axi_cdma_1/S_AXI_LITE/Reg] -force
   assign_bd_address -offset 0x020240000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
-  assign_bd_address -offset 0x40000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_0/axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x090000000000 -range 0x00001000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x40600000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs axi_uartlite_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x020200000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs mutex_0/S0_AXI/Reg] -force
@@ -1074,7 +1050,6 @@ proc create_root_design { parentCell } {
   assign_bd_address -offset 0x80000000 -range 0x00080000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m01_axi] [get_bd_addr_segs blackparrot_hier_1/axi_bram_ctrl_0/S_AXI/Mem0] -force
   assign_bd_address -offset 0x44A00000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs axi_cdma_1/S_AXI_LITE/Reg] -force
   assign_bd_address -offset 0x020240000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
-  assign_bd_address -offset 0x40000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_1/axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x090000000000 -range 0x00001000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x40600000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs axi_uartlite_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x020200000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs mutex_0/S0_AXI/Reg] -force
@@ -1085,7 +1060,6 @@ proc create_root_design { parentCell } {
   assign_bd_address -offset 0x80000000 -range 0x00080000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m01_axi] [get_bd_addr_segs blackparrot_hier_2/axi_bram_ctrl_0/S_AXI/Mem0] -force
   assign_bd_address -offset 0x44A00000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs axi_cdma_1/S_AXI_LITE/Reg] -force
   assign_bd_address -offset 0x020240000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
-  assign_bd_address -offset 0x40000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_2/axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x090000000000 -range 0x00001000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x40600000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs axi_uartlite_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x020200000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs mutex_0/S0_AXI/Reg] -force
@@ -1096,7 +1070,6 @@ proc create_root_design { parentCell } {
   assign_bd_address -offset 0x80000000 -range 0x00080000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m01_axi] [get_bd_addr_segs blackparrot_hier_3/axi_bram_ctrl_0/S_AXI/Mem0] -force
   assign_bd_address -offset 0x44A00000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs axi_cdma_1/S_AXI_LITE/Reg] -force
   assign_bd_address -offset 0x020240000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
-  assign_bd_address -offset 0x40000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_3/axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x090000000000 -range 0x00001000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x40600000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs axi_uartlite_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x020200000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs mutex_0/S0_AXI/Reg] -force
@@ -1107,7 +1080,6 @@ proc create_root_design { parentCell } {
   assign_bd_address -offset 0x80000000 -range 0x00080000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m01_axi] [get_bd_addr_segs blackparrot_hier_4/axi_bram_ctrl_0/S_AXI/Mem0] -force
   assign_bd_address -offset 0x44A00000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs axi_cdma_1/S_AXI_LITE/Reg] -force
   assign_bd_address -offset 0x020240000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
-  assign_bd_address -offset 0x40000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_4/axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x090000000000 -range 0x00001000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x40600000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs axi_uartlite_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x020200000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs mutex_0/S0_AXI/Reg] -force
@@ -1118,7 +1090,6 @@ proc create_root_design { parentCell } {
   assign_bd_address -offset 0x80000000 -range 0x00080000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m01_axi] [get_bd_addr_segs blackparrot_hier_5/axi_bram_ctrl_0/S_AXI/Mem0] -force
   assign_bd_address -offset 0x44A00000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs axi_cdma_1/S_AXI_LITE/Reg] -force
   assign_bd_address -offset 0x020240000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
-  assign_bd_address -offset 0x40000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_5/axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x090000000000 -range 0x00001000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x40600000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs axi_uartlite_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x020200000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs mutex_0/S0_AXI/Reg] -force
@@ -1129,7 +1100,6 @@ proc create_root_design { parentCell } {
   assign_bd_address -offset 0x80000000 -range 0x00080000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m01_axi] [get_bd_addr_segs blackparrot_hier_6/axi_bram_ctrl_0/S_AXI/Mem0] -force
   assign_bd_address -offset 0x44A00000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs axi_cdma_1/S_AXI_LITE/Reg] -force
   assign_bd_address -offset 0x020240000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
-  assign_bd_address -offset 0x40000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_6/axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x090000000000 -range 0x00001000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x40600000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs axi_uartlite_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x020200000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs mutex_0/S0_AXI/Reg] -force
@@ -1140,78 +1110,77 @@ proc create_root_design { parentCell } {
   assign_bd_address -offset 0x80000000 -range 0x00080000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m01_axi] [get_bd_addr_segs blackparrot_hier_7/axi_bram_ctrl_0/S_AXI/Mem0] -force
   assign_bd_address -offset 0x44A00000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs axi_cdma_1/S_AXI_LITE/Reg] -force
   assign_bd_address -offset 0x020240000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0] -force
-  assign_bd_address -offset 0x40000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_7/axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x090000000000 -range 0x00001000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x40600000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs axi_uartlite_0/S_AXI/Reg] -force
   assign_bd_address -offset 0x020200000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs mutex_0/S0_AXI/Reg] -force
+  assign_bd_address -offset 0x080000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_0/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080100000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_1/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080200000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_2/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080300000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_3/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080400000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_4/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080500000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_5/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080600000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_6/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080700000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_7/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080100000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_1/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_0/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080200000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_2/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080300000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_3/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080400000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_4/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080500000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_5/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080600000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_6/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080700000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_7/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080200000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_2/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_0/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080100000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_1/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080300000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_3/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080400000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_4/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080500000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_5/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080600000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_6/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080700000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_7/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080300000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_3/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_0/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080100000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_1/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080200000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_2/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080400000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_4/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080500000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_5/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080600000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_6/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080700000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_7/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080400000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_4/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_0/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080100000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_1/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080200000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_2/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080300000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_3/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080500000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_5/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080600000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_6/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080700000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_7/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080500000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_5/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_0/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080100000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_1/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080200000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_2/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080300000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_3/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080400000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_4/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080600000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_6/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080700000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_7/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080600000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_6/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_0/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080100000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_1/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080200000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_2/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080300000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_3/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080400000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_4/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080500000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_5/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080700000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_7/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080700000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_7/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_0/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080100000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_1/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080200000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_2/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080300000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_3/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080400000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_4/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080500000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_5/blackparrot_0/s00_axi/mem]
+  assign_bd_address -offset 0x080600000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_6/blackparrot_0/s00_axi/mem]
 
   # Exclude Address Segments
   exclude_bd_addr_seg -offset 0x020240000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces axi_cdma_1/Data] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0]
   exclude_bd_addr_seg -offset 0x020240000000 -range 0x00200000 -target_address_space [get_bd_addr_spaces axi_cdma_1/Data_SG] [get_bd_addr_segs axi_dbg_hub_0/S_AXI_DBG_HUB/Mem0]
-  exclude_bd_addr_seg -offset 0x080000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_0/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080100000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_1/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080200000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_2/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080300000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_3/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080400000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_4/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080500000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_5/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080600000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_6/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080700000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_0/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_7/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080100000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_1/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_0/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080200000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_2/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080300000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_3/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080400000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_4/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080500000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_5/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080600000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_6/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080700000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_1/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_7/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080200000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_2/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_0/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080100000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_1/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080300000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_3/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080400000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_4/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080500000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_5/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080600000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_6/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080700000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_2/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_7/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080300000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_3/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_0/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080100000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_1/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080200000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_2/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080400000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_4/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080500000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_5/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080600000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_6/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080700000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_3/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_7/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080400000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_4/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_0/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080100000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_1/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080200000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_2/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080300000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_3/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080500000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_5/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080600000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_6/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080700000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_4/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_7/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080500000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_5/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_0/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080100000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_1/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080200000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_2/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080300000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_3/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080400000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_4/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080600000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_6/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080700000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_5/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_7/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080600000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_6/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_0/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080100000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_1/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080200000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_2/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080300000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_3/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080400000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_4/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080500000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_5/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080700000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_6/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_7/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080700000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_7/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080000000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_0/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080100000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_1/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080200000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_2/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080300000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_3/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080400000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_4/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080500000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_5/blackparrot_0/s00_axi/mem]
-  exclude_bd_addr_seg -offset 0x080600000000 -range 0x000100000000 -target_address_space [get_bd_addr_spaces blackparrot_hier_7/blackparrot_0/m00_axi] [get_bd_addr_segs blackparrot_hier_6/blackparrot_0/s00_axi/mem]
 
   # Restore current instance
   current_bd_instance $oldCurInst

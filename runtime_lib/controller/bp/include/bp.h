@@ -59,11 +59,6 @@
 #define BP_CLINT_PLIC_OFFSET 0xB000LL
 #define BP_CLINT_DEBUG_OFFSET 0xC000LL
 
-// Local ID device (provides a global ID for the core)
-// This device is external to BP, but mapped to a local I/O address
-// that will route to the I/O network
-#define BP_ID_OFFSET 0x40000000LL
-
 // DRAM starts at 2GiB
 // maximum cacheable DRAM is 2 GiB
 // protoype design has 512 KiB "DRAM" that is backed by URAM blocks

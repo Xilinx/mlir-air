@@ -1,137 +1,21 @@
 diff --git a/axi/v/bp_axi_top.sv b/axi/v/bp_axi_top.sv
-index b080a63..39ab291 100644
+index 3647c5c..575634c 100644
 --- a/axi/v/bp_axi_top.sv
 +++ b/axi/v/bp_axi_top.sv
-@@ -163,30 +163,30 @@ module bp_axi_top
+@@ -35,6 +35,7 @@ module bp_axi_top
+   (input                                       clk_i
+    , input                                     reset_i
+    , input                                     rt_clk_i
++   , input [io_noc_did_width_p-1:0]            did_i
+ 
+    //======================== Outgoing I/O ========================
+    , output logic [m_axil_addr_width_p-1:0]    m_axil_awaddr_o
+@@ -167,7 +168,7 @@ module bp_axi_top
+         ,.reset_i(reset_i)
+ 
+         // Irrelevant for current AXI wrapper
+-        ,.my_did_i('0)
++        ,.my_did_i(did_i)
+         ,.host_did_i('0)
          ,.my_cord_i('0)
  
-         // Outgoing I/O
--        ,.io_cmd_header_o(io_cmd_header_lo)
--        ,.io_cmd_data_o(io_cmd_data_lo)
--        ,.io_cmd_v_o(io_cmd_v_lo)
--        ,.io_cmd_ready_and_i(io_cmd_ready_and_li)
--        ,.io_cmd_last_o(io_cmd_last_lo)
--
--        ,.io_resp_header_i(io_resp_header_li)
--        ,.io_resp_data_i(io_resp_data_li)
--        ,.io_resp_v_i(io_resp_v_li)
--        ,.io_resp_ready_and_o(io_resp_ready_and_lo)
--        ,.io_resp_last_i(io_resp_last_li)
-+        ,.mem_cmd_header_o(io_cmd_header_lo)
-+        ,.mem_cmd_data_o(io_cmd_data_lo)
-+        ,.mem_cmd_v_o(io_cmd_v_lo)
-+        ,.mem_cmd_ready_and_i(io_cmd_ready_and_li)
-+        ,.mem_cmd_last_o(io_cmd_last_lo)
-+
-+        ,.mem_resp_header_i(io_resp_header_li)
-+        ,.mem_resp_data_i(io_resp_data_li)
-+        ,.mem_resp_v_i(io_resp_v_li)
-+        ,.mem_resp_ready_and_o(io_resp_ready_and_lo)
-+        ,.mem_resp_last_i(io_resp_last_li)
- 
-         // Incoming I/O
--        ,.io_cmd_header_i(io_cmd_header_li)
--        ,.io_cmd_data_i(io_cmd_data_li)
--        ,.io_cmd_v_i(io_cmd_v_li)
--        ,.io_cmd_ready_and_o(io_cmd_ready_and_lo)
--        ,.io_cmd_last_i(io_cmd_last_li)
--
--        ,.io_resp_header_o(io_resp_header_lo)
--        ,.io_resp_data_o(io_resp_data_lo)
--        ,.io_resp_v_o(io_resp_v_lo)
--        ,.io_resp_ready_and_i(io_resp_ready_and_li)
--        ,.io_resp_last_o(io_resp_last_lo)
-+        ,.mem_cmd_header_i(io_cmd_header_li)
-+        ,.mem_cmd_data_i(io_cmd_data_li)
-+        ,.mem_cmd_v_i(io_cmd_v_li)
-+        ,.mem_cmd_ready_and_o(io_cmd_ready_and_lo)
-+        ,.mem_cmd_last_i(io_cmd_last_li)
-+
-+        ,.mem_resp_header_o(io_resp_header_lo)
-+        ,.mem_resp_data_o(io_resp_data_lo)
-+        ,.mem_resp_v_o(io_resp_v_lo)
-+        ,.mem_resp_ready_and_i(io_resp_ready_and_li)
-+        ,.mem_resp_last_o(io_resp_last_lo)
- 
-         // DMA (memory) to cache2axi
-         ,.dma_pkt_o(c2a_dma_pkt_lo)
-diff --git a/axi/v/bp_me_axil_client.sv b/axi/v/bp_me_axil_client.sv
-index 9343c59..4d0b4f8 100644
---- a/axi/v/bp_me_axil_client.sv
-+++ b/axi/v/bp_me_axil_client.sv
-@@ -105,6 +105,7 @@ module bp_me_axil_client
-      ,.*
-      );
- 
-+  localparam lg_axil_mask_width_lp = `BSG_SAFE_CLOG2(axil_mask_width_lp);
-   always_comb
-     begin
-       io_cmd_data_o = wdata_lo;
-@@ -113,13 +114,34 @@ module bp_me_axil_client
-       io_cmd_header_cast_o.payload.did    = did_i;
-       io_cmd_header_cast_o.addr           = addr_lo;
-       io_cmd_header_cast_o.msg_type       = w_lo ? e_bedrock_mem_uc_wr : e_bedrock_mem_uc_rd;
--      case (wmask_lo)
--        axil_mask_width_lp'('h1): io_cmd_header_cast_o.size = e_bedrock_msg_size_1;
--        axil_mask_width_lp'('h3): io_cmd_header_cast_o.size = e_bedrock_msg_size_2;
--        axil_mask_width_lp'('hF): io_cmd_header_cast_o.size = e_bedrock_msg_size_4;
--        // axil_mask_width_lp'('hFF):
--        default: io_cmd_header_cast_o.size = e_bedrock_msg_size_8;
--      endcase
-+      // reads are full width
-+      if (~w_lo) begin
-+        io_cmd_header_cast_o.size = bp_bedrock_msg_size_e'(lg_axil_mask_width_lp);
-+      end else begin
-+      // writes determine size from mask
-+        case (wmask_lo)
-+          // 1 byte masks
-+          axil_mask_width_lp'('h01)
-+          ,axil_mask_width_lp'('h02)
-+          ,axil_mask_width_lp'('h04)
-+          ,axil_mask_width_lp'('h08)
-+          ,axil_mask_width_lp'('h10)
-+          ,axil_mask_width_lp'('h20)
-+          ,axil_mask_width_lp'('h40)
-+          ,axil_mask_width_lp'('h80): io_cmd_header_cast_o.size = e_bedrock_msg_size_1;
-+          // 2 byte masks
-+          axil_mask_width_lp'('h03)
-+          ,axil_mask_width_lp'('h0C)
-+          ,axil_mask_width_lp'('h30)
-+          ,axil_mask_width_lp'('hC0): io_cmd_header_cast_o.size = e_bedrock_msg_size_2;
-+          // 4 byte masks
-+          axil_mask_width_lp'('h0F)
-+          ,axil_mask_width_lp'('hF0): io_cmd_header_cast_o.size = e_bedrock_msg_size_4;
-+          // 8 byte mask
-+          // axil_mask_width_lp'('hFF):
-+          default: io_cmd_header_cast_o.size = e_bedrock_msg_size_8;
-+        endcase
-+      end
- 
-       io_cmd_v_o = v_lo;
-       ready_and_li = io_cmd_ready_and_i;
-diff --git a/axi/v/bp_me_axil_master.sv b/axi/v/bp_me_axil_master.sv
-index 9081b53..755e723 100644
---- a/axi/v/bp_me_axil_master.sv
-+++ b/axi/v/bp_me_axil_master.sv
-@@ -93,6 +93,8 @@ module bp_me_axil_master
-      ,.yumi_i(header_yumi_li)
-      );
- 
-+  wire [`BSG_SAFE_CLOG2(axil_data_width_p/8)-1:0] wdata_sel_li = io_cmd_header_cast_i.addr[0+:byte_offset_width_lp];
-+
-   logic [axil_data_width_p-1:0] wdata_li;
-   logic [axil_addr_width_p-1:0] addr_li;
-   logic v_li, w_li, ready_and_lo;
-@@ -108,9 +110,9 @@ module bp_me_axil_master
-       header_v_li = io_cmd_ready_and_o & io_cmd_v_i;
- 
-       case (io_cmd_header_cast_i.size)
--        e_bedrock_msg_size_1: wmask_li = (axil_data_width_p>>3)'('h1);
--        e_bedrock_msg_size_2: wmask_li = (axil_data_width_p>>3)'('h3);
--        e_bedrock_msg_size_4: wmask_li = (axil_data_width_p>>3)'('hF);
-+        e_bedrock_msg_size_1: wmask_li = (axil_data_width_p>>3)'('h1) << wdata_sel_li;
-+        e_bedrock_msg_size_2: wmask_li = (axil_data_width_p>>3)'('h3) << wdata_sel_li;
-+        e_bedrock_msg_size_4: wmask_li = (axil_data_width_p>>3)'('hF) << wdata_sel_li;
-         // e_bedrock_msg_size_8:
-         default : wmask_li = (axil_data_width_p>>3)'('hFF);
-       endcase

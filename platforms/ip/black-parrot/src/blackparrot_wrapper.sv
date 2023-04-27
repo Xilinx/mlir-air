@@ -27,6 +27,8 @@ module blackparrot_wrapper
    , parameter integer C_M01_AXI_DATA_WIDTH   = 64
    , parameter integer C_M01_AXI_ADDR_WIDTH   = 32
    , parameter integer C_M01_AXI_ID_WIDTH     = 6
+   // Device ID
+   , parameter integer C_DEVICE_ID            = 0
    )
   (input wire                                    resetn
    , input wire                                  core_reset
@@ -132,14 +134,19 @@ module blackparrot_wrapper
   assign m01_axi_awqos = '0;
   assign m01_axi_arqos = '0;
 
+  // convert Device ID parameter to an input wire for BP core
+  wire [io_noc_did_width_p-1:0] did = io_noc_did_width_p'(C_DEVICE_ID);
+
   // Notes:
   // BP runs on a single clock - all axi clocks must be the same
   // the clock used is s00_axi_aclk
   // BP has single reset - currently the OR of all AXI and other resets
   bp_axi_top #
     (.bp_params_p(bp_params_p)
-     ,.axil_addr_width_p(C_S00_AXI_ADDR_WIDTH)
-     ,.axil_data_width_p(C_S00_AXI_DATA_WIDTH)
+     ,.m_axil_addr_width_p(C_M00_AXI_ADDR_WIDTH)
+     ,.m_axil_data_width_p(C_M00_AXI_DATA_WIDTH)
+     ,.s_axil_addr_width_p(C_S00_AXI_ADDR_WIDTH)
+     ,.s_axil_data_width_p(C_S00_AXI_DATA_WIDTH)
      ,.axi_addr_width_p(C_M01_AXI_ADDR_WIDTH)
      ,.axi_data_width_p(C_M01_AXI_DATA_WIDTH)
      ,.axi_id_width_p(C_M01_AXI_ID_WIDTH)
@@ -149,6 +156,8 @@ module blackparrot_wrapper
     blackparrot
     (.clk_i(s00_axi_aclk)
      ,.reset_i(bp_reset_li)
+     ,.rt_clk_i(s00_axi_aclk)
+     ,.did_i(did)
 
      // I/O reads/writes from BlackParrot
      ,.m_axil_awaddr_o (m00_axi_awaddr)
@@ -216,9 +225,9 @@ module blackparrot_wrapper
      ,.m_axi_wdata_o    (m01_axi_wdata)
      ,.m_axi_wvalid_o   (m01_axi_wvalid)
      ,.m_axi_wready_i   (m01_axi_wready)
+     ,.m_axi_wid_o      () // AXI3 only, ignore
      ,.m_axi_wlast_o    (m01_axi_wlast)
      ,.m_axi_wstrb_o    (m01_axi_wstrb)
-     ,.m_axi_wid_o      () // AXI3 only, ignore
 
      ,.m_axi_bvalid_i   (m01_axi_bvalid)
      ,.m_axi_bready_o   (m01_axi_bready)

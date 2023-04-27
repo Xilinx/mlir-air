@@ -5,7 +5,6 @@
 # source files required to wrap BP core with AXI interfaces and package as IP block
 #
 
-$BLACKPARROT_SUB_DIR/axi/v/bsg_axi_pkg.v
 $BASEJUMP_STL_DIR/bsg_cache/bsg_cache_to_axi.v
 $BASEJUMP_STL_DIR/bsg_cache/bsg_cache_to_axi_rx.v
 $BASEJUMP_STL_DIR/bsg_cache/bsg_cache_to_axi_tx.v
