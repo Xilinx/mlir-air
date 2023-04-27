@@ -39,6 +39,8 @@
 #define XAIE_AIE_TILE_ROW_START 1
 #define XAIE_AIE_TILE_NUM_ROWS 8
 
+#define SYSFS_PATH_MAX 63
+
 // temporary solution to stash some state
 extern "C" {
 
@@ -53,7 +55,6 @@ const char vck5000_driver_name[] = "/dev/amdair";
 }
 
 #ifdef AIR_PCIE
-volatile void *_mapped_aie_base = nullptr;
 std::vector<air_physical_device_t> physical_devices;
 #endif
 
@@ -103,36 +104,6 @@ air_libxaie_ctx_t air_init_libxaie(uint32_t device_id) {
     return (air_libxaie_ctx_t) nullptr;
 
   xaie->AieConfigPtr.AieGen = XAIE_DEV_GEN_AIE;
-#ifdef AIR_PCIE
-
-  if (device_id >= physical_devices.size()) {
-    printf("[ERROR] No device id %d in system\n", device_id);
-    return (air_libxaie_ctx_t) nullptr;
-  }
-
-  std::string aie_bar = air_get_aie_bar(device_id);
-
-  int fda;
-  if ((fda = open(vck5000_driver_name, O_RDWR | O_SYNC)) == -1) {
-    printf("[ERROR] Failed to open device file\n");
-    return (air_libxaie_ctx_t) nullptr;
-  }
-
-  // Map the memory region into userspace
-  _mapped_aie_base = mmap(NULL,                   // virtual address
-                          0x20000000,             // length
-                          PROT_READ | PROT_WRITE, // prot
-                          MAP_SHARED,             // flags
-                          fda,                    // device fd
-                          0x100000);              // offset
-  if (_mapped_aie_base == MAP_FAILED) {
-    printf("[ERROR] Failed mapping AIE BAR\n");
-    return (air_libxaie_ctx_t) nullptr;
-  }
-  xaie->AieConfigPtr.BaseAddr = (uint64_t)_mapped_aie_base;
-#else
-  xaie->AieConfigPtr.BaseAddr = XAIE_BASE_ADDR;
-#endif
   xaie->AieConfigPtr.ColShift = XAIE_COL_SHIFT;
   xaie->AieConfigPtr.RowShift = XAIE_ROW_SHIFT;
   xaie->AieConfigPtr.NumRows = XAIE_NUM_ROWS;
@@ -145,7 +116,64 @@ air_libxaie_ctx_t air_init_libxaie(uint32_t device_id) {
   xaie->AieConfigPtr.PartProp = {0};
   xaie->DevInst = {0};
 
-  XAie_CfgInitialize(&(xaie->DevInst), &(xaie->AieConfigPtr));
+  /*
+Set up the AIE base address
+For a PCIe device (e.g. VCK5000) the AIE region might be enabled through
+the driver for direct access (i.e. memory mapped BAR). This is only true
+when the driver is enabled in debug mode. Otherwise, use the sysfs
+interface. The sysfs path is passed by reusing the IOInst pointer before
+it is configured by the backend. This is non-standard usage and may break
+in future versions.
+For a non-PCIe device, memory map the base address directly.
+*/
+#ifdef AIR_PCIE
+  if (device_id >= physical_devices.size()) {
+    printf("[ERROR] No device id %d in system\n", device_id);
+    return (air_libxaie_ctx_t) nullptr;
+  }
+
+  char sysfs_path[SYSFS_PATH_MAX + 1];
+  if (snprintf(sysfs_path, SYSFS_PATH_MAX, "/sys/class/amdair/amdair/%02u",
+               device_id) == SYSFS_PATH_MAX)
+    sysfs_path[SYSFS_PATH_MAX] = 0;
+
+  int fda;
+  if ((fda = open(vck5000_driver_name, O_RDWR | O_SYNC)) == -1) {
+    printf("[ERROR] %s failed to open %s\n", __func__, vck5000_driver_name);
+    return (air_libxaie_ctx_t) nullptr;
+  }
+
+  // Map the AIE memory region into userspace for libxaie to use
+  volatile void *mapped_aie_base = nullptr;
+  mapped_aie_base = mmap(NULL,                   // virtual address
+                         0x20000000,             // length
+                         PROT_READ | PROT_WRITE, // prot
+                         MAP_SHARED,             // flags
+                         fda,                    // device fd
+                         0x100000);              // offset
+
+  XAie_BackendType backend;
+  if (mapped_aie_base == MAP_FAILED) {
+    printf("Failed mapping AIE BAR - using sysfs backend\n");
+    xaie->AieConfigPtr.Backend = XAIE_IO_BACKEND_SYSFS;
+    backend = XAIE_IO_BACKEND_SYSFS;
+    xaie->AieConfigPtr.BaseAddr = 0;
+    xaie->DevInst.IOInst = (void *)sysfs_path;
+  } else {
+    printf("Using Linux backend\n");
+    xaie->AieConfigPtr.Backend = XAIE_IO_BACKEND_LINUX;
+    backend = XAIE_IO_BACKEND_METAL;
+    xaie->AieConfigPtr.BaseAddr = (uint64_t)mapped_aie_base;
+  }
+#else
+  xaie->AieConfigPtr.BaseAddr = XAIE_BASE_ADDR;
+#endif
+
+  if (XAie_CfgInitialize(&(xaie->DevInst), &(xaie->AieConfigPtr)) != XAIE_OK) {
+    printf("[ERROR] Failed to configure libxaie\n");
+    return (air_libxaie_ctx_t) nullptr;
+  }
+
   XAie_PmRequestTiles(&(xaie->DevInst), NULL, 0);
 
   _air_host_active_libxaie = xaie;
@@ -157,8 +185,8 @@ void air_deinit_libxaie(air_libxaie_ctx_t _xaie) {
   if (xaie == _air_host_active_libxaie) {
     XAie_Finish(&(xaie->DevInst));
 #ifdef AIR_PCIE
-    munmap(const_cast<void *>(_mapped_aie_base), 0x20000000);
-    _mapped_aie_base = nullptr;
+    if (xaie->AieConfigPtr.BaseAddr)
+      munmap((void *)xaie->AieConfigPtr.BaseAddr, 0x20000000);
 #endif
     _air_host_active_libxaie = nullptr;
   }
@@ -167,7 +195,6 @@ void air_deinit_libxaie(air_libxaie_ctx_t _xaie) {
 
 air_module_handle_t air_module_load_from_file(const char *filename, queue_t *q,
                                               uint32_t device_id) {
-
   if (_air_host_active_module)
     air_module_unload(_air_host_active_module);
 
@@ -388,7 +415,6 @@ uint64_t air_herd_load(const char *name) {
 
 #ifdef AIR_PCIE
 hsa_status_t air_get_physical_devices() {
-
   struct stat st;
 
   // Skip device enumeration if it is already done
@@ -405,7 +431,6 @@ hsa_status_t air_get_physical_devices() {
 hsa_status_t air_iterate_agents(hsa_status_t (*callback)(air_agent_t agent,
                                                          void *data),
                                 void *data) {
-
   uint64_t total_controllers = 0;
 
 #ifdef AIR_PCIE
