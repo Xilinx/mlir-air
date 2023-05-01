@@ -49,6 +49,7 @@ struct AIRToAIEOptions {
   int64_t row_offset;
   bool emit_while;
   bool emit_herd_lock;
+  AIE::AIEDevice device;
 };
 
 // std::vector<int> s80_nmu_col_list{0, 0, 1, 1, 0, 0, 1, 1,
@@ -226,7 +227,7 @@ struct DMAAllocator {
 };
 
 AIE::LockOp allocateLockOp(AIE::DeviceOp aie_module, AIE::TileOp tile,
-                           int id = -1) {
+                           int init = 0, int id = -1) {
   AIE::LockOp lock = nullptr;
   std::set<int> ids;
   aie_module.walk([&](AIE::LockOp l) {
@@ -254,7 +255,7 @@ AIE::LockOp allocateLockOp(AIE::DeviceOp aie_module, AIE::TileOp tile,
   while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
     t = t->getNextNode();
   b.setInsertionPointAfter(t);
-  return b.create<AIE::LockOp>(tile.getLoc(), tile, new_id, 0);
+  return b.create<AIE::LockOp>(tile.getLoc(), tile, new_id, init);
 }
 
 void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_module,
@@ -323,7 +324,7 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_module,
 
       Value herd_lock = nullptr;
       if (options.emit_herd_lock)
-        herd_lock = allocateLockOp(aie_module, tile, 0);
+        herd_lock = allocateLockOp(aie_module, tile, /*init=*/0, /*id=*/0);
 
       // the buffers and locks created below need to go before the core and
       // mem
@@ -430,8 +431,8 @@ void createAIEModulesAndOutlineCores(
         ModuleOp::create(module.getLoc(), StringRef(aie_module_name));
     auto builder = OpBuilder::atBlockBegin(aie_module.getBody());
     auto aie_dev = builder.create<AIE::DeviceOp>(
-        aie_module.getLoc(), AIE::AIEDeviceAttr::get(builder.getContext(),
-                                                     AIE::AIEDevice::xcvc1902));
+        aie_module.getLoc(),
+        AIE::AIEDeviceAttr::get(builder.getContext(), options.device));
     aie_dev.getRegion().emplaceBlock();
     p.walk([&](xilinx::air::HerdOp h) { aie_modules.push_back({aie_dev, h}); });
   });
@@ -446,8 +447,8 @@ void createAIEModulesAndOutlineCores(
         ModuleOp::create(module.getLoc(), StringRef(aie_module_name));
     auto builder = OpBuilder::atBlockBegin(aie_module.getBody());
     auto aie_dev = builder.create<AIE::DeviceOp>(
-        aie_module.getLoc(), AIE::AIEDeviceAttr::get(builder.getContext(),
-                                                     AIE::AIEDevice::xcvc1902));
+        aie_module.getLoc(),
+        AIE::AIEDeviceAttr::get(builder.getContext(), options.device));
     aie_dev.getRegion().emplaceBlock();
     aie_modules.push_back({aie_dev, h});
   });
@@ -1092,7 +1093,8 @@ public:
   AIRToAIEPass() = default;
   AIRToAIEPass(const AIRToAIEPass &pass) {}
 
-  typedef std::vector<std::tuple<AIE::BufferOp, AIE::LockOp, AIE::DMAChannel>>
+  typedef std::vector<
+      std::tuple<AIE::BufferOp, AIE::DMAChannel, AIE::LockOp, AIE::LockOp>>
       lock_allocation_list;
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
@@ -1171,26 +1173,31 @@ public:
     return bufferOp;
   }
 
-  AIE::LockOp getLockForTileDMA(AIE::DeviceOp aie_module,
-                                air::DmaMemcpyInterface &dmaOp,
-                                lock_allocation_list &info, int col, int row) {
-    AIE::BufferOp bufferOp = getBufferForTileDMA(aie_module, dmaOp, col, row);
-    AIE::DMAChannel channel = getTileDMAChannel(aie_module, dmaOp, col, row);
+  // Allocate a reader/writer lock pair. These may be the same or different
+  // locks depending on the target device.
+  std::pair<AIE::LockOp, AIE::LockOp>
+  getLockForTileDMA(AIE::DeviceOp device, air::DmaMemcpyInterface &dmaOp,
+                    lock_allocation_list &info, int col, int row) {
+    AIE::BufferOp bufferOp = getBufferForTileDMA(device, dmaOp, col, row);
+    AIE::DMAChannel channel = getTileDMAChannel(device, dmaOp, col, row);
     assert(bufferOp);
-    AIE::LockOp lockOp = nullptr;
+
     for (size_t i = 0; i < info.size(); i++) {
       if ((std::get<0>(info[i]) == bufferOp) &&
-          (std::get<2>(info[i]) == channel)) {
-        lockOp = std::get<1>(info[i]);
-        break;
+          (std::get<1>(info[i]) == channel)) {
+        return {std::get<2>(info[i]), std::get<3>(info[i])};
       }
     }
-    if (!lockOp) {
-      OpBuilder builder(bufferOp);
-      lockOp = allocateLockOp(aie_module, bufferOp.getTileOp());
-      info.push_back({bufferOp, lockOp, channel});
-    }
-    return lockOp;
+    const auto &target_model = device.getTargetModel();
+    bool isAIE2 = (target_model.getTargetArch() == AIE::AIEArch::AIE2);
+    auto init = isAIE2 ? 1 : 0;
+
+    OpBuilder builder(bufferOp);
+    auto rlock = allocateLockOp(device, bufferOp.getTileOp(), 0);
+    auto wlock =
+        isAIE2 ? allocateLockOp(device, bufferOp.getTileOp(), init) : rlock;
+    info.push_back({bufferOp, channel, rlock, wlock});
+    return {rlock, wlock};
   }
 
   // get tileop using segment-relative coordinates
@@ -1346,12 +1353,14 @@ public:
     return herd_meta;
   }
 
-  void lowerAirDmaMemcpy(AIE::DeviceOp module, DMAAllocator &shimDmaAlloc) {
+  void lowerAirDmaMemcpy(AIE::DeviceOp device, DMAAllocator &shimDmaAlloc) {
     SmallVector<AIE::CoreOp, 32> cores;
-    for (auto c : module.getOps<AIE::CoreOp>())
+    for (auto c : device.getOps<AIE::CoreOp>())
       cores.push_back(c);
 
-    OpBuilder builder(module);
+    const auto &target_model = device.getTargetModel();
+    bool isAIE2 = (target_model.getTargetArch() == AIE::AIEArch::AIE2);
+    OpBuilder builder(device);
 
     for (AIE::CoreOp core : cores) {
       AIE::TileOp tile = core.getTileOp();
@@ -1371,19 +1380,20 @@ public:
         for (auto o : p.second) {
           auto dmaOpIf = cast<air::DmaMemcpyInterface>(o);
           AIE::DMAChannel tile_channel =
-              getTileDMAChannel(module, dmaOpIf, x, y);
-          AIE::LockOp lockOp =
-              getLockForTileDMA(module, dmaOpIf, lock_allocs, x, y);
+              getTileDMAChannel(device, dmaOpIf, x, y);
+          auto locks = getLockForTileDMA(device, dmaOpIf, lock_allocs, x, y);
+          auto acqLockOp = isMM2S(tile_channel) ? locks.second : locks.first;
+          auto relLockOp = isMM2S(tile_channel) ? locks.first : locks.second;
           int64_t lockAqValue = -1;
           int64_t lockRelValue = -1;
           Value alloc = nullptr;
           if (!isMM2S(tile_channel)) {
-            lockAqValue = 1;
-            lockRelValue = 0;
+            lockAqValue = isAIE2 ? 1 : 1;
+            lockRelValue = isAIE2 ? 1 : 0;
             alloc = dmaOpIf.getDstMemref();
           } else {
-            lockAqValue = 0;
-            lockRelValue = 1;
+            lockAqValue = isAIE2 ? 1 : 0;
+            lockRelValue = isAIE2 ? 1 : 1;
             alloc = dmaOpIf.getSrcMemref();
           }
 
@@ -1395,15 +1405,17 @@ public:
           else
             builder.setInsertionPoint(&dmaOpIf->getBlock()->front());
 
-          builder.create<AIE::UseLockOp>(o->getLoc(), lockOp, lockAqValue,
-                                         AIE::LockAction::Acquire);
+          builder.create<AIE::UseLockOp>(
+              o->getLoc(), acqLockOp, lockAqValue,
+              isAIE2 ? AIE::LockAction::AcquireGreaterEqual
+                     : AIE::LockAction::Acquire);
           // try to find a place to put the unlock. If there are deallocs,
           // replace them with unlock. Otherwise, put them at the end.
           bool need_unlock = true;
           for (auto u : alloc.getUsers()) {
             if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
               builder.setInsertionPoint(dealloc);
-              builder.create<AIE::UseLockOp>(dealloc->getLoc(), lockOp,
+              builder.create<AIE::UseLockOp>(dealloc->getLoc(), relLockOp,
                                              lockRelValue,
                                              AIE::LockAction::Release);
               // assume that the deallocs will take care of it when
@@ -1414,7 +1426,7 @@ public:
           if (need_unlock) {
             auto t = dmaOpIf->getBlock()->getTerminator();
             builder.setInsertionPoint(t);
-            builder.create<AIE::UseLockOp>(t->getLoc(), lockOp, lockRelValue,
+            builder.create<AIE::UseLockOp>(t->getLoc(), relLockOp, lockRelValue,
                                            AIE::LockAction::Release);
           }
           allocs_to_remap.insert(alloc.getDefiningOp());
@@ -1479,18 +1491,19 @@ public:
             mem.getBody().push_back(next_bd);
             b.create<AIE::NextBDOp>(loc, next_bd);
           }
-          AIE::BufferOp bufferOp = getBufferForTileDMA(module, dmaOp, x, y);
-          AIE::LockOp lockOp =
-              getLockForTileDMA(module, dmaOp, lock_allocs, x, y);
+          AIE::BufferOp bufferOp = getBufferForTileDMA(device, dmaOp, x, y);
+          auto locks = getLockForTileDMA(device, dmaOp, lock_allocs, x, y);
+          auto acqLockOp = isMM2S(channel) ? locks.first : locks.second;
+          auto relLockOp = isMM2S(channel) ? locks.second : locks.first;
           b.setInsertionPointToStart(bd);
           int64_t lockAqValue = -1;
           int64_t lockRelValue = -1;
           if (!isMM2S(channel)) {
-            lockAqValue = 0;
-            lockRelValue = 1;
+            lockAqValue = isAIE2 ? 1 : 0;
+            lockRelValue = isAIE2 ? 1 : 1;
           } else {
-            lockAqValue = 1;
-            lockRelValue = 0;
+            lockAqValue = isAIE2 ? 1 : 1;
+            lockRelValue = isAIE2 ? 1 : 0;
           }
           Value length = dmaOp.getLength();
           if (!length) {
@@ -1518,12 +1531,13 @@ public:
             length = b.create<arith::ConstantIndexOp>(dmaOp.getLoc(), size)
                          ->getResult(0);
           }
-          b.create<AIE::UseLockOp>(loc, lockOp, lockAqValue,
-                                   AIE::LockAction::Acquire);
+          b.create<AIE::UseLockOp>(loc, acqLockOp, lockAqValue,
+                                   isAIE2 ? AIE::LockAction::AcquireGreaterEqual
+                                          : AIE::LockAction::Acquire);
           b.create<AIE::DMABDOp>(
               loc, bufferOp, 0,
               cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(), 0);
-          b.create<AIE::UseLockOp>(loc, lockOp, lockRelValue,
+          b.create<AIE::UseLockOp>(loc, relLockOp, lockRelValue,
                                    AIE::LockAction::Release);
         }
         if (!channel_head) {
@@ -1572,10 +1586,17 @@ public:
     if (clTestPatterns.find("to-aie-mlir") != std::string::npos) {
       std::vector<std::pair<AIE::DeviceOp, air::HerdOp>> aie_modules;
       std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
+      auto device = AIE::symbolizeAIEDevice(clDevice);
+      if (!device) {
+        m.emitOpError("Invalid AIE.device option");
+        signalPassFailure();
+        return;
+      }
       AIRToAIEOptions options = {.col_offset = clColOffset,
                                  .row_offset = clRowOffset,
                                  .emit_while = clEmitWhileLoop,
-                                 .emit_herd_lock = clEmitHerdLock};
+                                 .emit_herd_lock = clEmitHerdLock,
+                                 .device = *device};
       createAIEModulesAndOutlineCores(m, aie_modules, tileToHerdMap, options);
       std::set<ModuleOp> seen;
       for (auto &p : aie_modules) {
@@ -1628,10 +1649,17 @@ public:
     std::vector<std::pair<AIE::DeviceOp, air::HerdOp>> aie_modules;
 
     std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
+    auto device = AIE::symbolizeAIEDevice(clDevice);
+    if (!device) {
+      module.emitOpError("Invalid AIE.device option");
+      signalPassFailure();
+      return;
+    }
     AIRToAIEOptions options = {.col_offset = clColOffset,
                                .row_offset = clRowOffset,
                                .emit_while = clEmitWhileLoop,
-                               .emit_herd_lock = clEmitHerdLock};
+                               .emit_herd_lock = clEmitHerdLock,
+                               .device = *device};
     createAIEModulesAndOutlineCores(module, aie_modules, tileToHerdMap,
                                     options);
 
@@ -1780,8 +1808,13 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
   ModuleOp aie_module =
       ModuleOp::create(rewriter.getUnknownLoc(), StringRef(aie_module_name));
 
+  auto device = AIE::symbolizeAIEDevice("xcvc1902");
+  if (!device) {
+    p->emitOpError("Invalid AIE.device option");
+    return failure();
+  }
   AIRToAIEOptions options = {
-      .col_offset = 7, .row_offset = 2, .emit_while = false};
+      .col_offset = 7, .row_offset = 2, .emit_while = false, .device = *device};
   std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> aie_modules;
   p.walk([&](xilinx::air::HerdOp h) {
     aie_modules.push_back({aie_module, h});
@@ -1792,8 +1825,8 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     xilinx::air::HerdOp h = std::get<1>(p);
     rewriter.setInsertionPointToStart(aie_module.getBody());
     auto devOp = rewriter.create<AIE::DeviceOp>(
-        aie_module.getLoc(), AIE::AIEDeviceAttr::get(rewriter.getContext(),
-                                                     AIE::AIEDevice::xcvc1902));
+        aie_module.getLoc(),
+        AIE::AIEDeviceAttr::get(rewriter.getContext(), options.device));
     devOp.getRegion().emplaceBlock();
     outlineAIECores(rewriter, devOp, h, tileToHerdMap, options);
 
