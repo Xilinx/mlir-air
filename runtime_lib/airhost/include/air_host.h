@@ -156,6 +156,8 @@ hsa_status_t air_packet_get_stream(dispatch_packet_t *pkt, uint64_t stream);
 hsa_status_t air_packet_l2_dma(dispatch_packet_t *pkt, uint64_t stream,
                                l2_dma_cmd_t cmd);
 
+hsa_status_t air_program_firmware(dispatch_packet_t *pkt, uint64_t phys_addr, uint32_t file_num_lines);
+
 hsa_status_t air_packet_cdma_memcpy(dispatch_packet_t *pkt, uint64_t dest,
                                     uint64_t source, uint32_t length);
 

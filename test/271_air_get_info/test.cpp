@@ -56,9 +56,15 @@ int main(int argc, char *argv[]) {
     queue_t *q = nullptr;
     ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q,
                            agent.handle);
-    assert(ret == 0 && "failed to create queue!");
-    queues.push_back(q);
+    if(ret) {
+      printf("Failed to create queue. Not adding to list of queues\n");
+    }
+    else {
+      queues.push_back(q);
+    }
   }
+
+  assert(queues.size() > 0 && "No queues were sucesfully created!");
  
   uint64_t data = -1;
   char vend[8];

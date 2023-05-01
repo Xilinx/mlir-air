@@ -148,6 +148,27 @@ void bp_strobe_reset() {
   mmio_write<uint32_t>(bp_gpio, BP_GPIO_RESET_OFFSET, BP_GPIO_RESET_OFF);
 }
 
+void start_bps() {
+  // Go through every BP, set the proper configuration and unfreeze
+  for(int bp_iter = 0; bp_iter < NUM_HERD_CONTROLLERS; bp_iter++) {
+    void *bp_cfg = (void *)(get_bp_base_addr(bp_iter) + BP_CFG_OFFSET);
+
+    // Configuring the BPs
+    mmio_write<uint32_t>(bp_cfg, BP_CFG_ICACHE_MODE_OFFSET, BP_CFG_CACHE_NORMAL);
+    mmio_write<uint32_t>(bp_cfg, BP_CFG_DCACHE_MODE_OFFSET, BP_CFG_CACHE_NORMAL);
+    mmio_write<uint32_t>(bp_cfg, BP_CFG_CCE_MODE_OFFSET, BP_CFG_CCE_NORMAL);
+    mmio_write<uint32_t>(bp_cfg, BP_CFG_NPC_OFFSET, 0x80000000);
+    mmio_write<uint32_t>(bp_cfg, BP_CFG_HIO_MASK_OFFSET, 0xFFFFFFFF);
+    sleep(1);
+
+    // Unfreezing the BP
+    mmio_write<uint32_t>(bp_cfg, BP_CFG_FREEZE_OFFSET, BP_CFG_FREEZE_OFF);
+
+    // Sleeping as we wake them up so we see each BPs prints at the
+    // the beginning.
+    sleep(1);
+  }
+}
 
 void handle_packet_prog_firmware(dispatch_packet_t *pkt) {
   packet_set_active(pkt, true);
@@ -178,24 +199,7 @@ void handle_packet_prog_firmware(dispatch_packet_t *pkt) {
   load_bp_dram(phys_addr, file_num_lines);
 
   // Step 6: Configure and unfreeze all of the BPs
-  for(int bp_iter = 0; bp_iter < NUM_HERD_CONTROLLERS; bp_iter++) {
-    void *bp_cfg = (void *)(get_bp_base_addr(bp_iter) + BP_CFG_OFFSET);
-    mmio_write<uint32_t>(bp_cfg, BP_CFG_FREEZE_OFFSET, BP_CFG_FREEZE_OFF);
-
-    // Sleeping as we wake them up so we see each BPs prints at the
-    // the beginning.
-    sleep(1);
-  }
+  start_bps();
 }
 
-void start_bps() {
-  // Go through every BP, set the proper configuration and unfreeze
-  for(int bp_iter = 0; bp_iter < NUM_HERD_CONTROLLERS; bp_iter++) {
-    void *bp_cfg = (void *)(get_bp_base_addr(bp_iter) + BP_CFG_OFFSET);
-    mmio_write<uint32_t>(bp_cfg, BP_CFG_FREEZE_OFFSET, BP_CFG_FREEZE_OFF);
 
-    // Sleeping as we wake them up so we see each BPs prints at the
-    // the beginning.
-    sleep(1);
-  }
-}

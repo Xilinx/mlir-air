@@ -78,8 +78,14 @@ hsa_status_t air_queue_create(uint32_t size, uint32_t type, queue_t **queue,
                                         MAP_SHARED, fd, paddr_aligned);
 
   // printf("Opened shared memory paddr: %p vaddr: %p\n", paddr, bram_ptr);
-  uint64_t q_paddr =
-      bram_ptr[paddr_offset / sizeof(uint64_t)] - AIR_VCK190_SHMEM_BASE;
+  uint64_t q_paddr = bram_ptr[paddr_offset / sizeof(uint64_t)];
+  if(q_paddr == 0) {
+    return HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
+  }
+  
+  // Have to remove the hardware memory map offset
+  q_paddr -= AIR_VCK190_SHMEM_BASE;
+  
   uint64_t q_offset = q_paddr;
 
   queue_t *q = (queue_t *)(((size_t)bram_ptr) + q_offset);
@@ -353,6 +359,18 @@ hsa_status_t air_packet_l2_dma(dispatch_packet_t *pkt, uint64_t stream,
   pkt->arg[1] |= cmd.id;
 
   pkt->type = AIR_PKT_TYPE_PUT_STREAM;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
+
+  return HSA_STATUS_SUCCESS;
+}
+
+hsa_status_t air_program_firmware(dispatch_packet_t *pkt, uint64_t phys_addr, uint32_t file_num_lines) {
+  initialize_packet(pkt);
+
+  pkt->arg[0] = phys_addr;
+  pkt->arg[1] = (uint64_t)file_num_lines;
+
+  pkt->type = AIR_PKT_TYPE_PROG_FIRMWARE;
   pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
 
   return HSA_STATUS_SUCCESS;

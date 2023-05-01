@@ -54,9 +54,16 @@ main(int argc, char *argv[])
     auto create_queue_ret =
         air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, agent.handle,
                          0 /* device_id (optional) */);
-    assert(create_queue_ret == 0 && "failed to create queue!");
-    queues.push_back(q);
+  
+    if(create_queue_ret) {
+      printf("Failed to create queue. Not adding to list\n");
+    }
+    else {
+      queues.push_back(q);
+    }
   }
+
+  assert(queues.size() > 0 && "No queues were sucesfully created!");
 
   aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_get_libxaie_ctx();
   if (xaie == NULL) {
