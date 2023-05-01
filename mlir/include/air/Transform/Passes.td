@@ -956,4 +956,9 @@ def AIRRenumberDmaIdPass : Pass<"air-renumber-dma", "func::FuncOp"> {
   ];
 }
 
+def AIRLowerHerdParallelPass : Pass<"air-lower-herd-parallel", "func::FuncOp"> {
+  let summary = "Remove scf.parallel from inside herds by transforming them to "
+                "scf.for.";
+  let constructor = "xilinx::air::createAIRLowerHerdParallelPass()";
+}
 #endif // AIR_CONVERSION_PASSES
