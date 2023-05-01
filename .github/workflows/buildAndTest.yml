@@ -52,7 +52,7 @@ jobs:
         run: |
           git clone https://github.com/Xilinx/cmakeModules.git
           pushd cmakeModules
-          git checkout -b air b0d8828f71bf61db5860843cb16cf8d068c862e4
+          git checkout -b air 7915d8fa4d2869bdbc078b9d266a555b72c2ebb2
           popd
         shell: bash
 
