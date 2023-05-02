@@ -49,6 +49,7 @@ cmake -GNinja \
     -DCMAKE_BUILD_TYPE=Release \
     -DLLVM_ENABLE_ASSERTIONS=ON \
     -DAIE_ENABLE_BINDINGS_PYTHON=ON \
+    -DPython3_FIND_VIRTUALENV=ONLY \
     .. |& tee cmake.log
 
 ninja |& tee ninja.log
