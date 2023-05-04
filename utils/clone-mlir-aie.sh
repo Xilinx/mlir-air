@@ -23,4 +23,5 @@ git clone --depth 1 https://github.com/Xilinx/mlir-aie.git mlir-aie
 pushd mlir-aie
 git fetch --depth=1 origin $HASH
 git checkout $HASH
+git submodule update --init
 popd
