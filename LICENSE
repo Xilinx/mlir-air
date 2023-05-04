@@ -21,8 +21,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-The code in the 'driver' subdirectory (the "driver") is licensed separately
-under the terms and conditions of the GNU General Public License v2 ("GPLv2").
-The complete description of the license can be found at:
-https://spdx.org/licenses/GPL-2.0.html

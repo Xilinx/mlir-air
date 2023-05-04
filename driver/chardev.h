@@ -1,5 +1,5 @@
 // Copyright (C) 2023, Advanced Micro Devices, Inc.
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: MIT
 
 #ifndef VCK5000_CHARDEV_H_
 #define VCK5000_CHARDEV_H_
