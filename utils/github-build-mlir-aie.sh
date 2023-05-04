@@ -36,6 +36,7 @@ cmake .. \
     -DCMAKE_CXX_COMPILER=clang++-12 \
     -DLLVM_EXTERNAL_LIT=`pwd`/../../llvm/build/bin/llvm-lit \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
     -DCMAKE_INSTALL_PREFIX=`pwd`/../$INSTALL_DIR
 
 cmake --build . --target install -- -j$(nproc)
