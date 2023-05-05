@@ -964,7 +964,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 
   LogicalResult matchAndRewrite(air::ChannelOp channel,
                                 PatternRewriter &rewriter) const override {
-    auto aie_module = channel->getParentOfType<AIE::DeviceOp>();
+    auto device = channel->getParentOfType<AIE::DeviceOp>();
     if (channel.getBundleSize() > 1)
       return failure();
 
@@ -999,7 +999,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       }
     } else {
       // put from L3
-      producerTile = shimTileAlloc.getShimTile(aie_module, src_space,
+      producerTile = shimTileAlloc.getShimTile(device, src_space,
                                                (int)air::MemorySpace::L1);
     }
 
@@ -1031,14 +1031,14 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     } else {
       // get from L3
       consumerTile = shimTileAlloc.getShimTile(
-          aie_module, (int)air::MemorySpace::L1, dst_space);
+          device, (int)air::MemorySpace::L1, dst_space);
     }
     consumers.push_back(consumerTile);
 
     // create objFifo
     // For now, number of memory elements in OF is hardcoded to 1
     // (single buffer). FIXME
-    rewriter.setInsertionPoint(*(aie_module.getOps<AIE::CoreOp>().begin()));
+    rewriter.setInsertionPoint(*(device.getOps<AIE::CoreOp>().begin()));
     AIE::AIEObjectFifoType datatype;
     if (channelPuts.size() > 0)
       datatype = AIE::AIEObjectFifoType::get(srcMemref);

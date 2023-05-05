@@ -7,29 +7,29 @@
 
 // RUN: air-opt %s --air-to-aie='test-patterns=lower-air-channels' | FileCheck %s
 
-// CHECK: module @aie.segment_0 {
-// CHECK:   %0 = AIE.tile(1, 1)
-// CHECK:   %1 = AIE.tile(2, 0)
-// CHECK:   %2 = AIE.objectFifo.createObjectFifo(%0, {%1}, 1) {sym_name = "air_channel_1"} : !AIE.objectFifo<memref<32xi32, 2>>
-// CHECK:   %3 = AIE.objectFifo.createObjectFifo(%1, {%0}, 1) {sym_name = "air_channel_0"} : !AIE.objectFifo<memref<32xi32, 2>>
-// CHECK:   %4 = AIE.core(%0) {
-// CHECK:     affine.for %arg0 = 0 to 4096 step 32 {
-// CHECK:       %5 = AIE.objectFifo.acquire<Consume> (%3 : !AIE.objectFifo<memref<32xi32, 2>>, 1) : !AIE.objectFifoSubview<memref<32xi32, 2>>
-// CHECK:       %6 = AIE.objectFifo.subview.access %5[0] : !AIE.objectFifoSubview<memref<32xi32, 2>> -> memref<32xi32, 2>
-// CHECK:       %7 = AIE.objectFifo.acquire<Produce> (%2 : !AIE.objectFifo<memref<32xi32, 2>>, 1) : !AIE.objectFifoSubview<memref<32xi32, 2>>
-// CHECK:       %8 = AIE.objectFifo.subview.access %7[0] : !AIE.objectFifoSubview<memref<32xi32, 2>> -> memref<32xi32, 2>
-// CHECK:       affine.for %arg1 = 0 to 32 {
-// CHECK:         %9 = affine.load %6[%arg1] : memref<32xi32, 2>
-// CHECK:         affine.store %9, %8[%arg1] : memref<32xi32, 2>
+// CHECK-LABEL:   AIE.device(xcvc1902) {
+// CHECK:   %[[VAL_0:.*]] = AIE.tile(1, 1)
+// CHECK:   %[[VAL_1:.*]] = AIE.tile(2, 0)
+// CHECK:   %[[VAL_2:.*]] = AIE.objectFifo.createObjectFifo(%[[VAL_0]], {%[[VAL_1]]}, 1) : !AIE.objectFifo<memref<32xi32, 2>>
+// CHECK:   %[[VAL_3:.*]] = AIE.objectFifo.createObjectFifo(%[[VAL_1]], {%[[VAL_0]]}, 1) : !AIE.objectFifo<memref<32xi32, 2>>
+// CHECK:   %[[VAL_4:.*]] = AIE.core(%[[VAL_0]]) {
+// CHECK:     affine.for %[[VAL_5:.*]] = 0 to 4096 step 32 {
+// CHECK:       %[[VAL_6:.*]] = AIE.objectFifo.acquire<Consume> (%[[VAL_3]] : !AIE.objectFifo<memref<32xi32, 2>>, 1) : !AIE.objectFifoSubview<memref<32xi32, 2>>
+// CHECK:       %[[VAL_7:.*]] = AIE.objectFifo.subview.access %[[VAL_6]][0] : !AIE.objectFifoSubview<memref<32xi32, 2>> -> memref<32xi32, 2>
+// CHECK:       %[[VAL_8:.*]] = AIE.objectFifo.acquire<Produce> (%[[VAL_2]] : !AIE.objectFifo<memref<32xi32, 2>>, 1) : !AIE.objectFifoSubview<memref<32xi32, 2>>
+// CHECK:       %[[VAL_9:.*]] = AIE.objectFifo.subview.access %[[VAL_8]][0] : !AIE.objectFifoSubview<memref<32xi32, 2>> -> memref<32xi32, 2>
+// CHECK:       affine.for %[[VAL_10:.*]] = 0 to 32 {
+// CHECK:         %[[VAL_11:.*]] = affine.load %[[VAL_7]]{{\[}}%[[VAL_10]]] : memref<32xi32, 2>
+// CHECK:         affine.store %[[VAL_11]], %[[VAL_9]]{{\[}}%[[VAL_10]]] : memref<32xi32, 2>
 // CHECK:       }
-// CHECK:       AIE.objectFifo.release<Produce> (%2 : !AIE.objectFifo<memref<32xi32, 2>>, 1)
-// CHECK:       AIE.objectFifo.release<Consume> (%3 : !AIE.objectFifo<memref<32xi32, 2>>, 1)
+// CHECK:       AIE.objectFifo.release<Produce> (%[[VAL_2]] : !AIE.objectFifo<memref<32xi32, 2>>, 1)
+// CHECK:       AIE.objectFifo.release<Consume> (%[[VAL_3]] : !AIE.objectFifo<memref<32xi32, 2>>, 1)
 // CHECK:     }
 // CHECK:     AIE.end
 // CHECK:   } {elf_file = "segment_0_core_1_1.elf"}
 // CHECK: }
 
-module @aie.segment_0 {
+AIE.device(xcvc1902) {
   %0 = AIE.tile(1, 1)
   %1 = AIE.core(%0) {
     %c32 = arith.constant 32 : index
