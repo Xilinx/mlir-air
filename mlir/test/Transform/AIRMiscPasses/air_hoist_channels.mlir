@@ -9,7 +9,7 @@
 
 // CHECK: put @channel_0[%c0, %c0] (%arg0[%c0] [%c4, %c32] [%c32, %c1]) : (memref<128xf32>)
 // CHECK: get @channel_1[%c0, %c0] (%arg1[%c0, %c0] [%c4, %c32, %c32] [%c4096, %c128, %c1]) : (memref<128x128xf32>)
-// CHECK: put @channel_2[%c0, %c0] (%arg1[%c0, %c0] [%c4, %c32, %c32] [%c32, %c32, %c1]) : (memref<128x128xf32>)
+// CHECK: put @channel_2[%c0, %c0] (%arg1[%c0, %c0] [%c4, %c32, %c32] [%c32, %c128, %c1]) : (memref<128x128xf32>)
 #map = affine_map<(d0) -> (d0)>
 module {
   air.channel @channel_2 [1, 1]
@@ -28,7 +28,7 @@ module {
       air.channel.get  @channel_1[%c0, %c0] (%arg1[%arg2, %c0] [%c32, %c32] [%c128, %c1]) : (memref<128x128xf32>)
     }
     scf.for %arg2 = %c0 to %c128 step %c32 {
-      air.channel.put  @channel_2[%c0, %c0] (%arg1[%c0, %arg2] [%c32, %c32] [%c32, %c1]) : (memref<128x128xf32>)
+      air.channel.put  @channel_2[%c0, %c0] (%arg1[%c0, %arg2] [%c32, %c32] [%c128, %c1]) : (memref<128x128xf32>)
     }
     return %alloc : memref<128xf32>
   }

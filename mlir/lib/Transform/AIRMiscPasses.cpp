@@ -881,11 +881,10 @@ void AIRLowerHerdParallelPass::runOnOperation() {
   (void)applyPatternsAndFoldGreedily(op, std::move(patterns));
 }
 
-class HoistScfChannelGetPutPass
-    : public RewritePattern {
+class HoistScfChannelGetPutPass : public RewritePattern {
 public:
   HoistScfChannelGetPutPass(MLIRContext *context, PatternBenefit benefit = 1)
-    : RewritePattern(MatchAnyOpTypeTag(), benefit, context) {}
+      : RewritePattern(MatchAnyOpTypeTag(), benefit, context) {}
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
@@ -947,7 +946,8 @@ public:
         chanOp.getStrides()[ivOffsetIdx].getDefiningOp());
     auto foldedStride = step.value() * lastStride.value();
 
-    strides.push_back(rewriter.create<arith::ConstantIndexOp>(loc, foldedStride));
+    strides.push_back(
+        rewriter.create<arith::ConstantIndexOp>(loc, foldedStride));
     for (auto v : chanOp.getStrides()) {
       auto c = dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp());
       if (!c)
@@ -973,7 +973,9 @@ public:
   }
 };
 
-class AIRHoistScfChannelGetPutPass : public air::AIRHoistScfChannelGetPutPassBase<AIRHoistScfChannelGetPutPass> {
+class AIRHoistScfChannelGetPutPass
+    : public air::AIRHoistScfChannelGetPutPassBase<
+          AIRHoistScfChannelGetPutPass> {
 
 public:
   AIRHoistScfChannelGetPutPass() = default;
