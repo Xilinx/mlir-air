@@ -831,6 +831,54 @@ void AIRRenumberDmaIdPass::runOnOperation() {
   air::renumberDmaOps(func, clMode);
 }
 
+class ParallelToForConversion : public OpRewritePattern<scf::ParallelOp> {
+public:
+  using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ParallelOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!op->getParentOfType<air::HerdOp>())
+      return failure();
+
+    IRMapping remap;
+    scf::ForOp forOp = nullptr;
+    for (unsigned int i = 0; i < op.getNumLoops(); i++) {
+      auto lb = op.getLowerBound()[i];
+      auto ub = op.getUpperBound()[i];
+      auto step = op.getStep()[i];
+      forOp = rewriter.create<scf::ForOp>(op->getLoc(), lb, ub, step);
+      rewriter.setInsertionPointToStart(forOp.getBody());
+      remap.map(op.getInductionVars()[i], forOp.getInductionVar());
+    }
+    for (Operation &o : op.getBody()->getOperations())
+      if (!isa<scf::YieldOp>(o))
+        rewriter.clone(o, remap);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+class AIRLowerHerdParallelPass
+    : public air::AIRLowerHerdParallelPassBase<AIRLowerHerdParallelPass> {
+
+public:
+  AIRLowerHerdParallelPass() = default;
+  AIRLowerHerdParallelPass(const AIRLowerHerdParallelPass &pass){};
+
+  void runOnOperation() override;
+
+private:
+};
+
+void AIRLowerHerdParallelPass::runOnOperation() {
+  auto op = getOperation();
+  auto context = op->getContext();
+  RewritePatternSet patterns(context);
+  patterns.add<ParallelToForConversion>(context);
+  (void)applyPatternsAndFoldGreedily(op, std::move(patterns));
+}
+
 } // anonymous namespace
 
 namespace xilinx {
@@ -866,6 +914,10 @@ std::unique_ptr<Pass> createAIRFuseParallelHerdPass() {
 
 std::unique_ptr<Pass> createAIRRenumberDmaIdPass() {
   return std::make_unique<AIRRenumberDmaIdPass>();
+}
+
+std::unique_ptr<Pass> createAIRLowerHerdParallelPass() {
+  return std::make_unique<AIRLowerHerdParallelPass>();
 }
 
 } // namespace air
