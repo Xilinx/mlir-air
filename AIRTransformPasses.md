@@ -558,6 +558,7 @@ module  {
 -air-label      : Transform loops with the given label
 -air-post-label : Label to apply to transformed loop nest
 ```
+### `-air-lower-herd-parallel`: Remove scf.parallel from inside herds by transforming them to scf.for.
 ### `-air-lower-linalg-tensors`: Lowering from linalg on tensors to loops
 This pass implements a lowering pipeline from linalg on tensors to affine
 loops. There are three stages:
