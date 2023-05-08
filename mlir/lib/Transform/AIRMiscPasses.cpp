@@ -15,6 +15,8 @@
 #include "air/Transform/AIRMiscPasses.h"
 #include "PassDetail.h"
 #include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Dialect/AIRRt/AIRRtDialect.h"
+#include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Transform/AIRTilingUtils.h"
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
@@ -941,9 +943,10 @@ public:
     }
 
     SmallVector<Value> strides;
-    auto foldedStride = step.value();
-    if (ivOffsetIdx < 1)
-      foldedStride *= memrefTy.getDimSize(0);
+    auto lastStride = dyn_cast<arith::ConstantIndexOp>(
+        chanOp.getStrides()[ivOffsetIdx].getDefiningOp());
+    auto foldedStride = step.value() * lastStride.value();
+
     strides.push_back(rewriter.create<arith::ConstantIndexOp>(loc, foldedStride));
     for (auto v : chanOp.getStrides()) {
       auto c = dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp());
@@ -956,8 +959,14 @@ public:
     SmallVector<Type> tys;
     auto ctx = op->getContext();
     auto channel = FlatSymbolRefAttr::get(ctx, chanOp.getChanName());
-    rewriter.create<air::ChannelPutOp>(loc, tys, deps, channel, chanOp.getIndices(), chanOp.getMemref(),
-                                       offsets, sizes, strides);
+    if (isa<air::ChannelPutOp>(op))
+      rewriter.create<air::ChannelPutOp>(
+          loc, tys, deps, channel, chanOp.getIndices(), chanOp.getMemref(),
+          offsets, sizes, strides);
+    else
+      rewriter.create<air::ChannelGetOp>(
+          loc, tys, deps, channel, chanOp.getIndices(), chanOp.getMemref(),
+          offsets, sizes, strides);
     rewriter.eraseOp(op);
     rewriter.eraseOp(forOp);
     return success();
