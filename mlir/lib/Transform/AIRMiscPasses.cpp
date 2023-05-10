@@ -914,18 +914,16 @@ public:
     rewriter.setInsertionPoint(forOp);
     auto loc = op->getLoc();
 
+    // look for an offset that is a loop iv
     SmallVector<Value> offsets;
     Value iv = nullptr;
     int ivOffsetIdx = 0;
     for (auto v : chanOp.getOffsets()) {
-      auto c = dyn_cast_if_present<arith::ConstantIndexOp>(v.getDefiningOp());
-      if (!c) {
-        if (v == forOp.getInductionVar()) {
-          if (iv) // there can be only one
-            return failure();
-          iv = v;
-          v = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-        }
+      if (v == forOp.getInductionVar()) {
+        if (iv) // there can be only one
+          return failure();
+        iv = v;
+        v = rewriter.create<arith::ConstantIndexOp>(loc, 0);
       }
       offsets.push_back(v);
       if (!iv)
@@ -941,9 +939,12 @@ public:
       sizes.push_back(c);
     }
 
+    // compute a new stride equal to the stride of the repeated dimension
+    // multiplied by the number of scf.loop iterations we're replacing
     SmallVector<Value> strides;
+    auto lastStrideOffset = chanOp.getStrides().size() - memrefTy.getRank() + ivOffsetIdx;
     auto lastStride = dyn_cast<arith::ConstantIndexOp>(
-        chanOp.getStrides()[ivOffsetIdx].getDefiningOp());
+        chanOp.getStrides()[lastStrideOffset].getDefiningOp());
     auto foldedStride = step.value() * lastStride.value();
 
     strides.push_back(
