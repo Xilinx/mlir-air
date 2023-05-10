@@ -942,7 +942,8 @@ public:
     // compute a new stride equal to the stride of the repeated dimension
     // multiplied by the number of scf.loop iterations we're replacing
     SmallVector<Value> strides;
-    auto lastStrideOffset = chanOp.getStrides().size() - memrefTy.getRank() + ivOffsetIdx;
+    auto lastStrideOffset =
+        chanOp.getStrides().size() - memrefTy.getRank() + ivOffsetIdx;
     auto lastStride = dyn_cast<arith::ConstantIndexOp>(
         chanOp.getStrides()[lastStrideOffset].getDefiningOp());
     auto foldedStride = step.value() * lastStride.value();
