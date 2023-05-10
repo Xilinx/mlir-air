@@ -961,4 +961,10 @@ def AIRLowerHerdParallelPass : Pass<"air-lower-herd-parallel", "func::FuncOp"> {
                 "scf.for.";
   let constructor = "xilinx::air::createAIRLowerHerdParallelPass()";
 }
+
+def AIRHoistScfChannelGetPutPass : Pass<"air-hoist-channels", "func::FuncOp"> {
+  let summary = "Hoist air.channel.get and air.channel.put out of scf.for.";
+  let constructor = "xilinx::air::createAIRHoistScfChannelGetPutPass()";
+}
+
 #endif // AIR_CONVERSION_PASSES

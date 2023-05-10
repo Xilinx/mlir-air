@@ -15,6 +15,8 @@
 #include "air/Transform/AIRMiscPasses.h"
 #include "PassDetail.h"
 #include "air/Dialect/AIR/AIRDialect.h"
+#include "air/Dialect/AIRRt/AIRRtDialect.h"
+#include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Transform/AIRTilingUtils.h"
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
@@ -879,6 +881,121 @@ void AIRLowerHerdParallelPass::runOnOperation() {
   (void)applyPatternsAndFoldGreedily(op, std::move(patterns));
 }
 
+class HoistScfChannelGetPutPass : public RewritePattern {
+public:
+  HoistScfChannelGetPutPass(MLIRContext *context, PatternBenefit benefit = 1)
+      : RewritePattern(MatchAnyOpTypeTag(), benefit, context) {}
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    auto chanOp = dyn_cast<air::ChannelInterface>(op);
+    if (!chanOp)
+      return failure();
+    MemRefType memrefTy = chanOp.getMemref().getType().cast<MemRefType>();
+
+    // channel op must be in an scf.for loop
+    auto forOp = op->getParentOfType<scf::ForOp>();
+    if (!forOp)
+      return failure();
+
+    // channel op must be the only op in the loop
+    if (forOp.getBody()->getOperations().size() != 2)
+      return failure();
+
+    // scf.for must have constant bounds and step
+    auto lb = forOp.getLowerBound().getDefiningOp<arith::ConstantIndexOp>();
+    auto ub = forOp.getUpperBound().getDefiningOp<arith::ConstantIndexOp>();
+    auto step = forOp.getStep().getDefiningOp<arith::ConstantIndexOp>();
+    if (!lb || !ub || !step)
+      return failure();
+
+    auto trip_count = (ub.value() - lb.value()) / step.value();
+
+    rewriter.setInsertionPoint(forOp);
+    auto loc = op->getLoc();
+
+    // look for an offset that is a loop iv
+    SmallVector<Value> offsets;
+    Value iv = nullptr;
+    int ivOffsetIdx = 0;
+    for (auto v : chanOp.getOffsets()) {
+      if (v == forOp.getInductionVar()) {
+        if (iv) // there can be only one
+          return failure();
+        iv = v;
+        v = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+      }
+      offsets.push_back(v);
+      if (!iv)
+        ivOffsetIdx++;
+    }
+
+    SmallVector<Value> sizes;
+    sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, trip_count));
+    for (auto v : chanOp.getSizes()) {
+      auto c = dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp());
+      if (!c)
+        return failure();
+      sizes.push_back(c);
+    }
+
+    // compute a new stride equal to the stride of the repeated dimension
+    // multiplied by the number of scf.loop iterations we're replacing
+    SmallVector<Value> strides;
+    auto lastStrideOffset =
+        chanOp.getStrides().size() - memrefTy.getRank() + ivOffsetIdx;
+    auto lastStride = dyn_cast<arith::ConstantIndexOp>(
+        chanOp.getStrides()[lastStrideOffset].getDefiningOp());
+    auto foldedStride = step.value() * lastStride.value();
+
+    strides.push_back(
+        rewriter.create<arith::ConstantIndexOp>(loc, foldedStride));
+    for (auto v : chanOp.getStrides()) {
+      auto c = dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp());
+      if (!c)
+        return failure();
+      strides.push_back(c);
+    }
+
+    SmallVector<Value> deps;
+    SmallVector<Type> tys;
+    auto ctx = op->getContext();
+    auto channel = FlatSymbolRefAttr::get(ctx, chanOp.getChanName());
+    if (isa<air::ChannelPutOp>(op))
+      rewriter.create<air::ChannelPutOp>(
+          loc, tys, deps, channel, chanOp.getIndices(), chanOp.getMemref(),
+          offsets, sizes, strides);
+    else
+      rewriter.create<air::ChannelGetOp>(
+          loc, tys, deps, channel, chanOp.getIndices(), chanOp.getMemref(),
+          offsets, sizes, strides);
+    rewriter.eraseOp(op);
+    rewriter.eraseOp(forOp);
+    return success();
+  }
+};
+
+class AIRHoistScfChannelGetPutPass
+    : public air::AIRHoistScfChannelGetPutPassBase<
+          AIRHoistScfChannelGetPutPass> {
+
+public:
+  AIRHoistScfChannelGetPutPass() = default;
+  AIRHoistScfChannelGetPutPass(const AIRHoistScfChannelGetPutPass &pass){};
+
+  void runOnOperation() override;
+
+private:
+};
+
+void AIRHoistScfChannelGetPutPass::runOnOperation() {
+  auto op = getOperation();
+  auto context = op->getContext();
+  RewritePatternSet patterns(context);
+  patterns.add<HoistScfChannelGetPutPass>(context);
+  (void)applyPatternsAndFoldGreedily(op, std::move(patterns));
+}
+
 } // anonymous namespace
 
 namespace xilinx {
@@ -918,6 +1035,10 @@ std::unique_ptr<Pass> createAIRRenumberDmaIdPass() {
 
 std::unique_ptr<Pass> createAIRLowerHerdParallelPass() {
   return std::make_unique<AIRLowerHerdParallelPass>();
+}
+
+std::unique_ptr<Pass> createAIRHoistScfChannelGetPutPass() {
+  return std::make_unique<AIRHoistScfChannelGetPutPass>();
 }
 
 } // namespace air
