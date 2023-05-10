@@ -1,5 +1,5 @@
 // Copyright (C) 2023, Advanced Micro Devices, Inc.
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: MIT
 
 #include <linux/init.h>
 #include <linux/module.h>
@@ -171,7 +171,7 @@ module_exit(vck5000_exit);
 module_param(enable_aie, bool, 0644);
 MODULE_PARM_DESC(enable_aie, "Enable debug access to AIE BAR");
 
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("Dual MIT/GPL");
 MODULE_AUTHOR("Joel Nider <joel.nider@amd.com>");
 MODULE_DESCRIPTION("VCK5000 AIR driver");
 MODULE_VERSION("1.0");
