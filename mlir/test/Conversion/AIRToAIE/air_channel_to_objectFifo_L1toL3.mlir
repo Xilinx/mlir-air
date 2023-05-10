@@ -10,8 +10,8 @@
 // CHECK: module @aie.segment_0 {
 // CHECK:   %0 = AIE.tile(1, 1)
 // CHECK:   %1 = AIE.tile(2, 0)
-// CHECK:   %2 = AIE.objectFifo.createObjectFifo(%0, {%1}, 1) : !AIE.objectFifo<memref<32xi32, 2>>
-// CHECK:   %3 = AIE.objectFifo.createObjectFifo(%1, {%0}, 1) : !AIE.objectFifo<memref<32xi32, 2>>
+// CHECK:   %2 = AIE.objectFifo.createObjectFifo(%0, {%1}, 1) {sym_name = "air_channel_1"} : !AIE.objectFifo<memref<32xi32, 2>>
+// CHECK:   %3 = AIE.objectFifo.createObjectFifo(%1, {%0}, 1) {sym_name = "air_channel_0"} : !AIE.objectFifo<memref<32xi32, 2>>
 // CHECK:   %4 = AIE.core(%0) {
 // CHECK:     affine.for %arg0 = 0 to 4096 step 32 {
 // CHECK:       %5 = AIE.objectFifo.acquire<Consume> (%3 : !AIE.objectFifo<memref<32xi32, 2>>, 1) : !AIE.objectFifoSubview<memref<32xi32, 2>>

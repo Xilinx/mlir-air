@@ -10,8 +10,8 @@
 // CHECK: module @aie.partition_0 {
 // CHECK:   %0 = AIE.tile(1, 1)
 // CHECK:   %1 = AIE.tile(1, 2)
-// CHECK:   %2 = AIE.objectFifo.createObjectFifo(%0, {%1}, 2) : !AIE.objectFifo<memref<32xi32, 2>>
-// CHECK:   %3 = AIE.objectFifo.createObjectFifo(%0, {%1}, 1) : !AIE.objectFifo<memref<32xi32, 2>>
+// CHECK:   %2 = AIE.objectFifo.createObjectFifo(%0, {%1}, 2) {sym_name = "air_channel_1"} : !AIE.objectFifo<memref<32xi32, 2>>
+// CHECK:   %3 = AIE.objectFifo.createObjectFifo(%0, {%1}, 1) {sym_name = "air_channel_0"} : !AIE.objectFifo<memref<32xi32, 2>>
 // CHECK:   %4 = AIE.core(%1) {
 // CHECK:     %6 = AIE.objectFifo.acquire<Consume> (%3 : !AIE.objectFifo<memref<32xi32, 2>>, 1) : !AIE.objectFifoSubview<memref<32xi32, 2>>
 // CHECK:     %7 = AIE.objectFifo.subview.access %6[0] : !AIE.objectFifoSubview<memref<32xi32, 2>> -> memref<32xi32, 2>
