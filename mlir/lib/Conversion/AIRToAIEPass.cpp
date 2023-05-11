@@ -911,8 +911,8 @@ void allocL1Buffers(AIE::DeviceOp m,
 AIE::ObjectFifoCreateOp createObjectFifo(OpBuilder &builder,
                                          AIE::AIEObjectFifoType datatype,
                                          Value prodTile,
-                                         std::vector<Value> consTile, int depth,
-                                         StringRef name) {
+                                         const std::vector<Value> &consTile,
+                                         int depth, StringRef name) {
   AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
       builder.getUnknownLoc(), datatype, prodTile, consTile, depth);
   fifo->setAttr(SymbolTable::getSymbolAttrName(), builder.getStringAttr(name));
@@ -1079,13 +1079,14 @@ private:
 // This function replaces ChannelPutOp/ChannelGetOp with AIE_CreateObjectFifoOps
 // and with ObjectFifoAcquireOp<Producer/Consumer>. It also erases memref allocs
 // as the objFifo lowering allocates its own memory. It replaces the associated
-// memref deallocs with ObjectFifoReleaseOps. void lowerAIRChannels(ModuleOp &m)
-// {
-//   auto ctx = m->getContext();
-//   RewritePatternSet patterns(ctx);
-//   patterns.insert<LowerAIRChannelsPattern>(ctx);
-//   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
-// }
+// memref deallocs with ObjectFifoReleaseOps.
+void lowerAIRChannels(AIE::DeviceOp &d, ShimTileAllocator &a) {
+  auto ctx = d->getContext();
+  RewritePatternSet patterns(ctx);
+  ShimTileAllocator shimTileAlloc(shim_dma_cols, shim_dma_channels);
+  patterns.insert<LowerAIRChannelsPattern>(ctx, a);
+  (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
+}
 
 class AIRToAIEPass : public AIRToAIEBase<AIRToAIEPass> {
 
@@ -1678,10 +1679,28 @@ public:
 
         allocL1Buffers(m, tileToHerdMap);
 
+        // The shim tile allocation is not unified for dma and channel lowering
+        // so we disallow a mix of dma and channel ops.
+        bool hasDma = false;
+        bool hasChan = false;
+        m.walk([&](Operation *o) {
+          hasDma |= isa<air::DmaMemcpyInterface>(o);
+          hasChan |= isa<air::ChannelInterface>(o);
+        });
+        if (hasDma && hasChan) {
+          m.emitOpError(": lowering of segments containing both dma copies and "
+                        "channels is not supported");
+          signalPassFailure();
+          return;
+        }
+
         DMAAllocator shimDmaAlloc(shim_dma_cols, shim_dma_channels);
 
         lowerAirDmaMemcpy(m, shimDmaAlloc);
         lowerPipelineGetPut(m, tileToHerdMap);
+
+        ShimTileAllocator shimTileAlloc(shim_dma_cols, shim_dma_channels);
+        lowerAIRChannels(m, shimTileAlloc);
 
         SmallVector<air::HerdOp, 4> herds;
         if (auto p = h->getParentOfType<air::SegmentOp>()) {
