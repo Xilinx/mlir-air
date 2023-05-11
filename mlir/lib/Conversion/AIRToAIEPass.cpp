@@ -899,11 +899,14 @@ void allocL1Buffers(ModuleOp m,
   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
 
-AIE::ObjectFifoCreateOp
-createObjectFifo(OpBuilder &builder, AIE::AIEObjectFifoType datatype,
-                 Value prodTile, std::vector<Value> consTile, int depth) {
+AIE::ObjectFifoCreateOp createObjectFifo(OpBuilder &builder,
+                                         AIE::AIEObjectFifoType datatype,
+                                         Value prodTile,
+                                         std::vector<Value> consTile, int depth,
+                                         StringRef name) {
   AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
       builder.getUnknownLoc(), datatype, prodTile, consTile, depth);
+  fifo->setAttr(SymbolTable::getSymbolAttrName(), builder.getStringAttr(name));
   return fifo;
 }
 
@@ -1034,9 +1037,9 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       datatype = AIE::AIEObjectFifoType::get(dstMemref);
     else
       return failure();
-    AIE::ObjectFifoCreateOp objFifo =
-        createObjectFifo(rewriter, datatype, producerTile, consumers,
-                         channel.getBufferResources());
+    AIE::ObjectFifoCreateOp objFifo = createObjectFifo(
+        rewriter, datatype, producerTile, consumers,
+        channel.getBufferResources(), "air_" + channel.getName().str());
 
     // replace put/get and the associated memref alloc/dealloc
     for (auto put : channelPuts) {
