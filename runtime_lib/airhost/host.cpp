@@ -155,8 +155,8 @@ For a non-PCIe device, memory map the base address directly.
   XAie_BackendType backend;
   if (mapped_aie_base == MAP_FAILED) {
     printf("Failed mapping AIE BAR - using sysfs backend\n");
-    xaie->AieConfigPtr.Backend = XAIE_IO_BACKEND_SYSFS;
-    backend = XAIE_IO_BACKEND_SYSFS;
+    xaie->AieConfigPtr.Backend = XAIE_IO_BACKEND_AMDAIR;
+    backend = XAIE_IO_BACKEND_AMDAIR;
     xaie->AieConfigPtr.BaseAddr = 0;
     xaie->DevInst.IOInst = (void *)sysfs_path;
   } else {

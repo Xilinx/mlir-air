@@ -42,6 +42,12 @@ struct vck5000_device {
 		/sys/class/amdair/amdair/<id>/value
 	*/
 	uint64_t mem_addr; /* address for indirect memory access */
+
+  /* Pointer to the admin queue which the kernel can submit 
+    requests to.
+  */
+	void __iomem *admin_queue;
+  
 };
 
 int vck5000_chardev_init(struct pci_dev *pdev);

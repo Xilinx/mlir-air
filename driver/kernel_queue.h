@@ -1,4 +1,4 @@
-//===- air_queue.h ---------------------------------------------*- C++ -*-===//
+//===- kernel_queue.h ---------------------------------------------*- C++ -*-===//
 //
 // Copyright (C) 2020-2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
@@ -6,12 +6,35 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef ACDC_QUEUE_H
-#define ACDC_QUEUE_H
+#ifndef KERNEL_QUEUE_H
+#define KERNEL_QUEUE_H
 
 #include "hsa_defs.h"
 
-#include <stdint.h>
+/* Offsets into BRAM BAR */
+#define HERD_CONTROLLER_BASE_ADDR(_base, _x)                                   \
+	((((uint64_t)ioread32(_base + (_x * sizeof(uint64_t) + 4))) << 32) |   \
+	 ioread32(_base + (_x * sizeof(uint64_t) + 0)))
+#define REG_HERD_CONTROLLER_COUNT 0x208
+#define BRAM_PADDR 0x20100000000
+
+// How a queue is defined
+#define QUEUE_TYPE_OFFSET       0x00
+#define QUEUE_DOORBELL_OFFSET   0x10
+#define QUEUE_SIZE_OFFSET       0x18
+#define QUEUE_ID_OFFSET         0x20
+#define QUEUE_RD_PTR_OFFSET     0x28
+#define QUEUE_WR_PTR_OFFSET     0x30
+#define QUEUE_RING_OFFSET       0x80
+#define QUEUE_TIMEOUT_VAL       5000000
+
+// How a packet is defined
+#define PKT_SIZE                0x40
+#define PKT_HEADER_TYPE_OFFSET  0x00
+#define PKT_RET_ADDR_OFFSET     0x08
+#define PKT_ARG_ADDR_OFFSET     0x10
+#define PKT_COMPL_OFFSET        0x38
+#define NUM_PKTS                0x30
 
 // Define the number of HSA packets we can have in a queue
 #define MB_QUEUE_SIZE 48
@@ -62,6 +85,7 @@
 #define AIR_ADDRESS_ABSOLUTE_RANGE 0x1L
 #define AIR_ADDRESS_HERD_RELATIVE 0x2L
 #define AIR_ADDRESS_HERD_RELATIVE_RANGE 0x3L
+
 
 typedef enum {
   AIR_AGENT_INFO_NAME = 0,        // NUL-terminated char[8]
@@ -145,82 +169,7 @@ typedef struct signal_s {
 
 typedef uint64_t signal_value_t;
 
-namespace {
-
-inline uint64_t queue_add_write_index(queue_t *q, uint64_t v) {
-  auto r = q->write_index;
-  q->write_index = r + v;
-  return r;
-}
-
-inline uint64_t queue_add_read_index(queue_t *q, uint64_t v) {
-  auto r = q->read_index;
-  q->read_index = r + v;
-  return r;
-}
-
-inline uint64_t queue_load_read_index(queue_t *q) { return q->read_index; }
-
-inline uint64_t queue_load_write_index(queue_t *q) { return q->write_index; }
-
-inline uint64_t queue_paddr_from_index(queue_t *q, uint64_t idx) {
-  return q->base_address + idx;
-}
-
-inline bool packet_get_active(dispatch_packet_t *pkt) {
-  return pkt->reserved1 & 0x1;
-}
-
-inline void packet_set_active(dispatch_packet_t *pkt, bool b) {
-  pkt->reserved1 = (pkt->reserved1 & ~0x1) | b;
-}
-
-inline void initialize_packet(dispatch_packet_t *pkt) {
-  pkt->header = HSA_PACKET_TYPE_INVALID;
-  // pkt->type = AIR_PKT_TYPE_INVALID;
-}
-
-inline hsa_status_t signal_create(signal_value_t initial_value,
-                                  uint32_t num_consumers, void *consumers,
-                                  signal_t *signal) {
-  // auto s = (signal_value_t*)malloc(sizeof(signal_value_t));
-  //*s = initial_value;
-  signal->handle = (uint64_t)initial_value;
-  return HSA_STATUS_SUCCESS;
-}
-
-inline hsa_status_t signal_destroy(signal_t signal) {
-  // free((void*)signal.handle);
-  return HSA_STATUS_SUCCESS;
-}
-
-inline void signal_store_release(signal_t *signal, signal_value_t value) {
-  signal->handle = (uint64_t)value;
-}
-
-inline signal_value_t signal_wait_acquire(volatile signal_t *signal,
-                                          hsa_signal_condition_t condition,
-                                          signal_value_t compare_value,
-                                          uint64_t timeout_hint,
-                                          hsa_wait_state_t wait_state_hint) {
-  signal_value_t ret = 0;
-  uint64_t timeout = timeout_hint;
-  do {
-    ret = signal->handle;
-    if (ret == compare_value)
-      return compare_value;
-  } while (timeout--);
-  return ret;
-}
-
-inline void signal_subtract_acq_rel(signal_t *signal, signal_value_t value) {
-  signal->handle = signal->handle - (uint64_t)value;
-  // uint64_t i;
-  // memcpy((void*)&i, (void*)signal, sizeof(signal_value_t));
-  // i = i - (uint64_t)value;
-  // memcpy((void*)signal, (void*)&i, sizeof(signal_value_t));
-}
-
-} // namespace
+// Function declarations
+hsa_status_t air_queue_create(uint32_t size, uint32_t type, struct vck5000_device *dev);
 
 #endif
