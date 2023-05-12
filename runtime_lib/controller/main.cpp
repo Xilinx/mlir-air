@@ -61,7 +61,7 @@ int shim_dma_cols[NUM_SHIM_DMAS] = {2,  3,  6,  7,  10, 11, 18, 19,
 int col_dma_cols[NUM_COL_DMAS] = {7, 8, 9, 10};
 #define NUM_DMAS (NUM_SHIM_DMAS + NUM_COL_DMAS)
 
-#define CHATTY 0
+#define CHATTY 1
 
 #define air_printf(fmt, ...)                                                   \
   do {                                                                         \
@@ -1094,6 +1094,44 @@ void handle_packet_get_info(dispatch_packet_t *pkt, uint32_t mb_id) {
   }
 }
 
+#define   AIE_BASE      0x020000000000
+#define   AIE_CSR_SIZE  0x000100000000
+
+void handle_packet_read_write_32(dispatch_packet_t *pkt) {
+
+  packet_set_active(pkt, true);
+
+  uint64_t *return_addr =
+      (uint64_t *)(&pkt->return_address); // FIXME when we can use a VA
+
+  uint64_t  address   = pkt->arg[0];
+  uint32_t  value     = pkt->arg[1] & 0x0FFFFFFFF;
+  bool      is_write  = (pkt->arg[1] >> 32) & 0x1;
+
+  /*xil_printf("GOT A RW32 PACKET\r\n");
+  xil_printf("\tAddress: 0x%lx\r\n", address);
+  xil_printf("\tvalue: 0x%lx\r\n", value);
+  xil_printf("\tis_write: 0x%lx\r\n", is_write);*/
+
+  volatile uint32_t* aie_csr = (volatile uint32_t *)AIE_BASE;
+
+  if(address > AIE_CSR_SIZE) {
+    printf("[ERROR] read32/write32 packets provided address of size 0x%lx. Window is only 4GB\n", address);
+  }
+
+  if(is_write) {
+    //xil_printf("We are writing 0x%lx to address 0x%lx\r\n", value, address);
+    aie_csr[address >> 2] = value;
+  }
+  else {
+    //xil_printf("We are reading from 0x%lx and storing in %p\r\n", address, return_addr);
+    *return_addr = aie_csr[address >> 2];
+    //xil_printf("We read 0x%x from the dude\r\n", aie_csr[address >> 2]);
+  }
+
+}
+
+
 // uint64_t cdma_base = 0x0202C0000000UL;
 // uint64_t cdma_base1 = 0x020340000000UL;
 #ifdef ARM_CONTROLLER
@@ -1518,7 +1556,7 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id) {
 
   packet_op:
     auto op = pkt->type & 0xffff;
-    // air_printf("Op is %04X\n\r",op);
+    //air_printf("Op is %04X\n\r",op);
     switch (op) {
     case AIR_PKT_TYPE_INVALID:
     default:
@@ -1540,6 +1578,12 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id) {
 
     case AIR_PKT_TYPE_CONFIGURE:
       handle_packet_sg_cdma(pkt);
+      complete_agent_dispatch_packet(pkt);
+      packets_processed++;
+      break;
+
+    case AIR_PKT_TYPE_RW32:
+      handle_packet_read_write_32(pkt);
       complete_agent_dispatch_packet(pkt);
       packets_processed++;
       break;

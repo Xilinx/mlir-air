@@ -63,6 +63,9 @@ hsa_status_t air_iterate_agents(hsa_status_t (*callback)(air_agent_t agent,
 hsa_status_t air_get_agent_info(queue_t *queue, air_agent_info_t attribute,
                                 void *data);
 
+
+hsa_status_t air_packet_rw32_init(dispatch_packet_t *pkt, bool is_write, uint64_t address, uint32_t value);
+
 #ifdef AIR_PCIE
 hsa_status_t air_get_physical_devices();
 #endif
