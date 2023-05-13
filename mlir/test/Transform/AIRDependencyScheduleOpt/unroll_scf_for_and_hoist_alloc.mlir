@@ -12,20 +12,20 @@
 // CHECK: func @unroll_and_hoist_alloc
 // CHECK: %[[EVENT0:.*]], %[[VALUE0:.*]] = air.execute
 // CHECK: memref.alloc()
-// CHECK: {unrolled_iteration = 1 : ui32}
+// CHECK: {unrolled_iteration = 1 : i32}
 // CHECK: %[[EVENT1:.*]], %[[VALUE1:.*]] = air.execute
 // CHECK: memref.alloc()
-// CHECK: {unrolled_iteration = 0 : ui32}
+// CHECK: {unrolled_iteration = 0 : i32}
 // CHECK: %[[EVENT2:.*]] = scf.for {{.*}} iter_args(%[[EVENT1:.*]] =
-// CHECK: %[[EVENT3:.*]] = air.wait_all async [%[[EVENT1]]]{{.*}}{unrolled_iteration = 0 : ui32}
-// CHECK: %[[EVENT4:.*]] = air.wait_all async [%[[EVENT3]]]{{.*}}{unrolled_iteration = 1 : ui32}
+// CHECK: %[[EVENT3:.*]] = air.wait_all async [%[[EVENT1]]]{{.*}}{unrolled_iteration = 0 : i32}
+// CHECK: %[[EVENT4:.*]] = air.wait_all async [%[[EVENT3]]]{{.*}}{unrolled_iteration = 1 : i32}
 // CHECK: scf.yield %[[EVENT4]]
 // CHECK: %[[EVENT5:.*]] = air.execute [%[[EVENT2]]]
 // CHECK: memref.dealloc
-// CHECK: {unrolled_iteration = 0 : ui32}
+// CHECK: {unrolled_iteration = 0 : i32}
 // CHECK: %[[EVENT6:.*]] = air.execute [%[[EVENT2]]]
 // CHECK: memref.dealloc
-// CHECK: {unrolled_iteration = 1 : ui32}
+// CHECK: {unrolled_iteration = 1 : i32}
 
 func.func @unroll_and_hoist_alloc(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x1024xbf16>, %arg2: memref<1024x1024xbf16>, %arg3: memref<1024x1024xbf16>) {
   %c1 = arith.constant 1 : index
