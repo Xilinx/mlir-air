@@ -2244,49 +2244,13 @@ char dependencyTracer::checkOperandReadOrWrite(mlir::Value operand) {
   bool foundWriteAccess = false;
   bool foundReadAccess = false;
   for (auto &u : operand.getUses()) {
-    // If used in DmaMemcpy Op
-    if (auto dma = dyn_cast<xilinx::air::DmaMemcpyInterface>(u.getOwner())) {
-      if (u.is(dma.getSrcMemref())) {
-        foundReadAccess = true;
-      } else if (u.is(dma.getDstMemref())) {
-        foundWriteAccess = true;
-      } else {
-        assert(false && "Unknown operand in air.dma");
-      }
-    }
-    // If used in Channel Put Op
-    else if (auto channel_put =
-                 dyn_cast<xilinx::air::ChannelPutOp>(u.getOwner())) {
-      if (u.is(channel_put.getSrc())) {
-        foundReadAccess = true;
-      } else {
-        assert(false && "Unknown operand in air.channel_put");
-      }
-    }
-    // If used in Channel Get Op
-    else if (auto channel_get =
-                 dyn_cast<xilinx::air::ChannelGetOp>(u.getOwner())) {
-      if (u.is(channel_get.getDst())) {
-        foundWriteAccess = true;
-      } else {
-        assert(false && "Unknown operand in air.channel_get");
-      }
-    }
-    // If used in a linalg op
-    else if (auto linalgop = mlir::dyn_cast<linalg::LinalgOp>(u.getOwner())) {
-      if (u.getOperandNumber() <
-          linalgop.getNumDpsInputs() + linalgop.getNumDpsInits()) {
-        foundReadAccess = true;
-      } else if (u.getOperandNumber() >= linalgop.getNumDpsInputs() &&
-                 u.getOperandNumber() - linalgop.getNumDpsInputs() <
-                     linalgop.getNumDpsInits()) {
-        foundWriteAccess = true;
-      } else {
-        assert(false && "Unknown operand in linalg op");
-      }
-    }
+    char rw_code = checkOpOperandReadOrWrite(u);
+    if (rw_code == 'w')
+      foundWriteAccess = true;
+    else if (rw_code == 'r')
+      foundReadAccess = true;
     // If unknown op, then assume write access for safety
-    else
+    else if (rw_code == 'u')
       foundWriteAccess = true;
   }
   if (foundWriteAccess)

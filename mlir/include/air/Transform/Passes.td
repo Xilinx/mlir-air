@@ -869,6 +869,14 @@ def AIRUnrollLoopForPipeliningPattern: Pass<"air-unroll-loop-for-pipelining-patt
   }];
 }
 
+def AIRConstructPingPongDependencyPattern: Pass<"air-construct-ping-pong-dependency-pattern", "ModuleOp"> {
+  let summary = "Transform an scf.for loop into ping-pong pattern";
+  let constructor = "xilinx::air::createAIRConstructPingPongDependencyPattern()";
+  let description = [{
+    This pass transform an scf.for loop into ping-pong pattern.
+  }];
+}
+
 def AIRPipelineLoweringPattern: Pass<"air-pipeline-lowering", "ModuleOp"> {
   let summary = "Lower to pipelining pattern";
   let constructor = "xilinx::air::createAIRPipelineLoweringPattern()";

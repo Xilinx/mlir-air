@@ -10,6 +10,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -345,7 +346,6 @@ air::getChannelGetOpThroughSymbol(air::ChannelOp channel) {
 // Get the other channel op through channel symbol
 std::vector<air::ChannelGetOp>
 air::getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put) {
-  auto module = put->getParentOfType<ModuleOp>();
   auto channel_op = getChannelDeclarationThroughSymbol(
       dyn_cast<air::ChannelInterface>(put.getOperation()));
   return getChannelGetOpThroughSymbol(channel_op);
@@ -354,7 +354,6 @@ air::getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put) {
 // Get the other channel op through channel symbol
 std::vector<air::ChannelPutOp>
 air::getTheOtherChannelOpThroughSymbol(air::ChannelGetOp get) {
-  auto module = get->getParentOfType<ModuleOp>();
   auto channel_op = getChannelDeclarationThroughSymbol(
       dyn_cast<air::ChannelInterface>(get.getOperation()));
   return getChannelPutOpThroughSymbol(channel_op);
@@ -522,4 +521,62 @@ Operation *air::getAffineIfNestAndSpatialLoopFromOp(
   spatial_loop = parent;
   parent = parent->getParentOp();
   return parent;
+}
+
+// Check if an operand of an operation is read or write access
+char air::checkOpOperandReadOrWrite(Value v, Operation * owner) {
+  for (auto &op_operand : owner->getOpOperands()){
+    if (op_operand.is(v)){
+      return checkOpOperandReadOrWrite(op_operand);
+    }
+  }
+  // Value is not an opoperand of the operation
+  return 'e';
+}
+char air::checkOpOperandReadOrWrite(mlir::OpOperand &op_operand) {
+  auto owner = op_operand.getOwner();
+  // If used in DmaMemcpy Op
+  if (auto dma = dyn_cast<xilinx::air::DmaMemcpyInterface>(owner)) {
+    if (op_operand.is(dma.getSrcMemref())) {
+      return 'r';
+    } else if (op_operand.is(dma.getDstMemref())) {
+      return 'w';
+    } else {
+      assert(false && "Unknown operand in air.dma");
+    }
+  }
+  // If used in Channel Put Op
+  else if (auto channel_put =
+                dyn_cast<xilinx::air::ChannelPutOp>(owner)) {
+    if (op_operand.is(channel_put.getSrc())) {
+      return 'r';
+    } else {
+      assert(false && "Unknown operand in air.channel_put");
+    }
+  }
+  // If used in Channel Get Op
+  else if (auto channel_get =
+                dyn_cast<xilinx::air::ChannelGetOp>(owner)) {
+    if (op_operand.is(channel_get.getDst())) {
+      return 'w';
+    } else {
+      assert(false && "Unknown operand in air.channel_get");
+    }
+  }
+  // If used in a linalg op
+  else if (auto linalgop = mlir::dyn_cast<linalg::LinalgOp>(owner)) {
+    if (op_operand.getOperandNumber() <
+        linalgop.getNumDpsInputs() + linalgop.getNumDpsInits()) {
+      return 'r';
+    } else if (op_operand.getOperandNumber() >= linalgop.getNumDpsInputs() &&
+                op_operand.getOperandNumber() - linalgop.getNumDpsInputs() <
+                    linalgop.getNumDpsInits()) {
+      return 'w';
+    } else {
+      assert(false && "Unknown operand in linalg op");
+    }
+  }
+  // If unknown op
+  else
+    return 'u';
 }
