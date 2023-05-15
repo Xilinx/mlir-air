@@ -857,7 +857,7 @@ def AIRHoistMemallocInForPattern: Pass<"air-hoist-alloc-in-for-pattern", "Module
   let summary = "Hoist pairs of alloc and dealloc ops out of for loop";
   let constructor = "xilinx::air::createAIRHoistMemallocInForPattern()";
   let description = [{
-    This pass Hoist pairs of alloc and dealloc ops out of a for loop body.
+    This pass hoists pairs of `alloc` and `dealloc` ops out of a for loop body.
   }];
 }
 
