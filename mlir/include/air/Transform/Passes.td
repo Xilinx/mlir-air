@@ -873,7 +873,7 @@ def AIRConstructPingPongDependencyPattern: Pass<"air-construct-ping-pong-depende
   let summary = "Transform an scf.for loop into ping-pong pattern";
   let constructor = "xilinx::air::createAIRConstructPingPongDependencyPattern()";
   let description = [{
-    This pass transform an scf.for loop into ping-pong pattern.
+    This pass transform an `scf.for` loop into ping-pong pattern.
   }];
 }
 
