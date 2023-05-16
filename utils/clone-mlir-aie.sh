@@ -14,14 +14,14 @@
 #
 ##===----------------------------------------------------------------------===##
 
-export HASH=97bb9cc6fc4a1d5c2854a5704433341a6ee3ceb4
+export HASH=cmake
 
 git clone --depth 1 https://github.com/Xilinx/cmakeModules cmakeModules/cmakeModulesXilinx
 export CMAKE_MODULE_PATH=`pwd`/cmakeModules/cmakeModulesXilinx
 
-git clone --depth 1 https://github.com/Xilinx/mlir-aie.git mlir-aie
+git clone https://github.com/Xilinx/mlir-aie.git mlir-aie
 pushd mlir-aie
-git fetch --depth=1 origin $HASH
-git checkout $HASH
+#git fetch --depth=1 origin $HASH
+git checkout -b cmake origin/cmake
 git submodule update --init
 popd
