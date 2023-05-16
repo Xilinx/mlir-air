@@ -17,6 +17,8 @@ namespace air {
 
 std::unique_ptr<mlir::Pass> createAIRHoistDmaInAccumPattern();
 
+std::unique_ptr<mlir::Pass> createAIRAnnotateFrontAndBackOpsInForPattern();
+
 std::unique_ptr<mlir::Pass> createAIRHoistMemallocInForPattern();
 
 std::unique_ptr<mlir::Pass> createAIRUnrollLoopForPipeliningPattern();

@@ -366,6 +366,113 @@ private:
   }
 };
 
+struct AnnotateFrontAndBackOpsInForPattern : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp for_op,
+                                PatternRewriter &rewriter) const override {
+
+    // Check if the for loop is targetted for unrolling
+    if (!for_op->hasAttr("unroll")) return failure();
+
+    // Check if the for loop is async
+    SmallVector<Value> iterTokens;
+    for (auto iter_arg : for_op.getRegionIterArgs()){
+      if (iter_arg.getType().isa<air::AsyncTokenType>()){
+        iterTokens.push_back(iter_arg);
+      }
+    }
+    if (!iterTokens.size()) return failure();
+
+    // Get async alloc ops
+    SmallVector<Operation *> allocOps;
+    for (auto &op : for_op.getOps()){
+      if (auto exec_op = dyn_cast<air::ExecuteOp>(op)){
+        bool isFrontCandidate = false;
+        if (!exec_op.getAsyncDependencies().size()) isFrontCandidate = true;
+        for (auto d : exec_op.getAsyncDependencies()){
+          for (auto t : iterTokens){
+            if (d == t){
+              isFrontCandidate = true;
+            }
+          }
+        }
+        auto child_op =
+            &exec_op.getRegion().front().getOperations().front();
+        if (isa<memref::AllocOp>(child_op) && isFrontCandidate) {
+          iterTokens.push_back(op.getResult(0));
+          // Note: skipping over alloc ops, since they will get hoisted out of loop
+          allocOps.push_back(&op);
+        }
+      }
+    }
+    if (!allocOps.size()) return failure();
+
+    // Get ops which are at the front of the loop body's dependency graph
+    for (auto &op : for_op.getOps()){
+      bool skip_this_op = false;
+      for (auto allocOp : allocOps){
+        if (&op == allocOp) skip_this_op = true;
+      }
+
+      SmallVector<Value> dep_list;
+      if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)){
+        dep_list = async_op.getAsyncDependencies();
+      }
+      else if (auto async_for_op = dyn_cast<scf::ForOp>(op)){
+        dep_list = async_for_op.getIterOperands();
+      }
+      else if (auto async_parallel_op = dyn_cast<scf::ParallelOp>(op)){
+        dep_list = async_parallel_op.getInitVals();
+      }
+      else skip_this_op = true;
+
+      if (skip_this_op) continue;
+
+      if (!dep_list.size()) op.setAttr("async_front", rewriter.getBoolAttr(true));
+      for (auto token : iterTokens){
+        for (auto dep : dep_list){
+          if (token == dep){
+            op.setAttr("async_front", rewriter.getBoolAttr(true));
+          }
+        }
+      }
+    }
+
+    // Get ops which are at the back of the loop body's dependency graph
+    auto yield = for_op.getBody()->getTerminator();
+    SmallVector<Value> yielded_tokens;
+    for (auto operand : yield->getOperands()){
+      if (operand.getType().isa<air::AsyncTokenType>()){
+        yielded_tokens.push_back(operand);
+      }
+    }
+    SmallVector<Operation *> back_candidates;
+    for (auto token : yielded_tokens){
+      auto back_candidate = token.getDefiningOp();
+      if (auto exec_op = dyn_cast<air::ExecuteOp>(back_candidate)){
+        auto child_op =
+            &exec_op.getRegion().front().getOperations().front();
+        if (isa<memref::DeallocOp>(child_op)){
+          for (auto d : exec_op.getAsyncDependencies()){
+            back_candidates.push_back(d.getDefiningOp());
+          }
+        }
+      }
+      else {
+        back_candidates.push_back(back_candidate);
+      }
+    }
+    for (auto op : back_candidates){
+      op->setAttr("async_back", rewriter.getBoolAttr(true));
+    }
+
+    return success();
+  }
+
+private:
+};
+
 struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
 
@@ -544,24 +651,6 @@ struct ConstructPingPongDependencyPattern : public OpRewritePattern<scf::ForOp> 
     scf::ForOp new_loop_op = createNewForLoopWithFourIterArgs(rewriter, for_op, iter_operands);
     for_op.getResult(0).replaceAllUsesWith(new_loop_op.getResult(new_loop_op.getNumResults() - 1));
     for_op.erase();
-
-    
-
-    // // Annotate iteration fronts and ends
-    // for (auto &child_op : for_op.getOps()){
-    //   for (auto operand : child_op.getOperands()){
-    //     if (operand == alloc_exec.getAsyncToken()){
-    //       child_op.setAttr("iteration_front", rewriter.getBoolAttr(true));
-    //     }
-    //   }
-    //   for (auto result : child_op.getResults()){
-    //     for (auto dealloc_dep : dealloc_exec.getAsyncDependencies()){
-    //       if (result == dealloc_dep){
-    //         child_op.setAttr("iteration_end", rewriter.getBoolAttr(true));
-    //       }
-    //     }
-    //   }
-    // }
 
     return success();
     
@@ -879,6 +968,32 @@ public:
 private:
 };
 
+class AIRAnnotateFrontAndBackOpsInForPattern
+    : public xilinx::air::AIRAnnotateFrontAndBackOpsInForPatternBase<
+          AIRAnnotateFrontAndBackOpsInForPattern> {
+
+public:
+  AIRAnnotateFrontAndBackOpsInForPattern() = default;
+  AIRAnnotateFrontAndBackOpsInForPattern(const AIRAnnotateFrontAndBackOpsInForPattern &pass){};
+
+  void runOptPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<AnnotateFrontAndBackOpsInForPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      runOptPatterns(f);
+  }
+
+private:
+};
+
 class AIRHoistMemallocInForPattern
     : public xilinx::air::AIRHoistMemallocInForPatternBase<
           AIRHoistMemallocInForPattern> {
@@ -1034,6 +1149,10 @@ namespace air {
 
 std::unique_ptr<Pass> createAIRHoistDmaInAccumPattern() {
   return std::make_unique<AIRHoistDmaInAccumPattern>();
+}
+
+std::unique_ptr<Pass> createAIRAnnotateFrontAndBackOpsInForPattern() {
+  return std::make_unique<AIRAnnotateFrontAndBackOpsInForPattern>();
 }
 
 std::unique_ptr<Pass> createAIRHoistMemallocInForPattern() {

@@ -853,6 +853,16 @@ def AIRPruneLinalgGenericInputDma: Pass<"air-prune-linalg-generic-input-dma", "M
   }];
 }
 
+def AIRAnnotateFrontAndBackOpsInForPattern: Pass<"air-annotate-front-and-back-ops-in-for-pattern", "ModuleOp"> {
+  let summary = "Annotates ops in for loop body which are at the front and back of the body's dependency graph";
+  let constructor = "xilinx::air::createAIRAnnotateFrontAndBackOpsInForPattern()";
+  let description = [{
+    This pass analyzes the loop body of an asynchronous for loop and annotates the 
+    asynchronous operations which are located at the front and back of the loop
+    body's dependency tree.
+  }];
+}
+
 def AIRHoistMemallocInForPattern: Pass<"air-hoist-alloc-in-for-pattern", "ModuleOp"> {
   let summary = "Hoist pairs of alloc and dealloc ops out of for loop";
   let constructor = "xilinx::air::createAIRHoistMemallocInForPattern()";
