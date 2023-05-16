@@ -28,7 +28,7 @@ cmake .. \
     -DAIE_LINKER=NONE \
     -DHOST_COMPILER=NONE \
     -DLLVM_ENABLE_ASSERTIONS=ON \
-    -DCMAKE_MODULE_PATH=`pwd`/../cmakeModules \
+    -DCMAKE_MODULE_PATH=`pwd`/../cmake/modulesXilinx \
     -DMLIR_DIR=`pwd`/../../llvm/install/lib/cmake/mlir/ \
     -DLLVM_DIR=`pwd`/../../llvm/install/lib/cmake/llvm/ \
     -DCMAKE_LINKER=lld \
