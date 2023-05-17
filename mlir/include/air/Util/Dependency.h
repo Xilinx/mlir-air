@@ -52,6 +52,7 @@ void traceDependentInductionVar(air::AsyncOpInterface async_op,
                                 std::vector<Operation *> &op_history);
 void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op,
                                      Value token);
+void clearAsyncDependenciesOfAsyncOp(xilinx::air::AsyncOpInterface op);
 Value getLoopCarriedTokenFromScfOp(scf::ParallelOp op);
 Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
                                    std::string operand_or_argument = "operand");
