@@ -21,6 +21,7 @@
 #include <linux/pci.h>
 #include <uapi/linux/kfd_ioctl.h>
 #include "chardev.h"
+#include "kernel_queue.h"
 
 #define DEVICE_INDEX_STR_MAX 15
 
@@ -32,39 +33,9 @@
 			     .name = #ioctl }
 
 #define HERD_CONTROLLER_BRAM_SIZE 0x1000
-#define DOORBELL_OFFSET 0x50
-#define SIZE_OFFSET 0x58
-#define ID_OFFSET 0x60
-#define RD_PTR_OFFSET 0x68
-#define WR_PTR_OFFSET 0x70
-#define QUEUE_OFFSET 0xC0
-#define QUEUE_TIMEOUT_VAL 5000000
 
 #define USE_RW32_PKTS
-
-  /*
-
-typedef struct dispatch_packet_s {
-
-  // HSA-like interface
-  volatile uint16_t header;
-  volatile uint16_t type;
-  uint32_t reserved0;
-  uint64_t return_address;
-  uint64_t arg[4];
-  uint64_t reserved1;
-  uint64_t completion_signal;
-
-} __attribute__((packed, aligned(__alignof__(uint64_t)))) dispatch_packet_t;
-*/
-
-#define PKT_SIZE                0x40
-#define PKT_HEADER_TYPE_OFFSET  0x00
-#define PKT_RET_ADDR_OFFSET     0x08
-#define PKT_ARG_ADDR_OFFSET     0x10
-#define PKT_COMPL_OFFSET        0x38
-#define NUM_PKTS                0x30
-
+  
 enum aie_address_validation {
 	AIE_ADDR_OK,
 	AIE_ADDR_ALIGNMENT,
@@ -143,11 +114,6 @@ extern bool enable_aie;
 static int chardev_major = -1;
 static struct class *vck5000_class;
 static struct device *vck5000_chardev;
-
-// Used for Eddie debugging read32/write32
-uint32_t show_count = 0;
-uint32_t store_count = 0;
-
 
 /** Ioctl table */
 static const struct vck5000_ioctl_desc vck5000_ioctls[] = {
@@ -402,72 +368,59 @@ static ssize_t address_store(struct kobject *kobj, struct attribute *attr,
 static ssize_t value_show(struct kobject *kobj, struct attribute *attr,
 			  char *buf)
 {
-	uint32_t value;
+	uint32_t value = 0;
 	struct vck5000_device *drv_priv =
 		container_of(kobj, struct vck5000_device, kobj_aie);
 	uint64_t offset = drv_priv->mem_addr;
+
+  // Variables to write the packet
+  bool is_write = 0;
+  uint64_t timeout_val = 0;
+  uint32_t packet_value = 0; // This is the value we write to the packet
+  uint32_t wr_idx, queue_size, packet_id, header_type, read_completion;
+  void __iomem *pkt;
 
 	if (validate_aie_address(offset, drv_priv)) {
 		snprintf(buf, PAGE_SIZE, "0xffffffff\n");
 		return strlen(buf) + 1;
 	}
 
-  show_count++;
-  printk("[EDDIE DEBUG %s] show_count: 0x%x\n", __func__, show_count);
-
 #ifdef USE_RW32_PKTS
 
-  // Step 1: Calculate the queue location
-  uint32_t queue_id = ioread32(drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + ID_OFFSET);
-  if(queue_id != 0xacdc) {
-    dev_warn(vck5000_chardev, "%s Invalid queue ID of 0x%x", __func__, queue_id);
-		return strlen(buf) + 1;
-  }
+  // Step 1: Calculate where our packet is going to exist
+  wr_idx = ioread32(drv_priv->admin_queue + QUEUE_WR_PTR_OFFSET);
+  queue_size = ioread32(drv_priv->admin_queue + QUEUE_SIZE_OFFSET);
+  packet_id = wr_idx % queue_size;
+  iowrite32(wr_idx + 1, drv_priv->admin_queue + QUEUE_WR_PTR_OFFSET);
 
-  // Step 2: Read the write pointer
-  uint32_t wr_idx = ioread32(drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + WR_PTR_OFFSET);
+  // Step 2: Initialize the packet 
+  pkt = drv_priv->admin_queue + QUEUE_RING_OFFSET + PKT_SIZE * packet_id;
+  header_type = (AIR_PKT_TYPE_RW32 << 16) | (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
+  iowrite32(HSA_PACKET_TYPE_INVALID, pkt + PKT_HEADER_TYPE_OFFSET);
+  iowrite32((uint32_t)(offset & 0xFFFFFFFF),  pkt + PKT_ARG_ADDR_OFFSET       );  // Writing the addr low bits
+  iowrite32((uint32_t)(offset >> 32),         pkt + PKT_ARG_ADDR_OFFSET + 0x4 );  // Writing the addr high bits
+  iowrite32(packet_value,                     pkt + PKT_ARG_ADDR_OFFSET + 0x8 );  // Writing the value, doesn't matter because read
+  iowrite32((uint32_t)is_write,               pkt + PKT_ARG_ADDR_OFFSET + 0xC );  // Writing the is_write
+  iowrite32(header_type, pkt + PKT_HEADER_TYPE_OFFSET); // Writing dispatch header type and rw32 dude
+  iowrite32(0x00000001, pkt + PKT_COMPL_OFFSET); // Writing a 1 to the signal which will mark the completion
 
-  // Step 3: Read the queue size
-  uint32_t queue_size = ioread32(drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + SIZE_OFFSET);
+  // Step 3: Ring the doorbell and poll on the read pointer
+  iowrite32(wr_idx, drv_priv->admin_queue + QUEUE_DOORBELL_OFFSET);
+  iowrite32(0, drv_priv->admin_queue + QUEUE_DOORBELL_OFFSET + 0x4);
 
-  // Step 4: Calculate packet_id
-  uint32_t packet_id = wr_idx % queue_size;
-  printk("[EDDIE DEBUG %s] We are writing to a packet ID of 0x%x\n", __func__, packet_id);
-
-  // Step 5.1: Write the new write index to the queue
-  iowrite32(wr_idx + 1, drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + WR_PTR_OFFSET);
-
-  // Step 6.1: Intiialize_packet - Write HSA_PACKET_TYPE_INVALID (1) to header
-  iowrite32(0x00000001, drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_HEADER_TYPE_OFFSET);
-  // Step 6.2: Write arguments
-  iowrite32((uint32_t)(offset & 0xFFFFFFFF), drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_ARG_ADDR_OFFSET); // Writing the addr low bits
-  iowrite32((uint32_t)(offset >> 32), drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_ARG_ADDR_OFFSET + 0x4);  // Writing the addr high bits
-  iowrite32(0x00000000, drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_ARG_ADDR_OFFSET + 0x8);                // Writing the value, doesn't matter because read
-  iowrite32(0x00000000, drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_ARG_ADDR_OFFSET + 0xC);                // Writing the is_write
-  // Step 6.3: Write pkt->type and header
-  iowrite32(0x00500004, drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_HEADER_TYPE_OFFSET); // Writing dispatch header type and rw32 dude
-  //printk("[EDDIE DEBUG %s] we are writing to 0x%lx\n", __func__, (uint64_t)(HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_HEADER_TYPE_OFFSET));
-  // Step 6.4: Create the completion signal
-  iowrite32(0x00000001, drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_COMPL_OFFSET); // Writing a 1 to the signal which will mark the completion
-
-  // Step 7: Ring the doorbell
-  iowrite32(wr_idx, drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + DOORBELL_OFFSET);
-  iowrite32(0, drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + DOORBELL_OFFSET + 0x4);
-
-  // Step 8: Poll on the read pointer to make sure that we did the dude - Make sure that there is a timeout and if there is return 0
-  uint64_t timeout_val = 0;
-  uint32_t read_completion = ioread32(drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_COMPL_OFFSET);
+  read_completion = ioread32(pkt + PKT_COMPL_OFFSET);
   while(read_completion != 0x00000000) {
     if(timeout_val >= QUEUE_TIMEOUT_VAL) {
 		  dev_warn(vck5000_chardev, "%s Timed out sending packet to the admin queue", __func__);
 		  return strlen(buf) + 1;
     }
-    read_completion = ioread32(drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_COMPL_OFFSET);
+    read_completion = ioread32(pkt + PKT_COMPL_OFFSET);
+    
     timeout_val++;
   }
 
-  // Step 9: Get the value from the packet and return it to the dude
-  value = ioread32(drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_RET_ADDR_OFFSET);
+  // Step 4: Get the value from the packet and return it to the calling application
+  value = ioread32(pkt + PKT_RET_ADDR_OFFSET);
 #else
   value = ioread32(drv_priv->aie_bar + offset);
 #endif
@@ -484,60 +437,49 @@ static ssize_t value_store(struct kobject *kobj, struct attribute *attr,
 		container_of(kobj, struct vck5000_device, kobj_aie);
 	uint64_t offset = drv_priv->mem_addr;
 
+  // Variables to write the packet
+  bool is_write = 1;
+  uint64_t timeout_val = 0;
+  uint32_t wr_idx, queue_size, packet_id, header_type, read_completion;
+  void __iomem *pkt;
+
 	if (validate_aie_address(offset, drv_priv) == AIE_ADDR_OK) {
 		kstrtouint(buf, 0, &value);
 
-    store_count++;
-    printk("[EDDIE DEBUG %s] store_count: 0x%x\n", __func__, store_count);
-
 #ifdef USE_RW32_PKTS
-    // Step 1: Calculate the queue location
-    uint32_t queue_id = ioread32(drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + ID_OFFSET);
-    if(queue_id != 0xacdc) {
-      dev_warn(vck5000_chardev, "%s Invalid queue ID of 0x%x", __func__, queue_id);
-		  return count;
+
+  // Step 1: Calculate where our packet is going to exist
+  wr_idx = ioread32(drv_priv->admin_queue + QUEUE_WR_PTR_OFFSET);
+  queue_size = ioread32(drv_priv->admin_queue + QUEUE_SIZE_OFFSET);
+  packet_id = wr_idx % queue_size;
+  iowrite32(wr_idx + 1, drv_priv->admin_queue + QUEUE_WR_PTR_OFFSET);
+
+  // Step 2: Initialize the packet 
+  pkt = drv_priv->admin_queue + QUEUE_RING_OFFSET + PKT_SIZE * packet_id;
+  header_type = (AIR_PKT_TYPE_RW32 << 16) | (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
+  iowrite32(HSA_PACKET_TYPE_INVALID, pkt + PKT_HEADER_TYPE_OFFSET);
+  iowrite32((uint32_t)(offset & 0xFFFFFFFF),  pkt + PKT_ARG_ADDR_OFFSET       );  // Writing the addr low bits
+  iowrite32((uint32_t)(offset >> 32),         pkt + PKT_ARG_ADDR_OFFSET + 0x4 );  // Writing the addr high bits
+  iowrite32(value,                            pkt + PKT_ARG_ADDR_OFFSET + 0x8 );  // Writing the value, doesn't matter because read
+  iowrite32((uint32_t)is_write,               pkt + PKT_ARG_ADDR_OFFSET + 0xC );  // Writing the is_write
+  iowrite32(header_type, pkt + PKT_HEADER_TYPE_OFFSET); // Writing dispatch header type and rw32 dude
+  iowrite32(0x00000001, pkt + PKT_COMPL_OFFSET); // Writing a 1 to the signal which will mark the completion
+
+  // Step 3: Ring the doorbell and poll on the read pointer
+  iowrite32(wr_idx, drv_priv->admin_queue + QUEUE_DOORBELL_OFFSET);
+  iowrite32(0, drv_priv->admin_queue + QUEUE_DOORBELL_OFFSET + 0x4);
+
+  read_completion = ioread32(pkt + PKT_COMPL_OFFSET);
+  while(read_completion != 0x00000000) {
+    if(timeout_val >= QUEUE_TIMEOUT_VAL) {
+		  dev_warn(vck5000_chardev, "%s Timed out sending packet to the admin queue", __func__);
+		  return strlen(buf) + 1;
     }
+    read_completion = ioread32(pkt + PKT_COMPL_OFFSET);
+    
+    timeout_val++;
+  }
 
-    // Step 2: Read the write pointer
-    uint32_t wr_idx = ioread32(drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + WR_PTR_OFFSET);
-
-    // Step 3: Read the queue size
-    uint32_t queue_size = ioread32(drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + SIZE_OFFSET);
-
-    // Step 4: Calculate packet_id
-    uint32_t packet_id = wr_idx % queue_size;
-    printk("[EDDIE DEBUG %s] We are writing to a packet ID of 0x%x\n", __func__, packet_id);
-
-    // Step 5.1: Write the new write index to the queue
-    iowrite32(wr_idx + 1, drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + WR_PTR_OFFSET);
-
-    // Step 6.1: Intiialize_packet - Write HSA_PACKET_TYPE_INVALID (1) to header
-    iowrite32(0x00000001, drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_HEADER_TYPE_OFFSET);
-    // Step 6.2: Write arguments
-    iowrite32((uint32_t)(offset & 0xFFFFFFFF), drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_ARG_ADDR_OFFSET); // Writing the addr low bits
-    iowrite32((uint32_t)(offset >> 32), drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_ARG_ADDR_OFFSET + 0x4);  // Writing the addr high bits
-    iowrite32(value, drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_ARG_ADDR_OFFSET + 0x8);                     // Writing the value
-    iowrite32(0x00000001, drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_ARG_ADDR_OFFSET + 0xC);                // Writing the is_write
-    // Step 6.3: Write pkt->type and header
-    iowrite32(0x00500004, drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_HEADER_TYPE_OFFSET);                   // Writing dispatch header type and rw32 dude
-    // Step 6.4: Create the completion signal
-    iowrite32(0x00000001, drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_COMPL_OFFSET);                         // Writing a 1 to the signal which will mark the completion
-
-    // Step 7: Ring the doorbell
-    iowrite32(wr_idx, drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + DOORBELL_OFFSET);
-    iowrite32(0, drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + DOORBELL_OFFSET + 0x4);
-
-    // Step 8: Poll on the read pointer to make sure that we did the dude - Make sure that there is a timeout and if there is return 0
-    uint64_t timeout_val = 0;
-    uint32_t read_completion = ioread32(drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_COMPL_OFFSET);
-    while(read_completion != 0x00000000) {
-      if(timeout_val >= QUEUE_TIMEOUT_VAL) {
-        dev_warn(vck5000_chardev, "%s Timed out sending packet to the admin queue", __func__);
-		    return count;
-      }
-      read_completion = ioread32(drv_priv->bram_bar + HERD_CONTROLLER_BRAM_SIZE + QUEUE_OFFSET + PKT_SIZE * packet_id + PKT_COMPL_OFFSET);
-      timeout_val++;
-    }
 #else
 		iowrite32(value, drv_priv->aie_bar + offset);
 #endif
