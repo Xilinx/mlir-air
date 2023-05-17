@@ -10,7 +10,7 @@
 // CHECK-LABEL:   AIE.device(xcvc1902) {
 // CHECK:    %[[VAL_0:.*]] = AIE.tile(1, 1)
 // CHECK:    %[[VAL_1:.*]] = AIE.tile(1, 2)
-// CHECK:    %[[VAL_2:.*]] = AIE.objectFifo.createObjectFifo(%[[VAL_0]], {%[[VAL_1]]}, 1) : !AIE.objectFifo<memref<32xi32, 2>>
+// CHECK:    %[[VAL_2:.*]] = AIE.objectFifo.createObjectFifo(%[[VAL_0]], {%[[VAL_1]]}, 1) {sym_name = "air_channel_0"} : !AIE.objectFifo<memref<32xi32, 2>>
 // CHECK:    %[[VAL_3:.*]] = AIE.core(%[[VAL_1]]) {
 // CHECK:      %[[VAL_4:.*]] = AIE.objectFifo.acquire<Consume> (%[[VAL_2]] : !AIE.objectFifo<memref<32xi32, 2>>, 1) : !AIE.objectFifoSubview<memref<32xi32, 2>>
 // CHECK:      %[[VAL_5:.*]] = AIE.objectFifo.subview.access %[[VAL_4]][0] : !AIE.objectFifoSubview<memref<32xi32, 2>> -> memref<32xi32, 2>
