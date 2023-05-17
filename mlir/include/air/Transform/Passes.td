@@ -887,9 +887,9 @@ def AIRConstructPingPongDependencyPattern: Pass<"air-construct-ping-pong-depende
   }];
 }
 
-def AIRPipelineLoweringPattern: Pass<"air-pipeline-lowering", "ModuleOp"> {
+def AIRPingPongTransformationPattern: Pass<"air-ping-pong-transform", "ModuleOp"> {
   let summary = "Lower to pipelining pattern";
-  let constructor = "xilinx::air::createAIRPipelineLoweringPattern()";
+  let constructor = "xilinx::air::createAIRPingPongTransformationPattern()";
   let description = [{
     This pass lowers to pipelining pattern. 
   }];

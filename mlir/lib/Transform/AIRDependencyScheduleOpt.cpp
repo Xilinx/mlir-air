@@ -1315,19 +1315,48 @@ public:
 private:
 };
 
-class AIRPipelineLoweringPattern
-    : public xilinx::air::AIRPipelineLoweringPatternBase<
-          AIRPipelineLoweringPattern> {
+class AIRPingPongTransformationPattern
+    : public xilinx::air::AIRPingPongTransformationPatternBase<
+          AIRPingPongTransformationPattern> {
 
 public:
-  AIRPipelineLoweringPattern() = default;
-  AIRPipelineLoweringPattern(const AIRPipelineLoweringPattern &pass){};
+  AIRPingPongTransformationPattern() = default;
+  AIRPingPongTransformationPattern(
+      const AIRPingPongTransformationPattern &pass){};
 
-  void runOptPatterns(func::FuncOp funcOp) {
+  void runOpAnnotationPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<AnnotateFrontAndBackOpsInForPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runHoistMemallocPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
     patterns.insert<HoistMemallocInForPattern>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runConstructPingPongDependencyPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<ConstructPingPongDependencyPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runLoopUnroll(func::FuncOp funcOp) {
+    funcOp.walk([&](scf::ForOp for_op) {
+      // Check if loop is the target
+      if (for_op->hasAttr("unroll")) {
+        uint64_t unroll_factor =
+            for_op->getAttrOfType<IntegerAttr>("unroll").getInt();
+        auto annotateFn = [](unsigned i, Operation *op, OpBuilder b) {
+          op->setAttr("unrolled_iteration", b.getI32IntegerAttr(i));
+        };
+        (void)loopUnrollByFactor(for_op, unroll_factor, annotateFn);
+      }
+    });
   }
 
   void runOnOperation() override {
@@ -1335,7 +1364,13 @@ public:
     SmallVector<func::FuncOp, 4> funcOps;
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
     for (auto f : funcOps)
-      runOptPatterns(f);
+      runOpAnnotationPatterns(f);
+    for (auto f : funcOps)
+      runLoopUnroll(f);
+    for (auto f : funcOps)
+      runHoistMemallocPatterns(f);
+    for (auto f : funcOps)
+      runConstructPingPongDependencyPatterns(f);
   }
 
 private:
@@ -1417,8 +1452,8 @@ std::unique_ptr<Pass> createAIRPruneLinalgGenericInputDma() {
   return std::make_unique<AIRPruneLinalgGenericInputDma>();
 }
 
-std::unique_ptr<Pass> createAIRPipelineLoweringPattern() {
-  return std::make_unique<AIRPipelineLoweringPattern>();
+std::unique_ptr<Pass> createAIRPingPongTransformationPattern() {
+  return std::make_unique<AIRPingPongTransformationPattern>();
 }
 
 std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass() {

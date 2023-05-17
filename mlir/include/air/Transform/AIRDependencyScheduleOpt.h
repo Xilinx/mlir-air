@@ -29,7 +29,7 @@ std::unique_ptr<mlir::Pass> createAIRBroadcastDetection();
 
 std::unique_ptr<mlir::Pass> createAIRPruneLinalgGenericInputDma();
 
-std::unique_ptr<mlir::Pass> createAIRPipelineLoweringPattern();
+std::unique_ptr<mlir::Pass> createAIRPingPongTransformationPattern();
 
 std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass();
 
