@@ -71,6 +71,10 @@ def parse_args(args=None):
             default=False,
             action='store_true',
             help='pass --xchesscc to aiecc, otherwise pass --no-xchesscc')
+    parser.add_argument('--device',
+            metavar="target_device",
+            default="xcvc1902",
+            help='Target AIE device')
 
     opts = parser.parse_args(args)
     return opts
