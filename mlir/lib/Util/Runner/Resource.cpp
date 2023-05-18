@@ -41,7 +41,13 @@ public:
 
   ~resource() {}
 
-private:
+protected:
+  void resource_assertion(bool cond, std::string msg = "") {
+    if (!cond) {
+      std::cerr << "Error: " + msg + "\n";
+      exit(EXIT_FAILURE);
+    }
+  }
 };
 
 class port : public resource {

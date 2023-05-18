@@ -47,7 +47,10 @@ public:
     if (memObject) {
       auto ms = memObject->getString("memory_space");
       auto bytes = memObject->getNumber("bytes");
-      assert(ms && bytes != 0.0f);
+      this->resource_assertion(ms.has_value(),
+                               "memory_space not found for memory object");
+      this->resource_assertion(bytes != 0.0f,
+                               "memory size is zero bytes for memory object");
       memory *mem = new memory(ms.value().str(), *bytes);
       this->set_memory(mem);
     } else {
@@ -87,7 +90,7 @@ public:
         }
       }
     } else {
-      assert(false);
+      this->resource_assertion(false, "JSON object 'portsObject' not found");
     }
   }
 
@@ -134,7 +137,10 @@ public:
     if (memObject) {
       auto ms = memObject->getString("memory_space");
       auto bytes = memObject->getNumber("bytes");
-      assert(ms && bytes != 0.0f);
+      this->resource_assertion(ms.has_value(),
+                               "memory_space not found for memory object");
+      this->resource_assertion(bytes != 0.0f,
+                               "memory size is zero bytes for memory object");
       memory *mem = new memory(ms.value().str(), *bytes);
       this->set_memory(mem);
     } else {
@@ -158,7 +164,7 @@ public:
         this->tiles.push_back(new_tile);
       }
     } else {
-      assert(false);
+      this->resource_assertion(false, "JSON object 'tilesObject' not found");
     }
   }
 
@@ -194,7 +200,7 @@ public:
         }
       }
     } else {
-      assert(false);
+      this->resource_assertion(false, "JSON object 'portsObject' not found");
     }
   }
 
@@ -251,8 +257,10 @@ public:
       llvm::json::Value jv = *it;
       llvm::json::Object *datatypeObject = jv.getAsObject();
       if (datatypeObject) {
-        assert(datatypeObject->getString("name") &&
-               datatypeObject->getNumber("bytes"));
+        this->resource_assertion(datatypeObject->getString("name").has_value(),
+                                 "datatypeObject has no name");
+        this->resource_assertion(datatypeObject->getNumber("bytes").has_value(),
+                                 "datatypeObject has no byte count");
         std::string name = datatypeObject->getString("name").value().str();
         double bytes = datatypeObject->getNumber("bytes").value();
         this->datatypes.insert(std::make_pair(name, bytes));
@@ -300,7 +308,7 @@ public:
         this->dus.push_back(new_col);
       }
     } else {
-      assert(false);
+      this->resource_assertion(false, "JSON model 'dusObject' not found");
     }
   }
 
@@ -336,7 +344,7 @@ public:
         }
       }
     } else {
-      assert(false);
+      this->resource_assertion(false, "JSON model 'portsObject' not found");
     }
   }
 
