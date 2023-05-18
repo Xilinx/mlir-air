@@ -490,6 +490,9 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface,
       }
       return -1;
     }
+    OperandRange getOffsets() { return getSrcOffsets(); }
+    OperandRange getSizes() { return getSrcSizes(); }
+    OperandRange getStrides() { return getSrcStrides(); }
   }];
 }
 
@@ -522,6 +525,9 @@ def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface,
       }
       return -1;
     }
+    OperandRange getOffsets() { return getDstOffsets(); }
+    OperandRange getSizes() { return getDstSizes(); }
+    OperandRange getStrides() { return getDstStrides(); }
   }];
 }
 

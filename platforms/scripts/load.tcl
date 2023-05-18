@@ -16,7 +16,6 @@
 
 # if the card index is not set, default to 0
 if {[info exists ::env(CARD_IDX)]} {
-	puts "ENV $::env(CARD_IDX)"
 	set card_idx $::env(CARD_IDX)
 } else {
 	set card_idx 0
@@ -41,7 +40,7 @@ set cards [ targets -target-properties -filter { name =~ "Versal xcvc1902*" }]
 
 # validate the selected card index
 set num_cards [ llength $cards ]
-if { $card_idx >= $num_cards } {
+if { $card_idx > $num_cards } {
 	puts "Invalid card index $card_idx; only $num_cards detected"
 	exit
 }

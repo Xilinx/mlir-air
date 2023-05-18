@@ -998,4 +998,15 @@ def AIRRenumberDmaIdPass : Pass<"air-renumber-dma", "func::FuncOp"> {
   ];
 }
 
+def AIRLowerHerdParallelPass : Pass<"air-lower-herd-parallel", "func::FuncOp"> {
+  let summary = "Remove scf.parallel from inside herds by transforming them to "
+                "scf.for.";
+  let constructor = "xilinx::air::createAIRLowerHerdParallelPass()";
+}
+
+def AIRHoistScfChannelGetPutPass : Pass<"air-hoist-channels", "func::FuncOp"> {
+  let summary = "Hoist air.channel.get and air.channel.put out of scf.for.";
+  let constructor = "xilinx::air::createAIRHoistScfChannelGetPutPass()";
+}
+
 #endif // AIR_CONVERSION_PASSES

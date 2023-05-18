@@ -222,6 +222,21 @@ def air_ChannelInterface : OpInterface<"ChannelInterface"> {
     InterfaceMethod<"description",
     "StringRef", "getChanName"
     >,
+    InterfaceMethod<"",
+    "OperandRange", "getIndices"
+    >,
+    InterfaceMethod<"",
+    "OperandRange", "getOffsets"
+    >,
+    InterfaceMethod<"",
+    "OperandRange", "getSizes"
+    >,
+    InterfaceMethod<"",
+    "OperandRange", "getStrides"
+    >,
+    InterfaceMethod<"",
+    "Value", "getMemref"
+    >,
   ];
 }
 #endif
