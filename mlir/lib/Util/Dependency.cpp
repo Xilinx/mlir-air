@@ -114,9 +114,11 @@ void traceDependentInductionVar(air::AsyncOpInterface async_op,
   // Get child op if async_op is air.execute
   Operation *op = nullptr;
   if (auto air_region_op = dyn_cast<air::ExecuteOp>(async_op.getOperation())) {
-    assert(air_region_op.getBody().front().getOperations().size() == 2 &&
-           "air::ExecuteOp should have only one child operation beside the "
-           "terminator");
+    if (air_region_op.getBody().front().getOperations().size() != 2) {
+      air_region_op->emitOpError("air::ExecuteOp should have only one child "
+                                 "operation beside the terminator");
+      return;
+    }
     for (auto &child_op : air_region_op.getBody().front().getOperations()) {
       if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
         op = &child_op;
@@ -215,12 +217,13 @@ void traceDependentScfLoopToken(air::AsyncOpInterface async_op,
 
 void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op,
                                      Value token) {
-  assert(token && "input value is nullptr");
-  assert(token.getType().isa<air::AsyncTokenType>() &&
-         "ssa value is not an async token");
+  if (!token)
+    return;
+  if (!token.getType().isa<air::AsyncTokenType>())
+    return;
   auto dependency_list = op.getAsyncDependencies();
   if (!dependency_list.size())
-    assert(false && "dependency list is empty");
+    return;
   for (int i = dependency_list.size() - 1; i >= 0; i--) {
     if (dependency_list[i] == token) {
       op.eraseAsyncDependency(i);
@@ -228,36 +231,64 @@ void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op,
   }
 }
 
+void clearAsyncDependenciesOfAsyncOp(xilinx::air::AsyncOpInterface op) {
+  auto dependency_list = op.getAsyncDependencies();
+  if (!dependency_list.size())
+    return;
+  for (int i = dependency_list.size() - 1; i >= 0; i--) {
+    op.eraseAsyncDependency(i);
+  }
+}
+
 // Get loop-carried dependency token from scf loop op
 Value getLoopCarriedTokenFromScfOp(scf::ParallelOp op) {
-  assert(op.getInitVals().size());
+  if (!op.getInitVals().size()) {
+    op->emitOpError("has no init_val");
+    return nullptr;
+  }
   auto token = op.getInitVals()[0];
-  assert(token.getType().isa<air::AsyncTokenType>() &&
-         "init value is not an async token");
+  if (!token.getType().isa<air::AsyncTokenType>()) {
+    op->emitOpError("init_val is not an async token");
+    return nullptr;
+  }
   return token;
 }
 Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
                                    std::string operand_or_argument) {
   if (operand_or_argument == "operand") {
-    assert(op.getIterOperands().size());
+    if (!op.getIterOperands().size()) {
+      op->emitOpError("has no iter_arg");
+      return nullptr;
+    }
     auto token = op.getIterOperands()[0];
-    assert(token.getType().isa<air::AsyncTokenType>() &&
-           "iter operand is not an async token");
+    if (!token.getType().isa<air::AsyncTokenType>()) {
+      op->emitOpError("iter operand is not an async token");
+      return nullptr;
+    }
     return token;
   } else if (operand_or_argument == "argument") {
-    assert(op.getRegionIterArgs().size());
+    if (!op.getRegionIterArgs().size()) {
+      op->emitOpError("has no iter_arg");
+      return nullptr;
+    }
     auto token = op.getRegionIterArgs()[0];
-    assert(token.getType().isa<air::AsyncTokenType>() &&
-           "iter operand is not an async token");
+    if (!token.getType().isa<air::AsyncTokenType>()) {
+      op->emitOpError("iter operand is not an async token");
+      return nullptr;
+    }
     return token;
-  } else
-    assert(false && "unknown string in operand_or_argument");
+  } else {
+    op->emitOpError("unknown string in operand_or_argument");
+    return nullptr;
+  }
 }
 
 // Add async dependency to op if unique
 void addAsyncDependencyIfNew(air::AsyncOpInterface op, Value token) {
-  assert(token.getType().isa<air::AsyncTokenType>() &&
-         "value is not an async token");
+  if (!token.getType().isa<air::AsyncTokenType>()) {
+    op->emitOpError("value is not an async token");
+    return;
+  }
   bool foundTokenInDepList = false;
   if (op.getAsyncDependencies().size()) {
     for (auto old_dep : op.getAsyncDependencies())
@@ -290,8 +321,10 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
   } else if (granularity == "core") {
     std::get<2>(expandHier) = true;
     std::get<3>(expandHier) = true;
-  } else
-    assert(false && "Unknown graph parsing granularity");
+  } else {
+    toplevel->emitOpError("unknown graph parsing granularity");
+    return;
+  }
 
   // Create vertices for graphs
   // Build up host graph
@@ -691,7 +724,7 @@ dependencyCanonicalizer::addVertexFromDmaOp(xilinx::air::DmaMemcpyInterface op,
     return addVertexFromOp(op, dep_ctx.DmaOpID, "dma", "DmaMemcpyNdOp",
                            graphNodeProperties("data"), G, dep_ctx);
   } else {
-    assert(false && "Unknown dma op");
+    op->emitOpError("unknown dma op");
     return 0;
   }
 }
@@ -705,7 +738,8 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
         getMemorySpaceAsString(channel_put.getSrc());
     std::vector<air::ChannelGetOp> channel_gets =
         getTheOtherChannelOpThroughSymbol(channel_put);
-    assert(channel_gets.size() && "found channel op not in pairs");
+    if (!channel_gets.size())
+      op->emitOpError("found channel op not in pairs");
     std::string memorySpaceDstStr =
         getMemorySpaceAsString(channel_gets[0].getDst());
     std::string event_name = "ChannelPutOp@" + channel_put.getChanName().str() +
@@ -740,7 +774,8 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
         getMemorySpaceAsString(channel_get.getDst());
     std::vector<air::ChannelPutOp> channel_puts =
         getTheOtherChannelOpThroughSymbol(channel_get);
-    assert(channel_puts.size() && "found channel op not in pairs");
+    if (!channel_puts.size())
+      op->emitOpError("found channel op not in pairs");
     std::string memorySpaceSrcStr =
         getMemorySpaceAsString(channel_puts[0].getSrc());
     std::string event_name = "ChannelGetOp@" + channel_get.getChanName().str() +
@@ -770,7 +805,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
                            graphNodeProperties("data", detailed_description), G,
                            dep_ctx);
   } else {
-    assert(false && "Unknown channel op");
+    op->emitOpError("unknown channel op");
     return 0;
   }
 }
@@ -797,7 +832,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromHierarchyOp(
         op, dep_ctx.HierarchyOpID, "hierarchy", "HerdOp",
         graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
   } else {
-    assert(false && "Unknown hierarchy op");
+    op->emitOpError("unknown hierarchy op");
     return 0;
   }
 }
@@ -955,7 +990,7 @@ std::string dependencyCanonicalizer::getOpTypeFromOpImpls(Operation *op) {
     if (dyn_cast<xilinx::air::ExecuteOp>(op->getParentOp())) {
       return "execute";
     } else {
-      assert(false && "Unknown op type");
+      op->emitOpError("unknown op type");
       return "";
     }
   }
@@ -984,8 +1019,8 @@ dependencyCanonicalizer::getVertexFromOp(Operation *op,
       output.first = dep_ctx.op_to_v[entry_pair];
       output.second = dep_ctx.op_to_g[entry_pair];
     } else {
-      assert(false &&
-             "Unknown string operand (only accepts 'front' or 'back')");
+      op->emitOpError(
+          "unknown string operand (only accepts 'front' or 'back')");
     }
   } else {
     std::pair<std::string, unsigned> entry_pair = getTypeIdPairFromOp(op);
@@ -1097,8 +1132,9 @@ void dependencyCanonicalizer::collectAIRChannelPutAndGetInGraph(
         channel_map[chan_name].first.push_back(map[vit]);
       } else if (dyn_cast<air::ChannelGetOp>(g[vit].op)) {
         channel_map[chan_name].second.push_back(map[vit]);
-      } else
-        assert(false && "unknown air.channel op type");
+      } else {
+        channel_op->emitOpError("unknown air.channel op type");
+      }
     }
   }
 }
@@ -1317,19 +1353,19 @@ void dependencyCanonicalizer::updatePointerFromHierarchyOpToGraph(
   for (auto v : hier_vs) {
     // If expand cores in herd
     if (G.subgraphs[idx].position.size()) {
-      assert(dyn_cast<air::HerdOp>(G.g[*v].op) &&
-             "Found non-herd op with core id");
+      if (!isa<air::HerdOp>(G.g[*v].op))
+        G.g[*v].op->emitOpError("found non-herd op with core id");
       auto hier = dyn_cast<air::HierarchyInterface>(G.g[*v].op);
       for (unsigned i = 0; i < getTripCountInHierarchyOp(hier); i++) {
         G.g[*v].nextDependencyGraphs.push_back(&(G.subgraphs[idx]));
-        assert(G.g[*v].op == G.subgraphs[idx].hierarchyOp &&
-               "mismatch between graph and hierarchy op");
+        if (G.g[*v].op != G.subgraphs[idx].hierarchyOp)
+          G.g[*v].op->emitOpError("mismatch between graph and hierarchy op");
         idx++;
       }
     } else {
       G.g[*v].nextDependencyGraphs.push_back(&(G.subgraphs[idx]));
-      assert(G.g[*v].op == G.subgraphs[idx].hierarchyOp &&
-             "mismatch between graph and hierarchy op");
+      if (G.g[*v].op != G.subgraphs[idx].hierarchyOp)
+        G.g[*v].op->emitOpError("mismatch between graph and hierarchy op");
       idx++;
     }
   }
@@ -1378,10 +1414,11 @@ void dependencyCanonicalizer::canonicalizeGraphs(
 
   // Transitive reduction
   auto global_size = global_graph.subgraphs.size();
-  assert(global_size == tr_graph.subgraphs.size() &&
-         "graph tree size mismatch");
-  assert(global_size == g_to_tr.submaps.size() &&
-         "graph tree size and map size mismatch");
+  if (global_size != tr_graph.subgraphs.size())
+    global_graph.hierarchyOp->emitOpError("graph tree size mismatch");
+  if (global_size != g_to_tr.submaps.size())
+    global_graph.hierarchyOp->emitOpError(
+        "graph tree size and map size mismatch");
   boostTransitiveReductionImpl(global_graph.g, tr_graph.g, g_to_tr.a_to_b,
                                g_to_tr.b_to_a);
   for (unsigned i = 0; i < global_size; i++) {
@@ -1389,10 +1426,11 @@ void dependencyCanonicalizer::canonicalizeGraphs(
     auto &trLaunchGraph = tr_graph.subgraphs[i];
     auto launch_size = launchGraph.subgraphs.size();
     auto launchMap = g_to_tr.submaps[i];
-    assert(launch_size == trLaunchGraph.subgraphs.size() &&
-           "graph tree size mismatch");
-    assert(launch_size == launchMap.submaps.size() &&
-           "graph tree size and map size mismatch");
+    if (launch_size != trLaunchGraph.subgraphs.size())
+      launchGraph.hierarchyOp->emitOpError("graph tree size mismatch");
+    if (launch_size != launchMap.submaps.size())
+      launchGraph.hierarchyOp->emitOpError(
+          "graph tree size and map size mismatch");
     boostTransitiveReductionImpl(launchGraph.g, trLaunchGraph.g,
                                  launchMap.a_to_b, launchMap.b_to_a);
     for (unsigned j = 0; j < launch_size; j++) {
@@ -1400,10 +1438,11 @@ void dependencyCanonicalizer::canonicalizeGraphs(
       auto &trSegmentGraph = trLaunchGraph.subgraphs[j];
       auto segment_size = segmentGraph.subgraphs.size();
       auto segmentMap = launchMap.submaps[j];
-      assert(segment_size == trSegmentGraph.subgraphs.size() &&
-             "graph tree size mismatch");
-      assert(segment_size == segmentMap.submaps.size() &&
-             "graph tree size and map size mismatch");
+      if (segment_size != trSegmentGraph.subgraphs.size())
+        segmentGraph.hierarchyOp->emitOpError("graph tree size mismatch");
+      if (segment_size != segmentMap.submaps.size())
+        segmentGraph.hierarchyOp->emitOpError(
+            "graph tree size and map size mismatch");
       boostTransitiveReductionImpl(segmentGraph.g, trSegmentGraph.g,
                                    segmentMap.a_to_b, segmentMap.b_to_a);
       for (unsigned k = 0; k < segment_size; k++) {
@@ -1528,10 +1567,7 @@ void dependencyCanonicalizer::purgeAIRDepList(dependencyGraph &graph) {
     auto async_op = mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op);
     if (!async_op)
       continue;
-    auto dependency_list = async_op.getAsyncDependencies();
-    for (int i = dependency_list.size() - 1; i >= 0; i--) {
-      async_op.eraseAsyncDependency(i);
-    }
+    clearAsyncDependenciesOfAsyncOp(async_op);
   }
 }
 
@@ -1631,7 +1667,8 @@ void dependencyCanonicalizer::removeUnusedExecuteOp(func::FuncOp func) {
         eraseAsyncDependencyFromAsyncOp(async_user, op.getAsyncToken());
       }
     }
-    assert(op.getAsyncToken().use_empty());
+    if (!op.getAsyncToken().use_empty())
+      op->emitOpError("returned async token still has uses");
     op->erase();
   }
 }
@@ -1725,8 +1762,8 @@ dependencyCanonicalizer::toPositionString(std::vector<unsigned> position) {
 void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
                                               air::AsyncOpInterface op, char rw,
                                               partialMemref *tile) {
-  assert(operand.getType().isa<MemRefType>() &&
-         "operand being traced is not a memref");
+  if (!operand.getType().isa<MemRefType>())
+    op->emitOpError("operand being traced is not a memref");
   for (auto &u : operand.getUses()) {
     // If used in DmaMemcpy Op
     if (auto dma = dyn_cast<xilinx::air::DmaMemcpyInterface>(u.getOwner())) {
@@ -1884,8 +1921,9 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
             }
           }
         }
-      } else
-        assert(false && "Unknown air channel op");
+      } else {
+        channel->emitOpError("unknown air channel op");
+      }
     }
 
     // If used in a linalg op
@@ -2204,7 +2242,8 @@ void dependencyTracer::getPartialMemrefFromOp(
 void dependencyTracer::addDependencyBetweenOps(Operation *source,
                                                Operation *sink) {
   auto async_sink = dyn_cast<air::AsyncOpInterface>(sink);
-  assert(async_sink && "sink op has no async interface");
+  if (!async_sink)
+    sink->emitOpError("dependency sink op has no async interface");
   if (source->getBlock() == sink->getBlock() && source->isBeforeInBlock(sink)) {
     if (auto async_source = dyn_cast<air::AsyncOpInterface>(source)) {
       addAsyncDependencyIfNew(async_sink, async_source.getAsyncToken());
@@ -2239,54 +2278,19 @@ bool dependencyTracer::areEqualIndexPartialMemrefs(partialMemref *tile_0,
 }
 
 char dependencyTracer::checkOperandReadOrWrite(mlir::Value operand) {
-  assert(operand.getType().isa<MemRefType>() &&
-         "operand being traced is not a memref");
+  if (!operand.getType().isa<MemRefType>())
+    operand.getDefiningOp()->emitOpError(
+        "operand being traced is not a memref");
   bool foundWriteAccess = false;
   bool foundReadAccess = false;
   for (auto &u : operand.getUses()) {
-    // If used in DmaMemcpy Op
-    if (auto dma = dyn_cast<xilinx::air::DmaMemcpyInterface>(u.getOwner())) {
-      if (u.is(dma.getSrcMemref())) {
-        foundReadAccess = true;
-      } else if (u.is(dma.getDstMemref())) {
-        foundWriteAccess = true;
-      } else {
-        assert(false && "Unknown operand in air.dma");
-      }
-    }
-    // If used in Channel Put Op
-    else if (auto channel_put =
-                 dyn_cast<xilinx::air::ChannelPutOp>(u.getOwner())) {
-      if (u.is(channel_put.getSrc())) {
-        foundReadAccess = true;
-      } else {
-        assert(false && "Unknown operand in air.channel_put");
-      }
-    }
-    // If used in Channel Get Op
-    else if (auto channel_get =
-                 dyn_cast<xilinx::air::ChannelGetOp>(u.getOwner())) {
-      if (u.is(channel_get.getDst())) {
-        foundWriteAccess = true;
-      } else {
-        assert(false && "Unknown operand in air.channel_get");
-      }
-    }
-    // If used in a linalg op
-    else if (auto linalgop = mlir::dyn_cast<linalg::LinalgOp>(u.getOwner())) {
-      if (u.getOperandNumber() <
-          linalgop.getNumDpsInputs() + linalgop.getNumDpsInits()) {
-        foundReadAccess = true;
-      } else if (u.getOperandNumber() >= linalgop.getNumDpsInputs() &&
-                 u.getOperandNumber() - linalgop.getNumDpsInputs() <
-                     linalgop.getNumDpsInits()) {
-        foundWriteAccess = true;
-      } else {
-        assert(false && "Unknown operand in linalg op");
-      }
-    }
+    char rw_code = checkOpOperandReadOrWrite(u);
+    if (rw_code == 'w')
+      foundWriteAccess = true;
+    else if (rw_code == 'r')
+      foundReadAccess = true;
     // If unknown op, then assume write access for safety
-    else
+    else if (rw_code == 'u')
       foundWriteAccess = true;
   }
   if (foundWriteAccess)
@@ -2304,16 +2308,20 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
     async_op = dyn_cast<air::AsyncOpInterface>(op);
   } else if (auto scf_par = dyn_cast<scf::ParallelOp>(op)) {
     auto token = getLoopCarriedTokenFromScfOp(scf_par);
-    assert(token.getDefiningOp());
+    if (!token.getDefiningOp())
+      scf_par->emitOpError("loop carried token has no defining op");
     async_op = dyn_cast<air::AsyncOpInterface>(token.getDefiningOp());
   } else if (auto scf_for = dyn_cast<scf::ForOp>(op)) {
     auto token = getLoopCarriedTokenFromScfOp(scf_for, "operand");
-    assert(token.getDefiningOp());
+    if (!token.getDefiningOp())
+      scf_for->emitOpError("loop carried token has no defining op");
     async_op = dyn_cast<air::AsyncOpInterface>(token.getDefiningOp());
-  } else
-    assert(false && "unsupported op for loop-carried dependency");
+  } else {
+    op->emitOpError("unsupported op for loop-carried dependency");
+  }
 
-  assert(async_op);
+  if (!async_op)
+    op->emitOpError("is not an async op");
 
   // Get parent scf loop op
   auto parent = op->getParentOp();
@@ -2329,10 +2337,12 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
     for (auto scf_par_reduce : scf_par.getOps<scf::ReduceOp>()) {
       reduce_ops.push_back(scf_par_reduce);
     }
-    assert(reduce_ops.size() == 1);
+    if (reduce_ops.size() != 1)
+      scf_par->emitOpError("number of reduce ops is not one");
     auto reduce_wait_all =
         dyn_cast<air::WaitAllOp>(reduce_ops[0].getOperand().getDefiningOp());
-    assert(reduce_wait_all);
+    if (!reduce_wait_all)
+      scf_par->emitOpError("reduce op is not dependent on any air::WaitAllOp");
 
     // Connect op's async token to scf reduce
     addAsyncDependencyIfNew(reduce_wait_all, op->getResult(0));
@@ -2351,7 +2361,9 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
         dyn_cast<scf::YieldOp>(scf_for.getBody()->getTerminator());
     auto yield_wait_all =
         dyn_cast<air::WaitAllOp>(scf_for_yield.getOperand(0).getDefiningOp());
-    assert(yield_wait_all);
+    if (!yield_wait_all)
+      scf_for->emitOpError(
+          "scf::YieldOp is not dependent on any air::WaitAllOp");
 
     // Connect op's async token to scf reduce
     addAsyncDependencyIfNew(yield_wait_all, op->getResult(0));

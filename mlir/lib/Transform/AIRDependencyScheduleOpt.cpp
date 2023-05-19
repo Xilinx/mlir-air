@@ -20,6 +20,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
+#include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IntegerSet.h"
@@ -87,8 +88,9 @@ struct HoistDmaInAccumPattern : public OpRewritePattern<scf::ForOp> {
           // Found a pair of dmas which cancel out each other
           air::ExecuteOp alloc_region_op = getRegionOfAllocOpForDmaOp(op_1);
           air::ExecuteOp dealloc_region_op = getRegionOfDeallocOpForDmaOp(op_2);
-          assert(alloc_region_op.getAsyncDependencies().size() <= 1 &&
-                 "Alloc event having more than one dependant");
+          if (alloc_region_op.getAsyncDependencies().size() > 1)
+            alloc_region_op->emitOpError(
+                "alloc event should have only one dependent");
 
           // Reconnect incoming alloc event
           if (alloc_region_op.getAsyncDependencies().size()) {
@@ -282,9 +284,7 @@ private:
       for (unsigned i = 0; i < dependency_list.size(); i++) {
         wait_all_after_for.addAsyncDependency(dependency_list[i]);
       }
-      for (int i = dependency_list.size() - 1; i >= 0; i--) {
-        dma_async_op.eraseAsyncDependency(i);
-      }
+      clearAsyncDependenciesOfAsyncOp(dma_async_op);
     }
     eraseAsyncDependencyFromAsyncOp(
         dyn_cast<air::AsyncOpInterface>(wait_all_after_for.getOperation()),
@@ -362,6 +362,587 @@ private:
     }
 
     return areSymmetric;
+  }
+};
+
+struct AnnotateFrontAndBackOpsInForPattern
+    : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp for_op,
+                                PatternRewriter &rewriter) const override {
+
+    // Check if the for loop is targetted for unrolling
+    if (!for_op->hasAttr("unroll"))
+      return failure();
+
+    // Check if the for loop is async
+    SmallVector<Value> iterTokens;
+    for (auto iter_arg : for_op.getRegionIterArgs()) {
+      if (iter_arg.getType().isa<air::AsyncTokenType>()) {
+        iterTokens.push_back(iter_arg);
+      }
+    }
+    if (!iterTokens.size())
+      return failure();
+
+    // Get async alloc ops
+    SmallVector<Operation *> allocOps;
+    for (auto &op : for_op.getOps()) {
+      if (auto exec_op = dyn_cast<air::ExecuteOp>(op)) {
+        bool isFrontCandidate = false;
+        if (!exec_op.getAsyncDependencies().size())
+          isFrontCandidate = true;
+        for (auto d : exec_op.getAsyncDependencies()) {
+          for (auto t : iterTokens) {
+            if (d == t) {
+              isFrontCandidate = true;
+            }
+          }
+        }
+        auto child_op = &exec_op.getRegion().front().getOperations().front();
+        if (isa<memref::AllocOp>(child_op) && isFrontCandidate) {
+          iterTokens.push_back(op.getResult(0));
+          // Note: skipping over alloc ops, since they will get hoisted out of
+          // loop
+          allocOps.push_back(&op);
+        }
+      }
+    }
+    if (!allocOps.size())
+      return failure();
+
+    // Get ops which are at the front of the loop body's dependency graph
+    for (auto &op : for_op.getOps()) {
+      bool skip_this_op = false;
+      for (auto allocOp : allocOps) {
+        if (&op == allocOp)
+          skip_this_op = true;
+      }
+
+      SmallVector<Value> dep_list;
+      skip_this_op |= !getAsyncDependenciesFromOp(&op, dep_list);
+      if (skip_this_op)
+        continue;
+
+      if (!dep_list.size())
+        op.setAttr("async_front", rewriter.getBoolAttr(true));
+      for (auto token : iterTokens) {
+        for (auto dep : dep_list) {
+          if (token == dep) {
+            setBoolAttrForAsyncOp(rewriter, &op, "async_front");
+          }
+        }
+      }
+    }
+
+    // Get ops which are at the back of the loop body's dependency graph
+    auto yield = for_op.getBody()->getTerminator();
+    SmallVector<Value> yielded_tokens;
+    for (auto operand : yield->getOperands()) {
+      if (operand.getType().isa<air::AsyncTokenType>()) {
+        yielded_tokens.push_back(operand);
+      }
+    }
+    SmallVector<Operation *> back_candidates;
+    for (auto token : yielded_tokens) {
+      auto back_candidate = token.getDefiningOp();
+      if (auto exec_op = dyn_cast<air::ExecuteOp>(back_candidate)) {
+        auto child_op = &exec_op.getRegion().front().getOperations().front();
+        if (isa<memref::DeallocOp>(child_op)) {
+          for (auto d : exec_op.getAsyncDependencies()) {
+            back_candidates.push_back(d.getDefiningOp());
+          }
+        } else {
+          back_candidates.push_back(back_candidate);
+        }
+      } else {
+        back_candidates.push_back(back_candidate);
+      }
+    }
+    for (auto op : back_candidates) {
+      // op->setAttr("async_back", rewriter.getBoolAttr(true));
+      setBoolAttrForAsyncOp(rewriter, op, "async_back");
+    }
+
+    return success();
+  }
+
+private:
+  bool getAsyncDependenciesFromOp(Operation *op,
+                                  SmallVector<Value> &dep_list) const {
+    bool result = true;
+    if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
+      dep_list = async_op.getAsyncDependencies();
+    } else if (auto async_for_op = dyn_cast<scf::ForOp>(op)) {
+      dep_list = async_for_op.getIterOperands();
+    } else if (auto async_parallel_op = dyn_cast<scf::ParallelOp>(op)) {
+      dep_list = async_parallel_op.getInitVals();
+    } else if (auto affine_if_op = dyn_cast<mlir::AffineIfOp>(op)) {
+      auto &first_child_op_in_then_block =
+          affine_if_op.getThenBlock()->getOperations().front();
+      return getAsyncDependenciesFromOp(&first_child_op_in_then_block,
+                                        dep_list);
+    } else
+      result = false;
+    return result;
+  }
+
+  void setBoolAttrForAsyncOp(OpBuilder builder, Operation *op,
+                             std::string attr) const {
+    if (auto aif = dyn_cast<mlir::AffineIfOp>(op)) {
+      op->setAttr(attr, builder.getBoolAttr(true));
+      aif.getThenBlock()->walk([&](Operation *child_op) {
+        child_op->setAttr(attr, builder.getBoolAttr(true));
+      });
+      aif.getElseBlock()->walk([&](Operation *child_op) {
+        child_op->setAttr(attr, builder.getBoolAttr(true));
+      });
+    } else
+      op->setAttr(attr, builder.getBoolAttr(true));
+  }
+};
+
+struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
+  using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::AllocOp alloc_op,
+                                PatternRewriter &rewriter) const override {
+
+    // Find parent air.execute
+    auto alloc_exec = alloc_op->getParentOfType<air::ExecuteOp>();
+    if (!alloc_exec)
+      return failure();
+
+    // Find dealloc
+    Operation *dealloc_op = nullptr;
+    auto alloc_exec_memref = alloc_exec->getResults()[1];
+    if (!alloc_exec_memref.getType().isa<MemRefType>())
+      alloc_op->emitOpError("the ssa value yielded from execute is not memref");
+    for (auto user : alloc_exec_memref.getUsers()) {
+      if (isa<memref::DeallocOp>(user)) {
+        dealloc_op = user;
+      }
+    }
+    if (!dealloc_op)
+      return failure();
+    auto dealloc_exec = dealloc_op->getParentOfType<air::ExecuteOp>();
+    if (!dealloc_exec)
+      return failure();
+
+    // Check if alloc is the target
+    if (!alloc_op->hasAttr("hoist_alloc"))
+      return failure();
+
+    // Get parent for loop
+    auto for_op = alloc_exec->getParentOfType<scf::ForOp>();
+    if (!for_op)
+      return failure();
+    if (for_op.getOperation() != alloc_exec->getParentOp())
+      return failure();
+
+    // Reconnect alloc dependency
+    skipOverOpInDependencyGraph(rewriter, alloc_exec.getOperation(),
+                                for_op.getRegion());
+
+    for (auto ia : for_op.getIterOperands()) {
+      alloc_exec.addAsyncDependency(ia);
+      for_op->replaceUsesOfWith(ia, alloc_exec.getAsyncToken());
+    }
+
+    // Reconnect dealloc dependency
+    skipOverOpInDependencyGraph(rewriter, dealloc_exec.getOperation(),
+                                for_op.getRegion());
+
+    for (auto for_op_token : for_op->getResults()) {
+      dealloc_exec.addAsyncDependency(for_op_token);
+    }
+
+    // Hoist alloc and dealloc out of for loop
+    alloc_exec->moveBefore(for_op);
+    dealloc_exec->moveAfter(for_op);
+
+    // Erase alloc hoisting attr
+    alloc_op->removeAttr("hoist_alloc");
+
+    return success();
+  }
+
+private:
+  void skipOverOpInDependencyGraph(OpBuilder &builder, Operation *op,
+                                   mlir::Region &region) const {
+
+    auto async_op = dyn_cast<air::AsyncOpInterface>(op);
+    if (!async_op)
+      return;
+
+    auto deps = async_op.getAsyncDependencies();
+
+    for (int i = deps.size() - 1; i >= 0; i--) {
+      for (auto user : async_op.getAsyncToken().getUsers()) {
+        if (auto async_user = dyn_cast<air::AsyncOpInterface>(user)) {
+          eraseAsyncDependencyFromAsyncOp(async_user, async_op.getAsyncToken());
+          addAsyncDependencyIfNew(async_user, deps[i]);
+        }
+        // Else if user is not an air op, and alloc depends on multiple tokens
+        else if (deps.size() > 1) {
+          builder.setInsertionPoint(async_op);
+          air::WaitAllOp wa = builder.create<xilinx::air::WaitAllOp>(
+              async_op->getLoc(),
+              air::AsyncTokenType::get(async_op->getContext()),
+              async_op.getAsyncDependencies());
+          replaceAllUsesInRegionWith(async_op.getAsyncToken(),
+                                     wa.getAsyncToken(), region);
+        } else {
+          replaceAllUsesInRegionWith(async_op.getAsyncToken(), deps[0], region);
+        }
+      }
+      async_op.eraseAsyncDependency(i);
+    }
+  }
+};
+
+struct ConstructPingPongDependencyPattern
+    : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp for_op,
+                                PatternRewriter &rewriter) const override {
+
+    // Check if the loop has been unrolled by factor 2
+    if (!for_op->hasAttr("unroll"))
+      return failure();
+    uint64_t unroll_factor =
+        for_op->getAttrOfType<IntegerAttr>("unroll").getInt();
+    if (unroll_factor != 2)
+      return failure();
+
+    // Find ping and pong allocs and deallocs
+    SmallVector<Operation *> alloc_execs;
+    for (auto &same_hier_op : for_op->getParentRegion()->getOps()) {
+      if (&same_hier_op != for_op.getOperation() &&
+          same_hier_op.hasAttr("unrolled_iteration")) {
+        if (isa<air::ExecuteOp>(same_hier_op)) {
+          if (same_hier_op.getNumResults() == 2 &&
+              same_hier_op.getResult(1).getType().isa<MemRefType>()) {
+            alloc_execs.push_back(&same_hier_op);
+          }
+        }
+      }
+    }
+    if (!alloc_execs.size())
+      return failure();
+
+    // Note: alloc ops were hoisted out of for loop in reversed order (pong
+    // before ping) Reordering alloc exec ops
+    std::reverse(alloc_execs.begin(), alloc_execs.end());
+
+    SmallVector<Operation *> dealloc_execs;
+    for (auto alloc_exec : alloc_execs) {
+      for (auto user : alloc_exec->getResult(1).getUsers()) {
+        if (isa<memref::DeallocOp>(user) &&
+            isa<air::ExecuteOp>(user->getParentOp())) {
+          dealloc_execs.push_back(user->getParentOp());
+        }
+      }
+    }
+
+    // Find producer and consumer ops that use ping and pong buffers
+    SmallVector<std::pair<SmallVector<Operation *>, SmallVector<Operation *>>>
+        all_buffers_user_ops;
+    for (auto alloc_exec : alloc_execs) {
+      auto buffer_memref = alloc_exec->getResult(1);
+      SmallVector<Operation *> producer_ops;
+      SmallVector<Operation *> consumer_ops;
+      SmallVector<Operation *> candidate_ops;
+      for_op.getBody()->walk([&](Operation *child_op) {
+        for (auto operand : child_op->getOperands()) {
+          if (operand == buffer_memref) {
+            push_back_if_unique<Operation *>(candidate_ops, child_op);
+          }
+        }
+      });
+      // Check if producer or consumer
+      for (auto candidate_op : candidate_ops) {
+        if (checkOpOperandReadOrWrite(buffer_memref, candidate_op) == 'w') {
+          if (isa<air::ExecuteOp>(candidate_op->getParentOp())) {
+            push_back_if_unique<Operation *>(producer_ops,
+                                             candidate_op->getParentOp());
+          } else if (isa<mlir::AffineIfOp>(candidate_op->getParentOp())) {
+            push_back_if_unique<Operation *>(producer_ops, candidate_op);
+          } else if (isa<air::AsyncOpInterface>(candidate_op)) {
+            push_back_if_unique<Operation *>(producer_ops, candidate_op);
+          } else
+            push_back_if_unique<Operation *>(producer_ops, candidate_op);
+        } else if (checkOpOperandReadOrWrite(buffer_memref, candidate_op) ==
+                   'r') {
+          if (isa<air::ExecuteOp>(candidate_op->getParentOp())) {
+            push_back_if_unique<Operation *>(consumer_ops,
+                                             candidate_op->getParentOp());
+          } else if (isa<mlir::AffineIfOp>(candidate_op->getParentOp())) {
+            push_back_if_unique<Operation *>(consumer_ops, candidate_op);
+          } else if (isa<air::AsyncOpInterface>(candidate_op)) {
+            push_back_if_unique<Operation *>(consumer_ops, candidate_op);
+          } else
+            push_back_if_unique<Operation *>(consumer_ops, candidate_op);
+        }
+      }
+      std::pair<SmallVector<Operation *>, SmallVector<Operation *>> vec_pair =
+          std::make_pair(producer_ops, consumer_ops);
+      all_buffers_user_ops.push_back(vec_pair);
+    }
+
+    // Annotate ping and pong
+    annotatePingPong(rewriter, alloc_execs);
+    annotatePingPong(rewriter, dealloc_execs);
+    for (auto pair : all_buffers_user_ops) {
+      annotatePingPong(rewriter, pair.first, "producer");
+      annotatePingPong(rewriter, pair.second, "consumer");
+    }
+
+    // Construct essential dep edges
+
+    // Part 1: alloc to for
+
+    auto alloc_ping_exec = dyn_cast<air::ExecuteOp>(alloc_execs[0]);
+    auto alloc_pong_exec = dyn_cast<air::ExecuteOp>(alloc_execs[1]);
+    auto alloc_ping_token = alloc_ping_exec.getAsyncToken();
+    auto alloc_pong_token = alloc_pong_exec.getAsyncToken();
+    SmallVector<Value> upstream_tokens = alloc_pong_exec.getAsyncDependencies();
+    clearAsyncDependenciesOfAsyncOp(alloc_ping_exec);
+    for (auto t : upstream_tokens) {
+      alloc_ping_exec.addAsyncDependency(t);
+    }
+    alloc_ping_exec->moveBefore(alloc_pong_exec);
+
+    SmallVector<Value, 1> iter_operands = {alloc_ping_token, alloc_pong_token,
+                                           alloc_pong_token, alloc_pong_token};
+    scf::ForOp new_loop_op =
+        replaceForLoopAndAddIterArgs(rewriter, for_op, iter_operands);
+    for_op.getResult(0).replaceAllUsesWith(new_loop_op.getResult(1));
+
+    // Collect ping/pong producer/consumer fronts and backs for ping pong
+    // dependency edge connection
+    SmallVector<Operation *> ping_producer_fronts;
+    SmallVector<Operation *> ping_producer_backs;
+    SmallVector<Operation *> ping_consumer_fronts;
+    SmallVector<Operation *> ping_consumer_backs;
+    SmallVector<Operation *> pong_producer_fronts;
+    SmallVector<Operation *> pong_producer_backs;
+    SmallVector<Operation *> pong_consumer_fronts;
+    SmallVector<Operation *> pong_consumer_backs;
+
+    new_loop_op.getBody()->walk([&](Operation *op) {
+      if (op->hasAttr("ping_pong")) {
+        auto ping_pong_id =
+            op->getAttrOfType<IntegerAttr>("ping_pong").getUInt();
+        // "Ping" producer fronts
+        if (op->hasAttr("async_front") && ping_pong_id == 0) {
+          ping_producer_fronts.push_back(op);
+        }
+        // "Pong" producer fronts
+        else if (op->hasAttr("async_front") && ping_pong_id == 1) {
+          pong_producer_fronts.push_back(op);
+        }
+        // "Ping" consumer backs
+        else if (op->hasAttr("async_back") && ping_pong_id == 0) {
+          ping_consumer_backs.push_back(op);
+        }
+        // "Pong" consumer backs
+        else if (op->hasAttr("async_back") && ping_pong_id == 1) {
+          pong_consumer_backs.push_back(op);
+        }
+        // "Ping" producer backs
+        if (op->hasAttr("producer") && ping_pong_id == 0) {
+          ping_producer_backs.push_back(op);
+        }
+        // "Pong" producer backs
+        if (op->hasAttr("producer") && ping_pong_id == 1) {
+          pong_producer_backs.push_back(op);
+        }
+        // "Ping" consumer fronts
+        if (op->hasAttr("consumer") && ping_pong_id == 0) {
+          ping_consumer_fronts.push_back(op);
+        }
+        // "Pong" consumer fronts
+        if (op->hasAttr("consumer") && ping_pong_id == 1) {
+          pong_consumer_fronts.push_back(op);
+        }
+      }
+    });
+
+    // Part 2: Connect producers
+    for (auto sink : ping_producer_fronts) {
+      // "Ping" producers
+      auto async_op = dyn_cast<air::AsyncOpInterface>(sink);
+      addAsyncDependencyIfNew(async_op, new_loop_op.getRegionIterArgs()[0]);
+      addAsyncDependencyIfNew(async_op, new_loop_op.getRegionIterArgs()[3]);
+    }
+    for (auto sink : pong_producer_fronts) {
+      // "Pong" producers
+      auto async_op = dyn_cast<air::AsyncOpInterface>(sink);
+      clearAsyncDependenciesOfAsyncOp(async_op);
+      addAsyncDependencyIfNew(async_op, new_loop_op.getRegionIterArgs()[1]);
+      for (auto source : ping_producer_backs) {
+        Value token = getTokenFromOutermostParentAffineIfOp(source);
+        addAsyncDependencyIfNew(async_op, token);
+      }
+    }
+
+    // Part 3: Connect consumers
+    for (auto sink : ping_consumer_fronts) {
+      // "Ping" consumers
+      auto async_op = dyn_cast<air::AsyncOpInterface>(sink);
+      addAsyncDependencyIfNew(async_op, new_loop_op.getRegionIterArgs()[2]);
+    }
+    for (auto sink : pong_consumer_fronts) {
+      // "Pong" consumers
+      for (auto source : ping_consumer_backs) {
+        auto async_op = dyn_cast<air::AsyncOpInterface>(sink);
+        Value token = getTokenFromOutermostParentAffineIfOp(source);
+        addAsyncDependencyIfNew(async_op, token);
+      }
+    }
+
+    // Part 4: Connect yield
+    // Note: currently only supports producer and consumer dep graphs with
+    // single back
+    rewriter.setInsertionPointToEnd(new_loop_op.getBody());
+    SmallVector<Value, 1> yield_operands = {
+        getJointTokenFromOps(rewriter, ping_consumer_backs),
+        getJointTokenFromOps(rewriter, pong_consumer_backs),
+        getJointTokenFromOps(rewriter, pong_consumer_backs),
+        getJointTokenFromOps(rewriter, pong_producer_backs)};
+    for (auto v : yield_operands) {
+      if (!v)
+        return failure();
+    }
+    rewriter.create<scf::YieldOp>(new_loop_op.getLoc(), yield_operands);
+
+    for_op.erase();
+
+    return success();
+  }
+
+private:
+  void annotatePingPong(OpBuilder builder, SmallVector<Operation *> ops,
+                        std::string flag = "") const {
+    uint64_t unroll_iter = 0;
+    for (auto op : ops) {
+      bool hit = false;
+      if (op->hasAttr("unrolled_iteration")) {
+        hit = true;
+        unroll_iter =
+            op->getAttrOfType<IntegerAttr>("unrolled_iteration").getInt();
+      }
+      // If op is in region of an unrolled affine if
+      else if (isa<mlir::AffineIfOp>(op->getParentOp())) {
+        Operation *parent = op->getParentOp();
+        while (isa<mlir::AffineIfOp>(parent)) {
+          if (parent->hasAttr("unrolled_iteration")) {
+            unroll_iter =
+                parent->getAttrOfType<IntegerAttr>("unrolled_iteration")
+                    .getInt();
+            hit = true;
+          }
+          parent = parent->getParentOp();
+        }
+      }
+
+      if (hit) {
+        op->setAttr("ping_pong", builder.getUI32IntegerAttr(unroll_iter));
+        op->removeAttr("unrolled_iteration");
+        if (flag != "") {
+          op->setAttr(flag, builder.getUI32IntegerAttr(unroll_iter));
+        }
+      }
+    }
+  }
+
+  scf::ForOp
+  replaceForLoopAndAddIterArgs(OpBuilder &builder, scf::ForOp loop_op,
+                               SmallVector<Value, 1> iter_operands) const {
+
+    builder.setInsertionPoint(loop_op);
+    scf::ForOp new_loop_op = builder.create<scf::ForOp>(
+        loop_op.getLoc(), loop_op.getLowerBound(), loop_op.getUpperBound(),
+        loop_op.getStep(), iter_operands);
+
+    if (auto attr = loop_op->getAttrOfType<StringAttr>(
+            SymbolTable::getSymbolAttrName()))
+      new_loop_op->setAttr(SymbolTable::getSymbolAttrName(), attr);
+
+    // Splice the operations inside loop op
+    auto &bb = new_loop_op.getBody()->getOperations();
+    auto &body = loop_op.getBody()->getOperations();
+    bb.splice(bb.begin(), body, body.begin(), --body.end());
+
+    auto iv = loop_op.getInductionVar();
+    iv.replaceAllUsesWith(new_loop_op.getInductionVar());
+    builder.setInsertionPointToStart(new_loop_op.getBody());
+
+    for (unsigned i = 0; i < loop_op.getRegionIterArgs().size(); i++) {
+      loop_op.getRegionIterArgs()[i].replaceAllUsesWith(
+          new_loop_op.getRegionIterArgs()[i]);
+    }
+
+    return new_loop_op;
+  }
+
+  template <typename T>
+  void push_back_if_unique(SmallVector<T> &vec, T entry) const {
+    if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
+      vec.push_back(entry);
+    }
+  }
+
+  Value getTokenFromOutermostParentAffineIfOp(Operation *op) const {
+    Value token = nullptr;
+    Operation *parent = op->getParentOp();
+    if (isa<mlir::AffineIfOp>(parent)) {
+      while (isa<mlir::AffineIfOp>(parent)) {
+        token = getAsyncTokenFromValues(parent->getResults());
+        parent = parent->getParentOp();
+      }
+      return token;
+    } else if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
+      return async_op.getAsyncToken();
+    } else if (auto for_op = dyn_cast<scf::ForOp>(op)) {
+      token = getAsyncTokenFromValues(for_op->getResults());
+      return token;
+    } else if (auto parallel_op = dyn_cast<scf::ParallelOp>(op)) {
+      token = getAsyncTokenFromValues(parallel_op->getResults());
+      return token;
+    } else
+      return nullptr;
+  }
+
+  Value getAsyncTokenFromValues(SmallVector<Value> vec) const {
+    for (auto v : vec) {
+      if (v.getType().isa<air::AsyncTokenType>()) {
+        return v;
+      }
+    }
+    return nullptr;
+  }
+
+  Value getJointTokenFromOps(OpBuilder builder,
+                             SmallVector<Operation *> vec) const {
+    Value token = nullptr;
+    if (vec.size() > 1) {
+      SmallVector<Value> wa_operands;
+      for (auto op : vec) {
+        token = getTokenFromOutermostParentAffineIfOp(op);
+        push_back_if_unique<Value>(wa_operands, token);
+      }
+      auto wa = builder.create<air::WaitAllOp>(
+          builder.getUnknownLoc(),
+          air::AsyncTokenType::get(builder.getContext()), wa_operands);
+      token = wa.getAsyncToken();
+    } else if (vec.size() == 1) {
+      token = getTokenFromOutermostParentAffineIfOp(vec[0]);
+    }
+    return token;
   }
 };
 
@@ -627,6 +1208,174 @@ public:
 private:
 };
 
+class AIRAnnotateFrontAndBackOpsInForPattern
+    : public xilinx::air::AIRAnnotateFrontAndBackOpsInForPatternBase<
+          AIRAnnotateFrontAndBackOpsInForPattern> {
+
+public:
+  AIRAnnotateFrontAndBackOpsInForPattern() = default;
+  AIRAnnotateFrontAndBackOpsInForPattern(
+      const AIRAnnotateFrontAndBackOpsInForPattern &pass){};
+
+  void runOptPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<AnnotateFrontAndBackOpsInForPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      runOptPatterns(f);
+  }
+
+private:
+};
+
+class AIRHoistMemallocInForPattern
+    : public xilinx::air::AIRHoistMemallocInForPatternBase<
+          AIRHoistMemallocInForPattern> {
+
+public:
+  AIRHoistMemallocInForPattern() = default;
+  AIRHoistMemallocInForPattern(const AIRHoistMemallocInForPattern &pass){};
+
+  void runOptPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<HoistMemallocInForPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      runOptPatterns(f);
+  }
+
+private:
+};
+
+class AIRConstructPingPongDependencyPattern
+    : public xilinx::air::AIRConstructPingPongDependencyPatternBase<
+          AIRConstructPingPongDependencyPattern> {
+
+public:
+  AIRConstructPingPongDependencyPattern() = default;
+  AIRConstructPingPongDependencyPattern(
+      const AIRConstructPingPongDependencyPattern &pass){};
+
+  void runOptPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<ConstructPingPongDependencyPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      runOptPatterns(f);
+  }
+
+private:
+};
+
+class AIRUnrollLoopForPipeliningPattern
+    : public xilinx::air::AIRUnrollLoopForPipeliningPatternBase<
+          AIRUnrollLoopForPipeliningPattern> {
+
+public:
+  AIRUnrollLoopForPipeliningPattern() = default;
+  AIRUnrollLoopForPipeliningPattern(
+      const AIRUnrollLoopForPipeliningPattern &pass){};
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    module.walk([&](scf::ForOp for_op) {
+      // Check if loop is the target
+      if (for_op->hasAttr("unroll")) {
+        uint64_t unroll_factor =
+            for_op->getAttrOfType<IntegerAttr>("unroll").getInt();
+        auto annotateFn = [](unsigned i, Operation *op, OpBuilder b) {
+          op->setAttr("unrolled_iteration", b.getI32IntegerAttr(i));
+        };
+        (void)loopUnrollByFactor(for_op, unroll_factor, annotateFn);
+      }
+    });
+  }
+
+private:
+};
+
+class AIRPingPongTransformationPattern
+    : public xilinx::air::AIRPingPongTransformationPatternBase<
+          AIRPingPongTransformationPattern> {
+
+public:
+  AIRPingPongTransformationPattern() = default;
+  AIRPingPongTransformationPattern(
+      const AIRPingPongTransformationPattern &pass){};
+
+  void runOpAnnotationPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<AnnotateFrontAndBackOpsInForPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runHoistMemallocPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<HoistMemallocInForPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runConstructPingPongDependencyPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<ConstructPingPongDependencyPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runLoopUnroll(func::FuncOp funcOp) {
+    funcOp.walk([&](scf::ForOp for_op) {
+      // Check if loop is the target
+      if (for_op->hasAttr("unroll")) {
+        uint64_t unroll_factor =
+            for_op->getAttrOfType<IntegerAttr>("unroll").getInt();
+        auto annotateFn = [](unsigned i, Operation *op, OpBuilder b) {
+          op->setAttr("unrolled_iteration", b.getI32IntegerAttr(i));
+        };
+        (void)loopUnrollByFactor(for_op, unroll_factor, annotateFn);
+      }
+    });
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      runOpAnnotationPatterns(f);
+    for (auto f : funcOps)
+      runLoopUnroll(f);
+    for (auto f : funcOps)
+      runHoistMemallocPatterns(f);
+    for (auto f : funcOps)
+      runConstructPingPongDependencyPatterns(f);
+  }
+
+private:
+};
+
 class AIRDependencyScheduleOpt
     : public AIRDependencyScheduleOptBase<AIRDependencyScheduleOpt> {
 
@@ -679,12 +1428,32 @@ std::unique_ptr<Pass> createAIRHoistDmaInAccumPattern() {
   return std::make_unique<AIRHoistDmaInAccumPattern>();
 }
 
+std::unique_ptr<Pass> createAIRAnnotateFrontAndBackOpsInForPattern() {
+  return std::make_unique<AIRAnnotateFrontAndBackOpsInForPattern>();
+}
+
+std::unique_ptr<Pass> createAIRHoistMemallocInForPattern() {
+  return std::make_unique<AIRHoistMemallocInForPattern>();
+}
+
+std::unique_ptr<Pass> createAIRUnrollLoopForPipeliningPattern() {
+  return std::make_unique<AIRUnrollLoopForPipeliningPattern>();
+}
+
+std::unique_ptr<Pass> createAIRConstructPingPongDependencyPattern() {
+  return std::make_unique<AIRConstructPingPongDependencyPattern>();
+}
+
 std::unique_ptr<Pass> createAIRBroadcastDetection() {
   return std::make_unique<AIRBroadcastDetection>();
 }
 
 std::unique_ptr<Pass> createAIRPruneLinalgGenericInputDma() {
   return std::make_unique<AIRPruneLinalgGenericInputDma>();
+}
+
+std::unique_ptr<Pass> createAIRPingPongTransformationPattern() {
+  return std::make_unique<AIRPingPongTransformationPattern>();
 }
 
 std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass() {

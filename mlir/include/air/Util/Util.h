@@ -100,6 +100,10 @@ struct LinalgTransforms {
   static const StringLiteral kLinalgTransformMarker;
 };
 
+// Check if an operand of an operation is read or write access
+char checkOpOperandReadOrWrite(mlir::OpOperand &op_operand);
+char checkOpOperandReadOrWrite(Value op_operand, Operation *owner);
+
 } // namespace air
 } // namespace xilinx
 

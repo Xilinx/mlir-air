@@ -11,6 +11,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IntegerSet.h"
@@ -153,7 +154,10 @@ scf::ForOp air::getForRegionIterArgsOwner(Value val) {
   auto ivArg = val.dyn_cast<BlockArgument>();
   if (!ivArg)
     return scf::ForOp();
-  assert(ivArg.getOwner() && "unlinked block argument");
+  if (!ivArg.getOwner()) {
+    val.getDefiningOp()->emitOpError("unlinked block argument");
+    return scf::ForOp();
+  }
   auto *containingOp = ivArg.getOwner()->getParentOp();
   return dyn_cast<scf::ForOp>(containingOp);
 }
@@ -174,7 +178,10 @@ air::HerdOp air::getHerdArgOwner(Value val) {
   auto ivArg = val.dyn_cast<BlockArgument>();
   if (!ivArg)
     return air::HerdOp();
-  assert(ivArg.getOwner() && "unlinked block argument");
+  if (!ivArg.getOwner()) {
+    val.getDefiningOp()->emitOpError("unlinked block argument");
+    return air::HerdOp();
+  }
   auto *containingOp = ivArg.getOwner()->getParentOp();
   return dyn_cast<air::HerdOp>(containingOp);
 }
@@ -184,7 +191,10 @@ air::HierarchyInterface air::getHierarchyArgOwner(Value val) {
   auto ivArg = val.dyn_cast<BlockArgument>();
   if (!ivArg)
     return air::HierarchyInterface();
-  assert(ivArg.getOwner() && "unlinked block argument");
+  if (!ivArg.getOwner()) {
+    val.getDefiningOp()->emitOpError("unlinked block argument");
+    return air::HierarchyInterface();
+  }
   auto *containingOp = ivArg.getOwner()->getParentOp();
   return dyn_cast<air::HierarchyInterface>(containingOp);
 }
@@ -192,8 +202,10 @@ air::HierarchyInterface air::getHierarchyArgOwner(Value val) {
 // Get operation's "id" attribute
 int air::getIdAttr(Operation *op) {
   auto idAttr = op->getAttrOfType<IntegerAttr>("id");
-  assert(idAttr && "op has no attribute named 'id'");
-  return idAttr.getInt();
+  if (idAttr)
+    return idAttr.getInt();
+  else
+    return -1;
 }
 
 // Renumber the DMA ops
@@ -223,7 +235,7 @@ void air::renumberDmaOps(func::FuncOp func, std::string mode) {
       });
     }
   } else
-    assert(false && "Unknown dma renumber mode. Supported modes: global, herd");
+    func->emitError("Unknown dma renumber mode. Supported modes: global, herd");
 }
 
 // Return op name as string
@@ -233,18 +245,23 @@ std::string air::to_string(Operation *op) {
 
 // Return memory space as string
 std::string air::getMemorySpaceAsString(Value memref) {
-  assert(memref.getType().isa<MemRefType>() && "value is not a memref");
+  if (!memref.getType().isa<MemRefType>()) {
+    memref.getDefiningOp()->emitOpError("value returned is not a memref");
+    return "";
+  }
   auto memory_space_as_int =
       memref.getType().dyn_cast<MemRefType>().getMemorySpaceAsInt();
-  std::string memorySpaceStr;
+  std::string memorySpaceStr = "";
   if (memory_space_as_int == (int)air::MemorySpace::L1) {
     memorySpaceStr = "L1";
   } else if (memory_space_as_int == (int)air::MemorySpace::L2) {
     memorySpaceStr = "L2";
   } else if (memory_space_as_int == (int)air::MemorySpace::L3) {
     memorySpaceStr = "L3";
-  } else
-    assert(false && "unknown memory space");
+  } else {
+    memref.getDefiningOp()->emitOpError(
+        "value returned has an unexpected memory space");
+  }
   return memorySpaceStr;
 }
 
@@ -266,7 +283,10 @@ air::DmaMemcpyNdOp air::getAIRDmaInBlock(mlir::Block *block) {
 
 // Erase a kernel operand from air.hierarchy op
 void air::eraseAIRHierarchyOperand(air::HierarchyInterface op, unsigned index) {
-  assert(index + 1 <= op->getNumOperands() && "Index out of range");
+  if (index + 1 > op->getNumOperands()) {
+    op->emitOpError("index out of range");
+    return;
+  }
   auto numAsyncDeps = dyn_cast<air::AsyncOpInterface>(op.getOperation())
                           .getAsyncDependencies()
                           .size();
@@ -345,7 +365,6 @@ air::getChannelGetOpThroughSymbol(air::ChannelOp channel) {
 // Get the other channel op through channel symbol
 std::vector<air::ChannelGetOp>
 air::getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put) {
-  auto module = put->getParentOfType<ModuleOp>();
   auto channel_op = getChannelDeclarationThroughSymbol(
       dyn_cast<air::ChannelInterface>(put.getOperation()));
   return getChannelGetOpThroughSymbol(channel_op);
@@ -354,7 +373,6 @@ air::getTheOtherChannelOpThroughSymbol(air::ChannelPutOp put) {
 // Get the other channel op through channel symbol
 std::vector<air::ChannelPutOp>
 air::getTheOtherChannelOpThroughSymbol(air::ChannelGetOp get) {
-  auto module = get->getParentOfType<ModuleOp>();
   auto channel_op = getChannelDeclarationThroughSymbol(
       dyn_cast<air::ChannelInterface>(get.getOperation()));
   return getChannelPutOpThroughSymbol(channel_op);
@@ -522,4 +540,60 @@ Operation *air::getAffineIfNestAndSpatialLoopFromOp(
   spatial_loop = parent;
   parent = parent->getParentOp();
   return parent;
+}
+
+// Check if an operand of an operation is read or write access
+char air::checkOpOperandReadOrWrite(Value v, Operation *owner) {
+  for (auto &op_operand : owner->getOpOperands()) {
+    if (op_operand.is(v)) {
+      return checkOpOperandReadOrWrite(op_operand);
+    }
+  }
+  // Value is not an opoperand of the operation
+  return 'e';
+}
+char air::checkOpOperandReadOrWrite(mlir::OpOperand &op_operand) {
+  auto owner = op_operand.getOwner();
+  // If used in DmaMemcpy Op
+  if (auto dma = dyn_cast<xilinx::air::DmaMemcpyInterface>(owner)) {
+    if (op_operand.is(dma.getSrcMemref())) {
+      return 'r';
+    } else if (op_operand.is(dma.getDstMemref())) {
+      return 'w';
+    } else {
+      return 'u';
+    }
+  }
+  // If used in Channel Put Op
+  else if (auto channel_put = dyn_cast<xilinx::air::ChannelPutOp>(owner)) {
+    if (op_operand.is(channel_put.getSrc())) {
+      return 'r';
+    } else {
+      return 'u';
+    }
+  }
+  // If used in Channel Get Op
+  else if (auto channel_get = dyn_cast<xilinx::air::ChannelGetOp>(owner)) {
+    if (op_operand.is(channel_get.getDst())) {
+      return 'w';
+    } else {
+      return 'u';
+    }
+  }
+  // If used in a linalg op
+  else if (auto linalgop = mlir::dyn_cast<linalg::LinalgOp>(owner)) {
+    if (op_operand.getOperandNumber() <
+        linalgop.getNumDpsInputs() + linalgop.getNumDpsInits()) {
+      return 'r';
+    } else if (op_operand.getOperandNumber() >= linalgop.getNumDpsInputs() &&
+               op_operand.getOperandNumber() - linalgop.getNumDpsInputs() <
+                   linalgop.getNumDpsInits()) {
+      return 'w';
+    } else {
+      return 'u';
+    }
+  }
+  // If unknown op
+  else
+    return 'u';
 }
