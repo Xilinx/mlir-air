@@ -102,7 +102,7 @@ public:
 private:
 }; // port
 
-class streamPort : port { // Do Ports need Master/Slave assignment? Probably...
+class streamPort : port {
 public:
 private:
 }; // streamPort
@@ -142,20 +142,28 @@ public:
       llvm::json::Object *datatypeObject = it->second.getAsObject();
       if (datatypeObject) {
         auto datatype_name = it->first.str();
-        this->push_to_datatypes(
-            datatype_name, datatypeObject->getNumber("efficiency"),
-            datatypeObject->getInteger("ops_per_core_per_cycle"));
+        this->resource_assertion(
+            datatypeObject->getNumber("efficiency").has_value(),
+            "datatype has no 'efficiency'");
+        if (datatypeObject->getInteger("ops_per_core_per_cycle")) {
+          this->push_to_datatypes(
+              datatype_name, datatypeObject->getNumber("efficiency"),
+              datatypeObject->getInteger("ops_per_core_per_cycle"));
+        } else if (auto macs_capacity =
+                       datatypeObject->getInteger("macs_per_core_per_cycle")) {
+          // Note: one mac op contains two ops (mul and add)
+          this->push_to_datatypes(datatype_name,
+                                  datatypeObject->getNumber("efficiency"),
+                                  macs_capacity.emplace(*macs_capacity * 2));
+        } else
+          this->resource_assertion(false,
+                                   "unknown compute capability for datatype " +
+                                       datatype_name +
+                                       ", supported: ops_per_core_per_cycle, "
+                                       "macs_per_core_per_cycle");
       }
       this->reset_reservation();
     }
-    // this->num_fmt = kernelObject->getString("format").value().str();
-    // this->total_ops = kernelObject->getInteger("ops").value();
-    // for(llvm::json::Value rgn : *kernelObject->getArray("supported_regions"))
-    // {
-    //   llvm::json::Object rgn_obj = *rgn.getAsObject();
-    //   this->efficiency[rgn_obj.getString("region").value().str()]
-    //     = rgn_obj.getInteger("efficiency").value();
-    // }
   }
 
   ~kernel() {}
