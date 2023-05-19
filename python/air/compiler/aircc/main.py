@@ -13,7 +13,7 @@ import platform
 import sys
 import subprocess
 from joblib import Parallel, delayed
-import tempfile
+import shutil
 
 from air.mlir.passmanager import PassManager
 from air.mlir.ir import Module, Context, Location
@@ -94,6 +94,15 @@ def run(mlir_module, args=None):
 
   if opts.verbose:
     print('compiling %s\n' % opts.air_mlir_file)
+
+  aiecc_path = shutil.which('aiecc.py')
+  if aiecc_path == None:
+    print("Error: could not find aiecc.py")
+    sys.exit(1)
+
+  aiecc_path = os.path.dirname(os.path.realpath(aiecc_path))+"/.."
+  if opts.verbose:
+    print("Using aiecc.py from: ", aiecc_path)
 
   with mlir_module.context as ctx:
     _,air_mlir_filename = os.path.split(opts.air_mlir_file)
@@ -206,17 +215,23 @@ def run(mlir_module, args=None):
       herd_file = opts.tmpdir+'/aie.'+herd+'.mlir'
       aiecc_file = opts.tmpdir+'/aiecc.'+herd+'.mlir'
       aiecc_dir = opts.tmpdir+'/'+herd
-      do_call(['air-opt', herd_file, '-air-lower-linalg-tensors', '--lower-affine', '-cse', '-o', aiecc_file])
+      do_call(['air-opt', herd_file,'-air-lower-linalg-tensors',
+               '-lower-affine', '-cse', '-o', aiecc_file])
+
+      # set host target for aiecc
       if 'x86_64' in platform.uname()[5]:
         aiecc_target = "x86_64-amd-linux-gnu"
       else:
         aiecc_target = "aarch64-linux-gnu"
+      aiecc_target = opts.host_target if opts.host_target else aiecc_target
+
+      # run aiecc to make the elf and configuration files
       do_call(['aiecc.py'] +
               (['-v'] if opts.verbose else []) +
               (['--sysroot', opts.sysroot] if opts.sysroot else ['--sysroot=/']) +
-              ['--host-target', opts.host_target if opts.host_target else aiecc_target] +
+              ['--host-target', aiecc_target] +
               ['--tmpdir', aiecc_dir] +
-              ['--aie-generate-xaiev2', '--no-aiesim'] +
+              ['--no-aiesim'] +
               ['--xbridge' if opts.xbridge else '--no-xbridge'] +
               ['--xchesscc' if opts.xchesscc else '--no-xchesscc'] +
               [aiecc_file])
@@ -232,17 +247,26 @@ def run(mlir_module, args=None):
       with open(cpp_file, 'w') as f:
         f.write(emit_wrapper(herd, inc_file))
 
-      cmd = [opts.cc, '-std=c++11', '-g']
+      cmd = [opts.cc, '-std=c++11', '-g', '-I.']
+
+      # set flags for cross-compilation
       cmd += ['--sysroot=%s' % opts.sysroot] if opts.sysroot else []
       if opts.sysroot and 'aarch64-linux-gnu' in opts.host_target:
         cmd += ['--gcc-toolchain=%s/usr' % opts.sysroot]
       cmd += ['--target=%s' % opts.host_target] if opts.host_target else []
-      cmd += ['-I.', f'-I{opts.sysroot}/opt/xaienginev2/include']
+
+      # air runtime include path
       thispath = os.path.dirname(os.path.realpath(__file__))
       cmd += [f'-I{thispath}/../../../../runtime_lib/airhost/include']
-      cmd += [f'-I{thispath}/../../../../runtime_lib']
-      cmd += [f'-I{thispath}/../../../../../aie/runtime_lib']
-      cmd += [f'-I{thispath}/../../../../../utils/mlir-aie/runtime_lib']
+
+      # aie runtime include path
+      if "x86_64" in aiecc_target:
+        cmd += [f'-I{aiecc_path}/runtime_lib/x86_64/test_lib/include']
+      if "aarch64" in aiecc_target:
+        cmd += [f'-I{aiecc_path}/runtime_lib/aarch64/test_lib/include']
+
+      # libxaie include path
+      cmd += [f'-I{opts.sysroot}/opt/xaienginev2/include']
       cmd += ['-DLIBXAIENGINEV2']
       cmd += ['-DAIE_LIBXAIE_ENABLE', '-fPIC', '-c']
       cmd += ['-o', obj_file, cpp_file]
