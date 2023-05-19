@@ -149,6 +149,9 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
     Option<"clTestPatterns", "test-patterns", "std::string",
           /*default=*/"\"\"",
            "Test the given patterns.">,
+    Option<"clDevice", "device", "std::string",
+          /*default=*/"\"xcvc1902\"",
+           "AIE device to target.">,
   ];
   let description = [{
     This pass converts AIR dialect `herd` and `segment` operations into AIE
