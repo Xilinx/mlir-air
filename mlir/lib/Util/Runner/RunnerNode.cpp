@@ -50,7 +50,8 @@ public:
     this->consumeResourceHiersWhenRunnerStarts(reserved_resources);
     auto entry = std::make_tuple(v, reserved_resources, (unsigned)1);
     for (auto i : this->wavefront) {
-      assert(std::get<2>(i) != std::get<2>(entry) && "queried thread is busy");
+      this->runner_assertion(std::get<2>(i) != std::get<2>(entry),
+                             "queried thread is busy");
     }
     this->wavefront.push_back(entry);
   }
@@ -203,8 +204,10 @@ public:
       if (G[*inv_adj_v].asyncEventType == "for_loop") {
         int th = this->tokenCountThresholdForExecution(
             G[it].op); // Consume all iter_arg tokens
-        assert(G[it].token_count >=
-               th * (int)this->tokenSpatialFactorForDependency(G[it].op));
+        this->runner_assertion(
+            G[it].token_count >=
+                th * (int)this->tokenSpatialFactorForDependency(G[it].op),
+            "process runs out of async tokens");
         G[it].token_count -=
             th * this->tokenSpatialFactorForDependency(G[it].op);
         return;
@@ -539,11 +542,11 @@ private:
     // Get number of bytes per element in tensor
     double datawidth = 0;
     auto d = this->getDeviceHier();
-    assert(d);
+    this->runner_assertion(d, "'device' resource not found");
     if (auto bytes = d->datatypes[getElementTypeAsString(ty)]) {
       datawidth = bytes;
     } else {
-      assert(false && "data type not found in JSON model");
+      this->runner_assertion(false, "data type not found in JSON model");
     }
     // Get resource usage multipler for spatial ops which are batch dispatched
     auto spatial_op = this->getAncestorSpatialLoopFromOp(op);
@@ -557,8 +560,8 @@ private:
                                     std::vector<resource *> &reserved_resources,
                                     unsigned usage_count) {
     // A previously emitted error should have captured this
-    assert(usage_count <= resource_pool.size() &&
-           "failed to reserve resources");
+    this->runner_assertion(usage_count <= resource_pool.size(),
+                           "failed to reserve resources");
     for (unsigned i = 0; i < usage_count; i++) {
       resource_pool[i]->isReserved = true;
       reserved_resources.push_back(resource_pool[i]);
@@ -574,7 +577,8 @@ private:
     double remaining = memory_allocated;
     for (auto res : resource_pool) {
       auto mem = static_cast<memory *>(res);
-      assert(mem);
+      this->runner_assertion(mem,
+                             "unknown memory type in memory resource pool");
       auto free_memory = mem->bytes - mem->bytes_used;
       if (free_memory >= remaining) {
         mem->bytes_used += remaining;
@@ -595,7 +599,8 @@ private:
     double remaining = memory_deallocated;
     for (auto res : resource_pool) {
       auto mem = static_cast<memory *>(res);
-      assert(mem);
+      this->runner_assertion(mem,
+                             "unknown memory type in memory resource pool");
       if (mem->bytes_used >= remaining) {
         mem->bytes_used -= remaining;
         remaining = 0;
@@ -870,7 +875,8 @@ private:
         found_entry = true;
       }
     }
-    assert(found_entry && "Cannot find channel symbol name in launch runner");
+    this->runner_assertion(found_entry,
+                           "cannot find channel symbol name in launch runner");
   }
 
   void allocateEventToResources(air::ChannelInterface Op,
@@ -1021,7 +1027,8 @@ private:
     // Start sub-runner node by pushing start node into its wavefront
     sub_runner_node->ctrl_g->g[sub_start_v].start_time = time;
     sub_runner_node->ctrl_g->g[sub_start_v].end_time = time;
-    assert(!sub_runner_node->wavefront.size() && "Sub runner node is busy");
+    this->runner_assertion(!sub_runner_node->wavefront.size(),
+                           "sub runner node is busy");
     sub_runner_node->pushStartToWavefront(sub_start_v);
 
     sub_runner_node->processed_vertices.clear();
@@ -1083,7 +1090,9 @@ private:
         // Get the yielded token in the next loop iteration (at the beginning of
         // the loop)
         auto next_iter_token = for_op.getRegionIterArgs()[token_ids[i]];
-        assert(next_iter_token);
+        this->runner_assertion(
+            next_iter_token != nullptr,
+            "token for next loop interation not successfully obtained");
 
         // Search for vertices corresponding to the next-iteration incarnations
         // of this token
@@ -1169,7 +1178,7 @@ private:
         this->processed_vertices.push_back(it);
       }
     } else
-      assert(false);
+      this->runner_assertion(false, "unknown channel.put op");
   }
 
   void executeOp(air::ChannelGetOp op, Graph::vertex_descriptor it) {
@@ -1363,7 +1372,8 @@ private:
     auto adj_set = boost::adjacent_vertices(v, G);
     for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
       auto adj_op = G[*adj_v].op;
-      assert(adj_op);
+      this->runner_assertion(
+          adj_op, "scf.for op has no adjacent op in dependency graph");
       for (auto d : adj_op->getOperands()) {
         if (d == next_iter_token) {
           adj_vs.push_back(*adj_v);
@@ -1399,7 +1409,7 @@ private:
   bool checkChannelDependenceFulfillment(dependencyNodeEntry dep_node,
                                          std::vector<unsigned> position) {
     auto channel_op = dyn_cast<air::ChannelInterface>(dep_node.op);
-    assert(channel_op);
+    this->runner_assertion(channel_op, "op being checked is not a channel op");
     std::string chan_name = channel_op.getChanName().str();
     unsigned th =
         (position.size())
@@ -1456,7 +1466,7 @@ private:
         return false;
       }
     } else {
-      assert(false && "Unknown async token type");
+      this->runner_assertion(false, "unknown async token type");
     }
     return true;
   }
@@ -1465,7 +1475,8 @@ private:
   bool checkEachDependenceFulfillment(
       std::pair<dependencyNodeEntry, std::string> &dep, uint64_t time) {
     if (dep.second == "ssa") {
-      assert(dep.first.start_time >= 0);
+      this->runner_assertion(dep.first.start_time >= 0,
+                             "invalid event start timestamp");
       if ((!dep.first.is_started()) || (!dep.first.is_done(time))) {
         // If source and sink of dep are both under the same loop
         return false;
@@ -1480,7 +1491,7 @@ private:
         return false;
       }
     } else {
-      assert(false && "Unknown async token type");
+      this->runner_assertion(false, "unknown async token type");
     }
     return true;
   }
@@ -1753,7 +1764,8 @@ private:
     } else if (isa<scf::ParallelOp>(op)) {
       return this->getResourceUsageMultiplier(op, false);
     }
-    assert(false && "TODO: add other simulation granularities");
+    this->runner_assertion(
+        false, "unknown simulation granularity (supported modes: herd, core)");
     return 1;
   }
 
@@ -1832,6 +1844,14 @@ private:
       }
     }
     return parent;
+  }
+
+  // Runner error assertion
+  void runner_assertion(bool cond, std::string msg = "") {
+    if (!cond) {
+      std::cerr << "Error: " + msg + "\n";
+      exit(EXIT_FAILURE);
+    }
   }
 
 }; // runnerNode

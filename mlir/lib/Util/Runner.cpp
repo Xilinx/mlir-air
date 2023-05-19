@@ -181,7 +181,10 @@ public:
       execution_time = 1;
     } else if (type == "dma") {
       auto Op = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(c.op);
-      assert(Op);
+      if (!Op)
+        c.op->emitOpError("has mismatching event type").attachNote()
+            << "Has 'dma' as event type, but op isn't of type "
+               "air::DmaMemcpyInterface";
       MemRefType srcTy = Op.getSrcMemref().getType().cast<MemRefType>();
       MemRefType dstTy = Op.getDstMemref().getType().cast<MemRefType>();
       auto srcSpace = srcTy.getMemorySpaceAsInt();
@@ -195,11 +198,15 @@ public:
     } else if (type == "channel" &&
                (name.find("ChannelGetOp") != std::string::npos)) {
       auto getOp = mlir::dyn_cast<xilinx::air::ChannelGetOp>(c.op);
-      assert(getOp);
+      if (!getOp)
+        c.op->emitOpError("has mismatching event type").attachNote()
+            << "Has 'channel' as event type, but op isn't of type "
+               "air::ChannelGetOp";
       MemRefType dstTy = getOp.getDst().getType().cast<MemRefType>();
       std::vector<air::ChannelPutOp> putOps =
           air::getTheOtherChannelOpThroughSymbol(getOp);
-      assert(putOps.size());
+      if (!putOps.size())
+        getOp->emitOpError("found no put op for air::ChannelGetOp");
       MemRefType srcTy = putOps[0].getSrc().getType().cast<MemRefType>();
       auto srcSpace = srcTy.getMemorySpaceAsInt();
       auto dstSpace = dstTy.getMemorySpaceAsInt();
@@ -210,8 +217,10 @@ public:
       else
         execution_time = getTransferCost(d, c.op, srcSpace, dstSpace, dstTy);
     } else if (type == "execute" && name != "ExecuteTerminatorOp") {
-      assert(dyn_cast<air::ExecuteOp>(c.op) &&
-             "op type and node type do not match");
+      if (!isa<air::ExecuteOp>(c.op))
+        c.op->emitOpError("has mismatching event type").attachNote()
+            << "Has 'execute' as event type, but op isn't of type "
+               "air::ExecuteOp";
       auto child_op = &*(c.op->getRegions().front().getOps().begin());
       if (auto Op = mlir::dyn_cast<linalg::LinalgOp>(child_op)) {
         uint64_t compute_xfer_cost = 0;
@@ -340,7 +349,8 @@ public:
 
     // Walk the json file and create resource model
     auto model = jsonModel.getAsObject();
-    assert(model && "Failed to read JSON model");
+    if (!model)
+      toplevel->emitOpError("failed to read JSON model");
     auto device_resource_node = device(model);
 
     uint64_t time = 1;
@@ -619,8 +629,10 @@ private:
       double efficiency = 1.0f;
 
       auto model = jsonModel.getAsObject();
-      assert(model);
-      assert(d.kernels.size() && "kernels not found in JSON model");
+      if (!model)
+        op->emitOpError("failed to read JSON model");
+      if (!d.kernels.size())
+        op->emitOpError("found no kernel in JSON model");
 
       // if kernels exists, assume everthing else exists
       // Get operation datatype as the first operand's datatype
@@ -636,8 +648,8 @@ private:
       cycles_per_second = d.clock;
 
       double ops_per_cycle = num_cores * ops_per_core_per_cycle * efficiency;
-      assert(ops_per_cycle > 0 &&
-             "ops per cycle in model must be greater than zero");
+      if (ops_per_cycle <= 0)
+        op->emitOpError("ops per cycle in model must be greater than zero");
 
       double cycles = ceil(compute_op_count / ops_per_cycle);
       compute_op_cost = cycles;
