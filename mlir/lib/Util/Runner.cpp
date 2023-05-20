@@ -604,8 +604,8 @@ private:
     std::string cpuops = "math.rsqrt;";
     cpuops += "arith.mulf;arith.divf;arith.addf;arith.subf;arith.truncf;"
               "arith.cmpf;arith.maxf;";
-    cpuops += "arith.muli;arith.divi;arith.addi;arith.subi;arith.trunci;"
-              "arith.cmpi;arith.maxi";
+    cpuops += "arith.muli;arith.divsi;arith.divsi;arith.addi;arith.subi;"
+              "arith.trunci;arith.cmpi;arith.maxi";
     cpuops += "std.select";
     uint64_t memory_op_count = 0;
     uint64_t compute_op_count = 0;
