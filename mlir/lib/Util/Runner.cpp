@@ -584,14 +584,12 @@ private:
       if (!datawidth)
         op->emitOpError("found data type with zero width in JSON model");
     } else
-      op->emitOpError(
-          "is data movement with data type not found in JSON model");
+      op->emitOpError("data type not found in JSON model");
 
     double bytes = volume * datawidth;
     double bps = d.interfaces[{srcSpace, dstSpace}]->data_rate;
     if (bps == 0.0f)
-      op->emitOpError(
-          "is data movement with data rate not found in JSON model");
+      op->emitOpError("data rate not found in JSON model");
     double seconds = bytes / bps;
     return (uint64_t)ceil(seconds * cps);
   }
