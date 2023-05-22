@@ -145,6 +145,7 @@ airrt.module_metadata{
 -emit-while-loop : Emit a while(1) around the herd code in generated AIR.core ops.
 -emit-herd-lock  : Acquire and release a lock at the start and end of herd execution. The default is to acquire lock 0 with value zero and release it with value 0. There is currently no way to override the default behavior.
 -test-patterns   : Test the given patterns.
+-device          : AIE device to target.
 ```
 ### `-air-to-async`: AIR dialect lowering
 ### `-air-to-std`: AIR dialect lowering
