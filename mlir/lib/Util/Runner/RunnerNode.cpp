@@ -977,7 +977,7 @@ private:
   // Get the number of remaining dispatches in a dynamically dispatched event
   // (e.g., events in scf.parallel)
   unsigned getRemainingDispatchesForDynamicDispatch(air::ChannelPutOp putOp) {
-    // Only launch runner node holds channel_ops_in_progress cache
+    // Only launch runner node shall hold channel_ops_in_progress cache
     if (this->runner_node_type != "launch") {
       return 0;
     }
@@ -1190,7 +1190,6 @@ private:
     }
 
     // Get op progress
-    auto put = air::getTheOtherChannelOpThroughSymbol(op);
     auto put_processed = launch_runner->getAlreadyDispatchedForDynamicDispatch(
         op.getChanName().str(), "put");
     auto get_processed = launch_runner->getAlreadyDispatchedForDynamicDispatch(

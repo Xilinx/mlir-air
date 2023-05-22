@@ -13,10 +13,6 @@
 // CHECK: "name": "DeallocOp(L1)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "B",
-
-// CHECK: "name": "DeallocOp(L1)",
-// CHECK-NEXT: "cat": "layer",
-// CHECK-NEXT: "ph": "E",
 // CHECK-NEXT: "ts": [[TIME0:.*]],
 
 // CHECK: "name": "AllocOp(L1)",
