@@ -125,7 +125,8 @@ def run(mlir_module, args=None):
 
     air_to_aie_pass = 'air-to-aie{emit-while-loop=false'
     air_to_aie_pass = air_to_aie_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
-    air_to_aie_pass = air_to_aie_pass + f' output-prefix={opts.tmpdir}/' + '}'
+    air_to_aie_pass = air_to_aie_pass + f' output-prefix={opts.tmpdir}/'
+    air_to_aie_pass = air_to_aie_pass + f' device={opts.device}' + '}'
     pass_pipeline = ','.join([
       air_to_aie_pass
     ])
@@ -133,7 +134,8 @@ def run(mlir_module, args=None):
 
     air_to_airrt_pass = 'air-to-aie{emit-while-loop=true'
     air_to_airrt_pass = air_to_airrt_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
-    air_to_airrt_pass = air_to_airrt_pass + f' output-prefix=/dev/null' + '}'
+    air_to_airrt_pass = air_to_airrt_pass + f' output-prefix=/dev/null'
+    air_to_airrt_pass = air_to_airrt_pass + f' device={opts.device}' + '}'
 
     # lower the airrt control program to llvm dialect
 
