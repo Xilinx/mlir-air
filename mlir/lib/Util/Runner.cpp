@@ -246,7 +246,7 @@ public:
     executeOpsFromWavefrontAndFreeResource(c, device_resource_node, time);
     pushOpsToWavefrontAndAllocateResource(c, device_resource_node, time);
 
-    return c.wavefront.size() > 0;
+    return !c.wavefront.empty();
   }
 
   void executeOpsFromWavefrontAndFreeResource(runnerNode &c,
