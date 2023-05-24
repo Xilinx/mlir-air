@@ -414,6 +414,7 @@ public:
 
     // Simulation performance report
     std::string end_ts = convertToTimeStampInStr(time, device_resource_node);
+    std::cout << "Latency: " << end_ts << "us\n";
   }
 
   void scheduleLaunch(runnerNode &launch, device &device_resource_node,
