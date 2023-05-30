@@ -129,10 +129,6 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
   let summary = "Lower air.launch_herd to AIE dialect";
   let constructor = "xilinx::air::createAIRToAIEPass()";
   let options = [
-    Option<"clOutputPrefix", "output-prefix", "std::string",
-          /*default=*/"\"-\"",
-           "File name prefix for generated AIE modules. Set to /dev/null "
-           "for no output. Set to \'-\' for stdout (default).">,
     Option<"clRowOffset", "row-offset", "unsigned", /*default=*/"1",
            "The default start row for any herds without 'y_loc' attribute.">,
     Option<"clColOffset", "col-offset", "unsigned", /*default=*/"1",
@@ -269,6 +265,17 @@ def AIRRtToLLVM : Pass<"airrt-to-llvm", "ModuleOp"> {
     air_host.h.  Any changes to this pass must be reflected there.
   }];
   let options = [];
+}
+
+def AIRSplitDevices : Pass<"air-split-devices", "ModuleOp"> {
+  let summary = "Split the input into one output per AIE.device op";
+  let constructor = "xilinx::air::createAIRSplitDevicesPass()";
+  let options = [
+    Option<"clOutputPrefix", "output-prefix", "std::string",
+          /*default=*/"\"-\"",
+           "File name prefix for split AIE modules. "
+           "Set to \'-\' for stdout (default).">,
+  ];
 }
 
 def AIRPipelineToAffine : Pass<"air-pipeline-to-affine", "ModuleOp"> {

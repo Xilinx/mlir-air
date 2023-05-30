@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie -o /dev/null | air-opt | FileCheck %s
+// RUN: air-opt %s -air-to-aie | FileCheck %s
 // CHECK: [[T_0_0:%.*]] = AIE.tile(1, 1)
 // CHECK: [[T_1_0:%.*]] = AIE.tile(2, 1)
 // CHECK: [[T_0_1:%.*]] = AIE.tile(1, 2)

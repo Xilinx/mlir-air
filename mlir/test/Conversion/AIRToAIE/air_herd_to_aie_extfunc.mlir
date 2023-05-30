@@ -11,7 +11,7 @@ module {
 
 func.func @foo(%arg0: i32) {
   %cst1 = arith.constant 1 : index
-  // CHECK-LABEL: module @aie.segment_0
+  // CHECK: AIE.device
   // CHECK: AIE.core(%0)  {
   // CHECK:   call @beefmaker_kernel(%1) : (memref<1024xi32, 2>) -> ()
   // CHECK:   AIE.end

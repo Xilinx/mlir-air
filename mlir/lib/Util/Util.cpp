@@ -326,13 +326,16 @@ air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
 
 // Get ChannelPutOp through ChannelOp
 std::vector<air::ChannelPutOp>
-air::getChannelPutOpThroughSymbol(air::ChannelOp channel) {
-  auto module = channel->getParentOfType<ModuleOp>();
+air::getChannelPutOpThroughSymbol(air::ChannelOp channel, Operation *scope) {
+
+  if (!scope)
+    scope = channel->getParentOfType<ModuleOp>();
+
   auto attr =
       channel->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
 
   std::vector<ChannelPutOp> channelPuts;
-  module.walk([&](Operation *op) {
+  scope->walk([&](Operation *op) {
     if (auto put = dyn_cast<air::ChannelPutOp>(op)) {
       if (put.getChanName() == attr) {
         channelPuts.push_back(put);
@@ -345,13 +348,16 @@ air::getChannelPutOpThroughSymbol(air::ChannelOp channel) {
 
 // Get ChannelGetOps through ChannelOp
 std::vector<air::ChannelGetOp>
-air::getChannelGetOpThroughSymbol(air::ChannelOp channel) {
-  auto module = channel->getParentOfType<ModuleOp>();
+air::getChannelGetOpThroughSymbol(air::ChannelOp channel, Operation *scope) {
+
+  if (!scope)
+    scope = channel->getParentOfType<ModuleOp>();
+
   auto attr =
       channel->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
 
   std::vector<ChannelGetOp> channelGets;
-  module.walk([&](Operation *op) {
+  scope->walk([&](Operation *op) {
     if (auto get = dyn_cast<air::ChannelGetOp>(op)) {
       if (get.getChanName() == attr) {
         channelGets.push_back(get);

@@ -312,9 +312,11 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       if (!core) {
         core = builder.create<AIE::CoreOp>(hloc, tile);
         tileToHerdMap[tile] = h;
-        std::string herd_name =
-            aie_device->getParentOfType<ModuleOp>().getName()->str().substr(
-                strlen("aie."));
+        auto herd_name =
+            aie_device
+                ->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
+                .getValue()
+                .str();
         core->setAttr("elf_file",
                       StringAttr::get(aie_device.getContext(),
                                       herd_name + "_core_" +
@@ -421,7 +423,16 @@ void createAIEModulesAndOutlineCores(
     std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
     AIRToAIEOptions &options) {
 
-  module.walk([&](xilinx::air::SegmentOp p) {
+  SmallVector<air::SegmentOp> segments;
+  SmallVector<air::HerdOp> herds;
+  module.walk([&](xilinx::air::SegmentOp s) { segments.push_back(s); });
+  module.walk([&](xilinx::air::HerdOp h) {
+    if (h->getParentOfType<xilinx::air::SegmentOp>())
+      return;
+    herds.push_back(h);
+  });
+
+  for (auto p : segments) {
     std::string segment_name;
     if (auto attr =
             p->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
@@ -429,32 +440,30 @@ void createAIEModulesAndOutlineCores(
     else
       segment_name = "segment_" + std::to_string(aie_modules.size());
     std::string aie_module_name = "aie." + segment_name;
-    auto aie_module =
-        ModuleOp::create(module.getLoc(), StringRef(aie_module_name));
-    auto builder = OpBuilder::atBlockBegin(aie_module.getBody());
+    auto builder = OpBuilder::atBlockBegin(module.getBody());
     auto aie_dev = builder.create<AIE::DeviceOp>(
-        aie_module.getLoc(),
+        module.getLoc(),
         AIE::AIEDeviceAttr::get(builder.getContext(), options.device));
+    aie_dev->setAttr(SymbolTable::getSymbolAttrName(),
+                     StringAttr::get(builder.getContext(), segment_name));
+
     aie_dev.getRegion().emplaceBlock();
     p.walk([&](xilinx::air::HerdOp h) { aie_modules.push_back({aie_dev, h}); });
-  });
+  };
 
-  module.walk([&](xilinx::air::HerdOp h) {
-    if (h->getParentOfType<xilinx::air::SegmentOp>())
-      return;
+  for (auto h : herds) {
     std::string segment_name;
     segment_name = "segment_" + std::to_string(aie_modules.size());
     std::string aie_module_name = "aie." + segment_name;
-    auto aie_module =
-        ModuleOp::create(module.getLoc(), StringRef(aie_module_name));
-    auto builder = OpBuilder::atBlockBegin(aie_module.getBody());
+    auto builder = OpBuilder::atBlockBegin(module.getBody());
     auto aie_dev = builder.create<AIE::DeviceOp>(
-        aie_module.getLoc(),
+        module.getLoc(),
         AIE::AIEDeviceAttr::get(builder.getContext(), options.device));
+    aie_dev->setAttr(SymbolTable::getSymbolAttrName(),
+                     StringAttr::get(builder.getContext(), segment_name));
     aie_dev.getRegion().emplaceBlock();
     aie_modules.push_back({aie_dev, h});
-  });
-
+  };
   for (auto &p : aie_modules) {
     auto aie_dev = std::get<0>(p);
     auto h = std::get<1>(p);
@@ -971,9 +980,9 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       return failure();
 
     std::vector<ChannelPutOp> channelPuts =
-        getChannelPutOpThroughSymbol(channel);
+        getChannelPutOpThroughSymbol(channel, device);
     std::vector<ChannelGetOp> channelGets =
-        getChannelGetOpThroughSymbol(channel);
+        getChannelGetOpThroughSymbol(channel, device);
 
     // put/get come in pairs, if one is missing then it's L3
     MemRefType srcMemref;
@@ -1783,9 +1792,11 @@ public:
             dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
           }
         }
-        auto segment_meta = getOrCreateSegmentMetadata(
-            module_meta,
-            device->getParentOfType<ModuleOp>().getName()->split('.').second);
+        auto segment_name =
+            device->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
+                .getValue();
+        auto segment_meta =
+            getOrCreateSegmentMetadata(module_meta, segment_name);
         auto herd_meta = createHerdMetadata(segment_meta, herd);
         herd_meta->setAttr("dma_allocations",
                            ArrayAttr::get(ctx, dma_allocations));
@@ -1797,20 +1808,91 @@ public:
       air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
       (void)applyPatternsAndFoldGreedily(device, std::move(patterns));
     }
+  }
+};
 
-    // emit aie_modules to files or to stdout
-    seen.clear();
-    for (auto p : aie_devices) {
-      auto aie_dev = std::get<0>(p);
-      if (seen.find(aie_dev) != seen.end())
-        continue;
-      seen.insert(aie_dev);
-      auto aie_module = aie_dev->getParentOfType<ModuleOp>();
+template <typename OpT>
+struct OpRemovalPattern : public OpConversionPattern<OpT> {
+  using OpConversionPattern<OpT>::OpConversionPattern;
+  using OpAdaptor = typename OpT::Adaptor;
+
+  OpRemovalPattern(MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern<OpT>(context, benefit) {}
+
+  LogicalResult
+  matchAndRewrite(OpT op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+class SplitAIEDevicesPass : public AIRSplitDevicesBase<SplitAIEDevicesPass> {
+
+public:
+  SplitAIEDevicesPass() = default;
+  SplitAIEDevicesPass(const SplitAIEDevicesPass &pass) {}
+  void runOnOperation() override {
+    ModuleOp m = getOperation();
+    auto ctx = &getContext();
+
+    SmallVector<AIE::DeviceOp> deviceOps;
+    m.walk([&](AIE::DeviceOp d) { deviceOps.push_back(d); });
+
+    unsigned segment_number = 0;
+    OpBuilder builder(ctx);
+    for (auto device : deviceOps) {
+
+      std::string segment_name;
+      if (auto attr = device->getAttrOfType<StringAttr>(
+              SymbolTable::getSymbolAttrName())) {
+        segment_name = attr.getValue().str();
+      } else {
+        segment_name = "segment_" + std::to_string(segment_number++);
+      }
+      std::string aie_module_name = "aie." + segment_name;
+
+      ModuleOp aie_module =
+          ModuleOp::create(builder.getUnknownLoc(), StringRef(aie_module_name));
+      builder.setInsertionPointToStart(aie_module.getBody());
+      IRMapping remap;
+      for (auto &o : m.getBody()->getOperations()) {
+
+        // if it's not the current device op, don't clone it
+        if (isa<AIE::DeviceOp>(o) && &o != device.getOperation())
+          continue;
+
+        // if it's a function without a use in the device op, don't clone it
+        if (isa<func::FuncOp>(o)) {
+          bool has_use = false;
+          for (auto u : o.getUsers()) {
+            has_use |= (u->getParentOfType<AIE::DeviceOp>() == device);
+          }
+          if (!has_use)
+            continue;
+        }
+
+        // clone op into the new module
+        builder.clone(o, remap);
+      }
+
+      // run lowering patterns
+      //
+      RewritePatternSet removepatterns(ctx);
+      removepatterns.add<OpRemovalPattern<airrt::ModuleMetadataOp>>(ctx);
+
+      ConversionTarget target(*ctx);
+      target.addIllegalDialect<xilinx::airrt::AIRRtDialect>();
+      if (failed(applyPartialConversion(aie_module, target,
+                                        std::move(removepatterns))))
+        signalPassFailure();
+
+      // write module to stdout or file
+      //
       if (clOutputPrefix != "-") {
         if (clOutputPrefix != "/dev/null") {
           std::error_code EC;
-          std::string fname =
-              clOutputPrefix + aie_module.getName()->str() + ".mlir";
+          std::string fname = clOutputPrefix + aie_module_name + ".mlir";
           llvm::raw_fd_ostream aie_ostream(fname, EC);
           aie_module.print(aie_ostream);
         }
@@ -1818,6 +1900,9 @@ public:
         aie_module.print(llvm::outs());
       }
     }
+
+    for (auto device : deviceOps)
+      device.erase();
   }
 };
 
@@ -1873,6 +1958,10 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
 
 std::unique_ptr<mlir::Pass> createAIRToAIEPass() {
   return std::make_unique<AIRToAIEPass>();
+}
+
+std::unique_ptr<mlir::Pass> createAIRSplitDevicesPass() {
+  return std::make_unique<SplitAIEDevicesPass>();
 }
 
 } // namespace air
