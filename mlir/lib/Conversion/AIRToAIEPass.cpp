@@ -1657,7 +1657,7 @@ public:
 
     // If we have multiple herds then we must emit them into different aie
     // modules to avoid resource conflicts in the AIE physical dialect.
-    std::vector<std::pair<AIE::DeviceOp, air::HerdOp>> aie_modules;
+    std::vector<std::pair<AIE::DeviceOp, air::HerdOp>> aie_devices;
 
     std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
     auto device = AIE::symbolizeAIEDevice(clDevice);
@@ -1671,141 +1671,140 @@ public:
                                .emit_while = clEmitWhileLoop,
                                .emit_herd_lock = clEmitHerdLock,
                                .device = *device};
-    createAIEModulesAndOutlineCores(module, aie_modules, tileToHerdMap,
+    createAIEModulesAndOutlineCores(module, aie_devices, tileToHerdMap,
                                     options);
 
     std::set<AIE::DeviceOp> seen;
-    for (auto &p : aie_modules) {
+    for (auto &p : aie_devices) {
       auto device = std::get<0>(p);
       xilinx::air::HerdOp h = std::get<1>(p);
       auto ctx = device->getContext();
 
-      if (seen.find(device) == seen.end()) {
-        seen.insert(device);
+      if (seen.find(device) != seen.end())
+        continue;
+      seen.insert(device);
 
-        specializeHerdAffineIf(device);
-        lowerAirExecute(device);
-        lowerScfAirTokens(device);
+      specializeHerdAffineIf(device);
+      lowerAirExecute(device);
+      lowerScfAirTokens(device);
 
-        allocL1Buffers(device, tileToHerdMap);
+      allocL1Buffers(device, tileToHerdMap);
 
-        // The shim tile allocation is not unified for dma and channel lowering
-        // so we disallow a mix of dma and channel ops.
-        bool hasDma = false;
-        bool hasChan = false;
-        device.walk([&](Operation *o) {
-          hasDma |= isa<air::DmaMemcpyInterface>(o);
-          hasChan |= isa<air::ChannelInterface>(o);
-        });
-        if (hasDma && hasChan) {
-          device.emitOpError(
-              ": lowering of segments containing both dma copies and "
-              "channels is not supported");
-          signalPassFailure();
-          return;
-        }
-
-        DMAAllocator shimDmaAlloc(device.getTargetModel());
-
-        lowerAirDmaMemcpy(device, shimDmaAlloc);
-        lowerPipelineGetPut(device, tileToHerdMap);
-
-        ShimTileAllocator shimTileAlloc(device.getTargetModel());
-        lowerAIRChannels(device, shimTileAlloc);
-
-        SmallVector<air::HerdOp, 4> herds;
-        if (auto p = h->getParentOfType<air::SegmentOp>()) {
-          auto hops = p.getOps<air::HerdOp>();
-          herds.append(hops.begin(), hops.end());
-        } else {
-          herds.push_back(h);
-        }
-
-        for (auto herd : herds) {
-          std::set<int64_t> dma_ids;
-          herd.walk([&](Operation *o) {
-            if (auto dmaOp = dyn_cast<air::DmaMemcpyInterface>(o))
-              dma_ids.insert(dmaOp.getId());
-          });
-          auto c = herd.getColOffset();
-          auto r = herd.getRowOffset();
-          int64_t col_offset = c ? *c : 0;
-          int64_t row_offset = r ? *r : 0;
-
-          // createAIRRtMetadata(module_meta, shimDmaAlloc);
-          std::vector<Attribute> dma_allocations;
-          for (auto &t : shimDmaAlloc.s2mm_allocs) {
-            auto tileOp = t.dma_tile;
-            int64_t col = t.col - col_offset;
-            int64_t row = t.row - row_offset;
-            int64_t chan = t.dma_channel;
-
-            for (int64_t id : t.dma_id) {
-              if (dma_ids.count(id) == 0)
-                continue;
-              SmallVector<NamedAttribute, 5> attrs;
-              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "id"),
-                                             builder.getI64IntegerAttr(id)));
-              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "row"),
-                                             builder.getI64IntegerAttr(row)));
-              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "col"),
-                                             builder.getI64IntegerAttr(col)));
-              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "channel"),
-                                             builder.getI64IntegerAttr(chan)));
-              attrs.push_back(
-                  NamedAttribute(StringAttr::get(ctx, "location"),
-                                 builder.getI64IntegerAttr(tileOp.getCol())));
-              dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
-            }
-          }
-          for (auto &t : shimDmaAlloc.mm2s_allocs) {
-            auto tileOp = t.dma_tile;
-            int64_t col = t.col - col_offset;
-            int64_t row = t.row - row_offset;
-            int64_t chan = t.dma_channel;
-            for (int64_t id : t.dma_id) {
-              if (dma_ids.count(id) == 0)
-                continue;
-              SmallVector<NamedAttribute, 5> attrs;
-              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "id"),
-                                             builder.getI64IntegerAttr(id)));
-              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "row"),
-                                             builder.getI64IntegerAttr(row)));
-              attrs.push_back(NamedAttribute(StringAttr::get(ctx, "col"),
-                                             builder.getI64IntegerAttr(col)));
-              attrs.push_back(
-                  NamedAttribute(StringAttr::get(ctx, "channel"),
-                                 builder.getI64IntegerAttr(chan + 2)));
-              attrs.push_back(
-                  NamedAttribute(StringAttr::get(ctx, "location"),
-                                 builder.getI64IntegerAttr(tileOp.getCol())));
-              dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
-            }
-          }
-          auto segment_meta = getOrCreateSegmentMetadata(
-              module_meta,
-              device->getParentOfType<ModuleOp>().getName()->split('.').second);
-          auto herd_meta = createHerdMetadata(segment_meta, herd);
-          herd_meta->setAttr("dma_allocations",
-                             ArrayAttr::get(ctx, dma_allocations));
-        }
-        tile_dma_S2MM_allocs.clear();
-        tile_dma_MM2S_allocs.clear();
+      // The shim tile allocation is not unified for dma and channel lowering
+      // so we disallow a mix of dma and channel ops.
+      bool hasDma = false;
+      bool hasChan = false;
+      device.walk([&](Operation *o) {
+        hasDma |= isa<air::DmaMemcpyInterface>(o);
+        hasChan |= isa<air::ChannelInterface>(o);
+      });
+      if (hasDma && hasChan) {
+        device.emitOpError(
+            ": lowering of segments containing both dma copies and "
+            "channels is not supported");
+        signalPassFailure();
+        return;
       }
+
+      DMAAllocator shimDmaAlloc(device.getTargetModel());
+
+      lowerAirDmaMemcpy(device, shimDmaAlloc);
+      lowerPipelineGetPut(device, tileToHerdMap);
+
+      ShimTileAllocator shimTileAlloc(device.getTargetModel());
+      lowerAIRChannels(device, shimTileAlloc);
+
+      SmallVector<air::HerdOp, 4> herds;
+      if (auto p = h->getParentOfType<air::SegmentOp>()) {
+        auto hops = p.getOps<air::HerdOp>();
+        herds.append(hops.begin(), hops.end());
+      } else {
+        herds.push_back(h);
+      }
+
+      for (auto herd : herds) {
+        std::set<int64_t> dma_ids;
+        herd.walk([&](Operation *o) {
+          if (auto dmaOp = dyn_cast<air::DmaMemcpyInterface>(o))
+            dma_ids.insert(dmaOp.getId());
+        });
+        auto c = herd.getColOffset();
+        auto r = herd.getRowOffset();
+        int64_t col_offset = c ? *c : 0;
+        int64_t row_offset = r ? *r : 0;
+
+        // createAIRRtMetadata(module_meta, shimDmaAlloc);
+        std::vector<Attribute> dma_allocations;
+        for (auto &t : shimDmaAlloc.s2mm_allocs) {
+          auto tileOp = t.dma_tile;
+          int64_t col = t.col - col_offset;
+          int64_t row = t.row - row_offset;
+          int64_t chan = t.dma_channel;
+
+          for (int64_t id : t.dma_id) {
+            if (dma_ids.count(id) == 0)
+              continue;
+            SmallVector<NamedAttribute, 5> attrs;
+            attrs.push_back(NamedAttribute(StringAttr::get(ctx, "id"),
+                                           builder.getI64IntegerAttr(id)));
+            attrs.push_back(NamedAttribute(StringAttr::get(ctx, "row"),
+                                           builder.getI64IntegerAttr(row)));
+            attrs.push_back(NamedAttribute(StringAttr::get(ctx, "col"),
+                                           builder.getI64IntegerAttr(col)));
+            attrs.push_back(NamedAttribute(StringAttr::get(ctx, "channel"),
+                                           builder.getI64IntegerAttr(chan)));
+            attrs.push_back(
+                NamedAttribute(StringAttr::get(ctx, "location"),
+                               builder.getI64IntegerAttr(tileOp.getCol())));
+            dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
+          }
+        }
+        for (auto &t : shimDmaAlloc.mm2s_allocs) {
+          auto tileOp = t.dma_tile;
+          int64_t col = t.col - col_offset;
+          int64_t row = t.row - row_offset;
+          int64_t chan = t.dma_channel;
+          for (int64_t id : t.dma_id) {
+            if (dma_ids.count(id) == 0)
+              continue;
+            SmallVector<NamedAttribute, 5> attrs;
+            attrs.push_back(NamedAttribute(StringAttr::get(ctx, "id"),
+                                           builder.getI64IntegerAttr(id)));
+            attrs.push_back(NamedAttribute(StringAttr::get(ctx, "row"),
+                                           builder.getI64IntegerAttr(row)));
+            attrs.push_back(NamedAttribute(StringAttr::get(ctx, "col"),
+                                           builder.getI64IntegerAttr(col)));
+            attrs.push_back(
+                NamedAttribute(StringAttr::get(ctx, "channel"),
+                               builder.getI64IntegerAttr(chan + 2)));
+            attrs.push_back(
+                NamedAttribute(StringAttr::get(ctx, "location"),
+                               builder.getI64IntegerAttr(tileOp.getCol())));
+            dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
+          }
+        }
+        auto segment_meta = getOrCreateSegmentMetadata(
+            module_meta,
+            device->getParentOfType<ModuleOp>().getName()->split('.').second);
+        auto herd_meta = createHerdMetadata(segment_meta, herd);
+        herd_meta->setAttr("dma_allocations",
+                           ArrayAttr::get(ctx, dma_allocations));
+      }
+      tile_dma_S2MM_allocs.clear();
+      tile_dma_MM2S_allocs.clear();
 
       RewritePatternSet patterns(ctx);
       air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
       (void)applyPatternsAndFoldGreedily(device, std::move(patterns));
-    };
+    }
 
     // emit aie_modules to files or to stdout
     seen.clear();
-    for (auto p : aie_modules) {
+    for (auto p : aie_devices) {
       auto aie_dev = std::get<0>(p);
-      if (seen.find(aie_dev) == seen.end())
-        seen.insert(aie_dev);
-      else
+      if (seen.find(aie_dev) != seen.end())
         continue;
+      seen.insert(aie_dev);
       auto aie_module = aie_dev->getParentOfType<ModuleOp>();
       if (clOutputPrefix != "-") {
         if (clOutputPrefix != "/dev/null") {
