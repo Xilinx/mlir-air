@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie='test-patterns=to-aie-mlir' -o /dev/null | FileCheck %s
+// RUN: air-opt %s -air-to-aie='test-patterns=to-aie-mlir' --split-input-file | FileCheck %s
 
-// CHECK-LABEL: @aie.segment0
+// CHECK: AIE.device
 // CHECK: [[T00:%.*]] = AIE.tile(1, 1)
 // CHECK: [[T10:%.*]] = AIE.tile(2, 1)
 // CHECK: [[T01:%.*]] = AIE.tile(1, 2)
@@ -56,7 +56,9 @@ module attributes {torch.debug_module_name = "mmult"} {
   }
 }
 
-// CHECK-LABEL: @aie.segment_1
+// -----
+
+// CHECK: AIE.device
 // CHECK: air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
 air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
 func.func @f1() -> () {

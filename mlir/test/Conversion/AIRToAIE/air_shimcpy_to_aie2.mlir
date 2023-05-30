@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" -o out.mlir --split-input-file | FileCheck %s
+// RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" --split-input-file | FileCheck %s
 
 // CHECK-LABEL:   AIE.device(xcve2802) {
 // CHECK:  %[[VAL_0:.*]] = AIE.tile(2, 3)

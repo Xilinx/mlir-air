@@ -121,28 +121,31 @@ def run(mlir_module, args=None):
       air_place_pass
     ])
     air_placed_module = Module.parse(str(mlir_module))
-    run_passes('builtin.module('+pass_pipeline+')', air_placed_module, opts, air_placed)
+    run_passes('builtin.module('+pass_pipeline+')', air_placed_module, opts,
+               air_placed)
 
     air_to_aie_pass = 'air-to-aie{emit-while-loop=false'
-    air_to_aie_pass = air_to_aie_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
-    air_to_aie_pass = air_to_aie_pass + f' output-prefix={opts.tmpdir}/'
+    air_to_aie_pass = air_to_aie_pass + f' row-offset={opts.row_offset}'
+    air_to_aie_pass = air_to_aie_pass + f' col-offset={opts.col_offset}'
     air_to_aie_pass = air_to_aie_pass + f' device={opts.device}' + '}'
     pass_pipeline = ','.join([
       air_to_aie_pass
     ])
-    run_passes('builtin.module('+pass_pipeline+')', Module.parse(str(air_placed_module)), opts)
 
-    air_to_airrt_pass = 'air-to-aie{emit-while-loop=true'
-    air_to_airrt_pass = air_to_airrt_pass + f' row-offset={opts.row_offset} col-offset={opts.col_offset}'
-    air_to_airrt_pass = air_to_airrt_pass + f' output-prefix=/dev/null'
-    air_to_airrt_pass = air_to_airrt_pass + f' device={opts.device}' + '}'
+    air_to_aie_file = opts.tmpdir+'/aie.'+air_mlir_filename
+    air_to_aie_module = Module.parse(str(air_placed_module))
+    run_passes('builtin.module('+pass_pipeline+')', air_to_aie_module, opts,
+               air_to_aie_file)
+
+    pass_pipeline = 'air-split-devices{'
+    pass_pipeline = pass_pipeline + f'output-prefix={opts.tmpdir}/' + '}'
+    run_passes('builtin.module('+pass_pipeline+')', air_to_aie_module, opts)
 
     # lower the airrt control program to llvm dialect
 
-    airrt_module = Module.parse(str(air_placed_module))
+    airrt_module = Module.parse(str(air_to_aie_module))
     aie_ctrl_airrt = opts.tmpdir+'/airrt.'+air_mlir_filename
     pass_pipeline = ','.join([
-      air_to_airrt_pass,
       'convert-vector-to-llvm',
       'convert-math-to-llvm',
       'lower-affine',
@@ -150,7 +153,8 @@ def run(mlir_module, args=None):
       'air-lower-linalg-tensors',
       'canonicalize', 'cse'
     ])
-    run_passes('builtin.module('+pass_pipeline+')', airrt_module, opts, aie_ctrl_airrt)
+    run_passes('builtin.module('+pass_pipeline+')', airrt_module, opts,
+               aie_ctrl_airrt)
 
     aie_ctrl = opts.tmpdir+'/aie_ctrl.'+air_mlir_filename
     pass_pipeline = ','.join([
@@ -158,7 +162,8 @@ def run(mlir_module, args=None):
       'func-bufferize',
       'func.func(finalizing-bufferize)'
     ])
-    run_passes('builtin.module('+pass_pipeline+')', airrt_module, opts, aie_ctrl)
+    run_passes('builtin.module('+pass_pipeline+')', airrt_module, opts,
+               aie_ctrl)
 
     aie_ctrl_refback = opts.tmpdir+'/refback.'+air_mlir_filename
     pass_pipeline = ','.join([
@@ -171,11 +176,11 @@ def run(mlir_module, args=None):
       'airrt-to-llvm',
       'canonicalize','cse'
     ])
-    run_passes('builtin.module('+pass_pipeline+')', Module.parse(str(air_placed_module)), opts, aie_ctrl_refback)
+    run_passes('builtin.module('+pass_pipeline+')',
+               Module.parse(str(air_placed_module)), opts, aie_ctrl_refback)
 
     aie_ctrl_llvm = opts.tmpdir+'/llvm.'+air_mlir_filename
     pass_pipeline = ','.join([
-      #'air-return-elimination',
       'expand-strided-metadata',
       'lower-affine',
       'convert-scf-to-cf',
@@ -184,12 +189,14 @@ def run(mlir_module, args=None):
       'convert-cf-to-llvm',
       'canonicalize','cse'
     ])
-    run_passes('builtin.module('+pass_pipeline+')', airrt_module, opts, aie_ctrl_llvm)
+    run_passes('builtin.module('+pass_pipeline+')', airrt_module, opts,
+               aie_ctrl_llvm)
 
     # compile the llvm dialect into a .o object file
 
     aie_ctrl_llvm_ir = opts.tmpdir+'/'+air_mlir_filename+'.ll'
-    do_call(['aie-translate', '--mlir-to-llvmir', aie_ctrl_llvm, '-o', aie_ctrl_llvm_ir])
+    do_call(['aie-translate', '--mlir-to-llvmir', aie_ctrl_llvm, '-o',
+             aie_ctrl_llvm_ir])
 
     aie_ctrl_llvm_opt_bc = opts.tmpdir+'/'+air_mlir_filename+'.opt.bc'
     do_call(['opt', '-O3', aie_ctrl_llvm_ir, '-o', aie_ctrl_llvm_opt_bc])
@@ -206,18 +213,20 @@ def run(mlir_module, args=None):
 
     t = do_run(['air-translate', '--airrt-generate-json', aie_ctrl_airrt])
     module_meta = eval(t.stdout)
-    herds = [module_meta[herd]["sym_name"] for herd in module_meta]
+    segments = [module_meta[segment]["sym_name"] for segment in module_meta]
     obj_files = [aie_ctrl_obj]
-    for herd in herds:
+    for segment in segments:
       if opts.verbose:
-        print ("Compiling segment:", herd)
+        print ("Compiling segment:", segment)
 
-      # build the elf files for the herd
+      # build the elf files for the segment
 
-      herd_file = opts.tmpdir+'/aie.'+herd+'.mlir'
-      aiecc_file = opts.tmpdir+'/aiecc.'+herd+'.mlir'
-      aiecc_dir = opts.tmpdir+'/'+herd
-      do_call(['air-opt', herd_file,'-air-lower-linalg-tensors',
+      #herd_file = opts.tmpdir+'/aie.'+herd+'.mlir'
+      segment_file = opts.tmpdir+'/aie.'+segment+'.mlir'
+      aiecc_file = opts.tmpdir+'/aiecc.'+segment+'.mlir'
+      aiecc_dir = opts.tmpdir+'/'+segment
+
+      do_call(['air-opt', segment_file, '-air-lower-linalg-tensors',
                '-lower-affine', '-cse', '-o', aiecc_file])
 
       # set host target for aiecc
@@ -228,9 +237,10 @@ def run(mlir_module, args=None):
       aiecc_target = opts.host_target if opts.host_target else aiecc_target
 
       # run aiecc to make the elf and configuration files
+      sysroot = opts.sysroot if opts.sysroot else '/'
       do_call(['aiecc.py'] +
               (['-v'] if opts.verbose else []) +
-              (['--sysroot', opts.sysroot] if opts.sysroot else ['--sysroot=/']) +
+              ['--sysroot', sysroot] +
               ['--host-target', aiecc_target] +
               ['--tmpdir', aiecc_dir] +
               ['--no-aiesim'] +
@@ -238,16 +248,16 @@ def run(mlir_module, args=None):
               ['--xchesscc' if opts.xchesscc else '--no-xchesscc'] +
               [aiecc_file])
 
-      inc_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.inc'
-      cpp_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.cpp'
-      obj_file = opts.tmpdir+'/'+air_mlir_filename+'.'+herd+'.o'
+      inc_file = opts.tmpdir+'/'+air_mlir_filename+'.'+segment+'.inc'
+      cpp_file = opts.tmpdir+'/'+air_mlir_filename+'.'+segment+'.cpp'
+      obj_file = opts.tmpdir+'/'+air_mlir_filename+'.'+segment+'.o'
 
       # compile the libxaie configuration functions generated by aie-translate
 
       do_call(['cp',aiecc_dir+'/aie_inc.cpp',inc_file])
 
       with open(cpp_file, 'w') as f:
-        f.write(emit_wrapper(herd, inc_file))
+        f.write(emit_wrapper(segment, inc_file))
 
       cmd = [opts.cc, '-std=c++11', '-g', '-I.']
 
@@ -278,7 +288,8 @@ def run(mlir_module, args=None):
 
     # combine the host side .o files generated above into a single library
 
-    lib_file = opts.tmpdir+'/'+air_mlir_filename+('.so' if opts.shared else '.a')
+    lib_file = air_mlir_filename+('.so' if opts.shared else '.a')
+    lib_file = opts.tmpdir+'/'+lib_file
     if opts.shared:
       cmd = ['clang', '-shared']
       cmd += ['--sysroot', opts.sysroot] if opts.sysroot else []
