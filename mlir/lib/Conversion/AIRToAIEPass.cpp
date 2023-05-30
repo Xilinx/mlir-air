@@ -1784,7 +1784,7 @@ public:
           }
           auto segment_meta = getOrCreateSegmentMetadata(
               module_meta,
-              m->getParentOfType<ModuleOp>().getName()->split('.').second);
+              device->getParentOfType<ModuleOp>().getName()->split('.').second);
           auto herd_meta = createHerdMetadata(segment_meta, herd);
           herd_meta->setAttr("dma_allocations",
                              ArrayAttr::get(ctx, dma_allocations));
@@ -1795,7 +1795,7 @@ public:
 
       RewritePatternSet patterns(ctx);
       air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
-      (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
+      (void)applyPatternsAndFoldGreedily(device, std::move(patterns));
     };
 
     // emit aie_modules to files or to stdout
