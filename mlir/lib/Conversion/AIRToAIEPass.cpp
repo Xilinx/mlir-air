@@ -7,11 +7,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "PassDetail.h"
-#include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Util/Util.h"
+
+#include "aie/Dialect/AIE/IR/AIEDialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -52,17 +53,6 @@ struct AIRToAIEOptions {
   AIE::AIEDevice device;
 };
 
-// std::vector<int> s80_nmu_col_list{0, 0, 1, 1, 0, 0, 1, 1,
-//                                   0, 0, 1, 1, 0, 0, 0, 0,
-//                                   0, 0, 1, 1, 0, 0, 0, 0,
-//                                   0, 0, 1, 1, 0, 0, 0, 0,
-//                                   0, 0, 1, 1, 0, 0, 0, 0,
-//                                   0, 0, 1, 1, 0, 0, 1, 1,
-//                                   0, 0};
-std::vector<int> shim_dma_cols{2,  3,  6,  7,  10, 11, 18, 19,
-                               26, 27, 34, 35, 42, 43, 46, 47};
-const int shim_dma_channels = 2;
-
 AIE::TileOp getPhysTileOpOrNull(AIE::DeviceOp aie_device, int col, int row) {
   for (auto t : aie_device.getOps<AIE::TileOp>()) {
     if (t.colIndex() == col && t.rowIndex() == row)
@@ -94,6 +84,7 @@ struct ShimTileAllocator {
 
   std::vector<int> shim_columns;
   int shim_dma_channels;
+  const AIE::AIETargetModel &aie_target;
 
   struct shim_allocation_info_t {
     AIE::TileOp shim_tile;
@@ -102,8 +93,13 @@ struct ShimTileAllocator {
 
   std::vector<shim_allocation_info_t> mm2s_allocs, s2mm_allocs;
 
-  ShimTileAllocator(std::vector<int> cols, int channels)
-      : shim_columns(cols), shim_dma_channels(channels) {}
+  ShimTileAllocator(const AIE::AIETargetModel &target) : aie_target(target) {
+    shim_dma_channels = 2;
+    for (int i = 0, e = aie_target.columns(); i < e; i++) {
+      if (aie_target.isShimNOCTile(i, 0))
+        shim_columns.push_back(i);
+    }
+  }
 
   AIE::TileOp getShimTile(AIE::DeviceOp aie_device, int src_memory_space,
                           int dst_memory_space) {
@@ -133,6 +129,7 @@ struct DMAAllocator {
 
   std::vector<int> dma_columns;
   int dma_channels;
+  const AIE::AIETargetModel &aie_target;
 
   struct allocation_info_t {
     AIE::TileOp dma_tile;
@@ -145,8 +142,13 @@ struct DMAAllocator {
 
   std::vector<allocation_info_t> mm2s_allocs, s2mm_allocs;
 
-  DMAAllocator(std::vector<int> cols, int channels)
-      : dma_columns(cols), dma_channels(channels) {}
+  DMAAllocator(const AIE::AIETargetModel &target) : aie_target(target) {
+    dma_channels = 2;
+    for (int i = 0, e = aie_target.columns(); i < e; i++) {
+      if (aie_target.isShimNOCTile(i, 0))
+        dma_columns.push_back(i);
+    }
+  }
 
   AIE::TileOp getTile(AIE::DeviceOp aie_device, air::DmaMemcpyInterface &dmaOp,
                       int64_t tile_channel, int64_t col, int64_t row) {
@@ -1083,7 +1085,6 @@ private:
 void lowerAIRChannels(AIE::DeviceOp &d, ShimTileAllocator &a) {
   auto ctx = d->getContext();
   RewritePatternSet patterns(ctx);
-  ShimTileAllocator shimTileAlloc(shim_dma_cols, shim_dma_channels);
   patterns.insert<LowerAIRChannelsPattern>(ctx, a);
   (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
 }
@@ -1303,15 +1304,17 @@ public:
                    << " for x=" << x << ", y=" << y << "\n");
 
         if ((shim_channel.first == AIE::DMAChannelDir::S2MM) &&
-            ((uint64_t)shim_channel.second < (uint64_t)shim_dma_channels)) {
-          getFlowOp(aie_device, tile, AIE::WireBundle::DMA,
-                    (uint32_t)tile_channel.second, shim_tile,
-                    AIE::WireBundle::DMA,
-                    ((uint32_t)shim_channel.second) % shim_dma_channels);
+            ((uint64_t)shim_channel.second <
+             (uint64_t)shim_dma_alloc.dma_channels)) {
+          getFlowOp(
+              aie_device, tile, AIE::WireBundle::DMA,
+              (uint32_t)tile_channel.second, shim_tile, AIE::WireBundle::DMA,
+              ((uint32_t)shim_channel.second) % shim_dma_alloc.dma_channels);
         } else {
           getFlowOp(aie_device, shim_tile, AIE::WireBundle::DMA,
-                    ((uint32_t)shim_channel.second) % shim_dma_channels, tile,
-                    AIE::WireBundle::DMA, (uint32_t)tile_channel.second);
+                    ((uint32_t)shim_channel.second) %
+                        shim_dma_alloc.dma_channels,
+                    tile, AIE::WireBundle::DMA, (uint32_t)tile_channel.second);
         }
       } else {
         llvm_unreachable("Unhandled dma transfer type");
@@ -1582,17 +1585,17 @@ public:
 
     RewritePatternSet patterns(ctx);
     std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
-    ShimTileAllocator shimTileAlloc(shim_dma_cols, shim_dma_channels);
+
+    auto device = AIE::symbolizeAIEDevice(clDevice);
+    if (!device) {
+      m.emitOpError("Invalid AIE.device option");
+      signalPassFailure();
+      return;
+    }
 
     if (clTestPatterns.find("to-aie-mlir") != std::string::npos) {
       std::vector<std::pair<AIE::DeviceOp, air::HerdOp>> aie_modules;
       std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
-      auto device = AIE::symbolizeAIEDevice(clDevice);
-      if (!device) {
-        m.emitOpError("Invalid AIE.device option");
-        signalPassFailure();
-        return;
-      }
       AIRToAIEOptions options = {.col_offset = clColOffset,
                                  .row_offset = clRowOffset,
                                  .emit_while = clEmitWhileLoop,
@@ -1622,8 +1625,15 @@ public:
       patterns.insert<LowerPipeGetPutPattern>(ctx, tileToHerdMap);
     if (clTestPatterns.find("lower-scf-tokens") != std::string::npos)
       patterns.insert<LowerScfTokenPattern>(ctx);
-    if (clTestPatterns.find("lower-air-channels") != std::string::npos)
+
+    OpBuilder builder(ctx);
+    AIE::DeviceOp deviceOp = builder.create<AIE::DeviceOp>(
+        builder.getUnknownLoc(),
+        AIE::AIEDeviceAttr::get(builder.getContext(), *device));
+    ShimTileAllocator shimTileAlloc(deviceOp.getTargetModel());
+    if (clTestPatterns.find("lower-air-channels") != std::string::npos) {
       patterns.insert<LowerAIRChannelsPattern>(ctx, shimTileAlloc);
+    }
 
     if (patterns.getNativePatterns().size())
       (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
@@ -1666,41 +1676,42 @@ public:
 
     std::set<AIE::DeviceOp> seen;
     for (auto &p : aie_modules) {
-      auto m = std::get<0>(p);
+      auto device = std::get<0>(p);
       xilinx::air::HerdOp h = std::get<1>(p);
-      auto ctx = m->getContext();
+      auto ctx = device->getContext();
 
-      if (seen.find(m) == seen.end()) {
-        seen.insert(m);
+      if (seen.find(device) == seen.end()) {
+        seen.insert(device);
 
-        specializeHerdAffineIf(m);
-        lowerAirExecute(m);
-        lowerScfAirTokens(m);
+        specializeHerdAffineIf(device);
+        lowerAirExecute(device);
+        lowerScfAirTokens(device);
 
-        allocL1Buffers(m, tileToHerdMap);
+        allocL1Buffers(device, tileToHerdMap);
 
         // The shim tile allocation is not unified for dma and channel lowering
         // so we disallow a mix of dma and channel ops.
         bool hasDma = false;
         bool hasChan = false;
-        m.walk([&](Operation *o) {
+        device.walk([&](Operation *o) {
           hasDma |= isa<air::DmaMemcpyInterface>(o);
           hasChan |= isa<air::ChannelInterface>(o);
         });
         if (hasDma && hasChan) {
-          m.emitOpError(": lowering of segments containing both dma copies and "
-                        "channels is not supported");
+          device.emitOpError(
+              ": lowering of segments containing both dma copies and "
+              "channels is not supported");
           signalPassFailure();
           return;
         }
 
-        DMAAllocator shimDmaAlloc(shim_dma_cols, shim_dma_channels);
+        DMAAllocator shimDmaAlloc(device.getTargetModel());
 
-        lowerAirDmaMemcpy(m, shimDmaAlloc);
-        lowerPipelineGetPut(m, tileToHerdMap);
+        lowerAirDmaMemcpy(device, shimDmaAlloc);
+        lowerPipelineGetPut(device, tileToHerdMap);
 
-        ShimTileAllocator shimTileAlloc(shim_dma_cols, shim_dma_channels);
-        lowerAIRChannels(m, shimTileAlloc);
+        ShimTileAllocator shimTileAlloc(device.getTargetModel());
+        lowerAIRChannels(device, shimTileAlloc);
 
         SmallVector<air::HerdOp, 4> herds;
         if (auto p = h->getParentOfType<air::SegmentOp>()) {
