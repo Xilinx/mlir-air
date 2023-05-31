@@ -665,7 +665,11 @@ struct ConstructPingPongDependencyPattern
       // Check if producer or consumer
       for (auto candidate_op : candidate_ops) {
         if (checkOpOperandReadOrWrite(buffer_memref, candidate_op) == 'w') {
-          if (isa<air::ExecuteOp>(candidate_op->getParentOp())) {
+          if (auto candidate_for_op =
+                  getOutermostForOpInForOpNest(candidate_op, for_op)) {
+            push_back_if_unique<Operation *>(producer_ops,
+                                             candidate_for_op.getOperation());
+          } else if (isa<air::ExecuteOp>(candidate_op->getParentOp())) {
             push_back_if_unique<Operation *>(producer_ops,
                                              candidate_op->getParentOp());
           } else if (isa<mlir::AffineIfOp>(candidate_op->getParentOp())) {
@@ -676,7 +680,11 @@ struct ConstructPingPongDependencyPattern
             push_back_if_unique<Operation *>(producer_ops, candidate_op);
         } else if (checkOpOperandReadOrWrite(buffer_memref, candidate_op) ==
                    'r') {
-          if (isa<air::ExecuteOp>(candidate_op->getParentOp())) {
+          if (auto candidate_for_op =
+                  getOutermostForOpInForOpNest(candidate_op, for_op)) {
+            push_back_if_unique<Operation *>(consumer_ops,
+                                             candidate_for_op.getOperation());
+          } else if (isa<air::ExecuteOp>(candidate_op->getParentOp())) {
             push_back_if_unique<Operation *>(consumer_ops,
                                              candidate_op->getParentOp());
           } else if (isa<mlir::AffineIfOp>(candidate_op->getParentOp())) {
@@ -774,33 +782,29 @@ struct ConstructPingPongDependencyPattern
     // Part 2: Connect producers
     for (auto sink : ping_producer_fronts) {
       // "Ping" producers
-      auto async_op = dyn_cast<air::AsyncOpInterface>(sink);
-      addAsyncDependencyIfNew(async_op, new_loop_op.getRegionIterArgs()[0]);
-      addAsyncDependencyIfNew(async_op, new_loop_op.getRegionIterArgs()[3]);
+      addAsyncDependencyIfNew(sink, new_loop_op.getRegionIterArgs()[0]);
+      addAsyncDependencyIfNew(sink, new_loop_op.getRegionIterArgs()[3]);
     }
     for (auto sink : pong_producer_fronts) {
       // "Pong" producers
-      auto async_op = dyn_cast<air::AsyncOpInterface>(sink);
-      clearAsyncDependenciesOfAsyncOp(async_op);
-      addAsyncDependencyIfNew(async_op, new_loop_op.getRegionIterArgs()[1]);
+      clearAsyncDependenciesOfAsyncOp(sink);
+      addAsyncDependencyIfNew(sink, new_loop_op.getRegionIterArgs()[1]);
       for (auto source : ping_producer_backs) {
         Value token = getTokenFromOutermostParentAffineIfOp(source);
-        addAsyncDependencyIfNew(async_op, token);
+        addAsyncDependencyIfNew(sink, token);
       }
     }
 
     // Part 3: Connect consumers
     for (auto sink : ping_consumer_fronts) {
       // "Ping" consumers
-      auto async_op = dyn_cast<air::AsyncOpInterface>(sink);
-      addAsyncDependencyIfNew(async_op, new_loop_op.getRegionIterArgs()[2]);
+      addAsyncDependencyIfNew(sink, new_loop_op.getRegionIterArgs()[2]);
     }
     for (auto sink : pong_consumer_fronts) {
       // "Pong" consumers
       for (auto source : ping_consumer_backs) {
-        auto async_op = dyn_cast<air::AsyncOpInterface>(sink);
         Value token = getTokenFromOutermostParentAffineIfOp(source);
-        addAsyncDependencyIfNew(async_op, token);
+        addAsyncDependencyIfNew(sink, token);
       }
     }
 
@@ -943,6 +947,25 @@ private:
       token = getTokenFromOutermostParentAffineIfOp(vec[0]);
     }
     return token;
+  }
+
+  scf::ForOp getOutermostForOpInForOpNest(Operation *op,
+                                          scf::ForOp ancestor_for) const {
+    if (!ancestor_for->isProperAncestor(op)) {
+      return scf::ForOp();
+    }
+    if (op->getParentOfType<scf::ForOp>() == ancestor_for) {
+      return scf::ForOp();
+    }
+    Operation *parent = op->getParentOp();
+    scf::ForOp output = nullptr;
+    while (parent != ancestor_for.getOperation()) {
+      if (auto parent_for = dyn_cast<scf::ForOp>(parent)) {
+        output = parent_for;
+      }
+      parent = parent->getParentOp();
+    }
+    return output;
   }
 };
 

@@ -231,7 +231,70 @@ void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op,
   }
 }
 
-void clearAsyncDependenciesOfAsyncOp(xilinx::air::AsyncOpInterface op) {
+void clearAsyncDependenciesOfAsyncOp(Operation *op) {
+  if (!isAsyncOp(op)) {
+    op->emitOpError("op has no async interface");
+    return;
+  }
+  if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
+    clearAsyncDependenciesOfAsyncOpImpl(async_op);
+  } else if (auto for_op = dyn_cast<scf::ForOp>(op)) {
+    clearAsyncDependenciesOfAsyncOpImpl(for_op);
+  } else if (auto parallel_op = dyn_cast<scf::ParallelOp>(op)) {
+    clearAsyncDependenciesOfAsyncOpImpl(parallel_op);
+  } else
+    op->emitOpError("unknown async op");
+}
+void clearAsyncDependenciesOfAsyncOpImpl(scf::ForOp op) {
+  SmallVector<Value> operands_without_wait_all;
+  for (auto iter_oper : op.getIterOperands()) {
+    if (auto wa_op = dyn_cast<air::WaitAllOp>(iter_oper.getDefiningOp())) {
+      clearAsyncDependenciesOfAsyncOpImpl(wa_op);
+    } else {
+      // Push to vec if unique
+      if (std::find(operands_without_wait_all.begin(),
+                    operands_without_wait_all.end(),
+                    iter_oper) == operands_without_wait_all.end()) {
+        operands_without_wait_all.push_back(iter_oper);
+      }
+    }
+  }
+  for (auto v : operands_without_wait_all) {
+    OpBuilder builder(op);
+    SmallVector<Value> dep_list = {};
+    air::WaitAllOp wait_all_op_before_loop =
+        builder.create<xilinx::air::WaitAllOp>(
+            builder.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
+            dep_list);
+    op->replaceUsesOfWith(v, wait_all_op_before_loop.getAsyncToken());
+  }
+}
+void clearAsyncDependenciesOfAsyncOpImpl(scf::ParallelOp op) {
+  SmallVector<Value> operands_without_wait_all;
+  for (auto init_val : op.getInitVals()) {
+    if (auto wa_op = dyn_cast<air::WaitAllOp>(init_val.getDefiningOp())) {
+      clearAsyncDependenciesOfAsyncOpImpl(wa_op);
+    } else {
+      // Push to vec if unique
+      if (std::find(operands_without_wait_all.begin(),
+                    operands_without_wait_all.end(),
+                    init_val) == operands_without_wait_all.end()) {
+        operands_without_wait_all.push_back(init_val);
+      }
+    }
+  }
+  for (auto v : operands_without_wait_all) {
+    OpBuilder builder(op);
+    SmallVector<Value> dep_list = {};
+    air::WaitAllOp wait_all_op_before_loop =
+        builder.create<xilinx::air::WaitAllOp>(
+            builder.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
+            dep_list);
+    op->replaceUsesOfWith(v, wait_all_op_before_loop.getAsyncToken());
+  }
+}
+
+void clearAsyncDependenciesOfAsyncOpImpl(xilinx::air::AsyncOpInterface op) {
   auto dependency_list = op.getAsyncDependencies();
   if (!dependency_list.size())
     return;
@@ -284,7 +347,21 @@ Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
 }
 
 // Add async dependency to op if unique
-void addAsyncDependencyIfNew(air::AsyncOpInterface op, Value token) {
+void addAsyncDependencyIfNew(Operation *op, Value token) {
+  if (!isAsyncOp(op)) {
+    op->emitOpError("op does not have async interface");
+    return;
+  }
+  if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
+    addAsyncDependencyIfNewImpl(async_op, token);
+  } else if (auto for_op = dyn_cast<scf::ForOp>(op)) {
+    addAsyncDependencyIfNewImpl(for_op, token);
+  } else if (auto parallel_op = dyn_cast<scf::ParallelOp>(op)) {
+    addAsyncDependencyIfNewImpl(parallel_op, token);
+  } else
+    op->emitOpError("unknown async op");
+}
+void addAsyncDependencyIfNewImpl(air::AsyncOpInterface op, Value token) {
   if (!token.getType().isa<air::AsyncTokenType>()) {
     op->emitOpError("value is not an async token");
     return;
@@ -300,6 +377,67 @@ void addAsyncDependencyIfNew(air::AsyncOpInterface op, Value token) {
   } else {
     op.addAsyncDependency(token);
   }
+}
+void addAsyncDependencyIfNewImpl(scf::ForOp op, Value token) {
+  SmallVector<Value> operands_without_wait_all;
+  for (auto iter_oper : op.getIterOperands()) {
+    if (auto wa_op = dyn_cast<air::WaitAllOp>(iter_oper.getDefiningOp())) {
+      addAsyncDependencyIfNewImpl(wa_op, token);
+    } else {
+      // Push to vec if unique
+      if (std::find(operands_without_wait_all.begin(),
+                    operands_without_wait_all.end(),
+                    iter_oper) == operands_without_wait_all.end()) {
+        operands_without_wait_all.push_back(iter_oper);
+      }
+    }
+  }
+  for (auto v : operands_without_wait_all) {
+    OpBuilder builder(op);
+    SmallVector<Value> dep_list = {};
+    air::WaitAllOp wait_all_op_before_loop =
+        builder.create<xilinx::air::WaitAllOp>(
+            builder.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
+            dep_list);
+    op->replaceUsesOfWith(v, wait_all_op_before_loop.getAsyncToken());
+    addAsyncDependencyIfNewImpl(wait_all_op_before_loop, v);
+    addAsyncDependencyIfNewImpl(wait_all_op_before_loop, token);
+  }
+}
+void addAsyncDependencyIfNewImpl(scf::ParallelOp op, Value token) {
+  SmallVector<Value> operands_without_wait_all;
+  for (auto init_val : op.getInitVals()) {
+    if (auto wa_op = dyn_cast<air::WaitAllOp>(init_val.getDefiningOp())) {
+      addAsyncDependencyIfNewImpl(wa_op, token);
+    } else {
+      // Push to vec if unique
+      if (std::find(operands_without_wait_all.begin(),
+                    operands_without_wait_all.end(),
+                    init_val) == operands_without_wait_all.end()) {
+        operands_without_wait_all.push_back(init_val);
+      }
+    }
+  }
+  for (auto v : operands_without_wait_all) {
+    OpBuilder builder(op);
+    SmallVector<Value> dep_list = {};
+    air::WaitAllOp wait_all_op_before_loop =
+        builder.create<xilinx::air::WaitAllOp>(
+            builder.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
+            dep_list);
+    op->replaceUsesOfWith(v, wait_all_op_before_loop.getAsyncToken());
+    addAsyncDependencyIfNewImpl(wait_all_op_before_loop, v);
+    addAsyncDependencyIfNewImpl(wait_all_op_before_loop, token);
+  }
+}
+
+bool isAsyncOp(Operation *op) {
+  for (auto result : op->getResults()) {
+    if (result.getType().isa<air::AsyncTokenType>()) {
+      return true;
+    }
+  }
+  return false;
 }
 
 //===----------------------------------------------------------------------===//

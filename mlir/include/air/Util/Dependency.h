@@ -52,11 +52,18 @@ void traceDependentInductionVar(air::AsyncOpInterface async_op,
                                 std::vector<Operation *> &op_history);
 void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op,
                                      Value token);
-void clearAsyncDependenciesOfAsyncOp(xilinx::air::AsyncOpInterface op);
+void clearAsyncDependenciesOfAsyncOp(Operation *op);
+void clearAsyncDependenciesOfAsyncOpImpl(xilinx::air::AsyncOpInterface op);
+void clearAsyncDependenciesOfAsyncOpImpl(scf::ForOp op);
+void clearAsyncDependenciesOfAsyncOpImpl(scf::ParallelOp op);
 Value getLoopCarriedTokenFromScfOp(scf::ParallelOp op);
 Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
                                    std::string operand_or_argument = "operand");
-void addAsyncDependencyIfNew(air::AsyncOpInterface op, Value token);
+void addAsyncDependencyIfNew(Operation *op, Value token);
+void addAsyncDependencyIfNewImpl(air::AsyncOpInterface op, Value token);
+void addAsyncDependencyIfNewImpl(scf::ForOp op, Value token);
+void addAsyncDependencyIfNewImpl(scf::ParallelOp op, Value token);
+bool isAsyncOp(Operation *op);
 
 //===----------------------------------------------------------------------===//
 // Dependency graph parsed as a Boost graph object
