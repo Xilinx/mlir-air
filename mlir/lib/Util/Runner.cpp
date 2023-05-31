@@ -302,19 +302,11 @@ public:
     Graph &G = c.ctrl_g->g;
 
     // Get candidate vertices to be pushed to wavefront
-    std::vector<Graph::vertex_descriptor> next_vertex_set_candidates;
-    std::vector<Graph::vertex_descriptor> next_vertex_set;
-    // Get all adjacent vertices to the procssed vertices
-    c.findAdjacentVerticesToProcessed(next_vertex_set_candidates);
-    // Remove candidate vertices already on wavefront
-    c.removeRepeatedVertices(next_vertex_set_candidates,
-                             getVectorOfFirstFromVectorOfTuples(c.wavefront));
-    // Remove candidate vertices which are filtered out by an affine.if, if
-    // showing cores
-    if (sim_granularity == "core") {
-      c.removeOpsFilteredOutByAffineIf(next_vertex_set_candidates);
-    }
+    std::vector<Graph::vertex_descriptor> next_vertex_set_candidates =
+        c.getCandidateVerticesForWavefront();
 
+    // Check dependency fulfillment of each candidate
+    std::vector<Graph::vertex_descriptor> next_vertex_set;
     for (auto it = next_vertex_set_candidates.begin();
          it != next_vertex_set_candidates.end(); ++it) {
       bool dep_fulfilled = true;
@@ -339,12 +331,15 @@ public:
       }
     }
 
+    // Check resource fulfillment of each candidate
     for (auto next_vertex : next_vertex_set) {
 
       // Check whether adj_v's resource requirement has been fulfilled.
       bool res_fulfilled = c.checkResourceFulfillmentForOpImpls(G[next_vertex]);
 
       if (res_fulfilled) {
+        // Delete vertex from latent wavefront candidates
+        c.removeVertexFromVertices(c.latent_wavefront_candidates, next_vertex);
         // Push to wavefront; check for sim. granularity
         c.pushToWavefront(next_vertex,
                           canonicalizer.getIteratorFromPosition(
@@ -701,19 +696,6 @@ private:
   // Misc. helper functions
   //===----------------------------------------------------------------------===//
 
-  // Get a vector of first elements from a vector of tuples
-  std::vector<Graph::vertex_descriptor> getVectorOfFirstFromVectorOfTuples(
-      std::vector<std::tuple<Graph::vertex_descriptor, std::vector<resource *>,
-                             unsigned>>
-          tuples) {
-    std::vector<Graph::vertex_descriptor> items;
-    std::transform(
-        tuples.begin(), tuples.end(), std::back_inserter(items),
-        [](const std::tuple<Graph::vertex_descriptor, std::vector<resource *>,
-                            unsigned> &p) { return std::get<0>(p); });
-    return items;
-  }
-
   // Move an element of the vector to the back
   template <typename T>
   void moveItemToBack(std::vector<T> &v, size_t itemIndex) {
@@ -798,6 +780,12 @@ unsigned lookUpMemorySpaceIntFromString(std::string memory_space) {
     output = 2;
   }
   return output;
+}
+
+template <typename T> void push_back_if_unique(std::vector<T> &vec, T entry) {
+  if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
+    vec.push_back(entry);
+  }
 }
 
 } // namespace air

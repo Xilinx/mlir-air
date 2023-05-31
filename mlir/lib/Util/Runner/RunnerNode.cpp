@@ -28,19 +28,36 @@ public:
       wavefront;
   // A vector of vertices processed by the current runner node
   std::vector<Graph::vertex_descriptor> processed_vertices;
+  // An incomplete vector of vertices as candidates to wavefront
+  std::vector<Graph::vertex_descriptor> latent_wavefront_candidates;
   // Sub runner nodes to the current runner node
   std::deque<runnerNode> sub_runner_nodes;
   // Resource hierarchies which are allocated to this runner node
   std::vector<resourceHierarchy *> resource_hiers;
 
-  // Private wavefront of each runner node, reserved to interface with resource
-  // model
-  std::vector<dependencyNodeEntry *> wavefrontNodes() {
-    std::vector<dependencyNodeEntry *> output;
-    for (auto v : wavefront) {
-      output.push_back(&ctrl_g->g[std::get<0>(v)]);
+  // Get a pool of vertices as candidates to be pushed to wavefront. This avoids
+  // having to check every vertex in the graphs for dependency and resource
+  // fulfillment.
+  std::vector<Graph::vertex_descriptor> getCandidateVerticesForWavefront() {
+    // Get candidate vertices to be pushed to wavefront
+    std::vector<Graph::vertex_descriptor> next_vertex_set_candidates;
+    // Get all adj. vertices to the procssed vertices as candidates
+    this->findAdjacentVerticesToProcessed(next_vertex_set_candidates);
+    for (auto v : this->latent_wavefront_candidates) {
+      push_back_if_unique<Graph::vertex_descriptor>(next_vertex_set_candidates,
+                                                    v);
     }
-    return output;
+    // Remove candidate vertices already on wavefront
+    this->removeRepeatedVertices(
+        next_vertex_set_candidates,
+        this->getVectorOfFirstFromVectorOfTuples(this->wavefront));
+    // Remove candidate vertices which are filtered out by an affine.if, if
+    // showing cores
+    if (this->sim_granularity == "core") {
+      this->removeOpsFilteredOutByAffineIf(next_vertex_set_candidates);
+    }
+
+    return next_vertex_set_candidates;
   }
 
   // Push runner "start" signal into wavefront
@@ -146,9 +163,13 @@ public:
   }
 
   // Recursively reset all vertices in for loop body
-  void resetGraphBetweenTwoVertices(Graph::vertex_descriptor start_v,
-                                    Graph::vertex_descriptor end_v, Graph &G,
-                                    uint64_t time) {
+  // "push_to_latent_wavefront_candidates" is a flag to indicate whether to push
+  // vertices adjacent to the resetted vertices to the "wavefront candidate
+  // vertices".
+  void resetGraphBetweenTwoVertices(
+      Graph::vertex_descriptor start_v, Graph::vertex_descriptor end_v,
+      Graph &G, uint64_t time,
+      bool push_to_latent_wavefront_candidates = false) {
 
     this->resetVertex(start_v, G, time);
 
@@ -158,7 +179,7 @@ public:
     SmallVector<Graph::vertex_descriptor, 1> vertices;
     if (this->hasPath(start_v, end_v, G, vertices)) {
       for (auto v : vertices) {
-        this->resetVertex(v, G, time);
+        this->resetVertex(v, G, time, push_to_latent_wavefront_candidates);
         // If v is a hierarchy op, then recursively clear the entire subgraph
         if (G[v].asyncEventType == "hierarchy") {
           for (auto sub_c : G[v].nextDependencyGraphs) {
@@ -166,8 +187,7 @@ public:
             auto terminator_v = sub_c->terminator_vertex;
             auto sub_g = sub_c->g;
             auto sub_runner = sub_c->runner_node;
-            sub_runner->resetGraphBetweenTwoVertices(start, terminator_v, sub_g,
-                                                     time);
+            sub_runner->resetGraph(time);
           }
         }
         // Else if v is an scf.for op, then clear the cached trip count from
@@ -186,12 +206,11 @@ public:
     }
   }
 
-  // Remove vertices in vector a which already exist in vector b
-  void removeRepeatedVertices(std::vector<Graph::vertex_descriptor> &a,
-                              std::vector<Graph::vertex_descriptor> b) {
-    for (auto v : b) {
-      this->removeVertexFromVertices(a, v);
-    }
+  void resetGraph(uint64_t time) {
+    Graph &G = this->ctrl_g->g;
+    auto sub_start_v = this->ctrl_g->start_vertex;
+    auto sub_terminator_v = this->ctrl_g->terminator_vertex;
+    this->resetGraphBetweenTwoVertices(sub_start_v, sub_terminator_v, G, time);
   }
 
   // Consume tokens upon op execution
@@ -238,27 +257,14 @@ public:
     return dep_fulfilled;
   }
 
-  // Find all vertices adjacent to given vertices in graph
-  void findAdjacentVerticesToProcessed(
-      std::vector<Graph::vertex_descriptor> &adjacent_vertices) {
-    Graph G = this->ctrl_g->g;
-    for (auto v : this->processed_vertices) {
-      auto adj_set = boost::adjacent_vertices(v, G);
-      for (auto v1 = adj_set.first; v1 != adj_set.second; ++v1) {
-        bool found_duplicate = false;
-        for (auto v2 : adjacent_vertices) {
-          if (*v1 == v2) {
-            found_duplicate = true;
-          }
-        }
-        bool is_in_vertices = false;
-        for (auto v3 : this->processed_vertices) {
-          if (*v1 == v3) {
-            is_in_vertices = true;
-          }
-        }
-        if (!found_duplicate && !is_in_vertices) {
-          adjacent_vertices.push_back(*v1);
+  // Remove a vertex from a vector of vertices
+  void removeVertexFromVertices(std::vector<Graph::vertex_descriptor> &vector,
+                                Graph::vertex_descriptor a) {
+    if (vector.size()) {
+      for (auto it = vector.begin(); it != vector.end(); ++it) {
+        if (*it == a) {
+          vector.erase(it);
+          it--;
         }
       }
     }
@@ -290,25 +296,6 @@ public:
       } else {
         pushToDepListIfAffineIfHit(dep_list, G[*inv_adj_v],
                                    this->ctrl_g->position, "ssa");
-      }
-    }
-  }
-
-  // Remove ops in affine.if which aren't running on this core
-  void removeOpsFilteredOutByAffineIf(
-      std::vector<Graph::vertex_descriptor> &candidates) {
-    Graph &G = this->ctrl_g->g;
-    for (auto it = candidates.begin(); it != candidates.end(); ++it) {
-      auto op = G[*it].op;
-      if (op->getParentOfType<mlir::AffineIfOp>()) {
-        std::vector<Operation *> affine_if_nest;
-        Operation *spatial_loop = nullptr;
-        getAffineIfNestAndSpatialLoopFromOp(op, affine_if_nest, spatial_loop);
-        if (!positionHitsAffineIfCondition(op, spatial_loop, affine_if_nest,
-                                           this->ctrl_g->position)) {
-          candidates.erase(it);
-          it--;
-        }
       }
     }
   }
@@ -1017,18 +1004,17 @@ private:
   void executeOp(xilinx::air::HierarchyInterface op, uint64_t time,
                  runnerNode *sub_runner_node, Graph::vertex_descriptor it) {
     // Initialize sub runner and sub graph prior to execution
-    Graph &G = sub_runner_node->ctrl_g->g;
     auto sub_start_v = sub_runner_node->ctrl_g->start_vertex;
     auto sub_terminator_v = sub_runner_node->ctrl_g->terminator_vertex;
-    sub_runner_node->resetGraphBetweenTwoVertices(sub_start_v, sub_terminator_v,
-                                                  G, time);
+    sub_runner_node->resetGraph(time);
     sub_runner_node->loop_trip_count.clear();
 
     // Start sub-runner node by pushing start node into its wavefront
     sub_runner_node->ctrl_g->g[sub_start_v].start_time = time;
     sub_runner_node->ctrl_g->g[sub_start_v].end_time = time;
     this->runner_assertion(!sub_runner_node->wavefront.size(),
-                           "sub runner node is busy");
+                           "sub runner node " + air::to_string(op) +
+                               " is busy");
     sub_runner_node->pushStartToWavefront(sub_start_v);
 
     sub_runner_node->processed_vertices.clear();
@@ -1112,8 +1098,8 @@ private:
         auto reset_vertices_end = this->getVertexInvAdjToLoopYieldedToken(
             op->getOperands()[token_ids[i]]);
         for (auto adj_v : reset_vertices_start) {
-          this->resetGraphBetweenTwoVertices(adj_v, reset_vertices_end, G,
-                                             time);
+          this->resetGraphBetweenTwoVertices(adj_v, reset_vertices_end, G, time,
+                                             true);
           // release the token locks, if the token is still iterating
           if (token_is_still_iterating[i]) {
             G[adj_v].token_count +=
@@ -1286,8 +1272,10 @@ private:
     }
   }
 
-  // Reset a vertex in dependency graph
-  void resetVertex(Graph::vertex_descriptor v, Graph &G, uint64_t time) {
+  // Reset a vertex in dependency graph. Vertices adj. to recently resetted
+  // vertices could be potential candidates to be pushed to wavefront.
+  void resetVertex(Graph::vertex_descriptor v, Graph &G, uint64_t time,
+                   bool push_to_latent_wavefront_candidates = false) {
 
     // Remove start_v from processed_vertices
     this->removeVertexFromVertices(this->processed_vertices, v);
@@ -1300,16 +1288,14 @@ private:
       G[v].start_time = 0;
       G[v].end_time = 0;
     }
-  }
 
-  // Remove a vertex from a vector of vertices
-  void removeVertexFromVertices(std::vector<Graph::vertex_descriptor> &vector,
-                                Graph::vertex_descriptor a) {
-    if (vector.size()) {
-      for (auto it = vector.begin(); it != vector.end(); ++it) {
-        if (*it == a) {
-          vector.erase(it);
-          it--;
+    // Push adj. vertices to latent wavefront candidates
+    if (push_to_latent_wavefront_candidates) {
+      auto adj_set = boost::adjacent_vertices(v, G);
+      for (auto adj_v = adj_set.first; adj_v != adj_set.second; ++adj_v) {
+        if (!isa<scf::YieldOp>(G[*adj_v].op) && !G[*adj_v].is_started()) {
+          push_back_if_unique<Graph::vertex_descriptor>(
+              this->latent_wavefront_candidates, *adj_v);
         }
       }
     }
@@ -1850,6 +1836,72 @@ private:
     if (!cond) {
       std::cerr << "Error: " + msg + "\n";
       exit(EXIT_FAILURE);
+    }
+  }
+
+  // Get a vector of first elements from a vector of tuples
+  std::vector<Graph::vertex_descriptor> getVectorOfFirstFromVectorOfTuples(
+      std::vector<std::tuple<Graph::vertex_descriptor, std::vector<resource *>,
+                             unsigned>>
+          tuples) {
+    std::vector<Graph::vertex_descriptor> items;
+    std::transform(
+        tuples.begin(), tuples.end(), std::back_inserter(items),
+        [](const std::tuple<Graph::vertex_descriptor, std::vector<resource *>,
+                            unsigned> &p) { return std::get<0>(p); });
+    return items;
+  }
+
+  // Find all vertices adjacent to given vertices in graph
+  void findAdjacentVerticesToProcessed(
+      std::vector<Graph::vertex_descriptor> &adjacent_vertices) {
+    Graph G = this->ctrl_g->g;
+    for (auto v : this->processed_vertices) {
+      auto adj_set = boost::adjacent_vertices(v, G);
+      for (auto v1 = adj_set.first; v1 != adj_set.second; ++v1) {
+        bool found_duplicate = false;
+        for (auto v2 : adjacent_vertices) {
+          if (*v1 == v2) {
+            found_duplicate = true;
+          }
+        }
+        bool is_in_vertices = false;
+        for (auto v3 : this->processed_vertices) {
+          if (*v1 == v3) {
+            is_in_vertices = true;
+          }
+        }
+        if (!found_duplicate && !is_in_vertices) {
+          adjacent_vertices.push_back(*v1);
+        }
+      }
+    }
+  }
+
+  // Remove vertices in vector a which already exist in vector b
+  void removeRepeatedVertices(std::vector<Graph::vertex_descriptor> &a,
+                              std::vector<Graph::vertex_descriptor> b) {
+    for (auto v : b) {
+      this->removeVertexFromVertices(a, v);
+    }
+  }
+
+  // Remove ops in affine.if which aren't running on this core
+  void removeOpsFilteredOutByAffineIf(
+      std::vector<Graph::vertex_descriptor> &candidates) {
+    Graph &G = this->ctrl_g->g;
+    for (auto it = candidates.begin(); it != candidates.end(); ++it) {
+      auto op = G[*it].op;
+      if (op->getParentOfType<mlir::AffineIfOp>()) {
+        std::vector<Operation *> affine_if_nest;
+        Operation *spatial_loop = nullptr;
+        getAffineIfNestAndSpatialLoopFromOp(op, affine_if_nest, spatial_loop);
+        if (!positionHitsAffineIfCondition(op, spatial_loop, affine_if_nest,
+                                           this->ctrl_g->position)) {
+          candidates.erase(it);
+          it--;
+        }
+      }
     }
   }
 
