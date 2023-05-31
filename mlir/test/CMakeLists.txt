@@ -2,6 +2,10 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
+if(NOT AIE_BINARY_DIR)
+  find_package(AIE REQUIRED CONFIG)
+endif()
+
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
   ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
