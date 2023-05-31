@@ -183,8 +183,6 @@ public:
         // If v is a hierarchy op, then recursively clear the entire subgraph
         if (G[v].asyncEventType == "hierarchy") {
           for (auto sub_c : G[v].nextDependencyGraphs) {
-            auto start = sub_c->start_vertex;
-            auto terminator_v = sub_c->terminator_vertex;
             auto sub_g = sub_c->g;
             auto sub_runner = sub_c->runner_node;
             sub_runner->resetGraph(time);
@@ -1005,7 +1003,6 @@ private:
                  runnerNode *sub_runner_node, Graph::vertex_descriptor it) {
     // Initialize sub runner and sub graph prior to execution
     auto sub_start_v = sub_runner_node->ctrl_g->start_vertex;
-    auto sub_terminator_v = sub_runner_node->ctrl_g->terminator_vertex;
     sub_runner_node->resetGraph(time);
     sub_runner_node->loop_trip_count.clear();
 
