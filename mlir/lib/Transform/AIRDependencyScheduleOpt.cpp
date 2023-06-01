@@ -451,17 +451,19 @@ struct AnnotateFrontAndBackOpsInForPattern
         auto child_op = &exec_op.getRegion().front().getOperations().front();
         if (isa<memref::DeallocOp>(child_op)) {
           for (auto d : exec_op.getAsyncDependencies()) {
-            back_candidates.push_back(d.getDefiningOp());
+            back_candidates.push_back(
+                getOpAsBackOpCandidate(rewriter, d.getDefiningOp()));
           }
         } else {
-          back_candidates.push_back(back_candidate);
+          back_candidates.push_back(
+              getOpAsBackOpCandidate(rewriter, back_candidate));
         }
       } else {
-        back_candidates.push_back(back_candidate);
+        back_candidates.push_back(
+            getOpAsBackOpCandidate(rewriter, back_candidate));
       }
     }
     for (auto op : back_candidates) {
-      // op->setAttr("async_back", rewriter.getBoolAttr(true));
       setBoolAttrForAsyncOp(rewriter, op, "async_back");
     }
 
@@ -500,6 +502,23 @@ private:
       });
     } else
       op->setAttr(attr, builder.getBoolAttr(true));
+  }
+
+  Operation *getOpAsBackOpCandidate(OpBuilder builder, Operation *op) const {
+    if (auto for_candidate = dyn_cast<scf::ForOp>(op)) {
+      // Note: if back candidate is scf.for, then since scf.yield is non
+      // blocking, an air.wait_all barrier needs to be inserted here
+      builder.setInsertionPointAfter(for_candidate);
+      SmallVector<Value> dep_list = {};
+      air::WaitAllOp wa_op = builder.create<xilinx::air::WaitAllOp>(
+          builder.getUnknownLoc(),
+          air::AsyncTokenType::get(for_candidate->getContext()), dep_list);
+      replaceAllUsesInRegionWith(for_candidate->getResult(0),
+                                 wa_op.getAsyncToken(), *op->getParentRegion());
+      wa_op.addAsyncDependency(for_candidate->getResult(0));
+      return wa_op.getOperation();
+    } else
+      return op;
   }
 };
 
@@ -741,9 +760,12 @@ struct ConstructPingPongDependencyPattern
     SmallVector<Operation *> pong_consumer_backs;
 
     new_loop_op.getBody()->walk([&](Operation *op) {
-      if (op->hasAttr("ping_pong")) {
+      if (op->hasAttr("ping_pong") || op->hasAttr("unrolled_iteration")) {
         auto ping_pong_id =
-            op->getAttrOfType<IntegerAttr>("ping_pong").getUInt();
+            op->hasAttr("ping_pong")
+                ? (op->getAttrOfType<IntegerAttr>("ping_pong").getUInt())
+                : (op->getAttrOfType<IntegerAttr>("unrolled_iteration")
+                       .getInt());
         // "Ping" producer fronts
         if (op->hasAttr("async_front") && ping_pong_id == 0) {
           ping_producer_fronts.push_back(op);
