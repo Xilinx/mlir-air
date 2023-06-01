@@ -451,17 +451,19 @@ struct AnnotateFrontAndBackOpsInForPattern
         auto child_op = &exec_op.getRegion().front().getOperations().front();
         if (isa<memref::DeallocOp>(child_op)) {
           for (auto d : exec_op.getAsyncDependencies()) {
-            back_candidates.push_back(d.getDefiningOp());
+            back_candidates.push_back(
+                getOpAsBackOpCandidate(rewriter, d.getDefiningOp()));
           }
         } else {
-          back_candidates.push_back(back_candidate);
+          back_candidates.push_back(
+              getOpAsBackOpCandidate(rewriter, back_candidate));
         }
       } else {
-        back_candidates.push_back(back_candidate);
+        back_candidates.push_back(
+            getOpAsBackOpCandidate(rewriter, back_candidate));
       }
     }
     for (auto op : back_candidates) {
-      // op->setAttr("async_back", rewriter.getBoolAttr(true));
       setBoolAttrForAsyncOp(rewriter, op, "async_back");
     }
 
@@ -500,6 +502,23 @@ private:
       });
     } else
       op->setAttr(attr, builder.getBoolAttr(true));
+  }
+
+  Operation *getOpAsBackOpCandidate(OpBuilder builder, Operation *op) const {
+    if (auto for_candidate = dyn_cast<scf::ForOp>(op)) {
+      // Note: if back candidate is scf.for, then since scf.yield is non
+      // blocking, an air.wait_all barrier needs to be inserted here
+      builder.setInsertionPointAfter(for_candidate);
+      SmallVector<Value> dep_list = {};
+      air::WaitAllOp wa_op = builder.create<xilinx::air::WaitAllOp>(
+          builder.getUnknownLoc(),
+          air::AsyncTokenType::get(for_candidate->getContext()), dep_list);
+      replaceAllUsesInRegionWith(for_candidate->getResult(0),
+                                 wa_op.getAsyncToken(), *op->getParentRegion());
+      wa_op.addAsyncDependency(for_candidate->getResult(0));
+      return wa_op.getOperation();
+    } else
+      return op;
   }
 };
 
@@ -665,7 +684,11 @@ struct ConstructPingPongDependencyPattern
       // Check if producer or consumer
       for (auto candidate_op : candidate_ops) {
         if (checkOpOperandReadOrWrite(buffer_memref, candidate_op) == 'w') {
-          if (isa<air::ExecuteOp>(candidate_op->getParentOp())) {
+          if (auto candidate_for_op =
+                  getOutermostForOpInForOpNest(candidate_op, for_op)) {
+            push_back_if_unique<Operation *>(producer_ops,
+                                             candidate_for_op.getOperation());
+          } else if (isa<air::ExecuteOp>(candidate_op->getParentOp())) {
             push_back_if_unique<Operation *>(producer_ops,
                                              candidate_op->getParentOp());
           } else if (isa<mlir::AffineIfOp>(candidate_op->getParentOp())) {
@@ -676,7 +699,11 @@ struct ConstructPingPongDependencyPattern
             push_back_if_unique<Operation *>(producer_ops, candidate_op);
         } else if (checkOpOperandReadOrWrite(buffer_memref, candidate_op) ==
                    'r') {
-          if (isa<air::ExecuteOp>(candidate_op->getParentOp())) {
+          if (auto candidate_for_op =
+                  getOutermostForOpInForOpNest(candidate_op, for_op)) {
+            push_back_if_unique<Operation *>(consumer_ops,
+                                             candidate_for_op.getOperation());
+          } else if (isa<air::ExecuteOp>(candidate_op->getParentOp())) {
             push_back_if_unique<Operation *>(consumer_ops,
                                              candidate_op->getParentOp());
           } else if (isa<mlir::AffineIfOp>(candidate_op->getParentOp())) {
@@ -733,9 +760,12 @@ struct ConstructPingPongDependencyPattern
     SmallVector<Operation *> pong_consumer_backs;
 
     new_loop_op.getBody()->walk([&](Operation *op) {
-      if (op->hasAttr("ping_pong")) {
+      if (op->hasAttr("ping_pong") || op->hasAttr("unrolled_iteration")) {
         auto ping_pong_id =
-            op->getAttrOfType<IntegerAttr>("ping_pong").getUInt();
+            op->hasAttr("ping_pong")
+                ? (op->getAttrOfType<IntegerAttr>("ping_pong").getUInt())
+                : (op->getAttrOfType<IntegerAttr>("unrolled_iteration")
+                       .getInt());
         // "Ping" producer fronts
         if (op->hasAttr("async_front") && ping_pong_id == 0) {
           ping_producer_fronts.push_back(op);
@@ -774,33 +804,29 @@ struct ConstructPingPongDependencyPattern
     // Part 2: Connect producers
     for (auto sink : ping_producer_fronts) {
       // "Ping" producers
-      auto async_op = dyn_cast<air::AsyncOpInterface>(sink);
-      addAsyncDependencyIfNew(async_op, new_loop_op.getRegionIterArgs()[0]);
-      addAsyncDependencyIfNew(async_op, new_loop_op.getRegionIterArgs()[3]);
+      addAsyncDependencyIfNew(sink, new_loop_op.getRegionIterArgs()[0]);
+      addAsyncDependencyIfNew(sink, new_loop_op.getRegionIterArgs()[3]);
     }
     for (auto sink : pong_producer_fronts) {
       // "Pong" producers
-      auto async_op = dyn_cast<air::AsyncOpInterface>(sink);
-      clearAsyncDependenciesOfAsyncOp(async_op);
-      addAsyncDependencyIfNew(async_op, new_loop_op.getRegionIterArgs()[1]);
+      clearAsyncDependenciesOfAsyncOp(sink);
+      addAsyncDependencyIfNew(sink, new_loop_op.getRegionIterArgs()[1]);
       for (auto source : ping_producer_backs) {
         Value token = getTokenFromOutermostParentAffineIfOp(source);
-        addAsyncDependencyIfNew(async_op, token);
+        addAsyncDependencyIfNew(sink, token);
       }
     }
 
     // Part 3: Connect consumers
     for (auto sink : ping_consumer_fronts) {
       // "Ping" consumers
-      auto async_op = dyn_cast<air::AsyncOpInterface>(sink);
-      addAsyncDependencyIfNew(async_op, new_loop_op.getRegionIterArgs()[2]);
+      addAsyncDependencyIfNew(sink, new_loop_op.getRegionIterArgs()[2]);
     }
     for (auto sink : pong_consumer_fronts) {
       // "Pong" consumers
       for (auto source : ping_consumer_backs) {
-        auto async_op = dyn_cast<air::AsyncOpInterface>(sink);
         Value token = getTokenFromOutermostParentAffineIfOp(source);
-        addAsyncDependencyIfNew(async_op, token);
+        addAsyncDependencyIfNew(sink, token);
       }
     }
 
@@ -943,6 +969,25 @@ private:
       token = getTokenFromOutermostParentAffineIfOp(vec[0]);
     }
     return token;
+  }
+
+  scf::ForOp getOutermostForOpInForOpNest(Operation *op,
+                                          scf::ForOp ancestor_for) const {
+    if (!ancestor_for->isProperAncestor(op)) {
+      return scf::ForOp();
+    }
+    if (op->getParentOfType<scf::ForOp>() == ancestor_for) {
+      return scf::ForOp();
+    }
+    Operation *parent = op->getParentOp();
+    scf::ForOp output = nullptr;
+    while (parent != ancestor_for.getOperation()) {
+      if (auto parent_for = dyn_cast<scf::ForOp>(parent)) {
+        output = parent_for;
+      }
+      parent = parent->getParentOp();
+    }
+    return output;
   }
 };
 
