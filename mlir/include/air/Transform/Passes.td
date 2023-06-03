@@ -898,6 +898,17 @@ def AIRConstructPingPongDependencyPattern: Pass<"air-construct-ping-pong-depende
   }];
 }
 
+def AIRHoistOpsNotUsingPingPongPattern: Pass<"air-hoist-ops-not-using-ping-pong", "ModuleOp"> {
+  let summary = "Hoists ops which are not direct users of the target memref";
+  let constructor = "xilinx::air::createAIRHoistOpsNotUsingPingPongPattern()";
+  let description = [{
+    This pass isolates an `scf.for` loop in preparation for ping-pong transformation,
+    by identifying child operations which are not direct consumers or producers of the 
+    memref targetted for ping-pong buffering, and hoisting said operations out of the
+    scf.for loop.
+  }];
+}
+
 def AIRPingPongTransformationPattern: Pass<"air-ping-pong-transform", "ModuleOp"> {
   let summary = "Lower to pipelining pattern";
   let constructor = "xilinx::air::createAIRPingPongTransformationPattern()";
