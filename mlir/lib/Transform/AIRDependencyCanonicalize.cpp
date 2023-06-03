@@ -38,6 +38,11 @@ public:
     auto module = getOperation();
 
     for (auto func : module.getOps<func::FuncOp>()) {
+      // Pre processing
+      // Re-trace ops which depend on air.hierarchies
+      // (Removes obsolete dep edges after -canonicalize)
+      canonicalizer.redoDepTraceIfDepOnHier(func);
+
       // Parse dependency graphs
       hostGraph = dependencyGraph(func, true);
       canonicalizer.parseCommandGraphs(func, hostGraph, dep_ctx);
@@ -46,6 +51,7 @@ public:
       xilinx::air::dependencyGraph trHostGraph;
       canonicalizer.canonicalizeGraphs(hostGraph, trHostGraph, g_to_tr);
 
+      // Post processing
       // Update dependency list
       canonicalizer.updateDepList(func, trHostGraph);
 
