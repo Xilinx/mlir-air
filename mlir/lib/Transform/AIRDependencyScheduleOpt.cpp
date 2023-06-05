@@ -493,7 +493,6 @@ private:
   void setBoolAttrForAsyncOp(OpBuilder builder, Operation *op,
                              std::string attr) const {
     if (auto aif = dyn_cast<mlir::AffineIfOp>(op)) {
-      op->setAttr(attr, builder.getBoolAttr(true));
       aif.getThenBlock()->walk([&](Operation *child_op) {
         child_op->setAttr(attr, builder.getBoolAttr(true));
       });
