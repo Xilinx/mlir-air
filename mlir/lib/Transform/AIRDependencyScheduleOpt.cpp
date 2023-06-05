@@ -1085,6 +1085,9 @@ struct HoistOpsNotUsingPingPongPattern : public OpRewritePattern<scf::ForOp> {
       }
       erase_op->erase();
     }
+    for (auto user : for_op.getResults().front().getUsers()) {
+      addAsyncDependencyIfNew(user, new_for_op.getResults().front());
+    }
 
     for_op->setAttr("isolated", rewriter.getBoolAttr(true));
 
