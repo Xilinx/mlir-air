@@ -231,19 +231,13 @@ void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op,
   }
 }
 
-void clearAsyncDependenciesOfAsyncOp(Operation *op) {
-  if (!isAsyncOp(op)) {
-    op->emitOpError("op has no async interface");
+void clearAsyncDependenciesOfAsyncOpImpl(xilinx::air::AsyncOpInterface op) {
+  auto dependency_list = op.getAsyncDependencies();
+  if (!dependency_list.size())
     return;
+  for (int i = dependency_list.size() - 1; i >= 0; i--) {
+    op.eraseAsyncDependency(i);
   }
-  if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
-    clearAsyncDependenciesOfAsyncOpImpl(async_op);
-  } else if (auto for_op = dyn_cast<scf::ForOp>(op)) {
-    clearAsyncDependenciesOfAsyncOpImpl(for_op);
-  } else if (auto parallel_op = dyn_cast<scf::ParallelOp>(op)) {
-    clearAsyncDependenciesOfAsyncOpImpl(parallel_op);
-  } else
-    op->emitOpError("unknown async op");
 }
 void clearAsyncDependenciesOfAsyncOpImpl(scf::ForOp op) {
   SmallVector<Value> operands_without_wait_all;
@@ -293,14 +287,19 @@ void clearAsyncDependenciesOfAsyncOpImpl(scf::ParallelOp op) {
     op->replaceUsesOfWith(v, wait_all_op_before_loop.getAsyncToken());
   }
 }
-
-void clearAsyncDependenciesOfAsyncOpImpl(xilinx::air::AsyncOpInterface op) {
-  auto dependency_list = op.getAsyncDependencies();
-  if (!dependency_list.size())
+void clearAsyncDependenciesOfAsyncOp(Operation *op) {
+  if (!isAsyncOp(op)) {
+    op->emitOpError("op has no async interface");
     return;
-  for (int i = dependency_list.size() - 1; i >= 0; i--) {
-    op.eraseAsyncDependency(i);
   }
+  if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
+    clearAsyncDependenciesOfAsyncOpImpl(async_op);
+  } else if (auto for_op = dyn_cast<scf::ForOp>(op)) {
+    clearAsyncDependenciesOfAsyncOpImpl(for_op);
+  } else if (auto parallel_op = dyn_cast<scf::ParallelOp>(op)) {
+    clearAsyncDependenciesOfAsyncOpImpl(parallel_op);
+  } else
+    op->emitOpError("unknown async op");
 }
 
 // Get loop-carried dependency token from scf loop op
@@ -346,21 +345,28 @@ Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
   }
 }
 
-// Add async dependency to op if unique
-void addAsyncDependencyIfNew(Operation *op, Value token) {
-  if (!isAsyncOp(op)) {
-    op->emitOpError("op does not have async interface");
-    return;
-  }
-  if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
-    addAsyncDependencyIfNewImpl(async_op, token);
-  } else if (auto for_op = dyn_cast<scf::ForOp>(op)) {
-    addAsyncDependencyIfNewImpl(for_op, token);
-  } else if (auto parallel_op = dyn_cast<scf::ParallelOp>(op)) {
-    addAsyncDependencyIfNewImpl(parallel_op, token);
-  } else
-    op->emitOpError("unknown async op");
+// Get dependency list of op
+SmallVector<Value> getAsyncDependenciesFromOpImpl(air::AsyncOpInterface op) {
+  return op.getAsyncDependencies();
 }
+SmallVector<Value> getAsyncDependenciesFromOpImpl(scf::ForOp op) {
+  return op.getIterOperands();
+}
+SmallVector<Value> getAsyncDependenciesFromOpImpl(scf::ParallelOp op) {
+  return op.getInitVals();
+}
+SmallVector<Value> getAsyncDependenciesFromOp(Operation *op) {
+  if (auto async_op = dyn_cast<air::AsyncOpInterface>(op))
+    return getAsyncDependenciesFromOpImpl(async_op);
+  else if (auto for_op = dyn_cast<scf::ForOp>(op))
+    return getAsyncDependenciesFromOpImpl(for_op);
+  else if (auto par_op = dyn_cast<scf::ParallelOp>(op))
+    return getAsyncDependenciesFromOpImpl(par_op);
+  else
+    return SmallVector<Value>();
+}
+
+// Add async dependency to op if unique
 void addAsyncDependencyIfNewImpl(air::AsyncOpInterface op, Value token) {
   if (!token.getType().isa<air::AsyncTokenType>()) {
     op->emitOpError("value is not an async token");
@@ -381,7 +387,9 @@ void addAsyncDependencyIfNewImpl(air::AsyncOpInterface op, Value token) {
 void addAsyncDependencyIfNewImpl(scf::ForOp op, Value token) {
   SmallVector<Value> operands_without_wait_all;
   for (auto iter_oper : op.getIterOperands()) {
-    if (auto wa_op = dyn_cast<air::WaitAllOp>(iter_oper.getDefiningOp())) {
+    if (iter_oper.getDefiningOp() &&
+        isa<air::WaitAllOp>(iter_oper.getDefiningOp())) {
+      auto wa_op = dyn_cast<air::WaitAllOp>(iter_oper.getDefiningOp());
       addAsyncDependencyIfNewImpl(wa_op, token);
     } else {
       // Push to vec if unique
@@ -407,7 +415,9 @@ void addAsyncDependencyIfNewImpl(scf::ForOp op, Value token) {
 void addAsyncDependencyIfNewImpl(scf::ParallelOp op, Value token) {
   SmallVector<Value> operands_without_wait_all;
   for (auto init_val : op.getInitVals()) {
-    if (auto wa_op = dyn_cast<air::WaitAllOp>(init_val.getDefiningOp())) {
+    if (init_val.getDefiningOp() &&
+        isa<air::WaitAllOp>(init_val.getDefiningOp())) {
+      auto wa_op = dyn_cast<air::WaitAllOp>(init_val.getDefiningOp());
       addAsyncDependencyIfNewImpl(wa_op, token);
     } else {
       // Push to vec if unique
@@ -426,9 +436,25 @@ void addAsyncDependencyIfNewImpl(scf::ParallelOp op, Value token) {
             builder.getUnknownLoc(), air::AsyncTokenType::get(op->getContext()),
             dep_list);
     op->replaceUsesOfWith(v, wait_all_op_before_loop.getAsyncToken());
+    replaceAllUsesInRegionWith(v, wait_all_op_before_loop.getAsyncToken(),
+                               op.getRegion());
     addAsyncDependencyIfNewImpl(wait_all_op_before_loop, v);
     addAsyncDependencyIfNewImpl(wait_all_op_before_loop, token);
   }
+}
+void addAsyncDependencyIfNew(Operation *op, Value token) {
+  if (!isAsyncOp(op)) {
+    op->emitOpError("op does not have async interface");
+    return;
+  }
+  if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
+    addAsyncDependencyIfNewImpl(async_op, token);
+  } else if (auto for_op = dyn_cast<scf::ForOp>(op)) {
+    addAsyncDependencyIfNewImpl(for_op, token);
+  } else if (auto parallel_op = dyn_cast<scf::ParallelOp>(op)) {
+    addAsyncDependencyIfNewImpl(parallel_op, token);
+  } else
+    op->emitOpError("unknown async op");
 }
 
 bool isAsyncOp(Operation *op) {
@@ -1890,6 +1916,48 @@ dependencyCanonicalizer::toPositionString(std::vector<unsigned> position) {
   }
   output += "]";
   return output;
+}
+
+// Re-trace ops which depend on air.hierarchy
+void dependencyCanonicalizer::redoDepTraceIfDepOnHier(func::FuncOp func) {
+  air::dependencyTracer depTracer;
+  func.walk([&](air::ExecuteOp exec_op) {
+    // Get partial memref reads/writes
+    SmallVector<air::partialMemref, 1> sink_op_memref_reads;
+    SmallVector<air::partialMemref, 1> sink_op_memref_writes;
+    SmallVector<Value, 1> sink_op_scalar_ins;
+    SmallVector<Value, 1> sink_op_scalar_outs;
+    // auto &bb = exec_op.getBody().front();
+    Operation &child_op = exec_op.getBody().front().getOperations().front();
+    // Operation &child_op = exec_op.getOps().begin();
+    depTracer.getPartialMemrefFromOp(&child_op, sink_op_memref_reads,
+                                     sink_op_memref_writes, sink_op_scalar_ins,
+                                     sink_op_scalar_outs);
+    if (sink_op_memref_reads.empty() && sink_op_memref_writes.empty()) {
+      return;
+    }
+    // Update dependency to air.hierarchy ops
+    bool hasDepToHier = false;
+    auto dep_list = exec_op.getAsyncDependencies();
+    for (auto dep : dep_list) {
+      if (dep.getDefiningOp() &&
+          isa<air::HierarchyInterface>(dep.getDefiningOp())) {
+        eraseAsyncDependencyFromAsyncOp(exec_op, dep);
+        hasDepToHier = true;
+      }
+    }
+    if (hasDepToHier) {
+      // Trace dependency of op again
+      depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+          sink_op_memref_reads, exec_op, "RAW");
+      depTracer.template traceDependencyFromOp<air::AsyncOpInterface>(
+          sink_op_memref_writes, exec_op, "WAW/WAR");
+      // Detect tile index deps
+      depTracer.traceTileIndices(sink_op_memref_reads, sink_op_memref_writes,
+                                 sink_op_scalar_ins, sink_op_scalar_outs,
+                                 exec_op);
+    }
+  });
 }
 
 //===----------------------------------------------------------------------===//

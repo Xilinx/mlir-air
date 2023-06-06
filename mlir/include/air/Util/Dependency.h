@@ -22,6 +22,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Transforms/RegionUtils.h"
 
 #include <numeric>
 #include <string>
@@ -53,16 +54,11 @@ void traceDependentInductionVar(air::AsyncOpInterface async_op,
 void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op,
                                      Value token);
 void clearAsyncDependenciesOfAsyncOp(Operation *op);
-void clearAsyncDependenciesOfAsyncOpImpl(xilinx::air::AsyncOpInterface op);
-void clearAsyncDependenciesOfAsyncOpImpl(scf::ForOp op);
-void clearAsyncDependenciesOfAsyncOpImpl(scf::ParallelOp op);
 Value getLoopCarriedTokenFromScfOp(scf::ParallelOp op);
 Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
                                    std::string operand_or_argument = "operand");
+SmallVector<Value> getAsyncDependenciesFromOp(Operation *op);
 void addAsyncDependencyIfNew(Operation *op, Value token);
-void addAsyncDependencyIfNewImpl(air::AsyncOpInterface op, Value token);
-void addAsyncDependencyIfNewImpl(scf::ForOp op, Value token);
-void addAsyncDependencyIfNewImpl(scf::ParallelOp op, Value token);
 bool isAsyncOp(Operation *op);
 
 //===----------------------------------------------------------------------===//
@@ -266,6 +262,7 @@ public:
   std::string toPositionString(std::vector<unsigned> position);
   unsigned getIteratorFromPosition(std::vector<unsigned> position,
                                    Operation *hier_op);
+  void redoDepTraceIfDepOnHier(func::FuncOp func);
 
 private:
   void addVerticesInHerd(std::deque<dependencyGraph> &herd_subgraphs,

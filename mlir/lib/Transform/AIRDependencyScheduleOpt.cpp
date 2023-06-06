@@ -493,7 +493,6 @@ private:
   void setBoolAttrForAsyncOp(OpBuilder builder, Operation *op,
                              std::string attr) const {
     if (auto aif = dyn_cast<mlir::AffineIfOp>(op)) {
-      op->setAttr(attr, builder.getBoolAttr(true));
       aif.getThenBlock()->walk([&](Operation *child_op) {
         child_op->setAttr(attr, builder.getBoolAttr(true));
       });
@@ -991,6 +990,146 @@ private:
   }
 };
 
+struct HoistOpsNotUsingPingPongPattern : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp for_op,
+                                PatternRewriter &rewriter) const override {
+
+    // Check if the loop has already been processed
+    if (for_op->hasAttr("isolated"))
+      return failure();
+
+    // Check if the loop has been unrolled by factor 2
+    if (!for_op->hasAttr("unroll"))
+      return failure();
+    uint64_t unroll_factor =
+        for_op->getAttrOfType<IntegerAttr>("unroll").getInt();
+    if (unroll_factor != 2)
+      return failure();
+    if (for_op.getIterOperands().size() != 1)
+      return failure();
+
+    // Check if any alloc.op in the scf.for loop is targetted for ping-pong
+    // transform
+    bool foundHoistAlloc = false;
+    for (auto child_exec : for_op.getOps<air::ExecuteOp>()) {
+      for (auto child_alloc : child_exec.getOps<memref::AllocOp>()) {
+        if (child_alloc->hasAttr("hoist_alloc")) {
+          foundHoistAlloc = true;
+        }
+      }
+    }
+    if (!foundHoistAlloc)
+      return failure();
+
+    // Find ops which are to be hoisted
+    SmallVector<Operation *> target_ops;
+    // Find air.herd in scf.for
+    for (auto child_herd : for_op.getOps<air::HerdOp>()) {
+      target_ops.push_back(child_herd.getOperation());
+    }
+    // Find scf.parallel only dependent on scf.for's (one) loop-carried
+    // dependency token
+    for (auto child_par : for_op.getOps<scf::ParallelOp>()) {
+      if (child_par.getInitVals().size() == 1 &&
+          child_par.getInitVals()[0] == for_op.getRegionIterArgs()[0]) {
+        target_ops.push_back(child_par.getOperation());
+      }
+    }
+    if (target_ops.empty())
+      return failure();
+
+    // Hoist ops out to a new scf.for loop
+    rewriter.setInsertionPoint(for_op);
+    IRMapping remap;
+    auto new_for_op = rewriter.create<scf::ForOp>(
+        for_op.getLoc(), for_op.getLowerBound(), for_op.getUpperBound(),
+        for_op.getStep(), for_op.getIterOperands());
+    remap.map(for_op.getInductionVar(), new_for_op.getInductionVar());
+    remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
+              getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
+    rewriter.setInsertionPointToStart(new_for_op.getBody());
+    SmallVector<Value> yield_operands;
+    for (auto op : target_ops) {
+      auto new_op = rewriter.clone(*op, remap);
+      yield_operands.push_back(new_op->getResult(0));
+    }
+    rewriter.create<scf::YieldOp>(
+        new_for_op.getLoc(),
+        SmallVector<Value>{
+            rewriter
+                .create<air::WaitAllOp>(
+                    new_for_op.getLoc(),
+                    air::AsyncTokenType::get(rewriter.getContext()),
+                    yield_operands)
+                ->getResult(0)});
+
+    // Update dependency to hoisted ops
+    for (auto herd : new_for_op.getOps<air::HerdOp>()) {
+      clearAsyncDependenciesOfAsyncOp(herd);
+      herd.addAsyncDependency(
+          getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
+    }
+    for (auto erase_op : target_ops) {
+      for (auto user : erase_op->getResult(0).getUsers()) {
+        if (auto async_user = dyn_cast<air::AsyncOpInterface>(user)) {
+          eraseAsyncDependencyFromAsyncOp(async_user, erase_op->getResult(0));
+          for (auto dep : getAsyncDependenciesFromOp(erase_op)) {
+            if (dep != getLoopCarriedTokenFromScfOp(for_op, "argument")) {
+              addAsyncDependencyIfNew(user, dep);
+            }
+          }
+        }
+      }
+      erase_op->erase();
+    }
+    for (auto user : for_op.getResults().front().getUsers()) {
+      addAsyncDependencyIfNew(user, new_for_op.getResults().front());
+    }
+
+    for_op->setAttr("isolated", rewriter.getBoolAttr(true));
+
+    return success();
+  }
+
+private:
+};
+
+struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp for_op,
+                                PatternRewriter &rewriter) const override {
+
+    // Check if the loop has been labelled
+    if (for_op->hasAttr("unroll"))
+      return failure();
+
+    // Check if the loop has child air.execute event containing memref.alloc
+    SmallVector<Operation *> alloc_ops;
+    for (auto child_exec : for_op.getOps<air::ExecuteOp>()) {
+      for (auto child_alloc : child_exec.getOps<memref::AllocOp>()) {
+        alloc_ops.push_back(child_alloc.getOperation());
+      }
+    }
+    if (alloc_ops.empty())
+      return failure();
+
+    // Label the scf.for loop and all its child memref.allocs
+    int unroll_factor = 2; // Unroll factor hardened as 2. TODO: add support for
+                           // an arbitrary factor.
+    for_op->setAttr("unroll", rewriter.getI32IntegerAttr(unroll_factor));
+    for (auto op : alloc_ops) {
+      op->setAttr("hoist_alloc", rewriter.getBoolAttr(true));
+    }
+
+    return success();
+  }
+
+private:
+};
+
 struct BroadcastDetection {
 
 public:
@@ -1360,6 +1499,33 @@ public:
 private:
 };
 
+class AIRHoistOpsNotUsingPingPongPattern
+    : public xilinx::air::AIRHoistOpsNotUsingPingPongPatternBase<
+          AIRHoistOpsNotUsingPingPongPattern> {
+
+public:
+  AIRHoistOpsNotUsingPingPongPattern() = default;
+  AIRHoistOpsNotUsingPingPongPattern(
+      const AIRHoistOpsNotUsingPingPongPattern &pass){};
+
+  void runOptPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<HoistOpsNotUsingPingPongPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      runOptPatterns(f);
+  }
+
+private:
+};
+
 class AIRPingPongTransformationPattern
     : public xilinx::air::AIRPingPongTransformationPatternBase<
           AIRPingPongTransformationPattern> {
@@ -1368,6 +1534,13 @@ public:
   AIRPingPongTransformationPattern() = default;
   AIRPingPongTransformationPattern(
       const AIRPingPongTransformationPattern &pass){};
+
+  void runIsolateScfForOpForPingPong(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<HoistOpsNotUsingPingPongPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
 
   void runOpAnnotationPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
@@ -1404,10 +1577,27 @@ public:
     });
   }
 
+  void runCleanUpAttrs(func::FuncOp funcOp) {
+    funcOp.walk([&](Operation *op) {
+      // Check if loop is the target
+      op->removeAttr("unroll");
+      op->removeAttr("hoist_alloc");
+      op->removeAttr("unrolled_iteration");
+      op->removeAttr("isolated");
+      op->removeAttr("ping_pong");
+      op->removeAttr("producer");
+      op->removeAttr("consumer");
+      op->removeAttr("async_front");
+      op->removeAttr("async_back");
+    });
+  }
+
   void runOnOperation() override {
     auto module = getOperation();
     SmallVector<func::FuncOp, 4> funcOps;
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      runIsolateScfForOpForPingPong(f);
     for (auto f : funcOps)
       runOpAnnotationPatterns(f);
     for (auto f : funcOps)
@@ -1416,6 +1606,35 @@ public:
       runHoistMemallocPatterns(f);
     for (auto f : funcOps)
       runConstructPingPongDependencyPatterns(f);
+    for (auto f : funcOps)
+      runCleanUpAttrs(f);
+  }
+
+private:
+};
+
+class AIRLabelScfForLoopForPingPongPattern
+    : public xilinx::air::AIRLabelScfForLoopForPingPongPatternBase<
+          AIRLabelScfForLoopForPingPongPattern> {
+
+public:
+  AIRLabelScfForLoopForPingPongPattern() = default;
+  AIRLabelScfForLoopForPingPongPattern(
+      const AIRLabelScfForLoopForPingPongPattern &pass){};
+
+  void runOptPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<LabelScfForLoopForPingPongPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      runOptPatterns(f);
   }
 
 private:
@@ -1489,6 +1708,10 @@ std::unique_ptr<Pass> createAIRConstructPingPongDependencyPattern() {
   return std::make_unique<AIRConstructPingPongDependencyPattern>();
 }
 
+std::unique_ptr<Pass> createAIRHoistOpsNotUsingPingPongPattern() {
+  return std::make_unique<AIRHoistOpsNotUsingPingPongPattern>();
+}
+
 std::unique_ptr<Pass> createAIRBroadcastDetection() {
   return std::make_unique<AIRBroadcastDetection>();
 }
@@ -1499,6 +1722,10 @@ std::unique_ptr<Pass> createAIRPruneLinalgGenericInputDma() {
 
 std::unique_ptr<Pass> createAIRPingPongTransformationPattern() {
   return std::make_unique<AIRPingPongTransformationPattern>();
+}
+
+std::unique_ptr<Pass> createAIRLabelScfForLoopForPingPongPattern() {
+  return std::make_unique<AIRLabelScfForLoopForPingPongPattern>();
 }
 
 std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass() {
