@@ -1501,6 +1501,13 @@ public:
   AIRPingPongTransformationPattern(
       const AIRPingPongTransformationPattern &pass){};
 
+  void runIsolateScfForOpForPingPong(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<HoistOpsNotUsingPingPongPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
   void runOpAnnotationPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
@@ -1540,6 +1547,8 @@ public:
     auto module = getOperation();
     SmallVector<func::FuncOp, 4> funcOps;
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      runIsolateScfForOpForPingPong(f);
     for (auto f : funcOps)
       runOpAnnotationPatterns(f);
     for (auto f : funcOps)
