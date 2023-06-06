@@ -919,6 +919,17 @@ def AIRPingPongTransformationPattern: Pass<"air-ping-pong-transform", "ModuleOp"
   }];
 }
 
+def AIRLabelScfForLoopForPingPongPattern: Pass<"air-label-scf-for-to-ping-pong", "ModuleOp"> {
+  let summary = "Label all candidate scf.for loops for ping-pong transformation";
+  let constructor = "xilinx::air::createAIRLabelScfForLoopForPingPongPattern()";
+  let description = [{
+    This pass labels all scf.for loops which contain air.execute event of memref.alloc,
+    which is a direct child op of said scf.for, as candidate loop for ping-pong
+    transformation. The label includes an attribute added to the child memref.alloc ops
+    for subsequent hoisting, and an attribute added to the scf.for with an unroll factor.
+  }];
+}
+
 def AIRDependencyScheduleOpt: Pass<"air-dependency-schedule-opt", "ModuleOp"> {
   let summary = "Optimize scheduling based on air async dependency";
   let constructor = "xilinx::air::createAIRDependencyScheduleOptPass()";

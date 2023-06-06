@@ -33,6 +33,8 @@ std::unique_ptr<mlir::Pass> createAIRPruneLinalgGenericInputDma();
 
 std::unique_ptr<mlir::Pass> createAIRPingPongTransformationPattern();
 
+std::unique_ptr<mlir::Pass> createAIRLabelScfForLoopForPingPongPattern();
+
 std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass();
 
 } // namespace air
