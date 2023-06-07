@@ -8,13 +8,10 @@
 
 #define VERBOSE 0
 
-/// TODO: channel type should be uint 64
 template <typename T, int R>
-static void _air_channel_put(tensor_t<T, 0> *channel, tensor_t<T, R> *src,
+static void _air_channel_put(tensor_t<uint64_t, 0> *channel, tensor_t<T, R> *src,
                              size_t *_offset, size_t *_size, size_t *_stride)
 {
-  printf("air_channel_put is called successfully\n");
-  // copy data from src to buffer
   size_t offset[4] = {0, 0, 0, 0};
   size_t size[4] = {1, 1, 1, 1};
   size_t stride[4] = {1, 1, 1, 1};
@@ -38,22 +35,19 @@ static void _air_channel_put(tensor_t<T, 0> *channel, tensor_t<T, R> *src,
           size_t idx =
               ((offset[3] + l) * stride[3]) + ((offset[2] + k) * stride[2]) +
               ((offset[1] + j) * stride[1]) + ((offset[0] + i) * stride[0]);
-          src_offset++;
-          buffer[src_offset] = src->data[idx];
+          buffer[src_offset++] = src->data[idx];
         }
 
   // save the buffer address to dst
-  channel->data[0] = (long)buffer;
+  channel->data[0] = (uint64_t)buffer;
 }
 
 template <typename T, int R>
-static void _air_channel_get(tensor_t<T, 0> *channel, tensor_t<T, R> *dst,
+static void _air_channel_get(tensor_t<uint64_t, 0> *channel, tensor_t<T, R> *dst,
                              size_t *_offset, size_t *_size, size_t *_stride)
 {
-  printf("air_channel_get is called successfully\n");
   // get the buffer address from src
-  T *buffer = (long *)channel->data[0];
-  // copy data from buffer to dst
+  uint64_t *buffer = (uint64_t *)channel->data[0];
   size_t offset[4] = {0, 0, 0, 0};
   size_t size[4] = {1, 1, 1, 1};
   size_t stride[4] = {1, 1, 1, 1};
@@ -66,7 +60,7 @@ static void _air_channel_get(tensor_t<T, 0> *channel, tensor_t<T, R> *dst,
   if (VERBOSE)
     printf("dst offset %lu, %lu, size %lu, %lu, stride %lu, %lu\n", offset[1],
            offset[0], size[1], size[0], stride[1], stride[0]);
-
+  // copy data from buffer to dst
   size_t dst_offset = 0;
   for (size_t l = 0; l < size[3]; l++)
     for (size_t k = 0; k < size[2]; k++)
@@ -76,11 +70,10 @@ static void _air_channel_get(tensor_t<T, 0> *channel, tensor_t<T, R> *dst,
           size_t idx =
               ((offset[3] + l) * stride[3]) + ((offset[2] + k) * stride[2]) +
               ((offset[1] + j) * stride[1]) + ((offset[0] + i) * stride[0]);
-          dst_offset++;
-          dst->data[idx] = buffer[dst_offset];
+          dst->data[idx] = buffer[dst_offset++];
         }
 
-  // free the buffer
+  // free the buffer in heap memory
   free(buffer);
 }
 
@@ -93,7 +86,7 @@ static void air_channel_get(void *c, void *d,
                             uint64_t stride3, uint64_t stride2,
                             uint64_t stride1, uint64_t stride0)
 {
-  tensor_t<T, 0> *channel = (tensor_t<T, 0> *)c;
+  tensor_t<uint64_t, 0> *channel = (tensor_t<uint64_t, 0> *)c;
   tensor_t<T, R> *dst = (tensor_t<T, R> *)d;
   size_t offset[4] = {offset0, offset1, offset2, offset3};
   size_t size[4] = {size0, size1, size2, size3};
@@ -110,7 +103,7 @@ static void air_channel_put(void *c, void *s,
                             uint64_t stride3, uint64_t stride2,
                             uint64_t stride1, uint64_t stride0)
 {
-  tensor_t<T, 0> *channel = (tensor_t<T, 0> *)c;
+  tensor_t<uint64_t, 0> *channel = (tensor_t<uint64_t, 0> *)c;
   tensor_t<T, R> *src = (tensor_t<T, R> *)s;
   size_t offset[4] = {offset0, offset1, offset2, offset3};
   size_t size[4] = {size0, size1, size2, size3};
