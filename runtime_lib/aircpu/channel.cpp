@@ -8,6 +8,18 @@
 
 #define VERBOSE 0
 
+/// Utility function to check if a memory address is valid
+bool isValidMemoryAddress(uint64_t address)
+{
+    try {
+        volatile uint8_t* ptr = reinterpret_cast<volatile uint8_t*>(address);
+        volatile uint8_t value = *ptr;  // Perform a memory access
+        return true;  // If no exception occurs, the address is valid
+    } catch (...) {
+        return false;  // Exception occurred, the address is invalid
+    }
+}
+
 template <typename T, int R>
 static void _air_channel_put(tensor_t<uint64_t, 0> *channel, tensor_t<T, R> *src,
                              size_t *_offset, size_t *_size, size_t *_stride)
@@ -48,6 +60,12 @@ static void _air_channel_get(tensor_t<uint64_t, 0> *channel, tensor_t<T, R> *dst
 {
   // get the buffer address from src
   uint64_t *buffer = (uint64_t *)channel->data[0];
+  // test if buffer points to a valid address
+  if (!isValidMemoryAddress((uint64_t)buffer))
+  {
+    printf("channel has an invalid memory address %p\n", buffer);
+    exit(1);
+  }
   size_t offset[4] = {0, 0, 0, 0};
   size_t size[4] = {1, 1, 1, 1};
   size_t stride[4] = {1, 1, 1, 1};
