@@ -5,8 +5,8 @@ AIR_ROOT = $(dir $(shell which air-opt))/..
 CC = clang++-12
 CFLAGS = -O2 -std=c++17 \
 	-I$(AIR_ROOT)/runtime_lib/airhost/include \
-	-I/home/niansong/mlir-air/utils/llvm/mlir/include
-LDFLAGS = -L/home/niansong/mlir-air/install/lib -lmlir_async_runtime
+	-I/path/to/llvm-project/mlir/include
+LDFLAGS = -L/path/to/build/llvm/lib -lmlir_async_runtime
 LDFLAGS += -L$(AIR_ROOT)/runtime_lib/aircpu -laircpu
 
 test.exe: main.o mmult.async.o
