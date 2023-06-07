@@ -898,6 +898,17 @@ def AIRConstructPingPongDependencyPattern: Pass<"air-construct-ping-pong-depende
   }];
 }
 
+def AIRHoistOpsNotUsingPingPongPattern: Pass<"air-hoist-ops-not-using-ping-pong", "ModuleOp"> {
+  let summary = "Hoists ops which are not direct users of the target memref";
+  let constructor = "xilinx::air::createAIRHoistOpsNotUsingPingPongPattern()";
+  let description = [{
+    This pass isolates an `scf.for` loop in preparation for ping-pong transformation,
+    by identifying child operations which are not direct consumers or producers of the 
+    memref targetted for ping-pong buffering, and hoisting said operations out of the
+    scf.for loop.
+  }];
+}
+
 def AIRPingPongTransformationPattern: Pass<"air-ping-pong-transform", "ModuleOp"> {
   let summary = "Lower to pipelining pattern";
   let constructor = "xilinx::air::createAIRPingPongTransformationPattern()";
@@ -905,6 +916,17 @@ def AIRPingPongTransformationPattern: Pass<"air-ping-pong-transform", "ModuleOp"
     This pass lowers to pipelining pattern. This pass looks for the target ping and 
     pong buffers, and a surrounding scf.for loop, to construct explicit dependency 
     edges which represent a ping-pong buffering scheduling.
+  }];
+}
+
+def AIRLabelScfForLoopForPingPongPattern: Pass<"air-label-scf-for-to-ping-pong", "ModuleOp"> {
+  let summary = "Label all candidate scf.for loops for ping-pong transformation";
+  let constructor = "xilinx::air::createAIRLabelScfForLoopForPingPongPattern()";
+  let description = [{
+    This pass labels all scf.for loops which contain air.execute event of memref.alloc,
+    which is a direct child op of said scf.for, as candidate loop for ping-pong
+    transformation. The label includes an attribute added to the child memref.alloc ops
+    for subsequent hoisting, and an attribute added to the scf.for with an unroll factor.
   }];
 }
 
