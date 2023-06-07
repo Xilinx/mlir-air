@@ -11,13 +11,16 @@
 /// Utility function to check if a memory address is valid
 bool isValidMemoryAddress(uint64_t address)
 {
-    try {
-        volatile uint8_t* ptr = reinterpret_cast<volatile uint8_t*>(address);
-        volatile uint8_t value = *ptr;  // Perform a memory access
-        return true;  // If no exception occurs, the address is valid
-    } catch (...) {
-        return false;  // Exception occurred, the address is invalid
-    }
+  try
+  {
+    volatile uint8_t *ptr = reinterpret_cast<volatile uint8_t *>(address);
+    volatile uint8_t value = *ptr; // Perform a memory access
+    return true;                   // If no exception occurs, the address is valid
+  }
+  catch (...)
+  {
+    return false; // Exception occurred, the address is invalid
+  }
 }
 
 template <typename T, int R>
