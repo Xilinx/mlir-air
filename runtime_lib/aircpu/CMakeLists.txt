@@ -8,6 +8,7 @@ include_directories(
 
 add_library(aircpu SHARED
     memory.cpp
+    channel.cpp
    )
 set_property(TARGET aircpu PROPERTY POSITION_INDEPENDENT_CODE ON)
 
