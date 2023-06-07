@@ -62,7 +62,7 @@ static void _air_channel_get(tensor_t<uint64_t, 0> *channel, tensor_t<T, R> *dst
                              size_t *_offset, size_t *_size, size_t *_stride)
 {
   // get the buffer address from src
-  uint64_t *buffer = (uint64_t *)channel->data[0];
+  T *buffer = (T *)channel->data[0];
   // test if buffer points to a valid address
   if (!isValidMemoryAddress((uint64_t)buffer))
   {
@@ -132,8 +132,9 @@ static void air_channel_put(void *c, void *s,
   _air_channel_put<T, R>(channel, src, offset, size, stride);
 }
 
+// 4D
 #define mlir_air_channel_get_4d(mangle, type)                                    \
-  void _mlir_ciface_air_channel_get_##mangle(uint32_t id, void *d, void *s,      \
+  void _mlir_ciface_air_channel_get_##mangle(void *c, void *d,      \
                                              uint64_t offset3, uint64_t offset2, \
                                              uint64_t offset1, uint64_t offset0, \
                                              uint64_t size3, uint64_t size2,     \
@@ -141,13 +142,13 @@ static void air_channel_put(void *c, void *s,
                                              uint64_t stride3, uint64_t stride2, \
                                              uint64_t stride1, uint64_t stride0) \
   {                                                                              \
-    air_channel_get<type, 4>(id, d, s, offset3, offset2, offset1, offset0,       \
+    air_channel_get<type, 4>(c, d, offset3, offset2, offset1, offset0,       \
                              size3, size2, size1, size0, stride3, stride2,       \
                              stride1, stride0);                                  \
   }
 
 #define mlir_air_channel_put_4d(mangle, type)                                    \
-  void _mlir_ciface_air_channel_put_##mangle(uint32_t id, void *d, void *s,      \
+  void _mlir_ciface_air_channel_put_##mangle(void *c, void *s,      \
                                              uint64_t offset3, uint64_t offset2, \
                                              uint64_t offset1, uint64_t offset0, \
                                              uint64_t size3, uint64_t size2,     \
@@ -155,36 +156,105 @@ static void air_channel_put(void *c, void *s,
                                              uint64_t stride3, uint64_t stride2, \
                                              uint64_t stride1, uint64_t stride0) \
   {                                                                              \
-    air_channel_put<type, 4>(id, d, s, offset3, offset2, offset1, offset0,       \
+    air_channel_put<type, 4>(c, s, offset3, offset2, offset1, offset0,       \
                              size3, size2, size1, size0, stride3, stride2,       \
                              stride1, stride0);                                  \
   }
 
+// 3D
+#define mlir_air_channel_get_3d(mangle, type)                                    \
+  void _mlir_ciface_air_channel_get_##mangle(void *c, void *d,      \
+                                             uint64_t offset2, uint64_t offset1, \
+                                             uint64_t offset0, uint64_t size2,   \
+                                             uint64_t size1, uint64_t size0,     \
+                                             uint64_t stride2, uint64_t stride1, \
+                                             uint64_t stride0)                   \
+  {                                                                              \
+    air_channel_get<type, 3>(c, d, 0, offset2, offset1, offset0,             \
+                             1, size2, size1, size0, 1, stride2, stride1,        \
+                             stride0);                                           \
+  }
+
+#define mlir_air_channel_put_3d(mangle, type)                                    \
+  void _mlir_ciface_air_channel_put_##mangle(void *c, void *s,      \
+                                             uint64_t offset2, uint64_t offset1, \
+                                             uint64_t offset0, uint64_t size2,   \
+                                             uint64_t size1, uint64_t size0,     \
+                                             uint64_t stride2, uint64_t stride1, \
+                                             uint64_t stride0)                   \
+  {                                                                              \
+    air_channel_put<type, 3>(c, s, 0, offset2, offset1, offset0,             \
+                             1, size2, size1, size0, 1, stride2, stride1,        \
+                             stride0);                                           \
+  }
+
+// 2D
 #define mlir_air_channel_get_2d(mangle, type)                                    \
-  void _mlir_ciface_air_channel_get_##mangle(void *d, void *s,                   \
+  void _mlir_ciface_air_channel_get_##mangle(void *c, void *d,                   \
                                              uint64_t offset1, uint64_t offset0, \
                                              uint64_t size1, uint64_t size0,     \
                                              uint64_t stride1, uint64_t stride0) \
   {                                                                              \
-    air_channel_get<type, 2>(d, s, 0, 0, offset1, offset0,                       \
+    air_channel_get<type, 2>(c, d, 0, 0, offset1, offset0,                       \
                              1, 1, size1, size0, 1, 1,                           \
                              stride1, stride0);                                  \
   }
 
 #define mlir_air_channel_put_2d(mangle, type)                                    \
-  void _mlir_ciface_air_channel_put_##mangle(void *d, void *s,                   \
+  void _mlir_ciface_air_channel_put_##mangle(void *c, void *s,                   \
                                              uint64_t offset1, uint64_t offset0, \
                                              uint64_t size1, uint64_t size0,     \
                                              uint64_t stride1, uint64_t stride0) \
   {                                                                              \
-    air_channel_put<type, 2>(d, s, 0, 0, offset1, offset0,                       \
+    air_channel_put<type, 2>(c, s, 0, 0, offset1, offset0,                       \
                              1, 1, size1, size0, 1, 1,                           \
                              stride1, stride0);                                  \
   }
 
+// 1D
+#define mlir_air_channel_get_1d(mangle, type)                                  \
+  void _mlir_ciface_air_channel_get_##mangle(void *c, void *d,                 \
+                                             uint64_t offset0, uint64_t size0, \
+                                             uint64_t stride0)                 \
+  {                                                                            \
+    air_channel_get<type, 1>(c, d, 0, 0, 0, offset0,                           \
+                             1, 1, 1, size0, 1, 1, 1,                          \
+                             stride0);                                         \
+  }
+
+#define mlir_air_channel_put_1d(mangle, type)                                  \
+  void _mlir_ciface_air_channel_put_##mangle(void *c, void *s,                 \
+                                             uint64_t offset0, uint64_t size0, \
+                                             uint64_t stride0)                 \
+  {                                                                            \
+    air_channel_put<type, 1>(c, s, 0, 0, 0, offset0,                           \
+                             1, 1, 1, size0, 1, 1, 1,                          \
+                             stride0);                                         \
+  }
+
 extern "C"
 {
-  // current solution is to list every name mangle
-  mlir_air_channel_get_2d(M0I64_M0D2I64_I64_I64_I64_I64_I64_I64, int64_t);
-  mlir_air_channel_put_2d(M0I64_M0D2I64_I64_I64_I64_I64_I64_I64, int64_t);
+  // 4D
+  mlir_air_channel_get_4d(M0I64_M0D4I32_I64_I64_I64_I64_I64_I64_I64_I64_I64_I64_I64_I64, int32_t);
+  mlir_air_channel_put_4d(M0I64_M0D4I32_I64_I64_I64_I64_I64_I64_I64_I64_I64_I64_I64_I64, int32_t);
+  mlir_air_channel_get_4d(M0I64_M0D4F32_I64_I64_I64_I64_I64_I64_I64_I64_I64_I64_I64_I64, float);
+  mlir_air_channel_put_4d(M0I64_M0D4F32_I64_I64_I64_I64_I64_I64_I64_I64_I64_I64_I64_I64, float);
+
+  // 3D
+  mlir_air_channel_get_3d(M0I64_M0D3I32_I64_I64_I64_I64_I64_I64_I64_I64_I64, int32_t);
+  mlir_air_channel_put_3d(M0I64_M0D3I32_I64_I64_I64_I64_I64_I64_I64_I64_I64, int32_t);
+  mlir_air_channel_get_3d(M0I64_M0D3F32_I64_I64_I64_I64_I64_I64_I64_I64_I64, float);
+  mlir_air_channel_put_3d(M0I64_M0D3F32_I64_I64_I64_I64_I64_I64_I64_I64_I64, float);
+
+  // 2D
+  mlir_air_channel_get_2d(M0I64_M0D2I32_I64_I64_I64_I64_I64_I64, int32_t);
+  mlir_air_channel_put_2d(M0I64_M0D2I32_I64_I64_I64_I64_I64_I64, int32_t);
+  mlir_air_channel_get_2d(M0I64_M0D2F32_I64_I64_I64_I64_I64_I64, float);
+  mlir_air_channel_put_2d(M0I64_M0D2F32_I64_I64_I64_I64_I64_I64, float);
+
+  // 1D
+  mlir_air_channel_get_1d(M0I64_M0D1I32_I64_I64_I64, int32_t);
+  mlir_air_channel_put_1d(M0I64_M0D1I32_I64_I64_I64, int32_t);
+  mlir_air_channel_get_1d(M0I64_M0D1F32_I64_I64_I64, float);
+  mlir_air_channel_put_1d(M0I64_M0D1F32_I64_I64_I64, float);
 }
