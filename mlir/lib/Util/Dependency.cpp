@@ -345,6 +345,22 @@ Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
   }
 }
 
+// Create scf.reduce op to reduce all async tokens in an scf.parallel
+scf::ReduceOp createSCFReduceForAsyncSCFParallel(OpBuilder builder,
+                                                 Location loc, Value token,
+                                                 MLIRContext *ctx) {
+  auto reduce_op = builder.create<scf::ReduceOp>(loc, token);
+  builder.setInsertionPointToStart(&reduce_op.getRegion().front());
+  SmallVector<Value, 4> reduce_tokens;
+  reduce_tokens.push_back(reduce_op.getRegion().front().getArgument(0));
+  reduce_tokens.push_back(reduce_op.getRegion().front().getArgument(1));
+  auto reduce_res = builder.create<xilinx::air::WaitAllOp>(
+      builder.getUnknownLoc(), air::AsyncTokenType::get(ctx), reduce_tokens);
+  builder.create<scf::ReduceReturnOp>(builder.getUnknownLoc(),
+                                      reduce_res.getResult(0));
+  return reduce_op;
+}
+
 // Get dependency list of op
 SmallVector<Value> getAsyncDependenciesFromOpImpl(air::AsyncOpInterface op) {
   return op.getAsyncDependencies();
