@@ -930,6 +930,25 @@ def AIRLabelScfForLoopForPingPongPattern: Pass<"air-label-scf-for-to-ping-pong",
   }];
 }
 
+def AIRUnrollChannelByFactorPattern: Pass<"air-unroll-channel-by-factor", "ModuleOp"> {
+  let summary = "Unroll channel puts and gets by an integer factor";
+  let constructor = "xilinx::air::createAIRUnrollChannelByFactorPattern()";
+  let description = [{
+    This pass unrolls all puts and gets to an air.channel by an integer factor, so as to
+    represent the usage of multiple physical DMA channels in parallel for improved
+    available bandwidth for this data movement.
+  }];
+  let options = [
+    Option<"clChanName", "channel-name", "std::string", 
+            /*default=*/"\"\"",
+            "Target channel to unroll.">,
+    Option<"clUnrollDim", "unroll-dim", "int", /*default=*/"0",
+           "Dimension id to unroll.">,
+    Option<"clUnrollFactor", "unroll-factor", "int", /*default=*/"1",
+           "Integer unroll factor.">
+  ];
+}
+
 def AIRDependencyScheduleOpt: Pass<"air-dependency-schedule-opt", "ModuleOp"> {
   let summary = "Optimize scheduling based on air async dependency";
   let constructor = "xilinx::air::createAIRDependencyScheduleOptPass()";

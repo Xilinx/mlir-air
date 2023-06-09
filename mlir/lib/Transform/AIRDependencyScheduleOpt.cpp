@@ -35,6 +35,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 
+#include "mlir/Support/MathExtras.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -1130,6 +1131,193 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
 private:
 };
 
+struct UnrollChannelByFactorPattern {
+
+public:
+  void runUnrollChannelByFactorPattern(func::FuncOp funcOp, Operation *op,
+                                       int chanDim, int factor) {
+    air::ChannelOp chan_op = dyn_cast<air::ChannelOp>(op);
+    OpBuilder builder(op);
+    SmallVector<int64_t, 2> sizes = extractFromI64ArrayAttr(chan_op.getSize());
+    if ((unsigned)chanDim >= sizes.size())
+      return;
+    if (sizes[chanDim] != 1) {
+      op->emitOpError("unrolling channel in a dimension with a size not equal "
+                      "to one. Currently unsupported");
+      return;
+    }
+
+    this->dim = chanDim;
+    this->factor = factor;
+
+    // Update channel declaration
+    sizes[chanDim] *= factor;
+    builder.create<air::ChannelOp>(op->getLoc(), chan_op.getSymName().str(),
+                                   builder.getI64ArrayAttr(sizes));
+
+    // Add scf.parallel to unroll channel puts and gets
+    auto puts = air::getChannelPutOpThroughSymbol(chan_op);
+    auto gets = air::getChannelGetOpThroughSymbol(chan_op);
+    for (auto put : puts) {
+      builder.setInsertionPoint(put);
+      auto init_val =
+          createWaitAllToCollectIncomingTokens(builder, put.getOperation());
+      if (init_val)
+        createSCFParallelToUnroll<air::ChannelPutOp>(builder, put, init_val);
+    }
+    for (auto get : gets) {
+      builder.setInsertionPoint(get);
+      auto init_val =
+          createWaitAllToCollectIncomingTokens(builder, get.getOperation());
+      if (init_val)
+        createSCFParallelToUnroll<air::ChannelGetOp>(builder, get, init_val);
+    }
+
+    for (auto put : puts) {
+      put->erase();
+    }
+    for (auto get : gets) {
+      get->erase();
+    }
+    op->erase();
+  }
+
+private:
+  int dim = 0;
+  int factor = 1;
+
+  Value createWaitAllToCollectIncomingTokens(OpBuilder builder, Operation *op) {
+    auto async_op = dyn_cast<air::AsyncOpInterface>(op);
+    if (!async_op) {
+      op->emitOpError("is air.channel_put but not async");
+      return nullptr;
+    } else if (async_op.getAsyncDependencies().empty()) {
+      SmallVector<Value> dep_list = {};
+      return builder
+          .create<air::WaitAllOp>(
+              op->getLoc(), air::AsyncTokenType::get(builder.getContext()),
+              dep_list)
+          .getAsyncToken();
+    } else if (async_op.getAsyncDependencies().size() == 1)
+      return async_op.getAsyncDependencies().front();
+    return builder
+        .create<air::WaitAllOp>(op->getLoc(),
+                                air::AsyncTokenType::get(builder.getContext()),
+                                async_op.getAsyncDependencies())
+        .getAsyncToken();
+  }
+
+  template <typename T>
+  scf::ParallelOp createSCFParallelToUnroll(OpBuilder builder, T op,
+                                            Value init_val) {
+    if (!isa<air::AsyncOpInterface>(op.getOperation())) {
+      op->emitOpError("is air.channel op but not async");
+      return nullptr;
+    }
+
+    auto loc = op->getLoc();
+    SmallVector<Value, 1> merged_incoming_token = {init_val};
+    SmallVector<Value, 1> LBs, UBs, Steps;
+
+    LBs.push_back(builder.create<arith::ConstantIndexOp>(loc, 0));
+    UBs.push_back(builder.create<arith::ConstantIndexOp>(loc, this->factor));
+    Steps.push_back(builder.create<arith::ConstantIndexOp>(loc, 1));
+
+    auto par = builder.create<scf::ParallelOp>(loc, LBs, UBs, Steps,
+                                               merged_incoming_token);
+
+    builder.setInsertionPointToStart(par.getBody());
+
+    // Update channel indices
+    SmallVector<Value, 1> new_channel_idx = {};
+    if (op.getIndices().empty()) {
+      auto const_0 = builder.create<arith::ConstantIndexOp>(par->getLoc(), 0);
+      new_channel_idx = {const_0, const_0};
+      new_channel_idx[this->dim] = par.getInductionVars()[0];
+    } else
+      op->emitOpError(
+          "unrolling a sub-channel in a channel bundle currently unsupported");
+    // Update memref size (divide by factor)
+    SmallVector<Value, 1> new_sizes = op.getSizes();
+    if (new_sizes.empty()) {
+      auto memTy = op.getMemref().getType().template cast<MemRefType>();
+      for (auto d : getTensorShape(memTy)) {
+        new_sizes.push_back(
+            builder.create<arith::ConstantIndexOp>(par->getLoc(), d));
+      }
+    }
+    auto size_op = new_sizes[this->dim].getDefiningOp();
+    if (size_op && isa<arith::ConstantIndexOp>(size_op)) {
+      auto val = dyn_cast<arith::ConstantIndexOp>(size_op).value();
+      val = mlir::ceilDiv(val, this->factor);
+      new_sizes[this->dim] =
+          builder.create<arith::ConstantIndexOp>(par->getLoc(), val);
+    } else {
+      new_sizes[this->dim] = builder.create<arith::FloorDivSIOp>(
+          par->getLoc(), new_sizes[this->dim],
+          builder.create<arith::ConstantIndexOp>(par->getLoc(), this->factor));
+    }
+    // Update offset (+ induction var. x size)
+    SmallVector<Value, 1> new_offsets = op.getOffsets();
+    if (new_offsets.empty()) {
+      auto const_0 = builder.create<arith::ConstantIndexOp>(par->getLoc(), 0);
+      new_offsets = {const_0, const_0};
+    }
+    auto prod = builder.create<arith::MulIOp>(
+        par->getLoc(), new_channel_idx[this->dim], new_sizes[this->dim]);
+    new_offsets[this->dim] = builder.create<arith::AddIOp>(
+        par->getLoc(), new_offsets[this->dim], prod);
+    // Update strides
+    SmallVector<Value, 1> new_strides = op.getStrides();
+    if (new_strides.empty()) {
+      auto const_1 = builder.create<arith::ConstantIndexOp>(par->getLoc(), 1);
+      new_strides = {const_1, const_1};
+    }
+
+    // Create new channel op
+    SmallVector<Type, 1> tys = {air::AsyncTokenType::get(builder.getContext())};
+    auto new_op = builder.create<T>(
+        par.getLoc(), tys, merged_incoming_token, op.getChanName(),
+        new_channel_idx, op.getMemref(), new_offsets, new_sizes, new_strides);
+
+    // Create scf::ReduceOp
+    air::createSCFReduceForAsyncSCFParallel(
+        builder, par.getLoc(), new_op.getAsyncToken(), op->getContext());
+
+    // Create air.wait_all as a barrier to protect the non-blocking scf.yield
+    // event
+    builder.setInsertionPointAfter(par);
+    SmallVector<Value, 1> barrier_deps = {par.getResults().front()};
+    auto barrier = builder.create<air::WaitAllOp>(
+        builder.getUnknownLoc(), air::AsyncTokenType::get(builder.getContext()),
+        barrier_deps);
+
+    // Reconnect dependencies
+    op.getAsyncToken().replaceAllUsesWith(barrier.getAsyncToken());
+
+    return par;
+  }
+
+  static SmallVector<int> getTensorShape(const ShapedType ty) {
+
+    if (!ty.hasRank())
+      return SmallVector<int>(1);
+
+    SmallVector<int> shape = {};
+    for (auto &d : ty.getShape())
+      shape.push_back(d);
+    return shape;
+  }
+
+  static SmallVector<int> getTensorShape(const Type ty) {
+    if (auto t = ty.dyn_cast<ShapedType>()) {
+      return getTensorShape(t);
+    } else {
+      return SmallVector<int>(1);
+    }
+  }
+};
+
 struct BroadcastDetection {
 
 public:
@@ -1640,6 +1828,40 @@ public:
 private:
 };
 
+class AIRUnrollChannelByFactorPattern
+    : public xilinx::air::AIRUnrollChannelByFactorPatternBase<
+          AIRUnrollChannelByFactorPattern> {
+
+public:
+  AIRUnrollChannelByFactorPattern() = default;
+  AIRUnrollChannelByFactorPattern(
+      const AIRUnrollChannelByFactorPattern &pass){};
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    UnrollChannelByFactorPattern proc;
+    SmallVector<air::ChannelOp> chanOps;
+    module.walk([&](air::ChannelOp op) {
+      if (op.getSymName().str() == clChanName)
+        chanOps.push_back(op);
+    });
+    if (chanOps.empty())
+      return;
+    if (chanOps.size() > 1) {
+      chanOps.back()->emitOpError(
+          "found multiple channel declarations with channel name ")
+          << clChanName;
+    }
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      proc.runUnrollChannelByFactorPattern(f, chanOps.front(), clUnrollDim,
+                                           clUnrollFactor);
+  }
+
+private:
+};
+
 class AIRDependencyScheduleOpt
     : public AIRDependencyScheduleOptBase<AIRDependencyScheduleOpt> {
 
@@ -1730,6 +1952,10 @@ std::unique_ptr<Pass> createAIRLabelScfForLoopForPingPongPattern() {
 
 std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass() {
   return std::make_unique<AIRDependencyScheduleOpt>();
+}
+
+std::unique_ptr<Pass> createAIRUnrollChannelByFactorPattern() {
+  return std::make_unique<AIRUnrollChannelByFactorPattern>();
 }
 
 } // namespace air
