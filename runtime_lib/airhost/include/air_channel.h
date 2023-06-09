@@ -1,4 +1,5 @@
-//===- air_channel.h ---------------------------------------------*- C++ -*-===//
+//===- air_channel.h ---------------------------------------------*- C++
+//-*-===//
 //
 // Copyright (C) 2020-2022, Xilinx Inc.
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
@@ -11,17 +12,14 @@
 
 #include <stdlib.h>
 
-template <typename T>
-struct channel_t
-{
-    T *data;
-    bool _is_full;
+template <typename T> struct channel_t {
+  T *data;
+  bool _is_full;
 
-    channel_t()
-    {
-        data = nullptr;
-        _is_full = false;
-    }
+  channel_t() {
+    data = nullptr;
+    _is_full = false;
+  }
 };
 
 #endif
