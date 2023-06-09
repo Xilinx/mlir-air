@@ -4,8 +4,7 @@
 #include "air_tensor.h"
 #include "air_channel.h"
 
-#include <cstdint>
-#include <cstdio>
+#include <iostream>
 
 #define VERBOSE 0
 
@@ -13,7 +12,6 @@ template <typename T, int R>
 static void _air_channel_put(tensor_t<uint64_t, 0> *channel, tensor_t<T, R> *src,
                              size_t *_offset, size_t *_size, size_t *_stride)
 {
-  printf("_air_channel_put called\n");
   size_t offset[4] = {0, 0, 0, 0};
   size_t size[4] = {1, 1, 1, 1};
   size_t stride[4] = {1, 1, 1, 1};
@@ -42,8 +40,9 @@ static void _air_channel_put(tensor_t<uint64_t, 0> *channel, tensor_t<T, R> *src
     ;
 
   if (VERBOSE)
-    printf("dst offset %lu, %lu, size %lu, %lu, stride %lu, %lu\n", offset[1],
-           offset[0], size[1], size[0], stride[1], stride[0]);
+    std::cerr << "dst offset " << offset[1] << ", " << offset[0] << ", size "
+              << size[1] << ", " << size[0] << ", stride " << stride[1] << ", "
+              << stride[0] << std::endl;
   size_t src_offset = 0;
   for (size_t l = 0; l < size[3]; l++)
     for (size_t k = 0; k < size[2]; k++)
@@ -69,7 +68,7 @@ static void _air_channel_get(tensor_t<uint64_t, 0> *channel, tensor_t<T, R> *dst
   // test if buffer points to a valid address
   if (chan == nullptr)
   {
-    printf("channel has an invalid memory address %p\n", chan);
+    std::cerr << "channel has an invalid memory address " << chan << std::endl;
     exit(1);
   }
   size_t offset[4] = {0, 0, 0, 0};
@@ -82,8 +81,9 @@ static void _air_channel_get(tensor_t<uint64_t, 0> *channel, tensor_t<T, R> *dst
     stride[i] = _stride[i];
   }
   if (VERBOSE)
-    printf("dst offset %lu, %lu, size %lu, %lu, stride %lu, %lu\n", offset[1],
-           offset[0], size[1], size[0], stride[1], stride[0]);
+    std::cerr << "dst offset " << offset[1] << ", " << offset[0] << ", size "
+              << size[1] << ", " << size[0] << ", stride " << stride[1] << ", "
+              << stride[0] << std::endl;
 
   // wait until the channel is full
   while (!chan->_is_full)
