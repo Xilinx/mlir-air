@@ -18,7 +18,7 @@
 #      <mlir-air dir> <libxaie dir> <build dir> <install dir>
 #
 # e.g. build-mlir-air.sh /scratch/vck190_air_sysroot /scratch/llvm 
-#          /scratch/cmakeModules/cmakeModulesXilinx
+#          /scratch/cmakeModules
 #          /scratch/mlir-aie /scratch/mlir-air /scratch/libxaie_install
 #
 # <sysroot dir>      - sysroot
