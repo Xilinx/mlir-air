@@ -23,6 +23,8 @@
 
 #include "aie_inc.cpp"
 
+#define XAIE_NUM_COLS 10
+
 // test configuration
 #define IMAGE_WIDTH 128
 #define IMAGE_HEIGHT 16

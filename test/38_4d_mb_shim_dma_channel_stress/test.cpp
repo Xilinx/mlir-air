@@ -23,6 +23,8 @@
 
 #include "aie_inc.cpp"
 
+#define XAIE_NUM_COLS 30
+
 #define IMAGE_WIDTH 64
 #define IMAGE_HEIGHT 16
 #define IMAGE_SIZE (IMAGE_WIDTH * IMAGE_HEIGHT)

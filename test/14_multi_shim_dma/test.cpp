@@ -23,6 +23,8 @@
 
 #include "aie_inc.cpp"
 
+#define XAIE_NUM_COLS 20
+
 int
 main(int argc, char *argv[])
 {
