@@ -36,6 +36,12 @@ Lower air.pipeline stages to affine.if
 ```
 -lowering-type : Type of lowering to use for core-to-core communication. Can be 'buffer' or 'getput'
 ```
+### `-air-split-devices`: Split the input into one output per AIE.device op
+
+#### Options
+```
+-output-prefix : File name prefix for split AIE modules. Set to '-' for stdout (default).
+```
 ### `-air-to-aie`: Lower air.launch_herd to AIE dialect
 This pass converts AIR dialect `herd` and `segment` operations into AIE
 dialect modules and AIRRt dialect metadata.
@@ -139,7 +145,6 @@ airrt.module_metadata{
 
 #### Options
 ```
--output-prefix   : File name prefix for generated AIE modules. Set to /dev/null for no output. Set to '-' for stdout (default).
 -row-offset      : The default start row for any herds without 'y_loc' attribute.
 -col-offset      : The default start column for any herds without 'x_loc' attribute.
 -emit-while-loop : Emit a while(1) around the herd code in generated AIR.core ops.
