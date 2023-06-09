@@ -210,12 +210,16 @@ public:
       MemRefType srcTy = putOps[0].getSrc().getType().cast<MemRefType>();
       auto srcSpace = srcTy.getMemorySpaceAsInt();
       auto dstSpace = dstTy.getMemorySpaceAsInt();
+      auto srcVolumn = getTransferVolumn(putOps[0]);
+      auto dstVolumn = getTransferVolumn(getOp);
       // if there is a size mismatch, it's because we're moving a tile of the
       // larger tensor
-      if (getTensorVolume(srcTy) <= getTensorVolume(dstTy))
-        execution_time = getTransferCost(d, c.op, srcSpace, dstSpace, srcTy);
+      if (srcVolumn <= dstVolumn)
+        execution_time =
+            getTransferCost(d, c.op, srcSpace, dstSpace, srcVolumn, srcTy);
       else
-        execution_time = getTransferCost(d, c.op, srcSpace, dstSpace, dstTy);
+        execution_time =
+            getTransferCost(d, c.op, srcSpace, dstSpace, dstVolumn, dstTy);
     } else if (type == "execute" && name != "ExecuteTerminatorOp") {
       if (!isa<air::ExecuteOp>(c.op))
         c.op->emitOpError("has mismatching event type").attachNote()
@@ -613,6 +617,26 @@ private:
       op->emitOpError("data rate not found in JSON model");
     double seconds = bytes / bps;
     return (uint64_t)ceil(seconds * cps);
+  }
+
+  uint64_t getTransferVolumn(air::ChannelInterface op) {
+    MemRefType memTy = op.getMemref().getType().cast<MemRefType>();
+    if (op.getSizes().empty())
+      return getTensorVolume(memTy);
+    else
+      return getVolumnFromSizes(op.getSizes());
+  }
+
+  uint64_t getVolumnFromSizes(SmallVector<Value> sizes) {
+    uint64_t output = 1;
+    for (auto s : sizes) {
+      auto op = s.getDefiningOp();
+      if (op && isa<arith::ConstantIndexOp>(op)) {
+        output *= dyn_cast<arith::ConstantIndexOp>(op).value();
+      } else if (op)
+        op->emitOpError("non-static shape for data movement");
+    }
+    return output;
   }
 
   uint64_t getComputeCost(device &d, Operation *op) {
