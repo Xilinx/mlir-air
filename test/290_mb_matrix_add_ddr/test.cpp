@@ -23,6 +23,8 @@
 
 #include "aie_inc.cpp"
 
+#define XAIE_NUM_COLS 10
+
 #define DDR_ADDR  0x2000
 
 // test configuration

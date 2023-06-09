@@ -25,6 +25,8 @@
 
 #define SCRATCH_AREA 8
 
+#define XAIE_NUM_COLS 10
+
 int
 main(int argc, char *argv[])
 {
