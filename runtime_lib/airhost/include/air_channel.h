@@ -10,9 +10,11 @@
 #define AIR_CHANNEL_H
 
 #include <stdlib.h>
+#include <mutex>
 
 template <typename T> struct channel_t {
   T *data;
+  std::mutex mtx;
   bool _is_full;
 
   channel_t() {
