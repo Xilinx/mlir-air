@@ -9,8 +9,8 @@
 #ifndef AIR_CHANNEL_H
 #define AIR_CHANNEL_H
 
-#include <stdlib.h>
 #include <mutex>
+#include <stdlib.h>
 
 template <typename T> struct channel_t {
   T *data;
