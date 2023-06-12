@@ -53,7 +53,6 @@ cmake .. \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_CXX_COMPILER=clang++ \
     -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
-    -DCMAKE_TOOLCHAIN_FILE_OPT=${CMAKEMODULES_DIR}/cmakeModulesXilinx/toolchain_clang_crosscomp_arm_petalinux.cmake \
     -DArch=arm64 \
     -DgccVer=10.2.0 \
     -DCMAKE_USE_TOOLCHAIN=FALSE \

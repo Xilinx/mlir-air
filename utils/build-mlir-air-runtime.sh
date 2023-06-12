@@ -69,7 +69,6 @@ cmake .. \
     -Dx86_TOOLCHAIN_FILE=${MLIR_AIR_DIR}/cmake/modules/toolchain_x86.cmake \
     -DLLVM_EXTERNAL_LIT=${LLVM_DIR}/build/bin/llvm-lit \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-    -DCMAKE_INSTALL_PREFIX=install \
     -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
     |& tee cmake.log
 
