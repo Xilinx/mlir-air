@@ -28,7 +28,6 @@ static void _air_channel_put(tensor_t<uint64_t, 0> *channel,
     channel_t<T> *new_channel = (channel_t<T> *)malloc(sizeof(channel_t<T>));
     new_channel->data =
         (T *)malloc(sizeof(T) * size[3] * size[2] * size[0] * size[1]);
-    new_channel->_is_full = false;
     channel->data[0] = (uint64_t)new_channel;
   }
 
@@ -37,6 +36,8 @@ static void _air_channel_put(tensor_t<uint64_t, 0> *channel,
   // wait until the channel is empty
   while (chan->_is_full)
     ;
+  
+  chan->mtx.lock();
 
   if (VERBOSE)
     std::cerr << "dst offset " << offset[1] << ", " << offset[0] << ", size "
@@ -55,6 +56,7 @@ static void _air_channel_put(tensor_t<uint64_t, 0> *channel,
 
   // mark the channel as full
   chan->_is_full = true;
+  chan->mtx.unlock();
 }
 
 template <typename T, int R>
@@ -84,6 +86,8 @@ static void _air_channel_get(tensor_t<uint64_t, 0> *channel,
   // wait until the channel is full
   while (!chan->_is_full)
     ;
+  
+  chan->mtx.lock();
 
   // copy data from buffer to dst
   size_t dst_offset = 0;
@@ -99,6 +103,7 @@ static void _air_channel_get(tensor_t<uint64_t, 0> *channel,
 
   // mark the channel as empty
   chan->_is_full = false;
+  chan->mtx.unlock();
 }
 
 template <typename T, int R>
