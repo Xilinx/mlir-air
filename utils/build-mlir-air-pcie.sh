@@ -59,7 +59,7 @@ cmake .. \
     -DAIE_DIR=${MLIR_AIE_DIR}/build/lib/cmake/aie \
     -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
     -DVitisSysroot="" \
-    -DLibXAIE_DIR=${LibXAIE_DIR} \
+    -DLibXAIE_ROOT=${LibXAIE_DIR} \
     -DARM_TOOLCHAIN_OPT="" \
 	-DAIR_RUNTIME_TARGETS="x86" \
     -DBUILD_AIR_PCIE=ON \
