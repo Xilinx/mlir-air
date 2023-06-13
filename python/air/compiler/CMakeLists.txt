@@ -19,15 +19,15 @@ add_mlir_python_modules(AirCompilerPythonModules
   )
 
 if(${AIE_COMPILER} STREQUAL XCHESSCC)
-set(CONFIG_COMPILE_WITH_XCHESSCC True)
+  set(CONFIG_COMPILE_WITH_XCHESSCC True)
 else()
-set(CONFIG_COMPILE_WITH_XCHESSCC False)
+  set(CONFIG_COMPILE_WITH_XCHESSCC False)
 endif()
 
 if(${AIE_LINKER} STREQUAL XCHESSCC)
-set(CONFIG_LINK_WITH_XCHESSCC True)
+  set(CONFIG_LINK_WITH_XCHESSCC True)
 else()
-set(CONFIG_LINK_WITH_XCHESSCC False)
+  set(CONFIG_LINK_WITH_XCHESSCC False)
 endif()
 
 set(AIRCC_BINARY_DIR ${PROJECT_BINARY_DIR}/python/air/compiler/aircc)
