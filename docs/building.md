@@ -80,22 +80,6 @@ Use the following command to build the AIR tools to compile on x86:
 ./build-mlir-air.sh $SYSROOT /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/mlir-aie build install
 ```
 
-## Building on x86 with runtime
-
-Building air runtime requires libxaie library.
-Use the following command to clone, build and install libxaie on x86:
-
-```
-./github-clone-build-libxaie.sh
-export LD_LIBRARY_PATH=${FULL_PATH_TO_MLIR_AIR}/utils/aienginev2/install/lib:${LD_LIBRARY_PATH}
-```
-
-Use the following command to build the AIR tools to compile on x86 with air runtime enabled:
-
-```
-./build-mlir-air-runtime.sh $SYSROOT /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/mlir-aie /full/path/to/mlir-air /full/path/to/libxaie/install build install
-```
-
 ## Building on x86 with runtime for PCIe 
 
 In order to build and run on PCIe cards, you first have to build and install the aienginev2 library:
@@ -114,7 +98,7 @@ export LD_LIBRARY_PATH=/opt/xaiengine/lib:${LD_LIBRARY_PATH}
 Use the following command to build the AIR tools to compile on x86 for PCIe cards (VCK5000):
 
 ```
-./utils/build-mlir-air-pcie.sh utils/llvm/ utils/cmakeModules/cmakeModulesXilinx/ utils/mlir-aie/
+./utils/build-mlir-air-pcie.sh utils/llvm/ utils/cmakeModules/cmakeModulesXilinx/ utils/mlir-aie/ /opt/xaiengine
 ```
 
 ## Environment setup
