@@ -17,7 +17,7 @@
 #     <build dir> <install dir>
 #
 # e.g. build-mlir-air.sh /scratch/vck190_air_sysroot /scratch/llvm 
-#          /scratch/cmakeModules /scratch/mlir-aie build install
+#          /scratch/cmakeModules/cmakeModulesXilinx /scratch/mlir-aie build install
 #
 # <sysroot dir>      - sysroot
 # <llvm dir>         - llvm
@@ -63,7 +63,7 @@ cmake .. \
     -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
     -DBUILD_SHARED_LIBS=OFF \
     -DLLVM_USE_LINKER=lld \
-    -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/cmakeModulesXilinx/ \
+    -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
     |& tee cmake.log
 
 ninja |& tee ninja.log
