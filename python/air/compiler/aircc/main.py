@@ -278,7 +278,13 @@ def run(mlir_module, args=None):
         cmd += [f'-I{aiecc_path}/runtime_lib/aarch64/test_lib/include']
 
       # libxaie include path
-      cmd += [f'-I{opts.sysroot}/opt/xaienginev2/include']
+      if opts.sysroot:
+        cmd += [f'-I{opts.sysroot}/opt/xaienginev2/include'] 
+      else:
+        if "x86_64" in aiecc_target:
+          cmd += [f'-I{aiecc_path}/runtime_lib/x86_64/xaiengine/include']
+        if "aarch64" in aiecc_target:
+          cmd += [f'-I{aiecc_path}/runtime_lib/aarch64/xaiengine/include']
       cmd += ['-DLIBXAIENGINEV2']
       cmd += ['-DAIE_LIBXAIE_ENABLE', '-fPIC', '-c']
       cmd += ['-o', obj_file, cpp_file]
