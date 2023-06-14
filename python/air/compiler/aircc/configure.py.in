@@ -5,3 +5,4 @@
 
 air_link_with_xchesscc = @CONFIG_LINK_WITH_XCHESSCC@
 air_compile_with_xchesscc = @CONFIG_COMPILE_WITH_XCHESSCC@
+libxaie_path = "@LibXAIE_ROOT@"

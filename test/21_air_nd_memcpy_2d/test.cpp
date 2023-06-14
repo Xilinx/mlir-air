@@ -22,6 +22,8 @@
 #include "air.hpp"
 #include "test_library.h"
 
+#define XAIE_NUM_COLS 10
+
 #define IMAGE_WIDTH 32
 #define IMAGE_HEIGHT 16
 #define IMAGE_SIZE  (IMAGE_WIDTH * IMAGE_HEIGHT)
