@@ -16,7 +16,7 @@
 LIBXAIE_DIR="aienginev2"
 INSTALL_DIR="install"
 
-HASH="vck5000"
+HASH="joel-aie"
 
 git clone --branch $HASH --depth 1 https://github.com/jnider/aie-rt.git $LIBXAIE_DIR
 
