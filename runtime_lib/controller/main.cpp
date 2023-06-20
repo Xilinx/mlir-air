@@ -61,7 +61,7 @@ int shim_dma_cols[NUM_SHIM_DMAS] = {2,  3,  6,  7,  10, 11, 18, 19,
 int col_dma_cols[NUM_COL_DMAS] = {7, 8, 9, 10};
 #define NUM_DMAS (NUM_SHIM_DMAS + NUM_COL_DMAS)
 
-#define CHATTY 1
+#define CHATTY 0
 
 #define air_printf(fmt, ...)                                                   \
   do {                                                                         \
@@ -1108,11 +1108,6 @@ void handle_packet_read_write_32(dispatch_packet_t *pkt) {
   uint32_t  value     = pkt->arg[1] & 0x0FFFFFFFF;
   bool      is_write  = (pkt->arg[1] >> 32) & 0x1;
 
-  /*xil_printf("GOT A RW32 PACKET\r\n");
-  xil_printf("\tAddress: 0x%lx\r\n", address);
-  xil_printf("\tvalue: 0x%lx\r\n", value);
-  xil_printf("\tis_write: 0x%lx\r\n", is_write);*/
-
   volatile uint32_t* aie_csr = (volatile uint32_t *)AIE_BASE;
 
   if(address > AIE_CSR_SIZE) {
@@ -1120,13 +1115,10 @@ void handle_packet_read_write_32(dispatch_packet_t *pkt) {
   }
 
   if(is_write) {
-    //xil_printf("We are writing 0x%lx to address 0x%lx\r\n", value, address);
     aie_csr[address >> 2] = value;
   }
   else {
-    //xil_printf("We are reading from 0x%lx and storing in %p\r\n", address, return_addr);
     *return_addr = aie_csr[address >> 2];
-    //xil_printf("We read 0x%x from the dude\r\n", aie_csr[address >> 2]);
   }
 
 }

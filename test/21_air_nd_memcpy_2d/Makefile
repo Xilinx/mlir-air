@@ -15,7 +15,7 @@ LDFLAGS = -fuse-ld=lld -rdynamic \
 		-Wl,--no-as-needed -ldl
 
 CFLAGS += -g -I/opt/xaiengine/include
-CFLAGS += -std=c++17 -I$(ACDC_AIR)/runtime_lib/airhost/include -I$(ACDC_AIE)/runtime_lib \
+CFLAGS += -std=c++17 -I$(ACDC_AIR)/runtime_lib/airhost/include -I$(ACDC_AIE)/runtime_lib/x86_64/test_lib/include \
           -DAIR_LIBXAIE_ENABLE
 LDFLAGS += -L/opt/xaiengine/lib -Wl,-R/opt/xaiengine/lib
 LDFLAGS += -L$(ACDC_AIR)/runtime_lib/airhost
@@ -23,10 +23,10 @@ LDFLAGS += -L$(ACDC_AIR)/runtime_lib/airhost
 all: herd.exe
 
 %.exe: 2d_nd.air.a test.cpp
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(ACDC_AIE)/runtime_lib/test_library.cpp test.cpp -Wl,--whole-archive 2d_nd.air.a -Wl,--no-whole-archive
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(ACDC_AIE)/runtime_lib/x86_64/test_lib/src/test_library.cpp test.cpp -Wl,--whole-archive 2d_nd.air.a -Wl,--no-whole-archive
 
 2d_nd.air.a: air.mlir
-	aircc.py -v --sysroot= --host-target=x86_64-amd-linux-gnu -row-offset=4 -col-offset=5 $< -o $@
+	aircc.py -v -xchesscc -xbridge --sysroot= --host-target=x86_64-amd-linux-gnu -row-offset=4 -col-offset=5 $< -o $@
 
 clean::
 	rm -rf air_project *.elf *.exe *.o *.a 
