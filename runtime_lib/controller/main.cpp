@@ -30,6 +30,7 @@ extern "C" {
 }
 
 #include "platform.h"
+#include "shell.h"
 
 #define XAIE_NUM_ROWS 8
 #define XAIE_NUM_COLS 50
@@ -874,13 +875,13 @@ void xaie_herd_init(int start_col, int num_cols, int start_row, int num_rows) {
 
 } // namespace
 
-namespace {
-
 uint64_t shmem_base = 0x020100000000UL;
 uint64_t uart_lock_offset = 0x200;
 uint64_t base_address;
 
 bool setup;
+
+uint64_t get_base_address(void) { return shmem_base; }
 
 void lock_uart(uint32_t id) {
   bool is_locked = false;
@@ -1465,8 +1466,6 @@ int stage_packet_nd_memcpy(dispatch_packet_t *pkt, uint32_t slot,
   }
 }
 
-} // namespace
-
 void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id) {
   uint64_t rd_idx = queue_load_read_index(q);
   dispatch_packet_t *pkt =
@@ -1824,6 +1823,7 @@ int main() {
         }
       }
     }
+    shell();
   }
 
   cleanup_platform();
