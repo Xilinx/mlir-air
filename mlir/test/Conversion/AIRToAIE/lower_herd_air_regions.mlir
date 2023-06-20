@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie -o /dev/null | air-opt | FileCheck %s
+// RUN: air-opt %s -air-to-aie | FileCheck %s
 // CHECK: AIE.core({{.*}}) {
 // CHECK: AIE.useLock({{.*}}, Acquire, 0)
 // CHECK: AIE.useLock({{.*}}, Acquire, 1)

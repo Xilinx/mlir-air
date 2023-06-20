@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=2 device=xcvc1902" -o out.mlir --split-input-file | FileCheck %s
+// RUN: air-opt %s -air-to-aie="row-offset=2 col-offset=2 device=xcvc1902" --split-input-file | FileCheck %s
 
-// CHECK: module @aie.segment_0
+// CHECK: AIE.device
 // CHECK:         %[[VAL_12:.*]] = AIE.tile(2, 2)
 // CHECK:         %[[VAL_10:.*]] = AIE.tile(2, 0)
 // CHECK:         %[[VAL_14:.*]] = AIE.lock(%[[VAL_12]], 0)
@@ -49,7 +49,7 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 
 // -----
 
-// CHECK: module @aie.segment_0
+// CHECK: AIE.device
 // CHECK:         %[[VAL_12:.*]] = AIE.tile(2, 2)
 // CHECK:         %[[VAL_10:.*]] = AIE.tile(2, 0)
 // CHECK:         %[[VAL_15:.*]] = AIE.lock(%[[VAL_12]], 1)

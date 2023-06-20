@@ -19,6 +19,8 @@
 
 #include "aie_inc.cpp"
 
+#define XAIE_NUM_COLS 10
+
 int main(int argc, char *argv[])
 {
   auto col = 7;

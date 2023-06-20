@@ -22,6 +22,8 @@
 
 #include "aie_inc.cpp"
 
+#define XAIE_NUM_COLS 36
+
 int
 main(int argc, char *argv[])
 {

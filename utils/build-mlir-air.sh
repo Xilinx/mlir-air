@@ -14,11 +14,10 @@
 # subfolder, it would look like:
 #
 # build-mlir-air.sh <sysroot dir> <llvm dir> <cmakeModules dir> <mlir-aie dir>
-#     <mlir-air dir> <build dir> <install dir>
+#     <build dir> <install dir>
 #
 # e.g. build-mlir-air.sh /scratch/vck190_air_sysroot /scratch/llvm 
-#          /scratch/mlir-aie
-#          /scratch/cmakeModules/cmakeModulesXilinx
+#          /scratch/cmakeModules/cmakeModulesXilinx /scratch/mlir-aie build install
 #
 # <sysroot dir>      - sysroot
 # <llvm dir>         - llvm
@@ -54,7 +53,6 @@ cmake .. \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_CXX_COMPILER=clang++ \
     -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
-    -DCMAKE_TOOLCHAIN_FILE_OPT=${CMAKEMODULES_DIR}/toolchain_clang_crosscomp_arm_petalinux.cmake \
     -DArch=arm64 \
     -DgccVer=10.2.0 \
     -DCMAKE_USE_TOOLCHAIN=FALSE \
