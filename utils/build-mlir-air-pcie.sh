@@ -53,15 +53,15 @@ cmake .. \
     -GNinja \
     -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
     -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
-    -Dx86_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86.cmake \
+    -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
     -DLLVM_DIR=${LLVM_DIR}/build/lib/cmake/llvm \
     -DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \
     -DAIE_DIR=${MLIR_AIE_DIR}/build/lib/cmake/aie \
     -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
     -DVitisSysroot="" \
-    -DLibXAIE_DIR=${LibXAIE_DIR} \
+    -DLibXAIE_ROOT=${LibXAIE_DIR} \
     -DARM_TOOLCHAIN_OPT="" \
-	-DAIR_RUNTIME_TARGETS="x86" \
+	-DAIR_RUNTIME_TARGETS="x86_64" \
     -DBUILD_AIR_PCIE=ON \
     -DBUILD_SHARED_LIBS=OFF \
     -DLLVM_USE_LINKER=lld \
