@@ -60,7 +60,7 @@ Next, clone and build MLIR-AIE with paths to llvm, and cmakeModules repositories
 
 ```
 ./clone-mlir-aie.sh
-./build-mlir-aie-local.sh llvm cmakeModules/cmakeModulesXilinx mlir-aie build ../../install
+./build-mlir-aie-local.sh llvm mlir-aie/cmake/modulesXilinx mlir-aie build ../../install
 ```
 
 The MLIR-AIE tools will be able to generate binaries targetting AIEngines.
@@ -98,7 +98,7 @@ export LD_LIBRARY_PATH=/opt/xaiengine/lib:${LD_LIBRARY_PATH}
 Use the following command to build the AIR tools to compile on x86 for PCIe cards (VCK5000):
 
 ```
-./utils/build-mlir-air-pcie.sh utils/llvm/ utils/cmakeModules/cmakeModulesXilinx/ utils/mlir-aie/ /opt/xaiengine
+./utils/build-mlir-air-pcie.sh utils/llvm/ utils/mlir-aie/cmake/modulesXilinx/ utils/mlir-aie/ /opt/xaiengine
 ```
 
 ## Environment setup
