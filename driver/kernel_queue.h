@@ -19,22 +19,22 @@
 #define BRAM_PADDR 0x20100000000
 
 // How a queue is defined
-#define QUEUE_TYPE_OFFSET       0x00
-#define QUEUE_DOORBELL_OFFSET   0x10
-#define QUEUE_SIZE_OFFSET       0x18
-#define QUEUE_ID_OFFSET         0x20
-#define QUEUE_RD_PTR_OFFSET     0x28
-#define QUEUE_WR_PTR_OFFSET     0x30
-#define QUEUE_RING_OFFSET       0x80
-#define QUEUE_TIMEOUT_VAL       5000000
+#define QUEUE_TYPE_OFFSET 0x00
+#define QUEUE_DOORBELL_OFFSET 0x10
+#define QUEUE_SIZE_OFFSET 0x18
+#define QUEUE_ID_OFFSET 0x20
+#define QUEUE_RD_PTR_OFFSET 0x28
+#define QUEUE_WR_PTR_OFFSET 0x30
+#define QUEUE_RING_OFFSET 0x80
+#define QUEUE_TIMEOUT_VAL 5000000
 
 // How a packet is defined
-#define PKT_SIZE                0x40
-#define PKT_HEADER_TYPE_OFFSET  0x00
-#define PKT_RET_ADDR_OFFSET     0x08
-#define PKT_ARG_ADDR_OFFSET     0x10
-#define PKT_COMPL_OFFSET        0x38
-#define NUM_PKTS                0x30
+#define PKT_SIZE 0x40
+#define PKT_HEADER_TYPE_OFFSET 0x00
+#define PKT_RET_ADDR_OFFSET 0x08
+#define PKT_ARG_ADDR_OFFSET 0x10
+#define PKT_COMPL_OFFSET 0x38
+#define NUM_PKTS 0x30
 
 // Define the number of HSA packets we can have in a queue
 #define MB_QUEUE_SIZE 48
@@ -86,19 +86,18 @@
 #define AIR_ADDRESS_HERD_RELATIVE 0x2L
 #define AIR_ADDRESS_HERD_RELATIVE_RANGE 0x3L
 
-
 typedef enum {
-  AIR_AGENT_INFO_NAME = 0,        // NUL-terminated char[8]
-  AIR_AGENT_INFO_VENDOR_NAME = 1, // NUL-terminated char[8]
-  AIR_AGENT_INFO_CONTROLLER_ID = 2,
-  AIR_AGENT_INFO_FIRMWARE_VER = 3,
-  AIR_AGENT_INFO_NUM_REGIONS = 4,
-  AIR_AGENT_INFO_HERD_SIZE = 5,
-  AIR_AGENT_INFO_HERD_ROWS = 6,
-  AIR_AGENT_INFO_HERD_COLS = 7,
-  AIR_AGENT_INFO_TILE_DATA_MEM_SIZE = 8,
-  AIR_AGENT_INFO_TILE_PROG_MEM_SIZE = 9,
-  AIR_AGENT_INFO_L2_MEM_SIZE = 10 // Per region
+	AIR_AGENT_INFO_NAME = 0, // NUL-terminated char[8]
+	AIR_AGENT_INFO_VENDOR_NAME = 1, // NUL-terminated char[8]
+	AIR_AGENT_INFO_CONTROLLER_ID = 2,
+	AIR_AGENT_INFO_FIRMWARE_VER = 3,
+	AIR_AGENT_INFO_NUM_REGIONS = 4,
+	AIR_AGENT_INFO_HERD_SIZE = 5,
+	AIR_AGENT_INFO_HERD_ROWS = 6,
+	AIR_AGENT_INFO_HERD_COLS = 7,
+	AIR_AGENT_INFO_TILE_DATA_MEM_SIZE = 8,
+	AIR_AGENT_INFO_TILE_PROG_MEM_SIZE = 9,
+	AIR_AGENT_INFO_L2_MEM_SIZE = 10 // Per region
 } air_agent_info_t;
 
 // Note below that "__attribute__((packed))" also asserts that the whole
@@ -106,70 +105,67 @@ typedef enum {
 // -waddress-of-packed-struct
 
 typedef struct dispatch_packet_s {
-
-  // HSA-like interface
-  volatile uint16_t header;
-  volatile uint16_t type;
-  uint32_t reserved0;
-  uint64_t return_address;
-  uint64_t arg[4];
-  uint64_t reserved1;
-  uint64_t completion_signal;
+	// HSA-like interface
+	volatile uint16_t header;
+	volatile uint16_t type;
+	uint32_t reserved0;
+	uint64_t return_address;
+	uint64_t arg[4];
+	uint64_t reserved1;
+	uint64_t completion_signal;
 
 } __attribute__((packed, aligned(__alignof__(uint64_t)))) dispatch_packet_t;
 
 typedef struct barrier_and_packet_s {
-
-  // HSA-like interface
-  volatile uint16_t header;
-  uint16_t reserved0;
-  uint32_t reserved1;
-  uint64_t dep_signal[5];
-  uint64_t reserved2;
-  uint64_t completion_signal;
+	// HSA-like interface
+	volatile uint16_t header;
+	uint16_t reserved0;
+	uint32_t reserved1;
+	uint64_t dep_signal[5];
+	uint64_t reserved2;
+	uint64_t completion_signal;
 
 } __attribute__((packed, aligned(__alignof__(uint64_t)))) barrier_and_packet_t;
 
 typedef struct barrier_or_packet_s {
-
-  // HSA-like interface
-  volatile uint16_t header;
-  uint16_t reserved0;
-  uint32_t reserved1;
-  uint64_t dep_signal[5];
-  uint64_t reserved2;
-  uint64_t completion_signal;
+	// HSA-like interface
+	volatile uint16_t header;
+	uint16_t reserved0;
+	uint32_t reserved1;
+	uint64_t dep_signal[5];
+	uint64_t reserved2;
+	uint64_t completion_signal;
 
 } __attribute__((packed, aligned(__alignof__(uint64_t)))) barrier_or_packet_t;
 
 typedef struct queue_s {
+	// HSA-like interface
+	uint32_t type;
+	uint32_t features;
+	uint64_t base_address;
+	volatile uint64_t doorbell;
+	uint32_t size;
+	uint32_t reserved0;
+	uint64_t id;
 
-  // HSA-like interface
-  uint32_t type;
-  uint32_t features;
-  uint64_t base_address;
-  volatile uint64_t doorbell;
-  uint32_t size;
-  uint32_t reserved0;
-  uint64_t id;
+	// implementation detail
+	uint64_t read_index;
+	uint64_t write_index;
+	uint64_t last_doorbell;
 
-  // implementation detail
-  uint64_t read_index;
-  uint64_t write_index;
-  uint64_t last_doorbell;
-
-  uint64_t base_address_paddr;
-  uint64_t base_address_vaddr;
+	uint64_t base_address_paddr;
+	uint64_t base_address_vaddr;
 
 } __attribute__((packed, aligned(__alignof__(uint64_t)))) queue_t;
 
 typedef struct signal_s {
-  uint64_t handle;
+	uint64_t handle;
 } signal_t;
 
 typedef uint64_t signal_value_t;
 
 // Function declarations
-hsa_status_t air_queue_create(uint32_t size, uint32_t type, struct vck5000_device *dev);
+hsa_status_t air_queue_create(uint32_t size, uint32_t type,
+			      struct vck5000_device *dev);
 
 #endif

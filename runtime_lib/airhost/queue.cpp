@@ -169,7 +169,8 @@ hsa_status_t air_queue_dispatch_and_wait(queue_t *q, uint64_t doorbell,
   return HSA_STATUS_SUCCESS;
 }
 
-hsa_status_t air_packet_rw32_init(dispatch_packet_t *pkt, bool is_write, uint64_t address, uint32_t value) {
+hsa_status_t air_packet_rw32_init(dispatch_packet_t *pkt, bool is_write,
+                                  uint64_t address, uint32_t value) {
 
   initialize_packet(pkt);
 
@@ -182,7 +183,6 @@ hsa_status_t air_packet_rw32_init(dispatch_packet_t *pkt, bool is_write, uint64_
   pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
 
   return HSA_STATUS_SUCCESS;
-
 }
 
 hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
