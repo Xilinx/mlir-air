@@ -1,3 +1,6 @@
+// Copyright (C) 2023, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+
 #include <stddef.h>
 #include <linux/device.h>
 #include <linux/export.h>

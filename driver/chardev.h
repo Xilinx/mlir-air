@@ -47,6 +47,7 @@ struct vck5000_device {
     requests to.
   */
 	void __iomem *admin_queue;
+  
 };
 
 int vck5000_chardev_init(struct pci_dev *pdev);
