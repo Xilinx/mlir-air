@@ -101,6 +101,10 @@ Use the following command to build the AIR tools to compile on x86 for PCIe card
 ./utils/build-mlir-air-pcie.sh utils/llvm/ utils/mlir-aie/cmake/modulesXilinx/ utils/mlir-aie/ /opt/xaiengine
 ```
 
+The PCIe AIR runtime requires the use of the [AIR PCIe kernel driver](driver). The driver directory contains documentation on how to compile and load the AIR PCIe kernel driver.
+
+Note that building a sysroot and the cross-compilation instructions are not necessary when running on x86 with the PCIe runtime.
+
 ## Environment setup
 
 Set up your environment to use the tools you just built with the following commands:
@@ -157,6 +161,12 @@ cd utils
 cd ..
 tar -cvf air_tools.tar.gz install-aarch64
 ```
+
+## Running on the VCK5000
+
+The first step required for running on the VCK5000 is building the hardware platform and loading it on your device. [Here](platforms/xilinx_vck5000_air) we provide documentation on how to do that. Then, the AIR tools must be installed by running the [Building external projects on X86](#building-external-projects-on-X86) followed by the [Building on x86 with runtime for PCIe](#building-on-x86-with-runtime-for-PCIe) and [Environment setup](#environment-setup). Then, the [AIR PCIe driver](driver) must be compiled and installed. Now you are ready to run tests using AIR on the VCK5000! For example, go to [Test 13](test/13_mb_add_one) and run `Make` followed by `sudo ./test.elf` to run the application.
+
+
 
 -----
 
