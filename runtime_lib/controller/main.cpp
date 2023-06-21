@@ -1094,8 +1094,8 @@ void handle_packet_get_info(dispatch_packet_t *pkt, uint32_t mb_id) {
   }
 }
 
-#define   AIE_BASE      0x020000000000
-#define   AIE_CSR_SIZE  0x000100000000
+#define AIE_BASE 0x020000000000
+#define AIE_CSR_SIZE 0x000100000000
 
 void handle_packet_read_write_32(dispatch_packet_t *pkt) {
 
@@ -1104,25 +1104,24 @@ void handle_packet_read_write_32(dispatch_packet_t *pkt) {
   uint64_t *return_addr =
       (uint64_t *)(&pkt->return_address); // FIXME when we can use a VA
 
-  uint64_t  address   = pkt->arg[0];
-  uint32_t  value     = pkt->arg[1] & 0x0FFFFFFFF;
-  bool      is_write  = (pkt->arg[1] >> 32) & 0x1;
+  uint64_t address = pkt->arg[0];
+  uint32_t value = pkt->arg[1] & 0x0FFFFFFFF;
+  bool is_write = (pkt->arg[1] >> 32) & 0x1;
 
-  volatile uint32_t* aie_csr = (volatile uint32_t *)AIE_BASE;
+  volatile uint32_t *aie_csr = (volatile uint32_t *)AIE_BASE;
 
-  if(address > AIE_CSR_SIZE) {
-    printf("[ERROR] read32/write32 packets provided address of size 0x%lx. Window is only 4GB\n", address);
+  if (address > AIE_CSR_SIZE) {
+    printf("[ERROR] read32/write32 packets provided address of size 0x%lx. "
+           "Window is only 4GB\n",
+           address);
   }
 
-  if(is_write) {
+  if (is_write) {
     aie_csr[address >> 2] = value;
-  }
-  else {
+  } else {
     *return_addr = aie_csr[address >> 2];
   }
-
 }
-
 
 // uint64_t cdma_base = 0x0202C0000000UL;
 // uint64_t cdma_base1 = 0x020340000000UL;
@@ -1548,7 +1547,7 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id) {
 
   packet_op:
     auto op = pkt->type & 0xffff;
-    //air_printf("Op is %04X\n\r",op);
+    // air_printf("Op is %04X\n\r",op);
     switch (op) {
     case AIR_PKT_TYPE_INVALID:
     default:

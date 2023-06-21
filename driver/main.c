@@ -10,8 +10,6 @@
 
 #define MAX_HERD_CONTROLLERS 64
 
-
-
 static const char air_dev_name[] = "amdair";
 static int dev_idx; /* linear index of managed devices */
 bool enable_aie;
@@ -136,11 +134,13 @@ static int vck5000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 			 controller_base);
 	}
 
-  // Getting a pointer to the admin queue
-  hsa_status_t hsa_status = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, dev_priv);
-  if(hsa_status != HSA_STATUS_SUCCESS) {
-    printk("[WARNING %s] Was unable to create admin queue for device\n", __func__);
-  }
+	// Getting a pointer to the admin queue
+	hsa_status_t hsa_status = air_queue_create(
+		MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, dev_priv);
+	if (hsa_status != HSA_STATUS_SUCCESS) {
+		printk("[WARNING %s] Was unable to create admin queue for device\n",
+		       __func__);
+	}
 
 	/* Create sysfs files for accessing AIE memory region */
 	create_aie_mem_sysfs(dev_priv, dev_idx);
