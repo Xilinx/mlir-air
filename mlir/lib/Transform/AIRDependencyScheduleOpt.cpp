@@ -688,6 +688,11 @@ struct ConstructPingPongDependencyPattern
                   getOutermostForOpInForOpNest(candidate_op, for_op)) {
             push_back_if_unique<Operation *>(producer_ops,
                                              candidate_for_op.getOperation());
+          } else if (auto candidate_parallel_op =
+                         getOutermostParallelOpInForOpNest(candidate_op,
+                                                           for_op)) {
+            push_back_if_unique<Operation *>(
+                producer_ops, candidate_parallel_op.getOperation());
           } else if (isa<air::ExecuteOp>(candidate_op->getParentOp())) {
             push_back_if_unique<Operation *>(producer_ops,
                                              candidate_op->getParentOp());
@@ -695,14 +700,20 @@ struct ConstructPingPongDependencyPattern
             push_back_if_unique<Operation *>(producer_ops, candidate_op);
           } else if (isa<air::AsyncOpInterface>(candidate_op)) {
             push_back_if_unique<Operation *>(producer_ops, candidate_op);
-          } else
+          } else {
             push_back_if_unique<Operation *>(producer_ops, candidate_op);
+          }
         } else if (checkOpOperandReadOrWrite(buffer_memref, candidate_op) ==
                    'r') {
           if (auto candidate_for_op =
                   getOutermostForOpInForOpNest(candidate_op, for_op)) {
             push_back_if_unique<Operation *>(consumer_ops,
                                              candidate_for_op.getOperation());
+          } else if (auto candidate_parallel_op =
+                         getOutermostParallelOpInForOpNest(candidate_op,
+                                                           for_op)) {
+            push_back_if_unique<Operation *>(
+                consumer_ops, candidate_parallel_op.getOperation());
           } else if (isa<air::ExecuteOp>(candidate_op->getParentOp())) {
             push_back_if_unique<Operation *>(consumer_ops,
                                              candidate_op->getParentOp());
@@ -984,6 +995,23 @@ private:
     while (parent != ancestor_for.getOperation()) {
       if (auto parent_for = dyn_cast<scf::ForOp>(parent)) {
         output = parent_for;
+      }
+      parent = parent->getParentOp();
+    }
+    return output;
+  }
+
+  scf::ParallelOp
+  getOutermostParallelOpInForOpNest(Operation *op,
+                                    scf::ForOp ancestor_for) const {
+    if (!ancestor_for->isProperAncestor(op)) {
+      return scf::ParallelOp();
+    }
+    Operation *parent = op->getParentOp();
+    scf::ParallelOp output = nullptr;
+    while (parent != ancestor_for.getOperation()) {
+      if (auto parent_parallel = dyn_cast<scf::ParallelOp>(parent)) {
+        output = parent_parallel;
       }
       parent = parent->getParentOp();
     }
