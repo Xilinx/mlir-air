@@ -323,7 +323,7 @@ void mlir_aie_print_shimdma_status(aie_libxaie_ctx_t *ctx, int col, int row) {
              col, row, dma_mm2s_status, dma_mm2s0_control, dma_mm2s1_control,
              dma_s2mm_status, dma_s2mm0_control, dma_s2mm1_control, dma_bd0_a,
              dma_bd0_control);
-  for (int bd = 0; bd < 8; bd++) {
+  for (int bd = 0; bd < 16; bd++) {
     u32 dma_bd_addr_a;
     XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D000 + (0x14 * bd),
                 &dma_bd_addr_a);
@@ -820,6 +820,49 @@ void xaie_l2_dma_init(int col) {
   xaie::out32(xaie::getTileAddr(col, 0) + 0x00033008, 0xFF);
 }
 
+#ifdef ARM_CONTROLLER
+
+// Defining the NPI base and registers we use to reset the array
+uint64_t npi_base = 0xF70A0000UL;
+#define NPI_MASK_REG 	0x0
+#define NPI_VAL_REG 	0x4
+#define NPI_LOCK_REG 	0xC
+void xaie_array_reset() {
+
+  // Getting a pointer to NPI
+  volatile uint32_t *npib = (volatile uint32_t *)(npi_base);
+
+  // Performing array reset sequence
+  air_printf("Starting array reset\r\n");
+  npib[NPI_LOCK_REG >> 2] = 0xF9E8D7C6;
+  npib[NPI_MASK_REG >> 2] = 0x04000000;
+  npib[NPI_VAL_REG 	>> 2] = 0x040381B1;
+  npib[NPI_MASK_REG >> 2] = 0x04000000;
+  npib[NPI_VAL_REG 	>> 2] = 0x000381B1;
+  npib[NPI_LOCK_REG >> 2] = 0x12341234;
+  air_printf("Done with array reset\r\n");
+}
+
+// This should be called after enabling the proper 
+// shims to be reset via the mask
+void xaie_strobe_shim_reset() {
+
+	// Getting a pointer to NPI
+  volatile uint32_t *npib = (volatile uint32_t *)(npi_base);
+
+  air_printf("Starting shim reset\r\n");
+  npib[NPI_LOCK_REG >> 2] = 0xF9E8D7C6;
+  npib[NPI_MASK_REG >> 2] = 0x08000000;
+  npib[NPI_VAL_REG 	>> 2] = 0x080381B1;
+  npib[NPI_MASK_REG >> 2] = 0x08000000;
+  npib[NPI_VAL_REG 	>> 2] = 0x000381B1;
+  npib[NPI_LOCK_REG >> 2] = 0x12341234;
+  air_printf("Done with shim reset\r\n");
+
+}
+
+#endif
+
 void xaie_shim_dma_init(int col) {
   // Invalidate all BDs by writing to their buffer control register
   for (int ch = 0; ch < 4; ch++) {
@@ -832,7 +875,12 @@ void xaie_shim_dma_init(int col) {
 }
 
 void xaie_device_init(int num_cols) {
+
+
   air_printf("Initializing device...\r\n");
+
+  // First, resetting the entire device
+  xaie_array_reset();
 
 #ifdef ARM_CONTROLLER
   int err = xaie2::mlir_aie_reinit_device(_xaie);
@@ -849,6 +897,13 @@ void xaie_device_init(int num_cols) {
   for (int c = 0; c < num_cols; c++) {
     xaie_shim_dma_init(shim_dma_cols[c]);
   }
+
+  // Turning the shim_reset_enable bit low for every column so they don't get 
+  // reset when we perform a global shim reset
+  for(int col = 0; col < XAIE_NUM_COLS; col++) {
+    xaie::out32(xaie::getTileAddr(col, 0) + 0x0003604C, 0);
+  }
+
 }
 
 // Initialize one herd with lower left corner at (col_start, row_start)
@@ -858,18 +913,30 @@ void xaie_herd_init(int start_col, int num_cols, int start_row, int num_rows) {
   HerdCfgInst.row_start = start_row;
   HerdCfgInst.num_rows = num_rows;
 #ifdef ARM_CONTROLLER
+
+  // Performing the shim reset
+  air_printf("Performing shim reset\r\n");
   for (int c = start_col; c < start_col + num_cols; c++) {
-    for (int r = start_row; r < start_row + num_rows; r++) {
-      xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048,
-                  !!1); // 1 == ResetEnable
-      xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048,
-                  !!0); // 0 == ResetDisable
-      // for (int l = 0; l < 16; l++)
-      //   xaie::maskpoll32(xaie::getTileAddr(c, r) + 0x0001E020 + 0x80 * l,
-      //   0x1,
-      //                    0x1, 0);
-    }
+    xaie::out32(xaie::getTileAddr(c, 0) + 0x0003604C, 1);
   }
+
+  xaie_strobe_shim_reset();
+
+  for (int c = start_col; c < start_col + num_cols; c++) {
+    xaie::out32(xaie::getTileAddr(c, 0) + 0x0003604C, 0);
+  } 
+
+  // Performing the column reset
+  air_printf("Performing col reset\r\n");
+  for (int c = start_col; c < start_col + num_cols; c++) {
+    xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048,
+                !!1); // 1 == ResetEnable
+    xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048,
+                !!0); // 0 == ResetDisable
+  }
+
+  
+
 #endif
 }
 

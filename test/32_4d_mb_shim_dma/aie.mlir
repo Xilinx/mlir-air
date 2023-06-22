@@ -50,4 +50,9 @@ module {
       AIE.end
   }
 
+  AIE.core(%t72) {
+    AIE.end
+
+  }
+
 }
