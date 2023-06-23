@@ -34,8 +34,6 @@
 
 #define HERD_CONTROLLER_BRAM_SIZE 0x1000
 
-#define USE_RW32_PKTS
-
 enum aie_address_validation {
 	AIE_ADDR_OK,
 	AIE_ADDR_ALIGNMENT,
@@ -385,8 +383,6 @@ static ssize_t value_show(struct kobject *kobj, struct attribute *attr,
 		return strlen(buf) + 1;
 	}
 
-#ifdef USE_RW32_PKTS
-
 	// Step 1: Calculate where our packet is going to exist
 	wr_idx = ioread32(drv_priv->admin_queue + QUEUE_WR_PTR_OFFSET);
 	queue_size = ioread32(drv_priv->admin_queue + QUEUE_SIZE_OFFSET);
@@ -417,12 +413,15 @@ static ssize_t value_show(struct kobject *kobj, struct attribute *attr,
 		0x00000001,
 		pkt + PKT_COMPL_OFFSET); // Writing a 1 to the signal which will mark the completion
 
+	// Write memory barrier before ringing doorbell
+	wmb();
+
 	// Step 3: Ring the doorbell and poll on the read pointer
 	iowrite32(wr_idx, drv_priv->admin_queue + QUEUE_DOORBELL_OFFSET);
 	iowrite32(0, drv_priv->admin_queue + QUEUE_DOORBELL_OFFSET + 0x4);
 
 	read_completion = ioread32(pkt + PKT_COMPL_OFFSET);
-	while (read_completion != 0x00000000) {
+	while (read_completion) {
 		if (timeout_val >= QUEUE_TIMEOUT_VAL) {
 			dev_warn(
 				vck5000_chardev,
@@ -437,9 +436,6 @@ static ssize_t value_show(struct kobject *kobj, struct attribute *attr,
 
 	// Step 4: Get the value from the packet and return it to the calling application
 	value = ioread32(pkt + PKT_RET_ADDR_OFFSET);
-#else
-	value = ioread32(drv_priv->aie_bar + offset);
-#endif
 
 	snprintf(buf, PAGE_SIZE, "0x%x\n", value);
 	return strlen(buf) + 1;
@@ -462,7 +458,6 @@ static ssize_t value_store(struct kobject *kobj, struct attribute *attr,
 	if (validate_aie_address(offset, drv_priv) == AIE_ADDR_OK) {
 		kstrtouint(buf, 0, &value);
 
-#ifdef USE_RW32_PKTS
 		// Step 1: Calculate where our packet is going to exist
 		wr_idx = ioread32(drv_priv->admin_queue + QUEUE_WR_PTR_OFFSET);
 		queue_size =
@@ -499,6 +494,9 @@ static ssize_t value_store(struct kobject *kobj, struct attribute *attr,
 			0x00000001,
 			pkt + PKT_COMPL_OFFSET); // Writing a 1 to the signal which will mark the completion
 
+		// Write memory barrier before ringing doorbell
+		wmb();
+
 		// Step 3: Ring the doorbell and poll on the read pointer
 		iowrite32(wr_idx,
 			  drv_priv->admin_queue + QUEUE_DOORBELL_OFFSET);
@@ -519,9 +517,6 @@ static ssize_t value_store(struct kobject *kobj, struct attribute *attr,
 			timeout_val++;
 		}
 
-#else
-		iowrite32(value, drv_priv->aie_bar + offset);
-#endif
 	}
 
 	return count;

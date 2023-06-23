@@ -35,7 +35,6 @@ hsa_status_t air_queue_create(uint32_t size, uint32_t type,
 	dev->admin_queue = dev->bram_bar +
 			   HERD_CONTROLLER_BASE_ADDR(dev->bram_bar, 0) -
 			   BRAM_PADDR;
-	;
 
 	uint32_t queue_id = ioread32(dev->admin_queue + QUEUE_ID_OFFSET);
 	if (queue_id != 0xacdc) {
