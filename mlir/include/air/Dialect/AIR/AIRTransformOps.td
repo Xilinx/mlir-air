@@ -66,7 +66,8 @@ def ParToHerdOp : Op<Transform_Dialect, "air.par_to_herd",
     herd. Returns the new `air.herd` operation.
   }];
   let arguments =
-    (ins PDL_Operation:$target);
+    (ins PDL_Operation:$target,
+     DefaultValuedAttr<I64Attr, "0">:$first_dim);
   let results = (outs PDL_Operation:$result);
   let assemblyFormat = "$target attr-dict";
 
