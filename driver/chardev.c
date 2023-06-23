@@ -516,7 +516,6 @@ static ssize_t value_store(struct kobject *kobj, struct attribute *attr,
 
 			timeout_val++;
 		}
-
 	}
 
 	return count;
