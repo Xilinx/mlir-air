@@ -164,7 +164,7 @@ tar -cvf air_tools.tar.gz install-aarch64
 
 ## Running on the VCK5000
 
-The first step required for running on the VCK5000 is building the hardware platform and loading it on your device. [Here](../platforms/xilinx_vck5000_air) we provide documentation on how to do that. Then, the AIR tools must be installed by running the [Building external projects on X86](#building-external-projects-on-X86) followed by the [Building on x86 with runtime for PCIe](#building-on-x86-with-runtime-for-PCIe) and [Environment setup](#environment-setup). Then, the [AIR PCIe driver](../driver) must be compiled and installed. Now you are ready to run tests using AIR on the VCK5000! For example, go to [Test 13](../test/13_mb_add_one) and run `Make` followed by `sudo ./test.elf` to run the application.
+The first step required for running on the VCK5000 is building the hardware platform and loading it on your device. [Here](../platforms/xilinx_vck5000_air) we provide documentation on how to do that. Then, the AIR tools must be installed by running the [Building external projects on X86](#building-external-projects-on-X86) followed by the [Building on x86 with runtime for PCIe](#building-on-x86-with-runtime-for-PCIe) and [Environment setup](#environment-setup). Then, the [AIR PCIe driver](../driver) must be compiled and installed. Now you are ready to run tests using AIR on the VCK5000! For example, go to [Test 13](../test/13_mb_add_one) and run `make` followed by `sudo ./test.elf` to run the application.
 
 
 
