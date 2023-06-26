@@ -345,6 +345,22 @@ Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
   }
 }
 
+// Create scf.reduce op to reduce all async tokens in an scf.parallel
+scf::ReduceOp createSCFReduceForAsyncSCFParallel(OpBuilder builder,
+                                                 Location loc, Value token,
+                                                 MLIRContext *ctx) {
+  auto reduce_op = builder.create<scf::ReduceOp>(loc, token);
+  builder.setInsertionPointToStart(&reduce_op.getRegion().front());
+  SmallVector<Value, 4> reduce_tokens;
+  reduce_tokens.push_back(reduce_op.getRegion().front().getArgument(0));
+  reduce_tokens.push_back(reduce_op.getRegion().front().getArgument(1));
+  auto reduce_res = builder.create<xilinx::air::WaitAllOp>(
+      builder.getUnknownLoc(), air::AsyncTokenType::get(ctx), reduce_tokens);
+  builder.create<scf::ReduceReturnOp>(builder.getUnknownLoc(),
+                                      reduce_res.getResult(0));
+  return reduce_op;
+}
+
 // Get dependency list of op
 SmallVector<Value> getAsyncDependenciesFromOpImpl(air::AsyncOpInterface op) {
   return op.getAsyncDependencies();
@@ -987,11 +1003,21 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromHierarchyOp(
     return addVertexFromOp(
         op, dep_ctx.HierarchyOpID, "hierarchy", "LaunchOp",
         graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
-  } else if (dyn_cast<xilinx::air::SegmentOp>(op.getOperation())) {
+  } else if (auto seg = dyn_cast<xilinx::air::SegmentOp>(op.getOperation())) {
+    // Annotate with physical address, if already placed
+    if (seg.getNumRows() && seg.getNumCols()) {
+      detailed_description += "[" + std::to_string(*seg.getNumCols()) + ", " +
+                              std::to_string(*seg.getNumRows()) + "]";
+    }
     return addVertexFromOp(
         op, dep_ctx.HierarchyOpID, "hierarchy", "SegmentOp",
         graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
-  } else if (dyn_cast<xilinx::air::HerdOp>(op.getOperation())) {
+  } else if (auto herd = dyn_cast<xilinx::air::HerdOp>(op.getOperation())) {
+    // Annotate with physical address, if already placed
+    if (herd.getNumRows() && herd.getNumCols()) {
+      detailed_description += "[" + std::to_string(herd.getNumCols()) + ", " +
+                              std::to_string(herd.getNumRows()) + "]";
+    }
     return addVertexFromOp(
         op, dep_ctx.HierarchyOpID, "hierarchy", "HerdOp",
         graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
@@ -1014,7 +1040,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromTerminatorOp(
         graphNodeProperties("hierarchy", detailed_description), G, dep_ctx);
   } else if (dyn_cast<xilinx::air::HerdTerminatorOp>(op)) {
     // Annotate core id, if showing cores
-    if (auto numDims = G->position.size()) {
+    if (G->position.size()) {
       detailed_description += "core id: ";
       detailed_description += toPositionString(G->position);
     }
@@ -1068,7 +1094,10 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromExecuteOp(
       // Annotate memref's memory space
       std::string memorySpaceStr =
           getMemorySpaceAsString(alloc_child_op.getMemref());
-      detailed_description += "(" + memorySpaceStr + ")";
+      auto ty = alloc_child_op.getMemref().getType().cast<MemRefType>();
+      detailed_description += "(" + memorySpaceStr + ", " +
+                              std::to_string(getTensorVolume(ty)) + ", " +
+                              getElementTypeAsString(ty) + ")";
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute", "AllocOp",
                           graphNodeProperties("compute", detailed_description),
                           G, dep_ctx, pointer_op);
@@ -1077,7 +1106,10 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromExecuteOp(
       // Annotate memref's memory space
       std::string memorySpaceStr =
           getMemorySpaceAsString(dealloc_child_op.getMemref());
-      detailed_description += "(" + memorySpaceStr + ")";
+      auto ty = dealloc_child_op.getMemref().getType().cast<MemRefType>();
+      detailed_description += "(" + memorySpaceStr + ", " +
+                              std::to_string(getTensorVolume(ty)) + ", " +
+                              getElementTypeAsString(ty) + ")";
       v = addVertexFromOp(&child_op, dep_ctx.ExecuteOpID, "execute",
                           "DeallocOp",
                           graphNodeProperties("compute", detailed_description),

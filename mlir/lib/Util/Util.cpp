@@ -149,6 +149,14 @@ uint64_t air::getTensorVolume(const Type ty) {
   }
 }
 
+std::string air::getElementTypeAsString(const mlir::Type ty) {
+  if (auto st = ty.dyn_cast<mlir::ShapedType>()) {
+    return to_string(st.getElementType());
+  } else {
+    return to_string(ty);
+  }
+}
+
 // Get the parent scf.for op of an iter_arg
 scf::ForOp air::getForRegionIterArgsOwner(Value val) {
   auto ivArg = val.dyn_cast<BlockArgument>();
@@ -241,6 +249,14 @@ void air::renumberDmaOps(func::FuncOp func, std::string mode) {
 // Return op name as string
 std::string air::to_string(Operation *op) {
   return op->getName().getStringRef().str();
+}
+
+// Return mlir type name as string
+std::string air::to_string(mlir::Type t) {
+  std::string type_str;
+  llvm::raw_string_ostream rso(type_str);
+  t.print(rso);
+  return type_str;
 }
 
 // Return memory space as string

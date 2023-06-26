@@ -57,6 +57,9 @@ void clearAsyncDependenciesOfAsyncOp(Operation *op);
 Value getLoopCarriedTokenFromScfOp(scf::ParallelOp op);
 Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
                                    std::string operand_or_argument = "operand");
+scf::ReduceOp createSCFReduceForAsyncSCFParallel(OpBuilder builder,
+                                                 Location loc, Value token,
+                                                 MLIRContext *ctx);
 SmallVector<Value> getAsyncDependenciesFromOp(Operation *op);
 void addAsyncDependencyIfNew(Operation *op, Value token);
 bool isAsyncOp(Operation *op);

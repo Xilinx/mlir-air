@@ -11,42 +11,42 @@
 // Trace simulation mode set to per-core granularity.
 
 
-// CHECK: "name": "DeallocOp(L1)",
+// CHECK: "name": "DeallocOp(L1, 1024, bf16)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME0:.*]],
 
-// CHECK: "name": "DeallocOp(L1)",
+// CHECK: "name": "DeallocOp(L1, 1024, bf16)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME0]],
 
-// CHECK: "name": "DeallocOp(L1)",
+// CHECK: "name": "DeallocOp(L1, 1024, bf16)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME0]],
 
-// CHECK: "name": "DeallocOp(L1)",
+// CHECK: "name": "DeallocOp(L1, 1024, bf16)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME0]],
 
-// CHECK: "name": "AllocOp(L1)",
+// CHECK: "name": "AllocOp(L1, 1024, bf16)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME0]],
 
-// CHECK: "name": "AllocOp(L1)",
+// CHECK: "name": "AllocOp(L1, 1024, bf16)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME0]],
 
-// CHECK: "name": "AllocOp(L1)",
+// CHECK: "name": "AllocOp(L1, 1024, bf16)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME0]],
 
-// CHECK: "name": "AllocOp(L1)",
+// CHECK: "name": "AllocOp(L1, 1024, bf16)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME0]],

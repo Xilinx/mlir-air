@@ -29,6 +29,7 @@ func::FuncOp getMangledFunction(ModuleOp module, std::string fnName,
 
 uint64_t getTensorVolume(const ShapedType ty);
 uint64_t getTensorVolume(const Type ty);
+std::string getElementTypeAsString(const mlir::Type ty);
 
 // Get the parent scf.for op of an iter_arg
 scf::ForOp getForRegionIterArgsOwner(Value val);
@@ -54,6 +55,7 @@ void renumberDmaOps(func::FuncOp func, std::string mode = "herd");
 
 // Return op name as string
 std::string to_string(Operation *op);
+std::string to_string(mlir::Type t);
 // Return memory space as string
 std::string getMemorySpaceAsString(Value memref);
 

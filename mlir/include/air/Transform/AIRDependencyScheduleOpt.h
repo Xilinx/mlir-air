@@ -37,6 +37,8 @@ std::unique_ptr<mlir::Pass> createAIRLabelScfForLoopForPingPongPattern();
 
 std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass();
 
+std::unique_ptr<mlir::Pass> createAIRUnrollChannelByFactorPattern();
+
 } // namespace air
 } // namespace xilinx
 
