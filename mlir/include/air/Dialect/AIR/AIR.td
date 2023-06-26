@@ -598,7 +598,7 @@ def air_CustomOp : air_Op<"custom", [air_AsyncOpInterface,
     performance with this op in place.
   }];
 
-  // let skipDefaultBuilders = 1;
+  let skipDefaultBuilders = 1;
   let builders = [
     OpBuilder<(ins "ValueRange":$custom_operands)>,
     OpBuilder<(ins "ValueRange":$async_dependencies,
@@ -607,8 +607,6 @@ def air_CustomOp : air_Op<"custom", [air_AsyncOpInterface,
       CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>
   ];
   let hasCustomAssemblyFormat = 1;
-  // let hasVerifier = 1;
-  // let hasCanonicalizer = 1;
 }
 
 #endif
