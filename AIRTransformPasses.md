@@ -799,6 +799,17 @@ module  {
 ```
 -filename : Transform Dialect filename
 ```
+### `-air-unroll-channel-by-factor`: Unroll channel puts and gets by an integer factor
+This pass unrolls all puts and gets to an air.channel by an integer factor, so as to
+represent the usage of multiple physical DMA channels in parallel for improved
+available bandwidth for this data movement.
+
+#### Options
+```
+-channel-name  : Target channel to unroll.
+-unroll-dim    : Dimension id to unroll.
+-unroll-factor : Integer unroll factor.
+```
 ### `-air-unroll-loop-for-pipelining-pattern`: Unroll loop by an integer factor
 This pass unrolls a loop by an integer factor. This pass is used in the ping-pong
 pattern transformation to unroll a scf.for loop by 2 to ensure explicit
