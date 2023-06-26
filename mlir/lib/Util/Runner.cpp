@@ -210,12 +210,16 @@ public:
       MemRefType srcTy = putOps[0].getSrc().getType().cast<MemRefType>();
       auto srcSpace = srcTy.getMemorySpaceAsInt();
       auto dstSpace = dstTy.getMemorySpaceAsInt();
+      auto srcVolumn = getTransferVolumn(putOps[0]);
+      auto dstVolumn = getTransferVolumn(getOp);
       // if there is a size mismatch, it's because we're moving a tile of the
       // larger tensor
-      if (getTensorVolume(srcTy) <= getTensorVolume(dstTy))
-        execution_time = getTransferCost(d, c.op, srcSpace, dstSpace, srcTy);
+      if (srcVolumn <= dstVolumn)
+        execution_time =
+            getTransferCost(d, c.op, srcSpace, dstSpace, srcVolumn, srcTy);
       else
-        execution_time = getTransferCost(d, c.op, srcSpace, dstSpace, dstTy);
+        execution_time =
+            getTransferCost(d, c.op, srcSpace, dstSpace, dstVolumn, dstTy);
     } else if (type == "execute" && name != "ExecuteTerminatorOp") {
       if (!isa<air::ExecuteOp>(c.op))
         c.op->emitOpError("has mismatching event type").attachNote()
@@ -514,13 +518,16 @@ private:
                              "M", getIdAttr(launchGraph.hierarchyOp));
       for (auto &segmentGraph : launchGraph.subgraphs) {
         // Write segment process name to trace metadata
+        std::string seg_process_info = "";
+        auto seg = dyn_cast<air::SegmentOp>(segmentGraph.hierarchyOp);
+        seg_process_info += air::to_string(seg);
+        seg_process_info += "[" + std::to_string(*seg.getNumCols()) + ", " +
+                            std::to_string(*seg.getNumRows()) + "]";
         emitTraceMetadataEvent(traceStream, "process_name", "name",
-                               air::to_string(segmentGraph.hierarchyOp), "M",
-                               getIdAttr(segmentGraph.hierarchyOp));
-        emitTraceMetadataEvent(
-            traceStream, "process_sort_index", "sort_index",
-            std::to_string(getIdAttr(segmentGraph.hierarchyOp)), "M",
-            getIdAttr(segmentGraph.hierarchyOp));
+                               seg_process_info, "M", getIdAttr(seg));
+        emitTraceMetadataEvent(traceStream, "process_sort_index", "sort_index",
+                               std::to_string(getIdAttr(seg)), "M",
+                               getIdAttr(seg));
         for (auto &herdGraph : segmentGraph.subgraphs) {
           // Only write herd process name metadata once per herd
           bool print_pid_metadata_for_herd = true;
@@ -536,13 +543,16 @@ private:
           }
           if (print_pid_metadata_for_herd) {
             // Write herd process name to trace metadata
+            std::string herd_process_info = "";
+            auto herd = dyn_cast<air::HerdOp>(herdGraph.hierarchyOp);
+            herd_process_info += air::to_string(herd);
+            herd_process_info += "[" + std::to_string(herd.getNumCols()) +
+                                 ", " + std::to_string(herd.getNumRows()) + "]";
             emitTraceMetadataEvent(traceStream, "process_name", "name",
-                                   air::to_string(herdGraph.hierarchyOp), "M",
-                                   getIdAttr(herdGraph.hierarchyOp));
+                                   herd_process_info, "M", getIdAttr(herd));
             emitTraceMetadataEvent(
                 traceStream, "process_sort_index", "sort_index",
-                std::to_string(getIdAttr(herdGraph.hierarchyOp)), "M",
-                getIdAttr(herdGraph.hierarchyOp));
+                std::to_string(getIdAttr(herd)), "M", getIdAttr(herd));
           }
           if (print_tid_metadata_for_core) {
             // Write herd process name to trace metadata
@@ -615,6 +625,26 @@ private:
       op->emitOpError("data rate not found in JSON model");
     double seconds = bytes / bps;
     return (uint64_t)ceil(seconds * cps);
+  }
+
+  uint64_t getTransferVolumn(air::ChannelInterface op) {
+    MemRefType memTy = op.getMemref().getType().cast<MemRefType>();
+    if (op.getSizes().empty())
+      return getTensorVolume(memTy);
+    else
+      return getVolumnFromSizes(op.getSizes());
+  }
+
+  uint64_t getVolumnFromSizes(SmallVector<Value> sizes) {
+    uint64_t output = 1;
+    for (auto s : sizes) {
+      auto op = s.getDefiningOp();
+      if (op && isa<arith::ConstantIndexOp>(op)) {
+        output *= dyn_cast<arith::ConstantIndexOp>(op).value();
+      } else if (op)
+        op->emitOpError("non-static shape for data movement");
+    }
+    return output;
   }
 
   uint64_t getComputeCostFromCostModel(device &d, Operation *op) {
@@ -771,20 +801,6 @@ std::string to_string(std::vector<unsigned> vec) {
   return output;
 }
 std::string to_string(dependencyNodeEntry &c) { return air::to_string(c.op); }
-std::string to_string(mlir::Type t) {
-  std::string type_str;
-  llvm::raw_string_ostream rso(type_str);
-  t.print(rso);
-  return type_str;
-}
-
-std::string getElementTypeAsString(const mlir::Type ty) {
-  if (auto st = ty.dyn_cast<mlir::ShapedType>()) {
-    return to_string(st.getElementType());
-  } else {
-    return to_string(ty);
-  }
-}
 
 std::string lookUpMemorySpaceFromInt(unsigned memory_space) {
   std::string output = "";

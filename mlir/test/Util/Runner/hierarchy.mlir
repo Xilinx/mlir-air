@@ -9,31 +9,31 @@
 
 // Test air hierarchy support
 
-// CHECK: "name": "SegmentOp",
+// CHECK: "name": "SegmentOp[4, 4]",
 // CHECK: "ph": "B",
 // CHECK: "ts": 0.001,
-// CHECK: "name": "SegmentOp",
+// CHECK: "name": "SegmentOp[4, 4]",
 // CHECK: "ph": "E",
 // CHECK: "ts": 0.002,
 
-// CHECK: "name": "HerdOp(herd_0)",
+// CHECK: "name": "HerdOp(herd_0)[4, 4]",
 // CHECK: "ph": "B",
 // CHECK: "ts": 0.002,
-// CHECK: "name": "HerdOp(herd_0)",
+// CHECK: "name": "HerdOp(herd_0)[4, 4]",
 // CHECK: "ph": "E",
 // CHECK: "ts": 0.003,
 
-// CHECK: "name": "AllocOp(L1)",
+// CHECK: "name": "AllocOp(L1, 1024, bf16)",
 // CHECK: "ph": "B",
 // CHECK: "ts": 0.003,
-// CHECK: "name": "AllocOp(L1)",
+// CHECK: "name": "AllocOp(L1, 1024, bf16)",
 // CHECK: "ph": "E",
 // CHECK: "ts": 0.004,
 
-// CHECK: "name": "DeallocOp(L1)",
+// CHECK: "name": "DeallocOp(L1, 1024, bf16)",
 // CHECK: "ph": "B",
 // CHECK: "ts": 0.005,
-// CHECK: "name": "DeallocOp(L1)",
+// CHECK: "name": "DeallocOp(L1, 1024, bf16)",
 // CHECK: "ph": "E",
 // CHECK: "ts": 0.006,
 

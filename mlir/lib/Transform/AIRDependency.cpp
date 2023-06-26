@@ -1812,17 +1812,9 @@ private:
 
     // Create scf::ReduceOp
     builder.setInsertionPointToEnd(new_loop_op.getBody());
-    auto reduce_op = builder.create<scf::ReduceOp>(
-        new_loop_op.getLoc(), wait_all_op_yielded.getResult(0));
-    builder.setInsertionPointToStart(&reduce_op.getRegion().front());
-    SmallVector<Value, 4> reduce_tokens;
-    reduce_tokens.push_back(reduce_op.getRegion().front().getArgument(0));
-    reduce_tokens.push_back(reduce_op.getRegion().front().getArgument(1));
-    auto reduce_res = builder.create<xilinx::air::WaitAllOp>(
-        builder.getUnknownLoc(),
-        air::AsyncTokenType::get(loop_op->getContext()), reduce_tokens);
-    builder.create<scf::ReduceReturnOp>(builder.getUnknownLoc(),
-                                        reduce_res.getResult(0));
+    air::createSCFReduceForAsyncSCFParallel(builder, new_loop_op.getLoc(),
+                                            wait_all_op_yielded.getAsyncToken(),
+                                            loop_op->getContext());
     builder.setInsertionPointToEnd(new_loop_op.getBody());
     builder.create<scf::YieldOp>(new_loop_op.getLoc());
 
