@@ -39,6 +39,18 @@ cmake .. \
     -DLibXAIE_x86_64_DIR=`pwd`/../../aienginev2/install/lib \
     -DCMAKE_INSTALL_PREFIX=`pwd`/../$INSTALL_DIR
 
-cmake --build . --target install -- -j$(nproc)
+ec=$?
+if [ $ec -ne 0 ]; then
+    echo "CMake Configuration Error"
+    exit $ec
+fi
+
+ninja install
+
+ec=$?
+if [ $ec -ne 0 ]; then
+    echo "Ninja Build Error"
+    exit $ec
+fi
 
 popd
