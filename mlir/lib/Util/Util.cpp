@@ -336,7 +336,6 @@ void air::eraseAIRHierarchyOperand(air::HierarchyInterface op, unsigned index) {
 // Get channel declaration through channel symbol
 air::ChannelOp
 air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
-  air::ChannelOp chan = air::ChannelOp();
   Operation *parent = op;
   while (parent = parent->getParentOp()) {
     if (parent->hasTrait<OpTrait::SymbolTable>()) {
