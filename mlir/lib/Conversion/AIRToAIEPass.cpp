@@ -1098,6 +1098,122 @@ void lowerAIRChannels(AIE::DeviceOp &d, ShimTileAllocator &a) {
   (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
 }
 
+struct LowerAIRPingPongPattern : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp for_op,
+                                PatternRewriter &rewriter) const override {
+
+    // Check if the loop is already isolated for ping-pong transformation, so
+    // that there are only data producers and consumers.
+    if (!for_op->hasAttr("isolated"))
+      return failure();
+
+    // Check for ping-pong factor
+    uint64_t unroll_factor = 0;
+    if (!for_op->hasAttr("unroll"))
+      return failure();
+
+    // Get device op
+    auto device = for_op->getParentOfType<AIE::DeviceOp>();
+    if (!device)
+      return failure();
+
+    // Remove async interface in device op; replace scf.for with affine.for
+    SmallVector<Operation *> ops;
+    if (for_op->getNumResults() &&
+        for_op->getResult(0).getType().isa<air::AsyncTokenType>()) {
+      auto afo = convertAsyncSCFForToSyncAffineForOp(rewriter, for_op, ops);
+      afo->setAttr("object_count",
+                   IntegerAttr::get(IntegerType::get(afo->getContext(), 32),
+                                    unroll_factor));
+
+    } else
+      return failure();
+
+    rewriter.eraseOp(for_op);
+
+    for_op->removeAttr("isolated");
+    for_op->removeAttr("unroll");
+
+    return success();
+  }
+
+private:
+  AffineForOp
+  convertAsyncSCFForToSyncAffineForOp(OpBuilder builder, scf::ForOp for_op,
+                                      SmallVector<Operation *> &ops) const {
+    builder.setInsertionPoint(for_op);
+    auto new_affine_for = convertScfForToAffineFor(builder, for_op);
+    builder.setInsertionPointToStart(new_affine_for.getBody());
+    for_op.walk([&](Operation *op) {
+      if (isa<air::ChannelGetOp>(op)) {
+        ops.push_back(op);
+      } else if (isa<air::ChannelPutOp>(op)) {
+        ops.push_back(op);
+      }
+    });
+    int unroll_factor = for_op->getAttrOfType<IntegerAttr>("unroll").getInt();
+    for (auto op : ops) {
+      removeAsyncInterface(builder, op, unroll_factor);
+    }
+
+    return new_affine_for;
+  }
+
+  void removeAsyncInterface(OpBuilder builder, Operation *op,
+                            int buffer_resources) const {
+    if (auto get = dyn_cast<air::ChannelGetOp>(op)) {
+      removeAsyncInterfaceInAsyncOp(builder, get);
+      auto chan_op = air::getChannelDeclarationThroughSymbol(get);
+      chan_op->setAttr(
+          "buffer_resources",
+          IntegerAttr::get(IntegerType::get(chan_op->getContext(), 32),
+                           buffer_resources));
+    } else if (auto put = dyn_cast<air::ChannelPutOp>(op)) {
+      removeAsyncInterfaceInAsyncOp(builder, put);
+      auto chan_op = air::getChannelDeclarationThroughSymbol(put);
+      chan_op->setAttr(
+          "buffer_resources",
+          IntegerAttr::get(IntegerType::get(chan_op->getContext(), 32),
+                           buffer_resources));
+    }
+  }
+
+  void removeAsyncInterfaceInAsyncOp(OpBuilder builder,
+                                     air::ChannelGetOp get) const {
+    SmallVector<Type, 4> tys = {};
+    SmallVector<Value, 4> deps = {};
+    builder.create<air::ChannelGetOp>(get->getLoc(), tys, deps,
+                                      get.getChanName(), get.getIndices(),
+                                      get.getDst(), get.getDstOffsets(),
+                                      get.getDstSizes(), get.getDstStrides());
+  }
+
+  void removeAsyncInterfaceInAsyncOp(OpBuilder builder,
+                                     air::ChannelPutOp put) const {
+    SmallVector<Type, 4> tys = {};
+    SmallVector<Value, 4> deps = {};
+    auto new_put = builder.create<air::ChannelPutOp>(
+        put->getLoc(), tys, deps, put.getChanName(), put.getIndices(),
+        put.getSrc(), put.getSrcOffsets(), put.getSrcSizes(),
+        put.getSrcStrides());
+  }
+
+  AffineForOp convertScfForToAffineFor(OpBuilder builder,
+                                       scf::ForOp sfo) const {
+    int stepNum =
+        dyn_cast<arith::ConstantIndexOp>(sfo.getStep().getDefiningOp()).value();
+    int lbNum =
+        dyn_cast<arith::ConstantIndexOp>(sfo.getLowerBound().getDefiningOp())
+            .value();
+    int ubNum =
+        dyn_cast<arith::ConstantIndexOp>(sfo.getUpperBound().getDefiningOp())
+            .value();
+    return builder.create<AffineForOp>(sfo.getLoc(), lbNum, ubNum, stepNum);
+  }
+};
+
 class AIRToAIEPass : public AIRToAIEBase<AIRToAIEPass> {
 
 public:
@@ -1642,6 +1758,9 @@ public:
     ShimTileAllocator shimTileAlloc(deviceOp.getTargetModel());
     if (clTestPatterns.find("lower-air-channels") != std::string::npos) {
       patterns.insert<LowerAIRChannelsPattern>(ctx, shimTileAlloc);
+    }
+    if (clTestPatterns.find("lower-air-ping-pong") != std::string::npos) {
+      patterns.insert<LowerAIRPingPongPattern>(ctx);
     }
 
     if (patterns.getNativePatterns().size())
