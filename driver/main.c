@@ -5,14 +5,10 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include "chardev.h"
+#include "kernel_queue.h"
+#include "hsa_defs.h"
 
 #define MAX_HERD_CONTROLLERS 64
-
-/* Offsets into BRAM BAR */
-#define HERD_CONTROLLER_BASE_ADDR(_base, _x)                                   \
-	((((uint64_t)ioread32(_base + (_x * sizeof(uint64_t) + 4))) << 32) |   \
-	 ioread32(_base + (_x * sizeof(uint64_t) + 0)))
-#define REG_HERD_CONTROLLER_COUNT 0x208
 
 static const char air_dev_name[] = "amdair";
 static int dev_idx; /* linear index of managed devices */
@@ -136,6 +132,14 @@ static int vck5000_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 			HERD_CONTROLLER_BASE_ADDR(dev_priv->bram_bar, idx);
 		dev_warn(&pdev->dev, "Controller %u base address: 0x%llx", idx,
 			 controller_base);
+	}
+
+	// Getting a pointer to the admin queue
+	hsa_status_t hsa_status = air_queue_create(
+		MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, dev_priv);
+	if (hsa_status != HSA_STATUS_SUCCESS) {
+		printk("[WARNING %s] Was unable to create admin queue for device\n",
+		       __func__);
 	}
 
 	/* Create sysfs files for accessing AIE memory region */
