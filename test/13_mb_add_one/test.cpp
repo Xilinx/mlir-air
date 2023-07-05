@@ -81,7 +81,6 @@ main(int argc, char *argv[])
   air_packet_device_init(shim_pkt, XAIE_NUM_COLS);
   air_queue_dispatch_and_wait(queues[0], wr_idx, shim_pkt);
 
-
   //
   // Set up a 1x3 herd starting 7,0
   //

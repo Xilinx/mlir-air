@@ -824,9 +824,9 @@ void xaie_l2_dma_init(int col) {
 
 // Defining the NPI base and registers we use to reset the array
 uint64_t npi_base = 0xF70A0000UL;
-#define NPI_MASK_REG 	0x0
-#define NPI_VAL_REG 	0x4
-#define NPI_LOCK_REG 	0xC
+#define NPI_MASK_REG 0x0
+#define NPI_VAL_REG 0x4
+#define NPI_LOCK_REG 0xC
 void xaie_array_reset() {
 
   // Getting a pointer to NPI
@@ -836,29 +836,28 @@ void xaie_array_reset() {
   air_printf("Starting array reset\r\n");
   npib[NPI_LOCK_REG >> 2] = 0xF9E8D7C6;
   npib[NPI_MASK_REG >> 2] = 0x04000000;
-  npib[NPI_VAL_REG 	>> 2] = 0x040381B1;
+  npib[NPI_VAL_REG >> 2] = 0x040381B1;
   npib[NPI_MASK_REG >> 2] = 0x04000000;
-  npib[NPI_VAL_REG 	>> 2] = 0x000381B1;
+  npib[NPI_VAL_REG >> 2] = 0x000381B1;
   npib[NPI_LOCK_REG >> 2] = 0x12341234;
   air_printf("Done with array reset\r\n");
 }
 
-// This should be called after enabling the proper 
+// This should be called after enabling the proper
 // shims to be reset via the mask
 void xaie_strobe_shim_reset() {
 
-	// Getting a pointer to NPI
+  // Getting a pointer to NPI
   volatile uint32_t *npib = (volatile uint32_t *)(npi_base);
 
   air_printf("Starting shim reset\r\n");
   npib[NPI_LOCK_REG >> 2] = 0xF9E8D7C6;
   npib[NPI_MASK_REG >> 2] = 0x08000000;
-  npib[NPI_VAL_REG 	>> 2] = 0x080381B1;
+  npib[NPI_VAL_REG >> 2] = 0x080381B1;
   npib[NPI_MASK_REG >> 2] = 0x08000000;
-  npib[NPI_VAL_REG 	>> 2] = 0x000381B1;
+  npib[NPI_VAL_REG >> 2] = 0x000381B1;
   npib[NPI_LOCK_REG >> 2] = 0x12341234;
   air_printf("Done with shim reset\r\n");
-
 }
 
 #endif
@@ -875,7 +874,6 @@ void xaie_shim_dma_init(int col) {
 }
 
 void xaie_device_init(int num_cols) {
-
 
   air_printf("Initializing device...\r\n");
 
@@ -898,12 +896,11 @@ void xaie_device_init(int num_cols) {
     xaie_shim_dma_init(shim_dma_cols[c]);
   }
 
-  // Turning the shim_reset_enable bit low for every column so they don't get 
+  // Turning the shim_reset_enable bit low for every column so they don't get
   // reset when we perform a global shim reset
-  for(int col = 0; col < XAIE_NUM_COLS; col++) {
+  for (int col = 0; col < XAIE_NUM_COLS; col++) {
     xaie::out32(xaie::getTileAddr(col, 0) + 0x0003604C, 0);
   }
-
 }
 
 // Initialize one herd with lower left corner at (col_start, row_start)
@@ -924,7 +921,7 @@ void xaie_herd_init(int start_col, int num_cols, int start_row, int num_rows) {
 
   for (int c = start_col; c < start_col + num_cols; c++) {
     xaie::out32(xaie::getTileAddr(c, 0) + 0x0003604C, 0);
-  } 
+  }
 
   // Performing the column reset
   air_printf("Performing col reset\r\n");
@@ -934,8 +931,6 @@ void xaie_herd_init(int start_col, int num_cols, int start_row, int num_rows) {
     xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048,
                 !!0); // 0 == ResetDisable
   }
-
-  
 
 #endif
 }

@@ -82,7 +82,6 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-
   uint64_t wr_idx = queue_add_write_index(queues[0], 1);
   uint64_t packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *shim_pkt =

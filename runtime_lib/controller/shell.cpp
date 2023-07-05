@@ -145,7 +145,7 @@ void shell(void) {
 
     // When we know that we have data, read it from the UART
     in = XUartPsv_RecvByte(STDOUT_BASEADDRESS);
-    
+
     // make sure character will fit in the command buffer
     if (cmd_len >= MAX_LINE_LENGTH) {
       xil_printf("Line too long\r\n");
