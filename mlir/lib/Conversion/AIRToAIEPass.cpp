@@ -925,7 +925,8 @@ AIE::ObjectFifoCreateOp createObjectFifo(OpBuilder &builder,
                                          const std::vector<Value> &consTile,
                                          int depth, StringRef name) {
   AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
-      builder.getUnknownLoc(), datatype, prodTile, consTile, depth);
+      builder.getUnknownLoc(), datatype, prodTile, consTile,
+      builder.getIntegerAttr(builder.getI32Type(), depth));
   fifo->setAttr(SymbolTable::getSymbolAttrName(), builder.getStringAttr(name));
   return fifo;
 }

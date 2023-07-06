@@ -30,6 +30,7 @@ extern "C" {
 }
 
 #include "platform.h"
+#include "shell.h"
 
 #define XAIE_NUM_ROWS 8
 #define XAIE_NUM_COLS 50
@@ -874,13 +875,13 @@ void xaie_herd_init(int start_col, int num_cols, int start_row, int num_rows) {
 
 } // namespace
 
-namespace {
-
 uint64_t shmem_base = 0x020100000000UL;
 uint64_t uart_lock_offset = 0x200;
 uint64_t base_address;
 
 bool setup;
+
+uint64_t get_base_address(void) { return shmem_base; }
 
 void lock_uart(uint32_t id) {
   bool is_locked = false;
@@ -1091,6 +1092,35 @@ void handle_packet_get_info(dispatch_packet_t *pkt, uint32_t mb_id) {
   default:
     *addr = 0;
     break;
+  }
+}
+
+#define AIE_BASE 0x020000000000
+#define AIE_CSR_SIZE 0x000100000000
+
+void handle_packet_read_write_32(dispatch_packet_t *pkt) {
+
+  packet_set_active(pkt, true);
+
+  uint64_t *return_addr =
+      (uint64_t *)(&pkt->return_address); // FIXME when we can use a VA
+
+  uint64_t address = pkt->arg[0];
+  uint32_t value = pkt->arg[1] & 0x0FFFFFFFF;
+  bool is_write = (pkt->arg[1] >> 32) & 0x1;
+
+  volatile uint32_t *aie_csr = (volatile uint32_t *)AIE_BASE;
+
+  if (address > AIE_CSR_SIZE) {
+    printf("[ERROR] read32/write32 packets provided address of size 0x%lx. "
+           "Window is only 4GB\n",
+           address);
+  }
+
+  if (is_write) {
+    aie_csr[address >> 2] = value;
+  } else {
+    *return_addr = aie_csr[address >> 2];
   }
 }
 
@@ -1436,8 +1466,6 @@ int stage_packet_nd_memcpy(dispatch_packet_t *pkt, uint32_t slot,
   }
 }
 
-} // namespace
-
 void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id) {
   uint64_t rd_idx = queue_load_read_index(q);
   dispatch_packet_t *pkt =
@@ -1540,6 +1568,12 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id) {
 
     case AIR_PKT_TYPE_CONFIGURE:
       handle_packet_sg_cdma(pkt);
+      complete_agent_dispatch_packet(pkt);
+      packets_processed++;
+      break;
+
+    case AIR_PKT_TYPE_RW32:
+      handle_packet_read_write_32(pkt);
       complete_agent_dispatch_packet(pkt);
       packets_processed++;
       break;
@@ -1789,6 +1823,7 @@ int main() {
         }
       }
     }
+    shell();
   }
 
   cleanup_platform();

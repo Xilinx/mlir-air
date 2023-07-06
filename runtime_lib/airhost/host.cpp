@@ -155,8 +155,8 @@ For a non-PCIe device, memory map the base address directly.
   XAie_BackendType backend;
   if (mapped_aie_base == MAP_FAILED) {
     printf("Failed mapping AIE BAR - using sysfs backend\n");
-    xaie->AieConfigPtr.Backend = XAIE_IO_BACKEND_SYSFS;
-    backend = XAIE_IO_BACKEND_SYSFS;
+    xaie->AieConfigPtr.Backend = XAIE_IO_BACKEND_AMDAIR;
+    backend = XAIE_IO_BACKEND_AMDAIR;
     xaie->AieConfigPtr.BaseAddr = 0;
     xaie->DevInst.IOInst = (void *)sysfs_path;
   } else {
@@ -325,6 +325,13 @@ uint64_t air_segment_load(const char *name) {
 
 #ifdef AIR_PCIE
   XAie_Finish(&(_air_host_active_libxaie->DevInst));
+
+  // Setting the driver libxaie backend back up
+  // Currently only targetting device 0
+  _air_host_active_libxaie->AieConfigPtr.Backend = XAIE_IO_BACKEND_AMDAIR;
+  _air_host_active_libxaie->DevInst.IOInst =
+      (void *)"/sys/class/amdair/amdair/00";
+
   XAie_CfgInitialize(&(_air_host_active_libxaie->DevInst),
                      &(_air_host_active_libxaie->AieConfigPtr));
   XAie_PmRequestTiles(&(_air_host_active_libxaie->DevInst), NULL, 0);
