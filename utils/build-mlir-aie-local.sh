@@ -33,7 +33,7 @@ fi
 LLVM_DIR=`realpath $1`
 CMAKEMODULES_DIR=`realpath $2`
 
-LIBXAIE_DIR=${realpath $3:-"/opt/xaiengine/"}
+LIBXAIE_DIR=`realpath ${3:-"/opt/xaiengine/"}`
 MLIR_AIE_DIR=${4:-"mlir-aie"}
 BUILD_DIR=${5:-"build"}
 INSTALL_DIR=${6:-"install"}
