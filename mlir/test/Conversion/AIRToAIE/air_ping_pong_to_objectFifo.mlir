@@ -19,7 +19,6 @@
 // CHECK:       %[[VAL_8:.*]] = AIE.objectFifo.acquire<Produce> (%[[VAL_2]] : !AIE.objectFifo<memref<32xi32, 2>>, 1) : !AIE.objectFifoSubview<memref<32xi32, 2>>
 // CHECK:       %[[VAL_9:.*]] = AIE.objectFifo.subview.access %[[VAL_8]][0] : !AIE.objectFifoSubview<memref<32xi32, 2>> -> memref<32xi32, 2>
 // CHECK:       AIE.objectFifo.release<Produce> (%[[VAL_2]] : !AIE.objectFifo<memref<32xi32, 2>>, 1)
-// CHECK:       AIE.objectFifo.release<Consume> (%[[VAL_3]] : !AIE.objectFifo<memref<32xi32, 2>>, 1)
 // CHECK:     }
 // CHECK:     AIE.end
 // CHECK:   } {elf_file = "segment_0_core_1_1.elf"}
@@ -33,14 +32,12 @@ AIE.device(xcvc1902) {
     %c1 = arith.constant 1 : index
     %c4096 = arith.constant 4096 : index
     %alloc = memref.alloc() {sym_name = "scratch"} : memref<32xi32, 2>
-    %alloc_0 = memref.alloc() {sym_name = "scratch_copy"} : memref<32xi32, 2>
     %async_token_0 = air.wait_all async
     %2 = scf.for %arg0 = %c0 to %c4096 step %c32 iter_args(%arg11 = %async_token_0) -> (!air.async.token) {
       %3 = air.channel.get async [%arg11]  @channel_0[] (%alloc[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
-      %4 = air.channel.put async [%3]  @channel_1[] (%alloc_0[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
+      %4 = air.channel.put async [%3]  @channel_1[] (%alloc[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
       scf.yield %4 : !air.async.token
     } {isolated = true, unroll = 2 : i64}
-    memref.dealloc %alloc_0 : memref<32xi32, 2>
     memref.dealloc %alloc : memref<32xi32, 2>
     AIE.end
   } {elf_file = "segment_0_core_1_1.elf"}
