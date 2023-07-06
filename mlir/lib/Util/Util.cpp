@@ -336,8 +336,16 @@ void air::eraseAIRHierarchyOperand(air::HierarchyInterface op, unsigned index) {
 // Get channel declaration through channel symbol
 air::ChannelOp
 air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
-  auto module = op->getParentOfType<ModuleOp>();
-  return dyn_cast<air::ChannelOp>(module.lookupSymbol(op.getChanName()));
+  Operation *parent = op;
+  while (parent = parent->getParentOp()) {
+    if (parent->hasTrait<OpTrait::SymbolTable>()) {
+      auto st = mlir::SymbolTable::lookupSymbolIn(parent, op.getChanName());
+      if (st && isa<air::ChannelOp>(st)) {
+        return dyn_cast<air::ChannelOp>(st);
+      }
+    }
+  }
+  return air::ChannelOp();
 }
 
 // Get ChannelPutOp through ChannelOp
