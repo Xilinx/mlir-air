@@ -859,7 +859,7 @@ void xaie_strobe_shim_reset() {
   auto *npib = (volatile uint32_t *)(npi_base);
 
   air_printf("Starting shim reset\r\n");
-  
+
   // Unlocking NPI
   npib[NPI_LOCK_REG >> 2] = 0xF9E8D7C6;
 
