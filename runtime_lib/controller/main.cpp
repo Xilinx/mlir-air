@@ -173,6 +173,8 @@ int mlir_aie_reinit_device(aie_libxaie_ctx_t *ctx) {
   return 0;
 }
 
+constexpr uint64_t NUM_BD = 16;
+
 void mlir_aie_print_dma_status(aie_libxaie_ctx_t *ctx, int col, int row) {
   // int col = loc.Col;
   // int row = loc.Row;
@@ -210,7 +212,7 @@ void mlir_aie_print_dma_status(aie_libxaie_ctx_t *ctx, int col, int row) {
              col, row, dma_mm2s_status, dma_mm2s0_control, dma_mm2s1_control,
              dma_s2mm_status, dma_s2mm0_control, dma_s2mm1_control, dma_bd0_a,
              dma_bd0_control, dma_bd1_a, dma_bd1_control);
-  for (int bd = 0; bd < 8; bd++) {
+  for (int bd = 0; bd < NUM_BD; bd++) {
     u32 dma_bd_addr_a;
     XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D000 + (0x20 * bd),
                 &dma_bd_addr_a);
@@ -823,22 +825,28 @@ void xaie_l2_dma_init(int col) {
 #ifdef ARM_CONTROLLER
 
 // Defining the NPI base and registers we use to reset the array
-uint64_t npi_base = 0xF70A0000UL;
-#define NPI_MASK_REG 0x0
-#define NPI_VAL_REG 0x4
-#define NPI_LOCK_REG 0xC
+constexpr uint64_t npi_base = 0xF70A0000UL;
+constexpr auto NPI_MASK_REG = 0x0;
+constexpr auto NPI_VAL_REG = 0x4;
+constexpr auto NPI_LOCK_REG = 0xC;
 void xaie_array_reset() {
 
   // Getting a pointer to NPI
-  volatile uint32_t *npib = (volatile uint32_t *)(npi_base);
+  auto *npib = (volatile uint32_t *)(npi_base);
 
   // Performing array reset sequence
   air_printf("Starting array reset\r\n");
+
+  // Unlocking NPI
   npib[NPI_LOCK_REG >> 2] = 0xF9E8D7C6;
+
+  // Performing reset
   npib[NPI_MASK_REG >> 2] = 0x04000000;
   npib[NPI_VAL_REG >> 2] = 0x040381B1;
   npib[NPI_MASK_REG >> 2] = 0x04000000;
   npib[NPI_VAL_REG >> 2] = 0x000381B1;
+
+  // Locking NPI
   npib[NPI_LOCK_REG >> 2] = 0x12341234;
   air_printf("Done with array reset\r\n");
 }
@@ -848,14 +856,20 @@ void xaie_array_reset() {
 void xaie_strobe_shim_reset() {
 
   // Getting a pointer to NPI
-  volatile uint32_t *npib = (volatile uint32_t *)(npi_base);
+  auto *npib = (volatile uint32_t *)(npi_base);
 
   air_printf("Starting shim reset\r\n");
+  
+  // Unlocking NPI
   npib[NPI_LOCK_REG >> 2] = 0xF9E8D7C6;
+
+  // Performing reset
   npib[NPI_MASK_REG >> 2] = 0x08000000;
   npib[NPI_VAL_REG >> 2] = 0x080381B1;
   npib[NPI_MASK_REG >> 2] = 0x08000000;
   npib[NPI_VAL_REG >> 2] = 0x000381B1;
+
+  // Locking NPI
   npib[NPI_LOCK_REG >> 2] = 0x12341234;
   air_printf("Done with shim reset\r\n");
 }
