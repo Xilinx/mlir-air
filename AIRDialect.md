@@ -199,6 +199,37 @@ Interfaces: air_AsyncOpInterface, air_ChannelInterface
 | :----: | ----------- |
 | `async_token` | async token type
 
+### `air.custom` (xilinx::air::CustomOp)
+
+A handle to a user-customized op
+
+A placeholder operation for a user-customized op. With user-specified 
+latency value, AIR Runner is able to simulate the system-level
+performance with this op in place.
+
+Traits: AttrSizedOperandSegments
+
+Interfaces: air_AsyncOpInterface
+
+#### Attributes:
+
+| Attribute | MLIR Type | Description |
+| :-------: | :-------: | ----------- |
+| `symbol` | ::mlir::SymbolRefAttr | symbol reference attribute
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `async_dependencies` | async token type
+| `custom_operands` | any type
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `async_token` | async token type
+
 ### `air.dealloc` (xilinx::air::DeallocOp)
 
 dealloc operator
