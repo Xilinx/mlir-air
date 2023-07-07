@@ -228,8 +228,10 @@ public:
       auto child_op = &*(c.op->getRegions().front().getOps().begin());
       if (auto Op = mlir::dyn_cast<linalg::LinalgOp>(child_op)) {
         uint64_t compute_xfer_cost = 0;
-        uint64_t compute_op_cost = getComputeCost(d, child_op);
+        uint64_t compute_op_cost = getComputeCostFromCostModel(d, child_op);
         execution_time = std::max(compute_op_cost, compute_xfer_cost);
+      } else if (auto custom_op = dyn_cast<air::CustomOp>(child_op)) {
+        execution_time = getComputeCostFromJSON(d, custom_op);
       }
     } else {
       LLVM_DEBUG(llvm::dbgs()
@@ -645,7 +647,7 @@ private:
     return output;
   }
 
-  uint64_t getComputeCost(device &d, Operation *op) {
+  uint64_t getComputeCostFromCostModel(device &d, Operation *op) {
     uint64_t compute_op_cost = 0;
     auto opCounts = xilinx::air::CostModel().getOpCounts(op);
     std::string skip = "footprint";
@@ -677,12 +679,6 @@ private:
       double cycles_per_second = 1e9;
       double efficiency = 1.0f;
 
-      auto model = jsonModel.getAsObject();
-      if (!model)
-        op->emitOpError("failed to read JSON model");
-      if (!d.kernels.size())
-        op->emitOpError("found no kernel in JSON model");
-
       // if kernels exists, assume everthing else exists
       // Get operation datatype as the first operand's datatype
       auto op_datatype = getElementTypeAsString(op->getOperandTypes()[0]);
@@ -704,6 +700,38 @@ private:
       compute_op_cost = cycles;
     }
     return compute_op_cost;
+  }
+
+  uint64_t getComputeCostFromJSON(device &d, air::CustomOp op) {
+    // TODO: read custom kernels directly from device model d
+    double cycles = 1.0;
+    auto model = jsonModel.getAsObject();
+    if (!model)
+      op->emitOpError("failed to read JSON model");
+
+    // if kernels exists, look up air.custom op and its symbolic name
+    auto op_sym_name =
+        op->getAttrOfType<StringAttr>(mlir::SymbolTable::getSymbolAttrName())
+            .str();
+    auto op_datatype = getElementTypeAsString(op->getOperandTypes()[0]);
+    auto kernels = model->getObject("custom_kernels");
+    if (kernels) {
+      auto kernel = kernels->getObject(op_sym_name);
+      if (kernel) {
+        auto kernel_ty = kernel->getObject("datatypes")->getObject(op_datatype);
+        if (kernel_ty && kernel_ty->getNumber("latency")) {
+          cycles = *kernel_ty->getNumber("latency");
+        } else {
+          op->emitOpError("unknown data type ")
+              << op_datatype << " for custom kernel " << op_sym_name;
+        }
+      } else {
+        op->emitOpError("found no custom kernel named ") << op_sym_name;
+      }
+    } else {
+      op->emitOpError("found no custom_kernels obj. in JSON");
+    }
+    return cycles;
   }
 
   //===----------------------------------------------------------------------===//
