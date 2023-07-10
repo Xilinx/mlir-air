@@ -679,6 +679,14 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
     new_region.back().erase();
     new_region.front().eraseArguments(iter_args_idx);
 
+    // copy ping-pong pattern flags over to the new scf.for
+    if (fop->hasAttr("isolated")) {
+      new_fop->setAttr("isolated", fop->getAttr("isolated"));
+    }
+    if (fop->hasAttr("unroll")) {
+      new_fop->setAttr("unroll", fop->getAttr("unroll"));
+    }
+
     // use the new for op's results
     int idx = 0;
     for (auto r : fop.getResults()) {
@@ -1002,22 +1010,16 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
         getChannelPutOpThroughSymbol(channel, device);
     std::vector<ChannelGetOp> channelGets =
         getChannelGetOpThroughSymbol(channel, device);
-    // // TODO: objectFifo currently does not support mult-producer over time,
-    // i.e.
-    // // multiple channel.put ops accessing the same channel
-    // if (foundNonUniqueChannelAccess(channelPuts))
-    //   return failure();
-    // // TODO: objectFifo currently does not support mult-consumer over time,
-    // i.e.
-    // // multiple channel.get ops accessing the same channel
-    // if (foundNonUniqueChannelAccess(channelGets))
-    //   return failure();
 
     // put/get come in pairs, if one is missing then it's L3
     MemRefType srcMemref;
     int src_space = (int)air::MemorySpace::L3;
     Value producerTile;
     if (channelPuts.size() > 0) {
+      // for now, objectFifo does not support many-to-one/many broadcast
+      if (channelPuts.size() > 1)
+        return failure();
+
       for (auto put : channelPuts) {
         // find AIE tiles and their cores based on memory hierarchy levels
         srcMemref = put.getSrc().getType().cast<MemRefType>();
@@ -1045,6 +1047,10 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     int dst_space = (int)air::MemorySpace::L3;
     Value consumerTile;
     if (channelGets.size() > 0) {
+      // for now, we focus on one-to-one channels
+      if (channelGets.size() > 1)
+        return failure();
+
       for (auto get : channelGets) {
         // find AIE tiles and their cores based on memory hierarchy levels
         dstMemref = get.getDst().getType().cast<MemRefType>();
@@ -1133,76 +1139,18 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 
 private:
   ShimTileAllocator &shimTileAlloc;
-
-  air::ChannelPutOp
-  foundNonUniqueChannelAccess(std::vector<air::ChannelPutOp> puts) const {
-    // Get channel.put channel indices
-    SmallVector<SmallVector<Value>> ids;
-    for (auto put : puts) {
-      for (auto id : put.getIndices()) {
-        if (!id.getDefiningOp())
-          put->emitOpError(
-              "contains channel index not returned from ConstantIndexOp");
-      }
-      ids.push_back(put.getIndices());
-    }
-    auto non_unique_id = foundNonUniqueChannelAccess(ids);
-    if (non_unique_id == -1)
-      return air::ChannelPutOp();
-    else {
-      return puts[foundNonUniqueChannelAccess(ids)];
-    }
-  }
-
-  air::ChannelGetOp
-  foundNonUniqueChannelAccess(std::vector<air::ChannelGetOp> gets) const {
-    // Get channel.put channel indices
-    SmallVector<SmallVector<Value>> ids;
-    for (auto get : gets) {
-      for (auto id : get.getIndices()) {
-        if (!id.getDefiningOp())
-          get->emitOpError(
-              "contains channel index not returned from ConstantIndexOp");
-      }
-      ids.push_back(get.getIndices());
-    }
-    auto non_unique_id = foundNonUniqueChannelAccess(ids);
-    if (non_unique_id == -1)
-      return air::ChannelGetOp();
-    else {
-      return gets[foundNonUniqueChannelAccess(ids)];
-    }
-  }
-
-  int foundNonUniqueChannelAccess(SmallVector<SmallVector<Value>> ids) const {
-    // Get indices in int
-    std::vector<std::vector<int>> ids_int;
-    for (auto id_v : ids) {
-      std::vector<int> id_v_int;
-      for (auto id : id_v) {
-        // assert(id.getDefiningOp());
-        id_v_int.push_back(
-            dyn_cast<arith::ConstantIndexOp>(id.getDefiningOp()).value());
-      }
-      ids_int.push_back(id_v_int);
-    }
-    // Find non-unique channel access
-    for (unsigned i = 0; i < ids_int.size(); i++) {
-      for (unsigned j = i + 1; j < ids_int.size(); j++) {
-        bool all_identical = true;
-        for (unsigned k = 0; k < std::min(ids_int[i].size(), ids_int[j].size());
-             k++) {
-          if (ids_int[i][k] != ids_int[j][k]) {
-            all_identical = false;
-          }
-        }
-        if (all_identical)
-          return j;
-      }
-    }
-    return -1;
-  }
 };
+
+// This function replaces ChannelPutOp/ChannelGetOp with AIE_CreateObjectFifoOps
+// and with ObjectFifoAcquireOp<Producer/Consumer>. It also erases memref allocs
+// as the objFifo lowering allocates its own memory. It replaces the associated
+// memref deallocs with ObjectFifoReleaseOps.
+void lowerAIRChannels(AIE::DeviceOp &d, ShimTileAllocator &a) {
+  auto ctx = d->getContext();
+  RewritePatternSet patterns(ctx);
+  patterns.insert<LowerAIRChannelsPattern>(ctx, a);
+  (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
+}
 
 struct SpecializeChannelBundlePattern
     : public OpRewritePattern<air::ChannelOp> {
@@ -1358,17 +1306,6 @@ void specializeChannelBundle(AIE::DeviceOp &d) {
   (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
 }
 
-// This function replaces ChannelPutOp/ChannelGetOp with AIE_CreateObjectFifoOps
-// and with ObjectFifoAcquireOp<Producer/Consumer>. It also erases memref allocs
-// as the objFifo lowering allocates its own memory. It replaces the associated
-// memref deallocs with ObjectFifoReleaseOps.
-void lowerAIRChannels(AIE::DeviceOp &d, ShimTileAllocator &a) {
-  auto ctx = d->getContext();
-  RewritePatternSet patterns(ctx);
-  patterns.insert<LowerAIRChannelsPattern>(ctx, a);
-  (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
-}
-
 struct LowerAIRPingPongPattern : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -1384,25 +1321,29 @@ struct LowerAIRPingPongPattern : public OpRewritePattern<scf::ForOp> {
     uint64_t unroll_factor = 0;
     if (!for_op->hasAttr("unroll"))
       return failure();
+    unroll_factor = for_op->getAttrOfType<IntegerAttr>("unroll").getInt();
 
     // Get device op
     auto device = for_op->getParentOfType<AIE::DeviceOp>();
     if (!device)
       return failure();
 
-    // Remove async interface in device op; replace scf.for with affine.for
-    SmallVector<Operation *> ops;
-    if (for_op->getNumResults() &&
-        for_op->getResult(0).getType().isa<air::AsyncTokenType>()) {
-      auto afo = convertAsyncSCFForToSyncAffineForOp(rewriter, for_op, ops);
-      afo->setAttr("object_count",
-                   IntegerAttr::get(IntegerType::get(afo->getContext(), 32),
-                                    unroll_factor));
-
-    } else
-      return failure();
-
-    rewriter.eraseOp(for_op);
+    // Annotate channels with buffer_resource, i.e. object count
+    for_op.walk([&](Operation *op) {
+      if (auto get = dyn_cast<air::ChannelGetOp>(op)) {
+        auto chan_op = air::getChannelDeclarationThroughSymbol(get);
+        chan_op->setAttr(
+            "buffer_resources",
+            IntegerAttr::get(IntegerType::get(chan_op->getContext(), 32),
+                             unroll_factor));
+      } else if (auto put = dyn_cast<air::ChannelPutOp>(op)) {
+        auto chan_op = air::getChannelDeclarationThroughSymbol(put);
+        chan_op->setAttr(
+            "buffer_resources",
+            IntegerAttr::get(IntegerType::get(chan_op->getContext(), 32),
+                             unroll_factor));
+      }
+    });
 
     for_op->removeAttr("isolated");
     for_op->removeAttr("unroll");
@@ -1411,79 +1352,16 @@ struct LowerAIRPingPongPattern : public OpRewritePattern<scf::ForOp> {
   }
 
 private:
-  AffineForOp
-  convertAsyncSCFForToSyncAffineForOp(OpBuilder builder, scf::ForOp for_op,
-                                      SmallVector<Operation *> &ops) const {
-    builder.setInsertionPoint(for_op);
-    auto new_affine_for = convertScfForToAffineFor(builder, for_op);
-    builder.setInsertionPointToStart(new_affine_for.getBody());
-    for_op.walk([&](Operation *op) {
-      if (isa<air::ChannelGetOp>(op)) {
-        ops.push_back(op);
-      } else if (isa<air::ChannelPutOp>(op)) {
-        ops.push_back(op);
-      }
-    });
-    int unroll_factor = for_op->getAttrOfType<IntegerAttr>("unroll").getInt();
-    for (auto op : ops) {
-      removeAsyncInterface(builder, op, unroll_factor);
-    }
-
-    return new_affine_for;
-  }
-
-  void removeAsyncInterface(OpBuilder builder, Operation *op,
-                            int buffer_resources) const {
-    if (auto get = dyn_cast<air::ChannelGetOp>(op)) {
-      removeAsyncInterfaceInAsyncOp(builder, get);
-      auto chan_op = air::getChannelDeclarationThroughSymbol(get);
-      chan_op->setAttr(
-          "buffer_resources",
-          IntegerAttr::get(IntegerType::get(chan_op->getContext(), 32),
-                           buffer_resources));
-    } else if (auto put = dyn_cast<air::ChannelPutOp>(op)) {
-      removeAsyncInterfaceInAsyncOp(builder, put);
-      auto chan_op = air::getChannelDeclarationThroughSymbol(put);
-      chan_op->setAttr(
-          "buffer_resources",
-          IntegerAttr::get(IntegerType::get(chan_op->getContext(), 32),
-                           buffer_resources));
-    }
-  }
-
-  void removeAsyncInterfaceInAsyncOp(OpBuilder builder,
-                                     air::ChannelGetOp get) const {
-    SmallVector<Type, 4> tys = {};
-    SmallVector<Value, 4> deps = {};
-    builder.create<air::ChannelGetOp>(get->getLoc(), tys, deps,
-                                      get.getChanName(), get.getIndices(),
-                                      get.getDst(), get.getDstOffsets(),
-                                      get.getDstSizes(), get.getDstStrides());
-  }
-
-  void removeAsyncInterfaceInAsyncOp(OpBuilder builder,
-                                     air::ChannelPutOp put) const {
-    SmallVector<Type, 4> tys = {};
-    SmallVector<Value, 4> deps = {};
-    builder.create<air::ChannelPutOp>(put->getLoc(), tys, deps,
-                                      put.getChanName(), put.getIndices(),
-                                      put.getSrc(), put.getSrcOffsets(),
-                                      put.getSrcSizes(), put.getSrcStrides());
-  }
-
-  AffineForOp convertScfForToAffineFor(OpBuilder builder,
-                                       scf::ForOp sfo) const {
-    int stepNum =
-        dyn_cast<arith::ConstantIndexOp>(sfo.getStep().getDefiningOp()).value();
-    int lbNum =
-        dyn_cast<arith::ConstantIndexOp>(sfo.getLowerBound().getDefiningOp())
-            .value();
-    int ubNum =
-        dyn_cast<arith::ConstantIndexOp>(sfo.getUpperBound().getDefiningOp())
-            .value();
-    return builder.create<AffineForOp>(sfo.getLoc(), lbNum, ubNum, stepNum);
-  }
 };
+
+// By specializing each air.channel op in a channel bundle, this function
+// removes air.channel bundled representation in a aie.device op.
+void LowerAIRPingPong(AIE::DeviceOp &d) {
+  auto ctx = d->getContext();
+  RewritePatternSet patterns(ctx);
+  patterns.insert<LowerAIRPingPongPattern>(ctx);
+  (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
+}
 
 class AIRToAIEPass : public AIRToAIEBase<AIRToAIEPass> {
 
@@ -2114,6 +1992,8 @@ public:
       lowerPipelineGetPut(device, tileToHerdMap);
 
       specializeChannelBundle(device);
+
+      LowerAIRPingPong(device);
 
       ShimTileAllocator shimTileAlloc(device.getTargetModel());
       lowerAIRChannels(device, shimTileAlloc);

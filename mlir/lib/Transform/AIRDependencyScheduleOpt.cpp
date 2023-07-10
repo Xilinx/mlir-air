@@ -1066,8 +1066,11 @@ struct HoistOpsNotUsingPingPongPattern : public OpRewritePattern<scf::ForOp> {
         target_ops.push_back(child_par.getOperation());
       }
     }
-    if (target_ops.empty())
+    if (target_ops.empty()) {
+      // Loop is already in isolation
+      for_op->setAttr("isolated", rewriter.getBoolAttr(true));
       return failure();
+    }
 
     // Hoist ops out to a new scf.for loop
     rewriter.setInsertionPoint(for_op);
