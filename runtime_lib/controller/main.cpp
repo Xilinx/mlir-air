@@ -918,7 +918,8 @@ void xaie_device_init(int num_cols) {
 }
 
 // Initialize one segment with lower left corner at (col_start, row_start)
-void xaie_segment_init(int start_col, int num_cols, int start_row, int num_rows) {
+void xaie_segment_init(int start_col, int num_cols, int start_row,
+                       int num_rows) {
   HerdCfgInst.col_start = start_col;
   HerdCfgInst.num_cols = num_cols;
   HerdCfgInst.row_start = start_row;
@@ -1066,8 +1067,8 @@ void handle_packet_segment_initialize(dispatch_packet_t *pkt) {
     if (start_row == 0)
       start_row++;
     xaie_segment_init(start_col, num_cols, start_row, num_rows);
-    air_printf("Initialized segment %d at (%d, %d) of size (%d,%d)\r\n", segment_id,
-               start_col, start_row, num_cols, num_rows);
+    air_printf("Initialized segment %d at (%d, %d) of size (%d,%d)\r\n",
+               segment_id, start_col, start_row, num_cols, num_rows);
     // segment_id is ignored - current restriction is 1 segment -> 1 controller
     // mappedShimDMA[0] = shimDMA0;
     // mappedShimDMA[1] = shimDMA1;
