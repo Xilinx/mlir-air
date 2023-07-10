@@ -17,12 +17,8 @@ func.func @graph(%arg0: memref<32x16xi32>, %arg1: memref<32x16xi32>) {
   %c32 = arith.constant 32 : index
   %c1 = arith.constant 1 : index
   %c0 = arith.constant 0 : index
-  %async_token = air.execute {
-    air.channel.put  @channel_0[%c0, %c0] (%arg0[%c8, %c0] [%c8, %c16] [%c32, %c0]) : (memref<32x16xi32>)
-  }
-  %async_token_0 = air.execute {
-    air.channel.get  @channel_1[%c0, %c0] (%arg1[%c8, %c0] [%c8, %c16] [%c32, %c0]) : (memref<32x16xi32>)
-  }
+  %async_token = air.channel.put async  @channel_0[%c0, %c0] (%arg0[%c8, %c0] [%c8, %c16] [%c32, %c0]) : (memref<32x16xi32>)
+  %async_token_0 = air.channel.get async @channel_1[%c0, %c0] (%arg1[%c8, %c0] [%c8, %c16] [%c32, %c0]) : (memref<32x16xi32>)
   air.herd @herd_0  tile (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) attributes {x_loc = 7 : i64, y_loc = 2 : i64} {
     %c0_1 = arith.constant 0 : index
     %c32_2 = arith.constant 32 : index
