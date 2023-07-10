@@ -124,7 +124,7 @@ main(int argc, char *argv[])
   segment_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
   // Set up the worlds smallest herd at 7,2
-  segment_pkt->arg[0] = AIR_PKT_TYPE_HERD_INITIALIZE;
+  segment_pkt->arg[0] = AIR_PKT_TYPE_SEGMENT_INITIALIZE;
   segment_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
   segment_pkt->arg[0] |= (1L << 40);
   segment_pkt->arg[0] |= (7L << 32);

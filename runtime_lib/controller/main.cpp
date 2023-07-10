@@ -917,8 +917,8 @@ void xaie_device_init(int num_cols) {
   }
 }
 
-// Initialize one herd with lower left corner at (col_start, row_start)
-void xaie_herd_init(int start_col, int num_cols, int start_row, int num_rows) {
+// Initialize one segment with lower left corner at (col_start, row_start)
+void xaie_segment_init(int start_col, int num_cols, int start_row, int num_rows) {
   HerdCfgInst.col_start = start_col;
   HerdCfgInst.num_cols = num_cols;
   HerdCfgInst.row_start = start_row;
@@ -1048,7 +1048,7 @@ void handle_packet_device_initialize(dispatch_packet_t *pkt) {
   xaie_device_init(NUM_SHIM_DMAS);
 }
 
-void handle_packet_herd_initialize(dispatch_packet_t *pkt) {
+void handle_packet_segment_initialize(dispatch_packet_t *pkt) {
   setup = true;
   packet_set_active(pkt, true);
 
@@ -1059,16 +1059,16 @@ void handle_packet_herd_initialize(dispatch_packet_t *pkt) {
     u32 start_col = (pkt->arg[0] >> 32) & 0xff;
     u32 num_cols = (pkt->arg[0] >> 40) & 0xff;
 
-    u32 herd_id = pkt->arg[1] & 0xffff;
+    u32 segment_id = pkt->arg[1] & 0xffff;
     u32 shimDMA0 = (pkt->arg[1] >> 16) & 0xff;
     u32 shimDMA1 = (pkt->arg[1] >> 24) & 0xff;
-    // TODO more checks on herd dimensions
+    // TODO more checks on segment dimensions
     if (start_row == 0)
       start_row++;
-    xaie_herd_init(start_col, num_cols, start_row, num_rows);
-    air_printf("Initialized herd %d at (%d, %d) of size (%d,%d)\r\n", herd_id,
+    xaie_segment_init(start_col, num_cols, start_row, num_rows);
+    air_printf("Initialized segment %d at (%d, %d) of size (%d,%d)\r\n", segment_id,
                start_col, start_row, num_cols, num_rows);
-    // herd_id is ignored - current restriction is 1 herd -> 1 controller
+    // segment_id is ignored - current restriction is 1 segment -> 1 controller
     // mappedShimDMA[0] = shimDMA0;
     // mappedShimDMA[1] = shimDMA1;
     // xaie_shim_dma_init(shimDMA0);
@@ -1077,7 +1077,7 @@ void handle_packet_herd_initialize(dispatch_packet_t *pkt) {
     // air_printf("Initialized shim DMA physical idx %d to logical idx
     // %d\r\n",shimDMA1,1);
   } else {
-    air_printf("Unsupported address type 0x%04X for herd initialize\r\n",
+    air_printf("Unsupported address type 0x%04X for segment initialize\r\n",
                (pkt->arg[0] >> 48) & 0xf);
   }
 }
@@ -1636,8 +1636,8 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id) {
       complete_agent_dispatch_packet(pkt);
       packets_processed++;
       break;
-    case AIR_PKT_TYPE_HERD_INITIALIZE:
-      handle_packet_herd_initialize(pkt);
+    case AIR_PKT_TYPE_SEGMENT_INITIALIZE:
+      handle_packet_segment_initialize(pkt);
       complete_agent_dispatch_packet(pkt);
       packets_processed++;
       break;
