@@ -118,24 +118,25 @@ main(int argc, char *argv[])
   uint64_t packet_id = wr_idx % q->size;
 
   // herd_setup packet
-  dispatch_packet_t *segment_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  dispatch_packet_t *segment_pkt =
+      (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
   initialize_packet(segment_pkt);
   segment_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
   // Set up the worlds smallest herd at 7,2
-  segment_pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
+  segment_pkt->arg[0] = AIR_PKT_TYPE_HERD_INITIALIZE;
   segment_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
   segment_pkt->arg[0] |= (1L << 40);
   segment_pkt->arg[0] |= (7L << 32);
   segment_pkt->arg[0] |= (1L << 24);
   segment_pkt->arg[0] |= (2L << 16);
-  
-  segment_pkt->arg[1] = 0;  // Herd ID 0
+
+  segment_pkt->arg[1] = 0; // Herd ID 0
   segment_pkt->arg[2] = 0;
   segment_pkt->arg[3] = 0;
 
   // dispatch packet
-  signal_create(1, 0, NULL, (signal_t*)&segment_pkt->completion_signal);
+  signal_create(1, 0, NULL, (signal_t *)&segment_pkt->completion_signal);
   signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
   signal_store_release((signal_t*)&q->doorbell, wr_idx);
 

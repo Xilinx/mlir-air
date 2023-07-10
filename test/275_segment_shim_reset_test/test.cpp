@@ -25,9 +25,7 @@
 
 #define XAIE_NUM_COLS 10
 
-int
-main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
   uint64_t row = 0;
   uint64_t reset_col = 6;
   uint64_t non_reset_col = 7;
@@ -116,11 +114,11 @@ main(int argc, char *argv[])
     dst_1[i] = 0xdeface;
   }
 
-  for (int i=0; i<8; i++) {
-    mlir_aie_write_buffer_ping_in(xaie, i, 0xabbaba00+i);
-    mlir_aie_write_buffer_pong_in(xaie, i, 0xdeeded00+i);
-    mlir_aie_write_buffer_ping_out(xaie, i, 0x12345670+i);
-    mlir_aie_write_buffer_pong_out(xaie, i, 0x76543210+i);
+  for (int i = 0; i < 8; i++) {
+    mlir_aie_write_buffer_ping_in(xaie, i, 0xabbaba00 + i);
+    mlir_aie_write_buffer_pong_in(xaie, i, 0xdeeded00 + i);
+    mlir_aie_write_buffer_ping_out(xaie, i, 0x12345670 + i);
+    mlir_aie_write_buffer_pong_out(xaie, i, 0x76543210 + i);
   }
 
   ///////////// Starting the column we are resetting
@@ -144,8 +142,9 @@ main(int argc, char *argv[])
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt2 =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt2, 0, reset_col, 0, 0, 4, 2, air_dev_mem_get_pa(dst_0),
-                       DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt2, 0, reset_col, 0, 0, 4, 2,
+                       air_dev_mem_get_pa(dst_0), DMA_COUNT * sizeof(float), 1,
+                       0, 1, 0, 1, 0);
   air_queue_dispatch_and_wait(queues[0], wr_idx, pkt2);
 
   ///////////// Starting the column we are not resetting
@@ -157,8 +156,9 @@ main(int argc, char *argv[])
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt3 =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt3, 0, non_reset_col, 1, 0, 4, 2, air_dev_mem_get_pa(src_1),
-                       DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt3, 0, non_reset_col, 1, 0, 4, 2,
+                       air_dev_mem_get_pa(src_1), DMA_COUNT * sizeof(float), 1,
+                       0, 1, 0, 1, 0);
   air_queue_dispatch_and_wait(queues[0], wr_idx, pkt3);
 
   //
@@ -169,15 +169,21 @@ main(int argc, char *argv[])
   packet_id = wr_idx % queues[0]->size;
   dispatch_packet_t *pkt4 =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt4, 0, non_reset_col, 0, 0, 4, 2, air_dev_mem_get_pa(dst_1),
-                       DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_packet_nd_memcpy(pkt4, 0, non_reset_col, 0, 0, 4, 2,
+                       air_dev_mem_get_pa(dst_1), DMA_COUNT * sizeof(float), 1,
+                       0, 1, 0, 1, 0);
   air_queue_dispatch_and_wait(queues[0], wr_idx, pkt4);
 
   // Reading the status of the two shim DMAs after performing the data movement
   u32 before_reset_core_dma_mm2s_status;
   u32 before_non_reset_core_dma_mm2s_status;
-  XAie_Read32(&(xaie->DevInst), _XAie_GetTileAddr(&(xaie->DevInst), row, reset_col) + 0x0001D164, &before_reset_core_dma_mm2s_status);
-  XAie_Read32(&(xaie->DevInst), _XAie_GetTileAddr(&(xaie->DevInst), row, non_reset_col) + 0x0001D164, &before_non_reset_core_dma_mm2s_status);
+  XAie_Read32(&(xaie->DevInst),
+              _XAie_GetTileAddr(&(xaie->DevInst), row, reset_col) + 0x0001D164,
+              &before_reset_core_dma_mm2s_status);
+  XAie_Read32(&(xaie->DevInst),
+              _XAie_GetTileAddr(&(xaie->DevInst), row, non_reset_col) +
+                  0x0001D164,
+              &before_non_reset_core_dma_mm2s_status);
 
   // Performing a reset on the reset col
   wr_idx = queue_add_write_index(queues[0], 1);
@@ -187,12 +193,17 @@ main(int argc, char *argv[])
   air_packet_segment_init(segment_pkt_two, 0, reset_col, 1, row, 3);
   air_queue_dispatch_and_wait(queues[0], wr_idx, segment_pkt_two);
 
-  
-  // Reading the status of the two shim DMAs after performing a reset of the reset_col
+  // Reading the status of the two shim DMAs after performing a reset of the
+  // reset_col
   u32 after_reset_core_dma_mm2s_status;
   u32 after_non_reset_core_dma_mm2s_status;
-  XAie_Read32(&(xaie->DevInst), _XAie_GetTileAddr(&(xaie->DevInst), row, reset_col) + 0x0001D164, &after_reset_core_dma_mm2s_status);
-  XAie_Read32(&(xaie->DevInst), _XAie_GetTileAddr(&(xaie->DevInst), row, non_reset_col) + 0x0001D164, &after_non_reset_core_dma_mm2s_status);
+  XAie_Read32(&(xaie->DevInst),
+              _XAie_GetTileAddr(&(xaie->DevInst), row, reset_col) + 0x0001D164,
+              &after_reset_core_dma_mm2s_status);
+  XAie_Read32(&(xaie->DevInst),
+              _XAie_GetTileAddr(&(xaie->DevInst), row, non_reset_col) +
+                  0x0001D164,
+              &after_non_reset_core_dma_mm2s_status);
 
   printf("Before the reset\n");
   printf("(%d, %d)\n", reset_col, row);
@@ -208,50 +219,64 @@ main(int argc, char *argv[])
 
   int errors = 0;
 
-  // Making sure that the core DMA status of both cores are not 0 before the reset - This makes sure the test was run correctly
-  if(!before_reset_core_dma_mm2s_status) {
+  // Making sure that the core DMA status of both cores are not 0 before the
+  // reset - This makes sure the test was run correctly
+  if (!before_reset_core_dma_mm2s_status) {
     errors++;
-    printf("[ERROR] MM2S Status of reset core before reset is not zero (0x%x != 0)\n", before_reset_core_dma_mm2s_status);
+    printf("[ERROR] MM2S Status of reset core before reset is not zero (0x%x "
+           "!= 0)\n",
+           before_reset_core_dma_mm2s_status);
   }
-  if(!before_non_reset_core_dma_mm2s_status) {
+  if (!before_non_reset_core_dma_mm2s_status) {
     errors++;
-    printf("[ERROR] MM2S Status of non reset core before reset is not zero (0x%x != 0)\n", before_non_reset_core_dma_mm2s_status);
+    printf("[ERROR] MM2S Status of non reset core before reset is not zero "
+           "(0x%x != 0)\n",
+           before_non_reset_core_dma_mm2s_status);
   }
 
-  // Making sure the reset core DMA status doesn't match what it was before the reset
-  if(before_reset_core_dma_mm2s_status == after_reset_core_dma_mm2s_status) {
+  // Making sure the reset core DMA status doesn't match what it was before the
+  // reset
+  if (before_reset_core_dma_mm2s_status == after_reset_core_dma_mm2s_status) {
     errors++;
-    printf("[ERROR] MM2S Status of reset core is the same before (0x%x) and after (0x%x) the reset\n", before_reset_core_dma_mm2s_status, after_reset_core_dma_mm2s_status);
+    printf("[ERROR] MM2S Status of reset core is the same before (0x%x) and "
+           "after (0x%x) the reset\n",
+           before_reset_core_dma_mm2s_status, after_reset_core_dma_mm2s_status);
   }
 
   // Making sure that the reset core DMA status is 0 after the reset
-  if(after_reset_core_dma_mm2s_status) {
+  if (after_reset_core_dma_mm2s_status) {
     errors++;
-    printf("[ERROR] MM2S Status of reset core after reset is not zero (0x%x != 0)\n", after_reset_core_dma_mm2s_status);
+    printf("[ERROR] MM2S Status of reset core after reset is not zero (0x%x != "
+           "0)\n",
+           after_reset_core_dma_mm2s_status);
   }
 
-  // Making sure the non reset core DMA status is the same as what it was before the reset
-  if(before_non_reset_core_dma_mm2s_status != after_non_reset_core_dma_mm2s_status) {
+  // Making sure the non reset core DMA status is the same as what it was before
+  // the reset
+  if (before_non_reset_core_dma_mm2s_status !=
+      after_non_reset_core_dma_mm2s_status) {
     errors++;
-    printf("[ERROR] MM2S Status of non reset core is not the same before (0x%x) and after (0x%x) the reset\n", before_reset_core_dma_mm2s_status, after_reset_core_dma_mm2s_status);
+    printf("[ERROR] MM2S Status of non reset core is not the same before "
+           "(0x%x) and after (0x%x) the reset\n",
+           before_reset_core_dma_mm2s_status, after_reset_core_dma_mm2s_status);
   }
 
-  for (int i=0; i<8; i++) {
+  for (int i = 0; i < 8; i++) {
     uint32_t d0 = mlir_aie_read_buffer_ping_in(xaie, i);
     uint32_t d1 = mlir_aie_read_buffer_pong_in(xaie, i);
     uint32_t d2 = mlir_aie_read_buffer_ping_out(xaie, i);
     uint32_t d3 = mlir_aie_read_buffer_pong_out(xaie, i);
-    if (d0+1 != d2) {
+    if (d0 + 1 != d2) {
       printf("mismatch ping %x != %x\n", d0, d2);
       errors++;
-    } 
-    if (d1+1 != d3) {
+    }
+    if (d1 + 1 != d3) {
       printf("mismatch pong %x != %x\n", d1, d3);
       errors++;
     }
   }
 
-  for (int i=0; i<DMA_COUNT; i++) {
+  for (int i = 0; i < DMA_COUNT; i++) {
     uint32_t s = src_0[i];
     uint32_t d = dst_0[i];
     if (d != (s + 1)) {
@@ -273,10 +298,8 @@ main(int argc, char *argv[])
   if (!errors) {
     printf("PASS!\n");
     return 0;
-  }
-  else {
+  } else {
     printf("fail %d.\n", errors);
     return -1;
   }
-
 }

@@ -130,8 +130,8 @@ struct l2_dma_rsp_t {
 
 // initialize pkt as a herd init packet with given parameters
 hsa_status_t air_packet_segment_init(dispatch_packet_t *pkt, uint16_t herd_id,
-                                  uint8_t start_col, uint8_t num_cols,
-                                  uint8_t start_row, uint8_t num_rows);
+                                     uint8_t start_col, uint8_t num_cols,
+                                     uint8_t start_row, uint8_t num_rows);
 // uint8_t start_row, uint8_t num_rows,
 // uint16_t dma0, uint16_t dma1);
 
