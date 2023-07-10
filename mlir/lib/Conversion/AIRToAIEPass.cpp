@@ -1243,8 +1243,11 @@ struct SpecializeChannelBundlePattern
           rewriter.setInsertionPoint(put);
           auto new_put =
               createChannelPutGetWithoutBundle(rewriter, new_chan, put);
-          replaceAllUsesInRegionWith(
-              put.getAsyncToken(), new_put.getAsyncToken(), device.getRegion());
+          if (put.getAsyncToken()) {
+            replaceAllUsesInRegionWith(put.getAsyncToken(),
+                                       new_put.getAsyncToken(),
+                                       device.getRegion());
+          }
         }
       }
       for (auto get : channelGets) {
@@ -1254,8 +1257,11 @@ struct SpecializeChannelBundlePattern
           rewriter.setInsertionPoint(get);
           auto new_get =
               createChannelPutGetWithoutBundle(rewriter, new_chan, get);
-          replaceAllUsesInRegionWith(
-              get.getAsyncToken(), new_get.getAsyncToken(), device.getRegion());
+          if (get.getAsyncToken()) {
+            replaceAllUsesInRegionWith(get.getAsyncToken(),
+                                       new_get.getAsyncToken(),
+                                       device.getRegion());
+          }
         }
       }
     }
