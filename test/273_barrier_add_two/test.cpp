@@ -66,17 +66,17 @@ main(int argc, char *argv[])
   //
   uint64_t wr_idx = queue_add_write_index(queues[0], 1);
   uint64_t packet_id = wr_idx % queues[0]->size;
-  dispatch_packet_t *herd_pkt =
+  dispatch_packet_t *segment_pkt =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_herd_init(herd_pkt, 0, col, 2, row, 2);
+  air_packet_segment_init(segment_pkt, 0, col, 2, row, 2);
   //
   // Set up a 1x1 herd starting 34,2
   //
   uint64_t wr_idx2 = queue_add_write_index(queues[1], 1);
   uint64_t packet_id2 = wr_idx2 % queues[1]->size;
-  dispatch_packet_t *herd_pkt2 =
+  dispatch_packet_t *segment_pkt2 =
       (dispatch_packet_t *)(queues[1]->base_address_vaddr) + packet_id2;
-  air_packet_herd_init(herd_pkt2, 1, col2, 1, row, 1);
+  air_packet_segment_init(segment_pkt2, 1, col2, 1, row, 1);
 
   wr_idx = queue_add_write_index(queues[0], 1);
   packet_id = wr_idx % queues[0]->size;

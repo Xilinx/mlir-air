@@ -118,35 +118,36 @@ main(int argc, char *argv[])
   uint64_t packet_id = wr_idx % q->size;
 
   // herd_setup packet
-  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  initialize_packet(herd_pkt);
-  herd_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  dispatch_packet_t *segment_pkt =
+      (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
+  initialize_packet(segment_pkt);
+  segment_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
 
   // Set up the worlds smallest herd at 7,2
-  herd_pkt->arg[0]  = AIR_PKT_TYPE_HERD_INITIALIZE;
-  herd_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
-  herd_pkt->arg[0] |= (1L << 40);
-  herd_pkt->arg[0] |= (7L << 32);
-  herd_pkt->arg[0] |= (1L << 24);
-  herd_pkt->arg[0] |= (2L << 16);
-  
-  herd_pkt->arg[1] = 0;  // Herd ID 0
-  herd_pkt->arg[2] = 0;
-  herd_pkt->arg[3] = 0;
+  segment_pkt->arg[0] = AIR_PKT_TYPE_SEGMENT_INITIALIZE;
+  segment_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
+  segment_pkt->arg[0] |= (1L << 40);
+  segment_pkt->arg[0] |= (7L << 32);
+  segment_pkt->arg[0] |= (1L << 24);
+  segment_pkt->arg[0] |= (2L << 16);
+
+  segment_pkt->arg[1] = 0; // Herd ID 0
+  segment_pkt->arg[2] = 0;
+  segment_pkt->arg[3] = 0;
 
   // dispatch packet
-  signal_create(1, 0, NULL, (signal_t*)&herd_pkt->completion_signal);
+  signal_create(1, 0, NULL, (signal_t *)&segment_pkt->completion_signal);
   signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
   signal_store_release((signal_t*)&q->doorbell, wr_idx);
 
   // wait for packet completion
-  while (signal_wait_acquire((signal_t *)&herd_pkt->completion_signal,
+  while (signal_wait_acquire((signal_t *)&segment_pkt->completion_signal,
                              HSA_SIGNAL_CONDITION_EQ, 0, 0x80000,
                              HSA_WAIT_STATE_ACTIVE) != 0) {
     printf("packet completion signal timeout on herd initialization!\n");
-    printf("%x\n", herd_pkt->header);
-    printf("%x\n", herd_pkt->type);
-    printf("%x\n", (unsigned)herd_pkt->completion_signal);
+    printf("%x\n", segment_pkt->header);
+    printf("%x\n", segment_pkt->type);
+    printf("%x\n", (unsigned)segment_pkt->completion_signal);
   }
 
   mlir_configure_cores();
