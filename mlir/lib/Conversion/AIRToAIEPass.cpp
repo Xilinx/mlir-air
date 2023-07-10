@@ -1002,14 +1002,16 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
         getChannelPutOpThroughSymbol(channel, device);
     std::vector<ChannelGetOp> channelGets =
         getChannelGetOpThroughSymbol(channel, device);
-    // TODO: objectFifo currently does not support mult-producer over time, i.e.
-    // multiple channel.put ops accessing the same channel
-    if (foundNonUniqueChannelAccess(channelPuts))
-      return failure();
-    // TODO: objectFifo currently does not support mult-consumer over time, i.e.
-    // multiple channel.get ops accessing the same channel
-    if (foundNonUniqueChannelAccess(channelGets))
-      return failure();
+    // // TODO: objectFifo currently does not support mult-producer over time,
+    // i.e.
+    // // multiple channel.put ops accessing the same channel
+    // if (foundNonUniqueChannelAccess(channelPuts))
+    //   return failure();
+    // // TODO: objectFifo currently does not support mult-consumer over time,
+    // i.e.
+    // // multiple channel.get ops accessing the same channel
+    // if (foundNonUniqueChannelAccess(channelGets))
+    //   return failure();
 
     // put/get come in pairs, if one is missing then it's L3
     MemRefType srcMemref;
@@ -1088,11 +1090,13 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
                                            erased_deallocs);
 
       // clear any dependence to put
-      for (auto u : put.getAsyncToken().getUsers()) {
-        if (auto async_u = dyn_cast<air::AsyncOpInterface>(u)) {
-          air::eraseAsyncDependencyFromAsyncOp(async_u, put.getAsyncToken());
+      if (put.getAsyncToken()) {
+        for (auto u : put.getAsyncToken().getUsers()) {
+          if (auto async_u = dyn_cast<air::AsyncOpInterface>(u)) {
+            air::eraseAsyncDependencyFromAsyncOp(async_u, put.getAsyncToken());
+          }
+          // TODO: complete else
         }
-        // TODO: complete else
       }
     }
     for (auto get : channelGets) {
@@ -1101,12 +1105,14 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       rewriteChannelDeallocs<ChannelGetOp>(rewriter, get, objFifo,
                                            AIE::ObjectFifoPort::Consume,
                                            erased_deallocs);
-      // clear any dependence to get
-      for (auto u : get.getAsyncToken().getUsers()) {
-        if (auto async_u = dyn_cast<air::AsyncOpInterface>(u)) {
-          air::eraseAsyncDependencyFromAsyncOp(async_u, get.getAsyncToken());
+      if (get.getAsyncToken()) {
+        // clear any dependence to get
+        for (auto u : get.getAsyncToken().getUsers()) {
+          if (auto async_u = dyn_cast<air::AsyncOpInterface>(u)) {
+            air::eraseAsyncDependencyFromAsyncOp(async_u, get.getAsyncToken());
+          }
+          // TODO: complete else
         }
-        // TODO: complete else
       }
     }
     // erase deallocs
