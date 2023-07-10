@@ -82,10 +82,10 @@ int main(int argc, char *argv[])
 
   // herd_setup packet
   // Set up a 2x4 herd starting 7,2
-  dispatch_packet_t *herd_pkt =
+  dispatch_packet_t *segment_pkt =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_herd_init(herd_pkt, 0, col, num_cols, row, num_rows);
-  air_queue_dispatch_and_wait(queues[0], wr_idx, herd_pkt);
+  air_packet_segment_init(segment_pkt, 0, col, num_cols, row, num_rows);
+  air_queue_dispatch_and_wait(queues[0], wr_idx, segment_pkt);
 
   mlir_aie_configure_cores(xaie);
   mlir_aie_configure_switchboxes(xaie);

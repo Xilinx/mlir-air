@@ -108,9 +108,9 @@ int main(int argc, char *argv[])
   packet_id = wr_idx % q->size;
 
   // Set up the worlds smallest herd at 7,2
-  dispatch_packet_t *herd_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_herd_init(herd_pkt, herd_id, col, num_cols, row, num_rows);
-  air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
+  dispatch_packet_t *segment_pkt = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  air_packet_segment_init(segment_pkt, herd_id, col, num_cols, row, num_rows);
+  air_queue_dispatch_and_wait(q, wr_idx, segment_pkt);
 
   // reserve another packet in the queue
   wr_idx = queue_add_write_index(q, 1);

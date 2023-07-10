@@ -185,7 +185,7 @@ hsa_status_t air_packet_rw32_init(dispatch_packet_t *pkt, bool is_write,
   return HSA_STATUS_SUCCESS;
 }
 
-hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
+hsa_status_t air_packet_segment_init(dispatch_packet_t *pkt, uint16_t herd_id,
                                   uint8_t start_col, uint8_t num_cols,
                                   uint8_t start_row, uint8_t num_rows) {
   // uint8_t start_row, uint8_t num_rows,

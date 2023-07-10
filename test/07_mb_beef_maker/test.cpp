@@ -86,10 +86,10 @@ main(int argc, char *argv[])
   packet_id = wr_idx % queues[0]->size;
 
   // herd_setup packet
-  dispatch_packet_t *herd_pkt =
+  dispatch_packet_t *segment_pkt =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_herd_init(herd_pkt, 0, col, 1, row, 1);
-  air_queue_dispatch_and_wait(queues[0], wr_idx, herd_pkt);
+  air_packet_segment_init(segment_pkt, 0, col, 1, row, 1);
+  air_queue_dispatch_and_wait(queues[0], wr_idx, segment_pkt);
 
   mlir_aie_configure_cores(xaie);
   mlir_aie_configure_switchboxes(xaie);
