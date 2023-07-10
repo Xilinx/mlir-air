@@ -13,7 +13,7 @@
 // CHECK:   %[[VAL_2:.*]] = AIE.objectFifo.createObjectFifo(%[[VAL_0]], {%[[VAL_1]]}, 2 : i32) {sym_name = "air_channel_1"} : !AIE.objectFifo<memref<32xi32, 2>>
 // CHECK:   %[[VAL_3:.*]] = AIE.objectFifo.createObjectFifo(%[[VAL_1]], {%[[VAL_0]]}, 2 : i32) {sym_name = "air_channel_0"} : !AIE.objectFifo<memref<32xi32, 2>>
 // CHECK:   %[[VAL_4:.*]] = AIE.core(%[[VAL_0]]) {
-// CHECK:     affine.for %[[VAL_5:.*]] = 0 to 4096 step 32 {
+// CHECK:     scf.for
 // CHECK:       %[[VAL_6:.*]] = AIE.objectFifo.acquire<Consume> (%[[VAL_3]] : !AIE.objectFifo<memref<32xi32, 2>>, 1) : !AIE.objectFifoSubview<memref<32xi32, 2>>
 // CHECK:       %[[VAL_7:.*]] = AIE.objectFifo.subview.access %[[VAL_6]][0] : !AIE.objectFifoSubview<memref<32xi32, 2>> -> memref<32xi32, 2>
 // CHECK:       %[[VAL_8:.*]] = AIE.objectFifo.acquire<Produce> (%[[VAL_2]] : !AIE.objectFifo<memref<32xi32, 2>>, 1) : !AIE.objectFifoSubview<memref<32xi32, 2>>
@@ -33,10 +33,9 @@ AIE.device(xcvc1902) {
     %c4096 = arith.constant 4096 : index
     %alloc = memref.alloc() {sym_name = "scratch"} : memref<32xi32, 2>
     %async_token_0 = air.wait_all async
-    %2 = scf.for %arg0 = %c0 to %c4096 step %c32 iter_args(%arg11 = %async_token_0) -> (!air.async.token) {
-      %3 = air.channel.get async [%arg11]  @channel_0[] (%alloc[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
+    scf.for %arg0 = %c0 to %c4096 step %c32 {
+      %3 = air.channel.get async  @channel_0[] (%alloc[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
       %4 = air.channel.put async [%3]  @channel_1[] (%alloc[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
-      scf.yield %4 : !air.async.token
     } {isolated = true, unroll = 2 : i64}
     memref.dealloc %alloc : memref<32xi32, 2>
     AIE.end
