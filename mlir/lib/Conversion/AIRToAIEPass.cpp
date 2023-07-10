@@ -10,6 +10,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
+#include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
@@ -954,16 +955,25 @@ void rewriteChannelAllocs(PatternRewriter &rewriter, MyOp op,
     rewriter.replaceOp(a.getOperation(), producerAccess.getOutput());
 }
 
+template <typename T> void push_back_if_unique(std::vector<T> &vec, T entry) {
+  if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
+    vec.push_back(entry);
+  }
+}
+
 template <typename MyOp>
 void rewriteChannelDeallocs(PatternRewriter &rewriter, MyOp op,
                             AIE::ObjectFifoCreateOp objFifo,
-                            AIE::ObjectFifoPort port) {
+                            AIE::ObjectFifoPort port,
+                            std::vector<Operation *> &erased_deallocs) {
   for (auto u : op.getMemref().getDefiningOp()->getUsers()) {
     if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
       rewriter.setInsertionPoint(&op->getBlock()->back());
       rewriter.create<AIE::ObjectFifoReleaseOp>(dealloc->getLoc(), port,
                                                 objFifo, 1);
-      rewriter.eraseOp(dealloc);
+      // Delete ops at the end of the rewrite pattern to avoid repeatedly
+      // deleting the same op
+      push_back_if_unique<Operation *>(erased_deallocs, dealloc.getOperation());
     }
   }
 }
@@ -977,6 +987,14 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
   LogicalResult matchAndRewrite(air::ChannelOp channel,
                                 PatternRewriter &rewriter) const override {
     auto device = channel->getParentOfType<AIE::DeviceOp>();
+    if (!device)
+      return failure();
+
+    // for now, objectFifo does not support broadcast (one-to-many in space)
+    if (channel->hasAttr("broadcast_pattern") ||
+        channel->hasAttr("broadcast_shape"))
+      return failure();
+
     if (channel.getBundleSize() > 1)
       return failure();
 
@@ -984,16 +1002,20 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
         getChannelPutOpThroughSymbol(channel, device);
     std::vector<ChannelGetOp> channelGets =
         getChannelGetOpThroughSymbol(channel, device);
+    // TODO: objectFifo currently does not support mult-producer over time, i.e.
+    // multiple channel.put ops accessing the same channel
+    if (foundNonUniqueChannelAccess(channelPuts))
+      return failure();
+    // TODO: objectFifo currently does not support mult-consumer over time, i.e.
+    // multiple channel.get ops accessing the same channel
+    if (foundNonUniqueChannelAccess(channelGets))
+      return failure();
 
     // put/get come in pairs, if one is missing then it's L3
     MemRefType srcMemref;
     int src_space = (int)air::MemorySpace::L3;
     Value producerTile;
     if (channelPuts.size() > 0) {
-      // for now, objectFifo does not support many-to-one/many broadcast
-      if (channelPuts.size() > 1)
-        return failure();
-
       for (auto put : channelPuts) {
         // find AIE tiles and their cores based on memory hierarchy levels
         srcMemref = put.getSrc().getType().cast<MemRefType>();
@@ -1021,10 +1043,6 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     int dst_space = (int)air::MemorySpace::L3;
     Value consumerTile;
     if (channelGets.size() > 0) {
-      // for now, we focus on one-to-one channels
-      if (channelGets.size() > 1)
-        return failure();
-
       for (auto get : channelGets) {
         // find AIE tiles and their cores based on memory hierarchy levels
         dstMemref = get.getDst().getType().cast<MemRefType>();
@@ -1048,8 +1066,6 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     consumers.push_back(consumerTile);
 
     // create objFifo
-    // For now, number of memory elements in OF is hardcoded to 1
-    // (single buffer). FIXME
     rewriter.setInsertionPoint(*(device.getOps<AIE::CoreOp>().begin()));
     AIE::AIEObjectFifoType datatype;
     if (channelPuts.size() > 0)
@@ -1062,22 +1078,47 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
         rewriter, datatype, producerTile, consumers,
         channel.getBufferResources(), "air_" + channel.getName().str());
 
-    // replace put/get and the associated memref alloc/dealloc
+    // replace put/get and any associated memref alloc/dealloc
+    std::vector<Operation *> erased_deallocs;
     for (auto put : channelPuts) {
       rewriteChannelAllocs<ChannelPutOp>(rewriter, put, objFifo,
                                          AIE::ObjectFifoPort::Produce);
       rewriteChannelDeallocs<ChannelPutOp>(rewriter, put, objFifo,
-                                           AIE::ObjectFifoPort::Produce);
-      // erase put
-      rewriter.eraseOp(put);
+                                           AIE::ObjectFifoPort::Produce,
+                                           erased_deallocs);
+
+      // clear any dependence to put
+      for (auto u : put.getAsyncToken().getUsers()) {
+        if (auto async_u = dyn_cast<air::AsyncOpInterface>(u)) {
+          air::eraseAsyncDependencyFromAsyncOp(async_u, put.getAsyncToken());
+        }
+        // TODO: complete else
+      }
     }
     for (auto get : channelGets) {
       rewriteChannelAllocs<ChannelGetOp>(rewriter, get, objFifo,
                                          AIE::ObjectFifoPort::Consume);
       rewriteChannelDeallocs<ChannelGetOp>(rewriter, get, objFifo,
-                                           AIE::ObjectFifoPort::Consume);
-      // erase get
+                                           AIE::ObjectFifoPort::Consume,
+                                           erased_deallocs);
+      // clear any dependence to get
+      for (auto u : get.getAsyncToken().getUsers()) {
+        if (auto async_u = dyn_cast<air::AsyncOpInterface>(u)) {
+          air::eraseAsyncDependencyFromAsyncOp(async_u, get.getAsyncToken());
+        }
+        // TODO: complete else
+      }
+    }
+    // erase deallocs
+    for (auto o : erased_deallocs) {
+      rewriter.eraseOp(o);
+    }
+    // erase channel puts and gets
+    for (auto get : channelGets) {
       rewriter.eraseOp(get);
+    }
+    for (auto put : channelPuts) {
+      rewriter.eraseOp(put);
     }
     // erase the channel
     rewriter.eraseOp(channel);
@@ -1086,7 +1127,224 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 
 private:
   ShimTileAllocator &shimTileAlloc;
+
+  air::ChannelPutOp
+  foundNonUniqueChannelAccess(std::vector<air::ChannelPutOp> puts) const {
+    // Get channel.put channel indices
+    SmallVector<SmallVector<Value>> ids;
+    for (auto put : puts) {
+      for (auto id : put.getIndices()) {
+        if (!id.getDefiningOp())
+          put->emitOpError(
+              "contains channel index not returned from ConstantIndexOp");
+      }
+      ids.push_back(put.getIndices());
+    }
+    auto non_unique_id = foundNonUniqueChannelAccess(ids);
+    if (non_unique_id == -1)
+      return air::ChannelPutOp();
+    else {
+      return puts[foundNonUniqueChannelAccess(ids)];
+    }
+  }
+
+  air::ChannelGetOp
+  foundNonUniqueChannelAccess(std::vector<air::ChannelGetOp> gets) const {
+    // Get channel.put channel indices
+    SmallVector<SmallVector<Value>> ids;
+    for (auto get : gets) {
+      for (auto id : get.getIndices()) {
+        if (!id.getDefiningOp())
+          get->emitOpError(
+              "contains channel index not returned from ConstantIndexOp");
+      }
+      ids.push_back(get.getIndices());
+    }
+    auto non_unique_id = foundNonUniqueChannelAccess(ids);
+    if (non_unique_id == -1)
+      return air::ChannelGetOp();
+    else {
+      return gets[foundNonUniqueChannelAccess(ids)];
+    }
+  }
+
+  int foundNonUniqueChannelAccess(SmallVector<SmallVector<Value>> ids) const {
+    // Get indices in int
+    std::vector<std::vector<int>> ids_int;
+    for (auto id_v : ids) {
+      std::vector<int> id_v_int;
+      for (auto id : id_v) {
+        // assert(id.getDefiningOp());
+        id_v_int.push_back(
+            dyn_cast<arith::ConstantIndexOp>(id.getDefiningOp()).value());
+      }
+      ids_int.push_back(id_v_int);
+    }
+    // Find non-unique channel access
+    for (unsigned i = 0; i < ids_int.size(); i++) {
+      for (unsigned j = i + 1; j < ids_int.size(); j++) {
+        bool all_identical = true;
+        for (unsigned k = 0; k < std::min(ids_int[i].size(), ids_int[j].size());
+             k++) {
+          if (ids_int[i][k] != ids_int[j][k]) {
+            all_identical = false;
+          }
+        }
+        if (all_identical)
+          return j;
+      }
+    }
+    return -1;
+  }
 };
+
+struct SpecializeChannelBundlePattern
+    : public OpRewritePattern<air::ChannelOp> {
+  using OpRewritePattern<air::ChannelOp>::OpRewritePattern;
+
+  SpecializeChannelBundlePattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(air::ChannelOp channel,
+                                PatternRewriter &rewriter) const override {
+
+    auto device = channel->getParentOfType<AIE::DeviceOp>();
+    if (!device)
+      return failure();
+
+    if (channel.getBundleSize() <= 1)
+      return failure();
+
+    std::vector<ChannelPutOp> channelPuts =
+        getChannelPutOpThroughSymbol(channel, device);
+    std::vector<ChannelGetOp> channelGets =
+        getChannelGetOpThroughSymbol(channel, device);
+
+    // Walk through each element in a channel bundle
+    auto bundle_size = extractFromI64ArrayAttr(channel.getSize());
+    auto bundle_size_stdvec = convertToStdVec(bundle_size);
+    for (unsigned iter = 0; iter < (unsigned)channel.getBundleSize(); iter++) {
+      rewriter.setInsertionPoint(channel);
+      auto cname = createChannelName(device.getOperation());
+      SmallVector<int64_t, 2> channel_sizes = {1, 1};
+      auto new_chan = rewriter.create<air::ChannelOp>(
+          channel->getLoc(), cname, rewriter.getI64ArrayAttr(channel_sizes));
+      std::vector<unsigned> position =
+          getMDVectorFromIterator(bundle_size_stdvec, iter);
+      for (auto put : channelPuts) {
+        auto indices_uint = convertVecOfConstIndexToVecOfUInt(put.getIndices());
+        if (areIdenticalVectors(indices_uint, position)) {
+          // Found channel put for this channel
+          rewriter.setInsertionPoint(put);
+          auto new_put =
+              createChannelPutGetWithoutBundle(rewriter, new_chan, put);
+          replaceAllUsesInRegionWith(
+              put.getAsyncToken(), new_put.getAsyncToken(), device.getRegion());
+        }
+      }
+      for (auto get : channelGets) {
+        auto indices_uint = convertVecOfConstIndexToVecOfUInt(get.getIndices());
+        if (areIdenticalVectors(indices_uint, position)) {
+          // Found channel get for this channel
+          rewriter.setInsertionPoint(get);
+          auto new_get =
+              createChannelPutGetWithoutBundle(rewriter, new_chan, get);
+          replaceAllUsesInRegionWith(
+              get.getAsyncToken(), new_get.getAsyncToken(), device.getRegion());
+        }
+      }
+    }
+
+    // Erase bundled channel ops and their corresponding put/get ops
+    for (auto put : channelPuts) {
+      rewriter.eraseOp(put);
+    }
+    for (auto get : channelGets) {
+      rewriter.eraseOp(get);
+    }
+    rewriter.eraseOp(channel);
+
+    return success();
+  }
+
+private:
+  bool areIdenticalVectors(std::vector<unsigned> a,
+                           std::vector<unsigned> b) const {
+    if (a.empty())
+      return false;
+    if (b.empty())
+      return false;
+    if (a.size() != b.size())
+      return false;
+    for (unsigned i = 0; i < a.size(); i++) {
+      if (a[i] != b[i])
+        return false;
+    }
+    return true;
+  }
+
+  std::vector<unsigned> convertToStdVec(SmallVector<long int, 4> vec) const {
+    std::vector<unsigned> output;
+    for (auto v : vec) {
+      output.push_back((unsigned)v);
+    }
+    return output;
+  }
+
+  // Create channel name as string
+  std::string createChannelName(Operation *scope) const {
+    if (!scope->hasTrait<OpTrait::SymbolTable>()) {
+      scope->emitOpError("has no symbol table trait");
+    }
+    std::string new_cname = "channel_0";
+    std::string cname = "channel";
+    int which_try = 0;
+    while (mlir::SymbolTable::lookupSymbolIn(scope, new_cname))
+      new_cname = cname + "_" + std::to_string(++which_try);
+    cname = new_cname;
+    return cname;
+  }
+
+  air::ChannelPutOp
+  createChannelPutGetWithoutBundle(OpBuilder builder, air::ChannelOp chan,
+                                   air::ChannelPutOp put) const {
+    SmallVector<Type, 4> tys = {};
+    SmallVector<Value, 4> deps = {};
+    if (put.getAsyncToken()) {
+      tys.push_back(air::AsyncTokenType::get(put->getContext()));
+      deps = put.getAsyncDependencies();
+    }
+    SmallVector<Value, 4> indices = {};
+    auto new_put = builder.create<air::ChannelPutOp>(
+        put->getLoc(), tys, deps, chan.getSymName(), indices, put.getSrc(),
+        put.getSrcOffsets(), put.getSrcSizes(), put.getSrcStrides());
+    return new_put;
+  }
+
+  air::ChannelGetOp
+  createChannelPutGetWithoutBundle(OpBuilder builder, air::ChannelOp chan,
+                                   air::ChannelGetOp get) const {
+    SmallVector<Type, 4> tys = {};
+    SmallVector<Value, 4> deps = {};
+    if (get.getAsyncToken()) {
+      tys.push_back(air::AsyncTokenType::get(get->getContext()));
+      deps = get.getAsyncDependencies();
+    }
+    SmallVector<Value, 4> indices = {};
+    auto new_get = builder.create<air::ChannelGetOp>(
+        get->getLoc(), tys, deps, chan.getSymName(), indices, get.getDst(),
+        get.getDstOffsets(), get.getDstSizes(), get.getDstStrides());
+    return new_get;
+  }
+};
+
+// By specializing each air.channel op in a channel bundle, this function
+// removes air.channel bundled representation in a aie.device op.
+void specializeChannelBundle(AIE::DeviceOp &d) {
+  auto ctx = d->getContext();
+  RewritePatternSet patterns(ctx);
+  patterns.insert<SpecializeChannelBundlePattern>(ctx);
+  (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
+}
 
 // This function replaces ChannelPutOp/ChannelGetOp with AIE_CreateObjectFifoOps
 // and with ObjectFifoAcquireOp<Producer/Consumer>. It also erases memref allocs
@@ -1195,10 +1453,10 @@ private:
                                      air::ChannelPutOp put) const {
     SmallVector<Type, 4> tys = {};
     SmallVector<Value, 4> deps = {};
-    auto new_put = builder.create<air::ChannelPutOp>(
-        put->getLoc(), tys, deps, put.getChanName(), put.getIndices(),
-        put.getSrc(), put.getSrcOffsets(), put.getSrcSizes(),
-        put.getSrcStrides());
+    builder.create<air::ChannelPutOp>(put->getLoc(), tys, deps,
+                                      put.getChanName(), put.getIndices(),
+                                      put.getSrc(), put.getSrcOffsets(),
+                                      put.getSrcSizes(), put.getSrcStrides());
   }
 
   AffineForOp convertScfForToAffineFor(OpBuilder builder,
@@ -1763,6 +2021,9 @@ public:
     if (clTestPatterns.find("lower-air-ping-pong") != std::string::npos) {
       patterns.insert<LowerAIRPingPongPattern>(ctx);
     }
+    if (clTestPatterns.find("specialize-channel-bundle") != std::string::npos) {
+      patterns.insert<SpecializeChannelBundlePattern>(ctx);
+    }
 
     if (patterns.getNativePatterns().size())
       (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
@@ -1839,6 +2100,8 @@ public:
 
       lowerAirDmaMemcpy(device, shimDmaAlloc);
       lowerPipelineGetPut(device, tileToHerdMap);
+
+      specializeChannelBundle(device);
 
       ShimTileAllocator shimTileAlloc(device.getTargetModel());
       lowerAIRChannels(device, shimTileAlloc);

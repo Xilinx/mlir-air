@@ -627,3 +627,52 @@ char air::checkOpOperandReadOrWrite(mlir::OpOperand &op_operand) {
   else
     return 'u';
 }
+
+// Convert a vector of SSA returned from arith::ConstantIndexOp into a vector of
+// uints
+std::vector<unsigned>
+air::convertVecOfConstIndexToVecOfUInt(SmallVector<Value> svec) {
+  std::vector<unsigned> output;
+  for (auto v : svec) {
+    auto op = v.getDefiningOp<arith::ConstantIndexOp>();
+    if (!op)
+      return std::vector<unsigned>();
+    output.push_back(op.value());
+  }
+  return output;
+}
+
+// Get iterator corresponding to a position in a multi-dimensional vector
+unsigned air::getIteratorFromMDVector(std::vector<unsigned> dims,
+                                      std::vector<unsigned> position) {
+  if (dims.size() != position.size())
+    return 0;
+
+  std::reverse(position.begin(), position.end());
+  unsigned output = 0;
+  for (int i = dims.size() - 1; i >= 0; i--) { // In reversed order
+    unsigned scale_factor = 1;
+    for (unsigned j = i + 1; j < dims.size(); j++) {
+      scale_factor *= dims[j];
+    }
+    output += scale_factor * position[i];
+  }
+  return output;
+}
+
+// Get coordinates corresponding to a position in a multi-dimensional vector
+// from an iterator
+std::vector<unsigned> air::getMDVectorFromIterator(std::vector<unsigned> dims,
+                                                   unsigned iter) {
+  std::vector<unsigned> output;
+  for (int i = dims.size() - 1; i >= 0; i--) { // reversed order
+    unsigned denominator = 1;
+    for (int j = 0; j < i; j++) {
+      denominator *= dims[j];
+    }
+    output.push_back((iter / (denominator)) % dims[i]);
+  }
+  // Reverse to original order
+  std::reverse(output.begin(), output.end());
+  return output;
+}
