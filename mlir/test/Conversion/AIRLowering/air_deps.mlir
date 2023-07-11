@@ -45,6 +45,41 @@ func.func @scf_for() {
   return
 }
 
+// CHECK-LABEL: func.func @scf_par_execute
+// CHECK: %[[V0:.*]] = airrt.wait_all : !airrt.event
+// CHECK: %[[V1:.*]] = scf.parallel (%arg0) = (%c0) to (%c64) step (%c1) init (%[[V0]]) -> !airrt.event {
+// CHECK:   %[[V2:.*]] = arith.muli %arg0, %c4 : index
+// CHECK:   %[[V3:.*]] = airrt.wait_all : !airrt.event
+// CHECK:   scf.reduce(%[[V3]])  : !airrt.event {
+// CHECK:   ^bb0(%arg1: !airrt.event, %arg2: !airrt.event):
+// CHECK:     %[[V4:.*]] = airrt.wait_all %arg1, %arg2 : !airrt.event
+// CHECK:     scf.reduce.return %[[V4]] : !airrt.event
+// CHECK:   }
+// CHECK:   scf.yield
+// CHECK: }
+// CHECK: airrt.wait_all %[[V1]]
+func.func @scf_par_execute() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c64 = arith.constant 64 : index
+  %4 = air.wait_all async
+  %3 = scf.parallel (%arg8) = (%c0) to (%c64) step (%c1) init (%4) -> !air.async.token {
+    %0, %1 = air.execute -> (index) {
+      %c4_3 = arith.constant 4 : index
+      %8 = arith.muli %arg8, %c4_3 : index
+      air.execute_terminator %8 : index
+    }
+    scf.reduce(%0)  : !air.async.token {
+    ^bb0(%arg10: !air.async.token, %arg11: !air.async.token):
+      %9 = air.wait_all async [%arg10, %arg11] 
+      scf.reduce.return %9 : !air.async.token
+    }
+    scf.yield
+  }
+  air.wait_all [%3]
+  return
+}
+
 // CHECK-LABEL: func.func @scf_if
 // CHECK: %[[V0:.*]] = scf.if {{.*}} -> (!airrt.event) {
 // CHECK:   %[[V1:.*]] = airrt.wait_all : !airrt.event
