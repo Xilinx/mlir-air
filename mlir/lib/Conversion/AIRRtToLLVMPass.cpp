@@ -1025,6 +1025,44 @@ public:
   }
 };
 
+class ScfReduceOpConversion : public OpConversionPattern<scf::ReduceOp> {
+public:
+  using OpConversionPattern<scf::ReduceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::ReduceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto newOp =
+        rewriter.replaceOpWithNewOp<scf::ReduceOp>(op, adaptor.getOperand());
+    auto body = &op.getRegion().front();
+    auto newBody = &newOp.getRegion().front();
+
+    for (int i = 0, e = body->getNumArguments(); i < e; i++) {
+      body->getArgument(i).replaceAllUsesWith(newBody->getArgument(i));
+    }
+
+    auto &ops = body->getOperations();
+    auto &newOps = newBody->getOperations();
+    newOps.splice(newOps.begin(), ops, ops.begin(), ops.end());
+    return success();
+  }
+};
+
+class ScfReduceReturnOpConversion
+    : public OpConversionPattern<scf::ReduceReturnOp> {
+public:
+  using OpConversionPattern<scf::ReduceReturnOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::ReduceReturnOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value, 8> operands{adaptor.getOperands()};
+    SmallVector<Type, 2> retTys;
+    rewriter.replaceOpWithNewOp<scf::ReduceReturnOp>(op, retTys, operands);
+    return success();
+  }
+};
+
 class ScfForOpConversion : public OpConversionPattern<scf::ForOp> {
 public:
   using OpConversionPattern<scf::ForOp>::OpConversionPattern;
@@ -1081,6 +1119,32 @@ public:
                       elseOps.end());
 
     rewriter.replaceOp(op, newIf.getResults());
+    return success();
+  }
+};
+
+class ScfParOpConversion : public OpConversionPattern<scf::ParallelOp> {
+public:
+  using OpConversionPattern<scf::ParallelOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::ParallelOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto newPar = rewriter.create<scf::ParallelOp>(
+        op->getLoc(), adaptor.getLowerBound(), adaptor.getUpperBound(),
+        adaptor.getStep(), adaptor.getInitVals());
+    auto body = op.getBody();
+    auto newBody = newPar.getBody();
+
+    for (int i = 0, e = body->getNumArguments(); i < e; i++) {
+      body->getArgument(i).replaceAllUsesWith(newBody->getArgument(i));
+    }
+
+    auto &ops = body->getOperations();
+    auto &newOps = newBody->getOperations();
+    newOps.splice(newOps.begin(), ops, ops.begin(), --ops.end());
+
+    rewriter.replaceOp(op, newPar.getResults());
     return success();
   }
 };
@@ -1163,11 +1227,13 @@ public:
                  HerdLoadToLLVMConversion, DmaMemcpyNdToLLVMConversion,
                  MemcpyNdToLLVMConversion, L2AllocOpConversion,
                  L2DeallocOpConversion>(context);
-    patterns.add<ScfIfOpConversion, ScfYieldOpConversion, ScfForOpConversion,
-                 L1AllocOpConversion, L1AffineLoadOpConversion,
-                 L1AffineStoreOpConversion, L1MemRefLoadOpConversion,
-                 L1MemRefStoreOpConversion, L1DeallocOpConversion,
-                 WaitAllOpConversion, CallOpConversion>(converter, context);
+    patterns.add<ScfIfOpConversion, ScfYieldOpConversion,
+                 ScfReduceReturnOpConversion, ScfReduceOpConversion,
+                 ScfForOpConversion, ScfParOpConversion, L1AllocOpConversion,
+                 L1AffineLoadOpConversion, L1AffineStoreOpConversion,
+                 L1MemRefLoadOpConversion, L1MemRefStoreOpConversion,
+                 L1DeallocOpConversion, WaitAllOpConversion, CallOpConversion>(
+        converter, context);
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(patterns,
                                                                    converter);
 
@@ -1237,6 +1303,14 @@ public:
       return true;
     });
 
+    target.addDynamicallyLegalOp<scf::ParallelOp>([&](scf::ParallelOp op) {
+      for (auto o : op.getInitVals()) {
+        if (o.getType().isa<xilinx::airrt::EventType>())
+          return false;
+      }
+      return true;
+    });
+
     target.addDynamicallyLegalOp<scf::YieldOp>([&](scf::YieldOp op) {
       for (auto v : op.getOperands()) {
         if (v.getType().isa<xilinx::airrt::EventType>())
@@ -1244,6 +1318,21 @@ public:
       }
       return true;
     });
+
+    target.addDynamicallyLegalOp<scf::ReduceOp>([&](scf::ReduceOp op) {
+      if (op.getOperand().getType().isa<xilinx::airrt::EventType>())
+        return false;
+      else
+        return true;
+    });
+
+    target.addDynamicallyLegalOp<scf::ReduceReturnOp>(
+        [&](scf::ReduceReturnOp op) {
+          if (op.getResult().getType().isa<xilinx::airrt::EventType>())
+            return false;
+          else
+            return true;
+        });
 
     target.addDynamicallyLegalOp<scf::IfOp>([&](scf::IfOp op) {
       for (auto v : op.getResults()) {

@@ -228,7 +228,7 @@ def run(mlir_module, args=None):
       aiecc_dir = opts.tmpdir+'/'+segment
 
       do_call(['air-opt', segment_file, '-air-lower-linalg-tensors',
-               '-lower-affine', '-cse', '-o', aiecc_file])
+               '-lower-affine', '-canonicalize', '-cse', '-o', aiecc_file])
 
       # set host target for aiecc
       if 'x86_64' in platform.uname()[5]:
