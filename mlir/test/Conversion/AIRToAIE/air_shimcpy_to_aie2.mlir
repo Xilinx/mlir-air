@@ -18,7 +18,7 @@
 // CHECK:    %[[VAL_6:.*]] = AIE.dmaStart(S2MM, 0, ^bb1, ^bb2)
 // CHECK:  ^bb1:
 // CHECK:    AIE.useLock(%[[VAL_2]], AcquireGreaterEqual, 1)
-// CHECK:    AIE.dmaBd(<%[[VAL_4]] : memref<1024xi32, 2>, 0, 0>, 0)
+// CHECK:    AIE.dmaBd(<%[[VAL_4]] : memref<1024xi32, 2>, 0, 1024>, 0)
 // CHECK:    AIE.useLock(%[[VAL_3]], Release, 1)
 // CHECK:    AIE.nextBd ^bb1
 // CHECK:  ^bb2:
@@ -63,7 +63,7 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:   %[[VAL_9:.*]] = AIE.dmaStart(S2MM, 0, ^bb1, ^bb3)
 // CHECK: ^bb1:
 // CHECK:   AIE.useLock(%[[VAL_4]], AcquireGreaterEqual, 1)
-// CHECK:   AIE.dmaBd(<%[[VAL_6]] : memref<1024xi32, 2>, 0, 0>, 0)
+// CHECK:   AIE.dmaBd(<%[[VAL_6]] : memref<1024xi32, 2>, 0, 1024>, 0)
 // CHECK:   AIE.useLock(%[[VAL_5]], Release, 1)
 // CHECK:   AIE.nextBd ^bb1
 // CHECK: ^bb2:
@@ -72,7 +72,7 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:   %[[VAL_10:.*]] = AIE.dmaStart(MM2S, 0, ^bb4, ^bb2)
 // CHECK: ^bb4:
 // CHECK:   AIE.useLock(%[[VAL_3]], AcquireGreaterEqual, 1)
-// CHECK:   AIE.dmaBd(<%[[VAL_7]] : memref<512xi32, 2>, 0, 0>, 0)
+// CHECK:   AIE.dmaBd(<%[[VAL_7]] : memref<512xi32, 2>, 0, 512>, 0)
 // CHECK:   AIE.useLock(%[[VAL_2]], Release, 1)
 // CHECK:   AIE.nextBd ^bb4
 // CHECK: }
