@@ -81,6 +81,108 @@ AIE::TileOp getPhysTileOp(AIE::DeviceOp aie_device, int col, int row) {
                                      col, row);
 }
 
+Value getMemrefInterface(air::DmaMemcpyNdOp memcpyOp, std::string src_or_dst) {
+  if (src_or_dst == "src") {
+    return memcpyOp.getSrcMemref();
+  } else if (src_or_dst == "dst") {
+    return memcpyOp.getDstMemref();
+  } else {
+    memcpyOp->emitOpError("unknown string operand: ")
+        << src_or_dst << " must be one of (src, dst)";
+    return nullptr;
+  }
+}
+Value getMemrefInterface(air::ChannelInterface memcpyOp,
+                         std::string src_or_dst) {
+  if (src_or_dst == "src") {
+    if (isa<air::ChannelPutOp>(memcpyOp.getOperation())) {
+      return memcpyOp.getMemref();
+    } else {
+      memcpyOp->emitOpError("only channel.put has src memref operand");
+    }
+  } else if (src_or_dst == "dst") {
+    if (isa<air::ChannelGetOp>(memcpyOp.getOperation())) {
+      return memcpyOp.getMemref();
+    } else {
+      memcpyOp->emitOpError("only channel.get has dst memref operand");
+    }
+  } else {
+    memcpyOp->emitOpError("unknown string operand: ")
+        << src_or_dst << " must be one of (src, dst)";
+    return nullptr;
+  }
+}
+// Note if size operand field is empty, then it means the subview size is the
+// entire memref.
+int getSizesInterface(air::DmaMemcpyNdOp memcpyOp, std::string src_or_dst) {
+  SmallVector<Value> sizes = {};
+  MemRefType memTy;
+  if (src_or_dst == "src") {
+    sizes = memcpyOp.getSrcSizes();
+    memTy = memcpyOp.getSrcMemref().getType().cast<MemRefType>();
+  } else if (src_or_dst == "dst") {
+    sizes = memcpyOp.getDstSizes();
+    memTy = memcpyOp.getDstMemref().getType().cast<MemRefType>();
+  } else {
+    memcpyOp->emitOpError("unknown string operand: ")
+        << src_or_dst << " must be one of (src, dst)";
+    return -1;
+  }
+  if (sizes.empty())
+    return getTensorVolume(memTy);
+  else {
+    int output = 1;
+    for (auto s : sizes) {
+      auto c = dyn_cast<arith::ConstantIndexOp>(s.getDefiningOp());
+      if (!c) {
+        output = -1;
+        break;
+      }
+      output *= c.value();
+    }
+    return output;
+  }
+}
+int getSizesInterface(air::ChannelInterface memcpyOp, std::string src_or_dst) {
+  SmallVector<Value> sizes = {};
+  MemRefType memTy;
+  if (src_or_dst == "src") {
+    if (isa<air::ChannelPutOp>(memcpyOp.getOperation())) {
+      sizes = memcpyOp.getSizes();
+      memTy = memcpyOp.getMemref().getType().cast<MemRefType>();
+    } else {
+      memcpyOp->emitOpError("only channel.put has src memref operand");
+      return -1;
+    }
+  } else if (src_or_dst == "dst") {
+    if (isa<air::ChannelGetOp>(memcpyOp.getOperation())) {
+      sizes = memcpyOp.getSizes();
+      memTy = memcpyOp.getMemref().getType().cast<MemRefType>();
+    } else {
+      memcpyOp->emitOpError("only channel.get has dst memref operand");
+      return -1;
+    }
+  } else {
+    memcpyOp->emitOpError("unknown string operand: ")
+        << src_or_dst << " must be one of (src, dst)";
+    return -1;
+  }
+  if (sizes.empty())
+    return getTensorVolume(memTy);
+  else {
+    int output = 1;
+    for (auto s : sizes) {
+      auto c = dyn_cast<arith::ConstantIndexOp>(s.getDefiningOp());
+      if (!c) {
+        output = -1;
+        break;
+      }
+      output *= c.value();
+    }
+    return output;
+  }
+}
+
 struct ShimTileAllocator {
 
   std::vector<int> shim_columns;
@@ -125,6 +227,41 @@ struct ShimTileAllocator {
 bool isMM2S(AIE::DMAChannel channel) {
   return (channel.first == AIE::DMAChannelDir::MM2S);
 }
+bool isTileInbound(air::DmaMemcpyNdOp memcpyOp) {
+  auto src_memory_space = memcpyOp.getSrcMemref()
+                              .getType()
+                              .cast<MemRefType>()
+                              .getMemorySpaceAsInt();
+  auto dst_memory_space = memcpyOp.getDstMemref()
+                              .getType()
+                              .cast<MemRefType>()
+                              .getMemorySpaceAsInt();
+  assert(src_memory_space != dst_memory_space);
+  return src_memory_space < dst_memory_space;
+}
+bool isTileInbound(air::ChannelInterface op) {
+  return isa<air::ChannelGetOp>(op.getOperation());
+}
+bool isTileOutbound(air::DmaMemcpyNdOp memcpyOp) {
+  return !isTileInbound(memcpyOp);
+}
+bool isTileOutbound(air::ChannelInterface op) { return !isTileInbound(op); }
+bool isLegalMemorySpace(air::DmaMemcpyNdOp memcpyOp) {
+  if (getMemorySpaceAsString(memcpyOp.getSrcMemref()) == "L1" &&
+      getMemorySpaceAsString(memcpyOp.getDstMemref()) == "L3") {
+    return true;
+  } else if (getMemorySpaceAsString(memcpyOp.getSrcMemref()) == "L3" &&
+             getMemorySpaceAsString(memcpyOp.getDstMemref()) == "L1") {
+    return true;
+  } else
+    return false;
+}
+bool isLegalMemorySpace(air::ChannelInterface op) {
+  if (getMemorySpaceAsString(op.getMemref()) == "L1") {
+    return true;
+  } else
+    return false;
+}
 
 struct DMAAllocator {
 
@@ -151,24 +288,18 @@ struct DMAAllocator {
     }
   }
 
-  AIE::TileOp getTile(AIE::DeviceOp aie_device, air::DmaMemcpyInterface &dmaOp,
+  template <typename T>
+  AIE::TileOp getTile(AIE::DeviceOp aie_device, T &memcpyOp,
                       int64_t tile_channel, int64_t col, int64_t row) {
-    auto src_memory_space =
-        dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    auto dst_memory_space =
-        dmaOp.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    assert(src_memory_space != dst_memory_space);
-
-    bool isMM2S = (src_memory_space < dst_memory_space);
-    auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
+    auto allocs = isTileInbound(memcpyOp) ? &mm2s_allocs : &s2mm_allocs;
 
     for (auto &t : *allocs) {
       if (col == t.col && row == t.row) {
         for (auto id : t.dma_id)
-          if (dmaOp.getId() == id)
+          if (memcpyOp.getId() == id)
             return t.dma_tile;
         if (tile_channel == t.tile_channel) {
-          t.dma_id.push_back(dmaOp.getId());
+          t.dma_id.push_back(memcpyOp.getId());
           return t.dma_tile;
         }
       }
@@ -181,27 +312,21 @@ struct DMAAllocator {
                        row,
                        (int64_t)dma_channel,
                        tile_channel,
-                       {dmaOp.getId()}});
-    LLVM_DEBUG(llvm::outs() << "isMM2S = " << isMM2S << " " << dmaOp.getId()
-                            << ", col =" << col << ", row = " << row
-                            << ", dma_col =" << dma_col
+                       {memcpyOp.getId()}});
+    LLVM_DEBUG(llvm::outs() << "isTileInbound = " << isTileInbound(memcpyOp)
+                            << " " << memcpyOp.getId() << ", col =" << col
+                            << ", row = " << row << ", dma_col =" << dma_col
                             << ", dma_chan =" << dma_channel << "\n");
 
     return dma_tile;
   }
 
-  AIE::DMAChannel getChannel(AIE::DeviceOp aie_device,
-                             air::DmaMemcpyInterface &dmaOp,
+  template <typename T>
+  AIE::DMAChannel getChannel(AIE::DeviceOp aie_device, T &memcpyOp,
                              AIE::DMAChannel tile_channel, int64_t col,
                              int64_t row) {
-    auto src_memory_space =
-        dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    auto dst_memory_space =
-        dmaOp.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    assert(src_memory_space != dst_memory_space);
-
-    bool isMM2S = (src_memory_space < dst_memory_space);
-    auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
+    bool isMM2S = isTileInbound(memcpyOp);
+    auto allocs = isTileInbound(memcpyOp) ? &mm2s_allocs : &s2mm_allocs;
 
     int64_t chan = -1;
     for (auto &t : *allocs) {
@@ -210,7 +335,7 @@ struct DMAAllocator {
                  << t.row << ", chan " << t.dma_channel << "\n");
       if (col == t.col && row == t.row) {
         for (auto id : t.dma_id)
-          if (dmaOp.getId() == id)
+          if (memcpyOp.getId() == id)
             chan = t.dma_channel;
         if (tile_channel.second == t.tile_channel) {
           chan = t.dma_channel;
@@ -1388,19 +1513,10 @@ public:
 
   // A very simple scheme to allocate channels for dma operations:
   //  <description>
-  AIE::DMAChannel getTileDMAChannel(AIE::DeviceOp aie_device,
-                                    air::DmaMemcpyInterface &dmaOp, int col,
-                                    int row) {
-    auto src_memory_space =
-        dmaOp.getSrcMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-    auto dst_memory_space =
-        dmaOp.getDstMemref().getType().cast<MemRefType>().getMemorySpaceAsInt();
-
-    bool isMM2S =
-        (src_memory_space >
-         dst_memory_space); // This is the tile DMA pushing onto a stream from
-                            // its own memory, e.g if the DMA is from 2 (src,
-                            // tile memory) to 0 (dst, ext memory)
+  template <typename T>
+  AIE::DMAChannel getTileDMAChannel(AIE::DeviceOp aie_device, T &memcpyOp,
+                                    int col, int row) {
+    bool isMM2S = isTileOutbound(memcpyOp);
     auto all_tile_dma_allocs =
         isMM2S ? &tile_dma_MM2S_allocs : &tile_dma_S2MM_allocs;
 
@@ -1409,7 +1525,7 @@ public:
     unsigned num_allocs = 0;
     for (auto &t : *all_tile_dma_allocs) {
       if (col == std::get<1>(t) && row == std::get<2>(t)) {
-        if (dmaOp.getId() == std::get<0>(t))
+        if (memcpyOp.getId() == std::get<0>(t))
           chan = std::get<3>(t);
         num_allocs++;
       }
@@ -1417,7 +1533,7 @@ public:
     if (chan == -1) {
       // Need to allocate a new one
       chan = num_allocs % tile_dma_channels;
-      all_tile_dma_allocs->push_back({dmaOp.getId(), col, row, chan});
+      all_tile_dma_allocs->push_back({memcpyOp.getId(), col, row, chan});
       LLVM_DEBUG(llvm::outs()
                  << "  1 tile isMM2S = " << isMM2S << ", col =" << col
                  << ", row = " << row << ", tile chan =" << chan << "\n");
@@ -1433,29 +1549,24 @@ public:
       return std::make_pair(AIE::DMAChannelDir::S2MM, (int)chan);
   }
 
-  AIE::BufferOp getBufferForTileDMA(AIE::DeviceOp aie_device,
-                                    air::DmaMemcpyInterface &dmaOp, int col,
-                                    int row) {
-    AIE::DMAChannel channel = getTileDMAChannel(aie_device, dmaOp, col, row);
-    Value buffer;
-    if (isMM2S(channel)) {
-      buffer = dmaOp.getSrcMemref();
-    } else {
-      buffer = dmaOp.getDstMemref();
-    }
+  template <typename T>
+  AIE::BufferOp getBufferForTileDMA(AIE::DeviceOp aie_device, T &memcpyOp,
+                                    int col, int row) {
+    Value buffer = isTileInbound(memcpyOp)
+                       ? (getMemrefInterface(memcpyOp, "dst"))
+                       : (getMemrefInterface(memcpyOp, "src"));
     AIE::BufferOp bufferOp = buffer.getDefiningOp<AIE::BufferOp>();
-    // if (!bufferOp)
-    //   buffer.dump();
     return bufferOp;
   }
 
   // Allocate a reader/writer lock pair. These may be the same or different
   // locks depending on the target device.
+  template <typename T>
   std::pair<AIE::LockOp, AIE::LockOp>
-  getLockForTileDMA(AIE::DeviceOp device, air::DmaMemcpyInterface &dmaOp,
+  getLockForTileDMA(AIE::DeviceOp device, T &memcpyOp,
                     lock_allocation_list &info, int col, int row) {
-    AIE::BufferOp bufferOp = getBufferForTileDMA(device, dmaOp, col, row);
-    AIE::DMAChannel channel = getTileDMAChannel(device, dmaOp, col, row);
+    AIE::BufferOp bufferOp = getBufferForTileDMA<T>(device, memcpyOp, col, row);
+    AIE::DMAChannel channel = getTileDMAChannel<T>(device, memcpyOp, col, row);
     assert(bufferOp);
 
     for (size_t i = 0; i < info.size(); i++) {
@@ -1508,70 +1619,51 @@ public:
                                        destBundle, destChannel);
   }
 
-  void getAIRDmaMemcpyInBlock(Block &b, std::vector<Operation *> &output) {
+  template <typename T>
+  void getAIRMemcpyOpInBlock(Block &b, std::vector<Operation *> &output) {
     for (Operation &o : b.getOperations()) {
-      if (isa<air::DmaMemcpyInterface>(&o))
+      if (isa<T>(&o))
         output.push_back(&o);
       for (Region &r : o.getRegions())
-        getAIRDmaMemcpyInRegion(r, output);
+        getAIRMemcpyOpInRegion<T>(r, output);
     }
   }
 
-  void getAIRDmaMemcpyInRegion(Region &r, std::vector<Operation *> &output) {
+  template <typename T>
+  void getAIRMemcpyOpInRegion(Region &r, std::vector<Operation *> &output) {
     for (Block &b : r.getBlocks())
-      getAIRDmaMemcpyInBlock(b, output);
+      getAIRMemcpyOpInBlock<T>(b, output);
   }
 
+  template <typename T>
   std::map<AIE::DMAChannel, std::vector<Operation *>>
   getDmaSchedules(AIE::CoreOp core, int x, int y, DMAAllocator &shim_dma_alloc,
                   std::vector<AIE::TileOp> &shim_dma_inits) {
 
     std::map<AIE::DMAChannel, std::vector<Operation *>> tile_dma_copies;
     std::vector<Operation *> dma_memcpy_ops;
-    getAIRDmaMemcpyInRegion(core.getBody(), dma_memcpy_ops);
+    getAIRMemcpyOpInRegion<T>(core.getBody(), dma_memcpy_ops);
 
     auto aie_device = core->getParentOfType<AIE::DeviceOp>();
     auto tile = core.getTileOp();
 
     for (auto o : dma_memcpy_ops) {
 
-      auto dmaOpIf = cast<air::DmaMemcpyInterface>(o);
-
-      int src_space = dmaOpIf.getSrcMemref()
-                          .getType()
-                          .cast<MemRefType>()
-                          .getMemorySpaceAsInt();
-      int dst_space = dmaOpIf.getDstMemref()
-                          .getType()
-                          .cast<MemRefType>()
-                          .getMemorySpaceAsInt();
-
-      if ((src_space == (int)air::MemorySpace::L2 &&
-           dst_space == (int)air::MemorySpace::L3) ||
-          (src_space == (int)air::MemorySpace::L3 &&
-           dst_space == (int)air::MemorySpace::L2) ||
-          (src_space == (int)air::MemorySpace::L1 &&
-           dst_space == (int)air::MemorySpace::L2) ||
-          (src_space == (int)air::MemorySpace::L2 &&
-           dst_space == (int)air::MemorySpace::L1)) {
+      auto memcpyOpIf = cast<T>(o);
+      if (!isLegalMemorySpace(memcpyOpIf)) {
         o->erase();
         continue;
-      }
+      } else {
 
-      AIE::DMAChannel tile_channel =
-          getTileDMAChannel(aie_device, dmaOpIf, x, y);
-
-      if ((src_space == (int)air::MemorySpace::L3 &&
-           dst_space == (int)air::MemorySpace::L1) ||
-          (src_space == (int)air::MemorySpace::L1 &&
-           dst_space == (int)air::MemorySpace::L3)) {
+        AIE::DMAChannel tile_channel =
+            getTileDMAChannel<T>(aie_device, memcpyOpIf, x, y);
 
         // copy between L1 and external memory, use shim dma
-        tile_channel = getTileDMAChannel(aie_device, dmaOpIf, x, y);
-        AIE::TileOp shim_tile = shim_dma_alloc.getTile(
-            aie_device, dmaOpIf, (int64_t)tile_channel.second, x, y);
-        AIE::DMAChannel shim_channel =
-            shim_dma_alloc.getChannel(aie_device, dmaOpIf, tile_channel, x, y);
+        tile_channel = getTileDMAChannel<T>(aie_device, memcpyOpIf, x, y);
+        AIE::TileOp shim_tile = shim_dma_alloc.getTile<T>(
+            aie_device, memcpyOpIf, (int64_t)tile_channel.second, x, y);
+        AIE::DMAChannel shim_channel = shim_dma_alloc.getChannel<T>(
+            aie_device, memcpyOpIf, tile_channel, x, y);
 
         LLVM_DEBUG(llvm::outs()
                    << "Shim channel is " << (uint64_t)shim_channel.second
@@ -1590,11 +1682,8 @@ public:
                         shim_dma_alloc.dma_channels,
                     tile, AIE::WireBundle::DMA, (uint32_t)tile_channel.second);
         }
-      } else {
-        llvm_unreachable("Unhandled dma transfer type");
+        tile_dma_copies[tile_channel].push_back(memcpyOpIf);
       }
-
-      tile_dma_copies[tile_channel].push_back(dmaOpIf);
     }
     return tile_dma_copies;
   }
@@ -1631,7 +1720,8 @@ public:
     return herd_meta;
   }
 
-  void lowerAirDmaMemcpy(AIE::DeviceOp device, DMAAllocator &shimDmaAlloc) {
+  template <typename T>
+  void lowerAIRMemcpyOp(AIE::DeviceOp device, DMAAllocator &shimDmaAlloc) {
     SmallVector<AIE::CoreOp, 32> cores;
     for (auto c : device.getOps<AIE::CoreOp>())
       cores.push_back(c);
@@ -1649,30 +1739,31 @@ public:
 
       // collect dma operations and generate a schedule
       std::map<AIE::DMAChannel, std::vector<Operation *>> tile_dma_copies =
-          getDmaSchedules(core, x, y, shimDmaAlloc, shim_dma_inits);
+          getDmaSchedules<T>(core, x, y, shimDmaAlloc, shim_dma_inits);
 
       // emit the acquire and release of the L1 buffer locks
       lock_allocation_list lock_allocs;
       std::unordered_set<Operation *> allocs_to_remap;
       for (auto p : tile_dma_copies) {
         for (auto o : p.second) {
-          auto dmaOpIf = cast<air::DmaMemcpyInterface>(o);
+          auto memcpyOpIf = cast<T>(o);
           AIE::DMAChannel tile_channel =
-              getTileDMAChannel(device, dmaOpIf, x, y);
-          auto locks = getLockForTileDMA(device, dmaOpIf, lock_allocs, x, y);
+              getTileDMAChannel<T>(device, memcpyOpIf, x, y);
+          auto locks =
+              getLockForTileDMA<T>(device, memcpyOpIf, lock_allocs, x, y);
           auto acqLockOp = isMM2S(tile_channel) ? locks.second : locks.first;
           auto relLockOp = isMM2S(tile_channel) ? locks.first : locks.second;
           int64_t lockAqValue = -1;
           int64_t lockRelValue = -1;
           Value alloc = nullptr;
-          if (!isMM2S(tile_channel)) {
+          if (isTileInbound(memcpyOpIf)) {
             lockAqValue = isAIE2 ? 1 : 1;
             lockRelValue = isAIE2 ? 1 : 0;
-            alloc = dmaOpIf.getDstMemref();
+            alloc = getMemrefInterface(memcpyOpIf, "dst");
           } else {
             lockAqValue = isAIE2 ? 1 : 0;
             lockRelValue = isAIE2 ? 1 : 1;
-            alloc = dmaOpIf.getSrcMemref();
+            alloc = getMemrefInterface(memcpyOpIf, "src");
           }
 
           if (auto bco =
@@ -1681,7 +1772,7 @@ public:
           else if (auto a = dyn_cast<memref::AllocaOp>(alloc.getDefiningOp()))
             builder.setInsertionPoint(alloc.getDefiningOp());
           else
-            builder.setInsertionPoint(&dmaOpIf->getBlock()->front());
+            builder.setInsertionPoint(&memcpyOpIf->getBlock()->front());
 
           builder.create<AIE::UseLockOp>(
               o->getLoc(), acqLockOp, lockAqValue,
@@ -1702,7 +1793,7 @@ public:
             }
           }
           if (need_unlock) {
-            auto t = dmaOpIf->getBlock()->getTerminator();
+            auto t = memcpyOpIf->getBlock()->getTerminator();
             builder.setInsertionPoint(t);
             builder.create<AIE::UseLockOp>(t->getLoc(), relLockOp, lockRelValue,
                                            AIE::LockAction::Release);
@@ -1752,25 +1843,26 @@ public:
 
         Block *first_bd = new Block();
         mem.getBody().push_back(first_bd);
-        auto dmaOps = p.second;
+        auto memcpyOps = p.second;
         Block *next_bd = nullptr;
-        for (size_t i = 0; i < dmaOps.size(); i++) {
-          auto dmaOp = cast<air::DmaMemcpyInterface>(dmaOps[i]);
+        for (size_t i = 0; i < memcpyOps.size(); i++) {
+          auto memcpyOp = cast<T>(memcpyOps[i]);
           Block *bd;
           if (i == 0)
             bd = first_bd;
           else
             bd = next_bd;
           auto b = OpBuilder::atBlockEnd(bd);
-          if (i == dmaOps.size() - 1) {
+          if (i == memcpyOps.size() - 1) {
             b.create<AIE::NextBDOp>(loc, first_bd);
           } else {
             next_bd = new Block();
             mem.getBody().push_back(next_bd);
             b.create<AIE::NextBDOp>(loc, next_bd);
           }
-          AIE::BufferOp bufferOp = getBufferForTileDMA(device, dmaOp, x, y);
-          auto locks = getLockForTileDMA(device, dmaOp, lock_allocs, x, y);
+          AIE::BufferOp bufferOp = getBufferForTileDMA(device, memcpyOp, x, y);
+          auto locks =
+              getLockForTileDMA<T>(device, memcpyOp, lock_allocs, x, y);
           auto acqLockOp = isMM2S(channel) ? locks.first : locks.second;
           auto relLockOp = isMM2S(channel) ? locks.second : locks.first;
           b.setInsertionPointToStart(bd);
@@ -1783,32 +1875,14 @@ public:
             lockAqValue = isAIE2 ? 1 : 1;
             lockRelValue = isAIE2 ? 1 : 0;
           }
-          Value length = dmaOp.getLength();
-          if (!length) {
-            auto ndcpy = cast<air::DmaMemcpyNdOp>(dmaOps[i]);
-            auto src_memory_space = ndcpy.getSrcMemref()
-                                        .getType()
-                                        .cast<MemRefType>()
-                                        .getMemorySpaceAsInt();
-            auto dst_memory_space = ndcpy.getDstMemref()
-                                        .getType()
-                                        .cast<MemRefType>()
-                                        .getMemorySpaceAsInt();
-            auto sizes = src_memory_space > dst_memory_space
-                             ? ndcpy.getDstSizes()
-                             : ndcpy.getSrcSizes();
-            int64_t size = 1;
-            for (auto s : sizes) {
-              auto c = dyn_cast<arith::ConstantIndexOp>(s.getDefiningOp());
-              if (!c) {
-                size = -1;
-                break;
-              }
-              size = size * c.value();
-            }
-            length = b.create<arith::ConstantIndexOp>(dmaOp.getLoc(), size)
-                         ->getResult(0);
-          }
+          auto ndcpy = cast<T>(memcpyOps[i]);
+
+          int64_t len = isTileInbound(ndcpy) ? getSizesInterface(ndcpy, "dst")
+                                             : getSizesInterface(ndcpy, "src");
+
+          Value length =
+              b.create<arith::ConstantIndexOp>(memcpyOp.getLoc(), len)
+                  ->getResult(0);
           b.create<AIE::UseLockOp>(loc, acqLockOp, lockAqValue,
                                    isAIE2 ? AIE::LockAction::AcquireGreaterEqual
                                           : AIE::LockAction::Acquire);
@@ -1975,7 +2049,7 @@ public:
       bool hasDma = false;
       bool hasChan = false;
       device.walk([&](Operation *o) {
-        hasDma |= isa<air::DmaMemcpyInterface>(o);
+        hasDma |= isa<air::DmaMemcpyNdOp>(o);
         hasChan |= isa<air::ChannelInterface>(o);
       });
       if (hasDma && hasChan) {
@@ -1988,15 +2062,19 @@ public:
 
       DMAAllocator shimDmaAlloc(device.getTargetModel());
 
-      lowerAirDmaMemcpy(device, shimDmaAlloc);
-      lowerPipelineGetPut(device, tileToHerdMap);
-
       specializeChannelBundle(device);
 
-      LowerAIRPingPong(device);
+      lowerAIRMemcpyOp<air::DmaMemcpyNdOp>(device, shimDmaAlloc);
 
-      ShimTileAllocator shimTileAlloc(device.getTargetModel());
-      lowerAIRChannels(device, shimTileAlloc);
+      if (clUseObjFifo) {
+        LowerAIRPingPong(device);
+        ShimTileAllocator shimTileAlloc(device.getTargetModel());
+        lowerAIRChannels(device, shimTileAlloc);
+      } else {
+        lowerAIRMemcpyOp<air::ChannelInterface>(device, shimDmaAlloc);
+      }
+
+      lowerPipelineGetPut(device, tileToHerdMap);
 
       SmallVector<air::HerdOp, 4> herds;
       if (auto p = h->getParentOfType<air::SegmentOp>()) {
@@ -2009,7 +2087,7 @@ public:
       for (auto herd : herds) {
         std::set<int64_t> dma_ids;
         herd.walk([&](Operation *o) {
-          if (auto dmaOp = dyn_cast<air::DmaMemcpyInterface>(o))
+          if (auto dmaOp = dyn_cast<air::DmaMemcpyNdOp>(o))
             dma_ids.insert(dmaOp.getId());
         });
         auto c = herd.getColOffset();
