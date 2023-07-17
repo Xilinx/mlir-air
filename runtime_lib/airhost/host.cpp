@@ -39,6 +39,8 @@
 #define XAIE_AIE_TILE_ROW_START 1
 #define XAIE_AIE_TILE_NUM_ROWS 8
 
+#define SYSFS_PATH_MAX 63
+
 // temporary solution to stash some state
 extern "C" {
 
@@ -48,14 +50,16 @@ aie_libxaie_ctx_t *_air_host_active_libxaie = nullptr;
 uint32_t *_air_host_bram_ptr = nullptr;
 uint64_t _air_host_bram_paddr = 0;
 air_module_handle_t _air_host_active_module = (air_module_handle_t) nullptr;
+
+const char vck5000_driver_name[] = "/dev/amdair";
 }
 
 #ifdef AIR_PCIE
-volatile void *_mapped_aie_base = nullptr;
 std::vector<air_physical_device_t> physical_devices;
 #endif
 
 hsa_status_t air_init() {
+  printf("%s\n", __func__);
 #ifdef AIR_PCIE
   hsa_status_t hsa_ret = air_get_physical_devices();
 
@@ -100,34 +104,6 @@ air_libxaie_ctx_t air_init_libxaie(uint32_t device_id) {
     return (air_libxaie_ctx_t) nullptr;
 
   xaie->AieConfigPtr.AieGen = XAIE_DEV_GEN_AIE;
-#ifdef AIR_PCIE
-
-  if (device_id >= physical_devices.size()) {
-    printf("[ERROR] No device id %d in system\n", device_id);
-    return (air_libxaie_ctx_t) nullptr;
-  }
-
-  std::string aie_bar = air_get_aie_bar(device_id);
-
-  int fda;
-  if ((fda = open(aie_bar.c_str(), O_RDWR | O_SYNC)) == -1) {
-    printf("[ERROR] Failed to open device file\n");
-    return (air_libxaie_ctx_t) nullptr;
-  }
-
-  // Map the memory region into userspace
-  _mapped_aie_base = mmap(NULL,                   // virtual address
-                          0x20000000,             // length
-                          PROT_READ | PROT_WRITE, // prot
-                          MAP_SHARED,             // flags
-                          fda,                    // device fd
-                          0);                     // offset
-  if (!_mapped_aie_base)
-    return (air_libxaie_ctx_t) nullptr;
-  xaie->AieConfigPtr.BaseAddr = (uint64_t)_mapped_aie_base;
-#else
-  xaie->AieConfigPtr.BaseAddr = XAIE_BASE_ADDR;
-#endif
   xaie->AieConfigPtr.ColShift = XAIE_COL_SHIFT;
   xaie->AieConfigPtr.RowShift = XAIE_ROW_SHIFT;
   xaie->AieConfigPtr.NumRows = XAIE_NUM_ROWS;
@@ -140,7 +116,64 @@ air_libxaie_ctx_t air_init_libxaie(uint32_t device_id) {
   xaie->AieConfigPtr.PartProp = {0};
   xaie->DevInst = {0};
 
-  XAie_CfgInitialize(&(xaie->DevInst), &(xaie->AieConfigPtr));
+  /*
+Set up the AIE base address
+For a PCIe device (e.g. VCK5000) the AIE region might be enabled through
+the driver for direct access (i.e. memory mapped BAR). This is only true
+when the driver is enabled in debug mode. Otherwise, use the sysfs
+interface. The sysfs path is passed by reusing the IOInst pointer before
+it is configured by the backend. This is non-standard usage and may break
+in future versions.
+For a non-PCIe device, memory map the base address directly.
+*/
+#ifdef AIR_PCIE
+  if (device_id >= physical_devices.size()) {
+    printf("[ERROR] No device id %d in system\n", device_id);
+    return (air_libxaie_ctx_t) nullptr;
+  }
+
+  char sysfs_path[SYSFS_PATH_MAX + 1];
+  if (snprintf(sysfs_path, SYSFS_PATH_MAX, "/sys/class/amdair/amdair/%02u",
+               device_id) == SYSFS_PATH_MAX)
+    sysfs_path[SYSFS_PATH_MAX] = 0;
+
+  int fda;
+  if ((fda = open(vck5000_driver_name, O_RDWR | O_SYNC)) == -1) {
+    printf("[ERROR] %s failed to open %s\n", __func__, vck5000_driver_name);
+    return (air_libxaie_ctx_t) nullptr;
+  }
+
+  // Map the AIE memory region into userspace for libxaie to use
+  volatile void *mapped_aie_base = nullptr;
+  mapped_aie_base = mmap(NULL,                   // virtual address
+                         0x20000000,             // length
+                         PROT_READ | PROT_WRITE, // prot
+                         MAP_SHARED,             // flags
+                         fda,                    // device fd
+                         0x100000);              // offset
+
+  XAie_BackendType backend;
+  if (mapped_aie_base == MAP_FAILED) {
+    printf("Failed mapping AIE BAR - using sysfs backend\n");
+    xaie->AieConfigPtr.Backend = XAIE_IO_BACKEND_AMDAIR;
+    backend = XAIE_IO_BACKEND_AMDAIR;
+    xaie->AieConfigPtr.BaseAddr = 0;
+    xaie->DevInst.IOInst = (void *)sysfs_path;
+  } else {
+    printf("Using Linux backend\n");
+    xaie->AieConfigPtr.Backend = XAIE_IO_BACKEND_LINUX;
+    backend = XAIE_IO_BACKEND_METAL;
+    xaie->AieConfigPtr.BaseAddr = (uint64_t)mapped_aie_base;
+  }
+#else
+  xaie->AieConfigPtr.BaseAddr = XAIE_BASE_ADDR;
+#endif
+
+  if (XAie_CfgInitialize(&(xaie->DevInst), &(xaie->AieConfigPtr)) != XAIE_OK) {
+    printf("[ERROR] Failed to configure libxaie\n");
+    return (air_libxaie_ctx_t) nullptr;
+  }
+
   XAie_PmRequestTiles(&(xaie->DevInst), NULL, 0);
 
   _air_host_active_libxaie = xaie;
@@ -152,8 +185,8 @@ void air_deinit_libxaie(air_libxaie_ctx_t _xaie) {
   if (xaie == _air_host_active_libxaie) {
     XAie_Finish(&(xaie->DevInst));
 #ifdef AIR_PCIE
-    munmap(const_cast<void *>(_mapped_aie_base), 0x20000000);
-    _mapped_aie_base = nullptr;
+    if (xaie->AieConfigPtr.BaseAddr)
+      munmap((void *)xaie->AieConfigPtr.BaseAddr, 0x20000000);
 #endif
     _air_host_active_libxaie = nullptr;
   }
@@ -162,7 +195,6 @@ void air_deinit_libxaie(air_libxaie_ctx_t _xaie) {
 
 air_module_handle_t air_module_load_from_file(const char *filename, queue_t *q,
                                               uint32_t device_id) {
-
   if (_air_host_active_module)
     air_module_unload(_air_host_active_module);
 
@@ -183,13 +215,12 @@ air_module_handle_t air_module_load_from_file(const char *filename, queue_t *q,
     return 0;
   }
 
-  int fd = open(air_get_ddr_bar(device_id).c_str(), O_RDWR | O_SYNC);
+  int fd = open(vck5000_driver_name, O_RDWR | O_SYNC);
   assert(fd != -1 && "Failed to open bram fd");
 
   _air_host_bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ | PROT_WRITE,
                                         MAP_SHARED, fd, 0x1C0000);
   _air_host_bram_paddr = AIR_BBUFF_BASE;
-  assert(_air_host_bram_ptr && "Failed to map scratch bram location");
 #else
 
 #ifndef __aarch64__
@@ -204,8 +235,9 @@ air_module_handle_t air_module_load_from_file(const char *filename, queue_t *q,
   _air_host_bram_ptr = (uint32_t *)mmap(NULL, 0x8000, PROT_READ | PROT_WRITE,
                                         MAP_SHARED, fd, AIR_BBUFF_BASE);
   _air_host_bram_paddr = AIR_BBUFF_BASE;
-  assert(_air_host_bram_ptr && "Failed to map scratch bram location");
 #endif
+  assert((_air_host_bram_ptr != MAP_FAILED) &&
+         "Failed to map scratch bram location");
 
   return (air_module_handle_t)_handle;
 }
@@ -293,6 +325,13 @@ uint64_t air_segment_load(const char *name) {
 
 #ifdef AIR_PCIE
   XAie_Finish(&(_air_host_active_libxaie->DevInst));
+
+  // Setting the driver libxaie backend back up
+  // Currently only targetting device 0
+  _air_host_active_libxaie->AieConfigPtr.Backend = XAIE_IO_BACKEND_AMDAIR;
+  _air_host_active_libxaie->DevInst.IOInst =
+      (void *)"/sys/class/amdair/amdair/00";
+
   XAie_CfgInitialize(&(_air_host_active_libxaie->DevInst),
                      &(_air_host_active_libxaie->AieConfigPtr));
   XAie_PmRequestTiles(&(_air_host_active_libxaie->DevInst), NULL, 0);
@@ -306,11 +345,11 @@ uint64_t air_segment_load(const char *name) {
 
   wr_idx = queue_add_write_index(_air_host_active_segment.q, 1);
   packet_id = wr_idx % _air_host_active_segment.q->size;
-  dispatch_packet_t *herd_pkt =
+  dispatch_packet_t *segment_pkt =
       (dispatch_packet_t *)(_air_host_active_segment.q->base_address_vaddr) +
       packet_id;
-  air_packet_herd_init(herd_pkt, 0, 0, 50, 1, 8);
-  air_queue_dispatch_and_wait(_air_host_active_segment.q, wr_idx, herd_pkt);
+  air_packet_segment_init(segment_pkt, 0, 0, 50, 1, 8);
+  air_queue_dispatch_and_wait(_air_host_active_segment.q, wr_idx, segment_pkt);
 
 #else
   XAie_Finish(&(_air_host_active_libxaie->DevInst));
@@ -383,67 +422,14 @@ uint64_t air_herd_load(const char *name) {
 
 #ifdef AIR_PCIE
 hsa_status_t air_get_physical_devices() {
+  struct stat st;
 
   // Skip device enumeration if it is already done
   if (physical_devices.size() != 0)
     return HSA_STATUS_SUCCESS;
 
-  // Right now just hardcode VCK5000 BDF
-  std::vector<std::string> bdf_vect;
-  utility::get_pci_dbdf(&bdf_vect, 0x000010ee, 0x0000b034, 0);
-
-  struct stat st;
-  for (std::string iter : bdf_vect) {
-    air_physical_device_t temp_physical_device;
-
-    // Creating the paths to all the BARs
-    std::string dram_bar = iter + "0";
-    std::string aie_bar = iter + "2";
-    std::string bram_bar = iter + "4";
-
-    // Copying the DRAM BAR
-    if (stat(dram_bar.c_str(), &st) == 0) {
-      temp_physical_device.dram_bar_size = st.st_size;
-      strcpy(temp_physical_device.dram_bar_path, dram_bar.c_str());
-    } else {
-      printf("[ERROR] Device file %s does not exist\n", dram_bar.c_str());
-      return HSA_STATUS_ERROR;
-    }
-
-    // Copying the AIE BAR
-    if (stat(aie_bar.c_str(), &st) == 0) {
-      temp_physical_device.aie_bar_size = st.st_size;
-      strcpy(temp_physical_device.aie_bar_path, aie_bar.c_str());
-    } else {
-      printf("[ERROR] Device file %s does not exist\n", aie_bar.c_str());
-      return HSA_STATUS_ERROR;
-    }
-
-    // Copying the BRAM BAR
-    if (stat(bram_bar.c_str(), &st) == 0) {
-      temp_physical_device.bram_bar_size = st.st_size;
-      strcpy(temp_physical_device.bram_bar_path, bram_bar.c_str());
-    } else {
-      printf("[ERROR] Device file %s does not exist\n", bram_bar.c_str());
-      return HSA_STATUS_ERROR;
-    }
-
-    // Adding to our list of
-    physical_devices.push_back(temp_physical_device);
-  }
-
-  printf("All BARs found:\n");
-  int physical_device_iter = 0;
-  for (air_physical_device_t temp_physical_device : physical_devices) {
-    printf("Device %d:\n", physical_device_iter);
-    printf("\tDRAM BAR: size 0x%lx at %s\n", temp_physical_device.dram_bar_size,
-           temp_physical_device.dram_bar_path);
-    printf("\tAIE BAR: size 0x%lx at %s\n", temp_physical_device.aie_bar_size,
-           temp_physical_device.aie_bar_path);
-    printf("\tBRAM BAR: size 0x%lx at %s\n", temp_physical_device.bram_bar_size,
-           temp_physical_device.bram_bar_path);
-    physical_device_iter++;
-  }
+  air_physical_device_t temp_physical_device;
+  physical_devices.push_back(temp_physical_device);
 
   return HSA_STATUS_SUCCESS;
 }
@@ -452,38 +438,13 @@ hsa_status_t air_get_physical_devices() {
 hsa_status_t air_iterate_agents(hsa_status_t (*callback)(air_agent_t agent,
                                                          void *data),
                                 void *data) {
-
   uint64_t total_controllers = 0;
 
 #ifdef AIR_PCIE
-  for (int i = 0; i < physical_devices.size(); i++) {
-    std::cout << "Discovering agents in device " << i << std::endl;
-    int fd = open(air_get_bram_bar(i).c_str(), O_RDWR | O_SYNC);
-    if (fd == -1)
-      return HSA_STATUS_ERROR;
-
-    uint64_t *bram_base = reinterpret_cast<uint64_t *>(
-        mmap(NULL, 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
-
-    total_controllers = bram_base[65];
-    if (total_controllers < 1) {
-      std::cerr << "No agents found" << std::endl;
-      return HSA_STATUS_ERROR;
-    }
-
-    uint64_t *base_addr = reinterpret_cast<uint64_t *>(AIR_VCK190_SHMEM_BASE);
-    for (int i = 0; i < total_controllers; i++) {
-      air_agent_t a;
-      a.handle = reinterpret_cast<uintptr_t>(&base_addr[i]);
-      callback(a, data);
-    }
-
-    auto res = munmap(bram_base, 0x1000);
-    if (res) {
-      std::cerr << "Could not munmap" << std::endl;
-      return HSA_STATUS_ERROR;
-    }
-  }
+  air_agent_t a;
+  a.handle = reinterpret_cast<uintptr_t>(0xBADF00DUL);
+  callback(a, data);
+  return HSA_STATUS_SUCCESS;
 #else
 
 #ifndef __aarch64__
@@ -499,6 +460,11 @@ hsa_status_t air_iterate_agents(hsa_status_t (*callback)(air_agent_t agent,
   uint64_t *bram_base =
       reinterpret_cast<uint64_t *>(mmap(NULL, 0x1000, PROT_READ | PROT_WRITE,
                                         MAP_SHARED, fd, AIR_VCK190_SHMEM_BASE));
+  if (bram_base == MAP_FAILED) {
+    printf("[ERROR] can't map BRAM\n");
+    return HSA_STATUS_ERROR;
+  }
+
   total_controllers = bram_base[65];
   if (total_controllers < 1) {
     std::cerr << "No agents found" << std::endl;
@@ -523,6 +489,8 @@ hsa_status_t air_iterate_agents(hsa_status_t (*callback)(air_agent_t agent,
 }
 
 #ifdef AIR_PCIE
+const char *air_get_driver_name(void) { return vck5000_driver_name; }
+
 std::string air_get_ddr_bar(uint32_t device_id) {
   if (device_id >= physical_devices.size()) {
     printf("[ERROR] Attempting to grab BAR of device %d which does not exist\n",

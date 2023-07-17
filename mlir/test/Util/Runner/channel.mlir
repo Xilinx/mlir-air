@@ -53,7 +53,7 @@ module {
         }
         scf.yield %4 : !air.async.token
       }
-      %3 = air.segment async  {
+      %3 = air.segment async attributes {x_loc = 0 : i64, x_size = 4 : i64, y_loc = 0 : i64, y_size = 4 : i64} {
         %c32 = arith.constant 32 : index
         %c1_5 = arith.constant 1 : index
         %c4 = arith.constant 4 : index
@@ -64,7 +64,7 @@ module {
         %4 = air.wait_all async 
         %5 = scf.for %arg9 = %c0_6 to %c256_9 step %c128_8 iter_args(%arg10 = %4) -> (!air.async.token) {
           %6 = scf.for %arg11 = %c0_6 to %c1024_7 step %c128_8 iter_args(%arg12 = %arg10) -> (!air.async.token) {
-            %async_token_10, %results_11 = air.execute -> (memref<128x128xbf16, 1>) {
+            %async_token_10, %results_11 = air.execute [%arg12] -> (memref<128x128xbf16, 1>) {
               %alloc = memref.alloc() : memref<128x128xbf16, 1>
               air.execute_terminator %alloc : memref<128x128xbf16, 1>
             }
@@ -102,6 +102,9 @@ module {
                   air.execute_terminator %alloc : memref<32x32xbf16, 2>
                 }
                 %13 = air.channel.get async [%async_token_18, %12]  @channel_1[%arg15, %arg16] (%results_19[] [] []) : (memref<32x32xbf16, 2>)
+                %async_token_22 = air.execute [%13] {
+                  memref.dealloc %results_19 : memref<32x32xbf16, 2>
+                }
                 air.herd_terminator
               }
               %async_token_16 = air.execute [%10] {
@@ -113,7 +116,10 @@ module {
               %11 = air.wait_all async [%9, %10] 
               scf.yield %11 : !air.async.token
             }
-            scf.yield %8 : !air.async.token
+            %async_token_23 = air.execute [%8] {
+              memref.dealloc %results_11 : memref<128x128xbf16, 1>
+            }
+            scf.yield %async_token_23 : !air.async.token
           }
           scf.yield %6 : !air.async.token
         }

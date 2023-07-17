@@ -60,7 +60,7 @@ Next, clone and build MLIR-AIE with paths to llvm, and cmakeModules repositories
 
 ```
 ./clone-mlir-aie.sh
-./build-mlir-aie-local.sh llvm cmakeModules/cmakeModulesXilinx mlir-aie build ../../install
+./build-mlir-aie-local.sh llvm mlir-aie/cmake/modulesXilinx mlir-aie build ../../install
 ```
 
 The MLIR-AIE tools will be able to generate binaries targetting AIEngines.
@@ -77,7 +77,7 @@ Finally, build the MLIR-AIR tools for your desired use case:
 Use the following command to build the AIR tools to compile on x86:
 
 ```
-./build-mlir-air.sh $SYSROOT /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/mlir-aie ../../mlir-air build install
+./build-mlir-air.sh $SYSROOT /full/path/to/mlir-air/utils/llvm /full/path/to/mlir-air/utils/cmakeModules /full/path/to/mlir-air/utils/mlir-aie build install
 ```
 
 ## Building on x86 with runtime for PCIe 
@@ -85,10 +85,10 @@ Use the following command to build the AIR tools to compile on x86:
 In order to build and run on PCIe cards, you first have to build and install the aienginev2 library:
 
 ```
-git clone https://github.com/jgmelber/embeddedsw.git
-cd embeddedsw
-git checkout xlnx_rel_v2021.2-vck5000
-cd XilinxProcessorIPLib/drivers/aienginev2/src
+git clone https://github.com/jnider/aie-rt
+cd aie-rt
+git checkout joel-aie
+cd driver/src
 make -f Makefile.Linux
 sudo cp -r ../include /opt/aiengine/
 sudo cp libxaiengine.so* /opt/aiengine/lib/
@@ -98,8 +98,12 @@ export LD_LIBRARY_PATH=/opt/xaiengine/lib:${LD_LIBRARY_PATH}
 Use the following command to build the AIR tools to compile on x86 for PCIe cards (VCK5000):
 
 ```
-./utils/build-mlir-air-pcie.sh utils/llvm/ utils/cmakeModules/cmakeModulesXilinx/ utils/mlir-aie/
+./utils/build-mlir-air-pcie.sh utils/llvm/ utils/mlir-aie/cmake/modulesXilinx/ utils/mlir-aie/ /opt/xaiengine
 ```
+
+The PCIe AIR runtime requires the use of the [AIR PCIe kernel driver](driver). The driver directory contains documentation on how to compile and load the AIR PCIe kernel driver.
+
+Note that building a sysroot and the cross-compilation instructions are not necessary when running on x86 with the PCIe runtime.
 
 ## Environment setup
 
@@ -109,6 +113,11 @@ Set up your environment to use the tools you just built with the following comma
 export PATH=/path/to/mlir-air/install/bin:${PATH}
 export PYTHONPATH=/path/to/mlir-air/install/python:${PYTHONPATH}
 export LD_LIBRARY_PATH=/path/to/install/mlir-air/lib:/opt/xaiengine/lib:${LD_LIBRARY_PATH}
+```
+
+Note that if you are running on x86 with the PCIe runtime, the following path should be added to your path rather than `/path/to/mlir-air/install/bin`. 
+```
+export PATH=/path/to/mlir-air/install-pcie/bin:${PATH}
 ```
 
 ## Building hardware platforms
@@ -152,6 +161,12 @@ cd utils
 cd ..
 tar -cvf air_tools.tar.gz install-aarch64
 ```
+
+## Running on the VCK5000
+
+The first step required for running on the VCK5000 is building the hardware platform and loading it on your device. [Here](platforms/xilinx_vck5000_air) we provide documentation on how to do that. Then, the AIR tools must be installed by running the [Building external projects on X86](#building-external-projects-on-X86) followed by the [Building on x86 with runtime for PCIe](#building-on-x86-with-runtime-for-PCIe) and [Environment setup](#environment-setup). Then, the [AIR PCIe driver](driver) must be compiled and installed. Now you are ready to run tests using AIR on the VCK5000! For example, go to [Test 13](test/13_mb_add_one) and run `make` followed by `sudo ./test.elf` to run the application.
+
+
 
 -----
 

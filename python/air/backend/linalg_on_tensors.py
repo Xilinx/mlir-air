@@ -95,9 +95,10 @@ class LinalgOnTensorsAirBackend(AirBackend):
         if pipeline is None:
             pipeline = LINALG_MEMREF_TO_AIR_PIPELINE
 
-        with imported_module.context:
-            pm = torch_mlir.passmanager.PassManager.parse('builtin.module(refback-mlprogram-bufferize)')
-            pm.run(imported_module)
+        if type(imported_module) is torch_mlir.ir.Module:
+            with imported_module.context:
+                pm = torch_mlir.passmanager.PassManager.parse('builtin.module(refback-mlprogram-bufferize)')
+                pm.run(imported_module)
 
         with air.mlir.ir.Context():
             air_module = air.mlir.ir.Module.parse(str(imported_module))

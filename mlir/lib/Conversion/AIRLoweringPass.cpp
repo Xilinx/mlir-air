@@ -15,6 +15,8 @@
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Util/Util.h"
 
+#include "aie/Dialect/AIE/IR/AIEDialect.h"
+
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -456,6 +458,9 @@ public:
     if (op->getParentOfType<air::HerdOp>())
       return failure();
 
+    if (op->getParentOfType<AIE::CoreOp>())
+      return failure();
+
     SmallVector<Value, 4> deps;
     for (auto o : adaptor.getOperands())
       if (o.getType().isa<xilinx::airrt::EventType>())
@@ -577,6 +582,9 @@ public:
     auto ctx = op->getContext();
 
     if (op->getParentOfType<air::HerdOp>())
+      return failure();
+
+    if (op->getParentOfType<AIE::CoreOp>())
       return failure();
 
     SmallVector<Value, 4> deps;

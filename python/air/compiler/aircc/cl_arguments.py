@@ -7,6 +7,8 @@
 import argparse
 import sys
 
+from air.compiler.aircc.configure import *
+
 def parse_args(args=None):
     if (args is None):
         args = sys.argv[1:]
@@ -63,14 +65,18 @@ def parse_args(args=None):
             help='Generate a shared library (.so) instead of the default of a static library (.a)')
     parser.add_argument('-xbridge',
             dest="xbridge",
-            default=False,
+            default=air_link_with_xchesscc,
             action='store_true',
             help='pass --xbridge to aiecc, otherwise pass --no-xbridge')
     parser.add_argument('-xchesscc',
             dest="xchesscc",
-            default=False,
+            default=air_compile_with_xchesscc,
             action='store_true',
             help='pass --xchesscc to aiecc, otherwise pass --no-xchesscc')
+    parser.add_argument('--device',
+            metavar="target_device",
+            default="xcvc1902",
+            help='Target AIE device')
 
     opts = parser.parse_args(args)
     return opts

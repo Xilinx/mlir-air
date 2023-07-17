@@ -4,7 +4,7 @@
 
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${AIE_INCLUDE_DIRS}/../runtime_lib
+    ${AIE_INCLUDE_DIRS}/../runtime_lib/x86_64/test_lib/include
 )
 
 add_definitions(-DLIBXAIENGINEV2)

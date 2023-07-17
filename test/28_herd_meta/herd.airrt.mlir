@@ -8,8 +8,8 @@
 
 module {
   airrt.module_metadata {
-    airrt.partition_metadata attributes {
-      sym_name = "partition_0"
+    airrt.segment_metadata attributes {
+      sym_name = "segment_0"
     } {
       airrt.herd_metadata {
         sym_name = "herd_0",
@@ -30,8 +30,8 @@ module {
         ]
       }
     }
-    // airrt.partition_metadata attributes {
-    //   sym_name = "partition_1"
+    // airrt.segment_metadata attributes {
+    //   sym_name = "segment_1"
     // } {
     //   airrt.herd_metadata {
     //     sym_name = "herd_2",

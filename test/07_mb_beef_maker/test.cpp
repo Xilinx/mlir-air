@@ -25,6 +25,8 @@
 
 #define SCRATCH_AREA 8
 
+#define XAIE_NUM_COLS 10
+
 int
 main(int argc, char *argv[])
 {
@@ -75,19 +77,19 @@ main(int argc, char *argv[])
   uint64_t wr_idx = queue_add_write_index(queues[0], 1);
   uint64_t packet_id = wr_idx % queues[0]->size;
 
-  // herd_setup packet
-  dispatch_packet_t *herd_pkt =
-      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_herd_init(herd_pkt, 0, col, 1, row, 1);
-  air_queue_dispatch_and_wait(queues[0], wr_idx, herd_pkt);
-
-  wr_idx = queue_add_write_index(queues[0], 1);
-  packet_id = wr_idx % queues[0]->size;
-
   dispatch_packet_t *shim_pkt =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
   air_packet_device_init(shim_pkt, XAIE_NUM_COLS);
   air_queue_dispatch_and_wait(queues[0], wr_idx, shim_pkt);
+
+  wr_idx = queue_add_write_index(queues[0], 1);
+  packet_id = wr_idx % queues[0]->size;
+
+  // herd_setup packet
+  dispatch_packet_t *segment_pkt =
+      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
+  air_packet_segment_init(segment_pkt, 0, col, 1, row, 1);
+  air_queue_dispatch_and_wait(queues[0], wr_idx, segment_pkt);
 
   mlir_aie_configure_cores(xaie);
   mlir_aie_configure_switchboxes(xaie);

@@ -14,7 +14,17 @@
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME0:.*]],
 
+// CHECK: "name": "ChannelGetOp@channel_0(L1<--L1)",
+// CHECK-NEXT: "cat": "layer",
+// CHECK-NEXT: "ph": "B",
+// CHECK-NEXT: "ts": [[TIME0]],
+
 // CHECK: "name": "ChannelPutOp@channel_0(L1-->L1)",
+// CHECK-NEXT: "cat": "layer",
+// CHECK-NEXT: "ph": "B",
+// CHECK-NEXT: "ts": [[TIME0]],
+
+// CHECK: "name": "ChannelGetOp@channel_0(L1<--L1)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME0]],
@@ -24,19 +34,9 @@
 // CHECK-NEXT: "ph": "E",
 // CHECK-NEXT: "ts": [[TIME1:.*]],
 
-// CHECK: "name": "ChannelGetOp@channel_0(L1<--L1)",
-// CHECK-NEXT: "cat": "layer",
-// CHECK-NEXT: "ph": "B",
-// CHECK-NEXT: "ts": [[TIME1]],
-
 // CHECK: "name": "ChannelPutOp@channel_0(L1-->L1)",
 // CHECK-NEXT: "cat": "layer",
 // CHECK-NEXT: "ph": "E",
-// CHECK-NEXT: "ts": [[TIME1]],
-
-// CHECK: "name": "ChannelGetOp@channel_0(L1<--L1)",
-// CHECK-NEXT: "cat": "layer",
-// CHECK-NEXT: "ph": "B",
 // CHECK-NEXT: "ts": [[TIME1]],
 
 // CHECK: "name": "ChannelGetOp@channel_0(L1<--L1)",
@@ -56,7 +56,7 @@
 // CHECK: "name": "LaunchTerminator",
 // CHECK: "ph": "E",
 
-#set = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 2 >= 0)>
+#set = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 1 >= 0)>
 module {
   air.channel @channel_0 [1, 2]
   func.func @test(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x1024xbf16>, %arg2: memref<1024x1024xbf16>, %arg3: memref<1024x1024xbf16>) -> memref<256x1024xbf16> {
@@ -77,7 +77,7 @@ module {
       memref.copy %results, %results_2 : memref<256x1024xbf16> to memref<256x1024xbf16>
     } {id = 4 : i32}
     %0 = air.launch async [%async_token_3] (%arg4, %arg5) in (%arg6=%c1, %arg7=%c1) {
-      %1 = air.segment async  {
+      %1 = air.segment async attributes {x_loc = 0 : i64, x_size = 2 : i64, y_loc = 0 : i64, y_size = 2 : i64} {
         %c2 = arith.constant 2 : index
         %async_token_4, %results_5 = air.execute -> (memref<128x128xbf16, 1>) {
           %alloc = memref.alloc() : memref<128x128xbf16, 1>

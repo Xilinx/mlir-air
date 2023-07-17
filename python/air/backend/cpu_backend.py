@@ -24,7 +24,7 @@ from typing import List
 
 path = Path(air.backend.__file__).resolve().parent
 ctypes.CDLL(f"{path}/../../../runtime_lib/aircpu/libaircpu.so", mode=ctypes.RTLD_GLOBAL)
-ctypes.CDLL(f"/work/acdc/build/llvm/lib/libmlir_async_runtime.so.16git", mode=ctypes.RTLD_GLOBAL)
+ctypes.CDLL(f"/FIXME/PATH/TO/llvm/lib/libmlir_async_runtime.so.17git", mode=ctypes.RTLD_GLOBAL)
 
 __all__ = [
     "AirCpuBackend",
@@ -39,15 +39,65 @@ DEFAULT_PIPELINE = "builtin.module("+",".join([
 ])+")"
 
 ASYNC_TO_LLVM_PIPELINE = "builtin.module("+",".join([
+    "func.func(buffer-deallocation)",
     "async-to-async-runtime",
     "async-runtime-ref-counting",
     "async-runtime-ref-counting-opt",
-    "func.func(convert-linalg-to-affine-loops)",
-    "lower-affine",
     "convert-async-to-llvm",
     "canonicalize",
     "cse"
 ])+")"
+
+REF_BACKEND_LOWERING_PIPELINE = "builtin.module(" + ",".join([
+    "func.func(refback-generalize-tensor-pad)",
+    # Apply some optimizations. It would be great if MLIR had more useful
+    # optimizations that worked out of the box here.
+    # Note: When measured, this doesn't seem to actually help that much
+    # for the linalg-on-tensors backend.
+    # This is likely because if things are naturally fusable we usually already
+    # emit things in that form from the high level (e.g. single linalg-generic).
+    # Other backends are likely to benefit more.
+    "func.func(linalg-fuse-elementwise-ops)",
+    # Bufferize.
+    "func.func(scf-bufferize)",
+    "func.func(tm-tensor-bufferize)",
+    "func.func(empty-tensor-to-alloc-tensor)",
+    "func.func(linalg-bufferize)",
+    "func-bufferize",
+    "arith-bufferize",
+    "refback-mlprogram-bufferize",
+    "func.func(tensor-bufferize)",
+    "func.func(finalizing-bufferize)",
+    #"func.func(buffer-deallocation)",
+    # Munge to make it ExecutionEngine compatible.
+    # Specifically, we rewrite calling convention boundaries to be in terms
+    # of unranked memref, and we rewrite the return to actually be a
+    # callback that consumes the return (the final munged function always
+    # returns void at the C level -- we get the return value by providing the
+    # callback).
+    "refback-munge-calling-conventions",
+    # Insert global variable and instruction sequence for getting the next
+    # global seed used in stateful rng.
+    # Lower to LLVM
+    "func.func(tm-tensor-to-loops)",
+    "func.func(refback-munge-memref-copy)",
+    "func.func(convert-linalg-to-loops)",
+    "func.func(lower-affine)",
+    "convert-scf-to-cf",
+    "func.func(refback-expand-ops-for-llvm)",
+    "func.func(arith-expand)",
+    "func.func(convert-math-to-llvm)",
+    # Handle some complex mlir::math ops (e.g. atan2)
+    "convert-math-to-libm",
+    "convert-linalg-to-llvm",
+    "expand-strided-metadata",
+    "convert-memref-to-llvm",
+    "lower-affine",
+    "func.func(convert-arith-to-llvm)",
+    "convert-func-to-llvm",
+    "convert-cf-to-llvm",
+    "reconcile-unrealized-casts",
+]) + ")"
 
 class AirCpuBackend(AirBackend):
     """Main entry-point for the AIR CPU backend.
@@ -102,13 +152,15 @@ class AirCpuBackend(AirBackend):
             pm = air.mlir.passmanager.PassManager.parse(ASYNC_TO_LLVM_PIPELINE)
             pm.run(air_module)
 
-            # if verbose:
-            #     print("LLVM Module:")
-            #     print(air_module)
+            if verbose:
+                print("LLVM Module:")
+                print(air_module)
 
         with torch_mlir.ir.Context():
             torch_mlir_module = torch_mlir.ir.Module.parse(str(air_module))
-        return self.refbackend.compile(torch_mlir_module)
+            pm = torch_mlir.passmanager.PassManager.parse(REF_BACKEND_LOWERING_PIPELINE)
+            pm.run(torch_mlir_module)
+        return torch_mlir_module
 
     def load(self, module):
         """Load a compiled artifact."""

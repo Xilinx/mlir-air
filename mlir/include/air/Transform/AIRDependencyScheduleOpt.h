@@ -17,11 +17,27 @@ namespace air {
 
 std::unique_ptr<mlir::Pass> createAIRHoistDmaInAccumPattern();
 
+std::unique_ptr<mlir::Pass> createAIRAnnotateFrontAndBackOpsInForPattern();
+
+std::unique_ptr<mlir::Pass> createAIRHoistMemallocInForPattern();
+
+std::unique_ptr<mlir::Pass> createAIRUnrollLoopForPipeliningPattern();
+
+std::unique_ptr<mlir::Pass> createAIRConstructPingPongDependencyPattern();
+
+std::unique_ptr<mlir::Pass> createAIRHoistOpsNotUsingPingPongPattern();
+
 std::unique_ptr<mlir::Pass> createAIRBroadcastDetection();
 
 std::unique_ptr<mlir::Pass> createAIRPruneLinalgGenericInputDma();
 
+std::unique_ptr<mlir::Pass> createAIRPingPongTransformationPattern();
+
+std::unique_ptr<mlir::Pass> createAIRLabelScfForLoopForPingPongPattern();
+
 std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass();
+
+std::unique_ptr<mlir::Pass> createAIRUnrollChannelByFactorPattern();
 
 } // namespace air
 } // namespace xilinx

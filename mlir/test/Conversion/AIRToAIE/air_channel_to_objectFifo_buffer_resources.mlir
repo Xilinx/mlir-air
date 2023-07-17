@@ -7,32 +7,32 @@
 
 // RUN: air-opt %s --air-to-aie='test-patterns=lower-air-channels' | FileCheck %s
 
-// CHECK: module @aie.partition_0 {
-// CHECK:   %0 = AIE.tile(1, 1)
-// CHECK:   %1 = AIE.tile(1, 2)
-// CHECK:   %2 = AIE.objectFifo.createObjectFifo(%0, {%1}, 2) : !AIE.objectFifo<memref<32xi32>>
-// CHECK:   %3 = AIE.objectFifo.createObjectFifo(%0, {%1}, 1) : !AIE.objectFifo<memref<32xi32>>
-// CHECK:   %4 = AIE.core(%1) {
-// CHECK:     %6 = AIE.objectFifo.acquire<Consume> (%3 : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
-// CHECK:     %7 = AIE.objectFifo.subview.access %6[0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:     %8 = AIE.objectFifo.acquire<Consume> (%2 : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
-// CHECK:     %9 = AIE.objectFifo.subview.access %8[0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:     AIE.objectFifo.release<Consume> (%2 : !AIE.objectFifo<memref<32xi32>>, 1)
-// CHECK:     AIE.objectFifo.release<Consume> (%3 : !AIE.objectFifo<memref<32xi32>>, 1)
+// CHECK-LABEL:   AIE.device(xcvc1902) {
+// CHECK:   %[[VAL_0:.*]] = AIE.tile(1, 1)
+// CHECK:   %[[VAL_1:.*]] = AIE.tile(1, 2)
+// CHECK:   %[[VAL_2:.*]] = AIE.objectFifo.createObjectFifo(%[[VAL_0]], {%[[VAL_1]]}, 2 : i32) {sym_name = "air_channel_1"} : !AIE.objectFifo<memref<32xi32>>
+// CHECK:   %[[VAL_3:.*]] = AIE.objectFifo.createObjectFifo(%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) {sym_name = "air_channel_0"} : !AIE.objectFifo<memref<32xi32>>
+// CHECK:   %[[VAL_4:.*]] = AIE.core(%[[VAL_1]]) {
+// CHECK:     %[[VAL_5:.*]] = AIE.objectFifo.acquire<Consume> (%[[VAL_3]] : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
+// CHECK:     %[[VAL_6:.*]] = AIE.objectFifo.subview.access %[[VAL_5]][0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     %[[VAL_7:.*]] = AIE.objectFifo.acquire<Consume> (%[[VAL_2]] : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
+// CHECK:     %[[VAL_8:.*]] = AIE.objectFifo.subview.access %[[VAL_7]][0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     AIE.objectFifo.release<Consume> (%[[VAL_2]] : !AIE.objectFifo<memref<32xi32>>, 1)
+// CHECK:     AIE.objectFifo.release<Consume> (%[[VAL_3]] : !AIE.objectFifo<memref<32xi32>>, 1)
 // CHECK:     AIE.end
 // CHECK:   } {elf_file = "partition_0_core_1_2.elf"}
-// CHECK:   %5 = AIE.core(%0) {
-// CHECK:     %6 = AIE.objectFifo.acquire<Produce> (%3 : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
-// CHECK:     %7 = AIE.objectFifo.subview.access %6[0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:     %8 = AIE.objectFifo.acquire<Produce> (%2 : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
-// CHECK:     %9 = AIE.objectFifo.subview.access %8[0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:     AIE.objectFifo.release<Produce> (%2 : !AIE.objectFifo<memref<32xi32>>, 1)
-// CHECK:     AIE.objectFifo.release<Produce> (%3 : !AIE.objectFifo<memref<32xi32>>, 1)
+// CHECK:   %[[VAL_9:.*]] = AIE.core(%[[VAL_0]]) {
+// CHECK:     %[[VAL_10:.*]] = AIE.objectFifo.acquire<Produce> (%[[VAL_3]] : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
+// CHECK:     %[[VAL_11:.*]] = AIE.objectFifo.subview.access %[[VAL_10]][0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     %[[VAL_12:.*]] = AIE.objectFifo.acquire<Produce> (%[[VAL_2]] : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
+// CHECK:     %[[VAL_13:.*]] = AIE.objectFifo.subview.access %[[VAL_12]][0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     AIE.objectFifo.release<Produce> (%[[VAL_2]] : !AIE.objectFifo<memref<32xi32>>, 1)
+// CHECK:     AIE.objectFifo.release<Produce> (%[[VAL_3]] : !AIE.objectFifo<memref<32xi32>>, 1)
 // CHECK:     AIE.end
 // CHECK:   } {elf_file = "partition_0_core_1_1.elf"}
 // CHECK: }
 
-module @aie.partition_0 {
+AIE.device(xcvc1902) {
   %0 = AIE.tile(1, 1)
   %1 = AIE.tile(1, 2)
   air.channel @channel_0 [1, 1]

@@ -1,7 +1,7 @@
 # https://www.kernel.org/doc/html/latest/kbuild/modules.html
 
 obj-m := amdair.o
-amdair-y := main.o chardev.o
+amdair-y := main.o chardev.o kernel_queue.o
 
 ifeq ($(KERNELRELEASE),)
 KDIR ?= /usr/src/linux-headers-`uname -r`

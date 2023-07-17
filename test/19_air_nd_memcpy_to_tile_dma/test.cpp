@@ -22,10 +22,10 @@
 #include "air.hpp"
 #include "test_library.h"
 
-namespace air::partitions::partition_0 {
+namespace air::segments::segment_0 {
 int32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t*, int);
 };
-using namespace air::partitions::partition_0;
+using namespace air::segments::segment_0;
 
 int
 main(int argc, char *argv[])

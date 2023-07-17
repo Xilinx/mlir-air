@@ -51,6 +51,15 @@ To unload the module, use the 'rmmod' tool with the module name:
 rmmod amdair
 ```
 
+Loading the kernel module will automatically create the device file
+/dev/amdair. By default, this device will be restricted to access by root. To
+give more general access, use a udev rule. An example rule is found in
+99-amdair.rules in this directory. The example rule is set up to give read
+and write access to all users. This can be modified to fit your needs by
+changing the group or owner and mode appropriately. To install the rule,
+copy it to a directory that is searched by udev. On Ubuntu, the common location
+is /etc/udev/rules.d/.
+
 ## Debugging
 
 When things go wrong in an application, people love to blame the driver. To

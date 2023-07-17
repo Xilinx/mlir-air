@@ -28,7 +28,7 @@ cmake .. \
     -DAIE_LINKER=NONE \
     -DHOST_COMPILER=NONE \
     -DLLVM_ENABLE_ASSERTIONS=ON \
-    -DCMAKE_MODULE_PATH=`pwd`/../cmakeModules \
+    -DCMAKE_MODULE_PATH=`pwd`/../cmake/modulesXilinx \
     -DMLIR_DIR=`pwd`/../../llvm/install/lib/cmake/mlir/ \
     -DLLVM_DIR=`pwd`/../../llvm/install/lib/cmake/llvm/ \
     -DCMAKE_LINKER=lld \
@@ -36,8 +36,21 @@ cmake .. \
     -DCMAKE_CXX_COMPILER=clang++-12 \
     -DLLVM_EXTERNAL_LIT=`pwd`/../../llvm/build/bin/llvm-lit \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DLibXAIE_x86_64_DIR=`pwd`/../../aienginev2/install/lib \
     -DCMAKE_INSTALL_PREFIX=`pwd`/../$INSTALL_DIR
 
-cmake --build . --target install -- -j$(nproc)
+ec=$?
+if [ $ec -ne 0 ]; then
+    echo "CMake Configuration Error"
+    exit $ec
+fi
+
+ninja install
+
+ec=$?
+if [ $ec -ne 0 ]; then
+    echo "Ninja Build Error"
+    exit $ec
+fi
 
 popd

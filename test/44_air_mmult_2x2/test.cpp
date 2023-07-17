@@ -51,12 +51,12 @@ void mm_out(tensor_t<T, 2> *a, tensor_t<T, 2> *b, tensor_t<T, 2> *r) {
 
 } // namespace
 
-namespace air::partitions::partition0 {
+namespace air::segments::segment0 {
 int32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t *, int);
 int32_t mlir_aie_read_buffer_buf11(aie_libxaie_ctx_t *, int);
 int32_t mlir_aie_read_buffer_buf2(aie_libxaie_ctx_t *, int);
-} // namespace air::partitions::partition0
-using namespace air::partitions::partition0;
+} // namespace air::segments::segment0
+using namespace air::segments::segment0;
 
 int main(int argc, char *argv[]) {
   uint64_t col = 5;

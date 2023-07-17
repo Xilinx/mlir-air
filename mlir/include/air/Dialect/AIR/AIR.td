@@ -497,6 +497,9 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface,
       }
       return -1;
     }
+    OperandRange getOffsets() { return getSrcOffsets(); }
+    OperandRange getSizes() { return getSrcSizes(); }
+    OperandRange getStrides() { return getSrcStrides(); }
   }];
 }
 
@@ -529,6 +532,9 @@ def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface,
       }
       return -1;
     }
+    OperandRange getOffsets() { return getDstOffsets(); }
+    OperandRange getSizes() { return getDstSizes(); }
+    OperandRange getStrides() { return getDstStrides(); }
   }];
 }
 
@@ -582,6 +588,32 @@ def air_ExecuteTerminatorOp : air_Op<"execute_terminator", [HasParent<"ExecuteOp
 
   let assemblyFormat =
       [{  attr-dict ($results^ `:` type($results))? }];
+}
+
+// AIR custom op, as a handle for a user-provided AIE kernel
+
+def air_CustomOp : air_Op<"custom", [air_AsyncOpInterface,
+                                 AttrSizedOperandSegments]>,
+                        Arguments<(ins OptionalAttr<SymbolRefAttr>:$symbol,
+                                       Variadic<air_AsyncToken>:$async_dependencies,
+                                       Variadic<AnyType>:$custom_operands)>,
+                        Results<(outs Optional<air_AsyncToken>:$async_token)> {
+  let summary = "A handle to a user-customized op";
+  let description = [{
+    A placeholder operation for a user-customized op. With user-specified 
+    latency value, AIR Runner is able to simulate the system-level
+    performance with this op in place.
+  }];
+
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins "ValueRange":$custom_operands)>,
+    OpBuilder<(ins "ValueRange":$async_dependencies,
+      "ValueRange":$custom_operands,
+      CArg<"bool", "false">:$is_async,
+      CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>
+  ];
+  let hasCustomAssemblyFormat = 1;
 }
 
 #endif

@@ -30,6 +30,7 @@ extern "C" {
 }
 
 #include "platform.h"
+#include "shell.h"
 
 #define XAIE_NUM_ROWS 8
 #define XAIE_NUM_COLS 50
@@ -172,6 +173,8 @@ int mlir_aie_reinit_device(aie_libxaie_ctx_t *ctx) {
   return 0;
 }
 
+constexpr uint64_t NUM_BD = 16;
+
 void mlir_aie_print_dma_status(aie_libxaie_ctx_t *ctx, int col, int row) {
   // int col = loc.Col;
   // int row = loc.Row;
@@ -209,7 +212,7 @@ void mlir_aie_print_dma_status(aie_libxaie_ctx_t *ctx, int col, int row) {
              col, row, dma_mm2s_status, dma_mm2s0_control, dma_mm2s1_control,
              dma_s2mm_status, dma_s2mm0_control, dma_s2mm1_control, dma_bd0_a,
              dma_bd0_control, dma_bd1_a, dma_bd1_control);
-  for (int bd = 0; bd < 8; bd++) {
+  for (int bd = 0; bd < NUM_BD; bd++) {
     u32 dma_bd_addr_a;
     XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D000 + (0x20 * bd),
                 &dma_bd_addr_a);
@@ -322,7 +325,7 @@ void mlir_aie_print_shimdma_status(aie_libxaie_ctx_t *ctx, int col, int row) {
              col, row, dma_mm2s_status, dma_mm2s0_control, dma_mm2s1_control,
              dma_s2mm_status, dma_s2mm0_control, dma_s2mm1_control, dma_bd0_a,
              dma_bd0_control);
-  for (int bd = 0; bd < 8; bd++) {
+  for (int bd = 0; bd < 16; bd++) {
     u32 dma_bd_addr_a;
     XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D000 + (0x14 * bd),
                 &dma_bd_addr_a);
@@ -819,6 +822,60 @@ void xaie_l2_dma_init(int col) {
   xaie::out32(xaie::getTileAddr(col, 0) + 0x00033008, 0xFF);
 }
 
+#ifdef ARM_CONTROLLER
+
+// Defining the NPI base and registers we use to reset the array
+constexpr uint64_t npi_base = 0xF70A0000UL;
+constexpr auto NPI_MASK_REG = 0x0;
+constexpr auto NPI_VAL_REG = 0x4;
+constexpr auto NPI_LOCK_REG = 0xC;
+void xaie_array_reset() {
+
+  // Getting a pointer to NPI
+  auto *npib = (volatile uint32_t *)(npi_base);
+
+  // Performing array reset sequence
+  air_printf("Starting array reset\r\n");
+
+  // Unlocking NPI
+  npib[NPI_LOCK_REG >> 2] = 0xF9E8D7C6;
+
+  // Performing reset
+  npib[NPI_MASK_REG >> 2] = 0x04000000;
+  npib[NPI_VAL_REG >> 2] = 0x040381B1;
+  npib[NPI_MASK_REG >> 2] = 0x04000000;
+  npib[NPI_VAL_REG >> 2] = 0x000381B1;
+
+  // Locking NPI
+  npib[NPI_LOCK_REG >> 2] = 0x12341234;
+  air_printf("Done with array reset\r\n");
+}
+
+// This should be called after enabling the proper
+// shims to be reset via the mask
+void xaie_strobe_shim_reset() {
+
+  // Getting a pointer to NPI
+  auto *npib = (volatile uint32_t *)(npi_base);
+
+  air_printf("Starting shim reset\r\n");
+
+  // Unlocking NPI
+  npib[NPI_LOCK_REG >> 2] = 0xF9E8D7C6;
+
+  // Performing reset
+  npib[NPI_MASK_REG >> 2] = 0x08000000;
+  npib[NPI_VAL_REG >> 2] = 0x080381B1;
+  npib[NPI_MASK_REG >> 2] = 0x08000000;
+  npib[NPI_VAL_REG >> 2] = 0x000381B1;
+
+  // Locking NPI
+  npib[NPI_LOCK_REG >> 2] = 0x12341234;
+  air_printf("Done with shim reset\r\n");
+}
+
+#endif
+
 void xaie_shim_dma_init(int col) {
   // Invalidate all BDs by writing to their buffer control register
   for (int ch = 0; ch < 4; ch++) {
@@ -831,7 +888,11 @@ void xaie_shim_dma_init(int col) {
 }
 
 void xaie_device_init(int num_cols) {
+
   air_printf("Initializing device...\r\n");
+
+  // First, resetting the entire device
+  xaie_array_reset();
 
 #ifdef ARM_CONTROLLER
   int err = xaie2::mlir_aie_reinit_device(_xaie);
@@ -848,39 +909,56 @@ void xaie_device_init(int num_cols) {
   for (int c = 0; c < num_cols; c++) {
     xaie_shim_dma_init(shim_dma_cols[c]);
   }
+
+  // Turning the shim_reset_enable bit low for every column so they don't get
+  // reset when we perform a global shim reset
+  for (int col = 0; col < XAIE_NUM_COLS; col++) {
+    xaie::out32(xaie::getTileAddr(col, 0) + 0x0003604C, 0);
+  }
 }
 
-// Initialize one herd with lower left corner at (col_start, row_start)
-void xaie_herd_init(int start_col, int num_cols, int start_row, int num_rows) {
+// Initialize one segment with lower left corner at (col_start, row_start)
+void xaie_segment_init(int start_col, int num_cols, int start_row,
+                       int num_rows) {
   HerdCfgInst.col_start = start_col;
   HerdCfgInst.num_cols = num_cols;
   HerdCfgInst.row_start = start_row;
   HerdCfgInst.num_rows = num_rows;
 #ifdef ARM_CONTROLLER
+
+  // Performing the shim reset
+  air_printf("Performing shim reset\r\n");
   for (int c = start_col; c < start_col + num_cols; c++) {
-    for (int r = start_row; r < start_row + num_rows; r++) {
-      xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048,
-                  !!1); // 1 == ResetEnable
-      xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048,
-                  !!0); // 0 == ResetDisable
-      // for (int l = 0; l < 16; l++)
-      //   xaie::maskpoll32(xaie::getTileAddr(c, r) + 0x0001E020 + 0x80 * l,
-      //   0x1,
-      //                    0x1, 0);
-    }
+    xaie::out32(xaie::getTileAddr(c, 0) + 0x0003604C, 1);
   }
+
+  xaie_strobe_shim_reset();
+
+  for (int c = start_col; c < start_col + num_cols; c++) {
+    xaie::out32(xaie::getTileAddr(c, 0) + 0x0003604C, 0);
+  }
+
+  // Performing the column reset
+  air_printf("Performing col reset\r\n");
+  for (int c = start_col; c < start_col + num_cols; c++) {
+    xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048,
+                !!1); // 1 == ResetEnable
+    xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048,
+                !!0); // 0 == ResetDisable
+  }
+
 #endif
 }
 
 } // namespace
-
-namespace {
 
 uint64_t shmem_base = 0x020100000000UL;
 uint64_t uart_lock_offset = 0x200;
 uint64_t base_address;
 
 bool setup;
+
+uint64_t get_base_address(void) { return shmem_base; }
 
 void lock_uart(uint32_t id) {
   bool is_locked = false;
@@ -971,7 +1049,7 @@ void handle_packet_device_initialize(dispatch_packet_t *pkt) {
   xaie_device_init(NUM_SHIM_DMAS);
 }
 
-void handle_packet_herd_initialize(dispatch_packet_t *pkt) {
+void handle_packet_segment_initialize(dispatch_packet_t *pkt) {
   setup = true;
   packet_set_active(pkt, true);
 
@@ -982,16 +1060,16 @@ void handle_packet_herd_initialize(dispatch_packet_t *pkt) {
     u32 start_col = (pkt->arg[0] >> 32) & 0xff;
     u32 num_cols = (pkt->arg[0] >> 40) & 0xff;
 
-    u32 herd_id = pkt->arg[1] & 0xffff;
+    u32 segment_id = pkt->arg[1] & 0xffff;
     u32 shimDMA0 = (pkt->arg[1] >> 16) & 0xff;
     u32 shimDMA1 = (pkt->arg[1] >> 24) & 0xff;
-    // TODO more checks on herd dimensions
+    // TODO more checks on segment dimensions
     if (start_row == 0)
       start_row++;
-    xaie_herd_init(start_col, num_cols, start_row, num_rows);
-    air_printf("Initialized herd %d at (%d, %d) of size (%d,%d)\r\n", herd_id,
-               start_col, start_row, num_cols, num_rows);
-    // herd_id is ignored - current restriction is 1 herd -> 1 controller
+    xaie_segment_init(start_col, num_cols, start_row, num_rows);
+    air_printf("Initialized segment %d at (%d, %d) of size (%d,%d)\r\n",
+               segment_id, start_col, start_row, num_cols, num_rows);
+    // segment_id is ignored - current restriction is 1 segment -> 1 controller
     // mappedShimDMA[0] = shimDMA0;
     // mappedShimDMA[1] = shimDMA1;
     // xaie_shim_dma_init(shimDMA0);
@@ -1000,7 +1078,7 @@ void handle_packet_herd_initialize(dispatch_packet_t *pkt) {
     // air_printf("Initialized shim DMA physical idx %d to logical idx
     // %d\r\n",shimDMA1,1);
   } else {
-    air_printf("Unsupported address type 0x%04X for herd initialize\r\n",
+    air_printf("Unsupported address type 0x%04X for segment initialize\r\n",
                (pkt->arg[0] >> 48) & 0xf);
   }
 }
@@ -1091,6 +1169,35 @@ void handle_packet_get_info(dispatch_packet_t *pkt, uint32_t mb_id) {
   default:
     *addr = 0;
     break;
+  }
+}
+
+#define AIE_BASE 0x020000000000
+#define AIE_CSR_SIZE 0x000100000000
+
+void handle_packet_read_write_32(dispatch_packet_t *pkt) {
+
+  packet_set_active(pkt, true);
+
+  uint64_t *return_addr =
+      (uint64_t *)(&pkt->return_address); // FIXME when we can use a VA
+
+  uint64_t address = pkt->arg[0];
+  uint32_t value = pkt->arg[1] & 0x0FFFFFFFF;
+  bool is_write = (pkt->arg[1] >> 32) & 0x1;
+
+  volatile uint32_t *aie_csr = (volatile uint32_t *)AIE_BASE;
+
+  if (address > AIE_CSR_SIZE) {
+    printf("[ERROR] read32/write32 packets provided address of size 0x%lx. "
+           "Window is only 4GB\n",
+           address);
+  }
+
+  if (is_write) {
+    aie_csr[address >> 2] = value;
+  } else {
+    *return_addr = aie_csr[address >> 2];
   }
 }
 
@@ -1436,8 +1543,6 @@ int stage_packet_nd_memcpy(dispatch_packet_t *pkt, uint32_t slot,
   }
 }
 
-} // namespace
-
 void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id) {
   uint64_t rd_idx = queue_load_read_index(q);
   dispatch_packet_t *pkt =
@@ -1532,14 +1637,20 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id) {
       complete_agent_dispatch_packet(pkt);
       packets_processed++;
       break;
-    case AIR_PKT_TYPE_HERD_INITIALIZE:
-      handle_packet_herd_initialize(pkt);
+    case AIR_PKT_TYPE_SEGMENT_INITIALIZE:
+      handle_packet_segment_initialize(pkt);
       complete_agent_dispatch_packet(pkt);
       packets_processed++;
       break;
 
     case AIR_PKT_TYPE_CONFIGURE:
       handle_packet_sg_cdma(pkt);
+      complete_agent_dispatch_packet(pkt);
+      packets_processed++;
+      break;
+
+    case AIR_PKT_TYPE_RW32:
+      handle_packet_read_write_32(pkt);
       complete_agent_dispatch_packet(pkt);
       packets_processed++;
       break;
@@ -1789,6 +1900,7 @@ int main() {
         }
       }
     }
+    shell();
   }
 
   cleanup_platform();

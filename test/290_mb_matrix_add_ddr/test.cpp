@@ -23,6 +23,8 @@
 
 #include "aie_inc.cpp"
 
+#define XAIE_NUM_COLS 10
+
 #define DDR_ADDR  0x2000
 
 // test configuration
@@ -68,10 +70,10 @@ main(int argc, char *argv[])
   // setup the herd
   uint64_t wr_idx = queue_add_write_index(q, 1);
   uint64_t packet_id = wr_idx % q->size;
-  dispatch_packet_t *herd_pkt =
+  dispatch_packet_t *segment_pkt =
       (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
-  air_packet_herd_init(herd_pkt, 0, col, 1, row, 3);
-  air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
+  air_packet_segment_init(segment_pkt, 0, col, 1, row, 3);
+  air_queue_dispatch_and_wait(q, wr_idx, segment_pkt);
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;

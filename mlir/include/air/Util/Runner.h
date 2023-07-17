@@ -9,6 +9,8 @@
 #ifndef AIR_UTIL_RUNNER_H
 #define AIR_UTIL_RUNNER_H
 
+#include "air/Util/Dependency.h"
+
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 
 #include "llvm/Support/JSON.h"
@@ -31,6 +33,18 @@ private:
   class AIRRunner_impl;
   std::unique_ptr<AIRRunner_impl> impl;
 };
+
+//===----------------------------------------------------------------------===//
+// Runner util. functions
+//===----------------------------------------------------------------------===//
+
+std::string to_string(std::vector<unsigned> vec);
+std::string to_string(dependencyNodeEntry &c);
+std::string to_string(mlir::Type t);
+std::string getElementTypeAsString(const mlir::Type ty);
+std::string lookUpMemorySpaceFromInt(unsigned memory_space);
+unsigned lookUpMemorySpaceIntFromString(std::string memory_space);
+template <typename T> void push_back_if_unique(std::vector<T> &vec, T entry);
 
 } // namespace air
 } // namespace xilinx

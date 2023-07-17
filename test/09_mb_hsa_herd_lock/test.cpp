@@ -19,6 +19,8 @@
 
 #include "aie_inc.cpp"
 
+#define XAIE_NUM_COLS 10
+
 int main(int argc, char *argv[])
 {
   auto col = 7;
@@ -68,21 +70,22 @@ int main(int argc, char *argv[])
   auto num_cols = 2;
   auto lock_id = 0;
 
-  // herd_setup packet
-  // Set up a 2x4 herd starting 7,2
-  dispatch_packet_t *herd_pkt =
+  // Initialize the device
+  dispatch_packet_t *dev_pkt =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_herd_init(herd_pkt, 0, col, num_cols, row, num_rows);
-  //air_queue_dispatch_and_wait(q, wr_idx, herd_pkt);
+  air_packet_device_init(dev_pkt, XAIE_NUM_COLS);
+  air_queue_dispatch_and_wait(queues[0], wr_idx, dev_pkt);
 
   // reserve another packet in the queue
   wr_idx = queue_add_write_index(queues[0], 1);
   packet_id = wr_idx % queues[0]->size;
 
-  dispatch_packet_t *dev_pkt =
+  // herd_setup packet
+  // Set up a 2x4 herd starting 7,2
+  dispatch_packet_t *segment_pkt =
       (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_device_init(dev_pkt, XAIE_NUM_COLS);
-  air_queue_dispatch_and_wait(queues[0], wr_idx, dev_pkt);
+  air_packet_segment_init(segment_pkt, 0, col, num_cols, row, num_rows);
+  air_queue_dispatch_and_wait(queues[0], wr_idx, segment_pkt);
 
   mlir_aie_configure_cores(xaie);
   mlir_aie_configure_switchboxes(xaie);

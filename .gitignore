@@ -29,3 +29,5 @@ air_project
 
 # build results
 libadf.a
+*.elf
+*.elf.*

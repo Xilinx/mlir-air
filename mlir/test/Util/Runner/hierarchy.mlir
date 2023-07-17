@@ -9,57 +9,57 @@
 
 // Test air hierarchy support
 
-// CHECK: "name": "SegmentOp",
+// CHECK: "name": "SegmentOp[4, 4]",
 // CHECK: "ph": "B",
-// CHECK: "ts": 1,
-// CHECK: "name": "SegmentOp",
+// CHECK: "ts": 0.001,
+// CHECK: "name": "SegmentOp[4, 4]",
 // CHECK: "ph": "E",
-// CHECK: "ts": 2,
+// CHECK: "ts": 0.002,
 
-// CHECK: "name": "HerdOp(herd_0)",
+// CHECK: "name": "HerdOp(herd_0)[4, 4]",
 // CHECK: "ph": "B",
-// CHECK: "ts": 2,
-// CHECK: "name": "HerdOp(herd_0)",
+// CHECK: "ts": 0.002,
+// CHECK: "name": "HerdOp(herd_0)[4, 4]",
 // CHECK: "ph": "E",
-// CHECK: "ts": 3,
+// CHECK: "ts": 0.003,
 
-// CHECK: "name": "AllocOp(L1)",
+// CHECK: "name": "AllocOp(L1, 1024, bf16)",
 // CHECK: "ph": "B",
-// CHECK: "ts": 3,
-// CHECK: "name": "AllocOp(L1)",
+// CHECK: "ts": 0.003,
+// CHECK: "name": "AllocOp(L1, 1024, bf16)",
 // CHECK: "ph": "E",
-// CHECK: "ts": 4,
+// CHECK: "ts": 0.004,
 
-// CHECK: "name": "DeallocOp(L1)",
+// CHECK: "name": "DeallocOp(L1, 1024, bf16)",
 // CHECK: "ph": "B",
-// CHECK: "ts": 5,
-// CHECK: "name": "DeallocOp(L1)",
+// CHECK: "ts": 0.005,
+// CHECK: "name": "DeallocOp(L1, 1024, bf16)",
 // CHECK: "ph": "E",
-// CHECK: "ts": 6,
+// CHECK: "ts": 0.006,
 
 // CHECK: "name": "HerdTerminator",
 // CHECK: "ph": "B",
-// CHECK: "ts": 7,
+// CHECK: "ts": 0.007,
 
 // CHECK: "name": "SegmentTerminator",
 // CHECK: "ph": "B",
-// CHECK: "ts": 8,
+// CHECK: "ts": 0.008,
 
 // CHECK: "name": "HerdTerminator",
 // CHECK: "ph": "E",
-// CHECK: "ts": 8,
+// CHECK: "ts": 0.008,
 
 // CHECK: "name": "LaunchTerminator",
 // CHECK: "ph": "B",
-// CHECK: "ts": 9,
+// CHECK: "ts": 0.009,
 
 // CHECK: "name": "SegmentTerminator",
 // CHECK: "ph": "E",
-// CHECK: "ts": 9,
+// CHECK: "ts": 0.009,
 
 // CHECK: "name": "LaunchTerminator",
 // CHECK: "ph": "E",
-// CHECK: "ts": 10,
+// CHECK: "ts": 0.010,
 
 module {
   ml_program.global private mutable @global_seed(dense<0> : tensor<i64>) : tensor<i64>
@@ -70,7 +70,7 @@ module {
       air.execute_terminator %alloc : memref<256x1024xbf16>
     }
     %0 = air.launch async [%async_token_1] (%arg4, %arg5) in (%arg6=%c1, %arg7=%c1) args(%arg8=%arg0, %arg9=%arg1) : memref<256x1024xbf16>, memref<1024x1024xbf16> attributes {id = 7 : i32} {
-      %1 = air.segment async  args(%arg15=%arg4, %arg16=%arg5, %arg17=%arg6, %arg18=%arg7, %arg19=%arg8, %arg20=%arg9) : index, index, index, index, memref<256x1024xbf16>, memref<1024x1024xbf16> {
+      %1 = air.segment async  args(%arg15=%arg4, %arg16=%arg5, %arg17=%arg6, %arg18=%arg7, %arg19=%arg8, %arg20=%arg9) : index, index, index, index, memref<256x1024xbf16>, memref<1024x1024xbf16> attributes {x_loc = 0 : i64, x_size = 4 : i64, y_loc = 0 : i64, y_size = 4 : i64} {
         %c4 = arith.constant 4 : index
         %2 = air.herd @herd_0 async tile (%arg21, %arg22) in (%arg23=%c4, %arg24=%c4) {
           %async_token_3, %results_4 = air.execute -> (memref<32x32xbf16, 2>) {

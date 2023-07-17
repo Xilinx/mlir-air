@@ -844,7 +844,7 @@ private:
                                  ++ChannelOpID));
       event_name = "Get";
     } else
-      assert(false && "Unknown air channel op");
+      op->emitOpError("unknown air channel op");
 
     // Create a vertex out of the current channel op
     auto v = add_vertex(asyncExecuteGraph);
@@ -928,7 +928,7 @@ private:
       // Update op-to-graph map
       hier_to_g[HierarchyOpID] = v;
     } else {
-      assert(false && "Unknown hierarchy operation");
+      op->emitOpError("unknown hierarchy operation");
     }
     auto new_hier = dyn_cast<air::HierarchyInterface>(new_op);
 
@@ -1039,8 +1039,10 @@ private:
   }
 
   char checkOperandReadOrWrite(mlir::Value operand) {
-    assert(operand.getType().isa<MemRefType>() &&
-           "operand being traced is not a memref");
+    if (!operand.getType().isa<MemRefType>()) {
+      operand.getDefiningOp()->emitOpError(
+          "operand being traced is not a memref");
+    }
     bool foundWriteAccess = false;
     bool foundReadAccess = false;
     for (auto &u : operand.getUses()) {
@@ -1051,7 +1053,7 @@ private:
         } else if (u.is(dma.getDstMemref())) {
           foundWriteAccess = true;
         } else {
-          assert(false && "Unknown operand in air.dma");
+          dma->emitOpError("unknown operand in air.dma");
         }
       }
       // If used in Channel Put Op
@@ -1060,7 +1062,7 @@ private:
         if (u.is(channel_put.getSrc())) {
           foundReadAccess = true;
         } else {
-          assert(false && "Unknown operand in air.channel_put");
+          channel_put->emitOpError("unknown operand in air.channel_put");
         }
       }
       // If used in Channel Get Op
@@ -1069,7 +1071,7 @@ private:
         if (u.is(channel_get.getDst())) {
           foundWriteAccess = true;
         } else {
-          assert(false && "Unknown operand in air.channel_get");
+          channel_get->emitOpError("unknown operand in air.channel_get");
         }
       }
       // If used in a linalg op
@@ -1082,7 +1084,7 @@ private:
                        linalgop.getNumDpsInits()) {
           foundWriteAccess = true;
         } else {
-          assert(false && "Unknown operand in linalg op");
+          linalgop->emitOpError("unknown operand in linalg op");
         }
       }
       // If unknown op, then assume write access for safety
@@ -1101,8 +1103,10 @@ private:
   template <typename T>
   void pushDepsAtCurrentScope(mlir::Value operand, T op, char rw = 'n',
                               partialMemref *tile = nullptr) {
-    assert(operand.getType().isa<MemRefType>() &&
-           "operand being traced is not a memref");
+    if (!operand.getType().isa<MemRefType>()) {
+      operand.getDefiningOp()->emitOpError(
+          "operand being traced is not a memref");
+    }
     for (auto &u : operand.getUses()) {
       // If used in DmaMemcpy Op
       if (auto dma = dyn_cast<xilinx::air::DmaMemcpyInterface>(u.getOwner())) {
@@ -1266,7 +1270,7 @@ private:
               }
             }
           } else
-            assert(false && "Unknown air channel op");
+            channel->emitOpError("unknown air channel op");
         }
       }
 
@@ -1334,7 +1338,7 @@ private:
     else if (dep_type == "WAW/WAR")
       dep_tracing_mode = 'n';
     else
-      assert(false && "Unknown dependency type");
+      sink_air_op->emitOpError("unknown dependency type");
 
     // Detect deps
     for (auto operand : operands) {
@@ -1601,10 +1605,9 @@ private:
                                  air::WaitAllOp wait_all_op_before_loop,
                                  SmallVector<Value, 4> incoming_tokens,
                                  SmallVector<Value, 4> constants) {
-
-    assert(
-        loop_op.getNumReductions() == 0 &&
-        "Currently only supporting input scf::ParallelOp with no reductions");
+    if (loop_op.getNumReductions() != 0)
+      loop_op->emitOpError(
+          "currently only supporting input scf::ParallelOp with no reductions");
 
     // Create new parallel op with init_val.
     SmallVector<Value, 4> merged_incoming_token;
@@ -1809,17 +1812,9 @@ private:
 
     // Create scf::ReduceOp
     builder.setInsertionPointToEnd(new_loop_op.getBody());
-    auto reduce_op = builder.create<scf::ReduceOp>(
-        new_loop_op.getLoc(), wait_all_op_yielded.getResult(0));
-    builder.setInsertionPointToStart(&reduce_op.getRegion().front());
-    SmallVector<Value, 4> reduce_tokens;
-    reduce_tokens.push_back(reduce_op.getRegion().front().getArgument(0));
-    reduce_tokens.push_back(reduce_op.getRegion().front().getArgument(1));
-    auto reduce_res = builder.create<xilinx::air::WaitAllOp>(
-        builder.getUnknownLoc(),
-        air::AsyncTokenType::get(loop_op->getContext()), reduce_tokens);
-    builder.create<scf::ReduceReturnOp>(builder.getUnknownLoc(),
-                                        reduce_res.getResult(0));
+    air::createSCFReduceForAsyncSCFParallel(builder, new_loop_op.getLoc(),
+                                            wait_all_op_yielded.getAsyncToken(),
+                                            loop_op->getContext());
     builder.setInsertionPointToEnd(new_loop_op.getBody());
     builder.create<scf::YieldOp>(new_loop_op.getLoc());
 
@@ -1980,10 +1975,10 @@ private:
                   .getOperation()
                   ->getResult(0));
         else
-          assert(false && "Unknown async event type");
+          op->emitOpError("unknown async event type");
       }
     } else
-      assert(false && "Operation has no async interface");
+      op->emitOpError("operation has no async interface");
   }
 
   template <typename T> void addAsyncDepToGraphIfNew(Value dep, T op) {
@@ -1996,7 +1991,7 @@ private:
       // Add edge to boost graph, iff dep is async execute region (i.e. not a
       // loop iterator)
       if (auto srcOp = dep.getDefiningOp()) {
-        uint64_t srcNode;
+        uint64_t srcNode = 0;
         if (auto execute_op = dyn_cast<air::ExecuteOp>(srcOp)) {
           srcNode = getGraphGVertexFromAIROp(execute_op);
         } else if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(srcOp)) {
@@ -2006,13 +2001,13 @@ private:
         } else if (auto hier_op = dyn_cast<air::HierarchyInterface>(srcOp)) {
           srcNode = getGraphGVertexFromAIROp(hier_op);
         } else
-          assert(false &&
-                 "dependency token should be generated by an async op");
+          srcOp->emitOpError(
+              "dependency token should be generated by an async op");
         uint64_t dstNode = getGraphGVertexFromAIROp(op);
         add_edge(srcNode, dstNode, asyncExecuteGraph);
       }
     } else
-      assert(false && "Operation has no async interface");
+      op->emitOpError("operation has no async interface");
   }
 
   // Dump graphviz
