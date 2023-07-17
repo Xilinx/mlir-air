@@ -952,18 +952,27 @@ LogicalResult createObjectFifo(
       AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
           builder.getUnknownLoc(), datatype, *(prodTiles.begin()->second),
           consumers, builder.getI32IntegerAttr(depth));
-      fifo->setAttr(SymbolTable::getSymbolAttrName(), builder.getStringAttr(name));
+      fifo->setAttr(SymbolTable::getSymbolAttrName(),
+                    builder.getStringAttr(name));
       for (auto const &[coord, tile] : consTiles)
         objFifos[coord] = fifo;
     }
 
   } else {
+    int subchannel_num = 0;
     for (auto const &[coord, objfifo] : objFifos) {
       if (prodTiles[coord] && consTiles[coord]) {
         AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
             builder.getUnknownLoc(), datatype, *(prodTiles[coord]),
             *(consTiles[coord]), builder.getI32IntegerAttr(depth));
-        fifo->setAttr(SymbolTable::getSymbolAttrName(), builder.getStringAttr(name));
+        if (objFifos.size() > 1) {
+          fifo->setAttr(SymbolTable::getSymbolAttrName(),
+                        builder.getStringAttr(name.str() + "_" + std::to_string(subchannel_num)));
+          subchannel_num++;
+        } else {
+          fifo->setAttr(SymbolTable::getSymbolAttrName(),
+                        builder.getStringAttr(name));
+        }
         objFifos[coord] = fifo;
       }
     }
@@ -1119,7 +1128,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     rewriter.setInsertionPoint(*(device.getOps<AIE::CoreOp>().begin()));
     auto res = createObjectFifo(rewriter, datatype, objFifos, producerTiles,
                                 consumerTiles, channel.getBufferResources(),
-                                "air_" + channel.getName().str(), 
+                                "air_" + channel.getName().str(),
                                 channel.isBroadcast());
     if (res.failed())
       return channel.emitOpError(
@@ -1267,9 +1276,9 @@ private:
                                      air::ChannelPutOp put) const {
     SmallVector<Type, 4> tys = {};
     SmallVector<Value, 4> deps = {};
-    builder.create<air::ChannelPutOp>(put->getLoc(), tys, deps, 
+    builder.create<air::ChannelPutOp>(put->getLoc(), tys, deps,
                                       put.getChanName(), put.getIndices(),
-                                      put.getSrc(), put.getSrcOffsets(), 
+                                      put.getSrc(), put.getSrcOffsets(),
                                       put.getSrcSizes(), put.getSrcStrides());
   }
 
