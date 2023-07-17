@@ -1893,21 +1893,10 @@ std::vector<unsigned>
 dependencyCanonicalizer::getPositionFromIterator(unsigned iter,
                                                  air::HerdOp herd) {
   auto herd_size = herd.getSizeOperands();
-  std::vector<unsigned> output;
-  for (int i = herd_size.size() - 1; i >= 0; i--) { // reversed order
-    unsigned denominator = 1;
-    for (int j = 0; j < i; j++) {
-      unsigned herd_size_j =
-          herd_size[j].getDefiningOp<arith::ConstantIndexOp>().value();
-      denominator *= herd_size_j;
-    }
-    unsigned herd_size_i =
-        herd_size[i].getDefiningOp<arith::ConstantIndexOp>().value();
-    output.push_back((iter / (denominator)) % herd_size_i);
-  }
-  // Reverse to original order
-  std::reverse(output.begin(), output.end());
-  return output;
+  auto herd_size_uint = convertVecOfConstIndexToVecOfUInt(herd_size);
+  if (herd_size_uint.empty())
+    herd->emitOpError("hierarchy op has empty iteration size");
+  return getMDVectorFromIterator(herd_size_uint, iter);
 }
 
 // Write position of each core to dependency graph, if showing cores
@@ -1921,19 +1910,11 @@ dependencyCanonicalizer::getIteratorFromPosition(std::vector<unsigned> position,
   if (!position.size()) {
     return 0;
   }
-  std::reverse(position.begin(), position.end());
   auto herd_size = herd.getSizeOperands();
-  unsigned output = 0;
-  for (int i = herd_size.size() - 1; i >= 0; i--) { // In reversed order
-    unsigned scale_factor = 1;
-    for (unsigned j = i + 1; j < herd_size.size(); j++) {
-      unsigned herd_size_j =
-          herd_size[j].getDefiningOp<arith::ConstantIndexOp>().value();
-      scale_factor *= herd_size_j;
-    }
-    output += scale_factor * position[i];
-  }
-  return output;
+  auto herd_size_uint = convertVecOfConstIndexToVecOfUInt(herd_size);
+  if (herd_size_uint.empty())
+    hier_op->emitOpError("hierarchy op has empty iteration size");
+  return getIteratorFromMDVector(herd_size_uint, position);
 }
 
 // Write position in string

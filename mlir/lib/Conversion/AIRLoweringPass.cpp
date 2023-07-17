@@ -794,6 +794,51 @@ public:
   }
 };
 
+class ScfReduceOpConversion : public OpConversionPattern<scf::ReduceOp> {
+public:
+  using OpConversionPattern<scf::ReduceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::ReduceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto newOp =
+        rewriter.replaceOpWithNewOp<scf::ReduceOp>(op, adaptor.getOperand());
+    auto body = &op.getRegion().front();
+    auto newBody = &newOp.getRegion().front();
+
+    for (int i = 0, e = body->getNumArguments(); i < e; i++) {
+      body->getArgument(i).replaceAllUsesWith(newBody->getArgument(i));
+    }
+
+    auto &ops = body->getOperations();
+    auto &newOps = newBody->getOperations();
+    newOps.splice(newOps.begin(), ops, ops.begin(), ops.end());
+    return success();
+  }
+};
+
+class ScfReduceReturnOpConversion
+    : public OpConversionPattern<scf::ReduceReturnOp> {
+public:
+  using OpConversionPattern<scf::ReduceReturnOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::ReduceReturnOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value, 8> operands{adaptor.getOperands()};
+    SmallVector<Type, 2> retTys;
+    for (auto t : op->getResultTypes()) {
+      if (t.isa<air::AsyncTokenType>()) {
+        retTys.push_back(airrt::EventType::get(op->getContext()));
+      } else {
+        retTys.push_back(t);
+      }
+    }
+    rewriter.replaceOpWithNewOp<scf::ReduceReturnOp>(op, retTys, operands);
+    return success();
+  }
+};
+
 class ScfIfOpConversion : public OpConversionPattern<scf::IfOp> {
 public:
   using OpConversionPattern<scf::IfOp>::OpConversionPattern;
@@ -852,6 +897,30 @@ public:
     auto &ops = body->getOperations();
     auto &newOps = newBody->getOperations();
     newOps.splice(newOps.begin(), ops, ops.begin(), ops.end());
+    return success();
+  }
+};
+
+class ScfParOpConversion : public OpConversionPattern<scf::ParallelOp> {
+public:
+  using OpConversionPattern<scf::ParallelOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(scf::ParallelOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto newOp = rewriter.replaceOpWithNewOp<scf::ParallelOp>(
+        op, adaptor.getLowerBound(), adaptor.getUpperBound(), adaptor.getStep(),
+        adaptor.getInitVals());
+    auto body = op.getBody();
+    auto newBody = newOp.getBody();
+
+    for (int i = 0, e = body->getNumArguments(); i < e; i++) {
+      body->getArgument(i).replaceAllUsesWith(newBody->getArgument(i));
+    }
+
+    auto &ops = body->getOperations();
+    auto &newOps = newBody->getOperations();
+    newOps.splice(newOps.begin(), ops, ops.begin(), --ops.end());
     return success();
   }
 };
@@ -948,6 +1017,14 @@ public:
       return true;
     });
 
+    target.addDynamicallyLegalOp<scf::ParallelOp>([&](scf::ParallelOp op) {
+      for (auto o : op.getInitVals()) {
+        if (o.getType().isa<air::AsyncTokenType>())
+          return false;
+      }
+      return true;
+    });
+
     target.addDynamicallyLegalOp<scf::YieldOp>([&](scf::YieldOp op) {
       for (auto v : op.getResults()) {
         if (v.getType().isa<air::AsyncTokenType>())
@@ -955,6 +1032,21 @@ public:
       }
       return true;
     });
+
+    target.addDynamicallyLegalOp<scf::ReduceOp>([&](scf::ReduceOp op) {
+      if (op.getOperand().getType().isa<air::AsyncTokenType>())
+        return false;
+      else
+        return true;
+    });
+
+    target.addDynamicallyLegalOp<scf::ReduceReturnOp>(
+        [&](scf::ReduceReturnOp op) {
+          if (op.getResult().getType().isa<air::AsyncTokenType>())
+            return false;
+          else
+            return true;
+        });
 
     target.addDynamicallyLegalOp<scf::IfOp>([&](scf::IfOp op) {
       for (auto v : op.getResults()) {
@@ -964,11 +1056,11 @@ public:
       return true;
     });
 
-    air_patterns
-        .add<ScfYieldOpConversion, ScfIfOpConversion, ScfForOpConversion,
-             L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion,
-             AIRLaunchConversion, AIRSegmentConversion, AIRHerdConversion>(
-            context);
+    air_patterns.add<
+        ScfYieldOpConversion, ScfIfOpConversion, ScfParOpConversion,
+        ScfReduceReturnOpConversion, ScfReduceOpConversion, ScfForOpConversion,
+        L2AllocToAIRRtConversion, L2DeallocToAIRRtConversion,
+        AIRLaunchConversion, AIRSegmentConversion, AIRHerdConversion>(context);
 
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(air_patterns,
                                                                    converter);

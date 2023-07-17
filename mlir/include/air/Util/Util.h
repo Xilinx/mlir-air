@@ -108,6 +108,19 @@ struct LinalgTransforms {
 char checkOpOperandReadOrWrite(mlir::OpOperand &op_operand);
 char checkOpOperandReadOrWrite(Value op_operand, Operation *owner);
 
+// Convert a vector of SSA returned from arith::ConstantIndexOp into a vector of
+// uints
+std::vector<unsigned>
+convertVecOfConstIndexToVecOfUInt(SmallVector<Value> svec);
+
+// Get iterator corresponding to a position in a multi-dimensional vector
+unsigned getIteratorFromMDVector(std::vector<unsigned> dims,
+                                 std::vector<unsigned> position);
+// Get coordinates corresponding to a position in a multi-dimensional vector
+// from an iterator
+std::vector<unsigned> getMDVectorFromIterator(std::vector<unsigned> dims,
+                                              unsigned iter);
+
 } // namespace air
 } // namespace xilinx
 

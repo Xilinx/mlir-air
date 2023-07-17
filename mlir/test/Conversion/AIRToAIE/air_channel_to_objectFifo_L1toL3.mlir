@@ -37,7 +37,7 @@ AIE.device(xcvc1902) {
     %alloc = memref.alloc() {sym_name = "scratch"} : memref<32xi32, 2>
     %alloc_0 = memref.alloc() {sym_name = "scratch_copy"} : memref<32xi32, 2>
     affine.for %arg0 = 0 to 4096 step 32 {
-      air.channel.get  @channel_0[] (%alloc[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
+      %3 = air.channel.get async @channel_0[] (%alloc[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
       affine.for %arg1 = 0 to 32 {
         %2 = affine.load %alloc[%arg1] : memref<32xi32, 2>
         affine.store %2, %alloc_0[%arg1] : memref<32xi32, 2>

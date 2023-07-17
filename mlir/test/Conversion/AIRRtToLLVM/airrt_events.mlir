@@ -58,3 +58,33 @@ func.func @scf_if(%arg0: i1) {
   airrt.wait_all %0
   return
 }
+
+// CHECK-LABEL: func.func @scf_par
+// CHECK: %[[V0:.*]] = call @__airrt_wait_all_1_0() : () -> !llvm.ptr<i64>
+// CHECK: %[[V1:.*]] = scf.parallel{{.*}}init (%[[V0]]) -> !llvm.ptr<i64> {
+// CHECK:   %[[V3:.*]] = func.call @__airrt_wait_all_1_1(%[[V0]]) : (!llvm.ptr<i64>) -> !llvm.ptr<i64>
+// CHECK:   scf.reduce(%[[V3]])  : !llvm.ptr<i64> {
+// CHECK:   ^bb0(%[[V4:.*]]: !llvm.ptr<i64>, %[[V5:.*]]: !llvm.ptr<i64>):
+// CHECK:     %[[V6:.*]] = func.call @__airrt_wait_all_1_2(%[[V4]], %[[V5]]) : (!llvm.ptr<i64>, !llvm.ptr<i64>) -> !llvm.ptr<i64>
+// CHECK:     scf.reduce.return %[[V6]] : !llvm.ptr<i64>
+// CHECK:   }
+// CHECK:   scf.yield
+// CHECK: }
+// CHECK: call @__airrt_wait_all_0_1(%[[V1]]) : (!llvm.ptr<i64>) -> ()
+func.func @scf_par() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c64 = arith.constant 64 : index
+  %0 = airrt.wait_all : !airrt.event
+  %1 = scf.parallel (%arg0) = (%c0) to (%c64) step (%c1) init (%0) -> !airrt.event {
+    %2 = airrt.wait_all %0 : !airrt.event
+    scf.reduce(%2)  : !airrt.event {
+    ^bb0(%arg5: !airrt.event, %arg6: !airrt.event):
+      %10 = airrt.wait_all %arg5, %arg6 : !airrt.event
+      scf.reduce.return %10 : !airrt.event
+    }
+    scf.yield
+  }
+  airrt.wait_all %1
+  return
+}

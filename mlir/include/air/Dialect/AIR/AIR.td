@@ -459,6 +459,7 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
       return size;
     }
   }];
+  let hasCanonicalizer = 1;
 }
 
 def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface, 

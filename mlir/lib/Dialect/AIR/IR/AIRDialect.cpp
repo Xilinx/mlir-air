@@ -1168,6 +1168,54 @@ void WaitAllOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 }
 
 //
+// Channel op
+//
+
+static LogicalResult FoldChannel(ChannelOp op, PatternRewriter &rewriter) {
+
+  Operation *parent = op;
+  std::vector<Operation *> parent_sts;
+  while (parent = parent->getParentOp()) {
+    if (parent->hasTrait<OpTrait::SymbolTable>()) {
+      parent_sts.push_back(parent);
+    }
+  }
+  if (parent_sts.empty()) {
+    return failure();
+  }
+  for (auto st : parent_sts) {
+    if (mlir::SymbolTable::lookupSymbolIn(st, op.getSymName())) {
+      auto attr =
+          op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
+
+      std::vector<ChannelPutOp> puts;
+      std::vector<ChannelGetOp> gets;
+      st->walk([&](Operation *o) {
+        if (auto put = dyn_cast<air::ChannelPutOp>(o)) {
+          if (put.getChanName() == attr) {
+            puts.push_back(put);
+          }
+        } else if (auto get = dyn_cast<air::ChannelGetOp>(o)) {
+          if (get.getChanName() == attr) {
+            gets.push_back(get);
+          }
+        }
+      });
+      if (puts.empty() && gets.empty()) {
+        rewriter.eraseOp(op);
+        return success();
+      }
+    }
+  }
+  return failure();
+}
+
+void ChannelOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                            MLIRContext *context) {
+  patterns.add(FoldChannel);
+}
+
+//
 // Custom op
 //
 
