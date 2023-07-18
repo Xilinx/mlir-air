@@ -74,14 +74,10 @@ static void _air_channel_get(tensor_t<uint64_t, 0> *channel,
               << size[1] << ", " << size[0] << ", stride " << stride[1] << ", "
               << stride[0] << std::endl;
 
-  if (channel->data[0] == 0) {
-    // if channel get called before channel put, allocate a new channel
-    channel_t<T> *new_channel = (channel_t<T> *)malloc(sizeof(channel_t<T>));
-    new_channel->data =
-        (T *)malloc(sizeof(T) * size[3] * size[2] * size[0] * size[1]);
-    new_channel->_is_full = false;
-    channel->data[0] = (uint64_t)new_channel;
-  }
+  // if channel get called before channel put, wait until the channel becomes
+  // available
+  while (channel->data[0] == 0)
+    ;
 
   channel_t<T> *chan = (channel_t<T> *)channel->data[0];
 
