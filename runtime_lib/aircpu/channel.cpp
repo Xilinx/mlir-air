@@ -38,8 +38,6 @@ static void _air_channel_put(tensor_t<uint64_t, 0> *channel,
   while (chan->_is_full)
     ;
 
-  chan->mtx.lock();
-
   if (VERBOSE)
     std::cerr << "dst offset " << offset[1] << ", " << offset[0] << ", size "
               << size[1] << ", " << size[0] << ", stride " << stride[1] << ", "
@@ -57,20 +55,12 @@ static void _air_channel_put(tensor_t<uint64_t, 0> *channel,
 
   // mark the channel as full
   chan->_is_full = true;
-  chan->mtx.unlock();
 }
 
 template <typename T, int R>
 static void _air_channel_get(tensor_t<uint64_t, 0> *channel,
                              tensor_t<T, R> *dst, size_t *_offset,
                              size_t *_size, size_t *_stride) {
-  // get the buffer address from src
-  channel_t<T> *chan = (channel_t<T> *)channel->data[0];
-  // test if buffer points to a valid address
-  if (chan == nullptr) {
-    std::cerr << "channel has an invalid memory address " << chan << std::endl;
-    exit(1);
-  }
   size_t offset[4] = {0, 0, 0, 0};
   size_t size[4] = {1, 1, 1, 1};
   size_t stride[4] = {1, 1, 1, 1};
@@ -84,11 +74,20 @@ static void _air_channel_get(tensor_t<uint64_t, 0> *channel,
               << size[1] << ", " << size[0] << ", stride " << stride[1] << ", "
               << stride[0] << std::endl;
 
+  if (channel->data[0] == 0) {
+    // if channel get called before channel put, allocate a new channel
+    channel_t<T> *new_channel = (channel_t<T> *)malloc(sizeof(channel_t<T>));
+    new_channel->data =
+        (T *)malloc(sizeof(T) * size[3] * size[2] * size[0] * size[1]);
+    new_channel->_is_full = false;
+    channel->data[0] = (uint64_t)new_channel;
+  }
+
+  channel_t<T> *chan = (channel_t<T> *)channel->data[0];
+
   // wait until the channel is full
   while (!chan->_is_full)
     ;
-
-  chan->mtx.lock();
 
   // copy data from buffer to dst
   size_t dst_offset = 0;
@@ -104,7 +103,6 @@ static void _air_channel_get(tensor_t<uint64_t, 0> *channel,
 
   // mark the channel as empty
   chan->_is_full = false;
-  chan->mtx.unlock();
 }
 
 template <typename T, int R>
