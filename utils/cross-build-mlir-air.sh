@@ -37,11 +37,11 @@ if [ "$#" -lt 5 ]; then
     exit 1
 fi
 
-CMAKE_TOOLCHAIN_FILE=$1
-CMAKE_SYSROOT=$2
-CMAKEMODULES_DIR=$3
-LLVM_DIR=$4
-MLIR_AIE_DIR=$5
+CMAKE_TOOLCHAIN_FILE=`realpath $1`
+CMAKE_SYSROOT=`realpath $2`
+CMAKEMODULES_DIR=`realpath $3`
+LLVM_DIR=`realpath $4`
+MLIR_AIE_DIR=`realpath $5`
 
 INSTALL_DIR=${6:-"install-aarch64"}
 MLIR_AIR_DIR=${7:-"mlir-air"}
@@ -69,6 +69,7 @@ cmake .. \
     -Daarch64_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE} \
     -DLLVM_DIR=${LLVM_DIR}/build-aarch64/lib/cmake/llvm \
     -DMLIR_DIR=${LLVM_DIR}/build-aarch64/lib/cmake/mlir \
+    -DLibXAIE_ROOT=${CMAKE_SYSROOT}/opt/xaienginev2 \
     |& tee cmake.log
 
 ec=$?

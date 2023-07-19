@@ -27,8 +27,8 @@ if [ "$#" -lt 2 ]; then
     exit 1
 fi
 
-CMAKE_TOOLCHAIN_FILE=$1
-CMAKE_SYSROOT=$2
+CMAKE_TOOLCHAIN_FILE=`realpath $1`
+CMAKE_SYSROOT=`realpath $2`
 
 INSTALL_DIR=${3:-"install-aarch64"}
 LLVM_DIR=${4:-"llvm"}
