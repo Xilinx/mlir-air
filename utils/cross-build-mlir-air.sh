@@ -16,15 +16,22 @@
 # build-mlir-air.sh <toolchain file> <sysroot dir> <cmakeModules dir>
 #     <llvm dir> < <mlir-aie dir> <install dir> <mlir-air dir> <build dir>
 #
-# e.g. build-mlir-air.sh /scratch/vck190_bare_prod_sysroot 10.2.0 /scratch/llvm 
-#          /scratch/mlir-aie
-#          /scratch/cmakeModules/cmakeModulesXilinx
+# e.g. ./utils/cross-build-mlir-air.sh 
+#          cmake/modules/toolchain_aarch64.cmake 
+#          /sysroot 
+#          utils/mlir-aie/cmake/modulesXilinx 
+#          utils/llvm 
+#          utils/mlir-aie 
+#          install-aarch64 
+#          . 
+#          build-aarch64
 #
-# <toolchain file> - absolute path to cmake toolchain file
-# <sysroot dir> - sysroot, absolute directory
-# <cmakeModules dir> - cmakeModules, absolute directory
-# <llvm dir>     - llvm location, absolute directory
-# <mlir-aie dir>     - mlir-aie, absolute directory
+# <toolchain file> - path to cmake toolchain file
+# <sysroot dir> - sysroot
+# <cmakeModules dir> - cmakeModules
+# <llvm dir>     - llvm location
+# <mlir-aie dir>     - mlir-aie
+# <libxaie dir>     - libxaie, default is '<cmakeModules dir>/opt/xaienginev2'
 # <install dir>  - optional, default is 'install-aarch64'
 # <mlir-air dir> - optional, default is 'mlir-air'
 # <build dir>    - optional, default is '<mlir-air dir>/build-aarch64'
@@ -42,10 +49,10 @@ CMAKE_SYSROOT=`realpath $2`
 CMAKEMODULES_DIR=`realpath $3`
 LLVM_DIR=`realpath $4`
 MLIR_AIE_DIR=`realpath $5`
-
-INSTALL_DIR=${6:-"install-aarch64"}
-MLIR_AIR_DIR=${7:-"mlir-air"}
-BUILD_DIR=${8:-"${MLIR_AIR_DIR}/build-aarch64"}
+LibXAIE_DIR=`realpath ${6:-"${CMAKE_SYSROOT}/opt/xaienginev2"}`
+INSTALL_DIR=${7:-"install-aarch64"}
+MLIR_AIR_DIR=${8:-"mlir-air"}
+BUILD_DIR=${9:-"${MLIR_AIR_DIR}/build-aarch64"}
 
 BUILD_DIR=`realpath ${BUILD_DIR}`
 INSTALL_DIR=`realpath ${INSTALL_DIR}`
@@ -69,7 +76,7 @@ cmake .. \
     -Daarch64_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE} \
     -DLLVM_DIR=${LLVM_DIR}/build-aarch64/lib/cmake/llvm \
     -DMLIR_DIR=${LLVM_DIR}/build-aarch64/lib/cmake/mlir \
-    -DLibXAIE_ROOT=${CMAKE_SYSROOT}/opt/xaienginev2 \
+    -DLibXAIE_ROOT=${LibXAIE_DIR} \
     |& tee cmake.log
 
 ec=$?

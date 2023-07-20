@@ -16,13 +16,15 @@
 # build-mlir-air-pcie.sh <llvm dir> <cmakeModules dir> <mlir-aie dir>
 #     <mlir-air dir> <build dir> <install dir>
 #
-# e.g. build-mlir-air-pcie.sh /scratch/llvm /scratch/mlir-aie
-#          /scratch/cmakeModules/cmakeModulesXilinx
+# e.g. ./utils/build-mlir-air-pcie.sh 
+#          utils/llvm 
+#          utils/mlir-aie/cmake/modulesXilinx
+#          utils/mlir-aie
+#          utils/aienginev2/install
 #
 # <llvm dir>         - llvm
 # <cmakeModules dir> - cmakeModules
 # <mlir-aie dir>     - mlir-aie
-#
 # <libXAIE dir>      - libXAIE to build runtime
 #
 # <build dir>    - optional, build dir name, default is 'build-pcie'
