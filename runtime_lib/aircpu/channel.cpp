@@ -25,18 +25,15 @@ static void _air_channel_put(tensor_t<uint64_t, 0> *channel,
   // if the channel is valid, channel->data[0] should be a valid memory address
   // otherwise, allocate a new channel
   if (channel->data[0] == 0) {
-    channel_t<T> *new_channel = (channel_t<T> *)malloc(sizeof(channel_t<T>));
-    new_channel->data =
-        (T *)malloc(sizeof(T) * size[3] * size[2] * size[0] * size[1]);
-    new_channel->_is_full = false;
+    channel_t<T> *new_channel = new channel_t<T>(size);
     channel->data[0] = (uint64_t)new_channel;
   }
 
   channel_t<T> *chan = (channel_t<T> *)channel->data[0];
 
   // wait until the channel is empty
-  while (chan->_is_full)
-    ;
+  std::unique_lock<std::mutex> lock(chan->mtx);
+  chan->cv.wait(lock, [&chan] { return !chan->_is_full; });
 
   if (VERBOSE)
     std::cerr << "dst offset " << offset[1] << ", " << offset[0] << ", size "
@@ -55,6 +52,7 @@ static void _air_channel_put(tensor_t<uint64_t, 0> *channel,
 
   // mark the channel as full
   chan->_is_full = true;
+  chan->cv.notify_all();
 }
 
 template <typename T, int R>
@@ -82,8 +80,8 @@ static void _air_channel_get(tensor_t<uint64_t, 0> *channel,
   channel_t<T> *chan = (channel_t<T> *)channel->data[0];
 
   // wait until the channel is full
-  while (!chan->_is_full)
-    ;
+  std::unique_lock<std::mutex> lock(chan->mtx);
+  chan->cv.wait(lock, [&chan] { return chan->_is_full; });
 
   // copy data from buffer to dst
   size_t dst_offset = 0;
@@ -99,6 +97,7 @@ static void _air_channel_get(tensor_t<uint64_t, 0> *channel,
 
   // mark the channel as empty
   chan->_is_full = false;
+  chan->cv.notify_all();
 }
 
 template <typename T, int R>
