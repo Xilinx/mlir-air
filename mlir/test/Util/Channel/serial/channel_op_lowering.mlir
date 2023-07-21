@@ -1,3 +1,9 @@
+// RUN: cd %S; make channel.async.o; mv channel.async.o %T/
+// RUN: %CLANG %S/main.cpp -O2 -std=c++17 %airhost_libs -c -o %T/main.o
+// RUN: %CLANG %airhost_libs %mlir_async_lib -o %T/test.exe %T/main.o %T/channel.async.o
+// RUN: %T/test.exe
+// RUN: make clean
+
 air.channel @channel_0 [1]
 func.func @forward(%arg0 : memref<16x16xi32>, %arg1 : memref<16x16xi32>) -> () {
   %c0 = arith.constant 0 : index

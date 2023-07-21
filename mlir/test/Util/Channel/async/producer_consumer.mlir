@@ -1,3 +1,9 @@
+// RUN: cd %S; make producer_consumer.async.o; mv producer_consumer.async.o %T/
+// RUN: %CLANG %S/main.cpp -O2 -std=c++17 %airhost_libs -c -o %T/main.o
+// RUN: %CLANG %airhost_libs %mlir_async_lib -o %T/test.exe %T/main.o %T/producer_consumer.async.o
+// RUN: %T/test.exe
+// RUN: make clean
+
 module {
   memref.global "private" @channel_0 : memref<i64> = dense<0>
   func.func @forward(%arg0: memref<32x32x32xi32>) attributes {llvm.emit_c_interface} { 

@@ -1,3 +1,9 @@
+// RUN: cd %S; make mmult.async.o; mv mmult.async.o %T/
+// RUN: %CLANG %S/main.cpp -O2 -std=c++17 %airhost_libs -c -o %T/main.o
+// RUN: %CLANG %airhost_libs %mlir_async_lib -o %T/test.exe %T/main.o %T/mmult.async.o
+// RUN: %T/test.exe
+// RUN: make clean
+
 module attributes {torch.debug_module_name = "model"} {
   memref.global "private" @channel_7 : memref<i64> = dense<0>
   memref.global "private" @channel_6 : memref<i64> = dense<0>
