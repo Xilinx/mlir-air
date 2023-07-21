@@ -9,9 +9,9 @@
 #ifndef AIR_CHANNEL_H
 #define AIR_CHANNEL_H
 
-#include <stdlib.h>
-#include <mutex>
 #include <condition_variable>
+#include <mutex>
+#include <stdlib.h>
 
 template <typename T> struct channel_t {
   T *data;
@@ -20,7 +20,7 @@ template <typename T> struct channel_t {
   std::condition_variable cv;
 
   channel_t(size_t sizes[4]) {
-    data = new T[sizes[0] * sizes[1] * sizes[2] * sizes[3]]; 
+    data = new T[sizes[0] * sizes[1] * sizes[2] * sizes[3]];
     _is_full = false;
     cv.notify_all();
   }
