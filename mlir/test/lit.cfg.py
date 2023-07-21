@@ -30,9 +30,13 @@ config.test_source_root = os.path.dirname(__file__)
 
 # test_exec_root: The root path where tests should be run.
 config.test_exec_root = os.path.join(config.air_obj_root, 'test')
+air_runtime_lib = os.path.join(config.air_obj_root, "runtime_lib", config.test_arch)
 
 config.substitutions.append(('%PATH%', config.environment['PATH']))
 config.substitutions.append(('%shlibext', config.llvm_shlib_ext))
+config.substitutions.append(('%CLANG', "clang++"))
+config.substitutions.append(("%airhost_libs", "-I" + air_runtime_lib + "/airhost/include -L" + air_runtime_lib + "/airhost -lairhost -L" + air_runtime_lib + "/runtime_lib -laircpu"))
+config.substitutions.append(("%mlir_async_lib", "-L" + config.llvm_obj_root + "/lib -lmlir_async_runtime"))
 
 llvm_config.with_system_environment(
     ['HOME', 'INCLUDE', 'LIB', 'TMP', 'TEMP'])
