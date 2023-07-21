@@ -5,6 +5,7 @@
 #include "air_tensor.h"
 
 #include <iostream>
+#include <thread>
 
 #define VERBOSE 0
 
@@ -74,8 +75,10 @@ static void _air_channel_get(tensor_t<uint64_t, 0> *channel,
 
   // if channel get called before channel put, wait until the channel becomes
   // available
-  while (channel->data[0] == 0)
-    ;
+  while (channel->data[0] == 0) {
+    // yield the processor
+    std::this_thread::yield();
+  }
 
   channel_t<T> *chan = (channel_t<T> *)channel->data[0];
 
