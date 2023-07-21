@@ -1,0 +1,12 @@
+//===- run.lit ------------------------------------------------------------===//
+//
+// Copyright (C) 2023, Xilinx Inc.
+// Copyright (C) 2023, Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+
+// RUN: cd %S; make mmult.async.o; mv mmult.async.o %T/
+// RUN: %CLANG %S/main.cpp -O2 -std=c++17 -I%air_runtime_lib%/airhost/include -I%air_include -c -o %T/main.o
+// RUN: %CLANG -L%air_runtime_lib%/runtime_lib -laircpu -o %T/test.exe %T/main.o %T/mmult.async.o
+// RUN: %run_on_board %T/test.exe
