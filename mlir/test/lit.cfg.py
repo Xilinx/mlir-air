@@ -32,6 +32,23 @@ config.test_source_root = os.path.dirname(__file__)
 config.test_exec_root = os.path.join(config.air_obj_root, 'test')
 air_runtime_lib = os.path.join(config.air_obj_root, "runtime_lib", config.test_arch)
 
+# directories to examine:
+# 1. air_runtime_lib/airhost/include
+# 2. air_runtime_lib/airhost
+# 3. air_runtime_lib/runtime_lib
+# 4. realpath of config.llvm_obj_root/lib/libmlir_async_runtime.so
+
+# do a ls on air_runtime_lib/airhost/include
+print("air_runtime_lib/airhost/include: " + air_runtime_lib + "/airhost/include")
+print("\t" + str(os.listdir(air_runtime_lib + "/airhost/include")))
+print("air_runtime_lib/airhost: " + air_runtime_lib + "/airhost")
+print("\t" + str(os.listdir(air_runtime_lib + "/airhost")))
+print("air_runtime_lib/runtime_lib: " + air_runtime_lib + "/runtime_lib")
+print("\t" + str(os.listdir(air_runtime_lib + "/runtime_lib")))
+print("config.llvm_obj_root/lib/libmlir_async_runtime.so realpath: ")
+# do a realpath
+print("\t" + str(os.path.realpath(config.llvm_obj_root + "/lib/libmlir_async_runtime.so")))
+
 config.substitutions.append(('%PATH%', config.environment['PATH']))
 config.substitutions.append(('%shlibext', config.llvm_shlib_ext))
 config.substitutions.append(('%CLANG', config.llvm_tools_dir + "/clang"))
