@@ -1,3 +1,11 @@
+//===- mmult.mlir -----------------------------------------------*- MLIR -*-===//
+//
+// Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+
+
 // RUN: cd %S; make mmult.async.o; mv mmult.async.o %T/
 // RUN: %CLANG %S/main.cpp -O2 -std=c++17 %airhost_libs -c -o %T/main.o
 // RUN: %CLANG %airhost_libs %mlir_async_lib -o %T/test.exe %T/main.o %T/mmult.async.o
