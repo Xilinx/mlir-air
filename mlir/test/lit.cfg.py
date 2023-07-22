@@ -51,8 +51,9 @@ print("\t" + str(os.path.realpath(config.llvm_obj_root + "/lib/libmlir_async_run
 
 config.substitutions.append(('%PATH%', config.environment['PATH']))
 config.substitutions.append(('%shlibext', config.llvm_shlib_ext))
-config.substitutions.append(('%CLANG', config.llvm_tools_dir + "/clang"))
-config.substitutions.append(("%airhost_libs", "-I" + air_runtime_lib + "/airhost/include -L" + air_runtime_lib + "/airhost -lairhost -L" + air_runtime_lib + "/runtime_lib -laircpu"))
+config.substitutions.append(('%CLANG', config.llvm_tools_dir + "/clang++ -v"))
+config.substitutions.append(("%airhost_inc", "-I" + air_runtime_lib + "/airhost/include"))
+config.substitutions.append(("%aircpu_lib", "-L" + air_runtime_lib + "/runtime_lib -laircpu"))
 config.substitutions.append(("%mlir_async_lib", "-L" + config.llvm_obj_root + "/lib -lmlir_async_runtime"))
 
 llvm_config.with_system_environment(
