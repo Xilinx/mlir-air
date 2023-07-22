@@ -13,17 +13,14 @@
 # <cmakeModules dir>, and <mlir-aie dir>. Assuming they are all in the same
 # subfolder, it would look like:
 #
-# build-mlir-air.sh <toolchain file> <sysroot dir> <cmakeModules dir>
-#     <llvm dir> < <mlir-aie dir> <install dir> <mlir-air dir> <build dir>
+# build-mlir-air.sh <sysroot dir> <llvm dir> < <mlir-aie dir> <install dir> 
+#     <build dir>
 #
 # e.g. ./utils/cross-build-mlir-air.sh 
-#          cmake/modules/toolchain_aarch64.cmake 
 #          /sysroot 
-#          utils/mlir-aie/cmake/modulesXilinx 
 #          utils/llvm 
 #          utils/mlir-aie 
 #          install-aarch64 
-#          . 
 #          build-aarch64
 #
 # <toolchain file> - path to cmake toolchain file
@@ -33,26 +30,25 @@
 # <mlir-aie dir>     - mlir-aie
 # <libxaie dir>     - libxaie, default is '<cmakeModules dir>/opt/xaienginev2'
 # <install dir>  - optional, default is 'install-aarch64'
-# <mlir-air dir> - optional, default is 'mlir-air'
 # <build dir>    - optional, default is '<mlir-air dir>/build-aarch64'
 #
 ##===----------------------------------------------------------------------===##
 
-if [ "$#" -lt 5 ]; then
-    echo "ERROR: Needs at least 5 arguments for <sysroot dir>, <llvm dir>, "
-    echo "<cmakeModules dir> and <mlir-aie dir>."
+if [ "$#" -lt 3 ]; then
+    echo "ERROR: Needs at least 3 arguments for <sysroot dir>, <llvm dir>, "
+    echo "and <mlir-aie dir>."
     exit 1
 fi
 
-CMAKE_TOOLCHAIN_FILE=`realpath $1`
-CMAKE_SYSROOT=`realpath $2`
-CMAKEMODULES_DIR=`realpath $3`
-LLVM_DIR=`realpath $4`
-MLIR_AIE_DIR=`realpath $5`
-LibXAIE_DIR=`realpath ${6:-"${CMAKE_SYSROOT}/opt/xaienginev2"}`
-INSTALL_DIR=${7:-"install-aarch64"}
-MLIR_AIR_DIR=${8:-"mlir-air"}
-BUILD_DIR=${9:-"${MLIR_AIR_DIR}/build-aarch64"}
+BASE_DIR=`realpath $(dirname $0)/..`
+CMAKE_TOOLCHAIN_FILE=$BASE_DIR/cmake/modules/toolchain_aarch64.cmake
+CMAKE_SYSROOT=`realpath $1`
+LLVM_DIR=`realpath $2`
+MLIR_AIE_DIR=`realpath $3`
+MLIR_AIE_CMAKEMODULES_DIR=$MLIR_AIE_DIR/cmake
+
+INSTALL_DIR=${4:-"install-aarch64"}
+BUILD_DIR=${5:-"${BASE_DIR}/build-aarch64"}
 
 BUILD_DIR=`realpath ${BUILD_DIR}`
 INSTALL_DIR=`realpath ${INSTALL_DIR}`
@@ -69,14 +65,13 @@ cmake .. \
     -DBUILD_SHARED_LIBS=OFF \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=${INSTALL_DIR} \
-    -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR} \
+    -DCMAKE_MODULE_PATH=${MLIR_AIE_CMAKEMODULES_DIR}/modulesXilinx \
     -DCMAKE_SYSROOT=${CMAKE_SYSROOT} \
     -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE} \
     -DAIR_RUNTIME_TARGETS:STRING="aarch64" \
     -Daarch64_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE} \
     -DLLVM_DIR=${LLVM_DIR}/build-aarch64/lib/cmake/llvm \
     -DMLIR_DIR=${LLVM_DIR}/build-aarch64/lib/cmake/mlir \
-    -DLibXAIE_ROOT=${LibXAIE_DIR} \
     |& tee cmake.log
 
 ec=$?
