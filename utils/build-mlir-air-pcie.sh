@@ -20,12 +20,10 @@
 #          utils/llvm 
 #          utils/mlir-aie/cmake/modulesXilinx
 #          utils/mlir-aie
-#          utils/aienginev2/install
 #
 # <llvm dir>         - llvm
 # <cmakeModules dir> - cmakeModules
 # <mlir-aie dir>     - mlir-aie
-# <libXAIE dir>      - libXAIE to build runtime
 #
 # <build dir>    - optional, build dir name, default is 'build-pcie'
 # <install dir>  - optional, install dir name, default is 'install-pcie'
@@ -40,10 +38,8 @@ LLVM_DIR=`realpath $1`
 CMAKEMODULES_DIR=`realpath $2`
 MLIR_AIE_DIR=`realpath $3`
 
-LibXAIE_DIR=`realpath $4`
-
-BUILD_DIR=${5:-"build-pcie"}
-INSTALL_DIR=${6:-"install-pcie"}
+BUILD_DIR=${4:-"build-pcie"}
+INSTALL_DIR=${5:-"install-pcie"}
 
 mkdir -p $BUILD_DIR
 mkdir -p $INSTALL_DIR
@@ -61,14 +57,12 @@ cmake .. \
     -DAIE_DIR=${MLIR_AIE_DIR}/build/lib/cmake/aie \
     -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
     -DVitisSysroot="" \
-    -DLibXAIE_ROOT=${LibXAIE_DIR} \
     -DARM_TOOLCHAIN_OPT="" \
 	-DAIR_RUNTIME_TARGETS="x86_64" \
     -DBUILD_AIR_PCIE=ON \
     -DBUILD_SHARED_LIBS=OFF \
     -DLLVM_USE_LINKER=lld \
     |& tee cmake.log
-
 
 ninja |& tee ninja.log
 ninja install |& tee ninja-install.log

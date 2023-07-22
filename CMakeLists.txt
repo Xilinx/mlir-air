@@ -36,7 +36,7 @@ include(ExternalProject)
 
 find_package(MLIR REQUIRED CONFIG)
 find_package(AIE REQUIRED)
-find_package(LibXAIE)
+# find_package(LibXAIE)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
@@ -120,6 +120,13 @@ foreach(target ${AIR_RUNTIME_TARGETS})
 	if (NOT EXISTS ${${target}_TOOLCHAIN_FILE})
 		message(FATAL_ERROR "Toolchain file ${${target}_TOOLCHAIN_FILE} not found! Cannot build target ${target}.")
 	endif()
+
+	if (DEFINED LibXAIE_${target}_DIR)
+		message("Using xaiengine from LibXAIE_${target}_DIR=${LibXAIE_${target}_DIR}.")
+		set(LibXAIE_ROOT ${LibXAIE_${target}_DIR})
+		find_package(LibXAIE)
+	endif()
+	
 	message("Building AIR runtime for ${target} with TOOLCHAIN=${${target}_TOOLCHAIN_FILE}")
 	ExternalProject_Add(air_runtime_lib_${target}
 		PREFIX ${CMAKE_CURRENT_BINARY_DIR}/runtime_libTmp/${target}
