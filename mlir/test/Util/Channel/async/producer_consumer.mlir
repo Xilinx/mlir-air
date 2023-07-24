@@ -10,7 +10,7 @@
 // RUN: %CLANG %T/producer_consumer.async.ll -O2 -std=c++17 -c -o %T/producer_consumer.async.o
 // RUN: %CLANG %S/main.cpp -O2 -std=c++17 %airhost_inc -c -o %T/main.o
 // RUN: %CLANG %aircpu_lib %mlir_async_lib -o %T/test.exe %T/main.o %T/producer_consumer.async.o
-// RUN: %T/test.exe
+// RUN: %ld_lib_path %T/test.exe
 
 module {
   memref.global "private" @channel_0 : memref<i64> = dense<0>
