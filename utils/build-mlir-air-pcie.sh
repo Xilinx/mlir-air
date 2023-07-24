@@ -9,20 +9,17 @@
 # 
 ##===----------------------------------------------------------------------===##
 #
-# This script builds mlir-air given the <llvm dir>, <cmakeModules dir>,
-# and <mlir-aie dir>. Assuming they are all in the same subfolder,
-# it would look like:
+# This script builds mlir-air given the <llvm dir> and <mlir-aie dir>. Assuming 
+# they are all in the same subfolder, it would look like:
 #
-# build-mlir-air-pcie.sh <llvm dir> <cmakeModules dir> <mlir-aie dir>
-#     <mlir-air dir> <build dir> <install dir>
+# build-mlir-air-pcie.sh <llvm dir> <mlir-aie dir>
+#     <build dir> <install dir>
 #
 # e.g. ./utils/build-mlir-air-pcie.sh 
 #          utils/llvm 
-#          utils/mlir-aie/cmake/modulesXilinx
 #          utils/mlir-aie
 #
 # <llvm dir>         - llvm
-# <cmakeModules dir> - cmakeModules
 # <mlir-aie dir>     - mlir-aie
 #
 # <build dir>    - optional, build dir name, default is 'build-pcie'
@@ -30,16 +27,17 @@
 #
 ##===----------------------------------------------------------------------===##
 
-if [ "$#" -lt 3 ]; then
-    echo "ERROR: Needs at least 3 arguments for <llvm dir>, <cmakeModules dir> and <mlir-aie dir>."
+if [ "$#" -lt 2 ]; then
+    echo "ERROR: Needs at least 2 arguments for <llvm dir> and <mlir-aie dir>."
     exit 1
 fi
 LLVM_DIR=`realpath $1`
-CMAKEMODULES_DIR=`realpath $2`
-MLIR_AIE_DIR=`realpath $3`
+MLIR_AIE_DIR=`realpath $2`
 
-BUILD_DIR=${4:-"build-pcie"}
-INSTALL_DIR=${5:-"install-pcie"}
+CMAKEMODULES_DIR=`realpath $MLIR_AIE_DIR/cmake`
+
+BUILD_DIR=${3:-"build-pcie"}
+INSTALL_DIR=${4:-"install-pcie"}
 
 mkdir -p $BUILD_DIR
 mkdir -p $INSTALL_DIR
@@ -50,7 +48,7 @@ PYTHON_ROOT=`pip3 show pybind11 | grep Location | awk '{print $2}'`
 cmake .. \
     -GNinja \
     -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
-    -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
+    -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/modulesXilinx \
     -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
     -DLLVM_DIR=${LLVM_DIR}/build/lib/cmake/llvm \
     -DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \

@@ -25,8 +25,6 @@ if [ "$#" -lt 2 ]; then
     echo "ERROR: Needs at least 2 arguments for <sysroot dir> and <llvm dir>."
     exit 1
 fi
-BASE_DIR=`realpath $(dirname $0)/..`
-CMAKEMODULES_DIR=$BASE_DIR/cmake
 
 CMAKE_SYSROOT=`realpath $1`
 LLVM_DIR=`realpath $2`
@@ -34,6 +32,8 @@ LLVM_DIR=`realpath $2`
 INSTALL_DIR=${3:-"install-aarch64"}
 MLIR_AIE_DIR=${4:-"mlir-aie"}
 BUILD_DIR=${5:-"${MLIR_AIE_DIR}/build-aarch64"}
+
+CMAKEMODULES_DIR=`realpath $MLIR_AIE_DIR/cmake`
 
 BUILD_DIR=`realpath ${BUILD_DIR}`
 INSTALL_DIR=`realpath ${INSTALL_DIR}`
