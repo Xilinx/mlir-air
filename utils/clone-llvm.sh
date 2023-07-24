@@ -21,4 +21,7 @@ git clone --depth 1 https://github.com/llvm/llvm-project.git llvm
 pushd llvm
 git fetch --depth=1 origin $commithash
 git checkout $commithash -b $branch
+# Make mlir_async_runtime library's symbol visible
+# so that we can link to this library in channel sim tests
+sed -i '/set_property(TARGET mlir_async_runtime PROPERTY CXX_VISIBILITY_PRESET hidden)/d' ./mlir/lib/ExecutionEngine/CMakeLists.txt
 popd
