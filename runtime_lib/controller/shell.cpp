@@ -141,7 +141,11 @@ void shell(void) {
 
   // handle all characters from the UART (which is a slow interface) so the UI
   // is responsive. If no character is waiting, go back to processing queues.
-  while ((in = XUartPsv_RecvByte(STDOUT_BASEADDRESS))) {
+  while (XUartPsv_IsReceiveData(STDOUT_BASEADDRESS)) {
+
+    // When we know that we have data, read it from the UART
+    in = XUartPsv_RecvByte(STDOUT_BASEADDRESS);
+
     // make sure character will fit in the command buffer
     if (cmd_len >= MAX_LINE_LENGTH) {
       xil_printf("Line too long\r\n");

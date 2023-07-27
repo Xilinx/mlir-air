@@ -185,9 +185,9 @@ hsa_status_t air_packet_rw32_init(dispatch_packet_t *pkt, bool is_write,
   return HSA_STATUS_SUCCESS;
 }
 
-hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
-                                  uint8_t start_col, uint8_t num_cols,
-                                  uint8_t start_row, uint8_t num_rows) {
+hsa_status_t air_packet_segment_init(dispatch_packet_t *pkt, uint16_t herd_id,
+                                     uint8_t start_col, uint8_t num_cols,
+                                     uint8_t start_row, uint8_t num_rows) {
   // uint8_t start_row, uint8_t num_rows,
   // uint16_t dma0, uint16_t dma1) {
   initialize_packet(pkt);
@@ -205,7 +205,7 @@ hsa_status_t air_packet_herd_init(dispatch_packet_t *pkt, uint16_t herd_id,
   pkt->arg[2] = 0; // unused
   pkt->arg[3] = 0; // unused
 
-  pkt->type = AIR_PKT_TYPE_HERD_INITIALIZE;
+  pkt->type = AIR_PKT_TYPE_SEGMENT_INITIALIZE;
   pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
 
   return HSA_STATUS_SUCCESS;

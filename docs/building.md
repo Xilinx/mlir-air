@@ -56,11 +56,10 @@ cd utils
 ./build-llvm-local.sh llvm build ../../install
 ```
 
-Next, clone and build MLIR-AIE with paths to llvm, and cmakeModules repositories. Again, we use a common installation directory.
-
+Next, clone and build MLIR-AIE with paths to llvm, aienginev2, and cmakeModules repositories. Again, we use a common installation directory. Note that in the following commands, we assume that the aienginev2 library is installed in /opt/xaiengine as directed in the `Building on x86 with runtime for PCIe` section. If the aienginev2 library was installed elsewhere, be sure that the 4th argument to build mlir-aie points to that location. 
 ```
 ./clone-mlir-aie.sh
-./build-mlir-aie-local.sh llvm mlir-aie/cmake/modulesXilinx mlir-aie build ../../install
+./build-mlir-aie-local.sh llvm mlir-aie/cmake/modulesXilinx /opt/xaiengine mlir-aie build ../../install
 ```
 
 The MLIR-AIE tools will be able to generate binaries targetting AIEngines.
@@ -82,7 +81,7 @@ Use the following command to build the AIR tools to compile on x86:
 
 ## Building on x86 with runtime for PCIe 
 
-In order to build and run on PCIe cards, you first have to build and install the aienginev2 library:
+In order to build and run on PCIe cards, you first have to build and install the aienginev2 library. We chose to install the library in /opt/xaiengine but it is not required for the tools to be installed there. Just ensure that when building mlir-aie and mlir-air, that you point to the directory in which the aienginev2 library was installed.
 
 ```
 git clone https://github.com/jnider/aie-rt
@@ -91,7 +90,7 @@ git checkout joel-aie
 cd driver/src
 make -f Makefile.Linux
 sudo cp -r ../include /opt/aiengine/
-sudo cp libxaiengine.so* /opt/aiengine/lib/
+sudo cp libxaiengine.so* /opt/xaiengine/lib/
 export LD_LIBRARY_PATH=/opt/xaiengine/lib:${LD_LIBRARY_PATH}
 ```
 

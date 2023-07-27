@@ -345,11 +345,11 @@ uint64_t air_segment_load(const char *name) {
 
   wr_idx = queue_add_write_index(_air_host_active_segment.q, 1);
   packet_id = wr_idx % _air_host_active_segment.q->size;
-  dispatch_packet_t *herd_pkt =
+  dispatch_packet_t *segment_pkt =
       (dispatch_packet_t *)(_air_host_active_segment.q->base_address_vaddr) +
       packet_id;
-  air_packet_herd_init(herd_pkt, 0, 0, 50, 1, 8);
-  air_queue_dispatch_and_wait(_air_host_active_segment.q, wr_idx, herd_pkt);
+  air_packet_segment_init(segment_pkt, 0, 0, 50, 1, 8);
+  air_queue_dispatch_and_wait(_air_host_active_segment.q, wr_idx, segment_pkt);
 
 #else
   XAie_Finish(&(_air_host_active_libxaie->DevInst));

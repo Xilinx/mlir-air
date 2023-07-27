@@ -34,4 +34,9 @@ module {
   }
   AIE.flow(%t72, "DMA" : 0, %t70, "DMA" : 0)
 
+  AIE.core(%t72) {
+    AIE.end
+
+  }
+
 }
