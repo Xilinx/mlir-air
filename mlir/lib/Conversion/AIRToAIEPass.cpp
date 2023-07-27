@@ -928,82 +928,6 @@ void allocL1Buffers(AIE::DeviceOp m,
   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
 
-// find AIE cores and their tiles based on memory hierarchy levels
-template <typename MyOp>
-LogicalResult findChannelPutGetTile(MyOp op, Value *tile,
-                                  AIE::AIEObjectFifoType *datatype) {
-  MemRefType memref = op.getMemref().getType().template cast<MemRefType>();
-  int mem_space = memref.getMemorySpaceAsInt();
-  *datatype = AIE::AIEObjectFifoType::get(MemRefType::get(memref.getShape(), memref.getElementType()));
-  if (mem_space == (int)air::MemorySpace::L1) {
-    AIE::CoreOp core = op->template getParentOfType<AIE::CoreOp>();
-    if (!core)
-      return op.emitOpError("could not retrieve core for channel put/get op");
-    *tile = core.getTileOp();
-    return success();
-  } else {
-    // TODO: complete for L2
-    return op.emitOpError("unsupported memory space");
-  }
-}
-
-AIE::ObjectFifoCreateOp createObjectFifo(OpBuilder &builder,
-                                         AIE::AIEObjectFifoType datatype,
-                                         Value prodTile,
-                                         const std::vector<Value> &consTile,
-                                         int depth, StringRef name) {
-  AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
-      builder.getUnknownLoc(), datatype, prodTile, consTile,
-      builder.getIntegerAttr(builder.getI32Type(), depth));
-  fifo->setAttr(SymbolTable::getSymbolAttrName(), builder.getStringAttr(name));
-  return fifo;
-}
-
-template <typename MyOp>
-void rewriteChannelAllocs(PatternRewriter &rewriter, MyOp op,
-                          AIE::ObjectFifoCreateOp objFifo,
-                          AIE::ObjectFifoPort port) {
-  auto elementType =
-      objFifo.getType().dyn_cast<AIE::AIEObjectFifoType>().getElementType();
-  auto acqType = AIE::AIEObjectFifoSubviewType::get(elementType);
-
-  rewriter.setInsertionPoint(&op->getBlock()->front());
-  AIE::ObjectFifoAcquireOp producerAcq =
-      rewriter.create<AIE::ObjectFifoAcquireOp>(rewriter.getUnknownLoc(),
-                                                acqType, port, objFifo, 1);
-  rewriter.setInsertionPointAfter(producerAcq);
-  AIE::ObjectFifoSubviewAccessOp producerAccess =
-      rewriter.create<AIE::ObjectFifoSubviewAccessOp>(
-          rewriter.getUnknownLoc(), elementType, producerAcq.getSubview(),
-          rewriter.getIntegerAttr(rewriter.getI32Type(), 0));
-
-  // replace uses of alloc with result of acquire
-  if (auto a = dyn_cast<memref::AllocOp>(op.getMemref().getDefiningOp()))
-    rewriter.replaceOp(a.getOperation(), producerAccess.getOutput());
-}
-
-template <typename T> void push_back_if_unique(std::vector<T> &vec, T entry) {
-  if (std::find(vec.begin(), vec.end(), entry) == vec.end()) 
-    vec.push_back(entry);
-}
-
-template <typename MyOp>
-void rewriteChannelDeallocs(PatternRewriter &rewriter, MyOp op,
-                            AIE::ObjectFifoCreateOp objFifo,
-                            AIE::ObjectFifoPort port,
-                            std::vector<Operation *> &erased_deallocs) {
-  for (auto u : op.getMemref().getDefiningOp()->getUsers()) {
-    if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
-      rewriter.setInsertionPoint(&op->getBlock()->back());
-      rewriter.create<AIE::ObjectFifoReleaseOp>(dealloc->getLoc(), port,
-                                                objFifo, 1);
-      // Delete ops at the end of the rewrite pattern to avoid repeatedly
-      // deleting the same op
-      push_back_if_unique<Operation *>(erased_deallocs, dealloc.getOperation());
-    }
-  }
-}
-
 struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
   using OpRewritePattern<air::ChannelOp>::OpRewritePattern;
 
@@ -1016,6 +940,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     if (!device)
       return failure();
 
+    // SpecializeChannelBundlePattern should have removed them
     if (channel.getBundleSize() > 1)
       return failure();
 
@@ -1076,15 +1001,12 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       rewriteChannelDeallocs<ChannelPutOp>(rewriter, put, objFifo,
                                            AIE::ObjectFifoPort::Produce,
                                            erased_deallocs);
-
       // clear any dependence to put
-      if (put.getAsyncToken()) {
-        for (auto u : put.getAsyncToken().getUsers()) {
+      if (put.getAsyncToken())
+        for (auto u : put.getAsyncToken().getUsers())
           if (auto async_u = dyn_cast<air::AsyncOpInterface>(u))
             air::eraseAsyncDependencyFromAsyncOp(async_u, put.getAsyncToken());
-          // TODO: complete else
-        }
-      }
+      // TODO: complete else
     }
     for (auto get : channelGets) {
       rewriteChannelAllocs<ChannelGetOp>(rewriter, get, objFifo,
@@ -1092,14 +1014,12 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       rewriteChannelDeallocs<ChannelGetOp>(rewriter, get, objFifo,
                                            AIE::ObjectFifoPort::Consume,
                                            erased_deallocs);
-      if (get.getAsyncToken()) {
+      if (get.getAsyncToken())
         // clear any dependence to get
-        for (auto u : get.getAsyncToken().getUsers()) {
+        for (auto u : get.getAsyncToken().getUsers())
           if (auto async_u = dyn_cast<air::AsyncOpInterface>(u))
             air::eraseAsyncDependencyFromAsyncOp(async_u, get.getAsyncToken());
-          // TODO: complete else
-        }
-      }
+      // TODO: complete else
     }
     // erase deallocs
     for (auto o : erased_deallocs)
@@ -1108,7 +1028,6 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     // erase channel puts and gets
     for (auto get : channelGets)
       rewriter.eraseOp(get);
-
     for (auto put : channelPuts)
       rewriter.eraseOp(put);
 
@@ -1118,6 +1037,82 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
   }
 
 private:
+  // find AIE cores and their tiles based on memory hierarchy levels
+  template <typename MyOp>
+  LogicalResult findChannelPutGetTile(MyOp op, Value *tile,
+                                    AIE::AIEObjectFifoType *datatype) {
+    MemRefType memref = op.getMemref().getType().template cast<MemRefType>();
+    int mem_space = memref.getMemorySpaceAsInt();
+    *datatype = AIE::AIEObjectFifoType::get(MemRefType::get(memref.getShape(), memref.getElementType()));
+    if (mem_space == (int)air::MemorySpace::L1) {
+      AIE::CoreOp core = op->template getParentOfType<AIE::CoreOp>();
+      if (!core)
+        return op.emitOpError("could not retrieve core for channel put/get op");
+      *tile = core.getTileOp();
+      return success();
+    } else {
+      // TODO: complete for L2
+      return op.emitOpError("unsupported memory space");
+    }
+  }
+
+  AIE::ObjectFifoCreateOp createObjectFifo(OpBuilder &builder,
+                                         AIE::AIEObjectFifoType datatype,
+                                         Value prodTile,
+                                         const std::vector<Value> &consTile,
+                                         int depth, StringRef name) {
+    AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
+        builder.getUnknownLoc(), datatype, prodTile, consTile,
+        builder.getIntegerAttr(builder.getI32Type(), depth));
+    fifo->setAttr(SymbolTable::getSymbolAttrName(), builder.getStringAttr(name));
+    return fifo;
+  }
+
+  template <typename MyOp>
+  void rewriteChannelAllocs(PatternRewriter &rewriter, MyOp op,
+                            AIE::ObjectFifoCreateOp objFifo,
+                            AIE::ObjectFifoPort port) {
+    auto elementType =
+        objFifo.getType().dyn_cast<AIE::AIEObjectFifoType>().getElementType();
+    auto acqType = AIE::AIEObjectFifoSubviewType::get(elementType);
+
+    rewriter.setInsertionPoint(&op->getBlock()->front());
+    AIE::ObjectFifoAcquireOp producerAcq =
+        rewriter.create<AIE::ObjectFifoAcquireOp>(rewriter.getUnknownLoc(),
+                                                  acqType, port, objFifo, 1);
+    rewriter.setInsertionPointAfter(producerAcq);
+    AIE::ObjectFifoSubviewAccessOp producerAccess =
+        rewriter.create<AIE::ObjectFifoSubviewAccessOp>(
+            rewriter.getUnknownLoc(), elementType, producerAcq.getSubview(),
+            rewriter.getIntegerAttr(rewriter.getI32Type(), 0));
+
+    // replace uses of alloc with result of acquire
+    if (auto a = dyn_cast<memref::AllocOp>(op.getMemref().getDefiningOp()))
+      rewriter.replaceOp(a.getOperation(), producerAccess.getOutput());
+  }
+
+  template <typename T> void push_back_if_unique(std::vector<T> &vec, T entry) {
+    if (std::find(vec.begin(), vec.end(), entry) == vec.end()) 
+      vec.push_back(entry);
+  }
+
+  template <typename MyOp>
+  void rewriteChannelDeallocs(PatternRewriter &rewriter, MyOp op,
+                              AIE::ObjectFifoCreateOp objFifo,
+                              AIE::ObjectFifoPort port,
+                              std::vector<Operation *> &erased_deallocs) {
+    for (auto u : op.getMemref().getDefiningOp()->getUsers()) {
+      if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
+        rewriter.setInsertionPoint(&op->getBlock()->back());
+        rewriter.create<AIE::ObjectFifoReleaseOp>(dealloc->getLoc(), port,
+                                                  objFifo, 1);
+        // Delete ops at the end of the rewrite pattern to avoid repeatedly
+        // deleting the same op
+        push_back_if_unique<Operation *>(erased_deallocs, dealloc.getOperation());
+      }
+    }
+  }
+
   ShimTileAllocator &shimTileAlloc;
 };
 

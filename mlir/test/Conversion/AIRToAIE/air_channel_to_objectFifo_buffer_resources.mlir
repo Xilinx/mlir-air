@@ -52,7 +52,7 @@ AIE.device(xcvc1902) {
     %alloc = memref.alloc() {sym_name = "scratch"} : memref<32xi32, 2>
     %alloc2 = memref.alloc() {sym_name = "scratch2"} : memref<32xi32, 2>
     air.channel.put @channel_0[] (%alloc[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
-    air.channel.put @channel_1[] (%alloc[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
+    air.channel.put @channel_1[] (%alloc2[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
     memref.dealloc %alloc : memref<32xi32, 2>
     memref.dealloc %alloc2 : memref<32xi32, 2>
     AIE.end
@@ -62,22 +62,22 @@ AIE.device(xcvc1902) {
 // CHECK-LABEL:   AIE.device(xcvc1902) {
 // CHECK:   %[[VAL_0:.*]] = AIE.tile(1, 1)
 // CHECK:   %[[VAL_1:.*]] = AIE.tile(1, 2)
-// CHECK:   %[[VAL_2:.*]] = AIE.objectFifo.createObjectFifo(%[[VAL_0]], {%[[VAL_1]]}, 2 : i32) {sym_name = "air_channel_1"} : !AIE.objectFifo<memref<32xi32, 2>>
-// CHECK:   %[[VAL_3:.*]] = AIE.objectFifo.createObjectFifo(%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) {sym_name = "air_channel_0"} : !AIE.objectFifo<memref<32xi32, 2>>
+// CHECK:   %[[VAL_2:.*]] = AIE.objectFifo.createObjectFifo(%[[VAL_0]], {%[[VAL_1]]}, 2 : i32) {sym_name = "air_channel_1"} : !AIE.objectFifo<memref<32xi32>>
+// CHECK:   %[[VAL_3:.*]] = AIE.objectFifo.createObjectFifo(%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) {sym_name = "air_channel_0"} : !AIE.objectFifo<memref<32xi32>>
 // CHECK:   %[[VAL_4:.*]] = AIE.core(%[[VAL_1]]) {
-// CHECK:     %[[VAL_5:.*]] = AIE.objectFifo.acquire<Consume> (%[[VAL_3]] : !AIE.objectFifo<memref<32xi32, 2>>, 1) : !AIE.objectFifoSubview<memref<32xi32, 2>>
-// CHECK:     %[[VAL_6:.*]] = AIE.objectFifo.subview.access %[[VAL_5]][0] : !AIE.objectFifoSubview<memref<32xi32, 2>> -> memref<32xi32, 2>
-// CHECK:     %[[VAL_7:.*]] = AIE.objectFifo.acquire<Consume> (%[[VAL_2]] : !AIE.objectFifo<memref<32xi32, 2>>, 1) : !AIE.objectFifoSubview<memref<32xi32, 2>>
-// CHECK:     %[[VAL_8:.*]] = AIE.objectFifo.subview.access %[[VAL_7]][0] : !AIE.objectFifoSubview<memref<32xi32, 2>> -> memref<32xi32, 2>
-// CHECK:     AIE.objectFifo.release<Consume> (%[[VAL_3]] : !AIE.objectFifo<memref<32xi32, 2>>, 1)
+// CHECK:     %[[VAL_5:.*]] = AIE.objectFifo.acquire<Consume> (%[[VAL_3]] : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
+// CHECK:     %[[VAL_6:.*]] = AIE.objectFifo.subview.access %[[VAL_5]][0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     %[[VAL_7:.*]] = AIE.objectFifo.acquire<Consume> (%[[VAL_2]] : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
+// CHECK:     %[[VAL_8:.*]] = AIE.objectFifo.subview.access %[[VAL_7]][0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     AIE.objectFifo.release<Consume> (%[[VAL_3]] : !AIE.objectFifo<memref<32xi32>>, 1)
 // CHECK:     AIE.end
 // CHECK:   } {elf_file = "partition_0_core_1_2.elf"}
 // CHECK:   %[[VAL_9:.*]] = AIE.core(%[[VAL_0]]) {
-// CHECK:     %[[VAL_10:.*]] = AIE.objectFifo.acquire<Produce> (%[[VAL_3]] : !AIE.objectFifo<memref<32xi32, 2>>, 1) : !AIE.objectFifoSubview<memref<32xi32, 2>>
-// CHECK:     %[[VAL_11:.*]] = AIE.objectFifo.subview.access %[[VAL_10]][0] : !AIE.objectFifoSubview<memref<32xi32, 2>> -> memref<32xi32, 2>
-// CHECK:     %[[VAL_12:.*]] = AIE.objectFifo.acquire<Produce> (%[[VAL_2]] : !AIE.objectFifo<memref<32xi32, 2>>, 1) : !AIE.objectFifoSubview<memref<32xi32, 2>>
-// CHECK:     %[[VAL_13:.*]] = AIE.objectFifo.subview.access %[[VAL_12]][0] : !AIE.objectFifoSubview<memref<32xi32, 2>> -> memref<32xi32, 2>
-// CHECK:     AIE.objectFifo.release<Produce> (%[[VAL_2]] : !AIE.objectFifo<memref<32xi32, 2>>, 1)
+// CHECK:     %[[VAL_10:.*]] = AIE.objectFifo.acquire<Produce> (%[[VAL_3]] : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
+// CHECK:     %[[VAL_11:.*]] = AIE.objectFifo.subview.access %[[VAL_10]][0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     %[[VAL_12:.*]] = AIE.objectFifo.acquire<Produce> (%[[VAL_2]] : !AIE.objectFifo<memref<32xi32>>, 1) : !AIE.objectFifoSubview<memref<32xi32>>
+// CHECK:     %[[VAL_13:.*]] = AIE.objectFifo.subview.access %[[VAL_12]][0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:     AIE.objectFifo.release<Produce> (%[[VAL_2]] : !AIE.objectFifo<memref<32xi32>>, 1)
 // CHECK:     AIE.end
 // CHECK:   } {elf_file = "partition_0_core_1_1.elf"}
 // CHECK: }
@@ -104,7 +104,7 @@ AIE.device(xcvc1902) {
     %alloc = memref.alloc() {sym_name = "scratch"} : memref<32xi32, 2>
     %alloc2 = memref.alloc() {sym_name = "scratch2"} : memref<32xi32, 2>
     %4 = air.channel.put async @channel_0[] (%alloc[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
-    %5 = air.channel.put async @channel_1[] (%alloc[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
+    %5 = air.channel.put async @channel_1[] (%alloc2[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
     memref.dealloc %alloc : memref<32xi32, 2>
     memref.dealloc %alloc2 : memref<32xi32, 2>
     AIE.end

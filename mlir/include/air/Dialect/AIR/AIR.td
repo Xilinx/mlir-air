@@ -460,17 +460,15 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
       return broadcastNum;
     }
     int getBufferResources() {
-      if(auto attr = getOperation()->getAttrOfType<IntegerAttr>("buffer_resources")) {
+      if(auto attr = getOperation()->getAttrOfType<IntegerAttr>("buffer_resources"))
         return attr.dyn_cast<IntegerAttr>().getInt();
-      } else {
+      else
         return 1;
-      }
     }
     int getBundleSize() {
       int size = 1;
-      for (auto i : getSize()) {
+      for (auto i : getSize())
         size *= i.dyn_cast<IntegerAttr>().getInt();
-      }
       return size;
     }
   }];
