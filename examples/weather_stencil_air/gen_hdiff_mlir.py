@@ -9,7 +9,7 @@ import random
 noc_columns = [2, 3, 6, 7, 10, 11, 18, 19, 26, 27, 34, 35, 42, 43, 46, 47]
 
 
-total_b_block= 1# 1-32
+total_b_block= 4# 1-32
 
 b_block_depth=4 #set how many rows
 input_rows=b_block_depth+5 # data input per block row
