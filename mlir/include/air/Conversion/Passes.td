@@ -148,6 +148,10 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
     Option<"clDevice", "device", "std::string",
           /*default=*/"\"xcvc1902\"",
            "AIE device to target.">,
+    Option<"clUseObjFifo", "use-objectfifo", "bool",
+           /*default=*/"false",
+           "Choose whether to lower data movement ops to aie.objectFifo, or "
+           "directly to aie.locks.">,
   ];
   let description = [{
     This pass converts AIR dialect `herd` and `segment` operations into AIE

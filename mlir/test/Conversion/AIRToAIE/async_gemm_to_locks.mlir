@@ -1,17 +1,33 @@
-//===- async_gemm_to_objectFifo.mlir ---------------------------*- MLIR -*-===//
+//===- async_gemm_to_locks.mlir --------------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-to-aie="emit-while-loop=false use-objectfifo=true row-offset=3 col-offset=5 device=xcvc1902" %s | FileCheck %s
+// RUN: air-opt -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcvc1902" %s | FileCheck %s
 
 // CHECK-LABEL:   AIE.device(xcvc1902) {
 // CHECK:   %[[VAL_0:.*]] = AIE.tile(5, 3)
 // CHECK:   %[[VAL_1:.*]] = AIE.tile(6, 3)
 // CHECK:   %[[VAL_2:.*]] = AIE.tile(5, 4)
 // CHECK:   %[[VAL_3:.*]] = AIE.tile(6, 4)
+// CHECK:   %[[LOCK_VAL_0:.*]] = AIE.lock(%[[VAL_0]], 3) {init = 0 : i32}
+// CHECK:   %[[LOCK_VAL_1:.*]] = AIE.lock(%[[VAL_0]], 2) {init = 0 : i32}
+// CHECK:   %[[LOCK_VAL_2:.*]] = AIE.lock(%[[VAL_0]], 1) {init = 0 : i32}
+// CHECK:   %[[LOCK_VAL_3:.*]] = AIE.lock(%[[VAL_0]], 0) {init = 0 : i32}
+// CHECK:   %[[LOCK_VAL_4:.*]] = AIE.lock(%[[VAL_1]], 3) {init = 0 : i32}
+// CHECK:   %[[LOCK_VAL_5:.*]] = AIE.lock(%[[VAL_1]], 2) {init = 0 : i32}
+// CHECK:   %[[LOCK_VAL_6:.*]] = AIE.lock(%[[VAL_1]], 1) {init = 0 : i32}
+// CHECK:   %[[LOCK_VAL_7:.*]] = AIE.lock(%[[VAL_1]], 0) {init = 0 : i32}
+// CHECK:   %[[LOCK_VAL_8:.*]] = AIE.lock(%[[VAL_2]], 3) {init = 0 : i32}
+// CHECK:   %[[LOCK_VAL_9:.*]] = AIE.lock(%[[VAL_2]], 2) {init = 0 : i32}
+// CHECK:   %[[LOCK_VAL_10:.*]] = AIE.lock(%[[VAL_2]], 1) {init = 0 : i32}
+// CHECK:   %[[LOCK_VAL_11:.*]] = AIE.lock(%[[VAL_2]], 0) {init = 0 : i32}
+// CHECK:   %[[LOCK_VAL_12:.*]] = AIE.lock(%[[VAL_3]], 3) {init = 0 : i32}
+// CHECK:   %[[LOCK_VAL_13:.*]] = AIE.lock(%[[VAL_3]], 2) {init = 0 : i32}
+// CHECK:   %[[LOCK_VAL_14:.*]] = AIE.lock(%[[VAL_3]], 1) {init = 0 : i32}
+// CHECK:   %[[LOCK_VAL_15:.*]] = AIE.lock(%[[VAL_3]], 0) {init = 0 : i32}
 // CHECK:   %[[VAL_4:.*]] = AIE.buffer(%[[VAL_3]]){{.*}}memref<64x96xbf16, 2>
 // CHECK:   %[[VAL_5:.*]] = AIE.buffer(%[[VAL_3]]){{.*}}memref<96x64xbf16, 2>
 // CHECK:   %[[VAL_6:.*]] = AIE.buffer(%[[VAL_3]]){{.*}}memref<64x64xbf16, 2>
@@ -24,7 +40,6 @@
 // CHECK:   %[[VAL_13:.*]] = AIE.buffer(%[[VAL_0]]){{.*}}memref<64x96xbf16, 2>
 // CHECK:   %[[VAL_14:.*]] = AIE.buffer(%[[VAL_0]]){{.*}}memref<96x64xbf16, 2>
 // CHECK:   %[[VAL_15:.*]] = AIE.buffer(%[[VAL_0]]){{.*}}memref<64x64xbf16, 2>
-// CHECK-COUNT-16:    AIE.objectFifo.createObjectFifo
 // CHECK:   %[[VAL_16:.*]] = AIE.core(%[[VAL_3]]) {
 // CHECK:   %[[VAL_17:.*]] = AIE.core(%[[VAL_2]]) {
 // CHECK:   %[[VAL_18:.*]] = AIE.core(%[[VAL_1]]) {
