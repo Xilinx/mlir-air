@@ -1,7 +1,6 @@
 // (c) 2023 SAFARI Research Group at ETH Zurich, Gagandeep Singh, D-ITET
 // SPDX-License-Identifier: MIT
 
-
 #include "./include.h"
 #include "hdiff.h"
 #define kernel_load 14
