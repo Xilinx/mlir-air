@@ -1157,6 +1157,14 @@ struct SpecializeChannelBundlePattern
       SmallVector<int64_t, 2> channel_sizes = {1, 1};
       auto new_chan = rewriter.create<air::ChannelOp>(
           channel->getLoc(), cname, rewriter.getI64ArrayAttr(channel_sizes));
+      if (channel->hasAttr("broadcast_shape")) {
+        auto broadcast_shape = specializeBroadcastShape(channel);
+        new_chan->setAttr("broadcast_shape",
+                          builder.getArrayAttr(ArrayRef(broadcast_shape)));
+        auto res = new_chan.verifyBroadcastShape();
+        if (res.failed())
+          return res;
+      }
       std::vector<unsigned> position =
           getMDVectorFromIterator(bundle_size_stdvec, iter);
       for (auto put : channelPuts) {
@@ -1269,6 +1277,25 @@ private:
         get->getLoc(), tys, deps, chan.getSymName(), indices, get.getDst(),
         get.getDstOffsets(), get.getDstSizes(), get.getDstStrides());
     return new_get;
+  }
+
+  std::vector<int>
+  specializeBroadcastShape(air::ChannelOp chan) const {
+    auto bundle_size = extractFromI64ArrayAttr(chan.getSize());
+    auto bundle_size_stdvec = convertToStdVec(bundle_size);
+    auto broadcast_shape = chan.getBroadcastShape();
+    auto broadcast_shape_stdvec = convertToStdVec(broadcast_shape);
+    std::vector<int> new_shape;
+    int diffDimension = retrieveBroadcastDimension(broadcast_shape_stdvec);
+    for (int i = 0; i < broadcast_shape_stdvec.size(); i++) {
+      if (i == diffDimension) {
+        // TODO andra: simplify
+        int new_dim = (bundle_size_stdvec[i] > broadcast_shape_stdvec[i]) ? (bundle_size_stdvec[i] / broadcast_shape_stdvec[i]) : (broadcast_shape_stdvec[i] / bundle_size_stdvec[i]);
+        new_shape.push_back(new_dim);
+      } else 
+        new_shape.push_back(1);
+    }
+    return new_shape;
   }
 };
 

@@ -1171,6 +1171,28 @@ void WaitAllOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 // Channel op
 //
 
+LogicalResult ChannelOp::verify() {
+  return verifyBroadcastShape();
+}
+
+LogicalResult ChannelOp::verifyBroadcastShape() {
+  if (isBroadcast()) {
+    auto bundle_size = extractFromI64ArrayAttr(getSize());
+    auto bundle_size_stdvec = convertToStdVec(bundle_size);
+    auto broadcast_shape = getBroadcastShape();
+    auto broadcast_shape_stdvec = convertToStdVec(broadcast_shape);
+    if (bundle_size_stdvec.size() != broadcast_shape_stdvec.size())
+      return emitOpError("bundle size should match broadcast_shape");
+    int diffDims = 0;
+    for (int i = 0; i < bundle_size_stdvec.size(); i++)
+      if (bundle_size_stdvec[i] != broadcast_shape_stdvec[i])
+        diffDims++;
+    if (diffDims > 1)
+      return emitOpError("bundle sizes and broadcast_shape should only differ along one dimension");
+  }
+  return success();
+}
+
 static LogicalResult FoldChannel(ChannelOp op, PatternRewriter &rewriter) {
 
   Operation *parent = op;

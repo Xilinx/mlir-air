@@ -444,11 +444,15 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
     ```
   }];
   let extraClassDeclaration = [{
+    bool verifyBroadcastShape();
     bool isBroadcast() {
       if(auto attr = getOperation()->getAttrOfType<ArrayAttr>("broadcast_shape"))
         return true;
       else
         return false;
+    }
+    ArrayAttr getBroadcastShape() {
+      return getOperation()->getAttrOfType<ArrayAttr>("broadcast_shape");
     }
     int getBroadcastNum() {
       int broadcastNum = 1;
@@ -472,6 +476,7 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
       return size;
     }
   }];
+  let hasVerifier = 1;
   let hasCanonicalizer = 1;
 }
 
