@@ -124,6 +124,7 @@ struct ShimTileAllocator {
 struct MemTileAllocator {
 
   std::vector<int> memTile_columns;
+  std::vector<int> memTile_rows;
   int memTile_dma_channels;
   const AIE::AIETargetModel &aie_target;
 
@@ -138,7 +139,8 @@ struct MemTileAllocator {
     for (int i = 0, c = aie_target.columns(); i < c; i++)
       for (int j = 0, r = aie_target.getNumMemTileRows(); j < r; j++)
         if (aie_target.isMemTile(i, j)) {
-          memTile_columns.push_back(j);
+          memTile_columns.push_back(i);
+          memTile_rows.push_back(j);
           memTile_dma_channels = getNumDestSwitchboxConnections(i, j, AIE::WireBundle::DMA);
         }
   }
@@ -154,9 +156,9 @@ struct MemTileAllocator {
         t.available_channels -= 1;
         return t.mem_tile;
       }
-    auto memTile_col = memTile_columns[allocs->size()];
-    auto memTile_row = memTile_rows[allocs->size()];
-    auto memTile = getPhysTileOp(aie_device, memTile_col, 0);
+    auto memTile_row = memTile_rows[allocs->size() % memTile_rows.size()]; // TODO: andra
+    auto memTile_col = memTile_columns[allocs->size() % memTile_rows.size()]; // TODO: andra
+    auto memTile = getPhysTileOp(aie_device, memTile_col, memTile_row);
     allocs->push_back({memTile, memTile_dma_channels - 1});
 
     return memTile;
