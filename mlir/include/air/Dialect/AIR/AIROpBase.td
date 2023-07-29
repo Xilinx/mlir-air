@@ -239,4 +239,38 @@ def air_ChannelInterface : OpInterface<"ChannelInterface"> {
     >,
   ];
 }
+
+def air_MemcpyInterface : OpInterface<"MemcpyInterface"> {
+  let description = [{}];
+  let cppNamespace = "xilinx::air";
+  let methods = [
+    InterfaceMethod<"description",
+    "Value", "getSrcMemref"
+    >,
+    InterfaceMethod<"description",
+    "Value", "getDstMemref"
+    >,
+    InterfaceMethod<"",
+    "OperandRange", "getSrcOffsets"
+    >,
+    InterfaceMethod<"",
+    "OperandRange", "getDstOffsets"
+    >,
+    InterfaceMethod<"",
+    "OperandRange", "getSrcSizes"
+    >,
+    InterfaceMethod<"",
+    "OperandRange", "getDstSizes"
+    >,
+    InterfaceMethod<"",
+    "OperandRange", "getSrcStrides"
+    >,
+    InterfaceMethod<"",
+    "OperandRange", "getDstStrides"
+    >,
+    InterfaceMethod<"description",
+    "int32_t", "getId"
+    >,
+  ];
+}
 #endif
