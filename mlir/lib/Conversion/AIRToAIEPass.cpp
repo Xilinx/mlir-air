@@ -1040,7 +1040,7 @@ private:
   // find AIE cores and their tiles based on memory hierarchy levels
   template <typename MyOp>
   LogicalResult findChannelPutGetTile(MyOp op, Value *tile,
-                                    AIE::AIEObjectFifoType *datatype) {
+                                    AIE::AIEObjectFifoType *datatype) const {
     MemRefType memref = op.getMemref().getType().template cast<MemRefType>();
     int mem_space = memref.getMemorySpaceAsInt();
     *datatype = AIE::AIEObjectFifoType::get(MemRefType::get(memref.getShape(), memref.getElementType()));
@@ -1060,7 +1060,7 @@ private:
                                          AIE::AIEObjectFifoType datatype,
                                          Value prodTile,
                                          const std::vector<Value> &consTile,
-                                         int depth, StringRef name) {
+                                         int depth, StringRef name) const {
     AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
         builder.getUnknownLoc(), datatype, prodTile, consTile,
         builder.getIntegerAttr(builder.getI32Type(), depth));
@@ -1071,7 +1071,7 @@ private:
   template <typename MyOp>
   void rewriteChannelAllocs(PatternRewriter &rewriter, MyOp op,
                             AIE::ObjectFifoCreateOp objFifo,
-                            AIE::ObjectFifoPort port) {
+                            AIE::ObjectFifoPort port) const {
     auto elementType =
         objFifo.getType().dyn_cast<AIE::AIEObjectFifoType>().getElementType();
     auto acqType = AIE::AIEObjectFifoSubviewType::get(elementType);
@@ -1091,7 +1091,7 @@ private:
       rewriter.replaceOp(a.getOperation(), producerAccess.getOutput());
   }
 
-  template <typename T> void push_back_if_unique(std::vector<T> &vec, T entry) {
+  template <typename T> void push_back_if_unique(std::vector<T> &vec, T entry) const {
     if (std::find(vec.begin(), vec.end(), entry) == vec.end()) 
       vec.push_back(entry);
   }
@@ -1100,7 +1100,7 @@ private:
   void rewriteChannelDeallocs(PatternRewriter &rewriter, MyOp op,
                               AIE::ObjectFifoCreateOp objFifo,
                               AIE::ObjectFifoPort port,
-                              std::vector<Operation *> &erased_deallocs) {
+                              std::vector<Operation *> &erased_deallocs) const {
     for (auto u : op.getMemref().getDefiningOp()->getUsers()) {
       if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
         rewriter.setInsertionPoint(&op->getBlock()->back());
@@ -1158,12 +1158,9 @@ struct SpecializeChannelBundlePattern
       auto new_chan = rewriter.create<air::ChannelOp>(
           channel->getLoc(), cname, rewriter.getI64ArrayAttr(channel_sizes));
       if (channel->hasAttr("broadcast_shape")) {
-        auto broadcast_shape = specializeBroadcastShape(channel);
+        auto broadcast_shape = specializeBroadcastShape(rewriter, channel);
         new_chan->setAttr("broadcast_shape",
-                          builder.getArrayAttr(ArrayRef(broadcast_shape)));
-        auto res = new_chan.verifyBroadcastShape();
-        if (res.failed())
-          return res;
+                          rewriter.getArrayAttr(ArrayRef(broadcast_shape)));
       }
       std::vector<unsigned> position =
           getMDVectorFromIterator(bundle_size_stdvec, iter);
@@ -1279,21 +1276,20 @@ private:
     return new_get;
   }
 
-  std::vector<int>
-  specializeBroadcastShape(air::ChannelOp chan) const {
-    auto bundle_size = extractFromI64ArrayAttr(chan.getSize());
-    auto bundle_size_stdvec = convertToStdVec(bundle_size);
+  std::vector<Attribute>
+  specializeBroadcastShape(OpBuilder builder, air::ChannelOp chan) const {
+    auto bundle_size = chan.getSize();
     auto broadcast_shape = chan.getBroadcastShape();
-    auto broadcast_shape_stdvec = convertToStdVec(broadcast_shape);
-    std::vector<int> new_shape;
-    int diffDimension = retrieveBroadcastDimension(broadcast_shape_stdvec);
-    for (int i = 0; i < broadcast_shape_stdvec.size(); i++) {
+    std::vector<Attribute> new_shape;
+    int diffDimension = chan.getBroadcastDimension();
+    for (int i = 0; i < (int)broadcast_shape.size(); i++) {
       if (i == diffDimension) {
-        // TODO andra: simplify
-        int new_dim = (bundle_size_stdvec[i] > broadcast_shape_stdvec[i]) ? (bundle_size_stdvec[i] / broadcast_shape_stdvec[i]) : (broadcast_shape_stdvec[i] / bundle_size_stdvec[i]);
-        new_shape.push_back(new_dim);
+        auto size_dim = dyn_cast<IntegerAttr>(bundle_size[i]).getInt();
+        auto broadcast_dim = dyn_cast<IntegerAttr>(broadcast_shape[i]).getInt();
+        int new_dim = (size_dim > broadcast_dim) ? (size_dim / broadcast_dim) : (broadcast_dim / size_dim);
+        new_shape.push_back(builder.getI64IntegerAttr(new_dim));
       } else 
-        new_shape.push_back(1);
+        new_shape.push_back(builder.getI64IntegerAttr(1));
     }
     return new_shape;
   }

@@ -1172,25 +1172,36 @@ void WaitAllOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 //
 
 LogicalResult ChannelOp::verify() {
-  return verifyBroadcastShape();
-}
-
-LogicalResult ChannelOp::verifyBroadcastShape() {
   if (isBroadcast()) {
-    auto bundle_size = extractFromI64ArrayAttr(getSize());
-    auto bundle_size_stdvec = convertToStdVec(bundle_size);
+    auto bundle_size = getSize();
     auto broadcast_shape = getBroadcastShape();
-    auto broadcast_shape_stdvec = convertToStdVec(broadcast_shape);
-    if (bundle_size_stdvec.size() != broadcast_shape_stdvec.size())
+    if (bundle_size.size() != broadcast_shape.size())
       return emitOpError("bundle size should match broadcast_shape");
     int diffDims = 0;
-    for (int i = 0; i < bundle_size_stdvec.size(); i++)
-      if (bundle_size_stdvec[i] != broadcast_shape_stdvec[i])
+    for (int i = 0; i < (int)bundle_size.size(); i++)
+      if (dyn_cast<IntegerAttr>(bundle_size[i]).getInt() != 
+          dyn_cast<IntegerAttr>(broadcast_shape[i]).getInt())
         diffDims++;
     if (diffDims > 1)
       return emitOpError("bundle sizes and broadcast_shape should only differ along one dimension");
   }
   return success();
+}
+
+int ChannelOp::getBroadcastDimension() {
+  int broadcastDim = -1;
+  auto bundle_size = getSize();
+  auto broadcast_shape = getBroadcastShape();
+  if (isBroadcast()) {
+    for (int i = 0; i < (int)bundle_size.size(); i++) {
+      if (dyn_cast<IntegerAttr>(bundle_size[i]).getInt() != 
+          dyn_cast<IntegerAttr>(broadcast_shape[i]).getInt()) {
+            broadcastDim = i;
+            break;
+      }
+    }
+  }
+  return broadcastDim;
 }
 
 static LogicalResult FoldChannel(ChannelOp op, PatternRewriter &rewriter) {
