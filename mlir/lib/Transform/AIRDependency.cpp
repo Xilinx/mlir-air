@@ -126,27 +126,27 @@ public:
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
         // Create async interface for air.dmamemcpy ops
-        if (mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op))
+        if (isa<xilinx::air::DmaMemcpyNdOp>(op))
           createAsyncDMA(module_builder, op);
 
         // Create async interface for air.channel ops
-        else if (mlir::dyn_cast<xilinx::air::ChannelInterface>(op))
+        else if (isa<xilinx::air::ChannelInterface>(op))
           createAsyncChannel(module_builder, op, ChannelOpID);
 
         // Create async execute region for linalg.matmul
-        else if (dyn_cast<linalg::MatmulOp>(op))
+        else if (isa<linalg::MatmulOp>(op))
           createAsyncExecute(module_builder, op, "linalg::matmul", ExecuteOpID);
 
         // Create async execute region for linalg.fill
-        else if (dyn_cast<linalg::FillOp>(op))
+        else if (isa<linalg::FillOp>(op))
           createAsyncExecute(module_builder, op, "linalg::fill", ExecuteOpID);
 
         // Create async execute region for linalg.copy
-        else if (dyn_cast<linalg::CopyOp>(op))
+        else if (isa<linalg::CopyOp>(op))
           createAsyncExecute(module_builder, op, "linalg::copy", ExecuteOpID);
 
         // Create async execute region for linalg op
-        else if (mlir::dyn_cast<linalg::LinalgOp>(op))
+        else if (isa<linalg::LinalgOp>(op))
           createAsyncExecute(module_builder, op, "linalg::unknown",
                              ExecuteOpID);
 
@@ -161,12 +161,12 @@ public:
                              memcast_op.getDest().getType());
 
         // Create async execute region for memref.dealloc
-        else if (dyn_cast<memref::DeallocOp>(op))
+        else if (isa<memref::DeallocOp>(op))
           createAsyncExecute(module_builder, op, "memref::dealloc",
                              ExecuteOpID);
 
         // Create async execute region for memref.copy
-        else if (dyn_cast<memref::CopyOp>(op))
+        else if (isa<memref::CopyOp>(op))
           createAsyncExecute(module_builder, op, "memref::copy", ExecuteOpID);
 
         // Create async execute region for arith.muli
@@ -208,10 +208,10 @@ public:
             }
           }
           // No air execute for loop ops
-          if (mlir::dyn_cast<mlir::LoopLikeOpInterface>(op))
+          if (isa<mlir::LoopLikeOpInterface>(op))
             isCandidateExecute = false;
           // No air execute for subview ops
-          if (mlir::dyn_cast<mlir::OffsetSizeAndStrideOpInterface>(op))
+          if (isa<mlir::OffsetSizeAndStrideOpInterface>(op))
             isCandidateExecute = false;
           // No air execute for terminators
           if (op->mightHaveTrait<OpTrait::IsTerminator>()) {
@@ -245,9 +245,9 @@ public:
                 sink_op = &child_op;
             }
           }
-        } else if (mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op)) {
+        } else if (isa<xilinx::air::DmaMemcpyNdOp>(op)) {
           sink_op = op;
-        } else if (mlir::dyn_cast<xilinx::air::ChannelInterface>(op)) {
+        } else if (isa<xilinx::air::ChannelInterface>(op)) {
           sink_op = op;
         } else if (dyn_cast<air::HierarchyInterface>(op)) {
           sink_op = op;
@@ -338,23 +338,13 @@ public:
 
         // If the sink op is an air::DmaMemcpy op
         else if (auto sink_op_dma =
-                     mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(sink_op)) {
+                     mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(sink_op)) {
           SmallVector<Value, 2> src_indices;
           SmallVector<Value, 2> dst_indices;
-          unsigned numDimsSrc = sink_op_dma.getNumDims();
-          unsigned numDimsDst = sink_op_dma.getNumDims();
-          // air.dmamemcpynd op has unknown # of dims (thus numdims defaults to
-          // 0)
-          if (numDimsSrc == 0) {
-            numDimsSrc = sink_op_dma.getSrcMemref()
-                             .getType()
-                             .cast<MemRefType>()
-                             .getRank();
-            numDimsDst = sink_op_dma.getDstMemref()
-                             .getType()
-                             .cast<MemRefType>()
-                             .getRank();
-          }
+          unsigned numDimsSrc =
+              sink_op_dma.getSrcMemref().getType().cast<MemRefType>().getRank();
+          unsigned numDimsDst =
+              sink_op_dma.getDstMemref().getType().cast<MemRefType>().getRank();
           // Special case with ND DMA op
           if (auto sink_op_nddma = dyn_cast<air::DmaMemcpyNdOp>(sink_op)) {
             // air.dmamemcpynd op has extra scalar operands
@@ -390,12 +380,12 @@ public:
             }
           } else {
             for (unsigned i = 0; i < numDimsSrc; i++) {
-              sink_op_scalar_ins.push_back(sink_op_dma.getSrcMemrefDim(i));
-              src_indices.push_back(sink_op_dma.getSrcMemrefDim(i));
+              sink_op_scalar_ins.push_back(nullptr);
+              src_indices.push_back(nullptr);
             }
             for (unsigned i = 0; i < numDimsDst; i++) {
-              sink_op_scalar_outs.push_back(sink_op_dma.getDstMemrefDim(i));
-              dst_indices.push_back(sink_op_dma.getDstMemrefDim(i));
+              sink_op_scalar_outs.push_back(nullptr);
+              dst_indices.push_back(nullptr);
             }
           }
           partialMemref tile_in = createPartialMemref(
@@ -542,11 +532,10 @@ public:
           // to the past, not future.
           async_execute_op_history.push_back(async_execute_op);
         } else if (auto dma_op =
-                       mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op)) {
-          traceDeps<air::DmaMemcpyInterface>(sink_op_memref_reads, dma_op,
-                                             "RAW");
-          traceDeps<air::DmaMemcpyInterface>(sink_op_memref_writes, dma_op,
-                                             "WAW/WAR");
+                       mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(op)) {
+          traceDeps<air::DmaMemcpyNdOp>(sink_op_memref_reads, dma_op, "RAW");
+          traceDeps<air::DmaMemcpyNdOp>(sink_op_memref_writes, dma_op,
+                                        "WAW/WAR");
           traceTileIndices(sink_op_memref_reads, sink_op_memref_writes,
                            sink_op_scalar_ins, sink_op_scalar_outs, dma_op);
           dma_op_history.push_back(dma_op);
@@ -594,8 +583,8 @@ public:
           fillAIRDepListUsingGraphTR<air::ExecuteOp>(async_execute_op);
         }
         // Fill dep list of air dmamemcpy2d ops
-        else if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(op)) {
-          fillAIRDepListUsingGraphTR<air::DmaMemcpyInterface>(dma_op);
+        else if (auto dma_op = dyn_cast<air::DmaMemcpyNdOp>(op)) {
+          fillAIRDepListUsingGraphTR<air::DmaMemcpyNdOp>(dma_op);
         }
         // Fill dep list of air channel ops
         else if (auto channel_op = dyn_cast<air::ChannelInterface>(op)) {
@@ -694,7 +683,7 @@ private:
 
   // Air async op history
   std::vector<air::ExecuteOp> async_execute_op_history;
-  std::vector<air::DmaMemcpyInterface> dma_op_history;
+  std::vector<air::DmaMemcpyNdOp> dma_op_history;
   std::vector<air::ChannelInterface> channel_op_history;
   std::vector<air::HierarchyInterface> hier_op_history;
 
@@ -783,7 +772,7 @@ private:
     builder.setInsertionPoint(op);
     auto loc = op->getLoc();
     SmallVector<Value, 1> deps;
-    auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op);
+    auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(op);
     unsigned id = dma_op.getId();
     std::string event_name = "";
     if (auto dmaNd_op = dyn_cast<air::DmaMemcpyNdOp>(op)) {
@@ -1047,7 +1036,7 @@ private:
     bool foundReadAccess = false;
     for (auto &u : operand.getUses()) {
       // If used in DmaMemcpy Op
-      if (auto dma = dyn_cast<xilinx::air::DmaMemcpyInterface>(u.getOwner())) {
+      if (auto dma = dyn_cast<xilinx::air::DmaMemcpyNdOp>(u.getOwner())) {
         if (u.is(dma.getSrcMemref())) {
           foundReadAccess = true;
         } else if (u.is(dma.getDstMemref())) {
@@ -1109,18 +1098,14 @@ private:
     }
     for (auto &u : operand.getUses()) {
       // If used in DmaMemcpy Op
-      if (auto dma = dyn_cast<xilinx::air::DmaMemcpyInterface>(u.getOwner())) {
+      if (auto dma = dyn_cast<xilinx::air::DmaMemcpyNdOp>(u.getOwner())) {
         if (foundAsyncOpUsesAboveCurrentLine(
                 &dma)) { // If this use is above current line
           // DMA2D: Need to check for overlapping partial memrefs in use
-          unsigned numDimsSrc = dma.getNumDims();
-          unsigned numDimsDst = dma.getNumDims();
-          if (numDimsSrc == 0)
-            numDimsSrc =
-                dma.getSrcMemref().getType().cast<MemRefType>().getRank();
-          if (numDimsDst == 0)
-            numDimsDst =
-                dma.getDstMemref().getType().cast<MemRefType>().getRank();
+          unsigned numDimsSrc =
+              dma.getSrcMemref().getType().cast<MemRefType>().getRank();
+          unsigned numDimsDst =
+              dma.getDstMemref().getType().cast<MemRefType>().getRank();
           SmallVector<Value, 2> src_indices;
           SmallVector<Value, 2> dst_indices;
           if (auto nddma =
@@ -1145,10 +1130,10 @@ private:
             }
           } else {
             for (unsigned i = 0; i < numDimsSrc; i++) {
-              src_indices.push_back(dma.getSrcMemrefDim(i));
+              src_indices.push_back(nullptr);
             }
             for (unsigned i = 0; i < numDimsDst; i++) {
-              dst_indices.push_back(dma.getDstMemrefDim(i));
+              dst_indices.push_back(nullptr);
             }
           }
           partialMemref dma_src =
@@ -1412,7 +1397,7 @@ private:
     unsigned v_b = 0;
     if (auto op = dyn_cast<air::ExecuteOp>(a)) {
       v_a = g_to_tr[getGraphGVertexFromAIROp(op)];
-    } else if (auto op = mlir::dyn_cast<air::DmaMemcpyInterface>(a)) {
+    } else if (auto op = mlir::dyn_cast<air::DmaMemcpyNdOp>(a)) {
       v_a = g_to_tr[getGraphGVertexFromAIROp(op)];
     } else if (auto op = mlir::dyn_cast<air::ChannelInterface>(a)) {
       v_a = g_to_tr[getGraphGVertexFromAIROp(op)];
@@ -1429,7 +1414,7 @@ private:
     }
     if (auto op = dyn_cast<air::ExecuteOp>(b)) {
       v_b = g_to_tr[getGraphGVertexFromAIROp(op)];
-    } else if (auto op = mlir::dyn_cast<air::DmaMemcpyInterface>(b)) {
+    } else if (auto op = mlir::dyn_cast<air::DmaMemcpyNdOp>(b)) {
       v_b = g_to_tr[getGraphGVertexFromAIROp(op)];
     } else if (auto op = mlir::dyn_cast<air::ChannelInterface>(b)) {
       v_b = g_to_tr[getGraphGVertexFromAIROp(op)];
@@ -1491,7 +1476,7 @@ private:
               dyn_cast<air::ExecuteOp>(token.getDefiningOp())) {
         src_id = g_to_tr[getGraphGVertexFromAIROp(async_execute_op)];
       } else if (auto dma_op =
-                     dyn_cast<air::DmaMemcpyInterface>(token.getDefiningOp())) {
+                     dyn_cast<air::DmaMemcpyNdOp>(token.getDefiningOp())) {
         src_id = g_to_tr[getGraphGVertexFromAIROp(dma_op)];
       } else if (auto channel_op =
                      dyn_cast<air::ChannelInterface>(token.getDefiningOp())) {
@@ -1649,7 +1634,7 @@ private:
         async_execute_op.addAsyncDependency(new_loop_op.getInitVals()[0]);
       }
     }
-    for (auto dma_op : new_loop_op.getOps<air::DmaMemcpyInterface>()) {
+    for (auto dma_op : new_loop_op.getOps<air::DmaMemcpyNdOp>()) {
       auto async_op =
           mlir::dyn_cast<air::AsyncOpInterface>(dma_op.getOperation());
       if (async_op.getAsyncDependencies().size() == 0) {
@@ -1885,8 +1870,7 @@ private:
            "This vertex is not a ExecuteOp");
     return async_execute_op_history[g[v].operationId - 1];
   }
-  air::DmaMemcpyInterface getDmaOpFromVertex(Graph::vertex_descriptor v,
-                                             Graph g) {
+  air::DmaMemcpyNdOp getDmaOpFromVertex(Graph::vertex_descriptor v, Graph g) {
     assert(g[v].asyncEventType == "dma" && "This vertex is not a DmaMemcpy op");
     return dma_op_history[g[v].operationId - 1];
   }
@@ -1908,8 +1892,7 @@ private:
     return region_to_g[op.getId()];
   }
 
-  Graph::vertex_descriptor
-  getGraphGVertexFromAIROp(air::DmaMemcpyInterface op) {
+  Graph::vertex_descriptor getGraphGVertexFromAIROp(air::DmaMemcpyNdOp op) {
     return dma_to_g[op.getId()];
   }
 
@@ -1994,7 +1977,7 @@ private:
         uint64_t srcNode = 0;
         if (auto execute_op = dyn_cast<air::ExecuteOp>(srcOp)) {
           srcNode = getGraphGVertexFromAIROp(execute_op);
-        } else if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(srcOp)) {
+        } else if (auto dma_op = dyn_cast<air::DmaMemcpyNdOp>(srcOp)) {
           srcNode = getGraphGVertexFromAIROp(dma_op);
         } else if (auto channel_op = dyn_cast<air::ChannelInterface>(srcOp)) {
           srcNode = getGraphGVertexFromAIROp(channel_op);
@@ -2038,7 +2021,7 @@ private:
     return false;
   }
 
-  bool foundAsyncOpUsesAboveCurrentLine(air::DmaMemcpyInterface *op) {
+  bool foundAsyncOpUsesAboveCurrentLine(air::DmaMemcpyNdOp *op) {
     if (!dma_op_history.empty())
       for (auto &iter : dma_op_history)
         if (iter->getResult(0) == op->getOperation()->getResult(0))

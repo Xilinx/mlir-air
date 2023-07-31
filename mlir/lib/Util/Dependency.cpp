@@ -47,20 +47,15 @@ bool areEqualIndices(mlir::Value index_0, mlir::Value index_1) {
 }
 
 // Recursively check for dependency to loop induction vars arising from dma src
-void traceDependentInductionVar(air::DmaMemcpyInterface async_op,
+void traceDependentInductionVar(air::DmaMemcpyNdOp dmaNd_op,
                                 SmallVector<Value, 1> &loop_dep_history,
                                 std::vector<Operation *> &op_history) {
   // Check for immediate dependency to loop induction vars
   SmallVector<Value, 1> candidate_scalar_operands;
-  for (unsigned i = 0; i < async_op.getNumDims(); i++) {
-    candidate_scalar_operands.push_back(async_op.getSrcMemrefDim(i));
-  }
-  if (auto dmaNd_op = dyn_cast<air::DmaMemcpyNdOp>(async_op.getOperation())) {
-    for (unsigned i = 0; i < dmaNd_op.getSrcOffsets().size(); i++) {
-      candidate_scalar_operands.push_back(dmaNd_op.getSrcOffsets()[i]);
-      candidate_scalar_operands.push_back(dmaNd_op.getSrcSizes()[i]);
-      candidate_scalar_operands.push_back(dmaNd_op.getSrcStrides()[i]);
-    }
+  for (unsigned i = 0; i < dmaNd_op.getSrcOffsets().size(); i++) {
+    candidate_scalar_operands.push_back(dmaNd_op.getSrcOffsets()[i]);
+    candidate_scalar_operands.push_back(dmaNd_op.getSrcSizes()[i]);
+    candidate_scalar_operands.push_back(dmaNd_op.getSrcStrides()[i]);
   }
   for (auto operand : candidate_scalar_operands) {
     // If parent loop op is an scf.for
@@ -844,7 +839,7 @@ void dependencyCanonicalizer::addVerticesInLaunch(
 Graph::vertex_descriptor
 dependencyCanonicalizer::addVertexFromOpImpls(Operation *op, dependencyGraph *G,
                                               dependencyContext &dep_ctx) {
-  if (auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op)) {
+  if (auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(op)) {
     return addVertexFromDmaOp(dma_op, G, dep_ctx);
   } else if (auto channel_op =
                  mlir::dyn_cast<xilinx::air::ChannelInterface>(op)) {
@@ -897,7 +892,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromOp(
 }
 
 Graph::vertex_descriptor
-dependencyCanonicalizer::addVertexFromDmaOp(xilinx::air::DmaMemcpyInterface op,
+dependencyCanonicalizer::addVertexFromDmaOp(xilinx::air::DmaMemcpyNdOp op,
                                             dependencyGraph *G,
                                             dependencyContext &dep_ctx) {
   if (dyn_cast<xilinx::air::DmaMemcpyNdOp>(op.getOperation())) {
@@ -1160,30 +1155,30 @@ dependencyCanonicalizer::getTypeIdPairFromOp(Operation *op) {
 }
 
 std::string dependencyCanonicalizer::getOpTypeFromOpImpls(Operation *op) {
-  if (mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op)) {
+  if (isa<air::DmaMemcpyNdOp>(op)) {
     return "dma";
-  } else if (mlir::dyn_cast<xilinx::air::ChannelInterface>(op)) {
+  } else if (isa<air::ChannelInterface>(op)) {
     return "channel";
-  } else if (dyn_cast<xilinx::air::WaitAllOp>(op)) {
+  } else if (isa<air::WaitAllOp>(op)) {
     return "wait_all";
-  } else if (dyn_cast<xilinx::air::HierarchyInterface>(op)) {
+  } else if (isa<xilinx::air::HierarchyInterface>(op)) {
     return "hierarchy";
-  } else if (dyn_cast<scf::ForOp>(op)) {
+  } else if (isa<scf::ForOp>(op)) {
     return "for_loop";
-  } else if (dyn_cast<scf::ParallelOp>(op)) {
+  } else if (isa<scf::ParallelOp>(op)) {
     return "parallel_loop";
-  } else if (dyn_cast<xilinx::air::LaunchTerminatorOp>(op)) {
+  } else if (isa<xilinx::air::LaunchTerminatorOp>(op)) {
     return "hierarchy_terminator";
-  } else if (dyn_cast<xilinx::air::SegmentTerminatorOp>(op)) {
+  } else if (isa<xilinx::air::SegmentTerminatorOp>(op)) {
     return "hierarchy_terminator";
-  } else if (dyn_cast<xilinx::air::HerdTerminatorOp>(op)) {
+  } else if (isa<xilinx::air::HerdTerminatorOp>(op)) {
     return "hierarchy_terminator";
-  } else if (dyn_cast<scf::YieldOp>(op)) {
+  } else if (isa<scf::YieldOp>(op)) {
     return "terminator";
-  } else if (dyn_cast<scf::ReduceOp>(op)) {
+  } else if (isa<scf::ReduceOp>(op)) {
     return "terminator";
   } else {
-    if (dyn_cast<xilinx::air::ExecuteOp>(op->getParentOp())) {
+    if (isa<xilinx::air::ExecuteOp>(op->getParentOp())) {
       return "execute";
     } else {
       op->emitOpError("unknown op type");
@@ -1745,9 +1740,9 @@ void dependencyCanonicalizer::updateDepList(func::FuncOp func,
 
   // Cleanup op ids. Only leave dma, execute and hierarchy ids
   func.walk([&](Operation *op) {
-    if (auto dma_op = dyn_cast<air::DmaMemcpyInterface>(op)) {
-    } else if (auto channel_op = dyn_cast<air::ChannelInterface>(op)) {
-    } else if (auto hier_op = dyn_cast<air::HierarchyInterface>(op)) {
+    if (isa<air::DmaMemcpyNdOp>(op)) {
+    } else if (isa<air::ChannelInterface>(op)) {
+    } else if (isa<air::HierarchyInterface>(op)) {
     } else {
       op->removeAttr("id");
     }
@@ -1985,14 +1980,12 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
     op->emitOpError("operand being traced is not a memref");
   for (auto &u : operand.getUses()) {
     // If used in DmaMemcpy Op
-    if (auto dma = dyn_cast<xilinx::air::DmaMemcpyInterface>(u.getOwner())) {
+    if (auto dma = dyn_cast<xilinx::air::DmaMemcpyNdOp>(u.getOwner())) {
       // DMA2D: Need to check for overlapping partial memrefs in use
-      unsigned numDimsSrc = dma.getNumDims();
-      unsigned numDimsDst = dma.getNumDims();
-      if (numDimsSrc == 0)
-        numDimsSrc = dma.getSrcMemref().getType().cast<MemRefType>().getRank();
-      if (numDimsDst == 0)
-        numDimsDst = dma.getDstMemref().getType().cast<MemRefType>().getRank();
+      unsigned numDimsSrc =
+          dma.getSrcMemref().getType().cast<MemRefType>().getRank();
+      unsigned numDimsDst =
+          dma.getDstMemref().getType().cast<MemRefType>().getRank();
       SmallVector<Value, 2> src_indices;
       SmallVector<Value, 2> dst_indices;
       if (auto nddma =
@@ -2017,10 +2010,10 @@ void dependencyTracer::pushDepsAtCurrentScope(mlir::Value operand,
         }
       } else {
         for (unsigned i = 0; i < numDimsSrc; i++) {
-          src_indices.push_back(dma.getSrcMemrefDim(i));
+          src_indices.push_back(nullptr);
         }
         for (unsigned i = 0; i < numDimsDst; i++) {
-          dst_indices.push_back(dma.getDstMemrefDim(i));
+          dst_indices.push_back(nullptr);
         }
       }
       partialMemref dma_src =
@@ -2291,19 +2284,13 @@ void dependencyTracer::getPartialMemrefFromOp(
 
   // If the sink op is an air::DmaMemcpy op
   else if (auto sink_op_dma =
-               mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(sink_op)) {
+               mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(sink_op)) {
     SmallVector<Value, 2> src_indices;
     SmallVector<Value, 2> dst_indices;
-    unsigned numDimsSrc = sink_op_dma.getNumDims();
-    unsigned numDimsDst = sink_op_dma.getNumDims();
-    // air.dmamemcpynd op has unknown # of dims (thus numdims defaults to
-    // 0)
-    if (numDimsSrc == 0) {
-      numDimsSrc =
-          sink_op_dma.getSrcMemref().getType().cast<MemRefType>().getRank();
-      numDimsDst =
-          sink_op_dma.getDstMemref().getType().cast<MemRefType>().getRank();
-    }
+    unsigned numDimsSrc =
+        sink_op_dma.getSrcMemref().getType().cast<MemRefType>().getRank();
+    unsigned numDimsDst =
+        sink_op_dma.getDstMemref().getType().cast<MemRefType>().getRank();
     // Special case with ND DMA op
     if (auto sink_op_nddma = dyn_cast<air::DmaMemcpyNdOp>(sink_op)) {
       // air.dmamemcpynd op has extra scalar operands
@@ -2339,12 +2326,12 @@ void dependencyTracer::getPartialMemrefFromOp(
       }
     } else {
       for (unsigned i = 0; i < numDimsSrc; i++) {
-        sink_op_scalar_ins.push_back(sink_op_dma.getSrcMemrefDim(i));
-        src_indices.push_back(sink_op_dma.getSrcMemrefDim(i));
+        sink_op_scalar_ins.push_back(nullptr);
+        src_indices.push_back(nullptr);
       }
       for (unsigned i = 0; i < numDimsDst; i++) {
-        sink_op_scalar_outs.push_back(sink_op_dma.getDstMemrefDim(i));
-        dst_indices.push_back(sink_op_dma.getDstMemrefDim(i));
+        sink_op_scalar_outs.push_back(nullptr);
+        dst_indices.push_back(nullptr);
       }
     }
     partialMemref tile_in = createPartialMemref(sink_op_dma.getSrcMemref(),

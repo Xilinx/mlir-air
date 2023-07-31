@@ -142,34 +142,6 @@ def air_AsyncOpInterface : OpInterface<"AsyncOpInterface"> {
   ];
 }
 
-def air_DmaMemcpyInterface : OpInterface<"DmaMemcpyInterface"> {
-  let description = [{}];
-  let cppNamespace = "xilinx::air";
-  let methods = [
-    InterfaceMethod<"description",
-    "unsigned", "getNumDims"
-    >,
-    InterfaceMethod<"description",
-    "Value", "getSrcMemref"
-    >,
-    InterfaceMethod<"description",
-    "Value", "getDstMemref"
-    >,
-    InterfaceMethod<"description",
-    "Value", "getSrcMemrefDim", (ins "unsigned":$i)
-    >,
-    InterfaceMethod<"description",
-    "Value", "getDstMemrefDim", (ins "unsigned":$i)
-    >,
-    InterfaceMethod<"description",
-    "Value", "getLength"
-    >,
-    InterfaceMethod<"description",
-    "int32_t", "getId"
-    >,
-  ];
-}
-
 def air_HierarchyInterface : OpInterface<"HierarchyInterface"> {
   let description = [{
     Interface for AIR hierarchy ops `air.herd`, `air.segment` and `air.launch`

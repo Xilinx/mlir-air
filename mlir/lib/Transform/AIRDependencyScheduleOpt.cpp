@@ -60,9 +60,9 @@ struct HoistDmaInAccumPattern : public OpRewritePattern<scf::ForOp> {
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
 
-    SmallVector<air::DmaMemcpyInterface, 1> dmamemcpy_incoming_history;
-    SmallVector<air::DmaMemcpyInterface, 1> dmamemcpy_outgoing_history;
-    for (auto dma_op : for_op.getOps<air::DmaMemcpyInterface>()) {
+    SmallVector<air::DmaMemcpyNdOp, 1> dmamemcpy_incoming_history;
+    SmallVector<air::DmaMemcpyNdOp, 1> dmamemcpy_outgoing_history;
+    for (auto dma_op : for_op.getOps<air::DmaMemcpyNdOp>()) {
       if (isIncomingDmaOp(dma_op)) {
         dmamemcpy_incoming_history.push_back(dma_op);
       }
@@ -152,7 +152,7 @@ struct HoistDmaInAccumPattern : public OpRewritePattern<scf::ForOp> {
 private:
   // Check if the dma performs memory copy inbound to the for loop with help
   // from dependency graph
-  bool isIncomingDmaOp(air::DmaMemcpyInterface dma_op) const {
+  bool isIncomingDmaOp(air::DmaMemcpyNdOp dma_op) const {
     bool foundScfForDep = false;
     bool foundMemrefAllocDep = false;
     Operation *current_op = dma_op.getOperation();
@@ -182,8 +182,7 @@ private:
 
   // Return the air.execute op in the dma's dep list which contains memref.alloc
   // op
-  air::ExecuteOp
-  getRegionOfAllocOpForDmaOp(air::DmaMemcpyInterface dma_op) const {
+  air::ExecuteOp getRegionOfAllocOpForDmaOp(air::DmaMemcpyNdOp dma_op) const {
     Operation *current_op = dma_op.getOperation();
     air::AsyncOpInterface current_async_op =
         dyn_cast<air::AsyncOpInterface>(current_op);
@@ -208,7 +207,7 @@ private:
 
   // Check if the dma performs memory copy outbound to the for loop with help
   // from dependency graph
-  bool isOutgoingDmaOp(air::DmaMemcpyInterface dma_op) const {
+  bool isOutgoingDmaOp(air::DmaMemcpyNdOp dma_op) const {
     bool foundDepToWaitall = false;
     bool foundDepToMemrefDealloc = false;
     Operation *current_op = dma_op.getOperation();
@@ -233,8 +232,7 @@ private:
 
   // Return the air.execute op in the dma's downstream which contains
   // memref.dealloc op
-  air::ExecuteOp
-  getRegionOfDeallocOpForDmaOp(air::DmaMemcpyInterface dma_op) const {
+  air::ExecuteOp getRegionOfDeallocOpForDmaOp(air::DmaMemcpyNdOp dma_op) const {
     Operation *current_op = dma_op.getOperation();
     air::AsyncOpInterface current_async_op =
         dyn_cast<air::AsyncOpInterface>(current_op);
@@ -253,7 +251,7 @@ private:
   }
 
   // Reconnect incoming DMA event in the dependency graph
-  void reconnectIncomingDma(air::DmaMemcpyInterface dma_op,
+  void reconnectIncomingDma(air::DmaMemcpyNdOp dma_op,
                             scf::ForOp for_op) const {
     Operation *current_op = dma_op.getOperation();
     air::AsyncOpInterface dma_async_op =
@@ -274,7 +272,7 @@ private:
   }
 
   // Reconnect outgoing DMA and dealloc events in the dependency graph
-  void reconnectOutgoingEvents(air::DmaMemcpyInterface dma_op,
+  void reconnectOutgoingEvents(air::DmaMemcpyNdOp dma_op,
                                air::ExecuteOp dealloc_op, scf::ForOp for_op,
                                air::WaitAllOp wait_all_after_for) const {
     Operation *current_op = dma_op.getOperation();
@@ -315,50 +313,36 @@ private:
   }
 
   // Check if two dma ops are symmetric
-  bool areSymmetricDmaOps(air::DmaMemcpyInterface op_1,
-                          air::DmaMemcpyInterface op_2) const {
+  bool areSymmetricDmaOps(air::DmaMemcpyNdOp op_1,
+                          air::DmaMemcpyNdOp op_2) const {
     bool areSymmetric = op_1.getSrcMemref() == op_2.getDstMemref();
     areSymmetric &= op_2.getSrcMemref() == op_1.getDstMemref();
-    if (op_1.getNumDims() == 0 && op_2.getNumDims() == 0) {
-      // If both dma ops are nd dmas, then proceed to check offsets, sizes and
-      // strides
-      auto op_1_dmaNd = dyn_cast<air::DmaMemcpyNdOp>(op_1.getOperation());
-      auto op_2_dmaNd = dyn_cast<air::DmaMemcpyNdOp>(op_2.getOperation());
-      unsigned op_1_dst_num_entries = op_1_dmaNd.getDstOffsets().size();
-      unsigned op_1_src_num_entries = op_1_dmaNd.getSrcOffsets().size();
-      unsigned op_2_dst_num_entries = op_2_dmaNd.getDstOffsets().size();
-      unsigned op_2_src_num_entries = op_2_dmaNd.getSrcOffsets().size();
-      if (areSymmetric && (op_1_dst_num_entries == op_2_src_num_entries) &&
-          (op_1_src_num_entries == op_2_dst_num_entries)) {
-        for (unsigned i = 0; i < op_1_dst_num_entries; i++) {
-          areSymmetric &= areEqualIndices(op_1_dmaNd.getDstOffsets()[i],
-                                          op_2_dmaNd.getSrcOffsets()[i]);
-          areSymmetric &= areEqualIndices(op_1_dmaNd.getDstSizes()[i],
-                                          op_2_dmaNd.getSrcSizes()[i]);
-          areSymmetric &= areEqualIndices(op_1_dmaNd.getDstStrides()[i],
-                                          op_2_dmaNd.getSrcStrides()[i]);
-        }
-        for (unsigned i = 0; i < op_1_src_num_entries; i++) {
-          areSymmetric &= areEqualIndices(op_1_dmaNd.getSrcOffsets()[i],
-                                          op_2_dmaNd.getDstOffsets()[i]);
-          areSymmetric &= areEqualIndices(op_1_dmaNd.getSrcSizes()[i],
-                                          op_2_dmaNd.getDstSizes()[i]);
-          areSymmetric &= areEqualIndices(op_1_dmaNd.getSrcStrides()[i],
-                                          op_2_dmaNd.getDstStrides()[i]);
-        }
-      } else {
-        areSymmetric = false;
+    // Check offsets, sizes and strides
+    auto op_1_dmaNd = dyn_cast<air::DmaMemcpyNdOp>(op_1.getOperation());
+    auto op_2_dmaNd = dyn_cast<air::DmaMemcpyNdOp>(op_2.getOperation());
+    unsigned op_1_dst_num_entries = op_1_dmaNd.getDstOffsets().size();
+    unsigned op_1_src_num_entries = op_1_dmaNd.getSrcOffsets().size();
+    unsigned op_2_dst_num_entries = op_2_dmaNd.getDstOffsets().size();
+    unsigned op_2_src_num_entries = op_2_dmaNd.getSrcOffsets().size();
+    if (areSymmetric && (op_1_dst_num_entries == op_2_src_num_entries) &&
+        (op_1_src_num_entries == op_2_dst_num_entries)) {
+      for (unsigned i = 0; i < op_1_dst_num_entries; i++) {
+        areSymmetric &= areEqualIndices(op_1_dmaNd.getDstOffsets()[i],
+                                        op_2_dmaNd.getSrcOffsets()[i]);
+        areSymmetric &= areEqualIndices(op_1_dmaNd.getDstSizes()[i],
+                                        op_2_dmaNd.getSrcSizes()[i]);
+        areSymmetric &= areEqualIndices(op_1_dmaNd.getDstStrides()[i],
+                                        op_2_dmaNd.getSrcStrides()[i]);
       }
-    } else if (op_1.getNumDims() == op_2.getNumDims()) {
-      // If both dma ops are of same dma type but not nd dmas, then proceed to
-      // check memrefdims etc
-      for (unsigned i = 0; i < op_1.getNumDims(); i++) {
-        areSymmetric &= op_1.getSrcMemrefDim(i) == op_2.getDstMemrefDim(i);
-        areSymmetric &= op_2.getSrcMemrefDim(i) == op_1.getDstMemrefDim(i);
+      for (unsigned i = 0; i < op_1_src_num_entries; i++) {
+        areSymmetric &= areEqualIndices(op_1_dmaNd.getSrcOffsets()[i],
+                                        op_2_dmaNd.getDstOffsets()[i]);
+        areSymmetric &= areEqualIndices(op_1_dmaNd.getSrcSizes()[i],
+                                        op_2_dmaNd.getDstSizes()[i]);
+        areSymmetric &= areEqualIndices(op_1_dmaNd.getSrcStrides()[i],
+                                        op_2_dmaNd.getDstStrides()[i]);
       }
-      areSymmetric &= op_1.getLength() == op_2.getLength();
     } else {
-      // Two dma ops having different # of dimensions
       areSymmetric = false;
     }
 
@@ -1355,7 +1339,7 @@ public:
   // Trace dma ops' dependency to loop induction variables
   void getDmaOpLoopDependency(func::FuncOp f) {
     f.walk([&](Operation *op) {
-      if (auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(op)) {
+      if (auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(op)) {
         if (dma_op->getParentOfType<xilinx::air::HerdOp>()) {
           // Start recursively tracing for loop induction variables
           dma_op_history.push_back(dma_op);
@@ -1450,7 +1434,7 @@ public:
 
 private:
   // DMA dependency to loop induction variables
-  std::vector<air::DmaMemcpyInterface> dma_op_history;
+  std::vector<air::DmaMemcpyNdOp> dma_op_history;
   SmallVector<SmallVector<Value, 1>, 1> dma_op_loop_dep_history;
 };
 
@@ -1496,8 +1480,8 @@ public:
     auto dep_list = async_op.getAsyncDependencies();
     for (int i = dep_list.size() - 1; i >= 0; i--) {
       auto upstream_op = dep_list[i].getDefiningOp();
-      if (upstream_op && dyn_cast<air::DmaMemcpyInterface>(upstream_op)) {
-        auto upstream_dma = dyn_cast<air::DmaMemcpyInterface>(upstream_op);
+      if (upstream_op && dyn_cast<air::DmaMemcpyNdOp>(upstream_op)) {
+        auto upstream_dma = dyn_cast<air::DmaMemcpyNdOp>(upstream_op);
         if (v == upstream_dma.getDstMemref()) {
           // Disconnect dependency between async op and upstream dma
           async_op.eraseAsyncDependency(i);

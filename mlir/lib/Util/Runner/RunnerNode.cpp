@@ -1202,7 +1202,10 @@ private:
 
     unsigned put_to_deallocate = 0;
     unsigned get_to_deallocate = 0;
-    if (put_reserved_count * bcast_factor > get_reserved_count) {
+    if (put_reserved_count == 0 && get_reserved_count == 1) {
+      // Why does this even happen? Transient?
+      get_to_deallocate = 1;
+    } else if (put_reserved_count * bcast_factor > get_reserved_count) {
       put_to_deallocate = mlir::floorDiv(get_reserved_count, bcast_factor);
       get_to_deallocate = get_reserved_count;
     } else {
@@ -1231,6 +1234,7 @@ private:
         break;
       }
     }
+    // assert(get_deallocate_count == get_to_deallocate);
 
     // If data movement is complete, clear put and get progresses
     if ((put_processed * bcast_factor == total_count) &&

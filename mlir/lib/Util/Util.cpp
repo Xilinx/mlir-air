@@ -222,7 +222,7 @@ void air::renumberDmaOps(func::FuncOp func, std::string mode) {
   if (mode == "global") {
     // Renumber DMA ops per entire module
     func->walk([&](Operation *func_dma) {
-      if (dyn_cast<xilinx::air::DmaMemcpyInterface>(func_dma)) {
+      if (isa<xilinx::air::DmaMemcpyNdOp>(func_dma)) {
         func_dma->setAttr(
             "id",
             mlir::IntegerAttr::get(
@@ -234,7 +234,7 @@ void air::renumberDmaOps(func::FuncOp func, std::string mode) {
       id = 0;
       // Renumber DMA ops per air herd
       herd->walk([&](Operation *herd_dma) {
-        if (dyn_cast<xilinx::air::DmaMemcpyInterface>(herd_dma)) {
+        if (isa<xilinx::air::DmaMemcpyNdOp>(herd_dma)) {
           herd_dma->setAttr(
               "id",
               mlir::IntegerAttr::get(
@@ -585,7 +585,7 @@ char air::checkOpOperandReadOrWrite(Value v, Operation *owner) {
 char air::checkOpOperandReadOrWrite(mlir::OpOperand &op_operand) {
   auto owner = op_operand.getOwner();
   // If used in DmaMemcpy Op
-  if (auto dma = dyn_cast<xilinx::air::DmaMemcpyInterface>(owner)) {
+  if (auto dma = dyn_cast<xilinx::air::DmaMemcpyNdOp>(owner)) {
     if (op_operand.is(dma.getSrcMemref())) {
       return 'r';
     } else if (op_operand.is(dma.getDstMemref())) {

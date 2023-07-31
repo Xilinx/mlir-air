@@ -344,7 +344,7 @@ private:
   void specializeDmaBroadcastWithAffineIf(func::FuncOp f) {
 
     f.walk([&](air::HerdOp launch) {
-      launch.walk([&](air::DmaMemcpyInterface memcpyOp) {
+      launch.walk([&](air::DmaMemcpyNdOp memcpyOp) {
         auto herd_id = launch.getIds();
         OpBuilder builder(memcpyOp);
         auto loc = memcpyOp->getLoc();
@@ -469,7 +469,7 @@ private:
 
   void simplifyDmaIndicesWithAffineSet(func::FuncOp f) {
 
-    f.walk([&](air::DmaMemcpyInterface memcpyOp) {
+    f.walk([&](air::DmaMemcpyNdOp memcpyOp) {
       auto ctx = memcpyOp->getContext();
       if (auto broadcast_set =
               memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_set")) {
@@ -657,7 +657,7 @@ private:
 
   // Replace memcpyOp's dependent operand with const
   Operation *replaceMemcpyOpWithSimplifiedOperands(
-      air::DmaMemcpyInterface &memcpyOp,
+      air::DmaMemcpyNdOp &memcpyOp,
       SmallVector<AffineExpr, 2> current_shape_expr) {
     OpBuilder builder(memcpyOp);
     builder.setInsertionPoint(memcpyOp);
@@ -679,7 +679,7 @@ private:
       // Replace memcpyOp
       return replaceMemcpyOp(memcpyNdOp, builder, srcMemrefDimsOrOffsets);
     } else {
-      assert(false && "Unhandled DMAMemcpyInterface");
+      assert(false && "Unhandled DmaMemcpyNdOp");
       return nullptr;
     }
   }
