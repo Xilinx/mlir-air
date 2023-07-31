@@ -336,130 +336,59 @@ public:
           sink_op_memref_writes.push_back(tileDst);
         }
 
-        // If the sink op is an air::DmaMemcpy op
-        else if (auto sink_op_dma =
-                     mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(sink_op)) {
-          SmallVector<Value, 2> src_indices;
-          SmallVector<Value, 2> dst_indices;
-          unsigned numDimsSrc =
-              sink_op_dma.getSrcMemref().getType().cast<MemRefType>().getRank();
-          unsigned numDimsDst =
-              sink_op_dma.getDstMemref().getType().cast<MemRefType>().getRank();
-          // Special case with ND DMA op
-          if (auto sink_op_nddma = dyn_cast<air::DmaMemcpyNdOp>(sink_op)) {
-            // air.dmamemcpynd op has extra scalar operands
-            for (unsigned i = 0; i < sink_op_nddma.getDstOffsets().size(); i++)
-              sink_op_scalar_outs.push_back(sink_op_nddma.getDstOffsets()[i]);
-            for (unsigned i = 0; i < sink_op_nddma.getDstSizes().size(); i++)
-              sink_op_scalar_outs.push_back(sink_op_nddma.getDstSizes()[i]);
-            for (unsigned i = 0; i < sink_op_nddma.getDstStrides().size(); i++)
-              sink_op_scalar_outs.push_back(sink_op_nddma.getDstStrides()[i]);
-            for (unsigned i = 0; i < sink_op_nddma.getSrcOffsets().size(); i++)
-              sink_op_scalar_ins.push_back(sink_op_nddma.getSrcOffsets()[i]);
-            for (unsigned i = 0; i < sink_op_nddma.getSrcSizes().size(); i++)
-              sink_op_scalar_ins.push_back(sink_op_nddma.getSrcSizes()[i]);
-            for (unsigned i = 0; i < sink_op_nddma.getSrcStrides().size(); i++)
-              sink_op_scalar_ins.push_back(sink_op_nddma.getSrcStrides()[i]);
-            if (sink_op_nddma.getSrcOffsets().size()) {
+        // If the sink op is an air::MemcpyInterface op
+        else if (auto sink_op_memcpy =
+                     mlir::dyn_cast<xilinx::air::MemcpyInterface>(sink_op)) {
+          if (sink_op_memcpy.getSrcMemref()) {
+            SmallVector<Value, 2> src_indices;
+            unsigned numDimsSrc = sink_op_memcpy.getSrcMemref()
+                                      .getType()
+                                      .cast<MemRefType>()
+                                      .getRank();
+            for (unsigned i = 0; i < sink_op_memcpy.getSrcOffsets().size(); i++)
+              sink_op_scalar_ins.push_back(sink_op_memcpy.getSrcOffsets()[i]);
+            for (unsigned i = 0; i < sink_op_memcpy.getSrcSizes().size(); i++)
+              sink_op_scalar_ins.push_back(sink_op_memcpy.getSrcSizes()[i]);
+            for (unsigned i = 0; i < sink_op_memcpy.getSrcStrides().size(); i++)
+              sink_op_scalar_ins.push_back(sink_op_memcpy.getSrcStrides()[i]);
+            if (sink_op_memcpy.getSrcOffsets().size()) {
               for (unsigned i = 0; i < numDimsSrc; i++) {
-                src_indices.push_back(sink_op_nddma.getSrcOffsets()[i]);
+                src_indices.push_back(sink_op_memcpy.getSrcOffsets()[i]);
               }
             } else {
               for (unsigned i = 0; i < numDimsSrc; i++) {
                 src_indices.push_back(nullptr);
               }
             }
-            if (sink_op_nddma.getDstOffsets().size()) {
+            partialMemref tile_in = createPartialMemref(
+                sink_op_memcpy.getSrcMemref(), numDimsSrc, src_indices);
+            sink_op_memref_reads.push_back(tile_in);
+          }
+          if (sink_op_memcpy.getDstMemref()) {
+            SmallVector<Value, 2> dst_indices;
+            unsigned numDimsDst = sink_op_memcpy.getDstMemref()
+                                      .getType()
+                                      .cast<MemRefType>()
+                                      .getRank();
+            for (unsigned i = 0; i < sink_op_memcpy.getDstOffsets().size(); i++)
+              sink_op_scalar_outs.push_back(sink_op_memcpy.getDstOffsets()[i]);
+            for (unsigned i = 0; i < sink_op_memcpy.getDstSizes().size(); i++)
+              sink_op_scalar_outs.push_back(sink_op_memcpy.getDstSizes()[i]);
+            for (unsigned i = 0; i < sink_op_memcpy.getDstStrides().size(); i++)
+              sink_op_scalar_outs.push_back(sink_op_memcpy.getDstStrides()[i]);
+            if (sink_op_memcpy.getDstOffsets().size()) {
               for (unsigned i = 0; i < numDimsDst; i++) {
-                dst_indices.push_back(sink_op_nddma.getDstOffsets()[i]);
+                dst_indices.push_back(sink_op_memcpy.getDstOffsets()[i]);
               }
             } else {
               for (unsigned i = 0; i < numDimsDst; i++) {
                 dst_indices.push_back(nullptr);
               }
             }
-          } else {
-            for (unsigned i = 0; i < numDimsSrc; i++) {
-              sink_op_scalar_ins.push_back(nullptr);
-              src_indices.push_back(nullptr);
-            }
-            for (unsigned i = 0; i < numDimsDst; i++) {
-              sink_op_scalar_outs.push_back(nullptr);
-              dst_indices.push_back(nullptr);
-            }
+            partialMemref tile_out = createPartialMemref(
+                sink_op_memcpy.getDstMemref(), numDimsDst, dst_indices);
+            sink_op_memref_writes.push_back(tile_out);
           }
-          partialMemref tile_in = createPartialMemref(
-              sink_op_dma.getSrcMemref(), numDimsSrc, src_indices);
-          sink_op_memref_reads.push_back(tile_in);
-          partialMemref tile_out = createPartialMemref(
-              sink_op_dma.getDstMemref(), numDimsDst, dst_indices);
-          sink_op_memref_writes.push_back(tile_out);
-        }
-
-        // If the sink op is channel put
-        else if (auto sink_op_channel_put =
-                     dyn_cast<air::ChannelPutOp>(sink_op)) {
-          unsigned numDimsSrc = sink_op_channel_put.getSrc()
-                                    .getType()
-                                    .cast<MemRefType>()
-                                    .getRank();
-          for (unsigned i = 0; i < sink_op_channel_put.getSrcOffsets().size();
-               i++)
-            sink_op_scalar_ins.push_back(
-                sink_op_channel_put.getSrcOffsets()[i]);
-          for (unsigned i = 0; i < sink_op_channel_put.getSrcSizes().size();
-               i++)
-            sink_op_scalar_ins.push_back(sink_op_channel_put.getSrcSizes()[i]);
-          for (unsigned i = 0; i < sink_op_channel_put.getSrcStrides().size();
-               i++)
-            sink_op_scalar_ins.push_back(
-                sink_op_channel_put.getSrcStrides()[i]);
-          SmallVector<Value, 2> src_indices;
-          if (sink_op_channel_put.getSrcOffsets().size()) {
-            for (unsigned i = 0; i < numDimsSrc; i++) {
-              src_indices.push_back(sink_op_channel_put.getSrcOffsets()[i]);
-            }
-          } else {
-            for (unsigned i = 0; i < numDimsSrc; i++) {
-              src_indices.push_back(nullptr);
-            }
-          }
-          partialMemref tile_in = createPartialMemref(
-              sink_op_channel_put.getSrc(), numDimsSrc, src_indices);
-          sink_op_memref_reads.push_back(tile_in);
-        }
-
-        // If the sink op is channel get
-        else if (auto sink_op_channel_get =
-                     dyn_cast<air::ChannelGetOp>(sink_op)) {
-          unsigned numDimsDst = sink_op_channel_get.getDst()
-                                    .getType()
-                                    .cast<MemRefType>()
-                                    .getRank();
-          for (unsigned i = 0; i < sink_op_channel_get.getDstOffsets().size();
-               i++)
-            sink_op_scalar_outs.push_back(
-                sink_op_channel_get.getDstOffsets()[i]);
-          for (unsigned i = 0; i < sink_op_channel_get.getDstSizes().size();
-               i++)
-            sink_op_scalar_outs.push_back(sink_op_channel_get.getDstSizes()[i]);
-          for (unsigned i = 0; i < sink_op_channel_get.getDstStrides().size();
-               i++)
-            sink_op_scalar_outs.push_back(
-                sink_op_channel_get.getDstStrides()[i]);
-          SmallVector<Value, 2> dst_indices;
-          if (sink_op_channel_get.getDstOffsets().size()) {
-            for (unsigned i = 0; i < numDimsDst; i++) {
-              dst_indices.push_back(sink_op_channel_get.getDstOffsets()[i]);
-            }
-          } else {
-            for (unsigned i = 0; i < numDimsDst; i++) {
-              dst_indices.push_back(nullptr);
-            }
-          }
-          partialMemref tile_out = createPartialMemref(
-              sink_op_channel_get.getDst(), numDimsDst, dst_indices);
-          sink_op_memref_writes.push_back(tile_out);
         }
 
         // If the sink op is arith::MulIOp
@@ -774,23 +703,18 @@ private:
     SmallVector<Value, 1> deps;
     auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(op);
     unsigned id = dma_op.getId();
-    std::string event_name = "";
-    if (auto dmaNd_op = dyn_cast<air::DmaMemcpyNdOp>(op)) {
-      air::DmaMemcpyNdOp new_dmaNd_op = builder.create<air::DmaMemcpyNdOp>(
-          loc, air::AsyncTokenType::get(dmaNd_op->getContext()), deps,
-          dmaNd_op.getDstMemref(), dmaNd_op.getDstOffsets(),
-          dmaNd_op.getDstSizes(), dmaNd_op.getDstStrides(),
-          dmaNd_op.getSrcMemref(), dmaNd_op.getSrcOffsets(),
-          dmaNd_op.getSrcSizes(), dmaNd_op.getSrcStrides());
-      new_dmaNd_op->setAttr(
-          "id", mlir::IntegerAttr::get(
-                    mlir::IntegerType::get(op->getContext(), 32), id));
-      event_name = "Nd";
-    }
+    air::DmaMemcpyNdOp new_dmaNd_op = builder.create<air::DmaMemcpyNdOp>(
+        loc, air::AsyncTokenType::get(dma_op->getContext()), deps,
+        dma_op.getDstMemref(), dma_op.getDstOffsets(), dma_op.getDstSizes(),
+        dma_op.getDstStrides(), dma_op.getSrcMemref(), dma_op.getSrcOffsets(),
+        dma_op.getSrcSizes(), dma_op.getSrcStrides());
+    new_dmaNd_op->setAttr(
+        "id", mlir::IntegerAttr::get(
+                  mlir::IntegerType::get(op->getContext(), 32), id));
 
     // Create a vertex out of the current dmamemcpy2d op
     auto v = add_vertex(asyncExecuteGraph);
-    asyncExecuteGraph[v].asyncEventName = "air::dma" + event_name;
+    asyncExecuteGraph[v].asyncEventName = "air::dmaNd";
     asyncExecuteGraph[v].asyncEventType = "dma";
     asyncExecuteGraph[v].color = "cyan";
     asyncExecuteGraph[v].shape = "oval";
@@ -1035,32 +959,14 @@ private:
     bool foundWriteAccess = false;
     bool foundReadAccess = false;
     for (auto &u : operand.getUses()) {
-      // If used in DmaMemcpy Op
-      if (auto dma = dyn_cast<xilinx::air::DmaMemcpyNdOp>(u.getOwner())) {
-        if (u.is(dma.getSrcMemref())) {
+      // If used in MemcpyInterface Op
+      if (auto memcpy = dyn_cast<xilinx::air::MemcpyInterface>(u.getOwner())) {
+        if (u.is(memcpy.getSrcMemref())) {
           foundReadAccess = true;
-        } else if (u.is(dma.getDstMemref())) {
+        } else if (u.is(memcpy.getDstMemref())) {
           foundWriteAccess = true;
         } else {
-          dma->emitOpError("unknown operand in air.dma");
-        }
-      }
-      // If used in Channel Put Op
-      else if (auto channel_put =
-                   dyn_cast<xilinx::air::ChannelPutOp>(u.getOwner())) {
-        if (u.is(channel_put.getSrc())) {
-          foundReadAccess = true;
-        } else {
-          channel_put->emitOpError("unknown operand in air.channel_put");
-        }
-      }
-      // If used in Channel Get Op
-      else if (auto channel_get =
-                   dyn_cast<xilinx::air::ChannelGetOp>(u.getOwner())) {
-        if (u.is(channel_get.getDst())) {
-          foundWriteAccess = true;
-        } else {
-          channel_get->emitOpError("unknown operand in air.channel_get");
+          memcpy->emitOpError("unknown operand in air::MemcpyInterface");
         }
       }
       // If used in a linalg op
@@ -1097,165 +1003,89 @@ private:
           "operand being traced is not a memref");
     }
     for (auto &u : operand.getUses()) {
-      // If used in DmaMemcpy Op
-      if (auto dma = dyn_cast<xilinx::air::DmaMemcpyNdOp>(u.getOwner())) {
-        if (foundAsyncOpUsesAboveCurrentLine(
-                &dma)) { // If this use is above current line
-          // DMA2D: Need to check for overlapping partial memrefs in use
-          unsigned numDimsSrc =
-              dma.getSrcMemref().getType().cast<MemRefType>().getRank();
-          unsigned numDimsDst =
-              dma.getDstMemref().getType().cast<MemRefType>().getRank();
-          SmallVector<Value, 2> src_indices;
-          SmallVector<Value, 2> dst_indices;
-          if (auto nddma =
-                  dyn_cast<xilinx::air::DmaMemcpyNdOp>(dma.getOperation())) {
-            if (nddma.getSrcOffsets().size()) {
+      // If used in MemcpyInterface Op
+      if (auto memcpy = dyn_cast<xilinx::air::MemcpyInterface>(u.getOwner())) {
+        bool isUsedAboveThisLine = false;
+        if (auto dma = dyn_cast<xilinx::air::DmaMemcpyNdOp>(u.getOwner())) {
+          if (foundAsyncOpUsesAboveCurrentLine(
+                  &dma)) { // If this use is above current line
+            isUsedAboveThisLine = true;
+          }
+        } else if (auto channel =
+                       dyn_cast<xilinx::air::ChannelInterface>(u.getOwner())) {
+          if (foundAsyncOpUsesAboveCurrentLine(
+                  &channel)) { // If this use is above current line
+            isUsedAboveThisLine = true;
+          }
+        }
+
+        if (isUsedAboveThisLine) {
+          partialMemref memcpy_src, memcpy_dst;
+          if (memcpy.getSrcMemref()) {
+            SmallVector<Value, 2> src_indices;
+            unsigned numDimsSrc =
+                memcpy.getSrcMemref().getType().cast<MemRefType>().getRank();
+            if (memcpy.getSrcOffsets().size()) {
               for (unsigned i = 0; i < numDimsSrc; i++) {
-                src_indices.push_back(nddma.getSrcOffsets()[i]);
+                src_indices.push_back(memcpy.getSrcOffsets()[i]);
               }
             } else {
               for (unsigned i = 0; i < numDimsSrc; i++) {
                 src_indices.push_back(nullptr);
               }
             }
-            if (nddma.getDstOffsets().size()) {
+            memcpy_src = createPartialMemref(memcpy.getSrcMemref(), numDimsSrc,
+                                             src_indices);
+          }
+          if (memcpy.getDstMemref()) {
+            unsigned numDimsDst =
+                memcpy.getDstMemref().getType().cast<MemRefType>().getRank();
+            SmallVector<Value, 2> dst_indices;
+            if (memcpy.getDstOffsets().size()) {
               for (unsigned i = 0; i < numDimsDst; i++) {
-                dst_indices.push_back(nddma.getDstOffsets()[i]);
+                dst_indices.push_back(memcpy.getDstOffsets()[i]);
               }
             } else {
               for (unsigned i = 0; i < numDimsDst; i++) {
                 dst_indices.push_back(nullptr);
               }
             }
-          } else {
-            for (unsigned i = 0; i < numDimsSrc; i++) {
-              src_indices.push_back(nullptr);
-            }
-            for (unsigned i = 0; i < numDimsDst; i++) {
-              dst_indices.push_back(nullptr);
-            }
+            memcpy_dst = createPartialMemref(memcpy.getDstMemref(), numDimsDst,
+                                             dst_indices);
           }
-          partialMemref dma_src =
-              createPartialMemref(dma.getSrcMemref(), numDimsSrc, src_indices);
-          partialMemref dma_dst =
-              createPartialMemref(dma.getDstMemref(), numDimsDst, dst_indices);
 
           if (rw == 'r') {
-            if (u.is(dma.getSrcMemref())) {
+            if (u.is(memcpy.getSrcMemref())) {
               if (tile == nullptr) {
-                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0),
+                addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
                                            op);
-              } else if (areEqualIndexPartialMemrefs(tile, &dma_src))
-                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0),
+              } else if (areEqualIndexPartialMemrefs(tile, &memcpy_src))
+                addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
                                            op);
             }
           } else if (rw == 'w') {
-            if (u.is(dma.getDstMemref())) {
+            if (u.is(memcpy.getDstMemref())) {
               if (tile == nullptr) {
-                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0),
+                addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
                                            op);
-              } else if (areEqualIndexPartialMemrefs(tile, &dma_dst))
-                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0),
+              } else if (areEqualIndexPartialMemrefs(tile, &memcpy_dst))
+                addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
                                            op);
             }
           } else {
             if (tile == nullptr) {
-              addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0), op);
-            } else if (u.is(dma.getDstMemref())) {
-              if (areEqualIndexPartialMemrefs(tile, &dma_dst))
-                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0),
+              addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
+                                         op);
+            } else if (u.is(memcpy.getDstMemref())) {
+              if (areEqualIndexPartialMemrefs(tile, &memcpy_dst))
+                addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
                                            op);
-            } else if (u.is(dma.getSrcMemref())) {
-              if (areEqualIndexPartialMemrefs(tile, &dma_src))
-                addAsyncDepToGraphIfNew<T>(dma.getOperation()->getResult(0),
+            } else if (u.is(memcpy.getSrcMemref())) {
+              if (areEqualIndexPartialMemrefs(tile, &memcpy_src))
+                addAsyncDepToGraphIfNew<T>(memcpy.getOperation()->getResult(0),
                                            op);
             }
           }
-        }
-      }
-      // Else if used in Channel Op
-      else if (auto channel =
-                   dyn_cast<xilinx::air::ChannelInterface>(u.getOwner())) {
-        if (foundAsyncOpUsesAboveCurrentLine(
-                &channel)) { // If this use is above current line
-          // Channel op: Need to check for overlapping partial memrefs in use
-          if (auto channel_put =
-                  dyn_cast<xilinx::air::ChannelPutOp>(channel.getOperation())) {
-            unsigned numDimsSrc =
-                channel_put.getSrc().getType().cast<MemRefType>().getRank();
-            SmallVector<Value, 2> src_indices;
-            if (channel_put.getSrcOffsets().size()) {
-              for (unsigned i = 0; i < numDimsSrc; i++) {
-                src_indices.push_back(channel_put.getSrcOffsets()[i]);
-              }
-            } else {
-              for (unsigned i = 0; i < numDimsSrc; i++) {
-                src_indices.push_back(nullptr);
-              }
-            }
-            partialMemref channel_put_src = createPartialMemref(
-                channel_put.getSrc(), numDimsSrc, src_indices);
-
-            if (rw == 'r') {
-              if (u.is(channel_put.getSrc())) {
-                if (tile == nullptr) {
-                  addAsyncDepToGraphIfNew<T>(
-                      channel_put.getOperation()->getResult(0), op);
-                } else if (areEqualIndexPartialMemrefs(tile, &channel_put_src))
-                  addAsyncDepToGraphIfNew<T>(
-                      channel_put.getOperation()->getResult(0), op);
-              }
-            } else if (rw == 'w') {
-            } else {
-              if (tile == nullptr) {
-                addAsyncDepToGraphIfNew<T>(
-                    channel_put.getOperation()->getResult(0), op);
-              } else if (u.is(channel_put.getSrc())) {
-                if (areEqualIndexPartialMemrefs(tile, &channel_put_src))
-                  addAsyncDepToGraphIfNew<T>(
-                      channel_put.getOperation()->getResult(0), op);
-              }
-            }
-          } else if (auto channel_get = dyn_cast<xilinx::air::ChannelGetOp>(
-                         channel.getOperation())) {
-            unsigned numDimsDst =
-                channel_get.getDst().getType().cast<MemRefType>().getRank();
-            SmallVector<Value, 2> dst_indices;
-            if (channel_get.getDstOffsets().size()) {
-              for (unsigned i = 0; i < numDimsDst; i++) {
-                dst_indices.push_back(channel_get.getDstOffsets()[i]);
-              }
-            } else {
-              for (unsigned i = 0; i < numDimsDst; i++) {
-                dst_indices.push_back(nullptr);
-              }
-            }
-            partialMemref channel_get_dst = createPartialMemref(
-                channel_get.getDst(), numDimsDst, dst_indices);
-
-            if (rw == 'r') {
-            } else if (rw == 'w') {
-              if (u.is(channel_get.getDst())) {
-                if (tile == nullptr) {
-                  addAsyncDepToGraphIfNew<T>(
-                      channel_get.getOperation()->getResult(0), op);
-                } else if (areEqualIndexPartialMemrefs(tile, &channel_get_dst))
-                  addAsyncDepToGraphIfNew<T>(
-                      channel_get.getOperation()->getResult(0), op);
-              }
-            } else {
-              if (tile == nullptr) {
-                addAsyncDepToGraphIfNew<T>(
-                    channel_get.getOperation()->getResult(0), op);
-              } else if (u.is(channel_get.getDst())) {
-                if (areEqualIndexPartialMemrefs(tile, &channel_get_dst))
-                  addAsyncDepToGraphIfNew<T>(
-                      channel_get.getOperation()->getResult(0), op);
-              }
-            }
-          } else
-            channel->emitOpError("unknown air channel op");
         }
       }
 

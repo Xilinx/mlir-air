@@ -483,7 +483,7 @@ def air_ChannelPutOp : air_Op<"channel.put", [air_AsyncOpInterface,
   let extraClassDeclaration = [{
     Value getMemref() { return getSrc(); }
     Value getSrcMemref() { return getSrc(); }
-    Value getDstMemref() { emitOpError("does not have DstMemref"); return nullptr; }
+    Value getDstMemref() { return nullptr; }
     OperandRange getOffsets() { return getSrcOffsets(); }
     OperandRange getDstOffsets() { emitOpError("does not have DstOffset"); llvm_unreachable("unreachable"); }
     OperandRange getSizes() { return getSrcSizes(); }
@@ -524,7 +524,7 @@ def air_ChannelGetOp : air_Op<"channel.get", [air_AsyncOpInterface,
   let extraClassDeclaration = [{
     Value getMemref() { return getDst(); }
     Value getDstMemref() { return getDst(); }
-    Value getSrcMemref() { emitOpError("does not have SrcMemref"); return nullptr; }
+    Value getSrcMemref() { return nullptr; }
     OperandRange getOffsets() { return getDstOffsets(); }
     OperandRange getSrcOffsets() { emitOpError("does not have SrcOffsets"); llvm_unreachable("unreachable"); }
     OperandRange getSizes() { return getDstSizes(); }
