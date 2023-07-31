@@ -34,12 +34,14 @@ AIE.device(xcvc1902) {
     %c1 = arith.constant 1 : index
     %c4096 = arith.constant 4096 : index
     %alloc = memref.alloc() {sym_name = "scratch"} : memref<32xi32, 2>
+    %alloc2 = memref.alloc() {sym_name = "scratch2"} : memref<32xi32, 2>
     %async_token_0 = air.wait_all async
     scf.for %arg0 = %c0 to %c4096 step %c32 {
       %3 = air.channel.get async  @channel_0[] (%alloc[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
-      %4 = air.channel.put async [%3]  @channel_1[] (%alloc[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
+      %4 = air.channel.put async [%3]  @channel_1[] (%alloc2[%c0] [%c32] [%c0]) : (memref<32xi32, 2>)
     } {isolated = true, unroll = 2 : i64}
     memref.dealloc %alloc : memref<32xi32, 2>
+    memref.dealloc %alloc2 : memref<32xi32, 2>
     AIE.end
   } {elf_file = "segment_0_core_1_1.elf"}
 }

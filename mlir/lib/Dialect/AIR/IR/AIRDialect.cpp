@@ -1179,11 +1179,12 @@ LogicalResult ChannelOp::verify() {
       return emitOpError("bundle size should match broadcast_shape");
     int diffDims = 0;
     for (int i = 0; i < (int)bundle_size.size(); i++)
-      if (dyn_cast<IntegerAttr>(bundle_size[i]).getInt() != 
+      if (dyn_cast<IntegerAttr>(bundle_size[i]).getInt() !=
           dyn_cast<IntegerAttr>(broadcast_shape[i]).getInt())
         diffDims++;
     if (diffDims > 1)
-      return emitOpError("bundle sizes and broadcast_shape should only differ along one dimension");
+      return emitOpError("bundle sizes and broadcast_shape should only differ "
+                         "along one dimension");
   }
   return success();
 }
@@ -1194,10 +1195,10 @@ int ChannelOp::getBroadcastDimension() {
   auto broadcast_shape = getBroadcastShape();
   if (isBroadcast()) {
     for (int i = 0; i < (int)bundle_size.size(); i++) {
-      if (dyn_cast<IntegerAttr>(bundle_size[i]).getInt() != 
+      if (dyn_cast<IntegerAttr>(bundle_size[i]).getInt() !=
           dyn_cast<IntegerAttr>(broadcast_shape[i]).getInt()) {
-            broadcastDim = i;
-            break;
+        broadcastDim = i;
+        break;
       }
     }
   }

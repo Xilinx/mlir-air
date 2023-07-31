@@ -954,14 +954,16 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     Value producerTile;
     if (channelPuts.size() > 0) {
       if (channelPuts.size() > 1)
-        return channel.emitOpError("channel lowering currently does not support many-to-one/many");
-      auto res = findChannelPutGetTile<ChannelPutOp>(channelPuts[0], &producerTile, &datatype);
-      if(res.failed())
+        return channel.emitOpError(
+            "channel lowering currently does not support many-to-one/many");
+      auto res = findChannelPutGetTile<ChannelPutOp>(channelPuts[0],
+                                                     &producerTile, &datatype);
+      if (res.failed())
         return res;
     } else {
       // put from L3
-      producerTile = shimTileAlloc.getShimTile(device, (int)air::MemorySpace::L3,
-                                               (int)air::MemorySpace::L1);
+      producerTile = shimTileAlloc.getShimTile(
+          device, (int)air::MemorySpace::L3, (int)air::MemorySpace::L1);
     }
 
     // put/get come in pairs, if one is missing then it's L3
@@ -972,8 +974,9 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 
     int expectedGets = channel.isBroadcast() ? channel.getBroadcastNum() : 1;
     for (auto get : channelGets) {
-      auto res = findChannelPutGetTile<ChannelGetOp>(get, &consumerTile, &datatype);
-      if(res.failed())
+      auto res =
+          findChannelPutGetTile<ChannelGetOp>(get, &consumerTile, &datatype);
+      if (res.failed())
         return res;
       consumers.push_back(consumerTile);
     }
@@ -1040,10 +1043,11 @@ private:
   // find AIE cores and their tiles based on memory hierarchy levels
   template <typename MyOp>
   LogicalResult findChannelPutGetTile(MyOp op, Value *tile,
-                                    AIE::AIEObjectFifoType *datatype) const {
+                                      AIE::AIEObjectFifoType *datatype) const {
     MemRefType memref = op.getMemref().getType().template cast<MemRefType>();
     int mem_space = memref.getMemorySpaceAsInt();
-    *datatype = AIE::AIEObjectFifoType::get(MemRefType::get(memref.getShape(), memref.getElementType()));
+    *datatype = AIE::AIEObjectFifoType::get(
+        MemRefType::get(memref.getShape(), memref.getElementType()));
     if (mem_space == (int)air::MemorySpace::L1) {
       AIE::CoreOp core = op->template getParentOfType<AIE::CoreOp>();
       if (!core)
@@ -1057,14 +1061,15 @@ private:
   }
 
   AIE::ObjectFifoCreateOp createObjectFifo(OpBuilder &builder,
-                                         AIE::AIEObjectFifoType datatype,
-                                         Value prodTile,
-                                         const std::vector<Value> &consTile,
-                                         int depth, StringRef name) const {
+                                           AIE::AIEObjectFifoType datatype,
+                                           Value prodTile,
+                                           const std::vector<Value> &consTile,
+                                           int depth, StringRef name) const {
     AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
         builder.getUnknownLoc(), datatype, prodTile, consTile,
         builder.getIntegerAttr(builder.getI32Type(), depth));
-    fifo->setAttr(SymbolTable::getSymbolAttrName(), builder.getStringAttr(name));
+    fifo->setAttr(SymbolTable::getSymbolAttrName(),
+                  builder.getStringAttr(name));
     return fifo;
   }
 
@@ -1091,8 +1096,9 @@ private:
       rewriter.replaceOp(a.getOperation(), producerAccess.getOutput());
   }
 
-  template <typename T> void push_back_if_unique(std::vector<T> &vec, T entry) const {
-    if (std::find(vec.begin(), vec.end(), entry) == vec.end()) 
+  template <typename T>
+  void push_back_if_unique(std::vector<T> &vec, T entry) const {
+    if (std::find(vec.begin(), vec.end(), entry) == vec.end())
       vec.push_back(entry);
   }
 
@@ -1108,7 +1114,8 @@ private:
                                                   objFifo, 1);
         // Delete ops at the end of the rewrite pattern to avoid repeatedly
         // deleting the same op
-        push_back_if_unique<Operation *>(erased_deallocs, dealloc.getOperation());
+        push_back_if_unique<Operation *>(erased_deallocs,
+                                         dealloc.getOperation());
       }
     }
   }
@@ -1276,8 +1283,8 @@ private:
     return new_get;
   }
 
-  std::vector<Attribute>
-  specializeBroadcastShape(OpBuilder builder, air::ChannelOp chan) const {
+  std::vector<Attribute> specializeBroadcastShape(OpBuilder builder,
+                                                  air::ChannelOp chan) const {
     auto bundle_size = chan.getSize();
     auto broadcast_shape = chan.getBroadcastShape();
     std::vector<Attribute> new_shape;
@@ -1286,9 +1293,10 @@ private:
       if (i == diffDimension) {
         auto size_dim = dyn_cast<IntegerAttr>(bundle_size[i]).getInt();
         auto broadcast_dim = dyn_cast<IntegerAttr>(broadcast_shape[i]).getInt();
-        int new_dim = (size_dim > broadcast_dim) ? (size_dim / broadcast_dim) : (broadcast_dim / size_dim);
+        int new_dim = (size_dim > broadcast_dim) ? (size_dim / broadcast_dim)
+                                                 : (broadcast_dim / size_dim);
         new_shape.push_back(builder.getI64IntegerAttr(new_dim));
-      } else 
+      } else
         new_shape.push_back(builder.getI64IntegerAttr(1));
     }
     return new_shape;
