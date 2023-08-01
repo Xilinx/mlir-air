@@ -12,7 +12,7 @@
 // CHECK:   %[[VAL_1:.*]] = AIE.tile(2, 1)
 // CHECK:   %[[VAL_2:.*]] = AIE.tile(1, 2)
 // CHECK:   %[[VAL_3:.*]] = AIE.tile(2, 2)
-// CHECK-COUNT-4:    air.channel @{{.*}}[1, 1] {broadcast_shape = [4, 1]}
+// CHECK-COUNT-3:    air.channel @{{.*}}[1, 1] {broadcast_shape = [4, 1]}
 // CHECK: }
    
 AIE.device(xcvc1902) {
