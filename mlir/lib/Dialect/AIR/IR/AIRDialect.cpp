@@ -1176,15 +1176,21 @@ LogicalResult ChannelOp::verify() {
     auto bundle_size = getSize();
     auto broadcast_shape = getBroadcastShape();
     if (bundle_size.size() != broadcast_shape.size())
-      return emitOpError("bundle size should match broadcast_shape");
+      return emitOpError("bundle size should match broadcast_shape size");
     int diffDims = 0;
+    int broadcastDim = -1;
     for (int i = 0; i < (int)bundle_size.size(); i++)
       if (dyn_cast<IntegerAttr>(bundle_size[i]).getInt() !=
-          dyn_cast<IntegerAttr>(broadcast_shape[i]).getInt())
+          dyn_cast<IntegerAttr>(broadcast_shape[i]).getInt()) {
         diffDims++;
+        broadcastDim = i;
+      }
     if (diffDims > 1)
       return emitOpError("bundle sizes and broadcast_shape should only differ "
                          "along one dimension");
+    if (dyn_cast<IntegerAttr>(bundle_size[broadcastDim]).getInt() != 1)
+      return emitOpError("along the broadcast dimension the index in the "
+                         "channel bundle sizes should be equal to 1");
   }
   return success();
 }

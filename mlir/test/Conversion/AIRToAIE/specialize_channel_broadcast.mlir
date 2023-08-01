@@ -12,7 +12,7 @@
 // CHECK:   %[[VAL_1:.*]] = AIE.tile(2, 1)
 // CHECK:   %[[VAL_2:.*]] = AIE.tile(1, 2)
 // CHECK:   %[[VAL_3:.*]] = AIE.tile(2, 2)
-// CHECK-COUNT-6:    air.channel @{{.*}}[1, 1] {broadcast_shape = [2, 1]}
+// CHECK-COUNT-4:    air.channel @{{.*}}[1, 1] {broadcast_shape = [4, 1]}
 // CHECK: }
    
 AIE.device(xcvc1902) {
@@ -20,5 +20,5 @@ AIE.device(xcvc1902) {
     %1 = AIE.tile(2, 1)
     %2 = AIE.tile(1, 2)
     %3 = AIE.tile(2, 2)
-    air.channel @channel_0 [2, 3] {broadcast_shape = [4, 3]}
+    air.channel @channel_0 [1, 3] {broadcast_shape = [4, 3]}
 }

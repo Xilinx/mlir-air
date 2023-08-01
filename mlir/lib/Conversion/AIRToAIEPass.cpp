@@ -1285,17 +1285,13 @@ private:
 
   std::vector<Attribute> specializeBroadcastShape(OpBuilder builder,
                                                   air::ChannelOp chan) const {
-    auto bundle_size = chan.getSize();
     auto broadcast_shape = chan.getBroadcastShape();
-    std::vector<Attribute> new_shape;
     int diffDimension = chan.getBroadcastDimension();
+    std::vector<Attribute> new_shape;
     for (int i = 0; i < (int)broadcast_shape.size(); i++) {
       if (i == diffDimension) {
-        auto size_dim = dyn_cast<IntegerAttr>(bundle_size[i]).getInt();
         auto broadcast_dim = dyn_cast<IntegerAttr>(broadcast_shape[i]).getInt();
-        int new_dim = (size_dim > broadcast_dim) ? (size_dim / broadcast_dim)
-                                                 : (broadcast_dim / size_dim);
-        new_shape.push_back(builder.getI64IntegerAttr(new_dim));
+        new_shape.push_back(builder.getI64IntegerAttr(broadcast_dim));
       } else
         new_shape.push_back(builder.getI64IntegerAttr(1));
     }
