@@ -638,23 +638,11 @@ struct ConstructPingPongDependencyPattern
 
     // Find ping and pong allocs and deallocs
     SmallVector<Operation *> alloc_execs;
-    for (auto &same_hier_op : for_op->getParentRegion()->getOps()) {
-      if (&same_hier_op != for_op.getOperation() &&
-          same_hier_op.hasAttr("unrolled_iteration")) {
-        if (isa<air::ExecuteOp>(same_hier_op)) {
-          if (same_hier_op.getNumResults() == 2 &&
-              same_hier_op.getResult(1).getType().isa<MemRefType>()) {
-            alloc_execs.push_back(&same_hier_op);
-          }
-        }
-      }
+    for (auto ia : for_op.getIterOperands()) {
+      pushToAllocExecsIfHoistedFromLoop(ia, alloc_execs);
     }
     if (!alloc_execs.size())
       return failure();
-
-    // Note: alloc ops were hoisted out of for loop in reversed order (pong
-    // before ping) Reordering alloc exec ops
-    std::reverse(alloc_execs.begin(), alloc_execs.end());
 
     SmallVector<Operation *> dealloc_execs;
     for (auto alloc_exec : alloc_execs) {
@@ -1016,6 +1004,21 @@ private:
       parent = parent->getParentOp();
     }
     return output;
+  }
+
+  // Recursively trace dependency of scf.for's iter args, and search for hoisted
+  // allocs
+  void pushToAllocExecsIfHoistedFromLoop(
+      Value v, SmallVector<Operation *> &alloc_execs) const {
+    if (auto exec = v.getDefiningOp<air::ExecuteOp>()) {
+      if (exec->hasAttr("unrolled_iteration") && exec->getNumResults() == 2 &&
+          exec->getResult(1).getType().isa<MemRefType>()) {
+        alloc_execs.push_back(exec.getOperation());
+        for (auto dep : exec.getAsyncDependencies()) {
+          pushToAllocExecsIfHoistedFromLoop(dep, alloc_execs);
+        }
+      }
+    }
   }
 };
 
