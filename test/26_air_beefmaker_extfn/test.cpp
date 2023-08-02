@@ -23,7 +23,7 @@ int32_t mlir_aie_read_buffer_beef_0_0(aie_libxaie_ctx_t *ctx, int index);
 } // namespace air::partitions::partition_0*/
 
 namespace air::segments::segment_0 {
-int32_t mlir_aie_read_buffer_beef_0_0(aie_libxaie_ctx_t*, int);
+int32_t mlir_aie_read_buffer_beef_0_0(aie_libxaie_ctx_t *, int);
 };
 using namespace air::segments::segment_0;
 
@@ -82,8 +82,7 @@ int main(int argc, char *argv[]) {
   aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_get_libxaie_ctx();
 
   for (int i = 0; i < 4; i++)
-    output_data[i] =
-        mlir_aie_read_buffer_beef_0_0(xaie, i);
+    output_data[i] = mlir_aie_read_buffer_beef_0_0(xaie, i);
 
   unsigned errors = 0;
   for (int i = 0; i < 4; i++) {
