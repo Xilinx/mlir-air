@@ -1,203 +1,104 @@
-//===- test.cpp -------------------------------------------------*- C++ -*-===//
+//===- main.cpp -------------------------------------------------*- C++ -*-===//
 //
-// Copyright (C) 2020-2022, Xilinx Inc.
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
+// Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
-#include <cassert>
-#include <cmath>
-#include <cstdio>
-#include <cstring>
-#include <fcntl.h>
-#include <stdlib.h>
-#include <sys/mman.h>
-#include <thread>
-#include <unistd.h>
-
 #include "air_host.h"
-
-#define XAIE_NUM_ROWS            8
-#define XAIE_NUM_COLS           50
-#define XAIE_ADDR_ARRAY_OFF     0x800
-
-#define SHMEM_BASE 0x020100000000LL
-
 #include "test_library.h"
 
-namespace {
+#include <cassert>
+#include <cstdio>
+#include <dlfcn.h>
+#include <stdlib.h>
+#include <sys/time.h>
+#include <vector>
 
-XAieGbl_Config *AieConfigPtr;	                          /**< AIE configuration pointer */
-XAieGbl AieInst;	                                      /**< AIE global instance */
-XAieGbl_HwCfg AieConfig;                                /**< AIE HW configuration instance */
-XAieGbl_Tile TileInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];  /**< Instantiates AIE array of [XAIE_NUM_COLS] x [XAIE_NUM_ROWS] */
-XAieDma_Tile TileDMAInst[XAIE_NUM_COLS][XAIE_NUM_ROWS+1];
+#define VERBOSE 1
+#define PROFILE 0
 
-#include "aie.cpp"
+/*namespace air::partitions::partition_0 {
+int32_t mlir_aie_read_buffer_beef_0_0(aie_libxaie_ctx_t *ctx, int index);
+} // namespace air::partitions::partition_0*/
 
-}
+namespace air::segments::segment_0 {
+int32_t mlir_aie_read_buffer_beef_0_0(aie_libxaie_ctx_t*, int);
+};
+using namespace air::segments::segment_0;
 
-void printCoreStatus(int col, int row, bool PM, int mem, int trace) {
+int main(int argc, char *argv[]) {
+  auto init_ret = air_init();
+  assert(init_ret == HSA_STATUS_SUCCESS);
 
-  u32 status, coreTimerLow, PC, LR, SP, locks, R0, R4;
-  status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x032004);
-  coreTimerLow = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0340F8);
-  PC = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x00030280);
-  LR = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x000302B0);
-  SP = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x000302A0);
-  locks = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x0001EF00);
-  u32 trace_status = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x000140D8);
-  R0 = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x00030000);
-  R4 = XAieGbl_Read32(TileInst[col][row].TileAddr + 0x00030040);
-  printf("Core [%d, %d] status is %08X, timer is %u, PC is %d, locks are %08X, LR is %08X, SP is %08X, R0 is %08X,R4 is %08X\n",col, row, status, coreTimerLow, PC, locks, LR, SP, R0, R4);
-  printf("Core [%d, %d] trace status is %08X\n",col, row, trace_status);
-  for (int lock=0;lock<16;lock++) {
-    u32 two_bits = (locks >> (lock*2)) & 0x3;
-    if (two_bits) {
-      printf("Lock %d: ", lock);
-      u32 acquired = two_bits & 0x1;
-      u32 value = two_bits & 0x2;
-      if (acquired)
-	printf("Acquired ");
-      printf(value?"1":"0");
-      printf("\n");
-    }
-  }
-  // Read the warning above!!!!!
-  if (PM)
-    for (int i=0;i<40;i++)
-      printf("PM[%d]: %08X\n",i*4, XAieGbl_Read32(TileInst[col][row].TileAddr + 0x00020000 + i*4));
-  if (mem) {
-    printf("FIRST %d WORDS\n",mem);
-    for (int i = 0; i < mem; i++) {
-      u32 RegVal = XAieTile_DmReadWord(&(TileInst[col][row]), 0x1000 + i * 4);
-      printf("memory value %d : %08X %f\n", i, RegVal, *(float *)(&RegVal));
-    }
-  }
-}
+  std::vector<air_agent_t> agents;
+  auto get_agents_ret = air_iterate_agents(
+      [](air_agent_t a, void *d) {
+        auto *v = static_cast<std::vector<air_agent_t> *>(d);
+        v->push_back(a);
+        return HSA_STATUS_SUCCESS;
+      },
+      (void *)&agents);
+  assert(get_agents_ret == HSA_STATUS_SUCCESS && agents.size() &&
+         "failed to get agents!");
 
-
-int
-main(int argc, char *argv[])
-{
-  auto herd_col = 7;
-  auto herd_row = 2;
-
-  size_t aie_base = XAIE_ADDR_ARRAY_OFF << 14;
-  XAIEGBL_HWCFG_SET_CONFIG((&AieConfig), XAIE_NUM_ROWS, XAIE_NUM_COLS, XAIE_ADDR_ARRAY_OFF);
-  XAieGbl_HwInit(&AieConfig);
-  AieConfigPtr = XAieGbl_LookupConfig(XPAR_AIE_DEVICE_ID);
-  XAieGbl_CfgInitialize(&AieInst, &TileInst[0][0], AieConfigPtr);
-
-  // reset cores and locks
-  for (int i = 1; i <= XAIE_NUM_ROWS; i++) {
-    for (int j = 0; j < XAIE_NUM_COLS; j++) {
-      XAieTile_CoreControl(&(TileInst[j][i]), XAIE_DISABLE, XAIE_ENABLE);
-      for (int l=0; l<16; l++)
-        XAieTile_LockRelease(&(TileInst[j][i]), l, 0x0, 0);
-    }
-  }
-
-  printCoreStatus(herd_col, herd_row, false, 0, 0);
-
-  hsa_status_t init_status = air_init();
-
-  if (init_status != HSA_STATUS_SUCCESS) {
-    std::cout << "air_init() failed. Exiting" << std::endl;
-    return -1;
-  }
-
-  // create the queue
   queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, SHMEM_BASE);
-  assert(ret == 0 && "failed to create queue!");
+  auto create_queue_ret =
+      air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q,
+                       agents[0].handle, 0 /* device_id (optional) */);
+  assert(q && create_queue_ret == 0 && "failed to create queue!");
 
-  // reserve a packet in the queue
-  uint64_t wr_idx = queue_add_write_index(q, 1);
-  uint64_t packet_id = wr_idx % q->size;
+  auto handle = air_module_load_from_file(nullptr, q);
+  assert(handle && "failed to open air module");
 
-  // herd_setup packet
-  dispatch_packet_t *segment_pkt =
-      (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
-  initialize_packet(segment_pkt);
-  segment_pkt->type = HSA_PACKET_TYPE_AGENT_DISPATCH;
+  auto cow_fn = (void (*)())dlsym((void *)handle, "_mlir_ciface_moo");
+  assert(cow_fn && "failed to locate _mlir_ciface_foo in .so");
 
-  // Set up the worlds smallest herd at 7,2
-  segment_pkt->arg[0] = AIR_PKT_TYPE_SEGMENT_INITIALIZE;
-  segment_pkt->arg[0] |= (AIR_ADDRESS_ABSOLUTE_RANGE << 48);
-  segment_pkt->arg[0] |= (1L << 40);
-  segment_pkt->arg[0] |= (7L << 32);
-  segment_pkt->arg[0] |= (1L << 24);
-  segment_pkt->arg[0] |= (2L << 16);
+#if PROFILE
+  struct timeval before, after;
+  long diff_s, diff_us;
+  gettimeofday(&before, NULL);
+#endif
 
-  segment_pkt->arg[1] = 0; // Herd ID 0
-  segment_pkt->arg[2] = 0;
-  segment_pkt->arg[3] = 0;
+  // run it
+  cow_fn();
 
-  // dispatch packet
-  signal_create(1, 0, NULL, (signal_t *)&segment_pkt->completion_signal);
-  signal_create(0, 0, NULL, (signal_t*)&q->doorbell);
-  signal_store_release((signal_t*)&q->doorbell, wr_idx);
+#if PROFILE
+  gettimeofday(&after, NULL);
+  diff_s = after.tv_sec - before.tv_sec;
+  diff_us = after.tv_usec - before.tv_usec;
 
-  // wait for packet completion
-  while (signal_wait_acquire((signal_t *)&segment_pkt->completion_signal,
-                             HSA_SIGNAL_CONDITION_EQ, 0, 0x80000,
-                             HSA_WAIT_STATE_ACTIVE) != 0) {
-    printf("packet completion signal timeout on herd initialization!\n");
-    printf("%x\n", segment_pkt->header);
-    printf("%x\n", segment_pkt->type);
-    printf("%x\n", (unsigned)segment_pkt->completion_signal);
+  if (diff_s)
+    diff_us += 10000000;
+
+  printf("before %ld.%06ld\n", before.tv_sec, before.tv_usec);
+  printf("after  %ld.%06ld\n", after.tv_sec, after.tv_usec);
+  printf("diff   %ld.%06ld\n", diff_s, diff_us);
+#endif
+
+  uint32_t reference_data[4] = {0xdeadbeef, 0xcafecafe, 0x000decaf, 0x5a1ad000};
+
+  uint32_t output_data[4];
+  aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_get_libxaie_ctx();
+
+  for (int i = 0; i < 4; i++)
+    output_data[i] =
+        mlir_aie_read_buffer_beef_0_0(xaie, i);
+
+  unsigned errors = 0;
+  for (int i = 0; i < 4; i++) {
+    if (VERBOSE)
+      printf("data[%d] = %x\n", i, output_data[i]);
+    if (output_data[i] != reference_data[i])
+      errors++;
   }
-
-  mlir_configure_cores();
-  mlir_configure_switchboxes();
-  mlir_initialize_locks();
-  mlir_configure_dmas();
-
-  printCoreStatus(herd_col, herd_row, false, 0, 0);
-
-  // We first write an ascending pattern into the area the AIE will write into
-  for (uint32_t i=0; i<1024; i++) {
-    mlir_write_buffer_beef_0_0(i, i+0x34431001);
-  }
-  printCoreStatus(herd_col, herd_row, false, 0, 0);
-
-  printf("memory before:\n");
-  for (uint32_t i=0; i<4; i++)
-    printf("%d %x\n", i, mlir_read_buffer_beef_0_0(i));
-
-  mlir_start_cores();
-
-  int errors = 0;
-
-  printf("memory after:\n");
-  for (uint32_t i=0; i<4; i++)
-    printf("%d %x\n", i, mlir_read_buffer_beef_0_0(i));
-
-  u32 rb[4];
-  for (uint32_t i=0; i<4; i++)
-    rb[i] = mlir_read_buffer_beef_0_0(i);
-
-  if (rb[0] != 0xdeadbeef)
-    printf("Error %d: %08x != 0xdeadbeef\n",errors++, rb);
-  
-  if (rb[1] != 0xcafecafe)
-    printf("Error %d: %08x != 0xcafecafe\n",errors++, rb);
-  
-  if (rb[2] != 0x000decaf)
-    printf("Error %d: %08x != 0x000decaf\n",errors++, rb);
-  
-  if (rb[3] != 0x5a1ad000)
-    printf("Error %d: %08x != 0x5a1ad000\n",errors++, rb);
 
   if (!errors) {
     printf("PASS!\n");
-    return 0;
-  }
-  else {
-    printf("fail %d/%d.\n", 4-errors, 4);
+  } else {
+    printf("fail %d/%d.\n", 4 - errors, 4);
     return -1;
   }
 
+  return 0;
 }
