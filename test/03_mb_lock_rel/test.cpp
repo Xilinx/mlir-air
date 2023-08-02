@@ -47,7 +47,8 @@ int main(int argc, char *argv[])
 
   // create the queue
   queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, agents[0].handle);
+  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q,
+                              agents[0].handle);
   assert(ret == 0 && "failed to create queue!");
 
   uint64_t wr_idx = queue_add_write_index(q, 1);
@@ -84,12 +85,13 @@ int main(int argc, char *argv[])
 
   dram_ptr[24] = 0xacdc;
 
-  #define DMA_COUNT 256
+#define DMA_COUNT 256
 
   auto burstlen = 4;
   XAie_DmaDesc dma_bd;
   XAie_DmaDescInit(&(xaie->DevInst), &dma_bd, XAie_TileLoc(col,0));
-  XAie_DmaSetAddrLen(&dma_bd, (u64)air_dev_mem_get_pa(dram_ptr), sizeof(u32) * DMA_COUNT); 
+  XAie_DmaSetAddrLen(&dma_bd, (u64)air_dev_mem_get_pa(dram_ptr),
+                     sizeof(u32) * DMA_COUNT);
   XAie_DmaSetNextBd(&dma_bd, 1, XAIE_DISABLE); 
   XAie_DmaSetAxi(&dma_bd, 0, burstlen, 0, 0, XAIE_ENABLE);
   XAie_DmaEnableBd(&dma_bd);

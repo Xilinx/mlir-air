@@ -99,13 +99,16 @@ main(int argc, char *argv[])
     return -1;
   }
 
-  uint32_t *dram_ptr_1 = (uint32_t *)air_dev_mem_alloc(IMAGE_SIZE * sizeof(uint32_t));
-  uint32_t *dram_ptr_2 = (uint32_t *)air_dev_mem_alloc(IMAGE_SIZE * sizeof(uint32_t));
-  uint32_t *dram_ptr_3 = (uint32_t *)air_dev_mem_alloc(IMAGE_SIZE * sizeof(uint32_t));
+  uint32_t *dram_ptr_1 =
+      (uint32_t *)air_dev_mem_alloc(IMAGE_SIZE * sizeof(uint32_t));
+  uint32_t *dram_ptr_2 =
+      (uint32_t *)air_dev_mem_alloc(IMAGE_SIZE * sizeof(uint32_t));
+  uint32_t *dram_ptr_3 =
+      (uint32_t *)air_dev_mem_alloc(IMAGE_SIZE * sizeof(uint32_t));
   if (dram_ptr_1 != NULL && dram_ptr_2 != NULL && dram_ptr_3 != NULL) {
     for (int i=0; i<IMAGE_SIZE; i++) {
-      dram_ptr_1[i] = i+1;
-      dram_ptr_2[i] = i+1;
+      dram_ptr_1[i] = i + 1;
+      dram_ptr_2[i] = i + 1;
       dram_ptr_3[i] = 0xdeface;
     }
   } else {
@@ -130,7 +133,12 @@ main(int argc, char *argv[])
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_c = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_c, 0, col, 0, 0, 4, 2, air_dev_mem_get_pa(dram_ptr_3)/*DDR_ADDR+(2*IMAGE_SIZE*sizeof(float))*/, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
+  air_packet_nd_memcpy(
+      pkt_c, 0, col, 0, 0, 4, 2,
+      air_dev_mem_get_pa(dram_ptr_3) /*DDR_ADDR+(2*IMAGE_SIZE*sizeof(float))*/,
+      TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
+      NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
 
   //
   // packet to send the input matrices
@@ -139,12 +147,21 @@ main(int argc, char *argv[])
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_a = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_a, 0, col, 1, 0, 4, 2, air_dev_mem_get_pa(dram_ptr_1)/*DDR_ADDR*/, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
+  air_packet_nd_memcpy(
+      pkt_a, 0, col, 1, 0, 4, 2, air_dev_mem_get_pa(dram_ptr_1) /*DDR_ADDR*/,
+      TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
+      NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_b = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_b, 0, col, 1, 1, 4, 2, air_dev_mem_get_pa(dram_ptr_2)/*DDR_ADDR+(IMAGE_SIZE*sizeof(float))*/, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
+  air_packet_nd_memcpy(
+      pkt_b, 0, col, 1, 1, 4, 2,
+      air_dev_mem_get_pa(dram_ptr_2) /*DDR_ADDR+(IMAGE_SIZE*sizeof(float))*/,
+      TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
+      NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
 
   //
   // dispatch the packets to the MB
@@ -190,5 +207,4 @@ main(int argc, char *argv[])
   }
 
   air_dev_mem_allocator_free();
-
 }
