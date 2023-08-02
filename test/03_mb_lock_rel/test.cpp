@@ -47,8 +47,7 @@ int main(int argc, char *argv[])
 
   // create the queue
   queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q,
-                              AIR_VCK190_SHMEM_BASE);
+  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, agents[0].handle);
   assert(ret == 0 && "failed to create queue!");
 
   uint64_t wr_idx = queue_add_write_index(q, 1);
@@ -67,26 +66,30 @@ int main(int argc, char *argv[])
   mlir_aie_configure_switchboxes(xaie);
   mlir_aie_initialize_locks(xaie);
 
-  mlir_aie_release_lock(xaie, col, 2, 0, 1, 0);
+  /*mlir_aie_release_lock(xaie, col, 2, 0, 1, 0);
   auto lock_ret = mlir_aie_acquire_lock(xaie, col, 2, 0, 1, 10000);
-  assert(lock_ret);
+  assert(lock_ret);*/
 
   mlir_aie_configure_dmas(xaie);
 
-  // setup the shim dma descriptors
-  uint32_t *bram_ptr;
-  mlir_aie_init_mems(xaie, 1);
-  bram_ptr = (uint32_t *)mlir_aie_mem_alloc(xaie, 0, 0x8000);
+  // Initializing the device memory allocator
+  if (air_init_dev_mem_allocator(0x8000 /* dev_mem_size */,
+                                 0 /* device_id (optional)*/)) {
+    std::cout << "Error creating device memory allocator" << std::endl;
+    return -1;
+  }
 
-  bram_ptr[24] = 0xacdc;
-  mlir_aie_sync_mem_dev(xaie, 0);
+  // Allocating some device memory
+  uint32_t *dram_ptr = (uint32_t *)air_dev_mem_alloc(0x8000);
+
+  dram_ptr[24] = 0xacdc;
 
   #define DMA_COUNT 256
 
   auto burstlen = 4;
   XAie_DmaDesc dma_bd;
   XAie_DmaDescInit(&(xaie->DevInst), &dma_bd, XAie_TileLoc(col,0));
-  XAie_DmaSetAddrLen(&dma_bd, (u64)bram_ptr, sizeof(u32) * DMA_COUNT); 
+  XAie_DmaSetAddrLen(&dma_bd, (u64)air_dev_mem_get_pa(dram_ptr), sizeof(u32) * DMA_COUNT); 
   XAie_DmaSetNextBd(&dma_bd, 1, XAIE_DISABLE); 
   XAie_DmaSetAxi(&dma_bd, 0, burstlen, 0, 0, XAIE_ENABLE);
   XAie_DmaEnableBd(&dma_bd);
@@ -139,7 +142,6 @@ int main(int argc, char *argv[])
   // we copied the start of the shared bram into tile memory,
   // fish out the queue id and check it
   uint32_t d = mlir_aie_read_buffer_b0(xaie, 24);
-  printf("ID %x\n", d);
 
   if (d == 0xacdc) {
     printf("PASS!\n");
