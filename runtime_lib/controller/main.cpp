@@ -78,8 +78,6 @@ inline uint64_t mymod(uint64_t a) {
   return result;
 }
 
-namespace {
-
 struct HerdConfig {
   uint32_t row_start;
   uint32_t num_rows;
@@ -90,8 +88,6 @@ struct HerdConfig {
 HerdConfig HerdCfgInst;
 
 #ifdef ARM_CONTROLLER
-namespace xaie2 {
-
 struct aie_libxaie_ctx_t {
   XAie_Config AieConfigPtr;
   XAie_DevInst DevInst;
@@ -212,7 +208,7 @@ void mlir_aie_print_dma_status(aie_libxaie_ctx_t *ctx, int col, int row) {
              col, row, dma_mm2s_status, dma_mm2s0_control, dma_mm2s1_control,
              dma_s2mm_status, dma_s2mm0_control, dma_s2mm1_control, dma_bd0_a,
              dma_bd0_control, dma_bd1_a, dma_bd1_control);
-  for (int bd = 0; bd < NUM_BD; bd++) {
+  for (uint8_t bd = 0; bd < NUM_BD; bd++) {
     u32 dma_bd_addr_a;
     XAie_Read32(&(ctx->DevInst), tileAddr + 0x0001D000 + (0x20 * bd),
                 &dma_bd_addr_a);
@@ -493,12 +489,8 @@ void mlir_aie_print_tile_status(aie_libxaie_ctx_t *ctx, int col, int row) {
   xil_printf("\n\r");
 }
 
-} // namespace xaie2
-
-xaie2::aie_libxaie_ctx_t *_xaie;
+aie_libxaie_ctx_t *_xaie;
 #endif
-
-namespace xaie {
 
 u64 getTileAddr(u16 ColIdx, u16 RowIdx) {
 #ifdef ARM_CONTROLLER
@@ -564,8 +556,6 @@ u32 maskpoll32(u64 Addr, u32 Mask, u32 Value, u32 TimeOut) {
   return Ret;
 }
 
-} // namespace xaie
-
 int xaie_shim_dma_wait_idle(uint64_t TileAddr, int direction, int channel) {
   uint32_t shimDMAchannel = channel;
   uint32_t status_register_offset;
@@ -586,7 +576,7 @@ int xaie_shim_dma_wait_idle(uint64_t TileAddr, int direction, int channel) {
   // Will timeout if shim is busy
   uint32_t timeout_count = 0;
   uint32_t timeout_val = 100;
-  while ((xaie::in32(TileAddr + status_register_offset) >> status_mask_shift) &
+  while ((in32(TileAddr + status_register_offset) >> status_mask_shift) &
          0b11) {
     if (timeout_count >= timeout_val) {
       air_printf("[WARNING] xaie_shim_dma_wait_idle timed out\r\n");
@@ -615,7 +605,7 @@ uint32_t xaie_shim_dma_get_outstanding(uint64_t TileAddr, int direction,
     shimDMAchannel += XAIEDMA_SHIM_CHNUM_MM2S0;
     status_register_offset = 0x1d164;
   }
-  uint32_t outstanding = (xaie::in32(TileAddr + status_register_offset) >>
+  uint32_t outstanding = (in32(TileAddr + status_register_offset) >>
                           start_queue_size_mask_shift) &
                          0b111;
   return outstanding;
@@ -675,7 +665,7 @@ int xaie_shim_dma_push_bd(uint64_t TileAddr, int direction, int channel,
   }
 
   uint32_t start_bd = 4 * shimDMAchannel; // shimDMAchannel<<2;
-  uint32_t outstanding = (xaie::in32(TileAddr + status_register_offset) >>
+  uint32_t outstanding = (in32(TileAddr + status_register_offset) >>
                           start_queue_size_mask_shift) &
                          0b111;
   // If outstanding >=4, we're in trouble!!!!
@@ -686,7 +676,7 @@ int xaie_shim_dma_push_bd(uint64_t TileAddr, int direction, int channel,
                shimDMAchannel);
     bool waiting = true;
     while (waiting) {
-      outstanding = (xaie::in32(TileAddr + status_register_offset) >>
+      outstanding = (in32(TileAddr + status_register_offset) >>
                      start_queue_size_mask_shift) &
                     0b111;
       waiting = (outstanding > 3); // NOTE maybe >= 3
@@ -708,42 +698,42 @@ int xaie_shim_dma_push_bd(uint64_t TileAddr, int direction, int channel,
   // last_bd[shimDMAchannel][dma] =
   // (last_bd[shimDMAchannel][dma]==3)?0:last_bd[shimDMAchannel][dma]+1;
   uint32_t bd_offset = bd * 0x14;
-  xaie::out32(TileAddr + 0x0001D008 + (bd_offset),
+  out32(TileAddr + 0x0001D008 + (bd_offset),
               0x0); // Mark the BD as invalid
 
   // Set the registers directly ...
   uint32_t base_address = 0x1d000 + bd_offset;
-  xaie::out32(TileAddr + base_address + 0x00, LOW_ADDR((u64)addr));
-  xaie::out32(
+  out32(TileAddr + base_address + 0x00, LOW_ADDR((u64)addr));
+  out32(
       TileAddr + base_address + 0x04,
       len >> 2); // We pass in bytes, but the shim DMA can ony deal with 32 bits
   u32 control = (HIGH_ADDR((u64)addr) << 16) | 1;
-  xaie::out32(TileAddr + base_address + 0x08, control);
-  xaie::out32(TileAddr + base_address + 0x0C,
+  out32(TileAddr + base_address + 0x08, control);
+  out32(TileAddr + base_address + 0x0C,
               0x410); // Burst len [10:9] = 2 (16)
                       // QoS [8:5] = 0 (best effort)
                       // Secure bit [4] = 1 (set)
 
-  xaie::out32(TileAddr + base_address + 0x10, 0x0);
+  out32(TileAddr + base_address + 0x10, 0x0);
 
-  // u32 config = xaie::in32(TileAddr + base_address + 0xC);
+  // u32 config = in32(TileAddr + base_address + 0xC);
   // xil_printf("New BD addr %08x ctrl %08x config
   // %08x\n\r",LOW_ADDR((u64)addr),control,config);
 
   // Check if the channel is running or not
   uint32_t precheck_status =
-      (xaie::in32(TileAddr + status_register_offset) >> status_mask_shift) &
+      (in32(TileAddr + status_register_offset) >> status_mask_shift) &
       0b11;
   if (precheck_status == 0b00) {
-    xaie::out32(TileAddr + control_register_offset,
+    out32(TileAddr + control_register_offset,
                 0xb001); // Stream traffic can run, we can issue AXI-MM, and the
                          // channel is enabled
   }
   // Now push into the queue
-  xaie::out32(TileAddr + start_queue_register_offset, bd);
+  out32(TileAddr + start_queue_register_offset, bd);
 
 #if CHATTY
-  outstanding = (xaie::in32(TileAddr + status_register_offset) >>
+  outstanding = (in32(TileAddr + status_register_offset) >>
                  start_queue_size_mask_shift) &
                 0b111;
   air_printf("Outstanding post: %d\n\r", outstanding);
@@ -765,7 +755,7 @@ int xaie_shim_dma_push_bd(uint64_t TileAddr, int direction, int channel,
 }
 
 int xaie_lock_release(u16 col, u16 row, u32 lock_id, u32 val) {
-  u64 Addr = xaie::getTileAddr(col, row);
+  u64 Addr = getTileAddr(col, row);
   u64 LockOfst = 0x0001E020;
   if (row != 0)
     LockOfst = 0x0001E020 + 0x10 * (val & 0x1);
@@ -780,13 +770,13 @@ int xaie_lock_release(u16 col, u16 row, u32 lock_id, u32 val) {
       break;
     }
   }
-  xaie::maskpoll32(Addr + LockOfst + 0x80 * lock_id, 0x1, 0x1, 0);
+  maskpoll32(Addr + LockOfst + 0x80 * lock_id, 0x1, 0x1, 0);
   // XAieTile_LockRelease(tile, lock_id, val, 0);
   return 1;
 }
 
 int xaie_lock_acquire_nb(u16 col, u16 row, u32 lock_id, u32 val) {
-  u64 Addr = xaie::getTileAddr(col, row);
+  u64 Addr = getTileAddr(col, row);
   u64 LockOfst = 0x0001E060;
   if (row != 0)
     LockOfst = 0x0001E060 + 0x10 * (val & 0x1);
@@ -805,7 +795,7 @@ int xaie_lock_acquire_nb(u16 col, u16 row, u32 lock_id, u32 val) {
   u32 loop = 0;
   while ((!lock_ret) && (loop < 512)) {
     lock_ret =
-        xaie::maskpoll32(Addr + LockOfst + 0x80 * lock_id, 0x1, 0x1, 100);
+        maskpoll32(Addr + LockOfst + 0x80 * lock_id, 0x1, 0x1, 100);
     // lock_ret = XAieTile_LockAcquire(tile, lock_id, val, 10000);
     loop++;
   }
@@ -815,11 +805,6 @@ int xaie_lock_acquire_nb(u16 col, u16 row, u32 lock_id, u32 val) {
     return 0;
   }
   return 1;
-}
-
-void xaie_l2_dma_init(int col) {
-  // Configure PLIO enable and up/downsizer
-  xaie::out32(xaie::getTileAddr(col, 0) + 0x00033008, 0xFF);
 }
 
 #ifdef ARM_CONTROLLER
@@ -879,11 +864,11 @@ void xaie_strobe_shim_reset() {
 void xaie_shim_dma_init(int col) {
   // Invalidate all BDs by writing to their buffer control register
   for (int ch = 0; ch < 4; ch++) {
-    xaie::out32(xaie::getTileAddr(col, 0) + 0x0001D140 + 0x8 * ch,
+    out32(getTileAddr(col, 0) + 0x0001D140 + 0x8 * ch,
                 0x00); // Disable all channels
   }
   for (int bd = 0; bd < 16; bd++) {
-    xaie::out32(xaie::getTileAddr(col, 0) + 0x0001D008 + 0x14 * bd, 0);
+    out32(getTileAddr(col, 0) + 0x0001D008 + 0x14 * bd, 0);
   }
 }
 
@@ -895,7 +880,7 @@ void xaie_device_init(int num_cols) {
   xaie_array_reset();
 
 #ifdef ARM_CONTROLLER
-  int err = xaie2::mlir_aie_reinit_device(_xaie);
+  int err = mlir_aie_reinit_device(_xaie);
   if (err)
     xil_printf("ERROR initializing device.\n\r");
 #endif
@@ -913,7 +898,7 @@ void xaie_device_init(int num_cols) {
   // Turning the shim_reset_enable bit low for every column so they don't get
   // reset when we perform a global shim reset
   for (int col = 0; col < XAIE_NUM_COLS; col++) {
-    xaie::out32(xaie::getTileAddr(col, 0) + 0x0003604C, 0);
+    out32(getTileAddr(col, 0) + 0x0003604C, 0);
   }
 }
 
@@ -929,28 +914,26 @@ void xaie_segment_init(int start_col, int num_cols, int start_row,
   // Performing the shim reset
   air_printf("Performing shim reset\r\n");
   for (int c = start_col; c < start_col + num_cols; c++) {
-    xaie::out32(xaie::getTileAddr(c, 0) + 0x0003604C, 1);
+    out32(getTileAddr(c, 0) + 0x0003604C, 1);
   }
 
   xaie_strobe_shim_reset();
 
   for (int c = start_col; c < start_col + num_cols; c++) {
-    xaie::out32(xaie::getTileAddr(c, 0) + 0x0003604C, 0);
+    out32(getTileAddr(c, 0) + 0x0003604C, 0);
   }
 
   // Performing the column reset
   air_printf("Performing col reset\r\n");
   for (int c = start_col; c < start_col + num_cols; c++) {
-    xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048,
+    out32(getTileAddr(c, 0) + 0x00036048,
                 !!1); // 1 == ResetEnable
-    xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048,
+    out32(getTileAddr(c, 0) + 0x00036048,
                 !!0); // 0 == ResetDisable
   }
 
 #endif
 }
-
-} // namespace
 
 uint64_t shmem_base = 0x020100000000UL;
 uint64_t uart_lock_offset = 0x200;
@@ -1061,8 +1044,7 @@ void handle_packet_segment_initialize(dispatch_packet_t *pkt) {
     u32 num_cols = (pkt->arg[0] >> 40) & 0xff;
 
     u32 segment_id = pkt->arg[1] & 0xffff;
-    u32 shimDMA0 = (pkt->arg[1] >> 16) & 0xff;
-    u32 shimDMA1 = (pkt->arg[1] >> 24) & 0xff;
+
     // TODO more checks on segment dimensions
     if (start_row == 0)
       start_row++;
@@ -1219,18 +1201,12 @@ void handle_packet_sg_cdma(dispatch_packet_t *pkt) {
   u32 num_cols = (pkt->arg[3] >> 24) & 0xff;
   for (uint c = start_col; c < start_col + num_cols; c++) {
     for (uint r = start_row; r < start_row + num_rows; r++) {
-      // int st = xaie::in32(xaie::getTileAddr(c,r) + 0x00032004);
-      // if ((0x3&st) != 0x2) {
-      // air_printf("Resetting col %d row %d. 0x%lx ==
-      // 0x%lx\n\r",c,r,xaie::getTileAddr(c,r),_XAie_GetTileAddr(&(_xaie->DevInst),
-      // r, c));
-      xaie::out32(xaie::getTileAddr(c, r) + 0x00032000, 0x2);
+      out32(getTileAddr(c, r) + 0x00032000, 0x2);
       air_printf("Done resetting col %d row %d.\n\r", c, r);
-      //}
     }
     air_printf("Resetting column %d.\n\r", c);
-    xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048, !!1); // 1 == ResetEnable
-    xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048, !!0); // 0 == ResetDisable
+    out32(getTileAddr(c, 0) + 0x00036048, !!1); // 1 == ResetEnable
+    out32(getTileAddr(c, 0) + 0x00036048, !!0); // 0 == ResetDisable
     air_printf("Done resetting column %d.\n\r", c);
   }
   air_printf("CDMA reset.\n\r");
@@ -1263,9 +1239,9 @@ void handle_packet_sg_cdma(dispatch_packet_t *pkt) {
   for (uint c = start_col; c < start_col + num_cols; c++) {
     for (uint r = start_row; r <= start_row + num_rows; r++) {
       for (int l = 0; l < 16; l++)
-        xaie::maskpoll32(xaie::getTileAddr(c, r) + 0x0001E020 + 0x80 * l, 0x1,
+        maskpoll32(getTileAddr(c, r) + 0x0001E020 + 0x80 * l, 0x1,
                          0x1, 0);
-      xaie::out32(xaie::getTileAddr(c, r) + 0x00032000, 0x1);
+      out32(getTileAddr(c, r) + 0x00032000, 0x1);
     }
   }
   air_printf("CDMA done!\n\r");
@@ -1282,13 +1258,13 @@ void handle_packet_cdma(dispatch_packet_t *pkt) {
   if (op == 2) {
     for (uint c = start_col; c < start_col + num_cols; c++) {
       for (uint r = start_row; r < start_row + num_rows; r++) {
-        int st = xaie::in32(xaie::getTileAddr(c, r) + 0x00032004);
+        int st = in32(getTileAddr(c, r) + 0x00032004);
         air_printf("Status col %d row %d. 0x%x\n\r", c, r, st & 0x3);
         if ((0x3 & st) != 0x2) {
           // air_printf("Resetting col %d row %d. 0x%lx ==
-          // 0x%lx\n\r",c,r,xaie::getTileAddr(c,r),_XAie_GetTileAddr(&(_xaie->DevInst),
+          // 0x%lx\n\r",c,r,getTileAddr(c,r),_XAie_GetTileAddr(&(_xaie->DevInst),
           // r, c));
-          xaie::out32(xaie::getTileAddr(c, r) + 0x00032000, 0x2);
+          out32(getTileAddr(c, r) + 0x00032000, 0x2);
           air_printf("Done resetting col %d row %d.\n\r", c, r);
         }
       }
@@ -1297,9 +1273,9 @@ void handle_packet_cdma(dispatch_packet_t *pkt) {
   if (op == 1) {
     for (uint c = start_col; c < start_col + num_cols; c++) {
       air_printf("Resetting column %d.\n\r", c);
-      xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048,
+      out32(getTileAddr(c, 0) + 0x00036048,
                   !!1); // 1 == ResetEnable
-      xaie::out32(xaie::getTileAddr(c, 0) + 0x00036048,
+      out32(getTileAddr(c, 0) + 0x00036048,
                   !!0); // 0 == ResetDisable
       air_printf("Done resetting column %d.\n\r", c);
     }
@@ -1323,9 +1299,9 @@ void handle_packet_cdma(dispatch_packet_t *pkt) {
     for (uint c = start_col; c < start_col + num_cols; c++) {
       for (uint r = start_row; r <= start_row + num_rows; r++) {
         for (int l = 0; l < 16; l++)
-          xaie::maskpoll32(xaie::getTileAddr(c, r) + 0x0001E020 + 0x80 * l, 0x1,
+          maskpoll32(getTileAddr(c, r) + 0x0001E020 + 0x80 * l, 0x1,
                            0x1, 0);
-        xaie::out32(xaie::getTileAddr(c, r) + 0x00032000, 0x1);
+        out32(getTileAddr(c, r) + 0x00032000, 0x1);
       }
     }
   }
@@ -1366,11 +1342,11 @@ void handle_packet_xaie_lock(dispatch_packet_t *pkt) {
 void handle_packet_xaie_status(dispatch_packet_t *pkt, u32 type) {
   xil_printf("Reading status! %d %d %d\n\r", type, pkt->arg[0], pkt->arg[1]);
   if (type == 1) {
-    xaie2::mlir_aie_print_shimdma_status(_xaie, pkt->arg[0], pkt->arg[1]);
+    mlir_aie_print_shimdma_status(_xaie, pkt->arg[0], 0);
   } else if (type == 2) {
-    xaie2::mlir_aie_print_dma_status(_xaie, pkt->arg[0], pkt->arg[1]);
+    mlir_aie_print_dma_status(_xaie, pkt->arg[0], pkt->arg[1]);
   } else if (type == 3) {
-    xaie2::mlir_aie_print_tile_status(_xaie, pkt->arg[0], pkt->arg[1]);
+    mlir_aie_print_tile_status(_xaie, pkt->arg[0], pkt->arg[1]);
   }
 }
 #endif
@@ -1471,7 +1447,7 @@ int do_packet_nd_memcpy(uint32_t slot) {
   for (; index_4d < length_4d; index_4d++) {
     for (; index_3d < length_3d; index_3d++) {
       for (; index_2d < length_2d; index_2d++) {
-        outstanding = xaie_shim_dma_get_outstanding(xaie::getTileAddr(col, 0),
+        outstanding = xaie_shim_dma_get_outstanding(getTileAddr(col, 0),
                                                     direction, channel);
         air_printf("\n\rND start shim DMA %d %d [%d][%d][%d] paddr %llx \n\r",
                    direction, channel, index_4d, index_3d, index_2d, paddr_1d);
@@ -1480,9 +1456,9 @@ int do_packet_nd_memcpy(uint32_t slot) {
                                 paddr_3d, paddr_2d, paddr_1d);
           return 1;
         } else {
-          xaie_shim_dma_push_bd(xaie::getTileAddr(col, 0), direction, channel,
+          xaie_shim_dma_push_bd(getTileAddr(col, 0), direction, channel,
                                 col, paddr_1d, length_1d);
-          // xaie_shim_dma_push_bd(&xaie::ShimTileInst[col], direction, channel,
+          // xaie_shim_dma_push_bd(&ShimTileInst[col], direction, channel,
           // logical_col, paddr_1d, length_1d);
         }
         paddr_1d += stride_2d;
@@ -1501,7 +1477,7 @@ int do_packet_nd_memcpy(uint32_t slot) {
 
   // Wait check idle
   int wait_idle_ret =
-      xaie_shim_dma_wait_idle(xaie::getTileAddr(col, 0), direction, channel);
+      xaie_shim_dma_wait_idle(getTileAddr(col, 0), direction, channel);
 
   // If return 1 we timed out, BDs waiting on other BDs. Put checkpoint and
   // return 1
@@ -1578,7 +1554,7 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id) {
           // uint16_t logical_col  = (a_pkt->arg[0] >> 32) & 0x00ff;
           uint16_t direction = (a_pkt->arg[0] >> 60) & 0x000f;
           // uint16_t col          = mappedShimDMA[logical_col];
-          stalled = (xaie_shim_dma_get_outstanding(xaie::getTileAddr(col, 0),
+          stalled = (xaie_shim_dma_get_outstanding(getTileAddr(col, 0),
                                                    direction, channel) >= 4);
           active = packet_get_active(a_pkt);
         } else {
@@ -1607,7 +1583,6 @@ void handle_agent_dispatch_packet(queue_t *q, uint32_t mb_id) {
       } // End get next packet
 
       // FOUND ND packet process here
-    found:
       last_slot = slot;
       int ret = do_packet_memcpy(slot);
       if (ret)
@@ -1806,10 +1781,10 @@ int main() {
 #ifdef ARM_CONTROLLER
   Xil_DCacheDisable();
 
-  xaie2::aie_libxaie_ctx_t ctx;
+  aie_libxaie_ctx_t ctx;
   _xaie = &ctx;
-  xaie2::mlir_aie_init_libxaie(_xaie);
-  int err = xaie2::mlir_aie_init_device(_xaie);
+  mlir_aie_init_libxaie(_xaie);
+  int err = mlir_aie_init_device(_xaie);
   if (err)
     xil_printf("ERROR initializing device.\n\r");
   int user1 = 1;
