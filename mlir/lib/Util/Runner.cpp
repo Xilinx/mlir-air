@@ -180,11 +180,11 @@ public:
     if (type == "wait_all") {
       execution_time = 1;
     } else if (type == "dma") {
-      auto Op = mlir::dyn_cast<xilinx::air::DmaMemcpyInterface>(c.op);
+      auto Op = mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(c.op);
       if (!Op)
         c.op->emitOpError("has mismatching event type").attachNote()
             << "Has 'dma' as event type, but op isn't of type "
-               "air::DmaMemcpyInterface";
+               "air::DmaMemcpyNdOp";
       MemRefType srcTy = Op.getSrcMemref().getType().cast<MemRefType>();
       MemRefType dstTy = Op.getDstMemref().getType().cast<MemRefType>();
       auto srcSpace = srcTy.getMemorySpaceAsInt();

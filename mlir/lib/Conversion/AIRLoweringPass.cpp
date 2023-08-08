@@ -208,7 +208,7 @@ public:
 
     // If the herd doesn't contain a dma op, then it can be deleted
     SmallVector<Operation *> herdOps;
-    herd.walk([&](air::DmaMemcpyInterface op) { herdOps.push_back(op); });
+    herd.walk([&](air::DmaMemcpyNdOp op) { herdOps.push_back(op); });
 
     if (herdOps.size()) {
       auto herd_size = herd.getSizeOperands();
