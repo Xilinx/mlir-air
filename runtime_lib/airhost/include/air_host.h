@@ -66,6 +66,8 @@ hsa_status_t air_get_agent_info(queue_t *queue, air_agent_info_t attribute,
 hsa_status_t air_packet_rw32_init(dispatch_packet_t *pkt, bool is_write,
                                   uint64_t address, uint32_t value);
 
+hsa_status_t air_packet_load_airbin(dispatch_packet_t *pkt, uint64_t table);
+
 #ifdef AIR_PCIE
 hsa_status_t air_get_physical_devices();
 #endif
@@ -90,9 +92,19 @@ of memory backed by the device DDR BAR and returns the virtual address to that
 region. */
 void *air_dev_mem_alloc(uint32_t size);
 
+#ifndef AIR_PCIE
 /* Used to obtain the physical address of a buffer allocated using the
 device memory allocator. */
 uint64_t air_dev_mem_get_pa(void *buff_va);
+#endif // AIR_PCIE
+
+/*
+  Get an offset relative to the start of device memory
+  This is necessary to share data structures with the device. The input address
+  points to device memory that is mapped in HVA (host virtual address) space.
+  Valid buffers are returned by air_dev_mem_alloc().
+*/
+uint64_t air_dev_mem_get_offset(void *buff_va);
 
 // memory operations
 //
