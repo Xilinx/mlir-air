@@ -611,10 +611,13 @@ struct ChannelOpConversion : public OpConversionPattern<air::ChannelOp> {
     auto initialValue =
         mlir::DenseElementsAttr::get(mlir::RankedTensorType::get(shape, ptrType),
                                      rewriter.getIntegerAttr(ptrType, 0));
-    rewriter.create<memref::GlobalOp>(op->getLoc(), name.str(),
+    auto globalOp = rewriter.create<memref::GlobalOp>(op->getLoc(), name.str(),
                                       rewriter.getStringAttr("private"),
                                       memrefType, initialValue, false, nullptr);
-
+    // if op has broadcast attribute, attach it to the global
+    if (op->getAttr("broadcast_shape")) {
+      globalOp->setAttr("broadcast_shape", op->getAttr("broadcast_shape"));
+    }
     return success();
   }
 };
@@ -662,6 +665,16 @@ public:
     auto channelPtr = rewriter.create<memref::GetGlobalOp>(
         op->getLoc(), memrefType, op.getChanNameAttr());
     operands.push_back(channelPtr);
+    // create constant index op for channel array size
+    for (auto i : memrefType.getShape()) {
+      operands.push_back(rewriter.create<arith::ConstantIndexOp>(op->getLoc(), i));
+    }
+    // if channel is broadcast, add broadcast shape
+    if (channelOp->getAttr("broadcast_shape")) {
+      for (auto i : channelOp->getAttr("broadcast_shape").cast<ArrayAttr>()) {
+        operands.push_back(rewriter.create<arith::ConstantIndexOp>(op->getLoc(), i.cast<IntegerAttr>().getInt()));
+      }
+    }
     operands.append(adaptor.getOperands().begin(), adaptor.getOperands().end());
     auto call = convertOpToFunction(op, operands, rewriter, "air_channel_put");
     if (call)
