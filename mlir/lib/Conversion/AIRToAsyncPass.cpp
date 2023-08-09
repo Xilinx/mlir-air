@@ -597,14 +597,19 @@ struct ChannelOpConversion : public OpConversionPattern<air::ChannelOp> {
   matchAndRewrite(air::ChannelOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
+    SmallVector<int64_t, 2> shape;
+    for (auto i : op.getSize()) {
+      shape.push_back(i.dyn_cast<IntegerAttr>().getInt());
+    }
+
     auto memrefType =
-        MemRefType::get({}, IntegerType::get(op->getContext(), 64));
+        MemRefType::get(shape, IntegerType::get(op->getContext(), 64));
     auto name = op.getSymName();
     rewriter.eraseOp(op);
 
     auto ptrType = rewriter.getIntegerType(64);
     auto initialValue =
-        mlir::DenseElementsAttr::get(mlir::RankedTensorType::get({}, ptrType),
+        mlir::DenseElementsAttr::get(mlir::RankedTensorType::get(shape, ptrType),
                                      rewriter.getIntegerAttr(ptrType, 0));
     rewriter.create<memref::GlobalOp>(op->getLoc(), name.str(),
                                       rewriter.getStringAttr("private"),
@@ -622,8 +627,12 @@ public:
   matchAndRewrite(air::ChannelGetOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     SmallVector<Value> operands;
-    auto memrefType =
-        MemRefType::get({}, IntegerType::get(op->getContext(), 64));
+    auto channel_name = op.getChanNameAttr();
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto channelOp = moduleOp.lookupSymbol<memref::GlobalOp>(channel_name);
+    if (!channelOp)
+      return failure();
+    auto memrefType = channelOp.getType();
     auto channelPtr = rewriter.create<memref::GetGlobalOp>(
         op->getLoc(), memrefType, op.getChanNameAttr());
     operands.push_back(channelPtr);
@@ -644,8 +653,12 @@ public:
   matchAndRewrite(air::ChannelPutOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     SmallVector<Value> operands;
-    auto memrefType =
-        MemRefType::get({}, IntegerType::get(op->getContext(), 64));
+    auto channel_name = op.getChanNameAttr();
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto channelOp = moduleOp.lookupSymbol<memref::GlobalOp>(channel_name);
+    if (!channelOp)
+      return failure();
+    auto memrefType = channelOp.getType();
     auto channelPtr = rewriter.create<memref::GetGlobalOp>(
         op->getLoc(), memrefType, op.getChanNameAttr());
     operands.push_back(channelPtr);
