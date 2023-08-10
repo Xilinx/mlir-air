@@ -601,6 +601,10 @@ struct ChannelOpConversion : public OpConversionPattern<air::ChannelOp> {
     for (auto i : op.getSize()) {
       shape.push_back(i.dyn_cast<IntegerAttr>().getInt());
     }
+    // if channel dim < 2, add until dim = 2
+    while (shape.size() < 2) {
+      shape.push_back(1);
+    }
 
     auto memrefType =
         MemRefType::get(shape, IntegerType::get(op->getContext(), 64));
@@ -669,11 +673,19 @@ public:
     for (auto i : memrefType.getShape()) {
       operands.push_back(rewriter.create<arith::ConstantIndexOp>(op->getLoc(), i));
     }
+    // if shape dim < 2, add until dim = 2
+    while (operands.size() < 3) {
+      operands.push_back(rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1));
+    }
     // if channel is broadcast, add broadcast shape
     if (channelOp->getAttr("broadcast_shape")) {
       for (auto i : channelOp->getAttr("broadcast_shape").cast<ArrayAttr>()) {
         operands.push_back(rewriter.create<arith::ConstantIndexOp>(op->getLoc(), i.cast<IntegerAttr>().getInt()));
       }
+    } else {
+      // if channel is not broadcast, add 1
+      operands.push_back(rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1));
+      operands.push_back(rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1));
     }
     operands.append(adaptor.getOperands().begin(), adaptor.getOperands().end());
     auto call = convertOpToFunction(op, operands, rewriter, "air_channel_put");
