@@ -281,7 +281,8 @@ mlir_air_channel_put_3d(
     float);
 
 // 2D
-mlir_air_channel_get_2d(M0D2I64_I64_I64_M0D2I32_I64_I64_I64_I64_I64_I64, int32_t);
+mlir_air_channel_get_2d(M0D2I64_I64_I64_M0D2I32_I64_I64_I64_I64_I64_I64,
+                        int32_t);
 mlir_air_channel_put_2d(
     M0D2I64_I64_I64_I64_I64_I64_I64_M0D2I32_I64_I64_I64_I64_I64_I64, int32_t);
 mlir_air_channel_get_2d(M0D2I64_I64_I64_M0D2F32_I64_I64_I64_I64_I64_I64, float);

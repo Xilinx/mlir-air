@@ -9,9 +9,9 @@
 #ifndef AIR_CHANNEL_H
 #define AIR_CHANNEL_H
 
+#include <atomic>
 #include <condition_variable>
 #include <mutex>
-#include <atomic>
 #include <stdlib.h>
 
 template <typename T> struct channel_t {

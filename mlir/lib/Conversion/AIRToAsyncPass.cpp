@@ -612,12 +612,12 @@ struct ChannelOpConversion : public OpConversionPattern<air::ChannelOp> {
     rewriter.eraseOp(op);
 
     auto ptrType = rewriter.getIntegerType(64);
-    auto initialValue =
-        mlir::DenseElementsAttr::get(mlir::RankedTensorType::get(shape, ptrType),
-                                     rewriter.getIntegerAttr(ptrType, 0));
-    auto globalOp = rewriter.create<memref::GlobalOp>(op->getLoc(), name.str(),
-                                      rewriter.getStringAttr("private"),
-                                      memrefType, initialValue, false, nullptr);
+    auto initialValue = mlir::DenseElementsAttr::get(
+        mlir::RankedTensorType::get(shape, ptrType),
+        rewriter.getIntegerAttr(ptrType, 0));
+    auto globalOp = rewriter.create<memref::GlobalOp>(
+        op->getLoc(), name.str(), rewriter.getStringAttr("private"), memrefType,
+        initialValue, false, nullptr);
     // if op has broadcast attribute, attach it to the global
     if (op->getAttr("broadcast_shape")) {
       globalOp->setAttr("broadcast_shape", op->getAttr("broadcast_shape"));
@@ -671,21 +671,26 @@ public:
     operands.push_back(channelPtr);
     // create constant index op for channel array size
     for (auto i : memrefType.getShape()) {
-      operands.push_back(rewriter.create<arith::ConstantIndexOp>(op->getLoc(), i));
+      operands.push_back(
+          rewriter.create<arith::ConstantIndexOp>(op->getLoc(), i));
     }
     // if shape dim < 2, add until dim = 2
     while (operands.size() < 3) {
-      operands.push_back(rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1));
+      operands.push_back(
+          rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1));
     }
     // if channel is broadcast, add broadcast shape
     if (channelOp->getAttr("broadcast_shape")) {
       for (auto i : channelOp->getAttr("broadcast_shape").cast<ArrayAttr>()) {
-        operands.push_back(rewriter.create<arith::ConstantIndexOp>(op->getLoc(), i.cast<IntegerAttr>().getInt()));
+        operands.push_back(rewriter.create<arith::ConstantIndexOp>(
+            op->getLoc(), i.cast<IntegerAttr>().getInt()));
       }
     } else {
       // if channel is not broadcast, add 1
-      operands.push_back(rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1));
-      operands.push_back(rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1));
+      operands.push_back(
+          rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1));
+      operands.push_back(
+          rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1));
     }
     operands.append(adaptor.getOperands().begin(), adaptor.getOperands().end());
     auto call = convertOpToFunction(op, operands, rewriter, "air_channel_put");
