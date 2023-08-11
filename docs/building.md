@@ -88,7 +88,7 @@ git clone https://github.com/jnider/aie-rt
 cd aie-rt
 git checkout joel-aie
 cd driver/src
-make -f Makefile.Linux
+make -f Makefile.Linux CFLAGS="-D__AIELINUX__ -D__AIESYSFS__ -D__AIEAMDAIR__"
 sudo cp -r ../include /opt/aiengine/
 sudo cp libxaiengine.so* /opt/xaiengine/lib/
 export LD_LIBRARY_PATH=/opt/xaiengine/lib:${LD_LIBRARY_PATH}
