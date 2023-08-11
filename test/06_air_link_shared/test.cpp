@@ -22,7 +22,7 @@
 #include "air.hpp"
 #include "test_library.h"
 
-// #include "aie_inc.cpp"
+#include "aie_inc.cpp"
 
 #define IMAGE_WIDTH 32
 #define IMAGE_HEIGHT 16
@@ -31,12 +31,6 @@
 #define TILE_WIDTH 16
 #define TILE_HEIGHT 8
 #define TILE_SIZE  (TILE_WIDTH * TILE_HEIGHT)
-
-namespace air::segments::segment_0 {
-void mlir_aie_write_buffer_scratch_0_0(aie_libxaie_ctx_t *, int, int32_t);
-int32_t mlir_aie_read_buffer_scratch_0_0(aie_libxaie_ctx_t *, int);
-}; // namespace air::segments::segment_0
-using namespace air::segments::segment_0;
 
 int main(int argc, char *argv[]) {
 
@@ -74,9 +68,9 @@ int main(int argc, char *argv[]) {
 
   for (int i=0; i<TILE_SIZE; i++)
     mlir_aie_write_buffer_scratch_0_0(xaie, i, 0xfadefade);
-
+ 
   printf("loading aie_ctrl.so\n");
-  auto handle = air_module_load_from_file(nullptr, q);
+  auto handle = air_module_load_from_file("./aie_ctrl.so", q);
   assert(handle && "failed to load aie_ctrl.so");
 
   auto graph_fn = (void (*)(void*,void *))dlsym((void*)handle, "_mlir_ciface_graph");
