@@ -1,4 +1,4 @@
-//===- main.cpp -------------------------------------------------*- C++ -*-===//
+//===- test.cpp -------------------------------------------------*- C++ -*-===//
 //
 // Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
@@ -17,10 +17,6 @@
 
 #define VERBOSE 1
 #define PROFILE 0
-
-/*namespace air::partitions::partition_0 {
-int32_t mlir_aie_read_buffer_beef_0_0(aie_libxaie_ctx_t *ctx, int index);
-} // namespace air::partitions::partition_0*/
 
 namespace air::segments::segment_0 {
 int32_t mlir_aie_read_buffer_beef_0_0(aie_libxaie_ctx_t *, int);
