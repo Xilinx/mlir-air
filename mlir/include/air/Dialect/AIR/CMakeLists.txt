@@ -31,3 +31,11 @@ mlir_tablegen(AIRTransformOps.cpp.inc -gen-op-defs)
 add_public_tablegen_target(AIRTransformOpsIncGen)
 
 add_mlir_doc(AIRTransformOps AIRTransformOps ./ -gen-op-doc)
+
+if(BUILD_WITH_AIE)
+  set(LLVM_TARGET_DEFINITIONS AIRtoAIETransformOps.td)
+  mlir_tablegen(AIRtoAIETransformOps.h.inc -gen-op-decls)
+  mlir_tablegen(AIRtoAIETransformOps.cpp.inc -gen-op-defs)
+  add_public_tablegen_target(AIRtoAIETransformOpsIncGen)
+  add_mlir_doc(AIRtoAIETransformOps AIRtoAIETransformOps ./ -gen-op-doc)
+endif()

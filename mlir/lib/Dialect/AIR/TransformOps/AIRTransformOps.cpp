@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Dialect/AIR/AIRTransformOps.h"
-#include "air/Conversion/AIRToAIEPass.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -46,22 +45,6 @@ transform::GetSegmentForOp::apply(transform::TransformResults &results,
     segments.insert(segment);
   }
   results.set(getResult().cast<OpResult>(), segments.getArrayRef());
-  return DiagnosedSilenceableFailure::success();
-}
-
-//===----------------------------------------------------------------------===//
-// SegmentToAIEOp
-//===----------------------------------------------------------------------===//
-
-DiagnosedSilenceableFailure
-transform::SegmentToAIEOp::applyToOne(xilinx::air::SegmentOp target,
-                                      transform::ApplyToEachResultList &results,
-                                      transform::TransformState &state) {
-  SimpleRewriter rewriter(target->getContext());
-  FailureOr<ModuleOp> res = convertAIRToAIE(rewriter, target);
-  if (failed(res))
-    return DiagnosedSilenceableFailure::definiteFailure();
-  results.push_back(res->getOperation());
   return DiagnosedSilenceableFailure::success();
 }
 

@@ -4,18 +4,22 @@
 
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${AIE_INCLUDE_DIRS}/../runtime_lib/x86_64/test_lib/include
 )
 
-add_definitions(-DLIBXAIENGINEV2)
+if(BUILD_WITH_AIE)
+  include_directories(
+      ${AIE_INCLUDE_DIRS}/../runtime_lib/x86_64/test_lib/include
+  )
+  add_definitions(-DLIBXAIENGINEV2)
+  include_directories(${XILINX_XAIE_INCLUDE_DIR})
+  link_libraries(${XILINX_XAIE_LIBS})
+endif()
+
 
 if(BUILD_AIR_PCIE)
   message("Building PCIe runtime (BUILD_AIR_PCIE=${BUILD_AIR_PCIE})")
   add_definitions(-DAIR_PCIE)
 endif()
-
-include_directories(${XILINX_XAIE_INCLUDE_DIR})
-link_libraries(${XILINX_XAIE_LIBS})
 
 add_library(airhost STATIC
     memory.cpp
@@ -39,10 +43,11 @@ add_library(airhost_shared SHARED
    )
 set_property(TARGET airhost_shared PROPERTY POSITION_INDEPENDENT_CODE ON)
 
-target_link_libraries(airhost
-  ${AIR_LIBXAIE_LIBS}
-  dl
-)
+target_link_libraries(airhost dl)
+
+if(BUILD_WITH_AIE)
+  target_link_libraries(airhost ${AIR_LIBXAIE_LIBS})
+endif()
 
 set_target_properties(airhost PROPERTIES
          LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/runtime_lib)

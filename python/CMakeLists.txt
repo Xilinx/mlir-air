@@ -12,7 +12,9 @@ set(AIR_PYTHON_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/air")
 # The AIR copy of the MLIR bindings is in the `air.mlir` namespace.
 add_compile_definitions("MLIR_PYTHON_PACKAGE_PREFIX=air.mlir.")
 
-add_definitions(-DLIBXAIENGINEV2)
+if(BUILD_WITH_AIE)
+  add_definitions(-DLIBXAIENGINEV2)
+endif()
 
 ################################################################################
 # Sources

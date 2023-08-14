@@ -18,16 +18,23 @@ set_target_properties(AIRMLIRPyExt PROPERTIES PREFIX
 set_target_properties(AIRMLIRPyExt PROPERTIES SUFFIX
                       "${PYTHON_MODULE_EXTENSION}")
 
-target_link_libraries(AIRMLIRPyExt
-  PRIVATE
+set(_libs
   AIRCAPI
   AIRDialect
   AIRRtDialect
   AIRUtil
   AIRConversionPasses
   AIRTransformPasses
+)
+
+if(BUILD_WITH_AIE)
+  list(APPEND _libs AIE)
+endif()
+
+target_link_libraries(AIRMLIRPyExt
+  PRIVATE
+  ${_libs}
   ${Python3_LIBRARIES}
-  AIE
 )
 
 set_target_properties(AIRMLIRPyExt PROPERTIES CXX_VISIBILITY_PRESET "hidden")

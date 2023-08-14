@@ -30,8 +30,10 @@ project(air_runtime_lib LANGUAGES CXX C)
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED YES)
 
-find_package(LibXAIE REQUIRED)
-find_package(AIE REQUIRED CONFIG)
+if(BUILD_WITH_AIE)
+  find_package(LibXAIE REQUIRED)
+  find_package(AIE REQUIRED CONFIG)
+endif()
 
 add_subdirectory(airhost)
 add_subdirectory(aircpu)

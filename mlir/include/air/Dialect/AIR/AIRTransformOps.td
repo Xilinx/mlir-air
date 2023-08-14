@@ -35,24 +35,6 @@ def GetSegmentForOp : Op<Transform_Dialect, "air.get_segment_for",
   let assemblyFormat = "$target attr-dict";
 }
 
-def SegmentToAIEOp : Op<Transform_Dialect, "air.segment_to_aie",
-    [FunctionalStyleTransformOpTrait, MemoryEffectsOpInterface,
-     TransformOpInterface, TransformEachOpTrait]> {
-  let description = [{
-    Lower air.segment operations to mlir-aie modules.
-  }];
-  let arguments = (ins PDL_Operation:$target);
-  let results = (outs PDL_Operation:$transformed);
-  let assemblyFormat = "$target attr-dict";
-
-  let extraClassDeclaration = [{
-    ::mlir::DiagnosedSilenceableFailure applyToOne(
-        ::xilinx::air::SegmentOp target,
-        ::mlir::transform::ApplyToEachResultList &results,
-        ::mlir::transform::TransformState &state);
-  }];
-}
-
 // Ops implemented in mlir/lib/Conversion/ConvertToAIRPass.cpp
 //
 

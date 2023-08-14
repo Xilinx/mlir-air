@@ -9,7 +9,9 @@
 #include "PassDetail.h"
 #include "air/Transform/AIRLowerLinalgTensors.h"
 
+#ifdef BUILD_WITH_AIE
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
+#endif
 
 #include "mlir/Conversion/LinalgToStandard/LinalgToStandard.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -143,9 +145,14 @@ void AIRLowerLinalgTensors::runOnOperation() {
 
   ConversionTarget target(context);
   bufferization::BufferizeTypeConverter typeConverter;
-  target.addLegalDialect<AIE::AIEDialect, AffineDialect, math::MathDialect,
+  target.addLegalDialect<
+//      AIE::AIEDialect,
+      AffineDialect, math::MathDialect,
                          memref::MemRefDialect, func::FuncDialect,
                          arith::ArithDialect>();
+#ifdef BUILD_WITH_AIE
+  target.addLegalDialect<AIE::AIEDialect>();
+#endif
   target.addIllegalOp<tensor::EmptyOp, tensor::ExtractSliceOp,
                       tensor::InsertSliceOp>();
 

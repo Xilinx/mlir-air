@@ -12,7 +12,7 @@
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 
-#include "aie/Dialect/AIE/IR/AIEDialect.h"
+//#include "aie/Dialect/AIE/IR/AIEDialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -115,11 +115,15 @@ void registerAIRRtTranslations() {
         return success();
       },
       [](DialectRegistry &registry) {
-        registry.insert<xilinx::AIE::AIEDialect, xilinx::air::airDialect,
+        registry.insert<
+            xilinx::air::airDialect,
                         xilinx::airrt::AIRRtDialect, func::FuncDialect,
                         cf::ControlFlowDialect, arith::ArithDialect,
                         memref::MemRefDialect, vector::VectorDialect,
                         LLVM::LLVMDialect, scf::SCFDialect, AffineDialect>();
+#ifdef BUILD_WITH_AIE
+        registry.insert<xilinx::AIE::AIEDialect>();
+#endif
       });
   TranslateFromMLIRRegistration registrationXJSON(
       "air-herds-to-json", "Transform herd information to JSON",
