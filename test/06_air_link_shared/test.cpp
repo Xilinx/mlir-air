@@ -68,7 +68,7 @@ int main(int argc, char *argv[]) {
 
   for (int i=0; i<TILE_SIZE; i++)
     mlir_aie_write_buffer_scratch_0_0(xaie, i, 0xfadefade);
- 
+
   printf("loading aie_ctrl.so\n");
   auto handle = air_module_load_from_file("./aie_ctrl.so", q);
   assert(handle && "failed to load aie_ctrl.so");
