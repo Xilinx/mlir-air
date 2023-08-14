@@ -92,29 +92,29 @@ main(int argc, char *argv[])
   mlir_aie_configure_dmas(xaie);
   mlir_aie_start_cores(xaie);
 
-  // setup images in memory
-  uint32_t *dram_ptr;
-
   // Initializing the device memory allocator
-  if (air_init_dev_mem_allocator(0x8000 /* dev_mem_size */,
+  if (air_init_dev_mem_allocator(0x100000 /* dev_mem_size */,
                                  0 /* device_id (optional)*/)) {
     std::cout << "Error creating device memory allocator" << std::endl;
     return -1;
   }
 
-  dram_ptr = (uint32_t *)air_dev_mem_alloc(0x100000);
-  if (dram_ptr != NULL) {
-    if ((3*IMAGE_SIZE*sizeof(uint32_t)) > 0x100000) {
-      printf("Image buffers out of range!\n");
-      return -1;
-    }
+  uint32_t *dram_ptr_1 =
+      (uint32_t *)air_dev_mem_alloc(IMAGE_SIZE * sizeof(uint32_t));
+  uint32_t *dram_ptr_2 =
+      (uint32_t *)air_dev_mem_alloc(IMAGE_SIZE * sizeof(uint32_t));
+  uint32_t *dram_ptr_3 =
+      (uint32_t *)air_dev_mem_alloc(IMAGE_SIZE * sizeof(uint32_t));
+  if (dram_ptr_1 != NULL && dram_ptr_2 != NULL && dram_ptr_3 != NULL) {
     for (int i=0; i<IMAGE_SIZE; i++) {
-      dram_ptr[i] = i+1;
-      dram_ptr[IMAGE_SIZE+i] = i+1;
-      dram_ptr[2*IMAGE_SIZE+i] = 0xdeface;
+      dram_ptr_1[i] = i + 1;
+      dram_ptr_2[i] = i + 1;
+      dram_ptr_3[i] = 0xdeface;
     }
-  } else
+  } else {
+    printf("[ERROR] Was unable to allocate device memory\n");
     return -1;
+  }
 
   // stamp over the aie tiles
   for (int i=0; i<TILE_SIZE; i++) {
@@ -133,7 +133,12 @@ main(int argc, char *argv[])
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_c = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_c, 0, col, 0, 0, 4, 2, DDR_ADDR+(2*IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
+  air_packet_nd_memcpy(
+      pkt_c, 0, col, 0, 0, 4, 2,
+      air_dev_mem_get_pa(dram_ptr_3) /*DDR_ADDR+(2*IMAGE_SIZE*sizeof(float))*/,
+      TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
+      NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
 
   //
   // packet to send the input matrices
@@ -142,12 +147,21 @@ main(int argc, char *argv[])
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_a = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_a, 0, col, 1, 0, 4, 2, DDR_ADDR, TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
+  air_packet_nd_memcpy(
+      pkt_a, 0, col, 1, 0, 4, 2, air_dev_mem_get_pa(dram_ptr_1) /*DDR_ADDR*/,
+      TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
+      NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
 
   wr_idx = queue_add_write_index(q, 1);
   packet_id = wr_idx % q->size;
   dispatch_packet_t *pkt_b = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_b, 0, col, 1, 1, 4, 2, DDR_ADDR+(IMAGE_SIZE*sizeof(float)), TILE_WIDTH*sizeof(float), TILE_HEIGHT, IMAGE_WIDTH*sizeof(float), NUM_3D, TILE_WIDTH*sizeof(float), NUM_4D, IMAGE_WIDTH*TILE_HEIGHT*sizeof(float));
+  air_packet_nd_memcpy(
+      pkt_b, 0, col, 1, 1, 4, 2,
+      air_dev_mem_get_pa(dram_ptr_2) /*DDR_ADDR+(IMAGE_SIZE*sizeof(float))*/,
+      TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
+      NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
+      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
 
   //
   // dispatch the packets to the MB
@@ -174,11 +188,10 @@ main(int argc, char *argv[])
     }
   }
 
-  air_dev_mem_allocator_free();
 
   // check the output image
   for (int i=0; i<IMAGE_SIZE; i++) {
-    uint32_t d = dram_ptr[2*IMAGE_SIZE+i];
+    uint32_t d = dram_ptr_3[i];
     if (d != ((i+1)*2)) {
       errors++;
       printf("mismatch %x != 2 + %x\n", d, i);
@@ -193,4 +206,5 @@ main(int argc, char *argv[])
     return -1;
   }
 
+  air_dev_mem_allocator_free();
 }
