@@ -7,3 +7,11 @@ mlir_tablegen(Passes.h.inc -gen-pass-decls -name AIRConversion)
 add_public_tablegen_target(AIRConversionPassIncGen)
 
 add_mlir_doc(Passes AIRConversionPasses ./ -gen-pass-doc)
+
+if(BUILD_WITH_AIE)
+  set(LLVM_TARGET_DEFINITIONS AIRToAIEPasses.td)
+  add_definitions(-DBUILD_WITH_AIE)
+  mlir_tablegen(AIRToAIEPass.h.inc -gen-pass-decls -name AIRToAIEConversion)
+  add_public_tablegen_target(AIRToAIEConversionPassIncGen)
+  add_mlir_doc(Passes AIRToAIEConversionPasses ./ -gen-pass-doc)
+endif()

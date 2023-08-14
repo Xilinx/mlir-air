@@ -21,6 +21,11 @@ using namespace mlir;
 #define GEN_PASS_CLASSES
 #include "air/Conversion/Passes.h.inc"
 
+#ifdef BUILD_WITH_AIE
+#define GEN_PASS_CLASSES
+#include "air/Conversion/AIRToAIEPass.h.inc"
+#endif
+
 } // namespace air
 } // namespace xilinx
 

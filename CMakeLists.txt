@@ -35,12 +35,9 @@ set(PEANO_INSTALL_DIR "<unset>" CACHE STRING "Location of Peano compiler")
 include(ExternalProject)
 
 find_package(MLIR REQUIRED CONFIG)
-find_package(AIE REQUIRED)
-find_package(LibXAIE)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
-message(STATUS "Using AIEConfig.cmake in: ${AIE_DIR}")
 
 option(LLVM_INCLUDE_TOOLS "Generate build targets for the LLVM tools." ON)
 option(LLVM_BUILD_TOOLS "Build the LLVM tools. If OFF, just generate build targets." ON)
@@ -91,8 +88,14 @@ endif()
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
 
-link_directories(${AIE_BINARY_DIR}/lib)
-include_directories(${AIE_INCLUDE_DIRS})
+option(BUILD_WITH_AIE "Build with AIE" ON)
+if (BUILD_WITH_AIE)
+  find_package(AIE REQUIRED)
+  message(STATUS "Using AIEConfig.cmake in: ${AIE_DIR}")
+  find_package(LibXAIE)
+  link_directories(${AIE_BINARY_DIR}/lib)
+  include_directories(${AIE_INCLUDE_DIRS})
+endif()
 
 include_directories(${PROJECT_SOURCE_DIR}/mlir/include)
 include_directories(${PROJECT_BINARY_DIR}/mlir/include)
@@ -136,6 +139,7 @@ foreach(target ${AIR_RUNTIME_TARGETS})
 			-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
 			-DLibXAIE_ROOT=${LibXAIE_ROOT}
 			-DAIE_DIR=${AIE_DIR}
+			-DBUILD_WITH_AIE=${BUILD_WITH_AIE}
 		BUILD_ALWAYS true
 		STEP_TARGETS clean build install test
 		USES_TERMINAL_CONFIGURE true

@@ -2,8 +2,10 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-if(NOT AIE_BINARY_DIR)
-  find_package(AIE REQUIRED CONFIG)
+if(BUILD_WITH_AIE)
+  if(NOT AIE_BINARY_DIR)
+    find_package(AIE REQUIRED CONFIG)
+  endif()
 endif()
 
 configure_lit_site_cfg(

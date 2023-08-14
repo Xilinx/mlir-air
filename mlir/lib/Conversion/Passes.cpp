@@ -11,6 +11,20 @@
 namespace {
 #define GEN_PASS_REGISTRATION
 #include "air/Conversion/Passes.h.inc"
-}
+} // namespace
 
-void xilinx::air::registerConversionPasses() { ::registerAIRConversionPasses(); }
+#ifdef BUILD_WITH_AIE
+#include "air/Conversion/Passes.h"
+
+namespace {
+#define GEN_PASS_REGISTRATION
+#include "air/Conversion/AIRToAIEPass.h.inc"
+} // namespace
+#endif
+
+void xilinx::air::registerConversionPasses() {
+  ::registerAIRConversionPasses();
+#ifdef BUILD_WITH_AIE
+  ::registerAIRToAIEConversionPasses();
+#endif
+}

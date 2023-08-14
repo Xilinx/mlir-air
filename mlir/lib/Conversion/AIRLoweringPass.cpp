@@ -15,7 +15,9 @@
 #include "air/Dialect/AIRRt/AIRRtOps.h"
 #include "air/Util/Util.h"
 
+#ifdef BUILD_WITH_AIE
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
+#endif
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
@@ -458,8 +460,10 @@ public:
     if (op->getParentOfType<air::HerdOp>())
       return failure();
 
+#ifdef BUILD_WITH_AIE
     if (op->getParentOfType<AIE::CoreOp>())
       return failure();
+#endif
 
     SmallVector<Value, 4> deps;
     for (auto o : adaptor.getOperands())
@@ -584,8 +588,10 @@ public:
     if (op->getParentOfType<air::HerdOp>())
       return failure();
 
+#ifdef BUILD_WITH_AIE
     if (op->getParentOfType<AIE::CoreOp>())
       return failure();
+#endif
 
     SmallVector<Value, 4> deps;
     for (auto o : adaptor.getOperands())

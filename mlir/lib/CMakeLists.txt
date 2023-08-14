@@ -12,13 +12,22 @@ add_subdirectory(Util)
 get_property(dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
 get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
 
+
+set(_depends
+  AIRDialect
+  AIRRtDialect
+  AIRTransformOpsIncGen
+)
+
+if(BUILD_WITH_AIE)
+  list(APPEND _depends AIRToAIETransformOpsIncGen)
+endif()
+
 add_air_library(AIRInitAll
   InitAll.cpp
 
   DEPENDS
-  AIRDialect
-  AIRRtDialect
-  AIRTransformOpsIncGen
+  ${_depends}
 
   LINK_LIBS
   AIRConversionPasses

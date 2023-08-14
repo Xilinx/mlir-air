@@ -11,9 +11,12 @@
 
 #include "air/Conversion/AIRLoweringPass.h"
 #include "air/Conversion/AIRRtToLLVMPass.h"
-#include "air/Conversion/AIRToAIEPass.h"
 #include "air/Conversion/AIRToAsyncPass.h"
 #include "air/Conversion/ConvertToAIRPass.h"
+#ifdef BUILD_WITH_AIE
+#include "air/Conversion/AIRToAIEPass.h"
+#endif
+
 namespace xilinx {
 namespace air {
 

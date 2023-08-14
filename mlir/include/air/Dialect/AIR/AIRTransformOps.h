@@ -23,14 +23,18 @@ class FuncOp;
 } // namespace func
 } // namespace mlir
 
+#define GET_OP_CLASSES
+#include "air/Dialect/AIR/AIRTransformOps.h.inc"
+
+#ifdef BUILD_WITH_AIE
 namespace xilinx {
 namespace air {
 class SegmentOp;
 }
 } // namespace xilinx
-
 #define GET_OP_CLASSES
-#include "air/Dialect/AIR/AIRTransformOps.h.inc"
+#include "air/Dialect/AIR/AIRToAIETransformOps.h.inc"
+#endif
 
 namespace xilinx {
 namespace air {

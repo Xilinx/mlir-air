@@ -24,13 +24,16 @@ set(LIBS
   AIRDialect
   AIRRtDialect
   AIRTargets
-  AIE
   ${translation_libs}
   MLIRIR
   MLIRParser
   MLIRPass
   MLIRSupport
 )
+
+if(BUILD_WITH_AIE)
+    list(APPEND LIBS AIE)
+endif()
 
 llvm_update_compile_flags(air-translate)
 target_link_libraries(air-translate PRIVATE ${LIBS})
