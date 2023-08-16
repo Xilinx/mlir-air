@@ -10,6 +10,7 @@
 #include "air_host_impl.h"
 
 #include <cassert>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>    /* for open() */
