@@ -52,6 +52,7 @@ int getIdAttr(Operation *op);
 
 // Renumber the DMA ops. Mode can be within a herd or global
 void renumberDmaOps(func::FuncOp func, std::string mode = "herd");
+void renumberChannelOps(Block *region);
 
 // Return op name as string
 std::string to_string(Operation *op);

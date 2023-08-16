@@ -245,6 +245,16 @@ void air::renumberDmaOps(func::FuncOp func, std::string mode) {
   } else
     func->emitError("Unknown dma renumber mode. Supported modes: global, herd");
 }
+void air::renumberChannelOps(Block *blk) {
+  unsigned id = 0;
+  blk->walk([&](Operation *chan) {
+    if (isa<xilinx::air::ChannelInterface>(chan)) {
+      chan->setAttr("id",
+                    mlir::IntegerAttr::get(
+                        mlir::IntegerType::get(chan->getContext(), 32), ++id));
+    }
+  });
+}
 
 // Return op name as string
 std::string air::to_string(Operation *op) {
