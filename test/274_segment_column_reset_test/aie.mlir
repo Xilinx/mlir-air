@@ -51,22 +51,22 @@ module {
       %dstDma = AIE.dmaStart(MM2S, 0, ^bd2, ^end)
     ^bd0:
       AIE.useLock(%l62_0, "Acquire", 0)
-      AIE.dmaBd(<%buf72_0 : memref<8xi32>, 0, 8>, 0)
+      AIE.dmaBd(<%buf62_0 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l62_0, "Release", 1)
       AIE.nextBd ^bd1
     ^bd1:
       AIE.useLock(%l62_1, "Acquire", 0)
-      AIE.dmaBd(<%buf72_2 : memref<8xi32>, 0, 8>, 0)
+      AIE.dmaBd(<%buf62_2 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l62_1, "Release", 1)
       AIE.nextBd ^bd0
     ^bd2:
       AIE.useLock(%l62_2, "Acquire", 1)
-      AIE.dmaBd(<%buf72_1 : memref<8xi32>, 0, 8>, 0)
+      AIE.dmaBd(<%buf62_1 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l62_2, "Release", 0)
       AIE.nextBd ^bd3
     ^bd3:
       AIE.useLock(%l62_3, "Acquire", 1)
-      AIE.dmaBd(<%buf72_3 : memref<8xi32>, 0, 8>, 0)
+      AIE.dmaBd(<%buf62_3 : memref<8xi32>, 0, 8>, 0)
       AIE.useLock(%l62_3, "Release", 0)
       AIE.nextBd ^bd2
     ^end:

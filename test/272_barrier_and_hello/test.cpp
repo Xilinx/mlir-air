@@ -32,8 +32,8 @@ int main(int argc, char *argv[]) {
   assert(ret == 0 && "failed to get agents!");
 
   if (agents.size() < 2) {
-    std::cout << "fail." << std::endl;
-    return -1;
+    std::cout << "WARNING: Test is unsuported with < 2 queues." << std::endl;
+    return 0;
   }
 
   std::vector<queue_t *> queues;
