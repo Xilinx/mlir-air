@@ -51,6 +51,12 @@ int main(int argc, char *argv[]) {
   uint64_t col = 5;
   uint64_t row = 3;
 
+  hsa_status_t init_status = air_init();
+  if (init_status != HSA_STATUS_SUCCESS) {
+    std::cout << "air_init() failed. Exiting" << std::endl;
+    return -1;
+  }
+
   std::vector<air_agent_t> agents;
   auto get_agents_ret = air_get_agents(agents);
   assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
