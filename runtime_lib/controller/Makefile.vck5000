@@ -6,12 +6,13 @@ LD_SRCS += \
 vck5000.ld
 
 OBJS += \
+./$(OUTPUT)/cdma.o \
 ./$(OUTPUT)/main.o \
 ./$(OUTPUT)/platform.o \
 ./$(OUTPUT)/shell.o \
 
 CXX=aarch64-none-elf-g++
-CXXFLAGS := -Wall -O0 -g3 -c -fmessage-length=0 -mcpu=cortex-a72 -DARM_CONTROLLER
+CXXFLAGS := -Wall -O2 -g3 -c -fmessage-length=0 -mcpu=cortex-a72 -DARM_CONTROLLER
 LIBS := -Wl,--start-group,-lxil,-lgcc,-lc,-lstdc++,--end-group
 OUTPUT := vck5000_obj
 BSP_ARM := bsp/arm
