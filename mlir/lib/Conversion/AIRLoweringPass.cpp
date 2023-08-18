@@ -941,7 +941,7 @@ public:
     auto context = module.getContext();
 
     TypeConverter converter;
-    converter.addConversion([&](Type type) -> Optional<Type> {
+    converter.addConversion([&](Type type) -> std::optional<Type> {
       // convert !air.async.token to !airrt.event
       if (auto t = type.dyn_cast<air::AsyncTokenType>())
         return airrt::EventType::get(context);
@@ -951,7 +951,7 @@ public:
     auto addUnrealizedCast = [](OpBuilder &builder, Type type,
                                 ValueRange inputs, Location loc) {
       auto cast = builder.create<UnrealizedConversionCastOp>(loc, type, inputs);
-      return Optional<Value>(cast.getResult(0));
+      return std::optional<Value>(cast.getResult(0));
     };
     converter.addSourceMaterialization(addUnrealizedCast);
     converter.addTargetMaterialization(addUnrealizedCast);

@@ -29,6 +29,7 @@
 #define DEBUG_TYPE "air-lower-linalg-tensors"
 
 using namespace mlir;
+using namespace mlir::affine;
 using namespace xilinx;
 using namespace xilinx::air;
 

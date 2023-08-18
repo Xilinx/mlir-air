@@ -86,7 +86,7 @@ LogicalResult xilinx::air::runAIRTransform(ModuleOp transformModule,
   for (auto op :
        transformModule.getBody()->getOps<transform::TransformOpInterface>()) {
     if (failed(transform::applyTransforms(
-            payloadModule, op,
+            payloadModule, op, {},
             transform::TransformOptions().enableExpensiveChecks(
                 /*enableExpensiveChecks=*/true))))
       return failure();

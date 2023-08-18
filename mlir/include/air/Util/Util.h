@@ -17,6 +17,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 
 using namespace mlir;
+using namespace mlir::affine;
 
 namespace xilinx {
 namespace air {
@@ -60,7 +61,7 @@ std::string to_string(mlir::Type t);
 std::string getMemorySpaceAsString(Value memref);
 
 // Returns the first affine if op in block; nullptr otherwise
-mlir::AffineIfOp getAffineIfInBlock(mlir::Block *block);
+AffineIfOp getAffineIfInBlock(mlir::Block *block);
 // Returns the first air.dma op in block; nullptr otherwise
 DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block);
 

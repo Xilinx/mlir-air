@@ -25,7 +25,6 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/Transform/IR/TransformInterfaces.h"
-#include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -42,78 +41,10 @@
 
 using namespace mlir;
 using namespace xilinx;
+using namespace xilinx::air;
 
 namespace {
 
-struct FoldSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
-  using OpRewritePattern<memref::SubViewOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(memref::SubViewOp op,
-                                PatternRewriter &rewriter) const override {
-    if (!dyn_cast_or_null<memref::SubViewOp>(op.getSource().getDefiningOp()))
-      return failure();
-
-    auto source_subview =
-        cast<memref::SubViewOp>(op.getSource().getDefiningOp());
-
-    // FIXME: do we still need this?
-    // for (auto m : llvm::zip(source_subview.getType().getLayout(),
-    //                         op.getType().getLayout()))
-    //   if (std::get<0>(m) != std::get<1>(m))
-    //     return failure();
-
-    auto offsets = op.offsets().begin();
-    auto source_offsets = source_subview.offsets().begin();
-    SmallVector<Value, 4> result_offsets;
-
-    auto static_offsets = op.getStaticOffsets();
-    auto source_static_offsets = source_subview.getStaticOffsets();
-    SmallVector<int64_t, 4> result_static_offsets;
-
-    for (auto p : llvm::zip(static_offsets, source_static_offsets)) {
-      auto op_offset = std::get<0>(p);
-      auto source_offset = std::get<1>(p);
-      if (op_offset >= 0 && source_offset >= 0) {
-        result_static_offsets.push_back(op_offset + source_offset);
-      } else if (op_offset < 0 && source_offset >= 0) {
-        result_static_offsets.push_back(op_offset);
-        if (source_offset == 0) {
-          result_offsets.push_back(*offsets++);
-        } else {
-          Value a = *offsets++;
-          Value b =
-              rewriter.create<arith::ConstantIndexOp>(op.getLoc(), source_offset);
-          result_offsets.push_back(
-              rewriter.create<arith::AddIOp>(op.getLoc(), a.getType(), a, b));
-        }
-      } else if (op_offset >= 0 && source_offset < 0) {
-        result_static_offsets.push_back(source_offset);
-        if (op_offset == 0) {
-          result_offsets.push_back(*source_offsets++);
-        } else {
-          Value a = *source_offsets++;
-          Value b = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), op_offset);
-          result_offsets.push_back(
-              rewriter.create<arith::AddIOp>(op.getLoc(), a.getType(), a, b));
-        }
-      } else if (op_offset < 0 && source_offset < 0) {
-        Value a = *source_offsets++;
-        Value b = *offsets++;
-        result_offsets.push_back(
-            rewriter.create<arith::AddIOp>(op.getLoc(), a.getType(), a, b));
-        result_static_offsets.push_back(source_offset);
-      }
-    }
-
-    rewriter.replaceOpWithNewOp<memref::SubViewOp>(
-        op.getOperation(), op.getType(), source_subview.getSource(),
-        result_offsets, op.sizes(), op.strides(),
-        rewriter.getDenseI64ArrayAttr(result_static_offsets),
-        op.getStaticSizes(), op.getStaticStrides());
-
-    return success();
-  }
-};
 
 struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
@@ -123,7 +54,7 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
     auto ty = op.getType();
     if (ty.hasStaticShape())
       return failure();
-    
+
     std::vector<int64_t> shape = ty.getShape();
     if (op.getNumOperands() != shape.size())
       return failure();
@@ -181,63 +112,7 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
 //   }
 // };
 
-// Replace a pattern like this:
-// %7 = memref.alloc() : memref<20736xi8> 
-// %8 = memref.view %7[%c0][] : memref<20736xi8> to 	 	memref<1x16x18x18xf32> 
-// With this 
-// %7 = memref.alloc() : memref< 1x16x18x18xf32, 2> 
-struct RemoveSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
-  using OpRewritePattern<memref::SubViewOp>::OpRewritePattern;
 
-  RemoveSubViewOpsPattern(MLIRContext *ctx, unsigned int fast_memory_space = 1);
-
-  LogicalResult matchAndRewrite(memref::SubViewOp op,
-                                PatternRewriter &rewriter) const override {
-    auto view = op.getSource().getDefiningOp<memref::ViewOp>();
-    if (!view)
-      return failure();
-    auto alloc = view.getSource().getDefiningOp<memref::AllocOp>();
-    if (!alloc)
-      return failure();
-
-    /* Force memory space */
-    Value newOp = rewriter.replaceOpWithNewOp<memref::AllocOp>(
-        op,
-        MemRefType::get(op.getType().getShape(), op.getType().getElementType(),
-                        {}, fast_space),
-        op.sizes());
-    alloc.replaceAllUsesWith(newOp);
-    return success();
-  }
-
-private:
-  unsigned int fast_space;
-};
-
-struct RemoveViewOpsPattern : public OpRewritePattern<memref::ViewOp> {
-  using OpRewritePattern<memref::ViewOp>::OpRewritePattern;
-
-  RemoveViewOpsPattern(MLIRContext *ctx, unsigned int fast_memory_space = 1);
-
-  LogicalResult matchAndRewrite(memref::ViewOp op,
-                                PatternRewriter &rewriter) const override {
-    auto alloc = op.getSource().getDefiningOp<memref::AllocOp>();
-    if (!alloc)
-      return failure();
-
-    /* Force memory space */
-    Value newOp = rewriter.replaceOpWithNewOp<memref::AllocOp>(
-        op,
-        MemRefType::get(op.getType().getShape(), op.getType().getElementType(),
-                        {}, fast_space),
-        op.getSizes());
-    alloc.replaceAllUsesWith(newOp);
-    return success();
-  }
-
-private:
-  unsigned int fast_space;
-};
 
 // Replace a pattern like this:
 //  linalg.fill %a
@@ -297,99 +172,6 @@ struct RemoveFillCopyLinalgPattern : public OpRewritePattern<memref::CopyOp> {
   }
 };
 
-// Replace a pattern like this:
-//  memref.copy %1, %2 : memref<?xi32> to memref<?xi32>
-//  linalg op with write to %1, no use of %2
-//  memref.copy %1, %2 : memref<?xi32> to memref<?xi32>
-// with this:
-//  linalg op with write to %1, no use of %2
-//  memref.copy %1, %2 : memref<?xi32> to memref<?xi32>
-struct RemoveDeadCopyPattern : public OpRewritePattern<memref::CopyOp> {
-  using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(memref::CopyOp op,
-                                PatternRewriter &rewriter) const override {
-
-    auto iter = op->getIterator();
-    auto linalgOp = dyn_cast<linalg::LinalgOp>(++iter);
-    if (!linalgOp)
-      return failure();
-    auto copyOp = dyn_cast<memref::CopyOp>(++iter);
-    if (!copyOp)
-      return failure();
-
-    auto oper0 = copyOp->getOperand(0);
-    auto oper1 = copyOp->getOperand(1);
-    if (op.getOperand(0) != oper0)
-      return failure();
-    if (op.getOperand(1) != oper1)
-      return failure();
-
-    // no use of %2
-    auto lopers = linalgOp->getOperands();
-    if (std::find(lopers.begin(), lopers.end(), oper1) != lopers.end())
-      return failure();
-
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-// Replace a pattern like this:
-//  %alloc_1 = memref.alloc() : memref<?x?xi32, 2>
-//  ...
-//  memref.copy %alloc_1, %m : memref<?x?xi32, 2> to memref<?x?xi32, 2>
-//  memref.dealloc %alloc_1 : memref<?x?xi32, 2>
-//  %alloc_2 = memref.alloc() : memref<?x?xi32, 2>
-//  memref.copy %m, %alloc_2 : memref<?x?xi32, 2> to memref<?x?xi32, 2>
-// with this:
-//  %alloc_1 = memref.alloc() : memref<?x?xi32, 2>
-//  ...
-//  memref.copy %alloc_1, %m : memref<?x?xi32, 2> to memref<?x?xi32, 2>
-//  [ and replace uses of %alloc_2 with %alloc_1 ]
-struct RemoveExtraAllocPattern : public OpRewritePattern<memref::CopyOp> {
-  using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(memref::CopyOp op,
-                                PatternRewriter &rewriter) const override {
-
-    auto existingAlloc =
-        dyn_cast<memref::AllocOp>(op.getOperand(0).getDefiningOp());
-    if (!existingAlloc)
-      return failure();
-
-    auto iter = op->getIterator();
-    auto deallocOp = dyn_cast<memref::DeallocOp>(++iter);
-    if (!deallocOp)
-      return failure();
-
-    auto allocOp = dyn_cast<memref::AllocOp>(++iter);
-    if (!allocOp)
-      return failure();
-    if (allocOp.getType() != existingAlloc.getType())
-      return failure();
-
-    auto copyOp = dyn_cast<memref::CopyOp>(++iter);
-    if (!copyOp)
-      return failure();
-
-    if (op.getOperand(0) != deallocOp.getOperand())
-      return failure();
-
-    if (op.getOperand(1) != copyOp.getOperand(0))
-      return failure();
-
-    if (allocOp.getResult() != copyOp.getOperand(1))
-      return failure();
-
-    rewriter.replaceAllUsesWith(allocOp.getResult(), {op.getOperand(0)});
-    rewriter.eraseOp(copyOp);
-    rewriter.eraseOp(allocOp);
-    rewriter.eraseOp(deallocOp);
-
-    return success();
-  }
-};
 
 // Replace a pattern like this:
 //  %0 = memref.alloc() : memref<4096xi32>
@@ -444,66 +226,6 @@ struct RemoveAllocLinalgOpCopyPattern
     rewriter.replaceOp(op, newOp->getResults());
     rewriter.eraseOp(copyOp);
 
-    return success();
-  }
-};
-
-// Replace a pattern like this:
-//  %sv = memref.subview ...
-//  %alloc = memref.alloc() : memref<...>
-//  memref.copy %sv, %alloc
-//  linalg.generic with outs(%alloc : memref<...>), does not read %alloc
-// with this:
-//  %sv = memref.subview ...
-//  %alloc = memref.alloc() : memref<...>
-//  linalg.generic with outs(%alloc : memref<...>), does not read %alloc
-// that is, remove the no-op copy.
-struct RemoveAllocCopyLinalgOpCopyPattern
-    : public OpRewritePattern<memref::CopyOp> {
-  using OpRewritePattern<memref::CopyOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(memref::CopyOp op,
-                                PatternRewriter &rewriter) const override {
-
-    // the target of the copy is an alloc
-    Operation *allocOp =
-        dyn_cast_if_present<memref::AllocOp>(op.getTarget().getDefiningOp());
-    if (!allocOp)
-      return failure();
-
-    // find the next linalg use in this block
-    linalg::LinalgOp linalgOp = nullptr;
-    for (auto &u : allocOp->getResult(0).getUses()) {
-      if (auto l = dyn_cast<linalg::LinalgOp>(u.getOwner())) {
-        // bail without trying to resolve the ordering
-        // if there's a linalg use in a different block
-        if (l->getBlock() != op->getBlock())
-          return failure();
-        if (l.payloadUsesValueFromOperand(&u))
-          continue;
-        // take the earliest use
-        if (linalgOp && linalgOp->isBeforeInBlock(l))
-          continue;
-        linalgOp = l;
-      }
-    }
-    if (!linalgOp)
-      return failure();
-
-    for (auto &u : allocOp->getResult(0).getUses()) {
-      auto use = u.getOwner();
-      if (use == op)
-        continue;
-      // if there's a use between the copy and the linalg op
-      if (!isa<linalg::LinalgOp>(use)) {
-        if (use->getBlock() != op->getBlock())
-          continue;
-        if (use->isBeforeInBlock(linalgOp))
-          return failure();
-      }
-    }
-
-    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -645,11 +367,11 @@ struct LinalgTransformationFilter {
 
   explicit LinalgTransformationFilter(
       ArrayRef<StringAttr> matchDisjunction = {},
-      Optional<StringAttr> replacement = std::nullopt);
+      std::optional<StringAttr> replacement = std::nullopt);
 
   explicit LinalgTransformationFilter(
       const FilterFunction &f, ArrayRef<StringAttr> matchDisjunction = {},
-      Optional<StringAttr> replacement = std::nullopt);
+      std::optional<StringAttr> replacement = std::nullopt);
 
   LinalgTransformationFilter(LinalgTransformationFilter &&) = default;
   LinalgTransformationFilter(const LinalgTransformationFilter &) = default;
@@ -683,20 +405,20 @@ struct LinalgTransformationFilter {
 private:
   SmallVector<FilterFunction> filters;
   SmallVector<StringAttr> matchDisjunction;
-  Optional<StringAttr> replacement;
+  std::optional<StringAttr> replacement;
   /// When set to true, if the attribute is not set, it will be treated as
   /// a match. Default is false.
   bool matchByDefault;
 };
 
 LinalgTransformationFilter::LinalgTransformationFilter(
-    ArrayRef<StringAttr> matchDisjunction, Optional<StringAttr> replacement)
+    ArrayRef<StringAttr> matchDisjunction, std::optional<StringAttr> replacement)
     : matchDisjunction(matchDisjunction.begin(), matchDisjunction.end()),
       replacement(replacement), matchByDefault(false) {}
 
 LinalgTransformationFilter::LinalgTransformationFilter(
     const FilterFunction &f, ArrayRef<StringAttr> matchDisjunction,
-    Optional<StringAttr> replacement)
+    std::optional<StringAttr> replacement)
     : filters(),
       matchDisjunction(matchDisjunction.begin(), matchDisjunction.end()),
       replacement(replacement), matchByDefault(false) {
@@ -755,14 +477,6 @@ bool LinalgTransformationFilter::hasReplacementFilter(Operation *op) const {
   return attr && attr == *replacement;
 }
 
-RemoveSubViewOpsPattern::RemoveSubViewOpsPattern(MLIRContext *ctx,
-                                                 unsigned int fast_memory_space)
-    : OpRewritePattern(ctx), fast_space(fast_memory_space) {}
-
-RemoveViewOpsPattern::RemoveViewOpsPattern(MLIRContext *ctx,
-                                                 unsigned int fast_memory_space)
-    : OpRewritePattern(ctx), fast_space(fast_memory_space) {}
-
 // Custom LinalgOp tiling pattern
 struct TileLinalgOpPattern : public RewritePattern {
   TileLinalgOpPattern(
@@ -782,7 +496,7 @@ struct TileLinalgOpPattern : public RewritePattern {
     if (failed(filter.checkAndNotify(rewriter, linalgOp)))
       return failure();
 
-    Optional<linalg::TiledLinalgOp> tiledLinalgOp =
+    std::optional<linalg::TiledLinalgOp> tiledLinalgOp =
         tileLinalgOp(rewriter, linalgOp, options);
     if (!tiledLinalgOp)
       return failure();
@@ -791,7 +505,7 @@ struct TileLinalgOpPattern : public RewritePattern {
 
     if (tiledLinalgOp->tensorResults.empty())
       rewriter.eraseOp(op);
-    else 
+    else
       rewriter.replaceOp(op, tiledLinalgOp->tensorResults);
 
     return success();
@@ -828,8 +542,8 @@ struct PromoteLinalgOpPattern : public RewritePattern {
     // to be happening here. So to fail properly, we should be cloning the op
     // and deleting the previous op. This needs more investigation.
     rewriter.startRootUpdate(op);
-    Optional<linalg::LinalgOp> promotedOp =
-        promoteSubViews(rewriter, op, options);
+    std::optional<linalg::LinalgOp> promotedOp =
+        promoteSubViews(rewriter, llvm::dyn_cast<linalg::LinalgOp>(op), options);
     if (!promotedOp) {
       rewriter.cancelRootUpdate(op);
       return op->emitError("subview promotion failed");
@@ -846,21 +560,6 @@ private:
   linalg::LinalgPromotionOptions options;
 };
 
-static std::optional<Value>
-allocBufferCallBack(OpBuilder &b, memref::SubViewOp subView,
-                    ArrayRef<Value> boundingSubViewSize, DataLayout &layout) {
-  MemRefType viewType = subView.getType();
-  MemRefType allocType =
-      MemRefType::get(viewType.getShape(), viewType.getElementType(), {},
-                      (unsigned)air::MemorySpace::L1);
-  Value buffer = b.createOrFold<memref::AllocOp>(subView.getLoc(), allocType);
-  return buffer;
-}
-
-static LogicalResult deallocBufferCallBack(OpBuilder &b, Value buffer) {
-  // b.create<memref::DeallocOp>(buffer.getLoc(), buffer);
-  return success();
-}
 
 FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
     PatternRewriter &b, linalg::LinalgOp op,
@@ -1032,202 +731,6 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   return linalg::TiledLinalgOp{op, {launch}, {}};
 }
 
-// Create channel name as string
-static std::string createChannelName(ModuleOp module) {
-  std::string new_cname = "channel_0";
-  std::string cname = "channel";
-  int which_try = 0;
-  while (module.lookupSymbol(new_cname))
-    new_cname = cname + "_" + std::to_string(++which_try);
-  cname = new_cname;
-  return cname;
-}
-
-// Split a linalg reduction into 'pipeline_depth' consecutive
-// stages, each one feeding partial reductions to the next stage.
-// Stages are mapped to Nx1 or Nx1 herd.
-FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
-    PatternRewriter &b, linalg::LinalgOp op,
-    ArrayRef<int64_t> static_tile_sizes, unsigned int pipeline_depth,
-    std::string pipeline_direction, bool promote) {
-
-  OpBuilder::InsertionGuard g(b);
-  b.setInsertionPoint(op);
-  auto loc = op.getLoc();
-  auto ctx = op.getContext();
-
-  if (!(pipeline_direction == "vert" || pipeline_direction == "horiz"))
-    return failure();
-
-  auto iteratorTypes = op.getIteratorTypesArray();
-  if (linalg::isParallelIterator(iteratorTypes.back()))
-    return failure();
-
-  bool isHoriz = pipeline_direction == "horiz";
-  int new_herd_x = isHoriz ? pipeline_depth : 1;
-  int new_herd_y = !isHoriz ? pipeline_depth : 1;
-
-  SmallVector<Value, 2> dims{b.create<arith::ConstantIndexOp>(loc, new_herd_x),
-                             b.create<arith::ConstantIndexOp>(loc, new_herd_y)};
-
-  SmallVector<Value, 4> args;
-  for (auto o : op->getOperands())
-    args.push_back(o);
-
-  auto herd = b.create<air::HerdOp>(loc, dims, args);
-  b.setInsertionPointToStart(&herd.getBody().front());
-
-  Value x = herd.getIds()[0];
-  Value y = herd.getIds()[1];
-
-  auto nLoops = op.getNumLoops();
-  auto tileSizes = static_tile_sizes.take_front(nLoops);
-
-  SmallVector<OpFoldResult, 4> tileSizeVector;
-  for (auto s : tileSizes)
-    tileSizeVector.push_back(
-        b.create<arith::ConstantIndexOp>(loc, s).getResult());
-  if (tileSizeVector.size() < nLoops) {
-    auto zero = b.create<arith::ConstantIndexOp>(loc, 0);
-    tileSizeVector.append(nLoops - tileSizeVector.size(), zero.getResult());
-  }
-
-  auto allShapeSizes = op.createFlatListOfOperandDims(b, loc);
-  AffineMap shapeSizesToLoopsMap = op.getShapesToLoopsMap();
-  if (!shapeSizesToLoopsMap)
-    return failure();
-  SmallVector<OpFoldResult> sizeBounds =
-      makeComposedFoldedMultiResultAffineApply(b, loc, shapeSizesToLoopsMap,
-                                               allShapeSizes);
-
-  SmallVector<OpFoldResult> tileIds;
-  for (auto s : tileSizes) {
-    if (s == 0)
-      continue;
-    AffineExpr d0 = b.getAffineDimExpr(0);
-    auto map = AffineMap::get(1, 0, d0 * s);
-    tileIds.push_back(
-        b.create<AffineApplyOp>(loc, map,
-                                isHoriz ? herd.getIds()[0] : herd.getIds()[1])
-            .getResult());
-  }
-  SmallVector<Value, 4> tiledOperands = linalg::makeTiledShapes(
-      b, loc, op, args, tileIds, tileSizeVector, sizeBounds, true);
-
-  unsigned int resultIdx = 0;
-  for (OpOperand *opOperand : op.getDpsInitOperands()) {
-    resultIdx = opOperand->getOperandNumber();
-    break;
-  }
-
-  Value firstOutputOperand = tiledOperands[resultIdx];
-  SmallVector<air::ChannelOp> channels(pipeline_depth, nullptr);
-  for (unsigned int i = 0; i < pipeline_depth; i++) {
-    OpBuilder::InsertionGuard pipeline_guard(b);
-    bool last_stage = i == pipeline_depth - 1;
-    bool first_stage = i == 0;
-
-    SmallVector<AffineExpr, 2> constraints{
-        getAffineDimExpr(isHoriz ? 0 : 1, ctx) - getAffineConstantExpr(i, ctx),
-        getAffineDimExpr(isHoriz ? 1 : 0, ctx)};
-    SmallVector<bool, 2> eqflags{true, false};
-    auto int_set = IntegerSet::get(2, 0, constraints, eqflags);
-    SmallVector<Value, 2> int_set_args{x, y};
-    AffineIfOp aif =
-        b.create<AffineIfOp>(op->getLoc(), int_set, int_set_args, false);
-
-    Block *stageBlock = aif.getBody();
-    b.setInsertionPointToStart(stageBlock);
-
-    if (i) {
-      auto ty = tiledOperands[resultIdx].getType().cast<MemRefType>();
-      auto alloc = b.create<memref::AllocOp>(
-          loc, MemRefType::get(ty.getShape(), ty.getElementType(), AffineMap(),
-                               (int)air::MemorySpace::L1));
-      tiledOperands[resultIdx] = alloc.getResult();
-      SmallVector<Value> src_offsets;
-      SmallVector<Value> src_sizes;
-      SmallVector<Value> src_strides;
-      SmallVector<Value> channel_idx;
-      SmallVector<Value> deps;
-      SmallVector<Type> tys;
-      b.create<air::ChannelGetOp>(loc, tys, deps, channels[i - 1].getSymName(),
-                                  channel_idx, tiledOperands[resultIdx],
-                                  src_offsets, src_sizes, src_strides);
-    }
-
-    linalg::LinalgOp linalgOp = clone(b, op, {}, tiledOperands);
-
-    auto defaultCopyCallBack = [loc](OpBuilder &bldr, Value src,
-                                     Value dst) -> LogicalResult {
-      bldr.create<memref::CopyOp>(loc, src, dst);
-      return success();
-    };
-
-    if (promote) {
-      SmallVector<int64_t, 3> opers_to_promote(linalgOp->getNumOperands() - 1);
-      std::iota(opers_to_promote.begin(), opers_to_promote.end(), 0);
-      if (first_stage /* || last_stage*/)
-        opers_to_promote.push_back(linalgOp->getNumOperands() - 1);
-
-      auto emptyCopyCallBack = [](OpBuilder &bldr, Value src,
-                                  Value dst) -> LogicalResult {
-        return success();
-      };
-      b.setInsertionPoint(linalgOp);
-      auto options = linalg::LinalgPromotionOptions()
-                         .setOperandsToPromote(opers_to_promote)
-                         .setAllocationDeallocationFns(allocBufferCallBack,
-                                                       deallocBufferCallBack);
-      if (first_stage)
-        options.setCopyInOutFns(defaultCopyCallBack, emptyCopyCallBack);
-      auto res = linalg::promoteSubViews(b, linalgOp, options);
-      if (failed(res))
-        return failure();
-    }
-
-    if (last_stage) {
-      b.setInsertionPointAfter(linalgOp);
-      (void)defaultCopyCallBack(b, tiledOperands[resultIdx],
-                                firstOutputOperand);
-      b.setInsertionPoint(stageBlock->getTerminator());
-    } else {
-      auto mref = tiledOperands[resultIdx];
-      if (promote && first_stage) {
-        memref::SubViewOp sv = dyn_cast<memref::SubViewOp>(
-            linalgOp.getDpsInitOperand(0)->get().getDefiningOp());
-        mref = sv.getSource();
-        sv.replaceAllUsesWith(mref);
-      }
-
-      auto module = op->getParentOfType<ModuleOp>();
-      auto cname = createChannelName(module);
-      b.setInsertionPointToStart(module.getBody());
-      auto channel_op =
-          b.create<air::ChannelOp>(loc, cname, b.getI64ArrayAttr({1}));
-      b.setInsertionPoint(stageBlock->getTerminator());
-      SmallVector<Value> src_offsets;
-      SmallVector<Value> src_sizes;
-      SmallVector<Value> src_strides;
-      SmallVector<Value> channel_idx;
-      SmallVector<Value> deps;
-      SmallVector<Type> tys;
-      b.create<air::ChannelPutOp>(
-          loc, tys, deps, FlatSymbolRefAttr::get(ctx, cname), channel_idx, mref,
-          src_offsets, src_sizes, src_strides);
-      channels[i] = channel_op;
-    }
-    // if (erased) erased.erase();
-  }
-
-  b.setInsertionPointToEnd(&herd.getBody().front());
-  b.create<air::HerdTerminatorOp>(loc);
-  int i = 0;
-  for (auto a : args) {
-    replaceAllUsesInRegionWith(a, herd.getKernelArgument(i++), herd.getBody());
-  }
-  return linalg::TiledLinalgOp{op, {herd}, {}};
-}
 
 struct PipelineReducePattern : public RewritePattern {
   PipelineReducePattern(
@@ -1318,11 +821,15 @@ public:
   void runTestPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(ctx);
-    patterns.insert<RemoveSubViewOpsPattern, FoldSubViewOpsPattern,
-                    RemoveViewOpsPattern, HoistReduceBufferPattern,
-                    RemoveAllocLinalgOpCopyPattern, RemoveExtraAllocPattern,
-                    RemoveAllocCopyLinalgOpCopyPattern, RemoveDeadCopyPattern,
+    patterns.insert<HoistReduceBufferPattern,
+                    RemoveAllocLinalgOpCopyPattern,
                     RemoveFillCopyLinalgPattern>(ctx);
+    populateRemoveSubViewOpsPattern(patterns);
+    populateFoldSubViewOpsPattern(patterns);
+    populateRemoveViewOpsPattern(patterns);
+    populateRemoveExtraAllocPattern(patterns);
+    populateRemoveAllocCopyLinalgOpCopyPattern(patterns);
+    populateRemoveDeadCopyPattern(patterns);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 
@@ -1529,8 +1036,8 @@ public:
             ctx, l2PromoteOptions,
             LinalgTransformationFilter(StringAttr::get(ctx, "L2"),
                                        StringAttr::get(ctx, "L2_promoted")));
-        stageL2Patterns.insert<RemoveSubViewOpsPattern>(ctx, 1);
-        stageL2Patterns.insert<FoldSubViewOpsPattern>(ctx);
+        populateRemoveSubViewOpsPattern(stageL2Patterns, 1);
+        populateFoldSubViewOpsPattern(stageL2Patterns);
         stageL2Patterns.insert<MemrefsPattern>(ctx);
         scf::populateSCFForLoopCanonicalizationPatterns(stageL2Patterns);
         (void)applyPatternsAndFoldGreedily(called, std::move(stageL2Patterns));
@@ -1617,14 +1124,14 @@ public:
           LinalgTransformationFilter(needL1Tiling ? StringAttr::get(ctx, "L1")
                                                   : next_match,
                                      StringAttr::get(ctx, "L1_promoted")));
-      stageL1Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
-      stageL1Patterns.insert<FoldSubViewOpsPattern>(ctx);
+      populateRemoveSubViewOpsPattern(stageL1Patterns, 2);
+      populateFoldSubViewOpsPattern(stageL1Patterns);
       scf::populateSCFForLoopCanonicalizationPatterns(stageL1Patterns);
       (void)applyPatternsAndFoldGreedily(called, std::move(stageL1Patterns));
 
       RewritePatternSet stage3Patterns(&getContext());
       stage3Patterns.insert<MemrefsPattern>(ctx);
-      stage3Patterns.insert<RemoveAllocCopyLinalgOpCopyPattern>(ctx);
+      populateRemoveAllocCopyLinalgOpCopyPattern(stage3Patterns);
       (void)applyPatternsAndFoldGreedily(called, std::move(stage3Patterns));
 
       LLVM_DEBUG(llvm::outs() << "After L1 Tiling\n");
@@ -1720,8 +1227,8 @@ public:
             ctx, l2PromoteOptions,
             LinalgTransformationFilter(StringAttr::get(ctx, "L2"),
                                        StringAttr::get(ctx, "L2_promoted")));
-        stageL2Patterns.insert<RemoveSubViewOpsPattern>(ctx, 1);
-        stageL2Patterns.insert<FoldSubViewOpsPattern>(ctx);
+        populateRemoveSubViewOpsPattern(stageL2Patterns, 1);
+        populateFoldSubViewOpsPattern(stageL2Patterns);
         stageL2Patterns.insert<MemrefsPattern>(ctx);
         scf::populateSCFForLoopCanonicalizationPatterns(stageL2Patterns);
         (void)applyPatternsAndFoldGreedily(called, std::move(stageL2Patterns));
@@ -1749,8 +1256,8 @@ public:
                                      StringAttr::get(ctx, "L1_promoted")));
 
       RewritePatternSet stage3Patterns(&getContext());
-      stage3Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
-      stage3Patterns.insert<FoldSubViewOpsPattern>(ctx);
+      populateRemoveSubViewOpsPattern(stage3Patterns, 2);
+      populateFoldSubViewOpsPattern(stage3Patterns);
       stage3Patterns.insert<MemrefsPattern>(ctx);
       scf::populateSCFForLoopCanonicalizationPatterns(stage3Patterns);
 
@@ -1784,13 +1291,13 @@ public:
 
       SmallVector<int64_t, 7> l1_tile_size{1, 32, 32, 32, 32, 3, 3};
       SmallVector<unsigned, 7> l1_tile_interchange{0, 1, 2, 3, 4, 5, 6};
-    
+
       for (int i = 0, e = clL1TileSize.size(); i < e; i++)
         l1_tile_size[i] = clL1TileSize[i];
 
       for (int i = 0, e = clL1TileInterchange.size(); i < e; i++)
         l1_tile_interchange[i] = clL1TileInterchange[i];
-    
+
       RewritePatternSet stage1Patterns(&getContext());
 
       stage1Patterns.insert<TileLinalgOpPattern>(
@@ -1814,15 +1321,15 @@ public:
       scf::populateSCFForLoopCanonicalizationPatterns(stage2Patterns);
 
       RewritePatternSet stage3Patterns(&getContext());
-      stage3Patterns.insert<RemoveSubViewOpsPattern>(ctx, 2);
-      stage3Patterns.insert<FoldSubViewOpsPattern>(ctx);
+      populateRemoveSubViewOpsPattern(stage3Patterns, 2);
+      populateFoldSubViewOpsPattern(stage3Patterns);
       stage3Patterns.insert<MemrefsPattern>(ctx);
-      stage3Patterns.insert<RemoveViewOpsPattern>(ctx, 2);
-      
+      populateRemoveViewOpsPattern(stage3Patterns, 2);
+
       (void)applyPatternsAndFoldGreedily(called, std::move(stage1Patterns));
       (void)applyPatternsAndFoldGreedily(called, std::move(stage2Patterns));
       (void)applyPatternsAndFoldGreedily(called, std::move(stage3Patterns));
-      
+
       /// scf.parallel transform from herd dimension
       /// Step-1: Capture the perfectly nested scf.for loops
       /// Step-2: Create scf.parallel loop based on herd dimension
@@ -1833,44 +1340,44 @@ public:
       called.walk([&](Operation *op) {
       if (auto scfForOp = dyn_cast<scf::ForOp>(op))
         if(!op->getParentOfType<scf::ForOp>())
-          getPerfectlyNestedLoops(loops, scfForOp); 
+          getPerfectlyNestedLoops(loops, scfForOp);
       });
-      
-      assert(clHerdSize.size() != 0 && 
+
+      assert(clHerdSize.size() != 0 &&
          "AIE tile dimension can't be zero");
 
-      assert(clHerdSize.size() <= loops.size() && 
-         "AIE tile dimension must be equal or less than Tiled loops number"); 
+      assert(clHerdSize.size() <= loops.size() &&
+         "AIE tile dimension must be equal or less than Tiled loops number");
 
       scf::ForOp outermost = loops[0];
       OpBuilder builder(outermost);
       Location loc = outermost.getLoc();
-      
-      // Create parallel loops for spatial iteration. 
+
+      // Create parallel loops for spatial iteration.
       SmallVector<Value, 2> lowerBounds, upperBounds, steps;
       for(unsigned i = 0, e = clHerdSize.size(); i < e; ++i) {
         lowerBounds.push_back(loops[i].getLowerBound());
         upperBounds.push_back(loops[i].getUpperBound());
         steps.push_back(loops[i].getStep());
       }
-      
+
       auto parallelLoop = builder.create<scf::ParallelOp>(
         loc, lowerBounds, upperBounds, steps);
-      
+
       builder.setInsertionPointToStart(parallelLoop.getBody());
 
       // Replace the scf.for IV with scf.parallel IV
       auto pLoopIV = parallelLoop.getInductionVars();
-      for(unsigned i = 0, e = pLoopIV.size(); i < e; ++i) 
+      for(unsigned i = 0, e = pLoopIV.size(); i < e; ++i)
         replaceAllUsesInRegionWith(loops[i].getInductionVar(), pLoopIV[i],
                                 loops[loops.size() -1].getRegion());
 
-      // Move the remaining inner scf.for loops and delete extra 
-      // terminator and perfectly nested loops. 
+      // Move the remaining inner scf.for loops and delete extra
+      // terminator and perfectly nested loops.
       loops[clHerdSize.size() -1].getBody()->back().erase();
       parallelLoop.getBody()->getOperations().splice(
       Block::iterator(parallelLoop.getBody()->back()),
-      loops[clHerdSize.size() -1].getBody()->getOperations()  
+      loops[clHerdSize.size() -1].getBody()->getOperations()
       );
 
       outermost.erase();
@@ -1884,7 +1391,7 @@ public:
       (void)inlineCall(interface, call, called, &called.getRegion(), true);
       call.erase();
       called.erase();
-     
+
     }
   }
 
@@ -1915,529 +1422,6 @@ private:
 
 } // namespace
 
-/// A simple pattern rewriter that implements no special logic.
-class SimpleRewriter : public PatternRewriter {
-public:
-  SimpleRewriter(MLIRContext *context) : PatternRewriter(context) {}
-};
-
-//===----------------------------------------------------------------------===//
-// PipelineReduceOp
-//===----------------------------------------------------------------------===//
-
-DiagnosedSilenceableFailure transform::PipelineReduceOp::applyToOne(
-    linalg::LinalgOp target, transform::ApplyToEachResultList &results,
-    transform::TransformState &state) {
-  SimpleRewriter rewriter(getContext());
-  auto result = pipelineReduceLinalgOp(
-      rewriter, target, extractFromI64ArrayAttr(getTileSize()),
-      getPipelineDepth(), getDirection().str(), getPromote());
-  if (failed(result))
-    return emitDefiniteFailure() << "Failed";
-  results.push_back(result->op);
-  rewriter.eraseOp(target);
-  return DiagnosedSilenceableFailure::success();
-}
-
-//===----------------------------------------------------------------------===//
-// LinalgTileOp
-//===----------------------------------------------------------------------===//
-
-void transform::LinalgTileOp::build(OpBuilder &builder, OperationState &result,
-                                    Value target,
-                                    ArrayRef<int64_t> staticTileSizes,
-                                    ArrayRef<int64_t> interchange) {
-  return build(builder, result,
-               /*target=*/target,
-               /*mixedTileSizes=*/
-               getAsOpFoldResult(builder.getI64ArrayAttr(staticTileSizes)),
-               interchange);
-}
-
-void transform::LinalgTileOp::build(OpBuilder &builder, OperationState &result,
-                                    Value target,
-                                    ArrayRef<OpFoldResult> mixedTileSizes,
-                                    ArrayRef<int64_t> interchange) {
-  SmallVector<int64_t> staticTileSizes;
-  SmallVector<Value> dynamicTileSizes;
-  dispatchIndexOpFoldResults(mixedTileSizes, dynamicTileSizes, staticTileSizes);
-  // Call the default builder which sets up the proper operands segment sizes
-  // attributes for multiple variadic operands. In the absence of this, horrible
-  // bugs ensue.
-  MLIRContext *ctx = builder.getContext();
-  auto operationType = pdl::OperationType::get(ctx);
-  auto staticTileSizesAttr = builder.getDenseI64ArrayAttr(staticTileSizes);
-  build(builder, result,
-        /*resultTypes=*/TypeRange{operationType, operationType},
-        /*target=*/target,
-        /*dynamic_sizes=*/dynamicTileSizes,
-        /*static_sizes=*/staticTileSizesAttr,
-        /*interchange=*/builder.getDenseI64ArrayAttr(interchange));
-}
-
-DiagnosedSilenceableFailure
-transform::LinalgTileOp::apply(TransformResults &transformResults,
-                               TransformState &state) {
-  ArrayRef<int64_t> tileSizes = getStaticSizes();
-
-  ArrayRef<Operation *> targets = state.getPayloadOps(getTarget());
-  SmallVector<ArrayRef<Operation *>> dynamicSizeProducers;
-  dynamicSizeProducers.reserve(getDynamicSizes().size());
-  for (Value dynamicSizeProducerHandle : getDynamicSizes()) {
-    dynamicSizeProducers.push_back(
-        state.getPayloadOps(dynamicSizeProducerHandle));
-
-    if (dynamicSizeProducers.back().size() != targets.size()) {
-      DiagnosedSilenceableFailure diag =
-          emitSilenceableError()
-          << "expected as many dynamic size-producing operations ("
-          << dynamicSizeProducers.back().size() << ") as target ops ("
-          << targets.size() << ")";
-      diag.attachNote(dynamicSizeProducerHandle.getLoc()) << "for this handle";
-      return diag;
-    }
-
-    for (Operation *op : dynamicSizeProducers.back()) {
-      if (op->getNumResults() == 1 &&
-          op->getResult(0).getType().isa<IndexType>())
-        continue;
-      DiagnosedSilenceableFailure diag =
-          emitSilenceableError() << "expected sizes to be produced by ops "
-                                    "with a single index-type result";
-      diag.attachNote(op->getLoc()) << "size producer op";
-      diag.attachNote(dynamicSizeProducerHandle.getLoc()) << "for this handle";
-      return diag;
-    }
-  }
-
-  SmallVector<Operation *> tiled;
-  SmallVector<SmallVector<Operation *, 4>, 4> loops;
-  loops.resize(getLoops().size());
-  for (auto &en : llvm::enumerate(targets)) {
-    auto linalgOp = dyn_cast<linalg::LinalgOp>(en.value());
-    if (!linalgOp) {
-      DiagnosedSilenceableFailure diag = emitSilenceableError()
-                                         << "only linalg ops are supported";
-      diag.attachNote(en.value()->getLoc()) << "target op";
-      return diag;
-    }
-
-    linalg::LinalgTilingOptions tilingOptions;
-    tilingOptions.setLoopType(linalg::LinalgTilingLoopType::ParallelLoops);
-    unsigned index = en.index();
-    if (!tileSizes.empty()) {
-      tilingOptions.setTileSizeComputationFunction(
-          [&, index](OpBuilder &b, Operation *) {
-            SmallVector<Value, 4> sizes;
-            sizes.reserve(tileSizes.size());
-            unsigned dynamicIdx = 0;
-            for (OpFoldResult ofr : getMixedSizes()) {
-              if (auto attr = ofr.dyn_cast<Attribute>()) {
-                sizes.push_back(b.create<arith::ConstantIndexOp>(
-                    getLoc(), attr.cast<IntegerAttr>().getInt()));
-              } else {
-                sizes.push_back(
-                    dynamicSizeProducers[dynamicIdx++][index]->getResult(0));
-              }
-            }
-            return sizes;
-          });
-    }
-
-    SmallVector<unsigned int> inter(getInterchange());
-    tilingOptions.setInterchange(inter);
-    SimpleRewriter rewriter(linalgOp.getContext());
-    FailureOr<linalg::TiledLinalgOp> maybeTilingResult =
-        linalg::tileLinalgOp(rewriter, linalgOp, tilingOptions);
-    if (failed(maybeTilingResult))
-      return DiagnosedSilenceableFailure::definiteFailure();
-
-    if (linalgOp.hasBufferSemantics())
-      rewriter.eraseOp(linalgOp);
-    else
-      rewriter.replaceOp(linalgOp,
-                         maybeTilingResult->loops.front()->getResults());
-
-    tiled.push_back(maybeTilingResult->op);
-    for (const auto &en2 : llvm::enumerate(maybeTilingResult->loops))
-      loops[en2.index()].push_back(en2.value());
-  }
-
-  transformResults.set(getTiledLinalgOp().cast<OpResult>(), tiled);
-  for (const auto &en : llvm::enumerate(loops))
-    transformResults.set(getLoops()[en.index()].cast<OpResult>(), en.value());
-
-  return DiagnosedSilenceableFailure::success();
-}
-
-SmallVector<OpFoldResult> transform::LinalgTileOp::getMixedSizes() {
-  ValueRange dynamic = getDynamicSizes();
-  ArrayRef<int64_t> tileSizes = getStaticSizes();
-  SmallVector<OpFoldResult> results;
-  results.reserve(tileSizes.size());
-  unsigned dynamicPos = 0;
-  Builder builder(getContext());
-  for (int64_t size : tileSizes) {
-    if (size == ShapedType::kDynamic) {
-      results.push_back(dynamic[dynamicPos++]);
-    } else {
-      results.push_back(builder.getIndexAttr(size));
-    }
-  }
-  return results;
-}
-
-// We want to parse `DenseI64ArrayAttr` using the short form without the
-// `array` prefix to be consistent in the IR with `parseDynamicIndexList`.
-static ParseResult parseInterchange(OpAsmParser &parser,
-                                    OperationState &result) {
-  if (succeeded(parser.parseOptionalLBrace())) {
-    if (failed(parser.parseKeyword("interchange")))
-      return parser.emitError(parser.getNameLoc()) << "expect `interchange`";
-    if (failed(parser.parseEqual()))
-      return parser.emitError(parser.getNameLoc()) << "expect `=`";
-    result.addAttribute("interchange",
-                        DenseI64ArrayAttr::parse(parser, Type{}));
-    if (failed(parser.parseRBrace()))
-      return parser.emitError(parser.getNameLoc()) << "expect `}`";
-  }
-  return success();
-}
-
-static void printInterchange(OpAsmPrinter &p,
-                             ArrayRef<int64_t> interchangeVals) {
-  if (!interchangeVals.empty()) {
-    p << " {interchange = [";
-    llvm::interleaveComma(interchangeVals, p,
-                          [&](int64_t integer) { p << integer; });
-    p << "]}";
-  }
-}
-
-ParseResult transform::LinalgTileOp::parse(OpAsmParser &parser,
-                                           OperationState &result) {
-  OpAsmParser::UnresolvedOperand target;
-  SmallVector<OpAsmParser::UnresolvedOperand> dynamicSizes;
-  DenseI64ArrayAttr staticSizes;
-  auto pdlOperationType = pdl::OperationType::get(parser.getContext());
-  if (parser.parseOperand(target) ||
-      parser.resolveOperand(target, pdlOperationType, result.operands) ||
-      parseDynamicIndexList(parser, dynamicSizes, staticSizes) ||
-      parser.resolveOperands(dynamicSizes, pdlOperationType, result.operands))
-    return ParseResult::failure();
-
-  // Parse optional interchange.
-  if (failed(parseInterchange(parser, result)))
-    return ParseResult::failure();
-
-  result.addAttribute(getStaticSizesAttrName(result.name), staticSizes);
-  size_t numExpectedLoops =
-      staticSizes.size() - llvm::count(staticSizes.asArrayRef(), 0);
-  result.addTypes(SmallVector<Type>(numExpectedLoops + 1, pdlOperationType));
-  return success();
-}
-
-void transform::LinalgTileOp::print(OpAsmPrinter &p) {
-  p << ' ' << getTarget();
-  printDynamicIndexList(p, getOperation(), getDynamicSizes(), getStaticSizes());
-  printInterchange(p, getInterchange());
-}
-
-void transform::LinalgTileOp::getEffects(
-    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  consumesHandle(getTarget(), effects);
-  onlyReadsHandle(getDynamicSizes(), effects);
-  producesHandle(getTiledLinalgOp(), effects);
-  producesHandle(getLoops(), effects);
-  modifiesPayload(effects);
-}
-
-//===----------------------------------------------------------------------===//
-// LinalgPromoteOp
-//===----------------------------------------------------------------------===//
-
-DiagnosedSilenceableFailure
-transform::LinalgPromoteOp::apply(transform::TransformResults &results,
-                                  transform::TransformState &state) {
-
-  ArrayRef<Operation *> payloadOps = state.getPayloadOps(getTarget());
-  if (!payloadOps.size())
-    DiagnosedSilenceableFailure::success();
-
-  linalg::LinalgPromotionOptions promotionOptions;
-  auto operandsToPromote = extractFromI64ArrayAttr(getOperandsToPromote());
-
-  if (getUseFullTilesByDefault())
-    promotionOptions = promotionOptions.setUseFullTileBuffersByDefault(
-        getUseFullTilesByDefault());
-  if (getUseAlloca())
-    promotionOptions = promotionOptions.setUseAlloca(getUseAlloca());
-  if (!getUseFullTileBuffers().empty())
-    promotionOptions = promotionOptions.setUseFullTileBuffers(
-        llvm::to_vector(getUseFullTileBuffers().getAsValueRange<BoolAttr>()));
-  if (getAlignment().has_value())
-    promotionOptions = promotionOptions.setAlignment(*getAlignment());
-
-  auto memorySpace = xilinx::air::MemorySpace::L1;
-  if (getMemorySpace() == "L1")
-    memorySpace = xilinx::air::MemorySpace::L1;
-  else if (getMemorySpace() == "L2")
-    memorySpace = xilinx::air::MemorySpace::L2;
-  else if (getMemorySpace() == "L3")
-    memorySpace = xilinx::air::MemorySpace::L3;
-
-  SetVector<Operation *> transformed;
-  int64_t operandOffset = 0;
-
-  uint32_t group_size = getGroupSize();
-  uint32_t group = 0;
-  for (Operation *target : state.getPayloadOps(getTarget())) {
-    auto linalgOp = dyn_cast<linalg::LinalgOp>(target);
-    if (!linalgOp)
-      continue;
-
-    int64_t numOperands = linalgOp->getNumOperands();
-    SmallVector<int64_t, 4> opersToPromote;
-    if (!operandsToPromote.size()) {
-      opersToPromote.resize_for_overwrite(numOperands);
-      std::iota(opersToPromote.begin(), opersToPromote.end(), 0);
-    } else {
-      for (auto &o : operandsToPromote) {
-        int64_t operand = o - operandOffset;
-        if (operand < 0)
-          continue;
-        if (operand >= numOperands)
-          continue;
-        opersToPromote.push_back(operand);
-      }
-    }
-    operandOffset += numOperands;
-    if (++group == group_size) {
-      group = 0;
-      operandOffset = 0;
-    }
-    if (opersToPromote.empty())
-      continue;
-
-    promotionOptions.setOperandsToPromote(opersToPromote);
-
-    if (failed(promoteSubviewsPrecondition(target, promotionOptions)))
-      return emitDefaultDefiniteFailure(target);
-
-    auto ctx = target->getContext();
-    SimpleRewriter rewriter(ctx);
-    rewriter.setInsertionPoint(target);
-    FailureOr<linalg::LinalgOp> res =
-        promoteSubViews(rewriter, target, promotionOptions);
-    if (failed(res))
-      return emitDefaultDefiniteFailure(target);
-
-    transformed.insert(linalgOp);
-  }
-
-  auto ctx = payloadOps[0]->getContext();
-  RewritePatternSet patterns(ctx);
-  // promoteSubViews generates extra copies and subviews, these patterns try to
-  // simplify them.
-  patterns.insert<RemoveSubViewOpsPattern>(ctx, (int)memorySpace);
-  patterns.insert<FoldSubViewOpsPattern, RemoveViewOpsPattern>(ctx);
-  patterns.insert<RemoveExtraAllocPattern, RemoveDeadCopyPattern,
-                  RemoveAllocCopyLinalgOpCopyPattern>(ctx);
-  // canonicalize allocs like:
-  //  memref.alloc(%c32, %c32) : memref<?x?xi32, 2>
-  // to:
-  //  memref.alloc() : memref<32x32xi32, 2>
-  memref::AllocOp::getCanonicalizationPatterns(patterns, ctx);
-  (void)applyPatternsAndFoldGreedily(
-      payloadOps[0]->getParentOfType<func::FuncOp>(), std::move(patterns));
-
-  if (!transformed.size())
-    return emitDefaultDefiniteFailure(payloadOps[0]);
-
-  results.set(getResult().cast<OpResult>(), transformed.getArrayRef());
-  return DiagnosedSilenceableFailure::success();
-}
-
-void transform::LinalgPromoteOp::getEffects(
-    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  onlyReadsHandle(getTarget(), effects);
-  producesHandle(getResult(), effects);
-  modifiesPayload(effects);
-}
-
-//===----------------------------------------------------------------------===//
-// FuseIntoContainingMemrefOp
-//===----------------------------------------------------------------------===//
-
-void transform::FuseIntoContainingMemrefOp::build(OpBuilder &builder,
-                                                  OperationState &result,
-                                                  Value producerOp,
-                                                  Value containingOp) {
-  result.addOperands({producerOp, containingOp});
-  result.addTypes(pdl::OperationType::get(builder.getContext()));
-}
-
-void transform::FuseIntoContainingMemrefOp::getEffects(
-    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  consumesHandle(getProducerOp(), effects);
-  onlyReadsHandle(getContainingOp(), effects);
-  producesHandle(getFusedOp(), effects);
-  modifiesPayload(effects);
-}
-
-static FailureOr<linalg::LinalgOp>
-generateResultTileValue(Operation *op, Operation *forOp, OpBuilder &b,
-                        ArrayRef<OpFoldResult> offsets,
-                        ArrayRef<OpFoldResult> sizes) {
-  auto linalgOp = cast<linalg::LinalgOp>(op);
-  auto loc = op->getLoc();
-  SmallVector<Value> args;
-  for (auto o : op->getOperands())
-    args.push_back(o);
-  auto allShapeSizes = linalgOp.createFlatListOfOperandDims(b, loc);
-  AffineMap shapeSizesToLoopsMap = linalgOp.getShapesToLoopsMap();
-  if (!shapeSizesToLoopsMap)
-    return failure();
-  SmallVector<OpFoldResult> sizeBounds =
-      makeComposedFoldedMultiResultAffineApply(b, loc, shapeSizesToLoopsMap,
-                                               allShapeSizes);
-  SmallVector<OpFoldResult, 2> ivs =
-      cast<scf::ParallelOp>(forOp).getInductionVars();
-  SmallVector<Value> tiledOperands = linalg::makeTiledShapes(
-      b, op->getLoc(), linalgOp, args, ivs, sizes, sizeBounds, true);
-
-  SmallVector<Value> operands;
-  auto ti = tiledOperands.begin();
-  for (auto o : op->getOperands()) {
-    if (isa<MemRefType>(o.getType()))
-      operands.push_back(*ti);
-    else
-      operands.push_back(o);
-    ti++;
-  }
-
-  linalg::LinalgOp newLinalgOp = clone(b, op, {}, operands);
-  return newLinalgOp;
-}
-
-/// Find the first subview user of `producerOp` and tile it right before its
-/// use. The tiled op is fused under the `containingOp`.
-/// Return this fused op on success or nullptr if anything fails.
-static Operation *tileAndFuseFirstExtractUse(RewriterBase &rewriter,
-                                             Diagnostic &diag,
-                                             Operation *producerOp,
-                                             Operation *containingOp) {
-  LLVM_DEBUG(llvm::dbgs() << "Try to fuse a direct extract use\n");
-  auto tileableProducer = dyn_cast<TilingInterface>(producerOp);
-  if (!tileableProducer) {
-    diag.attachNote(producerOp->getLoc())
-        << "producer is not a TileableInterface: " << *producerOp;
-    return nullptr;
-  }
-
-  linalg::LinalgOp producerLinalgOp = cast<linalg::LinalgOp>(producerOp);
-  auto users = producerLinalgOp.getDpsInitOperands()[0]->get().getUsers();
-  auto it = llvm::find_if(users, [&](Operation *user) {
-    auto sliceOp = dyn_cast<memref::SubViewOp>(user);
-    return sliceOp && containingOp->isProperAncestor(sliceOp);
-  });
-
-  // Find a fusion opportunity.
-  if (it == users.end()) {
-    diag.attachNote(tileableProducer->getLoc())
-        << "could not find fusion opportunity for: " << *tileableProducer;
-    return nullptr;
-  }
-  auto sliceOpToTile = cast<memref::SubViewOp>(*it);
-
-  OpBuilder::InsertionGuard guard(rewriter);
-  rewriter.setInsertionPoint(sliceOpToTile);
-
-  // Tile the producer.
-  FailureOr<linalg::LinalgOp> tiledProducer = generateResultTileValue(
-      producerOp, containingOp, rewriter, sliceOpToTile.getMixedOffsets(),
-      sliceOpToTile.getMixedSizes());
-  if (failed(tiledProducer)) {
-    diag.attachNote(tileableProducer->getLoc())
-        << "failed to tile producer op: " << *tileableProducer;
-    return nullptr;
-  }
-  LLVM_DEBUG(llvm::dbgs() << "tiledProducer: " << *tiledProducer << "\n");
-
-  // Replace the extract op.
-  rewriter.replaceOp(sliceOpToTile,
-                     tiledProducer.value().getDpsInitOperand(0)->get());
-  return *tiledProducer;
-}
-
-DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
-    transform::TransformResults &results, transform::TransformState &state) {
-  SmallVector<Operation *> fusedOps;
-  ArrayRef<Operation *> producerOps = state.getPayloadOps(getProducerOp());
-  // If nothing to fuse, propagate success.
-  if (producerOps.empty()) {
-    results.set(getFusedOp().cast<OpResult>(),
-                SmallVector<mlir::Operation *>{});
-    return DiagnosedSilenceableFailure::success();
-  }
-  if (producerOps.size() != 1) {
-    return emitDefiniteFailure()
-           << "requires exactly one producer_op handle (got "
-           << producerOps.size() << ")";
-  }
-  Operation *producerOp = producerOps.front();
-
-  ArrayRef<Operation *> containingOps = state.getPayloadOps(getContainingOp());
-  if (containingOps.size() != 1) {
-    return emitDefiniteFailure()
-           << "requires exactly one containing_op handle (got "
-           << containingOps.size() << ")";
-  }
-  Operation *containingOp = containingOps.front();
-
-  linalg::LinalgOp producerLinalgOp = dyn_cast<linalg::LinalgOp>(producerOp);
-  if (!producerLinalgOp) {
-    return emitDefiniteFailure() << "requires producer_op to be LinalgOp";
-  }
-  if (producerLinalgOp.getNumDpsInits() != 1) {
-    return emitDefiniteFailure()
-           << "requires producer_op to have exactly one init operand (got "
-           << producerLinalgOp.getNumDpsInits() << ")";
-  }
-
-  auto initOperand = producerLinalgOp.getDpsInitOperands()[0]->get();
-  // The containing op may be a user of producerOp: use isAncestor.
-  int64_t numUsesInContainingOp =
-      llvm::count_if(initOperand.getUsers(), [&](Operation *op) {
-        return containingOp->isAncestor(op);
-      });
-  if (numUsesInContainingOp == 0) {
-    results.set(getFusedOp().cast<OpResult>(), ArrayRef<Operation *>());
-    Diagnostic diag(containingOp->getLoc(), DiagnosticSeverity::Remark);
-    diag << "producer_op does not have uses in the container";
-    return DiagnosedSilenceableFailure::silenceableFailure(std::move(diag));
-  }
-
-  // Default diagnostic, to be complemented with more failure information.
-  Diagnostic diag(producerOp->getLoc(), DiagnosticSeverity::Remark);
-  diag << "could not fuse " << *producerOp << " into " << *containingOp;
-
-  IRRewriter rewriter(getContext());
-  Operation *tiled =
-      tileAndFuseFirstExtractUse(rewriter, diag, producerOp, containingOp);
-  if (tiled) {
-    LLVM_DEBUG(llvm::dbgs() << "\nFused a direct extract use\n"
-                            << *containingOp);
-    fusedOps.push_back(tiled);
-    rewriter.eraseOp(producerOp);
-
-    results.set(getFusedOp().cast<OpResult>(), fusedOps);
-    return DiagnosedSilenceableFailure::success();
-  }
-
-  results.set(getFusedOp().cast<OpResult>(), ArrayRef<Operation *>());
-  return DiagnosedSilenceableFailure::silenceableFailure(std::move(diag));
-}
 
 namespace xilinx {
 namespace air {

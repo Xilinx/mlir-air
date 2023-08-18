@@ -1202,7 +1202,7 @@ public:
 
     LLVMTypeConverter converter(context);
 
-    converter.addConversion([&](Type type) -> Optional<Type> {
+    converter.addConversion([&](Type type) -> std::optional<Type> {
       // convert L1 memrefs to L3
       if (auto memref = type.dyn_cast<MemRefType>())
         if (memref.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1)
@@ -1217,7 +1217,7 @@ public:
     auto addUnrealizedCast = [](OpBuilder &builder, Type type,
                                 ValueRange inputs, Location loc) {
       auto cast = builder.create<UnrealizedConversionCastOp>(loc, type, inputs);
-      return Optional<Value>(cast.getResult(0));
+      return std::optional<Value>(cast.getResult(0));
     };
     converter.addSourceMaterialization(addUnrealizedCast);
     converter.addTargetMaterialization(addUnrealizedCast);

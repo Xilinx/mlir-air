@@ -26,6 +26,7 @@
 #define DEBUG_TYPE "air-util-costmodel"
 
 using namespace mlir;
+using namespace mlir::affine;
 
 namespace xilinx {
 namespace air {

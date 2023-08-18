@@ -47,7 +47,8 @@ def SegmentToAIEOp : Op<Transform_Dialect, "air.segment_to_aie",
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
-        ::xilinx::air::SegmentOp target,
+        ::mlir::transform::TransformRewriter &rewriter,
+        ::mlir::Operation *target,
         ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
   }];
@@ -72,7 +73,8 @@ def ParToHerdOp : Op<Transform_Dialect, "air.par_to_herd",
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
-        ::mlir::scf::ParallelOp target,
+        ::mlir::transform::TransformRewriter &rewriter,
+        ::mlir::Operation *target,
         ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
   }];
@@ -92,7 +94,8 @@ def ParToLaunchOp : Op<Transform_Dialect, "air.par_to_launch",
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
-        ::mlir::scf::ParallelOp target,
+        ::mlir::transform::TransformRewriter &rewriter,
+        ::mlir::Operation *target,
         ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
   }];
@@ -112,7 +115,8 @@ def CopyToDmaOp : Op<Transform_Dialect, "air.copy_to_dma",
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
-        ::mlir::memref::CopyOp target,
+        ::mlir::transform::TransformRewriter &rewriter,
+        ::mlir::Operation *target,
         ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
   }];
@@ -138,7 +142,8 @@ def PipelineReduceOp : Op<Transform_Dialect, "air.pipeline_reduce",
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
-        ::mlir::linalg::LinalgOp target,
+        ::mlir::transform::TransformRewriter &rewriter,
+        ::mlir::Operation *target,
         ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
   }];

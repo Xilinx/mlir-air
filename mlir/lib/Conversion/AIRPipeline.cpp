@@ -19,6 +19,7 @@
 #define DEBUG_TYPE "air-pipeline-conversion"
 
 using namespace mlir;
+using namespace mlir::affine;
 
 namespace xilinx {
 namespace air {

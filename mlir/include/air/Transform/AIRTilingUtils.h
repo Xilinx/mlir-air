@@ -18,6 +18,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 
 using namespace mlir;
+using namespace mlir::affine;
 
 namespace xilinx {
 namespace air {

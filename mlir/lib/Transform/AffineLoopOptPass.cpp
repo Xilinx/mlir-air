@@ -32,10 +32,11 @@
 #define DEBUG_TYPE "affine-loop-opt"
 
 using namespace mlir;
+using namespace mlir::affine;
 using namespace xilinx::air;
 
 namespace {
-  
+
 class AffineLoopOptPass : public AffineLoopOptPassBase<AffineLoopOptPass> {
 
 public:
@@ -88,7 +89,7 @@ public:
   Option<std::string> clAffineOptLabel{*this, "affine-opt-label",
                           llvm::cl::desc("Transform loops with the given label"),
                           llvm::cl::init("")};
-                          
+
   Option<std::string> clAffineOptPostLabel{*this, "affine-opt-post-label",
                           llvm::cl::desc("Label to apply to transformed loop nest"),
                           llvm::cl::init("")};
@@ -99,7 +100,7 @@ public:
 
   void tileLoops(std::vector<SmallVector<AffineForOp, 6>> *bands);
   void generateDataCopyLoops(std::vector<SmallVector<AffineForOp, 6>> *bands,
-                             Optional<Value> filterMemRef = std::nullopt);
+                             std::optional<Value> filterMemRef = std::nullopt);
   void outlineDataCopyLoops();
 
   static void getTileableBands(func::FuncOp,
@@ -109,7 +110,7 @@ public:
   SmallVector<unsigned, 6> optTileSizes;
   SmallVector<unsigned, 6> optCopyDepths;
   std::set<Operation*>  erasedOps;
-  SmallVector<DenseSet<Operation *>, 3> dataCopyNests; 
+  SmallVector<DenseSet<Operation *>, 3> dataCopyNests;
 
   static const char *affineOptAttrName;
 
@@ -196,7 +197,7 @@ void AffineLoopOptPass::tileLoops(std::vector<SmallVector<AffineForOp, 6>> *band
   }
 }
 
-void AffineLoopOptPass::generateDataCopyLoops(std::vector<SmallVector<AffineForOp, 6>> *bands, Optional<Value> filterMemRef) {
+void AffineLoopOptPass::generateDataCopyLoops(std::vector<SmallVector<AffineForOp, 6>> *bands, std::optional<Value> filterMemRef) {
 
   if (bands->size() == 0)
     return;

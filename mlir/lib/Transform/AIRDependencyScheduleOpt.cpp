@@ -47,6 +47,7 @@
 #include <vector>
 
 using namespace mlir;
+using namespace mlir::affine;
 using namespace xilinx;
 using namespace xilinx::air;
 
@@ -465,7 +466,7 @@ private:
       dep_list = async_for_op.getIterOperands();
     } else if (auto async_parallel_op = dyn_cast<scf::ParallelOp>(op)) {
       dep_list = async_parallel_op.getInitVals();
-    } else if (auto affine_if_op = dyn_cast<mlir::AffineIfOp>(op)) {
+    } else if (auto affine_if_op = dyn_cast<AffineIfOp>(op)) {
       auto &first_child_op_in_then_block =
           affine_if_op.getThenBlock()->getOperations().front();
       return getAsyncDependenciesFromOp(&first_child_op_in_then_block,
@@ -477,7 +478,7 @@ private:
 
   void setBoolAttrForAsyncOp(OpBuilder builder, Operation *op,
                              std::string attr) const {
-    if (auto aif = dyn_cast<mlir::AffineIfOp>(op)) {
+    if (auto aif = dyn_cast<AffineIfOp>(op)) {
       aif.getThenBlock()->walk([&](Operation *child_op) {
         child_op->setAttr(attr, builder.getBoolAttr(true));
       });
@@ -668,7 +669,7 @@ struct ConstructPingPongDependencyPattern
           } else if (isa<air::ExecuteOp>(candidate_op->getParentOp())) {
             push_back_if_unique<Operation *>(producer_ops,
                                              candidate_op->getParentOp());
-          } else if (isa<mlir::AffineIfOp>(candidate_op->getParentOp())) {
+          } else if (isa<AffineIfOp>(candidate_op->getParentOp())) {
             push_back_if_unique<Operation *>(producer_ops, candidate_op);
           } else if (isa<air::AsyncOpInterface>(candidate_op)) {
             push_back_if_unique<Operation *>(producer_ops, candidate_op);
@@ -689,7 +690,7 @@ struct ConstructPingPongDependencyPattern
           } else if (isa<air::ExecuteOp>(candidate_op->getParentOp())) {
             push_back_if_unique<Operation *>(consumer_ops,
                                              candidate_op->getParentOp());
-          } else if (isa<mlir::AffineIfOp>(candidate_op->getParentOp())) {
+          } else if (isa<AffineIfOp>(candidate_op->getParentOp())) {
             push_back_if_unique<Operation *>(consumer_ops, candidate_op);
           } else if (isa<air::AsyncOpInterface>(candidate_op)) {
             push_back_if_unique<Operation *>(consumer_ops, candidate_op);
@@ -845,9 +846,9 @@ private:
             op->getAttrOfType<IntegerAttr>("unrolled_iteration").getInt();
       }
       // If op is in region of an unrolled affine if
-      else if (isa<mlir::AffineIfOp>(op->getParentOp())) {
+      else if (isa<AffineIfOp>(op->getParentOp())) {
         Operation *parent = op->getParentOp();
-        while (isa<mlir::AffineIfOp>(parent)) {
+        while (isa<AffineIfOp>(parent)) {
           if (parent->hasAttr("unrolled_iteration")) {
             unroll_iter =
                 parent->getAttrOfType<IntegerAttr>("unrolled_iteration")
@@ -908,8 +909,8 @@ private:
   Value getTokenFromOutermostParentAffineIfOp(Operation *op) const {
     Value token = nullptr;
     Operation *parent = op->getParentOp();
-    if (isa<mlir::AffineIfOp>(parent)) {
-      while (isa<mlir::AffineIfOp>(parent)) {
+    if (isa<AffineIfOp>(parent)) {
+      while (isa<AffineIfOp>(parent)) {
         token = getAsyncTokenFromValues(parent->getResults());
         parent = parent->getParentOp();
       }

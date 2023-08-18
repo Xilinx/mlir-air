@@ -38,6 +38,7 @@
 #include "llvm/Support/TargetSelect.h"
 
 using namespace mlir;
+using namespace mlir::affine;
 using namespace xilinx;
 
 namespace xilinx {

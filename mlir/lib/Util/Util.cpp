@@ -26,6 +26,7 @@
 #define DEBUG_TYPE "air-util"
 
 using namespace mlir;
+using namespace mlir::affine;
 using namespace xilinx;
 
 const StringLiteral air::LinalgTransforms::kLinalgTransformMarker =
@@ -282,11 +283,11 @@ std::string air::getMemorySpaceAsString(Value memref) {
 }
 
 // Returns the first affine if op in block; nullptr otherwise
-mlir::AffineIfOp air::getAffineIfInBlock(mlir::Block *block) {
-  for (auto op : block->getOps<mlir::AffineIfOp>()) {
+AffineIfOp air::getAffineIfInBlock(mlir::Block *block) {
+  for (auto op : block->getOps<AffineIfOp>()) {
     return op;
   }
-  return mlir::AffineIfOp();
+  return AffineIfOp();
 }
 
 // Returns the first air.dma op in block; nullptr otherwise
@@ -518,7 +519,7 @@ bool air::positionHitsAffineIfCondition(Operation *op, Operation *spatial_loop,
 
   // Walk through affine.if nest (in reverse order through vector)
   for (auto it = affine_if_nest.rbegin(); it != affine_if_nest.rend(); ++it) {
-    auto affine_if = dyn_cast<mlir::AffineIfOp>(*it);
+    auto affine_if = dyn_cast<AffineIfOp>(*it);
     // Get then integerset sizes
     SmallVector<int, 2> lbs_int = {0, 0};
     SmallVector<int, 2> ubs_int = {0, 0};
@@ -556,7 +557,7 @@ Operation *air::getAffineIfNestAndSpatialLoopFromOp(
   Operation *parent = op;
   while ((!isa<scf::ParallelOp>(parent)) &&
          (!isa<air::HierarchyInterface>(parent))) {
-    if (isa<mlir::AffineIfOp>(parent)) {
+    if (isa<AffineIfOp>(parent)) {
       affine_if_nest.push_back(parent);
     }
     parent = parent->getParentOp();

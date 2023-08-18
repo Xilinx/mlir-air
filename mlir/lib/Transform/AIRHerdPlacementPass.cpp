@@ -35,6 +35,7 @@
 #include <vector>
 
 using namespace mlir;
+using namespace mlir::affine;
 using namespace xilinx;
 using namespace xilinx::air;
 

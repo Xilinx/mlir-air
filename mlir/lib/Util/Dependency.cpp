@@ -16,6 +16,7 @@
 #define DEBUG_TYPE "air-dependency-util"
 
 using namespace mlir;
+using namespace mlir::affine;
 
 namespace xilinx {
 namespace air {
@@ -1263,7 +1264,7 @@ dependencyCanonicalizer::getVerticesWithAffineIf(
     for (auto v = vp.first; v != vp.second; ++v) {
       if (!g[*v].op) {
         output.push_back(*v);
-      } else if (!g[*v].op->getParentOfType<mlir::AffineIfOp>()) {
+      } else if (!g[*v].op->getParentOfType<AffineIfOp>()) {
         output.push_back(*v);
       } else if (positionHitsAffineIfCondition(g[*v].op, position)) {
         output.push_back(*v);
@@ -1442,8 +1443,8 @@ dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
   }
   // Else if dependency token is from affine if (joint token from multiple ops)
   else if (dep_token.getDefiningOp() &&
-           dyn_cast<mlir::AffineIfOp>(dep_token.getDefiningOp())) {
-    auto aifop = dyn_cast<mlir::AffineIfOp>(dep_token.getDefiningOp());
+           dyn_cast<AffineIfOp>(dep_token.getDefiningOp())) {
+    auto aifop = dyn_cast<AffineIfOp>(dep_token.getDefiningOp());
     // The first then block
     auto then_terminator = aifop.getThenBlock()->getTerminator();
     for (auto operand : then_terminator->getOperands()) {
@@ -1452,7 +1453,7 @@ dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
       }
     }
     // Recursion
-    mlir::AffineIfOp current_aif = aifop;
+    AffineIfOp current_aif = aifop;
     while (getAffineIfInBlock(current_aif.getElseBlock())) {
       auto child_aif_op = getAffineIfInBlock(current_aif.getElseBlock());
       auto child_aif_terminator = child_aif_op.getThenBlock()->getTerminator();
@@ -1791,9 +1792,9 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
         } else if (auto async_src_op =
                        dyn_cast<xilinx::air::AsyncOpInterface>(src_op)) {
           // Elevate src token if src op is in affine if
-          while (dyn_cast<mlir::AffineIfOp>(src_op->getParentOp())) {
+          while (dyn_cast<AffineIfOp>(src_op->getParentOp())) {
             auto parent_affine_if_op =
-                dyn_cast<mlir::AffineIfOp>(src_op->getParentOp());
+                dyn_cast<AffineIfOp>(src_op->getParentOp());
             src_op = parent_affine_if_op.getOperation();
           }
           async_op.addAsyncDependency(src_op->getResult(0));
@@ -1841,7 +1842,7 @@ void dependencyCanonicalizer::removeUnusedExecuteOp(func::FuncOp func) {
     // effects
     auto child_op = &(*op->getRegions().front().op_begin());
     if (dyn_cast<memref::AllocOp>(child_op) ||
-        dyn_cast<mlir::AffineApplyOp>(child_op)) {
+        dyn_cast<AffineApplyOp>(child_op)) {
       // The second result is the ssa value yielded from child op inside execute
       if (op->getNumResults() == 2) {
         auto result = op->getResult(1);
@@ -2256,8 +2257,8 @@ void dependencyTracer::getPartialMemrefFromOp(
     sink_op_scalar_outs.push_back(sink_op_arith.getResult());
   }
 
-  // If the sink op is mlir::AffineApplyOp
-  else if (auto sink_op_apply = dyn_cast<mlir::AffineApplyOp>(sink_op)) {
+  // If the sink op is AffineApplyOp
+  else if (auto sink_op_apply = dyn_cast<AffineApplyOp>(sink_op)) {
     for (auto applyop_operand : sink_op_apply.getMapOperands()) {
       sink_op_scalar_ins.push_back(applyop_operand);
     }

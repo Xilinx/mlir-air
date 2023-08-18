@@ -14,6 +14,7 @@
 #define DEBUG_TYPE "air-tiling-utils"
 
 using namespace mlir;
+using namespace mlir::affine;
 
 namespace xilinx {
 namespace air {
