@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "shell.h"
+#include "cdma.h"
 #include "platform.h"
 #include "xuartpsv_hw.h"
 #include <stdint.h>
@@ -13,6 +14,7 @@
 
 #define MAX_LINE_LENGTH 256
 #define MAX_CMD_LENGTH 15
+#define MAX_DIFF_LENGTH 0x8000
 #define NUM_CMDS (sizeof(command_tbl) / sizeof(command_entry))
 
 /*
@@ -24,17 +26,23 @@ typedef struct command_entry {
 } command_entry;
 
 // forward declarations of handlers
+static void command_aie(char *line);
+static void command_cdma(char *line);
 static void command_cp(char *line);
+static void command_diff(char *line);
+static void command_dma(char *line);
 static void command_help(char *line);
-static void command_x(char *line);
+static void command_write(char *line);
+static void command_read(char *line);
+static void command_reset(char *line);
 
 static int new_cmd = 1;
 static int cmd_len;
 static char line[MAX_LINE_LENGTH];
 static command_entry command_tbl[] = {
-    {"cp", command_cp},
-    {"help", command_help},
-    {"x", command_x},
+    {"aie", command_aie},   {"cdma", command_cdma}, {"cp", command_cp},
+    {"diff", command_diff}, {"dma", command_dma},   {"help", command_help},
+    {"w", command_write},   {"x", command_read},    {"reset", command_reset},
 };
 
 static char to_ascii(uint8_t byte) {
@@ -44,6 +52,39 @@ static char to_ascii(uint8_t byte) {
 
   return '.';
 }
+
+static void command_aie(char *line) {
+  char *col_str, *row_str, *op_str;
+  int col = 6, row = 2;
+
+  strtok(line, " ");
+  col_str = strtok(NULL, " ");
+  row_str = strtok(NULL, " ");
+  op_str = strtok(NULL, " ");
+
+  if (col_str)
+    col = strtol(col_str, NULL, 0);
+  if (row_str)
+    row = strtol(row_str, NULL, 0);
+
+  if (col < 0 || col > 49)
+    return;
+  if (row < 1 || row > 8)
+    return;
+
+  if (!op_str || strcmp(op_str, "status") == 0) {
+    xil_printf("aie status col=%d row=%d\r\n", col, row);
+    mlir_aie_print_tile_status(col, row);
+  } else if (strcmp(op_str, "reset") == 0) {
+    xil_printf("aie reset col=%d row=%d\r\n", col, row);
+    aie_tile_reset(col, row);
+  } else if (strcmp(op_str, "enable") == 0) {
+    xil_printf("aie enable col=%d row=%d\r\n", col, row);
+    aie_tile_enable(col, row);
+  }
+}
+
+static void command_cdma(char *line) { cdma_print_status(); }
 
 /*
         Print information about the command processors
@@ -59,6 +100,83 @@ static void command_cp(char *line) {
   for (uint32_t idx = 0; idx < cp_count; idx++) {
     xil_printf("[%02u]\t0x%llx\r\n", idx, queue_base[idx]);
   }
+}
+
+/*
+  Compare two regions of memory
+*/
+static void command_diff(char *line) {
+  char *first_str, *second_str, *length_str;
+  uint64_t first, second;
+  uint32_t length = 4;
+  uint32_t w1, w2;
+  uint8_t identical = 1;
+
+  strtok(line, " ");
+  first_str = strtok(NULL, " ");
+  second_str = strtok(NULL, " ");
+  length_str = strtok(NULL, " ");
+
+  if (!first_str || !second_str)
+    return;
+
+  first = strtoul(first_str, NULL, 0);
+  second = strtoul(second_str, NULL, 0);
+
+  if (length_str)
+    length = strtoul(length_str, NULL, 0);
+
+  // limit the length to prevent mistakes
+  if (length > MAX_DIFF_LENGTH) {
+    xil_printf("Limiting to 0x%x\r\n", MAX_DIFF_LENGTH);
+    length = MAX_DIFF_LENGTH;
+  }
+
+  // force the addresses to be 4-byte aligned
+  first &= ~(4ULL - 1);
+  second &= ~(4ULL - 1);
+
+  for (uint32_t idx = 0; idx < length; idx += 4) {
+    w1 = *(uint32_t *)first;
+    w2 = *(uint32_t *)second;
+    if (w1 != w2) {
+      identical = 0;
+      xil_printf("[0x%lx] 0x%x != 0x%x\r\n", second, w1, w2);
+    }
+
+    first += 4;
+    second += 4;
+  }
+
+  if (identical)
+    xil_printf("Identical!\r\n");
+}
+
+/*
+  Tile DMA status
+*/
+static void command_dma(char *line) {
+  char *col_str, *row_str;
+  uint32_t col = 6, row = 2;
+
+  strtok(line, " ");
+  col_str = strtok(NULL, " ");
+  row_str = strtok(NULL, " ");
+
+  if (col_str)
+    col = strtoul(col_str, NULL, 0);
+  if (row_str)
+    row = strtoul(row_str, NULL, 0);
+
+  if (col < 0 || col > 49)
+    return;
+  if (row > 8)
+    return;
+
+  if (row == 0)
+    mlir_aie_print_shimdma_status(col);
+  else
+    mlir_aie_print_dma_status(col, row);
 }
 
 /*
@@ -87,34 +205,79 @@ static void command_help(char *line) {
         parameter 1: ARM virtual address (in hex or decimal)
         parameter 2: number of bytes to read (should be aligned to 8)
 */
-static void command_x(char *line) {
-  char *cmd;
+static void command_read(char *line) {
   char *address_str;
   char *range_str;
   uint64_t address = 0x400000;
   uint32_t range = 8;
+  uint32_t w[2];
+  uint8_t *bytes = (uint8_t *)&w;
 
-  cmd = strtok(line, " ");
+  strtok(line, " ");
   address_str = strtok(NULL, " ");
   range_str = strtok(NULL, " ");
 
   if (address_str)
-    address = strtoul(address_str, NULL, 16);
+    address = strtoul(address_str, NULL, 0);
   if (range_str)
-    range = strtoul(range_str, NULL, 16);
+    range = strtoul(range_str, NULL, 0);
 
-  xil_printf("%s: addr=0x%llx range=0x%llx\r\n", cmd, address, range);
+  // force the address to be 4-byte aligned
+  address &= ~(4ULL - 1);
 
-  uint8_t *w = (uint8_t *)address;
+  for (uint32_t i = 0; i < range; i += 8) {
+    w[0] = IO_READ32(address + i);
+    w[1] = IO_READ32(address + i + 4);
 
-  for (uint32_t i = 0; i < range; i += 8)
     xil_printf("[%16llx]: %02x %02x %02x %02x %02x %02x %02x %02x | "
                "%c%c%c%c%c%c%c%c\r\n",
-               address + i * sizeof(*w), w[i], w[i + 1], w[i + 2], w[i + 3],
-               w[i + 4], w[i + 5], w[i + 6], w[i + 7], to_ascii(w[i]),
-               to_ascii(w[i + 1]), to_ascii(w[i + 2]), to_ascii(w[i + 3]),
-               to_ascii(w[i + 4]), to_ascii(w[i + 5]), to_ascii(w[i + 6]),
-               to_ascii(w[i + 7]));
+               address + i, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4],
+               bytes[5], bytes[6], bytes[7], to_ascii(bytes[0]),
+               to_ascii(bytes[1]), to_ascii(bytes[2]), to_ascii(bytes[3]),
+               to_ascii(bytes[4]), to_ascii(bytes[5]), to_ascii(bytes[6]),
+               to_ascii(bytes[7]));
+  }
+}
+
+static void command_write(char *line) {
+  char *address_str;
+  char *val_str;
+  uint64_t address = 0x400000;
+  uint32_t val = 0;
+
+  strtok(line, " ");
+  address_str = strtok(NULL, " ");
+  val_str = strtok(NULL, " ");
+
+  if (address_str) {
+    xil_printf("address_str: %s\r\n", address_str);
+    address = strtoul(address_str, NULL, 0);
+  }
+  if (val_str)
+    val = strtoul(val_str, NULL, 0);
+
+  xil_printf("write 0x%x to 0x%lx\r\n", val, address);
+  uint32_t *w = (uint32_t *)address;
+  *w = val;
+}
+
+static void command_reset(char *line) {
+  char *block_str;
+
+  strtok(line, " ");
+  block_str = strtok(NULL, " ");
+
+  if (!block_str) {
+    xil_printf("Invalid block name\r\n");
+    xil_printf("options: array device\r\n");
+    return;
+  }
+
+  if (strcmp(block_str, "array") == 0) {
+    xaie_array_reset();
+  } else if (strcmp(block_str, "device") == 0) {
+    xaie_device_init();
+  }
 }
 
 static void handle_command(void) {

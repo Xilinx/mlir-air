@@ -21,4 +21,7 @@ app create -lang c++ -name acdc_agent -platform arm -domain airrt_arm -template 
 importsources -name acdc_agent -soft-link -path [file join $root_directory "runtime_lib/controller"]
 app config -name acdc_agent include-path [file join $root_directory "runtime_lib/airhost/include"]
 
+# define ARM_CONTROLLER
+configapp -app acdc_agent define-compiler-symbols ARM_CONTROLLER
+
 app build -name acdc_agent
