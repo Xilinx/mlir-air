@@ -55,6 +55,7 @@ cmake .. \
     -DCMAKE_CXX_COMPILER=clang++ \
     -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
     -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
+    -DCMAKE_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
     -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
     -DLLVM_DIR=${LLVM_DIR}/build/lib/cmake/llvm \
     -DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \
