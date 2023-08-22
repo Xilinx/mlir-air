@@ -38,8 +38,8 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %herd_rows = arith.constant 1 : index
   air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<1024xi32>, memref<1024xi32> attributes { sym_name="func1"} {
     %c0 = arith.constant 0 : index
-    %c1 = arith.constant 0 : index
-    %c1024 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c1024 = arith.constant 1024 : index
     %buf0 = memref.alloc() : memref<1024xi32, 2>
     air.dma_memcpy_nd (%buf0[] [] [], %ext0[%c0] [%c1024] [%c1]) : (memref<1024xi32, 2>, memref<1024xi32>)
     memref.dealloc %buf0 : memref<1024xi32, 2>
@@ -91,9 +91,9 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %herd_rows = arith.constant 1 : index
   air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<1024xi32>, memref<1024xi32> attributes { sym_name="func1"} {
     %c0 = arith.constant 0 : index
-    %c1 = arith.constant 0 : index
-    %c1024 = arith.constant 0 : index
-    %c512 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c1024 = arith.constant 1024 : index
+    %c512 = arith.constant 512 : index
     %buf0 = memref.alloc() : memref<1024xi32, 2>
     %buf1 = memref.alloc() : memref<512xi32, 2>
     air.dma_memcpy_nd (%buf0[] [] [], %ext0[%c0] [%c1024] [%c1]) {id = 1 : i32} : (memref<1024xi32, 2>, memref<1024xi32>)
@@ -109,14 +109,14 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 
 // air.channel to aie.locks.
 // CHECK: AIE.device
-// CHECK:         %[[VAL_0:.*]] = AIE.tile(2, 2)
-// CHECK:         %[[VAL_1:.*]] = AIE.tile(2, 0)
-// CHECK:         %[[VAL_2:.*]] = AIE.lock(%[[VAL_0]], 1)
-// CHECK:         %[[VAL_3:.*]] = AIE.lock(%[[VAL_0]], 0)
-// CHECK:         %[[VAL_4:.*]] = AIE.buffer(%[[VAL_0]]) {sym_name = {{.*}}} : memref<1024xi32, 2>
-// CHECK:         %[[VAL_5:.*]] = AIE.buffer(%[[VAL_0]]) {sym_name = {{.*}}} : memref<512xi32, 2>
+// CHECK:         %[[VAL_0:.*]] = AIE.tile(2, 0)
+// CHECK:         %[[VAL_1:.*]] = AIE.tile(2, 2)
+// CHECK:         %[[VAL_2:.*]] = AIE.lock(%[[VAL_1]], 1)
+// CHECK:         %[[VAL_3:.*]] = AIE.lock(%[[VAL_1]], 0)
+// CHECK:         %[[VAL_4:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<1024xi32, 2>
+// CHECK:         %[[VAL_5:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<512xi32, 2>
 
-// CHECK:    AIE.mem(%[[VAL_0]])  {
+// CHECK:    AIE.mem(%[[VAL_1]])  {
 // CHECK:           AIE.dmaStart(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           AIE.useLock(%[[VAL_2]], Acquire, 0)
@@ -134,7 +134,7 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:           AIE.nextBd ^bb4
 // CHECK:         }
 
-// CHECK:    AIE.core(%[[VAL_0]])  {
+// CHECK:    AIE.core(%[[VAL_1]])  {
 // CHECK:           AIE.useLock(%[[VAL_2]], Acquire, 1)
 // CHECK:           AIE.useLock(%[[VAL_3]], Acquire, 0)
 // CHECK:           AIE.useLock(%[[VAL_2]], Release, 0)
@@ -142,16 +142,16 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:           AIE.end
 // CHECK:         }
 
-// CHECK:         AIE.flow(%[[VAL_1]], DMA : 0, %[[VAL_0]], DMA : 0)
 // CHECK:         AIE.flow(%[[VAL_0]], DMA : 0, %[[VAL_1]], DMA : 0)
+// CHECK:         AIE.flow(%[[VAL_1]], DMA : 0, %[[VAL_0]], DMA : 0)
 
 air.channel @channel_0 [1, 1]
 air.channel @channel_1 [1, 1]
 func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %c0 = arith.constant 0 : index
-  %c1 = arith.constant 0 : index
-  %c512 = arith.constant 0 : index
-  %c1024 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c512 = arith.constant 512 : index
+  %c1024 = arith.constant 1024 : index
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
   air.channel.put @channel_0[] (%arg0[%c0] [%c1024] [%c1]) {id = 1 : i32} : (memref<1024xi32>)
@@ -171,14 +171,14 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // -----
 
 // CHECK: AIE.device
-// CHECK:         %[[VAL_0:.*]] = AIE.tile(2, 2)
-// CHECK:         %[[VAL_1:.*]] = AIE.tile(2, 0)
-// CHECK:         %[[VAL_2:.*]] = AIE.lock(%[[VAL_0]], 1)
-// CHECK:         %[[VAL_3:.*]] = AIE.lock(%[[VAL_0]], 0)
-// CHECK:         %[[VAL_4:.*]] = AIE.buffer(%[[VAL_0]]) {sym_name = {{.*}}} : memref<1024xi32, 2>
-// CHECK:         %[[VAL_5:.*]] = AIE.buffer(%[[VAL_0]]) {sym_name = {{.*}}} : memref<512xi32, 2>
+// CHECK:         %[[VAL_0:.*]] = AIE.tile(2, 0)
+// CHECK:         %[[VAL_1:.*]] = AIE.tile(2, 2)
+// CHECK:         %[[VAL_2:.*]] = AIE.lock(%[[VAL_1]], 1)
+// CHECK:         %[[VAL_3:.*]] = AIE.lock(%[[VAL_1]], 0)
+// CHECK:         %[[VAL_4:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<1024xi32, 2>
+// CHECK:         %[[VAL_5:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<512xi32, 2>
 
-// CHECK:    AIE.mem(%[[VAL_0]])  {
+// CHECK:    AIE.mem(%[[VAL_1]])  {
 // CHECK:           AIE.dmaStart(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           AIE.useLock(%[[VAL_3]], Acquire, 0)
@@ -196,7 +196,7 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:           AIE.nextBd ^bb4
 // CHECK:         }
 
-// CHECK:    AIE.core(%[[VAL_0]])  {
+// CHECK:    AIE.core(%[[VAL_1]])  {
 // CHECK:           AIE.useLock(%[[VAL_2]], Acquire, 1)
 // CHECK:           AIE.useLock(%[[VAL_3]], Acquire, 1)
 // CHECK:           AIE.useLock(%[[VAL_3]], Release, 0)
@@ -204,16 +204,16 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:           AIE.end
 // CHECK:         }
 
-// CHECK:         AIE.flow(%[[VAL_1]], DMA : 0, %[[VAL_0]], DMA : 0)
-// CHECK:         AIE.flow(%[[VAL_1]], DMA : 1, %[[VAL_0]], DMA : 1)
+// CHECK:         AIE.flow(%[[VAL_0]], DMA : 0, %[[VAL_1]], DMA : 0)
+// CHECK:         AIE.flow(%[[VAL_0]], DMA : 1, %[[VAL_1]], DMA : 1)
 
 air.channel @channel_2 [1, 1]
 air.channel @channel_3 [1, 1]
 func.func @func4(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %c0 = arith.constant 0 : index
-  %c1 = arith.constant 0 : index
-  %c512 = arith.constant 0 : index
-  %c1024 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c512 = arith.constant 512 : index
+  %c1024 = arith.constant 1024 : index
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
   air.channel.put @channel_2[] (%arg0[%c0] [%c1024] [%c1]) {id = 1 : i32} : (memref<1024xi32>)
@@ -234,14 +234,14 @@ func.func @func4(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 
 // asynchronous air.channel to aie.locks.
 // CHECK: AIE.device
-// CHECK:         %[[VAL_0:.*]] = AIE.tile(2, 2)
-// CHECK:         %[[VAL_1:.*]] = AIE.tile(2, 0)
-// CHECK:         %[[VAL_2:.*]] = AIE.lock(%[[VAL_0]], 1)
-// CHECK:         %[[VAL_3:.*]] = AIE.lock(%[[VAL_0]], 0)
-// CHECK:         %[[VAL_4:.*]] = AIE.buffer(%[[VAL_0]]) {sym_name = {{.*}}} : memref<1024xi32, 2>
-// CHECK:         %[[VAL_5:.*]] = AIE.buffer(%[[VAL_0]]) {sym_name = {{.*}}} : memref<512xi32, 2>
+// CHECK:         %[[VAL_0:.*]] = AIE.tile(2, 0)
+// CHECK:         %[[VAL_1:.*]] = AIE.tile(2, 2)
+// CHECK:         %[[VAL_2:.*]] = AIE.lock(%[[VAL_1]], 1)
+// CHECK:         %[[VAL_3:.*]] = AIE.lock(%[[VAL_1]], 0)
+// CHECK:         %[[VAL_4:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<1024xi32, 2>
+// CHECK:         %[[VAL_5:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<512xi32, 2>
 
-// CHECK:    AIE.mem(%[[VAL_0]])  {
+// CHECK:    AIE.mem(%[[VAL_1]])  {
 // CHECK:           AIE.dmaStart(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           AIE.useLock(%[[VAL_3]], Acquire, 0)
@@ -259,7 +259,7 @@ func.func @func4(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:           AIE.nextBd ^bb4
 // CHECK:         }
 
-// CHECK:    AIE.core(%[[VAL_0]])  {
+// CHECK:    AIE.core(%[[VAL_1]])  {
 // CHECK:           AIE.useLock(%[[VAL_2]], Acquire, 1)
 // CHECK:           AIE.useLock(%[[VAL_3]], Acquire, 1)
 // CHECK:           AIE.useLock(%[[VAL_3]], Release, 0)
@@ -267,16 +267,16 @@ func.func @func4(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:           AIE.end
 // CHECK:         }
 
-// CHECK:         AIE.flow(%[[VAL_1]], DMA : 0, %[[VAL_0]], DMA : 0)
-// CHECK:         AIE.flow(%[[VAL_1]], DMA : 1, %[[VAL_0]], DMA : 1)
+// CHECK:         AIE.flow(%[[VAL_0]], DMA : 0, %[[VAL_1]], DMA : 0)
+// CHECK:         AIE.flow(%[[VAL_0]], DMA : 1, %[[VAL_1]], DMA : 1)
 
 air.channel @channel_4 [1, 1]
 air.channel @channel_5 [1, 1]
 func.func @func5(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %c0 = arith.constant 0 : index
-  %c1 = arith.constant 0 : index
-  %c512 = arith.constant 0 : index
-  %c1024 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c512 = arith.constant 512 : index
+  %c1024 = arith.constant 1024 : index
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
   %token_0 = air.channel.put async @channel_4[] (%arg0[%c0] [%c1024] [%c1]) {id = 1 : i32} : (memref<1024xi32>)

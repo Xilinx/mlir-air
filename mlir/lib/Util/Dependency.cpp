@@ -284,7 +284,6 @@ void clearAsyncDependenciesOfAsyncOpImpl(scf::ParallelOp op) {
 }
 void clearAsyncDependenciesOfAsyncOp(Operation *op) {
   if (!isAsyncOp(op)) {
-    op->emitOpError("op has no async interface");
     return;
   }
   if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
