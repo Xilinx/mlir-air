@@ -26,6 +26,7 @@ def constructAndPrintInFunc(f):
       with InsertionPoint(bb):
         f()
         func.ReturnOp([])
+  module.operation.verify()
   print(module)
 
 # CHECK-LABEL: TEST: launchOp

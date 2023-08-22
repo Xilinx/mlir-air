@@ -1,0 +1,3 @@
+recursive-include air *.so
+recursive-include air *.dylib
+recursive-include air *.pyi

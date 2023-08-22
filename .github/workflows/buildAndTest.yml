@@ -127,6 +127,20 @@ jobs:
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/aienginev2/install/lib
 
+      # Build the repo test target in release mode to build and test.
+      - name: Build and test Python wheel
+        run: |
+          cp -a build_release/python/air python/wheel
+          
+          pushd python/wheel
+          
+          pip install wheel
+          pip wheel . -v
+          pip install air-*whl
+          python ../test/dialect/air_ops.py
+          
+          popd
+
   lint-repo:
     name: Check code format
     runs-on: ubuntu-20.04
