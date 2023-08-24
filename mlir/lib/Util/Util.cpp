@@ -101,7 +101,7 @@ func::FuncOp air::getMangledFunction(ModuleOp module, std::string prefix,
   return fn;
 }
 
-LogicalResult air::normalizeLoop(AffineForOp afo) {
+LogicalResult air::normalizeLoop(affine::AffineForOp afo) {
   auto ubMap = afo.getUpperBoundMap();
   auto lbMap = afo.getLowerBoundMap();
   auto ctx = afo.getContext();
@@ -124,7 +124,7 @@ LogicalResult air::normalizeLoop(AffineForOp afo) {
   auto iv_expr = dim0_expr * step_expr + lb_expr;
   auto iv_map = AffineMap::get(1, 0, iv_expr);
   auto builder = OpBuilder::atBlockBegin(afo.getBody());
-  auto new_iv = builder.create<AffineApplyOp>(loc, iv_map, iv);
+  auto new_iv = builder.create<affine::AffineApplyOp>(loc, iv_map, iv);
   SmallPtrSet<Operation *, 1> keep{new_iv};
   iv.replaceAllUsesExcept(new_iv, keep);
   return success();
@@ -322,11 +322,11 @@ std::string air::getMemorySpaceAsString(Value memref) {
 }
 
 // Returns the first affine if op in block; nullptr otherwise
-mlir::AffineIfOp air::getAffineIfInBlock(mlir::Block *block) {
-  for (auto op : block->getOps<mlir::AffineIfOp>()) {
+affine::AffineIfOp air::getAffineIfInBlock(mlir::Block *block) {
+  for (auto op : block->getOps<affine::AffineIfOp>()) {
     return op;
   }
-  return mlir::AffineIfOp();
+  return affine::AffineIfOp();
 }
 
 // Returns the first air.dma op in block; nullptr otherwise
@@ -558,7 +558,7 @@ bool air::positionHitsAffineIfCondition(Operation *op, Operation *spatial_loop,
 
   // Walk through affine.if nest (in reverse order through vector)
   for (auto it = affine_if_nest.rbegin(); it != affine_if_nest.rend(); ++it) {
-    auto affine_if = dyn_cast<mlir::AffineIfOp>(*it);
+    auto affine_if = dyn_cast<affine::AffineIfOp>(*it);
     // Get then integerset sizes
     SmallVector<int, 2> lbs_int = {0, 0};
     SmallVector<int, 2> ubs_int = {0, 0};
@@ -596,7 +596,7 @@ Operation *air::getAffineIfNestAndSpatialLoopFromOp(
   Operation *parent = op;
   while ((!isa<scf::ParallelOp>(parent)) &&
          (!isa<air::HierarchyInterface>(parent))) {
-    if (isa<mlir::AffineIfOp>(parent)) {
+    if (isa<affine::AffineIfOp>(parent)) {
       affine_if_nest.push_back(parent);
     }
     parent = parent->getParentOp();

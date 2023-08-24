@@ -63,7 +63,7 @@ CostModel::getLinalgOpCounts(OpCountMap &map, linalg::LinalgOp op) {
     return;
 
   SmallVector<OpFoldResult> shapeSizes =
-      makeComposedFoldedMultiResultAffineApply(b, loc, shapeSizesToLoopsMap,
+      affine::makeComposedFoldedMultiResultAffineApply(b, loc, shapeSizesToLoopsMap,
                                                allShapeSizes);
   int64_t iters = 1;
   int64_t reads = 0;

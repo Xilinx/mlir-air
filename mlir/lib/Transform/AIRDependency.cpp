@@ -186,7 +186,7 @@ public:
         }
 
         // Create async execute region for affine.apply
-        else if (auto apply_op = dyn_cast<mlir::AffineApplyOp>(op))
+        else if (auto apply_op = dyn_cast<affine::AffineApplyOp>(op))
           createAsyncExecute(module_builder, op, "affine::apply", ExecuteOpID,
                              apply_op.getResult().getType());
 
@@ -405,8 +405,8 @@ public:
           sink_op_scalar_outs.push_back(sink_op_arith.getResult());
         }
 
-        // If the sink op is mlir::AffineApplyOp
-        else if (auto sink_op_apply = dyn_cast<mlir::AffineApplyOp>(sink_op)) {
+        // If the sink op is affine::AffineApplyOp
+        else if (auto sink_op_apply = dyn_cast<affine::AffineApplyOp>(sink_op)) {
           for (auto applyop_operand : sink_op_apply.getMapOperands()) {
             sink_op_scalar_ins.push_back(applyop_operand);
           }

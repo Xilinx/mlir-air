@@ -801,12 +801,12 @@ public:
   }
 };
 
-class L1AffineStoreOpConversion : public OpConversionPattern<AffineStoreOp> {
+class L1AffineStoreOpConversion : public OpConversionPattern<affine::AffineStoreOp> {
 public:
-  using OpConversionPattern<AffineStoreOp>::OpConversionPattern;
+  using OpConversionPattern<affine::AffineStoreOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(AffineStoreOp op, OpAdaptor adaptor,
+  matchAndRewrite(affine::AffineStoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = op.getMemref().getType().cast<MemRefType>();
@@ -855,12 +855,12 @@ public:
   }
 };
 
-class L1AffineLoadOpConversion : public OpConversionPattern<AffineLoadOp> {
+class L1AffineLoadOpConversion : public OpConversionPattern<affine::AffineLoadOp> {
 public:
-  using OpConversionPattern<AffineLoadOp>::OpConversionPattern;
+  using OpConversionPattern<affine::AffineLoadOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(AffineLoadOp op, OpAdaptor adaptor,
+  matchAndRewrite(affine::AffineLoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = op.getMemref().getType().cast<MemRefType>();
@@ -868,7 +868,7 @@ public:
       return failure();
 
     auto load =
-        rewriter.create<AffineLoadOp>(op.getLoc(), op->getResultTypes(),
+        rewriter.create<affine::AffineLoadOp>(op.getLoc(), op->getResultTypes(),
                                       adaptor.getOperands(), op->getAttrs());
     rewriter.replaceOp(op, load.getResult());
     return success();
@@ -1202,7 +1202,7 @@ public:
 
     LLVMTypeConverter converter(context);
 
-    converter.addConversion([&](Type type) -> Optional<Type> {
+    converter.addConversion([&](Type type) -> std::optional<Type> {
       // convert L1 memrefs to L3
       if (auto memref = type.dyn_cast<MemRefType>())
         if (memref.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1)
@@ -1211,13 +1211,13 @@ public:
                                        memref.getLayout(), 0);
       if (auto t = type.dyn_cast<xilinx::airrt::EventType>())
         return LLVM::LLVMPointerType::get(IntegerType::get(context, 64));
-      return type;
+      return std::optional<Type>(type);
     });
 
     auto addUnrealizedCast = [](OpBuilder &builder, Type type,
                                 ValueRange inputs, Location loc) {
       auto cast = builder.create<UnrealizedConversionCastOp>(loc, type, inputs);
-      return Optional<Value>(cast.getResult(0));
+      return std::optional<Value>(cast.getResult(0));
     };
     converter.addSourceMaterialization(addUnrealizedCast);
     converter.addTargetMaterialization(addUnrealizedCast);
@@ -1240,7 +1240,7 @@ public:
     ConversionTarget target(*context);
 
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           arith::ArithDialect, AffineDialect, scf::SCFDialect,
+                           arith::ArithDialect, affine::AffineDialect, scf::SCFDialect,
                            memref::MemRefDialect>();
 
     target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
@@ -1253,13 +1253,13 @@ public:
           0);
     });
 
-    target.addDynamicallyLegalOp<AffineStoreOp>([&](AffineStoreOp op) {
+    target.addDynamicallyLegalOp<affine::AffineStoreOp>([&](affine::AffineStoreOp op) {
       return (
           op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
           (int)xilinx::air::MemorySpace::L1);
     });
 
-    target.addDynamicallyLegalOp<AffineLoadOp>([&](AffineLoadOp op) {
+    target.addDynamicallyLegalOp<affine::AffineLoadOp>([&](affine::AffineLoadOp op) {
       return (
           op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
           (int)xilinx::air::MemorySpace::L1);

@@ -75,20 +75,20 @@ private:
 
 const char *AIRLoopMergingPass::affineOptAttrName = "affine_opt_label";
 
-static void constructReducedLoopNest(MutableArrayRef<AffineForOp> origLoops,
+static void constructReducedLoopNest(MutableArrayRef<affine::AffineForOp> origLoops,
                                 unsigned total_width,
-                                MutableArrayRef<AffineForOp> reducedLoops,
+                                MutableArrayRef<affine::AffineForOp> reducedLoops,
                                 SmallVectorImpl<unsigned> &loopMergeLevels) {
   
-  AffineForOp rootLoop = origLoops[0];
+  affine::AffineForOp rootLoop = origLoops[0];
   Location rootLoopLoc = rootLoop.getLoc();
   Operation *rootLoopOp = rootLoop.getOperation();
-  AffineForOp innermostLoop;
+  affine::AffineForOp innermostLoop;
 
   // Create an affine loop band
   for (unsigned i = 0; i < total_width; i++) {
     OpBuilder builder(rootLoopOp);
-    AffineForOp intraLoop = builder.create<AffineForOp>(rootLoopLoc, 0, 0);
+    affine::AffineForOp intraLoop = builder.create<affine::AffineForOp>(rootLoopLoc, 0, 0);
     intraLoop.getBody()->getOperations().splice(
       intraLoop.getBody()->begin(), rootLoopOp->getBlock()->getOperations(),
       rootLoopOp);
@@ -99,7 +99,7 @@ static void constructReducedLoopNest(MutableArrayRef<AffineForOp> origLoops,
   }
 
   // Move the innermost Loop body into the specified location
-  AffineForOp src = origLoops.back();
+  affine::AffineForOp src = origLoops.back();
   auto &ops = src.getBody()->getOperations();
   Block::iterator innerForLoc = innermostLoop.getBody()->begin();
   innermostLoop.getBody()->getOperations().splice(innerForLoc, ops, ops.begin(),
@@ -151,9 +151,9 @@ static void constructReducedLoopNest(MutableArrayRef<AffineForOp> origLoops,
   }
 
   // Restore the original induction variables
-  AffineForOp innerFor = reducedLoops[total_width - 1];
-  AffineForOp singleFor = reducedLoops[reduceAtLevel];
-  SmallVector<AffineApplyOp, 3> restoredIVs;
+  affine::AffineForOp innerFor = reducedLoops[total_width - 1];
+  affine::AffineForOp singleFor = reducedLoops[reduceAtLevel];
+  SmallVector<affine::AffineApplyOp, 3> restoredIVs;
   OpBuilder applyBuilder = OpBuilder::atBlockBegin(innerFor.getBody());
   // The IV in the outermost original reduced loop nest can be calculated as
   // i0 = i / a1*a2*...*an
@@ -164,7 +164,7 @@ static void constructReducedLoopNest(MutableArrayRef<AffineForOp> origLoops,
     divConst *= origLoops[loopLevel].getConstantUpperBound();
   }
   auto map_0 = AffineMap::get(1, 0, dim0.floorDiv(divConst));
-  AffineApplyOp apply_0 = applyBuilder.create<AffineApplyOp>(innerFor.getLoc(),
+  affine::AffineApplyOp apply_0 = applyBuilder.create<affine::AffineApplyOp>(innerFor.getLoc(),
                                 map_0, singleFor.getInductionVar());
   restoredIVs.push_back(apply_0);
 
@@ -180,7 +180,7 @@ static void constructReducedLoopNest(MutableArrayRef<AffineForOp> origLoops,
     }
     AffineExpr dim0 = applyBuilder.getAffineDimExpr(0);
     auto map = AffineMap::get(1, 0, dim0.floorDiv(divConst) % modConst);
-    AffineApplyOp apply = applyBuilder.create<AffineApplyOp>(innerFor.getLoc(),
+    affine::AffineApplyOp apply = applyBuilder.create<affine::AffineApplyOp>(innerFor.getLoc(),
                                 map, singleFor.getInductionVar());
     restoredIVs.push_back(apply);
   }
@@ -190,7 +190,7 @@ static void constructReducedLoopNest(MutableArrayRef<AffineForOp> origLoops,
   unsigned loopLevel = loopMergeLevels[reducedSize - 1];
   int64_t modConst = origLoops[loopLevel].getConstantUpperBound();
   auto map_1 = AffineMap::get(1, 0, dim0 % modConst);
-  AffineApplyOp apply_1 = applyBuilder.create<AffineApplyOp>(innerFor.getLoc(),
+  affine::AffineApplyOp apply_1 = applyBuilder.create<affine::AffineApplyOp>(innerFor.getLoc(),
                                 map_1, singleFor.getInductionVar());
   restoredIVs.push_back(apply_1);
   assert(restoredIVs.size() == loopMergeLevels.size());
@@ -224,14 +224,14 @@ void AIRLoopMergingPass::runOnOperation() {
   }
 
   // Assume that the pass takes in loops that are in normalized form.
-  std::vector<SmallVector<AffineForOp, 6>> bands;
+  std::vector<SmallVector<affine::AffineForOp, 6>> bands;
   xilinx::air::getTileableBands(func, bands, 
                    AIRLoopMergingPass::affineOptAttrName, clAIROptLabel);
 
   for (auto &band: bands) {
-    MutableArrayRef<AffineForOp> origLoops = band;
+    MutableArrayRef<affine::AffineForOp> origLoops = band;
     unsigned total_width = origLoops.size() - reduceLoopLevels.size() + 1;
-    SmallVector<AffineForOp, 6> reducedLoops(total_width);
+    SmallVector<affine::AffineForOp, 6> reducedLoops(total_width);
 
     constructReducedLoopNest(origLoops, 
                              total_width, 

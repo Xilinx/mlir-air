@@ -15,6 +15,7 @@
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/InitAllDialects.h"
+#include "mlir/InitAllExtensions.h"
 #include "mlir/InitAllPasses.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
@@ -46,6 +47,8 @@ int main(int argc, char **argv) {
   xilinx::air::registerAllDialects(registry);
   registry.insert<xilinx::AIE::AIEDialect>();
 
+  registerAllExtensions(registry);
+
   registerAllPasses();
   xilinx::air::registerAllPasses();
 
@@ -54,6 +57,5 @@ int main(int argc, char **argv) {
   ::test::registerTestTransformDialectExtension(registry);
 
   return failed(MlirOptMain(argc, argv, "MLIR-AIR modular optimizer driver\n",
-                            registry,
-                            /*preloadDialectsInContext=*/true));
+                            registry));
 }

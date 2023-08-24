@@ -21,7 +21,7 @@ using namespace mlir;
 namespace xilinx {
 namespace air {
 
-LogicalResult normalizeLoop(AffineForOp afo);
+LogicalResult normalizeLoop(affine::AffineForOp afo);
 
 func::FuncOp getMangledFunction(ModuleOp module, std::string fnName,
                                 ArrayRef<Value> operands,
@@ -63,7 +63,7 @@ std::string to_string(mlir::Type t);
 std::string getMemorySpaceAsString(Value memref);
 
 // Returns the first affine if op in block; nullptr otherwise
-mlir::AffineIfOp getAffineIfInBlock(mlir::Block *block);
+affine::AffineIfOp getAffineIfInBlock(mlir::Block *block);
 // Returns the first air.dma op in block; nullptr otherwise
 DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block);
 

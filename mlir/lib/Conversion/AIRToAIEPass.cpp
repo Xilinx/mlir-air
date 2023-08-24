@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/Pass/Pass.h"
@@ -456,7 +457,7 @@ bool isInSet(IntegerSet is) {
   return true;
 }
 
-bool isInSet(int64_t x, int64_t y, AffineIfOp aif) {
+bool isInSet(int64_t x, int64_t y, affine::AffineIfOp aif) {
   auto is = aif.getIntegerSet();
   if (is.getConstraints().size() != 2)
     return false;
@@ -470,12 +471,12 @@ bool isInSet(int64_t x, int64_t y, AffineIfOp aif) {
   return isInSet(newIs);
 }
 
-struct SpecializeAffineIfPattern : public OpRewritePattern<AffineIfOp> {
-  using OpRewritePattern<AffineIfOp>::OpRewritePattern;
+struct SpecializeAffineIfPattern : public OpRewritePattern<affine::AffineIfOp> {
+  using OpRewritePattern<affine::AffineIfOp>::OpRewritePattern;
 
   SpecializeAffineIfPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
 
-  LogicalResult matchAndRewrite(AffineIfOp op,
+  LogicalResult matchAndRewrite(affine::AffineIfOp op,
                                 PatternRewriter &rewriter) const override {
 
     auto core = op->getParentOfType<AIE::CoreOp>();
@@ -1467,6 +1468,7 @@ public:
     registry.insert<xilinx::airrt::AIRRtDialect>();
     registry.insert<xilinx::AIE::AIEDialect>();
     registry.insert<LLVM::LLVMDialect>();
+    registry.insert<cf::ControlFlowDialect>();
   }
 
   AIE::FlowOp getFlowOp(AIE::DeviceOp aie_device, mlir::Value source,

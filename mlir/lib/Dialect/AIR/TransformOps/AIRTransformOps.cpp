@@ -16,20 +16,13 @@
 
 using namespace mlir;
 
-namespace {
-/// A simple pattern rewriter that implements no special logic.
-class SimpleRewriter : public PatternRewriter {
-public:
-  SimpleRewriter(MLIRContext *context) : PatternRewriter(context) {}
-};
-} // namespace
-
 //===----------------------------------------------------------------------===//
 // GetSegmentForOp
 //===----------------------------------------------------------------------===//
 
 DiagnosedSilenceableFailure
-transform::GetSegmentForOp::apply(transform::TransformResults &results,
+transform::GetSegmentForOp::apply(transform::TransformRewriter &rewriter,
+                                  transform::TransformResults &results,
                                   transform::TransformState &state) {
   SetVector<Operation *> segments;
   for (Operation *target : state.getPayloadOps(getTarget())) {
@@ -54,10 +47,10 @@ transform::GetSegmentForOp::apply(transform::TransformResults &results,
 //===----------------------------------------------------------------------===//
 
 DiagnosedSilenceableFailure
-transform::SegmentToAIEOp::applyToOne(xilinx::air::SegmentOp target,
+transform::SegmentToAIEOp::applyToOne(transform::TransformRewriter &rewriter,
+                                      xilinx::air::SegmentOp target,
                                       transform::ApplyToEachResultList &results,
                                       transform::TransformState &state) {
-  SimpleRewriter rewriter(target->getContext());
   FailureOr<ModuleOp> res = convertAIRToAIE(rewriter, target);
   if (failed(res))
     return DiagnosedSilenceableFailure::definiteFailure();
