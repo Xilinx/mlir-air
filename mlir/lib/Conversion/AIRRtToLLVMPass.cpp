@@ -801,7 +801,8 @@ public:
   }
 };
 
-class L1AffineStoreOpConversion : public OpConversionPattern<affine::AffineStoreOp> {
+class L1AffineStoreOpConversion
+    : public OpConversionPattern<affine::AffineStoreOp> {
 public:
   using OpConversionPattern<affine::AffineStoreOp>::OpConversionPattern;
 
@@ -855,7 +856,8 @@ public:
   }
 };
 
-class L1AffineLoadOpConversion : public OpConversionPattern<affine::AffineLoadOp> {
+class L1AffineLoadOpConversion
+    : public OpConversionPattern<affine::AffineLoadOp> {
 public:
   using OpConversionPattern<affine::AffineLoadOp>::OpConversionPattern;
 
@@ -867,9 +869,9 @@ public:
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
-    auto load =
-        rewriter.create<affine::AffineLoadOp>(op.getLoc(), op->getResultTypes(),
-                                      adaptor.getOperands(), op->getAttrs());
+    auto load = rewriter.create<affine::AffineLoadOp>(
+        op.getLoc(), op->getResultTypes(), adaptor.getOperands(),
+        op->getAttrs());
     rewriter.replaceOp(op, load.getResult());
     return success();
   }
@@ -1240,8 +1242,8 @@ public:
     ConversionTarget target(*context);
 
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           arith::ArithDialect, affine::AffineDialect, scf::SCFDialect,
-                           memref::MemRefDialect>();
+                           arith::ArithDialect, affine::AffineDialect,
+                           scf::SCFDialect, memref::MemRefDialect>();
 
     target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
       return (op.getType().getMemorySpaceAsInt() == 0);
@@ -1253,13 +1255,15 @@ public:
           0);
     });
 
-    target.addDynamicallyLegalOp<affine::AffineStoreOp>([&](affine::AffineStoreOp op) {
+    target.addDynamicallyLegalOp<
+        affine::AffineStoreOp>([&](affine::AffineStoreOp op) {
       return (
           op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
           (int)xilinx::air::MemorySpace::L1);
     });
 
-    target.addDynamicallyLegalOp<affine::AffineLoadOp>([&](affine::AffineLoadOp op) {
+    target.addDynamicallyLegalOp<affine::AffineLoadOp>([&](affine::AffineLoadOp
+                                                               op) {
       return (
           op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
           (int)xilinx::air::MemorySpace::L1);

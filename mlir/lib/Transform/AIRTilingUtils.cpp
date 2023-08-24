@@ -43,7 +43,7 @@ void getTileableBands(func::FuncOp f,
 }
 
 affine::AffineForOp getLabel(affine::AffineForOp root, StringRef label,
-                                  const char* attrName) {
+                             const char *attrName) {
   affine::AffineForOp res;
 
   root.walk([&](affine::AffineForOp forOp) {

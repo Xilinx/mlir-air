@@ -69,7 +69,7 @@ public:
 
   void runOnOperation() override;
   void runOnAffineForNest(SmallVector<affine::AffineForOp, 6> &band);
-                              
+
   static const char *affineOptAttrName;
 private:
 
@@ -78,20 +78,22 @@ private:
 const char *AIRRegularizeLoopPass::affineOptAttrName = "affine_opt_label";
 
 static bool isIndependent(Operation *op, affine::AffineForOp forOp,
-                              SmallPtrSetImpl<Operation *> &opsWithUsers,
-                              SmallPtrSetImpl<Operation *> &opsToHoist);
-static bool checkInvarianceOfNestedIfOps(Operation *op, affine::AffineForOp forOp,
+                          SmallPtrSetImpl<Operation *> &opsWithUsers,
+                          SmallPtrSetImpl<Operation *> &opsToHoist);
+static bool
+checkInvarianceOfNestedIfOps(Operation *op, affine::AffineForOp forOp,
                              SmallPtrSetImpl<Operation *> &opsWithUsers,
                              SmallPtrSetImpl<Operation *> &opsToHoist);
-static bool areAllOpsInTheBlockListInvariant(Region &blockList, affine::AffineForOp forOp,
+static bool
+areAllOpsInTheBlockListInvariant(Region &blockList, affine::AffineForOp forOp,
                                  SmallPtrSetImpl<Operation *> &opsWithUsers,
                                  SmallPtrSetImpl<Operation *> &opsToHoist);
 
 // Refer to AffineLoopInvariantCodeMotion.cpp
 // Recursively check if the operation is independent of the loop induction var
 bool isIndependent(Operation *op, affine::AffineForOp forOp,
-                       SmallPtrSetImpl<Operation *> &opsWithUsers,
-                       SmallPtrSetImpl<Operation *> &opsToHoist) {
+                   SmallPtrSetImpl<Operation *> &opsWithUsers,
+                   SmallPtrSetImpl<Operation *> &opsToHoist) {
   auto indVar = forOp.getInductionVar();
   if (isa<affine::AffineIfOp>(op)) {
     if (!checkInvarianceOfNestedIfOps(op, forOp, opsWithUsers, opsToHoist)) {
@@ -127,7 +129,8 @@ bool isIndependent(Operation *op, affine::AffineForOp forOp,
             SmallVector<affine::AffineForOp, 8> userIVs;
             getAffineForIVs(*user, &userIVs);
             // Check that userIVs don't contain the for loop around the op.
-            if (llvm::is_contained(userIVs, affine::getForInductionVarOwner(indVar))) {
+            if (llvm::is_contained(userIVs,
+                                   affine::getForInductionVarOwner(indVar))) {
               return false;
             }
           }
@@ -185,7 +188,8 @@ bool checkInvarianceOfNestedIfOps(Operation *op, affine::AffineForOp forOp,
 
 // Checks if all ops in a region (i.e. list of blocks) are loop invariant.
 bool areAllOpsInTheBlockListInvariant(
-    Region &blockList, affine::AffineForOp forOp, SmallPtrSetImpl<Operation *> &opsWithUsers,
+    Region &blockList, affine::AffineForOp forOp,
+    SmallPtrSetImpl<Operation *> &opsWithUsers,
     SmallPtrSetImpl<Operation *> &opsToHoist) {
 
   for (auto &b : blockList) {
@@ -199,8 +203,9 @@ bool areAllOpsInTheBlockListInvariant(
   return true;
 }
 
-void AIRRegularizeLoopPass::runOnAffineForNest(SmallVector<affine::AffineForOp, 6> &band) {
-  
+void AIRRegularizeLoopPass::runOnAffineForNest(
+    SmallVector<affine::AffineForOp, 6> &band) {
+
   unsigned nestLevel = band.size();
   affine::AffineForOp innerForOp = band[nestLevel - 1];
 
@@ -226,7 +231,7 @@ void AIRRegularizeLoopPass::runOnAffineForNest(SmallVector<affine::AffineForOp, 
   SmallVector<Operation *, 8> opsToMove;
   SmallPtrSet<Operation *, 8> opsWithUsers;
   SmallPtrSet<Operation *, 8> opsToHoist;
-  for (affine::AffineForOp forOp: innerBand) {
+  for (affine::AffineForOp forOp : innerBand) {
     for (auto *op: opsToMove) {
       if (!op->use_empty()) {
         opsWithUsers.insert(op);
@@ -242,7 +247,8 @@ void AIRRegularizeLoopPass::runOnAffineForNest(SmallVector<affine::AffineForOp, 
     for (auto &op: *newloopBody) {
       if (!isa<affine::AffineForOp>(op)) {
         opsToMove.push_back(&op);
-      } else break;
+      } else
+        break;
     }
   }
 }

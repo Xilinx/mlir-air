@@ -845,16 +845,14 @@ void HoistingAffineIf(affine::AffineIfOp op) {
 
   // Get dependent ops to hoist together with external get/put
   SetVector<Operation *> backwardSlice;
-  BackwardSliceOptions bsOptions {[&](Operation *o) { return o != hier_op; }};
+  BackwardSliceOptions bsOptions{[&](Operation *o) { return o != hier_op; }};
   for (auto ext_channel_op : externalGetPut) {
-    getBackwardSlice(ext_channel_op.getOperation(), &backwardSlice,
-                     bsOptions);
+    getBackwardSlice(ext_channel_op.getOperation(), &backwardSlice, bsOptions);
 
     for (auto parent = ext_channel_op->getParentOp();
          !isa<air::HierarchyInterface>(parent);
          parent = parent->getParentOp()) {
-      getBackwardSlice(parent, &backwardSlice,
-                       bsOptions);
+      getBackwardSlice(parent, &backwardSlice, bsOptions);
       backwardSlice.insert(parent);
     }
   }
@@ -1023,7 +1021,8 @@ class AIRDmaToAIRChannelConversion
       OpBuilder::InsertionGuard guard(rewriter);
 
       SetVector<Operation *> backwardSlice;
-      BackwardSliceOptions bsOptions {[&](Operation *o) { return o != hier_op; }};
+      BackwardSliceOptions bsOptions{
+          [&](Operation *o) { return o != hier_op; }};
       for (auto ext_channel_op : externalGetPut) {
         getBackwardSlice(ext_channel_op.getOperation(), &backwardSlice,
                          bsOptions);
@@ -1032,8 +1031,7 @@ class AIRDmaToAIRChannelConversion
       for (auto parent = op->getParentOp();
            !isa<air::HierarchyInterface>(parent);
            parent = parent->getParentOp()) {
-        getBackwardSlice(parent, &backwardSlice,
-                         bsOptions);
+        getBackwardSlice(parent, &backwardSlice, bsOptions);
         backwardSlice.insert(parent);
       }
 
@@ -1067,8 +1065,7 @@ class AIRDmaToAIRChannelConversion
       for (auto b : backwardSlice) {
         if (dyn_cast<air::ExecuteOp>(b)) {
           for (auto &exec_child_op : b->getRegions().front().getOps()) {
-            getBackwardSlice(&exec_child_op, &backwardSlice,
-                             bsOptions);
+            getBackwardSlice(&exec_child_op, &backwardSlice, bsOptions);
             backwardSlice.insert(&exec_child_op);
           }
         }
@@ -1186,7 +1183,8 @@ class AIRDmaToAIRChannelConversion
   }
 };
 
-class AffineParToHerdConversion : public OpRewritePattern<affine::AffineParallelOp> {
+class AffineParToHerdConversion
+    : public OpRewritePattern<affine::AffineParallelOp> {
 public:
   using OpRewritePattern<affine::AffineParallelOp>::OpRewritePattern;
 
@@ -1681,7 +1679,8 @@ struct CopyToDmaPass : public air::CopyToDmaBase<CopyToDmaPass> {
                            scf::SCFDialect, air::airDialect,
                            arith::ArithDialect, memref::MemRefDialect>();
 
-    target.addLegalOp<affine::AffineApplyOp, affine::AffineForOp, affine::AffineLoadOp, affine::AffineStoreOp,
+    target.addLegalOp<affine::AffineApplyOp, affine::AffineForOp,
+                      affine::AffineLoadOp, affine::AffineStoreOp,
                       affine::AffineYieldOp>();
 
     target.addDynamicallyLegalOp<memref::CopyOp>([](memref::CopyOp co) {
@@ -1760,10 +1759,10 @@ struct DmaToChannelPass : public air::DmaToChannelBase<DmaToChannelPass> {
 
     ConversionTarget target(*context);
 
-    target
-        .addLegalDialect<LLVM::LLVMDialect, func::FuncDialect, scf::SCFDialect,
-                         affine::AffineDialect, air::airDialect, arith::ArithDialect,
-                         memref::MemRefDialect, linalg::LinalgDialect>();
+    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
+                           scf::SCFDialect, affine::AffineDialect,
+                           air::airDialect, arith::ArithDialect,
+                           memref::MemRefDialect, linalg::LinalgDialect>();
 
     target.addIllegalOp<air::DmaMemcpyNdOp>();
 
@@ -1962,7 +1961,8 @@ struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
                            air::airDialect, arith::ArithDialect>();
 
-    target.addLegalOp<affine::AffineApplyOp, affine::AffineForOp, affine::AffineLoadOp, affine::AffineStoreOp,
+    target.addLegalOp<affine::AffineApplyOp, affine::AffineForOp,
+                      affine::AffineLoadOp, affine::AffineStoreOp,
                       affine::AffineYieldOp, scf::YieldOp>();
 
     target.addDynamicallyLegalOp<scf::ParallelOp>(
@@ -2037,7 +2037,8 @@ struct ParallelToLaunchPass
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
                            air::airDialect, arith::ArithDialect>();
 
-    target.addLegalOp<affine::AffineApplyOp, affine::AffineForOp, affine::AffineLoadOp, affine::AffineStoreOp,
+    target.addLegalOp<affine::AffineApplyOp, affine::AffineForOp,
+                      affine::AffineLoadOp, affine::AffineStoreOp,
                       affine::AffineYieldOp, scf::YieldOp>();
 
     target.addDynamicallyLegalOp<scf::ParallelOp>(

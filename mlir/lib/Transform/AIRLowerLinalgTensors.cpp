@@ -143,9 +143,9 @@ void AIRLowerLinalgTensors::runOnOperation() {
 
   ConversionTarget target(context);
   bufferization::BufferizeTypeConverter typeConverter;
-  target.addLegalDialect<AIE::AIEDialect, affine::AffineDialect, math::MathDialect,
-                         memref::MemRefDialect, func::FuncDialect,
-                         arith::ArithDialect>();
+  target.addLegalDialect<AIE::AIEDialect, affine::AffineDialect,
+                         math::MathDialect, memref::MemRefDialect,
+                         func::FuncDialect, arith::ArithDialect>();
   target.addIllegalOp<tensor::EmptyOp, tensor::ExtractSliceOp,
                       tensor::InsertSliceOp>();
 

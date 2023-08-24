@@ -54,8 +54,8 @@ LogicalResult AIRPipeStageConversion::matchAndRewrite(
   SmallVector<bool, 2> eqflags{true, false};
   auto int_set = IntegerSet::get(2, 0, constraints, eqflags);
   SmallVector<Value, 2> int_set_args{x, y};
-  affine::AffineIfOp aif = rewriter.create<affine::AffineIfOp>(stage->getLoc(), int_set,
-                                               int_set_args, false);
+  affine::AffineIfOp aif = rewriter.create<affine::AffineIfOp>(
+      stage->getLoc(), int_set, int_set_args, false);
 
   auto &stageBlock = stage.getBody().front();
   auto &yield = stageBlock.getOperations().back();

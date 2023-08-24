@@ -30,7 +30,8 @@ void getTileableBands(func::FuncOp f,
                       const char *attrName, StringRef label);
 
 /// Get the loop band that has been attached with the given label.
-affine::AffineForOp getLabel(affine::AffineForOp root, StringRef label, const char* attrName);
+affine::AffineForOp getLabel(affine::AffineForOp root, StringRef label,
+                             const char *attrName);
 
 } // namespace air
 } // namespace xilinx

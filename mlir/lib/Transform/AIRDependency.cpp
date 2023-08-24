@@ -406,7 +406,8 @@ public:
         }
 
         // If the sink op is affine::AffineApplyOp
-        else if (auto sink_op_apply = dyn_cast<affine::AffineApplyOp>(sink_op)) {
+        else if (auto sink_op_apply =
+                     dyn_cast<affine::AffineApplyOp>(sink_op)) {
           for (auto applyop_operand : sink_op_apply.getMapOperands()) {
             sink_op_scalar_ins.push_back(applyop_operand);
           }

@@ -416,7 +416,7 @@ private:
                   dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
                       .getAsyncToken());
               builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
-                                            yield_token);
+                                                    yield_token);
               if (numSegments != 1) {
                 // If more than 1 spatial segments, then move loc to else
                 // block
@@ -442,12 +442,12 @@ private:
                   dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
                       .getAsyncToken());
               builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
-                                            yield_token);
+                                                    yield_token);
               builder.setInsertionPointAfter(aif);
               SmallVector<Value, 1> parent_block_yield_token = {
                   aif.getResult(0)};
               builder.create<affine::AffineYieldOp>(builder.getUnknownLoc(),
-                                            parent_block_yield_token);
+                                                    parent_block_yield_token);
               builder.setInsertionPointToStart(aif.getElseBlock());
             } else {
               auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
@@ -459,7 +459,7 @@ private:
                   dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
                       .getAsyncToken());
               builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
-                                            yield_token);
+                                                    yield_token);
             }
           }
           memcpyOp.erase();
@@ -578,8 +578,7 @@ private:
 
   // Evaluate the affine expression of affine map if the only symbolic
   // identifier is replaced with zero
-  void replaceSymbolAndEvaluateConstantInMap(AffineMap map,
-                                             AffineExpr &c,
+  void replaceSymbolAndEvaluateConstantInMap(AffineMap map, AffineExpr &c,
                                              MLIRContext *ctx) {
     auto newmap = map.replace(getAffineSymbolExpr(0, ctx), c, 0, 1);
     auto const_int = simplifyAffineMap(newmap).getSingleConstantResult();
@@ -587,8 +586,8 @@ private:
   }
 
   // AddI for AffineConstantExpr
-  void applyArithOpToAffineConstantExpr(arith::AddIOp arith_op,
-                                        AffineExpr &c, MLIRContext *ctx) {
+  void applyArithOpToAffineConstantExpr(arith::AddIOp arith_op, AffineExpr &c,
+                                        MLIRContext *ctx) {
     arith::ConstantIndexOp add_operand = nullptr;
     if (arith_op.getLhs().getDefiningOp() &&
         dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())) {
@@ -613,8 +612,8 @@ private:
   }
 
   // MulI for AffineConstantExpr
-  void applyArithOpToAffineConstantExpr(arith::MulIOp arith_op,
-                                        AffineExpr &c, MLIRContext *ctx) {
+  void applyArithOpToAffineConstantExpr(arith::MulIOp arith_op, AffineExpr &c,
+                                        MLIRContext *ctx) {
     arith::ConstantIndexOp mul_operand = nullptr;
     if (arith_op.getLhs().getDefiningOp() &&
         dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())) {

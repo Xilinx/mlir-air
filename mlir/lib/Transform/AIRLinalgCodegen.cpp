@@ -701,7 +701,8 @@ private:
 };
 
 LinalgTransformationFilter::LinalgTransformationFilter(
-    ArrayRef<StringAttr> matchDisjunction, std::optional<StringAttr> replacement)
+    ArrayRef<StringAttr> matchDisjunction,
+    std::optional<StringAttr> replacement)
     : matchDisjunction(matchDisjunction.begin(), matchDisjunction.end()),
       replacement(replacement), matchByDefault(false) {}
 
@@ -917,8 +918,8 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   if (!shapeSizesToLoopsMap)
     return failure();
   SmallVector<OpFoldResult> sizeBounds =
-      affine::makeComposedFoldedMultiResultAffineApply(b, loc, shapeSizesToLoopsMap,
-                                               allShapeSizes);
+      affine::makeComposedFoldedMultiResultAffineApply(
+          b, loc, shapeSizesToLoopsMap, allShapeSizes);
 
   SmallVector<OpFoldResult> tileIds;
   for (int i = 0, e = static_tile_sizes.size(); i < e; i++) {
@@ -1058,9 +1059,8 @@ static std::string createChannelName(ModuleOp module) {
 // stages, each one feeding partial reductions to the next stage.
 // Stages are mapped to Nx1 or Nx1 herd.
 FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
-    RewriterBase &b, linalg::LinalgOp op,
-    ArrayRef<int64_t> static_tile_sizes, unsigned int pipeline_depth,
-    std::string pipeline_direction, bool promote) {
+    RewriterBase &b, linalg::LinalgOp op, ArrayRef<int64_t> static_tile_sizes,
+    unsigned int pipeline_depth, std::string pipeline_direction, bool promote) {
 
   OpBuilder::InsertionGuard g(b);
   b.setInsertionPoint(op);
@@ -1108,8 +1108,8 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
   if (!shapeSizesToLoopsMap)
     return failure();
   SmallVector<OpFoldResult> sizeBounds =
-      affine::makeComposedFoldedMultiResultAffineApply(b, loc, shapeSizesToLoopsMap,
-                                               allShapeSizes);
+      affine::makeComposedFoldedMultiResultAffineApply(
+          b, loc, shapeSizesToLoopsMap, allShapeSizes);
 
   SmallVector<OpFoldResult> tileIds;
   for (auto s : tileSizes) {
@@ -1118,8 +1118,8 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
     AffineExpr d0 = b.getAffineDimExpr(0);
     auto map = AffineMap::get(1, 0, d0 * s);
     tileIds.push_back(
-        b.create<affine::AffineApplyOp>(loc, map,
-                                isHoriz ? herd.getIds()[0] : herd.getIds()[1])
+        b.create<affine::AffineApplyOp>(
+             loc, map, isHoriz ? herd.getIds()[0] : herd.getIds()[1])
             .getResult());
   }
   SmallVector<Value, 4> tiledOperands = linalg::makeTiledShapes(
@@ -1144,8 +1144,8 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
     SmallVector<bool, 2> eqflags{true, false};
     auto int_set = IntegerSet::get(2, 0, constraints, eqflags);
     SmallVector<Value, 2> int_set_args{x, y};
-    affine::AffineIfOp aif =
-        b.create<affine::AffineIfOp>(op->getLoc(), int_set, int_set_args, false);
+    affine::AffineIfOp aif = b.create<affine::AffineIfOp>(op->getLoc(), int_set,
+                                                          int_set_args, false);
 
     Block *stageBlock = aif.getBody();
     b.setInsertionPointToStart(stageBlock);
@@ -1322,8 +1322,9 @@ public:
   AIRLinalgCodegen(const AIRLinalgCodegen &pass) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<affine::AffineDialect, memref::MemRefDialect, linalg::LinalgDialect,
-                    scf::SCFDialect, air::airDialect, func::FuncDialect>();
+    registry.insert<affine::AffineDialect, memref::MemRefDialect,
+                    linalg::LinalgDialect, scf::SCFDialect, air::airDialect,
+                    func::FuncDialect>();
   }
 
   void runTestPatterns(func::FuncOp funcOp) {
@@ -1374,8 +1375,8 @@ public:
       return {};
 
     SmallVector<OpFoldResult> shapeSizes =
-        affine::makeComposedFoldedMultiResultAffineApply(b, loc, shapeSizesToLoopsMap,
-                                                 allShapeSizes);
+        affine::makeComposedFoldedMultiResultAffineApply(
+            b, loc, shapeSizesToLoopsMap, allShapeSizes);
     for (auto size : shapeSizes) {
       if (auto v = size.dyn_cast<Value>()) {
         auto c = dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp());
@@ -1929,8 +1930,8 @@ private:
 //===----------------------------------------------------------------------===//
 
 DiagnosedSilenceableFailure transform::PipelineReduceOp::applyToOne(
-    transform::TransformRewriter &rewriter,
-    linalg::LinalgOp target, transform::ApplyToEachResultList &results,
+    transform::TransformRewriter &rewriter, linalg::LinalgOp target,
+    transform::ApplyToEachResultList &results,
     transform::TransformState &state) {
   auto result = pipelineReduceLinalgOp(
       rewriter, target, extractFromI64ArrayAttr(getTileSize()),
@@ -2325,8 +2326,8 @@ generateResultTileValue(Operation *op, Operation *forOp, OpBuilder &b,
   if (!shapeSizesToLoopsMap)
     return failure();
   SmallVector<OpFoldResult> sizeBounds =
-      affine::makeComposedFoldedMultiResultAffineApply(b, loc, shapeSizesToLoopsMap,
-                                               allShapeSizes);
+      affine::makeComposedFoldedMultiResultAffineApply(
+          b, loc, shapeSizesToLoopsMap, allShapeSizes);
   SmallVector<OpFoldResult, 2> ivs =
       cast<scf::ParallelOp>(forOp).getInductionVars();
   SmallVector<Value> tiledOperands = linalg::makeTiledShapes(
@@ -2342,7 +2343,8 @@ generateResultTileValue(Operation *op, Operation *forOp, OpBuilder &b,
     ti++;
   }
 
-  linalg::LinalgOp newLinalgOp = cast<linalg::LinalgOp>(clone(b, op, {}, operands));
+  linalg::LinalgOp newLinalgOp =
+      cast<linalg::LinalgOp>(clone(b, op, {}, operands));
   return newLinalgOp;
 }
 
@@ -2397,7 +2399,7 @@ static Operation *tileAndFuseFirstExtractUse(RewriterBase &rewriter,
 }
 
 DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
-  transform::TransformRewriter &rewriter,
+    transform::TransformRewriter &rewriter,
     transform::TransformResults &results, transform::TransformState &state) {
   SmallVector<Operation *> fusedOps;
   SmallVector<Operation *> producerOps =

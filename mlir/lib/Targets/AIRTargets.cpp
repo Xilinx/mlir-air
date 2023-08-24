@@ -119,7 +119,8 @@ void registerAIRRtTranslations() {
                         xilinx::airrt::AIRRtDialect, func::FuncDialect,
                         cf::ControlFlowDialect, arith::ArithDialect,
                         memref::MemRefDialect, vector::VectorDialect,
-                        LLVM::LLVMDialect, scf::SCFDialect, affine::AffineDialect>();
+                        LLVM::LLVMDialect, scf::SCFDialect,
+                        affine::AffineDialect>();
       });
   TranslateFromMLIRRegistration registrationXJSON(
       "air-herds-to-json", "Transform herd information to JSON",
@@ -133,8 +134,8 @@ void registerAIRRtTranslations() {
       },
       [](DialectRegistry &registry) {
         registry.insert<air::airDialect, func::FuncDialect, arith::ArithDialect,
-                        memref::MemRefDialect, scf::SCFDialect, affine::AffineDialect,
-                        linalg::LinalgDialect>();
+                        memref::MemRefDialect, scf::SCFDialect,
+                        affine::AffineDialect, linalg::LinalgDialect>();
       });
 }
 

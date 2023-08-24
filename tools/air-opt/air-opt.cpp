@@ -56,6 +56,6 @@ int main(int argc, char **argv) {
   ::test::registerTestDialect(registry);
   ::test::registerTestTransformDialectExtension(registry);
 
-  return failed(MlirOptMain(argc, argv, "MLIR-AIR modular optimizer driver\n",
-                            registry));
+  return failed(
+      MlirOptMain(argc, argv, "MLIR-AIR modular optimizer driver\n", registry));
 }

@@ -738,12 +738,12 @@ public:
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           arith::ArithDialect, affine::AffineDialect, scf::SCFDialect,
-                           linalg::LinalgDialect, memref::MemRefDialect,
-                           bufferization::BufferizationDialect,
-                           xilinx::airrt::AIRRtDialect, async::AsyncDialect,
-                           mlir::BuiltinDialect>();
+    target.addLegalDialect<
+        LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect,
+        affine::AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
+        memref::MemRefDialect, bufferization::BufferizationDialect,
+        xilinx::airrt::AIRRtDialect, async::AsyncDialect,
+        mlir::BuiltinDialect>();
 
     // air.memcpy_nd conversion
     RewritePatternSet air_dma_patterns(context);

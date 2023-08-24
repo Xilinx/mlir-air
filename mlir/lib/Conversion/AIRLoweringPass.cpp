@@ -216,10 +216,11 @@ public:
       int64_t herd_size_x = herd.getNumCols();
       int64_t herd_size_y = herd.getNumRows();
 
-      auto outer = rewriter.create<affine::AffineForOp>(herd.getLoc(), 0, herd_size_x);
+      auto outer =
+          rewriter.create<affine::AffineForOp>(herd.getLoc(), 0, herd_size_x);
       auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
-      auto inner =
-          outer_builder.create<affine::AffineForOp>(herd.getLoc(), 0, herd_size_y);
+      auto inner = outer_builder.create<affine::AffineForOp>(herd.getLoc(), 0,
+                                                             herd_size_y);
 
       outer->setAttr("air.herd", StringAttr::get(op->getContext(), "outer"));
       inner->setAttr("air.herd", StringAttr::get(op->getContext(), "inner"));
@@ -1034,7 +1035,8 @@ public:
   AIRLoweringPass(const AIRLoweringPass &pass) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<affine::AffineDialect, airrt::AIRRtDialect, LLVM::LLVMDialect, scf::SCFDialect>();
+    registry.insert<affine::AffineDialect, airrt::AIRRtDialect,
+                    LLVM::LLVMDialect, scf::SCFDialect>();
   }
 
   void runOnOperation() override {
@@ -1060,11 +1062,11 @@ public:
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           arith::ArithDialect, affine::AffineDialect, scf::SCFDialect,
-                           linalg::LinalgDialect, memref::MemRefDialect,
-                           bufferization::BufferizationDialect,
-                           airrt::AIRRtDialect>();
+    target.addLegalDialect<
+        LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect,
+        affine::AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
+        memref::MemRefDialect, bufferization::BufferizationDialect,
+        airrt::AIRRtDialect>();
 
     // AIR ExecuteOp conversion
     if (failed(lowerAirExecute(module))) {
@@ -1197,11 +1199,11 @@ public:
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           arith::ArithDialect, affine::AffineDialect, scf::SCFDialect,
-                           linalg::LinalgDialect, memref::MemRefDialect,
-                           bufferization::BufferizationDialect,
-                           airrt::AIRRtDialect, air::airDialect>();
+    target.addLegalDialect<
+        LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect,
+        affine::AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
+        memref::MemRefDialect, bufferization::BufferizationDialect,
+        airrt::AIRRtDialect, air::airDialect>();
 
     target.addIllegalOp<air::PipelineStageOp, air::PipelineYieldOp>();
 

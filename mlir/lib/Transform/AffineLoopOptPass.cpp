@@ -98,13 +98,15 @@ public:
   // static const llvm::DenseMap<StringRef, unsigned> optConf;
 
   void tileLoops(std::vector<SmallVector<affine::AffineForOp, 6>> *bands);
-  void generateDataCopyLoops(std::vector<SmallVector<affine::AffineForOp, 6>> *bands,
-                             std::optional<Value> filterMemRef = std::nullopt);
+  void
+  generateDataCopyLoops(std::vector<SmallVector<affine::AffineForOp, 6>> *bands,
+                        std::optional<Value> filterMemRef = std::nullopt);
   void outlineDataCopyLoops();
 
-  static void getTileableBands(func::FuncOp,
-                               std::vector<SmallVector<affine::AffineForOp, 6>> *bands,
-                               StringRef label);
+  static void
+  getTileableBands(func::FuncOp,
+                   std::vector<SmallVector<affine::AffineForOp, 6>> *bands,
+                   StringRef label);
 
   SmallVector<unsigned, 6> optTileSizes;
   SmallVector<unsigned, 6> optCopyDepths;
@@ -165,7 +167,8 @@ static affine::AffineForOp getLabel(affine::AffineForOp root, StringRef label) {
   return res;
 }
 
-void AffineLoopOptPass::tileLoops(std::vector<SmallVector<affine::AffineForOp, 6>> *bands) {
+void AffineLoopOptPass::tileLoops(
+    std::vector<SmallVector<affine::AffineForOp, 6>> *bands) {
   // Tile loops
 
   // Tile each band.
@@ -183,7 +186,8 @@ void AffineLoopOptPass::tileLoops(std::vector<SmallVector<affine::AffineForOp, 6
     // Separate full and partial tiles.
     if (clSeparate) {
       auto intraTileLoops =
-          MutableArrayRef<affine::AffineForOp>(tiledNest).drop_front(band.size());
+          MutableArrayRef<affine::AffineForOp>(tiledNest).drop_front(
+              band.size());
       (void)separateFullTiles(intraTileLoops);
     }
 
@@ -196,7 +200,9 @@ void AffineLoopOptPass::tileLoops(std::vector<SmallVector<affine::AffineForOp, 6
   }
 }
 
-void AffineLoopOptPass::generateDataCopyLoops(std::vector<SmallVector<affine::AffineForOp, 6>> *bands, std::optional<Value> filterMemRef) {
+void AffineLoopOptPass::generateDataCopyLoops(
+    std::vector<SmallVector<affine::AffineForOp, 6>> *bands,
+    std::optional<Value> filterMemRef) {
 
   if (bands->size() == 0)
     return;
@@ -230,7 +236,8 @@ void AffineLoopOptPass::outlineDataCopyLoops() {
   for (auto &nest : dataCopyNests) {
     for (auto o : nest) {
       xilinx::air::AIROutliner olnr;
-      /*auto call = */olnr.outline(cast<affine::AffineForOp>(o), "air_dma_copy");
+      /*auto call = */ olnr.outline(cast<affine::AffineForOp>(o),
+                                    "air_dma_copy");
       erasedOps.insert(o);
     }
   }

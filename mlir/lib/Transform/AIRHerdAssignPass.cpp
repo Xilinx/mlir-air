@@ -50,11 +50,10 @@ public:
                                      llvm::cl::desc("herd assign depth"),
                                      llvm::cl::init(0)};
 
-  void loopsToParallel(ArrayRef<affine::AffineForOp> nest, int depth)
-  {
+  void loopsToParallel(ArrayRef<affine::AffineForOp> nest, int depth) {
     assert((int)nest.size() > depth+1);
     affine::AffineForOp outer = nest[depth];
-    affine::AffineForOp inner = nest[depth+1];
+    affine::AffineForOp inner = nest[depth + 1];
 
     if (failed(xilinx::air::normalizeLoop(inner)))
       return;
@@ -69,10 +68,9 @@ public:
       int64_t ub_0 = ub_map_0.getSingleConstantResult();
       int64_t ub_1 = ub_map_1.getSingleConstantResult();
 
-      auto affine_par = builder.create<affine::AffineParallelOp>(loc,
-                                                         std::vector<Type>{},
-                                                         std::vector<arith::AtomicRMWKind>{},
-                                                         std::vector<int64_t>{ub_0,ub_1});
+      auto affine_par = builder.create<affine::AffineParallelOp>(
+          loc, std::vector<Type>{}, std::vector<arith::AtomicRMWKind>{},
+          std::vector<int64_t>{ub_0, ub_1});
 
       outer.getBody()->back().erase();
       affine_par.getBody()->getOperations().splice(affine_par.getBody()->begin(),
