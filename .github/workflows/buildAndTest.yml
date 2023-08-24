@@ -183,8 +183,10 @@ jobs:
       - name: clang-format
         if: ${{ always() }}
         run: |
+          sudo apt install -y clang-format
+
           # Run clang-format
-          git clang-format-12 $DIFF_COMMIT
+          git clang-format $DIFF_COMMIT
           git diff --ignore-submodules > clang-format.patch
           if [ -s clang-format.patch ]; then
             echo "Clang-format found formatting problems in the following " \

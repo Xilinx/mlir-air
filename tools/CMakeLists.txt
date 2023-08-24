@@ -1,6 +1,5 @@
-# Copyright (C) 2022, Xilinx Inc. All rights reserved.
-# Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
-# SPDX-License-Identifier: MIT
+# Copyright (C) 2022, Xilinx Inc. All rights reserved. Copyright (C) 2022,
+# Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
 
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})

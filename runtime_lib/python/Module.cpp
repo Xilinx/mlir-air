@@ -15,9 +15,7 @@
 
 namespace py = pybind11;
 
-namespace {
-
-} // namespace
+namespace {} // namespace
 
 PYBIND11_MODULE(_airRt, m) {
   m.doc() = R"pbdoc(
@@ -32,9 +30,9 @@ PYBIND11_MODULE(_airRt, m) {
     )pbdoc";
 
 #ifdef VERSION_INFO
-    m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);
+  m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);
 #else
-    m.attr("__version__") = "dev";
+  m.attr("__version__") = "dev";
 #endif
 
   auto airhost = m.def_submodule("host", "libairhost bindings");

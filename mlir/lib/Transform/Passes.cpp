@@ -11,6 +11,6 @@
 namespace {
 #define GEN_PASS_REGISTRATION
 #include "air/Transform/Passes.h.inc"
-}
+} // namespace
 
 void xilinx::air::registerTransformPasses() { ::registerAIRTransformPasses(); }

@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "PassDetail.h"
 #include "air/Transform/AIRLowerLinalgTensors.h"
+#include "PassDetail.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 
@@ -39,11 +39,11 @@ struct RemoveBufferCastPattern
 
   LogicalResult matchAndRewrite(bufferization::ToMemrefOp op,
                                 PatternRewriter &rewriter) const override {
-                                
+
     auto load = op.getOperand().getDefiningOp<bufferization::ToTensorOp>();
     if (!load)
       return failure();
-      
+
     auto buffer = load.getMemref();
     if (!buffer)
       return failure();
@@ -54,12 +54,11 @@ struct RemoveBufferCastPattern
 
 // Replace a pattern like this:
 //  %1 = memref.alloc() : memref<32x32xi32>
-//  linalg.copy(%2, %1) : memref<32x32xi32, 2>, memref<32x32xi32> 
+//  linalg.copy(%2, %1) : memref<32x32xi32, 2>, memref<32x32xi32>
 //  use %1
 // with this:
 //  use %2
-struct RemoveAllocCopyPattern
-    : public OpRewritePattern<memref::AllocOp> {
+struct RemoveAllocCopyPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(memref::AllocOp op,
@@ -133,7 +132,8 @@ struct LowerLinalgOpPattern : public OpRewritePattern<linalg::GenericOp> {
   }
 };
 
-struct AIRLowerLinalgTensors : public AIRLowerLinalgTensorsBase<AIRLowerLinalgTensors> {
+struct AIRLowerLinalgTensors
+    : public AIRLowerLinalgTensorsBase<AIRLowerLinalgTensors> {
   void runOnOperation() override;
 };
 
@@ -164,8 +164,8 @@ void AIRLowerLinalgTensors::runOnOperation() {
 
   RewritePatternSet patterns1(&context);
   patterns1.add<RemoveBufferCastPattern,
-              //RemoveAllocCopyPattern,
-              RemoveTensorLoadStorePattern>(&context);
+                // RemoveAllocCopyPattern,
+                RemoveTensorLoadStorePattern>(&context);
   (void)applyPatternsAndFoldGreedily(aie_module, std::move(patterns1));
 
   RewritePatternSet patterns2(&context);

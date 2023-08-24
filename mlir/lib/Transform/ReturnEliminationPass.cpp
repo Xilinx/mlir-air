@@ -16,8 +16,8 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Pass/Pass.h"
 
-#include <vector>
 #include <set>
+#include <vector>
 
 #include "PassDetail.h"
 
@@ -28,7 +28,8 @@ using namespace xilinx::air;
 
 namespace {
 
-class ReturnEliminationPass : public AIRReturnEliminationBase<ReturnEliminationPass> {
+class ReturnEliminationPass
+    : public AIRReturnEliminationBase<ReturnEliminationPass> {
 
 public:
   ReturnEliminationPass() {}
@@ -51,7 +52,7 @@ public:
         tys.push_back(t);
 
       auto newFnTy = FunctionType::get(op->getContext(), tys, {});
-      std::string newFnName = callOp.getCallee().str()+"_out";
+      std::string newFnName = callOp.getCallee().str() + "_out";
 
       if (!module.lookupSymbol<func::FuncOp>(newFnName)) {
         auto fn = func::FuncOp::create(op->getLoc(), newFnName, newFnTy);
@@ -60,14 +61,14 @@ public:
       }
 
       std::vector<Value> newCallArgs{callOp.arg_operand_begin(),
-                                      callOp.arg_operand_end()};
+                                     callOp.arg_operand_end()};
 
       for (auto v : callOp.getResults()) {
         if (!v.getType().isa<MemRefType>())
           llvm_unreachable("function returns non-memref");
         if (!valueMap.count(v)) {
-          valueMap[v] = builder->create<memref::AllocOp>(op->getLoc(),
-                                                 v.getType().cast<MemRefType>());
+          valueMap[v] = builder->create<memref::AllocOp>(
+              op->getLoc(), v.getType().cast<MemRefType>());
         }
         v.replaceAllUsesWith(valueMap[v]);
         newCallArgs.push_back(valueMap[v]);
@@ -77,7 +78,8 @@ public:
           op->getLoc(), newFnName, ArrayRef<Type>{}, newCallArgs);
       erasedOps.insert(op);
       auto fn = module.lookupSymbol<func::FuncOp>(callOp.getCallee());
-      if (fn && fn.use_empty()) erasedOps.insert(fn);
+      if (fn && fn.use_empty())
+        erasedOps.insert(fn);
     } else if (isa<memref::AllocOp>(op)) {
       Value v = op->getResult(0);
       if (valueMap.count(v)) {
@@ -88,9 +90,9 @@ public:
     // else if ( isa<xilinx::air::AllocOp>(op) ) {
     // }
     else {
-      //getModule().dump();
-      //op->dump();
-      //llvm_unreachable("unhandled operation type");
+      // getModule().dump();
+      // op->dump();
+      // llvm_unreachable("unhandled operation type");
     }
 
     for (Value v : op->getOperands()) {
@@ -101,7 +103,6 @@ public:
       if (v.getDefiningOp())
         runOn(v.getDefiningOp());
     }
-
   }
 
   void runOnOperation() override {
@@ -132,7 +133,8 @@ public:
       for (auto ty : funcTy.getResults())
         newFuncInputTys.push_back(ty);
 
-      FunctionType newFuncTy = FunctionType::get(module.getContext(), newFuncInputTys, {});
+      FunctionType newFuncTy =
+          FunctionType::get(module.getContext(), newFuncInputTys, {});
       graph.setType(newFuncTy);
 
       Operation *retOp = retOps.front();
@@ -156,7 +158,7 @@ public:
           runOn(v.getDefiningOp());
       }
 
-      for (auto oi=BB.rbegin(),oe=BB.rend(); oi!=oe; ++oi) {
+      for (auto oi = BB.rbegin(), oe = BB.rend(); oi != oe; ++oi) {
         Operation *o = &*oi;
         for (Value v : o->getResults()) {
           if (v.getType().isa<MemRefType>()) {
@@ -172,9 +174,9 @@ public:
   }
 
 private:
-  llvm::DenseMap<Value,Value> valueMap;
-  std::set<Operation*> visitedOps;
-  std::set<Operation*> erasedOps;
+  llvm::DenseMap<Value, Value> valueMap;
+  std::set<Operation *> visitedOps;
+  std::set<Operation *> erasedOps;
 };
 
 } // namespace
@@ -188,4 +190,3 @@ std::unique_ptr<mlir::Pass> createReturnEliminationPass() {
 
 } // namespace air
 } // namespace xilinx
-

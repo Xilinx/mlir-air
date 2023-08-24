@@ -9,8 +9,8 @@
 #ifndef AFFINE_LOOP_OPT_H
 #define AFFINE_LOOP_OPT_H
 
-#include <mlir/Pass/Pass.h>
 #include <memory>
+#include <mlir/Pass/Pass.h>
 #include <vector>
 
 namespace xilinx {

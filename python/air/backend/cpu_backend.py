@@ -10,7 +10,9 @@ from torch_mlir.dynamo import make_simple_dynamo_backend
 import air.mlir.ir
 import air.mlir.passmanager
 
-from torch_mlir_e2e_test.linalg_on_tensors_backends.refbackend import RefBackendLinalgOnTensorsBackend
+from torch_mlir_e2e_test.linalg_on_tensors_backends.refbackend import (
+    RefBackendLinalgOnTensorsBackend,
+)
 
 from .abc import AirBackend
 
@@ -24,80 +26,89 @@ from typing import List
 
 path = Path(air.backend.__file__).resolve().parent
 ctypes.CDLL(f"{path}/../../../runtime_lib/aircpu/libaircpu.so", mode=ctypes.RTLD_GLOBAL)
-ctypes.CDLL(f"/FIXME/PATH/TO/llvm/lib/libmlir_async_runtime.so.17git", mode=ctypes.RTLD_GLOBAL)
+ctypes.CDLL(
+    f"/FIXME/PATH/TO/llvm/lib/libmlir_async_runtime.so.17git", mode=ctypes.RTLD_GLOBAL
+)
 
-__all__ = [
-    "AirCpuBackend",
-    "make_dynamo_backend",
-    "DEFAULT_PIPELINE"
-]
+__all__ = ["AirCpuBackend", "make_dynamo_backend", "DEFAULT_PIPELINE"]
 
-DEFAULT_PIPELINE = "builtin.module("+",".join([
-    "air-to-async",
-    "canonicalize",
-    "cse"
-])+")"
+DEFAULT_PIPELINE = (
+    "builtin.module(" + ",".join(["air-to-async", "canonicalize", "cse"]) + ")"
+)
 
-ASYNC_TO_LLVM_PIPELINE = "builtin.module("+",".join([
-    "func.func(buffer-deallocation)",
-    "async-to-async-runtime",
-    "async-runtime-ref-counting",
-    "async-runtime-ref-counting-opt",
-    "convert-async-to-llvm",
-    "canonicalize",
-    "cse"
-])+")"
+ASYNC_TO_LLVM_PIPELINE = (
+    "builtin.module("
+    + ",".join(
+        [
+            "func.func(buffer-deallocation)",
+            "async-to-async-runtime",
+            "async-runtime-ref-counting",
+            "async-runtime-ref-counting-opt",
+            "convert-async-to-llvm",
+            "canonicalize",
+            "cse",
+        ]
+    )
+    + ")"
+)
 
-REF_BACKEND_LOWERING_PIPELINE = "builtin.module(" + ",".join([
-    "func.func(refback-generalize-tensor-pad)",
-    # Apply some optimizations. It would be great if MLIR had more useful
-    # optimizations that worked out of the box here.
-    # Note: When measured, this doesn't seem to actually help that much
-    # for the linalg-on-tensors backend.
-    # This is likely because if things are naturally fusable we usually already
-    # emit things in that form from the high level (e.g. single linalg-generic).
-    # Other backends are likely to benefit more.
-    "func.func(linalg-fuse-elementwise-ops)",
-    # Bufferize.
-    "func.func(scf-bufferize)",
-    "func.func(tm-tensor-bufferize)",
-    "func.func(empty-tensor-to-alloc-tensor)",
-    "func.func(linalg-bufferize)",
-    "func-bufferize",
-    "arith-bufferize",
-    "refback-mlprogram-bufferize",
-    "func.func(tensor-bufferize)",
-    "func.func(finalizing-bufferize)",
-    #"func.func(buffer-deallocation)",
-    # Munge to make it ExecutionEngine compatible.
-    # Specifically, we rewrite calling convention boundaries to be in terms
-    # of unranked memref, and we rewrite the return to actually be a
-    # callback that consumes the return (the final munged function always
-    # returns void at the C level -- we get the return value by providing the
-    # callback).
-    "refback-munge-calling-conventions",
-    # Insert global variable and instruction sequence for getting the next
-    # global seed used in stateful rng.
-    # Lower to LLVM
-    "func.func(tm-tensor-to-loops)",
-    "func.func(refback-munge-memref-copy)",
-    "func.func(convert-linalg-to-loops)",
-    "func.func(lower-affine)",
-    "convert-scf-to-cf",
-    "func.func(refback-expand-ops-for-llvm)",
-    "func.func(arith-expand)",
-    "func.func(convert-math-to-llvm)",
-    # Handle some complex mlir::math ops (e.g. atan2)
-    "convert-math-to-libm",
-    "convert-linalg-to-llvm",
-    "expand-strided-metadata",
-    "convert-memref-to-llvm",
-    "lower-affine",
-    "func.func(convert-arith-to-llvm)",
-    "convert-func-to-llvm",
-    "convert-cf-to-llvm",
-    "reconcile-unrealized-casts",
-]) + ")"
+REF_BACKEND_LOWERING_PIPELINE = (
+    "builtin.module("
+    + ",".join(
+        [
+            "func.func(refback-generalize-tensor-pad)",
+            # Apply some optimizations. It would be great if MLIR had more useful
+            # optimizations that worked out of the box here.
+            # Note: When measured, this doesn't seem to actually help that much
+            # for the linalg-on-tensors backend.
+            # This is likely because if things are naturally fusable we usually already
+            # emit things in that form from the high level (e.g. single linalg-generic).
+            # Other backends are likely to benefit more.
+            "func.func(linalg-fuse-elementwise-ops)",
+            # Bufferize.
+            "func.func(scf-bufferize)",
+            "func.func(tm-tensor-bufferize)",
+            "func.func(empty-tensor-to-alloc-tensor)",
+            "func.func(linalg-bufferize)",
+            "func-bufferize",
+            "arith-bufferize",
+            "refback-mlprogram-bufferize",
+            "func.func(tensor-bufferize)",
+            "func.func(finalizing-bufferize)",
+            # "func.func(buffer-deallocation)",
+            # Munge to make it ExecutionEngine compatible.
+            # Specifically, we rewrite calling convention boundaries to be in terms
+            # of unranked memref, and we rewrite the return to actually be a
+            # callback that consumes the return (the final munged function always
+            # returns void at the C level -- we get the return value by providing the
+            # callback).
+            "refback-munge-calling-conventions",
+            # Insert global variable and instruction sequence for getting the next
+            # global seed used in stateful rng.
+            # Lower to LLVM
+            "func.func(tm-tensor-to-loops)",
+            "func.func(refback-munge-memref-copy)",
+            "func.func(convert-linalg-to-loops)",
+            "func.func(lower-affine)",
+            "convert-scf-to-cf",
+            "func.func(refback-expand-ops-for-llvm)",
+            "func.func(arith-expand)",
+            "func.func(convert-math-to-llvm)",
+            # Handle some complex mlir::math ops (e.g. atan2)
+            "convert-math-to-libm",
+            "convert-linalg-to-llvm",
+            "expand-strided-metadata",
+            "convert-memref-to-llvm",
+            "lower-affine",
+            "func.func(convert-arith-to-llvm)",
+            "convert-func-to-llvm",
+            "convert-cf-to-llvm",
+            "reconcile-unrealized-casts",
+        ]
+    )
+    + ")"
+)
+
 
 class AirCpuBackend(AirBackend):
     """Main entry-point for the AIR CPU backend.
@@ -106,6 +117,7 @@ class AirCpuBackend(AirBackend):
     for JIT execution.
 
     """
+
     def __init__(self):
         super().__init__()
         self.handle = None
@@ -114,8 +126,14 @@ class AirCpuBackend(AirBackend):
     def __del__(self):
         self.unload()
 
-    def compile(self, air_module: air.mlir.ir.Module, pipeline=None,
-                verbose=False, segment_offset=None, segment_size=None):
+    def compile(
+        self,
+        air_module: air.mlir.ir.Module,
+        pipeline=None,
+        verbose=False,
+        segment_offset=None,
+        segment_size=None,
+    ):
         """Compiles an imported module, with a flat list of functions.
 
         The module is expected to be AIR dialect.
@@ -170,6 +188,7 @@ class AirCpuBackend(AirBackend):
         """Unload any loaded module and release resources."""
         pass
 
+
 def make_dynamo_backend(pipeline=None, verbose=False):
     """Make a PyTorch dynamo backend using AirCpuBackend.
 
@@ -185,21 +204,27 @@ def make_dynamo_backend(pipeline=None, verbose=False):
         A PyTorch dynamo backend
     """
     backend = AirCpuBackend()
+
     @make_simple_dynamo_backend
-    def air_backend(fx_graph: torch.fx.GraphModule,
-                    example_inputs: List[torch.Tensor]):
-        
+    def air_backend(fx_graph: torch.fx.GraphModule, example_inputs: List[torch.Tensor]):
+
         # get the linalg mlir of the model from torch_mlir
         mlir_module = torch_mlir.compile(
-            fx_graph, example_inputs,
-            output_type=torch_mlir.OutputType.LINALG_ON_TENSORS)
+            fx_graph,
+            example_inputs,
+            output_type=torch_mlir.OutputType.LINALG_ON_TENSORS,
+        )
 
         with air.mlir.ir.Context():
             air_module = air.mlir.ir.Module.parse(str(mlir_module))
-            pm = air.mlir.passmanager.PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
+            pm = air.mlir.passmanager.PassManager.parse(
+                air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE
+            )
             pm.run(air_module)
             if pipeline is None:
-                pm = air.mlir.passmanager.PassManager.parse(linalg_on_tensors.LINALG_MEMREF_TO_AIR_PIPELINE)
+                pm = air.mlir.passmanager.PassManager.parse(
+                    linalg_on_tensors.LINALG_MEMREF_TO_AIR_PIPELINE
+                )
                 pm.run(air_module)
             else:
                 pm = air.mlir.passmanager.PassManager.parse(pipeline)
@@ -217,5 +242,7 @@ def make_dynamo_backend(pipeline=None, verbose=False):
             loaded = backend.load(compiled)
             result = loaded.forward(*inputs)
             return torch.from_numpy(result)
+
         return compiled_callable
+
     return air_backend

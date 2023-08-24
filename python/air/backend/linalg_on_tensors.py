@@ -12,7 +12,9 @@ from torch_mlir.dynamo import make_simple_dynamo_backend
 import air.mlir.ir
 import air.mlir.passmanager
 
-from torch_mlir_e2e_test.linalg_on_tensors_backends.refbackend import RefBackendLinalgOnTensorsBackend
+from torch_mlir_e2e_test.linalg_on_tensors_backends.refbackend import (
+    RefBackendLinalgOnTensorsBackend,
+)
 
 from .abc import AirBackend
 
@@ -25,7 +27,10 @@ from typing import List
 
 path = Path(air.backend.__file__).resolve().parent
 try:
-    ctypes.CDLL(f"{path}/../../../runtime_lib/airhost/libairhost_shared.so", mode=ctypes.RTLD_GLOBAL)
+    ctypes.CDLL(
+        f"{path}/../../../runtime_lib/airhost/libairhost_shared.so",
+        mode=ctypes.RTLD_GLOBAL,
+    )
 except:
     pass
 import air.mlir._mlir_libs._airRt as airrt
@@ -33,18 +38,25 @@ import air.mlir._mlir_libs._airRt as airrt
 __all__ = [
     "LinalgOnTensorsAirBackend",
     "make_dynamo_backend",
-    "LINALG_MEMREF_TO_AIR_PIPELINE"
+    "LINALG_MEMREF_TO_AIR_PIPELINE",
 ]
 
-LINALG_MEMREF_TO_AIR_PIPELINE = "builtin.module("+",".join([
-    "air-linalg-codegen",
-    "canonicalize",
-    "cse",
-    "air-par-to-herd",
-    "air-copy-to-dma",
-    "canonicalize",
-    "cse"
-])+")"
+LINALG_MEMREF_TO_AIR_PIPELINE = (
+    "builtin.module("
+    + ",".join(
+        [
+            "air-linalg-codegen",
+            "canonicalize",
+            "cse",
+            "air-par-to-herd",
+            "air-copy-to-dma",
+            "canonicalize",
+            "cse",
+        ]
+    )
+    + ")"
+)
+
 
 class LinalgOnTensorsAirBackend(AirBackend):
     """Main entry-point for the linalg-on-tensors based AIR backend.
@@ -59,6 +71,7 @@ class LinalgOnTensorsAirBackend(AirBackend):
     runtime resources.
 
     """
+
     def __init__(self):
         super().__init__()
         self.handle = None
@@ -67,8 +80,14 @@ class LinalgOnTensorsAirBackend(AirBackend):
     def __del__(self):
         self.unload()
 
-    def compile(self, imported_module: torch_mlir.ir.Module, pipeline=None,
-                verbose=False, segment_offset=None, segment_size=None):
+    def compile(
+        self,
+        imported_module: torch_mlir.ir.Module,
+        pipeline=None,
+        verbose=False,
+        segment_offset=None,
+        segment_size=None,
+    ):
         """Compiles an imported module, with a flat list of functions.
 
         The module is expected to be in linalg-on-tensors + scalar code form.
@@ -97,17 +116,22 @@ class LinalgOnTensorsAirBackend(AirBackend):
 
         if type(imported_module) is torch_mlir.ir.Module:
             with imported_module.context:
-                pm = torch_mlir.passmanager.PassManager.parse('builtin.module(refback-mlprogram-bufferize)')
+                pm = torch_mlir.passmanager.PassManager.parse(
+                    "builtin.module(refback-mlprogram-bufferize)"
+                )
                 pm.run(imported_module)
 
         with air.mlir.ir.Context():
             air_module = air.mlir.ir.Module.parse(str(imported_module))
             pm = air.mlir.passmanager.PassManager.parse(
-                air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
+                air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE
+            )
 
             if verbose:
-                print("Running MLIR pass pipeline: ",
-                      air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
+                print(
+                    "Running MLIR pass pipeline: ",
+                    air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE,
+                )
 
             pm.run(air_module)
 
@@ -121,21 +145,25 @@ class LinalgOnTensorsAirBackend(AirBackend):
                 print("AIR Module:")
                 print(air_module)
 
-            aircc_options = ['torch.mlir', '--shared', '-o', 'torch.mlir.so']
-            aircc_options = aircc_options + \
-                             [f"-row-offset={segment_offset[1]}",
-                              f"-col-offset={segment_offset[0]}"]
-            aircc_options = aircc_options + \
-                             [f"-num-rows={segment_size[1]}",
-                              f"-num-cols={segment_size[0]}"]
+            aircc_options = ["torch.mlir", "--shared", "-o", "torch.mlir.so"]
+            aircc_options = aircc_options + [
+                f"-row-offset={segment_offset[1]}",
+                f"-col-offset={segment_offset[0]}",
+            ]
+            aircc_options = aircc_options + [
+                f"-num-rows={segment_size[1]}",
+                f"-num-cols={segment_size[0]}",
+            ]
 
             if verbose:
-                aircc_options = aircc_options + ['-v']
+                aircc_options = aircc_options + ["-v"]
 
-            aircc.run(air_module,aircc_options)
+            aircc.run(air_module, aircc_options)
 
             with open("air_project/refback.torch.mlir") as f:
-                imported_module = torch_mlir.ir.Module.parse(f.read(),imported_module.context)
+                imported_module = torch_mlir.ir.Module.parse(
+                    f.read(), imported_module.context
+                )
 
         return self.refbackend.compile(imported_module)
 
@@ -154,8 +182,10 @@ class LinalgOnTensorsAirBackend(AirBackend):
         self.handle = None
         airrt.host.shut_down()
 
-def make_dynamo_backend(pipeline=None, verbose=False,
-                        segment_offset=None, segment_size=None):
+
+def make_dynamo_backend(
+    pipeline=None, verbose=False, segment_offset=None, segment_size=None
+):
     """Make a PyTorch dynamo backend using LinalgOnTensorsAirBackend.
 
     Args:
@@ -170,19 +200,25 @@ def make_dynamo_backend(pipeline=None, verbose=False,
         A PyTorch dynamo backend
     """
     backend = LinalgOnTensorsAirBackend()
+
     @make_simple_dynamo_backend
-    def air_backend(fx_graph: torch.fx.GraphModule,
-                    example_inputs: List[torch.Tensor]):
-        
+    def air_backend(fx_graph: torch.fx.GraphModule, example_inputs: List[torch.Tensor]):
+
         # get the linalg mlir of the model from torch_mlir
         mlir_module = torch_mlir.compile(
-            fx_graph, example_inputs,
-            output_type=torch_mlir.OutputType.LINALG_ON_TENSORS)
+            fx_graph,
+            example_inputs,
+            output_type=torch_mlir.OutputType.LINALG_ON_TENSORS,
+        )
 
         # compile the mlir model with aircc
-        compiled = backend.compile(mlir_module, pipeline=pipeline,
-            verbose=verbose, segment_offset=segment_offset,
-            segment_size=segment_size)
+        compiled = backend.compile(
+            mlir_module,
+            pipeline=pipeline,
+            verbose=verbose,
+            segment_offset=segment_offset,
+            segment_size=segment_size,
+        )
 
         # return a function for invoking the compiled model
         def compiled_callable(*inputs):
@@ -191,5 +227,7 @@ def make_dynamo_backend(pipeline=None, verbose=False,
             result = loaded.forward(*inputs)
             backend.unload()
             return torch.from_numpy(result)
+
         return compiled_callable
+
     return air_backend

@@ -14,17 +14,19 @@ from air.backend import linalg_on_tensors as backend
 
 air_backend = backend.make_dynamo_backend()
 
-shape = [128,128]
+shape = [128, 128]
 dtype = torch.int32
+
 
 class mmult(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
     def forward(self, a, b, c):
-        x = torch.mm(b,c)
-        y = a*x
+        x = torch.mm(b, c)
+        y = a * x
         return y
+
 
 model = mmult()
 dynamo_model = dynamo.optimize(air_backend)(model)
@@ -36,7 +38,7 @@ d = dynamo_model(a, b, c)
 
 print(f"input:\n{a}\n{b}\n{c}\noutput:\n{d}")
 
-if torch.equal(a*torch.mm(b,c),d):
+if torch.equal(a * torch.mm(b, c), d):
     print("PASS!")
 else:
     print("failed.")

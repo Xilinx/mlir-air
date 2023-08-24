@@ -26,8 +26,8 @@
 // Controlling what we print in the application
 #define PRINT_QP_STATE
 #define PRINT_DEV_STATE
-//#define PRINT_SQ
-//#define PRINT_CQ
+// #define PRINT_SQ
+// #define PRINT_CQ
 #define PRINT_BUFF
 
 // Function Defines

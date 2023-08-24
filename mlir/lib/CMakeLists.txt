@@ -1,6 +1,5 @@
-# Copyright (C) 2022, Xilinx Inc. All rights reserved.
-# Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
-# SPDX-License-Identifier: MIT
+# Copyright (C) 2022, Xilinx Inc. All rights reserved. Copyright (C) 2022,
+# Advanced Micro Devices, Inc. All rights reserved. SPDX-License-Identifier: MIT
 
 add_subdirectory(CAPI)
 add_subdirectory(Conversion)
@@ -12,14 +11,13 @@ add_subdirectory(Util)
 get_property(dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
 get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
 
-add_air_library(AIRInitAll
+add_air_library(
+  AIRInitAll
   InitAll.cpp
-
   DEPENDS
   AIRDialect
   AIRRtDialect
   AIRTransformOpsIncGen
-
   LINK_LIBS
   AIRConversionPasses
   AIRTransformPasses
@@ -29,5 +27,4 @@ add_air_library(AIRInitAll
   AIRUtil
   MLIRSupport
   ${conversion_libs}
-  ${dialect_libs}
-  )
+  ${dialect_libs})

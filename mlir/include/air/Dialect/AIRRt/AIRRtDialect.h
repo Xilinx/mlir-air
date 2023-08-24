@@ -22,8 +22,7 @@ public:
   static TensorType get(MLIRContext *context) { return Base::get(context); }
 };
 
-class EventType
-    : public Type::TypeBase<EventType, Type, TypeStorage> {
+class EventType : public Type::TypeBase<EventType, Type, TypeStorage> {
 public:
   using Base::Base;
 };

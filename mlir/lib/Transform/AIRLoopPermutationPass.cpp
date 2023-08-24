@@ -10,11 +10,11 @@
 // Refers to include/mlir/Transform/LoopUtils.h
 // ===---------------------------------------------------------------------===//
 //
-// This pass performs a loop nest reordering according to the input mapping. 
-// The i-th loop will be moved from position i -> permMap[i] where the counting 
-// of i starts at the outermost loop. The pass transforms only perfect loop 
-// nests. The specified ordering starts from 0, and should be of the same 
-// length as the loop nest size. Each number is required to appear once in 
+// This pass performs a loop nest reordering according to the input mapping.
+// The i-th loop will be moved from position i -> permMap[i] where the counting
+// of i starts at the outermost loop. The pass transforms only perfect loop
+// nests. The specified ordering starts from 0, and should be of the same
+// length as the loop nest size. Each number is required to appear once in
 // the input mapping.
 //
 // ===---------------------------------------------------------------------===//
@@ -47,19 +47,19 @@ using namespace xilinx;
 using namespace xilinx::air;
 
 namespace {
-  
-class AIRLoopPermutationPass : public AIRLoopPermutationBase<AIRLoopPermutationPass> {
+
+class AIRLoopPermutationPass
+    : public AIRLoopPermutationBase<AIRLoopPermutationPass> {
 
 public:
   AIRLoopPermutationPass() = default;
   AIRLoopPermutationPass(const AIRLoopPermutationPass &pass){};
 
-
   void runOnOperation() override;
 
   static const char *affineOptAttrName;
-private:
 
+private:
 };
 
 const char *AIRLoopPermutationPass::affineOptAttrName = "affine_opt_label";
@@ -67,17 +67,17 @@ const char *AIRLoopPermutationPass::affineOptAttrName = "affine_opt_label";
 void AIRLoopPermutationPass::runOnOperation() {
 
   auto func = getOperation();
-  
+
   // Bands of loops to tile
   std::vector<SmallVector<AffineForOp, 6>> bands;
   xilinx::air::getTileableBands(
       func, bands, AIRLoopPermutationPass::affineOptAttrName, clLabel);
 
-  for (auto band: bands) {
+  for (auto band : bands) {
     // Save and erase the previous label
     auto stringAttr = band[0]->getAttrOfType<StringAttr>(
-      AIRLoopPermutationPass::affineOptAttrName);
-    
+        AIRLoopPermutationPass::affineOptAttrName);
+
     unsigned newOutermost = permuteLoops(band, loopOrder);
 
     if (stringAttr) {
@@ -85,8 +85,8 @@ void AIRLoopPermutationPass::runOnOperation() {
           clPostLabel.empty()
               ? stringAttr
               : StringAttr::get(clPostLabel, stringAttr.getType());
-      band[newOutermost]->setAttr(
-          AIRLoopPermutationPass::affineOptAttrName, postLabel);
+      band[newOutermost]->setAttr(AIRLoopPermutationPass::affineOptAttrName,
+                                  postLabel);
     }
     (void)band[0]->removeAttr(AIRLoopPermutationPass::affineOptAttrName);
   }
