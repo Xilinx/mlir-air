@@ -106,7 +106,7 @@ void AIRAutomaticTilingPass::runOnOperation() {
         func, bands, AIRAutomaticTilingPass::affineOptAttrName, clLabel);
 
     // Normalize every loop before tiling.
-    for (auto band: bands)
+    for (auto band : bands)
       for (affine::AffineForOp affineFor : band)
         if (failed(normalizeAffineFor(affineFor)))
           continue;
@@ -117,7 +117,7 @@ void AIRAutomaticTilingPass::runOnOperation() {
     bands.clear();
     xilinx::air::getTileableBands(
         func, bands, AIRAutomaticTilingPass::affineOptAttrName, clLabel);
-    for (auto band: bands)
+    for (auto band : bands)
       for (affine::AffineForOp affineFor : band)
         if (failed(normalizeAffineFor(affineFor)))
           continue;
