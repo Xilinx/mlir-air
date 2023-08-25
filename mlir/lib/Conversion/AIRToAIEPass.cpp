@@ -1111,10 +1111,8 @@ private:
                                            const std::vector<Value> &consTile,
                                            int depth, StringRef name) const {
     AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
-        builder.getUnknownLoc(), datatype, prodTile, consTile,
-        builder.getIntegerAttr(builder.getI32Type(), depth));
-    fifo->setAttr(SymbolTable::getSymbolAttrName(),
-                  builder.getStringAttr(name));
+        builder.getUnknownLoc(), name, prodTile, consTile,
+        builder.getIntegerAttr(builder.getI32Type(), depth), datatype);
     return fifo;
   }
 
@@ -1122,14 +1120,16 @@ private:
   void rewriteChannelAllocs(PatternRewriter &rewriter, MyOp op,
                             AIE::ObjectFifoCreateOp objFifo,
                             AIE::ObjectFifoPort port) const {
-    auto elementType =
-        objFifo.getType().dyn_cast<AIE::AIEObjectFifoType>().getElementType();
+
+    AIE::AIEObjectFifoType ofTy =
+        cast<AIE::AIEObjectFifoType>(objFifo.getElemType());
+    auto elementType = ofTy.getElementType();
     auto acqType = AIE::AIEObjectFifoSubviewType::get(elementType);
 
     rewriter.setInsertionPoint(&op->getBlock()->front());
     AIE::ObjectFifoAcquireOp producerAcq =
-        rewriter.create<AIE::ObjectFifoAcquireOp>(rewriter.getUnknownLoc(),
-                                                  acqType, port, objFifo, 1);
+        rewriter.create<AIE::ObjectFifoAcquireOp>(
+            rewriter.getUnknownLoc(), acqType, port, objFifo.getName(), 1);
     rewriter.setInsertionPointAfter(producerAcq);
     AIE::ObjectFifoSubviewAccessOp producerAccess =
         rewriter.create<AIE::ObjectFifoSubviewAccessOp>(
@@ -1156,7 +1156,7 @@ private:
       if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
         rewriter.setInsertionPoint(&op->getBlock()->back());
         rewriter.create<AIE::ObjectFifoReleaseOp>(dealloc->getLoc(), port,
-                                                  objFifo, 1);
+                                                  objFifo.getName(), 1);
         // Delete ops at the end of the rewrite pattern to avoid repeatedly
         // deleting the same op
         push_back_if_unique<Operation *>(erased_deallocs,
