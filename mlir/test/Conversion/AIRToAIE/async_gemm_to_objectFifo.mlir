@@ -24,7 +24,7 @@
 // CHECK:   %[[VAL_13:.*]] = AIE.buffer(%[[VAL_0]]){{.*}}memref<64x96xbf16, 2>
 // CHECK:   %[[VAL_14:.*]] = AIE.buffer(%[[VAL_0]]){{.*}}memref<96x64xbf16, 2>
 // CHECK:   %[[VAL_15:.*]] = AIE.buffer(%[[VAL_0]]){{.*}}memref<64x64xbf16, 2>
-// CHECK-COUNT-16:    AIE.objectFifo.createObjectFifo
+// CHECK-COUNT-16:    AIE.objectFifo @
 // CHECK:   %[[VAL_16:.*]] = AIE.core(%[[VAL_3]]) {
 // CHECK:   %[[VAL_17:.*]] = AIE.core(%[[VAL_2]]) {
 // CHECK:   %[[VAL_18:.*]] = AIE.core(%[[VAL_1]]) {
