@@ -532,8 +532,6 @@ public:
     const auto &aie_target = device.getTargetModel();
     memtile_dma_channels = 2;
     for (int i = 0, e = aie_target.columns(); i < e; i++) {
-      // if (aie_target.isShimNOCTile(i, 0))
-      // TODO: are all columns candidates for memtile?
       memtile_dma_columns.push_back(i);
     }
   }
@@ -555,7 +553,7 @@ public:
         return t;
     }
     // Need to allocate a new one
-    int chan = memtile_dma_columns[num_allocs / memtile_dma_channels];
+    int chan = num_allocs % memtile_dma_channels;
     return this->DMAAllocator::allocNewDmaChannel(memcpyOp, tile, chan);
   }
 
