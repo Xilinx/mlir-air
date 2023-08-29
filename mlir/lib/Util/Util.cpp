@@ -157,6 +157,25 @@ std::string air::getElementTypeAsString(const mlir::Type ty) {
   }
 }
 
+// An incomplete lookup table of common data types
+unsigned air::getElementSizeInBytes(const mlir::Type ty) {
+  auto typeAsString = getElementTypeAsString(ty);
+  if (typeAsString == "i32")
+    return 4;
+  else if (typeAsString == "i16")
+    return 2;
+  else if (typeAsString == "i8")
+    return 1;
+  else if (typeAsString == "f32")
+    return 4;
+  else if (typeAsString == "f16")
+    return 2;
+  else if (typeAsString == "bf16")
+    return 2;
+  else
+    return 0;
+}
+
 // Get the parent scf.for op of an iter_arg
 scf::ForOp air::getForRegionIterArgsOwner(Value val) {
   auto ivArg = val.dyn_cast<BlockArgument>();
