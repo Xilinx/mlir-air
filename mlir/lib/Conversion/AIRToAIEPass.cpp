@@ -1965,8 +1965,6 @@ public:
       lowerAirExecute(device);
       lowerScfAirTokens(device);
 
-      allocL1Buffers(device, tileToHerdMap);
-
       // The shim tile allocation is not unified for dma and channel lowering
       // so we disallow a mix of dma and channel ops.
       bool hasDma = false;
@@ -1987,13 +1985,14 @@ public:
 
       specializeChannelBundle(device);
 
-      lowerAIRMemcpyOp<air::DmaMemcpyNdOp>(device, shimDmaAlloc);
-
       if (clUseObjFifo) {
         LowerAIRPingPong(device);
         ShimTileAllocator shimTileAlloc(device.getTargetModel());
         lowerAIRChannels(device, shimTileAlloc);
+        allocL1Buffers(device, tileToHerdMap);
       } else {
+        allocL1Buffers(device, tileToHerdMap);
+        lowerAIRMemcpyOp<air::DmaMemcpyNdOp>(device, shimDmaAlloc);
         lowerAIRMemcpyOp<air::ChannelInterface>(device, shimDmaAlloc);
       }
 
