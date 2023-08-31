@@ -13,7 +13,8 @@ to used to specify which loop depth to convert.
 
 #### Options
 ```
--depth : Given a nest of parallel for loops, which depth to map to air.herd
+-depth     : Given a nest of parallel for loops, which depth to map to air.herd
+-first-dim : Which herd dimension to map to first. Can be zero or one. If set to zero, the 0th dimension of the scf.parallel will be mapped to the x dimension of the herd. If set to one, the 0th dimension of the scf.parallel will be mapped to the y dimension of the herd.
 ```
 ### `-air-par-to-launch`: Convert parallel loops to air.launch
 This pass converts parallel loop operations to air `launch` operations. The

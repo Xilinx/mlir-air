@@ -236,6 +236,12 @@ Traits: FunctionalStyleTransformOpTrait, TransformEachOpTrait
 
 Interfaces: MemoryEffectsOpInterface, TransformOpInterface
 
+#### Attributes:
+
+| Attribute | MLIR Type | Description |
+| :-------: | :-------: | ----------- |
+| `first_dim` | ::mlir::IntegerAttr | 64-bit signless integer attribute
+
 #### Operands:
 
 | Operand | Description |
