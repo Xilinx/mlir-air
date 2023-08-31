@@ -2168,23 +2168,6 @@ public:
         }
       }
     }
-    // for (auto &f : memcpy_flows) {
-    //   if (isMM2S && f.S2MM_alloc.dma_tile == alloc.dma_tile &&
-    //       f.S2MM_alloc.dma_channel.first == alloc.dma_channel.first &&
-    //       f.S2MM_alloc.dma_channel.second == alloc.dma_channel.second) {
-    //     if (f.MM2S_alloc.dma_tile && f.MM2S_alloc.dma_tile.isShimTile()) {
-    //       output = f.MM2S_alloc;
-    //       return output;
-    //     }
-    //   } else if (!isMM2S && f.MM2S_alloc.dma_tile == alloc.dma_tile &&
-    //              f.MM2S_alloc.dma_channel.first == alloc.dma_channel.first &&
-    //              f.MM2S_alloc.dma_channel.second == alloc.dma_channel.second) {
-    //     if (f.S2MM_alloc.dma_tile && f.S2MM_alloc.dma_tile.isShimTile()) {
-    //       output = f.S2MM_alloc;
-    //       return output;
-    //     }
-    //   }
-    // }
     return output;
   }
   std::optional<allocation_info_t>
@@ -2273,8 +2256,10 @@ public:
 
           f.MM2S_alloc =
               tile_dma_alloc.getOrAllocNewDmaChannel(memcpyOpIf, x, y);
+          assert(f.MM2S_alloc.dma_tile);
         }
-      } else if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L1) {
+      } 
+      if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L1) {
         for (int i = 0; i < f.S2MM.size(); i++){
           for (auto o : f.S2MM[i]) {
             auto memcpyOpIf = cast<air::MemcpyInterface>(o);
@@ -2286,6 +2271,7 @@ public:
 
             f.S2MM_alloc[i] =
                 tile_dma_alloc.getOrAllocNewDmaChannel(memcpyOpIf, x, y);
+            assert(f.S2MM_alloc[i].dma_tile);
           }
         }
       }
@@ -2296,7 +2282,8 @@ public:
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
           f.MM2S_alloc = memtile_dma_alloc.getOrAllocNewDmaChannel(memcpyOpIf);
         }
-      } else if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L2) {
+      } 
+      if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L2) {
         for (int i = 0; i < f.S2MM.size(); i++){
           for (unsigned i = 0; i < f.S2MM.size(); i++) {
             for (auto o : f.S2MM[i]) {
@@ -2327,7 +2314,8 @@ public:
             }
           }
         }
-      } else if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L3) {
+      } 
+      if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L3) {
         // L3 shim tiles assumed to not be target for broadcast
         auto alloc =
             foundFlowReuseOpportunity(memcpy_flows, f.MM2S_alloc, false);
@@ -2351,6 +2339,7 @@ public:
     // Step 4: Connect flows
     for (auto &f : memcpy_flows) {
       for (unsigned i = 0; i < f.numS2MMAllocs; i++){
+        assert(f.MM2S_alloc.dma_tile);
         assert(f.S2MM_alloc[i].dma_tile);
         getFlowOp(aie_device, f.MM2S_alloc.dma_tile, AIE::WireBundle::DMA,
                   (uint32_t)f.MM2S_alloc.dma_channel.second,
