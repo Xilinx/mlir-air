@@ -1328,7 +1328,7 @@ public:
                          llvm::SmallSet<air::HerdOp, 2> &replacementOps,
                          int firstDim)
       : OpRewritePattern(ctx), filteredOps(filteredOps),
-        replacementOps(replacementOps), firstDim(firstDim) {};
+        replacementOps(replacementOps), firstDim(firstDim){};
 
   LogicalResult matchAndRewrite(scf::ParallelOp parOp,
                                 PatternRewriter &rewriter) const override {
@@ -1400,7 +1400,7 @@ public:
     }
 
     int idx0 = firstDim;
-    int idx1 = (firstDim+1) % 2;
+    int idx1 = (firstDim + 1) % 2;
     SmallVector<Value, 2> dims{
         rewriter.create<arith::ConstantIndexOp>(loc, bounds[idx0]),
         rewriter.create<arith::ConstantIndexOp>(loc, bounds[idx1])};
@@ -1950,7 +1950,8 @@ struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
 
     RewritePatternSet patterns(context);
     patterns.add<AffineParToHerdConversion>(context);
-    patterns.add<ScfParToHerdConversion>(context, filteredOps, replacementOps, clFirstDim);
+    patterns.add<ScfParToHerdConversion>(context, filteredOps, replacementOps,
+                                         clFirstDim);
 
     ConversionTarget target(*context);
 
