@@ -1,0 +1,33 @@
+# make artifacts
+CMakeFiles
+CMakeCache.txt
+platforms/scripts/env_config
+platforms/scripts/br_config
+
+# build artifacts
+*.cmd
+*.jou
+*.log
+*.xsa
+.Xil
+.ipcache
+bootgen_log.txt
+final_vck5000.pdi
+_x
+vck5000_aie_base_graph_hw.ltx
+vck5000_aie_base_graph_hw.xsa.link_summary
+Work
+build
+install
+platform_repo
+myproj
+sw_comp
+sd_card
+sysroot
+components
+air_project
+
+# build results
+libadf.a
+*.elf
+*.elf.*
