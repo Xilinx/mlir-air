@@ -123,6 +123,7 @@ class CMakeBuild(build_ext):
             f"-DMLIR_DIR={MLIR_INSTALL_ABS_PATH / 'lib' / 'cmake' / 'mlir'}",
             f"-DAIE_DIR={MLIR_AIE_INSTALL_ABS_PATH / 'lib' / 'cmake' / 'aie'}",
             f"-DPython3_EXECUTABLE={sys.executable}",
+            "-DMLIR_DETECT_PYTHON_ENV_PRIME_SEARCH=ON",
             # not used on MSVC, but no harm
             f"-DCMAKE_BUILD_TYPE={cfg}",
         ]
