@@ -8,7 +8,10 @@ pybind11[global]>=2.10.4
 setuptools>=42
 wheel
 
---find-links https://makslevental.github.io/wheels
-mlir-native-tools==17.0.0.2023083019+35ca6498
-mlir==17.0.0.2023083019+35ca6498
-mlir-aie==0.0.1.2023090122+c7add68
+-f https://makslevental.github.io/wheels
+-f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels
+-f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-wheels
+
+mlir-native-tools==18.0.0.2023091015+780b046b
+mlir==18.0.0.2023091015+780b046b
+mlir-aie==0.0.1.2023091105+a0cc3d0

@@ -41,19 +41,21 @@ if(MSVC)
   )
 endif()
 
-find_package(AIR REQUIRED CONFIG)
-
-message(STATUS "Using AIRConfig.cmake in: ${AIR_DIR}")
 
 find_package(MLIR REQUIRED CONFIG)
+find_package(AIR REQUIRED CONFIG)
+find_package(AIE REQUIRED CONFIG)
+
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
+message(STATUS "Using AIRConfig.cmake in: ${AIR_DIR}")
 
 set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/bin)
 set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/lib)
 set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
+list(APPEND CMAKE_MODULE_PATH "${AIR_CMAKE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 include(TableGen)
 include(AddLLVM)
@@ -63,12 +65,12 @@ include(HandleLLVMOptions)
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
 include_directories(${AIR_INCLUDE_DIRS})
+include_directories(${AIE_INCLUDE_DIRS})
 link_directories(${LLVM_BUILD_LIBRARY_DIR})
 add_definitions(${LLVM_DEFINITIONS})
 
 include(MLIRDetectPythonEnv)
 include(AddMLIRPython)
-mlir_detect_pybind11_install()
 mlir_configure_python_dev_packages()
 
 add_compile_definitions("MLIR_PYTHON_PACKAGE_PREFIX=air.mlir.")
@@ -129,5 +131,9 @@ add_mlir_python_modules(AirPythonModules
     AirAggregateCAPI
 )
 
-add_dependencies(AirPythonModules AirBackendPythonModules)
-add_dependencies(AirPythonModules AirCompilerPythonModules)
+include_directories(
+  ${AIE_INCLUDE_DIRS}/../runtime_lib
+)
+
+#add_dependencies(AirPythonModules AirBackendPythonModules)
+#add_dependencies(AirPythonModules AirCompilerPythonModules)

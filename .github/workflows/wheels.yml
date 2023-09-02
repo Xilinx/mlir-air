@@ -2,7 +2,18 @@ name: Wheels
 
 on:
   workflow_dispatch:
+    MLIR_AIR_WHEEL_VERSION:
+      description: 'mlir-air wheel version'
+      type: string
+      required: false
+      default: ''
   workflow_call:
+    inputs:
+      MLIR_AIR_WHEEL_VERSION:
+        description: 'mlir-air wheel version'
+        type: string
+        required: false
+        default: ''
 
 jobs:
 
@@ -25,8 +36,8 @@ jobs:
           - OS: macos-11
             ARCH: arm64
 
-          - OS: windows-2019
-            ARCH: AMD64
+#          - OS: windows-2019
+#            ARCH: AMD64
 
     steps:
     - uses: actions/checkout@v3
@@ -118,9 +129,9 @@ jobs:
         CMAKE_GENERATOR="Ninja" \
         HOST_CCACHE_DIR=${{ steps.configure_ccache_dir_on_host.outputs.HOST_CCACHE_DIR }} \
         MATRIX_OS=${{ matrix.OS }} \
-        MLIR_WHEEL_VERSION="17.0.0.2023083019+35ca6498" \
-        MLIR_AIE_WHEEL_VERSION="0.0.1.2023090122+c7add68" \
-        MLIR_AIR_WHEEL_VERSION="0.0.1.2023090202+fc87be2" \
+        MLIR_WHEEL_VERSION="18.0.0.2023091015+780b046b" \
+        MLIR_AIE_WHEEL_VERSION="0.0.1.2023091105+a0cc3d0" \
+        MLIR_AIR_WHEEL_VERSION=${{ inputs.MLIR_WHEEL_VERSION }} \
         PARALLEL_LEVEL=${{ matrix.OS == 'windows-2019' && '2' || '2' }} \
         cibuildwheel --output-dir ../wheelhouse
         
@@ -171,22 +182,8 @@ jobs:
         with:
           artifacts: "dist/*.whl,dist/*.tar.xz"
           token: "${{ secrets.GITHUB_TOKEN }}"
-          tag: "latest"
-          name: "latest"
-          removeArtifacts: false
-          allowUpdates: true
-          replacesArtifacts: true
-          makeLatest: true
-
-      - name: Release current commit
-        uses: ncipollo/release-action@v1.12.0
-        with:
-          owner: makslevental
-          repo: wheels
-          artifacts: "dist/*.whl"
-          token: "${{ secrets.WHEELS_REPO }}"
-          tag: "i"
-          name: "i"
+          tag: "latest-wheels"
+          name: "latest-wheels"
           removeArtifacts: false
           allowUpdates: true
           replacesArtifacts: true
