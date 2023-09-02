@@ -94,17 +94,9 @@ class CMakeBuild(build_ext):
             cmake_args += [
                 "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
                 "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
-                # https://stackoverflow.com/a/43188057
-                "-DCMAKE_C_USE_RESPONSE_FILE_FOR_OBJECTS=ON",
-                "-DCMAKE_CXX_USE_RESPONSE_FILE_FOR_OBJECTS=ON",
-                "-DCMAKE_C_RESPONSE_FILE_LINK_FLAG=@",
-                "-DCMAKE_CXX_RESPONSE_FILE_LINK_FLAG=@",
-                "-DCMAKE_NINJA_FORCE_RESPONSE_FILE=ON",
                 "-DCMAKE_C_COMPILER=cl",
                 "-DCMAKE_CXX_COMPILER=cl",
                 "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
-                "-DCMAKE_C_FLAGS=/MT",
-                "-DCMAKE_CXX_FLAGS=/MT",
             ]
 
         cmake_args_dict = get_cross_cmake_args()

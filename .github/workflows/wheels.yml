@@ -120,6 +120,7 @@ jobs:
         MATRIX_OS=${{ matrix.OS }} \
         MLIR_WHEEL_VERSION="17.0.0.2023083019+35ca6498" \
         MLIR_AIE_WHEEL_VERSION="0.0.1.2023090122+c7add68" \
+        MLIR_AIR_WHEEL_VERSION="0.0.1.2023090202+fc87be2" \
         PARALLEL_LEVEL=${{ matrix.OS == 'windows-2019' && '2' || '2' }} \
         cibuildwheel --output-dir ../wheelhouse
         

@@ -47,8 +47,7 @@ def get_cross_cmake_args():
         mlir_tblgen_target = next(
             f.locate() for f in files("mlir") if f.name.startswith("mlir-tblgen")
         )
-        os.remove(mlir_tblgen_target)
-        shutil.move(mlir_tblgen_host, mlir_tblgen_target)
+        shutil.copy(mlir_tblgen_host, mlir_tblgen_target)
         mlir_pdll_host = next(
             f.locate()
             for f in files("mlir-native-tools")
@@ -57,8 +56,7 @@ def get_cross_cmake_args():
         mlir_pdll_target = next(
             f.locate() for f in files("mlir") if f.name.startswith("mlir-pdll")
         )
-        os.remove(mlir_pdll_target)
-        shutil.move(mlir_pdll_host, mlir_pdll_target)
+        shutil.copy(mlir_pdll_host, mlir_pdll_target)
 
     CIBW_ARCHS = os.environ.get("CIBW_ARCHS")
     if CIBW_ARCHS in {"arm64", "aarch64", "ARM64"}:
@@ -84,7 +82,6 @@ def get_cross_cmake_args():
             cmake_args["CMAKE_C_COMPILER"] = "aarch64-linux-gnu-gcc"
             cmake_args["CMAKE_CXX_COMPILER"] = "aarch64-linux-gnu-g++"
             cmake_args["CMAKE_CXX_FLAGS"] = "-static-libgcc -static-libstdc++"
-            cmake_args["SysrootAarch64"] = "/usr/aarch64-linux-gnu"
             native_tools()
         elif ARCH == "X86":
             cmake_args["LLVM_HOST_TRIPLE"] = "x86_64-unknown-linux-gnu"
@@ -116,6 +113,8 @@ class CMakeBuild(build_ext):
             shutil.move(MLIR_INSTALL_ABS_PATH, "/tmp/m")
             MLIR_INSTALL_ABS_PATH = Path("/tmp/m").absolute()
 
+        BOOST_ROOT = os.environ.get("BOOST_ROOT")
+
         cmake_args = [
             f"-G {cmake_generator}",
             cmake_module_path,
@@ -134,10 +133,6 @@ class CMakeBuild(build_ext):
                 "-DCMAKE_C_COMPILER=cl",
                 "-DCMAKE_CXX_COMPILER=cl",
                 "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
-                "-DCMAKE_C_FLAGS=/MT",
-                "-DCMAKE_CXX_FLAGS=/MT",
-                "-DLLVM_USE_CRT_MINSIZEREL=MT",
-                "-DLLVM_USE_CRT_RELEASE=MT",
             ]
 
         cmake_args_dict = get_cross_cmake_args()

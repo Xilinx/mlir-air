@@ -164,6 +164,7 @@ jobs:
       with:
         boost_version: 1.72.0
         platform_version: ${{ steps.split.outputs.platform_version }}
+        arch: ${{ matrix.ARCH == 'x86_64' && 'x86' || 'aarch64' }}
 
     - name: cibuildwheel
       if: ${{ matrix.OS != 'ubuntu-20.04' || matrix.ARCH != 'aarch64' }}
@@ -188,6 +189,9 @@ jobs:
       if: ${{ matrix.OS == 'ubuntu-20.04' && matrix.ARCH == 'aarch64' }}
       run: |
         
+        sudo apt-get install -y python3-dev
+        
+        export APPLY_PATCHES=true
         export PIP_NO_BUILD_ISOLATION="false"
         export PIP_FIND_LINKS="https://makslevental.github.io/wheels"
         export CIBW_ARCHS=${{ matrix.ARCH }}
@@ -198,10 +202,11 @@ jobs:
         
         pip install -r requirements.txt
         ./scripts/pip_install_mlir.sh
+        ./scripts/pip_install_mlir_aie.sh
         ./scripts/apply_patches.sh
         
         CMAKE_GENERATOR=Ninja \
-        pip wheel . -v -w wheelhouse
+        pip wheel . -v -w wheelhouse --no-build-isolation
 
     - name: rename
       shell: bash
@@ -295,3 +300,7 @@ jobs:
 #      contents: write
 #      id-token: write
 #    secrets: inherit # pass all secrets
+
+#apt-get update && apt-get install libboost-all-dev git vim curl wget binutils-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-aarch64-linux-gnu
+#  apt-get install -y binutils-aarch64-linux-gnu           g++-aarch64-linux-gnu gcc-aarch64-linux-gnu
+#  apt-get install python3 python3-pip python-is-python3

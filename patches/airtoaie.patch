@@ -1,0 +1,51 @@
+diff --git a/mlir/lib/Conversion/AIRToAIEPass.cpp b/mlir/lib/Conversion/AIRToAIEPass.cpp
+index ce227c4e..547284b1 100644
+--- a/mlir/lib/Conversion/AIRToAIEPass.cpp
++++ b/mlir/lib/Conversion/AIRToAIEPass.cpp
+@@ -1274,7 +1274,7 @@ private:
+     return true;
+   }
+ 
+-  std::vector<unsigned> convertToStdVec(SmallVector<long int, 4> vec) const {
++  std::vector<unsigned> convertToStdVec(SmallVector<int64_t, 4> vec) const {
+     std::vector<unsigned> output;
+     for (auto v : vec) {
+       output.push_back((unsigned)v);
+@@ -1867,11 +1867,8 @@ public:
+     if (clTestPatterns.find("to-aie-mlir") != std::string::npos) {
+       std::vector<std::pair<AIE::DeviceOp, air::HerdOp>> aie_modules;
+       std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
+-      AIRToAIEOptions options = {.col_offset = clColOffset,
+-                                 .row_offset = clRowOffset,
+-                                 .emit_while = clEmitWhileLoop,
+-                                 .emit_herd_lock = clEmitHerdLock,
+-                                 .device = *device};
++      AIRToAIEOptions options{clColOffset, clRowOffset, clEmitWhileLoop,
++                              clEmitHerdLock, *device};
+       createAIEModulesAndOutlineCores(m, aie_modules, tileToHerdMap, options);
+       std::set<ModuleOp> seen;
+       for (auto &p : aie_modules) {
+@@ -1943,11 +1940,8 @@ public:
+       signalPassFailure();
+       return;
+     }
+-    AIRToAIEOptions options = {.col_offset = clColOffset,
+-                               .row_offset = clRowOffset,
+-                               .emit_while = clEmitWhileLoop,
+-                               .emit_herd_lock = clEmitHerdLock,
+-                               .device = *device};
++    AIRToAIEOptions options{clColOffset, clRowOffset, clEmitWhileLoop,
++                            clEmitHerdLock, *device};
+     createAIEModulesAndOutlineCores(module, aie_devices, tileToHerdMap,
+                                     options);
+ 
+@@ -2202,8 +2196,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
+     p->emitOpError("Invalid AIE.device option");
+     return failure();
+   }
+-  AIRToAIEOptions options = {
+-      .col_offset = 7, .row_offset = 2, .emit_while = false, .device = *device};
++  AIRToAIEOptions options{7, 2, false, false, *device};
+   std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> aie_modules;
+   p.walk([&](xilinx::air::HerdOp h) {
+     aie_modules.push_back({aie_module, h});

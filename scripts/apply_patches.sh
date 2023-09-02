@@ -3,12 +3,15 @@ set -xe
 
 # note that space before slash is important
 PATCHES="\
+airtoaie \
+boost \
 capi \
 export_targets \
 mscv \
 python \
 runner \
 transformgen \
+win32 \
 "
 
 if [[ x"${APPLY_PATCHES}" == x"true" ]]; then
