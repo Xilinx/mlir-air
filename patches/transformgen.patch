@@ -1,0 +1,19 @@
+diff --git a/mlir/lib/Conversion/CMakeLists.txt b/mlir/lib/Conversion/CMakeLists.txt
+index e6c39703..67e23dba 100644
+--- a/mlir/lib/Conversion/CMakeLists.txt
++++ b/mlir/lib/Conversion/CMakeLists.txt
+@@ -13,6 +13,7 @@ Passes.cpp
+ 
+ DEPENDS
+ AIRConversionPassIncGen
++AIRTransformOpsIncGen
+ AIRDialect
+ AIRRtDialect
+ 
+@@ -29,4 +30,5 @@ MLIRLinalgUtils
+ MLIRLinalgTransforms
+ MLIRSupport
+ MLIRTransforms
++MLIRPass
+ )
+\ No newline at end of file

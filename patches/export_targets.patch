@@ -1,0 +1,92 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index b7770b43..1e0fbda6 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -156,5 +156,5 @@ else()
+ 	add_subdirectory(test)
+ endif()
+ add_subdirectory(tools)
+-add_subdirectory(cmake/modules)
+ add_subdirectory(mlir)
++add_subdirectory(cmake/modules)
+diff --git a/cmake/modules/AIRConfig.cmake.in b/cmake/modules/AIRConfig.cmake.in
+index 0ea36be2..139193b1 100644
+--- a/cmake/modules/AIRConfig.cmake.in
++++ b/cmake/modules/AIRConfig.cmake.in
+@@ -14,4 +14,4 @@ set(AIR_INCLUDE_DIRS "@AIR_CONFIG_INCLUDE_DIRS@")
+ 
+ # Provide all our library targets to users.
+ include("@AIR_CONFIG_EXPORTS_FILE@")
+-
++include("@MLIR_CONFIG_INCLUDE_EXPORTS_FILE@")
+diff --git a/cmake/modules/AddAIR.cmake b/cmake/modules/AddAIR.cmake
+index 77c3f104..5ebb81fd 100644
+--- a/cmake/modules/AddAIR.cmake
++++ b/cmake/modules/AddAIR.cmake
+@@ -34,11 +34,29 @@ function(add_air_library name)
+ 
+   set_target_properties(${name} PROPERTIES FOLDER "AIR libraries")
+ 
+-  install(TARGETS ${name}
+-    LIBRARY DESTINATION lib${LLVM_LIBDIR_SUFFIX} COMPONENT ${name}
+-    ARCHIVE DESTINATION lib${LLVM_LIBDIR_SUFFIX} COMPONENT ${name}
+-    RUNTIME DESTINATION bin COMPONENT ${name})
+-    
++  if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
++    get_target_export_arg(${name} AIR export_to_airtargets UMBRELLA air-libraries)
++    install(TARGETS ${name}
++            COMPONENT ${name}
++            ${export_to_airtargets}
++            LIBRARY DESTINATION lib${LLVM_LIBDIR_SUFFIX}
++            ARCHIVE DESTINATION lib${LLVM_LIBDIR_SUFFIX}
++            RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
++            # Note that CMake will create a directory like:
++            #   objects-${CMAKE_BUILD_TYPE}/obj.LibName
++            # and put object files there.
++            OBJECTS DESTINATION lib${LLVM_LIBDIR_SUFFIX}
++    )
++
++    if (NOT LLVM_ENABLE_IDE)
++      add_llvm_install_targets(install-${name}
++              DEPENDS ${name}
++              COMPONENT ${name})
++    endif()
++    set_property(GLOBAL APPEND PROPERTY AIR_ALL_LIBS ${name})
++  endif()
++  set_property(GLOBAL APPEND PROPERTY AIR_EXPORTS ${name})
++
+ endfunction()
+ 
+ # Declare the library associated with a dialect.
+diff --git a/cmake/modules/CMakeLists.txt b/cmake/modules/CMakeLists.txt
+index 17c5c380..140c986b 100644
+--- a/cmake/modules/CMakeLists.txt
++++ b/cmake/modules/CMakeLists.txt
+@@ -9,7 +9,9 @@ set(AIR_INSTALL_PACKAGE_DIR lib${LLVM_LIBDIR_SUFFIX}/cmake/air)
+ set(air_cmake_builddir "${CMAKE_BINARY_DIR}/${AIR_INSTALL_PACKAGE_DIR}")
+ 
+ # Export targets for the build directory
+-export(EXPORT AIRTargets FILE ${air_cmake_builddir}/AIRTargets.cmake)
++#export(EXPORT AIRTargets FILE ${air_cmake_builddir}/AIRTargets.cmake)
++get_property(AIR_EXPORTS GLOBAL PROPERTY AIR_EXPORTS)
++export(TARGETS ${AIR_EXPORTS} APPEND FILE ${air_cmake_builddir}/AIRTargets.cmake)
+ 
+ # Generate AIRConfig.cmake for the build tree.
+ set(AIR_CONFIG_CMAKE_DIR "${air_cmake_builddir}")
+@@ -20,6 +22,7 @@ set(AIR_CONFIG_INCLUDE_DIRS
+   "${PROJECT_BINARY_DIR}/include"
+   )
+ set(AIR_CONFIG_EXPORTS_FILE "\${AIR_CMAKE_DIR}/AIRTargets.cmake")
++set(MLIR_CONFIG_INCLUDE_EXPORTS_FILE "\${AIR_CMAKE_DIR}/MLIRTargets.cmake")
+ configure_file(
+   ${CMAKE_CURRENT_SOURCE_DIR}/AIRConfig.cmake.in
+   ${air_cmake_builddir}/AIRConfig.cmake
+@@ -63,6 +66,8 @@ set(AIR_CONFIG_EXPORTS_FILE)
+ # export targets for the install directory
+ install(EXPORT AIRTargets DESTINATION ${AIR_INSTALL_PACKAGE_DIR}
+         COMPONENT air-cmake-exports)
++install(EXPORT MLIRTargets DESTINATION ${AIR_INSTALL_PACKAGE_DIR}
++        COMPONENT air-cmake-exports)
+ install(FILES
+   ${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/AIRConfig.cmake
+   DESTINATION ${AIR_INSTALL_PACKAGE_DIR}

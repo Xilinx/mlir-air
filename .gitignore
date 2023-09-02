@@ -1,4 +1,7 @@
 # make artifacts
+mlir-air
+.idea
+wheelhouse
 CMakeFiles
 CMakeCache.txt
 platforms/scripts/env_config
