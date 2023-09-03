@@ -2,7 +2,7 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-add_air_dialect_library(AIRDialect
+add_mlir_dialect_library(AIRDialect
   AIRDialect.cpp
 
   ADDITIONAL_HEADER_DIRS

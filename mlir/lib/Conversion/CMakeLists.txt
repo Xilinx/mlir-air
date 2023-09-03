@@ -2,7 +2,7 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-add_air_library(AIRConversionPasses
+add_mlir_library(AIRConversionPasses
 ConvertToAIRPass.cpp
 AIRLoweringPass.cpp
 AIRRtToLLVMPass.cpp

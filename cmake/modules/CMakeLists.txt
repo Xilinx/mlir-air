@@ -49,6 +49,7 @@ set(AIR_CONFIG_INCLUDE_DIRS
   "\${AIR_INSTALL_PREFIX}/include"
   )
 set(AIR_CONFIG_EXPORTS_FILE "\${AIR_CMAKE_DIR}/AIRTargets.cmake")
+set(MLIR_CONFIG_INCLUDE_EXPORTS_FILE "\${AIR_CMAKE_DIR}/MLIRTargets.cmake")
 configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/AIRConfig.cmake.in
   ${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/AIRConfig.cmake
@@ -62,6 +63,8 @@ set(AIR_CONFIG_EXPORTS_FILE)
 
 # export targets for the install directory
 install(EXPORT AIRTargets DESTINATION ${AIR_INSTALL_PACKAGE_DIR}
+        COMPONENT air-cmake-exports)
+install(EXPORT MLIRTargets DESTINATION ${AIR_INSTALL_PACKAGE_DIR}
         COMPONENT air-cmake-exports)
 install(FILES
   ${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/AIRConfig.cmake
