@@ -35,6 +35,7 @@ set(PEANO_INSTALL_DIR "<unset>" CACHE STRING "Location of Peano compiler")
 include(ExternalProject)
 
 find_package(MLIR REQUIRED CONFIG)
+find_package(Boost REQUIRED)
 find_package(AIE REQUIRED)
 find_package(LibXAIE)
 
@@ -96,6 +97,7 @@ include_directories(${AIE_INCLUDE_DIRS})
 
 include_directories(${PROJECT_SOURCE_DIR}/mlir/include)
 include_directories(${PROJECT_BINARY_DIR}/mlir/include)
+include_directories(${Boost_INCLUDE_DIRS})
 
 add_definitions(${LLVM_DEFINITIONS})
 
