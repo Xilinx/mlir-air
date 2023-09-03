@@ -18,10 +18,10 @@ extern "C" {
 /** Registers all AIR dialects with a context.
  * This is needed before creating IR for these Dialects.
  */
-void airRegisterAllDialects(MlirContext context);
+MLIR_CAPI_EXPORTED void airRegisterAllDialects(MlirContext context);
 
 /** Registers all AIR passes for symbolic access with the global registry. */
-void airRegisterAllPasses();
+MLIR_CAPI_EXPORTED void airRegisterAllPasses();
 
 #ifdef __cplusplus
 }

@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-void runTransform(MlirModule transform, MlirModule payload);
+MLIR_CAPI_EXPORTED void runTransform(MlirModule transform, MlirModule payload);
 
 #ifdef __cplusplus
 }

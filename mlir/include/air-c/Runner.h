@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-void airRunnerRun(MlirModule module, const char *json_file_name,
+MLIR_CAPI_EXPORTED void airRunnerRun(MlirModule module, const char *json_file_name,
                   const char *output_file_name, const char *function,
                   const char *sim_granularity, bool verbose);
 
