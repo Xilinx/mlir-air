@@ -28,4 +28,4 @@ MLIR_CAPI_EXPORTED MlirType mlirAIRAsyncTokenTypeGet(MlirContext ctx);
 }
 #endif
 
-#endif  // AIR_C_DIALECTS_H
+#endif // AIR_C_DIALECTS_H
