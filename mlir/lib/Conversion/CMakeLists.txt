@@ -30,4 +30,5 @@ add_mlir_library(
   MLIRLinalgUtils
   MLIRLinalgTransforms
   MLIRSupport
-  MLIRTransforms)
+  MLIRTransforms
+  MLIRPass)
