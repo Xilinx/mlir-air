@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <string>
 #include <sys/mman.h>
+#include <unistd.h>
 
 #include <cstdio>
 #include <iostream>
@@ -19,6 +20,17 @@
 #include "air_host.h"
 #include "air_host_impl.h"
 #include "air_queue.h"
+#include "airbin.h"
+#include <gelf.h>
+
+#define DEBUG_QUEUE
+
+#ifdef DEBUG_QUEUE
+#include <stdio.h>
+#define DBG_PRINT printf
+#else
+#define DBG_PRINT(...)
+#endif // DEBUG_QUEUE
 
 #define ALIGN(_x, _size) (((_x) + ((_size)-1)) & ~((_size)-1))
 
@@ -489,4 +501,188 @@ hsa_status_t air_packet_barrier_or(barrier_or_packet_t *pkt,
   pkt->header = (HSA_PACKET_TYPE_BARRIER_OR << HSA_PACKET_HEADER_TYPE);
 
   return HSA_STATUS_SUCCESS;
+}
+
+/*
+  'table' is an offset from the beginning of device memory
+*/
+hsa_status_t air_packet_load_airbin(dispatch_packet_t *pkt, uint64_t table) {
+  printf("%s: table @ %lx\r\n", __func__, table);
+  pkt->type = AIR_PKT_TYPE_AIRBIN;
+  pkt->header = (HSA_PACKET_TYPE_AGENT_DISPATCH << HSA_PACKET_HEADER_TYPE);
+  pkt->arg[0] = table;
+
+  return HSA_STATUS_SUCCESS;
+}
+
+/*
+  Load an airbin from a file into a device
+*/
+int air_load_airbin(queue_t *q, const char *filename, uint8_t column,
+                    uint32_t device_id) {
+  int ret;
+  int drv_fd = 0, elf_fd = 0;
+  uint32_t dram_size = 2 * 1024 * 1024;   // 2MB
+  uint32_t dram_offset = 8 * 1024 * 1024; // 8MB, just to avoid conflicts
+  uint8_t *dram_ptr = NULL;
+  uint8_t *data_ptr = NULL;
+  struct timespec ts_start;
+  struct timespec ts_end;
+  Elf *inelf = NULL;
+  GElf_Ehdr *ehdr = NULL;
+  GElf_Ehdr ehdr_mem;
+  uint64_t wr_idx = 0;
+  uint64_t packet_id = 0;
+  dispatch_packet_t *pkt = NULL;
+  size_t shnum;
+  uint32_t table_idx = 0;
+  airbin_table_entry *airbin_table;
+  uint64_t airbin_table_offset = 0;
+  uint32_t table_size = 0;
+  uint32_t data_offset = 0;
+
+  auto time_spec_diff = [](struct timespec &start, struct timespec &end) {
+    return (end.tv_sec - start.tv_sec) + 1e-9 * (end.tv_nsec - start.tv_nsec);
+  };
+
+  DBG_PRINT("%s fname=%s col=%u\r\n", __func__, filename, column);
+
+  // ask the driver to give us some device memory
+  drv_fd = open(air_get_driver_name(), O_RDWR | O_SYNC);
+  if (drv_fd == -1) {
+    printf("Error opening %s\n", air_get_driver_name());
+    ret = HSA_STATUS_ERROR_INVALID_QUEUE_CREATION;
+    goto err_drv_open;
+  }
+
+  // get some DRAM from the device
+  dram_ptr = (uint8_t *)mmap(NULL, dram_size, PROT_READ | PROT_WRITE,
+                             MAP_SHARED, drv_fd, dram_offset);
+
+  if (dram_ptr == MAP_FAILED) {
+    printf("Error allocating %u DRAM\n", dram_size);
+    ret = HSA_STATUS_ERROR_OUT_OF_RESOURCES;
+    goto err_dev_mem_alloc;
+  }
+
+  DBG_PRINT("Allocated %u device memory DVO=0x%x HVA=0x%lx\r\n", dram_size,
+            dram_offset, (uint64_t)dram_ptr);
+
+  // find the loadable sections and copy them to the device
+  elf_fd = open(filename, O_RDONLY);
+  if (elf_fd < 0) {
+    printf("Can't open %s\n", filename);
+    ret = HSA_STATUS_ERROR_INVALID_FILE;
+    goto err_elf_open;
+  }
+
+  elf_version(EV_CURRENT);
+  inelf = elf_begin(elf_fd, ELF_C_READ, NULL);
+
+  // check the characteristics
+  ehdr = gelf_getehdr(inelf, &ehdr_mem);
+  if (ehdr == NULL) {
+    printf("cannot get ELF header: %s\n", elf_errmsg(-1));
+    ret = HSA_STATUS_ERROR_INVALID_FILE;
+    goto err_elf_read;
+  }
+
+  // Read data as 64-bit little endian
+  if ((ehdr->e_ident[EI_CLASS] != ELFCLASS64) ||
+      (ehdr->e_ident[EI_DATA] != ELFDATA2LSB)) {
+    printf("unexpected ELF format\n");
+    ret = HSA_STATUS_ERROR_INVALID_FILE;
+    goto err_elf_read;
+  }
+
+  if (elf_getshdrnum(inelf, &shnum) != 0) {
+    printf("cannot get program header count: %s", elf_errmsg(-1));
+    ret = HSA_STATUS_ERROR_INVALID_FILE;
+    goto err_elf_read;
+  }
+
+  /*
+    Even though not all sections are loadable, we use the section count as an
+    upper bound for how much memory the table will take. We can then safely
+    place data after that point and avoid any conflicts. A small amount of
+    memory will be wasted but it is usually only two entries (32 bytes) so
+    not a big deal. This allows us to do only a single pass on the ELF
+    sections so it seems like a good trade-off.
+  */
+  printf("There are %lu sections\n", shnum);
+  table_size = shnum * sizeof(airbin_table_entry);
+  airbin_table = (airbin_table_entry *)dram_ptr;
+  data_ptr = dram_ptr + table_size;
+  data_offset = dram_offset + table_size;
+
+  // Iterate through all sections to create a table in device-readable format.
+  for (unsigned int ndx = 0; ndx < shnum; ndx++) {
+    GElf_Shdr shdr;
+    Elf_Scn *sec = elf_getscn(inelf, ndx);
+    if (sec == NULL) {
+      printf("cannot get section %d: %s", ndx, elf_errmsg(-1));
+      ret = HSA_STATUS_ERROR_INVALID_FILE;
+      goto err_elf_read;
+    }
+
+    gelf_getshdr(sec, &shdr);
+
+    // for each loadable program header
+    if (shdr.sh_type != SHT_PROGBITS || !(shdr.sh_flags & SHF_ALLOC))
+      continue;
+
+    // copy the data from into device memory
+    Elf_Data *desc;
+    desc = elf_getdata(sec, NULL);
+    if (!desc) {
+      printf("Error reading data for section %u\n", ndx);
+      ret = HSA_STATUS_ERROR_INVALID_FILE;
+      goto err_elf_read;
+    }
+    memcpy(data_ptr, desc->d_buf, desc->d_size);
+
+    airbin_table[table_idx].offset = data_offset;
+    airbin_table[table_idx].size = shdr.sh_size;
+    airbin_table[table_idx].addr = shdr.sh_addr;
+    printf("table[%u] offset=0x%x size=0x%lx addr=0x%lx\n", table_idx,
+           data_offset, shdr.sh_size, shdr.sh_addr);
+
+    table_idx++;
+    data_offset += shdr.sh_size;
+    data_ptr += shdr.sh_size;
+  }
+
+  // the last entry must be all 0's
+  airbin_table[table_idx].offset = 0;
+  airbin_table[table_idx].size = 0;
+  airbin_table[table_idx].addr = 0;
+
+  // Send configuration packet
+  printf("Notifying device\n");
+  wr_idx = queue_add_write_index(q, 1);
+  packet_id = wr_idx % q->size;
+  pkt =
+      reinterpret_cast<dispatch_packet_t *>(q->base_address_vaddr) + packet_id;
+
+  airbin_table_offset = dram_offset + (uint8_t *)airbin_table - dram_ptr;
+  air_packet_load_airbin(pkt, airbin_table_offset);
+
+  clock_gettime(CLOCK_BOOTTIME, &ts_start);
+  air_queue_dispatch_and_wait(q, wr_idx, pkt);
+  clock_gettime(CLOCK_BOOTTIME, &ts_end);
+
+  printf("airbin loading time: %0.8f sec\n", time_spec_diff(ts_start, ts_end));
+
+err_elf_read:
+  elf_end(inelf);
+  close(elf_fd);
+
+err_elf_open:
+  munmap(dram_ptr, dram_size);
+
+err_dev_mem_alloc:
+  close(drv_fd);
+
+err_drv_open:
+  return ret;
 }

@@ -110,23 +110,33 @@ int air_init_dev_mem_allocator(uint64_t dev_mem_size, uint32_t device_id) {
   }
 
   // Initializing new struct
-  dev_mem_allocator->dev_mem_size = dev_mem_size;
-  dev_mem_allocator->dev_mem_ptr = 0;
+  dev_mem_allocator->size = dev_mem_size;
+  dev_mem_allocator->ptr = 0;
 
   // Getting userspace pointers to device memory
 #ifdef AIR_PCIE
+  uint64_t offset = 0x1000000;
+  if (dev_mem_size > 0x8000000) {
+    // The driver currently uses 0x8000000 as the offset for BRAM. This is not
+    // a fundamental limit, just short-sightedness. Once that is fixed, this
+    // limitation can be removed.
+    printf("[ERROR] Can't allocate more than 100MB because the driver is limited\n");
+    return -2;
+  }
+
   int fd = open(air_get_driver_name(), O_RDWR | O_SYNC);
   if (fd < 0) {
-    printf("[ERROR] Could not open DDR BAR\n");
-    return 1;
+    printf("[ERROR] Could not open driver %s\n", air_get_driver_name());
+    return -3;
   }
-  dev_mem_allocator->dev_mem =
-      (uint32_t *)mmap(NULL, dev_mem_size /*0x8000*/, PROT_READ | PROT_WRITE,
-                       MAP_SHARED, fd, 0x1C0000);
+  dev_mem_allocator->dev_mem = (uint32_t *)mmap(
+      NULL, dev_mem_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, offset);
   if (dev_mem_allocator->dev_mem == MAP_FAILED) {
-    printf("[ERROR] Could not map DDR BAR\n");
-    return 1;
+    printf("[ERROR] Could not map DRAM offset %lx\n", offset);
+    return -4;
   }
+  dev_mem_allocator->offset = offset;
+  close(fd);
 #else
 
 #ifndef __aarch64__
@@ -152,7 +162,7 @@ int air_init_dev_mem_allocator(uint64_t dev_mem_size, uint32_t device_id) {
 // Freeing the device_memory_allocator
 void air_dev_mem_allocator_free() {
 
-  munmap(dev_mem_allocator->dev_mem, dev_mem_allocator->dev_mem_size);
+  munmap(dev_mem_allocator->dev_mem, dev_mem_allocator->size);
   dev_mem_allocator = NULL;
   free(dev_mem_allocator);
 }
@@ -171,7 +181,7 @@ void *air_dev_mem_alloc(uint32_t size) {
   }
 
   // Making sure we have enough space on the device
-  if (size + dev_mem_allocator->dev_mem_ptr > dev_mem_allocator->dev_mem_size) {
+  if (size + dev_mem_allocator->ptr > dev_mem_allocator->size) {
     printf("[ERROR] Device memory cannot accept this allocation due to lack of "
            "space\n");
     return NULL;
@@ -180,10 +190,10 @@ void *air_dev_mem_alloc(uint32_t size) {
   // Setting the user pointer equal to the next portion
   // of available memory
   void *user_ptr = (void *)((unsigned char *)dev_mem_allocator->dev_mem +
-                            dev_mem_allocator->dev_mem_ptr);
+                            dev_mem_allocator->ptr);
 
   // Incrementing pointer by the size of memory allocated
-  dev_mem_allocator->dev_mem_ptr += size;
+  dev_mem_allocator->ptr += size;
 
   return user_ptr;
 }
@@ -193,6 +203,7 @@ void *air_dev_mem_alloc(uint32_t size) {
 // in both platforms, the offsets of the virtual and physical
 // address are the same, and we can directly convert between
 // the two.
+#ifndef AIR_PCIE
 uint64_t air_dev_mem_get_pa(void *buff_va) {
 
   // Making sure we have a real allocator
@@ -208,6 +219,30 @@ uint64_t air_dev_mem_get_pa(void *buff_va) {
 
   // Adding that offset to our base physical address
   return offset + (uint64_t)AIR_BBUFF_BASE;
+}
+#endif // AIR_PCIE
+
+uint64_t air_dev_mem_get_offset(void *buff_va)
+{
+  // Making sure we have a real allocator
+  if (dev_mem_allocator == NULL) {
+    printf(
+        "[ERROR] Attempting to get a physical address without a valid device "
+        "memory allocator. Call air_init_dev_mem_allocator() first\n");
+    return (uint64_t)-1;
+  }
+
+  if (buff_va < dev_mem_allocator->dev_mem)
+    return (uint64_t)-2;
+
+  if ((uint64_t)buff_va > ((uint64_t)dev_mem_allocator->dev_mem + dev_mem_allocator->size))
+    return (uint64_t)-3;
+
+  // Get the virtual address offset
+  uint64_t offset = (uint64_t)buff_va - (uint64_t)(dev_mem_allocator->dev_mem);
+
+  // Adding that offset to the allocated range
+  return offset + dev_mem_allocator->offset;
 }
 
 static int64_t shim_location_data(air_herd_shim_desc_t *sd, int i, int j,

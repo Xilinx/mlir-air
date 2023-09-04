@@ -5,6 +5,7 @@
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${AIE_INCLUDE_DIRS}/../runtime_lib/x86_64/test_lib/include
+    ${ELFUTILS_DIR}/libelf
 )
 
 add_definitions(-DLIBXAIENGINEV2)
@@ -39,9 +40,19 @@ add_library(airhost_shared SHARED
    )
 set_property(TARGET airhost_shared PROPERTY POSITION_INDEPENDENT_CODE ON)
 
+add_library(libelf_pic STATIC IMPORTED)
+set_target_properties(libelf_pic PROPERTIES
+  INTERFACE_INCLUDE_DIRECTORIES "${ELFUTILS_DIR}/libelf"
+  IMPORTED_LOCATION "${ELFUTILS_DIR}/libelf/libelf_pic.a"
+)
+
 target_link_libraries(airhost
   ${AIR_LIBXAIE_LIBS}
   dl
+)
+
+target_link_libraries(airhost_shared
+  libelf_pic
 )
 
 set_target_properties(airhost PROPERTIES

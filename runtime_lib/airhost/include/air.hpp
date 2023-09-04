@@ -25,4 +25,6 @@ inline hsa_status_t air_get_agents(std::vector<air_agent_t> &agents) {
 
 uint64_t air_wait_all(std::vector<uint64_t> &signals);
 
+int air_load_airbin(queue_t *q, const char *filename, uint8_t column,
+                    uint32_t device_id = 0);
 #endif
