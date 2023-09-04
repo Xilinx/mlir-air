@@ -22,10 +22,8 @@ public:
 
   class OpCountMap {
   public:
-    size_t count(std::string& s) {
-      return map.count(s);
-    }
-    uint64_t &operator[](const std::string& s) {
+    size_t count(std::string &s) { return map.count(s); }
+    uint64_t &operator[](const std::string &s) {
       assert(map.count(s) && "key not found");
       return map[s];
     }
@@ -34,7 +32,7 @@ public:
     std::vector<OpCountMap> ops;
   };
 
-  OpCountMap getOpCounts(mlir::Operation* op);
+  OpCountMap getOpCounts(mlir::Operation *op);
   std::string opCountsToJSON(mlir::ModuleOp module);
   void opCountToJSON(OpCountMap &opCounts, llvm::json::Object &top);
 
