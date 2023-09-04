@@ -31,7 +31,7 @@ public:
   // An incomplete vector of vertices as candidates to wavefront
   std::vector<Graph::vertex_descriptor> latent_wavefront_candidates;
   // Sub runner nodes to the current runner node
-  std::deque<runnerNode> sub_runner_nodes;
+  std::vector<runnerNode> sub_runner_nodes;
   // Resource hierarchies which are allocated to this runner node
   std::vector<resourceHierarchy *> resource_hiers;
 

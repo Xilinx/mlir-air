@@ -16,6 +16,8 @@ configure_lit_site_cfg(
 set(TEST_DEPENDS
   FileCheck count not
   air-opt
+  air-runner
+  air-translate
   )
 
 add_lit_testsuite(check-air-mlir "Running the air mlir regression tests"

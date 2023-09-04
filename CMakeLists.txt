@@ -37,6 +37,7 @@ include(ExternalProject)
 find_package(MLIR REQUIRED CONFIG)
 find_package(AIE REQUIRED)
 find_package(LibXAIE)
+find_package(Boost REQUIRED)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
@@ -96,6 +97,7 @@ include_directories(${AIE_INCLUDE_DIRS})
 
 include_directories(${PROJECT_SOURCE_DIR}/mlir/include)
 include_directories(${PROJECT_BINARY_DIR}/mlir/include)
+include_directories(${Boost_INCLUDE_DIRS})
 
 add_definitions(${LLVM_DEFINITIONS})
 

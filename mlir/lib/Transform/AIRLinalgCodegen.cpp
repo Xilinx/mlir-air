@@ -1394,7 +1394,7 @@ public:
     assert(op.getNumLoops() == tileSizes->size() && "invalid tile size count");
     for (unsigned i = 0, e = op.getNumLoops(); i < e; i++) {
       auto &tFactorAdjusted = (*tileSizes)[i];
-      tFactorAdjusted = std::max(1L, tripCounts[i] / tFactorAdjusted);
+      tFactorAdjusted = std::max((int64_t)1, tripCounts[i] / tFactorAdjusted);
       // Adjust the tile size to largest factor of the trip count less than
       // tSize.
       auto constTripCount = tripCounts[i];
