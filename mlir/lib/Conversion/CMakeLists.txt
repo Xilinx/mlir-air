@@ -14,6 +14,7 @@ add_mlir_library(
 
   DEPENDS
   AIRConversionPassIncGen
+  AIRTransformOpsIncGen
   AIRDialect
   AIRRtDialect
 
@@ -29,4 +30,5 @@ add_mlir_library(
   MLIRLinalgUtils
   MLIRLinalgTransforms
   MLIRSupport
-  MLIRTransforms)
+  MLIRTransforms
+  MLIRPass)
