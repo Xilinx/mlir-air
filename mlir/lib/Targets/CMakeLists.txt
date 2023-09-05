@@ -2,16 +2,14 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-add_air_library(AIRTargets
+add_mlir_library(
+  AIRTargets
   AIRTargets.cpp
   AIRHerdToJSON.cpp
 
-  LINK_LIBS
-
-  PUBLIC
+  LINK_LIBS PUBLIC
   AIRRtDialect
   AIRDialect
   MLIRIR
   MLIRSupport
-  MLIRTransforms
-  )
+  MLIRTransforms)

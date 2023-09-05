@@ -60,6 +60,7 @@ declare_mlir_python_extension(AirPythonExtensions.MLIR
   SOURCES
     AIRMLIRModule.cpp
     AIRRunnerModule.cpp
+    AIRRunnerModule.h
   EMBED_CAPI_LINK_LIBS
     AIRCAPI
   PRIVATE_LINK_LIBS
@@ -73,6 +74,7 @@ declare_mlir_python_extension(AirPythonExtensions.AIRRt
   SOURCES
     Module.cpp
     LibAirHostModule.cpp
+    LibAirHostModule.h
   EMBED_CAPI_LINK_LIBS
     AIRCAPI
   PRIVATE_LINK_LIBS

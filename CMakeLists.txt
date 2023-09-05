@@ -170,6 +170,21 @@ foreach(target ${AIR_RUNTIME_TARGETS})
     TEST_EXCLUDE_FROM_MAIN true)
 endforeach()
 
+if(NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
+  install(
+    DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/runtime_lib/airhost/include
+    DESTINATION include/..
+    COMPONENT runtime_lib-headers
+    FILES_MATCHING
+    PATTERN "*.h"
+    PATTERN "*.hpp")
+
+  if(NOT LLVM_ENABLE_IDE)
+    add_llvm_install_targets(install-runtime_lib-headers DEPENDS
+                             runtime_lib-headers COMPONENT runtime_lib-headers)
+  endif()
+endif()
+
 add_subdirectory(python)
 if(NOT AIR_RUNTIME_TEST_TARGET_VAL)
   message(
@@ -181,5 +196,5 @@ else()
   add_subdirectory(test)
 endif()
 add_subdirectory(tools)
-add_subdirectory(cmake/modules)
 add_subdirectory(mlir)
+add_subdirectory(cmake/modules)

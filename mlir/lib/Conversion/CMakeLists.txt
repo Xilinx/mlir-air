@@ -2,31 +2,31 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-add_air_library(AIRConversionPasses
-ConvertToAIRPass.cpp
-AIRLoweringPass.cpp
-AIRRtToLLVMPass.cpp
-AIRToAIEPass.cpp
-AIRToAsyncPass.cpp
-AIRPipeline.cpp
-Passes.cpp
+add_mlir_library(
+  AIRConversionPasses
+  ConvertToAIRPass.cpp
+  AIRLoweringPass.cpp
+  AIRRtToLLVMPass.cpp
+  AIRToAIEPass.cpp
+  AIRToAsyncPass.cpp
+  AIRPipeline.cpp
+  Passes.cpp
 
-DEPENDS
-AIRConversionPassIncGen
-AIRDialect
-AIRRtDialect
+  DEPENDS
+  AIRConversionPassIncGen
+  AIRDialect
+  AIRRtDialect
 
-LINK_COMPONENTS
-Core
+  LINK_COMPONENTS
+  Core
 
-LINK_LIBS
-AIRDialect
-AIRRtDialect
-AIRUtil
-AIE
-MLIRIR
-MLIRLinalgUtils
-MLIRLinalgTransforms
-MLIRSupport
-MLIRTransforms
-)
+  LINK_LIBS
+  AIRDialect
+  AIRRtDialect
+  AIRUtil
+  AIE
+  MLIRIR
+  MLIRLinalgUtils
+  MLIRLinalgTransforms
+  MLIRSupport
+  MLIRTransforms)
