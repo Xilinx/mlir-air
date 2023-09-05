@@ -509,6 +509,9 @@ private:
 struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
 
+  HoistMemallocInForPattern(MLIRContext *ctx, bool keepMemrefDealloc)
+      : OpRewritePattern(ctx), keepMemrefDealloc(keepMemrefDealloc) {}
+
   LogicalResult matchAndRewrite(memref::AllocOp alloc_op,
                                 PatternRewriter &rewriter) const override {
 
@@ -557,13 +560,16 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
     skipOverOpInDependencyGraph(rewriter, dealloc_exec.getOperation(),
                                 for_op.getRegion());
 
-    for (auto for_op_token : for_op->getResults()) {
-      dealloc_exec.addAsyncDependency(for_op_token);
+    if (!keepMemrefDealloc) {
+      for (auto for_op_token : for_op->getResults()) {
+        dealloc_exec.addAsyncDependency(for_op_token);
+      }
     }
 
     // Hoist alloc and dealloc out of for loop
     alloc_exec->moveBefore(for_op);
-    dealloc_exec->moveAfter(for_op);
+    if (!keepMemrefDealloc)
+      dealloc_exec->moveAfter(for_op);
 
     // Erase alloc hoisting attr
     alloc_op->removeAttr("hoist_alloc");
@@ -572,6 +578,8 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
   }
 
 private:
+  bool keepMemrefDealloc;
+
   void skipOverOpInDependencyGraph(OpBuilder &builder, Operation *op,
                                    mlir::Region &region) const {
 
@@ -1636,7 +1644,7 @@ public:
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<HoistMemallocInForPattern>(ctx);
+    patterns.insert<HoistMemallocInForPattern>(ctx, clKeepMemrefDealloc);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 
@@ -1758,7 +1766,7 @@ public:
   void runHoistMemallocPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<HoistMemallocInForPattern>(ctx);
+    patterns.insert<HoistMemallocInForPattern>(ctx, clKeepMemrefDealloc);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 

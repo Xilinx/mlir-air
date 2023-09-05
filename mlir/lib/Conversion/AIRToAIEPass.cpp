@@ -1976,7 +1976,8 @@ public:
     }
     for (auto memref : cloned_memrefs) {
       if (auto memalloc = memref.getDefiningOp()) {
-        builder.clone(*memalloc, remap);
+        auto cloned_alloc = builder.clone(*memalloc, remap);
+        clearAsyncDependenciesOfAsyncOp(cloned_alloc);
       } else {
         MemRefType ty = memref.getType().cast<MemRefType>();
         auto alloc_op = builder.create<memref::AllocOp>(
@@ -2281,7 +2282,6 @@ public:
 
             f.S2MM_alloc[i] =
                 tile_dma_alloc.getOrAllocNewDmaChannel(memcpyOpIf, x, y, f.S2MM_alloc[i].dma_channel.second);
-              // std::cout << "allocating\n";
             assert(f.S2MM_alloc[i].dma_tile);
           }
         }
@@ -2346,6 +2346,19 @@ public:
         }
       }
     }
+
+    // int id = 0;
+    // for (auto &f : memcpy_flows){
+    //   std::cout << "flow id " << id;
+    //   std::cout << " f.s2mm allocs " << f.S2MM_alloc.size();
+    //   for (unsigned i = 0; i < f.S2MM_alloc.size(); i++){
+    //     std::cout << " f.s2mm ops " << f.S2MM[i].size();
+    //     std::cout << " chan " << f.S2MM_alloc[i].dma_channel.second;
+    //   }
+    //   std::cout << " f.mm2s ops " << f.MM2S.size();
+    //   std::cout << "\n";
+    //   id ++;
+    // }
 
     // Step 4: Connect flows
     for (auto &f : memcpy_flows) {
@@ -2422,7 +2435,8 @@ public:
     else if (auto a = dyn_cast<memref::AllocaOp>(alloc.getDefiningOp()))
       builder.setInsertionPoint(alloc.getDefiningOp());
     else
-      builder.setInsertionPoint(&memcpyOpIf->getBlock()->front());
+      // builder.setInsertionPoint(&memcpyOpIf->getBlock()->front());
+      builder.setInsertionPoint(memcpyOpIf);
 
     builder.create<AIE::UseLockOp>(memcpyOpIf->getLoc(), acqLockOp, lockAqValue,
                                    isAIE2 ? AIE::LockAction::AcquireGreaterEqual
