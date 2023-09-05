@@ -1,4 +1,4 @@
-//===- air_herd_to_aie_core_to_core.mlir -----------------------*- MLIR -*-===//
+//===- air_channel_to_locks_core_to_core.mlir ------------------*- MLIR -*-===//
 //
 // Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
