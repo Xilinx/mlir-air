@@ -314,11 +314,11 @@ AIE::ExternalBufferOp allocateExternalBufferOp(MemRefType memrefTy,
 }
 
 struct allocation_info_t {
-  AIE::TileOp dma_tile;
-  int64_t col;
-  int64_t row;
-  AIE::DMAChannel dma_channel;
-  int64_t tile_channel;
+  AIE::TileOp dma_tile = nullptr;
+  int64_t col = -1;
+  int64_t row = -1;
+  AIE::DMAChannel dma_channel = std::make_pair(AIE::DMAChannelDir::MM2S, -1);
+  int64_t tile_channel = -1;
   std::vector<int32_t> dma_id;
   std::vector<Operation *> memcpyOps;
   bool foundAlloc(int col, int row, air::MemcpyInterface memcpyOp) {
@@ -326,6 +326,11 @@ struct allocation_info_t {
       for (auto id : this->dma_id)
         if (memcpyOp.getId() == id)
           return true;
+    return false;
+  }
+  bool foundAlloc(int col, int row, int chan) {
+    if (col == this->dma_tile.getCol() && row == this->dma_tile.getRow() && chan == this->dma_channel.second)
+      return true;
     return false;
   }
   bool foundAlloc(int col, int row) {
@@ -435,7 +440,7 @@ public:
   // A very simple scheme to allocate channels for dma operations:
   //  <description>
   allocation_info_t getOrAllocNewDmaChannel(air::MemcpyInterface &memcpyOp,
-                                            int col, int row) {
+                                            int col, int row, int chan = -1) {
     bool isMM2S = isTileOutbound(memcpyOp, this->DMAMemorySpaceAsInt);
     auto allocs = isMM2S ? &this->mm2s_allocs : &this->s2mm_allocs;
 
@@ -446,6 +451,11 @@ public:
         num_allocs++;
       if (t.foundAlloc(col, row, memcpyOp))
         return t;
+      if (t.foundAlloc(col, row, chan)){
+        t.dma_id.push_back(memcpyOp.getId());
+        t.memcpyOps.push_back(memcpyOp.getOperation());
+        return t;
+      }
     }
     // Need to allocate a new one
     auto tile = getPhysTileOpOrNull(this->device, col, row);
@@ -453,7 +463,7 @@ public:
     int tile_dma_channels =
         isMM2S ? tile.getNumSourceConnections(AIE::WireBundle::DMA)
                : tile.getNumDestConnections(AIE::WireBundle::DMA);
-    int chan = num_allocs % tile_dma_channels;
+    chan = num_allocs % tile_dma_channels;
     return this->DMAAllocator::allocNewDmaChannel(memcpyOp, tile, chan);
   }
 
@@ -2255,7 +2265,7 @@ public:
           int y = tile.getRow();
 
           f.MM2S_alloc =
-              tile_dma_alloc.getOrAllocNewDmaChannel(memcpyOpIf, x, y);
+              tile_dma_alloc.getOrAllocNewDmaChannel(memcpyOpIf, x, y, f.MM2S_alloc.dma_channel.second);
           assert(f.MM2S_alloc.dma_tile);
         }
       } 
@@ -2270,7 +2280,8 @@ public:
             int y = tile.getRow();
 
             f.S2MM_alloc[i] =
-                tile_dma_alloc.getOrAllocNewDmaChannel(memcpyOpIf, x, y);
+                tile_dma_alloc.getOrAllocNewDmaChannel(memcpyOpIf, x, y, f.S2MM_alloc[i].dma_channel.second);
+              // std::cout << "allocating\n";
             assert(f.S2MM_alloc[i].dma_tile);
           }
         }
