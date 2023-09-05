@@ -89,8 +89,8 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         }
 
 // CHECK:    AIE.core(%[[VAL_2]])  {
-// CHECK:           AIE.useLock(%[[VAL_6]], Acquire, 1)
 // CHECK:           AIE.useLock(%[[VAL_7]], Acquire, 1)
+// CHECK:           AIE.useLock(%[[VAL_6]], Acquire, 1)
 // CHECK:           AIE.useLock(%[[VAL_7]], Release, 0)
 // CHECK:           AIE.useLock(%[[VAL_6]], Release, 0)
 // CHECK:           AIE.end

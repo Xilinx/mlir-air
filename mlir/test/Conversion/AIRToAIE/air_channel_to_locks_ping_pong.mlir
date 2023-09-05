@@ -38,8 +38,8 @@
 // CHECK:         }
 
 // CHECK:    AIE.core(%[[VAL_1]])  {
-// CHECK:           AIE.useLock(%[[VAL_5]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.useLock(%[[VAL_7]], AcquireGreaterEqual, 1)
+// CHECK:           AIE.useLock(%[[VAL_5]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.useLock(%[[VAL_6]], Release, 1)
 // CHECK:           AIE.useLock(%[[VAL_4]], Release, 1)
 // CHECK:           AIE.end
@@ -135,8 +135,8 @@ func.func @multi_memcpys_over_time() {
 // CHECK:         }
 
 // CHECK:    AIE.core(%[[VAL_2]])  {
-// CHECK:           AIE.useLock(%[[VAL_8]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.useLock(%[[VAL_10]], AcquireGreaterEqual, 1)
+// CHECK:           AIE.useLock(%[[VAL_8]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.useLock(%[[VAL_9]], Release, 1)
 // CHECK:           AIE.useLock(%[[VAL_7]], Release, 1)
 // CHECK:           AIE.end
@@ -159,8 +159,8 @@ func.func @multi_memcpys_over_time() {
 // CHECK:         }
 
 // CHECK:    AIE.core(%[[VAL_1]])  {
-// CHECK:           AIE.useLock(%[[VAL_3]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.useLock(%[[VAL_5]], AcquireGreaterEqual, 1)
+// CHECK:           AIE.useLock(%[[VAL_3]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.useLock(%[[VAL_6]], Release, 1)
 // CHECK:           AIE.useLock(%[[VAL_4]], Release, 1)
 // CHECK:           AIE.end
@@ -247,9 +247,9 @@ func.func @core_to_core_ping_pong() {
 // CHECK:         }
 
 // CHECK:    AIE.core(%[[VAL_2]])  {
-// CHECK:           AIE.useLock(%[[VAL_8]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.useLock(%[[VAL_10]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.useLock(%[[VAL_9]], Release, 1)
+// CHECK:           AIE.useLock(%[[VAL_8]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.useLock(%[[VAL_7]], Release, 1)
 // CHECK:           AIE.end
 // CHECK:         }
@@ -271,9 +271,9 @@ func.func @core_to_core_ping_pong() {
 // CHECK:         }
 
 // CHECK:    AIE.core(%[[VAL_1]])  {
-// CHECK:           AIE.useLock(%[[VAL_3]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.useLock(%[[VAL_5]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.useLock(%[[VAL_6]], Release, 1)
+// CHECK:           AIE.useLock(%[[VAL_3]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.useLock(%[[VAL_4]], Release, 1)
 // CHECK:           AIE.end
 // CHECK:         }
@@ -303,7 +303,13 @@ func.func @core_to_core_ping_pong() {
         %3 = affine.if #set1()[%arg8, %arg9] -> !air.async.token {
           %4:3 = scf.for %arg13 = %c0 to %c128 step %c64 iter_args(%arg14 = %async_token_4, %arg15 = %async_token_6, %arg16 = %async_token_6) -> (!air.async.token, !air.async.token, !air.async.token) {
             %5 = air.channel.put async [%arg14, %arg16]  @channel_1[] (%results_5[] [] []) : (memref<32x32xbf16, 2>)
+            %async_token_8 = air.execute [%5] {
+              memref.dealloc %results_5 : memref<32x32xbf16, 2>
+            }
             %6 = air.channel.put async [%5, %arg15]  @channel_1[] (%results_7[] [] []) : (memref<32x32xbf16, 2>)
+            %async_token_9 = air.execute [%6] {
+              memref.dealloc %results_7 : memref<32x32xbf16, 2>
+            }
             scf.yield %5, %6, %6 : !air.async.token, !air.async.token, !air.async.token
           }
           // %4 = air.channel.put async [%async_token_4]  @channel_1[] (%results_5[] [] []) : (memref<32x32xbf16, 2>)
@@ -312,19 +318,25 @@ func.func @core_to_core_ping_pong() {
         } else {
           %4:3 = scf.for %arg13 = %c0 to %c128 step %c64 iter_args(%arg14 = %async_token_4, %arg15 = %async_token_6, %arg16 = %async_token_6) -> (!air.async.token, !air.async.token, !air.async.token) {
             %5 = air.channel.get async [%arg14, %arg16]  @channel_1[] (%results_5[] [] []) : (memref<32x32xbf16, 2>)
+            %async_token_8 = air.execute [%5] {
+              memref.dealloc %results_5 : memref<32x32xbf16, 2>
+            }
             %6 = air.channel.get async [%5, %arg15]  @channel_1[] (%results_7[] [] []) : (memref<32x32xbf16, 2>)
+            %async_token_9 = air.execute [%6] {
+              memref.dealloc %results_7 : memref<32x32xbf16, 2>
+            }
             scf.yield %5, %6, %6 : !air.async.token, !air.async.token, !air.async.token
           }
           // %4 = air.channel.get async [%async_token_4]  @channel_1[] (%results_5[] [] []) : (memref<32x32xbf16, 2>)
           // %5 = air.channel.get async [%async_token_6, %4]  @channel_1[] (%results_7[] [] []) : (memref<32x32xbf16, 2>)
           affine.yield %4#2 : !air.async.token
         }
-        %async_token_8 = air.execute [%3] {
-          memref.dealloc %results_5 : memref<32x32xbf16, 2>
-        }
-        %async_token_9 = air.execute [%3] {
-          memref.dealloc %results_7 : memref<32x32xbf16, 2>
-        }
+        // %async_token_8 = air.execute [%3] {
+        //   memref.dealloc %results_5 : memref<32x32xbf16, 2>
+        // }
+        // %async_token_9 = air.execute [%3] {
+        //   memref.dealloc %results_7 : memref<32x32xbf16, 2>
+        // }
         air.herd_terminator
       }
       air.segment_terminator
