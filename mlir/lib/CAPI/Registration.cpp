@@ -21,6 +21,4 @@ void airRegisterAllDialects(MlirContext context) {
   unwrap(context)->loadAllAvailableDialects();
 }
 
-void airRegisterAllPasses() {
-  xilinx::air::registerAllPasses();
-}
+void airRegisterAllPasses() { xilinx::air::registerAllPasses(); }
