@@ -84,13 +84,8 @@ include(AddMLIR)
 include(HandleLLVMOptions)
 
 # setup python
-find_package(
-  Python3
-  COMPONENTS Interpreter Development
-  REQUIRED)
 include(MLIRDetectPythonEnv)
-mlir_detect_pybind11_install()
-find_package(pybind11 2.6 REQUIRED)
+mlir_configure_python_dev_packages()
 
 # python build directory
 if(NOT AIR_PYTHON_PACKAGES_DIR)
