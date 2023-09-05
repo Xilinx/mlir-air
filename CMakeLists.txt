@@ -40,6 +40,7 @@ find_package(MLIR REQUIRED CONFIG)
 find_package(Boost REQUIRED)
 find_package(AIE REQUIRED)
 find_package(LibXAIE)
+find_package(Boost REQUIRED)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")

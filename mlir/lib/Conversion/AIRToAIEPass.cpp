@@ -1274,7 +1274,7 @@ private:
     return true;
   }
 
-  std::vector<unsigned> convertToStdVec(SmallVector<long int, 4> vec) const {
+  std::vector<unsigned> convertToStdVec(SmallVector<int64_t, 4> vec) const {
     std::vector<unsigned> output;
     for (auto v : vec) {
       output.push_back((unsigned)v);
