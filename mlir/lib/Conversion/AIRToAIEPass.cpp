@@ -1782,6 +1782,9 @@ private:
     auto new_put = builder.create<air::ChannelPutOp>(
         put->getLoc(), tys, deps, chan.getSymName(), indices, put.getSrc(),
         put.getSrcOffsets(), put.getSrcSizes(), put.getSrcStrides());
+    new_put->setAttr("id",
+        IntegerAttr::get(IntegerType::get(put->getContext(), 32),
+                        put.getId()));
     return new_put;
   }
 
@@ -1798,6 +1801,9 @@ private:
     auto new_get = builder.create<air::ChannelGetOp>(
         get->getLoc(), tys, deps, chan.getSymName(), indices, get.getDst(),
         get.getDstOffsets(), get.getDstSizes(), get.getDstStrides());
+    new_get->setAttr("id",
+        IntegerAttr::get(IntegerType::get(get->getContext(), 32),
+                        get.getId()));
     return new_get;
   }
 };
