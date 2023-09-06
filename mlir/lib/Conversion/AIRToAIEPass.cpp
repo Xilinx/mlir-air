@@ -323,8 +323,8 @@ struct allocation_info_t {
   std::vector<Operation *> memcpyOps;
   bool foundAlloc(int col, int row, air::MemcpyInterface memcpyOp) {
     if (col == this->dma_tile.getCol() && row == this->dma_tile.getRow())
-      for (auto id : this->dma_id)
-        if (memcpyOp.getId() == id)
+      for (auto o : this->memcpyOps)
+        if (memcpyOp.getOperation() == o)
           return true;
     return false;
   }
@@ -400,7 +400,7 @@ public:
   // Allocate a new DMA channel
   allocation_info_t allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
                                        AIE::TileOp tile, int chan, int col = -1,
-                                       int row = -1) {
+                                       int row = -1, std::vector<int> dma_id = {}) {
     assert(tile);
     bool isMM2S = isTileOutbound(memcpyOp, this->DMAMemorySpaceAsInt);
     auto allocs = isMM2S ? &this->mm2s_allocs : &this->s2mm_allocs;
@@ -411,7 +411,6 @@ public:
       if (t.foundAlloc(tile.getCol(), tile.getRow())) {
         if (t.dma_channel.first == aie_chan.first &&
             t.dma_channel.second == aie_chan.second) {
-          t.dma_id.push_back(memcpyOp.getId());
           t.memcpyOps.push_back(memcpyOp.getOperation());
           return t;
         }
@@ -422,7 +421,7 @@ public:
                                 row,
                                 aie_chan,
                                 chan,
-                                {memcpyOp.getId()},
+                                dma_id,
                                 {memcpyOp.getOperation()}};
     allocs->push_back(output);
     return output;
@@ -452,7 +451,6 @@ public:
       if (t.foundAlloc(col, row, memcpyOp))
         return t;
       if (t.foundAlloc(col, row, chan)){
-        t.dma_id.push_back(memcpyOp.getId());
         t.memcpyOps.push_back(memcpyOp.getOperation());
         return t;
       }
@@ -495,7 +493,7 @@ public:
   }
 
   allocation_info_t allocNewDmaChannel(air::MemcpyInterface &memcpyOp, int col,
-                                       int row) {
+                                       int row, std::vector<Operation *> &dma_ops) {
     bool isMM2S = isTileOutbound(memcpyOp, this->DMAMemorySpaceAsInt);
     auto allocs = isMM2S ? &this->mm2s_allocs : &this->s2mm_allocs;
 
@@ -503,10 +501,16 @@ public:
     auto dma_channel = allocs->size() % shim_dma_channels;
     auto tile = getPhysTileOp(this->device, dma_col, 0);
     assert(tile);
-    // For shim dma allocations, the col and row fields record the other side of
-    // the flows, for airrt metadata
+    // For shim dma allocations, the col, row and dma_id fields record the other side of the flows, for airrt metadata
+    std::vector<int> dma_ops_get_id;
+    for (auto op : dma_ops) {
+      if (op->hasAttr("id"))
+        dma_ops_get_id.push_back(op->getAttrOfType<IntegerAttr>("id").getInt());
+      else
+        dma_ops_get_id.push_back(-1);
+    }
     return this->DMAAllocator::allocNewDmaChannel(memcpyOp, tile, dma_channel,
-                                                  col, row);
+                                                  col, row, dma_ops_get_id);
   }
 
   allocation_info_t allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
@@ -516,7 +520,6 @@ public:
 
     for (auto &t : *allocs) {
       if (t.foundAlloc(existing_alloc.dma_tile, existing_alloc.dma_channel)) {
-        t.dma_id.push_back(memcpyOp.getId());
         t.memcpyOps.push_back(memcpyOp.getOperation());
         return t;
       }
@@ -2321,7 +2324,7 @@ public:
               auto memcpyOpIf = cast<air::MemcpyInterface>(o);
               f.MM2S_alloc = shim_dma_alloc.allocNewDmaChannel(
                   memcpyOpIf, f.S2MM_alloc[i].dma_tile.getCol(),
-                  f.S2MM_alloc[i].dma_tile.getRow());
+                  f.S2MM_alloc[i].dma_tile.getRow(), f.S2MM[i]);
             }
           }
         }
@@ -2341,24 +2344,11 @@ public:
             auto memcpyOpIf = cast<air::MemcpyInterface>(o);
             f.S2MM_alloc[0] = shim_dma_alloc.allocNewDmaChannel(
                 memcpyOpIf, f.MM2S_alloc.dma_tile.getCol(),
-                f.MM2S_alloc.dma_tile.getRow());
+                f.MM2S_alloc.dma_tile.getRow(), f.MM2S);
           }
         }
       }
     }
-
-    // int id = 0;
-    // for (auto &f : memcpy_flows){
-    //   std::cout << "flow id " << id;
-    //   std::cout << " f.s2mm allocs " << f.S2MM_alloc.size();
-    //   for (unsigned i = 0; i < f.S2MM_alloc.size(); i++){
-    //     std::cout << " f.s2mm ops " << f.S2MM[i].size();
-    //     std::cout << " chan " << f.S2MM_alloc[i].dma_channel.second;
-    //   }
-    //   std::cout << " f.mm2s ops " << f.MM2S.size();
-    //   std::cout << "\n";
-    //   id ++;
-    // }
 
     // Step 4: Connect flows
     for (auto &f : memcpy_flows) {
@@ -2985,6 +2975,7 @@ public:
       }
 
       ShimDMAAllocator shimDmaAlloc(device);
+      std::map<int, int> chan_renumber_reverse_map;
 
       if (clUseObjFifo) {
 
@@ -3010,7 +3001,7 @@ public:
         // Copy over L2 and L3 memcpy ops into device op
         builder.setInsertionPointToStart(device.getBody());
         specializeChannelBundle(device);
-        renumberChannelOps(device.getBody());
+        renumberChannelOps(device.getBody(), chan_renumber_reverse_map);
         lowerAIRMemcpyOp<air::ChannelInterface>(device, shimDmaAlloc, options);
       }
 
@@ -3028,10 +3019,10 @@ public:
 
       for (auto herd : herds) {
         std::set<int64_t> dma_ids;
-        herd.walk([&](Operation *o) {
-          if (auto dmaOp = dyn_cast<air::DmaMemcpyNdOp>(o))
-            dma_ids.insert(dmaOp.getId());
+        herd.walk([&](air::MemcpyInterface o) {
+          dma_ids.insert(o.getId());
         });
+
         auto c = herd.getColOffset();
         auto r = herd.getRowOffset();
         int64_t col_offset = c ? *c : 0;
@@ -3046,11 +3037,12 @@ public:
           int64_t chan = t.dma_channel.second;
 
           for (int64_t id : t.dma_id) {
-            if (dma_ids.count(id) == 0)
+            int original_id = chan_renumber_reverse_map[id];
+            if (dma_ids.count(original_id) == 0)
               continue;
             SmallVector<NamedAttribute, 5> attrs;
             attrs.push_back(NamedAttribute(StringAttr::get(ctx, "id"),
-                                           builder.getI64IntegerAttr(id)));
+                                           builder.getI64IntegerAttr(original_id)));
             attrs.push_back(NamedAttribute(StringAttr::get(ctx, "row"),
                                            builder.getI64IntegerAttr(row)));
             attrs.push_back(NamedAttribute(StringAttr::get(ctx, "col"),
@@ -3069,11 +3061,12 @@ public:
           int64_t row = t.row - row_offset;
           int64_t chan = t.dma_channel.second;
           for (int64_t id : t.dma_id) {
-            if (dma_ids.count(id) == 0)
+            int original_id = chan_renumber_reverse_map[id];
+            if (dma_ids.count(original_id) == 0)
               continue;
             SmallVector<NamedAttribute, 5> attrs;
             attrs.push_back(NamedAttribute(StringAttr::get(ctx, "id"),
-                                           builder.getI64IntegerAttr(id)));
+                                           builder.getI64IntegerAttr(original_id)));
             attrs.push_back(NamedAttribute(StringAttr::get(ctx, "row"),
                                            builder.getI64IntegerAttr(row)));
             attrs.push_back(NamedAttribute(StringAttr::get(ctx, "col"),
