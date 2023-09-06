@@ -514,13 +514,23 @@ public:
   }
 
   allocation_info_t allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
-                                       allocation_info_t existing_alloc) {
+                                       allocation_info_t existing_alloc, std::vector<Operation *> &dma_ops) {
     bool isMM2S = isTileOutbound(memcpyOp, this->DMAMemorySpaceAsInt);
     auto allocs = isMM2S ? &this->mm2s_allocs : &this->s2mm_allocs;
+    
+    std::vector<int> dma_ops_get_id;
+    for (auto op : dma_ops) {
+      if (op->hasAttr("id"))
+        dma_ops_get_id.push_back(op->getAttrOfType<IntegerAttr>("id").getInt());
+      else
+        dma_ops_get_id.push_back(-1);
+    }
 
     for (auto &t : *allocs) {
       if (t.foundAlloc(existing_alloc.dma_tile, existing_alloc.dma_channel)) {
         t.memcpyOps.push_back(memcpyOp.getOperation());
+        for (auto id : dma_ops_get_id)
+          t.dma_id.push_back(id);
         return t;
       }
     }
@@ -2317,7 +2327,7 @@ public:
             for (auto o : f.MM2S) {
               auto memcpyOpIf = cast<air::MemcpyInterface>(o);
               f.MM2S_alloc =
-                  shim_dma_alloc.allocNewDmaChannel(memcpyOpIf, *alloc);
+                  shim_dma_alloc.allocNewDmaChannel(memcpyOpIf, *alloc, f.S2MM[i]);
             }
           } else {
             for (auto o : f.MM2S) {
@@ -2337,7 +2347,7 @@ public:
           for (auto o : f.S2MM[0]) {
             auto memcpyOpIf = cast<air::MemcpyInterface>(o);
             f.S2MM_alloc[0] =
-                shim_dma_alloc.allocNewDmaChannel(memcpyOpIf, *alloc);
+                shim_dma_alloc.allocNewDmaChannel(memcpyOpIf, *alloc, f.MM2S);
           }
         } else {
           for (auto o : f.S2MM[0]) {
