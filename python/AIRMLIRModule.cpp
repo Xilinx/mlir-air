@@ -10,9 +10,8 @@
 
 #include "air-c/Dialects.h"
 #include "air-c/Registration.h"
+#include "air-c/Runner.h"
 #include "air-c/Transform.h"
-
-#include "AIRRunnerModule.h"
 
 namespace py = pybind11;
 using namespace mlir::python::adaptors;
@@ -54,5 +53,10 @@ PYBIND11_MODULE(_airMlir, m) {
 
   // AIR Runner bindings
   auto air_runner = m.def_submodule("runner", "air-runner bindings");
-  xilinx::air::defineAIRRunnerModule(air_runner);
+  air_runner.def("run", [](MlirModule module, std::string json,
+                           std::string outfile, std::string function,
+                           std::string sim_granularity, bool verbose) {
+    airRunnerRun(module, json.c_str(), outfile.c_str(), function.c_str(),
+                 sim_granularity.c_str(), verbose);
+  });
 }
