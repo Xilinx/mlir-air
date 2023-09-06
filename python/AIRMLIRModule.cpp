@@ -10,9 +10,8 @@
 
 #include "air-c/Dialects.h"
 #include "air-c/Registration.h"
+#include "air-c/Runner.h"
 #include "air-c/Transform.h"
-
-#include "AIRRunnerModule.h"
 
 namespace py = pybind11;
 using namespace mlir::python::adaptors;
@@ -42,7 +41,7 @@ PYBIND11_MODULE(_airMlir, m) {
   mlir_type_subclass(m, "AsyncTokenType", mlirTypeIsAIRAsyncTokenType)
       .def_classmethod(
           "get",
-          [](py::object cls, MlirContext ctx) {
+          [](const py::object &cls, MlirContext ctx) {
             return cls(mlirAIRAsyncTokenTypeGet(ctx));
           },
           "Get an instance of AsyncTokenType in given context.",
@@ -54,5 +53,11 @@ PYBIND11_MODULE(_airMlir, m) {
 
   // AIR Runner bindings
   auto air_runner = m.def_submodule("runner", "air-runner bindings");
-  xilinx::air::defineAIRRunnerModule(air_runner);
+  air_runner.def("run", [](MlirModule module, const std::string &json,
+                           const std::string &outfile,
+                           const std::string &function,
+                           const std::string &sim_granularity, bool verbose) {
+    airRunnerRun(module, json.c_str(), outfile.c_str(), function.c_str(),
+                 sim_granularity.c_str(), verbose);
+  });
 }
