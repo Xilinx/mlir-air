@@ -26,10 +26,9 @@ void defineAIRHostModule(pybind11::module &m) {
     air_deinit_libxaie((air_libxaie_ctx_t)ctx);
   });
 
-  m.def("init", [](void) -> uint64_t { return (uint64_t)air_init(); });
+  m.def("init", []() -> uint64_t { return (uint64_t)air_init(); });
 
-  m.def("shut_down",
-        [](void) -> uint64_t { return (uint64_t)air_shut_down(); });
+  m.def("shut_down", []() -> uint64_t { return (uint64_t)air_shut_down(); });
 
   pybind11::class_<air_module_desc_t>(m, "ModuleDescriptor")
       .def(
@@ -53,16 +52,16 @@ void defineAIRHostModule(pybind11::module &m) {
           },
           pybind11::return_value_policy::reference)
       .def("getName", [](const air_segment_desc_t &d) -> std::string {
-        return std::string(d.name, d.name_length);
+        return {d.name, static_cast<size_t>(d.name_length)};
       });
 
   pybind11::class_<air_herd_desc_t>(m, "HerdDescriptor")
       .def("getName", [](const air_herd_desc_t &d) -> std::string {
-        return std::string(d.name, d.name_length);
+        return {d.name, static_cast<size_t>(d.name_length)};
       });
 
   m.def("module_load_from_file",
-        [](std::string filename, queue_t *q) -> air_module_handle_t {
+        [](const std::string &filename, queue_t *q) -> air_module_handle_t {
           return air_module_load_from_file(filename.c_str(), q);
         });
 
@@ -71,7 +70,7 @@ void defineAIRHostModule(pybind11::module &m) {
   m.def("get_module_descriptor", &air_module_get_desc,
         pybind11::return_value_policy::reference);
 
-  pybind11::class_<air_agent_t>(m, "Agent");
+  pybind11::class_<air_agent_t> Agent(m, "Agent");
 
   m.def(
       "get_agents",
@@ -82,7 +81,7 @@ void defineAIRHostModule(pybind11::module &m) {
       },
       pybind11::return_value_policy::reference);
 
-  pybind11::class_<queue_t>(m, "Queue");
+  pybind11::class_<queue_t> Queue(m, "Queue");
 
   m.def(
       "queue_create",
