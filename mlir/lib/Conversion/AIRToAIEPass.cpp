@@ -3037,7 +3037,7 @@ public:
           int64_t chan = t.dma_channel.second;
 
           for (int64_t id : t.dma_id) {
-            int original_id = chan_renumber_reverse_map[id];
+            int original_id = chan_renumber_reverse_map.size() ? chan_renumber_reverse_map[id] : id;
             if (dma_ids.count(original_id) == 0)
               continue;
             SmallVector<NamedAttribute, 5> attrs;
@@ -3061,7 +3061,7 @@ public:
           int64_t row = t.row - row_offset;
           int64_t chan = t.dma_channel.second;
           for (int64_t id : t.dma_id) {
-            int original_id = chan_renumber_reverse_map[id];
+            int original_id = chan_renumber_reverse_map.size() ? chan_renumber_reverse_map[id] : id;
             if (dma_ids.count(original_id) == 0)
               continue;
             SmallVector<NamedAttribute, 5> attrs;
