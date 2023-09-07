@@ -13,8 +13,8 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
-#include "air/Util/Util.h"
 #include "air/Util/Dependency.h"
+#include "air/Util/Util.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 
@@ -445,35 +445,36 @@ public:
   }
 };
 
-void remapExternalPutGet(OpBuilder rewriter, Value herd_x, Value herd_y, air::ChannelInterface op, air::ChannelInterface externalOp, IRMapping &remap){
+void remapExternalPutGet(OpBuilder rewriter, Value herd_x, Value herd_y,
+                         air::ChannelInterface op,
+                         air::ChannelInterface externalOp, IRMapping &remap) {
 
-  remap.map(externalOp->getParentOfType<scf::ParallelOp>().getInductionVars()[0],
-            herd_x.getDefiningOp<arith::IndexCastOp>().getIn());
-  remap.map(externalOp->getParentOfType<scf::ParallelOp>().getInductionVars()[1],
-            herd_y.getDefiningOp<arith::IndexCastOp>().getIn());
+  remap.map(
+      externalOp->getParentOfType<scf::ParallelOp>().getInductionVars()[0],
+      herd_x.getDefiningOp<arith::IndexCastOp>().getIn());
+  remap.map(
+      externalOp->getParentOfType<scf::ParallelOp>().getInductionVars()[1],
+      herd_y.getDefiningOp<arith::IndexCastOp>().getIn());
   remap.map(externalOp->getParentOfType<scf::ForOp>().getInductionVar(),
             op->getParentOfType<scf::ForOp>().getInductionVar());
-  for (auto o : externalOp.getOffsets()){
-    if (auto constOp = o.getDefiningOp<arith::ConstantIndexOp>()){
-      auto newConstOp = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), constOp.value());
+  for (auto o : externalOp.getOffsets()) {
+    if (auto constOp = o.getDefiningOp<arith::ConstantIndexOp>()) {
+      auto newConstOp = rewriter.create<arith::ConstantIndexOp>(
+          op->getLoc(), constOp.value());
       remap.map(constOp.getResult(), newConstOp.getResult());
-    }
-    else if (auto muliOp = o.getDefiningOp<arith::MulIOp>()){
-      for (auto operand : muliOp.getOperands()){
-        if (auto constOp = operand.getDefiningOp<arith::ConstantIndexOp>()){
-          remap.map(constOp.getResult(), rewriter.create<arith::ConstantIndexOp>(
-                                op->getLoc(), constOp.value()));
+    } else if (auto muliOp = o.getDefiningOp<arith::MulIOp>()) {
+      for (auto operand : muliOp.getOperands()) {
+        if (auto constOp = operand.getDefiningOp<arith::ConstantIndexOp>()) {
+          remap.map(constOp.getResult(),
+                    rewriter.create<arith::ConstantIndexOp>(op->getLoc(),
+                                                            constOp.value()));
         }
       }
       auto newMulIOp = rewriter.clone(*muliOp.getOperation(), remap);
       remap.map(muliOp->getResult(0), newMulIOp->getResult(0));
-    }
-    else if (auto execOp = o.getDefiningOp<air::ExecuteOp>()){
+    } else if (auto execOp = o.getDefiningOp<air::ExecuteOp>()) {
       assert(false);
     }
-
-    // offsets[idx++] = rewriter.create<arith::IndexCastOp>(
-    //     op->getLoc(), IntegerType::get(ctx, 64), remap.lookupOrDefault(o));
   }
 }
 
@@ -510,12 +511,11 @@ public:
     MemRefType srcType = op.getSrc().getType().cast<MemRefType>();
     MemRefType dstType = getOp.getDst().getType().cast<MemRefType>();
 
-    bool isFromTile = srcType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1;
+    bool isFromTile =
+        srcType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1;
     bool isFullMemcpy = false;
-    if (srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L3 &&
-               dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L2) {
+    if (srcType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3 &&
+        dstType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L2) {
       isFullMemcpy = true;
     } else if (dstType.getMemorySpaceAsInt() ==
                    (int)xilinx::air::MemorySpace::L3 &&
@@ -525,7 +525,8 @@ public:
     }
     if (!isFromTile && !isFullMemcpy) {
       auto placeholder = rewriter.create<xilinx::airrt::WaitAllOp>(
-          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), op.getAsyncDependencies());
+          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()),
+          op.getAsyncDependencies());
       rewriter.replaceOp(op, placeholder->getResults());
       return success();
     }
@@ -586,47 +587,24 @@ public:
     SmallVector<Value, 3> strides(3, zero);
 
     int idx = 4 - srcType.getRank();
-    if (isFromTile){
+    if (isFromTile) {
       // Hoisting the external get back into the herd
-      // TODO: this is not promising, and only makes sense when we only have one queue and one centralized controller
+      // TODO: this is not promising, and only makes sense when we only have one
+      // queue and one centralized controller
       IRMapping remap;
-      // remapExternalPutGet(rewriter, opers[1], opers[2], op, getOp, remap);
-      // Note: toggled herd x and y during remap
-      remap.map(getOp->getParentOfType<scf::ParallelOp>().getInductionVars()[1],
-                opers[1].getDefiningOp<arith::IndexCastOp>().getIn());
-      remap.map(getOp->getParentOfType<scf::ParallelOp>().getInductionVars()[0],
-                opers[2].getDefiningOp<arith::IndexCastOp>().getIn());
-      remap.map(getOp->getParentOfType<scf::ForOp>().getInductionVar(),
-                op->getParentOfType<scf::ForOp>().getInductionVar());
-      for (auto o : getOp.getDstOffsets()){
-        if (auto constOp = o.getDefiningOp<arith::ConstantIndexOp>()){
-          auto newConstOp = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), constOp.value());
-          remap.map(constOp.getResult(), newConstOp.getResult());
-        }
-        else if (auto muliOp = o.getDefiningOp<arith::MulIOp>()){
-          for (auto operand : muliOp.getOperands()){
-            if (auto constOp = operand.getDefiningOp<arith::ConstantIndexOp>()){
-              remap.map(constOp.getResult(), rewriter.create<arith::ConstantIndexOp>(
-                                    op->getLoc(), constOp.value()));
-            }
-          }
-          auto newMulIOp = rewriter.clone(*muliOp.getOperation(), remap);
-          remap.map(muliOp->getResult(0), newMulIOp->getResult(0));
-        }
-        else if (auto execOp = o.getDefiningOp<air::ExecuteOp>()){
-          assert(false);
-        }
-
+      // Note: toggled herd x and y during remap, because of tracking affine.for
+      // from inner to outer
+      remapExternalPutGet(rewriter, opers[2], opers[1], op, getOp, remap);
+      for (auto o : getOp.getDstOffsets()) {
         offsets[idx++] = rewriter.create<arith::IndexCastOp>(
             op->getLoc(), IntegerType::get(ctx, 64), remap.lookupOrDefault(o));
       }
-    }
-    else {
+    } else {
       for (auto o : op.getSrcOffsets())
         offsets[idx++] = rewriter.create<arith::IndexCastOp>(
             op->getLoc(), IntegerType::get(ctx, 64), o);
     }
-    
+
     idx = 4 - dstType.getRank();
     auto op_strides = isFromTile ? getOp.getDstStrides() : op.getSrcStrides();
     if (op_strides.size())
@@ -690,13 +668,12 @@ public:
     MemRefType srcType = putOp.getSrc().getType().cast<MemRefType>();
     MemRefType dstType = op.getDst().getType().cast<MemRefType>();
 
-    bool isToTile = dstType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1;
+    bool isToTile =
+        dstType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1;
     bool isFromTile = !isToTile;
     bool isFullMemcpy = false;
-    if (srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L3 &&
-               dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L2) {
+    if (srcType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3 &&
+        dstType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L2) {
       isFullMemcpy = true;
     } else if (dstType.getMemorySpaceAsInt() ==
                    (int)xilinx::air::MemorySpace::L3 &&
@@ -706,7 +683,8 @@ public:
     }
     if (!isToTile && !isFullMemcpy) {
       auto placeholder = rewriter.create<xilinx::airrt::WaitAllOp>(
-          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), op.getAsyncDependencies());
+          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()),
+          op.getAsyncDependencies());
       rewriter.replaceOp(op, placeholder->getResults());
       return success();
     }
@@ -768,51 +746,20 @@ public:
 
     int idx = 4 - srcType.getRank();
 
-    if (isToTile){
-      // Hoisting the external put back into the herd
-      // TODO: this is not promising, and only makes sense when we only have one queue
+    if (isToTile) {
       IRMapping remap;
-      remap.map(putOp->getParentOfType<scf::ParallelOp>().getInductionVars()[1],
-                opers[1].getDefiningOp<arith::IndexCastOp>().getIn());
-      remap.map(putOp->getParentOfType<scf::ParallelOp>().getInductionVars()[0],
-                opers[2].getDefiningOp<arith::IndexCastOp>().getIn());
-      remap.map(putOp->getParentOfType<scf::ForOp>().getInductionVar(),
-                op->getParentOfType<scf::ForOp>().getInductionVar());
-      for (auto o : putOp.getSrcOffsets()){
-        if (auto constOp = o.getDefiningOp<arith::ConstantIndexOp>()){
-          auto newConstOp = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), constOp.value());
-          remap.map(constOp.getResult(), newConstOp.getResult());
-          // offsets[idx++] = rewriter.create<arith::IndexCastOp>(
-          //     op->getLoc(), IntegerType::get(ctx, 64), newConstOp.getResult());
-        }
-        else if (auto muliOp = o.getDefiningOp<arith::MulIOp>()){
-          for (auto operand : muliOp.getOperands()){
-            if (auto constOp = operand.getDefiningOp<arith::ConstantIndexOp>()){
-              remap.map(constOp.getResult(), rewriter.create<arith::ConstantIndexOp>(
-                                    op->getLoc(), constOp.value()));
-            }
-          }
-          auto newMulIOp = rewriter.clone(*muliOp.getOperation(), remap);
-          remap.map(muliOp->getResult(0), newMulIOp->getResult(0));
-          // offsets[idx++] = rewriter.create<arith::IndexCastOp>(
-          //     op->getLoc(), IntegerType::get(ctx, 64), newMulIOp->getResult(0));
-        }
-        else if (auto execOp = o.getDefiningOp<air::ExecuteOp>()){
-          assert(false);
-        }
-        // else assert(false);
-
+      // Note: toggled herd x and y during remap, because of tracking affine.for
+      // from inner to outer
+      remapExternalPutGet(rewriter, opers[2], opers[1], op, putOp, remap);
+      for (auto o : putOp.getSrcOffsets()) {
         offsets[idx++] = rewriter.create<arith::IndexCastOp>(
             op->getLoc(), IntegerType::get(ctx, 64), remap.lookupOrDefault(o));
       }
-    }
-    else {
+    } else {
       for (auto o : op.getDstOffsets())
         offsets[idx++] = rewriter.create<arith::IndexCastOp>(
             op->getLoc(), IntegerType::get(ctx, 64), o);
     }
-
-
 
     idx = 4 - dstType.getRank();
     auto op_strides = isFromTile ? op.getDstStrides() : putOp.getSrcStrides();
@@ -929,8 +876,8 @@ LogicalResult collapseChannelOpsToAIRDmaOp(Operation *op) {
   SmallVector<Operation *, 8> erased;
   module->walk([&](scf::ParallelOp par) {
     // Disconnect async dependencies
-    if (par->getNumResults()){
-      for (auto res : par->getResults()){
+    if (par->getNumResults()) {
+      for (auto res : par->getResults()) {
         for (auto u : res.getUsers()) {
           if (auto async_u = dyn_cast<air::AsyncOpInterface>(u)) {
             air::eraseAsyncDependencyFromAsyncOp(async_u, res);
@@ -1249,9 +1196,11 @@ public:
     }
 
     // Collapsing ChannelOps back to AIR dma ops
-    // TODO: This is a crude serialization of asynchronous control programs back to one.
+    // TODO: This is a crude serialization of asynchronous control programs back
+    // to one.
     if (failed(collapseChannelOpsToAIRDmaOp(module))) {
-      emitError(UnknownLoc::get(context), "error serializing the asynchronous control programs\n");
+      emitError(UnknownLoc::get(context),
+                "error serializing the asynchronous control programs\n");
       signalPassFailure();
     }
   }
