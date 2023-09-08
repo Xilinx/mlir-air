@@ -449,14 +449,17 @@ void remapExternalPutGet(OpBuilder rewriter, Value herd_x, Value herd_y,
                          air::ChannelInterface op,
                          air::ChannelInterface externalOp, IRMapping &remap) {
 
-  remap.map(
-      externalOp->getParentOfType<scf::ParallelOp>().getInductionVars()[0],
-      herd_x.getDefiningOp<arith::IndexCastOp>().getIn());
-  remap.map(
-      externalOp->getParentOfType<scf::ParallelOp>().getInductionVars()[1],
-      herd_y.getDefiningOp<arith::IndexCastOp>().getIn());
-  remap.map(externalOp->getParentOfType<scf::ForOp>().getInductionVar(),
-            op->getParentOfType<scf::ForOp>().getInductionVar());
+  if (auto par = externalOp->getParentOfType<scf::ParallelOp>()) {
+    // TODO: What if some scf::par dims get canonicalized away
+    remap.map(par.getInductionVars()[0],
+              herd_x.getDefiningOp<arith::IndexCastOp>().getIn());
+    remap.map(par.getInductionVars()[1],
+              herd_y.getDefiningOp<arith::IndexCastOp>().getIn());
+  }
+  if (auto for_op = externalOp->getParentOfType<scf::ForOp>()) {
+    remap.map(for_op.getInductionVar(),
+              op->getParentOfType<scf::ForOp>().getInductionVar());
+  }
   for (auto o : externalOp.getOffsets()) {
     if (auto constOp = o.getDefiningOp<arith::ConstantIndexOp>()) {
       auto newConstOp = rewriter.create<arith::ConstantIndexOp>(
@@ -868,30 +871,6 @@ LogicalResult lowerAirExecute(Operation *op) {
   return success();
 }
 
-LogicalResult collapseChannelOpsToAIRDmaOp(Operation *op) {
-  ModuleOp module = dyn_cast<ModuleOp>(op);
-  if (!module)
-    return failure();
-
-  SmallVector<Operation *, 8> erased;
-  module->walk([&](scf::ParallelOp par) {
-    // Disconnect async dependencies
-    if (par->getNumResults()) {
-      for (auto res : par->getResults()) {
-        for (auto u : res.getUsers()) {
-          if (auto async_u = dyn_cast<air::AsyncOpInterface>(u)) {
-            air::eraseAsyncDependencyFromAsyncOp(async_u, res);
-          }
-        }
-      }
-    }
-    erased.push_back(par.getOperation());
-  });
-  for (auto a : erased)
-    a->erase();
-  return success();
-}
-
 class ScfYieldOpConversion : public OpConversionPattern<scf::YieldOp> {
 public:
   using OpConversionPattern<scf::YieldOp>::OpConversionPattern;
@@ -1192,15 +1171,6 @@ public:
     if (failed(
             applyPartialConversion(module, target, std::move(air_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air dialect\n");
-      signalPassFailure();
-    }
-
-    // Collapsing ChannelOps back to AIR dma ops
-    // TODO: This is a crude serialization of asynchronous control programs back
-    // to one.
-    if (failed(collapseChannelOpsToAIRDmaOp(module))) {
-      emitError(UnknownLoc::get(context),
-                "error serializing the asynchronous control programs\n");
       signalPassFailure();
     }
   }
