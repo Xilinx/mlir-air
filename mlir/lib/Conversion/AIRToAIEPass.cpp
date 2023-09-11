@@ -1240,7 +1240,7 @@ struct SpecializeChannelBundlePattern
         getChannelGetOpThroughSymbol(channel, device);
 
     // Walk through each element in a channel bundle
-    auto bundle_size = extractFromI64ArrayAttr(channel.getSize());
+    auto bundle_size = extractFromIntegerArrayAttr<int64_t>(channel.getSize());
     auto bundle_size_stdvec = convertToStdVec(bundle_size);
     for (unsigned iter = 0; iter < (unsigned)channel.getBundleSize(); iter++) {
       rewriter.setInsertionPoint(channel);
@@ -1315,7 +1315,7 @@ private:
     return true;
   }
 
-  std::vector<unsigned> convertToStdVec(SmallVector<int64_t, 4> vec) const {
+  std::vector<unsigned> convertToStdVec(SmallVector<int64_t, 6> vec) const {
     std::vector<unsigned> output;
     for (auto v : vec) {
       output.push_back((unsigned)v);

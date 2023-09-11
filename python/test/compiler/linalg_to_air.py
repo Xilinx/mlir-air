@@ -48,6 +48,6 @@ def matmul_l1_l2_2x2():
         zero_tensor = linalg.fill(zero.result, outs=[init_tensor.result])
         out = linalg.matmul(lhs, rhs, outs=[zero_tensor])
         return out
-    PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE).run(module)
-    PassManager.parse('builtin.module(air-linalg-codegen{l1-tile-size=32,32,32 l2-tile-size=64,64,64},air-par-to-herd{depth=1},air-copy-to-dma)').run(module)
+    PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE).run(module.operation)
+    PassManager.parse('builtin.module(air-linalg-codegen{l1-tile-size=32,32,32 l2-tile-size=64,64,64},air-par-to-herd{depth=1},air-copy-to-dma)').run(module.operation)
     print(module)

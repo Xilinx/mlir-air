@@ -1188,7 +1188,7 @@ private:
       if (auto subview =
               operand.memrefValue.getDefiningOp<memref::SubViewOp>()) {
         partialMemref subview_tile = createPartialMemref(
-            subview.getSource(), subview.sizes().size(), subview.offsets());
+            subview.getSource(), subview.getSizes().size(), subview.getOffsets());
         SmallVector<partialMemref, 1> subview_operands = {subview_tile};
         traceDeps<T>(subview_operands, sink_air_op, dep_type);
       }

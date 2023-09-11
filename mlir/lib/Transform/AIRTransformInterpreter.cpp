@@ -10,6 +10,7 @@
 
 #include "air/Dialect/AIR/AIRDialect.h"
 
+#include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/Dialect/Transform/IR/TransformInterfaces.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Support/FileUtilities.h"
@@ -63,7 +64,7 @@ public:
   AIRTransformInterpreterPass(const AIRTransformInterpreterPass &pass){};
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<air::airDialect>();
+    registry.insert<air::airDialect,transform::TransformDialect>();
   }
 
   void runOnOperation() override {

@@ -23,7 +23,7 @@ def run(f):
 # CHECK: transform.air.linalg_tile
 @run
 def testLinalgTile():
-  sequence = transform.SequenceOp(transform.FailurePropagationMode.PROPAGATE, [], pdl.OperationType.get())
+  sequence = transform.SequenceOp(transform.FailurePropagationMode.Propagate, [], pdl.OperationType.get())
   with InsertionPoint(sequence.body):
     airdialect.LinalgTileOp(sequence.bodyTarget, sizes=[32,32])
     transform.YieldOp()

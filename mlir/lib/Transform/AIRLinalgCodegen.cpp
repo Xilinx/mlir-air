@@ -23,7 +23,7 @@
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/SCF/Transforms/Transforms.h"
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/Transform/IR/TransformInterfaces.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/PatternMatch.h"
@@ -62,8 +62,8 @@ struct FoldSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
     //   if (std::get<0>(m) != std::get<1>(m))
     //     return failure();
 
-    auto offsets = op.offsets().begin();
-    auto source_offsets = source_subview.offsets().begin();
+    auto offsets = op.getOffsets().begin();
+    auto source_offsets = source_subview.getOffsets().begin();
     SmallVector<Value, 4> result_offsets;
 
     auto static_offsets = op.getStaticOffsets();
@@ -108,7 +108,7 @@ struct FoldSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
 
     rewriter.replaceOpWithNewOp<memref::SubViewOp>(
         op.getOperation(), op.getType(), source_subview.getSource(),
-        result_offsets, op.sizes(), op.strides(),
+        result_offsets, op.getSizes(), op.getStrides(),
         rewriter.getDenseI64ArrayAttr(result_static_offsets),
         op.getStaticSizes(), op.getStaticStrides());
 
@@ -206,7 +206,7 @@ struct RemoveSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
         op,
         MemRefType::get(op.getType().getShape(), op.getType().getElementType(),
                         {}, fast_space),
-        op.sizes());
+        op.getSizes());
     alloc.replaceAllUsesWith(newOp);
     return success();
   }
@@ -1934,7 +1934,7 @@ DiagnosedSilenceableFailure transform::PipelineReduceOp::applyToOne(
     transform::ApplyToEachResultList &results,
     transform::TransformState &state) {
   auto result = pipelineReduceLinalgOp(
-      rewriter, target, extractFromI64ArrayAttr(getTileSize()),
+      rewriter, target, extractFromIntegerArrayAttr<int64_t>(getTileSize()),
       getPipelineDepth(), getDirection().str(), getPromote());
   if (failed(result))
     return emitDefiniteFailure() << "Failed";
@@ -2193,7 +2193,7 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
     DiagnosedSilenceableFailure::success();
 
   linalg::LinalgPromotionOptions promotionOptions;
-  auto operandsToPromote = extractFromI64ArrayAttr(getOperandsToPromote());
+  auto operandsToPromote = extractFromIntegerArrayAttr<int64_t>(getOperandsToPromote());
 
   if (getUseFullTilesByDefault())
     promotionOptions = promotionOptions.setUseFullTileBuffersByDefault(

@@ -1164,7 +1164,7 @@ public:
                                        int chanDim, int factor) {
     air::ChannelOp chan_op = dyn_cast<air::ChannelOp>(op);
     OpBuilder builder(op);
-    SmallVector<int64_t, 2> sizes = extractFromI64ArrayAttr(chan_op.getSize());
+    SmallVector<int64_t, 2> sizes = extractFromIntegerArrayAttr<int64_t>(chan_op.getSize());
     if ((unsigned)chanDim >= sizes.size())
       return;
     if (sizes[chanDim] != 1) {

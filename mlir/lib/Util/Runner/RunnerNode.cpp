@@ -929,11 +929,11 @@ private:
     if (chan_declr->hasAttr("broadcast_shape")) {
       unsigned bcast_size = 1;
       auto size =
-          extractFromI64ArrayAttr(chan_declr->getAttr("broadcast_shape"));
+          extractFromIntegerArrayAttr<int64_t>(chan_declr->getAttr("broadcast_shape"));
       for (auto s : size) {
         bcast_size *= s;
       }
-      size = extractFromI64ArrayAttr(chan_declr.getSize());
+      size = extractFromIntegerArrayAttr<int64_t>(chan_declr.getSize());
       for (auto s : size) {
         bcast_size /= s;
       }
@@ -1501,11 +1501,11 @@ private:
       auto channel_op = dyn_cast<air::ChannelInterface>(op);
       auto chan = getChannelDeclarationThroughSymbol(channel_op);
       if (chan->hasAttr("broadcast_shape")) {
-        auto size = extractFromI64ArrayAttr(chan->getAttr("broadcast_shape"));
+        auto size = extractFromIntegerArrayAttr<int64_t>(chan->getAttr("broadcast_shape"));
         for (auto s : size) {
           output *= s;
         }
-        size = extractFromI64ArrayAttr(chan.getSize());
+        size = extractFromIntegerArrayAttr<int64_t>(chan.getSize());
         for (auto s : size) {
           output /= s;
         }
@@ -1565,11 +1565,11 @@ private:
       auto channel_op = dyn_cast<air::ChannelInterface>(op);
       auto chan = getChannelDeclarationThroughSymbol(channel_op);
       if (chan->hasAttr("broadcast_shape")) {
-        auto size = extractFromI64ArrayAttr(chan->getAttr("broadcast_shape"));
+        auto size = extractFromIntegerArrayAttr<int64_t>(chan->getAttr("broadcast_shape"));
         for (auto s : size) {
           output *= s;
         }
-        size = extractFromI64ArrayAttr(chan.getSize());
+        size = extractFromIntegerArrayAttr<int64_t>(chan.getSize());
         for (auto s : size) {
           output /= s;
         }

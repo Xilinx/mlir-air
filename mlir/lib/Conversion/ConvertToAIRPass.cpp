@@ -83,7 +83,7 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   auto extractOperandsFromSubview = [&](memref::SubViewOp subview,
                                         auto &offsets, auto &sizes,
                                         auto &strides) {
-    auto subview_offsets = subview.offsets().begin();
+    auto subview_offsets = subview.getOffsets().begin();
     auto static_offsets = subview.getStaticOffsets();
     auto static_sizes = subview.getStaticSizes();
     auto static_strides = subview.getStaticStrides();
@@ -155,8 +155,8 @@ static void extractOperandsFromSubview(memref::SubViewOp subview,
                                        SmallVector<Value, 4> &offsets,
                                        SmallVector<Value, 4> &sizes,
                                        SmallVector<Value, 4> &strides) {
-  auto subview_offsets = subview.offsets().begin();
-  auto static_offsets = subview.static_offsets();
+  auto subview_offsets = subview.getOffsets().begin();
+  auto static_offsets = subview.getStaticOffsets();
   auto static_sizes = subview.getStaticSizes();
   auto static_strides = subview.getStaticStrides();
   auto loc = subview.getLoc();
@@ -1049,7 +1049,7 @@ class AIRDmaToAIRChannelConversion
         auto module = op->getParentOfType<ModuleOp>();
         auto channel_op = dyn_cast<air::ChannelOp>(
             module.lookupSymbol(externalGetPut[0].getChanName()));
-        auto size = extractFromI64ArrayAttr(channel_op.getSize());
+        auto size = extractFromIntegerArrayAttr<int64_t>(channel_op.getSize());
         for (auto s : size) {
           lbs.push_back(0);
           ubs.push_back(s);

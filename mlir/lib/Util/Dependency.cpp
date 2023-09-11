@@ -922,7 +922,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
     auto channel_op = getChannelDeclarationThroughSymbol(op);
     std::string detailed_description = "";
     if (channel_op->hasAttr("broadcast_shape")) {
-      auto size = extractFromI64ArrayAttr(channel_op.getSize());
+      auto size = extractFromIntegerArrayAttr<int64_t>(channel_op.getSize());
       detailed_description += "(broadcast[";
       for (auto &s : size) {
         detailed_description += std::to_string(s);
@@ -930,7 +930,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
           detailed_description += ",";
       }
       detailed_description += "]-->[";
-      auto bsize = extractFromI64ArrayAttr(
+      auto bsize = extractFromIntegerArrayAttr<int64_t>(
           channel_op->getAttrOfType<mlir::ArrayAttr>("broadcast_shape"));
       for (auto &s : bsize) {
         detailed_description += std::to_string(s);
@@ -958,7 +958,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
     auto channel_op = getChannelDeclarationThroughSymbol(op);
     std::string detailed_description = "";
     if (channel_op->hasAttr("broadcast_shape")) {
-      auto size = extractFromI64ArrayAttr(channel_op.getSize());
+      auto size = extractFromIntegerArrayAttr<int64_t>(channel_op.getSize());
       detailed_description += "(broadcast[";
       for (auto &s : size) {
         detailed_description += std::to_string(s);
@@ -966,7 +966,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
           detailed_description += ",";
       }
       detailed_description += "]-->[";
-      auto bsize = extractFromI64ArrayAttr(
+      auto bsize = extractFromIntegerArrayAttr<int64_t>(
           channel_op->getAttrOfType<mlir::ArrayAttr>("broadcast_shape"));
       for (auto &s : bsize) {
         detailed_description += std::to_string(s);
