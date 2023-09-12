@@ -10,6 +10,7 @@
 
 #include "air/Dialect/AIR/AIRDialect.h"
 
+#include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/Dialect/Transform/IR/TransformInterfaces.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Support/FileUtilities.h"
@@ -62,6 +63,10 @@ public:
   AIRTransformInterpreterPass() = default;
   AIRTransformInterpreterPass(const AIRTransformInterpreterPass &pass){};
 
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<air::airDialect, transform::TransformDialect>();
+  }
+
   void runOnOperation() override {
     auto payload = getOperation();
     auto ctx = payload->getContext();
@@ -86,7 +91,7 @@ LogicalResult xilinx::air::runAIRTransform(ModuleOp transformModule,
   for (auto op :
        transformModule.getBody()->getOps<transform::TransformOpInterface>()) {
     if (failed(transform::applyTransforms(
-            payloadModule, op,
+            payloadModule, op, {},
             transform::TransformOptions().enableExpensiveChecks(
                 /*enableExpensiveChecks=*/true))))
       return failure();

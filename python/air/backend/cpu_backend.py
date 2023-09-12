@@ -91,7 +91,7 @@ REF_BACKEND_LOWERING_PIPELINE = "builtin.module(" + ",".join([
     "convert-math-to-libm",
     "convert-linalg-to-llvm",
     "expand-strided-metadata",
-    "convert-memref-to-llvm",
+    "finalize-memref-to-llvm",
     "lower-affine",
     "func.func(convert-arith-to-llvm)",
     "convert-func-to-llvm",
@@ -143,14 +143,14 @@ class AirCpuBackend(AirBackend):
                 print("Running MLIR pass pipeline: ", pipeline)
 
             pm = air.mlir.passmanager.PassManager.parse(pipeline)
-            pm.run(air_module)
+            pm.run(air_module.operation)
 
             if verbose:
                 print("Async Module:")
                 print(air_module)
 
             pm = air.mlir.passmanager.PassManager.parse(ASYNC_TO_LLVM_PIPELINE)
-            pm.run(air_module)
+            pm.run(air_module.operation)
 
             if verbose:
                 print("LLVM Module:")
@@ -159,7 +159,7 @@ class AirCpuBackend(AirBackend):
         with torch_mlir.ir.Context():
             torch_mlir_module = torch_mlir.ir.Module.parse(str(air_module))
             pm = torch_mlir.passmanager.PassManager.parse(REF_BACKEND_LOWERING_PIPELINE)
-            pm.run(torch_mlir_module)
+            pm.run(torch_mlir_module.operation)
         return torch_mlir_module
 
     def load(self, module):
@@ -197,13 +197,15 @@ def make_dynamo_backend(pipeline=None, verbose=False):
         with air.mlir.ir.Context():
             air_module = air.mlir.ir.Module.parse(str(mlir_module))
             pm = air.mlir.passmanager.PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
-            pm.run(air_module)
+            pm.run(air_module.operation)
             if pipeline is None:
                 pm = air.mlir.passmanager.PassManager.parse(linalg_on_tensors.LINALG_MEMREF_TO_AIR_PIPELINE)
-                pm.run(air_module)
+                pm.run(air_module.operation)
+            elif callable(pipeline):
+                air_module = pipeline(air_module)
             else:
                 pm = air.mlir.passmanager.PassManager.parse(pipeline)
-                pm.run(air_module)
+                pm.run(air_module.operation)
 
             if verbose:
                 print("AIR Module:")

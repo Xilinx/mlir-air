@@ -66,7 +66,6 @@ def air_Dialect : Dialect {
 
   }];
   let useDefaultTypePrinterParser = 1;
-  let useFoldAPI = kEmitFoldAdaptorFolder;
 }
 
 def air_AnyScalarOrTensor : TypeConstraint<Or<[AnySignlessInteger.predicate,

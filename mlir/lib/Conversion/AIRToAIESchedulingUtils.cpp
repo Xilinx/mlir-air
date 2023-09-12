@@ -418,12 +418,8 @@ AIE::BufferOp MemTileDMAAllocator::getBuffer(int64_t col, int64_t row,
   return bufferOp;
 }
 
-std::vector<unsigned> convertToStdVec(SmallVector<long int, 4> vec) {
-  std::vector<unsigned> output;
-  for (auto v : vec) {
-    output.push_back((unsigned)v);
-  }
-  return output;
+std::vector<unsigned> convertToStdVec(SmallVector<int64_t, 6> vec) {
+  return {vec.begin(), vec.end()};
 }
 
 bool areIdenticalVectors(std::vector<unsigned> a, std::vector<unsigned> b) {
@@ -460,7 +456,7 @@ void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp) {
   int alloc_id = 0;
   if (chan->hasAttr("broadcast_shape")) {
     // Walk through each element in broadcast_shape
-    auto bcast_sizes = extractFromI64ArrayAttr(
+    auto bcast_sizes = extractFromIntegerArrayAttr<int64_t>(
         chan->getAttrOfType<mlir::ArrayAttr>("broadcast_shape"));
     auto bcast_sizes_stdvec = convertToStdVec(bcast_sizes);
     for (unsigned iter = 0; iter < this->numS2MMAllocs; iter++) {
@@ -515,7 +511,7 @@ MemcpyBundleAsFlow::MemcpyBundleAsFlow(air::ChannelOp chan) {
   this->air_flow_op = chan.getOperation();
   int num_bcast_dests = 1;
   if (chan->hasAttr("broadcast_shape")) {
-    auto bsize = extractFromI64ArrayAttr(
+    auto bsize = extractFromIntegerArrayAttr<int64_t>(
         chan->getAttrOfType<mlir::ArrayAttr>("broadcast_shape"));
     for (auto &s : bsize) {
       num_bcast_dests *= s;
