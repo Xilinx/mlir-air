@@ -499,11 +499,12 @@ public:
       return failure();
 
     SmallVector<Value, 4> deps;
+    xilinx::airrt::WaitAllOp placeholder = nullptr;
     for (auto o : adaptor.getOperands())
       if (o.getType().isa<xilinx::airrt::EventType>())
         deps.push_back(o);
     if (deps.size())
-      rewriter.create<xilinx::airrt::WaitAllOp>(
+      placeholder = rewriter.create<xilinx::airrt::WaitAllOp>(
           op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
 
     auto getOps = getTheOtherChannelOpThroughSymbol(op);
@@ -527,9 +528,6 @@ public:
       isFullMemcpy = true;
     }
     if (!isFromTile && !isFullMemcpy) {
-      auto placeholder = rewriter.create<xilinx::airrt::WaitAllOp>(
-          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()),
-          op.getAsyncDependencies());
       rewriter.replaceOp(op, placeholder->getResults());
       return success();
     }
@@ -656,11 +654,12 @@ public:
       return failure();
 
     SmallVector<Value, 4> deps;
+    xilinx::airrt::WaitAllOp placeholder = nullptr;
     for (auto o : adaptor.getOperands())
       if (o.getType().isa<xilinx::airrt::EventType>())
         deps.push_back(o);
     if (deps.size())
-      rewriter.create<xilinx::airrt::WaitAllOp>(
+      placeholder = rewriter.create<xilinx::airrt::WaitAllOp>(
           op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
 
     auto putOps = getTheOtherChannelOpThroughSymbol(op);
@@ -685,9 +684,6 @@ public:
       isFullMemcpy = true;
     }
     if (!isToTile && !isFullMemcpy) {
-      auto placeholder = rewriter.create<xilinx::airrt::WaitAllOp>(
-          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()),
-          op.getAsyncDependencies());
       rewriter.replaceOp(op, placeholder->getResults());
       return success();
     }
