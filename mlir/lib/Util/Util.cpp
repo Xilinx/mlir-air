@@ -157,6 +157,25 @@ std::string air::getElementTypeAsString(const mlir::Type ty) {
   }
 }
 
+// An incomplete lookup table of common data types
+unsigned air::getElementSizeInBytes(const mlir::Type ty) {
+  auto typeAsString = getElementTypeAsString(ty);
+  if (typeAsString == "i32")
+    return 4;
+  else if (typeAsString == "i16")
+    return 2;
+  else if (typeAsString == "i8")
+    return 1;
+  else if (typeAsString == "f32")
+    return 4;
+  else if (typeAsString == "f16")
+    return 2;
+  else if (typeAsString == "bf16")
+    return 2;
+  else
+    return 0;
+}
+
 // Get the parent scf.for op of an iter_arg
 scf::ForOp air::getForRegionIterArgsOwner(Value val) {
   auto ivArg = val.dyn_cast<BlockArgument>();
@@ -244,6 +263,27 @@ void air::renumberDmaOps(func::FuncOp func, std::string mode) {
     }
   } else
     func->emitError("Unknown dma renumber mode. Supported modes: global, herd");
+}
+
+void air::renumberChannelOps(Block *blk) {
+  unsigned id = 0;
+  blk->walk([&](air::ChannelInterface chan) {
+    chan->setAttr("id",
+                  mlir::IntegerAttr::get(
+                      mlir::IntegerType::get(chan->getContext(), 32), ++id));
+  });
+}
+void air::renumberChannelOps(Block *blk, std::map<int, int> &reverse_map) {
+  unsigned id = 0;
+  blk->walk([&](air::ChannelInterface chan) {
+    // Update a reverse map for op ids
+    if (chan->hasAttr("id")) {
+      reverse_map[id + 1] = chan.getId();
+    }
+    chan->setAttr("id",
+                  mlir::IntegerAttr::get(
+                      mlir::IntegerType::get(chan->getContext(), 32), ++id));
+  });
 }
 
 // Return op name as string

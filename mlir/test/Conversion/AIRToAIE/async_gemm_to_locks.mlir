@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcvc1902" %s | FileCheck %s
+// RUN: air-opt -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcvc1902 generate-shim-dma=true" %s | FileCheck %s
 
 // CHECK-LABEL:   AIE.device(xcvc1902) {
 // CHECK:   %[[VAL_0:.*]] = AIE.tile(5, 3)

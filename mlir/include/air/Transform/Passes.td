@@ -873,6 +873,10 @@ def AIRHoistMemallocInForPattern: Pass<"air-hoist-alloc-in-for-pattern", "Module
     pattern transformation to identify and isolate the statically allocated ping and 
     pong buffers.
   }];
+  let options = [
+    Option<"clKeepMemrefDealloc", "keep-memref-dealloc", "bool", /*default=*/"false",
+            "Flag to keep memref dealloc ops after transformation. Memref dealloc is used in air-to-aie pass as handle to generate lock releases.">
+  ];
 }
 
 def AIRUnrollLoopForPipeliningPattern: Pass<"air-unroll-loop-for-pipelining-pattern", "ModuleOp"> {
@@ -917,6 +921,10 @@ def AIRPingPongTransformationPattern: Pass<"air-ping-pong-transform", "ModuleOp"
     pong buffers, and a surrounding scf.for loop, to construct explicit dependency 
     edges which represent a ping-pong buffering scheduling.
   }];
+  let options = [
+    Option<"clKeepMemrefDealloc", "keep-memref-dealloc", "bool", /*default=*/"false",
+            "Flag to keep memref dealloc ops after transformation. Memref dealloc is used in air-to-aie pass as handle to generate lock releases.">
+  ];
 }
 
 def AIRLabelScfForLoopForPingPongPattern: Pass<"air-label-scf-for-to-ping-pong", "ModuleOp"> {

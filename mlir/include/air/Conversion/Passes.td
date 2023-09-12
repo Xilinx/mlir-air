@@ -158,6 +158,10 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
            /*default=*/"false",
            "Choose whether to lower data movement ops to aie.objectFifo, or "
            "directly to aie.locks.">,
+    Option<"clGenerateShimDMA", "generate-shim-dma", "bool",
+           /*default=*/"false",
+           "Choose whether to schedule shim data movement via generating AIE "
+           " shim DMA program, or AIR runtime.">,
   ];
   let description = [{
     This pass converts AIR dialect `herd` and `segment` operations into AIE

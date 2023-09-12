@@ -13,6 +13,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
+#include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
@@ -206,9 +207,9 @@ public:
       herd.getResult(0).replaceAllUsesWith(w.getResult(0));
     }
 
-    // If the herd doesn't contain a dma op, then it can be deleted
+    // If the herd doesn't contain a memcpy op, then it can be deleted
     SmallVector<Operation *> herdOps;
-    herd.walk([&](air::DmaMemcpyNdOp op) { herdOps.push_back(op); });
+    herd.walk([&](air::MemcpyInterface op) { herdOps.push_back(op); });
 
     if (herdOps.size()) {
       auto herd_size = herd.getSizeOperands();
@@ -444,6 +445,42 @@ public:
   }
 };
 
+void remapExternalPutGet(OpBuilder rewriter, Value herd_x, Value herd_y,
+                         air::ChannelInterface op,
+                         air::ChannelInterface externalOp, IRMapping &remap) {
+
+  if (auto par = externalOp->getParentOfType<scf::ParallelOp>()) {
+    // TODO: What if some scf::par dims get canonicalized away
+    remap.map(par.getInductionVars()[0],
+              herd_x.getDefiningOp<arith::IndexCastOp>().getIn());
+    remap.map(par.getInductionVars()[1],
+              herd_y.getDefiningOp<arith::IndexCastOp>().getIn());
+  }
+  if (auto for_op = externalOp->getParentOfType<scf::ForOp>()) {
+    remap.map(for_op.getInductionVar(),
+              op->getParentOfType<scf::ForOp>().getInductionVar());
+  }
+  for (auto o : externalOp.getOffsets()) {
+    if (auto constOp = o.getDefiningOp<arith::ConstantIndexOp>()) {
+      auto newConstOp = rewriter.create<arith::ConstantIndexOp>(
+          op->getLoc(), constOp.value());
+      remap.map(constOp.getResult(), newConstOp.getResult());
+    } else if (auto muliOp = o.getDefiningOp<arith::MulIOp>()) {
+      for (auto operand : muliOp.getOperands()) {
+        if (auto constOp = operand.getDefiningOp<arith::ConstantIndexOp>()) {
+          remap.map(constOp.getResult(),
+                    rewriter.create<arith::ConstantIndexOp>(op->getLoc(),
+                                                            constOp.value()));
+        }
+      }
+      auto newMulIOp = rewriter.clone(*muliOp.getOperation(), remap);
+      remap.map(muliOp->getResult(0), newMulIOp->getResult(0));
+    } else if (auto execOp = o.getDefiningOp<air::ExecuteOp>()) {
+      assert(false);
+    }
+  }
+}
+
 class AIRChannelPutToAIRRtConversion
     : public OpConversionPattern<xilinx::air::ChannelPutOp> {
 public:
@@ -462,11 +499,12 @@ public:
       return failure();
 
     SmallVector<Value, 4> deps;
+    xilinx::airrt::WaitAllOp placeholder = nullptr;
     for (auto o : adaptor.getOperands())
       if (o.getType().isa<xilinx::airrt::EventType>())
         deps.push_back(o);
     if (deps.size())
-      rewriter.create<xilinx::airrt::WaitAllOp>(
+      placeholder = rewriter.create<xilinx::airrt::WaitAllOp>(
           op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
 
     auto getOps = getTheOtherChannelOpThroughSymbol(op);
@@ -477,80 +515,109 @@ public:
     MemRefType srcType = op.getSrc().getType().cast<MemRefType>();
     MemRefType dstType = getOp.getDst().getType().cast<MemRefType>();
 
-    bool isFromTile = false;
+    bool isFromTile =
+        srcType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1;
     bool isFullMemcpy = false;
-    if (srcType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1 &&
-        dstType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3) {
-      isFromTile = true;
-    } else if (dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L1 &&
-               srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L3) {
-      isFromTile = false;
-    } else if (srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L1 &&
-               dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L2) {
-      isFromTile = true;
-    } else if (dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L1 &&
-               srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L2) {
-      isFromTile = false;
-    } else if (srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L3 &&
-               dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L2) {
+    if (srcType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3 &&
+        dstType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L2) {
       isFullMemcpy = true;
     } else if (dstType.getMemorySpaceAsInt() ==
                    (int)xilinx::air::MemorySpace::L3 &&
                srcType.getMemorySpaceAsInt() ==
                    (int)xilinx::air::MemorySpace::L2) {
-      isFromTile = true;
       isFullMemcpy = true;
-    } else
-      return failure();
-    assert(!isFromTile);
-    assert(!isFullMemcpy);
+    }
+    if (!isFromTile && !isFullMemcpy) {
+      if (!placeholder)
+        placeholder = rewriter.create<xilinx::airrt::WaitAllOp>(
+            op->getLoc(), xilinx::airrt::EventType::get(op->getContext()),
+            deps);
+      rewriter.replaceOp(op, placeholder->getResults());
+      return success();
+    }
 
     SmallVector<Value, 16> opers;
 
-    auto idTy = IntegerType::get(op->getContext(), 32);
-    if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
-      opers.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
-    } else {
-      opers.push_back(rewriter.create<arith::ConstantOp>(
-          loc, idTy, IntegerAttr::get(idTy, 0)));
-    }
+    if (!isFullMemcpy) {
+      auto idTy = IntegerType::get(op->getContext(), 32);
+      if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
+        opers.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
+      } else {
+        opers.push_back(rewriter.create<arith::ConstantOp>(
+            loc, idTy, IntegerAttr::get(idTy, 0)));
+      }
 
+      air::HerdOp launch = op->getParentOfType<air::HerdOp>();
+      if (!launch) {
+
+        AffineForOp afo = op->getParentOfType<AffineForOp>();
+        while (afo && !afo->getAttr("air.herd"))
+          afo = afo->getParentOfType<AffineForOp>();
+        if (!afo)
+          return failure();
+        opers.push_back(afo.getInductionVar());
+
+        afo = afo->getParentOfType<AffineForOp>();
+        while (afo && !afo->getAttr("air.herd"))
+          afo = afo->getParentOfType<AffineForOp>();
+        if (!afo)
+          return failure();
+        opers.push_back(afo.getInductionVar());
+      } else {
+        auto tileIds = launch.getIds();
+        opers.push_back(tileIds[0]);
+        opers.push_back(tileIds[1]);
+      }
+      opers[1] = rewriter.create<arith::IndexCastOp>(
+          op->getLoc(), IntegerType::get(op->getContext(), 64), opers[1]);
+      opers[2] = rewriter.create<arith::IndexCastOp>(
+          op->getLoc(), IntegerType::get(op->getContext(), 64), opers[2]);
+
+      if (isFromTile)
+        opers.push_back(getOp.getDstMemref());
+      else
+        opers.push_back(op.getSrcMemref());
+    } else {
+      opers.push_back(getOp.getDstMemref());
+      opers.push_back(op.getSrcMemref());
+    }
     auto i64Ty = rewriter.getI64Type();
     auto zero = rewriter.create<arith::ConstantOp>(loc, i64Ty,
                                                    IntegerAttr::get(i64Ty, 0));
     auto one = rewriter.create<arith::ConstantOp>(loc, i64Ty,
                                                   IntegerAttr::get(i64Ty, 1));
 
-    // tile ids
-    opers.push_back(zero.getResult());
-    opers.push_back(zero.getResult());
-
-    opers.push_back(op.getSrc());
-
     SmallVector<Value, 4> offsets(4, zero);
     SmallVector<Value, 4> lengths(4, one);
     SmallVector<Value, 3> strides(3, zero);
 
     int idx = 4 - srcType.getRank();
-    for (auto o : op.getSrcOffsets())
-      offsets[idx++] = rewriter.create<arith::IndexCastOp>(
-          op->getLoc(), IntegerType::get(ctx, 64), o);
+    if (isFromTile) {
+      // Hoisting the external get back into the herd
+      // TODO: this is not promising, and only makes sense when we only have one
+      // queue and one centralized controller
+      IRMapping remap;
+      // Note: toggled herd x and y during remap, because of tracking affine.for
+      // from inner to outer
+      remapExternalPutGet(rewriter, opers[2], opers[1], op, getOp, remap);
+      for (auto o : getOp.getDstOffsets()) {
+        offsets[idx++] = rewriter.create<arith::IndexCastOp>(
+            op->getLoc(), IntegerType::get(ctx, 64), remap.lookupOrDefault(o));
+      }
+    } else {
+      for (auto o : op.getSrcOffsets())
+        offsets[idx++] = rewriter.create<arith::IndexCastOp>(
+            op->getLoc(), IntegerType::get(ctx, 64), o);
+    }
+
     idx = 4 - dstType.getRank();
-    auto op_strides = op.getSrcStrides();
+    auto op_strides = isFromTile ? getOp.getDstStrides() : op.getSrcStrides();
     if (op_strides.size())
       for (auto o : op_strides.drop_back())
         strides[idx++] = rewriter.create<arith::IndexCastOp>(
             op->getLoc(), IntegerType::get(ctx, 64), o);
     idx = 4 - srcType.getRank();
-    for (auto o : op.getSrcSizes())
+    for (auto o : isFromTile ? getOp.getDstSizes() : op.getSrcSizes())
       lengths[idx++] = rewriter.create<arith::IndexCastOp>(
           op->getLoc(), IntegerType::get(ctx, 64), o);
 
@@ -561,9 +628,12 @@ public:
     Operation *airrtOp = nullptr;
     SmallVector<Type, 1> tys;
     if (op->getNumResults())
-      tys.push_back(xilinx::airrt::EventType::get(ctx));
-
-    airrtOp = rewriter.create<xilinx::airrt::DmaMemcpyNdOp>(loc, tys, opers);
+      tys.push_back(airrt::EventType::get(ctx));
+    if (isFullMemcpy) {
+      airrtOp = rewriter.create<airrt::MemcpyNdOp>(loc, tys, opers);
+    } else {
+      airrtOp = rewriter.create<airrt::DmaMemcpyNdOp>(loc, tys, opers);
+    }
 
     rewriter.replaceOp(op, airrtOp->getResults());
     return success();
@@ -588,11 +658,12 @@ public:
       return failure();
 
     SmallVector<Value, 4> deps;
+    xilinx::airrt::WaitAllOp placeholder = nullptr;
     for (auto o : adaptor.getOperands())
       if (o.getType().isa<xilinx::airrt::EventType>())
         deps.push_back(o);
     if (deps.size())
-      rewriter.create<xilinx::airrt::WaitAllOp>(
+      placeholder = rewriter.create<xilinx::airrt::WaitAllOp>(
           op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
 
     auto putOps = getTheOtherChannelOpThroughSymbol(op);
@@ -603,80 +674,108 @@ public:
     MemRefType srcType = putOp.getSrc().getType().cast<MemRefType>();
     MemRefType dstType = op.getDst().getType().cast<MemRefType>();
 
-    bool isFromTile = false;
+    bool isToTile =
+        dstType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1;
+    bool isFromTile = !isToTile;
     bool isFullMemcpy = false;
-    if (srcType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1 &&
-        dstType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3) {
-      isFromTile = true;
-    } else if (dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L1 &&
-               srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L3) {
-      isFromTile = false;
-    } else if (srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L1 &&
-               dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L2) {
-      isFromTile = true;
-    } else if (dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L1 &&
-               srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L2) {
-      isFromTile = false;
-    } else if (srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L3 &&
-               dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L2) {
+    if (srcType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3 &&
+        dstType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L2) {
       isFullMemcpy = true;
     } else if (dstType.getMemorySpaceAsInt() ==
                    (int)xilinx::air::MemorySpace::L3 &&
                srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L1) {
-      isFromTile = true;
+                   (int)xilinx::air::MemorySpace::L2) {
       isFullMemcpy = true;
-    } else
-      return failure();
-    assert(isFromTile);
-    assert(!isFullMemcpy);
+    }
+    if (!isToTile && !isFullMemcpy) {
+      if (!placeholder)
+        placeholder = rewriter.create<xilinx::airrt::WaitAllOp>(
+            op->getLoc(), xilinx::airrt::EventType::get(op->getContext()),
+            deps);
+      rewriter.replaceOp(op, placeholder->getResults());
+      return success();
+    }
 
     SmallVector<Value, 16> opers;
 
-    auto idTy = IntegerType::get(op->getContext(), 32);
-    if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
-      opers.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
-    } else {
-      opers.push_back(rewriter.create<arith::ConstantOp>(
-          loc, idTy, IntegerAttr::get(idTy, 0)));
-    }
+    if (!isFullMemcpy) {
+      auto idTy = IntegerType::get(op->getContext(), 32);
+      if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
+        opers.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
+      } else {
+        opers.push_back(rewriter.create<arith::ConstantOp>(
+            loc, idTy, IntegerAttr::get(idTy, 0)));
+      }
 
+      air::HerdOp launch = op->getParentOfType<air::HerdOp>();
+      if (!launch) {
+
+        AffineForOp afo = op->getParentOfType<AffineForOp>();
+        while (afo && !afo->getAttr("air.herd"))
+          afo = afo->getParentOfType<AffineForOp>();
+        if (!afo)
+          return failure();
+        opers.push_back(afo.getInductionVar());
+
+        afo = afo->getParentOfType<AffineForOp>();
+        while (afo && !afo->getAttr("air.herd"))
+          afo = afo->getParentOfType<AffineForOp>();
+        if (!afo)
+          return failure();
+        opers.push_back(afo.getInductionVar());
+      } else {
+        auto tileIds = launch.getIds();
+        opers.push_back(tileIds[0]);
+        opers.push_back(tileIds[1]);
+      }
+      opers[1] = rewriter.create<arith::IndexCastOp>(
+          op->getLoc(), IntegerType::get(op->getContext(), 64), opers[1]);
+      opers[2] = rewriter.create<arith::IndexCastOp>(
+          op->getLoc(), IntegerType::get(op->getContext(), 64), opers[2]);
+
+      if (isFromTile)
+        opers.push_back(op.getDstMemref());
+      else
+        opers.push_back(putOp.getSrcMemref());
+    } else {
+      opers.push_back(op.getDstMemref());
+      opers.push_back(putOp.getSrcMemref());
+    }
     auto i64Ty = rewriter.getI64Type();
     auto zero = rewriter.create<arith::ConstantOp>(loc, i64Ty,
                                                    IntegerAttr::get(i64Ty, 0));
     auto one = rewriter.create<arith::ConstantOp>(loc, i64Ty,
                                                   IntegerAttr::get(i64Ty, 1));
 
-    // tile ids
-    opers.push_back(zero.getResult());
-    opers.push_back(zero.getResult());
-
-    opers.push_back(op.getDst());
-
     SmallVector<Value, 4> offsets(4, zero);
     SmallVector<Value, 4> lengths(4, one);
     SmallVector<Value, 3> strides(3, zero);
 
     int idx = 4 - srcType.getRank();
-    for (auto o : op.getDstOffsets())
-      offsets[idx++] = rewriter.create<arith::IndexCastOp>(
-          op->getLoc(), IntegerType::get(ctx, 64), o);
+
+    if (isToTile) {
+      IRMapping remap;
+      // Note: toggled herd x and y during remap, because of tracking affine.for
+      // from inner to outer
+      remapExternalPutGet(rewriter, opers[2], opers[1], op, putOp, remap);
+      for (auto o : putOp.getSrcOffsets()) {
+        offsets[idx++] = rewriter.create<arith::IndexCastOp>(
+            op->getLoc(), IntegerType::get(ctx, 64), remap.lookupOrDefault(o));
+      }
+    } else {
+      for (auto o : op.getDstOffsets())
+        offsets[idx++] = rewriter.create<arith::IndexCastOp>(
+            op->getLoc(), IntegerType::get(ctx, 64), o);
+    }
+
     idx = 4 - dstType.getRank();
-    auto op_strides = op.getDstStrides();
+    auto op_strides = isFromTile ? op.getDstStrides() : putOp.getSrcStrides();
     if (op_strides.size())
       for (auto o : op_strides.drop_back())
         strides[idx++] = rewriter.create<arith::IndexCastOp>(
             op->getLoc(), IntegerType::get(ctx, 64), o);
     idx = 4 - srcType.getRank();
-    for (auto o : op.getDstSizes())
+    for (auto o : isFromTile ? op.getDstSizes() : putOp.getSrcSizes())
       lengths[idx++] = rewriter.create<arith::IndexCastOp>(
           op->getLoc(), IntegerType::get(ctx, 64), o);
 
@@ -687,9 +786,12 @@ public:
     Operation *airrtOp = nullptr;
     SmallVector<Type, 1> tys;
     if (op->getNumResults())
-      tys.push_back(xilinx::airrt::EventType::get(ctx));
-
-    airrtOp = rewriter.create<xilinx::airrt::DmaMemcpyNdOp>(loc, tys, opers);
+      tys.push_back(airrt::EventType::get(ctx));
+    if (isFullMemcpy) {
+      airrtOp = rewriter.create<airrt::MemcpyNdOp>(loc, tys, opers);
+    } else {
+      airrtOp = rewriter.create<airrt::DmaMemcpyNdOp>(loc, tys, opers);
+    }
 
     rewriter.replaceOp(op, airrtOp->getResults());
     return success();

@@ -8,6 +8,7 @@ add_mlir_library(
   AIRLoweringPass.cpp
   AIRRtToLLVMPass.cpp
   AIRToAIEPass.cpp
+  AIRToAIESchedulingUtils.cpp
   AIRToAsyncPass.cpp
   AIRPipeline.cpp
   Passes.cpp
