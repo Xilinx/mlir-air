@@ -64,7 +64,7 @@ public:
   AIRTransformInterpreterPass(const AIRTransformInterpreterPass &pass){};
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<air::airDialect,transform::TransformDialect>();
+    registry.insert<air::airDialect, transform::TransformDialect>();
   }
 
   void runOnOperation() override {

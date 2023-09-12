@@ -2193,7 +2193,8 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
     DiagnosedSilenceableFailure::success();
 
   linalg::LinalgPromotionOptions promotionOptions;
-  auto operandsToPromote = extractFromIntegerArrayAttr<int64_t>(getOperandsToPromote());
+  auto operandsToPromote =
+      extractFromIntegerArrayAttr<int64_t>(getOperandsToPromote());
 
   if (getUseFullTilesByDefault())
     promotionOptions = promotionOptions.setUseFullTileBuffersByDefault(
