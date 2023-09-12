@@ -2367,7 +2367,8 @@ public:
         // Copy over L2 and L3 memcpy ops into device op
         builder.setInsertionPointToStart(device.getBody());
         specializeChannelBundle(device);
-        renumberChannelOps(device.getBody(), chan_renumber_reverse_map);
+        renumberChannelOps(&device.getBodyRegion().front(),
+                           chan_renumber_reverse_map);
         lowerAIRMemcpyOp<air::ChannelInterface>(device, shimDmaAlloc, options);
       }
 

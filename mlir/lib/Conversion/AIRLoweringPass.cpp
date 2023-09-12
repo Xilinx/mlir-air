@@ -551,16 +551,16 @@ public:
       air::HerdOp launch = op->getParentOfType<air::HerdOp>();
       if (!launch) {
 
-        AffineForOp afo = op->getParentOfType<AffineForOp>();
+        affine::AffineForOp afo = op->getParentOfType<affine::AffineForOp>();
         while (afo && !afo->getAttr("air.herd"))
-          afo = afo->getParentOfType<AffineForOp>();
+          afo = afo->getParentOfType<affine::AffineForOp>();
         if (!afo)
           return failure();
         opers.push_back(afo.getInductionVar());
 
-        afo = afo->getParentOfType<AffineForOp>();
+        afo = afo->getParentOfType<affine::AffineForOp>();
         while (afo && !afo->getAttr("air.herd"))
-          afo = afo->getParentOfType<AffineForOp>();
+          afo = afo->getParentOfType<affine::AffineForOp>();
         if (!afo)
           return failure();
         opers.push_back(afo.getInductionVar());
@@ -711,16 +711,16 @@ public:
       air::HerdOp launch = op->getParentOfType<air::HerdOp>();
       if (!launch) {
 
-        AffineForOp afo = op->getParentOfType<AffineForOp>();
+        affine::AffineForOp afo = op->getParentOfType<affine::AffineForOp>();
         while (afo && !afo->getAttr("air.herd"))
-          afo = afo->getParentOfType<AffineForOp>();
+          afo = afo->getParentOfType<affine::AffineForOp>();
         if (!afo)
           return failure();
         opers.push_back(afo.getInductionVar());
 
-        afo = afo->getParentOfType<AffineForOp>();
+        afo = afo->getParentOfType<affine::AffineForOp>();
         while (afo && !afo->getAttr("air.herd"))
-          afo = afo->getParentOfType<AffineForOp>();
+          afo = afo->getParentOfType<affine::AffineForOp>();
         if (!afo)
           return failure();
         opers.push_back(afo.getInductionVar());
