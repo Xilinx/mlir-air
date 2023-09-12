@@ -1325,9 +1325,10 @@ public:
 
   ScfParToHerdConversion(MLIRContext *ctx,
                          SmallPtrSet<Operation *, 8> &filteredOps,
-                         llvm::SmallSet<air::HerdOp, 2> &replacementOps)
+                         llvm::SmallSet<air::HerdOp, 2> &replacementOps,
+                         int firstDim)
       : OpRewritePattern(ctx), filteredOps(filteredOps),
-        replacementOps(replacementOps){};
+        replacementOps(replacementOps), firstDim(firstDim){};
 
   LogicalResult matchAndRewrite(scf::ParallelOp parOp,
                                 PatternRewriter &rewriter) const override {
@@ -1397,16 +1398,19 @@ public:
       else
         args.push_back(v);
     }
+
+    int idx0 = firstDim;
+    int idx1 = (firstDim + 1) % 2;
     SmallVector<Value, 2> dims{
-        rewriter.create<arith::ConstantIndexOp>(loc, bounds[0]),
-        rewriter.create<arith::ConstantIndexOp>(loc, bounds[1])};
+        rewriter.create<arith::ConstantIndexOp>(loc, bounds[idx0]),
+        rewriter.create<arith::ConstantIndexOp>(loc, bounds[idx1])};
     auto herdOp = rewriter.create<air::HerdOp>(op.getLoc(), dims, args);
     auto &bb = herdOp.getBody().front();
     auto ivs = op.getInductionVars();
 
-    ivs[0].replaceAllUsesWith(herdOp.getIds()[0]);
+    ivs[0].replaceAllUsesWith(herdOp.getIds()[idx0]);
     if (op.getNumLoops() == 2)
-      ivs[1].replaceAllUsesWith(herdOp.getIds()[1]);
+      ivs[1].replaceAllUsesWith(herdOp.getIds()[idx1]);
 
     auto &body = op.getBody()->getOperations();
     bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
@@ -1432,6 +1436,7 @@ public:
 private:
   llvm::SmallPtrSet<Operation *, 8> filteredOps;
   llvm::SmallSet<air::HerdOp, 2> &replacementOps;
+  int firstDim;
 };
 
 class ScfParToLaunchConversion : public OpRewritePattern<scf::ParallelOp> {
@@ -1945,7 +1950,8 @@ struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
 
     RewritePatternSet patterns(context);
     patterns.add<AffineParToHerdConversion>(context);
-    patterns.add<ScfParToHerdConversion>(context, filteredOps, replacementOps);
+    patterns.add<ScfParToHerdConversion>(context, filteredOps, replacementOps,
+                                         clFirstDim);
 
     ConversionTarget target(*context);
 
@@ -2059,7 +2065,8 @@ transform::ParToHerdOp::applyToOne(scf::ParallelOp target,
   llvm::SmallSet<air::HerdOp, 2> herdOps;
   llvm::SmallSet<Operation *, 8> filteredOps;
   filteredOps.insert(target);
-  patterns.add<ScfParToHerdConversion>(ctx, filteredOps, herdOps);
+  patterns.add<ScfParToHerdConversion>(ctx, filteredOps, herdOps,
+                                       getFirstDim());
   (void)applyPatternsAndFoldGreedily(
       target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
       std::move(patterns));

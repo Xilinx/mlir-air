@@ -9,19 +9,23 @@
 #ifndef AIR_CHANNEL_H
 #define AIR_CHANNEL_H
 
+#include <atomic>
 #include <condition_variable>
 #include <mutex>
 #include <stdlib.h>
 
 template <typename T> struct channel_t {
   T *data;
-  bool _is_full;
+  size_t bcast_ratio[2];
+  std::atomic<int> token;
   std::mutex mtx;
   std::condition_variable cv;
 
-  channel_t(size_t sizes[4]) {
+  channel_t(size_t sizes[4], size_t ratio[2]) {
     data = new T[sizes[0] * sizes[1] * sizes[2] * sizes[3]];
-    _is_full = false;
+    bcast_ratio[0] = ratio[0];
+    bcast_ratio[1] = ratio[1];
+    token.store(0);
     cv.notify_all();
   }
 };

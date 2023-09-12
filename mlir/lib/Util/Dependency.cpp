@@ -751,7 +751,7 @@ void dependencyCanonicalizer::
 }
 
 void dependencyCanonicalizer::addVerticesInHerd(
-    std::deque<dependencyGraph> &herd_subgraphs, air::HerdOp herd,
+    std::vector<dependencyGraph> &herd_subgraphs, air::HerdOp herd,
     dependencyContext &dep_ctx, graphGranularityProperties expandHier) {
   // Build up herd graph
   bool showCores = std::get<3>(expandHier);
@@ -793,7 +793,7 @@ void dependencyCanonicalizer::addVerticesInHerd(
 }
 
 void dependencyCanonicalizer::addVerticesInSegment(
-    std::deque<dependencyGraph> &part_subgraphs, air::SegmentOp segment,
+    std::vector<dependencyGraph> &part_subgraphs, air::SegmentOp segment,
     dependencyContext &dep_ctx, graphGranularityProperties expandHier) {
   // Build up segment graph
   part_subgraphs.push_back(dependencyGraph(segment.getOperation(), true));
@@ -812,7 +812,7 @@ void dependencyCanonicalizer::addVerticesInSegment(
 }
 
 void dependencyCanonicalizer::addVerticesInLaunch(
-    std::deque<dependencyGraph> &launch_subgraphs, air::LaunchOp launch,
+    std::vector<dependencyGraph> &launch_subgraphs, air::LaunchOp launch,
     dependencyContext &dep_ctx, graphGranularityProperties expandHier) {
   // Build up launch graph
   launch_subgraphs.push_back(dependencyGraph(launch.getOperation(), true));

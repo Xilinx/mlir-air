@@ -5,30 +5,14 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-to-aie="emit-while-loop=false use-objectfifo=true row-offset=3 col-offset=5 device=xcvc1902" %s | FileCheck %s
+// RUN: air-opt -air-to-aie="use-objectfifo=true row-offset=3 col-offset=5" %s | FileCheck %s
 
-// CHECK-LABEL:   AIE.device(xcvc1902) {
+// CHECK-LABEL: AIE.device
 // CHECK:   %[[VAL_0:.*]] = AIE.tile(5, 3)
 // CHECK:   %[[VAL_1:.*]] = AIE.tile(6, 3)
 // CHECK:   %[[VAL_2:.*]] = AIE.tile(5, 4)
 // CHECK:   %[[VAL_3:.*]] = AIE.tile(6, 4)
-// CHECK:   %[[VAL_4:.*]] = AIE.buffer(%[[VAL_3]]){{.*}}memref<64x96xbf16, 2>
-// CHECK:   %[[VAL_5:.*]] = AIE.buffer(%[[VAL_3]]){{.*}}memref<96x64xbf16, 2>
-// CHECK:   %[[VAL_6:.*]] = AIE.buffer(%[[VAL_3]]){{.*}}memref<64x64xbf16, 2>
-// CHECK:   %[[VAL_7:.*]] = AIE.buffer(%[[VAL_2]]){{.*}}memref<64x96xbf16, 2>
-// CHECK:   %[[VAL_8:.*]] = AIE.buffer(%[[VAL_2]]){{.*}}memref<96x64xbf16, 2>
-// CHECK:   %[[VAL_9:.*]] = AIE.buffer(%[[VAL_2]]){{.*}}memref<64x64xbf16, 2>
-// CHECK:   %[[VAL_10:.*]] = AIE.buffer(%[[VAL_1]]){{.*}}memref<64x96xbf16, 2>
-// CHECK:   %[[VAL_11:.*]] = AIE.buffer(%[[VAL_1]]){{.*}}memref<96x64xbf16, 2>
-// CHECK:   %[[VAL_12:.*]] = AIE.buffer(%[[VAL_1]]){{.*}}memref<64x64xbf16, 2>
-// CHECK:   %[[VAL_13:.*]] = AIE.buffer(%[[VAL_0]]){{.*}}memref<64x96xbf16, 2>
-// CHECK:   %[[VAL_14:.*]] = AIE.buffer(%[[VAL_0]]){{.*}}memref<96x64xbf16, 2>
-// CHECK:   %[[VAL_15:.*]] = AIE.buffer(%[[VAL_0]]){{.*}}memref<64x64xbf16, 2>
-// CHECK-COUNT-16:    AIE.objectFifo.createObjectFifo
-// CHECK:   %[[VAL_16:.*]] = AIE.core(%[[VAL_3]]) {
-// CHECK:   %[[VAL_17:.*]] = AIE.core(%[[VAL_2]]) {
-// CHECK:   %[[VAL_18:.*]] = AIE.core(%[[VAL_1]]) {
-// CHECK:   %[[VAL_19:.*]] = AIE.core(%[[VAL_0]]) {
+// CHECK-COUNT-12:    AIE.objectFifo @
 
 #map = affine_map<()[s0] -> (s0 * 64)>
 module {

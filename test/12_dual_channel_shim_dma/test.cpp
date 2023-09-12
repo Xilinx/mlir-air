@@ -184,14 +184,15 @@ main(int argc, char *argv[])
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = dram_ptr_3[i] /*bram_ptr[2*DMA_COUNT+i]*/;
     if (d != i) {
-      printf("ERROR: buf72_0 copy id %d Expected %08X, got %08X\n", i, i, d);
+      printf("ERROR: dram_ptr_3 copy id %d Expected %08X, got %08X\n", i, i, d);
       errs++;
     }
   }
   for (int i=0; i<DMA_COUNT; i++) {
     uint32_t d = dram_ptr_4[i] /*bram_ptr[3*DMA_COUNT+i]*/;
     if (d != i*2) {
-      printf("ERROR: buf74_0 copy id %d Expected %08X, got %08X\n", i, i*2, d);
+      printf("ERROR: dram_ptr_4 copy id %d Expected %08X, got %08X\n", i, i * 2,
+             d);
       errs++;
     }
   }

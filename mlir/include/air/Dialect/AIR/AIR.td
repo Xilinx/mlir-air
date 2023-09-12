@@ -440,21 +440,39 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
     ```
   }];
   let extraClassDeclaration = [{
+    bool isBroadcast() {
+      if(auto attr = getOperation()->getAttrOfType<ArrayAttr>("broadcast_shape"))
+        return true;
+      else
+        return false;
+    }
+    int getBroadcastDimension();
+    ArrayAttr getBroadcastShape() {
+      return getOperation()->getAttrOfType<ArrayAttr>("broadcast_shape");
+    }
+    int getBroadcastNum() {
+      int broadcastNum = 1;
+      if (isBroadcast())
+        for (auto bShape : getOperation()->getAttrOfType<ArrayAttr>("broadcast_shape")) {
+          auto attr = bShape.dyn_cast<IntegerAttr>().getInt();
+          broadcastNum *= attr;
+        }
+      return broadcastNum;
+    }
     int getBufferResources() {
-      if(auto attr = getOperation()->getAttrOfType<IntegerAttr>("buffer_resources")) {
+      if(auto attr = getOperation()->getAttrOfType<IntegerAttr>("buffer_resources"))
         return attr.dyn_cast<IntegerAttr>().getInt();
-      } else {
+      else
         return 1;
-      }
     }
     int getBundleSize() {
       int size = 1;
-      for (auto i : getSize()) {
+      for (auto i : getSize())
         size *= i.dyn_cast<IntegerAttr>().getInt();
-      }
       return size;
     }
   }];
+  let hasVerifier = 1;
   let hasCanonicalizer = 1;
 }
 

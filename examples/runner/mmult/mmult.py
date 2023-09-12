@@ -6,27 +6,38 @@
 
 import air.compiler.util
 
-from air.mlir.dialects import func
-from air.mlir.dialects import linalg
+from air.mlir.dialects import func, linalg, tensor, arith
 from air.mlir.ir import *
 import air.mlir.passmanager
 
 import sys
 
+M = int(sys.argv[1])
+N = int(sys.argv[2])
+K = int(sys.argv[3])
+Tiling_L1_m = int(sys.argv[4])
+Tiling_L1_n = int(sys.argv[5])
+Tiling_L1_k = int(sys.argv[6])
+Tiling_L2_m = int(sys.argv[7])
+Tiling_L2_n = int(sys.argv[8])
+Tiling_L2_k = int(sys.argv[9])
+
 def matmul_on_tensors(m, n, k, dtype):
     module = Module.create()
     with InsertionPoint(module.body):
         @func.FuncOp.from_py_func(
-            RankedTensorType.get((m, k), dtype), RankedTensorType.get((k, n), dtype),
-            RankedTensorType.get((m, n), dtype))
-        def matmul(lhs, rhs, out):
-            linalg.matmul(lhs, rhs, outs=[out])
+            RankedTensorType.get((m, k), dtype), RankedTensorType.get((k, n), dtype))
+        def matmul(lhs, rhs):
+            out = tensor.EmptyOp([m, n], dtype)
+            zero = arith.ConstantOp(dtype, 0.0)
+            zero_fill = linalg.fill(zero, outs=[out])
+            return linalg.matmul(lhs, rhs, outs=[zero_fill])
     return module
 
 
 with air.mlir.ir.Context(), Location.unknown():
 
-    air_module = matmul_on_tensors(512, 512, 512, BF16Type.get())
+    air_module = matmul_on_tensors(M, N, K, BF16Type.get())
     
     # convert linalg on tensors to linalg on memrefs
     pm = air.mlir.passmanager.PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
@@ -39,7 +50,8 @@ with air.mlir.ir.Context(), Location.unknown():
 
     # tile and map to air
     pipeline = "builtin.module("+",".join([
-        "air-linalg-codegen{l2-tile-size=64,64,128 l2-promote=true l1-tile-size=32,32,32 l1-promote=true}",
+        "buffer-results-to-out-params",
+        "air-linalg-codegen{l2-tile-size=" + str(Tiling_L2_m) + "," + str(Tiling_L2_n) + "," + str(Tiling_L2_k) + " l2-promote=true l1-tile-size=" + str(Tiling_L1_m) + "," + str(Tiling_L1_n) + "," + str(Tiling_L1_k) + " l1-promote=true}",
         "canonicalize", "cse",
         "air-par-to-herd{depth=1}",
         "air-copy-to-dma",

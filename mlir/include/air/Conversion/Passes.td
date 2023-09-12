@@ -25,7 +25,13 @@ def ParallelToHerd : Pass<"air-par-to-herd", "ModuleOp"> {
   let options = [
     Option<"clAssignDepth", "depth", "int",
           /*default=*/"-1",
-          "Given a nest of parallel for loops, which depth to map to air.herd">
+          "Given a nest of parallel for loops, which depth to map to air.herd">,
+    Option<"clFirstDim", "first-dim", "int",
+          /*default=*/"0",
+          "Which herd dimension to map to first. Can be zero or one. If set to "
+          "zero, the 0th dimension of the scf.parallel will be mapped to the x "
+          "dimension of the herd. If set to one, the 0th dimension of the "
+          "scf.parallel will be mapped to the y dimension of the herd.">
   ];
 }
 

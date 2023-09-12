@@ -81,8 +81,8 @@ struct FoldSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
           result_offsets.push_back(*offsets++);
         } else {
           Value a = *offsets++;
-          Value b =
-              rewriter.create<arith::ConstantIndexOp>(op.getLoc(), source_offset);
+          Value b = rewriter.create<arith::ConstantIndexOp>(op.getLoc(),
+                                                            source_offset);
           result_offsets.push_back(
               rewriter.create<arith::AddIOp>(op.getLoc(), a.getType(), a, b));
         }
@@ -92,7 +92,8 @@ struct FoldSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
           result_offsets.push_back(*source_offsets++);
         } else {
           Value a = *source_offsets++;
-          Value b = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), op_offset);
+          Value b =
+              rewriter.create<arith::ConstantIndexOp>(op.getLoc(), op_offset);
           result_offsets.push_back(
               rewriter.create<arith::AddIOp>(op.getLoc(), a.getType(), a, b));
         }
@@ -123,7 +124,7 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
     auto ty = op.getType();
     if (ty.hasStaticShape())
       return failure();
-    
+
     std::vector<int64_t> shape = ty.getShape();
     if (op.getNumOperands() != shape.size())
       return failure();
@@ -137,8 +138,8 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
       dim++;
     }
     Value newOp = rewriter.replaceOpWithNewOp<memref::AllocOp>(
-        op,
-        MemRefType::get(shape, ty.getElementType(), nullptr, ty.getMemorySpace()));
+        op, MemRefType::get(shape, ty.getElementType(), nullptr,
+                            ty.getMemorySpace()));
     for (auto use : newOp.getUsers()) {
       if (auto launch = dyn_cast<air::HerdOp>(use)) {
         assert(launch.getKernelArguments().size() ==
@@ -148,8 +149,8 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
           auto oper = launch.getKernelOperand(i);
           if (oper == newOp) {
             Block *b = arg.getOwner();
-            auto new_arg =
-                b->insertArgument(arg.getArgNumber(), newOp.getType(), newOp.getLoc());
+            auto new_arg = b->insertArgument(arg.getArgNumber(),
+                                             newOp.getType(), newOp.getLoc());
             rewriter.setInsertionPointToStart(&*launch.getRegion().begin());
             arg.replaceAllUsesWith(rewriter.create<memref::CastOp>(
                 op.getLoc(), arg.getType(), new_arg));
@@ -182,10 +183,10 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
 // };
 
 // Replace a pattern like this:
-// %7 = memref.alloc() : memref<20736xi8> 
-// %8 = memref.view %7[%c0][] : memref<20736xi8> to 	 	memref<1x16x18x18xf32> 
-// With this 
-// %7 = memref.alloc() : memref< 1x16x18x18xf32, 2> 
+// %7 = memref.alloc() : memref<20736xi8>
+// %8 = memref.view %7[%c0][] : memref<20736xi8> to
+// memref<1x16x18x18xf32> With this %7 = memref.alloc() : memref<
+// 1x16x18x18xf32, 2>
 struct RemoveSubViewOpsPattern : public OpRewritePattern<memref::SubViewOp> {
   using OpRewritePattern<memref::SubViewOp>::OpRewritePattern;
 
@@ -508,55 +509,62 @@ struct RemoveAllocCopyLinalgOpCopyPattern
   }
 };
 
-// Loop invarient code motion pass doesn't move kernel op partial result (linalg.copy) memcpy outside loop
-// this patternMatch transform perform kernel op partial result accumulation modeling. This transformation
-// model mllib kernel library. 
-// 
+// Loop invarient code motion pass doesn't move kernel op partial result
+// (linalg.copy) memcpy outside loop this patternMatch transform perform kernel
+// op partial result accumulation modeling. This transformation model mllib
+// kernel library.
+//
 // Replace a pattern like this:
 // scf.for %arg6 = %c0 to %c64 step %c16 {
-//  %6 = memref.subview %arg1[0, %4, %arg6, %5] [1, 32, 16, 16] [1, 1, 1, 1] : memref<1x128x64x64xf32> to memref<1x32x16x16xf32, #map1>
-//  scf.for %ag7 = %c0 to %c64 step %c16 {
-//    %7 = memref.subview %2[0, %arg7, %arg6, %5] [1, 16, 18, 18] [1, 1, 1, 1] : memref<1x64x66x66xf32> to memref<1x16x18x18xf32, #map2>
-//    %8 = memref.subview %0[%4, %arg7, 0, 0] [32, 16, 3, 3] [1, 1, 1, 1] : memref<128x64x3x3xf32> to memref<32x16x3x3xf32, #map3>
-//    %9 = memref.alloc() : memref<1x16x18x18xf32, 2>
-//    %10 = memref.alloc() : memref<32x16x3x3xf32, 2>
-//    %11 = memref.alloc() : memref<1x32x16x16xf32, 2>
-//    linalg.copy(%7, %9) : memref<1x16x18x18xf32, #map2>, memref<1x16x18x18xf32, 2> 
-//    linalg.copy(%8, %10) : memref<32x16x3x3xf32, #map3>, memref<32x16x3x3xf32, 2> 
-//    linalg.copy(%6, %11) : memref<1x32x16x16xf32, #map1>, memref<1x32x16x16xf32, 2> 
-//    linalg.conv_2d_nchw_fchw {dilations = dense<1> : vector<2xi64>, strides = dense<1> : vector<2xi64>} ins(%9, %10 : memref<1x16x18x18xf32, 2>,
-//    memref<32x16x3x3xf32, 2>) outs(%11 : memref<1x32x16x16xf32, 2>)
-//    linalg.copy(%11, %6) : memref<1x32x16x16xf32, 2>, memref<1x32x16x16xf32, #map1> 
-//    memref.dealloc %9 : memref<1x16x18x18xf32, 2>
-//    memref.dealloc %10 : memref<32x16x3x3xf32, 2>
+//  %6 = memref.subview %arg1[0, %4, %arg6, %5] [1, 32, 16, 16] [1, 1, 1, 1] :
+//  memref<1x128x64x64xf32> to memref<1x32x16x16xf32, #map1> scf.for %ag7 = %c0
+//  to %c64 step %c16 {
+//    %7 = memref.subview %2[0, %arg7, %arg6, %5] [1, 16, 18, 18] [1, 1, 1, 1] :
+//    memref<1x64x66x66xf32> to memref<1x16x18x18xf32, #map2> %8 =
+//    memref.subview %0[%4, %arg7, 0, 0] [32, 16, 3, 3] [1, 1, 1, 1] :
+//    memref<128x64x3x3xf32> to memref<32x16x3x3xf32, #map3> %9 = memref.alloc()
+//    : memref<1x16x18x18xf32, 2> %10 = memref.alloc() : memref<32x16x3x3xf32,
+//    2> %11 = memref.alloc() : memref<1x32x16x16xf32, 2> linalg.copy(%7, %9) :
+//    memref<1x16x18x18xf32, #map2>, memref<1x16x18x18xf32, 2> linalg.copy(%8,
+//    %10) : memref<32x16x3x3xf32, #map3>, memref<32x16x3x3xf32, 2>
+//    linalg.copy(%6, %11) : memref<1x32x16x16xf32, #map1>,
+//    memref<1x32x16x16xf32, 2> linalg.conv_2d_nchw_fchw {dilations = dense<1> :
+//    vector<2xi64>, strides = dense<1> : vector<2xi64>} ins(%9, %10 :
+//    memref<1x16x18x18xf32, 2>, memref<32x16x3x3xf32, 2>) outs(%11 :
+//    memref<1x32x16x16xf32, 2>) linalg.copy(%11, %6) : memref<1x32x16x16xf32,
+//    2>, memref<1x32x16x16xf32, #map1> memref.dealloc %9 :
+//    memref<1x16x18x18xf32, 2> memref.dealloc %10 : memref<32x16x3x3xf32, 2>
 //    memref.dealloc %11 : memref<1x32x16x16xf32, 2>
-//  }   
+//  }
 //}
 // with this:
 // scf.for %arg6 = %c0 to %c64 step %c16 {
-//  %6 = memref.subview %arg1[0, %4, %arg6, %5] [1, 32, 16, 16] [1, 1, 1, 1] : memref<1x128x64x64xf32> to memref<1x32x16x16xf32, #map1>
-//  %11 = memref.alloc() : memref<1x32x16x16xf32, 2>
-//  linalg.copy(%6, %11) : memref<1x32x16x16xf32, #map1>, memref<1x32x16x16xf32, 2>
-//  scf.for %ag7 = %c0 to %c64 step %c16 {
-//    %7 = memref.subview %2[0, %arg7, %arg6, %5] [1, 16, 18, 18] [1, 1, 1, 1] : memref<1x64x66x66xf32> to memref<1x16x18x18xf32, #map2>
-//    %8 = memref.subview %0[%4, %arg7, 0, 0] [32, 16, 3, 3] [1, 1, 1, 1] : memref<128x64x3x3xf32> to memref<32x16x3x3xf32, #map3>
-//    %9 = memref.alloc() : memref<1x16x18x18xf32, 2>
-//    %10 = memref.alloc() : memref<32x16x3x3xf32, 2>
-//    linalg.copy(%7, %9) : memref<1x16x18x18xf32, #map2>, memref<1x16x18x18xf32, 2> 
-//    linalg.copy(%8, %10) : memref<32x16x3x3xf32, #map3>, memref<32x16x3x3xf32, 2> 
-//    linalg.conv_2d_nchw_fchw {dilations = dense<1> : vector<2xi64>, strides = dense<1> : vector<2xi64>} ins(%9, %10 : memref<1x16x18x18xf32, 2>,
-//    memref<32x16x3x3xf32, 2>) outs(%11 : memref<1x32x16x16xf32, 2>)
-//    memref.dealloc %9 : memref<1x16x18x18xf32, 2>
+//  %6 = memref.subview %arg1[0, %4, %arg6, %5] [1, 32, 16, 16] [1, 1, 1, 1] :
+//  memref<1x128x64x64xf32> to memref<1x32x16x16xf32, #map1> %11 =
+//  memref.alloc() : memref<1x32x16x16xf32, 2> linalg.copy(%6, %11) :
+//  memref<1x32x16x16xf32, #map1>, memref<1x32x16x16xf32, 2> scf.for %ag7 = %c0
+//  to %c64 step %c16 {
+//    %7 = memref.subview %2[0, %arg7, %arg6, %5] [1, 16, 18, 18] [1, 1, 1, 1] :
+//    memref<1x64x66x66xf32> to memref<1x16x18x18xf32, #map2> %8 =
+//    memref.subview %0[%4, %arg7, 0, 0] [32, 16, 3, 3] [1, 1, 1, 1] :
+//    memref<128x64x3x3xf32> to memref<32x16x3x3xf32, #map3> %9 = memref.alloc()
+//    : memref<1x16x18x18xf32, 2> %10 = memref.alloc() : memref<32x16x3x3xf32,
+//    2> linalg.copy(%7, %9) : memref<1x16x18x18xf32, #map2>,
+//    memref<1x16x18x18xf32, 2> linalg.copy(%8, %10) : memref<32x16x3x3xf32,
+//    #map3>, memref<32x16x3x3xf32, 2> linalg.conv_2d_nchw_fchw {dilations =
+//    dense<1> : vector<2xi64>, strides = dense<1> : vector<2xi64>} ins(%9, %10
+//    : memref<1x16x18x18xf32, 2>, memref<32x16x3x3xf32, 2>) outs(%11 :
+//    memref<1x32x16x16xf32, 2>) memref.dealloc %9 : memref<1x16x18x18xf32, 2>
 //    memref.dealloc %10 : memref<32x16x3x3xf32, 2>
-//  }  
-//  linalg.copy(%11, %6) : memref<1x32x16x16xf32, 2>, memref<1x32x16x16xf32, #map1> 
-//  memref.dealloc %11 : memref<1x32x16x16xf32, 2> 
+//  }
+//  linalg.copy(%11, %6) : memref<1x32x16x16xf32, 2>, memref<1x32x16x16xf32,
+//  #map1> memref.dealloc %11 : memref<1x32x16x16xf32, 2>
 //}
 struct HoistReduceBufferPattern : public OpRewritePattern<linalg::CopyOp> {
   using OpRewritePattern<linalg::CopyOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(linalg::CopyOp op,
-                                PatternRewriter &rewriter) const override { 
+                                PatternRewriter &rewriter) const override {
 
     Operation *DeallocOp = nullptr;
     Operation *kernelOp = nullptr;
@@ -565,16 +573,19 @@ struct HoistReduceBufferPattern : public OpRewritePattern<linalg::CopyOp> {
     Operation *scfForOp = nullptr;
     Operation *otherCpy = nullptr;
 
-    //Find linalg.copy input uses that has following pattern
-    // a. Uses in kernel op (conv2d, fused_ops etc)
-    // b. Uses in linalg.copy. 1_linalg.copy.input == 2_linalg.copy.output && 1_linalg.copy.output == 2_linalg.copy.input 
-    //    and 1_linalg.copy & 2_linalg.copy & kernel op are in same region
-    // c. Uses in Dealloc op && defining op is memref.alloc()
-    // d. 2_linalg.copy input defining op is memref.subview & memref.subview and kernel op are not in same region.
-    //    loop invarient code motion move this subview op outside loop.
-    // e. kernel parent op is a scf.for op
-    // After matching those pattern, memref.alloc() & 2_linalg.copy move before inner scf.for loop
-    // and 1_linalg.copy & memref.dealloc() move after inner scf.for loop.
+    // Find linalg.copy input uses that has following pattern
+    //  a. Uses in kernel op (conv2d, fused_ops etc)
+    //  b. Uses in linalg.copy. 1_linalg.copy.input == 2_linalg.copy.output &&
+    //  1_linalg.copy.output == 2_linalg.copy.input
+    //     and 1_linalg.copy & 2_linalg.copy & kernel op are in same region
+    //  c. Uses in Dealloc op && defining op is memref.alloc()
+    //  d. 2_linalg.copy input defining op is memref.subview & memref.subview
+    //  and kernel op are not in same region.
+    //     loop invarient code motion move this subview op outside loop.
+    //  e. kernel parent op is a scf.for op
+    //  After matching those pattern, memref.alloc() & 2_linalg.copy move before
+    //  inner scf.for loop and 1_linalg.copy & memref.dealloc() move after inner
+    //  scf.for loop.
     for (Operation *userOp : op.getInputs()[0].getUsers()) {
       if (isa<linalg::CopyOp>(userOp))
         otherCpy = userOp;
@@ -760,7 +771,7 @@ RemoveSubViewOpsPattern::RemoveSubViewOpsPattern(MLIRContext *ctx,
     : OpRewritePattern(ctx), fast_space(fast_memory_space) {}
 
 RemoveViewOpsPattern::RemoveViewOpsPattern(MLIRContext *ctx,
-                                                 unsigned int fast_memory_space)
+                                           unsigned int fast_memory_space)
     : OpRewritePattern(ctx), fast_space(fast_memory_space) {}
 
 // Custom LinalgOp tiling pattern
@@ -791,7 +802,7 @@ struct TileLinalgOpPattern : public RewritePattern {
 
     if (tiledLinalgOp->tensorResults.empty())
       rewriter.eraseOp(op);
-    else 
+    else
       rewriter.replaceOp(op, tiledLinalgOp->tensorResults);
 
     return success();
@@ -882,7 +893,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
   int new_herd_x = isHoriz ? pipeline_depth : 1;
   int new_herd_y = !isHoriz ? pipeline_depth : 1;
 
-  SmallVector<Value, 2> dims {b.create<arith::ConstantIndexOp>(loc, new_herd_x),
+  SmallVector<Value, 2> dims{b.create<arith::ConstantIndexOp>(loc, new_herd_x),
                              b.create<arith::ConstantIndexOp>(loc, new_herd_y)};
 
   SmallVector<Value, 4> args;
@@ -983,7 +994,7 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
         return success();
       };
       auto emptyCopyCallBack = [](OpBuilder &b, Value src,
-                                     Value dst) -> LogicalResult {
+                                  Value dst) -> LogicalResult {
         return success();
       };
       auto options = linalg::LinalgPromotionOptions()
@@ -1327,9 +1338,9 @@ public:
   }
 
   /// Collect perfectly nested loops starting from `rootForOps`.  Loops are
-  /// perfectly nested if each loop is the first and only non-terminator operation
-  /// in the parent loop.  Collect at most `maxLoops` loops and append them to
-  /// `forOps`.
+  /// perfectly nested if each loop is the first and only non-terminator
+  /// operation in the parent loop.  Collect at most `maxLoops` loops and append
+  /// them to `forOps`.
   template <typename T>
   static void getPerfectlyNestedLoopsImpl(
       SmallVectorImpl<T> &forOps, T rootForOp,
@@ -1347,7 +1358,7 @@ public:
   }
 
   void getPerfectlyNestedLoops(SmallVectorImpl<scf::ForOp> &nestedLoops,
-                                    scf::ForOp root) {
+                               scf::ForOp root) {
     getPerfectlyNestedLoopsImpl(nestedLoops, root);
   }
 
@@ -1394,7 +1405,7 @@ public:
     assert(op.getNumLoops() == tileSizes->size() && "invalid tile size count");
     for (unsigned i = 0, e = op.getNumLoops(); i < e; i++) {
       auto &tFactorAdjusted = (*tileSizes)[i];
-      tFactorAdjusted = std::max(1L, tripCounts[i] / tFactorAdjusted);
+      tFactorAdjusted = std::max((int64_t)1, tripCounts[i] / tFactorAdjusted);
       // Adjust the tile size to largest factor of the trip count less than
       // tSize.
       auto constTripCount = tripCounts[i];
@@ -1784,13 +1795,13 @@ public:
 
       SmallVector<int64_t, 7> l1_tile_size{1, 32, 32, 32, 32, 3, 3};
       SmallVector<unsigned, 7> l1_tile_interchange{0, 1, 2, 3, 4, 5, 6};
-    
+
       for (int i = 0, e = clL1TileSize.size(); i < e; i++)
         l1_tile_size[i] = clL1TileSize[i];
 
       for (int i = 0, e = clL1TileInterchange.size(); i < e; i++)
         l1_tile_interchange[i] = clL1TileInterchange[i];
-    
+
       RewritePatternSet stage1Patterns(&getContext());
 
       stage1Patterns.insert<TileLinalgOpPattern>(
@@ -1818,11 +1829,11 @@ public:
       stage3Patterns.insert<FoldSubViewOpsPattern>(ctx);
       stage3Patterns.insert<MemrefsPattern>(ctx);
       stage3Patterns.insert<RemoveViewOpsPattern>(ctx, 2);
-      
+
       (void)applyPatternsAndFoldGreedily(called, std::move(stage1Patterns));
       (void)applyPatternsAndFoldGreedily(called, std::move(stage2Patterns));
       (void)applyPatternsAndFoldGreedily(called, std::move(stage3Patterns));
-      
+
       /// scf.parallel transform from herd dimension
       /// Step-1: Capture the perfectly nested scf.for loops
       /// Step-2: Create scf.parallel loop based on herd dimension
@@ -1831,47 +1842,46 @@ public:
       /// Capture the perfectly nested loops
       SmallVector<scf::ForOp, 6> loops;
       called.walk([&](Operation *op) {
-      if (auto scfForOp = dyn_cast<scf::ForOp>(op))
-        if(!op->getParentOfType<scf::ForOp>())
-          getPerfectlyNestedLoops(loops, scfForOp); 
+        if (auto scfForOp = dyn_cast<scf::ForOp>(op))
+          if (!op->getParentOfType<scf::ForOp>())
+            getPerfectlyNestedLoops(loops, scfForOp);
       });
-      
-      assert(clHerdSize.size() != 0 && 
-         "AIE tile dimension can't be zero");
 
-      assert(clHerdSize.size() <= loops.size() && 
-         "AIE tile dimension must be equal or less than Tiled loops number"); 
+      assert(clHerdSize.size() != 0 && "AIE tile dimension can't be zero");
+
+      assert(
+          clHerdSize.size() <= loops.size() &&
+          "AIE tile dimension must be equal or less than Tiled loops number");
 
       scf::ForOp outermost = loops[0];
       OpBuilder builder(outermost);
       Location loc = outermost.getLoc();
-      
-      // Create parallel loops for spatial iteration. 
+
+      // Create parallel loops for spatial iteration.
       SmallVector<Value, 2> lowerBounds, upperBounds, steps;
-      for(unsigned i = 0, e = clHerdSize.size(); i < e; ++i) {
+      for (unsigned i = 0, e = clHerdSize.size(); i < e; ++i) {
         lowerBounds.push_back(loops[i].getLowerBound());
         upperBounds.push_back(loops[i].getUpperBound());
         steps.push_back(loops[i].getStep());
       }
-      
-      auto parallelLoop = builder.create<scf::ParallelOp>(
-        loc, lowerBounds, upperBounds, steps);
-      
+
+      auto parallelLoop =
+          builder.create<scf::ParallelOp>(loc, lowerBounds, upperBounds, steps);
+
       builder.setInsertionPointToStart(parallelLoop.getBody());
 
       // Replace the scf.for IV with scf.parallel IV
       auto pLoopIV = parallelLoop.getInductionVars();
-      for(unsigned i = 0, e = pLoopIV.size(); i < e; ++i) 
+      for (unsigned i = 0, e = pLoopIV.size(); i < e; ++i)
         replaceAllUsesInRegionWith(loops[i].getInductionVar(), pLoopIV[i],
-                                loops[loops.size() -1].getRegion());
+                                   loops[loops.size() - 1].getRegion());
 
-      // Move the remaining inner scf.for loops and delete extra 
-      // terminator and perfectly nested loops. 
-      loops[clHerdSize.size() -1].getBody()->back().erase();
+      // Move the remaining inner scf.for loops and delete extra
+      // terminator and perfectly nested loops.
+      loops[clHerdSize.size() - 1].getBody()->back().erase();
       parallelLoop.getBody()->getOperations().splice(
-      Block::iterator(parallelLoop.getBody()->back()),
-      loops[clHerdSize.size() -1].getBody()->getOperations()  
-      );
+          Block::iterator(parallelLoop.getBody()->back()),
+          loops[clHerdSize.size() - 1].getBody()->getOperations());
 
       outermost.erase();
 
@@ -1884,14 +1894,13 @@ public:
       (void)inlineCall(interface, call, called, &called.getRegion(), true);
       call.erase();
       called.erase();
-     
     }
   }
 
   void runOnFunction(func::FuncOp f) {
 
-    //RewritePatternSet prePatterns(&getContext());
-    //prePatterns.insert<RemoveAllocLinalgOpCopyPattern>(&getContext());
+    // RewritePatternSet prePatterns(&getContext());
+    // prePatterns.insert<RemoveAllocLinalgOpCopyPattern>(&getContext());
     //(void)applyPatternsAndFoldGreedily(f, std::move(prePatterns));
     if (!clLinalgCodegenTestPatterns) {
       runMatmulPatterns(f);
