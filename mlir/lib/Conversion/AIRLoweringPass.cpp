@@ -528,6 +528,10 @@ public:
       isFullMemcpy = true;
     }
     if (!isFromTile && !isFullMemcpy) {
+      if (!placeholder)
+        placeholder = rewriter.create<xilinx::airrt::WaitAllOp>(
+            op->getLoc(), xilinx::airrt::EventType::get(op->getContext()),
+            deps);
       rewriter.replaceOp(op, placeholder->getResults());
       return success();
     }
@@ -684,6 +688,10 @@ public:
       isFullMemcpy = true;
     }
     if (!isToTile && !isFullMemcpy) {
+      if (!placeholder)
+        placeholder = rewriter.create<xilinx::airrt::WaitAllOp>(
+            op->getLoc(), xilinx::airrt::EventType::get(op->getContext()),
+            deps);
       rewriter.replaceOp(op, placeholder->getResults());
       return success();
     }

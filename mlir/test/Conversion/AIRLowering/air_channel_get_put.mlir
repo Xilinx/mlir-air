@@ -125,7 +125,6 @@ func.func @par_put_get(%arg0: memref<32x16xi32>, %arg1: memref<32x16xi32>) {
 // CHECK: scf.parallel{{.*}} -> !airrt.event {
 // CHECK:   scf.for{{.*}} -> (!airrt.event) {  
 // CHECK:     airrt.wait_all
-// CHECK:     airrt.wait_all
 // CHECK:     scf.yield {{.*}} : !airrt.event
 // CHECK:   }
 // CHECK: airrt.herd_load "herd_0" : i64
