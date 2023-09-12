@@ -12,4 +12,4 @@ runtimes and compilers.
 
 -----
 
-<p align="center">Copyright&copy; 2019-2022 Advanced Micro Devices, Inc.</p>
+<p align="center">Copyright&copy; 2019-2023 Advanced Micro Devices, Inc.</p>
