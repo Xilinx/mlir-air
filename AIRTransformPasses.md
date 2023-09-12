@@ -399,6 +399,11 @@ This pass hoists pairs of `alloc` and `dealloc` ops out of a for loop body, to
 represent the static allocation of memories. This pass is used in the ping-pong
 pattern transformation to identify and isolate the statically allocated ping and 
 pong buffers.
+
+#### Options
+```
+-keep-memref-dealloc : Flag to keep memref dealloc ops after transformation. Memref dealloc is used in air-to-aie pass as handle to generate lock releases.
+```
 ### `-air-hoist-channels`: Hoist air.channel.get and air.channel.put out of scf.for.
 ### `-air-hoist-dma-in-accum-pattern`: Hoist pairs of DMA ops out of for loop based on dependency graph
 This pass detects redundant DMA operations in scf.for loops based on AIR event
@@ -601,6 +606,11 @@ to be run after the air-to-aie pass.
 This pass lowers to pipelining pattern. This pass looks for the target ping and 
 pong buffers, and a surrounding scf.for loop, to construct explicit dependency 
 edges which represent a ping-pong buffering scheduling.
+
+#### Options
+```
+-keep-memref-dealloc : Flag to keep memref dealloc ops after transformation. Memref dealloc is used in air-to-aie pass as handle to generate lock releases.
+```
 ### `-air-pipeline-reduce`: Turn a reduction dimension into a herd pipeline
 
 #### Options
