@@ -11,7 +11,7 @@ can be lowered to a combination of standard and LLVM dialects.
 
 ### `airrt.alloc` (xilinx::airrt::AllocOp)
 
-AIRRt Allocation Op
+_AIRRt Allocation Op_
 
 
 Syntax:
@@ -28,9 +28,10 @@ AIRRt Allocation Op
 | :----: | ----------- |
 | `result` | memref of any type values
 
+
 ### `airrt.dealloc` (xilinx::airrt::DeallocOp)
 
-AIRRt Deallocation Op
+_AIRRt Deallocation Op_
 
 
 Syntax:
@@ -47,9 +48,10 @@ AIRRt Deallocation Op
 | :-----: | ----------- |
 | `memref` | memref of any type values
 
+
 ### `airrt.dma_memcpy_nd` (xilinx::airrt::DmaMemcpyNdOp)
 
-dma operator
+_Dma operator_
 
 
 Syntax:
@@ -93,9 +95,10 @@ nd half dma operator
 | :----: | ----------- |
 | `event` | event type
 
+
 ### `airrt.herd_load` (xilinx::airrt::HerdLoadOp)
 
-load a herd
+_Load a herd_
 
 
 Syntax:
@@ -118,9 +121,10 @@ operation ::= `airrt.herd_load` $sym_name attr-dict `:` type($h) (`,` type($even
 | `h` | 64-bit signless integer
 | `event` | event type
 
+
 ### `airrt.herd_metadata` (xilinx::airrt::HerdMetadataOp)
 
-Runtime metadata for a single herd
+_Runtime metadata for a single herd_
 
 
 Syntax:
@@ -132,7 +136,7 @@ operation ::= `airrt.herd_metadata` attr-dict
 Runtime metadata for a single herd.
 
 
-Traits: HasParent<SegmentMetadataOp>, SingleBlockImplicitTerminator<HerdMetadataTerminatorOp>
+Traits: HasParent<SegmentMetadataOp>, SingleBlock, SingleBlockImplicitTerminator<HerdMetadataTerminatorOp>
 
 #### Attributes:
 
@@ -140,9 +144,10 @@ Traits: HasParent<SegmentMetadataOp>, SingleBlockImplicitTerminator<HerdMetadata
 | :-------: | :-------: | ----------- |
 | `sym_name` | ::mlir::StringAttr | string attribute
 
+
 ### `airrt.herd_metadata_terminator` (xilinx::airrt::HerdMetadataTerminatorOp)
 
-Implicit terminator for HerdMetadataOp's region
+_Implicit terminator for HerdMetadataOp's region_
 
 
 Syntax:
@@ -154,9 +159,10 @@ operation ::= `airrt.herd_metadata_terminator` attr-dict
 
 Traits: HasParent<HerdMetadataOp>, Terminator
 
+
 ### `airrt.memcpy_nd` (xilinx::airrt::MemcpyNdOp)
 
-dma operator
+_Dma operator_
 
 
 Syntax:
@@ -198,20 +204,22 @@ nd memcpy operator
 | :----: | ----------- |
 | `event` | event type
 
+
 ### `airrt.module_metadata` (xilinx::airrt::ModuleMetadataOp)
 
-Global metadata for the module
+_Global metadata for the module_
 
 This op contains a region containing airrt.segment_metadata ops,
 which give information about the segments in the module.
 
 There is one of these per module.
 
-Traits: SingleBlockImplicitTerminator<ModuleMetadataTerminatorOp>
+Traits: SingleBlock, SingleBlockImplicitTerminator<ModuleMetadataTerminatorOp>
+
 
 ### `airrt.module_metadata_terminator` (xilinx::airrt::ModuleMetadataTerminatorOp)
 
-Implicit terminator for ModuleMetadataOp's region
+_Implicit terminator for ModuleMetadataOp's region_
 
 
 Syntax:
@@ -223,9 +231,10 @@ operation ::= `airrt.module_metadata_terminator` attr-dict
 
 Traits: HasParent<ModuleMetadataOp>, Terminator
 
+
 ### `airrt.segment_load` (xilinx::airrt::SegmentLoadOp)
 
-load a segment
+_Load a segment_
 
 
 Syntax:
@@ -248,14 +257,15 @@ operation ::= `airrt.segment_load` $sym_name attr-dict `:` type($p) (`,` type($e
 | `p` | 64-bit signless integer
 | `event` | event type
 
+
 ### `airrt.segment_metadata` (xilinx::airrt::SegmentMetadataOp)
 
-Runtime metadata for one air region
+_Runtime metadata for one air region_
 
 This op contains a region containing airrt.herd_metadata ops,
 which give information about the herds in the module.
 
-Traits: HasParent<ModuleMetadataOp>, SingleBlockImplicitTerminator<SegmentMetadataTerminatorOp>
+Traits: HasParent<ModuleMetadataOp>, SingleBlock, SingleBlockImplicitTerminator<SegmentMetadataTerminatorOp>
 
 #### Attributes:
 
@@ -263,9 +273,10 @@ Traits: HasParent<ModuleMetadataOp>, SingleBlockImplicitTerminator<SegmentMetada
 | :-------: | :-------: | ----------- |
 | `sym_name` | ::mlir::StringAttr | string attribute
 
+
 ### `airrt.segment_metadata_terminator` (xilinx::airrt::SegmentMetadataTerminatorOp)
 
-Implicit terminator for SegmentMetadataOp's region
+_Implicit terminator for SegmentMetadataOp's region_
 
 
 Syntax:
@@ -277,9 +288,10 @@ operation ::= `airrt.segment_metadata_terminator` attr-dict
 
 Traits: HasParent<SegmentMetadataOp>, Terminator
 
+
 ### `airrt.wait_all` (xilinx::airrt::WaitAllOp)
 
-wait for all operator
+_Wait for all operator_
 
 
 Syntax:
@@ -302,6 +314,7 @@ Optionally return an event.
 | Result | Description |
 | :----: | ----------- |
 | `event` | event type
+
 
 ## Type constraint definition
 
