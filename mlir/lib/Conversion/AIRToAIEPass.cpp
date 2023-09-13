@@ -2390,7 +2390,6 @@ public:
         int64_t col_offset = c ? *c : 0;
         int64_t row_offset = r ? *r : 0;
 
-        // createAIRRtMetadata(module_meta, shimDmaAlloc);
         std::vector<Attribute> dma_allocations;
         for (auto &t : shimDmaAlloc.s2mm_allocs) {
           auto tileOp = t.dma_tile;
@@ -2417,7 +2416,8 @@ public:
             attrs.push_back(
                 NamedAttribute(StringAttr::get(ctx, "location"),
                                builder.getI64IntegerAttr(tileOp.getCol())));
-            dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
+            push_back_if_unique<Attribute>(dma_allocations,
+                                           DictionaryAttr::get(ctx, attrs));
           }
         }
         for (auto &t : shimDmaAlloc.mm2s_allocs) {
@@ -2445,7 +2445,8 @@ public:
             attrs.push_back(
                 NamedAttribute(StringAttr::get(ctx, "location"),
                                builder.getI64IntegerAttr(tileOp.getCol())));
-            dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
+            push_back_if_unique<Attribute>(dma_allocations,
+                                           DictionaryAttr::get(ctx, attrs));
           }
         }
         auto segment_name =
