@@ -1063,7 +1063,6 @@ private:
     for (Value token : returned_tokens) {
       for (Operation *user : token.getUsers()) {
         adj_set.push_back(user);
-        std::cout << to_string(user);
       }
     }
     return adj_set;

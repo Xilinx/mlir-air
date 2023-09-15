@@ -1714,6 +1714,10 @@ public:
       simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
                                  memtile_dma_alloc, tile_dma_alloc);
 
+    // Step 3.5: Sort all ops being allocated to each DMA channel, to avoid
+    // ping-pong deadlock.
+    tile_dma_alloc.sortMemcpyOps(dma_memcpy_ops);
+
     // Step 4: Connect flows
     for (auto &f : memcpy_flows) {
       for (unsigned i = 0; i < f.numS2MMAllocs; i++) {

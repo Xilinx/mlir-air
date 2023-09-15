@@ -241,6 +241,38 @@ DMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
   return output;
 }
 
+// A simple selection sorting implementation.
+inline void swap(std::vector<Operation *> &a, int i, int j) {
+  Operation *t = a[i];
+  a[i] = a[j];
+  a[j] = t;
+}
+
+void selection(std::vector<Operation *> &a) {
+  int i, j, min;
+  for (i = 0; i < a.size() - 1; i++) {
+    min = i;
+    for (j = i + 1; j < a.size(); j++) {
+      auto a_j = dyn_cast<air::MemcpyInterface>(a[j]);
+      auto a_min = dyn_cast<air::MemcpyInterface>(a[min]);
+      if (a_j.getId() < a_min.getId())
+        min = j;
+    }
+    swap(a, min, i);
+  }
+}
+
+// Sort all ops being allocated to each DMA channel (based on id which indicates
+// op sequence), to avoid ping-pong deadlock.
+void DMAAllocator::sortMemcpyOps(std::vector<Operation *> dma_memcpy_ops) {
+  for (auto &alloc : this->mm2s_allocs) {
+    selection(alloc.memcpyOps);
+  }
+  for (auto &alloc : this->s2mm_allocs) {
+    selection(alloc.memcpyOps);
+  }
+}
+
 // TileDMAAllocator impl.
 
 TileDMAAllocator::TileDMAAllocator(AIE::DeviceOp &device) {

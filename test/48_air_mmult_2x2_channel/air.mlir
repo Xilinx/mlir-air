@@ -55,9 +55,8 @@ module {
         %9 = affine.apply #map()[%arg3]
         air.execute_terminator %9 : index
       }
-      %7 = air.wait_all async 
-      %8 = scf.for %arg5 = %c0 to %c64 step %c32 iter_args(%arg6 = %7) -> (!air.async.token) {
-        %9 = air.channel.put async [%arg6, %async_token_5]  @channel_1[%arg3, %arg4] (%arg0[%results_6, %arg5] [%c32, %c32] [%c64, %c1]) {id = 2 : i32} : (memref<64x64xi32>)
+      %8 = scf.for %arg5 = %c0 to %c64 step %c32 iter_args(%arg6 = %async_token_5) -> (!air.async.token) {
+        %9 = air.channel.put async [%arg6]  @channel_1[%arg3, %arg4] (%arg0[%results_6, %arg5] [%c32, %c32] [%c64, %c1]) {id = 2 : i32} : (memref<64x64xi32>)
         scf.yield %9 : !air.async.token
       }
       scf.reduce(%8)  : !air.async.token {
@@ -73,9 +72,8 @@ module {
         %9 = affine.apply #map()[%arg4]
         air.execute_terminator %9 : index
       }
-      %7 = air.wait_all async 
-      %8 = scf.for %arg5 = %c0 to %c64 step %c32 iter_args(%arg6 = %7) -> (!air.async.token) {
-        %9 = air.channel.put async [%arg6, %async_token_5]  @channel_2[%arg3, %arg4] (%arg1[%arg5, %results_6] [%c32, %c32] [%c64, %c1]) {id = 3 : i32} : (memref<64x64xi32>)
+      %8 = scf.for %arg5 = %c0 to %c64 step %c32 iter_args(%arg6 = %async_token_5) -> (!air.async.token) {
+        %9 = air.channel.put async [%arg6]  @channel_2[%arg3, %arg4] (%arg1[%arg5, %results_6] [%c32, %c32] [%c64, %c1]) {id = 3 : i32} : (memref<64x64xi32>)
         scf.yield %9 : !air.async.token
       }
       scf.reduce(%8)  : !air.async.token {

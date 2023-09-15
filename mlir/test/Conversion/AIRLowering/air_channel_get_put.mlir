@@ -43,24 +43,6 @@ func.func @single_put_get(%arg0: memref<32x16xi32>, %arg1: memref<32x16xi32>) {
 }
 
 // CHECK-LABEL:   func.func @par_put_get
-// CHECK: scf.parallel{{.*}} -> !airrt.event {
-// CHECK:   airrt.wait_all : !airrt.event
-// CHECK:   scf.reduce({{.*}})  : !airrt.event {
-// CHECK:   ^bb0({{.*}}: !airrt.event, {{.*}}: !airrt.event):
-// CHECK:     airrt.wait_all {{.*}} : !airrt.event
-// CHECK:     scf.reduce.return {{.*}} : !airrt.event
-// CHECK:   }
-// CHECK:   scf.yield
-// CHECK: }
-// CHECK: scf.parallel{{.*}} -> !airrt.event {
-// CHECK:   airrt.wait_all : !airrt.event
-// CHECK:   scf.reduce({{.*}})  : !airrt.event {
-// CHECK:   ^bb0({{.*}}: !airrt.event, {{.*}}: !airrt.event):
-// CHECK:     airrt.wait_all {{.*}} : !airrt.event
-// CHECK:     scf.reduce.return {{.*}} : !airrt.event
-// CHECK:   }
-// CHECK:   scf.yield
-// CHECK: }
 // CHECK: airrt.herd_load "herd_0" : i64
 // CHECK: affine.for
 // CHECK:   affine.for
@@ -120,13 +102,6 @@ func.func @par_put_get(%arg0: memref<32x16xi32>, %arg1: memref<32x16xi32>) {
 }
 
 // CHECK-LABEL:   func.func @par_with_for_put_get
-// CHECK: scf.parallel{{.*}} -> !airrt.event {
-// CHECK:   airrt.wait_all : !airrt.event
-// CHECK: scf.parallel{{.*}} -> !airrt.event {
-// CHECK:   scf.for{{.*}} -> (!airrt.event) {  
-// CHECK:     airrt.wait_all
-// CHECK:     scf.yield {{.*}} : !airrt.event
-// CHECK:   }
 // CHECK: airrt.herd_load "herd_0" : i64
 // CHECK: affine.for
 // CHECK:   affine.for
