@@ -305,4 +305,13 @@ def AIRPipelineToAffine : Pass<"air-pipeline-to-affine", "ModuleOp"> {
   ];
 }
 
+def InsertEmptyLaunchOverHerd : Pass<"air-insert-launch-and-segment-around-herd", "ModuleOp"> {
+  let summary = "Insert segment and launch ops around herd op";
+  let constructor = "xilinx::air::createInsertEmptyLaunchOverHerdPass()";
+  let description =  [{
+    This pass inserts launch and segment operations around herd op, if a herd op 
+    does not have a parent launch or segment operation.
+  }];
+}
+
 #endif
