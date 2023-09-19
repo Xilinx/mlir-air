@@ -49,7 +49,7 @@ with air.mlir.ir.Context():
     # convert linalg on tensors to linalg on memrefs
     pm = air.mlir.passmanager.PassManager.parse(
         air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
-    pm.run(air_module)
+    pm.run(air_module.operation)
 
     # AIR pipeline
     lowering_pipeline = "builtin.module("+",".join([
@@ -65,7 +65,7 @@ with air.mlir.ir.Context():
     ])+')'
 
     pm = air.mlir.passmanager.PassManager.parse(lowering_pipeline)
-    pm.run(air_module)
+    pm.run(air_module.operation)
 
     with open('output1.mlir', 'w') as f:
         f.write(str(air_module))
@@ -80,7 +80,7 @@ with air.mlir.ir.Context():
         "air-dependency-parse-graph{output-dir=dot_graphs/}",
     ])+')'
     pm = air.mlir.passmanager.PassManager.parse(lowering_pipeline)
-    pm.run(air_module)
+    pm.run(air_module.operation)
 
     with open('output2.mlir', 'w') as f:
         f.write(str(air_module))
