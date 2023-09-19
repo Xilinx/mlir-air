@@ -97,14 +97,16 @@ public:
   // void runOnBlock(Block *block);
   // static const llvm::DenseMap<StringRef, unsigned> optConf;
 
-  void tileLoops(std::vector<SmallVector<AffineForOp, 6>> *bands);
-  void generateDataCopyLoops(std::vector<SmallVector<AffineForOp, 6>> *bands,
-                             Optional<Value> filterMemRef = std::nullopt);
+  void tileLoops(std::vector<SmallVector<affine::AffineForOp, 6>> *bands);
+  void
+  generateDataCopyLoops(std::vector<SmallVector<affine::AffineForOp, 6>> *bands,
+                        std::optional<Value> filterMemRef = std::nullopt);
   void outlineDataCopyLoops();
 
-  static void getTileableBands(func::FuncOp,
-                               std::vector<SmallVector<AffineForOp, 6>> *bands,
-                               StringRef label);
+  static void
+  getTileableBands(func::FuncOp,
+                   std::vector<SmallVector<affine::AffineForOp, 6>> *bands,
+                   StringRef label);
 
   SmallVector<unsigned, 6> optTileSizes;
   SmallVector<unsigned, 6> optCopyDepths;
@@ -125,7 +127,7 @@ void AffineLoopOptPass::runOnOperation() {
   auto func = getOperation();
 
   // Bands of loops to tile.
-  std::vector<SmallVector<AffineForOp, 6>> bands;
+  std::vector<SmallVector<affine::AffineForOp, 6>> bands;
   getTileableBands(func, &bands, clAffineOptLabel);
 
   // Tile loops
@@ -147,10 +149,10 @@ void AffineLoopOptPass::runOnOperation() {
 
 }
 
-static AffineForOp getLabel(AffineForOp root, StringRef label) {
-  AffineForOp res;
+static affine::AffineForOp getLabel(affine::AffineForOp root, StringRef label) {
+  affine::AffineForOp res;
 
-  root.walk([&](AffineForOp forOp) {
+  root.walk([&](affine::AffineForOp forOp) {
     auto stringAttr = forOp->getAttrOfType<StringAttr>(
         AffineLoopOptPass::affineOptAttrName);
     if (!stringAttr)
@@ -165,13 +167,14 @@ static AffineForOp getLabel(AffineForOp root, StringRef label) {
   return res;
 }
 
-void AffineLoopOptPass::tileLoops(std::vector<SmallVector<AffineForOp, 6>> *bands) {
+void AffineLoopOptPass::tileLoops(
+    std::vector<SmallVector<affine::AffineForOp, 6>> *bands) {
   // Tile loops
 
   // Tile each band.
   for (auto &band : *bands) {
 
-    SmallVector<AffineForOp, 6> tiledNest;
+    SmallVector<affine::AffineForOp, 6> tiledNest;
     SmallVector<unsigned, 6> actualTileSizes = optTileSizes;
 
     unsigned loop_depth  = band.size();
@@ -183,7 +186,8 @@ void AffineLoopOptPass::tileLoops(std::vector<SmallVector<AffineForOp, 6>> *band
     // Separate full and partial tiles.
     if (clSeparate) {
       auto intraTileLoops =
-          MutableArrayRef<AffineForOp>(tiledNest).drop_front(band.size());
+          MutableArrayRef<affine::AffineForOp>(tiledNest).drop_front(
+              band.size());
       (void)separateFullTiles(intraTileLoops);
     }
 
@@ -196,7 +200,9 @@ void AffineLoopOptPass::tileLoops(std::vector<SmallVector<AffineForOp, 6>> *band
   }
 }
 
-void AffineLoopOptPass::generateDataCopyLoops(std::vector<SmallVector<AffineForOp, 6>> *bands, Optional<Value> filterMemRef) {
+void AffineLoopOptPass::generateDataCopyLoops(
+    std::vector<SmallVector<affine::AffineForOp, 6>> *bands,
+    std::optional<Value> filterMemRef) {
 
   if (bands->size() == 0)
     return;
@@ -210,7 +216,7 @@ void AffineLoopOptPass::generateDataCopyLoops(std::vector<SmallVector<AffineForO
 
     DenseSet<Operation *> copyNests;
 
-    AffineCopyOptions copyOptions;
+    affine::AffineCopyOptions copyOptions;
     copyOptions.generateDma = true;
     copyOptions.slowMemorySpace = clSlowSpace;
     copyOptions.fastMemorySpace = clFastSpace;
@@ -230,7 +236,8 @@ void AffineLoopOptPass::outlineDataCopyLoops() {
   for (auto &nest : dataCopyNests) {
     for (auto o : nest) {
       xilinx::air::AIROutliner olnr;
-      /*auto call = */olnr.outline(cast<AffineForOp>(o), "air_dma_copy");
+      /*auto call = */ olnr.outline(cast<affine::AffineForOp>(o),
+                                    "air_dma_copy");
       erasedOps.insert(o);
     }
   }
@@ -242,19 +249,19 @@ void AffineLoopOptPass::outlineDataCopyLoops() {
 // a temporary placeholder to test the mechanics of tiled code generation.
 // Returns all maximal outermost perfect loop nests to tile.
 void AffineLoopOptPass::getTileableBands(
-    func::FuncOp f, std::vector<SmallVector<AffineForOp, 6>> *bands,
+    func::FuncOp f, std::vector<SmallVector<affine::AffineForOp, 6>> *bands,
     StringRef label) {
   // Get maximal perfect nest of 'affine.for' insts starting from root
   // (inclusive).
-  auto getMaximalPerfectLoopNest = [&](AffineForOp root) {
-    SmallVector<AffineForOp, 6> band;
+  auto getMaximalPerfectLoopNest = [&](affine::AffineForOp root) {
+    SmallVector<affine::AffineForOp, 6> band;
     getPerfectlyNestedLoops(band, root);
     bands->push_back(band);
   };
 
   for (auto &block : f)
     for (auto &op : block)
-      if (auto forOp = dyn_cast<AffineForOp>(op)) {
+      if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
         auto targetForOp = getLabel(forOp, label);
         if (targetForOp) {
           getMaximalPerfectLoopNest(targetForOp);

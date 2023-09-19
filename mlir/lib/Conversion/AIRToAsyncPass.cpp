@@ -79,9 +79,9 @@ public:
           auto size =
               r.create<arith::ConstantIndexOp>(loc, herd_size_x * herd_size_y);
           auto group = r.create<async::CreateGroupOp>(loc, size);
-          auto outer = r.create<AffineForOp>(loc, 0, herd_size_x);
+          auto outer = r.create<affine::AffineForOp>(loc, 0, herd_size_x);
           r.setInsertionPointToStart(outer.getBody());
-          auto inner = r.create<AffineForOp>(loc, 0, herd_size_y);
+          auto inner = r.create<affine::AffineForOp>(loc, 0, herd_size_y);
 
           outer->setAttr("air.herd",
                          StringAttr::get(op->getContext(), "outer"));
@@ -708,7 +708,8 @@ public:
   AIRToAsyncPass(const AIRToAsyncPass &pass) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<AffineDialect>();
+    registry.insert<affine::AffineDialect>();
+    registry.insert<async::AsyncDialect>();
   }
 
   void runOnOperation() override {
@@ -717,7 +718,7 @@ public:
     auto context = module.getContext();
 
     TypeConverter converter;
-    converter.addConversion([&](Type type) -> Optional<Type> {
+    converter.addConversion([&](Type type) -> std::optional<Type> {
       // convert air::AsyncTokenType to async::TokenType
       if (auto t = type.dyn_cast<air::AsyncTokenType>())
         return async::TokenType::get(context);
@@ -730,19 +731,19 @@ public:
     auto addUnrealizedCast = [](OpBuilder &builder, Type type,
                                 ValueRange inputs, Location loc) {
       auto cast = builder.create<UnrealizedConversionCastOp>(loc, type, inputs);
-      return Optional<Value>(cast.getResult(0));
+      return std::optional<Value>(cast.getResult(0));
     };
     converter.addSourceMaterialization(addUnrealizedCast);
     converter.addTargetMaterialization(addUnrealizedCast);
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           arith::ArithDialect, AffineDialect, scf::SCFDialect,
-                           linalg::LinalgDialect, memref::MemRefDialect,
-                           bufferization::BufferizationDialect,
-                           xilinx::airrt::AIRRtDialect, async::AsyncDialect,
-                           mlir::BuiltinDialect>();
+    target.addLegalDialect<
+        LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect,
+        affine::AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
+        memref::MemRefDialect, bufferization::BufferizationDialect,
+        xilinx::airrt::AIRRtDialect, async::AsyncDialect,
+        mlir::BuiltinDialect>();
 
     // air.memcpy_nd conversion
     RewritePatternSet air_dma_patterns(context);

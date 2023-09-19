@@ -10,7 +10,7 @@
 
 #define __AIENGINE__ 1
 #define NOCPP
-#define __AIEARCH__ 10
+#define __AIE_ARCH__ 10
 
 #include "aie_api/aie.hpp"
 
