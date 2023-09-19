@@ -9,6 +9,12 @@ Convert memcpy to air.dma_memcpy_nd
 _Convert air.dma_memcpy_nd to air.channel_
 
 Convert air.dma_memcpy_nd to air.channel
+### `-air-insert-launch-and-segment-around-herd`
+
+_Insert segment and launch ops around herd op_
+
+This pass inserts launch and segment operations around herd op, if a herd op 
+does not have a parent launch or segment operation.
 ### `-air-par-to-herd`
 
 _Convert parallel loops to air.herd_
