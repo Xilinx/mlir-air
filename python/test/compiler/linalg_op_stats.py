@@ -34,4 +34,4 @@ def matmul_on_buffers_test():
         MemRefType.get((4, 8), f32))
       def matmul_on_buffers(lhs, rhs, out):
         linalg.matmul(lhs, rhs, outs=[out])
-    print(CostModel().op_stats(module))
+    print(CostModel().op_stats(module.operation))

@@ -25,6 +25,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/Pass/Pass.h"
@@ -402,7 +403,7 @@ private:
             SmallVector<Value, 2> int_set_args{herd_id[0], herd_id[1]};
             // Duplicate dma ops per spatial segment
             if (i == 0) {
-              AffineIfOp aif = builder.create<AffineIfOp>(
+              affine::AffineIfOp aif = builder.create<affine::AffineIfOp>(
                   loc, air::AsyncTokenType::get(ctx), int_set, int_set_args,
                   (i != numSegments - 1));
               builder.setInsertionPointToStart(aif.getThenBlock());
@@ -414,8 +415,8 @@ private:
               yield_token.push_back(
                   dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
                       .getAsyncToken());
-              builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(),
-                                            yield_token);
+              builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
+                                                    yield_token);
               if (numSegments != 1) {
                 // If more than 1 spatial segments, then move loc to else
                 // block
@@ -428,7 +429,7 @@ private:
               async_memcpyOp.getAsyncToken().replaceAllUsesWith(
                   aif.getResult(0));
             } else if (i < numSegments - 1) {
-              AffineIfOp aif = builder.create<AffineIfOp>(
+              affine::AffineIfOp aif = builder.create<affine::AffineIfOp>(
                   builder.getUnknownLoc(), air::AsyncTokenType::get(ctx),
                   int_set, int_set_args, (i != numSegments - 1));
               builder.setInsertionPointToStart(aif.getThenBlock());
@@ -440,13 +441,13 @@ private:
               yield_token.push_back(
                   dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
                       .getAsyncToken());
-              builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(),
-                                            yield_token);
+              builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
+                                                    yield_token);
               builder.setInsertionPointAfter(aif);
               SmallVector<Value, 1> parent_block_yield_token = {
                   aif.getResult(0)};
-              builder.create<AffineYieldOp>(builder.getUnknownLoc(),
-                                            parent_block_yield_token);
+              builder.create<affine::AffineYieldOp>(builder.getUnknownLoc(),
+                                                    parent_block_yield_token);
               builder.setInsertionPointToStart(aif.getElseBlock());
             } else {
               auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
@@ -457,8 +458,8 @@ private:
               yield_token.push_back(
                   dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
                       .getAsyncToken());
-              builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(),
-                                            yield_token);
+              builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
+                                                    yield_token);
             }
           }
           memcpyOp.erase();
@@ -519,7 +520,7 @@ private:
                 op = &child_op;
             }
             // If the async op is affine.apply
-            if (auto apply_op = dyn_cast<AffineApplyOp>(op)) {
+            if (auto apply_op = dyn_cast<affine::AffineApplyOp>(op)) {
               auto map = apply_op.getAffineMap();
               for (unsigned j = 0; j < current_shape_expr.size(); j++) {
                 if (current_shape_expr[j]) {
@@ -561,7 +562,7 @@ private:
 
   // Evaluate the integer value of affine set expression if the only symbolic
   // identifier is replaced with zero
-  int evaluateSymbolEqualityInSet(mlir::AffineExpr c, MLIRContext *ctx) {
+  int evaluateSymbolEqualityInSet(AffineExpr c, MLIRContext *ctx) {
     assert(c.isSymbolicOrConstant() && "constraint has dimension identifier");
     SmallVector<AffineExpr, 2> zero_syms{
         getAffineConstantExpr(0, ctx),
@@ -577,8 +578,7 @@ private:
 
   // Evaluate the affine expression of affine map if the only symbolic
   // identifier is replaced with zero
-  void replaceSymbolAndEvaluateConstantInMap(mlir::AffineMap map,
-                                             mlir::AffineExpr &c,
+  void replaceSymbolAndEvaluateConstantInMap(AffineMap map, AffineExpr &c,
                                              MLIRContext *ctx) {
     auto newmap = map.replace(getAffineSymbolExpr(0, ctx), c, 0, 1);
     auto const_int = simplifyAffineMap(newmap).getSingleConstantResult();
@@ -586,8 +586,8 @@ private:
   }
 
   // AddI for AffineConstantExpr
-  void applyArithOpToAffineConstantExpr(arith::AddIOp arith_op,
-                                        mlir::AffineExpr &c, MLIRContext *ctx) {
+  void applyArithOpToAffineConstantExpr(arith::AddIOp arith_op, AffineExpr &c,
+                                        MLIRContext *ctx) {
     arith::ConstantIndexOp add_operand = nullptr;
     if (arith_op.getLhs().getDefiningOp() &&
         dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())) {
@@ -605,15 +605,15 @@ private:
       return;
     }
     auto acc = add_operand.value();
-    assert(c.dyn_cast<mlir::AffineConstantExpr>() &&
+    assert(c.dyn_cast<AffineConstantExpr>() &&
            "non-constant affine expression");
-    acc += c.dyn_cast<mlir::AffineConstantExpr>().getValue();
+    acc += c.dyn_cast<AffineConstantExpr>().getValue();
     c = getAffineConstantExpr(acc, ctx);
   }
 
   // MulI for AffineConstantExpr
-  void applyArithOpToAffineConstantExpr(arith::MulIOp arith_op,
-                                        mlir::AffineExpr &c, MLIRContext *ctx) {
+  void applyArithOpToAffineConstantExpr(arith::MulIOp arith_op, AffineExpr &c,
+                                        MLIRContext *ctx) {
     arith::ConstantIndexOp mul_operand = nullptr;
     if (arith_op.getLhs().getDefiningOp() &&
         dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())) {
@@ -631,9 +631,9 @@ private:
       return;
     }
     auto mul = mul_operand.value();
-    assert(c.dyn_cast<mlir::AffineConstantExpr>() &&
+    assert(c.dyn_cast<AffineConstantExpr>() &&
            "non-constant affine expression");
-    mul *= c.dyn_cast<mlir::AffineConstantExpr>().getValue();
+    mul *= c.dyn_cast<AffineConstantExpr>().getValue();
     c = getAffineConstantExpr(mul, ctx);
   }
 
