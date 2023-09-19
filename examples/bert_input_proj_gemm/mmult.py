@@ -44,7 +44,7 @@ with air.mlir.ir.Context():
     # convert linalg on tensors to linalg on memrefs
     pm = air.mlir.passmanager.PassManager.parse(
         air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
-    pm.run(air_module)
+    pm.run(air_module.operation)
 
     pipeline = ",".join([
         "air-linalg-codegen{l1-tile-size=192,256,0 l1-promote=false}",
@@ -60,6 +60,6 @@ with air.mlir.ir.Context():
         "canonicalize", "cse",
     ])
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
-    pm.run(air_module)
+    pm.run(air_module.operation)
 
 print(air_module)

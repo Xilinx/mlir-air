@@ -44,7 +44,7 @@ with air.mlir.ir.Context(), Location.unknown():
     
     # convert linalg on tensors to linalg on memrefs
     pm = air.mlir.passmanager.PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
-    pm.run(air_module)
+    pm.run(air_module.operation)
 
     args = sys.argv[1:]
     if len(args) and args[0] == '-dump-linalg':
@@ -62,7 +62,7 @@ with air.mlir.ir.Context(), Location.unknown():
         "canonicalize", "cse",
     ])+')'
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
-    pm.run(air_module)
+    pm.run(air_module.operation)
     
     print ("\nAIR Dialect Module\n")
     print (air_module)
@@ -82,7 +82,7 @@ with air.mlir.ir.Context(), Location.unknown():
         "air-ping-pong-transform"
     ])+')'
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
-    pm.run(air_module)
+    pm.run(air_module.operation)
 
     print ("\nAIR Dialect Module (async)\n")
     print (air_module)
