@@ -125,8 +125,10 @@ int main(int argc, char *argv[]) {
   for (int i = 0; i < input_A.shape[0] * input_A.shape[1]; i++) {
     // input_A.data[i] = (rand() % 1024) + 1;
     // input_A.data[i] = i + 1;
-    if (i == 0) input_A.data[i] = 1;
-    else input_A.data[i] = 0;
+    if (i == 0)
+      input_A.data[i] = 1;
+    else
+      input_A.data[i] = 0;
   }
   for (int i = 0; i < input_B.shape[0] * input_B.shape[1]; i++) {
     // input_B.data[i] = (rand() % 1024) + 1;
@@ -153,7 +155,7 @@ int main(int argc, char *argv[]) {
     auto d = output.data[i];
     auto ref = output_ref0.data[i];
     if (d != 1) {
-    // if (d != ref) {
+      // if (d != ref) {
       errors++;
       if (errors < 100)
         printf("%04X: mismatch %d != %d\n", i, d, ref);
