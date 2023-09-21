@@ -14,7 +14,7 @@
 // CHECK:           %[[VAL_3:.*]] = arith.constant 4 : index
 // CHECK:           %[[VAL_4:.*]] = arith.constant 0 : index
 // CHECK:           %[[VAL_5:.*]] = arith.constant 1 : index
-// CHECK:           scf.parallel (%[[VAL_6:.*]], %[[VAL_7:.*]], %[[VAL_8:.*]]) = (%[[VAL_4]], %[[VAL_4]], %[[VAL_4]]) to (%[[VAL_3]], %[[VAL_2]], %[[VAL_2]]) step (%[[VAL_5]], %[[VAL_5]], %[[VAL_5]]) {
+// CHECK:           affine.for %[[VAL_6:.*]] = 0 to 4 {
 // CHECK:             air.dma_memcpy_nd (%[[VAL_1]][] [] [], %[[VAL_0]][] [] []) : (memref<16xf16>, memref<16xf16>)
 func.func @launch_0(%arg0: memref<16xf16>, %arg1: memref<16xf16>) {
   %c2 = arith.constant 2 : index
@@ -32,7 +32,7 @@ func.func @launch_0(%arg0: memref<16xf16>, %arg1: memref<16xf16>) {
 // CHECK: %[[VAL_3:.*]] = arith.constant 0 : index
 // CHECK: %[[VAL_4:.*]] = arith.constant 1 : index
 // CHECK: %[[VAL_5:.*]] = airrt.wait_all %[[VAL_1]], %[[VAL_2]] : !airrt.event
-// CHECK: scf.parallel (%[[VAL_6:.*]]) = (%[[VAL_3]]) to (%[[VAL_4]]) step (%[[VAL_4]]) {
+// CHECK:           affine.for %[[VAL_6:.*]] = 0 to 1 {
 func.func @launch_1() {
   %e0 = air.wait_all async
   %e1 = air.wait_all async [%e0]
