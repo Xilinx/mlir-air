@@ -1080,4 +1080,9 @@ def AIRHoistScfChannelGetPutPass : Pass<"air-hoist-channels", "func::FuncOp"> {
   let constructor = "xilinx::air::createAIRHoistScfChannelGetPutPass()";
 }
 
+def AIRLabelBroadcastChannelWithTilePass : Pass<"air-label-broadcast-channel-with-tile", "func::FuncOp"> {
+  let summary = "Label broadcasted channel ops with tile coordinates.";
+  let constructor = "xilinx::air::createAIRLabelBroadcastChannelWithTilePass()";
+}
+
 #endif // AIR_CONVERSION_PASSES
