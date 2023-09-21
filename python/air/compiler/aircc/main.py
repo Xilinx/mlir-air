@@ -149,6 +149,7 @@ def run(mlir_module, args=None):
     pass_pipeline = ','.join([
       'convert-vector-to-llvm',
       'convert-math-to-llvm',
+      'func.func(air-label-broadcast-channel-with-tile)',
       'lower-affine',
       'air-to-std',
       'air-lower-linalg-tensors',
@@ -170,6 +171,7 @@ def run(mlir_module, args=None):
     pass_pipeline = ','.join([
       'convert-vector-to-llvm',
       'convert-math-to-llvm',
+      'func.func(air-label-broadcast-channel-with-tile)',
       'lower-affine',
       'air-to-std',
       'air-lower-linalg-tensors',
