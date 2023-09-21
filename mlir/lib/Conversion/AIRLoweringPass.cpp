@@ -885,19 +885,24 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
     for (auto v : scf_par.getUpperBound())
       par_sizes.push_back(
           dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value());
-    assert(par_sizes.size() == 2);
 
     OpBuilder builder(scf_par);
     auto outer =
         builder.create<affine::AffineForOp>(scf_par.getLoc(), 0, par_sizes[0]);
-    auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
-    auto inner = outer_builder.create<affine::AffineForOp>(scf_par.getLoc(), 0,
-                                                           par_sizes[1]);
+    affine::AffineForOp inner = nullptr;
+    if (par_sizes.size() == 2) {
+      auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
+      inner = outer_builder.create<affine::AffineForOp>(scf_par.getLoc(), 0,
+                                                        par_sizes[1]);
+    } else
+      inner = outer;
 
     builder.setInsertionPointToStart(inner.getBody());
     IRMapping remap;
     remap.map(scf_par.getInductionVars()[0], outer.getInductionVar());
-    remap.map(scf_par.getInductionVars()[1], inner.getInductionVar());
+    if (par_sizes.size() == 2) {
+      remap.map(scf_par.getInductionVars()[1], inner.getInductionVar());
+    }
     for (auto &o : scf_par.getBody()->getOperations()) {
       if (!isa<scf::ReduceOp>(o) && !isa<scf::YieldOp>(o)) {
         builder.clone(o, remap);
@@ -905,8 +910,15 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
     }
     erased.push_back(scf_par);
   });
-  for (auto a : erased)
+  for (auto a : erased) {
+    if (a->getNumResults())
+      for (auto token : a->getResults())
+        for (auto user : token.getUsers())
+          for (unsigned i = 0; i < user->getNumOperands(); i++)
+            if (user->getOperand(i) == token)
+              user->eraseOperand(i);
     a->erase();
+  }
   return success();
 }
 

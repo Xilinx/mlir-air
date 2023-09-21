@@ -443,6 +443,14 @@ Value lookupOrDefaultRange(Value v, IRMapping &remap) {
   return remap.lookupOrDefault(v);
 }
 
+Operation *getLinalgOpFromExecuteOp(Operation *op) {
+  Operation *output = nullptr;
+  if (auto exec = dyn_cast<air::ExecuteOp>(op)) {
+    exec.walk([&](linalg::LinalgOp linalg_op) { output = linalg_op; });
+  }
+  return output;
+}
+
 SmallVector<Value, 1> lookupOrDefaultRange(SmallVector<Value, 1> vec,
                                            IRMapping &remap) {
   SmallVector<Value, 1> output;
