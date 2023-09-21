@@ -717,8 +717,8 @@ bool groupingMemcpysByLoop(std::vector<MemcpyBundleAsFlow> &memcpy_flows) {
       for_loops_log_s2mm;
   for (auto &f : memcpy_flows) {
     if (f.MM2S_memspace_as_int == (int)air::MemorySpace::L1) {
-      auto core = f.MM2S[0]->getParentOfType<AIE::CoreOp>();
       for (auto o : f.MM2S) {
+        auto core = o->getParentOfType<AIE::CoreOp>();
         f.flow_op_group = foundInVector<scf::ForOp>(
             o->getParentOfType<scf::ForOp>(), for_loops_log_mm2s[core]);
         if (f.flow_op_group == for_loops_log_mm2s[core].size()) {
@@ -727,9 +727,9 @@ bool groupingMemcpysByLoop(std::vector<MemcpyBundleAsFlow> &memcpy_flows) {
       }
     }
     if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L1) {
-      auto core = f.S2MM[0][0]->getParentOfType<AIE::CoreOp>();
       for (int i = 0; i < f.S2MM.size(); i++) {
         for (auto o : f.S2MM[i]) {
+          auto core = o->getParentOfType<AIE::CoreOp>();
           f.flow_op_group = foundInVector<scf::ForOp>(
               o->getParentOfType<scf::ForOp>(), for_loops_log_s2mm[core]);
           if (f.flow_op_group == for_loops_log_s2mm[core].size()) {
