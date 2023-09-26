@@ -62,7 +62,7 @@ Next, clone and build MLIR-AIE with paths to llvm, aienginev2, and cmakeModules 
 ./build-mlir-aie-local.sh llvm mlir-aie/cmake/modulesXilinx /opt/xaiengine mlir-aie build ../../install
 ```
 
-The MLIR-AIE tools will be able to generate binaries targetting AIEngines.
+The MLIR-AIE tools will be able to generate binaries targeting AIEngines.
 
 Finally, build the MLIR-AIR tools for your desired use case: 
 
@@ -89,7 +89,7 @@ cd aie-rt
 git checkout joel-aie
 cd driver/src
 make -f Makefile.Linux CFLAGS="-D__AIELINUX__ -D__AIESYSFS__ -D__AIEAMDAIR__"
-sudo cp -r ../include /opt/aiengine/
+sudo cp -r ../include /opt/xaiengine/
 sudo cp libxaiengine.so* /opt/xaiengine/lib/
 export LD_LIBRARY_PATH=/opt/xaiengine/lib:${LD_LIBRARY_PATH}
 ```
@@ -111,7 +111,7 @@ Set up your environment to use the tools you just built with the following comma
 ```
 export PATH=/path/to/mlir-air/install/bin:${PATH}
 export PYTHONPATH=/path/to/mlir-air/install/python:${PYTHONPATH}
-export LD_LIBRARY_PATH=/path/to/install/mlir-air/lib:/opt/xaiengine/lib:${LD_LIBRARY_PATH}
+export LD_LIBRARY_PATH=/path/to/mlir-air/install/lib:/opt/xaiengine/lib:${LD_LIBRARY_PATH}
 ```
 
 Note that if you are running on x86 with the PCIe runtime, the following path should be added to your path rather than `/path/to/mlir-air/install/bin`. 
