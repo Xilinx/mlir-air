@@ -26,8 +26,7 @@ using namespace mlir;
 namespace xilinx {
 namespace air {
 
-func::CallOp AIROutliner::outline(affine::AffineForOp forOp,
-                                  std::string fname) {
+func::CallOp AIROutliner::outline(AffineForOp forOp, std::string fname) {
 
   llvm::SetVector<Value> outline_args;
 

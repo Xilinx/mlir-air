@@ -7,9 +7,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Transform/AIRTilingUtils.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
+#include "mlir/IR/BuiltinOps.h"
 
 #define DEBUG_TYPE "air-tiling-utils"
 
@@ -22,19 +22,19 @@ namespace air {
 /// a temporary placeholder to test the mechanics of tiled code generation.
 /// Returns all maximal outermost perfect loop nests to tile.
 void getTileableBands(func::FuncOp f,
-                      std::vector<SmallVector<affine::AffineForOp, 6>> &bands,
+                      std::vector<SmallVector<AffineForOp, 6>> &bands,
                       const char *attrName, StringRef label) {
   // Get maximal perfect nest of 'affine.for' insts starting from root
   // (inclusive).
-  auto getMaximalPerfectLoopNest = [&](affine::AffineForOp root) {
-    SmallVector<affine::AffineForOp, 6> band;
+  auto getMaximalPerfectLoopNest = [&](AffineForOp root) {
+    SmallVector<AffineForOp, 6> band;
     getPerfectlyNestedLoops(band, root);
     bands.push_back(band);
   };
 
   for (auto &block : f)
     for (auto &op : block)
-      if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
+      if (auto forOp = dyn_cast<AffineForOp>(op)) {
         auto targetForOp = getLabel(forOp, label, attrName);
         if (targetForOp) {
           getMaximalPerfectLoopNest(targetForOp);
@@ -42,11 +42,10 @@ void getTileableBands(func::FuncOp f,
       }
 }
 
-affine::AffineForOp getLabel(affine::AffineForOp root, StringRef label,
-                             const char *attrName) {
-  affine::AffineForOp res;
+AffineForOp getLabel(AffineForOp root, StringRef label, const char *attrName) {
+  AffineForOp res;
 
-  root.walk([&](affine::AffineForOp forOp) {
+  root.walk([&](AffineForOp forOp) {
     auto stringAttr = forOp->getAttrOfType<StringAttr>(attrName);
     if (!stringAttr)
       return WalkResult::advance();
@@ -62,5 +61,3 @@ affine::AffineForOp getLabel(affine::AffineForOp root, StringRef label,
 
 } // namespace air
 } // namespace xilinx
-
-

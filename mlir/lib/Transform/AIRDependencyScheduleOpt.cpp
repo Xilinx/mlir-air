@@ -465,7 +465,7 @@ private:
       dep_list = async_for_op.getIterOperands();
     } else if (auto async_parallel_op = dyn_cast<scf::ParallelOp>(op)) {
       dep_list = async_parallel_op.getInitVals();
-    } else if (auto affine_if_op = dyn_cast<affine::AffineIfOp>(op)) {
+    } else if (auto affine_if_op = dyn_cast<mlir::AffineIfOp>(op)) {
       auto &first_child_op_in_then_block =
           affine_if_op.getThenBlock()->getOperations().front();
       return getAsyncDependenciesFromOp(&first_child_op_in_then_block,
@@ -477,7 +477,7 @@ private:
 
   void setBoolAttrForAsyncOp(OpBuilder builder, Operation *op,
                              std::string attr) const {
-    if (auto aif = dyn_cast<affine::AffineIfOp>(op)) {
+    if (auto aif = dyn_cast<mlir::AffineIfOp>(op)) {
       aif.getThenBlock()->walk([&](Operation *child_op) {
         child_op->setAttr(attr, builder.getBoolAttr(true));
       });
@@ -676,7 +676,7 @@ struct ConstructPingPongDependencyPattern
           } else if (isa<air::ExecuteOp>(candidate_op->getParentOp())) {
             push_back_if_unique<Operation *>(producer_ops,
                                              candidate_op->getParentOp());
-          } else if (isa<affine::AffineIfOp>(candidate_op->getParentOp())) {
+          } else if (isa<mlir::AffineIfOp>(candidate_op->getParentOp())) {
             push_back_if_unique<Operation *>(producer_ops, candidate_op);
           } else if (isa<air::AsyncOpInterface>(candidate_op)) {
             push_back_if_unique<Operation *>(producer_ops, candidate_op);
@@ -697,7 +697,7 @@ struct ConstructPingPongDependencyPattern
           } else if (isa<air::ExecuteOp>(candidate_op->getParentOp())) {
             push_back_if_unique<Operation *>(consumer_ops,
                                              candidate_op->getParentOp());
-          } else if (isa<affine::AffineIfOp>(candidate_op->getParentOp())) {
+          } else if (isa<mlir::AffineIfOp>(candidate_op->getParentOp())) {
             push_back_if_unique<Operation *>(consumer_ops, candidate_op);
           } else if (isa<air::AsyncOpInterface>(candidate_op)) {
             push_back_if_unique<Operation *>(consumer_ops, candidate_op);
@@ -853,9 +853,9 @@ private:
             op->getAttrOfType<IntegerAttr>("unrolled_iteration").getInt();
       }
       // If op is in region of an unrolled affine if
-      else if (isa<affine::AffineIfOp>(op->getParentOp())) {
+      else if (isa<mlir::AffineIfOp>(op->getParentOp())) {
         Operation *parent = op->getParentOp();
-        while (isa<affine::AffineIfOp>(parent)) {
+        while (isa<mlir::AffineIfOp>(parent)) {
           if (parent->hasAttr("unrolled_iteration")) {
             unroll_iter =
                 parent->getAttrOfType<IntegerAttr>("unrolled_iteration")
@@ -916,8 +916,8 @@ private:
   Value getTokenFromOutermostParentAffineIfOp(Operation *op) const {
     Value token = nullptr;
     Operation *parent = op->getParentOp();
-    if (isa<affine::AffineIfOp>(parent)) {
-      while (isa<affine::AffineIfOp>(parent)) {
+    if (isa<mlir::AffineIfOp>(parent)) {
+      while (isa<mlir::AffineIfOp>(parent)) {
         token = getAsyncTokenFromValues(parent->getResults());
         parent = parent->getParentOp();
       }
@@ -1164,8 +1164,7 @@ public:
                                        int chanDim, int factor) {
     air::ChannelOp chan_op = dyn_cast<air::ChannelOp>(op);
     OpBuilder builder(op);
-    SmallVector<int64_t, 2> sizes =
-        extractFromIntegerArrayAttr<int64_t>(chan_op.getSize());
+    SmallVector<int64_t, 2> sizes = extractFromI64ArrayAttr(chan_op.getSize());
     if ((unsigned)chanDim >= sizes.size())
       return;
     if (sizes[chanDim] != 1) {

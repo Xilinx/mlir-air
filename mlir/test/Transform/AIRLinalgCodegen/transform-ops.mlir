@@ -22,7 +22,7 @@ transform.with_pdl_patterns {
 ^bb0(%arg0: !pdl.operation):
   transform.sequence %arg0 : !pdl.operation failures(propagate) {
   ^bb1(%arg1: !pdl.operation):
-    %0 = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+    %0 = transform.structured.match ops{["linalg.matmul"]} in %arg1
     %1 = transform.air.linalg_promote %0
   }
 }
@@ -44,7 +44,7 @@ transform.with_pdl_patterns {
 ^bb0(%arg0: !pdl.operation):
   transform.sequence %arg0 : !pdl.operation failures(propagate) {
   ^bb1(%arg1: !pdl.operation):
-    %0 = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+    %0 = transform.structured.match ops{["linalg.matmul"]} in %arg1
     %1 = transform.air.linalg_promote %0 {memory_space="L2", operands_to_promote=[0,1,2]}
   }
 }
@@ -67,7 +67,7 @@ transform.with_pdl_patterns {
 ^bb0(%arg0: !pdl.operation):
   transform.sequence %arg0 : !pdl.operation failures(propagate) {
   ^bb1(%arg1: !pdl.operation):
-    %0 = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+    %0 = transform.structured.match ops{["linalg.matmul"]} in %arg1
     %1 = transform.air.linalg_promote %0 {operands_to_promote=[0]}
   }
 }
@@ -92,8 +92,8 @@ transform.with_pdl_patterns {
 ^bb0(%arg0: !pdl.operation):
   transform.sequence %arg0 : !pdl.operation failures(propagate) {
   ^bb1(%arg1: !pdl.operation):
-    %0 = transform.structured.match ops{["linalg.fill"]} in %arg1 : (!pdl.operation) -> !pdl.operation
-    %1 = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!pdl.operation) -> !pdl.operation
+    %0 = transform.structured.match ops{["linalg.fill"]} in %arg1
+    %1 = transform.structured.match ops{["linalg.matmul"]} in %arg1
     %2 = transform.merge_handles %0, %1 : !pdl.operation
     transform.air.linalg_promote %2 {"group_size"=2, "operands_to_promote"=[1,4], "memory_space"="L1"}
   }

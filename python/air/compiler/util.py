@@ -49,7 +49,7 @@ class CostModel:
             with air_module.context:
                 pipeline = f"builtin.module(air-linalg-op-stats{{outputfile={name}}})"
                 pm = air.mlir.passmanager.PassManager.parse(pipeline)
-                pm.run(air_module.operation)
+                pm.run(air_module)
             stats = open(name).read()
             os.unlink(name)
         return stats
