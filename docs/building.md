@@ -48,12 +48,24 @@ source utils/setup_python_packages.sh
 
 Next, clone and build LLVM, with the ability to target AArch64 as a cross-compiler, and with MLIR enabled. In addition, we make some common build optimizations to use a linker ('lld' or 'gold') other than 'ld' (which tends to be quite slow on large link jobs) and to link against libLLVM.so and libClang so. You may find that other options are also useful. Note that due to changing MLIR APIs, only a particular revision is expected to work.
 
-To clone llvm and cmakeModules, see utils/clone-llvm.sh for the correct commithash. We point LLVM and subsequent tools to a common installation directory. 
+To clone `llvm`, run `utils/clone-llvm.sh` (see
+`utils/clone-llvm.sh` for the correct `llvm` commit hash):
+```
+./utils/clone-llvm.sh
+```
+
+If you have already an LLVM repository, you can instead of cloning
+just make a new worktree from it by using:
+````
+./utils/clone-llvm.sh --llvm-worktree <directory-of-existing-LLVM-repository>
+````
+
+TODO: explain the case of cmakeModules.
+
+We point LLVM and subsequent tools to a common installation directory.
 
 ```
-cd utils
-./clone-llvm.sh
-./build-llvm-local.sh llvm build ../../install
+./utils/build-llvm-local.sh llvm build ../../install
 ```
 
 Next, clone and build MLIR-AIE with paths to llvm, aienginev2, and cmakeModules repositories. Again, we use a common installation directory. Note that in the following commands, we assume that the aienginev2 library is installed in /opt/xaiengine as directed in the `Building on x86 with runtime for PCIe` section. If the aienginev2 library was installed elsewhere, be sure that the 4th argument to build mlir-aie points to that location. 
