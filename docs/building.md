@@ -57,7 +57,7 @@ To clone `llvm`, run `utils/clone-llvm.sh` (see
 If you have already an LLVM repository, you can instead of cloning
 just make a new worktree from it by using:
 ````
-./utils/clone-llvm.sh --llvm-worktree <directory-of-existing-LLVM-repository>
+./utils/clone-llvm.sh --llvm-worktree <path-of-existing-LLVM-repository>
 ````
 
 TODO: explain the case of cmakeModules.
@@ -69,7 +69,20 @@ assuming above the current `mlir-air` work-tree directory.
 ./utils/build-llvm-local.sh llvm build ../install
 ```
 
-Next, clone and build MLIR-AIE with paths to llvm, aienginev2, and cmakeModules repositories. Again, we use a common installation directory. Note that in the following commands, we assume that the aienginev2 library is installed in /opt/xaiengine as directed in the `Building on x86 with runtime for PCIe` section. If the aienginev2 library was installed elsewhere, be sure that the 4th argument to build mlir-aie points to that location. 
+Then clone MLIR-AIE with `utils/clone-mlir-aie.sh` (see
+`utils/clone-mlir-aie.sh` for the correct `mlir-aie` commit hash):
+```
+./utils/clone-mlir-aie.sh
+```
+
+If you have already an MLIR-AIE repository, you can instead of cloning
+just make a new worktree from it by using:
+````
+./utils/clone-mlir-aie.sh --mlir-aie-worktree <path-of-local-mlir-aie-repository>
+````
+
+
+Next, build MLIR-AIE with paths to llvm, aienginev2, and cmakeModules repositories. Again, we use a common installation directory. Note that in the following commands, we assume that the aienginev2 library is installed in /opt/xaiengine as directed in the `Building on x86 with runtime for PCIe` section. If the aienginev2 library was installed elsewhere, be sure that the 4th argument to build mlir-aie points to that location. 
 ```
 ./utils/clone-mlir-aie.sh
 ./build-mlir-aie-local.sh llvm mlir-aie/cmake/modulesXilinx /opt/xaiengine mlir-aie build ../../install

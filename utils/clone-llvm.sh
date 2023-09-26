@@ -21,7 +21,7 @@ branch=air-2022.12
 
 here=$PWD
 
-# Use --llvm-worktree <directory-of-local-LLVM-repo> to reuse some existing
+# Use --llvm-worktree <path-of-local-LLVM-repo> to reuse some existing
 # local LLVM git repository
 if [ x"$1" == x--llvm-worktree ]; then
   git_central_llvm_repo_dir="$2"
