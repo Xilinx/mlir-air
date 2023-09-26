@@ -56,7 +56,7 @@ interface is provided to synchronize between operations.
 
 ### `air.alloc` (xilinx::air::AllocOp)
 
-_Alloc operator_
+alloc operator
 
 
 Syntax:
@@ -82,42 +82,9 @@ Interfaces: air_AsyncOpInterface
 | `async_token` | async token type
 | `result` | memref of any type values
 
-
-### `air.channel` (xilinx::air::ChannelOp)
-
-_Channel for data movement._
-
-
-Syntax:
-
-```
-operation ::= `air.channel` $sym_name $size attr-dict
-```
-
-Operation to represent a channel as a point-to-point connection between two memrefs. The array
-following the channel name symbol represents the channel sizes. If each channel is broadcasting
-to multiple destinations, then the optional 'broadcast_shape' attribute annotates the output 
-sizes after broadcasting.
-
-Example:
-
-```mlir
-air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
-```
-
-Interfaces: Symbol
-
-#### Attributes:
-
-| Attribute | MLIR Type | Description |
-| :-------: | :-------: | ----------- |
-| `sym_name` | ::mlir::StringAttr | string attribute
-| `size` | ::mlir::ArrayAttr | 64-bit integer array attribute
-
-
 ### `air.channel.get` (xilinx::air::ChannelGetOp)
 
-_Get for air channels._
+Get for air channels.
 
 
 Syntax:
@@ -158,10 +125,40 @@ Interfaces: air_AsyncOpInterface, air_ChannelInterface, air_MemcpyInterface
 | :----: | ----------- |
 | `async_token` | async token type
 
+### `air.channel` (xilinx::air::ChannelOp)
+
+Channel for data movement.
+
+
+Syntax:
+
+```
+operation ::= `air.channel` $sym_name $size attr-dict
+```
+
+Operation to represent a channel as a point-to-point connection between two memrefs. The array
+following the channel name symbol represents the channel sizes. If each channel is broadcasting
+to multiple destinations, then the optional 'broadcast_shape' attribute annotates the output 
+sizes after broadcasting.
+
+Example:
+
+```mlir
+air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
+```
+
+Interfaces: Symbol
+
+#### Attributes:
+
+| Attribute | MLIR Type | Description |
+| :-------: | :-------: | ----------- |
+| `sym_name` | ::mlir::StringAttr | string attribute
+| `size` | ::mlir::ArrayAttr | 64-bit integer array attribute
 
 ### `air.channel.put` (xilinx::air::ChannelPutOp)
 
-_Push for air channels._
+Push for air channels.
 
 
 Syntax:
@@ -202,10 +199,9 @@ Interfaces: air_AsyncOpInterface, air_ChannelInterface, air_MemcpyInterface
 | :----: | ----------- |
 | `async_token` | async token type
 
-
 ### `air.custom` (xilinx::air::CustomOp)
 
-_A handle to a user-customized op_
+A handle to a user-customized op
 
 A placeholder operation for a user-customized op. With user-specified 
 latency value, AIR Runner is able to simulate the system-level
@@ -234,10 +230,9 @@ Interfaces: air_AsyncOpInterface
 | :----: | ----------- |
 | `async_token` | async token type
 
-
 ### `air.dealloc` (xilinx::air::DeallocOp)
 
-_Dealloc operator_
+dealloc operator
 
 
 Syntax:
@@ -263,10 +258,9 @@ Interfaces: air_AsyncOpInterface
 | :----: | ----------- |
 | `async_token` | async token type
 
-
 ### `air.dma_memcpy_nd` (xilinx::air::DmaMemcpyNdOp)
 
-_Dma operator_
+dma operator
 
 
 Syntax:
@@ -304,10 +298,9 @@ Interfaces: air_AsyncOpInterface, air_MemcpyInterface
 | :----: | ----------- |
 | `async_token` | async token type
 
-
 ### `air.execute` (xilinx::air::ExecuteOp)
 
-_Asynchronous code region_
+Asynchronous code region
 
 
 Syntax:
@@ -320,7 +313,7 @@ operation ::= `air.execute` (` ``[` $async_dependencies^ `]`)?
 Defines a code region to be dispatched asynchronously at runtime. All operations in
 the region must be executed sequentially.
 
-Traits: SingleBlock, SingleBlockImplicitTerminator<ExecuteTerminatorOp>
+Traits: SingleBlockImplicitTerminator<ExecuteTerminatorOp>
 
 Interfaces: air_AsyncOpInterface
 
@@ -337,10 +330,9 @@ Interfaces: air_AsyncOpInterface
 | `async_token` | async token type
 | `results` | any type
 
-
 ### `air.execute_terminator` (xilinx::air::ExecuteTerminatorOp)
 
-_Terminator for air execute._
+Terminator for air execute.
 
 
 Syntax:
@@ -356,7 +348,7 @@ match the signature of the `air.execute` that contains the operation.
 
 Traits: AlwaysSpeculatableImplTrait, HasParent<ExecuteOp>, ReturnLike, Terminator
 
-Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface), RegionBranchTerminatorOpInterface
+Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
 
 Effects: MemoryEffects::Effect{}
 
@@ -366,14 +358,13 @@ Effects: MemoryEffects::Effect{}
 | :-----: | ----------- |
 | `results` | any type
 
-
 ### `air.herd` (xilinx::air::HerdOp)
 
-_Herd_
+Herd
 
 Define and run a 1D or 2D array of tiles as an AIR Herd.
 
-Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlock, SingleBlockImplicitTerminator<HerdTerminatorOp>
+Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlockImplicitTerminator<HerdTerminatorOp>
 
 Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 
@@ -397,10 +388,24 @@ Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 | :----: | ----------- |
 | `async_token` | async token type
 
+### `air.pipeline` (xilinx::air::HerdPipelineOp)
+
+Define a pipeline
+
+
+Syntax:
+
+```
+operation ::= `air.pipeline` attr-dict-with-keyword $body
+```
+
+Define a pipeline within an AIR Herd.
+
+Traits: AffineScope, HasParent<HerdOp>
 
 ### `air.herd_terminator` (xilinx::air::HerdTerminatorOp)
 
-_Terminator for air herd regions._
+Terminator for air herd regions.
 
 
 Syntax:
@@ -419,14 +424,13 @@ Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
 
 Effects: MemoryEffects::Effect{}
 
-
 ### `air.launch` (xilinx::air::LaunchOp)
-
-_Launch_
 
 Launch
 
-Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlock, SingleBlockImplicitTerminator<LaunchTerminatorOp>
+Launch
+
+Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlockImplicitTerminator<LaunchTerminatorOp>
 
 Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 
@@ -450,10 +454,9 @@ Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 | :----: | ----------- |
 | `async_token` | async token type
 
-
 ### `air.launch_terminator` (xilinx::air::LaunchTerminatorOp)
 
-_Terminator for `air.launch`._
+Terminator for `air.launch`.
 
 
 Syntax:
@@ -472,26 +475,9 @@ Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
 
 Effects: MemoryEffects::Effect{}
 
-
-### `air.pipeline` (xilinx::air::HerdPipelineOp)
-
-_Define a pipeline_
-
-
-Syntax:
-
-```
-operation ::= `air.pipeline` attr-dict-with-keyword $body
-```
-
-Define a pipeline within an AIR Herd.
-
-Traits: AffineScope, HasParent<HerdOp>
-
-
 ### `air.pipeline.get` (xilinx::air::PipelineGetOp)
 
-_Get for air pipeline stages._
+Get for air pipeline stages.
 
 
 Syntax:
@@ -516,10 +502,9 @@ Currently used internally by air-to-aie pass during pipeline lowering.
 | :----: | ----------- |
 | `results` | any type
 
-
 ### `air.pipeline.put` (xilinx::air::PipelinePutOp)
 
-_Put for air pipeline stages._
+Put for air pipeline stages.
 
 
 Syntax:
@@ -539,10 +524,9 @@ Currently used internally by air-to-aie pass during pipeline lowering.
 | `dst1` | any type
 | `opers` | any type
 
-
 ### `air.pipeline.stage` (xilinx::air::PipelineStageOp)
 
-_Pipeline stage_
+Pipeline stage
 
 Pipeline stage.
 
@@ -560,10 +544,9 @@ Traits: HasParent<HerdPipelineOp>
 | :----: | ----------- |
 | `results` | any type
 
-
 ### `air.pipeline.terminator` (xilinx::air::PipelineTerminatorOp)
 
-_Terminator for air pipeline regions._
+Terminator for air pipeline regions.
 
 
 Syntax:
@@ -587,10 +570,9 @@ Effects: MemoryEffects::Effect{}
 | :-----: | ----------- |
 | `opers` | any type
 
-
 ### `air.pipeline.yield` (xilinx::air::PipelineYieldOp)
 
-_Yield for air pipeline stages._
+Yield for air pipeline stages.
 
 
 Syntax:
@@ -606,7 +588,7 @@ match the signature of the `air.pipeline` that contains the operation.
 
 Traits: AlwaysSpeculatableImplTrait, HasParent<PipelineStageOp>, ReturnLike, Terminator
 
-Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface), RegionBranchTerminatorOpInterface
+Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
 
 Effects: MemoryEffects::Effect{}
 
@@ -616,14 +598,13 @@ Effects: MemoryEffects::Effect{}
 | :-----: | ----------- |
 | `opers` | any type
 
-
 ### `air.segment` (xilinx::air::SegmentOp)
-
-_Segment_
 
 Segment
 
-Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlock, SingleBlockImplicitTerminator<SegmentTerminatorOp>
+Segment
+
+Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlockImplicitTerminator<SegmentTerminatorOp>
 
 Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 
@@ -647,10 +628,9 @@ Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 | :----: | ----------- |
 | `async_token` | async token type
 
-
 ### `air.segment_terminator` (xilinx::air::SegmentTerminatorOp)
 
-_Terminator for air segment regions._
+Terminator for air segment regions.
 
 
 Syntax:
@@ -669,10 +649,9 @@ Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
 
 Effects: MemoryEffects::Effect{}
 
-
 ### `air.wait_all` (xilinx::air::WaitAllOp)
 
-_Wait for all operator_
+wait for all operator
 
 
 Syntax:
@@ -696,7 +675,6 @@ Interfaces: air_AsyncOpInterface
 | Result | Description |
 | :----: | ----------- |
 | `async_token` | async token type
-
 
 ## Type constraint definition
 
