@@ -7,9 +7,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Transform/AIRTilingUtils.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
+#include "mlir/IR/BuiltinOps.h"
 
 #define DEBUG_TYPE "air-tiling-utils"
 
@@ -42,8 +42,7 @@ void getTileableBands(func::FuncOp f,
       }
 }
 
-AffineForOp getLabel(AffineForOp root, StringRef label,
-                                  const char* attrName) {
+AffineForOp getLabel(AffineForOp root, StringRef label, const char *attrName) {
   AffineForOp res;
 
   root.walk([&](AffineForOp forOp) {
@@ -62,5 +61,3 @@ AffineForOp getLabel(AffineForOp root, StringRef label,
 
 } // namespace air
 } // namespace xilinx
-
-

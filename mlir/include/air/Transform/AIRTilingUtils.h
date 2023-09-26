@@ -6,7 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-//===- AIRTilingUtils.h - AIR Loop tiling utilities ------------------------===//
+//===- AIRTilingUtils.h - AIR Loop tiling utilities
+//------------------------===//
 //
 // This header file defines utility functions that are commonly used in passes,
 // primarily AIR automatic loop tiling passes.
@@ -30,7 +31,7 @@ void getTileableBands(func::FuncOp f,
                       const char *attrName, StringRef label);
 
 /// Get the loop band that has been attached with the given label.
-AffineForOp getLabel(AffineForOp root, StringRef label, const char* attrName);
+AffineForOp getLabel(AffineForOp root, StringRef label, const char *attrName);
 
 } // namespace air
 } // namespace xilinx

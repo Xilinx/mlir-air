@@ -25,8 +25,8 @@
 #include "air/Transform/AIRHerdAssignPass.h"
 #include "air/Util/Util.h"
 
-#include <vector>
 #include <deque>
+#include <vector>
 
 #include "PassDetail.h"
 
@@ -42,19 +42,17 @@ namespace {
 class AIRHerdAssignPass : public AIRHerdAssignBase<AIRHerdAssignPass> {
 
 public:
-
   AIRHerdAssignPass() = default;
   AIRHerdAssignPass(const AIRHerdAssignPass &pass) {}
 
   Option<int> HerdAssignDepth{*this, "herd-assign-depth",
-                                     llvm::cl::desc("herd assign depth"),
-                                     llvm::cl::init(0)};
+                              llvm::cl::desc("herd assign depth"),
+                              llvm::cl::init(0)};
 
-  void loopsToParallel(ArrayRef<AffineForOp> nest, int depth)
-  {
-    assert((int)nest.size() > depth+1);
+  void loopsToParallel(ArrayRef<AffineForOp> nest, int depth) {
+    assert((int)nest.size() > depth + 1);
     AffineForOp outer = nest[depth];
-    AffineForOp inner = nest[depth+1];
+    AffineForOp inner = nest[depth + 1];
 
     if (failed(xilinx::air::normalizeLoop(inner)))
       return;
@@ -69,20 +67,20 @@ public:
       int64_t ub_0 = ub_map_0.getSingleConstantResult();
       int64_t ub_1 = ub_map_1.getSingleConstantResult();
 
-      auto affine_par = builder.create<AffineParallelOp>(loc,
-                                                         std::vector<Type>{},
-                                                         std::vector<arith::AtomicRMWKind>{},
-                                                         std::vector<int64_t>{ub_0,ub_1});
+      auto affine_par = builder.create<AffineParallelOp>(
+          loc, std::vector<Type>{}, std::vector<arith::AtomicRMWKind>{},
+          std::vector<int64_t>{ub_0, ub_1});
 
       outer.getBody()->back().erase();
-      affine_par.getBody()->getOperations().splice(affine_par.getBody()->begin(),
-                                                   outer.getBody()->getOperations());
+      affine_par.getBody()->getOperations().splice(
+          affine_par.getBody()->begin(), outer.getBody()->getOperations());
       outer.getInductionVar().replaceAllUsesWith(affine_par.getIVs()[0]);
       outer.erase();
 
       inner.getBody()->back().erase();
-      affine_par.getBody()->getOperations().splice(Block::iterator(inner.getOperation()),
-                                                   inner.getBody()->getOperations());
+      affine_par.getBody()->getOperations().splice(
+          Block::iterator(inner.getOperation()),
+          inner.getBody()->getOperations());
       inner.getInductionVar().replaceAllUsesWith(affine_par.getIVs()[1]);
       inner.erase();
     }
@@ -103,9 +101,10 @@ public:
       std::vector<SmallVector<AffineForOp, 6>> bands;
       getTileableBands(f, &bands);
       for (auto &band : bands) {
-        auto stringAttr = band[0]->getAttrOfType<StringAttr>(
-          "affine_opt_label");
-        if (!stringAttr) continue;
+        auto stringAttr =
+            band[0]->getAttrOfType<StringAttr>("affine_opt_label");
+        if (!stringAttr)
+          continue;
         int depth = HerdAssignDepth;
         loopsToParallel(band, depth);
         LLVM_DEBUG(llvm::outs() << "finished band\n");
@@ -126,7 +125,6 @@ public:
   }
 
 private:
-
 };
 
 } // namespace

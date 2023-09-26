@@ -7,18 +7,18 @@
 //===----------------------------------------------------------------------===//
 
 // ===- AIRLoopMergingPass.cpp - Merge nested loops into a single loop ----===//
-// 
-// This pass transforms several perfectly nested subloops into a single 
+//
+// This pass transforms several perfectly nested subloops into a single
 // loop. The trip count of the new single loop is the product of all
-// trip counts in subloops. The original loop induction variables are 
-// restored using floordiv and modulo operations. Users can specify which 
+// trip counts in subloops. The original loop induction variables are
+// restored using floordiv and modulo operations. Users can specify which
 // loop levels they want to merge together.
 //
 // ===---------------------------------------------------------------------===//
 
 #include "air/Transform/AIRLoopMergingPass.h"
-#include "air/Transform/AIRTilingUtils.h"
 #include "PassDetail.h"
+#include "air/Transform/AIRTilingUtils.h"
 
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
@@ -44,7 +44,7 @@ using namespace xilinx;
 using namespace xilinx::air;
 
 namespace {
-  
+
 class AIRLoopMergingPass : public AIRLoopMergingPassBase<AIRLoopMergingPass> {
 
 public:
@@ -56,30 +56,32 @@ public:
       llvm::cl::desc("which loop levels to merge together"), llvm::cl::Required,
       llvm::cl::OneOrMore};
 
-  Option<std::string> clAIROptLabel{*this, "air-label",
-                          llvm::cl::desc("Transform loops with the given label"),
-                          llvm::cl::init("")};
+  Option<std::string> clAIROptLabel{
+      *this, "air-label",
+      llvm::cl::desc("Transform loops with the given label"),
+      llvm::cl::init("")};
 
-  Option<std::string> clAIROptPostLabel{*this, "air-post-label",
-                          llvm::cl::desc("Label to apply to transformed loop \
+  Option<std::string> clAIROptPostLabel{
+      *this, "air-post-label",
+      llvm::cl::desc("Label to apply to transformed loop \
                               nest"),
-                          llvm::cl::init("")};
+      llvm::cl::init("")};
 
   void runOnOperation() override;
 
   static const char *affineOptAttrName;
 
 private:
-
 };
 
 const char *AIRLoopMergingPass::affineOptAttrName = "affine_opt_label";
 
-static void constructReducedLoopNest(MutableArrayRef<AffineForOp> origLoops,
-                                unsigned total_width,
-                                MutableArrayRef<AffineForOp> reducedLoops,
-                                SmallVectorImpl<unsigned> &loopMergeLevels) {
-  
+static void
+constructReducedLoopNest(MutableArrayRef<AffineForOp> origLoops,
+                         unsigned total_width,
+                         MutableArrayRef<AffineForOp> reducedLoops,
+                         SmallVectorImpl<unsigned> &loopMergeLevels) {
+
   AffineForOp rootLoop = origLoops[0];
   Location rootLoopLoc = rootLoop.getLoc();
   Operation *rootLoopOp = rootLoop.getOperation();
@@ -90,11 +92,11 @@ static void constructReducedLoopNest(MutableArrayRef<AffineForOp> origLoops,
     OpBuilder builder(rootLoopOp);
     AffineForOp intraLoop = builder.create<AffineForOp>(rootLoopLoc, 0, 0);
     intraLoop.getBody()->getOperations().splice(
-      intraLoop.getBody()->begin(), rootLoopOp->getBlock()->getOperations(),
-      rootLoopOp);
+        intraLoop.getBody()->begin(), rootLoopOp->getBlock()->getOperations(),
+        rootLoopOp);
     reducedLoops[total_width - 1 - i] = intraLoop;
     rootLoopOp = intraLoop.getOperation();
-    if (i == 0) 
+    if (i == 0)
       innermostLoop = intraLoop;
   }
 
@@ -103,8 +105,8 @@ static void constructReducedLoopNest(MutableArrayRef<AffineForOp> origLoops,
   auto &ops = src.getBody()->getOperations();
   Block::iterator innerForLoc = innermostLoop.getBody()->begin();
   innermostLoop.getBody()->getOperations().splice(innerForLoc, ops, ops.begin(),
-                                         std::prev(ops.end()));
-  
+                                                  std::prev(ops.end()));
+
   // Manage the reduced loop bounds
   unsigned reduceAtLevel = loopMergeLevels[0];
   unsigned reduceExitLevel = loopMergeLevels[loopMergeLevels.size() - 1] + 1;
@@ -113,10 +115,10 @@ static void constructReducedLoopNest(MutableArrayRef<AffineForOp> origLoops,
   for (unsigned i = 0; i < reduceAtLevel; i++) {
     OperandRange newLbOperands = origLoops[i].getLowerBoundOperands();
     OperandRange newUbOperands = origLoops[i].getUpperBoundOperands();
-    reducedLoops[i].setLowerBound(newLbOperands, 
-                                       origLoops[i].getLowerBoundMap());
-    reducedLoops[i].setUpperBound(newUbOperands, 
-                                       origLoops[i].getUpperBoundMap());
+    reducedLoops[i].setLowerBound(newLbOperands,
+                                  origLoops[i].getLowerBoundMap());
+    reducedLoops[i].setUpperBound(newUbOperands,
+                                  origLoops[i].getUpperBoundMap());
     reducedLoops[i].setStep(origLoops[i].getStep());
   }
 
@@ -141,12 +143,14 @@ static void constructReducedLoopNest(MutableArrayRef<AffineForOp> origLoops,
   // Preserve the lower bounds, upper bounds and step sizes for loops following
   // the reduced ones.
   for (unsigned i = reduceAtLevel + 1; i < total_width; i++) {
-    OperandRange newLbOperands = origLoops[i - 1 + reducedSize].getLowerBoundOperands();
-    OperandRange newUbOperands = origLoops[i - 1 + reducedSize].getUpperBoundOperands();
-    reducedLoops[i].setLowerBound(newLbOperands, 
-                                       origLoops[i - 1 + reducedSize].getLowerBoundMap());
-    reducedLoops[i].setUpperBound(newUbOperands, 
-                                       origLoops[i - 1 + reducedSize].getUpperBoundMap());
+    OperandRange newLbOperands =
+        origLoops[i - 1 + reducedSize].getLowerBoundOperands();
+    OperandRange newUbOperands =
+        origLoops[i - 1 + reducedSize].getUpperBoundOperands();
+    reducedLoops[i].setLowerBound(
+        newLbOperands, origLoops[i - 1 + reducedSize].getLowerBoundMap());
+    reducedLoops[i].setUpperBound(
+        newUbOperands, origLoops[i - 1 + reducedSize].getUpperBoundMap());
     reducedLoops[i].setStep(origLoops[i - 1 + reducedSize].getStep());
   }
 
@@ -164,11 +168,11 @@ static void constructReducedLoopNest(MutableArrayRef<AffineForOp> origLoops,
     divConst *= origLoops[loopLevel].getConstantUpperBound();
   }
   auto map_0 = AffineMap::get(1, 0, dim0.floorDiv(divConst));
-  AffineApplyOp apply_0 = applyBuilder.create<AffineApplyOp>(innerFor.getLoc(),
-                                map_0, singleFor.getInductionVar());
+  AffineApplyOp apply_0 = applyBuilder.create<AffineApplyOp>(
+      innerFor.getLoc(), map_0, singleFor.getInductionVar());
   restoredIVs.push_back(apply_0);
 
-  // The IV in the middle loop nests can be calculated as 
+  // The IV in the middle loop nests can be calculated as
   // ik = (i / divConst) % ak
   for (unsigned i = 1; i < reducedSize - 1; i++) {
     unsigned loopLevel = loopMergeLevels[i];
@@ -180,8 +184,8 @@ static void constructReducedLoopNest(MutableArrayRef<AffineForOp> origLoops,
     }
     AffineExpr dim0 = applyBuilder.getAffineDimExpr(0);
     auto map = AffineMap::get(1, 0, dim0.floorDiv(divConst) % modConst);
-    AffineApplyOp apply = applyBuilder.create<AffineApplyOp>(innerFor.getLoc(),
-                                map, singleFor.getInductionVar());
+    AffineApplyOp apply = applyBuilder.create<AffineApplyOp>(
+        innerFor.getLoc(), map, singleFor.getInductionVar());
     restoredIVs.push_back(apply);
   }
 
@@ -190,8 +194,8 @@ static void constructReducedLoopNest(MutableArrayRef<AffineForOp> origLoops,
   unsigned loopLevel = loopMergeLevels[reducedSize - 1];
   int64_t modConst = origLoops[loopLevel].getConstantUpperBound();
   auto map_1 = AffineMap::get(1, 0, dim0 % modConst);
-  AffineApplyOp apply_1 = applyBuilder.create<AffineApplyOp>(innerFor.getLoc(),
-                                map_1, singleFor.getInductionVar());
+  AffineApplyOp apply_1 = applyBuilder.create<AffineApplyOp>(
+      innerFor.getLoc(), map_1, singleFor.getInductionVar());
   restoredIVs.push_back(apply_1);
   assert(restoredIVs.size() == loopMergeLevels.size());
 
@@ -199,8 +203,7 @@ static void constructReducedLoopNest(MutableArrayRef<AffineForOp> origLoops,
   SmallVector<Value, 6> origLoopIVs;
   extractForInductionVars(origLoops, &origLoopIVs);
   for (unsigned i = 0; i < reduceAtLevel; i++) {
-    origLoopIVs[i].replaceAllUsesWith(
-      reducedLoops[i].getInductionVar());
+    origLoopIVs[i].replaceAllUsesWith(reducedLoops[i].getInductionVar());
   }
   for (unsigned i = 0; i < loopMergeLevels.size(); i++) {
     unsigned loopLevel = loopMergeLevels[i];
@@ -208,9 +211,9 @@ static void constructReducedLoopNest(MutableArrayRef<AffineForOp> origLoops,
   }
   for (unsigned i = reduceExitLevel; i < origLoopIVs.size(); i++) {
     origLoopIVs[i].replaceAllUsesWith(
-      reducedLoops[i - loopMergeLevels.size() + 1].getInductionVar());
+        reducedLoops[i - loopMergeLevels.size() + 1].getInductionVar());
   }
-  
+
   // Erase the old loop nest.
   origLoops[0].erase();
 }
@@ -225,27 +228,27 @@ void AIRLoopMergingPass::runOnOperation() {
 
   // Assume that the pass takes in loops that are in normalized form.
   std::vector<SmallVector<AffineForOp, 6>> bands;
-  xilinx::air::getTileableBands(func, bands, 
-                   AIRLoopMergingPass::affineOptAttrName, clAIROptLabel);
+  xilinx::air::getTileableBands(
+      func, bands, AIRLoopMergingPass::affineOptAttrName, clAIROptLabel);
 
-  for (auto &band: bands) {
+  for (auto &band : bands) {
     MutableArrayRef<AffineForOp> origLoops = band;
     unsigned total_width = origLoops.size() - reduceLoopLevels.size() + 1;
     SmallVector<AffineForOp, 6> reducedLoops(total_width);
 
-    constructReducedLoopNest(origLoops, 
-                             total_width, 
-                             reducedLoops, 
+    constructReducedLoopNest(origLoops, total_width, reducedLoops,
                              reduceLoopLevels);
-    
+
     // Preserve the loop band label
     auto stringAttr = band[0]->getAttrOfType<StringAttr>(
         AIRLoopMergingPass::affineOptAttrName);
     if (stringAttr) {
-      StringAttr postLabel = clAIROptPostLabel.empty() ? 
-        stringAttr:StringAttr::get(clAIROptPostLabel, stringAttr.getType());
-        reducedLoops[0]->setAttr(
-          AIRLoopMergingPass::affineOptAttrName, postLabel);
+      StringAttr postLabel =
+          clAIROptPostLabel.empty()
+              ? stringAttr
+              : StringAttr::get(clAIROptPostLabel, stringAttr.getType());
+      reducedLoops[0]->setAttr(AIRLoopMergingPass::affineOptAttrName,
+                               postLabel);
     }
   }
 }

@@ -11,8 +11,8 @@
 // mlir/lib/Dialect/Affine/Transforms/AffineLoopNormalize.cpp
 // ===---------------------------------------------------------------------===//
 //
-// This file implements a multi-dimensional loop tiling pass that tiles all 
-// valid bands of loops with the same set of tiling sizes. It can also 
+// This file implements a multi-dimensional loop tiling pass that tiles all
+// valid bands of loops with the same set of tiling sizes. It can also
 // automatically tile a loop band, with the prime factors of the original loop
 // bounds as the new loop bounds.
 //
@@ -46,8 +46,9 @@ using namespace xilinx;
 using namespace xilinx::air;
 
 namespace {
-  
-class AIRAutomaticTilingPass : public AIRAutomaticTilingBase<AIRAutomaticTilingPass> {
+
+class AIRAutomaticTilingPass
+    : public AIRAutomaticTilingBase<AIRAutomaticTilingPass> {
 
 public:
   AIRAutomaticTilingPass() = default;
@@ -56,8 +57,8 @@ public:
   void runOnOperation() override;
 
   // Tile all bands of loops with the same set of tiling sizes.
-  void tileLoopsManually(std::vector<SmallVector<AffineForOp, 6>> &bands, 
-                 unsigned tileSize);
+  void tileLoopsManually(std::vector<SmallVector<AffineForOp, 6>> &bands,
+                         unsigned tileSize);
 
   // Tile each band of loops with prime factors of the loop tripcounts.
   void tileLoopsAutomatically(std::vector<SmallVector<AffineForOp, 6>> &bands);
@@ -67,7 +68,6 @@ public:
   static const char *affineOptAttrName;
 
 private:
-
 };
 
 const char *AIRAutomaticTilingPass::affineOptAttrName = "affine_opt_label";
@@ -82,7 +82,7 @@ void AIRAutomaticTilingPass::runOnOperation() {
       optTileSizes.push_back(loopTileSizes[i]);
     }
 
-    for (auto tileSize: optTileSizes) {
+    for (auto tileSize : optTileSizes) {
       // Bands of loops to tile
       std::vector<SmallVector<AffineForOp, 6>> bands;
       xilinx::air::getTileableBands(
@@ -97,15 +97,15 @@ void AIRAutomaticTilingPass::runOnOperation() {
             return;
       });
     }
-  } else { 
+  } else {
     // Find the optimal tile sizes automatically.
     std::vector<SmallVector<AffineForOp, 6>> bands;
     xilinx::air::getTileableBands(
         func, bands, AIRAutomaticTilingPass::affineOptAttrName, clLabel);
 
     // Normalize every loop before tiling.
-    for (auto band: bands) 
-      for (AffineForOp affineFor: band) 
+    for (auto band : bands)
+      for (AffineForOp affineFor : band)
         if (failed(normalizeAffineFor(affineFor)))
           continue;
 
@@ -115,15 +115,15 @@ void AIRAutomaticTilingPass::runOnOperation() {
     bands.clear();
     xilinx::air::getTileableBands(
         func, bands, AIRAutomaticTilingPass::affineOptAttrName, clLabel);
-    for (auto band: bands) 
-      for (AffineForOp affineFor: band) 
+    for (auto band : bands)
+      for (AffineForOp affineFor : band)
         if (failed(normalizeAffineFor(affineFor)))
           continue;
   }
 }
 
 /// Factorizes a long number into its prime factors.
-static void factorConstant(int64_t longNum, 
+static void factorConstant(int64_t longNum,
                            SmallVectorImpl<int64_t> &primeFactors) {
   while (longNum % 2 == 0) {
     primeFactors.push_back(2);
@@ -135,28 +135,29 @@ static void factorConstant(int64_t longNum,
       longNum = longNum / i;
     }
   }
-  if (longNum > 2) 
+  if (longNum > 2)
     primeFactors.push_back(longNum);
 }
 
 /// Construct a tiled loop nest and set their loop range.
-static void constructTiledLoopNest(MutableArrayRef<AffineForOp> origLoops,
-                            unsigned total_width,
-                            MutableArrayRef<AffineForOp> tiledLoops,
-                            ArrayRef<SmallVector<int64_t, 6>> setOfPrimeFactors,
-                            SmallVectorImpl<unsigned> &loopLevels) {
+static void
+constructTiledLoopNest(MutableArrayRef<AffineForOp> origLoops,
+                       unsigned total_width,
+                       MutableArrayRef<AffineForOp> tiledLoops,
+                       ArrayRef<SmallVector<int64_t, 6>> setOfPrimeFactors,
+                       SmallVectorImpl<unsigned> &loopLevels) {
   AffineForOp rootAffineForOp = origLoops[0];
   Location rootForLoc = rootAffineForOp.getLoc();
   Operation *topLoop = rootAffineForOp.getOperation();
   AffineForOp innermostLoop;
-  
+
   // Create an Affine for loop band.
   for (unsigned i = 0; i < total_width; i++) {
     OpBuilder b(topLoop);
     AffineForOp intraLoop = b.create<AffineForOp>(rootForLoc, 0, 0);
     intraLoop.getBody()->getOperations().splice(
-      intraLoop.getBody()->begin(), topLoop->getBlock()->getOperations(),
-      topLoop);
+        intraLoop.getBody()->begin(), topLoop->getBlock()->getOperations(),
+        topLoop);
     tiledLoops[total_width - 1 - i] = intraLoop;
     topLoop = intraLoop.getOperation();
     if (i == 0)
@@ -168,7 +169,7 @@ static void constructTiledLoopNest(MutableArrayRef<AffineForOp> origLoops,
   auto &ops = src.getBody()->getOperations();
   Block::iterator innerForLoc = innermostLoop.getBody()->begin();
   innermostLoop.getBody()->getOperations().splice(innerForLoc, ops, ops.begin(),
-                                         std::prev(ops.end()));
+                                                  std::prev(ops.end()));
 
   // Manage the tiled loop bounds and step sizes.
   assert(!origLoops.empty());
@@ -188,10 +189,10 @@ static void constructTiledLoopNest(MutableArrayRef<AffineForOp> origLoops,
     // c) step size = product of all successive primefactors
     OperandRange newLbOperands = origLoops[i].getLowerBoundOperands();
     OperandRange newUbOperands = origLoops[i].getUpperBoundOperands();
-    tiledLoops[forOpLevel].setLowerBound(newLbOperands, 
-                                       origLoops[i].getLowerBoundMap());
-    tiledLoops[forOpLevel].setUpperBound(newUbOperands, 
-                                       origLoops[i].getUpperBoundMap());
+    tiledLoops[forOpLevel].setLowerBound(newLbOperands,
+                                         origLoops[i].getLowerBoundMap());
+    tiledLoops[forOpLevel].setUpperBound(newUbOperands,
+                                         origLoops[i].getUpperBoundMap());
     int64_t stepSize = 1;
     for (unsigned j = 1; j < single_width; j++) {
       stepSize = stepSize * primeFactors[j];
@@ -204,7 +205,7 @@ static void constructTiledLoopNest(MutableArrayRef<AffineForOp> origLoops,
       AffineMap lbMap = b.getDimIdentityMap();
       tiledLoops[forOpLevel + j].setLowerBound(
           tiledLoops[forOpLevel + j - 1].getInductionVar(), lbMap);
-      
+
       // b) upper bound = the outer loop IV + step size of outer loop
       int64_t shiftAmount = 1;
       for (unsigned k = j; k < single_width; k++) {
@@ -220,7 +221,7 @@ static void constructTiledLoopNest(MutableArrayRef<AffineForOp> origLoops,
         newStepSize = newStepSize * primeFactors[k];
       }
       tiledLoops[forOpLevel + j].setStep(newStepSize);
-    } 
+    }
 
     // Note down which level to replace the loop IVs in the new loop body.
     loopLevels.push_back(forOpLevel + single_width - 1);
@@ -229,15 +230,15 @@ static void constructTiledLoopNest(MutableArrayRef<AffineForOp> origLoops,
   }
 }
 
-/// Tile a loop nest into multiple subloops where the new loop bounds are prime 
+/// Tile a loop nest into multiple subloops where the new loop bounds are prime
 /// factors of the original loop bounds.
 /// Assume that 1) the loop is in the normalized form. The lower bound is always
 /// 0, and the upper bound is the loop tripcount. The step is alwasy 1. 2) the
-/// loop bounds are all constants.  
+/// loop bounds are all constants.
 /// Assume hyper-rectangular loop space. No cross-axis dependency is considered.
 void AIRAutomaticTilingPass::tileLoopsAutomatically(
-                              std::vector<SmallVector<AffineForOp, 6>> &bands) {
-  for (auto &band: bands) {
+    std::vector<SmallVector<AffineForOp, 6>> &bands) {
+  for (auto &band : bands) {
     // For each band of loops, get the array of loops and the loop bound.
     MutableArrayRef<AffineForOp> origLoops = band;
     AffineForOp outerAffineForOp = origLoops[0];
@@ -248,21 +249,18 @@ void AIRAutomaticTilingPass::tileLoopsAutomatically(
     for (auto forOp : origLoops) {
       int64_t upperLoopBound = forOp.getConstantUpperBound();
       assert(upperLoopBound > 1);
-      
+
       SmallVector<int64_t, 6> primeFactors;
       factorConstant(upperLoopBound, primeFactors);
       total_width = total_width + primeFactors.size();
       setOfPrimeFactors.push_back(primeFactors);
     }
-    
+
     // Construct a tiled loop nest and set the loop bounds.
     SmallVector<AffineForOp, 6> tiledLoops(total_width);
     SmallVector<unsigned, 6> loopLevels;
-    constructTiledLoopNest(origLoops, 
-                           total_width, 
-                           tiledLoops,  
-                           setOfPrimeFactors, 
-                           loopLevels); 
+    constructTiledLoopNest(origLoops, total_width, tiledLoops,
+                           setOfPrimeFactors, loopLevels);
 
     // Replace original IVs with intra-tile IVs.
     SmallVector<Value, 3> origLoopIVs;
@@ -270,7 +268,7 @@ void AIRAutomaticTilingPass::tileLoopsAutomatically(
     for (unsigned i = 0; i < origLoopIVs.size(); i++) {
       unsigned singleLoopLevel = loopLevels[i];
       origLoopIVs[i].replaceAllUsesWith(
-        tiledLoops[singleLoopLevel].getInductionVar());
+          tiledLoops[singleLoopLevel].getInductionVar());
     }
 
     // Erase the old loop nest.
@@ -283,15 +281,14 @@ void AIRAutomaticTilingPass::tileLoopsAutomatically(
           clPostLabel.empty()
               ? stringAttr
               : StringAttr::get(clPostLabel, stringAttr.getType());
-      tiledLoops[0]->setAttr(
-          AIRAutomaticTilingPass::affineOptAttrName, postLabel);
+      tiledLoops[0]->setAttr(AIRAutomaticTilingPass::affineOptAttrName,
+                             postLabel);
     }
   }
 }
 
 void AIRAutomaticTilingPass::tileLoopsManually(
-                              std::vector<SmallVector<AffineForOp, 6>> &bands,
-                              unsigned tileSize) {
+    std::vector<SmallVector<AffineForOp, 6>> &bands, unsigned tileSize) {
   // Tile each band.
   for (auto &band : bands) {
     // Set up tile sizes; fill missing tile sizes at the end with default tile
@@ -319,8 +316,8 @@ void AIRAutomaticTilingPass::tileLoopsManually(
           clPostLabel.empty()
               ? stringAttr
               : StringAttr::get(clPostLabel, stringAttr.getType());
-      tiledNest[0]->setAttr(
-          AIRAutomaticTilingPass::affineOptAttrName, postLabel);
+      tiledNest[0]->setAttr(AIRAutomaticTilingPass::affineOptAttrName,
+                            postLabel);
     }
   }
 }
