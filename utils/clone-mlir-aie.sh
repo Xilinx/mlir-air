@@ -7,18 +7,20 @@
 
 ##===----------------------------------------------------------------------===##
 #
-# This script checks out MLIR-AIE.  We use this instead of a git submodule to 
+# This script checks out MLIR-AIE.  We use this instead of a git submodule to
 # manage commithash synchronization with LLVM.
 #
 # This script is called from the github workflows.
 #
 ##===----------------------------------------------------------------------===##
 
-export HASH=47ff7d38a89372c02e22515e61a696f2a3e93013
+commithash=47ff7d38a89372c02e22515e61a696f2a3e93013
 
-git clone --depth 1 https://github.com/Xilinx/mlir-aie.git mlir-aie
-pushd mlir-aie
-git fetch --depth=1 origin $HASH
-git checkout $HASH
-git submodule update --init
-popd
+# Avoid checking out to spare time since we switch to another branch later
+git clone --depth 1 --no-checkout https://github.com/Xilinx/mlir-aie.git mlir-aie
+(
+  cd mlir-aie
+  git fetch --depth=1 origin $commithash
+  git checkout $commithash
+  git submodule update --depth 1 --recursive --init
+)

@@ -62,15 +62,16 @@ just make a new worktree from it by using:
 
 TODO: explain the case of cmakeModules.
 
-We point LLVM and subsequent tools to a common installation directory.
+We point LLVM and subsequent tools to a common installation directory,
+assuming above the current `mlir-air` work-tree directory.
 
 ```
-./utils/build-llvm-local.sh llvm build ../../install
+./utils/build-llvm-local.sh llvm build ../install
 ```
 
 Next, clone and build MLIR-AIE with paths to llvm, aienginev2, and cmakeModules repositories. Again, we use a common installation directory. Note that in the following commands, we assume that the aienginev2 library is installed in /opt/xaiengine as directed in the `Building on x86 with runtime for PCIe` section. If the aienginev2 library was installed elsewhere, be sure that the 4th argument to build mlir-aie points to that location. 
 ```
-./clone-mlir-aie.sh
+./utils/clone-mlir-aie.sh
 ./build-mlir-aie-local.sh llvm mlir-aie/cmake/modulesXilinx /opt/xaiengine mlir-aie build ../../install
 ```
 

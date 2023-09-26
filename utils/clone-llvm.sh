@@ -2,7 +2,7 @@
 
 ##===- utils/clone-llvm.sh - Clone LLVM ---------------------*- Script -*-===##
 #
-# Copyright (C) 2022, Advanced Micro Devices, Inc.
+# Copyright (C) 2023, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
 ##===----------------------------------------------------------------------===##
@@ -15,7 +15,7 @@
 ##===----------------------------------------------------------------------===##
 
 # The LLVM commit the project depends on
-export commithash=11c3b979e6512b00a5bd9c3e0d4ed986cf500630
+commithash=11c3b979e6512b00a5bd9c3e0d4ed986cf500630
 # It is not clear why we need a branch
 branch=air-2022.12
 
@@ -36,7 +36,7 @@ if [ x"$1" == x--llvm-worktree ]; then
   )
 else
   # Avoid checking out to spare time since we switch to another branch later
-  git clone --depth 1 --no-checkout  https://github.com/llvm/llvm-project.git llvm
+  git clone --depth 1 --no-checkout https://github.com/llvm/llvm-project.git llvm
   (
     cd llvm
     # Then fetch the interesting part
