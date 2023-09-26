@@ -801,13 +801,12 @@ public:
   }
 };
 
-class L1AffineStoreOpConversion
-    : public OpConversionPattern<affine::AffineStoreOp> {
+class L1AffineStoreOpConversion : public OpConversionPattern<AffineStoreOp> {
 public:
-  using OpConversionPattern<affine::AffineStoreOp>::OpConversionPattern;
+  using OpConversionPattern<AffineStoreOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(affine::AffineStoreOp op, OpAdaptor adaptor,
+  matchAndRewrite(AffineStoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = op.getMemref().getType().cast<MemRefType>();
@@ -856,22 +855,21 @@ public:
   }
 };
 
-class L1AffineLoadOpConversion
-    : public OpConversionPattern<affine::AffineLoadOp> {
+class L1AffineLoadOpConversion : public OpConversionPattern<AffineLoadOp> {
 public:
-  using OpConversionPattern<affine::AffineLoadOp>::OpConversionPattern;
+  using OpConversionPattern<AffineLoadOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(affine::AffineLoadOp op, OpAdaptor adaptor,
+  matchAndRewrite(AffineLoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = op.getMemref().getType().cast<MemRefType>();
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
-    auto load = rewriter.create<affine::AffineLoadOp>(
-        op.getLoc(), op->getResultTypes(), adaptor.getOperands(),
-        op->getAttrs());
+    auto load =
+        rewriter.create<AffineLoadOp>(op.getLoc(), op->getResultTypes(),
+                                      adaptor.getOperands(), op->getAttrs());
     rewriter.replaceOp(op, load.getResult());
     return success();
   }
@@ -1204,7 +1202,7 @@ public:
 
     LLVMTypeConverter converter(context);
 
-    converter.addConversion([&](Type type) -> std::optional<Type> {
+    converter.addConversion([&](Type type) -> Optional<Type> {
       // convert L1 memrefs to L3
       if (auto memref = type.dyn_cast<MemRefType>())
         if (memref.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1)
@@ -1213,13 +1211,13 @@ public:
                                        memref.getLayout(), 0);
       if (auto t = type.dyn_cast<xilinx::airrt::EventType>())
         return LLVM::LLVMPointerType::get(IntegerType::get(context, 64));
-      return std::optional<Type>(type);
+      return type;
     });
 
     auto addUnrealizedCast = [](OpBuilder &builder, Type type,
                                 ValueRange inputs, Location loc) {
       auto cast = builder.create<UnrealizedConversionCastOp>(loc, type, inputs);
-      return std::optional<Value>(cast.getResult(0));
+      return Optional<Value>(cast.getResult(0));
     };
     converter.addSourceMaterialization(addUnrealizedCast);
     converter.addTargetMaterialization(addUnrealizedCast);
@@ -1242,8 +1240,8 @@ public:
     ConversionTarget target(*context);
 
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           arith::ArithDialect, affine::AffineDialect,
-                           scf::SCFDialect, memref::MemRefDialect>();
+                           arith::ArithDialect, AffineDialect, scf::SCFDialect,
+                           memref::MemRefDialect>();
 
     target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
       return (op.getType().getMemorySpaceAsInt() == 0);
@@ -1255,15 +1253,13 @@ public:
           0);
     });
 
-    target.addDynamicallyLegalOp<
-        affine::AffineStoreOp>([&](affine::AffineStoreOp op) {
+    target.addDynamicallyLegalOp<AffineStoreOp>([&](AffineStoreOp op) {
       return (
           op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
           (int)xilinx::air::MemorySpace::L1);
     });
 
-    target.addDynamicallyLegalOp<affine::AffineLoadOp>([&](affine::AffineLoadOp
-                                                               op) {
+    target.addDynamicallyLegalOp<AffineLoadOp>([&](AffineLoadOp op) {
       return (
           op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
           (int)xilinx::air::MemorySpace::L1);

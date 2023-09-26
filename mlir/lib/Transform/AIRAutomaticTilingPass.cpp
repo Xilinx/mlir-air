@@ -56,13 +56,11 @@ public:
   void runOnOperation() override;
 
   // Tile all bands of loops with the same set of tiling sizes.
-  void
-  tileLoopsManually(std::vector<SmallVector<affine::AffineForOp, 6>> &bands,
-                    unsigned tileSize);
+  void tileLoopsManually(std::vector<SmallVector<AffineForOp, 6>> &bands, 
+                 unsigned tileSize);
 
   // Tile each band of loops with prime factors of the loop tripcounts.
-  void tileLoopsAutomatically(
-      std::vector<SmallVector<affine::AffineForOp, 6>> &bands);
+  void tileLoopsAutomatically(std::vector<SmallVector<AffineForOp, 6>> &bands);
 
   SmallVector<unsigned, 6> optTileSizes;
 
@@ -86,7 +84,7 @@ void AIRAutomaticTilingPass::runOnOperation() {
 
     for (auto tileSize: optTileSizes) {
       // Bands of loops to tile
-      std::vector<SmallVector<affine::AffineForOp, 6>> bands;
+      std::vector<SmallVector<AffineForOp, 6>> bands;
       xilinx::air::getTileableBands(
           func, bands, AIRAutomaticTilingPass::affineOptAttrName, clLabel);
 
@@ -94,20 +92,20 @@ void AIRAutomaticTilingPass::runOnOperation() {
 
       // Normalize the loop space after tiling each dimension.
       func.walk([](Operation *op) {
-        if (auto affineFor = dyn_cast<affine::AffineForOp>(op))
+        if (auto affineFor = dyn_cast<AffineForOp>(op))
           if (failed(normalizeAffineFor(affineFor)))
             return;
       });
     }
   } else { 
     // Find the optimal tile sizes automatically.
-    std::vector<SmallVector<affine::AffineForOp, 6>> bands;
+    std::vector<SmallVector<AffineForOp, 6>> bands;
     xilinx::air::getTileableBands(
         func, bands, AIRAutomaticTilingPass::affineOptAttrName, clLabel);
 
     // Normalize every loop before tiling.
-    for (auto band : bands)
-      for (affine::AffineForOp affineFor : band)
+    for (auto band: bands) 
+      for (AffineForOp affineFor: band) 
         if (failed(normalizeAffineFor(affineFor)))
           continue;
 
@@ -117,8 +115,8 @@ void AIRAutomaticTilingPass::runOnOperation() {
     bands.clear();
     xilinx::air::getTileableBands(
         func, bands, AIRAutomaticTilingPass::affineOptAttrName, clLabel);
-    for (auto band : bands)
-      for (affine::AffineForOp affineFor : band)
+    for (auto band: bands) 
+      for (AffineForOp affineFor: band) 
         if (failed(normalizeAffineFor(affineFor)))
           continue;
   }
@@ -142,22 +140,20 @@ static void factorConstant(int64_t longNum,
 }
 
 /// Construct a tiled loop nest and set their loop range.
-static void
-constructTiledLoopNest(MutableArrayRef<affine::AffineForOp> origLoops,
-                       unsigned total_width,
-                       MutableArrayRef<affine::AffineForOp> tiledLoops,
-                       ArrayRef<SmallVector<int64_t, 6>> setOfPrimeFactors,
-                       SmallVectorImpl<unsigned> &loopLevels) {
-  affine::AffineForOp rootAffineForOp = origLoops[0];
+static void constructTiledLoopNest(MutableArrayRef<AffineForOp> origLoops,
+                            unsigned total_width,
+                            MutableArrayRef<AffineForOp> tiledLoops,
+                            ArrayRef<SmallVector<int64_t, 6>> setOfPrimeFactors,
+                            SmallVectorImpl<unsigned> &loopLevels) {
+  AffineForOp rootAffineForOp = origLoops[0];
   Location rootForLoc = rootAffineForOp.getLoc();
   Operation *topLoop = rootAffineForOp.getOperation();
-  affine::AffineForOp innermostLoop;
-
+  AffineForOp innermostLoop;
+  
   // Create an Affine for loop band.
   for (unsigned i = 0; i < total_width; i++) {
     OpBuilder b(topLoop);
-    affine::AffineForOp intraLoop =
-        b.create<affine::AffineForOp>(rootForLoc, 0, 0);
+    AffineForOp intraLoop = b.create<AffineForOp>(rootForLoc, 0, 0);
     intraLoop.getBody()->getOperations().splice(
       intraLoop.getBody()->begin(), topLoop->getBlock()->getOperations(),
       topLoop);
@@ -168,7 +164,7 @@ constructTiledLoopNest(MutableArrayRef<affine::AffineForOp> origLoops,
   }
 
   // Move the innermost loop body into the specified location....
-  affine::AffineForOp src = origLoops.back();
+  AffineForOp src = origLoops.back();
   auto &ops = src.getBody()->getOperations();
   Block::iterator innerForLoc = innermostLoop.getBody()->begin();
   innermostLoop.getBody()->getOperations().splice(innerForLoc, ops, ops.begin(),
@@ -240,11 +236,11 @@ constructTiledLoopNest(MutableArrayRef<affine::AffineForOp> origLoops,
 /// loop bounds are all constants.  
 /// Assume hyper-rectangular loop space. No cross-axis dependency is considered.
 void AIRAutomaticTilingPass::tileLoopsAutomatically(
-    std::vector<SmallVector<affine::AffineForOp, 6>> &bands) {
+                              std::vector<SmallVector<AffineForOp, 6>> &bands) {
   for (auto &band: bands) {
     // For each band of loops, get the array of loops and the loop bound.
-    MutableArrayRef<affine::AffineForOp> origLoops = band;
-    affine::AffineForOp outerAffineForOp = origLoops[0];
+    MutableArrayRef<AffineForOp> origLoops = band;
+    AffineForOp outerAffineForOp = origLoops[0];
 
     // Factor the loop bound into prime numbers.
     unsigned total_width = 0;
@@ -260,7 +256,7 @@ void AIRAutomaticTilingPass::tileLoopsAutomatically(
     }
     
     // Construct a tiled loop nest and set the loop bounds.
-    SmallVector<affine::AffineForOp, 6> tiledLoops(total_width);
+    SmallVector<AffineForOp, 6> tiledLoops(total_width);
     SmallVector<unsigned, 6> loopLevels;
     constructTiledLoopNest(origLoops, 
                            total_width, 
@@ -294,8 +290,8 @@ void AIRAutomaticTilingPass::tileLoopsAutomatically(
 }
 
 void AIRAutomaticTilingPass::tileLoopsManually(
-    std::vector<SmallVector<affine::AffineForOp, 6>> &bands,
-    unsigned tileSize) {
+                              std::vector<SmallVector<AffineForOp, 6>> &bands,
+                              unsigned tileSize) {
   // Tile each band.
   for (auto &band : bands) {
     // Set up tile sizes; fill missing tile sizes at the end with default tile
@@ -303,15 +299,14 @@ void AIRAutomaticTilingPass::tileLoopsManually(
     for (unsigned i = 0; i < band.size(); i++)
       actualTileSizes.push_back(tileSize);
 
-    SmallVector<affine::AffineForOp, 6> tiledNest;
+    SmallVector<AffineForOp, 6> tiledNest;
     if (failed(tilePerfectlyNested(band, actualTileSizes, &tiledNest)))
       return signalPassFailure();
 
     // Separate full and partial tiles.
     if (clTileSeparate) {
       auto intraTileLoops =
-          MutableArrayRef<affine::AffineForOp>(tiledNest).drop_front(
-              band.size());
+          MutableArrayRef<AffineForOp>(tiledNest).drop_front(band.size());
       (void)separateFullTiles(intraTileLoops);
     }
 
