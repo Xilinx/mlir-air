@@ -1016,7 +1016,7 @@ void AIRLabelBroadcastChannelWithTilePass::runOnOperation() {
   auto func = getOperation();
   auto ctx = func.getContext();
   func.walk([&](air::ChannelInterface op) {
-    auto aif = op->getParentOfType<affine::AffineIfOp>();
+    auto aif = op->getParentOfType<AffineIfOp>();
     auto herd = op->getParentOfType<air::HerdOp>();
     if (aif && herd) {
       // Fast forward through affine.if nest
