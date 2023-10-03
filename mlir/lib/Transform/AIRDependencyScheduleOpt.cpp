@@ -1014,6 +1014,82 @@ private:
   }
 };
 
+struct EnforceLoopCarriedMemrefDeallocPattern
+    : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp for_op,
+                                PatternRewriter &rewriter) const override {
+
+    // Check if the loop has already been processed
+    scf::YieldOp yield_op =
+        dyn_cast<scf::YieldOp>(for_op.getBody()->getTerminator());
+    std::vector<air::ExecuteOp> disconnected_deallocs;
+    for (auto exec : for_op.getOps<air::ExecuteOp>()) {
+      for (auto dealloc : exec.getOps<memref::DeallocOp>()) {
+        SmallVector<Operation *, 1> vec;
+        if (!hasPath(exec.getOperation(), yield_op.getOperation(), vec)) {
+          disconnected_deallocs.push_back(exec);
+        }
+      }
+    }
+
+    // Reconnect deallocs to loop-carried dependency path
+    if (!disconnected_deallocs.empty()) {
+      rewriter.setInsertionPoint(yield_op);
+      auto wa = rewriter.create<air::WaitAllOp>(
+          yield_op.getLoc(), air::AsyncTokenType::get(rewriter.getContext()),
+          yield_op->getOperands());
+      for (auto dealloc_exec : disconnected_deallocs) {
+        wa.addAsyncDependency(dealloc_exec.getAsyncToken());
+      }
+      auto new_yield_op = rewriter.create<scf::YieldOp>(
+          yield_op.getLoc(), SmallVector<Value>{wa.getAsyncToken()});
+      rewriter.eraseOp(yield_op.getOperation());
+    }
+
+    return success();
+  }
+
+private:
+  std::vector<Operation *> adjacent_events(Operation *event) const {
+    SmallVector<Value, 1> returned_tokens = {};
+    for (Value result : event->getResults()) {
+      if (result.getType().isa<air::AsyncTokenType>()) {
+        returned_tokens.push_back(result);
+      }
+    }
+    std::vector<Operation *> adj_set = {};
+    for (Value token : returned_tokens) {
+      for (Operation *user : token.getUsers()) {
+        adj_set.push_back(user);
+      }
+    }
+    return adj_set;
+  }
+
+  bool hasPath(Operation *start_event, Operation *end_event,
+               SmallVector<Operation *, 1> &vec) const {
+    vec.push_back(start_event);
+    if (start_event == end_event)
+      return true;
+    int pathCount = 0;
+    std::vector<Operation *> adj_set = adjacent_events(start_event);
+    for (auto adj_event : adj_set) {
+      SmallVector<Operation *, 1> tmp_vec;
+      if (hasPath(adj_event, end_event, tmp_vec)) {
+        pathCount++;
+        // Concatenate
+        vec.insert(vec.end(), tmp_vec.begin(), tmp_vec.end());
+      }
+    }
+    if (pathCount)
+      return true;
+    vec.pop_back();
+    return false;
+  }
+};
+
 struct HoistOpsNotUsingPingPongPattern : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -1931,6 +2007,40 @@ public:
 private:
 };
 
+class AIREnforceLoopCarriedMemrefDeallocPattern
+    : public AIREnforceLoopCarriedMemrefDeallocPatternBase<
+          AIREnforceLoopCarriedMemrefDeallocPattern> {
+
+public:
+  AIREnforceLoopCarriedMemrefDeallocPattern() = default;
+  AIREnforceLoopCarriedMemrefDeallocPattern(
+      const AIREnforceLoopCarriedMemrefDeallocPattern &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<scf::SCFDialect, air::airDialect>();
+  }
+
+  void runOptPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<EnforceLoopCarriedMemrefDeallocPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runOnFunction(func::FuncOp f) { runOptPatterns(f); }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps) {
+      runOnFunction(f);
+    }
+  }
+
+private:
+};
+
 } // namespace
 
 namespace xilinx {
@@ -1982,6 +2092,10 @@ std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass() {
 
 std::unique_ptr<Pass> createAIRUnrollChannelByFactorPattern() {
   return std::make_unique<AIRUnrollChannelByFactorPattern>();
+}
+
+std::unique_ptr<Pass> createAIREnforceLoopCarriedMemrefDeallocPattern() {
+  return std::make_unique<AIREnforceLoopCarriedMemrefDeallocPattern>();
 }
 
 } // namespace air

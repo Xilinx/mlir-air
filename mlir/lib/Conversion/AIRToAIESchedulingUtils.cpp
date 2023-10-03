@@ -241,6 +241,38 @@ DMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
   return output;
 }
 
+// A simple selection sorting implementation.
+inline void swap(std::vector<Operation *> &a, int i, int j) {
+  Operation *t = a[i];
+  a[i] = a[j];
+  a[j] = t;
+}
+
+void selection(std::vector<Operation *> &a) {
+  int i, j, min;
+  for (i = 0; i < a.size() - 1; i++) {
+    min = i;
+    for (j = i + 1; j < a.size(); j++) {
+      auto a_j = dyn_cast<air::MemcpyInterface>(a[j]);
+      auto a_min = dyn_cast<air::MemcpyInterface>(a[min]);
+      if (a_j.getId() < a_min.getId())
+        min = j;
+    }
+    swap(a, min, i);
+  }
+}
+
+// Sort all ops being allocated to each DMA channel (based on id which indicates
+// op sequence), to avoid ping-pong deadlock.
+void DMAAllocator::sortMemcpyOps(std::vector<Operation *> dma_memcpy_ops) {
+  for (auto &alloc : this->mm2s_allocs) {
+    selection(alloc.memcpyOps);
+  }
+  for (auto &alloc : this->s2mm_allocs) {
+    selection(alloc.memcpyOps);
+  }
+}
+
 // TileDMAAllocator impl.
 
 TileDMAAllocator::TileDMAAllocator(AIE::DeviceOp &device) {
@@ -689,8 +721,8 @@ bool groupingMemcpysByLoop(std::vector<MemcpyBundleAsFlow> &memcpy_flows) {
       for_loops_log_s2mm;
   for (auto &f : memcpy_flows) {
     if (f.MM2S_memspace_as_int == (int)air::MemorySpace::L1) {
-      auto core = f.MM2S[0]->getParentOfType<AIE::CoreOp>();
       for (auto o : f.MM2S) {
+        auto core = o->getParentOfType<AIE::CoreOp>();
         f.flow_op_group = foundInVector<scf::ForOp>(
             o->getParentOfType<scf::ForOp>(), for_loops_log_mm2s[core]);
         if (f.flow_op_group == for_loops_log_mm2s[core].size()) {
@@ -699,9 +731,9 @@ bool groupingMemcpysByLoop(std::vector<MemcpyBundleAsFlow> &memcpy_flows) {
       }
     }
     if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L1) {
-      auto core = f.S2MM[0][0]->getParentOfType<AIE::CoreOp>();
       for (int i = 0; i < f.S2MM.size(); i++) {
         for (auto o : f.S2MM[i]) {
+          auto core = o->getParentOfType<AIE::CoreOp>();
           f.flow_op_group = foundInVector<scf::ForOp>(
               o->getParentOfType<scf::ForOp>(), for_loops_log_s2mm[core]);
           if (f.flow_op_group == for_loops_log_s2mm[core].size()) {

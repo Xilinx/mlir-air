@@ -443,6 +443,14 @@ Value lookupOrDefaultRange(Value v, IRMapping &remap) {
   return remap.lookupOrDefault(v);
 }
 
+Operation *getLinalgOpFromExecuteOp(Operation *op) {
+  Operation *output = nullptr;
+  if (auto exec = dyn_cast<air::ExecuteOp>(op)) {
+    exec.walk([&](linalg::LinalgOp linalg_op) { output = linalg_op; });
+  }
+  return output;
+}
+
 SmallVector<Value, 1> lookupOrDefaultRange(SmallVector<Value, 1> vec,
                                            IRMapping &remap) {
   SmallVector<Value, 1> output;
@@ -485,6 +493,8 @@ T cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
       } else if (externalGetPut && dyn_cast<mlir::AffineIfOp>(child_op)) {
         // If externalGetPut is not nullptr, then broadcast lowering mode is on
         replaceAffineIfOpWithChannelOpAndClone(builder, remap, externalGetPut);
+      } else if (getLinalgOpFromExecuteOp(&child_op)) {
+        replaceAsyncOpWithWaitAllAndClone(builder, remap, &child_op, false);
       } else {
         builder.clone(child_op, remap);
       }
@@ -939,6 +949,8 @@ void HoistingAffineIf(mlir::AffineIfOp op) {
           }
         } else if (auto dma_op = dyn_cast<air::DmaMemcpyNdOp>(o)) {
           replaceAsyncOpWithWaitAllAndClone(module_builder, remap, &o, false);
+        } else if (getLinalgOpFromExecuteOp(&o)) {
+          replaceAsyncOpWithWaitAllAndClone(module_builder, remap, &o, false);
         } else {
           module_builder.clone(o, remap);
         }
@@ -1140,6 +1152,8 @@ class AIRDmaToAIRChannelConversion
               } else {
                 rewriter.clone(o, remap);
               }
+            } else if (getLinalgOpFromExecuteOp(&o)) {
+              replaceAsyncOpWithWaitAllAndClone(rewriter, remap, &o, false);
             } else {
               rewriter.clone(o, remap);
             }

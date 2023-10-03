@@ -996,6 +996,56 @@ void AIRHoistScfChannelGetPutPass::runOnOperation() {
   (void)applyPatternsAndFoldGreedily(op, std::move(patterns));
 }
 
+class AIRLabelBroadcastChannelWithTilePass
+    : public air::AIRLabelBroadcastChannelWithTilePassBase<
+          AIRLabelBroadcastChannelWithTilePass> {
+
+public:
+  AIRLabelBroadcastChannelWithTilePass() = default;
+  AIRLabelBroadcastChannelWithTilePass(
+      const AIRLabelBroadcastChannelWithTilePass &pass){};
+
+  void runOnOperation() override;
+
+private:
+};
+
+void AIRLabelBroadcastChannelWithTilePass::runOnOperation() {
+  // Util. functions for air dependency
+  xilinx::air::dependencyCanonicalizer canonicalizer;
+  auto func = getOperation();
+  auto ctx = func.getContext();
+  func.walk([&](air::ChannelInterface op) {
+    auto aif = op->getParentOfType<AffineIfOp>();
+    auto herd = op->getParentOfType<air::HerdOp>();
+    if (aif && herd) {
+      // Fast forward through affine.if nest
+      std::vector<Operation *> affine_if_nest;
+      Operation *spatial_loop = nullptr;
+      getAffineIfNestAndSpatialLoopFromOp(op, affine_if_nest, spatial_loop);
+      std::vector<int> position;
+      std::vector<Attribute> tiles;
+      OpBuilder builder(op);
+      for (unsigned i = 0; i < canonicalizer.getTripCountInHierarchyOp(herd);
+           i++) {
+        SmallVector<NamedAttribute, 5> attrs;
+        auto current_position = canonicalizer.getPositionFromIterator(i, herd);
+        if (positionHitsAffineIfCondition(op, spatial_loop, affine_if_nest,
+                                          current_position)) {
+          attrs.push_back(
+              NamedAttribute(StringAttr::get(ctx, "col"),
+                             builder.getI64IntegerAttr(current_position[0])));
+          attrs.push_back(
+              NamedAttribute(StringAttr::get(ctx, "row"),
+                             builder.getI64IntegerAttr(current_position[1])));
+          tiles.push_back(DictionaryAttr::get(ctx, attrs));
+        }
+      }
+      op->setAttr("tile", ArrayAttr::get(ctx, tiles));
+    }
+  });
+}
+
 } // anonymous namespace
 
 namespace xilinx {
@@ -1039,6 +1089,10 @@ std::unique_ptr<Pass> createAIRLowerHerdParallelPass() {
 
 std::unique_ptr<Pass> createAIRHoistScfChannelGetPutPass() {
   return std::make_unique<AIRHoistScfChannelGetPutPass>();
+}
+
+std::unique_ptr<Pass> createAIRLabelBroadcastChannelWithTilePass() {
+  return std::make_unique<AIRLabelBroadcastChannelWithTilePass>();
 }
 
 } // namespace air

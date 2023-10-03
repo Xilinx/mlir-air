@@ -957,6 +957,15 @@ def AIRUnrollChannelByFactorPattern: Pass<"air-unroll-channel-by-factor", "Modul
   ];
 }
 
+def AIREnforceLoopCarriedMemrefDeallocPattern: Pass<"air-enforce-loop-carried-memref-dealloc", "ModuleOp"> {
+  let summary = "Enforce memref dealloc ops in loop iterations";
+  let constructor = "xilinx::air::createAIREnforceLoopCarriedMemrefDeallocPattern()";
+  let description = [{
+    This pass enforces memref deallocation events to happen within each loop
+    iteration, by connecting them in the loop-carried dependency path.
+  }];
+}
+
 def AIRDependencyScheduleOpt: Pass<"air-dependency-schedule-opt", "ModuleOp"> {
   let summary = "Optimize scheduling based on air async dependency";
   let constructor = "xilinx::air::createAIRDependencyScheduleOptPass()";
@@ -1069,6 +1078,11 @@ def AIRLowerHerdParallelPass : Pass<"air-lower-herd-parallel", "func::FuncOp"> {
 def AIRHoistScfChannelGetPutPass : Pass<"air-hoist-channels", "func::FuncOp"> {
   let summary = "Hoist air.channel.get and air.channel.put out of scf.for.";
   let constructor = "xilinx::air::createAIRHoistScfChannelGetPutPass()";
+}
+
+def AIRLabelBroadcastChannelWithTilePass : Pass<"air-label-broadcast-channel-with-tile", "func::FuncOp"> {
+  let summary = "Label broadcasted channel ops with tile coordinates.";
+  let constructor = "xilinx::air::createAIRLabelBroadcastChannelWithTilePass()";
 }
 
 #endif // AIR_CONVERSION_PASSES

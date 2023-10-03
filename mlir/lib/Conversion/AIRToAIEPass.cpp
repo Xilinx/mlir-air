@@ -1714,6 +1714,10 @@ public:
       simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
                                  memtile_dma_alloc, tile_dma_alloc);
 
+    // Step 3.5: Sort all ops being allocated to each DMA channel, to avoid
+    // ping-pong deadlock.
+    tile_dma_alloc.sortMemcpyOps(dma_memcpy_ops);
+
     // Step 4: Connect flows
     for (auto &f : memcpy_flows) {
       for (unsigned i = 0; i < f.numS2MMAllocs; i++) {
@@ -2390,7 +2394,6 @@ public:
         int64_t col_offset = c ? *c : 0;
         int64_t row_offset = r ? *r : 0;
 
-        // createAIRRtMetadata(module_meta, shimDmaAlloc);
         std::vector<Attribute> dma_allocations;
         for (auto &t : shimDmaAlloc.s2mm_allocs) {
           auto tileOp = t.dma_tile;
@@ -2417,7 +2420,8 @@ public:
             attrs.push_back(
                 NamedAttribute(StringAttr::get(ctx, "location"),
                                builder.getI64IntegerAttr(tileOp.getCol())));
-            dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
+            push_back_if_unique<Attribute>(dma_allocations,
+                                           DictionaryAttr::get(ctx, attrs));
           }
         }
         for (auto &t : shimDmaAlloc.mm2s_allocs) {
@@ -2445,7 +2449,8 @@ public:
             attrs.push_back(
                 NamedAttribute(StringAttr::get(ctx, "location"),
                                builder.getI64IntegerAttr(tileOp.getCol())));
-            dma_allocations.push_back(DictionaryAttr::get(ctx, attrs));
+            push_back_if_unique<Attribute>(dma_allocations,
+                                           DictionaryAttr::get(ctx, attrs));
           }
         }
         auto segment_name =

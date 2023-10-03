@@ -73,6 +73,7 @@ public:
   allocation_info_t allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
                                        AIE::TileOp tile, int chan, int col,
                                        int row, std::vector<int> dma_id);
+  void sortMemcpyOps(std::vector<Operation *> dma_memcpy_ops);
 };
 
 class TileDMAAllocator : public DMAAllocator {
