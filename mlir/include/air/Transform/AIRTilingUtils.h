@@ -6,7 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-//===- AIRTilingUtils.h - AIR Loop tiling utilities ------------------------===//
+//===- AIRTilingUtils.h - AIR Loop tiling utilities
+//------------------------===//
 //
 // This header file defines utility functions that are commonly used in passes,
 // primarily AIR automatic loop tiling passes.
@@ -26,12 +27,11 @@ namespace air {
 /// Returns all maximal outermost perfect loop nests that has been attached with
 /// the given label to tile.
 void getTileableBands(func::FuncOp f,
-                      std::vector<SmallVector<affine::AffineForOp, 6>> &bands,
+                      std::vector<SmallVector<AffineForOp, 6>> &bands,
                       const char *attrName, StringRef label);
 
 /// Get the loop band that has been attached with the given label.
-affine::AffineForOp getLabel(affine::AffineForOp root, StringRef label,
-                             const char *attrName);
+AffineForOp getLabel(AffineForOp root, StringRef label, const char *attrName);
 
 } // namespace air
 } // namespace xilinx

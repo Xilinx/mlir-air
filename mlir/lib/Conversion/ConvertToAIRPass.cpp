@@ -55,10 +55,10 @@ using namespace xilinx;
 static uint64_t DmaMemcpyOpID;
 
 static FailureOr<air::DmaMemcpyNdOp>
-matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
+matchAndRewriteCopyOp(memref::CopyOp op, PatternRewriter &rewriter) {
   auto loc = op.getLoc();
-  Value src = op.getSource();
-  Value dst = op.getTarget();
+  auto src = op.getSource();
+  auto dst = op.getTarget();
 
   rewriter.setInsertionPoint(op);
 
@@ -83,7 +83,7 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   auto extractOperandsFromSubview = [&](memref::SubViewOp subview,
                                         auto &offsets, auto &sizes,
                                         auto &strides) {
-    auto subview_offsets = subview.getOffsets().begin();
+    auto subview_offsets = subview.offsets().begin();
     auto static_offsets = subview.getStaticOffsets();
     auto static_sizes = subview.getStaticSizes();
     auto static_strides = subview.getStaticStrides();
@@ -155,8 +155,8 @@ static void extractOperandsFromSubview(memref::SubViewOp subview,
                                        SmallVector<Value, 4> &offsets,
                                        SmallVector<Value, 4> &sizes,
                                        SmallVector<Value, 4> &strides) {
-  auto subview_offsets = subview.getOffsets().begin();
-  auto static_offsets = subview.getStaticOffsets();
+  auto subview_offsets = subview.offsets().begin();
+  auto static_offsets = subview.static_offsets();
   auto static_sizes = subview.getStaticSizes();
   auto static_strides = subview.getStaticStrides();
   auto loc = subview.getLoc();
@@ -490,7 +490,7 @@ T cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
         } else {
           builder.clone(child_op, remap);
         }
-      } else if (externalGetPut && dyn_cast<affine::AffineIfOp>(child_op)) {
+      } else if (externalGetPut && dyn_cast<mlir::AffineIfOp>(child_op)) {
         // If externalGetPut is not nullptr, then broadcast lowering mode is on
         replaceAffineIfOpWithChannelOpAndClone(builder, remap, externalGetPut);
       } else if (getLinalgOpFromExecuteOp(&child_op)) {
@@ -739,7 +739,7 @@ void replaceAIRDmaWithAIRChannelPairs(
   SmallVector<Value, 1> channel_idx_external{};
   if (op->hasAttr("broadcast_set")) {
     // If broadcasting, let internal channel inherit affine.if's operands
-    auto parent_affine_if_op = op->getParentOfType<affine::AffineIfOp>();
+    auto parent_affine_if_op = op->getParentOfType<mlir::AffineIfOp>();
     for (auto operand : parent_affine_if_op->getOperands()) {
       channel_idx_internal.push_back(operand);
     }
@@ -799,7 +799,7 @@ void replaceAIRDmaWithAIRChannelPairs(
   internalGetPutVector.push_back(internalGetPut);
 }
 
-void HoistingAffineIf(affine::AffineIfOp op) {
+void HoistingAffineIf(mlir::AffineIfOp op) {
   auto ctx = op->getContext();
 
   air::HierarchyInterface hier_op = nullptr;
@@ -831,7 +831,7 @@ void HoistingAffineIf(affine::AffineIfOp op) {
                                    then_block_dma, internalGetPut,
                                    externalGetPut);
   // Recursion
-  affine::AffineIfOp current_if = op;
+  mlir::AffineIfOp current_if = op;
   while (air::getAffineIfInBlock(current_if.getElseBlock())) {
     auto child_if_op = air::getAffineIfInBlock(current_if.getElseBlock());
 
@@ -855,14 +855,15 @@ void HoistingAffineIf(affine::AffineIfOp op) {
 
   // Get dependent ops to hoist together with external get/put
   SetVector<Operation *> backwardSlice;
-  BackwardSliceOptions bsOptions{[&](Operation *o) { return o != hier_op; }};
   for (auto ext_channel_op : externalGetPut) {
-    getBackwardSlice(ext_channel_op.getOperation(), &backwardSlice, bsOptions);
+    getBackwardSlice(ext_channel_op.getOperation(), &backwardSlice,
+                     [&](Operation *o) { return o != hier_op; });
 
     for (auto parent = ext_channel_op->getParentOp();
          !isa<air::HierarchyInterface>(parent);
          parent = parent->getParentOp()) {
-      getBackwardSlice(parent, &backwardSlice, bsOptions);
+      getBackwardSlice(parent, &backwardSlice,
+                       [&](Operation *o) { return o != hier_op; });
       backwardSlice.insert(parent);
     }
   }
@@ -932,7 +933,7 @@ void HoistingAffineIf(affine::AffineIfOp op) {
           cloneScfLoopUsingRemap<scf::ParallelOp>(module_builder, remap,
                                                   child_parallel_op,
                                                   externalGetPut[dma_index]);
-        } else if (dyn_cast<affine::AffineIfOp>(o)) {
+        } else if (dyn_cast<mlir::AffineIfOp>(o)) {
           replaceAffineIfOpWithChannelOpAndClone(module_builder, remap,
                                                  externalGetPut[dma_index]);
         } else if (auto channel_op = dyn_cast<air::ChannelInterface>(o)) {
@@ -1046,17 +1047,16 @@ class AIRDmaToAIRChannelConversion
       OpBuilder::InsertionGuard guard(rewriter);
 
       SetVector<Operation *> backwardSlice;
-      BackwardSliceOptions bsOptions{
-          [&](Operation *o) { return o != hier_op; }};
       for (auto ext_channel_op : externalGetPut) {
         getBackwardSlice(ext_channel_op.getOperation(), &backwardSlice,
-                         bsOptions);
+                         [&](Operation *o) { return o != hier_op; });
       }
 
       for (auto parent = op->getParentOp();
            !isa<air::HierarchyInterface>(parent);
            parent = parent->getParentOp()) {
-        getBackwardSlice(parent, &backwardSlice, bsOptions);
+        getBackwardSlice(parent, &backwardSlice,
+                         [&](Operation *o) { return o != hier_op; });
         backwardSlice.insert(parent);
       }
 
@@ -1081,7 +1081,7 @@ class AIRDmaToAIRChannelConversion
         auto module = op->getParentOfType<ModuleOp>();
         auto channel_op = dyn_cast<air::ChannelOp>(
             module.lookupSymbol(externalGetPut[0].getChanName()));
-        auto size = extractFromIntegerArrayAttr<int64_t>(channel_op.getSize());
+        auto size = extractFromI64ArrayAttr(channel_op.getSize());
         for (auto s : size) {
           lbs.push_back(0);
           ubs.push_back(s);
@@ -1097,7 +1097,8 @@ class AIRDmaToAIRChannelConversion
       for (auto b : backwardSlice) {
         if (dyn_cast<air::ExecuteOp>(b)) {
           for (auto &exec_child_op : b->getRegions().front().getOps()) {
-            getBackwardSlice(&exec_child_op, &backwardSlice, bsOptions);
+            getBackwardSlice(&exec_child_op, &backwardSlice,
+                             [&](Operation *o) { return o != hier_op; });
             backwardSlice.insert(&exec_child_op);
           }
         }
@@ -1225,16 +1226,15 @@ class AIRDmaToAIRChannelConversion
   }
 };
 
-class AffineParToHerdConversion
-    : public OpRewritePattern<affine::AffineParallelOp> {
+class AffineParToHerdConversion : public OpRewritePattern<AffineParallelOp> {
 public:
-  using OpRewritePattern<affine::AffineParallelOp>::OpRewritePattern;
+  using OpRewritePattern<AffineParallelOp>::OpRewritePattern;
 
   AffineParToHerdConversion(MLIRContext *ctx,
                             SmallPtrSet<Operation *, 8> &filteredOps)
       : OpRewritePattern(ctx), filteredOps(filteredOps){};
 
-  LogicalResult matchAndRewrite(affine::AffineParallelOp op,
+  LogicalResult matchAndRewrite(AffineParallelOp op,
                                 PatternRewriter &rewriter) const override {
 
     if (op.getNumDims() != 2) {
@@ -1349,7 +1349,7 @@ LogicalResult normalizeScfParallel(scf::ParallelOp parOp,
     AffineExpr mul = d0 * sv.getDefiningOp<arith::ConstantIndexOp>().value();
     AffineExpr add = mul + lbv.getDefiningOp<arith::ConstantIndexOp>().value();
     auto map = AffineMap::get(1, 0, add);
-    auto new_iv = builder.create<affine::AffineApplyOp>(loc, map, iv);
+    auto new_iv = builder.create<AffineApplyOp>(loc, map, iv);
     SmallPtrSet<Operation *, 1> keep{new_iv};
     iv.replaceAllUsesExcept(new_iv.getResult(), keep);
   }
@@ -1833,9 +1833,8 @@ struct CopyToDmaPass : public air::CopyToDmaBase<CopyToDmaPass> {
                            scf::SCFDialect, air::airDialect,
                            arith::ArithDialect, memref::MemRefDialect>();
 
-    target.addLegalOp<affine::AffineApplyOp, affine::AffineForOp,
-                      affine::AffineLoadOp, affine::AffineStoreOp,
-                      affine::AffineYieldOp>();
+    target.addLegalOp<AffineApplyOp, AffineForOp, AffineLoadOp, AffineStoreOp,
+                      AffineYieldOp>();
 
     target.addDynamicallyLegalOp<memref::CopyOp>([](memref::CopyOp co) {
       auto src_type = co.getSource().getType().dyn_cast<MemRefType>();
@@ -1860,14 +1859,13 @@ struct CopyToDmaPass : public air::CopyToDmaBase<CopyToDmaPass> {
                                       std::move(stage2Patterns)))) {
       emitError(UnknownLoc::get(context), "error\n");
       signalPassFailure();
-      module.dump();
       assert(0);
     }
 
     std::vector<Operation *> waits;
     for (auto f : module.getOps<func::FuncOp>()) {
       f.walk([&](Operation *op) {
-        if (auto wo = dyn_cast<affine::AffineDmaWaitOp>(op)) {
+        if (auto wo = dyn_cast<AffineDmaWaitOp>(op)) {
           auto memref = wo.getTagMemRef();
           for (auto u : memref.getUsers()) {
             waits.push_back(u);
@@ -1891,7 +1889,6 @@ struct DmaToChannelPass : public air::DmaToChannelBase<DmaToChannelPass> {
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<air::airDialect>();
     registry.insert<linalg::LinalgDialect>();
-    registry.insert<scf::SCFDialect>();
   }
 
   void runOnOperation() override {
@@ -1903,8 +1900,8 @@ struct DmaToChannelPass : public air::DmaToChannelBase<DmaToChannelPass> {
 
     // Hoist broadcast pattern
     for (auto f : funcOps) {
-      f.walk([&](affine::AffineIfOp op) {
-        if (!op->getParentOfType<affine::AffineIfOp>()) {
+      f.walk([&](mlir::AffineIfOp op) {
+        if (!op->getParentOfType<mlir::AffineIfOp>()) {
           // Only hoist top-level affine if op with a nest of if ops
           HoistingAffineIf(op);
         }
@@ -1913,10 +1910,10 @@ struct DmaToChannelPass : public air::DmaToChannelBase<DmaToChannelPass> {
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           scf::SCFDialect, affine::AffineDialect,
-                           air::airDialect, arith::ArithDialect,
-                           memref::MemRefDialect, linalg::LinalgDialect>();
+    target
+        .addLegalDialect<LLVM::LLVMDialect, func::FuncDialect, scf::SCFDialect,
+                         AffineDialect, air::airDialect, arith::ArithDialect,
+                         memref::MemRefDialect, linalg::LinalgDialect>();
 
     target.addIllegalOp<air::DmaMemcpyNdOp>();
 
@@ -2081,7 +2078,7 @@ struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
     SmallPtrSet<Operation *, 8> filteredOps;
     llvm::SmallSet<air::HerdOp, 2> replacementOps;
     module.walk([&](Operation *op) {
-      if (!isa<scf::ParallelOp, affine::AffineParallelOp>(op))
+      if (!isa<scf::ParallelOp, AffineParallelOp>(op))
         return;
       // skip parallel op already inside herd
       if (op->getParentOfType<air::HerdOp>())
@@ -2098,7 +2095,7 @@ struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
       int parallel_depth = 0;
       Operation *par = op;
       while ((par = par->getParentOp()))
-        if (isa<scf::ParallelOp, affine::AffineParallelOp>(par))
+        if (isa<scf::ParallelOp, AffineParallelOp>(par))
           parallel_depth++;
       if (parallel_depth != clAssignDepth)
         return;
@@ -2115,9 +2112,8 @@ struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
                            air::airDialect, arith::ArithDialect>();
 
-    target.addLegalOp<affine::AffineApplyOp, affine::AffineForOp,
-                      affine::AffineLoadOp, affine::AffineStoreOp,
-                      affine::AffineYieldOp, scf::YieldOp>();
+    target.addLegalOp<AffineApplyOp, AffineForOp, AffineLoadOp, AffineStoreOp,
+                      AffineYieldOp, scf::YieldOp>();
 
     target.addDynamicallyLegalOp<scf::ParallelOp>(
         [&](scf::ParallelOp p) { return !filteredOps.contains(p); });
@@ -2191,9 +2187,8 @@ struct ParallelToLaunchPass
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
                            air::airDialect, arith::ArithDialect>();
 
-    target.addLegalOp<affine::AffineApplyOp, affine::AffineForOp,
-                      affine::AffineLoadOp, affine::AffineStoreOp,
-                      affine::AffineYieldOp, scf::YieldOp>();
+    target.addLegalOp<AffineApplyOp, AffineForOp, AffineLoadOp, AffineStoreOp,
+                      AffineYieldOp, scf::YieldOp>();
 
     target.addDynamicallyLegalOp<scf::ParallelOp>(
         [&](scf::ParallelOp p) { return !filteredOps.contains(p); });
@@ -2240,8 +2235,7 @@ struct InsertEmptyLaunchOverHerdPass
 //===----------------------------------------------------------------------===//
 
 DiagnosedSilenceableFailure
-transform::ParToHerdOp::applyToOne(transform::TransformRewriter &rewriter,
-                                   scf::ParallelOp target,
+transform::ParToHerdOp::applyToOne(scf::ParallelOp target,
                                    transform::ApplyToEachResultList &results,
                                    transform::TransformState &state) {
   auto ctx = target->getContext();
@@ -2266,8 +2260,7 @@ transform::ParToHerdOp::applyToOne(transform::TransformRewriter &rewriter,
 //===----------------------------------------------------------------------===//
 
 DiagnosedSilenceableFailure
-transform::ParToLaunchOp::applyToOne(transform::TransformRewriter &rewriter,
-                                     scf::ParallelOp target,
+transform::ParToLaunchOp::applyToOne(scf::ParallelOp target,
                                      transform::ApplyToEachResultList &results,
                                      transform::TransformState &state) {
   auto ctx = target->getContext();
@@ -2284,13 +2277,17 @@ transform::ParToLaunchOp::applyToOne(transform::TransformRewriter &rewriter,
   return DiagnosedSilenceableFailure::success();
 }
 
+class SimpleRewriter : public PatternRewriter {
+public:
+  SimpleRewriter(MLIRContext *context) : PatternRewriter(context) {}
+};
+
 //===----------------------------------------------------------------------===//
 // CopyToDmaOp
 //===----------------------------------------------------------------------===//
 
 DiagnosedSilenceableFailure
-transform::CopyToDmaOp::applyToOne(transform::TransformRewriter &rewriter,
-                                   memref::CopyOp op,
+transform::CopyToDmaOp::applyToOne(memref::CopyOp op,
                                    transform::ApplyToEachResultList &results,
                                    transform::TransformState &state) {
   auto ctx = op->getContext();
@@ -2299,6 +2296,7 @@ transform::CopyToDmaOp::applyToOne(transform::TransformRewriter &rewriter,
   // memref::AllocOp::getCanonicalizationPatterns(stage1Patterns, ctx);
   // (void)applyPatternsAndFoldGreedily(op->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
   //                                    std::move(stage1Patterns));
+  SimpleRewriter rewriter(ctx);
   auto res = matchAndRewriteCopyOp(op, rewriter);
   if (failed(res))
     return emitDefaultDefiniteFailure(op);

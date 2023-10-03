@@ -928,12 +928,12 @@ private:
     auto chan_declr = getChannelDeclarationThroughSymbol(chan_op);
     if (chan_declr->hasAttr("broadcast_shape")) {
       unsigned bcast_size = 1;
-      auto size = extractFromIntegerArrayAttr<int64_t>(
-          chan_declr->getAttr("broadcast_shape"));
+      auto size =
+          extractFromI64ArrayAttr(chan_declr->getAttr("broadcast_shape"));
       for (auto s : size) {
         bcast_size *= s;
       }
-      size = extractFromIntegerArrayAttr<int64_t>(chan_declr.getSize());
+      size = extractFromI64ArrayAttr(chan_declr.getSize());
       for (auto s : size) {
         bcast_size /= s;
       }
@@ -1501,12 +1501,11 @@ private:
       auto channel_op = dyn_cast<air::ChannelInterface>(op);
       auto chan = getChannelDeclarationThroughSymbol(channel_op);
       if (chan->hasAttr("broadcast_shape")) {
-        auto size = extractFromIntegerArrayAttr<int64_t>(
-            chan->getAttr("broadcast_shape"));
+        auto size = extractFromI64ArrayAttr(chan->getAttr("broadcast_shape"));
         for (auto s : size) {
           output *= s;
         }
-        size = extractFromIntegerArrayAttr<int64_t>(chan.getSize());
+        size = extractFromI64ArrayAttr(chan.getSize());
         for (auto s : size) {
           output /= s;
         }
@@ -1531,7 +1530,7 @@ private:
         } else {
           output *= canonicalizer.getTripCountInHierarchyOp(hier);
         }
-      } else if (auto affine_if = dyn_cast<affine::AffineIfOp>(parent)) {
+      } else if (auto affine_if = dyn_cast<mlir::AffineIfOp>(parent)) {
         // Fast forward through affine.if nest
         std::vector<Operation *> affine_if_nest;
         Operation *spatial_loop = nullptr;
@@ -1566,12 +1565,11 @@ private:
       auto channel_op = dyn_cast<air::ChannelInterface>(op);
       auto chan = getChannelDeclarationThroughSymbol(channel_op);
       if (chan->hasAttr("broadcast_shape")) {
-        auto size = extractFromIntegerArrayAttr<int64_t>(
-            chan->getAttr("broadcast_shape"));
+        auto size = extractFromI64ArrayAttr(chan->getAttr("broadcast_shape"));
         for (auto s : size) {
           output *= s;
         }
-        size = extractFromIntegerArrayAttr<int64_t>(chan.getSize());
+        size = extractFromI64ArrayAttr(chan.getSize());
         for (auto s : size) {
           output /= s;
         }
@@ -1596,7 +1594,7 @@ private:
         } else {
           output *= this->canonicalizer.getTripCountInHierarchyOp(hier);
         }
-      } else if (auto affine_if = dyn_cast<affine::AffineIfOp>(parent)) {
+      } else if (auto affine_if = dyn_cast<mlir::AffineIfOp>(parent)) {
         // Fast forward through affine.if nest
         std::vector<Operation *> affine_if_nest;
         Operation *spatial_loop = nullptr;
@@ -1644,7 +1642,7 @@ private:
                  !isa<air::LaunchOp>(parent)) {
         auto hier = dyn_cast<air::HierarchyInterface>(parent);
         output *= this->canonicalizer.getTripCountInHierarchyOp(hier);
-      } else if (auto affine_if = dyn_cast<affine::AffineIfOp>(parent)) {
+      } else if (auto affine_if = dyn_cast<mlir::AffineIfOp>(parent)) {
         // Fast forward through affine.if nest
         std::vector<Operation *> affine_if_nest;
         Operation *spatial_loop = nullptr;
@@ -1686,7 +1684,7 @@ private:
 
     // Walk through affine.if nest (in reverse order through vector)
     for (auto it = affine_if_nest.rbegin(); it != affine_if_nest.rend(); ++it) {
-      auto affine_if = dyn_cast<affine::AffineIfOp>(*it);
+      auto affine_if = dyn_cast<mlir::AffineIfOp>(*it);
       // Get then integerset sizes
       SmallVector<int, 2> lbs_int = {0, 0};
       SmallVector<int, 2> ubs_int = {0, 0};
@@ -1777,7 +1775,7 @@ private:
       std::string dep_type = "") {
     bool pushed = false;
     if (this->sim_granularity == "core" && node.op &&
-        node.op->getParentOfType<affine::AffineIfOp>()) {
+        node.op->getParentOfType<mlir::AffineIfOp>()) {
       std::vector<Operation *> affine_if_nest;
       Operation *spatial_loop = nullptr;
       getAffineIfNestAndSpatialLoopFromOp(node.op, affine_if_nest,
@@ -1889,7 +1887,7 @@ private:
     Graph &G = this->ctrl_g->g;
     for (auto it = candidates.begin(); it != candidates.end(); ++it) {
       auto op = G[*it].op;
-      if (op->getParentOfType<affine::AffineIfOp>()) {
+      if (op->getParentOfType<mlir::AffineIfOp>()) {
         std::vector<Operation *> affine_if_nest;
         Operation *spatial_loop = nullptr;
         getAffineIfNestAndSpatialLoopFromOp(op, affine_if_nest, spatial_loop);

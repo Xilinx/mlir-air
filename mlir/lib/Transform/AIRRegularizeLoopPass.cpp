@@ -9,15 +9,15 @@
 // ===---     AIRRegularizeLoopPass.cpp - Loop Regularization Pass      ---===//
 //
 // This pass regularizes loop nests by moving intermediate operations between
-// subloops in a loop nest inside the innermost loop body. The pass is 
-// essentially the inverse of the affine loop invariant code motion pass. For 
-// each operation that makes the loop nest non-perfect, the pass will check 
-// recursively if the content of the operation is independent of the induction 
-// variable of the inner loop. And if it is independent, the operation will be 
-// moved inside the inner loop body until the induction variable of the inner 
+// subloops in a loop nest inside the innermost loop body. The pass is
+// essentially the inverse of the affine loop invariant code motion pass. For
+// each operation that makes the loop nest non-perfect, the pass will check
+// recursively if the content of the operation is independent of the induction
+// variable of the inner loop. And if it is independent, the operation will be
+// moved inside the inner loop body until the induction variable of the inner
 // loop is dependent on the operation or there are no loops at the same level.
 //
-// FIXME: This pass is the inverse of lib/Transforms/LoopInvariantCodeMotion. 
+// FIXME: This pass is the inverse of lib/Transforms/LoopInvariantCodeMotion.
 // We should generalize in terms of the LICM direction in the future.
 //
 // ===---------------------------------------------------------------------===//
@@ -27,13 +27,13 @@
 
 #include "PassDetail.h"
 #include "mlir/Analysis/SliceAnalysis.h"
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Affine/Passes.h"
-#include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/LoopUtils.h"
+#include "mlir/Dialect/Affine/Passes.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
@@ -55,82 +55,82 @@ using namespace xilinx;
 using namespace xilinx::air;
 
 namespace {
-  
-class AIRRegularizeLoopPass : public AIRRegularizeLoopBase<AIRRegularizeLoopPass> {
+
+class AIRRegularizeLoopPass
+    : public AIRRegularizeLoopBase<AIRRegularizeLoopPass> {
 
 public:
   AIRRegularizeLoopPass() = default;
   AIRRegularizeLoopPass(const AIRRegularizeLoopPass &pass){};
 
-  Option<std::string> clAIROptLabel{*this, "air-label",
-                          llvm::cl::desc("Transform loops with the given \
+  Option<std::string> clAIROptLabel{
+      *this, "air-label", llvm::cl::desc("Transform loops with the given \
                               label"),
-                          llvm::cl::init("")};
+      llvm::cl::init("")};
 
   void runOnOperation() override;
-  void runOnAffineForNest(SmallVector<affine::AffineForOp, 6> &band);
+  void runOnAffineForNest(SmallVector<AffineForOp, 6> &band);
 
   static const char *affineOptAttrName;
-private:
 
+private:
 };
 
 const char *AIRRegularizeLoopPass::affineOptAttrName = "affine_opt_label";
 
-static bool isIndependent(Operation *op, affine::AffineForOp forOp,
+static bool isIndependent(Operation *op, AffineForOp forOp,
                           SmallPtrSetImpl<Operation *> &opsWithUsers,
                           SmallPtrSetImpl<Operation *> &opsToHoist);
 static bool
-checkInvarianceOfNestedIfOps(Operation *op, affine::AffineForOp forOp,
+checkInvarianceOfNestedIfOps(Operation *op, AffineForOp forOp,
                              SmallPtrSetImpl<Operation *> &opsWithUsers,
                              SmallPtrSetImpl<Operation *> &opsToHoist);
 static bool
-areAllOpsInTheBlockListInvariant(Region &blockList, affine::AffineForOp forOp,
+areAllOpsInTheBlockListInvariant(Region &blockList, AffineForOp forOp,
                                  SmallPtrSetImpl<Operation *> &opsWithUsers,
                                  SmallPtrSetImpl<Operation *> &opsToHoist);
 
 // Refer to AffineLoopInvariantCodeMotion.cpp
 // Recursively check if the operation is independent of the loop induction var
-bool isIndependent(Operation *op, affine::AffineForOp forOp,
+bool isIndependent(Operation *op, AffineForOp forOp,
                    SmallPtrSetImpl<Operation *> &opsWithUsers,
                    SmallPtrSetImpl<Operation *> &opsToHoist) {
   auto indVar = forOp.getInductionVar();
-  if (isa<affine::AffineIfOp>(op)) {
+  if (isa<AffineIfOp>(op)) {
     if (!checkInvarianceOfNestedIfOps(op, forOp, opsWithUsers, opsToHoist)) {
       return false;
     }
-  } else if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
+  } else if (auto forOp = dyn_cast<AffineForOp>(op)) {
     if (!areAllOpsInTheBlockListInvariant(forOp.getLoopBody(), forOp,
                                           opsWithUsers, opsToHoist)) {
       return false;
     }
-  } else if (isa<affine::AffineDmaWaitOp, affine::AffineDmaStartOp>(op)) {
+  } else if (isa<AffineDmaWaitOp, AffineDmaStartOp>(op)) {
     return false;
   } else if (!isa<arith::ConstantOp>(op)) {
     // Register op in the set of ops that have users.
     opsWithUsers.insert(op);
-    if (isa<affine::AffineMapAccessInterface>(op)) {
-      Value memref = isa<affine::AffineReadOpInterface>(op)
-                         ? cast<affine::AffineReadOpInterface>(op).getMemRef()
-                         : cast<affine::AffineWriteOpInterface>(op).getMemRef();
+    if (isa<AffineMapAccessInterface>(op)) {
+      Value memref = isa<AffineReadOpInterface>(op)
+                         ? cast<AffineReadOpInterface>(op).getMemRef()
+                         : cast<AffineWriteOpInterface>(op).getMemRef();
       for (auto *user : memref.getUsers()) {
         // If this memref has a user that is a DMA, give up because these
         // operations write to this memref.
-        if (isa<affine::AffineDmaStartOp, affine::AffineDmaWaitOp>(op)) {
+        if (isa<AffineDmaStartOp, AffineDmaWaitOp>(op)) {
           return false;
         }
         // If the memref used by the load/store is used in a store elsewhere in
         // the loop nest, we do not hoist. Similarly, if the memref used in a
         // load is also being stored too, we do not hoist the load.
-        if (isa<affine::AffineWriteOpInterface>(user) ||
-            (isa<affine::AffineReadOpInterface>(user) &&
-             isa<affine::AffineWriteOpInterface>(op))) {
+        if (isa<AffineWriteOpInterface>(user) ||
+            (isa<AffineReadOpInterface>(user) &&
+             isa<AffineWriteOpInterface>(op))) {
           if (op != user) {
-            SmallVector<affine::AffineForOp, 8> userIVs;
+            SmallVector<AffineForOp, 8> userIVs;
             getAffineForIVs(*user, &userIVs);
             // Check that userIVs don't contain the for loop around the op.
-            if (llvm::is_contained(userIVs,
-                                   affine::getForInductionVarOwner(indVar))) {
+            if (llvm::is_contained(userIVs, getForInductionVarOwner(indVar))) {
               return false;
             }
           }
@@ -138,7 +138,7 @@ bool isIndependent(Operation *op, affine::AffineForOp forOp,
       }
     }
 
-    if (op->getNumOperands() == 0 && !isa<affine::AffineYieldOp>(op)) {
+    if (op->getNumOperands() == 0 && !isa<AffineYieldOp>(op)) {
       LLVM_DEBUG(llvm::dbgs() << "\nNon-constant op with 0 operands\n");
       return false;
     }
@@ -163,15 +163,15 @@ bool isIndependent(Operation *op, affine::AffineForOp forOp,
       }
     }
   }
-  
+
   return true;
 }
 
-bool checkInvarianceOfNestedIfOps(Operation *op, affine::AffineForOp forOp,
+bool checkInvarianceOfNestedIfOps(Operation *op, AffineForOp forOp,
                                   SmallPtrSetImpl<Operation *> &opsWithUsers,
                                   SmallPtrSetImpl<Operation *> &opsToHoist) {
-  assert(isa<affine::AffineIfOp>(op));
-  auto ifOp = cast<affine::AffineIfOp>(op);
+  assert(isa<AffineIfOp>(op));
+  auto ifOp = cast<AffineIfOp>(op);
 
   if (!areAllOpsInTheBlockListInvariant(ifOp.getThenRegion(), forOp,
                                         opsWithUsers, opsToHoist)) {
@@ -188,7 +188,7 @@ bool checkInvarianceOfNestedIfOps(Operation *op, affine::AffineForOp forOp,
 
 // Checks if all ops in a region (i.e. list of blocks) are loop invariant.
 bool areAllOpsInTheBlockListInvariant(
-    Region &blockList, affine::AffineForOp forOp,
+    Region &blockList, AffineForOp forOp,
     SmallPtrSetImpl<Operation *> &opsWithUsers,
     SmallPtrSetImpl<Operation *> &opsToHoist) {
 
@@ -204,20 +204,20 @@ bool areAllOpsInTheBlockListInvariant(
 }
 
 void AIRRegularizeLoopPass::runOnAffineForNest(
-    SmallVector<affine::AffineForOp, 6> &band) {
+    SmallVector<AffineForOp, 6> &band) {
 
   unsigned nestLevel = band.size();
-  affine::AffineForOp innerForOp = band[nestLevel - 1];
+  AffineForOp innerForOp = band[nestLevel - 1];
 
   // Recursively find all nested loops.
   bool endOfLoopNest = false;
-  SmallVector<affine::AffineForOp, 6> innerBand;
+  SmallVector<AffineForOp, 6> innerBand;
   innerBand.push_back(innerForOp);
   while (!endOfLoopNest) {
     auto *loopBody = innerForOp.getBody();
     endOfLoopNest = true;
-    for (auto &opInLoop: *loopBody) {
-      if (affine::AffineForOp forOp = dyn_cast<affine::AffineForOp>(opInLoop)) {
+    for (auto &opInLoop : *loopBody) {
+      if (AffineForOp forOp = dyn_cast<AffineForOp>(opInLoop)) {
         innerBand.push_back(forOp);
         endOfLoopNest = false;
         innerForOp = forOp;
@@ -231,8 +231,8 @@ void AIRRegularizeLoopPass::runOnAffineForNest(
   SmallVector<Operation *, 8> opsToMove;
   SmallPtrSet<Operation *, 8> opsWithUsers;
   SmallPtrSet<Operation *, 8> opsToHoist;
-  for (affine::AffineForOp forOp : innerBand) {
-    for (auto *op: opsToMove) {
+  for (AffineForOp forOp : innerBand) {
+    for (auto *op : opsToMove) {
       if (!op->use_empty()) {
         opsWithUsers.insert(op);
       }
@@ -244,8 +244,8 @@ void AIRRegularizeLoopPass::runOnAffineForNest(
     }
     auto *newloopBody = forOp.getBody();
     opsToMove.clear();
-    for (auto &op: *newloopBody) {
-      if (!isa<affine::AffineForOp>(op)) {
+    for (auto &op : *newloopBody) {
+      if (!isa<AffineForOp>(op)) {
         opsToMove.push_back(&op);
       } else
         break;
@@ -255,15 +255,15 @@ void AIRRegularizeLoopPass::runOnAffineForNest(
 
 void AIRRegularizeLoopPass::runOnOperation() {
   // Walk through all loops in a function in outermost-loop-first order. This
-  // way, we iteratively move operations inside loop body until we hit a 
+  // way, we iteratively move operations inside loop body until we hit a
   // dependency conflict or there are no loops at the same level.
 
   auto func = getOperation();
 
-  std::vector<SmallVector<affine::AffineForOp, 6>> bands;
-  xilinx::air::getTileableBands(func, bands, 
-                   AIRRegularizeLoopPass::affineOptAttrName, clAIROptLabel);
-  for (auto loopBand: bands) {
+  std::vector<SmallVector<AffineForOp, 6>> bands;
+  xilinx::air::getTileableBands(
+      func, bands, AIRRegularizeLoopPass::affineOptAttrName, clAIROptLabel);
+  for (auto loopBand : bands) {
     runOnAffineForNest(loopBand);
   }
 }

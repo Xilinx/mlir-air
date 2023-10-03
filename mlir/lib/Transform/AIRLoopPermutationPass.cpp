@@ -69,7 +69,7 @@ void AIRLoopPermutationPass::runOnOperation() {
   auto func = getOperation();
   
   // Bands of loops to tile
-  std::vector<SmallVector<affine::AffineForOp, 6>> bands;
+  std::vector<SmallVector<AffineForOp, 6>> bands;
   xilinx::air::getTileableBands(
       func, bands, AIRLoopPermutationPass::affineOptAttrName, clLabel);
 

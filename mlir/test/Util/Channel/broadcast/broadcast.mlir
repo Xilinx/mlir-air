@@ -6,7 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 
-// RUN: air-opt -o %T/broadcast.llvm.mlir %s -buffer-results-to-out-params -air-to-async -async-to-async-runtime -async-runtime-ref-counting -async-runtime-ref-counting-opt -convert-linalg-to-affine-loops -expand-strided-metadata -lower-affine -convert-scf-to-cf -convert-async-to-llvm -finalize-memref-to-llvm -convert-cf-to-llvm -convert-func-to-llvm -canonicalize -cse
+// RUN: air-opt -o %T/broadcast.llvm.mlir %s -buffer-results-to-out-params -air-to-async -async-to-async-runtime -async-runtime-ref-counting -async-runtime-ref-counting-opt -convert-linalg-to-affine-loops -expand-strided-metadata -lower-affine -convert-scf-to-cf -convert-async-to-llvm -convert-memref-to-llvm -convert-cf-to-llvm -convert-func-to-llvm -canonicalize -cse
 // RUN: air-translate --mlir-to-llvmir %T/broadcast.llvm.mlir -o %T/broadcast.ll
 // RUN: %CLANG %T/broadcast.ll -O2 -std=c++17 -c -o %T/broadcast.o
 // RUN: %CLANG %S/main.cpp -O2 -std=c++17 %airhost_inc -c -o %T/main.o
