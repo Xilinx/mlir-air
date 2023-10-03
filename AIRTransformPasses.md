@@ -391,6 +391,9 @@ dot files for graph visualization.
 ### `-air-dependency-schedule-opt`: Optimize scheduling based on air async dependency
 This pass contains multiple passes which optimize the schedule based on the
 dependency graph generated from -air-dependency pass.
+### `-air-enforce-loop-carried-memref-dealloc`: Enforce memref dealloc ops in loop iterations
+This pass enforces memref deallocation events to happen within each loop
+iteration, by connecting them in the loop-carried dependency path.
 ### `-air-example-pass`: Skeleton module op pass
 ### `-air-fuse-parallel-launch`: fuse parallel launch pass
 ### `-air-herd-assign`: Transfor affine.for to affine.parallel
@@ -414,6 +417,7 @@ This pass isolates an `scf.for` loop in preparation for ping-pong transformation
 by identifying child operations which are not direct consumers or producers of the 
 memref targetted for ping-pong buffering, and hoisting said operations out of the
 scf.for loop.
+### `-air-label-broadcast-channel-with-tile`: Label broadcasted channel ops with tile coordinates.
 ### `-air-label-scf-for-to-ping-pong`: Label all candidate scf.for loops for ping-pong transformation
 This pass labels all scf.for loops which contain air.execute event of memref.alloc,
 which is a direct child op of said scf.for, as candidate loop for ping-pong
