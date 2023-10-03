@@ -886,13 +886,12 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
           dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value());
 
     OpBuilder builder(scf_par);
-    auto outer =
-        builder.create<affine::AffineForOp>(scf_par.getLoc(), 0, par_sizes[0]);
-    affine::AffineForOp inner = nullptr;
+    auto outer = builder.create<AffineForOp>(scf_par.getLoc(), 0, par_sizes[0]);
+    AffineForOp inner = nullptr;
     if (par_sizes.size() == 2) {
       auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
-      inner = outer_builder.create<affine::AffineForOp>(scf_par.getLoc(), 0,
-                                                        par_sizes[1]);
+      inner =
+          outer_builder.create<AffineForOp>(scf_par.getLoc(), 0, par_sizes[1]);
     } else
       inner = outer;
 
@@ -1105,7 +1104,7 @@ private:
       for (auto child_for : for_loop.getBody()->getOps<scf::ForOp>()) {
         return child_for;
       }
-    } else if (auto afor_loop = dyn_cast<affine::AffineForOp>(loop)) {
+    } else if (auto afor_loop = dyn_cast<AffineForOp>(loop)) {
       for (auto child_for : afor_loop.getBody()->getOps<scf::ForOp>()) {
         return child_for;
       }
