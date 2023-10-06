@@ -215,10 +215,10 @@ public:
     int64_t herd_size_x = herd.getNumCols();
     int64_t herd_size_y = herd.getNumRows();
 
-    auto outer = rewriter.create<AffineForOp>(herd.getLoc(), 0, herd_size_x);
+    auto outer = rewriter.create<affine::AffineForOp>(herd.getLoc(), 0, herd_size_x);
     auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
     auto inner =
-        outer_builder.create<AffineForOp>(herd.getLoc(), 0, herd_size_y);
+        outer_builder.create<affine::AffineForOp>(herd.getLoc(), 0, herd_size_y);
 
     outer->setAttr("air.herd", StringAttr::get(op->getContext(), "outer"));
     inner->setAttr("air.herd", StringAttr::get(op->getContext(), "inner"));
@@ -371,16 +371,16 @@ public:
       air::HerdOp launch = op->getParentOfType<air::HerdOp>();
       if (!launch) {
 
-        AffineForOp afo = op->getParentOfType<AffineForOp>();
+        affine::AffineForOp afo = op->getParentOfType<affine::AffineForOp>();
         while (afo && !afo->getAttr("air.herd"))
-          afo = afo->getParentOfType<AffineForOp>();
+          afo = afo->getParentOfType<affine::AffineForOp>();
         if (!afo)
           return failure();
         opers.push_back(afo.getInductionVar());
 
-        afo = afo->getParentOfType<AffineForOp>();
+        afo = afo->getParentOfType<affine::AffineForOp>();
         while (afo && !afo->getAttr("air.herd"))
-          afo = afo->getParentOfType<AffineForOp>();
+          afo = afo->getParentOfType<affine::AffineForOp>();
         if (!afo)
           return failure();
         opers.push_back(afo.getInductionVar());
@@ -927,7 +927,8 @@ public:
   AIRLoweringPass(const AIRLoweringPass &pass) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<AffineDialect, airrt::AIRRtDialect, LLVM::LLVMDialect>();
+    registry.insert<affine::AffineDialect, airrt::AIRRtDialect,
+                    LLVM::LLVMDialect, scf::SCFDialect>();
   }
 
   void runOnOperation() override {
@@ -936,7 +937,7 @@ public:
     auto context = module.getContext();
 
     TypeConverter converter;
-    converter.addConversion([&](Type type) -> Optional<Type> {
+    converter.addConversion([&](Type type) -> std::optional<Type> {
       // convert !air.async.token to !airrt.event
       if (auto t = type.dyn_cast<air::AsyncTokenType>())
         return airrt::EventType::get(context);
@@ -946,18 +947,18 @@ public:
     auto addUnrealizedCast = [](OpBuilder &builder, Type type,
                                 ValueRange inputs, Location loc) {
       auto cast = builder.create<UnrealizedConversionCastOp>(loc, type, inputs);
-      return Optional<Value>(cast.getResult(0));
+      return std::optional<Value>(cast.getResult(0));
     };
     converter.addSourceMaterialization(addUnrealizedCast);
     converter.addTargetMaterialization(addUnrealizedCast);
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           arith::ArithDialect, AffineDialect, scf::SCFDialect,
-                           linalg::LinalgDialect, memref::MemRefDialect,
-                           bufferization::BufferizationDialect,
-                           airrt::AIRRtDialect>();
+    target.addLegalDialect<
+        LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect,
+        affine::AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
+        memref::MemRefDialect, bufferization::BufferizationDialect,
+        airrt::AIRRtDialect>();
 
     // AIR ExecuteOp conversion
     if (failed(lowerAirExecute(module))) {
@@ -1347,7 +1348,7 @@ public:
   AIRPipelineToAffinePass(const AIRPipelineToAffinePass &pass) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<AffineDialect>();
+    registry.insert<affine::AffineDialect>();
   }
 
   void runOnOperation() override {
@@ -1356,11 +1357,11 @@ public:
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           arith::ArithDialect, AffineDialect, scf::SCFDialect,
-                           linalg::LinalgDialect, memref::MemRefDialect,
-                           bufferization::BufferizationDialect,
-                           airrt::AIRRtDialect, air::airDialect>();
+    target.addLegalDialect<
+        LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect,
+        affine::AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
+        memref::MemRefDialect, bufferization::BufferizationDialect,
+        airrt::AIRRtDialect, air::airDialect>();
 
     target.addIllegalOp<air::PipelineStageOp, air::PipelineYieldOp>();
 

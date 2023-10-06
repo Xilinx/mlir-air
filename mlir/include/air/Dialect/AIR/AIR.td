@@ -121,35 +121,35 @@ def air_SegmentOp : air_Op<"segment", [air_AsyncOpInterface,
     }
     static StringRef getColOffsetAttrName() { return "x_loc"; }
     static StringRef getRowOffsetAttrName() { return "y_loc"; }
-    mlir::Optional<uint64_t> getColOffset() {
+    std::optional<uint64_t> getColOffset() {
       auto name = getColOffsetAttrName();
       if (auto a = (*this)->getAttrOfType<IntegerAttr>(name)) {
         return a.getInt();
       }
-      return mlir::Optional<uint64_t>();
+      return std::optional<uint64_t>();
     }
-    mlir::Optional<uint64_t> getRowOffset() {
+    std::optional<uint64_t> getRowOffset() {
       auto name = getRowOffsetAttrName();
       if (auto a = (*this)->getAttrOfType<IntegerAttr>(name)) {
         return a.getInt();
       }
-      return mlir::Optional<uint64_t>();
+      return std::optional<uint64_t>();
     }
     static StringRef getNumColsAttrName() { return "x_size"; }
     static StringRef getNumRowsAttrName() { return "y_size"; }
-    mlir::Optional<uint64_t> getNumCols() {
+    std::optional<uint64_t> getNumCols() {
       auto name = getNumColsAttrName();
       if (auto a = (*this)->getAttrOfType<IntegerAttr>(name)) {
         return a.getInt();
       }
-      return mlir::Optional<uint64_t>();
+      return std::optional<uint64_t>();
     }
-    mlir::Optional<uint64_t> getNumRows() {
+    std::optional<uint64_t> getNumRows() {
       auto name = getNumRowsAttrName();
       if (auto a = (*this)->getAttrOfType<IntegerAttr>(name)) {
         return a.getInt();
       }
-      return mlir::Optional<uint64_t>();
+      return std::optional<uint64_t>();
     }
   }];
   let hasCanonicalizer = 1;
@@ -212,19 +212,19 @@ def air_HerdOp : air_Op<"herd", [air_AsyncOpInterface,
     }
     static StringRef getColOffsetAttrName() { return "x_loc"; }
     static StringRef getRowOffsetAttrName() { return "y_loc"; }
-    mlir::Optional<uint64_t> getColOffset() {
+    std::optional<uint64_t> getColOffset() {
       auto name = getColOffsetAttrName();
       if (auto a = (*this)->getAttrOfType<IntegerAttr>(name)) {
         return a.getInt();
       }
-      return mlir::Optional<uint64_t>();
+      return std::optional<uint64_t>();
     }
-    mlir::Optional<uint64_t> getRowOffset() {
+    std::optional<uint64_t> getRowOffset() {
       auto name = getRowOffsetAttrName();
       if (auto a = (*this)->getAttrOfType<IntegerAttr>(name)) {
         return a.getInt();
       }
-      return mlir::Optional<uint64_t>();
+      return std::optional<uint64_t>();
     }
     uint64_t getNumCols();
     uint64_t getNumRows();

@@ -74,7 +74,7 @@ def do_run(command):
 def run_passes(pass_pipeline, mlir_module, opts, outputfile=None):
   if opts.verbose:
     print("Running:", pass_pipeline)
-  PassManager.parse(pass_pipeline).run(mlir_module)
+  PassManager.parse(pass_pipeline).run(mlir_module.operation)
   if outputfile:
     with open(outputfile, 'w') as g:
       g.write(str(mlir_module))
@@ -187,7 +187,7 @@ def run(mlir_module, args=None):
       'expand-strided-metadata',
       'lower-affine',
       'convert-scf-to-cf',
-      'convert-memref-to-llvm',
+      'finalize-memref-to-llvm',
       'convert-func-to-llvm',
       'convert-cf-to-llvm',
       'canonicalize','cse'
