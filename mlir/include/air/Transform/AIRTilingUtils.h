@@ -6,7 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-//===- AIRTilingUtils.h - AIR Loop tiling utilities ------------------------===//
+//===- AIRTilingUtils.h - AIR Loop tiling utilities
+//------------------------===//
 //
 // This header file defines utility functions that are commonly used in passes,
 // primarily AIR automatic loop tiling passes.

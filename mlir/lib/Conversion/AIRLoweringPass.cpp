@@ -215,10 +215,11 @@ public:
     int64_t herd_size_x = herd.getNumCols();
     int64_t herd_size_y = herd.getNumRows();
 
-    auto outer = rewriter.create<affine::AffineForOp>(herd.getLoc(), 0, herd_size_x);
+    auto outer =
+        rewriter.create<affine::AffineForOp>(herd.getLoc(), 0, herd_size_x);
     auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
-    auto inner =
-        outer_builder.create<affine::AffineForOp>(herd.getLoc(), 0, herd_size_y);
+    auto inner = outer_builder.create<affine::AffineForOp>(herd.getLoc(), 0,
+                                                           herd_size_y);
 
     outer->setAttr("air.herd", StringAttr::get(op->getContext(), "outer"));
     inner->setAttr("air.herd", StringAttr::get(op->getContext(), "inner"));

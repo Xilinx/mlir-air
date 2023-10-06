@@ -7,9 +7,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Transform/AIRTilingUtils.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
+#include "mlir/IR/BuiltinOps.h"
 
 #define DEBUG_TYPE "air-tiling-utils"
 
@@ -62,5 +62,3 @@ affine::AffineForOp getLabel(affine::AffineForOp root, StringRef label,
 
 } // namespace air
 } // namespace xilinx
-
-
