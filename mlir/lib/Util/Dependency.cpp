@@ -89,7 +89,7 @@ void traceDependentInductionVar(air::DmaMemcpyNdOp dmaNd_op,
       } else {
         // Trace dependency through a for loop
         if (auto for_op = getForRegionIterArgsOwner(operand)) {
-          for (auto iter_arg : for_op.getIterOperands()) {
+          for (auto iter_arg : for_op.getInitArgs()) {
             if (operand == iter_arg) {
               loop_dep_history.push_back(iter_arg);
             }
@@ -161,7 +161,7 @@ void traceDependentInductionVar(air::AsyncOpInterface async_op,
       } else {
         // Trace dependency through a for loop
         if (auto for_op = getForRegionIterArgsOwner(operand)) {
-          for (auto iter_arg : for_op.getIterOperands()) {
+          for (auto iter_arg : for_op.getInitArgs()) {
             if (operand == iter_arg) {
               loop_dep_history.push_back(iter_arg);
             }
@@ -236,7 +236,7 @@ void clearAsyncDependenciesOfAsyncOpImpl(xilinx::air::AsyncOpInterface op) {
 }
 void clearAsyncDependenciesOfAsyncOpImpl(scf::ForOp op) {
   SmallVector<Value> operands_without_wait_all;
-  for (auto iter_oper : op.getIterOperands()) {
+  for (auto iter_oper : op.getInitArgs()) {
     if (auto wa_op = dyn_cast<air::WaitAllOp>(iter_oper.getDefiningOp())) {
       clearAsyncDependenciesOfAsyncOpImpl(wa_op);
     } else {
@@ -312,11 +312,11 @@ Value getLoopCarriedTokenFromScfOp(scf::ParallelOp op) {
 Value getLoopCarriedTokenFromScfOp(scf::ForOp op,
                                    std::string operand_or_argument) {
   if (operand_or_argument == "operand") {
-    if (!op.getIterOperands().size()) {
+    if (!op.getInitArgs().size()) {
       op->emitOpError("has no iter_arg");
       return nullptr;
     }
-    auto token = op.getIterOperands()[0];
+    auto token = op.getInitArgs()[0];
     if (!token.getType().isa<air::AsyncTokenType>()) {
       op->emitOpError("iter operand is not an async token");
       return nullptr;
@@ -360,7 +360,7 @@ SmallVector<Value> getAsyncDependenciesFromOpImpl(air::AsyncOpInterface op) {
   return op.getAsyncDependencies();
 }
 SmallVector<Value> getAsyncDependenciesFromOpImpl(scf::ForOp op) {
-  return op.getIterOperands();
+  return op.getInitArgs();
 }
 SmallVector<Value> getAsyncDependenciesFromOpImpl(scf::ParallelOp op) {
   return op.getInitVals();
@@ -396,7 +396,7 @@ void addAsyncDependencyIfNewImpl(air::AsyncOpInterface op, Value token) {
 }
 void addAsyncDependencyIfNewImpl(scf::ForOp op, Value token) {
   SmallVector<Value> operands_without_wait_all;
-  for (auto iter_oper : op.getIterOperands()) {
+  for (auto iter_oper : op.getInitArgs()) {
     if (iter_oper.getDefiningOp() &&
         isa<air::WaitAllOp>(iter_oper.getDefiningOp())) {
       auto wa_op = dyn_cast<air::WaitAllOp>(iter_oper.getDefiningOp());
@@ -1352,7 +1352,7 @@ void dependencyCanonicalizer::connectOpToItsDepListImpls(
   }
   // scf.for
   else if (auto forop = dyn_cast<scf::ForOp>(op)) {
-    for (auto iter_operand : forop.getIterOperands()) {
+    for (auto iter_operand : forop.getInitArgs()) {
       dep_list.push_back(iter_operand);
     }
   }

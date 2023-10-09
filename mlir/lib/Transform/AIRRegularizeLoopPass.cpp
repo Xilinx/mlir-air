@@ -100,7 +100,7 @@ bool isIndependent(Operation *op, affine::AffineForOp forOp,
       return false;
     }
   } else if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
-    if (!areAllOpsInTheBlockListInvariant(forOp.getLoopBody(), forOp,
+    if (!areAllOpsInTheBlockListInvariant(forOp.getRegion(), forOp,
                                           opsWithUsers, opsToHoist)) {
       return false;
     }

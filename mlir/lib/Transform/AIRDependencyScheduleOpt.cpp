@@ -262,7 +262,7 @@ private:
       eraseAsyncDependencyFromAsyncOp(
           dyn_cast<air::AsyncOpInterface>(dma_async_op.getOperation()),
           for_op.getRegionIterArgs()[0]);
-      auto for_op_iter_operand = for_op.getIterOperands()[0];
+      auto for_op_iter_operand = for_op.getInitArgs()[0];
       dma_op->getResult(0).replaceAllUsesWith(for_op.getRegionIterArgs()[0]);
 
       replaceAllUsesInRegionWith(for_op_iter_operand, dma_op->getResult(0),
@@ -462,7 +462,7 @@ private:
     if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
       dep_list = async_op.getAsyncDependencies();
     } else if (auto async_for_op = dyn_cast<scf::ForOp>(op)) {
-      dep_list = async_for_op.getIterOperands();
+      dep_list = async_for_op.getInitArgs();
     } else if (auto async_parallel_op = dyn_cast<scf::ParallelOp>(op)) {
       dep_list = async_parallel_op.getInitVals();
     } else if (auto affine_if_op = dyn_cast<affine::AffineIfOp>(op)) {
@@ -551,7 +551,7 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
     skipOverOpInDependencyGraph(rewriter, alloc_exec.getOperation(),
                                 for_op.getRegion());
 
-    for (auto ia : for_op.getIterOperands()) {
+    for (auto ia : for_op.getInitArgs()) {
       alloc_exec.addAsyncDependency(ia);
       for_op->replaceUsesOfWith(ia, alloc_exec.getAsyncToken());
     }
@@ -630,7 +630,7 @@ struct ConstructPingPongDependencyPattern
 
     // Find ping and pong allocs and deallocs
     SmallVector<Operation *> alloc_execs;
-    for (auto ia : for_op.getIterOperands()) {
+    for (auto ia : for_op.getInitArgs()) {
       pushToAllocExecsIfHoistedFromLoop(ia, alloc_execs);
     }
     if (!alloc_execs.size())
@@ -1107,7 +1107,7 @@ struct HoistOpsNotUsingPingPongPattern : public OpRewritePattern<scf::ForOp> {
         for_op->getAttrOfType<IntegerAttr>("unroll").getInt();
     if (unroll_factor != 2)
       return failure();
-    if (for_op.getIterOperands().size() != 1)
+    if (for_op.getInitArgs().size() != 1)
       return failure();
 
     // Check if any alloc.op in the scf.for loop is targetted for ping-pong
@@ -1148,7 +1148,7 @@ struct HoistOpsNotUsingPingPongPattern : public OpRewritePattern<scf::ForOp> {
     IRMapping remap;
     auto new_for_op = rewriter.create<scf::ForOp>(
         for_op.getLoc(), for_op.getLowerBound(), for_op.getUpperBound(),
-        for_op.getStep(), for_op.getIterOperands());
+        for_op.getStep(), for_op.getInitArgs());
     remap.map(for_op.getInductionVar(), new_for_op.getInductionVar());
     remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
               getLoopCarriedTokenFromScfOp(new_for_op, "argument"));

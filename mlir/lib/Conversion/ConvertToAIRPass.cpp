@@ -259,7 +259,7 @@ static scf::ParallelOp hoistHerdToAsyncParallel(OpBuilder builder, Location loc,
 
 SmallVector<Value, 1> getLoopTokens(scf::ForOp loop) {
   SmallVector<Value, 1> output;
-  for (auto v : loop.getIterOperands()) {
+  for (auto v : loop.getInitArgs()) {
     output.push_back(v);
   }
   return output;
@@ -1976,10 +1976,10 @@ struct DmaToChannelPass : public air::DmaToChannelBase<DmaToChannelPass> {
                       scf_par.getInitVals()[0].getDefiningOp());
                 }
               } else if (auto scf_for = dyn_cast<scf::ForOp>(parent)) {
-                if (scf_for.getIterOperands().size() &&
-                    scf_for.getIterOperands()[0].getDefiningOp()) {
+                if (scf_for.getInitArgs().size() &&
+                    scf_for.getInitArgs()[0].getDefiningOp()) {
                   sink_wait_all_op = dyn_cast<air::WaitAllOp>(
-                      scf_for.getIterOperands()[0].getDefiningOp());
+                      scf_for.getInitArgs()[0].getDefiningOp());
                 }
               }
             }
