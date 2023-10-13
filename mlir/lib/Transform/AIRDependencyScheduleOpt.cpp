@@ -1249,8 +1249,8 @@ public:
       return;
     }
 
-    this->dim = chanDim;
-    this->factor = factor;
+    dim = chanDim;
+    factor = factor;
 
     // Update channel declaration
     sizes[chanDim] *= factor;
@@ -1322,7 +1322,7 @@ private:
     SmallVector<Value, 1> LBs, UBs, Steps;
 
     LBs.push_back(builder.create<arith::ConstantIndexOp>(loc, 0));
-    UBs.push_back(builder.create<arith::ConstantIndexOp>(loc, this->factor));
+    UBs.push_back(builder.create<arith::ConstantIndexOp>(loc, factor));
     Steps.push_back(builder.create<arith::ConstantIndexOp>(loc, 1));
 
     auto par = builder.create<scf::ParallelOp>(loc, LBs, UBs, Steps,
@@ -1335,7 +1335,7 @@ private:
     if (op.getIndices().empty()) {
       auto const_0 = builder.create<arith::ConstantIndexOp>(par->getLoc(), 0);
       new_channel_idx = {const_0, const_0};
-      new_channel_idx[this->dim] = par.getInductionVars()[0];
+      new_channel_idx[dim] = par.getInductionVars()[0];
     } else
       op->emitOpError(
           "unrolling a sub-channel in a channel bundle currently unsupported");
@@ -1348,16 +1348,16 @@ private:
             builder.create<arith::ConstantIndexOp>(par->getLoc(), d));
       }
     }
-    auto size_op = new_sizes[this->dim].getDefiningOp();
+    auto size_op = new_sizes[dim].getDefiningOp();
     if (size_op && isa<arith::ConstantIndexOp>(size_op)) {
       auto val = dyn_cast<arith::ConstantIndexOp>(size_op).value();
-      val = mlir::ceilDiv(val, this->factor);
-      new_sizes[this->dim] =
+      val = mlir::ceilDiv(val, factor);
+      new_sizes[dim] =
           builder.create<arith::ConstantIndexOp>(par->getLoc(), val);
     } else {
-      new_sizes[this->dim] = builder.create<arith::FloorDivSIOp>(
-          par->getLoc(), new_sizes[this->dim],
-          builder.create<arith::ConstantIndexOp>(par->getLoc(), this->factor));
+      new_sizes[dim] = builder.create<arith::FloorDivSIOp>(
+          par->getLoc(), new_sizes[dim],
+          builder.create<arith::ConstantIndexOp>(par->getLoc(), factor));
     }
     // Update offset (+ induction var. x size)
     SmallVector<Value, 1> new_offsets = op.getOffsets();
@@ -1366,9 +1366,9 @@ private:
       new_offsets = {const_0, const_0};
     }
     auto prod = builder.create<arith::MulIOp>(
-        par->getLoc(), new_channel_idx[this->dim], new_sizes[this->dim]);
-    new_offsets[this->dim] = builder.create<arith::AddIOp>(
-        par->getLoc(), new_offsets[this->dim], prod);
+        par->getLoc(), new_channel_idx[dim], new_sizes[dim]);
+    new_offsets[dim] = builder.create<arith::AddIOp>(
+        par->getLoc(), new_offsets[dim], prod);
     // Update strides
     SmallVector<Value, 1> new_strides = op.getStrides();
     if (new_strides.empty()) {
