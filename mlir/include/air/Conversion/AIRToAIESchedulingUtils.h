@@ -4,8 +4,8 @@
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
-
-#pragma once
+#ifndef AIR_TO_AIE_SCHEDULING_UTILS_H
+#define AIR_TO_AIE_SCHEDULING_UTILS_H
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "air/Dialect/AIR/AIRDialect.h"
@@ -39,7 +39,7 @@ AIE::ExternalBufferOp allocateExternalBufferOp(MemRefType memrefTy,
 
 std::vector<unsigned> convertToStdVec(SmallVector<long int, 4> vec);
 
-bool areIdenticalVectors(std::vector<unsigned> a, std::vector<unsigned> b);
+bool areIdenticalVectors(std::vector<unsigned> &a, std::vector<unsigned> &b);
 
 struct allocation_info_t {
   AIE::TileOp dma_tile = nullptr;
@@ -49,21 +49,18 @@ struct allocation_info_t {
   int64_t tile_channel = -1;
   std::vector<int32_t> dma_id;
   std::vector<Operation *> memcpyOps;
-  bool foundAlloc(int col, int row, air::MemcpyInterface memcpyOp);
-  bool foundAlloc(int col, int row, int chan);
-  bool foundAlloc(int col, int row);
+  bool foundAlloc(uint32_t col, uint32_t row, air::MemcpyInterface memcpyOp);
+  bool foundAlloc(uint32_t col, uint32_t row, int chan);
+  bool foundAlloc(uint32_t col, uint32_t row);
   bool foundAlloc(AIE::TileOp tile, AIE::DMAChannel channel);
 };
 
 class DMAAllocator {
 
 public:
-  AIE::DeviceOp device;
-  int DMAMemorySpaceAsInt;
-  std::vector<allocation_info_t> mm2s_allocs, s2mm_allocs;
-  std::vector<
-      std::tuple<Operation *, AIE::DMAChannel, AIE::LockOp, AIE::LockOp>>
-      lock_allocation_list;
+  DMAAllocator() = delete;
+  DMAAllocator(AIE::DeviceOp device, int dmaMemorySpaceAsInt)
+      : device(device), DMAMemorySpaceAsInt(dmaMemorySpaceAsInt) {}
 
   allocation_info_t lookupDMAAllocation(int64_t col, int64_t row,
                                         air::MemcpyInterface &memcpyOp);
@@ -74,12 +71,23 @@ public:
                                        AIE::TileOp tile, int chan, int col,
                                        int row, std::vector<int> dma_id);
   void sortMemcpyOps(std::vector<Operation *> dma_memcpy_ops);
+
+protected:
+  AIE::DeviceOp device;
+  int DMAMemorySpaceAsInt;
+
+public:
+  std::vector<allocation_info_t> mm2s_allocs, s2mm_allocs;
+  std::vector<
+      std::tuple<Operation *, AIE::DMAChannel, AIE::LockOp, AIE::LockOp>>
+      lock_allocation_list;
 };
 
 class TileDMAAllocator : public DMAAllocator {
 
 public:
-  TileDMAAllocator(AIE::DeviceOp &device);
+  TileDMAAllocator(AIE::DeviceOp device)
+      : DMAAllocator(device, (int)air::MemorySpace::L1) {}
 
   // A very simple scheme to allocate channels for dma operations:
   //  <description>
@@ -96,7 +104,7 @@ public:
   std::vector<int> dma_columns;
   int shim_dma_channels;
 
-  ShimDMAAllocator(AIE::DeviceOp &device);
+  ShimDMAAllocator(AIE::DeviceOp device);
 
   allocation_info_t allocNewDmaChannel(air::MemcpyInterface &memcpyOp, int col,
                                        int row,
@@ -115,7 +123,7 @@ class MemTileDMAAllocator : public DMAAllocator {
 public:
   std::vector<int> memtile_dma_columns;
 
-  MemTileDMAAllocator(AIE::DeviceOp &device);
+  MemTileDMAAllocator(AIE::DeviceOp device);
 
   allocation_info_t simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp);
 
@@ -143,6 +151,7 @@ struct MemcpyBundleAsFlow {
   MemcpyBundleAsFlow(air::DmaMemcpyNdOp dmaMemcpyOp);
   MemcpyBundleAsFlow(air::ChannelOp chan);
 };
+
 std::optional<allocation_info_t>
 foundFlowReuseOpportunity(std::vector<MemcpyBundleAsFlow> memcpy_flows,
                           allocation_info_t alloc, bool isMM2S);
@@ -164,3 +173,5 @@ void groupedByLoopDMAChannelAllocation(
 
 } // namespace air
 } // namespace xilinx
+
+#endif // AIR_TO_AIE_SCHEDULING_UTILS_H
