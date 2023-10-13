@@ -1367,8 +1367,8 @@ private:
     }
     auto prod = builder.create<arith::MulIOp>(
         par->getLoc(), new_channel_idx[dim], new_sizes[dim]);
-    new_offsets[dim] = builder.create<arith::AddIOp>(
-        par->getLoc(), new_offsets[dim], prod);
+    new_offsets[dim] =
+        builder.create<arith::AddIOp>(par->getLoc(), new_offsets[dim], prod);
     // Update strides
     SmallVector<Value, 1> new_strides = op.getStrides();
     if (new_strides.empty()) {

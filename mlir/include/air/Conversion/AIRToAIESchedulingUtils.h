@@ -60,7 +60,7 @@ class DMAAllocator {
 public:
   DMAAllocator() = delete;
   DMAAllocator(AIE::DeviceOp device, int dmaMemorySpaceAsInt)
-    : device(device), DMAMemorySpaceAsInt(dmaMemorySpaceAsInt) {}
+      : device(device), DMAMemorySpaceAsInt(dmaMemorySpaceAsInt) {}
 
   allocation_info_t lookupDMAAllocation(int64_t col, int64_t row,
                                         air::MemcpyInterface &memcpyOp);
@@ -86,7 +86,8 @@ public:
 class TileDMAAllocator : public DMAAllocator {
 
 public:
-  TileDMAAllocator(AIE::DeviceOp device) : DMAAllocator(device, (int)air::MemorySpace::L1) {}
+  TileDMAAllocator(AIE::DeviceOp device)
+      : DMAAllocator(device, (int)air::MemorySpace::L1) {}
 
   // A very simple scheme to allocate channels for dma operations:
   //  <description>
