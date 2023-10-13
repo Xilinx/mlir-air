@@ -16,14 +16,14 @@ using namespace xilinx;
 
 bool air::isTileInbound(air::MemcpyInterface memcpyOp, int tileMemSpaceAsInt) {
   if (memcpyOp.getSrcMemref() && memcpyOp.getDstMemref()) {
-    auto src_memory_space = memcpyOp.getSrcMemref()
-                                .getType()
-                                .cast<MemRefType>()
-                                .getMemorySpaceAsInt();
-    auto dst_memory_space = memcpyOp.getDstMemref()
-                                .getType()
-                                .cast<MemRefType>()
-                                .getMemorySpaceAsInt();
+    int src_memory_space = memcpyOp.getSrcMemref()
+                               .getType()
+                               .cast<MemRefType>()
+                               .getMemorySpaceAsInt();
+    int dst_memory_space = memcpyOp.getDstMemref()
+                               .getType()
+                               .cast<MemRefType>()
+                               .getMemorySpaceAsInt();
     assert(src_memory_space !=
            dst_memory_space); // air.dmaMemcpyNdOp isn't meant to represent
                               // core-to-core communication
@@ -155,7 +155,7 @@ bool air::areIdenticalVectors(std::vector<unsigned> &a,
 
 namespace xilinx::air {
 
-bool allocation_info_t::foundAlloc(int col, int row,
+bool allocation_info_t::foundAlloc(uint32_t col, uint32_t row,
                                    air::MemcpyInterface memcpyOp) {
   if (col == dma_tile.getCol() && row == dma_tile.getRow())
     for (auto o : memcpyOps)
@@ -163,13 +163,13 @@ bool allocation_info_t::foundAlloc(int col, int row,
         return true;
   return false;
 }
-bool allocation_info_t::foundAlloc(int col, int row, int chan) {
+bool allocation_info_t::foundAlloc(uint32_t col, uint32_t row, int chan) {
   if (col == dma_tile.getCol() && row == dma_tile.getRow() &&
       chan == dma_channel.second)
     return true;
   return false;
 }
-bool allocation_info_t::foundAlloc(int col, int row) {
+bool allocation_info_t::foundAlloc(uint32_t col, uint32_t row) {
   if (col == dma_tile.getCol() && row == dma_tile.getRow())
     return true;
   return false;
@@ -194,7 +194,7 @@ static inline void swap(std::vector<Operation *> &a, int i, int j) {
 }
 
 static void selection(std::vector<Operation *> &a) {
-  int i, j, min;
+  size_t i, j, min;
   for (i = 0; i < a.size() - 1; i++) {
     min = i;
     for (j = i + 1; j < a.size(); j++) {
@@ -485,7 +485,7 @@ void MemcpyBundleAsFlow::pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp) {
     auto bcast_sizes = extractFromI64ArrayAttr(
         chan->getAttrOfType<mlir::ArrayAttr>("broadcast_shape"));
     auto bcast_sizes_stdvec = convertToStdVec(bcast_sizes);
-    for (unsigned iter = 0; iter < numS2MMAllocs; iter++) {
+    for (int iter = 0; iter < numS2MMAllocs; iter++) {
       std::vector<unsigned> position =
           getMDVectorFromIterator(bcast_sizes_stdvec, iter);
       auto indices_uint =
@@ -625,7 +625,7 @@ void air::simpleDMAChannelAllocation(
       }
     }
     if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L1) {
-      for (int i = 0; i < f.S2MM.size(); i++) {
+      for (size_t i = 0; i < f.S2MM.size(); i++) {
         for (auto o : f.S2MM[i]) {
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
           auto core = o->getParentOfType<AIE::CoreOp>();
@@ -649,7 +649,7 @@ void air::simpleDMAChannelAllocation(
       }
     }
     if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L2) {
-      for (int i = 0; i < f.S2MM.size(); i++) {
+      for (size_t i = 0; i < f.S2MM.size(); i++) {
         for (unsigned i = 0; i < f.S2MM.size(); i++) {
           for (auto o : f.S2MM[i]) {
             auto memcpyOpIf = cast<air::MemcpyInterface>(o);
@@ -662,7 +662,7 @@ void air::simpleDMAChannelAllocation(
   }
   for (auto &f : memcpy_flows) {
     if (f.MM2S_memspace_as_int == (int)air::MemorySpace::L3) {
-      for (int i = 0; i < f.S2MM.size(); i++) {
+      for (size_t i = 0; i < f.S2MM.size(); i++) {
         auto alloc =
             foundFlowReuseOpportunity(memcpy_flows, f.S2MM_alloc[i], true);
         if (alloc.has_value()) {
@@ -722,18 +722,18 @@ bool air::groupingMemcpysByLoop(std::vector<MemcpyBundleAsFlow> &memcpy_flows) {
         auto core = o->getParentOfType<AIE::CoreOp>();
         f.flow_op_group = foundInVector<scf::ForOp>(
             o->getParentOfType<scf::ForOp>(), for_loops_log_mm2s[core]);
-        if (f.flow_op_group == for_loops_log_mm2s[core].size()) {
+        if ((size_t)f.flow_op_group == for_loops_log_mm2s[core].size()) {
           for_loops_log_mm2s[core].push_back(o->getParentOfType<scf::ForOp>());
         }
       }
     }
     if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L1) {
-      for (int i = 0; i < f.S2MM.size(); i++) {
+      for (size_t i = 0; i < f.S2MM.size(); i++) {
         for (auto o : f.S2MM[i]) {
           auto core = o->getParentOfType<AIE::CoreOp>();
           f.flow_op_group = foundInVector<scf::ForOp>(
               o->getParentOfType<scf::ForOp>(), for_loops_log_s2mm[core]);
-          if (f.flow_op_group == for_loops_log_s2mm[core].size()) {
+          if ((size_t)f.flow_op_group == for_loops_log_s2mm[core].size()) {
             for_loops_log_s2mm[core].push_back(
                 o->getParentOfType<scf::ForOp>());
           }
@@ -770,7 +770,7 @@ void air::groupedByLoopDMAChannelAllocation(
       }
     }
     if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L1) {
-      for (int i = 0; i < f.S2MM.size(); i++) {
+      for (size_t i = 0; i < f.S2MM.size(); i++) {
         for (auto o : f.S2MM[i]) {
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
           auto core = o->getParentOfType<AIE::CoreOp>();
@@ -794,7 +794,7 @@ void air::groupedByLoopDMAChannelAllocation(
       }
     }
     if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L2) {
-      for (int i = 0; i < f.S2MM.size(); i++) {
+      for (size_t i = 0; i < f.S2MM.size(); i++) {
         for (unsigned i = 0; i < f.S2MM.size(); i++) {
           for (auto o : f.S2MM[i]) {
             auto memcpyOpIf = cast<air::MemcpyInterface>(o);
@@ -807,7 +807,7 @@ void air::groupedByLoopDMAChannelAllocation(
   }
   for (auto &f : memcpy_flows) {
     if (f.MM2S_memspace_as_int == (int)air::MemorySpace::L3) {
-      for (int i = 0; i < f.S2MM.size(); i++) {
+      for (size_t i = 0; i < f.S2MM.size(); i++) {
         auto alloc =
             foundFlowReuseOpportunity(memcpy_flows, f.S2MM_alloc[i], true);
         if (alloc.has_value()) {

@@ -49,9 +49,9 @@ struct allocation_info_t {
   int64_t tile_channel = -1;
   std::vector<int32_t> dma_id;
   std::vector<Operation *> memcpyOps;
-  bool foundAlloc(int col, int row, air::MemcpyInterface memcpyOp);
-  bool foundAlloc(int col, int row, int chan);
-  bool foundAlloc(int col, int row);
+  bool foundAlloc(uint32_t col, uint32_t row, air::MemcpyInterface memcpyOp);
+  bool foundAlloc(uint32_t col, uint32_t row, int chan);
+  bool foundAlloc(uint32_t col, uint32_t row);
   bool foundAlloc(AIE::TileOp tile, AIE::DMAChannel channel);
 };
 
