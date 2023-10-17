@@ -233,8 +233,16 @@ DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
   AIE::TileOp tile = alloc.dma_tile;
 
   for (size_t i = 0; i < lock_allocation_list.size(); i++) {
+    // If multiple bds reference the same buffer and DMA channel
     if ((std::get<0>(lock_allocation_list[i]) == bufferOp) &&
         (std::get<1>(lock_allocation_list[i]) == channel)) {
+      return {std::get<2>(lock_allocation_list[i]),
+              std::get<3>(lock_allocation_list[i])};
+    }
+    // Else if multiple bds reference the same buffer, but different DMA
+    // channels, then we assume the scenario of having two bds, one S2MM and the
+    // other MM2S.
+    else if (std::get<0>(lock_allocation_list[i]) == bufferOp) {
       return {std::get<2>(lock_allocation_list[i]),
               std::get<3>(lock_allocation_list[i])};
     }
