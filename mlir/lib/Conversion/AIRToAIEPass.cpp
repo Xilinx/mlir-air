@@ -1055,9 +1055,11 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 
     // create objFifo
     rewriter.setInsertionPoint(*(device.getOps<AIE::CoreOp>().begin()));
-    AIE::ObjectFifoCreateOp objFifo = createObjectFifo(
-        rewriter, datatype, producerTile, consumers,
-        channel.getBufferResources(), "air_" + channel.getName().str());
+    auto chan_name_attr =
+        StringAttr::get(device.getContext(), "air_" + channel.getName().str());
+    AIE::ObjectFifoCreateOp objFifo =
+        createObjectFifo(rewriter, datatype, producerTile, consumers,
+                         channel.getBufferResources(), chan_name_attr);
 
     // replace put/get and any associated memref alloc/dealloc
     std::vector<Operation *> erased_deallocs;
@@ -1127,7 +1129,7 @@ private:
                                            AIE::AIEObjectFifoType datatype,
                                            Value prodTile,
                                            const std::vector<Value> &consTile,
-                                           int depth, StringRef name) const {
+                                           int depth, StringAttr name) const {
     AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
         builder.getUnknownLoc(), name, prodTile, consTile,
         builder.getIntegerAttr(builder.getI32Type(), depth), datatype);
