@@ -179,7 +179,7 @@ AIE::BufferOp allocateBufferOp(MemRefType memrefTy, AIE::TileOp tile,
     t = t->getNextNode();
   builder.setInsertionPointAfter(t);
   AIE::BufferOp bufferOp =
-      builder.create<AIE::BufferOp>(tile->getLoc(), memrefTy, tile);
+      builder.create<AIE::BufferOp>(tile->getLoc(), memrefTy, tile, nullptr);
 
   std::stringstream ss =
       generateBufferNameInStringStream("buf", BufferId, attr, x, y);
