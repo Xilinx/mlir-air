@@ -600,7 +600,7 @@ public:
         deps.push_back(o);
     if (deps.size())
       placeholder = rewriter.create<xilinx::airrt::WaitAllOp>(
-          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
+          loc, xilinx::airrt::EventType::get(ctx), deps);
 
     // Get src and dst memref types
     auto getOps = getTheOtherChannelOpThroughSymbol(op);
@@ -643,7 +643,7 @@ public:
         deps.push_back(o);
     if (deps.size())
       placeholder = rewriter.create<xilinx::airrt::WaitAllOp>(
-          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
+          loc, xilinx::airrt::EventType::get(ctx), deps);
 
     // Get src and dst memref types
     auto putOps = getTheOtherChannelOpThroughSymbol(op);
@@ -1272,8 +1272,6 @@ private:
   // processor, where all the async. control programs are serialized here.
   void serializeAsyncControlFlows(func::FuncOp func) const {
 
-    auto context = func.getContext();
-
     // Collect async scf loops in line-by-line order
     std::vector<Operation *> scf_loops;
     for (auto scf_loop : func.getBody().getOps<scf::ForOp>()) {
@@ -1341,7 +1339,7 @@ private:
                               .front()
                               .getTerminator();
           builder.setInsertionPoint(yield_op);
-          auto new_op = remapOpAndOperands(builder, chan_op, remap);
+          remapOpAndOperands(builder, chan_op, remap);
           if (i == bucket.size() - 1) {
             SmallVector<Value, 8> operands{};
             if (auto new_ctrl_loop_par =

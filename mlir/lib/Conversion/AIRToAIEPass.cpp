@@ -372,7 +372,7 @@ void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
     auto phys_y = 1;
 
     // make the AIE.tile
-    auto memtile = getPhysTileOp(aie_device, phys_x, phys_y);
+    getPhysTileOp(aie_device, phys_x, phys_y);
   }
 }
 
@@ -965,7 +965,7 @@ void L2MemrefToMemTileMap(
       memtile_id++;
       memtile_id %= memtiles.size();
       skip_count++;
-      assert(skip_count < memtiles.size());
+      assert(skip_count < (int)memtiles.size());
     }
     memtileToSizeMap[memtiles[memtile_id]] -= memref_vol;
     memrefToMemTileMap[alloc] = memtiles[memtile_id];
@@ -1597,7 +1597,7 @@ public:
         SmallVector<int, 2> lbs_spatial, ubs_spatial;
         getSizesFromSpatialLoop(par.getOperation(), lbs_spatial, ubs_spatial);
         std::vector<unsigned> par_size;
-        int par_vol = 1;
+        unsigned par_vol = 1;
         for (unsigned i = 0; i < lbs_spatial.size(); i++) {
           par_size.push_back(ubs_spatial[i] - lbs_spatial[i] + 1);
           par_vol *= ubs_spatial[i] - lbs_spatial[i] + 1;
@@ -1722,7 +1722,7 @@ public:
 
     // Step 4: Connect flows
     for (auto &f : memcpy_flows) {
-      for (unsigned i = 0; i < f.numS2MMAllocs; i++) {
+      for (int i = 0; i < f.numS2MMAllocs; i++) {
         assert(f.MM2S_alloc.dma_tile);
         assert(f.S2MM_alloc[i].dma_tile);
         getFlowOp(aie_device, f.MM2S_alloc.dma_tile, AIE::WireBundle::DMA,
@@ -1833,11 +1833,6 @@ public:
     std::set<int64_t> dma_ids;
     herd.walk([&](air::MemcpyInterface o) { dma_ids.insert(o.getId()); });
 
-    auto c = herd.getColOffset();
-    auto r = herd.getRowOffset();
-    int64_t col_offset = c ? *c : 0;
-    int64_t row_offset = r ? *r : 0;
-
     for (auto &t : allocs) {
       auto tileOp = t.dma_tile;
       int64_t chan = t.dma_channel.second;
@@ -1909,11 +1904,6 @@ public:
       if (!o->getParentOfType<air::HerdOp>())
         dma_ids.insert(o.getId());
     });
-
-    auto c = seg.getColOffset();
-    auto r = seg.getRowOffset();
-    int64_t col_offset = c ? *c : 0;
-    int64_t row_offset = r ? *r : 0;
 
     for (auto &t : allocs) {
       auto tileOp = t.dma_tile;
@@ -2276,10 +2266,6 @@ public:
         }
       }
 
-      // The first block
-      Block *channel_head = nullptr;
-      Block *end_bb = nullptr;
-
       auto loc = core->getLoc();
 
       // make a AIE.mem for the tile dma
@@ -2343,10 +2329,6 @@ public:
         }
       }
 
-      // The first block
-      Block *channel_head = nullptr;
-      Block *end_bb = nullptr;
-
       // Generate AIE.shimDMA op
       AIE::ShimDMAOp shimDMA = getShimDMAOp(tile);
       if (!shimDMA) {
@@ -2390,10 +2372,6 @@ public:
           }
         }
       }
-
-      // The first block
-      Block *channel_head = nullptr;
-      Block *end_bb = nullptr;
 
       // Generate AIE.memTileDMA op
       AIE::MemTileDMAOp memTileDMA = getMemTileDMAOp(tile);
