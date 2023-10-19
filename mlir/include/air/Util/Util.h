@@ -29,6 +29,8 @@ func::FuncOp getMangledFunction(ModuleOp module, std::string fnName,
 
 uint64_t getTensorVolume(const ShapedType ty);
 uint64_t getTensorVolume(const Type ty);
+SmallVector<int> getTensorShape(const ShapedType ty);
+SmallVector<int> getTensorShape(const Type ty);
 std::string getElementTypeAsString(const mlir::Type ty);
 uint64_t getElementSizeInBytes(const mlir::Type ty);
 
@@ -78,6 +80,8 @@ getChannelGetOpThroughSymbol(ChannelOp channel, Operation *scope = nullptr);
 // Get the other channel op through channel symbol
 std::vector<ChannelGetOp> getTheOtherChannelOpThroughSymbol(ChannelPutOp put);
 std::vector<ChannelPutOp> getTheOtherChannelOpThroughSymbol(ChannelGetOp get);
+std::vector<air::ChannelInterface>
+getTheOtherChannelOpThroughSymbol(air::ChannelInterface op);
 void getSizesFromIntegerSet(MLIRContext *ctx, IntegerSet int_set,
                             SmallVector<int, 2> &lbs_int,
                             SmallVector<int, 2> &ubs_int);
