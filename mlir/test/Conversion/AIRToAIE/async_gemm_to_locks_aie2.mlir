@@ -16,7 +16,7 @@
 // CHECK:   %[[VAL_5:.*]] = AIE.tile(6, 3)
 // CHECK:   %[[VAL_6:.*]] = AIE.tile(5, 4)
 // CHECK:   %[[VAL_7:.*]] = AIE.tile(6, 4)
-// CHECK-COUNT-46:    AIE.lock
+// CHECK-COUNT-38:    AIE.lock
 // CHECK:   AIE.buffer(%[[VAL_2]]){{.*}}memref<64x64xi32, 1>
 // CHECK:   AIE.buffer(%[[VAL_3]]){{.*}}memref<64x64xi32, 1>
 // CHECK:   AIE.buffer(%[[VAL_2]]){{.*}}memref<64x64xi32, 1>
