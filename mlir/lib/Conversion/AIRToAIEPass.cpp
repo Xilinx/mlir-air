@@ -1129,8 +1129,9 @@ private:
                                            const std::vector<Value> &consTile,
                                            int depth, StringRef name) const {
     AIE::ObjectFifoCreateOp fifo = builder.create<AIE::ObjectFifoCreateOp>(
-        builder.getUnknownLoc(), name, prodTile, consTile,
-        builder.getIntegerAttr(builder.getI32Type(), depth), datatype);
+        builder.getUnknownLoc(), builder.getStringAttr(name), prodTile,
+        consTile, builder.getIntegerAttr(builder.getI32Type(), depth),
+        datatype);
     return fifo;
   }
 

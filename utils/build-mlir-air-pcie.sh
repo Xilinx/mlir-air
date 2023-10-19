@@ -64,7 +64,7 @@ cmake .. \
     -DVitisSysroot="" \
     -DLibXAIE_ROOT=${LibXAIE_DIR} \
     -DARM_TOOLCHAIN_OPT="" \
-	  -DAIR_RUNTIME_TARGETS="x86_64" \
+    -DAIR_RUNTIME_TARGETS="x86_64" \
     -DBUILD_AIR_PCIE=ON \
     -DBUILD_SHARED_LIBS=OFF \
     -DLLVM_USE_LINKER=lld \
