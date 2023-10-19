@@ -1043,8 +1043,8 @@ struct EnforceLoopCarriedMemrefDeallocPattern
       for (auto dealloc_exec : disconnected_deallocs) {
         wa.addAsyncDependency(dealloc_exec.getAsyncToken());
       }
-      auto new_yield_op = rewriter.create<scf::YieldOp>(
-          yield_op.getLoc(), SmallVector<Value>{wa.getAsyncToken()});
+      rewriter.create<scf::YieldOp>(yield_op.getLoc(),
+                                    SmallVector<Value>{wa.getAsyncToken()});
       rewriter.eraseOp(yield_op.getOperation());
     }
 
@@ -1250,7 +1250,6 @@ public:
     }
 
     dim = chanDim;
-    factor = factor;
 
     // Update channel declaration
     sizes[chanDim] *= factor;
@@ -1398,25 +1397,6 @@ private:
     op.getAsyncToken().replaceAllUsesWith(barrier.getAsyncToken());
 
     return par;
-  }
-
-  static SmallVector<int> getTensorShape(const ShapedType ty) {
-
-    if (!ty.hasRank())
-      return SmallVector<int>(1);
-
-    SmallVector<int> shape = {};
-    for (auto &d : ty.getShape())
-      shape.push_back(d);
-    return shape;
-  }
-
-  static SmallVector<int> getTensorShape(const Type ty) {
-    if (auto t = ty.dyn_cast<ShapedType>()) {
-      return getTensorShape(t);
-    } else {
-      return SmallVector<int>(1);
-    }
   }
 };
 
