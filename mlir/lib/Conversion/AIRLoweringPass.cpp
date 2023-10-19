@@ -137,40 +137,46 @@ public:
       segment.getResult(0).replaceAllUsesWith(w.getResult(0));
     }
 
-    SmallVector<Value> lbs, ubs, steps;
-    auto c0 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 0);
-    auto c1 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1);
+    // If the segment doesn't contain a dma op, then it can be deleted
+    SmallVector<Operation *> segOps;
+    segment.walk([&](air::DmaMemcpyNdOp op) { segOps.push_back(op); });
 
-    // make scf.parallel to replace air.segment
-    for (auto d : segment.getSizeOperands()) {
-      lbs.push_back(c0);
-      ubs.push_back(d);
-      steps.push_back(c1);
+    if (segOps.size()) {
+      SmallVector<Value> lbs, ubs, steps;
+      auto c0 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 0);
+      auto c1 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1);
+
+      // make scf.parallel to replace air.segment
+      for (auto d : segment.getSizeOperands()) {
+        lbs.push_back(c0);
+        ubs.push_back(d);
+        steps.push_back(c1);
+      }
+      if (lbs.empty()) {
+        lbs.push_back(c0);
+        ubs.push_back(c1);
+        steps.push_back(c1);
+      }
+      auto scfPar =
+          rewriter.create<scf::ParallelOp>(op->getLoc(), lbs, ubs, steps);
+
+      // map segment iteration space to scf.parallel ivs
+      for (auto p : llvm::zip(segment.getIds(), scfPar.getInductionVars()))
+        std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
+
+      // map segment size to scf.parallel upper bounds
+      for (auto p :
+           llvm::zip(segment.getSizeOperands(), scfPar.getUpperBound()))
+        std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
+
+      int i = 0;
+      for (auto arg : segment.getKernelArguments())
+        arg.replaceAllUsesWith(segment.getKernelOperand(i++));
+
+      auto &body = segment.getBody().front().getOperations();
+      scfPar.getBody()->getOperations().splice(scfPar.getBody()->begin(), body,
+                                               body.begin(), --body.end());
     }
-    if (lbs.empty()) {
-      lbs.push_back(c0);
-      ubs.push_back(c1);
-      steps.push_back(c1);
-    }
-    auto scfPar =
-        rewriter.create<scf::ParallelOp>(op->getLoc(), lbs, ubs, steps);
-
-    // map segment iteration space to scf.parallel ivs
-    for (auto p : llvm::zip(segment.getIds(), scfPar.getInductionVars()))
-      std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
-
-    // map segment size to scf.parallel upper bounds
-    for (auto p : llvm::zip(segment.getSizeOperands(), scfPar.getUpperBound()))
-      std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
-
-    int i = 0;
-    for (auto arg : segment.getKernelArguments())
-      arg.replaceAllUsesWith(segment.getKernelOperand(i++));
-
-    auto &body = segment.getBody().front().getOperations();
-    scfPar.getBody()->getOperations().splice(scfPar.getBody()->begin(), body,
-                                             body.begin(), --body.end());
-
     rewriter.eraseOp(op);
     return success();
   }
@@ -440,6 +446,10 @@ public:
     } else {
       airrtOp = rewriter.create<airrt::DmaMemcpyNdOp>(loc, tys, opers);
     }
+    // If dma op contains shim dma alloc metadata, then inherit this information
+    if (op->hasAttr("metadata"))
+      airrtOp->setAttr("metadata",
+                       op->getAttrOfType<mlir::SymbolRefAttr>("metadata"));
     rewriter.replaceOp(op, airrtOp->getResults());
     return success();
   }
@@ -457,8 +467,8 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   MemRefType theOtherMemrefType =
       theOtherOp.getMemref().getType().cast<MemRefType>();
 
-  bool thisOpIsInTile =
-      thisMemrefType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1;
+  bool thisOpIsInShim =
+      thisMemrefType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3;
   bool isFullMemcpy = false;
   if (thisMemrefType.getMemorySpaceAsInt() ==
           (int)xilinx::air::MemorySpace::L3 &&
@@ -471,8 +481,17 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
                  (int)xilinx::air::MemorySpace::L2) {
     isFullMemcpy = true;
   }
-  if (!thisOpIsInTile && !isFullMemcpy) {
-    SmallVector<Value, 16> opers;
+
+  SmallVector<Value, 16> opers;
+  Operation *airrtOp = nullptr;
+  auto i64Ty = builder.getI64Type();
+  auto zero =
+      builder.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 0));
+  auto one =
+      builder.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 1));
+
+  if (thisOpIsInShim) {
+    // if (!isFullMemcpy) {
 
     auto idTy = IntegerType::get(ctx, 32);
     // Get op id of the internal put/get op
@@ -482,12 +501,6 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
       opers.push_back(builder.create<arith::ConstantOp>(
           loc, idTy, IntegerAttr::get(idTy, 0)));
     }
-
-    auto i64Ty = builder.getI64Type();
-    auto zero = builder.create<arith::ConstantOp>(loc, i64Ty,
-                                                  IntegerAttr::get(i64Ty, 0));
-    auto one = builder.create<arith::ConstantOp>(loc, i64Ty,
-                                                 IntegerAttr::get(i64Ty, 1));
 
     scf::ParallelOp launch = thisOp->getParentOfType<scf::ParallelOp>();
     if (!launch) {
@@ -532,31 +545,34 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
         strides[idx++] = builder.create<arith::IndexCastOp>(
             loc, IntegerType::get(ctx, 64), o);
     idx = 4 - thisMemrefType.getRank();
-    for (auto o : thisOp.getSizes())
-      lengths[idx++] =
-          builder.create<arith::IndexCastOp>(loc, IntegerType::get(ctx, 64), o);
+    // If sizes field is empty, then infer sizes from memref shape
+    if (thisOp.getSizes().empty())
+      for (auto d : air::getTensorShape(thisMemrefType))
+        lengths[idx++] = builder.create<arith::ConstantOp>(
+            loc, i64Ty, IntegerAttr::get(i64Ty, d));
+    else
+      for (auto o : thisOp.getSizes())
+        lengths[idx++] = builder.create<arith::IndexCastOp>(
+            loc, IntegerType::get(ctx, 64), o);
 
     opers.append(offsets);
     opers.append(lengths);
     opers.append(strides);
 
-    Operation *airrtOp = nullptr;
     SmallVector<Type, 1> tys;
     if (thisOp->getNumResults())
       tys.push_back(airrt::EventType::get(ctx));
-    if (isFullMemcpy) {
-      airrtOp = builder.create<airrt::MemcpyNdOp>(loc, tys, opers);
-    } else {
-      airrtOp = builder.create<airrt::DmaMemcpyNdOp>(loc, tys, opers);
-    }
+
+    airrtOp = builder.create<airrt::DmaMemcpyNdOp>(loc, tys, opers);
+    // If channel op contains shim dma alloc metadata, then inherit this
+    // information
+    if (thisOp->hasAttr("metadata"))
+      airrtOp->setAttr("metadata",
+                       thisOp->getAttrOfType<mlir::SymbolRefAttr>("metadata"));
     return airrtOp;
-  } else {
-    // If memcpy between L1 and L3, and this op is the L1 side, then this
-    // indicates a bug because it should have been deleted with herd.
-    assert(false);
-    // TODO: isFullMemcpy
   }
-  return nullptr;
+
+  return airrtOp;
 }
 
 class AIRChannelPutToAIRRtConversion
@@ -592,8 +608,11 @@ public:
 
     Operation *airrtOp =
         AIRChannelInterfaceToAIRRtConversionImpl(rewriter, op, getOp);
-    if (!airrtOp)
-      return failure();
+    if (!airrtOp) {
+      // If this put op is not convertable to  airrt op, then erase it.
+      rewriter.eraseOp(op);
+      return success();
+    }
     rewriter.replaceOp(op, airrtOp->getResults());
     return success();
   }
@@ -632,8 +651,11 @@ public:
 
     Operation *airrtOp =
         AIRChannelInterfaceToAIRRtConversionImpl(rewriter, op, putOp);
-    if (!airrtOp)
-      return failure();
+    if (!airrtOp) {
+      // If this get op is not convertable to  airrt op, then erase it.
+      rewriter.eraseOp(op);
+      return success();
+    }
     rewriter.replaceOp(op, airrtOp->getResults());
     return success();
   }

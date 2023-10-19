@@ -231,6 +231,7 @@ DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
   allocation_info_t alloc = lookupDMAAllocation(col, row, memcpyOp);
   AIE::DMAChannel channel = alloc.dma_channel;
   AIE::TileOp tile = alloc.dma_tile;
+  const auto &target_model = device.getTargetModel();
 
   for (size_t i = 0; i < lock_allocation_list.size(); i++) {
     // If multiple bds reference the same buffer and DMA channel
@@ -239,15 +240,16 @@ DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
       return {std::get<2>(lock_allocation_list[i]),
               std::get<3>(lock_allocation_list[i])};
     }
-    // Else if multiple bds reference the same buffer, but different DMA
-    // channels, then we assume the scenario of having two bds, one S2MM and the
-    // other MM2S.
-    else if (std::get<0>(lock_allocation_list[i]) == bufferOp) {
+    // Else if memtile, and multiple bds reference the same buffer, but
+    // different DMA channels, then we assume the scenario of having two bds,
+    // one S2MM and the other MM2S. This scenario is almost always true due to
+    // memtile having no core to communicate data with.
+    else if (target_model.isMemTile(col, row) &&
+             std::get<0>(lock_allocation_list[i]) == bufferOp) {
       return {std::get<2>(lock_allocation_list[i]),
               std::get<3>(lock_allocation_list[i])};
     }
   }
-  const auto &target_model = device.getTargetModel();
   bool isAIE2 = (target_model.getTargetArch() == AIE::AIEArch::AIE2);
   auto init = isAIE2 ? 1 : 0;
 

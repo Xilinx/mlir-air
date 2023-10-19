@@ -10,6 +10,7 @@
 #define AIR_CONVERSION_PASSES_H
 
 #include "air/Conversion/AIRLoweringPass.h"
+#include "air/Conversion/AIRRtToIpuPass.h"
 #include "air/Conversion/AIRRtToLLVMPass.h"
 #include "air/Conversion/AIRToAIEPass.h"
 #include "air/Conversion/AIRToAsyncPass.h"
