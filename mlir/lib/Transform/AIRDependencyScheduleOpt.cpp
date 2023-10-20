@@ -49,6 +49,7 @@
 using namespace mlir;
 using namespace xilinx;
 using namespace xilinx::air;
+using namespace boost;
 
 #define DEBUG_TYPE "air-dependency-schedule-opt"
 
@@ -2042,6 +2043,165 @@ public:
 private:
 };
 
+// A pass which de-alias a memref with multiple channel accesses over time, into
+// multiple memrefs. Note that this implementation is temporary and not generic.
+// TODO: Rewrite as a graph partitioning problem.
+class AIRDeAliasMemref : public AIRDeAliasMemrefBase<AIRDeAliasMemref> {
+
+public:
+  AIRDeAliasMemref() = default;
+  AIRDeAliasMemref(const AIRDeAliasMemref &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<scf::SCFDialect, air::airDialect>();
+  }
+
+  void runOnFunction(func::FuncOp f) {
+
+    std::vector<memref::AllocOp> allocs;
+    f.walk([&](memref::AllocOp alloc) { allocs.push_back(alloc); });
+
+    // Count air.channel references
+    for (auto alloc : allocs) {
+      Value memref = nullptr;
+      if (auto exec = alloc->getParentOfType<air::ExecuteOp>()) {
+        memref = exec->getResult(1);
+      } else
+        memref = alloc.getMemref();
+      std::vector<air::ChannelInterface> chan_puts_gets;
+      for (auto user : memref.getUsers()) {
+        if (auto putget = dyn_cast<air::ChannelInterface>(user))
+          if (putget.getMemref() == memref)
+            chan_puts_gets.push_back(putget);
+      }
+
+      // Partition the subgraph
+      std::vector<int> partition_cuts;
+      if (!chan_puts_gets.empty()) {
+        for (unsigned i = 0; i < chan_puts_gets.size() - 1; i++) {
+          if (isa<air::ChannelGetOp>(chan_puts_gets[i].getOperation()) &&
+              isa<air::ChannelPutOp>(chan_puts_gets[i + 1].getOperation())) {
+            partition_cuts.push_back(i + 1);
+          }
+        }
+      }
+
+      // Allocate new memref per cut
+      std::vector<Operation *> new_memallocs;
+      for (unsigned i = 0; i < partition_cuts.size(); i++) {
+        OpBuilder builder(alloc);
+        Operation *new_op = nullptr;
+        if (auto exec = alloc->getParentOfType<air::ExecuteOp>()) {
+          builder.setInsertionPoint(exec);
+          new_op = builder.clone(*exec.getOperation());
+        } else
+          new_op = builder.clone(*alloc.getOperation());
+        new_memallocs.push_back(new_op);
+
+        // Create deallocs for the new memref
+        Value new_memref = isa<air::ExecuteOp>(new_op) ? new_op->getResult(1)
+                                                       : new_op->getResult(0);
+        for (auto user : memref.getUsers()) {
+          if (isa<memref::DeallocOp>(user)) {
+            if (isa<air::ExecuteOp>(new_op)) {
+              builder.setInsertionPoint(
+                  user->getParentOfType<air::ExecuteOp>());
+              // Async. dealloc
+              auto async_exec = builder.create<xilinx::air::ExecuteOp>(
+                  user->getLoc(), air::AsyncTokenType::get(alloc->getContext()),
+                  SmallVector<Value>{});
+              Block *async_exec_bb = builder.createBlock(&async_exec.getBody());
+              builder.setInsertionPointToStart(async_exec_bb);
+              builder.create<memref::DeallocOp>(user->getLoc(), new_memref);
+              builder.create<air::ExecuteTerminatorOp>(user->getLoc());
+            } else {
+              builder.setInsertionPoint(user);
+              // Sync. dealloc
+              builder.create<memref::DeallocOp>(user->getLoc(), new_memref);
+            }
+          }
+        }
+      }
+
+      // Update references
+      partition_cuts.insert(partition_cuts.end(), chan_puts_gets.size());
+      for (unsigned i = 0; i < partition_cuts.size() - 1; i++) {
+        for (unsigned j = partition_cuts[i]; j < partition_cuts[i + 1]; j++) {
+          if (auto old_put = dyn_cast<air::ChannelPutOp>(
+                  chan_puts_gets[j].getOperation())) {
+            Value new_memref = isa<air::ExecuteOp>(new_memallocs[i])
+                                   ? new_memallocs[i]->getResult(1)
+                                   : new_memallocs[i]->getResult(0);
+            OpBuilder builder(old_put);
+            replaceChannelPutOp(builder, old_put, new_memref);
+          } else if (auto old_get = dyn_cast<air::ChannelGetOp>(
+                         chan_puts_gets[j].getOperation())) {
+            Value new_memref = isa<air::ExecuteOp>(new_memallocs[i])
+                                   ? new_memallocs[i]->getResult(1)
+                                   : new_memallocs[i]->getResult(0);
+            OpBuilder builder(old_get);
+            replaceChannelGetOp(builder, old_get, new_memref);
+          }
+        }
+      }
+    }
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps) {
+      runOnFunction(f);
+    }
+  }
+
+private:
+  Operation *replaceChannelPutOp(OpBuilder builder, air::ChannelPutOp old,
+                                 Value new_memref) {
+    builder.setInsertionPoint(old);
+    SmallVector<Type, 1> tys;
+    if (old.getAsyncToken()) {
+      tys.push_back(air::AsyncTokenType::get(old->getContext()));
+    }
+    SmallVector<Value, 4> deps = old.getAsyncDependencies();
+    auto new_op = builder.create<air::ChannelPutOp>(
+        old->getLoc(), tys, deps, old.getChanName(), old.getIndices(),
+        new_memref, old.getSrcOffsets(), old.getSrcSizes(),
+        old.getSrcStrides());
+    if (old.getAsyncToken()) {
+      old.getAsyncToken().replaceAllUsesWith(new_op.getAsyncToken());
+      // Add dependence to the new memref
+      new_op.addAsyncDependency(
+          dyn_cast<air::ExecuteOp>(new_memref.getDefiningOp()).getAsyncToken());
+    }
+    old->erase();
+    return new_op.getOperation();
+  }
+  Operation *replaceChannelGetOp(OpBuilder builder, air::ChannelGetOp old,
+                                 Value new_memref) {
+    builder.setInsertionPoint(old);
+    SmallVector<Type, 1> tys;
+    if (old.getAsyncToken()) {
+      tys.push_back(air::AsyncTokenType::get(old->getContext()));
+    }
+    SmallVector<Value, 4> deps = old.getAsyncDependencies();
+    auto new_op = builder.create<air::ChannelGetOp>(
+        old->getLoc(), tys, deps, old.getChanName(), old.getIndices(),
+        new_memref, old.getDstOffsets(), old.getDstSizes(),
+        old.getDstStrides());
+    if (old.getAsyncToken()) {
+      old.getAsyncToken().replaceAllUsesWith(new_op.getAsyncToken());
+      // Add dependence to the new memref
+      new_op.addAsyncDependency(
+          dyn_cast<air::ExecuteOp>(new_memref.getDefiningOp()).getAsyncToken());
+    }
+    old->erase();
+    return new_op.getOperation();
+  }
+};
+
 } // namespace
 
 namespace xilinx {
@@ -2097,6 +2257,10 @@ std::unique_ptr<Pass> createAIRUnrollChannelByFactorPattern() {
 
 std::unique_ptr<Pass> createAIREnforceLoopCarriedMemrefDeallocPattern() {
   return std::make_unique<AIREnforceLoopCarriedMemrefDeallocPattern>();
+}
+
+std::unique_ptr<Pass> createAIRDeAliasMemref() {
+  return std::make_unique<AIRDeAliasMemref>();
 }
 
 } // namespace air
