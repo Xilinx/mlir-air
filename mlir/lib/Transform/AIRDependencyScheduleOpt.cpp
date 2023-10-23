@@ -2176,6 +2176,11 @@ private:
       new_op.addAsyncDependency(
           dyn_cast<air::ExecuteOp>(new_memref.getDefiningOp()).getAsyncToken());
     }
+    if (old.getId() != -1) {
+      new_op->setAttr("id", mlir::IntegerAttr::get(
+                                mlir::IntegerType::get(old->getContext(), 32),
+                                old.getId()));
+    }
     old->erase();
     return new_op.getOperation();
   }
@@ -2196,6 +2201,11 @@ private:
       // Add dependence to the new memref
       new_op.addAsyncDependency(
           dyn_cast<air::ExecuteOp>(new_memref.getDefiningOp()).getAsyncToken());
+    }
+    if (old.getId() != -1) {
+      new_op->setAttr("id", mlir::IntegerAttr::get(
+                                mlir::IntegerType::get(old->getContext(), 32),
+                                old.getId()));
     }
     old->erase();
     return new_op.getOperation();
