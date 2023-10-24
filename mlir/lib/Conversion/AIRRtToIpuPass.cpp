@@ -15,6 +15,7 @@
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -158,15 +159,14 @@ struct AIRRtToIpuPass : public air::AIRRtToIpuBase<AIRRtToIpuPass> {
 
     ModuleOp module = getOperation();
 
-    SmallVector<SegmentLoadOp> segs;
-    module.walk([&](SegmentLoadOp s) { segs.push_back(s); });
-    for (auto s : segs) {
-      auto f = s->getParentOfType<func::FuncOp>();
-      auto d = getDeviceForSegmentLoad(s);
-      if (!f || !d)
-        continue;
-      f->moveAfter(&d.getBody()->back());
-    }
+    // Move func op to the end of device op's body
+    moveFuncOpToEndOfDeviceOp(module);
+
+    // Purge dma ops' async tokens
+    purgeDmaAsyncTokens(module);
+
+    // Purge all wait all ops
+    purgeWaitAlls(module);
 
     ConversionTarget target(getContext());
     target.addIllegalDialect<AIRRtDialect>();
@@ -194,6 +194,60 @@ struct AIRRtToIpuPass : public air::AIRRtToIpuBase<AIRRtToIpuPass> {
 
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
+
+    // Unroll any affine for loops
+    unrollAffineFors(module);
+  }
+
+  void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
+    // Move func op to the end of device op's body
+    SmallVector<SegmentLoadOp> segs;
+    module.walk([&](SegmentLoadOp s) { segs.push_back(s); });
+    for (auto s : segs) {
+      auto f = s->getParentOfType<func::FuncOp>();
+      auto d = getDeviceForSegmentLoad(s);
+      if (!f || !d)
+        continue;
+      f->moveAfter(&d.getBody()->back());
+    }
+  }
+
+  void purgeDmaAsyncTokens(ModuleOp module) {
+    SmallVector<DmaMemcpyNdOp> dmas;
+    module.walk([&](DmaMemcpyNdOp dma) { dmas.push_back(dma); });
+    for (auto dma : dmas) {
+      if (dma->getNumResults()) {
+        OpBuilder buider(dma);
+        SmallVector<Type, 1> tys = {};
+        auto newOp = buider.create<DmaMemcpyNdOp>(dma->getLoc(), tys,
+                                                  dma->getOperands());
+        if (dma->hasAttr("metadata"))
+          newOp->setAttr("metadata",
+                         dma->getAttrOfType<mlir::SymbolRefAttr>("metadata"));
+        dma->erase();
+      }
+    }
+  }
+
+  void purgeWaitAlls(ModuleOp module) {
+    SmallVector<WaitAllOp> waits;
+    module.walk([&](WaitAllOp w) { waits.push_back(w); });
+    for (auto w : waits) {
+      w->eraseOperands(0, w->getNumOperands());
+    }
+    for (auto w : waits) {
+      w.erase();
+    }
+  }
+
+  void unrollAffineFors(ModuleOp module) {
+    SmallVector<AffineForOp> afos;
+    module.walk([&](mlir::func::FuncOp f) {
+      f.walk([&](AffineForOp afo) { afos.push_back(afo); });
+    });
+    for (auto afo : afos) {
+      (void)loopUnrollFull(afo);
+    }
   }
 };
 
