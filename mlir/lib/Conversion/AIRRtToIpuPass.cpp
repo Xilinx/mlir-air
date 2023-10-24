@@ -197,6 +197,9 @@ struct AIRRtToIpuPass : public air::AIRRtToIpuBase<AIRRtToIpuPass> {
 
     // Unroll any affine for loops
     unrollAffineFors(module);
+
+    // Insert sync op after copying data out to host
+    insertIpuSyncOpForResults(module);
   }
 
   void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
@@ -248,6 +251,45 @@ struct AIRRtToIpuPass : public air::AIRRtToIpuBase<AIRRtToIpuPass> {
     for (auto afo : afos) {
       (void)loopUnrollFull(afo);
     }
+  }
+
+  Optional<AIE::ShimDMAAllocationOp> getAllocOpForSymbol(AIE::DeviceOp dev,
+                                                         StringRef sym_name) {
+    auto sym = dev.lookupSymbol(sym_name);
+    if (!sym)
+      return std::nullopt;
+
+    auto uses = SymbolTable::getSymbolUses(sym, dev);
+    for (auto use : *uses)
+      if (auto infoOp = dyn_cast<AIE::ShimDMAAllocationOp>(use.getUser()))
+        return infoOp;
+
+    return std::nullopt;
+  }
+
+  void insertIpuSyncOpForResults(ModuleOp module) {
+    module.walk([&](mlir::func::FuncOp f) {
+      SmallVector<AIEX::IpuDmaMemcpyNdOp> dmas;
+      f.walk([&](AIEX::IpuDmaMemcpyNdOp dma) { dmas.push_back(dma); });
+      auto d = f->getParentOfType<AIE::DeviceOp>();
+      for (auto dma : dmas) {
+        if (auto infoOp = getAllocOpForSymbol(d, dma.getMetadata())) {
+          if (infoOp->getChannelDir() == AIE::DMAChannelDir::S2MM) {
+            // Found dma op copying results to host
+            OpBuilder builder(dma);
+            auto col = builder.getI32IntegerAttr(infoOp->getCol());
+            auto row = builder.getI32IntegerAttr(0);
+            auto dir = builder.getI32IntegerAttr(0);
+            auto chan = builder.getI32IntegerAttr(infoOp->getChannelIndex());
+            auto col_num = builder.getI32IntegerAttr(0);
+            auto row_num = builder.getI32IntegerAttr(0);
+            builder.setInsertionPointAfter(dma);
+            builder.create<AIEX::IpuSyncOp>(dma->getLoc(), col, row, dir, chan,
+                                            col_num, row_num);
+          }
+        }
+      }
+    });
   }
 };
 

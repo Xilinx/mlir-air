@@ -20,6 +20,7 @@
 // CHECK:   %[[CST_1:.*]] = arith.constant 1 : i32
 // CHECK:   AIEX.ipu.dma_memcpy_nd(%[[CST_0]], %[[CST_0]], %[[VAL_0]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]] [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_64]]] [%[[CST_0]], %[[CST_0]], %[[CST_0]]]) {id = 2 : i32, metadata = @airMemcpyId2} : (i32, i32, memref<64xi32>, [i32, i32, i32, i32], [i32, i32, i32, i32], [i32, i32, i32])
 // CHECK:   AIEX.ipu.dma_memcpy_nd(%[[CST_0]], %[[CST_0]], %[[VAL_1]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]] [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_64]]] [%[[CST_0]], %[[CST_0]], %[[CST_0]]]) {id = 7 : i32, metadata = @airMemcpyId7} : (i32, i32, memref<64xi32>, [i32, i32, i32, i32], [i32, i32, i32, i32], [i32, i32, i32])
+// CHECK:   AIEX.ipu.sync {channel = 0 : i32, column = 0 : i32, column_num = 0 : i32, direction = 0 : i32, row = 0 : i32, row_num = 0 : i32}
 // CHECK:   return
 // CHECK: }
 // CHECK: {sym_name = "segment0"}
@@ -63,6 +64,7 @@ module {
 // CHECK:   %[[CST_1:.*]] = arith.constant 1 : i32
 // CHECK:   AIEX.ipu.dma_memcpy_nd(%[[CST_0]], %[[CST_0]], %[[VAL_0]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]] [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_64]]] [%[[CST_0]], %[[CST_0]], %[[CST_0]]]) {id = 2 : i32, metadata = @airMemcpyId2} : (i32, i32, memref<64xi32>, [i32, i32, i32, i32], [i32, i32, i32, i32], [i32, i32, i32])
 // CHECK:   AIEX.ipu.dma_memcpy_nd(%[[CST_0]], %[[CST_0]], %[[VAL_1]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]] [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_64]]] [%[[CST_0]], %[[CST_0]], %[[CST_0]]]) {id = 7 : i32, metadata = @airMemcpyId7} : (i32, i32, memref<64xi32>, [i32, i32, i32, i32], [i32, i32, i32, i32], [i32, i32, i32])
+// CHECK:   AIEX.ipu.sync {channel = 0 : i32, column = 0 : i32, column_num = 0 : i32, direction = 0 : i32, row = 0 : i32, row_num = 0 : i32}
 // CHECK:   return
 // CHECK: }
 // CHECK: } {sym_name = "segment0"}
@@ -115,6 +117,7 @@ module {
 // CHECK:   AIEX.ipu.dma_memcpy_nd(%[[CST_0]], %[[CST_0]], %[[VAL_0]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]] [%[[CST_1]], %[[CST_1]], %[[CST_32]], %[[CST_32]]] [%[[CST_0]], %[[CST_0]], %[[CST_32]]]) {id = 6 : i32, metadata = @airMemcpyId6} : (i32, i32, memref<32x32xi32>, [i32, i32, i32, i32], [i32, i32, i32, i32], [i32, i32, i32])
 // CHECK:   AIEX.ipu.dma_memcpy_nd(%[[CST_0]], %[[CST_0]], %[[VAL_1]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]] [%[[CST_1]], %[[CST_1]], %[[CST_32]], %[[CST_32]]] [%[[CST_0]], %[[CST_0]], %[[CST_32]]]) {id = 7 : i32, metadata = @airMemcpyId7} : (i32, i32, memref<32x32xi32>, [i32, i32, i32, i32], [i32, i32, i32, i32], [i32, i32, i32])
 // CHECK:   AIEX.ipu.dma_memcpy_nd(%[[CST_0]], %[[CST_0]], %[[VAL_2]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]] [%[[CST_1]], %[[CST_1]], %[[CST_32]], %[[CST_32]]] [%[[CST_0]], %[[CST_0]], %[[CST_32]]]) {id = 16 : i32, metadata = @airMemcpyId16} : (i32, i32, memref<32x32xi32>, [i32, i32, i32, i32], [i32, i32, i32, i32], [i32, i32, i32])
+// CHECK:   AIEX.ipu.sync {channel = 0 : i32, column = 0 : i32, column_num = 0 : i32, direction = 0 : i32, row = 0 : i32, row_num = 0 : i32}
 // CHECK:   return
 // CHECK: }
 // CHECK: } {sym_name = "segment_0"}
