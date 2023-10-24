@@ -55,6 +55,27 @@ struct allocation_info_t {
   bool foundAlloc(AIE::TileOp tile, AIE::DMAChannel channel);
 };
 
+// Bundling up memcpy ops into MM2S and S2MM ops sharing the same aie.flow
+struct MemcpyBundleAsFlow {
+  Operation *air_flow_op; // Either air::DmaMemcpyNdOp or air::ChannelOp
+  int flow_op_group = -1; // Scheduling group index; (in scheduling strategy 2,
+                          // flows of the same index can share DMA channels)
+  std::vector<allocation_info_t> S2MM_alloc;
+  std::vector<std::vector<Operation *>> S2MM;
+  allocation_info_t MM2S_alloc;
+  std::vector<Operation *> MM2S; // air::ChannelPuts
+  int MM2S_memspace_as_int;
+  int S2MM_memspace_as_int;
+  int numMM2SAllocs = 0;
+  int numS2MMAllocs = 0;
+  void pushBackMemcpyOpToBundle(air::DmaMemcpyNdOp memcpyOp);
+  void pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp);
+  void pushBackMemcpyOpToBundle(air::ChannelPutOp memcpyOp);
+  void pushBackMemcpyOpToBundle(air::ChannelInterface memcpyOp);
+  MemcpyBundleAsFlow(air::DmaMemcpyNdOp dmaMemcpyOp);
+  MemcpyBundleAsFlow(air::ChannelOp chan);
+};
+
 class DMAAllocator {
 
 public:
@@ -116,6 +137,10 @@ public:
 
   AIE::ExternalBufferOp getBuffer(int64_t col, int64_t row,
                                   air::MemcpyInterface &memcpyOp);
+
+  std::optional<air::allocation_info_t>
+  foundFlowReuseOpportunity(std::vector<MemcpyBundleAsFlow> memcpy_flows,
+                            air::allocation_info_t alloc, bool isMM2S);
 };
 
 class MemTileDMAAllocator : public DMAAllocator {
@@ -126,39 +151,19 @@ public:
   MemTileDMAAllocator(AIE::DeviceOp device);
 
   allocation_info_t simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp);
+  allocation_info_t simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
+                                          allocation_info_t &existing_alloc);
+
+  int forecastChannelAlloc(air::MemcpyInterface &memcpyOp);
 
   AIE::BufferOp getBuffer(int64_t col, int64_t row,
                           air::MemcpyInterface &memcpyOp);
+
+  std::optional<air::allocation_info_t>
+  foundFlowReuseOpportunity(std::vector<MemcpyBundleAsFlow> memcpy_flows,
+                            air::allocation_info_t alloc, bool isMM2S);
 };
 
-// Bundling up memcpy ops into MM2S and S2MM ops sharing the same aie.flow
-struct MemcpyBundleAsFlow {
-  Operation *air_flow_op; // Either air::DmaMemcpyNdOp or air::ChannelOp
-  int flow_op_group = -1; // Scheduling group index; (in scheduling strategy 2,
-                          // flows of the same index can share DMA channels)
-  std::vector<allocation_info_t> S2MM_alloc;
-  std::vector<std::vector<Operation *>> S2MM;
-  allocation_info_t MM2S_alloc;
-  std::vector<Operation *> MM2S; // air::ChannelPuts
-  int MM2S_memspace_as_int;
-  int S2MM_memspace_as_int;
-  int numMM2SAllocs = 0;
-  int numS2MMAllocs = 0;
-  void pushBackMemcpyOpToBundle(air::DmaMemcpyNdOp memcpyOp);
-  void pushBackMemcpyOpToBundle(air::ChannelGetOp memcpyOp);
-  void pushBackMemcpyOpToBundle(air::ChannelPutOp memcpyOp);
-  void pushBackMemcpyOpToBundle(air::ChannelInterface memcpyOp);
-  MemcpyBundleAsFlow(air::DmaMemcpyNdOp dmaMemcpyOp);
-  MemcpyBundleAsFlow(air::ChannelOp chan);
-};
-
-std::optional<allocation_info_t>
-foundFlowReuseOpportunity(std::vector<MemcpyBundleAsFlow> memcpy_flows,
-                          allocation_info_t alloc, bool isMM2S);
-
-std::optional<allocation_info_t>
-foundFlowReuseOpportunity(std::vector<MemcpyBundleAsFlow> memcpy_flows,
-                          std::vector<allocation_info_t> allocs, bool isMM2S);
 void simpleDMAChannelAllocation(std::vector<MemcpyBundleAsFlow> &memcpy_flows,
                                 ShimDMAAllocator &shim_dma_alloc,
                                 MemTileDMAAllocator &memtile_dma_alloc,

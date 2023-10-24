@@ -9,20 +9,16 @@
 
 // CHECK-LABEL:   AIE.device(xcve2802) {
 // CHECK:   %[[VAL_0:.*]] = AIE.tile(2, 0)
-// CHECK:   %[[VAL_1:.*]] = AIE.tile(3, 0)
-// CHECK:   %[[VAL_2:.*]] = AIE.tile(5, 1)
-// CHECK:   %[[VAL_3:.*]] = AIE.tile(6, 1)
-// CHECK:   %[[VAL_4:.*]] = AIE.tile(5, 3)
-// CHECK:   %[[VAL_5:.*]] = AIE.tile(6, 3)
-// CHECK:   %[[VAL_6:.*]] = AIE.tile(5, 4)
-// CHECK:   %[[VAL_7:.*]] = AIE.tile(6, 4)
-// CHECK-COUNT-38:    AIE.lock
+// CHECK:   %[[VAL_1:.*]] = AIE.tile(5, 1)
+// CHECK:   %[[VAL_2:.*]] = AIE.tile(6, 1)
+// CHECK:   %[[VAL_3:.*]] = AIE.tile(5, 3)
+// CHECK:   %[[VAL_4:.*]] = AIE.tile(6, 3)
+// CHECK:   %[[VAL_5:.*]] = AIE.tile(5, 4)
+// CHECK:   %[[VAL_6:.*]] = AIE.tile(6, 4)
+// CHECK-COUNT-40:    AIE.lock
+// CHECK:   AIE.buffer(%[[VAL_1]]){{.*}}memref<64x64xi32, 1>
 // CHECK:   AIE.buffer(%[[VAL_2]]){{.*}}memref<64x64xi32, 1>
-// CHECK:   AIE.buffer(%[[VAL_3]]){{.*}}memref<64x64xi32, 1>
-// CHECK:   AIE.buffer(%[[VAL_2]]){{.*}}memref<64x64xi32, 1>
-// CHECK:   AIE.buffer(%[[VAL_7]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   AIE.buffer(%[[VAL_7]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   AIE.buffer(%[[VAL_7]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   AIE.buffer(%[[VAL_1]]){{.*}}memref<64x64xi32, 1>
 // CHECK:   AIE.buffer(%[[VAL_6]]){{.*}}memref<32x32xi32, 2>
 // CHECK:   AIE.buffer(%[[VAL_6]]){{.*}}memref<32x32xi32, 2>
 // CHECK:   AIE.buffer(%[[VAL_6]]){{.*}}memref<32x32xi32, 2>
@@ -32,14 +28,19 @@
 // CHECK:   AIE.buffer(%[[VAL_4]]){{.*}}memref<32x32xi32, 2>
 // CHECK:   AIE.buffer(%[[VAL_4]]){{.*}}memref<32x32xi32, 2>
 // CHECK:   AIE.buffer(%[[VAL_4]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   %[[VAL_13:.*]] = AIE.mem(%[[VAL_7]]) {
-// CHECK:   %[[VAL_14:.*]] = AIE.core(%[[VAL_7]]) {
-// CHECK:   %[[VAL_15:.*]] = AIE.mem(%[[VAL_6]]) {
-// CHECK:   %[[VAL_16:.*]] = AIE.core(%[[VAL_6]]) {
-// CHECK:   %[[VAL_17:.*]] = AIE.mem(%[[VAL_5]]) {
-// CHECK:   %[[VAL_18:.*]] = AIE.core(%[[VAL_5]]) {
-// CHECK:   %[[VAL_19:.*]] = AIE.mem(%[[VAL_4]]) {
-// CHECK:   %[[VAL_20:.*]] = AIE.core(%[[VAL_4]]) {
+// CHECK:   AIE.buffer(%[[VAL_3]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   AIE.buffer(%[[VAL_3]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   AIE.buffer(%[[VAL_3]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   %[[VAL_13:.*]] = AIE.mem(%[[VAL_6]]) {
+// CHECK:   %[[VAL_14:.*]] = AIE.core(%[[VAL_6]]) {
+// CHECK:   %[[VAL_15:.*]] = AIE.mem(%[[VAL_5]]) {
+// CHECK:   %[[VAL_16:.*]] = AIE.core(%[[VAL_5]]) {
+// CHECK:   %[[VAL_17:.*]] = AIE.mem(%[[VAL_4]]) {
+// CHECK:   %[[VAL_18:.*]] = AIE.core(%[[VAL_4]]) {
+// CHECK:   %[[VAL_19:.*]] = AIE.mem(%[[VAL_3]]) {
+// CHECK:   %[[VAL_20:.*]] = AIE.core(%[[VAL_3]]) {
+// CHECK:   AIE.memTileDMA(%[[VAL_1]]) {
+// CHECK:   AIE.memTileDMA(%[[VAL_2]]) {
 
 
 #map = affine_map<()[s0] -> (s0 * 64)>

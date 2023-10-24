@@ -9,7 +9,6 @@
 
 // CHECK-LABEL:   AIE.device(xcve2802) {
 // CHECK:   %[[VAL_0:.*]] = AIE.tile(2, 0)
-// CHECK:   %[[VAL_1:.*]] = AIE.tile(3, 0)
 // CHECK:   %[[VAL_2:.*]] = AIE.tile(5, 1)
 // CHECK:   %[[VAL_3:.*]] = AIE.tile(6, 1)
 // CHECK:   %[[VAL_4:.*]] = AIE.tile(5, 3)
