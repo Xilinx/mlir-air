@@ -98,7 +98,10 @@ add_mlir_python_common_capi_library(
 # ##############################################################################
 
 _flatten_mlir_python_targets(air_python_sources_deps AirPythonSources)
-add_custom_target("air-python-sources" DEPENDS ${air_python_sources_deps})
+_flatten_mlir_python_targets(air_backend_python_sources_deps AirBackendPythonSources)
+_flatten_mlir_python_targets(air_compiler_python_sources_deps AirCompilerPythonSources)
+add_custom_target("air-python-sources"
+  DEPENDS ${air_python_sources_deps} ${air_backend_python_sources_deps} ${air_compiler_python_sources_deps})
 if(NOT LLVM_ENABLE_IDE)
   add_llvm_install_targets(install-air-python-sources DEPENDS
                            air-python-sources COMPONENT air-python-sources)
@@ -131,9 +134,20 @@ add_mlir_python_modules(AirPythonModules
     AirAggregateCAPI
 )
 
+add_mlir_python_modules(AirBackendPythonModules
+  ROOT_PREFIX "${MLIR_BINARY_DIR}/air/backend"
+  INSTALL_PREFIX "air/backend"
+  DECLARED_SOURCES
+    AirBackendPythonSources
+)
+
+add_mlir_python_modules(AirCompilerPythonModules
+  ROOT_PREFIX "${MLIR_BINARY_DIR}/air/compiler"
+  INSTALL_PREFIX "air/compiler"
+  DECLARED_SOURCES
+    AirCompilerPythonSources
+)
+
 include_directories(
   ${AIE_INCLUDE_DIRS}/../runtime_lib
 )
-
-#add_dependencies(AirPythonModules AirBackendPythonModules)
-#add_dependencies(AirPythonModules AirCompilerPythonModules)
