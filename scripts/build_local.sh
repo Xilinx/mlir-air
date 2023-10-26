@@ -33,6 +33,8 @@ else
   export CIBW_ARCHS=${CIBW_ARCHS:-AMD64}
 fi
 
+export CIBW_BUILD="cp311-*"
+
 ccache --show-stats
 ccache --print-stats
 ccache --show-config
@@ -51,6 +53,9 @@ if [ x"$CIBW_ARCHS" == x"aarch64" ] || [ x"$CIBW_ARCHS" == x"arm64" ]; then
 else
   cibuildwheel "$HERE"/.. --platform "$machine"
 fi
+
+rename 's/cp310-cp310/py3-none/' $HERE/../wheelhouse/mlir_air-*whl
+rename 's/cp311-cp311/py3-none/' $HERE/../wheelhouse/mlir_air-*whl
 
 cp -a "$HERE/../scripts" "$HERE/../python_bindings"
 cp -a $HERE/../requirements.txt $HERE/../python_bindings/

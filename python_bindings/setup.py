@@ -163,6 +163,15 @@ class CMakeBuild(build_ext):
             cwd=build_temp,
             check=True,
         )
+        shutil.copy(
+            MLIR_AIR_INSTALL_ABS_PATH
+            / "python"
+            / "air"
+            / "compiler"
+            / "aircc"
+            / "configure.py",
+            install_dir / "air" / "compiler" / "aircc" / "configure.py",
+        )
 
 
 setup(
