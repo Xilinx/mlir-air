@@ -13,8 +13,12 @@ case "${unameOut}" in
 esac
 echo "${machine}"
 
-export MLIR_WHEEL_VERSION="18.0.0.2023091015+780b046b"
-export MLIR_AIE_WHEEL_VERSION="0.0.1.2023091105+a0cc3d0"
+if [ ! -d mlir-air ]; then
+  git clone --recursive https://github.com/Xilinx/mlir-air.git
+fi
+
+export MLIR_WHEEL_VERSION="17.0.0.2023092813+35ca6498"
+export MLIR_AIE_WHEEL_VERSION="0.0.1.2023102602+bdd3c4be"
 
 if [ "$machine" == "linux" ]; then
   export CIBW_ARCHS=${CIBW_ARCHS:-x86_64}
@@ -34,8 +38,10 @@ ccache --print-stats
 ccache --show-config
 
 export HOST_CCACHE_DIR="$(ccache --get-config cache_dir)"
+export PIP_FIND_LINKS="https://makslevental.github.io/wheels https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-wheels"
 
-if [ x"$CIBW_ARCHS" == x"aarch64" ]; then
+if [ x"$CIBW_ARCHS" == x"aarch64" ] || [ x"$CIBW_ARCHS" == x"arm64" ]; then
+  pip install -r $HERE/../requirements.txt
   export PIP_NO_BUILD_ISOLATION="false"
   pip install -r $HERE/../requirements.txt
   $HERE/../scripts/pip_install_mlir.sh
@@ -46,8 +52,14 @@ else
   cibuildwheel "$HERE"/.. --platform "$machine"
 fi
 
-cp -R "$HERE/../scripts" "$HERE/../python_bindings"
+cp -a "$HERE/../scripts" "$HERE/../python_bindings"
+cp -a $HERE/../requirements.txt $HERE/../python_bindings/
 
 pushd "$HERE/../python_bindings"
 
-cibuildwheel --platform "$machine" --output-dir ../wheelhouse
+if [ x"$CIBW_ARCHS" == x"aarch64" ] || [ x"$CIBW_ARCHS" == x"arm64" ]; then
+  pip install mlir-air -f $HERE/../wheelhouse
+  pip wheel "$HERE/../python_bindings" -v -w $HERE/../wheelhouse
+else
+  cibuildwheel "$HERE/../python_bindings" --platform linux --output-dir $HERE/../wheelhouse
+fi

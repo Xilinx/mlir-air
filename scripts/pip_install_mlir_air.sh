@@ -14,16 +14,7 @@ if [ x"$CIBW_ARCHS" == x"arm64" ] || [ x"$CIBW_ARCHS" == x"aarch64" ]; then
     PLAT=linux_aarch64
   fi
 
-  pip install mlir-air$MLIR_AIR_WHEEL_VERSION --platform $PLAT --only-binary=:all: --target $SITE_PACKAGES  --no-deps --force -U \
-    -f https://makslevental.github.io/wheels \
-    -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels \
-    -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-wheels
-
+  pip install mlir-air$MLIR_AIR_WHEEL_VERSION --platform $PLAT --only-binary=:all: --target $SITE_PACKAGES  --no-deps --force -U
 else
-
-  pip install mlir-air$MLIR_AIR_WHEEL_VERSION --force -U \
-    -f https://makslevental.github.io/wheels \
-    -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels \
-    -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-wheels
-
+  pip install mlir-air$MLIR_AIR_WHEEL_VERSION --force -U
 fi

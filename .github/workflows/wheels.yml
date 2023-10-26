@@ -36,8 +36,8 @@ jobs:
           - OS: macos-11
             ARCH: arm64
 
-#          - OS: windows-2019
-#            ARCH: AMD64
+          - OS: windows-2019
+            ARCH: AMD64
 
     steps:
     - uses: actions/checkout@v3
@@ -120,6 +120,8 @@ jobs:
       run: |
         pip install cibuildwheel
         
+        export PIP_FIND_LINKS="https://makslevental.github.io/wheels https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-wheels"
+        
         cp -R scripts python_bindings/scripts
         cp requirements.txt python_bindings
         pushd python_bindings
@@ -129,8 +131,8 @@ jobs:
         CMAKE_GENERATOR="Ninja" \
         HOST_CCACHE_DIR=${{ steps.configure_ccache_dir_on_host.outputs.HOST_CCACHE_DIR }} \
         MATRIX_OS=${{ matrix.OS }} \
-        MLIR_WHEEL_VERSION="18.0.0.2023091015+780b046b" \
-        MLIR_AIE_WHEEL_VERSION="0.0.1.2023091105+a0cc3d0" \
+        MLIR_WHEEL_VERSION="17.0.0.2023092813+35ca6498" \
+        MLIR_AIE_WHEEL_VERSION="0.0.1.2023102602+bdd3c4be" \
         MLIR_AIR_WHEEL_VERSION=${{ inputs.MLIR_WHEEL_VERSION }} \
         PARALLEL_LEVEL=${{ matrix.OS == 'windows-2019' && '2' || '2' }} \
         cibuildwheel --output-dir ../wheelhouse

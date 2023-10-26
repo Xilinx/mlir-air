@@ -58,8 +58,8 @@ jobs:
           - OS: macos-11
             ARCH: arm64
 
-#          - OS: windows-2019
-#            ARCH: AMD64
+          - OS: windows-2019
+            ARCH: AMD64
 
     steps:
     # Enable tmate debugging of manually-triggered workflows if the input option was provided
@@ -93,15 +93,15 @@ jobs:
       uses: microsoft/setup-msbuild@v1.1
 
     - name: Free disk space
-      if: contains(matrix.OS, 'ubuntu')
-      uses: jlumbroso/free-disk-space@76866dbe54312617f00798d1762df7f43def6e5c # v1.2.0
+      if: contains(inputs.MATRIX_OS, 'ubuntu')
+      uses: descriptinc/free-disk-space@main
       with:
+        tool-cache: true
         android: true
         dotnet: true
         haskell: true
         large-packages: true
         swap-storage: false # This frees space on the wrong partition.
-        tool-cache: false # This includes Python, which we need.
 
     - uses: actions/setup-python@v4
       with:
@@ -172,14 +172,16 @@ jobs:
       run: |
         
         pip install cibuildwheel
-         
+        
+        export PIP_FIND_LINKS="https://makslevental.github.io/wheels https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-wheels"
+        
         BOOST_ROOT="${{ steps.install-boost.outputs.BOOST_ROOT }}" \
         CIBW_ARCHS=${{ matrix.ARCH }} \
         CMAKE_GENERATOR="Ninja" \
         HOST_CCACHE_DIR=${{ steps.configure_ccache_dir_on_host.outputs.HOST_CCACHE_DIR }} \
         MATRIX_OS=${{ matrix.OS }} \
-        MLIR_WHEEL_VERSION="18.0.0.2023091015+780b046b" \
-        MLIR_AIE_WHEEL_VERSION="0.0.1.2023091105+a0cc3d0" \
+        MLIR_WHEEL_VERSION="17.0.0.2023092813+35ca6498" \
+        MLIR_AIE_WHEEL_VERSION="0.0.1.2023102602+bdd3c4be" \
         PARALLEL_LEVEL=${{ matrix.OS == 'windows-2019' && '2' || '4' }} \
         cibuildwheel --output-dir wheelhouse
 
@@ -190,10 +192,11 @@ jobs:
         
         sudo apt-get install -y python3-dev
         
+        export PIP_FIND_LINKS="https://makslevental.github.io/wheels https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-wheels"
         export PIP_NO_BUILD_ISOLATION="false"
         export CIBW_ARCHS=${{ matrix.ARCH }}
-        export MLIR_WHEEL_VERSION="18.0.0.2023091015+780b046b"
-        export MLIR_AIE_WHEEL_VERSION="0.0.1.2023091105+a0cc3d0"
+        export MLIR_WHEEL_VERSION="17.0.0.2023092813+35ca6498"
+        export MLIR_AIE_WHEEL_VERSION="0.0.1.2023102602+bdd3c4be"
         export BOOST_ROOT="${{ steps.install-boost.outputs.BOOST_ROOT }}"
         export MATRIX_OS=${{ matrix.OS }}
         
@@ -202,10 +205,7 @@ jobs:
         ./scripts/pip_install_mlir_aie.sh
         
         CMAKE_GENERATOR=Ninja \
-        pip wheel . -v -w wheelhouse --no-build-isolation \
-          -f https://makslevental.github.io/wheels \
-          -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels \
-          -f https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-wheels
+        pip wheel . -v -w wheelhouse --no-build-isolation
 
     - name: rename
       shell: bash
