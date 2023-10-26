@@ -115,15 +115,15 @@ jobs:
         
         pip install cibuildwheel
         
-        export PIP_FIND_LINKS="https://makslevental.github.io/wheels https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-wheels"
+        export PIP_FIND_LINKS="https://github.com/makslevental/mlir-wheels/releases/expanded_assets/latest https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-wheels"
         
         BOOST_ROOT="${{ steps.install-boost.outputs.BOOST_ROOT }}" \
         CIBW_ARCHS=${{ matrix.ARCH }} \
         CMAKE_GENERATOR="Ninja" \
         HOST_CCACHE_DIR=${{ steps.configure_ccache_dir_on_host.outputs.HOST_CCACHE_DIR }} \
         MATRIX_OS=${{ matrix.OS }} \
-        MLIR_WHEEL_VERSION="17.0.0.2023092813+35ca6498" \
-        MLIR_AIE_WHEEL_VERSION="0.0.1.2023102602+bdd3c4be" \
+        MLIR_WHEEL_VERSION="17.0.0.2023102703+35ca6498" \
+        MLIR_AIE_WHEEL_VERSION="0.0.1.2023102707+7d51a5c8" \
         PARALLEL_LEVEL=${{ matrix.OS == 'windows-2019' && '2' || '4' }} \
         cibuildwheel --output-dir wheelhouse
 
@@ -135,11 +135,11 @@ jobs:
         
         sudo apt-get install -y python3-dev
         
-        export PIP_FIND_LINKS="https://makslevental.github.io/wheels https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-wheels"
+        export PIP_FIND_LINKS="https://github.com/makslevental/mlir-wheels/releases/expanded_assets/latest https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-wheels"
         export PIP_NO_BUILD_ISOLATION="false"
         export CIBW_ARCHS=${{ matrix.ARCH }}
-        export MLIR_WHEEL_VERSION="17.0.0.2023092813+35ca6498"
-        export MLIR_AIE_WHEEL_VERSION="0.0.1.2023102602+bdd3c4be"
+        export MLIR_WHEEL_VERSION="17.0.0.2023102703+35ca6498"
+        export MLIR_AIE_WHEEL_VERSION="0.0.1.2023102707+7d51a5c8"
         export BOOST_ROOT="${{ steps.install-boost.outputs.BOOST_ROOT }}"
         export MATRIX_OS=${{ matrix.OS }}
         

@@ -126,6 +126,10 @@ class CMakeBuild(build_ext):
             "-DMLIR_DETECT_PYTHON_ENV_PRIME_SEARCH=ON",
             # not used on MSVC, but no harm
             f"-DCMAKE_BUILD_TYPE={cfg}",
+            # prevent symbol collision that leads to multiple pass registration and such
+            "-DCMAKE_VISIBILITY_INLINES_HIDDEN=ON",
+            "-DCMAKE_C_VISIBILITY_PRESET=hidden",
+            "-DCMAKE_CXX_VISIBILITY_PRESET=hidden",
         ]
         if platform.system() == "Windows":
             cmake_args += [

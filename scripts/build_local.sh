@@ -17,8 +17,8 @@ if [ ! -d mlir-air ]; then
   git clone --recursive https://github.com/Xilinx/mlir-air.git
 fi
 
-export MLIR_WHEEL_VERSION="17.0.0.2023092813+35ca6498"
-export MLIR_AIE_WHEEL_VERSION="0.0.1.2023102602+bdd3c4be"
+export MLIR_WHEEL_VERSION="17.0.0.2023102703+35ca6498"
+export MLIR_AIE_WHEEL_VERSION="0.0.1.2023102707+7d51a5c8"
 
 if [ "$machine" == "linux" ]; then
   export CIBW_ARCHS=${CIBW_ARCHS:-x86_64}
@@ -40,7 +40,7 @@ ccache --print-stats
 ccache --show-config
 
 export HOST_CCACHE_DIR="$(ccache --get-config cache_dir)"
-export PIP_FIND_LINKS="https://makslevental.github.io/wheels https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-wheels"
+export PIP_FIND_LINKS="https://github.com/makslevental/mlir-wheels/releases/expanded_assets/latest https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels https://github.com/Xilinx/mlir-air/releases/expanded_assets/latest-wheels"
 
 if [ x"$CIBW_ARCHS" == x"aarch64" ] || [ x"$CIBW_ARCHS" == x"arm64" ]; then
   pip install -r $HERE/../requirements.txt
