@@ -466,7 +466,7 @@ private:
       dep_list = async_for_op.getInitArgs();
     } else if (auto async_parallel_op = dyn_cast<scf::ParallelOp>(op)) {
       dep_list = async_parallel_op.getInitVals();
-    } else if (auto affine_if_op = dyn_cast<affine::AffineIfOp>(op)) {
+    } else if (auto affine_if_op = dyn_cast<mlir::affine::AffineIfOp>(op)) {
       auto &first_child_op_in_then_block =
           affine_if_op.getThenBlock()->getOperations().front();
       return getAsyncDependenciesFromOp(&first_child_op_in_then_block,

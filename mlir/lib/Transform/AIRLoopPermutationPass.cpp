@@ -43,6 +43,7 @@
 #define DEBUG_TYPE "air-loop-permutation"
 
 using namespace mlir;
+using namespace mlir::affine;
 using namespace xilinx;
 using namespace xilinx::air;
 

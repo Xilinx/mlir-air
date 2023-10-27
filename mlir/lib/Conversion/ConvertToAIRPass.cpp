@@ -2246,7 +2246,6 @@ transform::CopyToDmaOp::applyToOne(transform::TransformRewriter &rewriter,
                                    memref::CopyOp op,
                                    transform::ApplyToEachResultList &results,
                                    transform::TransformState &state) {
-  auto ctx = op->getContext();
   // RewritePatternSet stage1Patterns =
   //   linalg::getLinalgTilingCanonicalizationPatterns(ctx);
   // memref::AllocOp::getCanonicalizationPatterns(stage1Patterns, ctx);
