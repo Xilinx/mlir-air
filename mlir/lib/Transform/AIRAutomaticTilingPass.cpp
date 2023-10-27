@@ -42,6 +42,7 @@
 #define DEBUG_TYPE "air-automatic-tiling"
 
 using namespace mlir;
+using namespace mlir::affine;
 using namespace xilinx;
 using namespace xilinx::air;
 

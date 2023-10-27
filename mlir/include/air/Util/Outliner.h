@@ -26,7 +26,7 @@ public:
 
   mlir::func::CallOp outline(std::vector<mlir::Operation *> ops,
                              std::string fname = "acap_outline_fn");
-  mlir::func::CallOp outline(affine::AffineForOp forOp,
+  mlir::func::CallOp outline(mlir::affine::AffineForOp forOp,
                              std::string fname = "acap_outline_fn");
 
 private:

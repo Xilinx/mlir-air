@@ -1214,7 +1214,7 @@ static LogicalResult FoldChannel(ChannelOp op, PatternRewriter &rewriter) {
 
   Operation *parent = op;
   std::vector<Operation *> parent_sts;
-  while (parent = parent->getParentOp()) {
+  while ((parent = parent->getParentOp())) {
     if (parent->hasTrait<OpTrait::SymbolTable>()) {
       parent_sts.push_back(parent);
     }
@@ -1346,8 +1346,6 @@ ParseResult CustomOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
   if (asyncTokenType)
     result.addTypes(asyncTokenType);
-
-  Type indexType = parser.getBuilder().getIndexType();
 
   auto tokenType = AsyncTokenType::get(parser.getBuilder().getContext());
   if (parser.resolveOperands(asyncDependencies, tokenType, result.operands))
