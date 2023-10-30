@@ -459,7 +459,7 @@ func.func @func7(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>, %arg2 : mem
   %token_0 = air.channel.put async @channel_8[] (%arg0[] [] []) {id = 1 : i32} : (memref<1024xi32>)
   %for_loop = scf.for %arg7 = %c0 to %c384 step %c96 iter_args(%arg8 = %token_0) -> (!air.async.token) {
     %token_1 = air.channel.put async [%arg8] @channel_9[] (%arg1[] [] []) {id = 2 : i32} : (memref<1024xi32>)
-    %token_2 = air.channel.put async [%token_1] @channel_10[] (%arg2[] [] []) {id = 3 : i32} : (memref<1024xi32>)
+    %token_2 = air.channel.put async [%token_1] @channel_9[] (%arg2[] [] []) {id = 3 : i32} : (memref<1024xi32>)
     scf.yield %token_2 : !air.async.token
   }
   %token_11 = air.channel.get async [%for_loop] @channel_11[] (%arg0[] [] []) {id = 1 : i32} : (memref<1024xi32>)
@@ -482,7 +482,7 @@ func.func @func7(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>, %arg2 : mem
         air.execute_terminator %alloc : memref<1024xi32, 2>
       }
       %token_7 = air.channel.get async [%token_5, %token_6] @channel_9[%tx, %ty] (%buf1[] [] []) {id = 5 : i32} : (memref<1024xi32, 2>)
-      %token_8 = air.channel.get async [%token_7] @channel_10[%tx, %ty] (%buf2[] [] []) {id = 6 : i32} : (memref<1024xi32, 2>)
+      %token_8 = air.channel.get async [%token_7] @channel_9[%tx, %ty] (%buf2[] [] []) {id = 6 : i32} : (memref<1024xi32, 2>)
       %token_9 = air.execute [%token_8] {
         memref.dealloc %buf2 : memref<1024xi32, 2>
       }

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcve2802" %s | FileCheck %s
+// RUN: air-opt -air-fuse-channels -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcve2802" %s | FileCheck %s
 
 // CHECK-LABEL:   AIE.device(xcve2802) {
 // CHECK:   %[[VAL_0:.*]] = AIE.tile(2, 0)
@@ -15,16 +15,16 @@
 // CHECK:   %[[VAL_5:.*]] = AIE.tile(6, 3)
 // CHECK:   %[[VAL_6:.*]] = AIE.tile(5, 4)
 // CHECK:   %[[VAL_7:.*]] = AIE.tile(6, 4)
-// CHECK-COUNT-4:    AIE.lock(%[[VAL_3]], {{.*}})
+// CHECK-COUNT-4:    AIE.lock(%[[VAL_2]], {{.*}})
 // CHECK-COUNT-6:    AIE.lock(%[[VAL_2]], {{.*}})
 // CHECK-COUNT-12:    AIE.lock(%[[VAL_4]], {{.*}})
 // CHECK-COUNT-12:    AIE.lock(%[[VAL_5]], {{.*}})
 // CHECK-COUNT-12:    AIE.lock(%[[VAL_6]], {{.*}})
 // CHECK-COUNT-12:    AIE.lock(%[[VAL_7]], {{.*}})
 // CHECK:    AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<64x64xi32, 1>
-// CHECK:    AIE.buffer(%[[VAL_3]]) {sym_name = {{.*}}} : memref<64x128xi32, 1>
+// CHECK:    AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<64x128xi32, 1>
 // CHECK:    AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<128x64xi32, 1>
-// CHECK:    AIE.buffer(%[[VAL_3]]) {sym_name = {{.*}}} : memref<64x128xi32, 1>
+// CHECK:    AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<64x128xi32, 1>
 // CHECK:    AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<128x64xi32, 1>
 // CHECK-COUNT-20:    AIE.buffer({{.*}}) {sym_name = {{.*}}} : memref<32x32xi32, 2>
 // CHECK:   AIE.mem(%[[VAL_7]])

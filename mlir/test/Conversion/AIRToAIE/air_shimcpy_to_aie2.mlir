@@ -334,9 +334,9 @@ func.func @func5(%arg0 : memref<1024xi32>) -> () {
   %token_0 = air.channel.put async @channel_8[] (%arg0[] [] []) {id = 3 : i32} : (memref<1024xi32>)
   %token_10 = air.segment @segment0 async {
     %c0 = arith.constant 0 : index
-    %c1 = arith.constant 0 : index
-    %c512 = arith.constant 0 : index
-    %c1024 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c512 = arith.constant 512 : index
+    %c1024 = arith.constant 1024 : index
     %herd_cols = arith.constant 4 : index
     %herd_rows = arith.constant 4 : index
     %token_1, %memtile0 = air.execute -> (memref<1024xi32, 1>) {

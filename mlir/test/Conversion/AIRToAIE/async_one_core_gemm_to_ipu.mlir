@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-to-aie="row-offset=2 col-offset=0 device=ipu" -canonicalize -cse %s | FileCheck %s
+// RUN: air-opt -air-fuse-channels -air-to-aie="row-offset=2 col-offset=0 device=ipu" -canonicalize -cse %s | FileCheck %s
 
 // CHECK-LABEL:   AIE.device(ipu) {
 // CHECK:  %[[VAL_0:.*]] = AIE.tile(0, 0)
@@ -39,7 +39,6 @@
 // CHECK:  AIE.flow(%[[VAL_0]], DMA : 0, %[[VAL_1]], DMA : 0)
 // CHECK:  AIE.flow(%[[VAL_1]], DMA : 0, %[[VAL_0]], DMA : 0)
 // CHECK:  AIE.flow(%[[VAL_1]], DMA : 1, %[[VAL_2]], DMA : 0)
-// CHECK:  AIE.flow(%[[VAL_1]], DMA : 2, %[[VAL_2]], DMA : 1)
 // CHECK:  AIE.flow(%[[VAL_2]], DMA : 0, %[[VAL_1]], DMA : 1)
 // CHECK:  %[[VAL_28:.*]] = AIE.memTileDMA(%[[VAL_1]]) {
 

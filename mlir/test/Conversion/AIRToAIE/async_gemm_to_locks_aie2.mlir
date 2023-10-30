@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcve2802" %s | FileCheck %s
+// RUN: air-opt -air-fuse-channels -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcve2802" %s | FileCheck %s
 
 // CHECK-LABEL:   AIE.device(xcve2802) {
 // CHECK:   %[[VAL_0:.*]] = AIE.tile(2, 0)
@@ -15,9 +15,8 @@
 // CHECK:   %[[VAL_4:.*]] = AIE.tile(6, 3)
 // CHECK:   %[[VAL_5:.*]] = AIE.tile(5, 4)
 // CHECK:   %[[VAL_6:.*]] = AIE.tile(6, 4)
-// CHECK-COUNT-40:    AIE.lock
 // CHECK:   AIE.buffer(%[[VAL_1]]){{.*}}memref<64x64xi32, 1>
-// CHECK:   AIE.buffer(%[[VAL_2]]){{.*}}memref<64x64xi32, 1>
+// CHECK:   AIE.buffer(%[[VAL_1]]){{.*}}memref<64x64xi32, 1>
 // CHECK:   AIE.buffer(%[[VAL_1]]){{.*}}memref<64x64xi32, 1>
 // CHECK:   AIE.buffer(%[[VAL_6]]){{.*}}memref<32x32xi32, 2>
 // CHECK:   AIE.buffer(%[[VAL_6]]){{.*}}memref<32x32xi32, 2>
@@ -40,7 +39,6 @@
 // CHECK:   %[[VAL_19:.*]] = AIE.mem(%[[VAL_3]]) {
 // CHECK:   %[[VAL_20:.*]] = AIE.core(%[[VAL_3]]) {
 // CHECK:   AIE.memTileDMA(%[[VAL_1]]) {
-// CHECK:   AIE.memTileDMA(%[[VAL_2]]) {
 
 
 #map = affine_map<()[s0] -> (s0 * 64)>
