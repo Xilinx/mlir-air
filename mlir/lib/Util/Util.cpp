@@ -393,6 +393,8 @@ void air::eraseAIRHierarchyOperand(air::HierarchyInterface op, unsigned index) {
 // Get channel declaration through channel symbol
 air::ChannelOp
 air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
+  if (!op)
+    return air::ChannelOp();
   Operation *parent = op;
   while (parent = parent->getParentOp()) {
     if (parent->hasTrait<OpTrait::SymbolTable>()) {
@@ -727,8 +729,8 @@ unsigned air::getIteratorFromMDVector(std::vector<unsigned> dims,
   unsigned output = 0;
   for (int i = dims.size() - 1; i >= 0; i--) { // In reversed order
     unsigned scale_factor = 1;
-    for (unsigned j = i + 1; j < dims.size(); j++) {
-      scale_factor *= dims[j];
+    for (unsigned j = 0; j < i; j++) {
+      scale_factor *= dims[i];
     }
     output += scale_factor * position[i];
   }
