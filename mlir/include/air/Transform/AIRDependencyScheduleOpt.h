@@ -43,6 +43,8 @@ std::unique_ptr<mlir::Pass> createAIREnforceLoopCarriedMemrefDeallocPattern();
 
 std::unique_ptr<mlir::Pass> createAIRDeAliasMemref();
 
+std::unique_ptr<mlir::Pass> createAIRFuseChannels();
+
 } // namespace air
 } // namespace xilinx
 

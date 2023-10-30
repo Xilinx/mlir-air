@@ -2212,6 +2212,296 @@ private:
   }
 };
 
+// A pass which transform multiple channel ops into one, where the data movement
+// is time-multiplexed.
+class AIRFuseChannels : public AIRFuseChannelsBase<AIRFuseChannels> {
+
+public:
+  AIRFuseChannels() = default;
+  AIRFuseChannels(const AIRFuseChannels &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<scf::SCFDialect, air::airDialect>();
+  }
+
+  void runOnFunction(func::FuncOp f, std::vector<air::ChannelOp> channelOps) {
+    std::map<air::ChannelOp, air::ChannelOp> chan_merge_map;
+    for (unsigned i = 0; i < channelOps.size() - 1; i++) {
+      for (unsigned j = i + 1; j < channelOps.size(); j++) {
+        if (checkIfMergeable(channelOps[i], channelOps[j])) {
+          // std::cout << "Loud noises!!!!!!!!\n";
+          // std::cout << channelOps[i].getSymName().str() << " and " <<
+          // channelOps[j].getSymName().str() << "\n";
+          mergeChannels(channelOps[i], channelOps[j]);
+          chan_merge_map[channelOps[j]] = channelOps[i];
+        }
+        // mergeChannels(channelOps[i], channelOps[j]);
+      }
+    }
+    // Rename symbols
+    for (unsigned i = 0; i < channelOps.size() - 1; i++) {
+      for (unsigned j = i + 1; j < channelOps.size(); j++) {
+        if (chan_merge_map.count(channelOps[j])) {
+          mlir::SymbolTable::replaceAllSymbolUses(
+              channelOps[j].getOperation(),
+              mlir::SymbolTable::getSymbolName(chan_merge_map[channelOps[j]]),
+              channelOps[j]->getParentOfType<ModuleOp>());
+        }
+      }
+    }
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+
+    SmallVector<func::FuncOp, 4> funcOps;
+    std::vector<air::ChannelOp> channelOps;
+    module.walk([&](air::ChannelOp op) { channelOps.push_back(op); });
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps) {
+      runOnFunction(f, channelOps);
+    }
+  }
+
+private:
+  bool checkIfMergeable(air::ChannelOp chan_a, air::ChannelOp chan_b) {
+    std::vector<air::ChannelPutOp> a_puts =
+        getChannelPutOpThroughSymbol(chan_a);
+    std::vector<air::ChannelPutOp> b_puts =
+        getChannelPutOpThroughSymbol(chan_b);
+    std::vector<air::ChannelGetOp> a_gets =
+        getChannelGetOpThroughSymbol(chan_a);
+    std::vector<air::ChannelGetOp> b_gets =
+        getChannelGetOpThroughSymbol(chan_b);
+    if (a_puts.size() != b_puts.size())
+      return false;
+    if (a_gets.size() != b_gets.size())
+      return false;
+    for (unsigned i = 0; i < a_puts.size(); i++) {
+      auto a_put_loop_nest = getParentLoopNest(a_puts[i].getOperation());
+      auto b_put_loop_nest = getParentLoopNest(b_puts[i].getOperation());
+      if (a_put_loop_nest.size() != b_put_loop_nest.size())
+        return false;
+      for (unsigned i = 0; i < a_put_loop_nest.size(); i++)
+        if (!areEquivalentControlLoops(a_put_loop_nest[i], b_put_loop_nest[i]))
+          return false;
+    }
+    for (unsigned i = 0; i < a_gets.size(); i++) {
+      auto a_get_loop_nest = getParentLoopNest(a_gets[i].getOperation());
+      auto b_get_loop_nest = getParentLoopNest(b_gets[i].getOperation());
+      if (a_get_loop_nest.size() != b_get_loop_nest.size())
+        return false;
+      for (unsigned i = 0; i < a_get_loop_nest.size(); i++)
+        if (!areEquivalentControlLoops(a_get_loop_nest[i], b_get_loop_nest[i]))
+          return false;
+    }
+    return true;
+  }
+  std::vector<Operation *> getParentLoopNest(Operation *op) {
+    std::vector<Operation *> parent_loop_nest;
+    Operation *parent = op;
+    while (parent) {
+      if (isa<scf::ForOp>(parent))
+        parent_loop_nest.push_back(parent);
+      else if (isa<scf::ParallelOp>(parent))
+        parent_loop_nest.push_back(parent);
+      else if (isa<air::HierarchyInterface>(parent))
+        parent_loop_nest.push_back(parent);
+      else if (isa<mlir::AffineIfOp>(parent))
+        parent_loop_nest.push_back(parent);
+      parent = parent->getParentOp();
+    }
+    return parent_loop_nest;
+  }
+  bool areEquivalentControlLoops(Operation *a, Operation *b) {
+    if (isa<scf::ForOp>(a) && isa<scf::ForOp>(b)) {
+      auto a_for = dyn_cast<scf::ForOp>(a);
+      auto b_for = dyn_cast<scf::ForOp>(b);
+      if (a_for == b_for)
+        return true;
+      std::optional<int64_t> aLbCstOp =
+          mlir::getConstantIntValue(a_for.getLowerBound());
+      std::optional<int64_t> aUbCstOp =
+          mlir::getConstantIntValue(a_for.getUpperBound());
+      std::optional<int64_t> aStepCstOp =
+          mlir::getConstantIntValue(a_for.getStep());
+      std::optional<int64_t> bLbCstOp =
+          mlir::getConstantIntValue(b_for.getLowerBound());
+      std::optional<int64_t> bUbCstOp =
+          mlir::getConstantIntValue(b_for.getUpperBound());
+      std::optional<int64_t> bStepCstOp =
+          mlir::getConstantIntValue(b_for.getStep());
+      if (aLbCstOp && aUbCstOp && aStepCstOp && bLbCstOp && bUbCstOp &&
+          bStepCstOp)
+        if (*aLbCstOp == *bLbCstOp && *aUbCstOp == *bUbCstOp &&
+            *aStepCstOp == *bStepCstOp)
+          return true;
+    } else if (isa<scf::ParallelOp>(a) && isa<scf::ParallelOp>(b)) {
+      auto a_par = dyn_cast<scf::ParallelOp>(a);
+      auto b_par = dyn_cast<scf::ParallelOp>(b);
+      if (a_par == b_par)
+        return true;
+      for (unsigned i = 0; i < a_par.getLowerBound().size(); i++) {
+        std::optional<int64_t> aLbCstOp =
+            mlir::getConstantIntValue(a_par.getLowerBound()[i]);
+        std::optional<int64_t> aUbCstOp =
+            mlir::getConstantIntValue(a_par.getUpperBound()[i]);
+        std::optional<int64_t> aStepCstOp =
+            mlir::getConstantIntValue(a_par.getStep()[i]);
+        std::optional<int64_t> bLbCstOp =
+            mlir::getConstantIntValue(b_par.getLowerBound()[i]);
+        std::optional<int64_t> bUbCstOp =
+            mlir::getConstantIntValue(b_par.getUpperBound()[i]);
+        std::optional<int64_t> bStepCstOp =
+            mlir::getConstantIntValue(b_par.getStep()[i]);
+        if (aLbCstOp && aUbCstOp && aStepCstOp && bLbCstOp && bUbCstOp &&
+            bStepCstOp) {
+          if (*aLbCstOp != *bLbCstOp || *aUbCstOp != *bUbCstOp ||
+              *aStepCstOp != *bStepCstOp)
+            return false;
+        } else
+          return false;
+      }
+      return true;
+    } else if (isa<air::HierarchyInterface>(a) &&
+               isa<air::HierarchyInterface>(a)) {
+      if (a == b)
+        return true;
+    } else if (isa<mlir::AffineIfOp>(a) || isa<mlir::AffineIfOp>(b))
+      return false;
+    return false;
+  }
+  void mergeChannels(air::ChannelOp chan_a, air::ChannelOp chan_b) {
+    std::vector<air::ChannelPutOp> a_puts =
+        getChannelPutOpThroughSymbol(chan_a);
+    std::vector<air::ChannelPutOp> b_puts =
+        getChannelPutOpThroughSymbol(chan_b);
+    std::vector<air::ChannelGetOp> a_gets =
+        getChannelGetOpThroughSymbol(chan_a);
+    std::vector<air::ChannelGetOp> b_gets =
+        getChannelGetOpThroughSymbol(chan_b);
+    // Interleave puts and gets
+    for (unsigned i = 0; i < a_puts.size(); i++) {
+      auto b_put_parent_region = b_puts[i]->getParentRegion();
+      auto b_put_parent = b_puts[i]->getParentOp();
+      // b_puts[i]->moveBefore(a_puts[i]);
+      OpBuilder builder(a_puts[i]);
+      IRMapping remap;
+      // for (unsigned j = 0; j < b_put_parent_region->getNumArguments(); j++){
+      //   remap.map(b_put_parent_region->getArgument(j),
+      //   a_puts[i]->getParentRegion()->getArgument(j));
+      // }
+      remapAllParentLoopArgs(remap, a_puts[i], b_puts[i]);
+      // auto new_b_put = builder.clone(*b_puts[i], remap);
+      auto new_b_put = cloneOpAndOperands(builder, remap, b_puts[i]);
+      eraseParentLoopIfEmpty(*b_puts[i]);
+      if (a_puts[i].getAsyncToken())
+        a_puts[i].addAsyncDependency(
+            dyn_cast<air::ChannelPutOp>(new_b_put).getAsyncToken());
+    }
+    for (unsigned i = 0; i < a_gets.size(); i++) {
+      auto b_get_parent_region = b_gets[i]->getParentRegion();
+      auto b_get_parent = b_gets[i]->getParentOp();
+      // b_gets[i]->moveBefore(a_gets[i]);
+      OpBuilder builder(a_gets[i]);
+      IRMapping remap;
+      // for (unsigned j = 0; j < b_get_parent_region->getNumArguments(); j++){
+      //   remap.map(b_get_parent_region->getArgument(j),
+      //   a_gets[i]->getParentRegion()->getArgument(j));
+      // }
+      remapAllParentLoopArgs(remap, a_gets[i], b_gets[i]);
+      // auto new_b_get = builder.clone(*b_gets[i], remap);
+      auto new_b_get = cloneOpAndOperands(builder, remap, b_gets[i]);
+      eraseParentLoopIfEmpty(*b_gets[i]);
+      if (a_gets[i].getAsyncToken())
+        a_gets[i].addAsyncDependency(
+            dyn_cast<air::ChannelGetOp>(new_b_get).getAsyncToken());
+    }
+    // Update symbol name
+    // mlir::SymbolTable::replaceAllSymbolUses(chan_b.getOperation(),
+    // mlir::SymbolTable::getSymbolName(chan_a),
+    // chan_a->getParentOfType<ModuleOp>());
+  }
+  Operation *cloneOpAndOperands(OpBuilder builder, IRMapping remap,
+                                Operation *op) {
+    for (auto operand : op->getOperands()) {
+      if (operand.getDefiningOp()) {
+        if (isa<arith::ConstantIndexOp>(operand.getDefiningOp()))
+          builder.clone(*operand.getDefiningOp());
+        else if (isa<mlir::AffineApplyOp>(operand.getDefiningOp()))
+          builder.clone(*operand.getDefiningOp(), remap);
+        else if (isa<air::ExecuteOp>(operand.getDefiningOp())) {
+          auto exec = dyn_cast<air::ExecuteOp>(operand.getDefiningOp());
+          auto child_op = &exec.getBody().front().getOperations().front();
+          if (isa<mlir::AffineApplyOp>(child_op))
+            builder.clone(*operand.getDefiningOp(), remap);
+        }
+      }
+    }
+    auto new_op = builder.clone(*op, remap);
+    return new_op;
+  }
+  void remapAllParentLoopArgs(IRMapping &remap, Operation *a, Operation *b) {
+    auto a_loop_nest = getParentLoopNest(a);
+    auto b_loop_nest = getParentLoopNest(b);
+    if (a_loop_nest.size() != b_loop_nest.size())
+      return;
+    for (unsigned i = 0; i < a_loop_nest.size(); i++) {
+      if (auto a_for = dyn_cast<scf::ForOp>(a_loop_nest[i])) {
+        if (auto b_for = dyn_cast<scf::ForOp>(b_loop_nest[i])) {
+          for (unsigned j = 0; j < a_for.getBody()->getNumArguments(); j++) {
+            remap.map(b_for.getBody()->getArgument(j),
+                      a_for.getBody()->getArgument(j));
+          }
+        }
+      }
+      if (auto a_par = dyn_cast<scf::ParallelOp>(a_loop_nest[i])) {
+        if (auto b_par = dyn_cast<scf::ParallelOp>(b_loop_nest[i])) {
+          for (unsigned j = 0; j < a_par.getBody()->getNumArguments(); j++) {
+            remap.map(b_par.getBody()->getArgument(j),
+                      a_par.getBody()->getArgument(j));
+          }
+        }
+      }
+    }
+  }
+  void eraseParentLoopIfEmpty(Operation &op) {
+    auto parent_region = op.getParentRegion();
+    auto parent_op = op.getParentOp();
+    if (!parent_region || !parent_op)
+      return;
+    int parent_op_count = 0;
+    Operation *op_pointer = nullptr;
+    for (auto &o : parent_region->getOps()) {
+      parent_op_count++;
+      op_pointer = &o;
+    }
+    if (parent_op_count == 1 ||
+        (parent_op_count == 2 && isa<scf::YieldOp>(op_pointer))) {
+      OpBuilder builder(parent_op);
+      if (parent_op->getNumResults()) {
+        auto wa = builder.create<air::WaitAllOp>(
+            builder.getUnknownLoc(),
+            air::AsyncTokenType::get(builder.getContext()),
+            SmallVector<Value>{});
+        parent_op->getResult(0).replaceAllUsesWith(wa.getAsyncToken());
+      }
+      // parent_op->dropAllDefinedValueUses();
+      parent_op->erase();
+    } else {
+      OpBuilder builder(&op);
+      if (op.getNumResults()) {
+        auto wa = builder.create<air::WaitAllOp>(
+            builder.getUnknownLoc(),
+            air::AsyncTokenType::get(builder.getContext()),
+            SmallVector<Value>{});
+        op.getResult(0).replaceAllUsesWith(wa.getAsyncToken());
+      }
+      op.erase();
+    }
+  }
+};
+
 } // namespace
 
 namespace xilinx {
@@ -2271,6 +2561,10 @@ std::unique_ptr<Pass> createAIREnforceLoopCarriedMemrefDeallocPattern() {
 
 std::unique_ptr<Pass> createAIRDeAliasMemref() {
   return std::make_unique<AIRDeAliasMemref>();
+}
+
+std::unique_ptr<Pass> createAIRFuseChannels() {
+  return std::make_unique<AIRFuseChannels>();
 }
 
 } // namespace air

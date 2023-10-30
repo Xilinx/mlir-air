@@ -976,6 +976,16 @@ def AIRDeAliasMemref: Pass<"air-dealias-memref", "ModuleOp"> {
   }];
 }
 
+def AIRFuseChannels: Pass<"air-fuse-channels", "ModuleOp"> {
+  let summary = "Fuse multiple air.channel ops into one";
+  let constructor = "xilinx::air::createAIRFuseChannels()";
+  let description = [{
+    This pass fuses multiple air.channel ops into one. The condition for fusing channels 
+    is such that the puts and gets of all candidate channels mush share the same control 
+    loop hierarchy, where every parent loops must have matching loop bounds.
+  }];
+}
+
 def AIRDependencyScheduleOpt: Pass<"air-dependency-schedule-opt", "ModuleOp"> {
   let summary = "Optimize scheduling based on air async dependency";
   let constructor = "xilinx::air::createAIRDependencyScheduleOptPass()";
