@@ -912,6 +912,28 @@ void allocL1Buffers(AIE::DeviceOp m,
   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
 
+bool areReferencedByTheSameAIRChannel(Value a, Value b) {
+  if (!isa<MemRefType>(a.getType()))
+    return false;
+  if (!isa<MemRefType>(b.getType()))
+    return false;
+  std::vector<air::ChannelOp> a_chans;
+  std::vector<air::ChannelOp> b_chans;
+  for (auto user : a.getUsers())
+    if (auto chan = dyn_cast<air::ChannelInterface>(user))
+      a_chans.push_back(getChannelDeclarationThroughSymbol(chan));
+  for (auto user : b.getUsers())
+    if (auto chan = dyn_cast<air::ChannelInterface>(user))
+      b_chans.push_back(getChannelDeclarationThroughSymbol(chan));
+  for (auto a_chan : a_chans) {
+    for (auto b_chan : b_chans) {
+      if (a_chan == b_chan)
+        return true;
+    }
+  }
+  return false;
+}
+
 void L2MemrefToMemTileMap(
     AIE::DeviceOp m,
     std::map<memref::AllocOp, AIE::TileOp> &memrefToMemTileMap) {
@@ -932,26 +954,6 @@ void L2MemrefToMemTileMap(
 
   // Allocation of L2 memrefs in segment to (memtile) tile ops
   // // Strategy: when one memtile is full, move on to the next one
-  // std::map<AIE::TileOp, uint32_t> memtileToSizeMap;
-  // for (auto t : memtiles) {
-  //   memtileToSizeMap[t] = m.getTargetModel().getMemTileSize();
-  // }
-  // // std::map<memref::AllocOp, AIE::TileOp> output;
-  // int memtile_id = 0;
-  // for (auto alloc : allocs) {
-  //   MemRefType ty = alloc.getMemref().getType().cast<MemRefType>();
-  //   auto memref_vol = getElementSizeInBytes(ty) * getTensorVolume(ty);
-  //   // std::cout << "memref_vol: " << memref_vol << " = " <<
-  //   getTensorVolume(ty)
-  //   // << " * " << getElementSizeInBytes(ty) << "\n";
-  //   while (memtileToSizeMap[memtiles[memtile_id]] < memref_vol) {
-  //     memtile_id++;
-  //     assert(memtile_id < memtiles.size());
-  //   }
-  //   memtileToSizeMap[memtiles[memtile_id]] -= memref_vol;
-  //   memrefToMemTileMap[alloc] = memtiles[memtile_id];
-  // }
-  // Strategy: round robin, with memory usage awareness
   std::map<AIE::TileOp, uint32_t> memtileToSizeMap;
   for (auto t : memtiles) {
     memtileToSizeMap[t] = m.getTargetModel().getMemTileSize();
@@ -960,18 +962,42 @@ void L2MemrefToMemTileMap(
   for (auto alloc : allocs) {
     MemRefType ty = alloc.getMemref().getType().cast<MemRefType>();
     auto memref_vol = getElementSizeInBytes(ty) * getTensorVolume(ty);
-    int skip_count = 0;
     while (memtileToSizeMap[memtiles[memtile_id]] < memref_vol) {
       memtile_id++;
-      memtile_id %= memtiles.size();
-      skip_count++;
-      assert(skip_count < (int)memtiles.size());
+      assert(memtile_id < memtiles.size());
     }
     memtileToSizeMap[memtiles[memtile_id]] -= memref_vol;
     memrefToMemTileMap[alloc] = memtiles[memtile_id];
-    memtile_id++;
-    memtile_id %= memtiles.size();
   }
+  // Strategy: round robin, with memory usage awareness
+  // std::map<AIE::TileOp, uint32_t> memtileToSizeMap;
+  // for (auto t : memtiles) {
+  //   memtileToSizeMap[t] = m.getTargetModel().getMemTileSize();
+  // }
+  // int memtile_id = 0;
+  // memref::AllocOp previous_alloc = nullptr;
+  // for (auto alloc : allocs) {
+  //   MemRefType ty = alloc.getMemref().getType().cast<MemRefType>();
+  //   auto memref_vol = getElementSizeInBytes(ty) * getTensorVolume(ty);
+  //   int skip_count = 0;
+  //   while (memtileToSizeMap[memtiles[memtile_id]] < memref_vol) {
+  //     memtile_id++;
+  //     memtile_id %= memtiles.size();
+  //     skip_count++;
+  //     assert(skip_count < (int)memtiles.size());
+  //   }
+  //   memtileToSizeMap[memtiles[memtile_id]] -= memref_vol;
+  //   memrefToMemTileMap[alloc] = memtiles[memtile_id];
+  //   if (previous_alloc && areReferencedByTheSameAIRChannel(alloc.getMemref(),
+  //   previous_alloc.getMemref())){
+  //     // Memrefs referenced by the same channel must be located in the same
+  //     tile
+  //   }
+  //   else memtile_id++;
+  //   // memtile_id++;
+  //   memtile_id %= memtiles.size();
+  //   previous_alloc = alloc;
+  // }
 }
 
 void allocL2Buffers(AIE::DeviceOp m) {
@@ -1562,12 +1588,9 @@ public:
       }
     }
 
-    // std::cout << "operand ops \n";
     for (auto o : operandOps) {
-      // std::cout << to_string(o) << " addr " << (void *)o << " ";
       builder.clone(*o, remap);
     }
-    // std::cout << "memcpy ops \n";
     std::vector<Value> cloned_memrefs;
     for (auto o : memcpyOps) {
       if (auto memref = o.getSrcMemref()) {
@@ -1592,6 +1615,7 @@ public:
       }
     }
     for (auto o : memcpyOps) {
+      // Clone memcpy op
       if (auto par = getChannelIndicesOwner(o)) {
 
         SmallVector<int, 2> lbs_spatial, ubs_spatial;
@@ -1612,6 +1636,42 @@ public:
               remap.map(putget.getIndices()[i],
                         builder.create<arith::ConstantIndexOp>(
                             builder.getUnknownLoc(), position[i]));
+          }
+          // Specialize any affine apply mappings to operand
+          for (auto oper : o->getOperands()) {
+            if (oper.getDefiningOp()) {
+              mlir::AffineApplyOp position_apply = nullptr;
+              if (auto apply_op =
+                      dyn_cast<mlir::AffineApplyOp>(oper.getDefiningOp()))
+                position_apply = apply_op;
+              else if (auto exec =
+                           dyn_cast<air::ExecuteOp>(oper.getDefiningOp())) {
+                auto child_op = &exec.getBody().front().getOperations().front();
+                if (auto apply_op = dyn_cast<mlir::AffineApplyOp>(child_op))
+                  position_apply = apply_op;
+              }
+              int position_iv = -1;
+              if (position_apply)
+                for (unsigned i = 0; i < par.getInductionVars().size(); i++)
+                  for (auto map_o : position_apply.getMapOperands())
+                    if (par.getInductionVars()[i] == map_o)
+                      position_iv = i;
+              if (position_apply && position_iv >= 0) {
+                // Evaluate the affine expression and specialize the operand
+                auto c = position_apply.getAffineMap().getResult(0);
+                SmallVector<AffineExpr, 1> const_syms{
+                    getAffineConstantExpr(position[position_iv],
+                                          builder.getContext()),
+                };
+                auto newC = c.replaceSymbols(const_syms);
+                auto expr = simplifyAffineExpr(newC, 0, 1)
+                                .dyn_cast<AffineConstantExpr>();
+                assert(expr);
+                int result = expr.getValue();
+                remap.map(oper, builder.create<arith::ConstantIndexOp>(
+                                    builder.getUnknownLoc(), result));
+              }
+            }
           }
           auto new_memcpy = builder.clone(*o, remap);
           clearAsyncDependenciesOfAsyncOp(new_memcpy);
@@ -1709,12 +1769,14 @@ public:
     // AIR channel to AIE flow mapping strategy: allocate L1 DMAs first,
     // followed by L2 and then L3, where outer memory hierarchies reuse existing
     // AIE flows as possible.
-    if (groupingMemcpysByLoop(memcpy_flows))
-      groupedByLoopDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
-                                        memtile_dma_alloc, tile_dma_alloc);
-    else
-      simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
-                                 memtile_dma_alloc, tile_dma_alloc);
+    // if (groupingMemcpysByLoop(memcpy_flows))
+    //   groupedByLoopDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
+    //                                     memtile_dma_alloc, tile_dma_alloc);
+    // else
+    //   simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc,
+    //                              memtile_dma_alloc, tile_dma_alloc);
+    simpleDMAChannelAllocation(memcpy_flows, shim_dma_alloc, memtile_dma_alloc,
+                               tile_dma_alloc);
 
     // Step 3.5: Sort all ops being allocated to each DMA channel, to avoid
     // ping-pong deadlock.
@@ -2144,13 +2206,22 @@ public:
             ? getMemcpySizesAsInt(ndcpy.getDstMemref(), ndcpy.getDstSizes())
             : getMemcpySizesAsInt(ndcpy.getSrcMemref(), ndcpy.getSrcSizes());
 
+    // This is a hack and assumes 1D non-interleaving and non-overlapping data
+    // layout.
+    int64_t offset =
+        isTileInbound(ndcpy, (int)air::MemorySpace::L1)
+            ? get1DOffset(ndcpy.getDstSizes(), ndcpy.getDstOffsets(),
+                          ndcpy.getDstMemref())
+            : get1DOffset(ndcpy.getSrcSizes(), ndcpy.getSrcOffsets(),
+                          ndcpy.getSrcMemref());
+
     Value length =
         b.create<arith::ConstantIndexOp>(memcpyOp.getLoc(), len)->getResult(0);
     b.create<AIE::UseLockOp>(loc, acqLockOp, lockAqValue,
                              isAIE2 ? AIE::LockAction::AcquireGreaterEqual
                                     : AIE::LockAction::Acquire);
     b.create<AIE::DMABDOp>(
-        loc, bufferOp, 0,
+        loc, bufferOp, offset,
         cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(), 0);
     b.create<AIE::UseLockOp>(loc, relLockOp, lockRelValue,
                              AIE::LockAction::Release);

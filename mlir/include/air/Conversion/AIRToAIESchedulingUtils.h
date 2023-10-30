@@ -41,6 +41,9 @@ std::vector<unsigned> convertToStdVec(SmallVector<int64_t, 6> vec);
 
 bool areIdenticalVectors(std::vector<unsigned> &a, std::vector<unsigned> &b);
 
+int64_t get1DOffset(SmallVector<Value> memcpy_sizes,
+                    SmallVector<Value> memcpy_offsets, Value memref);
+
 struct allocation_info_t {
   AIE::TileOp dma_tile = nullptr;
   int64_t col = -1;
@@ -49,9 +52,11 @@ struct allocation_info_t {
   int64_t tile_channel = -1;
   std::vector<int32_t> dma_id;
   std::vector<Operation *> memcpyOps;
+  bool foundAlloc(air::ChannelOp channel_op);
   bool foundAlloc(uint32_t col, uint32_t row, air::MemcpyInterface memcpyOp);
   bool foundAlloc(uint32_t col, uint32_t row, int chan);
   bool foundAlloc(uint32_t col, uint32_t row);
+  bool foundAlloc(uint32_t col, uint32_t row, air::ChannelOp channel_op);
   bool foundAlloc(AIE::TileOp tile, AIE::DMAChannel channel);
 };
 
@@ -150,7 +155,8 @@ public:
 
   MemTileDMAAllocator(AIE::DeviceOp device);
 
-  allocation_info_t simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp);
+  allocation_info_t simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
+                                          int chan);
   allocation_info_t simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
                                           allocation_info_t &existing_alloc);
 
@@ -169,6 +175,7 @@ void simpleDMAChannelAllocation(std::vector<MemcpyBundleAsFlow> &memcpy_flows,
                                 MemTileDMAAllocator &memtile_dma_alloc,
                                 TileDMAAllocator &tile_dma_alloc);
 template <typename T> int foundInVector(T item, std::vector<T> vec);
+int getSCFForLoopDepth(Operation *o);
 bool groupingMemcpysByLoop(std::vector<MemcpyBundleAsFlow> &memcpy_flows);
 
 void groupedByLoopDMAChannelAllocation(
