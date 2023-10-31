@@ -17,10 +17,12 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include "mlir/Support/MathExtras.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -164,11 +166,14 @@ struct AIRRtToIpuPass : public air::AIRRtToIpuBase<AIRRtToIpuPass> {
     // Move func op to the end of device op's body
     moveFuncOpToEndOfDeviceOp(module);
 
-    // Purge dma ops' async tokens
-    purgeDmaAsyncTokens(module);
+    // Unroll affine for loops lowered from air.launch iterations
+    unrollAffineFors(module);
 
     // Purge all wait all ops
     purgeWaitAlls(module);
+
+    // Purge dma ops' async tokens
+    purgeDmaAsyncTokens(module);
 
     ConversionTarget target(getContext());
     target.addIllegalDialect<AIRRtDialect>();
@@ -210,6 +215,9 @@ struct AIRRtToIpuPass : public air::AIRRtToIpuBase<AIRRtToIpuPass> {
 
     // Insert sync op after copying data out to host
     insertIpuSyncOpForResults(module);
+
+    // Renumber ipu dma ops
+    renumberIpuDmaOps(module.getBody());
   }
 
   void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
@@ -299,6 +307,15 @@ struct AIRRtToIpuPass : public air::AIRRtToIpuBase<AIRRtToIpuPass> {
           }
         }
       }
+    });
+  }
+
+  void renumberIpuDmaOps(Block *blk) {
+    unsigned id = 0;
+    blk->walk([&](AIEX::IpuDmaMemcpyNdOp dma) {
+      dma->setAttr("id",
+                   mlir::IntegerAttr::get(
+                       mlir::IntegerType::get(dma->getContext(), 32), ++id));
     });
   }
 };
