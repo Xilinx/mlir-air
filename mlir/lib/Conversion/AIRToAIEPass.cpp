@@ -1888,6 +1888,26 @@ public:
     }
   }
 
+  void annotateMetadataPerShimAIRChannel(air::ChannelInterface chan_o,
+                                         MemRefType memref_ty,
+                                         StringAttr dma_name_attr) {
+    for (auto the_other_chan_o : getTheOtherChannelOpThroughSymbol(chan_o)) {
+      bool areEqualVecs = true;
+      if (getTensorShape(memref_ty).size() !=
+          the_other_chan_o.getSizes().size())
+        areEqualVecs = false;
+      else
+        for (unsigned i = 0; i < getTensorShape(memref_ty).size(); i++)
+          if (getTensorShape(memref_ty)[i] !=
+              mlir::getConstantIntValue(the_other_chan_o.getSizes()[i]))
+            areEqualVecs = false;
+      if (areEqualVecs)
+        the_other_chan_o->setAttr(
+            "metadata", FlatSymbolRefAttr::get(the_other_chan_o->getContext(),
+                                               dma_name_attr));
+    }
+  }
+
   // AIE2: Get herd dma allocation info, and write as AIE::ShimDMAAllocationOp
   void createShimDMAAllocationOpsFromHerd(
       OpBuilder builder, MLIRContext *ctx, air::HerdOp herd,
@@ -1918,26 +1938,15 @@ public:
             builder.getI64IntegerAttr(chan),
             builder.getI64IntegerAttr(tileOp.getCol()));
 
-        // Label airrt.dmamemcpynd ops with symbolic ref. to shimdmaalloc op
         air::MemcpyInterface tile_side_memcpy = nullptr;
         herd.walk([&](air::MemcpyInterface o) {
-          if (o.getId() == original_id) {
+          if (o.getId() == original_id)
             tile_side_memcpy = o;
-            if (isa<air::DmaMemcpyNdOp>(o.getOperation()))
-              o->setAttr("metadata",
-                         FlatSymbolRefAttr::get(ctx, dma_name_attr));
-            else if (auto chan_o =
-                         dyn_cast<air::ChannelInterface>(o.getOperation()))
-              for (auto the_other_chan_o :
-                   getTheOtherChannelOpThroughSymbol(chan_o))
-                the_other_chan_o->setAttr(
-                    "metadata", FlatSymbolRefAttr::get(ctx, dma_name_attr));
-          }
         });
 
         // Create memref.global op with memref shape
+        MemRefType memref_ty;
         if (tile_side_memcpy) {
-          MemRefType memref_ty;
           if (auto tile_side_dmamemcpy = dyn_cast<air::DmaMemcpyNdOp>(
                   tile_side_memcpy.getOperation())) {
             if (isMM2S)
@@ -1955,6 +1964,19 @@ public:
                                            builder.getStringAttr("public"),
                                            memref_ty, nullptr, false, nullptr);
         }
+
+        // Label airrt.dmamemcpynd ops with symbolic ref. to shimdmaalloc op
+        herd.walk([&](air::MemcpyInterface o) {
+          if (o.getId() == original_id) {
+            if (isa<air::DmaMemcpyNdOp>(o.getOperation()))
+              o->setAttr("metadata",
+                         FlatSymbolRefAttr::get(ctx, dma_name_attr));
+            else if (auto chan_o =
+                         dyn_cast<air::ChannelInterface>(o.getOperation()))
+              annotateMetadataPerShimAIRChannel(chan_o, memref_ty,
+                                                dma_name_attr);
+          }
+        });
       }
     }
   }
@@ -1990,26 +2012,14 @@ public:
             builder.getI64IntegerAttr(chan),
             builder.getI64IntegerAttr(tileOp.getCol()));
 
-        // Label airrt.dmamemcpynd ops with symbolic ref. to shimdmaalloc op
-        air::MemcpyInterface tile_side_memcpy = nullptr;
-        seg.walk([&](air::MemcpyInterface o) {
-          if (o.getId() == original_id) {
-            tile_side_memcpy = o;
-            if (isa<air::DmaMemcpyNdOp>(o.getOperation()))
-              o->setAttr("metadata",
-                         FlatSymbolRefAttr::get(ctx, dma_name_attr));
-            else if (auto chan_o =
-                         dyn_cast<air::ChannelInterface>(o.getOperation()))
-              for (auto the_other_chan_o :
-                   getTheOtherChannelOpThroughSymbol(chan_o))
-                the_other_chan_o->setAttr(
-                    "metadata", FlatSymbolRefAttr::get(ctx, dma_name_attr));
-          }
-        });
-
         // Create memref.global op with memref shape
+        air::MemcpyInterface tile_side_memcpy = nullptr;
+        MemRefType memref_ty;
+        seg.walk([&](air::MemcpyInterface o) {
+          if (o.getId() == original_id)
+            tile_side_memcpy = o;
+        });
         if (tile_side_memcpy) {
-          MemRefType memref_ty;
           if (auto tile_side_dmamemcpy = dyn_cast<air::DmaMemcpyNdOp>(
                   tile_side_memcpy.getOperation())) {
             if (isMM2S)
@@ -2027,6 +2037,18 @@ public:
                                            builder.getStringAttr("public"),
                                            memref_ty, nullptr, false, nullptr);
         }
+        // Label airrt.dmamemcpynd ops with symbolic ref. to shimdmaalloc op
+        seg.walk([&](air::MemcpyInterface o) {
+          if (o.getId() == original_id) {
+            if (isa<air::DmaMemcpyNdOp>(o.getOperation()))
+              o->setAttr("metadata",
+                         FlatSymbolRefAttr::get(ctx, dma_name_attr));
+            else if (auto chan_o =
+                         dyn_cast<air::ChannelInterface>(o.getOperation()))
+              annotateMetadataPerShimAIRChannel(chan_o, memref_ty,
+                                                dma_name_attr);
+          }
+        });
       }
     }
   }

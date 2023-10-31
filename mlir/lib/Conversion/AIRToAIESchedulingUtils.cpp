@@ -194,16 +194,16 @@ std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
         read_counter++;
       else if (buffer_memref == memcpyOp.getDstMemref())
         write_counter++;
-    } else if (isa<AffineLoadOp>(user))
+    } else if (isa<affine::AffineLoadOp>(user))
       read_counter++;
-    else if (isa<AffineStoreOp>(user))
+    else if (isa<affine::AffineStoreOp>(user))
       write_counter++;
     else if (auto linalgop = dyn_cast<linalg::LinalgOp>(user)) {
       for (auto opoperand : linalgop.getDpsInputOperands())
         if (opoperand->is(buffer_memref))
           read_counter++;
-      for (auto opoperand : linalgop.getDpsInitOperands())
-        if (opoperand->is(buffer_memref)) {
+      for (auto &opoperand : linalgop.getDpsInitsMutable())
+        if (opoperand.is(buffer_memref)) {
           read_counter++;
           write_counter++;
         }
