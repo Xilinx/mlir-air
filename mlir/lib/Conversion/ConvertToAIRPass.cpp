@@ -1653,15 +1653,6 @@ public:
     for (auto b : bounds)
       sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, b));
     auto launch = rewriter.create<air::LaunchOp>(op.getLoc(), sizes, args);
-    auto &bb = launch.getBody().front();
-    auto ivs = op.getInductionVars();
-
-    for (int i = 0, e = ivs.size(); i < e; i++) {
-      ivs[i].replaceAllUsesWith(launch.getIds()[i]);
-    }
-
-    auto &body = op.getBody()->getOperations();
-    bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
     rewriter.setInsertionPointToStart(&launch.getRegion().front());
 
     if (generateSegment) {
@@ -1671,10 +1662,20 @@ public:
       int i = 0;
       auto kernel_args = segment.getKernelArguments();
       kernel_args = kernel_args.drop_front(
-          ivs.size() + launch.getSize().size()); // Launch's induction vars
+          launch.getIds().size() +
+          launch.getSize().size()); // Launch's induction vars
       for (Value v : args)
         replaceAllUsesInRegionWith(v, kernel_args[i++], segment.getRegion());
     } else {
+      auto &bb = launch.getBody().front();
+      auto ivs = op.getInductionVars();
+
+      for (int i = 0, e = ivs.size(); i < e; i++) {
+        ivs[i].replaceAllUsesWith(launch.getIds()[i]);
+      }
+
+      auto &body = op.getBody()->getOperations();
+      bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
       replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
                                             launch.getRegion());
       int i = 0;
