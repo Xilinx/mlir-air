@@ -7,6 +7,7 @@
 
 #include "air/Conversion/AIRToAIESchedulingUtils.h"
 #include "air/Util/Util.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/MathExtras.h"
 
@@ -176,6 +177,46 @@ int64_t air::get1DOffset(SmallVector<Value> memcpy_sizes,
   return vol * one_d_iter * getElementSizeInBytes(memref.getType());
 }
 
+std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
+                                                  Value buffer_memref) {
+  bool isAIE2 = (arch == AIE::AIEArch::AIE2);
+  if (!isAIE2)
+    return std::make_pair(0, 0);
+
+  // TODO: What if a buffer memref is read or written by multiple channels?
+  if (!buffer_memref.getType().isa<MemRefType>())
+    return std::make_pair(-1, -1);
+  int read_counter = 0;
+  int write_counter = 0;
+  for (auto user : buffer_memref.getUsers()) {
+    if (auto memcpyOp = dyn_cast<air::MemcpyInterface>(user)) {
+      if (buffer_memref == memcpyOp.getSrcMemref())
+        read_counter++;
+      else if (buffer_memref == memcpyOp.getDstMemref())
+        write_counter++;
+    } else if (isa<AffineLoadOp>(user))
+      read_counter++;
+    else if (isa<AffineStoreOp>(user))
+      write_counter++;
+    else if (auto linalgop = dyn_cast<linalg::LinalgOp>(user)) {
+      for (auto opoperand : linalgop.getDpsInputOperands())
+        if (opoperand->is(buffer_memref))
+          read_counter++;
+      for (auto opoperand : linalgop.getDpsInitOperands())
+        if (opoperand->is(buffer_memref)) {
+          read_counter++;
+          write_counter++;
+        }
+    }
+  }
+  if (!read_counter || !write_counter)
+    return std::make_pair(1, 1);
+  if (read_counter >= write_counter)
+    return std::make_pair(mlir::ceilDiv(read_counter, write_counter), 1);
+  else
+    return std::make_pair(1, mlir::ceilDiv(write_counter, read_counter));
+}
+
 // allocation_info_t impl.
 
 namespace xilinx::air {
@@ -301,7 +342,9 @@ DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
     }
   }
   bool isAIE2 = (target_model.getTargetArch() == AIE::AIEArch::AIE2);
-  auto init = isAIE2 ? 1 : 0;
+  auto init_pair =
+      getLockValuePair(target_model.getTargetArch(), bufferOp->getResult(0));
+  auto init = std::max(init_pair.first, init_pair.second);
 
   OpBuilder builder(bufferOp);
   auto rlock = allocateLockOp(device, tile, 0);

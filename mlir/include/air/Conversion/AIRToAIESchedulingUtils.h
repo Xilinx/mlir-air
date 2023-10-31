@@ -44,6 +44,9 @@ bool areIdenticalVectors(std::vector<unsigned> &a, std::vector<unsigned> &b);
 int64_t get1DOffset(SmallVector<Value> memcpy_sizes,
                     SmallVector<Value> memcpy_offsets, Value memref);
 
+std::pair<int64_t, int64_t> getLockValuePair(AIE::AIEArch arch,
+                                             Value buffer_memref);
+
 struct allocation_info_t {
   AIE::TileOp dma_tile = nullptr;
   int64_t col = -1;

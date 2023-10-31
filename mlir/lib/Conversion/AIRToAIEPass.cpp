@@ -2193,12 +2193,13 @@ public:
     b.setInsertionPointToStart(bd);
     int64_t lockAqValue = -1;
     int64_t lockRelValue = -1;
+    auto aie2LockVal = getLockValuePair(arch, bufferOp->getResult(0));
     if (!isMM2S) {
-      lockAqValue = isAIE2 ? 1 : 0;
-      lockRelValue = isAIE2 ? 1 : 1;
+      lockAqValue = isAIE2 ? aie2LockVal.first : 0;
+      lockRelValue = isAIE2 ? aie2LockVal.first : 1;
     } else {
-      lockAqValue = isAIE2 ? 1 : 1;
-      lockRelValue = isAIE2 ? 1 : 0;
+      lockAqValue = isAIE2 ? aie2LockVal.second : 1;
+      lockRelValue = isAIE2 ? aie2LockVal.second : 0;
     }
     auto ndcpy = cast<air::MemcpyInterface>(memcpyOp);
 
