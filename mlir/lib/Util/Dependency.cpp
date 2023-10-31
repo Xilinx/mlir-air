@@ -2135,8 +2135,7 @@ void dependencyTracer::getPartialMemrefFromOp(
         sink_op_scalar_ins.push_back(ins_value);
       }
     }
-    for (auto linalg_outs : sink_op_linalgop.getDpsInitOperands()) {
-      auto outs_value = linalg_outs->get();
+    for (auto outs_value : sink_op_linalgop.getDpsInits()) {
       if (outs_value.getType().isa<MemRefType>()) {
         unsigned memRefRank = outs_value.getType().cast<MemRefType>().getRank();
         partialMemref tile = createPartialMemref(outs_value, memRefRank);

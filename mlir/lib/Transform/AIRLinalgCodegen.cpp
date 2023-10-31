@@ -933,8 +933,10 @@ FailureOr<linalg::TiledLinalgOp> static pipelineLinalgOp(
       b, loc, op, args, tileIds, tileSizeVector, sizeBounds, true);
   SmallVector<Type, 4> stageResultTypes;
   unsigned int resultIdx = 0;
-  for (OpOperand *opOperand : op.getDpsInitOperands()) {
-    resultIdx = opOperand->getOperandNumber();
+  for (OpOperand &opOperand : op->getOpOperands()) {
+    if (!op.isDpsInit(&opOperand))
+      continue;
+    resultIdx = opOperand.getOperandNumber();
     auto memrefType = tiledOperands[resultIdx].getType().cast<MemRefType>();
     auto tensorType = RankedTensorType::get(memrefType.getShape(),
                                             memrefType.getElementType());
@@ -1126,10 +1128,11 @@ FailureOr<linalg::TiledLinalgOp> static pipelineReduceLinalgOp(
       b, loc, op, args, tileIds, tileSizeVector, sizeBounds, true);
 
   unsigned int resultIdx = 0;
-  for (OpOperand *opOperand : op.getDpsInitOperands()) {
-    resultIdx = opOperand->getOperandNumber();
-    break;
-  }
+  for (OpOperand &opOperand : op->getOpOperands())
+    if (op.isDpsInit(&opOperand)) {
+      resultIdx = opOperand.getOperandNumber();
+      break;
+    }
 
   Value firstOutputOperand = tiledOperands[resultIdx];
   SmallVector<air::ChannelOp> channels(pipeline_depth, nullptr);
@@ -1457,6 +1460,11 @@ public:
     adjustToDivisorsOfTripCounts(op, tileSizes, tripCounts);
   }
 
+  static LogicalResult copyCallBack(OpBuilder &b, Value src, Value dst) {
+    b.create<memref::CopyOp>(b.getUnknownLoc(), src, dst);
+    return success();
+  }
+
   void runGenericPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
 
@@ -1537,6 +1545,7 @@ public:
         linalg::LinalgPromotionOptions l2PromoteOptions;
         if (l2_promote_operands.size())
           l2PromoteOptions.setOperandsToPromote(l2_promote_operands);
+        l2PromoteOptions.setCopyInOutFns(copyCallBack, copyCallBack);
         stageL2Patterns.insert<PromoteLinalgOpPattern>(
             ctx, l2PromoteOptions,
             LinalgTransformationFilter(StringAttr::get(ctx, "L2"),
@@ -1624,6 +1633,7 @@ public:
       linalg::LinalgPromotionOptions l1PromoteOptions;
       if (l1_promote_operands.size())
         l1PromoteOptions.setOperandsToPromote(l1_promote_operands);
+      l1PromoteOptions.setCopyInOutFns(copyCallBack, copyCallBack);
       stageL1Patterns.insert<PromoteLinalgOpPattern>(
           ctx, l1PromoteOptions,
           LinalgTransformationFilter(needL1Tiling ? StringAttr::get(ctx, "L1")
@@ -1728,6 +1738,7 @@ public:
         linalg::LinalgPromotionOptions l2PromoteOptions;
         if (l2_promote_operands.size())
           l2PromoteOptions.setOperandsToPromote(l2_promote_operands);
+        l2PromoteOptions.setCopyInOutFns(copyCallBack, copyCallBack);
         stageL2Patterns.insert<PromoteLinalgOpPattern>(
             ctx, l2PromoteOptions,
             LinalgTransformationFilter(StringAttr::get(ctx, "L2"),
@@ -1755,6 +1766,7 @@ public:
       linalg::LinalgPromotionOptions l1PromoteOptions;
       if (l1_promote_operands.size())
         l1PromoteOptions.setOperandsToPromote(l1_promote_operands);
+      l1PromoteOptions.setCopyInOutFns(copyCallBack, copyCallBack);
       stageL1Patterns.insert<PromoteLinalgOpPattern>(
           ctx, l1PromoteOptions,
           LinalgTransformationFilter(StringAttr::get(ctx, "L1"),
@@ -2207,6 +2219,13 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
   if (getAlignment().has_value())
     promotionOptions = promotionOptions.setAlignment(*getAlignment());
 
+  auto copyCallBack = [](OpBuilder &b, Value src,
+                                   Value dst) -> LogicalResult {
+    b.create<memref::CopyOp>(b.getUnknownLoc(), src, dst);
+    return success();
+  };
+  promotionOptions.setCopyInOutFns(copyCallBack, copyCallBack);
+
   auto memorySpace = xilinx::air::MemorySpace::L1;
   if (getMemorySpace() == "L1")
     memorySpace = xilinx::air::MemorySpace::L1;
@@ -2365,7 +2384,7 @@ static Operation *tileAndFuseFirstExtractUse(RewriterBase &rewriter,
   }
 
   linalg::LinalgOp producerLinalgOp = cast<linalg::LinalgOp>(producerOp);
-  auto users = producerLinalgOp.getDpsInitOperands()[0]->get().getUsers();
+  auto users = producerLinalgOp.getDpsInits()[0].getUsers();
   auto it = llvm::find_if(users, [&](Operation *user) {
     auto sliceOp = dyn_cast<memref::SubViewOp>(user);
     return sliceOp && containingOp->isProperAncestor(sliceOp);
@@ -2437,7 +2456,7 @@ DiagnosedSilenceableFailure transform::FuseIntoContainingMemrefOp::apply(
            << producerLinalgOp.getNumDpsInits() << ")";
   }
 
-  auto initOperand = producerLinalgOp.getDpsInitOperands()[0]->get();
+  auto initOperand = producerLinalgOp.getDpsInits()[0];
   // The containing op may be a user of producerOp: use isAncestor.
   int64_t numUsesInContainingOp =
       llvm::count_if(initOperand.getUsers(), [&](Operation *op) {

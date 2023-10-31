@@ -142,7 +142,7 @@ AIE::ExternalBufferOp air::allocateExternalBufferOp(MemRefType memrefTy,
   return bufferOp;
 }
 
-std::vector<unsigned> air::convertToStdVec(SmallVector<int64_t, 4> vec) {
+std::vector<unsigned> air::convertToStdVec(SmallVector<int64_t, 6> vec) {
   return {vec.begin(), vec.end()};
 }
 

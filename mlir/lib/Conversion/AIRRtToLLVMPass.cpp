@@ -569,7 +569,7 @@ LogicalResult lowerDmaMemcpy(Operation *op, PatternRewriter &rewriter,
     auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, one, 4);
     operands.push_back(signal);
   } else {
-    auto nullV = rewriter.create<LLVM::NullOp>(loc, signalTy).getResult();
+    auto nullV = rewriter.create<LLVM::ZeroOp>(loc, signalTy).getResult();
     operands.push_back(nullV);
   }
 
@@ -621,7 +621,7 @@ LogicalResult lowerDmaNdMemcpy(Operation *op, PatternRewriter &rewriter,
     auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, one, 4);
     operands.push_back(signal);
   } else {
-    auto nullV = rewriter.create<LLVM::NullOp>(loc, signalTy).getResult();
+    auto nullV = rewriter.create<LLVM::ZeroOp>(loc, signalTy).getResult();
     operands.push_back(nullV);
   }
 
@@ -684,7 +684,7 @@ LogicalResult lowerNdMemcpy(Operation *op, PatternRewriter &rewriter,
     auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, one, 4);
     operands.push_back(signal);
   } else {
-    auto nullV = rewriter.create<LLVM::NullOp>(loc, signalTy).getResult();
+    auto nullV = rewriter.create<LLVM::ZeroOp>(loc, signalTy).getResult();
     operands.push_back(nullV);
   }
 

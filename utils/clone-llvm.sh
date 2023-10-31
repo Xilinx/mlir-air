@@ -14,8 +14,8 @@
 #
 ##===----------------------------------------------------------------------===##
 
-export commithash=d13da154a7c7eff77df8686b2de1cfdfa7cc7029
-branch=air-2022.12
+export commithash=ec456ba9ca0a097da63daafbb031cb2024f5513a
+branch=air
 
 git clone --depth 1 https://github.com/llvm/llvm-project.git llvm
 pushd llvm

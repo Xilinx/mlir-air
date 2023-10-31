@@ -107,7 +107,7 @@ LogicalResult air::normalizeLoop(affine::AffineForOp afo) {
   auto ctx = afo.getContext();
   auto loc = afo.getLoc();
 
-  auto step_expr = getAffineConstantExpr(afo.getStep(), ctx);
+  auto step_expr = getAffineConstantExpr(afo.getStepAsInt(), ctx);
 
   auto ub_expr = ubMap.getResult(0);
   auto lb_expr = lbMap.getResult(0);

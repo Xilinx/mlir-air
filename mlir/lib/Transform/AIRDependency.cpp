@@ -261,8 +261,7 @@ public:
 
         // If the sink op is linalg op
         if (auto sink_op_linalgop = dyn_cast<linalg::LinalgOp>(sink_op)) {
-          for (auto linalg_ins : sink_op_linalgop.getDpsInputOperands()) {
-            auto ins_value = linalg_ins->get();
+          for (auto ins_value : sink_op_linalgop.getDpsInputs()) {
             if (ins_value.getType().isa<MemRefType>()) {
               unsigned memRefRank =
                   ins_value.getType().cast<MemRefType>().getRank();
@@ -272,8 +271,7 @@ public:
               sink_op_scalar_ins.push_back(ins_value);
             }
           }
-          for (auto linalg_outs : sink_op_linalgop.getDpsInitOperands()) {
-            auto outs_value = linalg_outs->get();
+          for (auto outs_value : sink_op_linalgop.getDpsInits()) {
             if (outs_value.getType().isa<MemRefType>()) {
               unsigned memRefRank =
                   outs_value.getType().cast<MemRefType>().getRank();

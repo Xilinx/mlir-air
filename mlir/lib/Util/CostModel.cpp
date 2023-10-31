@@ -100,7 +100,8 @@ CostModel::getLinalgOpCounts(OpCountMap &map, linalg::LinalgOp op) {
       reads++;
     footprint += getTensorVolume(oper->get().getType());
   }
-  for (auto &oper : op.getDpsInitOperands()) {
+  for (int i = 0; i < op.getNumDpsInits(); i++) {
+    auto oper = op.getDpsInitOperand(i);
     if (op.payloadUsesValueFromOperand(oper))
       reads++;
     writes++;

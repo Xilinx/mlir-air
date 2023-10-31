@@ -1400,10 +1400,16 @@ public:
 
 } // namespace
 
-std::unique_ptr<mlir::Pass> xilinx::air::createAIRLoweringPass() {
+namespace xilinx {
+namespace air {
+
+std::unique_ptr<mlir::Pass> createAIRLoweringPass() {
   return std::make_unique<AIRLoweringPass>();
 }
 
-std::unique_ptr<mlir::Pass> xilinx::air::createAIRPipelineToAffinePass() {
+std::unique_ptr<mlir::Pass> createAIRPipelineToAffinePass() {
   return std::make_unique<AIRPipelineToAffinePass>();
 }
+
+} // namespace air
+} // namespace xilinx
