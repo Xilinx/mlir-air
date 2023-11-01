@@ -1980,6 +1980,39 @@ static void getHerdNames(ModuleOp module) {
   }
 }
 
+static void getSegmentNames(ModuleOp module) {
+  std::vector<std::string> seg_syms;
+  for (auto f : module.getOps<func::FuncOp>()) {
+    // record existing symbol names
+    f.walk([&](air::SegmentOp op) {
+      if (auto attr =
+              op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+        std::string name = attr.getValue().str();
+        assert((std::find(seg_syms.begin(), seg_syms.end(), name) ==
+                seg_syms.end()) &&
+               "unexpected duplicate symbol");
+        seg_syms.push_back(name);
+      }
+    });
+    // generate missing symbol names
+    f.walk([&](air::SegmentOp op) {
+      if (!op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+        unsigned id = 0;
+        std::string name;
+        do {
+          std::stringstream ss;
+          ss << "segment_" << id++;
+          name = ss.str();
+        } while (std::find(seg_syms.begin(), seg_syms.end(), name) !=
+                 seg_syms.end());
+        seg_syms.push_back(name);
+        op->setAttr(SymbolTable::getSymbolAttrName(),
+                    StringAttr::get(op->getContext(), name));
+      }
+    });
+  }
+}
+
 struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
 
   ParallelToHerdPass() = default;
@@ -2122,6 +2155,7 @@ struct ParallelToLaunchPass
       assert(0);
     }
 
+    getSegmentNames(module);
     LLVM_DEBUG(llvm::outs() << "output\n");
     LLVM_DEBUG(module.print(llvm::outs()));
   }
@@ -2148,6 +2182,7 @@ struct InsertEmptyLaunchOverHerdPass
       else if (!op->getParentOfType<air::SegmentOp>())
         InsertEmptyLaunchOverHerd(op);
     });
+    getSegmentNames(module);
   }
 };
 
