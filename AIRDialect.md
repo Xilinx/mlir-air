@@ -56,7 +56,7 @@ interface is provided to synchronize between operations.
 
 ### `air.alloc` (xilinx::air::AllocOp)
 
-alloc operator
+_Alloc operator_
 
 
 Syntax:
@@ -73,7 +73,7 @@ Interfaces: air_AsyncOpInterface
 
 | Operand | Description |
 | :-----: | ----------- |
-| `async_dependencies` | async token type
+| `async_dependencies` | variadic of async token type
 
 #### Results:
 
@@ -82,52 +82,10 @@ Interfaces: air_AsyncOpInterface
 | `async_token` | async token type
 | `result` | memref of any type values
 
-### `air.channel.get` (xilinx::air::ChannelGetOp)
-
-Get for air channels.
-
-
-Syntax:
-
-```
-operation ::= `air.channel.get` custom<AsyncDependencies>(type($async_token), $async_dependencies)
-              $chan_name `[` ($indices^)? `]`
-              `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `)` attr-dict `:`
-              `(` type($dst) `)`
-```
-
-Experimental operation to represent copying from a channel to a memref.
-
-Traits: AttrSizedOperandSegments
-
-Interfaces: air_AsyncOpInterface, air_ChannelInterface, air_MemcpyInterface
-
-#### Attributes:
-
-| Attribute | MLIR Type | Description |
-| :-------: | :-------: | ----------- |
-| `chan_name` | ::mlir::FlatSymbolRefAttr | flat symbol reference attribute
-
-#### Operands:
-
-| Operand | Description |
-| :-----: | ----------- |
-| `async_dependencies` | async token type
-| `indices` | index
-| `dst` | memref of any type values
-| `dst_offsets` | index
-| `dst_sizes` | index
-| `dst_strides` | index
-
-#### Results:
-
-| Result | Description |
-| :----: | ----------- |
-| `async_token` | async token type
 
 ### `air.channel` (xilinx::air::ChannelOp)
 
-Channel for data movement.
+_Channel for data movement._
 
 
 Syntax:
@@ -151,14 +109,61 @@ Interfaces: Symbol
 
 #### Attributes:
 
-| Attribute | MLIR Type | Description |
-| :-------: | :-------: | ----------- |
-| `sym_name` | ::mlir::StringAttr | string attribute
-| `size` | ::mlir::ArrayAttr | 64-bit integer array attribute
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>sym_name</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
+<tr><td><code>size</code></td><td>::mlir::ArrayAttr</td><td>64-bit integer array attribute</td></tr>
+</table>
+
+
+### `air.channel.get` (xilinx::air::ChannelGetOp)
+
+_Get for air channels._
+
+
+Syntax:
+
+```
+operation ::= `air.channel.get` custom<AsyncDependencies>(type($async_token), $async_dependencies)
+              $chan_name `[` ($indices^)? `]`
+              `(` $dst `[` ($dst_offsets^)? `]``[` ($dst_sizes^)? `]``[` ($dst_strides^)? `]` `)` attr-dict `:`
+              `(` type($dst) `)`
+```
+
+Experimental operation to represent copying from a channel to a memref.
+
+Traits: AttrSizedOperandSegments
+
+Interfaces: air_AsyncOpInterface, air_ChannelInterface, air_MemcpyInterface
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>chan_name</code></td><td>::mlir::FlatSymbolRefAttr</td><td>flat symbol reference attribute</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `async_dependencies` | variadic of async token type
+| `indices` | variadic of index
+| `dst` | memref of any type values
+| `dst_offsets` | variadic of index
+| `dst_sizes` | variadic of index
+| `dst_strides` | variadic of index
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `async_token` | async token type
+
 
 ### `air.channel.put` (xilinx::air::ChannelPutOp)
 
-Push for air channels.
+_Push for air channels._
 
 
 Syntax:
@@ -178,20 +183,21 @@ Interfaces: air_AsyncOpInterface, air_ChannelInterface, air_MemcpyInterface
 
 #### Attributes:
 
-| Attribute | MLIR Type | Description |
-| :-------: | :-------: | ----------- |
-| `chan_name` | ::mlir::FlatSymbolRefAttr | flat symbol reference attribute
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>chan_name</code></td><td>::mlir::FlatSymbolRefAttr</td><td>flat symbol reference attribute</td></tr>
+</table>
 
 #### Operands:
 
 | Operand | Description |
 | :-----: | ----------- |
-| `async_dependencies` | async token type
-| `indices` | index
+| `async_dependencies` | variadic of async token type
+| `indices` | variadic of index
 | `src` | memref of any type values
-| `src_offsets` | index
-| `src_sizes` | index
-| `src_strides` | index
+| `src_offsets` | variadic of index
+| `src_sizes` | variadic of index
+| `src_strides` | variadic of index
 
 #### Results:
 
@@ -199,9 +205,10 @@ Interfaces: air_AsyncOpInterface, air_ChannelInterface, air_MemcpyInterface
 | :----: | ----------- |
 | `async_token` | async token type
 
+
 ### `air.custom` (xilinx::air::CustomOp)
 
-A handle to a user-customized op
+_A handle to a user-customized op_
 
 A placeholder operation for a user-customized op. With user-specified 
 latency value, AIR Runner is able to simulate the system-level
@@ -213,16 +220,17 @@ Interfaces: air_AsyncOpInterface
 
 #### Attributes:
 
-| Attribute | MLIR Type | Description |
-| :-------: | :-------: | ----------- |
-| `symbol` | ::mlir::SymbolRefAttr | symbol reference attribute
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>symbol</code></td><td>::mlir::SymbolRefAttr</td><td>symbol reference attribute</td></tr>
+</table>
 
 #### Operands:
 
 | Operand | Description |
 | :-----: | ----------- |
-| `async_dependencies` | async token type
-| `custom_operands` | any type
+| `async_dependencies` | variadic of async token type
+| `custom_operands` | variadic of any type
 
 #### Results:
 
@@ -230,9 +238,10 @@ Interfaces: air_AsyncOpInterface
 | :----: | ----------- |
 | `async_token` | async token type
 
+
 ### `air.dealloc` (xilinx::air::DeallocOp)
 
-dealloc operator
+_Dealloc operator_
 
 
 Syntax:
@@ -249,7 +258,7 @@ Interfaces: air_AsyncOpInterface
 
 | Operand | Description |
 | :-----: | ----------- |
-| `async_dependencies` | async token type
+| `async_dependencies` | variadic of async token type
 | `memref` | memref of any type values
 
 #### Results:
@@ -258,9 +267,10 @@ Interfaces: air_AsyncOpInterface
 | :----: | ----------- |
 | `async_token` | async token type
 
+
 ### `air.dma_memcpy_nd` (xilinx::air::DmaMemcpyNdOp)
 
-dma operator
+_Dma operator_
 
 
 Syntax:
@@ -282,15 +292,15 @@ Interfaces: air_AsyncOpInterface, air_MemcpyInterface
 
 | Operand | Description |
 | :-----: | ----------- |
-| `async_dependencies` | async token type
+| `async_dependencies` | variadic of async token type
 | `dst` | memref of any type values
-| `dst_offsets` | index
-| `dst_sizes` | index
-| `dst_strides` | index
+| `dst_offsets` | variadic of index
+| `dst_sizes` | variadic of index
+| `dst_strides` | variadic of index
 | `src` | memref of any type values
-| `src_offsets` | index
-| `src_sizes` | index
-| `src_strides` | index
+| `src_offsets` | variadic of index
+| `src_sizes` | variadic of index
+| `src_strides` | variadic of index
 
 #### Results:
 
@@ -298,9 +308,10 @@ Interfaces: air_AsyncOpInterface, air_MemcpyInterface
 | :----: | ----------- |
 | `async_token` | async token type
 
+
 ### `air.execute` (xilinx::air::ExecuteOp)
 
-Asynchronous code region
+_Asynchronous code region_
 
 
 Syntax:
@@ -313,7 +324,7 @@ operation ::= `air.execute` (` ``[` $async_dependencies^ `]`)?
 Defines a code region to be dispatched asynchronously at runtime. All operations in
 the region must be executed sequentially.
 
-Traits: SingleBlockImplicitTerminator<ExecuteTerminatorOp>
+Traits: SingleBlock, SingleBlockImplicitTerminator<ExecuteTerminatorOp>
 
 Interfaces: air_AsyncOpInterface
 
@@ -321,18 +332,19 @@ Interfaces: air_AsyncOpInterface
 
 | Operand | Description |
 | :-----: | ----------- |
-| `async_dependencies` | async token type
+| `async_dependencies` | variadic of async token type
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
 | `async_token` | async token type
-| `results` | any type
+| `results` | variadic of any type
+
 
 ### `air.execute_terminator` (xilinx::air::ExecuteTerminatorOp)
 
-Terminator for air execute.
+_Terminator for air execute._
 
 
 Syntax:
@@ -348,7 +360,7 @@ match the signature of the `air.execute` that contains the operation.
 
 Traits: AlwaysSpeculatableImplTrait, HasParent<ExecuteOp>, ReturnLike, Terminator
 
-Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
+Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface), RegionBranchTerminatorOpInterface
 
 Effects: MemoryEffects::Effect{}
 
@@ -356,31 +368,33 @@ Effects: MemoryEffects::Effect{}
 
 | Operand | Description |
 | :-----: | ----------- |
-| `results` | any type
+| `results` | variadic of any type
+
 
 ### `air.herd` (xilinx::air::HerdOp)
 
-Herd
+_Herd_
 
 Define and run a 1D or 2D array of tiles as an AIR Herd.
 
-Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlockImplicitTerminator<HerdTerminatorOp>
+Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlock, SingleBlockImplicitTerminator<HerdTerminatorOp>
 
 Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 
 #### Attributes:
 
-| Attribute | MLIR Type | Description |
-| :-------: | :-------: | ----------- |
-| `symbol` | ::mlir::SymbolRefAttr | symbol reference attribute
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>sym_name</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
+</table>
 
 #### Operands:
 
 | Operand | Description |
 | :-----: | ----------- |
-| `async_dependencies` | async token type
-| `sizes` | index
-| `herd_operands` | any type
+| `async_dependencies` | variadic of async token type
+| `sizes` | variadic of index
+| `herd_operands` | variadic of any type
 
 #### Results:
 
@@ -388,24 +402,10 @@ Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 | :----: | ----------- |
 | `async_token` | async token type
 
-### `air.pipeline` (xilinx::air::HerdPipelineOp)
-
-Define a pipeline
-
-
-Syntax:
-
-```
-operation ::= `air.pipeline` attr-dict-with-keyword $body
-```
-
-Define a pipeline within an AIR Herd.
-
-Traits: AffineScope, HasParent<HerdOp>
 
 ### `air.herd_terminator` (xilinx::air::HerdTerminatorOp)
 
-Terminator for air herd regions.
+_Terminator for air herd regions._
 
 
 Syntax:
@@ -424,29 +424,31 @@ Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
 
 Effects: MemoryEffects::Effect{}
 
+
 ### `air.launch` (xilinx::air::LaunchOp)
 
-Launch
+_Launch_
 
 Launch
 
-Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlockImplicitTerminator<LaunchTerminatorOp>
+Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlock, SingleBlockImplicitTerminator<LaunchTerminatorOp>
 
 Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 
 #### Attributes:
 
-| Attribute | MLIR Type | Description |
-| :-------: | :-------: | ----------- |
-| `symbol` | ::mlir::SymbolRefAttr | symbol reference attribute
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>sym_name</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
+</table>
 
 #### Operands:
 
 | Operand | Description |
 | :-----: | ----------- |
-| `async_dependencies` | async token type
-| `sizes` | index
-| `launch_operands` | any type
+| `async_dependencies` | variadic of async token type
+| `sizes` | variadic of index
+| `launch_operands` | variadic of any type
 
 #### Results:
 
@@ -454,9 +456,10 @@ Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 | :----: | ----------- |
 | `async_token` | async token type
 
+
 ### `air.launch_terminator` (xilinx::air::LaunchTerminatorOp)
 
-Terminator for `air.launch`.
+_Terminator for `air.launch`._
 
 
 Syntax:
@@ -475,9 +478,26 @@ Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
 
 Effects: MemoryEffects::Effect{}
 
+
+### `air.pipeline` (xilinx::air::HerdPipelineOp)
+
+_Define a pipeline_
+
+
+Syntax:
+
+```
+operation ::= `air.pipeline` attr-dict-with-keyword $body
+```
+
+Define a pipeline within an AIR Herd.
+
+Traits: AffineScope, HasParent<HerdOp>
+
+
 ### `air.pipeline.get` (xilinx::air::PipelineGetOp)
 
-Get for air pipeline stages.
+_Get for air pipeline stages._
 
 
 Syntax:
@@ -500,11 +520,12 @@ Currently used internally by air-to-aie pass during pipeline lowering.
 
 | Result | Description |
 | :----: | ----------- |
-| `results` | any type
+| `results` | variadic of any type
+
 
 ### `air.pipeline.put` (xilinx::air::PipelinePutOp)
 
-Put for air pipeline stages.
+_Put for air pipeline stages._
 
 
 Syntax:
@@ -522,11 +543,12 @@ Currently used internally by air-to-aie pass during pipeline lowering.
 | :-----: | ----------- |
 | `dst0` | any type
 | `dst1` | any type
-| `opers` | any type
+| `opers` | variadic of any type
+
 
 ### `air.pipeline.stage` (xilinx::air::PipelineStageOp)
 
-Pipeline stage
+_Pipeline stage_
 
 Pipeline stage.
 
@@ -536,17 +558,18 @@ Traits: HasParent<HerdPipelineOp>
 
 | Operand | Description |
 | :-----: | ----------- |
-| `opers` | any type
+| `opers` | variadic of any type
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
-| `results` | any type
+| `results` | variadic of any type
+
 
 ### `air.pipeline.terminator` (xilinx::air::PipelineTerminatorOp)
 
-Terminator for air pipeline regions.
+_Terminator for air pipeline regions._
 
 
 Syntax:
@@ -568,11 +591,12 @@ Effects: MemoryEffects::Effect{}
 
 | Operand | Description |
 | :-----: | ----------- |
-| `opers` | any type
+| `opers` | variadic of any type
+
 
 ### `air.pipeline.yield` (xilinx::air::PipelineYieldOp)
 
-Yield for air pipeline stages.
+_Yield for air pipeline stages._
 
 
 Syntax:
@@ -588,7 +612,7 @@ match the signature of the `air.pipeline` that contains the operation.
 
 Traits: AlwaysSpeculatableImplTrait, HasParent<PipelineStageOp>, ReturnLike, Terminator
 
-Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
+Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface), RegionBranchTerminatorOpInterface
 
 Effects: MemoryEffects::Effect{}
 
@@ -596,31 +620,33 @@ Effects: MemoryEffects::Effect{}
 
 | Operand | Description |
 | :-----: | ----------- |
-| `opers` | any type
+| `opers` | variadic of any type
+
 
 ### `air.segment` (xilinx::air::SegmentOp)
 
-Segment
+_Segment_
 
 Segment
 
-Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlockImplicitTerminator<SegmentTerminatorOp>
+Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlock, SingleBlockImplicitTerminator<SegmentTerminatorOp>
 
 Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 
 #### Attributes:
 
-| Attribute | MLIR Type | Description |
-| :-------: | :-------: | ----------- |
-| `symbol` | ::mlir::SymbolRefAttr | symbol reference attribute
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>sym_name</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
+</table>
 
 #### Operands:
 
 | Operand | Description |
 | :-----: | ----------- |
-| `async_dependencies` | async token type
-| `sizes` | index
-| `segment_operands` | any type
+| `async_dependencies` | variadic of async token type
+| `sizes` | variadic of index
+| `segment_operands` | variadic of any type
 
 #### Results:
 
@@ -628,9 +654,10 @@ Interfaces: air_AsyncOpInterface, air_HierarchyInterface
 | :----: | ----------- |
 | `async_token` | async token type
 
+
 ### `air.segment_terminator` (xilinx::air::SegmentTerminatorOp)
 
-Terminator for air segment regions.
+_Terminator for air segment regions._
 
 
 Syntax:
@@ -649,9 +676,10 @@ Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
 
 Effects: MemoryEffects::Effect{}
 
+
 ### `air.wait_all` (xilinx::air::WaitAllOp)
 
-wait for all operator
+_Wait for all operator_
 
 
 Syntax:
@@ -668,13 +696,14 @@ Interfaces: air_AsyncOpInterface
 
 | Operand | Description |
 | :-----: | ----------- |
-| `async_dependencies` | async token type
+| `async_dependencies` | variadic of async token type
 
 #### Results:
 
 | Result | Description |
 | :----: | ----------- |
 | `async_token` | async token type
+
 
 ## Type constraint definition
 
