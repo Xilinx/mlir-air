@@ -1016,6 +1016,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
           producerTile = producerCore.getTileOp();
         } else if (src_space == (int)air::MemorySpace::L2) {
           return failure();
+          producerTile = memTileAlloc.getMemTile(device, src_space,
+                                                (int)air::MemorySpace::L1);
         } else {
           return put.emitOpError("unsupported memory space");
         }
