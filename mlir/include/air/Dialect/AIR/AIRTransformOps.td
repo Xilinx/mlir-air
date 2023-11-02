@@ -47,6 +47,7 @@ def SegmentToAIEOp : Op<Transform_Dialect, "air.segment_to_aie",
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::transform::TransformRewriter &rewriter,
         ::xilinx::air::SegmentOp target,
         ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
@@ -73,6 +74,7 @@ def ParToHerdOp : Op<Transform_Dialect, "air.par_to_herd",
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::transform::TransformRewriter &rewriter,
         ::mlir::scf::ParallelOp target,
         ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
@@ -93,6 +95,7 @@ def ParToLaunchOp : Op<Transform_Dialect, "air.par_to_launch",
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::transform::TransformRewriter &rewriter,
         ::mlir::scf::ParallelOp target,
         ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
@@ -113,6 +116,7 @@ def CopyToDmaOp : Op<Transform_Dialect, "air.copy_to_dma",
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::transform::TransformRewriter &rewriter,
         ::mlir::memref::CopyOp target,
         ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
@@ -139,6 +143,7 @@ def PipelineReduceOp : Op<Transform_Dialect, "air.pipeline_reduce",
 
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::transform::TransformRewriter &rewriter,
         ::mlir::linalg::LinalgOp target,
         ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
@@ -166,7 +171,7 @@ def LinalgPromoteOp : Op<Transform_Dialect, "air.linalg_promote",
 
     example:
     ```mlir
-    %0 = transform.structured.match ops{["linalg.matmul"]} in %code
+    %0 = transform.structured.match ops{["linalg.matmul"]} in %code  : (!pdl.operation) -> !pdl.operation
     %1 = transform.air.linalg_promote %0 {memory_space="L2", operands_to_promote=[0]}
     ```
 

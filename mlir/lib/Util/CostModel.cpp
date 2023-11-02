@@ -63,8 +63,8 @@ CostModel::getLinalgOpCounts(OpCountMap &map, linalg::LinalgOp op) {
     return;
 
   SmallVector<OpFoldResult> shapeSizes =
-      makeComposedFoldedMultiResultAffineApply(b, loc, shapeSizesToLoopsMap,
-                                               allShapeSizes);
+      affine::makeComposedFoldedMultiResultAffineApply(
+          b, loc, shapeSizesToLoopsMap, allShapeSizes);
   int64_t iters = 1;
   int64_t reads = 0;
   int64_t writes = 0;
@@ -100,7 +100,8 @@ CostModel::getLinalgOpCounts(OpCountMap &map, linalg::LinalgOp op) {
       reads++;
     footprint += getTensorVolume(oper->get().getType());
   }
-  for (auto &oper : op.getDpsInitOperands()) {
+  for (int i = 0; i < op.getNumDpsInits(); i++) {
+    auto oper = op.getDpsInitOperand(i);
     if (op.payloadUsesValueFromOperand(oper))
       reads++;
     writes++;

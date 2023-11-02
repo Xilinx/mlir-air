@@ -4,44 +4,49 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-try:
-  from ..mlir.ir import *
-except ImportError as e:
-  raise RuntimeError("Error loading imports from extension module") from e
+from ..ir import *
+from ._air_ops_gen import *
+from . import arith
+from ._ods_common import get_default_loc_context as _ods_get_default_loc_context
 
-class AirHierarchyOp:
-  def __init__(self, name=None, sizes=[1,1], results=[], async_deps=[], operands=[], attributes={}, loc=None, ip=None):
-    if name:
-      attributes["sym_name"] = StringAttr.get(str(name))
-    super().__init__(self.build_generic(
-      results=results,
-      operands=[async_deps,sizes,operands],
-      attributes=attributes,
-      loc=loc,
-      ip=ip))
+class LaunchOp(LaunchOp):
+  """Specialization for LaunchOp class."""
+  def __init__(self, name=None, sizes=[], async_token=None, async_dependencies=[], operands=[], attributes={}, loc=None, ip=None):
+    iTy = IndexType.get()
+    sizes = [arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) for i in sizes]
+    if name is not None:
+      print(name)
+      _ods_context = _ods_get_default_loc_context(loc)
+    super().__init__(async_token=async_token,
+                     async_dependencies=async_dependencies,
+                     sizes=sizes, launch_operands=operands,
+                     sym_name=name)
     operand_types = [s.type for s in sizes]*2 + \
                     [o.type for o in operands]
     self.regions[0].blocks.append(*operand_types)
 
-  @property
-  def body(self):
-    return self.regions[0].blocks[0]
-
-  @property
-  def name(self) -> StringAttr:
-    return StringAttr(self.attributes["sym_name"])
-
-class LaunchOp(AirHierarchyOp):
-  """Specialization for LaunchOp class."""
-  def __init__(self, name=None, sizes=[], results=[], async_deps=[], operands=[], attributes={}, loc=None, ip=None):
-    super().__init__(name, sizes, results, async_deps, operands, attributes, loc, ip)
-
-class SegmentOp(AirHierarchyOp):
+class SegmentOp(SegmentOp):
   """Specialization for SegmentOp class."""
-  def __init__(self, name=None, sizes=[], results=[], async_deps=[], operands=[], attributes={}, loc=None, ip=None):
-    super().__init__(name, sizes, results, async_deps, operands, attributes, loc, ip)
+  def __init__(self, name=None, sizes=[], async_token=None, async_dependencies=[], operands=[], attributes={}, loc=None, ip=None):
+    iTy = IndexType.get()
+    sizes = [arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) for i in sizes]
+    super().__init__(async_token=async_token,
+                     async_dependencies=async_dependencies,
+                     sizes=sizes, segment_operands=operands,
+                     sym_name=name)
+    operand_types = [s.type for s in sizes]*2 + \
+                    [o.type for o in operands]
+    self.regions[0].blocks.append(*operand_types)
 
-class HerdOp(AirHierarchyOp):
+class HerdOp(HerdOp):
   """Specialization for HerdOp class."""
-  def __init__(self, name=None, sizes=[1,1], results=[], async_deps=[], operands=[], attributes={}, loc=None, ip=None):
-    super().__init__(name, sizes, results, async_deps, operands, attributes, loc, ip)
+  def __init__(self, name=None, sizes=[1,1], async_token=None, async_dependencies=[], operands=[], attributes={}, loc=None, ip=None):
+    iTy = IndexType.get()
+    sizes = [arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) for i in sizes]
+    super().__init__(async_token=async_token,
+                     async_dependencies=async_dependencies,
+                     sizes=sizes, herd_operands=operands,
+                     sym_name=name)
+    operand_types = [s.type for s in sizes]*2 + \
+                    [o.type for o in operands]
+    self.regions[0].blocks.append(*operand_types)

@@ -6,11 +6,10 @@
 
 # RUN: %PYTHON %s | FileCheck %s
 
-import air
-from air.mlir.ir import *
+from air.ir import *
 from air.dialects import air as airdialect
-from air.mlir.dialects import arith
-from air.mlir.dialects import func
+from air.dialects import arith
+from air.dialects import func
 
 def constructAndPrintInFunc(f):
   print("\nTEST:", f.__name__)
@@ -35,7 +34,7 @@ def constructAndPrintInFunc(f):
 @constructAndPrintInFunc
 def launchOp():
   l = airdialect.LaunchOp("pyLaunch")
-  with InsertionPoint(l.body):
+  with InsertionPoint(l.body.blocks[0]):
     idx_ty = IndexType.get()
     arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 1))
     airdialect.LaunchTerminatorOp()
@@ -46,8 +45,8 @@ def launchOp():
 # CHECK:   air.segment_terminator
 @constructAndPrintInFunc
 def segmentOp():
-  P = airdialect.SegmentOp("pySegment")
-  with InsertionPoint(P.body):
+  s = airdialect.SegmentOp("pySegment")
+  with InsertionPoint(s.body.blocks[0]):
     idx_ty = IndexType.get()
     arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 1))
     airdialect.SegmentTerminatorOp()
@@ -60,12 +59,10 @@ def segmentOp():
 # CHECK:   air.herd_terminator
 @constructAndPrintInFunc
 def herdOp():
-  idx_ty = IndexType.get()
-  size_x = arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 2))
-  size_y = arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 2))
-  sizes = [size_x.result, size_y.result]
-  H = airdialect.HerdOp("pyHerd", sizes, [])
-  with InsertionPoint(H.body):
+  H = airdialect.HerdOp("pyHerd", [2,2])
+  with InsertionPoint(H.body.blocks[0]):
+    idx_ty = IndexType.get()
+    idx_ty = IndexType.get()
     arith.ConstantOp(idx_ty, IntegerAttr.get(idx_ty, 1))
     airdialect.HerdTerminatorOp()
 

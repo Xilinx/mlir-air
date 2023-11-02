@@ -262,7 +262,7 @@ private:
       eraseAsyncDependencyFromAsyncOp(
           dyn_cast<air::AsyncOpInterface>(dma_async_op.getOperation()),
           for_op.getRegionIterArgs()[0]);
-      auto for_op_iter_operand = for_op.getIterOperands()[0];
+      auto for_op_iter_operand = for_op.getInitArgs()[0];
       dma_op->getResult(0).replaceAllUsesWith(for_op.getRegionIterArgs()[0]);
 
       replaceAllUsesInRegionWith(for_op_iter_operand, dma_op->getResult(0),
@@ -462,10 +462,10 @@ private:
     if (auto async_op = dyn_cast<air::AsyncOpInterface>(op)) {
       dep_list = async_op.getAsyncDependencies();
     } else if (auto async_for_op = dyn_cast<scf::ForOp>(op)) {
-      dep_list = async_for_op.getIterOperands();
+      dep_list = async_for_op.getInitArgs();
     } else if (auto async_parallel_op = dyn_cast<scf::ParallelOp>(op)) {
       dep_list = async_parallel_op.getInitVals();
-    } else if (auto affine_if_op = dyn_cast<mlir::AffineIfOp>(op)) {
+    } else if (auto affine_if_op = dyn_cast<affine::AffineIfOp>(op)) {
       auto &first_child_op_in_then_block =
           affine_if_op.getThenBlock()->getOperations().front();
       return getAsyncDependenciesFromOp(&first_child_op_in_then_block,
@@ -477,7 +477,7 @@ private:
 
   void setBoolAttrForAsyncOp(OpBuilder builder, Operation *op,
                              std::string attr) const {
-    if (auto aif = dyn_cast<mlir::AffineIfOp>(op)) {
+    if (auto aif = dyn_cast<affine::AffineIfOp>(op)) {
       aif.getThenBlock()->walk([&](Operation *child_op) {
         child_op->setAttr(attr, builder.getBoolAttr(true));
       });
@@ -551,7 +551,7 @@ struct HoistMemallocInForPattern : public OpRewritePattern<memref::AllocOp> {
     skipOverOpInDependencyGraph(rewriter, alloc_exec.getOperation(),
                                 for_op.getRegion());
 
-    for (auto ia : for_op.getIterOperands()) {
+    for (auto ia : for_op.getInitArgs()) {
       alloc_exec.addAsyncDependency(ia);
       for_op->replaceUsesOfWith(ia, alloc_exec.getAsyncToken());
     }
@@ -630,7 +630,7 @@ struct ConstructPingPongDependencyPattern
 
     // Find ping and pong allocs and deallocs
     SmallVector<Operation *> alloc_execs;
-    for (auto ia : for_op.getIterOperands()) {
+    for (auto ia : for_op.getInitArgs()) {
       pushToAllocExecsIfHoistedFromLoop(ia, alloc_execs);
     }
     if (!alloc_execs.size())
@@ -676,7 +676,7 @@ struct ConstructPingPongDependencyPattern
           } else if (isa<air::ExecuteOp>(candidate_op->getParentOp())) {
             push_back_if_unique<Operation *>(producer_ops,
                                              candidate_op->getParentOp());
-          } else if (isa<mlir::AffineIfOp>(candidate_op->getParentOp())) {
+          } else if (isa<affine::AffineIfOp>(candidate_op->getParentOp())) {
             push_back_if_unique<Operation *>(producer_ops, candidate_op);
           } else if (isa<air::AsyncOpInterface>(candidate_op)) {
             push_back_if_unique<Operation *>(producer_ops, candidate_op);
@@ -697,7 +697,7 @@ struct ConstructPingPongDependencyPattern
           } else if (isa<air::ExecuteOp>(candidate_op->getParentOp())) {
             push_back_if_unique<Operation *>(consumer_ops,
                                              candidate_op->getParentOp());
-          } else if (isa<mlir::AffineIfOp>(candidate_op->getParentOp())) {
+          } else if (isa<affine::AffineIfOp>(candidate_op->getParentOp())) {
             push_back_if_unique<Operation *>(consumer_ops, candidate_op);
           } else if (isa<air::AsyncOpInterface>(candidate_op)) {
             push_back_if_unique<Operation *>(consumer_ops, candidate_op);
@@ -853,9 +853,9 @@ private:
             op->getAttrOfType<IntegerAttr>("unrolled_iteration").getInt();
       }
       // If op is in region of an unrolled affine if
-      else if (isa<mlir::AffineIfOp>(op->getParentOp())) {
+      else if (isa<affine::AffineIfOp>(op->getParentOp())) {
         Operation *parent = op->getParentOp();
-        while (isa<mlir::AffineIfOp>(parent)) {
+        while (isa<affine::AffineIfOp>(parent)) {
           if (parent->hasAttr("unrolled_iteration")) {
             unroll_iter =
                 parent->getAttrOfType<IntegerAttr>("unrolled_iteration")
@@ -916,8 +916,8 @@ private:
   Value getTokenFromOutermostParentAffineIfOp(Operation *op) const {
     Value token = nullptr;
     Operation *parent = op->getParentOp();
-    if (isa<mlir::AffineIfOp>(parent)) {
-      while (isa<mlir::AffineIfOp>(parent)) {
+    if (isa<affine::AffineIfOp>(parent)) {
+      while (isa<affine::AffineIfOp>(parent)) {
         token = getAsyncTokenFromValues(parent->getResults());
         parent = parent->getParentOp();
       }
@@ -1107,7 +1107,7 @@ struct HoistOpsNotUsingPingPongPattern : public OpRewritePattern<scf::ForOp> {
         for_op->getAttrOfType<IntegerAttr>("unroll").getInt();
     if (unroll_factor != 2)
       return failure();
-    if (for_op.getIterOperands().size() != 1)
+    if (for_op.getInitArgs().size() != 1)
       return failure();
 
     // Check if any alloc.op in the scf.for loop is targetted for ping-pong
@@ -1148,7 +1148,7 @@ struct HoistOpsNotUsingPingPongPattern : public OpRewritePattern<scf::ForOp> {
     IRMapping remap;
     auto new_for_op = rewriter.create<scf::ForOp>(
         for_op.getLoc(), for_op.getLowerBound(), for_op.getUpperBound(),
-        for_op.getStep(), for_op.getIterOperands());
+        for_op.getStep(), for_op.getInitArgs());
     remap.map(for_op.getInductionVar(), new_for_op.getInductionVar());
     remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
               getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
@@ -1240,7 +1240,8 @@ public:
                                        int chanDim, int factor) {
     air::ChannelOp chan_op = dyn_cast<air::ChannelOp>(op);
     OpBuilder builder(op);
-    SmallVector<int64_t, 2> sizes = extractFromI64ArrayAttr(chan_op.getSize());
+    SmallVector<int64_t, 2> sizes =
+        extractFromIntegerArrayAttr<int64_t>(chan_op.getSize());
     if ((unsigned)chanDim >= sizes.size())
       return;
     if (sizes[chanDim] != 1) {

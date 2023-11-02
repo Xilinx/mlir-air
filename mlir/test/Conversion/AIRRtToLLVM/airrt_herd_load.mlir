@@ -7,14 +7,14 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -airrt-to-llvm | FileCheck %s
-// CHECK: %0 = llvm.mlir.addressof @__airrt_string_plot : !llvm.ptr<array<4 x i8>>
-// CHECK: %1 = llvm.bitcast %0 : !llvm.ptr<array<4 x i8>> to !llvm.ptr<i8>
+// CHECK: %0 = llvm.mlir.addressof @__airrt_string_plot : !llvm.ptr
+// CHECK: %1 = llvm.bitcast %0 : !llvm.ptr to !llvm.ptr<i8>
 // CHECK: %2 = call @__airrt_segment_load(%1) : (!llvm.ptr<i8>) -> i64
-// CHECK: %3 = llvm.mlir.addressof @__airrt_string_elk : !llvm.ptr<array<3 x i8>>
-// CHECK: %4 = llvm.bitcast %3 : !llvm.ptr<array<3 x i8>> to !llvm.ptr<i8>
+// CHECK: %3 = llvm.mlir.addressof @__airrt_string_elk : !llvm.ptr
+// CHECK: %4 = llvm.bitcast %3 : !llvm.ptr to !llvm.ptr<i8>
 // CHECK: %5 = call @__airrt_herd_load(%4) : (!llvm.ptr<i8>) -> i64
-// CHECK: %6 = llvm.mlir.addressof @__airrt_string_deer : !llvm.ptr<array<4 x i8>>
-// CHECK: %7 = llvm.bitcast %6 : !llvm.ptr<array<4 x i8>> to !llvm.ptr<i8>
+// CHECK: %6 = llvm.mlir.addressof @__airrt_string_deer : !llvm.ptr
+// CHECK: %7 = llvm.bitcast %6 : !llvm.ptr to !llvm.ptr<i8>
 // CHECK: %8 = call @__airrt_herd_load(%7) : (!llvm.ptr<i8>) -> i64
 module {
     airrt.module_metadata {

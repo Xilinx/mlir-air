@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/Pass/Pass.h"
@@ -456,7 +457,7 @@ bool isInSet(IntegerSet is) {
   return true;
 }
 
-bool isInSet(int64_t x, int64_t y, AffineIfOp aif) {
+bool isInSet(int64_t x, int64_t y, affine::AffineIfOp aif) {
   auto is = aif.getIntegerSet();
   if (is.getConstraints().size() != 2)
     return false;
@@ -470,12 +471,12 @@ bool isInSet(int64_t x, int64_t y, AffineIfOp aif) {
   return isInSet(newIs);
 }
 
-struct SpecializeAffineIfPattern : public OpRewritePattern<AffineIfOp> {
-  using OpRewritePattern<AffineIfOp>::OpRewritePattern;
+struct SpecializeAffineIfPattern : public OpRewritePattern<affine::AffineIfOp> {
+  using OpRewritePattern<affine::AffineIfOp>::OpRewritePattern;
 
   SpecializeAffineIfPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
 
-  LogicalResult matchAndRewrite(AffineIfOp op,
+  LogicalResult matchAndRewrite(affine::AffineIfOp op,
                                 PatternRewriter &rewriter) const override {
 
     auto core = op->getParentOfType<AIE::CoreOp>();
@@ -577,16 +578,15 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
   LogicalResult matchAndRewrite(scf::ForOp fop,
                                 PatternRewriter &rewriter) const override {
 
-    if (!fop.getNumIterOperands())
+    if (!fop.getInitArgs().size())
       return failure();
 
     SmallVector<Value, 4> iter_args;
     BitVector iter_args_idx(fop.getNumOperands());
 
     // erase air.event from the iter args
-    for (OpOperand &oper : fop.getIterOpOperands()) {
-      Value v = oper.get();
-      BlockArgument block_arg = fop.getRegionIterArgForOpOperand(oper);
+    for (auto block_arg : fop.getRegionIterArgs()) {
+      Value v = fop.getOpOperandForRegionIterArg(block_arg).get();
       if (v.getType().isa<xilinx::air::AsyncTokenType>()) {
         block_arg.replaceAllUsesWith(v);
         iter_args_idx.set(block_arg.getArgNumber());
@@ -596,7 +596,7 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
     }
 
     // if none of the iter args were air.async.token, return
-    if (iter_args.size() == fop.getNumIterOperands())
+    if (iter_args.size() == fop.getInitArgs().size())
       return failure();
 
     // make a new scf.for without air.async.token
@@ -1240,7 +1240,7 @@ struct SpecializeChannelBundlePattern
         getChannelGetOpThroughSymbol(channel, device);
 
     // Walk through each element in a channel bundle
-    auto bundle_size = extractFromI64ArrayAttr(channel.getSize());
+    auto bundle_size = extractFromIntegerArrayAttr<int64_t>(channel.getSize());
     auto bundle_size_stdvec = convertToStdVec(bundle_size);
     for (unsigned iter = 0; iter < (unsigned)channel.getBundleSize(); iter++) {
       rewriter.setInsertionPoint(channel);
@@ -1315,7 +1315,7 @@ private:
     return true;
   }
 
-  std::vector<unsigned> convertToStdVec(SmallVector<int64_t, 4> vec) const {
+  std::vector<unsigned> convertToStdVec(SmallVector<int64_t, 6> vec) const {
     std::vector<unsigned> output;
     for (auto v : vec) {
       output.push_back((unsigned)v);
@@ -1468,6 +1468,7 @@ public:
     registry.insert<xilinx::airrt::AIRRtDialect>();
     registry.insert<xilinx::AIE::AIEDialect>();
     registry.insert<LLVM::LLVMDialect>();
+    registry.insert<cf::ControlFlowDialect>();
   }
 
   AIE::FlowOp getFlowOp(AIE::DeviceOp aie_device, mlir::Value source,
@@ -2370,7 +2371,8 @@ public:
         // Copy over L2 and L3 memcpy ops into device op
         builder.setInsertionPointToStart(device.getBody());
         specializeChannelBundle(device);
-        renumberChannelOps(device.getBody(), chan_renumber_reverse_map);
+        renumberChannelOps(&device.getBodyRegion().front(),
+                           chan_renumber_reverse_map);
         lowerAIRMemcpyOp<air::ChannelInterface>(device, shimDmaAlloc, options);
       }
 

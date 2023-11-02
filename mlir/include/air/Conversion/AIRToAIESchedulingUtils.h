@@ -37,7 +37,7 @@ AIE::ExternalBufferOp allocateExternalBufferOp(MemRefType memrefTy,
                                                mlir::StringAttr attr = nullptr,
                                                int x = -1, int y = -1);
 
-std::vector<unsigned> convertToStdVec(SmallVector<int64_t, 4> vec);
+std::vector<unsigned> convertToStdVec(SmallVector<int64_t, 6> vec);
 
 bool areIdenticalVectors(std::vector<unsigned> &a, std::vector<unsigned> &b);
 

@@ -186,7 +186,7 @@ public:
         }
 
         // Create async execute region for affine.apply
-        else if (auto apply_op = dyn_cast<mlir::AffineApplyOp>(op))
+        else if (auto apply_op = dyn_cast<affine::AffineApplyOp>(op))
           createAsyncExecute(module_builder, op, "affine::apply", ExecuteOpID,
                              apply_op.getResult().getType());
 
@@ -261,8 +261,7 @@ public:
 
         // If the sink op is linalg op
         if (auto sink_op_linalgop = dyn_cast<linalg::LinalgOp>(sink_op)) {
-          for (auto linalg_ins : sink_op_linalgop.getDpsInputOperands()) {
-            auto ins_value = linalg_ins->get();
+          for (auto ins_value : sink_op_linalgop.getDpsInputs()) {
             if (ins_value.getType().isa<MemRefType>()) {
               unsigned memRefRank =
                   ins_value.getType().cast<MemRefType>().getRank();
@@ -272,8 +271,7 @@ public:
               sink_op_scalar_ins.push_back(ins_value);
             }
           }
-          for (auto linalg_outs : sink_op_linalgop.getDpsInitOperands()) {
-            auto outs_value = linalg_outs->get();
+          for (auto outs_value : sink_op_linalgop.getDpsInits()) {
             if (outs_value.getType().isa<MemRefType>()) {
               unsigned memRefRank =
                   outs_value.getType().cast<MemRefType>().getRank();
@@ -405,8 +403,9 @@ public:
           sink_op_scalar_outs.push_back(sink_op_arith.getResult());
         }
 
-        // If the sink op is mlir::AffineApplyOp
-        else if (auto sink_op_apply = dyn_cast<mlir::AffineApplyOp>(sink_op)) {
+        // If the sink op is affine::AffineApplyOp
+        else if (auto sink_op_apply =
+                     dyn_cast<affine::AffineApplyOp>(sink_op)) {
           for (auto applyop_operand : sink_op_apply.getMapOperands()) {
             sink_op_scalar_ins.push_back(applyop_operand);
           }
@@ -1186,8 +1185,9 @@ private:
       // Check if operand is returned from memref.subview
       if (auto subview =
               operand.memrefValue.getDefiningOp<memref::SubViewOp>()) {
-        partialMemref subview_tile = createPartialMemref(
-            subview.getSource(), subview.sizes().size(), subview.offsets());
+        partialMemref subview_tile =
+            createPartialMemref(subview.getSource(), subview.getSizes().size(),
+                                subview.getOffsets());
         SmallVector<partialMemref, 1> subview_operands = {subview_tile};
         traceDeps<T>(subview_operands, sink_air_op, dep_type);
       }

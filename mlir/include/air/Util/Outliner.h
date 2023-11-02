@@ -14,6 +14,8 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 
+using namespace mlir;
+
 namespace xilinx {
 namespace air {
 
@@ -24,7 +26,7 @@ public:
 
   mlir::func::CallOp outline(std::vector<mlir::Operation *> ops,
                              std::string fname = "acap_outline_fn");
-  mlir::func::CallOp outline(mlir::AffineForOp forOp,
+  mlir::func::CallOp outline(affine::AffineForOp forOp,
                              std::string fname = "acap_outline_fn");
 
 private:

@@ -3,9 +3,9 @@
 
 # RUN: %PYTHON %s | FileCheck %s
 
-from air.mlir.ir import *
-from air.mlir.dialects import transform
-from air.mlir.dialects import pdl
+from air.ir import *
+from air.dialects import transform
+from air.dialects import pdl
 from air.dialects import air as airdialect
 
 def run(f):
@@ -23,7 +23,7 @@ def run(f):
 # CHECK: transform.air.linalg_tile
 @run
 def testLinalgTile():
-  sequence = transform.SequenceOp(transform.FailurePropagationMode.PROPAGATE, [], pdl.OperationType.get())
+  sequence = transform.SequenceOp(transform.FailurePropagationMode.Propagate, [], pdl.OperationType.get())
   with InsertionPoint(sequence.body):
     airdialect.LinalgTileOp(sequence.bodyTarget, sizes=[32,32])
     transform.YieldOp()

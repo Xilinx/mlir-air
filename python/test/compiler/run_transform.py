@@ -4,11 +4,10 @@
 # SPDX-License-Identifier: MIT
 
 # RUN: %PYTHON %s | FileCheck %s
-import air
-from air.mlir.ir import *
+from air.ir import *
 from air.dialects import air as airdialect
-from air.mlir.dialects import arith, func, linalg
-from air.mlir._mlir_libs._airMlir import _run_air_transform as run_air_transform
+from air.dialects import arith, func, linalg
+from air._mlir_libs._airMlir import _run_air_transform as run_air_transform
 
 def run(f):
   print("\nTEST:", f.__name__)
@@ -42,7 +41,7 @@ def gemm_module():
         ^bb0(%arg0: !pdl.operation):
             transform.sequence %arg0 : !pdl.operation failures(propagate) {
             ^bb1(%arg1: !pdl.operation):
-                %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1
+                %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1  : (!pdl.operation) -> !pdl.operation
                 %matmul_1, %loops:3 = transform.air.linalg_tile %matmul [64, 64, 64]
             }
         }
