@@ -2219,8 +2219,7 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
   if (getAlignment().has_value())
     promotionOptions = promotionOptions.setAlignment(*getAlignment());
 
-  auto copyCallBack = [](OpBuilder &b, Value src,
-                                   Value dst) -> LogicalResult {
+  auto copyCallBack = [](OpBuilder &b, Value src, Value dst) -> LogicalResult {
     b.create<memref::CopyOp>(b.getUnknownLoc(), src, dst);
     return success();
   };
