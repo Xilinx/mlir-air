@@ -151,6 +151,30 @@ public:
   }
 };
 
+// This is a hack due to the short-term limited support with lowering host code.
+// This should be removed in the future.
+class HostMemRefCopyOpConversion : public OpConversionPattern<memref::CopyOp> {
+public:
+  using OpConversionPattern<memref::CopyOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(memref::CopyOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Operation *> erased;
+    if (auto alloc = op.getSource().getDefiningOp()) {
+      op.getSource().replaceAllUsesWith(op.getTarget());
+      erased.push_back(alloc);
+    } else if (auto alloc = op.getTarget().getDefiningOp()) {
+      op.getTarget().replaceAllUsesWith(op.getSource());
+      erased.push_back(alloc);
+    }
+    for (auto o : erased)
+      rewriter.eraseOp(o);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 AIE::DeviceOp getDeviceForSegmentLoad(SegmentLoadOp s) {
   auto module = s->getParentOfType<ModuleOp>();
 
@@ -210,10 +234,23 @@ struct AIRRtToIpuPass : public air::AIRRtToIpuBase<AIRRtToIpuPass> {
           op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
           (int)xilinx::air::MemorySpace::L1);
     });
+    target.addDynamicallyLegalOp<memref::CopyOp>([&](memref::CopyOp op) {
+      auto f = op->getParentOfType<func::FuncOp>();
+      if (f) {
+        for (auto arg : f.getArguments()) {
+          if (op.getTarget() == arg)
+            return false;
+          else if (op.getSource() == arg)
+            return false;
+        }
+      }
+      return true;
+    });
     RewritePatternSet patterns(ctx);
-    patterns.insert<DmaToIpuPattern, HerdLoadToIpuPattern,
-                    SegmentLoadToIpuPattern, ModuleMetadataToIpuPattern,
-                    L1MemRefStoreOpConversion, L1AffineStoreOpConversion>(ctx);
+    patterns
+        .insert<DmaToIpuPattern, HerdLoadToIpuPattern, SegmentLoadToIpuPattern,
+                ModuleMetadataToIpuPattern, L1MemRefStoreOpConversion,
+                L1AffineStoreOpConversion, HostMemRefCopyOpConversion>(ctx);
 
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
