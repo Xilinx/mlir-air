@@ -85,6 +85,7 @@ struct ShimTileAllocator {
   struct shim_allocation_info_t {
     AIE::TileOp shim_tile;
     int available_channels;
+    std::vector<std::string> chan_names;
   };
 
   std::vector<shim_allocation_info_t> mm2s_allocs, s2mm_allocs;
@@ -98,7 +99,7 @@ struct ShimTileAllocator {
   }
 
   AIE::TileOp getShimTile(AIE::DeviceOp aie_device, int src_memory_space,
-                          int dst_memory_space) {
+                          int dst_memory_space, std::string chan_name) {
     bool isMM2S = (src_memory_space < dst_memory_space);
     auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
 
@@ -106,12 +107,13 @@ struct ShimTileAllocator {
     for (auto &t : *allocs) {
       if (t.available_channels > 0) {
         t.available_channels -= 1;
+        t.chan_names.push_back(chan_name);
         return t.shim_tile;
       }
     }
     auto shim_col = shim_columns[allocs->size()];
     auto shim_tile = getPhysTileOp(aie_device, shim_col, 0);
-    allocs->push_back({shim_tile, shim_dma_channels - 1});
+    allocs->push_back({shim_tile, shim_dma_channels - 1, {chan_name}});
 
     return shim_tile;
   }
@@ -1052,7 +1054,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     } else {
       // put from L3
       producerTile = shimTileAlloc.getShimTile(
-          device, (int)air::MemorySpace::L3, (int)air::MemorySpace::L1);
+          device, (int)air::MemorySpace::L3, (int)air::MemorySpace::L1,
+          channel.getName().str());
     }
 
     // put/get come in pairs, if one is missing then it's L3
@@ -1072,7 +1075,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     for (int i = 0; i < expectedGets - (int)channelGets.size(); i++) {
       // get from L3
       consumerTile = shimTileAlloc.getShimTile(
-          device, (int)air::MemorySpace::L1, (int)air::MemorySpace::L3);
+          device, (int)air::MemorySpace::L1, (int)air::MemorySpace::L3,
+          channel.getName().str());
       consumers.push_back(consumerTile);
     }
 
@@ -1248,7 +1252,9 @@ struct SpecializeChannelBundlePattern
     : public OpRewritePattern<air::ChannelOp> {
   using OpRewritePattern<air::ChannelOp>::OpRewritePattern;
 
-  SpecializeChannelBundlePattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
+  SpecializeChannelBundlePattern(
+      MLIRContext *ctx, std::map<std::string, std::string> &chan_to_chan_map)
+      : OpRewritePattern(ctx), chan_to_chan_map(chan_to_chan_map) {}
 
   LogicalResult matchAndRewrite(air::ChannelOp channel,
                                 PatternRewriter &rewriter) const override {
@@ -1271,6 +1277,8 @@ struct SpecializeChannelBundlePattern
     for (unsigned iter = 0; iter < (unsigned)channel.getBundleSize(); iter++) {
       rewriter.setInsertionPoint(channel);
       auto cname = createChannelName(device.getOperation());
+      // Add chan name to chan name map
+      chan_to_chan_map[cname] = channel.getName().str();
       SmallVector<int64_t, 2> channel_sizes = {1, 1};
       auto new_chan = rewriter.create<air::ChannelOp>(
           channel->getLoc(), cname, rewriter.getI64ArrayAttr(channel_sizes));
@@ -1326,6 +1334,7 @@ struct SpecializeChannelBundlePattern
   }
 
 private:
+  std::map<std::string, std::string> &chan_to_chan_map;
   bool areIdenticalVectors(std::vector<unsigned> a,
                            std::vector<unsigned> b) const {
     if (a.empty())
@@ -1419,10 +1428,11 @@ private:
 
 // By specializing each air.channel op in a channel bundle, this function
 // removes air.channel bundled representation in a aie.device op.
-void specializeChannelBundle(AIE::DeviceOp &d) {
+void specializeChannelBundle(
+    AIE::DeviceOp &d, std::map<std::string, std::string> &chan_to_chan_map) {
   auto ctx = d->getContext();
   RewritePatternSet patterns(ctx);
-  patterns.insert<SpecializeChannelBundlePattern>(ctx);
+  patterns.insert<SpecializeChannelBundlePattern>(ctx, chan_to_chan_map);
   (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
 }
 
@@ -1908,6 +1918,44 @@ public:
     }
   }
 
+  // AIE2 metadata format is symbolic linked to shim dma ops
+  void labelAIRDmaOpsWithMetadata(air::HierarchyInterface hier,
+                                  int target_op_id, StringAttr dma_name_attr,
+                                  MemRefType memref_ty) {
+    // Label air.dmamemcpynd ops with symbolic ref. to shimdmaalloc op
+    hier.walk([&](air::MemcpyInterface o) {
+      if (o.getId() == target_op_id) {
+        if (isa<air::DmaMemcpyNdOp>(o.getOperation()))
+          o->setAttr("metadata",
+                     FlatSymbolRefAttr::get(hier->getContext(), dma_name_attr));
+        else if (auto chan_o =
+                     dyn_cast<air::ChannelInterface>(o.getOperation()))
+          annotateMetadataPerShimAIRChannel(chan_o, memref_ty, dma_name_attr);
+      }
+    });
+  }
+
+  void labelAIRDmaOpsWithMetadata(
+      std::vector<air::ChannelInterface> channel_ops,
+      std::string specializedChanName,
+      std::map<std::string, std::string> chan_to_chan_map) {
+    for (auto o : channel_ops) {
+      if (o.getChanName().str() == specializedChanName) {
+        auto dma_name_attr =
+            StringAttr::get(o->getContext(), "air_" + specializedChanName);
+        o->setAttr("metadata",
+                   FlatSymbolRefAttr::get(o->getContext(), dma_name_attr));
+
+      } else if (o.getChanName().str() ==
+                 chan_to_chan_map[specializedChanName]) {
+        auto dma_name_attr =
+            StringAttr::get(o->getContext(), "air_" + specializedChanName);
+        o->setAttr("metadata",
+                   FlatSymbolRefAttr::get(o->getContext(), dma_name_attr));
+      }
+    }
+  }
+
   // AIE2: Get herd dma allocation info, and write as AIE::ShimDMAAllocationOp
   void createShimDMAAllocationOpsFromHerd(
       OpBuilder builder, MLIRContext *ctx, air::HerdOp herd,
@@ -1966,17 +2014,7 @@ public:
         }
 
         // Label airrt.dmamemcpynd ops with symbolic ref. to shimdmaalloc op
-        herd.walk([&](air::MemcpyInterface o) {
-          if (o.getId() == original_id) {
-            if (isa<air::DmaMemcpyNdOp>(o.getOperation()))
-              o->setAttr("metadata",
-                         FlatSymbolRefAttr::get(ctx, dma_name_attr));
-            else if (auto chan_o =
-                         dyn_cast<air::ChannelInterface>(o.getOperation()))
-              annotateMetadataPerShimAIRChannel(chan_o, memref_ty,
-                                                dma_name_attr);
-          }
-        });
+        labelAIRDmaOpsWithMetadata(herd, original_id, dma_name_attr, memref_ty);
       }
     }
   }
@@ -2038,17 +2076,7 @@ public:
                                            memref_ty, nullptr, false, nullptr);
         }
         // Label airrt.dmamemcpynd ops with symbolic ref. to shimdmaalloc op
-        seg.walk([&](air::MemcpyInterface o) {
-          if (o.getId() == original_id) {
-            if (isa<air::DmaMemcpyNdOp>(o.getOperation()))
-              o->setAttr("metadata",
-                         FlatSymbolRefAttr::get(ctx, dma_name_attr));
-            else if (auto chan_o =
-                         dyn_cast<air::ChannelInterface>(o.getOperation()))
-              annotateMetadataPerShimAIRChannel(chan_o, memref_ty,
-                                                dma_name_attr);
-          }
-        });
+        labelAIRDmaOpsWithMetadata(seg, original_id, dma_name_attr, memref_ty);
       }
     }
   }
@@ -2570,7 +2598,8 @@ public:
           allocL1Buffers(d, tileToHerdMap);
           allocL2Buffers(d);
           builder.setInsertionPointToStart(d.getBody());
-          specializeChannelBundle(d);
+          std::map<std::string, std::string> chan_to_chan_map;
+          specializeChannelBundle(d, chan_to_chan_map);
           renumberChannelOps(d.getBody());
           // ShimDMAAllocator shimDmaAlloc(d);
           // lowerAIRMemcpyOp<air::ChannelInterface>(d, shimDmaAlloc, options);
@@ -2602,7 +2631,8 @@ public:
       patterns.insert<LowerAIRPingPongPattern>(ctx);
     }
     if (clTestPatterns.find("specialize-channel-bundle") != std::string::npos) {
-      patterns.insert<SpecializeChannelBundlePattern>(ctx);
+      std::map<std::string, std::string> chan_to_chan_map;
+      patterns.insert<SpecializeChannelBundlePattern>(ctx, chan_to_chan_map);
     }
 
     if (patterns.getNativePatterns().size())
@@ -2673,16 +2703,17 @@ public:
 
       ShimDMAAllocator shimDmaAlloc(device);
       std::map<int, int> chan_renumber_reverse_map;
+      ShimTileAllocator shimTileAlloc(device.getTargetModel());
+      std::map<std::string, std::string> chan_to_chan_map;
 
       if (clUseObjFifo) {
 
         specializeHerdAffineIf(device);
         lowerAirExecute(device);
         lowerScfAirTokens(device);
-        specializeChannelBundle(device);
+        specializeChannelBundle(device, chan_to_chan_map);
         renumberChannelOps(device.getBody());
         LowerAIRPingPong(device);
-        ShimTileAllocator shimTileAlloc(device.getTargetModel());
         lowerAIRChannels(device, shimTileAlloc);
         allocL1Buffers(device, tileToHerdMap);
       } else {
@@ -2697,7 +2728,7 @@ public:
 
         // Copy over L2 and L3 memcpy ops into device op
         builder.setInsertionPointToStart(device.getBody());
-        specializeChannelBundle(device);
+        specializeChannelBundle(device, chan_to_chan_map);
         renumberChannelOps(&device.getBodyRegion().front(),
                            chan_renumber_reverse_map);
         lowerAIRMemcpyOp<air::ChannelInterface>(device, shimDmaAlloc, options);
@@ -2778,6 +2809,21 @@ public:
                                                 chan_renumber_reverse_map);
         }
       }
+
+      // ObjectFifo metadata linkage
+      auto f = h->getParentOfType<func::FuncOp>();
+
+      std::vector<air::ChannelInterface> channel_ops;
+      f.walk([&](air::ChannelInterface o) {
+        if (!o->getParentOfType<air::HerdOp>())
+          channel_ops.push_back(o);
+      });
+      for (auto &t : shimTileAlloc.s2mm_allocs)
+        for (auto n : t.chan_names)
+          labelAIRDmaOpsWithMetadata(channel_ops, n, chan_to_chan_map);
+      for (auto &t : shimTileAlloc.mm2s_allocs)
+        for (auto n : t.chan_names)
+          labelAIRDmaOpsWithMetadata(channel_ops, n, chan_to_chan_map);
 
       RewritePatternSet patterns(ctx);
       air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
