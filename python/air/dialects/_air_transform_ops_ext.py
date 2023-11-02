@@ -3,20 +3,18 @@
 # Copyright (C) 2023, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-from ._ods_common import get_op_result_or_value as _get_op_result_or_value
+from ..ir import *
+from ..dialects import pdl
+from ._air_transform_ops_gen import *
 
-try:
-  from ..mlir.ir import *
-  from ..mlir.dialects import pdl
-except ImportError as e:
-  raise RuntimeError("Error loading imports from extension module") from e
+from ._ods_common import get_op_result_or_value as _get_op_result_or_value
 
 from typing import List, Optional, Sequence, Union
 
 IntOrAttrList = Sequence[Union[IntegerAttr, int]]
 OptionalIntList = Optional[Union[ArrayAttr, IntOrAttrList]]
 
-class LinalgTileOp:
+class LinalgTileOp(LinalgTileOp):
   """Specialization for LinalgTileOp class."""
 
   def __init__(self,

@@ -4,10 +4,10 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-import air.mlir.ir
-import air.mlir.passmanager
-import air.mlir._mlir_libs._airMlir
-import air.mlir._mlir_libs._airMlir.runner as runner
+import air.ir
+import air.passmanager
+import air._mlir_libs._airMlir
+import air._mlir_libs._airMlir.runner as runner
 
 import json
 import tempfile
@@ -31,8 +31,8 @@ LINALG_TENSOR_TO_MEMREF_PIPELINE = "builtin.module(" + ",".join([
 ]) + ")"
 
 def _convert_module(module):
-    if not isinstance(module, air.mlir.ir.Module):
-        air_module = air.mlir.ir.Module.parse(str(module),air.mlir.ir.Context())
+    if not isinstance(module, air.ir.Module):
+        air_module = air.ir.Module.parse(str(module),air.ir.Context())
     else:
         air_module = module
     return air_module
@@ -48,7 +48,7 @@ class CostModel:
             name = tmpfile.name
             with air_module.context:
                 pipeline = f"builtin.module(air-linalg-op-stats{{outputfile={name}}})"
-                pm = air.mlir.passmanager.PassManager.parse(pipeline)
+                pm = air.passmanager.PassManager.parse(pipeline)
                 pm.run(air_module.operation)
             stats = open(name).read()
             os.unlink(name)

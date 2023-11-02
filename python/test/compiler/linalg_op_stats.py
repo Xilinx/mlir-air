@@ -5,9 +5,9 @@
 # SPDX-License-Identifier: MIT
 
 # RUN: %PYTHON %s | FileCheck %s
-from air.mlir.ir import *
-from air.mlir.dialects import func
-from air.mlir.dialects import linalg
+from air.ir import *
+from air.dialects import func
+from air.dialects import linalg
 
 from air.compiler.util import CostModel
 

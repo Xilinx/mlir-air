@@ -5,12 +5,12 @@
 # SPDX-License-Identifier: MIT
 
 # RUN: %PYTHON %s | FileCheck %s
-from air.mlir.ir import *
-from air.mlir.passmanager import PassManager
-from air.mlir.dialects import func
-from air.mlir.dialects import linalg
-from air.mlir.dialects import arith
-from air.mlir.dialects import tensor
+from air.ir import *
+from air.passmanager import PassManager
+from air.dialects import func
+from air.dialects import linalg
+from air.dialects import arith
+from air.dialects import tensor
 
 # this has a side effect of registering the air passes
 import air.compiler.util
