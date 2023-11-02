@@ -2229,13 +2229,9 @@ public:
     for (unsigned i = 0; i < channelOps.size() - 1; i++) {
       for (unsigned j = i + 1; j < channelOps.size(); j++) {
         if (checkIfMergeable(channelOps[i], channelOps[j])) {
-          // std::cout << "Loud noises!!!!!!!!\n";
-          // std::cout << channelOps[i].getSymName().str() << " and " <<
-          // channelOps[j].getSymName().str() << "\n";
           mergeChannels(channelOps[i], channelOps[j]);
           chan_merge_map[channelOps[j]] = channelOps[i];
         }
-        // mergeChannels(channelOps[i], channelOps[j]);
       }
     }
     // Rename symbols
