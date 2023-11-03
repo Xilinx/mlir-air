@@ -1700,7 +1700,7 @@ private:
   llvm::SmallSet<air::LaunchOp, 2> &replacementOps;
   bool generateSegment;
 
-  air::SegmentOp generateEmptySegmentOp(OpBuilder rewriter, scf::ParallelOp op,
+  air::SegmentOp generateEmptySegmentOp(OpBuilder &rewriter, scf::ParallelOp op,
                                         air::LaunchOp launch) const {
     SmallVector<Value, 1> segmentSizes = {};
     SmallVector<Value, 4> segmentOpers;
