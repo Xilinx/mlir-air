@@ -45,7 +45,7 @@ namespace air {
 //===----------------------------------------------------------------------===//
 
 bool areEqualIndices(mlir::Value index_0, mlir::Value index_1);
-void traceDependentInductionVar(air::DmaMemcpyInterface async_op,
+void traceDependentInductionVar(air::DmaMemcpyNdOp async_op,
                                 SmallVector<Value, 1> &loop_dep_history,
                                 std::vector<Operation *> &op_history);
 void traceDependentInductionVar(air::AsyncOpInterface async_op,
@@ -148,7 +148,7 @@ typedef boost::graph_traits<Graph>::vertex_iterator vertex_iterator;
 struct dependencyGraph {
   Graph g;
   mlir::Operation *hierarchyOp;
-  std::deque<dependencyGraph> subgraphs;
+  std::vector<dependencyGraph> subgraphs;
   runnerNode *runner_node;
   Graph::vertex_descriptor start_vertex;
   Graph::vertex_descriptor terminator_vertex;
@@ -268,15 +268,15 @@ public:
   void redoDepTraceIfDepOnHier(func::FuncOp func);
 
 private:
-  void addVerticesInHerd(std::deque<dependencyGraph> &herd_subgraphs,
+  void addVerticesInHerd(std::vector<dependencyGraph> &herd_subgraphs,
                          air::HerdOp herd, dependencyContext &dep_ctx,
                          graphGranularityProperties expandHier = {true, true,
                                                                   true, false});
-  void addVerticesInSegment(std::deque<dependencyGraph> &part_subgraphs,
+  void addVerticesInSegment(std::vector<dependencyGraph> &part_subgraphs,
                             air::SegmentOp segment, dependencyContext &dep_ctx,
                             graphGranularityProperties expandHier = {
                                 true, true, true, false});
-  void addVerticesInLaunch(std::deque<dependencyGraph> &launch_subgraphs,
+  void addVerticesInLaunch(std::vector<dependencyGraph> &launch_subgraphs,
                            air::LaunchOp launch, dependencyContext &dep_ctx,
                            graphGranularityProperties expandHier = {
                                true, true, true, false});
@@ -288,9 +288,9 @@ private:
                   std::string event_name, graphNodeProperties properties,
                   dependencyGraph *G, dependencyContext &dep_ctx,
                   Operation *pointer_op = nullptr);
-  Graph::vertex_descriptor
-  addVertexFromDmaOp(xilinx::air::DmaMemcpyInterface op, dependencyGraph *G,
-                     dependencyContext &dep_ctx);
+  Graph::vertex_descriptor addVertexFromDmaOp(xilinx::air::DmaMemcpyNdOp op,
+                                              dependencyGraph *G,
+                                              dependencyContext &dep_ctx);
   Graph::vertex_descriptor
   addVertexFromChannelOp(xilinx::air::ChannelInterface op, dependencyGraph *G,
                          dependencyContext &dep_ctx);

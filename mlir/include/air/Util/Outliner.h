@@ -20,9 +20,7 @@ namespace air {
 struct AIROutliner {
 
 public:
-  AIROutliner()
-  {
-  }
+  AIROutliner() {}
 
   mlir::func::CallOp outline(std::vector<mlir::Operation *> ops,
                              std::string fname = "acap_outline_fn");
@@ -30,8 +28,7 @@ public:
                              std::string fname = "acap_outline_fn");
 
 private:
-
-  //mlir::ModuleOp &module;
+  // mlir::ModuleOp &module;
 };
 
 } // namespace air

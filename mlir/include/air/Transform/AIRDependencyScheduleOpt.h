@@ -39,6 +39,8 @@ std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass();
 
 std::unique_ptr<mlir::Pass> createAIRUnrollChannelByFactorPattern();
 
+std::unique_ptr<mlir::Pass> createAIREnforceLoopCarriedMemrefDeallocPattern();
+
 } // namespace air
 } // namespace xilinx
 

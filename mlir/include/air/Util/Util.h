@@ -30,6 +30,7 @@ func::FuncOp getMangledFunction(ModuleOp module, std::string fnName,
 uint64_t getTensorVolume(const ShapedType ty);
 uint64_t getTensorVolume(const Type ty);
 std::string getElementTypeAsString(const mlir::Type ty);
+unsigned getElementSizeInBytes(const mlir::Type ty);
 
 // Get the parent scf.for op of an iter_arg
 scf::ForOp getForRegionIterArgsOwner(Value val);
@@ -52,6 +53,8 @@ int getIdAttr(Operation *op);
 
 // Renumber the DMA ops. Mode can be within a herd or global
 void renumberDmaOps(func::FuncOp func, std::string mode = "herd");
+void renumberChannelOps(Block *region);
+void renumberChannelOps(Block *region, std::map<int, int> &reverse_map);
 
 // Return op name as string
 std::string to_string(Operation *op);

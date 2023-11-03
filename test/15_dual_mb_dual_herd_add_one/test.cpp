@@ -32,6 +32,12 @@ main(int argc, char *argv[])
   uint64_t col  = 7;
   uint64_t col2 = 34;
 
+  hsa_status_t init_status = air_init();
+  if (init_status != HSA_STATUS_SUCCESS) {
+    std::cout << "air_init() failed. Exiting" << std::endl;
+    return -1;
+  }
+
   std::vector<air_agent_t> agents;
   auto get_agents_ret = air_get_agents(agents);
   assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
@@ -55,8 +61,9 @@ main(int argc, char *argv[])
   }
 
   if (queues.size() < 2) {
-    std::cout << "ERROR: test requires at least 2 agents" << std::endl;
-    return -1;
+    std::cout << "WARNING: test requires at least 2 queues, exiting."
+              << std::endl;
+    return 0;
   }
 
   aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();

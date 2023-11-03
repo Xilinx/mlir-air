@@ -51,8 +51,11 @@ PYTHON_ROOT=`pip3 show pybind11 | grep Location | awk '{print $2}'`
 
 cmake .. \
     -GNinja \
+    -DCMAKE_C_COMPILER=clang \
+    -DCMAKE_CXX_COMPILER=clang++ \
     -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
     -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
+    -DCMAKE_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
     -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
     -DLLVM_DIR=${LLVM_DIR}/build/lib/cmake/llvm \
     -DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \
@@ -61,7 +64,7 @@ cmake .. \
     -DVitisSysroot="" \
     -DLibXAIE_ROOT=${LibXAIE_DIR} \
     -DARM_TOOLCHAIN_OPT="" \
-	-DAIR_RUNTIME_TARGETS="x86_64" \
+    -DAIR_RUNTIME_TARGETS="x86_64" \
     -DBUILD_AIR_PCIE=ON \
     -DBUILD_SHARED_LIBS=OFF \
     -DLLVM_USE_LINKER=lld \

@@ -344,7 +344,7 @@ private:
   void specializeDmaBroadcastWithAffineIf(func::FuncOp f) {
 
     f.walk([&](air::HerdOp launch) {
-      launch.walk([&](air::DmaMemcpyInterface memcpyOp) {
+      launch.walk([&](air::DmaMemcpyNdOp memcpyOp) {
         auto herd_id = launch.getIds();
         OpBuilder builder(memcpyOp);
         auto loc = memcpyOp->getLoc();
@@ -469,7 +469,7 @@ private:
 
   void simplifyDmaIndicesWithAffineSet(func::FuncOp f) {
 
-    f.walk([&](air::DmaMemcpyInterface memcpyOp) {
+    f.walk([&](air::DmaMemcpyNdOp memcpyOp) {
       auto ctx = memcpyOp->getContext();
       if (auto broadcast_set =
               memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_set")) {
@@ -657,7 +657,7 @@ private:
 
   // Replace memcpyOp's dependent operand with const
   Operation *replaceMemcpyOpWithSimplifiedOperands(
-      air::DmaMemcpyInterface &memcpyOp,
+      air::DmaMemcpyNdOp &memcpyOp,
       SmallVector<AffineExpr, 2> current_shape_expr) {
     OpBuilder builder(memcpyOp);
     builder.setInsertionPoint(memcpyOp);
@@ -679,7 +679,7 @@ private:
       // Replace memcpyOp
       return replaceMemcpyOp(memcpyNdOp, builder, srcMemrefDimsOrOffsets);
     } else {
-      assert(false && "Unhandled DMAMemcpyInterface");
+      assert(false && "Unhandled DmaMemcpyNdOp");
       return nullptr;
     }
   }
@@ -996,6 +996,56 @@ void AIRHoistScfChannelGetPutPass::runOnOperation() {
   (void)applyPatternsAndFoldGreedily(op, std::move(patterns));
 }
 
+class AIRLabelBroadcastChannelWithTilePass
+    : public air::AIRLabelBroadcastChannelWithTilePassBase<
+          AIRLabelBroadcastChannelWithTilePass> {
+
+public:
+  AIRLabelBroadcastChannelWithTilePass() = default;
+  AIRLabelBroadcastChannelWithTilePass(
+      const AIRLabelBroadcastChannelWithTilePass &pass){};
+
+  void runOnOperation() override;
+
+private:
+};
+
+void AIRLabelBroadcastChannelWithTilePass::runOnOperation() {
+  // Util. functions for air dependency
+  xilinx::air::dependencyCanonicalizer canonicalizer;
+  auto func = getOperation();
+  auto ctx = func.getContext();
+  func.walk([&](air::ChannelInterface op) {
+    auto aif = op->getParentOfType<AffineIfOp>();
+    auto herd = op->getParentOfType<air::HerdOp>();
+    if (aif && herd) {
+      // Fast forward through affine.if nest
+      std::vector<Operation *> affine_if_nest;
+      Operation *spatial_loop = nullptr;
+      getAffineIfNestAndSpatialLoopFromOp(op, affine_if_nest, spatial_loop);
+      std::vector<int> position;
+      std::vector<Attribute> tiles;
+      OpBuilder builder(op);
+      for (unsigned i = 0; i < canonicalizer.getTripCountInHierarchyOp(herd);
+           i++) {
+        SmallVector<NamedAttribute, 5> attrs;
+        auto current_position = canonicalizer.getPositionFromIterator(i, herd);
+        if (positionHitsAffineIfCondition(op, spatial_loop, affine_if_nest,
+                                          current_position)) {
+          attrs.push_back(
+              NamedAttribute(StringAttr::get(ctx, "col"),
+                             builder.getI64IntegerAttr(current_position[0])));
+          attrs.push_back(
+              NamedAttribute(StringAttr::get(ctx, "row"),
+                             builder.getI64IntegerAttr(current_position[1])));
+          tiles.push_back(DictionaryAttr::get(ctx, attrs));
+        }
+      }
+      op->setAttr("tile", ArrayAttr::get(ctx, tiles));
+    }
+  });
+}
+
 } // anonymous namespace
 
 namespace xilinx {
@@ -1039,6 +1089,10 @@ std::unique_ptr<Pass> createAIRLowerHerdParallelPass() {
 
 std::unique_ptr<Pass> createAIRHoistScfChannelGetPutPass() {
   return std::make_unique<AIRHoistScfChannelGetPutPass>();
+}
+
+std::unique_ptr<Pass> createAIRLabelBroadcastChannelWithTilePass() {
+  return std::make_unique<AIRLabelBroadcastChannelWithTilePass>();
 }
 
 } // namespace air

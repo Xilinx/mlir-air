@@ -873,6 +873,10 @@ def AIRHoistMemallocInForPattern: Pass<"air-hoist-alloc-in-for-pattern", "Module
     pattern transformation to identify and isolate the statically allocated ping and 
     pong buffers.
   }];
+  let options = [
+    Option<"clKeepMemrefDealloc", "keep-memref-dealloc", "bool", /*default=*/"false",
+            "Flag to keep memref dealloc ops after transformation. Memref dealloc is used in air-to-aie pass as handle to generate lock releases.">
+  ];
 }
 
 def AIRUnrollLoopForPipeliningPattern: Pass<"air-unroll-loop-for-pipelining-pattern", "ModuleOp"> {
@@ -917,6 +921,10 @@ def AIRPingPongTransformationPattern: Pass<"air-ping-pong-transform", "ModuleOp"
     pong buffers, and a surrounding scf.for loop, to construct explicit dependency 
     edges which represent a ping-pong buffering scheduling.
   }];
+  let options = [
+    Option<"clKeepMemrefDealloc", "keep-memref-dealloc", "bool", /*default=*/"false",
+            "Flag to keep memref dealloc ops after transformation. Memref dealloc is used in air-to-aie pass as handle to generate lock releases.">
+  ];
 }
 
 def AIRLabelScfForLoopForPingPongPattern: Pass<"air-label-scf-for-to-ping-pong", "ModuleOp"> {
@@ -947,6 +955,15 @@ def AIRUnrollChannelByFactorPattern: Pass<"air-unroll-channel-by-factor", "Modul
     Option<"clUnrollFactor", "unroll-factor", "int", /*default=*/"1",
            "Integer unroll factor.">
   ];
+}
+
+def AIREnforceLoopCarriedMemrefDeallocPattern: Pass<"air-enforce-loop-carried-memref-dealloc", "ModuleOp"> {
+  let summary = "Enforce memref dealloc ops in loop iterations";
+  let constructor = "xilinx::air::createAIREnforceLoopCarriedMemrefDeallocPattern()";
+  let description = [{
+    This pass enforces memref deallocation events to happen within each loop
+    iteration, by connecting them in the loop-carried dependency path.
+  }];
 }
 
 def AIRDependencyScheduleOpt: Pass<"air-dependency-schedule-opt", "ModuleOp"> {
@@ -1061,6 +1078,11 @@ def AIRLowerHerdParallelPass : Pass<"air-lower-herd-parallel", "func::FuncOp"> {
 def AIRHoistScfChannelGetPutPass : Pass<"air-hoist-channels", "func::FuncOp"> {
   let summary = "Hoist air.channel.get and air.channel.put out of scf.for.";
   let constructor = "xilinx::air::createAIRHoistScfChannelGetPutPass()";
+}
+
+def AIRLabelBroadcastChannelWithTilePass : Pass<"air-label-broadcast-channel-with-tile", "func::FuncOp"> {
+  let summary = "Label broadcasted channel ops with tile coordinates.";
+  let constructor = "xilinx::air::createAIRLabelBroadcastChannelWithTilePass()";
 }
 
 #endif // AIR_CONVERSION_PASSES

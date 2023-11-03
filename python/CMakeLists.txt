@@ -56,10 +56,9 @@ declare_mlir_dialect_extension_python_bindings(
 declare_mlir_python_extension(AirPythonExtensions.MLIR
   MODULE_NAME _airMlir
   ADD_TO_PARENT AirPythonExtensions
-  ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../mlir/python
+  ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}
   SOURCES
     AIRMLIRModule.cpp
-    AIRRunnerModule.cpp
   EMBED_CAPI_LINK_LIBS
     AIRCAPI
   PRIVATE_LINK_LIBS
@@ -69,10 +68,9 @@ declare_mlir_python_extension(AirPythonExtensions.MLIR
 declare_mlir_python_extension(AirPythonExtensions.AIRRt
   MODULE_NAME _airRt
   ADD_TO_PARENT AirPythonExtensions
-  ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../runtime_lib/python
+  ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}
   SOURCES
-    Module.cpp
-    LibAirHostModule.cpp
+    AirHostModule.cpp
   EMBED_CAPI_LINK_LIBS
     AIRCAPI
   PRIVATE_LINK_LIBS

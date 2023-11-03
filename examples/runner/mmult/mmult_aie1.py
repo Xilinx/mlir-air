@@ -1,36 +1,46 @@
 # mmult.py -*- Python -*-
 #
-# Copyright (C) 2022, Xilinx Inc. All rights reserved.
-# Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
 import air.compiler.util
 
-from air.mlir.dialects import func
-from air.mlir.dialects import linalg
+from air.mlir.dialects import func, linalg, tensor, arith
 from air.mlir.ir import *
 import air.mlir.passmanager
 
 import sys
 
+M = int(sys.argv[1])
+N = int(sys.argv[2])
+K = int(sys.argv[3])
+Tiling_L1_m = int(sys.argv[4])
+Tiling_L1_n = int(sys.argv[5])
+Tiling_L1_k = int(sys.argv[6])
+
+herd_x = int(M / Tiling_L1_m)
+herd_y = int(N / Tiling_L1_n)
+
 def matmul_on_tensors(m, n, k, dtype):
     module = Module.create()
     with InsertionPoint(module.body):
         @func.FuncOp.from_py_func(
-            RankedTensorType.get((m, k), dtype), RankedTensorType.get((k, n), dtype),
-            RankedTensorType.get((m, n), dtype))
-        def matmul(lhs, rhs, out):
-            linalg.matmul(lhs, rhs, outs=[out])
+            RankedTensorType.get((m, k), dtype), RankedTensorType.get((k, n), dtype))
+        def matmul(lhs, rhs):
+            out = tensor.EmptyOp([m, n], dtype)
+            zero = arith.ConstantOp(dtype, 0.0)
+            zero_fill = linalg.fill(zero, outs=[out])
+            return linalg.matmul(lhs, rhs, outs=[zero_fill])
     return module
 
 
 with air.mlir.ir.Context(), Location.unknown():
 
-    air_module = matmul_on_tensors(512, 512, 512, BF16Type.get())
+    air_module = matmul_on_tensors(M, N, K, F32Type.get())
     
     # convert linalg on tensors to linalg on memrefs
     pm = air.mlir.passmanager.PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
-    pm.run(air_module)
+    pm.run(air_module.operation)
 
     args = sys.argv[1:]
     if len(args) and args[0] == '-dump-linalg':
@@ -39,15 +49,15 @@ with air.mlir.ir.Context(), Location.unknown():
 
     # tile and map to air
     pipeline = "builtin.module("+",".join([
-        "air-linalg-codegen{l2-tile-size=64,64,128 l2-promote=true l1-tile-size=32,32,32 l1-promote=true}",
-        "canonicalize", "cse",
-        "air-par-to-herd{depth=1}",
+        "buffer-results-to-out-params",
+        "air-linalg-codegen{l1-tile-size=" + str(Tiling_L1_m) + "," + str(Tiling_L1_n) + "," + str(Tiling_L1_k) + " l1-promote=true}",
+        "air-par-to-herd",
         "air-copy-to-dma",
-        "air-par-to-launch{has-air-segment=true}",
         "canonicalize", "cse",
+        "air-insert-launch-and-segment-around-herd",
     ])+')'
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
-    pm.run(air_module)
+    pm.run(air_module.operation)
     
     print ("\nAIR Dialect Module\n")
     print (air_module)
@@ -60,14 +70,13 @@ with air.mlir.ir.Context(), Location.unknown():
         "air-dma-to-channel",
         "canonicalize", "cse",
         "air-dependency-canonicalize",
-        "air-dependency-parse-graph{output-dir=dot_graphs/}",
-        "canonicalize", "cse",
-        "air-place-herds{num-rows=2 num-cols=2 row-anchor=0 col-anchor=0}",
+        # "air-dependency-parse-graph{output-dir=dot_graphs/}",
+        "air-place-herds{num-rows=" + str(herd_x) + " num-cols=" + str(herd_y) + " row-anchor=0 col-anchor=0}",
         "air-label-scf-for-to-ping-pong",
         "air-ping-pong-transform"
     ])+')'
     pm = air.mlir.passmanager.PassManager.parse(pipeline)
-    pm.run(air_module)
+    pm.run(air_module.operation)
 
     print ("\nAIR Dialect Module (async)\n")
     print (air_module)
@@ -81,8 +90,8 @@ with air.mlir.ir.Context(), Location.unknown():
         "name": "i8"
         },
         {
-        "bytes": 2,
-        "name": "bf16"
+        "bytes": 4,
+        "name": "f32"
         },
         {
         "bytes": 4,
@@ -97,12 +106,12 @@ with air.mlir.ir.Context(), Location.unknown():
                     "ops_per_core_per_cycle": 32,
                     "efficiency": 1
                 },
-                "bf16": {
-                    "ops_per_core_per_cycle": 32,
+                "f32": {
+                    "ops_per_core_per_cycle": 8,
                     "efficiency": 1
                 },
                 "i32": {
-                    "ops_per_core_per_cycle": 16,
+                    "ops_per_core_per_cycle": 8,
                     "efficiency": 1
                 }
             },
@@ -114,12 +123,12 @@ with air.mlir.ir.Context(), Location.unknown():
                     "ops_per_core_per_cycle": 32,
                     "efficiency": 1
                 },
-                "bf16": {
-                    "ops_per_core_per_cycle": 32,
+                "f32": {
+                    "ops_per_core_per_cycle": 8,
                     "efficiency": 1
                 },
                 "i32": {
-                    "ops_per_core_per_cycle": 16,
+                    "ops_per_core_per_cycle": 8,
                     "efficiency": 1
                 }
             },
@@ -131,7 +140,7 @@ with air.mlir.ir.Context(), Location.unknown():
                     "ops_per_core_per_cycle": 1,
                     "efficiency": 1
                 },
-                "bf16": {
+                "f32": {
                     "ops_per_core_per_cycle": 1,
                     "efficiency": 1
                 },
@@ -145,15 +154,15 @@ with air.mlir.ir.Context(), Location.unknown():
         "linalg.matmul": {
             "datatypes": {
                 "i8": {
-                    "macs_per_core_per_cycle": 256,
-                    "efficiency": 1
-                },
-                "bf16": {
                     "macs_per_core_per_cycle": 128,
                     "efficiency": 1
                 },
+                "f32": {
+                    "macs_per_core_per_cycle": 8,
+                    "efficiency": 1
+                },
                 "i32": {
-                    "macs_per_core_per_cycle": 32,
+                    "macs_per_core_per_cycle": 8,
                     "efficiency": 1
                 }
             },
@@ -161,26 +170,26 @@ with air.mlir.ir.Context(), Location.unknown():
         }
     },
     "dus": {
-        "count": [4, 4],
+        "count": [1, 1],
         "memory": {
             "memory_space": "L2",
-            "bytes": 524288
+            "bytes": 1
         },
         "ports": {
             "outbound": {
-                "count": 6,
+                "count": 1,
                 "bytes_per_second": 4000000000
             },
             "inbound": {
-                "count": 6,
+                "count": 1,
                 "bytes_per_second": 4000000000
             }
         },
         "tiles": {
-            "count": [1, 4],
+            "count": [50, 8],
             "memory": {
                 "memory_space": "L1",
-                "bytes": 65536
+                "bytes": 32768
             },
             "ports": {
                 "outbound": {
@@ -196,11 +205,11 @@ with air.mlir.ir.Context(), Location.unknown():
     },
     "noc": {
         "outbound": {
-            "count": 4,
+            "count": 6,
             "bytes_per_second": 4000000000
         },
         "inbound": {
-            "count": 4,
+            "count": 6,
             "bytes_per_second": 4000000000
         }
     }

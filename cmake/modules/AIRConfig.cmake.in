@@ -14,4 +14,4 @@ set(AIR_INCLUDE_DIRS "@AIR_CONFIG_INCLUDE_DIRS@")
 
 # Provide all our library targets to users.
 include("@AIR_CONFIG_EXPORTS_FILE@")
-
+include("@MLIR_CONFIG_INCLUDE_EXPORTS_FILE@")

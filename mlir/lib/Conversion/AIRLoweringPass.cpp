@@ -13,6 +13,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
+#include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
@@ -208,26 +209,26 @@ public:
 
     // If the herd doesn't contain a dma op, then it can be deleted
     SmallVector<Operation *> herdOps;
-    herd.walk([&](air::DmaMemcpyInterface op) { herdOps.push_back(op); });
+    herd.walk([&](air::DmaMemcpyNdOp op) { herdOps.push_back(op); });
+
+    auto herd_size = herd.getSizeOperands();
+    int64_t herd_size_x = herd.getNumCols();
+    int64_t herd_size_y = herd.getNumRows();
+
+    auto outer = rewriter.create<AffineForOp>(herd.getLoc(), 0, herd_size_x);
+    auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
+    auto inner =
+        outer_builder.create<AffineForOp>(herd.getLoc(), 0, herd_size_y);
+
+    outer->setAttr("air.herd", StringAttr::get(op->getContext(), "outer"));
+    inner->setAttr("air.herd", StringAttr::get(op->getContext(), "inner"));
+
+    herd.getSize()[0].replaceAllUsesWith(herd_size[0]);
+    herd.getSize()[1].replaceAllUsesWith(herd_size[1]);
+    herd.getIds()[0].replaceAllUsesWith(outer.getInductionVar());
+    herd.getIds()[1].replaceAllUsesWith(inner.getInductionVar());
 
     if (herdOps.size()) {
-      auto herd_size = herd.getSizeOperands();
-      int64_t herd_size_x = herd.getNumCols();
-      int64_t herd_size_y = herd.getNumRows();
-
-      auto outer = rewriter.create<AffineForOp>(herd.getLoc(), 0, herd_size_x);
-      auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
-      auto inner =
-          outer_builder.create<AffineForOp>(herd.getLoc(), 0, herd_size_y);
-
-      outer->setAttr("air.herd", StringAttr::get(op->getContext(), "outer"));
-      inner->setAttr("air.herd", StringAttr::get(op->getContext(), "inner"));
-
-      herd.getSize()[0].replaceAllUsesWith(herd_size[0]);
-      herd.getSize()[1].replaceAllUsesWith(herd_size[1]);
-      herd.getIds()[0].replaceAllUsesWith(outer.getInductionVar());
-      herd.getIds()[1].replaceAllUsesWith(inner.getInductionVar());
-
       int i = 0;
       for (auto arg : herd.getKernelArguments())
         arg.replaceAllUsesWith(herd.getKernelOperand(i++));
@@ -444,6 +445,120 @@ public:
   }
 };
 
+// AIR channel to AIRRT impl.
+Operation *
+AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
+                                         air::ChannelInterface thisOp,
+                                         air::ChannelInterface theOtherOp) {
+  auto loc = thisOp->getLoc();
+  auto ctx = thisOp->getContext();
+
+  MemRefType thisMemrefType = thisOp.getMemref().getType().cast<MemRefType>();
+  MemRefType theOtherMemrefType =
+      theOtherOp.getMemref().getType().cast<MemRefType>();
+
+  bool thisOpIsInTile =
+      thisMemrefType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1;
+  bool isFullMemcpy = false;
+  if (thisMemrefType.getMemorySpaceAsInt() ==
+          (int)xilinx::air::MemorySpace::L3 &&
+      theOtherMemrefType.getMemorySpaceAsInt() ==
+          (int)xilinx::air::MemorySpace::L2) {
+    isFullMemcpy = true;
+  } else if (theOtherMemrefType.getMemorySpaceAsInt() ==
+                 (int)xilinx::air::MemorySpace::L3 &&
+             thisMemrefType.getMemorySpaceAsInt() ==
+                 (int)xilinx::air::MemorySpace::L2) {
+    isFullMemcpy = true;
+  }
+  if (!thisOpIsInTile && !isFullMemcpy) {
+    SmallVector<Value, 16> opers;
+
+    auto idTy = IntegerType::get(ctx, 32);
+    // Get op id of the internal put/get op
+    if (auto id_attr = theOtherOp->getAttrOfType<IntegerAttr>("id")) {
+      opers.push_back(builder.create<arith::ConstantOp>(loc, idTy, id_attr));
+    } else {
+      opers.push_back(builder.create<arith::ConstantOp>(
+          loc, idTy, IntegerAttr::get(idTy, 0)));
+    }
+
+    auto i64Ty = builder.getI64Type();
+    auto zero = builder.create<arith::ConstantOp>(loc, i64Ty,
+                                                  IntegerAttr::get(i64Ty, 0));
+    auto one = builder.create<arith::ConstantOp>(loc, i64Ty,
+                                                 IntegerAttr::get(i64Ty, 1));
+
+    scf::ParallelOp launch = thisOp->getParentOfType<scf::ParallelOp>();
+    if (!launch) {
+      if (auto for_op = thisOp->getParentOfType<scf::ForOp>()) {
+        // Broadcast channel control loop
+        assert(theOtherOp->hasAttr("tile"));
+        ArrayAttr tiles = theOtherOp->getAttrOfType<ArrayAttr>("tile");
+        auto tile_dict = tiles[0].cast<DictionaryAttr>();
+        auto row = tile_dict.get("row").cast<IntegerAttr>().getInt();
+        auto col = tile_dict.get("col").cast<IntegerAttr>().getInt();
+        opers.push_back(builder.create<arith::ConstantOp>(
+            loc, i64Ty, IntegerAttr::get(i64Ty, col)));
+        opers.push_back(builder.create<arith::ConstantOp>(
+            loc, i64Ty, IntegerAttr::get(i64Ty, row)));
+      } else {
+        opers.push_back(zero);
+        opers.push_back(zero);
+      }
+    } else {
+      opers.push_back(builder.create<arith::IndexCastOp>(
+          loc, IntegerType::get(ctx, 64), launch.getInductionVars()[0]));
+      opers.push_back(builder.create<arith::IndexCastOp>(
+          loc, IntegerType::get(ctx, 64), launch.getInductionVars()[1]));
+    }
+
+    opers.push_back(thisOp.getMemref());
+
+    SmallVector<Value, 4> offsets(4, zero);
+    SmallVector<Value, 4> lengths(4, one);
+    SmallVector<Value, 3> strides(3, zero);
+
+    int idx = 4 - thisMemrefType.getRank();
+    for (auto o : thisOp.getOffsets()) {
+      offsets[idx++] =
+          builder.create<arith::IndexCastOp>(loc, IntegerType::get(ctx, 64), o);
+    }
+
+    idx = 4 - theOtherMemrefType.getRank();
+    auto op_strides = thisOp.getStrides();
+    if (op_strides.size())
+      for (auto o : op_strides.drop_back())
+        strides[idx++] = builder.create<arith::IndexCastOp>(
+            loc, IntegerType::get(ctx, 64), o);
+    idx = 4 - thisMemrefType.getRank();
+    for (auto o : thisOp.getSizes())
+      lengths[idx++] =
+          builder.create<arith::IndexCastOp>(loc, IntegerType::get(ctx, 64), o);
+
+    opers.append(offsets);
+    opers.append(lengths);
+    opers.append(strides);
+
+    Operation *airrtOp = nullptr;
+    SmallVector<Type, 1> tys;
+    if (thisOp->getNumResults())
+      tys.push_back(airrt::EventType::get(ctx));
+    if (isFullMemcpy) {
+      airrtOp = builder.create<airrt::MemcpyNdOp>(loc, tys, opers);
+    } else {
+      airrtOp = builder.create<airrt::DmaMemcpyNdOp>(loc, tys, opers);
+    }
+    return airrtOp;
+  } else {
+    // If memcpy between L1 and L3, and this op is the L1 side, then this
+    // indicates a bug because it should have been deleted with herd.
+    assert(false);
+    // TODO: isFullMemcpy
+  }
+  return nullptr;
+}
+
 class AIRChannelPutToAIRRtConversion
     : public OpConversionPattern<xilinx::air::ChannelPutOp> {
 public:
@@ -461,110 +576,24 @@ public:
     if (op->getParentOfType<AIE::CoreOp>())
       return failure();
 
+    // Resolve channel op's dependency list
     SmallVector<Value, 4> deps;
+    xilinx::airrt::WaitAllOp placeholder = nullptr;
     for (auto o : adaptor.getOperands())
       if (o.getType().isa<xilinx::airrt::EventType>())
         deps.push_back(o);
     if (deps.size())
-      rewriter.create<xilinx::airrt::WaitAllOp>(
+      placeholder = rewriter.create<xilinx::airrt::WaitAllOp>(
           op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
 
+    // Get src and dst memref types
     auto getOps = getTheOtherChannelOpThroughSymbol(op);
-    if (getOps.size() > 1)
-      return failure();
     auto getOp = getOps[0];
 
-    MemRefType srcType = op.getSrc().getType().cast<MemRefType>();
-    MemRefType dstType = getOp.getDst().getType().cast<MemRefType>();
-
-    bool isFromTile = false;
-    bool isFullMemcpy = false;
-    if (srcType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1 &&
-        dstType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3) {
-      isFromTile = true;
-    } else if (dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L1 &&
-               srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L3) {
-      isFromTile = false;
-    } else if (srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L1 &&
-               dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L2) {
-      isFromTile = true;
-    } else if (dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L1 &&
-               srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L2) {
-      isFromTile = false;
-    } else if (srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L3 &&
-               dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L2) {
-      isFullMemcpy = true;
-    } else if (dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L3 &&
-               srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L2) {
-      isFromTile = true;
-      isFullMemcpy = true;
-    } else
+    Operation *airrtOp =
+        AIRChannelInterfaceToAIRRtConversionImpl(rewriter, op, getOp);
+    if (!airrtOp)
       return failure();
-    assert(!isFromTile);
-    assert(!isFullMemcpy);
-
-    SmallVector<Value, 16> opers;
-
-    auto idTy = IntegerType::get(op->getContext(), 32);
-    if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
-      opers.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
-    } else {
-      opers.push_back(rewriter.create<arith::ConstantOp>(
-          loc, idTy, IntegerAttr::get(idTy, 0)));
-    }
-
-    auto i64Ty = rewriter.getI64Type();
-    auto zero = rewriter.create<arith::ConstantOp>(loc, i64Ty,
-                                                   IntegerAttr::get(i64Ty, 0));
-    auto one = rewriter.create<arith::ConstantOp>(loc, i64Ty,
-                                                  IntegerAttr::get(i64Ty, 1));
-
-    // tile ids
-    opers.push_back(zero.getResult());
-    opers.push_back(zero.getResult());
-
-    opers.push_back(op.getSrc());
-
-    SmallVector<Value, 4> offsets(4, zero);
-    SmallVector<Value, 4> lengths(4, one);
-    SmallVector<Value, 3> strides(3, zero);
-
-    int idx = 4 - srcType.getRank();
-    for (auto o : op.getSrcOffsets())
-      offsets[idx++] = rewriter.create<arith::IndexCastOp>(
-          op->getLoc(), IntegerType::get(ctx, 64), o);
-    idx = 4 - dstType.getRank();
-    auto op_strides = op.getSrcStrides();
-    if (op_strides.size())
-      for (auto o : op_strides.drop_back())
-        strides[idx++] = rewriter.create<arith::IndexCastOp>(
-            op->getLoc(), IntegerType::get(ctx, 64), o);
-    idx = 4 - srcType.getRank();
-    for (auto o : op.getSrcSizes())
-      lengths[idx++] = rewriter.create<arith::IndexCastOp>(
-          op->getLoc(), IntegerType::get(ctx, 64), o);
-
-    opers.append(offsets);
-    opers.append(lengths);
-    opers.append(strides);
-
-    Operation *airrtOp = nullptr;
-    SmallVector<Type, 1> tys;
-    if (op->getNumResults())
-      tys.push_back(xilinx::airrt::EventType::get(ctx));
-
-    airrtOp = rewriter.create<xilinx::airrt::DmaMemcpyNdOp>(loc, tys, opers);
-
     rewriter.replaceOp(op, airrtOp->getResults());
     return success();
   }
@@ -587,110 +616,24 @@ public:
     if (op->getParentOfType<AIE::CoreOp>())
       return failure();
 
+    // Resolve channel op's dependency list
     SmallVector<Value, 4> deps;
+    xilinx::airrt::WaitAllOp placeholder = nullptr;
     for (auto o : adaptor.getOperands())
       if (o.getType().isa<xilinx::airrt::EventType>())
         deps.push_back(o);
     if (deps.size())
-      rewriter.create<xilinx::airrt::WaitAllOp>(
+      placeholder = rewriter.create<xilinx::airrt::WaitAllOp>(
           op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
 
+    // Get src and dst memref types
     auto putOps = getTheOtherChannelOpThroughSymbol(op);
-    if (putOps.size() > 1)
-      return failure();
     auto putOp = putOps[0];
 
-    MemRefType srcType = putOp.getSrc().getType().cast<MemRefType>();
-    MemRefType dstType = op.getDst().getType().cast<MemRefType>();
-
-    bool isFromTile = false;
-    bool isFullMemcpy = false;
-    if (srcType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1 &&
-        dstType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3) {
-      isFromTile = true;
-    } else if (dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L1 &&
-               srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L3) {
-      isFromTile = false;
-    } else if (srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L1 &&
-               dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L2) {
-      isFromTile = true;
-    } else if (dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L1 &&
-               srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L2) {
-      isFromTile = false;
-    } else if (srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L3 &&
-               dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L2) {
-      isFullMemcpy = true;
-    } else if (dstType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L3 &&
-               srcType.getMemorySpaceAsInt() ==
-                   (int)xilinx::air::MemorySpace::L1) {
-      isFromTile = true;
-      isFullMemcpy = true;
-    } else
+    Operation *airrtOp =
+        AIRChannelInterfaceToAIRRtConversionImpl(rewriter, op, putOp);
+    if (!airrtOp)
       return failure();
-    assert(isFromTile);
-    assert(!isFullMemcpy);
-
-    SmallVector<Value, 16> opers;
-
-    auto idTy = IntegerType::get(op->getContext(), 32);
-    if (auto id_attr = op->getAttrOfType<IntegerAttr>("id")) {
-      opers.push_back(rewriter.create<arith::ConstantOp>(loc, idTy, id_attr));
-    } else {
-      opers.push_back(rewriter.create<arith::ConstantOp>(
-          loc, idTy, IntegerAttr::get(idTy, 0)));
-    }
-
-    auto i64Ty = rewriter.getI64Type();
-    auto zero = rewriter.create<arith::ConstantOp>(loc, i64Ty,
-                                                   IntegerAttr::get(i64Ty, 0));
-    auto one = rewriter.create<arith::ConstantOp>(loc, i64Ty,
-                                                  IntegerAttr::get(i64Ty, 1));
-
-    // tile ids
-    opers.push_back(zero.getResult());
-    opers.push_back(zero.getResult());
-
-    opers.push_back(op.getDst());
-
-    SmallVector<Value, 4> offsets(4, zero);
-    SmallVector<Value, 4> lengths(4, one);
-    SmallVector<Value, 3> strides(3, zero);
-
-    int idx = 4 - srcType.getRank();
-    for (auto o : op.getDstOffsets())
-      offsets[idx++] = rewriter.create<arith::IndexCastOp>(
-          op->getLoc(), IntegerType::get(ctx, 64), o);
-    idx = 4 - dstType.getRank();
-    auto op_strides = op.getDstStrides();
-    if (op_strides.size())
-      for (auto o : op_strides.drop_back())
-        strides[idx++] = rewriter.create<arith::IndexCastOp>(
-            op->getLoc(), IntegerType::get(ctx, 64), o);
-    idx = 4 - srcType.getRank();
-    for (auto o : op.getDstSizes())
-      lengths[idx++] = rewriter.create<arith::IndexCastOp>(
-          op->getLoc(), IntegerType::get(ctx, 64), o);
-
-    opers.append(offsets);
-    opers.append(lengths);
-    opers.append(strides);
-
-    Operation *airrtOp = nullptr;
-    SmallVector<Type, 1> tys;
-    if (op->getNumResults())
-      tys.push_back(xilinx::airrt::EventType::get(ctx));
-
-    airrtOp = rewriter.create<xilinx::airrt::DmaMemcpyNdOp>(loc, tys, opers);
-
     rewriter.replaceOp(op, airrtOp->getResults());
     return success();
   }
@@ -925,6 +868,58 @@ public:
   }
 };
 
+LogicalResult ScfParToAffineForConversion(Operation *op) {
+
+  func::FuncOp f = dyn_cast<func::FuncOp>(op);
+  if (!f)
+    return failure();
+
+  SmallVector<Operation *, 8> erased;
+  f.walk([&](scf::ParallelOp scf_par) {
+    for (auto v : scf_par.getLowerBound())
+      assert(dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value() == 0);
+    for (auto v : scf_par.getStep())
+      assert(dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value() == 1);
+    std::vector<int> par_sizes = {};
+    for (auto v : scf_par.getUpperBound())
+      par_sizes.push_back(
+          dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value());
+
+    OpBuilder builder(scf_par);
+    auto outer = builder.create<AffineForOp>(scf_par.getLoc(), 0, par_sizes[0]);
+    AffineForOp inner = nullptr;
+    if (par_sizes.size() == 2) {
+      auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
+      inner =
+          outer_builder.create<AffineForOp>(scf_par.getLoc(), 0, par_sizes[1]);
+    } else
+      inner = outer;
+
+    builder.setInsertionPointToStart(inner.getBody());
+    IRMapping remap;
+    remap.map(scf_par.getInductionVars()[0], outer.getInductionVar());
+    if (par_sizes.size() == 2) {
+      remap.map(scf_par.getInductionVars()[1], inner.getInductionVar());
+    }
+    for (auto &o : scf_par.getBody()->getOperations()) {
+      if (!isa<scf::ReduceOp>(o) && !isa<scf::YieldOp>(o)) {
+        builder.clone(o, remap);
+      }
+    }
+    erased.push_back(scf_par);
+  });
+  for (auto a : erased) {
+    if (a->getNumResults())
+      for (auto token : a->getResults())
+        for (auto user : token.getUsers())
+          for (unsigned i = 0; i < user->getNumOperands(); i++)
+            if (user->getOperand(i) == token)
+              user->eraseOperand(i);
+    a->erase();
+  }
+  return success();
+}
+
 class AIRLoweringPass : public air::AIRLoweringBase<AIRLoweringPass> {
 
 public:
@@ -1074,6 +1069,272 @@ public:
             applyPartialConversion(module, target, std::move(air_patterns)))) {
       emitError(UnknownLoc::get(context), "error lowering air dialect\n");
       signalPassFailure();
+    }
+
+    // If scf parallel loops containing memcpy ops exist in the same scope as
+    // herd load, then attempt to serialize the asynchronous control programs.
+    module.walk([&](func::FuncOp f) {
+      bool hasCandidateSCFParallel = false;
+      for (auto par : f.getBody().getOps<scf::ParallelOp>()) {
+        par.walk(
+            [&](airrt::DmaMemcpyNdOp c) { hasCandidateSCFParallel = true; });
+      }
+      if (hasCandidateSCFParallel)
+        serializeAsyncControlFlows(f);
+
+      // SCF parallel to affine for conversion
+      if (failed(ScfParToAffineForConversion(f))) {
+        emitError(UnknownLoc::get(context), "error lowering air.execute\n");
+        signalPassFailure();
+      }
+    });
+  }
+
+private:
+  // Util function getting child scf.for from scf loop. Note: at the moment only
+  // getting the first child for loop.
+  scf::ForOp getChildSCFForFromSCFLoop(Operation *loop) const {
+    if (!loop)
+      return scf::ForOp();
+    if (auto par_loop = dyn_cast<scf::ParallelOp>(loop)) {
+      for (auto child_for : par_loop.getBody()->getOps<scf::ForOp>()) {
+        return child_for;
+      }
+    } else if (auto for_loop = dyn_cast<scf::ForOp>(loop)) {
+      for (auto child_for : for_loop.getBody()->getOps<scf::ForOp>()) {
+        return child_for;
+      }
+    } else if (auto afor_loop = dyn_cast<AffineForOp>(loop)) {
+      for (auto child_for : afor_loop.getBody()->getOps<scf::ForOp>()) {
+        return child_for;
+      }
+    }
+    return scf::ForOp();
+  }
+
+  // Util function getting child airrt.memcpy from scf loop. Note: at the moment
+  // only getting the first child memcpy op.
+  airrt::DmaMemcpyNdOp getChildDmaMemcpyFromSCFLoop(Operation *loop) const {
+    if (!loop)
+      return airrt::DmaMemcpyNdOp();
+    if (auto par_loop = dyn_cast<scf::ParallelOp>(loop)) {
+      for (auto child : par_loop.getBody()->getOps<airrt::DmaMemcpyNdOp>()) {
+        return child;
+      }
+    }
+    if (auto for_loop = dyn_cast<scf::ForOp>(loop)) {
+      for (auto child : for_loop.getBody()->getOps<airrt::DmaMemcpyNdOp>()) {
+        return child;
+      }
+    }
+    return airrt::DmaMemcpyNdOp();
+  }
+
+  // Remap memcpy
+  Operation *remapOpAndOperands(OpBuilder builder, Operation *op,
+                                IRMapping &remap) const {
+    for (auto operand : op->getOperands()) {
+      if (operand.getDefiningOp()) {
+        if (auto index_cast =
+                dyn_cast<arith::IndexCastOp>(operand.getDefiningOp())) {
+          remapOpAndOperands(builder, operand.getDefiningOp(), remap);
+          builder.clone(*index_cast, remap);
+        } else if (auto const_op =
+                       dyn_cast<arith::ConstantOp>(operand.getDefiningOp())) {
+          builder.clone(*const_op, remap);
+        } else if (auto muli_op =
+                       dyn_cast<arith::MulIOp>(operand.getDefiningOp())) {
+          remapOpAndOperands(builder, operand.getDefiningOp(), remap);
+          builder.clone(*muli_op, remap);
+        }
+      }
+    }
+    return builder.clone(*op, remap);
+  }
+
+  // Remap for loop's region
+  void remapLoopRegion(OpBuilder builder, scf::ForOp src_for,
+                       scf::ForOp dst_for, IRMapping &remap) const {
+    remap.map(src_for.getInductionVar(), dst_for.getInductionVar());
+    for (unsigned i = 0; i < src_for.getRegionIterArgs().size(); i++) {
+      remap.map(src_for.getRegionIterArgs()[i], dst_for.getRegionIterArgs()[i]);
+    }
+    if (dst_for.getBody()->empty())
+      builder.setInsertionPointToStart(dst_for.getBody());
+    else if (dst_for.getBody()->getTerminator())
+      builder.setInsertionPoint(dst_for.getBody()->getTerminator());
+    else
+      builder.setInsertionPointToEnd(dst_for.getBody());
+    for (auto &op : src_for.getBody()->getOperations()) {
+      if (!isa<scf::YieldOp>(op))
+        remapOpAndOperands(builder, &op, remap);
+    }
+  }
+
+  // Remap loop nests
+  void remapLoop(scf::ForOp src_for, scf::ForOp dst_for,
+                 IRMapping &remap) const {
+    remap.map(src_for.getInductionVar(), dst_for.getInductionVar());
+    for (unsigned i = 0; i < src_for.getRegionIterArgs().size(); i++) {
+      remap.map(src_for.getRegionIterArgs()[i], dst_for.getRegionIterArgs()[i]);
+    }
+  }
+  void remapLoop(scf::ParallelOp src_par, scf::ParallelOp dst_par,
+                 IRMapping &remap) const {
+    for (unsigned i = 0; i < src_par.getInductionVars().size(); i++) {
+      remap.map(src_par.getInductionVars()[i], dst_par.getInductionVars()[i]);
+    }
+    for (unsigned i = 0; i < src_par.getInitVals().size(); i++) {
+      remap.map(src_par.getInitVals()[i], dst_par.getInitVals()[i]);
+    }
+  }
+  void remapLoop(Operation *src, Operation *dst, IRMapping &remap) const {
+    auto src_for = dyn_cast<scf::ForOp>(src);
+    auto dst_for = dyn_cast<scf::ForOp>(dst);
+    auto src_par = dyn_cast<scf::ParallelOp>(src);
+    auto dst_par = dyn_cast<scf::ParallelOp>(dst);
+    if (src_for && dst_for) {
+      remapLoop(src_for, dst_for, remap);
+    } else if (src_par && dst_par) {
+      remapLoop(src_par, dst_par, remap);
+    } else
+      assert(false);
+  }
+
+  // Get parent loop nest
+  std::vector<Operation *> getParentLoopNest(Operation *op,
+                                             Operation *outermost) const {
+    assert(op);
+    std::vector<Operation *> output;
+    for (auto parent = op->getParentOp(); parent != outermost;
+         parent = parent->getParentOp()) {
+      output.push_back(parent);
+    }
+    output.push_back(outermost);
+    return output;
+  }
+
+  // Get (the first) memcpy op from loop nest
+  Operation *getInnerMostMemcpyFromLoopNest(Operation *op) const {
+    if (auto scf_par = dyn_cast<scf::ParallelOp>(op))
+      return getInnerMostMemcpyFromLoopNest(scf_par);
+    else if (auto scf_for = dyn_cast<scf::ForOp>(op))
+      return getInnerMostMemcpyFromLoopNest(scf_for);
+    // else return nullptr;
+    else
+      assert(false);
+  }
+  Operation *getInnerMostMemcpyFromLoopNest(scf::ForOp op) const {
+    Operation *output = nullptr;
+    op.walk([&](airrt::DmaMemcpyNdOp o) { output = o; });
+    return output;
+  }
+  Operation *getInnerMostMemcpyFromLoopNest(scf::ParallelOp op) const {
+    Operation *output = nullptr;
+    op.walk([&](airrt::DmaMemcpyNdOp o) { output = o; });
+    return output;
+  }
+
+  SmallVector<Value, 1> lookupOrDefaultRange(SmallVector<Value, 1> vec,
+                                             IRMapping &remap) const {
+    SmallVector<Value, 1> output;
+    for (auto v : vec) {
+      output.push_back(remap.lookupOrDefault(v));
+    }
+    return output;
+  }
+
+  // This function is a workaround for vck190 having one single control
+  // processor, where all the async. control programs are serialized here.
+  void serializeAsyncControlFlows(func::FuncOp func) const {
+
+    auto context = func.getContext();
+
+    // Collect async scf loops in line-by-line order
+    std::vector<Operation *> scf_loops;
+    for (auto scf_loop : func.getBody().getOps<scf::ForOp>()) {
+      if (getInnerMostMemcpyFromLoopNest(scf_loop)) {
+        scf_loops.push_back(scf_loop);
+      }
+    }
+    for (auto scf_loop : func.getBody().getOps<scf::ParallelOp>()) {
+      if (getInnerMostMemcpyFromLoopNest(scf_loop)) {
+        scf_loops.push_back(scf_loop);
+      }
+    }
+
+    // Move herd load to before the first ctrl loop
+    func.walk([&](airrt::HerdLoadOp hl) { hl->moveBefore(scf_loops[0]); });
+
+    // Adjacent loops which contain for loop should merge into one
+    std::vector<std::vector<Operation *>> scf_loop_buckets;
+    scf_loop_buckets.push_back(std::vector<Operation *>());
+    int bucket_id = 0;
+    bool prev_loop_in_bucket = false;
+    for (auto scf_loop : scf_loops) {
+      bool merge_candidate_loop = false;
+      if (isa<scf::ForOp>(scf_loop))
+        merge_candidate_loop = true;
+      else if (auto scf_par = dyn_cast<scf::ParallelOp>(scf_loop)) {
+        merge_candidate_loop = false;
+        for (auto child_scf_for_loop : scf_par.getBody()->getOps<scf::ForOp>())
+          merge_candidate_loop = true;
+      }
+
+      if (merge_candidate_loop) {
+        scf_loop_buckets[bucket_id].push_back(scf_loop);
+        prev_loop_in_bucket = true;
+      } else {
+        if (prev_loop_in_bucket == true) {
+          bucket_id++;
+          scf_loop_buckets.push_back(std::vector<Operation *>());
+        }
+        prev_loop_in_bucket = false;
+      }
+    }
+
+    // Merge each bucket of loops into one
+    for (auto bucket : scf_loop_buckets) {
+      if (!bucket.empty()) {
+        OpBuilder builder(bucket[0]);
+        auto new_ctrl_loop = builder.clone(*bucket[0]);
+        Operation *first_chan_op =
+            getInnerMostMemcpyFromLoopNest(new_ctrl_loop);
+        auto dst_loop_nest = getParentLoopNest(first_chan_op, new_ctrl_loop);
+        for (unsigned i = 1; i < bucket.size(); i++) {
+          IRMapping remap;
+          Operation *chan_op = getInnerMostMemcpyFromLoopNest(bucket[i]);
+          assert(chan_op);
+          auto src_loop_nest = getParentLoopNest(chan_op, bucket[i]);
+          assert(src_loop_nest.size() == dst_loop_nest.size());
+          for (unsigned i = 0; i < src_loop_nest.size(); i++) {
+            remapLoop(src_loop_nest[i], dst_loop_nest[i], remap);
+          }
+          auto yield_op = dst_loop_nest[0]
+                              ->getRegions()
+                              .front()
+                              .getBlocks()
+                              .front()
+                              .getTerminator();
+          builder.setInsertionPoint(yield_op);
+          auto new_op = remapOpAndOperands(builder, chan_op, remap);
+          if (i == bucket.size() - 1) {
+            SmallVector<Value, 8> operands{};
+            if (auto new_ctrl_loop_par =
+                    dyn_cast<scf::ParallelOp>(dst_loop_nest[0])) {
+              operands.push_back(new_ctrl_loop_par.getInitVals()[0]);
+            } else if (auto new_ctrl_loop_for =
+                           dyn_cast<scf::ForOp>(dst_loop_nest[0])) {
+              operands.push_back(new_ctrl_loop_for.getRegionIterArgs()[0]);
+            }
+            builder.create<scf::YieldOp>(yield_op->getLoc(), operands);
+            yield_op->erase();
+          }
+        }
+      }
+      for (unsigned i = 0; i < bucket.size(); i++) {
+        bucket[i]->erase();
+      }
     }
   }
 };

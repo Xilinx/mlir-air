@@ -25,7 +25,13 @@ def ParallelToHerd : Pass<"air-par-to-herd", "ModuleOp"> {
   let options = [
     Option<"clAssignDepth", "depth", "int",
           /*default=*/"-1",
-          "Given a nest of parallel for loops, which depth to map to air.herd">
+          "Given a nest of parallel for loops, which depth to map to air.herd">,
+    Option<"clFirstDim", "first-dim", "int",
+          /*default=*/"0",
+          "Which herd dimension to map to first. Can be zero or one. If set to "
+          "zero, the 0th dimension of the scf.parallel will be mapped to the x "
+          "dimension of the herd. If set to one, the 0th dimension of the "
+          "scf.parallel will be mapped to the y dimension of the herd.">
   ];
 }
 
@@ -148,6 +154,14 @@ def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
     Option<"clDevice", "device", "std::string",
           /*default=*/"\"xcvc1902\"",
            "AIE device to target.">,
+    Option<"clUseObjFifo", "use-objectfifo", "bool",
+           /*default=*/"false",
+           "Choose whether to lower data movement ops to aie.objectFifo, or "
+           "directly to aie.locks.">,
+    Option<"clGenerateShimDMA", "generate-shim-dma", "bool",
+           /*default=*/"false",
+           "Choose whether to schedule shim data movement via generating AIE "
+           " shim DMA program, or AIR runtime.">,
   ];
   let description = [{
     This pass converts AIR dialect `herd` and `segment` operations into AIE
@@ -289,6 +303,15 @@ def AIRPipelineToAffine : Pass<"air-pipeline-to-affine", "ModuleOp"> {
           /*default=*/"\"buffers\"",
           "Type of lowering to use for core-to-core communication. Can be 'buffer' or 'getput'">
   ];
+}
+
+def InsertEmptyLaunchOverHerd : Pass<"air-insert-launch-and-segment-around-herd", "ModuleOp"> {
+  let summary = "Insert segment and launch ops around herd op";
+  let constructor = "xilinx::air::createInsertEmptyLaunchOverHerdPass()";
+  let description =  [{
+    This pass inserts launch and segment operations around herd op, if a herd op 
+    does not have a parent launch or segment operation.
+  }];
 }
 
 #endif

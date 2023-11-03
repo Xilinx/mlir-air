@@ -31,7 +31,7 @@ public:
   // An incomplete vector of vertices as candidates to wavefront
   std::vector<Graph::vertex_descriptor> latent_wavefront_candidates;
   // Sub runner nodes to the current runner node
-  std::deque<runnerNode> sub_runner_nodes;
+  std::vector<runnerNode> sub_runner_nodes;
   // Resource hierarchies which are allocated to this runner node
   std::vector<resourceHierarchy *> resource_hiers;
 
@@ -1152,11 +1152,10 @@ private:
     // Check if this op has been completely dispatched
     std::pair<std::string, std::string> key =
         std::make_pair(op.getChanName().str(), "put");
-    unsigned processed = 1;
     unsigned total_count =
         this->tokenSpatialFactorForResource<air::HierarchyInterface>(op, {});
     if (launch_runner->channel_ops_in_progress.count(key)) {
-      processed = launch_runner->channel_ops_in_progress[key].first;
+      unsigned processed = launch_runner->channel_ops_in_progress[key].first;
       if (processed == total_count) {
         this->processed_vertices.push_back(it);
       }
@@ -1204,31 +1203,30 @@ private:
     unsigned get_to_deallocate = 0;
     if (put_reserved_count * bcast_factor > get_reserved_count) {
       put_to_deallocate = mlir::floorDiv(get_reserved_count, bcast_factor);
-      get_to_deallocate = get_reserved_count;
     } else {
       put_to_deallocate = put_reserved_count;
-      get_to_deallocate = put_reserved_count * bcast_factor;
     }
+    get_to_deallocate = put_to_deallocate * bcast_factor;
 
     // Deallocate src and dst ports
     unsigned put_deallocate_count = 0;
     for (auto p : launch_runner->channel_ops_in_progress[put_key].second) {
+      if (put_deallocate_count == put_to_deallocate) {
+        break;
+      }
       if (p->isReserved) {
         p->isReserved = false;
         put_deallocate_count++;
       }
-      if (put_deallocate_count == put_to_deallocate) {
-        break;
-      }
     }
     unsigned get_deallocate_count = 0;
     for (auto g : launch_runner->channel_ops_in_progress[get_key].second) {
+      if (get_deallocate_count == get_to_deallocate) {
+        break;
+      }
       if (g->isReserved) {
         g->isReserved = false;
         get_deallocate_count++;
-      }
-      if (get_deallocate_count == get_to_deallocate) {
-        break;
       }
     }
 

@@ -47,17 +47,11 @@ func.func @scf_for() {
 
 // CHECK-LABEL: func.func @scf_par_execute
 // CHECK: %[[V0:.*]] = airrt.wait_all : !airrt.event
-// CHECK: %[[V1:.*]] = scf.parallel (%arg0) = (%c0) to (%c64) step (%c1) init (%[[V0]]) -> !airrt.event {
+// CHECK: affine.for %[[V1:.*]] = 0 to 64 {
 // CHECK:   %[[V2:.*]] = arith.muli %arg0, %c4 : index
 // CHECK:   %[[V3:.*]] = airrt.wait_all : !airrt.event
-// CHECK:   scf.reduce(%[[V3]])  : !airrt.event {
-// CHECK:   ^bb0(%arg1: !airrt.event, %arg2: !airrt.event):
-// CHECK:     %[[V4:.*]] = airrt.wait_all %arg1, %arg2 : !airrt.event
-// CHECK:     scf.reduce.return %[[V4]] : !airrt.event
-// CHECK:   }
-// CHECK:   scf.yield
 // CHECK: }
-// CHECK: airrt.wait_all %[[V1]]
+// CHECK: airrt.wait_all
 func.func @scf_par_execute() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
