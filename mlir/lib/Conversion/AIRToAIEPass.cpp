@@ -2044,6 +2044,12 @@ public:
         std::string dma_name = "airMemcpyId" + std::to_string(original_id);
         auto dma_name_attr = builder.getStringAttr(dma_name);
 
+        // Avoid redeclaration of the same metadata
+        auto dev = tileOp->getParentOfType<AIE::DeviceOp>();
+        auto sym = dev.lookupSymbol(dma_name_attr);
+        if (sym)
+          continue;
+
         builder.create<AIE::ShimDMAAllocationOp>(
             builder.getUnknownLoc(), SymbolRefAttr::get(ctx, dma_name_attr),
             AIE::DMAChannelDirAttr::get(ctx, dir),
