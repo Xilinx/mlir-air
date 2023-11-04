@@ -47,6 +47,10 @@ int64_t get1DOffset(SmallVector<Value> memcpy_sizes,
 std::pair<int64_t, int64_t> getLockValuePair(AIE::AIEArch arch,
                                              Value buffer_memref);
 
+std::pair<int64_t, int64_t> getLockValuePair(AIE::AIEArch arch,
+                                             Value buffer_memref,
+                                             air::ChannelOp air_chan);
+
 struct allocation_info_t {
   AIE::TileOp dma_tile = nullptr;
   int64_t col = -1;
@@ -107,8 +111,8 @@ protected:
 
 public:
   std::vector<allocation_info_t> mm2s_allocs, s2mm_allocs;
-  std::vector<
-      std::tuple<Operation *, AIE::DMAChannel, AIE::LockOp, AIE::LockOp>>
+  std::vector<std::tuple<Operation *, air::ChannelOp, AIE::DMAChannel,
+                         AIE::LockOp, AIE::LockOp>>
       lock_allocation_list;
 };
 
