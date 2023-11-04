@@ -1234,6 +1234,39 @@ struct LabelScfForLoopForPingPongPattern : public OpRewritePattern<scf::ForOp> {
 private:
 };
 
+struct LabelScfForLoopInAIRSegment : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp for_op,
+                                PatternRewriter &rewriter) const override {
+
+    // Check if the loop has been labelled
+    if (for_op->hasAttr("unroll"))
+      return failure();
+
+    if (for_op->getParentOfType<air::SegmentOp>() &&
+        !for_op->getParentOfType<air::HerdOp>()) {
+      // Get for loop iteration count
+      std::optional<int64_t> LbCstOp =
+          mlir::getConstantIntValue(for_op.getLowerBound());
+      std::optional<int64_t> UbCstOp =
+          mlir::getConstantIntValue(for_op.getUpperBound());
+      std::optional<int64_t> StepCstOp =
+          mlir::getConstantIntValue(for_op.getStep());
+      if (LbCstOp && UbCstOp && StepCstOp) {
+        // If the for loop has static loop bounds
+        int64_t tripCount = mlir::ceilDiv((*UbCstOp - *LbCstOp), *StepCstOp);
+        // Label for full unrolling
+        for_op->setAttr("unroll", rewriter.getI32IntegerAttr(tripCount));
+      }
+    }
+
+    return success();
+  }
+
+private:
+};
+
 struct UnrollChannelByFactorPattern {
 
 public:
@@ -1932,6 +1965,33 @@ public:
 private:
 };
 
+class AIRLabelScfForLoopInAIRSegmentPattern
+    : public xilinx::air::AIRLabelScfForLoopInAIRSegmentPatternBase<
+          AIRLabelScfForLoopInAIRSegmentPattern> {
+
+public:
+  AIRLabelScfForLoopInAIRSegmentPattern() = default;
+  AIRLabelScfForLoopInAIRSegmentPattern(
+      const AIRLabelScfForLoopInAIRSegmentPattern &pass){};
+
+  void runOptPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<LabelScfForLoopInAIRSegment>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      runOptPatterns(f);
+  }
+
+private:
+};
+
 class AIRUnrollChannelByFactorPattern
     : public xilinx::air::AIRUnrollChannelByFactorPatternBase<
           AIRUnrollChannelByFactorPattern> {
@@ -2380,15 +2440,9 @@ private:
     for (unsigned i = 0; i < a_puts.size(); i++) {
       auto b_put_parent_region = b_puts[i]->getParentRegion();
       auto b_put_parent = b_puts[i]->getParentOp();
-      // b_puts[i]->moveBefore(a_puts[i]);
       OpBuilder builder(a_puts[i]);
       IRMapping remap;
-      // for (unsigned j = 0; j < b_put_parent_region->getNumArguments(); j++){
-      //   remap.map(b_put_parent_region->getArgument(j),
-      //   a_puts[i]->getParentRegion()->getArgument(j));
-      // }
       remapAllParentLoopArgs(remap, a_puts[i], b_puts[i]);
-      // auto new_b_put = builder.clone(*b_puts[i], remap);
       auto new_b_put = cloneOpAndOperands(builder, remap, b_puts[i]);
       eraseParentLoopIfEmpty(*b_puts[i]);
       if (a_puts[i].getAsyncToken())
@@ -2398,25 +2452,15 @@ private:
     for (unsigned i = 0; i < a_gets.size(); i++) {
       auto b_get_parent_region = b_gets[i]->getParentRegion();
       auto b_get_parent = b_gets[i]->getParentOp();
-      // b_gets[i]->moveBefore(a_gets[i]);
       OpBuilder builder(a_gets[i]);
       IRMapping remap;
-      // for (unsigned j = 0; j < b_get_parent_region->getNumArguments(); j++){
-      //   remap.map(b_get_parent_region->getArgument(j),
-      //   a_gets[i]->getParentRegion()->getArgument(j));
-      // }
       remapAllParentLoopArgs(remap, a_gets[i], b_gets[i]);
-      // auto new_b_get = builder.clone(*b_gets[i], remap);
       auto new_b_get = cloneOpAndOperands(builder, remap, b_gets[i]);
       eraseParentLoopIfEmpty(*b_gets[i]);
       if (a_gets[i].getAsyncToken())
         a_gets[i].addAsyncDependency(
             dyn_cast<air::ChannelGetOp>(new_b_get).getAsyncToken());
     }
-    // Update symbol name
-    // mlir::SymbolTable::replaceAllSymbolUses(chan_b.getOperation(),
-    // mlir::SymbolTable::getSymbolName(chan_a),
-    // chan_a->getParentOfType<ModuleOp>());
   }
   Operation *cloneOpAndOperands(OpBuilder builder, IRMapping remap,
                                 Operation *op) {
@@ -2482,7 +2526,6 @@ private:
             SmallVector<Value>{});
         parent_op->getResult(0).replaceAllUsesWith(wa.getAsyncToken());
       }
-      // parent_op->dropAllDefinedValueUses();
       parent_op->erase();
     } else {
       OpBuilder builder(&op);
@@ -2541,6 +2584,10 @@ std::unique_ptr<Pass> createAIRPingPongTransformationPattern() {
 
 std::unique_ptr<Pass> createAIRLabelScfForLoopForPingPongPattern() {
   return std::make_unique<AIRLabelScfForLoopForPingPongPattern>();
+}
+
+std::unique_ptr<Pass> createAIRLabelScfForLoopInAIRSegmentPattern() {
+  return std::make_unique<AIRLabelScfForLoopInAIRSegmentPattern>();
 }
 
 std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass() {
