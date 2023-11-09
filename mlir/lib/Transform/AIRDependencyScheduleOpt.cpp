@@ -2363,7 +2363,7 @@ private:
         parent_loop_nest.push_back(parent);
       else if (isa<air::HierarchyInterface>(parent))
         parent_loop_nest.push_back(parent);
-      else if (isa<mlir::AffineIfOp>(parent))
+      else if (isa<affine::AffineIfOp>(parent))
         parent_loop_nest.push_back(parent);
       parent = parent->getParentOp();
     }
@@ -2423,7 +2423,7 @@ private:
                isa<air::HierarchyInterface>(a)) {
       if (a == b)
         return true;
-    } else if (isa<mlir::AffineIfOp>(a) || isa<mlir::AffineIfOp>(b))
+    } else if (isa<affine::AffineIfOp>(a) || isa<affine::AffineIfOp>(b))
       return false;
     return false;
   }
@@ -2468,12 +2468,12 @@ private:
       if (operand.getDefiningOp()) {
         if (isa<arith::ConstantIndexOp>(operand.getDefiningOp()))
           builder.clone(*operand.getDefiningOp());
-        else if (isa<mlir::AffineApplyOp>(operand.getDefiningOp()))
+        else if (isa<affine::AffineApplyOp>(operand.getDefiningOp()))
           builder.clone(*operand.getDefiningOp(), remap);
         else if (isa<air::ExecuteOp>(operand.getDefiningOp())) {
           auto exec = dyn_cast<air::ExecuteOp>(operand.getDefiningOp());
           auto child_op = &exec.getBody().front().getOperations().front();
-          if (isa<mlir::AffineApplyOp>(child_op))
+          if (isa<affine::AffineApplyOp>(child_op))
             builder.clone(*operand.getDefiningOp(), remap);
         }
       }
