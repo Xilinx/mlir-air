@@ -234,6 +234,11 @@ AIR dialect memcpy operations into AIRRt memcpy operations.
     return
   }
 ```
+### `-airrt-to-ipu`
+
+_Lower AIRRt dialect to AIEX.ipu dialect_
+
+Lower AIRRt dialect to AIEX.ipu dialect
 ### `-airrt-to-llvm`
 
 _Lower AIRRt dialect to LLVM dialect_
