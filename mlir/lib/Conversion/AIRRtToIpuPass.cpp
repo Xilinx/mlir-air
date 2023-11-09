@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -199,6 +200,11 @@ struct AIRRtToIpuPass : public air::AIRRtToIpuBase<AIRRtToIpuPass> {
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
 
+    // Simplify arith ops
+    RewritePatternSet canoPatterns(ctx);
+    arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns, ctx);
+    (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns));
+
     // Unroll any affine for loops
     unrollAffineFors(module);
 
@@ -285,8 +291,8 @@ struct AIRRtToIpuPass : public air::AIRRtToIpuBase<AIRRtToIpuPass> {
             auto row = builder.getI32IntegerAttr(0);
             auto dir = builder.getI32IntegerAttr(0);
             auto chan = builder.getI32IntegerAttr(infoOp->getChannelIndex());
-            auto col_num = builder.getI32IntegerAttr(0);
-            auto row_num = builder.getI32IntegerAttr(0);
+            auto col_num = builder.getI32IntegerAttr(1);
+            auto row_num = builder.getI32IntegerAttr(1);
             builder.setInsertionPointAfter(dma);
             builder.create<AIEX::IpuSyncOp>(dma->getLoc(), col, row, dir, chan,
                                             col_num, row_num);
