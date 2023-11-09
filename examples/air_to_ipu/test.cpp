@@ -67,14 +67,14 @@ std::vector<uint32_t> load_instr_sequence(std::string instr_path) {
 template <typename T>
 void mm_out(std::vector<T> a, std::vector<T> b, std::vector<T> &r) {
   // Data layout preprocessing
-  for (size_t m2 = 0; m2 < M / mm; m2++){
-    for (size_t m1 = 0; m1 < mm; m1++){
-      for (size_t n2 = 0; n2 < N / nn; n2++){
-        for (size_t n1 = 0; n1 < nn; n1++){
+  for (size_t m2 = 0; m2 < M / mm; m2++) {
+    for (size_t m1 = 0; m1 < mm; m1++) {
+      for (size_t n2 = 0; n2 < N / nn; n2++) {
+        for (size_t n1 = 0; n1 < nn; n1++) {
           size_t idx = n1 + m1 * nn + n2 * mm * nn + m2 * mm * N;
           r[idx] = (T)(0);
-          for (size_t k2 = 0; k2 < K / kk; k2++){
-            for (size_t k1 = 0; k1 < kk; k1++){
+          for (size_t k2 = 0; k2 < K / kk; k2++) {
+            for (size_t k1 = 0; k1 < kk; k1++) {
               T _a = a[k1 + m1 * kk + k2 * mm * kk + m2 * mm * K];
               T _b = b[n1 + k1 * nn + n2 * nn * kk + k2 * kk * N];
               r[idx] += _a * _b;
@@ -171,7 +171,8 @@ int main(int argc, const char *argv[]) {
       xrt::bo(device, A_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(2));
   auto bo_b =
       xrt::bo(device, B_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(3));
-  auto bo_c = xrt::bo(device, C_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(4));
+  auto bo_c =
+      xrt::bo(device, C_SIZE, XRT_BO_FLAGS_HOST_ONLY, kernel.group_id(4));
 
   if (verbosity >= 1)
     std::cout << "Writing data into buffer objects.\n";
@@ -210,17 +211,19 @@ int main(int argc, const char *argv[]) {
 
   int errors = 0;
   int max_errors = 100;
-  
+
   std::vector<C_DATATYPE> output_ref0;
   for (uint32_t i = 0; i < C_VOLUME; i++)
     output_ref0.push_back(0);
   mm_out(AVec, BVec, output_ref0);
 
   for (uint32_t i = 0; i < C_VOLUME; i++) {
-    if (bufOut[i] != output_ref0[i]){
-      errors ++;
-      if (errors < max_errors){
-        std::cout << "\nerror, id " << i << " expected " << std::to_string(output_ref0[i]) << ", got" << std::to_string(bufOut[i]) << "\n";
+    if (bufOut[i] != output_ref0[i]) {
+      errors++;
+      if (errors < max_errors) {
+        std::cout << "\nerror, id " << i << " expected "
+                  << std::to_string(output_ref0[i]) << ", got"
+                  << std::to_string(bufOut[i]) << "\n";
       }
     }
   }
