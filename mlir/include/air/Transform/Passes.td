@@ -938,6 +938,17 @@ def AIRLabelScfForLoopForPingPongPattern: Pass<"air-label-scf-for-to-ping-pong",
   }];
 }
 
+def AIRLabelScfForLoopInAIRSegmentPattern: Pass<"air-label-scf-for-in-segment", "ModuleOp"> {
+  let summary = "Label all candidate scf.for loops within air.segment for unrolling";
+  let constructor = "xilinx::air::createAIRLabelScfForLoopInAIRSegmentPattern()";
+  let description = [{
+    This pass labels all scf.for loops contained in air.segment ops, except for those
+    which are also contained in air.herd ops, with an 'unroll' integer attribute. Scf.for
+    loops labelled with this attribute shall be unrolled, with the provided factor, by
+    any subsequent 'air-unroll-loop-for-pipelining-pattern' pass.
+  }];
+}
+
 def AIRUnrollChannelByFactorPattern: Pass<"air-unroll-channel-by-factor", "ModuleOp"> {
   let summary = "Unroll channel puts and gets by an integer factor";
   let constructor = "xilinx::air::createAIRUnrollChannelByFactorPattern()";
@@ -963,6 +974,26 @@ def AIREnforceLoopCarriedMemrefDeallocPattern: Pass<"air-enforce-loop-carried-me
   let description = [{
     This pass enforces memref deallocation events to happen within each loop
     iteration, by connecting them in the loop-carried dependency path.
+  }];
+}
+
+def AIRDeAliasMemref: Pass<"air-dealias-memref", "ModuleOp"> {
+  let summary = "De-alias a memref into multiple memrefs";
+  let constructor = "xilinx::air::createAIRDeAliasMemref()";
+  let description = [{
+    This pass detects memrefs which can de-alias into multiple memrefs over time, and
+    generates extra copies of this memref. This process can improve the stability of the
+    memref-to-buffer mappings.
+  }];
+}
+
+def AIRFuseChannels: Pass<"air-fuse-channels", "ModuleOp"> {
+  let summary = "Fuse multiple air.channel ops into one";
+  let constructor = "xilinx::air::createAIRFuseChannels()";
+  let description = [{
+    This pass fuses multiple air.channel ops into one. The condition for fusing channels 
+    is such that the puts and gets of all candidate channels mush share the same control 
+    loop hierarchy, where every parent loops must have matching loop bounds.
   }];
 }
 
