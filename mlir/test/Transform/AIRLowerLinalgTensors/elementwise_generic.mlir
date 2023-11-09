@@ -7,9 +7,10 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-lower-linalg-tensors | FileCheck %s
-// CHECK: %[[BUF2:.*]] = AIE.buffer(%0) {sym_name = "buf2"} : memref<32x32xi32, 2>
-// CHECK: %[[BUF1:.*]] = AIE.buffer(%0) {sym_name = "buf1"} : memref<32x32xi32, 2>
-// CHECK: %[[BUF0:.*]] = AIE.buffer(%0) {sym_name = "buf0"} : memref<32x32xi32, 2>
+// CHECK: %[[TILE0:.*]] = AIE.tile(1, 1)
+// CHECK: %[[BUF2:.*]] = AIE.buffer(%[[TILE0]]) {sym_name = "buf2"} : memref<32x32xi32, 2>
+// CHECK: %[[BUF1:.*]] = AIE.buffer(%[[TILE0]]) {sym_name = "buf1"} : memref<32x32xi32, 2>
+// CHECK: %[[BUF0:.*]] = AIE.buffer(%[[TILE0]]) {sym_name = "buf0"} : memref<32x32xi32, 2>
 // CHECK: affine.for %arg0 = 0 to 32 {
 // CHECK:     affine.for %arg1 = 0 to 32 {
 // CHECK:       %{{.*}} = affine.load %[[BUF0]][%arg0, %arg1] : memref<32x32xi32, 2>
