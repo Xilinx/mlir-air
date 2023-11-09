@@ -19,11 +19,7 @@
 // CHECK:  %[[VAL_8:.*]] = AIE.lock(%[[VAL_1]], 2) {init = 0 : i32}
 // CHECK:  %[[VAL_9:.*]] = AIE.lock(%[[VAL_1]], 1) {init = 1 : i32}
 // CHECK:  %[[VAL_10:.*]] = AIE.lock(%[[VAL_1]], 0) {init = 0 : i32}
-// CHECK:  %[[VAL_11:.*]] = AIE.lock(%[[VAL_2]], 7) {init = 1 : i32}
-// CHECK:  %[[VAL_12:.*]] = AIE.lock(%[[VAL_2]], 6) {init = 0 : i32}
-// CHECK:  %[[VAL_13:.*]] = AIE.lock(%[[VAL_2]], 5) {init = 1 : i32}
-// CHECK:  %[[VAL_14:.*]] = AIE.lock(%[[VAL_2]], 4) {init = 0 : i32}
-// CHECK:  %[[VAL_15:.*]] = AIE.lock(%[[VAL_2]], 3) {init = 1 : i32}
+// CHECK:  %[[VAL_15:.*]] = AIE.lock(%[[VAL_2]], 3) {init = 3 : i32}
 // CHECK:  %[[VAL_16:.*]] = AIE.lock(%[[VAL_2]], 2) {init = 0 : i32}
 // CHECK:  %[[VAL_17:.*]] = AIE.lock(%[[VAL_2]], 1) {init = 1 : i32}
 // CHECK:  %[[VAL_18:.*]] = AIE.lock(%[[VAL_2]], 0) {init = 0 : i32}

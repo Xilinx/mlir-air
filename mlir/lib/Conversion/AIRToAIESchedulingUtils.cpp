@@ -228,13 +228,16 @@ std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
     return std::make_pair(-1, -1);
 
   if (!air_chan)
-    return getLockValuePair(arch, buffer_memref, air_chan);
+    return getLockValuePair(arch, buffer_memref);
 
   // Infer semaphore lock values using air.channel
   int read_counter = 0;
   int write_counter = 0;
   for (auto get : getChannelGetOpThroughSymbol(air_chan)) {
-    if (auto core_op = get->getParentOfType<AIE::CoreOp>()) {
+    if (isa<AIE::ExternalBufferOp>(buffer_memref.getDefiningOp())) {
+      // Shim DMA locks
+      write_counter = 1;
+    } else if (auto core_op = get->getParentOfType<AIE::CoreOp>()) {
       if (core_op.getTileOp().getResult() ==
           buffer_memref.getDefiningOp()->getOperand(0)) {
         write_counter++;
@@ -242,7 +245,10 @@ std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
     }
   }
   for (auto put : getChannelPutOpThroughSymbol(air_chan)) {
-    if (auto core_op = put->getParentOfType<AIE::CoreOp>()) {
+    if (isa<AIE::ExternalBufferOp>(buffer_memref.getDefiningOp())) {
+      // Shim DMA locks
+      read_counter = 1;
+    } else if (auto core_op = put->getParentOfType<AIE::CoreOp>()) {
       if (core_op.getTileOp().getResult() ==
           buffer_memref.getDefiningOp()->getOperand(0)) {
         read_counter++;
@@ -424,8 +430,6 @@ DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
   else
     init_pair = getLockValuePair(target_model.getTargetArch(),
                                  bufferOp->getResult(0), air_chan);
-  // auto init_pair =
-  //     getLockValuePair(target_model.getTargetArch(), bufferOp->getResult(0));
   auto init = std::max(init_pair.first, init_pair.second);
 
   OpBuilder builder(bufferOp);
