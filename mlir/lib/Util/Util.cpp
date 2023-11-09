@@ -149,6 +149,23 @@ uint64_t air::getTensorVolume(const Type ty) {
   }
 }
 
+SmallVector<int> air::getTensorShape(const ShapedType ty) {
+  if (!ty.hasRank())
+    return SmallVector<int>(1);
+  SmallVector<int> shape = {};
+  for (auto &d : ty.getShape())
+    shape.push_back(d);
+  return shape;
+}
+
+SmallVector<int> air::getTensorShape(const Type ty) {
+  if (auto t = ty.dyn_cast<ShapedType>()) {
+    return getTensorShape(t);
+  } else {
+    return SmallVector<int>(1);
+  }
+}
+
 std::string air::getElementTypeAsString(const mlir::Type ty) {
   if (auto st = ty.dyn_cast<mlir::ShapedType>()) {
     return to_string(st.getElementType());
@@ -376,6 +393,8 @@ void air::eraseAIRHierarchyOperand(air::HierarchyInterface op, unsigned index) {
 // Get channel declaration through channel symbol
 air::ChannelOp
 air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
+  if (!op)
+    return air::ChannelOp();
   Operation *parent = op;
   while (parent = parent->getParentOp()) {
     if (parent->hasTrait<OpTrait::SymbolTable>()) {
@@ -446,6 +465,24 @@ air::getTheOtherChannelOpThroughSymbol(air::ChannelGetOp get) {
   auto channel_op = getChannelDeclarationThroughSymbol(
       dyn_cast<air::ChannelInterface>(get.getOperation()));
   return getChannelPutOpThroughSymbol(channel_op);
+}
+
+std::vector<air::ChannelInterface>
+air::getTheOtherChannelOpThroughSymbol(air::ChannelInterface op) {
+  if (auto put = dyn_cast<air::ChannelPutOp>(op.getOperation())) {
+    auto vec = getTheOtherChannelOpThroughSymbol(put);
+    std::vector<air::ChannelInterface> output;
+    for (auto v : vec)
+      output.push_back(dyn_cast<air::ChannelInterface>(v.getOperation()));
+    return output;
+  } else if (auto get = dyn_cast<air::ChannelGetOp>(op.getOperation())) {
+    auto vec = getTheOtherChannelOpThroughSymbol(get);
+    std::vector<air::ChannelInterface> output;
+    for (auto v : vec)
+      output.push_back(dyn_cast<air::ChannelInterface>(v.getOperation()));
+    return output;
+  } else
+    return std::vector<air::ChannelInterface>();
 }
 
 // Get sizes from integerset
@@ -692,8 +729,8 @@ unsigned air::getIteratorFromMDVector(std::vector<unsigned> dims,
   unsigned output = 0;
   for (int i = dims.size() - 1; i >= 0; i--) { // In reversed order
     unsigned scale_factor = 1;
-    for (unsigned j = i + 1; j < dims.size(); j++) {
-      scale_factor *= dims[j];
+    for (unsigned j = 0; j < i; j++) {
+      scale_factor *= dims[i];
     }
     output += scale_factor * position[i];
   }

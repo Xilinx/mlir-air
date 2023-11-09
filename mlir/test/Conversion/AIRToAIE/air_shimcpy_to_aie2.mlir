@@ -183,14 +183,10 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         %[[VAL_2:.*]] = AIE.tile(2, 1)
 // CHECK:         %[[VAL_3:.*]] = AIE.tile(2, 3)
 // CHECK:         %[[VAL_4:.*]] = AIE.tile(2, 0)
-// CHECK:         %[[VAL_5:.*]] = AIE.lock(%[[VAL_2]], 7) {init = 1 : i32}
-// CHECK:         %[[VAL_6:.*]] = AIE.lock(%[[VAL_2]], 6) {init = 0 : i32}
-// CHECK:         %[[VAL_7:.*]] = AIE.lock(%[[VAL_2]], 5) {init = 1 : i32}
-// CHECK:         %[[VAL_8:.*]] = AIE.lock(%[[VAL_2]], 4) {init = 0 : i32}
-// CHECK:         %[[VAL_9:.*]] = AIE.lock(%[[VAL_2]], 3) {init = 1 : i32}
-// CHECK:         %[[VAL_10:.*]] = AIE.lock(%[[VAL_2]], 2) {init = 0 : i32}
-// CHECK:         %[[VAL_11:.*]] = AIE.lock(%[[VAL_2]], 1) {init = 1 : i32}
-// CHECK:         %[[VAL_12:.*]] = AIE.lock(%[[VAL_2]], 0) {init = 0 : i32}
+// CHECK:         %[[VAL_5:.*]] = AIE.lock(%[[VAL_2]], 3) {init = 1 : i32}
+// CHECK:         %[[VAL_6:.*]] = AIE.lock(%[[VAL_2]], 2) {init = 0 : i32}
+// CHECK:         %[[VAL_7:.*]] = AIE.lock(%[[VAL_2]], 1) {init = 1 : i32}
+// CHECK:         %[[VAL_8:.*]] = AIE.lock(%[[VAL_2]], 0) {init = 0 : i32}
 // CHECK:         %[[VAL_17:.*]] = AIE.lock(%[[VAL_3]], 3) {init = 1 : i32}
 // CHECK:         %[[VAL_18:.*]] = AIE.lock(%[[VAL_3]], 2) {init = 0 : i32}
 // CHECK:         %[[VAL_19:.*]] = AIE.lock(%[[VAL_3]], 1) {init = 1 : i32}
@@ -233,18 +229,18 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK: AIE.memTileDMA(%[[VAL_2]]) {
 // CHECK:   AIE.dmaStart(S2MM, 0, ^bb1, ^bb7)
 // CHECK: ^bb1:
-// CHECK:   AIE.useLock(%[[VAL_11]], AcquireGreaterEqual, 1)
+// CHECK:   AIE.useLock(%[[VAL_7]], AcquireGreaterEqual, 1)
 // CHECK:   AIE.dmaBd(<%[[VAL_21]] : memref<1024xi32, 1>, 0, 1024>, 0)
-// CHECK:   AIE.useLock(%[[VAL_12]], Release, 1)
+// CHECK:   AIE.useLock(%[[VAL_8]], Release, 1)
 // CHECK:   AIE.nextBd ^bb1
 // CHECK: ^bb2:
 // CHECK:   AIE.end
 // CHECK: ^bb3:
 // CHECK:   AIE.dmaStart(S2MM, 1, ^bb4, ^bb2)
 // CHECK: ^bb4:
-// CHECK:   AIE.useLock(%[[VAL_9]], AcquireGreaterEqual, 1)
+// CHECK:   AIE.useLock(%[[VAL_5]], AcquireGreaterEqual, 1)
 // CHECK:   AIE.dmaBd(<%[[VAL_22]] : memref<1024xi32, 1>, 0, 1024>, 0)
-// CHECK:   AIE.useLock(%[[VAL_10]], Release, 1)
+// CHECK:   AIE.useLock(%[[VAL_6]], Release, 1)
 // CHECK:   AIE.nextBd ^bb4
 // CHECK: ^bb5:
 // CHECK:   AIE.dmaStart(MM2S, 0, ^bb6, ^bb3)
@@ -338,9 +334,9 @@ func.func @func5(%arg0 : memref<1024xi32>) -> () {
   %token_0 = air.channel.put async @channel_8[] (%arg0[] [] []) {id = 3 : i32} : (memref<1024xi32>)
   %token_10 = air.segment @segment0 async {
     %c0 = arith.constant 0 : index
-    %c1 = arith.constant 0 : index
-    %c512 = arith.constant 0 : index
-    %c1024 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c512 = arith.constant 512 : index
+    %c1024 = arith.constant 1024 : index
     %herd_cols = arith.constant 4 : index
     %herd_rows = arith.constant 4 : index
     %token_1, %memtile0 = air.execute -> (memref<1024xi32, 1>) {
