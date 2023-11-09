@@ -107,12 +107,13 @@ struct ModuleMetadataToIpuPattern
   }
 };
 
-class L1AffineStoreOpConversion : public OpConversionPattern<AffineStoreOp> {
+class L1AffineStoreOpConversion
+    : public OpConversionPattern<affine::AffineStoreOp> {
 public:
-  using OpConversionPattern<AffineStoreOp>::OpConversionPattern;
+  using OpConversionPattern<affine::AffineStoreOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(AffineStoreOp op, OpAdaptor adaptor,
+  matchAndRewrite(affine::AffineStoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = op.getMemref().getType().cast<MemRefType>();
@@ -172,13 +173,16 @@ struct AIRRtToIpuPass : public air::AIRRtToIpuBase<AIRRtToIpuPass> {
     target.addIllegalDialect<AIRRtDialect>();
     target.addLegalDialect<arith::ArithDialect, AIEX::AIEXDialect>();
 
-    target.addDynamicallyLegalOp<AffineStoreOp>([&](AffineStoreOp op) {
-      if (op->getParentOfType<AIE::CoreOp>())
-        return true;
-      return (
-          op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
-          (int)xilinx::air::MemorySpace::L1);
-    });
+    target.addDynamicallyLegalOp<affine::AffineStoreOp>(
+        [&](affine::AffineStoreOp op) {
+          if (op->getParentOfType<AIE::CoreOp>())
+            return true;
+          return (op.getMemref()
+                      .getType()
+                      .cast<MemRefType>()
+                      .getMemorySpaceAsInt() !=
+                  (int)xilinx::air::MemorySpace::L1);
+        });
     target.addDynamicallyLegalOp<memref::StoreOp>([&](memref::StoreOp op) {
       if (op->getParentOfType<AIE::CoreOp>())
         return true;
@@ -244,17 +248,17 @@ struct AIRRtToIpuPass : public air::AIRRtToIpuBase<AIRRtToIpuPass> {
   }
 
   void unrollAffineFors(ModuleOp module) {
-    SmallVector<AffineForOp> afos;
+    SmallVector<affine::AffineForOp> afos;
     module.walk([&](mlir::func::FuncOp f) {
-      f.walk([&](AffineForOp afo) { afos.push_back(afo); });
+      f.walk([&](affine::AffineForOp afo) { afos.push_back(afo); });
     });
     for (auto afo : afos) {
       (void)loopUnrollFull(afo);
     }
   }
 
-  Optional<AIE::ShimDMAAllocationOp> getAllocOpForSymbol(AIE::DeviceOp dev,
-                                                         StringRef sym_name) {
+  std::optional<AIE::ShimDMAAllocationOp>
+  getAllocOpForSymbol(AIE::DeviceOp dev, StringRef sym_name) {
     auto sym = dev.lookupSymbol(sym_name);
     if (!sym)
       return std::nullopt;

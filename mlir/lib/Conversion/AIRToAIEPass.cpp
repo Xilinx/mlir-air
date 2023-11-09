@@ -118,7 +118,7 @@ struct ShimTileAllocator {
 };
 
 bool isMM2S(AIE::DMAChannel channel) {
-  return (channel.first == AIE::DMAChannelDir::MM2S);
+  return (channel.direction == AIE::DMAChannelDir::MM2S);
 }
 bool isLegalMemorySpace(air::MemcpyInterface memcpyOp, AIE::AIEArch arch) {
   switch (arch) {
@@ -179,7 +179,7 @@ AIE::BufferOp allocateBufferOp(MemRefType memrefTy, AIE::TileOp tile,
     t = t->getNextNode();
   builder.setInsertionPointAfter(t);
   AIE::BufferOp bufferOp =
-      builder.create<AIE::BufferOp>(tile->getLoc(), memrefTy, tile, nullptr);
+      builder.create<AIE::BufferOp>(tile->getLoc(), memrefTy, tile);
 
   std::stringstream ss =
       generateBufferNameInStringStream("buf", BufferId, attr, x, y);
@@ -1640,14 +1640,15 @@ public:
           // Specialize any affine apply mappings to operand
           for (auto oper : o->getOperands()) {
             if (oper.getDefiningOp()) {
-              mlir::AffineApplyOp position_apply = nullptr;
-              if (auto apply_op =
-                      dyn_cast<mlir::AffineApplyOp>(oper.getDefiningOp()))
+              mlir::affine::AffineApplyOp position_apply = nullptr;
+              if (auto apply_op = dyn_cast<mlir::affine::AffineApplyOp>(
+                      oper.getDefiningOp()))
                 position_apply = apply_op;
               else if (auto exec =
                            dyn_cast<air::ExecuteOp>(oper.getDefiningOp())) {
                 auto child_op = &exec.getBody().front().getOperations().front();
-                if (auto apply_op = dyn_cast<mlir::AffineApplyOp>(child_op))
+                if (auto apply_op =
+                        dyn_cast<mlir::affine::AffineApplyOp>(child_op))
                   position_apply = apply_op;
               }
               int position_iv = -1;
@@ -1788,9 +1789,9 @@ public:
         assert(f.MM2S_alloc.dma_tile);
         assert(f.S2MM_alloc[i].dma_tile);
         getFlowOp(aie_device, f.MM2S_alloc.dma_tile, AIE::WireBundle::DMA,
-                  (uint32_t)f.MM2S_alloc.dma_channel.second,
+                  (uint32_t)f.MM2S_alloc.dma_channel.channel,
                   f.S2MM_alloc[i].dma_tile, AIE::WireBundle::DMA,
-                  (uint32_t)f.S2MM_alloc[i].dma_channel.second);
+                  (uint32_t)f.S2MM_alloc[i].dma_channel.channel);
       }
     }
   }
@@ -1813,7 +1814,7 @@ public:
       auto tileOp = t.dma_tile;
       int64_t col = t.col - col_offset;
       int64_t row = t.row - row_offset;
-      int64_t chan = isMM2S ? t.dma_channel.second + 2 : t.dma_channel.second;
+      int64_t chan = isMM2S ? t.dma_channel.channel + 2 : t.dma_channel.channel;
 
       for (int64_t id : t.dma_id) {
         int original_id = chan_renumber_reverse_map.size()
@@ -1861,7 +1862,7 @@ public:
       auto tileOp = t.dma_tile;
       int64_t col = t.col - col_offset;
       int64_t row = t.row - row_offset;
-      int64_t chan = isMM2S ? t.dma_channel.second + 2 : t.dma_channel.second;
+      int64_t chan = isMM2S ? t.dma_channel.channel + 2 : t.dma_channel.channel;
 
       for (int64_t id : t.dma_id) {
         int original_id = chan_renumber_reverse_map.size()
@@ -1897,7 +1898,7 @@ public:
 
     for (auto &t : allocs) {
       auto tileOp = t.dma_tile;
-      int64_t chan = t.dma_channel.second;
+      int64_t chan = t.dma_channel.channel;
       AIE::DMAChannelDir dir =
           isMM2S ? AIE::DMAChannelDir::MM2S : AIE::DMAChannelDir::S2MM;
 
@@ -1928,7 +1929,7 @@ public:
             else if (auto chan_o =
                          dyn_cast<air::ChannelInterface>(o.getOperation()))
               for (auto the_other_chan_o :
-                   getTheOtherChannelOpThroughSymbol(chan_o.getOperation()))
+                   getTheOtherChannelOpThroughSymbol(chan_o))
                 the_other_chan_o->setAttr(
                     "metadata", FlatSymbolRefAttr::get(ctx, dma_name_attr));
           }
@@ -1969,7 +1970,7 @@ public:
 
     for (auto &t : allocs) {
       auto tileOp = t.dma_tile;
-      int64_t chan = t.dma_channel.second;
+      int64_t chan = t.dma_channel.channel;
       AIE::DMAChannelDir dir =
           isMM2S ? AIE::DMAChannelDir::MM2S : AIE::DMAChannelDir::S2MM;
 
@@ -2000,7 +2001,7 @@ public:
             else if (auto chan_o =
                          dyn_cast<air::ChannelInterface>(o.getOperation()))
               for (auto the_other_chan_o :
-                   getTheOtherChannelOpThroughSymbol(chan_o.getOperation()))
+                   getTheOtherChannelOpThroughSymbol(chan_o))
                 the_other_chan_o->setAttr(
                     "metadata", FlatSymbolRefAttr::get(ctx, dma_name_attr));
           }
@@ -2092,7 +2093,6 @@ public:
     else if (auto a = dyn_cast<memref::AllocaOp>(alloc.getDefiningOp()))
       builder.setInsertionPoint(alloc.getDefiningOp());
     else
-      // builder.setInsertionPoint(&memcpyOpIf->getBlock()->front());
       builder.setInsertionPoint(memcpyOpIf);
 
     builder.create<AIE::UseLockOp>(memcpyOpIf->getLoc(), acqLockOp, lockAqValue,
@@ -2123,7 +2123,8 @@ public:
   template <typename dmaAllocatorTy, typename bufferOpTy, typename memOpTy>
   void generateDmaBdProgram(
       OpBuilder builder, AIE::AIEArch arch,
-      std::map<AIE::DMAChannel, std::vector<Operation *>> dma_memcpys,
+      std::map<std::pair<AIE::DMAChannelDir, int>, std::vector<Operation *>>
+          dma_memcpys,
       dmaAllocatorTy dmaAlloc, mlir::Location loc, memOpTy mem, int x, int y) {
 
     // The first block
@@ -2318,11 +2319,13 @@ public:
 
       // Collect memcpy ops wrt each DMA channel from chessboard; make aie.mem
       // dmabd program
-      std::map<AIE::DMAChannel, std::vector<Operation *>> tile_dma_memcpys;
+      std::map<std::pair<AIE::DMAChannelDir, int>, std::vector<Operation *>>
+          tile_dma_memcpys;
 
       for (auto &alloc : tileDmaAlloc.mm2s_allocs) {
         if (alloc.foundAlloc(x, y)) {
-          AIE::DMAChannel mm2s_chan = alloc.dma_channel;
+          std::pair<AIE::DMAChannelDir, int> mm2s_chan = {
+              alloc.dma_channel.direction, alloc.dma_channel.channel};
           for (auto &o : alloc.memcpyOps) {
             tile_dma_memcpys[mm2s_chan].push_back(o);
           }
@@ -2330,7 +2333,8 @@ public:
       }
       for (auto &alloc : tileDmaAlloc.s2mm_allocs) {
         if (alloc.foundAlloc(x, y)) {
-          AIE::DMAChannel s2mm_chan = alloc.dma_channel;
+          std::pair<AIE::DMAChannelDir, int> s2mm_chan = {
+              alloc.dma_channel.direction, alloc.dma_channel.channel};
           for (auto &o : alloc.memcpyOps) {
             tile_dma_memcpys[s2mm_chan].push_back(o);
           }
@@ -2381,11 +2385,13 @@ public:
       auto y = tile.getRow();
 
       // Collect memcpy ops wrt each DMA channel
-      std::map<AIE::DMAChannel, std::vector<Operation *>> shim_dma_memcpys;
+      std::map<std::pair<AIE::DMAChannelDir, int>, std::vector<Operation *>>
+          shim_dma_memcpys;
 
       for (auto &alloc : shimDmaAlloc.mm2s_allocs) {
         if (alloc.foundAlloc(x, y)) {
-          AIE::DMAChannel mm2s_chan = alloc.dma_channel;
+          std::pair<AIE::DMAChannelDir, int> mm2s_chan = {
+              alloc.dma_channel.direction, alloc.dma_channel.channel};
           for (auto &o : alloc.memcpyOps) {
             shim_dma_memcpys[mm2s_chan].push_back(o);
           }
@@ -2393,7 +2399,8 @@ public:
       }
       for (auto &alloc : shimDmaAlloc.s2mm_allocs) {
         if (alloc.foundAlloc(x, y)) {
-          AIE::DMAChannel s2mm_chan = alloc.dma_channel;
+          std::pair<AIE::DMAChannelDir, int> s2mm_chan = {
+              alloc.dma_channel.direction, alloc.dma_channel.channel};
           for (auto &o : alloc.memcpyOps) {
             shim_dma_memcpys[s2mm_chan].push_back(o);
           }
@@ -2425,11 +2432,13 @@ public:
 
       // Collect memcpy ops wrt each DMA channel from chessboard; make aie.mem
       // dmabd program
-      std::map<AIE::DMAChannel, std::vector<Operation *>> memtile_dma_memcpys;
+      std::map<std::pair<AIE::DMAChannelDir, int>, std::vector<Operation *>>
+          memtile_dma_memcpys;
 
       for (auto &alloc : memTileDmaAlloc.mm2s_allocs) {
         if (alloc.foundAlloc(x, y)) {
-          AIE::DMAChannel mm2s_chan = alloc.dma_channel;
+          std::pair<AIE::DMAChannelDir, int> mm2s_chan = {
+              alloc.dma_channel.direction, alloc.dma_channel.channel};
           for (auto &o : alloc.memcpyOps) {
             memtile_dma_memcpys[mm2s_chan].push_back(o);
           }
@@ -2437,7 +2446,8 @@ public:
       }
       for (auto &alloc : memTileDmaAlloc.s2mm_allocs) {
         if (alloc.foundAlloc(x, y)) {
-          AIE::DMAChannel s2mm_chan = alloc.dma_channel;
+          std::pair<AIE::DMAChannelDir, int> s2mm_chan = {
+              alloc.dma_channel.direction, alloc.dma_channel.channel};
           for (auto &o : alloc.memcpyOps) {
             memtile_dma_memcpys[s2mm_chan].push_back(o);
           }

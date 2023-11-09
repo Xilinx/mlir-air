@@ -48,7 +48,7 @@ struct allocation_info_t {
   AIE::TileOp dma_tile = nullptr;
   int64_t col = -1;
   int64_t row = -1;
-  AIE::DMAChannel dma_channel = std::make_pair(AIE::DMAChannelDir::MM2S, -1);
+  AIE::DMAChannel dma_channel = {AIE::DMAChannelDir::MM2S, -1};
   int64_t tile_channel = -1;
   std::vector<int32_t> dma_id;
   std::vector<Operation *> memcpyOps;

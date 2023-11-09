@@ -132,8 +132,8 @@ AIE::ExternalBufferOp air::allocateExternalBufferOp(MemRefType memrefTy,
   static uint64_t BufferId = 0;
 
   auto builder = OpBuilder::atBlockBegin(device.getBody());
-  AIE::ExternalBufferOp bufferOp = builder.create<AIE::ExternalBufferOp>(
-      builder.getUnknownLoc(), memrefTy, nullptr);
+  AIE::ExternalBufferOp bufferOp =
+      builder.create<AIE::ExternalBufferOp>(builder.getUnknownLoc(), memrefTy);
 
   std::stringstream ss =
       generateBufferNameInStringStream("extBuf", BufferId, attr, x, y);
@@ -202,7 +202,7 @@ bool allocation_info_t::foundAlloc(uint32_t col, uint32_t row,
 }
 bool allocation_info_t::foundAlloc(uint32_t col, uint32_t row, int chan) {
   if (col == dma_tile.getCol() && row == dma_tile.getRow() &&
-      chan == dma_channel.second)
+      chan == dma_channel.channel)
     return true;
   return false;
 }
@@ -212,8 +212,8 @@ bool allocation_info_t::foundAlloc(uint32_t col, uint32_t row) {
   return false;
 }
 bool allocation_info_t::foundAlloc(AIE::TileOp tile, AIE::DMAChannel channel) {
-  if (tile == dma_tile && channel.first == dma_channel.first &&
-      channel.second == dma_channel.second)
+  if (tile == dma_tile && channel.direction == dma_channel.direction &&
+      channel.channel == dma_channel.channel)
     return true;
   else
     return false;
@@ -318,13 +318,14 @@ DMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
   assert(tile);
   bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
   auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
-  AIE::DMAChannel aie_chan =
-      (isMM2S) ? (std::make_pair(AIE::DMAChannelDir::MM2S, chan))
-               : (std::make_pair(AIE::DMAChannelDir::S2MM, chan));
+  AIE::DMAChannel aie_chan;
+  aie_chan.direction =
+      isMM2S ? AIE::DMAChannelDir::MM2S : AIE::DMAChannelDir::S2MM;
+  aie_chan.channel = chan;
   for (auto &t : *allocs) {
     if (t.foundAlloc(tile.getCol(), tile.getRow())) {
-      if (t.dma_channel.first == aie_chan.first &&
-          t.dma_channel.second == aie_chan.second) {
+      if (t.dma_channel.direction == aie_chan.direction &&
+          t.dma_channel.channel == aie_chan.channel) {
         t.memcpyOps.push_back(memcpyOp.getOperation());
         return t;
       }
@@ -467,7 +468,7 @@ ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
   }
   assert(false);
   return DMAAllocator::allocNewDmaChannel(memcpyOp, existing_alloc.dma_tile,
-                                          existing_alloc.dma_channel.second);
+                                          existing_alloc.dma_channel.channel);
 }
 
 AIE::ExternalBufferOp
@@ -500,8 +501,9 @@ ShimDMAAllocator::foundFlowReuseOpportunity(
     if (isMM2S) {
       for (unsigned i = 0; i < f.S2MM_alloc.size(); i++) {
         if (f.S2MM_alloc[i].dma_tile == alloc.dma_tile &&
-            f.S2MM_alloc[i].dma_channel.first == alloc.dma_channel.first &&
-            f.S2MM_alloc[i].dma_channel.second == alloc.dma_channel.second) {
+            f.S2MM_alloc[i].dma_channel.direction ==
+                alloc.dma_channel.direction &&
+            f.S2MM_alloc[i].dma_channel.channel == alloc.dma_channel.channel) {
           if (f.MM2S_alloc.dma_tile && f.MM2S_alloc.dma_tile.isShimTile()) {
             output = f.MM2S_alloc;
             return output;
@@ -509,8 +511,9 @@ ShimDMAAllocator::foundFlowReuseOpportunity(
         }
       }
     } else if (!isMM2S && f.MM2S_alloc.dma_tile == alloc.dma_tile &&
-               f.MM2S_alloc.dma_channel.first == alloc.dma_channel.first &&
-               f.MM2S_alloc.dma_channel.second == alloc.dma_channel.second) {
+               f.MM2S_alloc.dma_channel.direction ==
+                   alloc.dma_channel.direction &&
+               f.MM2S_alloc.dma_channel.channel == alloc.dma_channel.channel) {
 
       for (unsigned i = 0; i < f.S2MM_alloc.size(); i++) {
         if (f.S2MM_alloc[i].dma_tile && f.S2MM_alloc[i].dma_tile.isShimTile()) {
@@ -596,8 +599,9 @@ MemTileDMAAllocator::foundFlowReuseOpportunity(
     if (!isMM2S) {
       for (unsigned i = 0; i < f.S2MM_alloc.size(); i++) {
         if (f.S2MM_alloc[i].dma_tile == alloc.dma_tile &&
-            f.S2MM_alloc[i].dma_channel.first == alloc.dma_channel.first &&
-            f.S2MM_alloc[i].dma_channel.second == alloc.dma_channel.second) {
+            f.S2MM_alloc[i].dma_channel.direction ==
+                alloc.dma_channel.direction &&
+            f.S2MM_alloc[i].dma_channel.channel == alloc.dma_channel.channel) {
           if (f.MM2S_alloc.dma_tile && f.MM2S_alloc.dma_tile.isMemTile()) {
             output = f.MM2S_alloc;
             return output;
@@ -605,8 +609,9 @@ MemTileDMAAllocator::foundFlowReuseOpportunity(
         }
       }
     } else if (isMM2S && f.MM2S_alloc.dma_tile == alloc.dma_tile &&
-               f.MM2S_alloc.dma_channel.first == alloc.dma_channel.first &&
-               f.MM2S_alloc.dma_channel.second == alloc.dma_channel.second) {
+               f.MM2S_alloc.dma_channel.direction ==
+                   alloc.dma_channel.direction &&
+               f.MM2S_alloc.dma_channel.channel == alloc.dma_channel.channel) {
 
       for (unsigned i = 0; i < f.S2MM_alloc.size(); i++) {
         if (f.S2MM_alloc[i].dma_tile && f.S2MM_alloc[i].dma_tile.isMemTile()) {
@@ -763,7 +768,7 @@ void air::simpleDMAChannelAllocation(
         int y = tile.getRow();
 
         f.MM2S_alloc = tile_dma_alloc.simpleDmaChannelAlloc(
-            memcpyOpIf, x, y, f.MM2S_alloc.dma_channel.second);
+            memcpyOpIf, x, y, f.MM2S_alloc.dma_channel.channel);
         assert(f.MM2S_alloc.dma_tile);
       }
     }
@@ -778,7 +783,7 @@ void air::simpleDMAChannelAllocation(
           int y = tile.getRow();
 
           f.S2MM_alloc[i] = tile_dma_alloc.simpleDmaChannelAlloc(
-              memcpyOpIf, x, y, f.S2MM_alloc[i].dma_channel.second);
+              memcpyOpIf, x, y, f.S2MM_alloc[i].dma_channel.channel);
           assert(f.S2MM_alloc[i].dma_tile);
         }
       }
