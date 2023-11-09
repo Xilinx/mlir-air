@@ -158,6 +158,13 @@ consumer processes for ping and pong buffers, respectively. The dependency edges
 being yielded across loop iterations, directly represent a compute scheduling 
 scheme which leads to concurrency between communication and compute in the form of 
 ping-pong buffering.
+### `-air-dealias-memref`
+
+_De-alias a memref into multiple memrefs_
+
+This pass detects memrefs which can de-alias into multiple memrefs over time, and
+generates extra copies of this memref. This process can improve the stability of the
+memref-to-buffer mappings.
 ### `-air-dependency`
 
 _AIR dependency analysis_
@@ -428,6 +435,13 @@ iteration, by connecting them in the loop-carried dependency path.
 
 _Skeleton module op pass_
 
+### `-air-fuse-channels`
+
+_Fuse multiple air.channel ops into one_
+
+This pass fuses multiple air.channel ops into one. The condition for fusing channels 
+is such that the puts and gets of all candidate channels mush share the same control 
+loop hierarchy, where every parent loops must have matching loop bounds.
 ### `-air-fuse-parallel-launch`
 
 _Fuse parallel launch pass_
@@ -472,6 +486,14 @@ scf.for loop.
 
 _Label broadcasted channel ops with tile coordinates._
 
+### `-air-label-scf-for-in-segment`
+
+_Label all candidate scf.for loops within air.segment for unrolling_
+
+This pass labels all scf.for loops contained in air.segment ops, except for those
+which are also contained in air.herd ops, with an 'unroll' integer attribute. Scf.for
+loops labelled with this attribute shall be unrolled, with the provided factor, by
+any subsequent 'air-unroll-loop-for-pipelining-pattern' pass.
 ### `-air-label-scf-for-to-ping-pong`
 
 _Label all candidate scf.for loops for ping-pong transformation_
