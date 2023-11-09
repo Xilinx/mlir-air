@@ -35,11 +35,17 @@ std::unique_ptr<mlir::Pass> createAIRPingPongTransformationPattern();
 
 std::unique_ptr<mlir::Pass> createAIRLabelScfForLoopForPingPongPattern();
 
+std::unique_ptr<mlir::Pass> createAIRLabelScfForLoopInAIRSegmentPattern();
+
 std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass();
 
 std::unique_ptr<mlir::Pass> createAIRUnrollChannelByFactorPattern();
 
 std::unique_ptr<mlir::Pass> createAIREnforceLoopCarriedMemrefDeallocPattern();
+
+std::unique_ptr<mlir::Pass> createAIRDeAliasMemref();
+
+std::unique_ptr<mlir::Pass> createAIRFuseChannels();
 
 } // namespace air
 } // namespace xilinx

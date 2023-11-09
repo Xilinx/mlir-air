@@ -519,6 +519,19 @@ T cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
   return new_loop_op;
 }
 
+void getUsedConstsAndArgsDefinedAbove(MutableArrayRef<Region> region,
+                                      SmallVector<Value, 4> &constants,
+                                      SmallVector<Value, 4> &args) {
+  llvm::SetVector<Value> region_args;
+  getUsedValuesDefinedAbove(region, region_args);
+  for (Value v : region_args) {
+    if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
+      constants.push_back(v);
+    else
+      args.push_back(v);
+  }
+}
+
 namespace {
 
 class MemrefCopyToAIRDmaConversion : public OpRewritePattern<memref::CopyOp> {
@@ -1257,14 +1270,7 @@ public:
 
     SmallVector<Value, 4> args;
     SmallVector<Value, 4> constants;
-    llvm::SetVector<Value> region_args;
-    getUsedValuesDefinedAbove(op.getRegion(), region_args);
-    for (Value v : region_args) {
-      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
-        constants.push_back(v);
-      else
-        args.push_back(v);
-    }
+    getUsedConstsAndArgsDefinedAbove(op.getRegion(), constants, args);
     SmallVector<Value, 2> dims{
         rewriter.create<arith::ConstantIndexOp>(loc, ub0.getValue()),
         rewriter.create<arith::ConstantIndexOp>(loc, ub1.getValue())};
@@ -1544,14 +1550,7 @@ public:
     }
     SmallVector<Value, 4> args;
     SmallVector<Value, 4> constants;
-    llvm::SetVector<Value> region_args;
-    getUsedValuesDefinedAbove(op.getRegion(), region_args);
-    for (Value v : region_args) {
-      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
-        constants.push_back(v);
-      else
-        args.push_back(v);
-    }
+    getUsedConstsAndArgsDefinedAbove(op.getRegion(), constants, args);
 
     int idx0 = firstDim;
     int idx1 = (firstDim + 1) % 2;
@@ -1599,9 +1598,10 @@ public:
 
   ScfParToLaunchConversion(MLIRContext *ctx,
                            llvm::SmallSet<scf::ParallelOp, 8> &filteredOps,
-                           llvm::SmallSet<air::LaunchOp, 2> &replacementOps)
+                           llvm::SmallSet<air::LaunchOp, 2> &replacementOps,
+                           bool generateSegment)
       : OpRewritePattern(ctx), filteredOps(filteredOps),
-        replacementOps(replacementOps){};
+        replacementOps(replacementOps), generateSegment(generateSegment){};
 
   LogicalResult matchAndRewrite(scf::ParallelOp parOp,
                                 PatternRewriter &rewriter) const override {
@@ -1647,39 +1647,45 @@ public:
 
     SmallVector<Value, 4> args;
     SmallVector<Value, 4> constants;
-    llvm::SetVector<Value> region_args;
-    getUsedValuesDefinedAbove(op.getRegion(), region_args);
-    for (Value v : region_args) {
-      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
-        constants.push_back(v);
-      else
-        args.push_back(v);
-    }
+    getUsedConstsAndArgsDefinedAbove(op.getRegion(), constants, args);
 
     SmallVector<Value, 4> sizes;
     for (auto b : bounds)
       sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, b));
     auto launch = rewriter.create<air::LaunchOp>(op.getLoc(), sizes, args);
-    auto &bb = launch.getBody().front();
-    auto ivs = op.getInductionVars();
+    rewriter.setInsertionPointToStart(&launch.getRegion().front());
 
-    for (int i = 0, e = ivs.size(); i < e; i++) {
-      ivs[i].replaceAllUsesWith(launch.getIds()[i]);
+    if (generateSegment) {
+      auto segment = generateEmptySegmentOp(rewriter, op, launch);
+      replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
+                                            segment.getRegion());
+      int i = 0;
+      auto kernel_args = segment.getKernelArguments();
+      kernel_args = kernel_args.drop_front(
+          launch.getIds().size() +
+          launch.getSize().size()); // Launch's induction vars
+      for (Value v : args)
+        replaceAllUsesInRegionWith(v, kernel_args[i++], segment.getRegion());
+    } else {
+      auto &bb = launch.getBody().front();
+      auto ivs = op.getInductionVars();
+
+      for (int i = 0, e = ivs.size(); i < e; i++) {
+        ivs[i].replaceAllUsesWith(launch.getIds()[i]);
+      }
+
+      auto &body = op.getBody()->getOperations();
+      bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
+      replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
+                                            launch.getRegion());
+      int i = 0;
+      auto kernel_args = launch.getKernelArguments();
+      for (Value v : args)
+        replaceAllUsesInRegionWith(v, kernel_args[i++], launch.getRegion());
     }
 
-    auto &body = op.getBody()->getOperations();
-    bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
-    rewriter.setInsertionPointToStart(&launch.getRegion().front());
-    replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
-                                          launch.getRegion());
-
-    auto builder = OpBuilder::atBlockEnd(&bb);
-    builder.create<air::LaunchTerminatorOp>(loc);
-
-    int i = 0;
-    auto kernel_args = launch.getKernelArguments();
-    for (Value v : args)
-      replaceAllUsesInRegionWith(v, kernel_args[i++], launch.getRegion());
+    OpBuilder builder = OpBuilder::atBlockEnd(&launch.getBody().front());
+    builder.create<air::LaunchTerminatorOp>(builder.getUnknownLoc());
 
     if (op != parOp)
       op.erase();
@@ -1692,75 +1698,10 @@ public:
 private:
   llvm::SmallSet<scf::ParallelOp, 8> &filteredOps;
   llvm::SmallSet<air::LaunchOp, 2> &replacementOps;
-};
+  bool generateSegment;
 
-class ScfParToLaunchAndSegmentConversion
-    : public OpRewritePattern<scf::ParallelOp> {
-public:
-  using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
-
-  ScfParToLaunchAndSegmentConversion(
-      MLIRContext *ctx, llvm::SmallSet<scf::ParallelOp, 8> &filteredOps)
-      : OpRewritePattern(ctx), filteredOps(filteredOps){};
-
-  LogicalResult matchAndRewrite(scf::ParallelOp parOp,
-                                PatternRewriter &rewriter) const override {
-
-    scf::ParallelOp op = parOp;
-
-    if (!filteredOps.contains(op))
-      return failure();
-
-    if (failed(normalizeScfParallel(op, rewriter)))
-      return failure();
-
-    auto loc = op.getLoc();
-
-    SmallVector<int, 4> bounds(op.getNumLoops(), 1);
-    for (unsigned int i = 0; i < op.getNumLoops(); i++) {
-      auto lb = dyn_cast<arith::ConstantIndexOp>(
-          op.getLowerBound()[i].getDefiningOp());
-      auto ub = dyn_cast<arith::ConstantIndexOp>(
-          op.getUpperBound()[i].getDefiningOp());
-      auto step =
-          dyn_cast<arith::ConstantIndexOp>(op.getStep()[i].getDefiningOp());
-
-      // lowerBound, upperBound and step must be arith::ConstantIndexOps
-      if (!(lb && step && ub))
-        return failure();
-
-      auto ub_int = ub.value();
-      auto lb_int = lb.value();
-      auto step_int = step.value();
-
-      // must start at 0
-      if (lb_int)
-        return failure();
-
-      // step must divide upper bound evenly
-      if (ub_int % step_int)
-        return failure();
-
-      ub_int = ub_int / step_int;
-      bounds[i] = ub_int;
-    }
-
-    SmallVector<Value, 4> args;
-    SmallVector<Value, 4> constants;
-    llvm::SetVector<Value> region_args;
-    getUsedValuesDefinedAbove(op.getRegion(), region_args);
-    for (Value v : region_args) {
-      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
-        constants.push_back(v);
-      else
-        args.push_back(v);
-    }
-
-    SmallVector<Value, 4> sizes;
-    for (auto b : bounds)
-      sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, b));
-    auto launch = rewriter.create<air::LaunchOp>(op.getLoc(), sizes, args);
-    rewriter.setInsertionPointToStart(&launch.getRegion().front());
+  air::SegmentOp generateEmptySegmentOp(OpBuilder rewriter, scf::ParallelOp op,
+                                        air::LaunchOp launch) const {
     SmallVector<Value, 1> segmentSizes = {};
     SmallVector<Value, 4> segmentOpers;
     for (Value v : launch.getIds()) {
@@ -1772,7 +1713,7 @@ public:
     for (Value v : launch.getKernelArguments()) {
       segmentOpers.push_back(v);
     }
-    auto segment = rewriter.create<air::SegmentOp>(op.getLoc(), segmentSizes,
+    auto segment = rewriter.create<air::SegmentOp>(op->getLoc(), segmentSizes,
                                                    segmentOpers);
     auto &bb = segment.getBody().front();
     auto ivs = op.getInductionVars();
@@ -1784,30 +1725,11 @@ public:
     auto &body = op.getBody()->getOperations();
     bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
     rewriter.setInsertionPointToStart(&segment.getRegion().front());
-    replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
-                                          segment.getRegion());
-
     auto builder = OpBuilder::atBlockEnd(&bb);
     builder.create<air::SegmentTerminatorOp>(builder.getUnknownLoc());
-    builder = OpBuilder::atBlockEnd(&launch.getBody().front());
-    builder.create<air::LaunchTerminatorOp>(builder.getUnknownLoc());
 
-    int i = 0;
-    auto kernel_args = segment.getKernelArguments();
-    kernel_args = kernel_args.drop_front(
-        ivs.size() + launch.getSize().size()); // Launch's induction vars
-    for (Value v : args)
-      replaceAllUsesInRegionWith(v, kernel_args[i++], segment.getRegion());
-
-    if (op != parOp)
-      op.erase();
-    rewriter.eraseOp(parOp);
-
-    return success();
+    return segment;
   }
-
-private:
-  llvm::SmallSet<scf::ParallelOp, 8> &filteredOps;
 };
 
 struct CopyToDmaPass : public air::CopyToDmaBase<CopyToDmaPass> {
@@ -2058,6 +1980,39 @@ static void getHerdNames(ModuleOp module) {
   }
 }
 
+static void getSegmentNames(ModuleOp module) {
+  std::vector<std::string> seg_syms;
+  for (auto f : module.getOps<func::FuncOp>()) {
+    // record existing symbol names
+    f.walk([&](air::SegmentOp op) {
+      if (auto attr =
+              op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+        std::string name = attr.getValue().str();
+        assert((std::find(seg_syms.begin(), seg_syms.end(), name) ==
+                seg_syms.end()) &&
+               "unexpected duplicate symbol");
+        seg_syms.push_back(name);
+      }
+    });
+    // generate missing symbol names
+    f.walk([&](air::SegmentOp op) {
+      if (!op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+        unsigned id = 0;
+        std::string name;
+        do {
+          std::stringstream ss;
+          ss << "segment_" << id++;
+          name = ss.str();
+        } while (std::find(seg_syms.begin(), seg_syms.end(), name) !=
+                 seg_syms.end());
+        seg_syms.push_back(name);
+        op->setAttr(SymbolTable::getSymbolAttrName(),
+                    StringAttr::get(op->getContext(), name));
+      }
+    });
+  }
+}
+
 struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
 
   ParallelToHerdPass() = default;
@@ -2179,12 +2134,8 @@ struct ParallelToLaunchPass
     });
 
     RewritePatternSet patterns(context);
-    if (clHasSegment) {
-      patterns.add<ScfParToLaunchAndSegmentConversion>(context, filteredOps);
-    } else {
-      patterns.add<ScfParToLaunchConversion>(context, filteredOps,
-                                             replacementOps);
-    }
+    patterns.add<ScfParToLaunchConversion>(context, filteredOps, replacementOps,
+                                           clHasSegment);
 
     ConversionTarget target(*context);
 
@@ -2204,6 +2155,7 @@ struct ParallelToLaunchPass
       assert(0);
     }
 
+    getSegmentNames(module);
     LLVM_DEBUG(llvm::outs() << "output\n");
     LLVM_DEBUG(module.print(llvm::outs()));
   }
@@ -2230,6 +2182,7 @@ struct InsertEmptyLaunchOverHerdPass
       else if (!op->getParentOfType<air::SegmentOp>())
         InsertEmptyLaunchOverHerd(op);
     });
+    getSegmentNames(module);
   }
 };
 
@@ -2275,7 +2228,7 @@ transform::ParToLaunchOp::applyToOne(transform::TransformRewriter &rewriter,
   llvm::SmallSet<air::LaunchOp, 2> launchOps;
   llvm::SmallSet<scf::ParallelOp, 8> filteredOps;
   filteredOps.insert(target);
-  patterns.add<ScfParToLaunchConversion>(ctx, filteredOps, launchOps);
+  patterns.add<ScfParToLaunchConversion>(ctx, filteredOps, launchOps, false);
   (void)applyPatternsAndFoldGreedily(
       target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
       std::move(patterns));

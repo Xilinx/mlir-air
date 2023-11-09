@@ -925,7 +925,8 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
       remap.map(scf_par.getInductionVars()[1], inner.getInductionVar());
     }
     for (auto &o : scf_par.getBody()->getOperations()) {
-      if (!isa<scf::ReduceOp>(o) && !isa<scf::YieldOp>(o)) {
+      if (!isa<scf::ReduceOp>(o) && !isa<scf::YieldOp>(o) &&
+          !isa<scf::ParallelOp>(o)) {
         builder.clone(o, remap);
       }
     }
