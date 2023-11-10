@@ -2636,8 +2636,8 @@ public:
     if (clTestPatterns.find("lower-air-ping-pong") != std::string::npos) {
       patterns.insert<LowerAIRPingPongPattern>(ctx);
     }
+    std::map<std::string, std::string> chan_to_chan_map;
     if (clTestPatterns.find("specialize-channel-bundle") != std::string::npos) {
-      std::map<std::string, std::string> chan_to_chan_map;
       patterns.insert<SpecializeChannelBundlePattern>(ctx, chan_to_chan_map);
     }
 
