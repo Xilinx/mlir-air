@@ -1,10 +1,10 @@
 import air
 import air.compiler.util
-from air.mlir.dialects import linalg, tensor, arith, func, memref
-from air.mlir.ir import *
-import air.mlir.passmanager
+from air.dialects import linalg, tensor, arith, func, memref
+from air.ir import *
+import air.passmanager
 from air.dialects import air as airdialect
-from air.mlir._mlir_libs._airMlir import _run_air_transform as run_air_transform
+from air._mlir_libs._airMlir import _run_air_transform as run_air_transform
 import sys
 def matmul_on_tensors(m, n, k, dtype):
     module = Module.create()
@@ -19,7 +19,7 @@ def matmul_on_tensors(m, n, k, dtype):
             return out
     return module
 
-with air.mlir.ir.Context() as ctx, Location.unknown():
+with air.ir.Context() as ctx, Location.unknown():
     airdialect.register_dialect(ctx)
     air_module = matmul_on_tensors(8, 8, 16, IntegerType.get_signless(width = 32))
     
@@ -27,8 +27,8 @@ with air.mlir.ir.Context() as ctx, Location.unknown():
     ## Tiling
     ################################################
 
-    pm = air.mlir.passmanager.PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
-    pm.run(air_module)
+    pm = air.passmanager.PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
+    pm.run(air_module.operation)
     with open('air_input.mlir', 'w') as f:
         f.write(str(air_module))
     
@@ -37,8 +37,8 @@ with air.mlir.ir.Context() as ctx, Location.unknown():
     ^bb0(%arg0: !pdl.operation):
         transform.sequence %arg0 : !pdl.operation failures(propagate) {
         ^bb1(%arg1: !pdl.operation):
-            %fill = transform.structured.match ops{["linalg.fill"]} in %arg1
-            %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1
+            %fill = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!pdl.operation) -> !pdl.operation
+            %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1  : (!pdl.operation) -> !pdl.operation
             %matmul_1, %loops:2 = transform.air.linalg_tile %matmul [8, 8, 0]
             %fill_1 = transform.air.fuse_into_containing_op %fill into %loops#1
             transform.air.linalg_promote %fill_1 {"operands_to_promote"=[1], "memory_space"="L2"}
@@ -70,8 +70,8 @@ with air.mlir.ir.Context() as ctx, Location.unknown():
         "air-copy-to-dma",
         "canonicalize", "cse",
     ])+')'
-    pm = air.mlir.passmanager.PassManager.parse(pipeline)
-    pm.run(air_module)
+    pm = air.passmanager.PassManager.parse(pipeline)
+    pm.run(air_module.operation)
 
     with open('air_sync.mlir', 'w') as f:
         f.write(str(air_module))
@@ -90,8 +90,8 @@ with air.mlir.ir.Context() as ctx, Location.unknown():
         "canonicalize", "cse",
         "air-label-scf-for-to-ping-pong",
     ])+')'
-    pm = air.mlir.passmanager.PassManager.parse(pipeline)
-    pm.run(air_module)
+    pm = air.passmanager.PassManager.parse(pipeline)
+    pm.run(air_module.operation)
     # Not sure why parsing the ir solves the segmentation fault...
     air_module = Module.parse(str(air_module))
     pipeline = "builtin.module("+",".join([
@@ -102,8 +102,8 @@ with air.mlir.ir.Context() as ctx, Location.unknown():
         "air-label-scf-for-in-segment",
         "air-unroll-loop-for-pipelining-pattern",
     ])+')'
-    pm = air.mlir.passmanager.PassManager.parse(pipeline)
-    pm.run(air_module)
+    pm = air.passmanager.PassManager.parse(pipeline)
+    pm.run(air_module.operation)
     with open('aircc_input.mlir', 'w') as f:
         f.write(str(air_module))
     
@@ -118,8 +118,8 @@ with air.mlir.ir.Context() as ctx, Location.unknown():
         'func.func(air-renumber-dma)',
         'func.func(convert-linalg-to-loops)',
     ])+')'
-    pm = air.mlir.passmanager.PassManager.parse(pipeline)
-    pm.run(air_module)
+    pm = air.passmanager.PassManager.parse(pipeline)
+    pm.run(air_module.operation)
     with open('air_placed.mlir', 'w') as f:
         f.write(str(air_module))
     
@@ -131,8 +131,8 @@ with air.mlir.ir.Context() as ctx, Location.unknown():
         'air-to-aie{row-offset=2 col-offset=0 device=ipu}',
         'canonicalize',
     ])+')'
-    pm = air.mlir.passmanager.PassManager.parse(pipeline)
-    pm.run(air_module)
+    pm = air.passmanager.PassManager.parse(pipeline)
+    pm.run(air_module.operation)
     with open('aircc_decomp_aiecc.mlir', 'w') as f:
         f.write(str(air_module))
     
@@ -145,7 +145,7 @@ with air.mlir.ir.Context() as ctx, Location.unknown():
       'airrt-to-ipu',
       'canonicalize',
     ])+')'
-    pm = air.mlir.passmanager.PassManager.parse(pipeline)
-    pm.run(air_module)
+    pm = air.passmanager.PassManager.parse(pipeline)
+    pm.run(air_module.operation)
     with open('aircc_decomp_airrt.mlir', 'w') as f:
         f.write(str(air_module))

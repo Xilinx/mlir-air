@@ -8,8 +8,8 @@ import torch
 from torch.nn import functional as F
 import torch_mlir
 
-import air.mlir.ir
-import air.mlir.passmanager
+import air.ir
+import air.passmanager
 import air.compiler.util
 
 import sys
@@ -39,12 +39,12 @@ if len(args) and args[0] == '-dump-linalg':
     print(mlir)
     exit(0)
 
-with air.mlir.ir.Context():
-    # convert torch_mlir.ir.Module to air.mlir.ir.Module
-    air_module = air.mlir.ir.Module.parse(str(mlir))
+with air.ir.Context():
+    # convert torch_mlir.ir.Module to air.ir.Module
+    air_module = air.ir.Module.parse(str(mlir))
 
     # convert linalg on tensors to linalg on memrefs
-    pm = air.mlir.passmanager.PassManager.parse(
+    pm = air.passmanager.PassManager.parse(
         air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
     pm.run(air_module.operation)
 
@@ -57,7 +57,7 @@ with air.mlir.ir.Context():
         "air-par-to-launch{has-air-segment=true}",
         "canonicalize", "cse",
     ])+')'
-    pm = air.mlir.passmanager.PassManager.parse(pipeline)
+    pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
 
     with open('output1.mlir', 'w') as f:
@@ -70,7 +70,7 @@ with air.mlir.ir.Context():
         "air-dependency-canonicalize",
         "air-dependency-parse-graph{output-dir=dot_graphs/}",
     ])+')'
-    pm = air.mlir.passmanager.PassManager.parse(pipeline)
+    pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
 
     with open('output2.mlir', 'w') as f:
