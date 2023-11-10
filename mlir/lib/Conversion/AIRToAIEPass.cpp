@@ -368,7 +368,6 @@ void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
   int64_t col_offset = options.col_offset;
 
   for (auto x = 0; x < seg_size_x; x++) {
-    auto segloc = seg.getLoc();
     auto phys_x = x + col_offset;
     // TODO: Hard coded memtile row to be 1 here.
     auto phys_y = 1;
@@ -587,8 +586,8 @@ struct LowerScfTokenPattern : public OpRewritePattern<scf::ForOp> {
     BitVector iter_args_idx(fop.getNumOperands());
 
     // erase air.event from the iter args
-    for (auto block_arg : fop.getRegionIterArgs()) {
-      Value v = fop.getOpOperandForRegionIterArg(block_arg).get();
+    for (auto [index, block_arg] : llvm::enumerate(fop.getRegionIterArgs())) {
+      Value v = fop.getInitsMutable()[index].get();
       if (v.getType().isa<xilinx::air::AsyncTokenType>()) {
         block_arg.replaceAllUsesWith(v);
         iter_args_idx.set(block_arg.getArgNumber());
@@ -663,144 +662,145 @@ void lowerScfAirTokens(AIE::DeviceOp m) {
   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
 
-struct LowerPipeGetPutPattern : public OpRewritePattern<air::PipelinePutOp> {
-  using OpRewritePattern<air::PipelinePutOp>::OpRewritePattern;
+// struct LowerPipeGetPutPattern : public OpRewritePattern<air::PipelinePutOp> {
+//   using OpRewritePattern<air::PipelinePutOp>::OpRewritePattern;
 
-  LowerPipeGetPutPattern(MLIRContext *ctx,
-                         std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap)
-      : OpRewritePattern(ctx), tileToHerdMap(tileToHerdMap) {}
+//   LowerPipeGetPutPattern(MLIRContext *ctx,
+//                          std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap)
+//       : OpRewritePattern(ctx), tileToHerdMap(tileToHerdMap) {}
 
-  LogicalResult matchAndRewrite(air::PipelinePutOp put,
-                                PatternRewriter &rewriter) const override {
-    auto aie_device = put->getParentOfType<AIE::DeviceOp>();
-    auto core = put->getParentOfType<AIE::CoreOp>();
-    assert(aie_device && core);
+//   LogicalResult matchAndRewrite(air::PipelinePutOp put,
+//                                 PatternRewriter &rewriter) const override {
+//     auto aie_device = put->getParentOfType<AIE::DeviceOp>();
+//     auto core = put->getParentOfType<AIE::CoreOp>();
+//     assert(aie_device && core);
 
-    auto herd = tileToHerdMap[core.getTileOp()];
-    auto c = herd.getColOffset();
-    auto r = herd.getRowOffset();
-    auto col_offset = c ? *c : 0;
-    auto row_offset = r ? *r : 0;
+//     auto herd = tileToHerdMap[core.getTileOp()];
+//     auto c = herd.getColOffset();
+//     auto r = herd.getRowOffset();
+//     auto col_offset = c ? *c : 0;
+//     auto row_offset = r ? *r : 0;
 
-    auto other_x = cast<arith::ConstantIndexOp>(put.getDst0().getDefiningOp());
-    auto other_y = cast<arith::ConstantIndexOp>(put.getDst1().getDefiningOp());
-    auto other_core = getPhysTileOp(aie_device, other_x.value() + col_offset,
-                                    other_y.value() + row_offset)
-                          .getCoreOp();
-    assert(other_core);
+//     auto other_x = cast<arith::ConstantIndexOp>(put.getDst0().getDefiningOp());
+//     auto other_y = cast<arith::ConstantIndexOp>(put.getDst1().getDefiningOp());
+//     auto other_core = getPhysTileOp(aie_device, other_x.value() + col_offset,
+//                                     other_y.value() + row_offset)
+//                           .getCoreOp();
+//     assert(other_core);
 
-    air::PipelineGetOp get;
-    other_core.walk([&](air::PipelineGetOp pgo) { get = pgo; });
-    assert(get && get->getNumResults() == (put->getNumOperands() - 2));
+//     air::PipelineGetOp get;
+//     other_core.walk([&](air::PipelineGetOp pgo) { get = pgo; });
+//     assert(get && get->getNumResults() == (put->getNumOperands() - 2));
 
-    for (auto p :
-         llvm::zip(put->getOperands().drop_front(2), get->getResults())) {
+//     for (auto p :
+//          llvm::zip(put->getOperands().drop_front(2), get->getResults())) {
 
-      auto o = std::get<0>(p); // operand of put
-      auto r = std::get<1>(p); // result of get
-      // for each ranked tensor put (yielded) by the tile
-      if (RankedTensorType tt = o.getType().dyn_cast<RankedTensorType>()) {
-        auto memrefTy = MemRefType::get(tt.getShape(), tt.getElementType(), {},
-                                        (int)air::MemorySpace::L1);
-        // allocate buffer+lock
-        auto buf = allocateBufferOp(
-            memrefTy, core.getTileOp(),
-            StringAttr::get(aie_device.getContext(), "pipebuf"));
-        auto lockOp = allocateLockOp(aie_device, core.getTileOp());
+//       auto o = std::get<0>(p); // operand of put
+//       auto r = std::get<1>(p); // result of get
+//       // for each ranked tensor put (yielded) by the tile
+//       if (RankedTensorType tt = o.getType().dyn_cast<RankedTensorType>()) {
+//         auto memrefTy = MemRefType::get(tt.getShape(), tt.getElementType(), {},
+//                                         (int)air::MemorySpace::L1);
+//         // allocate buffer+lock
+//         auto buf = allocateBufferOp(
+//             memrefTy, core.getTileOp(),
+//             StringAttr::get(aie_device.getContext(), "pipebuf"));
+//         auto lockOp = allocateLockOp(aie_device, core.getTileOp());
 
-        // acquire the lock for write on the put side
-        rewriter.setInsertionPoint(put);
-        rewriter.create<AIE::UseLockOp>(put->getLoc(), lockOp, 0,
-                                        AIE::LockAction::Acquire);
-        rewriter.create<memref::TensorStoreOp>(put->getLoc(), o, buf);
-        rewriter.create<AIE::UseLockOp>(put->getLoc(), lockOp, 1,
-                                        AIE::LockAction::Release);
+//         // acquire the lock for write on the put side
+//         rewriter.setInsertionPoint(put);
+//         rewriter.create<AIE::UseLockOp>(put->getLoc(), lockOp, 0,
+//                                         AIE::LockAction::Acquire);
+//         rewriter.create<memref::TensorStoreOp>(put->getLoc(), o, buf);
+//         rewriter.create<AIE::UseLockOp>(put->getLoc(), lockOp, 1,
+//                                         AIE::LockAction::Release);
 
-        // acquire the lock for read on the get side
-        rewriter.setInsertionPoint(get);
-        rewriter.create<AIE::UseLockOp>(get->getLoc(), lockOp, 1,
-                                        AIE::LockAction::Acquire);
-        auto loadOp =
-            rewriter.create<bufferization::ToTensorOp>(get->getLoc(), buf);
-        rewriter.create<AIE::UseLockOp>(get->getLoc(), lockOp, 0,
-                                        AIE::LockAction::Release);
-        r.replaceAllUsesWith(loadOp.getResult());
-      } else {
-        llvm::errs() << "error, unsupported air.pipeline.yield operand type\n";
-        assert(0 && "Unsupported");
-        return failure();
-      }
-    }
-    rewriter.eraseOp(get);
-    rewriter.eraseOp(put);
-    return success();
-  }
+//         // acquire the lock for read on the get side
+//         rewriter.setInsertionPoint(get);
+//         rewriter.create<AIE::UseLockOp>(get->getLoc(), lockOp, 1,
+//                                         AIE::LockAction::Acquire);
+//         auto loadOp =
+//             rewriter.create<bufferization::ToTensorOp>(get->getLoc(), buf);
+//         rewriter.create<AIE::UseLockOp>(get->getLoc(), lockOp, 0,
+//                                         AIE::LockAction::Release);
+//         r.replaceAllUsesWith(loadOp.getResult());
+//       } else {
+//         llvm::errs() << "error, unsupported air.pipeline.yield operand type\n";
+//         assert(0 && "Unsupported");
+//         return failure();
+//       }
+//     }
+//     rewriter.eraseOp(get);
+//     rewriter.eraseOp(put);
+//     return success();
+//   }
 
-private:
-  std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap;
-};
+// private:
+//   std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap;
+// };
 
-// This function replaces PipelinePutOp/PipelineGetOp pairs with a
-// shared AIE.buffer + AIE.lock. This is a single-buffered implementation
-// with exclusive access to the buffer controlled by the lock. i.e. FIXME.
-void lowerPipelineGetPut(AIE::DeviceOp &m,
-                         std::map<AIE::TileOp, air::HerdOp> tileToHerdMap) {
-  auto ctx = m->getContext();
-  RewritePatternSet patterns(ctx);
-  patterns.insert<LowerPipeGetPutPattern>(ctx, tileToHerdMap);
-  (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
-}
+// // This function replaces PipelinePutOp/PipelineGetOp pairs with a
+// // shared AIE.buffer + AIE.lock. This is a single-buffered implementation
+// // with exclusive access to the buffer controlled by the lock. i.e. FIXME.
+// void lowerPipelineGetPut(AIE::DeviceOp &m,
+//                          std::map<AIE::TileOp, air::HerdOp> tileToHerdMap) {
+//   auto ctx = m->getContext();
+//   RewritePatternSet patterns(ctx);
+//   patterns.insert<LowerPipeGetPutPattern>(ctx, tileToHerdMap);
+//   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
+// }
 
-struct AllocL1TensorsPattern
-    : public OpRewritePattern<bufferization::ToMemrefOp> {
-  using OpRewritePattern<bufferization::ToMemrefOp>::OpRewritePattern;
 
-  AllocL1TensorsPattern(MLIRContext *ctx,
-                        std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap)
-      : OpRewritePattern(ctx), tileToHerdMap(tileToHerdMap) {}
+// struct AllocL1TensorsPattern
+//     : public OpRewritePattern<bufferization::ToMemrefOp> {
+//   using OpRewritePattern<bufferization::ToMemrefOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(bufferization::ToMemrefOp cast,
-                                PatternRewriter &rewriter) const override {
+//   AllocL1TensorsPattern(MLIRContext *ctx,
+//                         std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap)
+//       : OpRewritePattern(ctx), tileToHerdMap(tileToHerdMap) {}
 
-    AIE::CoreOp core = cast->getParentOfType<AIE::CoreOp>();
-    if (!core)
-      return failure();
+//   LogicalResult matchAndRewrite(bufferization::ToMemrefOp cast,
+//                                 PatternRewriter &rewriter) const override {
 
-    AIE::TileOp tile = core.getTileOp();
-    if (!tile)
-      return failure();
+//     AIE::CoreOp core = cast->getParentOfType<AIE::CoreOp>();
+//     if (!core)
+//       return failure();
 
-    MemRefType memrefTy = nullptr;
-    memrefTy = cast.getType().cast<MemRefType>();
+//     AIE::TileOp tile = core.getTileOp();
+//     if (!tile)
+//       return failure();
 
-    if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
-      return failure();
+//     MemRefType memrefTy = nullptr;
+//     memrefTy = cast.getType().cast<MemRefType>();
 
-    rewriter.setInsertionPointAfter(tile);
-    auto herd = tileToHerdMap[core.getTileOp()];
-    int64_t col_offset = 0;
-    int64_t row_offset = 0;
-    if (herd) {
-      auto c = herd.getColOffset();
-      auto r = herd.getRowOffset();
-      col_offset = c ? *c : 0;
-      row_offset = r ? *r : 0;
-    }
-    auto buffer = allocateBufferOp(
-        memrefTy, tile,
-        cast->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
-        tile.getCol() - col_offset, tile.getRow() - row_offset);
+//     if (memrefTy.getMemorySpaceAsInt() != (int)air::MemorySpace::L1)
+//       return failure();
 
-    rewriter.setInsertionPoint(cast);
-    rewriter.create<memref::TensorStoreOp>(cast.getLoc(), cast.getOperand(),
-                                           buffer);
-    rewriter.replaceOp(cast, buffer->getResults());
-    return success();
-  }
+//     rewriter.setInsertionPointAfter(tile);
+//     auto herd = tileToHerdMap[core.getTileOp()];
+//     int64_t col_offset = 0;
+//     int64_t row_offset = 0;
+//     if (herd) {
+//       auto c = herd.getColOffset();
+//       auto r = herd.getRowOffset();
+//       col_offset = c ? *c : 0;
+//       row_offset = r ? *r : 0;
+//     }
+//     auto buffer = allocateBufferOp(
+//         memrefTy, tile,
+//         cast->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
+//         tile.getCol() - col_offset, tile.getRow() - row_offset);
 
-private:
-  std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap;
-};
+//     rewriter.setInsertionPoint(cast);
+//     rewriter.create<memref::TensorStoreOp>(cast.getLoc(), cast.getOperand(),
+//                                            buffer);
+//     rewriter.replaceOp(cast, buffer->getResults());
+//     return success();
+//   }
+
+// private:
+//   std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap;
+// };
 
 struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
@@ -909,8 +909,8 @@ void allocL1Buffers(AIE::DeviceOp m,
                     std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
-  patterns.insert<AllocL1BuffersPattern, AllocL1TensorsPattern>(ctx,
-                                                                tileToHerdMap);
+  patterns.insert<AllocL1BuffersPattern>(ctx, tileToHerdMap);
+  // AllocL1TensorsPattern                                                                
   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
 
@@ -2544,7 +2544,7 @@ public:
 
     // erase the memcpy operations
     for (AIE::CoreOp core : cores) {
-
+      (void)core;
       std::vector<Operation *> memcpy_ops;
       getAIRMemcpyOpInRegion<T>(device.getRegion(), memcpy_ops);
 
@@ -2579,12 +2579,13 @@ public:
     if (clTestPatterns.find("to-aie-mlir") != std::string::npos) {
       std::vector<std::pair<AIE::DeviceOp, air::HerdOp>> aie_modules;
       std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
-      AIRToAIEOptions options = {.col_offset = clColOffset,
-                                 .row_offset = clRowOffset,
-                                 .emit_while = clEmitWhileLoop,
-                                 .emit_herd_lock = clEmitHerdLock,
-                                 .generate_shim_dma = clGenerateShimDMA,
-                                 .device = *device};
+      AIRToAIEOptions options;
+      options.col_offset = clColOffset;
+      options.row_offset = clRowOffset;
+      options.emit_while = clEmitWhileLoop;
+      options.emit_herd_lock = clEmitHerdLock;
+      options.generate_shim_dma = clGenerateShimDMA;
+      options.device = *device;
       createAIEModulesAndOutlineCores(m, aie_modules, tileToHerdMap, options);
       std::set<ModuleOp> seen;
       for (auto &p : aie_modules) {
@@ -2620,8 +2621,8 @@ public:
           ctx, tileToHerdMap);
     if (clTestPatterns.find("specialize-affine-if") != std::string::npos)
       patterns.insert<SpecializeAffineIfPattern>(ctx);
-    if (clTestPatterns.find("lower-pipe-get-put") != std::string::npos)
-      patterns.insert<LowerPipeGetPutPattern>(ctx, tileToHerdMap);
+    // if (clTestPatterns.find("lower-pipe-get-put") != std::string::npos)
+    //   patterns.insert<LowerPipeGetPutPattern>(ctx, tileToHerdMap);
     if (clTestPatterns.find("lower-scf-tokens") != std::string::npos)
       patterns.insert<LowerScfTokenPattern>(ctx);
 
@@ -2672,12 +2673,13 @@ public:
       signalPassFailure();
       return;
     }
-    AIRToAIEOptions options = {.col_offset = clColOffset,
-                               .row_offset = clRowOffset,
-                               .emit_while = clEmitWhileLoop,
-                               .emit_herd_lock = clEmitHerdLock,
-                               .generate_shim_dma = clGenerateShimDMA,
-                               .device = *device};
+    AIRToAIEOptions options;
+    options.col_offset = clColOffset;
+    options.row_offset = clRowOffset;
+    options.emit_while = clEmitWhileLoop;
+    options.emit_herd_lock = clEmitHerdLock;
+    options.generate_shim_dma = clGenerateShimDMA;
+    options.device = *device;
     createAIEModulesAndOutlineCores(module, aie_devices, tileToHerdMap,
                                     options);
 
@@ -2742,7 +2744,7 @@ public:
 
       lowerAIRMemcpyOp<air::DmaMemcpyNdOp>(device, shimDmaAlloc, options);
 
-      lowerPipelineGetPut(device, tileToHerdMap);
+      // lowerPipelineGetPut(device, tileToHerdMap);
 
       SmallVector<air::HerdOp, 4> herds;
       SmallVector<air::SegmentOp, 4> segs;
@@ -2954,8 +2956,11 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     p->emitOpError("Invalid AIE.device option");
     return failure();
   }
-  AIRToAIEOptions options = {
-      .col_offset = 7, .row_offset = 2, .emit_while = false, .device = *device};
+  AIRToAIEOptions options;
+  options.col_offset = 7;
+  options.row_offset = 2;
+  options.emit_while = false;
+  options.device = *device;
   std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> aie_modules;
   p.walk([&](xilinx::air::HerdOp h) {
     aie_modules.push_back({aie_module, h});

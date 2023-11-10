@@ -281,15 +281,15 @@ def AIRRtToLLVM : Pass<"airrt-to-llvm", "ModuleOp"> {
   let options = [];
 }
 
-def AIRRtToIpu : Pass<"airrt-to-ipu", "ModuleOp"> {
-  let summary = "Lower AIRRt dialect to AIEX.ipu dialect";
-  let constructor = "xilinx::airrt::createAIRRtToIpuPass()";
-  let description =  [{
-    Lower AIRRt dialect to AIEX.ipu dialect
-  }];
-  let options = [];
-  let dependentDialects = ["xilinx::AIEX::AIEXDialect"];
-}
+// def AIRRtToIpu : Pass<"airrt-to-ipu", "ModuleOp"> {
+//   let summary = "Lower AIRRt dialect to AIEX.ipu dialect";
+//   let constructor = "xilinx::airrt::createAIRRtToIpuPass()";
+//   let description =  [{
+//     Lower AIRRt dialect to AIEX.ipu dialect
+//   }];
+//   let options = [];
+//   let dependentDialects = ["xilinx::AIEX::AIEXDialect"];
+// }
 
 def AIRSplitDevices : Pass<"air-split-devices", "ModuleOp"> {
   let summary = "Split the input into one output per AIE.device op";

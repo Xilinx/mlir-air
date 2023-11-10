@@ -207,20 +207,20 @@ struct dependencyContext {
         WaitAllOpID(0), ForOpID(0), ParallelOpID(0), TerminatorID(0) {}
 };
 
-// Flat boost graph
-typedef std::map<std::string, std::string> GraphvizAttributes;
-typedef boost::subgraph<
-    boost::adjacency_list<boost::vecS, boost::vecS, boost::directedS,
-                          boost::property<boost::vertex_index_t, int>,
-                          boost::property<boost::edge_index_t, int>,
-                          boost::property<boost::graph_name_t, std::string>>>
-    FlatGraph;
-typedef std::map<Graph::vertex_descriptor, FlatGraph::vertex_descriptor>
-    vertex_to_flat_vertex_map;
-typedef std::map<std::string,
-                 std::pair<std::vector<FlatGraph::vertex_descriptor>,
-                           std::vector<FlatGraph::vertex_descriptor>>>
-    ChannelMap;
+// // Flat boost graph for visualization
+// typedef std::map<std::string, std::string> GraphvizAttributes;
+// typedef boost::subgraph<
+//     boost::adjacency_list<boost::vecS, boost::vecS, boost::directedS,
+//                           boost::property<boost::vertex_index_t, int>,
+//                           boost::property<boost::edge_index_t, int>,
+//                           boost::property<boost::graph_name_t, std::string>>>
+//     FlatGraph;
+// typedef std::map<Graph::vertex_descriptor, FlatGraph::vertex_descriptor>
+//     vertex_to_flat_vertex_map;
+// typedef std::map<std::string,
+//                  std::pair<std::vector<FlatGraph::vertex_descriptor>,
+//                            std::vector<FlatGraph::vertex_descriptor>>>
+//     ChannelMap;
 
 class dependencyCanonicalizer {
 
@@ -301,16 +301,16 @@ private:
   std::pair<std::string, unsigned> getTypeIdPairFromOp(Operation *op);
   std::string getOpTypeFromOpImpls(Operation *op);
   void parseDependencyEdgesInGraph(Graph &g, dependencyContext dep_ctx);
-  void copyFromDependencyGraphToFlatGraph(Graph g_src,
-                                          std::vector<unsigned> position,
-                                          FlatGraph &g_dst,
-                                          vertex_to_flat_vertex_map &map,
-                                          bool copyEdges = false);
-  void updateSubgraphFromDependencyGraph(Graph subg_src,
-                                         std::vector<unsigned> position,
-                                         FlatGraph &subg_dst,
-                                         vertex_to_flat_vertex_map map,
-                                         bool copyEdges = false);
+  // void copyFromDependencyGraphToFlatGraph(Graph g_src,
+  //                                         std::vector<unsigned> position,
+  //                                         FlatGraph &g_dst,
+  //                                         vertex_to_flat_vertex_map &map,
+  //                                         bool copyEdges = false);
+  // void updateSubgraphFromDependencyGraph(Graph subg_src,
+  //                                        std::vector<unsigned> position,
+  //                                        FlatGraph &subg_dst,
+  //                                        vertex_to_flat_vertex_map map,
+  //                                        bool copyEdges = false);
   void connectOpToItsDepListImpls(Operation *op, Graph &g,
                                   dependencyContext dep_ctx);
   void connectOpToItsDepList(Operation *op, SmallVector<Value, 1> dep_list,
@@ -328,13 +328,13 @@ private:
                                     vertex_to_vertex_map &tr_to_g);
   void purgeAIRDepList(dependencyGraph &graph);
   void fillAIRDepListUsingGraphTR(dependencyGraph &graph);
-  void collectAIRChannelPutAndGetInGraph(Graph g,
-                                         std::vector<unsigned> position,
-                                         vertex_to_flat_vertex_map map,
-                                         ChannelMap &channel_map);
-  void updateSubgraphFromDependencyGraphAsGraphVizCluster(
-      dependencyGraph &G, FlatGraph &flat_subg, vertex_to_flat_vertex_map map,
-      unsigned global_idx, unsigned &subg_idx, std::string hier_name = "");
+  // void collectAIRChannelPutAndGetInGraph(Graph g,
+  //                                        std::vector<unsigned> position,
+  //                                        vertex_to_flat_vertex_map map,
+  //                                        ChannelMap &channel_map);
+  // void updateSubgraphFromDependencyGraphAsGraphVizCluster(
+  //     dependencyGraph &G, FlatGraph &flat_subg, vertex_to_flat_vertex_map map,
+  //     unsigned global_idx, unsigned &subg_idx, std::string hier_name = "");
   std::vector<Graph::vertex_descriptor>
   getVerticesWithAffineIf(Graph g, std::vector<unsigned> position);
 };

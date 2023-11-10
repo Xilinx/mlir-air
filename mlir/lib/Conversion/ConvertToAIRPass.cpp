@@ -2174,7 +2174,6 @@ struct InsertEmptyLaunchOverHerdPass
 
   void runOnOperation() override {
     auto module = getOperation();
-    auto context = module.getContext();
 
     module.walk([&](air::HerdOp op) {
       if (!op->getParentOfType<air::LaunchOp>())
@@ -2197,21 +2196,22 @@ transform::ParToHerdOp::applyToOne(transform::TransformRewriter &rewriter,
                                    scf::ParallelOp target,
                                    transform::ApplyToEachResultList &results,
                                    transform::TransformState &state) {
-  auto ctx = target->getContext();
-  RewritePatternSet patterns(ctx);
-  llvm::SmallSet<air::HerdOp, 2> herdOps;
-  llvm::SmallSet<Operation *, 8> filteredOps;
-  filteredOps.insert(target);
-  patterns.add<ScfParToHerdConversion>(ctx, filteredOps, herdOps,
-                                       getFirstDim());
-  (void)applyPatternsAndFoldGreedily(
-      target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
-      std::move(patterns));
-  for (auto h : herdOps) {
-    getHerdNames(h->getParentOfType<ModuleOp>());
-    results.push_back(h);
-  }
-  return DiagnosedSilenceableFailure::success();
+  // auto ctx = target->getContext();
+  // RewritePatternSet patterns(ctx);
+  // llvm::SmallSet<air::HerdOp, 2> herdOps;
+  // llvm::SmallSet<Operation *, 8> filteredOps;
+  // filteredOps.insert(target);
+  // patterns.add<ScfParToHerdConversion>(ctx, filteredOps, herdOps,
+  //                                      this->getFirstDim());
+  // (void)applyPatternsAndFoldGreedily(
+  //     target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
+  //     std::move(patterns));
+  // for (auto h : herdOps) {
+  //   getHerdNames(h->getParentOfType<ModuleOp>());
+  //   results.push_back(h);
+  // }
+  // return DiagnosedSilenceableFailure::success();
+  return DiagnosedSilenceableFailure::definiteFailure();
 }
 
 //===----------------------------------------------------------------------===//
@@ -2247,11 +2247,11 @@ transform::CopyToDmaOp::applyToOne(transform::TransformRewriter &rewriter,
                                    transform::ApplyToEachResultList &results,
                                    transform::TransformState &state) {
   auto ctx = op->getContext();
-  // RewritePatternSet stage1Patterns =
-  //   linalg::getLinalgTilingCanonicalizationPatterns(ctx);
-  // memref::AllocOp::getCanonicalizationPatterns(stage1Patterns, ctx);
-  // (void)applyPatternsAndFoldGreedily(op->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
-  //                                    std::move(stage1Patterns));
+  RewritePatternSet stage1Patterns =
+      linalg::getLinalgTilingCanonicalizationPatterns(ctx);
+  memref::AllocOp::getCanonicalizationPatterns(stage1Patterns, ctx);
+  (void)applyPatternsAndFoldGreedily(op->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
+                                     std::move(stage1Patterns));
   auto res = matchAndRewriteCopyOp(op, rewriter);
   if (failed(res))
     return emitDefaultDefiniteFailure(op);

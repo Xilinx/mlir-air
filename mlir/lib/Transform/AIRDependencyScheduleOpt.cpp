@@ -1028,6 +1028,7 @@ struct EnforceLoopCarriedMemrefDeallocPattern
     std::vector<air::ExecuteOp> disconnected_deallocs;
     for (auto exec : for_op.getOps<air::ExecuteOp>()) {
       for (auto dealloc : exec.getOps<memref::DeallocOp>()) {
+        (void)dealloc;
         SmallVector<Operation *, 1> vec;
         if (!hasPath(exec.getOperation(), yield_op.getOperation(), vec)) {
           disconnected_deallocs.push_back(exec);
@@ -2278,7 +2279,7 @@ public:
     for (unsigned i = 0; i < channelOps.size() - 1; i++) {
       for (unsigned j = i + 1; j < channelOps.size(); j++) {
         if (chan_merge_map.count(channelOps[j])) {
-          mlir::SymbolTable::replaceAllSymbolUses(
+          (void)mlir::SymbolTable::replaceAllSymbolUses(
               channelOps[j].getOperation(),
               mlir::SymbolTable::getSymbolName(chan_merge_map[channelOps[j]]),
               channelOps[j]->getParentOfType<ModuleOp>());
@@ -2418,8 +2419,6 @@ private:
         getChannelGetOpThroughSymbol(chan_b);
     // Interleave puts and gets
     for (unsigned i = 0; i < a_puts.size(); i++) {
-      auto b_put_parent_region = b_puts[i]->getParentRegion();
-      auto b_put_parent = b_puts[i]->getParentOp();
       OpBuilder builder(a_puts[i]);
       IRMapping remap;
       remapAllParentLoopArgs(remap, a_puts[i], b_puts[i]);
@@ -2430,8 +2429,6 @@ private:
             dyn_cast<air::ChannelPutOp>(new_b_put).getAsyncToken());
     }
     for (unsigned i = 0; i < a_gets.size(); i++) {
-      auto b_get_parent_region = b_gets[i]->getParentRegion();
-      auto b_get_parent = b_gets[i]->getParentOp();
       OpBuilder builder(a_gets[i]);
       IRMapping remap;
       remapAllParentLoopArgs(remap, a_gets[i], b_gets[i]);
