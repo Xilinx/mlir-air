@@ -52,7 +52,6 @@ void boost::throw_exception(std::exception const &e,
 // boost graph
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/graph_traits.hpp>
-#include <boost/graph/graphviz.hpp>
 #include <boost/graph/transitive_reduction.hpp>
 
 #include <algorithm>
@@ -1821,22 +1820,6 @@ private:
       }
     } else
       op->emitOpError("operation has no async interface");
-  }
-
-  // Dump graphviz
-  void dump_graph(std::string filename) {
-    std::ofstream ofs(filename, std::ofstream::out);
-    boost::dynamic_properties dp;
-    dp.property("label",
-                boost::get(&executeNode::asyncEventName, asyncExecuteGraphTR));
-    dp.property("color", boost::get(&executeNode::color, asyncExecuteGraphTR));
-    dp.property("shape", boost::get(&executeNode::shape, asyncExecuteGraphTR));
-    dp.property("node_id",
-                boost::get(boost::vertex_index, asyncExecuteGraphTR));
-    dp.property(
-        "style",
-        boost::make_constant_property<Graph::vertex_descriptor>(+"filled"));
-    write_graphviz_dp(ofs, asyncExecuteGraphTR, dp);
   }
 
   //===----------------------------------------------------------------------===//
