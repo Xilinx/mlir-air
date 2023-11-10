@@ -13,4 +13,4 @@ namespace {
 #include "air/Transform/Passes.h.inc"
 }
 
-void xilinx::air::registerTransformPasses() { ::registerAIRTransformPasses(); }
+void xilinx::air::registerTransformPasses() { registerPasses(); }

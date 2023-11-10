@@ -368,7 +368,7 @@ void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
   int64_t col_offset = options.col_offset;
 
   for (auto x = 0; x < seg_size_x; x++) {
-    auto segloc = seg.getLoc();
+    // auto segloc = seg.getLoc();
     auto phys_x = x + col_offset;
     // TODO: Hard coded memtile row to be 1 here.
     auto phys_y = 1;
@@ -2544,7 +2544,7 @@ public:
 
     // erase the memcpy operations
     for (AIE::CoreOp core : cores) {
-
+      (void)core;
       std::vector<Operation *> memcpy_ops;
       getAIRMemcpyOpInRegion<T>(device.getRegion(), memcpy_ops);
 
@@ -2579,12 +2579,12 @@ public:
     if (clTestPatterns.find("to-aie-mlir") != std::string::npos) {
       std::vector<std::pair<AIE::DeviceOp, air::HerdOp>> aie_modules;
       std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
-      AIRToAIEOptions options = {.col_offset = clColOffset,
-                                 .row_offset = clRowOffset,
-                                 .emit_while = clEmitWhileLoop,
-                                 .emit_herd_lock = clEmitHerdLock,
-                                 .generate_shim_dma = clGenerateShimDMA,
-                                 .device = *device};
+      AIRToAIEOptions options = {/*.col_offset = */ clColOffset,
+                                 /*.row_offset = */ clRowOffset,
+                                 /*.emit_while = */ clEmitWhileLoop,
+                                 /*.emit_herd_lock = */ clEmitHerdLock,
+                                 /*.generate_shim_dma = */ clGenerateShimDMA,
+                                 /*.device = */ *device};
       createAIEModulesAndOutlineCores(m, aie_modules, tileToHerdMap, options);
       std::set<ModuleOp> seen;
       for (auto &p : aie_modules) {
@@ -2672,12 +2672,12 @@ public:
       signalPassFailure();
       return;
     }
-    AIRToAIEOptions options = {.col_offset = clColOffset,
-                               .row_offset = clRowOffset,
-                               .emit_while = clEmitWhileLoop,
-                               .emit_herd_lock = clEmitHerdLock,
-                               .generate_shim_dma = clGenerateShimDMA,
-                               .device = *device};
+    AIRToAIEOptions options = {/* .col_offset = */ clColOffset,
+                               /* .row_offset = */ clRowOffset,
+                               /* .emit_while = */ clEmitWhileLoop,
+                               /* .emit_herd_lock = */ clEmitHerdLock,
+                               /* .generate_shim_dma = */ clGenerateShimDMA,
+                               /* .device = */ *device};
     createAIEModulesAndOutlineCores(module, aie_devices, tileToHerdMap,
                                     options);
 
@@ -2954,8 +2954,12 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     p->emitOpError("Invalid AIE.device option");
     return failure();
   }
-  AIRToAIEOptions options = {
-      .col_offset = 7, .row_offset = 2, .emit_while = false, .device = *device};
+  AIRToAIEOptions options = {/* .col_offset = */ 7,
+                             /* .row_offset = */ 2,
+                             /* .emit_while = */ false,
+                             /* .emit_herd_lock = */ false,
+                             /* .generate_shim_dma = */ false,
+                             /* .device = */ *device};
   std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> aie_modules;
   p.walk([&](xilinx::air::HerdOp h) {
     aie_modules.push_back({aie_module, h});

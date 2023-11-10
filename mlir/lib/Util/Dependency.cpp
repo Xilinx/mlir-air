@@ -619,7 +619,7 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
       auto a = add_vertex(a_entry, flat_subg_chan);
       for (auto b_entry : map.second.second) {
         auto b = add_vertex(b_entry, flat_subg_chan);
-        add_edge(a, b, flat_subg_chan).first;
+        add_edge(a, b, flat_subg_chan);
       }
     }
   }

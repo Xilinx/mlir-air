@@ -13,4 +13,4 @@ namespace {
 #include "air/Conversion/Passes.h.inc"
 }
 
-void xilinx::air::registerConversionPasses() { ::registerAIRConversionPasses(); }
+void xilinx::air::registerConversionPasses() { ::registerPasses(); }

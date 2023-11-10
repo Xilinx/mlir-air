@@ -1300,8 +1300,11 @@ private:
         merge_candidate_loop = true;
       else if (auto scf_par = dyn_cast<scf::ParallelOp>(scf_loop)) {
         merge_candidate_loop = false;
-        for (auto child_scf_for_loop : scf_par.getBody()->getOps<scf::ForOp>())
+        for (auto child_scf_for_loop :
+             scf_par.getBody()->getOps<scf::ForOp>()) {
+          (void)child_scf_for_loop;
           merge_candidate_loop = true;
+        }
       }
 
       if (merge_candidate_loop) {

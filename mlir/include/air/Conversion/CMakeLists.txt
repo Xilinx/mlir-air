@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 set(LLVM_TARGET_DEFINITIONS Passes.td)
-mlir_tablegen(Passes.h.inc -gen-pass-decls -name AIRConversion)
+mlir_tablegen(Passes.h.inc -gen-pass-decls)
 add_public_tablegen_target(AIRConversionPassIncGen)
 
 add_mlir_doc(Passes AIRConversionPasses ./ -gen-pass-doc)

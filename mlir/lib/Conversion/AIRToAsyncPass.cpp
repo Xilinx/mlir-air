@@ -455,7 +455,6 @@ public:
     // compute the total number of iterations and check that the bounds are
     // constants
     uint64_t total_size = 1;
-    auto ivs = op.getInductionVars().begin();
     auto step = op.getStep().begin();
     auto lowerBound = op.getLowerBound().begin();
     auto upperBound = op.getUpperBound().begin();
