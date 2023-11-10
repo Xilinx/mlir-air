@@ -11,12 +11,10 @@
 // CHECK: AIE.device
 // CHECK:         %[[VAL_0:.*]] = AIE.tile(2, 1)
 // CHECK:         %[[VAL_1:.*]] = AIE.tile(2, 3)
-// CHECK:         %[[VAL_2:.*]] = AIE.lock(%[[VAL_0]], 1)
-// CHECK:         %[[VAL_3:.*]] = AIE.lock(%[[VAL_0]], 0)
-// CHECK:         %[[VAL_4:.*]] = AIE.lock(%[[VAL_1]], 3)
-// CHECK:         %[[VAL_5:.*]] = AIE.lock(%[[VAL_1]], 2)
-// CHECK:         %[[VAL_6:.*]] = AIE.lock(%[[VAL_1]], 1)
-// CHECK:         %[[VAL_7:.*]] = AIE.lock(%[[VAL_1]], 0)
+// CHECK:         %[[VAL_2:.*]] = AIE.lock(%[[VAL_0]], 1) {init = 1 : i32}
+// CHECK:         %[[VAL_3:.*]] = AIE.lock(%[[VAL_0]], 0) {init = 0 : i32}
+// CHECK:         %[[VAL_4:.*]] = AIE.lock(%[[VAL_1]], 1) {init = 2 : i32}
+// CHECK:         %[[VAL_5:.*]] = AIE.lock(%[[VAL_1]], 0) {init = 0 : i32}
 // CHECK:         %[[VAL_8:.*]] = AIE.buffer(%[[VAL_0]]) {sym_name = {{.*}}} : memref<32x32xbf16, 1>
 // CHECK:         %[[VAL_9:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
 // CHECK:         %[[VAL_10:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
@@ -24,9 +22,9 @@
 // CHECK:    AIE.mem(%[[VAL_1]])  {
 // CHECK:           AIE.dmaStart(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
-// CHECK:           AIE.useLock(%[[VAL_6]], AcquireGreaterEqual, 1)
+// CHECK:           AIE.useLock(%[[VAL_4]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.dmaBd(<%[[VAL_9]] : memref<32x32xbf16, 2>, 0, 1024>, 0)
-// CHECK:           AIE.useLock(%[[VAL_7]], Release, 1)
+// CHECK:           AIE.useLock(%[[VAL_5]], Release, 1)
 // CHECK:           AIE.nextBd ^bb2
 // CHECK:         ^bb2:
 // CHECK:           AIE.useLock(%[[VAL_4]], AcquireGreaterEqual, 1)
@@ -38,9 +36,9 @@
 // CHECK:         }
 
 // CHECK:    AIE.core(%[[VAL_1]])  {
-// CHECK:           AIE.useLock(%[[VAL_7]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.useLock(%[[VAL_5]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.useLock(%[[VAL_6]], Release, 1)
+// CHECK:           AIE.useLock(%[[VAL_5]], AcquireGreaterEqual, 1)
+// CHECK:           AIE.useLock(%[[VAL_4]], Release, 1)
 // CHECK:           AIE.useLock(%[[VAL_4]], Release, 1)
 // CHECK:           AIE.end
 // CHECK:         }
@@ -105,14 +103,10 @@ func.func @multi_memcpys_over_time() {
 // CHECK:         %[[VAL_0:.*]] = AIE.tile(2, 1)
 // CHECK:         %[[VAL_1:.*]] = AIE.tile(2, 3)
 // CHECK:         %[[VAL_2:.*]] = AIE.tile(2, 4)
-// CHECK:         %[[VAL_3:.*]] = AIE.lock(%[[VAL_1]], 3)
-// CHECK:         %[[VAL_4:.*]] = AIE.lock(%[[VAL_1]], 2)
-// CHECK:         %[[VAL_5:.*]] = AIE.lock(%[[VAL_1]], 1)
-// CHECK:         %[[VAL_6:.*]] = AIE.lock(%[[VAL_1]], 0)
-// CHECK:         %[[VAL_7:.*]] = AIE.lock(%[[VAL_2]], 3)
-// CHECK:         %[[VAL_8:.*]] = AIE.lock(%[[VAL_2]], 2)
-// CHECK:         %[[VAL_9:.*]] = AIE.lock(%[[VAL_2]], 1)
-// CHECK:         %[[VAL_10:.*]] = AIE.lock(%[[VAL_2]], 0)
+// CHECK:         %[[VAL_3:.*]] = AIE.lock(%[[VAL_1]], 1) {init = 2 : i32}
+// CHECK:         %[[VAL_4:.*]] = AIE.lock(%[[VAL_1]], 0) {init = 0 : i32}
+// CHECK:         %[[VAL_7:.*]] = AIE.lock(%[[VAL_2]], 1) {init = 2 : i32}
+// CHECK:         %[[VAL_8:.*]] = AIE.lock(%[[VAL_2]], 0) {init = 0 : i32}
 // CHECK:         %[[VAL_11:.*]] = AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
 // CHECK:         %[[VAL_12:.*]] = AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
 // CHECK:         %[[VAL_13:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
@@ -121,9 +115,9 @@ func.func @multi_memcpys_over_time() {
 // CHECK:    AIE.mem(%[[VAL_2]])  {
 // CHECK:           AIE.dmaStart(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
-// CHECK:           AIE.useLock(%[[VAL_9]], AcquireGreaterEqual, 1)
+// CHECK:           AIE.useLock(%[[VAL_7]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.dmaBd(<%[[VAL_11]] : memref<32x32xbf16, 2>, 0, 1024>, 0)
-// CHECK:           AIE.useLock(%[[VAL_10]], Release, 1)
+// CHECK:           AIE.useLock(%[[VAL_8]], Release, 1)
 // CHECK:           AIE.nextBd ^bb2
 // CHECK:         ^bb2:
 // CHECK:           AIE.useLock(%[[VAL_7]], AcquireGreaterEqual, 1)
@@ -135,9 +129,9 @@ func.func @multi_memcpys_over_time() {
 // CHECK:         }
 
 // CHECK:    AIE.core(%[[VAL_2]])  {
-// CHECK:           AIE.useLock(%[[VAL_10]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.useLock(%[[VAL_8]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.useLock(%[[VAL_9]], Release, 1)
+// CHECK:           AIE.useLock(%[[VAL_8]], AcquireGreaterEqual, 1)
+// CHECK:           AIE.useLock(%[[VAL_7]], Release, 1)
 // CHECK:           AIE.useLock(%[[VAL_7]], Release, 1)
 // CHECK:           AIE.end
 // CHECK:         }
@@ -145,9 +139,9 @@ func.func @multi_memcpys_over_time() {
 // CHECK:    AIE.mem(%[[VAL_1]])  {
 // CHECK:           AIE.dmaStart(MM2S, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
-// CHECK:           AIE.useLock(%[[VAL_6]], AcquireGreaterEqual, 1)
+// CHECK:           AIE.useLock(%[[VAL_4]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.dmaBd(<%[[VAL_13]] : memref<32x32xbf16, 2>, 0, 1024>, 0)
-// CHECK:           AIE.useLock(%[[VAL_5]], Release, 1)
+// CHECK:           AIE.useLock(%[[VAL_3]], Release, 1)
 // CHECK:           AIE.nextBd ^bb2
 // CHECK:         ^bb2:
 // CHECK:           AIE.useLock(%[[VAL_4]], AcquireGreaterEqual, 1)
@@ -159,9 +153,9 @@ func.func @multi_memcpys_over_time() {
 // CHECK:         }
 
 // CHECK:    AIE.core(%[[VAL_1]])  {
-// CHECK:           AIE.useLock(%[[VAL_5]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.useLock(%[[VAL_3]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.useLock(%[[VAL_6]], Release, 1)
+// CHECK:           AIE.useLock(%[[VAL_3]], AcquireGreaterEqual, 1)
+// CHECK:           AIE.useLock(%[[VAL_4]], Release, 1)
 // CHECK:           AIE.useLock(%[[VAL_4]], Release, 1)
 // CHECK:           AIE.end
 // CHECK:         }
@@ -217,14 +211,10 @@ func.func @core_to_core_ping_pong() {
 // CHECK:         %[[VAL_0:.*]] = AIE.tile(2, 1)
 // CHECK:         %[[VAL_1:.*]] = AIE.tile(2, 3)
 // CHECK:         %[[VAL_2:.*]] = AIE.tile(2, 4)
-// CHECK:         %[[VAL_3:.*]] = AIE.lock(%[[VAL_1]], 3)
-// CHECK:         %[[VAL_4:.*]] = AIE.lock(%[[VAL_1]], 2)
-// CHECK:         %[[VAL_5:.*]] = AIE.lock(%[[VAL_1]], 1)
-// CHECK:         %[[VAL_6:.*]] = AIE.lock(%[[VAL_1]], 0)
-// CHECK:         %[[VAL_7:.*]] = AIE.lock(%[[VAL_2]], 3)
-// CHECK:         %[[VAL_8:.*]] = AIE.lock(%[[VAL_2]], 2)
-// CHECK:         %[[VAL_9:.*]] = AIE.lock(%[[VAL_2]], 1)
-// CHECK:         %[[VAL_10:.*]] = AIE.lock(%[[VAL_2]], 0)
+// CHECK:         %[[VAL_3:.*]] = AIE.lock(%[[VAL_1]], 1) {init = 2 : i32}
+// CHECK:         %[[VAL_4:.*]] = AIE.lock(%[[VAL_1]], 0) {init = 0 : i32}
+// CHECK:         %[[VAL_7:.*]] = AIE.lock(%[[VAL_2]], 1) {init = 2 : i32}
+// CHECK:         %[[VAL_8:.*]] = AIE.lock(%[[VAL_2]], 0) {init = 0 : i32}
 // CHECK:         %[[VAL_11:.*]] = AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
 // CHECK:         %[[VAL_12:.*]] = AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
 // CHECK:         %[[VAL_13:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
@@ -233,9 +223,9 @@ func.func @core_to_core_ping_pong() {
 // CHECK:    AIE.mem(%[[VAL_2]])  {
 // CHECK:           AIE.dmaStart(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
-// CHECK:           AIE.useLock(%[[VAL_9]], AcquireGreaterEqual, 1)
+// CHECK:           AIE.useLock(%[[VAL_7]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.dmaBd(<%[[VAL_11]] : memref<32x32xbf16, 2>, 0, 1024>, 0)
-// CHECK:           AIE.useLock(%[[VAL_10]], Release, 1)
+// CHECK:           AIE.useLock(%[[VAL_8]], Release, 1)
 // CHECK:           AIE.nextBd ^bb2
 // CHECK:         ^bb2:
 // CHECK:           AIE.useLock(%[[VAL_7]], AcquireGreaterEqual, 1)
@@ -247,8 +237,8 @@ func.func @core_to_core_ping_pong() {
 // CHECK:         }
 
 // CHECK:    AIE.core(%[[VAL_2]])  {
-// CHECK:           AIE.useLock(%[[VAL_10]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.useLock(%[[VAL_9]], Release, 1)
+// CHECK:           AIE.useLock(%[[VAL_8]], AcquireGreaterEqual, 1)
+// CHECK:           AIE.useLock(%[[VAL_7]], Release, 1)
 // CHECK:           AIE.useLock(%[[VAL_8]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.useLock(%[[VAL_7]], Release, 1)
 // CHECK:           AIE.end
@@ -257,9 +247,9 @@ func.func @core_to_core_ping_pong() {
 // CHECK:    AIE.mem(%[[VAL_1]])  {
 // CHECK:           AIE.dmaStart(MM2S, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
-// CHECK:           AIE.useLock(%[[VAL_6]], AcquireGreaterEqual, 1)
+// CHECK:           AIE.useLock(%[[VAL_4]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.dmaBd(<%[[VAL_13]] : memref<32x32xbf16, 2>, 0, 1024>, 0)
-// CHECK:           AIE.useLock(%[[VAL_5]], Release, 1)
+// CHECK:           AIE.useLock(%[[VAL_3]], Release, 1)
 // CHECK:           AIE.nextBd ^bb2
 // CHECK:         ^bb2:
 // CHECK:           AIE.useLock(%[[VAL_4]], AcquireGreaterEqual, 1)
@@ -271,8 +261,8 @@ func.func @core_to_core_ping_pong() {
 // CHECK:         }
 
 // CHECK:    AIE.core(%[[VAL_1]])  {
-// CHECK:           AIE.useLock(%[[VAL_5]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.useLock(%[[VAL_6]], Release, 1)
+// CHECK:           AIE.useLock(%[[VAL_3]], AcquireGreaterEqual, 1)
+// CHECK:           AIE.useLock(%[[VAL_4]], Release, 1)
 // CHECK:           AIE.useLock(%[[VAL_3]], AcquireGreaterEqual, 1)
 // CHECK:           AIE.useLock(%[[VAL_4]], Release, 1)
 // CHECK:           AIE.end
@@ -312,8 +302,6 @@ func.func @core_to_core_ping_pong() {
             }
             scf.yield %5, %6, %6 : !air.async.token, !air.async.token, !air.async.token
           }
-          // %4 = air.channel.put async [%async_token_4]  @channel_1[] (%results_5[] [] []) : (memref<32x32xbf16, 2>)
-          // %5 = air.channel.put async [%async_token_6, %4]  @channel_1[] (%results_7[] [] []) : (memref<32x32xbf16, 2>)
           affine.yield %4#2 : !air.async.token
         } else {
           %4:3 = scf.for %arg13 = %c0 to %c128 step %c64 iter_args(%arg14 = %async_token_4, %arg15 = %async_token_6, %arg16 = %async_token_6) -> (!air.async.token, !air.async.token, !air.async.token) {
@@ -327,16 +315,8 @@ func.func @core_to_core_ping_pong() {
             }
             scf.yield %5, %6, %6 : !air.async.token, !air.async.token, !air.async.token
           }
-          // %4 = air.channel.get async [%async_token_4]  @channel_1[] (%results_5[] [] []) : (memref<32x32xbf16, 2>)
-          // %5 = air.channel.get async [%async_token_6, %4]  @channel_1[] (%results_7[] [] []) : (memref<32x32xbf16, 2>)
           affine.yield %4#2 : !air.async.token
         }
-        // %async_token_8 = air.execute [%3] {
-        //   memref.dealloc %results_5 : memref<32x32xbf16, 2>
-        // }
-        // %async_token_9 = air.execute [%3] {
-        //   memref.dealloc %results_7 : memref<32x32xbf16, 2>
-        // }
         air.herd_terminator
       }
       air.segment_terminator

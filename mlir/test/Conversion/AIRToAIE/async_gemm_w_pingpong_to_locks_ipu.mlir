@@ -1,107 +1,50 @@
-//===- async_gemm_w_ping_pong_to_locks_aie2.mlir ---------------*- MLIR -*-===//
+//===- async_gemm_w_ping_pong_to_locks_ipu.mlir ----------------*- MLIR -*-===//
 //
 // Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt -air-fuse-channels -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcve2802" %s | FileCheck %s
+// RUN: air-opt -air-fuse-channels -air-to-aie="row-offset=2 col-offset=0 device=ipu" -canonicalize -cse %s | FileCheck %s
 
-// CHECK-LABEL:   AIE.device(xcve2802) {
-// CHECK:   %[[VAL_0:.*]] = AIE.tile(2, 0)
-// CHECK:   %[[VAL_2:.*]] = AIE.tile(5, 1)
-// CHECK:   %[[VAL_3:.*]] = AIE.tile(6, 1)
-// CHECK:   %[[VAL_4:.*]] = AIE.tile(5, 3)
-// CHECK:   %[[VAL_5:.*]] = AIE.tile(6, 3)
-// CHECK:   %[[VAL_6:.*]] = AIE.tile(5, 4)
-// CHECK:   %[[VAL_7:.*]] = AIE.tile(6, 4)
-// CHECK-COUNT-10:    AIE.lock(%[[VAL_2]], {{.*}})
-// CHECK-COUNT-8:    AIE.lock(%[[VAL_4]], {{.*}})
-// CHECK-COUNT-8:    AIE.lock(%[[VAL_5]], {{.*}})
-// CHECK-COUNT-8:    AIE.lock(%[[VAL_6]], {{.*}})
-// CHECK-COUNT-8:    AIE.lock(%[[VAL_7]], {{.*}})
-// CHECK:    AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<64x64xi32, 1>
-// CHECK:    AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<64x128xi32, 1>
-// CHECK:    AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<128x64xi32, 1>
-// CHECK:    AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<64x128xi32, 1>
-// CHECK:    AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<128x64xi32, 1>
+// CHECK-LABEL:   AIE.device(ipu) {
+// CHECK:   %[[tile_0_0:.*]] = AIE.tile(0, 0)
+// CHECK:   %[[tile_0_1:.*]] = AIE.tile(0, 1)
+// CHECK:   %[[tile_1_1:.*]] = AIE.tile(1, 1)
+// CHECK:   %[[tile_0_2:.*]] = AIE.tile(0, 2)
+// CHECK:   %[[tile_1_2:.*]] = AIE.tile(1, 2)
+// CHECK:   %[[tile_0_3:.*]] = AIE.tile(0, 3)
+// CHECK:   %[[tile_1_3:.*]] = AIE.tile(1, 3)
+// CHECK-COUNT-10:    AIE.lock(%[[tile_0_1]], {{.*}})
+// CHECK-COUNT-8:    AIE.lock(%[[tile_0_2]], {{.*}})
+// CHECK-COUNT-8:    AIE.lock(%[[tile_1_2]], {{.*}})
+// CHECK-COUNT-8:    AIE.lock(%[[tile_0_3]], {{.*}})
+// CHECK-COUNT-8:    AIE.lock(%[[tile_1_3]], {{.*}})
+// CHECK:    AIE.buffer(%[[tile_0_1]]) {sym_name = {{.*}}} : memref<64x64xi32, 1>
+// CHECK:    AIE.buffer(%[[tile_0_1]]) {sym_name = {{.*}}} : memref<64x128xi32, 1>
+// CHECK:    AIE.buffer(%[[tile_0_1]]) {sym_name = {{.*}}} : memref<128x64xi32, 1>
+// CHECK:    AIE.buffer(%[[tile_0_1]]) {sym_name = {{.*}}} : memref<64x128xi32, 1>
+// CHECK:    AIE.buffer(%[[tile_0_1]]) {sym_name = {{.*}}} : memref<128x64xi32, 1>
 // CHECK-COUNT-20:    AIE.buffer({{.*}}) {sym_name = {{.*}}} : memref<32x32xi32, 2>
-// CHECK:   AIE.mem(%[[VAL_7]])
-// CHECK:   AIE.core(%[[VAL_7]]) {
-// CHECK:     AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:     scf.for
-// CHECK:       AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:       AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:       linalg.matmul
-// CHECK:       AIE.useLock({{.*}}, Release, 1)
-// CHECK:       AIE.useLock({{.*}}, Release, 1)
-// CHECK:       AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:       AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:       linalg.matmul
-// CHECK:       AIE.useLock({{.*}}, Release, 1)
-// CHECK:       AIE.useLock({{.*}}, Release, 1)
-// CHECK:     }
-// CHECK:     AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:     AIE.useLock({{.*}}, Release, 1)
-// CHECK:     AIE.useLock({{.*}}, Release, 1)
-// CHECK:   } {elf_file = 
-// CHECK:   AIE.mem(%[[VAL_6]])
-// CHECK:   AIE.core(%[[VAL_6]])
-// CHECK:     AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:     scf.for
-// CHECK:       AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:       AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:       linalg.matmul
-// CHECK:       AIE.useLock({{.*}}, Release, 1)
-// CHECK:       AIE.useLock({{.*}}, Release, 1)
-// CHECK:       AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:       AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:       linalg.matmul
-// CHECK:       AIE.useLock({{.*}}, Release, 1)
-// CHECK:       AIE.useLock({{.*}}, Release, 1)
-// CHECK:     }
-// CHECK:     AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:     AIE.useLock({{.*}}, Release, 1)
-// CHECK:     AIE.useLock({{.*}}, Release, 1)
-// CHECK:   } {elf_file = 
-// CHECK:   AIE.mem(%[[VAL_5]])
-// CHECK:   AIE.core(%[[VAL_5]])
-// CHECK:     AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:     scf.for
-// CHECK:       AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:       AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:       linalg.matmul
-// CHECK:       AIE.useLock({{.*}}, Release, 1)
-// CHECK:       AIE.useLock({{.*}}, Release, 1)
-// CHECK:       AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:       AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:       linalg.matmul
-// CHECK:       AIE.useLock({{.*}}, Release, 1)
-// CHECK:       AIE.useLock({{.*}}, Release, 1)
-// CHECK:     }
-// CHECK:     AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:     AIE.useLock({{.*}}, Release, 1)
-// CHECK:     AIE.useLock({{.*}}, Release, 1)
-// CHECK:   } {elf_file = 
-// CHECK:   AIE.mem(%[[VAL_4]])
-// CHECK:   AIE.core(%[[VAL_4]])
-// CHECK:     AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:     scf.for
-// CHECK:       AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:       AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:       linalg.matmul
-// CHECK:       AIE.useLock({{.*}}, Release, 1)
-// CHECK:       AIE.useLock({{.*}}, Release, 1)
-// CHECK:       AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:       AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:       linalg.matmul
-// CHECK:       AIE.useLock({{.*}}, Release, 1)
-// CHECK:       AIE.useLock({{.*}}, Release, 1)
-// CHECK:     }
-// CHECK:     AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:     AIE.useLock({{.*}}, Release, 1)
-// CHECK:     AIE.useLock({{.*}}, Release, 1)
-// CHECK:   } {elf_file = 
+// CHECK:    AIE.flow(%[[tile_0_0]], DMA : 0, %[[tile_0_1]], DMA : 0)
+// CHECK:    AIE.flow(%[[tile_0_0]], DMA : 1, %[[tile_0_1]], DMA : 1)
+// CHECK:    AIE.flow(%[[tile_0_1]], DMA : 0, %[[tile_0_0]], DMA : 0)
+// CHECK:    AIE.flow(%[[tile_0_1]], DMA : 1, %[[tile_0_2]], DMA : 0)
+// CHECK:    AIE.flow(%[[tile_0_1]], DMA : 2, %[[tile_1_2]], DMA : 0)
+// CHECK:    AIE.flow(%[[tile_0_1]], DMA : 3, %[[tile_0_3]], DMA : 0)
+// CHECK:    AIE.flow(%[[tile_0_1]], DMA : 4, %[[tile_1_3]], DMA : 0)
+// CHECK:    AIE.flow(%[[tile_0_2]], DMA : 0, %[[tile_0_1]], DMA : 2)
+// CHECK:    AIE.flow(%[[tile_1_2]], DMA : 0, %[[tile_0_1]], DMA : 3)
+// CHECK:    AIE.flow(%[[tile_0_3]], DMA : 0, %[[tile_0_1]], DMA : 4)
+// CHECK:    AIE.flow(%[[tile_1_3]], DMA : 0, %[[tile_0_1]], DMA : 5)
+// CHECK:    AIE.flow(%[[tile_0_1]], DMA : 0, %[[tile_0_2]], DMA : 1)
+// CHECK:    AIE.flow(%[[tile_0_1]], DMA : 0, %[[tile_0_3]], DMA : 1)
+// CHECK:    AIE.flow(%[[tile_0_1]], DMA : 0, %[[tile_1_2]], DMA : 1)
+// CHECK:    AIE.flow(%[[tile_0_1]], DMA : 0, %[[tile_1_3]], DMA : 1)
+// CHECK:    AIE.flow(%[[tile_0_1]], DMA : 0, %[[tile_0_2]], DMA : 0)
+// CHECK:    AIE.flow(%[[tile_0_1]], DMA : 0, %[[tile_1_2]], DMA : 0)
+// CHECK:    AIE.flow(%[[tile_0_1]], DMA : 0, %[[tile_0_3]], DMA : 0)
+// CHECK:    AIE.flow(%[[tile_0_1]], DMA : 0, %[[tile_1_3]], DMA : 0)
 
 #map = affine_map<()[s0] -> (s0 * 64)>
 #map1 = affine_map<()[s0] -> (s0 * 32)>
@@ -169,7 +112,7 @@ module {
         air.execute_terminator %8 : index
       }
       %6 = air.channel.get async [%async_token_11, %async_token_9]  @channel_9[] (%arg9[%results_10, %results_12] [%c64, %c64] [%c128, %c1]) {id = 4 : i32} : (memref<128x128xi32>)
-      %7 = air.segment async  attributes {id = 2 : i32, x_loc = 5 : i64, x_size = 2 : i64, y_loc = 3 : i64, y_size = 2 : i64} {
+      %7 = air.segment async  attributes {id = 2 : i32, x_loc = 0 : i64, x_size = 2 : i64, y_loc = 2 : i64, y_size = 2 : i64} {
         %c256 = arith.constant 256 : index
         %c32 = arith.constant 32 : index
         %c1_13 = arith.constant 1 : index
@@ -185,7 +128,7 @@ module {
         }
         %9 = air.channel.get async [%async_token_19, %8]  @channel_4[] (%results_20[] [] []) {id = 5 : i32} : (memref<64x64xi32, 1>)
         %10 = scf.for %arg10 = %c0_16 to %c512_17 step %c128_18 iter_args(%arg11 = %9) -> (!air.async.token) {
-          %13 = air.herd @herd_0 async [%arg11]  tile (%arg12, %arg13) in (%arg14=%c2_15, %arg15=%c2_15) attributes {id = 3 : i32, x_loc = 5 : i64, y_loc = 3 : i64} {
+          %13 = air.herd @herd_0 async [%arg11]  tile (%arg12, %arg13) in (%arg14=%c2_15, %arg15=%c2_15) attributes {id = 3 : i32, x_loc = 0 : i64, y_loc = 2 : i64} {
             %c64_30 = arith.constant 64 : index
             %c0_31 = arith.constant 0 : index
             %c128_32 = arith.constant 128 : index

@@ -7,6 +7,7 @@
 
 #include "air/Conversion/AIRToAIESchedulingUtils.h"
 #include "air/Util/Util.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/MathExtras.h"
 
@@ -176,6 +177,87 @@ int64_t air::get1DOffset(SmallVector<Value> memcpy_sizes,
   return vol * one_d_iter * getElementSizeInBytes(memref.getType());
 }
 
+std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
+                                                  Value buffer_memref) {
+  bool isAIE2 = (arch == AIE::AIEArch::AIE2);
+  if (!isAIE2)
+    return std::make_pair(0, 0);
+
+  // Infer semaphore lock values using buffer op
+  // TODO: What if a buffer memref is read or written by multiple channels?
+  if (!buffer_memref.getType().isa<MemRefType>())
+    return std::make_pair(-1, -1);
+  int read_counter = 0;
+  int write_counter = 0;
+  for (auto user : buffer_memref.getUsers()) {
+    if (auto memcpyOp = dyn_cast<air::MemcpyInterface>(user)) {
+      if (buffer_memref == memcpyOp.getSrcMemref())
+        read_counter++;
+      else if (buffer_memref == memcpyOp.getDstMemref())
+        write_counter++;
+    } else if (isa<affine::AffineLoadOp>(user))
+      read_counter++;
+    else if (isa<affine::AffineStoreOp>(user))
+      write_counter++;
+    else if (auto linalgop = dyn_cast<linalg::LinalgOp>(user)) {
+      for (auto opoperand : linalgop.getDpsInputOperands())
+        if (opoperand->is(buffer_memref))
+          read_counter++;
+      for (auto &opoperand : linalgop.getDpsInitsMutable())
+        if (opoperand.is(buffer_memref)) {
+          read_counter++;
+          write_counter++;
+        }
+    }
+  }
+  if (!read_counter || !write_counter)
+    return std::make_pair(1, 1);
+  if (read_counter >= write_counter)
+    return std::make_pair(mlir::ceilDiv(read_counter, write_counter), 1);
+  else
+    return std::make_pair(1, mlir::ceilDiv(write_counter, read_counter));
+}
+
+std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
+                                                  Value buffer_memref,
+                                                  air::ChannelOp air_chan) {
+  bool isAIE2 = (arch == AIE::AIEArch::AIE2);
+  if (!isAIE2)
+    return std::make_pair(0, 0);
+  if (!buffer_memref.getType().isa<MemRefType>())
+    return std::make_pair(-1, -1);
+
+  if (!air_chan)
+    return getLockValuePair(arch, buffer_memref);
+
+  // Infer semaphore lock values using air.channel
+  int read_counter = 0;
+  int write_counter = 0;
+  for (auto get : getChannelGetOpThroughSymbol(air_chan)) {
+    if (isa<AIE::ExternalBufferOp>(buffer_memref.getDefiningOp())) {
+      // Shim DMA locks
+      write_counter = 1;
+    } else if (auto core_op = get->getParentOfType<AIE::CoreOp>()) {
+      if (core_op.getTileOp().getResult() ==
+          buffer_memref.getDefiningOp()->getOperand(0)) {
+        write_counter++;
+      }
+    }
+  }
+  for (auto put : getChannelPutOpThroughSymbol(air_chan)) {
+    if (isa<AIE::ExternalBufferOp>(buffer_memref.getDefiningOp())) {
+      // Shim DMA locks
+      read_counter = 1;
+    } else if (auto core_op = put->getParentOfType<AIE::CoreOp>()) {
+      if (core_op.getTileOp().getResult() ==
+          buffer_memref.getDefiningOp()->getOperand(0)) {
+        read_counter++;
+      }
+    }
+  }
+  return std::make_pair(read_counter, write_counter);
+}
+
 // allocation_info_t impl.
 
 namespace xilinx::air {
@@ -281,32 +363,79 @@ DMAAllocator::getLockForDMA(air::MemcpyInterface &memcpyOp, int col, int row,
   allocation_info_t alloc = lookupDMAAllocation(col, row, memcpyOp);
   AIE::DMAChannel channel = alloc.dma_channel;
   AIE::TileOp tile = alloc.dma_tile;
+  air::ChannelOp air_chan = nullptr;
+  if (auto air_chan_op =
+          dyn_cast<air::ChannelInterface>(memcpyOp.getOperation())) {
+    air_chan = getChannelDeclarationThroughSymbol(air_chan_op);
+  }
   const auto &target_model = device.getTargetModel();
+  bool isAIE2 = (target_model.getTargetArch() == AIE::AIEArch::AIE2);
+  bool isAIE1 = (target_model.getTargetArch() == AIE::AIEArch::AIE1);
 
-  for (size_t i = 0; i < lock_allocation_list.size(); i++) {
-    // If multiple bds reference the same buffer and DMA channel
-    if ((std::get<0>(lock_allocation_list[i]) == bufferOp) &&
-        (std::get<1>(lock_allocation_list[i]) == channel)) {
-      return {std::get<2>(lock_allocation_list[i]),
-              std::get<3>(lock_allocation_list[i])};
-    }
-    // Else if memtile, and multiple bds reference the same buffer, but
-    // different DMA channels, then we assume the scenario of having two bds,
-    // one S2MM and the other MM2S. This scenario is almost always true due to
-    // memtile having no core to communicate data with.
-    else if (target_model.isMemTile(col, row) &&
-             std::get<0>(lock_allocation_list[i]) == bufferOp) {
-      return {std::get<2>(lock_allocation_list[i]),
-              std::get<3>(lock_allocation_list[i])};
+  if (isAIE1) {
+    for (size_t i = 0; i < lock_allocation_list.size(); i++) {
+      // If multiple bds reference the same buffer and DMA channel
+      if ((std::get<0>(lock_allocation_list[i]) == bufferOp) &&
+          (std::get<2>(lock_allocation_list[i]) == channel)) {
+        return {std::get<3>(lock_allocation_list[i]),
+                std::get<4>(lock_allocation_list[i])};
+      }
     }
   }
-  bool isAIE2 = (target_model.getTargetArch() == AIE::AIEArch::AIE2);
-  auto init = isAIE2 ? 1 : 0;
+
+  else if (isAIE2) {
+    if (air_chan) {
+      // AIE2's semaphore locks may share by air.channels
+      for (size_t i = 0; i < lock_allocation_list.size(); i++) {
+        if (target_model.isMemTile(col, row)) {
+          // If memtile, and multiple bds reference the same buffer op, but
+          // different DMA channels, then we assume the scenario of having two
+          // bds, one S2MM and the other MM2S. This scenario is almost always
+          // true due to memtile having no core to communicate data with.
+          if (std::get<0>(lock_allocation_list[i]) == bufferOp) {
+            return {std::get<3>(lock_allocation_list[i]),
+                    std::get<4>(lock_allocation_list[i])};
+          }
+        } else if ((std::get<1>(lock_allocation_list[i]) == air_chan) &&
+                   (std::get<0>(lock_allocation_list[i])->getOperand(0) ==
+                    bufferOp->getOperand(0)) &&
+                   (std::get<2>(lock_allocation_list[i]) == channel)) {
+          return {std::get<3>(lock_allocation_list[i]),
+                  std::get<4>(lock_allocation_list[i])};
+        }
+      }
+    } else {
+      for (size_t i = 0; i < lock_allocation_list.size(); i++) {
+        if ((std::get<0>(lock_allocation_list[i]) == bufferOp) &&
+            (std::get<2>(lock_allocation_list[i]) == channel)) {
+          return {std::get<3>(lock_allocation_list[i]),
+                  std::get<4>(lock_allocation_list[i])};
+        }
+        // Else if memtile, and multiple bds reference the same buffer, but
+        // different DMA channels, then we assume the scenario of having two
+        // bds, one S2MM and the other MM2S. This scenario is almost always true
+        // due to memtile having no core to communicate data with.
+        else if (target_model.isMemTile(col, row) &&
+                 std::get<0>(lock_allocation_list[i]) == bufferOp) {
+          return {std::get<3>(lock_allocation_list[i]),
+                  std::get<4>(lock_allocation_list[i])};
+        }
+      }
+    }
+  }
+  std::pair<int64_t, int64_t> init_pair;
+  if (target_model.isMemTile(col, row))
+    init_pair =
+        getLockValuePair(target_model.getTargetArch(), bufferOp->getResult(0));
+  else
+    init_pair = getLockValuePair(target_model.getTargetArch(),
+                                 bufferOp->getResult(0), air_chan);
+  auto init = std::max(init_pair.first, init_pair.second);
 
   OpBuilder builder(bufferOp);
   auto rlock = allocateLockOp(device, tile, 0);
   auto wlock = isAIE2 ? allocateLockOp(device, tile, init) : rlock;
-  lock_allocation_list.push_back({bufferOp, channel, rlock, wlock});
+  lock_allocation_list.push_back({bufferOp, air_chan, channel, rlock, wlock});
   return {rlock, wlock};
 }
 
