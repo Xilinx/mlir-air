@@ -896,8 +896,9 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
 
   AllocL2BuffersPattern(MLIRContext *ctx,
-                        std::map<memref::AllocOp, AIE::TileOp> &memrefToTileMap)
-      : OpRewritePattern(ctx), memrefToTileMap(memrefToTileMap) {}
+                        std::map<memref::AllocOp, AIE::TileOp> &memrefToTileMap,
+                        std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap)
+      : OpRewritePattern(ctx), memrefToTileMap(memrefToTileMap), bufferToMemtileMap(bufferToMemtileMap) {}
 
   LogicalResult matchAndRewrite(memref::AllocOp alloc,
                                 PatternRewriter &rewriter) const override {
@@ -939,11 +940,13 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
 
     rewriter.setInsertionPoint(alloc);
     rewriter.replaceOp(alloc, buffer->getResults());
+    bufferToMemtileMap[buffer] = tile;
     return success();
   }
 
 private:
   std::map<memref::AllocOp, AIE::TileOp> &memrefToTileMap;
+  std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap;
 };
 
 void allocL1Buffers(AIE::DeviceOp m,
@@ -1017,13 +1020,14 @@ void L2MemrefToMemTileMap(
   }
 }
 
-void allocL2Buffers(AIE::DeviceOp m) {
+void allocL2Buffers(AIE::DeviceOp m,
+                    std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
   if (m.getTargetModel().getNumMemTileRows()) {
     std::map<memref::AllocOp, AIE::TileOp> memrefToTileMap;
     L2MemrefToMemTileMap(m, memrefToTileMap);
-    patterns.insert<AllocL2BuffersPattern>(ctx, memrefToTileMap);
+    patterns.insert<AllocL2BuffersPattern>(ctx, memrefToTileMap, bufferToMemtileMap);
     (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
   }
 }
@@ -1037,12 +1041,15 @@ template <typename T> void push_back_if_unique(std::vector<T> &vec, T entry) {
 struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
   using OpRewritePattern<air::ChannelOp>::OpRewritePattern;
 
-  LowerAIRChannelsPattern(MLIRContext *ctx, ShimTileAllocator &shimTileAlloc, MemTileAllocator &memTileAlloc)
-      : OpRewritePattern(ctx), shimTileAlloc(shimTileAlloc), memTileAlloc(memTileAlloc) {}
+  LowerAIRChannelsPattern(MLIRContext *ctx, ShimTileAllocator &shimTileAlloc, 
+                          std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap,
+                          std::map<Operation*, AIE::ObjectFifoCreateOp> &linksToComplete)
+      : OpRewritePattern(ctx), shimTileAlloc(shimTileAlloc), bufferToMemtileMap(bufferToMemtileMap), linksToComplete(linksToComplete) {}
 
   LogicalResult matchAndRewrite(air::ChannelOp channel,
                                 PatternRewriter &rewriter) const override {
     auto device = channel->getParentOfType<AIE::DeviceOp>();
+    auto ctx = device->getContext();
     if (!device)
       return failure();
 
@@ -1056,6 +1063,11 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     std::vector<ChannelGetOp> channelGets =
         getChannelGetOpThroughSymbol(channel, device);
 
+    // keep track of potential LinkOp
+    bool linkToComplete = false;  // track if objFifo has to be added to 
+    bool linkFound = false;       // all ends of a link have been found
+    Operation* endOfLink;         // one end of a link
+
     // put/get come in pairs, if one is missing then it's L3
     Value producerTile;
     if (channelPuts.size() > 0) {
@@ -1066,6 +1078,20 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
                                                      &producerTile, &datatype);
       if (res.failed())
         return res;
+
+      // check if this put is linked to a get from another channel
+      if (linksToComplete.find(channelPuts[0].getOperation()) != linksToComplete.end()) {
+        endOfLink = channelPuts[0].getOperation();
+        linkFound = true;
+      } else {
+        AIE::BufferOp buff = dyn_cast<AIE::BufferOp>(channelPuts[0].getMemref().getDefiningOp());
+        for (auto user : buff->getUsers()) {
+          if (auto pairedPut = dyn_cast<ChannelGetOp>(user)) {
+            endOfLink = pairedPut.getOperation();
+            linkToComplete = true;
+          }
+        }
+      }
     } else {
       // put from L3
       producerTile = shimTileAlloc.getShimTile(
@@ -1085,6 +1111,24 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       if (res.failed())
         return res;
       consumers.push_back(consumerTile);
+
+      // check if this get is linked to a put from another channel
+      MemRefType memref = get.getMemref().getType().cast<MemRefType>();
+      int mem_space = memref.getMemorySpaceAsInt();
+      if (mem_space == (int)air::MemorySpace::L2) {
+        if (linksToComplete.find(get.getOperation()) != linksToComplete.end())  {
+          endOfLink = get.getOperation();
+          linkFound = true;
+        } else {
+          AIE::BufferOp buff = dyn_cast<AIE::BufferOp>(get.getMemref().getDefiningOp());
+          for (auto user : buff->getUsers()) {
+            if (auto pairedPut = dyn_cast<ChannelPutOp>(user)) {
+              endOfLink = pairedPut.getOperation();
+              linkToComplete = true;
+            }
+          }
+        }
+      }
     }
     for (int i = 0; i < expectedGets - (int)channelGets.size(); i++) {
       // get from L3
@@ -1096,23 +1140,36 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     if (!datatype)
       return failure();
 
-    if (!datatype)
-      return failure();
-
     // create objFifo
     rewriter.setInsertionPoint(*(device.getOps<AIE::CoreOp>().begin()));
     AIE::ObjectFifoCreateOp objFifo = createObjectFifo(
         rewriter, datatype, producerTile, consumers,
         channel.getBufferResources(), "air_" + channel.getName().str());
 
+    // if this channel's get is linked with another put, register it
+    if (linkToComplete)
+      linksToComplete[endOfLink] = objFifo;
+    // once the corresponding objFifo has been made, complete the link
+    if (linkFound) {
+      AIE::ObjectFifoCreateOp producerFifo = linksToComplete[endOfLink];
+      if (isa<ChannelGetOp>(endOfLink))
+        rewriter.create<AIE::ObjectFifoLinkOp>(
+            rewriter.getUnknownLoc(), rewriter.getArrayAttr({SymbolRefAttr::get(ctx, objFifo.name())}), rewriter.getArrayAttr({SymbolRefAttr::get(ctx, producerFifo.name())}));
+      else 
+        rewriter.create<AIE::ObjectFifoLinkOp>(
+            rewriter.getUnknownLoc(), rewriter.getArrayAttr({SymbolRefAttr::get(ctx, producerFifo.name())}), rewriter.getArrayAttr({SymbolRefAttr::get(ctx, objFifo.name())}));
+    }
+
     // replace put/get and any associated memref alloc/dealloc
     std::vector<Operation *> erased_deallocs;
+    std::vector<Operation *> erased_ops;
     for (auto put : channelPuts) {
       rewriteChannelAllocs<ChannelPutOp>(rewriter, put, objFifo,
-                                         AIE::ObjectFifoPort::Produce);
+                                         AIE::ObjectFifoPort::Produce,
+                                         erased_ops);
       rewriteChannelDeallocs<ChannelPutOp>(rewriter, put, objFifo,
                                            AIE::ObjectFifoPort::Produce,
-                                           erased_deallocs);
+                                           erased_deallocs, erased_ops);
       // clear any dependence to put
       if (put.getAsyncToken())
         for (auto u : put.getAsyncToken().getUsers())
@@ -1122,10 +1179,11 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     }
     for (auto get : channelGets) {
       rewriteChannelAllocs<ChannelGetOp>(rewriter, get, objFifo,
-                                         AIE::ObjectFifoPort::Consume);
+                                         AIE::ObjectFifoPort::Consume,
+                                         erased_ops);
       rewriteChannelDeallocs<ChannelGetOp>(rewriter, get, objFifo,
                                            AIE::ObjectFifoPort::Consume,
-                                           erased_deallocs);
+                                           erased_deallocs, erased_ops);
       if (get.getAsyncToken())
         // clear any dependence to get
         for (auto u : get.getAsyncToken().getUsers())
@@ -1133,14 +1191,16 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
             air::eraseAsyncDependencyFromAsyncOp(async_u, get.getAsyncToken());
       // TODO: complete else
     }
-    // erase deallocs
+    // erase dangling deallocs
     for (auto o : erased_deallocs)
       rewriter.eraseOp(o);
     // erase channel puts and gets
-    for (auto get : channelGets)
+    for (auto get : channelGets) {
       rewriter.eraseOp(get);
-    for (auto put : channelPuts)
+    }
+    for (auto put : channelPuts) {
       rewriter.eraseOp(put);
+    }
     // erase the channel
     rewriter.eraseOp(channel);
     return success();
@@ -1163,13 +1223,11 @@ private:
       *tile = core.getTileOp();
       return success();
     } else if (mem_space == (int)air::MemorySpace::L2) {
-      if (isa<ChannelPutOp>(op)) {
-        *tile = memTileAlloc.getMemTile(device, mem_space,
-                                       (int)air::MemorySpace::L1);
-      } else {
-        *tile = memTileAlloc.getMemTile(device, (int)air::MemorySpace::L1,
-                                       mem_space);
-      }
+        if (bufferToMemtileMap.find(dyn_cast<AIE::BufferOp>(op.getMemref().getDefiningOp())) != bufferToMemtileMap.end()) {
+          *tile = bufferToMemtileMap[dyn_cast<AIE::BufferOp>(op.getMemref().getDefiningOp())];
+        } else {
+          return op.emitOpError("missing L2 alloc");
+        }
       return success();
     } else {
       return op.emitOpError("unsupported memory space");
@@ -1191,7 +1249,13 @@ private:
   template <typename MyOp>
   void rewriteChannelAllocs(PatternRewriter &rewriter, MyOp op,
                             AIE::ObjectFifoCreateOp objFifo,
-                            AIE::ObjectFifoPort port) const {
+                            AIE::ObjectFifoPort port,
+                            std::vector<Operation *> &erased_ops) const {
+    MemRefType memref = op.getMemref().getType().template cast<MemRefType>();
+    int mem_space = memref.getMemorySpaceAsInt();
+    if (mem_space == (int)air::MemorySpace::L2) {
+      return;
+    }
 
     AIE::AIEObjectFifoType ofTy =
         cast<AIE::AIEObjectFifoType>(objFifo.getElemType());
@@ -1217,7 +1281,13 @@ private:
   void rewriteChannelDeallocs(PatternRewriter &rewriter, MyOp op,
                               AIE::ObjectFifoCreateOp objFifo,
                               AIE::ObjectFifoPort port,
-                              std::vector<Operation *> &erased_deallocs) const {
+                              std::vector<Operation *> &erased_deallocs,
+                              std::vector<Operation *> &erased_ops) const {
+    MemRefType memref = op.getMemref().getType().template cast<MemRefType>();
+    int mem_space = memref.getMemorySpaceAsInt();
+    if (mem_space == (int)air::MemorySpace::L2) {
+      return;
+    }
     for (auto u : op.getMemref().getDefiningOp()->getUsers()) {
       if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
         rewriter.setInsertionPoint(&op->getBlock()->back());
@@ -1232,17 +1302,20 @@ private:
   }
 
   ShimTileAllocator &shimTileAlloc;
-  MemTileAllocator &memTileAlloc;
+  std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap;
+  std::map<Operation*, AIE::ObjectFifoCreateOp> &linksToComplete;
 };
 
 // This function replaces ChannelPutOp/ChannelGetOp with AIE_CreateObjectFifoOps
 // and with ObjectFifoAcquireOp<Producer/Consumer>. It also erases memref allocs
 // as the objFifo lowering allocates its own memory. It replaces the associated
 // memref deallocs with ObjectFifoReleaseOps.
-void lowerAIRChannels(AIE::DeviceOp &d, ShimTileAllocator &s, MemTileAllocator &m) {
+void lowerAIRChannels(AIE::DeviceOp &d, ShimTileAllocator &s, 
+                      std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap) {
   auto ctx = d->getContext();
   RewritePatternSet patterns(ctx);
-  patterns.insert<LowerAIRChannelsPattern>(ctx, s, m);
+  std::map<Operation*, AIE::ObjectFifoCreateOp> linksToComplete;
+  patterns.insert<LowerAIRChannelsPattern>(ctx, s, bufferToMemtileMap, linksToComplete);
   (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
 }
 
@@ -2260,6 +2333,7 @@ public:
 
     RewritePatternSet patterns(ctx);
     std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
+    std::map<AIE::BufferOp, AIE::TileOp> bufferToMemtileMap;
 
     auto device = AIE::symbolizeAIEDevice(clDevice);
     if (!device) {
@@ -2289,15 +2363,15 @@ public:
         }
         if (options.generate_shim_dma) {
           OpBuilder builder(d);
-          cloneL2AndL3MemcpysToDeviceOp(builder, d, m, true, true);
+          cloneL2AndL3MemcpysToDeviceOp(builder, d, m, true, false);
           specializeHerdAffineIf(d);
           lowerAirExecute(d);
           lowerScfAirTokens(d);
           allocL1Buffers(d, tileToHerdMap);
-          allocL2Buffers(d);
-          builder.setInsertionPointToStart(d.getBody());
-          specializeChannelBundle(d);
-          renumberChannelOps(d.getBody());
+          allocL2Buffers(d, bufferToMemtileMap);
+          // builder.setInsertionPointToStart(d.getBody());
+          // specializeChannelBundle(d);
+          // renumberChannelOps(d.getBody());
           // ShimDMAAllocator shimDmaAlloc(d);
           // lowerAIRMemcpyOp<air::ChannelInterface>(d, shimDmaAlloc, options);
         }
@@ -2321,9 +2395,9 @@ public:
         builder.getUnknownLoc(),
         AIE::AIEDeviceAttr::get(builder.getContext(), *device));
     ShimTileAllocator shimTileAlloc(deviceOp.getTargetModel());
-    MemTileAllocator memTileAlloc(deviceOp.getTargetModel());
+    std::map<Operation*, AIE::ObjectFifoCreateOp> linksToComplete;
     if (clTestPatterns.find("lower-air-channels") != std::string::npos) {
-      patterns.insert<LowerAIRChannelsPattern>(ctx, shimTileAlloc, memTileAlloc);
+      patterns.insert<LowerAIRChannelsPattern>(ctx, shimTileAlloc, bufferToMemtileMap, linksToComplete);
     }
     if (clTestPatterns.find("lower-air-ping-pong") != std::string::npos) {
       patterns.insert<LowerAIRPingPongPattern>(ctx);
@@ -2355,8 +2429,9 @@ public:
     // If we have multiple herds then we must emit them into different aie
     // modules to avoid resource conflicts in the AIE physical dialect.
     std::vector<std::pair<AIE::DeviceOp, air::HerdOp>> aie_devices;
-
+    
     std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
+    std::map<AIE::BufferOp, AIE::TileOp> bufferToMemtileMap;
     auto device = AIE::symbolizeAIEDevice(clDevice);
     if (!device) {
       module.emitOpError("Invalid AIE.device option");
@@ -2402,17 +2477,18 @@ public:
       std::map<int, int> chan_renumber_reverse_map;
 
       if (clUseObjFifo) {
-
+        
+        cloneL2AndL3MemcpysToDeviceOp(builder, device, module, true, false);
         specializeHerdAffineIf(device);
         lowerAirExecute(device);
         lowerScfAirTokens(device);
         specializeChannelBundle(device);
         renumberChannelOps(device.getBody());
         LowerAIRPingPong(device);
+        allocL2Buffers(device, bufferToMemtileMap);
         ShimTileAllocator shimTileAlloc(device.getTargetModel());
-        MemTileAllocator memTileAlloc(device.getTargetModel());
-        lowerAIRChannels(device, shimTileAlloc, memTileAlloc);
-        allocL1Buffers(device, tileToHerdMap);
+        lowerAIRChannels(device, shimTileAlloc, bufferToMemtileMap);
+        //allocL1Buffers(device, tileToHerdMap);
       } else {
 
         cloneL2AndL3MemcpysToDeviceOp(builder, device, module, true, true);
@@ -2421,7 +2497,7 @@ public:
         lowerScfAirTokens(device);
 
         allocL1Buffers(device, tileToHerdMap);
-        allocL2Buffers(device);
+        allocL2Buffers(device, bufferToMemtileMap);
 
         // Copy over L2 and L3 memcpy ops into device op
         builder.setInsertionPointToStart(device.getBody());
@@ -2433,8 +2509,7 @@ public:
       lowerAIRMemcpyOp<air::DmaMemcpyNdOp>(device, shimDmaAlloc, options);
 
       ShimTileAllocator shimTileAlloc(device.getTargetModel());
-      MemTileAllocator memTileAlloc(device.getTargetModel());
-      lowerAIRChannels(device, shimTileAlloc, memTileAlloc);
+      lowerAIRChannels(device, shimTileAlloc, bufferToMemtileMap);
       
       lowerPipelineGetPut(device, tileToHerdMap);
 
