@@ -7,10 +7,10 @@ import torch
 from torch.nn import functional as F
 import torch_mlir
 
-import air.mlir.ir
+import air.ir
 from air.backend import linalg_on_tensors as backend
 import air.compiler.aircc.main as aircc
-import air.mlir.passmanager
+import air.passmanager
 import air.compiler.util
 
 import sys
