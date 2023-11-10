@@ -566,11 +566,6 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
       }
     }
   }
-
-  if (dump_dot) {
-    // Dump dot graphs
-    dumpDotGraphFiles(global_graph, dump_dir);
-  }
 }
 
 void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
@@ -578,7 +573,6 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
     dependencyContext &dep_ctx, bool dump_dot, std::string dump_dir) {
   // Create FlatGraph
   FlatGraph flat_g;
-  boost::get_property(flat_g, boost::graph_graph_attribute)["rankdir"] = "LR";
   std::vector<vertex_to_flat_vertex_map> maps;
 
   // Copy vertices and edges to flat graph
@@ -625,9 +619,7 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
       auto a = add_vertex(a_entry, flat_subg_chan);
       for (auto b_entry : map.second.second) {
         auto b = add_vertex(b_entry, flat_subg_chan);
-        auto e = add_edge(a, b, flat_subg_chan).first;
-        put(get(boost::edge_attribute, flat_subg_chan), e,
-            GraphvizAttributes{{"style", "dashed"}});
+        add_edge(a, b, flat_subg_chan).first;
       }
     }
   }
@@ -726,17 +718,6 @@ void dependencyCanonicalizer::copyDependencyGraphToFlatGraphAndVisualize(
       }
     }
   }
-
-  if (dump_dot) {
-    // Dump dot graphs
-    if (dump_dir != "") {
-      int status = mkdir(dump_dir.c_str(), 0777);
-      if ((status < 0) && (errno != EEXIST))
-        dump_dir = ""; // Failed to create dir
-    }
-    std::ofstream ofs(dump_dir + "graph.dot", std::ofstream::out);
-    write_graphviz(ofs, flat_g);
-  }
 }
 
 void dependencyCanonicalizer::
@@ -746,8 +727,6 @@ void dependencyCanonicalizer::
   updateSubgraphFromDependencyGraph(G.g, G.position, flat_subg, map, true);
   boost::get_property(flat_subg, boost::graph_name) =
       "cluster" + std::to_string(global_idx);
-  boost::get_property(flat_subg, boost::graph_graph_attribute)["label"] =
-      hier_name + std::to_string(subg_idx++);
 }
 
 void dependencyCanonicalizer::addVerticesInHerd(
@@ -1228,13 +1207,6 @@ void dependencyCanonicalizer::copyFromDependencyGraphToFlatGraph(
   auto vp = getVerticesWithAffineIf(g_src, position);
   for (auto vit : vp) {
     auto new_v = add_vertex(g_dst);
-    // Copy vertex asyncEventName
-    put(get(boost::vertex_attribute, g_dst), new_v,
-        GraphvizAttributes{{"label", g_src[vit].asyncEventName + "\n" +
-                                         g_src[vit].detailed_description},
-                           {"color", g_src[vit].color},
-                           {"shape", g_src[vit].shape},
-                           {"style", "filled"}});
     map.insert(std::make_pair(vit, new_v));
   }
   if (copyEdges) {
@@ -1561,19 +1533,6 @@ void dependencyCanonicalizer::updatePointerFromHierarchyOpToGraph(
   }
 }
 
-// Dump graphviz
-void dependencyCanonicalizer::dump_graph(std::string filename, Graph G) {
-  std::ofstream ofs(filename, std::ofstream::out);
-  boost::dynamic_properties dp;
-  dp.property("label", boost::get(&dependencyNodeEntry::asyncEventName, G));
-  dp.property("color", boost::get(&dependencyNodeEntry::color, G));
-  dp.property("shape", boost::get(&dependencyNodeEntry::shape, G));
-  dp.property("node_id", boost::get(boost::vertex_index, G));
-  dp.property("style", boost::make_constant_property<Graph::vertex_descriptor>(
-                           +"filled"));
-  write_graphviz_dp(ofs, G, dp);
-}
-
 // Perform transitive reduction to canonicalize the dependency graph
 void dependencyCanonicalizer::canonicalizeGraphs(
     dependencyGraph &global_graph, dependencyGraph &tr_graph,
@@ -1641,41 +1600,6 @@ void dependencyCanonicalizer::canonicalizeGraphs(
         auto herdMap = segmentMap.submaps[k];
         boostTransitiveReductionImpl(herdGraph.g, trHerdGraph.g, herdMap.a_to_b,
                                      herdMap.b_to_a);
-      }
-    }
-  }
-
-  if (dump_dot) {
-    // Dump dot graphs
-    dumpDotGraphFiles(tr_graph, dump_dir);
-  }
-}
-
-void dependencyCanonicalizer::dumpDotGraphFiles(dependencyGraph global_graph,
-                                                std::string dump_dir) {
-  // Dump dot graphs
-  if (dump_dir != "") {
-    int status = mkdir(dump_dir.c_str(), 0777);
-    if ((status < 0) && (errno != EEXIST))
-      dump_dir = ""; // Failed to create dir
-  }
-  dump_graph(dump_dir + "host.dot", global_graph.g);
-  int i = 0;
-  for (auto G_l : global_graph.subgraphs) {
-    std::string name = xilinx::air::to_string(G_l.hierarchyOp) + "_" +
-                       std::to_string(++i) + ".dot";
-    dump_graph(dump_dir + name, G_l.g);
-    int j = 0;
-    for (auto G_p : G_l.subgraphs) {
-      std::string name = xilinx::air::to_string(G_p.hierarchyOp) + "_" +
-                         std::to_string(i) + "_" + std::to_string(++j) + ".dot";
-      dump_graph(dump_dir + name, G_p.g);
-      int k = 0;
-      for (auto G_h : G_p.subgraphs) {
-        std::string name = xilinx::air::to_string(G_h.hierarchyOp) + "_" +
-                           std::to_string(i) + "_" + std::to_string(j) + "_" +
-                           std::to_string(++k) + ".dot";
-        dump_graph(dump_dir + name, G_h.g);
       }
     }
   }

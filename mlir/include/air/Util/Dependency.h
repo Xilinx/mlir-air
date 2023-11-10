@@ -31,7 +31,6 @@
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/copy.hpp>
 #include <boost/graph/graph_traits.hpp>
-#include <boost/graph/graphviz.hpp>
 #include <boost/graph/subgraph.hpp>
 #include <boost/graph/transitive_reduction.hpp>
 
@@ -208,21 +207,13 @@ struct dependencyContext {
         WaitAllOpID(0), ForOpID(0), ParallelOpID(0), TerminatorID(0) {}
 };
 
-// Flat boost graph for visualization
+// Flat boost graph
 typedef std::map<std::string, std::string> GraphvizAttributes;
-typedef boost::subgraph<boost::adjacency_list<
-    boost::vecS, boost::vecS, boost::directedS,
-    boost::property<boost::vertex_attribute_t, GraphvizAttributes>,
-    boost::property<
-        boost::edge_index_t, int,
-        boost::property<boost::edge_attribute_t, GraphvizAttributes>>,
-    boost::property<
-        boost::graph_name_t, std::string,
-        boost::property<
-            boost::graph_graph_attribute_t, GraphvizAttributes,
-            boost::property<boost::graph_vertex_attribute_t, GraphvizAttributes,
-                            boost::property<boost::graph_edge_attribute_t,
-                                            GraphvizAttributes>>>>>>
+typedef boost::subgraph<
+    boost::adjacency_list<boost::vecS, boost::vecS, boost::directedS,
+                          boost::property<boost::vertex_index_t, int>,
+                          boost::property<boost::edge_index_t, int>,
+                          boost::property<boost::graph_name_t, std::string>>>
     FlatGraph;
 typedef std::map<Graph::vertex_descriptor, FlatGraph::vertex_descriptor>
     vertex_to_flat_vertex_map;
@@ -248,8 +239,6 @@ public:
   void removeDepListRepetition(func::FuncOp func);
   void removeUnusedExecuteOp(func::FuncOp func);
   void removeRedundantWaitAllOps(func::FuncOp func);
-  void dumpDotGraphFiles(dependencyGraph global_graph,
-                         std::string dump_dir = "");
   void copyDependencyGraphToFlatGraphAndVisualize(func::FuncOp &toplevel,
                                                   dependencyGraph &global_graph,
                                                   dependencyContext &dep_ctx,
@@ -333,7 +322,6 @@ private:
   void updatePointerFromHierarchyTerminatorToGraph(dependencyGraph &G,
                                                    dependencyGraph &subG);
   void updatePointerFromHierarchyOpToGraph(dependencyGraph &G);
-  void dump_graph(std::string filename, Graph G);
   void boostTransitiveReductionImpl(Graph &asyncExecuteGraph,
                                     Graph &asyncExecuteGraphTR,
                                     vertex_to_vertex_map &g_to_tr,

@@ -59,11 +59,6 @@ public:
       canonicalizer.removeUnusedExecuteOp(func);
       canonicalizer.removeRedundantWaitAllOps(func);
       canonicalizer.removeDepListRepetition(func);
-
-      if (clDumpGraph) {
-        // Dump graphs
-        canonicalizer.dumpDotGraphFiles(trHostGraph, clDumpDir);
-      }
     }
   }
 
