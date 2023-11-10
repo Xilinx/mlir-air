@@ -181,9 +181,9 @@ createSegmentDescriptor(OpBuilder builder, ModuleOp module,
         loc, IntegerType::get(ctx, 64),
         builder.getI32IntegerAttr(segment_name.size()));
 
-    auto segmentNamePtr = builder.create<LLVM::GEPOp>(
-        loc, LLVM::LLVMPointerType::get(ctx), segmentName.getType(),
-        segmentNameArray, ArrayRef<LLVM::GEPArg>{0, 0});
+    builder.create<LLVM::GEPOp>(loc, LLVM::LLVMPointerType::get(ctx),
+                                segmentName.getType(), segmentNameArray,
+                                ArrayRef<LLVM::GEPArg>{0, 0});
 
     // length of the array of herd_desc_t
     auto herd_descs_len = builder.create<LLVM::ConstantOp>(

@@ -284,8 +284,10 @@ struct RemoveFillCopyLinalgPattern : public OpRewritePattern<memref::CopyOp> {
       return failure();
 
     auto num_uses = 0;
-    for (auto &u : copyOper0.getUses())
+    for (auto &u : copyOper0.getUses()) {
+      (void)u;
       num_uses++;
+    }
 
     IRMapping map;
     map.map(copyOper0, copyOper1);
@@ -417,14 +419,17 @@ struct RemoveAllocLinalgOpCopyPattern
     for (auto &u : op->getUses())
       if (auto c = dyn_cast<memref::CastOp>(u.getOwner()))
         castOp = c;
-      else if (auto c = dyn_cast<memref::CopyOp>(u.getOwner()))
+      else if (auto c = dyn_cast<memref::CopyOp>(u.getOwner())) {
         if (u.getOperandNumber() == 0)
           copyOp = c;
-        else if (auto l = dyn_cast<linalg::LinalgOp>(u.getOwner())) {
-          linalgOp = l;
-          if (l.isInitTensor(&u))
-            return failure();
+        else {
+          if (auto l = dyn_cast<linalg::LinalgOp>(u.getOwner())) {
+            linalgOp = l;
+            if (l.isInitTensor(&u))
+              return failure();
+          }
         }
+      }
     if (castOp && copyOp)
       return failure();
 
@@ -2202,7 +2207,7 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
   SmallVector<Operation *> payloadOps =
       llvm::to_vector(state.getPayloadOps(getTarget()));
   if (!payloadOps.size())
-    DiagnosedSilenceableFailure::success();
+    return DiagnosedSilenceableFailure::success();
 
   linalg::LinalgPromotionOptions promotionOptions;
   auto operandsToPromote =
@@ -2271,7 +2276,6 @@ transform::LinalgPromoteOp::apply(transform::TransformRewriter &rewriter,
     if (failed(promoteSubviewsPrecondition(target, promotionOptions)))
       return emitDefaultDefiniteFailure(target);
 
-    auto ctx = target->getContext();
     rewriter.setInsertionPoint(target);
     FailureOr<linalg::LinalgOp> res =
         promoteSubViews(rewriter, linalgOp, promotionOptions);

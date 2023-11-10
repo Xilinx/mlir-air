@@ -546,7 +546,6 @@ ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp, int col,
   auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
 
   // Search for existing dma channel allocation
-  unsigned num_allocs = 0;
   for (auto &t : *allocs) {
     if (t.foundAlloc(getChannelDeclarationThroughSymbol(
             dyn_cast<air::ChannelInterface>(memcpyOp.getOperation())))) {

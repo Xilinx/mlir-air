@@ -396,7 +396,7 @@ air::getChannelDeclarationThroughSymbol(air::ChannelInterface op) {
   if (!op)
     return air::ChannelOp();
   Operation *parent = op;
-  while (parent = parent->getParentOp()) {
+  while ((parent = parent->getParentOp())) {
     if (parent->hasTrait<OpTrait::SymbolTable>()) {
       auto st = mlir::SymbolTable::lookupSymbolIn(parent, op.getChanName());
       if (st && isa<air::ChannelOp>(st)) {

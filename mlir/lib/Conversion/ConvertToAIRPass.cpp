@@ -2174,7 +2174,7 @@ struct InsertEmptyLaunchOverHerdPass
 
   void runOnOperation() override {
     auto module = getOperation();
-    auto context = module.getContext();
+    module.getContext();
 
     module.walk([&](air::HerdOp op) {
       if (!op->getParentOfType<air::LaunchOp>())
