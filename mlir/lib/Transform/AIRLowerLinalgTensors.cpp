@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "PassDetail.h"
 #include "air/Transform/AIRLowerLinalgTensors.h"
+#include "PassDetail.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 
@@ -39,11 +39,11 @@ struct RemoveBufferCastPattern
 
   LogicalResult matchAndRewrite(bufferization::ToMemrefOp op,
                                 PatternRewriter &rewriter) const override {
-                                
+
     auto load = op.getOperand().getDefiningOp<bufferization::ToTensorOp>();
     if (!load)
       return failure();
-      
+
     auto buffer = load.getMemref();
     if (!buffer)
       return failure();
@@ -54,12 +54,11 @@ struct RemoveBufferCastPattern
 
 // Replace a pattern like this:
 //  %1 = memref.alloc() : memref<32x32xi32>
-//  linalg.copy(%2, %1) : memref<32x32xi32, 2>, memref<32x32xi32> 
+//  linalg.copy(%2, %1) : memref<32x32xi32, 2>, memref<32x32xi32>
 //  use %1
 // with this:
 //  use %2
-struct RemoveAllocCopyPattern
-    : public OpRewritePattern<memref::AllocOp> {
+struct RemoveAllocCopyPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(memref::AllocOp op,
@@ -93,31 +92,31 @@ struct RemoveAllocCopyPattern
 //   memref.tensor_store %3, %1 : memref<?, 2>
 // to this:
 //   <use of %1>
-struct RemoveTensorLoadStorePattern
-    : public OpRewritePattern<bufferization::ToTensorOp> {
-  using OpRewritePattern<bufferization::ToTensorOp>::OpRewritePattern;
+// struct RemoveTensorLoadStorePattern
+//     : public OpRewritePattern<bufferization::ToTensorOp> {
+//   using OpRewritePattern<bufferization::ToTensorOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(bufferization::ToTensorOp op,
-                                PatternRewriter &rewriter) const override {
+//   LogicalResult matchAndRewrite(bufferization::ToTensorOp op,
+//                                 PatternRewriter &rewriter) const override {
 
-    auto alloc = op.getOperand().getDefiningOp<memref::AllocOp>();
-    if (!alloc)
-      return failure();
+//     auto alloc = op.getOperand().getDefiningOp<memref::AllocOp>();
+//     if (!alloc)
+//       return failure();
 
-    if (!op->hasOneUse())
-      return failure();
+//     if (!op->hasOneUse())
+//       return failure();
 
-    auto store = dyn_cast<memref::TensorStoreOp>(*op->user_begin());
-    if (!store)
-      return failure();
+//     auto store = dyn_cast<memref::TensorStoreOp>(*op->user_begin());
+//     if (!store)
+//       return failure();
 
-    rewriter.replaceOp(alloc, store.getMemref());
-    rewriter.eraseOp(store);
-    rewriter.eraseOp(op);
+//     rewriter.replaceOp(alloc, store.getMemref());
+//     rewriter.eraseOp(store);
+//     rewriter.eraseOp(op);
 
-    return success();
-  }
-};
+//     return success();
+//   }
+// };
 
 struct LowerLinalgOpPattern : public OpRewritePattern<linalg::GenericOp> {
   using OpRewritePattern<linalg::GenericOp>::OpRewritePattern;
@@ -133,7 +132,8 @@ struct LowerLinalgOpPattern : public OpRewritePattern<linalg::GenericOp> {
   }
 };
 
-struct AIRLowerLinalgTensors : public AIRLowerLinalgTensorsBase<AIRLowerLinalgTensors> {
+struct AIRLowerLinalgTensors
+    : public AIRLowerLinalgTensorsBase<AIRLowerLinalgTensors> {
   void runOnOperation() override;
 };
 
@@ -163,9 +163,9 @@ void AIRLowerLinalgTensors::runOnOperation() {
     signalPassFailure();
 
   RewritePatternSet patterns1(&context);
-  patterns1.add<RemoveBufferCastPattern,
-              //RemoveAllocCopyPattern,
-              RemoveTensorLoadStorePattern>(&context);
+  patterns1.add<RemoveBufferCastPattern>(&context);
+  // RemoveAllocCopyPattern,
+  // RemoveTensorLoadStorePattern
   (void)applyPatternsAndFoldGreedily(aie_module, std::move(patterns1));
 
   RewritePatternSet patterns2(&context);

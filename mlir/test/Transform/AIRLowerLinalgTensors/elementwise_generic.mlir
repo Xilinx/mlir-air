@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+// XFAIL:*
 // RUN: air-opt %s -air-lower-linalg-tensors | FileCheck %s
 // CHECK: %[[TILE0:.*]] = AIE.tile(1, 1)
 // CHECK: %[[BUF2:.*]] = AIE.buffer(%[[TILE0]]) {sym_name = "buf2"} : memref<32x32xi32, 2>

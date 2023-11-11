@@ -38,15 +38,13 @@ namespace {
 //   int64_t *channel_data;
 // }
 LLVM::LLVMStructType getShimDescriptorType(MLIRContext *ctx) {
-  return LLVM::LLVMStructType::getLiteral(
-      ctx, {
-               // int64_t[64]* location data
-               LLVM::LLVMPointerType::get(LLVM::LLVMArrayType::get(
-                   IntegerType::get(ctx, 64), 16 * 8 * 8)),
-               // int64_t[64]* channel data
-               LLVM::LLVMPointerType::get(LLVM::LLVMArrayType::get(
-                   IntegerType::get(ctx, 64), 16 * 8 * 8)),
-           });
+  return LLVM::LLVMStructType::getLiteral(ctx,
+                                          {
+                                              // int64_t[64]* location data
+                                              LLVM::LLVMPointerType::get(ctx),
+                                              // int64_t[64]* channel data
+                                              LLVM::LLVMPointerType::get(ctx),
+                                          });
 }
 
 // struct herd_desc_t {
@@ -55,15 +53,15 @@ LLVM::LLVMStructType getShimDescriptorType(MLIRContext *ctx) {
 //   shim_desc_t *shim_desc;
 // }
 LLVM::LLVMStructType getHerdDescriptorType(MLIRContext *ctx) {
-  return LLVM::LLVMStructType::getLiteral(
-      ctx, {
-               // int64_t name_length
-               IntegerType::get(ctx, 64),
-               // char *name
-               LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8)),
-               // shim_desc_t *shim_desc
-               LLVM::LLVMPointerType::get(getShimDescriptorType(ctx)),
-           });
+  return LLVM::LLVMStructType::getLiteral(ctx,
+                                          {
+                                              // int64_t name_length
+                                              IntegerType::get(ctx, 64),
+                                              // char *name
+                                              LLVM::LLVMPointerType::get(ctx),
+                                              // shim_desc_t *shim_desc
+                                              LLVM::LLVMPointerType::get(ctx),
+                                          });
 }
 
 // struct air_segment_desc_t {
@@ -79,13 +77,11 @@ LLVM::LLVMStructType getSegmentDescriptorType(MLIRContext *ctx,
                // int64_t name_length;
                IntegerType::get(ctx, 64),
                // char *name;
-               LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8)),
+               LLVM::LLVMPointerType::get(ctx),
                // uint64_t herd_length;
                IntegerType::get(ctx, 64),
                // air_herd_desc_t *herd_descs[herd_length];
-               LLVM::LLVMPointerType::get(LLVM::LLVMArrayType::get(
-                   LLVM::LLVMPointerType::get(getHerdDescriptorType(ctx)),
-                   herd_length)),
+               LLVM::LLVMPointerType::get(ctx),
            });
 };
 
@@ -97,16 +93,13 @@ LLVM::LLVMStructType getModuleDescriptorType(MLIRContext *ctx,
                                              ArrayRef<int64_t> herd_count) {
   auto max_herds = *std::max_element(herd_count.begin(), herd_count.end());
   auto num_segments = herd_count.size();
-  return LLVM::LLVMStructType::getLiteral(
-      ctx, {
-               // int64_t length
-               IntegerType::get(ctx, 64),
-               // herd_desc_t *herd_descs[length]
-               LLVM::LLVMPointerType::get(LLVM::LLVMArrayType::get(
-                   LLVM::LLVMPointerType::get(
-                       getSegmentDescriptorType(ctx, max_herds)),
-                   num_segments)),
-           });
+  return LLVM::LLVMStructType::getLiteral(ctx,
+                                          {
+                                              // int64_t length
+                                              IntegerType::get(ctx, 64),
+                                              // herd_desc_t *herd_descs[length]
+                                              LLVM::LLVMPointerType::get(ctx),
+                                          });
 }
 
 LLVM::GlobalOp getOrCreateAIRString(OpBuilder builder, ModuleOp module,
@@ -140,7 +133,7 @@ createSegmentDescriptor(OpBuilder builder, ModuleOp module,
 
   auto segmentName = getOrCreateAIRString(builder, module, segment_name);
 
-  auto arrayElemTy = LLVM::LLVMPointerType::get(getHerdDescriptorType(ctx));
+  auto arrayElemTy = LLVM::LLVMPointerType::get(ctx);
   auto arrayTy = LLVM::LLVMArrayType::get(arrayElemTy, herd_descs.size());
   std::string str_name = "__airrt_segment_herd_descriptors";
   int which_try = 0;
@@ -197,7 +190,7 @@ createSegmentDescriptor(OpBuilder builder, ModuleOp module,
                                                builder.getDenseI64ArrayAttr(0));
 
     auto segmentNameArrayPtr = builder.create<LLVM::BitcastOp>(
-        loc, LLVM::LLVMPointerType::get(builder.getI8Type()), segmentNameArray);
+        loc, LLVM::LLVMPointerType::get(ctx), segmentNameArray);
     desc = builder.create<LLVM::InsertValueOp>(loc, desc, segmentNameArrayPtr,
                                                builder.getDenseI64ArrayAttr(1));
 
@@ -205,7 +198,7 @@ createSegmentDescriptor(OpBuilder builder, ModuleOp module,
                                                builder.getDenseI64ArrayAttr(2));
 
     auto herd_descs_ptr = builder.create<LLVM::BitcastOp>(
-        loc, LLVM::LLVMPointerType::get(arrayTy), herd_descs_global_addr);
+        loc, LLVM::LLVMPointerType::get(ctx), herd_descs_global_addr);
     desc = builder.create<LLVM::InsertValueOp>(loc, desc, herd_descs_ptr,
                                                builder.getDenseI64ArrayAttr(3));
 
@@ -222,8 +215,7 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
   auto descTy = getModuleDescriptorType(ctx, segment_herd_count);
   auto max_herds =
       *std::max_element(segment_herd_count.begin(), segment_herd_count.end());
-  auto arrayElemTy =
-      LLVM::LLVMPointerType::get(getSegmentDescriptorType(ctx, max_herds));
+  auto arrayElemTy = LLVM::LLVMPointerType::get(ctx);
   auto arrayTy =
       LLVM::LLVMArrayType::get(arrayElemTy, segment_herd_count.size());
   std::string str_name = "__airrt_module_segment_descriptors";
@@ -265,7 +257,7 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
         builder.getI64IntegerAttr(segment_descs.size()));
 
     auto segment_descs_global_addr = builder.create<LLVM::BitcastOp>(
-        loc, LLVM::LLVMPointerType::get(arrayTy),
+        loc, LLVM::LLVMPointerType::get(ctx),
         builder.create<LLVM::AddressOfOp>(loc, segment_descs_global));
 
     desc = builder.create<LLVM::InsertValueOp>(loc, desc, segment_descs_len,
@@ -313,7 +305,7 @@ LLVM::GlobalOp createHerdDescriptor(OpBuilder builder, ModuleOp module,
       builder.getI32IntegerAttr(herd_name.size()));
 
   auto herdNamePtr = builder.create<LLVM::BitcastOp>(
-      loc, LLVM::LLVMPointerType::get(builder.getI8Type()),
+      loc, LLVM::LLVMPointerType::get(ctx),
       builder.create<LLVM::GEPOp>(loc, LLVM::LLVMPointerType::get(ctx),
                                   herdName.getType(), herdNameArray,
                                   ArrayRef<LLVM::GEPArg>{0, 0}));
@@ -324,7 +316,7 @@ LLVM::GlobalOp createHerdDescriptor(OpBuilder builder, ModuleOp module,
                                              builder.getDenseI64ArrayAttr({1}));
 
   Value shimDescPtr = builder.create<LLVM::BitcastOp>(
-      loc, LLVM::LLVMPointerType::get(getShimDescriptorType(ctx)),
+      loc, LLVM::LLVMPointerType::get(ctx),
       builder.create<LLVM::AddressOfOp>(loc, shim_desc));
   desc = builder.create<LLVM::InsertValueOp>(loc, desc, shimDescPtr,
                                              builder.getDenseI64ArrayAttr({2}));
@@ -410,7 +402,7 @@ LLVM::GlobalOp createShimDescriptor(OpBuilder builder, ModuleOp module,
 
     Value desc = builder.create<LLVM::UndefOp>(loc, descTy);
 
-    Type arrayPtrTy = LLVM::LLVMPointerType::get(arrayTy);
+    Type arrayPtrTy = LLVM::LLVMPointerType::get(ctx);
     Value locArrayPtr = builder.create<LLVM::BitcastOp>(
         loc, arrayPtrTy,
         builder.create<LLVM::AddressOfOp>(loc, locArrayGlobal));
@@ -492,8 +484,7 @@ public:
                                 PatternRewriter &rewriter) const override {
     auto ctx = op->getContext();
     SmallVector<Type> retTys{IntegerType::get(ctx, 64)};
-    SmallVector<Type, 1> tys{
-        LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8))};
+    SmallVector<Type, 1> tys{LLVM::LLVMPointerType::get(ctx)};
     auto functionTy = FunctionType::get(ctx, tys, retTys);
 
     auto module = op->getParentOfType<ModuleOp>();
@@ -512,7 +503,7 @@ public:
 
     auto segment_name_addr =
         rewriter.create<LLVM::AddressOfOp>(op->getLoc(), segment_name);
-    auto ptrTy = LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8));
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     auto segment_name_addr_cast = rewriter.create<LLVM::BitcastOp>(
         op->getLoc(), ptrTy, segment_name_addr);
     SmallVector<Value, 2> operands{segment_name_addr_cast};
@@ -533,8 +524,7 @@ public:
                                 PatternRewriter &rewriter) const override {
     auto ctx = op->getContext();
     SmallVector<Type> retTys{IntegerType::get(ctx, 64)};
-    SmallVector<Type, 1> tys{
-        LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8))};
+    SmallVector<Type, 1> tys{LLVM::LLVMPointerType::get(ctx)};
     auto functionTy = FunctionType::get(ctx, tys, retTys);
 
     auto module = op->getParentOfType<ModuleOp>();
@@ -553,7 +543,7 @@ public:
 
     auto herd_name_addr =
         rewriter.create<LLVM::AddressOfOp>(op->getLoc(), herd_name);
-    auto ptrTy = LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8));
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     auto herd_name_addr_cast =
         rewriter.create<LLVM::BitcastOp>(op->getLoc(), ptrTy, herd_name_addr);
     SmallVector<Value, 2> operands{herd_name_addr_cast};
@@ -576,12 +566,12 @@ LogicalResult lowerDmaMemcpy(Operation *op, PatternRewriter &rewriter,
 
   auto i32Ty = IntegerType::get(ctx, 32);
   auto i64Ty = IntegerType::get(ctx, 64);
-  auto signalTy = LLVM::LLVMPointerType::get(i64Ty);
+  auto signalTy = LLVM::LLVMPointerType::get(ctx);
   tys.push_back(signalTy);
   if (op->getNumResults()) {
     auto one = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
                                                  rewriter.getI32IntegerAttr(1));
-    auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, one, 4);
+    auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, i32Ty, one, 4);
     operands.push_back(signal);
   } else {
     auto nullV = rewriter.create<LLVM::ZeroOp>(loc, signalTy).getResult();
@@ -628,12 +618,12 @@ LogicalResult lowerDmaNdMemcpy(Operation *op, PatternRewriter &rewriter,
 
   auto i32Ty = IntegerType::get(ctx, 32);
   auto i64Ty = IntegerType::get(ctx, 64);
-  auto signalTy = LLVM::LLVMPointerType::get(i64Ty);
+  auto signalTy = LLVM::LLVMPointerType::get(ctx);
   tys.push_back(signalTy);
   if (op->getNumResults()) {
     auto one = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
                                                  rewriter.getI32IntegerAttr(1));
-    auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, one, 4);
+    auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, i32Ty, one, 4);
     operands.push_back(signal);
   } else {
     auto nullV = rewriter.create<LLVM::ZeroOp>(loc, signalTy).getResult();
@@ -686,17 +676,16 @@ LogicalResult lowerNdMemcpy(Operation *op, PatternRewriter &rewriter,
   SmallVector<Type, 6> tys;
   SmallVector<Value, 16> operands;
 
-  SmallVector<Type, 1> retTys(
-      op->getNumResults(),
-      LLVM::LLVMPointerType::get(IntegerType::get(ctx, 64)));
+  SmallVector<Type, 1> retTys(op->getNumResults(),
+                              LLVM::LLVMPointerType::get(ctx));
 
   auto i32Ty = IntegerType::get(ctx, 32);
   auto i64Ty = IntegerType::get(ctx, 64);
-  auto signalTy = LLVM::LLVMPointerType::get(i64Ty);
+  auto signalTy = LLVM::LLVMPointerType::get(ctx);
   if (op->getNumResults()) {
     auto one = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
                                                  rewriter.getI32IntegerAttr(1));
-    auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, one, 4);
+    auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, i32Ty, one, 4);
     operands.push_back(signal);
   } else {
     auto nullV = rewriter.create<LLVM::ZeroOp>(loc, signalTy).getResult();
@@ -1004,11 +993,9 @@ public:
     auto module = op->getParentOfType<ModuleOp>();
     auto ctx = op->getContext();
 
-    SmallVector<Type, 8> tys(
-        operands.size(), LLVM::LLVMPointerType::get(IntegerType::get(ctx, 64)));
-    SmallVector<Type, 1> retTys(
-        op->getNumResults(),
-        LLVM::LLVMPointerType::get(IntegerType::get(ctx, 64)));
+    SmallVector<Type, 8> tys(operands.size(), LLVM::LLVMPointerType::get(ctx));
+    SmallVector<Type, 1> retTys(op->getNumResults(),
+                                LLVM::LLVMPointerType::get(ctx));
 
     std::string fnName = "__airrt_wait_all";
     llvm::raw_string_ostream ss(fnName);
@@ -1227,7 +1214,7 @@ public:
                                        memref.getElementType(),
                                        memref.getLayout(), 0);
       if (auto t = type.dyn_cast<xilinx::airrt::EventType>())
-        return LLVM::LLVMPointerType::get(IntegerType::get(context, 64));
+        return LLVM::LLVMPointerType::get(context);
       return std::optional<Type>(type);
     });
 
