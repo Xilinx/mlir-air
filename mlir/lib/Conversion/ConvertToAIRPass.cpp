@@ -1587,7 +1587,7 @@ public:
   }
 
 private:
-  llvm::SmallPtrSet<Operation *, 8> filteredOps;
+  llvm::SmallPtrSet<Operation *, 8> &filteredOps;
   llvm::SmallSet<air::HerdOp, 2> &replacementOps;
   int firstDim;
 };
@@ -1611,9 +1611,6 @@ public:
     if (!filteredOps.contains(op))
       return failure();
 
-    // if (failed(normalizeScfParallel(op, rewriter)))
-    //   return failure();
-
     auto loc = op.getLoc();
 
     if (op.getRank() > 2) {
@@ -1626,9 +1623,10 @@ public:
         outerUpperBounds.push_back(op.getMixedUpperBound()[i]);
         outerSteps.push_back(op.getMixedStep()[i]);
       }
-      auto outerLoop = rewriter.create<scf::ForallOp>(
-          loc, outerLowerBounds, outerUpperBounds, outerSteps, ValueRange(),
-          std::nullopt);
+      auto outerLoop = rewriter.create<scf::ParallelOp>(
+          loc, getValueOrCreateConstantIndexOp(rewriter, loc, outerLowerBounds),
+          getValueOrCreateConstantIndexOp(rewriter, loc, outerUpperBounds),
+          getValueOrCreateConstantIndexOp(rewriter, loc, outerSteps));
       for (unsigned i = 0, e = split_idx; i < e; ++i)
         op.getInductionVars()[i].replaceAllUsesWith(
             outerLoop.getInductionVars()[i]);
@@ -1697,7 +1695,7 @@ public:
       replaceAllUsesInRegionWith(v, kernel_args[i++], herdOp.getRegion());
 
     if (op != parOp)
-      op.erase();
+      rewriter.eraseOp(op);
     rewriter.eraseOp(parOp);
     replacementOps.insert(herdOp);
 
@@ -1705,7 +1703,7 @@ public:
   }
 
 private:
-  llvm::SmallPtrSet<Operation *, 8> filteredOps;
+  llvm::SmallPtrSet<Operation *, 8> &filteredOps;
   llvm::SmallSet<air::HerdOp, 2> &replacementOps;
   int firstDim;
 };
@@ -1938,7 +1936,7 @@ public:
 private:
   llvm::SmallSet<Operation *, 8> &filteredOps;
   llvm::SmallSet<air::LaunchOp, 2> &replacementOps;
-  //bool generateSegment;
+  // bool generateSegment;
 };
 
 struct CopyToDmaPass : public air::CopyToDmaBase<CopyToDmaPass> {
@@ -2454,9 +2452,12 @@ transform::ParToLaunchOp::applyToOne(transform::TransformRewriter &rewriter,
   (void)applyPatternsAndFoldGreedily(
       target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
       std::move(patterns));
+  for (auto l : launchOps)
+    results.push_back(l);
   return DiagnosedSilenceableFailure::success();
 }
 
+//===----------------------------------------------------------------------===//
 // CopyToDmaOp
 //===----------------------------------------------------------------------===//
 
@@ -2465,10 +2466,6 @@ transform::CopyToDmaOp::applyToOne(transform::TransformRewriter &rewriter,
                                    memref::CopyOp op,
                                    transform::ApplyToEachResultList &results,
                                    transform::TransformState &state) {
-
-  // auto ctx = op->getContext();
-  // (void)applyPatternsAndFoldGreedily(op->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
-  //                                    std::move(stage1Patterns));
   auto res = matchAndRewriteCopyOp(op, rewriter);
   if (failed(res))
     return emitDefaultDefiniteFailure(op);

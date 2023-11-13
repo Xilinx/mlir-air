@@ -29,3 +29,20 @@ func.func @scf1()  {
   }
   return
 }
+
+// -----
+
+// CHECK-LABEL: func.func @scf2() {
+// CHECK: %[[VAL_0:.*]] = arith.constant 0 : index
+// CHECK: %[[VAL_1:.*]] = arith.constant 1 : index
+// CHECK: %[[VAL_2:.*]] = arith.constant 2 : index
+// CHECK: scf.parallel (%[[VAL_3:.*]], %[[VAL_4:.*]]) = (%[[VAL_0]], %[[VAL_0]]) to (%[[VAL_1]], %[[VAL_2]]) step (%[[VAL_1]], %[[VAL_1]]) {
+// CHECK:   %[[VAL_5:.*]] = arith.constant 3 : index
+// CHECK:   %[[VAL_6:.*]] = arith.constant 4 : index
+// CHECK:   air.herd @herd_0  tile (%[[VAL_7:.*]], %[[VAL_8:.*]]) in (%[[VAL_9:.*]]=%[[VAL_5]], %[[VAL_10:.*]]=%[[VAL_6]])
+func.func @scf2()  {
+  scf.forall (%a,%b,%x,%y) in (1,2,3,4) {
+    %2 = arith.muli %x, %y : index
+  }
+  return
+}
