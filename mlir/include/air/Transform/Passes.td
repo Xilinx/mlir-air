@@ -1116,4 +1116,9 @@ def AIRLabelBroadcastChannelWithTilePass : Pass<"air-label-broadcast-channel-wit
   let constructor = "xilinx::air::createAIRLabelBroadcastChannelWithTilePass()";
 }
 
+def AIRCollapseHerdPass : Pass<"air-collapse-herd", "func::FuncOp"> {
+  let summary = "Collapse a multi-dimensional air.herd into a single column.";
+  let constructor = "xilinx::air::createAIRCollapseHerdPass()";
+}
+
 #endif // AIR_CONVERSION_PASSES
