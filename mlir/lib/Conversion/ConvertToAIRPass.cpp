@@ -1587,7 +1587,123 @@ public:
   }
 
 private:
-  llvm::SmallPtrSet<Operation *, 8> filteredOps;
+  llvm::SmallPtrSet<Operation *, 8> &filteredOps;
+  llvm::SmallSet<air::HerdOp, 2> &replacementOps;
+  int firstDim;
+};
+
+class ScfForallToHerdConversion : public OpRewritePattern<scf::ForallOp> {
+public:
+  using OpRewritePattern<scf::ForallOp>::OpRewritePattern;
+
+  ScfForallToHerdConversion(MLIRContext *ctx,
+                            SmallPtrSet<Operation *, 8> &filteredOps,
+                            llvm::SmallSet<air::HerdOp, 2> &replacementOps,
+                            int firstDim)
+      : OpRewritePattern(ctx), filteredOps(filteredOps),
+        replacementOps(replacementOps), firstDim(firstDim){};
+
+  LogicalResult matchAndRewrite(scf::ForallOp parOp,
+                                PatternRewriter &rewriter) const override {
+
+    scf::ForallOp op = parOp;
+
+    if (!filteredOps.contains(op))
+      return failure();
+
+    auto loc = op.getLoc();
+
+    if (op.getRank() > 2) {
+      unsigned split_idx = op.getRank() - 2;
+      SmallVector<OpFoldResult> outerLowerBounds, outerUpperBounds, outerSteps;
+      SmallVector<OpFoldResult> innerLowerBounds, innerUpperBounds, innerSteps;
+
+      for (unsigned i = 0, e = split_idx; i < e; ++i) {
+        outerLowerBounds.push_back(op.getMixedLowerBound()[i]);
+        outerUpperBounds.push_back(op.getMixedUpperBound()[i]);
+        outerSteps.push_back(op.getMixedStep()[i]);
+      }
+      auto outerLoop = rewriter.create<scf::ParallelOp>(
+          loc, getValueOrCreateConstantIndexOp(rewriter, loc, outerLowerBounds),
+          getValueOrCreateConstantIndexOp(rewriter, loc, outerUpperBounds),
+          getValueOrCreateConstantIndexOp(rewriter, loc, outerSteps));
+      for (unsigned i = 0, e = split_idx; i < e; ++i)
+        op.getInductionVars()[i].replaceAllUsesWith(
+            outerLoop.getInductionVars()[i]);
+
+      rewriter.setInsertionPointToStart(outerLoop.getBody());
+
+      for (unsigned i = split_idx, e = op.getRank(); i < e; ++i) {
+        innerLowerBounds.push_back(op.getMixedLowerBound()[i]);
+        innerUpperBounds.push_back(op.getMixedUpperBound()[i]);
+        innerSteps.push_back(op.getMixedStep()[i]);
+      }
+      auto innerLoop = rewriter.create<scf::ForallOp>(
+          loc, innerLowerBounds, innerUpperBounds, innerSteps, ValueRange(),
+          std::nullopt);
+      for (unsigned i = split_idx, e = op.getRank(); i < e; ++i)
+        op.getInductionVars()[i].replaceAllUsesWith(
+            innerLoop.getInductionVars()[i - split_idx]);
+
+      auto &body = op.getBody()->getOperations();
+      innerLoop.getBody()->getOperations().splice(
+          innerLoop.getBody()->begin(), body, body.begin(), --body.end());
+      op = innerLoop;
+    }
+
+    SmallVector<int, 2> bounds{1, 1};
+    for (unsigned int i = 0; i < op.getRank(); i++) {
+      int64_t ub_int = op.getStaticUpperBound()[i];
+      int64_t step_int = op.getStaticStep()[i];
+      bounds[i] = ub_int / step_int;
+    }
+    SmallVector<Value, 4> args;
+    SmallVector<Value, 4> constants;
+    llvm::SetVector<Value> region_args;
+    getUsedValuesDefinedAbove(op.getRegion(), region_args);
+    for (Value v : region_args) {
+      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
+        constants.push_back(v);
+      else
+        args.push_back(v);
+    }
+
+    int idx0 = firstDim;
+    int idx1 = (firstDim + 1) % 2;
+    SmallVector<Value, 2> dims{
+        rewriter.create<arith::ConstantIndexOp>(loc, bounds[idx0]),
+        rewriter.create<arith::ConstantIndexOp>(loc, bounds[idx1])};
+    auto herdOp = rewriter.create<air::HerdOp>(op.getLoc(), dims, args);
+    auto &bb = herdOp.getBody().front();
+    auto ivs = op.getInductionVars();
+
+    ivs[0].replaceAllUsesWith(herdOp.getIds()[idx0]);
+    if (op.getRank() == 2)
+      ivs[1].replaceAllUsesWith(herdOp.getIds()[idx1]);
+
+    auto &body = op.getBody()->getOperations();
+    bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
+    rewriter.setInsertionPointToStart(&herdOp.getRegion().front());
+    replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
+                                          herdOp.getRegion());
+    auto builder = OpBuilder::atBlockEnd(&bb);
+    builder.create<air::HerdTerminatorOp>(loc);
+
+    int i = 0;
+    auto kernel_args = herdOp.getKernelArguments();
+    for (Value v : args)
+      replaceAllUsesInRegionWith(v, kernel_args[i++], herdOp.getRegion());
+
+    if (op != parOp)
+      rewriter.eraseOp(op);
+    rewriter.eraseOp(parOp);
+    replacementOps.insert(herdOp);
+
+    return success();
+  }
+
+private:
+  llvm::SmallPtrSet<Operation *, 8> &filteredOps;
   llvm::SmallSet<air::HerdOp, 2> &replacementOps;
   int firstDim;
 };
@@ -1597,7 +1713,7 @@ public:
   using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
 
   ScfParToLaunchConversion(MLIRContext *ctx,
-                           llvm::SmallSet<scf::ParallelOp, 8> &filteredOps,
+                           llvm::SmallSet<Operation *, 8> &filteredOps,
                            llvm::SmallSet<air::LaunchOp, 2> &replacementOps,
                            bool generateSegment)
       : OpRewritePattern(ctx), filteredOps(filteredOps),
@@ -1696,7 +1812,7 @@ public:
   }
 
 private:
-  llvm::SmallSet<scf::ParallelOp, 8> &filteredOps;
+  llvm::SmallSet<Operation *, 8> &filteredOps;
   llvm::SmallSet<air::LaunchOp, 2> &replacementOps;
   bool generateSegment;
 
@@ -1730,6 +1846,97 @@ private:
 
     return segment;
   }
+};
+
+class ScfForallToLaunchConversion : public OpRewritePattern<scf::ForallOp> {
+public:
+  using OpRewritePattern<scf::ForallOp>::OpRewritePattern;
+
+  ScfForallToLaunchConversion(MLIRContext *ctx,
+                              llvm::SmallSet<Operation *, 8> &filteredOps,
+                              llvm::SmallSet<air::LaunchOp, 2> &replacementOps)
+      : OpRewritePattern(ctx), filteredOps(filteredOps),
+        replacementOps(replacementOps){};
+
+  LogicalResult matchAndRewrite(scf::ForallOp forOp,
+                                PatternRewriter &rewriter) const override {
+
+    scf::ForallOp op = forOp;
+
+    if (!filteredOps.contains(op))
+      return failure();
+
+    // if (failed(normalizeScfParallel(op, rewriter)))
+    //   return failure();
+
+    auto loc = op.getLoc();
+
+    SmallVector<int, 4> bounds(op.getRank(), 1);
+    for (unsigned int i = 0; i < op.getRank(); i++) {
+      int64_t lb_int = op.getStaticLowerBound()[i];
+      int64_t ub_int = op.getStaticUpperBound()[i];
+      int64_t step_int = op.getStaticStep()[i];
+
+      // must start at 0
+      if (lb_int)
+        return failure();
+
+      // step must divide upper bound evenly
+      if (ub_int % step_int)
+        return failure();
+
+      ub_int = ub_int / step_int;
+      bounds[i] = ub_int;
+    }
+
+    SmallVector<Value, 4> args;
+    SmallVector<Value, 4> constants;
+    llvm::SetVector<Value> region_args;
+    getUsedValuesDefinedAbove(op.getRegion(), region_args);
+    for (Value v : region_args) {
+      if (v.getDefiningOp() && isa<arith::ConstantOp>(v.getDefiningOp()))
+        constants.push_back(v);
+      else
+        args.push_back(v);
+    }
+
+    SmallVector<Value, 4> sizes;
+    for (auto b : bounds)
+      sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, b));
+    auto launch = rewriter.create<air::LaunchOp>(op.getLoc(), sizes, args);
+    auto &bb = launch.getBody().front();
+    auto ivs = op.getInductionVars();
+
+    for (int i = 0, e = ivs.size(); i < e; i++) {
+      ivs[i].replaceAllUsesWith(launch.getIds()[i]);
+    }
+
+    auto &body = op.getBody()->getOperations();
+    bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
+    rewriter.setInsertionPointToStart(&launch.getRegion().front());
+    replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
+                                          launch.getRegion());
+
+    auto builder = OpBuilder::atBlockEnd(&bb);
+    builder.create<air::LaunchTerminatorOp>(loc);
+
+    int i = 0;
+    auto kernel_args = launch.getKernelArguments();
+    for (Value v : args)
+      replaceAllUsesInRegionWith(v, kernel_args[i++], launch.getRegion());
+
+    if (op != forOp)
+      op.erase();
+    rewriter.eraseOp(forOp);
+    replacementOps.insert(launch);
+
+    return success();
+  }
+
+private:
+  llvm::SmallSet<Operation *, 8> &filteredOps;
+  llvm::SmallSet<air::LaunchOp, 2> &replacementOps;
+  // bool generateSegment;
 };
 
 struct CopyToDmaPass : public air::CopyToDmaBase<CopyToDmaPass> {
@@ -2036,7 +2243,7 @@ struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
     SmallPtrSet<Operation *, 8> filteredOps;
     llvm::SmallSet<air::HerdOp, 2> replacementOps;
     module.walk([&](Operation *op) {
-      if (!isa<scf::ParallelOp, affine::AffineParallelOp>(op))
+      if (!isa<scf::ForallOp, scf::ParallelOp, affine::AffineParallelOp>(op))
         return;
       // skip parallel op already inside herd
       if (op->getParentOfType<air::HerdOp>())
@@ -2053,7 +2260,7 @@ struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
       int parallel_depth = 0;
       Operation *par = op;
       while ((par = par->getParentOp()))
-        if (isa<scf::ParallelOp, affine::AffineParallelOp>(par))
+        if (isa<scf::ForallOp, scf::ParallelOp, affine::AffineParallelOp>(par))
           parallel_depth++;
       if (parallel_depth != clAssignDepth)
         return;
@@ -2064,6 +2271,8 @@ struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
     patterns.add<AffineParToHerdConversion>(context);
     patterns.add<ScfParToHerdConversion>(context, filteredOps, replacementOps,
                                          clFirstDim);
+    patterns.add<ScfForallToHerdConversion>(context, filteredOps,
+                                            replacementOps, clFirstDim);
 
     ConversionTarget target(*context);
 
@@ -2076,6 +2285,8 @@ struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
 
     target.addDynamicallyLegalOp<scf::ParallelOp>(
         [&](scf::ParallelOp p) { return !filteredOps.contains(p); });
+    target.addDynamicallyLegalOp<scf::ForallOp>(
+        [&](scf::ForallOp p) { return !filteredOps.contains(p); });
 
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
       signalPassFailure();
@@ -2108,9 +2319,11 @@ struct ParallelToLaunchPass
     llvm::SmallVector<air::LaunchOp> launchOps;
     module.walk([&](air::LaunchOp op) { launchOps.push_back(op); });
 
-    llvm::SmallSet<scf::ParallelOp, 8> filteredOps;
+    llvm::SmallSet<Operation *, 8> filteredOps;
     llvm::SmallSet<air::LaunchOp, 2> replacementOps;
-    module.walk([&](scf::ParallelOp op) {
+    module.walk([&](Operation *op) {
+      if (!isa<scf::ForallOp, scf::ParallelOp>(op))
+        return;
       if (op->getParentOfType<air::HerdOp>())
         return;
       if (op->getParentOfType<air::LaunchOp>())
@@ -2124,9 +2337,9 @@ struct ParallelToLaunchPass
       }
       // the number of nested scf.parallel above this one
       int parallel_depth = 0;
-      Operation *par = op.getOperation();
+      Operation *par = op;
       while ((par = par->getParentOp()))
-        if (isa<scf::ParallelOp>(par))
+        if (isa<scf::ForallOp, scf::ParallelOp>(par))
           parallel_depth++;
       if (parallel_depth != clAssignDepth)
         return;
@@ -2136,6 +2349,8 @@ struct ParallelToLaunchPass
     RewritePatternSet patterns(context);
     patterns.add<ScfParToLaunchConversion>(context, filteredOps, replacementOps,
                                            clHasSegment);
+    patterns.add<ScfForallToLaunchConversion>(context, filteredOps,
+                                              replacementOps);
 
     ConversionTarget target(*context);
 
@@ -2148,6 +2363,8 @@ struct ParallelToLaunchPass
 
     target.addDynamicallyLegalOp<scf::ParallelOp>(
         [&](scf::ParallelOp p) { return !filteredOps.contains(p); });
+    target.addDynamicallyLegalOp<scf::ForallOp>(
+        [&](scf::ForallOp p) { return !filteredOps.contains(p); });
 
     if (failed(applyPartialConversion(module, target, std::move(patterns)))) {
       emitError(UnknownLoc::get(context), "error\n");
@@ -2204,6 +2421,8 @@ transform::ParToHerdOp::applyToOne(transform::TransformRewriter &rewriter,
   filteredOps.insert(target);
   patterns.add<ScfParToHerdConversion>(ctx, filteredOps, herdOps,
                                        getFirstDim());
+  patterns.add<ScfForallToHerdConversion>(ctx, filteredOps, herdOps,
+                                          getFirstDim());
   (void)applyPatternsAndFoldGreedily(
       target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
       std::move(patterns));
@@ -2226,9 +2445,10 @@ transform::ParToLaunchOp::applyToOne(transform::TransformRewriter &rewriter,
   auto ctx = target->getContext();
   RewritePatternSet patterns(ctx);
   llvm::SmallSet<air::LaunchOp, 2> launchOps;
-  llvm::SmallSet<scf::ParallelOp, 8> filteredOps;
+  llvm::SmallSet<Operation *, 8> filteredOps;
   filteredOps.insert(target);
   patterns.add<ScfParToLaunchConversion>(ctx, filteredOps, launchOps, false);
+  patterns.add<ScfForallToLaunchConversion>(ctx, filteredOps, launchOps);
   (void)applyPatternsAndFoldGreedily(
       target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
       std::move(patterns));
@@ -2246,11 +2466,6 @@ transform::CopyToDmaOp::applyToOne(transform::TransformRewriter &rewriter,
                                    memref::CopyOp op,
                                    transform::ApplyToEachResultList &results,
                                    transform::TransformState &state) {
-  // RewritePatternSet stage1Patterns =
-  //   linalg::getLinalgTilingCanonicalizationPatterns(ctx);
-  // memref::AllocOp::getCanonicalizationPatterns(stage1Patterns, ctx);
-  // (void)applyPatternsAndFoldGreedily(op->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
-  //                                    std::move(stage1Patterns));
   auto res = matchAndRewriteCopyOp(op, rewriter);
   if (failed(res))
     return emitDefaultDefiniteFailure(op);
