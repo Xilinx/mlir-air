@@ -148,6 +148,10 @@ This pass detects DMA broadcast opportunities by tracing the source indices'
 dependence to the induction variables of any parent spatial loop space. Upon
 successful detection, the DMA shall be annotated by an affine set attribute 
 named 'broadcast_pattern'. 
+### `-air-collapse-herd`
+
+_Collapse a multi-dimensional air.herd into a single column._
+
 ### `-air-construct-ping-pong-dependency-pattern`
 
 _Transform an scf.for loop into ping-pong pattern_
