@@ -1150,6 +1150,10 @@ void AIRCollapseHerdPass::runOnOperation() {
     if (h.getAsyncToken()) {
       h.getAsyncToken().replaceAllUsesWith(newPloop.getAsyncToken());
     }
+
+    // Copy over any attributes
+    NamedAttrList attrs(h->getAttrDictionary());
+    newPloop->setAttrs(attrs.getDictionary(h->getContext()));
   }
 
   for (auto h : herds) {

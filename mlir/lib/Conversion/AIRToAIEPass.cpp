@@ -461,8 +461,6 @@ bool isInSet(IntegerSet is) {
 
 bool isInSet(int64_t x, int64_t y, affine::AffineIfOp aif) {
   auto is = aif.getIntegerSet();
-  if (is.getConstraints().size() != 2)
-    return false;
 
   SmallVector<AffineExpr, 2> dims{
       getAffineConstantExpr(x, aif->getContext()),
@@ -489,10 +487,26 @@ struct SpecializeAffineIfPattern : public OpRewritePattern<affine::AffineIfOp> {
     if (op.getNumOperands() == 2) {
       SmallVector<int64_t, 2> operands;
       for (auto o : op.getOperands()) {
-        auto v = dyn_cast<arith::ConstantIndexOp>(o.getDefiningOp());
-        if (!v)
+        if (auto v = dyn_cast<arith::ConstantIndexOp>(o.getDefiningOp()))
+          operands.push_back(v.value());
+        else if (auto v = dyn_cast<arith::RemSIOp>(o.getDefiningOp())) {
+          if (mlir::getConstantIntValue(v.getLhs()) &&
+              mlir::getConstantIntValue(v.getRhs())) {
+            int lhs = *mlir::getConstantIntValue(v.getLhs());
+            int rhs = *mlir::getConstantIntValue(v.getRhs());
+            operands.push_back(mlir::mod(lhs, rhs));
+          } else
+            return failure();
+        } else if (auto v = dyn_cast<arith::DivSIOp>(o.getDefiningOp())) {
+          if (mlir::getConstantIntValue(v.getLhs()) &&
+              mlir::getConstantIntValue(v.getRhs())) {
+            int lhs = *mlir::getConstantIntValue(v.getLhs());
+            int rhs = *mlir::getConstantIntValue(v.getRhs());
+            operands.push_back(mlir::floorDiv(lhs, rhs));
+          } else
+            return failure();
+        } else
           return failure();
-        operands.push_back(v.value());
       }
       auto x = operands[0];
       auto y = operands[1];
@@ -1732,18 +1746,10 @@ public:
 
     aie_device.walk(
         [&](T memcpyOp) { dma_memcpy_ops.push_back(memcpyOp.getOperation()); });
-    // getAIRMemcpyOpInBlock<T>(*aie_device.getBody(), dma_memcpy_ops);
-
-    // std::cout << "placing \n";
-    // for (auto o : dma_memcpy_ops)
-    //   std::cout << (void *)o << " ";
 
     // Step 1: Verify data movement legality for the given device architecture
     // verifyMemcpyOps(dma_memcpy_ops,
     //                 aie_device.getTargetModel().getTargetArch());
-
-    // if (dma_memcpy_ops.size())
-    //   assert(dma_memcpy_ops.size() == 4);
 
     // Step 2: Pair up memcpy ops into flow ops. Each entry in memcpy_flows is a
     // bundle of memcpy ops which share the same aie.flow.
