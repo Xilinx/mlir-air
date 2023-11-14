@@ -922,6 +922,7 @@ void air::simpleDMAChannelAllocation(
       for (auto o : f.MM2S) {
         auto memcpyOpIf = cast<air::MemcpyInterface>(o);
         f.MM2S_alloc = memtile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf);
+        assert(f.MM2S_alloc.dma_tile);
       }
     }
     if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L2) {
@@ -929,6 +930,7 @@ void air::simpleDMAChannelAllocation(
         for (auto o : f.S2MM[i]) {
           auto memcpyOpIf = cast<air::MemcpyInterface>(o);
           f.S2MM_alloc[i] = memtile_dma_alloc.simpleDmaChannelAlloc(memcpyOpIf);
+          assert(f.S2MM_alloc[i].dma_tile);
         }
       }
     }
@@ -941,16 +943,19 @@ void air::simpleDMAChannelAllocation(
           f.MM2S_alloc = shim_dma_alloc.allocNewDmaChannel(
               memcpyOpIf, f.S2MM_alloc[i].dma_tile.getCol(),
               f.S2MM_alloc[i].dma_tile.getRow(), f.S2MM[i]);
+          assert(f.MM2S_alloc.dma_tile);
         }
       }
     }
     if (f.S2MM_memspace_as_int == (int)air::MemorySpace::L3) {
       // L3 shim tiles assumed to not be target for broadcast
+      assert(f.S2MM.size() <= 1);
       for (auto o : f.S2MM[0]) {
         auto memcpyOpIf = cast<air::MemcpyInterface>(o);
         f.S2MM_alloc[0] = shim_dma_alloc.allocNewDmaChannel(
             memcpyOpIf, f.MM2S_alloc.dma_tile.getCol(),
             f.MM2S_alloc.dma_tile.getRow(), f.MM2S);
+        assert(f.S2MM_alloc[0].dma_tile);
       }
     }
   }

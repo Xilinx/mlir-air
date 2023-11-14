@@ -1046,6 +1046,121 @@ void AIRLabelBroadcastChannelWithTilePass::runOnOperation() {
   });
 }
 
+class AIRCollapseHerdPass
+    : public air::AIRCollapseHerdPassBase<AIRCollapseHerdPass> {
+
+public:
+  AIRCollapseHerdPass() = default;
+  AIRCollapseHerdPass(const AIRCollapseHerdPass &pass){};
+
+  void runOnOperation() override;
+
+private:
+};
+
+void AIRCollapseHerdPass::runOnOperation() {
+  SmallVector<air::HerdOp> herds;
+  auto func = getOperation();
+  func.walk([&](air::HerdOp op) {
+    if (op.getNumCols() != 1)
+      herds.push_back(op);
+  });
+
+  for (auto h : herds) {
+    OpBuilder outsideBuilder(h);
+    Location loc = h.getLoc();
+
+    // Assumption: herd is two-dimensional, and both of which we collapse into a
+    // single dim.
+    SmallVector<SmallVector<unsigned>> combinedDimensions = {{}, {0, 1}};
+
+    // Combine iteration spaces.
+    SmallVector<Value, 3> lowerBounds, upperBounds, steps;
+    auto cst0 = outsideBuilder.create<arith::ConstantIndexOp>(loc, 0);
+    auto cst1 = outsideBuilder.create<arith::ConstantIndexOp>(loc, 1);
+    // First dimension size set to one, i.e. a single column
+    lowerBounds.push_back(cst0);
+    steps.push_back(cst1);
+    upperBounds.push_back(cst1);
+    // Second dimension onwards
+    for (unsigned i = 1, e = combinedDimensions.size(); i < e; ++i) {
+      Value newUpperBound =
+          outsideBuilder.create<arith::ConstantIndexOp>(loc, 1);
+      for (auto idx : combinedDimensions[i]) {
+        newUpperBound = outsideBuilder.create<arith::MulIOp>(
+            loc, newUpperBound,
+            h->getOperand(h.getAsyncDependencies().size() + idx));
+      }
+      lowerBounds.push_back(cst0);
+      steps.push_back(cst1);
+      upperBounds.push_back(newUpperBound);
+    }
+
+    // Create new air.herd with conversions to the original induction values.
+    SmallVector<Value> herd_kernel_operands;
+    for (unsigned i = 0; i < h.getNumKernelOperands(); i++) {
+      herd_kernel_operands.push_back(h.getKernelOperand(i));
+    }
+    air::HerdOp newPloop = nullptr;
+    if (h.getAsyncToken())
+      newPloop = outsideBuilder.create<air::HerdOp>(
+          loc, h.getAsyncDependencies(), upperBounds, herd_kernel_operands,
+          true);
+    else
+      newPloop = outsideBuilder.create<air::HerdOp>(loc, upperBounds,
+                                                    herd_kernel_operands);
+
+    // Remap the induction variables
+    OpBuilder insideBuilder(h);
+    insideBuilder.setInsertionPointToStart(&newPloop.getBody().front());
+    for (unsigned i = 0, e = newPloop.getNumDims(); i < e; ++i) {
+      Value previous = newPloop.getIds()[i];
+      // Iterate over all except the last induction value.
+      for (int j = combinedDimensions[i].size() - 1; j > 0; --j) {
+        unsigned idx = combinedDimensions[i][j];
+        auto old_upper_bound = mlir::getConstantIntValue(
+            h.getOperand(h.getAsyncDependencies().size() + idx));
+        assert(old_upper_bound);
+        auto old_upper_b_v =
+            insideBuilder.create<arith::ConstantIndexOp>(loc, *old_upper_bound);
+
+        // Determine the current induction value's current loop iteration
+        Value iv =
+            insideBuilder.create<arith::RemSIOp>(loc, previous, old_upper_b_v);
+        replaceAllUsesInRegionWith(h.getIds()[idx], iv, h.getBody());
+
+        // Remove the effect of the current induction value to prepare for
+        // the next value.
+        previous =
+            insideBuilder.create<arith::DivSIOp>(loc, previous, old_upper_b_v);
+      }
+
+      // The final induction value is just the remaining value.
+      if (combinedDimensions[i].size()) {
+        unsigned idx = combinedDimensions[i][0];
+        replaceAllUsesInRegionWith(h.getIds()[idx], previous, h.getRegion());
+      }
+    }
+
+    // Replace the old loop with the new loop.
+    newPloop.getBody().front().getOperations().splice(
+        ++Block::iterator(newPloop.getBody().front().back()),
+        h.getBody().front().getOperations());
+    // Update async deps
+    if (h.getAsyncToken()) {
+      h.getAsyncToken().replaceAllUsesWith(newPloop.getAsyncToken());
+    }
+
+    // Copy over any attributes
+    NamedAttrList attrs(h->getAttrDictionary());
+    newPloop->setAttrs(attrs.getDictionary(h->getContext()));
+  }
+
+  for (auto h : herds) {
+    h.erase();
+  }
+}
+
 } // anonymous namespace
 
 namespace xilinx {
@@ -1093,6 +1208,10 @@ std::unique_ptr<Pass> createAIRHoistScfChannelGetPutPass() {
 
 std::unique_ptr<Pass> createAIRLabelBroadcastChannelWithTilePass() {
   return std::make_unique<AIRLabelBroadcastChannelWithTilePass>();
+}
+
+std::unique_ptr<Pass> createAIRCollapseHerdPass() {
+  return std::make_unique<AIRCollapseHerdPass>();
 }
 
 } // namespace air
