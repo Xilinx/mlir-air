@@ -21,7 +21,7 @@ def matmul_on_tensors(m, n, k, dtype):
 
 with air.ir.Context() as ctx, Location.unknown():
     airdialect.register_dialect(ctx)
-    air_module = matmul_on_tensors(8, 8, 16, IntegerType.get_signless(width = 32))
+    air_module = matmul_on_tensors(32, 32, 32, IntegerType.get_signless(width = 32))
     
     ################################################
     ## Tiling
@@ -39,16 +39,16 @@ with air.ir.Context() as ctx, Location.unknown():
         ^bb1(%arg1: !pdl.operation):
             %fill = transform.structured.match ops{["linalg.fill"]} in %arg1  : (!pdl.operation) -> !pdl.operation
             %matmul = transform.structured.match ops{["linalg.matmul"]} in %arg1  : (!pdl.operation) -> !pdl.operation
-            %matmul_1, %loops:2 = transform.air.linalg_tile %matmul [8, 8, 0]
+            %matmul_1, %loops:2 = transform.air.linalg_tile %matmul [32, 32, 0]
             %fill_1 = transform.air.fuse_into_containing_op %fill into %loops#1
             transform.air.linalg_promote %fill_1 {"operands_to_promote"=[1], "memory_space"="L2"}
             transform.air.linalg_promote %matmul_1 {"operands_to_promote"=[2], "memory_space"="L2"}
             transform.air.linalg_promote %matmul_1 {"operands_to_promote"=[0,1], "memory_space"="L2"}
-            %matmul_2, %loops_2:2 = transform.air.linalg_tile %matmul_1 [4, 4, 0]
+            %matmul_2, %loops_2:2 = transform.air.linalg_tile %matmul_1 [16, 16, 0]
             %fill_2 = transform.air.fuse_into_containing_op %fill_1 into %loops_2#1
             transform.air.linalg_promote %fill_2 {"operands_to_promote"=[1], "memory_space"="L1"}
             transform.air.linalg_promote %matmul_2 {"operands_to_promote"=[2], "memory_space"="L1"}
-            %matmul_3, %reduction_loop = transform.air.linalg_tile %matmul_2 [0, 0, 4]
+            %matmul_3, %reduction_loop = transform.air.linalg_tile %matmul_2 [0, 0, 8]
             transform.air.linalg_promote %matmul_3 {"operands_to_promote"=[0,1], "memory_space"="L1"}
         }
     }
@@ -113,7 +113,9 @@ with air.ir.Context() as ctx, Location.unknown():
 
     air_async_module = Module.parse(str(air_module))
     pipeline = "builtin.module("+",".join([
-        "air-place-herds{num-rows=2 num-cols=2 row-anchor=2 col-anchor=0}",
+        "func.func(air-collapse-herd)",
+        'canonicalize', 'cse',
+        "air-place-herds{num-rows=4 num-cols=1 row-anchor=2 col-anchor=0}",
         'canonicalize', 'cse',
         'func.func(air-renumber-dma)',
         'func.func(convert-linalg-to-loops)',
@@ -147,5 +149,5 @@ with air.ir.Context() as ctx, Location.unknown():
     ])+')'
     pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
-    with open('aircc_decomp_airrt.mlir', 'w') as f:
+    with open('aie.mlir', 'w') as f:
         f.write(str(air_module))
