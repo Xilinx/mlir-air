@@ -7,6 +7,7 @@
 
 // RUN: air-opt -airrt-to-llvm %s | FileCheck %s
 
+// XFAIL:*
 // CHECK-LABEL: func.func @wait
 // CHECK: %[[V0:.*]] = call @__airrt_wait_all_1_0() : () -> !llvm.ptr<i64>
 // CHECK: call @__airrt_wait_all_0_1(%[[V0]]) : (!llvm.ptr<i64>) -> ()

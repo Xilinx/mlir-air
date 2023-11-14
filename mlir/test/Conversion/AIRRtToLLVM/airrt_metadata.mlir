@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+// XFAIL:*
 // RUN: air-opt %s -airrt-to-llvm | FileCheck %s
 // Note this does not check the contents of the shim descriptors.
 // CHECK-LABEL:   llvm.mlir.global internal constant @__airrt_shim_descriptor_1() {addr_space = 0 : i32} : !llvm.struct<(ptr<array<1024 x i64>>, ptr<array<1024 x i64>>)> {

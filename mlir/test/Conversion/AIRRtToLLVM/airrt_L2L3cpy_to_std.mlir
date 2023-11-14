@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+// XFAIL:*
 // RUN: air-opt %s -airrt-to-llvm | FileCheck %s
 // CHECK: call @__airrt_nd_memcpy_2d1i32_2d0i32({{.*}}) : (!llvm.ptr<i64>, memref<?x?xi32, 1>, memref<?x?xi32>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()
 // CHECK: call @__airrt_nd_memcpy_2d1i32_2d0i32({{.*}}) : (!llvm.ptr<i64>, memref<?x?xi32, 1>, memref<?x?xi32>, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> ()

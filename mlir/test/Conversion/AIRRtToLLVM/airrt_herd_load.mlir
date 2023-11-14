@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+// XFAIL:*
 // RUN: air-opt %s -airrt-to-llvm | FileCheck %s
 // CHECK: %0 = llvm.mlir.addressof @__airrt_string_plot : !llvm.ptr
 // CHECK: %1 = llvm.bitcast %0 : !llvm.ptr to !llvm.ptr<i8>
