@@ -454,21 +454,21 @@ def air_ChannelOp : air_Op<"channel", [Symbol]>,
       int broadcastNum = 1;
       if (isBroadcast())
         for (auto bShape : getOperation()->getAttrOfType<ArrayAttr>("broadcast_shape")) {
-          auto attr = bShape.dyn_cast<IntegerAttr>().getInt();
+          auto attr = dyn_cast<IntegerAttr>(bShape).getInt();
           broadcastNum *= attr;
         }
       return broadcastNum;
     }
     int getBufferResources() {
       if(auto attr = getOperation()->getAttrOfType<IntegerAttr>("buffer_resources"))
-        return attr.dyn_cast<IntegerAttr>().getInt();
+        return dyn_cast<IntegerAttr>(attr).getInt();
       else
         return 1;
     }
     int getBundleSize() {
       int size = 1;
       for (auto i : getSize())
-        size *= i.dyn_cast<IntegerAttr>().getInt();
+        size *= dyn_cast<IntegerAttr>(i).getInt();
       return size;
     }
   }];

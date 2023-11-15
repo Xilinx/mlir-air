@@ -63,8 +63,8 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
   rewriter.setInsertionPoint(op);
 
   // It must already be a memref
-  auto src_type = src.getType().dyn_cast<MemRefType>();
-  auto dst_type = dst.getType().dyn_cast<MemRefType>();
+  auto src_type = dyn_cast<MemRefType>(src.getType());
+  auto dst_type = dyn_cast<MemRefType>(dst.getType());
   if (!src_type)
     return failure();
 
@@ -553,8 +553,8 @@ class LinalgCopyToAIRDmaConversion : public OpRewritePattern<linalg::CopyOp> {
     auto dst = op.getOutputs()[0];
 
     // It must already be a memref
-    auto src_type = src.getType().dyn_cast<MemRefType>();
-    auto dst_type = dst.getType().dyn_cast<MemRefType>();
+    auto src_type = dyn_cast<MemRefType>(src.getType());
+    auto dst_type = dyn_cast<MemRefType>(dst.getType());
     if (!src_type)
       return failure();
 
@@ -680,8 +680,8 @@ void replaceAIRDmaWithAIRChannelPairs(
   auto dst = op.getDstMemref();
   auto ctx = op->getContext();
 
-  auto src_type = src.getType().dyn_cast<MemRefType>();
-  auto dst_type = dst.getType().dyn_cast<MemRefType>();
+  auto src_type = dyn_cast<MemRefType>(src.getType());
+  auto dst_type = dyn_cast<MemRefType>(dst.getType());
   SmallVector<Value, 4> src_offsets = op.getSrcOffsets();
   SmallVector<Value, 4> dst_offsets = op.getDstOffsets();
   SmallVector<Value, 4> src_sizes = op.getSrcSizes();
@@ -1000,8 +1000,8 @@ class AIRDmaToAIRChannelConversion
     auto ctx = op->getContext();
 
     // It must already be a memref
-    auto src_type = src.getType().dyn_cast<MemRefType>();
-    auto dst_type = dst.getType().dyn_cast<MemRefType>();
+    auto src_type = dyn_cast<MemRefType>(src.getType());
+    auto dst_type = dyn_cast<MemRefType>(dst.getType());
     if (!src_type)
       return failure();
 
@@ -1259,9 +1259,9 @@ public:
 
     auto loc = op.getLoc();
     auto ub0 =
-        op.getUpperBoundsMap().getResult(0).dyn_cast<AffineConstantExpr>();
+        dyn_cast<AffineConstantExpr>(op.getUpperBoundsMap().getResult(0));
     auto ub1 =
-        op.getUpperBoundsMap().getResult(1).dyn_cast<AffineConstantExpr>();
+        dyn_cast<AffineConstantExpr>(op.getUpperBoundsMap().getResult(1));
 
     if (!ub0 || !ub1) {
       return op->emitOpError("failed conversion to 'air.herd': only constant "
@@ -1967,8 +1967,8 @@ struct CopyToDmaPass : public air::CopyToDmaBase<CopyToDmaPass> {
                       affine::AffineYieldOp>();
 
     target.addDynamicallyLegalOp<memref::CopyOp>([](memref::CopyOp co) {
-      auto src_type = co.getSource().getType().dyn_cast<MemRefType>();
-      auto dst_type = co.getTarget().getType().dyn_cast<MemRefType>();
+      auto src_type = dyn_cast<MemRefType>(co.getSource().getType());
+      auto dst_type = dyn_cast<MemRefType>(co.getTarget().getType());
       return src_type.getMemorySpaceAsInt() == dst_type.getMemorySpaceAsInt();
     });
 

@@ -289,7 +289,7 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
                 core_builder.create<arith::ConstantIndexOp>(hloc, herd_size_y));
 
       for (auto a : h.getKernelArguments()) {
-        auto memrefTy = a.getType().dyn_cast<MemRefType>();
+        auto memrefTy = dyn_cast<MemRefType>(a.getType());
         if (!memrefTy)
           continue;
 
@@ -444,7 +444,7 @@ bool isInSet(IntegerSet is) {
 
   int i = 0;
   for (auto c : constraints) {
-    auto expr = simplifyAffineExpr(c, 0, 1).dyn_cast<AffineConstantExpr>();
+    auto expr = simplifyAffineExpr(c, 0, dyn_cast<AffineConstantExpr>(1));
     if (!expr)
       return false;
     if (eqFlags[i++]) {
@@ -716,7 +716,7 @@ void lowerScfAirTokens(AIE::DeviceOp m) {
 //       auto o = std::get<0>(p); // operand of put
 //       auto r = std::get<1>(p); // result of get
 //       // for each ranked tensor put (yielded) by the tile
-//       if (RankedTensorType tt = o.getType().dyn_cast<RankedTensorType>()) {
+//       if (RankedTensorType tt = dyn_cast<RankedTensorType>(o.getType())) {
 //         auto memrefTy = MemRefType::get(tt.getShape(), tt.getElementType(),
 //         {},
 //                                         (int)air::MemorySpace::L1);
@@ -1241,7 +1241,7 @@ void lowerAIRChannels(AIE::DeviceOp &d, ShimTileAllocator &a) {
 
 // Get owner (scf.parallelop) of channel indices
 scf::ParallelOp getChannelIndicesOwner(Value val) {
-  auto ivArg = val.dyn_cast<BlockArgument>();
+  auto ivArg = dyn_cast<BlockArgument>(val);
   if (!ivArg)
     return scf::ParallelOp();
   if (!ivArg.getOwner()) {

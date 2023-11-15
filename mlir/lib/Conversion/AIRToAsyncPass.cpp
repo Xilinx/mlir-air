@@ -153,7 +153,7 @@ static func::CallOp convertOpToFunction(Operation *op, ArrayRef<Value> operands,
   SmallVector<Value, 4> dependencies;
   for (auto o : operands) {
     // erase the size to reduce the number of manglings
-    if (auto memrefTy = o.getType().dyn_cast<MemRefType>()) {
+    if (auto memrefTy = dyn_cast<MemRefType>(o.getType())) {
       auto t = MemRefType::get(
           std::vector<int64_t>(memrefTy.getRank(), ShapedType::kDynamic),
           memrefTy.getElementType(), memrefTy.getLayout(),
@@ -170,7 +170,7 @@ static func::CallOp convertOpToFunction(Operation *op, ArrayRef<Value> operands,
   SmallVector<MemRefType, 16> real_result_tys;
   SmallVector<Type, 1> token_result_tys;
   for (auto t : op->getResultTypes()) {
-    if (auto memrefTy = t.dyn_cast<MemRefType>()) {
+    if (auto memrefTy = dyn_cast<MemRefType>(t)) {
       auto mrt = MemRefType::get(
           std::vector<int64_t>(memrefTy.getRank(), ShapedType::kDynamic),
           memrefTy.getElementType(), memrefTy.getLayout(),
@@ -206,7 +206,7 @@ static func::CallOp convertOpToFunction(Operation *op, ArrayRef<Value> operands,
     results = call.getResults();
     for (unsigned i = 0, real_result_idx = 0; i < results.size(); ++i) {
       auto r = results[i];
-      if (auto memrefTy = r.getType().dyn_cast<MemRefType>()) {
+      if (auto memrefTy = dyn_cast<MemRefType>(r.getType())) {
         auto t = real_result_tys[real_result_idx++];
         auto c =
             rewriter.create<UnrealizedConversionCastOp>(op->getLoc(), t, r);
@@ -598,7 +598,7 @@ struct ChannelOpConversion : public OpConversionPattern<air::ChannelOp> {
 
     SmallVector<int64_t, 2> shape;
     for (auto i : op.getSize()) {
-      shape.push_back(i.dyn_cast<IntegerAttr>().getInt());
+      dyn_cast<IntegerAttr>(shape.push_back(i).getInt());
     }
     // if channel dim < 2, add until dim = 2
     while (shape.size() < 2) {
@@ -719,9 +719,9 @@ public:
     TypeConverter converter;
     converter.addConversion([&](Type type) -> std::optional<Type> {
       // convert air::AsyncTokenType to async::TokenType
-      if (auto t = type.dyn_cast<air::AsyncTokenType>())
+      if (auto t = dyn_cast<air::AsyncTokenType>(type))
         return async::TokenType::get(context);
-      if (auto t = type.dyn_cast<MemRefType>())
+      if (auto t = dyn_cast<MemRefType>(type))
         if (t.getMemorySpaceAsInt() != 0)
           return MemRefType::get(t.getShape(), t.getElementType(),
                                  t.getLayout(), 0);
@@ -772,7 +772,7 @@ public:
       auto isIllegal = [](Type t) {
         if (t.isa<air::AsyncTokenType>())
           return true;
-        if (auto mt = t.dyn_cast<MemRefType>())
+        if (auto mt = dyn_cast<MemRefType>(t))
           return mt.getMemorySpaceAsInt() != 0;
         return false;
       };

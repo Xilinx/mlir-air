@@ -169,7 +169,7 @@ struct MemrefsPattern : public OpRewritePattern<memref::AllocOp> {
 
 //   LogicalResult matchAndRewrite(memref::DimOp op,
 //                                 PatternRewriter &rewriter) const override {
-//     auto operTy = op.memrefOrTensor().getType().dyn_cast<ShapedType>();
+//     auto operTy = dyn_cast<ShapedType>(op.memrefOrTensor().getType());
 //     if (!operTy.hasStaticShape())
 //       return failure();
 
@@ -1386,7 +1386,7 @@ public:
         affine::makeComposedFoldedMultiResultAffineApply(
             b, loc, shapeSizesToLoopsMap, allShapeSizes);
     for (auto size : shapeSizes) {
-      if (auto v = size.dyn_cast<Value>()) {
+      if (auto v = dyn_cast<Value>(size)) {
         auto c = dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp());
         if (!c) {
           LLVM_DEBUG(llvm::outs() << "Found non-constant dim!\n");
@@ -1394,8 +1394,8 @@ public:
         }
         tripCounts.push_back(c.value());
       } else {
-        auto a = size.dyn_cast<Attribute>();
-        auto c = a.dyn_cast<IntegerAttr>();
+        auto a = dyn_cast<Attribute>(size);
+        auto c = dyn_cast<IntegerAttr>(a);
         if (!c) {
           LLVM_DEBUG(llvm::outs() << "unhandled addr!\n");
           return {};
@@ -2076,7 +2076,7 @@ transform::LinalgTileOp::apply(TransformRewriter &rewriter,
             sizes.reserve(tileSizes.size());
             unsigned dynamicIdx = 0;
             for (OpFoldResult ofr : getMixedSizes()) {
-              if (auto attr = ofr.dyn_cast<Attribute>()) {
+              if (auto attr = dyn_cast<Attribute>(ofr)) {
                 sizes.push_back(b.create<arith::ConstantIndexOp>(
                     getLoc(), attr.cast<IntegerAttr>().getInt()));
               } else {

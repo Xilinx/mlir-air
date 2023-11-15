@@ -34,7 +34,7 @@ const StringLiteral air::LinalgTransforms::kLinalgTransformMarker =
 static std::string getMangledType(const Type ty) {
   std::stringstream ret;
 
-  if (const MemRefType mrt = ty.dyn_cast<const MemRefType>()) {
+  if (const MemRefType mrt = dyn_cast<const MemRefType>(ty)) {
     ret << "M";
     ret << mrt.getMemorySpaceAsInt();
     if (mrt.hasStaticShape()) {
@@ -46,13 +46,13 @@ static std::string getMangledType(const Type ty) {
     }
     const Type elem = mrt.getElementType();
     ret << getMangledType(elem);
-  } else if (FloatType ft = ty.dyn_cast<FloatType>()) {
+  } else if (FloatType ft = dyn_cast<FloatType>(ty)) {
     ret << "F" << ft.getWidth();
-  } else if (const IntegerType it = ty.dyn_cast<const IntegerType>()) {
+  } else if (const IntegerType it = dyn_cast<const IntegerType>(ty)) {
     ret << "I" << it.getWidth();
-  } else if (const IndexType it = ty.dyn_cast<const IndexType>()) {
+  } else if (const IndexType it = dyn_cast<const IndexType>(ty)) {
     ret << "I64";
-  } else if (ty.dyn_cast<air::AsyncTokenType>()) {
+  } else if dyn_cast<air::AsyncTokenType>((ty)) {
     ret << "E";
   } else {
     Type t = ty;
@@ -142,7 +142,7 @@ uint64_t air::getTensorVolume(const ShapedType ty) {
 }
 
 uint64_t air::getTensorVolume(const Type ty) {
-  if (auto t = ty.dyn_cast<ShapedType>()) {
+  if (auto t = dyn_cast<ShapedType>(ty)) {
     return getTensorVolume(t);
   } else {
     return 1;
@@ -159,7 +159,7 @@ SmallVector<int> air::getTensorShape(const ShapedType ty) {
 }
 
 SmallVector<int> air::getTensorShape(const Type ty) {
-  if (auto t = ty.dyn_cast<ShapedType>()) {
+  if (auto t = dyn_cast<ShapedType>(ty)) {
     return getTensorShape(t);
   } else {
     return SmallVector<int>(1);
@@ -167,7 +167,7 @@ SmallVector<int> air::getTensorShape(const Type ty) {
 }
 
 std::string air::getElementTypeAsString(const mlir::Type ty) {
-  if (auto st = ty.dyn_cast<mlir::ShapedType>()) {
+  if (auto st = dyn_cast<mlir::ShapedType>(ty)) {
     return to_string(st.getElementType());
   } else {
     return to_string(ty);
@@ -195,7 +195,7 @@ uint64_t air::getElementSizeInBytes(const mlir::Type ty) {
 
 // Get the parent scf.for op of an iter_arg
 scf::ForOp air::getForRegionIterArgsOwner(Value val) {
-  auto ivArg = val.dyn_cast<BlockArgument>();
+  auto ivArg = dyn_cast<BlockArgument>(val);
   if (!ivArg)
     return scf::ForOp();
   if (!ivArg.getOwner()) {
@@ -219,7 +219,7 @@ scf::ParallelOp air::getParallelRegionInitValsOwner(Operation *op, Value val) {
 
 // Get the parent air.launch_herd op of a tile id
 air::HerdOp air::getHerdArgOwner(Value val) {
-  auto ivArg = val.dyn_cast<BlockArgument>();
+  auto ivArg = dyn_cast<BlockArgument>(val);
   if (!ivArg)
     return air::HerdOp();
   if (!ivArg.getOwner()) {
@@ -232,7 +232,7 @@ air::HerdOp air::getHerdArgOwner(Value val) {
 
 // Get the parent air.hierarchy op of a tile id
 air::HierarchyInterface air::getHierarchyArgOwner(Value val) {
-  auto ivArg = val.dyn_cast<BlockArgument>();
+  auto ivArg = dyn_cast<BlockArgument>(val);
   if (!ivArg)
     return air::HierarchyInterface();
   if (!ivArg.getOwner()) {
@@ -323,7 +323,7 @@ std::string air::getMemorySpaceAsString(Value memref) {
     return "";
   }
   auto memory_space_as_int =
-      memref.getType().dyn_cast<MemRefType>().getMemorySpaceAsInt();
+      dyn_cast<MemRefType>(memref.getType()).getMemorySpaceAsInt();
   std::string memorySpaceStr = "";
   if (memory_space_as_int == (int)air::MemorySpace::L1) {
     memorySpaceStr = "L1";
@@ -506,7 +506,7 @@ void air::getSizesFromIntegerSet(MLIRContext *ctx, IntegerSet int_set,
       if (c.isSymbolicOrConstant()) {
         auto newC = c.replaceSymbols(zero_syms);
         auto expr =
-            simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
+            simplifyAffineExpr(newC, 0, dyn_cast<AffineConstantExpr>(1));
         int v = expr.getValue();
         if (c.isFunctionOfSymbol(i)) {
           if (eqFlags[c_iter]) {

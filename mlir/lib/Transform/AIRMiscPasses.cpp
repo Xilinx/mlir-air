@@ -366,7 +366,7 @@ private:
             if (c.isSymbolicOrConstant()) {
               auto newC = c.replaceSymbols(zero_syms);
               auto expr =
-                  simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
+                  simplifyAffineExpr(newC, 0, dyn_cast<AffineConstantExpr>(1));
               if (!expr) {
                 continue;
               }
@@ -569,7 +569,7 @@ private:
         getAffineConstantExpr(0, ctx),
     };
     auto newC = c.replaceSymbols(zero_syms);
-    auto expr = simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
+    auto expr = simplifyAffineExpr(newC, 0, dyn_cast<AffineConstantExpr>(1));
     assert(expr);
     int result = expr.getValue();
     // Both + and - constant eval are legal for AffineExpr
@@ -605,9 +605,9 @@ private:
       return;
     }
     auto acc = add_operand.value();
-    assert(c.dyn_cast<AffineConstantExpr>() &&
+    dyn_cast<AffineConstantExpr>(assert(c) &&
            "non-constant affine expression");
-    acc += c.dyn_cast<AffineConstantExpr>().getValue();
+    acc += dyn_cast<AffineConstantExpr>(c).getValue();
     c = getAffineConstantExpr(acc, ctx);
   }
 
@@ -631,9 +631,9 @@ private:
       return;
     }
     auto mul = mul_operand.value();
-    assert(c.dyn_cast<AffineConstantExpr>() &&
+    dyn_cast<AffineConstantExpr>(assert(c) &&
            "non-constant affine expression");
-    mul *= c.dyn_cast<AffineConstantExpr>().getValue();
+    mul *= dyn_cast<AffineConstantExpr>(c).getValue();
     c = getAffineConstantExpr(mul, ctx);
   }
 

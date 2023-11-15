@@ -291,7 +291,7 @@ public:
     auto getOp = cast<air::PipelineGetOp>(op);
     SmallVector<Value, 2> gets;
     for (auto r : getOp.getResults()) {
-      if (auto ty = r.getType().dyn_cast<RankedTensorType>())
+      if (auto ty = dyn_cast<RankedTensorType>(r.getType()))
         gets.push_back(rewriter.create<bufferization::AllocTensorOp>(
             op->getLoc(), ty, ValueRange{}));
       else
@@ -963,7 +963,7 @@ public:
     TypeConverter converter;
     converter.addConversion([&](Type type) -> std::optional<Type> {
       // convert !air.async.token to !airrt.event
-      if (auto t = type.dyn_cast<air::AsyncTokenType>())
+      if (auto t = dyn_cast<air::AsyncTokenType>(type))
         return airrt::EventType::get(context);
       else
         return type;
