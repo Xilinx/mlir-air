@@ -52,7 +52,7 @@ static std::string getMangledType(const Type ty) {
     ret << "I" << it.getWidth();
   } else if (const IndexType it = dyn_cast<const IndexType>(ty)) {
     ret << "I64";
-  } else if dyn_cast<air::AsyncTokenType>((ty)) {
+  } else if (dyn_cast<air::AsyncTokenType>(ty)) {
     ret << "E";
   } else {
     Type t = ty;
