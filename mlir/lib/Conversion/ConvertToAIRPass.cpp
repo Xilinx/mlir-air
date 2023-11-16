@@ -22,6 +22,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/MemRef/Transforms/ComposeSubView.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Transform/IR/TransformInterfaces.h"
 #include "mlir/IR/Builders.h"
@@ -1259,9 +1260,9 @@ public:
 
     auto loc = op.getLoc();
     auto ub0 =
-        op.getUpperBoundsMap().getResult(0).dyn_cast<AffineConstantExpr>();
+        dyn_cast<AffineConstantExpr>(op.getUpperBoundsMap().getResult(0));
     auto ub1 =
-        op.getUpperBoundsMap().getResult(1).dyn_cast<AffineConstantExpr>();
+        dyn_cast<AffineConstantExpr>(op.getUpperBoundsMap().getResult(1));
 
     if (!ub0 || !ub1) {
       return op->emitOpError("failed conversion to 'air.herd': only constant "
@@ -1979,6 +1980,7 @@ struct CopyToDmaPass : public air::CopyToDmaBase<CopyToDmaPass> {
     RewritePatternSet stage1Patterns =
         linalg::getLinalgTilingCanonicalizationPatterns(context);
     memref::AllocOp::getCanonicalizationPatterns(stage1Patterns, context);
+    memref::populateComposeSubViewPatterns(stage1Patterns, context);
     (void)applyPatternsAndFoldGreedily(module, std::move(stage1Patterns));
 
     RewritePatternSet stage2Patterns(context);
