@@ -181,7 +181,7 @@ AIE::BufferOp allocateBufferOp(MemRefType memrefTy, AIE::TileOp tile,
     t = t->getNextNode();
   builder.setInsertionPointAfter(t);
   AIE::BufferOp bufferOp =
-      builder.create<AIE::BufferOp>(tile->getLoc(), memrefTy, tile);
+      builder.create<AIE::BufferOp>(tile->getLoc(), memrefTy, tile, nullptr);
 
   std::stringstream ss =
       generateBufferNameInStringStream("buf", BufferId, attr, x, y);
@@ -444,7 +444,7 @@ bool isInSet(IntegerSet is) {
 
   int i = 0;
   for (auto c : constraints) {
-    auto expr = simplifyAffineExpr(c, 0, 1).dyn_cast<AffineConstantExpr>();
+    auto expr = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(c, 0, 1));
     if (!expr)
       return false;
     if (eqFlags[i++]) {
@@ -1692,8 +1692,8 @@ public:
                                           builder.getContext()),
                 };
                 auto newC = c.replaceSymbols(const_syms);
-                auto expr = simplifyAffineExpr(newC, 0, 1)
-                                .dyn_cast<AffineConstantExpr>();
+                auto expr = dyn_cast<AffineConstantExpr>(
+                    simplifyAffineExpr(newC, 0, 1));
                 assert(expr);
                 int result = expr.getValue();
                 remap.map(oper, builder.create<arith::ConstantIndexOp>(

@@ -366,7 +366,7 @@ private:
             if (c.isSymbolicOrConstant()) {
               auto newC = c.replaceSymbols(zero_syms);
               auto expr =
-                  simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
+                  dyn_cast<AffineConstantExpr>(simplifyAffineExpr(newC, 0, 1));
               if (!expr) {
                 continue;
               }
@@ -569,7 +569,7 @@ private:
         getAffineConstantExpr(0, ctx),
     };
     auto newC = c.replaceSymbols(zero_syms);
-    auto expr = simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
+    auto expr = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(newC, 0, 1));
     assert(expr);
     int result = expr.getValue();
     // Both + and - constant eval are legal for AffineExpr
@@ -605,9 +605,8 @@ private:
       return;
     }
     auto acc = add_operand.value();
-    assert(c.dyn_cast<AffineConstantExpr>() &&
-           "non-constant affine expression");
-    acc += c.dyn_cast<AffineConstantExpr>().getValue();
+    assert(dyn_cast<AffineConstantExpr>(c) && "non-constant affine expression");
+    acc += dyn_cast<AffineConstantExpr>(c).getValue();
     c = getAffineConstantExpr(acc, ctx);
   }
 
@@ -631,9 +630,8 @@ private:
       return;
     }
     auto mul = mul_operand.value();
-    assert(c.dyn_cast<AffineConstantExpr>() &&
-           "non-constant affine expression");
-    mul *= c.dyn_cast<AffineConstantExpr>().getValue();
+    assert(dyn_cast<AffineConstantExpr>(c) && "non-constant affine expression");
+    mul *= dyn_cast<AffineConstantExpr>(c).getValue();
     c = getAffineConstantExpr(mul, ctx);
   }
 
@@ -667,9 +665,8 @@ private:
             dyn_cast<air::DmaMemcpyNdOp>(memcpyOp.getOperation())) {
       for (unsigned i = 0; i < current_shape_expr.size(); i++) {
         if (current_shape_expr[i]) {
-          auto val = current_shape_expr[i]
-                         .template dyn_cast<AffineConstantExpr>()
-                         .getValue();
+          auto val =
+              dyn_cast<AffineConstantExpr>(current_shape_expr[i]).getValue();
           auto cop = builder.create<arith::ConstantIndexOp>(loc, val);
           srcMemrefDimsOrOffsets.push_back(cop);
         } else {

@@ -506,7 +506,7 @@ void air::getSizesFromIntegerSet(MLIRContext *ctx, IntegerSet int_set,
       if (c.isSymbolicOrConstant()) {
         auto newC = c.replaceSymbols(zero_syms);
         auto expr =
-            simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
+            dyn_cast<AffineConstantExpr>(simplifyAffineExpr(newC, 0, 1));
         int v = expr.getValue();
         if (c.isFunctionOfSymbol(i)) {
           if (eqFlags[c_iter]) {

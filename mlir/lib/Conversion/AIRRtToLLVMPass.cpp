@@ -91,8 +91,6 @@ LLVM::LLVMStructType getSegmentDescriptorType(MLIRContext *ctx,
 // }
 LLVM::LLVMStructType getModuleDescriptorType(MLIRContext *ctx,
                                              ArrayRef<int64_t> herd_count) {
-  auto max_herds = *std::max_element(herd_count.begin(), herd_count.end());
-  auto num_segments = herd_count.size();
   return LLVM::LLVMStructType::getLiteral(ctx,
                                           {
                                               // int64_t length
@@ -213,8 +211,6 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
   auto ctx = module.getContext();
   auto loc = builder.getUnknownLoc();
   auto descTy = getModuleDescriptorType(ctx, segment_herd_count);
-  auto max_herds =
-      *std::max_element(segment_herd_count.begin(), segment_herd_count.end());
   auto arrayElemTy = LLVM::LLVMPointerType::get(ctx);
   auto arrayTy =
       LLVM::LLVMArrayType::get(arrayElemTy, segment_herd_count.size());
@@ -565,7 +561,6 @@ LogicalResult lowerDmaMemcpy(Operation *op, PatternRewriter &rewriter,
   SmallVector<Value, 16> operands;
 
   auto i32Ty = IntegerType::get(ctx, 32);
-  auto i64Ty = IntegerType::get(ctx, 64);
   auto signalTy = LLVM::LLVMPointerType::get(ctx);
   tys.push_back(signalTy);
   if (op->getNumResults()) {
@@ -617,7 +612,6 @@ LogicalResult lowerDmaNdMemcpy(Operation *op, PatternRewriter &rewriter,
   SmallVector<Value, 16> operands;
 
   auto i32Ty = IntegerType::get(ctx, 32);
-  auto i64Ty = IntegerType::get(ctx, 64);
   auto signalTy = LLVM::LLVMPointerType::get(ctx);
   tys.push_back(signalTy);
   if (op->getNumResults()) {
@@ -680,7 +674,6 @@ LogicalResult lowerNdMemcpy(Operation *op, PatternRewriter &rewriter,
                               LLVM::LLVMPointerType::get(ctx));
 
   auto i32Ty = IntegerType::get(ctx, 32);
-  auto i64Ty = IntegerType::get(ctx, 64);
   auto signalTy = LLVM::LLVMPointerType::get(ctx);
   if (op->getNumResults()) {
     auto one = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,

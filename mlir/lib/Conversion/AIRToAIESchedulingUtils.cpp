@@ -133,8 +133,8 @@ AIE::ExternalBufferOp air::allocateExternalBufferOp(MemRefType memrefTy,
   static uint64_t BufferId = 0;
 
   auto builder = OpBuilder::atBlockBegin(device.getBody());
-  AIE::ExternalBufferOp bufferOp =
-      builder.create<AIE::ExternalBufferOp>(builder.getUnknownLoc(), memrefTy);
+  AIE::ExternalBufferOp bufferOp = builder.create<AIE::ExternalBufferOp>(
+      builder.getUnknownLoc(), memrefTy, nullptr);
 
   std::stringstream ss =
       generateBufferNameInStringStream("extBuf", BufferId, attr, x, y);
