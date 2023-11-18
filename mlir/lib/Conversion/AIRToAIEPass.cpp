@@ -1965,6 +1965,18 @@ public:
     }
   }
 
+  // Create channel name as string, in case if repetition due to channel
+  // specialization
+  std::string createChannelSubName(AIE::DeviceOp device, std::string dma_name) {
+    std::string new_cname = dma_name;
+    std::string cname = "";
+    int which_try = 0;
+    while (device.lookupSymbol(new_cname))
+      new_cname = dma_name + "_" + std::to_string(++which_try);
+    cname = new_cname;
+    return cname;
+  }
+
   // AIE2: Get herd dma allocation info, and write as AIE::ShimDMAAllocationOp
   void createShimDMAAllocationOpsFromHerd(
       OpBuilder builder, MLIRContext *ctx, air::HerdOp herd,
@@ -1987,6 +1999,8 @@ public:
           continue;
         original_id = std::max(original_id, 0); // If id is -1, change to 0.
         std::string dma_name = "airMemcpyId" + std::to_string(original_id);
+        dma_name = createChannelSubName(
+            tileOp->getParentOfType<AIE::DeviceOp>(), dma_name);
         auto dma_name_attr = builder.getStringAttr(dma_name);
 
         builder.create<AIE::ShimDMAAllocationOp>(
@@ -2023,7 +2037,10 @@ public:
         }
 
         // Label airrt.dmamemcpynd ops with symbolic ref. to shimdmaalloc op
-        labelAIRDmaOpsWithMetadata(herd, original_id, dma_name_attr, memref_ty);
+        labelAIRDmaOpsWithMetadata(
+            herd, original_id,
+            builder.getStringAttr("airMemcpyId" + std::to_string(original_id)),
+            memref_ty);
       }
     }
   }
