@@ -312,15 +312,44 @@ struct AIRRtToIpuPass : public air::AIRRtToIpuBase<AIRRtToIpuPass> {
   }
 
   void unrollAffineFors(ModuleOp module) {
+    // Taking into account for loop nests
     SmallVector<affine::AffineForOp> afos;
     module.walk([&](mlir::func::FuncOp f) {
-      f.walk([&](affine::AffineForOp afo) { afos.push_back(afo); });
+      for (auto op : f.getOps<affine::AffineForOp>()) {
+        afos.push_back(op);
+      }
+      for (auto op : afos) {
+        unrollAffineFors(op);
+        // Renumber unrolled memcpy ops
+        int unrolled_op_id = 0;
+        f.walk([&](airrt::DmaMemcpyNdOp dma) {
+          if (dma->hasAttr("unrolled")) {
+            auto metadata =
+                dma->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata")
+                    .getValue()
+                    .str();
+            // Start from unrolled_op_id 1
+            if (unrolled_op_id)
+              dma->setAttr("metadata", FlatSymbolRefAttr::get(
+                                           dma->getContext(),
+                                           metadata + "_" +
+                                               std::to_string(unrolled_op_id)));
+            unrolled_op_id++;
+            dma->removeAttr("unrolled");
+          }
+        });
+      }
     });
+  }
+
+  void unrollAffineFors(affine::AffineForOp affine_for_op) {
+    SmallVector<affine::AffineForOp> afos;
+    affine_for_op.walk([&](affine::AffineForOp afo) { afos.push_back(afo); });
     for (auto afo : afos) {
       int64_t tripCount = mlir::ceilDiv(afo.getConstantUpperBound() -
                                             afo.getConstantLowerBound(),
                                         afo.getStepAsInt());
-      auto annotateFn = [](unsigned i, Operation *op, OpBuilder b) {
+      auto annotateFn = [&](unsigned i, Operation *op, OpBuilder b) {
         if (op->hasAttr("metadata") && isa<airrt::DmaMemcpyNdOp>(op)) {
           auto metadata = op->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata")
                               .getValue()
@@ -336,6 +365,13 @@ struct AIRRtToIpuPass : public air::AIRRtToIpuBase<AIRRtToIpuPass> {
             op->removeAttr("metadata");
             op->setAttr("metadata_base",
                         b.getI32IntegerAttr(base_chan_idx_val));
+          }
+
+          // default metadata format
+          prefix = "airMemcpyId";
+          pos = metadata.find(prefix);
+          if (pos != std::string::npos) {
+            op->setAttr("unrolled", b.getI32IntegerAttr(1));
           }
         }
       };
