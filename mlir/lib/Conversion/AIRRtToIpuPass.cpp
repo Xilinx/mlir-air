@@ -263,6 +263,9 @@ struct AIRRtToIpuPass : public air::AIRRtToIpuBase<AIRRtToIpuPass> {
     // Unroll any affine for loops
     unrollAffineFors(module);
 
+    // Buffer ipu.dma_memcpy_nd memref to function's argument list.
+    BufferMemrefToFuncArgs(module);
+
     // Insert sync op after copying data out to host
     insertIpuSyncOpForResults(module);
 
@@ -507,6 +510,43 @@ struct AIRRtToIpuPass : public air::AIRRtToIpuBase<AIRRtToIpuPass> {
                    mlir::IntegerAttr::get(
                        mlir::IntegerType::get(dma->getContext(), 32), ++id));
     });
+  }
+
+  // Buffers ipu.dma_memcpy_op memref as function argument
+  void BufferMemrefToFuncArgs(ModuleOp module) {
+    module.walk([&](mlir::func::FuncOp f) { BufferMemrefToFuncArgs(f); });
+  }
+  void BufferMemrefToFuncArgs(func::FuncOp funcOp) {
+    if (!funcOp)
+      return;
+
+    // Collect illegal dma ops whose memrefs are not in function's arguments.
+    SmallVector<Type, 6> memrefTypes;
+    SmallVector<Value, 6> memrefs;
+    funcOp.walk([&](AIEX::IpuDmaMemcpyNdOp dma) {
+      if (std::find(funcOp.getArguments().begin(), funcOp.getArguments().end(),
+                    dma.getMemref()) == funcOp.getArguments().end()) {
+        memrefTypes.push_back(dma.getMemref().getType());
+        memrefs.push_back(dma.getMemref());
+      }
+    });
+
+    // Append memref to function's arguments.
+    auto functionType = funcOp.getFunctionType();
+    auto newArgTypes = llvm::to_vector<6>(
+        llvm::concat<const Type>(functionType.getInputs(), memrefTypes));
+    auto newFunctionType = FunctionType::get(funcOp.getContext(), newArgTypes,
+                                             functionType.getResults());
+    funcOp.setType(newFunctionType);
+
+    // Add the new arguments to the entry block if the function is not external.
+    if (!funcOp.isExternal()) {
+      Location loc = funcOp.getLoc();
+      for (Value v : memrefs) {
+        auto newArg = funcOp.front().addArgument(v.getType(), loc);
+        v.replaceAllUsesWith(newArg);
+      }
+    }
   }
 };
 
