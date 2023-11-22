@@ -9,6 +9,8 @@
 #ifndef AIRRT_TO_LLVM_H
 #define AIRRT_TO_LLVM_H
 
+#include "air/Conversion/PassDetail.h"
+
 #include "mlir/Pass/Pass.h"
 #include <memory>
 

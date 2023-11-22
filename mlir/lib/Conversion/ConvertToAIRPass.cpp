@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Conversion/ConvertToAIRPass.h"
-#include "PassDetail.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIR/AIRTransformOps.h"
 #include "air/Util/Dependency.h"
@@ -1940,7 +1939,7 @@ private:
   // bool generateSegment;
 };
 
-struct CopyToDmaPass : public air::CopyToDmaBase<CopyToDmaPass> {
+struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
 
   CopyToDmaPass() = default;
   CopyToDmaPass(const CopyToDmaPass &pass) {}
@@ -2014,7 +2013,7 @@ struct CopyToDmaPass : public air::CopyToDmaBase<CopyToDmaPass> {
   }
 };
 
-struct DmaToChannelPass : public air::DmaToChannelBase<DmaToChannelPass> {
+struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
 
   DmaToChannelPass() = default;
   DmaToChannelPass(const DmaToChannelPass &pass) {}
@@ -2222,10 +2221,11 @@ static void getSegmentNames(ModuleOp module) {
   }
 }
 
-struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
+struct ParallelToHerdPass : public air::impl::ParallelToHerdBase<ParallelToHerdPass> {
 
   ParallelToHerdPass() = default;
   ParallelToHerdPass(const ParallelToHerdPass &pass) {}
+  ParallelToHerdPass(const ::xilinx::air::ParallelToHerdOptions &options) : ParallelToHerdBase(options) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<air::airDialect>();
@@ -2301,7 +2301,7 @@ struct ParallelToHerdPass : public air::ParallelToHerdBase<ParallelToHerdPass> {
 };
 
 struct ParallelToLaunchPass
-    : public air::ParallelToLaunchBase<ParallelToLaunchPass> {
+    : public air::impl::ParallelToLaunchBase<ParallelToLaunchPass> {
 
   ParallelToLaunchPass() = default;
   ParallelToLaunchPass(const ParallelToLaunchPass &pass) {}
@@ -2381,7 +2381,7 @@ struct ParallelToLaunchPass
 };
 
 struct InsertEmptyLaunchOverHerdPass
-    : public air::InsertEmptyLaunchOverHerdBase<InsertEmptyLaunchOverHerdPass> {
+    : public air::impl::InsertEmptyLaunchOverHerdBase<InsertEmptyLaunchOverHerdPass> {
 
   InsertEmptyLaunchOverHerdPass() = default;
   InsertEmptyLaunchOverHerdPass(const InsertEmptyLaunchOverHerdPass &pass) {}
@@ -2480,6 +2480,10 @@ namespace air {
 
 std::unique_ptr<mlir::Pass> createParallelToHerdPass() {
   return std::make_unique<ParallelToHerdPass>();
+}
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createParallelToHerdPass(const ParallelToHerdOptions &options) {
+  return std::make_unique<ParallelToHerdPass>(options);
 }
 
 std::unique_ptr<mlir::Pass> createParallelToLaunchPass() {

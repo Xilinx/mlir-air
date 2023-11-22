@@ -9,6 +9,8 @@
 #ifndef AIR_TO_STD_H
 #define AIR_TO_STD_H
 
+#include "air/Conversion/PassDetail.h"
+
 #include "mlir/Pass/Pass.h"
 #include <memory>
 

@@ -6,7 +6,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Conversion/AIRRtToIpuPass.h"
-#include "PassDetail.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
@@ -188,7 +187,7 @@ AIE::DeviceOp getDeviceForSegmentLoad(SegmentLoadOp s) {
   return nullptr;
 }
 
-struct AIRRtToIpuPass : public air::AIRRtToIpuBase<AIRRtToIpuPass> {
+struct AIRRtToIpuPass : public air::impl::AIRRtToIpuBase<AIRRtToIpuPass> {
   void runOnOperation() override {
 
     ModuleOp module = getOperation();
