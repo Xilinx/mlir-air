@@ -2286,13 +2286,17 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
     async_op = dyn_cast<air::AsyncOpInterface>(op);
   } else if (auto scf_par = dyn_cast<scf::ParallelOp>(op)) {
     auto token = getLoopCarriedTokenFromScfOp(scf_par);
-    if (!token.getDefiningOp())
-      scf_par->emitOpError("loop carried token has no defining op");
+    if (!token.getDefiningOp()) {
+      // loop carried token has no defining op
+      return;
+    }
     async_op = dyn_cast<air::AsyncOpInterface>(token.getDefiningOp());
   } else if (auto scf_for = dyn_cast<scf::ForOp>(op)) {
     auto token = getLoopCarriedTokenFromScfOp(scf_for, "operand");
-    if (!token.getDefiningOp())
-      scf_for->emitOpError("loop carried token has no defining op");
+    if (!token.getDefiningOp()) {
+      // loop carried token has no defining op
+      return;
+    }
     async_op = dyn_cast<air::AsyncOpInterface>(token.getDefiningOp());
   } else {
     op->emitOpError("unsupported op for loop-carried dependency");
