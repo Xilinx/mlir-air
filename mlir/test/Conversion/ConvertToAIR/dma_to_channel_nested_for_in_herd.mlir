@@ -93,73 +93,59 @@ module {
     %async_token, %results = air.execute -> (memref<64x64xi32>) {
       %alloc = memref.alloc() {alignment = 128 : i64} : memref<64x64xi32>
       air.execute_terminator %alloc : memref<64x64xi32>
-    } {id = 1 : i32}
+    }
     %async_token_0 = air.execute [%async_token] {
       linalg.fill ins(%c0_i32 : i32) outs(%results : memref<64x64xi32>)
-    } {id = 2 : i32}
+    }
     %async_token_1, %results_2 = air.execute -> (memref<64x64xi32>) {
       %alloc = memref.alloc() {alignment = 128 : i64} : memref<64x64xi32>
       air.execute_terminator %alloc : memref<64x64xi32>
-    } {id = 3 : i32}
+    }
     %async_token_3 = air.execute [%async_token_1, %async_token_0] {
       memref.copy %results, %results_2 : memref<64x64xi32> to memref<64x64xi32>
-    } {id = 4 : i32}
+    }
     %0 = air.herd @herd_0 async [%async_token_3]  tile (%arg2, %arg3) in (%arg4=%c2, %arg5=%c2) args(%arg6=%arg0, %arg7=%arg1, %arg8=%results_2) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> attributes {id = 1 : i32} {
       %c1 = arith.constant 1 : index
       %c0 = arith.constant 0 : index
       %c64 = arith.constant 64 : index
       %c32 = arith.constant 32 : index
-      %1 = air.wait_all async  {id = 6 : i32}
+      %1 = air.wait_all async 
       %2 = scf.for %arg9 = %c0 to %c64 step %c32 iter_args(%arg10 = %1) -> (!air.async.token) {
-        %c0_4 = arith.constant 0 : index
-        %c64_5 = arith.constant 64 : index
-        %c32_6 = arith.constant 32 : index
-        %3 = air.wait_all async [%arg10]  {id = 4 : i32}
-        %4 = scf.for %arg11 = %c0_4 to %c64_5 step %c32_6 iter_args(%arg12 = %3) -> (!air.async.token) {
-          %c0_7 = arith.constant 0 : index
-          %c64_8 = arith.constant 64 : index
-          %c32_9 = arith.constant 32 : index
-          %6 = air.wait_all async [%arg12]  {id = 2 : i32}
-          %7 = scf.for %arg13 = %c0_7 to %c64_8 step %c32_9 iter_args(%arg14 = %6) -> (!air.async.token) {
-            %c32_10 = arith.constant 32 : index
-            %c64_11 = arith.constant 64 : index
-            %c1_12 = arith.constant 1 : index
-            %async_token_13, %results_14 = air.execute -> (memref<32x32xi32, 2>) {
+        %3 = scf.for %arg11 = %c0 to %c64 step %c32 iter_args(%arg12 = %arg10) -> (!air.async.token) {
+          %4 = scf.for %arg13 = %c0 to %c64 step %c32 iter_args(%arg14 = %arg12) -> (!air.async.token) {
+            %async_token_4, %results_5 = air.execute -> (memref<32x32xi32, 2>) {
               %alloc = memref.alloc() : memref<32x32xi32, 2>
               air.execute_terminator %alloc : memref<32x32xi32, 2>
-            } {id = 5 : i32}
-            %async_token_15, %results_16 = air.execute -> (memref<32x32xi32, 2>) {
+            }
+            %async_token_6, %results_7 = air.execute -> (memref<32x32xi32, 2>) {
               %alloc = memref.alloc() : memref<32x32xi32, 2>
               air.execute_terminator %alloc : memref<32x32xi32, 2>
-            } {id = 6 : i32}
-            %async_token_17, %results_18 = air.execute -> (memref<32x32xi32, 2>) {
+            }
+            %async_token_8, %results_9 = air.execute -> (memref<32x32xi32, 2>) {
               %alloc = memref.alloc() : memref<32x32xi32, 2>
               air.execute_terminator %alloc : memref<32x32xi32, 2>
-            } {id = 7 : i32}
-            %9 = air.dma_memcpy_nd async [%arg14, %async_token_13] (%results_14[] [] [], %arg6[%arg9, %arg13] [%c32_10, %c32_10] [%c64_11, %c1_12]) {id = 1 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
-            %10 = air.dma_memcpy_nd async [%arg14, %async_token_15] (%results_16[] [] [], %arg7[%arg13, %arg11] [%c32_10, %c32_10] [%c64_11, %c1_12]) {id = 2 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
-            %11 = air.dma_memcpy_nd async [%arg14, %async_token_17] (%results_18[] [] [], %arg8[%arg9, %arg11] [%c32_10, %c32_10] [%c64_11, %c1_12]) {id = 3 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
-            %async_token_19 = air.execute [%arg14, %11, %10, %9] {
-              linalg.matmul ins(%results_14, %results_16 : memref<32x32xi32, 2>, memref<32x32xi32, 2>) outs(%results_18 : memref<32x32xi32, 2>)
-            } {id = 8 : i32}
-            %12 = air.dma_memcpy_nd async [%arg14, %async_token_19] (%arg8[%arg9, %arg11] [%c32_10, %c32_10] [%c64_11, %c1_12], %results_18[] [] []) {id = 4 : i32} : (memref<64x64xi32>, memref<32x32xi32, 2>)
-            %async_token_20 = air.execute [%async_token_19] {
-              memref.dealloc %results_14 : memref<32x32xi32, 2>
-            } {id = 9 : i32}
-            %async_token_21 = air.execute [%async_token_19] {
-              memref.dealloc %results_16 : memref<32x32xi32, 2>
-            } {id = 10 : i32}
-            %async_token_22 = air.execute [%12] {
-              memref.dealloc %results_18 : memref<32x32xi32, 2>
-            } {id = 11 : i32}
-            %13 = air.wait_all async [%arg14, %12]  {id = 1 : i32}
-            scf.yield %13 : !air.async.token
+            }
+            %5 = air.dma_memcpy_nd async [%async_token_4, %arg14] (%results_5[] [] [], %arg6[%arg9, %arg13] [%c32, %c32] [%c64, %c1]) {id = 1 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
+            %6 = air.dma_memcpy_nd async [%async_token_6, %arg14] (%results_7[] [] [], %arg7[%arg13, %arg11] [%c32, %c32] [%c64, %c1]) {id = 2 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
+            %7 = air.dma_memcpy_nd async [%async_token_8, %arg14] (%results_9[] [] [], %arg8[%arg9, %arg11] [%c32, %c32] [%c64, %c1]) {id = 3 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
+            %async_token_10 = air.execute [%7, %6, %5] {
+              linalg.matmul ins(%results_5, %results_7 : memref<32x32xi32, 2>, memref<32x32xi32, 2>) outs(%results_9 : memref<32x32xi32, 2>)
+            }
+            %8 = air.dma_memcpy_nd async [%async_token_10] (%arg8[%arg9, %arg11] [%c32, %c32] [%c64, %c1], %results_9[] [] []) {id = 4 : i32} : (memref<64x64xi32>, memref<32x32xi32, 2>)
+            %async_token_11 = air.execute [%async_token_10] {
+              memref.dealloc %results_5 : memref<32x32xi32, 2>
+            }
+            %async_token_12 = air.execute [%async_token_10] {
+              memref.dealloc %results_7 : memref<32x32xi32, 2>
+            }
+            %async_token_13 = air.execute [%8] {
+              memref.dealloc %results_9 : memref<32x32xi32, 2>
+            }
+            scf.yield %8 : !air.async.token
           }
-          %8 = air.wait_all async [%arg12, %7]  {id = 3 : i32}
-          scf.yield %8 : !air.async.token
+          scf.yield %4 : !air.async.token
         }
-        %5 = air.wait_all async [%arg10, %4]  {id = 5 : i32}
-        scf.yield %5 : !air.async.token
+        scf.yield %3 : !air.async.token
       }
       air.herd_terminator
     }
