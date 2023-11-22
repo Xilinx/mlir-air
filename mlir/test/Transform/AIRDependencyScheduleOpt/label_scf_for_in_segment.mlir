@@ -12,7 +12,10 @@
 // CHECK: scf.for
 // CHECK: scf.yield
 // CHECK-NEXT: } {unroll = 8 : i32}
+// CHECK: scf.for
 // CHECK: air.herd
+// CHECK: scf.yield
+// CHECK-NOT: } {unroll = 8 : i32}
 
 module {
   func.func @test(%arg0: memref<256x1024xbf16>, %arg1: memref<1024x1024xbf16>, %arg2: memref<1024x1024xbf16>, %arg3: memref<1024x1024xbf16>) {
@@ -28,8 +31,11 @@ module {
           %async_token_3 = air.wait_all async [%arg11]
           scf.yield %async_token_3 : !air.async.token
         }
-        %2 = air.herd @herd_0 async tile (%arg21, %arg22) in (%arg23=%c4, %arg24=%c4) {
-          air.herd_terminator
+        %4 = scf.for %arg10 = %c0 to %c512 step %c64 iter_args(%arg11 = %3) -> (!air.async.token) {
+          %2 = air.herd @herd_0 async tile (%arg21, %arg22) in (%arg23=%c4, %arg24=%c4) {
+            air.herd_terminator
+          }
+          scf.yield %2 : !air.async.token
         }
         air.segment_terminator
       }

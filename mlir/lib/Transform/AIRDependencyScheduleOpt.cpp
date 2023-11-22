@@ -1200,6 +1200,12 @@ struct LabelScfForLoopInAIRSegment : public OpRewritePattern<scf::ForOp> {
     if (for_op->hasAttr("unroll"))
       return failure();
 
+    // Avoid unrolling for loop which contains air.herd
+    bool hasHerdInBody = false;
+    for_op.getBody()->walk([&](air::HerdOp herd) { hasHerdInBody = true; });
+    if (hasHerdInBody)
+      return failure();
+
     if (for_op->getParentOfType<air::SegmentOp>() &&
         !for_op->getParentOfType<air::HerdOp>()) {
       // Get for loop iteration count
