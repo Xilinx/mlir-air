@@ -1146,52 +1146,7 @@ struct HoistOpsNotUsingPingPongPattern : public OpRewritePattern<scf::ForOp> {
     }
 
     // Hoist ops out to a new scf.for loop
-    rewriter.setInsertionPoint(for_op);
-    IRMapping remap;
-    auto new_for_op = rewriter.create<scf::ForOp>(
-        for_op.getLoc(), for_op.getLowerBound(), for_op.getUpperBound(),
-        for_op.getStep(), for_op.getInitArgs());
-    remap.map(for_op.getInductionVar(), new_for_op.getInductionVar());
-    remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
-              getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
-    rewriter.setInsertionPointToStart(new_for_op.getBody());
-    SmallVector<Value> yield_operands;
-    for (auto op : target_ops) {
-      auto new_op = rewriter.clone(*op, remap);
-      yield_operands.push_back(new_op->getResult(0));
-    }
-    rewriter.create<scf::YieldOp>(
-        new_for_op.getLoc(),
-        SmallVector<Value>{
-            rewriter
-                .create<air::WaitAllOp>(
-                    new_for_op.getLoc(),
-                    air::AsyncTokenType::get(rewriter.getContext()),
-                    yield_operands)
-                ->getResult(0)});
-
-    // Update dependency to hoisted ops
-    for (auto herd : new_for_op.getOps<air::HerdOp>()) {
-      clearAsyncDependenciesOfAsyncOp(herd);
-      herd.addAsyncDependency(
-          getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
-    }
-    for (auto erase_op : target_ops) {
-      for (auto user : erase_op->getResult(0).getUsers()) {
-        if (auto async_user = dyn_cast<air::AsyncOpInterface>(user)) {
-          eraseAsyncDependencyFromAsyncOp(async_user, erase_op->getResult(0));
-          for (auto dep : getAsyncDependenciesFromOp(erase_op)) {
-            if (dep != getLoopCarriedTokenFromScfOp(for_op, "argument")) {
-              addAsyncDependencyIfNew(user, dep);
-            }
-          }
-        }
-      }
-      erase_op->erase();
-    }
-    for (auto user : for_op.getResults().front().getUsers()) {
-      addAsyncDependencyIfNew(user, new_for_op.getResults().front());
-    }
+    hoistTargetOpsToNewSCFFor(rewriter, for_op, target_ops);
 
     for_op->setAttr("isolated", rewriter.getBoolAttr(true));
 
@@ -2520,6 +2475,66 @@ private:
   }
 };
 
+// A pass which hoists dma ops out of shared for loops, into perfectly nested
+// loops.
+class AIRIsolateAsyncDmaLoopNests
+    : public AIRIsolateAsyncDmaLoopNestsBase<AIRIsolateAsyncDmaLoopNests> {
+
+public:
+  AIRIsolateAsyncDmaLoopNests() = default;
+  AIRIsolateAsyncDmaLoopNests(const AIRIsolateAsyncDmaLoopNests &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<scf::SCFDialect, air::airDialect>();
+  }
+
+  void runOnFunction(func::FuncOp f,
+                     std::vector<air::HierarchyInterface> hierOps) {
+    for (auto hier_op : hierOps) {
+      // Identify the target for loops and their target child ops
+      std::map<scf::ForOp, SmallVector<Operation *>> target_ops_map;
+      for (auto for_op : hier_op->getRegion(0).getOps<scf::ForOp>()) {
+        for_op.walk([&](air::MemcpyInterface memcpyOp) {
+          // Get for_op's immediate child op
+          if (!dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation())
+                   .getAsyncToken())
+            return; // This pass requires an async IR.
+          Operation *parent = memcpyOp.getOperation();
+          while (parent->getParentOp() != for_op.getOperation()) {
+            parent = parent->getParentOp();
+          }
+          if (parent == memcpyOp.getOperation())
+            return;
+          if (isa<air::HierarchyInterface>(parent))
+            return;
+          target_ops_map[for_op].push_back(parent);
+        });
+      }
+
+      for (auto pair : target_ops_map) {
+        OpBuilder builder(pair.first);
+        for (auto op : pair.second)
+          hoistTargetOpsToNewSCFFor(builder, pair.first, {op});
+      }
+    }
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+
+    SmallVector<func::FuncOp, 4> funcOps;
+    std::vector<air::HierarchyInterface> air_hier_ops;
+    module.walk(
+        [&](air::HierarchyInterface op) { air_hier_ops.push_back(op); });
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps) {
+      runOnFunction(f, air_hier_ops);
+    }
+  }
+
+private:
+};
+
 } // namespace
 
 namespace xilinx {
@@ -2587,6 +2602,10 @@ std::unique_ptr<Pass> createAIRDeAliasMemref() {
 
 std::unique_ptr<Pass> createAIRFuseChannels() {
   return std::make_unique<AIRFuseChannels>();
+}
+
+std::unique_ptr<Pass> createAIRIsolateAsyncDmaLoopNests() {
+  return std::make_unique<AIRIsolateAsyncDmaLoopNests>();
 }
 
 } // namespace air

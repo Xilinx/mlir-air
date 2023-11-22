@@ -47,6 +47,8 @@ std::unique_ptr<mlir::Pass> createAIRDeAliasMemref();
 
 std::unique_ptr<mlir::Pass> createAIRFuseChannels();
 
+std::unique_ptr<mlir::Pass> createAIRIsolateAsyncDmaLoopNests();
+
 } // namespace air
 } // namespace xilinx
 
