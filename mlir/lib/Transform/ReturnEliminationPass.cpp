@@ -19,8 +19,6 @@
 #include <vector>
 #include <set>
 
-#include "PassDetail.h"
-
 #define DEBUG_TYPE "return-elimination"
 
 using namespace mlir;

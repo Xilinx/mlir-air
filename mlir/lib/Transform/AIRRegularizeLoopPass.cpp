@@ -25,7 +25,6 @@
 #include "air/Transform/AIRRegularizeLoopPass.h"
 #include "air/Transform/AIRTilingUtils.h"
 
-#include "PassDetail.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineStructures.h"

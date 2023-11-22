@@ -17,7 +17,6 @@
 // ===---------------------------------------------------------------------===//
 
 #include "air/Transform/AIRLoopMergingPass.h"
-#include "PassDetail.h"
 #include "air/Transform/AIRTilingUtils.h"
 
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"

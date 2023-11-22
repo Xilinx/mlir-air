@@ -2307,6 +2307,8 @@ struct ParallelToLaunchPass
 
   ParallelToLaunchPass() = default;
   ParallelToLaunchPass(const ParallelToLaunchPass &pass) {}
+  ParallelToLaunchPass(const xilinx::air::ParallelToLaunchOptions &options)
+      : ParallelToLaunchBase(options) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<air::airDialect>();
@@ -2491,6 +2493,10 @@ createParallelToHerdPass(const ParallelToHerdOptions &options) {
 
 std::unique_ptr<mlir::Pass> createParallelToLaunchPass() {
   return std::make_unique<ParallelToLaunchPass>();
+}
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createParallelToLaunchPass(const ParallelToLaunchOptions &options) {
+  return std::make_unique<ParallelToLaunchPass>(options);
 }
 
 std::unique_ptr<mlir::Pass> createCopyToDmaPass() {

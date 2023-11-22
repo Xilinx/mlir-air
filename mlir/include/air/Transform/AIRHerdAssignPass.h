@@ -8,6 +8,8 @@
 
 #ifndef AIR_HERD_ASSIGN_H
 
+#include "air/Transform/PassDetail.h"
+
 #include "mlir/Pass/Pass.h"
 #include <memory>
 

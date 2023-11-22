@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Transform/AIRLinalgOpStats.h"
-#include "PassDetail.h"
 #include "air/Util/CostModel.h"
 
 #include "mlir/Conversion/LinalgToStandard/LinalgToStandard.h"

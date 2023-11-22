@@ -9,6 +9,8 @@
 #ifndef AIR_LINALG_OP_STATS_H
 #define AIR_LINALG_OP_STATS_H
 
+#include "air/Transform/PassDetail.h"
+
 #include "mlir/Pass/Pass.h"
 #include <memory>
 #include <vector>

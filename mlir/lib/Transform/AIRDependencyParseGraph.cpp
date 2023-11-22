@@ -5,8 +5,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "PassDetail.h"
-
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRDependencyParseGraph.h"
 #include "air/Util/Dependency.h"

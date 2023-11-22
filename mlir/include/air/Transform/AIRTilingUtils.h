@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include "air/Transform/PassDetail.h"
+
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 

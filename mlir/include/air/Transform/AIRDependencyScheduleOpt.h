@@ -9,6 +9,8 @@
 #ifndef AIR_DEPENDENCY_SCHEDULE_OPT_H
 #define AIR_DEPENDENCY_SCHEDULE_OPT_H
 
+#include "air/Transform/PassDetail.h"
+
 #include "mlir/Pass/Pass.h"
 #include <memory>
 
@@ -32,6 +34,8 @@ std::unique_ptr<mlir::Pass> createAIRBroadcastDetection();
 std::unique_ptr<mlir::Pass> createAIRPruneLinalgGenericInputDma();
 
 std::unique_ptr<mlir::Pass> createAIRPingPongTransformationPattern();
+std::unique_ptr<OperationPass<ModuleOp>>
+createAIRPingPongTransformationPattern(const AIRPingPongTransformationPatternOptions &);
 
 std::unique_ptr<mlir::Pass> createAIRLabelScfForLoopForPingPongPattern();
 

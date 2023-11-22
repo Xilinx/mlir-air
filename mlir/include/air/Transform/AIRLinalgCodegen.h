@@ -9,6 +9,8 @@
 #ifndef AIR_LINALG_CODEGEN_H
 #define AIR_LINALG_CODEGEN_H
 
+#include "air/Transform/PassDetail.h"
+
 #include "mlir/Pass/Pass.h"
 #include <memory>
 #include <vector>

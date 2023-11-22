@@ -6,7 +6,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Transform/AIRTransformInterpreter.h"
-#include "PassDetail.h"
 
 #include "air/Dialect/AIR/AIRDialect.h"
 

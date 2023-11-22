@@ -11,7 +11,6 @@
 #include "air/Transform/AffineLoopOptPass.h"
 #include "air/Util/Outliner.h"
 
-#include "PassDetail.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"

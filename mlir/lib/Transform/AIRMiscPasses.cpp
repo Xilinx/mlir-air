@@ -13,7 +13,6 @@
 // ===---------------------------------------------------------------------===//
 
 #include "air/Transform/AIRMiscPasses.h"
-#include "PassDetail.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
@@ -45,7 +44,7 @@ using namespace xilinx;
 
 namespace {
 
-class AIRExamplePass : public air::AIRExamplePassBase<AIRExamplePass> {
+class AIRExamplePass : public air::impl::AIRExamplePassBase<AIRExamplePass> {
 
 public:
   AIRExamplePass() = default;
@@ -58,7 +57,7 @@ private:
 
 void AIRExamplePass::runOnOperation() {}
 
-class AIRLinalgNamePass : public air::AIRLinalgNamePassBase<AIRLinalgNamePass> {
+class AIRLinalgNamePass : public air::impl::AIRLinalgNamePassBase<AIRLinalgNamePass> {
 
 public:
   AIRLinalgNamePass() = default;
@@ -87,7 +86,7 @@ void AIRLinalgNamePass::runOnOperation() {
 }
 
 class AIRRemoveLinalgNamePass
-    : public air::AIRRemoveLinalgNamePassBase<AIRRemoveLinalgNamePass> {
+    : public air::impl::AIRRemoveLinalgNamePassBase<AIRRemoveLinalgNamePass> {
 
 public:
   AIRRemoveLinalgNamePass() = default;
@@ -112,7 +111,7 @@ void AIRRemoveLinalgNamePass::runOnOperation() {
 
 // AIRPromoteUniformL1Dma
 class AIRPromoteUniformL1Dma
-    : public air::AIRPromoteUniformL1DmaBase<AIRPromoteUniformL1Dma> {
+    : public air::impl::AIRPromoteUniformL1DmaBase<AIRPromoteUniformL1Dma> {
 
 public:
   AIRPromoteUniformL1Dma() = default;
@@ -235,7 +234,7 @@ bool isFuncOf(Operation *op, Value v, std::vector<Operation *> &ops) {
 }
 
 // AIRSpecializeDma
-class AIRSpecializeDma : public air::AIRSpecializeDmaBase<AIRSpecializeDma> {
+class AIRSpecializeDma : public air::impl::AIRSpecializeDmaBase<AIRSpecializeDma> {
 
 public:
   AIRSpecializeDma() = default;
@@ -317,7 +316,7 @@ void AIRSpecializeDma::runOnOperation() {
 
 // AIRSpecializeDmaBroadcast
 class AIRSpecializeDmaBroadcast
-    : public air::AIRSpecializeDmaBroadcastBase<AIRSpecializeDmaBroadcast> {
+    : public air::impl::AIRSpecializeDmaBroadcastBase<AIRSpecializeDmaBroadcast> {
 
 public:
   AIRSpecializeDmaBroadcast() = default;
@@ -695,7 +694,7 @@ private:
 };
 
 class AIRFuseParallelHerdPass
-    : public air::AIRFuseParallelHerdPassBase<AIRFuseParallelHerdPass> {
+    : public air::impl::AIRFuseParallelHerdPassBase<AIRFuseParallelHerdPass> {
 
 public:
   AIRFuseParallelHerdPass() = default;
@@ -814,7 +813,7 @@ void AIRFuseParallelHerdPass::runOnOperation() {
 }
 
 class AIRRenumberDmaIdPass
-    : public air::AIRRenumberDmaIdPassBase<AIRRenumberDmaIdPass> {
+    : public air::impl::AIRRenumberDmaIdPassBase<AIRRenumberDmaIdPass> {
 
 public:
   AIRRenumberDmaIdPass() = default;
@@ -859,7 +858,7 @@ public:
 };
 
 class AIRLowerHerdParallelPass
-    : public air::AIRLowerHerdParallelPassBase<AIRLowerHerdParallelPass> {
+    : public air::impl::AIRLowerHerdParallelPassBase<AIRLowerHerdParallelPass> {
 
 public:
   AIRLowerHerdParallelPass() = default;
@@ -973,7 +972,7 @@ public:
 };
 
 class AIRHoistScfChannelGetPutPass
-    : public air::AIRHoistScfChannelGetPutPassBase<
+    : public air::impl::AIRHoistScfChannelGetPutPassBase<
           AIRHoistScfChannelGetPutPass> {
 
 public:
@@ -994,7 +993,7 @@ void AIRHoistScfChannelGetPutPass::runOnOperation() {
 }
 
 class AIRLabelBroadcastChannelWithTilePass
-    : public air::AIRLabelBroadcastChannelWithTilePassBase<
+    : public air::impl::AIRLabelBroadcastChannelWithTilePassBase<
           AIRLabelBroadcastChannelWithTilePass> {
 
 public:
@@ -1044,7 +1043,7 @@ void AIRLabelBroadcastChannelWithTilePass::runOnOperation() {
 }
 
 class AIRCollapseHerdPass
-    : public air::AIRCollapseHerdPassBase<AIRCollapseHerdPass> {
+    : public air::impl::AIRCollapseHerdPassBase<AIRCollapseHerdPass> {
 
 public:
   AIRCollapseHerdPass() = default;

@@ -28,8 +28,6 @@
 #include <deque>
 #include <vector>
 
-#include "PassDetail.h"
-
 #define DEBUG_TYPE "air-herd-assign"
 
 using namespace mlir;

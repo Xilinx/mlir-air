@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Transform/AIRLowerLinalgTensors.h"
-#include "PassDetail.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 
