@@ -476,6 +476,72 @@ bool isAsyncOp(Operation *op) {
   return false;
 }
 
+// Splits an SCF for loop into two for loops, by hoisting target operations in
+// for loop to a new for loop located at the same scope.
+scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
+                                     SmallVector<Operation *> target_ops) {
+
+  // If target ops are already perfectly nested, then skip
+  auto hasNElements = [](Block *block, unsigned N) {
+    auto op_ptr = block->begin();
+    for (unsigned i = 0; i < N; i++)
+      op_ptr = std::next(op_ptr);
+    return op_ptr != block->end() && &*op_ptr == &block->back();
+  };
+  if (hasNElements(for_op.getBody(), target_ops.size() + 1))
+    return for_op;
+
+  builder.setInsertionPoint(for_op);
+  IRMapping remap;
+  auto new_for_op = builder.create<scf::ForOp>(
+      for_op.getLoc(), for_op.getLowerBound(), for_op.getUpperBound(),
+      for_op.getStep(), for_op.getInitArgs());
+  remap.map(for_op.getInductionVar(), new_for_op.getInductionVar());
+  remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
+            getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
+  builder.setInsertionPointToStart(new_for_op.getBody());
+  SmallVector<Value> yield_operands;
+  for (auto op : target_ops) {
+    if (op->getParentOp() != for_op.getOperation())
+      continue;
+    auto new_op = builder.clone(*op, remap);
+    yield_operands.push_back(new_op->getResult(0));
+  }
+  builder.create<scf::YieldOp>(
+      new_for_op.getLoc(),
+      SmallVector<Value>{builder
+                             .create<air::WaitAllOp>(
+                                 new_for_op.getLoc(),
+                                 air::AsyncTokenType::get(builder.getContext()),
+                                 yield_operands)
+                             ->getResult(0)});
+
+  // Update dependency to hoisted ops
+  for (auto herd : new_for_op.getOps<air::HerdOp>()) {
+    clearAsyncDependenciesOfAsyncOp(herd);
+    herd.addAsyncDependency(
+        getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
+  }
+  for (auto erase_op : target_ops) {
+    for (auto user : erase_op->getResult(0).getUsers()) {
+      if (auto async_user = dyn_cast<air::AsyncOpInterface>(user)) {
+        eraseAsyncDependencyFromAsyncOp(async_user, erase_op->getResult(0));
+        for (auto dep : getAsyncDependenciesFromOp(erase_op)) {
+          if (dep != getLoopCarriedTokenFromScfOp(for_op, "argument")) {
+            air::addAsyncDependencyIfNew(user, dep);
+          }
+        }
+      }
+    }
+    erase_op->erase();
+  }
+  for (auto user : for_op.getResults().front().getUsers()) {
+    air::addAsyncDependencyIfNew(user, new_for_op.getResults().front());
+  }
+
+  return new_for_op;
+}
+
 //===----------------------------------------------------------------------===//
 // Dependency graph as a Boost graph object
 //===----------------------------------------------------------------------===//

@@ -62,6 +62,8 @@ scf::ReduceOp createSCFReduceForAsyncSCFParallel(OpBuilder builder,
 SmallVector<Value> getAsyncDependenciesFromOp(Operation *op);
 void addAsyncDependencyIfNew(Operation *op, Value token);
 bool isAsyncOp(Operation *op);
+scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
+                                     SmallVector<Operation *> target_ops);
 
 //===----------------------------------------------------------------------===//
 // Dependency graph parsed as a Boost graph object

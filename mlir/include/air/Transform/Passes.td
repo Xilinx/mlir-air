@@ -997,6 +997,15 @@ def AIRFuseChannels: Pass<"air-fuse-channels", "ModuleOp"> {
   }];
 }
 
+def AIRIsolateAsyncDmaLoopNests: Pass<"air-isolate-async-dma-loop-nests", "ModuleOp"> {
+  let summary = "Hoist dma ops into perfectly nested loop";
+  let constructor = "xilinx::air::createAIRIsolateAsyncDmaLoopNests()";
+  let description = [{
+    This pass isolates loops containing dma memcpy ops into perfectly nested loops, by 
+    hoisting them out of their previous parent loop.
+  }];
+}
+
 def AIRDependencyScheduleOpt: Pass<"air-dependency-schedule-opt", "ModuleOp"> {
   let summary = "Optimize scheduling based on air async dependency";
   let constructor = "xilinx::air::createAIRDependencyScheduleOptPass()";
