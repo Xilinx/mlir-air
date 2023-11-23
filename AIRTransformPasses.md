@@ -486,6 +486,12 @@ This pass isolates an `scf.for` loop in preparation for ping-pong transformation
 by identifying child operations which are not direct consumers or producers of the 
 memref targetted for ping-pong buffering, and hoisting said operations out of the
 scf.for loop.
+### `-air-isolate-async-dma-loop-nests`
+
+_Hoist dma ops into perfectly nested loop_
+
+This pass isolates loops containing dma memcpy ops into perfectly nested loops, by 
+hoisting them out of their previous parent loop.
 ### `-air-label-broadcast-channel-with-tile`
 
 _Label broadcasted channel ops with tile coordinates._
