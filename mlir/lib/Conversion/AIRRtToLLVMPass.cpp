@@ -1182,7 +1182,7 @@ public:
   }
 };
 
-class AIRRtToLLVM : public AIRRtToLLVMBase<AIRRtToLLVM> {
+class AIRRtToLLVM : public air::impl::AIRRtToLLVMBase<AIRRtToLLVM> {
 
 public:
   AIRRtToLLVM() {}

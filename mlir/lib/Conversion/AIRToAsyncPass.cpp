@@ -698,7 +698,7 @@ public:
   }
 };
 
-class AIRToAsyncPass : public AIRToAsyncBase<AIRToAsyncPass> {
+class AIRToAsyncPass : public air::impl::AIRToAsyncBase<AIRToAsyncPass> {
 
 public:
   AIRToAsyncPass() = default;
