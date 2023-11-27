@@ -93,7 +93,8 @@ static uint64_t HierarchyOpID;
 static uint64_t WaitAllOpID;
 static uint64_t ChannelOpID;
 
-class AIRDependency : public xilinx::air::impl::AIRDependencyBase<AIRDependency> {
+class AIRDependency
+    : public xilinx::air::impl::AIRDependencyBase<AIRDependency> {
 
 public:
   AIRDependency() = default;

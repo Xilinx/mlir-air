@@ -1321,7 +1321,8 @@ void AIRPipelineReducePass::runOnOperation() {
 
   (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
 }
-class AIRLinalgCodegen : public air::impl::AIRLinalgCodegenBase<AIRLinalgCodegen> {
+class AIRLinalgCodegen
+    : public air::impl::AIRLinalgCodegenBase<AIRLinalgCodegen> {
 
 public:
   AIRLinalgCodegen() = default;

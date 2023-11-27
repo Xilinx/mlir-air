@@ -20,7 +20,8 @@ using namespace boost;
 namespace {
 
 class AIRDependencyCanonicalize
-    : public xilinx::air::impl::AIRDependencyCanonicalizeBase<AIRDependencyCanonicalize> {
+    : public xilinx::air::impl::AIRDependencyCanonicalizeBase<
+          AIRDependencyCanonicalize> {
 
 public:
   AIRDependencyCanonicalize() = default;

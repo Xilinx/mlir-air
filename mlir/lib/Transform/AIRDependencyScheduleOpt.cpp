@@ -1619,7 +1619,8 @@ private:
 };
 
 class AIRBroadcastDetection
-    : public xilinx::air::impl::AIRBroadcastDetectionBase<AIRBroadcastDetection> {
+    : public xilinx::air::impl::AIRBroadcastDetectionBase<
+          AIRBroadcastDetection> {
 
 public:
   AIRBroadcastDetection() = default;
@@ -1970,7 +1971,8 @@ private:
 };
 
 class AIRDependencyScheduleOpt
-    : public xilinx::air::impl::AIRDependencyScheduleOptBase<AIRDependencyScheduleOpt> {
+    : public xilinx::air::impl::AIRDependencyScheduleOptBase<
+          AIRDependencyScheduleOpt> {
 
 public:
   AIRDependencyScheduleOpt() = default;
@@ -2049,7 +2051,8 @@ private:
 // A pass which de-alias a memref with multiple channel accesses over time, into
 // multiple memrefs. Note that this implementation is temporary and not generic.
 // TODO: Rewrite as a graph partitioning problem.
-class AIRDeAliasMemref : public xilinx::air::impl::AIRDeAliasMemrefBase<AIRDeAliasMemref> {
+class AIRDeAliasMemref
+    : public xilinx::air::impl::AIRDeAliasMemrefBase<AIRDeAliasMemref> {
 
 public:
   AIRDeAliasMemref() = default;
@@ -2217,7 +2220,8 @@ private:
 
 // A pass which transform multiple channel ops into one, where the data movement
 // is time-multiplexed.
-class AIRFuseChannels : public xilinx::air::impl::AIRFuseChannelsBase<AIRFuseChannels> {
+class AIRFuseChannels
+    : public xilinx::air::impl::AIRFuseChannelsBase<AIRFuseChannels> {
 
 public:
   AIRFuseChannels() = default;
@@ -2485,7 +2489,8 @@ private:
 // A pass which hoists dma ops out of shared for loops, into perfectly nested
 // loops.
 class AIRIsolateAsyncDmaLoopNests
-    : public xilinx::air::impl::AIRIsolateAsyncDmaLoopNestsBase<AIRIsolateAsyncDmaLoopNests> {
+    : public xilinx::air::impl::AIRIsolateAsyncDmaLoopNestsBase<
+          AIRIsolateAsyncDmaLoopNests> {
 
 public:
   AIRIsolateAsyncDmaLoopNests() = default;
@@ -2582,8 +2587,8 @@ std::unique_ptr<Pass> createAIRPruneLinalgGenericInputDma() {
 std::unique_ptr<Pass> createAIRPingPongTransformationPattern() {
   return std::make_unique<AIRPingPongTransformationPattern>();
 }
-std::unique_ptr<OperationPass<ModuleOp>>
-createAIRPingPongTransformationPattern(const AIRPingPongTransformationPatternOptions &options) {
+std::unique_ptr<OperationPass<ModuleOp>> createAIRPingPongTransformationPattern(
+    const AIRPingPongTransformationPatternOptions &options) {
   return std::make_unique<AIRPingPongTransformationPattern>(options);
 }
 

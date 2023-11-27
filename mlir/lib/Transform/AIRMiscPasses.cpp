@@ -57,7 +57,8 @@ private:
 
 void AIRExamplePass::runOnOperation() {}
 
-class AIRLinalgNamePass : public air::impl::AIRLinalgNamePassBase<AIRLinalgNamePass> {
+class AIRLinalgNamePass
+    : public air::impl::AIRLinalgNamePassBase<AIRLinalgNamePass> {
 
 public:
   AIRLinalgNamePass() = default;
@@ -234,7 +235,8 @@ bool isFuncOf(Operation *op, Value v, std::vector<Operation *> &ops) {
 }
 
 // AIRSpecializeDma
-class AIRSpecializeDma : public air::impl::AIRSpecializeDmaBase<AIRSpecializeDma> {
+class AIRSpecializeDma
+    : public air::impl::AIRSpecializeDmaBase<AIRSpecializeDma> {
 
 public:
   AIRSpecializeDma() = default;
@@ -316,7 +318,8 @@ void AIRSpecializeDma::runOnOperation() {
 
 // AIRSpecializeDmaBroadcast
 class AIRSpecializeDmaBroadcast
-    : public air::impl::AIRSpecializeDmaBroadcastBase<AIRSpecializeDmaBroadcast> {
+    : public air::impl::AIRSpecializeDmaBroadcastBase<
+          AIRSpecializeDmaBroadcast> {
 
 public:
   AIRSpecializeDmaBroadcast() = default;
