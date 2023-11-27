@@ -26,7 +26,9 @@ using namespace xilinx::air;
 
 namespace {
 
-class ReturnEliminationPass : public AIRReturnEliminationBase<ReturnEliminationPass> {
+class ReturnEliminationPass
+    : public xilinx::air::impl::AIRReturnEliminationBase<
+          ReturnEliminationPass> {
 
 public:
   ReturnEliminationPass() {}

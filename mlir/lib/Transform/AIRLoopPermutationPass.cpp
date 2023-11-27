@@ -47,8 +47,9 @@ using namespace xilinx;
 using namespace xilinx::air;
 
 namespace {
-  
-class AIRLoopPermutationPass : public AIRLoopPermutationBase<AIRLoopPermutationPass> {
+
+class AIRLoopPermutationPass
+    : public xilinx::air::impl::AIRLoopPermutationBase<AIRLoopPermutationPass> {
 
 public:
   AIRLoopPermutationPass() = default;
@@ -59,7 +60,6 @@ public:
 
   static const char *affineOptAttrName;
 private:
-
 };
 
 const char *AIRLoopPermutationPass::affineOptAttrName = "affine_opt_label";

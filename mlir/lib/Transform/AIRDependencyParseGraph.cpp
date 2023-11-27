@@ -19,7 +19,8 @@ using namespace boost;
 namespace {
 
 class AIRDependencyParseGraph
-    : public AIRDependencyParseGraphBase<AIRDependencyParseGraph> {
+    : public xilinx::air::impl::AIRDependencyParseGraphBase<
+          AIRDependencyParseGraph> {
 
 public:
   AIRDependencyParseGraph() = default;

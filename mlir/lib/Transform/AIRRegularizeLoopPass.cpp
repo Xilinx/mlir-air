@@ -57,7 +57,7 @@ using namespace xilinx::air;
 namespace {
 
 class AIRRegularizeLoopPass
-    : public AIRRegularizeLoopBase<AIRRegularizeLoopPass> {
+    : public xilinx::air::impl::AIRRegularizeLoopBase<AIRRegularizeLoopPass> {
 
 public:
   AIRRegularizeLoopPass() = default;

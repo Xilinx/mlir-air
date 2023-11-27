@@ -45,7 +45,8 @@ using namespace xilinx::air;
 
 namespace {
 
-class AIRLoopMergingPass : public AIRLoopMergingPassBase<AIRLoopMergingPass> {
+class AIRLoopMergingPass
+    : public xilinx::air::impl::AIRLoopMergingPassBase<AIRLoopMergingPass> {
 
 public:
   AIRLoopMergingPass() = default;

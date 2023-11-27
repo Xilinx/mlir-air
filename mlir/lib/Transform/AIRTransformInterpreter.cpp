@@ -55,7 +55,7 @@ parseTransformModuleFromFile(MLIRContext *context,
 namespace {
 
 class AIRTransformInterpreterPass
-    : public xilinx::air::AIRTransformInterpreterPassBase<
+    : public xilinx::air::impl::AIRTransformInterpreterPassBase<
           AIRTransformInterpreterPass> {
 
 public:

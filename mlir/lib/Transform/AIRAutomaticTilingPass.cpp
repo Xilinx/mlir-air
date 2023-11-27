@@ -48,7 +48,7 @@ using namespace xilinx::air;
 namespace {
 
 class AIRAutomaticTilingPass
-    : public AIRAutomaticTilingBase<AIRAutomaticTilingPass> {
+    : public xilinx::air::impl::AIRAutomaticTilingBase<AIRAutomaticTilingPass> {
 
 public:
   AIRAutomaticTilingPass() = default;
