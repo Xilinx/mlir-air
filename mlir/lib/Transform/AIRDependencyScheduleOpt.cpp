@@ -2505,6 +2505,14 @@ public:
           if (!dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation())
                    .getAsyncToken())
             return; // This pass requires an async IR.
+          int for_op_token_count = 0;
+          for (auto v : for_op->getResults())
+            if (isa<air::AsyncTokenType>(v.getType()))
+              for_op_token_count++;
+          if (for_op_token_count > 1)
+            return; // This for op has more than one loop-carried dep token,
+                    // suggesting pipelining pattern. Will be handelled by
+                    // -air-unroll-loop-for-pipelining-pattern instead.
           Operation *parent = memcpyOp.getOperation();
           while (parent->getParentOp() != for_op.getOperation()) {
             parent = parent->getParentOp();
