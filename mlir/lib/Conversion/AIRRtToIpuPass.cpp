@@ -187,7 +187,7 @@ AIE::DeviceOp getDeviceForSegmentLoad(SegmentLoadOp s) {
   return nullptr;
 }
 
-struct AIRRtToIpuPass : public air::impl::AIRRtToIpuBase<AIRRtToIpuPass> {
+struct AIRRtToIpuPass : public airrt::impl::AIRRtToIpuBase<AIRRtToIpuPass> {
   void runOnOperation() override {
 
     ModuleOp module = getOperation();

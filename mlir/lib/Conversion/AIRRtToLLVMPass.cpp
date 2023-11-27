@@ -1182,7 +1182,7 @@ public:
   }
 };
 
-class AIRRtToLLVM : public air::impl::AIRRtToLLVMBase<AIRRtToLLVM> {
+class AIRRtToLLVM : public xilinx::airrt::impl::AIRRtToLLVMBase<AIRRtToLLVM> {
 
 public:
   AIRRtToLLVM() {}
