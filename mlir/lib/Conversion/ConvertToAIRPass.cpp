@@ -2221,11 +2221,13 @@ static void getSegmentNames(ModuleOp module) {
   }
 }
 
-struct ParallelToHerdPass : public air::impl::ParallelToHerdBase<ParallelToHerdPass> {
+struct ParallelToHerdPass
+    : public air::impl::ParallelToHerdBase<ParallelToHerdPass> {
 
   ParallelToHerdPass() = default;
   ParallelToHerdPass(const ParallelToHerdPass &pass) {}
-  ParallelToHerdPass(const ::xilinx::air::ParallelToHerdOptions &options) : ParallelToHerdBase(options) {}
+  ParallelToHerdPass(const ::xilinx::air::ParallelToHerdOptions &options)
+      : ParallelToHerdBase(options) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<air::airDialect>();
@@ -2381,7 +2383,8 @@ struct ParallelToLaunchPass
 };
 
 struct InsertEmptyLaunchOverHerdPass
-    : public air::impl::InsertEmptyLaunchOverHerdBase<InsertEmptyLaunchOverHerdPass> {
+    : public air::impl::InsertEmptyLaunchOverHerdBase<
+          InsertEmptyLaunchOverHerdPass> {
 
   InsertEmptyLaunchOverHerdPass() = default;
   InsertEmptyLaunchOverHerdPass(const InsertEmptyLaunchOverHerdPass &pass) {}

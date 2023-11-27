@@ -37,4 +37,3 @@ std::unique_ptr<mlir::Pass> createAIRSplitDevicesPass();
 } // namespace xilinx
 
 #endif // AIR_TO_AIE_PASS_H
-

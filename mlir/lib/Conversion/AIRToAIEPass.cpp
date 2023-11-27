@@ -348,7 +348,8 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
 }
 
 void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
-                        xilinx::air::SegmentOp seg, AIRToAIEConversionOptions &options) {
+                        xilinx::air::SegmentOp seg,
+                        AIRToAIEConversionOptions &options) {
   builder.setInsertionPointToStart(aie_device.getBody());
 
   int64_t seg_size_x = 1;
@@ -1514,7 +1515,8 @@ class AIRToAIEPass : public air::impl::AIRToAIEBase<AIRToAIEPass> {
 public:
   AIRToAIEPass() = default;
   AIRToAIEPass(const AIRToAIEPass &pass) {}
-  AIRToAIEPass(const ::xilinx::air::AIRToAIEOptions &options) : AIRToAIEBase(options) {}
+  AIRToAIEPass(const ::xilinx::air::AIRToAIEOptions &options)
+      : AIRToAIEBase(options) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<xilinx::air::airDialect>();
@@ -2605,12 +2607,13 @@ public:
     if (clTestPatterns.find("to-aie-mlir") != std::string::npos) {
       std::vector<std::pair<AIE::DeviceOp, air::HerdOp>> aie_modules;
       std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
-      AIRToAIEConversionOptions options = {/*.col_offset = */ clColOffset,
-                                 /*.row_offset = */ clRowOffset,
-                                 /*.emit_while = */ clEmitWhileLoop,
-                                 /*.emit_herd_lock = */ clEmitHerdLock,
-                                 /*.generate_shim_dma = */ clGenerateShimDMA,
-                                 /*.device = */ *device};
+      AIRToAIEConversionOptions options = {
+          /*.col_offset = */ clColOffset,
+          /*.row_offset = */ clRowOffset,
+          /*.emit_while = */ clEmitWhileLoop,
+          /*.emit_herd_lock = */ clEmitHerdLock,
+          /*.generate_shim_dma = */ clGenerateShimDMA,
+          /*.device = */ *device};
       createAIEModulesAndOutlineCores(m, aie_modules, tileToHerdMap, options);
       std::set<ModuleOp> seen;
       for (auto &p : aie_modules) {
@@ -2698,12 +2701,13 @@ public:
       signalPassFailure();
       return;
     }
-    AIRToAIEConversionOptions options = {/* .col_offset = */ clColOffset,
-                               /* .row_offset = */ clRowOffset,
-                               /* .emit_while = */ clEmitWhileLoop,
-                               /* .emit_herd_lock = */ clEmitHerdLock,
-                               /* .generate_shim_dma = */ clGenerateShimDMA,
-                               /* .device = */ *device};
+    AIRToAIEConversionOptions options = {
+        /* .col_offset = */ clColOffset,
+        /* .row_offset = */ clRowOffset,
+        /* .emit_while = */ clEmitWhileLoop,
+        /* .emit_herd_lock = */ clEmitHerdLock,
+        /* .generate_shim_dma = */ clGenerateShimDMA,
+        /* .device = */ *device};
     createAIEModulesAndOutlineCores(module, aie_devices, tileToHerdMap,
                                     options);
 
@@ -2880,7 +2884,8 @@ struct OpRemovalPattern : public OpConversionPattern<OpT> {
   }
 };
 
-class SplitAIEDevicesPass : public air::impl::AIRSplitDevicesBase<SplitAIEDevicesPass> {
+class SplitAIEDevicesPass
+    : public air::impl::AIRSplitDevicesBase<SplitAIEDevicesPass> {
 
 public:
   SplitAIEDevicesPass() = default;
@@ -2981,11 +2986,11 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     return failure();
   }
   AIRToAIEConversionOptions options = {/* .col_offset = */ 7,
-                             /* .row_offset = */ 2,
-                             /* .emit_while = */ false,
-                             /* .emit_herd_lock = */ false,
-                             /* .generate_shim_dma = */ false,
-                             /* .device = */ *device};
+                                       /* .row_offset = */ 2,
+                                       /* .emit_while = */ false,
+                                       /* .emit_herd_lock = */ false,
+                                       /* .generate_shim_dma = */ false,
+                                       /* .device = */ *device};
   std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> aie_modules;
   p.walk([&](xilinx::air::HerdOp h) {
     aie_modules.push_back({aie_module, h});
@@ -3016,7 +3021,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
 std::unique_ptr<mlir::Pass> createAIRToAIEPass() {
   return std::make_unique<AIRToAIEPass>();
 }
- 
+
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createAIRToAIEPass(const AIRToAIEOptions &options) {
   return std::make_unique<AIRToAIEPass>(options);
