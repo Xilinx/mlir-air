@@ -35,7 +35,8 @@ using namespace xilinx::air;
 
 namespace {
 
-class AffineLoopOptPass : public AffineLoopOptPassBase<AffineLoopOptPass> {
+class AffineLoopOptPass
+    : public xilinx::air::impl::AffineLoopOptPassBase<AffineLoopOptPass> {
 
 public:
   AffineLoopOptPass() = default;

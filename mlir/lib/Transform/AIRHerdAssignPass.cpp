@@ -37,7 +37,8 @@ static llvm::cl::OptionCategory clOptionsCategory(DEBUG_TYPE " options");
 
 namespace {
 
-class AIRHerdAssignPass : public AIRHerdAssignBase<AIRHerdAssignPass> {
+class AIRHerdAssignPass
+    : public xilinx::air::impl::AIRHerdAssignBase<AIRHerdAssignPass> {
 
 public:
   AIRHerdAssignPass() = default;

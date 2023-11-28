@@ -28,9 +28,11 @@
 #define DEBUG_TYPE "airrt-to-llvm-pass"
 
 using namespace mlir;
-using namespace xilinx::air;
+using namespace xilinx;
 
 namespace {
+#define GEN_PASS_DEF_AIRRTTOLLVM
+#include "air/Conversion/Passes.h.inc"
 
 // struct shim_desc_t {
 //   int64_t *location_data;
@@ -896,7 +898,7 @@ public:
         memrefTy.getElementType(), memrefTy.getLayout(),
         memrefTy.getMemorySpace()));
 
-    auto size = getTensorVolume(memrefTy);
+    auto size = xilinx::air::getTensorVolume(memrefTy);
     operands.push_back(
         rewriter.create<arith::ConstantIndexOp>(op->getLoc(), size));
 
@@ -1182,7 +1184,7 @@ public:
   }
 };
 
-class AIRRtToLLVM : public xilinx::airrt::impl::AIRRtToLLVMBase<AIRRtToLLVM> {
+class AIRRtToLLVM : public impl::AIRRtToLLVMBase<AIRRtToLLVM> {
 
 public:
   AIRRtToLLVM() {}
