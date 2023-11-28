@@ -491,6 +491,20 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
   if (hasNElements(for_op.getBody(), target_ops.size() + 1))
     return for_op;
 
+  // Preprocess target ops by canonicalizing dependencies in target ops' region.
+  for (auto target_op : target_ops) {
+    for (auto &region : target_op->getRegions()) {
+      llvm::SetVector<Value> region_args;
+      getUsedValuesDefinedAbove(region, region_args);
+      for (auto arg : region_args) {
+        if (isa<air::AsyncTokenType>(arg.getType())) {
+          replaceAllUsesInRegionWith(
+              arg, getLoopCarriedTokenFromScfOp(for_op, "argument"), region);
+        }
+      }
+    }
+  }
+
   builder.setInsertionPoint(for_op);
   IRMapping remap;
   auto new_for_op = builder.create<scf::ForOp>(
@@ -523,6 +537,7 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
         getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
   }
   for (auto erase_op : target_ops) {
+    // Reconnect returned tokens.
     for (auto user : erase_op->getResult(0).getUsers()) {
       if (auto async_user = dyn_cast<air::AsyncOpInterface>(user)) {
         eraseAsyncDependencyFromAsyncOp(async_user, erase_op->getResult(0));
@@ -533,8 +548,9 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
         }
       }
     }
-    erase_op->erase();
   }
+  for (auto erase_op : target_ops)
+    erase_op->erase();
   for (auto user : for_op.getResults().front().getUsers()) {
     air::addAsyncDependencyIfNew(user, new_for_op.getResults().front());
   }

@@ -2494,11 +2494,11 @@ public:
     registry.insert<scf::SCFDialect, air::airDialect>();
   }
 
-  void runOnFunction(func::FuncOp f,
-                     std::vector<air::HierarchyInterface> hierOps) {
+  void identifyTargetSCFForAndOps(
+      func::FuncOp f, std::vector<air::HierarchyInterface> hierOps,
+      std::map<scf::ForOp, SmallVector<Operation *>> &target_ops_map) {
     for (auto hier_op : hierOps) {
       // Identify the target for loops and their target child ops
-      std::map<scf::ForOp, SmallVector<Operation *>> target_ops_map;
       for (auto for_op : hier_op->getRegion(0).getOps<scf::ForOp>()) {
         for_op.walk([&](air::MemcpyInterface memcpyOp) {
           // Get for_op's immediate child op
@@ -2521,14 +2521,39 @@ public:
             return;
           if (isa<air::HierarchyInterface>(parent))
             return;
-          target_ops_map[for_op].push_back(parent);
+          push_back_if_unique<Operation *>(target_ops_map[for_op], parent);
+          // Check if any memref.alloc needs to be hoisted.
+          if (memcpyOp.getSrcMemref() &&
+              for_op->isProperAncestor(
+                  memcpyOp.getSrcMemref().getDefiningOp())) {
+            Operation *memref_def = memcpyOp.getSrcMemref().getDefiningOp();
+            if (auto exec = dyn_cast<air::ExecuteOp>(memref_def))
+              memref_def = exec.getBody()
+                               .getBlocks()
+                               .front()
+                               .getTerminator()
+                               ->getOperand(0)
+                               .getDefiningOp();
+            memref_def->setAttr(
+                "hoist_alloc",
+                mlir::BoolAttr::get(memref_def->getContext(), true));
+          }
+          if (memcpyOp.getDstMemref() &&
+              for_op->isProperAncestor(
+                  memcpyOp.getDstMemref().getDefiningOp())) {
+            Operation *memref_def = memcpyOp.getDstMemref().getDefiningOp();
+            if (auto exec = dyn_cast<air::ExecuteOp>(memref_def))
+              memref_def = exec.getBody()
+                               .getBlocks()
+                               .front()
+                               .getTerminator()
+                               ->getOperand(0)
+                               .getDefiningOp();
+            memref_def->setAttr(
+                "hoist_alloc",
+                mlir::BoolAttr::get(memref_def->getContext(), true));
+          }
         });
-      }
-
-      for (auto pair : target_ops_map) {
-        OpBuilder builder(pair.first);
-        for (auto op : pair.second)
-          hoistTargetOpsToNewSCFFor(builder, pair.first, {op});
       }
     }
   }
@@ -2541,12 +2566,33 @@ public:
     module.walk(
         [&](air::HierarchyInterface op) { air_hier_ops.push_back(op); });
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+
+    // Identify scf.for ops and target child ops for hoisting.
+    std::map<scf::ForOp, SmallVector<Operation *>> target_ops_map;
     for (auto f : funcOps) {
-      runOnFunction(f, air_hier_ops);
+      identifyTargetSCFForAndOps(f, air_hier_ops, target_ops_map);
+      // If necessary, hoist allocs out of the loops, too.
+      RewritePatternSet patterns(f.getContext());
+      patterns.insert<HoistMemallocInForPattern>(f.getContext(), false);
+      (void)applyPatternsAndFoldGreedily(f, std::move(patterns));
+    }
+
+    // Hoist ops out of each scf.for.
+    for (auto pair : target_ops_map) {
+      OpBuilder builder(pair.first);
+      for (auto op : pair.second)
+        hoistTargetOpsToNewSCFFor(builder, pair.first,
+                                  SmallVector<Operation *>{op});
     }
   }
 
 private:
+  template <typename T>
+  void push_back_if_unique(SmallVector<T> &vec, T entry) const {
+    if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
+      vec.push_back(entry);
+    }
+  }
 };
 
 } // namespace
