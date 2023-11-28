@@ -10,6 +10,7 @@
 #define AIR_CONVERSION_PASSDETAIL_H
 
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
+#include "air/Dialect/AIRRt/AIRRtDialect.h"
 
 namespace xilinx {
 namespace air {
@@ -19,6 +20,8 @@ using namespace mlir;
 #define GEN_PASS_DECL
 #define GEN_PASS_DEF_AIRLOWERING
 #define GEN_PASS_DEF_AIRPIPELINETOAFFINE
+#define GEN_PASS_DEF_AIRRTTOIPU
+#define GEN_PASS_DEF_AIRRTTOLLVM
 #define GEN_PASS_DEF_AIRSPLITDEVICES
 #define GEN_PASS_DEF_AIRTOAIE
 #define GEN_PASS_DEF_AIRTOASYNC

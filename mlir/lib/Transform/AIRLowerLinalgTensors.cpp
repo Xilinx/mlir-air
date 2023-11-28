@@ -132,7 +132,8 @@ struct LowerLinalgOpPattern : public OpRewritePattern<linalg::GenericOp> {
 };
 
 struct AIRLowerLinalgTensors
-    : public AIRLowerLinalgTensorsBase<AIRLowerLinalgTensors> {
+    : public xilinx::air::impl::AIRLowerLinalgTensorsBase<
+          AIRLowerLinalgTensors> {
   void runOnOperation() override;
 };
 
