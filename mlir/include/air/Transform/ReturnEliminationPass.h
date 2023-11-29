@@ -9,6 +9,8 @@
 #ifndef RETURN_ELIMINATION_H
 #define RETURN_ELIMINATION_H
 
+#include "air/Transform/PassDetail.h"
+
 #include "mlir/Pass/Pass.h"
 #include <memory>
 namespace xilinx {

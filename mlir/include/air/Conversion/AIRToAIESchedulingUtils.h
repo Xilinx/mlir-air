@@ -7,6 +7,8 @@
 #ifndef AIR_TO_AIE_SCHEDULING_UTILS_H
 #define AIR_TO_AIE_SCHEDULING_UTILS_H
 
+#include "air/Conversion/PassDetail.h"
+
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "mlir/Pass/Pass.h"

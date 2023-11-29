@@ -9,6 +9,8 @@
 #ifndef AIR_TO_ASYNC_PASS_H
 #define AIR_TO_ASYNC_PASS_H
 
+#include "air/Conversion/PassDetail.h"
+
 #include "mlir/Pass/Pass.h"
 #include <memory>
 

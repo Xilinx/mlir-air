@@ -5,8 +5,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "PassDetail.h"
-
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRDependencyParseGraph.h"
 #include "air/Util/Dependency.h"
@@ -21,7 +19,8 @@ using namespace boost;
 namespace {
 
 class AIRDependencyParseGraph
-    : public AIRDependencyParseGraphBase<AIRDependencyParseGraph> {
+    : public xilinx::air::impl::AIRDependencyParseGraphBase<
+          AIRDependencyParseGraph> {
 
 public:
   AIRDependencyParseGraph() = default;

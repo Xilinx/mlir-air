@@ -25,7 +25,6 @@
 #include "air/Transform/AIRRegularizeLoopPass.h"
 #include "air/Transform/AIRTilingUtils.h"
 
-#include "PassDetail.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
@@ -58,7 +57,7 @@ using namespace xilinx::air;
 namespace {
 
 class AIRRegularizeLoopPass
-    : public AIRRegularizeLoopBase<AIRRegularizeLoopPass> {
+    : public xilinx::air::impl::AIRRegularizeLoopBase<AIRRegularizeLoopPass> {
 
 public:
   AIRRegularizeLoopPass() = default;

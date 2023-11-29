@@ -21,7 +21,6 @@
 #include "air/Transform/AIRAutomaticTilingPass.h"
 #include "air/Transform/AIRTilingUtils.h"
 
-#include "PassDetail.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
@@ -49,7 +48,7 @@ using namespace xilinx::air;
 namespace {
 
 class AIRAutomaticTilingPass
-    : public AIRAutomaticTilingBase<AIRAutomaticTilingPass> {
+    : public xilinx::air::impl::AIRAutomaticTilingBase<AIRAutomaticTilingPass> {
 
 public:
   AIRAutomaticTilingPass() = default;

@@ -28,8 +28,6 @@
 #include <deque>
 #include <vector>
 
-#include "PassDetail.h"
-
 #define DEBUG_TYPE "air-herd-assign"
 
 using namespace mlir;
@@ -39,7 +37,8 @@ static llvm::cl::OptionCategory clOptionsCategory(DEBUG_TYPE " options");
 
 namespace {
 
-class AIRHerdAssignPass : public AIRHerdAssignBase<AIRHerdAssignPass> {
+class AIRHerdAssignPass
+    : public xilinx::air::impl::AIRHerdAssignBase<AIRHerdAssignPass> {
 
 public:
   AIRHerdAssignPass() = default;

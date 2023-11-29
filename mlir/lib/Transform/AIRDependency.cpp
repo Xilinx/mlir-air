@@ -5,8 +5,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "PassDetail.h"
-
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRDependency.h"
 #include "air/Util/Dependency.h"
@@ -95,7 +93,8 @@ static uint64_t HierarchyOpID;
 static uint64_t WaitAllOpID;
 static uint64_t ChannelOpID;
 
-class AIRDependency : public AIRDependencyBase<AIRDependency> {
+class AIRDependency
+    : public xilinx::air::impl::AIRDependencyBase<AIRDependency> {
 
 public:
   AIRDependency() = default;

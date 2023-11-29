@@ -6,8 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "PassDetail.h"
-
 #include "air/Conversion/AIRPipeline.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
@@ -700,7 +698,7 @@ public:
   }
 };
 
-class AIRToAsyncPass : public AIRToAsyncBase<AIRToAsyncPass> {
+class AIRToAsyncPass : public air::impl::AIRToAsyncBase<AIRToAsyncPass> {
 
 public:
   AIRToAsyncPass() = default;

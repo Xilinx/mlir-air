@@ -9,6 +9,8 @@
 #ifndef AIR_LOOP_MERGING_PASS_H
 #define AIR_LOOP_MERGING_PASS_H
 
+#include "air/Transform/PassDetail.h"
+
 #include "mlir/Pass/Pass.h"
 #include <memory>
 

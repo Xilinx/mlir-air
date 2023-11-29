@@ -8,11 +8,15 @@
 #ifndef AIRRT_TO_IPU_H
 #define AIRRT_TO_IPU_H
 
+#include "air/Conversion/PassDetail.h"
+
 #include "mlir/Pass/Pass.h"
 #include <memory>
 
 namespace xilinx {
 namespace airrt {
+
+using namespace mlir;
 
 std::unique_ptr<mlir::Pass> createAIRRtToIpuPass();
 

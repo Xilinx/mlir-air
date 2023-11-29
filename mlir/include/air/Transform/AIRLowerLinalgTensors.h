@@ -9,6 +9,8 @@
 #ifndef AIR_LOWER_LINALG_TENSORS_H
 #define AIR_LOWER_LINALG_TENSORS_H
 
+#include "air/Transform/PassDetail.h"
+
 #include "mlir/Pass/Pass.h"
 #include <memory>
 #include <vector>

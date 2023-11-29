@@ -19,8 +19,6 @@
 #include <vector>
 #include <set>
 
-#include "PassDetail.h"
-
 #define DEBUG_TYPE "return-elimination"
 
 using namespace mlir;
@@ -28,7 +26,9 @@ using namespace xilinx::air;
 
 namespace {
 
-class ReturnEliminationPass : public AIRReturnEliminationBase<ReturnEliminationPass> {
+class ReturnEliminationPass
+    : public xilinx::air::impl::AIRReturnEliminationBase<
+          ReturnEliminationPass> {
 
 public:
   ReturnEliminationPass() {}

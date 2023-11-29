@@ -11,19 +11,27 @@
 
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
 
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/IR/BuiltinOps.h"
-#include "mlir/Pass/Pass.h"
-
 namespace xilinx {
 namespace air {
 
 using namespace mlir;
 
-#define GEN_PASS_CLASSES
+#define GEN_PASS_DECL
+#define GEN_PASS_DEF_AIRLOWERING
+#define GEN_PASS_DEF_AIRPIPELINETOAFFINE
+#define GEN_PASS_DEF_AIRRTTOIPU
+#define GEN_PASS_DEF_AIRRTTOLLVM
+#define GEN_PASS_DEF_AIRSPLITDEVICES
+#define GEN_PASS_DEF_AIRTOAIE
+#define GEN_PASS_DEF_AIRTOASYNC
+#define GEN_PASS_DEF_COPYTODMA
+#define GEN_PASS_DEF_DMATOCHANNEL
+#define GEN_PASS_DEF_INSERTEMPTYLAUNCHOVERHERD
+#define GEN_PASS_DEF_PARALLELTOHERD
+#define GEN_PASS_DEF_PARALLELTOLAUNCH
 #include "air/Conversion/Passes.h.inc"
 
 } // namespace air
 } // namespace xilinx
 
-#endif // AIR_CONVERSION_PASSDETAIL_H
+#endif

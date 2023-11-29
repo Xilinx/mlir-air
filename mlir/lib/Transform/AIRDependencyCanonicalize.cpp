@@ -6,8 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "PassDetail.h"
-
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRDependencyCanonicalize.h"
 #include "air/Util/Dependency.h"
@@ -22,7 +20,8 @@ using namespace boost;
 namespace {
 
 class AIRDependencyCanonicalize
-    : public AIRDependencyCanonicalizeBase<AIRDependencyCanonicalize> {
+    : public xilinx::air::impl::AIRDependencyCanonicalizeBase<
+          AIRDependencyCanonicalize> {
 
 public:
   AIRDependencyCanonicalize() = default;

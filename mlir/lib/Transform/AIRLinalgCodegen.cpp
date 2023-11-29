@@ -6,8 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "PassDetail.h"
-
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIR/AIRTransformOps.h"
 #include "air/Transform/AIRLinalgCodegen.h"
@@ -1294,7 +1292,7 @@ private:
 };
 
 class AIRPipelineReducePass
-    : public air::AIRPipelineReducePassBase<AIRPipelineReducePass> {
+    : public air::impl::AIRPipelineReducePassBase<AIRPipelineReducePass> {
 
 public:
   AIRPipelineReducePass() = default;
@@ -1323,7 +1321,8 @@ void AIRPipelineReducePass::runOnOperation() {
 
   (void)applyPatternsAndFoldGreedily(func, std::move(patterns));
 }
-class AIRLinalgCodegen : public air::AIRLinalgCodegenBase<AIRLinalgCodegen> {
+class AIRLinalgCodegen
+    : public air::impl::AIRLinalgCodegenBase<AIRLinalgCodegen> {
 
 public:
   AIRLinalgCodegen() = default;

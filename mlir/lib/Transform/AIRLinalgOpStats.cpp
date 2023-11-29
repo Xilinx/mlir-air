@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Transform/AIRLinalgOpStats.h"
-#include "PassDetail.h"
 #include "air/Util/CostModel.h"
 
 #include "mlir/Conversion/LinalgToStandard/LinalgToStandard.h"
@@ -24,7 +23,8 @@ using namespace mlir;
 using namespace xilinx;
 using namespace xilinx::air;
 
-class AIRLinalgOpStats : public AIRLinalgOpStatsBase<AIRLinalgOpStats> {
+class AIRLinalgOpStats
+    : public xilinx::air::impl::AIRLinalgOpStatsBase<AIRLinalgOpStats> {
 public:
   AIRLinalgOpStats() = default;
   AIRLinalgOpStats(const AIRLinalgOpStats &pass) {}

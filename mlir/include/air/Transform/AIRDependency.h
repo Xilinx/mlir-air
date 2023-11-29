@@ -9,6 +9,8 @@
 #ifndef AIR_DEPENDENCY_H
 #define AIR_DEPENDENCY_H
 
+#include "air/Transform/PassDetail.h"
+
 #include "mlir/Pass/Pass.h"
 #include <memory>
 

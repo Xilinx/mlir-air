@@ -22,7 +22,6 @@
 #include "air/Transform/AIRLoopPermutationPass.h"
 #include "air/Transform/AIRTilingUtils.h"
 
-#include "PassDetail.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
@@ -48,8 +47,9 @@ using namespace xilinx;
 using namespace xilinx::air;
 
 namespace {
-  
-class AIRLoopPermutationPass : public AIRLoopPermutationBase<AIRLoopPermutationPass> {
+
+class AIRLoopPermutationPass
+    : public xilinx::air::impl::AIRLoopPermutationBase<AIRLoopPermutationPass> {
 
 public:
   AIRLoopPermutationPass() = default;
@@ -60,7 +60,6 @@ public:
 
   static const char *affineOptAttrName;
 private:
-
 };
 
 const char *AIRLoopPermutationPass::affineOptAttrName = "affine_opt_label";

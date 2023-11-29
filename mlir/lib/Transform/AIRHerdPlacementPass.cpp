@@ -5,8 +5,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "PassDetail.h"
-
 #include "air/Transform/AIRHerdPlacementPass.h"
 #include "air/Util/Util.h"
 
@@ -155,11 +153,13 @@ private:
 };
 
 class AIRHerdPlacementPass
-    : public AIRHerdPlacementPassBase<AIRHerdPlacementPass> {
+    : public xilinx::air::impl::AIRHerdPlacementPassBase<AIRHerdPlacementPass> {
 
 public:
   AIRHerdPlacementPass() = default;
   AIRHerdPlacementPass(const AIRHerdPlacementPass &pass) {}
+  AIRHerdPlacementPass(const AIRHerdPlacementPassOptions &options)
+      : AIRHerdPlacementPassBase(options) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<air::airDialect>();
@@ -318,6 +318,10 @@ namespace air {
 
 std::unique_ptr<mlir::Pass> createAIRHerdPlacementPass() {
   return std::make_unique<AIRHerdPlacementPass>();
+}
+std::unique_ptr<OperationPass<ModuleOp>>
+createAIRHerdPlacementPass(const AIRHerdPlacementPassOptions &options) {
+  return std::make_unique<AIRHerdPlacementPass>(options);
 }
 
 } // namespace air

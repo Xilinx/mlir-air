@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Transform/AIRLowerLinalgTensors.h"
-#include "PassDetail.h"
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 
@@ -133,7 +132,8 @@ struct LowerLinalgOpPattern : public OpRewritePattern<linalg::GenericOp> {
 };
 
 struct AIRLowerLinalgTensors
-    : public AIRLowerLinalgTensorsBase<AIRLowerLinalgTensors> {
+    : public xilinx::air::impl::AIRLowerLinalgTensorsBase<
+          AIRLowerLinalgTensors> {
   void runOnOperation() override;
 };
 

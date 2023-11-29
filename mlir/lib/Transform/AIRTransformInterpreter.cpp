@@ -6,7 +6,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "air/Transform/AIRTransformInterpreter.h"
-#include "PassDetail.h"
 
 #include "air/Dialect/AIR/AIRDialect.h"
 
@@ -56,7 +55,7 @@ parseTransformModuleFromFile(MLIRContext *context,
 namespace {
 
 class AIRTransformInterpreterPass
-    : public xilinx::air::AIRTransformInterpreterPassBase<
+    : public xilinx::air::impl::AIRTransformInterpreterPassBase<
           AIRTransformInterpreterPass> {
 
 public:

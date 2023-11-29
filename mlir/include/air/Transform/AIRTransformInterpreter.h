@@ -8,6 +8,8 @@
 #ifndef AIR_TRANSFORM_INTERPRETER_H
 #define AIR_TRANSFORM_INTERPRETER_H
 
+#include "air/Transform/PassDetail.h"
+
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
