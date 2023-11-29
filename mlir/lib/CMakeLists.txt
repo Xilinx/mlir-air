@@ -20,6 +20,8 @@ add_mlir_library(
   AIRDialect
   AIRRtDialect
   AIRTransformOpsIncGen
+  AIRConversionPasses
+  AIRTransformPasses
 
   LINK_LIBS
   AIRConversionPasses
