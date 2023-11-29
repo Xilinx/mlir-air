@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/MathExtras.h"
+#include <set>
 
 #define DEBUG_TYPE "air-to-aie-scheduling-utils"
 
