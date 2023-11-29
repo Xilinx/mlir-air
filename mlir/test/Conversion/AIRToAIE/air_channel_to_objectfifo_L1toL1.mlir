@@ -1,4 +1,4 @@
-//===- air_channel_to_objectFifo_L1toL1.mlir --------------------*- MLIR -*-===//
+//===- air_channel_to_objectfifo_L1toL1.mlir --------------------*- MLIR -*-===//
 //
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
@@ -10,17 +10,17 @@
 // CHECK-LABEL:   AIE.device(xcvc1902) {
 // CHECK:    %[[VAL_0:.*]] = AIE.tile(1, 1)
 // CHECK:    %[[VAL_1:.*]] = AIE.tile(1, 2)
-// CHECK:    AIE.objectFifo @[[VAL_2:.*]](%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) : !AIE.objectFifo<memref<32xi32>>
+// CHECK:    AIE.objectfifo @[[VAL_2:.*]](%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) : !AIE.objectfifo<memref<32xi32>>
 // CHECK:    %[[VAL_3:.*]] = AIE.core(%[[VAL_1]]) {
-// CHECK:      %[[VAL_4:.*]] = AIE.objectFifo.acquire @[[VAL_2]](Consume, 1) : !AIE.objectFifoSubview<memref<32xi32>>
-// CHECK:      %[[VAL_5:.*]] = AIE.objectFifo.subview.access %[[VAL_4]][0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:      AIE.objectFifo.release @[[VAL_2]](Consume, 1)
+// CHECK:      %[[VAL_4:.*]] = AIE.objectfifo.acquire @[[VAL_2]](Consume, 1) : !AIE.objectfifosubview<memref<32xi32>>
+// CHECK:      %[[VAL_5:.*]] = AIE.objectfifo.subview.access %[[VAL_4]][0] : !AIE.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:      AIE.objectfifo.release @[[VAL_2]](Consume, 1)
 // CHECK:      AIE.end
 // CHECK:    } {elf_file = "segment_0_core_1_2.elf"}
 // CHECK:    %[[VAL_6:.*]] = AIE.core(%[[VAL_0]]) {
-// CHECK:      %[[VAL_7:.*]] = AIE.objectFifo.acquire @[[VAL_2]](Produce, 1) : !AIE.objectFifoSubview<memref<32xi32>>
-// CHECK:      %[[VAL_8:.*]] = AIE.objectFifo.subview.access %[[VAL_7]][0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:      AIE.objectFifo.release @[[VAL_2]](Produce, 1)
+// CHECK:      %[[VAL_7:.*]] = AIE.objectfifo.acquire @[[VAL_2]](Produce, 1) : !AIE.objectfifosubview<memref<32xi32>>
+// CHECK:      %[[VAL_8:.*]] = AIE.objectfifo.subview.access %[[VAL_7]][0] : !AIE.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:      AIE.objectfifo.release @[[VAL_2]](Produce, 1)
 // CHECK:      AIE.end
 // CHECK:    } {elf_file = "segment_0_core_1_1.elf"}
 // CHECK:  }
@@ -50,17 +50,17 @@ AIE.device(xcvc1902) {
 // CHECK-LABEL:   AIE.device(xcvc1902) {
 // CHECK:    %[[VAL_0:.*]] = AIE.tile(1, 1)
 // CHECK:    %[[VAL_1:.*]] = AIE.tile(1, 2)
-// CHECK:    AIE.objectFifo @[[VAL_2:.*]](%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) : !AIE.objectFifo<memref<32xi32>>
+// CHECK:    AIE.objectfifo @[[VAL_2:.*]](%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) : !AIE.objectfifo<memref<32xi32>>
 // CHECK:    %[[VAL_3:.*]] = AIE.core(%[[VAL_1]]) {
-// CHECK:      %[[VAL_4:.*]] = AIE.objectFifo.acquire @[[VAL_2]](Consume, 1) : !AIE.objectFifoSubview<memref<32xi32>>
-// CHECK:      %[[VAL_5:.*]] = AIE.objectFifo.subview.access %[[VAL_4]][0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:      AIE.objectFifo.release @[[VAL_2]](Consume, 1)
+// CHECK:      %[[VAL_4:.*]] = AIE.objectfifo.acquire @[[VAL_2]](Consume, 1) : !AIE.objectfifosubview<memref<32xi32>>
+// CHECK:      %[[VAL_5:.*]] = AIE.objectfifo.subview.access %[[VAL_4]][0] : !AIE.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:      AIE.objectfifo.release @[[VAL_2]](Consume, 1)
 // CHECK:      AIE.end
 // CHECK:    } {elf_file = "segment_0_core_1_2.elf"}
 // CHECK:    %[[VAL_6:.*]] = AIE.core(%[[VAL_0]]) {
-// CHECK:      %[[VAL_7:.*]] = AIE.objectFifo.acquire @[[VAL_2]](Produce, 1) : !AIE.objectFifoSubview<memref<32xi32>>
-// CHECK:      %[[VAL_8:.*]] = AIE.objectFifo.subview.access %[[VAL_7]][0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:      AIE.objectFifo.release @[[VAL_2]](Produce, 1)
+// CHECK:      %[[VAL_7:.*]] = AIE.objectfifo.acquire @[[VAL_2]](Produce, 1) : !AIE.objectfifosubview<memref<32xi32>>
+// CHECK:      %[[VAL_8:.*]] = AIE.objectfifo.subview.access %[[VAL_7]][0] : !AIE.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:      AIE.objectfifo.release @[[VAL_2]](Produce, 1)
 // CHECK:      AIE.end
 // CHECK:    } {elf_file = "segment_0_core_1_1.elf"}
 // CHECK:  }
