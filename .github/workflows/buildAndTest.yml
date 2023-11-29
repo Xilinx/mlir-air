@@ -95,7 +95,6 @@ jobs:
             -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_INSTALL_PREFIX=install
-          ninja clean
           ninja
           ninja check-air-mlir
           ninja check-air-python
