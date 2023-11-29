@@ -1,4 +1,4 @@
-//===- air_channel_to_objectFifo_L1toL3.mlir --------------------*- MLIR -*-===//
+//===- air_channel_to_objectfifo_L1toL3.mlir --------------------*- MLIR -*-===//
 //
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
@@ -10,20 +10,20 @@
 // CHECK-LABEL:   AIE.device(xcvc1902) {
 // CHECK:   %[[VAL_0:.*]] = AIE.tile(1, 1)
 // CHECK:   %[[VAL_1:.*]] = AIE.tile(2, 0)
-// CHECK:   AIE.objectFifo @[[VAL_2:.*]](%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) : !AIE.objectFifo<memref<32xi32>>
-// CHECK:   AIE.objectFifo @[[VAL_3:.*]](%[[VAL_1]], {%[[VAL_0]]}, 1 : i32) : !AIE.objectFifo<memref<32xi32>>
+// CHECK:   AIE.objectfifo @[[VAL_2:.*]](%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) : !AIE.objectfifo<memref<32xi32>>
+// CHECK:   AIE.objectfifo @[[VAL_3:.*]](%[[VAL_1]], {%[[VAL_0]]}, 1 : i32) : !AIE.objectfifo<memref<32xi32>>
 // CHECK:   %[[VAL_4:.*]] = AIE.core(%[[VAL_0]]) {
 // CHECK:     affine.for %[[VAL_5:.*]] = 0 to 4096 step 32 {
-// CHECK:       %[[VAL_6:.*]] = AIE.objectFifo.acquire @[[VAL_3]](Consume, 1) : !AIE.objectFifoSubview<memref<32xi32>>
-// CHECK:       %[[VAL_7:.*]] = AIE.objectFifo.subview.access %[[VAL_6]][0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:       %[[VAL_8:.*]] = AIE.objectFifo.acquire @[[VAL_2]](Produce, 1) : !AIE.objectFifoSubview<memref<32xi32>>
-// CHECK:       %[[VAL_9:.*]] = AIE.objectFifo.subview.access %[[VAL_8]][0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:       %[[VAL_6:.*]] = AIE.objectfifo.acquire @[[VAL_3]](Consume, 1) : !AIE.objectfifosubview<memref<32xi32>>
+// CHECK:       %[[VAL_7:.*]] = AIE.objectfifo.subview.access %[[VAL_6]][0] : !AIE.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:       %[[VAL_8:.*]] = AIE.objectfifo.acquire @[[VAL_2]](Produce, 1) : !AIE.objectfifosubview<memref<32xi32>>
+// CHECK:       %[[VAL_9:.*]] = AIE.objectfifo.subview.access %[[VAL_8]][0] : !AIE.objectfifosubview<memref<32xi32>> -> memref<32xi32>
 // CHECK:       affine.for %[[VAL_10:.*]] = 0 to 32 {
 // CHECK:         %[[VAL_11:.*]] = affine.load %[[VAL_7]]{{\[}}%[[VAL_10]]] : memref<32xi32>
 // CHECK:         affine.store %[[VAL_11]], %[[VAL_9]]{{\[}}%[[VAL_10]]] : memref<32xi32>
 // CHECK:       }
-// CHECK:       AIE.objectFifo.release @[[VAL_2]](Produce, 1)
-// CHECK:       AIE.objectFifo.release @[[VAL_3]](Consume, 1)
+// CHECK:       AIE.objectfifo.release @[[VAL_2]](Produce, 1)
+// CHECK:       AIE.objectfifo.release @[[VAL_3]](Consume, 1)
 // CHECK:     }
 // CHECK:     AIE.end
 // CHECK:   } {elf_file = "segment_0_core_1_1.elf"}

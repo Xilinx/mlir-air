@@ -79,8 +79,10 @@ public:
         rewriter.create<scf::ParallelOp>(op->getLoc(), lbs, ubs, steps);
 
     // map launch iteration space to scf.parallel ivs
-    for (auto p : llvm::zip(launch.getIds(), scfPar.getInductionVars()))
-      std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
+    for (auto p : llvm::zip(launch.getIds(), scfPar.getInductionVars())) {
+      Value p_0 = std::get<0>(p);
+      p_0.replaceAllUsesWith(std::get<1>(p));
+    }
 
     // map launch size to scf.parallel upper bounds
     for (auto p : llvm::zip(launch.getSizeOperands(), scfPar.getUpperBound()))
@@ -159,8 +161,10 @@ public:
           rewriter.create<scf::ParallelOp>(op->getLoc(), lbs, ubs, steps);
 
       // map segment iteration space to scf.parallel ivs
-      for (auto p : llvm::zip(segment.getIds(), scfPar.getInductionVars()))
-        std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
+      for (auto p : llvm::zip(segment.getIds(), scfPar.getInductionVars())) {
+        Value p_0 = std::get<0>(p);
+        p_0.replaceAllUsesWith(std::get<1>(p));
+      }
 
       // map segment size to scf.parallel upper bounds
       for (auto p :
@@ -228,10 +232,14 @@ public:
     outer->setAttr("air.herd", StringAttr::get(op->getContext(), "outer"));
     inner->setAttr("air.herd", StringAttr::get(op->getContext(), "inner"));
 
-    herd.getSize()[0].replaceAllUsesWith(herd_size[0]);
-    herd.getSize()[1].replaceAllUsesWith(herd_size[1]);
-    herd.getIds()[0].replaceAllUsesWith(outer.getInductionVar());
-    herd.getIds()[1].replaceAllUsesWith(inner.getInductionVar());
+    Value hs_0 = herd.getSize()[0];
+    Value hs_1 = herd.getSize()[1];
+    Value hid_0 = herd.getIds()[0];
+    Value hid_1 = herd.getIds()[1];
+    hs_0.replaceAllUsesWith(herd_size[0]);
+    hs_1.replaceAllUsesWith(herd_size[1]);
+    hid_0.replaceAllUsesWith(outer.getInductionVar());
+    hid_1.replaceAllUsesWith(inner.getInductionVar());
 
     if (herdOps.size()) {
       int i = 0;

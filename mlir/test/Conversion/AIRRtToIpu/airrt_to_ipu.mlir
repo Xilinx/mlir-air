@@ -220,9 +220,9 @@ module {
 
 // -----
 
-// ObjectFifo lowering
+// objectfifo lowering
 
-// CHECK-LABEL: AIE.device(ipu) {
+// CHECK-LABEL: AIE.device(ipu)
 // CHECK:  func.func @func4(%[[ARG0:.*]]: memref<8x8xi32>)
 // CHECK:  %[[CST0]] = arith.constant 0 : i32
 // CHECK:  %[[CST1]] = arith.constant 1 : i32
@@ -242,10 +242,10 @@ module {
     %tile_1_4 = AIE.tile(1, 4)
     %tile_0_0 = AIE.tile(0, 0)
     %tile_1_0 = AIE.tile(1, 0)
-    AIE.objectFifo @air_channel_4(%tile_1_4, {%tile_0_0}, 1 : i32) : !AIE.objectFifo<memref<4x4xi32>>
-    AIE.objectFifo @air_channel_3(%tile_0_4, {%tile_0_0}, 1 : i32) : !AIE.objectFifo<memref<4x4xi32>>
-    AIE.objectFifo @air_channel_2(%tile_1_3, {%tile_1_0}, 1 : i32) : !AIE.objectFifo<memref<4x4xi32>>
-    AIE.objectFifo @air_channel_1(%tile_0_3, {%tile_1_0}, 1 : i32) : !AIE.objectFifo<memref<4x4xi32>>
+    AIE.objectfifo @air_channel_4(%tile_1_4, {%tile_0_0}, 1 : i32) : !AIE.objectfifo<memref<4x4xi32>>
+    AIE.objectfifo @air_channel_3(%tile_0_4, {%tile_0_0}, 1 : i32) : !AIE.objectfifo<memref<4x4xi32>>
+    AIE.objectfifo @air_channel_2(%tile_1_3, {%tile_1_0}, 1 : i32) : !AIE.objectfifo<memref<4x4xi32>>
+    AIE.objectfifo @air_channel_1(%tile_0_3, {%tile_1_0}, 1 : i32) : !AIE.objectfifo<memref<4x4xi32>>
   } {sym_name = "segment_0"}
   airrt.module_metadata{
   }

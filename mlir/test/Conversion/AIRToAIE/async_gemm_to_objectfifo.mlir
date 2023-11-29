@@ -1,4 +1,4 @@
-//===- async_gemm_to_objectFifo.mlir ---------------------------*- MLIR -*-===//
+//===- async_gemm_to_objectfifo.mlir ---------------------------*- MLIR -*-===//
 //
 // Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
@@ -12,7 +12,7 @@
 // CHECK:   %[[VAL_1:.*]] = AIE.tile(6, 3)
 // CHECK:   %[[VAL_2:.*]] = AIE.tile(5, 4)
 // CHECK:   %[[VAL_3:.*]] = AIE.tile(6, 4)
-// CHECK-COUNT-12:    AIE.objectFifo @
+// CHECK-COUNT-12:    AIE.objectfifo @
 
 #map = affine_map<()[s0] -> (s0 * 64)>
 module {
