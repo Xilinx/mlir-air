@@ -12,16 +12,18 @@ configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py)
 
 set(TEST_DEPENDS FileCheck count not air-opt air-runner air-translate)
-
 add_lit_testsuite(check-air-mlir "Running the air mlir regression tests"
                   ${CMAKE_CURRENT_BINARY_DIR} DEPENDS ${TEST_DEPENDS})
 set_target_properties(check-air-mlir PROPERTIES FOLDER "Tests")
-
 add_lit_testsuites(AIRMLIR ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS ${TEST_DEPENDS})
 add_dependencies(check-all check-air-mlir)
 
+
+# C++ tests:
 include(CTest)
 add_executable(MyTest  MyTest.cpp)
 add_test(NAME MyCppTest COMMAND MyTest)
-add_custom_target(check-cpp COMMAND ${CMAKE_CTEST_COMMAND} DEPENDS MyTest)
-add_dependencies(check-all check-cpp)
+add_custom_target(check-air-cpp COMMAND ${CMAKE_CTEST_COMMAND} DEPENDS MyTest)
+
+add_dependencies(check-all check-air-cpp)
+

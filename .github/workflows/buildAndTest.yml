@@ -98,6 +98,7 @@ jobs:
           ninja
           ninja check-air-mlir
           ninja check-air-python
+          ninja check-air-cpp
           popd
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/aienginev2/install/lib
@@ -122,7 +123,7 @@ jobs:
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_INSTALL_PREFIX=install
           make -j$(nproc)
-          make check-air-mlir check-air-python
+          make check-air-mlir check-air-python check-air-cpp
           popd
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/aienginev2/install/lib
