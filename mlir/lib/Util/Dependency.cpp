@@ -1777,9 +1777,7 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
     auto async_op = mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op);
     if (!async_op)
       continue;
-
     auto inv_adj_verts = inv_adjacent_vertices(*dstTRVertex, graph.g);
-
     for (auto it = inv_adj_verts.first; it != inv_adj_verts.second; it++) {
       auto TRVertex = *it;
       auto src_op = graph.g[TRVertex].op;
