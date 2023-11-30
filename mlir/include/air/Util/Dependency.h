@@ -234,9 +234,7 @@ public:
                           std::string granularity = "herd",
                           bool dump_dot = false, std::string dump_dir = "");
   void canonicalizeGraphs(dependencyGraph &global_graph,
-                          dependencyGraph &tr_graph,
-                          vertex_to_vertex_map_tree &g_to_tr,
-                          bool dump_graph = false, std::string dump_dir = "");
+                          dependencyGraph &tr_graph);
   void updateDepList(func::FuncOp func, dependencyGraph &global_graph);
   void removeDepListRepetition(func::FuncOp func);
   void removeUnusedExecuteOp(func::FuncOp func);
@@ -325,9 +323,7 @@ private:
                                                    dependencyGraph &subG);
   void updatePointerFromHierarchyOpToGraph(dependencyGraph &G);
   void boostTransitiveReductionImpl(Graph &asyncExecuteGraph,
-                                    Graph &asyncExecuteGraphTR,
-                                    vertex_to_vertex_map &g_to_tr,
-                                    vertex_to_vertex_map &tr_to_g);
+                                    Graph &asyncExecuteGraphTR);
   void purgeAIRDepList(dependencyGraph &graph);
   void fillAIRDepListUsingGraphTR(dependencyGraph &graph);
   void collectAIRChannelPutAndGetInGraph(Graph g,
