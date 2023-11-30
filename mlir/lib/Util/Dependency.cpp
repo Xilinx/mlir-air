@@ -1616,8 +1616,8 @@ void dependencyCanonicalizer::updatePointerFromHierarchyOpToGraph(
 }
 
 // Perform transitive reduction to canonicalize the dependency graph
-void dependencyCanonicalizer::canonicalizeGraphs(
-    dependencyGraph &global_graph, dependencyGraph &tr_graph){
+void dependencyCanonicalizer::canonicalizeGraphs(dependencyGraph &global_graph,
+                                                 dependencyGraph &tr_graph) {
 
   // Construct empty post-canonicalization dependency graph, tr_graph
   for (auto &launchGraph : global_graph.subgraphs) {
@@ -1657,7 +1657,7 @@ void dependencyCanonicalizer::canonicalizeGraphs(
       for (unsigned k = 0; k < segment_size; k++) {
         auto &herdGraph = segmentGraph.subgraphs[k];
         auto &trHerdGraph = trSegmentGraph.subgraphs[k];
-        boostTransitiveReductionImpl(herdGraph.g, trHerdGraph.g); 
+        boostTransitiveReductionImpl(herdGraph.g, trHerdGraph.g);
       }
     }
   }
@@ -1666,8 +1666,8 @@ void dependencyCanonicalizer::canonicalizeGraphs(
 void dependencyCanonicalizer::boostTransitiveReductionImpl(
     Graph &asyncExecuteGraph, Graph &asyncExecuteGraphTR) {
 
-    vertex_to_vertex_map g_to_tr;
-    vertex_to_vertex_map tr_to_g;
+  vertex_to_vertex_map g_to_tr;
+  vertex_to_vertex_map tr_to_g;
 
   std::vector<size_t> id_map(num_vertices(asyncExecuteGraph));
   std::iota(id_map.begin(), id_map.end(), 0u);

@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRDependencyCanonicalize.h"
+#include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/Dependency.h"
 
 using namespace mlir;
