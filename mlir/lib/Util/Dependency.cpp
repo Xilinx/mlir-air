@@ -1616,29 +1616,21 @@ void dependencyCanonicalizer::updatePointerFromHierarchyOpToGraph(
 }
 
 // Perform transitive reduction to canonicalize the dependency graph
-void dependencyCanonicalizer::canonicalizeGraphs(
-    dependencyGraph &global_graph, dependencyGraph &tr_graph,
-    vertex_to_vertex_map_tree &g_to_tr, bool dump_dot, std::string dump_dir) {
+void dependencyCanonicalizer::canonicalizeGraphs(dependencyGraph &global_graph,
+                                                 dependencyGraph &tr_graph) {
 
   // Construct empty post-canonicalization dependency graph, tr_graph
   for (auto &launchGraph : global_graph.subgraphs) {
     tr_graph.subgraphs.push_back(dependencyGraph(launchGraph.hierarchyOp));
     dependencyGraph *current_launch_graph = &(tr_graph.subgraphs.back());
-    g_to_tr.submaps.push_back(vertex_to_vertex_map_tree());
-    vertex_to_vertex_map_tree *current_launch_g_to_tr =
-        &(g_to_tr.submaps.back());
     for (auto &segmentGraph : launchGraph.subgraphs) {
       current_launch_graph->subgraphs.push_back(
           dependencyGraph(segmentGraph.hierarchyOp));
       dependencyGraph *current_segment_graph =
           &(current_launch_graph->subgraphs.back());
-      current_launch_g_to_tr->submaps.push_back(vertex_to_vertex_map_tree());
-      vertex_to_vertex_map_tree *current_segment_g_to_tr =
-          &(current_launch_g_to_tr->submaps.back());
       for (auto &herdGraph : segmentGraph.subgraphs) {
         current_segment_graph->subgraphs.push_back(
             dependencyGraph(herdGraph.hierarchyOp));
-        current_segment_g_to_tr->submaps.push_back(vertex_to_vertex_map_tree());
       }
     }
   }
@@ -1647,49 +1639,35 @@ void dependencyCanonicalizer::canonicalizeGraphs(
   auto global_size = global_graph.subgraphs.size();
   if (global_size != tr_graph.subgraphs.size())
     global_graph.hierarchyOp->emitOpError("graph tree size mismatch");
-  if (global_size != g_to_tr.submaps.size())
-    global_graph.hierarchyOp->emitOpError(
-        "graph tree size and map size mismatch");
-  boostTransitiveReductionImpl(global_graph.g, tr_graph.g, g_to_tr.a_to_b,
-                               g_to_tr.b_to_a);
+  boostTransitiveReductionImpl(global_graph.g, tr_graph.g);
   for (unsigned i = 0; i < global_size; i++) {
     auto &launchGraph = global_graph.subgraphs[i];
     auto &trLaunchGraph = tr_graph.subgraphs[i];
     auto launch_size = launchGraph.subgraphs.size();
-    auto launchMap = g_to_tr.submaps[i];
     if (launch_size != trLaunchGraph.subgraphs.size())
       launchGraph.hierarchyOp->emitOpError("graph tree size mismatch");
-    if (launch_size != launchMap.submaps.size())
-      launchGraph.hierarchyOp->emitOpError(
-          "graph tree size and map size mismatch");
-    boostTransitiveReductionImpl(launchGraph.g, trLaunchGraph.g,
-                                 launchMap.a_to_b, launchMap.b_to_a);
+    boostTransitiveReductionImpl(launchGraph.g, trLaunchGraph.g);
     for (unsigned j = 0; j < launch_size; j++) {
       auto &segmentGraph = launchGraph.subgraphs[j];
       auto &trSegmentGraph = trLaunchGraph.subgraphs[j];
       auto segment_size = segmentGraph.subgraphs.size();
-      auto segmentMap = launchMap.submaps[j];
       if (segment_size != trSegmentGraph.subgraphs.size())
         segmentGraph.hierarchyOp->emitOpError("graph tree size mismatch");
-      if (segment_size != segmentMap.submaps.size())
-        segmentGraph.hierarchyOp->emitOpError(
-            "graph tree size and map size mismatch");
-      boostTransitiveReductionImpl(segmentGraph.g, trSegmentGraph.g,
-                                   segmentMap.a_to_b, segmentMap.b_to_a);
+      boostTransitiveReductionImpl(segmentGraph.g, trSegmentGraph.g);
       for (unsigned k = 0; k < segment_size; k++) {
         auto &herdGraph = segmentGraph.subgraphs[k];
         auto &trHerdGraph = trSegmentGraph.subgraphs[k];
-        auto herdMap = segmentMap.submaps[k];
-        boostTransitiveReductionImpl(herdGraph.g, trHerdGraph.g, herdMap.a_to_b,
-                                     herdMap.b_to_a);
+        boostTransitiveReductionImpl(herdGraph.g, trHerdGraph.g);
       }
     }
   }
 }
 
 void dependencyCanonicalizer::boostTransitiveReductionImpl(
-    Graph &asyncExecuteGraph, Graph &asyncExecuteGraphTR,
-    vertex_to_vertex_map &g_to_tr, vertex_to_vertex_map &tr_to_g) {
+    Graph &asyncExecuteGraph, Graph &asyncExecuteGraphTR) {
+
+  vertex_to_vertex_map g_to_tr;
+  vertex_to_vertex_map tr_to_g;
 
   std::vector<size_t> id_map(num_vertices(asyncExecuteGraph));
   std::iota(id_map.begin(), id_map.end(), 0u);
