@@ -138,7 +138,7 @@ struct dependencyNodeEntry {
 };
 
 // Boost dependency graph
-typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::bidirectionalS,
+typedef boost::adjacency_list<boost::setS, boost::vecS, boost::bidirectionalS,
                               dependencyNodeEntry>
     Graph;
 typedef boost::graph_traits<Graph>::in_edge_iterator in_edge_iterator;
