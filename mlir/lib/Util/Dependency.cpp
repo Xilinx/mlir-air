@@ -1294,9 +1294,9 @@ void dependencyCanonicalizer::copyFromDependencyGraphToFlatGraph(
   if (copyEdges) {
     // Copy edges
     for (auto vit : vp) {
-      for (auto it = out_edges(vit, g_src).first;
-           it != out_edges(vit, g_src).second; it++) {
-        auto target_it = target(*it, g_src);
+      auto adj_vs = adjacent_vertices(vit, g_src);
+      for (auto it = adj_vs.first; it != adj_vs.second; ++it) {
+        auto target_it = *it;
         if (std::count(vp.begin(), vp.end(), target_it)) {
           add_edge(map[vit], map[target_it], g_dst);
         }
@@ -1344,9 +1344,9 @@ void dependencyCanonicalizer::updateSubgraphFromDependencyGraph(
   if (copyEdges) {
     // Update edges
     for (auto vit : vp) {
-      for (auto it = out_edges(vit, subg_src).first;
-           it != out_edges(vit, subg_src).second; it++) {
-        auto target_it = target(*it, subg_src);
+      auto adj_vs = boost::adjacent_vertices(vit, subg_src);
+      for (auto it = adj_vs.first; it != adj_vs.second; ++it) {
+        auto target_it = *it;
         if (std::count(vp.begin(), vp.end(), target_it)) {
           add_edge(subg_map[vit], subg_map[target_it], subg_dst);
         }
@@ -1777,10 +1777,11 @@ void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
     auto async_op = mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op);
     if (!async_op)
       continue;
-    auto incoming_deps = in_edges(*dstTRVertex, graph.g);
-    for (in_edge_iterator it = incoming_deps.first; it != incoming_deps.second;
-         it++) {
-      auto TRVertex = source(*it, graph.g);
+
+    auto inv_adj_verts = inv_adjacent_vertices(*dstTRVertex, graph.g);
+
+    for (auto it = inv_adj_verts.first; it != inv_adj_verts.second; it++) {
+      auto TRVertex = *it;
       auto src_op = graph.g[TRVertex].op;
       if (src_op && op != src_op) { // Avoid dep to itself
         if (graph.g[TRVertex].asyncEventType == "for_loop") {
