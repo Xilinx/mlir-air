@@ -44,9 +44,6 @@ public:
       // Purge id attribute
       func.walk([&](Operation *op) { op->removeAttr("id"); });
 
-      // Visualize graph with flattened hierarchy
-      canonicalizer.copyDependencyGraphToFlatGraphAndVisualize(
-          func, hostGraph, dep_ctx, true, clDumpDir);
     }
   }
 
