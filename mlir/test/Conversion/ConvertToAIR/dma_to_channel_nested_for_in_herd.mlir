@@ -151,4 +151,155 @@ module {
     }
     return %results_2 : memref<64x64xi32>
   }
+
+// CHECK-LABEL: func.func @legalize_memspace_sync
+// CHECK: scf.parallel
+// CHECK: scf.for{{.*}}%c0 to %c512 step %c64
+// CHECK: scf.for{{.*}}%c0 to %c512 step %c64
+// CHECK: scf.for{{.*}}%c0 to %c64 step %c32
+// CHECK: scf.for{{.*}}%c0 to %c64 step %c32
+// CHECK: scf.for{{.*}}%c0 to %c1024 step %c128
+// CHECK: air.channel.put @channel_8
+// CHECK: }
+// CHECK: }
+// CHECK: }
+// CHECK: }
+// CHECK: }
+// CHECK: scf.yield
+// CHECK-NEXT: }
+// CHECK: scf.parallel
+// CHECK: scf.for{{.*}}%c0 to %c512 step %c64
+// CHECK: scf.for{{.*}}%c0 to %c512 step %c64
+// CHECK: air.channel.get @channel_9
+// CHECK: }
+// CHECK: }
+// CHECK: scf.yield
+// CHECK-NEXT: }
+// CHECK: air.segment @segment_0
+// CHECK: scf.parallel
+// CHECK: scf.for{{.*}}%c0_6 to %c512_2 step %c64_1
+// CHECK: scf.for{{.*}}%c0_6 to %c512_2 step %c64_1
+// CHECK: scf.for{{.*}}%c0_6 to %c64_1 step %c32_3
+// CHECK: scf.for{{.*}}%c0_6 to %c64_1 step %c32_3
+// CHECK: scf.for{{.*}}%c0_6 to %c1024_5 step %c128_4
+// CHECK: air.channel.get @channel_8
+// CHECK: }
+// CHECK: }
+// CHECK: }
+// CHECK: }
+// CHECK: }
+// CHECK: scf.yield
+// CHECK-NEXT: }
+// CHECK: scf.parallel
+// CHECK: scf.for{{.*}}%c0_6 to %c512_2 step %c64_1
+// CHECK: scf.for{{.*}}%c0_6 to %c512_2 step %c64_1
+// CHECK: air.channel.put @channel_9
+// CHECK: }
+// CHECK: }
+// CHECK: scf.yield
+// CHECK-NEXT: }
+// CHECK: scf.parallel
+// CHECK: scf.for{{.*}}%c0_6 to %c512_2 step %c64_1
+// CHECK: scf.for{{.*}}%c0_6 to %c512_2 step %c64_1
+// CHECK: scf.for{{.*}}%c0_6 to %c64_1 step %c32_3
+// CHECK: scf.for{{.*}}%c0_6 to %c64_1 step %c32_3
+// CHECK: scf.for{{.*}}%c0_6 to %c1024_5 step %c128_4
+// CHECK: scf.for{{.*}}%c0_6 to %c128_4 step %c32_3
+// CHECK: air.channel.put @channel_10
+// CHECK: }
+// CHECK: }
+// CHECK: }
+// CHECK: }
+// CHECK: }
+// CHECK: }
+// CHECK: scf.yield
+// CHECK-NEXT: }
+// CHECK: scf.parallel
+// CHECK: scf.for{{.*}}%c0_6 to %c512_2 step %c64_1
+// CHECK: scf.for{{.*}}%c0_6 to %c512_2 step %c64_1
+// CHECK: scf.for{{.*}}%c0_6 to %c64_1 step %c32_3
+// CHECK: scf.for{{.*}}%c0_6 to %c64_1 step %c32_3
+// CHECK: air.channel.get @channel_11
+// CHECK: }
+// CHECK: }
+// CHECK: }
+// CHECK: }
+// CHECK: scf.yield
+// CHECK-NEXT: }
+// CHECK: air.herd @herd_0
+// CHECK: scf.for{{.*}}%c0_15 to %c512_14 step %c64_16
+// CHECK: scf.for{{.*}}%c0_15 to %c512_14 step %c64_16
+// CHECK: scf.for{{.*}}%c0_15 to %c64_16 step %c32_13
+// CHECK: scf.for{{.*}}%c0_15 to %c64_16 step %c32_13
+// CHECK: scf.for{{.*}}%c0_15 to %c1024_11 step %c128_12
+// CHECK: scf.for{{.*}}%c0_15 to %c128_12 step %c32_13
+// CHECK: air.channel.get @channel_10
+// CHECK: }
+// CHECK: }
+// CHECK: air.channel.put @channel_11
+// CHECK: }
+// CHECK: }
+// CHECK: }
+// CHECK: }
+// CHECK: air.herd_terminator
+// CHECK: air.segment_terminator
+// CHECK: air.launch_terminator
+
+  func.func @legalize_memspace_sync(%arg0: memref<1024x1024xi32>, %arg1: memref<1024x1024xi32>, %arg2: memref<1024x1024xi32>) {
+    %c2 = arith.constant 2 : index
+    %alloc = memref.alloc() : memref<1024x1024xi32>
+    %c1 = arith.constant 1 : index
+    %c1_0 = arith.constant 1 : index
+    air.launch (%arg3, %arg4) in (%arg5=%c1, %arg6=%c1_0) args(%arg7=%arg0, %arg8=%arg1, %arg9=%alloc) : memref<1024x1024xi32>, memref<1024x1024xi32>, memref<1024x1024xi32> {
+      air.segment @segment_0  args(%arg10=%arg3, %arg11=%arg4, %arg12=%arg5, %arg13=%arg6, %arg14=%arg7, %arg15=%arg8, %arg16=%arg9) : index, index, index, index, memref<1024x1024xi32>, memref<1024x1024xi32>, memref<1024x1024xi32> {
+        %c2_1 = arith.constant 2 : index
+        %c2_2 = arith.constant 2 : index
+        air.herd @herd_0  tile (%arg17, %arg18) in (%arg19=%c2_1, %arg20=%c2_2) args(%arg21=%arg10, %arg22=%arg11, %arg23=%arg12, %arg24=%arg13, %arg25=%arg14, %arg26=%arg15, %arg27=%arg16) : index, index, index, index, memref<1024x1024xi32>, memref<1024x1024xi32>, memref<1024x1024xi32> {
+          %c1_3 = arith.constant 1 : index
+          %c1024 = arith.constant 1024 : index
+          %c128 = arith.constant 128 : index
+          %c32 = arith.constant 32 : index
+          %c512 = arith.constant 512 : index
+          %c0 = arith.constant 0 : index
+          %c64 = arith.constant 64 : index
+          %c0_i32 = arith.constant 0 : i32
+          %0 = affine.apply #map()[%arg17]
+          %1 = affine.apply #map()[%arg18]
+          scf.for %arg28 = %c0 to %c512 step %c64 {
+            scf.for %arg29 = %c0 to %c512 step %c64 {
+              %2 = arith.addi %0, %arg28 : index
+              %3 = arith.addi %1, %arg29 : index
+              %alloc_4 = memref.alloc() : memref<64x64xi32, 1>
+              scf.for %arg30 = %c0 to %c64 step %c32 {
+                scf.for %arg31 = %c0 to %c64 step %c32 {
+                  %4 = arith.addi %2, %arg30 : index
+                  %5 = arith.addi %3, %arg31 : index
+                  %alloc_5 = memref.alloc() : memref<32x32xi32, 2>
+                  scf.for %arg32 = %c0 to %c1024 step %c128 {
+                    %alloc_6 = memref.alloc() : memref<32x128xi32, 1>
+                    air.dma_memcpy_nd (%alloc_6[] [] [], %arg25[%4, %arg32] [%c32, %c128] [%c1024, %c1_3]) {id = 1 : i32} : (memref<32x128xi32, 1>, memref<1024x1024xi32>)
+                    scf.for %arg33 = %c0 to %c128 step %c32 {
+                      %alloc_8 = memref.alloc() : memref<32x32xi32, 2>
+                      air.dma_memcpy_nd (%alloc_8[] [] [], %alloc_6[%c0, %arg33] [%c32, %c32] [%c128, %c1_3]) {id = 3 : i32} : (memref<32x32xi32, 2>, memref<32x128xi32, 1>)
+                      memref.dealloc %alloc_8 : memref<32x32xi32, 2>
+                    }
+                    memref.dealloc %alloc_6 : memref<32x128xi32, 1>
+                  }
+                  air.dma_memcpy_nd (%alloc_4[%arg30, %arg31] [%c32, %c32] [%c64, %c1_3], %alloc_5[] [] []) {id = 5 : i32} : (memref<64x64xi32, 1>, memref<32x32xi32, 2>)
+                  memref.dealloc %alloc_5 : memref<32x32xi32, 2>
+                }
+              }
+              air.dma_memcpy_nd (%arg27[%2, %3] [%c64, %c64] [%c1024, %c1_3], %alloc_4[] [] []) {id = 6 : i32} : (memref<1024x1024xi32>, memref<64x64xi32, 1>)
+              memref.dealloc %alloc_4 : memref<64x64xi32, 1>
+            }
+          }
+          air.herd_terminator
+        }
+        air.segment_terminator
+      }
+      air.launch_terminator
+    }
+    memref.copy %alloc, %arg2 : memref<1024x1024xi32> to memref<1024x1024xi32>
+    return
+  }
 }
