@@ -78,7 +78,7 @@ struct executeNode {
   unsigned operationId;
 };
 
-typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::bidirectionalS,
+typedef boost::adjacency_list<boost::setS, boost::vecS, boost::bidirectionalS,
                               executeNode>
     Graph;
 typedef boost::graph_traits<Graph>::in_edge_iterator in_edge_iterator;
