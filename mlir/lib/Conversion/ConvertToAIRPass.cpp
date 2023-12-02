@@ -369,32 +369,58 @@ static void updateUsesInScfLoop(OpBuilder builder, T new_loop_op, T loop_op) {
   builder.restoreInsertionPoint(insertionCheckpoint);
 }
 
+void getLeavesInDepGraph(Operation *op, SmallVector<Value> &leaves_list) {
+  Value token = nullptr;
+  for (auto res : op->getResults())
+    if (isa<air::AsyncTokenType>(res.getType()))
+      token = res;
+  if (token) {
+    if (token.getUsers().empty()) {
+      // Push back if unique
+      if (std::find(leaves_list.begin(), leaves_list.end(), token) ==
+          leaves_list.end()) {
+        leaves_list.push_back(token);
+      }
+    } else {
+      for (auto u : token.getUsers())
+        getLeavesInDepGraph(u, leaves_list);
+    }
+  }
+}
+
+void getLeavesInDepGraph(Value v, SmallVector<Value> &leaves_list) {
+  for (auto u : v.getUsers())
+    getLeavesInDepGraph(u, leaves_list);
+}
+
 scf::YieldOp generateYieldAndOrReduceToScfLoop(OpBuilder builder,
                                                MLIRContext *ctx,
                                                scf::ForOp scf_loop) {
   auto insertionCheckpoint = builder.saveInsertionPoint();
   builder.setInsertionPointToEnd(scf_loop.getBody());
-  SmallVector<air::ChannelInterface, 1> channel_ops;
-  for (auto channel_op : scf_loop.getOps<air::ChannelInterface>()) {
-    if (channel_op->hasAttr("hoist")) {
-      channel_ops.push_back(channel_op);
+  SmallVector<air::MemcpyInterface, 1> memcpy_ops;
+  for (auto memcpy_op : scf_loop.getOps<air::MemcpyInterface>()) {
+    if (memcpy_op->hasAttr("hoist")) {
+      memcpy_ops.push_back(memcpy_op);
     }
   }
-  assert(channel_ops.size() <= 1 &&
-         "found multiple channel ops in one hoisted for loop");
+  assert(memcpy_ops.size() <= 1 &&
+         "found multiple memcpy ops in one hoisted for loop");
   SmallVector<Value, 1> yield_token;
-  if (channel_ops.size()) {
-    assert(channel_ops[0]->getResult(0) &&
-           "found sync channel op in async for loop");
+  if (memcpy_ops.size()) {
+    assert(memcpy_ops[0]->getResult(0) &&
+           "found sync memcpy op in async for loop");
     auto wa_op = builder.create<air::WaitAllOp>(
         builder.getUnknownLoc(), air::AsyncTokenType::get(ctx),
-        SmallVector<Value, 1>{channel_ops[0]->getResult(0)});
+        SmallVector<Value, 1>{memcpy_ops[0]->getResult(0)});
     yield_token.push_back(wa_op.getAsyncToken());
     wa_op->setAttr("hoist", StringAttr::get(ctx, "dep"));
   } else {
-    auto wa_op = builder.create<air::WaitAllOp>(builder.getUnknownLoc(),
-                                                air::AsyncTokenType::get(ctx),
-                                                SmallVector<Value, 1>{});
+    // Collect dangling leaves into yield
+    SmallVector<Value> dep_list;
+    getLeavesInDepGraph(scf_loop.getRegionIterArgs()[0], dep_list);
+    auto wa_op = builder.create<air::WaitAllOp>(
+        builder.getUnknownLoc(), air::AsyncTokenType::get(ctx), dep_list);
     yield_token.push_back(wa_op.getAsyncToken());
     wa_op->setAttr("hoist", StringAttr::get(ctx, "dep"));
   }
