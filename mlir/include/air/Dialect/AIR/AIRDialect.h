@@ -34,6 +34,7 @@ class AsyncTokenType
 public:
   // Used for generic hooks in TypeBase.
   using Base::Base;
+  static constexpr StringLiteral name = "xilinx.air.async_token";
 };
 
 // Adds a `air.async.token` to the front of the argument list.
