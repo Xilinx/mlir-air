@@ -2169,9 +2169,17 @@ void dependencyTracer::reconnectLoopCarriedDependencyFromOp(Operation *op) {
         dyn_cast<scf::YieldOp>(scf_for.getBody()->getTerminator());
     auto yield_wait_all =
         dyn_cast<air::WaitAllOp>(scf_for_yield.getOperand(0).getDefiningOp());
-    if (!yield_wait_all)
-      scf_for->emitOpError(
-          "scf::YieldOp is not dependent on any air::WaitAllOp");
+    if (!yield_wait_all) {
+      OpBuilder b_yield(scf_for_yield);
+      yield_wait_all = b_yield.create<air::WaitAllOp>(
+          scf_for_yield->getLoc(),
+          air::AsyncTokenType::get(scf_for_yield->getContext()),
+          SmallVector<Value>{scf_for_yield.getOperand(0)});
+      b_yield.create<scf::YieldOp>(
+          scf_for_yield->getLoc(),
+          SmallVector<Value>{yield_wait_all.getAsyncToken()});
+      scf_for_yield->erase();
+    }
 
     // Connect op's async token to scf reduce
     addAsyncDependencyIfNew(yield_wait_all, op->getResult(0));
