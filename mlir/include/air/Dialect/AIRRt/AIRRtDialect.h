@@ -18,14 +18,14 @@ namespace airrt {
 class TensorType : public Type::TypeBase<TensorType, Type, TypeStorage> {
 public:
   using Base::Base;
-
   static TensorType get(MLIRContext *context) { return Base::get(context); }
+  static constexpr StringLiteral name = "xilinx.airrt.tensor";
 };
 
-class EventType
-    : public Type::TypeBase<EventType, Type, TypeStorage> {
+class EventType : public Type::TypeBase<EventType, Type, TypeStorage> {
 public:
   using Base::Base;
+  static constexpr StringLiteral name = "xilinx.airrt.event";
 };
 
 } // namespace airrt
