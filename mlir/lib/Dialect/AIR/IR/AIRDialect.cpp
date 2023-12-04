@@ -170,19 +170,20 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
   if (asyncDependenciesUnsorted.empty())
     return;
 
-  // The values can be sorted by their order in a basic block, if they all have
-  // defining ops in the same basic block.
+  // The values can be sorted by their order in a basic block, but only if they
+  // all have defining ops in the same basic block. We go through all the
+  // values, and check that they have defining ops in the same block.
   bool canSort = [&]() {
     auto v0 = asyncDependenciesUnsorted[0];
     if (!v0.getDefiningOp())
       return false;
-    auto b0 = v0.getDefiningOp()->getBlock();
+    auto block = v0.getDefiningOp()->getBlock();
     for (auto v : asyncDependenciesUnsorted) {
       auto op = v.getDefiningOp();
       if (!op)
         return false;
       auto b = op->getBlock();
-      if (b != b0)
+      if (b != block)
         return false;
     }
     return true;
@@ -190,7 +191,6 @@ static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
 
   printer << "[";
 
-  // canSort = false;
   if (!canSort) {
     llvm::interleaveComma(asyncDependenciesUnsorted, printer);
   } else {

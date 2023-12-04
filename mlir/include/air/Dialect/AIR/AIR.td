@@ -576,9 +576,9 @@ def air_ExecuteOp : air_Op<"execute", [SingleBlockImplicitTerminator<"ExecuteTer
     the region must be executed sequentially.
   }];
 
-  // TODO(jn) async_dependencies are printed in sorted order for ops which have
-  // custom assembly formats. ExecuteOp should be made to have a custom print
-  // and parse too, so that it follows this pattern.
+  // Note: async_dependencies are printed in sorted order for ops which have
+  // custom assembly formats. We can consider giving ExecuteOp custom
+  // printer/parser too.
   let assemblyFormat = [{
     (` ``[` $async_dependencies^ `]`)?
     (`->` `(` type($results)^ `)`)? regions attr-dict
