@@ -163,13 +163,43 @@ static ParseResult parseAsyncDependencies(
 
 static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
                                    Type asyncTokenType,
-                                   OperandRange asyncDependencies) {
+                                   OperandRange asyncDependenciesUnsorted) {
+
   if (asyncTokenType)
     printer << "async ";
-  if (asyncDependencies.empty())
+  if (asyncDependenciesUnsorted.empty())
     return;
+
+  // The values can be sorted by their order in a basic block, if they all have
+  // defining ops in the same basic block.
+  bool canSort = [&]() {
+    auto v0 = asyncDependenciesUnsorted[0];
+    if (!v0.getDefiningOp())
+      return false;
+    auto b0 = v0.getDefiningOp()->getBlock();
+    for (auto v : asyncDependenciesUnsorted) {
+      auto op = v.getDefiningOp();
+      if (!op)
+        return false;
+      auto b = op->getBlock();
+      if (b != b0)
+        return false;
+    }
+    return true;
+  }();
+
   printer << "[";
-  llvm::interleaveComma(asyncDependencies, printer);
+
+  // canSort = false;
+  if (!canSort) {
+    llvm::interleaveComma(asyncDependenciesUnsorted, printer);
+  } else {
+    SmallVector<Value> asyncDependencies(asyncDependenciesUnsorted);
+    llvm::sort(asyncDependencies, [&](Value a, Value b) {
+      return a.getDefiningOp()->isBeforeInBlock(b.getDefiningOp());
+    });
+    llvm::interleaveComma(asyncDependencies, printer);
+  }
   printer << "] ";
 }
 
@@ -435,6 +465,7 @@ void SegmentOp::build(OpBuilder &builder, OperationState &result,
                       ValueRange asyncDependencies, ValueRange sizes,
                       ValueRange segmentOperands, bool isAsync,
                       ArrayRef<NamedAttribute> attrs) {
+
 
   result.addOperands(asyncDependencies);
   if (isAsync)
