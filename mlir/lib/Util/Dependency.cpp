@@ -13,6 +13,10 @@
 
 #include <sys/stat.h>
 
+#include <boost/graph/copy.hpp>
+#include <boost/graph/graph_traits.hpp>
+#include <boost/graph/transitive_reduction.hpp>
+
 #define DEBUG_TYPE "air-dependency-util"
 
 using namespace mlir;

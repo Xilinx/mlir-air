@@ -5,14 +5,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRDependencyParseGraph.h"
+#include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/Dependency.h"
 
 using namespace mlir;
 using namespace xilinx;
 using namespace xilinx::air;
-using namespace boost;
 
 #define DEBUG_TYPE "air-dependency-parse-graph"
 

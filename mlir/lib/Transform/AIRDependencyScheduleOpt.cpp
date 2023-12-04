@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRDependencyScheduleOpt.h"
+#include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/Dependency.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -47,7 +47,6 @@
 using namespace mlir;
 using namespace xilinx;
 using namespace xilinx::air;
-using namespace boost;
 
 #define DEBUG_TYPE "air-dependency-schedule-opt"
 
