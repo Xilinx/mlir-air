@@ -466,7 +466,6 @@ void SegmentOp::build(OpBuilder &builder, OperationState &result,
                       ValueRange segmentOperands, bool isAsync,
                       ArrayRef<NamedAttribute> attrs) {
 
-
   result.addOperands(asyncDependencies);
   if (isAsync)
     result.addTypes(AsyncTokenType::get(builder.getContext()));
