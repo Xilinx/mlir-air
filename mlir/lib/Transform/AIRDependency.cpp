@@ -5,8 +5,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Transform/AIRDependency.h"
+#include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/Dependency.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -61,7 +61,6 @@ void boost::throw_exception(std::exception const &e,
 using namespace mlir;
 using namespace xilinx;
 using namespace xilinx::air;
-using namespace boost;
 
 #define DEBUG_TYPE "air-dependency"
 
@@ -486,7 +485,8 @@ public:
     std::iota(id_map.begin(), id_map.end(), 0u);
 
     transitive_reduction(asyncExecuteGraph, asyncExecuteGraphTR,
-                         make_assoc_property_map(g_to_tr), id_map.data());
+                         boost::make_assoc_property_map(g_to_tr),
+                         id_map.data());
 
     for (vertex_map::iterator i = g_to_tr.begin(); i != g_to_tr.end(); ++i) {
       // Copy over graph properties

@@ -54,7 +54,6 @@
 #define INDEX_WIDTH 32
 
 using namespace mlir;
-using namespace boost;
 
 namespace xilinx {
 namespace air {
