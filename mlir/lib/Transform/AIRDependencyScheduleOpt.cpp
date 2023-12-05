@@ -1206,7 +1206,7 @@ struct LabelScfForLoopInAIRSegment : public OpRewritePattern<scf::ForOp> {
 
     if (for_op->getParentOfType<air::SegmentOp>() &&
         !for_op->getParentOfType<air::HerdOp>()) {
-      // // Get for loop trip count
+      // Get for loop trip count
       if (auto tripCount = getStaticScfForTripCountAsInt(for_op))
         for_op->setAttr("unroll", rewriter.getI32IntegerAttr(*tripCount));
     }
@@ -1224,6 +1224,17 @@ struct AIRSpecializeChannelWrapAndStride : public OpRewritePattern<scf::ForOp> {
                                 PatternRewriter &rewriter) const override {
     auto loc = for_op->getLoc();
     auto ctx = for_op->getContext();
+
+    // For now, limit this pass to operate in air.segment only (i.e. control
+    // loop around L2 memory)
+    if (for_op->getParentOfType<air::HerdOp>())
+      return failure();
+    if (!for_op->getParentOfType<air::SegmentOp>())
+      return failure();
+    bool hasHerdInBody = false;
+    for_op.getBody()->walk([&](air::HerdOp herd) { hasHerdInBody = true; });
+    if (hasHerdInBody)
+      return failure();
 
     // Check if the loop is the outermost loop in a perfect loop nest
     auto hasNElements = [](Block *block, unsigned N) {
