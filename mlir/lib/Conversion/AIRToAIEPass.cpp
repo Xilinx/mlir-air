@@ -2294,10 +2294,8 @@ public:
 
     int64_t offset =
         isTileInbound(ndcpy, (int)air::MemorySpace::L1)
-            ? get1DOffset(ndcpy.getDstSizes(), ndcpy.getDstOffsets(),
-                          ndcpy.getDstMemref())
-            : get1DOffset(ndcpy.getSrcSizes(), ndcpy.getSrcOffsets(),
-                          ndcpy.getSrcMemref());
+            ? get1DOffset(ndcpy.getDstOffsets(), ndcpy.getDstMemref())
+            : get1DOffset(ndcpy.getSrcOffsets(), ndcpy.getSrcMemref());
 
     Value length =
         b.create<arith::ConstantIndexOp>(memcpyOp.getLoc(), len)->getResult(0);

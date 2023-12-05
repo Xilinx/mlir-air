@@ -154,8 +154,7 @@ bool air::areIdenticalVectors(std::vector<unsigned> &a,
   return a == b;
 }
 
-int64_t air::get1DOffset(SmallVector<Value> memcpy_sizes,
-                         SmallVector<Value> memcpy_offsets, Value memref) {
+int64_t air::get1DOffset(SmallVector<Value> memcpy_offsets, Value memref) {
   if (memcpy_offsets.empty())
     return 0;
   SmallVector<int> memref_shape = getTensorShape(memref.getType());
@@ -170,7 +169,7 @@ int64_t air::get1DOffset(SmallVector<Value> memcpy_sizes,
     else
       one_d_offset += *offset * memref_shape[i + 1];
   }
-  return one_d_offset;
+  return one_d_offset * getElementSizeInBytes(memref.getType());
 }
 
 std::vector<AIE::DimTupleAttr>
