@@ -662,8 +662,7 @@ private:
       auto name = std::get<0>(p);
       auto count = std::get<1>(p);
       if (memops.find(name) != std::string::npos) {
-      }
-      else if (cpuops.find(name) != std::string::npos)
+      } else if (cpuops.find(name) != std::string::npos)
         compute_op_count += count;
       else if (skip.find(name) == std::string::npos)
         LLVM_DEBUG(llvm::dbgs() << name << " not counted\n");

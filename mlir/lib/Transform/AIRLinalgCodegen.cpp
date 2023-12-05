@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "air/Transform/AIRLinalgCodegen.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIR/AIRTransformOps.h"
-#include "air/Transform/AIRLinalgCodegen.h"
 #include "air/Util/CostModel.h"
 #include "air/Util/Outliner.h"
 #include "air/Util/Util.h"
@@ -876,7 +876,6 @@ static LogicalResult deallocBufferCallBack(OpBuilder &b, Value buffer) {
   // b.create<memref::DeallocOp>(buffer.getLoc(), buffer);
   return success();
 }
-
 
 // Create channel name as string
 static std::string createChannelName(ModuleOp module) {
