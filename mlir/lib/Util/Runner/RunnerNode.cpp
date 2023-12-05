@@ -1090,7 +1090,7 @@ private:
         // Get vertices adjacent to the next-iteration-incarnation of this
         // yielded token
         this->verticesAdjToNextIterToken(reset_vertices_start, G, for_v,
-                                            next_iter_token);
+                                         next_iter_token);
         // Get vertex inversely adjacent to this yielded token
         auto reset_vertices_end = this->getVertexInvAdjToLoopYieldedToken(
             op->getOperands()[token_ids[i]]);
