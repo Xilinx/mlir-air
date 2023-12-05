@@ -1,0 +1,47 @@
+#include "air/Util/DirectedAdjacencyMap.h"
+#include <stdexcept>
+
+class TestGraph : public xilinx::air::DirectedAdjacencyMap {
+public:
+  using xilinx::air::DirectedAdjacencyMap::addVertex;
+};
+
+using VertexId = TestGraph::VertexId;
+
+void basicTest() {
+
+  TestGraph g;
+
+  g.addVertex();
+  g.addVertex();
+  g.addVertex();
+
+  g.addEdge(2, 0);
+  g.addEdge(1, 0);
+  g.addEdge(2, 1);
+
+  if (g.getSchedule() != std::vector<VertexId>{2, 1, 0}) {
+    throw std::runtime_error("Incorrect schedule");
+  }
+
+  auto closure = g.getClosure();
+  decltype(closure) expected = {{1, 0, 0}, {1, 1, 0}, {1, 1, 1}};
+  if (closure != expected) {
+    throw std::runtime_error("Incorrect closure");
+  }
+
+  if (!g.hasEdge(2, 0)) {
+    throw std::runtime_error("Edge 2->0 was inserted into graph");
+  }
+
+  g.applyTransitiveReduction();
+
+  if (g.hasEdge(2, 0)) {
+    throw std::runtime_error("Edge 2->0 not removed in reduction");
+  }
+}
+
+int main() {
+  basicTest();
+  return 0;
+}
