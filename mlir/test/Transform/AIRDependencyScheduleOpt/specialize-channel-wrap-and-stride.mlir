@@ -10,13 +10,13 @@
 // Specialize air.channel ops in perfectly nested scf.for in air.segment with wraps and strides.
 // CHECK-LABEL: test
 // CHECK: air.segment
-// CHECK: %[[CST8:.*]] = arith.constant 8 : index
-// CHECK: %[[CST0:.*]] = arith.constant 0 : index
-// CHECK: %[[CST1:.*]] = arith.constant 1 : index
-// CHECK: %[[CST16:.*]] = arith.constant 16 : index
-// CHECK: %[[CST64:.*]] = arith.constant 64 : index
-// CHECK: %[[CST512:.*]] = arith.constant 512 : index
-// CHECK: %[[CST4:.*]] = arith.constant 4 : index
+// CHECK-DAG: %[[CST0:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[CST8:.*]] = arith.constant 8 : index
+// CHECK-DAG: %[[CST64:.*]] = arith.constant 64 : index
+// CHECK-DAG: %[[CST1:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[CST16:.*]] = arith.constant 16 : index
+// CHECK-DAG: %[[CST512:.*]] = arith.constant 512 : index
+// CHECK-DAG: %[[CST4:.*]] = arith.constant 4 : index
 // CHECK: %[[EVENT0:.*]] = air.channel.put async [{{.*}}]  @channel_0[] (%[[VAL0:.*]][%[[CST0]], %[[CST0]]] [%[[CST8]], %[[CST4]], %[[CST4]]] [%[[CST64]], %[[CST16]], %[[CST1]]]) : (memref<8x16xi32, 1>)
 // CHECK: scf.for{{.*}}iter_args(%[[EVENT1:.*]] = %[[EVENT0]])
 // CHECK: air.herd
