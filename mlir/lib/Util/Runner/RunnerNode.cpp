@@ -1029,7 +1029,6 @@ private:
     this->getReadyTokensAtScfYield(token_ids, op, time, G);
 
     // For loop trip counter
-    bool trip_count_fulfilled = false;
     for (auto &count_entry : this->loop_trip_count) {
       if (std::get<0>(count_entry) ==
           (unsigned)getIdAttr(for_op.getOperation())) {
