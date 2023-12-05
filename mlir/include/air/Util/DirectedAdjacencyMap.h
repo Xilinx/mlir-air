@@ -13,12 +13,12 @@ namespace xilinx {
 namespace air {
 
 /**
- * This class is based on the boost::adjacency_list class. It provides minimal
- * functionality to support its use case. Additional functionality should be
- * added as required.
+ * This class is funnctioanlly similar to the boost::adjacency_list class. It
+ * provides minimal functionality to support the removal of boost in this
+ * project. Additional functionality should be added as required.
  *
- * It implements a directed acyclic graph, where the each node can be queried
- * for out going edges and in coming edges.
+ * The class implements a directed acyclic graph, where each node can be queried
+ * for outgoing edges and incoming edges.
  * */
 class DirectedAdjacencyMap {
 
@@ -26,18 +26,18 @@ public:
   using VertexId = uint64_t;
 
   /**
-   * Add an edge from \p src to \p dst to the graph, so that \p dst is adjacent
-   * to \p src.
+   * Insert an edge from \p src to \p dst to the graph, so that \p dst is
+   * adjacent to \p src.
    * */
   void addEdge(VertexId src, VertexId dst);
 
   /**
-   * \return The number of vertices which have an edge from \p v.
+   * \return The number of vertices which have an edge \b from \p v.
    * */
   uint64_t outDegree(VertexId v) const { return fwdEdges[v].size(); }
 
   /**
-   * \return The number of vertices which have an edge to \p v.
+   * \return The number of vertices which have an edge \b to \p v.
    * */
   uint64_t inDegree(VertexId v) const { return bwdEdges[v].size(); }
 
