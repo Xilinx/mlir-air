@@ -131,5 +131,42 @@ private:
   std::vector<std::set<VertexId>> bwdEdges;
 };
 
+/**
+ * An extension to DirectedAdjacencyMap where vertices have types.
+ *
+ * \tparam T The type of the vertex.
+ * */
+template <typename T>
+class TypedDirectedAdjacencyMap : public DirectedAdjacencyMap {
+public:
+  using DirectedAdjacencyMap::VertexId;
+
+  VertexId addVertex() {
+    auto id = nodes.size();
+    nodes.push_back({});
+    DirectedAdjacencyMap::addVertex();
+    return id;
+  }
+
+  const T &operator[](VertexId v) const {
+    assert(v < numVertices());
+    return nodes[v];
+  }
+
+  T &operator[](VertexId v) {
+    // const_cast, really? See Scott Meyers: Effective C++ for this use case.
+    return const_cast<T &>(
+        static_cast<const TypedDirectedAdjacencyMap<T> &>(*this)[v]);
+  }
+
+  void clear() {
+    nodes = {};
+    DirectedAdjacencyMap::clear();
+  }
+
+private:
+  std::vector<T> nodes;
+};
+
 } // namespace air
 } // namespace xilinx
