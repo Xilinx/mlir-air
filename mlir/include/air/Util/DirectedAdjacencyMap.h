@@ -13,7 +13,7 @@ namespace xilinx {
 namespace air {
 
 /**
- * This class is funnctioanlly similar to the boost::adjacency_list class. It
+ * This class is functionally similar to the boost::adjacency_list class. It
  * provides minimal functionality to support the removal of boost in this
  * project. Additional functionality should be added as required.
  *
