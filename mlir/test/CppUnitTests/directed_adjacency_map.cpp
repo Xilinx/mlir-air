@@ -45,7 +45,24 @@ void basicTest() {
   }
 }
 
+void templateClassTest() {
+
+  class TGraph : public xilinx::air::TypedDirectedAdjacencyMap<std::string> {};
+
+  TGraph a;
+  a.addVertex();
+  a.addVertex();
+
+  a[0] = "foo";
+  a[1] = "bar";
+
+  if (a[0] != "foo" || a[1] != "bar") {
+    throw std::runtime_error("string vertex type setter/getter failure");
+  }
+}
+
 int main() {
   basicTest();
+  templateClassTest();
   return 0;
 }
