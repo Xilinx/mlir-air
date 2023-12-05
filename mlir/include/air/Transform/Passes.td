@@ -949,6 +949,15 @@ def AIRLabelScfForLoopInAIRSegmentPattern: Pass<"air-label-scf-for-in-segment", 
   }];
 }
 
+def AIRSpecializeChannelWrapAndStridePattern: Pass<"air-specialize-channel-wrap-and-stride", "ModuleOp"> {
+  let summary = "Specialize air.channel op in perfect loop nest with wraps and strides";
+  let constructor = "xilinx::air::createAIRSpecializeChannelWrapAndStridePattern()";
+  let description = [{
+    This pass specialize air.channel op in perfect loop nest with wraps and strides, for
+    efficient mapping to hardware buffer descriptors.
+  }];
+}
+
 def AIRUnrollChannelByFactorPattern: Pass<"air-unroll-channel-by-factor", "ModuleOp"> {
   let summary = "Unroll channel puts and gets by an integer factor";
   let constructor = "xilinx::air::createAIRUnrollChannelByFactorPattern()";
