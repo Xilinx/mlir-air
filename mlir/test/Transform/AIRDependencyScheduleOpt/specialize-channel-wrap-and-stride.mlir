@@ -17,7 +17,7 @@
 // CHECK: %[[CST64:.*]] = arith.constant 64 : index
 // CHECK: %[[CST512:.*]] = arith.constant 512 : index
 // CHECK: %[[CST4:.*]] = arith.constant 4 : index
-// CHECK: %[[EVENT0:.*]] = air.channel.put async [{{.*}}]  @channel_0[] (%[[VAL0:.*]][%[[CST0]], %[[CST0]]] [%[[CST4]], %[[CST4]], %[[CST8]]] [%[[CST16]], %[[CST1]], %[[CST64]]]) : (memref<8x16xi32, 1>)
+// CHECK: %[[EVENT0:.*]] = air.channel.put async [{{.*}}]  @channel_0[] (%[[VAL0:.*]][%[[CST0]], %[[CST0]]] [%[[CST8]], %[[CST4]], %[[CST4]]] [%[[CST64]], %[[CST16]], %[[CST1]]]) : (memref<8x16xi32, 1>)
 // CHECK: scf.for{{.*}}iter_args(%[[EVENT1:.*]] = %[[EVENT0]])
 // CHECK: air.herd
 // CHECK: air.channel.get async{{.*}}@channel_0

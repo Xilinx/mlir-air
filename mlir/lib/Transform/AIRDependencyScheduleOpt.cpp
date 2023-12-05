@@ -1274,8 +1274,8 @@ struct AIRSpecializeChannelWrapAndStride : public OpRewritePattern<scf::ForOp> {
         Value new_wrap =
             rewriter.create<arith::ConstantIndexOp>(loc, *trip_count);
         Value new_stride = o.getStep();
-        wraps.push_back(new_wrap);
-        strides.push_back(new_stride);
+        wraps.insert(wraps.begin(), new_wrap);
+        strides.insert(strides.begin(), new_stride);
       } else
         return failure();
       // Replace for loop induction vars in offsets with zero
