@@ -52,7 +52,6 @@ void boost::throw_exception(std::exception const &e,
 }
 #endif
 
-
 #include <algorithm>
 #include <map>
 #include <numeric>
