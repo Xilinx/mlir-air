@@ -243,6 +243,21 @@ air::HierarchyInterface air::getHierarchyArgOwner(Value val) {
   return dyn_cast<air::HierarchyInterface>(containingOp);
 }
 
+// Get a static scf.for trip count as int
+std::optional<int64_t> air::getStaticScfForTripCountAsInt(scf::ForOp for_op) {
+  std::optional<int64_t> output = std::nullopt;
+  // Get for loop iteration count
+  std::optional<int64_t> LbCstOp =
+      mlir::getConstantIntValue(for_op.getLowerBound());
+  std::optional<int64_t> UbCstOp =
+      mlir::getConstantIntValue(for_op.getUpperBound());
+  std::optional<int64_t> StepCstOp =
+      mlir::getConstantIntValue(for_op.getStep());
+  if (LbCstOp && UbCstOp && StepCstOp)
+    output = mlir::ceilDiv((*UbCstOp - *LbCstOp), *StepCstOp);
+  return output;
+}
+
 // Get operation's "id" attribute
 int air::getIdAttr(Operation *op) {
   auto idAttr = op->getAttrOfType<IntegerAttr>("id");
