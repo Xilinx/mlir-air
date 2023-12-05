@@ -46,6 +46,10 @@ bool areIdenticalVectors(std::vector<unsigned> &a, std::vector<unsigned> &b);
 int64_t get1DOffset(SmallVector<Value> memcpy_sizes,
                     SmallVector<Value> memcpy_offsets, Value memref);
 
+std::vector<AIE::DimTupleAttr>
+getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
+                   SmallVector<Value> memcpy_strides, MLIRContext *ctx);
+
 std::pair<int64_t, int64_t> getLockValuePair(AIE::AIEArch arch,
                                              Value buffer_memref);
 

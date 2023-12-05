@@ -156,26 +156,40 @@ bool air::areIdenticalVectors(std::vector<unsigned> &a,
 
 int64_t air::get1DOffset(SmallVector<Value> memcpy_sizes,
                          SmallVector<Value> memcpy_offsets, Value memref) {
-  if (memcpy_sizes.empty() || memcpy_offsets.empty())
+  if (memcpy_offsets.empty())
     return 0;
-  assert(memcpy_sizes.size() == memcpy_offsets.size());
   SmallVector<int> memref_shape = getTensorShape(memref.getType());
-  assert(memcpy_sizes.size() == memref_shape.size());
-  std::vector<unsigned> range;
-  std::vector<unsigned> iter;
-  for (int i = 0; i < memcpy_sizes.size(); i++) {
-    std::optional<int64_t> cstSizeOp =
-        mlir::getConstantIntValue(memcpy_sizes[i]);
-    range.push_back((unsigned)mlir::ceilDiv(memref_shape[i], *cstSizeOp));
-    std::optional<int64_t> cstOffsetOp =
-        mlir::getConstantIntValue(memcpy_offsets[i]);
-    iter.push_back((unsigned)mlir::ceilDiv(*cstOffsetOp, *cstSizeOp));
+  assert(memref_shape.size() == memcpy_offsets.size());
+  int64_t one_d_offset = 0;
+  for (int i = memcpy_offsets.size() - 1; i >= 0; i--) {
+    auto offset = mlir::getConstantIntValue(memcpy_offsets[i]);
+    if (!offset)
+      assert(false && "non-static offset in memcpy op");
+    if (i == memcpy_offsets.size() - 1)
+      one_d_offset += *offset;
+    else
+      one_d_offset += *offset * memref_shape[i + 1];
   }
-  unsigned one_d_iter = getIteratorFromMDVector(range, iter);
-  unsigned vol = 1;
-  for (int i = 0; i < memcpy_sizes.size(); i++)
-    vol *= *mlir::getConstantIntValue(memcpy_sizes[i]);
-  return vol * one_d_iter * getElementSizeInBytes(memref.getType());
+  return one_d_offset;
+}
+
+std::vector<AIE::DimTupleAttr>
+air::getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
+                        SmallVector<Value> memcpy_strides, MLIRContext *ctx) {
+  if (memcpy_sizes.empty() || memcpy_strides.empty())
+    return std::vector<AIE::DimTupleAttr>{};
+  assert(memcpy_sizes.size() == memcpy_strides.size() &&
+         "unequal sizes between wrap list and stride list");
+  std::vector<AIE::DimTupleAttr> output = {};
+  for (unsigned i = 0; i < memcpy_sizes.size(); i++) {
+    auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);
+    assert(stepsize && "non-static stride");
+    auto wrap = mlir::getConstantIntValue(memcpy_sizes[i]);
+    assert(wrap && "non-static wrap");
+    auto tuple = AIE::DimTupleAttr::get(ctx, *stepsize, *wrap);
+    output.push_back(tuple);
+  }
+  return output;
 }
 
 std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,

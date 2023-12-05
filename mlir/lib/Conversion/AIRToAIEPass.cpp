@@ -2292,8 +2292,6 @@ public:
             ? getMemcpySizesAsInt(ndcpy.getDstMemref(), ndcpy.getDstSizes())
             : getMemcpySizesAsInt(ndcpy.getSrcMemref(), ndcpy.getSrcSizes());
 
-    // This is a hack and assumes 1D non-interleaving and non-overlapping data
-    // layout.
     int64_t offset =
         isTileInbound(ndcpy, (int)air::MemorySpace::L1)
             ? get1DOffset(ndcpy.getDstSizes(), ndcpy.getDstOffsets(),
@@ -2306,9 +2304,24 @@ public:
     b.create<AIE::UseLockOp>(loc, acqLockOp, lockAqValue,
                              isAIE2 ? AIE::LockAction::AcquireGreaterEqual
                                     : AIE::LockAction::Acquire);
-    b.create<AIE::DMABDOp>(
-        loc, bufferOp, offset,
-        cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(), 0);
+
+    std::vector<AIE::DimTupleAttr> dims =
+        isTileInbound(ndcpy, (int)air::MemorySpace::L1)
+            ? getWrapsAndStrides(ndcpy.getDstSizes(), ndcpy.getDstStrides(),
+                                 ndcpy->getContext())
+            : getWrapsAndStrides(ndcpy.getSrcSizes(), ndcpy.getSrcStrides(),
+                                 ndcpy->getContext());
+    auto wraps_and_strides =
+        AIE::DimTupleArrayAttr::get(ndcpy->getContext(), ArrayRef(dims));
+    if (wraps_and_strides.getValue().empty())
+      b.create<AIE::DMABDOp>(
+          loc, bufferOp, offset,
+          cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(), 0);
+    else
+      b.create<AIE::DMABDOp>(
+          loc, bufferOp, offset,
+          cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(), 0,
+          wraps_and_strides);
     b.create<AIE::UseLockOp>(loc, relLockOp, lockRelValue,
                              AIE::LockAction::Release);
   }
