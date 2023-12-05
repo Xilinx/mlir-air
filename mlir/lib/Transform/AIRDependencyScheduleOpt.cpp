@@ -2131,7 +2131,7 @@ public:
       // Update references
       partition_cuts.insert(partition_cuts.end(), chan_puts_gets.size());
       for (unsigned i = 0; i < partition_cuts.size() - 1; i++) {
-        for (unsigned j = partition_cuts[i]; j < partition_cuts[i + 1]; j++) {
+        for (int j = partition_cuts[i]; j < partition_cuts[i + 1]; j++) {
           if (auto old_put = dyn_cast<air::ChannelPutOp>(
                   chan_puts_gets[j].getOperation())) {
             Value new_memref = isa<air::ExecuteOp>(new_memallocs[i])

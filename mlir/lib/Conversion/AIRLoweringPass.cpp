@@ -476,18 +476,6 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
 
   bool thisOpIsInShim =
       thisMemrefType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3;
-  bool isFullMemcpy = false;
-  if (thisMemrefType.getMemorySpaceAsInt() ==
-          (int)xilinx::air::MemorySpace::L3 &&
-      theOtherMemrefType.getMemorySpaceAsInt() ==
-          (int)xilinx::air::MemorySpace::L2) {
-    isFullMemcpy = true;
-  } else if (theOtherMemrefType.getMemorySpaceAsInt() ==
-                 (int)xilinx::air::MemorySpace::L3 &&
-             thisMemrefType.getMemorySpaceAsInt() ==
-                 (int)xilinx::air::MemorySpace::L2) {
-    isFullMemcpy = true;
-  }
 
   SmallVector<Value, 16> opers;
   Operation *airrtOp = nullptr;

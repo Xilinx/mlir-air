@@ -127,8 +127,7 @@ LogicalResult run(int argc, char **argv, llvm::StringRef toolName) {
 
     xilinx::air::AIRRunner runner(os, *jsonModel, sim_granularity, clVerbose);
 
-    // The number of inputs to the function in the IR.
-    unsigned numInputs = 0;
+    // The number of outputs of the function in the IR.
     unsigned numOutputs = 0;
 
     if (func::FuncOp toplevel =
@@ -138,7 +137,6 @@ LogicalResult run(int argc, char **argv, llvm::StringRef toolName) {
       blockArgs = entryBlock.getArguments();
 
       // Get the primary inputs of toplevel off the command line.
-      numInputs = ftype.getNumInputs();
       numOutputs = ftype.getNumResults();
     } else {
       llvm_unreachable("Function not supported.\n");

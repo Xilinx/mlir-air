@@ -1063,7 +1063,6 @@ private:
 
     if (allAsyncTokensFulfilled) {
       this->processed_vertices.push_back(it);
-      trip_count_fulfilled = true;
     } else {
       // If trip count unfulfilled, then iterate.
       // Clear start_time and end_time of all ops in loop body.
