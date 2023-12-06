@@ -35,6 +35,11 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
+// boost graph
+#include <boost/graph/adjacency_list.hpp>
+#include <boost/graph/graph_traits.hpp>
+#include <boost/graph/transitive_reduction.hpp>
+
 #define BOOST_NO_EXCEPTIONS
 #include <boost/throw_exception.hpp>
 void boost::throw_exception(std::exception const &e) {
@@ -47,10 +52,6 @@ void boost::throw_exception(std::exception const &e,
 }
 #endif
 
-// boost graph
-#include <boost/graph/adjacency_list.hpp>
-#include <boost/graph/graph_traits.hpp>
-#include <boost/graph/transitive_reduction.hpp>
 
 #include <algorithm>
 #include <map>

@@ -36,11 +36,6 @@
 #include <sstream>
 #include <vector>
 
-// boost graph
-#include <boost/graph/adjacency_list.hpp>
-#include <boost/graph/copy.hpp>
-#include <boost/graph/graph_traits.hpp>
-
 #include <algorithm>
 #include <numeric>
 #include <string>
@@ -265,8 +260,8 @@ public:
     // event may change the execution status of other ops on wavefront
     for (int i = c.wavefront.size() - 1; i >= 0; i--) {
       if (G[std::get<0>(c.wavefront[i])].asyncEventType == "terminator") {
-        moveItemToBack<std::tuple<Graph::vertex_descriptor,
-                                  std::vector<resource *>, unsigned>>(
+        moveItemToBack<
+            std::tuple<Graph::VertexId, std::vector<resource *>, unsigned>>(
             c.wavefront, i);
       }
     }
@@ -307,11 +302,11 @@ public:
     Graph &G = c.ctrl_g->g;
 
     // Get candidate vertices to be pushed to wavefront
-    std::vector<Graph::vertex_descriptor> next_vertex_set_candidates =
+    std::vector<Graph::VertexId> next_vertex_set_candidates =
         c.getCandidateVerticesForWavefront();
 
     // Check dependency fulfillment of each candidate
-    std::vector<Graph::vertex_descriptor> next_vertex_set;
+    std::vector<Graph::VertexId> next_vertex_set;
     for (auto it = next_vertex_set_candidates.begin();
          it != next_vertex_set_candidates.end(); ++it) {
       bool dep_fulfilled = true;
@@ -369,7 +364,7 @@ public:
 
   void scheduleFunction(func::FuncOp &toplevel) {
 
-    // Walk the launch op and create a boost graph using dependencyCanonicalizer
+    // Walk the launch op and create a graph using dependencyCanonicalizer
     // intepreter
     canonicalizer.removeDepListRepetition(toplevel);
     hostGraph = dependencyGraph(toplevel, true);
@@ -495,7 +490,7 @@ private:
   unsigned core_dma_slots;
   unsigned herd_slots;
 
-  // Dependency graph constructed as Boost graph
+  // Dependency graph constructed
   dependencyGraph hostGraph;
 
   // Host and segment runnerNodes

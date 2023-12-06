@@ -8,14 +8,8 @@
 
 #include "air/Util/Dependency.h"
 #include "air/Util/Util.h"
-
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-
 #include <sys/stat.h>
-
-#include <boost/graph/copy.hpp>
-#include <boost/graph/graph_traits.hpp>
-#include <boost/graph/transitive_reduction.hpp>
 
 #define DEBUG_TYPE "air-dependency-util"
 
@@ -23,6 +17,8 @@ using namespace mlir;
 
 namespace xilinx {
 namespace air {
+
+using Graph = dependencyGraph::Graph;
 
 bool areEqualIndices(mlir::Value index_0, mlir::Value index_1) {
   if (index_0 == nullptr || index_1 == nullptr) {
@@ -563,7 +559,7 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
 }
 
 //===----------------------------------------------------------------------===//
-// Dependency graph as a Boost graph object
+// Dependency graph
 //===----------------------------------------------------------------------===//
 
 void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
@@ -654,8 +650,6 @@ void dependencyCanonicalizer::parseCommandGraphs(func::FuncOp &toplevel,
   }
 }
 
-
-
 void dependencyCanonicalizer::addVerticesInHerd(
     std::vector<dependencyGraph> &herd_subgraphs, air::HerdOp herd,
     dependencyContext &dep_ctx, graphGranularityProperties expandHier) {
@@ -741,7 +735,7 @@ void dependencyCanonicalizer::addVerticesInLaunch(
   });
 }
 
-Graph::vertex_descriptor
+Graph::VertexId
 dependencyCanonicalizer::addVertexFromOpImpls(Operation *op, dependencyGraph *G,
                                               dependencyContext &dep_ctx) {
   if (auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(op)) {
@@ -772,13 +766,13 @@ dependencyCanonicalizer::addVertexFromOpImpls(Operation *op, dependencyGraph *G,
 }
 
 // Create graph vertex from op
-Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromOp(
+Graph::VertexId dependencyCanonicalizer::addVertexFromOp(
     Operation *op, uint64_t &id, std::string event_type, std::string event_name,
     graphNodeProperties properties, dependencyGraph *G,
     dependencyContext &dep_ctx, Operation *pointer_op) {
   op->setAttr("id", mlir::IntegerAttr::get(
                         mlir::IntegerType::get(op->getContext(), 32), ++id));
-  auto v = add_vertex(G->g);
+  auto v = G->g.addVertex();
   G->g[v].asyncEventName = event_name;
   G->g[v].asyncEventType = event_type;
   G->g[v].color = properties.color;
@@ -796,7 +790,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromOp(
   return v;
 }
 
-Graph::vertex_descriptor
+Graph::VertexId
 dependencyCanonicalizer::addVertexFromDmaOp(xilinx::air::DmaMemcpyNdOp op,
                                             dependencyGraph *G,
                                             dependencyContext &dep_ctx) {
@@ -809,7 +803,7 @@ dependencyCanonicalizer::addVertexFromDmaOp(xilinx::air::DmaMemcpyNdOp op,
   }
 }
 
-Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
+Graph::VertexId dependencyCanonicalizer::addVertexFromChannelOp(
     xilinx::air::ChannelInterface op, dependencyGraph *G,
     dependencyContext &dep_ctx) {
   if (auto channel_put =
@@ -890,7 +884,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromChannelOp(
   }
 }
 
-Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromHierarchyOp(
+Graph::VertexId dependencyCanonicalizer::addVertexFromHierarchyOp(
     xilinx::air::HierarchyInterface op, dependencyGraph *G,
     dependencyContext &dep_ctx) {
   std::string detailed_description = "";
@@ -927,7 +921,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromHierarchyOp(
   }
 }
 
-Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromTerminatorOp(
+Graph::VertexId dependencyCanonicalizer::addVertexFromTerminatorOp(
     Operation *op, dependencyGraph *G, dependencyContext &dep_ctx) {
   std::string detailed_description = "";
   if (dyn_cast<xilinx::air::LaunchTerminatorOp>(op)) {
@@ -964,17 +958,17 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromTerminatorOp(
 
 // Note: in the current scf parallel spec, reduce op takes the role of yielding
 // the ssa value. Hence, here we parse reduce op as a terminator.
-Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromReduceOp(
+Graph::VertexId dependencyCanonicalizer::addVertexFromReduceOp(
     Operation *op, dependencyGraph *G, dependencyContext &dep_ctx) {
   return addVertexFromOp(op, dep_ctx.TerminatorID, "terminator", "ScfReduceOp",
                          graphNodeProperties("control"), G, dep_ctx);
 }
 
-Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromExecuteOp(
+Graph::VertexId dependencyCanonicalizer::addVertexFromExecuteOp(
     xilinx::air::ExecuteOp op, dependencyGraph *G, dependencyContext &dep_ctx) {
   int iter_count = 0;
-  Graph::vertex_descriptor v_prev = 0;
-  Graph::vertex_descriptor v = 0;
+  Graph::VertexId v_prev = 0;
+  Graph::VertexId v = 0;
   Operation *pointer_op = op;
   for (auto &child_op : op->getRegions().front().getOps()) {
     if (auto linalg_child_op = dyn_cast<linalg::LinalgOp>(child_op)) {
@@ -1028,7 +1022,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromExecuteOp(
     }
     // Make connections within execute
     if (iter_count > 0) {
-      add_edge(v_prev, v, G->g);
+      G->g.addEdge(v_prev, v);
       pointer_op = nullptr;
     }
     v_prev = v;
@@ -1037,7 +1031,7 @@ Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromExecuteOp(
   return v;
 }
 
-Graph::vertex_descriptor dependencyCanonicalizer::addVertexFromWaitAllOp(
+Graph::VertexId dependencyCanonicalizer::addVertexFromWaitAllOp(
     xilinx::air::WaitAllOp op, dependencyGraph *G, dependencyContext &dep_ctx) {
   // Note: disabled parsing wait_all op inside of reduce op
   for (auto u : op.getAsyncToken().getUsers()) {
@@ -1095,11 +1089,11 @@ std::string dependencyCanonicalizer::getOpTypeFromOpImpls(Operation *op) {
 // Get vertex descriptor from op
 // "front_or_back": if op is an air.execute, then "front" returns the first op
 // in region, while "back" returns the terminator in region.
-std::pair<Graph::vertex_descriptor, dependencyGraph *>
+std::pair<Graph::VertexId, dependencyGraph *>
 dependencyCanonicalizer::getVertexFromOp(Operation *op,
                                          dependencyContext dep_ctx,
                                          std::string front_or_back) {
-  std::pair<Graph::vertex_descriptor, dependencyGraph *> output;
+  std::pair<Graph::VertexId, dependencyGraph *> output;
   if (auto execute_op = dyn_cast<xilinx::air::ExecuteOp>(op)) {
     if (front_or_back == "front") {
       auto execute_front_op = &(*op->getRegions().front().op_begin());
@@ -1126,40 +1120,36 @@ dependencyCanonicalizer::getVertexFromOp(Operation *op,
   return output;
 }
 
-
 // Create a vector of vertices which remain after affine.if filtering, if
 // showing cores
-std::vector<Graph::vertex_descriptor>
-dependencyCanonicalizer::getVerticesWithAffineIf(
-    Graph g, std::vector<unsigned> position) {
-  std::vector<Graph::vertex_descriptor> output;
-  auto vp = boost::vertices(g);
+std::vector<Graph::VertexId> dependencyCanonicalizer::getVerticesWithAffineIf(
+    const Graph &g, const std::vector<unsigned> &position) {
+  std::vector<Graph::VertexId> output;
+  auto vp = g.getVertices();
   if (position.size()) {
-    for (auto v = vp.first; v != vp.second; ++v) {
-      if (!g[*v].op) {
-        output.push_back(*v);
-      } else if (!g[*v].op->getParentOfType<affine::AffineIfOp>()) {
-        output.push_back(*v);
-      } else if (positionHitsAffineIfCondition(g[*v].op, position)) {
-        output.push_back(*v);
+    for (auto v : vp) {
+      if (!g[v].op) {
+        output.push_back(v);
+      } else if (!g[v].op->getParentOfType<affine::AffineIfOp>()) {
+        output.push_back(v);
+      } else if (positionHitsAffineIfCondition(g[v].op, position)) {
+        output.push_back(v);
       }
     }
   } else {
-    for (auto v = vp.first; v != vp.second; ++v) {
-      output.push_back(*v);
+    for (auto v : vp) {
+      output.push_back(v);
     }
   }
   return output;
 }
 
-
-
-// Trace dependency of every op in a boost graph
+// Trace dependency of every op in a graph
 void dependencyCanonicalizer::parseDependencyEdgesInGraph(
     Graph &g, dependencyContext dep_ctx) {
-  auto vp = boost::vertices(g);
-  for (auto vit = vp.first; vit != vp.second; ++vit) {
-    auto op = g[*vit].op;
+  auto vp = g.getVertices();
+  for (auto vit : vp) {
+    auto op = g[vit].op;
     if (!op)
       continue;
     connectOpToItsDepListImpls(op, g, dep_ctx);
@@ -1215,8 +1205,8 @@ void dependencyCanonicalizer::connectOpToItsDepList(
       if (src_vector.size()) {
         for (auto src_op : src_vector) {
           auto src_v = getVertexFromOp(src_op, dep_ctx, "back").first;
-          if (!edge(src_v, dst_v, g).second) {
-            add_edge(src_v, dst_v, g);
+          if (!g.hasEdge(src_v, dst_v)) {
+            g.addEdge(src_v, dst_v);
           }
         }
       }
@@ -1301,19 +1291,19 @@ dependencyCanonicalizer::traceOpFromToken(Operation *op, Value dep_token) {
 
 // Connects launch, segment and herd terminators
 void dependencyCanonicalizer::connectTerminatorInGraph(Graph &g) {
-  auto vp = boost::vertices(g);
-  Graph::vertex_descriptor terminator_v = 0;
-  for (auto vit = vp.first; vit != vp.second; ++vit) {
-    if (g[*vit].asyncEventType == "hierarchy_terminator") {
-      terminator_v = *vit;
+  Graph::VertexId terminator_v = 0;
+  for (auto vit : g.getVertices()) {
+    if (g[vit].asyncEventType == "hierarchy_terminator") {
+      terminator_v = vit;
     }
   }
   if (terminator_v == 0)
     return;
-  for (auto vit = vp.first; vit != vp.second; ++vit) {
-    if ((terminator_v != *vit) && !out_degree(*vit, g) &&
-        (g[*vit].asyncEventType != "start")) {
-      add_edge(*vit, terminator_v, g);
+
+  for (auto vit : g.getVertices()) {
+    if ((terminator_v != vit) && !g.outDegree(vit) &&
+        (g[vit].asyncEventType != "start")) {
+      g.addEdge(vit, terminator_v);
     }
   }
 }
@@ -1322,10 +1312,10 @@ void dependencyCanonicalizer::connectTerminatorInGraph(Graph &g) {
 void dependencyCanonicalizer::connectStartNodeInCommandGraph(
     dependencyGraph &G) {
   auto v = G.start_vertex;
-  auto vp = boost::vertices(G.g);
-  for (auto vit = vp.first; vit != vp.second; ++vit) {
-    if ((v != *vit) && !in_degree(*vit, G.g)) {
-      add_edge(v, *vit, G.g);
+  auto vp = G.g.getVertices();
+  for (auto vit : vp) {
+    if ((v != vit) && !G.g.inDegree(vit)) {
+      G.g.addEdge(v, vit);
     }
   }
 }
@@ -1333,10 +1323,10 @@ void dependencyCanonicalizer::connectStartNodeInCommandGraph(
 // Adds pointer from command graph to launch, segment and herd terminators
 void dependencyCanonicalizer::updatePointerFromGraphToHierarchyTerminator(
     dependencyGraph &G) {
-  auto vp = boost::vertices(G.g);
-  for (auto v = vp.first; v != vp.second; ++v) {
-    if (G.g[*v].asyncEventType == "hierarchy_terminator") {
-      G.terminator_vertex = *v;
+  auto vp = G.g.getVertices();
+  for (auto v : vp) {
+    if (G.g[v].asyncEventType == "hierarchy_terminator") {
+      G.terminator_vertex = v;
       return;
     }
   }
@@ -1345,10 +1335,9 @@ void dependencyCanonicalizer::updatePointerFromGraphToHierarchyTerminator(
 // Adds pointer from hierarchy terminator to parent command graph
 void dependencyCanonicalizer::updatePointerFromHierarchyTerminatorToGraph(
     dependencyGraph &G, dependencyGraph &subG) {
-  auto vp = boost::vertices(subG.g);
-  for (auto v = vp.first; v != vp.second; ++v) {
-    if (subG.g[*v].asyncEventType == "hierarchy_terminator") {
-      subG.g[*v].nextDependencyGraphs.push_back(&G);
+  for (auto v : subG.g.getVertices()) {
+    if (subG.g[v].asyncEventType == "hierarchy_terminator") {
+      subG.g[v].nextDependencyGraphs.push_back(&G);
       return;
     }
   }
@@ -1358,40 +1347,43 @@ void dependencyCanonicalizer::updatePointerFromHierarchyTerminatorToGraph(
 void dependencyCanonicalizer::updatePointerFromHierarchyOpToGraph(
     dependencyGraph &G) {
   unsigned idx = 0;
-  std::vector<vertex_iterator> hier_vs;
-  auto vp = boost::vertices(G.g);
-  for (auto v = vp.first; v != vp.second; ++v) {
-    if (G.g[*v].asyncEventType == "hierarchy") {
+  std::vector<Graph::VertexId> hier_vs;
+  auto vp = G.g.getVertices();
+  for (auto v : vp) {
+    if (G.g[v].asyncEventType == "hierarchy") {
       hier_vs.push_back(v);
     }
   }
+
   for (auto v : hier_vs) {
+
     // If expand cores in herd
     if (G.subgraphs[idx].position.size()) {
-      if (!isa<air::HerdOp>(G.g[*v].op))
-        G.g[*v].op->emitOpError("found non-herd op with core id");
-      auto hier = dyn_cast<air::HierarchyInterface>(G.g[*v].op);
+      if (!isa<air::HerdOp>(G.g[v].op))
+        G.g[v].op->emitOpError("found non-herd op with core id");
+      auto hier = dyn_cast<air::HierarchyInterface>(G.g[v].op);
       for (unsigned i = 0; i < getTripCountInHierarchyOp(hier); i++) {
-        G.g[*v].nextDependencyGraphs.push_back(&(G.subgraphs[idx]));
-        if (G.g[*v].op != G.subgraphs[idx].hierarchyOp)
-          G.g[*v].op->emitOpError("mismatch between graph and hierarchy op");
+        G.g[v].nextDependencyGraphs.push_back(&(G.subgraphs[idx]));
+        if (G.g[v].op != G.subgraphs[idx].hierarchyOp)
+          G.g[v].op->emitOpError("mismatch between graph and hierarchy op");
         idx++;
       }
     } else {
-      G.g[*v].nextDependencyGraphs.push_back(&(G.subgraphs[idx]));
-      if (G.g[*v].op != G.subgraphs[idx].hierarchyOp)
-        G.g[*v].op->emitOpError("mismatch between graph and hierarchy op");
+      G.g[v].nextDependencyGraphs.push_back(&(G.subgraphs[idx]));
+      if (G.g[v].op != G.subgraphs[idx].hierarchyOp)
+        G.g[v].op->emitOpError("mismatch between graph and hierarchy op");
       idx++;
     }
   }
 }
 
 // Perform transitive reduction to canonicalize the dependency graph
-void dependencyCanonicalizer::canonicalizeGraphs(dependencyGraph &global_graph,
-                                                 dependencyGraph &tr_graph) {
+void dependencyCanonicalizer::canonicalizeGraphs(
+    const dependencyGraph &global_graph, dependencyGraph &tr_graph) {
 
   // Construct empty post-canonicalization dependency graph, tr_graph
   for (auto &launchGraph : global_graph.subgraphs) {
+
     tr_graph.subgraphs.push_back(dependencyGraph(launchGraph.hierarchyOp));
     dependencyGraph *current_launch_graph = &(tr_graph.subgraphs.back());
     for (auto &segmentGraph : launchGraph.subgraphs) {
@@ -1410,61 +1402,37 @@ void dependencyCanonicalizer::canonicalizeGraphs(dependencyGraph &global_graph,
   auto global_size = global_graph.subgraphs.size();
   if (global_size != tr_graph.subgraphs.size())
     global_graph.hierarchyOp->emitOpError("graph tree size mismatch");
-  boostTransitiveReductionImpl(global_graph.g, tr_graph.g);
+  transitiveReductionImpl(global_graph.g, tr_graph.g);
   for (unsigned i = 0; i < global_size; i++) {
     auto &launchGraph = global_graph.subgraphs[i];
     auto &trLaunchGraph = tr_graph.subgraphs[i];
     auto launch_size = launchGraph.subgraphs.size();
     if (launch_size != trLaunchGraph.subgraphs.size())
       launchGraph.hierarchyOp->emitOpError("graph tree size mismatch");
-    boostTransitiveReductionImpl(launchGraph.g, trLaunchGraph.g);
+    transitiveReductionImpl(launchGraph.g, trLaunchGraph.g);
     for (unsigned j = 0; j < launch_size; j++) {
       auto &segmentGraph = launchGraph.subgraphs[j];
       auto &trSegmentGraph = trLaunchGraph.subgraphs[j];
       auto segment_size = segmentGraph.subgraphs.size();
       if (segment_size != trSegmentGraph.subgraphs.size())
         segmentGraph.hierarchyOp->emitOpError("graph tree size mismatch");
-      boostTransitiveReductionImpl(segmentGraph.g, trSegmentGraph.g);
+      transitiveReductionImpl(segmentGraph.g, trSegmentGraph.g);
       for (unsigned k = 0; k < segment_size; k++) {
         auto &herdGraph = segmentGraph.subgraphs[k];
         auto &trHerdGraph = trSegmentGraph.subgraphs[k];
-        boostTransitiveReductionImpl(herdGraph.g, trHerdGraph.g);
+        transitiveReductionImpl(herdGraph.g, trHerdGraph.g);
       }
     }
   }
 }
 
-void dependencyCanonicalizer::boostTransitiveReductionImpl(
-    Graph &asyncExecuteGraph, Graph &asyncExecuteGraphTR) {
-
-  vertex_to_vertex_map g_to_tr;
-  vertex_to_vertex_map tr_to_g;
-
-  std::vector<size_t> id_map(num_vertices(asyncExecuteGraph));
-  std::iota(id_map.begin(), id_map.end(), 0u);
-
-  boost::transitive_reduction(asyncExecuteGraph, asyncExecuteGraphTR,
-                              boost::make_assoc_property_map(g_to_tr),
-                              id_map.data());
-
-  for (vertex_to_vertex_map::iterator i = g_to_tr.begin(); i != g_to_tr.end();
-       ++i) {
-    // Copy over graph properties
-    asyncExecuteGraphTR[i->second].asyncEventName =
-        asyncExecuteGraph[i->first].asyncEventName;
-    asyncExecuteGraphTR[i->second].asyncEventType =
-        asyncExecuteGraph[i->first].asyncEventType;
-    asyncExecuteGraphTR[i->second].color = asyncExecuteGraph[i->first].color;
-    asyncExecuteGraphTR[i->second].shape = asyncExecuteGraph[i->first].shape;
-    asyncExecuteGraphTR[i->second].operationId =
-        asyncExecuteGraph[i->first].operationId;
-    asyncExecuteGraphTR[i->second].op = asyncExecuteGraph[i->first].op;
-    // Build reverse map tr_to_g, for convenient vertex mapping
-    tr_to_g[i->second] = i->first;
-  }
+void dependencyCanonicalizer::transitiveReductionImpl(
+    const Graph &asyncExecuteGraph, Graph &asyncExecuteGraphTR) {
+  asyncExecuteGraphTR = asyncExecuteGraph;
+  asyncExecuteGraphTR.applyTransitiveReduction();
 }
 
-// Update dependency list based on transformed boost graph
+// Update dependency list based on transformed graph
 void dependencyCanonicalizer::updateDepList(func::FuncOp func,
                                             dependencyGraph &global_graph) {
 
@@ -1504,9 +1472,9 @@ void dependencyCanonicalizer::updateDepList(func::FuncOp func,
 }
 
 void dependencyCanonicalizer::purgeAIRDepList(dependencyGraph &graph) {
-  auto vp = boost::vertices(graph.g);
-  for (auto dstTRVertex = vp.first; dstTRVertex != vp.second; ++dstTRVertex) {
-    auto op = graph.g[*dstTRVertex].op;
+  auto vp = graph.g.getVertices();
+  for (auto dstTRVertex : vp) {
+    auto op = graph.g[dstTRVertex].op;
     if (!op)
       continue;
     auto async_op = mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op);
@@ -1518,17 +1486,16 @@ void dependencyCanonicalizer::purgeAIRDepList(dependencyGraph &graph) {
 
 void dependencyCanonicalizer::fillAIRDepListUsingGraphTR(
     dependencyGraph &graph) {
-  auto vp = boost::vertices(graph.g);
-  for (auto dstTRVertex = vp.first; dstTRVertex != vp.second; ++dstTRVertex) {
-    auto op = graph.g[*dstTRVertex].op;
+  auto vp = graph.g.getVertices();
+  for (auto dstTRVertex : vp) {
+    auto op = graph.g[dstTRVertex].op;
     if (!op)
       continue;
     auto async_op = mlir::dyn_cast<xilinx::air::AsyncOpInterface>(op);
     if (!async_op)
       continue;
-    auto inv_adj_verts = inv_adjacent_vertices(*dstTRVertex, graph.g);
-    for (auto it = inv_adj_verts.first; it != inv_adj_verts.second; it++) {
-      auto TRVertex = *it;
+    auto incoming_deps = graph.g.inverseAdjacentVertices(dstTRVertex);
+    for (auto TRVertex : incoming_deps) {
       auto src_op = graph.g[TRVertex].op;
       if (src_op && op != src_op) { // Avoid dep to itself
         if (graph.g[TRVertex].asyncEventType == "for_loop") {

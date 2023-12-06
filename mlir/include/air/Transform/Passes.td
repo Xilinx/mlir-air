@@ -1044,7 +1044,7 @@ def AIRDependencyParseGraph: Pass<"air-dependency-parse-graph", "ModuleOp"> {
   let summary = "Parse the dependency graph and dump dot files";
   let constructor = "xilinx::air::createAIRDependencyParseGraphPass()";
   let description = [{
-    This pass parses the dependency graph into Boost::Graph format, and dump
+    This pass parses the dependency graph into an internal format, and dump
     dot files for graph visualization.
   }];
   let options = [
