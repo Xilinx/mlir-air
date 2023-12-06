@@ -415,7 +415,7 @@ dependency edges.
 
 _Parse the dependency graph and dump dot files_
 
-This pass parses the dependency graph into Boost::Graph format, and dump
+This pass parses the dependency graph into an internal format, and dump
 dot files for graph visualization.
 
 #### Options
