@@ -942,6 +942,12 @@ _Convert functions to return their values with out parameters_
 
 _Remove LinalgTransformMarker string attributes from linalg ops_
 
+### `-air-specialize-channel-wrap-and-stride`
+
+_Specialize air.channel op in perfect loop nest with wraps and strides_
+
+This pass specialize air.channel op in perfect loop nest with wraps and strides, for
+efficient mapping to hardware buffer descriptors.
 ### `-air-specialize-dma`
 
 _Specialize dma operations_
