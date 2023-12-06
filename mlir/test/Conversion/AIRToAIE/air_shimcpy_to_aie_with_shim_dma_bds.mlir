@@ -184,7 +184,7 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:           AIE.dmaStart(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
 // CHECK:           AIE.useLock(%[[VAL_4]], Acquire, 0)
-// CHECK:           AIE.dmaBd(<%[[VAL_1]] : memref<1024xi32>, 0, 512>, 0)
+// CHECK:           AIE.dmaBd(<%[[VAL_1]] : memref<1024xi32>, 0, 512>, 0, [<512, 1>])
 // CHECK:           AIE.useLock(%[[VAL_4]], Release, 1)
 // CHECK:           AIE.nextBd ^bb1
 // CHECK:         ^bb2:
