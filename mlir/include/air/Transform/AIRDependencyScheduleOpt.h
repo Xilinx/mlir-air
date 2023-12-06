@@ -41,6 +41,8 @@ std::unique_ptr<mlir::Pass> createAIRLabelScfForLoopForPingPongPattern();
 
 std::unique_ptr<mlir::Pass> createAIRLabelScfForLoopInAIRSegmentPattern();
 
+std::unique_ptr<mlir::Pass> createAIRSpecializeChannelWrapAndStridePattern();
+
 std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass();
 
 std::unique_ptr<mlir::Pass> createAIRUnrollChannelByFactorPattern();

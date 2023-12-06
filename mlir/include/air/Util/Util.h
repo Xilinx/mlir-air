@@ -47,6 +47,8 @@ template <typename T> T getScfParentOpFromYieldOp(Operation *yield) {
   return dyn_cast_if_present<T>(yield->getParentOp());
 }
 
+std::optional<int64_t> getStaticScfForTripCountAsInt(scf::ForOp for_op);
+
 // Erase a kernel operand from air.hierarchy op
 void eraseAIRHierarchyOperand(HierarchyInterface op, unsigned index);
 

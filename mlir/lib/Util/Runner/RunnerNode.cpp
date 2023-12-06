@@ -1110,21 +1110,16 @@ private:
   }
 
   void executeOp(scf::ForOp op, Graph::vertex_descriptor it) {
-    // Get for loop trip count
-    auto lb = op.getLowerBound().getDefiningOp();
-    int64_t lbv = cast<arith::ConstantIndexOp>(lb).value();
-    auto ub = op.getUpperBound().getDefiningOp();
-    int64_t ubv = cast<arith::ConstantIndexOp>(ub).value();
-    auto step = op.getStep().getDefiningOp();
-    int64_t stepv = cast<arith::ConstantIndexOp>(step).value();
-
-    // (ubv - lbv) / stepv, fast round up
-    int64_t trip_count = (ubv - lbv + stepv - 1) / stepv;
+    // // Get for loop trip count
+    auto trip_count = getStaticScfForTripCountAsInt(op);
+    if (!trip_count)
+      this->runner_assertion(
+          false, "non-static scf.for loop bound currently unsupported");
 
     // Update for loop trip count per async token
     for (unsigned i = 0; i < op.getRegionIterArgs().size(); i++) {
       this->loop_trip_count.push_back(
-          std::make_tuple(getIdAttr(op.getOperation()), i, trip_count));
+          std::make_tuple(getIdAttr(op.getOperation()), i, *trip_count));
     }
 
     // Release the locks for all async tokens adjacent to scf.for, to initiate

@@ -1205,20 +1205,117 @@ struct LabelScfForLoopInAIRSegment : public OpRewritePattern<scf::ForOp> {
 
     if (for_op->getParentOfType<air::SegmentOp>() &&
         !for_op->getParentOfType<air::HerdOp>()) {
-      // Get for loop iteration count
-      std::optional<int64_t> LbCstOp =
-          mlir::getConstantIntValue(for_op.getLowerBound());
-      std::optional<int64_t> UbCstOp =
-          mlir::getConstantIntValue(for_op.getUpperBound());
-      std::optional<int64_t> StepCstOp =
-          mlir::getConstantIntValue(for_op.getStep());
-      if (LbCstOp && UbCstOp && StepCstOp) {
-        // If the for loop has static loop bounds
-        int64_t tripCount = mlir::ceilDiv((*UbCstOp - *LbCstOp), *StepCstOp);
-        // Label for full unrolling
-        for_op->setAttr("unroll", rewriter.getI32IntegerAttr(tripCount));
+      // Get for loop trip count
+      if (auto tripCount = getStaticScfForTripCountAsInt(for_op))
+        for_op->setAttr("unroll", rewriter.getI32IntegerAttr(*tripCount));
+    }
+
+    return success();
+  }
+
+private:
+};
+
+struct AIRSpecializeChannelWrapAndStride : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp for_op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = for_op->getLoc();
+    auto ctx = for_op->getContext();
+
+    // For now, limit this pass to operate in air.segment only (i.e. control
+    // loop around L2 memory)
+    if (for_op->getParentOfType<air::HerdOp>())
+      return failure();
+    if (!for_op->getParentOfType<air::SegmentOp>())
+      return failure();
+    bool hasHerdInBody = false;
+    for_op.getBody()->walk([&](air::HerdOp herd) { hasHerdInBody = true; });
+    if (hasHerdInBody)
+      return failure();
+
+    // Check if the loop is the outermost loop in a perfect loop nest
+    auto hasNElements = [](Block *block, unsigned N) {
+      auto op_ptr = block->begin();
+      for (unsigned i = 0; i < N; i++)
+        op_ptr = std::next(op_ptr);
+      return op_ptr != block->end() && &*op_ptr == &block->back();
+    };
+    if (auto parent_for = dyn_cast<scf::ForOp>(for_op->getParentOp()))
+      if (hasNElements(parent_for.getBody(), 1))
+        return failure();
+
+    if (!hasNElements(for_op.getBody(), 1))
+      return failure();
+
+    // Check if the loop nest contains exactly one channel op
+    SmallVector<air::ChannelInterface> channel_ops;
+    for_op.getBody()->walk(
+        [&](air::ChannelInterface putget) { channel_ops.push_back(putget); });
+    if (channel_ops.size() != 1)
+      return failure();
+
+    // Fold for loops int channel op's wrap and stride fields
+    SmallVector<scf::ForOp> for_loops;
+    Operation *parent = channel_ops[0].getOperation();
+    while (parent != for_op.getOperation()) {
+      parent = parent->getParentOp();
+      if (auto for_op_in_nest = dyn_cast<scf::ForOp>(parent))
+        for_loops.push_back(for_op_in_nest);
+    }
+    SmallVector<Value> offsets = channel_ops[0].getOffsets();
+    SmallVector<Value> wraps = channel_ops[0].getSizes();
+    SmallVector<Value> strides = channel_ops[0].getStrides();
+    for (auto o : for_loops) {
+      // Calculate offset factor which is to contribute to stride
+      unsigned ind_var_factor = 1;
+      for (int i = offsets.size() - 1; i >= 0; i--) {
+        if (offsets[i] == o.getInductionVar()) {
+          // Replace for loop induction vars in offsets with zero
+          offsets[i] = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+          break;
+        }
+        ind_var_factor *=
+            getTensorShape(channel_ops[0].getMemref().getType())[i];
+      }
+      auto trip_count = getStaticScfForTripCountAsInt(o);
+      if (trip_count) {
+        Value new_wrap =
+            rewriter.create<arith::ConstantIndexOp>(loc, *trip_count);
+        Value new_stride = rewriter.create<arith::ConstantIndexOp>(
+            loc, *mlir::getConstantIntValue(o.getStep()) * ind_var_factor);
+        wraps.insert(wraps.begin(), new_wrap);
+        strides.insert(strides.begin(), new_stride);
+      } else
+        return failure();
+    }
+
+    Operation *new_chan_op = nullptr;
+    SmallVector<Type, 1> tys;
+    if (isAsyncOp(channel_ops[0].getOperation())) {
+      tys.push_back(air::AsyncTokenType::get(ctx));
+    }
+    SmallVector<Value, 1> deps =
+        for_op.getOperands().drop_front(for_op.getNumControlOperands());
+    if (isa<air::ChannelPutOp>(channel_ops[0]))
+      new_chan_op = rewriter.create<air::ChannelPutOp>(
+          loc, tys, deps, channel_ops[0].getChanName(),
+          channel_ops[0].getIndices(), channel_ops[0].getMemref(), offsets,
+          wraps, strides);
+    else if (isa<air::ChannelGetOp>(channel_ops[0]))
+      new_chan_op = rewriter.create<air::ChannelGetOp>(
+          loc, tys, deps, channel_ops[0].getChanName(),
+          channel_ops[0].getIndices(), channel_ops[0].getMemref(), offsets,
+          wraps, strides);
+
+    for (auto res : for_op.getResults()) {
+      if (isa<air::AsyncTokenType>(res.getType())) {
+        res.replaceAllUsesWith(
+            dyn_cast<air::AsyncOpInterface>(new_chan_op).getAsyncToken());
       }
     }
+    rewriter.eraseOp(for_op.getOperation());
 
     return success();
   }
@@ -1921,6 +2018,33 @@ public:
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
     patterns.insert<LabelScfForLoopInAIRSegment>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runOnOperation() override {
+    auto module = getOperation();
+    SmallVector<func::FuncOp, 4> funcOps;
+    module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
+    for (auto f : funcOps)
+      runOptPatterns(f);
+  }
+
+private:
+};
+
+class AIRSpecializeChannelWrapAndStridePattern
+    : public xilinx::air::impl::AIRSpecializeChannelWrapAndStridePatternBase<
+          AIRSpecializeChannelWrapAndStridePattern> {
+
+public:
+  AIRSpecializeChannelWrapAndStridePattern() = default;
+  AIRSpecializeChannelWrapAndStridePattern(
+      const AIRSpecializeChannelWrapAndStridePattern &pass){};
+
+  void runOptPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<AIRSpecializeChannelWrapAndStride>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 
@@ -2651,6 +2775,10 @@ std::unique_ptr<Pass> createAIRLabelScfForLoopForPingPongPattern() {
 
 std::unique_ptr<Pass> createAIRLabelScfForLoopInAIRSegmentPattern() {
   return std::make_unique<AIRLabelScfForLoopInAIRSegmentPattern>();
+}
+
+std::unique_ptr<Pass> createAIRSpecializeChannelWrapAndStridePattern() {
+  return std::make_unique<AIRSpecializeChannelWrapAndStridePattern>();
 }
 
 std::unique_ptr<mlir::Pass> createAIRDependencyScheduleOptPass() {
