@@ -198,10 +198,9 @@ bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
     return false;
   // If the sizes and strides were already accessing the memref in default
   // order, then wraps and strides are not needed
-  bool isDefaultAccessPattern = true;
   SmallVector<int> memref_shape = getTensorShape(memref.getType());
   if (memcpy_sizes.size() != memref_shape.size())
-    isDefaultAccessPattern = false;
+    return false;
   unsigned stride_factor = 1;
   for (int i = memcpy_sizes.size() - 1; i >= 0; i--) {
     auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);
@@ -209,12 +208,12 @@ bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
     auto wrap = mlir::getConstantIntValue(memcpy_sizes[i]);
     assert(wrap && "non-static wrap");
     if (*stepsize != stride_factor)
-      isDefaultAccessPattern = false;
+      return false;
     if (*wrap != memref_shape[i])
-      isDefaultAccessPattern = false;
+      return false;
     stride_factor *= *wrap;
   }
-  return isDefaultAccessPattern;
+  return true;
 }
 
 std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
