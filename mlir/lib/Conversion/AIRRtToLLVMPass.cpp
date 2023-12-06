@@ -552,57 +552,6 @@ public:
   }
 };
 
-LogicalResult lowerDmaMemcpy(Operation *op, PatternRewriter &rewriter,
-                             std::string fnName) {
-  auto ctx = op->getContext();
-  auto loc = op->getLoc();
-
-  SmallVector<Type, 6> tys;
-  SmallVector<Type, 1> retTys;
-  SmallVector<Value, 16> operands;
-
-  auto i32Ty = IntegerType::get(ctx, 32);
-  auto signalTy = LLVM::LLVMPointerType::get(ctx);
-  tys.push_back(signalTy);
-  if (op->getNumResults()) {
-    auto one = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
-                                                 rewriter.getI32IntegerAttr(1));
-    auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, i32Ty, one, 4);
-    operands.push_back(signal);
-  } else {
-    auto nullV = rewriter.create<LLVM::ZeroOp>(loc, signalTy).getResult();
-    operands.push_back(nullV);
-  }
-
-  for (auto o : op->getOperands()) {
-    tys.push_back(o.getType());
-    operands.push_back(o);
-  }
-
-  MemRefType memrefTy = tys[4].cast<MemRefType>();
-  tys[4] = MemRefType::get(
-      std::vector<int64_t>(memrefTy.getRank(), ShapedType::kDynamic),
-      memrefTy.getElementType(), memrefTy.getLayout(),
-      memrefTy.getMemorySpace());
-  auto module = op->getParentOfType<ModuleOp>();
-
-  auto fnTy = FunctionType::get(ctx, tys, retTys);
-  auto fn = module.lookupSymbol<func::FuncOp>(fnName);
-  if (!fn) {
-    fn = func::FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
-    fn.setPrivate();
-    module.push_back(fn);
-  }
-  operands[4] = rewriter.create<memref::CastOp>(loc, tys[4], operands[4]);
-  rewriter.create<func::CallOp>(loc, retTys, SymbolRefAttr::get(fn), operands);
-  if (op->getNumResults()) {
-    rewriter.replaceOp(op, operands[0]);
-  } else {
-    rewriter.eraseOp(op);
-  }
-  return success();
-}
-
 LogicalResult lowerDmaNdMemcpy(Operation *op, PatternRewriter &rewriter,
                                std::string fnName) {
   auto ctx = op->getContext();

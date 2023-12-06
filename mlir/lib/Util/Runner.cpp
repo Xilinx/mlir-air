@@ -652,14 +652,12 @@ private:
     cpuops += "arith.muli;arith.divsi;arith.divsi;arith.addi;arith.subi;"
               "arith.trunci;arith.cmpi;arith.maxi";
     cpuops += "std.select";
-    uint64_t memory_op_count = 0;
     uint64_t compute_op_count = 0;
     for (auto &p : opCounts.map) {
       auto name = std::get<0>(p);
       auto count = std::get<1>(p);
-      if (memops.find(name) != std::string::npos)
-        memory_op_count += count;
-      else if (cpuops.find(name) != std::string::npos)
+      if (memops.find(name) != std::string::npos) {
+      } else if (cpuops.find(name) != std::string::npos)
         compute_op_count += count;
       else if (skip.find(name) == std::string::npos)
         LLVM_DEBUG(llvm::dbgs() << name << " not counted\n");
@@ -670,7 +668,6 @@ private:
       double num_cores = 1;              // one because the post-tiling code in
                                          // air.herd's body is for each core
       double ops_per_core_per_cycle = 8; // vector width for this type
-      double cycles_per_second = 1e9;
       double efficiency = 1.0f;
 
       // if kernels exists, assume everthing else exists
@@ -684,7 +681,6 @@ private:
               d.kernels[air::to_string(op)]->datatypes[op_datatype].first;
         }
       }
-      cycles_per_second = d.clock;
 
       double ops_per_cycle = num_cores * ops_per_core_per_cycle * efficiency;
       if (ops_per_cycle <= 0)

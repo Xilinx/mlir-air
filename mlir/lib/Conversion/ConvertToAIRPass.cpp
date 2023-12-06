@@ -1297,7 +1297,7 @@ Value insertArgToHierOpImpl(OpBuilder &builder, T op, SmallVector<Value> vec) {
   int newIdx = 0;
   for (int i : newOperandsIdx)
     remap.map(op.getKernelArgument(i), newOp.getKernelArgument(newIdx++));
-  for (int i = 0; i < vec.size(); i++)
+  for (uint64_t i = 0; i < vec.size(); i++)
     remap.map(vec[i], newOp.getKernelArgument(op.getNumKernelOperands() + i));
 
   for (Operation &o : op.getRegion().front().getOperations())
@@ -1347,7 +1347,6 @@ LogicalResult AIRDemoteMemrefToAIRHierarchy(
       auto memref =
           isa<air::ExecuteOp>(op) ? op->getResult(1) : op->getResult(0);
       auto token = isa<air::ExecuteOp>(op) ? op->getResult(0) : nullptr;
-      auto ctx = op->getContext();
       auto memref_type = memref.getType().dyn_cast<MemRefType>();
 
       if (memref_type.getMemorySpaceAsInt() == hierMemorySpace)
@@ -1442,7 +1441,6 @@ class AIRDemoteDmaToAIRHierarchyConversion
 
     auto herd = op->getParentOfType<air::HerdOp>();
     auto segment = op->getParentOfType<air::SegmentOp>();
-    auto launch = op->getParentOfType<air::LaunchOp>();
 
     if (src_type.getMemorySpaceAsInt() == dst_type.getMemorySpaceAsInt())
       return failure(); // Src and dst under same memory space
@@ -2446,7 +2444,7 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     }
     for (auto pair : hier_to_allocs) {
       OpBuilder builder(pair.first);
-      AIRDemoteMemrefToAIRHierarchy(pair, builder);
+      (void)AIRDemoteMemrefToAIRHierarchy(pair, builder);
     }
 
     // First pattern to demote dma ops to corresponding air hierarchy

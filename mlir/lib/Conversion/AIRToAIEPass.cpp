@@ -123,7 +123,7 @@ bool isMM2S(AIE::DMAChannel channel) {
 }
 bool isLegalMemorySpace(air::MemcpyInterface memcpyOp, AIE::AIEArch arch) {
   switch (arch) {
-  case xilinx::AIE::AIEArch::AIE1:
+  case xilinx::AIE::AIEArch::AIE1: {
     if (memcpyOp.getSrcMemref() && memcpyOp.getDstMemref()) {
       if (getMemorySpaceAsString(memcpyOp.getSrcMemref()) == "L1" &&
           getMemorySpaceAsString(memcpyOp.getDstMemref()) == "L3") {
@@ -139,10 +139,10 @@ bool isLegalMemorySpace(air::MemcpyInterface memcpyOp, AIE::AIEArch arch) {
     } else if (memcpyOp.getDstMemref() &&
                getMemorySpaceAsString(memcpyOp.getDstMemref()) == "L1") {
       return true;
-    } else
-      return false;
-    break;
-  case xilinx::AIE::AIEArch::AIE2:
+    }
+    return false;
+  }
+  case xilinx::AIE::AIEArch::AIE2: {
     // todo for AIE2: add memtile data movement support
     if (memcpyOp.getSrcMemref() && memcpyOp.getDstMemref()) {
       if (getMemorySpaceAsString(memcpyOp.getSrcMemref()) == "L1" &&
@@ -159,13 +159,11 @@ bool isLegalMemorySpace(air::MemcpyInterface memcpyOp, AIE::AIEArch arch) {
     } else if (memcpyOp.getDstMemref() &&
                getMemorySpaceAsString(memcpyOp.getDstMemref()) == "L1") {
       return true;
-    } else
-      return false;
-    return false;
-    break;
-  default:
+    }
     return false;
   }
+  }
+  return false;
 }
 
 AIE::BufferOp allocateBufferOp(MemRefType memrefTy, AIE::TileOp tile,
@@ -931,28 +929,6 @@ void allocL1Buffers(AIE::DeviceOp m,
   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
 
-bool areReferencedByTheSameAIRChannel(Value a, Value b) {
-  if (!isa<MemRefType>(a.getType()))
-    return false;
-  if (!isa<MemRefType>(b.getType()))
-    return false;
-  std::vector<air::ChannelOp> a_chans;
-  std::vector<air::ChannelOp> b_chans;
-  for (auto user : a.getUsers())
-    if (auto chan = dyn_cast<air::ChannelInterface>(user))
-      a_chans.push_back(getChannelDeclarationThroughSymbol(chan));
-  for (auto user : b.getUsers())
-    if (auto chan = dyn_cast<air::ChannelInterface>(user))
-      b_chans.push_back(getChannelDeclarationThroughSymbol(chan));
-  for (auto a_chan : a_chans) {
-    for (auto b_chan : b_chans) {
-      if (a_chan == b_chan)
-        return true;
-    }
-  }
-  return false;
-}
-
 void L2MemrefToMemTileMap(
     AIE::DeviceOp m,
     std::map<memref::AllocOp, AIE::TileOp> &memrefToMemTileMap) {
@@ -1537,8 +1513,8 @@ public:
         if (source == fop.getSource() && dest == fop.getDest() &&
             sourceBundle == fop.getSourceBundle() &&
             destBundle == fop.getDestBundle() &&
-            sourceChannel == fop.getSourceChannel() &&
-            destChannel == fop.getDestChannel())
+            static_cast<int64_t>(sourceChannel) == fop.getSourceChannel() &&
+            static_cast<int64_t>(destChannel) == fop.getDestChannel())
           flowOp = fop;
     });
     if (flowOp)
