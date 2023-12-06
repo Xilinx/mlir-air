@@ -473,3 +473,61 @@ func.func @func6(%arg5 : memref<8x8xi32>) {
   }
   return
 }
+
+// -----
+
+// Multi-dimensional memref copy to wraps and strides
+// CHECK: AIE.device(xcve2802)
+// CHECK: %[[memTileDMA_2_1:.*]] = AIE.memTileDMA
+// CHECK:   AIE.dmaStart(S2MM, 0, ^bb1, ^bb5)
+// CHECK: ^bb1:  // 2 preds: ^bb0, ^bb1
+// CHECK:   AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
+// CHECK:   AIE.dmaBd(<{{.*}} : memref<4x4xi32, 1>, 0, 16>, 0)
+// CHECK:   AIE.useLock({{.*}}, Release, 1)
+// CHECK:   AIE.nextBd ^bb1
+// CHECK: ^bb3:  // pred: ^bb5
+// CHECK:   AIE.dmaStart(S2MM, 1, ^bb4, ^bb2)
+// CHECK: ^bb4:  // 2 preds: ^bb3, ^bb4
+// CHECK:   AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
+// CHECK:   AIE.dmaBd(<{{.*}} : memref<8x16xi32, 1>, 0, 16>, 0, [<4, 16>, <4, 1>])
+// CHECK:   AIE.useLock({{.*}}, Release, 1)
+// CHECK:   AIE.nextBd ^bb4
+// CHECK: ^bb5:  // pred: ^bb0
+// CHECK:   AIE.dmaStart(MM2S, 0, ^bb6, ^bb3)
+// CHECK: ^bb6:  // 2 preds: ^bb5, ^bb6
+// CHECK:   AIE.useLock({{.*}}, AcquireGreaterEqual, 1)
+// CHECK:   AIE.dmaBd(<{{.*}} : memref<4x4xi32, 1>, 0, 16>, 0)
+// CHECK:   AIE.useLock({{.*}}, Release, 1)
+// CHECK:   AIE.nextBd ^bb6
+
+air.channel @channel_0 [1, 1]
+air.channel @channel_1 [1, 1]
+air.channel @channel_2 [1, 1]
+func.func @func7(%arg0 : memref<8x16xi32>, %arg1 : memref<16x8xi32>){
+  air.channel.put @channel_0[] (%arg0[] [] []) {id = 1 : i32} : (memref<8x16xi32>)
+  air.segment args(%ext0 = %arg0, %ext1 = %arg1) : memref<8x16xi32>, memref<16x8xi32> attributes {sym_name="segment", id = 2 : i32, x_loc = 0 : i64, x_size = 1 : i64, y_loc = 3 : i64, y_size = 1 : i64} {
+    %herd_cols = arith.constant 1 : index
+    %herd_rows = arith.constant 1 : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c8 = arith.constant 8 : index
+    %c16 = arith.constant 16 : index
+    air.herd @herd_0 tile (%arg6, %arg7) in (%arg8=%herd_cols, %arg9=%herd_rows) attributes {id = 3 : i32, x_loc = 0 : i64, y_loc = 3 : i64} {
+      %results_35 = memref.alloc() : memref<4x4xi32, 2>
+      air.channel.put @channel_2[%arg6, %arg7] (%results_35[] [] []) {id = 14 : i32} : (memref<4x4xi32, 2>)
+      memref.dealloc %results_35 : memref<4x4xi32, 2>
+      air.herd_terminator
+    }
+    %buf0 = memref.alloc() : memref<4x4xi32, 1>
+    %buf1 = memref.alloc() : memref<8x16xi32, 1>
+    air.channel.get @channel_0[] (%buf0[] [] []) {id = 2 : i32} : (memref<4x4xi32, 1>)
+    air.channel.put @channel_1[] (%buf0[] [] []) {id = 3 : i32} : (memref<4x4xi32, 1>)
+    air.channel.get @channel_2[] (%buf1[%c0, %c0] [%c4, %c4] [%c16, %c1]) {id = 4 : i32} : (memref<8x16xi32, 1>)
+    memref.dealloc %buf0 : memref<4x4xi32, 1>
+    memref.dealloc %buf1 : memref<8x16xi32, 1>
+    air.segment_terminator
+  }
+  air.channel.get @channel_1[] (%arg1[] [] []) {id = 4 : i32} : (memref<16x8xi32>)
+  return
+}

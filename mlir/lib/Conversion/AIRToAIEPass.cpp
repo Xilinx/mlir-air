@@ -2263,28 +2263,43 @@ public:
     }
     auto ndcpy = cast<air::MemcpyInterface>(memcpyOp);
 
-    int64_t len =
-        isTileInbound(ndcpy, (int)air::MemorySpace::L1)
-            ? getMemcpySizesAsInt(ndcpy.getDstMemref(), ndcpy.getDstSizes())
-            : getMemcpySizesAsInt(ndcpy.getSrcMemref(), ndcpy.getSrcSizes());
+    Value memref = isTileInbound(ndcpy, (int)air::MemorySpace::L1)
+                       ? ndcpy.getDstMemref()
+                       : ndcpy.getSrcMemref();
+    SmallVector<Value> sizes = isTileInbound(ndcpy, (int)air::MemorySpace::L1)
+                                   ? ndcpy.getDstSizes()
+                                   : ndcpy.getSrcSizes();
+    SmallVector<Value> offsets = isTileInbound(ndcpy, (int)air::MemorySpace::L1)
+                                     ? ndcpy.getDstOffsets()
+                                     : ndcpy.getSrcOffsets();
+    SmallVector<Value> strides = isTileInbound(ndcpy, (int)air::MemorySpace::L1)
+                                     ? ndcpy.getDstStrides()
+                                     : ndcpy.getSrcStrides();
 
-    // This is a hack and assumes 1D non-interleaving and non-overlapping data
-    // layout.
-    int64_t offset =
-        isTileInbound(ndcpy, (int)air::MemorySpace::L1)
-            ? get1DOffset(ndcpy.getDstSizes(), ndcpy.getDstOffsets(),
-                          ndcpy.getDstMemref())
-            : get1DOffset(ndcpy.getSrcSizes(), ndcpy.getSrcOffsets(),
-                          ndcpy.getSrcMemref());
+    int64_t len = getMemcpySizesAsInt(memref, sizes);
+    int64_t offset = get1DOffset(offsets, memref);
 
     Value length =
         b.create<arith::ConstantIndexOp>(memcpyOp.getLoc(), len)->getResult(0);
     b.create<AIE::UseLockOp>(loc, acqLockOp, lockAqValue,
                              isAIE2 ? AIE::LockAction::AcquireGreaterEqual
                                     : AIE::LockAction::Acquire);
-    b.create<AIE::DMABDOp>(
-        loc, bufferOp, offset,
-        cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(), 0);
+
+    std::vector<AIE::DimTupleAttr> dims =
+        getWrapsAndStrides(sizes, strides, ndcpy->getContext());
+
+    auto wraps_and_strides =
+        AIE::DimTupleArrayAttr::get(ndcpy->getContext(), ArrayRef(dims));
+    if (wraps_and_strides.getValue().empty() ||
+        isDefaultDataAccessPattern(sizes, strides, memref))
+      b.create<AIE::DMABDOp>(
+          loc, bufferOp, offset,
+          cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(), 0);
+    else
+      b.create<AIE::DMABDOp>(
+          loc, bufferOp, offset,
+          cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(), 0,
+          wraps_and_strides);
     b.create<AIE::UseLockOp>(loc, relLockOp, lockRelValue,
                              AIE::LockAction::Release);
   }

@@ -43,8 +43,15 @@ std::vector<unsigned> convertToStdVec(SmallVector<int64_t, 6> vec);
 
 bool areIdenticalVectors(std::vector<unsigned> &a, std::vector<unsigned> &b);
 
-int64_t get1DOffset(SmallVector<Value> memcpy_sizes,
-                    SmallVector<Value> memcpy_offsets, Value memref);
+int64_t get1DOffset(SmallVector<Value> memcpy_offsets, Value memref);
+
+std::vector<AIE::DimTupleAttr>
+getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
+                   SmallVector<Value> memcpy_strides, MLIRContext *ctx);
+
+bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
+                                SmallVector<Value> memcpy_strides,
+                                Value memref);
 
 std::pair<int64_t, int64_t> getLockValuePair(AIE::AIEArch arch,
                                              Value buffer_memref);
