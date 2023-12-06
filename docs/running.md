@@ -2,7 +2,8 @@
 
 ## Running end-to-end examples:
 
-TODO: document running one of the examples (ie. AIRBERT)
+TODO: document running one of the examples (ie. AIRBERT), 
+      mention boost requirement in air_to_ipu example. 
 
 ## Using the AIR compiler passes: 
 
