@@ -13,7 +13,6 @@
 using namespace mlir;
 using namespace xilinx;
 using namespace xilinx::air;
-using namespace boost;
 
 #define DEBUG_TYPE "air-dependency-canonicalize"
 

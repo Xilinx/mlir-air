@@ -19,3 +19,5 @@ set_target_properties(check-air-mlir PROPERTIES FOLDER "Tests")
 
 add_lit_testsuites(AIRMLIR ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS ${TEST_DEPENDS})
 add_dependencies(check-all check-air-mlir)
+
+add_subdirectory(CppUnitTests)
