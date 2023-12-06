@@ -49,6 +49,10 @@ std::vector<AIE::DimTupleAttr>
 getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
                    SmallVector<Value> memcpy_strides, MLIRContext *ctx);
 
+bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
+                                SmallVector<Value> memcpy_strides,
+                                Value memref);
+
 std::pair<int64_t, int64_t> getLockValuePair(AIE::AIEArch arch,
                                              Value buffer_memref);
 
