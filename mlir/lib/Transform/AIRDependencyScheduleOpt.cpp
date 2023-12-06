@@ -1224,17 +1224,6 @@ struct AIRSpecializeChannelWrapAndStride : public OpRewritePattern<scf::ForOp> {
     auto loc = for_op->getLoc();
     auto ctx = for_op->getContext();
 
-    // For now, limit this pass to operate in air.segment only (i.e. control
-    // loop around L2 memory)
-    if (for_op->getParentOfType<air::HerdOp>())
-      return failure();
-    if (!for_op->getParentOfType<air::SegmentOp>())
-      return failure();
-    bool hasHerdInBody = false;
-    for_op.getBody()->walk([&](air::HerdOp herd) { hasHerdInBody = true; });
-    if (hasHerdInBody)
-      return failure();
-
     // Check if the loop is the outermost loop in a perfect loop nest
     auto hasNElements = [](Block *block, unsigned N) {
       auto op_ptr = block->begin();
@@ -1247,6 +1236,10 @@ struct AIRSpecializeChannelWrapAndStride : public OpRewritePattern<scf::ForOp> {
         return failure();
 
     if (!hasNElements(for_op.getBody(), 1))
+      return failure();
+    if (isa<air::ChannelInterface>(for_op.getBody()->begin())) {
+    } else if (isa<scf::ForOp>(for_op.getBody()->begin())) {
+    } else
       return failure();
 
     // Check if the loop nest contains exactly one channel op
@@ -1268,6 +1261,13 @@ struct AIRSpecializeChannelWrapAndStride : public OpRewritePattern<scf::ForOp> {
     SmallVector<Value> wraps = channel_ops[0].getSizes();
     SmallVector<Value> strides = channel_ops[0].getStrides();
     for (auto o : for_loops) {
+      // Check for perfect loop nest containing only air.channel ops
+      if (!hasNElements(o.getBody(), 1))
+        return failure();
+      if (isa<air::ChannelInterface>(o.getBody()->begin())) {
+      } else if (isa<scf::ForOp>(o.getBody()->begin())) {
+      } else
+        return failure();
       // Calculate offset factor which is to contribute to stride
       unsigned ind_var_factor = 1;
       for (int i = offsets.size() - 1; i >= 0; i--) {

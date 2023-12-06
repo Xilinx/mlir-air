@@ -1124,11 +1124,6 @@ def AIRLowerHerdParallelPass : Pass<"air-lower-herd-parallel", "func::FuncOp"> {
   let constructor = "xilinx::air::createAIRLowerHerdParallelPass()";
 }
 
-def AIRHoistScfChannelGetPutPass : Pass<"air-hoist-channels", "func::FuncOp"> {
-  let summary = "Hoist air.channel.get and air.channel.put out of scf.for.";
-  let constructor = "xilinx::air::createAIRHoistScfChannelGetPutPass()";
-}
-
 def AIRLabelBroadcastChannelWithTilePass : Pass<"air-label-broadcast-channel-with-tile", "func::FuncOp"> {
   let summary = "Label broadcasted channel ops with tile coordinates.";
   let constructor = "xilinx::air::createAIRLabelBroadcastChannelWithTilePass()";
