@@ -258,6 +258,18 @@ std::optional<int64_t> air::getStaticScfForTripCountAsInt(scf::ForOp for_op) {
   return output;
 }
 
+// Get a static affine.for trip count as int
+std::optional<int64_t>
+air::getStaticScfForTripCountAsInt(affine::AffineForOp for_op) {
+  std::optional<int64_t> output = std::nullopt;
+  if (for_op.hasConstantBounds()) {
+    output = mlir::ceilDiv(
+        (for_op.getConstantUpperBound() - for_op.getConstantLowerBound()),
+        for_op.getStepAsInt());
+  }
+  return output;
+}
+
 // Get operation's "id" attribute
 int air::getIdAttr(Operation *op) {
   auto idAttr = op->getAttrOfType<IntegerAttr>("id");
@@ -767,4 +779,56 @@ std::vector<unsigned> air::getMDVectorFromIterator(std::vector<unsigned> dims,
   // Reverse to original order
   std::reverse(output.begin(), output.end());
   return output;
+}
+
+// Fold perfectly nested for loops as extra entries in wraps and strides
+void air::foldForLoopNestAsExtendedSizesAndStrides(
+    OpBuilder rewriter, Operation *for_op, Operation *channel_op,
+    SmallVector<Value> &offsets, SmallVector<Value> &wraps,
+    SmallVector<Value> &strides, Value memref) {
+  auto loc = for_op->getLoc();
+  auto ctx = for_op->getContext();
+
+  // Fold for loops int channel op's wrap and stride fields
+  SmallVector<Operation *> for_loops;
+  Operation *parent = channel_op;
+  while (parent != for_op) {
+    parent = parent->getParentOp();
+    if (isa<scf::ForOp>(parent))
+      for_loops.push_back(parent);
+    else if (isa<affine::AffineForOp>(parent))
+      for_loops.push_back(parent);
+  }
+  for (auto o : for_loops) {
+    unsigned ind_var_factor = 1;
+    for (int i = offsets.size() - 1; i >= 0; i--) {
+      Value iv = nullptr;
+      if (auto afo = dyn_cast<affine::AffineForOp>(o))
+        iv = afo.getInductionVar();
+      else if (auto sfo = dyn_cast<scf::ForOp>(o))
+        iv = sfo.getInductionVar();
+      if (iv && offsets[i] == iv) {
+        // Replace for loop induction vars in offsets with zero
+        offsets[i] = rewriter.template create<arith::ConstantIndexOp>(loc, 0);
+        break;
+      }
+      ind_var_factor *= getTensorShape(memref.getType())[i];
+    }
+    int trip_count = -1;
+    if (auto afo = dyn_cast<affine::AffineForOp>(o))
+      trip_count = *getStaticScfForTripCountAsInt(afo);
+    else if (auto sfo = dyn_cast<scf::ForOp>(o))
+      trip_count = *getStaticScfForTripCountAsInt(sfo);
+    Value new_wrap =
+        rewriter.template create<arith::ConstantIndexOp>(loc, trip_count);
+    int stepSize = -1;
+    if (auto afo = dyn_cast<affine::AffineForOp>(o))
+      stepSize = 1;
+    else if (auto sfo = dyn_cast<scf::ForOp>(o))
+      stepSize = *mlir::getConstantIntValue(sfo.getStep());
+    Value new_stride = rewriter.template create<arith::ConstantIndexOp>(
+        loc, stepSize * ind_var_factor);
+    wraps.insert(wraps.begin(), new_wrap);
+    strides.insert(strides.begin(), new_stride);
+  }
 }

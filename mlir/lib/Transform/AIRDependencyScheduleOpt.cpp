@@ -1268,28 +1268,13 @@ struct AIRSpecializeChannelWrapAndStride : public OpRewritePattern<scf::ForOp> {
       } else if (isa<scf::ForOp>(o.getBody()->begin())) {
       } else
         return failure();
-      // Calculate offset factor which is to contribute to stride
-      unsigned ind_var_factor = 1;
-      for (int i = offsets.size() - 1; i >= 0; i--) {
-        if (offsets[i] == o.getInductionVar()) {
-          // Replace for loop induction vars in offsets with zero
-          offsets[i] = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-          break;
-        }
-        ind_var_factor *=
-            getTensorShape(channel_ops[0].getMemref().getType())[i];
-      }
-      auto trip_count = getStaticScfForTripCountAsInt(o);
-      if (trip_count) {
-        Value new_wrap =
-            rewriter.create<arith::ConstantIndexOp>(loc, *trip_count);
-        Value new_stride = rewriter.create<arith::ConstantIndexOp>(
-            loc, *mlir::getConstantIntValue(o.getStep()) * ind_var_factor);
-        wraps.insert(wraps.begin(), new_wrap);
-        strides.insert(strides.begin(), new_stride);
-      } else
+      if (!getStaticScfForTripCountAsInt(o))
         return failure();
     }
+
+    foldForLoopNestAsExtendedSizesAndStrides(
+        rewriter, for_op.getOperation(), channel_ops[0].getOperation(), offsets,
+        wraps, strides, channel_ops[0].getMemref());
 
     Operation *new_chan_op = nullptr;
     SmallVector<Type, 1> tys;
