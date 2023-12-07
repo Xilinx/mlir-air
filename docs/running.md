@@ -2,8 +2,10 @@
 
 ## Running end-to-end examples:
 
-TODO: document running one of the examples (ie. AIRBERT), 
-      mention boost requirement in air_to_ipu example. 
+TODO: 
+- document running one of the examples (ie. AIRBERT), 
+- mention boost requirement in air_to_ipu example
+- consider replacling boost program_options with [cxxopts](https://github.com/jarro2783/cxxopts) or what seems to be the most popular parser atm [CLI11](https://github.com/CLIUtils/CLI11)
 
 ## Using the AIR compiler passes: 
 
