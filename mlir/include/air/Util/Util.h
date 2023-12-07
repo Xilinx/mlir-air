@@ -49,7 +49,7 @@ template <typename T> T getScfParentOpFromYieldOp(Operation *yield) {
 
 std::optional<int64_t> getStaticScfForTripCountAsInt(scf::ForOp for_op);
 std::optional<int64_t>
-getStaticScfForTripCountAsInt(affine::AffineForOp for_op);
+getStaticAffineForTripCountAsInt(affine::AffineForOp for_op);
 
 // Erase a kernel operand from air.hierarchy op
 void eraseAIRHierarchyOperand(HierarchyInterface op, unsigned index);

@@ -1216,7 +1216,8 @@ struct LabelScfForLoopInAIRSegment : public OpRewritePattern<scf::ForOp> {
 private:
 };
 
-struct AIRSpecializeChannelWrapAndStride : public OpRewritePattern<scf::ForOp> {
+struct AIRSpecializeChannelWrapAndStrideInScfFor
+    : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(scf::ForOp for_op,
@@ -1269,6 +1270,99 @@ struct AIRSpecializeChannelWrapAndStride : public OpRewritePattern<scf::ForOp> {
       } else
         return failure();
       if (!getStaticScfForTripCountAsInt(o))
+        return failure();
+    }
+
+    foldForLoopNestAsExtendedSizesAndStrides(
+        rewriter, for_op.getOperation(), channel_ops[0].getOperation(), offsets,
+        wraps, strides, channel_ops[0].getMemref());
+
+    Operation *new_chan_op = nullptr;
+    SmallVector<Type, 1> tys;
+    if (isAsyncOp(channel_ops[0].getOperation())) {
+      tys.push_back(air::AsyncTokenType::get(ctx));
+    }
+    SmallVector<Value, 1> deps =
+        for_op.getOperands().drop_front(for_op.getNumControlOperands());
+    if (isa<air::ChannelPutOp>(channel_ops[0]))
+      new_chan_op = rewriter.create<air::ChannelPutOp>(
+          loc, tys, deps, channel_ops[0].getChanName(),
+          channel_ops[0].getIndices(), channel_ops[0].getMemref(), offsets,
+          wraps, strides);
+    else if (isa<air::ChannelGetOp>(channel_ops[0]))
+      new_chan_op = rewriter.create<air::ChannelGetOp>(
+          loc, tys, deps, channel_ops[0].getChanName(),
+          channel_ops[0].getIndices(), channel_ops[0].getMemref(), offsets,
+          wraps, strides);
+
+    for (auto res : for_op.getResults()) {
+      if (isa<air::AsyncTokenType>(res.getType())) {
+        res.replaceAllUsesWith(
+            dyn_cast<air::AsyncOpInterface>(new_chan_op).getAsyncToken());
+      }
+    }
+    rewriter.eraseOp(for_op.getOperation());
+
+    return success();
+  }
+
+private:
+};
+
+struct AIRSpecializeChannelWrapAndStrideInAffineFor
+    : public OpRewritePattern<affine::AffineForOp> {
+  using OpRewritePattern<affine::AffineForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(affine::AffineForOp for_op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = for_op->getLoc();
+    auto ctx = for_op->getContext();
+
+    // Check if the loop is the outermost loop in a perfect loop nest
+    auto hasNElements = [](Block *block, unsigned N) {
+      auto op_ptr = block->begin();
+      for (unsigned i = 0; i < N; i++)
+        op_ptr = std::next(op_ptr);
+      return op_ptr != block->end() && &*op_ptr == &block->back();
+    };
+    if (auto parent_for = dyn_cast<affine::AffineForOp>(for_op->getParentOp()))
+      if (hasNElements(parent_for.getBody(), 1))
+        return failure();
+
+    if (!hasNElements(for_op.getBody(), 1))
+      return failure();
+    if (isa<air::ChannelInterface>(for_op.getBody()->begin())) {
+    } else if (isa<affine::AffineForOp>(for_op.getBody()->begin())) {
+    } else
+      return failure();
+
+    // Check if the loop nest contains exactly one channel op
+    SmallVector<air::ChannelInterface> channel_ops;
+    for_op.getBody()->walk(
+        [&](air::ChannelInterface putget) { channel_ops.push_back(putget); });
+    if (channel_ops.size() != 1)
+      return failure();
+
+    // Fold for loops int channel op's wrap and stride fields
+    SmallVector<affine::AffineForOp> for_loops;
+    Operation *parent = channel_ops[0].getOperation();
+    while (parent != for_op.getOperation()) {
+      parent = parent->getParentOp();
+      if (auto for_op_in_nest = dyn_cast<affine::AffineForOp>(parent))
+        for_loops.push_back(for_op_in_nest);
+    }
+    SmallVector<Value> offsets = channel_ops[0].getOffsets();
+    SmallVector<Value> wraps = channel_ops[0].getSizes();
+    SmallVector<Value> strides = channel_ops[0].getStrides();
+    for (auto o : for_loops) {
+      // Check for perfect loop nest containing only air.channel ops
+      if (!hasNElements(o.getBody(), 1))
+        return failure();
+      if (isa<air::ChannelInterface>(o.getBody()->begin())) {
+      } else if (isa<affine::AffineForOp>(o.getBody()->begin())) {
+      } else
+        return failure();
+      if (!getStaticAffineForTripCountAsInt(o))
         return failure();
     }
 
@@ -2029,7 +2123,8 @@ public:
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<AIRSpecializeChannelWrapAndStride>(ctx);
+    patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor,
+                    AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 

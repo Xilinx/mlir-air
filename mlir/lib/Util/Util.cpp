@@ -260,7 +260,7 @@ std::optional<int64_t> air::getStaticScfForTripCountAsInt(scf::ForOp for_op) {
 
 // Get a static affine.for trip count as int
 std::optional<int64_t>
-air::getStaticScfForTripCountAsInt(affine::AffineForOp for_op) {
+air::getStaticAffineForTripCountAsInt(affine::AffineForOp for_op) {
   std::optional<int64_t> output = std::nullopt;
   if (for_op.hasConstantBounds()) {
     output = mlir::ceilDiv(
@@ -816,14 +816,14 @@ void air::foldForLoopNestAsExtendedSizesAndStrides(
     }
     int trip_count = -1;
     if (auto afo = dyn_cast<affine::AffineForOp>(o))
-      trip_count = *getStaticScfForTripCountAsInt(afo);
+      trip_count = *getStaticAffineForTripCountAsInt(afo);
     else if (auto sfo = dyn_cast<scf::ForOp>(o))
       trip_count = *getStaticScfForTripCountAsInt(sfo);
     Value new_wrap =
         rewriter.template create<arith::ConstantIndexOp>(loc, trip_count);
     int stepSize = -1;
     if (auto afo = dyn_cast<affine::AffineForOp>(o))
-      stepSize = 1;
+      stepSize = afo.getStepAsInt();
     else if (auto sfo = dyn_cast<scf::ForOp>(o))
       stepSize = *mlir::getConstantIntValue(sfo.getStep());
     Value new_stride = rewriter.template create<arith::ConstantIndexOp>(

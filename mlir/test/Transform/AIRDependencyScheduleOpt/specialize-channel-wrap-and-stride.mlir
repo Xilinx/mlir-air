@@ -7,9 +7,14 @@
 
 // RUN: air-opt %s -air-specialize-channel-wrap-and-stride | FileCheck %s
 
-// Specialize air.channel ops in perfectly nested scf.for in air.segment with wraps and strides.
+// Specialize air.channel ops in perfectly nested for loops in air.segment with wraps and strides.
 
 module {
+  air.channel @channel_10 [1, 1]
+  air.channel @channel_9 [1, 1]
+  air.channel @channel_8 [1, 1]
+  air.channel @channel_7 [1, 1]
+  air.channel @channel_6 [1, 1]
   air.channel @channel_5 [1, 1]
   air.channel @channel_4 [1, 1]
   air.channel @channel_3 [1, 1]
@@ -100,6 +105,41 @@ module {
     scf.for %arg2 = %c0 to %c128 step %c32 {
       scf.for %arg3 = %c0 to %c128 step %c32 {
         air.channel.get  @channel_5[%c0, %c0] (%arg1[%arg2, %arg3] [%c32, %c32] [%c128, %c1]) : (memref<128x128xf32>)
+      }
+    }
+    return %alloc : memref<128xf32>
+  }
+
+  // CHECK-LABEL: test2
+  // CHECK: put @channel_6[%c0, %c0] (%arg0[%c0] [%c4, %c32] [%c32, %c1]) : (memref<128xf32>)
+  // CHECK: get @channel_7[%c0, %c0] (%arg1[%c0, %c0] [%c4, %c32, %c32] [%c4096, %c128, %c1]) : (memref<128x128xf32>)
+  // CHECK: put @channel_8[%c0, %c0] (%arg1[%c0, %c0] [%c4, %c32, %c32] [%c32, %c128, %c1]) : (memref<128x128xf32>)
+  // CHECK: put @channel_9[%c0, %c0] (%arg1[%c0, %c0] [%c4, %c4, %c32, %c32] [%c32, %c4096, %c128, %c1]) : (memref<128x128xf32>)
+  // CHECK: get @channel_10[%c0, %c0] (%arg1[%c0, %c0] [%c4, %c4, %c32, %c32] [%c4096, %c32, %c128, %c1]) : (memref<128x128xf32>)
+
+  func.func @test2(%arg0: memref<128xf32>, %arg1: memref<128x128xf32>) -> memref<128xf32> {
+    %c0 = arith.constant 0 : index
+    %c32 = arith.constant 32 : index
+    %c128 = arith.constant 128 : index
+    %c1 = arith.constant 1 : index
+    %alloc = memref.alloc() : memref<128xf32>
+    affine.for %arg2 = 0 to 128 step 32 {
+      air.channel.put  @channel_6[%c0, %c0] (%arg0[%arg2] [%c32] [%c1]) : (memref<128xf32>)
+    }
+    affine.for %arg2 = 0 to 128 step 32 {
+      air.channel.get  @channel_7[%c0, %c0] (%arg1[%arg2, %c0] [%c32, %c32] [%c128, %c1]) : (memref<128x128xf32>)
+    }
+    affine.for %arg2 = 0 to 128 step 32 {
+      air.channel.put  @channel_8[%c0, %c0] (%arg1[%c0, %arg2] [%c32, %c32] [%c128, %c1]) : (memref<128x128xf32>)
+    }
+    affine.for %arg2 = 0 to 128 step 32 {
+      affine.for %arg3 = 0 to 128 step 32 {
+        air.channel.put  @channel_9[%c0, %c0] (%arg1[%arg3, %arg2] [%c32, %c32] [%c128, %c1]) : (memref<128x128xf32>)
+      }
+    }
+    affine.for %arg2 = 0 to 128 step 32 {
+      affine.for %arg3 = 0 to 128 step 32 {
+        air.channel.get  @channel_10[%c0, %c0] (%arg1[%arg2, %arg3] [%c32, %c32] [%c128, %c1]) : (memref<128x128xf32>)
       }
     }
     return %alloc : memref<128xf32>
