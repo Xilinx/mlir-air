@@ -1216,6 +1216,140 @@ struct LabelScfForLoopInAIRSegment : public OpRewritePattern<scf::ForOp> {
 private:
 };
 
+struct CanonicalizeAffineApplyOnLoopInductionVar
+    : public OpRewritePattern<affine::AffineApplyOp> {
+  using OpRewritePattern<affine::AffineApplyOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(affine::AffineApplyOp apply,
+                                PatternRewriter &rewriter) const override {
+
+    auto ctx = apply->getContext();
+
+    if (apply.getAffineMap().getNumInputs() != 1)
+      return failure();
+    auto val = apply->getOperand(0);
+    auto ivArg = val.dyn_cast<BlockArgument>();
+    if (!ivArg)
+      return failure();
+    if (!ivArg.getOwner())
+      return failure();
+    if (apply.getResult().use_empty())
+      return failure();
+    auto *containingOp = ivArg.getOwner()->getParentOp();
+
+    // Apply affine map to loop step and bound
+    if (auto sfo = dyn_cast<scf::ForOp>(containingOp)) {
+      if (!getStaticScfForTripCountAsInt(sfo))
+        return failure();
+      auto new_ub = evaluateConstantInMap(
+          apply.getAffineMap(), *mlir::getConstantIntValue(sfo.getUpperBound()),
+          ctx);
+      auto new_lb = evaluateConstantInMap(
+          apply.getAffineMap(), *mlir::getConstantIntValue(sfo.getLowerBound()),
+          ctx);
+      auto new_step = evaluateConstantInMap(
+          apply.getAffineMap(), *mlir::getConstantIntValue(sfo.getStep()), ctx);
+      assert(new_ub && new_lb && new_step);
+      IRMapping remap;
+      if (auto exec = dyn_cast<air::ExecuteOp>(apply->getParentOp())) {
+        rewriter.setInsertionPoint(exec);
+        exec.getResult(1).replaceAllUsesWith(sfo.getInductionVar());
+        exec.getAsyncToken().replaceAllUsesWith(sfo.getRegionIterArgs()[0]);
+        rewriter.eraseOp(exec);
+      } else {
+        rewriter.setInsertionPoint(apply);
+        apply.getResult().replaceAllUsesWith(sfo.getInductionVar());
+        rewriter.eraseOp(apply);
+      }
+      rewriter.setInsertionPoint(sfo);
+      updateScfForBounds(rewriter, remap, sfo, *new_lb, *new_ub, *new_step);
+      rewriter.eraseOp(sfo);
+    } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
+      if (!afo.hasConstantBounds())
+        return failure();
+      auto new_ub = evaluateConstantInMap(apply.getAffineMap(),
+                                          afo.getConstantUpperBound(), ctx);
+      auto new_lb = evaluateConstantInMap(apply.getAffineMap(),
+                                          afo.getConstantLowerBound(), ctx);
+      auto new_step =
+          evaluateConstantInMap(apply.getAffineMap(), afo.getStepAsInt(), ctx);
+      assert(new_ub && new_lb && new_step);
+      IRMapping remap;
+      rewriter.setInsertionPoint(afo);
+      apply.getResult().replaceAllUsesWith(afo.getInductionVar());
+      rewriter.eraseOp(apply);
+      updateAffineForBounds(rewriter, remap, afo, *new_lb, *new_ub, *new_step);
+      rewriter.eraseOp(afo);
+    } else
+      return failure();
+
+    return success();
+  }
+
+private:
+  // Evaluate the affine expression of affine map on a constant affine
+  // expression. Only works with affine maps with a single input.
+  std::optional<int64_t> evaluateConstantInMap(AffineMap map,
+                                               int64_t const_input,
+                                               MLIRContext *ctx) const {
+    std::optional<int64_t> output = std::nullopt;
+    if (map.getNumInputs() != 1)
+      return output;
+    auto c = getAffineConstantExpr(const_input, ctx);
+    auto newmap = map.replace(getAffineSymbolExpr(0, ctx), c, 0, 1);
+    output = simplifyAffineMap(newmap).getSingleConstantResult();
+    return output;
+  }
+
+  affine::AffineForOp updateAffineForBounds(OpBuilder builder, IRMapping &remap,
+                                            affine::AffineForOp loop_op, int lb,
+                                            int ub, int step) const {
+    affine::AffineForOp new_loop_op = builder.create<affine::AffineForOp>(
+        builder.getUnknownLoc(), lb, ub, step);
+    remap.map(loop_op.getInductionVar(), new_loop_op.getInductionVar());
+    // remap.map(old_apply.getResult(), new_loop_op.getInductionVar());
+    auto insertionCheckpoint = builder.saveInsertionPoint();
+    builder.setInsertionPointToStart(new_loop_op.getBody());
+    for (Operation &child_op : loop_op.getBody()->getOperations()) {
+      if (&child_op == loop_op.getBody()->getTerminator()) { /*Skip*/
+      } else
+        builder.clone(child_op, remap);
+    }
+    builder.restoreInsertionPoint(insertionCheckpoint);
+    return new_loop_op;
+  }
+
+  scf::ForOp updateScfForBounds(OpBuilder builder, IRMapping &remap,
+                                scf::ForOp loop_op, int lb, int ub,
+                                int step) const {
+    auto loc = loop_op->getLoc();
+    SmallVector<Value, 1> deps =
+        loop_op.getOperands().drop_front(loop_op.getNumControlOperands());
+    scf::ForOp new_loop_op = builder.create<scf::ForOp>(
+        builder.getUnknownLoc(),
+        builder.create<arith::ConstantIndexOp>(loc, lb),
+        builder.create<arith::ConstantIndexOp>(loc, ub),
+        builder.create<arith::ConstantIndexOp>(loc, step), deps);
+    remap.map(loop_op.getInductionVar(), new_loop_op.getInductionVar());
+    for (unsigned i = 0; i < loop_op.getRegionIterArgs().size(); i++)
+      remap.map(loop_op.getRegionIterArgs()[i],
+                new_loop_op.getRegionIterArgs()[i]);
+    auto insertionCheckpoint = builder.saveInsertionPoint();
+    builder.setInsertionPointToStart(new_loop_op.getBody());
+    for (Operation &child_op : loop_op.getBody()->getOperations()) {
+      if (&child_op == loop_op.getBody()->getTerminator()) {
+        if (!new_loop_op.getBody()->mightHaveTerminator())
+          builder.clone(child_op, remap);
+      } else
+        builder.clone(child_op, remap);
+    }
+    for (unsigned i = 0; i < loop_op->getNumResults(); i++)
+      loop_op->getResult(i).replaceAllUsesWith(new_loop_op->getResult(i));
+    builder.restoreInsertionPoint(insertionCheckpoint);
+    return new_loop_op;
+  }
+};
+
 struct AIRSpecializeChannelWrapAndStrideInScfFor
     : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
@@ -2123,7 +2257,8 @@ public:
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<AIRSpecializeChannelWrapAndStrideInScfFor,
+    patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar,
+                    AIRSpecializeChannelWrapAndStrideInScfFor,
                     AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }

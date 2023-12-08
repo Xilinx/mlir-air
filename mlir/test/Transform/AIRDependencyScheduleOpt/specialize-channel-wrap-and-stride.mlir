@@ -9,18 +9,8 @@
 
 // Specialize air.channel ops in perfectly nested for loops in air.segment with wraps and strides.
 
+#map = affine_map<()[s0] -> (s0 * 32)>
 module {
-  air.channel @channel_10 [1, 1]
-  air.channel @channel_9 [1, 1]
-  air.channel @channel_8 [1, 1]
-  air.channel @channel_7 [1, 1]
-  air.channel @channel_6 [1, 1]
-  air.channel @channel_5 [1, 1]
-  air.channel @channel_4 [1, 1]
-  air.channel @channel_3 [1, 1]
-  air.channel @channel_2 [1, 1]
-  air.channel @channel_1 [1, 1]
-  air.channel @channel_0 [1, 1]
 
   // CHECK-LABEL: test0
   // CHECK: air.segment
@@ -141,6 +131,46 @@ module {
       affine.for %arg3 = 0 to 128 step 32 {
         air.channel.get  @channel_10[%c0, %c0] (%arg1[%arg2, %arg3] [%c32, %c32] [%c128, %c1]) : (memref<128x128xf32>)
       }
+    }
+    return %alloc : memref<128xf32>
+  }
+
+  // CHECK-LABEL: test3
+  // CHECK: put @channel_11[%c0, %c0] (%arg0[%c0] [%c4, %c32] [%c32, %c1]) : (memref<128xf32>)
+  // CHECK: put @channel_12[%c0, %c0] (%arg1[%c0, %c0] [%c4, %c4, %c32, %c32] [%c32, %c4096, %c128, %c1]) : (memref<128x128xf32>)
+  // CHECK: put @channel_13[%c0, %c0] (%arg0[%c0] [%c4, %c32] [%c32, %c1]) : (memref<128xf32>)
+  // CHECK: put async [%0]  @channel_14[%c0, %c0] (%arg0[%c0] [%c4, %c32] [%c32, %c1]) : (memref<128xf32>)
+
+  func.func @test3(%arg0: memref<128xf32>, %arg1: memref<128x128xf32>) -> memref<128xf32> {
+    %c0 = arith.constant 0 : index
+    %c4 = arith.constant 4 : index
+    %c32 = arith.constant 32 : index
+    %c128 = arith.constant 128 : index
+    %c1 = arith.constant 1 : index
+    %alloc = memref.alloc() : memref<128xf32>
+    affine.for %arg2 = 0 to 4 step 1 {
+      %0 = affine.apply #map()[%arg2]
+      air.channel.put  @channel_11[%c0, %c0] (%arg0[%0] [%c32] [%c1]) : (memref<128xf32>)
+    }
+    affine.for %arg2 = 0 to 4 step 1 {
+      affine.for %arg3 = 0 to 4 step 1 {
+        %0 = affine.apply #map()[%arg2]
+        %1 = affine.apply #map()[%arg3]
+        air.channel.put  @channel_12[%c0, %c0] (%arg1[%1, %0] [%c32, %c32] [%c128, %c1]) : (memref<128x128xf32>)
+      }
+    }
+    scf.for %arg2 = %c0 to %c4 step %c1 {
+      %0 = affine.apply #map()[%arg2]
+      air.channel.put  @channel_13[%c0, %c0] (%arg0[%0] [%c32] [%c1]) : (memref<128xf32>)
+    }
+    %async_token = air.wait_all async
+    %async_token_0 = scf.for %arg2 = %c0 to %c4 step %c1 iter_args(%arg4 = %async_token) -> (!air.async.token) {
+      %async_token_1, %results_0 = air.execute [%arg4] -> (index) {
+        %apply = affine.apply #map()[%arg2]
+        air.execute_terminator %apply : index
+      }
+      %async_token_2 = air.channel.put async [%async_token_1]  @channel_14[%c0, %c0] (%arg0[%results_0] [%c32] [%c1]) : (memref<128xf32>)
+      scf.yield %async_token_2 : !air.async.token
     }
     return %alloc : memref<128xf32>
   }
