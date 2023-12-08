@@ -756,7 +756,7 @@ unsigned air::getIteratorFromMDVector(std::vector<unsigned> dims,
   unsigned output = 0;
   for (int i = dims.size() - 1; i >= 0; i--) { // In reversed order
     unsigned scale_factor = 1;
-    for (unsigned j = 0; j < i; j++) {
+    for (int j = 0; j < i; j++) {
       scale_factor *= dims[i];
     }
     output += scale_factor * position[i];
@@ -800,7 +800,6 @@ void air::foldForLoopNestAsExtendedSizesAndStrides(
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
     SmallVector<Value> &strides, Value memref) {
   auto loc = for_op->getLoc();
-  auto ctx = for_op->getContext();
 
   // Fold for loops int channel op's wrap and stride fields
   SmallVector<Operation *> for_loops;
