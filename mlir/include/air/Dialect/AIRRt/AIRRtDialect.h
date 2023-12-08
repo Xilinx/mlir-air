@@ -10,6 +10,7 @@
 #define AIRRT_DIALECT_H
 
 #include "mlir/IR/Dialect.h"
+#include "llvm/ADT/StringRef.h"
 
 using namespace mlir;
 

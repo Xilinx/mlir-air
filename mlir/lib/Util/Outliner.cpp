@@ -78,6 +78,7 @@ func::CallOp AIROutliner::outline(affine::AffineForOp forOp,
   auto body_builder = OpBuilder::atBlockBegin(&entryBlock);
   Operation* clone = body_builder.clone(*forOp.getOperation(), mapper);
   assert(clone);
+  (void)clone;
 
   body_builder.create<func::ReturnOp>(loc);
 
@@ -93,6 +94,7 @@ func::CallOp AIROutliner::outline(std::vector<mlir::Operation *> ops,
 
   auto module = ops[0]->getParentOfType<mlir::ModuleOp>();
   Block *bb = nullptr;
+  (void)bb;
   std::vector<Operation*> outline_ops;
   std::vector<Value> outline_rets;
   std::vector<mlir::Type> ret_types;

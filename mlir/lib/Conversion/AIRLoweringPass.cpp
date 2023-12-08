@@ -79,10 +79,8 @@ public:
         rewriter.create<scf::ParallelOp>(op->getLoc(), lbs, ubs, steps);
 
     // map launch iteration space to scf.parallel ivs
-    for (auto p : llvm::zip(launch.getIds(), scfPar.getInductionVars())) {
-      Value p_0 = std::get<0>(p);
-      p_0.replaceAllUsesWith(std::get<1>(p));
-    }
+    for (auto p : llvm::zip(launch.getIds(), scfPar.getInductionVars()))
+      rewriter.replaceAllUsesWith(std::get<0>(p), std::get<1>(p));
 
     // map launch size to scf.parallel upper bounds
     for (auto p : llvm::zip(launch.getSizeOperands(), scfPar.getUpperBound()))
@@ -161,10 +159,8 @@ public:
           rewriter.create<scf::ParallelOp>(op->getLoc(), lbs, ubs, steps);
 
       // map segment iteration space to scf.parallel ivs
-      for (auto p : llvm::zip(segment.getIds(), scfPar.getInductionVars())) {
-        Value p_0 = std::get<0>(p);
-        p_0.replaceAllUsesWith(std::get<1>(p));
-      }
+      for (auto p : llvm::zip(segment.getIds(), scfPar.getInductionVars()))
+        rewriter.replaceAllUsesWith(std::get<0>(p), std::get<1>(p));
 
       // map segment size to scf.parallel upper bounds
       for (auto p :
@@ -232,14 +228,10 @@ public:
     outer->setAttr("air.herd", StringAttr::get(op->getContext(), "outer"));
     inner->setAttr("air.herd", StringAttr::get(op->getContext(), "inner"));
 
-    Value hs_0 = herd.getSize()[0];
-    Value hs_1 = herd.getSize()[1];
-    Value hid_0 = herd.getIds()[0];
-    Value hid_1 = herd.getIds()[1];
-    hs_0.replaceAllUsesWith(herd_size[0]);
-    hs_1.replaceAllUsesWith(herd_size[1]);
-    hid_0.replaceAllUsesWith(outer.getInductionVar());
-    hid_1.replaceAllUsesWith(inner.getInductionVar());
+    rewriter.replaceAllUsesWith(herd.getSize()[0], herd_size[0]);
+    rewriter.replaceAllUsesWith(herd.getSize()[1], herd_size[1]);
+    rewriter.replaceAllUsesWith(herd.getIds()[0], outer.getInductionVar());
+    rewriter.replaceAllUsesWith(herd.getIds()[1], inner.getInductionVar());
 
     if (herdOps.size()) {
       int i = 0;
@@ -486,8 +478,6 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
       builder.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 1));
 
   if (thisOpIsInShim) {
-    // if (!isFullMemcpy) {
-
     auto idTy = IntegerType::get(ctx, 32);
     // Get op id of the internal put/get op
     if (auto id_attr = theOtherOp->getAttrOfType<IntegerAttr>("id")) {
@@ -892,10 +882,14 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
 
   SmallVector<Operation *, 8> erased;
   f.walk([&](scf::ParallelOp scf_par) {
-    for (auto v : scf_par.getLowerBound())
+    for (auto v : scf_par.getLowerBound()) {
       assert(dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value() == 0);
-    for (auto v : scf_par.getStep())
+      (void)v;
+    }
+    for (auto v : scf_par.getStep()) {
       assert(dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value() == 1);
+      (void)v;
+    }
     std::vector<int> par_sizes = {};
     for (auto v : scf_par.getUpperBound())
       par_sizes.push_back(
@@ -1240,8 +1234,9 @@ private:
     else if (auto scf_for = dyn_cast<scf::ForOp>(op))
       return getInnerMostMemcpyFromLoopNest(scf_for);
     // else return nullptr;
-    else
-      assert(false);
+    else {
+      llvm_unreachable("unhandled op");
+    }
   }
   Operation *getInnerMostMemcpyFromLoopNest(scf::ForOp op) const {
     Operation *output = nullptr;
