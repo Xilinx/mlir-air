@@ -132,6 +132,10 @@ unsigned getIteratorFromMDVector(std::vector<unsigned> dims,
 std::vector<unsigned> getMDVectorFromIterator(std::vector<unsigned> dims,
                                               unsigned iter);
 
+// Recursively trace back in defining ops
+void getDefiningOpsToOperands(Operation *op, SmallVector<Operation *> &def_ops);
+
+// Fold perfectly nested parent loops into wraps and strides list
 void foldForLoopNestAsExtendedSizesAndStrides(
     OpBuilder rewriter, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,

@@ -3020,5 +3020,10 @@ std::unique_ptr<Pass> createAIRIsolateAsyncDmaLoopNests() {
   return std::make_unique<AIRIsolateAsyncDmaLoopNests>();
 }
 
+void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns) {
+  MLIRContext *ctx = patterns.getContext();
+  patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar>(ctx);
+}
+
 } // namespace air
 } // namespace xilinx

@@ -781,6 +781,19 @@ std::vector<unsigned> air::getMDVectorFromIterator(std::vector<unsigned> dims,
   return output;
 }
 
+// Recursively trace back in defining ops
+void air::getDefiningOpsToOperands(Operation *op,
+                                   SmallVector<Operation *> &def_ops) {
+  if (!op)
+    return;
+  for (auto oper : op->getOperands()) {
+    if (auto def_op = oper.getDefiningOp()) {
+      getDefiningOpsToOperands(def_op, def_ops);
+      def_ops.push_back(def_op);
+    }
+  }
+}
+
 // Fold perfectly nested for loops as extra entries in wraps and strides
 void air::foldForLoopNestAsExtendedSizesAndStrides(
     OpBuilder rewriter, Operation *for_op, Operation *channel_op,
@@ -811,6 +824,12 @@ void air::foldForLoopNestAsExtendedSizesAndStrides(
         // Replace for loop induction vars in offsets with zero
         offsets[i] = rewriter.template create<arith::ConstantIndexOp>(loc, 0);
         break;
+      } else if (iv && offsets[i].getDefiningOp()) {
+        if (isa<arith::IndexCastOp>(offsets[i].getDefiningOp()) &&
+            offsets[i].getDefiningOp()->getOperand(0) == iv) {
+          offsets[i] = rewriter.template create<arith::ConstantIndexOp>(loc, 0);
+          break;
+        };
       }
       ind_var_factor *= getTensorShape(memref.getType())[i];
     }
