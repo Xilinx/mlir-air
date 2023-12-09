@@ -48,6 +48,8 @@ template <typename T> T getScfParentOpFromYieldOp(Operation *yield) {
 }
 
 std::optional<int64_t> getStaticScfForTripCountAsInt(scf::ForOp for_op);
+std::optional<int64_t>
+getStaticAffineForTripCountAsInt(affine::AffineForOp for_op);
 
 // Erase a kernel operand from air.hierarchy op
 void eraseAIRHierarchyOperand(HierarchyInterface op, unsigned index);
@@ -129,6 +131,15 @@ unsigned getIteratorFromMDVector(std::vector<unsigned> dims,
 // from an iterator
 std::vector<unsigned> getMDVectorFromIterator(std::vector<unsigned> dims,
                                               unsigned iter);
+
+// Recursively trace back in defining ops
+void getDefiningOpsToOperands(Operation *op, SmallVector<Operation *> &def_ops);
+
+// Fold perfectly nested parent loops into wraps and strides list
+void foldForLoopNestAsExtendedSizesAndStrides(
+    OpBuilder rewriter, Operation *for_op, Operation *channel_op,
+    SmallVector<Value> &offsets, SmallVector<Value> &wraps,
+    SmallVector<Value> &strides, Value memref);
 
 } // namespace air
 } // namespace xilinx

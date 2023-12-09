@@ -1216,24 +1216,148 @@ struct LabelScfForLoopInAIRSegment : public OpRewritePattern<scf::ForOp> {
 private:
 };
 
-struct AIRSpecializeChannelWrapAndStride : public OpRewritePattern<scf::ForOp> {
+struct CanonicalizeAffineApplyOnLoopInductionVar
+    : public OpRewritePattern<affine::AffineApplyOp> {
+  using OpRewritePattern<affine::AffineApplyOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(affine::AffineApplyOp apply,
+                                PatternRewriter &rewriter) const override {
+
+    auto ctx = apply->getContext();
+
+    if (apply.getAffineMap().getNumInputs() != 1)
+      return failure();
+    auto val = apply->getOperand(0);
+    auto ivArg = val.dyn_cast<BlockArgument>();
+    if (!ivArg)
+      return failure();
+    if (!ivArg.getOwner())
+      return failure();
+    if (apply.getResult().use_empty())
+      return failure();
+    auto *containingOp = ivArg.getOwner()->getParentOp();
+
+    // Apply affine map to loop step and bound
+    if (auto sfo = dyn_cast<scf::ForOp>(containingOp)) {
+      if (!getStaticScfForTripCountAsInt(sfo))
+        return failure();
+      auto new_ub = evaluateConstantInMap(
+          apply.getAffineMap(), *mlir::getConstantIntValue(sfo.getUpperBound()),
+          ctx);
+      auto new_lb = evaluateConstantInMap(
+          apply.getAffineMap(), *mlir::getConstantIntValue(sfo.getLowerBound()),
+          ctx);
+      auto new_step = evaluateConstantInMap(
+          apply.getAffineMap(), *mlir::getConstantIntValue(sfo.getStep()), ctx);
+      assert(new_ub && new_lb && new_step);
+      IRMapping remap;
+      if (auto exec = dyn_cast<air::ExecuteOp>(apply->getParentOp())) {
+        rewriter.setInsertionPoint(exec);
+        exec.getResult(1).replaceAllUsesWith(sfo.getInductionVar());
+        exec.getAsyncToken().replaceAllUsesWith(sfo.getRegionIterArgs()[0]);
+        rewriter.eraseOp(exec);
+      } else {
+        rewriter.setInsertionPoint(apply);
+        apply.getResult().replaceAllUsesWith(sfo.getInductionVar());
+        rewriter.eraseOp(apply);
+      }
+      rewriter.setInsertionPoint(sfo);
+      updateScfForBounds(rewriter, remap, sfo, *new_lb, *new_ub, *new_step);
+      rewriter.eraseOp(sfo);
+    } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
+      if (!afo.hasConstantBounds())
+        return failure();
+      auto new_ub = evaluateConstantInMap(apply.getAffineMap(),
+                                          afo.getConstantUpperBound(), ctx);
+      auto new_lb = evaluateConstantInMap(apply.getAffineMap(),
+                                          afo.getConstantLowerBound(), ctx);
+      auto new_step =
+          evaluateConstantInMap(apply.getAffineMap(), afo.getStepAsInt(), ctx);
+      assert(new_ub && new_lb && new_step);
+      IRMapping remap;
+      rewriter.setInsertionPoint(afo);
+      apply.getResult().replaceAllUsesWith(afo.getInductionVar());
+      rewriter.eraseOp(apply);
+      updateAffineForBounds(rewriter, remap, afo, *new_lb, *new_ub, *new_step);
+      rewriter.eraseOp(afo);
+    } else
+      return failure();
+
+    return success();
+  }
+
+private:
+  // Evaluate the affine expression of affine map on a constant affine
+  // expression. Only works with affine maps with a single input.
+  std::optional<int64_t> evaluateConstantInMap(AffineMap map,
+                                               int64_t const_input,
+                                               MLIRContext *ctx) const {
+    std::optional<int64_t> output = std::nullopt;
+    if (map.getNumInputs() != 1)
+      return output;
+    auto c = getAffineConstantExpr(const_input, ctx);
+    auto newmap = map.replace(getAffineSymbolExpr(0, ctx), c, 0, 1);
+    output = simplifyAffineMap(newmap).getSingleConstantResult();
+    return output;
+  }
+
+  affine::AffineForOp updateAffineForBounds(OpBuilder builder, IRMapping &remap,
+                                            affine::AffineForOp loop_op, int lb,
+                                            int ub, int step) const {
+    affine::AffineForOp new_loop_op = builder.create<affine::AffineForOp>(
+        builder.getUnknownLoc(), lb, ub, step);
+    remap.map(loop_op.getInductionVar(), new_loop_op.getInductionVar());
+    // remap.map(old_apply.getResult(), new_loop_op.getInductionVar());
+    auto insertionCheckpoint = builder.saveInsertionPoint();
+    builder.setInsertionPointToStart(new_loop_op.getBody());
+    for (Operation &child_op : loop_op.getBody()->getOperations()) {
+      if (&child_op == loop_op.getBody()->getTerminator()) { /*Skip*/
+      } else
+        builder.clone(child_op, remap);
+    }
+    builder.restoreInsertionPoint(insertionCheckpoint);
+    return new_loop_op;
+  }
+
+  scf::ForOp updateScfForBounds(OpBuilder builder, IRMapping &remap,
+                                scf::ForOp loop_op, int lb, int ub,
+                                int step) const {
+    auto loc = loop_op->getLoc();
+    SmallVector<Value, 1> deps =
+        loop_op.getOperands().drop_front(loop_op.getNumControlOperands());
+    scf::ForOp new_loop_op = builder.create<scf::ForOp>(
+        builder.getUnknownLoc(),
+        builder.create<arith::ConstantIndexOp>(loc, lb),
+        builder.create<arith::ConstantIndexOp>(loc, ub),
+        builder.create<arith::ConstantIndexOp>(loc, step), deps);
+    remap.map(loop_op.getInductionVar(), new_loop_op.getInductionVar());
+    for (unsigned i = 0; i < loop_op.getRegionIterArgs().size(); i++)
+      remap.map(loop_op.getRegionIterArgs()[i],
+                new_loop_op.getRegionIterArgs()[i]);
+    auto insertionCheckpoint = builder.saveInsertionPoint();
+    builder.setInsertionPointToStart(new_loop_op.getBody());
+    for (Operation &child_op : loop_op.getBody()->getOperations()) {
+      if (&child_op == loop_op.getBody()->getTerminator()) {
+        if (!new_loop_op.getBody()->mightHaveTerminator())
+          builder.clone(child_op, remap);
+      } else
+        builder.clone(child_op, remap);
+    }
+    for (unsigned i = 0; i < loop_op->getNumResults(); i++)
+      loop_op->getResult(i).replaceAllUsesWith(new_loop_op->getResult(i));
+    builder.restoreInsertionPoint(insertionCheckpoint);
+    return new_loop_op;
+  }
+};
+
+struct AIRSpecializeChannelWrapAndStrideInScfFor
+    : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(scf::ForOp for_op,
                                 PatternRewriter &rewriter) const override {
     auto loc = for_op->getLoc();
     auto ctx = for_op->getContext();
-
-    // For now, limit this pass to operate in air.segment only (i.e. control
-    // loop around L2 memory)
-    if (for_op->getParentOfType<air::HerdOp>())
-      return failure();
-    if (!for_op->getParentOfType<air::SegmentOp>())
-      return failure();
-    bool hasHerdInBody = false;
-    for_op.getBody()->walk([&](air::HerdOp herd) { hasHerdInBody = true; });
-    if (hasHerdInBody)
-      return failure();
 
     // Check if the loop is the outermost loop in a perfect loop nest
     auto hasNElements = [](Block *block, unsigned N) {
@@ -1247,6 +1371,10 @@ struct AIRSpecializeChannelWrapAndStride : public OpRewritePattern<scf::ForOp> {
         return failure();
 
     if (!hasNElements(for_op.getBody(), 1))
+      return failure();
+    if (isa<air::ChannelInterface>(for_op.getBody()->begin())) {
+    } else if (isa<scf::ForOp>(for_op.getBody()->begin())) {
+    } else
       return failure();
 
     // Check if the loop nest contains exactly one channel op
@@ -1268,28 +1396,113 @@ struct AIRSpecializeChannelWrapAndStride : public OpRewritePattern<scf::ForOp> {
     SmallVector<Value> wraps = channel_ops[0].getSizes();
     SmallVector<Value> strides = channel_ops[0].getStrides();
     for (auto o : for_loops) {
-      // Calculate offset factor which is to contribute to stride
-      unsigned ind_var_factor = 1;
-      for (int i = offsets.size() - 1; i >= 0; i--) {
-        if (offsets[i] == o.getInductionVar()) {
-          // Replace for loop induction vars in offsets with zero
-          offsets[i] = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-          break;
-        }
-        ind_var_factor *=
-            getTensorShape(channel_ops[0].getMemref().getType())[i];
-      }
-      auto trip_count = getStaticScfForTripCountAsInt(o);
-      if (trip_count) {
-        Value new_wrap =
-            rewriter.create<arith::ConstantIndexOp>(loc, *trip_count);
-        Value new_stride = rewriter.create<arith::ConstantIndexOp>(
-            loc, *mlir::getConstantIntValue(o.getStep()) * ind_var_factor);
-        wraps.insert(wraps.begin(), new_wrap);
-        strides.insert(strides.begin(), new_stride);
+      // Check for perfect loop nest containing only air.channel ops
+      if (!hasNElements(o.getBody(), 1))
+        return failure();
+      if (isa<air::ChannelInterface>(o.getBody()->begin())) {
+      } else if (isa<scf::ForOp>(o.getBody()->begin())) {
       } else
         return failure();
+      if (!getStaticScfForTripCountAsInt(o))
+        return failure();
     }
+
+    foldForLoopNestAsExtendedSizesAndStrides(
+        rewriter, for_op.getOperation(), channel_ops[0].getOperation(), offsets,
+        wraps, strides, channel_ops[0].getMemref());
+
+    Operation *new_chan_op = nullptr;
+    SmallVector<Type, 1> tys;
+    if (isAsyncOp(channel_ops[0].getOperation())) {
+      tys.push_back(air::AsyncTokenType::get(ctx));
+    }
+    SmallVector<Value, 1> deps =
+        for_op.getOperands().drop_front(for_op.getNumControlOperands());
+    if (isa<air::ChannelPutOp>(channel_ops[0]))
+      new_chan_op = rewriter.create<air::ChannelPutOp>(
+          loc, tys, deps, channel_ops[0].getChanName(),
+          channel_ops[0].getIndices(), channel_ops[0].getMemref(), offsets,
+          wraps, strides);
+    else if (isa<air::ChannelGetOp>(channel_ops[0]))
+      new_chan_op = rewriter.create<air::ChannelGetOp>(
+          loc, tys, deps, channel_ops[0].getChanName(),
+          channel_ops[0].getIndices(), channel_ops[0].getMemref(), offsets,
+          wraps, strides);
+
+    for (auto res : for_op.getResults()) {
+      if (isa<air::AsyncTokenType>(res.getType())) {
+        res.replaceAllUsesWith(
+            dyn_cast<air::AsyncOpInterface>(new_chan_op).getAsyncToken());
+      }
+    }
+    rewriter.eraseOp(for_op.getOperation());
+
+    return success();
+  }
+
+private:
+};
+
+struct AIRSpecializeChannelWrapAndStrideInAffineFor
+    : public OpRewritePattern<affine::AffineForOp> {
+  using OpRewritePattern<affine::AffineForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(affine::AffineForOp for_op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = for_op->getLoc();
+    auto ctx = for_op->getContext();
+
+    // Check if the loop is the outermost loop in a perfect loop nest
+    auto hasNElements = [](Block *block, unsigned N) {
+      auto op_ptr = block->begin();
+      for (unsigned i = 0; i < N; i++)
+        op_ptr = std::next(op_ptr);
+      return op_ptr != block->end() && &*op_ptr == &block->back();
+    };
+    if (auto parent_for = dyn_cast<affine::AffineForOp>(for_op->getParentOp()))
+      if (hasNElements(parent_for.getBody(), 1))
+        return failure();
+
+    if (!hasNElements(for_op.getBody(), 1))
+      return failure();
+    if (isa<air::ChannelInterface>(for_op.getBody()->begin())) {
+    } else if (isa<affine::AffineForOp>(for_op.getBody()->begin())) {
+    } else
+      return failure();
+
+    // Check if the loop nest contains exactly one channel op
+    SmallVector<air::ChannelInterface> channel_ops;
+    for_op.getBody()->walk(
+        [&](air::ChannelInterface putget) { channel_ops.push_back(putget); });
+    if (channel_ops.size() != 1)
+      return failure();
+
+    // Fold for loops int channel op's wrap and stride fields
+    SmallVector<affine::AffineForOp> for_loops;
+    Operation *parent = channel_ops[0].getOperation();
+    while (parent != for_op.getOperation()) {
+      parent = parent->getParentOp();
+      if (auto for_op_in_nest = dyn_cast<affine::AffineForOp>(parent))
+        for_loops.push_back(for_op_in_nest);
+    }
+    SmallVector<Value> offsets = channel_ops[0].getOffsets();
+    SmallVector<Value> wraps = channel_ops[0].getSizes();
+    SmallVector<Value> strides = channel_ops[0].getStrides();
+    for (auto o : for_loops) {
+      // Check for perfect loop nest containing only air.channel ops
+      if (!hasNElements(o.getBody(), 1))
+        return failure();
+      if (isa<air::ChannelInterface>(o.getBody()->begin())) {
+      } else if (isa<affine::AffineForOp>(o.getBody()->begin())) {
+      } else
+        return failure();
+      if (!getStaticAffineForTripCountAsInt(o))
+        return failure();
+    }
+
+    foldForLoopNestAsExtendedSizesAndStrides(
+        rewriter, for_op.getOperation(), channel_ops[0].getOperation(), offsets,
+        wraps, strides, channel_ops[0].getMemref());
 
     Operation *new_chan_op = nullptr;
     SmallVector<Type, 1> tys;
@@ -2044,7 +2257,9 @@ public:
   void runOptPatterns(func::FuncOp funcOp) {
     MLIRContext *ctx = funcOp.getContext();
     RewritePatternSet patterns(&getContext());
-    patterns.insert<AIRSpecializeChannelWrapAndStride>(ctx);
+    patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar,
+                    AIRSpecializeChannelWrapAndStrideInScfFor,
+                    AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 
@@ -2803,6 +3018,11 @@ std::unique_ptr<Pass> createAIRFuseChannels() {
 
 std::unique_ptr<Pass> createAIRIsolateAsyncDmaLoopNests() {
   return std::make_unique<AIRIsolateAsyncDmaLoopNests>();
+}
+
+void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns) {
+  MLIRContext *ctx = patterns.getContext();
+  patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar>(ctx);
 }
 
 } // namespace air

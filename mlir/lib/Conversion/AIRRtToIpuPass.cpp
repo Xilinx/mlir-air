@@ -9,6 +9,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
+#include "air/Transform/AIRDependencyScheduleOpt.h"
 #include "air/Util/Util.h"
 
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
@@ -189,6 +190,212 @@ AIE::DeviceOp getDeviceForSegmentLoad(SegmentLoadOp s) {
   return nullptr;
 }
 
+// Splits an Affine for loop into two for loops, by hoisting target operations
+// in for loop to a new for loop located at the same scope.
+void hoistTargetOpsToNewAffineFor(OpBuilder builder, affine::AffineForOp for_op,
+                                  SmallVector<Operation *> target_ops) {
+  // Get loop nest
+  SmallVector<affine::AffineForOp> for_loops;
+  affine::AffineForOp parent_for =
+      target_ops[0]->getParentOfType<affine::AffineForOp>();
+  while (parent_for != for_op) {
+    for_loops.push_back(parent_for);
+    parent_for = parent_for->getParentOfType<affine::AffineForOp>();
+  }
+  for_loops.push_back(for_op);
+
+  // Clone loop nest
+  builder.setInsertionPoint(for_op);
+  IRMapping remap;
+  for (int i = for_loops.size() - 1; i >= 0; i--) {
+    auto new_for_op = builder.create<affine::AffineForOp>(
+        for_loops[i].getLoc(), for_loops[i].getConstantLowerBound(),
+        for_loops[i].getConstantUpperBound());
+    remap.map(for_loops[i].getInductionVar(), new_for_op.getInductionVar());
+    builder.setInsertionPointToStart(new_for_op.getBody());
+    // Bottom of rabbit hole
+    if (i == 0) {
+      for (auto op : target_ops) {
+        builder.clone(*op, remap);
+      }
+    }
+  }
+}
+
+template <typename T> void push_back_if_unique(SmallVector<T> &vec, T entry) {
+  if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
+    vec.push_back(entry);
+  }
+}
+
+void identifyTargetAffineForAndOps(
+    func::FuncOp f, SmallVector<SmallVector<Operation *>> &target_ops_vec) {
+  // Identify the target for loops and their target child ops
+  int index = 0;
+  for (auto for_op : f.getBody().getOps<affine::AffineForOp>()) {
+    for_op.walk([&](airrt::DmaMemcpyNdOp memcpyOp) {
+      // Get for_op's immediate child op
+      target_ops_vec.push_back(SmallVector<Operation *>{});
+      // Check if any operand's defining ops needs to be hoisted together.
+      SmallVector<Operation *> oper_def_ops;
+      xilinx::air::getDefiningOpsToOperands(memcpyOp.getOperation(),
+                                            oper_def_ops);
+      for (auto o : oper_def_ops) {
+        if (o->getParentOp() == memcpyOp->getParentOp()) {
+          push_back_if_unique<Operation *>(target_ops_vec[index], o);
+        }
+      }
+      push_back_if_unique<Operation *>(target_ops_vec[index],
+                                       memcpyOp.getOperation());
+      index++;
+    });
+  }
+}
+
+void isolateAIRRtDmaLoopNests(ModuleOp module) {
+  // Identify affine.for ops and target child ops for hoisting.
+  SmallVector<SmallVector<Operation *>> target_ops_vec;
+  SmallVector<func::FuncOp> funcOps;
+  module.walk([&](func::FuncOp f) { funcOps.push_back(f); });
+  for (auto f : funcOps) {
+    f.walk(
+        [&](affine::AffineForOp afo) { (void)promoteIfSingleIteration(afo); });
+    identifyTargetAffineForAndOps(f, target_ops_vec);
+  }
+
+  // Hoist ops out of each scf.for.
+  SmallVector<Operation *> erased;
+  for (auto vec : target_ops_vec) {
+    affine::AffineForOp loop_nest_head =
+        vec[0]->getParentOfType<affine::AffineForOp>();
+    while (!isa<func::FuncOp>(loop_nest_head->getParentOp())) {
+      loop_nest_head = loop_nest_head->getParentOfType<affine::AffineForOp>();
+    }
+    OpBuilder builder(loop_nest_head);
+    hoistTargetOpsToNewAffineFor(builder, loop_nest_head, vec);
+    push_back_if_unique<Operation *>(erased, loop_nest_head.getOperation());
+  }
+  for (auto o : erased)
+    o->erase();
+}
+
+void specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
+                                                affine::AffineForOp for_op) {
+  auto loc = for_op->getLoc();
+  auto ctx = for_op->getContext();
+
+  // Declaration of constants
+  auto i64Ty = builder.getI64Type();
+  auto i64_zero =
+      builder.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 0));
+  auto i64_one =
+      builder.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 1));
+
+  // Check if the loop is the outermost loop in a perfect loop nest
+  auto hasNElements = [](Block *block, unsigned N) {
+    auto op_ptr = block->begin();
+    for (unsigned i = 0; i < N; i++)
+      op_ptr = std::next(op_ptr);
+    return op_ptr != block->end() && &*op_ptr == &block->back();
+  };
+  if (auto parent_for = dyn_cast<affine::AffineForOp>(for_op->getParentOp()))
+    if (hasNElements(parent_for.getBody(), 1))
+      return;
+
+  // Check if the loop nest contains exactly one memcpy op
+  SmallVector<airrt::DmaMemcpyNdOp> memcpy_ops;
+  for_op.getBody()->walk(
+      [&](airrt::DmaMemcpyNdOp putget) { memcpy_ops.push_back(putget); });
+  if (memcpy_ops.size() != 1)
+    return;
+
+  // Fold for loops int channel op's wrap and stride fields
+  SmallVector<affine::AffineForOp> for_loops;
+  Operation *parent = memcpy_ops[0].getOperation();
+  while (parent != for_op.getOperation()) {
+    parent = parent->getParentOp();
+    if (auto for_op_in_nest = dyn_cast<affine::AffineForOp>(parent))
+      for_loops.push_back(for_op_in_nest);
+  }
+
+  auto memref = memcpy_ops[0]->getOperand(3);
+  auto memref_shape = xilinx::air::getTensorShape(memref.getType());
+  auto oper_begin = memcpy_ops[0].getOperands().begin();
+  SmallVector<Value> offsets(oper_begin + (8 - memref_shape.size()),
+                             oper_begin + 8);
+  SmallVector<Value> wraps(oper_begin + (12 - memref_shape.size()),
+                           oper_begin + 12);
+  SmallVector<Value> strides(oper_begin + (16 - memref_shape.size()),
+                             oper_begin + 15);
+  // Stride field implicit last element one
+  strides.push_back(i64_one);
+
+  xilinx::air::foldForLoopNestAsExtendedSizesAndStrides(
+      builder, for_op.getOperation(), memcpy_ops[0].getOperation(), offsets,
+      wraps, strides, memcpy_ops[0]->getOperand(3));
+
+  // Stride field implicit last element one
+  strides.pop_back();
+  while (offsets.size() < 4) {
+    offsets.insert(offsets.begin(), i64_zero);
+  }
+  while (wraps.size() < 4) {
+    wraps.insert(wraps.begin(), i64_one);
+  }
+  while (strides.size() < 3) {
+    strides.insert(strides.begin(), i64_zero);
+  }
+  assert(offsets.size() == 4);
+  assert(wraps.size() == 4);
+  assert(strides.size() == 3);
+
+  // Create new airrt.dma_memcpy_nd
+  SmallVector<Type, 1> tys;
+  if (memcpy_ops[0]->getNumResults())
+    tys.push_back(airrt::EventType::get(ctx));
+
+  SmallVector<Value, 16> opers;
+  auto old_opers = memcpy_ops[0]->getOperands();
+  opers.insert(opers.end(), old_opers.begin(), old_opers.begin() + 4);
+  opers[1] =
+      builder.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 0));
+  opers[2] =
+      builder.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 0));
+  opers.insert(opers.end(), offsets.begin(), offsets.end());
+  opers.insert(opers.end(), wraps.begin(), wraps.end());
+  opers.insert(opers.end(), strides.begin(), strides.end());
+
+  // index_cast
+  for (unsigned i = 0; i < opers.size(); i++) {
+    if (opers[i].getDefiningOp() &&
+        isa<arith::ConstantIndexOp>(opers[i].getDefiningOp())) {
+      opers[i] = builder.create<arith::IndexCastOp>(
+          loc, IntegerType::get(ctx, 64), opers[i]);
+    }
+  }
+  auto new_dma = builder.create<airrt::DmaMemcpyNdOp>(loc, tys, opers);
+  // If dma op contains shim dma alloc metadata, then inherit this information
+  if (memcpy_ops[0]->hasAttr("metadata"))
+    new_dma->setAttr(
+        "metadata",
+        memcpy_ops[0]->getAttrOfType<mlir::SymbolRefAttr>("metadata"));
+}
+
+void specializeAffineForInAIRRtDmaWrapAndStride(ModuleOp module) {
+  SmallVector<func::FuncOp> funcOps;
+  module.walk([&](func::FuncOp f) { funcOps.push_back(f); });
+  SmallVector<Operation *> erased;
+  for (auto f : funcOps) {
+    for (auto for_op : f.getOps<affine::AffineForOp>()) {
+      OpBuilder builder(for_op);
+      specializeAffineForInAIRRtDmaWrapAndStride(builder, for_op);
+      erased.push_back(for_op);
+    }
+  }
+  for (auto o : erased)
+    o->erase();
+}
+
 struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
   void runOnOperation() override {
 
@@ -197,19 +404,32 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     // Move func op to the end of device op's body
     moveFuncOpToEndOfDeviceOp(module);
 
-    // Unroll affine for loops lowered from air.launch iterations
-    unrollAffineFors(module);
-    // Simplify arith ops (from airrt)
+    // Purge all wait all ops
+    purgeWaitAlls(module);
+
+    // Purge airrt.dma x and y fields, as they are obsolete for AIE2.
+    purgeAIRRtDmaXAndY(module);
+
+    // Separate affine for loop nest into loop nests each containing one dma
+    // memcpy op
+    isolateAIRRtDmaLoopNests(module);
+
+    // Simplify affine apply ops
     auto ctx = &getContext();
-    RewritePatternSet canoPatterns(ctx);
-    arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns, ctx);
-    (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns));
+    RewritePatternSet canoPatterns_0(ctx);
+    xilinx::air::populateAIRLoopIndexCanonicalizationPatterns(canoPatterns_0);
+    (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns_0));
+
+    // Specialize affine for loop nest into wraps and strides
+    specializeAffineForInAIRRtDmaWrapAndStride(module);
+
+    // Simplify arith ops (from airrt)
+    RewritePatternSet canoPatterns_1(ctx);
+    arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns_1, ctx);
+    (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns_1));
     module.walk(
         [&](airrt::DmaMemcpyNdOp dma) { updateMetadataForUnrolledDma(dma); });
     unrollSCFFors(module);
-
-    // Purge all wait all ops
-    purgeWaitAlls(module);
 
     // Purge dma ops' async tokens
     purgeDmaAsyncTokens(module);
@@ -257,9 +477,9 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
       signalPassFailure();
 
     // Simplify arith ops (from airrt-to-ipu)
-    RewritePatternSet canoPatterns_1(ctx);
-    arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns_1, ctx);
-    (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns_1));
+    RewritePatternSet canoPatterns_2(ctx);
+    arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns_2, ctx);
+    (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns_2));
 
     // Unroll any affine for loops
     unrollAffineFors(module);
@@ -312,6 +532,23 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     }
     for (auto w : waits) {
       w.erase();
+    }
+  }
+
+  void purgeAIRRtDmaXAndY(ModuleOp module) {
+    SmallVector<airrt::DmaMemcpyNdOp> dmas;
+    module.walk([&](airrt::DmaMemcpyNdOp dma) { dmas.push_back(dma); });
+    for (auto dma : dmas) {
+      for (unsigned idx = 1; idx <= 2; idx++) {
+        auto x_def_op = dma->getOperand(idx).getDefiningOp();
+        if (x_def_op && !isa<arith::ConstantOp>(x_def_op)) {
+          OpBuilder builder(x_def_op);
+          auto i64Ty = builder.getI64Type();
+          dma->setOperand(
+              idx, builder.create<arith::ConstantOp>(
+                       dma->getLoc(), i64Ty, IntegerAttr::get(i64Ty, 0)));
+        }
+      }
     }
   }
 
@@ -429,7 +666,7 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     SmallVector<int> memref_shape =
         air::getTensorShape(airrt_dma.getMemref().getType());
 
-    for (int i = 0; i < memref_shape.size(); i++) {
+    for (size_t i = 0; i < memref_shape.size(); i++) {
       int cstSizeOp = lengths[i];
       dims.push_back((unsigned)mlir::ceilDiv(memref_shape[i], cstSizeOp));
       int cstOffsetOp = offsets[i];

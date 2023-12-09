@@ -169,14 +169,12 @@ module {
 
 // CHECK-LABEL: AIE.device(ipu) {
 // CHECK:  func.func @func3(%[[ARG0:.*]]: memref<8x8xi32>)
-// CHECK:  %[[CST0:.*]] = arith.constant 0 : i32
-// CHECK:  %[[CST1:.*]] = arith.constant 1 : i32
-// CHECK:  %[[CST4:.*]] = arith.constant 4 : i32
-// CHECK:  %[[CST8:.*]] = arith.constant 8 : i32
-// CHECK:  AIEX.ipu.dma_memcpy_nd(%[[CST0]], %[[CST0]], %[[ARG0]][%[[CST0]], %[[CST0]], %[[CST0]], %[[CST0]]] [%[[CST1]], %[[CST1]], %[[CST4]], %[[CST4]]] [%[[CST0]], %[[CST0]], %[[CST8]]]) {id = 1 : i32, metadata = @airMemcpyId14} : (i32, i32, memref<8x8xi32>, [i32, i32, i32, i32], [i32, i32, i32, i32], [i32, i32, i32])
-// CHECK:  AIEX.ipu.dma_memcpy_nd(%[[CST0]], %[[CST1]], %[[ARG0]][%[[CST0]], %[[CST0]], %[[CST0]], %[[CST4]]] [%[[CST1]], %[[CST1]], %[[CST4]], %[[CST4]]] [%[[CST0]], %[[CST0]], %[[CST8]]]) {id = 2 : i32, metadata = @airMemcpyId14_1} : (i32, i32, memref<8x8xi32>, [i32, i32, i32, i32], [i32, i32, i32, i32], [i32, i32, i32])
-// CHECK:  AIEX.ipu.dma_memcpy_nd(%[[CST1]], %[[CST0]], %[[ARG0]][%[[CST0]], %[[CST0]], %[[CST4]], %[[CST0]]] [%[[CST1]], %[[CST1]], %[[CST4]], %[[CST4]]] [%[[CST0]], %[[CST0]], %[[CST8]]]) {id = 3 : i32, metadata = @airMemcpyId14_2} : (i32, i32, memref<8x8xi32>, [i32, i32, i32, i32], [i32, i32, i32, i32], [i32, i32, i32])
-// CHECK:  AIEX.ipu.dma_memcpy_nd(%[[CST1]], %[[CST1]], %[[ARG0]][%[[CST0]], %[[CST0]], %[[CST4]], %[[CST4]]] [%[[CST1]], %[[CST1]], %[[CST4]], %[[CST4]]] [%[[CST0]], %[[CST0]], %[[CST8]]]) {id = 4 : i32, metadata = @airMemcpyId14_3} : (i32, i32, memref<8x8xi32>, [i32, i32, i32, i32], [i32, i32, i32, i32], [i32, i32, i32])
+// CHECK-DAG:  %[[CST0:.*]] = arith.constant 0 : i32
+// CHECK-DAG:  %[[CST2:.*]] = arith.constant 2 : i32
+// CHECK-DAG:  %[[CST4:.*]] = arith.constant 4 : i32
+// CHECK-DAG:  %[[CST8:.*]] = arith.constant 8 : i32
+// CHECK-DAG:  %[[CST32:.*]] = arith.constant 32 : i32
+// CHECK:  AIEX.ipu.dma_memcpy_nd(%[[CST0]], %[[CST0]], %[[ARG0]][%[[CST0]], %[[CST0]], %[[CST0]], %[[CST0]]] [%[[CST2]], %[[CST2]], %[[CST4]], %[[CST4]]] [%[[CST32]], %[[CST4]], %[[CST8]]]) {id = 1 : i32, metadata = @airMemcpyId14} : (i32, i32, memref<8x8xi32>, [i32, i32, i32, i32], [i32, i32, i32, i32], [i32, i32, i32])
 
 #map = affine_map<()[s0] -> (s0 * 4)>
 module {
@@ -224,14 +222,12 @@ module {
 
 // CHECK-LABEL: AIE.device(ipu)
 // CHECK:  func.func @func4(%[[ARG0:.*]]: memref<8x8xi32>)
-// CHECK:  %[[CST0]] = arith.constant 0 : i32
-// CHECK:  %[[CST1]] = arith.constant 1 : i32
-// CHECK:  %[[CST4]] = arith.constant 4 : i32
-// CHECK:  %[[CST8]] = arith.constant 8 : i32
-// CHECK:  AIEX.ipu.dma_memcpy_nd(%[[CST0]], %[[CST0]], %[[ARG0]][%[[CST0]], %[[CST0]], %[[CST0]], %[[CST0]]] [%[[CST1]], %[[CST1]], %[[CST4]], %[[CST4]]] [%[[CST0]], %[[CST0]], %[[CST8]]]) {id = 1 : i32, metadata = @air_channel_1} : (i32, i32, memref<8x8xi32>, [i32, i32, i32, i32], [i32, i32, i32, i32], [i32, i32, i32])
-// CHECK:  AIEX.ipu.dma_memcpy_nd(%[[CST0]], %[[CST1]], %[[ARG0]][%[[CST0]], %[[CST0]], %[[CST0]], %[[CST4]]] [%[[CST1]], %[[CST1]], %[[CST4]], %[[CST4]]] [%[[CST0]], %[[CST0]], %[[CST8]]]) {id = 2 : i32, metadata = @air_channel_3} : (i32, i32, memref<8x8xi32>, [i32, i32, i32, i32], [i32, i32, i32, i32], [i32, i32, i32])
-// CHECK:  AIEX.ipu.dma_memcpy_nd(%[[CST1]], %[[CST0]], %[[ARG0]][%[[CST0]], %[[CST0]], %[[CST4]], %[[CST0]]] [%[[CST1]], %[[CST1]], %[[CST4]], %[[CST4]]] [%[[CST0]], %[[CST0]], %[[CST8]]]) {id = 3 : i32, metadata = @air_channel_2} : (i32, i32, memref<8x8xi32>, [i32, i32, i32, i32], [i32, i32, i32, i32], [i32, i32, i32])
-// CHECK:  AIEX.ipu.dma_memcpy_nd(%[[CST1]], %[[CST1]], %[[ARG0]][%[[CST0]], %[[CST0]], %[[CST4]], %[[CST4]]] [%[[CST1]], %[[CST1]], %[[CST4]], %[[CST4]]] [%[[CST0]], %[[CST0]], %[[CST8]]]) {id = 4 : i32, metadata = @air_channel_4} : (i32, i32, memref<8x8xi32>, [i32, i32, i32, i32], [i32, i32, i32, i32], [i32, i32, i32])
+// CHECK-DAG:  %[[CST0]] = arith.constant 0 : i32
+// CHECK-DAG:  %[[CST2]] = arith.constant 2 : i32
+// CHECK-DAG:  %[[CST4]] = arith.constant 4 : i32
+// CHECK-DAG:  %[[CST8]] = arith.constant 8 : i32
+// CHECK-DAG:  %[[CST32]] = arith.constant 32 : i32
+// CHECK:  AIEX.ipu.dma_memcpy_nd(%[[CST0]], %[[CST0]], %[[ARG0]][%[[CST0]], %[[CST0]], %[[CST0]], %[[CST0]]] [%[[CST2]], %[[CST2]], %[[CST4]], %[[CST4]]] [%[[CST32]], %[[CST4]], %[[CST8]]]) {id = 1 : i32, metadata = @air_channel_1} : (i32, i32, memref<8x8xi32>, [i32, i32, i32, i32], [i32, i32, i32, i32], [i32, i32, i32])
 
 #map = affine_map<()[s0] -> (s0 * 4)>
 module {
