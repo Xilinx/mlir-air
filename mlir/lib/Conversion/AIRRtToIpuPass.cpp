@@ -407,6 +407,9 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     // Purge all wait all ops
     purgeWaitAlls(module);
 
+    // Purge airrt.dma x and y fields, as they are obsolete for AIE2.
+    purgeAIRRtDmaXAndY(module);
+
     // Separate affine for loop nest into loop nests each containing one dma
     // memcpy op
     isolateAIRRtDmaLoopNests(module);
@@ -529,6 +532,23 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     }
     for (auto w : waits) {
       w.erase();
+    }
+  }
+
+  void purgeAIRRtDmaXAndY(ModuleOp module) {
+    SmallVector<airrt::DmaMemcpyNdOp> dmas;
+    module.walk([&](airrt::DmaMemcpyNdOp dma) { dmas.push_back(dma); });
+    for (auto dma : dmas) {
+      for (unsigned idx = 1; idx <= 2; idx++) {
+        auto x_def_op = dma->getOperand(idx).getDefiningOp();
+        if (x_def_op && !isa<arith::ConstantOp>(x_def_op)) {
+          OpBuilder builder(x_def_op);
+          auto i64Ty = builder.getI64Type();
+          dma->setOperand(
+              idx, builder.create<arith::ConstantOp>(
+                       dma->getLoc(), i64Ty, IntegerAttr::get(i64Ty, 0)));
+        }
+      }
     }
   }
 

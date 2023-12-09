@@ -845,7 +845,7 @@ void air::foldForLoopNestAsExtendedSizesAndStrides(
     else if (auto sfo = dyn_cast<scf::ForOp>(o))
       stepSize = *mlir::getConstantIntValue(sfo.getStep());
     Value new_stride = rewriter.template create<arith::ConstantIndexOp>(
-        loc, stepSize * ind_var_factor);
+        loc, (stepSize * ind_var_factor) % getTensorVolume(memref.getType()));
     wraps.insert(wraps.begin(), new_wrap);
     strides.insert(strides.begin(), new_stride);
   }
