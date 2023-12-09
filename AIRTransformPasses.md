@@ -467,10 +467,6 @@ pong buffers.
 ```
 -keep-memref-dealloc : Flag to keep memref dealloc ops after transformation. Memref dealloc is used in air-to-aie pass as handle to generate lock releases.
 ```
-### `-air-hoist-channels`
-
-_Hoist air.channel.get and air.channel.put out of scf.for._
-
 ### `-air-hoist-dma-in-accum-pattern`
 
 _Hoist pairs of DMA ops out of for loop based on dependency graph_
