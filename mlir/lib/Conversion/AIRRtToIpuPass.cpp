@@ -782,8 +782,12 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     funcOp.walk([&](AIEX::IpuDmaMemcpyNdOp dma) {
       if (std::find(funcOp.getArguments().begin(), funcOp.getArguments().end(),
                     dma.getMemref()) == funcOp.getArguments().end()) {
-        memrefTypes.push_back(dma.getMemref().getType());
-        memrefs.push_back(dma.getMemref());
+        // push back if unique
+        if (std::find(memrefs.begin(), memrefs.end(), dma.getMemref()) ==
+            memrefs.end()) {
+          memrefs.push_back(dma.getMemref());
+          memrefTypes.push_back(dma.getMemref().getType());
+        }
       }
     });
 
