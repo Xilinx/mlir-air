@@ -279,8 +279,9 @@ void isolateAIRRtDmaLoopNests(ModuleOp module) {
     o->erase();
 }
 
-void specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
-                                                affine::AffineForOp for_op) {
+LogicalResult
+specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
+                                           affine::AffineForOp for_op) {
   auto loc = for_op->getLoc();
   auto ctx = for_op->getContext();
 
@@ -300,16 +301,16 @@ void specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
   };
   if (auto parent_for = dyn_cast<affine::AffineForOp>(for_op->getParentOp()))
     if (hasNElements(parent_for.getBody(), 1))
-      return;
+      return failure();
 
   // Check if the loop nest contains exactly one memcpy op
   SmallVector<airrt::DmaMemcpyNdOp> memcpy_ops;
   for_op.getBody()->walk(
       [&](airrt::DmaMemcpyNdOp putget) { memcpy_ops.push_back(putget); });
   if (memcpy_ops.size() != 1)
-    return;
+    return failure();
 
-  // Fold for loops int channel op's wrap and stride fields
+  // Fold for loops into channel op's wrap and stride fields
   SmallVector<affine::AffineForOp> for_loops;
   Operation *parent = memcpy_ops[0].getOperation();
   while (parent != for_op.getOperation()) {
@@ -349,6 +350,19 @@ void specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
   assert(wraps.size() == 4);
   assert(strides.size() == 3);
 
+  // Temporary hack: stride currently cannot implement repeat with stride = 0.
+  // This is to be removed when that constraint is gone.
+  for (unsigned i = 0; i < strides.size() - 1; i++) {
+    if (mlir::getConstantIntValue(strides[i]) &&
+        *mlir::getConstantIntValue(strides[i])) {
+      for (unsigned j = i + 1; j < strides.size(); j++) {
+        if (mlir::getConstantIntValue(strides[j]) &&
+            !*mlir::getConstantIntValue(strides[j]))
+          return failure();
+      }
+    }
+  }
+
   // Create new airrt.dma_memcpy_nd
   SmallVector<Type, 1> tys;
   if (memcpy_ops[0]->getNumResults())
@@ -379,6 +393,8 @@ void specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
     new_dma->setAttr(
         "metadata",
         memcpy_ops[0]->getAttrOfType<mlir::SymbolRefAttr>("metadata"));
+
+  return success();
 }
 
 void specializeAffineForInAIRRtDmaWrapAndStride(ModuleOp module) {
@@ -388,8 +404,9 @@ void specializeAffineForInAIRRtDmaWrapAndStride(ModuleOp module) {
   for (auto f : funcOps) {
     for (auto for_op : f.getOps<affine::AffineForOp>()) {
       OpBuilder builder(for_op);
-      specializeAffineForInAIRRtDmaWrapAndStride(builder, for_op);
-      erased.push_back(for_op);
+      if (specializeAffineForInAIRRtDmaWrapAndStride(builder, for_op)
+              .succeeded())
+        erased.push_back(for_op);
     }
   }
   for (auto o : erased)
@@ -422,13 +439,12 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
 
     // Specialize affine for loop nest into wraps and strides
     specializeAffineForInAIRRtDmaWrapAndStride(module);
+    unrollAffineFors(module);
 
     // Simplify arith ops (from airrt)
     RewritePatternSet canoPatterns_1(ctx);
     arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns_1, ctx);
     (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns_1));
-    module.walk(
-        [&](airrt::DmaMemcpyNdOp dma) { updateMetadataForUnrolledDma(dma); });
     unrollSCFFors(module);
 
     // Purge dma ops' async tokens
@@ -590,33 +606,7 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
       int64_t tripCount = mlir::ceilDiv(afo.getConstantUpperBound() -
                                             afo.getConstantLowerBound(),
                                         afo.getStepAsInt());
-      auto annotateFn = [&](unsigned i, Operation *op, OpBuilder b) {
-        if (op->hasAttr("metadata") && isa<airrt::DmaMemcpyNdOp>(op)) {
-          auto metadata = op->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata")
-                              .getValue()
-                              .str();
-          std::string prefix = "air_channel_";
-          std::size_t pos = metadata.find(prefix);
-          if (pos != std::string::npos) {
-            std::string base_chan_idx =
-                metadata.substr(pos + prefix.length(), 1);
-            int base_chan_idx_val = std::stoi(base_chan_idx);
-            // Unrolled dma ops are labelled for later update of metadata air
-            // channel id
-            op->removeAttr("metadata");
-            op->setAttr("metadata_base",
-                        b.getI32IntegerAttr(base_chan_idx_val));
-          }
-
-          // default metadata format
-          prefix = "airMemcpyId";
-          pos = metadata.find(prefix);
-          if (pos != std::string::npos) {
-            op->setAttr("unrolled", b.getI32IntegerAttr(1));
-          }
-        }
-      };
-      (void)loopUnrollByFactor(afo, tripCount, annotateFn);
+      (void)loopUnrollByFactor(afo, tripCount);
     }
   }
 
@@ -646,40 +636,6 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
       strides[1] = static_cast<uint32_t>(c.value());
     if (auto c = op.getStride3().getDefiningOp<arith::ConstantIntOp>())
       strides[2] = static_cast<uint32_t>(c.value());
-  }
-
-  // Get base channel index from "metadata_base" attr, increment with
-  // op-specific iter, update metadata
-  void updateMetadataForUnrolledDma(airrt::DmaMemcpyNdOp airrt_dma) {
-    if (!airrt_dma->hasAttr("metadata_base"))
-      return;
-
-    SmallVector<uint32_t, 4> offsets(4, 0);
-    SmallVector<uint32_t, 4> lengths(4, 1);
-    SmallVector<uint32_t, 3> strides(3, 0);
-    getOperandsFromAIRRtDma(airrt_dma, offsets, lengths, strides);
-
-    int metadata_base =
-        airrt_dma->getAttrOfType<IntegerAttr>("metadata_base").getInt();
-    std::vector<unsigned> dims;
-    std::vector<unsigned> position;
-    SmallVector<int> memref_shape =
-        air::getTensorShape(airrt_dma.getMemref().getType());
-
-    for (size_t i = 0; i < memref_shape.size(); i++) {
-      int cstSizeOp = lengths[i];
-      dims.push_back((unsigned)mlir::ceilDiv(memref_shape[i], cstSizeOp));
-      int cstOffsetOp = offsets[i];
-      position.push_back((unsigned)mlir::ceilDiv(cstOffsetOp, cstSizeOp));
-    }
-    int iter = air::getIteratorFromMDVector(dims, position);
-    auto new_metadata_attr =
-        StringAttr::get(airrt_dma->getContext(),
-                        "air_channel_" + std::to_string(iter + metadata_base));
-    airrt_dma->setAttr(
-        "metadata",
-        FlatSymbolRefAttr::get(airrt_dma->getContext(), new_metadata_attr));
-    airrt_dma->removeAttr("metadata_base");
   }
 
   void unrollSCFFors(ModuleOp module) {
@@ -764,8 +720,12 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     funcOp.walk([&](AIEX::IpuDmaMemcpyNdOp dma) {
       if (std::find(funcOp.getArguments().begin(), funcOp.getArguments().end(),
                     dma.getMemref()) == funcOp.getArguments().end()) {
-        memrefTypes.push_back(dma.getMemref().getType());
-        memrefs.push_back(dma.getMemref());
+        // push back if unique
+        if (std::find(memrefs.begin(), memrefs.end(), dma.getMemref()) ==
+            memrefs.end()) {
+          memrefs.push_back(dma.getMemref());
+          memrefTypes.push_back(dma.getMemref().getType());
+        }
       }
     });
 
