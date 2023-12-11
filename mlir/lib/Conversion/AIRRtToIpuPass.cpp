@@ -279,8 +279,9 @@ void isolateAIRRtDmaLoopNests(ModuleOp module) {
     o->erase();
 }
 
-void specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
-                                                affine::AffineForOp for_op) {
+LogicalResult
+specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
+                                           affine::AffineForOp for_op) {
   auto loc = for_op->getLoc();
   auto ctx = for_op->getContext();
 
@@ -300,16 +301,16 @@ void specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
   };
   if (auto parent_for = dyn_cast<affine::AffineForOp>(for_op->getParentOp()))
     if (hasNElements(parent_for.getBody(), 1))
-      return;
+      return failure();
 
   // Check if the loop nest contains exactly one memcpy op
   SmallVector<airrt::DmaMemcpyNdOp> memcpy_ops;
   for_op.getBody()->walk(
       [&](airrt::DmaMemcpyNdOp putget) { memcpy_ops.push_back(putget); });
   if (memcpy_ops.size() != 1)
-    return;
+    return failure();
 
-  // Fold for loops int channel op's wrap and stride fields
+  // Fold for loops into channel op's wrap and stride fields
   SmallVector<affine::AffineForOp> for_loops;
   Operation *parent = memcpy_ops[0].getOperation();
   while (parent != for_op.getOperation()) {
@@ -349,6 +350,19 @@ void specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
   assert(wraps.size() == 4);
   assert(strides.size() == 3);
 
+  // Temporary hack: stride currently cannot implement repeat with stride = 0.
+  // This is to be removed when that constraint is gone.
+  for (unsigned i = 0; i < strides.size() - 1; i++) {
+    if (mlir::getConstantIntValue(strides[i]) &&
+        *mlir::getConstantIntValue(strides[i])) {
+      for (unsigned j = i + 1; j < strides.size(); j++) {
+        if (mlir::getConstantIntValue(strides[j]) &&
+            !*mlir::getConstantIntValue(strides[j]))
+          return failure();
+      }
+    }
+  }
+
   // Create new airrt.dma_memcpy_nd
   SmallVector<Type, 1> tys;
   if (memcpy_ops[0]->getNumResults())
@@ -379,6 +393,8 @@ void specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
     new_dma->setAttr(
         "metadata",
         memcpy_ops[0]->getAttrOfType<mlir::SymbolRefAttr>("metadata"));
+
+  return success();
 }
 
 void specializeAffineForInAIRRtDmaWrapAndStride(ModuleOp module) {
@@ -388,8 +404,9 @@ void specializeAffineForInAIRRtDmaWrapAndStride(ModuleOp module) {
   for (auto f : funcOps) {
     for (auto for_op : f.getOps<affine::AffineForOp>()) {
       OpBuilder builder(for_op);
-      specializeAffineForInAIRRtDmaWrapAndStride(builder, for_op);
-      erased.push_back(for_op);
+      if (specializeAffineForInAIRRtDmaWrapAndStride(builder, for_op)
+              .succeeded())
+        erased.push_back(for_op);
     }
   }
   for (auto o : erased)
@@ -422,6 +439,7 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
 
     // Specialize affine for loop nest into wraps and strides
     specializeAffineForInAIRRtDmaWrapAndStride(module);
+    unrollAffineFors(module);
 
     // Simplify arith ops (from airrt)
     RewritePatternSet canoPatterns_1(ctx);
