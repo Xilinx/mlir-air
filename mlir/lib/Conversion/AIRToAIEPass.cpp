@@ -2290,8 +2290,9 @@ public:
 
     auto wraps_and_strides =
         AIE::DimTupleArrayAttr::get(ndcpy->getContext(), ArrayRef(dims));
-    if (wraps_and_strides.getValue().empty() ||
-        isDefaultDataAccessPattern(sizes, strides, memref))
+    bool useDefaultDataAccessPattern =
+        isAIE2 ? isDefaultDataAccessPattern(sizes, strides, memref) : true;
+    if (wraps_and_strides.getValue().empty() || useDefaultDataAccessPattern)
       b.create<AIE::DMABDOp>(
           loc, bufferOp, offset,
           cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(), 0);

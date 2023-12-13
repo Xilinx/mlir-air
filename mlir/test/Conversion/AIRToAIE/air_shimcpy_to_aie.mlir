@@ -500,3 +500,60 @@ func.func @func7(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>, %arg2 : mem
   }
   return
 }
+
+// -----
+
+// With AIE1, multi-dimensional buffer descriptor is not supported.
+// CHECK: AIE.device
+// CHECK:         %[[VAL_0:.*]] = AIE.tile(5, 4)
+// CHECK:         %[[VAL_1:.*]] = AIE.tile(2, 0)
+// CHECK:         %[[VAL_2:.*]] = AIE.lock(%[[VAL_0]], 1) {init = 0 : i32}
+// CHECK:         %[[VAL_3:.*]] = AIE.lock(%[[VAL_0]], 0) {init = 0 : i32}
+// CHECK:         %[[VAL_4:.*]] = AIE.buffer(%[[VAL_0]]) {sym_name = {{.*}}} : memref<16x8xi32, 2>
+// CHECK:         %[[VAL_5:.*]] = AIE.buffer(%[[VAL_0]]) {sym_name = {{.*}}} : memref<16x8xi32, 2>
+
+// CHECK:    AIE.mem(%[[VAL_0]])  {
+// CHECK:           AIE.dmaStart(S2MM, 0, ^bb1, ^bb3)
+// CHECK:         ^bb1:
+// CHECK:           AIE.useLock(%[[VAL_2]], Acquire, 0)
+// CHECK:           AIE.dmaBd(<%[[VAL_4]] : memref<16x8xi32, 2>, 0, 128>, 0)
+// CHECK:           AIE.useLock(%[[VAL_2]], Release, 1)
+// CHECK:           AIE.nextBd ^bb1
+// CHECK:         ^bb2:
+// CHECK:           AIE.end
+// CHECK:         ^bb3:
+// CHECK:           AIE.dmaStart(MM2S, 0, ^bb4, ^bb2)
+// CHECK:         ^bb4:
+// CHECK:           AIE.useLock(%[[VAL_3]], Acquire, 1)
+// CHECK:           AIE.dmaBd(<%[[VAL_5]] : memref<16x8xi32, 2>, 0, 128>, 0)
+// CHECK:           AIE.useLock(%[[VAL_3]], Release, 0)
+// CHECK:           AIE.nextBd ^bb4
+// CHECK:         }
+
+
+module {
+  func.func @graph(%arg0: memref<32x16xi32>, %arg1: memref<32x16xi32>) {
+    %c1 = arith.constant 1 : index
+    air.herd @herd_0  tile (%arg2, %arg3) in (%arg4=%c1, %arg5=%c1) args(%arg6=%arg0, %arg7=%arg1) : memref<32x16xi32>, memref<32x16xi32> attributes {x_loc = 5 : i64, y_loc = 4 : i64} {
+      %c0 = arith.constant 0 : index
+      %c1_1 = arith.constant 1 : index
+      %c32 = arith.constant 32 : index
+      %c16 = arith.constant 16 : index
+      %c8 = arith.constant 8 : index
+      %alloc = memref.alloc() {sym_name = "scratch"} : memref<16x8xi32, 2>
+      %alloc_0 = memref.alloc() {sym_name = "scratch_copy"} : memref<16x8xi32, 2>
+      air.dma_memcpy_nd (%alloc[%c0, %c0] [%c8, %c16] [%c32, %c1_1], %arg6[%c8, %c0] [%c8, %c16] [%c32, %c1_1]) {id = 1 : i32} : (memref<16x8xi32, 2>, memref<32x16xi32>)
+      affine.for %arg8 = 0 to 8 {
+        affine.for %arg9 = 0 to 16 {
+          %0 = affine.load %alloc[%arg9, %arg8] : memref<16x8xi32, 2>
+          affine.store %0, %alloc_0[%arg9, %arg8] : memref<16x8xi32, 2>
+        }
+      }
+      air.dma_memcpy_nd (%arg7[%c8, %c0] [%c8, %c16] [%c32, %c1_1], %alloc_0[%c0, %c0] [%c8, %c16] [%c32, %c1_1]) {id = 2 : i32} : (memref<32x16xi32>, memref<16x8xi32, 2>)
+      memref.dealloc %alloc_0 : memref<16x8xi32, 2>
+      memref.dealloc %alloc : memref<16x8xi32, 2>
+      air.herd_terminator
+    }
+    return
+  }
+}
