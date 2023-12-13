@@ -7,7 +7,7 @@ can be lowered to a combination of standard and LLVM dialects.
 
 [TOC]
 
-## Operation definition
+## Operations
 
 ### `airrt.alloc` (xilinx::airrt::AllocOp)
 
@@ -320,7 +320,7 @@ Optionally return an event.
 | `event` | event type
 
 
-## Type constraint definition
+## Type constraints
 
 ### event type
 

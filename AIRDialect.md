@@ -52,7 +52,7 @@ interface is provided to synchronize between operations.
 
 [TOC]
 
-## Operation definition
+## Operations
 
 ### `air.alloc` (xilinx::air::AllocOp)
 
@@ -705,7 +705,7 @@ Interfaces: air_AsyncOpInterface
 | `async_token` | async token type
 
 
-## Type constraint definition
+## Type constraints
 
 ### async token type
 
