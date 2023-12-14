@@ -12,9 +12,12 @@ LDFLAGS = -fuse-ld=lld -rdynamic \
 		-Wl,--whole-archive -lairhost -Wl,--no-whole-archive \
 		-lstdc++ \
 		-lm \
-		-Wl,--no-as-needed -ldl
+		-Wl,--no-as-needed -ldl \
+    -Wl,-rpath,${ROCM_ROOT}/lib ${ROCM_ROOT}/lib/libhsa-runtime64.so.1.9.0 \
+		../../elfutils/libelf/libelf.a \
 
 CFLAGS += -g -I/opt/xaiengine/include
+CFLAGS += -I${ROCM_ROOT}/include
 CFLAGS += -std=c++17 -I$(ACDC_AIR)/runtime_lib/airhost/include -I$(ACDC_AIE)/runtime_lib/x86_64/test_lib/include \
           -DAIR_LIBXAIE_ENABLE
 LDFLAGS += -L/opt/xaiengine/lib -Wl,-R/opt/xaiengine/lib
@@ -29,4 +32,4 @@ all: herd.exe
 	aircc.py -v -xchesscc -xbridge --sysroot= --host-target=x86_64-amd-linux-gnu -row-offset=4 -col-offset=5 $< -o $@
 
 clean::
-	rm -rf air_project *.elf *.exe *.o *.a 
+	rm -rf air_project *.elf *.exe *.o *.a segment*

@@ -22,6 +22,9 @@
 #include "air.hpp"
 #include "test_library.h"
 
+#include "hsa/hsa.h"
+#include "hsa/hsa_ext_amd.h"
+
 #define DMA_COUNT 256
 
 namespace air::segments::segment_0 {
@@ -35,6 +38,9 @@ main(int argc, char *argv[])
   uint64_t row = 6;
   uint64_t col = 5;
 
+  std::vector<hsa_queue_t *> queues;
+  uint32_t aie_max_queue_size(0);
+
   hsa_status_t init_status = air_init();
 
   if (init_status != HSA_STATUS_SUCCESS) {
@@ -42,36 +48,45 @@ main(int argc, char *argv[])
     return -1;
   }
 
-  std::vector<air_agent_t> agents;
+  std::vector<hsa_agent_t> agents;
   auto get_agents_ret = air_get_agents(agents);
   assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
   if (agents.empty()) {
-    std::cout << "fail." << std::endl;
+    std::cout << "No agents found. Exiting." << std::endl;
     return -1;
   }
 
   std::cout << "Found " << agents.size() << " agents" << std::endl;
 
-  std::vector<queue_t *> queues;
-  for (auto agent : agents) {
-    // create the queue
-    queue_t *q = nullptr;
-    auto create_queue_ret = air_queue_create(
-        MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, agent.handle);
-    assert(create_queue_ret == 0 && "failed to create queue!");
-    queues.push_back(q);
+  hsa_agent_get_info(agents[0], HSA_AGENT_INFO_QUEUE_MAX_SIZE,
+                     &aie_max_queue_size);
+
+  std::cout << "Max AIE queue size: " << aie_max_queue_size << std::endl;
+
+  hsa_queue_t *q = NULL;
+
+  // Creating a queue
+  auto queue_create_status =
+      hsa_queue_create(agents[0], aie_max_queue_size, HSA_QUEUE_TYPE_SINGLE,
+                       nullptr, nullptr, 0, 0, &q);
+
+  if (queue_create_status != HSA_STATUS_SUCCESS) {
+    std::cout << "hsa_queue_create failed" << std::endl;
   }
+
+  // Adding to our vector of queues
+  queues.push_back(q);
+  assert(queues.size() > 0 && "No queues were sucesfully created!");
 
   aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_get_libxaie_ctx();
 
-  queue_t *q = queues[0];
 
   for (int i = 0; i < DMA_COUNT; i++)
     mlir_aie_write_buffer_buf0(xaie, i, 0xfeedcafe);
 
   printf("loading aie_ctrl.so\n");
-  auto handle = air_module_load_from_file(nullptr,q);
+  auto handle = air_module_load_from_file(nullptr, &agents[0], q);
   assert(handle && "failed to open aie_ctrl.so");
 
   auto graph_fn = (void (*)(void*))dlsym((void*)handle, "_mlir_ciface_graph");
@@ -101,7 +116,16 @@ main(int argc, char *argv[])
     }
   }
 
+  // Clean up
   free(output.alloc);
+  air_module_unload(handle);
+  hsa_queue_destroy(queues[0]);
+
+  hsa_status_t shut_down_ret = air_shut_down();
+  if (shut_down_ret != HSA_STATUS_SUCCESS) {
+    printf("[ERROR] air_shut_down() failed\n");
+    errors++;
+  }
 
   if (!errors) {
     printf("PASS!\n");
