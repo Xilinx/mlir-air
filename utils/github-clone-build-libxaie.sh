@@ -23,7 +23,7 @@ git clone --branch $HASH --depth 1 https://github.com/jnider/aie-rt.git $LIBXAIE
 mkdir -p $LIBXAIE_DIR/$INSTALL_DIR/lib
 
 pushd $LIBXAIE_DIR/driver/src/
-make -f Makefile.Linux CFLAGS="-D__AIELINUX__ -D__AIESYSFS__ -D__AIEAMDAIR__"
+make -f Makefile.Linux CFLAGS="-D__AIELINUX__ -D__AIEAMDAIR__"
 popd
 
 cp -v $LIBXAIE_DIR/driver/src/*.so* $LIBXAIE_DIR/$INSTALL_DIR/lib

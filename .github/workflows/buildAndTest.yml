@@ -27,6 +27,12 @@ jobs:
           fetch-depth: 2
           submodules: "true"
 
+      - name: Install necessary build tools for libelf
+        run: sudo apt install autoconf flex bison gawk autopoint -y
+
+      - name: Install libboost
+        run: sudo apt-get install -y libboost-all-dev
+
       - name: Install pip packages
         run: sudo pip install psutil pybind11 numpy
 
@@ -69,6 +75,9 @@ jobs:
       - name: Rebuild and Install libxaie
         run: utils/github-clone-build-libxaie.sh
 
+      - name: Rebuild and Install elfutils
+        run: utils/github-clone-build-elfutils.sh
+
       - name: Rebuild and Install mlir-aie
         run: utils/github-build-mlir-aie.sh
 
@@ -86,6 +95,7 @@ jobs:
             -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
+            -DELFUTILS_DIR=$PWD/../elfutils \
             -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
             -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
             -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
@@ -113,6 +123,7 @@ jobs:
             -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
+            -DELFUTILS_DIR=$PWD/../elfutils \
             -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
             -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
             -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \

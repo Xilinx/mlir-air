@@ -150,7 +150,10 @@ foreach(target ${AIR_RUNTIME_TARGETS})
                -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
                -DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
                -DLibXAIE_ROOT=${LibXAIE_ROOT}
+               -Dhsa-runtime64_DIR=${hsa-runtime64_DIR}
+               -Dhsakmt_DIR=${hsakmt_DIR}
                -DAIE_DIR=${AIE_DIR}
+               -DELFUTILS_DIR=${ELFUTILS_DIR}
     BUILD_ALWAYS true
     STEP_TARGETS clean build install test
     USES_TERMINAL_CONFIGURE true

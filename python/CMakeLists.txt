@@ -115,6 +115,7 @@ add_mlir_python_modules(AirPythonModules
   include_directories(
     ${AIE_INCLUDE_DIRS}/../runtime_lib
     ${CMAKE_CURRENT_SOURCE_DIR}/../runtime_lib/airhost/include
+    ${hsa-runtime64_DIR}/../../../include
   )
   
 add_dependencies(AirPythonModules AirBackendPythonModules)

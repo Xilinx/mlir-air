@@ -19,14 +19,29 @@ from .abc import AirBackend
 import air.compiler.util
 import air.compiler.aircc.main as aircc
 
+# Used to get the paths used to configure aircc
+from air.compiler.aircc.configure import *
+
 import ctypes
 from pathlib import Path
 from typing import List
 
 path = Path(air.backend.__file__).resolve().parent
+
+# First need to load the libhsa-runtime64.so.1 so we can load libairhost_shared
+try:
+    ctypes.CDLL(f"{rocm_path}/../../libhsa-runtime64.so.1", mode=ctypes.RTLD_GLOBAL)
+except Exception as e:
+    print("[WARNING] We were not able to load .so for libhsa-runtime64.so.1");
+    print(e)
+    pass
+
+# After loading libhsa-runtime64.so we can load the AIR runtime functions
 try:
     ctypes.CDLL(f"{path}/../../../runtime_lib/airhost/libairhost_shared.so", mode=ctypes.RTLD_GLOBAL)
-except:
+except Exception as e:
+    print("[WARNING] We were not able to load .so for libairhost_shared.so");
+    print(e)
     pass
 import air.mlir._mlir_libs._airRt as airrt
 
@@ -144,7 +159,12 @@ class LinalgOnTensorsAirBackend(AirBackend):
         airrt.host.init()
         a = airrt.host.get_agents()
         q = airrt.host.queue_create(a[0])
-        self.handle = airrt.host.module_load_from_file("./torch.mlir.so", q)
+        self.handle = airrt.host.module_load_from_file("./torch.mlir.so", a[0], q)
+
+        # Keeping the agent and queue as a part of the backend so Python doesn't delete them
+        self.a = a
+        self.q = q
+        
         return self.refbackend.load(module)
 
     def unload(self):

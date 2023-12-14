@@ -2,19 +2,7 @@
 # Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-set(INSTALLS
-    air.hpp
-    air_channel.h
-    air_host.h
-    air_host_impl.h
-    air_network.h
-    air_queue.h
-    air_tensor.h
-    hsa_defs.h
-    pcie-ernic.h
-    pcie-ernic-defines.h
-    pcie-ernic-dev-mem-allocator.h
-    utility.hpp)
+set(INSTALLS air_tensor.h air_host.h air_channel.h air_host_impl.h air_queue.h pcie-ernic.h pcie-ernic-dev-mem-allocator.h air_network.h air.hpp hsa_ext_air.h)
 
 # Stuff into the build area:
 add_custom_target(copy-runtime-includes ALL)

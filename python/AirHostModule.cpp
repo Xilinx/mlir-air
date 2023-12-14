@@ -6,9 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "air.hpp"
-
 #include <pybind11/pybind11.h>
+#include <pybind11/pytypes.h>
+#include <pybind11/stl.h>
+#include <iostream>
+#include <pybind11/pybind11.h>
+
+#include "air.hpp"
+#include "hsa/hsa.h"
 
 #define STRINGIFY(x) #x
 #define MACRO_STRINGIFY(x) STRINGIFY(x)
@@ -61,8 +66,9 @@ void defineAIRHostModule(pybind11::module &m) {
       });
 
   m.def("module_load_from_file",
-        [](const std::string &filename, queue_t *q) -> air_module_handle_t {
-          return air_module_load_from_file(filename.c_str(), q);
+        [](const std::string &filename, hsa_agent_t *agent,
+           hsa_queue_t *q) -> air_module_handle_t {
+          return air_module_load_from_file(filename.c_str(), agent, q);
         });
 
   m.def("module_unload", &air_module_unload);
@@ -70,26 +76,37 @@ void defineAIRHostModule(pybind11::module &m) {
   m.def("get_module_descriptor", &air_module_get_desc,
         pybind11::return_value_policy::reference);
 
-  pybind11::class_<air_agent_t> Agent(m, "Agent");
+  pybind11::class_<hsa_agent_t> Agent(m, "Agent");
 
   m.def(
       "get_agents",
-      []() -> std::vector<air_agent_t> {
-        std::vector<air_agent_t> agents;
+      []() -> std::vector<hsa_agent_t> {
+        std::vector<hsa_agent_t> agents;
         air_get_agents(agents);
         return agents;
       },
       pybind11::return_value_policy::reference);
 
-  pybind11::class_<queue_t> Queue(m, "Queue");
+  pybind11::class_<hsa_queue_t> Queue(m, "Queue");
 
   m.def(
       "queue_create",
-      [](const air_agent_t &a) -> queue_t * {
-        queue_t *q = nullptr;
-        auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q,
-                                    a.handle);
-        if (ret != 0)
+      [](const hsa_agent_t &a) -> hsa_queue_t * {
+        hsa_queue_t *q = nullptr;
+        uint32_t aie_max_queue_size(0);
+
+        // Query the queue size the agent supports
+        auto queue_size_ret = hsa_agent_get_info(
+            a, HSA_AGENT_INFO_QUEUE_MAX_SIZE, &aie_max_queue_size);
+        if (queue_size_ret != HSA_STATUS_SUCCESS)
+          return nullptr;
+
+        // Creating the queue
+        auto queue_create_ret =
+            hsa_queue_create(a, aie_max_queue_size, HSA_QUEUE_TYPE_SINGLE,
+                             nullptr, nullptr, 0, 0, &q);
+
+        if (queue_create_ret != 0)
           return nullptr;
         return q;
       },
