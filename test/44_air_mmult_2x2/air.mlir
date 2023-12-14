@@ -6,55 +6,47 @@
 //
 //===----------------------------------------------------------------------===//
 
-#map = affine_map<()[s0] -> (s0 * 32)>
-module attributes {torch.debug_module_name = "mmult"} {
-  func.func @forward(%a0: memref<64x64xi32>, %a1: memref<64x64xi32>, %a2: memref<64x64xi32>) {
-    air.segment @segment0 args(%arg0=%a0, %arg1=%a1, %arg2=%a2) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> {
-      %c2 = arith.constant 2 : index
-      %c0_i32 = arith.constant 0 : i32
-      %0 = memref.alloc() {alignment = 128 : i64} : memref<64x64xi32>
-      %1 = memref.alloc() {alignment = 128 : i64} : memref<64x64xi32>
-      affine.for %arg3 = 0 to 64 {
-        affine.for %arg4 = 0 to 64 {
-          affine.store %c0_i32, %0[%arg3, %arg4] : memref<64x64xi32>
-        }
-      }
-      memref.copy %0, %1 : memref<64x64xi32> to memref<64x64xi32>
-      air.herd  tile (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) args(%arg7=%arg0, %arg8=%arg1, %arg9=%1) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> attributes {sym_name = "herd_0"} {
-        %c1 = arith.constant 1 : index
-        %c0 = arith.constant 0 : index
-        %c64 = arith.constant 64 : index
-        %c32 = arith.constant 32 : index
-        %2 = affine.apply #map()[%arg3]
-        %3 = affine.apply #map()[%arg4]
-        scf.for %arg10 = %c0 to %c64 step %c32 {
-          %4 = memref.alloc() : memref<32x32xi32, 2>
-          %5 = memref.alloc() : memref<32x32xi32, 2>
-          %6 = memref.alloc() : memref<32x32xi32, 2>
-          air.dma_memcpy_nd (%4[] [] [], %arg7[%2, %arg10] [%c32, %c32] [%c64, %c1]) {id = 1 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
-          air.dma_memcpy_nd (%5[] [] [], %arg8[%arg10, %3] [%c32, %c32] [%c64, %c1]) {id = 2 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
-          air.dma_memcpy_nd (%6[] [] [], %arg9[%2, %3] [%c32, %c32] [%c64, %c1]) {id = 3 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
-          affine.for %arg11 = 0 to 32 {
-            affine.for %arg12 = 0 to 32 {
-              affine.for %arg13 = 0 to 32 {
-                %7 = affine.load %4[%arg11, %arg13] : memref<32x32xi32, 2>
-                %8 = affine.load %5[%arg13, %arg12] : memref<32x32xi32, 2>
-                %9 = affine.load %6[%arg11, %arg12] : memref<32x32xi32, 2>
-                %10 = arith.muli %7, %8 : i32
-                %11 = arith.addi %9, %10 : i32
-                affine.store %11, %6[%arg11, %arg12] : memref<32x32xi32, 2>
-              }
-            }
+#map = affine_map<()[s0] -> (s0 * 64)>
+#map1 = affine_map<()[s0] -> (s0 * 32)>
+module {
+  func.func @forward(%arg0: memref<64x64xi32>, %arg1: memref<64x64xi32>, %arg2: memref<64x64xi32>) {
+    %c1 = arith.constant 1 : index
+    %alloc = memref.alloc() : memref<64x64xi32>
+    air.launch (%arg3, %arg4) in (%arg5=%c1, %arg6=%c1) args(%arg7=%alloc, %arg8=%arg0, %arg9=%arg1) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> {
+      air.segment @segment_0  args(%arg10=%arg3, %arg11=%arg4, %arg12=%arg7, %arg13=%arg8, %arg14=%arg9) : index, index, memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> {
+        %c2 = arith.constant 2 : index
+        %0 = affine.apply #map()[%arg10]
+        %1 = affine.apply #map()[%arg11]
+        air.herd @herd_0  tile (%arg15, %arg16) in (%arg17=%c2, %arg18=%c2) args(%arg19=%0, %arg20=%1, %arg21=%arg12, %arg22=%arg13, %arg23=%arg14) : index, index, memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> {
+          %c1_0 = arith.constant 1 : index
+          %c0_i32 = arith.constant 0 : i32
+          %c0 = arith.constant 0 : index
+          %c64 = arith.constant 64 : index
+          %c32 = arith.constant 32 : index
+          %2 = affine.apply #map1()[%arg15]
+          %3 = affine.apply #map1()[%arg16]
+          %4 = arith.addi %arg19, %2 : index
+          %5 = arith.addi %arg20, %3 : index
+          %alloc_1 = memref.alloc() : memref<32x32xi32, 2>
+          linalg.fill ins(%c0_i32 : i32) outs(%alloc_1 : memref<32x32xi32, 2>)
+          scf.for %arg24 = %c0 to %c64 step %c32 {
+            %alloc_2 = memref.alloc() : memref<32x32xi32, 2>
+            %alloc_3 = memref.alloc() : memref<32x32xi32, 2>
+            air.dma_memcpy_nd (%alloc_2[] [] [], %arg22[%4, %arg24] [%c32, %c32] [%c64, %c1_0]) {id = 1 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
+            air.dma_memcpy_nd (%alloc_3[] [] [], %arg23[%arg24, %5] [%c32, %c32] [%c64, %c1_0]) {id = 2 : i32} : (memref<32x32xi32, 2>, memref<64x64xi32>)
+            linalg.matmul {cast = #linalg.type_fn<cast_signed>} ins(%alloc_2, %alloc_3 : memref<32x32xi32, 2>, memref<32x32xi32, 2>) outs(%alloc_1 : memref<32x32xi32, 2>)
+            memref.dealloc %alloc_2 : memref<32x32xi32, 2>
+            memref.dealloc %alloc_3 : memref<32x32xi32, 2>
           }
-          air.dma_memcpy_nd (%arg9[%2, %3] [%c32, %c32] [%c64, %c1], %6[] [] []) {id = 4 : i32} : (memref<64x64xi32>, memref<32x32xi32, 2>)
-          memref.dealloc %4 : memref<32x32xi32, 2>
-          memref.dealloc %5 : memref<32x32xi32, 2>
-          memref.dealloc %6 : memref<32x32xi32, 2>
+          air.dma_memcpy_nd (%arg21[%4, %5] [%c32, %c32] [%c64, %c1_0], %alloc_1[] [] []) {id = 3 : i32} : (memref<64x64xi32>, memref<32x32xi32, 2>)
+          memref.dealloc %alloc_1 : memref<32x32xi32, 2>
+          air.herd_terminator
         }
-        air.herd_terminator
+        air.segment_terminator
       }
-      memref.copy %1, %arg2 : memref<64x64xi32> to memref<64x64xi32>
+      air.launch_terminator
     }
+    memref.copy %alloc, %arg2 : memref<64x64xi32> to memref<64x64xi32>
     return
   }
 }

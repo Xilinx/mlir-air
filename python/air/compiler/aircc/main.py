@@ -15,8 +15,8 @@ import subprocess
 from joblib import Parallel, delayed
 import shutil
 
-from air.mlir.passmanager import PassManager
-from air.mlir.ir import Module, Context, Location
+from air.passmanager import PassManager
+from air.ir import Module, Context, Location
 from air.dialects import air as airdialect
 
 import air.compiler.aircc.cl_arguments as cl_arguments
