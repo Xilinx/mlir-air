@@ -7,12 +7,11 @@
 
 // RUN: air-opt -airrt-to-llvm %s | FileCheck %s
 
-// XFAIL:*
 // CHECK-LABEL: func.func @wait
-// CHECK: %[[V0:.*]] = call @__airrt_wait_all_1_0() : () -> !llvm.ptr<i64>
-// CHECK: call @__airrt_wait_all_0_1(%[[V0]]) : (!llvm.ptr<i64>) -> ()
-// CHECK: %[[V1:.*]] = call @__airrt_wait_all_1_1(%[[V0]]) : (!llvm.ptr<i64>) -> !llvm.ptr<i64>
-// CHECK: call @__airrt_wait_all_0_2(%[[V0]], %[[V1]]) : (!llvm.ptr<i64>, !llvm.ptr<i64>) -> ()
+// CHECK: %[[V0:.*]] = call @__airrt_wait_all_1_0() : () -> !llvm.ptr
+// CHECK: call @__airrt_wait_all_0_1(%[[V0]]) : (!llvm.ptr) -> ()
+// CHECK: %[[V1:.*]] = call @__airrt_wait_all_1_1(%[[V0]]) : (!llvm.ptr) -> !llvm.ptr
+// CHECK: call @__airrt_wait_all_0_2(%[[V0]], %[[V1]]) : (!llvm.ptr, !llvm.ptr) -> ()
 func.func @wait() {
   %1 = airrt.wait_all : !airrt.event
   airrt.wait_all %1
@@ -22,11 +21,11 @@ func.func @wait() {
 }
 
 // CHECK-LABEL: func.func @scf_for
-// CHECK: %[[V0:.*]] = call @__airrt_wait_all_1_0() : () -> !llvm.ptr<i64>
-// CHECK: %[[V1:.*]] = scf.for {{.*}} iter_args(%[[V2:.*]] = %[[V0]]) -> (!llvm.ptr<i64>) {
-// CHECK:   %[[V3:.*]] = func.call @__airrt_wait_all_1_1(%[[V2]]) : (!llvm.ptr<i64>) -> !llvm.ptr<i64>
-// CHECK:   scf.yield %[[V3]] : !llvm.ptr<i64>
-// CHECK: call @__airrt_wait_all_0_1(%[[V1]]) : (!llvm.ptr<i64>) -> ()
+// CHECK: %[[V0:.*]] = call @__airrt_wait_all_1_0() : () -> !llvm.ptr
+// CHECK: %[[V1:.*]] = scf.for {{.*}} iter_args(%[[V2:.*]] = %[[V0]]) -> (!llvm.ptr) {
+// CHECK:   %[[V3:.*]] = func.call @__airrt_wait_all_1_1(%[[V2]]) : (!llvm.ptr) -> !llvm.ptr
+// CHECK:   scf.yield %[[V3]] : !llvm.ptr
+// CHECK: call @__airrt_wait_all_0_1(%[[V1]]) : (!llvm.ptr) -> ()
 func.func @scf_for() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -41,13 +40,13 @@ func.func @scf_for() {
 }
 
 // CHECK-LABEL: func.func @scf_if
-// CHECK: %[[V0:.*]] = scf.if {{.*}} -> (!llvm.ptr<i64>) {
-// CHECK:   %[[V1:.*]] = func.call @__airrt_wait_all_1_0() : () -> !llvm.ptr<i64>
-// CHECK:   scf.yield %[[V1]] : !llvm.ptr<i64>
+// CHECK: %[[V0:.*]] = scf.if {{.*}} -> (!llvm.ptr) {
+// CHECK:   %[[V1:.*]] = func.call @__airrt_wait_all_1_0() : () -> !llvm.ptr
+// CHECK:   scf.yield %[[V1]] : !llvm.ptr
 // CHECK: } else {
-// CHECK:   %[[V1:.*]] = func.call @__airrt_wait_all_1_0() : () -> !llvm.ptr<i64>
-// CHECK:   scf.yield %[[V1]] : !llvm.ptr<i64>
-// CHECK: call @__airrt_wait_all_0_1(%[[V0]]) : (!llvm.ptr<i64>) -> ()
+// CHECK:   %[[V1:.*]] = func.call @__airrt_wait_all_1_0() : () -> !llvm.ptr
+// CHECK:   scf.yield %[[V1]] : !llvm.ptr
+// CHECK: call @__airrt_wait_all_0_1(%[[V0]]) : (!llvm.ptr) -> ()
 func.func @scf_if(%arg0: i1) {
   %0 = scf.if %arg0 -> (!airrt.event) {
     %1 = airrt.wait_all : !airrt.event
@@ -61,17 +60,17 @@ func.func @scf_if(%arg0: i1) {
 }
 
 // CHECK-LABEL: func.func @scf_par
-// CHECK: %[[V0:.*]] = call @__airrt_wait_all_1_0() : () -> !llvm.ptr<i64>
-// CHECK: %[[V1:.*]] = scf.parallel{{.*}}init (%[[V0]]) -> !llvm.ptr<i64> {
-// CHECK:   %[[V3:.*]] = func.call @__airrt_wait_all_1_1(%[[V0]]) : (!llvm.ptr<i64>) -> !llvm.ptr<i64>
-// CHECK:   scf.reduce(%[[V3]])  : !llvm.ptr<i64> {
-// CHECK:   ^bb0(%[[V4:.*]]: !llvm.ptr<i64>, %[[V5:.*]]: !llvm.ptr<i64>):
-// CHECK:     %[[V6:.*]] = func.call @__airrt_wait_all_1_2(%[[V4]], %[[V5]]) : (!llvm.ptr<i64>, !llvm.ptr<i64>) -> !llvm.ptr<i64>
-// CHECK:     scf.reduce.return %[[V6]] : !llvm.ptr<i64>
+// CHECK: %[[V0:.*]] = call @__airrt_wait_all_1_0() : () -> !llvm.ptr
+// CHECK: %[[V1:.*]] = scf.parallel{{.*}}init (%[[V0]]) -> !llvm.ptr {
+// CHECK:   %[[V3:.*]] = func.call @__airrt_wait_all_1_1(%[[V0]]) : (!llvm.ptr) -> !llvm.ptr
+// CHECK:   scf.reduce(%[[V3]])  : !llvm.ptr {
+// CHECK:   ^bb0(%[[V4:.*]]: !llvm.ptr, %[[V5:.*]]: !llvm.ptr):
+// CHECK:     %[[V6:.*]] = func.call @__airrt_wait_all_1_2(%[[V4]], %[[V5]]) : (!llvm.ptr, !llvm.ptr) -> !llvm.ptr
+// CHECK:     scf.reduce.return %[[V6]] : !llvm.ptr
 // CHECK:   }
 // CHECK:   scf.yield
 // CHECK: }
-// CHECK: call @__airrt_wait_all_0_1(%[[V1]]) : (!llvm.ptr<i64>) -> ()
+// CHECK: call @__airrt_wait_all_0_1(%[[V1]]) : (!llvm.ptr) -> ()
 func.func @scf_par() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
