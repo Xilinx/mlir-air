@@ -16,8 +16,8 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
-#include <fcntl.h>  /* for open() */
-#include <string.h> /* for memset() */
+#include <fcntl.h>    /* for open() */
+#include <string.h>   /* for memset() */
 #include <sys/mman.h> /* for mlock() */
 #include <unistd.h>   /* for getpagesize() */
 #include <vector>
