@@ -30,6 +30,21 @@ jobs:
       - name: Install necessary build tools for libelf
         run: sudo apt install autoconf flex bison gawk autopoint -y
 
+      - name: Install necessary build tools for the ROCm runtime
+        run: | 
+          sudo apt install libelf-dev elfutils libdwarf-dev
+          sudo mkdir --parents --mode=0755 /etc/apt/keyrings
+          wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | \
+            gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
+          for ver in 5.3.3 5.4.3 5.5.1 5.6; do
+            echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/$ver focal main" \
+              | sudo tee --append /etc/apt/sources.list.d/rocm.list
+            done
+            echo -e 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' \
+              | sudo tee /etc/apt/preferences.d/rocm-pin-600
+          sudo apt update
+          sudo apt install rocm-hip-runtime-dev5.6.0
+
       - name: Install libboost
         run: sudo apt-get install -y libboost-all-dev
 
@@ -72,6 +87,11 @@ jobs:
         run: utils/clone-mlir-aie.sh
         shell: bash
 
+      - name: Get ROCm-air-platforms
+        id: clone-rocm-air-platforms
+        run: utils/clone-rocm-air-platforms.sh
+        shell: bash
+
       - name: Rebuild and Install libxaie
         run: utils/github-clone-build-libxaie.sh
 
@@ -80,6 +100,12 @@ jobs:
 
       - name: Rebuild and Install mlir-aie
         run: utils/github-build-mlir-aie.sh
+
+      - name: Build ROCt
+        run: ROCm-air-platforms/utils/clone-build-roct.sh
+
+      - name: Build ROCr
+        run: ROCm-air-platforms/utils/clone-build-rocr.sh
 
       # Build the repo test target in debug mode to build and test.
       - name: Build and test (Assert)
@@ -97,6 +123,8 @@ jobs:
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
             -DELFUTILS_DIR=$PWD/../elfutils \
             -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
+            -Dhsa-runtime64_DIR=`pwd`/../rocm/lib/cmake/hsa-runtime64/ \
+            -Dhsakmt_DIR=`pwd`/../rocm/lib/cmake/hsakmt/ \
             -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
             -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
             -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
@@ -125,6 +153,8 @@ jobs:
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
             -DELFUTILS_DIR=$PWD/../elfutils \
             -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
+            -Dhsa-runtime64_DIR=`pwd`/../rocm/lib/cmake/hsa-runtime64/ \
+            -Dhsakmt_DIR=`pwd`/../rocm/lib/cmake/hsakmt/ \
             -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
             -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
             -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \

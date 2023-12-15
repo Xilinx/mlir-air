@@ -14,7 +14,7 @@
 
 #include <map>
 #include <stdint.h>
-#include <string.h>
+#include <string>
 
 struct tensor_to_qp_map_entry {
   uint32_t qp;
