@@ -59,11 +59,11 @@ std::vector<uint32_t> load_instr_sequence(std::string instr_path) {
 
 template <typename T>
 void mm_out(std::vector<T> a, std::vector<T> b, std::vector<T> &r) {
-  for (size_t m1 = 0; m1 < M; m1++){
-    for (size_t n1 = 0; n1 < N; n1++){
+  for (size_t m1 = 0; m1 < M; m1++) {
+    for (size_t n1 = 0; n1 < N; n1++) {
       size_t idx = m1 * N + n1;
       r[idx] = (T)(0);
-      for (size_t k1 = 0; k1 < K; k1++){
+      for (size_t k1 = 0; k1 < K; k1++) {
         T _a = a[k1 + m1 * K];
         T _b = b[n1 + k1 * N];
         r[idx] += _a * _b;
