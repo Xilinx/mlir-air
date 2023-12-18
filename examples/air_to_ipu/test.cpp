@@ -1,8 +1,6 @@
 #include <boost/program_options.hpp>
 #include <cstdint>
-#include <cstdlib>
 #include <fstream>
-#include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -12,14 +10,9 @@
 #include "xrt/xrt_device.h"
 #include "xrt/xrt_kernel.h"
 
-#define M 8
-#define K 16
-#define N 8
-
-// L1 tile size, for testbench data layout preprocessing
-#define mm 4
-#define kk 4
-#define nn 4
+#define M 128
+#define N 128
+#define K 256
 
 #define A_VOLUME M *K
 #define B_VOLUME N *K
@@ -66,21 +59,14 @@ std::vector<uint32_t> load_instr_sequence(std::string instr_path) {
 
 template <typename T>
 void mm_out(std::vector<T> a, std::vector<T> b, std::vector<T> &r) {
-  // Data layout preprocessing
-  for (size_t m2 = 0; m2 < M / mm; m2++) {
-    for (size_t m1 = 0; m1 < mm; m1++) {
-      for (size_t n2 = 0; n2 < N / nn; n2++) {
-        for (size_t n1 = 0; n1 < nn; n1++) {
-          size_t idx = n1 + m1 * nn + n2 * mm * nn + m2 * mm * N;
-          r[idx] = (T)(0);
-          for (size_t k2 = 0; k2 < K / kk; k2++) {
-            for (size_t k1 = 0; k1 < kk; k1++) {
-              T _a = a[k1 + m1 * kk + k2 * mm * kk + m2 * mm * K];
-              T _b = b[n1 + k1 * nn + n2 * nn * kk + k2 * kk * N];
-              r[idx] += _a * _b;
-            }
-          }
-        }
+  for (size_t m1 = 0; m1 < M; m1++) {
+    for (size_t n1 = 0; n1 < N; n1++) {
+      size_t idx = m1 * N + n1;
+      r[idx] = (T)(0);
+      for (size_t k1 = 0; k1 < K; k1++) {
+        T _a = a[k1 + m1 * K];
+        T _b = b[n1 + k1 * N];
+        r[idx] += _a * _b;
       }
     }
   }
