@@ -153,7 +153,6 @@ foreach(target ${AIR_RUNTIME_TARGETS})
                -Dhsa-runtime64_DIR=${hsa-runtime64_DIR}
                -Dhsakmt_DIR=${hsakmt_DIR}
                -DAIE_DIR=${AIE_DIR}
-               -DELFUTILS_DIR=${ELFUTILS_DIR}
     BUILD_ALWAYS true
     STEP_TARGETS clean build install test
     USES_TERMINAL_CONFIGURE true

@@ -15,6 +15,7 @@ The first step required for running on the VCK5000 is building the hardware plat
   python 3.8.x
   ninja 1.10.0
   Xilinx Vitis 2021.2 
+  libelf
 ```
 
 In addition the following packages maybe useful: 
@@ -74,11 +75,6 @@ cd mlir-air
 ./utils/build-llvm-local.sh llvm
 ```
 
-Next, we are going to need to clone and build elfutils. This is used in the runtime to unpack and decode AIE application binaries. 
-```
-./utils/github-clone-build-elfutils.sh
-```
-
 Next, clone and build MLIR-AIE with paths to llvm, aienginev2, and cmakeModules repositories. Note that in the following commands, we assume that the aienginev2 library is installed in /opt/xaiengine as directed in the `Prerequisites` section. If the aienginev2 library was installed elsewhere, be sure that the 4th argument to build mlir-aie points to that location. 
 
 ```
@@ -89,7 +85,7 @@ Next, clone and build MLIR-AIE with paths to llvm, aienginev2, and cmakeModules 
 Use the following command to build the AIR tools to compile on x86 for PCIe cards (VCK5000). Make sure that ${ROCM\_ROOT} is pointing to your local ROCm install:
 
 ```
-./utils/build-mlir-air-pcie.sh llvm/ mlir-aie/cmake/modulesXilinx/ mlir-aie/ /opt/xaiengine elfutils/ ${ROCM_ROOT}/lib/cmake/hsa-runtime64/ ${ROCM_ROOT}/lib/cmake/hsakmt/
+./utils/build-mlir-air-pcie.sh llvm/ mlir-aie/cmake/modulesXilinx/ mlir-aie/ /opt/xaiengine ${ROCM_ROOT}/lib/cmake/hsa-runtime64/ ${ROCM_ROOT}/lib/cmake/hsakmt/
 ```
 
 The PCIe AIR runtime requires the use of the [AIR PCIe kernel driver](https://github.com/Xilinx/ROCm-air-platforms/tree/main/driver). The driver directory in the [ROCm-air-platforms](https://github.com/Xilinx/ROCm-air-platforms) repository contains documentation on how to compile and load the AIR PCIe kernel driver. Run the following script to clone the ROCm-air-platforms repository:

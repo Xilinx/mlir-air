@@ -14,7 +14,7 @@ LDFLAGS = -fuse-ld=lld -rdynamic \
 		-lm \
 		-Wl,--no-as-needed -ldl \
     -Wl,-rpath,${ROCM_ROOT}/lib ${ROCM_ROOT}/lib/libhsa-runtime64.so.1.9.0 \
-		../../elfutils/libelf/libelf.a \
+		-lelf \
 
 CFLAGS += -g -I/opt/xaiengine/include
 CFLAGS += -I${ROCM_ROOT}/include
@@ -22,6 +22,7 @@ CFLAGS += -std=c++17 -I$(ACDC_AIR)/runtime_lib/airhost/include -I$(ACDC_AIE)/run
           -DAIR_LIBXAIE_ENABLE
 LDFLAGS += -L/opt/xaiengine/lib -Wl,-R/opt/xaiengine/lib
 LDFLAGS += -L$(ACDC_AIR)/runtime_lib/airhost
+LDFLAGS += -L/lib/x86_64-linux-gnu/
 
 all: herd.exe
 

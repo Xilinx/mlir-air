@@ -24,6 +24,8 @@
 # <mlir-aie dir>     - mlir-aie
 #
 # <libXAIE dir>      - libXAIE to build runtime
+# <HSA dir>          - HSA to build runtime
+# <HSA kmt dir>      - HSA to build runtime
 #
 # <build dir>    - optional, build dir name, default is 'build-pcie'
 # <install dir>  - optional, install dir name, default is 'install-pcie'
@@ -39,10 +41,9 @@ CMAKEMODULES_DIR=`realpath $2`
 MLIR_AIE_DIR=`realpath $3`
 
 LibXAIE_DIR=`realpath $4`
-ELFUTILS_DIR=`realpath $5`
 
-HSA_DIR=`realpath $6`
-HSAKMT_DIR=`realpath $7`
+HSA_DIR=`realpath $5`
+HSAKMT_DIR=`realpath $6`
 
 BUILD_DIR=${8:-"build-pcie"}
 INSTALL_DIR=${9:-"install-pcie"}
@@ -64,7 +65,6 @@ cmake .. \
     -DLLVM_DIR=${LLVM_DIR}/build/lib/cmake/llvm \
     -DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \
     -DAIE_DIR=${MLIR_AIE_DIR}/build/lib/cmake/aie \
-    -DELFUTILS_DIR=${ELFUTILS_DIR} \
     -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
     -DVitisSysroot="" \
     -DLibXAIE_ROOT=${LibXAIE_DIR} \

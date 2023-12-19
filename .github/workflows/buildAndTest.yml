@@ -27,9 +27,6 @@ jobs:
           fetch-depth: 2
           submodules: "true"
 
-      - name: Install necessary build tools for libelf
-        run: sudo apt install autoconf flex bison gawk autopoint -y
-
       - name: Install necessary build tools for the ROCm runtime
         run: | 
           sudo apt install libelf-dev elfutils libdwarf-dev
@@ -95,9 +92,6 @@ jobs:
       - name: Rebuild and Install libxaie
         run: utils/github-clone-build-libxaie.sh
 
-      - name: Rebuild and Install elfutils
-        run: utils/github-clone-build-elfutils.sh
-
       - name: Rebuild and Install mlir-aie
         run: utils/github-build-mlir-aie.sh
 
@@ -121,7 +115,6 @@ jobs:
             -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
-            -DELFUTILS_DIR=$PWD/../elfutils \
             -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
             -Dhsa-runtime64_DIR=`pwd`/../rocm/lib/cmake/hsa-runtime64/ \
             -Dhsakmt_DIR=`pwd`/../rocm/lib/cmake/hsakmt/ \
@@ -151,7 +144,6 @@ jobs:
             -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
-            -DELFUTILS_DIR=$PWD/../elfutils \
             -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
             -Dhsa-runtime64_DIR=`pwd`/../rocm/lib/cmake/hsa-runtime64/ \
             -Dhsakmt_DIR=`pwd`/../rocm/lib/cmake/hsakmt/ \
