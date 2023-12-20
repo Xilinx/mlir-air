@@ -282,6 +282,7 @@ def run(mlir_module, args=None):
 
       # libxaie include path
       cmd += [f'-I{libxaie_path}/include']
+      cmd += [f'-I{rocm_path}/../../../include']
       cmd += ['-DLIBXAIENGINEV2']
       cmd += ['-DAIE_LIBXAIE_ENABLE', '-fPIC', '-c']
       cmd += ['-o', obj_file, cpp_file]

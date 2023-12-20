@@ -7,12 +7,11 @@
 
 #include <cstdio>
 #include <iostream>
-#include <map>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
+#include "air.hpp"
 #include "air_host.h"
 #include "pcie-ernic.h"
 
@@ -25,50 +24,6 @@ std::map<std::string, int> hostname_to_qp_map;
 std::map<void *, tensor_to_qp_map_entry *> tensor_to_qp_map;
 std::map<std::string, world_view_entry *> world_view;
 std::map<std::string, std::string> data_placement;
-
-// Storing these as state in the runtime
-void init_world_view() {
-
-  // Creating host_1 network information
-  world_view["host_0"] =
-      (struct world_view_entry *)malloc(sizeof(world_view_entry));
-  strcpy(world_view["host_0"]->ip, "610c6007");
-  strcpy(world_view["host_0"]->mac, "000016C450560F2E");
-  world_view["host_0"]->rank = 0;
-  world_view["host_0"]->qps[1] =
-      2; // Setting that we will use QP 2 to communicate with host_1
-
-  // Creating host_0 network information
-  world_view["host_1"] =
-      (struct world_view_entry *)malloc(sizeof(world_view_entry));
-  strcpy(world_view["host_1"]->ip, "f38590ba");
-  strcpy(world_view["host_1"]->mac, "00002F7617DC5E9A");
-  world_view["host_1"]->rank = 1;
-  world_view["host_1"]->qps[0] = 2;
-
-  return;
-}
-
-// This is used to denote where remote buffers are going to be place.d
-// The runtime uses this information to determine the location of buffers
-// used in AIR.
-void init_data_placement() {
-
-  data_placement["src"] = std::string("host_1");
-  data_placement["dst"] = std::string("host_0");
-  data_placement["host0_barrier_tensor"] = std::string("host_0");
-  data_placement["host1_barrier_tensor"] = std::string("host_1");
-
-  // Used for the message passing tests because we have multiple
-  // copies of the data.
-  // TODO: Replace these with the AIR device memory allocator
-  data_placement["host0_src"] = std::string("host_0");
-  data_placement["host0_dst"] = std::string("host_0");
-  data_placement["host1_src"] = std::string("host_1");
-  data_placement["host1_dst"] = std::string("host_1");
-
-  return;
-}
 
 // Used to set this hosts hostname
 hsa_status_t air_set_hostname(char hostname[100]) {
@@ -85,16 +40,15 @@ hsa_status_t air_get_hostname(char hostname[100]) {
 // This is a part of the bootstraping process, where we have a file that shows
 // us all the AIR instances, and we want to initialize the ERNIC with our own
 // information, and create QPs for every remote AIR instance
-hsa_status_t air_explore_world(uint32_t ernic_id, uint64_t dev_mem_offset,
-                               uint64_t bar_offset) {
-#ifndef AIR_PCIE
-  return HSA_STATUS_ERROR;
-#else
-  // Initializing all of the representations. This is just hardcoded right now,
-  // but should be passed by an driver node through a file or a serialized
-  // object
-  init_world_view();
-  init_data_placement();
+hsa_status_t
+air_explore_world(uint32_t ernic_id, uint64_t dev_mem_offset,
+                  uint64_t bar_offset,
+                  std::map<std::string, world_view_entry *> pass_world_view,
+                  std::map<std::string, std::string> pass_data_placement) {
+
+  // Storing the representation of the distributed system
+  world_view = pass_world_view;
+  data_placement = pass_data_placement;
 
   // Reading the world view to get our own IP and MAC address
   uint32_t ip_addr =
@@ -115,25 +69,26 @@ hsa_status_t air_explore_world(uint32_t ernic_id, uint64_t dev_mem_offset,
 #endif
 
   // Initializing the ERNIC
-  air_ernic_dev =
-      pcie_ernic_open_dev(air_get_bram_bar(0).c_str(), // axil_bar_filename
-                          2097152,                     // axil_bar_size
-                          bar_offset,                  // axil_bar_offset
-                          air_get_ddr_bar(0).c_str(),  // dev_mem_bar_filename
-                          67108864,                    // dev_mem_bar_size
-                          0x0000000800000000,          // dev_mem_global_offset
-                          dev_mem_offset,              // dev_mem_segment_offset
-                          0x00100000,                  // mrmac_reset_offset
-                          0x00110000,                  // mac_0_csr_offset
-                          0x00120000,                  // mac_1_csr_offset
-                          ernic_id,                    // ernic_id
-                          ip_addr,                     // ipv4 addr
-                          mac_addr_lsb,                // mac_addr_lsb
-                          mac_addr_msb,                // mac_addr_msb
-                          true,                        // configure_cmac
-                          false,                       // configure_bdf
-                          true,                        // is_versal
-                          true);                       // dual_reset
+  air_ernic_dev = pcie_ernic_open_dev(
+      "" /*air_get_bram_bar(0).c_str()*/, // axil_bar_filename // TODO: Fix this
+      2097152,                            // axil_bar_size
+      bar_offset,                         // axil_bar_offset
+      "" /*air_get_ddr_bar(0).c_str()*/,  // dev_mem_bar_filename // TODO: Fix
+                                          // this
+      67108864,                           // dev_mem_bar_size
+      0x0000000800000000,                 // dev_mem_global_offset
+      dev_mem_offset,                     // dev_mem_segment_offset
+      0x00100000,                         // mrmac_reset_offset
+      0x00110000,                         // mac_0_csr_offset
+      0x00120000,                         // mac_1_csr_offset
+      ernic_id,                           // ernic_id
+      ip_addr,                            // ipv4 addr
+      mac_addr_lsb,                       // mac_addr_lsb
+      mac_addr_msb,                       // mac_addr_msb
+      true,                               // configure_cmac
+      false,                              // configure_bdf
+      true,                               // is_versal
+      true);                              // dual_reset
 
   if (air_ernic_dev == NULL) {
     printf("[ERROR] Failed to create pcie_ernic_dev structure\n");
@@ -193,9 +148,15 @@ hsa_status_t air_explore_world(uint32_t ernic_id, uint64_t dev_mem_offset,
   }
 
   return HSA_STATUS_SUCCESS;
-#endif // AIR_PCIE
 }
 
+/* Conditionally allocates and/or registers memory depending on
+the location memory. This function should be called to initialize
+all remote or local buffers that are accessed remotely. If the
+buffer is local, the memory is allocated and the virtual address
+and key are advertised to all AIR instances. If the buffer is
+remote, we poll on receiving the virtual address and key
+from the remote instance who is hosting the memory */
 hsa_status_t air_ernic_mem_alloc(char buff_name[100], uint32_t size, void *t,
                                  bool register_mem) {
 
@@ -289,6 +250,7 @@ hsa_status_t air_ernic_mem_alloc(char buff_name[100], uint32_t size, void *t,
   return HSA_STATUS_SUCCESS;
 }
 
+// Should be called at the end of the application
 hsa_status_t air_ernic_free() {
 
   pcie_ernic_free_dev(air_ernic_dev);
@@ -296,10 +258,14 @@ hsa_status_t air_ernic_free() {
   return HSA_STATUS_SUCCESS;
 }
 
-// template <typename T, int R>
-void air_recv(signal_t *s, tensor_t<uint32_t, 1> *t, uint32_t size,
-              uint32_t offset, uint32_t src_rank, queue_t *q,
-              uint8_t ernic_sel) {
+/* Performs a message passing receive. We first poll on receiving an
+RDMA SEND which contains the data, which is then copied to the provided
+tensor t. We then send a synchronizing SEND back to remote agent. This
+function is capable of performing a non-blocking SEND by passing an
+HSA signal as a handle*/
+void air_recv(hsa_signal_t *s, tensor_t<uint32_t, 1> *t, uint32_t size,
+              uint32_t offset, uint32_t src_rank, hsa_agent_t *agent,
+              hsa_queue_t *q, uint8_t ernic_sel) {
 
 #ifdef VERBOSE_DEBUG
   printf("Called air_recv(%p, %p, 0x%x, 0x%x, 0x%x\n", s, t, size, offset,
@@ -351,7 +317,6 @@ void air_recv(signal_t *s, tensor_t<uint32_t, 1> *t, uint32_t size,
     uint32_t amount_data_left = size;
 
     uint64_t wr_idx, packet_id;
-    dispatch_packet_t *pkt;
     uint32_t rqe_offset = 0;
     while (amount_data_left > 0) {
 
@@ -363,10 +328,11 @@ void air_recv(signal_t *s, tensor_t<uint32_t, 1> *t, uint32_t size,
         amount_data_to_recv = amount_data_left;
       }
 
-      wr_idx = queue_add_write_index(q, 1);
+      wr_idx = hsa_queue_add_write_index_relaxed(q, 1);
       packet_id = wr_idx % q->size;
-      pkt = (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
-      air_packet_post_rdma_recv(pkt, // HSA Packet
+      hsa_agent_dispatch_packet_t recv_pkt;
+
+      air_packet_post_rdma_recv(&recv_pkt, // HSA Packet
                                 rdma_entry->local_buff->pa + rqe_offset +
                                     offset,          // Local PADDR
                                 amount_data_to_recv, // Length
@@ -375,10 +341,12 @@ void air_recv(signal_t *s, tensor_t<uint32_t, 1> *t, uint32_t size,
 
       // Need to do this because otherwise the runtime will complain the packet
       // is timing out but it is supposed to be blocking
-      air_queue_dispatch(q, wr_idx, pkt);
-      while (signal_wait_acquire((signal_t *)&pkt->completion_signal,
-                                 HSA_SIGNAL_CONDITION_EQ, 0, 0x80000,
-                                 HSA_WAIT_STATE_ACTIVE) != 0)
+      // air_write_pkt<hsa_agent_dispatch_packet_t>(q, packet_id, &recv_pkt);
+      air_queue_dispatch(q, packet_id, wr_idx, &recv_pkt);
+
+      while (hsa_signal_wait_scacquire(recv_pkt.completion_signal,
+                                       HSA_SIGNAL_CONDITION_EQ, 0, 0x80000,
+                                       HSA_WAIT_STATE_ACTIVE) != 0)
         ;
 
       // Calculating how much data we have to receive now and the new offset
@@ -387,11 +355,11 @@ void air_recv(signal_t *s, tensor_t<uint32_t, 1> *t, uint32_t size,
     }
 
     // Sending a synchronizing SEND so the corresponding air_send() can complete
-    wr_idx = queue_add_write_index(q, 1);
+    wr_idx = hsa_queue_add_write_index_relaxed(q, 1);
     packet_id = wr_idx % q->size;
-    pkt = (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
+    hsa_agent_dispatch_packet_t sync_send_pkt;
     air_packet_post_rdma_wqe(
-        pkt,                        // HSA Packet
+        &sync_send_pkt,             // HSA Packet
         0,                          // Remote VADDR
         rdma_entry->local_buff->pa, // Local PADDR -- Once 0 length SENDs are
                                     // working we can just make this 0
@@ -401,13 +369,21 @@ void air_recv(signal_t *s, tensor_t<uint32_t, 1> *t, uint32_t size,
         0,                // Key
         (uint8_t)qpid,    // QPID
         ernic_sel);       // ERNIC select
-    air_queue_dispatch_and_wait(q, wr_idx, pkt);
+
+    // air_write_pkt<hsa_agent_dispatch_packet_t>(q, packet_id, &sync_send_pkt);
+    air_queue_dispatch_and_wait(agent, q, packet_id, wr_idx, &sync_send_pkt);
   }
 }
 
-void air_send(signal_t *s, tensor_t<uint32_t, 1> *t, uint32_t size,
-              uint32_t offset, uint32_t dst_rank, queue_t *q,
-              uint8_t ernic_sel) {
+/* Performs an SEND operation of the data in the provided tensor t.
+It first performs an RDMA SEND of the data, and then must poll
+on a synchronizing SEND which reports the data was received.
+We then send a synchronizing SEND back to remote agent. This
+function is capable of performing a non-blocking SEND by
+passing an HSA signal as a handle */
+void air_send(hsa_signal_t *s, tensor_t<uint32_t, 1> *t, uint32_t size,
+              uint32_t offset, uint32_t dst_rank, hsa_agent_t *agent,
+              hsa_queue_t *q, uint8_t ernic_sel) {
 
 #ifdef VERBOSE_DEBUG
   printf("Called air_send(%p, %p, 0x%x, 0x%x\n", s, t, size, dst_rank);
@@ -458,14 +434,13 @@ void air_send(signal_t *s, tensor_t<uint32_t, 1> *t, uint32_t size,
     uint32_t num_rqes = ceil((float)size / RQE_SIZE);
 
     uint64_t wr_idx, packet_id;
-    dispatch_packet_t *pkt;
     uint32_t rqe_offset = 0;
     for (int i = 0; i < num_rqes; i++) {
-      wr_idx = queue_add_write_index(q, 1);
+      wr_idx = hsa_queue_add_write_index_relaxed(q, 1);
       packet_id = wr_idx % q->size;
-      pkt = (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
+      hsa_agent_dispatch_packet_t send_pkt;
       air_packet_post_rdma_wqe(
-          pkt,                                              // HSA Packet
+          &send_pkt,                                        // HSA Packet
           0,                                                // Remote VADDR
           rdma_entry->local_buff->pa + rqe_offset + offset, // Local PADDR
           0x00000100, // Length -- Need to send RQE size elements, receive side
@@ -474,14 +449,17 @@ void air_send(signal_t *s, tensor_t<uint32_t, 1> *t, uint32_t size,
           0,                // Key
           (uint8_t)qpid,    // QPID
           ernic_sel);       // ERNIC select
-      air_queue_dispatch_and_wait(q, wr_idx, pkt);
+
+      // air_write_pkt<hsa_agent_dispatch_packet_t>(q, packet_id, &send_pkt);
+      air_queue_dispatch_and_wait(agent, q, packet_id, wr_idx, &send_pkt);
     }
 
-    wr_idx = queue_add_write_index(q, 1);
+    wr_idx = hsa_queue_add_write_index_relaxed(q, 1);
     packet_id = wr_idx % q->size;
-    pkt = (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
+    hsa_agent_dispatch_packet_t recv_pkt;
+
     air_packet_post_rdma_recv(
-        pkt,                        // HSA Packet
+        &recv_pkt,                  // HSA Packet
         rdma_entry->local_buff->pa, // Local PADDR
         0, // Length - Synchronizing so don't want to copy any of the data over
         (uint8_t)qpid, // QPID
@@ -489,16 +467,22 @@ void air_send(signal_t *s, tensor_t<uint32_t, 1> *t, uint32_t size,
 
     // Need to do this because otherwise the runtime will complain the packet is
     // timing out but it is supposed to be blocking
-    air_queue_dispatch(q, wr_idx, pkt);
-    while (signal_wait_acquire((signal_t *)&pkt->completion_signal,
-                               HSA_SIGNAL_CONDITION_EQ, 0, 0x80000,
-                               HSA_WAIT_STATE_ACTIVE) != 0)
+    // air_write_pkt<hsa_agent_dispatch_packet_t>(q, packet_id, &recv_pkt);
+    air_queue_dispatch(q, packet_id, wr_idx, &recv_pkt);
+    while (hsa_signal_wait_scacquire(recv_pkt.completion_signal,
+                                     HSA_SIGNAL_CONDITION_EQ, 0, 0x80000,
+                                     HSA_WAIT_STATE_ACTIVE) != 0)
       ;
   }
 }
 
-void air_barrier(tensor_t<uint32_t, 1> *dummy_tensor, queue_t *q,
-                 uint8_t ernic_sel) {
+/* Provides a very simplistic barrier for remote AIR instances.
+This barrier uses rank 0 as the coordinater, which receives an
+incoming send from every non-zero rank AIR instance. Then,
+it perform an air_send to every non-zero rank AIR instance
+which allows them to proceed. */
+void air_barrier(tensor_t<uint32_t, 1> *dummy_tensor, hsa_agent_t *agent,
+                 hsa_queue_t *q, uint8_t ernic_sel) {
 
   // Get my own rank
   // TODO: Do this when we explore world and then store it in some AIR state
@@ -527,16 +511,16 @@ void air_barrier(tensor_t<uint32_t, 1> *dummy_tensor, queue_t *q,
   if (my_rank == 0) {
     // Waiting for everyone to hit the barrier
     for (int i = 1; i < world_size; i++) {
-      air_recv(NULL, dummy_tensor, RQE_SIZE, 0, i, q, ernic_sel);
+      air_recv(NULL, dummy_tensor, RQE_SIZE, 0, i, agent, q, ernic_sel);
     }
 
     // Notifying everyone that they can continue
     for (int i = 1; i < world_size; i++) {
-      air_send(NULL, dummy_tensor, RQE_SIZE, 0, i, q, ernic_sel);
+      air_send(NULL, dummy_tensor, RQE_SIZE, 0, i, agent, q, ernic_sel);
     }
   } else {
     // Perform a send() then recv() to rank 0
-    air_send(NULL, dummy_tensor, RQE_SIZE, 0, 0, q, ernic_sel);
-    air_recv(NULL, dummy_tensor, RQE_SIZE, 0, 0, q, ernic_sel);
+    air_send(NULL, dummy_tensor, RQE_SIZE, 0, 0, agent, q, ernic_sel);
+    air_recv(NULL, dummy_tensor, RQE_SIZE, 0, 0, agent, q, ernic_sel);
   }
 }

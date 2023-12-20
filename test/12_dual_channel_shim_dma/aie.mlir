@@ -58,4 +58,13 @@ module {
       AIE.end
   }
 
+  AIE.core(%t72) {
+    AIE.end
+  }
+
+  AIE.core(%t74) {
+    AIE.end
+  }
+
+
 }

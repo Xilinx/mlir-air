@@ -114,6 +114,9 @@ int main() {
   *(uint32_t *)(reg_mem->buff) = 0xEDEDEDED;
   *(uint32_t *)(reg_mem->buff + 4) = 0xEDEDEDED;
 
+  // Clearing the buffer we will be remotely writing into
+  *(uint32_t *)(reg_mem->buff + 0x00000100) = 0;
+  *(uint32_t *)(reg_mem->buff + 0x00000104) = 0;
   printf("Memory before remote write : 0x%x\n",
          *(uint32_t *)(reg_mem->buff + 0x00000100));
 

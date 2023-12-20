@@ -5,6 +5,8 @@
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${AIE_INCLUDE_DIRS}/../runtime_lib/x86_64/test_lib/include
+    ${AIE_INCLUDE_DIRS}/../runtime_lib
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../driver
 )
 
 add_definitions(-DLIBXAIENGINEV2)
@@ -20,6 +22,7 @@ link_libraries(${XILINX_XAIE_LIBS})
 add_library(airhost STATIC
     memory.cpp
     queue.cpp
+    runtime.cpp
     host.cpp
     pcie-ernic.cpp
     pcie-ernic-dev-mem-allocator.cpp
@@ -30,6 +33,7 @@ set_property(TARGET airhost PROPERTY POSITION_INDEPENDENT_CODE ON)
 add_library(airhost_shared SHARED
     memory.cpp
     queue.cpp
+    runtime.cpp
     host.cpp
     pcie-ernic.cpp
     pcie-ernic-dev-mem-allocator.cpp
@@ -37,9 +41,20 @@ add_library(airhost_shared SHARED
    )
 set_property(TARGET airhost_shared PROPERTY POSITION_INDEPENDENT_CODE ON)
 
+add_library(libelf_pic STATIC IMPORTED)
+set_target_properties(libelf_pic PROPERTIES
+  IMPORTED_LOCATION "/lib/x86_64-linux-gnu/libelf.so"
+)
+
 target_link_libraries(airhost
   ${AIR_LIBXAIE_LIBS}
   dl
+  hsa-runtime64::hsa-runtime64
+)
+
+target_link_libraries(airhost_shared
+  hsa-runtime64::hsa-runtime64
+  libelf_pic
 )
 
 set_target_properties(airhost PROPERTIES

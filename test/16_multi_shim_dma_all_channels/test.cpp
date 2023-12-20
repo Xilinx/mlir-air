@@ -23,6 +23,9 @@
 
 #include "aie_inc.cpp"
 
+#include "hsa/hsa.h"
+#include "hsa/hsa_ext_amd.h"
+
 #define XAIE_NUM_COLS 20
 
 int
@@ -38,54 +41,61 @@ main(int argc, char *argv[])
     return -1;
   }
 
-  std::vector<air_agent_t> agents;
+  std::vector<hsa_agent_t> agents;
   auto get_agents_ret = air_get_agents(agents);
   assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
   if (agents.empty()) {
-    std::cout << "No agents found. Exiting." << std::endl;
+    std::cout << "fail." << std::endl;
     return -1;
   }
 
   std::cout << "Found " << agents.size() << " agents" << std::endl;
 
-  std::vector<queue_t *> queues;
-  for (auto agent : agents) {
-    // create the queue
-    queue_t *q = nullptr;
-    auto create_queue_ret =
-        air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, agent.handle,
-                         0 /* device_id (optional) */);
-    assert(create_queue_ret == 0 && "failed to create queue!");
-    queues.push_back(q);
+  uint32_t aie_max_queue_size(0);
+  hsa_agent_get_info(agents[0], HSA_AGENT_INFO_QUEUE_MAX_SIZE,
+                     &aie_max_queue_size);
+
+  std::cout << "Max AIE queue size: " << aie_max_queue_size << std::endl;
+
+  hsa_queue_t *q = NULL;
+
+  // Creating a queue
+  auto queue_create_status =
+      hsa_queue_create(agents[0], aie_max_queue_size, HSA_QUEUE_TYPE_SINGLE,
+                       nullptr, nullptr, 0, 0, &q);
+
+  if (queue_create_status != HSA_STATUS_SUCCESS) {
+    std::cout << "hsa_queue_create failed" << std::endl;
   }
+
+  // Adding to our vector of queues
+  std::vector<hsa_queue_t *> queues;
+  queues.push_back(q);
+  assert(queues.size() > 0 && "No queues were sucesfully created!");
 
   aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_get_libxaie_ctx();
   if (xaie == NULL) {
-    std::cout << "Error initializing libxaie" << std::endl;
+    std::cout << "Error getting libxaie context" << std::endl;
     return -1;
   }
 
-  // Want to initializing the device memory allocator
-  if (air_init_dev_mem_allocator(0x8000 /* dev_mem_size */,
-                                 0 /* device_id (optional)*/)) {
-    std::cout << "Error creating device memory allocator" << std::endl;
-    return -1;
-  }
-
-  uint64_t wr_idx = queue_add_write_index(queues[0], 1);
+  //
+  // Set up a 1x3 herd starting 7,0
+  //
+  uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queues[0], 1);
   uint64_t packet_id = wr_idx % queues[0]->size;
-  dispatch_packet_t *shim_pkt =
-      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_device_init(shim_pkt, XAIE_NUM_COLS);
-  air_queue_dispatch_and_wait(queues[0], wr_idx, shim_pkt);
+  hsa_agent_dispatch_packet_t segment_pkt;
+  air_packet_segment_init(&segment_pkt, 0, col, 1, row, 5);
+  air_queue_dispatch_and_wait(&agents[0], queues[0], packet_id, wr_idx,
+                              &segment_pkt);
 
-  wr_idx = queue_add_write_index(queues[0], 1);
+  wr_idx = hsa_queue_add_write_index_relaxed(queues[0], 1);
   packet_id = wr_idx % queues[0]->size;
-  dispatch_packet_t *segment_pkt =
-      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_segment_init(segment_pkt, 0, col, 2, row, 5);
-  air_queue_dispatch_and_wait(queues[0], wr_idx, segment_pkt);
+  hsa_agent_dispatch_packet_t shim_pkt;
+  air_packet_device_init(&shim_pkt, XAIE_NUM_COLS);
+  air_queue_dispatch_and_wait(&agents[0], queues[0], packet_id, wr_idx,
+                              &shim_pkt);
 
   mlir_aie_configure_cores(xaie);
   mlir_aie_configure_switchboxes(xaie);
@@ -101,18 +111,12 @@ main(int argc, char *argv[])
     mlir_aie_write_buffer_buf74_0(xaie, i, 0xfeedf00d);
   }
 
-  uint32_t *dram_ptr_1 =
-      (uint32_t *)air_dev_mem_alloc(DMA_COUNT * sizeof(uint32_t));
-  uint32_t *dram_ptr_2 =
-      (uint32_t *)air_dev_mem_alloc(DMA_COUNT * sizeof(uint32_t));
-  uint32_t *dram_ptr_3 =
-      (uint32_t *)air_dev_mem_alloc(DMA_COUNT * sizeof(uint32_t));
-  uint32_t *dram_ptr_4 =
-      (uint32_t *)air_dev_mem_alloc(DMA_COUNT * sizeof(uint32_t));
-  uint32_t *dram_ptr_5 =
-      (uint32_t *)air_dev_mem_alloc(DMA_COUNT * sizeof(uint32_t));
-  uint32_t *dram_ptr_6 =
-      (uint32_t *)air_dev_mem_alloc(DMA_COUNT * sizeof(uint32_t));
+  uint32_t *dram_ptr_1 = (uint32_t *)air_malloc(DMA_COUNT * sizeof(uint32_t));
+  uint32_t *dram_ptr_2 = (uint32_t *)air_malloc(DMA_COUNT * sizeof(uint32_t));
+  uint32_t *dram_ptr_3 = (uint32_t *)air_malloc(DMA_COUNT * sizeof(uint32_t));
+  uint32_t *dram_ptr_4 = (uint32_t *)air_malloc(DMA_COUNT * sizeof(uint32_t));
+  uint32_t *dram_ptr_5 = (uint32_t *)air_malloc(DMA_COUNT * sizeof(uint32_t));
+  uint32_t *dram_ptr_6 = (uint32_t *)air_malloc(DMA_COUNT * sizeof(uint32_t));
 
   if (dram_ptr_1 == NULL || dram_ptr_2 == NULL || dram_ptr_3 == NULL ||
       dram_ptr_4 == NULL || dram_ptr_5 == NULL || dram_ptr_6 == NULL) {
@@ -131,88 +135,108 @@ main(int argc, char *argv[])
 
   // This starts the copying to the tiles
 
-  wr_idx = queue_add_write_index(queues[0], 1);
+  // Sending data on shim 18 channel 1
+  wr_idx = hsa_queue_add_write_index_relaxed(queues[0], 1);
   packet_id = wr_idx % queues[0]->size;
-  dispatch_packet_t *pkt_e =
-      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_e, 0, 18, 1, 1, 4, 2,
-                       air_dev_mem_get_pa(dram_ptr_1) /*AIR_BBUFF_BASE*/,
+  hsa_agent_dispatch_packet_t pkt_e;
+  air_packet_nd_memcpy(&pkt_e, 0, 18, 1, 1, 4, 2,
+                       reinterpret_cast<uint64_t>(dram_ptr_1),
                        DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
+  hsa_amd_signal_create_on_agent(1, 0, nullptr, &agents[0], 0,
+                                 &pkt_e.completion_signal);
+  air_write_pkt<hsa_agent_dispatch_packet_t>(queues[0], packet_id, &pkt_e);
 
-  wr_idx = queue_add_write_index(queues[0], 1);
+  // Sending data on shim 11 channel 1
+  wr_idx = hsa_queue_add_write_index_relaxed(queues[0], 1);
   packet_id = wr_idx % queues[0]->size;
-  dispatch_packet_t *pkt_f =
-      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(
-      pkt_f, 0, 11, 1, 1, 4, 2,
-      air_dev_mem_get_pa(
-          dram_ptr_2) /*AIR_BBUFF_BASE+(DMA_COUNT*sizeof(float))*/,
-      DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
+  hsa_agent_dispatch_packet_t pkt_f;
+  air_packet_nd_memcpy(&pkt_f, 0, 11, 1, 1, 4, 2,
+                       reinterpret_cast<uint64_t>(dram_ptr_2),
+                       DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
+  hsa_amd_signal_create_on_agent(1, 0, nullptr, &agents[0], 0,
+                                 &pkt_f.completion_signal);
+  air_write_pkt<hsa_agent_dispatch_packet_t>(queues[0], packet_id, &pkt_f);
+
+  // Now, lets read the data back
+
+  // Reading back the data on shim 18 channel 0
+  wr_idx = hsa_queue_add_write_index_relaxed(queues[0], 1);
+  packet_id = wr_idx % queues[0]->size;
+  hsa_agent_dispatch_packet_t pkt_g;
+  air_packet_nd_memcpy(&pkt_g, 0, 18, 0, 1, 4, 2,
+                       reinterpret_cast<uint64_t>(dram_ptr_5),
+                       DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
+  hsa_amd_signal_create_on_agent(1, 0, nullptr, &agents[0], 0,
+                                 &pkt_g.completion_signal);
+  air_write_pkt<hsa_agent_dispatch_packet_t>(queues[0], packet_id, &pkt_g);
+
+  // Reading back the data on shim 11 channel 0
+  wr_idx = hsa_queue_add_write_index_relaxed(queues[0], 1);
+  packet_id = wr_idx % queues[0]->size;
+  hsa_agent_dispatch_packet_t pkt_h;
+  air_packet_nd_memcpy(&pkt_h, 0, 11, 0, 1, 4, 2,
+                       reinterpret_cast<uint64_t>(dram_ptr_6),
+                       DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
+  hsa_amd_signal_create_on_agent(1, 0, nullptr, &agents[0], 0,
+                                 &pkt_h.completion_signal);
+  air_write_pkt<hsa_agent_dispatch_packet_t>(queues[0], packet_id, &pkt_h);
+
+  // Now, we do the pattern again!
+
+  // Sending data on shim 18 channel 0
+  wr_idx = hsa_queue_add_write_index_relaxed(queues[0], 1);
+  packet_id = wr_idx % queues[0]->size;
+  hsa_agent_dispatch_packet_t pkt_a;
+  air_packet_nd_memcpy(&pkt_a, 0, 18, 1, 0, 4, 2,
+                       reinterpret_cast<uint64_t>(dram_ptr_1),
+                       DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
+  hsa_amd_signal_create_on_agent(1, 0, nullptr, &agents[0], 0,
+                                 &pkt_a.completion_signal);
+  air_write_pkt<hsa_agent_dispatch_packet_t>(queues[0], packet_id, &pkt_a);
+
+  // Sending data on shim 11 channel 0
+  wr_idx = hsa_queue_add_write_index_relaxed(queues[0], 1);
+  packet_id = wr_idx % queues[0]->size;
+  hsa_agent_dispatch_packet_t pkt_b;
+  air_packet_nd_memcpy(&pkt_b, 0, 11, 1, 0, 4, 2,
+                       reinterpret_cast<uint64_t>(dram_ptr_2),
+                       DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
+  hsa_amd_signal_create_on_agent(1, 0, nullptr, &agents[0], 0,
+                                 &pkt_b.completion_signal);
+  air_write_pkt<hsa_agent_dispatch_packet_t>(queues[0], packet_id, &pkt_b);
 
   // This completes the copying to the tiles, let's move the pattern back
 
-  wr_idx = queue_add_write_index(queues[0], 1);
+  // Reading data on shim 18 channel 0
+  wr_idx = hsa_queue_add_write_index_relaxed(queues[0], 1);
   packet_id = wr_idx % queues[0]->size;
-  dispatch_packet_t *pkt_g =
-      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(
-      pkt_g, 0, 18, 0, 1, 4, 2,
-      air_dev_mem_get_pa(
-          dram_ptr_5) /*AIR_BBUFF_BASE+(4*DMA_COUNT*sizeof(float))*/,
-      DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
-
-  wr_idx = queue_add_write_index(queues[0], 1);
-  packet_id = wr_idx % queues[0]->size;
-  dispatch_packet_t *pkt_h =
-      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(
-      pkt_h, 0, 11, 0, 1, 4, 2,
-      air_dev_mem_get_pa(
-          dram_ptr_6) /*AIR_BBUFF_BASE+(5*DMA_COUNT*sizeof(float))*/,
-      DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
-
-  // This completes packets for first two cores, let's duplicate the effort
-
-  wr_idx = queue_add_write_index(queues[0], 1);
-  packet_id = wr_idx % queues[0]->size;
-  dispatch_packet_t *pkt_a =
-      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(pkt_a, 0, 18, 1, 0, 4, 2,
-                       air_dev_mem_get_pa(dram_ptr_1) /*AIR_BBUFF_BASE*/,
+  hsa_agent_dispatch_packet_t pkt_c;
+  air_packet_nd_memcpy(&pkt_c, 0, 18, 0, 0, 4, 2,
+                       reinterpret_cast<uint64_t>(dram_ptr_3),
                        DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
+  hsa_amd_signal_create_on_agent(1, 0, nullptr, &agents[0], 0,
+                                 &pkt_c.completion_signal);
+  air_write_pkt<hsa_agent_dispatch_packet_t>(queues[0], packet_id, &pkt_c);
 
-  wr_idx = queue_add_write_index(queues[0], 1);
+  // Reading data on shim 18 channel 0
+  wr_idx = hsa_queue_add_write_index_relaxed(queues[0], 1);
   packet_id = wr_idx % queues[0]->size;
-  dispatch_packet_t *pkt_b =
-      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(
-      pkt_b, 0, 11, 1, 0, 4, 2,
-      air_dev_mem_get_pa(
-          dram_ptr_2) /*AIR_BBUFF_BASE+(DMA_COUNT*sizeof(float))*/,
-      DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
+  hsa_agent_dispatch_packet_t pkt_d;
+  air_packet_nd_memcpy(&pkt_d, 0, 11, 0, 0, 4, 2,
+                       reinterpret_cast<uint64_t>(dram_ptr_4),
+                       DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
+  air_queue_dispatch_and_wait(&agents[0], queues[0], packet_id, wr_idx, &pkt_d);
 
-  // This completes the copying to the tiles, let's move the pattern back
-
-  wr_idx = queue_add_write_index(queues[0], 1);
-  packet_id = wr_idx % queues[0]->size;
-  dispatch_packet_t *pkt_c =
-      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(
-      pkt_c, 0, 18, 0, 0, 4, 2,
-      air_dev_mem_get_pa(
-          dram_ptr_3) /*AIR_BBUFF_BASE+(2*DMA_COUNT*sizeof(float))*/,
-      DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
-
-  wr_idx = queue_add_write_index(queues[0], 1);
-  packet_id = wr_idx % queues[0]->size;
-  dispatch_packet_t *pkt_d =
-      (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(
-      pkt_d, 0, 11, 0, 0, 4, 2,
-      air_dev_mem_get_pa(
-          dram_ptr_4) /*AIR_BBUFF_BASE+(3*DMA_COUNT*sizeof(float))*/,
-      DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
-  air_queue_dispatch_and_wait(queues[0], wr_idx, pkt_d);
+  // Destroying the completion signals
+  // TODO: We can probably just not create them
+  hsa_signal_destroy(pkt_a.completion_signal);
+  hsa_signal_destroy(pkt_b.completion_signal);
+  hsa_signal_destroy(pkt_c.completion_signal);
+  hsa_signal_destroy(pkt_d.completion_signal);
+  hsa_signal_destroy(pkt_e.completion_signal);
+  hsa_signal_destroy(pkt_f.completion_signal);
+  hsa_signal_destroy(pkt_g.completion_signal);
+  hsa_signal_destroy(pkt_h.completion_signal);
 
   uint32_t errs = 0;
   // Let go check the tile memory
@@ -274,7 +298,21 @@ main(int argc, char *argv[])
     }
   }
 
-  air_dev_mem_allocator_free();
+  // destroying the queue
+  hsa_queue_destroy(queues[0]);
+  air_free(dram_ptr_1);
+  air_free(dram_ptr_2);
+  air_free(dram_ptr_3);
+  air_free(dram_ptr_4);
+  air_free(dram_ptr_5);
+  air_free(dram_ptr_6);
+
+  // Shutdown AIR and HSA
+  hsa_status_t shut_down_ret = air_shut_down();
+  if (shut_down_ret != HSA_STATUS_SUCCESS) {
+    printf("[ERROR] air_shut_down() failed\n");
+    errs++;
+  }
 
   if (errs == 0) {
     printf("PASS!\n");

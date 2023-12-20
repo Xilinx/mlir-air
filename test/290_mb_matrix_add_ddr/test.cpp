@@ -23,6 +23,9 @@
 
 #include "aie_inc.cpp"
 
+#include "hsa/hsa.h"
+#include "hsa/hsa_ext_amd.h"
+
 #define XAIE_NUM_COLS 10
 
 #define DDR_ADDR  0x2000
@@ -45,6 +48,9 @@ main(int argc, char *argv[])
   uint64_t col = 7;
   uint64_t row = 0;
 
+  std::vector<hsa_queue_t *> queues;
+  uint32_t aie_max_queue_size(0);
+
   hsa_status_t init_status = air_init();
 
   if (init_status != HSA_STATUS_SUCCESS) {
@@ -52,37 +58,59 @@ main(int argc, char *argv[])
     return -1;
   }
 
-  std::vector<air_agent_t> agents;
+  std::vector<hsa_agent_t> agents;
   auto get_agents_ret = air_get_agents(agents);
   assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
   if (agents.empty()) {
-    std::cout << "fail." << std::endl;
+    std::cout << "No agents found. Exiting." << std::endl;
     return -1;
   }
 
-  // create the queue
-  queue_t *q = nullptr;
-  auto ret = air_queue_create(MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q,
-                              AIR_VCK190_SHMEM_BASE);
-  assert(ret == 0 && "failed to create queue!");
+  std::cout << "Found " << agents.size() << " agents" << std::endl;
 
-  // setup the herd
-  uint64_t wr_idx = queue_add_write_index(q, 1);
-  uint64_t packet_id = wr_idx % q->size;
-  dispatch_packet_t *segment_pkt =
-      (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
-  air_packet_segment_init(segment_pkt, 0, col, 1, row, 3);
-  air_queue_dispatch_and_wait(q, wr_idx, segment_pkt);
+  hsa_agent_get_info(agents[0], HSA_AGENT_INFO_QUEUE_MAX_SIZE,
+                     &aie_max_queue_size);
 
-  wr_idx = queue_add_write_index(q, 1);
-  packet_id = wr_idx % q->size;
-  dispatch_packet_t *shim_pkt =
-      (dispatch_packet_t *)(q->base_address_vaddr) + packet_id;
-  air_packet_device_init(shim_pkt, XAIE_NUM_COLS);
-  air_queue_dispatch_and_wait(q, wr_idx, shim_pkt);
+  std::cout << "Max AIE queue size: " << aie_max_queue_size << std::endl;
+
+  hsa_queue_t *q = NULL;
+
+  // Creating a queue
+  auto queue_create_status =
+      hsa_queue_create(agents[0], aie_max_queue_size, HSA_QUEUE_TYPE_SINGLE,
+                       nullptr, nullptr, 0, 0, &q);
+
+  if (queue_create_status != HSA_STATUS_SUCCESS) {
+    std::cout << "hsa_queue_create failed" << std::endl;
+  }
+
+  // Adding to our vector of queues
+  queues.push_back(q);
+  assert(queues.size() > 0 && "No queues were sucesfully created!");
 
   aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_get_libxaie_ctx();
+  if (xaie == NULL) {
+    std::cout << "Error getting libxaie context" << std::endl;
+    return -1;
+  }
+
+  //
+  // Set up a 1x3 herd starting 7,0
+  //
+  uint64_t wr_idx = hsa_queue_add_write_index_relaxed(queues[0], 1);
+  uint64_t packet_id = wr_idx % queues[0]->size;
+  hsa_agent_dispatch_packet_t segment_pkt;
+  air_packet_segment_init(&segment_pkt, 0, col, 1, row, 3);
+  air_queue_dispatch_and_wait(&agents[0], queues[0], packet_id, wr_idx,
+                              &segment_pkt);
+
+  wr_idx = hsa_queue_add_write_index_relaxed(queues[0], 1);
+  packet_id = wr_idx % queues[0]->size;
+  hsa_agent_dispatch_packet_t shim_pkt;
+  air_packet_device_init(&shim_pkt, XAIE_NUM_COLS);
+  air_queue_dispatch_and_wait(&agents[0], queues[0], packet_id, wr_idx,
+                              &shim_pkt);
 
   mlir_aie_print_dma_status(xaie, 7, 2);
 
@@ -92,19 +120,9 @@ main(int argc, char *argv[])
   mlir_aie_configure_dmas(xaie);
   mlir_aie_start_cores(xaie);
 
-  // Initializing the device memory allocator
-  if (air_init_dev_mem_allocator(0x100000 /* dev_mem_size */,
-                                 0 /* device_id (optional)*/)) {
-    std::cout << "Error creating device memory allocator" << std::endl;
-    return -1;
-  }
-
-  uint32_t *dram_ptr_1 =
-      (uint32_t *)air_dev_mem_alloc(IMAGE_SIZE * sizeof(uint32_t));
-  uint32_t *dram_ptr_2 =
-      (uint32_t *)air_dev_mem_alloc(IMAGE_SIZE * sizeof(uint32_t));
-  uint32_t *dram_ptr_3 =
-      (uint32_t *)air_dev_mem_alloc(IMAGE_SIZE * sizeof(uint32_t));
+  uint32_t *dram_ptr_1 = (uint32_t *)air_malloc(IMAGE_SIZE * sizeof(uint32_t));
+  uint32_t *dram_ptr_2 = (uint32_t *)air_malloc(IMAGE_SIZE * sizeof(uint32_t));
+  uint32_t *dram_ptr_3 = (uint32_t *)air_malloc(IMAGE_SIZE * sizeof(uint32_t));
   if (dram_ptr_1 != NULL && dram_ptr_2 != NULL && dram_ptr_3 != NULL) {
     for (int i=0; i<IMAGE_SIZE; i++) {
       dram_ptr_1[i] = i + 1;
@@ -127,48 +145,63 @@ main(int argc, char *argv[])
   }
 
   //
-  // packet to read the output matrix
+  // send the data
   //
 
-  wr_idx = queue_add_write_index(q, 1);
-  packet_id = wr_idx % q->size;
-  dispatch_packet_t *pkt_c = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
+  wr_idx = hsa_queue_add_write_index_relaxed(queues[0], 1);
+  packet_id = wr_idx % queues[0]->size;
+  hsa_agent_dispatch_packet_t pkt_c;
   air_packet_nd_memcpy(
-      pkt_c, 0, col, 0, 0, 4, 2,
-      air_dev_mem_get_pa(dram_ptr_3) /*DDR_ADDR+(2*IMAGE_SIZE*sizeof(float))*/,
+      &pkt_c, 0, col, 0, 0, 4, 2,
+      reinterpret_cast<uint64_t>(
+          dram_ptr_3) /*DDR_ADDR+(2*IMAGE_SIZE*sizeof(float))*/,
       TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
       NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
       IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
+  hsa_amd_signal_create_on_agent(1, 0, nullptr, &agents[0], 0,
+                                 &pkt_c.completion_signal);
+  air_write_pkt<hsa_agent_dispatch_packet_t>(queues[0], packet_id, &pkt_c);
+
+  //
+  // read the data
+  //
+
+  wr_idx = hsa_queue_add_write_index_relaxed(queues[0], 1);
+  packet_id = wr_idx % queues[0]->size;
+  hsa_agent_dispatch_packet_t pkt_a;
+  air_packet_nd_memcpy(&pkt_a, 0, col, 1, 0, 4, 2,
+                       reinterpret_cast<uint64_t>(dram_ptr_1) /*DDR_ADDR*/,
+                       TILE_WIDTH * sizeof(float), TILE_HEIGHT,
+                       IMAGE_WIDTH * sizeof(float), NUM_3D,
+                       TILE_WIDTH * sizeof(float), NUM_4D,
+                       IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
+  hsa_amd_signal_create_on_agent(1, 0, nullptr, &agents[0], 0,
+                                 &pkt_a.completion_signal);
+  air_write_pkt<hsa_agent_dispatch_packet_t>(queues[0], packet_id, &pkt_a);
 
   //
   // packet to send the input matrices
   //
 
-  wr_idx = queue_add_write_index(q, 1);
-  packet_id = wr_idx % q->size;
-  dispatch_packet_t *pkt_a = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(
-      pkt_a, 0, col, 1, 0, 4, 2, air_dev_mem_get_pa(dram_ptr_1) /*DDR_ADDR*/,
-      TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
-      NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
-      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
-
-  wr_idx = queue_add_write_index(q, 1);
-  packet_id = wr_idx % q->size;
-  dispatch_packet_t *pkt_b = (dispatch_packet_t*)(q->base_address_vaddr) + packet_id;
-  air_packet_nd_memcpy(
-      pkt_b, 0, col, 1, 1, 4, 2,
-      air_dev_mem_get_pa(dram_ptr_2) /*DDR_ADDR+(IMAGE_SIZE*sizeof(float))*/,
-      TILE_WIDTH * sizeof(float), TILE_HEIGHT, IMAGE_WIDTH * sizeof(float),
-      NUM_3D, TILE_WIDTH * sizeof(float), NUM_4D,
-      IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
+  wr_idx = hsa_queue_add_write_index_relaxed(queues[0], 1);
+  packet_id = wr_idx % queues[0]->size;
+  hsa_agent_dispatch_packet_t pkt_b;
+  air_packet_nd_memcpy(&pkt_b, 0, col, 1, 1, 4, 2,
+                       reinterpret_cast<uint64_t>(
+                           dram_ptr_2) /*DDR_ADDR+(IMAGE_SIZE*sizeof(float))*/,
+                       TILE_WIDTH * sizeof(float), TILE_HEIGHT,
+                       IMAGE_WIDTH * sizeof(float), NUM_3D,
+                       TILE_WIDTH * sizeof(float), NUM_4D,
+                       IMAGE_WIDTH * TILE_HEIGHT * sizeof(float));
 
   //
-  // dispatch the packets to the MB
+  // dispatch the packets
   //
 
-  air_queue_dispatch_and_wait(q, wr_idx-2, pkt_c);
-  
+  air_queue_dispatch_and_wait(&agents[0], queues[0], packet_id, wr_idx, &pkt_b);
+  hsa_signal_destroy(pkt_a.completion_signal);
+  hsa_signal_destroy(pkt_c.completion_signal);
+
   int errors = 0;
   // check the aie tiles
   for (int i=0; i<TILE_SIZE; i++) {
@@ -197,6 +230,20 @@ main(int argc, char *argv[])
       printf("mismatch %x != 2 + %x\n", d, i);
     }
   }
+
+  // destroying the queue
+  hsa_queue_destroy(queues[0]);
+  air_free(dram_ptr_1);
+  air_free(dram_ptr_2);
+  air_free(dram_ptr_3);
+
+  // Shutdown AIR and HSA
+  hsa_status_t shut_down_ret = air_shut_down();
+  if (shut_down_ret != HSA_STATUS_SUCCESS) {
+    printf("[ERROR] air_shut_down() failed\n");
+    errors++;
+  }
+
   if (!errors) {
     printf("PASS!\n");
     return 0;
@@ -206,5 +253,4 @@ main(int argc, char *argv[])
     return -1;
   }
 
-  air_dev_mem_allocator_free();
 }
