@@ -31,23 +31,17 @@ cd $BUILD_DIR
 mkdir -p $MLIR_WHL_DIR
 mkdir -p $MLIR_AIE_WHL_DIR
 
-MLIR_DISTRO="mlir_no_rtti-18.0.0.2023121521+d36b483-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
-MLIR_AIE_DISTRO="mlir_aie_no_rtti-0.0.1.2023121602+5631ba5c-py3-none-manylinux_2_28_x86_64.whl"
+export PIP_FIND_LINKS="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels"
+
+MLIR_DISTRO="18.0.0.2023121521+d36b483"
+MLIR_AIE_DISTRO="0.0.1.2023121602+5631ba5c"
 
 cd $MLIR_WHL_DIR
-if [ -f ${MLIR_DISTRO} ]; then
-  echo "MLIR wheel exists."
-else
-  wget https://github.com/Xilinx/mlir-aie/releases/download/mlir-distro/${MLIR_DISTRO}
-  unzip ${MLIR_DISTRO}
-fi
+pip download mlir_no_rtti==${MLIR_DISTRO}
+find . -type f -name "mlir_no_rtti-${MLIR_DISTRO}*" -print0 | xargs -0 unzip -n
 cd ../$MLIR_AIE_WHL_DIR
-if [ -f ${MLIR_AIE_DISTRO} ]; then
-  echo "MLIR-AIE wheel exists."
-else
-  wget https://github.com/Xilinx/mlir-aie/releases/download/latest-wheels/${MLIR_AIE_DISTRO}
-  unzip ${MLIR_AIE_DISTRO}
-fi
+pip download mlir_aie_no_rtti==${MLIR_AIE_DISTRO}
+find . -type f -name "mlir_aie_no_rtti-${MLIR_AIE_DISTRO}*" -print0 | xargs -0 unzip -n
 cd ..
 
 PYTHON_ROOT=`pip3 show pybind11 | grep Location | awk '{print $2}'`
@@ -75,7 +69,7 @@ cmake .. \
     -DLLVM_TARGETS_TO_BUILD=X86 \
     -DLLVM_HOST_TRIPLE=x86_64-unknown-linux-gnu \
     -DLLVM_ENABLE_RTTI=OFF \
-    |& tee cmake.log
+    2>&1 | tee cmake.log
 
-ninja |& tee ninja.log
-ninja install |& tee ninja-install.log
+ninja 2>&1 | tee ninja.log
+ninja install 2>&1 | tee ninja-install.log
