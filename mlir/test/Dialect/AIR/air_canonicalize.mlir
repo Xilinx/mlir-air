@@ -38,7 +38,11 @@ func.func @herd_async(%arg0: i32, %e0 : !air.async.token) {
 }
 
 // CHECK-LABEL: herd_async_1
-// CHECK: air.herd async [%{{.*}}] tile (
+// CHECK: air.execute
+// CHECK: memref.alloc
+// CHECK: air.execute_terminator
+// CHECK: air.herd async [{{.*}}] tile (
+// CHECK: air.dma_memcpy_nd
 func.func @herd_async_1() {
   %cst2 = arith.constant 2 : index
   %t0, %results = air.execute -> (memref<1xi32>) {
@@ -47,7 +51,8 @@ func.func @herd_async_1() {
   }
   %t1 = air.wait_all async [%t0]
   %e0 = air.wait_all async [%t0, %t1]
-  %e1 = air.herd async [%t0, %t1, %e0] tile (%x, %y) in (%sx=%cst2, %sy=%cst2) {
+  %e1 = air.herd async [%t0, %t1, %e0] tile (%x, %y) in (%sx=%cst2, %sy=%cst2) args (%op0=%results) : memref<1xi32> {
+    %d0 = air.dma_memcpy_nd async (%op0[] [] [], %op0[] [] []) : (memref<1xi32>, memref<1xi32>)
     air.herd_terminator
   }
   air.wait_all [%e1]
@@ -55,7 +60,7 @@ func.func @herd_async_1() {
 }
 
 // CHECK-LABEL: herd_async_2
-// CHECK: air.herd async tile (
+// CHECK: air.herd async  tile (
 func.func @herd_async_2() {
   %cst2 = arith.constant 2 : index
   %t0 = air.wait_all async
@@ -79,9 +84,6 @@ func.func @wait_all_0() {
 }
 
 // CHECK-LABEL: wait_all_1
-// CHECK: %[[T0:.*]], %{{.*}} = air.execute
-// CHECK: }
-// CHECK-NEXT: air.wait_all [%[[T0]]]
 // CHECK-NEXT: return
 func.func @wait_all_1() {
   %async_token, %results = air.execute -> (memref<1xi32>) {
@@ -128,10 +130,9 @@ func.func @execute_2() -> (index, !air.async.token) {
 }
 
 // CHECK-LABEL: execute_3
-// CHECK: air.execute
-// CHECK: memref.alloc
-// CHECK: air.dma_memcpy_nd
-// CHECK: air.execute_terminator
+// CHECK-NEXT: arith.constant 0 : index
+// CHECK-NEXT: air.wait_all async 
+// CHECK-NEXT: return %{{.*}}, %{{.*}} : index, !air.async.token
 func.func @execute_3() -> (index, !air.async.token) {
   %c0 = arith.constant 0 : index
   %async_token, %results = air.execute -> (index) {
@@ -141,4 +142,25 @@ func.func @execute_3() -> (index, !air.async.token) {
   }
   %t = air.wait_all async [%async_token]
   return %results, %t : index, !air.async.token
+}
+
+// CHECK-LABEL: execute_4
+// CHECK: air.execute
+// CHECK: memref.alloc
+// CHECK: air.dma_memcpy_nd
+// CHECK: air.execute_terminator
+// CHECK: air.execute
+// CHECK: memref.dealloc
+func.func @execute_4() -> (memref<1xi32>, !air.async.token) {
+  %c0 = arith.constant 0 : index
+  %async_token, %results = air.execute -> (memref<1xi32>) {
+    %1 = memref.alloc() : memref<1xi32>
+    air.dma_memcpy_nd (%1[] [] [], %1[] [] []) : (memref<1xi32>, memref<1xi32>)
+    air.execute_terminator %1 : memref<1xi32>
+  }
+  %t = air.wait_all async [%async_token]
+  %async_token_0 = air.execute {
+    memref.dealloc %results : memref<1xi32>
+  }
+  return %results, %t : memref<1xi32>, !air.async.token
 }
