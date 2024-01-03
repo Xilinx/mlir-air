@@ -608,8 +608,6 @@ private:
     // Update op-to-graph map
     region_to_g[async_region.getId()] = v;
 
-    // Erase op
-    op->erase();
     return async_region;
   }
 
@@ -650,8 +648,6 @@ private:
     // Update op-to-graph map
     region_to_g[async_region.getId()] = v;
 
-    // Erase op
-    op->erase();
     return async_region;
   }
 
@@ -682,8 +678,6 @@ private:
     // Update op-to-graph map
     dma_to_g[id] = v;
 
-    // Erase op
-    op->erase();
   }
 
   // Re-instantiate the channel op with async interface; update graph
@@ -729,8 +723,6 @@ private:
     // Update op-to-graph map
     channel_to_g[ChannelOpID] = v;
 
-    // Erase op
-    op->erase();
   }
 
   // Re-instantiate the hierarchy op with async interface; update graph
@@ -804,8 +796,6 @@ private:
     }
     auto new_hier = dyn_cast<air::HierarchyInterface>(new_op);
 
-    // Erase op
-    op->erase();
     return new_hier;
   }
 
@@ -1530,8 +1520,6 @@ private:
     elevateAsyncTokens<scf::ForOp, scf::ParallelOp>(new_loop_op,
                                                     wait_all_op_yielded_v);
 
-    loop_op.erase();
-
     loop_op = new_loop_op;
   }
 
@@ -1582,8 +1570,6 @@ private:
 
     // Remove the old scf::YieldOp
     SmallVector<scf::YieldOp, 2> y_ops(new_loop_op.getOps<scf::YieldOp>());
-    for (auto y_op : y_ops)
-      y_op.erase();
 
     // Create scf::ReduceOp
     builder.setInsertionPointToEnd(new_loop_op.getBody());
@@ -1602,7 +1588,6 @@ private:
     elevateAsyncTokens<scf::ParallelOp, scf::ParallelOp>(new_loop_op,
                                                          wait_all_op_yielded_v);
 
-    loop_op.erase();
 
     loop_op = new_loop_op;
   }
