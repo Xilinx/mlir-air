@@ -172,20 +172,20 @@ int64_t air::get1DOffset(SmallVector<Value> memcpy_offsets, Value memref) {
   return one_d_offset * getElementSizeInBytes(memref.getType());
 }
 
-std::vector<AIE::DimTupleAttr>
+std::vector<AIE::BDDimLayoutAttr>
 air::getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
                         SmallVector<Value> memcpy_strides, MLIRContext *ctx) {
   if (memcpy_sizes.empty() || memcpy_strides.empty())
-    return std::vector<AIE::DimTupleAttr>{};
+    return std::vector<AIE::BDDimLayoutAttr>{};
   assert(memcpy_sizes.size() == memcpy_strides.size() &&
          "unequal sizes between wrap list and stride list");
-  std::vector<AIE::DimTupleAttr> output = {};
+  std::vector<AIE::BDDimLayoutAttr> output = {};
   for (unsigned i = 0; i < memcpy_sizes.size(); i++) {
     auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);
     assert(stepsize && "non-static stride");
     auto wrap = mlir::getConstantIntValue(memcpy_sizes[i]);
     assert(wrap && "non-static wrap");
-    auto tuple = AIE::DimTupleAttr::get(ctx, *stepsize, *wrap);
+    auto tuple = AIE::BDDimLayoutAttr::get(ctx, *stepsize, *wrap);
     output.push_back(tuple);
   }
   return output;

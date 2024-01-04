@@ -2285,21 +2285,21 @@ public:
                              isAIE2 ? AIE::LockAction::AcquireGreaterEqual
                                     : AIE::LockAction::Acquire);
 
-    std::vector<AIE::DimTupleAttr> dims =
+    std::vector<AIE::BDDimLayoutAttr> dims =
         getWrapsAndStrides(sizes, strides, ndcpy->getContext());
 
     auto wraps_and_strides =
-        AIE::DimTupleArrayAttr::get(ndcpy->getContext(), ArrayRef(dims));
+        AIE::BDDimLayoutArrayAttr::get(ndcpy->getContext(), ArrayRef(dims));
     bool useDefaultDataAccessPattern =
         isAIE2 ? isDefaultDataAccessPattern(sizes, strides, memref) : true;
     if (wraps_and_strides.getValue().empty() || useDefaultDataAccessPattern)
       b.create<AIE::DMABDOp>(
           loc, bufferOp, offset,
-          cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(), 0);
+          cast<arith::ConstantIndexOp>(length.getDefiningOp()).value());
     else
       b.create<AIE::DMABDOp>(
           loc, bufferOp, offset,
-          cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(), 0,
+          cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(),
           wraps_and_strides);
     b.create<AIE::UseLockOp>(loc, relLockOp, lockRelValue,
                              AIE::LockAction::Release);
