@@ -49,6 +49,27 @@ using namespace xilinx;
 
 namespace {
 
+// Remove an op if it has no users, else return failure.
+// This is a temporary measure, while the issue
+// https://github.com/Xilinx/mlir-air/issues/372
+// is open. Once the root cause is found, there should be no ops erased here
+// whose results have users.
+LogicalResult eraseOpWithCheck(Operation *op, std::string_view context = "") {
+  for (auto opResult : op->getResults()) {
+    for (auto &&user : opResult.getUsers()) {
+      auto result =
+          op->emitOpError("is being erased, but it has at least one user.");
+      result.attachNote(user->getLoc()) << "erased op has user:\n" << *user;
+      result.attachNote(op->getLoc())
+          << "additional context:'" << context << "'\n";
+      return result;
+    }
+  }
+
+  op->erase();
+  return success();
+}
+
 // Construction of a dependency graph
 
 struct executeNode {
@@ -609,7 +630,10 @@ private:
     region_to_g[async_region.getId()] = v;
 
     // Erase op
-    op->erase();
+    if (eraseOpWithCheck(op, "createAsyncExecute (no SSA return)").failed()) {
+      signalPassFailure();
+    }
+
     return async_region;
   }
 
@@ -651,7 +675,9 @@ private:
     region_to_g[async_region.getId()] = v;
 
     // Erase op
-    op->erase();
+    if (eraseOpWithCheck(op, "createAsyncExecute (one SSA return)").failed()) {
+      signalPassFailure();
+    }
     return async_region;
   }
 
@@ -683,7 +709,9 @@ private:
     dma_to_g[id] = v;
 
     // Erase op
-    op->erase();
+    if (eraseOpWithCheck(op, "createAsyncDMA").failed()) {
+      signalPassFailure();
+    }
   }
 
   // Re-instantiate the channel op with async interface; update graph
@@ -730,7 +758,9 @@ private:
     channel_to_g[ChannelOpID] = v;
 
     // Erase op
-    op->erase();
+    if (eraseOpWithCheck(op, "createAsyncChannel").failed()) {
+      signalPassFailure();
+    }
   }
 
   // Re-instantiate the hierarchy op with async interface; update graph
@@ -805,7 +835,9 @@ private:
     auto new_hier = dyn_cast<air::HierarchyInterface>(new_op);
 
     // Erase op
-    op->erase();
+    if (eraseOpWithCheck(op, "createAsyncHierarchyImpls").failed()) {
+      signalPassFailure();
+    }
     return new_hier;
   }
 
@@ -1530,8 +1562,9 @@ private:
     elevateAsyncTokens<scf::ForOp, scf::ParallelOp>(new_loop_op,
                                                     wait_all_op_yielded_v);
 
-    loop_op.erase();
-
+    if (eraseOpWithCheck(loop_op, "insertLoopCarriedDeps").failed()) {
+      signalPassFailure();
+    }
     loop_op = new_loop_op;
   }
 
@@ -1549,8 +1582,8 @@ private:
     // Update op-to-graph map for wait_all ops
     wa_to_g[wait_all_op_yielded.getId()] = wait_all_op_yielded_v;
 
-    // (2) Create a new wait_all event before the parallel op which collects the
-    // incoming deps.
+    // (2) Create a new wait_all event before the parallel op which collects
+    // the incoming deps.
     SmallVector<Value, 4> incoming_tokens;
     SmallVector<Value, 4> constants;
     llvm::SetVector<Value> region_args;
@@ -1583,7 +1616,8 @@ private:
     // Remove the old scf::YieldOp
     SmallVector<scf::YieldOp, 2> y_ops(new_loop_op.getOps<scf::YieldOp>());
     for (auto y_op : y_ops)
-      y_op.erase();
+      if (eraseOpWithCheck(y_op, "insertLoopCarriedDeps").failed())
+        signalPassFailure();
 
     // Create scf::ReduceOp
     builder.setInsertionPointToEnd(new_loop_op.getBody());
@@ -1602,8 +1636,8 @@ private:
     elevateAsyncTokens<scf::ParallelOp, scf::ParallelOp>(new_loop_op,
                                                          wait_all_op_yielded_v);
 
-    loop_op.erase();
-
+    if (eraseOpWithCheck(loop_op, "insertLoopCarriedDeps 2").failed())
+      signalPassFailure();
     loop_op = new_loop_op;
   }
 
