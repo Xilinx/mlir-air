@@ -82,17 +82,19 @@ Next, clone and build MLIR-AIE with paths to llvm, aienginev2, and cmakeModules 
 ./utils/build-mlir-aie-local.sh llvm mlir-aie/cmake/modulesXilinx /opt/xaiengine mlir-aie
 ```
 
+Next, we must install our experimental ROCm runtime (ROCr) which allows us to communicate with the AIEs. The [ROCm-air-platforms](https://github.com/Xilinx/ROCm-air-platforms) repository contains documentation on how to install ROCr. Run the following script to clone the ROCm-air-platforms repository:
+
+```
+./utils/clone-rocm-air-platforms.sh
+```
+
 Use the following command to build the AIR tools to compile on x86 for PCIe cards (VCK5000). Make sure that ${ROCM\_ROOT} is pointing to your local ROCm install:
 
 ```
 ./utils/build-mlir-air-pcie.sh llvm/ mlir-aie/cmake/modulesXilinx/ mlir-aie/ /opt/xaiengine ${ROCM_ROOT}/lib/cmake/hsa-runtime64/ ${ROCM_ROOT}/lib/cmake/hsakmt/
 ```
 
-The PCIe AIR runtime requires the use of the [AIR PCIe kernel driver](https://github.com/Xilinx/ROCm-air-platforms/tree/main/driver). The driver directory in the [ROCm-air-platforms](https://github.com/Xilinx/ROCm-air-platforms) repository contains documentation on how to compile and load the AIR PCIe kernel driver. Run the following script to clone the ROCm-air-platforms repository:
-
-```
-./utils/clone-rocm-air-platforms.sh
-```
+The PCIe AIR runtime requires the use of the [AIR PCIe kernel driver](https://github.com/Xilinx/ROCm-air-platforms/tree/main/driver). The driver directory in the [ROCm-air-platforms](https://github.com/Xilinx/ROCm-air-platforms) repository contains documentation on how to compile and load the AIR PCIe kernel driver. 
 
 ## Environment setup
 
