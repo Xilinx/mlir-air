@@ -23,6 +23,8 @@
 # <llvm dir>         - llvm
 # <cmakeModules dir> - cmakeModules
 # <mlir-aie dir>     - mlir-aie
+# <HSA dir>          - HSA to build runtime
+# <HSA kmt dir>      - HSA to build runtime
 #
 # <build dir>    - optional, build dir name, default is 'build'
 # <install dir>  - optional, install dir name, default is 'install'
@@ -38,9 +40,11 @@ SYSROOT_DIR=`realpath $1`
 LLVM_DIR=`realpath $2`
 CMAKEMODULES_DIR=`realpath $3`
 MLIR_AIE_DIR=`realpath $4`
+HSA_DIR=`realpath $5`
+HSAKMT_DIR=`realpath $6`
 
-BUILD_DIR=${5:-"build"}
-INSTALL_DIR=${6:-"install"}
+BUILD_DIR=${7:-"build"}
+INSTALL_DIR=$86:-"install"}
 
 mkdir -p $BUILD_DIR
 mkdir -p $INSTALL_DIR
@@ -60,6 +64,8 @@ cmake .. \
     -DLLVM_DIR=${LLVM_DIR}/build/lib/cmake/llvm \
     -DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \
     -DAIE_DIR=${MLIR_AIE_DIR}/build/lib/cmake/aie \
+    -Dhsa-runtime64_DIR=${HSA_DIR} \
+    -Dhsakmt_DIR=${HSAKMT_DIR} \
     -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
     -DBUILD_SHARED_LIBS=OFF \
     -DLLVM_USE_LINKER=lld \

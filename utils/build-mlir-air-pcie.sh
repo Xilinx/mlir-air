@@ -45,8 +45,8 @@ LibXAIE_DIR=`realpath $4`
 HSA_DIR=`realpath $5`
 HSAKMT_DIR=`realpath $6`
 
-BUILD_DIR=${8:-"build-pcie"}
-INSTALL_DIR=${9:-"install-pcie"}
+BUILD_DIR=${7:-"build-pcie"}
+INSTALL_DIR=${8:-"install-pcie"}
 
 mkdir -p $BUILD_DIR
 mkdir -p $INSTALL_DIR
