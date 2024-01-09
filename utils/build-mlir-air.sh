@@ -31,9 +31,9 @@
 #
 ##===----------------------------------------------------------------------===##
 
-if [ "$#" -lt 4 ]; then
-    echo "ERROR: Needs at least 4 arguments for <sysroot dir>, <llvm dir>,"
-    echo "<cmakeModules dir> and <mlir-aie dir>."
+if [ "$#" -lt 6 ]; then
+    echo "ERROR: Needs at least 6 arguments for <sysroot dir>, <llvm dir>,"
+    echo "<cmakeModules dir>, <mlir-aie dir>, <hsa runtime dir> and <hsa kmt dir>."
     exit 1
 fi
 SYSROOT_DIR=`realpath $1`
@@ -44,7 +44,7 @@ HSA_DIR=`realpath $5`
 HSAKMT_DIR=`realpath $6`
 
 BUILD_DIR=${7:-"build"}
-INSTALL_DIR=$86:-"install"}
+INSTALL_DIR=${8:-"install"}
 
 mkdir -p $BUILD_DIR
 mkdir -p $INSTALL_DIR
