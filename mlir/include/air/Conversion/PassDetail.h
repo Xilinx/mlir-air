@@ -10,6 +10,8 @@
 #define AIR_CONVERSION_PASSDETAIL_H
 
 #include "aie/Dialect/AIEX/IR/AIEXDialect.h"
+#include "mlir/Pass/PassOptions.h"
+#include "mlir/Pass/Pass.h"
 
 namespace xilinx {
 namespace air {
