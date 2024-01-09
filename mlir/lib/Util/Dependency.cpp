@@ -344,10 +344,10 @@ scf::ReduceOp createSCFReduceForAsyncSCFParallel(OpBuilder builder,
                                                  Location loc, Value token,
                                                  MLIRContext *ctx) {
   auto reduce_op = builder.create<scf::ReduceOp>(loc, token);
-  builder.setInsertionPointToStart(&reduce_op.getReductions()[0].front());
+  builder.setInsertionPointToStart(&reduce_op.getRegion(0).front());
   SmallVector<Value, 4> reduce_tokens;
-  reduce_tokens.push_back(reduce_op.getReductions()[0].front().getArgument(0));
-  reduce_tokens.push_back(reduce_op.getReductions()[0].front().getArgument(1));
+  reduce_tokens.push_back(reduce_op.getRegion(0).front().getArgument(0));
+  reduce_tokens.push_back(reduce_op.getRegion(0).front().getArgument(1));
   auto reduce_res = builder.create<xilinx::air::WaitAllOp>(
       builder.getUnknownLoc(), air::AsyncTokenType::get(ctx), reduce_tokens);
   builder.create<scf::ReduceReturnOp>(builder.getUnknownLoc(),

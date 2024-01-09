@@ -979,10 +979,12 @@ public:
   LogicalResult
   matchAndRewrite(scf::ReduceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto newOp =
-        rewriter.replaceOpWithNewOp<scf::ReduceOp>(op, adaptor.getOperand());
-    auto body = &op.getRegion().front();
-    auto newBody = &newOp.getRegion().front();
+    auto newOp = rewriter.replaceOpWithNewOp<scf::ReduceOp>(
+        op, adaptor.getOperands()[0]);
+    // TODO(JamesNewling / ErweiWang) : op has been erased above, and should not
+    // be referenced below. Logic needs updating.
+    auto body = &op.getRegion(0).front();
+    auto newBody = &newOp.getRegion(0).front();
 
     for (int i = 0, e = body->getNumArguments(); i < e; i++) {
       body->getArgument(i).replaceAllUsesWith(newBody->getArgument(i));
@@ -1271,7 +1273,7 @@ public:
     });
 
     target.addDynamicallyLegalOp<scf::ReduceOp>([&](scf::ReduceOp op) {
-      if (op.getOperand().getType().isa<xilinx::airrt::EventType>())
+      if (op.getOperand(0).getType().isa<xilinx::airrt::EventType>())
         return false;
       else
         return true;
