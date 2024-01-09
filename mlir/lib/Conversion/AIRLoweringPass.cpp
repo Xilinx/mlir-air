@@ -750,8 +750,8 @@ public:
   LogicalResult
   matchAndRewrite(scf::ReduceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto newOp =
-        rewriter.replaceOpWithNewOp<scf::ReduceOp>(op, adaptor.getOperands()[0]);
+    auto newOp = rewriter.replaceOpWithNewOp<scf::ReduceOp>(
+        op, adaptor.getOperands()[0]);
     auto body = &op.getRegion(0).front();
     auto newBody = &newOp.getRegion(0).front();
 
