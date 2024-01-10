@@ -63,12 +63,11 @@ func.func @scf_par_execute() {
       %8 = arith.muli %arg8, %c4_3 : index
       air.execute_terminator %8 : index
     }
-    scf.reduce(%0)  : !air.async.token {
+    scf.reduce(%0 : !air.async.token) {
     ^bb0(%arg10: !air.async.token, %arg11: !air.async.token):
       %9 = air.wait_all async [%arg10, %arg11] 
       scf.reduce.return %9 : !air.async.token
     }
-    scf.yield
   }
   air.wait_all [%3]
   return

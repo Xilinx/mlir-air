@@ -88,7 +88,7 @@ module {
                   air.execute_terminator %13 : index
                 }
                 %12 = air.channel.put async [%async_token_20, %async_token_18, %arg14]  @channel_1[%arg15, %arg16] (%results_11[%results_19, %results_21] [%c32, %c32] [%c128_8, %c1_5]) : (memref<128x128xbf16, 1>)
-                scf.reduce(%12)  : !air.async.token {
+                scf.reduce(%12 : !air.async.token) {
                 ^bb0(%arg17: !air.async.token, %arg18: !air.async.token):
                   %13 = air.wait_all async [%arg17, %arg18] 
                   scf.reduce.return %13 : !air.async.token

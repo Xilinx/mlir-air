@@ -429,7 +429,7 @@ func.func @scf_parallel() {
         %8 = air.channel.get async [%arg5]  @channel_9[] (%results_2[%arg4, %c0] [%c128, %c128] [%c1024, %c1_0]) {async_front = true, id = 4 : i32, unrolled_iteration = 0 : i32} : (memref<128x1024xbf16, 1>)
         %9 = scf.parallel (%arg6) = (%c0) to (%c256) step (%c128) init (%8) -> !air.async.token {
           %15 = air.channel.put async [%8]  @channel_10[] (%results_2[%c0, %c0] [%c128, %c128] [%c128, %c1_0]) {id = 18 : i32} : (memref<128x1024xbf16, 1>)
-          scf.reduce(%15)  : !air.async.token {
+          scf.reduce(%15 : !air.async.token) {
           ^bb0(%arg14: !air.async.token, %arg15: !air.async.token):
             %18 = air.wait_all async [%arg14, %arg15] 
             scf.reduce.return %18 : !air.async.token
@@ -441,7 +441,7 @@ func.func @scf_parallel() {
         %12 = air.channel.get async [%10]  @channel_9[] (%results[%11, %c0] [%c128, %c128] [%c1024, %c1_0]) {async_front = true, id = 4 : i32, unrolled_iteration = 1 : i32} : (memref<128x1024xbf16, 1>)
         %13 = scf.parallel (%arg6) = (%c0) to (%c256) step (%c128) init (%12) -> !air.async.token {
           %15 = air.channel.put async [%12]  @channel_10[] (%results[%c0, %c0] [%c128, %c128] [%c128, %c1_0]) {id = 18 : i32} : (memref<128x1024xbf16, 1>)
-          scf.reduce(%15)  : !air.async.token {
+          scf.reduce(%15 : !air.async.token) {
           ^bb0(%arg14: !air.async.token, %arg15: !air.async.token):
             %18 = air.wait_all async [%arg14, %arg15] 
             scf.reduce.return %18 : !air.async.token
@@ -503,7 +503,7 @@ func.func @scf_parallel() {
         %8 = air.channel.get async [%arg5]  @channel_11[] (%results_2[%arg4, %c0] [%c128, %c128] [%c1024, %c1_0]) {async_front = true, id = 4 : i32, unrolled_iteration = 0 : i32} : (memref<128x1024xbf16, 1>)
         %9 = scf.parallel (%arg6) = (%c0) to (%c256) step (%c128) init (%8) -> !air.async.token {
           %15 = air.channel.put async [%8]  @channel_12[] (%results_2[%arg4, %c0] [%c128, %c128] [%c128, %c1_0]) {id = 18 : i32} : (memref<128x1024xbf16, 1>)
-          scf.reduce(%15)  : !air.async.token {
+          scf.reduce(%15 : !air.async.token) {
           ^bb0(%arg14: !air.async.token, %arg15: !air.async.token):
             %18 = air.wait_all async [%arg14, %arg15] 
             scf.reduce.return %18 : !air.async.token
@@ -515,7 +515,7 @@ func.func @scf_parallel() {
         %12 = air.channel.get async [%10]  @channel_11[] (%results[%11, %c0] [%c128, %c128] [%c1024, %c1_0]) {async_front = true, id = 4 : i32, unrolled_iteration = 1 : i32} : (memref<128x1024xbf16, 1>)
         %13 = scf.parallel (%arg6) = (%c0) to (%c256) step (%c128) init (%12) -> !air.async.token {
           %15 = air.channel.put async [%12]  @channel_12[] (%results[%11, %c0] [%c128, %c128] [%c128, %c1_0]) {id = 18 : i32} : (memref<128x1024xbf16, 1>)
-          scf.reduce(%15)  : !air.async.token {
+          scf.reduce(%15 : !air.async.token) {
           ^bb0(%arg14: !air.async.token, %arg15: !air.async.token):
             %18 = air.wait_all async [%arg14, %arg15] 
             scf.reduce.return %18 : !air.async.token

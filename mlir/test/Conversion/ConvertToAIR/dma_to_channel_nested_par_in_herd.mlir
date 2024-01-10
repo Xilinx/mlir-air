@@ -110,7 +110,7 @@ module {
 // CHECK: %[[EVENT16:.*]] = air.channel.put async{{.*}}@channel_2
         %5 = air.dma_memcpy_nd async [%4] (%arg9[%results_6, %results_8] [%c32, %c32] [%c512, %c1], %results_10[] [] []) {id = 3 : i32} : (memref<512x512xi32>, memref<32x32xi32, 2>)
 // CHECK: scf.reduce
-        scf.reduce(%5)  : !air.async.token {
+        scf.reduce(%5 : !air.async.token) {
         ^bb0(%arg12: !air.async.token, %arg13: !air.async.token):
           %6 = air.wait_all async [%arg12, %arg13] 
 // CHECK: scf.reduce.return

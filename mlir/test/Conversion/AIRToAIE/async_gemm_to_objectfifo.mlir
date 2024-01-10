@@ -45,12 +45,11 @@ module {
         %8 = air.channel.put async [%arg6]  @channel_0[%arg3, %arg4] (%arg0[%results_2, %arg5] [%c64, %c96] [%c384, %c1]) {id = 1 : i32} : (memref<128x384xbf16>)
         scf.yield %8 : !air.async.token
       }
-      scf.reduce(%7)  : !air.async.token {
+      scf.reduce(%7 : !air.async.token) {
       ^bb0(%arg5: !air.async.token, %arg6: !air.async.token):
         %8 = air.wait_all async [%arg5, %arg6] 
         scf.reduce.return %8 : !air.async.token
       }
-      scf.yield
     }
     %2 = air.wait_all async 
     %3 = scf.parallel (%arg3, %arg4) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%2) -> !air.async.token {
@@ -62,12 +61,11 @@ module {
         %8 = air.channel.put async [%arg6]  @channel_1[%arg3, %arg4] (%arg1[%arg5, %results_2] [%c96, %c64] [%c128, %c1]) {id = 2 : i32} : (memref<384x128xbf16>)
         scf.yield %8 : !air.async.token
       }
-      scf.reduce(%7)  : !air.async.token {
+      scf.reduce(%7 : !air.async.token) {
       ^bb0(%arg5: !air.async.token, %arg6: !air.async.token):
         %8 = air.wait_all async [%arg5, %arg6] 
         scf.reduce.return %8 : !air.async.token
       }
-      scf.yield
     }
     %4 = scf.parallel (%arg3, %arg4) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%async_token_0) -> !air.async.token {
       %async_token_1, %results_2 = air.execute -> (index) {
@@ -83,12 +81,11 @@ module {
         %9 = air.channel.put async [%arg6]  @channel_2[%arg3, %arg4] (%results[%results_2, %results_4] [%c64, %c64] [%c128, %c1]) {id = 3 : i32} : (memref<128x128xbf16>)
         scf.yield %9 : !air.async.token
       }
-      scf.reduce(%8)  : !air.async.token {
+      scf.reduce(%8 : !air.async.token) {
       ^bb0(%arg5: !air.async.token, %arg6: !air.async.token):
         %9 = air.wait_all async [%arg5, %arg6] 
         scf.reduce.return %9 : !air.async.token
       }
-      scf.yield
     }
     %5 = scf.parallel (%arg3, %arg4) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%async_token_0) -> !air.async.token {
       %async_token_1, %results_2 = air.execute -> (index) {
@@ -104,12 +101,11 @@ module {
         %9 = air.channel.get async [%arg6]  @channel_3[%arg3, %arg4] (%results[%results_2, %results_4] [%c64, %c64] [%c128, %c1]) {id = 4 : i32} : (memref<128x128xbf16>)
         scf.yield %9 : !air.async.token
       }
-      scf.reduce(%8)  : !air.async.token {
+      scf.reduce(%8 : !air.async.token) {
       ^bb0(%arg5: !air.async.token, %arg6: !air.async.token):
         %9 = air.wait_all async [%arg5, %arg6] 
         scf.reduce.return %9 : !air.async.token
       }
-      scf.yield
     }
     %6 = air.herd @herd_0 async [%async_token_0]  tile (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) attributes {id = 1 : i32} {
       %c0_1 = arith.constant 0 : index

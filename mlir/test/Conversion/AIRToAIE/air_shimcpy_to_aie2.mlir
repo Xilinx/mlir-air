@@ -447,12 +447,11 @@ func.func @func6(%arg5 : memref<8x8xi32>) {
         air.execute_terminator %7 : index
       }
       %6 = air.channel.get async [%async_token_19, %async_token_17]  @channel_0[%arg6, %arg7] (%arg4[%results_18, %results_20] [%c4, %c4] [%c8, %c1_7]) {id = 3 : i32} : (memref<8x8xi32>)
-      scf.reduce(%6)  : !air.async.token {
+      scf.reduce(%6 : !air.async.token) {
       ^bb0(%arg8: !air.async.token, %arg9: !air.async.token):
         %7 = air.wait_all async [%arg8, %arg9] 
         scf.reduce.return %7 : !air.async.token
       }
-      scf.yield
     }
     %5 = air.segment @segment_0 async  attributes {id = 2 : i32, x_loc = 0 : i64, x_size = 2 : i64, y_loc = 3 : i64, y_size = 2 : i64} {
       %c2_22 = arith.constant 2 : index
@@ -489,7 +488,7 @@ func.func @func6(%arg5 : memref<8x8xi32>) {
 // CHECK:   aie.dma_start(S2MM, 1, ^bb4, ^bb2)
 // CHECK: ^bb4:  // 2 preds: ^bb3, ^bb4
 // CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:   aie.dma_bd({{.*}} : memref<8x16xi32, 1>, 0, 16>, 0, [<4, 16)
+// CHECK:   aie.dma_bd({{.*}} : memref<8x16xi32, 1>, 0, 16, [<size = 16, stride = 4>, <size = 1, stride = 4>])
 // CHECK:   aie.use_lock({{.*}}, Release, 1)
 // CHECK:   aie.next_bd ^bb4
 // CHECK: ^bb5:  // pred: ^bb0

@@ -127,7 +127,7 @@ module {
         %7 = air.wait_all async [%asyncToken_7, %asyncToken_8, %asyncToken_9] 
         scf.yield %7 : !air.async.token
       }
-      scf.reduce(%1)  : !air.async.token {
+      scf.reduce(%1 : !air.async.token) {
       ^bb0(%arg5: !air.async.token, %arg6: !air.async.token):
         %2 = air.wait_all async [%arg5, %arg6] 
         scf.reduce.return %2 : !air.async.token
