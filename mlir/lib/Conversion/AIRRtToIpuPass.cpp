@@ -719,7 +719,7 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     SmallVector<Value, 6> memrefs;
     funcOp.walk([&](AIEX::IpuDmaMemcpyNdOp dma) {
       if (std::find(funcOp.getArguments().begin(), funcOp.getArguments().end(),
-                    dma.getMemref()) == funcOp.getArguments().end()) {
+                    dma.getOperand(2)) == funcOp.getArguments().end()) {
         // push back if unique
         if (std::find(memrefs.begin(), memrefs.end(), dma.getMemref()) ==
             memrefs.end()) {

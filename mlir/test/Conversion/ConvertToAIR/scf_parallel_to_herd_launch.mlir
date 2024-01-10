@@ -17,7 +17,6 @@ func.func @scf0()  {
   %c2 = arith.constant 2 : index
   scf.parallel (%x,%y) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) {
     %2 = arith.addi %x, %y : index
-    scf.yield
   }
   return
 }
@@ -31,7 +30,6 @@ func.func @scferror0(%c0 : index)  {
   // expected-error@+1 {{failed to normalize: lower bound is not a constant}}
   scf.parallel (%x,%y) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) {
     %2 = arith.addi %x, %y : index
-    scf.yield
   }
   return
 }
@@ -45,7 +43,6 @@ func.func @scferror1(%c1 : index)  {
   // expected-error@+1 {{failed to normalize: step is not a constant}}
   scf.parallel (%x,%y) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) {
     %2 = arith.addi %x, %y : index
-    scf.yield
   }
   return
 }
@@ -59,7 +56,6 @@ func.func @scferror2(%c2 : index)  {
   // expected-error@+1 {{failed to normalize: upper bound is not a constant}}
   scf.parallel (%x,%y) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) {
     %2 = arith.addi %x, %y : index
-    scf.yield
   }
   return
 }
@@ -74,7 +70,6 @@ func.func @scferror3()  {
   // expected-error@+1 {{failed to normalize: step '2' does not evenly divide range '7'}}
   scf.parallel (%x,%y) = (%c2, %c2) to (%c9, %c9) step (%c2, %c1) {
     %2 = arith.addi %x, %y : index
-    scf.yield
   }
   return
 }
@@ -93,7 +88,6 @@ func.func @scf1()  {
   %c128 = arith.constant 128 : index
   scf.parallel (%x) = (%c0) to (%c128) step (%c32) {
     %2 = arith.muli %x, %x : index
-    scf.yield
   }
   return
 }
@@ -116,7 +110,6 @@ func.func @scf2()  {
   %c4 = arith.constant 4 : index
   scf.parallel (%a,%b,%x,%y) = (%c0,%c0,%c0,%c0) to (%c1,%c2,%c3,%c4) step (%c1,%c1,%c1,%c1) {
     %2 = arith.muli %x, %y : index
-    scf.yield
   }
   return
 }

@@ -164,16 +164,12 @@ module {
 // CHECK: }
 // CHECK: }
 // CHECK: }
-// CHECK: }
-// CHECK: scf.yield
 // CHECK-NEXT: }
 // CHECK: scf.parallel
 // CHECK: scf.for{{.*}}%c0 to %c512 step %c64
 // CHECK: scf.for{{.*}}%c0 to %c512 step %c64
 // CHECK: air.channel.get @channel_9
 // CHECK: }
-// CHECK: }
-// CHECK: scf.yield
 // CHECK-NEXT: }
 // CHECK: air.segment @segment_0
 // CHECK: scf.parallel
@@ -187,16 +183,12 @@ module {
 // CHECK: }
 // CHECK: }
 // CHECK: }
-// CHECK: }
-// CHECK: scf.yield
 // CHECK-NEXT: }
 // CHECK: scf.parallel
 // CHECK: scf.for{{.*}}%c0_6 to %c512_2 step %c64_1
 // CHECK: scf.for{{.*}}%c0_6 to %c512_2 step %c64_1
 // CHECK: air.channel.put @channel_9
 // CHECK: }
-// CHECK: }
-// CHECK: scf.yield
 // CHECK-NEXT: }
 // CHECK: scf.parallel
 // CHECK: scf.for{{.*}}%c0_6 to %c512_2 step %c64_1
@@ -211,8 +203,6 @@ module {
 // CHECK: }
 // CHECK: }
 // CHECK: }
-// CHECK: }
-// CHECK: scf.yield
 // CHECK-NEXT: }
 // CHECK: scf.parallel
 // CHECK: scf.for{{.*}}%c0_6 to %c512_2 step %c64_1
@@ -223,8 +213,6 @@ module {
 // CHECK: }
 // CHECK: }
 // CHECK: }
-// CHECK: }
-// CHECK: scf.yield
 // CHECK-NEXT: }
 // CHECK: air.herd @herd_0
 // CHECK: scf.for{{.*}}%c0_15 to %c512_14 step %c64_16

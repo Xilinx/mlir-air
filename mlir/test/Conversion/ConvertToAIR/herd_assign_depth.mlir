@@ -49,10 +49,8 @@ module attributes {torch.debug_module_name = "mmult"} {
             memref.dealloc %14 : memref<?x?xi32, 2>
             memref.dealloc %15 : memref<32x32xi32, 2>
           }
-          scf.yield
         }
       }
-      scf.yield
     }
     return
   }
