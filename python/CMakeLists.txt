@@ -65,7 +65,7 @@ declare_mlir_python_extension(AirPythonExtensions.MLIR
 
 # Only building this if we are building the runtime, as it requires
 # the headers from the runtime
-if(AIR_RUNTIME_TEST_TARGET_VAL)
+if(AIR_RUNTIME_TARGETS)
   message("Building AirHostModule.cpp because we are building the runtime")
   declare_mlir_python_extension(AirPythonExtensions.AIRRt
     MODULE_NAME _airRt
@@ -123,7 +123,7 @@ include_directories(
 )
 
 # Only include this if we are building the runtime
-if(AIR_RUNTIME_TEST_TARGET_VAL)
+if(AIR_RUNTIME_TARGETS)
   include_directories(
     ${hsa-runtime64_DIR}/../../../include
   )
