@@ -66,7 +66,7 @@ declare_mlir_python_extension(AirPythonExtensions.MLIR
 # Only building this if we are building the runtime, as it requires
 # the headers from the runtime
 if(AIR_RUNTIME_TARGETS)
-  message("Building AirHostModule.cpp because we are building the runtime")
+  message(STATUS "Building python bindings because we are building the runtime")
   declare_mlir_python_extension(AirPythonExtensions.AIRRt
     MODULE_NAME _airRt
     ADD_TO_PARENT AirPythonExtensions
