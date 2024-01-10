@@ -185,7 +185,7 @@ air::getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
     assert(stepsize && "non-static stride");
     auto wrap = mlir::getConstantIntValue(memcpy_sizes[i]);
     assert(wrap && "non-static wrap");
-    auto tuple = AIE::BDDimLayoutAttr::get(ctx, *stepsize, *wrap);
+    auto tuple = AIE::BDDimLayoutAttr::get(ctx, *wrap, *stepsize);
     output.push_back(tuple);
   }
   return output;
