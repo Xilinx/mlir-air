@@ -63,17 +63,22 @@ declare_mlir_python_extension(AirPythonExtensions.MLIR
     LLVMSupport
 )
 
-declare_mlir_python_extension(AirPythonExtensions.AIRRt
-  MODULE_NAME _airRt
-  ADD_TO_PARENT AirPythonExtensions
-  ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}
-  SOURCES
-    AirHostModule.cpp
-  EMBED_CAPI_LINK_LIBS
-    AIRCAPI
-  PRIVATE_LINK_LIBS
-    LLVMSupport
-)
+# Only building this if we are building the runtime, as it requires
+# the headers from the runtime
+if(AIR_RUNTIME_TARGETS)
+  message(STATUS "Building python bindings because we are building the runtime")
+  declare_mlir_python_extension(AirPythonExtensions.AIRRt
+    MODULE_NAME _airRt
+    ADD_TO_PARENT AirPythonExtensions
+    ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}
+    SOURCES
+      AirHostModule.cpp
+    EMBED_CAPI_LINK_LIBS
+      AIRCAPI
+    PRIVATE_LINK_LIBS
+      LLVMSupport
+  )
+endif()
 
 add_mlir_python_common_capi_library(AirAggregateCAPI
   INSTALL_COMPONENT AirPythonModules
@@ -112,11 +117,17 @@ add_mlir_python_modules(AirPythonModules
     AirAggregateCAPI
 )
 
+include_directories(
+  ${AIE_INCLUDE_DIRS}/../runtime_lib
+  ${CMAKE_CURRENT_SOURCE_DIR}/../runtime_lib/airhost/include
+)
+
+# Only include this if we are building the runtime
+if(AIR_RUNTIME_TARGETS)
   include_directories(
-    ${AIE_INCLUDE_DIRS}/../runtime_lib
-    ${CMAKE_CURRENT_SOURCE_DIR}/../runtime_lib/airhost/include
     ${hsa-runtime64_DIR}/../../../include
   )
+endif()
   
 add_dependencies(AirPythonModules AirBackendPythonModules)
 add_subdirectory(air/backend)
