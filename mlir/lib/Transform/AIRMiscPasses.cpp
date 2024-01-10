@@ -852,7 +852,7 @@ public:
       remap.map(op.getInductionVars()[i], forOp.getInductionVar());
     }
     for (Operation &o : op.getBody()->getOperations())
-      if (!isa<scf::YieldOp>(o))
+      if (!isa<scf::ReduceOp>(o))
         rewriter.clone(o, remap);
 
     rewriter.eraseOp(op);

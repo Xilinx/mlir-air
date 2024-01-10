@@ -1624,8 +1624,6 @@ private:
     air::createSCFReduceForAsyncSCFParallel(builder, new_loop_op.getLoc(),
                                             wait_all_op_yielded.getAsyncToken(),
                                             loop_op->getContext());
-    builder.setInsertionPointToEnd(new_loop_op.getBody());
-    builder.create<scf::YieldOp>(new_loop_op.getLoc());
 
     // Elevating tokens from inside forOp body to the yielded token, to maintain
     // dominance
