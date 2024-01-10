@@ -9,10 +9,10 @@
 
 // Synchronous airrt.dma_memcpy_nd
 
-// CHECK-LABEL: AIE.device(ipu)
-// CHECK: AIE.shimDMAAllocation @airMemcpyId7(S2MM, 0, 0)
+// CHECK-LABEL: aie.device(ipu)
+// CHECK: aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
 // CHECK: memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
-// CHECK: AIE.shimDMAAllocation @airMemcpyId2(MM2S, 0, 0)
+// CHECK: aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
 // CHECK: memref.global "public" @airMemcpyId2 : memref<64xi32, 1>
 // CHECK: func.func @func0(%[[VAL_0:.*]]: memref<64xi32>, %[[VAL_1:.*]]: memref<64xi32>) {
 // CHECK:   %[[CST_0:.*]] = arith.constant 0 : i32
@@ -26,10 +26,10 @@
 // CHECK: {sym_name = "segment0"}
 
 module {
-  AIE.device(ipu) {
-    AIE.shimDMAAllocation @airMemcpyId7(S2MM, 0, 0)
+  aie.device(ipu) {
+    aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
     memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
-    AIE.shimDMAAllocation @airMemcpyId2(MM2S, 0, 0)
+    aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
     memref.global "public" @airMemcpyId2 : memref<64xi32, 1>
   } {sym_name = "segment0"}
   air.channel @channel_0 [1, 1]
@@ -53,10 +53,10 @@ module {
 
 // Asynchronous airrt.dma_memcpy_nd
 
-// CHECK-LABEL: AIE.device(ipu) {
-// CHECK: AIE.shimDMAAllocation @airMemcpyId7(S2MM, 0, 0)
+// CHECK-LABEL: aie.device(ipu) {
+// CHECK: aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
 // CHECK: memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
-// CHECK: AIE.shimDMAAllocation @airMemcpyId2(MM2S, 0, 0)
+// CHECK: aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
 // CHECK: memref.global "public" @airMemcpyId2 : memref<64xi32, 1>
 // CHECK: func.func @func1(%[[VAL_0:.*]]: memref<64xi32>, %[[VAL_1:.*]]: memref<64xi32>) {
 // CHECK:   %[[CST_0:.*]] = arith.constant 0 : i32
@@ -70,10 +70,10 @@ module {
 // CHECK: } {sym_name = "segment0"}
 
 module {
-  AIE.device(ipu) {
-    AIE.shimDMAAllocation @airMemcpyId7(S2MM, 0, 0)
+  aie.device(ipu) {
+    aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
     memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
-    AIE.shimDMAAllocation @airMemcpyId2(MM2S, 0, 0)
+    aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
     memref.global "public" @airMemcpyId2 : memref<64xi32, 1>
   } {sym_name = "segment0"}
   airrt.module_metadata{
@@ -100,14 +100,14 @@ module {
 
 // air.launch iteration space unrolling
 
-// CHECK-LABEL: AIE.device(ipu) {
-// CHECK: AIE.shimDMAAllocation @airMemcpyId16(S2MM, 0, 0)
+// CHECK-LABEL: aie.device(ipu) {
+// CHECK: aie.shim_dma_allocation @airMemcpyId16(S2MM, 0, 0)
 // CHECK: memref.global "public" @airMemcpyId16 : memref<32x32xi32, 1>
-// CHECK: AIE.shimDMAAllocation @airMemcpyId5(MM2S, 0, 0)
+// CHECK: aie.shim_dma_allocation @airMemcpyId5(MM2S, 0, 0)
 // CHECK: memref.global "public" @airMemcpyId5 : memref<32x32xi32, 1>
-// CHECK: AIE.shimDMAAllocation @airMemcpyId6(MM2S, 0, 0)
+// CHECK: aie.shim_dma_allocation @airMemcpyId6(MM2S, 0, 0)
 // CHECK: memref.global "public" @airMemcpyId6 : memref<32x32xi32, 1>
-// CHECK: AIE.shimDMAAllocation @airMemcpyId7(MM2S, 0, 0)
+// CHECK: aie.shim_dma_allocation @airMemcpyId7(MM2S, 0, 0)
 // CHECK: memref.global "public" @airMemcpyId7 : memref<32x32xi32, 1>
 // CHECK: func.func @func2(%[[VAL_0:.*]]: memref<32x32xi32>, %[[VAL_1:.*]]: memref<32x32xi32>, %[[VAL_2:.*]]: memref<32x32xi32>) {
 // CHECK:   %[[CST_0:.*]] = arith.constant 0 : i32
@@ -124,14 +124,14 @@ module {
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 module {
-  AIE.device(ipu) {
-    AIE.shimDMAAllocation @airMemcpyId16(S2MM, 0, 0)
+  aie.device(ipu) {
+    aie.shim_dma_allocation @airMemcpyId16(S2MM, 0, 0)
     memref.global "public" @airMemcpyId16 : memref<32x32xi32, 1>
-    AIE.shimDMAAllocation @airMemcpyId5(MM2S, 0, 0)
+    aie.shim_dma_allocation @airMemcpyId5(MM2S, 0, 0)
     memref.global "public" @airMemcpyId5 : memref<32x32xi32, 1>
-    AIE.shimDMAAllocation @airMemcpyId6(MM2S, 0, 0)
+    aie.shim_dma_allocation @airMemcpyId6(MM2S, 0, 0)
     memref.global "public" @airMemcpyId6 : memref<32x32xi32, 1>
-    AIE.shimDMAAllocation @airMemcpyId7(MM2S, 0, 0)
+    aie.shim_dma_allocation @airMemcpyId7(MM2S, 0, 0)
     memref.global "public" @airMemcpyId7 : memref<32x32xi32, 1>
   } {sym_name = "segment_0"}
   airrt.module_metadata{
@@ -167,7 +167,7 @@ module {
 
 // air.launch iteration space unrolling 2
 
-// CHECK-LABEL: AIE.device(ipu) {
+// CHECK-LABEL: aie.device(ipu) {
 // CHECK:  func.func @func3(%[[ARG0:.*]]: memref<8x8xi32>)
 // CHECK-DAG:  %[[CST0:.*]] = arith.constant 0 : i32
 // CHECK-DAG:  %[[CST2:.*]] = arith.constant 2 : i32
@@ -178,14 +178,14 @@ module {
 
 #map = affine_map<()[s0] -> (s0 * 4)>
 module {
-  AIE.device(ipu) {
-    AIE.shimDMAAllocation @airMemcpyId14(S2MM, 0, 0)
+  aie.device(ipu) {
+    aie.shim_dma_allocation @airMemcpyId14(S2MM, 0, 0)
     memref.global "public" @airMemcpyId14 : memref<4x4xi32, 2>
-    AIE.shimDMAAllocation @airMemcpyId14_1(S2MM, 1, 0)
+    aie.shim_dma_allocation @airMemcpyId14_1(S2MM, 1, 0)
     memref.global "public" @airMemcpyId14_1 : memref<4x4xi32, 2>
-    AIE.shimDMAAllocation @airMemcpyId14_2(S2MM, 0, 1)
+    aie.shim_dma_allocation @airMemcpyId14_2(S2MM, 0, 1)
     memref.global "public" @airMemcpyId14_2 : memref<4x4xi32, 2>
-    AIE.shimDMAAllocation @airMemcpyId14_3(S2MM, 1, 1)
+    aie.shim_dma_allocation @airMemcpyId14_3(S2MM, 1, 1)
     memref.global "public" @airMemcpyId14_3 : memref<4x4xi32, 2>
   } {sym_name = "segment_0"}
   airrt.module_metadata{
@@ -220,7 +220,7 @@ module {
 
 // objectfifo lowering
 
-// CHECK-LABEL: AIE.device(ipu)
+// CHECK-LABEL: aie.device(ipu)
 // CHECK:  func.func @func4(%[[ARG0:.*]]: memref<8x8xi32>)
 // CHECK-DAG:  %[[CST0:.*]] = arith.constant 0 : i32
 // CHECK-DAG:  %[[CST2:.*]] = arith.constant 2 : i32
@@ -231,17 +231,17 @@ module {
 
 #map = affine_map<()[s0] -> (s0 * 4)>
 module {
-  AIE.device(ipu) {
-    %tile_0_3 = AIE.tile(0, 3)
-    %tile_1_3 = AIE.tile(1, 3)
-    %tile_0_4 = AIE.tile(0, 4)
-    %tile_1_4 = AIE.tile(1, 4)
-    %tile_0_0 = AIE.tile(0, 0)
-    %tile_1_0 = AIE.tile(1, 0)
-    AIE.objectfifo @air_channel_4(%tile_1_4, {%tile_0_0}, 1 : i32) : !AIE.objectfifo<memref<4x4xi32>>
-    AIE.objectfifo @air_channel_3(%tile_0_4, {%tile_0_0}, 1 : i32) : !AIE.objectfifo<memref<4x4xi32>>
-    AIE.objectfifo @air_channel_2(%tile_1_3, {%tile_1_0}, 1 : i32) : !AIE.objectfifo<memref<4x4xi32>>
-    AIE.objectfifo @air_channel_1(%tile_0_3, {%tile_1_0}, 1 : i32) : !AIE.objectfifo<memref<4x4xi32>>
+  aie.device(ipu) {
+    %tile_0_3 = aie.tile(0, 3)
+    %tile_1_3 = aie.tile(1, 3)
+    %tile_0_4 = aie.tile(0, 4)
+    %tile_1_4 = aie.tile(1, 4)
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_1_0 = aie.tile(1, 0)
+    aie.objectfifo @air_channel_4(%tile_1_4, {%tile_0_0}, 1 : i32) : !aie.objectfifo<memref<4x4xi32>>
+    aie.objectfifo @air_channel_3(%tile_0_4, {%tile_0_0}, 1 : i32) : !aie.objectfifo<memref<4x4xi32>>
+    aie.objectfifo @air_channel_2(%tile_1_3, {%tile_1_0}, 1 : i32) : !aie.objectfifo<memref<4x4xi32>>
+    aie.objectfifo @air_channel_1(%tile_0_3, {%tile_1_0}, 1 : i32) : !aie.objectfifo<memref<4x4xi32>>
   } {sym_name = "segment_0"}
   airrt.module_metadata{
   }
@@ -275,7 +275,7 @@ module {
 
 // Unroll repeat pattern
 
-// CHECK-LABEL: AIE.device(ipu)
+// CHECK-LABEL: aie.device(ipu)
 // CHECK:  func.func @func5(%[[ARG0:.*]]: memref<8x8xi32>, %[[ARG1:.*]]: memref<8x8xi32>, %[[ARG2:.*]]: memref<8x8xi32>)
 // CHECK-DAG:  %[[CST0:.*]] = arith.constant 0 : i32
 // CHECK-DAG:  %[[CST1:.*]] = arith.constant 1 : i32
@@ -292,18 +292,18 @@ module {
 
 #map = affine_map<()[s0] -> (s0 * 4)>
 module {
-  AIE.device(ipu) {
-    %tile_0_0 = AIE.tile(0, 0)
-    %tile_0_1 = AIE.tile(0, 1)
-    %tile_0_2 = AIE.tile(0, 2)
-    %tile_0_3 = AIE.tile(0, 3)
-    %tile_0_4 = AIE.tile(0, 4)
-    %tile_0_5 = AIE.tile(0, 5)
-    AIE.shimDMAAllocation @airMemcpyId16(S2MM, 0, 0)
+  aie.device(ipu) {
+    %tile_0_0 = aie.tile(0, 0)
+    %tile_0_1 = aie.tile(0, 1)
+    %tile_0_2 = aie.tile(0, 2)
+    %tile_0_3 = aie.tile(0, 3)
+    %tile_0_4 = aie.tile(0, 4)
+    %tile_0_5 = aie.tile(0, 5)
+    aie.shim_dma_allocation @airMemcpyId16(S2MM, 0, 0)
     memref.global "public" @airMemcpyId16 : memref<4x4xi32, 1>
-    AIE.shimDMAAllocation @airMemcpyId4(MM2S, 0, 0)
+    aie.shim_dma_allocation @airMemcpyId4(MM2S, 0, 0)
     memref.global "public" @airMemcpyId4 : memref<4x8xi32, 1>
-    AIE.shimDMAAllocation @airMemcpyId5(MM2S, 1, 0)
+    aie.shim_dma_allocation @airMemcpyId5(MM2S, 1, 0)
     memref.global "public" @airMemcpyId5 : memref<8x4xi32, 1>
   } {sym_name = "segment_0"}
   airrt.module_metadata{

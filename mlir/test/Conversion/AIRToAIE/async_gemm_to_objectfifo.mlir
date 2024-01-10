@@ -7,12 +7,12 @@
 
 // RUN: air-opt -air-to-aie="use-objectfifo=true row-offset=3 col-offset=5" %s | FileCheck %s
 
-// CHECK-LABEL: AIE.device
-// CHECK:   %[[VAL_0:.*]] = AIE.tile(5, 3)
-// CHECK:   %[[VAL_1:.*]] = AIE.tile(6, 3)
-// CHECK:   %[[VAL_2:.*]] = AIE.tile(5, 4)
-// CHECK:   %[[VAL_3:.*]] = AIE.tile(6, 4)
-// CHECK-COUNT-12:    AIE.objectfifo @
+// CHECK-LABEL: aie.device
+// CHECK:   %[[VAL_0:.*]] = aie.tile(5, 3)
+// CHECK:   %[[VAL_1:.*]] = aie.tile(6, 3)
+// CHECK:   %[[VAL_2:.*]] = aie.tile(5, 4)
+// CHECK:   %[[VAL_3:.*]] = aie.tile(6, 4)
+// CHECK-COUNT-12:    aie.objectfifo @
 
 #map = affine_map<()[s0] -> (s0 * 64)>
 module {

@@ -7,96 +7,96 @@
 
 // RUN: air-opt -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcvc1902" %s | FileCheck %s
 
-// CHECK-LABEL:   AIE.device(xcvc1902) {
-// CHECK:   %[[VAL_0:.*]] = AIE.tile(2, 0)
-// CHECK:   %[[VAL_1:.*]] = AIE.tile(3, 0)
-// CHECK:   %[[VAL_2:.*]] = AIE.tile(5, 3)
-// CHECK:   %[[VAL_3:.*]] = AIE.tile(6, 3)
-// CHECK:   %[[VAL_4:.*]] = AIE.tile(5, 4)
-// CHECK:   %[[VAL_5:.*]] = AIE.tile(6, 4)
-// CHECK-COUNT-6:    AIE.lock(%[[VAL_2]], {{.*}}) {init = 0 : i32}
-// CHECK-COUNT-6:    AIE.lock(%[[VAL_3]], {{.*}}) {init = 0 : i32}
-// CHECK-COUNT-6:    AIE.lock(%[[VAL_4]], {{.*}}) {init = 0 : i32}
-// CHECK-COUNT-6:    AIE.lock(%[[VAL_5]], {{.*}}) {init = 0 : i32}
-// CHECK-COUNT-5:    AIE.buffer(%[[VAL_5]]) {sym_name = {{.*}}} : memref<32x32xi32, 2>
-// CHECK-COUNT-5:    AIE.buffer(%[[VAL_4]]) {sym_name = {{.*}}} : memref<32x32xi32, 2>
-// CHECK-COUNT-5:    AIE.buffer(%[[VAL_3]]) {sym_name = {{.*}}} : memref<32x32xi32, 2>
-// CHECK-COUNT-5:    AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xi32, 2>
-// CHECK:   AIE.mem(%[[VAL_5]])
-// CHECK:   AIE.core(%[[VAL_5]]) {
-// CHECK:     AIE.useLock({{.*}}, Acquire, 1)
+// CHECK-LABEL:   aie.device(xcvc1902) {
+// CHECK:   %[[VAL_0:.*]] = aie.tile(2, 0)
+// CHECK:   %[[VAL_1:.*]] = aie.tile(3, 0)
+// CHECK:   %[[VAL_2:.*]] = aie.tile(5, 3)
+// CHECK:   %[[VAL_3:.*]] = aie.tile(6, 3)
+// CHECK:   %[[VAL_4:.*]] = aie.tile(5, 4)
+// CHECK:   %[[VAL_5:.*]] = aie.tile(6, 4)
+// CHECK-COUNT-6:    aie.lock(%[[VAL_2]], {{.*}}) {init = 0 : i32}
+// CHECK-COUNT-6:    aie.lock(%[[VAL_3]], {{.*}}) {init = 0 : i32}
+// CHECK-COUNT-6:    aie.lock(%[[VAL_4]], {{.*}}) {init = 0 : i32}
+// CHECK-COUNT-6:    aie.lock(%[[VAL_5]], {{.*}}) {init = 0 : i32}
+// CHECK-COUNT-5:    aie.buffer(%[[VAL_5]]) {sym_name = {{.*}}} : memref<32x32xi32, 2>
+// CHECK-COUNT-5:    aie.buffer(%[[VAL_4]]) {sym_name = {{.*}}} : memref<32x32xi32, 2>
+// CHECK-COUNT-5:    aie.buffer(%[[VAL_3]]) {sym_name = {{.*}}} : memref<32x32xi32, 2>
+// CHECK-COUNT-5:    aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xi32, 2>
+// CHECK:   aie.mem(%[[VAL_5]])
+// CHECK:   aie.core(%[[VAL_5]]) {
+// CHECK:     aie.use_lock({{.*}}, Acquire, 1)
 // CHECK:     scf.for
-// CHECK:       AIE.useLock({{.*}}, Acquire, 1)
-// CHECK:       AIE.useLock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
 // CHECK:       linalg.matmul
-// CHECK:       AIE.useLock({{.*}}, Release, 0)
-// CHECK:       AIE.useLock({{.*}}, Release, 0)
-// CHECK:       AIE.useLock({{.*}}, Acquire, 1)
-// CHECK:       AIE.useLock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
 // CHECK:       linalg.matmul
-// CHECK:       AIE.useLock({{.*}}, Release, 0)
-// CHECK:       AIE.useLock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Release, 0)
 // CHECK:     }
-// CHECK:     AIE.useLock({{.*}}, Acquire, 0)
-// CHECK:     AIE.useLock({{.*}}, Release, 1)
-// CHECK:     AIE.useLock({{.*}}, Release, 0)
+// CHECK:     aie.use_lock({{.*}}, Acquire, 0)
+// CHECK:     aie.use_lock({{.*}}, Release, 1)
+// CHECK:     aie.use_lock({{.*}}, Release, 0)
 // CHECK:   } {elf_file = 
-// CHECK:   AIE.mem(%[[VAL_4]])
-// CHECK:   AIE.core(%[[VAL_4]])
-// CHECK:     AIE.useLock({{.*}}, Acquire, 1)
+// CHECK:   aie.mem(%[[VAL_4]])
+// CHECK:   aie.core(%[[VAL_4]])
+// CHECK:     aie.use_lock({{.*}}, Acquire, 1)
 // CHECK:     scf.for
-// CHECK:       AIE.useLock({{.*}}, Acquire, 1)
-// CHECK:       AIE.useLock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
 // CHECK:       linalg.matmul
-// CHECK:       AIE.useLock({{.*}}, Release, 0)
-// CHECK:       AIE.useLock({{.*}}, Release, 0)
-// CHECK:       AIE.useLock({{.*}}, Acquire, 1)
-// CHECK:       AIE.useLock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
 // CHECK:       linalg.matmul
-// CHECK:       AIE.useLock({{.*}}, Release, 0)
-// CHECK:       AIE.useLock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Release, 0)
 // CHECK:     }
-// CHECK:     AIE.useLock({{.*}}, Acquire, 0)
-// CHECK:     AIE.useLock({{.*}}, Release, 1)
-// CHECK:     AIE.useLock({{.*}}, Release, 0)
+// CHECK:     aie.use_lock({{.*}}, Acquire, 0)
+// CHECK:     aie.use_lock({{.*}}, Release, 1)
+// CHECK:     aie.use_lock({{.*}}, Release, 0)
 // CHECK:   } {elf_file = 
-// CHECK:   AIE.mem(%[[VAL_3]])
-// CHECK:   AIE.core(%[[VAL_3]])
-// CHECK:     AIE.useLock({{.*}}, Acquire, 1)
+// CHECK:   aie.mem(%[[VAL_3]])
+// CHECK:   aie.core(%[[VAL_3]])
+// CHECK:     aie.use_lock({{.*}}, Acquire, 1)
 // CHECK:     scf.for
-// CHECK:       AIE.useLock({{.*}}, Acquire, 1)
-// CHECK:       AIE.useLock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
 // CHECK:       linalg.matmul
-// CHECK:       AIE.useLock({{.*}}, Release, 0)
-// CHECK:       AIE.useLock({{.*}}, Release, 0)
-// CHECK:       AIE.useLock({{.*}}, Acquire, 1)
-// CHECK:       AIE.useLock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
 // CHECK:       linalg.matmul
-// CHECK:       AIE.useLock({{.*}}, Release, 0)
-// CHECK:       AIE.useLock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Release, 0)
 // CHECK:     }
-// CHECK:     AIE.useLock({{.*}}, Acquire, 0)
-// CHECK:     AIE.useLock({{.*}}, Release, 1)
-// CHECK:     AIE.useLock({{.*}}, Release, 0)
+// CHECK:     aie.use_lock({{.*}}, Acquire, 0)
+// CHECK:     aie.use_lock({{.*}}, Release, 1)
+// CHECK:     aie.use_lock({{.*}}, Release, 0)
 // CHECK:   } {elf_file = 
-// CHECK:   AIE.mem(%[[VAL_2]])
-// CHECK:   AIE.core(%[[VAL_2]])
-// CHECK:     AIE.useLock({{.*}}, Acquire, 1)
+// CHECK:   aie.mem(%[[VAL_2]])
+// CHECK:   aie.core(%[[VAL_2]])
+// CHECK:     aie.use_lock({{.*}}, Acquire, 1)
 // CHECK:     scf.for
-// CHECK:       AIE.useLock({{.*}}, Acquire, 1)
-// CHECK:       AIE.useLock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
 // CHECK:       linalg.matmul
-// CHECK:       AIE.useLock({{.*}}, Release, 0)
-// CHECK:       AIE.useLock({{.*}}, Release, 0)
-// CHECK:       AIE.useLock({{.*}}, Acquire, 1)
-// CHECK:       AIE.useLock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
+// CHECK:       aie.use_lock({{.*}}, Acquire, 1)
 // CHECK:       linalg.matmul
-// CHECK:       AIE.useLock({{.*}}, Release, 0)
-// CHECK:       AIE.useLock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Release, 0)
+// CHECK:       aie.use_lock({{.*}}, Release, 0)
 // CHECK:     }
-// CHECK:     AIE.useLock({{.*}}, Acquire, 0)
-// CHECK:     AIE.useLock({{.*}}, Release, 1)
-// CHECK:     AIE.useLock({{.*}}, Release, 0)
+// CHECK:     aie.use_lock({{.*}}, Acquire, 0)
+// CHECK:     aie.use_lock({{.*}}, Release, 1)
+// CHECK:     aie.use_lock({{.*}}, Release, 0)
 // CHECK:   } {elf_file = 
 
 #map = affine_map<()[s0] -> (s0 * 32)>

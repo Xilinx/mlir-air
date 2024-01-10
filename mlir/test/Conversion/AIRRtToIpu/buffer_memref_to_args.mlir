@@ -9,7 +9,7 @@
 
 // Converts AIEX.ipu.dma_memcpy_nd src/dst memref to function params.
 
-// CHECK-LABEL: AIE.device(ipu)
+// CHECK-LABEL: aie.device(ipu)
 // CHECK: func.func @func0(%[[VAL_0:.*]]: memref<8x16xi32>, %[[VAL_1:.*]]: memref<16x8xi32>, %[[VAL_2:.*]]: memref<8x8xi32>) {
 // CHECK:   AIEX.ipu.dma_memcpy_nd(%{{.*}}, %{{.*}}, %[[VAL_0]][%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}])
 // CHECK:   AIEX.ipu.dma_memcpy_nd(%{{.*}}, %{{.*}}, %[[VAL_1]][%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}])
@@ -17,12 +17,12 @@
 
 #map = affine_map<()[s0] -> (s0 * 8)>
 module {
-  AIE.device(ipu) {
-    AIE.shimDMAAllocation @airMemcpyId16(S2MM, 0, 0)
+  aie.device(ipu) {
+    aie.shim_dma_allocation @airMemcpyId16(S2MM, 0, 0)
     memref.global "public" @airMemcpyId16 : memref<8x8xi32, 1>
-    AIE.shimDMAAllocation @airMemcpyId4(MM2S, 0, 0)
+    aie.shim_dma_allocation @airMemcpyId4(MM2S, 0, 0)
     memref.global "public" @airMemcpyId4 : memref<8x16xi32, 1>
-    AIE.shimDMAAllocation @airMemcpyId5(MM2S, 0, 0)
+    aie.shim_dma_allocation @airMemcpyId5(MM2S, 0, 0)
     memref.global "public" @airMemcpyId5 : memref<16x8xi32, 1>
   } {sym_name = "segment_0"}
   func.func @func0(%arg0: memref<8x16xi32>, %arg1: memref<16x8xi32>, %arg2: memref<8x8xi32>) {
@@ -55,7 +55,7 @@ module {
 
 // -----
 
-// CHECK-LABEL: AIE.device(ipu)
+// CHECK-LABEL: aie.device(ipu)
 // CHECK: func.func @func1(%[[VAL_0:.*]]: memref<8x16xi32>, %[[VAL_1:.*]]: memref<16x8xi32>, %[[VAL_2:.*]]: memref<8x8xi32>) {
 // CHECK:   AIEX.ipu.dma_memcpy_nd(%{{.*}}, %{{.*}}, %[[VAL_0]][%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}])
 // CHECK:   AIEX.ipu.dma_memcpy_nd(%{{.*}}, %{{.*}}, %[[VAL_1]][%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}] [%{{.*}}, %{{.*}}, %{{.*}}])
@@ -63,12 +63,12 @@ module {
 
 #map = affine_map<()[s0] -> (s0 * 8)>
 module {
-  AIE.device(ipu) {
-    AIE.shimDMAAllocation @airMemcpyId16(S2MM, 0, 0)
+  aie.device(ipu) {
+    aie.shim_dma_allocation @airMemcpyId16(S2MM, 0, 0)
     memref.global "public" @airMemcpyId16 : memref<8x8xi32, 1>
-    AIE.shimDMAAllocation @airMemcpyId4(MM2S, 0, 0)
+    aie.shim_dma_allocation @airMemcpyId4(MM2S, 0, 0)
     memref.global "public" @airMemcpyId4 : memref<8x16xi32, 1>
-    AIE.shimDMAAllocation @airMemcpyId5(MM2S, 0, 0)
+    aie.shim_dma_allocation @airMemcpyId5(MM2S, 0, 0)
     memref.global "public" @airMemcpyId5 : memref<16x8xi32, 1>
   } {sym_name = "segment_0"}
   func.func @func1() {

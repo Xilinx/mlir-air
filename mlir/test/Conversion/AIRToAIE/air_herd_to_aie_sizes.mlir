@@ -10,10 +10,10 @@
 
 func.func @launch(%arg0: i32) {
   %cst2 = arith.constant 2 : index
-  // CHECK: %[[TILE01:.*]] = AIE.tile(1, 2)
-  // CHECK: {{.*}} = AIE.core(%[[TILE01]])  {
+  // CHECK: %[[TILE01:.*]] = aie.tile(1, 2)
+  // CHECK: {{.*}} = aie.core(%[[TILE01]])  {
   // CHECK: memref.store {{.*}}, {{.*}}[{{.*}}] : memref<1024xindex, 2>
-  // CHECK: AIE.end
+  // CHECK: aie.end
   air.herd tile (%x, %y) in (%sx=%cst2, %sy=%cst2) {
     %buf = memref.alloc() : memref<1024xindex,2>
     %0 = arith.addi %x, %y : index

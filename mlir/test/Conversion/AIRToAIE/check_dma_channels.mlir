@@ -7,7 +7,7 @@
 
 // RUN: air-opt -air-to-aie -verify-diagnostics %s
 
-// expected-error@-10 {{'AIE.device' op : lowering of segments containing both dma copies and channels is not supported}}
+// expected-error@-10 {{'aie.device' op : lowering of segments containing both dma copies and channels is not supported}}
 air.channel @channel_0 [1, 1]
 func.func @test(%arg0: memref<1024xi32>) {
   %c1 = arith.constant 1 : index

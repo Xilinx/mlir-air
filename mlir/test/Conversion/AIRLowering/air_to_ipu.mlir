@@ -7,7 +7,7 @@
 
 // RUN: air-opt %s -air-to-std -cse --split-input-file | FileCheck %s
 
-// CHECK-LABEL: AIE.device(ipu)
+// CHECK-LABEL: aie.device(ipu)
 // CHECK: {sym_name = "segment0"}
 // CHECK: func.func @func0(%[[VAL_0:.*]]: memref<64xi32>, %[[VAL_1:.*]]: memref<64xi32>)
 // CHECK: %[[CST_0:.*]] = arith.constant 0 : i64
@@ -20,10 +20,10 @@
 // CHECK: airrt.dma_memcpy_nd(%[[CST_7]], %[[CST_0]], %[[CST_0]], %[[VAL_1]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_64]]], [%[[CST_0]], %[[CST_0]], %[[CST_0]]]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
 
 module {
-  AIE.device(ipu) {
-    AIE.shimDMAAllocation @airMemcpyId7(S2MM, 0, 0)
+  aie.device(ipu) {
+    aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
     memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
-    AIE.shimDMAAllocation @airMemcpyId2(MM2S, 0, 0)
+    aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
     memref.global "public" @airMemcpyId2 : memref<64xi32, 1>
   } {sym_name = "segment0"}
   air.channel @channel_0 [1, 1]
@@ -68,7 +68,7 @@ module {
 
 // Asynchronous version
 
-// CHECK-LABEL: AIE.device(ipu)
+// CHECK-LABEL: aie.device(ipu)
 // CHECK: {sym_name = "segment0"}
 // CHECK: func.func @func0(%[[VAL_0:.*]]: memref<64xi32>, %[[VAL_1:.*]]: memref<64xi32>)
 // CHECK: %[[CST_0:.*]] = arith.constant 0 : i64
@@ -81,10 +81,10 @@ module {
 // CHECK: airrt.dma_memcpy_nd(%[[CST_7]], %[[CST_0]], %[[CST_0]], %[[VAL_1]][%[[CST_0]], %[[CST_0]], %[[CST_0]], %[[CST_0]]], [%[[CST_1]], %[[CST_1]], %[[CST_1]], %[[CST_64]]], [%[[CST_0]], %[[CST_0]], %[[CST_0]]]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
 
 module {
-  AIE.device(ipu) {
-    AIE.shimDMAAllocation @airMemcpyId7(S2MM, 0, 0)
+  aie.device(ipu) {
+    aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
     memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
-    AIE.shimDMAAllocation @airMemcpyId2(MM2S, 0, 0)
+    aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
     memref.global "public" @airMemcpyId2 : memref<64xi32, 1>
   } {sym_name = "segment0"}
   airrt.module_metadata{
