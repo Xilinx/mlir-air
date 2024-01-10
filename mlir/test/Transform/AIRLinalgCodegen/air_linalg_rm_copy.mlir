@@ -43,7 +43,6 @@ func.func @test_copy_remove(%arg0: memref<10240xf32>) -> memref<10240xf32> {
       memref.dealloc %alloc_1 : memref<2560xf32, 2>
       memref.dealloc %alloc_2 : memref<2560xf32, 2>
     }
-    scf.yield
   }
   return %alloc : memref<10240xf32>
 }
@@ -84,7 +83,6 @@ func.func @test_copy_reduce(%arg0: memref<10240xf32>) -> memref<10240xf32> {
       memref.dealloc %alloc_1 : memref<2560xf32, 2>
       memref.dealloc %alloc_2 : memref<1280xf32, 2>
     }
-    scf.yield
   }
   return %alloc : memref<10240xf32>
 }
@@ -126,7 +124,6 @@ func.func @test_copy_use(%arg0: memref<10240xf32>) -> memref<10240xf32> {
       memref.dealloc %alloc_1 : memref<2560xf32, 2>
       memref.dealloc %alloc_2 : memref<2560xf32, 2>
     }
-    scf.yield
   }
   return %alloc : memref<10240xf32>
 }

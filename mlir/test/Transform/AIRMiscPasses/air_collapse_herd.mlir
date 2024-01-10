@@ -8,8 +8,8 @@
 // RUN: air-opt %s -air-collapse-herd -canonicalize --split-input-file | FileCheck %s
 
 // CHECK: func.func @test0
-// CHECK: %[[CST9:.*]] = arith.constant 9 : index
 // CHECK: %[[CST1:.*]] = arith.constant 1 : index
+// CHECK: %[[CST9:.*]] = arith.constant 9 : index
 // CHECK: air.herd  tile (%[[VAL0:.*]], %[[VAL1:.*]]) in (%[[VAL2:.*]]=%[[CST1]], %[[VAL3:.*]]=%[[CST9]])
 
 func.func @test0() -> () {
@@ -24,8 +24,8 @@ func.func @test0() -> () {
 // CHECK: [[$SET0:#set[0-9]*]] = affine_set<()[s0, s1] : (s0 == 0, s1 >= 0, -s1 + 2 >= 0)>
 // CHECK: [[$SET1:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 2 >= 0, s1 == 0)>
 // CHECK: func.func @test1
-// CHECK: %[[CST9:.*]] = arith.constant 9 : index
 // CHECK: %[[CST1:.*]] = arith.constant 1 : index
+// CHECK: %[[CST9:.*]] = arith.constant 9 : index
 // CHECK: air.herd  tile (%[[ARG0:.*]], %[[ARG1:.*]]) in (%[[ARG2:.*]]=%[[CST1]], %[[ARG3:.*]]=%[[CST9]])
 // CHECK:   %[[CST0:.*]] = arith.constant 0 : index
 // CHECK:   %[[CST3:.*]] = arith.constant 3 : index

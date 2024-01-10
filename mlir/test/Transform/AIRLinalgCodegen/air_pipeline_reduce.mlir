@@ -10,8 +10,8 @@
 // CHECK: #set1 = affine_set<()[s0, s1] : (s0 - 1 == 0, s1 >= 0)>
 // CHECK:   air.channel @channel_0 [1]
 // CHECK:   func.func @f0(%[[VAL_0:.*]]: memref<32xf32>) -> memref<f32> {
-// CHECK:     %[[VAL_1:.*]] = arith.constant 2 : index
 // CHECK:     %[[VAL_2:.*]] = arith.constant 1 : index
+// CHECK:     %[[VAL_1:.*]] = arith.constant 2 : index
 // CHECK:     %[[VAL_3:.*]] = memref.alloc() {alignment = 64 : i64} : memref<f32>
 // CHECK:     air.herd  tile (%[[VAL_4:.*]], %[[VAL_5:.*]]) in (%[[VAL_6:.*]]=%[[VAL_1]], %[[VAL_7:.*]]=%[[VAL_2]]) args(%[[VAL_8:.*]]=%[[VAL_0]], %[[VAL_9:.*]]=%[[VAL_3]]) : memref<32xf32>, memref<f32> {
 // CHECK:       %[[VAL_10:.*]] = affine.apply #map(){{\[}}%[[VAL_4]]]
