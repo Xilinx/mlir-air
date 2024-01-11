@@ -63,12 +63,11 @@ func.func @scf_if(%arg0: i1) {
 // CHECK: %[[V0:.*]] = call @__airrt_wait_all_1_0() : () -> !llvm.ptr
 // CHECK: %[[V1:.*]] = scf.parallel{{.*}}init (%[[V0]]) -> !llvm.ptr {
 // CHECK:   %[[V3:.*]] = func.call @__airrt_wait_all_1_1(%[[V0]]) : (!llvm.ptr) -> !llvm.ptr
-// CHECK:   scf.reduce(%[[V3]])  : !llvm.ptr {
+// CHECK:   scf.reduce(%[[V3]] : !llvm.ptr) {
 // CHECK:   ^bb0(%[[V4:.*]]: !llvm.ptr, %[[V5:.*]]: !llvm.ptr):
 // CHECK:     %[[V6:.*]] = func.call @__airrt_wait_all_1_2(%[[V4]], %[[V5]]) : (!llvm.ptr, !llvm.ptr) -> !llvm.ptr
 // CHECK:     scf.reduce.return %[[V6]] : !llvm.ptr
 // CHECK:   }
-// CHECK:   scf.yield
 // CHECK: }
 // CHECK: call @__airrt_wait_all_0_1(%[[V1]]) : (!llvm.ptr) -> ()
 func.func @scf_par() {
