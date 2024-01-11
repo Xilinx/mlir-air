@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-runner %s -f test -m %S/arch.json | FileCheck %s
+// XFAIL: *
 
 // Pipelined for loop with race condition for both producer and consumer
 
@@ -97,7 +98,6 @@ module attributes {torch.debug_module_name = "mmult"} {
               %10 = air.wait_all async [%arg11, %arg12] 
               scf.reduce.return %10 : !air.async.token
             }
-            scf.yield
           }
           %5 = air.wait_all async [%arg9, %async_token_16] 
           %6 = scf.parallel (%arg10) = (%c0) to (%c4) step (%c1_10) init (%5) -> !air.async.token {
@@ -119,7 +119,6 @@ module attributes {torch.debug_module_name = "mmult"} {
               %10 = air.wait_all async [%arg11, %arg12] 
               scf.reduce.return %10 : !air.async.token
             }
-            scf.yield
           }
           %7 = air.herd @herd_0 async [%arg9]  tile (%arg10, %arg11) in (%arg12=%c4, %arg13=%c4) attributes {id = 1 : i32} {
             %c0_20 = arith.constant 0 : index

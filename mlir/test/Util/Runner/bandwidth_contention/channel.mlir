@@ -109,7 +109,6 @@ module {
             %13 = air.wait_all async [%arg17, %arg18] 
             scf.reduce.return %13 : !air.async.token
           }
-          scf.yield
         }
         %10 = air.herd @herd_0 async tile (%arg15, %arg16) in (%arg17=%c4, %arg18=%c4) {
           %async_token_18, %results_19 = air.execute -> (memref<32x32xbf16, 2>) {

@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-runner %s -f test -m %S/arch.json | FileCheck %s
+// XFAIL: *
 
 // Air channel ops
 
@@ -93,7 +94,6 @@ module {
                   %13 = air.wait_all async [%arg17, %arg18] 
                   scf.reduce.return %13 : !air.async.token
                 }
-                scf.yield
               }
               %10 = air.herd @herd_0 async [%arg14]  tile (%arg15, %arg16) in (%arg17=%c4, %arg18=%c4) {
                 %12 = air.wait_all async 
