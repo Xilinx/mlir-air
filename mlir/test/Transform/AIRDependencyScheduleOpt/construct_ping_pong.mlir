@@ -362,12 +362,10 @@ func.func @scf_for() {
 // CHECK: %[[EVENT5:.*]] = air.channel.get async [%[[EVENT4]], %[[EVENT1]]] @channel_9
 // CHECK: %[[EVENT6:.*]] = air.wait_all async [%[[EVENT3]], %[[EVENT5]]]
 // CHECK: %[[EVENT7:.*]] = scf.parallel
-// CHECK: scf.yield
 // CHECK: %[[EVENT8:.*]] = air.wait_all async [%[[EVENT7]]]
 // CHECK: %[[EVENT9:.*]] = air.channel.get async [%[[EVENT5]], %[[EVENT2]]] @channel_9
 // CHECK-NEXT: %[[EVENT10:.*]] = air.wait_all async [%[[EVENT8]], %[[EVENT9]]]
 // CHECK-NEXT: %[[EVENT11:.*]] = scf.parallel
-// CHECK: scf.yield
 // CHECK: %[[EVENT12:.*]] = air.wait_all async [%[[EVENT11]]]
 // CHECK: scf.yield %[[EVENT8]], %[[EVENT12]], %[[EVENT12]], %[[EVENT9]] : !air.async.token, !air.async.token, !air.async.token, !air.async.token
 // CHECK: air.segment async
@@ -375,12 +373,10 @@ func.func @scf_for() {
 // CHECK: %[[EVENT5:.*]] = air.channel.get async [%[[EVENT4]], %[[EVENT1]]] @channel_11
 // CHECK: %[[EVENT6:.*]] = air.wait_all async [%[[EVENT3]], %[[EVENT5]]]
 // CHECK: %[[EVENT7:.*]] = scf.parallel
-// CHECK: scf.yield
 // CHECK: %[[EVENT8:.*]] = air.wait_all async [%[[EVENT7]]]
 // CHECK: %[[EVENT9:.*]] = air.channel.get async [%[[EVENT5]], %[[EVENT2]]] @channel_11
 // CHECK-NEXT: %[[EVENT10:.*]] = air.wait_all async [%[[EVENT8]], %[[EVENT9]]]
 // CHECK-NEXT: %[[EVENT11:.*]] = scf.parallel
-// CHECK: scf.yield
 // CHECK: %[[EVENT12:.*]] = air.wait_all async [%[[EVENT11]]]
 // CHECK: scf.yield %[[EVENT8]], %[[EVENT12]], %[[EVENT12]], %[[EVENT9]] : !air.async.token, !air.async.token, !air.async.token, !air.async.token
 
@@ -434,7 +430,6 @@ func.func @scf_parallel() {
             %18 = air.wait_all async [%arg14, %arg15] 
             scf.reduce.return %18 : !air.async.token
           }
-          scf.yield
         } {unrolled_iteration = 0 : i32}
         %10 = air.wait_all async [%9]  {async_back = true, unrolled_iteration = 0 : i32}
         %11 = arith.addi %arg4, %c256 : index
@@ -446,7 +441,6 @@ func.func @scf_parallel() {
             %18 = air.wait_all async [%arg14, %arg15] 
             scf.reduce.return %18 : !air.async.token
           }
-          scf.yield
         } {unrolled_iteration = 1 : i32}
         %14 = air.wait_all async [%13]  {async_back = true, unrolled_iteration = 1 : i32}
         scf.yield %14 : !air.async.token
@@ -508,7 +502,6 @@ func.func @scf_parallel() {
             %18 = air.wait_all async [%arg14, %arg15] 
             scf.reduce.return %18 : !air.async.token
           }
-          scf.yield
         } {unrolled_iteration = 0 : i32}
         %10 = air.wait_all async [%9]  {async_back = true, unrolled_iteration = 0 : i32}
         %11 = arith.addi %arg4, %c256 : index
@@ -520,7 +513,6 @@ func.func @scf_parallel() {
             %18 = air.wait_all async [%arg14, %arg15] 
             scf.reduce.return %18 : !air.async.token
           }
-          scf.yield
         } {unrolled_iteration = 1 : i32}
         %14 = air.wait_all async [%13]  {async_back = true, unrolled_iteration = 1 : i32}
         scf.yield %14 : !air.async.token

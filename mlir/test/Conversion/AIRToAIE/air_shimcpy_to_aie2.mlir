@@ -488,7 +488,7 @@ func.func @func6(%arg5 : memref<8x8xi32>) {
 // CHECK:   aie.dma_start(S2MM, 1, ^bb4, ^bb2)
 // CHECK: ^bb4:  // 2 preds: ^bb3, ^bb4
 // CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
-// CHECK:   aie.dma_bd({{.*}} : memref<8x16xi32, 1>, 0, 16, [<size = 16, stride = 4>, <size = 1, stride = 4>])
+// CHECK:   aie.dma_bd({{.*}} : memref<8x16xi32, 1>, 0, 16, [<size = 4, stride = 16>, <size = 4, stride = 1>])
 // CHECK:   aie.use_lock({{.*}}, Release, 1)
 // CHECK:   aie.next_bd ^bb4
 // CHECK: ^bb5:  // pred: ^bb0
