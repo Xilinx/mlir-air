@@ -13,6 +13,3 @@ set(CLANG_LLD lld-${CLANG_VER} CACHE STRING "" FORCE)
 # Make it a debug runtime build
 #set(CMAKE_BUILD_TYPE Debug CACHE STRING "build type" FORCE)
 #set(LLVM_ENABLE_ASSERTIONS ON CACHE BOOL "" FORCE)
-
-# the default for x86 is to build a PCIe runtime
-set(BUILD_AIR_PCIE ON CACHE BOOL "" FORCE)

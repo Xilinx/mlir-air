@@ -32,7 +32,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED YES)
 
 find_package(LibXAIE REQUIRED)
 find_package(AIE REQUIRED CONFIG)
-find_package(hsa-runtime64 REQUIRED)
+find_package(hsa-runtime64)
 
 add_subdirectory(airhost)
 add_subdirectory(aircpu)
