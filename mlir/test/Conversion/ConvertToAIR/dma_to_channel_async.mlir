@@ -57,7 +57,7 @@ module {
 // CHECK: %[[EVENT21:.*]] = air.wait_all async [%[[EVENT20]]]
 // CHECK: scf.yield %[[EVENT21]]
 // CHECK: %[[EVENT22:.*]] = air.wait_all async [%[[EVENT18]]]
-// CHECK: scf.reduce(%[[EVENT22]])
+// CHECK: scf.reduce(%[[EVENT22]]
 // CHECK: %[[EVENT23:.*]] = air.wait_all async [%[[EVENT24:.*]], %[[EVENT25:.*]]]
 
 // CHECK: %[[EVENT26:.*]] = air.herd @herd_0 async

@@ -7,36 +7,36 @@
 
 // RUN: air-opt -air-fuse-channels -air-to-aie="row-offset=2 col-offset=0 device=ipu" -canonicalize -cse %s | FileCheck %s
 
-// CHECK-LABEL:   AIE.device(ipu) {
-// CHECK:  %[[VAL_0:.*]] = AIE.tile(0, 0)
-// CHECK:  %[[VAL_1:.*]] = AIE.tile(0, 1)
-// CHECK:  %[[VAL_2:.*]] = AIE.tile(0, 2)
-// CHECK:  %[[VAL_3:.*]] = AIE.lock(%[[VAL_1]], 7) {init = 1 : i32}
-// CHECK:  %[[VAL_4:.*]] = AIE.lock(%[[VAL_1]], 6) {init = 0 : i32}
-// CHECK:  %[[VAL_5:.*]] = AIE.lock(%[[VAL_1]], 5) {init = 1 : i32}
-// CHECK:  %[[VAL_6:.*]] = AIE.lock(%[[VAL_1]], 4) {init = 0 : i32}
-// CHECK:  %[[VAL_7:.*]] = AIE.lock(%[[VAL_1]], 3) {init = 1 : i32}
-// CHECK:  %[[VAL_8:.*]] = AIE.lock(%[[VAL_1]], 2) {init = 0 : i32}
-// CHECK:  %[[VAL_9:.*]] = AIE.lock(%[[VAL_1]], 1) {init = 1 : i32}
-// CHECK:  %[[VAL_10:.*]] = AIE.lock(%[[VAL_1]], 0) {init = 0 : i32}
-// CHECK:  %[[VAL_15:.*]] = AIE.lock(%[[VAL_2]], 3) {init = 3 : i32}
-// CHECK:  %[[VAL_16:.*]] = AIE.lock(%[[VAL_2]], 2) {init = 0 : i32}
-// CHECK:  %[[VAL_17:.*]] = AIE.lock(%[[VAL_2]], 1) {init = 1 : i32}
-// CHECK:  %[[VAL_18:.*]] = AIE.lock(%[[VAL_2]], 0) {init = 0 : i32}
-// CHECK:  %[[VAL_19:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = "buf6"} : memref<32x32xi32, 1>
-// CHECK:  %[[VAL_20:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = "buf5"} : memref<32x32xi32, 1>
-// CHECK:  %[[VAL_21:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = "buf4"} : memref<32x32xi32, 1>
-// CHECK:  %[[VAL_22:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = "buf3"} : memref<32x32xi32, 1>
-// CHECK:  %[[VAL_23:.*]] = AIE.buffer(%[[VAL_2]]) {sym_name = "buf2"} : memref<32x32xi32, 2>
-// CHECK:  %[[VAL_24:.*]] = AIE.buffer(%[[VAL_2]]) {sym_name = "buf1"} : memref<32x32xi32, 2>
-// CHECK:  %[[VAL_25:.*]] = AIE.buffer(%[[VAL_2]]) {sym_name = "buf0"} : memref<32x32xi32, 2>
-// CHECK:  %[[VAL_26:.*]] = AIE.mem(%[[VAL_2]]) {
-// CHECK:  %[[VAL_27:.*]] = AIE.core(%[[VAL_2]]) {
-// CHECK:  AIE.flow(%[[VAL_0]], DMA : 0, %[[VAL_1]], DMA : 0)
-// CHECK:  AIE.flow(%[[VAL_1]], DMA : 0, %[[VAL_0]], DMA : 0)
-// CHECK:  AIE.flow(%[[VAL_1]], DMA : 1, %[[VAL_2]], DMA : 0)
-// CHECK:  AIE.flow(%[[VAL_2]], DMA : 0, %[[VAL_1]], DMA : 1)
-// CHECK:  %[[VAL_28:.*]] = AIE.memTileDMA(%[[VAL_1]]) {
+// CHECK-LABEL:   aie.device(ipu) {
+// CHECK:  %[[VAL_0:.*]] = aie.tile(0, 0)
+// CHECK:  %[[VAL_1:.*]] = aie.tile(0, 1)
+// CHECK:  %[[VAL_2:.*]] = aie.tile(0, 2)
+// CHECK:  %[[VAL_3:.*]] = aie.lock(%[[VAL_1]], 7) {init = 1 : i32}
+// CHECK:  %[[VAL_4:.*]] = aie.lock(%[[VAL_1]], 6) {init = 0 : i32}
+// CHECK:  %[[VAL_5:.*]] = aie.lock(%[[VAL_1]], 5) {init = 1 : i32}
+// CHECK:  %[[VAL_6:.*]] = aie.lock(%[[VAL_1]], 4) {init = 0 : i32}
+// CHECK:  %[[VAL_7:.*]] = aie.lock(%[[VAL_1]], 3) {init = 1 : i32}
+// CHECK:  %[[VAL_8:.*]] = aie.lock(%[[VAL_1]], 2) {init = 0 : i32}
+// CHECK:  %[[VAL_9:.*]] = aie.lock(%[[VAL_1]], 1) {init = 1 : i32}
+// CHECK:  %[[VAL_10:.*]] = aie.lock(%[[VAL_1]], 0) {init = 0 : i32}
+// CHECK:  %[[VAL_15:.*]] = aie.lock(%[[VAL_2]], 3) {init = 3 : i32}
+// CHECK:  %[[VAL_16:.*]] = aie.lock(%[[VAL_2]], 2) {init = 0 : i32}
+// CHECK:  %[[VAL_17:.*]] = aie.lock(%[[VAL_2]], 1) {init = 1 : i32}
+// CHECK:  %[[VAL_18:.*]] = aie.lock(%[[VAL_2]], 0) {init = 0 : i32}
+// CHECK:  %[[VAL_19:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = "buf6"} : memref<32x32xi32, 1>
+// CHECK:  %[[VAL_20:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = "buf5"} : memref<32x32xi32, 1>
+// CHECK:  %[[VAL_21:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = "buf4"} : memref<32x32xi32, 1>
+// CHECK:  %[[VAL_22:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = "buf3"} : memref<32x32xi32, 1>
+// CHECK:  %[[VAL_23:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = "buf2"} : memref<32x32xi32, 2>
+// CHECK:  %[[VAL_24:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = "buf1"} : memref<32x32xi32, 2>
+// CHECK:  %[[VAL_25:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = "buf0"} : memref<32x32xi32, 2>
+// CHECK:  %[[VAL_26:.*]] = aie.mem(%[[VAL_2]]) {
+// CHECK:  %[[VAL_27:.*]] = aie.core(%[[VAL_2]]) {
+// CHECK:  aie.flow(%[[VAL_0]], DMA : 0, %[[VAL_1]], DMA : 0)
+// CHECK:  aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_0]], DMA : 0)
+// CHECK:  aie.flow(%[[VAL_1]], DMA : 1, %[[VAL_2]], DMA : 0)
+// CHECK:  aie.flow(%[[VAL_2]], DMA : 0, %[[VAL_1]], DMA : 1)
+// CHECK:  %[[VAL_28:.*]] = aie.memtile_dma(%[[VAL_1]]) {
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 module {

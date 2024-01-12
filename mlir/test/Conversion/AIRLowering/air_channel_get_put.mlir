@@ -63,21 +63,19 @@ func.func @par_put_get(%arg0: memref<32x16xi32>, %arg1: memref<32x16xi32>) {
   %async_token_2 = air.wait_all async
   %5 = scf.parallel (%arg8, %arg9) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%async_token_2) -> !air.async.token {
     %async_token = air.channel.put async  @channel_2[%arg8, %arg9] (%arg0[%c8, %c0] [%c8, %c16] [%c32, %c0]) {id = 1 : i32} : (memref<32x16xi32>)
-    scf.reduce(%async_token)  : !air.async.token {
+    scf.reduce(%async_token : !air.async.token) {
     ^bb0(%arg10: !air.async.token, %arg11: !air.async.token):
       %9 = air.wait_all async [%arg10, %arg11] 
       scf.reduce.return %9 : !air.async.token
     }
-    scf.yield
   }
   %6 = scf.parallel (%arg8, %arg9) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%async_token_2) -> !air.async.token {
     %async_token_0 = air.channel.get async @channel_3[%arg8, %arg9] (%arg1[%c8, %c0] [%c8, %c16] [%c32, %c0]) {id = 2 : i32} : (memref<32x16xi32>)
-    scf.reduce(%async_token_0)  : !air.async.token {
+    scf.reduce(%async_token_0 : !air.async.token) {
     ^bb0(%arg10: !air.async.token, %arg11: !air.async.token):
       %9 = air.wait_all async [%arg10, %arg11] 
       scf.reduce.return %9 : !air.async.token
     }
-    scf.yield
   }
   air.herd @herd_0  tile (%arg2, %arg3) in (%arg4=%c2, %arg5=%c2) attributes {x_loc = 7 : i64, y_loc = 2 : i64} {
     %c0_1 = arith.constant 0 : index
@@ -123,24 +121,22 @@ func.func @par_with_for_put_get(%arg0: memref<32x16xi32>, %arg1: memref<32x16xi3
   %async_token_2 = air.wait_all async
   %5 = scf.parallel (%arg8, %arg9) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%async_token_2) -> !air.async.token {
     %async_token = air.channel.put async  @channel_4[%arg8, %arg9] (%arg0[%c8, %c0] [%c8, %c16] [%c32, %c0]) {id = 1 : i32} : (memref<32x16xi32>)
-    scf.reduce(%async_token)  : !air.async.token {
+    scf.reduce(%async_token : !air.async.token) {
     ^bb0(%arg10: !air.async.token, %arg11: !air.async.token):
       %9 = air.wait_all async [%arg10, %arg11] 
       scf.reduce.return %9 : !air.async.token
     }
-    scf.yield
   }
   %6 = scf.parallel (%arg8, %arg9) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) init (%async_token_2) -> !air.async.token {
     %7 = scf.for %arg12 = %c0 to %c2 step %c1 iter_args(%arg13 = %async_token_2) -> (!air.async.token) {
       %async_token_0 = air.channel.get async [%arg13] @channel_5[%arg8, %arg9] (%arg1[%c8, %c0] [%c8, %c16] [%c32, %c0]) {id = 2 : i32} : (memref<32x16xi32>)
       scf.yield %async_token_0 : !air.async.token
     }
-    scf.reduce(%7)  : !air.async.token {
+    scf.reduce(%7 : !air.async.token) {
     ^bb0(%arg10: !air.async.token, %arg11: !air.async.token):
       %9 = air.wait_all async [%arg10, %arg11] 
       scf.reduce.return %9 : !air.async.token
     }
-    scf.yield
   }
   air.herd @herd_0  tile (%arg2, %arg3) in (%arg4=%c2, %arg5=%c2) attributes {x_loc = 7 : i64, y_loc = 2 : i64} {
     %c0_1 = arith.constant 0 : index

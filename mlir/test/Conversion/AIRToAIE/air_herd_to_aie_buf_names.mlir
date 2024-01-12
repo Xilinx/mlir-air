@@ -8,7 +8,7 @@
 
 // RUN: air-opt -air-to-aie %s | FileCheck %s
 
-// CHECK: AIE.device
+// CHECK: aie.device
 // CHECK: scratch_2_2
 // CHECK: buf8
 // ...

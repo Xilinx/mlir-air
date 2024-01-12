@@ -20,7 +20,7 @@
 // CHECK: memref.copy {{.*}} : memref<{{.*}}, 1> to memref<{{.*}}, 2>
 // CHECK: memref.copy {{.*}} : memref<{{.*}}, 1> to memref<{{.*}}, 2>
 // CHECK: memref.copy {{.*}} : memref<{{.*}}, 2> to memref<{{.*}}, 1>
-// CHECK: scf.yield
+// CHECK: scf.reduce
 // CHECK: memref.copy {{.*}} : memref<{{.*}}, 1> to memref<{{.*}}>
 func.func @matmul_on_memref(%arg0: memref<128x128xi32>, %arg1: memref<128x128xi32>) -> memref<128x128xi32> {
     %c0_i32 = arith.constant 0 : i32

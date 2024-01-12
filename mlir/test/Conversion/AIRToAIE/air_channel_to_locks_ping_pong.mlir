@@ -8,52 +8,52 @@
 // RUN: air-opt %s -air-to-aie="row-offset=3 col-offset=2 device=xcve2802" --split-input-file | FileCheck %s
 
 // one dma channel, multiple dma memcpy ops over time
-// CHECK: AIE.device
-// CHECK:         %[[VAL_0:.*]] = AIE.tile(2, 1)
-// CHECK:         %[[VAL_1:.*]] = AIE.tile(2, 3)
-// CHECK:         %[[VAL_2:.*]] = AIE.lock(%[[VAL_0]], 1) {init = 1 : i32}
-// CHECK:         %[[VAL_3:.*]] = AIE.lock(%[[VAL_0]], 0) {init = 0 : i32}
-// CHECK:         %[[VAL_4:.*]] = AIE.lock(%[[VAL_1]], 1) {init = 2 : i32}
-// CHECK:         %[[VAL_5:.*]] = AIE.lock(%[[VAL_1]], 0) {init = 0 : i32}
-// CHECK:         %[[VAL_8:.*]] = AIE.buffer(%[[VAL_0]]) {sym_name = {{.*}}} : memref<32x32xbf16, 1>
-// CHECK:         %[[VAL_9:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_10:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
+// CHECK: aie.device
+// CHECK:         %[[VAL_0:.*]] = aie.tile(2, 1)
+// CHECK:         %[[VAL_1:.*]] = aie.tile(2, 3)
+// CHECK:         %[[VAL_2:.*]] = aie.lock(%[[VAL_0]], 1) {init = 1 : i32}
+// CHECK:         %[[VAL_3:.*]] = aie.lock(%[[VAL_0]], 0) {init = 0 : i32}
+// CHECK:         %[[VAL_4:.*]] = aie.lock(%[[VAL_1]], 1) {init = 2 : i32}
+// CHECK:         %[[VAL_5:.*]] = aie.lock(%[[VAL_1]], 0) {init = 0 : i32}
+// CHECK:         %[[VAL_8:.*]] = aie.buffer(%[[VAL_0]]) {sym_name = {{.*}}} : memref<32x32xbf16, 1>
+// CHECK:         %[[VAL_9:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_10:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
 
-// CHECK:    AIE.mem(%[[VAL_1]])  {
-// CHECK:           AIE.dmaStart(S2MM, 0, ^bb1, ^bb3)
+// CHECK:    aie.mem(%[[VAL_1]])  {
+// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
-// CHECK:           AIE.useLock(%[[VAL_4]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.dmaBd(<%[[VAL_9]] : memref<32x32xbf16, 2>, 0, 1024>, 0)
-// CHECK:           AIE.useLock(%[[VAL_5]], Release, 1)
-// CHECK:           AIE.nextBd ^bb2
+// CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, 1)
+// CHECK:           aie.dma_bd(%[[VAL_9]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.use_lock(%[[VAL_5]], Release, 1)
+// CHECK:           aie.next_bd ^bb2
 // CHECK:         ^bb2:
-// CHECK:           AIE.useLock(%[[VAL_4]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.dmaBd(<%[[VAL_10]] : memref<32x32xbf16, 2>, 0, 1024>, 0)
-// CHECK:           AIE.useLock(%[[VAL_5]], Release, 1)
-// CHECK:           AIE.nextBd ^bb1
+// CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, 1)
+// CHECK:           aie.dma_bd(%[[VAL_10]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.use_lock(%[[VAL_5]], Release, 1)
+// CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb3:
-// CHECK:           AIE.end
+// CHECK:           aie.end
 // CHECK:         }
 
-// CHECK:    AIE.core(%[[VAL_1]])  {
-// CHECK:           AIE.useLock(%[[VAL_5]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.useLock(%[[VAL_5]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.useLock(%[[VAL_4]], Release, 1)
-// CHECK:           AIE.useLock(%[[VAL_4]], Release, 1)
-// CHECK:           AIE.end
+// CHECK:    aie.core(%[[VAL_1]])  {
+// CHECK:           aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, 1)
+// CHECK:           aie.use_lock(%[[VAL_5]], AcquireGreaterEqual, 1)
+// CHECK:           aie.use_lock(%[[VAL_4]], Release, 1)
+// CHECK:           aie.use_lock(%[[VAL_4]], Release, 1)
+// CHECK:           aie.end
 // CHECK:         }
 
-// CHECK:         AIE.flow(%[[VAL_0]], DMA : 0, %[[VAL_1]], DMA : 0)
+// CHECK:         aie.flow(%[[VAL_0]], DMA : 0, %[[VAL_1]], DMA : 0)
 
-// CHECK:    AIE.memTileDMA(%[[VAL_0]])  {
-// CHECK:           AIE.dmaStart(MM2S, 0, ^bb1, ^bb2)
+// CHECK:    aie.memtile_dma(%[[VAL_0]])  {
+// CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb2)
 // CHECK:         ^bb1:
-// CHECK:           AIE.useLock(%[[VAL_3]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.dmaBd(<%[[VAL_8]] : memref<32x32xbf16, 1>, 0, 1024>, 0)
-// CHECK:           AIE.useLock(%[[VAL_2]], Release, 1)
-// CHECK:           AIE.nextBd ^bb1
+// CHECK:           aie.use_lock(%[[VAL_3]], AcquireGreaterEqual, 1)
+// CHECK:           aie.dma_bd(%[[VAL_8]] : memref<32x32xbf16, 1>, 0, 1024)
+// CHECK:           aie.use_lock(%[[VAL_2]], Release, 1)
+// CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb2:
-// CHECK:           AIE.end
+// CHECK:           aie.end
 // CHECK:         }
 
 #set = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 == 0)>
@@ -99,68 +99,68 @@ func.func @multi_memcpys_over_time() {
 // -----
 
 // core-to-core ping pong
-// CHECK: AIE.device
-// CHECK:         %[[VAL_0:.*]] = AIE.tile(2, 1)
-// CHECK:         %[[VAL_1:.*]] = AIE.tile(2, 3)
-// CHECK:         %[[VAL_2:.*]] = AIE.tile(2, 4)
-// CHECK:         %[[VAL_3:.*]] = AIE.lock(%[[VAL_1]], 1) {init = 2 : i32}
-// CHECK:         %[[VAL_4:.*]] = AIE.lock(%[[VAL_1]], 0) {init = 0 : i32}
-// CHECK:         %[[VAL_7:.*]] = AIE.lock(%[[VAL_2]], 1) {init = 2 : i32}
-// CHECK:         %[[VAL_8:.*]] = AIE.lock(%[[VAL_2]], 0) {init = 0 : i32}
-// CHECK:         %[[VAL_11:.*]] = AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_12:.*]] = AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_13:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_14:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
+// CHECK: aie.device
+// CHECK:         %[[VAL_0:.*]] = aie.tile(2, 1)
+// CHECK:         %[[VAL_1:.*]] = aie.tile(2, 3)
+// CHECK:         %[[VAL_2:.*]] = aie.tile(2, 4)
+// CHECK:         %[[VAL_3:.*]] = aie.lock(%[[VAL_1]], 1) {init = 2 : i32}
+// CHECK:         %[[VAL_4:.*]] = aie.lock(%[[VAL_1]], 0) {init = 0 : i32}
+// CHECK:         %[[VAL_7:.*]] = aie.lock(%[[VAL_2]], 1) {init = 2 : i32}
+// CHECK:         %[[VAL_8:.*]] = aie.lock(%[[VAL_2]], 0) {init = 0 : i32}
+// CHECK:         %[[VAL_11:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_12:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_13:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_14:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
 
-// CHECK:    AIE.mem(%[[VAL_2]])  {
-// CHECK:           AIE.dmaStart(S2MM, 0, ^bb1, ^bb3)
+// CHECK:    aie.mem(%[[VAL_2]])  {
+// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
-// CHECK:           AIE.useLock(%[[VAL_7]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.dmaBd(<%[[VAL_11]] : memref<32x32xbf16, 2>, 0, 1024>, 0)
-// CHECK:           AIE.useLock(%[[VAL_8]], Release, 1)
-// CHECK:           AIE.nextBd ^bb2
+// CHECK:           aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, 1)
+// CHECK:           aie.dma_bd(%[[VAL_11]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.use_lock(%[[VAL_8]], Release, 1)
+// CHECK:           aie.next_bd ^bb2
 // CHECK:         ^bb2:
-// CHECK:           AIE.useLock(%[[VAL_7]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.dmaBd(<%[[VAL_12]] : memref<32x32xbf16, 2>, 0, 1024>, 0)
-// CHECK:           AIE.useLock(%[[VAL_8]], Release, 1)
-// CHECK:           AIE.nextBd ^bb1
+// CHECK:           aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, 1)
+// CHECK:           aie.dma_bd(%[[VAL_12]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.use_lock(%[[VAL_8]], Release, 1)
+// CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb3:
-// CHECK:           AIE.end
+// CHECK:           aie.end
 // CHECK:         }
 
-// CHECK:    AIE.core(%[[VAL_2]])  {
-// CHECK:           AIE.useLock(%[[VAL_8]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.useLock(%[[VAL_8]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.useLock(%[[VAL_7]], Release, 1)
-// CHECK:           AIE.useLock(%[[VAL_7]], Release, 1)
-// CHECK:           AIE.end
+// CHECK:    aie.core(%[[VAL_2]])  {
+// CHECK:           aie.use_lock(%[[VAL_8]], AcquireGreaterEqual, 1)
+// CHECK:           aie.use_lock(%[[VAL_8]], AcquireGreaterEqual, 1)
+// CHECK:           aie.use_lock(%[[VAL_7]], Release, 1)
+// CHECK:           aie.use_lock(%[[VAL_7]], Release, 1)
+// CHECK:           aie.end
 // CHECK:         }
 
-// CHECK:    AIE.mem(%[[VAL_1]])  {
-// CHECK:           AIE.dmaStart(MM2S, 0, ^bb1, ^bb3)
+// CHECK:    aie.mem(%[[VAL_1]])  {
+// CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
-// CHECK:           AIE.useLock(%[[VAL_4]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.dmaBd(<%[[VAL_13]] : memref<32x32xbf16, 2>, 0, 1024>, 0)
-// CHECK:           AIE.useLock(%[[VAL_3]], Release, 1)
-// CHECK:           AIE.nextBd ^bb2
+// CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, 1)
+// CHECK:           aie.dma_bd(%[[VAL_13]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.use_lock(%[[VAL_3]], Release, 1)
+// CHECK:           aie.next_bd ^bb2
 // CHECK:         ^bb2:
-// CHECK:           AIE.useLock(%[[VAL_4]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.dmaBd(<%[[VAL_14]] : memref<32x32xbf16, 2>, 0, 1024>, 0)
-// CHECK:           AIE.useLock(%[[VAL_3]], Release, 1)
-// CHECK:           AIE.nextBd ^bb1
+// CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, 1)
+// CHECK:           aie.dma_bd(%[[VAL_14]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.use_lock(%[[VAL_3]], Release, 1)
+// CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb3:
-// CHECK:           AIE.end
+// CHECK:           aie.end
 // CHECK:         }
 
-// CHECK:    AIE.core(%[[VAL_1]])  {
-// CHECK:           AIE.useLock(%[[VAL_3]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.useLock(%[[VAL_3]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.useLock(%[[VAL_4]], Release, 1)
-// CHECK:           AIE.useLock(%[[VAL_4]], Release, 1)
-// CHECK:           AIE.end
+// CHECK:    aie.core(%[[VAL_1]])  {
+// CHECK:           aie.use_lock(%[[VAL_3]], AcquireGreaterEqual, 1)
+// CHECK:           aie.use_lock(%[[VAL_3]], AcquireGreaterEqual, 1)
+// CHECK:           aie.use_lock(%[[VAL_4]], Release, 1)
+// CHECK:           aie.use_lock(%[[VAL_4]], Release, 1)
+// CHECK:           aie.end
 // CHECK:         }
 
-// CHECK:         AIE.flow(%[[VAL_1]], DMA : 0, %[[VAL_2]], DMA : 0)
+// CHECK:         aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_2]], DMA : 0)
 
 #set1 = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 == 0)>
 air.channel @channel_1 [1, 1]
@@ -207,68 +207,68 @@ func.func @core_to_core_ping_pong() {
 // -----
 
 // core-to-core ping pong, with multi-token scf.for loop
-// CHECK: AIE.device
-// CHECK:         %[[VAL_0:.*]] = AIE.tile(2, 1)
-// CHECK:         %[[VAL_1:.*]] = AIE.tile(2, 3)
-// CHECK:         %[[VAL_2:.*]] = AIE.tile(2, 4)
-// CHECK:         %[[VAL_3:.*]] = AIE.lock(%[[VAL_1]], 1) {init = 2 : i32}
-// CHECK:         %[[VAL_4:.*]] = AIE.lock(%[[VAL_1]], 0) {init = 0 : i32}
-// CHECK:         %[[VAL_7:.*]] = AIE.lock(%[[VAL_2]], 1) {init = 2 : i32}
-// CHECK:         %[[VAL_8:.*]] = AIE.lock(%[[VAL_2]], 0) {init = 0 : i32}
-// CHECK:         %[[VAL_11:.*]] = AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_12:.*]] = AIE.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_13:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
-// CHECK:         %[[VAL_14:.*]] = AIE.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
+// CHECK: aie.device
+// CHECK:         %[[VAL_0:.*]] = aie.tile(2, 1)
+// CHECK:         %[[VAL_1:.*]] = aie.tile(2, 3)
+// CHECK:         %[[VAL_2:.*]] = aie.tile(2, 4)
+// CHECK:         %[[VAL_3:.*]] = aie.lock(%[[VAL_1]], 1) {init = 2 : i32}
+// CHECK:         %[[VAL_4:.*]] = aie.lock(%[[VAL_1]], 0) {init = 0 : i32}
+// CHECK:         %[[VAL_7:.*]] = aie.lock(%[[VAL_2]], 1) {init = 2 : i32}
+// CHECK:         %[[VAL_8:.*]] = aie.lock(%[[VAL_2]], 0) {init = 0 : i32}
+// CHECK:         %[[VAL_11:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_12:.*]] = aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_13:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
+// CHECK:         %[[VAL_14:.*]] = aie.buffer(%[[VAL_1]]) {sym_name = {{.*}}} : memref<32x32xbf16, 2>
 
-// CHECK:    AIE.mem(%[[VAL_2]])  {
-// CHECK:           AIE.dmaStart(S2MM, 0, ^bb1, ^bb3)
+// CHECK:    aie.mem(%[[VAL_2]])  {
+// CHECK:           aie.dma_start(S2MM, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
-// CHECK:           AIE.useLock(%[[VAL_7]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.dmaBd(<%[[VAL_11]] : memref<32x32xbf16, 2>, 0, 1024>, 0)
-// CHECK:           AIE.useLock(%[[VAL_8]], Release, 1)
-// CHECK:           AIE.nextBd ^bb2
+// CHECK:           aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, 1)
+// CHECK:           aie.dma_bd(%[[VAL_11]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.use_lock(%[[VAL_8]], Release, 1)
+// CHECK:           aie.next_bd ^bb2
 // CHECK:         ^bb2:
-// CHECK:           AIE.useLock(%[[VAL_7]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.dmaBd(<%[[VAL_12]] : memref<32x32xbf16, 2>, 0, 1024>, 0)
-// CHECK:           AIE.useLock(%[[VAL_8]], Release, 1)
-// CHECK:           AIE.nextBd ^bb1
+// CHECK:           aie.use_lock(%[[VAL_7]], AcquireGreaterEqual, 1)
+// CHECK:           aie.dma_bd(%[[VAL_12]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.use_lock(%[[VAL_8]], Release, 1)
+// CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb3:
-// CHECK:           AIE.end
+// CHECK:           aie.end
 // CHECK:         }
 
-// CHECK:    AIE.core(%[[VAL_2]])  {
-// CHECK:           AIE.useLock(%[[VAL_8]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.useLock(%[[VAL_7]], Release, 1)
-// CHECK:           AIE.useLock(%[[VAL_8]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.useLock(%[[VAL_7]], Release, 1)
-// CHECK:           AIE.end
+// CHECK:    aie.core(%[[VAL_2]])  {
+// CHECK:           aie.use_lock(%[[VAL_8]], AcquireGreaterEqual, 1)
+// CHECK:           aie.use_lock(%[[VAL_7]], Release, 1)
+// CHECK:           aie.use_lock(%[[VAL_8]], AcquireGreaterEqual, 1)
+// CHECK:           aie.use_lock(%[[VAL_7]], Release, 1)
+// CHECK:           aie.end
 // CHECK:         }
 
-// CHECK:    AIE.mem(%[[VAL_1]])  {
-// CHECK:           AIE.dmaStart(MM2S, 0, ^bb1, ^bb3)
+// CHECK:    aie.mem(%[[VAL_1]])  {
+// CHECK:           aie.dma_start(MM2S, 0, ^bb1, ^bb3)
 // CHECK:         ^bb1:
-// CHECK:           AIE.useLock(%[[VAL_4]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.dmaBd(<%[[VAL_13]] : memref<32x32xbf16, 2>, 0, 1024>, 0)
-// CHECK:           AIE.useLock(%[[VAL_3]], Release, 1)
-// CHECK:           AIE.nextBd ^bb2
+// CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, 1)
+// CHECK:           aie.dma_bd(%[[VAL_13]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.use_lock(%[[VAL_3]], Release, 1)
+// CHECK:           aie.next_bd ^bb2
 // CHECK:         ^bb2:
-// CHECK:           AIE.useLock(%[[VAL_4]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.dmaBd(<%[[VAL_14]] : memref<32x32xbf16, 2>, 0, 1024>, 0)
-// CHECK:           AIE.useLock(%[[VAL_3]], Release, 1)
-// CHECK:           AIE.nextBd ^bb1
+// CHECK:           aie.use_lock(%[[VAL_4]], AcquireGreaterEqual, 1)
+// CHECK:           aie.dma_bd(%[[VAL_14]] : memref<32x32xbf16, 2>, 0, 1024)
+// CHECK:           aie.use_lock(%[[VAL_3]], Release, 1)
+// CHECK:           aie.next_bd ^bb1
 // CHECK:         ^bb3:
-// CHECK:           AIE.end
+// CHECK:           aie.end
 // CHECK:         }
 
-// CHECK:    AIE.core(%[[VAL_1]])  {
-// CHECK:           AIE.useLock(%[[VAL_3]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.useLock(%[[VAL_4]], Release, 1)
-// CHECK:           AIE.useLock(%[[VAL_3]], AcquireGreaterEqual, 1)
-// CHECK:           AIE.useLock(%[[VAL_4]], Release, 1)
-// CHECK:           AIE.end
+// CHECK:    aie.core(%[[VAL_1]])  {
+// CHECK:           aie.use_lock(%[[VAL_3]], AcquireGreaterEqual, 1)
+// CHECK:           aie.use_lock(%[[VAL_4]], Release, 1)
+// CHECK:           aie.use_lock(%[[VAL_3]], AcquireGreaterEqual, 1)
+// CHECK:           aie.use_lock(%[[VAL_4]], Release, 1)
+// CHECK:           aie.end
 // CHECK:         }
 
-// CHECK:         AIE.flow(%[[VAL_1]], DMA : 0, %[[VAL_2]], DMA : 0)
+// CHECK:         aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_2]], DMA : 0)
 
 #set1 = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 == 0)>
 air.channel @channel_1 [1, 1]

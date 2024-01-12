@@ -84,7 +84,7 @@ struct RemoveAllocCopyPattern : public OpRewritePattern<memref::AllocOp> {
 };
 
 // Rewrite of this pattern:
-//   %1 = AIE.buffer(%0) {..} : memref<?, 2>
+//   %1 = aie.buffer(%0) {..} : memref<?, 2>
 //   %2 = memref.alloc() : memref<?>
 //   <use of %2>
 //   %3 = memref.tensor_load %2 : memref<?>

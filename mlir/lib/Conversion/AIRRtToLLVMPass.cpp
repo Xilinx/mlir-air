@@ -980,9 +980,9 @@ public:
   matchAndRewrite(scf::ReduceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto newOp =
-        rewriter.replaceOpWithNewOp<scf::ReduceOp>(op, adaptor.getOperand());
-    auto body = &op.getRegion().front();
-    auto newBody = &newOp.getRegion().front();
+        rewriter.create<scf::ReduceOp>(op->getLoc(), adaptor.getOperands());
+    auto body = &op.getRegion(0).front();
+    auto newBody = &newOp.getRegion(0).front();
 
     for (int i = 0, e = body->getNumArguments(); i < e; i++) {
       body->getArgument(i).replaceAllUsesWith(newBody->getArgument(i));
@@ -991,6 +991,7 @@ public:
     auto &ops = body->getOperations();
     auto &newOps = newBody->getOperations();
     newOps.splice(newOps.begin(), ops, ops.begin(), ops.end());
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -1089,7 +1090,7 @@ public:
 
     auto &ops = body->getOperations();
     auto &newOps = newBody->getOperations();
-    newOps.splice(newOps.begin(), ops, ops.begin(), --ops.end());
+    newOps.splice(newOps.begin(), ops, ops.begin(), ops.end());
 
     rewriter.replaceOp(op, newPar.getResults());
     return success();
@@ -1271,10 +1272,11 @@ public:
     });
 
     target.addDynamicallyLegalOp<scf::ReduceOp>([&](scf::ReduceOp op) {
-      if (op.getOperand().getType().isa<xilinx::airrt::EventType>())
-        return false;
-      else
-        return true;
+      for (auto oper : op.getOperands()) {
+        if (oper.getType().isa<xilinx::airrt::EventType>())
+          return false;
+      }
+      return true;
     });
 
     target.addDynamicallyLegalOp<scf::ReduceReturnOp>(

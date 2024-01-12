@@ -23,13 +23,11 @@
 // CHECK: air.channel.put{{.*}}@channel_2
 // CHECK: scf.reduce
 // CHECK: scf.yield
-// CHECK: scf.yield
 
 // CHECK: scf.for
 // CHECK: scf.parallel
 // CHECK: air.channel.get{{.*}}@channel_3
 // CHECK: scf.reduce
-// CHECK: scf.yield
 // CHECK: scf.yield
 
 // CHECK: scf.for
@@ -106,21 +104,19 @@ module {
           }
           %12 = scf.parallel (%arg9, %arg10) = (%c0_23, %c0_23) to (%c2, %c2) step (%c1_22, %c1_22) init (%arg8) -> !air.async.token {
             %15 = air.channel.put async [%arg8]  @channel_2[%arg9, %arg10] (%results_27[] [] []) {id = 12 : i32} : (memref<32x32xi32, 1>)
-            scf.reduce(%15)  : !air.async.token {
+            scf.reduce(%15 : !air.async.token) {
             ^bb0(%arg11: !air.async.token, %arg12: !air.async.token):
               %16 = air.wait_all async [%arg11, %arg12] 
               scf.reduce.return %16 : !air.async.token
             }
-            scf.yield
           }
           %13 = scf.parallel (%arg9, %arg10) = (%c0_23, %c0_23) to (%c2, %c2) step (%c1_22, %c1_22) init (%arg8) -> !air.async.token {
             %15 = air.channel.get async [%arg8]  @channel_3[%arg9, %arg10] (%results_27[] [] []) {id = 13 : i32} : (memref<32x32xi32, 1>)
-            scf.reduce(%15)  : !air.async.token {
+            scf.reduce(%15 : !air.async.token) {
             ^bb0(%arg11: !air.async.token, %arg12: !air.async.token):
               %16 = air.wait_all async [%arg11, %arg12] 
               scf.reduce.return %16 : !air.async.token
             }
-            scf.yield
           }
           %14 = air.wait_all async [%11, %12, %13] 
           scf.yield %14 : !air.async.token

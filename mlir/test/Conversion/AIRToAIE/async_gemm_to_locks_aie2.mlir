@@ -7,38 +7,38 @@
 
 // RUN: air-opt -air-fuse-channels -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' -air-to-aie="emit-while-loop=false use-objectfifo=false row-offset=3 col-offset=5 device=xcve2802" %s | FileCheck %s
 
-// CHECK-LABEL:   AIE.device(xcve2802) {
-// CHECK:   %[[VAL_0:.*]] = AIE.tile(2, 0)
-// CHECK:   %[[VAL_1:.*]] = AIE.tile(5, 1)
-// CHECK:   %[[VAL_2:.*]] = AIE.tile(6, 1)
-// CHECK:   %[[VAL_3:.*]] = AIE.tile(5, 3)
-// CHECK:   %[[VAL_4:.*]] = AIE.tile(6, 3)
-// CHECK:   %[[VAL_5:.*]] = AIE.tile(5, 4)
-// CHECK:   %[[VAL_6:.*]] = AIE.tile(6, 4)
-// CHECK:   AIE.buffer(%[[VAL_1]]){{.*}}memref<64x64xi32, 1>
-// CHECK:   AIE.buffer(%[[VAL_1]]){{.*}}memref<64x64xi32, 1>
-// CHECK:   AIE.buffer(%[[VAL_1]]){{.*}}memref<64x64xi32, 1>
-// CHECK:   AIE.buffer(%[[VAL_6]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   AIE.buffer(%[[VAL_6]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   AIE.buffer(%[[VAL_6]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   AIE.buffer(%[[VAL_5]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   AIE.buffer(%[[VAL_5]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   AIE.buffer(%[[VAL_5]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   AIE.buffer(%[[VAL_4]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   AIE.buffer(%[[VAL_4]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   AIE.buffer(%[[VAL_4]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   AIE.buffer(%[[VAL_3]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   AIE.buffer(%[[VAL_3]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   AIE.buffer(%[[VAL_3]]){{.*}}memref<32x32xi32, 2>
-// CHECK:   %[[VAL_13:.*]] = AIE.mem(%[[VAL_6]]) {
-// CHECK:   %[[VAL_14:.*]] = AIE.core(%[[VAL_6]]) {
-// CHECK:   %[[VAL_15:.*]] = AIE.mem(%[[VAL_5]]) {
-// CHECK:   %[[VAL_16:.*]] = AIE.core(%[[VAL_5]]) {
-// CHECK:   %[[VAL_17:.*]] = AIE.mem(%[[VAL_4]]) {
-// CHECK:   %[[VAL_18:.*]] = AIE.core(%[[VAL_4]]) {
-// CHECK:   %[[VAL_19:.*]] = AIE.mem(%[[VAL_3]]) {
-// CHECK:   %[[VAL_20:.*]] = AIE.core(%[[VAL_3]]) {
-// CHECK:   AIE.memTileDMA(%[[VAL_1]]) {
+// CHECK-LABEL:   aie.device(xcve2802) {
+// CHECK:   %[[VAL_0:.*]] = aie.tile(2, 0)
+// CHECK:   %[[VAL_1:.*]] = aie.tile(5, 1)
+// CHECK:   %[[VAL_2:.*]] = aie.tile(6, 1)
+// CHECK:   %[[VAL_3:.*]] = aie.tile(5, 3)
+// CHECK:   %[[VAL_4:.*]] = aie.tile(6, 3)
+// CHECK:   %[[VAL_5:.*]] = aie.tile(5, 4)
+// CHECK:   %[[VAL_6:.*]] = aie.tile(6, 4)
+// CHECK:   aie.buffer(%[[VAL_1]]){{.*}}memref<64x64xi32, 1>
+// CHECK:   aie.buffer(%[[VAL_1]]){{.*}}memref<64x64xi32, 1>
+// CHECK:   aie.buffer(%[[VAL_1]]){{.*}}memref<64x64xi32, 1>
+// CHECK:   aie.buffer(%[[VAL_6]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[VAL_6]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[VAL_6]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[VAL_5]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[VAL_5]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[VAL_5]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[VAL_4]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[VAL_4]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[VAL_4]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[VAL_3]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[VAL_3]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   aie.buffer(%[[VAL_3]]){{.*}}memref<32x32xi32, 2>
+// CHECK:   %[[VAL_13:.*]] = aie.mem(%[[VAL_6]]) {
+// CHECK:   %[[VAL_14:.*]] = aie.core(%[[VAL_6]]) {
+// CHECK:   %[[VAL_15:.*]] = aie.mem(%[[VAL_5]]) {
+// CHECK:   %[[VAL_16:.*]] = aie.core(%[[VAL_5]]) {
+// CHECK:   %[[VAL_17:.*]] = aie.mem(%[[VAL_4]]) {
+// CHECK:   %[[VAL_18:.*]] = aie.core(%[[VAL_4]]) {
+// CHECK:   %[[VAL_19:.*]] = aie.mem(%[[VAL_3]]) {
+// CHECK:   %[[VAL_20:.*]] = aie.core(%[[VAL_3]]) {
+// CHECK:   aie.memtile_dma(%[[VAL_1]]) {
 
 
 #map = affine_map<()[s0] -> (s0 * 64)>
@@ -142,12 +142,11 @@ module {
               %22 = air.channel.put async [%arg17]  @channel_3[%arg14, %arg15] (%results_19[%results_28, %arg16] [%c32, %c32] [%c64_17, %c1_13]) {id = 8 : i32} : (memref<64x64xi32, 1>)
               scf.yield %22 : !air.async.token
             }
-            scf.reduce(%21)  : !air.async.token {
+            scf.reduce(%21 : !air.async.token) {
             ^bb0(%arg16: !air.async.token, %arg17: !air.async.token):
               %22 = air.wait_all async [%arg16, %arg17] 
               scf.reduce.return %22 : !air.async.token
             }
-            scf.yield
           }
           %14 = scf.parallel (%arg14, %arg15) = (%c0_15, %c0_15) to (%c2_14, %c2_14) step (%c1_13, %c1_13) init (%11) -> !air.async.token {
             %async_token_27, %results_28 = air.execute -> (index) {
@@ -159,12 +158,11 @@ module {
               %22 = air.channel.put async [%arg17]  @channel_4[%arg14, %arg15] (%results_21[%arg16, %results_28] [%c32, %c32] [%c64_17, %c1_13]) {id = 9 : i32} : (memref<64x64xi32, 1>)
               scf.yield %22 : !air.async.token
             }
-            scf.reduce(%21)  : !air.async.token {
+            scf.reduce(%21 : !air.async.token) {
             ^bb0(%arg16: !air.async.token, %arg17: !air.async.token):
               %22 = air.wait_all async [%arg16, %arg17] 
               scf.reduce.return %22 : !air.async.token
             }
-            scf.yield
           }
           %15 = scf.parallel (%arg14, %arg15) = (%c0_15, %c0_15) to (%c2_14, %c2_14) step (%c1_13, %c1_13) init (%12) -> !air.async.token {
             %async_token_27, %results_28 = air.execute -> (index) {
@@ -180,12 +178,11 @@ module {
               %22 = air.channel.put async [%arg17]  @channel_5[%arg14, %arg15] (%results_23[%results_28, %results_30] [%c32, %c32] [%c64_17, %c1_13]) {id = 10 : i32} : (memref<64x64xi32, 1>)
               scf.yield %22 : !air.async.token
             }
-            scf.reduce(%21)  : !air.async.token {
+            scf.reduce(%21 : !air.async.token) {
             ^bb0(%arg16: !air.async.token, %arg17: !air.async.token):
               %22 = air.wait_all async [%arg16, %arg17] 
               scf.reduce.return %22 : !air.async.token
             }
-            scf.yield
           }
           %16 = scf.parallel (%arg14, %arg15) = (%c0_15, %c0_15) to (%c2_14, %c2_14) step (%c1_13, %c1_13) init (%12) -> !air.async.token {
             %async_token_27, %results_28 = air.execute -> (index) {
@@ -201,12 +198,11 @@ module {
               %22 = air.channel.get async [%arg17]  @channel_6[%arg14, %arg15] (%results_23[%results_28, %results_30] [%c32, %c32] [%c64_17, %c1_13]) {id = 11 : i32} : (memref<64x64xi32, 1>)
               scf.yield %22 : !air.async.token
             }
-            scf.reduce(%21)  : !air.async.token {
+            scf.reduce(%21 : !air.async.token) {
             ^bb0(%arg16: !air.async.token, %arg17: !air.async.token):
               %22 = air.wait_all async [%arg16, %arg17] 
               scf.reduce.return %22 : !air.async.token
             }
-            scf.yield
           }
           %17 = air.herd @herd_0 async [%12, %11, %10]  tile (%arg14, %arg15) in (%arg16=%c2_14, %arg17=%c2_14) attributes {id = 3 : i32} {
             %c0_27 = arith.constant 0 : index

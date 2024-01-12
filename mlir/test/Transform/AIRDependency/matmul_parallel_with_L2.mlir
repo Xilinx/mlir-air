@@ -63,7 +63,6 @@ module attributes {torch.debug_module_name = "mmult"} {
         memref.dealloc %3 : memref<64x64xf32, 1>
         memref.dealloc %4 : memref<64x64xf32, 1>
       }
-      scf.yield
     }
     memref.copy %1, %arg2 : memref<384x1024xf32> to memref<384x1024xf32>
     return

@@ -7,34 +7,34 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-to-aie | FileCheck %s
-// CHECK: [[T_0_0:%.*]] = AIE.tile(1, 1)
-// CHECK: [[T_1_0:%.*]] = AIE.tile(2, 1)
-// CHECK: [[T_0_1:%.*]] = AIE.tile(1, 2)
-// CHECK: [[T_1_1:%.*]] = AIE.tile(2, 2)
-// CHECK: [[C_1_1:%.*]] = AIE.core([[T_1_1]])
+// CHECK: [[T_0_0:%.*]] = aie.tile(1, 1)
+// CHECK: [[T_1_0:%.*]] = aie.tile(2, 1)
+// CHECK: [[T_0_1:%.*]] = aie.tile(1, 2)
+// CHECK: [[T_1_1:%.*]] = aie.tile(2, 2)
+// CHECK: [[C_1_1:%.*]] = aie.core([[T_1_1]])
 // CHECK: [[V1:%.*]] = arith.constant 6 : i32
 // CHECK: [[V0:%.*]] = arith.constant 10 : i32
 // CHECK: arith.addi %{{.*}}, [[V1]] : i32
 // CHECK: arith.addi %{{.*}}, [[V0]] : i32
-// CHECK: AIE.end
-// CHECK: [[C_0_1:%.*]] = AIE.core([[T_0_1]])
+// CHECK: aie.end
+// CHECK: [[C_0_1:%.*]] = aie.core([[T_0_1]])
 // CHECK: [[V3:%.*]] = arith.constant 6 : i32
 // CHECK: [[V2:%.*]] = arith.constant 8 : i32
 // CHECK: arith.addi %{{.*}}, [[V3]] : i32
 // CHECK: arith.addi %{{.*}}, [[V2]] : i32
-// CHECK: AIE.end
-// CHECK: [[C_1_0:%.*]] = AIE.core([[T_1_0]])
+// CHECK: aie.end
+// CHECK: [[C_1_0:%.*]] = aie.core([[T_1_0]])
 // CHECK: [[V5:%.*]] = arith.constant 4 : i32
 // CHECK: [[V4:%.*]] = arith.constant 10 : i32
 // CHECK: arith.addi %{{.*}}, [[V5]] : i32
 // CHECK: arith.addi %{{.*}}, [[V4]] : i32
-// CHECK: AIE.end
-// CHECK: [[C_0_0:%.*]] = AIE.core([[T_0_0]])
+// CHECK: aie.end
+// CHECK: [[C_0_0:%.*]] = aie.core([[T_0_0]])
 // CHECK: [[V7:%.*]] = arith.constant 4 : i32
 // CHECK: [[V6:%.*]] = arith.constant 8 : i32
 // CHECK: arith.addi %{{.*}}, [[V7]] : i32
 // CHECK: arith.addi %{{.*}}, [[V6]] : i32
-// CHECK: AIE.end
+// CHECK: aie.end
 #map0 = affine_map<()[s0] -> (s0 * 32)>
 #map1 = affine_map<(d0, d1) -> (d0, d1)>
 #set0 = affine_set<()[s0, s1] : (s0 >= 0, s1 == 0)>

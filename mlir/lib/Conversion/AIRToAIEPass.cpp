@@ -177,8 +177,8 @@ AIE::BufferOp allocateBufferOp(MemRefType memrefTy, AIE::TileOp tile,
   while (dyn_cast_or_null<AIE::TileOp>(t->getNextNode()))
     t = t->getNextNode();
   builder.setInsertionPointAfter(t);
-  AIE::BufferOp bufferOp =
-      builder.create<AIE::BufferOp>(tile->getLoc(), memrefTy, tile, nullptr);
+  AIE::BufferOp bufferOp = builder.create<AIE::BufferOp>(
+      tile->getLoc(), memrefTy, tile, nullptr, nullptr);
 
   std::stringstream ss =
       generateBufferNameInStringStream("buf", BufferId, attr, x, y);
@@ -227,7 +227,7 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       auto phys_x = x + col_offset;
       auto phys_y = y + row_offset;
 
-      // make the AIE.tile
+      // make the aie.tile
       auto tile = getPhysTileOp(aie_device, phys_x, phys_y);
 
       Operation *t = tile.getOperation();
@@ -235,7 +235,7 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
         t = t->getNextNode();
       builder.setInsertionPointAfter(t);
 
-      // make the AIE.core for the tile core
+      // make the aie.core for the tile core
       auto core = tile.getCoreOp();
       if (!core) {
         core = builder.create<AIE::CoreOp>(hloc, tile);
@@ -265,7 +265,7 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       assert((h.getBody().getBlocks().size() == 1) &&
              "Launch body can only contain one Block");
 
-      // generate the AIE.core body
+      // generate the aie.core body
       //
       OpBuilder core_builder(core);
       Block *core_bb = core_builder.createBlock(&core.getBody());
@@ -371,7 +371,7 @@ void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
     // TODO: Hard coded memtile row to be 1 here.
     auto phys_y = 1;
 
-    // make the AIE.tile
+    // make the aie.tile
     getPhysTileOp(aie_device, phys_x, phys_y);
   }
 }
@@ -756,7 +756,7 @@ void lowerScfAirTokens(AIE::DeviceOp m) {
 // };
 
 // This function replaces PipelinePutOp/PipelineGetOp pairs with a
-// shared AIE.buffer + AIE.lock. This is a single-buffered implementation
+// shared aie.buffer + aie.lock. This is a single-buffered implementation
 // with exclusive access to the buffer controlled by the lock. i.e. FIXME.
 // void lowerPipelineGetPut(AIE::DeviceOp &m,
 //                          std::map<AIE::TileOp, air::HerdOp> tileToHerdMap) {
@@ -2285,21 +2285,21 @@ public:
                              isAIE2 ? AIE::LockAction::AcquireGreaterEqual
                                     : AIE::LockAction::Acquire);
 
-    std::vector<AIE::DimTupleAttr> dims =
+    std::vector<AIE::BDDimLayoutAttr> dims =
         getWrapsAndStrides(sizes, strides, ndcpy->getContext());
 
     auto wraps_and_strides =
-        AIE::DimTupleArrayAttr::get(ndcpy->getContext(), ArrayRef(dims));
+        AIE::BDDimLayoutArrayAttr::get(ndcpy->getContext(), ArrayRef(dims));
     bool useDefaultDataAccessPattern =
         isAIE2 ? isDefaultDataAccessPattern(sizes, strides, memref) : true;
     if (wraps_and_strides.getValue().empty() || useDefaultDataAccessPattern)
       b.create<AIE::DMABDOp>(
           loc, bufferOp, offset,
-          cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(), 0);
+          cast<arith::ConstantIndexOp>(length.getDefiningOp()).value());
     else
       b.create<AIE::DMABDOp>(
           loc, bufferOp, offset,
-          cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(), 0,
+          cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(),
           wraps_and_strides);
     b.create<AIE::UseLockOp>(loc, relLockOp, lockRelValue,
                              AIE::LockAction::Release);
@@ -2388,10 +2388,10 @@ public:
           o->erase();
       }
 
-      // Generate the TileDMA bd program. That is, generate the AIE.mem
+      // Generate the TileDMA bd program. That is, generate the aie.mem
       // body for the tile. Above we collected per channel lists of dma
       // copy operations. We'll assume these lists are in the correct
-      // execution order and generate a AIE.mem program to loop over
+      // execution order and generate a aie.mem program to loop over
       // each list.
 
       // Collect memcpy ops wrt each DMA channel from chessboard; make aie.mem
@@ -2420,7 +2420,7 @@ public:
 
       auto loc = core->getLoc();
 
-      // make a AIE.mem for the tile dma
+      // make a aie.mem for the tile dma
       auto mem = tile.getMemOp();
       if (!mem && tile_dma_memcpys.size()) {
         builder.setInsertionPoint(core);
@@ -2484,7 +2484,7 @@ public:
         }
       }
 
-      // Generate AIE.shimDMA op
+      // Generate aie.shim_dma op
       AIE::ShimDMAOp shimDMA = getShimDMAOp(tile);
       if (!shimDMA) {
         builder.setInsertionPointToEnd(device.getBody());
@@ -2531,7 +2531,7 @@ public:
         }
       }
 
-      // Generate AIE.memTileDMA op
+      // Generate aie.memtile_dma op
       AIE::MemTileDMAOp memTileDMA = getMemTileDMAOp(tile);
       if (!memTileDMA) {
         builder.setInsertionPointToEnd(device.getBody());
@@ -2591,7 +2591,7 @@ public:
 
     auto device = AIE::symbolizeAIEDevice(clDevice);
     if (!device) {
-      m.emitOpError("Invalid AIE.device option");
+      m.emitOpError("Invalid aie.device option");
       signalPassFailure();
       return;
     }
@@ -2689,7 +2689,7 @@ public:
     std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
     auto device = AIE::symbolizeAIEDevice(clDevice);
     if (!device) {
-      module.emitOpError("Invalid AIE.device option");
+      module.emitOpError("Invalid aie.device option");
       signalPassFailure();
       return;
     }
@@ -2974,7 +2974,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
 
   auto device = AIE::symbolizeAIEDevice("xcvc1902");
   if (!device) {
-    p->emitOpError("Invalid AIE.device option");
+    p->emitOpError("Invalid aie.device option");
     return failure();
   }
   AIRToAIEConversionOptions options = {/* .col_offset = */ 7,

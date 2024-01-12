@@ -59,7 +59,6 @@ module {
         memref.dealloc %2 : memref<64x64xbf16, 1>
         memref.dealloc %3 : memref<64x64xbf16, 1>
       }
-      scf.yield
     }
     return
   }

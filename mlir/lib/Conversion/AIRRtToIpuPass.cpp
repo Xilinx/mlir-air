@@ -46,31 +46,88 @@ struct DmaToIpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
   LogicalResult
   matchAndRewrite(DmaMemcpyNdOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    SmallVector<Value> newOperands;
-    for (auto o : adaptor.getOperands().drop_front()) {
-      auto t = o.getType();
-      if (isa<IntegerType>(t))
-        newOperands.push_back(rewriter.create<arith::TruncIOp>(
-            op->getLoc(), rewriter.getI32Type(), o));
-      else
-        newOperands.push_back(o);
-    }
     auto idOp = adaptor.getOperands().front();
-    auto constOp = idOp.getDefiningOp<arith::ConstantOp>();
-    if (!constOp)
-      return failure();
-    auto idAttr = constOp.getValue();
-    auto newOp = rewriter.replaceOpWithNewOp<AIEX::IpuDmaMemcpyNdOp>(
-        op, SmallVector<Type, 1>(), newOperands);
-    newOp->setAttr("id", idAttr);
-    if (op->hasAttr("metadata"))
-      newOp->setAttr("metadata",
-                     op->getAttrOfType<mlir::SymbolRefAttr>("metadata"));
+    uint64_t idInt = 0;
+    if (auto const_int = getConstantIntValue(idOp))
+      idInt = *const_int;
     else
-      newOp->setAttr(
-          "metadata",
-          FlatSymbolRefAttr::get(newOp->getContext(),
-                                 rewriter.getStringAttr("MetadataNotFound")));
+      return failure();
+    uint64_t xInt = 0;
+    if (auto const_int = getConstantIntValue(adaptor.getX()))
+      xInt = *const_int;
+    else
+      return failure();
+    uint64_t yInt = 0;
+    if (auto const_int = getConstantIntValue(adaptor.getY()))
+      yInt = *const_int;
+    else
+      return failure();
+
+    SmallVector<Value> offsets;
+    SmallVector<int64_t> staticOffsets;
+    if (auto const_int = getConstantIntValue(adaptor.getOffset3()))
+      staticOffsets.push_back(*const_int);
+    else
+      offsets.push_back(adaptor.getOffset3());
+    if (auto const_int = getConstantIntValue(adaptor.getOffset2()))
+      staticOffsets.push_back(*const_int);
+    else
+      offsets.push_back(adaptor.getOffset2());
+    if (auto const_int = getConstantIntValue(adaptor.getOffset1()))
+      staticOffsets.push_back(*const_int);
+    else
+      offsets.push_back(adaptor.getOffset1());
+    if (auto const_int = getConstantIntValue(adaptor.getOffset0()))
+      staticOffsets.push_back(*const_int);
+    else
+      offsets.push_back(adaptor.getOffset0());
+    SmallVector<Value> sizes;
+    SmallVector<int64_t> staticSizes;
+    if (auto const_int = getConstantIntValue(adaptor.getLength3()))
+      staticSizes.push_back(*const_int);
+    else
+      sizes.push_back(adaptor.getLength3());
+    if (auto const_int = getConstantIntValue(adaptor.getLength2()))
+      staticSizes.push_back(*const_int);
+    else
+      sizes.push_back(adaptor.getLength2());
+    if (auto const_int = getConstantIntValue(adaptor.getLength1()))
+      staticSizes.push_back(*const_int);
+    else
+      sizes.push_back(adaptor.getLength1());
+    if (auto const_int = getConstantIntValue(adaptor.getLength0()))
+      staticSizes.push_back(*const_int);
+    else
+      sizes.push_back(adaptor.getLength0());
+    SmallVector<Value> strides;
+    SmallVector<int64_t> staticStrides;
+    if (auto const_int = getConstantIntValue(adaptor.getStride3()))
+      staticStrides.push_back(*const_int);
+    else
+      strides.push_back(adaptor.getStride3());
+    if (auto const_int = getConstantIntValue(adaptor.getStride2()))
+      staticStrides.push_back(*const_int);
+    else
+      strides.push_back(adaptor.getStride2());
+    if (auto const_int = getConstantIntValue(adaptor.getStride1()))
+      staticStrides.push_back(*const_int);
+    else
+      strides.push_back(adaptor.getStride1());
+
+    StringRef metadata;
+    if (op->hasAttr("metadata"))
+      metadata =
+          op->getAttrOfType<mlir::FlatSymbolRefAttr>("metadata").getValue();
+    else
+      metadata =
+          FlatSymbolRefAttr::get(op->getContext(),
+                                 rewriter.getStringAttr("MetadataNotFound"))
+              .getValue();
+
+    rewriter.replaceOpWithNewOp<AIEX::IpuDmaMemcpyNdOp>(
+        op, xInt, yInt, adaptor.getMemref(), offsets, sizes, strides,
+        staticOffsets, staticSizes, staticStrides, metadata, idInt);
+
     return success();
   }
 };
@@ -702,7 +759,7 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     blk->walk([&](AIEX::IpuDmaMemcpyNdOp dma) {
       dma->setAttr("id",
                    mlir::IntegerAttr::get(
-                       mlir::IntegerType::get(dma->getContext(), 32), ++id));
+                       mlir::IntegerType::get(dma->getContext(), 64), ++id));
     });
   }
 
@@ -718,6 +775,8 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     SmallVector<Type, 6> memrefTypes;
     SmallVector<Value, 6> memrefs;
     funcOp.walk([&](AIEX::IpuDmaMemcpyNdOp dma) {
+      // Value test_val = dyn_cast<Value>(dma.getMemref());
+      // auto test_val1 = dma.getMemref();
       if (std::find(funcOp.getArguments().begin(), funcOp.getArguments().end(),
                     dma.getMemref()) == funcOp.getArguments().end()) {
         // push back if unique

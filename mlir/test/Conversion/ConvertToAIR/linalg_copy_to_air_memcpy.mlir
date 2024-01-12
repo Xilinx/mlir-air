@@ -36,7 +36,6 @@ module  {
       memref.dealloc %4 : memref<16x64xf32, 2>
       memref.dealloc %5 : memref<64x16xf32, 2>
       memref.dealloc %6 : memref<16x16xf32, 2>
-      scf.yield
     }
     return %0 : memref<64x64xf32>
   }
@@ -75,7 +74,6 @@ module  {
             memref.dealloc %5 : memref<32x32x128xi32, 2>
             memref.dealloc %6 : memref<32x32x128xi32, 2>
             memref.dealloc %7 : memref<32x32x128xi32, 2>
-            scf.yield
           }
         }
       }

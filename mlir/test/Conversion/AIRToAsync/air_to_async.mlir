@@ -186,7 +186,6 @@ func.func @scf_par(%arg0: memref<256x256xf32>) {
       %alloc = memref.alloc() : memref<32x32xf32, 2>
       memref.copy %subview, %alloc : memref<32x32xf32, strided<[256, 1], offset: ?>> to memref<32x32xf32, 2>
       memref.dealloc %alloc : memref<32x32xf32, 2>
-      scf.yield
     }
     air.herd_terminator
   }

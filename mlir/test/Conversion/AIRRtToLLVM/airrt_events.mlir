@@ -63,12 +63,11 @@ func.func @scf_if(%arg0: i1) {
 // CHECK: %[[V0:.*]] = call @__airrt_wait_all_1_0() : () -> !llvm.ptr
 // CHECK: %[[V1:.*]] = scf.parallel{{.*}}init (%[[V0]]) -> !llvm.ptr {
 // CHECK:   %[[V3:.*]] = func.call @__airrt_wait_all_1_1(%[[V0]]) : (!llvm.ptr) -> !llvm.ptr
-// CHECK:   scf.reduce(%[[V3]])  : !llvm.ptr {
+// CHECK:   scf.reduce(%[[V3]] : !llvm.ptr) {
 // CHECK:   ^bb0(%[[V4:.*]]: !llvm.ptr, %[[V5:.*]]: !llvm.ptr):
 // CHECK:     %[[V6:.*]] = func.call @__airrt_wait_all_1_2(%[[V4]], %[[V5]]) : (!llvm.ptr, !llvm.ptr) -> !llvm.ptr
 // CHECK:     scf.reduce.return %[[V6]] : !llvm.ptr
 // CHECK:   }
-// CHECK:   scf.yield
 // CHECK: }
 // CHECK: call @__airrt_wait_all_0_1(%[[V1]]) : (!llvm.ptr) -> ()
 func.func @scf_par() {
@@ -78,12 +77,11 @@ func.func @scf_par() {
   %0 = airrt.wait_all : !airrt.event
   %1 = scf.parallel (%arg0) = (%c0) to (%c64) step (%c1) init (%0) -> !airrt.event {
     %2 = airrt.wait_all %0 : !airrt.event
-    scf.reduce(%2)  : !airrt.event {
+    scf.reduce(%2 : !airrt.event) {
     ^bb0(%arg5: !airrt.event, %arg6: !airrt.event):
       %10 = airrt.wait_all %arg5, %arg6 : !airrt.event
       scf.reduce.return %10 : !airrt.event
     }
-    scf.yield
   }
   airrt.wait_all %1
   return
