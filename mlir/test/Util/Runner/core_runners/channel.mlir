@@ -6,7 +6,6 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-runner %s -f test -m %S/../arch.json -g core | FileCheck %s
-// XFAIL: *
 
 // Air channel ops, running each core in a herd
 

@@ -6,7 +6,6 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-runner %s -f test -m %S/arch.json | FileCheck %s
-// XFAIL: *
 
 // Pipelined for loop with race condition for both producer and consumer
 
