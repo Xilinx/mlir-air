@@ -979,10 +979,8 @@ public:
   LogicalResult
   matchAndRewrite(scf::ReduceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto newOp = rewriter.replaceOpWithNewOp<scf::ReduceOp>(
-        op, adaptor.getOperands()[0]);
-    // TODO(JamesNewling / ErweiWang) : op has been erased above, and should not
-    // be referenced below. Logic needs updating.
+    auto newOp =
+        rewriter.create<scf::ReduceOp>(op->getLoc(), adaptor.getOperands());
     auto body = &op.getRegion(0).front();
     auto newBody = &newOp.getRegion(0).front();
 
@@ -993,6 +991,7 @@ public:
     auto &ops = body->getOperations();
     auto &newOps = newBody->getOperations();
     newOps.splice(newOps.begin(), ops, ops.begin(), ops.end());
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -1091,7 +1090,7 @@ public:
 
     auto &ops = body->getOperations();
     auto &newOps = newBody->getOperations();
-    newOps.splice(newOps.begin(), ops, ops.begin(), --ops.end());
+    newOps.splice(newOps.begin(), ops, ops.begin(), ops.end());
 
     rewriter.replaceOp(op, newPar.getResults());
     return success();
@@ -1273,10 +1272,11 @@ public:
     });
 
     target.addDynamicallyLegalOp<scf::ReduceOp>([&](scf::ReduceOp op) {
-      if (op.getOperand(0).getType().isa<xilinx::airrt::EventType>())
-        return false;
-      else
-        return true;
+      for (auto oper : op.getOperands()) {
+        if (oper.getType().isa<xilinx::airrt::EventType>())
+          return false;
+      }
+      return true;
     });
 
     target.addDynamicallyLegalOp<scf::ReduceReturnOp>(

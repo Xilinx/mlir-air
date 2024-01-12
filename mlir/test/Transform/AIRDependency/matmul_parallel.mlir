@@ -51,7 +51,6 @@ module attributes {torch.debug_module_name = "mmult"} {
           air.herd_terminator
         }
       }
-      scf.yield
     }
     memref.copy %1, %arg2 : memref<1024x1024xf32> to memref<1024x1024xf32>
     return

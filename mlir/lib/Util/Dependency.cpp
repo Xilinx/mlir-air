@@ -757,10 +757,10 @@ dependencyCanonicalizer::addVertexFromOpImpls(Operation *op, dependencyGraph *G,
   } else if (auto hier_op =
                  mlir::dyn_cast<xilinx::air::HierarchyInterface>(op)) {
     return addVertexFromHierarchyOp(hier_op, G, dep_ctx);
-  } else if (op->mightHaveTrait<OpTrait::IsTerminator>()) {
-    return addVertexFromTerminatorOp(op, G, dep_ctx);
   } else if (auto reduce_op = dyn_cast<scf::ReduceOp>(op)) {
     return addVertexFromReduceOp(reduce_op, G, dep_ctx);
+  } else if (op->mightHaveTrait<OpTrait::IsTerminator>()) {
+    return addVertexFromTerminatorOp(op, G, dep_ctx);
   } else
     return 0;
 }
