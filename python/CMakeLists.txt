@@ -63,9 +63,8 @@ declare_mlir_python_extension(AirPythonExtensions.MLIR
     LLVMSupport
 )
 
-# Only building this if we are building the runtime, as it requires
-# the headers from the runtime
-if(AIR_RUNTIME_TARGETS)
+# Only building this if we are building the hsa runtime, as it requires hsa.h
+if(hsa-runtime64_FOUND)
   message(STATUS "Building python bindings because we are building the runtime")
   declare_mlir_python_extension(AirPythonExtensions.AIRRt
     MODULE_NAME _airRt
@@ -122,13 +121,13 @@ include_directories(
   ${CMAKE_CURRENT_SOURCE_DIR}/../runtime_lib/airhost/include
 )
 
-# Only include this if we are building the runtime
-if(AIR_RUNTIME_TARGETS)
+# Only include this if we are building the hsa runtime
+if(hsa-runtime64_FOUND)
   include_directories(
     ${hsa-runtime64_DIR}/../../../include
   )
 endif()
-  
+
 add_dependencies(AirPythonModules AirBackendPythonModules)
 add_subdirectory(air/backend)
 
