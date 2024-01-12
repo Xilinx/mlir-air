@@ -137,7 +137,7 @@ operation ::= `airrt.herd_metadata` attr-dict
 Runtime metadata for a single herd.
 
 
-Traits: HasParent<SegmentMetadataOp>, SingleBlock, SingleBlockImplicitTerminator<HerdMetadataTerminatorOp>
+Traits: `HasParent<SegmentMetadataOp>`, `SingleBlockImplicitTerminator<HerdMetadataTerminatorOp>`, `SingleBlock`
 
 #### Attributes:
 
@@ -159,7 +159,7 @@ operation ::= `airrt.herd_metadata_terminator` attr-dict
 ```
 
 
-Traits: HasParent<HerdMetadataOp>, Terminator
+Traits: `HasParent<HerdMetadataOp>`, `Terminator`
 
 
 ### `airrt.memcpy_nd` (xilinx::airrt::MemcpyNdOp)
@@ -216,7 +216,7 @@ which give information about the segments in the module.
 
 There is one of these per module.
 
-Traits: SingleBlock, SingleBlockImplicitTerminator<ModuleMetadataTerminatorOp>
+Traits: `SingleBlockImplicitTerminator<ModuleMetadataTerminatorOp>`, `SingleBlock`
 
 
 ### `airrt.module_metadata_terminator` (xilinx::airrt::ModuleMetadataTerminatorOp)
@@ -231,7 +231,7 @@ operation ::= `airrt.module_metadata_terminator` attr-dict
 ```
 
 
-Traits: HasParent<ModuleMetadataOp>, Terminator
+Traits: `HasParent<ModuleMetadataOp>`, `Terminator`
 
 
 ### `airrt.segment_load` (xilinx::airrt::SegmentLoadOp)
@@ -268,7 +268,7 @@ _Runtime metadata for one air region_
 This op contains a region containing airrt.herd_metadata ops,
 which give information about the herds in the module.
 
-Traits: HasParent<ModuleMetadataOp>, SingleBlock, SingleBlockImplicitTerminator<SegmentMetadataTerminatorOp>
+Traits: `HasParent<ModuleMetadataOp>`, `SingleBlockImplicitTerminator<SegmentMetadataTerminatorOp>`, `SingleBlock`
 
 #### Attributes:
 
@@ -290,7 +290,7 @@ operation ::= `airrt.segment_metadata_terminator` attr-dict
 ```
 
 
-Traits: HasParent<SegmentMetadataOp>, Terminator
+Traits: `HasParent<SegmentMetadataOp>`, `Terminator`
 
 
 ### `airrt.wait_all` (xilinx::airrt::WaitAllOp)

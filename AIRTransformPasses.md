@@ -710,7 +710,7 @@ loops. There are three stages:
 3. Named ops are transformed to linalg GenericOps then all GenericOps
 are lowered to loops using `linalg::LinalgLoweringPattern`.
 
-The transforms are biased toward AIE.core regions and are intended
+The transforms are biased toward aie.core regions and are intended
 to be run after the air-to-aie pass.
 ### `-air-ping-pong-transform`
 

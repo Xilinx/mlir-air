@@ -10,9 +10,9 @@ operation ::= `transform.air.copy_to_dma` $target attr-dict
 Transform a `memref.copy` operation into a `air.dma_memcpy_nd` operation.
 Returns the new `air.dma_memcpy_nd` operation.
 
-Traits: FunctionalStyleTransformOpTrait, TransformEachOpTrait
+Traits: `FunctionalStyleTransformOpTrait`, `TransformEachOpTrait`
 
-Interfaces: MemoryEffectsOpInterface, TransformOpInterface
+Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 #### Operands:
 
@@ -57,7 +57,7 @@ op are rejected by this operation.
 This operation reads and frees the producer handle.
 This operation reads the containing op handle.
 
-Interfaces: MemoryEffectOpInterface, TransformOpInterface
+Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 
 #### Operands:
 
@@ -90,9 +90,9 @@ parent operations in the same order as the list associated with the operand,
 except for operations that are parents to more than one input which are only
 present once.
 
-Traits: NavigationTransformOpTrait
+Traits: `NavigationTransformOpTrait`
 
-Interfaces: MemoryEffectsOpInterface, TransformOpInterface
+Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 #### Operands:
 
@@ -149,7 +149,7 @@ For example,
 transform.air.linalg_promote %h {"group_size"=2, "operands_to_promote"=[1,4], "memory_space"="L1"}
 ```
 
-Interfaces: MemoryEffectOpInterface, TransformOpInterface
+Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 
 #### Attributes:
 
@@ -185,7 +185,7 @@ loops are generated whenever possible.
 
 This is a variant of `transform.structured.tile`.
 
-Interfaces: MemoryEffectOpInterface, TransformOpInterface
+Interfaces: `MemoryEffectOpInterface`, `TransformOpInterface`
 
 #### Attributes:
 
@@ -222,9 +222,9 @@ If the `scf.parallel` operation has more than two dimensions, then only
 the last two are used and a new `scf.parallel` is created outside of the
 herd. Returns the new `air.herd` operation.
 
-Traits: FunctionalStyleTransformOpTrait, TransformEachOpTrait
+Traits: `FunctionalStyleTransformOpTrait`, `TransformEachOpTrait`
 
-Interfaces: MemoryEffectsOpInterface, TransformOpInterface
+Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 #### Attributes:
 
@@ -256,9 +256,9 @@ operation ::= `transform.air.par_to_launch` $target attr-dict
 Transform a `scf.parallel` operation into a `air.launch` operation.
 Returns the new `air.launch` operation.
 
-Traits: FunctionalStyleTransformOpTrait, TransformEachOpTrait
+Traits: `FunctionalStyleTransformOpTrait`, `TransformEachOpTrait`
 
-Interfaces: MemoryEffectsOpInterface, TransformOpInterface
+Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 #### Operands:
 
@@ -282,9 +282,9 @@ operation ::= `transform.air.pipeline_reduce` $target attr-dict
 
 Experimental
 
-Traits: FunctionalStyleTransformOpTrait, TransformEachOpTrait
+Traits: `FunctionalStyleTransformOpTrait`, `TransformEachOpTrait`
 
-Interfaces: MemoryEffectsOpInterface, TransformOpInterface
+Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 #### Attributes:
 
@@ -318,9 +318,9 @@ operation ::= `transform.air.segment_to_aie` $target attr-dict
 
 Lower air.segment operations to mlir-aie modules.
 
-Traits: FunctionalStyleTransformOpTrait, TransformEachOpTrait
+Traits: `FunctionalStyleTransformOpTrait`, `TransformEachOpTrait`
 
-Interfaces: MemoryEffectsOpInterface, TransformOpInterface
+Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
 #### Operands:
 

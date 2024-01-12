@@ -67,7 +67,7 @@ operation ::= `air.alloc` custom<AsyncDependencies>(type($async_token), $async_d
 
 Allocate memory
 
-Interfaces: air_AsyncOpInterface
+Interfaces: `air_AsyncOpInterface`
 
 #### Operands:
 
@@ -105,7 +105,7 @@ Example:
 air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
 ```
 
-Interfaces: Symbol
+Interfaces: `Symbol`
 
 #### Attributes:
 
@@ -132,9 +132,9 @@ operation ::= `air.channel.get` custom<AsyncDependencies>(type($async_token), $a
 
 Experimental operation to represent copying from a channel to a memref.
 
-Traits: AttrSizedOperandSegments
+Traits: `AttrSizedOperandSegments`
 
-Interfaces: air_AsyncOpInterface, air_ChannelInterface, air_MemcpyInterface
+Interfaces: `air_AsyncOpInterface`, `air_ChannelInterface`, `air_MemcpyInterface`
 
 #### Attributes:
 
@@ -177,9 +177,9 @@ operation ::= `air.channel.put` custom<AsyncDependencies>(type($async_token), $a
 
 Experimental operation to represent copying data from a memref to a channel.
 
-Traits: AttrSizedOperandSegments
+Traits: `AttrSizedOperandSegments`
 
-Interfaces: air_AsyncOpInterface, air_ChannelInterface, air_MemcpyInterface
+Interfaces: `air_AsyncOpInterface`, `air_ChannelInterface`, `air_MemcpyInterface`
 
 #### Attributes:
 
@@ -214,9 +214,9 @@ A placeholder operation for a user-customized op. With user-specified
 latency value, AIR Runner is able to simulate the system-level
 performance with this op in place.
 
-Traits: AttrSizedOperandSegments
+Traits: `AttrSizedOperandSegments`
 
-Interfaces: air_AsyncOpInterface
+Interfaces: `air_AsyncOpInterface`
 
 #### Attributes:
 
@@ -252,7 +252,7 @@ operation ::= `air.dealloc` custom<AsyncDependencies>(type($async_token), $async
 
 Deallocate memory
 
-Interfaces: air_AsyncOpInterface
+Interfaces: `air_AsyncOpInterface`
 
 #### Operands:
 
@@ -284,9 +284,9 @@ operation ::= `air.dma_memcpy_nd` custom<AsyncDependencies>(type($async_token), 
 
 dma operator
 
-Traits: AttrSizedOperandSegments
+Traits: `AttrSizedOperandSegments`
 
-Interfaces: air_AsyncOpInterface, air_MemcpyInterface
+Interfaces: `air_AsyncOpInterface`, `air_MemcpyInterface`
 
 #### Operands:
 
@@ -324,9 +324,9 @@ operation ::= `air.execute` (` ``[` $async_dependencies^ `]`)?
 Defines a code region to be dispatched asynchronously at runtime. All operations in
 the region must be executed sequentially.
 
-Traits: SingleBlock, SingleBlockImplicitTerminator<ExecuteTerminatorOp>
+Traits: `SingleBlockImplicitTerminator<ExecuteTerminatorOp>`, `SingleBlock`
 
-Interfaces: air_AsyncOpInterface
+Interfaces: `air_AsyncOpInterface`
 
 #### Operands:
 
@@ -358,11 +358,11 @@ A terminator operation for code regions that appear in the body of
 operands and produces no results. The operand number and types must
 match the signature of the `air.execute` that contains the operation.
 
-Traits: AlwaysSpeculatableImplTrait, HasParent<ExecuteOp>, ReturnLike, Terminator
+Traits: `AlwaysSpeculatableImplTrait`, `HasParent<ExecuteOp>`, `ReturnLike`, `Terminator`
 
-Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface), RegionBranchTerminatorOpInterface
+Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`, `RegionBranchTerminatorOpInterface`
 
-Effects: MemoryEffects::Effect{}
+Effects: `MemoryEffects::Effect{}`
 
 #### Operands:
 
@@ -377,9 +377,9 @@ _Herd_
 
 Define and run a 1D or 2D array of tiles as an AIR Herd.
 
-Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlock, SingleBlockImplicitTerminator<HerdTerminatorOp>
+Traits: `AffineScope`, `AttrSizedOperandSegments`, `IsolatedFromAbove`, `SingleBlockImplicitTerminator<HerdTerminatorOp>`, `SingleBlock`
 
-Interfaces: air_AsyncOpInterface, air_HierarchyInterface
+Interfaces: `air_AsyncOpInterface`, `air_HierarchyInterface`
 
 #### Attributes:
 
@@ -418,11 +418,11 @@ A terminator operation for the body of `air.herd` operations.
 `air.herd` operations are not expected to return any value so the
 terminator takes no operands.
 
-Traits: AlwaysSpeculatableImplTrait, HasParent<HerdOp>, Terminator
+Traits: `AlwaysSpeculatableImplTrait`, `HasParent<HerdOp>`, `Terminator`
 
-Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
+Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
-Effects: MemoryEffects::Effect{}
+Effects: `MemoryEffects::Effect{}`
 
 
 ### `air.launch` (xilinx::air::LaunchOp)
@@ -431,9 +431,9 @@ _Launch_
 
 Launch
 
-Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlock, SingleBlockImplicitTerminator<LaunchTerminatorOp>
+Traits: `AffineScope`, `AttrSizedOperandSegments`, `IsolatedFromAbove`, `SingleBlockImplicitTerminator<LaunchTerminatorOp>`, `SingleBlock`
 
-Interfaces: air_AsyncOpInterface, air_HierarchyInterface
+Interfaces: `air_AsyncOpInterface`, `air_HierarchyInterface`
 
 #### Attributes:
 
@@ -472,11 +472,11 @@ A terminator operation for the body of `air.launch` operations.
 `air.launch` operations are not expected to return any value so the
 terminator takes no operands.
 
-Traits: AlwaysSpeculatableImplTrait, HasParent<LaunchOp>, Terminator
+Traits: `AlwaysSpeculatableImplTrait`, `HasParent<LaunchOp>`, `Terminator`
 
-Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
+Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
-Effects: MemoryEffects::Effect{}
+Effects: `MemoryEffects::Effect{}`
 
 
 ### `air.pipeline` (xilinx::air::HerdPipelineOp)
@@ -492,7 +492,7 @@ operation ::= `air.pipeline` attr-dict-with-keyword $body
 
 Define a pipeline within an AIR Herd.
 
-Traits: AffineScope, HasParent<HerdOp>
+Traits: `AffineScope`, `HasParent<HerdOp>`
 
 
 ### `air.pipeline.get` (xilinx::air::PipelineGetOp)
@@ -552,7 +552,7 @@ _Pipeline stage_
 
 Pipeline stage.
 
-Traits: HasParent<HerdPipelineOp>
+Traits: `HasParent<HerdPipelineOp>`
 
 #### Operands:
 
@@ -581,11 +581,11 @@ operation ::= `air.pipeline.terminator` attr-dict ($opers^ `:` type($opers))?
 A terminator operation for regions that appear in the body of
 `air.pipeline` operation.
 
-Traits: AlwaysSpeculatableImplTrait, HasParent<HerdPipelineOp>, Terminator
+Traits: `AlwaysSpeculatableImplTrait`, `HasParent<HerdPipelineOp>`, `Terminator`
 
-Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
+Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
-Effects: MemoryEffects::Effect{}
+Effects: `MemoryEffects::Effect{}`
 
 #### Operands:
 
@@ -610,11 +610,11 @@ A terminator operation for regions that appear in the body of
 operands and produces no results. The operand number and types must
 match the signature of the `air.pipeline` that contains the operation.
 
-Traits: AlwaysSpeculatableImplTrait, HasParent<PipelineStageOp>, ReturnLike, Terminator
+Traits: `AlwaysSpeculatableImplTrait`, `HasParent<PipelineStageOp>`, `ReturnLike`, `Terminator`
 
-Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface), RegionBranchTerminatorOpInterface
+Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`, `RegionBranchTerminatorOpInterface`
 
-Effects: MemoryEffects::Effect{}
+Effects: `MemoryEffects::Effect{}`
 
 #### Operands:
 
@@ -629,9 +629,9 @@ _Segment_
 
 Segment
 
-Traits: AffineScope, AttrSizedOperandSegments, IsolatedFromAbove, SingleBlock, SingleBlockImplicitTerminator<SegmentTerminatorOp>
+Traits: `AffineScope`, `AttrSizedOperandSegments`, `IsolatedFromAbove`, `SingleBlockImplicitTerminator<SegmentTerminatorOp>`, `SingleBlock`
 
-Interfaces: air_AsyncOpInterface, air_HierarchyInterface
+Interfaces: `air_AsyncOpInterface`, `air_HierarchyInterface`
 
 #### Attributes:
 
@@ -670,11 +670,11 @@ A terminator operation for the body of `air.segment` operations.
 `air.segment` operations are not expected to return any value so the
 terminator takes no operands.
 
-Traits: AlwaysSpeculatableImplTrait, HasParent<SegmentOp>, Terminator
+Traits: `AlwaysSpeculatableImplTrait`, `HasParent<SegmentOp>`, `Terminator`
 
-Interfaces: ConditionallySpeculatable, NoMemoryEffect (MemoryEffectOpInterface)
+Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
-Effects: MemoryEffects::Effect{}
+Effects: `MemoryEffects::Effect{}`
 
 
 ### `air.wait_all` (xilinx::air::WaitAllOp)
@@ -690,7 +690,7 @@ operation ::= `air.wait_all` custom<AsyncDependencies>(type($async_token), $asyn
 
 Wait for all async tokens before preceding.
 
-Interfaces: air_AsyncOpInterface
+Interfaces: `air_AsyncOpInterface`
 
 #### Operands:
 

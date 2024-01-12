@@ -60,7 +60,7 @@ Lower air.pipeline stages to affine.if
 ```
 ### `-air-split-devices`
 
-_Split the input into one output per AIE.device op_
+_Split the input into one output per aie.device op_
 
 
 #### Options
@@ -78,28 +78,28 @@ One AIE dialect module is generated for each `segment` in the input
 module. Any `herd` without a parent `segment` will will also generate
 an AIE dialect module as if the `herd` has an implicit segment.
 
-For each `herd` in a segment a 2d array of `AIE.tile` operations is
+For each `herd` in a segment a 2d array of `aie.tile` operations is
 generated. The physical placement of the tiles is specified using the
 `herd` operation placement attributes or with `row-offset` and `col-offset`
-options to the pass. `AIE.core` operations are generated for each `AIE.tile`
+options to the pass. `aie.core` operations are generated for each `aie.tile`
 and the `herd` body is cloned into each core. 
 
-After generating `AIE.core` operations, several other conversions are run:
+After generating `aie.core` operations, several other conversions are run:
 
 * `memref.alloc` operations returning L1 memory are converted into static
-allocations using `AIE.buffer` operations.
+allocations using `aie.buffer` operations.
 
-* `dma_memcpy_nd` operations in each core are lowered to `AIE.mem`
-operations to perform the transfers and `AIE.locks` are allocated to
+* `dma_memcpy_nd` operations in each core are lowered to `aie.mem`
+operations to perform the transfers and `aie.locks` are allocated to
 synchronize between the cores and the tile DMAs. As part of this 
 conversion tile DMA schedules and channel allocations are generated
-for the `AIE.mem` bodies. L3 or L2 DMA channels are allocated for
-sending or receiving data to the tile DMAs. `AIE.flow` operations
+for the `aie.mem` bodies. L3 or L2 DMA channels are allocated for
+sending or receiving data to the tile DMAs. `aie.flow` operations
 are allocated to connect the DMAs.
 
 * `affine.if` operations with tile id operands are specialized, as these
 are now constants. This allows an upstream user or transformation to
-specialize parts of each `AIE.core` according to its location in the herd.
+specialize parts of each `aie.core` according to its location in the herd.
 
 * `air.execute` and `air.wait_all` operations are optimized away or
 transformed into sequential code.
@@ -131,35 +131,35 @@ generated from the AIRRt metadata by the `air-to-std` pass.
 The AIE resource allocation,
 ```mlir
 module @aie.segment_0 {
-  %0 = AIE.tile(1, 1)
-  %1 = AIE.tile(2, 0)
-  %2 = AIE.lock(%0, 0)
-  %3 = AIE.buffer(%0) {sym_name = "buf0"} : memref<1024xi32, 2>
-  AIE.flow(%1, DMA : 0, %0, DMA : 0)
+  %0 = aie.tile(1, 1)
+  %1 = aie.tile(2, 0)
+  %2 = aie.lock(%0, 0)
+  %3 = aie.buffer(%0) {sym_name = "buf0"} : memref<1024xi32, 2>
+  aie.flow(%1, DMA : 0, %0, DMA : 0)
 ```
 the AIE DMA program,
 ```mlir
-%4 = AIE.mem(%0) {
-  %6 = AIE.dmaStart(S2MM, 0, ^bb1, ^bb2)
+%4 = aie.mem(%0) {
+  %6 = aie.dma_start(S2MM, 0, ^bb1, ^bb2)
 ^bb1:  // 2 preds: ^bb0, ^bb1
-  AIE.useLock(%2, Acquire, 0)
-  AIE.dmaBd(<%3 : memref<1024xi32, 2>, 0, 1>, 0)
-  AIE.useLock(%2, Release, 1)
+  aie.use_lock(%2, Acquire, 0)
+  aie.dma_bd(%3 : memref<1024xi32, 2>, 0, 1)
+  aie.use_lock(%2, Release, 1)
   cf.br ^bb1
 ^bb2:  // pred: ^bb0
-  AIE.end
+  aie.end
 }
 ```
 the AIE Core program,
 ```mlir
-%5 = AIE.core(%0) {
+%5 = aie.core(%0) {
   cf.br ^bb1
 ^bb1:  // pred: ^bb0
   cf.br ^bb2
 ^bb2:  // pred: ^bb1
-  AIE.useLock(%2, Acquire, 1)
-  AIE.useLock(%2, Release, 0)
-  AIE.end
+  aie.use_lock(%2, Acquire, 1)
+  aie.use_lock(%2, Release, 0)
+  aie.end
 }
 ```
 and the AIRRt metadata,
