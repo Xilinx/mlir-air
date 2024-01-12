@@ -2735,7 +2735,7 @@ struct ParallelToHerdPass
 
     target.addLegalOp<affine::AffineApplyOp, affine::AffineForOp,
                       affine::AffineLoadOp, affine::AffineStoreOp,
-                      affine::AffineYieldOp, scf::YieldOp>();
+                      affine::AffineYieldOp, scf::YieldOp, scf::ReduceOp>();
 
     target.addDynamicallyLegalOp<scf::ParallelOp>(
         [&](scf::ParallelOp p) { return !filteredOps.contains(p); });
