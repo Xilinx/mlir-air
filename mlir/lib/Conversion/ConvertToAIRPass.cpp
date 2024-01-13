@@ -1054,7 +1054,8 @@ class AIRDmaToAIRChannelConversion
     } else
       return failure();
 
-    auto rank = src_type.getShape().size();
+    auto src_rank = src_type.getRank();
+    auto dst_rank = dst_type.getRank();
 
     SmallVector<Value, 4> src_offsets = op.getSrcOffsets();
     SmallVector<Value, 4> dst_offsets = op.getDstOffsets();
@@ -1064,16 +1065,16 @@ class AIRDmaToAIRChannelConversion
     SmallVector<Value, 4> dst_strides = op.getDstStrides();
 
     if (src_offsets.size()) {
-      if (src_sizes.size() != rank)
+      if (src_sizes.size() != src_rank)
         return failure();
-      if (src_strides.size() != rank)
+      if (src_strides.size() != src_rank)
         return failure();
     }
 
     if (dst_offsets.size()) {
-      if (dst_sizes.size() != rank)
+      if (dst_sizes.size() != dst_rank)
         return failure();
-      if (dst_strides.size() != rank)
+      if (dst_strides.size() != dst_rank)
         return failure();
     }
 
@@ -1464,7 +1465,8 @@ class AIRDemoteDmaToAIRHierarchyConversion
       return failure(); // This pass is currently not able to promote in memory
                         // tier
 
-    auto rank = src_type.getShape().size();
+    auto src_rank = src_type.getRank();
+    auto dst_rank = dst_type.getRank();
 
     SmallVector<Value, 4> src_offsets = op.getSrcOffsets();
     SmallVector<Value, 4> dst_offsets = op.getDstOffsets();
@@ -1474,16 +1476,16 @@ class AIRDemoteDmaToAIRHierarchyConversion
     SmallVector<Value, 4> dst_strides = op.getDstStrides();
 
     if (src_offsets.size()) {
-      if (src_sizes.size() != rank)
+      if (src_sizes.size() != src_rank)
         return failure();
-      if (src_strides.size() != rank)
+      if (src_strides.size() != src_rank)
         return failure();
     }
 
     if (dst_offsets.size()) {
-      if (dst_sizes.size() != rank)
+      if (dst_sizes.size() != dst_rank)
         return failure();
-      if (dst_strides.size() != rank)
+      if (dst_strides.size() != dst_rank)
         return failure();
     }
 
