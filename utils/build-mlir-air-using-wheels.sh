@@ -33,8 +33,8 @@ mkdir -p $MLIR_AIE_WHL_DIR
 
 export PIP_FIND_LINKS="https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels"
 
-MLIR_DISTRO="18.0.0.2023121521+d36b483"
-MLIR_AIE_DISTRO="0.0.1.2023121602+5631ba5c"
+MLIR_DISTRO="18.0.0.2024011316+850f713e"
+MLIR_AIE_DISTRO="0.0.1.2024011721+d960ffd5"
 
 cd $MLIR_WHL_DIR
 pip download mlir_no_rtti==${MLIR_DISTRO}
