@@ -1604,79 +1604,6 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
 private:
 };
 
-// struct AIRCanonicalizeChannelPutOpWrapAndStrideList
-//     : public OpRewritePattern<air::ChannelPutOp> {
-//   using OpRewritePattern<air::ChannelPutOp>::OpRewritePattern;
-
-//   LogicalResult matchAndRewrite(air::ChannelPutOp op,
-//                                 PatternRewriter &rewriter) const override {
-
-//     SmallVector<Value, 1> deps;
-//     SmallVector<Type, 1> tys;
-//     if (isAsyncOp(op)) {
-//       tys.push_back(air::AsyncTokenType::get(op->getContext()));
-//       deps = op.getAsyncDependencies();
-//     }
-
-//     SmallVector<Value, 1> offsets = op.getOffsets();
-//     SmallVector<Value, 1> sizes = op.getSizes();
-//     SmallVector<Value, 1> strides = op.getStrides();
-
-//     if (failed(AIRCanonicalizeWrapAndStrideList(rewriter, offsets, sizes,
-//     strides)))
-//       return failure();
-
-//     auto new_op = rewriter.create<air::ChannelPutOp>(
-//         op->getLoc(), tys, deps, op.getChanName(), op.getIndices(),
-//         op.getMemref(), offsets, sizes,
-//         strides);
-//     op.getAsyncToken().replaceAllUsesWith(new_op.getAsyncToken());
-
-//     rewriter.eraseOp(op);
-
-//     return success();
-//   }
-
-// private:
-// };
-
-// struct AIRCanonicalizeChannelGetOpWrapAndStrideList
-//     : public OpRewritePattern<air::ChannelGetOp> {
-//   using OpRewritePattern<air::ChannelGetOp>::OpRewritePattern;
-
-//   LogicalResult matchAndRewrite(air::ChannelGetOp op,
-//                                 PatternRewriter &rewriter) const override {
-
-//     SmallVector<Value, 1> deps;
-//     SmallVector<Type, 1> tys;
-//     if (isAsyncOp(op)) {
-//       tys.push_back(air::AsyncTokenType::get(op->getContext()));
-//       deps = op.getAsyncDependencies();
-//     }
-
-//     SmallVector<Value, 1> offsets = op.getOffsets();
-//     SmallVector<Value, 1> sizes = op.getSizes();
-//     SmallVector<Value, 1> strides = op.getStrides();
-
-//     if (failed(AIRCanonicalizeWrapAndStrideList(rewriter, offsets, sizes,
-//     strides)))
-//       return failure();
-
-//     auto new_op = rewriter.create<air::ChannelGetOp>(
-//         op->getLoc(), tys, deps, op.getChanName(), op.getIndices(),
-//         op.getMemref(), offsets, sizes,
-//         strides);
-//     if (op.getAsyncToken() && new_op.getAsyncToken())
-//       op.getAsyncToken().replaceAllUsesWith(new_op.getAsyncToken());
-
-//     rewriter.eraseOp(op);
-
-//     return success();
-//   }
-
-// private:
-// };
-
 struct UnrollChannelByFactorPattern {
 
 public:
@@ -2402,12 +2329,6 @@ public:
                     AIRSpecializeChannelWrapAndStrideInScfFor,
                     AIRSpecializeChannelWrapAndStrideInAffineFor>(ctx);
     (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
-
-    // // Canonicalize wrap and stride list to remove redundant dimensions
-    // RewritePatternSet cano_patterns(&getContext());
-    // cano_patterns.insert<AIRCanonicalizeChannelGetOpWrapAndStrideList,
-    // AIRCanonicalizeChannelPutOpWrapAndStrideList>(&getContext());
-    // (void)applyPatternsAndFoldGreedily(funcOp, std::move(cano_patterns));
   }
 
   void runOnOperation() override {
