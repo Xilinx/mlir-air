@@ -158,7 +158,7 @@ int64_t air::get1DOffset(SmallVector<Value> memcpy_offsets, Value memref) {
   if (memcpy_offsets.empty())
     return 0;
   SmallVector<int> memref_shape = getTensorShape(memref.getType());
-  assert(memref_shape.size() == memcpy_offsets.size());
+
   int64_t one_d_offset = 0;
   for (int i = memcpy_offsets.size() - 1; i >= 0; i--) {
     auto offset = mlir::getConstantIntValue(memcpy_offsets[i]);
