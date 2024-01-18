@@ -174,4 +174,24 @@ module {
     }
     return %alloc : memref<128xf32>
   }
+
+  // CHECK-LABEL: test4
+  // CHECK: put async  @channel_15[%c0, %c0] (%arg0[%c0] [%c32] [%c1]) : (memref<128xf32>)
+  // CHECK: put async  @channel_16[%c0, %c0] (%arg1[%c0, %c0] [%c16, %c4] [%c4, %c1]) : (memref<128x128xf32>)
+
+  func.func @test4(%arg0: memref<128xf32>, %arg1: memref<128x128xf32>) -> memref<128xf32> {
+    %c0 = arith.constant 0 : index
+    %c4 = arith.constant 4 : index
+    %c32 = arith.constant 32 : index
+    %c64 = arith.constant 64 : index
+    %c128 = arith.constant 128 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c8 = arith.constant 8 : index
+    %alloc = memref.alloc() : memref<128xf32>
+    %0 = air.channel.put async @channel_15[%c0, %c0] (%arg0[%c0, %c0, %c0, %c0] [%c1, %c1, %c1, %c32] [%c128, %c128, %c128, %c1]) : (memref<128xf32>)
+    %1 = air.channel.put async @channel_16[%c0, %c0] (%arg1[%c0, %c0, %c0, %c0] [%c1, %c2, %c8, %c4] [%c64, %c32, %c4, %c1]) : (memref<128x128xf32>)
+    %2 = air.wait_all async [%0, %1]
+    return %alloc : memref<128xf32>
+  }
 }
