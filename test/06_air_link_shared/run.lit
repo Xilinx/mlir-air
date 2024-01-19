@@ -7,5 +7,5 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: aircc.py --shared -row-offset=2 -col-offset=7 %S/air.mlir -o aie_ctrl.so
-// RUN: %CLANG %S/test.cpp -ltest_lib -L%aie_runtime_lib%/test_lib/lib -g -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%aie_runtime_lib%/test_lib/include -I./ -I./air_project/segment_0 -I%air_runtime_lib%/airhost/include -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
+// RUN: %CLANG %S/test.cpp -Iair_project/segment_0 -I%HSA_DIR%/include -L%HSA_DIR%/lib -lhsa-runtime64 -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -L%AIE_RUNTIME_DIR%/test_lib/lib -ltest_lib %airhost_libs% -o %T/test.elf
 // RUN: %run_on_board %T/test.elf

@@ -7,6 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: aircc.py -row-offset=3 -col-offset=3 %S/air.mlir -o %T/air.mlir.a
-// RUN: %CLANG %S/test.cpp -ltest_lib -L%aie_runtime_lib%/test_lib/lib -Wl,--whole-archive %T/air.mlir.a -Wl,--no-whole-archive -g -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%aie_runtime_lib%/test_lib/include -I./ -I%air_runtime_lib%/airhost/include -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
+// RUN: %CLANG %S/test.cpp -ltest_lib -L%AIE_RUNTIME_DIR%/test_lib/lib -Wl,--whole-archive %T/air.mlir.a -Wl,--no-whole-archive -g -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -I./ -I%air_runtime_lib%/airhost/include -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
 // RUN: %run_on_board %T/test.elf
 // XFAIL: *

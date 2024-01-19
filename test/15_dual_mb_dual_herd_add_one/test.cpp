@@ -23,6 +23,9 @@
 
 #include "aie_inc.cpp"
 
+#include "hsa/hsa.h"
+#include "hsa/hsa_ext_amd.h"
+
 #define XAIE_NUM_COLS 36
 
 int
