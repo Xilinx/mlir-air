@@ -66,12 +66,11 @@ module {
         air.execute_terminator %11 : index
       }
       %10 = air.channel.get async [%async_token_7, %async_token_5, %async_token_3]  @channel_4[%arg3, %arg4] (%results_2[%results_6, %results_8] [%c32, %c32] [%c64, %c1]) {id = 5 : i32} : (memref<64x64xi32>)
-      scf.reduce(%10)  : !air.async.token {
+      scf.reduce(%10 : !air.async.token) {
       ^bb0(%arg5: !air.async.token, %arg6: !air.async.token):
         %11 = air.wait_all async [%arg5, %arg6] 
         scf.reduce.return %11 : !air.async.token
       }
-      scf.yield
     }
     %9 = air.herd @herd_0 async [%async_token_3]  tile (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) attributes {id = 1 : i32} {
       %c0_5 = arith.constant 0 : index
