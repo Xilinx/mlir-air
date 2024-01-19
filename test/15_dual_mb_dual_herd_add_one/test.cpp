@@ -64,7 +64,7 @@ main(int argc, char *argv[])
     hsa_queue_t *q = NULL;
     auto queue_create_status =
         hsa_queue_create(agents[0], aie_max_queue_size, HSA_QUEUE_TYPE_SINGLE,
-                        nullptr, nullptr, 0, 0, &q);
+                         nullptr, nullptr, 0, 0, &q);
     if (queue_create_status != HSA_STATUS_SUCCESS)
       std::cout << "hsa_queue_create failed" << std::endl;
     queues.push_back(q);
@@ -89,7 +89,8 @@ main(int argc, char *argv[])
   uint64_t packet_id = wr_idx % queues[0]->size;
   hsa_agent_dispatch_packet_t segment_pkt;
   air_packet_segment_init(&segment_pkt, 0, col, 1, row, 3);
-  air_queue_dispatch_and_wait(&agents[0], queues[0], packet_id, wr_idx, &segment_pkt);
+  air_queue_dispatch_and_wait(&agents[0], queues[0], packet_id, wr_idx,
+                              &segment_pkt);
   //
   // Set up a 1x3 herd starting 34,0
   //
@@ -97,13 +98,15 @@ main(int argc, char *argv[])
   uint64_t packet_id2 = wr_idx2 % queues[1]->size;
   hsa_agent_dispatch_packet_t segment_pkt2;
   air_packet_segment_init(&segment_pkt2, 0, col2, 1, row, 3);
-  air_queue_dispatch_and_wait(&agents[0], queues[1], packet_id, wr_idx2, &segment_pkt2);
+  air_queue_dispatch_and_wait(&agents[0], queues[1], packet_id, wr_idx2,
+                              &segment_pkt2);
 
   wr_idx = hsa_queue_add_write_index_relaxed(queues[0], 1);
   packet_id = wr_idx % queues[0]->size;
   hsa_agent_dispatch_packet_t shim_pkt;
   air_packet_device_init(&shim_pkt, XAIE_NUM_COLS);
-  air_queue_dispatch_and_wait(&agents[0], queues[0], packet_id, wr_idx, &shim_pkt);
+  air_queue_dispatch_and_wait(&agents[0], queues[0], packet_id, wr_idx,
+                              &shim_pkt);
 
   mlir_aie_configure_cores(xaie);
   mlir_aie_configure_switchboxes(xaie);
@@ -113,8 +116,7 @@ main(int argc, char *argv[])
 
 #define DMA_COUNT 16
 
-  uint32_t *bram_ptr =
-      (uint32_t *)air_malloc(4 * DMA_COUNT * sizeof(uint32_t));
+  uint32_t *bram_ptr = (uint32_t *)air_malloc(4 * DMA_COUNT * sizeof(uint32_t));
   if (bram_ptr != NULL) {
     for (int i=0; i<DMA_COUNT; i++) {
       bram_ptr[i] = i+1;
@@ -156,8 +158,7 @@ main(int argc, char *argv[])
   packet_id = wr_idx % q->size;
   hsa_agent_dispatch_packet_t pkt2;
   air_packet_nd_memcpy(&pkt2, 0, 7, 0, 0, 4, 2,
-                       (size_t)(bram_ptr +
-                           (DMA_COUNT * sizeof(float))),
+                       (size_t)(bram_ptr + (DMA_COUNT * sizeof(float))),
                        DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
 
   //
@@ -178,8 +179,7 @@ main(int argc, char *argv[])
   packet_id2 = wr_idx2 % q2->size;
   hsa_agent_dispatch_packet_t pkt22;
   air_packet_nd_memcpy(&pkt22, 0, 34, 0, 0, 4, 2,
-                       (size_t)(bram_ptr +
-                           (2 * DMA_COUNT * sizeof(float))),
+                       (size_t)(bram_ptr + (2 * DMA_COUNT * sizeof(float))),
                        DMA_COUNT * sizeof(float), 1, 0, 1, 0, 1, 0);
 
   air_queue_dispatch(q, packet_id, wr_idx, &pkt2);
