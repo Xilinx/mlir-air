@@ -43,6 +43,8 @@ include(ExternalProject)
 find_package(MLIR REQUIRED CONFIG)
 find_package(AIE REQUIRED)
 find_package(LibXAIE)
+find_package(XRT)
+find_package(hsa-runtime64)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
@@ -163,28 +165,15 @@ foreach(target ${AIR_RUNTIME_TARGETS})
     TEST_EXCLUDE_FROM_MAIN true)
 endforeach()
 
-if(NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
-  install(
-    DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/runtime_lib/airhost/include
-    DESTINATION include/..
-    COMPONENT runtime_lib-headers
-    FILES_MATCHING
-    PATTERN "*.h"
-    PATTERN "*.hpp")
-
-  if(NOT LLVM_ENABLE_IDE)
-    add_llvm_install_targets(install-runtime_lib-headers DEPENDS
-                             runtime_lib-headers COMPONENT runtime_lib-headers)
-  endif()
-endif()
-
 add_subdirectory(python)
 if(NOT AIR_RUNTIME_TEST_TARGET_VAL)
   message(
-    "Skipping tests: No Runtime architecture found. Please configure AIR_RUNTIME_TARGETS."
+    "Skipping e2e tests: No Runtime architecture found. Please configure AIR_RUNTIME_TARGETS."
   )
-elseif(NOT LibXAIE_FOUND)
-  message("Skipping tests: LibXAIE not found.")
+elseif(NOT hsa-runtime64_FOUND AND NOT XRT_FOUND)
+  message(
+    "Skipping e2e tests because cmake did not find hsa-runtime64 or XRT."
+  )
 else()
   add_subdirectory(test)
 endif()
