@@ -1889,19 +1889,9 @@ public:
                                          MemRefType memref_ty,
                                          StringAttr dma_name_attr) {
     for (auto the_other_chan_o : getTheOtherChannelOpThroughSymbol(chan_o)) {
-      bool areEqualVecs = true;
-      if (getTensorShape(memref_ty).size() !=
-          the_other_chan_o.getSizes().size())
-        areEqualVecs = false;
-      else
-        for (unsigned i = 0; i < getTensorShape(memref_ty).size(); i++)
-          if (getTensorShape(memref_ty)[i] !=
-              mlir::getConstantIntValue(the_other_chan_o.getSizes()[i]))
-            areEqualVecs = false;
-      if (areEqualVecs)
-        the_other_chan_o->setAttr(
-            "metadata", FlatSymbolRefAttr::get(the_other_chan_o->getContext(),
-                                               dma_name_attr));
+      the_other_chan_o->setAttr(
+          "metadata", FlatSymbolRefAttr::get(the_other_chan_o->getContext(),
+                                             dma_name_attr));
     }
   }
 
