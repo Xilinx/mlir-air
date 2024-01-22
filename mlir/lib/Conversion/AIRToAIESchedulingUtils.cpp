@@ -154,10 +154,11 @@ bool air::areIdenticalVectors(std::vector<unsigned> &a,
   return a == b;
 }
 
-int64_t air::get1DOffset(SmallVector<Value> memcpy_offsets, Value memref) {
+int64_t air::get1DOffset(SmallVector<Value> memcpy_offsets,
+                         SmallVector<Value> memcpy_sizes,
+                         int byte_count_per_elem) {
   if (memcpy_offsets.empty())
     return 0;
-  SmallVector<int> memref_shape = getTensorShape(memref.getType());
 
   int64_t one_d_offset = 0;
   for (int i = memcpy_offsets.size() - 1; i >= 0; i--) {
@@ -166,10 +167,14 @@ int64_t air::get1DOffset(SmallVector<Value> memcpy_offsets, Value memref) {
       assert(false && "non-static offset in memcpy op");
     if (i == memcpy_offsets.size() - 1)
       one_d_offset += *offset;
-    else
-      one_d_offset += *offset * memref_shape[i + 1];
+    else {
+      if (auto size_i_p_1 = mlir::getConstantIntValue(memcpy_sizes[i + 1])) {
+        one_d_offset += (*offset) * (*size_i_p_1);
+      } else
+        assert(false && "non-static size in memcpy op");
+    }
   }
-  return one_d_offset * getElementSizeInBytes(memref.getType());
+  return one_d_offset * byte_count_per_elem;
 }
 
 std::vector<AIE::BDDimLayoutAttr>
