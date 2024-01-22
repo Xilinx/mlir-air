@@ -21,7 +21,7 @@ using namespace mlir;
 namespace xilinx {
 namespace air {
 
-LogicalResult normalizeLoop(AffineForOp afo);
+LogicalResult normalizeLoop(affine::AffineForOp afo);
 
 func::FuncOp getMangledFunction(ModuleOp module, std::string fnName,
                                 ArrayRef<Value> operands,
@@ -29,8 +29,10 @@ func::FuncOp getMangledFunction(ModuleOp module, std::string fnName,
 
 uint64_t getTensorVolume(const ShapedType ty);
 uint64_t getTensorVolume(const Type ty);
+SmallVector<int> getTensorShape(const ShapedType ty);
+SmallVector<int> getTensorShape(const Type ty);
 std::string getElementTypeAsString(const mlir::Type ty);
-unsigned getElementSizeInBytes(const mlir::Type ty);
+uint64_t getElementSizeInBytes(const mlir::Type ty);
 
 // Get the parent scf.for op of an iter_arg
 scf::ForOp getForRegionIterArgsOwner(Value val);
@@ -44,6 +46,10 @@ HierarchyInterface getHierarchyArgOwner(Value val);
 template <typename T> T getScfParentOpFromYieldOp(Operation *yield) {
   return dyn_cast_if_present<T>(yield->getParentOp());
 }
+
+std::optional<int64_t> getStaticScfForTripCountAsInt(scf::ForOp for_op);
+std::optional<int64_t>
+getStaticAffineForTripCountAsInt(affine::AffineForOp for_op);
 
 // Erase a kernel operand from air.hierarchy op
 void eraseAIRHierarchyOperand(HierarchyInterface op, unsigned index);
@@ -63,7 +69,7 @@ std::string to_string(mlir::Type t);
 std::string getMemorySpaceAsString(Value memref);
 
 // Returns the first affine if op in block; nullptr otherwise
-mlir::AffineIfOp getAffineIfInBlock(mlir::Block *block);
+affine::AffineIfOp getAffineIfInBlock(mlir::Block *block);
 // Returns the first air.dma op in block; nullptr otherwise
 DmaMemcpyNdOp getAIRDmaInBlock(mlir::Block *block);
 
@@ -78,6 +84,8 @@ getChannelGetOpThroughSymbol(ChannelOp channel, Operation *scope = nullptr);
 // Get the other channel op through channel symbol
 std::vector<ChannelGetOp> getTheOtherChannelOpThroughSymbol(ChannelPutOp put);
 std::vector<ChannelPutOp> getTheOtherChannelOpThroughSymbol(ChannelGetOp get);
+std::vector<air::ChannelInterface>
+getTheOtherChannelOpThroughSymbol(air::ChannelInterface op);
 void getSizesFromIntegerSet(MLIRContext *ctx, IntegerSet int_set,
                             SmallVector<int, 2> &lbs_int,
                             SmallVector<int, 2> &ubs_int);
@@ -123,6 +131,15 @@ unsigned getIteratorFromMDVector(std::vector<unsigned> dims,
 // from an iterator
 std::vector<unsigned> getMDVectorFromIterator(std::vector<unsigned> dims,
                                               unsigned iter);
+
+// Recursively trace back in defining ops
+void getDefiningOpsToOperands(Operation *op, SmallVector<Operation *> &def_ops);
+
+// Fold perfectly nested parent loops into wraps and strides list
+void foldForLoopNestAsExtendedSizesAndStrides(
+    OpBuilder rewriter, Operation *for_op, Operation *channel_op,
+    SmallVector<Value> &offsets, SmallVector<Value> &wraps,
+    SmallVector<Value> &strides, Value memref);
 
 } // namespace air
 } // namespace xilinx

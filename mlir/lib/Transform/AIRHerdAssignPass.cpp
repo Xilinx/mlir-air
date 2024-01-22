@@ -28,8 +28,6 @@
 #include <deque>
 #include <vector>
 
-#include "PassDetail.h"
-
 #define DEBUG_TYPE "air-herd-assign"
 
 using namespace mlir;
@@ -39,7 +37,8 @@ static llvm::cl::OptionCategory clOptionsCategory(DEBUG_TYPE " options");
 
 namespace {
 
-class AIRHerdAssignPass : public AIRHerdAssignBase<AIRHerdAssignPass> {
+class AIRHerdAssignPass
+    : public xilinx::air::impl::AIRHerdAssignBase<AIRHerdAssignPass> {
 
 public:
   AIRHerdAssignPass() = default;
@@ -49,10 +48,10 @@ public:
                               llvm::cl::desc("herd assign depth"),
                               llvm::cl::init(0)};
 
-  void loopsToParallel(ArrayRef<AffineForOp> nest, int depth) {
+  void loopsToParallel(ArrayRef<affine::AffineForOp> nest, int depth) {
     assert((int)nest.size() > depth + 1);
-    AffineForOp outer = nest[depth];
-    AffineForOp inner = nest[depth + 1];
+    affine::AffineForOp outer = nest[depth];
+    affine::AffineForOp inner = nest[depth + 1];
 
     if (failed(xilinx::air::normalizeLoop(inner)))
       return;
@@ -67,7 +66,7 @@ public:
       int64_t ub_0 = ub_map_0.getSingleConstantResult();
       int64_t ub_1 = ub_map_1.getSingleConstantResult();
 
-      auto affine_par = builder.create<AffineParallelOp>(
+      auto affine_par = builder.create<affine::AffineParallelOp>(
           loc, std::vector<Type>{}, std::vector<arith::AtomicRMWKind>{},
           std::vector<int64_t>{ub_0, ub_1});
 
@@ -98,7 +97,7 @@ public:
     //
 
     for (auto f : module.getOps<func::FuncOp>()) {
-      std::vector<SmallVector<AffineForOp, 6>> bands;
+      std::vector<SmallVector<affine::AffineForOp, 6>> bands;
       getTileableBands(f, &bands);
       for (auto &band : bands) {
         auto stringAttr =

@@ -9,6 +9,8 @@
 #ifndef AIR_AUTOMATIC_TILING_PASS_H
 #define AIR_AUTOMATIC_TILING_PASS_H
 
+#include "air/Transform/PassDetail.h"
+
 #include "mlir/Pass/Pass.h"
 #include <memory>
 #include <vector>

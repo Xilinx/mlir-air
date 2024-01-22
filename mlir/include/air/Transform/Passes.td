@@ -332,7 +332,7 @@ def AIRLowerLinalgTensors : Pass<"air-lower-linalg-tensors", "ModuleOp"> {
     3. Named ops are transformed to linalg GenericOps then all GenericOps
     are lowered to loops using `linalg::LinalgLoweringPattern`.
 
-    The transforms are biased toward AIE.core regions and are intended
+    The transforms are biased toward aie.core regions and are intended
     to be run after the air-to-aie pass.
   }];
 }
@@ -938,6 +938,26 @@ def AIRLabelScfForLoopForPingPongPattern: Pass<"air-label-scf-for-to-ping-pong",
   }];
 }
 
+def AIRLabelScfForLoopInAIRSegmentPattern: Pass<"air-label-scf-for-in-segment", "ModuleOp"> {
+  let summary = "Label all candidate scf.for loops within air.segment for unrolling";
+  let constructor = "xilinx::air::createAIRLabelScfForLoopInAIRSegmentPattern()";
+  let description = [{
+    This pass labels all scf.for loops contained in air.segment ops, except for those
+    which are also contained in air.herd ops, with an 'unroll' integer attribute. Scf.for
+    loops labelled with this attribute shall be unrolled, with the provided factor, by
+    any subsequent 'air-unroll-loop-for-pipelining-pattern' pass.
+  }];
+}
+
+def AIRSpecializeChannelWrapAndStridePattern: Pass<"air-specialize-channel-wrap-and-stride", "ModuleOp"> {
+  let summary = "Specialize air.channel op in perfect loop nest with wraps and strides";
+  let constructor = "xilinx::air::createAIRSpecializeChannelWrapAndStridePattern()";
+  let description = [{
+    This pass specialize air.channel op in perfect loop nest with wraps and strides, for
+    efficient mapping to hardware buffer descriptors.
+  }];
+}
+
 def AIRUnrollChannelByFactorPattern: Pass<"air-unroll-channel-by-factor", "ModuleOp"> {
   let summary = "Unroll channel puts and gets by an integer factor";
   let constructor = "xilinx::air::createAIRUnrollChannelByFactorPattern()";
@@ -963,6 +983,35 @@ def AIREnforceLoopCarriedMemrefDeallocPattern: Pass<"air-enforce-loop-carried-me
   let description = [{
     This pass enforces memref deallocation events to happen within each loop
     iteration, by connecting them in the loop-carried dependency path.
+  }];
+}
+
+def AIRDeAliasMemref: Pass<"air-dealias-memref", "ModuleOp"> {
+  let summary = "De-alias a memref into multiple memrefs";
+  let constructor = "xilinx::air::createAIRDeAliasMemref()";
+  let description = [{
+    This pass detects memrefs which can de-alias into multiple memrefs over time, and
+    generates extra copies of this memref. This process can improve the stability of the
+    memref-to-buffer mappings.
+  }];
+}
+
+def AIRFuseChannels: Pass<"air-fuse-channels", "ModuleOp"> {
+  let summary = "Fuse multiple air.channel ops into one";
+  let constructor = "xilinx::air::createAIRFuseChannels()";
+  let description = [{
+    This pass fuses multiple air.channel ops into one. The condition for fusing channels 
+    is such that the puts and gets of all candidate channels mush share the same control 
+    loop hierarchy, where every parent loops must have matching loop bounds.
+  }];
+}
+
+def AIRIsolateAsyncDmaLoopNests: Pass<"air-isolate-async-dma-loop-nests", "ModuleOp"> {
+  let summary = "Hoist dma ops into perfectly nested loop";
+  let constructor = "xilinx::air::createAIRIsolateAsyncDmaLoopNests()";
+  let description = [{
+    This pass isolates loops containing dma memcpy ops into perfectly nested loops, by 
+    hoisting them out of their previous parent loop.
   }];
 }
 
@@ -995,7 +1044,7 @@ def AIRDependencyParseGraph: Pass<"air-dependency-parse-graph", "ModuleOp"> {
   let summary = "Parse the dependency graph and dump dot files";
   let constructor = "xilinx::air::createAIRDependencyParseGraphPass()";
   let description = [{
-    This pass parses the dependency graph into Boost::Graph format, and dump
+    This pass parses the dependency graph into an internal format, and dump
     dot files for graph visualization.
   }];
   let options = [
@@ -1075,14 +1124,14 @@ def AIRLowerHerdParallelPass : Pass<"air-lower-herd-parallel", "func::FuncOp"> {
   let constructor = "xilinx::air::createAIRLowerHerdParallelPass()";
 }
 
-def AIRHoistScfChannelGetPutPass : Pass<"air-hoist-channels", "func::FuncOp"> {
-  let summary = "Hoist air.channel.get and air.channel.put out of scf.for.";
-  let constructor = "xilinx::air::createAIRHoistScfChannelGetPutPass()";
-}
-
 def AIRLabelBroadcastChannelWithTilePass : Pass<"air-label-broadcast-channel-with-tile", "func::FuncOp"> {
   let summary = "Label broadcasted channel ops with tile coordinates.";
   let constructor = "xilinx::air::createAIRLabelBroadcastChannelWithTilePass()";
+}
+
+def AIRCollapseHerdPass : Pass<"air-collapse-herd", "func::FuncOp"> {
+  let summary = "Collapse a multi-dimensional air.herd into a single column.";
+  let constructor = "xilinx::air::createAIRCollapseHerdPass()";
 }
 
 #endif // AIR_CONVERSION_PASSES

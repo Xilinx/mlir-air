@@ -9,7 +9,7 @@
 #ifndef AIRRT_OPS
 #define AIRRT_OPS
 
-include "AIRRtBase.td"
+include "air/Dialect/AIRRt/AIRRtBase.td"
 include "mlir/IR/SymbolInterfaces.td"
 
 class AIRRt_Op<string mnemonic, list<Trait> traits = []>

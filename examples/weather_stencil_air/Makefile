@@ -16,9 +16,10 @@ i32_chess:
 
 i32.elf: 
 	aiecc.py aie_$(b).mlir \
-	-I/opt/xaiengine/include -L/opt/xaiengine/lib -Wl,-R/opt/xaiengine/lib -I$(ACDC_AIE)/runtime_lib/x86_64/test_lib/include -I$(ACDC_AIR)/runtime_lib/airhost/include -L$(ACDC_AIR)/runtime_lib/airhost $(ACDC_AIE)/runtime_lib/x86_64/test_lib/src/test_library.cpp ./test_$(b).cpp -Wl,--whole-archive -lairhost -Wl,--no-whole-archive -lstdc++ -ldl -o test_$(b).elf
+	 ../../elfutils/libelf/libelf.a \
+	-I/opt/xaiengine/include -L/opt/xaiengine/lib -Wl,-R/opt/xaiengine/lib -I$(ACDC_AIE)/runtime_lib/x86_64/test_lib/include -I$(ACDC_AIR)/runtime_lib/airhost/include -L$(ACDC_AIR)/runtime_lib/airhost $(ACDC_AIE)/runtime_lib/x86_64/test_lib/src/test_library.cpp -I${ROCM_ROOT}/include -Wl,-rpath,${ROCM_ROOT}/lib ${ROCM_ROOT}/lib/libhsa-runtime64.so.1.9.0 ./test_$(b).cpp -Wl,--whole-archive -lairhost -Wl,--no-whole-archive -lstdc++ -ldl -o test_$(b).elf
 
 clean:
-	rm -rf work *mem acdc_project core_* *.elf *.o *.mlir.prj chesswork*
+	rm -rf work *mem acdc_project core_* *.elf *.mlir.prj chesswork*
 
 

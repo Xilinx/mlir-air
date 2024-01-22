@@ -22,7 +22,6 @@
 #include "air/Transform/AIRLoopPermutationPass.h"
 #include "air/Transform/AIRTilingUtils.h"
 
-#include "PassDetail.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
@@ -43,12 +42,14 @@
 #define DEBUG_TYPE "air-loop-permutation"
 
 using namespace mlir;
+using namespace mlir::affine;
 using namespace xilinx;
 using namespace xilinx::air;
 
 namespace {
-  
-class AIRLoopPermutationPass : public AIRLoopPermutationBase<AIRLoopPermutationPass> {
+
+class AIRLoopPermutationPass
+    : public xilinx::air::impl::AIRLoopPermutationBase<AIRLoopPermutationPass> {
 
 public:
   AIRLoopPermutationPass() = default;
@@ -59,7 +60,6 @@ public:
 
   static const char *affineOptAttrName;
 private:
-
 };
 
 const char *AIRLoopPermutationPass::affineOptAttrName = "affine_opt_label";
@@ -69,7 +69,7 @@ void AIRLoopPermutationPass::runOnOperation() {
   auto func = getOperation();
   
   // Bands of loops to tile
-  std::vector<SmallVector<AffineForOp, 6>> bands;
+  std::vector<SmallVector<affine::AffineForOp, 6>> bands;
   xilinx::air::getTileableBands(
       func, bands, AIRLoopPermutationPass::affineOptAttrName, clLabel);
 

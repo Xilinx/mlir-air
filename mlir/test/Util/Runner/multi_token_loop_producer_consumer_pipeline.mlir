@@ -92,12 +92,11 @@ module attributes {torch.debug_module_name = "mmult"} {
               %11 = air.channel.put async [%10, %async_token_22]  @channel_0[%arg10, %c0] (%results_15[%results_21, %arg11] [%c32, %c32] [%c128, %c1_10]) : (memref<128x128xf32, 1>)
               scf.yield %11 : !air.async.token
             }
-            scf.reduce(%9)  : !air.async.token {
+            scf.reduce(%9 : !air.async.token) {
             ^bb0(%arg11: !air.async.token, %arg12: !air.async.token):
               %10 = air.wait_all async [%arg11, %arg12] 
               scf.reduce.return %10 : !air.async.token
             }
-            scf.yield
           }
           %5 = air.wait_all async [%arg9, %async_token_16] 
           %6 = scf.parallel (%arg10) = (%c0) to (%c4) step (%c1_10) init (%5) -> !air.async.token {
@@ -114,12 +113,11 @@ module attributes {torch.debug_module_name = "mmult"} {
               %11 = air.channel.put async [%10, %async_token_22]  @channel_1[%c0, %arg10] (%results_17[%c0, %results_23] [%c32, %c32] [%c128, %c1_10]) : (memref<128x128xf32, 1>)
               scf.yield %11 : !air.async.token
             }
-            scf.reduce(%9)  : !air.async.token {
+            scf.reduce(%9 : !air.async.token) {
             ^bb0(%arg11: !air.async.token, %arg12: !air.async.token):
               %10 = air.wait_all async [%arg11, %arg12] 
               scf.reduce.return %10 : !air.async.token
             }
-            scf.yield
           }
           %7 = air.herd @herd_0 async [%arg9]  tile (%arg10, %arg11) in (%arg12=%c4, %arg13=%c4) attributes {id = 1 : i32} {
             %c0_20 = arith.constant 0 : index

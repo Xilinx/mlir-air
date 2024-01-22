@@ -27,7 +27,7 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-  std::vector<air_agent_t> agents;
+  std::vector<hsa_agent_t> agents;
   auto ret = air_get_agents(agents);
   assert(ret == 0 && "failed to get agents!");
 

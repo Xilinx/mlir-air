@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include "air/Transform/PassDetail.h"
+
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 
@@ -26,12 +28,14 @@ namespace air {
 /// a temporary placeholder to test the mechanics of tiled code generation.
 /// Returns all maximal outermost perfect loop nests that has been attached with
 /// the given label to tile.
-void getTileableBands(func::FuncOp f,
-                      std::vector<SmallVector<AffineForOp, 6>> &bands,
-                      const char *attrName, StringRef label);
+void getTileableBands(
+    func::FuncOp f,
+    std::vector<SmallVector<mlir::affine::AffineForOp, 6>> &bands,
+    const char *attrName, StringRef label);
 
 /// Get the loop band that has been attached with the given label.
-AffineForOp getLabel(AffineForOp root, StringRef label, const char *attrName);
+mlir::affine::AffineForOp getLabel(mlir::affine::AffineForOp root,
+                                   StringRef label, const char *attrName);
 
 } // namespace air
 } // namespace xilinx

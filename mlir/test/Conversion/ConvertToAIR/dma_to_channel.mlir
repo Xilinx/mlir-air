@@ -27,7 +27,7 @@ module attributes {torch.debug_module_name = "mmult"} {
 // CHECK: scf.for
 // CHECK: air.channel.put{{.*}}@channel_0
 // CHECK: %[[EVENT2:.*]] = air.wait_all async
-// CHECK: scf.reduce(%[[EVENT2]])
+// CHECK: scf.reduce(%[[EVENT2]]
 // CHECK: %[[EVENT3:.*]] = air.wait_all async [%[[EVENT4:.*]], %[[EVENT5:.*]]]
 
 // CHECK: %[[EVENT6:.*]] = air.wait_all async
@@ -35,7 +35,7 @@ module attributes {torch.debug_module_name = "mmult"} {
 // CHECK: scf.for
 // CHECK: air.channel.put{{.*}}@channel_1
 // CHECK: %[[EVENT8:.*]] = air.wait_all async
-// CHECK: scf.reduce(%[[EVENT8]])
+// CHECK: scf.reduce(%[[EVENT8]]
 // CHECK: %[[EVENT9:.*]] = air.wait_all async [%[[EVENT10:.*]], %[[EVENT11:.*]]]
 
 // CHECK: %[[EVENT12:.*]] = air.wait_all async
@@ -43,7 +43,7 @@ module attributes {torch.debug_module_name = "mmult"} {
 // CHECK: scf.for
 // CHECK: air.channel.put{{.*}}@channel_2
 // CHECK: %[[EVENT14:.*]] = air.wait_all async
-// CHECK: scf.reduce(%[[EVENT14]])
+// CHECK: scf.reduce(%[[EVENT14]]
 // CHECK: %[[EVENT15:.*]] = air.wait_all async [%[[EVENT16:.*]], %[[EVENT17:.*]]]
 
 // CHECK: %[[EVENT18:.*]] = air.wait_all async
@@ -51,7 +51,7 @@ module attributes {torch.debug_module_name = "mmult"} {
 // CHECK: scf.for
 // CHECK: air.channel.get{{.*}}@channel_3
 // CHECK: %[[EVENT20:.*]] = air.wait_all async
-// CHECK: scf.reduce(%[[EVENT20]])
+// CHECK: scf.reduce(%[[EVENT20]]
 // CHECK: %[[EVENT21:.*]] = air.wait_all async [%[[EVENT22:.*]], %[[EVENT23:.*]]]
     air.herd @herd_0  tile (%arg2, %arg3) in (%arg4=%c2, %arg5=%c2) args(%arg6=%arg0, %arg7=%arg1, %arg8=%alloc_0) : memref<64x64xi32>, memref<64x64xi32>, memref<64x64xi32> {
       %c1 = arith.constant 1 : index

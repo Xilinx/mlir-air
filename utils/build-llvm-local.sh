@@ -27,26 +27,31 @@ PYTHON_ROOT=`pip3 show pybind11 | grep Location | awk '{print $2}'`
 
 mkdir -p $LLVM_DIR/$BUILD_DIR
 mkdir -p $LLVM_DIR/$INSTALL_DIR
-cd $LLVM_DIR/$BUILD_DIR
+LLVM_ENABLE_RTTI=${LLVM_ENABLE_RTTI:OFF}
 
-cmake ../llvm \
+# Enter a sub-shell to avoid messing up with current directory in case of error
+(
+cd $LLVM_DIR/$BUILD_DIR
+set -o pipefail
+set -e
+
+CMAKE_CONFIGS="\
     -GNinja \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_CXX_COMPILER=clang++ \
     -DPython3_FIND_VIRTUALENV=ONLY \
     -DLLVM_BUILD_EXAMPLES=OFF \
     -DLLVM_BUILD_UTILS=ON \
+    -DLLVM_ENABLE_RTTI=$LLVM_ENABLE_RTTI \
     -DLLVM_INSTALL_UTILS=ON \
-    -DLLVM_USE_LINKER=lld \
     -DCMAKE_INSTALL_PREFIX=../$INSTALL_DIR \
-    -DLLVM_ENABLE_PROJECTS="clang;lld;mlir" \
-    -DLLVM_TARGETS_TO_BUILD:STRING="X86;ARM;AArch64;" \
+    -DLLVM_ENABLE_PROJECTS=clang;lld;mlir \
+    -DLLVM_TARGETS_TO_BUILD:STRING=X86;ARM;AArch64; \
     -DCMAKE_BUILD_TYPE=Release \
     -DLLVM_BUILD_LLVM_DYLIB=OFF \
     -DLLVM_LINK_LLVM_DYLIB=OFF \
     -DCLANG_LINK_CLANG_DYLIB=OFF \
     -DMLIR_BUILD_MLIR_DYLIB=OFF \
-    -DLLVM_ENABLE_RTTI=ON \
     -DLLVM_INCLUDE_UTILS=ON \
     -DLLVM_BUILD_TOOLS=ON \
     -DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF \
@@ -54,8 +59,17 @@ cmake ../llvm \
     -DLLVM_OPTIMIZED_TABLEGEN=OFF \
     -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
     -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
-    -DLLVM_DISTRIBUTION_COMPONENTS="cmake-exports;not;count;FileCheck;MLIRPythonModules;mlir-cpu-runner;mlir-linalg-ods-yaml-gen;mlir-opt;mlir-reduce;mlir-tblgen;mlir-translate;mlir-headers;mlir-cmake-exports" \
-    |& tee cmake.log
+    -DLLVM_DISTRIBUTION_COMPONENTS=cmake-exports;not;count;FileCheck;MLIRPythonModules;mlir-cpu-runner;mlir-linalg-ods-yaml-gen;mlir-opt;mlir-reduce;mlir-tblgen;mlir-translate;mlir-headers;mlir-cmake-exports"
 
-ninja |& tee ninja.log
-ninja install |& tee ninja-install.log
+if [ -x "$(command -v lld)" ]; then
+  CMAKE_CONFIGS="${CMAKE_CONFIGS} -DLLVM_USE_LINKER=lld"
+fi
+
+if [ -x "$(command -v ccache)" ]; then
+  CMAKE_CONFIGS="${CMAKE_CONFIGS} -DLLVM_CCACHE_BUILD=ON"
+fi
+
+cmake $CMAKE_CONFIGS ../llvm 2>&1 | tee cmake.log
+ninja 2>&1 | tee ninja.log
+ninja install 2>&1 | tee ninja-install.log
+)

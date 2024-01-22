@@ -9,6 +9,8 @@
 #ifndef AIR_MISC_PASSES_H
 #define AIR_MISC_PASSES_H
 
+#include "air/Transform/PassDetail.h"
+
 #include "mlir/Pass/Pass.h"
 #include <memory>
 
@@ -25,8 +27,8 @@ std::unique_ptr<mlir::Pass> createAIRPipelineReducePass();
 std::unique_ptr<mlir::Pass> createAIRFuseParallelHerdPass();
 std::unique_ptr<mlir::Pass> createAIRRenumberDmaIdPass();
 std::unique_ptr<mlir::Pass> createAIRLowerHerdParallelPass();
-std::unique_ptr<mlir::Pass> createAIRHoistScfChannelGetPutPass();
 std::unique_ptr<mlir::Pass> createAIRLabelBroadcastChannelWithTilePass();
+std::unique_ptr<mlir::Pass> createAIRCollapseHerdPass();
 
 } // namespace air
 } // namespace xilinx

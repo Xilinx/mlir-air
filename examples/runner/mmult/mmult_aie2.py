@@ -6,9 +6,9 @@
 
 import air.compiler.util
 
-from air.mlir.dialects import func, linalg, tensor, arith
-from air.mlir.ir import *
-import air.mlir.passmanager
+from air.dialects import func, linalg, tensor, arith
+from air.ir import *
+import air.passmanager
 
 import sys
 
@@ -38,12 +38,12 @@ def matmul_on_tensors(m, n, k, dtype):
     return module
 
 
-with air.mlir.ir.Context(), Location.unknown():
+with air.ir.Context(), Location.unknown():
 
     air_module = matmul_on_tensors(M, N, K, BF16Type.get())
     
     # convert linalg on tensors to linalg on memrefs
-    pm = air.mlir.passmanager.PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
+    pm = air.passmanager.PassManager.parse(air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
     pm.run(air_module.operation)
 
     args = sys.argv[1:]
@@ -61,7 +61,7 @@ with air.mlir.ir.Context(), Location.unknown():
         "air-par-to-launch{has-air-segment=true}",
         "canonicalize", "cse",
     ])+')'
-    pm = air.mlir.passmanager.PassManager.parse(pipeline)
+    pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
     
     print ("\nAIR Dialect Module\n")
@@ -81,7 +81,7 @@ with air.mlir.ir.Context(), Location.unknown():
         "air-label-scf-for-to-ping-pong",
         "air-ping-pong-transform"
     ])+')'
-    pm = air.mlir.passmanager.PassManager.parse(pipeline)
+    pm = air.passmanager.PassManager.parse(pipeline)
     pm.run(air_module.operation)
 
     print ("\nAIR Dialect Module (async)\n")

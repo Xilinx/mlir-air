@@ -9,7 +9,10 @@
 #ifndef AFFINE_LOOP_OPT_H
 #define AFFINE_LOOP_OPT_H
 
-#include <mlir/Pass/Pass.h>
+#include "air/Transform/PassDetail.h"
+
+#include "mlir/Pass/Pass.h"
+
 #include <memory>
 #include <vector>
 

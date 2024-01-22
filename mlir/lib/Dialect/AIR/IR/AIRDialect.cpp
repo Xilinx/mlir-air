@@ -12,7 +12,6 @@
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectImplementation.h"
-#include "mlir/IR/FunctionImplementation.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 
@@ -164,13 +163,43 @@ static ParseResult parseAsyncDependencies(
 
 static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
                                    Type asyncTokenType,
-                                   OperandRange asyncDependencies) {
+                                   OperandRange asyncDependenciesUnsorted) {
+
   if (asyncTokenType)
     printer << "async ";
-  if (asyncDependencies.empty())
+  if (asyncDependenciesUnsorted.empty())
     return;
+
+  // The values can be sorted by their order in a basic block, but only if they
+  // all have defining ops in the same basic block. We go through all the
+  // values, and check that they have defining ops in the same block.
+  bool canSort = [&]() {
+    auto v0 = asyncDependenciesUnsorted[0];
+    if (!v0.getDefiningOp())
+      return false;
+    auto block = v0.getDefiningOp()->getBlock();
+    for (auto v : asyncDependenciesUnsorted) {
+      auto op = v.getDefiningOp();
+      if (!op)
+        return false;
+      auto b = op->getBlock();
+      if (b != block)
+        return false;
+    }
+    return true;
+  }();
+
   printer << "[";
-  llvm::interleaveComma(asyncDependencies, printer);
+
+  if (!canSort) {
+    llvm::interleaveComma(asyncDependenciesUnsorted, printer);
+  } else {
+    SmallVector<Value> asyncDependencies(asyncDependenciesUnsorted);
+    llvm::sort(asyncDependencies, [&](Value a, Value b) {
+      return a.getDefiningOp()->isBeforeInBlock(b.getDefiningOp());
+    });
+    llvm::interleaveComma(asyncDependencies, printer);
+  }
   printer << "] ";
 }
 
@@ -1215,7 +1244,7 @@ static LogicalResult FoldChannel(ChannelOp op, PatternRewriter &rewriter) {
 
   Operation *parent = op;
   std::vector<Operation *> parent_sts;
-  while (parent = parent->getParentOp()) {
+  while ((parent = parent->getParentOp())) {
     if (parent->hasTrait<OpTrait::SymbolTable>()) {
       parent_sts.push_back(parent);
     }
@@ -1347,8 +1376,6 @@ ParseResult CustomOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
   if (asyncTokenType)
     result.addTypes(asyncTokenType);
-
-  Type indexType = parser.getBuilder().getIndexType();
 
   auto tokenType = AsyncTokenType::get(parser.getBuilder().getContext());
   if (parser.resolveOperands(asyncDependencies, tokenType, result.operands))

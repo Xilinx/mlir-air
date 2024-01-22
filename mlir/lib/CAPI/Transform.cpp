@@ -16,6 +16,8 @@
 void runTransform(MlirModule transform_ir, MlirModule payload_ir) {
   auto transformModule = unwrap(transform_ir);
   auto payloadModule = unwrap(payload_ir);
-  xilinx::air::runAIRTransform(transformModule, payloadModule);
+  auto logicalResult =
+      xilinx::air::runAIRTransform(transformModule, payloadModule);
+  (void)logicalResult;
   return;
 }

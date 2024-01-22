@@ -20,7 +20,6 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 
-#include "PassDetail.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
@@ -29,24 +28,24 @@
 #define DEBUG_TYPE "airrt-to-llvm-pass"
 
 using namespace mlir;
-using namespace xilinx::air;
+using namespace xilinx;
 
 namespace {
+#define GEN_PASS_DEF_AIRRTTOLLVM
+#include "air/Conversion/Passes.h.inc"
 
 // struct shim_desc_t {
 //   int64_t *location_data;
 //   int64_t *channel_data;
 // }
 LLVM::LLVMStructType getShimDescriptorType(MLIRContext *ctx) {
-  return LLVM::LLVMStructType::getLiteral(
-      ctx, {
-               // int64_t[64]* location data
-               LLVM::LLVMPointerType::get(LLVM::LLVMArrayType::get(
-                   IntegerType::get(ctx, 64), 16 * 8 * 8)),
-               // int64_t[64]* channel data
-               LLVM::LLVMPointerType::get(LLVM::LLVMArrayType::get(
-                   IntegerType::get(ctx, 64), 16 * 8 * 8)),
-           });
+  return LLVM::LLVMStructType::getLiteral(ctx,
+                                          {
+                                              // int64_t[64]* location data
+                                              LLVM::LLVMPointerType::get(ctx),
+                                              // int64_t[64]* channel data
+                                              LLVM::LLVMPointerType::get(ctx),
+                                          });
 }
 
 // struct herd_desc_t {
@@ -55,15 +54,15 @@ LLVM::LLVMStructType getShimDescriptorType(MLIRContext *ctx) {
 //   shim_desc_t *shim_desc;
 // }
 LLVM::LLVMStructType getHerdDescriptorType(MLIRContext *ctx) {
-  return LLVM::LLVMStructType::getLiteral(
-      ctx, {
-               // int64_t name_length
-               IntegerType::get(ctx, 64),
-               // char *name
-               LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8)),
-               // shim_desc_t *shim_desc
-               LLVM::LLVMPointerType::get(getShimDescriptorType(ctx)),
-           });
+  return LLVM::LLVMStructType::getLiteral(ctx,
+                                          {
+                                              // int64_t name_length
+                                              IntegerType::get(ctx, 64),
+                                              // char *name
+                                              LLVM::LLVMPointerType::get(ctx),
+                                              // shim_desc_t *shim_desc
+                                              LLVM::LLVMPointerType::get(ctx),
+                                          });
 }
 
 // struct air_segment_desc_t {
@@ -79,13 +78,11 @@ LLVM::LLVMStructType getSegmentDescriptorType(MLIRContext *ctx,
                // int64_t name_length;
                IntegerType::get(ctx, 64),
                // char *name;
-               LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8)),
+               LLVM::LLVMPointerType::get(ctx),
                // uint64_t herd_length;
                IntegerType::get(ctx, 64),
                // air_herd_desc_t *herd_descs[herd_length];
-               LLVM::LLVMPointerType::get(LLVM::LLVMArrayType::get(
-                   LLVM::LLVMPointerType::get(getHerdDescriptorType(ctx)),
-                   herd_length)),
+               LLVM::LLVMPointerType::get(ctx),
            });
 };
 
@@ -95,18 +92,13 @@ LLVM::LLVMStructType getSegmentDescriptorType(MLIRContext *ctx,
 // }
 LLVM::LLVMStructType getModuleDescriptorType(MLIRContext *ctx,
                                              ArrayRef<int64_t> herd_count) {
-  auto max_herds = *std::max_element(herd_count.begin(), herd_count.end());
-  auto num_segments = herd_count.size();
-  return LLVM::LLVMStructType::getLiteral(
-      ctx, {
-               // int64_t length
-               IntegerType::get(ctx, 64),
-               // herd_desc_t *herd_descs[length]
-               LLVM::LLVMPointerType::get(LLVM::LLVMArrayType::get(
-                   LLVM::LLVMPointerType::get(
-                       getSegmentDescriptorType(ctx, max_herds)),
-                   num_segments)),
-           });
+  return LLVM::LLVMStructType::getLiteral(ctx,
+                                          {
+                                              // int64_t length
+                                              IntegerType::get(ctx, 64),
+                                              // herd_desc_t *herd_descs[length]
+                                              LLVM::LLVMPointerType::get(ctx),
+                                          });
 }
 
 LLVM::GlobalOp getOrCreateAIRString(OpBuilder builder, ModuleOp module,
@@ -140,9 +132,8 @@ createSegmentDescriptor(OpBuilder builder, ModuleOp module,
 
   auto segmentName = getOrCreateAIRString(builder, module, segment_name);
 
-  auto arrayTy = LLVM::LLVMArrayType::get(
-      LLVM::LLVMPointerType::get(getHerdDescriptorType(ctx)),
-      herd_descs.size());
+  auto arrayElemTy = LLVM::LLVMPointerType::get(ctx);
+  auto arrayTy = LLVM::LLVMArrayType::get(arrayElemTy, herd_descs.size());
   std::string str_name = "__airrt_segment_herd_descriptors";
   int which_try = 0;
   while (module.lookupSymbol(str_name))
@@ -155,7 +146,9 @@ createSegmentDescriptor(OpBuilder builder, ModuleOp module,
     builder.createBlock(&herd_descs_global.getInitializerRegion());
     Value data = builder.create<LLVM::UndefOp>(loc, arrayTy);
     for (int i = 0, e = herd_descs.size(); i < e; i++) {
-      auto a = builder.create<LLVM::AddressOfOp>(loc, herd_descs[i]);
+      auto a = builder.create<LLVM::BitcastOp>(
+          loc, arrayElemTy,
+          builder.create<LLVM::AddressOfOp>(loc, herd_descs[i]));
       data = builder.create<LLVM::InsertValueOp>(
           loc, data, a, builder.getDenseI64ArrayAttr({i}));
     }
@@ -174,16 +167,15 @@ createSegmentDescriptor(OpBuilder builder, ModuleOp module,
     builder.createBlock(&descGlobal.getInitializerRegion());
     Value desc = builder.create<LLVM::UndefOp>(loc, descTy);
 
-    auto segmentNameArray = builder.create<LLVM::AddressOfOp>(loc, segmentName);
+    auto segmentNameArray = builder.create<LLVM::AddressOfOp>(
+        loc, LLVM::LLVMPointerType::get(ctx), segmentName.getSymNameAttr());
     auto segmentNameLen = builder.create<LLVM::ConstantOp>(
         loc, IntegerType::get(ctx, 64),
         builder.getI32IntegerAttr(segment_name.size()));
 
-    auto c0 = builder.create<LLVM::ConstantOp>(loc, IntegerType::get(ctx, 32),
-                                               builder.getI32IntegerAttr(0));
-    auto segmentNamePtr = builder.create<LLVM::GEPOp>(
-        loc, LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8)),
-        segmentNameArray, ValueRange({c0, c0}));
+    builder.create<LLVM::GEPOp>(loc, LLVM::LLVMPointerType::get(ctx),
+                                segmentName.getType(), segmentNameArray,
+                                ArrayRef<LLVM::GEPArg>{0, 0});
 
     // length of the array of herd_desc_t
     auto herd_descs_len = builder.create<LLVM::ConstantOp>(
@@ -196,14 +188,18 @@ createSegmentDescriptor(OpBuilder builder, ModuleOp module,
     desc = builder.create<LLVM::InsertValueOp>(loc, desc, segmentNameLen,
                                                builder.getDenseI64ArrayAttr(0));
 
-    desc = builder.create<LLVM::InsertValueOp>(loc, desc, segmentNamePtr,
+    auto segmentNameArrayPtr = builder.create<LLVM::BitcastOp>(
+        loc, LLVM::LLVMPointerType::get(ctx), segmentNameArray);
+    desc = builder.create<LLVM::InsertValueOp>(loc, desc, segmentNameArrayPtr,
                                                builder.getDenseI64ArrayAttr(1));
 
     desc = builder.create<LLVM::InsertValueOp>(loc, desc, herd_descs_len,
                                                builder.getDenseI64ArrayAttr(2));
 
-    desc = builder.create<LLVM::InsertValueOp>(
-        loc, desc, herd_descs_global_addr, builder.getDenseI64ArrayAttr(3));
+    auto herd_descs_ptr = builder.create<LLVM::BitcastOp>(
+        loc, LLVM::LLVMPointerType::get(ctx), herd_descs_global_addr);
+    desc = builder.create<LLVM::InsertValueOp>(loc, desc, herd_descs_ptr,
+                                               builder.getDenseI64ArrayAttr(3));
 
     builder.create<LLVM::ReturnOp>(loc, desc);
   }
@@ -216,11 +212,9 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
   auto ctx = module.getContext();
   auto loc = builder.getUnknownLoc();
   auto descTy = getModuleDescriptorType(ctx, segment_herd_count);
-  auto max_herds =
-      *std::max_element(segment_herd_count.begin(), segment_herd_count.end());
-  auto arrayTy = LLVM::LLVMArrayType::get(
-      LLVM::LLVMPointerType::get(getSegmentDescriptorType(ctx, max_herds)),
-      segment_herd_count.size());
+  auto arrayElemTy = LLVM::LLVMPointerType::get(ctx);
+  auto arrayTy =
+      LLVM::LLVMArrayType::get(arrayElemTy, segment_herd_count.size());
   std::string str_name = "__airrt_module_segment_descriptors";
   int which_try = 0;
   while (module.lookupSymbol(str_name))
@@ -233,7 +227,9 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
     builder.createBlock(&segment_descs_global.getInitializerRegion());
     Value data = builder.create<LLVM::UndefOp>(loc, arrayTy);
     for (int i = 0, e = segment_descs.size(); i < e; i++) {
-      auto a = builder.create<LLVM::AddressOfOp>(loc, segment_descs[i]);
+      auto a = builder.create<LLVM::BitcastOp>(
+          loc, arrayElemTy,
+          builder.create<LLVM::AddressOfOp>(loc, segment_descs[i]));
       data = builder.create<LLVM::InsertValueOp>(
           loc, data, a, builder.getDenseI64ArrayAttr({i}));
     }
@@ -247,7 +243,7 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
   auto descGlobal = builder.create<LLVM::GlobalOp>(
       loc, descTy, /*isConstant=*/true, LLVM::Linkage::External, str_name,
       /*value=*/Attribute());
-  if (1) {
+  {
     OpBuilder::InsertionGuard guard(builder);
     builder.createBlock(&descGlobal.getInitializerRegion());
     Value desc = builder.create<LLVM::UndefOp>(loc, descTy);
@@ -257,8 +253,9 @@ LLVM::GlobalOp createModuleDescriptor(OpBuilder builder, ModuleOp module,
         loc, IntegerType::get(ctx, 64),
         builder.getI64IntegerAttr(segment_descs.size()));
 
-    auto segment_descs_global_addr =
-        builder.create<LLVM::AddressOfOp>(loc, segment_descs_global);
+    auto segment_descs_global_addr = builder.create<LLVM::BitcastOp>(
+        loc, LLVM::LLVMPointerType::get(ctx),
+        builder.create<LLVM::AddressOfOp>(loc, segment_descs_global));
 
     desc = builder.create<LLVM::InsertValueOp>(loc, desc, segment_descs_len,
                                                builder.getDenseI64ArrayAttr(0));
@@ -298,23 +295,26 @@ LLVM::GlobalOp createHerdDescriptor(OpBuilder builder, ModuleOp module,
   builder.createBlock(&descGlobal.getInitializerRegion());
 
   Value desc = builder.create<LLVM::UndefOp>(loc, descTy);
-  auto herdNameArray = builder.create<LLVM::AddressOfOp>(loc, herdName);
+  auto herdNameArray = builder.create<LLVM::AddressOfOp>(
+      loc, LLVM::LLVMPointerType::get(ctx), herdName.getSymNameAttr());
   auto herdNameLen = builder.create<LLVM::ConstantOp>(
       loc, IntegerType::get(ctx, 64),
       builder.getI32IntegerAttr(herd_name.size()));
 
-  auto c0 = builder.create<LLVM::ConstantOp>(loc, IntegerType::get(ctx, 32),
-                                             builder.getI32IntegerAttr(0));
-  auto herdNamePtr = builder.create<LLVM::GEPOp>(
-      loc, LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8)), herdNameArray,
-      ValueRange({c0, c0}));
+  auto herdNamePtr = builder.create<LLVM::BitcastOp>(
+      loc, LLVM::LLVMPointerType::get(ctx),
+      builder.create<LLVM::GEPOp>(loc, LLVM::LLVMPointerType::get(ctx),
+                                  herdName.getType(), herdNameArray,
+                                  ArrayRef<LLVM::GEPArg>{0, 0}));
 
   desc = builder.create<LLVM::InsertValueOp>(loc, desc, herdNameLen,
                                              builder.getDenseI64ArrayAttr({0}));
   desc = builder.create<LLVM::InsertValueOp>(loc, desc, herdNamePtr,
                                              builder.getDenseI64ArrayAttr({1}));
 
-  Value shimDescPtr = builder.create<LLVM::AddressOfOp>(loc, shim_desc);
+  Value shimDescPtr = builder.create<LLVM::BitcastOp>(
+      loc, LLVM::LLVMPointerType::get(ctx),
+      builder.create<LLVM::AddressOfOp>(loc, shim_desc));
   desc = builder.create<LLVM::InsertValueOp>(loc, desc, shimDescPtr,
                                              builder.getDenseI64ArrayAttr({2}));
 
@@ -399,12 +399,16 @@ LLVM::GlobalOp createShimDescriptor(OpBuilder builder, ModuleOp module,
 
     Value desc = builder.create<LLVM::UndefOp>(loc, descTy);
 
-    Value locArrayPtr = builder.create<LLVM::AddressOfOp>(loc, locArrayGlobal);
+    Type arrayPtrTy = LLVM::LLVMPointerType::get(ctx);
+    Value locArrayPtr = builder.create<LLVM::BitcastOp>(
+        loc, arrayPtrTy,
+        builder.create<LLVM::AddressOfOp>(loc, locArrayGlobal));
     desc = builder.create<LLVM::InsertValueOp>(
         loc, desc, locArrayPtr, builder.getDenseI64ArrayAttr({0}));
 
-    Value chanArrayPtr =
-        builder.create<LLVM::AddressOfOp>(loc, chanArrayGlobal);
+    Value chanArrayPtr = builder.create<LLVM::BitcastOp>(
+        loc, arrayPtrTy,
+        builder.create<LLVM::AddressOfOp>(loc, chanArrayGlobal));
     desc = builder.create<LLVM::InsertValueOp>(
         loc, desc, chanArrayPtr, builder.getDenseI64ArrayAttr({1}));
 
@@ -477,8 +481,7 @@ public:
                                 PatternRewriter &rewriter) const override {
     auto ctx = op->getContext();
     SmallVector<Type> retTys{IntegerType::get(ctx, 64)};
-    SmallVector<Type, 1> tys{
-        LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8))};
+    SmallVector<Type, 1> tys{LLVM::LLVMPointerType::get(ctx)};
     auto functionTy = FunctionType::get(ctx, tys, retTys);
 
     auto module = op->getParentOfType<ModuleOp>();
@@ -497,7 +500,7 @@ public:
 
     auto segment_name_addr =
         rewriter.create<LLVM::AddressOfOp>(op->getLoc(), segment_name);
-    auto ptrTy = LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8));
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     auto segment_name_addr_cast = rewriter.create<LLVM::BitcastOp>(
         op->getLoc(), ptrTy, segment_name_addr);
     SmallVector<Value, 2> operands{segment_name_addr_cast};
@@ -518,8 +521,7 @@ public:
                                 PatternRewriter &rewriter) const override {
     auto ctx = op->getContext();
     SmallVector<Type> retTys{IntegerType::get(ctx, 64)};
-    SmallVector<Type, 1> tys{
-        LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8))};
+    SmallVector<Type, 1> tys{LLVM::LLVMPointerType::get(ctx)};
     auto functionTy = FunctionType::get(ctx, tys, retTys);
 
     auto module = op->getParentOfType<ModuleOp>();
@@ -538,7 +540,7 @@ public:
 
     auto herd_name_addr =
         rewriter.create<LLVM::AddressOfOp>(op->getLoc(), herd_name);
-    auto ptrTy = LLVM::LLVMPointerType::get(IntegerType::get(ctx, 8));
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     auto herd_name_addr_cast =
         rewriter.create<LLVM::BitcastOp>(op->getLoc(), ptrTy, herd_name_addr);
     SmallVector<Value, 2> operands{herd_name_addr_cast};
@@ -550,58 +552,6 @@ public:
   }
 };
 
-LogicalResult lowerDmaMemcpy(Operation *op, PatternRewriter &rewriter,
-                             std::string fnName) {
-  auto ctx = op->getContext();
-  auto loc = op->getLoc();
-
-  SmallVector<Type, 6> tys;
-  SmallVector<Type, 1> retTys;
-  SmallVector<Value, 16> operands;
-
-  auto i32Ty = IntegerType::get(ctx, 32);
-  auto i64Ty = IntegerType::get(ctx, 64);
-  auto signalTy = LLVM::LLVMPointerType::get(i64Ty);
-  tys.push_back(signalTy);
-  if (op->getNumResults()) {
-    auto one = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
-                                                 rewriter.getI32IntegerAttr(1));
-    auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, one, 4);
-    operands.push_back(signal);
-  } else {
-    auto nullV = rewriter.create<LLVM::NullOp>(loc, signalTy).getResult();
-    operands.push_back(nullV);
-  }
-
-  for (auto o : op->getOperands()) {
-    tys.push_back(o.getType());
-    operands.push_back(o);
-  }
-
-  MemRefType memrefTy = tys[4].cast<MemRefType>();
-  tys[4] = MemRefType::get(
-      std::vector<int64_t>(memrefTy.getRank(), ShapedType::kDynamic),
-      memrefTy.getElementType(), memrefTy.getLayout(),
-      memrefTy.getMemorySpace());
-  auto module = op->getParentOfType<ModuleOp>();
-
-  auto fnTy = FunctionType::get(ctx, tys, retTys);
-  auto fn = module.lookupSymbol<func::FuncOp>(fnName);
-  if (!fn) {
-    fn = func::FuncOp::create(rewriter.getUnknownLoc(), fnName, fnTy);
-    fn.setPrivate();
-    module.push_back(fn);
-  }
-  operands[4] = rewriter.create<memref::CastOp>(loc, tys[4], operands[4]);
-  rewriter.create<func::CallOp>(loc, retTys, SymbolRefAttr::get(fn), operands);
-  if (op->getNumResults()) {
-    rewriter.replaceOp(op, operands[0]);
-  } else {
-    rewriter.eraseOp(op);
-  }
-  return success();
-}
-
 LogicalResult lowerDmaNdMemcpy(Operation *op, PatternRewriter &rewriter,
                                std::string fnName) {
   auto ctx = op->getContext();
@@ -612,16 +562,15 @@ LogicalResult lowerDmaNdMemcpy(Operation *op, PatternRewriter &rewriter,
   SmallVector<Value, 16> operands;
 
   auto i32Ty = IntegerType::get(ctx, 32);
-  auto i64Ty = IntegerType::get(ctx, 64);
-  auto signalTy = LLVM::LLVMPointerType::get(i64Ty);
+  auto signalTy = LLVM::LLVMPointerType::get(ctx);
   tys.push_back(signalTy);
   if (op->getNumResults()) {
     auto one = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
                                                  rewriter.getI32IntegerAttr(1));
-    auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, one, 4);
+    auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, i32Ty, one, 4);
     operands.push_back(signal);
   } else {
-    auto nullV = rewriter.create<LLVM::NullOp>(loc, signalTy).getResult();
+    auto nullV = rewriter.create<LLVM::ZeroOp>(loc, signalTy).getResult();
     operands.push_back(nullV);
   }
 
@@ -671,20 +620,18 @@ LogicalResult lowerNdMemcpy(Operation *op, PatternRewriter &rewriter,
   SmallVector<Type, 6> tys;
   SmallVector<Value, 16> operands;
 
-  SmallVector<Type, 1> retTys(
-      op->getNumResults(),
-      LLVM::LLVMPointerType::get(IntegerType::get(ctx, 64)));
+  SmallVector<Type, 1> retTys(op->getNumResults(),
+                              LLVM::LLVMPointerType::get(ctx));
 
   auto i32Ty = IntegerType::get(ctx, 32);
-  auto i64Ty = IntegerType::get(ctx, 64);
-  auto signalTy = LLVM::LLVMPointerType::get(i64Ty);
+  auto signalTy = LLVM::LLVMPointerType::get(ctx);
   if (op->getNumResults()) {
     auto one = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
                                                  rewriter.getI32IntegerAttr(1));
-    auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, one, 4);
+    auto signal = rewriter.create<LLVM::AllocaOp>(loc, signalTy, i32Ty, one, 4);
     operands.push_back(signal);
   } else {
-    auto nullV = rewriter.create<LLVM::NullOp>(loc, signalTy).getResult();
+    auto nullV = rewriter.create<LLVM::ZeroOp>(loc, signalTy).getResult();
     operands.push_back(nullV);
   }
 
@@ -801,12 +748,13 @@ public:
   }
 };
 
-class L1AffineStoreOpConversion : public OpConversionPattern<AffineStoreOp> {
+class L1AffineStoreOpConversion
+    : public OpConversionPattern<affine::AffineStoreOp> {
 public:
-  using OpConversionPattern<AffineStoreOp>::OpConversionPattern;
+  using OpConversionPattern<affine::AffineStoreOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(AffineStoreOp op, OpAdaptor adaptor,
+  matchAndRewrite(affine::AffineStoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = op.getMemref().getType().cast<MemRefType>();
@@ -855,21 +803,22 @@ public:
   }
 };
 
-class L1AffineLoadOpConversion : public OpConversionPattern<AffineLoadOp> {
+class L1AffineLoadOpConversion
+    : public OpConversionPattern<affine::AffineLoadOp> {
 public:
-  using OpConversionPattern<AffineLoadOp>::OpConversionPattern;
+  using OpConversionPattern<affine::AffineLoadOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(AffineLoadOp op, OpAdaptor adaptor,
+  matchAndRewrite(affine::AffineLoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
     auto memrefTy = op.getMemref().getType().cast<MemRefType>();
     if (memrefTy.getMemorySpaceAsInt() != (int)xilinx::air::MemorySpace::L1)
       return failure();
 
-    auto load =
-        rewriter.create<AffineLoadOp>(op.getLoc(), op->getResultTypes(),
-                                      adaptor.getOperands(), op->getAttrs());
+    auto load = rewriter.create<affine::AffineLoadOp>(
+        op.getLoc(), op->getResultTypes(), adaptor.getOperands(),
+        op->getAttrs());
     rewriter.replaceOp(op, load.getResult());
     return success();
   }
@@ -898,7 +847,7 @@ public:
         memrefTy.getElementType(), memrefTy.getLayout(),
         memrefTy.getMemorySpace()));
 
-    auto size = getTensorVolume(memrefTy);
+    auto size = xilinx::air::getTensorVolume(memrefTy);
     operands.push_back(
         rewriter.create<arith::ConstantIndexOp>(op->getLoc(), size));
 
@@ -987,11 +936,9 @@ public:
     auto module = op->getParentOfType<ModuleOp>();
     auto ctx = op->getContext();
 
-    SmallVector<Type, 8> tys(
-        operands.size(), LLVM::LLVMPointerType::get(IntegerType::get(ctx, 64)));
-    SmallVector<Type, 1> retTys(
-        op->getNumResults(),
-        LLVM::LLVMPointerType::get(IntegerType::get(ctx, 64)));
+    SmallVector<Type, 8> tys(operands.size(), LLVM::LLVMPointerType::get(ctx));
+    SmallVector<Type, 1> retTys(op->getNumResults(),
+                                LLVM::LLVMPointerType::get(ctx));
 
     std::string fnName = "__airrt_wait_all";
     llvm::raw_string_ostream ss(fnName);
@@ -1033,9 +980,9 @@ public:
   matchAndRewrite(scf::ReduceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto newOp =
-        rewriter.replaceOpWithNewOp<scf::ReduceOp>(op, adaptor.getOperand());
-    auto body = &op.getRegion().front();
-    auto newBody = &newOp.getRegion().front();
+        rewriter.create<scf::ReduceOp>(op->getLoc(), adaptor.getOperands());
+    auto body = &op.getRegion(0).front();
+    auto newBody = &newOp.getRegion(0).front();
 
     for (int i = 0, e = body->getNumArguments(); i < e; i++) {
       body->getArgument(i).replaceAllUsesWith(newBody->getArgument(i));
@@ -1044,6 +991,7 @@ public:
     auto &ops = body->getOperations();
     auto &newOps = newBody->getOperations();
     newOps.splice(newOps.begin(), ops, ops.begin(), ops.end());
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -1142,7 +1090,7 @@ public:
 
     auto &ops = body->getOperations();
     auto &newOps = newBody->getOperations();
-    newOps.splice(newOps.begin(), ops, ops.begin(), --ops.end());
+    newOps.splice(newOps.begin(), ops, ops.begin(), ops.end());
 
     rewriter.replaceOp(op, newPar.getResults());
     return success();
@@ -1186,7 +1134,7 @@ public:
   }
 };
 
-class AIRRtToLLVM : public AIRRtToLLVMBase<AIRRtToLLVM> {
+class AIRRtToLLVM : public impl::AIRRtToLLVMBase<AIRRtToLLVM> {
 
 public:
   AIRRtToLLVM() {}
@@ -1202,7 +1150,7 @@ public:
 
     LLVMTypeConverter converter(context);
 
-    converter.addConversion([&](Type type) -> Optional<Type> {
+    converter.addConversion([&](Type type) -> std::optional<Type> {
       // convert L1 memrefs to L3
       if (auto memref = type.dyn_cast<MemRefType>())
         if (memref.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1)
@@ -1210,14 +1158,14 @@ public:
                                        memref.getElementType(),
                                        memref.getLayout(), 0);
       if (auto t = type.dyn_cast<xilinx::airrt::EventType>())
-        return LLVM::LLVMPointerType::get(IntegerType::get(context, 64));
-      return type;
+        return LLVM::LLVMPointerType::get(context);
+      return std::optional<Type>(type);
     });
 
     auto addUnrealizedCast = [](OpBuilder &builder, Type type,
                                 ValueRange inputs, Location loc) {
       auto cast = builder.create<UnrealizedConversionCastOp>(loc, type, inputs);
-      return Optional<Value>(cast.getResult(0));
+      return std::optional<Value>(cast.getResult(0));
     };
     converter.addSourceMaterialization(addUnrealizedCast);
     converter.addTargetMaterialization(addUnrealizedCast);
@@ -1240,8 +1188,8 @@ public:
     ConversionTarget target(*context);
 
     target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           arith::ArithDialect, AffineDialect, scf::SCFDialect,
-                           memref::MemRefDialect>();
+                           arith::ArithDialect, affine::AffineDialect,
+                           scf::SCFDialect, memref::MemRefDialect>();
 
     target.addDynamicallyLegalOp<memref::AllocOp>([&](memref::AllocOp op) {
       return (op.getType().getMemorySpaceAsInt() == 0);
@@ -1253,13 +1201,17 @@ public:
           0);
     });
 
-    target.addDynamicallyLegalOp<AffineStoreOp>([&](AffineStoreOp op) {
-      return (
-          op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
-          (int)xilinx::air::MemorySpace::L1);
-    });
+    target.addDynamicallyLegalOp<affine::AffineStoreOp>(
+        [&](affine::AffineStoreOp op) {
+          return (op.getMemref()
+                      .getType()
+                      .cast<MemRefType>()
+                      .getMemorySpaceAsInt() !=
+                  (int)xilinx::air::MemorySpace::L1);
+        });
 
-    target.addDynamicallyLegalOp<AffineLoadOp>([&](AffineLoadOp op) {
+    target.addDynamicallyLegalOp<affine::AffineLoadOp>([&](affine::AffineLoadOp
+                                                               op) {
       return (
           op.getMemref().getType().cast<MemRefType>().getMemorySpaceAsInt() !=
           (int)xilinx::air::MemorySpace::L1);
@@ -1320,10 +1272,11 @@ public:
     });
 
     target.addDynamicallyLegalOp<scf::ReduceOp>([&](scf::ReduceOp op) {
-      if (op.getOperand().getType().isa<xilinx::airrt::EventType>())
-        return false;
-      else
-        return true;
+      for (auto oper : op.getOperands()) {
+        if (oper.getType().isa<xilinx::airrt::EventType>())
+          return false;
+      }
+      return true;
     });
 
     target.addDynamicallyLegalOp<scf::ReduceReturnOp>(

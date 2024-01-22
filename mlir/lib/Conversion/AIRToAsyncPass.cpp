@@ -6,8 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "PassDetail.h"
-
 #include "air/Conversion/AIRPipeline.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
@@ -79,9 +77,9 @@ public:
           auto size =
               r.create<arith::ConstantIndexOp>(loc, herd_size_x * herd_size_y);
           auto group = r.create<async::CreateGroupOp>(loc, size);
-          auto outer = r.create<AffineForOp>(loc, 0, herd_size_x);
+          auto outer = r.create<affine::AffineForOp>(loc, 0, herd_size_x);
           r.setInsertionPointToStart(outer.getBody());
-          auto inner = r.create<AffineForOp>(loc, 0, herd_size_y);
+          auto inner = r.create<affine::AffineForOp>(loc, 0, herd_size_y);
 
           outer->setAttr("air.herd",
                          StringAttr::get(op->getContext(), "outer"));
@@ -455,7 +453,6 @@ public:
     // compute the total number of iterations and check that the bounds are
     // constants
     uint64_t total_size = 1;
-    auto ivs = op.getInductionVars().begin();
     auto step = op.getStep().begin();
     auto lowerBound = op.getLowerBound().begin();
     auto upperBound = op.getUpperBound().begin();
@@ -701,14 +698,15 @@ public:
   }
 };
 
-class AIRToAsyncPass : public AIRToAsyncBase<AIRToAsyncPass> {
+class AIRToAsyncPass : public air::impl::AIRToAsyncBase<AIRToAsyncPass> {
 
 public:
   AIRToAsyncPass() = default;
   AIRToAsyncPass(const AIRToAsyncPass &pass) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<AffineDialect>();
+    registry.insert<affine::AffineDialect>();
+    registry.insert<async::AsyncDialect>();
   }
 
   void runOnOperation() override {
@@ -717,7 +715,7 @@ public:
     auto context = module.getContext();
 
     TypeConverter converter;
-    converter.addConversion([&](Type type) -> Optional<Type> {
+    converter.addConversion([&](Type type) -> std::optional<Type> {
       // convert air::AsyncTokenType to async::TokenType
       if (auto t = type.dyn_cast<air::AsyncTokenType>())
         return async::TokenType::get(context);
@@ -730,19 +728,19 @@ public:
     auto addUnrealizedCast = [](OpBuilder &builder, Type type,
                                 ValueRange inputs, Location loc) {
       auto cast = builder.create<UnrealizedConversionCastOp>(loc, type, inputs);
-      return Optional<Value>(cast.getResult(0));
+      return std::optional<Value>(cast.getResult(0));
     };
     converter.addSourceMaterialization(addUnrealizedCast);
     converter.addTargetMaterialization(addUnrealizedCast);
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           arith::ArithDialect, AffineDialect, scf::SCFDialect,
-                           linalg::LinalgDialect, memref::MemRefDialect,
-                           bufferization::BufferizationDialect,
-                           xilinx::airrt::AIRRtDialect, async::AsyncDialect,
-                           mlir::BuiltinDialect>();
+    target.addLegalDialect<
+        LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect,
+        affine::AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
+        memref::MemRefDialect, bufferization::BufferizationDialect,
+        xilinx::airrt::AIRRtDialect, async::AsyncDialect,
+        mlir::BuiltinDialect>();
 
     // air.memcpy_nd conversion
     RewritePatternSet air_dma_patterns(context);

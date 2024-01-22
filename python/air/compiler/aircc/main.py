@@ -15,8 +15,8 @@ import subprocess
 from joblib import Parallel, delayed
 import shutil
 
-from air.mlir.passmanager import PassManager
-from air.mlir.ir import Module, Context, Location
+from air.passmanager import PassManager
+from air.ir import Module, Context, Location
 from air.dialects import air as airdialect
 
 import air.compiler.aircc.cl_arguments as cl_arguments
@@ -74,7 +74,7 @@ def do_run(command):
 def run_passes(pass_pipeline, mlir_module, opts, outputfile=None):
   if opts.verbose:
     print("Running:", pass_pipeline)
-  PassManager.parse(pass_pipeline).run(mlir_module)
+  PassManager.parse(pass_pipeline).run(mlir_module.operation)
   if outputfile:
     with open(outputfile, 'w') as g:
       g.write(str(mlir_module))
@@ -187,7 +187,7 @@ def run(mlir_module, args=None):
       'expand-strided-metadata',
       'lower-affine',
       'convert-scf-to-cf',
-      'convert-memref-to-llvm',
+      'finalize-memref-to-llvm',
       'convert-func-to-llvm',
       'convert-cf-to-llvm',
       'canonicalize','cse'
@@ -282,6 +282,7 @@ def run(mlir_module, args=None):
 
       # libxaie include path
       cmd += [f'-I{libxaie_path}/include']
+      cmd += [f'-I{rocm_path}/../../../include']
       cmd += ['-DLIBXAIENGINEV2']
       cmd += ['-DAIE_LIBXAIE_ENABLE', '-fPIC', '-c']
       cmd += ['-o', obj_file, cpp_file]

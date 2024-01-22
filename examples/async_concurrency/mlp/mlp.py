@@ -8,8 +8,8 @@ import torch
 import torch.nn as nn
 import torch_mlir
 
-import air.mlir.ir
-import air.mlir.passmanager
+import air.ir
+import air.passmanager
 import air.compiler.util
 
 # Model specifications
@@ -39,15 +39,15 @@ x = torch.randn((batch_size, 28, 28))
 # Emit the model to Linalg MLIR
 module = torch_mlir.compile(mlp, x, output_type="linalg-on-tensors")
 
-with air.mlir.ir.Context():
-    # convert torch_mlir.ir.Module to air.mlir.ir.Module
-    air_module = air.mlir.ir.Module.parse(str(module))
+with air.ir.Context():
+    # convert torch_mlir.ir.Module to air.ir.Module
+    air_module = air.ir.Module.parse(str(module))
 
     with open('output0.mlir', 'w') as f:
         f.write(str(air_module))
 
     # convert linalg on tensors to linalg on memrefs
-    pm = air.mlir.passmanager.PassManager.parse(
+    pm = air.passmanager.PassManager.parse(
         air.compiler.util.LINALG_TENSOR_TO_MEMREF_PIPELINE)
     pm.run(air_module.operation)
 
@@ -64,7 +64,7 @@ with air.mlir.ir.Context():
         "canonicalize", "cse",
     ])+')'
 
-    pm = air.mlir.passmanager.PassManager.parse(lowering_pipeline)
+    pm = air.passmanager.PassManager.parse(lowering_pipeline)
     pm.run(air_module.operation)
 
     with open('output1.mlir', 'w') as f:
@@ -79,7 +79,7 @@ with air.mlir.ir.Context():
         "air-dependency-canonicalize",
         "air-dependency-parse-graph{output-dir=dot_graphs/}",
     ])+')'
-    pm = air.mlir.passmanager.PassManager.parse(lowering_pipeline)
+    pm = air.passmanager.PassManager.parse(lowering_pipeline)
     pm.run(air_module.operation)
 
     with open('output2.mlir', 'w') as f:

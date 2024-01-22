@@ -9,6 +9,8 @@
 #ifndef AIR_PIPELINE_H
 #define AIR_PIPELINE_H
 
+#include "air/Conversion/PassDetail.h"
+
 #include "air/Dialect/AIR/AIRDialect.h"
 
 #include "mlir/Transforms/DialectConversion.h"

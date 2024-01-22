@@ -14,6 +14,7 @@
 #define DEBUG_TYPE "air-tiling-utils"
 
 using namespace mlir;
+using namespace mlir::affine;
 
 namespace xilinx {
 namespace air {
@@ -22,19 +23,19 @@ namespace air {
 /// a temporary placeholder to test the mechanics of tiled code generation.
 /// Returns all maximal outermost perfect loop nests to tile.
 void getTileableBands(func::FuncOp f,
-                      std::vector<SmallVector<AffineForOp, 6>> &bands,
+                      std::vector<SmallVector<affine::AffineForOp, 6>> &bands,
                       const char *attrName, StringRef label) {
   // Get maximal perfect nest of 'affine.for' insts starting from root
   // (inclusive).
-  auto getMaximalPerfectLoopNest = [&](AffineForOp root) {
-    SmallVector<AffineForOp, 6> band;
+  auto getMaximalPerfectLoopNest = [&](affine::AffineForOp root) {
+    SmallVector<affine::AffineForOp, 6> band;
     getPerfectlyNestedLoops(band, root);
     bands.push_back(band);
   };
 
   for (auto &block : f)
     for (auto &op : block)
-      if (auto forOp = dyn_cast<AffineForOp>(op)) {
+      if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
         auto targetForOp = getLabel(forOp, label, attrName);
         if (targetForOp) {
           getMaximalPerfectLoopNest(targetForOp);
@@ -42,10 +43,11 @@ void getTileableBands(func::FuncOp f,
       }
 }
 
-AffineForOp getLabel(AffineForOp root, StringRef label, const char *attrName) {
-  AffineForOp res;
+affine::AffineForOp getLabel(affine::AffineForOp root, StringRef label,
+                             const char *attrName) {
+  affine::AffineForOp res;
 
-  root.walk([&](AffineForOp forOp) {
+  root.walk([&](affine::AffineForOp forOp) {
     auto stringAttr = forOp->getAttrOfType<StringAttr>(attrName);
     if (!stringAttr)
       return WalkResult::advance();

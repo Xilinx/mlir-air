@@ -6,8 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "PassDetail.h"
-
 #include "air/Conversion/AIRLoweringPass.h"
 #include "air/Conversion/AIRPipeline.h"
 #include "air/Dialect/AIR/AIRDialect.h"
@@ -82,7 +80,7 @@ public:
 
     // map launch iteration space to scf.parallel ivs
     for (auto p : llvm::zip(launch.getIds(), scfPar.getInductionVars()))
-      std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
+      rewriter.replaceAllUsesWith(std::get<0>(p), std::get<1>(p));
 
     // map launch size to scf.parallel upper bounds
     for (auto p : llvm::zip(launch.getSizeOperands(), scfPar.getUpperBound()))
@@ -137,40 +135,46 @@ public:
       segment.getResult(0).replaceAllUsesWith(w.getResult(0));
     }
 
-    SmallVector<Value> lbs, ubs, steps;
-    auto c0 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 0);
-    auto c1 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1);
+    // If the segment doesn't contain a dma op, then it can be deleted
+    SmallVector<Operation *> segOps;
+    segment.walk([&](air::DmaMemcpyNdOp op) { segOps.push_back(op); });
 
-    // make scf.parallel to replace air.segment
-    for (auto d : segment.getSizeOperands()) {
-      lbs.push_back(c0);
-      ubs.push_back(d);
-      steps.push_back(c1);
+    if (segOps.size()) {
+      SmallVector<Value> lbs, ubs, steps;
+      auto c0 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 0);
+      auto c1 = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), 1);
+
+      // make scf.parallel to replace air.segment
+      for (auto d : segment.getSizeOperands()) {
+        lbs.push_back(c0);
+        ubs.push_back(d);
+        steps.push_back(c1);
+      }
+      if (lbs.empty()) {
+        lbs.push_back(c0);
+        ubs.push_back(c1);
+        steps.push_back(c1);
+      }
+      auto scfPar =
+          rewriter.create<scf::ParallelOp>(op->getLoc(), lbs, ubs, steps);
+
+      // map segment iteration space to scf.parallel ivs
+      for (auto p : llvm::zip(segment.getIds(), scfPar.getInductionVars()))
+        rewriter.replaceAllUsesWith(std::get<0>(p), std::get<1>(p));
+
+      // map segment size to scf.parallel upper bounds
+      for (auto p :
+           llvm::zip(segment.getSizeOperands(), scfPar.getUpperBound()))
+        std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
+
+      int i = 0;
+      for (auto arg : segment.getKernelArguments())
+        arg.replaceAllUsesWith(segment.getKernelOperand(i++));
+
+      auto &body = segment.getBody().front().getOperations();
+      scfPar.getBody()->getOperations().splice(scfPar.getBody()->begin(), body,
+                                               body.begin(), --body.end());
     }
-    if (lbs.empty()) {
-      lbs.push_back(c0);
-      ubs.push_back(c1);
-      steps.push_back(c1);
-    }
-    auto scfPar =
-        rewriter.create<scf::ParallelOp>(op->getLoc(), lbs, ubs, steps);
-
-    // map segment iteration space to scf.parallel ivs
-    for (auto p : llvm::zip(segment.getIds(), scfPar.getInductionVars()))
-      std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
-
-    // map segment size to scf.parallel upper bounds
-    for (auto p : llvm::zip(segment.getSizeOperands(), scfPar.getUpperBound()))
-      std::get<0>(p).replaceAllUsesWith(std::get<1>(p));
-
-    int i = 0;
-    for (auto arg : segment.getKernelArguments())
-      arg.replaceAllUsesWith(segment.getKernelOperand(i++));
-
-    auto &body = segment.getBody().front().getOperations();
-    scfPar.getBody()->getOperations().splice(scfPar.getBody()->begin(), body,
-                                             body.begin(), --body.end());
-
     rewriter.eraseOp(op);
     return success();
   }
@@ -215,18 +219,19 @@ public:
     int64_t herd_size_x = herd.getNumCols();
     int64_t herd_size_y = herd.getNumRows();
 
-    auto outer = rewriter.create<AffineForOp>(herd.getLoc(), 0, herd_size_x);
+    auto outer =
+        rewriter.create<affine::AffineForOp>(herd.getLoc(), 0, herd_size_x);
     auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
-    auto inner =
-        outer_builder.create<AffineForOp>(herd.getLoc(), 0, herd_size_y);
+    auto inner = outer_builder.create<affine::AffineForOp>(herd.getLoc(), 0,
+                                                           herd_size_y);
 
     outer->setAttr("air.herd", StringAttr::get(op->getContext(), "outer"));
     inner->setAttr("air.herd", StringAttr::get(op->getContext(), "inner"));
 
-    herd.getSize()[0].replaceAllUsesWith(herd_size[0]);
-    herd.getSize()[1].replaceAllUsesWith(herd_size[1]);
-    herd.getIds()[0].replaceAllUsesWith(outer.getInductionVar());
-    herd.getIds()[1].replaceAllUsesWith(inner.getInductionVar());
+    rewriter.replaceAllUsesWith(herd.getSize()[0], herd_size[0]);
+    rewriter.replaceAllUsesWith(herd.getSize()[1], herd_size[1]);
+    rewriter.replaceAllUsesWith(herd.getIds()[0], outer.getInductionVar());
+    rewriter.replaceAllUsesWith(herd.getIds()[1], inner.getInductionVar());
 
     if (herdOps.size()) {
       int i = 0;
@@ -371,16 +376,16 @@ public:
       air::HerdOp launch = op->getParentOfType<air::HerdOp>();
       if (!launch) {
 
-        AffineForOp afo = op->getParentOfType<AffineForOp>();
+        affine::AffineForOp afo = op->getParentOfType<affine::AffineForOp>();
         while (afo && !afo->getAttr("air.herd"))
-          afo = afo->getParentOfType<AffineForOp>();
+          afo = afo->getParentOfType<affine::AffineForOp>();
         if (!afo)
           return failure();
         opers.push_back(afo.getInductionVar());
 
-        afo = afo->getParentOfType<AffineForOp>();
+        afo = afo->getParentOfType<affine::AffineForOp>();
         while (afo && !afo->getAttr("air.herd"))
-          afo = afo->getParentOfType<AffineForOp>();
+          afo = afo->getParentOfType<affine::AffineForOp>();
         if (!afo)
           return failure();
         opers.push_back(afo.getInductionVar());
@@ -440,6 +445,10 @@ public:
     } else {
       airrtOp = rewriter.create<airrt::DmaMemcpyNdOp>(loc, tys, opers);
     }
+    // If dma op contains shim dma alloc metadata, then inherit this information
+    if (op->hasAttr("metadata"))
+      airrtOp->setAttr("metadata",
+                       op->getAttrOfType<mlir::SymbolRefAttr>("metadata"));
     rewriter.replaceOp(op, airrtOp->getResults());
     return success();
   }
@@ -457,23 +466,18 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   MemRefType theOtherMemrefType =
       theOtherOp.getMemref().getType().cast<MemRefType>();
 
-  bool thisOpIsInTile =
-      thisMemrefType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L1;
-  bool isFullMemcpy = false;
-  if (thisMemrefType.getMemorySpaceAsInt() ==
-          (int)xilinx::air::MemorySpace::L3 &&
-      theOtherMemrefType.getMemorySpaceAsInt() ==
-          (int)xilinx::air::MemorySpace::L2) {
-    isFullMemcpy = true;
-  } else if (theOtherMemrefType.getMemorySpaceAsInt() ==
-                 (int)xilinx::air::MemorySpace::L3 &&
-             thisMemrefType.getMemorySpaceAsInt() ==
-                 (int)xilinx::air::MemorySpace::L2) {
-    isFullMemcpy = true;
-  }
-  if (!thisOpIsInTile && !isFullMemcpy) {
-    SmallVector<Value, 16> opers;
+  bool thisOpIsInShim =
+      thisMemrefType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3;
 
+  SmallVector<Value, 16> opers;
+  Operation *airrtOp = nullptr;
+  auto i64Ty = builder.getI64Type();
+  auto zero =
+      builder.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 0));
+  auto one =
+      builder.create<arith::ConstantOp>(loc, i64Ty, IntegerAttr::get(i64Ty, 1));
+
+  if (thisOpIsInShim) {
     auto idTy = IntegerType::get(ctx, 32);
     // Get op id of the internal put/get op
     if (auto id_attr = theOtherOp->getAttrOfType<IntegerAttr>("id")) {
@@ -482,12 +486,6 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
       opers.push_back(builder.create<arith::ConstantOp>(
           loc, idTy, IntegerAttr::get(idTy, 0)));
     }
-
-    auto i64Ty = builder.getI64Type();
-    auto zero = builder.create<arith::ConstantOp>(loc, i64Ty,
-                                                  IntegerAttr::get(i64Ty, 0));
-    auto one = builder.create<arith::ConstantOp>(loc, i64Ty,
-                                                 IntegerAttr::get(i64Ty, 1));
 
     scf::ParallelOp launch = thisOp->getParentOfType<scf::ParallelOp>();
     if (!launch) {
@@ -532,31 +530,33 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
         strides[idx++] = builder.create<arith::IndexCastOp>(
             loc, IntegerType::get(ctx, 64), o);
     idx = 4 - thisMemrefType.getRank();
-    for (auto o : thisOp.getSizes())
-      lengths[idx++] =
-          builder.create<arith::IndexCastOp>(loc, IntegerType::get(ctx, 64), o);
+    // If sizes field is empty, then infer sizes from memref shape
+    if (thisOp.getSizes().empty())
+      for (auto d : air::getTensorShape(thisMemrefType))
+        lengths[idx++] = builder.create<arith::ConstantOp>(
+            loc, i64Ty, IntegerAttr::get(i64Ty, d));
+    else
+      for (auto o : thisOp.getSizes())
+        lengths[idx++] = builder.create<arith::IndexCastOp>(
+            loc, IntegerType::get(ctx, 64), o);
 
     opers.append(offsets);
     opers.append(lengths);
     opers.append(strides);
 
-    Operation *airrtOp = nullptr;
     SmallVector<Type, 1> tys;
     if (thisOp->getNumResults())
       tys.push_back(airrt::EventType::get(ctx));
-    if (isFullMemcpy) {
-      airrtOp = builder.create<airrt::MemcpyNdOp>(loc, tys, opers);
-    } else {
-      airrtOp = builder.create<airrt::DmaMemcpyNdOp>(loc, tys, opers);
-    }
+
+    airrtOp = builder.create<airrt::DmaMemcpyNdOp>(loc, tys, opers);
+    // If channel op contains shim dma alloc metadata, then inherit this
+    // information
+    if (thisOp->hasAttr("metadata"))
+      airrtOp->setAttr("metadata",
+                       thisOp->getAttrOfType<mlir::SymbolRefAttr>("metadata"));
     return airrtOp;
-  } else {
-    // If memcpy between L1 and L3, and this op is the L1 side, then this
-    // indicates a bug because it should have been deleted with herd.
-    assert(false);
-    // TODO: isFullMemcpy
   }
-  return nullptr;
+  return airrtOp;
 }
 
 class AIRChannelPutToAIRRtConversion
@@ -584,7 +584,7 @@ public:
         deps.push_back(o);
     if (deps.size())
       placeholder = rewriter.create<xilinx::airrt::WaitAllOp>(
-          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
+          loc, xilinx::airrt::EventType::get(ctx), deps);
 
     // Get src and dst memref types
     auto getOps = getTheOtherChannelOpThroughSymbol(op);
@@ -592,8 +592,11 @@ public:
 
     Operation *airrtOp =
         AIRChannelInterfaceToAIRRtConversionImpl(rewriter, op, getOp);
-    if (!airrtOp)
-      return failure();
+    if (!airrtOp) {
+      // If this put op is not convertable to  airrt op, then erase it.
+      rewriter.eraseOp(op);
+      return success();
+    }
     rewriter.replaceOp(op, airrtOp->getResults());
     return success();
   }
@@ -624,7 +627,7 @@ public:
         deps.push_back(o);
     if (deps.size())
       placeholder = rewriter.create<xilinx::airrt::WaitAllOp>(
-          op->getLoc(), xilinx::airrt::EventType::get(op->getContext()), deps);
+          loc, xilinx::airrt::EventType::get(ctx), deps);
 
     // Get src and dst memref types
     auto putOps = getTheOtherChannelOpThroughSymbol(op);
@@ -632,8 +635,11 @@ public:
 
     Operation *airrtOp =
         AIRChannelInterfaceToAIRRtConversionImpl(rewriter, op, putOp);
-    if (!airrtOp)
-      return failure();
+    if (!airrtOp) {
+      // If this get op is not convertable to  airrt op, then erase it.
+      rewriter.eraseOp(op);
+      return success();
+    }
     rewriter.replaceOp(op, airrtOp->getResults());
     return success();
   }
@@ -744,10 +750,10 @@ public:
   LogicalResult
   matchAndRewrite(scf::ReduceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto newOp =
-        rewriter.replaceOpWithNewOp<scf::ReduceOp>(op, adaptor.getOperand());
-    auto body = &op.getRegion().front();
-    auto newBody = &newOp.getRegion().front();
+    auto newOp = rewriter.replaceOpWithNewOp<scf::ReduceOp>(
+        op, adaptor.getOperands()[0]);
+    auto body = &op.getRegion(0).front();
+    auto newBody = &newOp.getRegion(0).front();
 
     for (int i = 0, e = body->getNumArguments(); i < e; i++) {
       body->getArgument(i).replaceAllUsesWith(newBody->getArgument(i));
@@ -876,22 +882,27 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
 
   SmallVector<Operation *, 8> erased;
   f.walk([&](scf::ParallelOp scf_par) {
-    for (auto v : scf_par.getLowerBound())
+    for (auto v : scf_par.getLowerBound()) {
       assert(dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value() == 0);
-    for (auto v : scf_par.getStep())
+      (void)v;
+    }
+    for (auto v : scf_par.getStep()) {
       assert(dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value() == 1);
+      (void)v;
+    }
     std::vector<int> par_sizes = {};
     for (auto v : scf_par.getUpperBound())
       par_sizes.push_back(
           dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp()).value());
 
     OpBuilder builder(scf_par);
-    auto outer = builder.create<AffineForOp>(scf_par.getLoc(), 0, par_sizes[0]);
-    AffineForOp inner = nullptr;
+    auto outer =
+        builder.create<affine::AffineForOp>(scf_par.getLoc(), 0, par_sizes[0]);
+    affine::AffineForOp inner = nullptr;
     if (par_sizes.size() == 2) {
       auto outer_builder = OpBuilder::atBlockBegin(outer.getBody());
-      inner =
-          outer_builder.create<AffineForOp>(scf_par.getLoc(), 0, par_sizes[1]);
+      inner = outer_builder.create<affine::AffineForOp>(scf_par.getLoc(), 0,
+                                                        par_sizes[1]);
     } else
       inner = outer;
 
@@ -902,7 +913,8 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
       remap.map(scf_par.getInductionVars()[1], inner.getInductionVar());
     }
     for (auto &o : scf_par.getBody()->getOperations()) {
-      if (!isa<scf::ReduceOp>(o) && !isa<scf::YieldOp>(o)) {
+      if (!isa<scf::ReduceOp>(o) && !isa<scf::YieldOp>(o) &&
+          !isa<scf::ParallelOp>(o)) {
         builder.clone(o, remap);
       }
     }
@@ -920,14 +932,15 @@ LogicalResult ScfParToAffineForConversion(Operation *op) {
   return success();
 }
 
-class AIRLoweringPass : public air::AIRLoweringBase<AIRLoweringPass> {
+class AIRLoweringPass : public air::impl::AIRLoweringBase<AIRLoweringPass> {
 
 public:
   AIRLoweringPass() = default;
   AIRLoweringPass(const AIRLoweringPass &pass) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<AffineDialect, airrt::AIRRtDialect, LLVM::LLVMDialect>();
+    registry.insert<affine::AffineDialect, airrt::AIRRtDialect,
+                    LLVM::LLVMDialect, scf::SCFDialect>();
   }
 
   void runOnOperation() override {
@@ -936,7 +949,7 @@ public:
     auto context = module.getContext();
 
     TypeConverter converter;
-    converter.addConversion([&](Type type) -> Optional<Type> {
+    converter.addConversion([&](Type type) -> std::optional<Type> {
       // convert !air.async.token to !airrt.event
       if (auto t = type.dyn_cast<air::AsyncTokenType>())
         return airrt::EventType::get(context);
@@ -946,18 +959,18 @@ public:
     auto addUnrealizedCast = [](OpBuilder &builder, Type type,
                                 ValueRange inputs, Location loc) {
       auto cast = builder.create<UnrealizedConversionCastOp>(loc, type, inputs);
-      return Optional<Value>(cast.getResult(0));
+      return std::optional<Value>(cast.getResult(0));
     };
     converter.addSourceMaterialization(addUnrealizedCast);
     converter.addTargetMaterialization(addUnrealizedCast);
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           arith::ArithDialect, AffineDialect, scf::SCFDialect,
-                           linalg::LinalgDialect, memref::MemRefDialect,
-                           bufferization::BufferizationDialect,
-                           airrt::AIRRtDialect>();
+    target.addLegalDialect<
+        LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect,
+        affine::AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
+        memref::MemRefDialect, bufferization::BufferizationDialect,
+        airrt::AIRRtDialect>();
 
     // AIR ExecuteOp conversion
     if (failed(lowerAirExecute(module))) {
@@ -1029,10 +1042,10 @@ public:
     });
 
     target.addDynamicallyLegalOp<scf::ReduceOp>([&](scf::ReduceOp op) {
-      if (op.getOperand().getType().isa<air::AsyncTokenType>())
-        return false;
-      else
-        return true;
+      for (auto o : op.getOperands())
+        if (o.getType().isa<air::AsyncTokenType>())
+          return false;
+      return true;
     });
 
     target.addDynamicallyLegalOp<scf::ReduceReturnOp>(
@@ -1104,7 +1117,7 @@ private:
       for (auto child_for : for_loop.getBody()->getOps<scf::ForOp>()) {
         return child_for;
       }
-    } else if (auto afor_loop = dyn_cast<AffineForOp>(loop)) {
+    } else if (auto afor_loop = dyn_cast<affine::AffineForOp>(loop)) {
       for (auto child_for : afor_loop.getBody()->getOps<scf::ForOp>()) {
         return child_for;
       }
@@ -1221,8 +1234,9 @@ private:
     else if (auto scf_for = dyn_cast<scf::ForOp>(op))
       return getInnerMostMemcpyFromLoopNest(scf_for);
     // else return nullptr;
-    else
-      assert(false);
+    else {
+      llvm_unreachable("unhandled op");
+    }
   }
   Operation *getInnerMostMemcpyFromLoopNest(scf::ForOp op) const {
     Operation *output = nullptr;
@@ -1247,8 +1261,6 @@ private:
   // This function is a workaround for vck190 having one single control
   // processor, where all the async. control programs are serialized here.
   void serializeAsyncControlFlows(func::FuncOp func) const {
-
-    auto context = func.getContext();
 
     // Collect async scf loops in line-by-line order
     std::vector<Operation *> scf_loops;
@@ -1277,8 +1289,11 @@ private:
         merge_candidate_loop = true;
       else if (auto scf_par = dyn_cast<scf::ParallelOp>(scf_loop)) {
         merge_candidate_loop = false;
-        for (auto child_scf_for_loop : scf_par.getBody()->getOps<scf::ForOp>())
+        for (auto child_scf_for_loop :
+             scf_par.getBody()->getOps<scf::ForOp>()) {
+          (void)child_scf_for_loop;
           merge_candidate_loop = true;
+        }
       }
 
       if (merge_candidate_loop) {
@@ -1317,7 +1332,7 @@ private:
                               .front()
                               .getTerminator();
           builder.setInsertionPoint(yield_op);
-          auto new_op = remapOpAndOperands(builder, chan_op, remap);
+          remapOpAndOperands(builder, chan_op, remap);
           if (i == bucket.size() - 1) {
             SmallVector<Value, 8> operands{};
             if (auto new_ctrl_loop_par =
@@ -1340,14 +1355,14 @@ private:
 };
 
 class AIRPipelineToAffinePass
-    : public air::AIRPipelineToAffineBase<AIRPipelineToAffinePass> {
+    : public air::impl::AIRPipelineToAffineBase<AIRPipelineToAffinePass> {
 
 public:
   AIRPipelineToAffinePass() = default;
   AIRPipelineToAffinePass(const AIRPipelineToAffinePass &pass) {}
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
-    registry.insert<AffineDialect>();
+    registry.insert<affine::AffineDialect>();
   }
 
   void runOnOperation() override {
@@ -1356,11 +1371,11 @@ public:
 
     ConversionTarget target(*context);
 
-    target.addLegalDialect<LLVM::LLVMDialect, func::FuncDialect,
-                           arith::ArithDialect, AffineDialect, scf::SCFDialect,
-                           linalg::LinalgDialect, memref::MemRefDialect,
-                           bufferization::BufferizationDialect,
-                           airrt::AIRRtDialect, air::airDialect>();
+    target.addLegalDialect<
+        LLVM::LLVMDialect, func::FuncDialect, arith::ArithDialect,
+        affine::AffineDialect, scf::SCFDialect, linalg::LinalgDialect,
+        memref::MemRefDialect, bufferization::BufferizationDialect,
+        airrt::AIRRtDialect, air::airDialect>();
 
     target.addIllegalOp<air::PipelineStageOp, air::PipelineYieldOp>();
 
@@ -1397,10 +1412,16 @@ public:
 
 } // namespace
 
-std::unique_ptr<mlir::Pass> xilinx::air::createAIRLoweringPass() {
+namespace xilinx {
+namespace air {
+
+std::unique_ptr<mlir::Pass> createAIRLoweringPass() {
   return std::make_unique<AIRLoweringPass>();
 }
 
-std::unique_ptr<mlir::Pass> xilinx::air::createAIRPipelineToAffinePass() {
+std::unique_ptr<mlir::Pass> createAIRPipelineToAffinePass() {
   return std::make_unique<AIRPipelineToAffinePass>();
 }
+
+} // namespace air
+} // namespace xilinx

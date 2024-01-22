@@ -62,7 +62,6 @@ module  {
       memref.dealloc %4 : memref<?xi8>
       memref.dealloc %7 : memref<?xi8>
       memref.dealloc %10 : memref<?xi8>
-      scf.yield
     }
     return %0 : memref<64x64xf32>
   }

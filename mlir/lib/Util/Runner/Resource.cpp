@@ -9,6 +9,7 @@
 #define AIR_UTIL_RUNNER_RESOURCE
 
 #include "air/Util/Runner.h"
+#include <iostream> // To print std::cerr error message
 
 namespace xilinx {
 namespace air {

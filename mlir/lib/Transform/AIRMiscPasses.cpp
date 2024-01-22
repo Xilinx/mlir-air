@@ -13,7 +13,6 @@
 // ===---------------------------------------------------------------------===//
 
 #include "air/Transform/AIRMiscPasses.h"
-#include "PassDetail.h"
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Dialect/AIRRt/AIRRtDialect.h"
 #include "air/Dialect/AIRRt/AIRRtOps.h"
@@ -25,6 +24,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/Pass/Pass.h"
@@ -44,7 +44,7 @@ using namespace xilinx;
 
 namespace {
 
-class AIRExamplePass : public air::AIRExamplePassBase<AIRExamplePass> {
+class AIRExamplePass : public air::impl::AIRExamplePassBase<AIRExamplePass> {
 
 public:
   AIRExamplePass() = default;
@@ -57,7 +57,8 @@ private:
 
 void AIRExamplePass::runOnOperation() {}
 
-class AIRLinalgNamePass : public air::AIRLinalgNamePassBase<AIRLinalgNamePass> {
+class AIRLinalgNamePass
+    : public air::impl::AIRLinalgNamePassBase<AIRLinalgNamePass> {
 
 public:
   AIRLinalgNamePass() = default;
@@ -86,7 +87,7 @@ void AIRLinalgNamePass::runOnOperation() {
 }
 
 class AIRRemoveLinalgNamePass
-    : public air::AIRRemoveLinalgNamePassBase<AIRRemoveLinalgNamePass> {
+    : public air::impl::AIRRemoveLinalgNamePassBase<AIRRemoveLinalgNamePass> {
 
 public:
   AIRRemoveLinalgNamePass() = default;
@@ -111,7 +112,7 @@ void AIRRemoveLinalgNamePass::runOnOperation() {
 
 // AIRPromoteUniformL1Dma
 class AIRPromoteUniformL1Dma
-    : public air::AIRPromoteUniformL1DmaBase<AIRPromoteUniformL1Dma> {
+    : public air::impl::AIRPromoteUniformL1DmaBase<AIRPromoteUniformL1Dma> {
 
 public:
   AIRPromoteUniformL1Dma() = default;
@@ -234,7 +235,8 @@ bool isFuncOf(Operation *op, Value v, std::vector<Operation *> &ops) {
 }
 
 // AIRSpecializeDma
-class AIRSpecializeDma : public air::AIRSpecializeDmaBase<AIRSpecializeDma> {
+class AIRSpecializeDma
+    : public air::impl::AIRSpecializeDmaBase<AIRSpecializeDma> {
 
 public:
   AIRSpecializeDma() = default;
@@ -316,7 +318,8 @@ void AIRSpecializeDma::runOnOperation() {
 
 // AIRSpecializeDmaBroadcast
 class AIRSpecializeDmaBroadcast
-    : public air::AIRSpecializeDmaBroadcastBase<AIRSpecializeDmaBroadcast> {
+    : public air::impl::AIRSpecializeDmaBroadcastBase<
+          AIRSpecializeDmaBroadcast> {
 
 public:
   AIRSpecializeDmaBroadcast() = default;
@@ -365,7 +368,7 @@ private:
             if (c.isSymbolicOrConstant()) {
               auto newC = c.replaceSymbols(zero_syms);
               auto expr =
-                  simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
+                  dyn_cast<AffineConstantExpr>(simplifyAffineExpr(newC, 0, 1));
               if (!expr) {
                 continue;
               }
@@ -402,7 +405,7 @@ private:
             SmallVector<Value, 2> int_set_args{herd_id[0], herd_id[1]};
             // Duplicate dma ops per spatial segment
             if (i == 0) {
-              AffineIfOp aif = builder.create<AffineIfOp>(
+              affine::AffineIfOp aif = builder.create<affine::AffineIfOp>(
                   loc, air::AsyncTokenType::get(ctx), int_set, int_set_args,
                   (i != numSegments - 1));
               builder.setInsertionPointToStart(aif.getThenBlock());
@@ -414,8 +417,8 @@ private:
               yield_token.push_back(
                   dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
                       .getAsyncToken());
-              builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(),
-                                            yield_token);
+              builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
+                                                    yield_token);
               if (numSegments != 1) {
                 // If more than 1 spatial segments, then move loc to else
                 // block
@@ -428,7 +431,7 @@ private:
               async_memcpyOp.getAsyncToken().replaceAllUsesWith(
                   aif.getResult(0));
             } else if (i < numSegments - 1) {
-              AffineIfOp aif = builder.create<AffineIfOp>(
+              affine::AffineIfOp aif = builder.create<affine::AffineIfOp>(
                   builder.getUnknownLoc(), air::AsyncTokenType::get(ctx),
                   int_set, int_set_args, (i != numSegments - 1));
               builder.setInsertionPointToStart(aif.getThenBlock());
@@ -440,13 +443,13 @@ private:
               yield_token.push_back(
                   dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
                       .getAsyncToken());
-              builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(),
-                                            yield_token);
+              builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
+                                                    yield_token);
               builder.setInsertionPointAfter(aif);
               SmallVector<Value, 1> parent_block_yield_token = {
                   aif.getResult(0)};
-              builder.create<AffineYieldOp>(builder.getUnknownLoc(),
-                                            parent_block_yield_token);
+              builder.create<affine::AffineYieldOp>(builder.getUnknownLoc(),
+                                                    parent_block_yield_token);
               builder.setInsertionPointToStart(aif.getElseBlock());
             } else {
               auto memcpyOp_cloned = builder.clone(*memcpyOp.getOperation());
@@ -457,8 +460,8 @@ private:
               yield_token.push_back(
                   dyn_cast<air::AsyncOpInterface>(memcpyOp_cloned)
                       .getAsyncToken());
-              builder.create<AffineYieldOp>(memcpyOp_cloned->getLoc(),
-                                            yield_token);
+              builder.create<affine::AffineYieldOp>(memcpyOp_cloned->getLoc(),
+                                                    yield_token);
             }
           }
           memcpyOp.erase();
@@ -519,7 +522,7 @@ private:
                 op = &child_op;
             }
             // If the async op is affine.apply
-            if (auto apply_op = dyn_cast<AffineApplyOp>(op)) {
+            if (auto apply_op = dyn_cast<affine::AffineApplyOp>(op)) {
               auto map = apply_op.getAffineMap();
               for (unsigned j = 0; j < current_shape_expr.size(); j++) {
                 if (current_shape_expr[j]) {
@@ -561,14 +564,14 @@ private:
 
   // Evaluate the integer value of affine set expression if the only symbolic
   // identifier is replaced with zero
-  int evaluateSymbolEqualityInSet(mlir::AffineExpr c, MLIRContext *ctx) {
+  int evaluateSymbolEqualityInSet(AffineExpr c, MLIRContext *ctx) {
     assert(c.isSymbolicOrConstant() && "constraint has dimension identifier");
     SmallVector<AffineExpr, 2> zero_syms{
         getAffineConstantExpr(0, ctx),
         getAffineConstantExpr(0, ctx),
     };
     auto newC = c.replaceSymbols(zero_syms);
-    auto expr = simplifyAffineExpr(newC, 0, 1).dyn_cast<AffineConstantExpr>();
+    auto expr = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(newC, 0, 1));
     assert(expr);
     int result = expr.getValue();
     // Both + and - constant eval are legal for AffineExpr
@@ -577,8 +580,7 @@ private:
 
   // Evaluate the affine expression of affine map if the only symbolic
   // identifier is replaced with zero
-  void replaceSymbolAndEvaluateConstantInMap(mlir::AffineMap map,
-                                             mlir::AffineExpr &c,
+  void replaceSymbolAndEvaluateConstantInMap(AffineMap map, AffineExpr &c,
                                              MLIRContext *ctx) {
     auto newmap = map.replace(getAffineSymbolExpr(0, ctx), c, 0, 1);
     auto const_int = simplifyAffineMap(newmap).getSingleConstantResult();
@@ -586,8 +588,8 @@ private:
   }
 
   // AddI for AffineConstantExpr
-  void applyArithOpToAffineConstantExpr(arith::AddIOp arith_op,
-                                        mlir::AffineExpr &c, MLIRContext *ctx) {
+  void applyArithOpToAffineConstantExpr(arith::AddIOp arith_op, AffineExpr &c,
+                                        MLIRContext *ctx) {
     arith::ConstantIndexOp add_operand = nullptr;
     if (arith_op.getLhs().getDefiningOp() &&
         dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())) {
@@ -605,15 +607,14 @@ private:
       return;
     }
     auto acc = add_operand.value();
-    assert(c.dyn_cast<mlir::AffineConstantExpr>() &&
-           "non-constant affine expression");
-    acc += c.dyn_cast<mlir::AffineConstantExpr>().getValue();
+    assert(dyn_cast<AffineConstantExpr>(c) && "non-constant affine expression");
+    acc += dyn_cast<AffineConstantExpr>(c).getValue();
     c = getAffineConstantExpr(acc, ctx);
   }
 
   // MulI for AffineConstantExpr
-  void applyArithOpToAffineConstantExpr(arith::MulIOp arith_op,
-                                        mlir::AffineExpr &c, MLIRContext *ctx) {
+  void applyArithOpToAffineConstantExpr(arith::MulIOp arith_op, AffineExpr &c,
+                                        MLIRContext *ctx) {
     arith::ConstantIndexOp mul_operand = nullptr;
     if (arith_op.getLhs().getDefiningOp() &&
         dyn_cast<arith::ConstantIndexOp>(arith_op.getLhs().getDefiningOp())) {
@@ -631,9 +632,8 @@ private:
       return;
     }
     auto mul = mul_operand.value();
-    assert(c.dyn_cast<mlir::AffineConstantExpr>() &&
-           "non-constant affine expression");
-    mul *= c.dyn_cast<mlir::AffineConstantExpr>().getValue();
+    assert(dyn_cast<AffineConstantExpr>(c) && "non-constant affine expression");
+    mul *= dyn_cast<AffineConstantExpr>(c).getValue();
     c = getAffineConstantExpr(mul, ctx);
   }
 
@@ -667,9 +667,8 @@ private:
             dyn_cast<air::DmaMemcpyNdOp>(memcpyOp.getOperation())) {
       for (unsigned i = 0; i < current_shape_expr.size(); i++) {
         if (current_shape_expr[i]) {
-          auto val = current_shape_expr[i]
-                         .template dyn_cast<AffineConstantExpr>()
-                         .getValue();
+          auto val =
+              dyn_cast<AffineConstantExpr>(current_shape_expr[i]).getValue();
           auto cop = builder.create<arith::ConstantIndexOp>(loc, val);
           srcMemrefDimsOrOffsets.push_back(cop);
         } else {
@@ -698,7 +697,7 @@ private:
 };
 
 class AIRFuseParallelHerdPass
-    : public air::AIRFuseParallelHerdPassBase<AIRFuseParallelHerdPass> {
+    : public air::impl::AIRFuseParallelHerdPassBase<AIRFuseParallelHerdPass> {
 
 public:
   AIRFuseParallelHerdPass() = default;
@@ -817,7 +816,7 @@ void AIRFuseParallelHerdPass::runOnOperation() {
 }
 
 class AIRRenumberDmaIdPass
-    : public air::AIRRenumberDmaIdPassBase<AIRRenumberDmaIdPass> {
+    : public air::impl::AIRRenumberDmaIdPassBase<AIRRenumberDmaIdPass> {
 
 public:
   AIRRenumberDmaIdPass() = default;
@@ -853,7 +852,7 @@ public:
       remap.map(op.getInductionVars()[i], forOp.getInductionVar());
     }
     for (Operation &o : op.getBody()->getOperations())
-      if (!isa<scf::YieldOp>(o))
+      if (!isa<scf::ReduceOp>(o))
         rewriter.clone(o, remap);
 
     rewriter.eraseOp(op);
@@ -862,7 +861,7 @@ public:
 };
 
 class AIRLowerHerdParallelPass
-    : public air::AIRLowerHerdParallelPassBase<AIRLowerHerdParallelPass> {
+    : public air::impl::AIRLowerHerdParallelPassBase<AIRLowerHerdParallelPass> {
 
 public:
   AIRLowerHerdParallelPass() = default;
@@ -881,123 +880,8 @@ void AIRLowerHerdParallelPass::runOnOperation() {
   (void)applyPatternsAndFoldGreedily(op, std::move(patterns));
 }
 
-class HoistScfChannelGetPutPass : public RewritePattern {
-public:
-  HoistScfChannelGetPutPass(MLIRContext *context, PatternBenefit benefit = 1)
-      : RewritePattern(MatchAnyOpTypeTag(), benefit, context) {}
-
-  LogicalResult matchAndRewrite(Operation *op,
-                                PatternRewriter &rewriter) const override {
-    auto chanOp = dyn_cast<air::ChannelInterface>(op);
-    if (!chanOp)
-      return failure();
-    MemRefType memrefTy = chanOp.getMemref().getType().cast<MemRefType>();
-
-    // channel op must be in an scf.for loop
-    auto forOp = op->getParentOfType<scf::ForOp>();
-    if (!forOp)
-      return failure();
-
-    // channel op must be the only op in the loop
-    if (forOp.getBody()->getOperations().size() != 2)
-      return failure();
-
-    // scf.for must have constant bounds and step
-    auto lb = forOp.getLowerBound().getDefiningOp<arith::ConstantIndexOp>();
-    auto ub = forOp.getUpperBound().getDefiningOp<arith::ConstantIndexOp>();
-    auto step = forOp.getStep().getDefiningOp<arith::ConstantIndexOp>();
-    if (!lb || !ub || !step)
-      return failure();
-
-    auto trip_count = (ub.value() - lb.value()) / step.value();
-
-    rewriter.setInsertionPoint(forOp);
-    auto loc = op->getLoc();
-
-    // look for an offset that is a loop iv
-    SmallVector<Value> offsets;
-    Value iv = nullptr;
-    int ivOffsetIdx = 0;
-    for (auto v : chanOp.getOffsets()) {
-      if (v == forOp.getInductionVar()) {
-        if (iv) // there can be only one
-          return failure();
-        iv = v;
-        v = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-      }
-      offsets.push_back(v);
-      if (!iv)
-        ivOffsetIdx++;
-    }
-
-    SmallVector<Value> sizes;
-    sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, trip_count));
-    for (auto v : chanOp.getSizes()) {
-      auto c = dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp());
-      if (!c)
-        return failure();
-      sizes.push_back(c);
-    }
-
-    // compute a new stride equal to the stride of the repeated dimension
-    // multiplied by the number of scf.loop iterations we're replacing
-    SmallVector<Value> strides;
-    auto lastStrideOffset =
-        chanOp.getStrides().size() - memrefTy.getRank() + ivOffsetIdx;
-    auto lastStride = dyn_cast<arith::ConstantIndexOp>(
-        chanOp.getStrides()[lastStrideOffset].getDefiningOp());
-    auto foldedStride = step.value() * lastStride.value();
-
-    strides.push_back(
-        rewriter.create<arith::ConstantIndexOp>(loc, foldedStride));
-    for (auto v : chanOp.getStrides()) {
-      auto c = dyn_cast<arith::ConstantIndexOp>(v.getDefiningOp());
-      if (!c)
-        return failure();
-      strides.push_back(c);
-    }
-
-    SmallVector<Value> deps;
-    SmallVector<Type> tys;
-    auto ctx = op->getContext();
-    auto channel = FlatSymbolRefAttr::get(ctx, chanOp.getChanName());
-    if (isa<air::ChannelPutOp>(op))
-      rewriter.create<air::ChannelPutOp>(
-          loc, tys, deps, channel, chanOp.getIndices(), chanOp.getMemref(),
-          offsets, sizes, strides);
-    else
-      rewriter.create<air::ChannelGetOp>(
-          loc, tys, deps, channel, chanOp.getIndices(), chanOp.getMemref(),
-          offsets, sizes, strides);
-    rewriter.eraseOp(op);
-    rewriter.eraseOp(forOp);
-    return success();
-  }
-};
-
-class AIRHoistScfChannelGetPutPass
-    : public air::AIRHoistScfChannelGetPutPassBase<
-          AIRHoistScfChannelGetPutPass> {
-
-public:
-  AIRHoistScfChannelGetPutPass() = default;
-  AIRHoistScfChannelGetPutPass(const AIRHoistScfChannelGetPutPass &pass){};
-
-  void runOnOperation() override;
-
-private:
-};
-
-void AIRHoistScfChannelGetPutPass::runOnOperation() {
-  auto op = getOperation();
-  auto context = op->getContext();
-  RewritePatternSet patterns(context);
-  patterns.add<HoistScfChannelGetPutPass>(context);
-  (void)applyPatternsAndFoldGreedily(op, std::move(patterns));
-}
-
 class AIRLabelBroadcastChannelWithTilePass
-    : public air::AIRLabelBroadcastChannelWithTilePassBase<
+    : public air::impl::AIRLabelBroadcastChannelWithTilePassBase<
           AIRLabelBroadcastChannelWithTilePass> {
 
 public:
@@ -1016,7 +900,7 @@ void AIRLabelBroadcastChannelWithTilePass::runOnOperation() {
   auto func = getOperation();
   auto ctx = func.getContext();
   func.walk([&](air::ChannelInterface op) {
-    auto aif = op->getParentOfType<AffineIfOp>();
+    auto aif = op->getParentOfType<affine::AffineIfOp>();
     auto herd = op->getParentOfType<air::HerdOp>();
     if (aif && herd) {
       // Fast forward through affine.if nest
@@ -1044,6 +928,121 @@ void AIRLabelBroadcastChannelWithTilePass::runOnOperation() {
       op->setAttr("tile", ArrayAttr::get(ctx, tiles));
     }
   });
+}
+
+class AIRCollapseHerdPass
+    : public air::impl::AIRCollapseHerdPassBase<AIRCollapseHerdPass> {
+
+public:
+  AIRCollapseHerdPass() = default;
+  AIRCollapseHerdPass(const AIRCollapseHerdPass &pass){};
+
+  void runOnOperation() override;
+
+private:
+};
+
+void AIRCollapseHerdPass::runOnOperation() {
+  SmallVector<air::HerdOp> herds;
+  auto func = getOperation();
+  func.walk([&](air::HerdOp op) {
+    if (op.getNumCols() != 1)
+      herds.push_back(op);
+  });
+
+  for (auto h : herds) {
+    OpBuilder outsideBuilder(h);
+    Location loc = h.getLoc();
+
+    // Assumption: herd is two-dimensional, and both of which we collapse into a
+    // single dim.
+    SmallVector<SmallVector<unsigned>> combinedDimensions = {{}, {0, 1}};
+
+    // Combine iteration spaces.
+    SmallVector<Value, 3> lowerBounds, upperBounds, steps;
+    auto cst0 = outsideBuilder.create<arith::ConstantIndexOp>(loc, 0);
+    auto cst1 = outsideBuilder.create<arith::ConstantIndexOp>(loc, 1);
+    // First dimension size set to one, i.e. a single column
+    lowerBounds.push_back(cst0);
+    steps.push_back(cst1);
+    upperBounds.push_back(cst1);
+    // Second dimension onwards
+    for (unsigned i = 1, e = combinedDimensions.size(); i < e; ++i) {
+      Value newUpperBound =
+          outsideBuilder.create<arith::ConstantIndexOp>(loc, 1);
+      for (auto idx : combinedDimensions[i]) {
+        newUpperBound = outsideBuilder.create<arith::MulIOp>(
+            loc, newUpperBound,
+            h->getOperand(h.getAsyncDependencies().size() + idx));
+      }
+      lowerBounds.push_back(cst0);
+      steps.push_back(cst1);
+      upperBounds.push_back(newUpperBound);
+    }
+
+    // Create new air.herd with conversions to the original induction values.
+    SmallVector<Value> herd_kernel_operands;
+    for (unsigned i = 0; i < h.getNumKernelOperands(); i++) {
+      herd_kernel_operands.push_back(h.getKernelOperand(i));
+    }
+    air::HerdOp newPloop = nullptr;
+    if (h.getAsyncToken())
+      newPloop = outsideBuilder.create<air::HerdOp>(
+          loc, h.getAsyncDependencies(), upperBounds, herd_kernel_operands,
+          true);
+    else
+      newPloop = outsideBuilder.create<air::HerdOp>(loc, upperBounds,
+                                                    herd_kernel_operands);
+
+    // Remap the induction variables
+    OpBuilder insideBuilder(h);
+    insideBuilder.setInsertionPointToStart(&newPloop.getBody().front());
+    for (unsigned i = 0, e = newPloop.getNumDims(); i < e; ++i) {
+      Value previous = newPloop.getIds()[i];
+      // Iterate over all except the last induction value.
+      for (int j = combinedDimensions[i].size() - 1; j > 0; --j) {
+        unsigned idx = combinedDimensions[i][j];
+        auto old_upper_bound = mlir::getConstantIntValue(
+            h.getOperand(h.getAsyncDependencies().size() + idx));
+        assert(old_upper_bound);
+        auto old_upper_b_v =
+            insideBuilder.create<arith::ConstantIndexOp>(loc, *old_upper_bound);
+
+        // Determine the current induction value's current loop iteration
+        Value iv =
+            insideBuilder.create<arith::RemSIOp>(loc, previous, old_upper_b_v);
+        replaceAllUsesInRegionWith(h.getIds()[idx], iv, h.getBody());
+
+        // Remove the effect of the current induction value to prepare for
+        // the next value.
+        previous =
+            insideBuilder.create<arith::DivSIOp>(loc, previous, old_upper_b_v);
+      }
+
+      // The final induction value is just the remaining value.
+      if (combinedDimensions[i].size()) {
+        unsigned idx = combinedDimensions[i][0];
+        replaceAllUsesInRegionWith(h.getIds()[idx], previous, h.getRegion());
+      }
+    }
+
+    // Replace the old loop with the new loop.
+    newPloop.getBody().front().getOperations().splice(
+        ++Block::iterator(newPloop.getBody().front().back()),
+        h.getBody().front().getOperations());
+    // Update async deps
+    if (h.getAsyncToken()) {
+      h.getAsyncToken().replaceAllUsesWith(newPloop.getAsyncToken());
+    }
+
+    // Copy over any attributes
+    NamedAttrList attrs(h->getAttrDictionary());
+    newPloop->setAttrs(attrs.getDictionary(h->getContext()));
+  }
+
+  for (auto h : herds) {
+    h.erase();
+  }
 }
 
 } // anonymous namespace
@@ -1087,12 +1086,12 @@ std::unique_ptr<Pass> createAIRLowerHerdParallelPass() {
   return std::make_unique<AIRLowerHerdParallelPass>();
 }
 
-std::unique_ptr<Pass> createAIRHoistScfChannelGetPutPass() {
-  return std::make_unique<AIRHoistScfChannelGetPutPass>();
-}
-
 std::unique_ptr<Pass> createAIRLabelBroadcastChannelWithTilePass() {
   return std::make_unique<AIRLabelBroadcastChannelWithTilePass>();
+}
+
+std::unique_ptr<Pass> createAIRCollapseHerdPass() {
+  return std::make_unique<AIRCollapseHerdPass>();
 }
 
 } // namespace air

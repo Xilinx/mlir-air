@@ -17,7 +17,6 @@ func.func @f0()  {
   %c2 = arith.constant 2 : index
   scf.parallel (%x,%y) = (%c0,%c0) to (%c2, %c2) step (%c1,%c1) {
     %2 = arith.addi %x, %y : index
-    scf.yield
   }
   return
 }
@@ -32,7 +31,6 @@ func.func @f1()  {
   %c128 = arith.constant 128 : index
   scf.parallel (%x) = (%c0) to (%c128) step (%c32) {
     %2 = arith.muli %x, %x : index
-    scf.yield
   }
   return
 }

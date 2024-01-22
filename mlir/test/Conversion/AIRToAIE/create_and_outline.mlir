@@ -8,15 +8,15 @@
 
 // RUN: air-opt %s -air-to-aie='test-patterns=to-aie-mlir' --split-input-file | FileCheck %s
 
-// CHECK: AIE.device
-// CHECK: [[T00:%.*]] = AIE.tile(1, 1)
-// CHECK: [[T10:%.*]] = AIE.tile(2, 1)
-// CHECK: [[T01:%.*]] = AIE.tile(1, 2)
-// CHECK: [[T11:%.*]] = AIE.tile(2, 2)
-// CHECK: AIE.core([[T11]])
-// CHECK: AIE.core([[T01]])
-// CHECK: AIE.core([[T10]])
-// CHECK: AIE.core([[T00]])
+// CHECK: aie.device
+// CHECK: [[T00:%.*]] = aie.tile(1, 1)
+// CHECK: [[T10:%.*]] = aie.tile(2, 1)
+// CHECK: [[T01:%.*]] = aie.tile(1, 2)
+// CHECK: [[T11:%.*]] = aie.tile(2, 2)
+// CHECK: aie.core([[T11]])
+// CHECK: aie.core([[T01]])
+// CHECK: aie.core([[T10]])
+// CHECK: aie.core([[T00]])
 #map = affine_map<()[s0] -> (s0 * 32)>
 module attributes {torch.debug_module_name = "mmult"} {
   func.func @forward(%a0: memref<64x64xi32>, %a1: memref<64x64xi32>, %a2: memref<64x64xi32>) {
@@ -58,7 +58,7 @@ module attributes {torch.debug_module_name = "mmult"} {
 
 // -----
 
-// CHECK: AIE.device
+// CHECK: aie.device
 // CHECK: air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
 air.channel @channel_0 [1, 1] {broadcast_shape = [1, 4]}
 func.func @f1() -> () {

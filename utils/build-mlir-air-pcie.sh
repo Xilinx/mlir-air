@@ -24,6 +24,8 @@
 # <mlir-aie dir>     - mlir-aie
 #
 # <libXAIE dir>      - libXAIE to build runtime
+# <HSA dir>          - HSA to build runtime
+# <HSA kmt dir>      - HSA to build runtime
 #
 # <build dir>    - optional, build dir name, default is 'build-pcie'
 # <install dir>  - optional, install dir name, default is 'install-pcie'
@@ -40,8 +42,11 @@ MLIR_AIE_DIR=`realpath $3`
 
 LibXAIE_DIR=`realpath $4`
 
-BUILD_DIR=${5:-"build-pcie"}
-INSTALL_DIR=${6:-"install-pcie"}
+HSA_DIR=`realpath $5`
+HSAKMT_DIR=`realpath $6`
+
+BUILD_DIR=${7:-"build-pcie"}
+INSTALL_DIR=${8:-"install-pcie"}
 
 mkdir -p $BUILD_DIR
 mkdir -p $INSTALL_DIR
@@ -63,6 +68,8 @@ cmake .. \
     -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
     -DVitisSysroot="" \
     -DLibXAIE_ROOT=${LibXAIE_DIR} \
+    -Dhsa-runtime64_DIR=${HSA_DIR} \
+    -Dhsakmt_DIR=${HSAKMT_DIR} \
     -DARM_TOOLCHAIN_OPT="" \
     -DAIR_RUNTIME_TARGETS="x86_64" \
     -DBUILD_AIR_PCIE=ON \

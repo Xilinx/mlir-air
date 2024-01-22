@@ -11,11 +11,13 @@ add_mlir_library(
   AIRToAIESchedulingUtils.cpp
   AIRToAsyncPass.cpp
   AIRPipeline.cpp
+  AIRRtToIpuPass.cpp
   Passes.cpp
 
   DEPENDS
   AIRConversionPassIncGen
   AIRTransformOpsIncGen
+  AIRTransformPasses
   AIRDialect
   AIRRtDialect
 
@@ -27,6 +29,7 @@ add_mlir_library(
   AIRRtDialect
   AIRUtil
   AIE
+  AIEX
   MLIRIR
   MLIRLinalgUtils
   MLIRLinalgTransforms

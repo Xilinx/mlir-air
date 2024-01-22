@@ -80,7 +80,6 @@ module attributes {torch.debug_module_name = "Conv2D"} {
           }
         }
       }
-      scf.yield
     }
     return
   }
