@@ -6,5 +6,5 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: %CLANG %S/test.cpp -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%aie_runtime_lib%/test_lib/include -ltest_lib -L%aie_runtime_lib%/test_lib/lib -rdynamic -lxaiengine %airhost_libs% -o %T/test.elf
+// RUN: %CLANG %S/test.cpp -I%HSA_DIR%/include -L%HSA_DIR%/lib -lhsa-runtime64 -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -L%AIE_RUNTIME_DIR%/test_lib/lib -ltest_lib %airhost_libs% -o %T/test.elf
 // RUN: %run_on_board %T/test.elf

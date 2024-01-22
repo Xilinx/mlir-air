@@ -7,26 +7,26 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: aircc.py -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-49 -n 1) %S/air.mlir -o %T/air.a
-// RUN: cat air_project/aiecc.segment_0.mlir | grep %1 | grep tile 
-// RUN: %CLANG %S/test.cpp -ltest_lib -L%aie_runtime_lib%/test_lib/lib -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -g -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%aie_runtime_lib%/test_lib/include -I%air_runtime_lib%/airhost/include -rdynamic -lxaiengine %airhost_libs% -o %T/air_test.elf
-// RUN: %run_on_board %T/air_test.elf
+// RUN: cat air_project/aiecc.segment_0.mlir | grep tile | head -n 1
+// RUN: %CLANG %S/test.cpp -I%HSA_DIR%/include -L%HSA_DIR%/lib -lhsa-runtime64 -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -L%AIE_RUNTIME_DIR%/test_lib/lib -ltest_lib %airhost_libs% -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -rdynamic -o %T/test.elf
+// RUN: %run_on_board %T/test.elf
 
 // RUN: aircc.py -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-49 -n 1) %S/air.mlir -o %T/air.a
-// RUN: cat air_project/aiecc.segment_0.mlir | grep %1 | grep tile 
-// RUN: %CLANG %S/test.cpp -ltest_lib -L%aie_runtime_lib%/test_lib/lib -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -g -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%aie_runtime_lib%/test_lib/include -I%air_runtime_lib%/airhost/include -rdynamic -lxaiengine %airhost_libs% -o %T/air_test.elf
-// RUN: %run_on_board %T/air_test.elf
+// RUN: cat air_project/aiecc.segment_0.mlir | grep tile | head -n 1
+// RUN: %CLANG %S/test.cpp -I%HSA_DIR%/include -L%HSA_DIR%/lib -lhsa-runtime64 -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -L%AIE_RUNTIME_DIR%/test_lib/lib -ltest_lib %airhost_libs% -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -rdynamic -o %T/test.elf
+// RUN: %run_on_board %T/test.elf
 
 // RUN: aircc.py -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-49 -n 1) %S/air.mlir -o %T/air.a
-// RUN: cat air_project/aiecc.segment_0.mlir | grep %1 | grep tile 
-// RUN: %CLANG %S/test.cpp -ltest_lib -L%aie_runtime_lib%/test_lib/lib -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -g -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%aie_runtime_lib%/test_lib/include -I%air_runtime_lib%/airhost/include -rdynamic -lxaiengine %airhost_libs% -o %T/air_test.elf
-// RUN: %run_on_board %T/air_test.elf
+// RUN: cat air_project/aiecc.segment_0.mlir | grep tile | head -n 1
+// RUN: %CLANG %S/test.cpp -I%HSA_DIR%/include -L%HSA_DIR%/lib -lhsa-runtime64 -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -L%AIE_RUNTIME_DIR%/test_lib/lib -ltest_lib %airhost_libs% -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -rdynamic -o %T/test.elf
+// RUN: %run_on_board %T/test.elf
 
 // RUN: aircc.py -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-49 -n 1) %S/air.mlir -o %T/air.a
-// RUN: cat air_project/aiecc.segment_0.mlir | grep %1 | grep tile 
-// RUN: %CLANG %S/test.cpp -ltest_lib -L%aie_runtime_lib%/test_lib/lib -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -g -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%aie_runtime_lib%/test_lib/include -I%air_runtime_lib%/airhost/include -rdynamic -lxaiengine %airhost_libs% -o %T/air_test.elf
-// RUN: %run_on_board %T/air_test.elf
+// RUN: cat air_project/aiecc.segment_0.mlir | grep tile | head -n 1
+// RUN: %CLANG %S/test.cpp -I%HSA_DIR%/include -L%HSA_DIR%/lib -lhsa-runtime64 -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -L%AIE_RUNTIME_DIR%/test_lib/lib -ltest_lib %airhost_libs% -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -rdynamic -o %T/test.elf
+// RUN: %run_on_board %T/test.elf
 
 // RUN: aircc.py -row-offset=$(shuf -i 1-8 -n 1) -col-offset=$(shuf -i 0-49 -n 1) %S/air.mlir -o %T/air.a
-// RUN: cat air_project/aiecc.segment_0.mlir | grep %1 | grep tile 
-// RUN: %CLANG %S/test.cpp -ltest_lib -L%aie_runtime_lib%/test_lib/lib -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -g -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%aie_runtime_lib%/test_lib/include -I%air_runtime_lib%/airhost/include -rdynamic -lxaiengine %airhost_libs% -o %T/air_test.elf
-// RUN: %run_on_board %T/air_test.elf
+// RUN: cat air_project/aiecc.segment_0.mlir | grep tile | head -n 1
+// RUN: %CLANG %S/test.cpp -I%HSA_DIR%/include -L%HSA_DIR%/lib -lhsa-runtime64 -I%LIBXAIE_DIR%/include -L%LIBXAIE_DIR%/lib -lxaiengine -I%AIE_RUNTIME_DIR%/test_lib/include -L%AIE_RUNTIME_DIR%/test_lib/lib -ltest_lib %airhost_libs% -Wl,--whole-archive %T/air.a -Wl,--no-whole-archive -rdynamic -o %T/test.elf
+// RUN: %run_on_board %T/test.elf

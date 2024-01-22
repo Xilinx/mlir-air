@@ -57,7 +57,7 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-  std::vector<air_agent_t> agents;
+  std::vector<hsa_agent_t> agents;
   auto get_agents_ret = air_get_agents(agents);
   assert(get_agents_ret == HSA_STATUS_SUCCESS && "failed to get agents!");
 
@@ -69,19 +69,22 @@ int main(int argc, char *argv[]) {
   if (VERBOSE)
     std::cout << "Found " << agents.size() << " agents" << std::endl;
 
-  std::vector<queue_t *> queues;
-  for (auto agent : agents) {
-    // create the queue
-    queue_t *q = nullptr;
-    auto create_queue_ret = air_queue_create(
-        MB_QUEUE_SIZE, HSA_QUEUE_TYPE_SINGLE, &q, agent.handle);
-    assert(create_queue_ret == 0 && "failed to create queue!");
-    queues.push_back(q);
+  uint32_t aie_max_queue_size(0);
+  hsa_agent_get_info(agents[0], HSA_AGENT_INFO_QUEUE_MAX_SIZE,
+                     &aie_max_queue_size);
+
+  std::cout << "Max AIE queue size: " << aie_max_queue_size << std::endl;
+
+  hsa_queue_t *q = NULL;
+  auto queue_create_status =
+      hsa_queue_create(agents[0], aie_max_queue_size, HSA_QUEUE_TYPE_SINGLE,
+                       nullptr, nullptr, 0, 0, &q);
+
+  if (queue_create_status != HSA_STATUS_SUCCESS) {
+    std::cout << "hsa_queue_create failed" << std::endl;
   }
 
   aie_libxaie_ctx_t *xaie = (aie_libxaie_ctx_t *)air_init_libxaie();
-
-  queue_t *q = queues[0];
 
   if (VERBOSE)
     mlir_aie_print_tile_status(xaie, col, row);
@@ -115,7 +118,7 @@ int main(int argc, char *argv[]) {
   output_ref0.alloc = output_ref0.data = (uint32_t *)malloc(
       sizeof(uint32_t) * output_ref0.shape[0] * output_ref0.shape[1]);
 
-  auto handle = air_module_load_from_file(nullptr, q);
+  auto handle = air_module_load_from_file(nullptr, &agents[0], q);
   assert(handle && "failed to open linked air module");
 
   auto herd_fn = (void (*)(void *, void *, void *))dlsym(
