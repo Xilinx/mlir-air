@@ -100,7 +100,7 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
         getStridesAndOffset(inferredType, layout_strides, offset);
     if (failed(successStrides)) {
       llvm::outs() << "Failed to get strides\n";
-      return; // failure();
+      return failure();
     }
 
     for (auto o : static_offsets) {
@@ -2341,28 +2341,32 @@ static MemRefType inferTransposeResultType(MemRefType memRefType,
           StridedLayoutAttr::get(memRefType.getContext(), offset, strides));
 }
 
-static void extractStridesFromMemrefType(MemRefType memrefTy,
-                                         OpBuilder &builder,
-                                         SmallVector<Value, 4> &strides) {
+static SmallVector<Value, 4> extractStridesFromMemrefType(MemRefType memrefTy,
+                                                          OpBuilder &builder) {
   // get the strides and offsets from the memref type
+  SmallVector<Value, 4> strides;
   int64_t offset;
   SmallVector<int64_t, 4> layout_strides;
   auto successStrides = getStridesAndOffset(memrefTy, layout_strides, offset);
   if (failed(successStrides)) {
     llvm::outs() << "Failed to get strides\n";
-    return;
+    return strides;
   }
 
   for (auto s : layout_strides)
     strides.push_back(
         builder.create<arith::ConstantIndexOp>(builder.getUnknownLoc(), s));
+
+  return strides;
 }
 
-static void extractSizesFromMemrefType(MemRefType memrefTy, OpBuilder &builder,
-                                       SmallVector<Value, 4> &sizes) {
+static SmallVector<Value, 4> extractSizesFromMemrefType(MemRefType memrefTy,
+                                                        OpBuilder &builder) {
+  SmallVector<Value, 4> sizes;
   for (auto s : memrefTy.getShape())
     sizes.push_back(
         builder.create<arith::ConstantIndexOp>(builder.getUnknownLoc(), s));
+  return sizes;
 }
 
 static void extractOffsetsFromSubview(memref::SubViewOp subview,
@@ -2385,7 +2389,9 @@ static LogicalResult canonicalizeAIRDmaOperands(OpBuilder builder,
                                                 SmallVector<Value, 4> &sizes,
                                                 SmallVector<Value, 4> &strides,
                                                 MemRefType memref) {
-  // Increase vector sizes up to memref size
+  // Increase vector sizes up to memref size. When offsets, sizes and strides
+  // are all empty, then it implies that the whole memref is accessed in the
+  // default order.
   int max_dim_size =
       std::max(std::max(offsets.size(), sizes.size()), strides.size());
   if (max_dim_size && offsets.size() < memref.getRank()) {
@@ -2432,7 +2438,7 @@ static LogicalResult canonicalizeAIRDmaOperands(OpBuilder builder,
   return success();
 }
 
-static LogicalResult CondenseMemrefDataReorderingToAIRDma(
+static LogicalResult condenseMemrefDataReorderingToAIRDma(
     air::DmaMemcpyNdOp dmaOp, std::vector<Operation *> src_ancestor_memref_ops,
     std::vector<Operation *> dst_ancestor_memref_ops) {
   OpBuilder rewriter(dmaOp);
@@ -2548,12 +2554,12 @@ static LogicalResult CondenseMemrefDataReorderingToAIRDma(
   }
 
   if (src_ancestor_memref_ops.size()) {
-    extractStridesFromMemrefType(src_memref_ty, rewriter, src_strides);
-    extractSizesFromMemrefType(src_memref_ty, rewriter, src_sizes);
+    src_strides = extractStridesFromMemrefType(src_memref_ty, rewriter);
+    src_sizes = extractSizesFromMemrefType(src_memref_ty, rewriter);
   }
   if (dst_ancestor_memref_ops.size()) {
-    extractStridesFromMemrefType(dst_memref_ty, rewriter, dst_strides);
-    extractSizesFromMemrefType(dst_memref_ty, rewriter, dst_sizes);
+    dst_strides = extractStridesFromMemrefType(dst_memref_ty, rewriter);
+    dst_sizes = extractSizesFromMemrefType(dst_memref_ty, rewriter);
   }
 
   SmallVector<Value, 4> deps;
@@ -2673,6 +2679,8 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
         dst_condense |= isa<memref::SubViewOp>(dst_defop);
       }
       if (src_condense || dst_condense) {
+        // Fields in the tuple: (1) dma op, (2) list of memref ops producing the
+        // src memref, and (3) list of memref ops producing the dst memref.
         std::tuple<air::DmaMemcpyNdOp, std::vector<Operation *>,
                    std::vector<Operation *>>
             log_entry;
@@ -2719,17 +2727,10 @@ struct CopyToDmaPass : public air::impl::CopyToDmaBase<CopyToDmaPass> {
       }
     });
     for (auto dmaOp : dma_ops) {
-      if (failed(CondenseMemrefDataReorderingToAIRDma(
+      if (failed(condenseMemrefDataReorderingToAIRDma(
               std::get<0>(dmaOp), std::get<1>(dmaOp), std::get<2>(dmaOp)))) {
         return signalPassFailure();
       }
-    }
-    // Erase condensed memref ops
-    for (auto dmaOp : dma_ops) {
-      for (auto memref_op : std::get<1>(dmaOp))
-        memref_op->erase();
-      for (auto memref_op : std::get<2>(dmaOp))
-        memref_op->erase();
     }
   }
 };
