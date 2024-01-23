@@ -530,3 +530,43 @@ func.func @func7(%arg0 : memref<8x16xi32>, %arg1 : memref<16x8xi32>){
   air.channel.get @channel_1[] (%arg1[] [] []) {id = 4 : i32} : (memref<16x8xi32>)
   return
 }
+
+// -----
+
+// Multi-dimensional memref copy to wraps and strides, with offsets having more dims than memref type.
+// CHECK: aie.device(xcve2802)
+// CHECK: %[[memTileDMA_2_1:.*]] = aie.memtile_dma
+// CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb2)
+// CHECK: ^bb1:  // 2 preds: ^bb0, ^bb1
+// CHECK:   aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
+// CHECK:   aie.dma_bd({{.*}} : memref<64x256xi32, 1>, 32768, 8192, [<size = 8, stride = 32>, <size = 32, stride = 256>, <size = 32, stride = 1>])
+// CHECK:   aie.use_lock({{.*}}, Release, 1)
+// CHECK:   aie.next_bd ^bb1
+// CHECK: ^bb2:  // pred: ^bb0
+// CHECK:   aie.end
+
+air.channel @channel_0 [1, 1]
+func.func @func8(%arg0 : memref<8x16xi32>, %arg1 : memref<16x8xi32>){
+  air.segment args(%ext0 = %arg0, %ext1 = %arg1) : memref<8x16xi32>, memref<16x8xi32> attributes {sym_name="segment", id = 2 : i32, x_loc = 0 : i64, x_size = 1 : i64, y_loc = 3 : i64, y_size = 1 : i64} {
+    %herd_cols = arith.constant 1 : index
+    %herd_rows = arith.constant 1 : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c8 = arith.constant 8 : index
+    %c16 = arith.constant 16 : index
+    %c32 = arith.constant 32 : index
+    %c256 = arith.constant 256 : index
+    air.herd @herd_0 tile (%arg6, %arg7) in (%arg8=%herd_cols, %arg9=%herd_rows) attributes {id = 3 : i32, x_loc = 0 : i64, y_loc = 3 : i64} {
+      %results_35 = memref.alloc() : memref<32x32xi32, 2>
+      air.channel.get @channel_0[%arg6, %arg7] (%results_35[] [] []) {id = 14 : i32} : (memref<32x32xi32, 2>)
+      memref.dealloc %results_35 : memref<32x32xi32, 2>
+      air.herd_terminator
+    }
+    %buf0 = memref.alloc() : memref<64x256xi32, 1>
+    air.channel.put @channel_0[] (%buf0[%c0, %c32, %c0] [%c8, %c32, %c32] [%c32, %c256, %c1]) : (memref<64x256xi32, 1>)
+    memref.dealloc %buf0 : memref<64x256xi32, 1>
+    air.segment_terminator
+  }
+  return
+}
