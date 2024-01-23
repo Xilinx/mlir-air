@@ -26,13 +26,11 @@
 #include "hsa/hsa_ext_amd.h"
 
 namespace air::segments::segment_0 {
-int32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t*, int);
+int32_t mlir_aie_read_buffer_buf0(aie_libxaie_ctx_t *, int);
 };
 using namespace air::segments::segment_0;
 
-int
-main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
 
   std::vector<hsa_queue_t *> queues;
   uint32_t aie_max_queue_size(0);
@@ -81,13 +79,13 @@ main(int argc, char *argv[])
   auto handle = air_module_load_from_file(nullptr, &agents[0], q);
   assert(handle && "failed to open aie_ctrl.so");
 
-  auto graph_fn = (void (*)(void*))dlsym((void*)handle, "_mlir_ciface_graph");
+  auto graph_fn = (void (*)(void *))dlsym((void *)handle, "_mlir_ciface_graph");
   assert(graph_fn && "failed to locate _mlir_ciface_graph in aie_ctrl.so");
 
-  tensor_t<uint32_t,1> input;
+  tensor_t<uint32_t, 1> input;
   input.shape[0] = 256;
   input.alloc = input.data = (uint32_t *)malloc(sizeof(uint32_t) * 256);
-  for (int i=0; i<input.shape[0]; i++) {
+  for (int i = 0; i < input.shape[0]; i++) {
     input.data[i] = i;
   }
 
@@ -114,10 +112,8 @@ main(int argc, char *argv[])
   if (d == 0xacdc) {
     printf("PASS!\n");
     return 0;
-  }
-  else {
+  } else {
     printf("fail.\n");
     return -1;
   }
-
 }

@@ -28,9 +28,7 @@
 
 #define XAIE_NUM_COLS 10
 
-int
-main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
   uint64_t col = 6;
   uint64_t row = 0;
 
@@ -105,19 +103,20 @@ main(int argc, char *argv[])
 
 #define DMA_COUNT 512
 
-  // Ascending plus 2 sequence in the tile memory, and toggle the associated lock
-  for (int i=0; i<DMA_COUNT; i++) {
-    if (i<(DMA_COUNT/2))
-      mlir_aie_write_buffer_a(xaie, i, i+2);
+  // Ascending plus 2 sequence in the tile memory, and toggle the associated
+  // lock
+  for (int i = 0; i < DMA_COUNT; i++) {
+    if (i < (DMA_COUNT / 2))
+      mlir_aie_write_buffer_a(xaie, i, i + 2);
     else
-      mlir_aie_write_buffer_b(xaie, i-(DMA_COUNT/2), i+2);
+      mlir_aie_write_buffer_b(xaie, i - (DMA_COUNT / 2), i + 2);
   }
   mlir_aie_release_lock(xaie, 6, 2, 0, 0x1, 0);
   mlir_aie_release_lock(xaie, 6, 2, 1, 0x1, 0);
 
   uint32_t *dram_ptr = (uint32_t *)air_malloc(DMA_COUNT * sizeof(uint32_t));
   // Lets stomp over it!
-  for (int i=0;i<DMA_COUNT;i++) {
+  for (int i = 0; i < DMA_COUNT; i++) {
     dram_ptr[i] = 0xdeadbeef;
   }
 
@@ -132,19 +131,19 @@ main(int argc, char *argv[])
 
   uint32_t errs = 0;
   // Let go check the tile memory
-  for (int i=0; i<DMA_COUNT; i++) {
+  for (int i = 0; i < DMA_COUNT; i++) {
     uint32_t d;
-    if (i<(DMA_COUNT/2))
+    if (i < (DMA_COUNT / 2))
       d = mlir_aie_read_buffer_a(xaie, i);
     else
-      d = mlir_aie_read_buffer_b(xaie, i-(DMA_COUNT/2));
+      d = mlir_aie_read_buffer_b(xaie, i - (DMA_COUNT / 2));
 
-    if (d != i+2) {
-      printf("ERROR: Tile Memory id %d Expected %08X, got %08X\n", i, i+2, d);
+    if (d != i + 2) {
+      printf("ERROR: Tile Memory id %d Expected %08X, got %08X\n", i, i + 2, d);
       errs++;
     }
   }
-  for (int i=0; i<DMA_COUNT; i++) {
+  for (int i = 0; i < DMA_COUNT; i++) {
     if (dram_ptr[i] != 2 + i) {
       printf("ERROR: L2 Memory id %d Expected %08X, got %08X\n", i, i + 2,
              dram_ptr[i]);
@@ -167,8 +166,7 @@ main(int argc, char *argv[])
     printf("PASS!\n");
     return 0;
   } else {
-    printf("fail %d/%d.\n",DMA_COUNT-errs, DMA_COUNT);
+    printf("fail %d/%d.\n", DMA_COUNT - errs, DMA_COUNT);
     return -1;
   }
-
 }

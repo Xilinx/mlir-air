@@ -11,8 +11,8 @@
 #include <fcntl.h>
 #include <iostream>
 #include <stdlib.h>
-#include <sys/mman.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <vector>
 
 #include "air.hpp"
@@ -67,7 +67,8 @@ int main(int argc, char *argv[]) {
   char vend[8];
   uint32_t q_iter = 0;
   for (auto q : queues) {
-    std::cout << std::endl << "Requesting attribute: AIR_AGENT_INFO_CONTROLLER_ID... ";
+    std::cout << std::endl
+              << "Requesting attribute: AIR_AGENT_INFO_CONTROLLER_ID... ";
     air_get_agent_info(&agents[q_iter], q, AIR_AGENT_INFO_CONTROLLER_ID, &data);
     std::cout << "Agent ID is: " << data << std::endl;
 

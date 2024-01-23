@@ -28,9 +28,7 @@
 
 #define XAIE_NUM_COLS 10
 
-int
-main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
   uint64_t col = 7;
   uint64_t row = 0;
 
@@ -107,12 +105,12 @@ main(int argc, char *argv[])
 #define DMA_COUNT 512
 
   // We're going to stamp over the memory
-  for (int i=0; i<DMA_COUNT; i++)
+  for (int i = 0; i < DMA_COUNT; i++)
     mlir_aie_write_buffer_b0(xaie, i, 0xdeadbeef);
 
   uint32_t *dram_ptr = (uint32_t *)air_malloc(DMA_COUNT * sizeof(uint32_t));
 
-  for (int i=0;i<DMA_COUNT;i++) {
+  for (int i = 0; i < DMA_COUNT; i++) {
     dram_ptr[i] = i;
   }
 
@@ -130,7 +128,7 @@ main(int argc, char *argv[])
 
   uint32_t errs = 0;
   // Let go check the tile memory
-  for (int i=0; i<DMA_COUNT; i++) {
+  for (int i = 0; i < DMA_COUNT; i++) {
     uint32_t d = mlir_aie_read_buffer_b0(xaie, i);
     // printf("dram_ptr[%d] = %x\tbuffer val = 0x%x\n", i, dram_ptr[i], d);
     if (d != i) {
@@ -153,8 +151,7 @@ main(int argc, char *argv[])
   if (errs == 0) {
     printf("PASS!\n");
     return 0;
-  }
-  else {
+  } else {
     printf("fail.\n");
     return -1;
   }

@@ -24,11 +24,9 @@
 
 #define XAIE_NUM_COLS 36
 
-int
-main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
   bool use_barrier = true;
-  
+
   int col = 7;
   int row = 2;
   int col2 = 34;
@@ -102,8 +100,8 @@ main(int argc, char *argv[])
 
   uint32_t *bram_ptr;
 
-  #define BRAM_ADDR AIR_BBUFF_BASE
-  #define DMA_COUNT 16
+#define BRAM_ADDR AIR_BBUFF_BASE
+#define DMA_COUNT 16
 
   // Initializing the device memory allocator
   if (air_init_dev_mem_allocator(0x8000 /* dev_mem_size */,
@@ -114,35 +112,35 @@ main(int argc, char *argv[])
 
   bram_ptr = (uint32_t *)air_dev_mem_alloc(12 * DMA_COUNT * sizeof(uint32_t));
   if (bram_ptr != NULL) {
-    for (int i=0; i<4*DMA_COUNT; i++) {
-      bram_ptr[i] = i+1;
-      bram_ptr[4*DMA_COUNT+i] = 0xdeface;
-      bram_ptr[8*DMA_COUNT+i] = 0xcafe00;
+    for (int i = 0; i < 4 * DMA_COUNT; i++) {
+      bram_ptr[i] = i + 1;
+      bram_ptr[4 * DMA_COUNT + i] = 0xdeface;
+      bram_ptr[8 * DMA_COUNT + i] = 0xcafe00;
     }
   } else
     return -1;
 
-  for (int i=0; i<8; i++) {
-    mlir_aie_write_buffer_t72_ping_in(xaie, i, 0xabbaba10+i);
-    mlir_aie_write_buffer_t72_pong_in(xaie, i, 0xdeeded10+i);
-    mlir_aie_write_buffer_t72_ping_out(xaie, i, 0x12345610+i);
-    mlir_aie_write_buffer_t72_pong_out(xaie, i, 0x76543210+i);
-    mlir_aie_write_buffer_t73_ping_in(xaie, i, 0xabbaba10+i);
-    mlir_aie_write_buffer_t73_pong_in(xaie, i, 0xdeeded10+i);
-    mlir_aie_write_buffer_t73_ping_out(xaie, i, 0x12345610+i);
-    mlir_aie_write_buffer_t73_pong_out(xaie, i, 0x76543210+i);
-    mlir_aie_write_buffer_t82_ping_in(xaie, i, 0xabbaba10+i);
-    mlir_aie_write_buffer_t82_pong_in(xaie, i, 0xdeeded10+i);
-    mlir_aie_write_buffer_t82_ping_out(xaie, i, 0x12345610+i);
-    mlir_aie_write_buffer_t82_pong_out(xaie, i, 0x76543210+i);
-    mlir_aie_write_buffer_t83_ping_in(xaie, i, 0xabbaba10+i);
-    mlir_aie_write_buffer_t83_pong_in(xaie, i, 0xdeeded10+i);
-    mlir_aie_write_buffer_t83_ping_out(xaie, i, 0x12345610+i);
-    mlir_aie_write_buffer_t83_pong_out(xaie, i, 0x76543210+i);
-    mlir_aie_write_buffer_ping_in2(xaie, i, 0xabbaba20+i);
-    mlir_aie_write_buffer_pong_in2(xaie, i, 0xdeeded20+i);
-    mlir_aie_write_buffer_ping_out2(xaie, i, 0x12345620+i);
-    mlir_aie_write_buffer_pong_out2(xaie, i, 0x76543220+i);
+  for (int i = 0; i < 8; i++) {
+    mlir_aie_write_buffer_t72_ping_in(xaie, i, 0xabbaba10 + i);
+    mlir_aie_write_buffer_t72_pong_in(xaie, i, 0xdeeded10 + i);
+    mlir_aie_write_buffer_t72_ping_out(xaie, i, 0x12345610 + i);
+    mlir_aie_write_buffer_t72_pong_out(xaie, i, 0x76543210 + i);
+    mlir_aie_write_buffer_t73_ping_in(xaie, i, 0xabbaba10 + i);
+    mlir_aie_write_buffer_t73_pong_in(xaie, i, 0xdeeded10 + i);
+    mlir_aie_write_buffer_t73_ping_out(xaie, i, 0x12345610 + i);
+    mlir_aie_write_buffer_t73_pong_out(xaie, i, 0x76543210 + i);
+    mlir_aie_write_buffer_t82_ping_in(xaie, i, 0xabbaba10 + i);
+    mlir_aie_write_buffer_t82_pong_in(xaie, i, 0xdeeded10 + i);
+    mlir_aie_write_buffer_t82_ping_out(xaie, i, 0x12345610 + i);
+    mlir_aie_write_buffer_t82_pong_out(xaie, i, 0x76543210 + i);
+    mlir_aie_write_buffer_t83_ping_in(xaie, i, 0xabbaba10 + i);
+    mlir_aie_write_buffer_t83_pong_in(xaie, i, 0xdeeded10 + i);
+    mlir_aie_write_buffer_t83_ping_out(xaie, i, 0x12345610 + i);
+    mlir_aie_write_buffer_t83_pong_out(xaie, i, 0x76543210 + i);
+    mlir_aie_write_buffer_ping_in2(xaie, i, 0xabbaba20 + i);
+    mlir_aie_write_buffer_pong_in2(xaie, i, 0xdeeded20 + i);
+    mlir_aie_write_buffer_ping_out2(xaie, i, 0x12345620 + i);
+    mlir_aie_write_buffer_pong_out2(xaie, i, 0x76543220 + i);
   }
 
   dispatch_packet_t *p;
@@ -157,7 +155,8 @@ main(int argc, char *argv[])
 
       wr_idx = queue_add_write_index(queues[0], 1);
       packet_id = wr_idx % queues[0]->size;
-      dispatch_packet_t *pkt1 = (dispatch_packet_t*)(queues[0]->base_address_vaddr) + packet_id;
+      dispatch_packet_t *pkt1 =
+          (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
       air_packet_nd_memcpy(pkt1, 0, 2 + i, 1, 0 + j, 4, 2,
                            air_dev_mem_get_pa(bram_ptr) +
                                ((2 * i + j) * DMA_COUNT * sizeof(float)),
@@ -169,7 +168,8 @@ main(int argc, char *argv[])
 
       wr_idx = queue_add_write_index(queues[0], 1);
       packet_id = wr_idx % queues[0]->size;
-      dispatch_packet_t *pkt2 = (dispatch_packet_t*)(queues[0]->base_address_vaddr) + packet_id;
+      dispatch_packet_t *pkt2 =
+          (dispatch_packet_t *)(queues[0]->base_address_vaddr) + packet_id;
       air_packet_nd_memcpy(pkt2, 0, 2 + i, 0, 0 + j, 4, 2,
                            air_dev_mem_get_pa(bram_ptr) +
                                (4 * DMA_COUNT * sizeof(float)) +
@@ -205,7 +205,8 @@ main(int argc, char *argv[])
 
   wr_idx2 = queue_add_write_index(queues[1], 1);
   packet_id2 = wr_idx2 % queues[1]->size;
-  dispatch_packet_t *pkt12 = (dispatch_packet_t*)(queues[1]->base_address_vaddr) + packet_id2;
+  dispatch_packet_t *pkt12 =
+      (dispatch_packet_t *)(queues[1]->base_address_vaddr) + packet_id2;
   air_packet_nd_memcpy(pkt12, 0, 6, 1, 0, 4, 2,
                        air_dev_mem_get_pa(bram_ptr) +
                            4 * DMA_COUNT * sizeof(float),
@@ -217,7 +218,8 @@ main(int argc, char *argv[])
 
   wr_idx2 = queue_add_write_index(queues[1], 1);
   packet_id2 = wr_idx2 % queues[1]->size;
-  dispatch_packet_t *pkt22 = (dispatch_packet_t*)(queues[1]->base_address_vaddr) + packet_id2;
+  dispatch_packet_t *pkt22 =
+      (dispatch_packet_t *)(queues[1]->base_address_vaddr) + packet_id2;
   air_packet_nd_memcpy(pkt22, 0, 6, 0, 0, 4, 2,
                        air_dev_mem_get_pa(bram_ptr) +
                            (8 * DMA_COUNT * sizeof(float)),
@@ -226,7 +228,7 @@ main(int argc, char *argv[])
   // start herd 1 (waiting on barrier)
   air_queue_dispatch(queues[1], wr_idx2, pkt22);
 
-  // start herd 0 
+  // start herd 0
   air_queue_dispatch(queues[0], wr_idx, p);
 
   // wait for both to finish
@@ -235,17 +237,17 @@ main(int argc, char *argv[])
 
   int errors = 0;
 
-  for (int i=0; i<4*DMA_COUNT; i++) {
-    uint32_t d = bram_ptr[4*DMA_COUNT+i];
-    if (d != (i+2)) {
+  for (int i = 0; i < 4 * DMA_COUNT; i++) {
+    uint32_t d = bram_ptr[4 * DMA_COUNT + i];
+    if (d != (i + 2)) {
       errors++;
       std::cout << "step 1 mismatch " << d << " != 2 + " << i << std::endl;
     }
   }
 
-  for (int i=0; i<4*DMA_COUNT; i++) {
-    uint32_t d = bram_ptr[8*DMA_COUNT+i];
-    if (d != (i+3)) {
+  for (int i = 0; i < 4 * DMA_COUNT; i++) {
+    uint32_t d = bram_ptr[8 * DMA_COUNT + i];
+    if (d != (i + 3)) {
       errors++;
       std::cout << "step 2 mismatch " << d << " != 3 + " << i << std::endl;
     }
@@ -256,11 +258,8 @@ main(int argc, char *argv[])
   if (!errors) {
     std::cout << "PASS!" << std::endl;
     return 0;
-  }
-  else {
-    std::cout << "fail "
-              << errors << "/" << 8*DMA_COUNT << std::endl;
+  } else {
+    std::cout << "fail " << errors << "/" << 8 * DMA_COUNT << std::endl;
     return -1;
   }
-
 }

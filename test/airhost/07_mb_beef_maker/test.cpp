@@ -30,9 +30,7 @@
 
 #define XAIE_NUM_COLS 10
 
-int
-main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
   auto col = 7;
   auto row = 2;
 
@@ -103,8 +101,8 @@ main(int argc, char *argv[])
   mlir_aie_start_cores(xaie);
 
   // We first write an ascending pattern into the area the AIE will write into
-  for (int i=0; i<SCRATCH_AREA; i++) {
-    uint32_t d = i+1;
+  for (int i = 0; i < SCRATCH_AREA; i++) {
+    uint32_t d = i + 1;
     mlir_aie_write_buffer_buffer(xaie, i, d);
   }
 
@@ -125,19 +123,25 @@ main(int argc, char *argv[])
   while (!mlir_aie_acquire_lock(xaie, col, 2, 0, 0, 1000)) {
     count++;
     if (!(count % 1000)) {
-      printf("%d seconds\n",count/1000);
-      if (count == 2000) break;
+      printf("%d seconds\n", count / 1000);
+      if (count == 2000)
+        break;
     }
   }
 
   int errors = 0;
-  mlir_aie_check("Check Result 0:", mlir_aie_read_buffer_buffer(xaie, 0), 0xdeadbeef,errors);
-  mlir_aie_check("Check Result 1:", mlir_aie_read_buffer_buffer(xaie, 1), 0xcafecafe,errors);
-  mlir_aie_check("Check Result 2:", mlir_aie_read_buffer_buffer(xaie, 2), 0x000decaf,errors);
-  mlir_aie_check("Check Result 3:", mlir_aie_read_buffer_buffer(xaie, 3), 0x5a1ad000,errors);
+  mlir_aie_check("Check Result 0:", mlir_aie_read_buffer_buffer(xaie, 0),
+                 0xdeadbeef, errors);
+  mlir_aie_check("Check Result 1:", mlir_aie_read_buffer_buffer(xaie, 1),
+                 0xcafecafe, errors);
+  mlir_aie_check("Check Result 2:", mlir_aie_read_buffer_buffer(xaie, 2),
+                 0x000decaf, errors);
+  mlir_aie_check("Check Result 3:", mlir_aie_read_buffer_buffer(xaie, 3),
+                 0x5a1ad000, errors);
 
-  for (int i=4; i<SCRATCH_AREA; i++)
-    mlir_aie_check("Check Result:", mlir_aie_read_buffer_buffer(xaie, i), i+1,errors);
+  for (int i = 4; i < SCRATCH_AREA; i++)
+    mlir_aie_check("Check Result:", mlir_aie_read_buffer_buffer(xaie, i), i + 1,
+                   errors);
 
   // destroying the queue
   hsa_queue_destroy(queues[0]);
@@ -153,7 +157,7 @@ main(int argc, char *argv[])
     printf("PASS!\n");
     return 0;
   } else {
-    printf("fail %d/%d.\n", (SCRATCH_AREA-errors), SCRATCH_AREA);
+    printf("fail %d/%d.\n", (SCRATCH_AREA - errors), SCRATCH_AREA);
     return -1;
   }
 }

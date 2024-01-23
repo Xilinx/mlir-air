@@ -24,8 +24,7 @@
 
 #define XAIE_NUM_COLS 10
 
-int main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
   auto col = 7;
   auto row = 2;
 
@@ -112,7 +111,8 @@ int main(int argc, char *argv[])
   u32 errors = 0;
   for (int c = col; c < col + num_cols; c++)
     for (int r = row; r < row + num_rows; r++) {
-      u32 locks = mlir_aie_read32(xaie, mlir_aie_get_tile_addr(xaie, c, r) + 0x0001EF00);
+      u32 locks = mlir_aie_read32(xaie, mlir_aie_get_tile_addr(xaie, c, r) +
+                                            0x0001EF00);
       if (locks != 0x1)
         errors++;
     }
@@ -121,11 +121,11 @@ int main(int argc, char *argv[])
     printf("%d errors\n", errors);
     for (int c = col; c < col + num_cols; c++)
       for (int r = row; r < row + num_rows; r++) {
-        u32 locks = mlir_aie_read32(xaie, mlir_aie_get_tile_addr(xaie, c, r) + 0x0001EF00);
+        u32 locks = mlir_aie_read32(xaie, mlir_aie_get_tile_addr(xaie, c, r) +
+                                              0x0001EF00);
         printf("C[%d][%d] %08X\n", c, r, locks);
       }
-  }
-  else {
+  } else {
     // Release the herd locks!
     wr_idx = hsa_queue_add_write_index_relaxed(queues[0], 1);
     packet_id = wr_idx % queues[0]->size;
@@ -166,8 +166,7 @@ int main(int argc, char *argv[])
   if (errors == 0) {
     printf("PASS!\n");
     return 0;
-  }
-  else {
+  } else {
     printf("fail.\n");
     return -1;
   }

@@ -100,8 +100,8 @@ int main(int argc, char *argv[]) {
   pkt = (dispatch_packet_t *)(queues[1]->base_address_vaddr) + packet_id;
   air_packet_hello(pkt, 0xface);
 
-  // Dispatch to start agent 1 
-  // Second air_hello blocked by barrier_and waiting 
+  // Dispatch to start agent 1
+  // Second air_hello blocked by barrier_and waiting
   // for agent 0 to finish
   std::cout << "Dispatch work to MB 1 -> "
             << "] air_hello ] barrier_and ] air_hello ]" << std::endl
@@ -116,8 +116,7 @@ int main(int argc, char *argv[]) {
     sleep(1);
   }
   std::cout << std::endl
-            << "Dispatch work to MB 0 -> ] 5x air_hello packets ]"
-            << std::endl;
+            << "Dispatch work to MB 0 -> ] 5x air_hello packets ]" << std::endl;
 
   // Hit doorbell of agent 0's queue to start processing
   signal_create(0, 0, NULL, (signal_t *)&queues[0]->doorbell);

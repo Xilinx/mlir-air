@@ -28,9 +28,7 @@
 
 #define XAIE_NUM_COLS 20
 
-int
-main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
   uint64_t col = 7;
   uint64_t row = 0;
 
@@ -106,7 +104,7 @@ main(int argc, char *argv[])
 #define DMA_COUNT 32
 
   // We're going to stamp over the memories
-  for (int i=0; i<DMA_COUNT; i++) {
+  for (int i = 0; i < DMA_COUNT; i++) {
     mlir_aie_write_buffer_buf72_0(xaie, i, 0xdeadbeef);
     mlir_aie_write_buffer_buf74_0(xaie, i, 0xfeedf00d);
   }
@@ -124,7 +122,7 @@ main(int argc, char *argv[])
     return -1;
   }
 
-  for (int i=0;i<DMA_COUNT;i++) {
+  for (int i = 0; i < DMA_COUNT; i++) {
     dram_ptr_1[i] = i;
     dram_ptr_2[i] = i * 2;
     dram_ptr_3[i] = 0x1001ba11;
@@ -240,60 +238,62 @@ main(int argc, char *argv[])
 
   uint32_t errs = 0;
   // Let go check the tile memory
-  for (int i=0; i<DMA_COUNT; i++) {
+  for (int i = 0; i < DMA_COUNT; i++) {
     uint32_t d = mlir_aie_read_buffer_buf72_0(xaie, i);
     if (d != i) {
       printf("ERROR: buf72_0 id %d Expected %08X, got %08X\n", i, i, d);
       errs++;
     }
   }
-  for (int i=0; i<DMA_COUNT; i++) {
+  for (int i = 0; i < DMA_COUNT; i++) {
     uint32_t d = mlir_aie_read_buffer_buf74_0(xaie, i);
-    if (d != i*2) {
-      printf("ERROR: buf74_0 id %d Expected %08X, got %08X\n", i, i*2, d);
+    if (d != i * 2) {
+      printf("ERROR: buf74_0 id %d Expected %08X, got %08X\n", i, i * 2, d);
       errs++;
     }
   }
-  for (int i=0; i<DMA_COUNT; i++) {
+  for (int i = 0; i < DMA_COUNT; i++) {
     uint32_t d = mlir_aie_read_buffer_buf82_0(xaie, i);
     if (d != i) {
       printf("ERROR: buf82_0 id %d Expected %08X, got %08X\n", i, i, d);
       errs++;
     }
   }
-  for (int i=0; i<DMA_COUNT; i++) {
+  for (int i = 0; i < DMA_COUNT; i++) {
     uint32_t d = mlir_aie_read_buffer_buf84_0(xaie, i);
-    if (d != i*2) {
-      printf("ERROR: buf84_0 id %d Expected %08X, got %08X\n", i, i*2, d);
+    if (d != i * 2) {
+      printf("ERROR: buf84_0 id %d Expected %08X, got %08X\n", i, i * 2, d);
       errs++;
     }
   }
   // And the BRAM we updated
-  for (int i=0; i<DMA_COUNT; i++) {
+  for (int i = 0; i < DMA_COUNT; i++) {
     uint32_t d = dram_ptr_3[i]; // bram_ptr[2*DMA_COUNT+i];;
     if (d != i) {
       printf("ERROR: buf72_0 copy id %d Expected %08X, got %08X\n", i, i, d);
       errs++;
     }
   }
-  for (int i=0; i<DMA_COUNT; i++) {
+  for (int i = 0; i < DMA_COUNT; i++) {
     uint32_t d = dram_ptr_4[i]; // bram_ptr[3*DMA_COUNT+i];;
-    if (d != i*2) {
-      printf("ERROR: buf74_0 copy id %d Expected %08X, got %08X\n", i, i*2, d);
+    if (d != i * 2) {
+      printf("ERROR: buf74_0 copy id %d Expected %08X, got %08X\n", i, i * 2,
+             d);
       errs++;
     }
   }
-  for (int i=0; i<DMA_COUNT; i++) {
+  for (int i = 0; i < DMA_COUNT; i++) {
     uint32_t d = dram_ptr_5[i]; // bram_ptr[4*DMA_COUNT+i];;
     if (d != i) {
       printf("ERROR: buf82_0 copy id %d Expected %08X, got %08X\n", i, i, d);
       errs++;
     }
   }
-  for (int i=0; i<DMA_COUNT; i++) {
+  for (int i = 0; i < DMA_COUNT; i++) {
     uint32_t d = dram_ptr_6[i] /*bram_ptr[5*DMA_COUNT+i]*/;
-    if (d != i*2) {
-      printf("ERROR: buf84_0 copy id %d Expected %08X, got %08X\n", i, i*2, d);
+    if (d != i * 2) {
+      printf("ERROR: buf84_0 copy id %d Expected %08X, got %08X\n", i, i * 2,
+             d);
       errs++;
     }
   }
@@ -317,11 +317,8 @@ main(int argc, char *argv[])
   if (errs == 0) {
     printf("PASS!\n");
     return 0;
-  }
-  else {
+  } else {
     printf("fail.\n");
     return -1;
   }
-
 }
-

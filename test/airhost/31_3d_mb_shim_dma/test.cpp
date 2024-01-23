@@ -30,17 +30,15 @@
 
 #define IMAGE_WIDTH 128
 #define IMAGE_HEIGHT 16
-#define IMAGE_SIZE  (IMAGE_WIDTH * IMAGE_HEIGHT)
+#define IMAGE_SIZE (IMAGE_WIDTH * IMAGE_HEIGHT)
 
 #define TILE_WIDTH 16
 #define TILE_HEIGHT 8
-#define TILE_SIZE  (TILE_WIDTH * TILE_HEIGHT)
+#define TILE_SIZE (TILE_WIDTH * TILE_HEIGHT)
 
 #define NUM_3D (IMAGE_WIDTH / TILE_WIDTH)
 
-int
-main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
   uint64_t col = 7;
   uint64_t row = 0;
 
@@ -114,7 +112,7 @@ main(int argc, char *argv[])
   mlir_aie_start_cores(xaie);
 
   // We're going to stamp over the memories
-  for (int i=0; i<2*TILE_SIZE; i++) {
+  for (int i = 0; i < 2 * TILE_SIZE; i++) {
     mlir_aie_write_buffer_buf72_0(xaie, i, 0xdeadbeef);
     mlir_aie_write_buffer_buf72_1(xaie, i, 0xfeedface);
   }
@@ -127,7 +125,7 @@ main(int argc, char *argv[])
     return -1;
   }
 
-  for (int i=0;i<IMAGE_SIZE;i++) {
+  for (int i = 0; i < IMAGE_SIZE; i++) {
     dram_ptr_1[i] = i;
     dram_ptr_2[i] = 0xf001ba11;
   }
@@ -158,23 +156,23 @@ main(int argc, char *argv[])
   hsa_signal_destroy(pkt_a.completion_signal);
 
   uint32_t errs = 0;
-  // Can check the tile memory however it will be last two tiles transferred into the ping-pong tiles
-  // NOTE this is set up for IMAGE_WIDTH 32
-  //for (int j=0; j<2; j++) {
+  // Can check the tile memory however it will be last two tiles transferred
+  // into the ping-pong tiles NOTE this is set up for IMAGE_WIDTH 32
+  // for (int j=0; j<2; j++) {
   //  for (int i=0; i<TILE_SIZE; i++) {
   //    uint32_t d = mlir_aie_read_buffer_buf72_0(xaie, i+TILE_SIZE*j);
   //    u32 row = i / TILE_WIDTH;
   //    u32 col = i % TILE_WIDTH;
-  //    u32 o_i = row * IMAGE_WIDTH + col + TILE_WIDTH*j; 
+  //    u32 o_i = row * IMAGE_WIDTH + col + TILE_WIDTH*j;
   //    if (d != o_i) {`
   //      printf("ERROR: buf72_0 idx %d Expected %08X, got %08X\n", i, o_i, d);
   //      errs++;
-  //    } 
+  //    }
   //  }
   //}
- 
+
   // And the BRAM we updated
-  for (int i=0; i<IMAGE_SIZE; i++) {
+  for (int i = 0; i < IMAGE_SIZE; i++) {
     uint32_t d = dram_ptr_2[i];
     ;
     u32 r = i / IMAGE_WIDTH;
@@ -186,10 +184,11 @@ main(int argc, char *argv[])
       }
     } else {
       if (d != 0xf001ba11) {
-        printf("ERROR: copy idx %d Expected %08X, got %08X\n", i, 0xf001ba11, d);
+        printf("ERROR: copy idx %d Expected %08X, got %08X\n", i, 0xf001ba11,
+               d);
         errs++;
       }
-    } 
+    }
   }
 
   // destroying the queue
@@ -207,10 +206,8 @@ main(int argc, char *argv[])
   if (errs == 0) {
     printf("PASS!\n");
     return 0;
-  }
-  else {
+  } else {
     printf("fail.\n");
     return -1;
   }
-
 }

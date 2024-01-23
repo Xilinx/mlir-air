@@ -31,18 +31,16 @@
 // test configuration
 #define IMAGE_WIDTH 128
 #define IMAGE_HEIGHT 16
-#define IMAGE_SIZE  (IMAGE_WIDTH * IMAGE_HEIGHT)
+#define IMAGE_SIZE (IMAGE_WIDTH * IMAGE_HEIGHT)
 
 #define TILE_WIDTH 16
 #define TILE_HEIGHT 8
-#define TILE_SIZE  (TILE_WIDTH * TILE_HEIGHT)
+#define TILE_SIZE (TILE_WIDTH * TILE_HEIGHT)
 
 #define NUM_3D (IMAGE_WIDTH / TILE_WIDTH)
 #define NUM_4D (IMAGE_HEIGHT / TILE_HEIGHT)
 
-int
-main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
   uint64_t col = 7;
   uint64_t row = 0;
 
@@ -133,13 +131,13 @@ main(int argc, char *argv[])
   }
 
   // stamp over the aie tiles
-  for (int i=0; i<TILE_SIZE; i++) {
-    mlir_aie_write_buffer_ping_a(xaie, i, 0xabba0000+i);
-    mlir_aie_write_buffer_pong_a(xaie, i, 0xdeeded00+i);
-    mlir_aie_write_buffer_ping_b(xaie, i, 0xcafe0000+i);
-    mlir_aie_write_buffer_pong_b(xaie, i, 0xfabcab00+i);
-    mlir_aie_write_buffer_ping_c(xaie, i, 0x12345670+i);
-    mlir_aie_write_buffer_pong_c(xaie, i, 0x76543210+i);
+  for (int i = 0; i < TILE_SIZE; i++) {
+    mlir_aie_write_buffer_ping_a(xaie, i, 0xabba0000 + i);
+    mlir_aie_write_buffer_pong_a(xaie, i, 0xdeeded00 + i);
+    mlir_aie_write_buffer_ping_b(xaie, i, 0xcafe0000 + i);
+    mlir_aie_write_buffer_pong_b(xaie, i, 0xfabcab00 + i);
+    mlir_aie_write_buffer_ping_c(xaie, i, 0x12345670 + i);
+    mlir_aie_write_buffer_pong_c(xaie, i, 0x76543210 + i);
   }
 
   //
@@ -195,27 +193,27 @@ main(int argc, char *argv[])
 
   int errors = 0;
   // check the aie tiles
-  for (int i=0; i<TILE_SIZE; i++) {
+  for (int i = 0; i < TILE_SIZE; i++) {
     uint32_t d0 = mlir_aie_read_buffer_ping_a(xaie, i);
     uint32_t d1 = mlir_aie_read_buffer_pong_a(xaie, i);
     uint32_t d4 = mlir_aie_read_buffer_ping_b(xaie, i);
     uint32_t d5 = mlir_aie_read_buffer_pong_b(xaie, i);
     uint32_t d2 = mlir_aie_read_buffer_ping_c(xaie, i);
     uint32_t d3 = mlir_aie_read_buffer_pong_c(xaie, i);
-    if (d0+d4 != d2) {
+    if (d0 + d4 != d2) {
       printf("mismatch [%d] ping %x+%x != %x\n", i, d0, d4, d2);
       errors++;
     }
-    if (d1+d5 != d3) {
+    if (d1 + d5 != d3) {
       printf("mismatch [%d] pong %x+%x != %x\n", i, d1, d5, d3);
       errors++;
     }
   }
 
   // check the output image
-  for (int i=0; i<IMAGE_SIZE; i++) {
+  for (int i = 0; i < IMAGE_SIZE; i++) {
     uint32_t d = dram_ptr_3[i];
-    if (d != (i+2)) {
+    if (d != (i + 2)) {
       errors++;
       printf("mismatch %x != 2 + %x\n", d, i);
     }
@@ -236,10 +234,8 @@ main(int argc, char *argv[])
   if (!errors) {
     printf("PASS!\n");
     return 0;
-  }
-  else {
-    printf("fail %d/%d.\n", errors, IMAGE_SIZE+2*TILE_SIZE);
+  } else {
+    printf("fail %d/%d.\n", errors, IMAGE_SIZE + 2 * TILE_SIZE);
     return -1;
   }
-
 }

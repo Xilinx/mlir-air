@@ -28,11 +28,9 @@
 
 #define XAIE_NUM_COLS 36
 
-int
-main(int argc, char *argv[])
-{
-  uint64_t row  = 0;
-  uint64_t col  = 7;
+int main(int argc, char *argv[]) {
+  uint64_t row = 0;
+  uint64_t col = 7;
   uint64_t col2 = 34;
 
   hsa_status_t init_status = air_init();
@@ -129,22 +127,22 @@ main(int argc, char *argv[])
 
   uint32_t *bram_ptr = (uint32_t *)air_malloc(4 * DMA_COUNT * sizeof(uint32_t));
   if (bram_ptr != NULL) {
-    for (int i=0; i<DMA_COUNT; i++) {
-      bram_ptr[i] = i+1;
-      bram_ptr[DMA_COUNT+i]   = 0xdeface;
-      bram_ptr[2*DMA_COUNT+i] = 0xdeface;
+    for (int i = 0; i < DMA_COUNT; i++) {
+      bram_ptr[i] = i + 1;
+      bram_ptr[DMA_COUNT + i] = 0xdeface;
+      bram_ptr[2 * DMA_COUNT + i] = 0xdeface;
     }
   }
 
-  for (int i=0; i<8; i++) {
-    mlir_aie_write_buffer_ping_in(xaie, i, 0xabbaba10+i);
-    mlir_aie_write_buffer_pong_in(xaie, i, 0xdeeded10+i);
-    mlir_aie_write_buffer_ping_out(xaie, i, 0x12345610+i);
-    mlir_aie_write_buffer_pong_out(xaie, i, 0x76543210+i);
-    mlir_aie_write_buffer_ping_in2(xaie, i, 0xabbaba20+i);
-    mlir_aie_write_buffer_pong_in2(xaie, i, 0xdeeded20+i);
-    mlir_aie_write_buffer_ping_out2(xaie, i, 0x12345620+i);
-    mlir_aie_write_buffer_pong_out2(xaie, i, 0x76543220+i);
+  for (int i = 0; i < 8; i++) {
+    mlir_aie_write_buffer_ping_in(xaie, i, 0xabbaba10 + i);
+    mlir_aie_write_buffer_pong_in(xaie, i, 0xdeeded10 + i);
+    mlir_aie_write_buffer_ping_out(xaie, i, 0x12345610 + i);
+    mlir_aie_write_buffer_pong_out(xaie, i, 0x76543210 + i);
+    mlir_aie_write_buffer_ping_in2(xaie, i, 0xabbaba20 + i);
+    mlir_aie_write_buffer_pong_in2(xaie, i, 0xdeeded20 + i);
+    mlir_aie_write_buffer_ping_out2(xaie, i, 0x12345620 + i);
+    mlir_aie_write_buffer_pong_out2(xaie, i, 0x76543220 + i);
   }
 
   // create the queues
@@ -199,38 +197,38 @@ main(int argc, char *argv[])
 
   int errors = 0;
 
-  for (int i=0; i<8; i++) {
+  for (int i = 0; i < 8; i++) {
     uint32_t d0 = mlir_aie_read_buffer_ping_in(xaie, i);
     uint32_t d1 = mlir_aie_read_buffer_pong_in(xaie, i);
     uint32_t d2 = mlir_aie_read_buffer_ping_out(xaie, i);
     uint32_t d3 = mlir_aie_read_buffer_pong_out(xaie, i);
-    if (d0+1 != d2) {
+    if (d0 + 1 != d2) {
       printf("1 mismatch ping %x != %x\n", d0, d2);
       errors++;
     }
-    if (d1+1 != d3) {
+    if (d1 + 1 != d3) {
       printf("1 mismatch pong %x != %x\n", d1, d3);
       errors++;
     }
   }
 
-  for (int i=0; i<DMA_COUNT; i++) {
-    uint32_t d = bram_ptr[DMA_COUNT+i];
-    if (d != (i+2)) {
+  for (int i = 0; i < DMA_COUNT; i++) {
+    uint32_t d = bram_ptr[DMA_COUNT + i];
+    if (d != (i + 2)) {
       errors++;
       printf("1 mismatch %x != 2 + %x\n", d, i);
     }
   }
-  for (int i=0; i<8; i++) {
+  for (int i = 0; i < 8; i++) {
     uint32_t d0 = mlir_aie_read_buffer_ping_in2(xaie, i);
     uint32_t d1 = mlir_aie_read_buffer_pong_in2(xaie, i);
     uint32_t d2 = mlir_aie_read_buffer_ping_out2(xaie, i);
     uint32_t d3 = mlir_aie_read_buffer_pong_out2(xaie, i);
-    if (d0+1 != d2) {
+    if (d0 + 1 != d2) {
       printf("2 mismatch ping %x != %x\n", d0, d2);
       errors++;
     }
-    if (d1+1 != d3) {
+    if (d1 + 1 != d3) {
       printf("2 mismatch pong %x != %x\n", d1, d3);
       errors++;
     }
@@ -247,9 +245,9 @@ main(int argc, char *argv[])
     errors++;
   }
 
-  for (int i=0; i<DMA_COUNT; i++) {
-    uint32_t d = bram_ptr[2*DMA_COUNT+i];
-    if (d != (i+2)) {
+  for (int i = 0; i < DMA_COUNT; i++) {
+    uint32_t d = bram_ptr[2 * DMA_COUNT + i];
+    if (d != (i + 2)) {
       errors++;
       printf("2 mismatch %x != 2 + %x\n", d, i);
     }
@@ -258,10 +256,8 @@ main(int argc, char *argv[])
   if (!errors) {
     printf("PASS!\n");
     return 0;
-  }
-  else {
-    printf("fail %d/%d.\n", errors, 2*(DMA_COUNT+4*8));
+  } else {
+    printf("fail %d/%d.\n", errors, 2 * (DMA_COUNT + 4 * 8));
     return -1;
   }
-
 }

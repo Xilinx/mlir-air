@@ -29,20 +29,18 @@
 
 #define IMAGE_WIDTH 32
 #define IMAGE_HEIGHT 16
-#define IMAGE_SIZE  (IMAGE_WIDTH * IMAGE_HEIGHT)
+#define IMAGE_SIZE (IMAGE_WIDTH * IMAGE_HEIGHT)
 
 #define TILE_WIDTH 16
 #define TILE_HEIGHT 8
-#define TILE_SIZE  (TILE_WIDTH * TILE_HEIGHT)
+#define TILE_SIZE (TILE_WIDTH * TILE_HEIGHT)
 
 namespace air::segments::segment_0 {
-void mlir_aie_write_buffer_scratch_0_0(aie_libxaie_ctx_t*, int, int32_t);
+void mlir_aie_write_buffer_scratch_0_0(aie_libxaie_ctx_t *, int, int32_t);
 };
 using namespace air::segments::segment_0;
 
-int
-main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
   uint64_t row = 3;
   uint64_t col = 3;
 
@@ -104,18 +102,19 @@ main(int argc, char *argv[])
                               &shim_pkt);
   hsa_signal_destroy(shim_pkt.completion_signal);
 
-  for (int i=0; i<TILE_SIZE; i++)
+  for (int i = 0; i < TILE_SIZE; i++)
     mlir_aie_write_buffer_scratch_0_0(xaie, i, 0xfadefade);
 
   printf("loading aie_ctrl.so\n");
   auto handle = air_module_load_from_file(nullptr, &agents[0], q);
   assert(handle && "failed to open aie_ctrl.so");
 
-  auto graph_fn = (void (*)(void*,void *))dlsym((void*)handle, "_mlir_ciface_graph");
+  auto graph_fn =
+      (void (*)(void *, void *))dlsym((void *)handle, "_mlir_ciface_graph");
   assert(graph_fn && "failed to locate _mlir_ciface_graph in .so");
 
-  tensor_t<uint32_t,2> input;
-  tensor_t<uint32_t,2> output;
+  tensor_t<uint32_t, 2> input;
+  tensor_t<uint32_t, 2> output;
 
   input.shape[1] = IMAGE_WIDTH;
   input.shape[0] = IMAGE_HEIGHT;
@@ -127,7 +126,7 @@ main(int argc, char *argv[])
   output.alloc = output.data =
       (uint32_t *)malloc(sizeof(uint32_t) * output.shape[0] * output.shape[1]);
 
-  for (int i=0; i<IMAGE_SIZE; i++) {
+  for (int i = 0; i < IMAGE_SIZE; i++) {
     input.data[i] = i + 0x1000;
     output.data[i] = 0x00defaced;
   }
@@ -143,21 +142,22 @@ main(int argc, char *argv[])
   int errors = 0;
 
   // Now look at the image, should have the bottom left filled in
-  for (int i=0;i<IMAGE_SIZE;i++) {
+  for (int i = 0; i < IMAGE_SIZE; i++) {
     u32 rb = output.data[i];
 
     u32 row = i / IMAGE_WIDTH;
     u32 col = i % IMAGE_WIDTH;
 
     if ((row >= TILE_HEIGHT) && (col < TILE_WIDTH)) {
-      if (!(rb == 0x1000+i)) {
-        printf("IM %d [%d, %d] should be %08X, is %08X\n", i, col, row, i+0x1000, rb);
+      if (!(rb == 0x1000 + i)) {
+        printf("IM %d [%d, %d] should be %08X, is %08X\n", i, col, row,
+               i + 0x1000, rb);
         errors++;
       }
-    }
-    else {
+    } else {
       if (rb != 0x00defaced) {
-        printf("IM %d [%d, %d] should be 0xdefaced, is %08X\n", i, col, row, rb);
+        printf("IM %d [%d, %d] should be 0xdefaced, is %08X\n", i, col, row,
+               rb);
         errors++;
       }
     }
@@ -179,10 +179,9 @@ main(int argc, char *argv[])
   if (!errors) {
     printf("PASS!\n");
     return 0;
-  }
-  else {
-    printf("fail %d/%d.\n", (TILE_SIZE+IMAGE_SIZE-errors), TILE_SIZE+IMAGE_SIZE);
+  } else {
+    printf("fail %d/%d.\n", (TILE_SIZE + IMAGE_SIZE - errors),
+           TILE_SIZE + IMAGE_SIZE);
     return -1;
   }
-
 }

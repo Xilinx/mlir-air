@@ -30,18 +30,16 @@
 
 #define IMAGE_WIDTH 128
 #define IMAGE_HEIGHT 16
-#define IMAGE_SIZE  (IMAGE_WIDTH * IMAGE_HEIGHT)
+#define IMAGE_SIZE (IMAGE_WIDTH * IMAGE_HEIGHT)
 
 #define TILE_WIDTH 16
 #define TILE_HEIGHT 8
-#define TILE_SIZE  (TILE_WIDTH * TILE_HEIGHT)
+#define TILE_SIZE (TILE_WIDTH * TILE_HEIGHT)
 
 #define NUM_3D (IMAGE_WIDTH / TILE_WIDTH)
 #define NUM_4D (IMAGE_HEIGHT / TILE_HEIGHT)
 
-int
-main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
   uint64_t col = 7;
   uint64_t row = 0;
 
@@ -115,7 +113,7 @@ main(int argc, char *argv[])
   mlir_aie_start_cores(xaie);
 
   // We're going to stamp over the memories
-  for (int i=0; i<2*TILE_SIZE; i++) { 
+  for (int i = 0; i < 2 * TILE_SIZE; i++) {
     mlir_aie_write_buffer_buf72_0(xaie, i, 0xdeadbeef);
     mlir_aie_write_buffer_buf72_1(xaie, i, 0xfeedface);
   }
@@ -128,7 +126,7 @@ main(int argc, char *argv[])
     return -1;
   }
 
-  for (int i=0;i<IMAGE_SIZE;i++) {
+  for (int i = 0; i < IMAGE_SIZE; i++) {
     dram_ptr_1[i] = i;
     dram_ptr_2[i] = 0xf001ba11;
   }
@@ -163,7 +161,7 @@ main(int argc, char *argv[])
   uint32_t errs = 0;
 
   // Now check the BRAM we updated
-  for (int i=0; i<IMAGE_SIZE; i++) {
+  for (int i = 0; i < IMAGE_SIZE; i++) {
     uint32_t d = dram_ptr_2[i];
     if (d != i) {
       printf("ERROR: buf72_0 copy idx %d Expected %08X, got %08X\n", i, i, d);
@@ -186,10 +184,8 @@ main(int argc, char *argv[])
   if (errs == 0) {
     printf("PASS!\n");
     return 0;
-  }
-  else {
+  } else {
     printf("fail.\n");
     return -1;
   }
-
 }

@@ -40,9 +40,7 @@ void hsa_check_status(const std::string func_name, hsa_status_t status) {
   }
 }
 
-int
-main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
   uint64_t row = 0;
   uint64_t col = 6;
 
@@ -133,11 +131,11 @@ main(int argc, char *argv[])
     dst[i] = 0xdeface;
   }
 
-  for (int i=0; i<8; i++) {
-    mlir_aie_write_buffer_ping_in(xaie, i, 0xabbaba00+i);
-    mlir_aie_write_buffer_pong_in(xaie, i, 0xdeeded00+i);
-    mlir_aie_write_buffer_ping_out(xaie, i, 0x12345670+i);
-    mlir_aie_write_buffer_pong_out(xaie, i, 0x76543210+i);
+  for (int i = 0; i < 8; i++) {
+    mlir_aie_write_buffer_ping_in(xaie, i, 0xabbaba00 + i);
+    mlir_aie_write_buffer_pong_in(xaie, i, 0xdeeded00 + i);
+    mlir_aie_write_buffer_ping_out(xaie, i, 0x12345670 + i);
+    mlir_aie_write_buffer_pong_out(xaie, i, 0x76543210 + i);
   }
 
   //
@@ -168,22 +166,22 @@ main(int argc, char *argv[])
 
   int errors = 0;
 
-  for (int i=0; i<8; i++) {
+  for (int i = 0; i < 8; i++) {
     uint32_t d0 = mlir_aie_read_buffer_ping_in(xaie, i);
     uint32_t d1 = mlir_aie_read_buffer_pong_in(xaie, i);
     uint32_t d2 = mlir_aie_read_buffer_ping_out(xaie, i);
     uint32_t d3 = mlir_aie_read_buffer_pong_out(xaie, i);
-    if (d0+1 != d2) {
+    if (d0 + 1 != d2) {
       printf("mismatch ping %x != %x\n", d0, d2);
       errors++;
-    } 
-    if (d1+1 != d3) {
+    }
+    if (d1 + 1 != d3) {
       printf("mismatch pong %x != %x\n", d1, d3);
       errors++;
     }
   }
 
-  for (int i=0; i<DMA_COUNT; i++) {
+  for (int i = 0; i < DMA_COUNT; i++) {
     uint32_t s = src[i];
     uint32_t d = dst[i];
     // printf("src[%d] = 0x%lx\n", i, src[i]);
