@@ -155,7 +155,7 @@ bool air::areIdenticalVectors(std::vector<unsigned> &a,
 }
 
 int64_t air::get1DOffset(SmallVector<Value> memcpy_offsets,
-                         SmallVector<Value> memcpy_sizes,
+                         SmallVector<Value> memcpy_strides,
                          int byte_count_per_elem) {
   if (memcpy_offsets.empty())
     return 0;
@@ -168,8 +168,8 @@ int64_t air::get1DOffset(SmallVector<Value> memcpy_offsets,
     if (i == memcpy_offsets.size() - 1)
       one_d_offset += *offset;
     else {
-      if (auto size_i_p_1 = mlir::getConstantIntValue(memcpy_sizes[i + 1])) {
-        one_d_offset += (*offset) * (*size_i_p_1);
+      if (auto stride_i = mlir::getConstantIntValue(memcpy_strides[i])) {
+        one_d_offset += (*offset) * (*stride_i);
       } else
         assert(false && "non-static size in memcpy op");
     }
