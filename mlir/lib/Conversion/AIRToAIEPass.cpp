@@ -308,8 +308,8 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
 
       if (options.emit_herd_lock)
         core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(),
-                                            herd_lock, 0,
-                                            AIE::LockAction::Acquire);
+                                            herd_lock, AIE::LockAction::Acquire,
+                                            0);
 
       Region &r = h.getRegion();
       r.cloneInto(&core.getBody(), remap);
@@ -319,8 +319,8 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
       core_builder.setInsertionPoint(launch_bb->getTerminator());
       if (options.emit_herd_lock)
         core_builder.create<AIE::UseLockOp>(core_builder.getUnknownLoc(),
-                                            herd_lock, 0,
-                                            AIE::LockAction::Release);
+                                            herd_lock, AIE::LockAction::Release,
+                                            0);
 
       if (options.emit_while)
         core_builder.create<cf::BranchOp>(hloc, core_bb);
@@ -2155,9 +2155,10 @@ public:
     else
       builder.setInsertionPoint(memcpyOpIf);
 
-    builder.create<AIE::UseLockOp>(memcpyOpIf->getLoc(), acqLockOp, lockAqValue,
+    builder.create<AIE::UseLockOp>(memcpyOpIf->getLoc(), acqLockOp,
                                    isAIE2 ? AIE::LockAction::AcquireGreaterEqual
-                                          : AIE::LockAction::Acquire);
+                                          : AIE::LockAction::Acquire,
+                                   lockAqValue);
     // try to find a place to put the unlock. If there are deallocs,
     // replace them with unlock. Otherwise, put them at the end.
     bool need_unlock = true;
@@ -2165,7 +2166,7 @@ public:
       if (auto dealloc = dyn_cast<memref::DeallocOp>(u)) {
         builder.setInsertionPoint(dealloc);
         builder.create<AIE::UseLockOp>(dealloc->getLoc(), relLockOp,
-                                       lockRelValue, AIE::LockAction::Release);
+                                       AIE::LockAction::Release, lockRelValue);
         // assume that the deallocs will take care of it when
         // deallocs are present
         need_unlock = false;
@@ -2174,8 +2175,8 @@ public:
     if (need_unlock) {
       auto t = memcpyOpIf->getBlock()->getTerminator();
       builder.setInsertionPoint(t);
-      builder.create<AIE::UseLockOp>(t->getLoc(), relLockOp, lockRelValue,
-                                     AIE::LockAction::Release);
+      builder.create<AIE::UseLockOp>(t->getLoc(), relLockOp,
+                                     AIE::LockAction::Release, lockRelValue);
     }
     allocs_to_remap.insert(alloc.getDefiningOp());
   }
@@ -2282,9 +2283,10 @@ public:
 
     Value length =
         b.create<arith::ConstantIndexOp>(memcpyOp.getLoc(), len)->getResult(0);
-    b.create<AIE::UseLockOp>(loc, acqLockOp, lockAqValue,
+    b.create<AIE::UseLockOp>(loc, acqLockOp,
                              isAIE2 ? AIE::LockAction::AcquireGreaterEqual
-                                    : AIE::LockAction::Acquire);
+                                    : AIE::LockAction::Acquire,
+                             lockAqValue);
 
     std::vector<AIE::BDDimLayoutAttr> dims =
         getWrapsAndStrides(sizes, strides, ndcpy->getContext());
@@ -2302,8 +2304,8 @@ public:
           loc, bufferOp, offset,
           cast<arith::ConstantIndexOp>(length.getDefiningOp()).value(),
           wraps_and_strides);
-    b.create<AIE::UseLockOp>(loc, relLockOp, lockRelValue,
-                             AIE::LockAction::Release);
+    b.create<AIE::UseLockOp>(loc, relLockOp, AIE::LockAction::Release,
+                             lockRelValue);
   }
 
   AIE::ShimDMAOp getShimDMAOp(AIE::TileOp tile) {
