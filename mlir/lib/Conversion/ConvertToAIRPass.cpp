@@ -100,7 +100,7 @@ matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
         getStridesAndOffset(inferredType, layout_strides, offset);
     if (failed(successStrides)) {
       llvm::outs() << "Failed to get strides\n";
-      return failure();
+      return; // failure();
     }
 
     for (auto o : static_offsets) {
