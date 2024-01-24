@@ -285,7 +285,7 @@ void air::renumberDmaOps(func::FuncOp func, std::string mode) {
   if (mode == "global") {
     // Renumber DMA ops per entire module
     func->walk([&](Operation *func_dma) {
-      if (isa<xilinx::air::DmaMemcpyNdOp>(func_dma)) {
+      if (isa<xilinx::air::MemcpyInterface>(func_dma)) {
         func_dma->setAttr(
             "id",
             mlir::IntegerAttr::get(
@@ -297,7 +297,7 @@ void air::renumberDmaOps(func::FuncOp func, std::string mode) {
       id = 0;
       // Renumber DMA ops per air herd
       herd->walk([&](Operation *herd_dma) {
-        if (isa<xilinx::air::DmaMemcpyNdOp>(herd_dma)) {
+        if (isa<xilinx::air::MemcpyInterface>(herd_dma)) {
           herd_dma->setAttr(
               "id",
               mlir::IntegerAttr::get(

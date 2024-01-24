@@ -407,14 +407,25 @@ specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
   assert(wraps.size() == 4);
   assert(strides.size() == 3);
 
-  // Temporary hack: stride currently cannot implement repeat with stride = 0.
-  // This is to be removed when that constraint is gone.
-  for (unsigned i = 0; i < strides.size() - 1; i++) {
-    if (mlir::getConstantIntValue(strides[i]) &&
-        *mlir::getConstantIntValue(strides[i])) {
-      for (unsigned j = i + 1; j < strides.size(); j++) {
-        if (mlir::getConstantIntValue(strides[j]) &&
-            !*mlir::getConstantIntValue(strides[j]))
+  // Stride = 0 means repeat that dimension. If highest dimension (dim 0) is not
+  // used, then move the repeat dimension to dim 0, which is the only dim with
+  // repeat capability. Else, NYI. Fall back to unrolling BDs.
+  for (unsigned i = 1; i < strides.size(); i++) {
+    if (mlir::getConstantIntValue(wraps[i]) &&
+        mlir::getConstantIntValue(strides[i])) {
+      if (*mlir::getConstantIntValue(wraps[i]) > 1 &&
+          !*mlir::getConstantIntValue(strides[i])) {
+        // This is a repeat dimension.
+        if (mlir::getConstantIntValue(wraps[0]) &&
+            *mlir::getConstantIntValue(wraps[0]) == 1) {
+          // Move the repeat dimension i to dimension 0.
+          auto tmp = wraps[0];
+          wraps[0] = wraps[i];
+          wraps[i] = tmp;
+          tmp = strides[0];
+          strides[0] = strides[i];
+          strides[i] = tmp;
+        } else
           return failure();
       }
     }
