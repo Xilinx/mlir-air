@@ -35,7 +35,7 @@ transform.with_pdl_patterns {
     %0 = pdl_match @match_addi in %arg1 : (!pdl.operation) -> !pdl.operation
     // CHECK: = transform.air.get_segment_for
     %1 = transform.air.get_segment_for %0
-    transform.test_print_remark_at_operand %1, "found segment" : !pdl.operation
+    transform.debug.emit_remark_at %1, "found segment" : !pdl.operation
   }
 }
 
