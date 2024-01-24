@@ -49,9 +49,9 @@ config.substitutions.append(('%CLANG', "clang++ -fuse-ld=lld -DLIBXAIENGINEV2"))
 config.substitutions.append(('%LIBXAIE_DIR%', config.libxaie_dir))
 #config.substitutions.append(('%AIE_RUNTIME_DIR%', os.path.join(config.aie_obj_root, "runtime_lib", config.test_arch)))
 config.substitutions.append(('%air_runtime_lib%', air_runtime_lib))
-config.substitutions.append(('%airhost_libs%', "-I" + air_runtime_lib + "/airhost/include -L" + air_runtime_lib + "/airhost -Wl,--whole-archive -lairhost -Wl,--no-whole-archive -lpthread -lstdc++ -lsysfs -ldl -lrt -lelf"))
+config.substitutions.append(('%airhost_libs%', "-I" + air_runtime_lib + "/airhost/include -L" + air_runtime_lib + "/airhost -Wl,--whole-archive -lairhost -Wl,-R{}/lib -Wl,-rpath,{}/lib -Wl,--whole-archive -Wl,--no-whole-archive -lpthread -lstdc++ -lsysfs -ldl -lrt -lelf".format(config.libxaie_dir, config.rocm_root)))
 config.substitutions.append(('%AIE_RUNTIME_DIR%', os.path.join(config.aie_obj_root, "runtime_lib", config.test_arch)))
-config.substitutions.append(('%HSA_DIR%', "/scratch/jefff/acdc/ROCm-air-platforms/rocm"))
+config.substitutions.append(('%HSA_DIR%', "{}".format(config.rocm_root)))
 
 if(config.enable_board_tests):
     config.substitutions.append(('%run_on_board', "sudo"))

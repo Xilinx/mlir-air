@@ -41,6 +41,11 @@ config.air_runtime_lib_obj_root = "@AIR_BINARY_DIR@/runtime_lib"
 # test_exec_root: The root path where tests should be run.
 config.test_exec_root = "@CMAKE_CURRENT_BINARY_DIR@"
 
+# Getting the path to the ROCm directory. hsa-runtime64
+# points to the cmake directory so need to go up 
+# three directories
+config.rocm_root = "@hsa-runtime64_DIR@/../../../"
+
 # pass on vitis settings
 config.enable_chess_tests = @CONFIG_ENABLE_CHESS_TESTS@
 config.enable_board_tests = @CONFIG_ENABLE_BOARD_TESTS@
