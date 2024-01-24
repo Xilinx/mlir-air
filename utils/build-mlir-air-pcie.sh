@@ -56,8 +56,6 @@ PYTHON_ROOT=`pip3 show pybind11 | grep Location | awk '{print $2}'`
 
 cmake .. \
     -GNinja \
-    -DCMAKE_C_COMPILER=clang \
-    -DCMAKE_CXX_COMPILER=clang++ \
     -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
     -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
     -DCMAKE_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
@@ -68,12 +66,15 @@ cmake .. \
     -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
     -DVitisSysroot="" \
     -DLibXAIE_ROOT=${LibXAIE_DIR} \
+    -DPython3_FIND_VIRTUALENV=ONLY \
     -Dhsa-runtime64_DIR=${HSA_DIR} \
     -Dhsakmt_DIR=${HSAKMT_DIR} \
+    -DCMAKE_BUILD_TYPE=Release \
     -DARM_TOOLCHAIN_OPT="" \
     -DAIR_RUNTIME_TARGETS="x86_64" \
     -DBUILD_AIR_PCIE=ON \
     -DBUILD_SHARED_LIBS=OFF \
+    -DENABLE_BOARD_TESTS=ON \
     -DLLVM_USE_LINKER=lld \
     |& tee cmake.log
 
