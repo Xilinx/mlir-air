@@ -37,6 +37,7 @@
 
 int main(int argc, char *argv[]) {
 
+  int errors = 0;
   hsa_status_t init_status = air_init();
 
   if (init_status != HSA_STATUS_SUCCESS) {
@@ -83,10 +84,32 @@ int main(int argc, char *argv[]) {
 
   printf("loading aie_ctrl.so\n");
   auto handle = air_module_load_from_file("./aie_ctrl.so", &agents[0], q);
-  assert(handle && "failed to load aie_ctrl.so");
+
+  if(!handle) {
+    printf("Failed to load aie_ctrl.so\n");
+    // Need to destroy the queue and shutdown hsa
+    hsa_queue_destroy(queues[0]);
+    hsa_status_t shut_down_ret = air_shut_down();
+    if (shut_down_ret != HSA_STATUS_SUCCESS) {
+      printf("[ERROR] air_shut_down() failed\n");
+      errors++;
+    }
+    return -1;
+  }
 
   auto graph_fn = (void (*)(void*,void *))dlsym((void*)handle, "_mlir_ciface_graph");
-  assert(graph_fn && "failed to locate _mlir_ciface_graph in .so");
+
+  if(!graph_fn) {
+    printf("failed to locate _mlir_cifage_graph in .so\n");
+    // Need to destroy the queue and shutdown hsa
+    hsa_queue_destroy(queues[0]);
+    hsa_status_t shut_down_ret = air_shut_down();
+    if (shut_down_ret != HSA_STATUS_SUCCESS) {
+      printf("[ERROR] air_shut_down() failed\n");
+      errors++;
+    }
+    return -1;
+  }
 
   tensor_t<uint32_t,2> input;
   tensor_t<uint32_t,2> output;
@@ -108,8 +131,6 @@ int main(int argc, char *argv[]) {
   i = &input;
   o = &output;
   graph_fn(i, o);
-
-  int errors = 0;
 
   // Go look at the scratch buffer
   for (int i=0;i<TILE_SIZE;i++) {
