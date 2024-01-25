@@ -2821,7 +2821,7 @@ public:
       std::map<std::string, std::string> chan_to_chan_map;
 
       if (clUseObjFifo) {
-        
+
         cloneL2AndL3MemcpysToDeviceOp(builder, device, module, true, false);
         specializeHerdAffineIf(device);
         lowerAirExecute(device);
@@ -2851,7 +2851,7 @@ public:
       }
 
       lowerAIRMemcpyOp<air::DmaMemcpyNdOp>(device, shimDmaAlloc, options);
-      
+
       // lowerPipelineGetPut(device, tileToHerdMap);
 
       SmallVector<air::HerdOp, 4> herds;
