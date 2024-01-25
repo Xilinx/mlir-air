@@ -82,7 +82,7 @@ jobs:
               git reset --hard ${{ inputs.AIE_COMMIT }}
             fi 
             
-            apt install python3.10-venv
+            apt install -y python3.10-venv
             python -m venv aie-venv
             source aie-venv/bin/activate
             pip install -r python/requirements.txt
@@ -116,28 +116,29 @@ jobs:
               -DAIE_ENABLE_GENERATE_CDO_DIRECT=OFF
             
             ninja
+
+            cd /
             
             if [ x"${{ inputs.LIT_FILTER }}" == x"" ]; then
               export LIT_FILTER="${{ inputs.LIT_FILTER }}"
             fi
             
             # Install necessary build tools for the ROCm runtime
-            sudo apt install libelf-dev elfutils libdwarf-dev
-            sudo mkdir --parents --mode=0755 /etc/apt/keyrings
+            apt install -y libelf-dev elfutils libdwarf-dev
+            mkdir --parents --mode=0755 /etc/apt/keyrings
             wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | \
-              gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
+              gpg --dearmor | tee /etc/apt/keyrings/rocm.gpg > /dev/null
             for ver in 5.3.3 5.4.3 5.5.1 5.6; do
               echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/$ver focal main" \
-                | sudo tee --append /etc/apt/sources.list.d/rocm.list
+                | tee --append /etc/apt/sources.list.d/rocm.list
               done
               echo -e 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' \
-                | sudo tee /etc/apt/preferences.d/rocm-pin-600
-            sudo apt update
-            sudo apt install rocm-hip-runtime-dev5.6.0
+                | tee /etc/apt/preferences.d/rocm-pin-600
+            apt update
+            apt install -y rocm-hip-runtime-dev5.6.0
             
-            sudo apt-get install -y libboost-all-dev
+            apt-get install -y libboost-all-dev pkg-config
 
-            cd /
             git clone --recursive https://github.com/Xilinx/mlir-air.git
             cd /mlir-air
             
@@ -157,9 +158,8 @@ jobs:
               -DCMAKE_BUILD_TYPE=Debug \
               -DLLVM_ENABLE_ASSERTIONS=ON \
               -DCMAKE_MODULE_PATH=/mlir-aie/cmake/modulesXilinx/ \
-              -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
-              -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
-              -DAIE_DIR=/mlir-aie/install/lib/cmake/aie/ \
+              -DMLIR_DIR=/mlir-aie/mlir/lib/cmake/mlir \
+              -DAIE_DIR=/mlir-aie/build/install/lib/cmake/aie/ \
               -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
               -Dhsa-runtime64_DIR=`pwd`/../rocm/lib/cmake/hsa-runtime64/ \
               -Dhsakmt_DIR=`pwd`/../rocm/lib/cmake/hsakmt/ \
