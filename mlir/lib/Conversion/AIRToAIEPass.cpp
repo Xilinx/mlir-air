@@ -2770,7 +2770,7 @@ public:
     // If we have multiple herds then we must emit them into different aie
     // modules to avoid resource conflicts in the AIE physical dialect.
     std::vector<std::pair<AIE::DeviceOp, air::HerdOp>> aie_devices;
-    
+
     std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
     std::map<AIE::BufferOp, AIE::TileOp> bufferToMemtileMap;
     auto device = AIE::symbolizeAIEDevice(clDevice);
