@@ -815,18 +815,26 @@ void air::foldForLoopNestAsExtendedSizesAndStrides(
     unsigned ind_var_factor = 1;
     for (int i = offsets.size() - 1; i >= 0; i--) {
       Value iv = nullptr;
-      if (auto afo = dyn_cast<affine::AffineForOp>(o))
+      int loop_lower_bound = 0;
+      if (auto afo = dyn_cast<affine::AffineForOp>(o)) {
         iv = afo.getInductionVar();
-      else if (auto sfo = dyn_cast<scf::ForOp>(o))
+        loop_lower_bound = afo.getConstantLowerBound();
+      } else if (auto sfo = dyn_cast<scf::ForOp>(o)) {
         iv = sfo.getInductionVar();
+        if (auto cst_lower_bound =
+                mlir::getConstantIntValue(sfo.getLowerBound()))
+          loop_lower_bound = *cst_lower_bound;
+      }
       if (iv && offsets[i] == iv) {
         // Replace for loop induction vars in offsets with zero
-        offsets[i] = rewriter.template create<arith::ConstantIndexOp>(loc, 0);
+        offsets[i] = rewriter.template create<arith::ConstantIndexOp>(
+            loc, loop_lower_bound);
         break;
       } else if (iv && offsets[i].getDefiningOp()) {
         if (isa<arith::IndexCastOp>(offsets[i].getDefiningOp()) &&
             offsets[i].getDefiningOp()->getOperand(0) == iv) {
-          offsets[i] = rewriter.template create<arith::ConstantIndexOp>(loc, 0);
+          offsets[i] = rewriter.template create<arith::ConstantIndexOp>(
+              loc, loop_lower_bound);
           break;
         };
       }
