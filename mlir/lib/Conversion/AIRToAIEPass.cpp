@@ -117,50 +117,6 @@ struct ShimTileAllocator {
   }
 };
 
-struct MemTileAllocator {
-
-  std::vector<int> memTile_columns;
-  std::vector<int> memTile_rows;
-  int memTile_dma_channels;
-  const AIE::AIETargetModel &aie_target;
-
-  struct memTile_allocation_info_t {
-    AIE::TileOp mem_tile;
-    int available_channels;
-  };
-
-  std::vector<memTile_allocation_info_t> mm2s_allocs, s2mm_allocs;
-
-  MemTileAllocator(const AIE::AIETargetModel &target) : aie_target(target) {
-    for (int i = 0, c = aie_target.columns(); i < c; i++)
-      for (int j = 0, r = aie_target.getNumMemTileRows(); j < r; j++)
-        if (aie_target.isMemTile(i, j)) {
-          memTile_columns.push_back(i);
-          memTile_rows.push_back(j);
-          memTile_dma_channels = aie_target.getNumDestSwitchboxConnections(i, j, AIE::WireBundle::DMA);
-        }
-  }
-
-  AIE::TileOp getMemTile(AIE::DeviceOp aie_device, int src_memory_space,
-                        int dst_memory_space) {
-    bool isMM2S = (src_memory_space < dst_memory_space);
-    auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
-
-    // return first available memTile with a free channel
-    for (auto &t : *allocs)
-      if (t.available_channels > 0) {
-        t.available_channels -= 1;
-        return t.mem_tile;
-      }
-    auto memTile_row = memTile_rows[allocs->size() % memTile_rows.size()]; // TODO: andra
-    auto memTile_col = memTile_columns[allocs->size() % memTile_rows.size()]; // TODO: andra
-    auto memTile = getPhysTileOp(aie_device, memTile_col, memTile_row);
-    allocs->push_back({memTile, memTile_dma_channels - 1});
-
-    return memTile;
-  }
-};
-
 bool isMM2S(AIE::DMAChannel channel) {
   return (channel.direction == AIE::DMAChannelDir::MM2S);
 }
