@@ -1085,7 +1085,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
         getChannelGetOpThroughSymbol(channel, device);
 
     // keep track of potential LinkOp
-    bool linkToComplete = false;  // track if objFifo has to be added to 
+    bool linkToComplete = false;  // track if objFifo has to be added to linksToComplete
     bool linkFound = false;       // all ends of a link have been found
     Operation* endOfLink;         // one end of a link
 
@@ -1107,8 +1107,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       } else {
         AIE::BufferOp buff = dyn_cast<AIE::BufferOp>(channelPuts[0].getMemref().getDefiningOp());
         for (auto user : buff->getUsers()) {
-          if (auto pairedPut = dyn_cast<ChannelGetOp>(user)) {
-            endOfLink = pairedPut.getOperation();
+          if (auto pairedGet = dyn_cast<ChannelGetOp>(user)) {
+            endOfLink = pairedGet.getOperation();
             linkToComplete = true;
           }
         }
@@ -2746,16 +2746,16 @@ public:
         }
         if (options.generate_shim_dma) {
           OpBuilder builder(d);
-          cloneL2AndL3MemcpysToDeviceOp(builder, d, m, true, false);
+          cloneL2AndL3MemcpysToDeviceOp(builder, d, m, true, true);
           specializeHerdAffineIf(d);
           lowerAirExecute(d);
           lowerScfAirTokens(d);
           allocL1Buffers(d, tileToHerdMap);
           allocL2Buffers(d, bufferToMemtileMap);
-          // builder.setInsertionPointToStart(d.getBody());
-          // std::map<std::string, std::string> chan_to_chan_map;
-          // specializeChannelBundle(d, chan_to_chan_map);
-          // renumberChannelOps(d.getBody());
+          builder.setInsertionPointToStart(d.getBody());
+          std::map<std::string, std::string> chan_to_chan_map;
+          specializeChannelBundle(d, chan_to_chan_map);
+          renumberChannelOps(d.getBody());
           // ShimDMAAllocator shimDmaAlloc(d);
           // lowerAIRMemcpyOp<air::ChannelInterface>(d, shimDmaAlloc, options);
         }
@@ -2874,9 +2874,8 @@ public:
         renumberChannelOps(device.getBody());
         LowerAIRPingPong(device);
         allocL2Buffers(device, bufferToMemtileMap);
-        ShimTileAllocator shimTileAlloc(device.getTargetModel());
         lowerAIRChannels(device, shimTileAlloc, bufferToMemtileMap);
-        //allocL1Buffers(device, tileToHerdMap);
+        allocL1Buffers(device, tileToHerdMap);
       } else {
 
         cloneL2AndL3MemcpysToDeviceOp(builder, device, module, true, true);
@@ -2896,11 +2895,8 @@ public:
       }
 
       lowerAIRMemcpyOp<air::DmaMemcpyNdOp>(device, shimDmaAlloc, options);
-
-      ShimTileAllocator shimTileAlloc(device.getTargetModel());
-      lowerAIRChannels(device, shimTileAlloc, bufferToMemtileMap);
       
-      lowerPipelineGetPut(device, tileToHerdMap);
+      // lowerPipelineGetPut(device, tileToHerdMap);
 
       SmallVector<air::HerdOp, 4> herds;
       SmallVector<air::SegmentOp, 4> segs;
