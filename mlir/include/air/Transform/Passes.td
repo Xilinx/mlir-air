@@ -1113,7 +1113,7 @@ def AIRRenumberDmaIdPass : Pass<"air-renumber-dma", "func::FuncOp"> {
   let summary = "Renumber air dma op ids";
   let constructor = "xilinx::air::createAIRRenumberDmaIdPass()";
   let options = [
-    Option<"clMode", "mode", "std::string", /*default=*/"\"herd\"",
+    Option<"clMode", "mode", "std::string", /*default=*/"\"global\"",
            "In which hierarchy level to renumber the dma ops">,
   ];
 }

@@ -463,8 +463,6 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
   auto ctx = thisOp->getContext();
 
   MemRefType thisMemrefType = thisOp.getMemref().getType().cast<MemRefType>();
-  MemRefType theOtherMemrefType =
-      theOtherOp.getMemref().getType().cast<MemRefType>();
 
   bool thisOpIsInShim =
       thisMemrefType.getMemorySpaceAsInt() == (int)xilinx::air::MemorySpace::L3;
@@ -517,19 +515,20 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     SmallVector<Value, 4> lengths(4, one);
     SmallVector<Value, 3> strides(3, zero);
 
-    int idx = 4 - thisMemrefType.getRank();
+    int idx = 4 - thisOp.getOffsets().size();
     for (auto o : thisOp.getOffsets()) {
       offsets[idx++] =
           builder.create<arith::IndexCastOp>(loc, IntegerType::get(ctx, 64), o);
     }
 
-    idx = 4 - theOtherMemrefType.getRank();
+    idx = 4 - thisOp.getStrides().size();
     auto op_strides = thisOp.getStrides();
     if (op_strides.size())
       for (auto o : op_strides.drop_back())
         strides[idx++] = builder.create<arith::IndexCastOp>(
             loc, IntegerType::get(ctx, 64), o);
-    idx = 4 - thisMemrefType.getRank();
+    idx = 4 - std::max(thisOp.getSizes().size(),
+                       (unsigned long)thisMemrefType.getRank());
     // If sizes field is empty, then infer sizes from memref shape
     if (thisOp.getSizes().empty())
       for (auto d : air::getTensorShape(thisMemrefType))
