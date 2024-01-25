@@ -453,6 +453,9 @@ specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
         isa<arith::ConstantIndexOp>(opers[i].getDefiningOp())) {
       opers[i] = builder.create<arith::IndexCastOp>(
           loc, IntegerType::get(ctx, 64), opers[i]);
+    } else if (opers[i].getDefiningOp() &&
+               isa<arith::IndexCastOp>(opers[i].getDefiningOp())) {
+      opers[i] = builder.clone(*opers[i].getDefiningOp())->getResult(0);
     }
   }
   auto new_dma = builder.create<airrt::DmaMemcpyNdOp>(loc, tys, opers);
@@ -469,14 +472,38 @@ void specializeAffineForInAIRRtDmaWrapAndStride(ModuleOp module) {
   SmallVector<func::FuncOp> funcOps;
   module.walk([&](func::FuncOp f) { funcOps.push_back(f); });
   SmallVector<Operation *> erased;
-  for (auto f : funcOps) {
-    for (auto for_op : f.getOps<affine::AffineForOp>()) {
-      OpBuilder builder(for_op);
-      if (specializeAffineForInAIRRtDmaWrapAndStride(builder, for_op)
-              .succeeded())
-        erased.push_back(for_op);
-    }
+  SmallVector<affine::AffineForOp> unroll_outer_dim;
+  auto specialzeAllAffineFors =
+      [&](SmallVector<func::FuncOp> funcOps, SmallVector<Operation *> &erased,
+          SmallVector<affine::AffineForOp> &unroll_outer_dim) {
+        for (auto f : funcOps) {
+          for (auto for_op : f.getOps<affine::AffineForOp>()) {
+            OpBuilder builder(for_op);
+            if (specializeAffineForInAIRRtDmaWrapAndStride(builder, for_op)
+                    .succeeded())
+              erased.push_back(for_op);
+            else {
+              // Wait list to be unrolled one outer dimension, and then try
+              // specializing the wraps and strides again.
+              unroll_outer_dim.push_back(for_op);
+            }
+          }
+        }
+      };
+  specialzeAllAffineFors(funcOps, erased, unroll_outer_dim);
+  for (auto o : erased)
+    o->erase();
+  erased.clear();
+  // In AIE2 BD, there is one single dimension capable of repeating. If
+  // unroll_outer_dim isn't empty, then unroll the existing dimension in the
+  // repeat dim and repopulate that dimension with a true repeat dimension.
+  for (auto o : unroll_outer_dim) {
+    int64_t tripCount =
+        mlir::ceilDiv(o.getConstantUpperBound() - o.getConstantLowerBound(),
+                      o.getStepAsInt());
+    (void)loopUnrollByFactor(o, tripCount);
   }
+  specialzeAllAffineFors(funcOps, erased, unroll_outer_dim);
   for (auto o : erased)
     o->erase();
 }
