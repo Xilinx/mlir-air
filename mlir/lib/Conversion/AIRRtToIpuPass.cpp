@@ -794,10 +794,13 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
 
   void renumberIpuDmaOps(Block *blk) {
     unsigned id = 0;
-    blk->walk([&](AIEX::IpuDmaMemcpyNdOp dma) {
-      dma->setAttr("id",
-                   mlir::IntegerAttr::get(
-                       mlir::IntegerType::get(dma->getContext(), 64), ++id));
+    blk->walk([&](Operation *op) {
+      if (isa<AIEX::IpuDmaMemcpyNdOp>(op)) {
+        op->setAttr("id",
+                    mlir::IntegerAttr::get(
+                        mlir::IntegerType::get(op->getContext(), 64), id++));
+      } else if (isa<AIEX::IpuSyncOp>(op))
+        id = 0;
     });
   }
 
