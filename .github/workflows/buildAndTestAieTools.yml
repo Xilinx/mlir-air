@@ -112,7 +112,8 @@ jobs:
               -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld" \
               -DCMAKE_C_COMPILER_LAUNCHER=ccache \
               -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-              -DCMAKE_INSTALL_PREFIX=install 
+              -DCMAKE_INSTALL_PREFIX=install \
+              -DAIE_ENABLE_GENERATE_CDO_DIRECT=OFF
             
             ninja
             
@@ -120,9 +121,55 @@ jobs:
               export LIT_FILTER="${{ inputs.LIT_FILTER }}"
             fi
             
-            # until I put bootgen into the image
-            export LIT_FILTER_OUT=Targets/AIEGenerateCDODirect
-            sed -i.bak 's/-sv --timeout 600/-sv --timeout 600 -j1/g' ../test/CMakeLists.txt
-            sed -i.bak 's/-sv --timeout 300/-sv --timeout 600 -j1 --show-unsupported/g' ../reference_designs/CMakeLists.txt
-            ninja check-aie
-            ninja check-reference-designs
+            # Install necessary build tools for the ROCm runtime
+            sudo apt install libelf-dev elfutils libdwarf-dev
+            sudo mkdir --parents --mode=0755 /etc/apt/keyrings
+            wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | \
+              gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
+            for ver in 5.3.3 5.4.3 5.5.1 5.6; do
+              echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/$ver focal main" \
+                | sudo tee --append /etc/apt/sources.list.d/rocm.list
+              done
+              echo -e 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' \
+                | sudo tee /etc/apt/preferences.d/rocm-pin-600
+            sudo apt update
+            sudo apt install rocm-hip-runtime-dev5.6.0
+            
+            sudo apt-get install -y libboost-all-dev
+
+            cd /
+            git clone --recursive https://github.com/Xilinx/mlir-air.git
+            cd /mlir-air
+            
+            git checkout ${{ github.head_ref }}
+
+            utils/clone-rocm-air-platforms.sh
+            utils/github-clone-build-libxaie.sh
+
+            ROCm-air-platforms/utils/clone-build-roct.sh
+            ROCm-air-platforms/utils/clone-build-rocr.sh
+
+            mkdir build_assert
+            pushd build_assert
+            cmake .. \
+              -GNinja \
+              -DCMAKE_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
+              -DCMAKE_BUILD_TYPE=Debug \
+              -DLLVM_ENABLE_ASSERTIONS=ON \
+              -DCMAKE_MODULE_PATH=/mlir-aie/cmake/modulesXilinx/ \
+              -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
+              -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
+              -DAIE_DIR=/mlir-aie/install/lib/cmake/aie/ \
+              -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
+              -Dhsa-runtime64_DIR=`pwd`/../rocm/lib/cmake/hsa-runtime64/ \
+              -Dhsakmt_DIR=`pwd`/../rocm/lib/cmake/hsakmt/ \
+              -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
+              -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
+              -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
+              -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+              -DCMAKE_INSTALL_PREFIX=install
+            ninja
+            ninja check-air-cpp
+            ninja check-air-mlir
+            ninja check-air-python
+            popd
