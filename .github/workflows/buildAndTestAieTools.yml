@@ -80,9 +80,23 @@ jobs:
             # git checkout ${{ github.head_ref }}
             if [ x"${{ inputs.AIE_COMMIT }}" != x"" ]; then
               git reset --hard ${{ inputs.AIE_COMMIT }}
-            fi 
+            fi
             
-            apt install -y python3.10-venv
+            # add the ROCm repos
+            mkdir --parents --mode=0755 /etc/apt/keyrings
+            wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | \
+              gpg --dearmor | tee /etc/apt/keyrings/rocm.gpg > /dev/null
+            for ver in 5.3.3 5.4.3 5.5.1 5.6; do
+              echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/$ver focal main" \
+                | tee --append /etc/apt/sources.list.d/rocm.list
+              done
+              echo -e 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' \
+                | tee /etc/apt/preferences.d/rocm-pin-600
+            apt update
+            apt install -y rocm-hip-runtime-dev5.6.0 python3.10-venv \
+                           libboost-all-dev pkg-config libelf-dev elfutils \
+                           libdwarf-dev
+
             python -m venv aie-venv
             source aie-venv/bin/activate
             pip install -r python/requirements.txt
@@ -112,10 +126,12 @@ jobs:
               -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld" \
               -DCMAKE_C_COMPILER_LAUNCHER=ccache \
               -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-              -DCMAKE_INSTALL_PREFIX=install \
+              -DCMAKE_INSTALL_PREFIX=/install \
               -DAIE_ENABLE_GENERATE_CDO_DIRECT=OFF
             
             ninja
+            ls /install
+            ls /install/lib/cmake
 
             cd /
             
@@ -123,22 +139,6 @@ jobs:
               export LIT_FILTER="${{ inputs.LIT_FILTER }}"
             fi
             
-            # Install necessary build tools for the ROCm runtime
-            apt install -y libelf-dev elfutils libdwarf-dev
-            mkdir --parents --mode=0755 /etc/apt/keyrings
-            wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | \
-              gpg --dearmor | tee /etc/apt/keyrings/rocm.gpg > /dev/null
-            for ver in 5.3.3 5.4.3 5.5.1 5.6; do
-              echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/$ver focal main" \
-                | tee --append /etc/apt/sources.list.d/rocm.list
-              done
-              echo -e 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' \
-                | tee /etc/apt/preferences.d/rocm-pin-600
-            apt update
-            apt install -y rocm-hip-runtime-dev5.6.0
-            
-            apt-get install -y libboost-all-dev pkg-config
-
             git clone --recursive https://github.com/Xilinx/mlir-air.git
             cd /mlir-air
             
@@ -159,7 +159,7 @@ jobs:
               -DLLVM_ENABLE_ASSERTIONS=ON \
               -DCMAKE_MODULE_PATH=/mlir-aie/cmake/modulesXilinx/ \
               -DMLIR_DIR=/mlir-aie/mlir/lib/cmake/mlir \
-              -DAIE_DIR=/mlir-aie/build/install/lib/cmake/aie/ \
+              -DAIE_DIR=/install/lib/cmake/aie \
               -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
               -Dhsa-runtime64_DIR=`pwd`/../rocm/lib/cmake/hsa-runtime64/ \
               -Dhsakmt_DIR=`pwd`/../rocm/lib/cmake/hsakmt/ \
@@ -167,9 +167,10 @@ jobs:
               -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
               -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
               -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-              -DCMAKE_INSTALL_PREFIX=install
+              -DCMAKE_INSTALL_PREFIX=/install
             ninja
             ninja check-air-cpp
             ninja check-air-mlir
             ninja check-air-python
+            ninja check-air-e2e
             popd
