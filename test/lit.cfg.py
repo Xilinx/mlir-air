@@ -62,8 +62,8 @@ if config.hsa_found:
     config.substitutions.append(('%airhost_libs%',
                                  " -I" + air_runtime_lib + "/airhost/include" +
                                  " -L" + air_runtime_lib + "/airhost -Wl,--whole-archive -lairhost" +
-                                 " -Wl,-R{}/lib -Wl,-rpath,{}/lib -Wl,--whole-archive" +
-                                 " -Wl,--no-whole-archive -lpthread -lstdc++ -lsysfs -ldl -lrt -lelf".format(config.libxaie_dir, rocm_root)))
+                                 " -Wl,-R{}/lib -Wl,-rpath,{}/lib -Wl,--whole-archive".format(config.libxaie_dir, rocm_root) +
+                                 " -Wl,--no-whole-archive -lpthread -lstdc++ -lsysfs -ldl -lrt -lelf"))
     if config.enable_run_airhost_tests:
         config.substitutions.append(('%run_on_board', "sudo"))
     else:
