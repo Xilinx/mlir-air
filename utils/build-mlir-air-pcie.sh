@@ -56,6 +56,8 @@ PYTHON_ROOT=`pip3 show pybind11 | grep Location | awk '{print $2}'`
 
 cmake .. \
     -GNinja \
+    -DCMAKE_C_COMPILER=clang \
+    -DCMAKE_CXX_COMPILER=clang++ \
     -DCMAKE_INSTALL_PREFIX="../${INSTALL_DIR}" \
     -DCMAKE_MODULE_PATH=${CMAKEMODULES_DIR}/ \
     -DCMAKE_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
