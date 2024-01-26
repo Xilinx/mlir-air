@@ -29,6 +29,7 @@ std::unique_ptr<mlir::Pass> createAIRRenumberDmaIdPass();
 std::unique_ptr<mlir::Pass> createAIRLowerHerdParallelPass();
 std::unique_ptr<mlir::Pass> createAIRLabelBroadcastChannelWithTilePass();
 std::unique_ptr<mlir::Pass> createAIRCollapseHerdPass();
+std::unique_ptr<mlir::Pass> createAIRUnrollOuterPerfectlyNestedLoopsPass();
 
 } // namespace air
 } // namespace xilinx

@@ -1134,4 +1134,13 @@ def AIRCollapseHerdPass : Pass<"air-collapse-herd", "func::FuncOp"> {
   let constructor = "xilinx::air::createAIRCollapseHerdPass()";
 }
 
+def AIRUnrollOuterPerfectlyNestedLoopsPass : Pass<"air-unroll-outer-affine-loops", "func::FuncOp"> {
+  let summary = "Unroll loops in a perfectly nested affine for loop nest, outer to inner.";
+  let constructor = "xilinx::air::createAIRUnrollOuterPerfectlyNestedLoopsPass()";
+  let options = [
+    Option<"clDepth", "depth", "int", /*default=*/"1",
+           "The number of outermost loops in the loop nest to unroll">,
+  ];
+}
+
 #endif // AIR_CONVERSION_PASSES

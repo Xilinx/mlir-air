@@ -21,6 +21,7 @@
 #include "air/Util/Util.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -1045,6 +1046,45 @@ void AIRCollapseHerdPass::runOnOperation() {
   }
 }
 
+class AIRUnrollOuterPerfectlyNestedLoopsPass
+    : public air::impl::AIRUnrollOuterPerfectlyNestedLoopsPassBase<
+          AIRUnrollOuterPerfectlyNestedLoopsPass> {
+
+public:
+  AIRUnrollOuterPerfectlyNestedLoopsPass() = default;
+  AIRUnrollOuterPerfectlyNestedLoopsPass(
+      const AIRUnrollOuterPerfectlyNestedLoopsPass &pass){};
+
+  void runOnOperation() override;
+
+private:
+};
+
+void AIRUnrollOuterPerfectlyNestedLoopsPass::runOnOperation() {
+  SmallVector<air::HerdOp> herds;
+  auto func = getOperation();
+  SmallVector<affine::AffineForOp> roots;
+  func.walk([&](affine::AffineForOp afo) {
+    if (!isa<affine::AffineForOp>(afo->getParentOp())) {
+      roots.push_back(afo);
+    }
+  });
+  for (auto root : roots) {
+    SmallVector<affine::AffineForOp> perfectly_nested_loops;
+    affine::getPerfectlyNestedLoops(perfectly_nested_loops, root);
+    if (perfectly_nested_loops.empty()) {
+      continue;
+    }
+
+    int depth = std::min((int)clDepth, (int)perfectly_nested_loops.size());
+    // Unroll from inner to outer, otherwise gathered inner loops are lost when
+    // outer loop is unrolled.
+    for (int i = depth - 1; i >= 0; i--) {
+      (void)loopUnrollFull(perfectly_nested_loops[i]);
+    }
+  }
+}
+
 } // anonymous namespace
 
 namespace xilinx {
@@ -1092,6 +1132,10 @@ std::unique_ptr<Pass> createAIRLabelBroadcastChannelWithTilePass() {
 
 std::unique_ptr<Pass> createAIRCollapseHerdPass() {
   return std::make_unique<AIRCollapseHerdPass>();
+}
+
+std::unique_ptr<Pass> createAIRUnrollOuterPerfectlyNestedLoopsPass() {
+  return std::make_unique<AIRUnrollOuterPerfectlyNestedLoopsPass>();
 }
 
 } // namespace air
