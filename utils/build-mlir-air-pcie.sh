@@ -76,7 +76,7 @@ cmake .. \
     -DAIR_RUNTIME_TARGETS="x86_64" \
     -DBUILD_AIR_PCIE=ON \
     -DBUILD_SHARED_LIBS=OFF \
-    -DENABLE_BOARD_TESTS=ON \
+    -DENABLE_RUN_AIRHOST_TESTS=ON \
     -DLLVM_USE_LINKER=lld \
     |& tee cmake.log
 
