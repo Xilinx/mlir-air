@@ -239,7 +239,7 @@ main(int argc, char *argv[])
   // destroying the queue
   hsa_queue_destroy(queues[0]);
   hsa_queue_destroy(queues[1]);
-  
+
   // Shutdown AIR and HSA
   hsa_status_t shut_down_ret = air_shut_down();
   if (shut_down_ret != HSA_STATUS_SUCCESS) {

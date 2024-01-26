@@ -85,7 +85,7 @@ int main(int argc, char *argv[]) {
   printf("loading aie_ctrl.so\n");
   auto handle = air_module_load_from_file("./aie_ctrl.so", &agents[0], q);
 
-  if(!handle) {
+  if (!handle) {
     printf("Failed to load aie_ctrl.so\n");
     // Need to destroy the queue and shutdown hsa
     hsa_queue_destroy(queues[0]);
@@ -99,7 +99,7 @@ int main(int argc, char *argv[]) {
 
   auto graph_fn = (void (*)(void*,void *))dlsym((void*)handle, "_mlir_ciface_graph");
 
-  if(!graph_fn) {
+  if (!graph_fn) {
     printf("failed to locate _mlir_cifage_graph in .so\n");
     // Need to destroy the queue and shutdown hsa
     hsa_queue_destroy(queues[0]);

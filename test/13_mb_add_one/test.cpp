@@ -194,9 +194,6 @@ main(int argc, char *argv[])
     }
   }
 
-
-
-
   // destroying the queue
   hsa_queue_destroy(queues[0]);
   air_free(src);
@@ -216,5 +213,4 @@ main(int argc, char *argv[])
     printf("fail %d/%d.\n", errors, DMA_COUNT);
     return -1;
   }
-
 }
