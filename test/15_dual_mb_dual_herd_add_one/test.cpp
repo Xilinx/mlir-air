@@ -50,6 +50,17 @@ main(int argc, char *argv[])
     return -1;
   }
 
+  if (agents.size() < 2) {
+    std::cout << "WARNING: Test is unsuported with < 2 queues." << std::endl;
+
+    // Shutdown AIR and HSA
+    hsa_status_t shut_down_ret = air_shut_down();
+    if (shut_down_ret != HSA_STATUS_SUCCESS) {
+      printf("[ERROR] air_shut_down() failed\n");
+    }
+    return 0;
+  }
+
   std::cout << "Found " << agents.size() << " agents" << std::endl;
 
   uint32_t aie_max_queue_size(0);
@@ -223,6 +234,17 @@ main(int argc, char *argv[])
       printf("2 mismatch pong %x != %x\n", d1, d3);
       errors++;
     }
+  }
+
+  // destroying the queue
+  hsa_queue_destroy(queues[0]);
+  hsa_queue_destroy(queues[1]);
+
+  // Shutdown AIR and HSA
+  hsa_status_t shut_down_ret = air_shut_down();
+  if (shut_down_ret != HSA_STATUS_SUCCESS) {
+    printf("[ERROR] air_shut_down() failed\n");
+    errors++;
   }
 
   for (int i=0; i<DMA_COUNT; i++) {

@@ -194,13 +194,6 @@ main(int argc, char *argv[])
     }
   }
 
-
-  if (!errors) {
-    printf("PASS!\n");
-  } else {
-    printf("fail %d/%d.\n", errors, DMA_COUNT);
-  }
-
   // destroying the queue
   hsa_queue_destroy(queues[0]);
   air_free(src);
@@ -212,5 +205,12 @@ main(int argc, char *argv[])
     printf("[ERROR] air_shut_down() failed\n");
     return -1;
   }
-  return 0;
+
+  if (!errors) {
+    printf("PASS!\n");
+    return 0;
+  } else {
+    printf("fail %d/%d.\n", errors, DMA_COUNT);
+    return -1;
+  }
 }

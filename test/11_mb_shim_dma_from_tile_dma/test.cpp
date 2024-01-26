@@ -165,9 +165,10 @@ main(int argc, char *argv[])
 
   if (errs == 0) {
     printf("PASS!\n");
+    return 0;
   } else {
     printf("fail %d/%d.\n",DMA_COUNT-errs, DMA_COUNT);
+    return -1;
   }
 
-  return 0;
 }

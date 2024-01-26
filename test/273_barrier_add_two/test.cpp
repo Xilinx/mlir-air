@@ -46,6 +46,13 @@ main(int argc, char *argv[])
 
   if (agents.size() < 2) {
     std::cout << "WARNING: Test is unsuported with < 2 queues." << std::endl;
+
+    // Shutdown AIR and HSA
+    hsa_status_t shut_down_ret = air_shut_down();
+    if (shut_down_ret != HSA_STATUS_SUCCESS) {
+      printf("[ERROR] air_shut_down() failed\n");
+    }
+
     return 0;
   }
 

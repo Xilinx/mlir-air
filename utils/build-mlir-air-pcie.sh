@@ -68,12 +68,15 @@ cmake .. \
     -Dpybind11_DIR=${PYTHON_ROOT}/pybind11/share/cmake/pybind11 \
     -DVitisSysroot="" \
     -DLibXAIE_ROOT=${LibXAIE_DIR} \
+    -DPython3_FIND_VIRTUALENV=ONLY \
     -Dhsa-runtime64_DIR=${HSA_DIR} \
     -Dhsakmt_DIR=${HSAKMT_DIR} \
+    -DCMAKE_BUILD_TYPE=Release \
     -DARM_TOOLCHAIN_OPT="" \
     -DAIR_RUNTIME_TARGETS="x86_64" \
     -DBUILD_AIR_PCIE=ON \
     -DBUILD_SHARED_LIBS=OFF \
+    -DENABLE_BOARD_TESTS=ON \
     -DLLVM_USE_LINKER=lld \
     |& tee cmake.log
 
