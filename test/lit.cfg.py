@@ -26,14 +26,20 @@ config.name = 'AIR_TEST'
 
 config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
 config.environment['PYTHONPATH'] \
-    = "{}:{}".format(os.path.join(config.air_obj_root, "python"),
-                     os.path.join(config.aie_obj_root, "python"))
+    = "{}:{}:{}".format(os.path.join(config.air_obj_root, "python"),
+                     os.path.join(config.aie_obj_root, "python"),
+                     os.path.join(config.xrt_dir, "python"))
 
 #os.environ['PYTHONPATH']
 print("Running with PYTHONPATH",config.environment['PYTHONPATH'])
 
 # suffixes: A list of file extensions to treat as test files.
 config.suffixes = ['.lit']
+
+# excludes: A list of directories to exclude from the testsuite. The 'Inputs'
+# subdirectories contain auxiliary inputs for various tests in their parent
+# directories.
+config.excludes = []
 
 # test_source_root: The root path where tests are located.
 config.test_source_root = os.path.dirname(__file__)
@@ -42,31 +48,72 @@ config.test_source_root = os.path.dirname(__file__)
 config.test_exec_root = os.path.join(config.air_obj_root, 'test')
 air_runtime_lib = os.path.join(config.air_obj_root, "runtime_lib", config.test_arch)
 
-config.substitutions.append(('%PATH%', config.environment['PATH']))
-config.substitutions.append(('%shlibext', config.llvm_shlib_ext))
 config.substitutions.append(('%PYTHON', config.python_executable))
 config.substitutions.append(('%CLANG', "clang++ -fuse-ld=lld -DLIBXAIENGINEV2"))
 config.substitutions.append(('%LIBXAIE_DIR%', config.libxaie_dir))
-#config.substitutions.append(('%AIE_RUNTIME_DIR%', os.path.join(config.aie_obj_root, "runtime_lib", config.test_arch)))
-config.substitutions.append(('%air_runtime_lib%', air_runtime_lib))
-config.substitutions.append(('%airhost_libs%', "-I" + air_runtime_lib + "/airhost/include -L" + air_runtime_lib + "/airhost -Wl,--whole-archive -lairhost -Wl,-R{}/lib -Wl,-rpath,{}/lib -Wl,--whole-archive -Wl,--no-whole-archive -lpthread -lstdc++ -lsysfs -ldl -lrt -lelf".format(config.libxaie_dir, config.rocm_root)))
 config.substitutions.append(('%AIE_RUNTIME_DIR%', os.path.join(config.aie_obj_root, "runtime_lib", config.test_arch)))
-config.substitutions.append(('%HSA_DIR%', "{}".format(config.rocm_root)))
 
-if(config.enable_board_tests):
-    config.substitutions.append(('%run_on_board', "sudo"))
+if config.hsa_found:
+    # Getting the path to the ROCm directory. hsa-runtime64 points to the cmake
+    # directory so need to go up three directories
+    rocm_root = os.path.join(config.hsa_dir, "..", "..", "..")
+    print("Found ROCm:", rocm_root)
+    config.substitutions.append(('%HSA_DIR%', "{}".format(rocm_root)))
+    config.substitutions.append(('%airhost_libs%',
+                                 " -I" + air_runtime_lib + "/airhost/include" +
+                                 " -L" + air_runtime_lib + "/airhost -Wl,--whole-archive -lairhost" +
+                                 " -Wl,-R{}/lib -Wl,-rpath,{}/lib -Wl,--whole-archive".format(config.libxaie_dir, rocm_root) +
+                                 " -Wl,--no-whole-archive -lpthread -lstdc++ -lsysfs -ldl -lrt -lelf"))
+    if config.enable_run_airhost_tests:
+        config.substitutions.append(('%run_on_board', "sudo"))
+    else:
+        print("Skipping execution of airhost tests (ENABLE_RUN_AIRHOST_TESTS=OFF)")
+        config.substitutions.append(('%run_on_board', "echo"))
 else:
-    config.substitutions.append(('%run_on_board', "echo"))
+    print("ROCm not found")
+    config.excludes.append('airhost')
+
+
+# XRT
+if config.xrt_lib_dir:
+    print("xrt found at", os.path.dirname(config.xrt_lib_dir))
+    xrt_flags = "-I{} -L{} -luuid -lxrt_coreutil".format(
+        config.xrt_include_dir, config.xrt_lib_dir
+    )
+    config.available_features.add("xrt")
+
+    run_on_ipu = "echo"
+    try:
+        xbutil = os.path.join(config.xrt_bin_dir, "xbutil")
+        result = subprocess.run(
+            [xbutil, "examine"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        result = result.stdout.decode("utf-8").split("\n")
+        p = re.compile("\[.+:.+:.+\].+Phoenix.+Yes")
+        for l in result:
+            m = p.match(l)
+            if m:
+                print("Found Ryzen AI device:", m.group().split()[0])
+                config.available_features.add("ryzen_ai")
+                if config.enable_run_xrt_tests:
+                    run_on_ipu = "flock /tmp/ipu.lock /opt/xilinx/run_on_ipu.sh"
+                else:
+                    print("Skipping execution of Ryzen AI tests (ENABLE_RUN_XRT_TESTS=OFF)")
+                break
+    except:
+        print("Failed to run xbutil")
+        pass
+    config.substitutions.append(("%run_on_ipu", run_on_ipu))
+    config.substitutions.append(("%xrt_flags", xrt_flags))
+    config.substitutions.append(("%XRT_DIR", config.xrt_dir))
+else:
+    print("xrt not found")
+    config.excludes.append('xrt')
 
 llvm_config.with_system_environment(
     ['HOME', 'INCLUDE', 'LIB', 'TMP', 'TEMP'])
 
 llvm_config.use_default_substitutions()
-
-# excludes: A list of directories to exclude from the testsuite. The 'Inputs'
-# subdirectories contain auxiliary inputs for various tests in their parent
-# directories.
-config.excludes = ['Inputs', 'Examples', 'CMakeLists.txt', 'README.txt', 'LICENSE.txt', 'lit.cfg.py']
 
 # test_source_root: The root path where tests are located.
 config.test_source_root = os.path.dirname(__file__)
@@ -82,11 +129,11 @@ llvm_config.with_environment('PATH', config.peano_tools_dir, append_path=True)
 llvm_config.with_environment('PATH', config.aie_tools_dir, append_path=True)
 llvm_config.with_environment('PATH', config.air_tools_dir, append_path=True)
 
-#test if LM_LICENSE_FILE valid
-if(config.enable_chess_tests):
+# test if LM_LICENSE_FILE valid
+if config.enable_chess_tests:
     import shutil
     result = None
-    if(config.vitis_root):
+    if config.vitis_root:
         result = shutil.which("xchesscc")
 
     import subprocess
@@ -108,7 +155,7 @@ if(config.enable_chess_tests):
         print("WARNING: no valid xchess license that is required by some of the lit tests")
 
 
-if(config.vitis_root):
+if config.vitis_root:
   llvm_config.with_environment('CARDANO', config.vitis_aietools_dir)
   llvm_config.with_environment('VITIS', config.vitis_root)
 
@@ -130,6 +177,6 @@ tools = [
 
 llvm_config.add_tool_substitutions(tools, tool_dirs)
 
-if(config.enable_board_tests):
+if config.enable_run_airhost_tests:
     lit_config.parallelism_groups["board"] = 1
     config.parallelism_group = "board"
