@@ -37,6 +37,7 @@ cmake .. \
     -DLLVM_EXTERNAL_LIT=`pwd`/../../llvm/build/bin/llvm-lit \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DLibXAIE_x86_64_DIR=`pwd`/../../aienginev2/install/lib \
+    -DAIE_ENABLE_GENERATE_CDO_DIRECT=ON \
     -DCMAKE_INSTALL_PREFIX=`pwd`/../$INSTALL_DIR
 
 ec=$?
