@@ -1,4 +1,4 @@
-//===- air_channel_to_objectFifo_L1toL2.mlir --------------------*- MLIR -*-===//
+//===- air_channel_to_objectfifo_L1toL2.mlir --------------------*- MLIR -*-===//
 //
 // Copyright (C) 2022, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
@@ -12,14 +12,14 @@
 // CHECK:    %[[VAL_1:.*]] = aie.tile(6, 1)
 // CHECK:    %[[VAL_2:.*]] = aie.tile(5, 3)
 // CHECK:    %[[VAL_3:.*]] = aie.tile(2, 0)
-// CHECK:    %[[VAL_4:.*]] = aie.buffer(%tile_5_1) {sym_name = "buf0"} : memref<32xi32, 1>
-// CHECK:    aie.objectfifo @[[VAL_5:.*]](%[[VAL_0]], {%[[VAL_2]]}, 1 : i32) : !aie.objectFifo<memref<32xi32>>
-// CHECK:    aie.objectfifo @[[VAL_6:.*]](%[[VAL_3]], {%[[VAL_0]]}, 1 : i32) : !aie.objectFifo<memref<32xi32>>
+// CHECK:    %[[VAL_4:.*]] = aie.buffer(%[[VAL_0]]) {sym_name = "buf0"} : memref<32xi32, 1>
+// CHECK:    aie.objectfifo @[[VAL_5:.*]](%[[VAL_0]], {%[[VAL_2]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
+// CHECK:    aie.objectfifo @[[VAL_6:.*]](%[[VAL_3]], {%[[VAL_0]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:    aie.objectfifo.link [@[VAL_5:.*]] -> [@[VAL_6:.*]]()
 // CHECK:    %[[VAL_7:.*]] = aie.core(%[[VAL_2]]) {
-// CHECK:      %[[VAL_8:.*]] = aie.objectFifo.acquire @[[VAL_5]](Consume, 1) : !aie.objectFifoSubview<memref<32xi32>>
-// CHECK:      %[[VAL_9:.*]] = aie.objectFifo.subview.access %[[VAL_8]][0] : !aie.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:      aie.objectFifo.release @[[VAL_5]](Consume, 1)
+// CHECK:      %[[VAL_8:.*]] = aie.objectfifo.acquire @[[VAL_5]](Consume, 1) : !aie.objectfifoSubview<memref<32xi32>>
+// CHECK:      %[[VAL_9:.*]] = aie.objectfifo.subview.access %[[VAL_8]][0] : !aie.objectfifoSubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:      aie.objectfifo.release @[[VAL_5]](Consume, 1)
 // CHECK:      aie.end
 // CHECK:    } {elf_file = "segment_0_core_3_5.elf"}
 // CHECK:  }
