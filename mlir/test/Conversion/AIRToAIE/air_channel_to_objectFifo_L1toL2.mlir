@@ -8,16 +8,18 @@
 // RUN: air-opt %s -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' --air-to-aie='emit-while-loop=false row-offset=3 col-offset=5 use-objectfifo=true device=xcve2802' | air-opt --canonicalize | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcve2802) {
-// CHECK:    %[[VAL_0:.*]] = aie.tile(3, 0)
-// CHECK:    %[[VAL_1:.*]] = aie.tile(3, 1)
-// CHECK:    %[[VAL_2:.*]] = aie.tile(3, 5)
-// CHECK:    aie.objectfifo @[[VAL_3:.*]](%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) : !aie.objectFifo<memref<32xi32>>
-// CHECK:    aie.objectfifo @[[VAL_4:.*]](%[[VAL_1]], {%[[VAL_2]]}, 1 : i32) : !aie.objectFifo<memref<32xi32>>
-// CHECK:    aie.objectfifo.link [@[VAL_3:.*]] -> [@[VAL_4:.*]]
-// CHECK:    %[[VAL_5:.*]] = aie.core(%[[VAL_2]]) {
-// CHECK:      %[[VAL_6:.*]] = aie.objectFifo.acquire @[[VAL_4]](Consume, 1) : !aie.objectFifoSubview<memref<32xi32>>
-// CHECK:      %[[VAL_7:.*]] = aie.objectFifo.subview.access %[[VAL_6]][0] : !aie.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:      aie.objectFifo.release @[[VAL_4]](Consume, 1)
+// CHECK:    %[[VAL_0:.*]] = aie.tile(5, 1)
+// CHECK:    %[[VAL_1:.*]] = aie.tile(6, 1)
+// CHECK:    %[[VAL_2:.*]] = aie.tile(5, 3)
+// CHECK:    %[[VAL_3:.*]] = aie.tile(2, 0)
+// CHECK:    %[[VAL_4:.*]] = aie.buffer(%tile_5_1) {sym_name = "buf0"} : memref<32xi32, 1>
+// CHECK:    aie.objectfifo @[[VAL_5:.*]](%[[VAL_0]], {%[[VAL_2]]}, 1 : i32) : !aie.objectFifo<memref<32xi32>>
+// CHECK:    aie.objectfifo @[[VAL_6:.*]](%[[VAL_3]], {%[[VAL_0]]}, 1 : i32) : !aie.objectFifo<memref<32xi32>>
+// CHECK:    aie.objectfifo.link [@[VAL_5:.*]] -> [@[VAL_6:.*]]()
+// CHECK:    %[[VAL_7:.*]] = aie.core(%[[VAL_2]]) {
+// CHECK:      %[[VAL_8:.*]] = aie.objectFifo.acquire @[[VAL_5]](Consume, 1) : !aie.objectFifoSubview<memref<32xi32>>
+// CHECK:      %[[VAL_9:.*]] = aie.objectFifo.subview.access %[[VAL_8]][0] : !aie.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:      aie.objectFifo.release @[[VAL_5]](Consume, 1)
 // CHECK:      aie.end
 // CHECK:    } {elf_file = "segment_0_core_3_5.elf"}
 // CHECK:  }
