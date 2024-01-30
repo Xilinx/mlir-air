@@ -7,7 +7,7 @@
 
 // RUN: air-opt %s -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' --air-to-aie='emit-while-loop=false row-offset=3 col-offset=5 use-objectfifo=true device=xcve2802' | air-opt --canonicalize | FileCheck %s
 
-// CHECK-LABEL:   AIE.device(xcvc1902) {
+// CHECK-LABEL:   AIE.device(xcve2802) {
 // CHECK:    %[[VAL_0:.*]] = AIE.tile(3, 0)
 // CHECK:    %[[VAL_1:.*]] = AIE.tile(3, 1)
 // CHECK:    %[[VAL_2:.*]] = AIE.tile(3, 5)
