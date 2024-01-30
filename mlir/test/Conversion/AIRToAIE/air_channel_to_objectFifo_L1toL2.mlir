@@ -7,21 +7,19 @@
 
 // RUN: air-opt %s -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' --air-to-aie='emit-while-loop=false row-offset=3 col-offset=5 use-objectfifo=true device=xcve2802' | air-opt --canonicalize | FileCheck %s
 
-// CHECK-LABEL:   module {
-// CHECK:    AIE.device(xcve2802) {
-// CHECK:      %[[VAL_0:.*]] = AIE.tile(3, 0)
-// CHECK:      %[[VAL_1:.*]] = AIE.tile(3, 1)
-// CHECK:      %[[VAL_2:.*]] = AIE.tile(3, 5)
-// CHECK:      AIE.objectfifo @[[VAL_3:.*]](%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) : !AIE.objectFifo<memref<32xi32>>
-// CHECK:      AIE.objectfifo @[[VAL_4:.*]](%[[VAL_1]], {%[[VAL_2]]}, 1 : i32) : !AIE.objectFifo<memref<32xi32>>
-// CHECK:      AIE.objectfifo.link [@[VAL_3:.*]] -> [@[VAL_4:.*]]
-// CHECK:      %[[VAL_5:.*]] = AIE.core(%[[VAL_2]]) {
-// CHECK:        %[[VAL_6:.*]] = AIE.objectFifo.acquire @[[VAL_4]](Consume, 1) : !AIE.objectFifoSubview<memref<32xi32>>
-// CHECK:        %[[VAL_7:.*]] = AIE.objectFifo.subview.access %[[VAL_6]][0] : !AIE.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:        AIE.objectFifo.release @[[VAL_4]](Consume, 1)
-// CHECK:        AIE.end
-// CHECK:      } {elf_file = "segment_0_core_3_5.elf"}
-// CHECK:    }
+// CHECK-LABEL:   aie.device(xcve2802) {
+// CHECK:    %[[VAL_0:.*]] = aie.tile(3, 0)
+// CHECK:    %[[VAL_1:.*]] = aie.tile(3, 1)
+// CHECK:    %[[VAL_2:.*]] = aie.tile(3, 5)
+// CHECK:    aie.objectfifo @[[VAL_3:.*]](%[[VAL_0]], {%[[VAL_1]]}, 1 : i32) : !aie.objectFifo<memref<32xi32>>
+// CHECK:    aie.objectfifo @[[VAL_4:.*]](%[[VAL_1]], {%[[VAL_2]]}, 1 : i32) : !aie.objectFifo<memref<32xi32>>
+// CHECK:    aie.objectfifo.link [@[VAL_3:.*]] -> [@[VAL_4:.*]]
+// CHECK:    %[[VAL_5:.*]] = aie.core(%[[VAL_2]]) {
+// CHECK:      %[[VAL_6:.*]] = aie.objectFifo.acquire @[[VAL_4]](Consume, 1) : !aie.objectFifoSubview<memref<32xi32>>
+// CHECK:      %[[VAL_7:.*]] = aie.objectFifo.subview.access %[[VAL_6]][0] : !aie.objectFifoSubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:      aie.objectFifo.release @[[VAL_4]](Consume, 1)
+// CHECK:      aie.end
+// CHECK:    } {elf_file = "segment_0_core_3_5.elf"}
 // CHECK:  }
 
 module {
