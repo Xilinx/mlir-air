@@ -62,6 +62,9 @@ module {
               air.execute_terminator %alloc2 : memref<32xi32, 2>
             }
             %9 = air.channel.get async [%async_token_2, %8] @channel_1[] (%results_2[] [] []) {id = 7 : i32} : (memref<32xi32, 2>)
+            %async_token_3 = air.execute [%9] {
+              memref.dealloc %results_2 : memref<32xi32, 2>
+            }
             air.herd_terminator
         }
         air.segment_terminator
