@@ -15,7 +15,7 @@
 // CHECK:    %[[VAL_4:.*]] = aie.buffer(%[[VAL_0]]) {sym_name = "buf0"} : memref<32xi32, 1>
 // CHECK:    aie.objectfifo @[[VAL_5:.*]](%[[VAL_0]], {%[[VAL_2]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:    aie.objectfifo @[[VAL_6:.*]](%[[VAL_3]], {%[[VAL_0]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
-// CHECK:    aie.objectfifo.link [@[[VAL_5]]] -> [@[[VAL_6]]]()
+// CHECK:    aie.objectfifo.link [@[[VAL_6]]] -> [@[[VAL_5]]]()
 // CHECK:    %[[VAL_7:.*]] = aie.core(%[[VAL_2]]) {
 // CHECK:      %[[VAL_8:.*]] = aie.objectfifo.acquire @[[VAL_5]](Consume, 1) : !aie.objectfifoSubview<memref<32xi32>>
 // CHECK:      %[[VAL_9:.*]] = aie.objectfifo.subview.access %[[VAL_8]][0] : !aie.objectfifoSubview<memref<32xi32>> -> memref<32xi32>
