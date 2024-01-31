@@ -12,6 +12,7 @@
 // CHECK:    %[[VAL_1:.*]] = aie.tile(6, 1)
 // CHECK:    %[[VAL_2:.*]] = aie.tile(5, 3)
 // CHECK:    %[[VAL_3:.*]] = aie.tile(2, 0)
+// CHECK:    %buf0 = aie.buffer(%tile_5_1) {sym_name = "buf0"} : memref<32xi32, 1> 
 // CHECK:    aie.objectfifo @[[VAL_4:.*]](%[[VAL_0]], {%[[VAL_2]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:    aie.objectfifo @[[VAL_5:.*]](%[[VAL_3]], {%[[VAL_0]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:    aie.objectfifo.link [@[[VAL_5]]] -> [@[[VAL_4]]]()
@@ -26,6 +27,7 @@
 module {
   air.channel @channel_0 [1, 1]
   air.channel @channel_1 [1, 1]
+  air.channel @channel_2 [1, 1]
   func.func @L2toL1(%arg0: memref<32xi32>) {
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
