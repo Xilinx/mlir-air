@@ -90,11 +90,12 @@ struct ShimTileAllocator {
   std::vector<shim_allocation_info_t> mm2s_allocs, s2mm_allocs;
 
   ShimTileAllocator(const AIE::AIETargetModel &target) : aie_target(target) {
-    for (int i = 0, e = aie_target.columns(); i < e; i++)
+    for (int i = 0, e = aie_target.columns(); i < e; i++) {
       if (aie_target.isShimNOCTile(i, 0)) {
         shim_columns.push_back(i);
         shim_dma_channels = aie_target.getNumDestSwitchboxConnections(i, 0, AIE::WireBundle::FIFO);
       }
+    }
   }
 
   AIE::TileOp getShimTile(AIE::DeviceOp aie_device, int src_memory_space,
@@ -103,12 +104,13 @@ struct ShimTileAllocator {
     auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
 
     // return first available shim tile with a free channel
-    for (auto &t : *allocs)
+    for (auto &t : *allocs) {
       if (t.available_channels > 0) {
         t.available_channels -= 1;
         t.chan_names.push_back(chan_name);
         return t.shim_tile;
       }
+    }
     auto shim_col = shim_columns[allocs->size()];
     auto shim_tile = getPhysTileOp(aie_device, shim_col, 0);
     allocs->push_back({shim_tile, shim_dma_channels - 1, {chan_name}});
@@ -1057,15 +1059,19 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
         return res;
 
       // check if this put is linked to a get from another channel
-      if (linksToComplete.find(channelPuts[0].getOperation()) != linksToComplete.end()) {
-        endOfLink = channelPuts[0].getOperation();
-        linkFound = true;
-      } else {
-        AIE::BufferOp buff = dyn_cast<AIE::BufferOp>(channelPuts[0].getMemref().getDefiningOp());
-        for (auto user : buff->getUsers()) {
-          if (auto pairedGet = dyn_cast<ChannelGetOp>(user)) {
-            endOfLink = pairedGet.getOperation();
-            linkToComplete = true;
+      MemRefType memref = channelPuts[0].getMemref().getType().cast<MemRefType>();
+      int mem_space = memref.getMemorySpaceAsInt();
+      if (mem_space == (int)air::MemorySpace::L2) {
+        if (linksToComplete.find(channelPuts[0].getOperation()) != linksToComplete.end()) {
+          endOfLink = channelPuts[0].getOperation();
+          linkFound = true;
+        } else {
+          AIE::BufferOp buff = dyn_cast<AIE::BufferOp>(channelPuts[0].getMemref().getDefiningOp());
+          for (auto user : buff->getUsers()) {
+            if (auto pairedGet = dyn_cast<ChannelGetOp>(user)) {
+              endOfLink = pairedGet.getOperation();
+              linkToComplete = true;
+            }
           }
         }
       }
