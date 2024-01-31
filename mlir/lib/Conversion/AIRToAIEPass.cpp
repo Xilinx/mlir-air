@@ -1218,7 +1218,6 @@ private:
   template <typename MyOp>
   LogicalResult findChannelPutGetTile(MyOp op, Value *tile,
                                       AIE::AIEObjectFifoType *datatype) const {
-    auto device = op->template getParentOfType<AIE::DeviceOp>();
     MemRefType memref = op.getMemref().getType().template cast<MemRefType>();
     int mem_space = memref.getMemorySpaceAsInt();
     *datatype = AIE::AIEObjectFifoType::get(
@@ -1287,7 +1286,7 @@ private:
 
     // add alloc to list of ops to erase
     if (auto a = dyn_cast<memref::AllocOp>(op.getMemref().getDefiningOp())) {
-      auto execute = a->getParentOfType<air::ExecuteOp>();
+      auto execute = a->template getParentOfType<air::ExecuteOp>();
       if (execute) {
         erased_allocs.push_back(execute.getOperation());
         for (auto u : execute.getAsyncToken().getUsers()) {
