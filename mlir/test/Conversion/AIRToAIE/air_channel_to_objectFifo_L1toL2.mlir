@@ -12,14 +12,13 @@
 // CHECK:    %[[VAL_1:.*]] = aie.tile(6, 1)
 // CHECK:    %[[VAL_2:.*]] = aie.tile(5, 3)
 // CHECK:    %[[VAL_3:.*]] = aie.tile(2, 0)
-// CHECK:    %[[VAL_4:.*]] = aie.buffer(%[[VAL_0]]) {sym_name = "buf0"} : memref<32xi32, 1>
-// CHECK:    aie.objectfifo @[[VAL_5:.*]](%[[VAL_0]], {%[[VAL_2]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
-// CHECK:    aie.objectfifo @[[VAL_6:.*]](%[[VAL_3]], {%[[VAL_0]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
-// CHECK:    aie.objectfifo.link [@[[VAL_6]]] -> [@[[VAL_5]]]()
-// CHECK:    %[[VAL_7:.*]] = aie.core(%[[VAL_2]]) {
-// CHECK:      %[[VAL_8:.*]] = aie.objectfifo.acquire @[[VAL_5]](Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:      %[[VAL_9:.*]] = aie.objectfifo.subview.access %[[VAL_8]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:      aie.objectfifo.release @[[VAL_5]](Consume, 1)
+// CHECK:    aie.objectfifo @[[VAL_4:.*]](%[[VAL_0]], {%[[VAL_2]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
+// CHECK:    aie.objectfifo @[[VAL_5:.*]](%[[VAL_3]], {%[[VAL_0]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
+// CHECK:    aie.objectfifo.link [@[[VAL_5]]] -> [@[[VAL_4]]]()
+// CHECK:    %[[VAL_6:.*]] = aie.core(%[[VAL_2]]) {
+// CHECK:      %[[VAL_7:.*]] = aie.objectfifo.acquire @[[VAL_4]](Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
+// CHECK:      %[[VAL_8:.*]] = aie.objectfifo.subview.access %[[VAL_7]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:      aie.objectfifo.release @[[VAL_4]](Consume, 1)
 // CHECK:      aie.end
 // CHECK:    } {elf_file = "segment_0_core_5_3.elf"}
 // CHECK:  }
@@ -46,7 +45,7 @@ module {
       
       %2 = air.segment async args(%arg6=%arg1, %arg7=%arg2) : index, index attributes {id = 3 : i32} {
         %3 = air.wait_all async 
-        %async_token_1, %results_1 = air.execute -> (memref<32xi32, 1>) {
+        %async_token_1, %result_1 = air.execute -> (memref<32xi32, 1>) {
           %alloc1 = memref.alloc() : memref<32xi32, 1>
           air.execute_terminator %alloc1 : memref<32xi32, 1>
         }

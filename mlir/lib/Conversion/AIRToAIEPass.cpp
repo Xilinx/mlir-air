@@ -1164,35 +1164,42 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 
     // replace put/get and any associated memref alloc/dealloc
     std::vector<Operation *> erased_deallocs;
-    std::vector<Operation *> erased_ops;
+    std::vector<Operation *> erased_allocs;
     for (auto put : channelPuts) {
       rewriteChannelAllocs<ChannelPutOp>(
-          rewriter, put, objFifo, AIE::ObjectFifoPort::Produce, erased_ops);
+          rewriter, put, objFifo, AIE::ObjectFifoPort::Produce, erased_allocs);
       rewriteChannelDeallocs<ChannelPutOp>(rewriter, put, objFifo,
                                            AIE::ObjectFifoPort::Produce,
-                                           erased_deallocs, erased_ops);
+                                           erased_deallocs);
       // clear any dependence to put
-      if (put.getAsyncToken())
-        for (auto u : put.getAsyncToken().getUsers())
+      if (put.getAsyncToken()) {
+        for (auto u : put.getAsyncToken().getUsers()) {
           if (auto async_u = dyn_cast<air::AsyncOpInterface>(u))
             air::eraseAsyncDependencyFromAsyncOp(async_u, put.getAsyncToken());
-      // TODO: complete else
+          // TODO: complete else: account for scf.for and scf.parallel users
+        }
+      }
     }
     for (auto get : channelGets) {
       rewriteChannelAllocs<ChannelGetOp>(
-          rewriter, get, objFifo, AIE::ObjectFifoPort::Consume, erased_ops);
+          rewriter, get, objFifo, AIE::ObjectFifoPort::Consume, erased_allocs);
       rewriteChannelDeallocs<ChannelGetOp>(rewriter, get, objFifo,
                                            AIE::ObjectFifoPort::Consume,
-                                           erased_deallocs, erased_ops);
-      if (get.getAsyncToken())
-        // clear any dependence to get
-        for (auto u : get.getAsyncToken().getUsers())
+                                           erased_deallocs);
+      // clear any dependence to get
+      if (get.getAsyncToken()) {
+        for (auto u : get.getAsyncToken().getUsers()) {
           if (auto async_u = dyn_cast<air::AsyncOpInterface>(u))
             air::eraseAsyncDependencyFromAsyncOp(async_u, get.getAsyncToken());
-      // TODO: complete else
+          // TODO: complete else: account for scf.for and scf.parallel users
+        }
+      }
     }
     // erase dangling deallocs
     for (auto o : erased_deallocs)
+      rewriter.eraseOp(o);
+    // erase dangling allocs
+    for (auto o : erased_allocs)
       rewriter.eraseOp(o);
     // erase channel puts and gets
     for (auto get : channelGets) {
@@ -1252,7 +1259,7 @@ private:
   void rewriteChannelAllocs(PatternRewriter &rewriter, MyOp op,
                             AIE::ObjectFifoCreateOp objFifo,
                             AIE::ObjectFifoPort port,
-                            std::vector<Operation *> &erased_ops) const {
+                            std::vector<Operation *> &erased_allocs) const {
     MemRefType memref = op.getMemref().getType().template cast<MemRefType>();
     int mem_space = memref.getMemorySpaceAsInt();
     if (mem_space == (int)air::MemorySpace::L2) {
@@ -1277,14 +1284,28 @@ private:
     // replace uses of alloc with result of acquire
     if (auto a = dyn_cast<memref::AllocOp>(op.getMemref().getDefiningOp()))
       rewriter.replaceOp(a.getOperation(), producerAccess.getOutput());
+
+    // add alloc to list of ops to erase
+    if (auto a = dyn_cast<memref::AllocOp>(op.getMemref().getDefiningOp())) {
+      auto execute = a->getParentOfType<air::ExecuteOp>();
+      if (execute) {
+        erased_allocs.push_back(execute.getOperation());
+        for (auto u : execute.getAsyncToken().getUsers()) {
+          if (auto async_u = dyn_cast<air::AsyncOpInterface>(u))
+            air::eraseAsyncDependencyFromAsyncOp(async_u, execute.getAsyncToken());
+          // TODO: complete else: account for scf.for and scf.parallel users
+        }
+      } else {
+        erased_allocs.push_back(a.getOperation());
+      }
+    }
   }
 
   template <typename MyOp>
   void rewriteChannelDeallocs(PatternRewriter &rewriter, MyOp op,
                               AIE::ObjectFifoCreateOp objFifo,
                               AIE::ObjectFifoPort port,
-                              std::vector<Operation *> &erased_deallocs,
-                              std::vector<Operation *> &erased_ops) const {
+                              std::vector<Operation *> &erased_deallocs) const {
     MemRefType memref = op.getMemref().getType().template cast<MemRefType>();
     int mem_space = memref.getMemorySpaceAsInt();
     if (mem_space == (int)air::MemorySpace::L2) {
