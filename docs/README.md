@@ -39,7 +39,7 @@ air
 - [Transform Dialect Extensions](AIRTransformOps.html)
 
 ### AIR Platform Documentation
-#### [VCK5000 platform](https://github.com/Xilinx/ROCm-air-platforms)
+- [VCK5000 platform](https://github.com/Xilinx/ROCm-air-platforms) 
 
 ### Tutorials
 - [AIR Asynchronous Concurrency](AIRAsyncConcurrency.md)
