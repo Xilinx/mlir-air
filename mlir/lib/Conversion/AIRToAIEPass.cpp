@@ -1198,18 +1198,16 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     // erase dangling deallocs
     for (auto o : erased_deallocs)
       rewriter.eraseOp(o);
+    // erase channel puts and gets
+    for (auto get : channelGets)
+      rewriter.eraseOp(get);
+    for (auto put : channelPuts)
+      rewriter.eraseOp(put);
+    // erase the channel
+    rewriter.eraseOp(channel);
     // erase dangling allocs
     for (auto o : erased_allocs)
       rewriter.eraseOp(o);
-    // erase channel puts and gets
-    for (auto get : channelGets) {
-      rewriter.eraseOp(get);
-    }
-    for (auto put : channelPuts) {
-      rewriter.eraseOp(put);
-    }
-    // erase the channel
-    rewriter.eraseOp(channel);
     return success();
   }
 
