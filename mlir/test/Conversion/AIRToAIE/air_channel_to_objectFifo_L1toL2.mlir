@@ -45,7 +45,7 @@ module {
       
       %2 = air.segment async args(%arg6=%arg1, %arg7=%arg2) : index, index attributes {id = 3 : i32} {
         %3 = air.wait_all async 
-        %async_token_1, %result_1 = air.execute -> (memref<32xi32, 1>) {
+        %async_token_1, %results_1 = air.execute -> (memref<32xi32, 1>) {
           %alloc1 = memref.alloc() : memref<32xi32, 1>
           air.execute_terminator %alloc1 : memref<32xi32, 1>
         }
