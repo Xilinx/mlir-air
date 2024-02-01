@@ -1279,17 +1279,19 @@ private:
             rewriter.getIntegerAttr(rewriter.getI32Type(), 0));
 
     // replace uses of alloc with result of acquire
-    auto allocOrExecute = op.getMemref().getDefiningOp();
-    if (auto a = dyn_cast<memref::AllocOp>(allocOrExecute))
+    if (auto a = dyn_cast<memref::AllocOp>(op.getMemref().getDefiningOp()))
       rewriter.replaceOp(a.getOperation(), producerAccess.getOutput());
 
     // add alloc to list of ops to erase
-    push_back_if_unique<Operation *>(erased_allocs, allocOrExecute);
-    for (auto u : allocOrExecute.getAsyncToken().getUsers()) {
-      if (auto async_u = dyn_cast<air::AsyncOpInterface>(u))
-        air::eraseAsyncDependencyFromAsyncOp(async_u,
-                                              allocOrExecute.getAsyncToken());
+    push_back_if_unique<Operation *>(erased_allocs, op.getMemref().getDefiningOp());
+    if (auto execute = dyn_cast<air::ExecuteOp>(op.getMemref().getDefiningOp())) {
+      if (execute) {
+        for (auto u : execute.getAsyncToken().getUsers()) {
+          if (auto async_u = dyn_cast<air::AsyncOpInterface>(u))
+            air::eraseAsyncDependencyFromAsyncOp(async_u, execute.getAsyncToken());
           // TODO: complete else: account for scf.for and scf.parallel users
+        }
+      }
     }
   }
 

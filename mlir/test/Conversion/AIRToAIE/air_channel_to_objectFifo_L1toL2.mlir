@@ -13,13 +13,13 @@
 // CHECK:    %[[VAL_2:.*]] = aie.tile(5, 3)
 // CHECK:    %[[VAL_3:.*]] = aie.tile(2, 0)
 // CHECK:    %buf0 = aie.buffer(%tile_5_1) {sym_name = "buf0"} : memref<32xi32, 1> 
-// CHECK:    aie.objectfifo @[[VAL_4:.*]](%[[VAL_0]], {%[[VAL_2]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
-// CHECK:    aie.objectfifo @[[VAL_5:.*]](%[[VAL_3]], {%[[VAL_0]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
-// CHECK:    aie.objectfifo.link [@[[VAL_5]]] -> [@[[VAL_4]]]()
-// CHECK:    %[[VAL_6:.*]] = aie.core(%[[VAL_2]]) {
-// CHECK:      %[[VAL_7:.*]] = aie.objectfifo.acquire @[[VAL_4]](Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
-// CHECK:      %[[VAL_8:.*]] = aie.objectfifo.subview.access %[[VAL_7]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
-// CHECK:      aie.objectfifo.release @[[VAL_4]](Consume, 1)
+// CHECK:    aie.objectfifo @air_channel_1(%[[VAL_0]], {%[[VAL_2]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
+// CHECK:    aie.objectfifo @air_channel_0(%[[VAL_3]], {%[[VAL_0]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
+// CHECK:    aie.objectfifo.link [@air_channel_0] -> [@air_channel_1]()
+// CHECK:    %[[VAL_4:.*]] = aie.core(%[[VAL_2]]) {
+// CHECK:      %[[VAL_5:.*]] = aie.objectfifo.acquire @air_channel_1(Consume, 1) : !aie.objectfifosubview<memref<32xi32>>
+// CHECK:      %[[VAL_6:.*]] = aie.objectfifo.subview.access %[[VAL_5]][0] : !aie.objectfifosubview<memref<32xi32>> -> memref<32xi32>
+// CHECK:      aie.objectfifo.release @air_channel_1(Consume, 1)
 // CHECK:      aie.end
 // CHECK:    } {elf_file = "segment_0_core_5_3.elf"}
 // CHECK:  }
