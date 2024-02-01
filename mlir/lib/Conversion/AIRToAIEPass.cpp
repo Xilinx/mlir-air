@@ -1206,8 +1206,14 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     // erase the channel
     rewriter.eraseOp(channel);
     // erase dangling allocs
-    for (auto o : erased_allocs)
-      rewriter.eraseOp(o);
+    for (auto o : erased_allocs) {
+      int num_users = 0;
+      for (auto u : o->getUsers())
+        num_users++;
+      // erase only when all related channels have been erased
+      if (num_users == 0)
+        rewriter.eraseOp(o);
+    }
     return success();
   }
 
@@ -1260,6 +1266,8 @@ private:
     MemRefType memref = op.getMemref().getType().template cast<MemRefType>();
     int mem_space = memref.getMemorySpaceAsInt();
     if (mem_space == (int)air::MemorySpace::L2) {
+      // add alloc to list of ops to erase
+      push_back_if_unique<Operation *>(erased_allocs, op.getMemref().getDefiningOp());
       return;
     }
 
@@ -1281,18 +1289,6 @@ private:
     // replace uses of alloc with result of acquire
     if (auto a = dyn_cast<memref::AllocOp>(op.getMemref().getDefiningOp()))
       rewriter.replaceOp(a.getOperation(), producerAccess.getOutput());
-
-    // add alloc to list of ops to erase
-    push_back_if_unique<Operation *>(erased_allocs, op.getMemref().getDefiningOp());
-    if (auto execute = dyn_cast<air::ExecuteOp>(op.getMemref().getDefiningOp())) {
-      if (execute) {
-        for (auto u : execute.getAsyncToken().getUsers()) {
-          if (auto async_u = dyn_cast<air::AsyncOpInterface>(u))
-            air::eraseAsyncDependencyFromAsyncOp(async_u, execute.getAsyncToken());
-          // TODO: complete else: account for scf.for and scf.parallel users
-        }
-      }
-    }
   }
 
   template <typename MyOp>

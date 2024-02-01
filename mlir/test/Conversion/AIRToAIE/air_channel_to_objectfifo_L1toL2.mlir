@@ -5,14 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' --air-to-aie='emit-while-loop=false row-offset=3 col-offset=5 use-objectfifo=true device=xcve2802' | air-opt --canonicalize | FileCheck %s
+// RUN: air-opt %s -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' --air-to-aie='emit-while-loop=false row-offset=3 col-offset=5 use-objectfifo=true device=xcve2802' --canonicalize | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcve2802) {
 // CHECK:    %[[VAL_0:.*]] = aie.tile(5, 1)
-// CHECK:    %[[VAL_1:.*]] = aie.tile(6, 1)
 // CHECK:    %[[VAL_2:.*]] = aie.tile(5, 3)
 // CHECK:    %[[VAL_3:.*]] = aie.tile(2, 0)
-// CHECK:    %buf0 = aie.buffer(%tile_5_1) {sym_name = "buf0"} : memref<32xi32, 1> 
 // CHECK:    aie.objectfifo @air_channel_1(%[[VAL_0]], {%[[VAL_2]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:    aie.objectfifo @air_channel_0(%[[VAL_3]], {%[[VAL_0]]}, 1 : i32) : !aie.objectfifo<memref<32xi32>>
 // CHECK:    aie.objectfifo.link [@air_channel_0] -> [@air_channel_1]()
@@ -27,7 +25,6 @@
 module {
   air.channel @channel_0 [1, 1]
   air.channel @channel_1 [1, 1]
-  air.channel @channel_2 [1, 1]
   func.func @L2toL1(%arg0: memref<32xi32>) {
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
@@ -51,7 +48,7 @@ module {
           %alloc1 = memref.alloc() : memref<32xi32, 1>
           air.execute_terminator %alloc1 : memref<32xi32, 1>
         }
-        %4 = air.channel.get async [%async_token_1, %3] @channel_0[] (%results_1[] [] []) {id = 4 : i32} : (memref<32xi32, 1>)
+        %4 = air.channel.get async [%3] @channel_0[] (%results_1[] [] []) {id = 4 : i32} : (memref<32xi32, 1>)
         %5 = air.wait_all async [%4] 
         %6 = air.channel.put async [%5] @channel_1[] (%results_1[] [] []) {id = 5 : i32} : (memref<32xi32, 1>)
         %c1_2 = arith.constant 1 : index
