@@ -1292,7 +1292,7 @@ private:
           // TODO: complete else: account for scf.for and scf.parallel users
         }
       } else {
-        push_back_if_unique<Operation *>(erased_allocs, a.getOperation());
+        push_back_if_unique<Operation *>(erased_allocs, op.getMemref().getDefiningOp());
       }
     }
   }
