@@ -1283,7 +1283,7 @@ private:
       rewriter.replaceOp(a.getOperation(), producerAccess.getOutput());
 
     // add alloc to list of ops to erase
-    if (auto execute = dyn_cast<memref::ExecuteOp>(op.getMemref().getDefiningOp())) {
+    if (auto execute = dyn_cast<air::ExecuteOp>(op.getMemref().getDefiningOp())) {
       if (execute) {
         push_back_if_unique<Operation *>(erased_allocs, execute.getOperation());
         for (auto u : execute.getAsyncToken().getUsers()) {
