@@ -21,7 +21,7 @@ def matmul_on_tensors(m, n, k, dtype):
 
 with air.ir.Context() as ctx, Location.unknown():
     airdialect.register_dialect(ctx)
-    air_module = matmul_on_tensors(128, 128, 256, IntegerType.get_signless(width = 32))
+    air_module = matmul_on_tensors(2048, 2048, 512, IntegerType.get_signless(width = 32))
     
     ################################################
     ## Tiling
@@ -144,6 +144,9 @@ with air.ir.Context() as ctx, Location.unknown():
 
     pipeline = "builtin.module("+",".join([
       'air-to-std',
+      'func.func(affine-loop-tile{tile-sizes=4,4})',
+      'func.func(air-unroll-outer-affine-loops{depth=2})',
+      'affine-expand-index-ops',
       'airrt-to-ipu',
       'canonicalize',
     ])+')'
