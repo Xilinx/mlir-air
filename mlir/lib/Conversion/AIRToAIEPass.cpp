@@ -1283,17 +1283,16 @@ private:
       rewriter.replaceOp(a.getOperation(), producerAccess.getOutput());
 
     // add alloc to list of ops to erase
-    if (auto a = dyn_cast<memref::AllocOp>(op.getMemref().getDefiningOp())) {
-      auto execute = a->template getParentOfType<air::ExecuteOp>();
+    if (auto execute = dyn_cast<memref::ExecuteOp>(op.getMemref().getDefiningOp())) {
       if (execute) {
-        erased_allocs.push_back(execute.getOperation());
+        push_back_if_unique<Operation *>(erased_allocs, execute.getOperation());
         for (auto u : execute.getAsyncToken().getUsers()) {
           if (auto async_u = dyn_cast<air::AsyncOpInterface>(u))
             air::eraseAsyncDependencyFromAsyncOp(async_u, execute.getAsyncToken());
           // TODO: complete else: account for scf.for and scf.parallel users
         }
       } else {
-        erased_allocs.push_back(a.getOperation());
+        push_back_if_unique<Operation *>(erased_allocs, a.getOperation());
       }
     }
   }

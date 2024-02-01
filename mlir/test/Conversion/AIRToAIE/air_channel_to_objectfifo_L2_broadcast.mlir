@@ -62,7 +62,7 @@ module {
         %c1_2 = arith.constant 1 : index
         %c2_2 = arith.constant 2 : index
         
-        %7 = air.herd @herd_0 async [%4] tile (%arg8, %arg9) in (%arg10=%c1_2, %arg11=%c2_2) attributes {id = 6 : i32} {
+        %7 = air.herd @herd_0 async [%6] tile (%arg8, %arg9) in (%arg10=%c1_2, %arg11=%c2_2) attributes {id = 6 : i32} {
             %8 = air.wait_all async 
             %async_token_2, %results_2 = air.execute -> (memref<32xi32, 2>) {
               %alloc2 = memref.alloc() : memref<32xi32, 2>
