@@ -1267,7 +1267,8 @@ private:
     int mem_space = memref.getMemorySpaceAsInt();
     if (mem_space == (int)air::MemorySpace::L2) {
       // add alloc to list of ops to erase
-      push_back_if_unique<Operation *>(erased_allocs, op.getMemref().getDefiningOp());
+      push_back_if_unique<Operation *>(erased_allocs,
+                                       op.getMemref().getDefiningOp());
       return;
     }
 
