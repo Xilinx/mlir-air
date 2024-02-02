@@ -1471,6 +1471,8 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         return failure();
     }
 
+    (void)AIRCanonicalizeWrapAndStrideList(rewriter, offsets, wraps, strides);
+
     foldForLoopNestAsExtendedSizesAndStrides(
         rewriter, for_op.getOperation(), channel_ops[0].getOperation(), offsets,
         wraps, strides, channel_ops[0].getMemref());
@@ -1565,6 +1567,8 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
       if (!getStaticAffineForTripCountAsInt(o))
         return failure();
     }
+
+    (void)AIRCanonicalizeWrapAndStrideList(rewriter, offsets, wraps, strides);
 
     foldForLoopNestAsExtendedSizesAndStrides(
         rewriter, for_op.getOperation(), channel_ops[0].getOperation(), offsets,
