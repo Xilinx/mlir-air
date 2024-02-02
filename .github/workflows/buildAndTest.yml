@@ -43,7 +43,7 @@ jobs:
           sudo apt install rocm-hip-runtime-dev5.6.0
 
       - name: Install libboost
-        run: sudo apt-get install -y libboost-all-dev
+        run: sudo apt-get install -y libboost-all-dev && sudo apt-get clean
 
       - name: Install pip packages
         run: sudo pip install psutil pybind11 numpy
@@ -128,6 +128,7 @@ jobs:
           ninja check-air-mlir
           ninja check-air-python
           popd
+          rm -rf build_assert
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/aienginev2/install/lib
 
@@ -155,6 +156,7 @@ jobs:
           make -j$(nproc)
           make check-air-cpp check-air-mlir check-air-python
           popd
+          rm -rf build_release
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/aienginev2/install/lib
 
