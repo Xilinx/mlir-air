@@ -23,7 +23,7 @@ pushd $MLIR_AIE_DIR/$BUILD_DIR
 
 cmake .. \
     -GNinja \
-    -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_BUILD_TYPE=Release \
     -DAIE_COMPILER=NONE \
     -DAIE_LINKER=NONE \
     -DHOST_COMPILER=NONE \
