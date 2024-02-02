@@ -54,3 +54,4 @@ if [ $ec -ne 0 ]; then
 fi
 
 popd
+rm -rf $MLIR_AIE_DIR/$BUILD_DIR
