@@ -14,10 +14,14 @@
 #
 ##===----------------------------------------------------------------------===##
 
-export HASH=71477e556ee75d22e7575e1bf29aeeb1d8c7e41a
+export HASH=48329cab738a35d6fd8e8b9f86ddcf68b459a176
+target_dir=mlir-aie
 
-git clone --depth 1 https://github.com/Xilinx/mlir-aie.git mlir-aie
-pushd mlir-aie
+if [[ ! -d $target_dir ]]; then
+  git clone --depth 1 https://github.com/Xilinx/mlir-aie.git $target_dir
+fi
+
+pushd $target_dir
 git fetch --depth=1 origin $HASH
 git checkout $HASH
 git submodule update --init

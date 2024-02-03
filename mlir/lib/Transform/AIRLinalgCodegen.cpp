@@ -842,14 +842,14 @@ struct PromoteLinalgOpPattern : public RewritePattern {
     // so if the promotion fails, those need to be cleaned up, which doesnt seem
     // to be happening here. So to fail properly, we should be cloning the op
     // and deleting the previous op. This needs more investigation.
-    rewriter.startRootUpdate(op);
+    rewriter.startOpModification(op);
     std::optional<linalg::LinalgOp> promotedOp =
         promoteSubViews(rewriter, cast<linalg::LinalgOp>(op), options);
     if (!promotedOp) {
-      rewriter.cancelRootUpdate(op);
+      rewriter.cancelOpModification(op);
       return op->emitError("subview promotion failed");
     }
-    rewriter.finalizeRootUpdate(op);
+    rewriter.finalizeOpModification(op);
     filter.replaceLinalgTransformationFilter(rewriter, op);
     return success();
   }
@@ -1922,7 +1922,7 @@ transform::LinalgTileOp::apply(TransformRewriter &rewriter,
     if (failed(maybeTilingResult))
       return DiagnosedSilenceableFailure::definiteFailure();
 
-    if (linalgOp.hasBufferSemantics())
+    if (linalgOp.hasPureBufferSemantics())
       rewriter.eraseOp(linalgOp);
     else
       rewriter.replaceOp(linalgOp,
