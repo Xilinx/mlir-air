@@ -21,6 +21,7 @@
 #include "air/Util/Util.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -1045,6 +1046,36 @@ void AIRCollapseHerdPass::runOnOperation() {
   }
 }
 
+class AIRAffineLoopTilingPass
+    : public air::impl::AIRAffineLoopTilingPassBase<AIRAffineLoopTilingPass> {
+
+public:
+  AIRAffineLoopTilingPass() = default;
+  AIRAffineLoopTilingPass(const AIRAffineLoopTilingPass &pass){};
+
+  void runOnOperation() override;
+
+private:
+};
+
+void AIRAffineLoopTilingPass::runOnOperation() {
+  // Bands of loops to tile.
+  std::vector<SmallVector<mlir::affine::AffineForOp, 6>> bands;
+  mlir::affine::getTileableBands(getOperation(), &bands);
+
+  // Tile each band.
+  for (auto &band : bands) {
+    SmallVector<mlir::affine::AffineForOp, 6> tiledNest;
+    if (failed(
+            mlir::affine::tilePerfectlyNested(band, tileSizes, &tiledNest))) {
+      // An empty band always succeeds.
+      assert(!band.empty() && "guaranteed to succeed on empty bands");
+      LLVM_DEBUG(band.front()->emitRemark("loop tiling failed!\n"));
+      continue;
+    }
+  }
+}
+
 } // anonymous namespace
 
 namespace xilinx {
@@ -1092,6 +1123,15 @@ std::unique_ptr<Pass> createAIRLabelBroadcastChannelWithTilePass() {
 
 std::unique_ptr<Pass> createAIRCollapseHerdPass() {
   return std::make_unique<AIRCollapseHerdPass>();
+}
+
+std::unique_ptr<Pass> createAIRAffineLoopTilingPass() {
+  return std::make_unique<AIRAffineLoopTilingPass>();
+}
+
+std::unique_ptr<Pass>
+createAIRAffineLoopTilingPass(AIRAffineLoopTilingPass options) {
+  return std::make_unique<AIRAffineLoopTilingPass>(options);
 }
 
 } // namespace air

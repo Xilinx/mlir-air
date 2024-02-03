@@ -1134,4 +1134,14 @@ def AIRCollapseHerdPass : Pass<"air-collapse-herd", "func::FuncOp"> {
   let constructor = "xilinx::air::createAIRCollapseHerdPass()";
 }
 
+def AIRAffineLoopTilingPass : Pass<"air-affine-loop-tile", "func::FuncOp"> {
+  let summary = "Wrapper around affine-loop-tile.";
+  let constructor = "xilinx::air::createAIRAffineLoopTilingPass()";
+  let options = [
+    ListOption<"tileSizes", "tile-sizes", "unsigned",
+               "Tile sizes",
+               "llvm::cl::OneOrMore">,
+  ];
+}
+
 #endif // AIR_CONVERSION_PASSES
