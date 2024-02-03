@@ -1054,6 +1054,10 @@ public:
   AIRUnrollOuterPerfectlyNestedLoopsPass() = default;
   AIRUnrollOuterPerfectlyNestedLoopsPass(
       const AIRUnrollOuterPerfectlyNestedLoopsPass &pass){};
+  AIRUnrollOuterPerfectlyNestedLoopsPass(
+      const ::xilinx::air::AIRUnrollOuterPerfectlyNestedLoopsPassOptions
+          &options)
+      : AIRUnrollOuterPerfectlyNestedLoopsPassBase(options) {}
 
   void runOnOperation() override;
 
@@ -1136,6 +1140,11 @@ std::unique_ptr<Pass> createAIRCollapseHerdPass() {
 
 std::unique_ptr<Pass> createAIRUnrollOuterPerfectlyNestedLoopsPass() {
   return std::make_unique<AIRUnrollOuterPerfectlyNestedLoopsPass>();
+}
+
+std::unique_ptr<Pass> createAIRUnrollOuterPerfectlyNestedLoopsPass(
+    AIRUnrollOuterPerfectlyNestedLoopsPassOptions options) {
+  return std::make_unique<AIRUnrollOuterPerfectlyNestedLoopsPass>(options);
 }
 
 } // namespace air

@@ -30,6 +30,8 @@ std::unique_ptr<mlir::Pass> createAIRLowerHerdParallelPass();
 std::unique_ptr<mlir::Pass> createAIRLabelBroadcastChannelWithTilePass();
 std::unique_ptr<mlir::Pass> createAIRCollapseHerdPass();
 std::unique_ptr<mlir::Pass> createAIRUnrollOuterPerfectlyNestedLoopsPass();
+std::unique_ptr<mlir::Pass> createAIRUnrollOuterPerfectlyNestedLoopsPass(
+    const AIRUnrollOuterPerfectlyNestedLoopsPassOptions &options);
 
 } // namespace air
 } // namespace xilinx
