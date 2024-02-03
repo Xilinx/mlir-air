@@ -29,12 +29,11 @@ cmake .. \
     -DHOST_COMPILER=NONE \
     -DLLVM_ENABLE_ASSERTIONS=ON \
     -DCMAKE_MODULE_PATH=`pwd`/../cmake/modulesXilinx \
-    -DMLIR_DIR=`pwd`/../../llvm/install/lib/cmake/mlir/ \
-    -DLLVM_DIR=`pwd`/../../llvm/install/lib/cmake/llvm/ \
+    -DMLIR_DIR=`pwd`/../mlir/lib/cmake/mlir \
     -DCMAKE_LINKER=lld \
     -DCMAKE_C_COMPILER=clang-12 \
     -DCMAKE_CXX_COMPILER=clang++-12 \
-    -DLLVM_EXTERNAL_LIT=`pwd`/../../llvm/build/bin/llvm-lit \
+    -DLLVM_EXTERNAL_LIT=$(which lit) \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DLibXAIE_x86_64_DIR=`pwd`/../../aienginev2/install/lib \
     -DCMAKE_INSTALL_PREFIX=`pwd`/../$INSTALL_DIR

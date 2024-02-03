@@ -46,7 +46,7 @@ jobs:
         run: sudo apt-get install -y libboost-all-dev && sudo apt-get clean
 
       - name: Install pip packages
-        run: sudo pip install psutil pybind11 numpy
+        run: sudo pip install psutil pybind11 numpy lit
 
       - name: Install Ninja
         uses: llvm/actions/install-ninja@55d844821959226fab4911f96f37071c1d4c3268
@@ -71,14 +71,6 @@ jobs:
           popd
         shell: bash
 
-      - name: Get LLVM
-        id: clone-llvm
-        run: utils/clone-llvm.sh
-        shell: bash
-        
-      - name: Rebuild and Install LLVM
-        run: utils/github-build-llvm.sh
-
       - name: Get mlir-aie
         id: clone-mlir-aie
         run: utils/clone-mlir-aie.sh
@@ -89,12 +81,29 @@ jobs:
         run: utils/clone-rocm-air-platforms.sh
         shell: bash
 
-      - name: Rebuild and Install libxaie
+      - name: Build and Install libxaie
         run: utils/github-clone-build-libxaie.sh
 
-      - name: Rebuild and Install mlir-aie
-        run: utils/github-build-mlir-aie.sh
+      - name: Build and Install mlir-aie
+        run: |
 
+          cd mlir-aie
+          python -m venv aie-venv
+          source aie-venv/bin/activate
+          pip install -r python/requirements.txt
+
+          VERSION=$(utils/clone-llvm.sh --get-wheel-version)
+          pip -q download mlir==$VERSION \
+            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
+          unzip -q mlir-*.whl
+          # I have no clue why but the system clock on GHA containers is like 12 hours ahead.
+          # That means wheels have file with time stamps in the future which makes ninja loop
+          # forever when configuring. Set the time to some arbitrary stamp in the past just to be safe.
+          find mlir -exec touch -a -m -t 201108231405.14 {} \;
+          cd ..
+
+          utils/github-build-mlir-aie.sh
+  
       - name: Build ROCt
         run: ROCm-air-platforms/utils/clone-build-roct.sh
 
@@ -112,7 +121,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug \
             -DLLVM_ENABLE_ASSERTIONS=ON \
             -DCMAKE_MODULE_PATH=`pwd`/../cmakeModules \
-            -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
+            -DMLIR_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/mlir \
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
             -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
