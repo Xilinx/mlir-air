@@ -49,7 +49,7 @@ func.func @single_put_get(%arg0: memref<32x16xi32>, %arg1: memref<32x16xi32>) {
 // CHECK:     airrt.dma_memcpy_nd(%c3_i32, %{{.*}}, %{{.*}}, %arg0[%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], [%{{.*}}, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<32x16xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
 // CHECK:     airrt.dma_memcpy_nd(%c4_i32, %{{.*}}, %{{.*}}, %arg1[%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], [%{{.*}}, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<32x16xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
 // CHECK:   } {air.herd = "inner"}
-// CHECK: } {air.herd = "outer"}
+// CHECK: } {affine_opt_label = "tiling", air.herd = "outer"}
 
 air.channel @channel_3 [2, 2]
 air.channel @channel_2 [2, 2]
@@ -108,7 +108,7 @@ func.func @par_put_get(%arg0: memref<32x16xi32>, %arg1: memref<32x16xi32>) {
 // CHECK:       airrt.dma_memcpy_nd(%{{.*}}, %{{.*}}, %{{.*}}, %arg1[%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], [%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}], [%{{.*}}, %{{.*}}, %{{.*}}]) : (i32, i64, i64, memref<32x16xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
 // CHECK:       scf.yield
 // CHECK:   } {air.herd = "inner"}
-// CHECK: } {air.herd = "outer"}
+// CHECK: } {affine_opt_label = "tiling", air.herd = "outer"}
 air.channel @channel_5 [2, 2]
 air.channel @channel_4 [2, 2]
 func.func @par_with_for_put_get(%arg0: memref<32x16xi32>, %arg1: memref<32x16xi32>) {
