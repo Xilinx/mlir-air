@@ -33,8 +33,6 @@ set(LIBS
   MLIRTransformUtils
   MLIRSupport
   MLIRIR
-  # MLIRTestTransformDialect
-  # MLIRTestTransforms
   )
 
 target_link_libraries(air-opt PRIVATE ${LIBS})
