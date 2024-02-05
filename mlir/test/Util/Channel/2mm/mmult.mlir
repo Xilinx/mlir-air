@@ -7,7 +7,8 @@
 
 // RUN: air-opt -o %T/mmult.async.llvm.mlir %s -async-to-async-runtime -async-runtime-ref-counting -async-runtime-ref-counting-opt -convert-linalg-to-affine-loops -expand-strided-metadata -lower-affine -convert-scf-to-cf -convert-async-to-llvm -finalize-memref-to-llvm -convert-cf-to-llvm -convert-func-to-llvm -canonicalize -cse
 // RUN: air-translate --mlir-to-llvmir %T/mmult.async.llvm.mlir -o %T/mmult.async.ll
-// RUN: %CLANG %T/mmult.async.ll -O2 -std=c++17 -c -o %T/mmult.async.o
+// RUN: %OPT -O3 -o %T/mmult.async.opt.ll < %T/mmult.async.ll
+// RUN: %LLC %T/mmult.async.opt.ll -filetype=obj -o %T/mmult.async.o
 // RUN: %CLANG %S/main.cpp -O2 -std=c++17 %airhost_inc -c -o %T/main.o
 // RUN: %CLANG %aircpu_lib %mlir_async_lib -o %T/test.exe %T/main.o %T/mmult.async.o
 // RUN: %ld_lib_path %T/test.exe
