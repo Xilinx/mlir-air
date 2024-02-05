@@ -14,6 +14,25 @@ include "mlir/Pass/PassBase.td"
 def AffineLoopOptPass : Pass<"affine-loop-opt", "func::FuncOp"> {
   let summary = "Affine loop transformations";
   let constructor = "xilinx::air::createAffineLoopOptPass()";
+  let options = [
+    ListOption<"clTileSizes", "affine-opt-tile-sizes", "unsigned",
+               "Affine loop tiling sizes",
+               "llvm::cl::ZeroOrMore">,
+    ListOption<"clCopyDepths", "affine-opt-copy-depths", "unsigned",
+               "Affine loop data copy loop depths",
+               "llvm::cl::ZeroOrMore">,
+    Option<"clFastSpace", "affine-opt-copy-fast-space", "unsigned", /*default=*/"1",
+           "Fast memory space to use for affine data copy">,
+    Option<"clSlowSpace", "affine-opt-copy-slow-space", "unsigned", 
+            /*default=*/"0",
+            "slow memory space to use for affine data copy">,
+    Option<"clSeparate", "affine-opt-tile-separate", "bool", /*default=*/"false",
+            "Affine loop tiling separates full and partial tiles">,
+    Option<"clAffineOptLabel", "aaffine-opt-label", "std::string", /*default=*/"",
+            "Transform loops with the given label">,
+    Option<"clAffineOptPostLabel", "affine-opt-post-label", "std::string", /*default=*/"",
+            "Label to apply to transformed loop nest">,
+  ];
 }
 
 def AIRAutomaticTiling: Pass<"air-automatic-tiling", "func::FuncOp"> {
