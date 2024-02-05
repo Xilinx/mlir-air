@@ -30,9 +30,8 @@ cmake .. \
     -DLLVM_ENABLE_ASSERTIONS=ON \
     -DCMAKE_MODULE_PATH=`pwd`/../cmake/modulesXilinx \
     -DMLIR_DIR=`pwd`/../mlir/lib/cmake/mlir \
+    -DLLVM_DIR=`pwd`/../mlir/lib/cmake/llvm \
     -DCMAKE_LINKER=lld \
-    -DCMAKE_C_COMPILER=clang-12 \
-    -DCMAKE_CXX_COMPILER=clang++-12 \
     -DLLVM_EXTERNAL_LIT=$(which lit) \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DLibXAIE_x86_64_DIR=`pwd`/../../aienginev2/install/lib \
