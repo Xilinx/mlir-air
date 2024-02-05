@@ -1,15 +1,14 @@
 //===- air_channel_to_objectfifo_L2_broadcast.mlir --------------------*- MLIR -*-===//
 //
-// Copyright (C) 2022, Advanced Micro Devices, Inc.
+// Copyright (C) 2024, Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' --air-to-aie='emit-while-loop=false row-offset=3 col-offset=5 use-objectfifo=true device=xcve2802' --canonicalize | FileCheck %s
+// RUN: air-opt %s --air-to-aie | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcve2802) {
-// CHECK:    %[[VAL_0:.*]] = aie.tile(5, 1)
-// CHECK:    %[[VAL_1:.*]] = aie.tile(6, 1)
+// CHECK:    %[[VAL_0:.*]] = aie.tile(1, 1)
 // CHECK:    %[[VAL_2:.*]] = aie.tile(5, 3)
 // CHECK:    %[[VAL_3:.*]] = aie.tile(5, 4)
 // CHECK:    %[[VAL_4:.*]] = aie.tile(2, 0)
