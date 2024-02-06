@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN:  air-opt %s -test-transform-dialect-interpreter
+// RUN:  air-opt %s -air-transform='filename=%s'
 
 
 #map0 = affine_map<(d0, d1) -> (d0, d1)>
