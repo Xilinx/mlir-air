@@ -13,7 +13,7 @@ on:
 
 jobs:
   build-repo:
-    name: Build and Test
+    name: Build and Test with ROCm runtime
     runs-on: ubuntu-20.04
     steps:
       - name: Configure Environment
@@ -27,26 +27,32 @@ jobs:
           fetch-depth: 2
           submodules: "true"
 
-      - name: Install necessary build tools for the ROCm runtime
-        run: | 
-          sudo apt install libelf-dev elfutils libdwarf-dev
-          sudo mkdir --parents --mode=0755 /etc/apt/keyrings
-          wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | \
-            gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
-          for ver in 5.3.3 5.4.3 5.5.1 5.6; do
-            echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/$ver focal main" \
-              | sudo tee --append /etc/apt/sources.list.d/rocm.list
-            done
-            echo -e 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' \
-              | sudo tee /etc/apt/preferences.d/rocm-pin-600
-          sudo apt update
-          sudo apt install rocm-hip-runtime-dev5.6.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Upgrade gcc
+        #if: matrix.ubuntu_version == '20.04'
+        run: |
+          sudo apt-get install -y ninja-build clang lld
+
+          sudo apt install build-essential manpages-dev software-properties-common
+          sudo add-apt-repository ppa:ubuntu-toolchain-r/test
+          GCC_VERSION=11
+          sudo apt update && sudo apt install gcc-$GCC_VERSION g++-$GCC_VERSION
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 90 \
+            --slave /usr/bin/g++ g++ /usr/bin/g++-9 \
+            --slave /usr/bin/gcov gcov /usr/bin/gcov-9 \
+            --slave /usr/bin/gcc-ar gcc-ar /usr/bin/gcc-ar-9 \
+            --slave /usr/bin/gcc-ranlib gcc-ranlib /usr/bin/gcc-ranlib-9
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-$GCC_VERSION 110 \
+            --slave /usr/bin/g++ g++ /usr/bin/g++-$GCC_VERSION \
+            --slave /usr/bin/gcov gcov /usr/bin/gcov-$GCC_VERSION \
+            --slave /usr/bin/gcc-ar gcc-ar /usr/bin/gcc-ar-$GCC_VERSION \
+            --slave /usr/bin/gcc-ranlib gcc-ranlib /usr/bin/gcc-ranlib-$GCC_VERSION
 
       - name: Install libboost
-        run: sudo apt-get install -y libboost-all-dev
-
-      - name: Install pip packages
-        run: sudo pip install psutil pybind11 numpy
+        run: sudo apt-get install -y libboost-all-dev && sudo apt-get clean
 
       - name: Install Ninja
         uses: llvm/actions/install-ninja@55d844821959226fab4911f96f37071c1d4c3268
@@ -62,39 +68,51 @@ jobs:
           key: ${{ runner.os }}-clangreleaseasserts-${{ steps.get-submodule-hash.outputs.hash }}
           max-size: 1G
 
-      - name: Get cmakeModules
-        id: clone-cmakeModules
+      - name: Install necessary build tools for the ROCm runtime
         run: |
-          git clone https://github.com/Xilinx/cmakeModules.git
-          pushd cmakeModules
-          git checkout -b air 2c3885644ea115d1d61bbf102abbd41be8ba8427
-          popd
-        shell: bash
-
-      - name: Get LLVM
-        id: clone-llvm
-        run: utils/clone-llvm.sh
-        shell: bash
-        
-      - name: Rebuild and Install LLVM
-        run: utils/github-build-llvm.sh
-
-      - name: Get mlir-aie
-        id: clone-mlir-aie
-        run: utils/clone-mlir-aie.sh
-        shell: bash
+          sudo apt install libelf-dev elfutils libdwarf-dev
+          sudo mkdir --parents --mode=0755 /etc/apt/keyrings
+          wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | \
+            gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
+          for ver in 5.3.3 5.4.3 5.5.1 5.6; do
+            echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/$ver focal main" \
+              | sudo tee --append /etc/apt/sources.list.d/rocm.list
+            done
+            echo -e 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' \
+              | sudo tee /etc/apt/preferences.d/rocm-pin-600
+          sudo apt update
+          sudo apt install rocm-hip-runtime-dev5.6.0 && sudo apt-get clean
 
       - name: Get ROCm-air-platforms
         id: clone-rocm-air-platforms
         run: utils/clone-rocm-air-platforms.sh
         shell: bash
 
-      - name: Rebuild and Install libxaie
+      - name: Build and Install libxaie
         run: utils/github-clone-build-libxaie.sh
 
-      - name: Rebuild and Install mlir-aie
-        run: utils/github-build-mlir-aie.sh
+      - name: Get mlir-aie
+        id: clone-mlir-aie
+        run: utils/clone-mlir-aie.sh
+        shell: bash
 
+      - name: Build and Install mlir-aie
+        run: |
+          pushd mlir-aie
+          pip install -r python/requirements.txt
+
+          VERSION=$(utils/clone-llvm.sh --get-wheel-version)
+          pip -q download mlir==$VERSION \
+            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
+          unzip -q mlir-*.whl
+          # I have no clue why but the system clock on GHA containers is like 12 hours ahead.
+          # That means wheels have file with time stamps in the future which makes ninja loop
+          # forever when configuring. Set the time to some arbitrary stamp in the past just to be safe.
+          find mlir -exec touch -a -m -t 201108231405.14 {} \;
+          popd
+
+          utils/github-build-mlir-aie.sh
+  
       - name: Build ROCt
         run: ROCm-air-platforms/utils/clone-build-roct.sh
 
@@ -108,26 +126,27 @@ jobs:
           pushd build_assert
           cmake .. \
             -GNinja \
-            -DCMAKE_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
             -DCMAKE_BUILD_TYPE=Debug \
             -DLLVM_ENABLE_ASSERTIONS=ON \
-            -DCMAKE_MODULE_PATH=`pwd`/../cmakeModules \
-            -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
-            -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
+            -DCMAKE_MODULE_PATH=`pwd`/../mlir-aie/cmake/modulesXilinx \
+            -DMLIR_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/mlir \
+            -DLLVM_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/llvm \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
             -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
             -Dhsa-runtime64_DIR=`pwd`/../rocm/lib/cmake/hsa-runtime64/ \
             -Dhsakmt_DIR=`pwd`/../rocm/lib/cmake/hsakmt/ \
             -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
             -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
-            -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
+            -DLLVM_EXTERNAL_LIT=$(which lit) \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DLLVM_USE_LINKER=lld \
             -DCMAKE_INSTALL_PREFIX=install
           ninja
           ninja check-air-cpp
           ninja check-air-mlir
           ninja check-air-python
           popd
+          rm -rf build_assert
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/aienginev2/install/lib
 
@@ -137,24 +156,25 @@ jobs:
           mkdir build_release
           pushd build_release
           cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_ENABLE_ASSERTIONS=OFF \
-            -DCMAKE_MODULE_PATH=`pwd`/../cmakeModules \
-            -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
-            -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
+            -DCMAKE_MODULE_PATH=`pwd`/../mlir-aie/cmake/modulesXilinx \
+            -DMLIR_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/mlir \
+            -DLLVM_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/llvm \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
             -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
             -Dhsa-runtime64_DIR=`pwd`/../rocm/lib/cmake/hsa-runtime64/ \
             -Dhsakmt_DIR=`pwd`/../rocm/lib/cmake/hsakmt/ \
             -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
             -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
-            -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
+            -DLLVM_EXTERNAL_LIT=$(which lit) \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DLLVM_USE_LINKER=lld \
             -DCMAKE_INSTALL_PREFIX=install
           make -j$(nproc)
           make check-air-cpp check-air-mlir check-air-python
           popd
+          rm -rf build_release
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/aienginev2/install/lib
 

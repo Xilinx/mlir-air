@@ -33,9 +33,9 @@ func.func @scf1()  {
 // -----
 
 // CHECK-LABEL: func.func @scf2() {
-// CHECK: %[[VAL_0:.*]] = arith.constant 0 : index
 // CHECK: %[[VAL_1:.*]] = arith.constant 1 : index
 // CHECK: %[[VAL_2:.*]] = arith.constant 2 : index
+// CHECK: %[[VAL_0:.*]] = arith.constant 0 : index
 // CHECK: scf.parallel (%[[VAL_3:.*]], %[[VAL_4:.*]]) = (%[[VAL_0]], %[[VAL_0]]) to (%[[VAL_1]], %[[VAL_2]]) step (%[[VAL_1]], %[[VAL_1]]) {
 // CHECK:   %[[VAL_5:.*]] = arith.constant 3 : index
 // CHECK:   %[[VAL_6:.*]] = arith.constant 4 : index
