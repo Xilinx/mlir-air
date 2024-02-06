@@ -838,7 +838,11 @@ void air::foldForLoopNestAsExtendedSizesAndStrides(
           break;
         };
       }
-      ind_var_factor *= getTensorShape(memref.getType())[i];
+      // Index offset taking into account mismatch between memref rank and
+      // offset list size difference.
+      ind_var_factor *= getTensorShape(
+          memref.getType())[i + memref.getType().cast<MemRefType>().getRank() -
+                            offsets.size()];
     }
     int trip_count = -1;
     if (auto afo = dyn_cast<affine::AffineForOp>(o))

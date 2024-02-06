@@ -673,7 +673,12 @@ private:
           auto cop = builder.create<arith::ConstantIndexOp>(loc, val);
           srcMemrefDimsOrOffsets.push_back(cop);
         } else {
-          srcMemrefDimsOrOffsets.push_back(memcpyNdOp.getSrcOffsets()[i]);
+          // Offset taking into account mismatch between current_shape_expr size
+          // and offset list size.
+          int md_dma_offset =
+              memcpyNdOp.getSrcOffsets().size() - current_shape_expr.size();
+          srcMemrefDimsOrOffsets.push_back(
+              memcpyNdOp.getSrcOffsets()[md_dma_offset + i]);
         }
       }
       // Replace memcpyOp
@@ -688,6 +693,12 @@ private:
   Operation *replaceMemcpyOp(air::DmaMemcpyNdOp op, OpBuilder &builder,
                              SmallVector<Value, 1> srcMemrefDimsOrOffsets) {
     auto loc = op->getLoc();
+    // Fill higher dims with zeros if offset rank is lower than size rank.
+    while (srcMemrefDimsOrOffsets.size() < op.getSrcSizes().size()) {
+      srcMemrefDimsOrOffsets.insert(
+          srcMemrefDimsOrOffsets.begin(),
+          builder.create<arith::ConstantIndexOp>(loc, 0));
+    }
     air::DmaMemcpyNdOp newMemcpyOp = builder.create<air::DmaMemcpyNdOp>(
         loc, air::AsyncTokenType::get(op->getContext()),
         op.getAsyncDependencies(), op.getDstMemref(), op.getDstOffsets(),
