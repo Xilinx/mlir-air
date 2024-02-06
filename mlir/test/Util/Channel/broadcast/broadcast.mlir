@@ -8,7 +8,8 @@
 
 // RUN: air-opt -o %T/broadcast.llvm.mlir %s -buffer-results-to-out-params -air-to-async -async-to-async-runtime -async-runtime-ref-counting -async-runtime-ref-counting-opt -convert-linalg-to-affine-loops -expand-strided-metadata -lower-affine -convert-scf-to-cf -convert-async-to-llvm -finalize-memref-to-llvm -convert-cf-to-llvm -convert-func-to-llvm -canonicalize -cse
 // RUN: air-translate --mlir-to-llvmir %T/broadcast.llvm.mlir -o %T/broadcast.ll
-// RUN: %CLANG %T/broadcast.ll -O2 -std=c++17 -c -o %T/broadcast.o
+// RUN: %OPT -O3 -o %T/broadcast.opt.bc < %T/broadcast.ll
+// RUN: %LLC %T/broadcast.opt.bc --relocation-model=pic -filetype=obj -o %T/broadcast.o
 // RUN: %CLANG %S/main.cpp -O2 -std=c++17 %airhost_inc -c -o %T/main.o
 // RUN: %CLANG %aircpu_lib %mlir_async_lib -o %T/test.exe %T/main.o %T/broadcast.o
 // RUN: %ld_lib_path %T/test.exe
