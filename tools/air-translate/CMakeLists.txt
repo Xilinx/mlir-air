@@ -21,11 +21,12 @@ install(TARGETS air-translate
 add_dependencies(air-translate AIRTargets)
 
 set(LIBS
+  ${dialect_libs}
+  ${translation_libs}
   AIRDialect
   AIRRtDialect
   AIRTargets
   AIE
-  ${translation_libs}
   MLIRIR
   MLIRParser
   MLIRPass
