@@ -41,6 +41,8 @@ class AffineLoopOptPass
 public:
   AffineLoopOptPass() = default;
   AffineLoopOptPass(const AffineLoopOptPass &pass){};
+  AffineLoopOptPass(const ::xilinx::air::AffineLoopOptPassOptions &options)
+      : AffineLoopOptPassBase(options) {}
 
   void init_options() {
     optTileSizes.clear();
@@ -64,40 +66,6 @@ public:
     erasedOps.clear();
     dataCopyNests.clear();
   }
-
-  ListOption<unsigned> clTileSizes{*this, "affine-opt-tile-sizes",
-                                   llvm::cl::desc("Affine loop tiling sizes"),
-                                   llvm::cl::ZeroOrMore};
-
-  ListOption<unsigned> clCopyDepths{
-      *this, "affine-opt-copy-depths",
-      llvm::cl::desc("Affine loop data copy loop depths"),
-      llvm::cl::ZeroOrMore};
-
-  Option<unsigned> clFastSpace{
-      *this, "affine-opt-copy-fast-space",
-      llvm::cl::desc("Fast memory space to use for affine data copy"),
-      llvm::cl::init(1)};
-
-  Option<unsigned> clSlowSpace{
-      *this, "affine-opt-copy-slow-space",
-      llvm::cl::desc("slow memory space to use for affine data copy"),
-      llvm::cl::init(0)};
-
-  Option<bool> clSeparate{
-      *this, "affine-opt-tile-separate",
-      llvm::cl::desc("Affine loop tiling separates full and partial tiles"),
-      llvm::cl::init(false)};
-
-  Option<std::string> clAffineOptLabel{
-      *this, "affine-opt-label",
-      llvm::cl::desc("Transform loops with the given label"),
-      llvm::cl::init("")};
-
-  Option<std::string> clAffineOptPostLabel{
-      *this, "affine-opt-post-label",
-      llvm::cl::desc("Label to apply to transformed loop nest"),
-      llvm::cl::init("")};
 
   void runOnOperation() override;
   // void runOnBlock(Block *block);
@@ -281,6 +249,11 @@ namespace air {
 
 std::unique_ptr<Pass> createAffineLoopOptPass() {
   return std::make_unique<AffineLoopOptPass>();
+}
+
+std::unique_ptr<Pass>
+createAffineLoopOptPass(AffineLoopOptPassOptions options) {
+  return std::make_unique<AffineLoopOptPass>(options);
 }
 
 } // namespace air
