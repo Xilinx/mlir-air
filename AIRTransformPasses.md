@@ -3,6 +3,17 @@
 
 _Affine loop transformations_
 
+
+#### Options
+```
+-affine-opt-tile-sizes      : Affine loop tiling sizes
+-affine-opt-copy-depths     : Affine loop data copy loop depths
+-affine-opt-copy-fast-space : Fast memory space to use for affine data copy
+-affine-opt-copy-slow-space : slow memory space to use for affine data copy
+-affine-opt-tile-separate   : Affine loop tiling separates full and partial tiles
+-aaffine-opt-label          : Transform loops with the given label
+-affine-opt-post-label      : Label to apply to transformed loop nest
+```
 ### `-air-annotate-front-and-back-ops-in-for-pattern`
 
 _Annotates ops in for loop body which are at the front and back of the body's dependency graph_
@@ -982,3 +993,12 @@ _Unroll loop by an integer factor_
 This pass unrolls a loop by an integer factor. This pass is used in the ping-pong
 pattern transformation to unroll a scf.for loop by 2 to ensure explicit
 representation of ping and pong processes, respectively.
+### `-air-unroll-outer-affine-loops`
+
+_Unroll loops in a perfectly nested affine for loop nest, outer to inner._
+
+
+#### Options
+```
+-depth : The number of outermost loops in the loop nest to unroll
+```
