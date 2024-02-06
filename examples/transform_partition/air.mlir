@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -test-transform-dialect-interpreter
+// RUN: air-opt %s -air-transform='filename=%s'
 
 #map = affine_map<()[s0] -> (s0 * 32)>
 module attributes {torch.debug_module_name = "mmult"} {

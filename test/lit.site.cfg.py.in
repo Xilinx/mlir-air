@@ -49,7 +49,7 @@ config.air_runtime_lib_obj_root = "@AIR_BINARY_DIR@/runtime_lib"
 config.test_exec_root = "@CMAKE_CURRENT_BINARY_DIR@"
 
 config.hsa_dir = "@hsa-runtime64_DIR@"
-config.hsa_found = "@hsa-runtime64_FOUND@"
+config.hsa_found = lit.util.pythonize_bool("@hsa-runtime64_FOUND@")
 
 config.enable_chess_tests = lit.util.pythonize_bool("@ENABLE_CHESS_TESTS@")
 config.enable_run_airhost_tests = lit.util.pythonize_bool("@ENABLE_RUN_AIRHOST_TESTS@")
