@@ -45,8 +45,8 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
-#include <sstream>
 #include <atomic>
+#include <sstream>
 
 using namespace mlir;
 using namespace xilinx;
