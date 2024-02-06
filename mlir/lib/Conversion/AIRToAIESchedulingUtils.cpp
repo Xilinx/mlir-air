@@ -11,6 +11,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/MathExtras.h"
 #include <set>
+#include <mutex>
 
 #define DEBUG_TYPE "air-to-aie-scheduling-utils"
 
@@ -106,10 +107,17 @@ AIE::LockOp air::allocateLockOp(AIE::DeviceOp aie_device, AIE::TileOp tile,
   return b.create<AIE::LockOp>(tile.getLoc(), tile, new_id, init);
 }
 
+namespace {
+static std::mutex globalCounterMutex;
+}
+
 std::stringstream air::generateBufferNameInStringStream(std::string prefix,
                                                         uint64_t &BufferId,
                                                         mlir::StringAttr attr,
                                                         int x, int y) {
+
+  // RAII lock globalCounterMutex:
+  std::lock_guard<std::mutex> lock(globalCounterMutex);
 
   // if a symbol name was passed in, use it to make
   // the buffer symbol name as "sym_name_x_y",

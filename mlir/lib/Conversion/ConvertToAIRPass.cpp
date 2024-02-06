@@ -46,13 +46,14 @@
 
 #include <algorithm>
 #include <sstream>
+#include <atomic>
 
 using namespace mlir;
 using namespace xilinx;
 
 #define DEBUG_TYPE "convert-to-air"
 
-static uint64_t DmaMemcpyOpID;
+static std::atomic<uint64_t> DmaMemcpyOpID;
 
 static FailureOr<air::DmaMemcpyNdOp>
 matchAndRewriteCopyOp(memref::CopyOp op, RewriterBase &rewriter) {
@@ -1137,7 +1138,8 @@ class AIRDmaToAIRChannelConversion
         insertionPointAtHierOp = rewriter.saveInsertionPoint();
       }
 
-      for (auto b : backwardSlice) {
+      auto backwardSliceCopy = backwardSlice;
+      for (auto b : backwardSliceCopy) {
         if (dyn_cast<air::ExecuteOp>(b)) {
           for (auto &exec_child_op : b->getRegions().front().getOps()) {
             getBackwardSlice(&exec_child_op, &backwardSlice, bsOptions);
