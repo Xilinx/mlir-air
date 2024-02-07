@@ -379,18 +379,21 @@ specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
   auto memref = memcpy_ops[0]->getOperand(3);
   auto memref_shape = xilinx::air::getTensorShape(memref.getType());
   auto oper_begin = memcpy_ops[0].getOperands().begin();
-  SmallVector<Value> offsets(oper_begin + (8 - memref_shape.size()),
-                             oper_begin + 8);
-  SmallVector<Value> wraps(oper_begin + (12 - memref_shape.size()),
-                           oper_begin + 12);
-  SmallVector<Value> strides(oper_begin + (16 - memref_shape.size()),
-                             oper_begin + 15);
+  SmallVector<Value> offsets(oper_begin + 4, oper_begin + 8);
+  SmallVector<Value> wraps(oper_begin + 8, oper_begin + 12);
+  SmallVector<Value> strides(oper_begin + 12, oper_begin + 15);
   // Stride field implicit last element one
   strides.push_back(i64_one);
+
+  // Canonicalize wraps and strides
+  air::canonicalizeWrapAndStrideList(builder, offsets, wraps, strides);
 
   xilinx::air::foldForLoopNestAsExtendedSizesAndStrides(
       builder, for_op.getOperation(), memcpy_ops[0].getOperation(), offsets,
       wraps, strides, memcpy_ops[0]->getOperand(3));
+
+  if (offsets.size() > 4 || wraps.size() > 4 || strides.size() > 4)
+    return failure();
 
   // Stride field implicit last element one
   strides.pop_back();
@@ -403,9 +406,6 @@ specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
   while (strides.size() < 3) {
     strides.insert(strides.begin(), i64_zero);
   }
-  assert(offsets.size() == 4);
-  assert(wraps.size() == 4);
-  assert(strides.size() == 3);
 
   // Stride = 0 means repeat that dimension. If highest dimension (dim 0) is not
   // used, then move the repeat dimension to dim 0, which is the only dim with

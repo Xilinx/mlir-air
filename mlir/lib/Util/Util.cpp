@@ -23,6 +23,8 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "iostream"
+
 #define DEBUG_TYPE "air-util"
 
 using namespace mlir;
@@ -794,9 +796,74 @@ void air::getDefiningOpsToOperands(Operation *op,
   }
 }
 
+// Canonicalize wrap and stride lists by removing redundant dimensions.
+LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
+                                                 SmallVector<Value> &offsets,
+                                                 SmallVector<Value> &sizes,
+                                                 SmallVector<Value> &strides) {
+
+  // Match offsets size with sizes and strides
+  int max_dim_size =
+      std::max(std::max(offsets.size(), sizes.size()), strides.size());
+  if (max_dim_size && offsets.size() < max_dim_size) {
+    for (unsigned i = offsets.size(); i < max_dim_size; i++) {
+      offsets.insert(offsets.begin(), builder.create<arith::ConstantIndexOp>(
+                                          builder.getUnknownLoc(), 0));
+    }
+  }
+
+  SmallVector<int> unit_dims;
+  for (int i = sizes.size() - 1; i >= 0; i--) {
+    if (auto const_val = getConstantIntValue(sizes[i])) {
+      if (*const_val == 1) {
+        unit_dims.push_back(i);
+      }
+    }
+  }
+
+  for (auto i : unit_dims) {
+    offsets.erase(offsets.begin() + i);
+    sizes.erase(sizes.begin() + i);
+    strides.erase(strides.begin() + i);
+  }
+
+  SmallVector<int> redundant_dims;
+  if (!sizes.empty())
+    for (int i = sizes.size() - 1; i >= 1; i--) {
+      if (getConstantIntValue(sizes[i]) && getConstantIntValue(sizes[i - 1]) &&
+          getConstantIntValue(strides[i]) &&
+          getConstantIntValue(strides[i - 1])) {
+        auto const_size = *getConstantIntValue(sizes[i]);
+        auto const_size_next = *getConstantIntValue(sizes[i - 1]);
+        auto const_stride = *getConstantIntValue(strides[i]);
+        auto const_stride_next = *getConstantIntValue(strides[i - 1]);
+        // Skip over the first dimension if stride is 1
+        if (const_stride == 1 && i == (int)sizes.size() - 1)
+          continue;
+        if (const_stride_next == const_size * const_stride) {
+          redundant_dims.push_back(i - 1);
+          sizes[i] = builder.create<arith::ConstantIndexOp>(
+              builder.getUnknownLoc(), const_size * const_size_next);
+        }
+      }
+    }
+
+  for (auto i : redundant_dims) {
+    offsets.erase(offsets.begin() + i);
+    sizes.erase(sizes.begin() + i);
+    strides.erase(strides.begin() + i);
+  }
+
+  if (unit_dims.empty() && redundant_dims.empty()) {
+    return failure();
+  }
+
+  return success();
+}
+
 // Fold perfectly nested for loops as extra entries in wraps and strides
 void air::foldForLoopNestAsExtendedSizesAndStrides(
-    OpBuilder rewriter, Operation *for_op, Operation *channel_op,
+    OpBuilder builder, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
     SmallVector<Value> &strides, Value memref) {
   auto loc = for_op->getLoc();
@@ -827,22 +894,25 @@ void air::foldForLoopNestAsExtendedSizesAndStrides(
       }
       if (iv && offsets[i] == iv) {
         // Replace for loop induction vars in offsets with zero
-        offsets[i] = rewriter.template create<arith::ConstantIndexOp>(
+        offsets[i] = builder.template create<arith::ConstantIndexOp>(
             loc, loop_lower_bound);
         break;
       } else if (iv && offsets[i].getDefiningOp()) {
         if (isa<arith::IndexCastOp>(offsets[i].getDefiningOp()) &&
             offsets[i].getDefiningOp()->getOperand(0) == iv) {
-          offsets[i] = rewriter.template create<arith::ConstantIndexOp>(
+          offsets[i] = builder.template create<arith::ConstantIndexOp>(
               loc, loop_lower_bound);
           break;
         };
       }
       // Index offset taking into account mismatch between memref rank and
       // offset list size difference.
-      ind_var_factor *= getTensorShape(
-          memref.getType())[i + memref.getType().cast<MemRefType>().getRank() -
-                            offsets.size()];
+      ind_var_factor *=
+          getTensorShape(memref.getType()).size() < offsets.size()
+              ? getTensorVolume(memref.getType())
+              : getTensorShape(memref.getType())
+                    [i + memref.getType().cast<MemRefType>().getRank() -
+                     offsets.size()];
     }
     int trip_count = -1;
     if (auto afo = dyn_cast<affine::AffineForOp>(o))
@@ -850,14 +920,16 @@ void air::foldForLoopNestAsExtendedSizesAndStrides(
     else if (auto sfo = dyn_cast<scf::ForOp>(o))
       trip_count = *getStaticScfForTripCountAsInt(sfo);
     Value new_wrap =
-        rewriter.template create<arith::ConstantIndexOp>(loc, trip_count);
+        builder.template create<arith::ConstantIndexOp>(loc, trip_count);
     int stepSize = -1;
     if (auto afo = dyn_cast<affine::AffineForOp>(o))
       stepSize = afo.getStepAsInt();
     else if (auto sfo = dyn_cast<scf::ForOp>(o))
       stepSize = *mlir::getConstantIntValue(sfo.getStep());
-    Value new_stride = rewriter.template create<arith::ConstantIndexOp>(
+    Value new_stride = builder.template create<arith::ConstantIndexOp>(
         loc, (stepSize * ind_var_factor) % getTensorVolume(memref.getType()));
+
+    // Insert new dimension into the wraps and strides list.
     wraps.insert(wraps.begin(), new_wrap);
     strides.insert(strides.begin(), new_stride);
   }

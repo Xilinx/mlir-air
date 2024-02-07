@@ -1350,70 +1350,6 @@ private:
   }
 };
 
-LogicalResult AIRCanonicalizeWrapAndStrideList(OpBuilder builder,
-                                               SmallVector<Value> &offsets,
-                                               SmallVector<Value> &sizes,
-                                               SmallVector<Value> &strides) {
-
-  // Match offsets size with sizes and strides
-  int max_dim_size =
-      std::max(std::max(offsets.size(), sizes.size()), strides.size());
-  if (max_dim_size && offsets.size() < max_dim_size) {
-    for (unsigned i = offsets.size(); i < max_dim_size; i++) {
-      offsets.insert(offsets.begin(), builder.create<arith::ConstantIndexOp>(
-                                          builder.getUnknownLoc(), 0));
-    }
-  }
-
-  SmallVector<int> unit_dims;
-  for (int i = sizes.size() - 1; i >= 0; i--) {
-    if (auto const_val = getConstantIntValue(sizes[i])) {
-      if (*const_val == 1) {
-        unit_dims.push_back(i);
-      }
-    }
-  }
-
-  for (auto i : unit_dims) {
-    offsets.erase(offsets.begin() + i);
-    sizes.erase(sizes.begin() + i);
-    strides.erase(strides.begin() + i);
-  }
-
-  SmallVector<int> redundant_dims;
-  if (!sizes.empty())
-    for (int i = sizes.size() - 1; i >= 1; i--) {
-      if (getConstantIntValue(sizes[i]) && getConstantIntValue(sizes[i - 1]) &&
-          getConstantIntValue(strides[i]) &&
-          getConstantIntValue(strides[i - 1])) {
-        auto const_size = *getConstantIntValue(sizes[i]);
-        auto const_size_next = *getConstantIntValue(sizes[i - 1]);
-        auto const_stride = *getConstantIntValue(strides[i]);
-        auto const_stride_next = *getConstantIntValue(strides[i - 1]);
-        // Skip over the first dimension if stride is 1
-        if (const_stride == 1 && i == (int)sizes.size() - 1)
-          continue;
-        if (const_stride_next == const_size * const_stride) {
-          redundant_dims.push_back(i - 1);
-          sizes[i] = builder.create<arith::ConstantIndexOp>(
-              builder.getUnknownLoc(), const_size * const_size_next);
-        }
-      }
-    }
-
-  for (auto i : redundant_dims) {
-    offsets.erase(offsets.begin() + i);
-    sizes.erase(sizes.begin() + i);
-    strides.erase(strides.begin() + i);
-  }
-
-  if (unit_dims.empty() && redundant_dims.empty()) {
-    return failure();
-  }
-
-  return success();
-}
-
 struct AIRSpecializeChannelWrapAndStrideInScfFor
     : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
@@ -1471,13 +1407,13 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         return failure();
     }
 
-    (void)AIRCanonicalizeWrapAndStrideList(rewriter, offsets, wraps, strides);
+    (void)canonicalizeWrapAndStrideList(rewriter, offsets, wraps, strides);
 
     foldForLoopNestAsExtendedSizesAndStrides(
         rewriter, for_op.getOperation(), channel_ops[0].getOperation(), offsets,
         wraps, strides, channel_ops[0].getMemref());
 
-    (void)AIRCanonicalizeWrapAndStrideList(rewriter, offsets, wraps, strides);
+    (void)canonicalizeWrapAndStrideList(rewriter, offsets, wraps, strides);
 
     Operation *new_chan_op = nullptr;
     SmallVector<Type, 1> tys;
@@ -1568,13 +1504,13 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
         return failure();
     }
 
-    (void)AIRCanonicalizeWrapAndStrideList(rewriter, offsets, wraps, strides);
+    (void)canonicalizeWrapAndStrideList(rewriter, offsets, wraps, strides);
 
     foldForLoopNestAsExtendedSizesAndStrides(
         rewriter, for_op.getOperation(), channel_ops[0].getOperation(), offsets,
         wraps, strides, channel_ops[0].getMemref());
 
-    (void)AIRCanonicalizeWrapAndStrideList(rewriter, offsets, wraps, strides);
+    (void)canonicalizeWrapAndStrideList(rewriter, offsets, wraps, strides);
 
     Operation *new_chan_op = nullptr;
     SmallVector<Type, 1> tys;
@@ -1626,8 +1562,8 @@ struct AIRCanonicalizeChannelPutOpWrapAndStrideList
     SmallVector<Value> sizes = op.getSizes();
     SmallVector<Value> strides = op.getStrides();
 
-    if (failed(AIRCanonicalizeWrapAndStrideList(rewriter, offsets, sizes,
-                                                strides)))
+    if (failed(
+            canonicalizeWrapAndStrideList(rewriter, offsets, sizes, strides)))
       return failure();
 
     auto new_op = rewriter.create<air::ChannelPutOp>(
@@ -1662,8 +1598,8 @@ struct AIRCanonicalizeChannelGetOpWrapAndStrideList
     SmallVector<Value> sizes = op.getSizes();
     SmallVector<Value> strides = op.getStrides();
 
-    if (failed(AIRCanonicalizeWrapAndStrideList(rewriter, offsets, sizes,
-                                                strides)))
+    if (failed(
+            canonicalizeWrapAndStrideList(rewriter, offsets, sizes, strides)))
       return failure();
 
     auto new_op = rewriter.create<air::ChannelGetOp>(
