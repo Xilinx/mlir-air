@@ -36,6 +36,7 @@ generateBufferNameInStringStream(std::string prefix, uint64_t &BufferId,
 
 AIE::ExternalBufferOp allocateExternalBufferOp(MemRefType memrefTy,
                                                AIE::DeviceOp device,
+                                               uint64_t &BufferId,
                                                mlir::StringAttr attr = nullptr,
                                                int x = -1, int y = -1);
 
@@ -146,6 +147,7 @@ class ShimDMAAllocator : public DMAAllocator {
 public:
   std::vector<int> dma_columns;
   int shim_dma_channels;
+  uint64_t BufferId = 0;
 
   ShimDMAAllocator(AIE::DeviceOp device);
 

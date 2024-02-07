@@ -10,7 +10,6 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/MathExtras.h"
-#include <mutex>
 #include <set>
 
 #define DEBUG_TYPE "air-to-aie-scheduling-utils"
@@ -107,17 +106,10 @@ AIE::LockOp air::allocateLockOp(AIE::DeviceOp aie_device, AIE::TileOp tile,
   return b.create<AIE::LockOp>(tile.getLoc(), tile, new_id, init);
 }
 
-namespace {
-static std::mutex globalCounterMutex;
-}
-
 std::stringstream air::generateBufferNameInStringStream(std::string prefix,
                                                         uint64_t &BufferId,
                                                         mlir::StringAttr attr,
                                                         int x, int y) {
-
-  // RAII lock globalCounterMutex:
-  std::lock_guard<std::mutex> lock(globalCounterMutex);
 
   // if a symbol name was passed in, use it to make
   // the buffer symbol name as "sym_name_x_y",
@@ -136,10 +128,9 @@ std::stringstream air::generateBufferNameInStringStream(std::string prefix,
 
 AIE::ExternalBufferOp air::allocateExternalBufferOp(MemRefType memrefTy,
                                                     AIE::DeviceOp device,
+                                                    uint64_t &BufferId,
                                                     mlir::StringAttr attr,
                                                     int x, int y) {
-
-  static uint64_t BufferId = 0;
 
   auto builder = OpBuilder::atBlockBegin(device.getBody());
   AIE::ExternalBufferOp bufferOp = builder.create<AIE::ExternalBufferOp>(
@@ -664,7 +655,7 @@ ShimDMAAllocator::getBuffer(int64_t col, int64_t row,
   memrefTy = MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(), {},
                              DMAMemorySpaceAsInt);
   AIE::ExternalBufferOp bufferOp = allocateExternalBufferOp(
-      memrefTy, device,
+      memrefTy, device, BufferId,
       memcpyOp->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
       col, row);
   return bufferOp;
