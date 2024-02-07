@@ -91,6 +91,10 @@ static uint64_t HierarchyOpID;
 static uint64_t WaitAllOpID;
 static uint64_t ChannelOpID;
 
+namespace {
+  std::mutex mtx;
+}
+
 class AIRDependency
     : public xilinx::air::impl::AIRDependencyBase<AIRDependency> {
 
@@ -103,6 +107,21 @@ public:
   }
 
   void runOnOperation() override {
+
+    // RAII for the mutex mtx.
+    //
+    // While this pass operates at the builtin module scope, it is not correct
+    // to assume that there is only onle builtin module being operated at a time
+    // (example: IREE IR structure with multiple dispatches).
+    //
+    // This class contains alot of state and is therefore not designed to
+    // operate on many ops at once (see
+    // https://mlir.llvm.org/docs/PassManagement)
+    //
+    // As a temporary workaround, we use a mutex to ensure that only one
+    // operation is processed at a time.
+    std::lock_guard<std::mutex> lock(mtx);
+
     auto module = getOperation();
 
     // Preprocessing: renumber the air dma op ids
