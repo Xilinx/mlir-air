@@ -92,7 +92,7 @@ static uint64_t WaitAllOpID;
 static uint64_t ChannelOpID;
 
 namespace {
-  std::mutex mtx;
+std::mutex mtx;
 }
 
 class AIRDependency
