@@ -86,40 +86,18 @@ using ExecuteGraph = xilinx::air::TypedDirectedAdjacencyMap<::executeNode>;
 typedef std::map<ExecuteGraph::VertexId, ExecuteGraph::VertexId> vertex_map;
 typedef std::map<unsigned, ExecuteGraph::VertexId> operation_id_to_vertex_map;
 
-static uint64_t ExecuteOpID;
-static uint64_t HierarchyOpID;
-static uint64_t WaitAllOpID;
-static uint64_t ChannelOpID;
-
-namespace {
-std::mutex mtx;
-}
-
 class AIRDependency
     : public xilinx::air::impl::AIRDependencyBase<AIRDependency> {
 
 public:
   AIRDependency() = default;
-  AIRDependency(const AIRDependency &pass) {}
+  AIRDependency(const AIRDependency &pass) = default;
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<scf::SCFDialect, air::airDialect>();
   }
 
   void runOnOperation() override {
-
-    // This pass operates on builtin module ops, but it is not safe
-    // to assume that there is only one module being operated on at a time
-    // (example: IREE with multiple dispatches, creates nested modules).
-    //
-    // This class contains state and so it is not designed to operate on ops
-    // in parallel (read/write race conditions on class state).
-    //
-    // See also ... https://mlir.llvm.org/docs/PassManagement
-    //
-    // As a temporary workaround, use a mutex to ensure that only one
-    // operation is processed at a time.
-    std::lock_guard<std::mutex> lock(mtx);
 
     auto module = getOperation();
 
@@ -603,6 +581,11 @@ public:
   }
 
 private:
+  uint64_t ExecuteOpID;
+  uint64_t HierarchyOpID;
+  uint64_t WaitAllOpID;
+  uint64_t ChannelOpID;
+
   //===----------------------------------------------------------------------===//
   // Creating async events
   //===----------------------------------------------------------------------===//
