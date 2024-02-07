@@ -108,17 +108,16 @@ public:
 
   void runOnOperation() override {
 
-    // RAII for the mutex mtx.
+    // This pass operates on builtin module ops, but it is not safe
+    // to assume that there is only one module being operated on at a time
+    // (example: IREE with multiple dispatches, creates nested modules).
     //
-    // While this pass operates at the builtin module scope, it is not correct
-    // to assume that there is only onle builtin module being operated at a time
-    // (example: IREE IR structure with multiple dispatches).
+    // This class contains state and so it is not designed to operate on ops
+    // in parallel (read/write race conditions on class state).
     //
-    // This class contains alot of state and is therefore not designed to
-    // operate on many ops at once (see
-    // https://mlir.llvm.org/docs/PassManagement)
+    // See also ... https://mlir.llvm.org/docs/PassManagement
     //
-    // As a temporary workaround, we use a mutex to ensure that only one
+    // As a temporary workaround, use a mutex to ensure that only one
     // operation is processed at a time.
     std::lock_guard<std::mutex> lock(mtx);
 
