@@ -89,14 +89,16 @@ if config.xrt_lib_dir:
             [xbutil, "examine"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
         result = result.stdout.decode("utf-8").split("\n")
-        p = re.compile("\[.+:.+:.+\].+Phoenix.+Yes")
+        p = re.compile("\[.+:.+:.+\].+Phoenix")
         for l in result:
             m = p.match(l)
             if m:
                 print("Found Ryzen AI device:", m.group().split()[0])
                 config.available_features.add("ryzen_ai")
                 if config.enable_run_xrt_tests:
-                    run_on_ipu = "flock /tmp/ipu.lock /opt/xilinx/run_on_ipu.sh"
+                    run_on_ipu = (
+                        f"flock /tmp/ipu.lock {config.air_src_root}/utils/run_on_ipu.sh"
+                    )
                 else:
                     print("Skipping execution of Ryzen AI tests (ENABLE_RUN_XRT_TESTS=OFF)")
                 break
