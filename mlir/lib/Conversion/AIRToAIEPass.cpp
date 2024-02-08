@@ -417,7 +417,7 @@ void createAIEModulesAndOutlineCores(
 
   for (auto h : herds) {
     std::string segment_name;
-    segment_name = "segment_" + std::to_string(aie_modules.size());
+    segment_name = "herd_" + std::to_string(aie_modules.size());
     std::string aie_module_name = "aie." + segment_name;
     auto builder = OpBuilder::atBlockBegin(module.getBody());
     auto aie_dev = builder.create<AIE::DeviceOp>(
