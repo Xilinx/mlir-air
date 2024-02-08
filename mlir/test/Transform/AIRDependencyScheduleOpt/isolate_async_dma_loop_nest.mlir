@@ -30,10 +30,10 @@
 // CHECK: scf.reduce
 // CHECK: scf.yield
 
-// CHECK: scf.for
 // CHECK: air.herd @herd_0
-// CHECK: air.herd_terminator
+// CHECK: scf.for
 // CHECK: scf.yield
+// CHECK: air.herd_terminator
 
 // CHECK: %[[EVENT0:.*]]:4 = scf.for
 // CHECK: air.channel.get{{.*}}@channel_1

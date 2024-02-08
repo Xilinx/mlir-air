@@ -611,6 +611,110 @@ private:
   }
 };
 
+struct HoistAIRHerdInForPattern : public OpRewritePattern<air::HerdOp> {
+  using OpRewritePattern<air::HerdOp>::OpRewritePattern;
+
+  HoistAIRHerdInForPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(air::HerdOp herdOp,
+                                PatternRewriter &rewriter) const override {
+    auto loc = herdOp->getLoc();
+    auto ctx = herdOp->getContext();
+    auto hasNElements = [](Block *block, unsigned N) {
+      auto op_ptr = block->begin();
+      for (unsigned i = 0; i < N; i++)
+        op_ptr = std::next(op_ptr);
+      return op_ptr != block->end() && &*op_ptr == &block->back();
+    };
+    SmallVector<scf::ForOp> for_loop_nest;
+    Operation *parent = herdOp->getParentOp();
+    while (parent && !isa<air::SegmentOp>(parent)) {
+      if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+        if (hasNElements(forOp.getBody(), 2))
+          for_loop_nest.push_back(forOp);
+        else
+          return failure(); // Herd is not in perfectly nested loop.
+      }
+      parent = parent->getParentOp();
+    }
+
+    if (for_loop_nest.empty())
+      return failure();
+
+    llvm::reverse(for_loop_nest);
+
+    scf::ForOp outerMostLoop = for_loop_nest.front();
+
+    // Create new herd op as parent to the scf.for loop nest.
+    rewriter.setInsertionPoint(outerMostLoop);
+    auto herdOperands = herdOp.getOperands().drop_front(
+        herdOp.getAsyncDependencies().size() + herdOp.getNumDims());
+    auto forRegionIterOperands = outerMostLoop.getOperands().drop_front(
+        outerMostLoop.getNumControlOperands());
+    auto newHerdOp = rewriter.create<air::HerdOp>(
+        loc, forRegionIterOperands, herdOp.getSizeOperands(), herdOperands,
+        true, herdOp->getAttrs());
+    auto builder = OpBuilder::atBlockEnd(&newHerdOp.getBody().front());
+    auto newHerdTerm = builder.create<air::HerdTerminatorOp>(loc);
+    outerMostLoop->moveBefore(newHerdTerm);
+    builder.setInsertionPointToStart(&newHerdOp.getBody().front());
+
+    // Replace uses of tokens and consts in for loop nest.
+    for (auto val : forRegionIterOperands) {
+      auto newAsyncToken =
+          builder
+              .create<air::WaitAllOp>(loc, air::AsyncTokenType::get(ctx),
+                                      SmallVector<Value>{})
+              .getAsyncToken();
+      replaceAllUsesInRegionWith(val, newAsyncToken, newHerdOp.getBody());
+    }
+    for (auto loop : for_loop_nest) {
+      if (auto definingOp = loop.getUpperBound().getDefiningOp())
+        replaceAllUsesInRegionWith(loop.getUpperBound(),
+                                   builder.clone(*definingOp)->getResult(0),
+                                   newHerdOp.getBody());
+      if (auto definingOp = loop.getLowerBound().getDefiningOp())
+        replaceAllUsesInRegionWith(loop.getLowerBound(),
+                                   builder.clone(*definingOp)->getResult(0),
+                                   newHerdOp.getBody());
+      if (auto definingOp = loop.getStep().getDefiningOp())
+        replaceAllUsesInRegionWith(loop.getStep(),
+                                   builder.clone(*definingOp)->getResult(0),
+                                   newHerdOp.getBody());
+    }
+    for (auto res : outerMostLoop->getResults())
+      res.replaceAllUsesWith(newHerdOp.getAsyncToken());
+
+    // Splice herd block into inner-most for loop.
+    scf::ForOp innerMostLoop = for_loop_nest.back();
+    auto &bb = innerMostLoop.getBody()->getOperations();
+    auto &body = herdOp.getBody().front().getOperations();
+    bb.splice(bb.begin(), body, body.begin(), --body.end());
+
+    rewriter.setInsertionPoint(herdOp);
+    for (auto res : herdOp->getResults())
+      res.replaceAllUsesWith(
+          rewriter
+              .create<air::WaitAllOp>(loc, air::AsyncTokenType::get(ctx),
+                                      SmallVector<Value>{})
+              .getAsyncToken());
+    for (unsigned i = 0; i < herdOp.getNumKernelOperands(); i++)
+      herdOp.getKernelArgument(i).replaceAllUsesWith(
+          newHerdOp.getKernelArgument(i));
+    for (unsigned i = 0; i < herdOp.getNumDims(); i++) {
+      replaceAllUsesInRegionWith(herdOp.getIds()[i], newHerdOp.getIds()[i],
+                                 newHerdOp.getBody());
+      replaceAllUsesInRegionWith(herdOp.getSize()[i], newHerdOp.getSize()[i],
+                                 newHerdOp.getBody());
+    }
+
+    rewriter.eraseOp(herdOp);
+    return success();
+  }
+
+private:
+};
+
 struct ConstructPingPongDependencyPattern
     : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
@@ -3077,6 +3181,14 @@ public:
       for (auto op : pair.second)
         hoistTargetOpsToNewSCFFor(builder, pair.first,
                                   SmallVector<Operation *>{op});
+    }
+
+    // Post processing, hoisting air.herd ops out of perfectly nested scf.for
+    // loop.
+    for (auto f : funcOps) {
+      RewritePatternSet patterns_1(f.getContext());
+      patterns_1.insert<HoistAIRHerdInForPattern>(f.getContext(), false);
+      (void)applyPatternsAndFoldGreedily(f, std::move(patterns_1));
     }
   }
 
