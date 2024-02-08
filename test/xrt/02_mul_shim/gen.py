@@ -11,9 +11,6 @@ from air.dialects import arith, func, linalg, memref
 from air.dialects.linalg.opdsl.lang import *
 from air._mlir_libs._airMlir import _run_air_transform as run_air_transform
 
-import numpy as np
-import pyxrt as xrt
-
 def generate_add_module(shape, dtype):
     module = Module.create()
     with InsertionPoint(module.body):
