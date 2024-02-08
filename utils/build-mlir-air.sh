@@ -57,6 +57,7 @@ cmake .. \
     -DgccVer=10.2.0 \
     -DCMAKE_USE_TOOLCHAIN=FALSE \
     -DCMAKE_USE_TOOLCHAIN_AIRHOST=TRUE \
+    -DPython3_FIND_VIRTUALENV=ONLY \
     -DLLVM_DIR=${LLVM_DIR}/build/lib/cmake/llvm \
     -DMLIR_DIR=${LLVM_DIR}/build/lib/cmake/mlir \
     -DAIE_DIR=${MLIR_AIE_DIR}/build/lib/cmake/aie \
