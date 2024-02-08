@@ -234,13 +234,13 @@ public:
   }
 };
 
-AIE::DeviceOp getDeviceForSegmentLoad(SegmentLoadOp s) {
+AIE::DeviceOp getDeviceForSegmentLoad(Operation *s) {
   auto module = s->getParentOfType<ModuleOp>();
 
   // Use the airrt metadata to lookup the segment associated with each head
-  // load operation.
+  // or segment load operation.
   for (auto d : module.getOps<AIE::DeviceOp>()) {
-    if (s.getSymName() ==
+    if (s->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()) ==
         d->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
       return d;
   }
@@ -607,8 +607,12 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
 
   void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
     // Move func op to the end of device op's body
-    SmallVector<SegmentLoadOp> segs;
-    module.walk([&](SegmentLoadOp s) { segs.push_back(s); });
+    SmallVector<Operation *> segs;
+    module.walk([&](Operation *o) {
+      if (isa<SegmentLoadOp, HerdLoadOp>(o)) {
+        segs.push_back(o);
+      }
+    });
     for (auto s : segs) {
       auto f = s->getParentOfType<func::FuncOp>();
       auto d = getDeviceForSegmentLoad(s);
