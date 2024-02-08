@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s --air-to-aie | FileCheck %s
+// RUN: air-opt %s -air-place-herds='num-rows=2 num-cols=2 row-anchor=3 col-anchor=5' --air-to-aie='use-objectfifo=true device=xcve2802' --canonicalize | FileCheck %s
 
 // CHECK-LABEL:   aie.device(xcve2802) {
 // CHECK:    %[[VAL_0:.*]] = aie.tile(1, 1)
