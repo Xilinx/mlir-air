@@ -73,7 +73,7 @@ jobs:
             # the -w ("wrap after 1000000 cols") is so that there are no spaces in the XILINX_LIC env var
             echo -n "${{ secrets.XILINX_LIC }}" | base64 --decode > ~/.Xilinx/Xilinx.lic
 
-            add the ROCm repos
+            # add the ROCm repos
             mkdir --parents --mode=0755 /etc/apt/keyrings
             wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | \
               gpg --dearmor | tee /etc/apt/keyrings/rocm.gpg > /dev/null
