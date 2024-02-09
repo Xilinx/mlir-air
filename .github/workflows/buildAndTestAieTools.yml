@@ -108,6 +108,13 @@ jobs:
             pushd mlir-aie
             pip install -r python/requirements.txt
 
+            pushd runtime_lib/xaiengine/aie-rt/driver/src
+            make -f Makefile.Linux CFLAGS="-D__AIELINUX__ -D__AIEAMDAIR__"
+            popd
+            mkdir /install/aie-rt
+            cp -a runtime_lib/xaiengine/aie-rt/driver/src/*.so* /install/aie-rt/lib
+            cp -a runtime_lib/xaiengine/aie-rt/driver/include /install/aie-rt
+
             VERSION=$(utils/clone-llvm.sh --get-wheel-version)
             pip -q download mlir==$VERSION \
               -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
@@ -134,10 +141,12 @@ jobs:
               -DCMAKE_C_COMPILER_LAUNCHER=ccache \
               -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
               -DCMAKE_INSTALL_PREFIX=/install \
+              -DLibXAIE_ROOT=/install/aie-rt \
               -DAIE_ENABLE_GENERATE_CDO_DIRECT=ON
             
             ninja install
             ls /install
+            popd
 
             cd /mlir-air
             
@@ -161,7 +170,7 @@ jobs:
               -DCMAKE_MODULE_PATH=`pwd`/../mlir-aie/cmake/modulesXilinx \
               -DMLIR_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/mlir \
               -DAIE_DIR=/install/lib/cmake/aie \
-              -DLibXAIE_ROOT=/install/runtime_lib/x86_64/xaiengine \
+              -DLibXAIE_ROOT=/install/aie-rt \
               -Dhsa-runtime64_DIR=`pwd`/../rocm/lib/cmake/hsa-runtime64/ \
               -Dhsakmt_DIR=`pwd`/../rocm/lib/cmake/hsakmt/ \
               -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
