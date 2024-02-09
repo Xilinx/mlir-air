@@ -162,8 +162,8 @@ jobs:
               -DMLIR_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/mlir \
               -DAIE_DIR=/install/lib/cmake/aie \
               -DLibXAIE_ROOT=/install/runtime_lib/x86_64/xaiengine \
-              -Dhsa-runtime64_DIR=`pwd`/../rocm/lib/cmake/hsa-runtime64/
-              -Dhsakmt_DIR=`pwd`/../rocm/lib/cmake/hsakmt/
+              -Dhsa-runtime64_DIR=`pwd`/../rocm/lib/cmake/hsa-runtime64/ \
+              -Dhsakmt_DIR=`pwd`/../rocm/lib/cmake/hsakmt/ \
               -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
               -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
               -DLLVM_EXTERNAL_LIT=$(which lit) \
