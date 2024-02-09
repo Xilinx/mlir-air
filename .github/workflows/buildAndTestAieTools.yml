@@ -166,7 +166,7 @@ jobs:
               -Dhsakmt_DIR=`pwd`/../rocm/lib/cmake/hsakmt/
               -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
               -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
-              -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
+              -DLLVM_EXTERNAL_LIT=$(which lit) \
               -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
               -DCMAKE_INSTALL_PREFIX=/install
             ninja
