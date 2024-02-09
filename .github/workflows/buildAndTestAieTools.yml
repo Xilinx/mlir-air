@@ -111,7 +111,7 @@ jobs:
             pushd runtime_lib/xaiengine/aie-rt/driver/src
             make -f Makefile.Linux CFLAGS="-D__AIELINUX__ -D__AIEAMDAIR__"
             popd
-            mkdir /install/aie-rt
+            mkdir -p /install/aie-rt/lib
             cp -a runtime_lib/xaiengine/aie-rt/driver/src/*.so* /install/aie-rt/lib
             cp -a runtime_lib/xaiengine/aie-rt/driver/include /install/aie-rt
 
