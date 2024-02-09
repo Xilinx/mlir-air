@@ -86,7 +86,7 @@ jobs:
             apt update
             apt install -y rocm-hip-runtime-dev5.6.0 python3.10-venv \
                            libboost-all-dev pkg-config libelf-dev elfutils \
-                           libdwarf-dev
+                           libdwarf-dev libsysfs-dev
             apt-get clean
 
             cd /
