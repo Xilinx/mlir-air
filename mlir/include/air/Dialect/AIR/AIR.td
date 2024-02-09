@@ -585,6 +585,7 @@ def air_ExecuteOp : air_Op<"execute", [SingleBlockImplicitTerminator<"ExecuteTer
   }];
 
   let extraClassDeclaration = [{
+    Operation * getChildOp();
     int32_t getId() {
       if (auto id_attr = (*this)->getAttrOfType<IntegerAttr>("id")) {
         return id_attr.getInt();
