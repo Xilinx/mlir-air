@@ -86,23 +86,19 @@ using ExecuteGraph = xilinx::air::TypedDirectedAdjacencyMap<::executeNode>;
 typedef std::map<ExecuteGraph::VertexId, ExecuteGraph::VertexId> vertex_map;
 typedef std::map<unsigned, ExecuteGraph::VertexId> operation_id_to_vertex_map;
 
-static uint64_t ExecuteOpID;
-static uint64_t HierarchyOpID;
-static uint64_t WaitAllOpID;
-static uint64_t ChannelOpID;
-
 class AIRDependency
     : public xilinx::air::impl::AIRDependencyBase<AIRDependency> {
 
 public:
   AIRDependency() = default;
-  AIRDependency(const AIRDependency &pass) {}
+  AIRDependency(const AIRDependency &pass) = default;
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const override {
     registry.insert<scf::SCFDialect, air::airDialect>();
   }
 
   void runOnOperation() override {
+
     auto module = getOperation();
 
     // Preprocessing: renumber the air dma op ids
@@ -585,6 +581,11 @@ public:
   }
 
 private:
+  uint64_t ExecuteOpID;
+  uint64_t HierarchyOpID;
+  uint64_t WaitAllOpID;
+  uint64_t ChannelOpID;
+
   //===----------------------------------------------------------------------===//
   // Creating async events
   //===----------------------------------------------------------------------===//

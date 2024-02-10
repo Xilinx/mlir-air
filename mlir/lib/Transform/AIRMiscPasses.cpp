@@ -478,9 +478,10 @@ private:
       if (auto broadcast_set =
               memcpyOp->getAttrOfType<mlir::IntegerSetAttr>("broadcast_set")) {
         // Get all ops on the dependency connection between dma and herd launch
-        SmallVector<Value, 1> loop_dep_history;
         std::vector<Operation *> op_history;
-        traceDependentInductionVar(memcpyOp, loop_dep_history, op_history);
+        auto loop_dep_history = traceDependentHerdId(memcpyOp);
+        // "loop_dep_history" tuple fields: value, ancestors and producers to
+        // those ancestors.
 
         // Walk constraints in broadcast pattern, and get shape of the broadcast
         // pattern
@@ -490,15 +491,20 @@ private:
 
         // Check which dimension op operates on; initialize current_shape_expr
         SmallVector<AffineExpr, 2> current_shape_expr = {nullptr, nullptr};
-        for (auto v : loop_dep_history) {
-          if (auto hl_op = air::getHerdArgOwner(v)) {
-            for (unsigned j = 0; j < current_shape_expr.size(); j++) {
-              if (v == hl_op.getIds()[j]) {
-                for (unsigned i = 0; i < constraints.size(); i++) {
-                  auto c = constraints[i];
-                  if (c.isFunctionOfSymbol(j) && eqFlags[i]) {
-                    auto eval = evaluateSymbolEqualityInSet(c, ctx);
-                    current_shape_expr[j] = getAffineConstantExpr(eval, ctx);
+        for (auto &elem : loop_dep_history) {
+          for (auto v : std::get<1>(elem)) {
+            if (auto hl_op = air::getHerdArgOwner(v)) {
+              for (unsigned j = 0; j < current_shape_expr.size(); j++) {
+                if (v == hl_op.getIds()[j]) {
+                  for (unsigned i = 0; i < constraints.size(); i++) {
+                    auto c = constraints[i];
+                    if (c.isFunctionOfSymbol(j) && eqFlags[i]) {
+                      auto eval = evaluateSymbolEqualityInSet(c, ctx);
+                      current_shape_expr[j] = getAffineConstantExpr(eval, ctx);
+                      op_history.insert(op_history.end(),
+                                        std::get<2>(elem).begin(),
+                                        std::get<2>(elem).end());
+                    }
                   }
                 }
               }
@@ -705,6 +711,103 @@ private:
         op.getDstSizes(), op.getDstStrides(), op.getSrcMemref(),
         srcMemrefDimsOrOffsets, op.getSrcSizes(), op.getSrcStrides());
     return newMemcpyOp.getOperation();
+  }
+
+  // Recursively check for dependency to air herd op index vars.
+  std::vector<std::tuple<Value, SmallVector<Value>, SmallVector<Operation *>>>
+  traceDependentHerdId(air::DmaMemcpyNdOp dmaNd_op) {
+    // Tuple fields: value, ancestors and producers to those ancestors.
+    std::vector<std::tuple<Value, SmallVector<Value>, SmallVector<Operation *>>>
+        loop_dep_history;
+    for (unsigned i = 0; i < dmaNd_op.getSrcOffsets().size(); i++) {
+      loop_dep_history.push_back(std::make_tuple(dmaNd_op.getSrcOffsets()[i],
+                                                 SmallVector<Value>{},
+                                                 SmallVector<Operation *>{}));
+      loop_dep_history.push_back(std::make_tuple(dmaNd_op.getSrcSizes()[i],
+                                                 SmallVector<Value>{},
+                                                 SmallVector<Operation *>{}));
+      loop_dep_history.push_back(std::make_tuple(dmaNd_op.getSrcStrides()[i],
+                                                 SmallVector<Value>{},
+                                                 SmallVector<Operation *>{}));
+    }
+    for (auto elem : loop_dep_history) {
+      // If parent loop op is an air.launch_herd
+      if (auto hl_op = air::getHerdArgOwner(std::get<0>(elem))) {
+        for (auto id : hl_op.getIds()) {
+          if (std::get<0>(elem) == id) {
+            std::get<1>(elem).push_back(id);
+          }
+        }
+      }
+    }
+
+    // Recursively trace dependency to loop induction vars
+    for (auto &elem : loop_dep_history) {
+      if (std::get<0>(elem) &&
+          std::get<0>(elem)
+              .getType()
+              .isa<IndexType>()) { // Only tracing scalar operands
+        if (std::get<0>(elem).getDefiningOp() &&
+            mlir::dyn_cast<air::AsyncOpInterface>(
+                std::get<0>(elem).getDefiningOp())) {
+          auto ancestor_async_op = dyn_cast<air::AsyncOpInterface>(
+              std::get<0>(elem).getDefiningOp());
+          std::get<2>(elem).push_back(ancestor_async_op.getOperation());
+          traceDependentHerdId(ancestor_async_op, std::get<1>(elem),
+                               std::get<2>(elem));
+        }
+      }
+    }
+
+    return loop_dep_history;
+  }
+
+  // Recursively check for dependency to any loop induction vars
+  void traceDependentHerdId(air::AsyncOpInterface async_op,
+                            SmallVector<Value> &loop_dep_history,
+                            SmallVector<Operation *> &op_history) {
+    // Get child op if async_op is air.execute
+    Operation *op = nullptr;
+    if (auto air_region_op =
+            dyn_cast<air::ExecuteOp>(async_op.getOperation())) {
+      if (air_region_op.getBody().front().getOperations().size() != 2) {
+        air_region_op->emitOpError("air::ExecuteOp should have only one child "
+                                   "operation beside the terminator");
+        return;
+      }
+      for (auto &child_op : air_region_op.getBody().front().getOperations()) {
+        if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
+          op = &child_op;
+      }
+    } else {
+      op = async_op.getOperation();
+    }
+
+    // Check for immediate dependency to loop induction vars
+    for (auto operand : op->getOperands()) {
+      // If parent loop op is an air.launch_herd
+      if (auto hl_op = air::getHerdArgOwner(operand)) {
+        for (auto id : hl_op.getIds()) {
+          if (operand == id) {
+            loop_dep_history.push_back(id);
+          }
+        }
+      }
+    }
+
+    // Recursively trace dependency to loop induction vars
+    for (auto operand : op->getOperands()) {
+      if (operand &&
+          operand.getType().isa<IndexType>()) { // Only tracing scalar operands
+        if (operand.getDefiningOp() &&
+            mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())) {
+          auto ancestor_async_op =
+              dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp());
+          op_history.push_back(ancestor_async_op.getOperation());
+          traceDependentHerdId(ancestor_async_op, loop_dep_history, op_history);
+        }
+      }
+    }
   }
 };
 

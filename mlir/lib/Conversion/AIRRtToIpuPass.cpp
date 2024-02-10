@@ -234,13 +234,13 @@ public:
   }
 };
 
-AIE::DeviceOp getDeviceForSegmentLoad(SegmentLoadOp s) {
+AIE::DeviceOp getDeviceForSegmentLoad(Operation *s) {
   auto module = s->getParentOfType<ModuleOp>();
 
   // Use the airrt metadata to lookup the segment associated with each head
-  // load operation.
+  // or segment load operation.
   for (auto d : module.getOps<AIE::DeviceOp>()) {
-    if (s.getSymName() ==
+    if (s->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()) ==
         d->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
       return d;
   }
@@ -379,18 +379,21 @@ specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
   auto memref = memcpy_ops[0]->getOperand(3);
   auto memref_shape = xilinx::air::getTensorShape(memref.getType());
   auto oper_begin = memcpy_ops[0].getOperands().begin();
-  SmallVector<Value> offsets(oper_begin + (8 - memref_shape.size()),
-                             oper_begin + 8);
-  SmallVector<Value> wraps(oper_begin + (12 - memref_shape.size()),
-                           oper_begin + 12);
-  SmallVector<Value> strides(oper_begin + (16 - memref_shape.size()),
-                             oper_begin + 15);
+  SmallVector<Value> offsets(oper_begin + 4, oper_begin + 8);
+  SmallVector<Value> wraps(oper_begin + 8, oper_begin + 12);
+  SmallVector<Value> strides(oper_begin + 12, oper_begin + 15);
   // Stride field implicit last element one
   strides.push_back(i64_one);
+
+  // Canonicalize wraps and strides
+  air::canonicalizeWrapAndStrideList(builder, offsets, wraps, strides);
 
   xilinx::air::foldForLoopNestAsExtendedSizesAndStrides(
       builder, for_op.getOperation(), memcpy_ops[0].getOperation(), offsets,
       wraps, strides, memcpy_ops[0]->getOperand(3));
+
+  if (offsets.size() > 4 || wraps.size() > 4 || strides.size() > 4)
+    return failure();
 
   // Stride field implicit last element one
   strides.pop_back();
@@ -403,9 +406,6 @@ specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
   while (strides.size() < 3) {
     strides.insert(strides.begin(), i64_zero);
   }
-  assert(offsets.size() == 4);
-  assert(wraps.size() == 4);
-  assert(strides.size() == 3);
 
   // Stride = 0 means repeat that dimension. If highest dimension (dim 0) is not
   // used, then move the repeat dimension to dim 0, which is the only dim with
@@ -607,8 +607,12 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
 
   void moveFuncOpToEndOfDeviceOp(ModuleOp module) {
     // Move func op to the end of device op's body
-    SmallVector<SegmentLoadOp> segs;
-    module.walk([&](SegmentLoadOp s) { segs.push_back(s); });
+    SmallVector<Operation *> segs;
+    module.walk([&](Operation *o) {
+      if (isa<SegmentLoadOp, HerdLoadOp>(o)) {
+        segs.push_back(o);
+      }
+    });
     for (auto s : segs) {
       auto f = s->getParentOfType<func::FuncOp>();
       auto d = getDeviceForSegmentLoad(s);

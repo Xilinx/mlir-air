@@ -31,7 +31,7 @@ func.func @foo(%arg0: i32) {
     memref.store %2, %dst0[%zero] : memref<1xi32, 2>
     air.herd_terminator
   }
-  // CHECK: sym_name = "segment_0"
+  // CHECK: sym_name = "herd_0"
   return
 }
 
