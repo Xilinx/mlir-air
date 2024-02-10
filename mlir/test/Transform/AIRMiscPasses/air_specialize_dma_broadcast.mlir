@@ -14,15 +14,23 @@
 // CHECK: [[$SET2:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 == 0)>
 // CHECK: [[$SET3:#set[0-9]+]] = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 - 1 == 0)>
 // CHECK-LABEL: @func0
+// CHECK: air.herd @herd_0
+// CHECK-DAG: %[[CST1:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[CST64:.*]] = arith.constant 64 : index
+// CHECK-DAG: %[[CST32:.*]] = arith.constant 32 : index
 // CHECK: %[[EVENT0:.*]] = affine.if [[$SET0]]
-// CHECK: %[[EVENT1:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET0]]{{.*}}id = [[#ID0:]]
+// CHECK: %[[CST0:.*]] = arith.constant 0 : index
+// CHECK: %[[EVENT1:.*]] = air.dma_memcpy_nd {{.*}} ({{.*}}[] [] [], {{.*}}[%[[CST0]], {{.*}}] [%[[CST32]], %[[CST32]]] [%[[CST64]], %[[CST1]]]) {broadcast_set = [[$SET0]]{{.*}}id = [[#ID0:]]
 // CHECK: affine.yield %[[EVENT1]]
-// CHECK: %[[EVENT2:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET1]]{{.*}}id = [[#ID0+1]]
+// CHECK: %[[CST32_1:.*]] = arith.constant 32 : index
+// CHECK: %[[EVENT2:.*]] = air.dma_memcpy_nd {{.*}} ({{.*}}[] [] [], {{.*}}[%[[CST32_1]], {{.*}}] [%[[CST32]], %[[CST32]]] [%[[CST64]], %[[CST1]]]) {broadcast_set = [[$SET1]]{{.*}}id = [[#ID0+1]]
 // CHECK: affine.yield %[[EVENT2]]
 // CHECK: %[[EVENT3:.*]] = affine.if [[$SET2]]
-// CHECK: %[[EVENT4:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET2]]{{.*}}id = [[#ID1:]]
+// CHECK: %[[CST0:.*]] = arith.constant 0 : index
+// CHECK: %[[EVENT4:.*]] = air.dma_memcpy_nd {{.*}} ({{.*}}[] [] [], {{.*}}[{{.*}}, %[[CST0]]] [%[[CST32]], %[[CST32]]] [%[[CST64]], %[[CST1]]]) {broadcast_set = [[$SET2]]{{.*}}id = [[#ID1:]]
 // CHECK: affine.yield %[[EVENT4]]
-// CHECK: %[[EVENT5:.*]] = air.dma_memcpy_nd {{.*}}broadcast_set = [[$SET3]]{{.*}}id = [[#ID1+1]]
+// CHECK: %[[CST32_1:.*]] = arith.constant 32 : index
+// CHECK: %[[EVENT5:.*]] = air.dma_memcpy_nd {{.*}} ({{.*}}[] [] [], {{.*}}[{{.*}}, %[[CST32_1]]] [%[[CST32]], %[[CST32]]] [%[[CST64]], %[[CST1]]]) {broadcast_set = [[$SET3]]{{.*}}id = [[#ID1+1]]
 // CHECK: affine.yield %[[EVENT5]]
 
 #map = affine_map<()[s0] -> (s0 * 32)>
@@ -52,6 +60,7 @@ func.func @func0() {
         %c1 = arith.constant 1 : index
         %c64_4 = arith.constant 64 : index
         %c32 = arith.constant 32 : index
+        %c2_5 = arith.constant 2 : index
         %c0_5 = arith.constant 0 : index
         %async_token_6, %results_7 = air.execute -> (index) {
           %6 = affine.apply #map()[%arg4]
@@ -61,8 +70,12 @@ func.func @func0() {
           %6 = affine.apply #map()[%arg5]
           air.execute_terminator %6 : index
         } {id = 7 : i32}
-        %4 = air.wait_all async [%async_token_6, %async_token_8] 
-        %5 = scf.for %arg10 = %c0_5 to %c64_4 step %c32 iter_args(%arg11 = %4) -> (!air.async.token) {
+        %4 = air.wait_all async [%async_token_6, %async_token_8]
+        %5 = scf.for %arg10 = %c0_5 to %c2_5 step %c1 iter_args(%arg11 = %4) -> (!air.async.token) {
+          %async_token_36, %results_37 = air.execute [%arg11] -> (index) {
+            %12 = affine.apply #map()[%arg10]
+            air.execute_terminator %12 : index
+          } {id = 16 : i32}
           %async_token_10, %results_11 = air.execute [%arg11] -> (memref<32x32xbf16, 2>) {
             %alloc = memref.alloc() : memref<32x32xbf16, 2>
             air.execute_terminator %alloc : memref<32x32xbf16, 2>
@@ -71,8 +84,8 @@ func.func @func0() {
             %alloc = memref.alloc() : memref<32x32xbf16, 2>
             air.execute_terminator %alloc : memref<32x32xbf16, 2>
           } {id = 9 : i32}
-          %6 = air.dma_memcpy_nd async [%async_token_10, %arg11] (%results_11[] [] [], %arg8[%results_7, %arg10] [%c32, %c32] [%c64_4, %c1]) {broadcast_pattern = #set, id = 4 : i32} : (memref<32x32xbf16, 2>, memref<64x64xbf16, 1>)
-          %7 = air.dma_memcpy_nd async [%async_token_12, %arg11] (%results_13[] [] [], %arg9[%arg10, %results_9] [%c32, %c32] [%c64_4, %c1]) {broadcast_pattern = #set1, id = 5 : i32} : (memref<32x32xbf16, 2>, memref<64x64xbf16, 1>)
+          %6 = air.dma_memcpy_nd async [%async_token_10, %arg11] (%results_11[] [] [], %arg8[%results_7, %results_37] [%c32, %c32] [%c64_4, %c1]) {broadcast_pattern = #set, id = 4 : i32} : (memref<32x32xbf16, 2>, memref<64x64xbf16, 1>)
+          %7 = air.dma_memcpy_nd async [%async_token_12, %arg11] (%results_13[] [] [], %arg9[%results_37, %results_9] [%c32, %c32] [%c64_4, %c1]) {broadcast_pattern = #set1, id = 5 : i32} : (memref<32x32xbf16, 2>, memref<64x64xbf16, 1>)
           %8 = air.wait_all async [%6, %7] 
           scf.yield %8 : !air.async.token
         }

@@ -420,3 +420,28 @@ module {
     return
   }
 }
+
+// -----
+
+// check that lowering works for the herd_load case
+
+// CHECK: aie.device
+// CHECK: func.func @func8
+// CHECK: aiex.ipu.dma_memcpy_nd
+// CHECK: aiex.ipu.sync
+module {
+  aie.device(ipu) {
+    aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
+    memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
+  } {sym_name = "herd"}
+  func.func @func8(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c2_i32 = arith.constant 2 : i32
+    %c7_i32 = arith.constant 7 : i32
+    %c64_i64 = arith.constant 64 : i64
+    %p = airrt.herd_load "herd" : i64
+    airrt.dma_memcpy_nd(%c7_i32, %c0_i64, %c0_i64, %arg1[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c64_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<64xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+    return
+  }
+}

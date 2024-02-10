@@ -45,11 +45,11 @@ Building mlir-air requires several other open source packages:
 In order to build and run on PCIe cards, you first have to build and install the aienginev2 library. We chose to install the library in /opt/xaiengine but it is not required for the tools to be installed there. Just ensure that when building mlir-aie and mlir-air, that you point to the directory in which the aienginev2 library was installed.
 
 ```
-git clone https://github.com/jnider/aie-rt
+git clone https://github.com/stephenneuendorffer/aie-rt
 cd aie-rt
-git checkout joel-aie
+git checkout phoenix_v2023.2
 cd driver/src
-make -f Makefile.Linux CFLAGS="-D__AIELINUX__ -D__AIESYSFS__ -D__AIEAMDAIR__"
+make -f Makefile.Linux CFLAGS="-D__AIEAMDAIR__"
 sudo cp -r ../include /opt/aiengine/
 sudo cp libxaiengine.so* /opt/xaiengine/lib/
 export LD_LIBRARY_PATH=/opt/xaiengine/lib:${LD_LIBRARY_PATH}
