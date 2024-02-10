@@ -137,9 +137,14 @@ void getDefiningOpsToOperands(Operation *op, SmallVector<Operation *> &def_ops);
 
 // Fold perfectly nested parent loops into wraps and strides list
 void foldForLoopNestAsExtendedSizesAndStrides(
-    OpBuilder rewriter, Operation *for_op, Operation *channel_op,
+    OpBuilder builder, Operation *for_op, Operation *channel_op,
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
     SmallVector<Value> &strides, Value memref);
+
+LogicalResult canonicalizeWrapAndStrideList(OpBuilder builder,
+                                            SmallVector<Value> &offsets,
+                                            SmallVector<Value> &sizes,
+                                            SmallVector<Value> &strides);
 
 } // namespace air
 } // namespace xilinx

@@ -360,10 +360,73 @@ module {
 
 // -----
 
+// Unroll repeat pattern + populate repeat dimension
+
+// CHECK-LABEL: aie.device(ipu)
+// CHECK:  func.func @func7(%[[ARG0:.*]]: memref<2048x512xi32>, %[[ARG1:.*]]: memref<512x2048xi32>, %[[ARG2:.*]]: memref<2048x2048xi32>)
+// CHECK:  aiex.ipu.dma_memcpy_nd(0, 0, %[[ARG0]][0, 0, 0, 0][4, 8, 64, 64][0, 64, 512]) {id = 0 : i64, metadata = @airMemcpyId20} : memref<2048x512xi32>
+// CHECK:  aiex.ipu.dma_memcpy_nd(0, 0, %[[ARG0]][0, 0, 64, 0][4, 8, 64, 64][0, 64, 512]) {id = 1 : i64, metadata = @airMemcpyId20} : memref<2048x512xi32>
+// CHECK:  aiex.ipu.dma_memcpy_nd(0, 0, %[[ARG0]][0, 0, 128, 0][4, 8, 64, 64][0, 64, 512]) {id = 2 : i64, metadata = @airMemcpyId20} : memref<2048x512xi32>
+// CHECK:  aiex.ipu.dma_memcpy_nd(0, 0, %[[ARG0]][0, 0, 192, 0][4, 8, 64, 64][0, 64, 512]) {id = 3 : i64, metadata = @airMemcpyId20} : memref<2048x512xi32>
+// CHECK:  aiex.ipu.dma_memcpy_nd(0, 0, %[[ARG1]][0, 0, 0, 0][4, 4, 512, 64][0, 64, 2048]) {id = 4 : i64, metadata = @airMemcpyId21} : memref<512x2048xi32>
+// CHECK:  aiex.ipu.dma_memcpy_nd(0, 0, %[[ARG2]][0, 0, 0, 0][4, 4, 64, 64][131072, 64, 2048]) {id = 5 : i64, metadata = @airMemcpyId26} : memref<2048x2048xi32>
+
+#map = affine_map<()[s0] -> (s0 * 64)>
+module {
+  aie.device(ipu) {
+    %tile_0_0 = aie.tile(0, 0)
+    aie.shim_dma_allocation @airMemcpyId26(S2MM, 0, 0)
+    memref.global "public" @airMemcpyId26 : memref<64x64xi32, 1>
+    aie.shim_dma_allocation @airMemcpyId20(MM2S, 0, 0)
+    memref.global "public" @airMemcpyId20 : memref<64x64xi32, 1>
+    aie.shim_dma_allocation @airMemcpyId21(MM2S, 1, 0)
+    memref.global "public" @airMemcpyId21 : memref<64x64xi32, 1>
+  } {sym_name = "segment_0"}
+  airrt.module_metadata{
+  }
+  func.func @func7(%arg0: memref<2048x512xi32>, %arg1: memref<512x2048xi32>) {
+    %c2048_i64 = arith.constant 2048 : i64
+    %c8_i64 = arith.constant 8 : i64
+    %c512_i64 = arith.constant 512 : i64
+    %c64_i64 = arith.constant 64 : i64
+    %c26_i32 = arith.constant 26 : i32
+    %c15_i32 = arith.constant 15 : i32
+    %c14_i32 = arith.constant 14 : i32
+    %c1_i64 = arith.constant 1 : i64
+    %c0_i64 = arith.constant 0 : i64
+    %alloc = memref.alloc() : memref<2048x2048xi32>
+    affine.for %arg3 = 0 to 4 {
+      affine.for %arg4 = 0 to 4 {
+        %0 = affine.apply #map()[%arg3]
+        %1 = arith.index_cast %arg3 : index to i64
+        %2 = arith.index_cast %arg4 : index to i64
+        %3 = arith.index_cast %0 : index to i64
+        %4 = airrt.dma_memcpy_nd(%c14_i32, %1, %2, %arg0[%c0_i64, %c0_i64, %3, %c0_i64], [%c1_i64, %c8_i64, %c64_i64, %c64_i64], [%c0_i64, %c64_i64, %c512_i64]) {metadata = @airMemcpyId20} : (i32, i64, i64, memref<2048x512xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+        %5 = affine.apply #map()[%arg4]
+        %6 = arith.index_cast %arg3 : index to i64
+        %7 = arith.index_cast %arg4 : index to i64
+        %8 = arith.index_cast %5 : index to i64
+        %9 = airrt.dma_memcpy_nd(%c15_i32, %6, %7, %arg1[%c0_i64, %c0_i64, %c0_i64, %8], [%c1_i64, %c1_i64, %c512_i64, %c64_i64], [%c0_i64, %c0_i64, %c2048_i64]) {metadata = @airMemcpyId21} : (i32, i64, i64, memref<512x2048xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+        %10 = affine.apply #map()[%arg3]
+        %11 = affine.apply #map()[%arg4]
+        %12 = arith.index_cast %arg3 : index to i64
+        %13 = arith.index_cast %arg4 : index to i64
+        %14 = arith.index_cast %10 : index to i64
+        %15 = arith.index_cast %11 : index to i64
+        %16 = airrt.dma_memcpy_nd(%c26_i32, %12, %13, %alloc[%c0_i64, %c0_i64, %14, %15], [%c1_i64, %c1_i64, %c64_i64, %c64_i64], [%c0_i64, %c0_i64, %c2048_i64]) {metadata = @airMemcpyId26} : (i32, i64, i64, memref<2048x2048xi32>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+        %p = airrt.segment_load "segment_0" : i64
+      }
+    }
+    return
+  }
+}
+
+// -----
+
 // check that lowering works for the herd_load case
 
 // CHECK: aie.device
-// CHECK: func.func @func0
+// CHECK: func.func @func8
 // CHECK: aiex.ipu.dma_memcpy_nd
 // CHECK: aiex.ipu.sync
 module {
@@ -371,7 +434,7 @@ module {
     aie.shim_dma_allocation @airMemcpyId7(S2MM, 0, 0)
     memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
   } {sym_name = "herd"}
-  func.func @func0(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
+  func.func @func8(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
     %c0_i64 = arith.constant 0 : i64
     %c1_i64 = arith.constant 1 : i64
     %c2_i32 = arith.constant 2 : i32
