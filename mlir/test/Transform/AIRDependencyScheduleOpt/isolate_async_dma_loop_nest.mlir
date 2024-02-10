@@ -180,15 +180,20 @@ module {
 
 // CHECK: air.launch
 // CHECK: air.segment @segment_0
-// CHECK: scf.for
+// CHECK-DAG: %[[CST0:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[CST64:.*]] = arith.constant 64 : index
+// CHECK: scf.for {{.*}} = %[[CST0]] to %[[CST64]] step %[[CST64]] iter_args
 // CHECK: scf.parallel
 // CHECK: air.channel.get{{.*}}@channel_0
 // CHECK: scf.reduce
 // CHECK: scf.yield
 
 // CHECK: air.herd @herd_0
+// CHECK-DAG: %[[CST0:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[CST64:.*]] = arith.constant 64 : index
+// CHECK-DAG: %[[CST512:.*]] = arith.constant 512 : index
 // CHECK: linalg.fill
-// CHECK: scf.for
+// CHECK: scf.for {{.*}} = %[[CST0]] to %[[CST512]] step %[[CST64]] iter_args
 // CHECK: scf.yield
 // CHECK: air.channel.put{{.*}}@channel_0
 // CHECK: air.herd_terminator

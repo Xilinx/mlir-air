@@ -372,14 +372,50 @@ struct HoistAIRChannelInAccumPattern : public OpRewritePattern<scf::ForOp> {
     for (auto op_2 : dataConsumers) {
       bool foundPairForThisOp2 = false;
       for (auto op_1 : dataProducers) {
-        bool areInvariantWRTForLoop = true;
         // Check if the pair of dmas form symmetry in their src and dst
         bool areSymmetric = areSymmetricDataMovements(op_1, op_2);
         // Check if the pair of dmas are invariant with respect to for loop
         // iterations
+        bool areInvariantWRTForLoop = true;
         areInvariantWRTForLoop &= isInvariantWRTForLoop(op_1, for_op);
         areInvariantWRTForLoop &= isInvariantWRTForLoop(op_2, for_op);
-        if (areSymmetric & areInvariantWRTForLoop) {
+        // Check if other air.channel ops sharing the same symbolic channel with
+        // op_1 and op_2 can also be hoisted out of a for loop.
+        bool allOtherChannelOpsCanHoistTogether = true;
+        SmallVector<Operation *> other_chan_ops;
+        SmallVector<scf::ForOp> other_for_ops;
+        if (auto chan_op_1 = dyn_cast<air::ChannelGetOp>(op_1))
+          for (auto o : getTheOtherChannelOpThroughSymbol(chan_op_1))
+            other_chan_ops.push_back(o.getOperation());
+        if (auto chan_op_2 = dyn_cast<air::ChannelPutOp>(op_2))
+          for (auto o : getTheOtherChannelOpThroughSymbol(chan_op_2))
+            other_chan_ops.push_back(o.getOperation());
+        for (auto other_chan_op : other_chan_ops) {
+          auto parent_for_op = other_chan_op->getParentOfType<scf::ForOp>();
+          if (!parent_for_op)
+            continue;
+          if (getStaticScfForTripCountAsInt(parent_for_op) &&
+              getStaticScfForTripCountAsInt(for_op)) {
+            bool equal_trip_count =
+                *getStaticScfForTripCountAsInt(parent_for_op) ==
+                *getStaticScfForTripCountAsInt(for_op);
+            int data_movement_op_count = 0;
+            int linalg_op_count = 0;
+            parent_for_op->walk([&](Operation *child_op) {
+              if (isa<air::MemcpyInterface>(child_op))
+                data_movement_op_count++;
+              if (isa<linalg::LinalgOp>(child_op))
+                linalg_op_count++;
+            });
+            bool hasOneAsyncEventInForOp =
+                (data_movement_op_count + linalg_op_count) == 1;
+            allOtherChannelOpsCanHoistTogether &= equal_trip_count;
+            allOtherChannelOpsCanHoistTogether &= hasOneAsyncEventInForOp;
+            other_for_ops.push_back(parent_for_op);
+          }
+        }
+        if (areSymmetric & areInvariantWRTForLoop &
+            allOtherChannelOpsCanHoistTogether) {
           foundPairToHoist = true;
           foundPairForThisOp2 = true;
           // Found a pair of dmas which cancel out each other
@@ -433,6 +469,18 @@ struct HoistAIRChannelInAccumPattern : public OpRewritePattern<scf::ForOp> {
               rewriter.setInsertionPoint(op_1);
               rewriter.clone(*op_1_operand.getDefiningOp());
             }
+          }
+          // Hoist all other channel ops sharing the same channels out of their
+          // parent for loops.
+          for (auto for_op : other_for_ops) {
+            if (*getConstantIntValue(for_op.getLowerBound()) == 0)
+              for_op.getUpperBoundMutable().assign(for_op.getStep());
+            else
+              for_op.getUpperBoundMutable().assign(
+                  rewriter.create<arith::ConstantIndexOp>(
+                      for_op->getLoc(),
+                      *getConstantIntValue(for_op.getLowerBound()) +
+                          *getConstantIntValue(for_op.getStep())));
           }
         }
       }
