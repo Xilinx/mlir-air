@@ -1162,4 +1162,9 @@ def AIRUnrollOuterPerfectlyNestedLoopsPass : Pass<"air-unroll-outer-affine-loops
   ];
 }
 
+def AIRRtLoopOptPass : Pass<"airrt-loop-opt", "ModuleOp"> {
+  let summary = "Optimize and canonicalize loop nests around airrt ops.";
+  let constructor = "xilinx::airrt::createAIRRtLoopOptPass()";
+}
+
 #endif // AIR_CONVERSION_PASSES

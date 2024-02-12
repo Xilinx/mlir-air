@@ -21,6 +21,7 @@ add_mlir_library(
   AIRDependencyScheduleOpt.cpp
   AIRDependencyCanonicalize.cpp
   AIRDependencyParseGraph.cpp
+  AIRRtLoopOptPass.cpp
   Passes.cpp
   ReturnEliminationPass.cpp
 

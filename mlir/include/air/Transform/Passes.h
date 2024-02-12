@@ -23,6 +23,7 @@
 #include "air/Transform/AIRLowerLinalgTensors.h"
 #include "air/Transform/AIRMiscPasses.h"
 #include "air/Transform/AIRRegularizeLoopPass.h"
+#include "air/Transform/AIRRtLoopOptPass.h"
 #include "air/Transform/AIRTilingUtils.h"
 #include "air/Transform/AIRTransformInterpreter.h"
 #include "air/Transform/AffineLoopOptPass.h"
