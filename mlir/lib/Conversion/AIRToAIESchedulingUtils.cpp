@@ -107,17 +107,10 @@ AIE::LockOp air::allocateLockOp(AIE::DeviceOp aie_device, AIE::TileOp tile,
   return b.create<AIE::LockOp>(tile.getLoc(), tile, new_id, init);
 }
 
-namespace {
-static std::mutex globalCounterMutex;
-}
-
 std::stringstream air::generateBufferNameInStringStream(std::string prefix,
                                                         uint64_t &BufferId,
                                                         mlir::StringAttr attr,
                                                         int x, int y) {
-
-  // RAII lock globalCounterMutex:
-  std::lock_guard<std::mutex> lock(globalCounterMutex);
 
   // if a symbol name was passed in, use it to make
   // the buffer symbol name as "sym_name_x_y",
@@ -134,12 +127,11 @@ std::stringstream air::generateBufferNameInStringStream(std::string prefix,
   return ss;
 }
 
-AIE::ExternalBufferOp air::allocateExternalBufferOp(MemRefType memrefTy,
+AIE::ExternalBufferOp air::allocateExternalBufferOp(uint64_t &BufferId,
+                                                    MemRefType memrefTy,
                                                     AIE::DeviceOp device,
                                                     mlir::StringAttr attr,
                                                     int x, int y) {
-
-  static uint64_t BufferId = 0;
 
   auto builder = OpBuilder::atBlockBegin(device.getBody());
   AIE::ExternalBufferOp bufferOp = builder.create<AIE::ExternalBufferOp>(
@@ -569,7 +561,7 @@ TileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp, int col,
   return DMAAllocator::allocNewDmaChannel(memcpyOp, tile, chan);
 }
 
-AIE::BufferOp TileDMAAllocator::getBuffer(int64_t col, int64_t row,
+AIE::BufferOp TileDMAAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
                                           air::MemcpyInterface &memcpyOp) {
   Value buffer = isTileInbound(memcpyOp, DMAMemorySpaceAsInt)
                      ? (memcpyOp.getDstMemref())
@@ -652,7 +644,7 @@ ShimDMAAllocator::allocNewDmaChannel(air::MemcpyInterface &memcpyOp,
 }
 
 AIE::ExternalBufferOp
-ShimDMAAllocator::getBuffer(int64_t col, int64_t row,
+ShimDMAAllocator::getBuffer(uint64_t &BufferId, int64_t col, int64_t row,
                             air::MemcpyInterface &memcpyOp) {
   bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
   // Allocate external buffers
@@ -664,7 +656,7 @@ ShimDMAAllocator::getBuffer(int64_t col, int64_t row,
   memrefTy = MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(), {},
                              DMAMemorySpaceAsInt);
   AIE::ExternalBufferOp bufferOp = allocateExternalBufferOp(
-      memrefTy, device,
+      BufferId, memrefTy, device,
       memcpyOp->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
       col, row);
   return bufferOp;
@@ -726,7 +718,8 @@ MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
   auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
 
-  AIE::BufferOp buffer = getBuffer(-1, -1, memcpyOp);
+  const int dummy{0};
+  AIE::BufferOp buffer = getBuffer(dummy, -1, -1, memcpyOp);
   auto tile = buffer.getTileOp();
   assert(tile);
 
@@ -753,7 +746,8 @@ MemTileDMAAllocator::simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
   bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
   auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
 
-  AIE::BufferOp buffer = getBuffer(-1, -1, memcpyOp);
+  const int dummy{0};
+  AIE::BufferOp buffer = getBuffer(dummy, -1, -1, memcpyOp);
   auto tile = buffer.getTileOp();
   assert(tile);
 
@@ -808,7 +802,8 @@ int MemTileDMAAllocator::forecastChannelAlloc(air::MemcpyInterface &memcpyOp) {
   bool isMM2S = isTileOutbound(memcpyOp, DMAMemorySpaceAsInt);
   auto allocs = isMM2S ? &mm2s_allocs : &s2mm_allocs;
 
-  AIE::BufferOp buffer = getBuffer(-1, -1, memcpyOp);
+  const int dummy{0};
+  AIE::BufferOp buffer = getBuffer(dummy, -1, -1, memcpyOp);
   auto tile = buffer.getTileOp();
 
   // Search for existing dma channel allocation
@@ -825,7 +820,7 @@ int MemTileDMAAllocator::forecastChannelAlloc(air::MemcpyInterface &memcpyOp) {
   return num_allocs % memtile_dma_channels;
 }
 
-AIE::BufferOp MemTileDMAAllocator::getBuffer(int64_t col, int64_t row,
+AIE::BufferOp MemTileDMAAllocator::getBuffer(uint64_t, int64_t col, int64_t row,
                                              air::MemcpyInterface &memcpyOp) {
   Value buffer = isTileInbound(memcpyOp, DMAMemorySpaceAsInt)
                      ? (memcpyOp.getDstMemref())

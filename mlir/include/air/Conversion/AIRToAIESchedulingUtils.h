@@ -34,7 +34,8 @@ generateBufferNameInStringStream(std::string prefix, uint64_t &BufferId,
                                  mlir::StringAttr attr = nullptr, int x = -1,
                                  int y = -1);
 
-AIE::ExternalBufferOp allocateExternalBufferOp(MemRefType memrefTy,
+AIE::ExternalBufferOp allocateExternalBufferOp(uint64_t &BufferId,
+                                               MemRefType memrefTy,
                                                AIE::DeviceOp device,
                                                mlir::StringAttr attr = nullptr,
                                                int x = -1, int y = -1);
@@ -137,7 +138,7 @@ public:
   allocation_info_t simpleDmaChannelAlloc(air::MemcpyInterface &memcpyOp,
                                           int col, int row, int chan);
 
-  AIE::BufferOp getBuffer(int64_t col, int64_t row,
+  AIE::BufferOp getBuffer(uint64_t, int64_t col, int64_t row,
                           air::MemcpyInterface &memcpyOp);
 };
 
@@ -157,7 +158,7 @@ public:
                                        allocation_info_t existing_alloc,
                                        std::vector<Operation *> &dma_ops);
 
-  AIE::ExternalBufferOp getBuffer(int64_t col, int64_t row,
+  AIE::ExternalBufferOp getBuffer(uint64_t &BufferId, int64_t col, int64_t row,
                                   air::MemcpyInterface &memcpyOp);
 
   std::optional<air::allocation_info_t>
@@ -179,7 +180,7 @@ public:
 
   int forecastChannelAlloc(air::MemcpyInterface &memcpyOp);
 
-  AIE::BufferOp getBuffer(int64_t col, int64_t row,
+  AIE::BufferOp getBuffer(uint64_t, int64_t col, int64_t row,
                           air::MemcpyInterface &memcpyOp);
 
   std::optional<air::allocation_info_t>

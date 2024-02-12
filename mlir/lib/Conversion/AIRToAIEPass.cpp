@@ -168,11 +168,10 @@ bool isLegalMemorySpace(air::MemcpyInterface memcpyOp, AIE::AIEArch arch) {
   return false;
 }
 
-AIE::BufferOp allocateBufferOp(MemRefType memrefTy, AIE::TileOp tile,
+AIE::BufferOp allocateBufferOp(uint64_t &BufferId, MemRefType memrefTy,
+                               AIE::TileOp tile,
                                mlir::StringAttr attr = nullptr, int x = -1,
                                int y = -1) {
-
-  static uint64_t BufferId = 0;
 
   OpBuilder builder(tile);
   Operation *t = tile.getOperation();
@@ -823,8 +822,10 @@ struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
   using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
 
   AllocL1BuffersPattern(MLIRContext *ctx,
-                        std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap)
-      : OpRewritePattern(ctx), tileToHerdMap(tileToHerdMap) {}
+                        std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
+                        uint64_t &bufferId)
+      : OpRewritePattern(ctx), tileToHerdMap(tileToHerdMap),
+        BufferId(bufferId) {}
 
   LogicalResult matchAndRewrite(memref::AllocOp alloc,
                                 PatternRewriter &rewriter) const override {
@@ -855,7 +856,7 @@ struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
     }
 
     auto buffer = allocateBufferOp(
-        memrefTy, tile,
+        BufferId, memrefTy, tile,
         alloc->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
         tile.getCol() - col_offset, tile.getRow() - row_offset);
 
@@ -866,6 +867,7 @@ struct AllocL1BuffersPattern : public OpRewritePattern<memref::AllocOp> {
 
 private:
   std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap;
+  uint64_t &BufferId;
 };
 
 struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
@@ -873,9 +875,10 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
 
   AllocL2BuffersPattern(
       MLIRContext *ctx, std::map<memref::AllocOp, AIE::TileOp> &memrefToTileMap,
-      std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap)
+      std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap,
+      uint64_t &bufferId)
       : OpRewritePattern(ctx), memrefToTileMap(memrefToTileMap),
-        bufferToMemtileMap(bufferToMemtileMap) {}
+        BufferId(bufferId), bufferToMemtileMap(bufferToMemtileMap) {}
 
   LogicalResult matchAndRewrite(memref::AllocOp alloc,
                                 PatternRewriter &rewriter) const override {
@@ -911,7 +914,7 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
       row_offset = r ? *r : 0;
     }
     AIE::BufferOp buffer = allocateBufferOp(
-        memrefTy, tile,
+        BufferId, memrefTy, tile,
         alloc->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()),
         tile.getCol() - col_offset, tile.getRow() - row_offset);
 
@@ -923,14 +926,16 @@ struct AllocL2BuffersPattern : public OpRewritePattern<memref::AllocOp> {
 
 private:
   std::map<memref::AllocOp, AIE::TileOp> &memrefToTileMap;
+  uint64_t &BufferId;
   std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap;
 };
 
 void allocL1Buffers(AIE::DeviceOp m,
-                    std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap) {
+                    std::map<AIE::TileOp, air::HerdOp> &tileToHerdMap,
+                    uint64_t &BufferId) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
-  patterns.insert<AllocL1BuffersPattern>(ctx, tileToHerdMap);
+  patterns.insert<AllocL1BuffersPattern>(ctx, tileToHerdMap, BufferId);
   // AllocL1TensorsPattern
   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
@@ -1002,14 +1007,15 @@ void L2MemrefToMemTileMap(
 }
 
 void allocL2Buffers(AIE::DeviceOp m,
-                    std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap) {
+                    std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap,
+                    uint64_t &BufferId) {
   auto ctx = m->getContext();
   RewritePatternSet patterns(ctx);
   if (m.getTargetModel().getNumMemTileRows()) {
     std::map<memref::AllocOp, AIE::TileOp> memrefToTileMap;
     L2MemrefToMemTileMap(m, memrefToTileMap);
     patterns.insert<AllocL2BuffersPattern>(ctx, memrefToTileMap,
-                                           bufferToMemtileMap);
+                                           bufferToMemtileMap, BufferId);
     (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
   }
 }
@@ -1607,6 +1613,8 @@ void LowerAIRPingPong(AIE::DeviceOp &d) {
 }
 
 class AIRToAIEPass : public air::impl::AIRToAIEBase<AIRToAIEPass> {
+
+  uint64_t BufferId = 0;
 
 public:
   AIRToAIEPass() = default;
@@ -2240,7 +2248,7 @@ public:
     bool isAIE2 = (arch == AIE::AIEArch::AIE2);
     AIE::DMAChannel tile_channel =
         tileDmaAlloc.lookupDMAAllocation(x, y, memcpyOpIf).dma_channel;
-    AIE::BufferOp bufferOp = tileDmaAlloc.getBuffer(x, y, memcpyOpIf);
+    AIE::BufferOp bufferOp = tileDmaAlloc.getBuffer(BufferId, x, y, memcpyOpIf);
     auto locks =
         tileDmaAlloc.getLockForDMA(memcpyOpIf, x, y, bufferOp.getOperation());
     auto acqLockOp = isMM2S(tile_channel) ? locks.second : locks.first;
@@ -2326,7 +2334,7 @@ public:
           mem.getBody().push_back(next_bd);
           b.create<AIE::NextBDOp>(loc, next_bd);
         }
-        bufferOpTy bufferOp = dmaAlloc.getBuffer(x, y, memcpyOp);
+        bufferOpTy bufferOp = dmaAlloc.getBuffer(BufferId, x, y, memcpyOp);
         auto locks =
             dmaAlloc.getLockForDMA(memcpyOp, x, y, bufferOp.getOperation());
         generateDmaBd<bufferOpTy>(loc, dir, locks, x, y, arch, bd, memcpyOp,
@@ -2736,8 +2744,8 @@ public:
           specializeHerdAffineIf(d);
           lowerAirExecute(d);
           lowerScfAirTokens(d);
-          allocL1Buffers(d, tileToHerdMap);
-          allocL2Buffers(d, bufferToMemtileMap);
+          allocL1Buffers(d, tileToHerdMap, BufferId);
+          allocL2Buffers(d, bufferToMemtileMap, BufferId);
           builder.setInsertionPointToStart(d.getBody());
           std::map<std::string, std::string> chan_to_chan_map;
           specializeChannelBundle(d, chan_to_chan_map);
@@ -2752,7 +2760,7 @@ public:
       patterns.insert<LowerAIRExecutePattern>(ctx);
     if (clTestPatterns.find("alloc-l1-buffers") != std::string::npos)
       patterns.insert<AllocL1BuffersPattern, AllocL1BuffersPattern>(
-          ctx, tileToHerdMap);
+          ctx, tileToHerdMap, BufferId);
     if (clTestPatterns.find("specialize-affine-if") != std::string::npos)
       patterns.insert<SpecializeAffineIfPattern>(ctx);
     // if (clTestPatterns.find("lower-pipe-get-put") != std::string::npos)
@@ -2860,9 +2868,9 @@ public:
         specializeChannelBundle(device, chan_to_chan_map);
         renumberChannelOps(device.getBody());
         LowerAIRPingPong(device);
-        allocL2Buffers(device, bufferToMemtileMap);
+        allocL2Buffers(device, bufferToMemtileMap, BufferId);
         lowerAIRChannels(device, shimTileAlloc, bufferToMemtileMap);
-        allocL1Buffers(device, tileToHerdMap);
+        allocL1Buffers(device, tileToHerdMap, BufferId);
       } else {
 
         cloneL2AndL3MemcpysToDeviceOp(builder, device, module, true, true);
@@ -2870,8 +2878,8 @@ public:
         lowerAirExecute(device);
         lowerScfAirTokens(device);
 
-        allocL1Buffers(device, tileToHerdMap);
-        allocL2Buffers(device, bufferToMemtileMap);
+        allocL1Buffers(device, tileToHerdMap, BufferId);
+        allocL2Buffers(device, bufferToMemtileMap, BufferId);
 
         // Copy over L2 and L3 memcpy ops into device op
         builder.setInsertionPointToStart(device.getBody());
@@ -3082,6 +3090,7 @@ namespace air {
 
 FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
                                     air::SegmentOp p) {
+  uint64_t BufferId{0};
   std::string segment_name = "segment_0";
   if (auto attr =
           p->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
@@ -3121,7 +3130,7 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
     RewritePatternSet patterns(ctx);
     patterns.insert<SpecializeAffineIfPattern>(ctx);
     patterns.insert<LowerAIRExecutePattern>(ctx);
-    patterns.insert<AllocL1BuffersPattern>(ctx, tileToHerdMap);
+    patterns.insert<AllocL1BuffersPattern>(ctx, tileToHerdMap, BufferId);
     air::WaitAllOp::getCanonicalizationPatterns(patterns, ctx);
     (void)applyPatternsAndFoldGreedily(aie_module, std::move(patterns));
   }
