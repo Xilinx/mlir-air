@@ -52,6 +52,110 @@ using namespace xilinx::air;
 
 namespace {
 
+//===----------------------------------------------------------------------===//
+// Utility methods for op hoisting
+//===----------------------------------------------------------------------===//
+
+// Return the air.execute op in the op's dep list which contains memref.alloc
+// op
+air::ExecuteOp getRegionOfAllocOpForOp(Operation *op) {
+  air::AsyncOpInterface current_async_op = dyn_cast<air::AsyncOpInterface>(op);
+  auto dependency_list = current_async_op.getAsyncDependencies();
+  if (dependency_list.size()) {
+    for (auto dep_op : dependency_list) {
+      if (dep_op.getDefiningOp() &&
+          dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp())) {
+        // Found air.ExecuteOp in upstream dependency
+        auto exec_op = dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp());
+        auto child_op = exec_op.getChildOp();
+        if (auto alloc_op = dyn_cast<memref::AllocOp>(child_op)) {
+          // Found memref.allocOp inside air.ExecuteOp
+          return exec_op;
+        }
+      }
+    }
+  }
+  return nullptr;
+}
+
+// Return the air.execute op in the dma's downstream which contains
+// memref.dealloc op
+air::ExecuteOp getRegionOfDeallocOpForOp(Operation *op) {
+  air::AsyncOpInterface current_async_op = dyn_cast<air::AsyncOpInterface>(op);
+  auto dependency_token = current_async_op.getAsyncToken();
+  for (auto user : dependency_token.getUsers()) {
+    if (auto exec_op = dyn_cast<air::ExecuteOp>(user)) {
+      // Found air.ExecuteOp in downstream dependency
+      auto child_op = exec_op.getChildOp();
+      if (auto dealloc_op = dyn_cast<memref::DeallocOp>(child_op)) {
+        // Found memref.deallocOp inside air.ExecuteOp
+        return exec_op;
+      }
+    }
+  }
+  return nullptr;
+}
+
+// Reconnect incoming DMA event in the dependency graph
+void reconnectIncomingDataMovements(Operation *op, scf::ForOp for_op) {
+  air::AsyncOpInterface async_op = dyn_cast<air::AsyncOpInterface>(op);
+  auto dependency_list = async_op.getAsyncDependencies();
+  if (dependency_list.size()) {
+    // Erase dependence to upstream scf.forOp
+    eraseAsyncDependencyFromAsyncOp(
+        dyn_cast<air::AsyncOpInterface>(async_op.getOperation()),
+        for_op.getRegionIterArgs()[0]);
+    auto for_op_iter_operand = for_op.getInitArgs()[0];
+    op->getResult(0).replaceAllUsesWith(for_op.getRegionIterArgs()[0]);
+
+    replaceAllUsesInRegionWith(for_op_iter_operand, op->getResult(0),
+                               *for_op->getParentRegion());
+    async_op.addAsyncDependency(for_op_iter_operand);
+  }
+}
+
+// Reconnect outgoing channel and dealloc events in the dependency graph
+void reconnectOutgoingEvents(Operation *op, air::ExecuteOp dealloc_op,
+                             scf::ForOp for_op,
+                             air::WaitAllOp wait_all_after_for) {
+  air::AsyncOpInterface async_op = dyn_cast<air::AsyncOpInterface>(op);
+  auto dependency_list = async_op.getAsyncDependencies();
+  if (dependency_list.size()) {
+    for (unsigned i = 0; i < dependency_list.size(); i++) {
+      wait_all_after_for.addAsyncDependency(dependency_list[i]);
+    }
+    clearAsyncDependenciesOfAsyncOp(async_op);
+  }
+  eraseAsyncDependencyFromAsyncOp(
+      dyn_cast<air::AsyncOpInterface>(wait_all_after_for.getOperation()),
+      dealloc_op.getAsyncToken());
+  for_op.getResult(0).replaceAllUsesWith(dealloc_op.getResult(0));
+  async_op.addAsyncDependency(for_op.getResult(0));
+}
+
+// Check if an operation is invariant with respect to for loop iteration
+bool isInvariantWRTForLoop(Operation *op, scf::ForOp for_op) {
+  for (auto op_operand : op->getOperands()) {
+    if (op_operand == for_op.getInductionVar()) {
+      return false;
+    }
+    if (op_operand.getDefiningOp() &&
+        isa<memref::SubViewOp>(op_operand.getDefiningOp())) {
+      auto subview_op = dyn_cast<memref::SubViewOp>(op_operand.getDefiningOp());
+      for (auto subview_operand : subview_op->getOperands()) {
+        if (subview_operand == for_op.getInductionVar()) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+//===----------------------------------------------------------------------===//
+// Passes
+//===----------------------------------------------------------------------===//
+
 struct HoistDmaInAccumPattern : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -85,20 +189,20 @@ struct HoistDmaInAccumPattern : public OpRewritePattern<scf::ForOp> {
           foundDmaPairToHoist = true;
           foundDmaPairForThisOp2 = true;
           // Found a pair of dmas which cancel out each other
-          air::ExecuteOp alloc_region_op = getRegionOfAllocOpForDmaOp(op_1);
-          air::ExecuteOp dealloc_region_op = getRegionOfDeallocOpForDmaOp(op_2);
-          if (alloc_region_op.getAsyncDependencies().size() > 1)
-            alloc_region_op->emitOpError(
+          air::ExecuteOp alloc_exec_op = getRegionOfAllocOpForOp(op_1);
+          air::ExecuteOp dealloc_exec_op = getRegionOfDeallocOpForOp(op_2);
+          if (alloc_exec_op.getAsyncDependencies().size() > 1)
+            alloc_exec_op->emitOpError(
                 "alloc event should have only one dependent");
 
           // Reconnect incoming alloc event
-          if (alloc_region_op.getAsyncDependencies().size()) {
-            alloc_region_op.eraseAsyncDependency(0);
+          if (alloc_exec_op.getAsyncDependencies().size()) {
+            alloc_exec_op.eraseAsyncDependency(0);
           }
           // Reconnect incoming dma event
-          reconnectIncomingDma(op_1, for_op);
+          reconnectIncomingDataMovements(op_1, for_op);
           // Move ops to before the for loop
-          alloc_region_op->moveBefore(for_op);
+          alloc_exec_op->moveBefore(for_op);
           op_1->moveBefore(for_op);
 
           // Reconnect outgoing dealloc event
@@ -107,7 +211,7 @@ struct HoistDmaInAccumPattern : public OpRewritePattern<scf::ForOp> {
               dyn_cast<scf::YieldOp>(for_op.getBody()->getTerminator());
           air::WaitAllOp wait_all_after_for =
               dyn_cast<air::WaitAllOp>(yield_op->getOperand(0).getDefiningOp());
-          reconnectOutgoingEvents(op_2, dealloc_region_op, for_op,
+          reconnectOutgoingEvents(op_2, dealloc_exec_op, for_op,
                                   wait_all_after_for);
           // If wait_all depends on outgoing dma, then erase this dependency
           eraseAsyncDependencyFromAsyncOp(
@@ -116,7 +220,7 @@ struct HoistDmaInAccumPattern : public OpRewritePattern<scf::ForOp> {
               dyn_cast<air::AsyncOpInterface>(op_2.getOperation())
                   .getAsyncToken());
           // Move ops to after the for loop
-          dealloc_region_op->moveAfter(for_op);
+          dealloc_exec_op->moveAfter(for_op);
           op_2->moveAfter(for_op);
 
           // Move const ops which produce op_2 operands
@@ -163,11 +267,10 @@ private:
             current_op->getParentOfType<scf::ForOp>().getRegionIterArgs()[0]) {
           // Found scf.forOp in upstream dependency
           foundScfForDep = true;
-        } else if (auto region_op =
+        } else if (auto exec_op =
                        dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp())) {
           // Found air.ExecuteOp in upstream dependency
-          auto child_op =
-              &region_op.getRegion().front().getOperations().front();
+          auto child_op = exec_op.getChildOp();
           if (auto alloc_op = dyn_cast<memref::AllocOp>(child_op)) {
             // Found memref.allocOp inside air.ExecuteOp
             foundMemrefAllocDep = true;
@@ -176,31 +279,6 @@ private:
       }
     }
     return foundScfForDep & foundMemrefAllocDep;
-  }
-
-  // Return the air.execute op in the dma's dep list which contains memref.alloc
-  // op
-  air::ExecuteOp getRegionOfAllocOpForDmaOp(air::DmaMemcpyNdOp dma_op) const {
-    Operation *current_op = dma_op.getOperation();
-    air::AsyncOpInterface current_async_op =
-        dyn_cast<air::AsyncOpInterface>(current_op);
-    auto dependency_list = current_async_op.getAsyncDependencies();
-    if (dependency_list.size()) {
-      for (auto dep_op : dependency_list) {
-        if (dep_op.getDefiningOp() &&
-            dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp())) {
-          // Found air.ExecuteOp in upstream dependency
-          auto region_op = dyn_cast<air::ExecuteOp>(dep_op.getDefiningOp());
-          auto child_op =
-              &region_op.getRegion().front().getOperations().front();
-          if (auto alloc_op = dyn_cast<memref::AllocOp>(child_op)) {
-            // Found memref.allocOp inside air.ExecuteOp
-            return region_op;
-          }
-        }
-      }
-    }
-    return nullptr;
   }
 
   // Check if the dma performs memory copy outbound to the for loop with help
@@ -213,9 +291,9 @@ private:
         dyn_cast<air::AsyncOpInterface>(current_op);
     auto dependency_token = current_async_op.getAsyncToken();
     for (auto user : dependency_token.getUsers()) {
-      if (auto region_op = dyn_cast<air::ExecuteOp>(user)) {
+      if (auto exec_op = dyn_cast<air::ExecuteOp>(user)) {
         // Found air.ExecuteOp in downstream dependency
-        auto child_op = &region_op.getRegion().front().getOperations().front();
+        auto child_op = &exec_op.getRegion().front().getOperations().front();
         if (auto dealloc_op = dyn_cast<memref::DeallocOp>(child_op)) {
           // Found memref.deallocOp inside air.ExecuteOp
           foundDepToMemrefDealloc = true;
@@ -226,88 +304,6 @@ private:
       }
     }
     return foundDepToWaitall & foundDepToMemrefDealloc;
-  }
-
-  // Return the air.execute op in the dma's downstream which contains
-  // memref.dealloc op
-  air::ExecuteOp getRegionOfDeallocOpForDmaOp(air::DmaMemcpyNdOp dma_op) const {
-    Operation *current_op = dma_op.getOperation();
-    air::AsyncOpInterface current_async_op =
-        dyn_cast<air::AsyncOpInterface>(current_op);
-    auto dependency_token = current_async_op.getAsyncToken();
-    for (auto user : dependency_token.getUsers()) {
-      if (auto region_op = dyn_cast<air::ExecuteOp>(user)) {
-        // Found air.ExecuteOp in downstream dependency
-        auto child_op = &region_op.getRegion().front().getOperations().front();
-        if (auto dealloc_op = dyn_cast<memref::DeallocOp>(child_op)) {
-          // Found memref.deallocOp inside air.ExecuteOp
-          return region_op;
-        }
-      }
-    }
-    return nullptr;
-  }
-
-  // Reconnect incoming DMA event in the dependency graph
-  void reconnectIncomingDma(air::DmaMemcpyNdOp dma_op,
-                            scf::ForOp for_op) const {
-    Operation *current_op = dma_op.getOperation();
-    air::AsyncOpInterface dma_async_op =
-        dyn_cast<air::AsyncOpInterface>(current_op);
-    auto dependency_list = dma_async_op.getAsyncDependencies();
-    if (dependency_list.size()) {
-      // Erase dependence to upstream scf.forOp
-      eraseAsyncDependencyFromAsyncOp(
-          dyn_cast<air::AsyncOpInterface>(dma_async_op.getOperation()),
-          for_op.getRegionIterArgs()[0]);
-      auto for_op_iter_operand = for_op.getInitArgs()[0];
-      dma_op->getResult(0).replaceAllUsesWith(for_op.getRegionIterArgs()[0]);
-
-      replaceAllUsesInRegionWith(for_op_iter_operand, dma_op->getResult(0),
-                                 *for_op->getParentRegion());
-      dma_async_op.addAsyncDependency(for_op_iter_operand);
-    }
-  }
-
-  // Reconnect outgoing DMA and dealloc events in the dependency graph
-  void reconnectOutgoingEvents(air::DmaMemcpyNdOp dma_op,
-                               air::ExecuteOp dealloc_op, scf::ForOp for_op,
-                               air::WaitAllOp wait_all_after_for) const {
-    Operation *current_op = dma_op.getOperation();
-    air::AsyncOpInterface dma_async_op =
-        dyn_cast<air::AsyncOpInterface>(current_op);
-    auto dependency_list = dma_async_op.getAsyncDependencies();
-    if (dependency_list.size()) {
-      for (unsigned i = 0; i < dependency_list.size(); i++) {
-        wait_all_after_for.addAsyncDependency(dependency_list[i]);
-      }
-      clearAsyncDependenciesOfAsyncOp(dma_async_op);
-    }
-    eraseAsyncDependencyFromAsyncOp(
-        dyn_cast<air::AsyncOpInterface>(wait_all_after_for.getOperation()),
-        dealloc_op.getAsyncToken());
-    for_op.getResult(0).replaceAllUsesWith(dealloc_op.getResult(0));
-    dma_async_op.addAsyncDependency(for_op.getResult(0));
-  }
-
-  // Check if an operation is invariant with respect to for loop iteration
-  bool isInvariantWRTForLoop(Operation *op, scf::ForOp for_op) const {
-    for (auto op_operand : op->getOperands()) {
-      if (op_operand == for_op.getInductionVar()) {
-        return false;
-      }
-      if (op_operand.getDefiningOp() &&
-          isa<memref::SubViewOp>(op_operand.getDefiningOp())) {
-        auto subview_op =
-            dyn_cast<memref::SubViewOp>(op_operand.getDefiningOp());
-        for (auto subview_operand : subview_op->getOperands()) {
-          if (subview_operand == for_op.getInductionVar()) {
-            return false;
-          }
-        }
-      }
-    }
-    return true;
   }
 
   // Check if two dma ops are symmetric
@@ -345,6 +341,215 @@ private:
     }
 
     return areSymmetric;
+  }
+};
+
+struct HoistAIRChannelInAccumPattern : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp for_op,
+                                PatternRewriter &rewriter) const override {
+
+    // Currently only able to analyze scf.for in air.herd.
+    if (!isa<air::HerdOp>(for_op->getParentOp()))
+      return failure();
+
+    SmallVector<Operation *> dataProducers;
+    SmallVector<Operation *> dataConsumers;
+    // Note: currently not able to analyze air.channel with broadcast (those are
+    // skipped over by ignoring affine.if).
+    for (auto get : for_op.getOps<air::ChannelGetOp>())
+      dataProducers.push_back(get);
+    for (auto exec : for_op.getOps<air::ExecuteOp>()) {
+      auto child_op = exec.getChildOp();
+      if (isa<linalg::FillOp>(child_op))
+        dataProducers.push_back(exec);
+    }
+    for (auto put : for_op.getOps<air::ChannelPutOp>())
+      dataConsumers.push_back(put);
+
+    bool foundPairToHoist = false;
+    for (auto op_2 : dataConsumers) {
+      bool foundPairForThisOp2 = false;
+      for (auto op_1 : dataProducers) {
+        // Check if the pair of dmas form symmetry in their src and dst
+        bool areSymmetric = areSymmetricDataMovements(op_1, op_2);
+        // Check if the pair of dmas are invariant with respect to for loop
+        // iterations
+        bool areInvariantWRTForLoop = true;
+        areInvariantWRTForLoop &= isInvariantWRTForLoop(op_1, for_op);
+        areInvariantWRTForLoop &= isInvariantWRTForLoop(op_2, for_op);
+        // Check if other air.channel ops sharing the same symbolic channel with
+        // op_1 and op_2 can also be hoisted out of a for loop.
+        bool allOtherChannelOpsCanHoistTogether = true;
+        SmallVector<Operation *> other_chan_ops;
+        SmallVector<scf::ForOp> other_for_ops;
+        if (auto chan_op_1 = dyn_cast<air::ChannelGetOp>(op_1))
+          for (auto o : getTheOtherChannelOpThroughSymbol(chan_op_1))
+            other_chan_ops.push_back(o.getOperation());
+        if (auto chan_op_2 = dyn_cast<air::ChannelPutOp>(op_2))
+          for (auto o : getTheOtherChannelOpThroughSymbol(chan_op_2))
+            other_chan_ops.push_back(o.getOperation());
+        for (auto other_chan_op : other_chan_ops) {
+          auto parent_for_op = other_chan_op->getParentOfType<scf::ForOp>();
+          if (!parent_for_op)
+            continue;
+          if (getStaticScfForTripCountAsInt(parent_for_op) &&
+              getStaticScfForTripCountAsInt(for_op)) {
+            bool equal_trip_count =
+                *getStaticScfForTripCountAsInt(parent_for_op) ==
+                *getStaticScfForTripCountAsInt(for_op);
+            int data_movement_op_count = 0;
+            int linalg_op_count = 0;
+            parent_for_op->walk([&](Operation *child_op) {
+              if (isa<air::MemcpyInterface>(child_op))
+                data_movement_op_count++;
+              if (isa<linalg::LinalgOp>(child_op))
+                linalg_op_count++;
+            });
+            bool hasOneAsyncEventInForOp =
+                (data_movement_op_count + linalg_op_count) == 1;
+            allOtherChannelOpsCanHoistTogether &= equal_trip_count;
+            allOtherChannelOpsCanHoistTogether &= hasOneAsyncEventInForOp;
+            other_for_ops.push_back(parent_for_op);
+          }
+        }
+        if (areSymmetric & areInvariantWRTForLoop &
+            allOtherChannelOpsCanHoistTogether) {
+          foundPairToHoist = true;
+          foundPairForThisOp2 = true;
+          // Found a pair of dmas which cancel out each other
+          air::ExecuteOp alloc_exec_op = getRegionOfAllocOpForOp(op_1);
+          air::ExecuteOp dealloc_exec_op = getRegionOfDeallocOpForOp(op_2);
+          if (alloc_exec_op.getAsyncDependencies().size() > 1)
+            alloc_exec_op->emitOpError(
+                "alloc event should have only one dependent");
+
+          // Reconnect incoming alloc event
+          if (alloc_exec_op.getAsyncDependencies().size()) {
+            alloc_exec_op.eraseAsyncDependency(0);
+          }
+          // Reconnect incoming dma event
+          reconnectIncomingDataMovements(op_1, for_op);
+          // Move ops to before the for loop
+          alloc_exec_op->moveBefore(for_op);
+          op_1->moveBefore(for_op);
+
+          // Reconnect outgoing dealloc event
+          // Reconnect outgoing dma event
+          scf::YieldOp yield_op =
+              dyn_cast<scf::YieldOp>(for_op.getBody()->getTerminator());
+          air::WaitAllOp wait_all_after_for =
+              dyn_cast<air::WaitAllOp>(yield_op->getOperand(0).getDefiningOp());
+          reconnectOutgoingEvents(op_2, dealloc_exec_op, for_op,
+                                  wait_all_after_for);
+          // If wait_all depends on outgoing dma, then erase this dependency
+          eraseAsyncDependencyFromAsyncOp(
+              dyn_cast<air::AsyncOpInterface>(
+                  wait_all_after_for.getOperation()),
+              dyn_cast<air::AsyncOpInterface>(op_2).getAsyncToken());
+          // Move ops to after the for loop
+          dealloc_exec_op->moveAfter(for_op);
+          op_2->moveAfter(for_op);
+
+          // Move const ops which produce op_2 operands
+          // Note: moving consts of which op_1 depends on AFTER op_2 to maintain
+          // dominance if consts are shared by both
+          for (auto op_2_operand : op_2->getOperands()) {
+            if (op_2_operand.getDefiningOp() &&
+                isa<arith::ConstantOp>(op_2_operand.getDefiningOp())) {
+              rewriter.setInsertionPoint(op_2);
+              rewriter.clone(*op_2_operand.getDefiningOp());
+            }
+          }
+          // Move const ops which produce op_1 operands
+          for (auto op_1_operand : op_1->getOperands()) {
+            if (op_1_operand.getDefiningOp() &&
+                isa<arith::ConstantOp>(op_1_operand.getDefiningOp())) {
+              rewriter.setInsertionPoint(op_1);
+              rewriter.clone(*op_1_operand.getDefiningOp());
+            }
+          }
+          // Hoist all other channel ops sharing the same channels out of their
+          // parent for loops.
+          for (auto for_op : other_for_ops) {
+            if (*getConstantIntValue(for_op.getLowerBound()) == 0)
+              for_op.getUpperBoundMutable().assign(for_op.getStep());
+            else
+              for_op.getUpperBoundMutable().assign(
+                  rewriter.create<arith::ConstantIndexOp>(
+                      for_op->getLoc(),
+                      *getConstantIntValue(for_op.getLowerBound()) +
+                          *getConstantIntValue(for_op.getStep())));
+          }
+        }
+      }
+      if (foundPairForThisOp2)
+        continue; // Ensure unique pairing
+    }
+    if (foundPairToHoist)
+      return success();
+    return failure();
+  }
+
+private:
+  // Check if two dma ops are symmetric
+  bool areSymmetricChannelOps(air::ChannelGetOp op_1,
+                              air::ChannelPutOp op_2) const {
+    bool areSymmetric = op_1.getMemref() == op_2.getMemref();
+    // Check offsets, sizes and strides
+    auto op_1_dmaNd = dyn_cast<air::DmaMemcpyNdOp>(op_1.getOperation());
+    auto op_2_dmaNd = dyn_cast<air::DmaMemcpyNdOp>(op_2.getOperation());
+    unsigned op_1_dst_num_entries = op_1.getOffsets().size();
+    unsigned op_1_src_num_entries = op_1.getOffsets().size();
+    unsigned op_2_dst_num_entries = op_2.getOffsets().size();
+    unsigned op_2_src_num_entries = op_2.getOffsets().size();
+    if (areSymmetric && (op_1_dst_num_entries == op_2_src_num_entries) &&
+        (op_1_src_num_entries == op_2_dst_num_entries)) {
+      for (unsigned i = 0; i < op_1_dst_num_entries; i++) {
+        areSymmetric &=
+            areEqualIndices(op_1.getOffsets()[i], op_2.getOffsets()[i]);
+        areSymmetric &= areEqualIndices(op_1.getSizes()[i], op_2.getSizes()[i]);
+        areSymmetric &=
+            areEqualIndices(op_1.getStrides()[i], op_2.getStrides()[i]);
+      }
+    } else {
+      areSymmetric = false;
+    }
+
+    return areSymmetric;
+  }
+
+  // Check if a pair of data producer and consumer ops are symmetric
+  bool areSymmetricDataMovements(Operation *op_1, Operation *op_2) const {
+    if (auto chan_1 = dyn_cast<air::ChannelGetOp>(op_1)) {
+      if (auto chan_2 = dyn_cast<air::ChannelPutOp>(op_2)) {
+        return areSymmetricChannelOps(chan_1, chan_2);
+      }
+    }
+    Operation *actual_op_1 = op_1;
+    Operation *actual_op_2 = op_2;
+    if (auto exec = dyn_cast<air::ExecuteOp>(op_1)) {
+      actual_op_1 = exec.getChildOp();
+    }
+    if (auto exec = dyn_cast<air::ExecuteOp>(op_2)) {
+      actual_op_2 = exec.getChildOp();
+    }
+    Value op_1_memref = nullptr;
+    Value op_2_memref = nullptr;
+    if (auto linalg_op = dyn_cast<linalg::LinalgOp>(actual_op_1)) {
+      if (linalg_op.getDpsInits().size() == 1) {
+        op_1_memref = linalg_op.getDpsInits()[0];
+      }
+    } else if (auto get = dyn_cast<air::ChannelGetOp>(op_1)) {
+      op_1_memref = get.getMemref();
+    } else
+      return false; // Unsupported data producer op.
+    if (auto put = dyn_cast<air::ChannelPutOp>(op_2)) {
+      op_2_memref = put.getMemref();
+    } else
+      return false; // Unsupported data consumer op.
+    return op_1_memref == op_2_memref;
   }
 };
 
@@ -609,6 +814,110 @@ private:
       async_op.eraseAsyncDependency(i);
     }
   }
+};
+
+struct HoistAIRHerdInForPattern : public OpRewritePattern<air::HerdOp> {
+  using OpRewritePattern<air::HerdOp>::OpRewritePattern;
+
+  HoistAIRHerdInForPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(air::HerdOp herdOp,
+                                PatternRewriter &rewriter) const override {
+    auto loc = herdOp->getLoc();
+    auto ctx = herdOp->getContext();
+    auto hasNElements = [](Block *block, unsigned N) {
+      auto op_ptr = block->begin();
+      for (unsigned i = 0; i < N; i++)
+        op_ptr = std::next(op_ptr);
+      return op_ptr != block->end() && &*op_ptr == &block->back();
+    };
+    SmallVector<scf::ForOp> for_loop_nest;
+    Operation *parent = herdOp->getParentOp();
+    while (parent && !isa<air::SegmentOp>(parent)) {
+      if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+        if (hasNElements(forOp.getBody(), 2))
+          for_loop_nest.push_back(forOp);
+        else
+          return failure(); // Herd is not in perfectly nested loop.
+      }
+      parent = parent->getParentOp();
+    }
+
+    if (for_loop_nest.empty())
+      return failure();
+
+    llvm::reverse(for_loop_nest);
+
+    scf::ForOp outerMostLoop = for_loop_nest.front();
+
+    // Create new herd op as parent to the scf.for loop nest.
+    rewriter.setInsertionPoint(outerMostLoop);
+    auto herdOperands = herdOp.getOperands().drop_front(
+        herdOp.getAsyncDependencies().size() + herdOp.getNumDims());
+    auto forRegionIterOperands = outerMostLoop.getOperands().drop_front(
+        outerMostLoop.getNumControlOperands());
+    auto newHerdOp = rewriter.create<air::HerdOp>(
+        loc, forRegionIterOperands, herdOp.getSizeOperands(), herdOperands,
+        true, herdOp->getAttrs());
+    auto builder = OpBuilder::atBlockEnd(&newHerdOp.getBody().front());
+    auto newHerdTerm = builder.create<air::HerdTerminatorOp>(loc);
+    outerMostLoop->moveBefore(newHerdTerm);
+    builder.setInsertionPointToStart(&newHerdOp.getBody().front());
+
+    // Replace uses of tokens and consts in for loop nest.
+    for (auto val : forRegionIterOperands) {
+      auto newAsyncToken =
+          builder
+              .create<air::WaitAllOp>(loc, air::AsyncTokenType::get(ctx),
+                                      SmallVector<Value>{})
+              .getAsyncToken();
+      replaceAllUsesInRegionWith(val, newAsyncToken, newHerdOp.getBody());
+    }
+    for (auto loop : for_loop_nest) {
+      if (auto definingOp = loop.getUpperBound().getDefiningOp())
+        replaceAllUsesInRegionWith(loop.getUpperBound(),
+                                   builder.clone(*definingOp)->getResult(0),
+                                   newHerdOp.getBody());
+      if (auto definingOp = loop.getLowerBound().getDefiningOp())
+        replaceAllUsesInRegionWith(loop.getLowerBound(),
+                                   builder.clone(*definingOp)->getResult(0),
+                                   newHerdOp.getBody());
+      if (auto definingOp = loop.getStep().getDefiningOp())
+        replaceAllUsesInRegionWith(loop.getStep(),
+                                   builder.clone(*definingOp)->getResult(0),
+                                   newHerdOp.getBody());
+    }
+    for (auto res : outerMostLoop->getResults())
+      res.replaceAllUsesWith(newHerdOp.getAsyncToken());
+
+    // Splice herd block into inner-most for loop.
+    scf::ForOp innerMostLoop = for_loop_nest.back();
+    auto &bb = innerMostLoop.getBody()->getOperations();
+    auto &body = herdOp.getBody().front().getOperations();
+    bb.splice(bb.begin(), body, body.begin(), --body.end());
+
+    rewriter.setInsertionPoint(herdOp);
+    for (auto res : herdOp->getResults())
+      res.replaceAllUsesWith(
+          rewriter
+              .create<air::WaitAllOp>(loc, air::AsyncTokenType::get(ctx),
+                                      SmallVector<Value>{})
+              .getAsyncToken());
+    for (unsigned i = 0; i < herdOp.getNumKernelOperands(); i++)
+      herdOp.getKernelArgument(i).replaceAllUsesWith(
+          newHerdOp.getKernelArgument(i));
+    for (unsigned i = 0; i < herdOp.getNumDims(); i++) {
+      replaceAllUsesInRegionWith(herdOp.getIds()[i], newHerdOp.getIds()[i],
+                                 newHerdOp.getBody());
+      replaceAllUsesInRegionWith(herdOp.getSize()[i], newHerdOp.getSize()[i],
+                                 newHerdOp.getBody());
+    }
+
+    rewriter.eraseOp(herdOp);
+    return success();
+  }
+
+private:
 };
 
 struct ConstructPingPongDependencyPattern
@@ -1919,8 +2228,8 @@ public:
     auto v = op->getOperand(operand_id);
 
     air::AsyncOpInterface async_op;
-    if (air::ExecuteOp region_op = op->getParentOfType<air::ExecuteOp>()) {
-      async_op = dyn_cast<air::AsyncOpInterface>(region_op.getOperation());
+    if (air::ExecuteOp exec_op = op->getParentOfType<air::ExecuteOp>()) {
+      async_op = dyn_cast<air::AsyncOpInterface>(exec_op.getOperation());
     } else if (auto hl_op = dyn_cast<air::HerdOp>(op)) {
       async_op = dyn_cast<air::AsyncOpInterface>(hl_op.getOperation());
     } else if (auto hier_op = dyn_cast<air::HierarchyInterface>(op)) {
@@ -3013,6 +3322,16 @@ public:
       for (auto op : pair.second)
         hoistTargetOpsToNewSCFFor(builder, pair.first,
                                   SmallVector<Operation *>{op});
+    }
+
+    // Post processing, hoisting air.herd ops out of perfectly nested scf.for
+    // loop.
+    for (auto f : funcOps) {
+      RewritePatternSet patterns_1(f.getContext());
+      patterns_1
+          .insert<HoistAIRHerdInForPattern, HoistAIRChannelInAccumPattern>(
+              f.getContext(), false);
+      (void)applyPatternsAndFoldGreedily(f, std::move(patterns_1));
     }
   }
 
