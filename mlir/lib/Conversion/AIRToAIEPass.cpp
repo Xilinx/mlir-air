@@ -1212,14 +1212,9 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     // erase the channel
     rewriter.eraseOp(channel);
     // erase dangling allocs
-    for (auto o : erased_allocs) {
-      int num_users = 0;
-      for (auto u : o->getUsers())
-        num_users++;
-      // erase only when all related channels have been erased
-      if (num_users == 0)
+    for (auto o : erased_allocs)
+      if (o->use_empty())
         rewriter.eraseOp(o);
-    }
     return success();
   }
 

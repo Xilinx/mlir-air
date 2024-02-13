@@ -498,8 +498,6 @@ private:
                               air::ChannelPutOp op_2) const {
     bool areSymmetric = op_1.getMemref() == op_2.getMemref();
     // Check offsets, sizes and strides
-    auto op_1_dmaNd = dyn_cast<air::DmaMemcpyNdOp>(op_1.getOperation());
-    auto op_2_dmaNd = dyn_cast<air::DmaMemcpyNdOp>(op_2.getOperation());
     unsigned op_1_dst_num_entries = op_1.getOffsets().size();
     unsigned op_1_src_num_entries = op_1.getOffsets().size();
     unsigned op_2_dst_num_entries = op_2.getOffsets().size();
@@ -528,12 +526,8 @@ private:
       }
     }
     Operation *actual_op_1 = op_1;
-    Operation *actual_op_2 = op_2;
     if (auto exec = dyn_cast<air::ExecuteOp>(op_1)) {
       actual_op_1 = exec.getChildOp();
-    }
-    if (auto exec = dyn_cast<air::ExecuteOp>(op_2)) {
-      actual_op_2 = exec.getChildOp();
     }
     Value op_1_memref = nullptr;
     Value op_2_memref = nullptr;
