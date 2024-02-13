@@ -21,7 +21,7 @@ def matmul_on_tensors(m, n, k, dtype):
 
 with air.ir.Context() as ctx, Location.unknown():
     airdialect.register_dialect(ctx)
-    air_module = matmul_on_tensors(2048, 2048, 512, IntegerType.get_signless(width = 32))
+    air_module = matmul_on_tensors(2048, 2048, 2048, IntegerType.get_signless(width = 32))
     
     ################################################
     ## Tiling
@@ -43,16 +43,18 @@ with air.ir.Context() as ctx, Location.unknown():
             %fill_1 = transform.air.fuse_into_containing_op %fill into %loops#1
             transform.air.linalg_promote %fill_1 {"operands_to_promote"=[1], "memory_space"="L2"}
             transform.air.linalg_promote %matmul_1 {"operands_to_promote"=[2], "memory_space"="L2"}
-            transform.air.linalg_promote %matmul_1 {"operands_to_promote"=[0,1], "memory_space"="L2"}
-            %matmul_2, %loops_2:2 = transform.air.linalg_tile %matmul_1 [32, 32, 0]
+            %matmul_2, %reduction_loop_1 = transform.air.linalg_tile %matmul_1 [0, 0, 256]
+            transform.air.linalg_promote %matmul_2 {"operands_to_promote"=[0,1], "memory_space"="L2"}
+            %matmul_3, %loops_2:2 = transform.air.linalg_tile %matmul_2 [32, 32, 0]
             %fill_2 = transform.air.fuse_into_containing_op %fill_1 into %loops_2#1
             transform.air.linalg_promote %fill_2 {"operands_to_promote"=[1], "memory_space"="L1"}
-            transform.air.linalg_promote %matmul_2 {"operands_to_promote"=[2], "memory_space"="L1"}
-            %matmul_3, %reduction_loop = transform.air.linalg_tile %matmul_2 [0, 0, 32]
-            transform.air.linalg_promote %matmul_3 {"operands_to_promote"=[0,1], "memory_space"="L1"}
+            transform.air.linalg_promote %matmul_3 {"operands_to_promote"=[2], "memory_space"="L1"}
+            %matmul_4, %reduction_loop_2 = transform.air.linalg_tile %matmul_3 [0, 0, 32]
+            transform.air.linalg_promote %matmul_4 {"operands_to_promote"=[0,1], "memory_space"="L1"}
         }
     }
     """
+    
     transform_ir = Module.parse(transform_ir_string)
     run_air_transform(transform_ir, air_module)
     
@@ -96,7 +98,6 @@ with air.ir.Context() as ctx, Location.unknown():
     air_module = Module.parse(str(air_module))
     pipeline = "builtin.module("+",".join([
         "air-ping-pong-transform{keep-memref-dealloc=true}",
-        "air-dealias-memref",
         "canonicalize", "cse",
         "air-isolate-async-dma-loop-nests",
         "air-specialize-channel-wrap-and-stride",
@@ -125,9 +126,9 @@ with air.ir.Context() as ctx, Location.unknown():
     with open('air_placed.mlir', 'w') as f:
         f.write(str(air_module))
     
-    # ################################################
-    # ## MLIR-AIR to MLIR-AIE
-    # ################################################
+    ################################################
+    ## MLIR-AIR to MLIR-AIE
+    ################################################
     
     pipeline = "builtin.module("+",".join([
         'air-to-aie{row-offset=2 col-offset=0 device=ipu emit-while-loop=true}',
@@ -144,6 +145,7 @@ with air.ir.Context() as ctx, Location.unknown():
 
     pipeline = "builtin.module("+",".join([
       'air-to-std',
+      'canonicalize',
       'func.func(affine-loop-opt{affine-opt-tile-sizes=4,4})',
       'func.func(air-unroll-outer-affine-loops{depth=2})',
       'affine-expand-index-ops',

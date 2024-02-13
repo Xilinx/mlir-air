@@ -336,6 +336,140 @@ void isolateAIRRtDmaLoopNests(ModuleOp module) {
     o->erase();
 }
 
+// AIE2 hardware constraints.
+const int AIE2_WRAP_UPPER_BOUND = 1024;
+const int AIE2_DIM_COUNT = 4;
+
+bool violatesAIE2WrapLimit(airrt::DmaMemcpyNdOp dma) {
+  SmallVector<Value> wrap_list;
+  wrap_list.push_back(dma.getLength0());
+  wrap_list.push_back(dma.getLength1());
+  wrap_list.push_back(dma.getLength2());
+  wrap_list.push_back(dma.getLength3());
+  for (auto wrap : wrap_list) {
+    if (auto const_val = getConstantIntValue(wrap)) {
+      // Detected wrap that goes beyond the AIE2 hardware limit.
+      if (*const_val >= AIE2_WRAP_UPPER_BOUND) {
+        return true;
+      }
+    } else
+      assert(false && "has non-static wrap");
+  }
+  return false;
+}
+
+void tileIllegalWrapDim(airrt::DmaMemcpyNdOp memcpy_op) {
+  auto loc = memcpy_op->getLoc();
+  auto oper_begin = memcpy_op.getOperands().begin();
+  SmallVector<Value> offsets(oper_begin + 4, oper_begin + 8);
+  SmallVector<Value> wraps(oper_begin + 8, oper_begin + 12);
+  SmallVector<Value> strides(oper_begin + 12, oper_begin + 15);
+  // Stride field implicit last element one
+  OpBuilder builder(memcpy_op);
+  strides.push_back(builder.create<arith::ConstantOp>(
+      loc, builder.getI64Type(), IntegerAttr::get(builder.getI64Type(), 1)));
+
+  for (int i = wraps.size() - 1; i >= 0; i--) {
+    auto const_wrap = *getConstantIntValue(wraps[i]);
+    auto const_stride = *getConstantIntValue(strides[i]);
+    if (const_wrap >= AIE2_WRAP_UPPER_BOUND) {
+      // Found dimension with illegal wrap. Tiling.
+      assert(!(const_wrap % (AIE2_WRAP_UPPER_BOUND / 2)) &&
+             "Currently do not support remainder tiles");
+      int new_wrap = mlir::ceilDiv(const_wrap, AIE2_WRAP_UPPER_BOUND / 2);
+      wraps[i] = builder.create<arith::ConstantOp>(
+          loc, builder.getI64Type(),
+          IntegerAttr::get(builder.getI64Type(), AIE2_WRAP_UPPER_BOUND / 2));
+      wraps.insert(wraps.begin() + i,
+                   builder.create<arith::ConstantOp>(
+                       loc, builder.getI64Type(),
+                       IntegerAttr::get(builder.getI64Type(), new_wrap)));
+      auto new_const_stride =
+          (const_stride * AIE2_WRAP_UPPER_BOUND / 2) %
+          air::getTensorVolume(
+              memcpy_op.getMemref().getType().cast<MemRefType>());
+      strides.insert(
+          strides.begin() + i,
+          builder.create<arith::ConstantOp>(
+              loc, builder.getI64Type(),
+              IntegerAttr::get(builder.getI64Type(), new_const_stride)));
+      offsets.insert(offsets.begin() + i,
+                     builder.create<arith::ConstantOp>(
+                         loc, builder.getI64Type(),
+                         IntegerAttr::get(builder.getI64Type(), 0)));
+      i++;
+    }
+  }
+
+  // Unroll highest dimensions of wrap and stride, if the new dimension count
+  // goes beyond 4.
+  SmallVector<affine::AffineForOp> for_loop_nest;
+  if (wraps.size() > AIE2_DIM_COUNT) {
+    affine::AffineForOp inner_affine_for = nullptr;
+    while (wraps.size() > AIE2_DIM_COUNT) {
+      auto const_offset = *getConstantIntValue(offsets[0]);
+      auto const_wrap = *getConstantIntValue(wraps[0]);
+      auto const_stride = *getConstantIntValue(strides[0]);
+
+      // Convert the outer dimension into an affine.for loop.
+      auto const_upper_bound = const_offset + const_wrap * const_stride;
+      auto new_for_op =
+          (const_stride)
+              ? (builder.create<affine::AffineForOp>(
+                    loc, const_offset, const_upper_bound, const_stride))
+              : (builder.create<affine::AffineForOp>(loc, 0, const_wrap));
+      for_loop_nest.push_back(new_for_op);
+      inner_affine_for = new_for_op;
+
+      // Pop front.
+      offsets.erase(offsets.begin());
+      wraps.erase(wraps.begin());
+      strides.erase(strides.begin());
+    }
+    builder.setInsertionPointToStart(inner_affine_for.getBody());
+  }
+
+  // Stride field implicit last element one, pop.
+  strides.pop_back();
+
+  // Create new airrt.dma_memcpy_nd op.
+  SmallVector<Value> new_opers;
+  SmallVector<Type> tys;
+  auto old_opers = memcpy_op.getOperands();
+  new_opers.insert(new_opers.end(), old_opers.begin(), old_opers.begin() + 4);
+  new_opers.insert(new_opers.end(), offsets.begin(), offsets.end());
+  new_opers.insert(new_opers.end(), wraps.begin(), wraps.end());
+  new_opers.insert(new_opers.end(), strides.begin(), strides.end());
+  builder.create<airrt::DmaMemcpyNdOp>(loc, tys, new_opers,
+                                       memcpy_op->getAttrs());
+
+  // Unroll the affine loop nest.
+  llvm::reverse(for_loop_nest);
+  for (auto forOp : for_loop_nest) {
+    (void)loopUnrollFull(forOp);
+  }
+
+  memcpy_op.erase();
+}
+
+void enforceAIE2WrapLimit(ModuleOp module) {
+  // Identify airrt.dma_memcpy_nd ops that violate the AIE2 wrap size
+  // constraint.
+  SmallVector<airrt::DmaMemcpyNdOp> target_airrt_dmas;
+  SmallVector<func::FuncOp> funcOps;
+  module.walk([&](func::FuncOp f) { funcOps.push_back(f); });
+  for (auto f : funcOps) {
+    f.walk([&](airrt::DmaMemcpyNdOp dma) {
+      if (violatesAIE2WrapLimit(dma))
+        target_airrt_dmas.push_back(dma);
+    });
+  }
+
+  // Enforce the AIE2 wrap limit by tiling that dimension.
+  for (auto memcpy_op : target_airrt_dmas)
+    tileIllegalWrapDim(memcpy_op);
+}
+
 LogicalResult
 specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
                                            affine::AffineForOp for_op) {
@@ -544,6 +678,9 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
 
     // Purge dma ops' async tokens
     purgeDmaAsyncTokens(module);
+
+    // Enforce AIE2 hardware constraint: wrap size limit within [0, 1023].
+    enforceAIE2WrapLimit(module);
 
     ConversionTarget target(getContext());
     target.addIllegalDialect<AIRRtDialect>();
