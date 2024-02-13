@@ -520,7 +520,7 @@ specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
   strides.push_back(i64_one);
 
   // Canonicalize wraps and strides
-  air::canonicalizeWrapAndStrideList(builder, offsets, wraps, strides);
+  (void)air::canonicalizeWrapAndStrideList(builder, offsets, wraps, strides);
 
   xilinx::air::foldForLoopNestAsExtendedSizesAndStrides(
       builder, for_op.getOperation(), memcpy_ops[0].getOperation(), offsets,

@@ -1212,14 +1212,9 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     // erase the channel
     rewriter.eraseOp(channel);
     // erase dangling allocs
-    for (auto o : erased_allocs) {
-      int num_users = 0;
-      for (auto u : o->getUsers())
-        num_users++;
-      // erase only when all related channels have been erased
-      if (num_users == 0)
+    for (auto o : erased_allocs)
+      if (o->use_empty())
         rewriter.eraseOp(o);
-    }
     return success();
   }
 
@@ -3112,9 +3107,8 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
                                        /* .generate_shim_dma = */ false,
                                        /* .device = */ *device};
   std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> aie_modules;
-  p.walk([&](xilinx::air::HerdOp h) {
-    aie_modules.push_back({aie_module, h});
-  });
+  p.walk(
+      [&](xilinx::air::HerdOp h) { aie_modules.push_back({aie_module, h}); });
   std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
   for (auto &p : aie_modules) {
     ModuleOp aie_module = std::get<0>(p);
