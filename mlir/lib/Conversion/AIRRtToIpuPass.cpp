@@ -139,8 +139,10 @@ struct DmaToIpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
                                  rewriter.getStringAttr("MetadataNotFound"))
               .getValue();
 
-    memref = rewriter.create<UnrealizedConversionCastOp>(op.getLoc(),
-                                                         newMemrefTy, memref).getResult(0);
+    memref = rewriter
+                 .create<UnrealizedConversionCastOp>(op.getLoc(), newMemrefTy,
+                                                     memref)
+                 .getResult(0);
 
     rewriter.replaceOpWithNewOp<AIEX::IpuDmaMemcpyNdOp>(
         op, xInt, yInt, memref, offsets, sizes, strides, staticOffsets,
