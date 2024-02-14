@@ -63,56 +63,71 @@ struct DmaToIpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
     else
       return failure();
 
+    Value memref = adaptor.getMemref();
+    MemRefType memrefTy = cast<MemRefType>(memref.getType());
+    unsigned int bitwidth = memrefTy.getElementTypeBitWidth();
+    if (bitwidth != 32 && bitwidth != 16 && bitwidth != 8)
+      return failure();
+    unsigned int div = 32 / bitwidth;
+    unsigned int numElements = memrefTy.getNumElements() / div;
+    SmallVector<int64_t> shape{numElements};
+    MemRefType newMemrefTy =
+        MemRefType::get(shape, rewriter.getIntegerType(32));
+
+    Value divV = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), div);
+    auto divOp = [&](Value v) {
+      return rewriter.create<arith::DivUIOp>(op->getLoc(), v, divV);
+    };
     SmallVector<Value> offsets;
     SmallVector<int64_t> staticOffsets;
     if (auto const_int = getConstantIntValue(adaptor.getOffset3()))
-      staticOffsets.push_back(*const_int);
+      staticOffsets.push_back(*const_int / div);
     else
-      offsets.push_back(adaptor.getOffset3());
+      offsets.push_back(divOp(adaptor.getOffset3()));
     if (auto const_int = getConstantIntValue(adaptor.getOffset2()))
-      staticOffsets.push_back(*const_int);
+      staticOffsets.push_back(*const_int / div);
     else
-      offsets.push_back(adaptor.getOffset2());
+      offsets.push_back(divOp(adaptor.getOffset2()));
     if (auto const_int = getConstantIntValue(adaptor.getOffset1()))
-      staticOffsets.push_back(*const_int);
+      staticOffsets.push_back(*const_int / div);
     else
-      offsets.push_back(adaptor.getOffset1());
+      offsets.push_back(divOp(adaptor.getOffset1()));
     if (auto const_int = getConstantIntValue(adaptor.getOffset0()))
-      staticOffsets.push_back(*const_int);
+      staticOffsets.push_back(*const_int / div);
     else
-      offsets.push_back(adaptor.getOffset0());
+      offsets.push_back(divOp(adaptor.getOffset0()));
     SmallVector<Value> sizes;
     SmallVector<int64_t> staticSizes;
     if (auto const_int = getConstantIntValue(adaptor.getLength3()))
-      staticSizes.push_back(*const_int);
+      staticSizes.push_back(*const_int / div);
     else
-      sizes.push_back(adaptor.getLength3());
+      sizes.push_back(divOp(adaptor.getLength3()));
     if (auto const_int = getConstantIntValue(adaptor.getLength2()))
-      staticSizes.push_back(*const_int);
+      staticSizes.push_back(*const_int / div);
     else
-      sizes.push_back(adaptor.getLength2());
+      sizes.push_back(divOp(adaptor.getLength2()));
     if (auto const_int = getConstantIntValue(adaptor.getLength1()))
-      staticSizes.push_back(*const_int);
+      staticSizes.push_back(*const_int / div);
     else
-      sizes.push_back(adaptor.getLength1());
+      sizes.push_back(divOp(adaptor.getLength1()));
     if (auto const_int = getConstantIntValue(adaptor.getLength0()))
-      staticSizes.push_back(*const_int);
+      staticSizes.push_back(*const_int / div);
     else
-      sizes.push_back(adaptor.getLength0());
+      sizes.push_back(divOp(adaptor.getLength0()));
     SmallVector<Value> strides;
     SmallVector<int64_t> staticStrides;
     if (auto const_int = getConstantIntValue(adaptor.getStride3()))
-      staticStrides.push_back(*const_int);
+      staticStrides.push_back(*const_int / div);
     else
-      strides.push_back(adaptor.getStride3());
+      strides.push_back(divOp(adaptor.getStride3()));
     if (auto const_int = getConstantIntValue(adaptor.getStride2()))
-      staticStrides.push_back(*const_int);
+      staticStrides.push_back(*const_int / div);
     else
-      strides.push_back(adaptor.getStride2());
+      strides.push_back(divOp(adaptor.getStride2()));
     if (auto const_int = getConstantIntValue(adaptor.getStride1()))
-      staticStrides.push_back(*const_int);
+      staticStrides.push_back(*const_int / div);
     else
-      strides.push_back(adaptor.getStride1());
+      strides.push_back(divOp(adaptor.getStride1()));
 
     StringRef metadata;
     if (op->hasAttr("metadata"))
@@ -124,9 +139,12 @@ struct DmaToIpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
                                  rewriter.getStringAttr("MetadataNotFound"))
               .getValue();
 
+    memref = rewriter.create<UnrealizedConversionCastOp>(op.getLoc(),
+                                                         newMemrefTy, memref).getResult(0);
+
     rewriter.replaceOpWithNewOp<AIEX::IpuDmaMemcpyNdOp>(
-        op, xInt, yInt, adaptor.getMemref(), offsets, sizes, strides,
-        staticOffsets, staticSizes, staticStrides, metadata, idInt);
+        op, xInt, yInt, memref, offsets, sizes, strides, staticOffsets,
+        staticSizes, staticStrides, metadata, idInt);
 
     return success();
   }
@@ -685,7 +703,7 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     ConversionTarget target(getContext());
     target.addIllegalDialect<AIRRtDialect>();
     target.addLegalDialect<arith::ArithDialect, AIEX::AIEXDialect>();
-
+    target.addLegalOp<UnrealizedConversionCastOp>();
     target.addDynamicallyLegalOp<affine::AffineStoreOp>(
         [&](affine::AffineStoreOp op) {
           if (op->getParentOfType<AIE::CoreOp>())

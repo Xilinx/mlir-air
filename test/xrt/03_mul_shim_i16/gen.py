@@ -62,9 +62,9 @@ with Context() as ctx, Location.unknown():
     airdialect.register_dialect(ctx)
     mlir_module = generate_add_module([32*32], IntegerType.get_signless(16))
 
-    # print("\nTiled AIR Module:\n\n", mlir_module)
-    # with open("mul.air.mlir", "w") as f:
-    #     f.write(str(mlir_module))
+    print("\nTiled AIR Module:\n\n", mlir_module)
+    with open("mul.air.mlir", "w") as f:
+        f.write(str(mlir_module))
 
     pipeline = "builtin.module(" + ",".join([
         "func.func(air-lower-herd-parallel)",
@@ -72,18 +72,36 @@ with Context() as ctx, Location.unknown():
         "canonicalize", "cse",
         "air-specialize-channel-wrap-and-stride",
         "func.func(convert-linalg-to-loops)",
-        'func.func(air-renumber-dma)',
+        'func.func(air-renumber-dma)'
+    ]) + ")"
+    pm = PassManager.parse(pipeline)
+    pm.run(mlir_module.operation)
+
+    print("\nAIE Module:\n\n", mlir_module)
+    with open("mul.chan.mlir", "w") as f:
+        f.write(str(mlir_module))
+
+    pipeline = "builtin.module(" + ",".join([
         "air-to-aie{emit-while-loop=true device=ipu row-offset=2 col-offset=0}",
         "air-to-std",
+    ]) + ")"
+    pm = PassManager.parse(pipeline)
+    pm.run(mlir_module.operation)
+
+    print("\nAIE Module:\n\n", mlir_module)
+    with open("mul.aieairrt.mlir", "w") as f:
+        f.write(str(mlir_module))
+
+    pipeline = "builtin.module(" + ",".join([
         "airrt-to-ipu",
         "canonicalize", "cse",
     ]) + ")"
     pm = PassManager.parse(pipeline)
     pm.run(mlir_module.operation)
 
-    # print("\nAIE Module:\n\n", mlir_module)
-    # with open("mul.air_ipu.mlir", "w") as f:
-    #     f.write(str(mlir_module))
+    print("\nAIE Module:\n\n", mlir_module)
+    with open("mul.aieipu.mlir", "w") as f:
+        f.write(str(mlir_module))
 
     import aie.compiler.aiecc.main as aiecc
 
