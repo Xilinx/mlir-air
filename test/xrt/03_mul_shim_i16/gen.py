@@ -107,6 +107,7 @@ with Context() as ctx, Location.unknown():
     import aie.compiler.aiecc.main as aiecc
 
     aiecc_options = ['--no-aiesim',
+                     '--xchess',
                      '--aie-generate-cdo',
                      '--aie-generate-ipu',
                      '--no-compile-host',
