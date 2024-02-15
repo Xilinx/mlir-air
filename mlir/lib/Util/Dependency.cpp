@@ -1573,11 +1573,14 @@ void dependencyCanonicalizer::removeUnusedExecuteOp(func::FuncOp func) {
   });
 
   for (auto op : erased_ops) {
-    for (auto user : op.getAsyncToken().getUsers()) {
-      if (auto async_user = dyn_cast<air::AsyncOpInterface>(user)) {
-        eraseAsyncDependencyFromAsyncOp(async_user, op.getAsyncToken());
-      }
-    }
+    OpBuilder builder(op);
+    auto new_token =
+        builder
+            .create<air::WaitAllOp>(
+                op->getLoc(), air::AsyncTokenType::get(builder.getContext()),
+                op.getAsyncDependencies())
+            .getAsyncToken();
+    op.getAsyncToken().replaceAllUsesWith(new_token);
     if (!op.getAsyncToken().use_empty())
       op->emitOpError("returned async token still has uses");
     op->erase();
