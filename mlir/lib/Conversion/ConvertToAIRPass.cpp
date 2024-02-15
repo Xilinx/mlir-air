@@ -1071,16 +1071,16 @@ class AIRDmaToAIRChannelConversion
     SmallVector<Value, 4> dst_strides = op.getDstStrides();
 
     if (src_offsets.size()) {
-      if (src_sizes.size() != src_rank)
+      if (src_sizes.size() != (unsigned)src_rank)
         return failure();
-      if (src_strides.size() != src_rank)
+      if (src_strides.size() != (unsigned)src_rank)
         return failure();
     }
 
     if (dst_offsets.size()) {
-      if (dst_sizes.size() != dst_rank)
+      if (dst_sizes.size() != (unsigned)dst_rank)
         return failure();
-      if (dst_strides.size() != dst_rank)
+      if (dst_strides.size() != (unsigned)dst_rank)
         return failure();
     }
 
@@ -1483,16 +1483,16 @@ class AIRDemoteDmaToAIRHierarchyConversion
     SmallVector<Value, 4> dst_strides = op.getDstStrides();
 
     if (src_offsets.size()) {
-      if (src_sizes.size() != src_rank)
+      if (src_sizes.size() != (unsigned)src_rank)
         return failure();
-      if (src_strides.size() != src_rank)
+      if (src_strides.size() != (unsigned)src_rank)
         return failure();
     }
 
     if (dst_offsets.size()) {
-      if (dst_sizes.size() != dst_rank)
+      if (dst_sizes.size() != (unsigned)dst_rank)
         return failure();
-      if (dst_strides.size() != dst_rank)
+      if (dst_strides.size() != (unsigned)dst_rank)
         return failure();
     }
 
@@ -1517,10 +1517,6 @@ class AIRDemoteDmaToAIRHierarchyConversion
                   StringAttr::get(op->getContext(), "external"));
 
       // Hoist hierarchy op into scf op
-      Operation *scf_loop = nullptr;
-      mlir::OpBuilder::InsertPoint
-          insertionPointAtHierOp; // To keep a record of the insertion point as
-                                  // destination for hoisting
       rewriter.setInsertionPoint(hier_op);
 
       if (herd) {
@@ -1562,17 +1558,6 @@ class AIRDemoteDmaToAIRHierarchyConversion
       } else
         return failure();
 
-      if (scf_loop) {
-        scf_loop->walk([&](mlir::Operation *o) {
-          if (o == o->getBlock()->getTerminator()) {
-            return;
-          }
-          if (!o->hasAttr("hoist"))
-            erased.insert(o);
-          else
-            o->removeAttr("hoist");
-        });
-      }
       hier_op.walk([&](mlir::Operation *o) {
         if (o->hasAttr("hoist"))
           o->removeAttr("hoist");
@@ -2374,13 +2359,13 @@ static LogicalResult canonicalizeAIRDmaOperands(OpBuilder builder,
   // default order.
   int max_dim_size =
       std::max(std::max(offsets.size(), sizes.size()), strides.size());
-  if (max_dim_size && offsets.size() < memref.getRank()) {
+  if (max_dim_size && offsets.size() < (unsigned)memref.getRank()) {
     for (unsigned i = offsets.size(); i < memref.getRank(); i++) {
       offsets.insert(offsets.begin(), builder.create<arith::ConstantIndexOp>(
                                           builder.getUnknownLoc(), 0));
     }
   }
-  if (max_dim_size && sizes.size() < memref.getRank()) {
+  if (max_dim_size && sizes.size() < (unsigned)memref.getRank()) {
     for (unsigned i = sizes.size(); i < memref.getRank(); i++) {
       sizes.insert(sizes.begin(), builder.create<arith::ConstantIndexOp>(
                                       builder.getUnknownLoc(), 1));
@@ -2389,7 +2374,7 @@ static LogicalResult canonicalizeAIRDmaOperands(OpBuilder builder,
   int memref_size = 1;
   for (auto size : memref.getShape())
     memref_size *= size;
-  if (max_dim_size && strides.size() < memref.getRank()) {
+  if (max_dim_size && strides.size() < (unsigned)memref.getRank()) {
     for (unsigned i = strides.size(); i < memref.getRank(); i++) {
       strides.insert(strides.begin(),
                      builder.create<arith::ConstantIndexOp>(
@@ -2398,12 +2383,13 @@ static LogicalResult canonicalizeAIRDmaOperands(OpBuilder builder,
   }
 
   // Reduce highest dimensions if more than memref size
-  while (strides.size() > memref.getRank() && getConstantIntValue(strides[0]) &&
+  while (strides.size() > (unsigned)memref.getRank() &&
+         getConstantIntValue(strides[0]) &&
          *getConstantIntValue(strides[0]) == memref_size) {
     strides.erase(strides.begin());
   }
-  while (sizes.size() > memref.getRank() && getConstantIntValue(sizes[0]) &&
-         *getConstantIntValue(sizes[0]) == 1) {
+  while (sizes.size() > (unsigned)memref.getRank() &&
+         getConstantIntValue(sizes[0]) && *getConstantIntValue(sizes[0]) == 1) {
     sizes.erase(sizes.begin());
   }
   while (offsets.size() > std::min(sizes.size(), strides.size()) &&
@@ -2752,7 +2738,7 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
             alloc->getParentOfType<air::ExecuteOp>()
                 ? alloc->getParentOfType<air::ExecuteOp>().getOperation()
                 : alloc.getOperation();
-        if (memref_type.getMemorySpaceAsInt() < hierMemorySpace) {
+        if (memref_type.getMemorySpaceAsInt() < (unsigned)hierMemorySpace) {
           hier_to_allocs[hier_op].push_back(alloc_op);
         }
       });
