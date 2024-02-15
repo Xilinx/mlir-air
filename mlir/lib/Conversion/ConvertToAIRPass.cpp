@@ -520,6 +520,11 @@ T cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
       } else if (externalGetPut && dyn_cast<affine::AffineIfOp>(child_op)) {
         // If externalGetPut is not nullptr, then broadcast lowering mode is on
         replaceAffineIfOpWithChannelOpAndClone(builder, remap, externalGetPut);
+      } else if (auto dma_op = dyn_cast<air::DmaMemcpyNdOp>(child_op)) {
+        if (child_op.hasAttr("loop-carried-dep"))
+          builder.clone(child_op, remap);
+        else
+          replaceAsyncOpWithWaitAllAndClone(builder, remap, &child_op, false);
       } else if (getLinalgOpFromExecuteOp(&child_op)) {
         replaceAsyncOpWithWaitAllAndClone(builder, remap, &child_op, false);
       } else {
@@ -1496,31 +1501,18 @@ class AIRDemoteDmaToAIRHierarchyConversion
     {
       OpBuilder::InsertionGuard guard(rewriter);
 
-      SetVector<Operation *> backwardSlice;
-      BackwardSliceOptions bsOptions{
-          [&](Operation *o) { return o != hier_op; }};
-      getBackwardSlice(op.getOperation(), &backwardSlice, bsOptions);
-
-      for (auto parent = op->getParentOp();
-           !isa<air::HierarchyInterface>(parent);
-           parent = parent->getParentOp()) {
-        getBackwardSlice(parent, &backwardSlice, bsOptions);
-        backwardSlice.insert(parent);
-      }
-
-      for (auto b : backwardSlice) {
-        if (dyn_cast<air::ExecuteOp>(b)) {
-          for (auto &exec_child_op : b->getRegions().front().getOps()) {
-            getBackwardSlice(&exec_child_op, &backwardSlice, bsOptions);
-            backwardSlice.insert(&exec_child_op);
-          }
-        }
-      }
+      SmallVector<Operation *> backwardSlice;
+      backwardSlice.push_back(op);
+      if (isa<scf::ForOp>(op->getParentOp()))
+        backwardSlice.push_back(op->getParentOp());
+      for (auto o : backwardSlice)
+        for (auto oper : o->getOperands())
+          if (getConstantIntValue(oper))
+            backwardSlice.push_back(oper.getDefiningOp());
 
       for (auto b : backwardSlice) {
         b->setAttr("hoist", StringAttr::get(ctx, "dep"));
       }
-      op->setAttr("hoist", StringAttr::get(op->getContext(), "dep"));
       op->setAttr("loop-carried-dep",
                   StringAttr::get(op->getContext(), "external"));
 
@@ -1530,37 +1522,23 @@ class AIRDemoteDmaToAIRHierarchyConversion
           insertionPointAtHierOp; // To keep a record of the insertion point as
                                   // destination for hoisting
       rewriter.setInsertionPoint(hier_op);
-      if (herd) {
-        SmallVector<int, 2> lbs;
-        SmallVector<int, 2> ubs;
-        auto size = herd.getSizeOperands();
-        for (auto s : size) {
-          lbs.push_back(0);
-          ubs.push_back(*mlir::getConstantIntValue(s));
-        }
-        scf::ParallelOp scf_par =
-            hoistHerdToAsyncParallel(rewriter, loc, ctx, herd, lbs, ubs);
-        scf_loop = scf_par.getOperation();
-      } else if (segment) {
-        // Since segment doesn't have iteration space, it doesn't hoist a loop
-        insertionPointAtHierOp = rewriter.saveInsertionPoint();
-      }
 
       if (herd) {
-        auto scf_par = dyn_cast<scf::ParallelOp>(scf_loop);
         // Get mapping for remapped ssa values entering the hoisted scf.parallel
         IRMapping remap;
-        auto herd_size = herd.getSizeOperands();
-        remap.map(herd.getSize()[0], herd_size[0]);
-        remap.map(herd.getSize()[1], herd_size[1]);
-        remap.map(herd.getIds()[0], scf_par.getInductionVars()[0]);
-        remap.map(herd.getIds()[1], scf_par.getInductionVars()[1]);
+        if (auto for_op = dyn_cast<scf::ForOp>(op->getParentOp()))
+          for (auto init_arg : for_op.getInitArgs())
+            remap.map(init_arg,
+                      rewriter
+                          .create<air::WaitAllOp>(
+                              loc, air::AsyncTokenType::get(op->getContext()),
+                              SmallVector<Value>{})
+                          .getAsyncToken());
         int arg_idx = 0;
         for (auto arg : herd.getKernelArguments())
           remap.map(arg, herd.getKernelOperand(arg_idx++));
 
         // Clone ops into hoisted scf.parallel
-        rewriter.setInsertionPointToStart(scf_par.getBody());
         for (Operation &o :
              herd->getRegions().front().getBlocks().front().getOperations()) {
           if (isa<air::HerdTerminatorOp>(o))
@@ -2755,16 +2733,6 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     SmallVector<func::FuncOp, 4> funcOps;
     module.walk([&](func::FuncOp op) { funcOps.push_back(op); });
 
-    // Hoist broadcast pattern
-    for (auto f : funcOps) {
-      f.walk([&](affine::AffineIfOp op) {
-        if (!op->getParentOfType<affine::AffineIfOp>()) {
-          // Only hoist top-level affine if op with a nest of if ops
-          HoistingAffineIf(op);
-        }
-      });
-    }
-
     // Demote memref alloc pattern
     std::map<air::HierarchyInterface, std::vector<Operation *>> hier_to_allocs;
     for (auto f : funcOps) {
@@ -2792,6 +2760,16 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
     for (auto pair : hier_to_allocs) {
       OpBuilder builder(pair.first);
       (void)AIRDemoteMemrefToAIRHierarchy(pair, builder);
+    }
+
+    // Hoist broadcast pattern
+    for (auto f : funcOps) {
+      f.walk([&](affine::AffineIfOp op) {
+        if (!op->getParentOfType<affine::AffineIfOp>()) {
+          // Only hoist top-level affine if op with a nest of if ops
+          HoistingAffineIf(op);
+        }
+      });
     }
 
     // First pattern to demote dma ops to corresponding air hierarchy
