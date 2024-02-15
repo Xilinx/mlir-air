@@ -76,7 +76,9 @@ struct DmaToIpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
 
     Value divV = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), div);
     auto divOp = [&](Value v) {
-      return rewriter.create<arith::DivUIOp>(op->getLoc(), v, divV);
+      if (div == 1)
+        return v;
+      return rewriter.create<arith::DivUIOp>(op->getLoc(), v, divV).getResult();
     };
     SmallVector<Value> offsets;
     SmallVector<int64_t> staticOffsets;
@@ -139,10 +141,11 @@ struct DmaToIpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
                                  rewriter.getStringAttr("MetadataNotFound"))
               .getValue();
 
-    memref = rewriter
-                 .create<UnrealizedConversionCastOp>(op.getLoc(), newMemrefTy,
-                                                     memref)
-                 .getResult(0);
+    if (bitwidth != 32)
+      memref = rewriter
+                   .create<UnrealizedConversionCastOp>(op.getLoc(), newMemrefTy,
+                                                       memref)
+                   .getResult(0);
 
     rewriter.replaceOpWithNewOp<AIEX::IpuDmaMemcpyNdOp>(
         op, xInt, yInt, memref, offsets, sizes, strides, staticOffsets,
@@ -804,7 +807,7 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     unrollAffineFors(module);
 
     // Buffer ipu.dma_memcpy_nd memref to function's argument list.
-    // BufferMemrefToFuncArgs(module);
+    BufferMemrefToFuncArgs(module);
 
     // Insert sync op after copying data out to host
     insertIpuSyncOpForResults(module);
@@ -1028,16 +1031,21 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     SmallVector<Type, 6> memrefTypes;
     SmallVector<Value, 6> memrefs;
     funcOp.walk([&](AIEX::IpuDmaMemcpyNdOp dma) {
-      // Value test_val = dyn_cast<Value>(dma.getMemref());
-      // auto test_val1 = dma.getMemref();
-      if (std::find(funcOp.getArguments().begin(), funcOp.getArguments().end(),
-                    dma.getMemref()) == funcOp.getArguments().end()) {
-        // push back if unique
-        if (std::find(memrefs.begin(), memrefs.end(), dma.getMemref()) ==
-            memrefs.end()) {
-          memrefs.push_back(dma.getMemref());
-          memrefTypes.push_back(dma.getMemref().getType());
-        }
+      Value memref = dma.getMemref();
+      auto args = funcOp.getArguments();
+      // if the memref is an arg, return
+      if (std::find(args.begin(), args.end(), memref) != args.end())
+        return;
+      // if the memref is the result of a cast of an arg, return
+      if (auto cast = dyn_cast_or_null<UnrealizedConversionCastOp>(memref.getDefiningOp()))
+        if (std::find(args.begin(), args.end(), cast.getOperand(0)) != args.end())
+          return;
+        else
+          memref = cast.getOperand(0);
+      // push back if unique
+      if (std::find(memrefs.begin(), memrefs.end(), dma.getMemref()) == memrefs.end()) {
+        memrefs.push_back(dma.getMemref());
+        memrefTypes.push_back(dma.getMemref().getType());
       }
     });
 
