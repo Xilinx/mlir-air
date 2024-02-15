@@ -254,6 +254,56 @@ public:
   }
 };
 
+struct CastFunctionArgs : public OpConversionPattern<func::FuncOp> {
+  using OpConversionPattern<func::FuncOp>::OpConversionPattern;
+
+  CastFunctionArgs(MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern<func::FuncOp>(context, benefit) {}
+
+  LogicalResult
+  matchAndRewrite(func::FuncOp funcOp, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    // only run on ipu control functions
+    bool hasIpuOps = false;
+    funcOp.walk([&](AIEX::IpuDmaMemcpyNdOp dma) { hasIpuOps = true; });
+    if (!hasIpuOps)
+      return failure();
+
+    // cast all the function args to i32 types.
+    // this is in support of ipu.dma_memcpy_nd which only allow 32bit types
+    mlir::FunctionType funcType = funcOp.getFunctionType();
+    SmallVector<Type> argTypes(funcType.getInputs());
+    for (int i = 0, e = argTypes.size(); i < e; i++) {
+      auto memrefTy = dyn_cast<MemRefType>(argTypes[i]);
+      if (!memrefTy)
+        continue;
+
+      unsigned int bitwidth = memrefTy.getElementTypeBitWidth();
+      if (bitwidth != 16 && bitwidth != 8)
+        continue;
+
+      unsigned int div = 32 / bitwidth;
+      unsigned int numElements = memrefTy.getNumElements() / div;
+      SmallVector<int64_t> shape{numElements};
+      MemRefType newMemrefTy =
+          MemRefType::get(shape, rewriter.getIntegerType(32));
+      argTypes[i] = newMemrefTy;
+      auto &entry = funcOp.front();
+      entry.insertArgument(i, newMemrefTy, rewriter.getUnknownLoc());
+      rewriter.setInsertionPointToStart(&entry);
+      auto cast = rewriter.create<UnrealizedConversionCastOp>(
+          rewriter.getUnknownLoc(), memrefTy, entry.getArgument(i));
+      entry.getArgument(i + 1).replaceAllUsesWith(cast.getResult(0));
+      entry.eraseArgument(i + 1);
+    }
+    auto newFuncType =
+        FunctionType::get(funcOp.getContext(), argTypes, funcType.getResults());
+    funcOp.setType(newFuncType);
+    return success();
+  }
+};
+
 AIE::DeviceOp getDeviceForSegmentLoad(Operation *s) {
   auto module = s->getParentOfType<ModuleOp>();
 
@@ -747,13 +797,14 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     // Simplify arith ops (from airrt-to-ipu)
     RewritePatternSet canoPatterns_2(ctx);
     arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns_2, ctx);
+    canoPatterns_2.insert<CastFunctionArgs>(ctx);
     (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns_2));
 
     // Unroll any affine for loops
     unrollAffineFors(module);
 
     // Buffer ipu.dma_memcpy_nd memref to function's argument list.
-    BufferMemrefToFuncArgs(module);
+    // BufferMemrefToFuncArgs(module);
 
     // Insert sync op after copying data out to host
     insertIpuSyncOpForResults(module);

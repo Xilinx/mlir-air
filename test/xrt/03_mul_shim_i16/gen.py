@@ -84,6 +84,7 @@ with Context() as ctx, Location.unknown():
     pipeline = "builtin.module(" + ",".join([
         "air-to-aie{emit-while-loop=true device=ipu row-offset=2 col-offset=0}",
         "air-to-std",
+        "canonicalize", "cse",
     ]) + ")"
     pm = PassManager.parse(pipeline)
     pm.run(mlir_module.operation)
