@@ -3338,6 +3338,182 @@ private:
   }
 };
 
+// A pass which performs loop fusion within air.segment op's region.
+class AIRSegmentLoopFusion
+    : public xilinx::air::impl::AIRSegmentLoopFusionBase<AIRSegmentLoopFusion> {
+
+public:
+  AIRSegmentLoopFusion() = default;
+  AIRSegmentLoopFusion(const AIRSegmentLoopFusion &pass) {}
+
+  void getDependentDialects(::mlir::DialectRegistry &registry) const override {
+    registry.insert<scf::SCFDialect, air::airDialect>();
+  }
+
+  void runOnSegment(air::SegmentOp op) {
+    auto loc = op->getLoc();
+    // Get memref.alloc ops.
+    SmallVector<air::ExecuteOp> memalloc_execs;
+    SmallVector<air::ExecuteOp> memdealloc_execs;
+    // Map from air.execute op containing alloc to air.execute op containing
+    // dealloc.
+    std::map<air::ExecuteOp, air::ExecuteOp> alloc_dealloc_execs;
+    for (auto execOp : op.getOps<air::ExecuteOp>()) {
+      if (auto child_op = execOp.getChildOp()) {
+        if (isa<memref::AllocOp>(child_op))
+          alloc_dealloc_execs[execOp] = nullptr;
+      }
+    }
+    for (auto execOp : op.getOps<air::ExecuteOp>()) {
+      if (auto child_op = execOp.getChildOp()) {
+        if (auto dealloc = dyn_cast<memref::DeallocOp>(child_op))
+          if (llvm::any_of(alloc_dealloc_execs,
+                           [&](std::pair<air::ExecuteOp, air::ExecuteOp> pair) {
+                             return dealloc.getMemref() ==
+                                    pair.first.getResult(1);
+                           })) {
+            alloc_dealloc_execs[dyn_cast<air::ExecuteOp>(
+                dealloc.getMemref().getDefiningOp())] = execOp;
+          }
+      }
+    }
+    // Get roots to perfectly nested scf.for loops.
+    SmallVector<scf::ForOp> perfectlyNestedForBands;
+    auto hasNElements = [](Block *block, unsigned N) {
+      auto op_ptr = block->begin();
+      for (unsigned i = 0; i < N; i++)
+        op_ptr = std::next(op_ptr);
+      return op_ptr != block->end() && &*op_ptr == &block->back();
+    };
+    for (auto forOp : op.getOps<scf::ForOp>()) {
+      if (hasNElements(forOp.getBody(), 1))
+        perfectlyNestedForBands.push_back(forOp);
+    }
+    if (perfectlyNestedForBands.empty())
+      return;
+    if (alloc_dealloc_execs.empty())
+      return;
+
+    // From the loop bands, get fusable scf.for for loop bands.
+    SmallVector<scf::ForOp> equalIterationForOps;
+    equalIterationForOps.push_back(perfectlyNestedForBands[0]);
+    auto lb = perfectlyNestedForBands[0].getLowerBound();
+    auto ub = perfectlyNestedForBands[0].getUpperBound();
+    auto step = perfectlyNestedForBands[0].getStep();
+    for (unsigned i = 1; i < perfectlyNestedForBands.size(); i++) {
+      if (perfectlyNestedForBands[i].getLowerBound() == lb &&
+          perfectlyNestedForBands[i].getUpperBound() == ub &&
+          perfectlyNestedForBands[i].getStep() == step) {
+        equalIterationForOps.push_back(perfectlyNestedForBands[i]);
+      }
+    }
+    if (equalIterationForOps.empty())
+      return;
+
+    // Folding memref.alloc / dealloc ops into fused loop.
+    SmallVector<scf::ForOp> fusableForOps;
+    OpBuilder builder(equalIterationForOps[0]);
+    auto new_loop_op_init_arg =
+        builder
+            .create<air::WaitAllOp>(
+                loc, air::AsyncTokenType::get(builder.getContext()),
+                SmallVector<Value>{})
+            .getAsyncToken();
+    scf::ForOp new_loop_op =
+        builder.create<scf::ForOp>(builder.getUnknownLoc(), lb, ub, step,
+                                   SmallVector<Value>{new_loop_op_init_arg});
+    SmallVector<air::ExecuteOp> erase_keys;
+    for (auto execOpPair : alloc_dealloc_execs) {
+      bool canMove = false;
+      air::ExecuteOp alloc_exec = execOpPair.first;
+      for (auto token_user : alloc_exec.getAsyncToken().getUsers()) {
+        if (llvm::any_of(equalIterationForOps, [&](scf::ForOp fusableForOp) {
+              return fusableForOp == token_user;
+            })) {
+          fusableForOps.push_back(dyn_cast<scf::ForOp>(token_user));
+          canMove = true;
+        }
+      }
+      if (canMove) {
+        for (auto user : alloc_exec.getAsyncToken().getUsers()) {
+          if (auto async_user = dyn_cast<air::AsyncOpInterface>(user))
+            eraseAsyncDependencyFromAsyncOp(async_user,
+                                            alloc_exec.getAsyncToken());
+        }
+        alloc_exec->moveBefore(new_loop_op.getBody(),
+                               new_loop_op.getBody()->getOperations().end());
+      } else
+        erase_keys.push_back(alloc_exec);
+    }
+    for (auto e : erase_keys)
+      alloc_dealloc_execs.erase(e);
+
+    // Loop fusion.
+    IRMapping remap;
+    for (auto forOp : fusableForOps) {
+      remap.map(forOp.getInductionVar(), new_loop_op.getInductionVar());
+      for (unsigned i = 0; i < forOp.getRegionIterArgs().size(); i++)
+        remap.map(forOp.getRegionIterArgs(), new_loop_op.getRegionIterArgs());
+      builder.setInsertionPointToEnd(new_loop_op.getBody());
+      for (auto &child_op : forOp.getBody()->getOperations())
+        if (!child_op.mightHaveTrait<OpTrait::IsTerminator>())
+          builder.clone(child_op, remap);
+    }
+
+    // Fuse dealloc ops.
+    for (auto execOpPair : alloc_dealloc_execs) {
+      air::ExecuteOp dealloc_exec = execOpPair.second;
+      dealloc_exec->moveBefore(new_loop_op.getBody(),
+                               new_loop_op.getBody()->getOperations().end());
+    }
+
+    // Scf.yield op.
+    builder.setInsertionPointToEnd(new_loop_op.getBody());
+    SmallVector<Value> yield_dep_list;
+    for (auto &child_op : new_loop_op.getBody()->getOperations()) {
+      if (!child_op.getResults().empty()) {
+        if (isa<air::AsyncTokenType>(child_op.getResult(0).getType()) &&
+            child_op.getResult(0).getUsers().empty()) {
+          yield_dep_list.push_back(child_op.getResult(0));
+        }
+      }
+    }
+    auto wa_op = builder.create<air::WaitAllOp>(
+        loc, air::AsyncTokenType::get(builder.getContext()), yield_dep_list);
+    builder.create<scf::YieldOp>(loc, wa_op.getAsyncToken());
+
+    // Erase original scf.for ops.
+    for (auto forOp : fusableForOps) {
+      assert(forOp.getNumResults() == new_loop_op.getNumResults() &&
+             "Fused loop has different number of results as original");
+      for (unsigned i = 0; i < forOp.getNumResults(); i++) {
+        forOp.getResult(i).replaceAllUsesWith(new_loop_op.getResult(i));
+      }
+      forOp->erase();
+    }
+
+    new_loop_op.walk([&](air::ChannelPutOp putOp) {
+      air::ChannelGetOp getOp = nullptr;
+      for (auto user : putOp.getMemref().getUsers())
+        if (auto get_user = dyn_cast<air::ChannelGetOp>(user))
+          getOp = get_user;
+      scf::ForOp put_parent = putOp->getParentOfType<scf::ForOp>();
+      put_parent->setOperand(3, getOp.getAsyncToken());
+    });
+  }
+
+  void runOnOperation() override {
+    auto func = getOperation();
+    SmallVector<air::SegmentOp> segs;
+    func.walk([&](air::SegmentOp op) { segs.push_back(op); });
+    for (auto seg : segs) {
+      runOnSegment(seg);
+    }
+  }
+
+private:
+};
+
 } // namespace
 
 namespace xilinx {
@@ -3417,6 +3593,10 @@ std::unique_ptr<Pass> createAIRFuseChannels() {
 
 std::unique_ptr<Pass> createAIRIsolateAsyncDmaLoopNests() {
   return std::make_unique<AIRIsolateAsyncDmaLoopNests>();
+}
+
+std::unique_ptr<Pass> createAIRSegmentLoopFusion() {
+  return std::make_unique<AIRSegmentLoopFusion>();
 }
 
 void populateAIRLoopIndexCanonicalizationPatterns(RewritePatternSet &patterns) {

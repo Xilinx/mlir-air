@@ -1034,6 +1034,14 @@ def AIRIsolateAsyncDmaLoopNests: Pass<"air-isolate-async-dma-loop-nests", "Modul
   }];
 }
 
+def AIRSegmentLoopFusion: Pass<"air-loop-fusion", "func::FuncOp"> {
+  let summary = "Hoist dma ops into perfectly nested loop";
+  let constructor = "xilinx::air::createAIRSegmentLoopFusion()";
+  let description = [{
+    This pass performs loop fusion within air.segment op's region.
+  }];
+}
+
 def AIRDependencyScheduleOpt: Pass<"air-dependency-schedule-opt", "ModuleOp"> {
   let summary = "Optimize scheduling based on air async dependency";
   let constructor = "xilinx::air::createAIRDependencyScheduleOptPass()";
