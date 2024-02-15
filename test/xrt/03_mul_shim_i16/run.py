@@ -15,7 +15,7 @@ out_size_bytes = out_size * 2
 with open('insts.txt', 'r') as f:
     instr_text = f.read().split('\n')
     instr_text = [l for l in instr_text if l != '']
-    instr_v = np.array([int(i,16) for i in instr_text], dtype=np.uint16)
+    instr_v = np.array([int(i,16) for i in instr_text], dtype=np.uint32)
 
 opts_xclbin = 'mul.xclbin'
 opts_kernel = 'MLIR_AIE'
@@ -41,11 +41,11 @@ bo_c = xrt.bo(device, out_size_bytes, xrt.bo.host_only, kernel.group_id(4))
 bo_instr.write(instr_v, 0)
 bo_instr.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
-input_a = np.arange(in_size, dtype=np.uint16)
+input_a = np.arange(in_size, dtype=np.uint16)+1
 bo_a.write(input_a, 0)
 bo_a.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 
-input_b = np.arange(in_size, dtype=np.uint16)
+input_b = np.arange(in_size, dtype=np.uint16)+13
 bo_b.write(input_b, 0)
 bo_b.sync(xrt.xclBOSyncDirection.XCL_BO_SYNC_BO_TO_DEVICE)
 

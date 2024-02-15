@@ -78,7 +78,8 @@ struct DmaToIpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
     auto divOp = [&](Value v) {
       if (div == 1)
         return v;
-      return rewriter.create<arith::DivUIOp>(op->getLoc(), v, divV).getResult();
+      return rewriter.create<arith::CeilDivUIOp>(op->getLoc(), v, divV)
+          .getResult();
     };
     SmallVector<Value> offsets;
     SmallVector<int64_t> staticOffsets;
@@ -101,19 +102,19 @@ struct DmaToIpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
     SmallVector<Value> sizes;
     SmallVector<int64_t> staticSizes;
     if (auto const_int = getConstantIntValue(adaptor.getLength3()))
-      staticSizes.push_back(*const_int / div);
+      staticSizes.push_back(*const_int);
     else
-      sizes.push_back(divOp(adaptor.getLength3()));
+      sizes.push_back(adaptor.getLength3());
     if (auto const_int = getConstantIntValue(adaptor.getLength2()))
-      staticSizes.push_back(*const_int / div);
+      staticSizes.push_back(*const_int);
     else
-      sizes.push_back(divOp(adaptor.getLength2()));
+      sizes.push_back(adaptor.getLength2());
     if (auto const_int = getConstantIntValue(adaptor.getLength1()))
-      staticSizes.push_back(*const_int / div);
+      staticSizes.push_back(*const_int);
     else
-      sizes.push_back(divOp(adaptor.getLength1()));
+      sizes.push_back(adaptor.getLength1());
     if (auto const_int = getConstantIntValue(adaptor.getLength0()))
-      staticSizes.push_back(*const_int / div);
+      staticSizes.push_back(std::max(1L, *const_int / div));
     else
       sizes.push_back(divOp(adaptor.getLength0()));
     SmallVector<Value> strides;
