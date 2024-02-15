@@ -550,6 +550,11 @@ _Give linalg ops a LinalgTransformMarker string attribute if they don't already 
 
 _AIR linalg operation statistics_
 
+### `-air-loop-fusion`
+
+_Hoist dma ops into perfectly nested loop_
+
+This pass performs loop fusion within air.segment op's region.
 ### `-air-loop-merging`
 
 _Merge several nested subloops into a single loop_
