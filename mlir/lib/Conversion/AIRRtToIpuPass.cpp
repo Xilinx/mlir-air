@@ -63,24 +63,42 @@ struct DmaToIpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
     else
       return failure();
 
+    Value memref = adaptor.getMemref();
+    MemRefType memrefTy = cast<MemRefType>(memref.getType());
+    unsigned int bitwidth = memrefTy.getElementTypeBitWidth();
+    if (bitwidth != 32 && bitwidth != 16 && bitwidth != 8)
+      return failure();
+    unsigned int div = 32 / bitwidth;
+    unsigned int numElements = memrefTy.getNumElements() / div;
+    SmallVector<int64_t> shape{numElements};
+    MemRefType newMemrefTy =
+        MemRefType::get(shape, rewriter.getIntegerType(32));
+
+    Value divV = rewriter.create<arith::ConstantIndexOp>(op->getLoc(), div);
+    auto divOp = [&](Value v) {
+      if (div == 1)
+        return v;
+      return rewriter.create<arith::CeilDivUIOp>(op->getLoc(), v, divV)
+          .getResult();
+    };
     SmallVector<Value> offsets;
     SmallVector<int64_t> staticOffsets;
     if (auto const_int = getConstantIntValue(adaptor.getOffset3()))
-      staticOffsets.push_back(*const_int);
+      staticOffsets.push_back(*const_int / div);
     else
-      offsets.push_back(adaptor.getOffset3());
+      offsets.push_back(divOp(adaptor.getOffset3()));
     if (auto const_int = getConstantIntValue(adaptor.getOffset2()))
-      staticOffsets.push_back(*const_int);
+      staticOffsets.push_back(*const_int / div);
     else
-      offsets.push_back(adaptor.getOffset2());
+      offsets.push_back(divOp(adaptor.getOffset2()));
     if (auto const_int = getConstantIntValue(adaptor.getOffset1()))
-      staticOffsets.push_back(*const_int);
+      staticOffsets.push_back(*const_int / div);
     else
-      offsets.push_back(adaptor.getOffset1());
+      offsets.push_back(divOp(adaptor.getOffset1()));
     if (auto const_int = getConstantIntValue(adaptor.getOffset0()))
-      staticOffsets.push_back(*const_int);
+      staticOffsets.push_back(*const_int / div);
     else
-      offsets.push_back(adaptor.getOffset0());
+      offsets.push_back(divOp(adaptor.getOffset0()));
     SmallVector<Value> sizes;
     SmallVector<int64_t> staticSizes;
     if (auto const_int = getConstantIntValue(adaptor.getLength3()))
@@ -96,23 +114,23 @@ struct DmaToIpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
     else
       sizes.push_back(adaptor.getLength1());
     if (auto const_int = getConstantIntValue(adaptor.getLength0()))
-      staticSizes.push_back(*const_int);
+      staticSizes.push_back(std::max(1L, *const_int / div));
     else
-      sizes.push_back(adaptor.getLength0());
+      sizes.push_back(divOp(adaptor.getLength0()));
     SmallVector<Value> strides;
     SmallVector<int64_t> staticStrides;
     if (auto const_int = getConstantIntValue(adaptor.getStride3()))
-      staticStrides.push_back(*const_int);
+      staticStrides.push_back(*const_int / div);
     else
-      strides.push_back(adaptor.getStride3());
+      strides.push_back(divOp(adaptor.getStride3()));
     if (auto const_int = getConstantIntValue(adaptor.getStride2()))
-      staticStrides.push_back(*const_int);
+      staticStrides.push_back(*const_int / div);
     else
-      strides.push_back(adaptor.getStride2());
+      strides.push_back(divOp(adaptor.getStride2()));
     if (auto const_int = getConstantIntValue(adaptor.getStride1()))
-      staticStrides.push_back(*const_int);
+      staticStrides.push_back(*const_int / div);
     else
-      strides.push_back(adaptor.getStride1());
+      strides.push_back(divOp(adaptor.getStride1()));
 
     StringRef metadata;
     if (op->hasAttr("metadata"))
@@ -124,9 +142,15 @@ struct DmaToIpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
                                  rewriter.getStringAttr("MetadataNotFound"))
               .getValue();
 
+    if (bitwidth != 32)
+      memref = rewriter
+                   .create<UnrealizedConversionCastOp>(op.getLoc(), newMemrefTy,
+                                                       memref)
+                   .getResult(0);
+
     rewriter.replaceOpWithNewOp<AIEX::IpuDmaMemcpyNdOp>(
-        op, xInt, yInt, adaptor.getMemref(), offsets, sizes, strides,
-        staticOffsets, staticSizes, staticStrides, metadata, idInt);
+        op, xInt, yInt, memref, offsets, sizes, strides, staticOffsets,
+        staticSizes, staticStrides, metadata, idInt);
 
     return success();
   }
@@ -230,6 +254,56 @@ public:
     for (auto o : erased)
       rewriter.eraseOp(o);
     rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct CastFunctionArgs : public OpConversionPattern<func::FuncOp> {
+  using OpConversionPattern<func::FuncOp>::OpConversionPattern;
+
+  CastFunctionArgs(MLIRContext *context, PatternBenefit benefit = 1)
+      : OpConversionPattern<func::FuncOp>(context, benefit) {}
+
+  LogicalResult
+  matchAndRewrite(func::FuncOp funcOp, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    // only run on ipu control functions
+    bool hasIpuOps = false;
+    funcOp.walk([&](AIEX::IpuDmaMemcpyNdOp dma) { hasIpuOps = true; });
+    if (!hasIpuOps)
+      return failure();
+
+    // cast all the function args to i32 types.
+    // this is in support of ipu.dma_memcpy_nd which only allow 32bit types
+    mlir::FunctionType funcType = funcOp.getFunctionType();
+    SmallVector<Type> argTypes(funcType.getInputs());
+    for (int i = 0, e = argTypes.size(); i < e; i++) {
+      auto memrefTy = dyn_cast<MemRefType>(argTypes[i]);
+      if (!memrefTy)
+        continue;
+
+      unsigned int bitwidth = memrefTy.getElementTypeBitWidth();
+      if (bitwidth != 16 && bitwidth != 8)
+        continue;
+
+      unsigned int div = 32 / bitwidth;
+      unsigned int numElements = memrefTy.getNumElements() / div;
+      SmallVector<int64_t> shape{numElements};
+      MemRefType newMemrefTy =
+          MemRefType::get(shape, rewriter.getIntegerType(32));
+      argTypes[i] = newMemrefTy;
+      auto &entry = funcOp.front();
+      entry.insertArgument(i, newMemrefTy, rewriter.getUnknownLoc());
+      rewriter.setInsertionPointToStart(&entry);
+      auto cast = rewriter.create<UnrealizedConversionCastOp>(
+          rewriter.getUnknownLoc(), memrefTy, entry.getArgument(i));
+      entry.getArgument(i + 1).replaceAllUsesWith(cast.getResult(0));
+      entry.eraseArgument(i + 1);
+    }
+    auto newFuncType =
+        FunctionType::get(funcOp.getContext(), argTypes, funcType.getResults());
+    funcOp.setType(newFuncType);
     return success();
   }
 };
@@ -685,7 +759,7 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     ConversionTarget target(getContext());
     target.addIllegalDialect<AIRRtDialect>();
     target.addLegalDialect<arith::ArithDialect, AIEX::AIEXDialect>();
-
+    target.addLegalOp<UnrealizedConversionCastOp>();
     target.addDynamicallyLegalOp<affine::AffineStoreOp>(
         [&](affine::AffineStoreOp op) {
           if (op->getParentOfType<AIE::CoreOp>())
@@ -727,6 +801,7 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     // Simplify arith ops (from airrt-to-ipu)
     RewritePatternSet canoPatterns_2(ctx);
     arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns_2, ctx);
+    canoPatterns_2.insert<CastFunctionArgs>(ctx);
     (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns_2));
 
     // Unroll any affine for loops
@@ -957,16 +1032,24 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     SmallVector<Type, 6> memrefTypes;
     SmallVector<Value, 6> memrefs;
     funcOp.walk([&](AIEX::IpuDmaMemcpyNdOp dma) {
-      // Value test_val = dyn_cast<Value>(dma.getMemref());
-      // auto test_val1 = dma.getMemref();
-      if (std::find(funcOp.getArguments().begin(), funcOp.getArguments().end(),
-                    dma.getMemref()) == funcOp.getArguments().end()) {
-        // push back if unique
-        if (std::find(memrefs.begin(), memrefs.end(), dma.getMemref()) ==
-            memrefs.end()) {
-          memrefs.push_back(dma.getMemref());
-          memrefTypes.push_back(dma.getMemref().getType());
-        }
+      Value memref = dma.getMemref();
+      auto args = funcOp.getArguments();
+      // if the memref is an arg, return
+      if (std::find(args.begin(), args.end(), memref) != args.end())
+        return;
+      // if the memref is the result of a cast of an arg, return
+      if (auto cast = dyn_cast_or_null<UnrealizedConversionCastOp>(
+              memref.getDefiningOp()))
+        if (std::find(args.begin(), args.end(), cast.getOperand(0)) !=
+            args.end())
+          return;
+        else
+          memref = cast.getOperand(0);
+      // push back if unique
+      if (std::find(memrefs.begin(), memrefs.end(), dma.getMemref()) ==
+          memrefs.end()) {
+        memrefs.push_back(dma.getMemref());
+        memrefTypes.push_back(dma.getMemref().getType());
       }
     });
 
