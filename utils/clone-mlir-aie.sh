@@ -14,7 +14,7 @@
 #
 ##===----------------------------------------------------------------------===##
 
-export HASH=ac815651b12b2aa17f6a64105707fc4bc08a8434
+export HASH=d07ee8ee44b5f0fa9b48ceb0f38878cb71c6533f
 target_dir=mlir-aie
 
 if [[ ! -d $target_dir ]]; then
