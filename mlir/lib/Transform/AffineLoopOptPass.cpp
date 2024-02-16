@@ -146,6 +146,10 @@ void AffineLoopOptPass::tileLoops(
   // Tile each band.
   for (auto &band : *bands) {
 
+    assert(!band.empty());
+    auto stringAttr = band[0]->getAttrOfType<StringAttr>(
+        AffineLoopOptPass::affineOptAttrName);
+
     SmallVector<affine::AffineForOp, 6> tiledNest;
     SmallVector<unsigned, 6> actualTileSizes = optTileSizes;
 
@@ -163,8 +167,6 @@ void AffineLoopOptPass::tileLoops(
       (void)separateFullTiles(intraTileLoops);
     }
 
-    auto stringAttr = band[0]->getAttrOfType<StringAttr>(
-        AffineLoopOptPass::affineOptAttrName);
     if (stringAttr)
       tiledNest[0]->setAttr(
           AffineLoopOptPass::affineOptAttrName,
