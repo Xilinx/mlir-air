@@ -2340,13 +2340,14 @@ public:
         end_bb = new Block();
         mem.getBody().push_back(end_bb);
         auto b = OpBuilder::atBlockBegin(channel_head);
-        b.create<AIE::DMAStartOp>(loc, dir, chan, first_bd, end_bb);
+        b.create<AIE::DMAStartOp>(loc, dir, chan, /*repeat*/ 1, first_bd,
+                                  end_bb);
         b.setInsertionPointToEnd(end_bb);
         b.create<AIE::EndOp>(loc);
       } else {
         auto b = OpBuilder::atBlockBegin(start_bb);
         b.create<AIE::DMAStartOp>(
-            loc, dir, chan, first_bd,
+            loc, dir, chan, /*repeat*/ 1, first_bd,
             channel_head->getTerminator()->getSuccessor(1));
         channel_head->getTerminator()->setSuccessor(start_bb, 1);
       }

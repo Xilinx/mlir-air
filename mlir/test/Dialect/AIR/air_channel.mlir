@@ -8,17 +8,17 @@
 
 // RUN: air-opt %s | FileCheck %s
 
-// CHECK-LABEL: func.func @channel
 // CHECK: air.channel @channel_1 [2, 2]
+// CHECK: func.func @channel
 // CHECK: %[[V1:.*]] = air.channel.put async [{{.*}}] @channel_1[{{.*}}, {{.*}}]
 // CHECK: %[[V2:.*]] = air.channel.get async [{{.*}}] @channel_1[{{.*}}, {{.*}}]
+air.channel @channel_1 [2,2]
 func.func @channel() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c2 = arith.constant 2 : index
   %c32 = arith.constant 32 : index
   %c64 = arith.constant 64 : index
-  air.channel @channel_1 [2,2]
   %0 = memref.alloc() : memref<64x64xbf16, 1>
   %1 = memref.alloc() : memref<32x32xbf16, 2>
   scf.parallel (%arg0, %arg1) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) {
@@ -32,16 +32,16 @@ func.func @channel() {
   return 
 } 
 
-// CHECK-LABEL: func.func @fork
+// CHECK: func.func @fork
 // CHECK: %[[V1:.*]] = air.channel.put async [{{.*}}] @bcast[] ({{.*}}[{{.*}},{{.*}}]
 // CHECK: air.channel.get @bcast[{{.*}}, {{.*}}] ({{.*}}[] [] []) 
+air.channel @bcast [2,1]
 func.func @fork() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c2 = arith.constant 2 : index
   %c32 = arith.constant 32 : index
   %c64 = arith.constant 64 : index
-  air.channel @bcast [2,1]
   %0 = memref.alloc() : memref<64x64xbf16, 1>
   %1 = memref.alloc() : memref<32x32xbf16, 2>
   %2 = air.wait_all async
@@ -52,16 +52,16 @@ func.func @fork() {
   return 
 } 
 
-// CHECK-LABEL: func.func @distribute
+// CHECK: func.func @distribute
 // CHECK: air.channel.put @merge[{{.*}}, {{.*}}] ({{.*}}[
 // CHECK: %[[V2:.*]] = air.channel.get async [{{.*}}] @merge[]
+air.channel @merge[2,2]
 func.func @distribute() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c2 = arith.constant 2 : index
   %c32 = arith.constant 32 : index
   %c64 = arith.constant 64 : index
-  air.channel @merge[2,2]
   %0 = memref.alloc() : memref<64x64xbf16, 1>
   %1 = memref.alloc() : memref<32x32xbf16, 2>
   scf.parallel (%arg0, %arg1) = (%c0, %c0) to (%c2, %c2) step (%c1, %c1) {
