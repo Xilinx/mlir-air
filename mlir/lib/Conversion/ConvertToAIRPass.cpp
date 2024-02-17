@@ -1501,28 +1501,88 @@ class AIRDemoteDmaToAIRHierarchyConversion
     {
       OpBuilder::InsertionGuard guard(rewriter);
 
-      SmallVector<Operation *> backwardSlice;
-      backwardSlice.push_back(op);
-      if (isa<scf::ForOp>(op->getParentOp()))
-        backwardSlice.push_back(op->getParentOp());
-      for (auto o : backwardSlice)
-        for (auto oper : o->getOperands())
-          if (getConstantIntValue(oper))
-            backwardSlice.push_back(oper.getDefiningOp());
+      bool hoist_herd = false;
+      for (auto &elem : traceDependentHerdId(op)) {
+        for (auto v : std::get<1>(elem)) {
+          if (air::getHerdArgOwner(v)) {
+            hoist_herd = true;
+          }
+        }
+      }
+
+      SetVector<Operation *> backwardSlice;
+      // Transitive defs up to scf.for.
+      BackwardSliceOptions bsOptions{
+          [&](Operation *o) { return o != hier_op && !isa<scf::ForOp>(o); }};
+      getBackwardSlice(op.getOperation(), &backwardSlice, bsOptions);
+
+      if (hoist_herd) {
+        // Transitive defs up to air.herd.
+        BackwardSliceOptions bsOptionsHoistHerd{
+            [&](Operation *o) { return o != hier_op; }};
+        for (auto parent = op->getParentOp();
+             !isa<air::HierarchyInterface>(parent);
+             parent = parent->getParentOp()) {
+          getBackwardSlice(parent, &backwardSlice, bsOptionsHoistHerd);
+          backwardSlice.insert(parent);
+        }
+      } else {
+        // Add scf.for op, and any associate constant operands, to transitive
+        // defs.
+        if (auto parent_for = dyn_cast<scf::ForOp>(op->getParentOp())) {
+          backwardSlice.insert(parent_for);
+          for (auto oper : parent_for->getOperands())
+            if (getConstantIntValue(oper))
+              backwardSlice.insert(oper.getDefiningOp());
+        }
+      }
+
+      for (auto b : backwardSlice) {
+        if (dyn_cast<air::ExecuteOp>(b)) {
+          for (auto &exec_child_op : b->getRegions().front().getOps()) {
+            getBackwardSlice(&exec_child_op, &backwardSlice, bsOptions);
+            backwardSlice.insert(&exec_child_op);
+          }
+        }
+      }
 
       for (auto b : backwardSlice) {
         b->setAttr("hoist", StringAttr::get(ctx, "dep"));
       }
+      op->setAttr("hoist", StringAttr::get(op->getContext(), "dep"));
       op->setAttr("loop-carried-dep",
                   StringAttr::get(op->getContext(), "external"));
 
       // Hoist hierarchy op into scf op
+      scf::ParallelOp scf_par = nullptr;
       rewriter.setInsertionPoint(hier_op);
+      if (herd && hoist_herd) {
+        SmallVector<int, 2> lbs;
+        SmallVector<int, 2> ubs;
+        auto size = herd.getSizeOperands();
+        for (auto s : size) {
+          lbs.push_back(0);
+          ubs.push_back(*mlir::getConstantIntValue(s));
+        }
+        scf_par = hoistHerdToAsyncParallel(rewriter, loc, ctx, herd, lbs, ubs);
+      } else if (segment) {
+        // Since segment doesn't have iteration space, it doesn't hoist a loop
+        // insertionPointAtHierOp = rewriter.saveInsertionPoint();
+      }
 
       if (herd) {
         // Get mapping for remapped ssa values entering the hoisted scf.parallel
         IRMapping remap;
-        if (auto for_op = dyn_cast<scf::ForOp>(op->getParentOp()))
+        auto herd_size = herd.getSizeOperands();
+        remap.map(herd.getSize()[0], herd_size[0]);
+        remap.map(herd.getSize()[1], herd_size[1]);
+        if (scf_par) {
+          remap.map(herd.getIds()[0], scf_par.getInductionVars()[0]);
+          remap.map(herd.getIds()[1], scf_par.getInductionVars()[1]);
+        }
+        if (isa<scf::ForOp>(op->getParentOp()) && !hoist_herd) {
+          // Dangling incoming dependency edge to hoisted scf.for.
+          auto for_op = dyn_cast<scf::ForOp>(op->getParentOp());
           for (auto init_arg : for_op.getInitArgs())
             remap.map(init_arg,
                       rewriter
@@ -1530,11 +1590,14 @@ class AIRDemoteDmaToAIRHierarchyConversion
                               loc, air::AsyncTokenType::get(op->getContext()),
                               SmallVector<Value>{})
                           .getAsyncToken());
+        }
         int arg_idx = 0;
         for (auto arg : herd.getKernelArguments())
           remap.map(arg, herd.getKernelOperand(arg_idx++));
 
         // Clone ops into hoisted scf.parallel
+        if (scf_par)
+          rewriter.setInsertionPointToStart(scf_par.getBody());
         for (Operation &o :
              herd->getRegions().front().getBlocks().front().getOperations()) {
           if (isa<air::HerdTerminatorOp>(o))
@@ -1558,6 +1621,17 @@ class AIRDemoteDmaToAIRHierarchyConversion
       } else
         return failure();
 
+      if (scf_par) {
+        scf_par->walk([&](mlir::Operation *o) {
+          if (o == o->getBlock()->getTerminator()) {
+            return;
+          }
+          if (!o->hasAttr("hoist"))
+            erased.insert(o);
+          else
+            o->removeAttr("hoist");
+        });
+      }
       hier_op.walk([&](mlir::Operation *o) {
         if (o->hasAttr("hoist"))
           o->removeAttr("hoist");

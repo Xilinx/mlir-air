@@ -45,6 +45,11 @@ void traceDependentInductionVar(air::DmaMemcpyNdOp async_op,
 void traceDependentInductionVar(air::AsyncOpInterface async_op,
                                 SmallVector<Value, 1> &loop_dep_history,
                                 std::vector<Operation *> &op_history);
+void traceDependentHerdId(air::AsyncOpInterface async_op,
+                          SmallVector<Value> &loop_dep_history,
+                          SmallVector<Operation *> &op_history);
+std::vector<std::tuple<Value, SmallVector<Value>, SmallVector<Operation *>>>
+traceDependentHerdId(air::DmaMemcpyNdOp dmaNd_op);
 void eraseAsyncDependencyFromAsyncOp(xilinx::air::AsyncOpInterface op,
                                      Value token);
 void clearAsyncDependenciesOfAsyncOp(Operation *op);
