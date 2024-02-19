@@ -506,8 +506,15 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     } else {
       opers.push_back(builder.create<arith::IndexCastOp>(
           loc, IntegerType::get(ctx, 64), launch.getInductionVars()[0]));
-      opers.push_back(builder.create<arith::IndexCastOp>(
-          loc, IntegerType::get(ctx, 64), launch.getInductionVars()[1]));
+      if (launch.getNumLoops() == 2)
+        opers.push_back(builder.create<arith::IndexCastOp>(
+            loc, IntegerType::get(ctx, 64), launch.getInductionVars()[1]));
+      else if (launch.getNumLoops() == 1)
+        opers.push_back(builder.create<arith::ConstantOp>(
+            loc, i64Ty, IntegerAttr::get(i64Ty, 0)));
+      else
+        assert(false && "lowering of air.launch with more than 2 dimensions is "
+                        "currently unsupported");
     }
 
     opers.push_back(thisOp.getMemref());
