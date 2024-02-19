@@ -1760,10 +1760,27 @@ public:
           SmallVector<Value, 4> emptyVec = {};
           SmallVector<Type, 4> tys = {};
           if (auto putget = dyn_cast<air::ChannelInterface>(o.getOperation())) {
-            for (unsigned i = 0; i < putget.getIndices().size(); i++)
-              remap.map(putget.getIndices()[i],
+            auto air_chan = getChannelDeclarationThroughSymbol(putget);
+            auto air_chan_size =
+                extractFromIntegerArrayAttr<int64_t>(air_chan.getSize());
+            if (position.size() == putget.getIndices().size()) {
+              for (unsigned i = 0; i < putget.getIndices().size(); i++)
+                remap.map(putget.getIndices()[i],
+                          builder.create<arith::ConstantIndexOp>(
+                              builder.getUnknownLoc(), position[i]));
+            } else if (position.size() == 1 &&
+                       std::find(air_chan_size.begin(), air_chan_size.end(),
+                                 air_chan.getBundleSize()) !=
+                           air_chan_size.end()) {
+              auto idx = std::find(air_chan_size.begin(), air_chan_size.end(),
+                                   air_chan.getBundleSize()) -
+                         air_chan_size.begin();
+              remap.map(putget.getIndices()[idx],
                         builder.create<arith::ConstantIndexOp>(
-                            builder.getUnknownLoc(), position[i]));
+                            builder.getUnknownLoc(), position[0]));
+            } else
+              assert(false && "mismatching dimension counts between loop "
+                              "iteration space and air.channel shape");
           }
           // Specialize any affine apply mappings to operand
           for (auto oper : o->getOperands()) {
@@ -3108,9 +3125,8 @@ FailureOr<ModuleOp> convertAIRToAIE(mlir::RewriterBase &rewriter,
                                        /* .generate_shim_dma = */ false,
                                        /* .device = */ *device};
   std::vector<std::pair<ModuleOp, xilinx::air::HerdOp>> aie_modules;
-  p.walk([&](xilinx::air::HerdOp h) {
-    aie_modules.push_back({aie_module, h});
-  });
+  p.walk(
+      [&](xilinx::air::HerdOp h) { aie_modules.push_back({aie_module, h}); });
   std::map<AIE::TileOp, air::HerdOp> tileToHerdMap;
   for (auto &p : aie_modules) {
     ModuleOp aie_module = std::get<0>(p);
