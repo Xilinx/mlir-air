@@ -392,10 +392,10 @@ void createAIEModulesAndOutlineCores(
     herds.push_back(h);
   });
 
-  for (auto p : segments) {
+  for (auto seg : segments) {
     std::string segment_name;
     if (auto attr =
-            p->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+            seg->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
       segment_name = attr.getValue().str();
     else
       segment_name = "segment_" + std::to_string(aie_modules.size());
@@ -408,17 +408,23 @@ void createAIEModulesAndOutlineCores(
                      StringAttr::get(builder.getContext(), segment_name));
 
     aie_dev.getRegion().emplaceBlock();
-    p.walk([&](xilinx::air::HerdOp h) { aie_modules.push_back({aie_dev, h}); });
+    seg.walk([&](xilinx::air::HerdOp h) {
+      aie_modules.push_back({aie_dev, h});
+    });
 
     // If the device has memtiles, then outline memtiles
     if (aie_dev.getTargetModel().getNumMemTileRows()) {
-      outlineAIEMemtiles(builder, aie_dev, p, options);
+      outlineAIEMemtiles(builder, aie_dev, seg, options);
     }
   };
 
-  for (auto h : herds) {
+  for (auto herd : herds) {
     std::string segment_name;
-    segment_name = "herd_" + std::to_string(aie_modules.size());
+    if (auto attr =
+            herd->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+      segment_name = attr.getValue().str();
+    else
+      segment_name = "herd_" + std::to_string(aie_modules.size());
     std::string aie_module_name = "aie." + segment_name;
     auto builder = OpBuilder::atBlockBegin(module.getBody());
     auto aie_dev = builder.create<AIE::DeviceOp>(
@@ -427,7 +433,7 @@ void createAIEModulesAndOutlineCores(
     aie_dev->setAttr(SymbolTable::getSymbolAttrName(),
                      StringAttr::get(builder.getContext(), segment_name));
     aie_dev.getRegion().emplaceBlock();
-    aie_modules.push_back({aie_dev, h});
+    aie_modules.push_back({aie_dev, herd});
   };
   for (auto &p : aie_modules) {
     auto aie_dev = std::get<0>(p);
