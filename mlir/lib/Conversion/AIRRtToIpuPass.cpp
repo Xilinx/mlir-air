@@ -1039,12 +1039,13 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
         return;
       // if the memref is the result of a cast of an arg, return
       if (auto cast = dyn_cast_or_null<UnrealizedConversionCastOp>(
-              memref.getDefiningOp()))
+              memref.getDefiningOp())) {
         if (std::find(args.begin(), args.end(), cast.getOperand(0)) !=
             args.end())
           return;
         else
           memref = cast.getOperand(0);
+      }
       // push back if unique
       if (std::find(memrefs.begin(), memrefs.end(), dma.getMemref()) ==
           memrefs.end()) {
