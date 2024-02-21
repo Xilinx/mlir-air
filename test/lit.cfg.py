@@ -168,8 +168,6 @@ tools = [
     'aiecc.py',
     'aircc.py',
     'air-opt',
-    'clang',
-    'clang++',
     'ld.lld',
     'llc',
     'llvm-objdump',
