@@ -208,12 +208,15 @@ def run(mlir_module, args=None):
     do_call(['llvm-dis', aie_ctrl_llvm_opt_bc, '-o', aie_ctrl_llvm_opt_ir])
 
     aie_ctrl_obj = opts.tmpdir+'/'+air_mlir_filename+'.o'
+    llc_target = None
     if "x86_64" in opts.host_target:
       llc_target = "x86-64"
     elif "aarch64" in opts.host_target:
       llc_target = "aarch64"
+    elif opts.host_target:
+      print("Unhandled llc host target: '"+ opts.host_target + "'")
     do_call(['llc', '-O3', '--filetype=obj', '--relocation-model=pic'] +
-            (['-march=' + llc_target] if opts.host_target else []) +
+            (['-march=' + llc_target] if llc_target else []) +
             [aie_ctrl_llvm_opt_ir, '-o', aie_ctrl_obj])
 
     # make aie elf files and host .o files for each herd in the program
