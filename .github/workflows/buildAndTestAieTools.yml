@@ -110,7 +110,7 @@ jobs:
             pip install joblib
 
             pushd runtime_lib/xaiengine/aie-rt/driver/src
-            make -f Makefile.Linux CFLAGS="-D__AIELINUX__ -D__AIEAMDAIR__"
+            make -f Makefile.Linux CFLAGS="-D__AIEAMDAIR__"
             popd
             mkdir -p /install/aie-rt/lib
             cp -a runtime_lib/xaiengine/aie-rt/driver/src/*.so* /install/aie-rt/lib
