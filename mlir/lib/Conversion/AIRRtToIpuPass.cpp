@@ -791,7 +791,6 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     // Simplify arith ops (from airrt-to-ipu)
     RewritePatternSet canoPatterns_2(ctx);
     arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns_2, ctx);
-    canoPatterns_2.add(CastFunctionArgs);
     (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns_2));
 
     // Unroll any affine for loops
@@ -799,6 +798,11 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
 
     // Buffer ipu.dma_memcpy_nd memref to function's argument list.
     BufferMemrefToFuncArgs(module);
+
+    // Cast buffers to i32 types
+    RewritePatternSet castPattern(ctx);
+    castPattern.add(CastFunctionArgs);
+    (void)applyPatternsAndFoldGreedily(module, std::move(castPattern));
 
     // Insert sync op after copying data out to host
     insertIpuSyncOpForResults(module);
@@ -978,6 +982,8 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
       SmallVector<AIEX::IpuDmaMemcpyNdOp> dmas;
       f.walk([&](AIEX::IpuDmaMemcpyNdOp dma) { dmas.push_back(dma); });
       auto d = f->getParentOfType<AIE::DeviceOp>();
+      if (!d)
+        return;
       for (auto dma : dmas) {
         if (auto infoOp = getAllocOpForSymbol(d, dma.getMetadata())) {
           if (infoOp->getChannelDir() == AIE::DMAChannelDir::S2MM) {

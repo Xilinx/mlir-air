@@ -536,3 +536,22 @@ module {
     }
   }
 }
+
+// -----
+
+// 16-bit conversion with dma operands that aren't function arguments
+
+// CHECK-LABEL: func.func @func11
+// CHECK-SAME: %arg0: memref<16xi32>
+// CHECK-NEXT: aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 0, 0][1, 1, 1, 16][0, 0, 0]) {{.*}} : memref<16xi32>
+module {
+ func.func @func11() {
+    %c1_i32 = arith.constant 1 : i32
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c32_i64 = arith.constant 32 : i64
+    %alloc = memref.alloc() : memref<32xbf16>
+    airrt.dma_memcpy_nd(%c1_i32, %c0_i64, %c0_i64, %alloc[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c32_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @md0} : (i32, i64, i64, memref<32xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+    return
+  }
+}
