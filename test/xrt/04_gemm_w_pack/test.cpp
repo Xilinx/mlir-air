@@ -163,19 +163,17 @@ int main(int argc, const char *argv[]) {
   if (verbosity >= 1)
     std::cout << "Writing data into buffer objects.\n";
   A_DATATYPE *bufA = bo_a.map<A_DATATYPE *>();
-  std::vector<A_DATATYPE> AVec;
+  std::vector<A_DATATYPE> AVec(A_VOLUME);
   for (int i = 0; i < A_VOLUME; i++)
-    AVec.push_back(rand() % UINT16_MAX);
+    AVec[i] = rand() % UINT16_MAX;
   memcpy(bufA, AVec.data(), (AVec.size() * sizeof(A_DATATYPE)));
   B_DATATYPE *bufB = bo_b.map<B_DATATYPE *>();
-  std::vector<B_DATATYPE> BVec;
+  std::vector<B_DATATYPE> BVec(B_VOLUME);
   for (int i = 0; i < B_VOLUME; i++)
-    BVec.push_back(rand() % UINT16_MAX);
+    BVec[i] = rand() % UINT16_MAX;
   memcpy(bufB, BVec.data(), (BVec.size() * sizeof(B_DATATYPE)));
   C_DATATYPE *bufC = bo_c.map<C_DATATYPE *>();
-  std::vector<C_DATATYPE> CVec;
-  for (int i = 0; i < C_VOLUME; i++)
-    CVec.push_back(0);
+  std::vector<C_DATATYPE> CVec(C_VOLUME, 0);
   memcpy(bufC, CVec.data(), (CVec.size() * sizeof(C_DATATYPE)));
 
   void *bufInstr = bo_instr.map<void *>();
@@ -198,9 +196,7 @@ int main(int argc, const char *argv[]) {
   int errors = 0;
   int max_errors = 100;
 
-  std::vector<C_DATATYPE> output_ref0;
-  for (uint32_t i = 0; i < C_VOLUME; i++)
-    output_ref0.push_back(0);
+  std::vector<C_DATATYPE> output_ref0(C_VOLUME, 0);
   mm_out(AVec, BVec, output_ref0);
 
   for (uint32_t i = 0; i < C_VOLUME; i++) {
