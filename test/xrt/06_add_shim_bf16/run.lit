@@ -1,0 +1,6 @@
+// (c) Copyright 2024 Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// REQUIRES: ryzen_ai, valid_xchess_license
+// RUN: %python %S/gen.py
+// RUN: %run_on_ipu %python %S/run.py add.xclbin
