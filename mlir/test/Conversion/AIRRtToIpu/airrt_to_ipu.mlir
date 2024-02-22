@@ -514,3 +514,25 @@ module {
     return
   }
 }
+
+// -----
+
+// 16-bit type conversion
+
+// CHECK-LABEL: func.func @func10
+// CHECK-SAME: %arg0: memref<8192xi32>
+// CHECK-NEXT: aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 0, 0][4, 4, 32, 16][2048, 16, 64]){{.*}}: memref<8192xi32>
+module {
+  aie.device(ipu) {
+    func.func @func10(%arg0: memref<128x128xbf16>, %arg1: memref<128x128xbf16>) {
+      %c0_i32 = arith.constant 0 : i32
+      %c0_i64 = arith.constant 0 : i64
+      %c4_i64 = arith.constant 4 : i64
+      %c32_i64 = arith.constant 32 : i64
+      %c128_i64 = arith.constant 128 : i64
+      %c4096_i64 = arith.constant 4096 : i64
+      airrt.dma_memcpy_nd(%c0_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c4_i64, %c4_i64, %c32_i64, %c32_i64], [%c4096_i64, %c32_i64, %c128_i64]) {metadata = @md0} : (i32, i64, i64, memref<128x128xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+      return
+    }
+  }
+}
