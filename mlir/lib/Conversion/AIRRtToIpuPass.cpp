@@ -17,6 +17,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -26,6 +27,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
+#include <cstddef>
 
 #define DEBUG_TYPE "airrt-to-ipu-pass"
 
@@ -36,6 +38,58 @@ using namespace xilinx::airrt;
 namespace {
 #define GEN_PASS_DEF_AIRRTTOIPU
 #include "air/Conversion/Passes.h.inc"
+
+//
+//
+// Converts IR like:
+//
+// %0 = some.op
+// %1 = memref.assume_alignment %0
+// %2 = unrealized_conversion_cast %0
+//
+// to IR like:
+//
+// %0 = some.op
+// %1 = unrealized_conversion_cast %0
+// %2 = memref.assume_alignment %1
+//
+struct RelocateAssumeAlignmentOp
+    : public mlir::OpRewritePattern<memref::AssumeAlignmentOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(memref::AssumeAlignmentOp assumeOp,
+                  mlir::PatternRewriter &rewriter) const override {
+
+    auto producerOp = assumeOp.getOperand().getDefiningOp();
+    if (!producerOp)
+      return rewriter.notifyMatchFailure(assumeOp,
+                                         "No producer for AssumeAlignmentOp");
+
+    auto castConsumerOp = [&]() -> mlir::Operation * {
+      for (auto u : producerOp->getUsers()) {
+        if (auto castOp = dyn_cast<mlir::UnrealizedConversionCastOp>(u)) {
+          return castOp;
+        }
+      }
+      return {};
+    }();
+
+    if (!castConsumerOp)
+      return rewriter.notifyMatchFailure(
+          assumeOp, "No unrealized_conversion_cast consumer of producer.");
+
+    // Create a new AssumeAlignmentOp that consumes the cast operation's result
+    (void)rewriter.create<memref::AssumeAlignmentOp>(
+        assumeOp.getLoc(), castConsumerOp->getResult(0),
+        assumeOp.getAlignment());
+
+    // Erase the old AssumeAlignmentOp
+    rewriter.eraseOp(assumeOp);
+
+    return success();
+  }
+};
 
 struct DmaToIpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
   using OpConversionPattern<DmaMemcpyNdOp>::OpConversionPattern;
@@ -790,6 +844,7 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
 
     // Simplify arith ops (from airrt-to-ipu)
     RewritePatternSet canoPatterns_2(ctx);
+    canoPatterns_2.insert<RelocateAssumeAlignmentOp>(ctx);
     arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns_2, ctx);
     (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns_2));
 
