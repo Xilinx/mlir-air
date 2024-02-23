@@ -1,6 +1,6 @@
 //===- transform-par-to-launch-seg.mlir ------------------------*- MLIR -*-===//
 //
-// Copyright (C) 2023, Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//

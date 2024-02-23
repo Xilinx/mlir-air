@@ -90,7 +90,7 @@ def ParToLaunchOp : Op<Transform_Dialect, "air.par_to_launch",
   }];
   let arguments =
     (ins PDL_Operation:$target,
-     DefaultValuedAttr<BoolAttr, "true">:$has_air_segment);
+     DefaultValuedAttr<BoolAttr, "false">:$has_air_segment);
   let results = (outs PDL_Operation:$result);
   let assemblyFormat = "$target attr-dict";
 
