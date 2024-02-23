@@ -10,6 +10,7 @@ from air.dialects import air as airdialect
 from air.dialects import arith, func, linalg, memref
 from air.dialects.linalg.opdsl.lang import *
 from air._mlir_libs._airMlir import _run_air_transform as run_air_transform
+import air.compiler.aircc.main as aircc
 
 def generate_add_module(shape, dtype):
     module = Module.create()
@@ -62,56 +63,8 @@ with Context() as ctx, Location.unknown():
     airdialect.register_dialect(ctx)
     mlir_module = generate_add_module([32*32], IntegerType.get_signless(16))
 
-    print("\nTiled AIR Module:\n\n", mlir_module)
-    with open("mul.air.mlir", "w") as f:
-        f.write(str(mlir_module))
-
-    pipeline = "builtin.module(" + ",".join([
-        "func.func(air-lower-herd-parallel)",
-        "air-dma-to-channel",
-        "canonicalize", "cse",
-        "air-specialize-channel-wrap-and-stride",
-        "func.func(convert-linalg-to-loops)",
-        'func.func(air-renumber-dma)'
-    ]) + ")"
-    pm = PassManager.parse(pipeline)
-    pm.run(mlir_module.operation)
-
-    print("\nAIE Module:\n\n", mlir_module)
-    with open("mul.chan.mlir", "w") as f:
-        f.write(str(mlir_module))
-
-    pipeline = "builtin.module(" + ",".join([
-        "air-to-aie{emit-while-loop=true device=ipu row-offset=2 col-offset=0}",
-        "air-to-std",
-        "canonicalize", "cse",
-    ]) + ")"
-    pm = PassManager.parse(pipeline)
-    pm.run(mlir_module.operation)
-
-    print("\nAIE Module:\n\n", mlir_module)
-    with open("mul.aieairrt.mlir", "w") as f:
-        f.write(str(mlir_module))
-
-    pipeline = "builtin.module(" + ",".join([
-        "airrt-to-ipu",
-        "canonicalize", "cse",
-    ]) + ")"
-    pm = PassManager.parse(pipeline)
-    pm.run(mlir_module.operation)
-
-    print("\nAIE Module:\n\n", mlir_module)
-    with open("mul.aieipu.mlir", "w") as f:
-        f.write(str(mlir_module))
-
-    import aie.compiler.aiecc.main as aiecc
-
-    aiecc_options = ['--no-aiesim',
-                     '--xchess',
-                     '--aie-generate-cdo',
-                     '--aie-generate-ipu',
-                     '--no-compile-host',
-                     '--ipu-insts-name=insts.txt',
-                     '--xclbin-name=mul.xclbin',
-                     'aie.mlir']
-    aiecc.run(mlir_module, aiecc_options)
+    aircc_options = ['-row-offset', '2',
+                     '-col-offset', '0',
+                     '--device', 'ipu',
+                     '-xchesscc', 'air.mlir']
+    aircc.run(mlir_module, aircc_options)
