@@ -260,6 +260,13 @@ Traits: `FunctionalStyleTransformOpTrait`, `TransformEachOpTrait`
 
 Interfaces: `MemoryEffectsOpInterface`, `TransformOpInterface`
 
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>has_air_segment</code></td><td>::mlir::BoolAttr</td><td>bool attribute</td></tr>
+</table>
+
 #### Operands:
 
 | Operand | Description |
