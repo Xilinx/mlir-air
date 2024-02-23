@@ -964,7 +964,7 @@ void AIRCollapseHerdPass::runOnOperation() {
   SmallVector<air::HerdOp> herds;
   auto func = getOperation();
   func.walk([&](air::HerdOp op) {
-    if (op.getNumCols() != 1)
+    if (op.getNumCols() <= 2 && op.getNumRows() <= 2)
       herds.push_back(op);
   });
 
@@ -1048,6 +1048,9 @@ void AIRCollapseHerdPass::runOnOperation() {
     newPloop.getBody().front().getOperations().splice(
         ++Block::iterator(newPloop.getBody().front().back()),
         h.getBody().front().getOperations());
+    // Update kernel args
+    for (unsigned i = 0; i < h.getNumKernelOperands(); i++)
+      h.getKernelArgument(i).replaceAllUsesWith(newPloop.getKernelArgument(i));
     // Update async deps
     if (h.getAsyncToken()) {
       h.getAsyncToken().replaceAllUsesWith(newPloop.getAsyncToken());
