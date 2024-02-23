@@ -3289,7 +3289,8 @@ transform::ParToLaunchOp::applyToOne(transform::TransformRewriter &rewriter,
   llvm::SmallSet<air::LaunchOp, 2> launchOps;
   llvm::SmallSet<Operation *, 8> filteredOps;
   filteredOps.insert(target);
-  patterns.add<ScfParToLaunchConversion>(ctx, filteredOps, launchOps, false);
+  patterns.add<ScfParToLaunchConversion>(ctx, filteredOps, launchOps,
+                                         getHasAirSegment());
   patterns.add<ScfForallToLaunchConversion>(ctx, filteredOps, launchOps);
   (void)applyPatternsAndFoldGreedily(
       target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
