@@ -61,6 +61,7 @@ struct RelocateAssumeAlignmentOp
   matchAndRewrite(memref::AssumeAlignmentOp assumeOp,
                   mlir::PatternRewriter &rewriter) const override {
 
+
     auto producerOp = assumeOp.getOperand().getDefiningOp();
     if (!producerOp)
       return rewriter.notifyMatchFailure(assumeOp,
