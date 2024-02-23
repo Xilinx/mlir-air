@@ -2433,14 +2433,15 @@ static LogicalResult canonicalizeAIRDmaOperands(OpBuilder builder,
   // default order.
   int max_dim_size =
       std::max(std::max(offsets.size(), sizes.size()), strides.size());
-  if (max_dim_size && offsets.size() < (unsigned)memref.getRank()) {
-    for (unsigned i = offsets.size(); i < memref.getRank(); i++) {
+  int target_dim_size = std::max(max_dim_size, (int)memref.getRank());
+  if (max_dim_size && offsets.size() < target_dim_size) {
+    for (unsigned i = offsets.size(); i < target_dim_size; i++) {
       offsets.insert(offsets.begin(), builder.create<arith::ConstantIndexOp>(
                                           builder.getUnknownLoc(), 0));
     }
   }
-  if (max_dim_size && sizes.size() < (unsigned)memref.getRank()) {
-    for (unsigned i = sizes.size(); i < memref.getRank(); i++) {
+  if (max_dim_size && sizes.size() < target_dim_size) {
+    for (unsigned i = sizes.size(); i < target_dim_size; i++) {
       sizes.insert(sizes.begin(), builder.create<arith::ConstantIndexOp>(
                                       builder.getUnknownLoc(), 1));
     }
@@ -2448,8 +2449,8 @@ static LogicalResult canonicalizeAIRDmaOperands(OpBuilder builder,
   int memref_size = 1;
   for (auto size : memref.getShape())
     memref_size *= size;
-  if (max_dim_size && strides.size() < (unsigned)memref.getRank()) {
-    for (unsigned i = strides.size(); i < memref.getRank(); i++) {
+  if (max_dim_size && strides.size() < target_dim_size) {
+    for (unsigned i = strides.size(); i < target_dim_size; i++) {
       strides.insert(strides.begin(),
                      builder.create<arith::ConstantIndexOp>(
                          builder.getUnknownLoc(), memref_size));
@@ -2457,13 +2458,12 @@ static LogicalResult canonicalizeAIRDmaOperands(OpBuilder builder,
   }
 
   // Reduce highest dimensions if more than memref size
-  while (strides.size() > (unsigned)memref.getRank() &&
-         getConstantIntValue(strides[0]) &&
+  while (strides.size() > target_dim_size && getConstantIntValue(strides[0]) &&
          *getConstantIntValue(strides[0]) == memref_size) {
     strides.erase(strides.begin());
   }
-  while (sizes.size() > (unsigned)memref.getRank() &&
-         getConstantIntValue(sizes[0]) && *getConstantIntValue(sizes[0]) == 1) {
+  while (sizes.size() > target_dim_size && getConstantIntValue(sizes[0]) &&
+         *getConstantIntValue(sizes[0]) == 1) {
     sizes.erase(sizes.begin());
   }
   while (offsets.size() > std::min(sizes.size(), strides.size()) &&
