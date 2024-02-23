@@ -576,7 +576,7 @@ bool isAsyncOp(Operation *op) {
 // for loop to a new for loop located at the same scope.
 scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
                                      SmallVector<Operation *> target_ops) {
-
+  auto loc = for_op->getLoc();
   // If target ops are already perfectly nested, then skip
   auto hasNElements = [](Block *block, unsigned N) {
     auto op_ptr = block->begin();
@@ -604,8 +604,8 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
   builder.setInsertionPoint(for_op);
   IRMapping remap;
   auto new_for_op = builder.create<scf::ForOp>(
-      for_op.getLoc(), for_op.getLowerBound(), for_op.getUpperBound(),
-      for_op.getStep(), for_op.getInitArgs());
+      loc, for_op.getLowerBound(), for_op.getUpperBound(), for_op.getStep(),
+      for_op.getInitArgs());
   remap.map(for_op.getInductionVar(), new_for_op.getInductionVar());
   remap.map(getLoopCarriedTokenFromScfOp(for_op, "argument"),
             getLoopCarriedTokenFromScfOp(new_for_op, "argument"));
@@ -618,13 +618,12 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
     yield_operands.push_back(new_op->getResult(0));
   }
   builder.create<scf::YieldOp>(
-      new_for_op.getLoc(),
-      SmallVector<Value>{builder
-                             .create<air::WaitAllOp>(
-                                 new_for_op.getLoc(),
-                                 air::AsyncTokenType::get(builder.getContext()),
-                                 yield_operands)
-                             ->getResult(0)});
+      loc, SmallVector<Value>{
+               builder
+                   .create<air::WaitAllOp>(
+                       loc, air::AsyncTokenType::get(builder.getContext()),
+                       yield_operands)
+                   ->getResult(0)});
 
   // Update dependency to hoisted ops
   for (auto herd : new_for_op.getOps<air::HerdOp>()) {
@@ -634,13 +633,26 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
   }
   for (auto erase_op : target_ops) {
     // Reconnect returned tokens.
-    for (auto user : erase_op->getResult(0).getUsers()) {
-      if (auto async_user = dyn_cast<air::AsyncOpInterface>(user)) {
-        eraseAsyncDependencyFromAsyncOp(async_user, erase_op->getResult(0));
-        for (auto dep : getAsyncDependenciesFromOp(erase_op)) {
-          if (dep != getLoopCarriedTokenFromScfOp(for_op, "argument")) {
-            air::addAsyncDependencyIfNew(user, dep);
+    builder.setInsertionPoint(erase_op);
+    for (auto res : erase_op->getResults()) {
+      if (!isa<air::AsyncTokenType>(res.getType()))
+        continue;
+      for (auto &u : res.getUses()) {
+        if (auto async_user = dyn_cast<air::AsyncOpInterface>(u.getOwner())) {
+          eraseAsyncDependencyFromAsyncOp(async_user, res);
+          for (auto dep : getAsyncDependenciesFromOp(erase_op)) {
+            if (dep != getLoopCarriedTokenFromScfOp(for_op, "argument")) {
+              air::addAsyncDependencyIfNew(u.getOwner(), dep);
+            }
           }
+        } else {
+          // User op doesn't have air::AsyncOpInterface. Replace uses with newly
+          // generated air.wait_all op.
+          u.assign(builder
+                       .create<air::WaitAllOp>(
+                           loc, air::AsyncTokenType::get(builder.getContext()),
+                           getAsyncDependenciesFromOp(erase_op))
+                       .getAsyncToken());
         }
       }
     }
