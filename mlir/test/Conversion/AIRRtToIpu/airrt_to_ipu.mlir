@@ -558,11 +558,9 @@ module {
 
 // -----
 
-
-
 // Before PR https://github.com/Xilinx/mlir-air/pull/447 running
 // `air-opt --cse  --canonicalize -airrt-to-ipu`
-// on function in the test produces:
+// on the function in the test produced:
 //
 //  func.func @func12(%arg0: memref<16xi32>) {
 //    %alloc = memref.alloc() : memref<32xbf16>
@@ -571,14 +569,16 @@ module {
 //    return
 //  }
 //
-// PR 447 fixes relocates the memref.assume_alignment op.
-// `air-opt -airrt-to-ipu` on function in the test now produces:
+// PR 447 relocates the memref.assume_alignment op so that calling
+// `air-opt -airrt-to-ipu` on the function in the test now produces:
 //
 //  func.func @func12(%arg0: memref<16xi32>) {
 //    memref.assume_alignment %arg0, 64 : memref<16xi32>
 //    aiex.ipu.dma_memcpy_nd(0, 0, %arg0 ...
 //    return
 //  }
+//
+// The key difference is that memref.alloc is removed.
 
 // CHECK-LABEL: func12
 // CHECK-NOT: memref.alloc
