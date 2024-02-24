@@ -910,12 +910,17 @@ void air::foldForLoopNestAsExtendedSizesAndStrides(
       }
       // Index offset taking into account mismatch between memref rank and
       // offset list size difference.
-      ind_var_factor *=
-          getTensorShape(memref.getType()).size() < offsets.size()
-              ? getTensorVolume(memref.getType())
-              : getTensorShape(memref.getType())
-                    [i + memref.getType().cast<MemRefType>().getRank() -
-                     offsets.size()];
+      int memref_rank = getTensorShape(memref.getType()).size();
+      if (memref_rank < offsets.size()) {
+        if (i < offsets.size() - memref_rank)
+          ind_var_factor *= getTensorVolume(memref.getType());
+        else
+          ind_var_factor *= getTensorShape(
+              memref.getType())[i + memref_rank - offsets.size()];
+      } else {
+        ind_var_factor *=
+            getTensorShape(memref.getType())[i + memref_rank - offsets.size()];
+      }
     }
     int trip_count = -1;
     if (auto afo = dyn_cast<affine::AffineForOp>(o))
