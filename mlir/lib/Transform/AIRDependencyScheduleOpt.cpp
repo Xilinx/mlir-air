@@ -2094,7 +2094,17 @@ public:
   void getDmaOpLoopDependency(func::FuncOp f) {
     f.walk([&](Operation *op) {
       if (auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(op)) {
-        if (dma_op->getParentOfType<xilinx::air::HerdOp>()) {
+        int src_memspace = dma_op.getSrcMemref()
+                               .getType()
+                               .cast<MemRefType>()
+                               .getMemorySpaceAsInt();
+        int dst_memspace = dma_op.getDstMemref()
+                               .getType()
+                               .cast<MemRefType>()
+                               .getMemorySpaceAsInt();
+        bool isL1Memcpy = (src_memspace == (int)air::MemorySpace::L1) ||
+                          (dst_memspace == (int)air::MemorySpace::L1);
+        if (dma_op->getParentOfType<xilinx::air::HerdOp>() && isL1Memcpy) {
           // Start recursively tracing for loop induction variables
           dma_op_history.push_back(dma_op);
           SmallVector<Value, 1> loop_dep_history;
