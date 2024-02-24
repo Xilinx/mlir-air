@@ -964,7 +964,7 @@ void AIRCollapseHerdPass::runOnOperation() {
   SmallVector<air::HerdOp> herds;
   auto func = getOperation();
   func.walk([&](air::HerdOp op) {
-    if (op.getNumCols() <= 2 && op.getNumRows() <= 2)
+    if (op.getNumCols() != 1 && op.getNumDims() == 2)
       herds.push_back(op);
   });
 
@@ -974,7 +974,9 @@ void AIRCollapseHerdPass::runOnOperation() {
 
     // Assumption: herd is two-dimensional, and both of which we collapse into a
     // single dim.
-    SmallVector<SmallVector<unsigned>> combinedDimensions = {{}, {0, 1}};
+    if (h.getNumDims() != 2)
+      continue;
+    SmallVector<unsigned> dims = {0, 1};
 
     // Combine iteration spaces.
     SmallVector<Value, 3> lowerBounds, upperBounds, steps;
@@ -985,84 +987,43 @@ void AIRCollapseHerdPass::runOnOperation() {
     steps.push_back(cst1);
     upperBounds.push_back(cst1);
     // Second dimension onwards
-    for (unsigned i = 1, e = combinedDimensions.size(); i < e; ++i) {
-      Value newUpperBound =
-          outsideBuilder.create<arith::ConstantIndexOp>(loc, 1);
-      for (auto idx : combinedDimensions[i]) {
-        newUpperBound = outsideBuilder.create<arith::MulIOp>(
-            loc, newUpperBound,
-            h->getOperand(h.getAsyncDependencies().size() + idx));
-      }
-      lowerBounds.push_back(cst0);
-      steps.push_back(cst1);
-      upperBounds.push_back(newUpperBound);
+    Value newUpperBound = outsideBuilder.create<arith::ConstantIndexOp>(loc, 1);
+    for (auto idx : dims) {
+      newUpperBound = outsideBuilder.create<arith::MulIOp>(
+          loc, newUpperBound,
+          h->getOperand(h.getAsyncDependencies().size() + idx));
     }
+    lowerBounds.push_back(cst0);
+    steps.push_back(cst1);
+    upperBounds.push_back(newUpperBound);
 
-    // Create new air.herd with conversions to the original induction values.
-    SmallVector<Value> herd_kernel_operands;
-    for (unsigned i = 0; i < h.getNumKernelOperands(); i++) {
-      herd_kernel_operands.push_back(h.getKernelOperand(i));
-    }
-    air::HerdOp newPloop = nullptr;
-    if (h.getAsyncToken())
-      newPloop = outsideBuilder.create<air::HerdOp>(
-          loc, h.getAsyncDependencies(), upperBounds, herd_kernel_operands,
-          true);
-    else
-      newPloop = outsideBuilder.create<air::HerdOp>(loc, upperBounds,
-                                                    herd_kernel_operands);
-
-    // Remap the induction variables
     OpBuilder insideBuilder(h);
-    insideBuilder.setInsertionPointToStart(&newPloop.getBody().front());
-    for (unsigned i = 0, e = newPloop.getNumDims(); i < e; ++i) {
-      Value previous = newPloop.getIds()[i];
-      // Iterate over all except the last induction value.
-      for (int j = combinedDimensions[i].size() - 1; j > 0; --j) {
-        unsigned idx = combinedDimensions[i][j];
-        auto old_upper_bound = mlir::getConstantIntValue(
-            h.getOperand(h.getAsyncDependencies().size() + idx));
-        assert(old_upper_bound);
-        auto old_upper_b_v =
-            insideBuilder.create<arith::ConstantIndexOp>(loc, *old_upper_bound);
+    insideBuilder.setInsertionPointToStart(&h.getBody().front());
+    auto old_upper_bound = mlir::getConstantIntValue(
+        h.getOperand(h.getAsyncDependencies().size() + dims[1]));
+    if (!old_upper_bound)
+      return; // Found air.herd with dynamic shape. NYI.
+    auto old_upper_b_v =
+        insideBuilder.create<arith::ConstantIndexOp>(loc, *old_upper_bound);
 
-        // Determine the current induction value's current loop iteration
-        Value iv =
-            insideBuilder.create<arith::RemSIOp>(loc, previous, old_upper_b_v);
-        replaceAllUsesInRegionWith(h.getIds()[idx], iv, h.getBody());
+    // Determine the current induction value's current loop iteration
+    Value iv_1 =
+        insideBuilder.create<arith::RemSIOp>(loc, h.getIds()[1], old_upper_b_v);
+    h.getIds()[1].cast<Value>().replaceAllUsesExcept(iv_1,
+                                                     iv_1.getDefiningOp());
 
-        // Remove the effect of the current induction value to prepare for
-        // the next value.
-        previous =
-            insideBuilder.create<arith::DivSIOp>(loc, previous, old_upper_b_v);
-      }
+    // Remove the effect of the current induction value to prepare for
+    // the next value.
+    Value iv_0 =
+        insideBuilder.create<arith::DivSIOp>(loc, h.getIds()[1], old_upper_b_v);
+    replaceAllUsesInRegionWith(h.getIds()[0], iv_0, h.getBody());
 
-      // The final induction value is just the remaining value.
-      if (combinedDimensions[i].size()) {
-        unsigned idx = combinedDimensions[i][0];
-        replaceAllUsesInRegionWith(h.getIds()[idx], previous, h.getRegion());
-      }
+    // Update upper bounds.
+    int operandsIdxOffset = h.getAsyncDependencies().size();
+    for (unsigned i = operandsIdxOffset; i < operandsIdxOffset + h.getNumDims();
+         i++) {
+      h->getOpOperand(i).assign(upperBounds[i - operandsIdxOffset]);
     }
-
-    // Replace the old loop with the new loop.
-    newPloop.getBody().front().getOperations().splice(
-        ++Block::iterator(newPloop.getBody().front().back()),
-        h.getBody().front().getOperations());
-    // Update kernel args
-    for (unsigned i = 0; i < h.getNumKernelOperands(); i++)
-      h.getKernelArgument(i).replaceAllUsesWith(newPloop.getKernelArgument(i));
-    // Update async deps
-    if (h.getAsyncToken()) {
-      h.getAsyncToken().replaceAllUsesWith(newPloop.getAsyncToken());
-    }
-
-    // Copy over any attributes
-    NamedAttrList attrs(h->getAttrDictionary());
-    newPloop->setAttrs(attrs.getDictionary(h->getContext()));
-  }
-
-  for (auto h : herds) {
-    h.erase();
   }
 }
 
