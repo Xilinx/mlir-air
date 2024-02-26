@@ -408,8 +408,9 @@ void createAIEModulesAndOutlineCores(
                      StringAttr::get(builder.getContext(), segment_name));
 
     aie_dev.getRegion().emplaceBlock();
-    seg.walk(
-        [&](xilinx::air::HerdOp h) { aie_modules.push_back({aie_dev, h}); });
+    seg.walk([&](xilinx::air::HerdOp h) {
+      aie_modules.push_back({aie_dev, h});
+    });
 
     // If the device has memtiles, then outline memtiles
     if (aie_dev.getTargetModel().getNumMemTileRows()) {
