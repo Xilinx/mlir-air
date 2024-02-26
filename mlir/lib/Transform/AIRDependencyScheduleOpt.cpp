@@ -1708,9 +1708,9 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         offsets.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
         wraps.push_back(
             rewriter.create<arith::ConstantIndexOp>(loc, memref_shape[i]));
+        current_stride /= memref_shape[i];
         strides.push_back(
             rewriter.create<arith::ConstantIndexOp>(loc, current_stride));
-        current_stride /= memref_shape[i];
       }
     }
     for (auto o : for_loops) {
