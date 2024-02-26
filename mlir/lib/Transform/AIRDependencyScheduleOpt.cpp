@@ -2970,6 +2970,8 @@ public:
   }
 
   void runOnFunction(func::FuncOp f, std::vector<air::ChannelOp> channelOps) {
+    if (channelOps.empty())
+      return;
     std::map<air::ChannelOp, air::ChannelOp> chan_merge_map;
     for (unsigned i = 0; i < channelOps.size() - 1; i++) {
       for (unsigned j = i + 1; j < channelOps.size(); j++) {
