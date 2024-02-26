@@ -47,6 +47,8 @@ bool areIdenticalVectors(std::vector<unsigned> &a, std::vector<unsigned> &b);
 int64_t get1DOffset(SmallVector<Value> memcpy_offsets,
                     SmallVector<Value> memcpy_strides, int byte_count_per_elem);
 
+int getRepeatCount(Operation *memcpy_op);
+
 std::vector<AIE::BDDimLayoutAttr>
 getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
                    SmallVector<Value> memcpy_strides, MLIRContext *ctx);

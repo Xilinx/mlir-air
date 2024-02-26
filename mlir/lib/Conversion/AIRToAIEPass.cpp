@@ -408,9 +408,8 @@ void createAIEModulesAndOutlineCores(
                      StringAttr::get(builder.getContext(), segment_name));
 
     aie_dev.getRegion().emplaceBlock();
-    seg.walk([&](xilinx::air::HerdOp h) {
-      aie_modules.push_back({aie_dev, h});
-    });
+    seg.walk(
+        [&](xilinx::air::HerdOp h) { aie_modules.push_back({aie_dev, h}); });
 
     // If the device has memtiles, then outline memtiles
     if (aie_dev.getTargetModel().getNumMemTileRows()) {
@@ -2358,19 +2357,24 @@ public:
         generateDmaBd<bufferOpTy>(loc, dir, locks, x, y, arch, bd, memcpyOp,
                                   bufferOp);
       }
+
+      int repeat_count = 1;
+      if (p.second.size() == 1)
+        repeat_count = air::getRepeatCount(p.second[0]);
+
       if (!channel_head) {
         channel_head = start_bb;
         end_bb = new Block();
         mem.getBody().push_back(end_bb);
         auto b = OpBuilder::atBlockBegin(channel_head);
-        b.create<AIE::DMAStartOp>(loc, dir, chan, /*repeat*/ 1, first_bd,
+        b.create<AIE::DMAStartOp>(loc, dir, chan, repeat_count, first_bd,
                                   end_bb);
         b.setInsertionPointToEnd(end_bb);
         b.create<AIE::EndOp>(loc);
       } else {
         auto b = OpBuilder::atBlockBegin(start_bb);
         b.create<AIE::DMAStartOp>(
-            loc, dir, chan, /*repeat*/ 1, first_bd,
+            loc, dir, chan, repeat_count, first_bd,
             channel_head->getTerminator()->getSuccessor(1));
         channel_head->getTerminator()->setSuccessor(start_bb, 1);
       }
@@ -2413,6 +2417,16 @@ public:
     SmallVector<Value> strides = isTileInbound(ndcpy, (int)air::MemorySpace::L1)
                                      ? ndcpy.getDstStrides()
                                      : ndcpy.getSrcStrides();
+
+    // Skip over repeat pattern at highest dimension; repeat pattern handled at
+    // AIE::DMAStartOp.
+    if (!strides.empty() && !sizes.empty() && !offsets.empty())
+      if (auto const_highest_stride = getConstantIntValue(strides[0]))
+        if (*const_highest_stride == 0) {
+          strides.erase(strides.begin());
+          sizes.erase(sizes.begin());
+          offsets.erase(offsets.begin());
+        }
 
     int64_t len = getMemcpySizesAsInt(memref, sizes);
     int64_t offset =
