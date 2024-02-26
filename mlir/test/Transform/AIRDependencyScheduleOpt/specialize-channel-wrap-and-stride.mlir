@@ -194,4 +194,19 @@ module {
     %2 = air.wait_all async [%0, %1]
     return %alloc : memref<128xf32>
   }
+
+  // CHECK-LABEL: test5
+  // CHECK: put async  @channel_17[] (%arg0[%c0, %c0, %c0] [%c8, %c32, %c32] [%c0, %c32, %c1]) : (memref<32x32xf32>)
+
+  func.func @test5(%arg0: memref<32x32xf32>) -> memref<32x32xf32> {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    %alloc = memref.alloc() : memref<32x32xf32>
+    scf.for %arg2 = %c0 to %c8 step %c1 {
+      %0 = affine.apply #map()[%arg2]
+      %1 = air.channel.put async @channel_17[] (%arg0[] [] []) : (memref<32x32xf32>)
+    }
+    return %alloc : memref<32x32xf32>
+  }
 }

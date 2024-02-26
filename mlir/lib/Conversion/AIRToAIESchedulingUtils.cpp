@@ -177,6 +177,25 @@ int64_t air::get1DOffset(SmallVector<Value> memcpy_offsets,
   return one_d_offset * byte_count_per_elem;
 }
 
+// Get the repeat_count value from an air::ChannelPut/GetOp.
+int air::getRepeatCount(Operation *memcpy_op) {
+  auto chan_op = dyn_cast<air::ChannelInterface>(memcpy_op);
+  if (!chan_op)
+    return 1;
+  if (chan_op.getStrides().empty() || chan_op.getSizes().empty())
+    return 1;
+  if (getConstantIntValue(chan_op.getStrides()[0]) &&
+      getConstantIntValue(chan_op.getSizes()[0])) {
+    auto const_highest_stride = getConstantIntValue(chan_op.getStrides()[0]);
+    auto const_highest_size = getConstantIntValue(chan_op.getSizes()[0]);
+    if (*const_highest_stride == 0) {
+      // Highest dimension data access pattern is repeat.
+      return *const_highest_size;
+    }
+  }
+  return 1;
+}
+
 std::vector<AIE::BDDimLayoutAttr>
 air::getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
                         SmallVector<Value> memcpy_strides, MLIRContext *ctx) {

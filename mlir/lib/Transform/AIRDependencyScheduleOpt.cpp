@@ -1698,6 +1698,21 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     SmallVector<Value> offsets = channel_ops[0].getOffsets();
     SmallVector<Value> wraps = channel_ops[0].getSizes();
     SmallVector<Value> strides = channel_ops[0].getStrides();
+    // If empty offsets/sizes/strides, then populate the lists with default
+    // values.
+    if (offsets.empty() && wraps.empty() && strides.empty()) {
+      auto memref_shape = getTensorShape(channel_ops[0].getMemref().getType());
+      int current_stride =
+          getTensorVolume(channel_ops[0].getMemref().getType());
+      for (unsigned i = 0; i < memref_shape.size(); i++) {
+        offsets.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
+        wraps.push_back(
+            rewriter.create<arith::ConstantIndexOp>(loc, memref_shape[i]));
+        current_stride /= memref_shape[i];
+        strides.push_back(
+            rewriter.create<arith::ConstantIndexOp>(loc, current_stride));
+      }
+    }
     for (auto o : for_loops) {
       // Check for perfect loop nest containing only air.channel ops
       if (!hasNElements(o.getBody(), 1))
