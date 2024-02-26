@@ -10,6 +10,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/Dependency.h"
 
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -3146,18 +3147,28 @@ private:
   }
   Operation *cloneOpAndOperands(OpBuilder builder, IRMapping remap,
                                 Operation *op) {
+    SetVector<Operation *> backwardSlice;
+    BackwardSliceOptions bsOptions{[&](Operation *o) {
+      return !isa<scf::ForOp>(o) && !isa<scf::ParallelOp>(o) &&
+             !isa<air::HierarchyInterface>(o);
+    }};
+    getBackwardSlice(op, &backwardSlice, bsOptions);
     for (auto operand : op->getOperands()) {
-      if (operand.getDefiningOp()) {
-        if (isa<arith::ConstantIndexOp>(operand.getDefiningOp()))
-          builder.clone(*operand.getDefiningOp());
-        else if (isa<affine::AffineApplyOp>(operand.getDefiningOp()))
-          builder.clone(*operand.getDefiningOp(), remap);
-        else if (isa<air::ExecuteOp>(operand.getDefiningOp())) {
-          auto exec = dyn_cast<air::ExecuteOp>(operand.getDefiningOp());
-          auto child_op = &exec.getBody().front().getOperations().front();
-          if (isa<affine::AffineApplyOp>(child_op))
-            builder.clone(*operand.getDefiningOp(), remap);
-        }
+      if (operand.getDefiningOp() &&
+          isa<arith::ConstantIndexOp>(operand.getDefiningOp()))
+        backwardSlice.insert(operand.getDefiningOp());
+    }
+    for (auto b : backwardSlice) {
+      if (isa<arith::ConstantIndexOp>(b))
+        builder.clone(*b, remap);
+      else if (b->getNumResults() == 1 &&
+               isa<IndexType>(b->getResult(0).getType()))
+        builder.clone(*b, remap);
+      else if (auto exec = dyn_cast<air::ExecuteOp>(b)) {
+        auto child_op = exec.getChildOp();
+        if (child_op->getNumResults() == 1 &&
+            isa<IndexType>(child_op->getResult(0).getType()))
+          builder.clone(*b, remap);
       }
     }
     auto new_op = builder.clone(*op, remap);
