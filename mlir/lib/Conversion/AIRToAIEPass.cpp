@@ -1048,7 +1048,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
     if (channel.getBundleSize() > 1)
       return failure();
 
-    AIE::AIEObjectFifoType datatype;
+    std::pair<int, MemRefType> datatype = {(int)air::MemorySpace::L3, {}};
     std::vector<ChannelPutOp> channelPuts =
         getChannelPutOpThroughSymbol(channel, device);
     std::vector<ChannelGetOp> channelGets =
@@ -1118,13 +1118,14 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       consumers.push_back(consumerTile);
     }
 
-    if (!datatype)
-      return failure();
+    if (datatype.first == (int)air::MemorySpace::L3)
+      return channel.emitOpError(
+          "could not infer datatype of Object FIFO elements");
 
     // create objFifo
     rewriter.setInsertionPoint(*(device.getOps<AIE::CoreOp>().begin()));
     AIE::ObjectFifoCreateOp objFifo = createObjectFifo(
-        rewriter, datatype, producerTile, consumers,
+        rewriter, datatype.second, producerTile, consumers,
         channel.getBufferResources(), "air_" + channel.getName().str());
 
     // if a link end was found
@@ -1195,12 +1196,16 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
 private:
   // find AIE cores and their tiles based on memory hierarchy levels
   template <typename MyOp>
-  LogicalResult findChannelPutGetTile(MyOp op, Value *tile,
-                                      AIE::AIEObjectFifoType *datatype) const {
+  LogicalResult
+  findChannelPutGetTile(MyOp op, Value *tile,
+                        std::pair<int, MemRefType> *datatype) const {
     MemRefType memref = op.getMemref().getType().template cast<MemRefType>();
     int mem_space = memref.getMemorySpaceAsInt();
-    *datatype = AIE::AIEObjectFifoType::get(
-        MemRefType::get(memref.getShape(), memref.getElementType()));
+    // remove mem_space from memref for objFifo datatype
+    if (datatype->first != (int)air::MemorySpace::L1) {
+      *datatype = {mem_space,
+                   MemRefType::get(memref.getShape(), memref.getElementType())};
+    }
     if (mem_space == (int)air::MemorySpace::L1) {
       AIE::CoreOp core = op->template getParentOfType<AIE::CoreOp>();
       if (!core)
@@ -1222,14 +1227,13 @@ private:
   }
 
   AIE::ObjectFifoCreateOp createObjectFifo(PatternRewriter &rewriter,
-                                           AIE::AIEObjectFifoType datatype,
-                                           Value prodTile,
+                                           MemRefType datatype, Value prodTile,
                                            const std::vector<Value> &consTile,
                                            int depth, StringRef name) const {
     AIE::ObjectFifoCreateOp fifo = rewriter.create<AIE::ObjectFifoCreateOp>(
         rewriter.getUnknownLoc(), rewriter.getStringAttr(name), prodTile,
         consTile, rewriter.getIntegerAttr(rewriter.getI32Type(), depth),
-        datatype);
+        AIE::AIEObjectFifoType::get(datatype));
     return fifo;
   }
 
