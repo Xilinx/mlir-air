@@ -1105,11 +1105,6 @@ class AIRDmaToAIRChannelConversion
       MemRefType externalMemrefTy =
           externalGetPut[0].getMemref().getType().cast<MemRefType>();
       if (herd) {
-        if (externalMemrefTy.getMemorySpaceAsInt() ==
-                (int)air::MemorySpace::L3 &&
-            segment) {
-          rewriter.setInsertionPoint(segment);
-        }
         // Scf parallel shape is either herd shape, or channel set shape if
         // broadcasting
         SmallVector<int, 2> lbs;
@@ -1154,16 +1149,8 @@ class AIRDmaToAIRChannelConversion
         remap.map(herd.getIds()[0], scf_par.getInductionVars()[0]);
         remap.map(herd.getIds()[1], scf_par.getInductionVars()[1]);
         int arg_idx = 0;
-        if (externalMemrefTy.getMemorySpaceAsInt() ==
-                (int)air::MemorySpace::L3 &&
-            segment) {
-          // If hoisting directly to launch region
-          for (auto arg : herd.getKernelArguments())
-            remap.map(arg, segment.getKernelOperand(arg_idx++));
-        } else {
-          for (auto arg : herd.getKernelArguments())
-            remap.map(arg, herd.getKernelOperand(arg_idx++));
-        }
+        for (auto arg : herd.getKernelArguments())
+          remap.map(arg, herd.getKernelOperand(arg_idx++));
 
         // Clone ops into hoisted scf.parallel
         rewriter.setInsertionPointToStart(scf_par.getBody());
