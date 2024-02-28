@@ -1033,7 +1033,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       MLIRContext *ctx, ShimTileAllocator &shimTileAlloc,
       std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap,
       std::map<AIE::BufferOp,
-               std::tuple<int, std::vector<Attribute>, std::vector<Attribute>>>
+               std::tuple<int, std::vector<std::pair<Attribute, int64_t>>, std::vector<std::pair<Attribute, int64_t>>>>
           &linkEnds)
       : OpRewritePattern(ctx), shimTileAlloc(shimTileAlloc),
         bufferToMemtileMap(bufferToMemtileMap), linkEnds(linkEnds) {}
@@ -1136,11 +1136,19 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       // if get: add to input objectFifo vector
       if (auto get = dyn_cast<ChannelGetOp>(endOfLink)) {
         buff = dyn_cast<AIE::BufferOp>(get.getMemref().getDefiningOp());
-        addLinkEnd(ctx, buff, /* isInput */ true, numLinkEnds, objFifo);
+        SmallVector<Value> offsets = get.getDstOffsets();
+        SmallVector<Value> strides = get.getDstStrides();
+        int64_t offset =
+            get1DOffset(offsets, strides, getElementSizeInBytes(get.getMemref().getType().cast<MemRefType>()));
+        addLinkEnd(ctx, buff, /* isInput */ true, numLinkEnds, objFifo, offset);
         // if put: add to output objectFifo vector
       } else if (auto put = dyn_cast<ChannelPutOp>(endOfLink)) {
         buff = dyn_cast<AIE::BufferOp>(put.getMemref().getDefiningOp());
-        addLinkEnd(ctx, buff, /* isInput */ false, numLinkEnds, objFifo);
+        SmallVector<Value> offsets = put.getSrcOffsets();
+        SmallVector<Value> strides = put.getSrcStrides();
+        int64_t offset =
+            get1DOffset(offsets, strides, getElementSizeInBytes(put.getMemref().getType().cast<MemRefType>()));
+        addLinkEnd(ctx, buff, /* isInput */ false, numLinkEnds, objFifo, offset);
       }
       createLink(rewriter, buff);
     }
@@ -1328,24 +1336,39 @@ private:
   }
 
   void addLinkEnd(MLIRContext *ctx, AIE::BufferOp buff, bool isInput,
-                  int numLinkEnds, AIE::ObjectFifoCreateOp objFifo) const {
+                  int numLinkEnds, AIE::ObjectFifoCreateOp objFifo,
+                  int64_t offset) const {
     if (linkEnds.find(buff) == linkEnds.end()) {
-      std::vector<Attribute> input_ofs;
-      std::vector<Attribute> output_ofs;
+      std::vector<std::pair<Attribute, int64_t>> input_ofs;
+      std::vector<std::pair<Attribute, int64_t>> output_ofs;
       linkEnds[buff] = {numLinkEnds, input_ofs, output_ofs};
     }
     if (isInput)
       std::get<1>(linkEnds[buff])
-          .push_back(SymbolRefAttr::get(ctx, objFifo.name()));
+          .push_back({SymbolRefAttr::get(ctx, objFifo.name()), offset});
     else
       std::get<2>(linkEnds[buff])
-          .push_back(SymbolRefAttr::get(ctx, objFifo.name()));
+          .push_back({SymbolRefAttr::get(ctx, objFifo.name()), offset});
+  }
+
+  static bool sortLinkObjectFifos(std::pair<Attribute, int64_t> op0, 
+                                  std::pair<Attribute, int64_t> op1) {
+    return op0.second < op1.second;
   }
 
   void createLink(PatternRewriter &rewriter, AIE::BufferOp buff) const {
     auto numEnds = std::get<0>(linkEnds[buff]);
-    auto input_ofs = std::get<1>(linkEnds[buff]);
-    auto output_ofs = std::get<2>(linkEnds[buff]);
+    auto input_pairs = std::get<1>(linkEnds[buff]);
+    auto output_pairs = std::get<2>(linkEnds[buff]);
+    std::vector<Attribute> input_ofs;
+    std::vector<Attribute> output_ofs;
+    std::sort(input_pairs.begin(), input_pairs.end(), sortLinkObjectFifos);
+    std::sort(output_pairs.begin(), output_pairs.end(), sortLinkObjectFifos);
+    // retrieve only objectFifo symbol ref attributes
+    for (auto p : input_pairs)
+      input_ofs.push_back(p.first);
+    for (auto p : output_pairs)
+      output_ofs.push_back(p.first);
     // check if all ends have been found
     // if yes, create ObjectFifoLinkOp
     if ((int)input_ofs.size() + (int)output_ofs.size() == numEnds) {
@@ -1358,7 +1381,7 @@ private:
   ShimTileAllocator &shimTileAlloc;
   std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap;
   std::map<AIE::BufferOp,
-           std::tuple<int, std::vector<Attribute>, std::vector<Attribute>>>
+           std::tuple<int, std::vector<std::pair<Attribute, int64_t>>, std::vector<std::pair<Attribute, int64_t>>>>
       &linkEnds; // map L2 AIE.BufferOps to pairs of vectors of SymbolRefAttr
                  // (<inputOFs, outputOFs>)
 };
@@ -1373,7 +1396,7 @@ void lowerAIRChannels(
   auto ctx = d->getContext();
   RewritePatternSet patterns(ctx);
   std::map<AIE::BufferOp,
-           std::tuple<int, std::vector<Attribute>, std::vector<Attribute>>>
+           std::tuple<int, std::vector<std::pair<Attribute, int64_t>>, std::vector<std::pair<Attribute, int64_t>>>>
       linkEnds;
   patterns.insert<LowerAIRChannelsPattern>(ctx, s, bufferToMemtileMap,
                                            linkEnds);
@@ -2814,7 +2837,7 @@ public:
         AIE::AIEDeviceAttr::get(builder.getContext(), *device));
     ShimTileAllocator shimTileAlloc(deviceOp.getTargetModel());
     std::map<AIE::BufferOp,
-             std::tuple<int, std::vector<Attribute>, std::vector<Attribute>>>
+             std::tuple<int, std::vector<std::pair<Attribute, int64_t>>, std::vector<std::pair<Attribute, int64_t>>>>
         linkEnds;
     if (clTestPatterns.find("lower-air-channels") != std::string::npos) {
       patterns.insert<LowerAIRChannelsPattern>(ctx, shimTileAlloc,
