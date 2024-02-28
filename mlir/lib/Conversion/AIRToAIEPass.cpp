@@ -56,6 +56,12 @@ struct AIRToAIEConversionOptions {
   AIE::AIEDevice device;
 };
 
+struct link_ends_interface {
+  int numLinkEnds;
+  std::vector<std::pair<Attribute, int64_t>> input_ofs_with_offsets;
+  std::vector<std::pair<Attribute, int64_t>> output_ofs_with_offsets;
+};
+
 // get memcpy operation volumn (elements) as int
 int getMemcpySizesAsInt(Value memref, SmallVector<Value> sizes) {
   MemRefType memTy = memref.getType().cast<MemRefType>();
@@ -1032,9 +1038,7 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
   LowerAIRChannelsPattern(
       MLIRContext *ctx, ShimTileAllocator &shimTileAlloc,
       std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap,
-      std::map<AIE::BufferOp,
-               std::tuple<int, std::vector<std::pair<Attribute, int64_t>>, std::vector<std::pair<Attribute, int64_t>>>>
-          &linkEnds)
+      std::map<AIE::BufferOp, link_ends_interface> &linkEnds)
       : OpRewritePattern(ctx), shimTileAlloc(shimTileAlloc),
         bufferToMemtileMap(bufferToMemtileMap), linkEnds(linkEnds) {}
 
@@ -1344,11 +1348,11 @@ private:
       linkEnds[buff] = {numLinkEnds, input_ofs, output_ofs};
     }
     if (isInput)
-      std::get<1>(linkEnds[buff])
-          .push_back({SymbolRefAttr::get(ctx, objFifo.name()), offset});
+      linkEnds[buff].input_ofs_with_offsets.push_back(
+          {SymbolRefAttr::get(ctx, objFifo.name()), offset});
     else
-      std::get<2>(linkEnds[buff])
-          .push_back({SymbolRefAttr::get(ctx, objFifo.name()), offset});
+      linkEnds[buff].output_ofs_with_offsets.push_back(
+          {SymbolRefAttr::get(ctx, objFifo.name()), offset});
   }
 
   static bool sortLinkObjectFifos(std::pair<Attribute, int64_t> op0, 
@@ -1357,9 +1361,9 @@ private:
   }
 
   void createLink(PatternRewriter &rewriter, AIE::BufferOp buff) const {
-    auto numEnds = std::get<0>(linkEnds[buff]);
-    auto input_pairs = std::get<1>(linkEnds[buff]);
-    auto output_pairs = std::get<2>(linkEnds[buff]);
+    auto numEnds = linkEnds[buff].numLinkEnds;
+    auto input_pairs = linkEnds[buff].input_ofs_with_offsets;
+    auto output_pairs = linkEnds[buff].output_ofs_with_offsets;
     std::vector<Attribute> input_ofs;
     std::vector<Attribute> output_ofs;
     std::sort(input_pairs.begin(), input_pairs.end(), sortLinkObjectFifos);
@@ -1380,10 +1384,9 @@ private:
 
   ShimTileAllocator &shimTileAlloc;
   std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap;
-  std::map<AIE::BufferOp,
-           std::tuple<int, std::vector<std::pair<Attribute, int64_t>>, std::vector<std::pair<Attribute, int64_t>>>>
-      &linkEnds; // map L2 AIE.BufferOps to pairs of vectors of SymbolRefAttr
-                 // (<inputOFs, outputOFs>)
+  std::map<AIE::BufferOp, link_ends_interface> &linkEnds;
+  // map L2 AIE.BufferOps to pairs of vectors of SymbolRefAttr
+  // (<inputOFs, outputOFs>)
 };
 
 // This function replaces ChannelPutOp/ChannelGetOp with AIE_CreateObjectFifoOps
@@ -1395,9 +1398,7 @@ void lowerAIRChannels(
     std::map<AIE::BufferOp, AIE::TileOp> &bufferToMemtileMap) {
   auto ctx = d->getContext();
   RewritePatternSet patterns(ctx);
-  std::map<AIE::BufferOp,
-           std::tuple<int, std::vector<std::pair<Attribute, int64_t>>, std::vector<std::pair<Attribute, int64_t>>>>
-      linkEnds;
+  std::map<AIE::BufferOp, link_ends_interface> linkEnds;
   patterns.insert<LowerAIRChannelsPattern>(ctx, s, bufferToMemtileMap,
                                            linkEnds);
   (void)applyPatternsAndFoldGreedily(d, std::move(patterns));
@@ -2836,9 +2837,7 @@ public:
         builder.getUnknownLoc(),
         AIE::AIEDeviceAttr::get(builder.getContext(), *device));
     ShimTileAllocator shimTileAlloc(deviceOp.getTargetModel());
-    std::map<AIE::BufferOp,
-             std::tuple<int, std::vector<std::pair<Attribute, int64_t>>, std::vector<std::pair<Attribute, int64_t>>>>
-        linkEnds;
+    std::map<AIE::BufferOp, link_ends_interface> linkEnds;
     if (clTestPatterns.find("lower-air-channels") != std::string::npos) {
       patterns.insert<LowerAIRChannelsPattern>(ctx, shimTileAlloc,
                                                bufferToMemtileMap, linkEnds);
