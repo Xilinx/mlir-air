@@ -15,6 +15,7 @@
 
 #include "aie/Dialect/AIE/IR/AIEDialect.h"
 
+#include "mlir/Conversion/LinalgToStandard/LinalgToStandard.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -3118,6 +3119,24 @@ public:
   }
 };
 
+struct AIRLinalgToStandardPass
+    : public air::impl::AIRLinalgToStandardBase<AIRLinalgToStandardPass> {
+  void runOnOperation() override;
+};
+
+void AIRLinalgToStandardPass::runOnOperation() {
+  auto module = getOperation();
+  ConversionTarget target(getContext());
+  target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
+                         func::FuncDialect, memref::MemRefDialect,
+                         scf::SCFDialect, air::airDialect, AIE::AIEDialect, cf::ControlFlowDialect>();
+  target.addLegalOp<ModuleOp, func::FuncOp, func::ReturnOp>();
+  RewritePatternSet patterns(&getContext());
+  linalg::populateLinalgToStandardConversionPatterns(patterns);
+  if (failed(applyFullConversion(module, target, std::move(patterns))))
+    signalPassFailure();
+}
+
 } // namespace
 
 namespace xilinx {
@@ -3184,6 +3203,10 @@ createAIRToAIEPass(const AIRToAIEOptions &options) {
 
 std::unique_ptr<mlir::Pass> createAIRSplitDevicesPass() {
   return std::make_unique<SplitAIEDevicesPass>();
+}
+
+std::unique_ptr<OperationPass<ModuleOp>> createAIRLinalgToStandardPass() {
+  return std::make_unique<AIRLinalgToStandardPass>();
 }
 
 } // namespace air

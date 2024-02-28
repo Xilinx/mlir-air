@@ -19,6 +19,7 @@ namespace air {
 using namespace mlir;
 
 #define GEN_PASS_DECL
+#define GEN_PASS_DEF_AIRLINALGTOSTANDARD
 #define GEN_PASS_DEF_AIRLOWERING
 #define GEN_PASS_DEF_AIRPIPELINETOAFFINE
 #define GEN_PASS_DEF_AIRRTTOIPU
