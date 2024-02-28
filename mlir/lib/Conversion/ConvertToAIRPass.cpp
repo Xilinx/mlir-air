@@ -1976,6 +1976,25 @@ public:
         rewriter.create<arith::ConstantIndexOp>(loc, bounds[idx0]),
         rewriter.create<arith::ConstantIndexOp>(loc, bounds[idx1])};
     auto herdOp = rewriter.create<air::HerdOp>(op.getLoc(), dims, args);
+    auto moduleOp = SymbolTable::getNearestSymbolTable(op);
+    auto &body = op.getBody()->getOperations();
+    // func.call itself has a `link_with` which we can absorb into air.herd.
+    // This means that the onus of setting the path to microkernel is on IREE.
+    //
+    // NOTE: Microkernel being used is actually residing within MLIR-AIE.
+    for (Operation &op : body) {
+      if (auto callOp = dyn_cast<func::CallOp>(op)) {
+        // Fetch name.
+        StringRef fnName = callOp.getCallee();
+        auto fnDecl = dyn_cast_or_null<func::FuncOp>(
+            SymbolTable::lookupSymbolIn(moduleOp, fnName));
+        assert(fnDecl && "expected function declaration");
+        assert(fnDecl->hasAttr("link_with") &&
+               "expected 'link_with' construct for the function declaration");
+        herdOp->setAttr("link_with", fnDecl->getAttr("link_with"));
+        break;
+      }
+    }
     auto &bb = herdOp.getBody().front();
     auto ivs = op.getInductionVars();
 
@@ -1983,7 +2002,6 @@ public:
     if (op.getNumLoops() == 2)
       ivs[1].replaceAllUsesWith(herdOp.getIds()[idx1]);
 
-    auto &body = op.getBody()->getOperations();
     bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
     rewriter.setInsertionPointToStart(&herdOp.getRegion().front());
     replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
