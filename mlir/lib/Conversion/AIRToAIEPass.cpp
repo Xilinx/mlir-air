@@ -3129,7 +3129,8 @@ void AIRLinalgToStandardPass::runOnOperation() {
   ConversionTarget target(getContext());
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
                          func::FuncDialect, memref::MemRefDialect,
-                         scf::SCFDialect, air::airDialect, AIE::AIEDialect, cf::ControlFlowDialect>();
+                         scf::SCFDialect, air::airDialect, AIE::AIEDialect,
+                         cf::ControlFlowDialect>();
   target.addLegalOp<ModuleOp, func::FuncOp, func::ReturnOp>();
   RewritePatternSet patterns(&getContext());
   linalg::populateLinalgToStandardConversionPatterns(patterns);
