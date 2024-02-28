@@ -198,7 +198,11 @@ int air::getRepeatCount(Operation *memcpy_op) {
 
 std::vector<AIE::BDDimLayoutAttr>
 air::getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
-                        SmallVector<Value> memcpy_strides, MLIRContext *ctx) {
+                        SmallVector<Value> memcpy_strides,
+                        int byte_count_per_elem, MLIRContext *ctx) {
+  assert(byte_count_per_elem == 4 || byte_count_per_elem == 2 ||
+         byte_count_per_elem == 1 && "unsupported data format");
+  int div_factor = mlir::ceilDiv(4, byte_count_per_elem);
   if (memcpy_sizes.empty() || memcpy_strides.empty())
     return std::vector<AIE::BDDimLayoutAttr>{};
   assert(memcpy_sizes.size() == memcpy_strides.size() &&
@@ -207,9 +211,15 @@ air::getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
   for (unsigned i = 0; i < memcpy_sizes.size(); i++) {
     auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);
     assert(stepsize && "non-static stride");
+    int stepsize_v = *stepsize;
     auto wrap = mlir::getConstantIntValue(memcpy_sizes[i]);
     assert(wrap && "non-static wrap");
-    auto tuple = AIE::BDDimLayoutAttr::get(ctx, *wrap, *stepsize);
+    int wrap_v = *wrap;
+    if (i < memcpy_sizes.size() - 1)
+      stepsize_v /= div_factor;
+    if (i == memcpy_sizes.size() - 1)
+      wrap_v /= div_factor;
+    auto tuple = AIE::BDDimLayoutAttr::get(ctx, wrap_v, stepsize_v);
     output.push_back(tuple);
   }
   return output;

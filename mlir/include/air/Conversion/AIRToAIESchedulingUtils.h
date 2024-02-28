@@ -51,7 +51,8 @@ int getRepeatCount(Operation *memcpy_op);
 
 std::vector<AIE::BDDimLayoutAttr>
 getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
-                   SmallVector<Value> memcpy_strides, MLIRContext *ctx);
+                   SmallVector<Value> memcpy_strides, int byte_count_per_elem,
+                   MLIRContext *ctx);
 
 bool isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
                                 SmallVector<Value> memcpy_strides,
