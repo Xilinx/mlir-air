@@ -131,6 +131,17 @@ def AIRLowering : Pass<"air-to-std", "ModuleOp"> {
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// Custom version of upstream LinalgToFunc
+//===----------------------------------------------------------------------===//
+
+def AIRLinalgToFunc : Pass<"air-linalg-to-func", "ModuleOp"> {
+  let summary = "Convert the operations from the linalg dialect into the "
+                "function calls";
+  let constructor = "xilinx::air::createAIRLinalgToFuncPass()";
+  let dependentDialects = ["func::FuncDialect", "memref::MemRefDialect"];
+}
+
 def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {
   let summary = "Lower air.launch_herd to AIE dialect";
   let constructor = "xilinx::air::createAIRToAIEPass()";

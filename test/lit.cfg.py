@@ -52,6 +52,7 @@ config.substitutions.append(('%PYTHON', config.python_executable))
 config.substitutions.append(('%CLANG', "clang++ -fuse-ld=lld -DLIBXAIENGINEV2"))
 config.substitutions.append(('%LIBXAIE_DIR%', config.libxaie_dir))
 config.substitutions.append(('%AIE_RUNTIME_DIR%', os.path.join(config.aie_obj_root, "runtime_lib", config.test_arch)))
+config.substitutions.append(("%aietools", config.vitis_aietools_dir))
 
 if config.hsa_found:
     # Getting the path to the ROCm directory. hsa-runtime64 points to the cmake
