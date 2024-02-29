@@ -3140,20 +3140,20 @@ public:
       auto libFnType = rewriter.getFunctionType(op->getOperandTypes(), {});
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(module.getBody(),
-                                std::prev(module.getBody()->end()));
+                                 std::prev(module.getBody()->end()));
       func::FuncOp funcOp = rewriter.create<func::FuncOp>(
           op->getLoc(), fnNameAttr.getValue(), libFnType);
       // Insert a function attribute that will trigger the emission of the
-      // corresponding `_mlir_ciface_xxx` interface so that external libraries see
-      // a normalized ABI. This interface is added during std to llvm conversion.
+      // corresponding `_mlir_ciface_xxx` interface so that external libraries
+      // see a normalized ABI. This interface is added during std to llvm
+      // conversion.
       funcOp->setAttr(LLVM::LLVMDialect::getEmitCWrapperAttrName(),
                       UnitAttr::get(op->getContext()));
       funcOp.setPrivate();
     }
 
-    rewriter.replaceOpWithNewOp<func::CallOp>(
-        op, fnNameAttr.getValue(), TypeRange(),
-        op->getOperands());
+    rewriter.replaceOpWithNewOp<func::CallOp>(op, fnNameAttr.getValue(),
+                                              TypeRange(), op->getOperands());
     return success();
   }
 };
