@@ -3119,6 +3119,45 @@ public:
   }
 };
 
+// Custom version of LinalgOpToLibraryCallRewrite
+class AIRLinalgOpToLibraryCallRewrite
+    : public OpInterfaceRewritePattern<linalg::LinalgOp> {
+public:
+  using OpInterfaceRewritePattern<linalg::LinalgOp>::OpInterfaceRewritePattern;
+
+  LogicalResult matchAndRewrite(linalg::LinalgOp op,
+                                PatternRewriter &rewriter) const override {
+    auto fnName = op.getLibraryCallName();
+    if (fnName.empty())
+      return failure();
+
+    // fnName is a dynamic std::string, unique it via a SymbolRefAttr.
+    FlatSymbolRefAttr fnNameAttr =
+        SymbolRefAttr::get(rewriter.getContext(), fnName);
+    auto module = op->getParentOfType<ModuleOp>();
+    auto sym = module.lookupSymbol(fnNameAttr.getAttr());
+    if (!sym) {
+      auto libFnType = rewriter.getFunctionType(op->getOperandTypes(), {});
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(module.getBody(),
+                                std::prev(module.getBody()->end()));
+      func::FuncOp funcOp = rewriter.create<func::FuncOp>(
+          op->getLoc(), fnNameAttr.getValue(), libFnType);
+      // Insert a function attribute that will trigger the emission of the
+      // corresponding `_mlir_ciface_xxx` interface so that external libraries see
+      // a normalized ABI. This interface is added during std to llvm conversion.
+      funcOp->setAttr(LLVM::LLVMDialect::getEmitCWrapperAttrName(),
+                      UnitAttr::get(op->getContext()));
+      funcOp.setPrivate();
+    }
+
+    rewriter.replaceOpWithNewOp<func::CallOp>(
+        op, fnNameAttr.getValue(), TypeRange(),
+        op->getOperands());
+    return success();
+  }
+};
+
 struct AIRLinalgToStandardPass
     : public air::impl::AIRLinalgToStandardBase<AIRLinalgToStandardPass> {
   void runOnOperation() override;
@@ -3133,7 +3172,7 @@ void AIRLinalgToStandardPass::runOnOperation() {
                          cf::ControlFlowDialect>();
   target.addLegalOp<ModuleOp, func::FuncOp, func::ReturnOp>();
   RewritePatternSet patterns(&getContext());
-  linalg::populateLinalgToStandardConversionPatterns(patterns);
+  patterns.insert<AIRLinalgOpToLibraryCallRewrite>(&getContext());
   if (failed(applyFullConversion(module, target, std::move(patterns))))
     signalPassFailure();
 }
