@@ -34,7 +34,7 @@ createAIRToAIEPass(const AIRToAIEOptions &options);
 std::unique_ptr<mlir::Pass> createAIRSplitDevicesPass();
 
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
-createAIRLinalgToStandardPass();
+createAIRLinalgToFuncPass();
 
 } // namespace air
 } // namespace xilinx
