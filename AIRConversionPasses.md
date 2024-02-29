@@ -15,6 +15,10 @@ _Insert segment and launch ops around herd op_
 
 This pass inserts launch and segment operations around herd op, if a herd op 
 does not have a parent launch or segment operation.
+### `-air-linalg-to-func`
+
+_Convert the operations from the linalg dialect into the function calls_
+
 ### `-air-par-to-herd`
 
 _Convert parallel loops to air.herd_
