@@ -44,7 +44,7 @@
 func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
-  air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<1024xi32>, memref<1024xi32> attributes { sym_name="func1"} {
+  air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<1024xi32>, memref<1024xi32> attributes { sym_name="herd1"} {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c1024 = arith.constant 1024 : index
@@ -118,7 +118,7 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
-  air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<1024xi32>, memref<1024xi32> attributes { sym_name="func1"} {
+  air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<1024xi32>, memref<1024xi32> attributes { sym_name="herd1"} {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c1024 = arith.constant 1024 : index
@@ -207,7 +207,7 @@ func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
   air.channel.put @channel_0[] (%arg0[%c0] [%c1024] [%c1]) {id = 1 : i32} : (memref<1024xi32>)
-  air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<1024xi32>, memref<1024xi32> attributes { sym_name="func1"} {
+  air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) args(%ext0 = %arg0, %ext1 = %arg1) : memref<1024xi32>, memref<1024xi32> attributes { sym_name="herd1"} {
     %buf0 = memref.alloc() : memref<1024xi32, 2>
     %buf1 = memref.alloc() : memref<512xi32, 2>
     air.channel.get @channel_0[%tx, %ty] (%buf0[] [] []) {id = 2 : i32} : (memref<1024xi32, 2>)
@@ -342,7 +342,7 @@ func.func @func4(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
     air.channel.get @channel_2[] (%memtile0[] [] []) {id = 2 : i32} : (memref<1024xi32, 1>)
     air.channel.put @channel_3[] (%memtile0[] [] []) {id = 3 : i32} : (memref<1024xi32, 1>)
     memref.dealloc %memtile0 : memref<1024xi32, 1>
-    air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) attributes { sym_name="func4"} {
+    air.herd tile(%tx, %ty) in (%size_x = %herd_cols, %size_y = %herd_rows) attributes { sym_name="herd4"} {
       %buf0 = memref.alloc() : memref<1024xi32, 2>
       air.channel.get @channel_3[%tx, %ty] (%buf0[] [] []) {id = 4 : i32} : (memref<1024xi32, 2>)
       air.channel.put @channel_4[%tx, %ty] (%buf0[] [] []) {id = 5 : i32} : (memref<1024xi32, 2>)

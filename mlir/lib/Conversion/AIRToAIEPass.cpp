@@ -185,7 +185,8 @@ AIE::BufferOp allocateBufferOp(uint64_t &BufferId, MemRefType memrefTy,
     t = t->getNextNode();
   builder.setInsertionPointAfter(t);
   AIE::BufferOp bufferOp = builder.create<AIE::BufferOp>(
-      tile->getLoc(), memrefTy, tile, nullptr, nullptr);
+      tile->getLoc(), memrefTy, tile, /*sym_name*/ nullptr,
+      /*address*/ nullptr, /*initial_value*/ nullptr);
 
   std::stringstream ss =
       generateBufferNameInStringStream("buf", BufferId, attr, x, y);
@@ -398,10 +399,10 @@ void createAIEModulesAndOutlineCores(
     herds.push_back(h);
   });
 
-  for (auto p : segments) {
+  for (auto seg : segments) {
     std::string segment_name;
     if (auto attr =
-            p->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+            seg->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
       segment_name = attr.getValue().str();
     else
       segment_name = "segment_" + std::to_string(aie_modules.size());
@@ -414,17 +415,23 @@ void createAIEModulesAndOutlineCores(
                      StringAttr::get(builder.getContext(), segment_name));
 
     aie_dev.getRegion().emplaceBlock();
-    p.walk([&](xilinx::air::HerdOp h) { aie_modules.push_back({aie_dev, h}); });
+    seg.walk([&](xilinx::air::HerdOp h) {
+      aie_modules.push_back({aie_dev, h});
+    });
 
     // If the device has memtiles, then outline memtiles
     if (aie_dev.getTargetModel().getNumMemTileRows()) {
-      outlineAIEMemtiles(builder, aie_dev, p, options);
+      outlineAIEMemtiles(builder, aie_dev, seg, options);
     }
   };
 
-  for (auto h : herds) {
+  for (auto herd : herds) {
     std::string segment_name;
-    segment_name = "herd_" + std::to_string(aie_modules.size());
+    if (auto attr =
+            herd->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
+      segment_name = attr.getValue().str();
+    else
+      segment_name = "herd_" + std::to_string(aie_modules.size());
     std::string aie_module_name = "aie." + segment_name;
     auto builder = OpBuilder::atBlockBegin(module.getBody());
     auto aie_dev = builder.create<AIE::DeviceOp>(
@@ -433,7 +440,7 @@ void createAIEModulesAndOutlineCores(
     aie_dev->setAttr(SymbolTable::getSymbolAttrName(),
                      StringAttr::get(builder.getContext(), segment_name));
     aie_dev.getRegion().emplaceBlock();
-    aie_modules.push_back({aie_dev, h});
+    aie_modules.push_back({aie_dev, herd});
   };
   for (auto &p : aie_modules) {
     auto aie_dev = std::get<0>(p);
@@ -1828,10 +1835,27 @@ public:
           SmallVector<Value, 4> emptyVec = {};
           SmallVector<Type, 4> tys = {};
           if (auto putget = dyn_cast<air::ChannelInterface>(o.getOperation())) {
-            for (unsigned i = 0; i < putget.getIndices().size(); i++)
-              remap.map(putget.getIndices()[i],
+            auto air_chan = getChannelDeclarationThroughSymbol(putget);
+            auto air_chan_size =
+                extractFromIntegerArrayAttr<int64_t>(air_chan.getSize());
+            if (position.size() == putget.getIndices().size()) {
+              for (unsigned i = 0; i < putget.getIndices().size(); i++)
+                remap.map(putget.getIndices()[i],
+                          builder.create<arith::ConstantIndexOp>(
+                              builder.getUnknownLoc(), position[i]));
+            } else if (position.size() == 1 &&
+                       std::find(air_chan_size.begin(), air_chan_size.end(),
+                                 air_chan.getBundleSize()) !=
+                           air_chan_size.end()) {
+              auto idx = std::find(air_chan_size.begin(), air_chan_size.end(),
+                                   air_chan.getBundleSize()) -
+                         air_chan_size.begin();
+              remap.map(putget.getIndices()[idx],
                         builder.create<arith::ConstantIndexOp>(
-                            builder.getUnknownLoc(), position[i]));
+                            builder.getUnknownLoc(), position[0]));
+            } else
+              assert(false && "mismatching dimension counts between loop "
+                              "iteration space and air.channel shape");
           }
           // Specialize any affine apply mappings to operand
           for (auto oper : o->getOperands()) {
@@ -2403,19 +2427,24 @@ public:
         generateDmaBd<bufferOpTy>(loc, dir, locks, x, y, arch, bd, memcpyOp,
                                   bufferOp);
       }
+
+      int repeat_count = 1;
+      if (p.second.size() == 1)
+        repeat_count = air::getRepeatCount(p.second[0]);
+
       if (!channel_head) {
         channel_head = start_bb;
         end_bb = new Block();
         mem.getBody().push_back(end_bb);
         auto b = OpBuilder::atBlockBegin(channel_head);
-        b.create<AIE::DMAStartOp>(loc, dir, chan, /*repeat*/ 1, first_bd,
+        b.create<AIE::DMAStartOp>(loc, dir, chan, repeat_count, first_bd,
                                   end_bb);
         b.setInsertionPointToEnd(end_bb);
         b.create<AIE::EndOp>(loc);
       } else {
         auto b = OpBuilder::atBlockBegin(start_bb);
         b.create<AIE::DMAStartOp>(
-            loc, dir, chan, /*repeat*/ 1, first_bd,
+            loc, dir, chan, repeat_count, first_bd,
             channel_head->getTerminator()->getSuccessor(1));
         channel_head->getTerminator()->setSuccessor(start_bb, 1);
       }
@@ -2458,6 +2487,16 @@ public:
     SmallVector<Value> strides = isTileInbound(ndcpy, (int)air::MemorySpace::L1)
                                      ? ndcpy.getDstStrides()
                                      : ndcpy.getSrcStrides();
+
+    // Skip over repeat pattern at highest dimension; repeat pattern handled at
+    // AIE::DMAStartOp.
+    if (!strides.empty() && !sizes.empty() && !offsets.empty())
+      if (auto const_highest_stride = getConstantIntValue(strides[0]))
+        if (*const_highest_stride == 0) {
+          strides.erase(strides.begin());
+          sizes.erase(sizes.begin());
+          offsets.erase(offsets.begin());
+        }
 
     int64_t len = getMemcpySizesAsInt(memref, sizes);
     int64_t offset =

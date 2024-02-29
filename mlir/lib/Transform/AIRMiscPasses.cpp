@@ -712,103 +712,6 @@ private:
         srcMemrefDimsOrOffsets, op.getSrcSizes(), op.getSrcStrides());
     return newMemcpyOp.getOperation();
   }
-
-  // Recursively check for dependency to air herd op index vars.
-  std::vector<std::tuple<Value, SmallVector<Value>, SmallVector<Operation *>>>
-  traceDependentHerdId(air::DmaMemcpyNdOp dmaNd_op) {
-    // Tuple fields: value, ancestors and producers to those ancestors.
-    std::vector<std::tuple<Value, SmallVector<Value>, SmallVector<Operation *>>>
-        loop_dep_history;
-    for (unsigned i = 0; i < dmaNd_op.getSrcOffsets().size(); i++) {
-      loop_dep_history.push_back(std::make_tuple(dmaNd_op.getSrcOffsets()[i],
-                                                 SmallVector<Value>{},
-                                                 SmallVector<Operation *>{}));
-      loop_dep_history.push_back(std::make_tuple(dmaNd_op.getSrcSizes()[i],
-                                                 SmallVector<Value>{},
-                                                 SmallVector<Operation *>{}));
-      loop_dep_history.push_back(std::make_tuple(dmaNd_op.getSrcStrides()[i],
-                                                 SmallVector<Value>{},
-                                                 SmallVector<Operation *>{}));
-    }
-    for (auto elem : loop_dep_history) {
-      // If parent loop op is an air.launch_herd
-      if (auto hl_op = air::getHerdArgOwner(std::get<0>(elem))) {
-        for (auto id : hl_op.getIds()) {
-          if (std::get<0>(elem) == id) {
-            std::get<1>(elem).push_back(id);
-          }
-        }
-      }
-    }
-
-    // Recursively trace dependency to loop induction vars
-    for (auto &elem : loop_dep_history) {
-      if (std::get<0>(elem) &&
-          std::get<0>(elem)
-              .getType()
-              .isa<IndexType>()) { // Only tracing scalar operands
-        if (std::get<0>(elem).getDefiningOp() &&
-            mlir::dyn_cast<air::AsyncOpInterface>(
-                std::get<0>(elem).getDefiningOp())) {
-          auto ancestor_async_op = dyn_cast<air::AsyncOpInterface>(
-              std::get<0>(elem).getDefiningOp());
-          std::get<2>(elem).push_back(ancestor_async_op.getOperation());
-          traceDependentHerdId(ancestor_async_op, std::get<1>(elem),
-                               std::get<2>(elem));
-        }
-      }
-    }
-
-    return loop_dep_history;
-  }
-
-  // Recursively check for dependency to any loop induction vars
-  void traceDependentHerdId(air::AsyncOpInterface async_op,
-                            SmallVector<Value> &loop_dep_history,
-                            SmallVector<Operation *> &op_history) {
-    // Get child op if async_op is air.execute
-    Operation *op = nullptr;
-    if (auto air_region_op =
-            dyn_cast<air::ExecuteOp>(async_op.getOperation())) {
-      if (air_region_op.getBody().front().getOperations().size() != 2) {
-        air_region_op->emitOpError("air::ExecuteOp should have only one child "
-                                   "operation beside the terminator");
-        return;
-      }
-      for (auto &child_op : air_region_op.getBody().front().getOperations()) {
-        if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
-          op = &child_op;
-      }
-    } else {
-      op = async_op.getOperation();
-    }
-
-    // Check for immediate dependency to loop induction vars
-    for (auto operand : op->getOperands()) {
-      // If parent loop op is an air.launch_herd
-      if (auto hl_op = air::getHerdArgOwner(operand)) {
-        for (auto id : hl_op.getIds()) {
-          if (operand == id) {
-            loop_dep_history.push_back(id);
-          }
-        }
-      }
-    }
-
-    // Recursively trace dependency to loop induction vars
-    for (auto operand : op->getOperands()) {
-      if (operand &&
-          operand.getType().isa<IndexType>()) { // Only tracing scalar operands
-        if (operand.getDefiningOp() &&
-            mlir::dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp())) {
-          auto ancestor_async_op =
-              dyn_cast<air::AsyncOpInterface>(operand.getDefiningOp());
-          op_history.push_back(ancestor_async_op.getOperation());
-          traceDependentHerdId(ancestor_async_op, loop_dep_history, op_history);
-        }
-      }
-    }
-  }
 };
 
 class AIRFuseParallelHerdPass
@@ -1061,7 +964,7 @@ void AIRCollapseHerdPass::runOnOperation() {
   SmallVector<air::HerdOp> herds;
   auto func = getOperation();
   func.walk([&](air::HerdOp op) {
-    if (op.getNumCols() != 1)
+    if (op.getNumCols() != 1 && op.getNumDims() == 2)
       herds.push_back(op);
   });
 
@@ -1071,7 +974,9 @@ void AIRCollapseHerdPass::runOnOperation() {
 
     // Assumption: herd is two-dimensional, and both of which we collapse into a
     // single dim.
-    SmallVector<SmallVector<unsigned>> combinedDimensions = {{}, {0, 1}};
+    if (h.getNumDims() != 2)
+      continue;
+    SmallVector<unsigned> dims = {0, 1};
 
     // Combine iteration spaces.
     SmallVector<Value, 3> lowerBounds, upperBounds, steps;
@@ -1082,81 +987,43 @@ void AIRCollapseHerdPass::runOnOperation() {
     steps.push_back(cst1);
     upperBounds.push_back(cst1);
     // Second dimension onwards
-    for (unsigned i = 1, e = combinedDimensions.size(); i < e; ++i) {
-      Value newUpperBound =
-          outsideBuilder.create<arith::ConstantIndexOp>(loc, 1);
-      for (auto idx : combinedDimensions[i]) {
-        newUpperBound = outsideBuilder.create<arith::MulIOp>(
-            loc, newUpperBound,
-            h->getOperand(h.getAsyncDependencies().size() + idx));
-      }
-      lowerBounds.push_back(cst0);
-      steps.push_back(cst1);
-      upperBounds.push_back(newUpperBound);
+    Value newUpperBound = outsideBuilder.create<arith::ConstantIndexOp>(loc, 1);
+    for (auto idx : dims) {
+      newUpperBound = outsideBuilder.create<arith::MulIOp>(
+          loc, newUpperBound,
+          h->getOperand(h.getAsyncDependencies().size() + idx));
     }
+    lowerBounds.push_back(cst0);
+    steps.push_back(cst1);
+    upperBounds.push_back(newUpperBound);
 
-    // Create new air.herd with conversions to the original induction values.
-    SmallVector<Value> herd_kernel_operands;
-    for (unsigned i = 0; i < h.getNumKernelOperands(); i++) {
-      herd_kernel_operands.push_back(h.getKernelOperand(i));
-    }
-    air::HerdOp newPloop = nullptr;
-    if (h.getAsyncToken())
-      newPloop = outsideBuilder.create<air::HerdOp>(
-          loc, h.getAsyncDependencies(), upperBounds, herd_kernel_operands,
-          true);
-    else
-      newPloop = outsideBuilder.create<air::HerdOp>(loc, upperBounds,
-                                                    herd_kernel_operands);
-
-    // Remap the induction variables
     OpBuilder insideBuilder(h);
-    insideBuilder.setInsertionPointToStart(&newPloop.getBody().front());
-    for (unsigned i = 0, e = newPloop.getNumDims(); i < e; ++i) {
-      Value previous = newPloop.getIds()[i];
-      // Iterate over all except the last induction value.
-      for (int j = combinedDimensions[i].size() - 1; j > 0; --j) {
-        unsigned idx = combinedDimensions[i][j];
-        auto old_upper_bound = mlir::getConstantIntValue(
-            h.getOperand(h.getAsyncDependencies().size() + idx));
-        assert(old_upper_bound);
-        auto old_upper_b_v =
-            insideBuilder.create<arith::ConstantIndexOp>(loc, *old_upper_bound);
+    insideBuilder.setInsertionPointToStart(&h.getBody().front());
+    auto old_upper_bound = mlir::getConstantIntValue(
+        h.getOperand(h.getAsyncDependencies().size() + dims[1]));
+    if (!old_upper_bound)
+      return; // Found air.herd with dynamic shape. NYI.
+    auto old_upper_b_v =
+        insideBuilder.create<arith::ConstantIndexOp>(loc, *old_upper_bound);
 
-        // Determine the current induction value's current loop iteration
-        Value iv =
-            insideBuilder.create<arith::RemSIOp>(loc, previous, old_upper_b_v);
-        replaceAllUsesInRegionWith(h.getIds()[idx], iv, h.getBody());
+    // Determine the current induction value's current loop iteration
+    Value iv_1 =
+        insideBuilder.create<arith::RemSIOp>(loc, h.getIds()[1], old_upper_b_v);
+    h.getIds()[1].cast<Value>().replaceAllUsesExcept(iv_1,
+                                                     iv_1.getDefiningOp());
 
-        // Remove the effect of the current induction value to prepare for
-        // the next value.
-        previous =
-            insideBuilder.create<arith::DivSIOp>(loc, previous, old_upper_b_v);
-      }
+    // Remove the effect of the current induction value to prepare for
+    // the next value.
+    Value iv_0 =
+        insideBuilder.create<arith::DivSIOp>(loc, h.getIds()[1], old_upper_b_v);
+    replaceAllUsesInRegionWith(h.getIds()[0], iv_0, h.getBody());
 
-      // The final induction value is just the remaining value.
-      if (combinedDimensions[i].size()) {
-        unsigned idx = combinedDimensions[i][0];
-        replaceAllUsesInRegionWith(h.getIds()[idx], previous, h.getRegion());
-      }
+    // Update upper bounds.
+    int operandsIdxOffset = h.getAsyncDependencies().size();
+    for (unsigned i = operandsIdxOffset; i < operandsIdxOffset + h.getNumDims();
+         i++) {
+      h->getOpOperand(i).assign(upperBounds[i - operandsIdxOffset]);
     }
-
-    // Replace the old loop with the new loop.
-    newPloop.getBody().front().getOperations().splice(
-        ++Block::iterator(newPloop.getBody().front().back()),
-        h.getBody().front().getOperations());
-    // Update async deps
-    if (h.getAsyncToken()) {
-      h.getAsyncToken().replaceAllUsesWith(newPloop.getAsyncToken());
-    }
-
-    // Copy over any attributes
-    NamedAttrList attrs(h->getAttrDictionary());
-    newPloop->setAttrs(attrs.getDictionary(h->getContext()));
-  }
-
-  for (auto h : herds) {
-    h.erase();
   }
 }
 

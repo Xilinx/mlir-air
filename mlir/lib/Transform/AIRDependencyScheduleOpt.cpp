@@ -10,6 +10,7 @@
 #include "air/Dialect/AIR/AIRDialect.h"
 #include "air/Util/Dependency.h"
 
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -1698,6 +1699,21 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     SmallVector<Value> offsets = channel_ops[0].getOffsets();
     SmallVector<Value> wraps = channel_ops[0].getSizes();
     SmallVector<Value> strides = channel_ops[0].getStrides();
+    // If empty offsets/sizes/strides, then populate the lists with default
+    // values.
+    if (offsets.empty() && wraps.empty() && strides.empty()) {
+      auto memref_shape = getTensorShape(channel_ops[0].getMemref().getType());
+      int current_stride =
+          getTensorVolume(channel_ops[0].getMemref().getType());
+      for (unsigned i = 0; i < memref_shape.size(); i++) {
+        offsets.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
+        wraps.push_back(
+            rewriter.create<arith::ConstantIndexOp>(loc, memref_shape[i]));
+        current_stride /= memref_shape[i];
+        strides.push_back(
+            rewriter.create<arith::ConstantIndexOp>(loc, current_stride));
+      }
+    }
     for (auto o : for_loops) {
       // Check for perfect loop nest containing only air.channel ops
       if (!hasNElements(o.getBody(), 1))
@@ -2094,7 +2110,17 @@ public:
   void getDmaOpLoopDependency(func::FuncOp f) {
     f.walk([&](Operation *op) {
       if (auto dma_op = mlir::dyn_cast<xilinx::air::DmaMemcpyNdOp>(op)) {
-        if (dma_op->getParentOfType<xilinx::air::HerdOp>()) {
+        int src_memspace = dma_op.getSrcMemref()
+                               .getType()
+                               .cast<MemRefType>()
+                               .getMemorySpaceAsInt();
+        int dst_memspace = dma_op.getDstMemref()
+                               .getType()
+                               .cast<MemRefType>()
+                               .getMemorySpaceAsInt();
+        bool isL1Memcpy = (src_memspace == (int)air::MemorySpace::L1) ||
+                          (dst_memspace == (int)air::MemorySpace::L1);
+        if (dma_op->getParentOfType<xilinx::air::HerdOp>() && isL1Memcpy) {
           // Start recursively tracing for loop induction variables
           dma_op_history.push_back(dma_op);
           SmallVector<Value, 1> loop_dep_history;
@@ -2959,6 +2985,8 @@ public:
   }
 
   void runOnFunction(func::FuncOp f, std::vector<air::ChannelOp> channelOps) {
+    if (channelOps.empty())
+      return;
     std::map<air::ChannelOp, air::ChannelOp> chan_merge_map;
     for (unsigned i = 0; i < channelOps.size() - 1; i++) {
       for (unsigned j = i + 1; j < channelOps.size(); j++) {
@@ -3136,18 +3164,28 @@ private:
   }
   Operation *cloneOpAndOperands(OpBuilder builder, IRMapping remap,
                                 Operation *op) {
+    SetVector<Operation *> backwardSlice;
+    BackwardSliceOptions bsOptions{[&](Operation *o) {
+      return !isa<scf::ForOp>(o) && !isa<scf::ParallelOp>(o) &&
+             !isa<air::HierarchyInterface>(o);
+    }};
+    getBackwardSlice(op, &backwardSlice, bsOptions);
     for (auto operand : op->getOperands()) {
-      if (operand.getDefiningOp()) {
-        if (isa<arith::ConstantIndexOp>(operand.getDefiningOp()))
-          builder.clone(*operand.getDefiningOp());
-        else if (isa<affine::AffineApplyOp>(operand.getDefiningOp()))
-          builder.clone(*operand.getDefiningOp(), remap);
-        else if (isa<air::ExecuteOp>(operand.getDefiningOp())) {
-          auto exec = dyn_cast<air::ExecuteOp>(operand.getDefiningOp());
-          auto child_op = &exec.getBody().front().getOperations().front();
-          if (isa<affine::AffineApplyOp>(child_op))
-            builder.clone(*operand.getDefiningOp(), remap);
-        }
+      if (operand.getDefiningOp() &&
+          isa<arith::ConstantIndexOp>(operand.getDefiningOp()))
+        backwardSlice.insert(operand.getDefiningOp());
+    }
+    for (auto b : backwardSlice) {
+      if (isa<arith::ConstantIndexOp>(b))
+        builder.clone(*b, remap);
+      else if (b->getNumResults() == 1 &&
+               isa<IndexType>(b->getResult(0).getType()))
+        builder.clone(*b, remap);
+      else if (auto exec = dyn_cast<air::ExecuteOp>(b)) {
+        auto child_op = exec.getChildOp();
+        if (child_op->getNumResults() == 1 &&
+            isa<IndexType>(child_op->getResult(0).getType()))
+          builder.clone(*b, remap);
       }
     }
     auto new_op = builder.clone(*op, remap);
@@ -3338,6 +3376,184 @@ private:
   }
 };
 
+// Get the memref size along a given dimension, that the access pattern actually
+// covers.
+SmallVector<int64_t>
+getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
+                                        SmallVector<Value> sizes,
+                                        SmallVector<Value> strides) {
+  SmallVector<int64_t> access_bounds(memref_shape.size(), -1);
+  for (int i = sizes.size() - 1; i >= 0; i--) {
+    int current_memref_volumn = 1;
+    for (int j = memref_shape.size() - 1; j >= 0; j--) {
+      current_memref_volumn *= memref_shape[j];
+      if (mlir::floorDiv(*getConstantIntValue(strides[i]),
+                         current_memref_volumn))
+        continue;
+      int64_t bound = mlir::floorDiv(*getConstantIntValue(strides[i]),
+                                     current_memref_volumn / memref_shape[j]) *
+                      *getConstantIntValue(sizes[i]);
+      access_bounds[j] = std::max(access_bounds[j], bound);
+    }
+  }
+  return access_bounds;
+}
+
+// A pattern which attempts to shrink the memref sizes, based on the access
+// patterns of all its uses.
+struct ShrinkMemrefSizesByAccessPattern
+    : public OpRewritePattern<memref::AllocOp> {
+  using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::AllocOp alloc,
+                                PatternRewriter &rewriter) const override {
+
+    // Get memref.
+    Value memref = alloc.getMemref();
+    if (auto exec = dyn_cast<air::ExecuteOp>(alloc->getParentOp()))
+      memref = exec->getResult(1);
+
+    if (alloc->hasAttr("test"))
+      return failure();
+
+    // Get dealloc.
+    memref::DeallocOp dealloc;
+    // Get channel op users.
+    SmallVector<air::ChannelGetOp> gets;
+    SmallVector<air::ChannelPutOp> puts;
+    SmallVector<air::ChannelInterface> chanOps;
+    for (auto user : memref.getUsers()) {
+      if (auto da = dyn_cast<memref::DeallocOp>(user))
+        dealloc = da;
+      else if (auto chanOp = dyn_cast<air::ChannelInterface>(user))
+        chanOps.push_back(chanOp);
+      else
+        return failure(); // NYI.
+    }
+
+    // Analyze data access pattern.
+    auto memref_shape = getTensorShape(memref.getType());
+    SmallVector<int64_t> overall_access_bounds(memref_shape.size(), -1);
+    for (auto chanOp : chanOps) {
+      SmallVector<int64_t> access_bounds(memref_shape.size(), -1);
+      if (chanOp.getOffsets().empty())
+        for (unsigned i = 0; i < memref_shape.size(); i++)
+          access_bounds[i] = memref_shape[i];
+      // for (auto oper : chanOp->getOperands()){
+      bool forIterationAccess = false;
+      for (unsigned i = 0; i < chanOp.getOffsets().size(); i++) {
+        if (auto forOp = scf::getForInductionVarOwner(chanOp.getOffsets()[i])) {
+          if (forOp == chanOp->getParentOp() &&
+              getStaticScfForTripCountAsInt(forOp)) {
+            access_bounds = getEffectiveMemrefSizeFromAccessPattern(
+                memref_shape, chanOp.getSizes(), chanOp.getStrides());
+            forIterationAccess = true;
+          }
+        }
+      }
+      if (!forIterationAccess &&
+          memref_shape.size() == chanOp.getSizes().size()) {
+        for (unsigned i = 0; i < memref_shape.size(); i++) {
+          access_bounds[i] = *getConstantIntValue(chanOp.getSizes()[i]);
+        }
+      }
+      // Update overall access bounds.
+      for (unsigned i = 0; i < memref_shape.size(); i++)
+        overall_access_bounds[i] =
+            std::max(overall_access_bounds[i], access_bounds[i]);
+    }
+
+    bool shrinkMemref = false;
+    for (unsigned i = 0; i < memref_shape.size(); i++) {
+      if (overall_access_bounds[i] < 0)
+        return failure();
+      if (overall_access_bounds[i] < memref_shape[i]) {
+        shrinkMemref = true;
+      }
+    }
+    if (shrinkMemref) {
+      // Start shrinking memref.
+      for (auto chanOp : chanOps) {
+        rewriter.setInsertionPoint(chanOp);
+        auto new_strides = getUpdatedStridesAfterShrinkage(
+            memref_shape, overall_access_bounds, chanOp.getStrides());
+        int strideListIdxOffset =
+            dyn_cast<air::AsyncOpInterface>(chanOp.getOperation())
+                .getAsyncDependencies()
+                .size() +
+            1 + chanOp.getOffsets().size() + chanOp.getSizes().size();
+        for (unsigned i = strideListIdxOffset;
+             i < strideListIdxOffset + chanOp.getStrides().size(); i++) {
+          chanOp->getOpOperand(i).assign(
+              rewriter.create<arith::ConstantIndexOp>(
+                  chanOp->getLoc(), new_strides[i - strideListIdxOffset]));
+        }
+      }
+
+      // Replace memref alloc op;
+      Type elemType = memref.getType().cast<MemRefType>().getElementType();
+      Attribute memorySpace =
+          memref.getType().cast<MemRefType>().getMemorySpace();
+      auto newMemrefType = MemRefType::get(overall_access_bounds, elemType,
+                                           nullptr, memorySpace);
+      if (auto execOp = dyn_cast<air::ExecuteOp>(alloc->getParentOp())) {
+        rewriter.setInsertionPoint(execOp);
+        auto newExecOp = rewriter.create<air::ExecuteOp>(
+            execOp->getLoc(), air::AsyncTokenType::get(rewriter.getContext()),
+            newMemrefType, execOp.getAsyncDependencies());
+        Block *async_exec_bb = rewriter.createBlock(&newExecOp.getBody());
+        rewriter.setInsertionPointToStart(async_exec_bb);
+        auto newAlloc =
+            rewriter.create<memref::AllocOp>(alloc->getLoc(), newMemrefType);
+        rewriter.create<air::ExecuteTerminatorOp>(rewriter.getUnknownLoc(),
+                                                  newAlloc.getResult());
+        for (unsigned i = 0; i < execOp->getNumResults(); i++)
+          execOp->getResult(i).replaceAllUsesWith(newExecOp->getResult(i));
+        rewriter.eraseOp(execOp);
+
+      } else {
+        rewriter.setInsertionPoint(alloc);
+        auto newAlloc =
+            rewriter.create<memref::AllocOp>(alloc->getLoc(), newMemrefType);
+        newAlloc->setAttr("test", rewriter.getBoolAttr(true));
+        alloc.getResult().replaceAllUsesWith(newAlloc.getResult());
+        rewriter.eraseOp(alloc);
+      }
+      return success();
+    }
+
+    return failure();
+  }
+
+private:
+  // Update strides after memref shrinkage. Assuming there is only dimension
+  // being shrunk.
+  SmallVector<int>
+  getUpdatedStridesAfterShrinkage(SmallVector<int> old_memref_shape,
+                                  SmallVector<int64_t> new_memref_shape,
+                                  SmallVector<Value> strides) const {
+    SmallVector<int> new_strides(strides.size(), -1);
+    int shrinkage_volumn = 1;
+    int shrinkage_factor = 1;
+    for (int j = old_memref_shape.size() - 1; j >= 0; j--) {
+      shrinkage_volumn *= old_memref_shape[j];
+      if (old_memref_shape[j] != new_memref_shape[j]) {
+        shrinkage_factor =
+            mlir::ceilDiv(old_memref_shape[j], new_memref_shape[j]);
+        break;
+      }
+    }
+    for (int i = strides.size() - 1; i >= 0; i--) {
+      if (mlir::floorDiv(*getConstantIntValue(strides[i]), shrinkage_volumn))
+        new_strides[i] =
+            mlir::ceilDiv(*getConstantIntValue(strides[i]), shrinkage_factor);
+      else
+        new_strides[i] = *getConstantIntValue(strides[i]);
+    }
+    return new_strides;
+  }
+};
+
 // A pass which performs loop fusion within air.segment op's region.
 class AIRSegmentLoopFusion
     : public xilinx::air::impl::AIRSegmentLoopFusionBase<AIRSegmentLoopFusion> {
@@ -3386,7 +3602,8 @@ public:
       return op_ptr != block->end() && &*op_ptr == &block->back();
     };
     for (auto forOp : op.getOps<scf::ForOp>()) {
-      if (hasNElements(forOp.getBody(), 1))
+      if (hasNElements(forOp.getBody(), 1) &&
+          air::getStaticScfForTripCountAsInt(forOp))
         perfectlyNestedForBands.push_back(forOp);
     }
     if (perfectlyNestedForBands.empty())
@@ -3401,10 +3618,22 @@ public:
     auto ub = perfectlyNestedForBands[0].getUpperBound();
     auto step = perfectlyNestedForBands[0].getStep();
     for (unsigned i = 1; i < perfectlyNestedForBands.size(); i++) {
+      int band_step_as_int =
+          *mlir::getConstantIntValue(perfectlyNestedForBands[i].getStep());
+      int step_as_int = *mlir::getConstantIntValue(step);
       if (perfectlyNestedForBands[i].getLowerBound() == lb &&
           perfectlyNestedForBands[i].getUpperBound() == ub &&
           perfectlyNestedForBands[i].getStep() == step) {
         equalIterationForOps.push_back(perfectlyNestedForBands[i]);
+      } else if (perfectlyNestedForBands[i].getLowerBound() == lb &&
+                 perfectlyNestedForBands[i].getUpperBound() == ub &&
+                 mlir::mod(std::max(band_step_as_int, step_as_int),
+                           std::min(band_step_as_int, step_as_int)) == 0) {
+        // If scf.for loops are not identical, but tilable to having identical
+        // roots.
+        if (simpleScfForLoopTiling(perfectlyNestedForBands[i], step_as_int,
+                                   band_step_as_int))
+          equalIterationForOps.push_back(perfectlyNestedForBands[i]);
       }
     }
     if (equalIterationForOps.empty())
@@ -3492,26 +3721,133 @@ public:
       forOp->erase();
     }
 
+    std::vector<scf::ForOp> put_parents;
+    // Map from channel.put's scf.for op parents to dependent channel.get.
+    std::map<scf::ForOp, air::ChannelGetOp> put_get_mapping;
     new_loop_op.walk([&](air::ChannelPutOp putOp) {
       air::ChannelGetOp getOp = nullptr;
       for (auto user : putOp.getMemref().getUsers())
         if (auto get_user = dyn_cast<air::ChannelGetOp>(user))
           getOp = get_user;
       scf::ForOp put_parent = putOp->getParentOfType<scf::ForOp>();
-      put_parent->setOperand(3, getOp.getAsyncToken());
+      put_get_mapping[put_parent] = getOp;
+      put_parents.push_back(put_parent);
     });
+    for (auto put_parent : put_parents) {
+      auto getOp = put_get_mapping[put_parent];
+      put_parent->moveAfter(getOp);
+      put_parent->setOperand(put_parent.getNumControlOperands(),
+                             getOp.getAsyncToken());
+    }
+  }
+
+  void runPreProcPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<CanonicalizeAffineApplyOnLoopInductionVar>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  }
+
+  void runPostProcPatterns(func::FuncOp funcOp) {
+    MLIRContext *ctx = funcOp.getContext();
+    RewritePatternSet patterns(&getContext());
+    patterns.insert<ShrinkMemrefSizesByAccessPattern>(ctx);
+    (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   }
 
   void runOnOperation() override {
     auto func = getOperation();
+    runPreProcPatterns(func);
     SmallVector<air::SegmentOp> segs;
     func.walk([&](air::SegmentOp op) { segs.push_back(op); });
     for (auto seg : segs) {
       runOnSegment(seg);
     }
+    runPostProcPatterns(func);
   }
 
 private:
+  // Scf.for loop tiling. This simple tiling implementation generates a new
+  // inner scf.for loop which starts from the original loop's lower bound. It
+  // may change the meaning of the original scf.for loop, therefore it requires
+  // a separate check to make sure that it is legal to tile this way.
+  scf::ForOp simpleScfForLoopTiling(scf::ForOp forOp, int original_step,
+                                    int tiled_step) const {
+    // Check if it is legal to tile the for loop this way, by checking the
+    // access pattern of all memrefs within the loop.
+    SmallVector<air::ChannelInterface> channel_ops;
+    forOp.walk([&](air::ChannelInterface op) { channel_ops.push_back(op); });
+    if (channel_ops.size() != 1)
+      return scf::ForOp(); // Expected to only have one channel op in loop body.
+    auto offsets = channel_ops[0].getOffsets();
+    auto sizes = channel_ops[0].getSizes();
+    auto strides = channel_ops[0].getStrides();
+    int induction_var_dim = -1;
+    // Find memref type dimension which the for loop iterates on.
+    auto memref_shape = getTensorShape(channel_ops[0].getMemref().getType());
+    for (unsigned i = 0; i < offsets.size(); i++) {
+      if (scf::getForInductionVarOwner(offsets[i]) == forOp)
+        induction_var_dim = i;
+    }
+    if (induction_var_dim == -1 ||
+        induction_var_dim < offsets.size() - memref_shape.size())
+      return scf::ForOp(); // NYI.
+    if (offsets.size() > memref_shape.size())
+      induction_var_dim -= offsets.size() - memref_shape.size();
+    int access_volumn = 1;
+    for (auto v : sizes)
+      access_volumn *= *getConstantIntValue(v);
+    if (offsets.empty() ||
+        access_volumn == getTensorVolume(channel_ops[0].getMemref().getType()))
+      return scf::ForOp(); // May access the whole memref.
+
+    int effective_access_size = getEffectiveMemrefSizeFromAccessPattern(
+        memref_shape, sizes, strides)[induction_var_dim];
+    effective_access_size *= mlir::ceilDiv(original_step, tiled_step);
+    if (effective_access_size > original_step)
+      return scf::ForOp(); // Loop iteration access out of bound.
+
+    // Tiling.
+    auto loc = forOp->getLoc();
+    OpBuilder builder(forOp);
+    forOp.getStepMutable().assign(
+        builder.create<arith::ConstantIndexOp>(loc, original_step));
+    builder.setInsertionPointToStart(forOp.getBody());
+    auto new_for_op = builder.create<scf::ForOp>(
+        loc, builder.create<arith::ConstantIndexOp>(loc, 0),
+        builder.create<arith::ConstantIndexOp>(loc, original_step),
+        builder.create<arith::ConstantIndexOp>(loc, tiled_step),
+        forOp.getRegionIterArgs());
+    builder.setInsertionPointToStart(new_for_op.getBody());
+    IRMapping remap;
+    for (unsigned j = 0; j < forOp.getNumRegionIterArgs(); j++)
+      remap.map(forOp.getRegionIterArgs()[j],
+                new_for_op.getRegionIterArgs()[j]);
+    remap.map(forOp.getInductionVar(), new_for_op.getInductionVar());
+    SmallVector<Operation *> erased;
+    Value yielded_token = nullptr;
+    for (auto &o : forOp.getOps()) {
+      if (&o != new_for_op && &o != forOp.getBody()->getTerminator()) {
+        auto new_o = builder.clone(o, remap);
+        if (isAsyncOp(new_o)) {
+          yielded_token = new_o->getResult(0);
+          erased.push_back(&o);
+        }
+      }
+    }
+    if (!new_for_op.getBody()->mightHaveTerminator()) {
+      if (yielded_token)
+        builder.create<scf::YieldOp>(loc, yielded_token);
+      else
+        builder.create<scf::YieldOp>(loc);
+    }
+    for (auto o : erased) {
+      o->getResult(0).replaceAllUsesWith(new_for_op->getResult(0));
+      o->erase();
+    }
+
+    return new_for_op;
+  }
 };
 
 } // namespace

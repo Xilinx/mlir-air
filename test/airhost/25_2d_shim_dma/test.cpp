@@ -35,11 +35,11 @@
 #define TILE_HEIGHT 8
 #define TILE_SIZE (TILE_WIDTH * TILE_HEIGHT)
 
-namespace air::segments::segment_0 {
+namespace air::segments::copyherd {
 int32_t mlir_aie_read_buffer_scratch_0_0(aie_libxaie_ctx_t *, int);
 void mlir_aie_write_buffer_scratch_0_0(aie_libxaie_ctx_t *, int, int32_t);
-}; // namespace air::segments::segment_0
-using namespace air::segments::segment_0;
+}; // namespace air::segments::copyherd
+using namespace air::segments::copyherd;
 
 int main(int argc, char *argv[]) {
   auto shim_col = 2;

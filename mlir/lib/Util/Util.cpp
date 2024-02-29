@@ -771,15 +771,18 @@ unsigned air::getIteratorFromMDVector(std::vector<unsigned> dims,
 std::vector<unsigned> air::getMDVectorFromIterator(std::vector<unsigned> dims,
                                                    unsigned iter) {
   std::vector<unsigned> output;
-  for (int i = dims.size() - 1; i >= 0; i--) { // reversed order
-    unsigned denominator = 1;
-    for (int j = 0; j < i; j++) {
-      denominator *= dims[j];
+  if (dims.size() > 1) {
+    for (int i = dims.size() - 1; i >= 0; i--) { // reversed order
+      unsigned denominator = 1;
+      for (int j = 0; j < i; j++) {
+        denominator *= dims[j];
+      }
+      output.push_back((iter / (denominator)) % dims[i]);
     }
-    output.push_back((iter / (denominator)) % dims[i]);
-  }
-  // Reverse to original order
-  std::reverse(output.begin(), output.end());
+    // Reverse to original order
+    std::reverse(output.begin(), output.end());
+  } else if (dims.size() == 1)
+    output.push_back(iter);
   return output;
 }
 
@@ -907,12 +910,17 @@ void air::foldForLoopNestAsExtendedSizesAndStrides(
       }
       // Index offset taking into account mismatch between memref rank and
       // offset list size difference.
-      ind_var_factor *=
-          getTensorShape(memref.getType()).size() < offsets.size()
-              ? getTensorVolume(memref.getType())
-              : getTensorShape(memref.getType())
-                    [i + memref.getType().cast<MemRefType>().getRank() -
-                     offsets.size()];
+      int memref_rank = getTensorShape(memref.getType()).size();
+      if (memref_rank < offsets.size()) {
+        if (i < offsets.size() - memref_rank)
+          ind_var_factor *= getTensorVolume(memref.getType());
+        else
+          ind_var_factor *= getTensorShape(
+              memref.getType())[i + memref_rank - offsets.size()];
+      } else {
+        ind_var_factor *=
+            getTensorShape(memref.getType())[i + memref_rank - offsets.size()];
+      }
     }
     int trip_count = -1;
     if (auto afo = dyn_cast<affine::AffineForOp>(o))

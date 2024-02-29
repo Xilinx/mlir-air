@@ -514,3 +514,92 @@ module {
     return
   }
 }
+
+// -----
+
+// 16-bit type conversion
+
+// CHECK-LABEL: func.func @func10
+// CHECK-SAME: %arg0: memref<8192xi32>
+// CHECK-NEXT: aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 0, 0][4, 4, 32, 16][2048, 16, 64]){{.*}}: memref<8192xi32>
+module {
+  aie.device(ipu) {
+    func.func @func10(%arg0: memref<128x128xbf16>, %arg1: memref<128x128xbf16>) {
+      %c0_i32 = arith.constant 0 : i32
+      %c0_i64 = arith.constant 0 : i64
+      %c4_i64 = arith.constant 4 : i64
+      %c32_i64 = arith.constant 32 : i64
+      %c128_i64 = arith.constant 128 : i64
+      %c4096_i64 = arith.constant 4096 : i64
+      airrt.dma_memcpy_nd(%c0_i32, %c0_i64, %c0_i64, %arg0[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c4_i64, %c4_i64, %c32_i64, %c32_i64], [%c4096_i64, %c32_i64, %c128_i64]) {metadata = @md0} : (i32, i64, i64, memref<128x128xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+      return
+    }
+  }
+}
+
+// -----
+
+// 16-bit conversion with dma operands that aren't function arguments
+
+// CHECK-LABEL: func.func @func11
+// CHECK-SAME: %arg0: memref<16xi32>
+// CHECK-NEXT: aiex.ipu.dma_memcpy_nd(0, 0, %arg0[0, 0, 0, 0][1, 1, 1, 16][0, 0, 0]) {{.*}} : memref<16xi32>
+module {
+ func.func @func11() {
+    %c1_i32 = arith.constant 1 : i32
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c32_i64 = arith.constant 32 : i64
+    %alloc = memref.alloc() : memref<32xbf16>
+    airrt.dma_memcpy_nd(%c1_i32, %c0_i64, %c0_i64, %alloc[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c32_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @md0} : (i32, i64, i64, memref<32xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+    return
+  }
+}
+
+// -----
+
+// Before PR https://github.com/Xilinx/mlir-air/pull/447 running
+// `air-opt --cse  --canonicalize -airrt-to-ipu`
+// on the function in the test produced:
+//
+//  func.func @func12(%arg0: memref<16xi32>) {
+//    %alloc = memref.alloc() : memref<32xbf16>
+//    memref.assume_alignment %alloc, 64 : memref<32xbf16>
+//    aiex.ipu.dma_memcpy_nd(0, 0, %arg0 ...
+//    return
+//  }
+//
+// PR 447 relocates the memref.assume_alignment op so that calling
+// `air-opt -airrt-to-ipu` on the function in the test now produces:
+//
+//  func.func @func12(%arg0: memref<16xi32>) {
+//    memref.assume_alignment %arg0, 64 : memref<16xi32>
+//    aiex.ipu.dma_memcpy_nd(0, 0, %arg0 ...
+//    return
+//  }
+//
+// The key difference is that memref.alloc is removed.
+
+// CHECK-LABEL: func12
+// CHECK-NOT: memref.alloc
+// CHECK: memref.assume_alignment
+// CHECK-SAME: memref<16xi32>
+// CHECK-NOT: memref.alloc
+// CHECK: return
+module {
+  func.func @func12() {
+
+    %c1_i32 = arith.constant 1 : i32
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c32_i64 = arith.constant 32 : i64
+    %alloc = memref.alloc() : memref<32xbf16>
+
+    // assert that the alignment of %alloc is 64 bits:
+    memref.assume_alignment %alloc, 64 : memref<32xbf16>
+    airrt.dma_memcpy_nd(%c1_i32, %c0_i64, %c0_i64, %alloc[%c0_i64, %c0_i64, %c0_i64, %c0_i64], [%c1_i64, %c1_i64, %c1_i64, %c32_i64], [%c0_i64, %c0_i64, %c0_i64]) {metadata = @md0} : (i32, i64, i64, memref<32xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64])
+    return
+  }
+}
+
+

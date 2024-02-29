@@ -17,6 +17,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -26,6 +27,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
+#include <cstddef>
 
 #define DEBUG_TYPE "airrt-to-ipu-pass"
 
@@ -36,6 +38,58 @@ using namespace xilinx::airrt;
 namespace {
 #define GEN_PASS_DEF_AIRRTTOIPU
 #include "air/Conversion/Passes.h.inc"
+
+//
+//
+// Converts IR like:
+//
+// %0 = some.op
+// %1 = memref.assume_alignment %0
+// %2 = unrealized_conversion_cast %0
+//
+// to IR like:
+//
+// %0 = some.op
+// %1 = unrealized_conversion_cast %0
+// %2 = memref.assume_alignment %1
+//
+struct RelocateAssumeAlignmentOp
+    : public mlir::OpRewritePattern<memref::AssumeAlignmentOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  mlir::LogicalResult
+  matchAndRewrite(memref::AssumeAlignmentOp assumeOp,
+                  mlir::PatternRewriter &rewriter) const override {
+
+    auto producerOp = assumeOp.getOperand().getDefiningOp();
+    if (!producerOp)
+      return rewriter.notifyMatchFailure(assumeOp,
+                                         "No producer for AssumeAlignmentOp");
+
+    auto castConsumerOp = [&]() -> mlir::Operation * {
+      for (auto u : producerOp->getUsers()) {
+        if (auto castOp = dyn_cast<mlir::UnrealizedConversionCastOp>(u)) {
+          return castOp;
+        }
+      }
+      return {};
+    }();
+
+    if (!castConsumerOp)
+      return rewriter.notifyMatchFailure(
+          assumeOp, "No unrealized_conversion_cast consumer of producer.");
+
+    // Create a new AssumeAlignmentOp that consumes the cast operation's result
+    (void)rewriter.create<memref::AssumeAlignmentOp>(
+        assumeOp.getLoc(), castConsumerOp->getResult(0),
+        assumeOp.getAlignment());
+
+    // Erase the old AssumeAlignmentOp
+    rewriter.eraseOp(assumeOp);
+
+    return success();
+  }
+};
 
 struct DmaToIpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
   using OpConversionPattern<DmaMemcpyNdOp>::OpConversionPattern;
@@ -258,55 +312,46 @@ public:
   }
 };
 
-struct CastFunctionArgs : public OpConversionPattern<func::FuncOp> {
-  using OpConversionPattern<func::FuncOp>::OpConversionPattern;
+static LogicalResult CastFunctionArgs(func::FuncOp funcOp,
+                                      PatternRewriter &rewriter) {
+  // only run on ipu control functions
+  bool hasIpuOps = false;
+  funcOp.walk([&](AIEX::IpuDmaMemcpyNdOp dma) { hasIpuOps = true; });
+  if (!hasIpuOps)
+    return failure();
 
-  CastFunctionArgs(MLIRContext *context, PatternBenefit benefit = 1)
-      : OpConversionPattern<func::FuncOp>(context, benefit) {}
+  // cast all the function args to i32 types.
+  // this is in support of ipu.dma_memcpy_nd which only allow 32bit types
+  mlir::FunctionType funcType = funcOp.getFunctionType();
+  SmallVector<Type> argTypes(funcType.getInputs());
+  for (int i = 0, e = argTypes.size(); i < e; i++) {
+    auto memrefTy = dyn_cast<MemRefType>(argTypes[i]);
+    if (!memrefTy)
+      continue;
 
-  LogicalResult
-  matchAndRewrite(func::FuncOp funcOp, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
+    unsigned int bitwidth = memrefTy.getElementTypeBitWidth();
+    if (bitwidth != 16 && bitwidth != 8)
+      continue;
 
-    // only run on ipu control functions
-    bool hasIpuOps = false;
-    funcOp.walk([&](AIEX::IpuDmaMemcpyNdOp dma) { hasIpuOps = true; });
-    if (!hasIpuOps)
-      return failure();
-
-    // cast all the function args to i32 types.
-    // this is in support of ipu.dma_memcpy_nd which only allow 32bit types
-    mlir::FunctionType funcType = funcOp.getFunctionType();
-    SmallVector<Type> argTypes(funcType.getInputs());
-    for (int i = 0, e = argTypes.size(); i < e; i++) {
-      auto memrefTy = dyn_cast<MemRefType>(argTypes[i]);
-      if (!memrefTy)
-        continue;
-
-      unsigned int bitwidth = memrefTy.getElementTypeBitWidth();
-      if (bitwidth != 16 && bitwidth != 8)
-        continue;
-
-      unsigned int div = 32 / bitwidth;
-      unsigned int numElements = memrefTy.getNumElements() / div;
-      SmallVector<int64_t> shape{numElements};
-      MemRefType newMemrefTy =
-          MemRefType::get(shape, rewriter.getIntegerType(32));
-      argTypes[i] = newMemrefTy;
-      auto &entry = funcOp.front();
-      entry.insertArgument(i, newMemrefTy, rewriter.getUnknownLoc());
-      rewriter.setInsertionPointToStart(&entry);
-      auto cast = rewriter.create<UnrealizedConversionCastOp>(
-          rewriter.getUnknownLoc(), memrefTy, entry.getArgument(i));
-      entry.getArgument(i + 1).replaceAllUsesWith(cast.getResult(0));
-      entry.eraseArgument(i + 1);
-    }
-    auto newFuncType =
-        FunctionType::get(funcOp.getContext(), argTypes, funcType.getResults());
-    funcOp.setType(newFuncType);
-    return success();
+    unsigned int div = 32 / bitwidth;
+    unsigned int numElements = memrefTy.getNumElements() / div;
+    SmallVector<int64_t> shape{numElements};
+    MemRefType newMemrefTy =
+        MemRefType::get(shape, rewriter.getIntegerType(32));
+    argTypes[i] = newMemrefTy;
+    auto &entry = funcOp.front();
+    entry.insertArgument(i, newMemrefTy, rewriter.getUnknownLoc());
+    rewriter.setInsertionPointToStart(&entry);
+    auto cast = rewriter.create<UnrealizedConversionCastOp>(
+        rewriter.getUnknownLoc(), memrefTy, entry.getArgument(i));
+    entry.getArgument(i + 1).replaceAllUsesWith(cast.getResult(0));
+    entry.eraseArgument(i + 1);
   }
-};
+  auto newFuncType =
+      FunctionType::get(funcOp.getContext(), argTypes, funcType.getResults());
+  funcOp.setType(newFuncType);
+  return success();
+}
 
 AIE::DeviceOp getDeviceForSegmentLoad(Operation *s) {
   auto module = s->getParentOfType<ModuleOp>();
@@ -790,18 +835,17 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
       return true;
     });
     RewritePatternSet patterns(ctx);
-    patterns
-        .insert<DmaToIpuPattern, HerdLoadToIpuPattern, SegmentLoadToIpuPattern,
-                ModuleMetadataToIpuPattern, L1MemRefStoreOpConversion,
-                L1AffineStoreOpConversion, HostMemRefCopyOpConversion>(ctx);
+    patterns.add<DmaToIpuPattern, HerdLoadToIpuPattern, SegmentLoadToIpuPattern,
+                 ModuleMetadataToIpuPattern, L1MemRefStoreOpConversion,
+                 L1AffineStoreOpConversion, HostMemRefCopyOpConversion>(ctx);
 
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
 
     // Simplify arith ops (from airrt-to-ipu)
     RewritePatternSet canoPatterns_2(ctx);
+    canoPatterns_2.insert<RelocateAssumeAlignmentOp>(ctx);
     arith::IndexCastOp::getCanonicalizationPatterns(canoPatterns_2, ctx);
-    canoPatterns_2.insert<CastFunctionArgs>(ctx);
     (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns_2));
 
     // Unroll any affine for loops
@@ -809,6 +853,11 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
 
     // Buffer ipu.dma_memcpy_nd memref to function's argument list.
     BufferMemrefToFuncArgs(module);
+
+    // Cast buffers to i32 types
+    RewritePatternSet castPattern(ctx);
+    castPattern.add(CastFunctionArgs);
+    (void)applyPatternsAndFoldGreedily(module, std::move(castPattern));
 
     // Insert sync op after copying data out to host
     insertIpuSyncOpForResults(module);
@@ -988,6 +1037,8 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
       SmallVector<AIEX::IpuDmaMemcpyNdOp> dmas;
       f.walk([&](AIEX::IpuDmaMemcpyNdOp dma) { dmas.push_back(dma); });
       auto d = f->getParentOfType<AIE::DeviceOp>();
+      if (!d)
+        return;
       for (auto dma : dmas) {
         if (auto infoOp = getAllocOpForSymbol(d, dma.getMetadata())) {
           if (infoOp->getChannelDir() == AIE::DMAChannelDir::S2MM) {
@@ -1039,12 +1090,13 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
         return;
       // if the memref is the result of a cast of an arg, return
       if (auto cast = dyn_cast_or_null<UnrealizedConversionCastOp>(
-              memref.getDefiningOp()))
+              memref.getDefiningOp())) {
         if (std::find(args.begin(), args.end(), cast.getOperand(0)) !=
             args.end())
           return;
         else
           memref = cast.getOperand(0);
+      }
       // push back if unique
       if (std::find(memrefs.begin(), memrefs.end(), dma.getMemref()) ==
           memrefs.end()) {
