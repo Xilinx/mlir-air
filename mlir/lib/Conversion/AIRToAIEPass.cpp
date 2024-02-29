@@ -3158,12 +3158,12 @@ public:
   }
 };
 
-struct AIRLinalgToStandardPass
-    : public air::impl::AIRLinalgToStandardBase<AIRLinalgToStandardPass> {
+struct AIRLinalgToFuncPass
+    : public air::impl::AIRLinalgToFuncBase<AIRLinalgToFuncPass> {
   void runOnOperation() override;
 };
 
-void AIRLinalgToStandardPass::runOnOperation() {
+void AIRLinalgToFuncPass::runOnOperation() {
   auto module = getOperation();
   ConversionTarget target(getContext());
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
@@ -3245,8 +3245,8 @@ std::unique_ptr<mlir::Pass> createAIRSplitDevicesPass() {
   return std::make_unique<SplitAIEDevicesPass>();
 }
 
-std::unique_ptr<OperationPass<ModuleOp>> createAIRLinalgToStandardPass() {
-  return std::make_unique<AIRLinalgToStandardPass>();
+std::unique_ptr<OperationPass<ModuleOp>> createAIRLinalgToFuncPass() {
+  return std::make_unique<AIRLinalgToFuncPass>();
 }
 
 } // namespace air

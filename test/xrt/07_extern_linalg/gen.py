@@ -77,7 +77,7 @@ with Context() as ctx, Location.unknown():
         "air-dma-to-channel",
         "canonicalize", "cse",
         "air-specialize-channel-wrap-and-stride",
-        "air-linalg-to-std",
+        "air-linalg-to-func",
         'func.func(air-renumber-dma)'
     ]) + ")"
     pm = PassManager.parse(pipeline)
@@ -88,8 +88,7 @@ with Context() as ctx, Location.unknown():
     #     f.write(str(mlir_module))
 
     pipeline = "builtin.module(" + ",".join([
-        #"convert-linalg-to-loops",
-        "air-to-aie{emit-while-loop=false device=ipu row-offset=2 col-offset=0}",
+        "air-to-aie{device=ipu row-offset=2 col-offset=0}",
         "air-to-std",
         "symbol-dce",
         "canonicalize", "cse",
