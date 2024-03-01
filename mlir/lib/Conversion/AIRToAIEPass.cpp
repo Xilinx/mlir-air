@@ -2290,6 +2290,8 @@ public:
       builder.setInsertionPoint(bco.getOperand().getDefiningOp());
     else if (auto a = dyn_cast<memref::AllocaOp>(alloc.getDefiningOp()))
       builder.setInsertionPoint(alloc.getDefiningOp());
+    else if (auto a = dyn_cast<AIE::BufferOp>(alloc.getDefiningOp()))
+      builder.setInsertionPointToStart(memcpyOpIf->getBlock());
     else
       builder.setInsertionPoint(memcpyOpIf);
 
