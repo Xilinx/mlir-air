@@ -44,13 +44,13 @@
 // CHECK: ^bb1:
 // CHECK:   cf.br ^bb2
 // CHECK: ^bb2:
+// CHECK:   aie.use_lock(%[[VAL9]], AcquireGreaterEqual, 1)
 // CHECK:   aie.use_lock(%[[VAL8]], AcquireGreaterEqual, 1)
 // CHECK:   affine.for %[[VAL16:.*]] = 0 to 64 {
 // CHECK:     %[[VAL17:.*]] = affine.load %[[VAL13]][%[[VAL16]]] : memref<64xi32, 2>
 // CHECK:     %[[VAL18:.*]] = arith.addi %[[VAL17]], %[[VAL15]] : i32
 // CHECK:     affine.store %[[VAL18]], %[[VAL14]][%[[VAL16]]] : memref<64xi32, 2>
 // CHECK:   }
-// CHECK:   aie.use_lock(%[[VAL9]], AcquireGreaterEqual, 1)
 // CHECK:   aie.use_lock(%[[VAL7]], Release, 1)
 // CHECK:   aie.use_lock(%[[VAL10]], Release, 1)
 // CHECK:   aie.end
@@ -92,7 +92,7 @@
 // CHECK: memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
 // CHECK: aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
 // CHECK: memref.global "public" @airMemcpyId2 : memref<64xi32, 1>
-
+// CHECK: @func0
 #map2 = affine_map<(d0) -> (d0)>
 air.channel @channel_0 [1, 1]
 air.channel @channel_1 [1, 1]
@@ -176,13 +176,13 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
 // CHECK: ^bb1:
 // CHECK:   cf.br ^bb2
 // CHECK: ^bb2:
+// CHECK:   aie.use_lock(%[[VAL9]], AcquireGreaterEqual, 1)
 // CHECK:   aie.use_lock(%[[VAL8]], AcquireGreaterEqual, 1)
 // CHECK:   affine.for %[[VAL16:.*]] = 0 to 64 {
 // CHECK:     %[[VAL17:.*]] = affine.load %[[VAL13]][%[[VAL16]]] : memref<64xi32, 2>
 // CHECK:     %[[VAL18:.*]] = arith.addi %[[VAL17]], %[[VAL15]] : i32
 // CHECK:     affine.store %[[VAL18]], %[[VAL14]][%[[VAL16]]] : memref<64xi32, 2>
 // CHECK:   }
-// CHECK:   aie.use_lock(%[[VAL9]], AcquireGreaterEqual, 1)
 // CHECK:   aie.use_lock(%[[VAL7]], Release, 1)
 // CHECK:   aie.use_lock(%[[VAL10]], Release, 1)
 // CHECK:   aie.end
@@ -224,14 +224,14 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
 // CHECK: memref.global "public" @airMemcpyId7 : memref<64xi32, 1>
 // CHECK: aie.shim_dma_allocation @airMemcpyId2(MM2S, 0, 0)
 // CHECK: memref.global "public" @airMemcpyId2 : memref<64xi32, 1>
-
+// CHECK: @func1
 #map = affine_map<(d0) -> (d0)>
 module {
   air.channel @channel_0 [1, 1]
   air.channel @channel_1 [1, 1]
   air.channel @channel_2 [1, 1]
   air.channel @channel_3 [1, 1]
-  func.func @func0(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
+  func.func @func1(%arg0: memref<64xi32>, %arg1: memref<64xi32>) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c512 = arith.constant 512 : index

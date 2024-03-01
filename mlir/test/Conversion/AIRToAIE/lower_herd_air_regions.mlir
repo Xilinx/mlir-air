@@ -8,6 +8,7 @@
 
 // RUN: air-opt %s -air-to-aie | FileCheck %s
 // CHECK: aie.core({{.*}}) {
+// CHECK: aie.use_lock({{.*}}, Acquire, 0)
 // CHECK: aie.use_lock({{.*}}, Acquire, 1)
 // CHECK: scf.for {{.*}} = {{.*}} to {{.*}} step {{.*}} {
 // CHECK:   aie.use_lock({{.*}}, Acquire, 1)
@@ -16,7 +17,6 @@
 // CHECK:   aie.use_lock({{.*}}, Release, 0)
 // CHECK:   aie.use_lock({{.*}}, Release, 0)
 // CHECK: }
-// CHECK: aie.use_lock({{.*}}, Acquire, 0)
 // CHECK: aie.use_lock({{.*}}, Release, 1)
 // CHECK: aie.use_lock({{.*}}, Release, 0)
 #map = affine_map<()[s0] -> (s0 * 32)>

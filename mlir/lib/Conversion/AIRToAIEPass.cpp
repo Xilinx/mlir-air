@@ -2276,7 +2276,8 @@ public:
     int64_t lockAqValue = -1;
     int64_t lockRelValue = -1;
     Value alloc = nullptr;
-    if (isTileInbound(memcpyOpIf, (int)air::MemorySpace::L1)) {
+    auto tileInbound = isTileInbound(memcpyOpIf, (int)air::MemorySpace::L1);
+    if (tileInbound) {
       lockAqValue = isAIE2 ? 1 : 1;
       lockRelValue = isAIE2 ? 1 : 0;
       alloc = memcpyOpIf.getDstMemref();
@@ -2288,9 +2289,9 @@ public:
 
     if (auto bco = dyn_cast<bufferization::ToMemrefOp>(alloc.getDefiningOp()))
       builder.setInsertionPoint(bco.getOperand().getDefiningOp());
-    else if (auto a = dyn_cast<memref::AllocaOp>(alloc.getDefiningOp()))
+    else if (isa<memref::AllocaOp>(alloc.getDefiningOp()))
       builder.setInsertionPoint(alloc.getDefiningOp());
-    else if (auto a = dyn_cast<AIE::BufferOp>(alloc.getDefiningOp()))
+    else if (!tileInbound && isa<AIE::BufferOp>(alloc.getDefiningOp()))
       builder.setInsertionPointToStart(memcpyOpIf->getBlock());
     else
       builder.setInsertionPoint(memcpyOpIf);

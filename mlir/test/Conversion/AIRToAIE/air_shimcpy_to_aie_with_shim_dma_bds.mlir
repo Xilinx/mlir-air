@@ -41,6 +41,7 @@
 // CHECK:         ^bb2:
 // CHECK:           aie.end
 // CHECK:         }
+// CHECK: @func1
 func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
@@ -116,7 +117,7 @@ func.func @func1(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:           aie.use_lock(%[[VAL_4]], Release, 0)
 // CHECK:           aie.next_bd ^bb4
 // CHECK:         }
-
+// CHECK: @func2
 func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
   %herd_cols = arith.constant 1 : index
   %herd_rows = arith.constant 1 : index
@@ -170,8 +171,8 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:         }
 
 // CHECK:    aie.core(%[[VAL_5]])  {
-// CHECK:           aie.use_lock(%[[VAL_6]], Acquire, 1)
 // CHECK:           aie.use_lock(%[[VAL_7]], Acquire, 0)
+// CHECK:           aie.use_lock(%[[VAL_6]], Acquire, 1)
 // CHECK:           aie.use_lock(%[[VAL_6]], Release, 0)
 // CHECK:           aie.use_lock(%[[VAL_7]], Release, 1)
 // CHECK:           aie.end
@@ -197,7 +198,7 @@ func.func @func2(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
 // CHECK:           aie.use_lock(%[[VAL_3]], Release, 0)
 // CHECK:           aie.next_bd ^bb4
 // CHECK:         }
-
+// CHECK: @func3
 air.channel @channel_0 [1, 1]
 air.channel @channel_1 [1, 1]
 func.func @func3(%arg0 : memref<1024xi32>, %arg1 : memref<1024xi32>) -> () {
