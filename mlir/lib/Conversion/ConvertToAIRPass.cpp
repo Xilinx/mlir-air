@@ -1060,29 +1060,12 @@ class AIRDmaToAIRChannelConversion
     } else
       return failure();
 
-    auto src_rank = src_type.getRank();
-    auto dst_rank = dst_type.getRank();
-
     SmallVector<Value, 4> src_offsets = op.getSrcOffsets();
     SmallVector<Value, 4> dst_offsets = op.getDstOffsets();
     SmallVector<Value, 4> src_sizes = op.getSrcSizes();
     SmallVector<Value, 4> dst_sizes = op.getDstSizes();
     SmallVector<Value, 4> src_strides = op.getSrcStrides();
     SmallVector<Value, 4> dst_strides = op.getDstStrides();
-
-    if (src_offsets.size()) {
-      if (src_sizes.size() != (unsigned)src_rank)
-        return failure();
-      if (src_strides.size() != (unsigned)src_rank)
-        return failure();
-    }
-
-    if (dst_offsets.size()) {
-      if (dst_sizes.size() != (unsigned)dst_rank)
-        return failure();
-      if (dst_strides.size() != (unsigned)dst_rank)
-        return failure();
-    }
 
     std::set<Operation *> erased;
     SmallVector<air::ChannelInterface, 1> externalGetPut;
@@ -1472,29 +1455,12 @@ class AIRDemoteDmaToAIRHierarchyConversion
       return failure(); // This pass is currently not able to promote in memory
                         // tier
 
-    auto src_rank = src_type.getRank();
-    auto dst_rank = dst_type.getRank();
-
     SmallVector<Value, 4> src_offsets = op.getSrcOffsets();
     SmallVector<Value, 4> dst_offsets = op.getDstOffsets();
     SmallVector<Value, 4> src_sizes = op.getSrcSizes();
     SmallVector<Value, 4> dst_sizes = op.getDstSizes();
     SmallVector<Value, 4> src_strides = op.getSrcStrides();
     SmallVector<Value, 4> dst_strides = op.getDstStrides();
-
-    if (src_offsets.size()) {
-      if (src_sizes.size() != (unsigned)src_rank)
-        return failure();
-      if (src_strides.size() != (unsigned)src_rank)
-        return failure();
-    }
-
-    if (dst_offsets.size()) {
-      if (dst_sizes.size() != (unsigned)dst_rank)
-        return failure();
-      if (dst_strides.size() != (unsigned)dst_rank)
-        return failure();
-    }
 
     std::set<Operation *> erased;
 

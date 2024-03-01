@@ -341,6 +341,7 @@ public:
             for (unsigned i = 0; i < sink_op_memcpy.getSrcStrides().size(); i++)
               sink_op_scalar_ins.push_back(sink_op_memcpy.getSrcStrides()[i]);
             if (sink_op_memcpy.getSrcOffsets().size()) {
+              numDimsSrc = sink_op_memcpy.getSrcOffsets().size();
               for (unsigned i = 0; i < numDimsSrc; i++) {
                 src_indices.push_back(sink_op_memcpy.getSrcOffsets()[i]);
               }
@@ -366,6 +367,7 @@ public:
             for (unsigned i = 0; i < sink_op_memcpy.getDstStrides().size(); i++)
               sink_op_scalar_outs.push_back(sink_op_memcpy.getDstStrides()[i]);
             if (sink_op_memcpy.getDstOffsets().size()) {
+              numDimsDst = sink_op_memcpy.getDstOffsets().size();
               for (unsigned i = 0; i < numDimsDst; i++) {
                 dst_indices.push_back(sink_op_memcpy.getDstOffsets()[i]);
               }
@@ -1018,6 +1020,7 @@ private:
             unsigned numDimsSrc =
                 memcpy.getSrcMemref().getType().cast<MemRefType>().getRank();
             if (memcpy.getSrcOffsets().size()) {
+              numDimsSrc = memcpy.getSrcOffsets().size();
               for (unsigned i = 0; i < numDimsSrc; i++) {
                 src_indices.push_back(memcpy.getSrcOffsets()[i]);
               }
@@ -1034,6 +1037,7 @@ private:
                 memcpy.getDstMemref().getType().cast<MemRefType>().getRank();
             SmallVector<Value, 2> dst_indices;
             if (memcpy.getDstOffsets().size()) {
+              numDimsDst = memcpy.getDstOffsets().size();
               for (unsigned i = 0; i < numDimsDst; i++) {
                 dst_indices.push_back(memcpy.getDstOffsets()[i]);
               }
