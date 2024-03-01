@@ -178,6 +178,9 @@ std::string air::getElementTypeAsString(const mlir::Type ty) {
 
 // An incomplete lookup table of common data types
 uint64_t air::getElementSizeInBytes(const mlir::Type ty) {
+  if (auto memrefTy = ty.cast<MemRefType>()) {
+    return memrefTy.getElementTypeBitWidth() / 8;
+  }
   auto typeAsString = getElementTypeAsString(ty);
   if (typeAsString == "i32")
     return 4;

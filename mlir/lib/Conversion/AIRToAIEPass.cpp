@@ -2442,9 +2442,9 @@ public:
                                     : AIE::LockAction::Acquire,
                              lockAqValue);
 
-    std::vector<AIE::BDDimLayoutAttr> dims =
-        getWrapsAndStrides(sizes, strides, ndcpy->getContext());
-
+    std::vector<AIE::BDDimLayoutAttr> dims = getWrapsAndStrides(
+        sizes, strides, getElementSizeInBytes(memref.getType()),
+        ndcpy->getContext());
     auto wraps_and_strides =
         AIE::BDDimLayoutArrayAttr::get(ndcpy->getContext(), ArrayRef(dims));
     bool useDefaultDataAccessPattern =
