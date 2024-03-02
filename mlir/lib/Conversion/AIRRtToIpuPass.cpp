@@ -348,10 +348,10 @@ static LogicalResult CastFunctionArgs(func::FuncOp funcOp,
     // needs to be collapsed.
     SmallVector<Operation *> users;
     for (auto user : entry.getArgument(i + 1).getUsers()) {
-      if (auto cast = dyn_cast<UnrealizedConversionCastOp>(user)) {
-        assert(cast.getNumResults() == 1);
-        for (auto cast_user : cast.getResult(0).getUsers())
-          users.push_back(cast_user);
+      if (auto cast_user = dyn_cast<UnrealizedConversionCastOp>(user)) {
+        assert(cast_user.getNumResults() == 1);
+        for (auto cast_r_user : cast_user.getResult(0).getUsers())
+          users.push_back(cast_r_user);
       } else
         users.push_back(user);
     }
@@ -369,7 +369,7 @@ static LogicalResult CastFunctionArgs(func::FuncOp funcOp,
             dmaUser.getStrides(), ArrayRef(newStaticOffsets),
             dmaUser.getStaticSizes(), dmaUser.getStaticStrides(),
             dmaUser.getMetadata(), dmaUser.getId());
-        dmaUser->erase();
+        rewriter.eraseOp(dmaUser);
       }
     }
     entry.getArgument(i + 1).replaceAllUsesWith(cast.getResult(0));
