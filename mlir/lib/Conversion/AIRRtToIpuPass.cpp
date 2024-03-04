@@ -138,17 +138,17 @@ struct DmaToIpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
     SmallVector<Value> offsets;
     SmallVector<int64_t> staticOffsets;
     if (auto const_int = getConstantIntValue(adaptor.getOffset3()))
-      staticOffsets.push_back(*const_int / div);
+      staticOffsets.push_back(*const_int);
     else
-      offsets.push_back(divOp(adaptor.getOffset3()));
+      offsets.push_back(adaptor.getOffset3());
     if (auto const_int = getConstantIntValue(adaptor.getOffset2()))
-      staticOffsets.push_back(*const_int / div);
+      staticOffsets.push_back(*const_int);
     else
-      offsets.push_back(divOp(adaptor.getOffset2()));
+      offsets.push_back(adaptor.getOffset2());
     if (auto const_int = getConstantIntValue(adaptor.getOffset1()))
-      staticOffsets.push_back(*const_int / div);
+      staticOffsets.push_back(*const_int);
     else
-      offsets.push_back(divOp(adaptor.getOffset1()));
+      offsets.push_back(adaptor.getOffset1());
     if (auto const_int = getConstantIntValue(adaptor.getOffset0()))
       staticOffsets.push_back(*const_int / div);
     else
@@ -344,6 +344,34 @@ static LogicalResult CastFunctionArgs(func::FuncOp funcOp,
     rewriter.setInsertionPointToStart(&entry);
     auto cast = rewriter.create<UnrealizedConversionCastOp>(
         rewriter.getUnknownLoc(), memrefTy, entry.getArgument(i));
+    // With memref shape collapsed to 1d, the multi-dimensional offset also
+    // needs to be collapsed.
+    SmallVector<Operation *> users;
+    for (auto user : entry.getArgument(i + 1).getUsers()) {
+      if (auto cast = dyn_cast<UnrealizedConversionCastOp>(user)) {
+        assert(cast.getNumResults() == 1);
+        for (auto cast_user : cast.getResult(0).getUsers())
+          users.push_back(cast_user);
+      } else
+        users.push_back(user);
+    }
+    for (Operation *user : users) {
+      if (auto dmaUser = dyn_cast<AIEX::IpuDmaMemcpyNdOp>(user)) {
+        int oneDOffset = *getConstantIntValue(dmaUser.getMixedOffsets().back());
+        for (int i = dmaUser.getMixedOffsets().size() - 2; i >= 0; i--)
+          oneDOffset += *getConstantIntValue(dmaUser.getMixedOffsets()[i]) *
+                        *getConstantIntValue(dmaUser.getMixedStrides()[i]);
+        rewriter.setInsertionPoint(dmaUser);
+        const std::vector<int64_t> newStaticOffsets = {0, 0, 0, oneDOffset};
+        rewriter.create<AIEX::IpuDmaMemcpyNdOp>(
+            rewriter.getUnknownLoc(), dmaUser.getX(), dmaUser.getY(),
+            dmaUser.getMemref(), SmallVector<Value>{}, dmaUser.getSizes(),
+            dmaUser.getStrides(), ArrayRef(newStaticOffsets),
+            dmaUser.getStaticSizes(), dmaUser.getStaticStrides(),
+            dmaUser.getMetadata(), dmaUser.getId());
+        dmaUser->erase();
+      }
+    }
     entry.getArgument(i + 1).replaceAllUsesWith(cast.getResult(0));
     entry.eraseArgument(i + 1);
   }
