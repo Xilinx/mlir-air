@@ -358,9 +358,9 @@ static LogicalResult CastFunctionArgs(func::FuncOp funcOp,
     for (Operation *user : users) {
       if (auto dmaUser = dyn_cast<AIEX::IpuDmaMemcpyNdOp>(user)) {
         int oneDOffset = *getConstantIntValue(dmaUser.getMixedOffsets().back());
-        for (int i = dmaUser.getMixedOffsets().size() - 2; i >= 0; i--)
-          oneDOffset += *getConstantIntValue(dmaUser.getMixedOffsets()[i]) *
-                        *getConstantIntValue(dmaUser.getMixedStrides()[i]);
+        for (int j = dmaUser.getMixedOffsets().size() - 2; j >= 0; j--)
+          oneDOffset += *getConstantIntValue(dmaUser.getMixedOffsets()[j]) *
+                        *getConstantIntValue(dmaUser.getMixedStrides()[j]);
         rewriter.setInsertionPoint(dmaUser);
         const std::vector<int64_t> newStaticOffsets = {0, 0, 0, oneDOffset};
         rewriter.create<AIEX::IpuDmaMemcpyNdOp>(
