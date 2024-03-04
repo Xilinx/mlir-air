@@ -795,6 +795,10 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
     (void)applyPatternsAndFoldGreedily(module, std::move(canoPatterns_1));
     unrollSCFFors(module);
 
+    // Purge all wait ops again after unroll, in case there were loop carried
+    // events which couldn't be purged before
+    purgeWaitAlls(module);
+
     // Purge dma ops' async tokens
     purgeDmaAsyncTokens(module);
 
@@ -901,13 +905,20 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
   }
 
   void purgeWaitAlls(ModuleOp module) {
-    SmallVector<WaitAllOp> waits;
-    module.walk([&](WaitAllOp w) { waits.push_back(w); });
-    for (auto w : waits) {
-      w->eraseOperands(0, w->getNumOperands());
-    }
-    for (auto w : waits) {
-      w.erase();
+    int size = 0;
+    int last_size = 1;
+    while (size < last_size) {
+      SmallVector<WaitAllOp> waits;
+      module.walk([&](WaitAllOp w) { waits.push_back(w); });
+      size = waits.size();
+      last_size = size;
+      for (auto &w : waits) {
+        if (!w->use_empty())
+          continue;
+        w->eraseOperands(0, w->getNumOperands());
+        w.erase();
+        size--;
+      }
     }
   }
 

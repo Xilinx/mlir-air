@@ -602,4 +602,22 @@ module {
   }
 }
 
+// -----
 
+// Loop carried event
+
+// CHECK-LABEL: func.func @func14
+// CHECK-NEXT: return
+module {
+  func.func @func14() {
+    %c0 = arith.constant 0 : index
+    %c512 = arith.constant 512 : index
+    %c2048 = arith.constant 2048 : index
+    %9 = airrt.wait_all : !airrt.event
+    %11:1 = scf.for %arg6 = %c0 to %c2048 step %c512 iter_args(%arg7 = %9) -> (!airrt.event) {
+      %12 = airrt.wait_all : !airrt.event
+      scf.yield %12 : !airrt.event
+    }
+    return
+  }
+}
