@@ -142,6 +142,10 @@ public:
           createAsyncExecute(module_builder, op, "linalg::unknown",
                              ExecuteOpID);
 
+        // Create async interface for func.call ops.
+        else if (isa<func::CallOp>(op))
+          createAsyncExecute(module_builder, op, "func::call", ExecuteOpID);
+
         // Create async execute region for memref.alloc
         else if (auto memalloc_op = dyn_cast<memref::AllocOp>(op))
           createAsyncExecute(module_builder, op, "memref::alloc", ExecuteOpID,
@@ -651,7 +655,8 @@ private:
     SmallVector<Value, 1> deps;
     air::ExecuteOp async_region;
     async_region = builder.create<xilinx::air::ExecuteOp>(
-        loc, air::AsyncTokenType::get(op->getContext()), valueType, deps);
+        loc, air::AsyncTokenType::get(op->getContext()),
+        op->getResults().getType(), deps);
     async_region->setAttr(
         "id", mlir::IntegerAttr::get(
                   mlir::IntegerType::get(op->getContext(), 32), ++ExecuteOpID));
@@ -660,10 +665,12 @@ private:
     Block *async_region_bb = builder.createBlock(&async_region.getBody());
     builder.setInsertionPointToStart(async_region_bb);
     auto op_cloned = builder.clone(*op);
-    builder.create<xilinx::air::ExecuteTerminatorOp>(
-        builder.getUnknownLoc(), op_cloned->getResults().front());
+    builder.create<xilinx::air::ExecuteTerminatorOp>(builder.getUnknownLoc(),
+                                                     op_cloned->getResults());
     SmallVector<Value, 1> returnVals;
-    returnVals.push_back(async_region.getResult(1));
+    for (auto val : async_region.getResults()) {
+      returnVals.push_back(val);
+    }
     op->replaceAllUsesWith(returnVals);
 
     // Create a vertex out of the current async execute region
