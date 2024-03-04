@@ -116,6 +116,7 @@ def run(mlir_module, args=None):
     air_placed = opts.tmpdir+'/placed.'+air_mlir_filename
     pass_pipeline = ','.join([
       'air-pipeline-to-affine{lowering-type=getput}',
+      'air-fuse-channels',
       'canonicalize', 'cse',
       'func.func(air-renumber-dma)',
       'func.func(convert-linalg-to-loops)',
