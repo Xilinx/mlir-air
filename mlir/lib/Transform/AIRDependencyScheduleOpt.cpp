@@ -3694,6 +3694,7 @@ public:
       air::ExecuteOp dealloc_exec = execOpPair.second;
       dealloc_exec->moveBefore(new_loop_op.getBody(),
                                new_loop_op.getBody()->getOperations().end());
+      clearAsyncDependenciesOfAsyncOp(dealloc_exec);
     }
 
     // Scf.yield op.
