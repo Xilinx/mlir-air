@@ -81,7 +81,7 @@ def run_passes(pass_pipeline, mlir_module, opts, outputfile=None):
         with open(outputfile, 'w') as g:
            g.write(str(mlir_module))
 
-def lower_airrt_to_airhost(air_to_aie_module, air_mlir_filename):
+def lower_airrt_to_airhost(air_to_aie_module, air_placed_module, air_mlir_filename):
     pass_pipeline = 'air-split-devices{'
     pass_pipeline = pass_pipeline + f'output-prefix={opts.tmpdir}/' + '}'
     run_passes('builtin.module('+pass_pipeline+')', air_to_aie_module, opts)
@@ -295,9 +295,10 @@ def run(mlir_module, args=None):
 
     air_placed = opts.tmpdir+'/placed.'+air_mlir_filename
     pass_pipeline = ','.join([
-      'func.func(air-lower-herd-parallel)',
-      'air-dma-to-channel',
-      'canonicalize', 'cse',
+      'air-insert-launch-and-segment-around-herd',
+      'func.func(air-lower-herd-parallel)'] +
+      (['air-dma-to-channel'] if "ipu" in opts.device else []) +
+      ['canonicalize', 'cse',
       'air-specialize-channel-wrap-and-stride',
       'func.func(air-renumber-dma)',
       'func.func(convert-linalg-to-loops)',
@@ -347,7 +348,7 @@ def run(mlir_module, args=None):
                        air_to_ipu_file]
       aiecc.run(air_to_ipu_module, aiecc_options)
     else:
-      lower_airrt_to_airhost(air_to_aie_module, air_mlir_filename)
+      lower_airrt_to_airhost(air_to_aie_module, air_placed_module, air_mlir_filename)
 
 def main():
     global opts
