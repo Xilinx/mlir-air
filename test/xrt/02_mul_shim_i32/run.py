@@ -5,6 +5,7 @@
 
 import numpy as np
 import pyxrt as xrt
+import sys
 
 in_size = 32*32
 out_size = 32*32
@@ -12,13 +13,15 @@ out_size = 32*32
 in_size_bytes = in_size * 4
 out_size_bytes = out_size * 4
 
-with open('insts.txt', 'r') as f:
+
+opts_xclbin = sys.argv[1]
+opts_kernel = 'MLIR_AIE'
+opts_insts = opts_xclbin.removesuffix('.xclbin') + ".insts.txt"
+
+with open(opts_insts, 'r') as f:
     instr_text = f.read().split('\n')
     instr_text = [l for l in instr_text if l != '']
     instr_v = np.array([int(i,16) for i in instr_text], dtype=np.uint32)
-
-opts_xclbin = 'mul.xclbin'
-opts_kernel = 'MLIR_AIE'
 
 device = xrt.device(0)
 xclbin = xrt.xclbin(opts_xclbin)
