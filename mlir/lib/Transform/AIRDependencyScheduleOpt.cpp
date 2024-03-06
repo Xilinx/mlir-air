@@ -2138,23 +2138,46 @@ public:
       auto dma_op = dma_op_history[i];
       SmallVector<Value, 1> loop_dep_history = dma_op_loop_dep_history[i];
       air::HerdOp hl_op = nullptr;
-      bool hasDepInHerdRows = false;
-      bool hasDepInHerdCols = false;
+      bool isVariantWrtHerdRows = false;
+      bool isVariantWrtHerdCols = false;
       // Create an affine set to represent the broadcast pattern
       auto ctx = dma_op->getContext();
       for (auto v : loop_dep_history) {
+        // Check row-wise or col-wise broadcastable based on variance wrt herd
+        // dimensions.
         if (getHerdArgOwner(v)) {
           hl_op = getHerdArgOwner(v);
           if (v == hl_op.getIds()[0]) {
-            hasDepInHerdRows = true;
+            isVariantWrtHerdRows = true;
           }
           if (v == hl_op.getIds()[1]) {
-            hasDepInHerdCols = true;
+            isVariantWrtHerdCols = true;
           }
         }
       }
+      // If not variant wrt herd, then check for fixed row-wise or col-wise
+      // offset.
+      int src_memspace = dma_op.getSrcMemref()
+                             .getType()
+                             .cast<MemRefType>()
+                             .getMemorySpaceAsInt();
+      int dst_memspace = dma_op.getDstMemref()
+                             .getType()
+                             .cast<MemRefType>()
+                             .getMemorySpaceAsInt();
+      auto externalOffsets = src_memspace == (int)air::MemorySpace::L1
+                                 ? dma_op.getDstOffsets()
+                                 : dma_op.getSrcOffsets();
+      if (!hl_op && externalOffsets.size() ==
+                        dma_op->getParentOfType<air::HerdOp>().getNumDims()) {
+        hl_op = dma_op->getParentOfType<air::HerdOp>();
+        if (getConstantIntValue(externalOffsets[0]))
+          isVariantWrtHerdRows = true;
+        if (getConstantIntValue(externalOffsets[1]))
+          isVariantWrtHerdCols = true;
+      }
 
-      if (hl_op && hasDepInHerdRows && !hasDepInHerdCols) {
+      if (hl_op && isVariantWrtHerdRows && !isVariantWrtHerdCols) {
         auto numColsOp = dyn_cast<arith::ConstantIndexOp>(
             hl_op.getSizeOperands()[1].getDefiningOp());
         auto numCols = numColsOp.value();
@@ -2169,7 +2192,7 @@ public:
           dma_op->setAttr("broadcast_pattern",
                           mlir::IntegerSetAttr::get(int_set));
         }
-      } else if (hl_op && !hasDepInHerdRows && hasDepInHerdCols) {
+      } else if (hl_op && !isVariantWrtHerdRows && isVariantWrtHerdCols) {
         auto numRowsOp = dyn_cast<arith::ConstantIndexOp>(
             hl_op.getSizeOperands()[0].getDefiningOp());
         auto numRows = numRowsOp.value();
@@ -2180,23 +2203,6 @@ public:
               getAffineSymbolExpr(0, ctx),
               numRows - 1 - getAffineSymbolExpr(0, ctx)};
           SmallVector<bool, 5> eqflags{false, false, true, false, false};
-          auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
-          dma_op->setAttr("broadcast_pattern",
-                          mlir::IntegerSetAttr::get(int_set));
-        }
-      } else if (hl_op && !hasDepInHerdRows && !hasDepInHerdCols) {
-        auto numRowsOp = dyn_cast<arith::ConstantIndexOp>(
-            hl_op.getSizeOperands()[0].getDefiningOp());
-        auto numRows = numRowsOp.value();
-        auto numColsOp = dyn_cast<arith::ConstantIndexOp>(
-            hl_op.getSizeOperands()[1].getDefiningOp());
-        auto numCols = numColsOp.value();
-        if (numCols > 1 && numRows > 1) {
-          SmallVector<AffineExpr, 5> constraints{
-              getAffineDimExpr(0, ctx), numRows - 1 - getAffineDimExpr(0, ctx),
-              getAffineDimExpr(1, ctx), numCols - 1 - getAffineDimExpr(1, ctx),
-              getAffineSymbolExpr(0, ctx)};
-          SmallVector<bool, 5> eqflags{false, false, false, false, true};
           auto int_set = IntegerSet::get(2, 1, constraints, eqflags);
           dma_op->setAttr("broadcast_pattern",
                           mlir::IntegerSetAttr::get(int_set));
