@@ -64,8 +64,5 @@ with Context() as ctx, Location.unknown():
 
     mlir_module = generate_add_module([32*32], IntegerType.get_signless(32))
 
-    aircc_options = ['-row-offset', '2',
-                     '-col-offset', '0',
-                     '--device', 'ipu',
-                     'air.mlir']
+    aircc_options = ['--device', 'ipu', 'air.mlir']
     aircc.run(mlir_module, aircc_options)

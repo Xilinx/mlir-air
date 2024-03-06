@@ -273,8 +273,20 @@ def run(mlir_module, args=None):
     if opts.verbose:
       print('created temporary directory', tmpdirname)
 
+  if opts.num_cols < 0:
+    opts.num_cols = 4 if "ipu" in opts.device else 10
+
+  if opts.num_rows < 0:
+    opts.num_rows = 6
+
+  if opts.row_offset < 0:
+    opts.row_offset = 2
+
+  if opts.col_offset < 0:
+    opts.col_offset = 0 if "ipu" in opts.device else 7
+
   if opts.verbose:
-    print('compiling %s\n' % opts.air_mlir_file)
+    print('compiling %s for %s\n' % (opts.air_mlir_file, opts.device))
 
   aiecc_path = shutil.which('aiecc.py')
   if aiecc_path == None:

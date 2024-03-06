@@ -63,8 +63,5 @@ with Context() as ctx, Location.unknown():
     airdialect.register_dialect(ctx)
     mlir_module = generate_add_module([32*32], IntegerType.get_signless(16))
 
-    aircc_options = ['-row-offset', '2',
-                     '-col-offset', '0',
-                     '--device', 'ipu',
-                     '-xchesscc', 'air.mlir']
+    aircc_options = ['--device', 'ipu', '-xchesscc', 'air.mlir']
     aircc.run(mlir_module, aircc_options)
