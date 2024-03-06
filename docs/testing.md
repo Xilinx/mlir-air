@@ -37,19 +37,14 @@ If no board is available, then designs will still be compiled (enabling some min
 $ cmake -GNinja .. -DCMAKE_MODULE_PATH=/home/xilinx/acdc/cmakeModules/cmakeModulesXilinx/ -DENABLE_RUN_AIRHOST_TESTS=ON
 ```
 ```
-// RUN: clang ... -o %T/test.elf
-// RUN: %run_on_board %T/test.elf
+// RUN: clang ... -o test.elf
+// RUN: %run_on_board test.elf
 ```
 
-When a board is available, `%run_on_board` becomes `sudo`, executing the elf file.  If the execution fails (i.e., returns a negative return value), then the test will fail.  If no board is available then `%run_on_board` becomes `echo`.  Note that this mechanism means that the executable must be self-checking and cannot use the common `FileCheck`
-mechanism.
+When a board is available, `%run_on_board test.elf` becomes `sudo test.elf`, executing the elf file.  If the execution fails (i.e., returns a negative return value), then the test will fail.  If no board is available then `%run_on_board test.elf` becomes `echo test.elf`, to disable running the test.  Note that this mechanism means that the executable must be self-checking and cannot use the common `FileCheck` mechanism to check the output of running `test.elf`.
 
-Board tests must also be serialized.  Currently no in-system mechanism is provided to arbitrate access to the AIR platform.  Board tests configure lit (in `lit.cfg.py`) as below, in order to ensure serial access to the AIR platform:
-```
-lit_config.parallelism_groups["board"] = 1
-config.parallelism_group = "board"
-```
+Board tests must also be serialized because they assume exclusive access to the hardware.  Currently tests are serialized by adding `flock /tmp/board.lock` to the `%run_on_board` command line. The complete `%run_on_board <command line>` substitution is `sudo flock /tmp/board.lock <command line>`.
 
 -----
 
-<p align="center">Copyright&copy; 2019-2022 Advanced Micro Devices, Inc.</p>
+<p align="center">Copyright&copy; 2019-2024 Advanced Micro Devices, Inc.</p>

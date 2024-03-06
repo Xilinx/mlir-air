@@ -66,7 +66,7 @@ if config.hsa_found:
                                  " -Wl,-R{}/lib -Wl,-rpath,{}/lib -Wl,--whole-archive".format(config.libxaie_dir, rocm_root) +
                                  " -Wl,--no-whole-archive -lpthread -lstdc++ -lsysfs -ldl -lrt -lelf"))
     if config.enable_run_airhost_tests:
-        config.substitutions.append(('%run_on_board', "sudo"))
+        config.substitutions.append(('%run_on_board', "sudo flock /tmp/board.lock"))
     else:
         print("Skipping execution of airhost tests (ENABLE_RUN_AIRHOST_TESTS=OFF)")
         config.substitutions.append(('%run_on_board', "echo"))
@@ -177,7 +177,3 @@ tools = [
 ]
 
 llvm_config.add_tool_substitutions(tools, tool_dirs)
-
-if config.enable_run_airhost_tests:
-    lit_config.parallelism_groups["board"] = 1
-    config.parallelism_group = "board"
