@@ -140,12 +140,8 @@ if config.enable_chess_tests:
     import subprocess
     if result != None:
         result = subprocess.run(['xchesscc','+v'],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-        errs = result.stderr.decode('utf-8')
-        validLMLicense = (len(errs) == 0)
-        if not validLMLicense:
-            print ("WARNING: xchesscc did not work,", errs)
+        validLMLicense = (len(result.stderr.decode('utf-8')) == 0)
     else:
-        print ("WARNING: xchesscc not found")
         validLMLicense = False
 
     if validLMLicense:

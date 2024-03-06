@@ -155,6 +155,8 @@ jobs:
               export LIT_FILTER="${{ inputs.LIT_FILTER }}"
             fi
 
+            export LIT_OPTS="-sv --timeout 300 -j1 --time-tests --order=random"
+
             utils/clone-rocm-air-platforms.sh
             utils/github-clone-build-libxaie.sh
 
