@@ -273,16 +273,16 @@ def run(mlir_module, args=None):
     if opts.verbose:
       print('created temporary directory', tmpdirname)
 
-  if opts.num_cols < 0:
+  if not opts.num_cols:
     opts.num_cols = 4 if "ipu" in opts.device else 10
 
-  if opts.col_offset < 0:
+  if not opts.col_offset:
     opts.col_offset = 0 if "ipu" in opts.device else 7
 
-  if opts.num_rows < 0:
+  if not opts.num_rows:
     opts.num_rows = 6
 
-  if opts.row_offset < 0:
+  if not opts.row_offset:
     opts.row_offset = 2
 
   if opts.verbose:

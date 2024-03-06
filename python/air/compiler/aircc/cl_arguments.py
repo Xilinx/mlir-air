@@ -32,19 +32,15 @@ def parse_args(args=None):
             help='Trace commands as they are executed')
     parser.add_argument('-row-offset',
             dest="row_offset",
-            default=-1,
             help='Default row offset for generated segments')
     parser.add_argument('-col-offset',
             dest="col_offset",
-            default=-1,
             help='Default column offset for generated segments')
     parser.add_argument('-num-rows',
             dest="num_rows",
-            default=-1,
             help='Default number of rows for generated segments')
     parser.add_argument('-num-cols',
             dest="num_cols",
-            default=-1,
             help='Default number of rows for generated segments')
     parser.add_argument('-cc',
             dest="cc",
