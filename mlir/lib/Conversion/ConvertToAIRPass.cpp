@@ -1948,19 +1948,21 @@ public:
     // This means that the onus of setting the path to microkernel is on IREE.
     //
     // NOTE: Microkernel being used is actually residing within MLIR-AIE.
-    for (Operation &op : body) {
-      if (auto callOp = dyn_cast<func::CallOp>(op)) {
-        // Fetch name.
-        StringRef fnName = callOp.getCallee();
-        auto fnDecl = dyn_cast_or_null<func::FuncOp>(
-            SymbolTable::lookupSymbolIn(moduleOp, fnName));
-        assert(fnDecl && "expected function declaration");
-        assert(fnDecl->hasAttr("link_with") &&
-               "expected 'link_with' construct for the function declaration");
-        herdOp->setAttr("link_with", fnDecl->getAttr("link_with"));
-        break;
-      }
-    }
+    //
+    // Walk through all the func.call operations (immediate/nested children)
+    // within scf.parallel. Currently we only assume and enforce that we relay
+    // `link_with` information from just one func.call op.
+    op->walk([&](func::CallOp callOp) {
+      // Fetch name.
+      StringRef fnName = callOp.getCallee();
+      auto fnDecl = dyn_cast_or_null<func::FuncOp>(
+          SymbolTable::lookupSymbolIn(moduleOp, fnName));
+      assert(fnDecl && "expected function declaration");
+      assert(fnDecl->hasAttr("link_with") &&
+             "expected 'link_with' construct for the function declaration");
+      herdOp->setAttr("link_with", fnDecl->getAttr("link_with"));
+      return WalkResult::interrupt();
+    });
     auto &bb = herdOp.getBody().front();
     auto ivs = op.getInductionVars();
 
