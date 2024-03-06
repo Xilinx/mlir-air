@@ -135,9 +135,7 @@ llvm_config.with_environment('PATH', config.air_tools_dir, append_path=True)
 # test if LM_LICENSE_FILE valid
 if config.enable_chess_tests:
     import shutil
-    result = None
-    if config.vitis_root:
-        result = shutil.which("xchesscc")
+    result = shutil.which("xchesscc")
 
     import subprocess
     if result != None:
@@ -158,9 +156,8 @@ if config.enable_chess_tests:
         print("WARNING: no valid xchess license that is required by some of the lit tests")
 
 
-if config.vitis_root:
+if config.vitis_aietools_dir:
   llvm_config.with_environment('CARDANO', config.vitis_aietools_dir)
-  llvm_config.with_environment('VITIS', config.vitis_root)
 
 tool_dirs = [config.peano_tools_dir, config.aie_tools_dir, config.air_tools_dir, config.llvm_tools_dir]
 tools = [
