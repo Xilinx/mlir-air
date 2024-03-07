@@ -1083,6 +1083,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       if (res.failed())
         return res;
 
+      setChannelBufferResources(rewriter, channel, channelPuts[0].getOperation());
+
       // check if this put is linked to a get from another channel
       MemRefType memref =
           channelPuts[0].getMemref().getType().cast<MemRefType>();
@@ -1113,6 +1115,8 @@ struct LowerAIRChannelsPattern : public OpRewritePattern<air::ChannelOp> {
       if (res.failed())
         return res;
       consumers.push_back(consumerTile);
+
+      setChannelBufferResources(rewriter, channel, get.getOperation());
 
       // check if this get is linked to a put from another channel
       MemRefType memref = get.getMemref().getType().cast<MemRefType>();
@@ -1244,6 +1248,20 @@ private:
       return success();
     } else {
       return op.emitOpError("unsupported memory space");
+    }
+  }
+
+  void setChannelBufferResources(PatternRewriter &rewriter,
+                                 air::ChannelOp channel,
+                                 Operation* op) const {
+    if (channel->hasAttr("buffer_resources"))
+      return;
+    auto for_op = op->getParentOfType<scf::ForOp>();
+    if (!for_op)
+      return;
+    if (for_op->hasAttr("unroll")) {
+      auto unroll_factor = for_op->getAttrOfType<IntegerAttr>("unroll");
+      channel->setAttr("buffer_resources", unroll_factor);
     }
   }
 
