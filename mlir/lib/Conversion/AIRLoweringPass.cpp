@@ -169,6 +169,12 @@ public:
               o)) {
         rewriter.clone(o, remap);
       } else if (auto chanOp = dyn_cast<air::ChannelInterface>(o)) {
+        // clone L3 get/put
+        MemRefType memrefTy = chanOp.getMemref().getType().cast<MemRefType>();
+        if (memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L3) {
+          rewriter.clone(o, remap);
+          continue;
+        }
         auto async = cast<air::AsyncOpInterface>(o);
         if (o.getNumResults()) {
           auto tok = o.getResult(0);
