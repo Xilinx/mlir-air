@@ -667,8 +667,23 @@ specializeAffineForInAIRRtDmaWrapAndStride(OpBuilder builder,
   strides.push_back(i64_one);
 
   // Canonicalize wraps and strides
-  (void)air::canonicalizeWrapAndStrideList(builder, offsets, wraps, strides);
+  (void)air::canonicalizeWrapAndStrideList(
+      builder, offsets, wraps, strides, air::getTensorVolume(memref.getType()));
 
+  // If empty offsets/sizes/strides, then populate the lists with default
+  // values.
+  if (offsets.empty() && wraps.empty() && strides.empty()) {
+    auto memref_shape = air::getTensorShape(memref.getType());
+    int current_stride = air::getTensorVolume(memref.getType());
+    for (unsigned i = 0; i < memref_shape.size(); i++) {
+      offsets.push_back(builder.create<arith::ConstantIndexOp>(loc, 0));
+      wraps.push_back(
+          builder.create<arith::ConstantIndexOp>(loc, memref_shape[i]));
+      current_stride /= memref_shape[i];
+      strides.push_back(
+          builder.create<arith::ConstantIndexOp>(loc, current_stride));
+    }
+  }
   xilinx::air::foldForLoopNestAsExtendedSizesAndStrides(
       builder, for_op.getOperation(), memcpy_ops[0].getOperation(), offsets,
       wraps, strides, memcpy_ops[0]->getOperand(3));

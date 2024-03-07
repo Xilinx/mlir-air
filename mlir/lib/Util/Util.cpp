@@ -806,8 +806,10 @@ void air::getDefiningOpsToOperands(Operation *op,
 LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
                                                  SmallVector<Value> &offsets,
                                                  SmallVector<Value> &sizes,
-                                                 SmallVector<Value> &strides) {
+                                                 SmallVector<Value> &strides,
+                                                 int memref_volume) {
 
+  bool listsHaveChanged = false;
   // Match offsets size with sizes and strides
   int max_dim_size =
       std::max(std::max(offsets.size(), sizes.size()), strides.size());
@@ -816,6 +818,7 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
       offsets.insert(offsets.begin(), builder.create<arith::ConstantIndexOp>(
                                           builder.getUnknownLoc(), 0));
     }
+    listsHaveChanged = true;
   }
 
   SmallVector<int> unit_dims;
@@ -831,40 +834,50 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
     offsets.erase(offsets.begin() + i);
     sizes.erase(sizes.begin() + i);
     strides.erase(strides.begin() + i);
+    listsHaveChanged = true;
   }
 
-  SmallVector<int> redundant_dims;
-  if (!sizes.empty())
+  if (!sizes.empty()) {
     for (int i = sizes.size() - 1; i >= 1; i--) {
-      if (getConstantIntValue(sizes[i]) && getConstantIntValue(sizes[i - 1]) &&
+      if (getConstantIntValue(offsets[i]) &&
+          getConstantIntValue(offsets[i - 1]) &&
+          getConstantIntValue(sizes[i]) && getConstantIntValue(sizes[i - 1]) &&
           getConstantIntValue(strides[i]) &&
           getConstantIntValue(strides[i - 1])) {
         auto const_size = *getConstantIntValue(sizes[i]);
         auto const_size_next = *getConstantIntValue(sizes[i - 1]);
         auto const_stride = *getConstantIntValue(strides[i]);
         auto const_stride_next = *getConstantIntValue(strides[i - 1]);
-        // Skip over the first dimension if stride is 1
-        if (const_stride == 1 && i == (int)sizes.size() - 1)
-          continue;
         if (const_stride_next == const_size * const_stride) {
-          redundant_dims.push_back(i - 1);
           sizes[i] = builder.create<arith::ConstantIndexOp>(
               builder.getUnknownLoc(), const_size * const_size_next);
+          offsets.erase(offsets.begin() + i - 1);
+          sizes.erase(sizes.begin() + i - 1);
+          strides.erase(strides.begin() + i - 1);
+          listsHaveChanged = true;
         }
       }
     }
-
-  for (auto i : redundant_dims) {
-    offsets.erase(offsets.begin() + i);
-    sizes.erase(sizes.begin() + i);
-    strides.erase(strides.begin() + i);
   }
 
-  if (unit_dims.empty() && redundant_dims.empty()) {
+  // If default data access pattern, then clear the offsets, sizes and strides.
+  if (offsets.size() == 1 && sizes.size() == 1 && strides.size() == 1) {
+    if (getConstantIntValue(offsets[0]) && getConstantIntValue(sizes[0]) &&
+        getConstantIntValue(strides[0])) {
+      if (*getConstantIntValue(strides[0]) == 1 &&
+          *getConstantIntValue(sizes[0]) == memref_volume) {
+        offsets.erase(offsets.begin());
+        sizes.erase(sizes.begin());
+        strides.erase(strides.begin());
+        listsHaveChanged = true;
+      }
+    }
+  }
+
+  if (listsHaveChanged)
+    return success();
+  else
     return failure();
-  }
-
-  return success();
 }
 
 // Fold perfectly nested for loops as extra entries in wraps and strides

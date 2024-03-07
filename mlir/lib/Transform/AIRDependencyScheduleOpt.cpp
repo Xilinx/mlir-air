@@ -1699,6 +1699,22 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
     SmallVector<Value> offsets = channel_ops[0].getOffsets();
     SmallVector<Value> wraps = channel_ops[0].getSizes();
     SmallVector<Value> strides = channel_ops[0].getStrides();
+    for (auto o : for_loops) {
+      // Check for perfect loop nest containing only air.channel ops
+      if (!hasNElements(o.getBody(), 1))
+        return failure();
+      if (isa<air::ChannelInterface>(o.getBody()->begin())) {
+      } else if (isa<scf::ForOp>(o.getBody()->begin())) {
+      } else
+        return failure();
+      if (!getStaticScfForTripCountAsInt(o))
+        return failure();
+    }
+
+    (void)canonicalizeWrapAndStrideList(
+        rewriter, offsets, wraps, strides,
+        air::getTensorVolume(channel_ops[0].getMemref().getType()));
+
     // If empty offsets/sizes/strides, then populate the lists with default
     // values.
     if (offsets.empty() && wraps.empty() && strides.empty()) {
@@ -1714,25 +1730,13 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
             rewriter.create<arith::ConstantIndexOp>(loc, current_stride));
       }
     }
-    for (auto o : for_loops) {
-      // Check for perfect loop nest containing only air.channel ops
-      if (!hasNElements(o.getBody(), 1))
-        return failure();
-      if (isa<air::ChannelInterface>(o.getBody()->begin())) {
-      } else if (isa<scf::ForOp>(o.getBody()->begin())) {
-      } else
-        return failure();
-      if (!getStaticScfForTripCountAsInt(o))
-        return failure();
-    }
-
-    (void)canonicalizeWrapAndStrideList(rewriter, offsets, wraps, strides);
-
     foldForLoopNestAsExtendedSizesAndStrides(
         rewriter, for_op.getOperation(), channel_ops[0].getOperation(), offsets,
         wraps, strides, channel_ops[0].getMemref());
 
-    (void)canonicalizeWrapAndStrideList(rewriter, offsets, wraps, strides);
+    (void)canonicalizeWrapAndStrideList(
+        rewriter, offsets, wraps, strides,
+        air::getTensorVolume(channel_ops[0].getMemref().getType()));
 
     Operation *new_chan_op = nullptr;
     SmallVector<Type, 1> tys;
@@ -1823,13 +1827,17 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
         return failure();
     }
 
-    (void)canonicalizeWrapAndStrideList(rewriter, offsets, wraps, strides);
+    (void)canonicalizeWrapAndStrideList(
+        rewriter, offsets, wraps, strides,
+        air::getTensorVolume(channel_ops[0].getMemref().getType()));
 
     foldForLoopNestAsExtendedSizesAndStrides(
         rewriter, for_op.getOperation(), channel_ops[0].getOperation(), offsets,
         wraps, strides, channel_ops[0].getMemref());
 
-    (void)canonicalizeWrapAndStrideList(rewriter, offsets, wraps, strides);
+    (void)canonicalizeWrapAndStrideList(
+        rewriter, offsets, wraps, strides,
+        air::getTensorVolume(channel_ops[0].getMemref().getType()));
 
     Operation *new_chan_op = nullptr;
     SmallVector<Type, 1> tys;
@@ -1881,8 +1889,9 @@ struct AIRCanonicalizeChannelPutOpWrapAndStrideList
     SmallVector<Value> sizes = op.getSizes();
     SmallVector<Value> strides = op.getStrides();
 
-    if (failed(
-            canonicalizeWrapAndStrideList(rewriter, offsets, sizes, strides)))
+    if (failed(canonicalizeWrapAndStrideList(
+            rewriter, offsets, sizes, strides,
+            air::getTensorVolume(op.getMemref().getType()))))
       return failure();
 
     auto new_op = rewriter.create<air::ChannelPutOp>(
@@ -1917,8 +1926,9 @@ struct AIRCanonicalizeChannelGetOpWrapAndStrideList
     SmallVector<Value> sizes = op.getSizes();
     SmallVector<Value> strides = op.getStrides();
 
-    if (failed(
-            canonicalizeWrapAndStrideList(rewriter, offsets, sizes, strides)))
+    if (failed(canonicalizeWrapAndStrideList(
+            rewriter, offsets, sizes, strides,
+            air::getTensorVolume(op.getMemref().getType()))))
       return failure();
 
     auto new_op = rewriter.create<air::ChannelGetOp>(
