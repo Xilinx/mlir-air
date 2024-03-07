@@ -2161,10 +2161,6 @@ public:
                              .getType()
                              .cast<MemRefType>()
                              .getMemorySpaceAsInt();
-      int dst_memspace = dma_op.getDstMemref()
-                             .getType()
-                             .cast<MemRefType>()
-                             .getMemorySpaceAsInt();
       auto externalOffsets = src_memspace == (int)air::MemorySpace::L1
                                  ? dma_op.getDstOffsets()
                                  : dma_op.getSrcOffsets();
