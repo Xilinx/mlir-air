@@ -838,8 +838,7 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
   }
 
   if (!sizes.empty()){
-    int i = sizes.size() - 1;
-    while (i >= 1) {
+    for (int i = sizes.size() - 1; i >= 1; i--){
       if (getConstantIntValue(offsets[i]) && getConstantIntValue(offsets[i - 1]) &&
           getConstantIntValue(sizes[i]) && getConstantIntValue(sizes[i - 1]) &&
           getConstantIntValue(strides[i]) &&
@@ -857,7 +856,6 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
           listsHaveChanged = true;
         }
       }
-      i--;
     }
   }
 
