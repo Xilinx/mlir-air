@@ -144,7 +144,8 @@ void foldForLoopNestAsExtendedSizesAndStrides(
 LogicalResult canonicalizeWrapAndStrideList(OpBuilder builder,
                                             SmallVector<Value> &offsets,
                                             SmallVector<Value> &sizes,
-                                            SmallVector<Value> &strides);
+                                            SmallVector<Value> &strides,
+                                            int memref_volume);
 
 } // namespace air
 } // namespace xilinx

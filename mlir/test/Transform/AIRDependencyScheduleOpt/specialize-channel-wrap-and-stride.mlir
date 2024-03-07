@@ -66,7 +66,7 @@ module {
   }
 
   // CHECK-LABEL: test1
-  // CHECK: put @channel_1[%c0, %c0] (%arg0[%c0, %c0] [%c4, %c32] [%c32, %c1]) : (memref<128xf32>)
+  // CHECK: put @channel_1[%c0, %c0] (%arg0[] [] []) : (memref<128xf32>)
   // CHECK: get @channel_2[%c0, %c0] (%arg1[%c0, %c0] [%c128, %c32] [%c128, %c1]) : (memref<128x128xf32>)
   // CHECK: put @channel_3[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c32, %c32] [%c32, %c128, %c1]) : (memref<128x128xf32>)
   // CHECK: put @channel_4[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c128, %c32] [%c32, %c128, %c1]) : (memref<128x128xf32>)
@@ -101,7 +101,7 @@ module {
   }
 
   // CHECK-LABEL: test2
-  // CHECK: put @channel_6[%c0, %c0] (%arg0[%c0, %c0] [%c4, %c32] [%c32, %c1]) : (memref<128xf32>)
+  // CHECK: put @channel_6[%c0, %c0] (%arg0[] [] []) : (memref<128xf32>)
   // CHECK: get @channel_7[%c0, %c0] (%arg1[%c0, %c0] [%c128, %c32] [%c128, %c1]) : (memref<128x128xf32>)
   // CHECK: put @channel_8[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c32, %c32] [%c32, %c128, %c1]) : (memref<128x128xf32>)
   // CHECK: put @channel_9[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c128, %c32] [%c32, %c128, %c1]) : (memref<128x128xf32>)
@@ -136,10 +136,10 @@ module {
   }
 
   // CHECK-LABEL: test3
-  // CHECK: put @channel_11[%c0, %c0] (%arg0[%c0, %c0] [%c4, %c32] [%c32, %c1]) : (memref<128xf32>)
+  // CHECK: put @channel_11[%c0, %c0] (%arg0[] [] []) : (memref<128xf32>)
   // CHECK: put @channel_12[%c0, %c0] (%arg1[%c0, %c0, %c0] [%c4, %c128, %c32] [%c32, %c128, %c1]) : (memref<128x128xf32>)
-  // CHECK: put @channel_13[%c0, %c0] (%arg0[%c0, %c0] [%c4, %c32] [%c32, %c1]) : (memref<128xf32>)
-  // CHECK: put async [%0]  @channel_14[%c0, %c0] (%arg0[%c0, %c0] [%c4, %c32] [%c32, %c1]) : (memref<128xf32>)
+  // CHECK: put @channel_13[%c0, %c0] (%arg0[] [] []) : (memref<128xf32>)
+  // CHECK: put async [%0]  @channel_14[%c0, %c0] (%arg0[] [] []) : (memref<128xf32>)
 
   func.func @test3(%arg0: memref<128xf32>, %arg1: memref<128x128xf32>) -> memref<128xf32> {
     %c0 = arith.constant 0 : index
@@ -177,7 +177,7 @@ module {
 
   // CHECK-LABEL: test4
   // CHECK: put async  @channel_15[%c0, %c0] (%arg0[%c0] [%c32] [%c1]) : (memref<128xf32>)
-  // CHECK: put async  @channel_16[%c0, %c0] (%arg1[%c0, %c0] [%c16, %c4] [%c4, %c1]) : (memref<128x128xf32>)
+  // CHECK: put async  @channel_16[%c0, %c0] (%arg1[%c0] [%c64] [%c1]) : (memref<128x128xf32>)
 
   func.func @test4(%arg0: memref<128xf32>, %arg1: memref<128x128xf32>) -> memref<128xf32> {
     %c0 = arith.constant 0 : index
@@ -196,7 +196,7 @@ module {
   }
 
   // CHECK-LABEL: test5
-  // CHECK: put async  @channel_17[] (%arg0[%c0, %c0, %c0] [%c8, %c32, %c32] [%c0, %c32, %c1]) : (memref<32x32xf32>)
+  // CHECK: put async  @channel_17[] (%arg0[%c0, %c0] [%c8, %c1024] [%c0, %c1]) : (memref<32x32xf32>)
 
   func.func @test5(%arg0: memref<32x32xf32>) -> memref<32x32xf32> {
     %c0 = arith.constant 0 : index
@@ -208,5 +208,20 @@ module {
       %1 = air.channel.put async @channel_17[] (%arg0[] [] []) : (memref<32x32xf32>)
     }
     return %alloc : memref<32x32xf32>
+  }
+
+  // CHECK-LABEL: test6
+  // CHECK: put async  @channel_18[] (%arg0[] [] []) : (memref<1x1x4x2x8x4xi32>)
+
+  func.func @test6(%arg0: memref<1x1x4x2x8x4xi32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c4 = arith.constant 4 : index
+    %c8 = arith.constant 8 : index
+    %c32 = arith.constant 32 : index
+    %c64 = arith.constant 64 : index
+    %1 = air.channel.put async @channel_18[] (%arg0[%c0, %c0, %c0, %c0] [%c4, %c2, %c8, %c4] [%c64, %c32, %c4, %c1]) : (memref<1x1x4x2x8x4xi32>)
+    return
   }
 }
