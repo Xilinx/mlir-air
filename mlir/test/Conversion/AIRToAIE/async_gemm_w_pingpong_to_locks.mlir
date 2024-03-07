@@ -24,6 +24,7 @@
 // CHECK-COUNT-5:    aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<32x32xi32, 2>
 // CHECK:   aie.mem(%[[VAL_5]])
 // CHECK:   aie.core(%[[VAL_5]]) {
+// CHECK:     aie.use_lock({{.*}}, Acquire, 0)
 // CHECK:     aie.use_lock({{.*}}, Acquire, 1)
 // CHECK:     scf.for
 // CHECK:       aie.use_lock({{.*}}, Acquire, 1)
@@ -37,12 +38,12 @@
 // CHECK:       aie.use_lock({{.*}}, Release, 0)
 // CHECK:       aie.use_lock({{.*}}, Release, 0)
 // CHECK:     }
-// CHECK:     aie.use_lock({{.*}}, Acquire, 0)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 0)
 // CHECK:   } {elf_file = 
 // CHECK:   aie.mem(%[[VAL_4]])
 // CHECK:   aie.core(%[[VAL_4]])
+// CHECK:     aie.use_lock({{.*}}, Acquire, 0)
 // CHECK:     aie.use_lock({{.*}}, Acquire, 1)
 // CHECK:     scf.for
 // CHECK:       aie.use_lock({{.*}}, Acquire, 1)
@@ -56,12 +57,12 @@
 // CHECK:       aie.use_lock({{.*}}, Release, 0)
 // CHECK:       aie.use_lock({{.*}}, Release, 0)
 // CHECK:     }
-// CHECK:     aie.use_lock({{.*}}, Acquire, 0)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 0)
 // CHECK:   } {elf_file = 
 // CHECK:   aie.mem(%[[VAL_3]])
 // CHECK:   aie.core(%[[VAL_3]])
+// CHECK:     aie.use_lock({{.*}}, Acquire, 0)
 // CHECK:     aie.use_lock({{.*}}, Acquire, 1)
 // CHECK:     scf.for
 // CHECK:       aie.use_lock({{.*}}, Acquire, 1)
@@ -75,12 +76,12 @@
 // CHECK:       aie.use_lock({{.*}}, Release, 0)
 // CHECK:       aie.use_lock({{.*}}, Release, 0)
 // CHECK:     }
-// CHECK:     aie.use_lock({{.*}}, Acquire, 0)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 0)
 // CHECK:   } {elf_file = 
 // CHECK:   aie.mem(%[[VAL_2]])
 // CHECK:   aie.core(%[[VAL_2]])
+// CHECK:     aie.use_lock({{.*}}, Acquire, 0)
 // CHECK:     aie.use_lock({{.*}}, Acquire, 1)
 // CHECK:     scf.for
 // CHECK:       aie.use_lock({{.*}}, Acquire, 1)
@@ -94,7 +95,6 @@
 // CHECK:       aie.use_lock({{.*}}, Release, 0)
 // CHECK:       aie.use_lock({{.*}}, Release, 0)
 // CHECK:     }
-// CHECK:     aie.use_lock({{.*}}, Acquire, 0)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 0)
 // CHECK:   } {elf_file = 

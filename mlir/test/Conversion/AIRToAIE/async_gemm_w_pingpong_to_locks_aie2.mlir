@@ -29,6 +29,7 @@
 // CHECK:   aie.mem(%[[VAL_7]])
 // CHECK:   aie.core(%[[VAL_7]]) {
 // CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
+// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     scf.for
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
@@ -41,13 +42,13 @@
 // CHECK:       aie.use_lock({{.*}}, Release, 1)
 // CHECK:       aie.use_lock({{.*}}, Release, 1)
 // CHECK:     }
-// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:   } {elf_file = 
 // CHECK:   aie.mem(%[[VAL_6]])
 // CHECK:   aie.core(%[[VAL_6]])
 // CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
+// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     scf.for
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
@@ -60,13 +61,13 @@
 // CHECK:       aie.use_lock({{.*}}, Release, 1)
 // CHECK:       aie.use_lock({{.*}}, Release, 1)
 // CHECK:     }
-// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:   } {elf_file = 
 // CHECK:   aie.mem(%[[VAL_5]])
 // CHECK:   aie.core(%[[VAL_5]])
 // CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
+// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     scf.for
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
@@ -79,13 +80,13 @@
 // CHECK:       aie.use_lock({{.*}}, Release, 1)
 // CHECK:       aie.use_lock({{.*}}, Release, 1)
 // CHECK:     }
-// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:   } {elf_file = 
 // CHECK:   aie.mem(%[[VAL_4]])
 // CHECK:   aie.core(%[[VAL_4]])
 // CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
+// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     scf.for
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:       aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
@@ -98,7 +99,6 @@
 // CHECK:       aie.use_lock({{.*}}, Release, 1)
 // CHECK:       aie.use_lock({{.*}}, Release, 1)
 // CHECK:     }
-// CHECK:     aie.use_lock({{.*}}, AcquireGreaterEqual, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:     aie.use_lock({{.*}}, Release, 1)
 // CHECK:   } {elf_file = 

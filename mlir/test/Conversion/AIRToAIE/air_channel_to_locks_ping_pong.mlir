@@ -55,7 +55,7 @@
 // CHECK:         ^bb2:
 // CHECK:           aie.end
 // CHECK:         }
-
+// CHECK: @multi_memcpys_over_time
 #set = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 == 0)>
 air.channel @channel_0 [1, 1]
 func.func @multi_memcpys_over_time() {
@@ -161,7 +161,7 @@ func.func @multi_memcpys_over_time() {
 // CHECK:         }
 
 // CHECK:         aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_2]], DMA : 0)
-
+// CHECK: @core_to_core_ping_pong
 #set1 = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 == 0)>
 air.channel @channel_1 [1, 1]
 func.func @core_to_core_ping_pong() {
@@ -262,14 +262,14 @@ func.func @core_to_core_ping_pong() {
 
 // CHECK:    aie.core(%[[VAL_1]])  {
 // CHECK:           aie.use_lock(%[[VAL_3]], AcquireGreaterEqual, 1)
-// CHECK:           aie.use_lock(%[[VAL_4]], Release, 1)
 // CHECK:           aie.use_lock(%[[VAL_3]], AcquireGreaterEqual, 1)
+// CHECK:           aie.use_lock(%[[VAL_4]], Release, 1)
 // CHECK:           aie.use_lock(%[[VAL_4]], Release, 1)
 // CHECK:           aie.end
 // CHECK:         }
 
 // CHECK:         aie.flow(%[[VAL_1]], DMA : 0, %[[VAL_2]], DMA : 0)
-
+// cHECK: @core_to_core_ping_pong
 #set1 = affine_set<()[s0, s1] : (s0 >= 0, -s0 + 1 >= 0, s1 == 0)>
 air.channel @channel_1 [1, 1]
 func.func @core_to_core_ping_pong() {
