@@ -837,9 +837,10 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
     listsHaveChanged = true;
   }
 
-  if (!sizes.empty()){
-    for (int i = sizes.size() - 1; i >= 1; i--){
-      if (getConstantIntValue(offsets[i]) && getConstantIntValue(offsets[i - 1]) &&
+  if (!sizes.empty()) {
+    for (int i = sizes.size() - 1; i >= 1; i--) {
+      if (getConstantIntValue(offsets[i]) &&
+          getConstantIntValue(offsets[i - 1]) &&
           getConstantIntValue(sizes[i]) && getConstantIntValue(sizes[i - 1]) &&
           getConstantIntValue(strides[i]) &&
           getConstantIntValue(strides[i - 1])) {
@@ -860,9 +861,11 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
   }
 
   // If default data access pattern, then clear the offsets, sizes and strides.
-  if (offsets.size() == 1 && sizes.size() == 1 && strides.size() == 1){
-    if (getConstantIntValue(offsets[0]) && getConstantIntValue(sizes[0]) && getConstantIntValue(strides[0])){
-      if (*getConstantIntValue(strides[0]) == 1 && *getConstantIntValue(sizes[0]) == memref_volume){
+  if (offsets.size() == 1 && sizes.size() == 1 && strides.size() == 1) {
+    if (getConstantIntValue(offsets[0]) && getConstantIntValue(sizes[0]) &&
+        getConstantIntValue(strides[0])) {
+      if (*getConstantIntValue(strides[0]) == 1 &&
+          *getConstantIntValue(sizes[0]) == memref_volume) {
         offsets.erase(offsets.begin());
         sizes.erase(sizes.begin());
         strides.erase(strides.begin());

@@ -1711,7 +1711,9 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         return failure();
     }
 
-    (void)canonicalizeWrapAndStrideList(rewriter, offsets, wraps, strides, air::getTensorVolume(channel_ops[0].getMemref().getType()));
+    (void)canonicalizeWrapAndStrideList(
+        rewriter, offsets, wraps, strides,
+        air::getTensorVolume(channel_ops[0].getMemref().getType()));
 
     // If empty offsets/sizes/strides, then populate the lists with default
     // values.
@@ -1732,7 +1734,9 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
         rewriter, for_op.getOperation(), channel_ops[0].getOperation(), offsets,
         wraps, strides, channel_ops[0].getMemref());
 
-    (void)canonicalizeWrapAndStrideList(rewriter, offsets, wraps, strides, air::getTensorVolume(channel_ops[0].getMemref().getType()));
+    (void)canonicalizeWrapAndStrideList(
+        rewriter, offsets, wraps, strides,
+        air::getTensorVolume(channel_ops[0].getMemref().getType()));
 
     Operation *new_chan_op = nullptr;
     SmallVector<Type, 1> tys;
@@ -1823,13 +1827,17 @@ struct AIRSpecializeChannelWrapAndStrideInAffineFor
         return failure();
     }
 
-    (void)canonicalizeWrapAndStrideList(rewriter, offsets, wraps, strides, air::getTensorVolume(channel_ops[0].getMemref().getType()));
+    (void)canonicalizeWrapAndStrideList(
+        rewriter, offsets, wraps, strides,
+        air::getTensorVolume(channel_ops[0].getMemref().getType()));
 
     foldForLoopNestAsExtendedSizesAndStrides(
         rewriter, for_op.getOperation(), channel_ops[0].getOperation(), offsets,
         wraps, strides, channel_ops[0].getMemref());
 
-    (void)canonicalizeWrapAndStrideList(rewriter, offsets, wraps, strides, air::getTensorVolume(channel_ops[0].getMemref().getType()));
+    (void)canonicalizeWrapAndStrideList(
+        rewriter, offsets, wraps, strides,
+        air::getTensorVolume(channel_ops[0].getMemref().getType()));
 
     Operation *new_chan_op = nullptr;
     SmallVector<Type, 1> tys;
@@ -1881,8 +1889,9 @@ struct AIRCanonicalizeChannelPutOpWrapAndStrideList
     SmallVector<Value> sizes = op.getSizes();
     SmallVector<Value> strides = op.getStrides();
 
-    if (failed(
-            canonicalizeWrapAndStrideList(rewriter, offsets, sizes, strides, air::getTensorVolume(op.getMemref().getType()))))
+    if (failed(canonicalizeWrapAndStrideList(
+            rewriter, offsets, sizes, strides,
+            air::getTensorVolume(op.getMemref().getType()))))
       return failure();
 
     auto new_op = rewriter.create<air::ChannelPutOp>(
@@ -1917,8 +1926,9 @@ struct AIRCanonicalizeChannelGetOpWrapAndStrideList
     SmallVector<Value> sizes = op.getSizes();
     SmallVector<Value> strides = op.getStrides();
 
-    if (failed(
-            canonicalizeWrapAndStrideList(rewriter, offsets, sizes, strides, air::getTensorVolume(op.getMemref().getType()))))
+    if (failed(canonicalizeWrapAndStrideList(
+            rewriter, offsets, sizes, strides,
+            air::getTensorVolume(op.getMemref().getType()))))
       return failure();
 
     auto new_op = rewriter.create<air::ChannelGetOp>(
