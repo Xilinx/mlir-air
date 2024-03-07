@@ -809,6 +809,7 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
                                                  SmallVector<Value> &strides,
                                                  int memref_volume) {
 
+  bool listsHaveChanged = false;
   // Match offsets size with sizes and strides
   int max_dim_size =
       std::max(std::max(offsets.size(), sizes.size()), strides.size());
@@ -817,6 +818,7 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
       offsets.insert(offsets.begin(), builder.create<arith::ConstantIndexOp>(
                                           builder.getUnknownLoc(), 0));
     }
+    listsHaveChanged = true;
   }
 
   SmallVector<int> unit_dims;
@@ -832,9 +834,9 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
     offsets.erase(offsets.begin() + i);
     sizes.erase(sizes.begin() + i);
     strides.erase(strides.begin() + i);
+    listsHaveChanged = true;
   }
 
-  bool hasRedudantDims = false;
   if (!sizes.empty()){
     int i = sizes.size() - 1;
     while (i >= 1) {
@@ -847,12 +849,12 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
         auto const_stride = *getConstantIntValue(strides[i]);
         auto const_stride_next = *getConstantIntValue(strides[i - 1]);
         if (const_stride_next == const_size * const_stride) {
-          hasRedudantDims = true;
           sizes[i] = builder.create<arith::ConstantIndexOp>(
               builder.getUnknownLoc(), const_size * const_size_next);
           offsets.erase(offsets.begin() + i - 1);
           sizes.erase(sizes.begin() + i - 1);
           strides.erase(strides.begin() + i - 1);
+          listsHaveChanged = true;
         }
       }
       i--;
@@ -866,15 +868,15 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
         offsets.erase(offsets.begin());
         sizes.erase(sizes.begin());
         strides.erase(strides.begin());
+        listsHaveChanged = true;
       }
     }
   }
 
-  if (unit_dims.empty() && !hasRedudantDims) {
+  if (listsHaveChanged)
+    return success();
+  else
     return failure();
-  }
-
-  return success();
 }
 
 // Fold perfectly nested for loops as extra entries in wraps and strides
