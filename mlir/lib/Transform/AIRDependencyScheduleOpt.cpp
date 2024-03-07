@@ -3581,10 +3581,18 @@ public:
     // dealloc.
     std::map<air::ExecuteOp, air::ExecuteOp> alloc_dealloc_execs;
     for (auto execOp : op.getOps<air::ExecuteOp>()) {
-      if (auto child_op = execOp.getChildOp()) {
-        if (isa<memref::AllocOp>(child_op))
-          alloc_dealloc_execs[execOp] = nullptr;
-      }
+      if (!execOp.getChildOp())
+        continue;
+      if (!isa<memref::AllocOp>(execOp.getChildOp()))
+        continue;
+      auto memref = execOp->getResult(1);
+      bool allChannelUsersAreInScfFor = true;
+      for (auto user : memref.getUsers())
+        if (isa<air::ChannelInterface>(user))
+          if (!isa<scf::ForOp>(user->getParentOp()))
+            allChannelUsersAreInScfFor = false;
+      if (allChannelUsersAreInScfFor)
+        alloc_dealloc_execs[execOp] = nullptr;
     }
     for (auto execOp : op.getOps<air::ExecuteOp>()) {
       if (auto child_op = execOp.getChildOp()) {
