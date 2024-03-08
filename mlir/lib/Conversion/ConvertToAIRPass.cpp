@@ -2116,6 +2116,38 @@ private:
   int firstDim;
 };
 
+template <class T>
+air::SegmentOp generateEmptySegmentOp(OpBuilder &rewriter, T op,
+                                      air::LaunchOp launch) {
+  SmallVector<Value, 1> segmentSizes = {};
+  SmallVector<Value, 4> segmentOpers;
+  for (Value v : launch.getIds()) {
+    segmentOpers.push_back(v);
+  }
+  for (Value v : launch.getSize()) {
+    segmentOpers.push_back(v);
+  }
+  for (Value v : launch.getKernelArguments()) {
+    segmentOpers.push_back(v);
+  }
+  auto segment =
+      rewriter.create<air::SegmentOp>(op->getLoc(), segmentSizes, segmentOpers);
+  auto &bb = segment.getBody().front();
+  auto ivs = op.getInductionVars();
+
+  for (int i = 0, e = ivs.size(); i < e; i++) {
+    ivs[i].replaceAllUsesWith(segment.getKernelArgument(i));
+  }
+
+  auto &body = op.getBody()->getOperations();
+  bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
+  rewriter.setInsertionPointToStart(&segment.getRegion().front());
+  auto builder = OpBuilder::atBlockEnd(&bb);
+  builder.template create<air::SegmentTerminatorOp>(builder.getUnknownLoc());
+
+  return segment;
+}
+
 class ScfParToLaunchConversion : public OpRewritePattern<scf::ParallelOp> {
 public:
   using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
@@ -2223,37 +2255,6 @@ private:
   llvm::SmallSet<Operation *, 8> &filteredOps;
   llvm::SmallSet<air::LaunchOp, 2> &replacementOps;
   bool generateSegment;
-
-  air::SegmentOp generateEmptySegmentOp(OpBuilder &rewriter, scf::ParallelOp op,
-                                        air::LaunchOp launch) const {
-    SmallVector<Value, 1> segmentSizes = {};
-    SmallVector<Value, 4> segmentOpers;
-    for (Value v : launch.getIds()) {
-      segmentOpers.push_back(v);
-    }
-    for (Value v : launch.getSize()) {
-      segmentOpers.push_back(v);
-    }
-    for (Value v : launch.getKernelArguments()) {
-      segmentOpers.push_back(v);
-    }
-    auto segment = rewriter.create<air::SegmentOp>(op->getLoc(), segmentSizes,
-                                                   segmentOpers);
-    auto &bb = segment.getBody().front();
-    auto ivs = op.getInductionVars();
-
-    for (int i = 0, e = ivs.size(); i < e; i++) {
-      ivs[i].replaceAllUsesWith(segment.getKernelArgument(i));
-    }
-
-    auto &body = op.getBody()->getOperations();
-    bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
-    rewriter.setInsertionPointToStart(&segment.getRegion().front());
-    auto builder = OpBuilder::atBlockEnd(&bb);
-    builder.create<air::SegmentTerminatorOp>(builder.getUnknownLoc());
-
-    return segment;
-  }
 };
 
 class ScfForallToLaunchConversion : public OpRewritePattern<scf::ForallOp> {
@@ -2262,9 +2263,10 @@ public:
 
   ScfForallToLaunchConversion(MLIRContext *ctx,
                               llvm::SmallSet<Operation *, 8> &filteredOps,
-                              llvm::SmallSet<air::LaunchOp, 2> &replacementOps)
+                              llvm::SmallSet<air::LaunchOp, 2> &replacementOps,
+                              bool generateSegment)
       : OpRewritePattern(ctx), filteredOps(filteredOps),
-        replacementOps(replacementOps){};
+        replacementOps(replacementOps), generateSegment(generateSegment){};
 
   LogicalResult matchAndRewrite(scf::ForallOp forOp,
                                 PatternRewriter &rewriter) const override {
@@ -2312,26 +2314,40 @@ public:
     for (auto b : bounds)
       sizes.push_back(rewriter.create<arith::ConstantIndexOp>(loc, b));
     auto launch = rewriter.create<air::LaunchOp>(op.getLoc(), sizes, args);
-    auto &bb = launch.getBody().front();
-    auto ivs = op.getInductionVars();
 
-    for (int i = 0, e = ivs.size(); i < e; i++) {
-      ivs[i].replaceAllUsesWith(launch.getIds()[i]);
+    rewriter.setInsertionPointToStart(&launch.getRegion().front());
+
+    if (generateSegment) {
+      auto segment = generateEmptySegmentOp(rewriter, op, launch);
+      replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
+                                            segment.getRegion());
+      int i = 0;
+      auto kernel_args = segment.getKernelArguments();
+      kernel_args = kernel_args.drop_front(
+          launch.getIds().size() +
+          launch.getSize().size()); // Launch's induction vars
+      for (Value v : args)
+        replaceAllUsesInRegionWith(v, kernel_args[i++], segment.getRegion());
+    } else {
+      auto &bb = launch.getBody().front();
+      auto ivs = op.getInductionVars();
+
+      for (int i = 0, e = ivs.size(); i < e; i++) {
+        ivs[i].replaceAllUsesWith(launch.getIds()[i]);
+      }
+
+      auto &body = op.getBody()->getOperations();
+      bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
+      replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
+                                            launch.getRegion());
+      int i = 0;
+      auto kernel_args = launch.getKernelArguments();
+      for (Value v : args)
+        replaceAllUsesInRegionWith(v, kernel_args[i++], launch.getRegion());
     }
 
-    auto &body = op.getBody()->getOperations();
-    bb.getOperations().splice(bb.begin(), body, body.begin(), --body.end());
-    rewriter.setInsertionPointToStart(&launch.getRegion().front());
-    replaceAllUsesOfConstsInRegionWithNew(constants, rewriter,
-                                          launch.getRegion());
-
-    auto builder = OpBuilder::atBlockEnd(&bb);
+    OpBuilder builder = OpBuilder::atBlockEnd(&launch.getBody().front());
     builder.create<air::LaunchTerminatorOp>(loc);
-
-    int i = 0;
-    auto kernel_args = launch.getKernelArguments();
-    for (Value v : args)
-      replaceAllUsesInRegionWith(v, kernel_args[i++], launch.getRegion());
 
     if (op != forOp)
       op.erase();
@@ -2344,7 +2360,7 @@ public:
 private:
   llvm::SmallSet<Operation *, 8> &filteredOps;
   llvm::SmallSet<air::LaunchOp, 2> &replacementOps;
-  // bool generateSegment;
+  bool generateSegment;
 };
 
 /// Build a strided memref type by applying `permutationMap` tp `memRefType`.
@@ -3181,7 +3197,7 @@ struct ParallelToLaunchPass
     patterns.add<ScfParToLaunchConversion>(context, filteredOps, replacementOps,
                                            clHasSegment);
     patterns.add<ScfForallToLaunchConversion>(context, filteredOps,
-                                              replacementOps);
+                                              replacementOps, clHasSegment);
 
     ConversionTarget target(*context);
 
@@ -3281,7 +3297,8 @@ transform::ParToLaunchOp::applyToOne(transform::TransformRewriter &rewriter,
   filteredOps.insert(target);
   patterns.add<ScfParToLaunchConversion>(ctx, filteredOps, launchOps,
                                          getHasAirSegment());
-  patterns.add<ScfForallToLaunchConversion>(ctx, filteredOps, launchOps);
+  patterns.add<ScfForallToLaunchConversion>(ctx, filteredOps, launchOps,
+                                            getHasAirSegment());
   (void)applyPatternsAndFoldGreedily(
       target->getParentWithTrait<OpTrait::IsIsolatedFromAbove>(),
       std::move(patterns));
