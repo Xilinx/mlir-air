@@ -6,10 +6,16 @@
 //===----------------------------------------------------------------------===//
 
 // RUN: air-opt %s -air-linalg-to-func | FileCheck %s
+// RUN: air-opt %s -air-linalg-to-func="link-with=test.o" | FileCheck %s --check-prefix=LINKWITH
 
 // CHECK-LABEL: test_0
 // CHECK: call @linalg_fill_i16_view64x64xi16
 // CHECK: call @linalg_matmul_view64x256xi16_view256x64xi16_view64x64xi16
+// LINKWITH-LABEL: test_0
+// LINKWITH: call @linalg_fill_i16_view64x64xi16
+// LINKWITH: call @linalg_matmul_view64x256xi16_view256x64xi16_view64x64xi16
+// LINKWITH: func.func private @linalg_fill_i16_view64x64xi16{{.*}}link_with = "test.o"
+// LINKWITH: func.func private @linalg_matmul_view64x256xi16_view256x64xi16_view64x64xi16{{.*}}link_with = "test.o"
 func.func @test_0(%arg0: memref<64x256xi16>, %arg1: memref<256x64xi16>, %arg2: memref<64x64xi16>) {
   %cst = arith.constant 0 : i16
   linalg.fill ins(%cst : i16) outs(%arg2 : memref<64x64xi16>)
@@ -20,6 +26,11 @@ func.func @test_0(%arg0: memref<64x256xi16>, %arg1: memref<256x64xi16>, %arg2: m
 // CHECK-LABEL: test_1
 // CHECK: call @zero_f32
 // CHECK: call @matmul_f32
+// LINKWITH: func.func private @zero_f32{{.*}}link_with = "test.o"
+// LINKWITH: func.func private @matmul_f32{{.*}}link_with = "test.o"
+// LINKWITH-LABEL: test_1
+// LINKWITH: call @zero_f32
+// LINKWITH: call @matmul_f32
 #map = affine_map<(d0, d1) -> ()>
 #map1 = affine_map<(d0, d1) -> (d0, d1)>
 #map2 = affine_map<(d0, d1, d2) -> (d0, d2)>
