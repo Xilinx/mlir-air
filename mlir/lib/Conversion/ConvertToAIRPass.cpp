@@ -470,12 +470,16 @@ Value lookupOrDefaultRange(Value v, IRMapping &remap) {
   return remap.lookupOrDefault(v);
 }
 
-Operation *getLinalgOpFromExecuteOp(Operation *op) {
-  Operation *output = nullptr;
+Operation *getCoreComputeOpFromExecuteOp(Operation *op) {
+  // We assume all linalg ops (except for linalg.copy) and func.call ops do
+  // computations only and do not participate in data movement.
   if (auto exec = dyn_cast<air::ExecuteOp>(op)) {
-    exec.walk([&](linalg::LinalgOp linalg_op) { output = linalg_op; });
+    if (isa<linalg::LinalgOp>(exec.getChildOp()))
+      return exec.getChildOp();
+    else if (isa<func::CallOp>(exec.getChildOp()))
+      return exec.getChildOp();
   }
-  return output;
+  return nullptr;
 }
 
 SmallVector<Value, 1> lookupOrDefaultRange(SmallVector<Value, 1> vec,
@@ -525,7 +529,7 @@ T cloneScfLoopUsingRemap(OpBuilder builder, IRMapping &remap, T loop_op,
           builder.clone(child_op, remap);
         else
           replaceAsyncOpWithWaitAllAndClone(builder, remap, &child_op, false);
-      } else if (getLinalgOpFromExecuteOp(&child_op)) {
+      } else if (getCoreComputeOpFromExecuteOp(&child_op)) {
         replaceAsyncOpWithWaitAllAndClone(builder, remap, &child_op, false);
       } else {
         builder.clone(child_op, remap);
@@ -996,7 +1000,7 @@ void HoistingAffineIf(affine::AffineIfOp op) {
           }
         } else if (auto dma_op = dyn_cast<air::DmaMemcpyNdOp>(o)) {
           replaceAsyncOpWithWaitAllAndClone(module_builder, remap, &o, false);
-        } else if (getLinalgOpFromExecuteOp(&o)) {
+        } else if (getCoreComputeOpFromExecuteOp(&o)) {
           replaceAsyncOpWithWaitAllAndClone(module_builder, remap, &o, false);
         } else {
           module_builder.clone(o, remap);
@@ -1184,7 +1188,7 @@ class AIRDmaToAIRChannelConversion
               } else {
                 rewriter.clone(o, remap);
               }
-            } else if (getLinalgOpFromExecuteOp(&o)) {
+            } else if (getCoreComputeOpFromExecuteOp(&o)) {
               replaceAsyncOpWithWaitAllAndClone(rewriter, remap, &o, false);
             } else {
               rewriter.clone(o, remap);
@@ -1574,7 +1578,7 @@ class AIRDemoteDmaToAIRHierarchyConversion
             } else if (auto child_parallel_op = dyn_cast<scf::ParallelOp>(o)) {
               cloneScfLoopUsingRemap<scf::ParallelOp>(rewriter, remap,
                                                       child_parallel_op);
-            } else if (getLinalgOpFromExecuteOp(&o)) {
+            } else if (getCoreComputeOpFromExecuteOp(&o)) {
               replaceAsyncOpWithWaitAllAndClone(rewriter, remap, &o, false);
             } else
               rewriter.clone(o, remap);

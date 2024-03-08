@@ -140,6 +140,12 @@ def AIRLinalgToFunc : Pass<"air-linalg-to-func", "ModuleOp"> {
                 "function calls";
   let constructor = "xilinx::air::createAIRLinalgToFuncPass()";
   let dependentDialects = ["func::FuncDialect", "memref::MemRefDialect"];
+  let options = [
+    Option<"clLinkWith", "link-with", "std::string",
+          /*default=*/"\"\"",
+           "Path to the object file containing the functions that will be "
+           "called in place of the linalg operations.">
+  ];
 }
 
 def AIRToAIE : Pass<"air-to-aie", "ModuleOp"> {

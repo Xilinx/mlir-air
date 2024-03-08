@@ -3126,7 +3126,8 @@ public:
 class AIRLinalgOpToLibraryCallRewrite
     : public OpInterfaceRewritePattern<linalg::LinalgOp> {
 public:
-  using OpInterfaceRewritePattern<linalg::LinalgOp>::OpInterfaceRewritePattern;
+  AIRLinalgOpToLibraryCallRewrite(MLIRContext *ctx, std::string &linkWith)
+      : OpInterfaceRewritePattern(ctx), linkWith(linkWith) {}
 
   LogicalResult matchAndRewrite(linalg::LinalgOp op,
                                 PatternRewriter &rewriter) const override {
@@ -3152,6 +3153,12 @@ public:
       // conversion.
       funcOp->setAttr(LLVM::LLVMDialect::getEmitCWrapperAttrName(),
                       UnitAttr::get(op->getContext()));
+      if (linkWith != "") {
+        // Insert a function attribute that will link to the compiled kernel
+        // object file (.o).
+        funcOp->setAttr("link_with",
+                        StringAttr::get(rewriter.getContext(), linkWith));
+      }
       funcOp.setPrivate();
     }
 
@@ -3159,6 +3166,9 @@ public:
                                               TypeRange(), op->getOperands());
     return success();
   }
+
+private:
+  std::string &linkWith;
 };
 
 struct AIRLinalgToFuncPass
@@ -3175,7 +3185,7 @@ void AIRLinalgToFuncPass::runOnOperation() {
                          cf::ControlFlowDialect>();
   target.addLegalOp<ModuleOp, func::FuncOp, func::ReturnOp>();
   RewritePatternSet patterns(&getContext());
-  patterns.insert<AIRLinalgOpToLibraryCallRewrite>(&getContext());
+  patterns.insert<AIRLinalgOpToLibraryCallRewrite>(&getContext(), clLinkWith);
   if (failed(applyFullConversion(module, target, std::move(patterns))))
     signalPassFailure();
 }
