@@ -3134,6 +3134,8 @@ public:
     auto fnName = op.getLibraryCallName();
     if (fnName.empty())
       return failure();
+    if (fnName == "op_has_no_registered_library_name")
+      return failure();
 
     // fnName is a dynamic std::string, unique it via a SymbolRefAttr.
     FlatSymbolRefAttr fnNameAttr =
@@ -3183,7 +3185,16 @@ void AIRLinalgToFuncPass::runOnOperation() {
                          func::FuncDialect, memref::MemRefDialect,
                          scf::SCFDialect, air::airDialect, AIE::AIEDialect,
                          cf::ControlFlowDialect>();
-  target.addLegalOp<ModuleOp, func::FuncOp, func::ReturnOp>();
+  target.addLegalOp<ModuleOp, func::FuncOp, func::ReturnOp, linalg::YieldOp>();
+  target.addDynamicallyLegalOp<linalg::GenericOp>([](linalg::GenericOp op) {
+    std::string fnName = op.getLibraryCallName();
+    if (fnName.empty())
+      return true;
+    if (fnName == "op_has_no_registered_library_name")
+      return true;
+    op->dump();
+    return false;
+  });
   RewritePatternSet patterns(&getContext());
   patterns.insert<AIRLinalgOpToLibraryCallRewrite>(&getContext(), clLinkWith);
   if (failed(applyFullConversion(module, target, std::move(patterns))))
