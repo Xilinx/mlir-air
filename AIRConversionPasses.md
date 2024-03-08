@@ -19,6 +19,11 @@ does not have a parent launch or segment operation.
 
 _Convert the operations from the linalg dialect into the function calls_
 
+
+#### Options
+```
+-link-with : Path to the object file containing the functions that will be called in place of the linalg operations.
+```
 ### `-air-par-to-herd`
 
 _Convert parallel loops to air.herd_
