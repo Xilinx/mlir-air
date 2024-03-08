@@ -3153,9 +3153,11 @@ public:
       // conversion.
       funcOp->setAttr(LLVM::LLVMDialect::getEmitCWrapperAttrName(),
                       UnitAttr::get(op->getContext()));
-      if (linkWith != ""){
-        // Insert a function attribute that will link to the compiled kernel object file (.o).
-        funcOp->setAttr("link_with", StringAttr::get(rewriter.getContext(), linkWith));
+      if (linkWith != "") {
+        // Insert a function attribute that will link to the compiled kernel
+        // object file (.o).
+        funcOp->setAttr("link_with",
+                        StringAttr::get(rewriter.getContext(), linkWith));
       }
       funcOp.setPrivate();
     }
@@ -3164,6 +3166,7 @@ public:
                                               TypeRange(), op->getOperands());
     return success();
   }
+
 private:
   std::string &linkWith;
 };

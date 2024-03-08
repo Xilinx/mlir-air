@@ -471,10 +471,13 @@ Value lookupOrDefaultRange(Value v, IRMapping &remap) {
 }
 
 Operation *getCoreComputeOpFromExecuteOp(Operation *op) {
-  // We assume all linalg ops (except for linalg.copy) and func.call ops do computations only and do not participate in data movement.
+  // We assume all linalg ops (except for linalg.copy) and func.call ops do
+  // computations only and do not participate in data movement.
   if (auto exec = dyn_cast<air::ExecuteOp>(op)) {
-    if (isa<linalg::LinalgOp>(exec.getChildOp())) return exec.getChildOp();
-    else if (isa<func::CallOp>(exec.getChildOp())) return exec.getChildOp();
+    if (isa<linalg::LinalgOp>(exec.getChildOp()))
+      return exec.getChildOp();
+    else if (isa<func::CallOp>(exec.getChildOp()))
+      return exec.getChildOp();
   }
   return nullptr;
 }
