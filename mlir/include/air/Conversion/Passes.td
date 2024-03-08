@@ -143,7 +143,8 @@ def AIRLinalgToFunc : Pass<"air-linalg-to-func", "ModuleOp"> {
   let options = [
     Option<"clLinkWith", "link-with", "std::string",
           /*default=*/"\"\"",
-           "Compiled kernel object file to link with.">
+           "Path to the object file containing the functions that will be "
+           "called in place of the linalg operations.">
   ];
 }
 
