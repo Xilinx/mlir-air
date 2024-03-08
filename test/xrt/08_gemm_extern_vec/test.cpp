@@ -4,7 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (C) 2023, Advanced Micro Devices, Inc.
+// Copyright (C) 2024, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -82,7 +82,7 @@ int main(int argc, const char *argv[]) {
                                [Node, verbosity](xrt::xclbin::kernel &k) {
                                  auto name = k.get_name();
                                  if (verbosity >= 1) {
-                                  std::cout << "Name: " << name << std::endl;
+                                   std::cout << "Name: " << name << std::endl;
                                  }
                                  return name.rfind(Node, 0) == 0;
                                });
@@ -172,7 +172,7 @@ int main(int argc, const char *argv[]) {
       float vtime =
           std::chrono::duration_cast<std::chrono::seconds>(vstop - vstart)
               .count();
-      if(verbosity >= 1) {
+      if (verbosity >= 1) {
         std::cout << "Verify time: " << vtime << "secs." << std::endl;
       }
     } else {

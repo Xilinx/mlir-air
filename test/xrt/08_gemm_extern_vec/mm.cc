@@ -4,7 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Copyright (C) 2023, Advanced Micro Devices, Inc.
+// Copyright (C) 2024, Advanced Micro Devices, Inc.
 //
 //===----------------------------------------------------------------------===//
 
@@ -34,14 +34,14 @@ void matmul_vectorized(const T_in *__restrict pA, const T_in *__restrict pB,
 
   for (unsigned z = 0; z < rowA; z += 2)
     chess_loop_range(2, ) {
-      T_out *__restrict pC1 = pC + (z) * MMUL::size_C;
+      T_out *__restrict pC1 = pC + (z)*MMUL::size_C;
       T_out *__restrict pC2 = pC + ((z + 1)) * MMUL::size_C;
 
       for (unsigned j = 0; j < colB; j += 2)
         chess_prepare_for_pipelining chess_loop_range(8, ) {
-          const T_in *__restrict pA1 = pA + (z) * MMUL::size_A;
+          const T_in *__restrict pA1 = pA + (z)*MMUL::size_A;
           const T_in *__restrict pA2 = pA + ((z + 1)) * MMUL::size_A;
-          const T_in *__restrict pB1 = pB + (j) * colA * MMUL::size_B;
+          const T_in *__restrict pB1 = pB + (j)*colA * MMUL::size_B;
           const T_in *__restrict pB2 = pB + ((j + 1)) * colA * MMUL::size_B;
           aie::vector<T_in, MMUL::size_A> A0 = aie::load_v<MMUL::size_A>(pA1);
           pA1 += rowA * MMUL::size_A;
@@ -51,7 +51,7 @@ void matmul_vectorized(const T_in *__restrict pA, const T_in *__restrict pB,
           pB1 += MMUL::size_B;
           aie::vector<T_in, MMUL::size_B> B1 = aie::load_v<MMUL::size_B>(pB2);
           pB2 += MMUL::size_B;
-          
+
           aie::vector<T_out, MMUL::size_C> acc_C00 =
               aie::load_v<MMUL::size_C>(pC1);
           aie::vector<T_out, MMUL::size_C> acc_C01 =
@@ -117,8 +117,7 @@ void matmul_vectorized_4x8x4_bf16_bf16(const bfloat16 *__restrict pA,
 
 extern "C" {
 
-#define combos(X)                                                              \
-  X(bfloat16, bf16, bfloat16, bf16, 4, 8, 4)
+#define combos(X) X(bfloat16, bf16, bfloat16, bf16, 4, 8, 4)
 
 #define matmul_vectorized_c_func(ctype_in, mlir_type_in, ctype_out,            \
                                  mlir_type_out, r, s, t)                       \
