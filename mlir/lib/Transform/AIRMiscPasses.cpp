@@ -964,7 +964,8 @@ void AIRCollapseHerdPass::runOnOperation() {
   SmallVector<air::HerdOp> herds;
   auto func = getOperation();
   func.walk([&](air::HerdOp op) {
-    if (op.getNumCols() != 1 && op.getNumDims() == 2)
+    if (op.getNumCols() != 1 && op.getNumDims() == 2 &&
+        op.getNumRows() * op.getNumCols() <= clMaxColSize)
       herds.push_back(op);
   });
 

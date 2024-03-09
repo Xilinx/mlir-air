@@ -1159,6 +1159,10 @@ def AIRLabelBroadcastChannelWithTilePass : Pass<"air-label-broadcast-channel-wit
 def AIRCollapseHerdPass : Pass<"air-collapse-herd", "func::FuncOp"> {
   let summary = "Collapse a multi-dimensional air.herd into a single column.";
   let constructor = "xilinx::air::createAIRCollapseHerdPass()";
+  let options = [
+    Option<"clMaxColSize", "max-col-size", "int", /*default=*/"4",
+           "The maximum column size after collapse, before collapse is cancelled.">
+  ];
 }
 
 def AIRUnrollOuterPerfectlyNestedLoopsPass : Pass<"air-unroll-outer-affine-loops", "func::FuncOp"> {
