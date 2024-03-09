@@ -948,6 +948,25 @@ void allocL1Buffers(AIE::DeviceOp m,
   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
 
+bool areReferencedByTheSameAIRChannel(Value memref_a, Value memref_b){
+  for (auto user_a : memref_a.getUsers()){
+    for (auto user_b : memref_b.getUsers()){
+      if (auto chan_user_a = dyn_cast<air::ChannelInterface>(user_a)){
+        if (auto chan_user_b = dyn_cast<air::ChannelInterface>(user_b)){
+          if (chan_user_a.getChanName().str() == chan_user_b.getChanName().str() && chan_user_a.getIndices().size() == chan_user_b.getIndices().size()){
+            bool hasIdenticalIndices = true;
+            for (unsigned i = 0; i < chan_user_a.getIndices().size(); i++){
+              if (*getConstantIntValue(chan_user_a.getIndices()[i]) != *getConstantIntValue(chan_user_b.getIndices()[i])) hasIdenticalIndices = false;
+            }
+            if (hasIdenticalIndices) return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
 void L2MemrefToMemTileMap(
     AIE::DeviceOp m,
     std::map<memref::AllocOp, AIE::TileOp> &memrefToMemTileMap) {
@@ -967,51 +986,41 @@ void L2MemrefToMemTileMap(
   }
 
   // Allocation of L2 memrefs in segment to (memtile) tile ops
-  // // Strategy: when one memtile is full, move on to the next one
   std::map<AIE::TileOp, uint32_t> memtileToSizeMap;
   for (auto t : memtiles) {
     memtileToSizeMap[t] = m.getTargetModel().getMemTileSize();
   }
-  int memtile_id = 0;
-  for (auto alloc : allocs) {
-    MemRefType ty = alloc.getMemref().getType().cast<MemRefType>();
-    auto memref_vol = getElementSizeInBytes(ty) * getTensorVolume(ty);
-    while (memtileToSizeMap[memtiles[memtile_id]] < memref_vol) {
-      memtile_id++;
-      assert(memtile_id < memtiles.size());
+
+
+  // First round of memref placement: placing memrefs referenced by the same air.channel onto the same memtile.
+  SmallVector<SmallVector<memref::AllocOp>> memref_buckets;
+  auto placeMemrefInSharedBucket = [&](SmallVector<SmallVector<memref::AllocOp>> &memref_buckets, memref::AllocOp alloc) {
+    for (auto &bucket : memref_buckets){
+      for (auto bucket_elem : bucket){
+        if (areReferencedByTheSameAIRChannel(alloc.getMemref(), bucket_elem.getMemref())){
+          bucket.push_back(alloc);
+          return true;
+        }
+      }
     }
-    memtileToSizeMap[memtiles[memtile_id]] -= memref_vol;
-    memrefToMemTileMap[alloc] = memtiles[memtile_id];
+    return false;
+  };
+  for (auto alloc : allocs){
+    if (!placeMemrefInSharedBucket(memref_buckets, alloc)){
+      memref_buckets.push_back(SmallVector<memref::AllocOp>{alloc});
+    }
   }
-  // Strategy: round robin, with memory usage awareness
-  // std::map<AIE::TileOp, uint32_t> memtileToSizeMap;
-  // for (auto t : memtiles) {
-  //   memtileToSizeMap[t] = m.getTargetModel().getMemTileSize();
-  // }
-  // int memtile_id = 0;
-  // memref::AllocOp previous_alloc = nullptr;
-  // for (auto alloc : allocs) {
-  //   MemRefType ty = alloc.getMemref().getType().cast<MemRefType>();
-  //   auto memref_vol = getElementSizeInBytes(ty) * getTensorVolume(ty);
-  //   int skip_count = 0;
-  //   while (memtileToSizeMap[memtiles[memtile_id]] < memref_vol) {
-  //     memtile_id++;
-  //     memtile_id %= memtiles.size();
-  //     skip_count++;
-  //     assert(skip_count < (int)memtiles.size());
-  //   }
-  //   memtileToSizeMap[memtiles[memtile_id]] -= memref_vol;
-  //   memrefToMemTileMap[alloc] = memtiles[memtile_id];
-  //   if (previous_alloc && areReferencedByTheSameAIRChannel(alloc.getMemref(),
-  //   previous_alloc.getMemref())){
-  //     // Memrefs referenced by the same channel must be located in the same
-  //     tile
-  //   }
-  //   else memtile_id++;
-  //   // memtile_id++;
-  //   memtile_id %= memtiles.size();
-  //   previous_alloc = alloc;
-  // }
+  int memtile_id = 0;
+  for (auto &bucket : memref_buckets){
+    for (auto bucket_elem : bucket){
+      MemRefType ty = bucket_elem.getMemref().getType().cast<MemRefType>();
+      auto memref_vol = getElementSizeInBytes(ty) * getTensorVolume(ty);
+      memtileToSizeMap[memtiles[memtile_id]] -= memref_vol;
+      memrefToMemTileMap[bucket_elem] = memtiles[memtile_id];
+    }
+    memtile_id++;
+    memtile_id %= memtiles.size();
+  }
 }
 
 void allocL2Buffers(AIE::DeviceOp m,
