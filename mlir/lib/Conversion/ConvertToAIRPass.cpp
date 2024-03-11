@@ -1871,7 +1871,7 @@ void InsertEmptyLaunchOverHerd(air::HerdOp op) {
 // Walk through all the func.call operations (immediate/nested children)
 // within parallel loop. Currently we only assume and enforce that we relay
 // `link_with` information from just one func.call op.
-static LogicalResult propagateLinkWith(Operation *op, air::HerdOp herdOp) {
+static void propagateLinkWith(Operation *op, air::HerdOp herdOp) {
   auto moduleOp = op->getParentOfType<ModuleOp>();
   op->walk([&](func::CallOp callOp) {
     // Fetch name.
@@ -1884,7 +1884,6 @@ static LogicalResult propagateLinkWith(Operation *op, air::HerdOp herdOp) {
     herdOp->setAttr("link_with", fnDecl->getAttr("link_with"));
     return WalkResult::interrupt();
   });
-  return success();
 }
 
 class ScfParToHerdConversion : public OpRewritePattern<scf::ParallelOp> {
@@ -1966,7 +1965,6 @@ public:
         rewriter.create<arith::ConstantIndexOp>(loc, bounds[idx0]),
         rewriter.create<arith::ConstantIndexOp>(loc, bounds[idx1])};
     auto herdOp = rewriter.create<air::HerdOp>(op.getLoc(), dims, args);
-    auto moduleOp = SymbolTable::getNearestSymbolTable(op);
     auto &body = op.getBody()->getOperations();
 
     propagateLinkWith(op, herdOp);
