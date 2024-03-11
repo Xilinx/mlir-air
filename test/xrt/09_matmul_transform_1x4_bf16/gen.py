@@ -8,7 +8,9 @@ from air.ir import *
 import air.passmanager
 from air.dialects import air as airdialect
 from air._mlir_libs._airMlir import _run_air_transform as run_air_transform
+
 import sys
+import argparse
 
 def matmul_on_tensors(m, n, k, dtype):
     module = Module.create()
@@ -22,6 +24,10 @@ def matmul_on_tensors(m, n, k, dtype):
             return
     return module
 
+parser = argparse.ArgumentParser()
+parser.add_argument('-t', required=True, dest='transform_filename', help='transform script filename')
+opts = parser.parse_args()
+
 with air.ir.Context() as ctx, Location.unknown():
     airdialect.register_dialect(ctx)
     air_module = matmul_on_tensors(256, 256, 1024, BF16Type.get())
@@ -30,7 +36,7 @@ with air.ir.Context() as ctx, Location.unknown():
     ## Tiling
     ################################################
 
-    with open('transform.mlir', 'r') as f:
+    with open(opts.transform_filename, 'r') as f:
         transform_ir_string = f.read()
 
     transform_ir = Module.parse(transform_ir_string)
