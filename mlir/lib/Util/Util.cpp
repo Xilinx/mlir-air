@@ -958,3 +958,61 @@ void air::foldForLoopNestAsExtendedSizesAndStrides(
     strides.insert(strides.begin(), new_stride);
   }
 }
+
+// Get the memref size along a given dimension, that the access pattern actually
+// covers.
+SmallVector<int64_t>
+air::getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
+                                        SmallVector<Value> sizes,
+                                        SmallVector<Value> strides) {
+  SmallVector<int64_t> access_bounds(memref_shape.size(), -1);
+  for (int i = sizes.size() - 1; i >= 0; i--) {
+    int current_memref_volumn = 1;
+    for (int j = memref_shape.size() - 1; j >= 0; j--) {
+      current_memref_volumn *= memref_shape[j];
+      if (mlir::floorDiv(*getConstantIntValue(strides[i]),
+                         current_memref_volumn))
+        continue;
+      int64_t bound = mlir::floorDiv(*getConstantIntValue(strides[i]),
+                                     current_memref_volumn / memref_shape[j]) *
+                      *getConstantIntValue(sizes[i]);
+      access_bounds[j] = std::max(access_bounds[j], bound);
+    }
+  }
+  return access_bounds;
+}
+
+// Get the overall data access pattern from air.channel ops which access the memref.
+SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(Value memref, SmallVector<air::ChannelInterface> chanOps){
+  auto memref_shape = getTensorShape(memref.getType());
+  SmallVector<int64_t> overall_access_bounds(memref_shape.size(), -1);
+  for (auto chanOp : chanOps) {
+    if (chanOp.getMemref() != memref) continue;
+    SmallVector<int64_t> access_bounds(memref_shape.size(), -1);
+    if (chanOp.getOffsets().empty())
+      for (unsigned i = 0; i < memref_shape.size(); i++)
+        access_bounds[i] = memref_shape[i];
+    bool forIterationAccess = false;
+    for (unsigned i = 0; i < chanOp.getOffsets().size(); i++) {
+      if (auto forOp = scf::getForInductionVarOwner(chanOp.getOffsets()[i])) {
+        if (forOp == chanOp->getParentOp() &&
+            getStaticScfForTripCountAsInt(forOp)) {
+          access_bounds = getEffectiveMemrefSizeFromAccessPattern(
+              memref_shape, chanOp.getSizes(), chanOp.getStrides());
+          forIterationAccess = true;
+        }
+      }
+    }
+    if (!forIterationAccess &&
+        memref_shape.size() == chanOp.getSizes().size()) {
+      for (unsigned i = 0; i < memref_shape.size(); i++) {
+        access_bounds[i] = *getConstantIntValue(chanOp.getSizes()[i]);
+      }
+    }
+    // Update overall access bounds.
+    for (unsigned i = 0; i < memref_shape.size(); i++)
+      overall_access_bounds[i] =
+          std::max(overall_access_bounds[i], access_bounds[i]);
+  }
+  return overall_access_bounds;
+}

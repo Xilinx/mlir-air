@@ -348,6 +348,18 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
   }
 }
 
+// Get all tile ops representing memtiles from device op.
+std::vector<AIE::TileOp> getMemtilesFromDeviceOp(AIE::DeviceOp d){
+  std::vector<AIE::TileOp> memtiles;
+  for (auto t : d.getOps<AIE::TileOp>()) {
+    // TODO: Hard coded memtile row as 1 here
+    if (t.rowIndex() == 1) {
+      memtiles.push_back(t);
+    }
+  }
+  return memtiles;
+}
+
 void outlineAIEMemtiles(OpBuilder &builder, AIE::DeviceOp aie_device,
                         xilinx::air::SegmentOp seg,
                         AIRToAIEConversionOptions &options) {
@@ -977,13 +989,7 @@ void L2MemrefToMemTileMap(
       allocs.push_back(alloc);
     }
   });
-  std::vector<AIE::TileOp> memtiles;
-  for (auto t : m.getOps<AIE::TileOp>()) {
-    // TODO: Hard coded memtile row as 1 here
-    if (t.rowIndex() == 1) {
-      memtiles.push_back(t);
-    }
-  }
+  std::vector<AIE::TileOp> memtiles = getMemtilesFromDeviceOp(m);
 
   // Allocation of L2 memrefs in segment to (memtile) tile ops
   std::map<AIE::TileOp, uint32_t> memtileToSizeMap;
@@ -991,8 +997,7 @@ void L2MemrefToMemTileMap(
     memtileToSizeMap[t] = m.getTargetModel().getMemTileSize();
   }
 
-
-  // First round of memref placement: placing memrefs referenced by the same air.channel onto the same memtile.
+  // First stage in memref placement: grouping memrefs referenced by the same air.channel.
   SmallVector<SmallVector<memref::AllocOp>> memref_buckets;
   auto placeMemrefInSharedBucket = [&](SmallVector<SmallVector<memref::AllocOp>> &memref_buckets, memref::AllocOp alloc) {
     for (auto &bucket : memref_buckets){
@@ -1010,6 +1015,7 @@ void L2MemrefToMemTileMap(
       memref_buckets.push_back(SmallVector<memref::AllocOp>{alloc});
     }
   }
+  // Second stage in memref placement: placing memref groups to memtiles.
   int memtile_id = 0;
   for (auto &bucket : memref_buckets){
     for (auto bucket_elem : bucket){
@@ -1853,6 +1859,157 @@ public:
           builder.clone(*ch.getOperation());
         }
       }
+    }
+  }
+
+  bool everyAIRChannelAccessIsContiguousRowMajor(std::vector<air::ChannelInterface> ops){
+    for (auto op : ops){
+      auto memref = op.getMemref();
+      auto memrefShape = air::getTensorShape(memref.getType());
+      if (op.getStrides().size() != memrefShape.size()) return false;
+      int current_stride = 1;
+      for (int i = op.getStrides().size() - 1; i >= 0; i--){
+        if (*getConstantIntValue(op.getStrides()[i]) != current_stride) return false;
+        current_stride *= memrefShape[i];
+      }
+    }
+    return true;
+  }
+  // Check whether every channel op in the vector has non-overlapping access pattern, by exhaustively scan through pairs of air channel ops in the vector.
+  bool everyAIRChannelAccessIsNonOverlapping(std::vector<air::ChannelInterface> ops){
+    if (!everyAIRChannelAccessIsContiguousRowMajor(ops)) return false; // Incontiguous or not row-major, NYI.
+    for (unsigned i = 0; i < ops.size() - 1; i++) {
+      for (unsigned j = i + 1; j < ops.size(); j++) {
+        air::ChannelInterface op1 = ops[i];
+        air::ChannelInterface op2 = ops[j];
+        if (op1.getOffsets().size() != op2.getOffsets().size()) return false;
+        if (op1.getSizes().size() != op2.getSizes().size()) return false;
+        bool isOverlappingPair = true; // True if every dimension is overlapping.
+        for (unsigned k = 0; k < op1.getOffsets().size(); k++){
+          int op1Offset = *getConstantIntValue(op1.getOffsets()[k]);
+          int op2Offset = *getConstantIntValue(op2.getOffsets()[k]);
+          int op1LowerRange = op1Offset;
+          int op1UpperRange = op1Offset + *getConstantIntValue(op1.getSizes()[k]);
+          int op2LowerRange = op2Offset;
+          int op2UpperRange = op2Offset + *getConstantIntValue(op2.getSizes()[k]);
+          bool isOverlappingDim = false;
+          if (op1Offset >= op2LowerRange && op1Offset < op2UpperRange) isOverlappingDim = true;
+          else if (op2Offset >= op1LowerRange && op2Offset < op1UpperRange) isOverlappingDim = true;
+          if (!isOverlappingDim) isOverlappingPair = false;
+        }
+        if (isOverlappingPair) return false;
+      }
+    }
+    return true;
+  }
+  bool everyAIRChannelAccessIsNonOverlapping(std::vector<air::ChannelPutOp> ops){
+    std::vector<air::ChannelInterface> chanOps;
+    for (auto op : ops) chanOps.push_back(op);
+    return everyAIRChannelAccessIsNonOverlapping(chanOps);
+  }
+  bool everyAIRChannelAccessIsNonOverlapping(std::vector<air::ChannelGetOp> ops){
+    std::vector<air::ChannelInterface> chanOps;
+    for (auto op : ops) chanOps.push_back(op);
+    return everyAIRChannelAccessIsNonOverlapping(chanOps);
+  }
+
+  // A naive memref partitioning scheme which partitions the memref column wise.
+  void partitionMemrefColumnWise(std::vector<air::ChannelInterface> ops){
+    std::map<int, SmallVector<air::ChannelInterface>> chanOpPartitions;
+    std::vector<int> keys;
+    for (auto op : ops){
+      int lastOffset = *getConstantIntValue(op.getOffsets()[1]);
+      push_back_if_unique<int>(keys, lastOffset);
+      if (!chanOpPartitions.count(lastOffset)) chanOpPartitions[lastOffset] = SmallVector<air::ChannelInterface>{op};
+      else chanOpPartitions[lastOffset].push_back(op);
+    }
+    if (keys.size() != 4) return; // Currently only implemented the case where the L2-L1 tiling factor is 4 by 4 (4 column wise).
+    for (auto key : keys){
+      auto memref = chanOpPartitions[key][0].getMemref();
+      auto allocOp = memref.getDefiningOp();
+      MemRefType ty = memref.getType().cast<MemRefType>();
+      auto newMemrefShape = air::getDataAccessShapeFromMemcpyOp(memref, chanOpPartitions[key]);
+      OpBuilder builder(allocOp);
+      Value newMemref = builder.create<memref::AllocOp>(
+            builder.getUnknownLoc(),
+            MemRefType::get(newMemrefShape, ty.getElementType(),
+                            ty.getLayout().getAffineMap(),
+                            ty.getMemorySpaceAsInt()));
+      for (auto op : chanOpPartitions[key]){
+        int asyncDepListSize = dyn_cast<air::AsyncOpInterface>(op.getOperation()).getAsyncDependencies().size();
+        auto &opoperand = op->getOpOperand(asyncDepListSize);
+        opoperand.assign(newMemref);
+      }
+    }
+  }
+  void partitionMemrefColumnWise(std::vector<air::ChannelPutOp> ops){
+    std::vector<air::ChannelInterface> chanOps;
+    for (auto op : ops) chanOps.push_back(op);
+    partitionMemrefColumnWise(chanOps);
+  }
+  void partitionMemrefColumnWise(std::vector<air::ChannelGetOp> ops){
+    std::vector<air::ChannelInterface> chanOps;
+    for (auto op : ops) chanOps.push_back(op);
+    partitionMemrefColumnWise(chanOps);
+  }
+
+  // Optimize L2 (memtile) buffer allocation by attempting to partition non-overlapping L2 memref accesses into (upto M, where M is the number of memtiles in the device) separate memrefs.
+  void specializeL2MemrefsIntoMemtiles(AIE::DeviceOp d){
+    // Get all memtiles to place L2 memrefs onto.
+    std::vector<AIE::TileOp> memtiles = getMemtilesFromDeviceOp(d);
+    int maxMemtileSrcConnections = memtiles[0].getNumSourceConnections(AIE::WireBundle::DMA);
+    int maxMemtileDstConnections = memtiles[0].getNumDestConnections(AIE::WireBundle::DMA);
+
+    // Get L2 memrefs which require partitioning, due to having more channel puts/gets than memtile hardware limit.
+    std::vector<Value> memrefs;
+    d.walk([&](memref::AllocOp allocOp) {
+      auto memref = allocOp.getMemref();
+      auto memrefTy = memref.getType().cast<MemRefType>();
+      if (memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L2){
+        // Count the number of unique incoming and outgoing channels.
+        std::vector<std::string> uniqueS2MMChannels;
+        std::vector<std::string> uniqueMM2SChannels;
+        for (auto user : memref.getUsers()){
+          if (auto get = dyn_cast<air::ChannelGetOp>(user))
+            push_back_if_unique<std::string>(uniqueS2MMChannels, get.getChanName().str());
+          else if (auto put = dyn_cast<air::ChannelPutOp>(user))
+            push_back_if_unique<std::string>(uniqueMM2SChannels, put.getChanName().str());
+        }
+        bool tooManyChannelConnections = uniqueS2MMChannels.size() > maxMemtileDstConnections || uniqueMM2SChannels.size() > maxMemtileSrcConnections;
+        if (tooManyChannelConnections){
+          if (auto exec = dyn_cast<air::ExecuteOp>(allocOp->getParentOp()))
+            memrefs.push_back(exec->getResult(1));
+          else memrefs.push_back(memref);
+        }
+      }
+    });
+
+    // assert(memrefs.size() == 1);
+
+    // Tile the memrefs based on air.channel put/get access pattern.
+    for (auto memref : memrefs){
+      std::vector<air::ChannelPutOp> puts;
+      std::vector<air::ChannelGetOp> gets;
+      for (auto user : memref.getUsers()){
+        if (auto put = dyn_cast<air::ChannelPutOp>(user)) puts.push_back(put);
+        else if (auto get = dyn_cast<air::ChannelGetOp>(user)) gets.push_back(get);
+      }
+      if (puts.size() == 1 && puts[0].getOffsets().empty()){
+        // Partition memref wrt gets.
+        if (everyAIRChannelAccessIsNonOverlapping(gets)){
+          // TODO: Currently hard coding a column-wise memref partition scheme here.
+          partitionMemrefColumnWise(gets);
+        }
+        else continue; // NYI if any pair of air channel ops are overlapping.
+      }
+      else if (gets.size() == 1 && gets[0].getOffsets().empty()){
+        // Partition memref wrt puts.
+        if (everyAIRChannelAccessIsNonOverlapping(puts)){
+          partitionMemrefColumnWise(puts);
+        }
+        else continue; // NYI if any pair of air channel ops are overlapping.
+      }
+      else continue; // Multiple of puts and multiple of gets, NYI.
     }
   }
 
@@ -2926,12 +3083,13 @@ public:
         lowerAirExecute(device);
         lowerScfAirTokens(device);
 
+        // Copy over L2 and L3 memcpy ops into device op
+        specializeChannelBundle(device, chan_to_chan_map);
+        specializeL2MemrefsIntoMemtiles(device);
+
         allocL1Buffers(device, tileToHerdMap, BufferId);
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
-
-        // Copy over L2 and L3 memcpy ops into device op
-        builder.setInsertionPointToStart(device.getBody());
-        specializeChannelBundle(device, chan_to_chan_map);
+        
         renumberChannelOps(&device.getBodyRegion().front(),
                            chan_renumber_reverse_map);
         lowerAIRMemcpyOp<air::ChannelInterface>(device, shimDmaAlloc, options);

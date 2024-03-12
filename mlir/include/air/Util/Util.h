@@ -147,6 +147,16 @@ LogicalResult canonicalizeWrapAndStrideList(OpBuilder builder,
                                             SmallVector<Value> &strides,
                                             int memref_volume);
 
+// Get the memref size along a given dimension, that the access pattern actually
+// covers.
+SmallVector<int64_t>
+getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
+                                        SmallVector<Value> sizes,
+                                        SmallVector<Value> strides);
+
+// Get the overall data access pattern from air.channel ops which access the memref.
+SmallVector<int64_t> getDataAccessShapeFromMemcpyOp(Value memref, SmallVector<air::ChannelInterface> chanOps);
+
 } // namespace air
 } // namespace xilinx
 
