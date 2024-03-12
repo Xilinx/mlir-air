@@ -100,6 +100,8 @@ if config.xrt_lib_dir:
                     run_on_ipu = (
                         f"flock /tmp/ipu.lock {config.air_src_root}/utils/run_on_ipu.sh"
                     )
+                    # see https://github.com/amd/xdna-driver/blob/main/src/shim/kmq/hwctx.cpp
+                    config.environment['XRT_HACK_UNSECURE_LOADING_XCLBIN'] = "1"
                 else:
                     print("Skipping execution of Ryzen AI tests (ENABLE_RUN_XRT_TESTS=OFF)")
                 break
