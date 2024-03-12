@@ -2,5 +2,4 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // REQUIRES: ryzen_ai
-// RUN: %python %S/gen.py
-// RUN: %run_on_ipu %python %S/run.py aie.xclbin
+// RUN: %python %S/run.py aie.xclbin
