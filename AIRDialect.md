@@ -54,35 +54,6 @@ interface is provided to synchronize between operations.
 
 ## Operations
 
-### `air.alloc` (xilinx::air::AllocOp)
-
-_Alloc operator_
-
-
-Syntax:
-
-```
-operation ::= `air.alloc` custom<AsyncDependencies>(type($async_token), $async_dependencies) attr-dict `:` type($result)
-```
-
-Allocate memory
-
-Interfaces: `air_AsyncOpInterface`
-
-#### Operands:
-
-| Operand | Description |
-| :-----: | ----------- |
-| `async_dependencies` | variadic of async token type
-
-#### Results:
-
-| Result | Description |
-| :----: | ----------- |
-| `async_token` | async token type
-| `result` | memref of any type values
-
-
 ### `air.channel` (xilinx::air::ChannelOp)
 
 _Channel for data movement._
@@ -231,35 +202,6 @@ Interfaces: `air_AsyncOpInterface`
 | :-----: | ----------- |
 | `async_dependencies` | variadic of async token type
 | `custom_operands` | variadic of any type
-
-#### Results:
-
-| Result | Description |
-| :----: | ----------- |
-| `async_token` | async token type
-
-
-### `air.dealloc` (xilinx::air::DeallocOp)
-
-_Dealloc operator_
-
-
-Syntax:
-
-```
-operation ::= `air.dealloc` custom<AsyncDependencies>(type($async_token), $async_dependencies) $memref attr-dict `:` type($memref)
-```
-
-Deallocate memory
-
-Interfaces: `air_AsyncOpInterface`
-
-#### Operands:
-
-| Operand | Description |
-| :-----: | ----------- |
-| `async_dependencies` | variadic of async token type
-| `memref` | memref of any type values
 
 #### Results:
 
