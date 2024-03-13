@@ -954,6 +954,8 @@ class AIRCollapseHerdPass
 public:
   AIRCollapseHerdPass() = default;
   AIRCollapseHerdPass(const AIRCollapseHerdPass &pass){};
+  AIRCollapseHerdPass(const ::xilinx::air::AIRCollapseHerdPassOptions &options)
+      : AIRCollapseHerdPassBase(options) {}
 
   void runOnOperation() override;
 
