@@ -516,20 +516,13 @@ private:
         // operations in op history, last-in-first-out
         for (std::vector<Operation *>::reverse_iterator i = op_history.rbegin();
              i != op_history.rend(); ++i) {
-          if (auto air_region_op = dyn_cast<air::ExecuteOp>(*i)) {
-            assert(air_region_op.getBody().front().getOperations().size() ==
-                       2 &&
-                   "air::ExecuteOp should have only one child operation beside "
-                   "the terminator");
-            // Get current scalar op
-            Operation *op = nullptr;
-            for (auto &child_op :
-                 air_region_op.getBody().front().getOperations()) {
-              if (!dyn_cast<air::ExecuteTerminatorOp>(child_op))
-                op = &child_op;
-            }
+          if (auto exec_op = dyn_cast<air::ExecuteOp>(*i)) {
+            Operation *op = exec_op.getChildOp();
             // If the async op is affine.apply
             if (auto apply_op = dyn_cast<affine::AffineApplyOp>(op)) {
+              // Can only propagate affine.apply ops with single operand.
+              if (apply_op.getNumOperands() != 1)
+                return;
               auto map = apply_op.getAffineMap();
               for (unsigned j = 0; j < current_shape_expr.size(); j++) {
                 if (current_shape_expr[j]) {
@@ -538,8 +531,8 @@ private:
                   // Remove dependence from scalar op to memcpyOp if present
                   auto async_memcpyOp =
                       dyn_cast<air::AsyncOpInterface>(memcpyOp.getOperation());
-                  eraseAsyncDependencyFromAsyncOp(
-                      async_memcpyOp, air_region_op.getAsyncToken());
+                  eraseAsyncDependencyFromAsyncOp(async_memcpyOp,
+                                                  exec_op.getAsyncToken());
                 }
               }
             }
@@ -954,6 +947,8 @@ class AIRCollapseHerdPass
 public:
   AIRCollapseHerdPass() = default;
   AIRCollapseHerdPass(const AIRCollapseHerdPass &pass){};
+  AIRCollapseHerdPass(const ::xilinx::air::AIRCollapseHerdPassOptions &options)
+      : AIRCollapseHerdPassBase(options) {}
 
   void runOnOperation() override;
 
@@ -963,8 +958,12 @@ private:
 void AIRCollapseHerdPass::runOnOperation() {
   SmallVector<air::HerdOp> herds;
   auto func = getOperation();
+  int maximumColumnSize = clMaxColSize;
+  if (clMaxColSize == -1)
+    maximumColumnSize = INT_MAX; // max-col-size disabled.
   func.walk([&](air::HerdOp op) {
-    if (op.getNumCols() != 1 && op.getNumDims() == 2)
+    if (op.getNumCols() != 1 && op.getNumDims() == 2 &&
+        op.getNumRows() * op.getNumCols() <= maximumColumnSize)
       herds.push_back(op);
   });
 
@@ -1117,6 +1116,11 @@ std::unique_ptr<Pass> createAIRLabelBroadcastChannelWithTilePass() {
 
 std::unique_ptr<Pass> createAIRCollapseHerdPass() {
   return std::make_unique<AIRCollapseHerdPass>();
+}
+
+std::unique_ptr<Pass>
+createAIRCollapseHerdPass(AIRCollapseHerdPassOptions options) {
+  return std::make_unique<AIRCollapseHerdPass>(options);
 }
 
 std::unique_ptr<Pass> createAIRUnrollOuterPerfectlyNestedLoopsPass() {

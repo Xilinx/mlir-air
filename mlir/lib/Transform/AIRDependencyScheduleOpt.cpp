@@ -2150,7 +2150,6 @@ public:
       air::HerdOp hl_op = nullptr;
       bool isVariantWrtHerdRows = false;
       bool isVariantWrtHerdCols = false;
-      // Create an affine set to represent the broadcast pattern
       auto ctx = dma_op->getContext();
       for (auto v : loop_dep_history) {
         // Check row-wise or col-wise broadcastable based on variance wrt herd
@@ -2183,6 +2182,7 @@ public:
           isVariantWrtHerdCols = true;
       }
 
+      // Create an affine set to represent the broadcast pattern
       if (hl_op && isVariantWrtHerdRows && !isVariantWrtHerdCols) {
         auto numColsOp = dyn_cast<arith::ConstantIndexOp>(
             hl_op.getSizeOperands()[1].getDefiningOp());
