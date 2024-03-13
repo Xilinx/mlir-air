@@ -963,9 +963,12 @@ private:
 void AIRCollapseHerdPass::runOnOperation() {
   SmallVector<air::HerdOp> herds;
   auto func = getOperation();
+  int maximumColumnSize = clMaxColSize;
+  if (clMaxColSize == -1)
+    maximumColumnSize = INT_MAX; // max-col-size disabled.
   func.walk([&](air::HerdOp op) {
     if (op.getNumCols() != 1 && op.getNumDims() == 2 &&
-        op.getNumRows() * op.getNumCols() <= clMaxColSize)
+        op.getNumRows() * op.getNumCols() <= maximumColumnSize)
       herds.push_back(op);
   });
 

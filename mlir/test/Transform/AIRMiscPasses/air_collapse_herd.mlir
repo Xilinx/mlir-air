@@ -5,8 +5,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-// RUN: air-opt %s -air-collapse-herd -canonicalize --split-input-file | FileCheck %s
-// RUN: air-opt %s -air-collapse-herd="max-col-size=9" -canonicalize --split-input-file | FileCheck %s --check-prefix=MAXCOL
+// RUN: air-opt %s -air-collapse-herd="max-col-size=4" -canonicalize --split-input-file | FileCheck %s
+// RUN: air-opt %s -air-collapse-herd -canonicalize --split-input-file | FileCheck %s --check-prefix=MAXCOL
 
 // CHECK-LABEL: func.func @test0
 // CHECK: %[[CST1:.*]] = arith.constant 1 : index
