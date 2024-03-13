@@ -163,6 +163,11 @@ named 'broadcast_pattern'.
 
 _Collapse a multi-dimensional air.herd into a single column._
 
+
+#### Options
+```
+-max-col-size : The maximum column size after collapse, before collapse is cancelled. Disabled by default.
+```
 ### `-air-construct-ping-pong-dependency-pattern`
 
 _Transform an scf.for loop into ping-pong pattern_
