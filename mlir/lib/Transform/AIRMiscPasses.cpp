@@ -1118,6 +1118,11 @@ std::unique_ptr<Pass> createAIRCollapseHerdPass() {
   return std::make_unique<AIRCollapseHerdPass>();
 }
 
+std::unique_ptr<Pass>
+createAIRCollapseHerdPass(AIRCollapseHerdPassOptions options) {
+  return std::make_unique<AIRCollapseHerdPass>(options);
+}
+
 std::unique_ptr<Pass> createAIRUnrollOuterPerfectlyNestedLoopsPass() {
   return std::make_unique<AIRUnrollOuterPerfectlyNestedLoopsPass>();
 }
