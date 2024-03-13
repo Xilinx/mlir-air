@@ -947,6 +947,8 @@ class AIRCollapseHerdPass
 public:
   AIRCollapseHerdPass() = default;
   AIRCollapseHerdPass(const AIRCollapseHerdPass &pass){};
+  AIRCollapseHerdPass(const ::xilinx::air::AIRCollapseHerdPassOptions &options)
+      : AIRCollapseHerdPassBase(options) {}
 
   void runOnOperation() override;
 
@@ -956,8 +958,12 @@ private:
 void AIRCollapseHerdPass::runOnOperation() {
   SmallVector<air::HerdOp> herds;
   auto func = getOperation();
+  int maximumColumnSize = clMaxColSize;
+  if (clMaxColSize == -1)
+    maximumColumnSize = INT_MAX; // max-col-size disabled.
   func.walk([&](air::HerdOp op) {
-    if (op.getNumCols() != 1 && op.getNumDims() == 2)
+    if (op.getNumCols() != 1 && op.getNumDims() == 2 &&
+        op.getNumRows() * op.getNumCols() <= maximumColumnSize)
       herds.push_back(op);
   });
 
