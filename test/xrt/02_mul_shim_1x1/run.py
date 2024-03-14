@@ -10,7 +10,7 @@ from air.passmanager import *
 from air.dialects import air as airdialect
 from air.dialects import arith, func, linalg, memref
 from air.dialects.linalg.opdsl.lang import *
-from air._mlir_libs._airMlir import _run_air_transform as run_air_transform
+from air.compiler.util import run_transform
 import air.compiler.aircc.main as aircc
 
 import numpy as np
@@ -86,7 +86,7 @@ def generate_add_module(shape, idtype, odtype):
     pm = PassManager.parse('builtin.module(func.func(linalg-generalize-named-ops))')
     pm.run(module.operation)
     transform_ir = Module.parse(transform_ir_string)
-    run_air_transform(transform_ir, module)
+    run_transform(transform_ir, module)
 
     pm = PassManager.parse('builtin.module(func.func(canonicalize,cse))')
     pm.run(module.operation)
@@ -96,8 +96,6 @@ def run_test(size, idtype, odtype):
     with Context() as ctx, Location.unknown():
         mlir_input_type = to_type(idtype)
         mlir_output_type = to_type(odtype)
-    
-        airdialect.register_dialect(ctx)
 
         mlir_module = generate_add_module(size, mlir_input_type, mlir_output_type)
 

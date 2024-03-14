@@ -10,7 +10,6 @@ from air.dialects import air as airdialect
 
 def run(f):
   with Context() as ctx, Location.unknown():
-    airdialect.register_dialect(ctx)
     module = Module.create()
     with InsertionPoint(module.body):
       print("\nTEST:", f.__name__)
