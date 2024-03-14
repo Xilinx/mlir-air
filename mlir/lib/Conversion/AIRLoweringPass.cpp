@@ -122,11 +122,11 @@ public:
     air::SegmentOp segment = cast<air::SegmentOp>(op);
     if (auto attr =
             op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())) {
+      OpBuilder::InsertionGuard guard(rewriter);
       auto segment_name = attr.getValue().str();
       rewriter.setInsertionPointToStart(op->getBlock());
       rewriter.create<airrt::SegmentLoadOp>(op->getLoc(), rewriter.getI64Type(),
                                             segment_name);
-      rewriter.setInsertionPoint(op);
     }
 
     SmallVector<Value> lbs, ubs, steps;
@@ -222,8 +222,12 @@ public:
       return failure();
     }
 
-    rewriter.create<airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(),
-                                       herd_name_attr.getValue().str());
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(op->getBlock());
+      rewriter.create<airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(),
+                                        herd_name_attr.getValue().str());
+    }
 
     SmallVector<Value, 4> deps;
     for (auto &o : operands)
