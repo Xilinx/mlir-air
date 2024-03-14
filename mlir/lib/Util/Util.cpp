@@ -637,7 +637,8 @@ bool air::positionHitsAffineIfCondition(Operation *op, Operation *spatial_loop,
     if (affine_if.getThenBlock()->findAncestorOpInBlock(*op)) {
       bool hit = true;
       for (unsigned i = 0; i < lbs_int.size(); i++) {
-        if ((position[i] < lbs_int[i]) || (position[i] > ubs_int[i])) {
+        if ((position[i] < (unsigned)lbs_int[i]) ||
+            (position[i] > (unsigned)ubs_int[i])) {
           hit = false;
         }
       }
@@ -651,7 +652,8 @@ bool air::positionHitsAffineIfCondition(Operation *op, Operation *spatial_loop,
   // If op isn't in any then blocks in affine.if nest
   bool hit = true;
   for (unsigned i = 0; i < lbs_spatial.size(); i++) {
-    if ((position[i] < lbs_spatial[i]) || (position[i] > ubs_spatial[i])) {
+    if ((position[i] < (unsigned)lbs_spatial[i]) ||
+        (position[i] > (unsigned)ubs_spatial[i])) {
       hit = false;
     }
   }
@@ -811,10 +813,10 @@ LogicalResult air::canonicalizeWrapAndStrideList(OpBuilder builder,
 
   bool listsHaveChanged = false;
   // Match offsets size with sizes and strides
-  int max_dim_size =
+  auto max_dim_size =
       std::max(std::max(offsets.size(), sizes.size()), strides.size());
   if (max_dim_size && offsets.size() < max_dim_size) {
-    for (unsigned i = offsets.size(); i < max_dim_size; i++) {
+    for (auto i = offsets.size(); i < max_dim_size; i++) {
       offsets.insert(offsets.begin(), builder.create<arith::ConstantIndexOp>(
                                           builder.getUnknownLoc(), 0));
     }
@@ -926,9 +928,9 @@ void air::foldForLoopNestAsExtendedSizesAndStrides(
       }
       // Index offset taking into account mismatch between memref rank and
       // offset list size difference.
-      int memref_rank = getTensorShape(memref.getType()).size();
+      auto memref_rank = getTensorShape(memref.getType()).size();
       if (memref_rank < offsets.size()) {
-        if (i < offsets.size() - memref_rank)
+        if ((unsigned)i < offsets.size() - memref_rank)
           ind_var_factor *= getTensorVolume(memref.getType());
         else
           ind_var_factor *= getTensorShape(
