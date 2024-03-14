@@ -4,7 +4,7 @@ from air.dialects import linalg, tensor, arith, func, memref
 from air.ir import *
 import air.passmanager
 from air.dialects import air as airdialect
-from air._mlir_libs._airMlir import _run_air_transform as run_air_transform
+from air.compiler.util import run_transform
 import sys
 def matmul_on_tensors(m, n, k, dtype):
     module = Module.create()
@@ -20,7 +20,6 @@ def matmul_on_tensors(m, n, k, dtype):
     return module
 
 with air.ir.Context() as ctx, Location.unknown():
-    airdialect.register_dialect(ctx)
     air_module = matmul_on_tensors(128, 128, 256, IntegerType.get_signless(width = 32))
     
     ################################################
@@ -54,7 +53,7 @@ with air.ir.Context() as ctx, Location.unknown():
     }
     """
     transform_ir = Module.parse(transform_ir_string)
-    run_air_transform(transform_ir, air_module)
+    run_transform(transform_ir, air_module)
     
     with open('air_tiled.mlir', 'w') as f:
         f.write(str(air_module))

@@ -14,7 +14,6 @@ from air.dialects import func
 def constructAndPrintInFunc(f):
   print("\nTEST:", f.__name__)
   with Context() as ctx, Location.unknown():
-    airdialect.register_dialect(ctx)
     module = Module.create()
     with InsertionPoint(module.body):
       ftype = FunctionType.get(
@@ -74,3 +73,7 @@ def waitallOp():
   token_type = airdialect.AsyncTokenType.get()
   e = airdialect.WaitAllOp(token_type,[]).result
   airdialect.WaitAllOp(None,[e])
+
+# CHECK-LABEL: TEST: enum
+# CHECK-SAME: L1 L2
+print("TEST: enum", airdialect.MemorySpace.L1, airdialect.MemorySpace.L2)

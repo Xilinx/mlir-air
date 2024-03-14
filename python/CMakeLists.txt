@@ -36,6 +36,7 @@ declare_mlir_dialect_python_bindings(
     dialects/air.py
     dialects/_air_ops_ext.py
   DIALECT_NAME air
+  GEN_ENUM_BINDINGS_TD_FILE "dialects/AirBinding.td"
 )
 
 declare_mlir_dialect_extension_python_bindings(
@@ -52,7 +53,7 @@ declare_mlir_dialect_extension_python_bindings(
 ################################################################################
 
 declare_mlir_python_extension(AirPythonExtensions.MLIR
-  MODULE_NAME _airMlir
+  MODULE_NAME _air
   ADD_TO_PARENT AirPythonExtensions
   ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}
   SOURCES

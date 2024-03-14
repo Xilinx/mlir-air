@@ -368,7 +368,6 @@ def main():
     is_windows = platform.system() == 'Windows'
 
     with Context() as ctx, Location.unknown():
-      airdialect.register_dialect(ctx)
       with open(opts.air_mlir_file, 'r') as f:
         module = Module.parse(f.read())
         run(module)

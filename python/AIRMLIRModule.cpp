@@ -16,7 +16,7 @@
 namespace py = pybind11;
 using namespace mlir::python::adaptors;
 
-PYBIND11_MODULE(_airMlir, m) {
+PYBIND11_MODULE(_air, m) {
 
   ::airRegisterAllPasses();
 
@@ -24,7 +24,7 @@ PYBIND11_MODULE(_airMlir, m) {
     AIR MLIR Python bindings
     --------------------------
 
-    .. currentmodule:: _airMlir
+    .. currentmodule:: _air
 
     .. autosummary::
         :toctree: _generate
@@ -32,10 +32,8 @@ PYBIND11_MODULE(_airMlir, m) {
 
   m.def(
       "register_dialect",
-      [](MlirContext context, bool load) { airRegisterAllDialects(context); },
-      py::arg("context"), py::arg("load") = true);
-
-  m.def("_register_all_passes", ::airRegisterAllPasses);
+      [](MlirDialectRegistry registry) { airRegisterAllDialects(registry); },
+      "registry"_a);
 
   // AIR types bindings
   mlir_type_subclass(m, "AsyncTokenType", mlirTypeIsAIRAsyncTokenType)
@@ -47,7 +45,7 @@ PYBIND11_MODULE(_airMlir, m) {
           "Get an instance of AsyncTokenType in given context.",
           py::arg("self"), py::arg("ctx") = py::none());
 
-  m.def("_run_air_transform", ::runTransform);
+  m.def("run_transform", ::runTransform);
 
   m.attr("__version__") = "dev";
 
