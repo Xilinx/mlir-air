@@ -168,7 +168,7 @@ struct DmaToIpuPattern : public OpConversionPattern<DmaMemcpyNdOp> {
     else
       sizes.push_back(adaptor.getLength1());
     if (auto const_int = getConstantIntValue(adaptor.getLength0()))
-      staticSizes.push_back(std::max(1L, *const_int / div));
+      staticSizes.push_back(std::max((int64_t)1, *const_int / div));
     else
       sizes.push_back(divOp(adaptor.getLength0()));
     SmallVector<Value> strides;
