@@ -226,7 +226,7 @@ public:
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(op->getBlock());
       rewriter.create<airrt::HerdLoadOp>(op->getLoc(), rewriter.getI64Type(),
-                                        herd_name_attr.getValue().str());
+                                         herd_name_attr.getValue().str());
     }
 
     SmallVector<Value, 4> deps;
@@ -566,8 +566,8 @@ AIRChannelInterfaceToAIRRtConversionImpl(OpBuilder builder,
     for (auto o : op_strides.drop_back())
       strides[idx++] =
           builder.create<arith::IndexCastOp>(loc, IntegerType::get(ctx, 64), o);
-  idx = 4 - std::max(thisOp.getSizes().size(),
-                     (size_t)thisMemrefType.getRank());
+  idx =
+      4 - std::max(thisOp.getSizes().size(), (size_t)thisMemrefType.getRank());
   // If sizes field is empty, then infer sizes from memref shape
   if (thisOp.getSizes().empty())
     for (auto d : air::getTensorShape(thisMemrefType))
