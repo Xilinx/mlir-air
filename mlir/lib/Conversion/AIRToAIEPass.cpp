@@ -978,7 +978,7 @@ void L2MemrefToMemTileMap(
     auto memref_vol = getElementSizeInBytes(ty) * getTensorVolume(ty);
     while (memtileToSizeMap[memtiles[memtile_id]] < memref_vol) {
       memtile_id++;
-      assert(memtile_id < memtiles.size());
+      assert((unsigned)memtile_id < memtiles.size());
     }
     memtileToSizeMap[memtiles[memtile_id]] -= memref_vol;
     memrefToMemTileMap[alloc] = memtiles[memtile_id];

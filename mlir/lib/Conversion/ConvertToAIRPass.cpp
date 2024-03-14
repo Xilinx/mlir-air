@@ -2441,9 +2441,9 @@ static LogicalResult canonicalizeAIRDmaOperands(OpBuilder builder,
   // Increase vector sizes up to memref size. When offsets, sizes and strides
   // are all empty, then it implies that the whole memref is accessed in the
   // default order.
-  int max_dim_size =
+  auto max_dim_size =
       std::max(std::max(offsets.size(), sizes.size()), strides.size());
-  int target_dim_size = std::max(max_dim_size, (int)memref.getRank());
+  auto target_dim_size = std::max(max_dim_size, (size_t)memref.getRank());
   if (max_dim_size && offsets.size() < target_dim_size) {
     for (unsigned i = offsets.size(); i < target_dim_size; i++) {
       offsets.insert(offsets.begin(), builder.create<arith::ConstantIndexOp>(

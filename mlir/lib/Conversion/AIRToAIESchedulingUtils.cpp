@@ -165,7 +165,7 @@ int64_t air::get1DOffset(SmallVector<Value> memcpy_offsets,
     auto offset = mlir::getConstantIntValue(memcpy_offsets[i]);
     if (!offset)
       assert(false && "non-static offset in memcpy op");
-    if (i == memcpy_offsets.size() - 1)
+    if ((unsigned)i == memcpy_offsets.size() - 1)
       one_d_offset += *offset;
     else {
       if (auto stride_i = mlir::getConstantIntValue(memcpy_strides[i])) {
@@ -347,7 +347,7 @@ bool allocation_info_t::foundAlloc(air::ChannelOp channel_op) {
   }
   return false;
 }
-bool allocation_info_t::foundAlloc(uint32_t col, uint32_t row,
+bool allocation_info_t::foundAlloc(int32_t col, int32_t row,
                                    air::MemcpyInterface memcpyOp) {
   if (col == dma_tile.getCol() && row == dma_tile.getRow())
     for (auto o : memcpyOps)
@@ -355,13 +355,13 @@ bool allocation_info_t::foundAlloc(uint32_t col, uint32_t row,
         return true;
   return false;
 }
-bool allocation_info_t::foundAlloc(uint32_t col, uint32_t row, int chan) {
+bool allocation_info_t::foundAlloc(int32_t col, int32_t row, int chan) {
   if (col == dma_tile.getCol() && row == dma_tile.getRow() &&
       chan == dma_channel.channel)
     return true;
   return false;
 }
-bool allocation_info_t::foundAlloc(uint32_t col, uint32_t row) {
+bool allocation_info_t::foundAlloc(int32_t col, int32_t row) {
   if (col == dma_tile.getCol() && row == dma_tile.getRow())
     return true;
   return false;
@@ -373,7 +373,7 @@ bool allocation_info_t::foundAlloc(AIE::TileOp tile, AIE::DMAChannel channel) {
   else
     return false;
 }
-bool allocation_info_t::foundAlloc(uint32_t col, uint32_t row,
+bool allocation_info_t::foundAlloc(int32_t col, int32_t row,
                                    air::ChannelOp channel_op) {
   if (col == dma_tile.getCol() && row == dma_tile.getRow() && channel_op) {
     for (auto o : memcpyOps) {

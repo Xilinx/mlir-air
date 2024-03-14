@@ -3811,11 +3811,11 @@ private:
         induction_var_dim = i;
     }
     if (induction_var_dim == -1 ||
-        induction_var_dim < offsets.size() - memref_shape.size())
+        (unsigned)induction_var_dim < offsets.size() - memref_shape.size())
       return scf::ForOp(); // NYI.
     if (offsets.size() > memref_shape.size())
       induction_var_dim -= offsets.size() - memref_shape.size();
-    int access_volumn = 1;
+    unsigned access_volumn = 1;
     for (auto v : sizes)
       access_volumn *= *getConstantIntValue(v);
     if (offsets.empty() ||

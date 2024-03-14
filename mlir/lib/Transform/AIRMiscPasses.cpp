@@ -963,7 +963,7 @@ void AIRCollapseHerdPass::runOnOperation() {
     maximumColumnSize = INT_MAX; // max-col-size disabled.
   func.walk([&](air::HerdOp op) {
     if (op.getNumCols() != 1 && op.getNumDims() == 2 &&
-        op.getNumRows() * op.getNumCols() <= maximumColumnSize)
+        op.getNumRows() * op.getNumCols() <= (unsigned)maximumColumnSize)
       herds.push_back(op);
   });
 

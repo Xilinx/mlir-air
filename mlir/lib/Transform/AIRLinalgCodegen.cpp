@@ -661,16 +661,11 @@ struct LinalgTransformationFilter {
       ArrayRef<StringAttr> matchDisjunction = {},
       std::optional<StringAttr> replacement = std::nullopt);
 
-  explicit LinalgTransformationFilter(
-      const FilterFunction &f, ArrayRef<StringAttr> matchDisjunction = {},
-      std::optional<StringAttr> replacement = std::nullopt);
-
   LinalgTransformationFilter(LinalgTransformationFilter &&) = default;
   LinalgTransformationFilter(const LinalgTransformationFilter &) = default;
   LogicalResult checkAndNotify(PatternRewriter &rewriter, Operation *op) const;
   void replaceLinalgTransformationFilter(PatternRewriter &rewriter,
                                          Operation *op) const;
-  bool hasReplacementFilter(Operation *op) const;
 
   LinalgTransformationFilter &addFilter(const FilterFunction &f) {
     if (f)
@@ -708,16 +703,6 @@ LinalgTransformationFilter::LinalgTransformationFilter(
     std::optional<StringAttr> replacement)
     : matchDisjunction(matchDisjunction.begin(), matchDisjunction.end()),
       replacement(replacement), matchByDefault(false) {}
-
-LinalgTransformationFilter::LinalgTransformationFilter(
-    const FilterFunction &f, ArrayRef<StringAttr> matchDisjunction,
-    std::optional<StringAttr> replacement)
-    : filters(),
-      matchDisjunction(matchDisjunction.begin(), matchDisjunction.end()),
-      replacement(replacement), matchByDefault(false) {
-  if (f)
-    filters.push_back(f);
-}
 
 LogicalResult
 LinalgTransformationFilter::checkAndNotify(PatternRewriter &rewriter,
@@ -760,14 +745,6 @@ void LinalgTransformationFilter::replaceLinalgTransformationFilter(
   else
     op->removeAttr(
         rewriter.getStringAttr(air::LinalgTransforms::kLinalgTransformMarker));
-}
-
-bool LinalgTransformationFilter::hasReplacementFilter(Operation *op) const {
-  if (!replacement)
-    return false;
-  auto attr = op->getAttr(air::LinalgTransforms::kLinalgTransformMarker)
-                  .dyn_cast<StringAttr>();
-  return attr && attr == *replacement;
 }
 
 RemoveSubViewOpsPattern::RemoveSubViewOpsPattern(MLIRContext *ctx,
