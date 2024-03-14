@@ -111,19 +111,19 @@ void matmul_vectorized_2x2(const T_in *__restrict pA, const T_in *__restrict pB,
 
   for (unsigned z = 0; z < rowA; z += 4)
     chess_loop_range(2, ) {
-      T_out *__restrict pC1 = pC + (z) * MMUL::size_C;
+      T_out *__restrict pC1 = pC + (z)*MMUL::size_C;
       T_out *__restrict pC2 = pC + ((z + 1)) * MMUL::size_C;
       T_out *__restrict pC3 = pC + ((z + 2)) * MMUL::size_C;
       T_out *__restrict pC4 = pC + ((z + 3)) * MMUL::size_C;
 
       for (unsigned j = 0; j < colB; j += 4)
         chess_prepare_for_pipelining chess_loop_range(8, ) {
-          const T_in *__restrict pA1 = pA + (z) * MMUL::size_A;
+          const T_in *__restrict pA1 = pA + (z)*MMUL::size_A;
           const T_in *__restrict pA2 = pA + ((z + 1)) * MMUL::size_A;
           const T_in *__restrict pA3 = pA + ((z + 2)) * MMUL::size_A;
           const T_in *__restrict pA4 = pA + ((z + 3)) * MMUL::size_A;
 
-          const T_in *__restrict pB1 = pB + (j) * MMUL::size_B;
+          const T_in *__restrict pB1 = pB + (j)*MMUL::size_B;
           const T_in *__restrict pB2 = pB + ((j + 1)) * MMUL::size_B;
           const T_in *__restrict pB3 = pB + ((j + 2)) * MMUL::size_B;
           const T_in *__restrict pB4 = pB + ((j + 3)) * MMUL::size_B;
@@ -313,8 +313,8 @@ void matmul_vectorized_4x8x4_bf16_bf16(const bfloat16 *__restrict pA,
   static_assert(m % (2 * r) == 0 && m / (2 * r) > 0);
   static_assert(k % (2 * s) == 0 && k / (2 * s) > 0);
   static_assert(n % (2 * t) == 0 && n / (2 * t) > 0);
-  return matmul_vectorized_2x2<bfloat16, bfloat16, m / r, k / s, n / t, r, s, t>(
-      pA, pB, pC);
+  return matmul_vectorized_2x2<bfloat16, bfloat16, m / r, k / s, n / t, r, s,
+                               t>(pA, pB, pC);
 }
 
 extern "C" {
