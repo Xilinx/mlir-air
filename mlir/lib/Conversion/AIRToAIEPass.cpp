@@ -349,7 +349,7 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
 }
 
 // Get all tile ops representing memtiles from device op.
-std::vector<AIE::TileOp> getMemtilesFromDeviceOp(AIE::DeviceOp d){
+std::vector<AIE::TileOp> getMemtilesFromDeviceOp(AIE::DeviceOp d) {
   std::vector<AIE::TileOp> memtiles;
   for (auto t : d.getOps<AIE::TileOp>()) {
     // TODO: Hard coded memtile row as 1 here
@@ -960,17 +960,23 @@ void allocL1Buffers(AIE::DeviceOp m,
   (void)applyPatternsAndFoldGreedily(m, std::move(patterns));
 }
 
-bool areReferencedByTheSameAIRChannel(Value memref_a, Value memref_b){
-  for (auto user_a : memref_a.getUsers()){
-    for (auto user_b : memref_b.getUsers()){
-      if (auto chan_user_a = dyn_cast<air::ChannelInterface>(user_a)){
-        if (auto chan_user_b = dyn_cast<air::ChannelInterface>(user_b)){
-          if (chan_user_a.getChanName().str() == chan_user_b.getChanName().str() && chan_user_a.getIndices().size() == chan_user_b.getIndices().size()){
+bool areReferencedByTheSameAIRChannel(Value memref_a, Value memref_b) {
+  for (auto user_a : memref_a.getUsers()) {
+    for (auto user_b : memref_b.getUsers()) {
+      if (auto chan_user_a = dyn_cast<air::ChannelInterface>(user_a)) {
+        if (auto chan_user_b = dyn_cast<air::ChannelInterface>(user_b)) {
+          if (chan_user_a.getChanName().str() ==
+                  chan_user_b.getChanName().str() &&
+              chan_user_a.getIndices().size() ==
+                  chan_user_b.getIndices().size()) {
             bool hasIdenticalIndices = true;
-            for (unsigned i = 0; i < chan_user_a.getIndices().size(); i++){
-              if (*getConstantIntValue(chan_user_a.getIndices()[i]) != *getConstantIntValue(chan_user_b.getIndices()[i])) hasIdenticalIndices = false;
+            for (unsigned i = 0; i < chan_user_a.getIndices().size(); i++) {
+              if (*getConstantIntValue(chan_user_a.getIndices()[i]) !=
+                  *getConstantIntValue(chan_user_b.getIndices()[i]))
+                hasIdenticalIndices = false;
             }
-            if (hasIdenticalIndices) return true;
+            if (hasIdenticalIndices)
+              return true;
           }
         }
       }
@@ -997,28 +1003,32 @@ void L2MemrefToMemTileMap(
     memtileToSizeMap[t] = m.getTargetModel().getMemTileSize();
   }
 
-  // First stage in memref placement: grouping memrefs referenced by the same air.channel.
+  // First stage in memref placement: grouping memrefs referenced by the same
+  // air.channel.
   SmallVector<SmallVector<memref::AllocOp>> memref_buckets;
-  auto placeMemrefInSharedBucket = [&](SmallVector<SmallVector<memref::AllocOp>> &memref_buckets, memref::AllocOp alloc) {
-    for (auto &bucket : memref_buckets){
-      for (auto bucket_elem : bucket){
-        if (areReferencedByTheSameAIRChannel(alloc.getMemref(), bucket_elem.getMemref())){
-          bucket.push_back(alloc);
-          return true;
+  auto placeMemrefInSharedBucket =
+      [&](SmallVector<SmallVector<memref::AllocOp>> &memref_buckets,
+          memref::AllocOp alloc) {
+        for (auto &bucket : memref_buckets) {
+          for (auto bucket_elem : bucket) {
+            if (areReferencedByTheSameAIRChannel(alloc.getMemref(),
+                                                 bucket_elem.getMemref())) {
+              bucket.push_back(alloc);
+              return true;
+            }
+          }
         }
-      }
-    }
-    return false;
-  };
-  for (auto alloc : allocs){
-    if (!placeMemrefInSharedBucket(memref_buckets, alloc)){
+        return false;
+      };
+  for (auto alloc : allocs) {
+    if (!placeMemrefInSharedBucket(memref_buckets, alloc)) {
       memref_buckets.push_back(SmallVector<memref::AllocOp>{alloc});
     }
   }
   // Second stage in memref placement: placing memref groups to memtiles.
   int memtile_id = 0;
-  for (auto &bucket : memref_buckets){
-    for (auto bucket_elem : bucket){
+  for (auto &bucket : memref_buckets) {
+    for (auto bucket_elem : bucket) {
       MemRefType ty = bucket_elem.getMemref().getType().cast<MemRefType>();
       auto memref_vol = getElementSizeInBytes(ty) * getTensorVolume(ty);
       memtileToSizeMap[memtiles[memtile_id]] -= memref_vol;
@@ -1495,20 +1505,6 @@ private:
     return output;
   }
 
-  // Create channel name as string
-  std::string createChannelName(Operation *scope) const {
-    if (!scope->hasTrait<OpTrait::SymbolTable>()) {
-      scope->emitOpError("has no symbol table trait");
-    }
-    std::string new_cname = "channel_0";
-    std::string cname = "channel";
-    int which_try = 0;
-    while (mlir::SymbolTable::lookupSymbolIn(scope, new_cname))
-      new_cname = cname + "_" + std::to_string(++which_try);
-    cname = new_cname;
-    return cname;
-  }
-
   air::ChannelPutOp
   createChannelPutGetWithoutBundle(OpBuilder builder, air::ChannelOp chan,
                                    air::ChannelPutOp put) const {
@@ -1862,154 +1858,209 @@ public:
     }
   }
 
-  bool everyAIRChannelAccessIsContiguousRowMajor(std::vector<air::ChannelInterface> ops){
-    for (auto op : ops){
+  bool everyAIRChannelAccessIsContiguousRowMajor(
+      std::vector<air::ChannelInterface> ops) {
+    for (auto op : ops) {
       auto memref = op.getMemref();
       auto memrefShape = air::getTensorShape(memref.getType());
-      if (op.getStrides().size() != memrefShape.size()) return false;
+      if (op.getStrides().size() != memrefShape.size())
+        return false;
       int current_stride = 1;
-      for (int i = op.getStrides().size() - 1; i >= 0; i--){
-        if (*getConstantIntValue(op.getStrides()[i]) != current_stride) return false;
+      for (int i = op.getStrides().size() - 1; i >= 0; i--) {
+        if (*getConstantIntValue(op.getStrides()[i]) != current_stride)
+          return false;
         current_stride *= memrefShape[i];
       }
     }
     return true;
   }
-  // Check whether every channel op in the vector has non-overlapping access pattern, by exhaustively scan through pairs of air channel ops in the vector.
-  bool everyAIRChannelAccessIsNonOverlapping(std::vector<air::ChannelInterface> ops){
-    if (!everyAIRChannelAccessIsContiguousRowMajor(ops)) return false; // Incontiguous or not row-major, NYI.
+  // Check whether every channel op in the vector has non-overlapping access
+  // pattern, by exhaustively scan through pairs of air channel ops in the
+  // vector.
+  bool everyAIRChannelAccessIsNonOverlapping(
+      std::vector<air::ChannelInterface> ops) {
+    if (!everyAIRChannelAccessIsContiguousRowMajor(ops))
+      return false; // Incontiguous or not row-major, NYI.
     for (unsigned i = 0; i < ops.size() - 1; i++) {
       for (unsigned j = i + 1; j < ops.size(); j++) {
         air::ChannelInterface op1 = ops[i];
         air::ChannelInterface op2 = ops[j];
-        if (op1.getOffsets().size() != op2.getOffsets().size()) return false;
-        if (op1.getSizes().size() != op2.getSizes().size()) return false;
-        bool isOverlappingPair = true; // True if every dimension is overlapping.
-        for (unsigned k = 0; k < op1.getOffsets().size(); k++){
+        if (op1.getOffsets().size() != op2.getOffsets().size())
+          return false;
+        if (op1.getSizes().size() != op2.getSizes().size())
+          return false;
+        bool isOverlappingPair =
+            true; // True if every dimension is overlapping.
+        for (unsigned k = 0; k < op1.getOffsets().size(); k++) {
           int op1Offset = *getConstantIntValue(op1.getOffsets()[k]);
           int op2Offset = *getConstantIntValue(op2.getOffsets()[k]);
           int op1LowerRange = op1Offset;
-          int op1UpperRange = op1Offset + *getConstantIntValue(op1.getSizes()[k]);
+          int op1UpperRange =
+              op1Offset + *getConstantIntValue(op1.getSizes()[k]);
           int op2LowerRange = op2Offset;
-          int op2UpperRange = op2Offset + *getConstantIntValue(op2.getSizes()[k]);
+          int op2UpperRange =
+              op2Offset + *getConstantIntValue(op2.getSizes()[k]);
           bool isOverlappingDim = false;
-          if (op1Offset >= op2LowerRange && op1Offset < op2UpperRange) isOverlappingDim = true;
-          else if (op2Offset >= op1LowerRange && op2Offset < op1UpperRange) isOverlappingDim = true;
-          if (!isOverlappingDim) isOverlappingPair = false;
+          if (op1Offset >= op2LowerRange && op1Offset < op2UpperRange)
+            isOverlappingDim = true;
+          else if (op2Offset >= op1LowerRange && op2Offset < op1UpperRange)
+            isOverlappingDim = true;
+          if (!isOverlappingDim)
+            isOverlappingPair = false;
         }
-        if (isOverlappingPair) return false;
+        if (isOverlappingPair)
+          return false;
       }
     }
     return true;
   }
-  bool everyAIRChannelAccessIsNonOverlapping(std::vector<air::ChannelPutOp> ops){
+  bool
+  everyAIRChannelAccessIsNonOverlapping(std::vector<air::ChannelPutOp> ops) {
     std::vector<air::ChannelInterface> chanOps;
-    for (auto op : ops) chanOps.push_back(op);
+    for (auto op : ops)
+      chanOps.push_back(op);
     return everyAIRChannelAccessIsNonOverlapping(chanOps);
   }
-  bool everyAIRChannelAccessIsNonOverlapping(std::vector<air::ChannelGetOp> ops){
+  bool
+  everyAIRChannelAccessIsNonOverlapping(std::vector<air::ChannelGetOp> ops) {
     std::vector<air::ChannelInterface> chanOps;
-    for (auto op : ops) chanOps.push_back(op);
+    for (auto op : ops)
+      chanOps.push_back(op);
     return everyAIRChannelAccessIsNonOverlapping(chanOps);
+  }
+  bool hasSinglePutAndGet(air::ChannelOp chan) {
+    auto puts = getChannelPutOpThroughSymbol(
+        chan, chan->getParentOfType<AIE::DeviceOp>());
+    auto gets = getChannelGetOpThroughSymbol(
+        chan, chan->getParentOfType<AIE::DeviceOp>());
+    return puts.size() == 1 && gets.size() == 1;
   }
 
-  // A naive memref partitioning scheme which partitions the memref column wise.
-  void partitionMemrefColumnWise(std::vector<air::ChannelInterface> ops){
+  void partitionMemref(std::vector<air::ChannelPutOp> puts,
+                       std::vector<air::ChannelGetOp> gets) {
     std::map<int, SmallVector<air::ChannelInterface>> chanOpPartitions;
     std::vector<int> keys;
-    for (auto op : ops){
-      int lastOffset = *getConstantIntValue(op.getOffsets()[1]);
-      push_back_if_unique<int>(keys, lastOffset);
-      if (!chanOpPartitions.count(lastOffset)) chanOpPartitions[lastOffset] = SmallVector<air::ChannelInterface>{op};
-      else chanOpPartitions[lastOffset].push_back(op);
+    for (auto op : puts) {
+      int firstOffset = *getConstantIntValue(op.getOffsets().front());
+      push_back_if_unique<int>(keys, firstOffset);
+      if (!chanOpPartitions.count(firstOffset))
+        chanOpPartitions[firstOffset] = SmallVector<air::ChannelInterface>{op};
+      else
+        chanOpPartitions[firstOffset].push_back(op);
     }
-    if (keys.size() != 4) return; // Currently only implemented the case where the L2-L1 tiling factor is 4 by 4 (4 column wise).
-    for (auto key : keys){
+    for (auto op : gets) {
+      int firstOffset = *getConstantIntValue(op.getOffsets().front());
+      push_back_if_unique<int>(keys, firstOffset);
+      if (!chanOpPartitions.count(firstOffset))
+        chanOpPartitions[firstOffset] = SmallVector<air::ChannelInterface>{op};
+      else
+        chanOpPartitions[firstOffset].push_back(op);
+    }
+    for (auto key : keys) {
       auto memref = chanOpPartitions[key][0].getMemref();
       auto allocOp = memref.getDefiningOp();
       MemRefType ty = memref.getType().cast<MemRefType>();
-      auto newMemrefShape = air::getDataAccessShapeFromMemcpyOp(memref, chanOpPartitions[key]);
+      // New memref shape is a column of (4) tiles.
+      SmallVector<int64_t> newMemrefShape;
+      for (unsigned i = 0; i < air::getTensorShape(ty).size(); i++) {
+        newMemrefShape.push_back(air::getTensorShape(ty)[i]);
+      }
+      newMemrefShape.front() =
+          *getConstantIntValue(chanOpPartitions[key][0].getSizes().front());
+
       OpBuilder builder(allocOp);
+      auto loc = allocOp->getLoc();
       Value newMemref = builder.create<memref::AllocOp>(
-            builder.getUnknownLoc(),
-            MemRefType::get(newMemrefShape, ty.getElementType(),
-                            ty.getLayout().getAffineMap(),
-                            ty.getMemorySpaceAsInt()));
-      for (auto op : chanOpPartitions[key]){
-        int asyncDepListSize = dyn_cast<air::AsyncOpInterface>(op.getOperation()).getAsyncDependencies().size();
-        auto &opoperand = op->getOpOperand(asyncDepListSize);
-        opoperand.assign(newMemref);
+          loc, MemRefType::get(newMemrefShape, ty.getElementType(),
+                               ty.getLayout().getAffineMap(),
+                               ty.getMemorySpaceAsInt()));
+      for (auto op : chanOpPartitions[key]) {
+        int memrefOperandOffset =
+            dyn_cast<air::AsyncOpInterface>(op.getOperation())
+                .getAsyncDependencies()
+                .size();
+        auto &memrefOpOper = op->getOpOperand(memrefOperandOffset);
+        memrefOpOper.assign(newMemref);
+        int firstOffsetOperandOffset = memrefOperandOffset + 1;
+        auto &firstOffsetOpOper = op->getOpOperand(firstOffsetOperandOffset);
+        firstOffsetOpOper.assign(
+            builder.create<arith::ConstantIndexOp>(loc, 0));
+        // Update strides (contiguous, row-major) after memref tiling.
+        SmallVector<Value> offsets;
+        SmallVector<Value> wraps;
+        SmallVector<Value> strides;
+        populateDefaultWrapsAndStrides(builder, newMemref, offsets, wraps,
+                                       strides);
+        int firstStrideOperandOffset =
+            memrefOperandOffset + op.getOffsets().size() * 2 + 1;
+        for (unsigned i = 0; i < op.getStrides().size(); i++) {
+          auto &strideOpOper = op->getOpOperand(firstStrideOperandOffset + i);
+          strideOpOper.assign(strides[i]);
+        }
       }
     }
   }
-  void partitionMemrefColumnWise(std::vector<air::ChannelPutOp> ops){
-    std::vector<air::ChannelInterface> chanOps;
-    for (auto op : ops) chanOps.push_back(op);
-    partitionMemrefColumnWise(chanOps);
-  }
-  void partitionMemrefColumnWise(std::vector<air::ChannelGetOp> ops){
-    std::vector<air::ChannelInterface> chanOps;
-    for (auto op : ops) chanOps.push_back(op);
-    partitionMemrefColumnWise(chanOps);
-  }
 
-  // Optimize L2 (memtile) buffer allocation by attempting to partition non-overlapping L2 memref accesses into (upto M, where M is the number of memtiles in the device) separate memrefs.
-  void specializeL2MemrefsIntoMemtiles(AIE::DeviceOp d){
+  // Optimize L2 (memtile) buffer allocation by attempting to partition
+  // non-overlapping L2 memref accesses into (upto M, where M is the number of
+  // memtiles being allocated to) separate memrefs.
+  void specializeL2MemrefsIntoMemtiles(AIE::DeviceOp d) {
     // Get all memtiles to place L2 memrefs onto.
     std::vector<AIE::TileOp> memtiles = getMemtilesFromDeviceOp(d);
-    int maxMemtileSrcConnections = memtiles[0].getNumSourceConnections(AIE::WireBundle::DMA);
-    int maxMemtileDstConnections = memtiles[0].getNumDestConnections(AIE::WireBundle::DMA);
+    if (memtiles.empty())
+      return;
+    int maxMemtileSrcConnections =
+        memtiles[0].getNumSourceConnections(AIE::WireBundle::DMA);
+    int maxMemtileDstConnections =
+        memtiles[0].getNumDestConnections(AIE::WireBundle::DMA);
 
-    // Get L2 memrefs which require partitioning, due to having more channel puts/gets than memtile hardware limit.
+    // Get L2 memrefs which require partitioning, due to having more channel
+    // puts/gets than memtile hardware limit.
     std::vector<Value> memrefs;
     d.walk([&](memref::AllocOp allocOp) {
       auto memref = allocOp.getMemref();
       auto memrefTy = memref.getType().cast<MemRefType>();
-      if (memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L2){
+      if (memrefTy.getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
         // Count the number of unique incoming and outgoing channels.
         std::vector<std::string> uniqueS2MMChannels;
         std::vector<std::string> uniqueMM2SChannels;
-        for (auto user : memref.getUsers()){
+        for (auto user : memref.getUsers()) {
           if (auto get = dyn_cast<air::ChannelGetOp>(user))
-            push_back_if_unique<std::string>(uniqueS2MMChannels, get.getChanName().str());
+            push_back_if_unique<std::string>(uniqueS2MMChannels,
+                                             get.getChanName().str());
           else if (auto put = dyn_cast<air::ChannelPutOp>(user))
-            push_back_if_unique<std::string>(uniqueMM2SChannels, put.getChanName().str());
+            push_back_if_unique<std::string>(uniqueMM2SChannels,
+                                             put.getChanName().str());
         }
-        bool tooManyChannelConnections = uniqueS2MMChannels.size() > maxMemtileDstConnections || uniqueMM2SChannels.size() > maxMemtileSrcConnections;
-        if (tooManyChannelConnections){
+        bool tooManyChannelConnections =
+            uniqueS2MMChannels.size() > maxMemtileDstConnections ||
+            uniqueMM2SChannels.size() > maxMemtileSrcConnections;
+        if (tooManyChannelConnections) {
           if (auto exec = dyn_cast<air::ExecuteOp>(allocOp->getParentOp()))
             memrefs.push_back(exec->getResult(1));
-          else memrefs.push_back(memref);
+          else
+            memrefs.push_back(memref);
         }
       }
     });
-
-    // assert(memrefs.size() == 1);
+    if (memrefs.empty())
+      return;
 
     // Tile the memrefs based on air.channel put/get access pattern.
-    for (auto memref : memrefs){
+    for (auto memref : memrefs) {
       std::vector<air::ChannelPutOp> puts;
       std::vector<air::ChannelGetOp> gets;
-      for (auto user : memref.getUsers()){
-        if (auto put = dyn_cast<air::ChannelPutOp>(user)) puts.push_back(put);
-        else if (auto get = dyn_cast<air::ChannelGetOp>(user)) gets.push_back(get);
+      for (auto user : memref.getUsers()) {
+        if (auto put = dyn_cast<air::ChannelPutOp>(user))
+          puts.push_back(put);
+        else if (auto get = dyn_cast<air::ChannelGetOp>(user))
+          gets.push_back(get);
       }
-      if (puts.size() == 1 && puts[0].getOffsets().empty()){
-        // Partition memref wrt gets.
-        if (everyAIRChannelAccessIsNonOverlapping(gets)){
-          // TODO: Currently hard coding a column-wise memref partition scheme here.
-          partitionMemrefColumnWise(gets);
-        }
-        else continue; // NYI if any pair of air channel ops are overlapping.
-      }
-      else if (gets.size() == 1 && gets[0].getOffsets().empty()){
-        // Partition memref wrt puts.
-        if (everyAIRChannelAccessIsNonOverlapping(puts)){
-          partitionMemrefColumnWise(puts);
-        }
-        else continue; // NYI if any pair of air channel ops are overlapping.
-      }
-      else continue; // Multiple of puts and multiple of gets, NYI.
+      if (everyAIRChannelAccessIsNonOverlapping(gets) &&
+          everyAIRChannelAccessIsNonOverlapping(puts)) {
+        partitionMemref(puts, gets);
+      } else
+        continue; // Multiple of puts and multiple of gets, NYI.
     }
   }
 
@@ -2202,10 +2253,32 @@ public:
   void annotateMetadataPerShimAIRChannel(air::ChannelInterface chan_o,
                                          MemRefType memref_ty,
                                          StringAttr dma_name_attr) {
+    auto originalIndices = chan_o.getIndices();
+    SmallVector<int> subChannelIndices;
+    for (auto index : originalIndices) {
+      if (auto const_index = getConstantIntValue(index))
+        subChannelIndices.push_back(*const_index);
+    }
     for (auto the_other_chan_o : getTheOtherChannelOpThroughSymbol(chan_o)) {
-      the_other_chan_o->setAttr(
-          "metadata", FlatSymbolRefAttr::get(the_other_chan_o->getContext(),
-                                             dma_name_attr));
+      if (the_other_chan_o->hasAttr("metadata"))
+        continue;
+      // If they are sub-channels, then check for sub-channel indices.
+      if (!originalIndices.empty() &&
+          originalIndices.size() == the_other_chan_o.getIndices().size()) {
+        bool allEqual = true;
+        for (unsigned i = 0; i < subChannelIndices.size(); i++) {
+          if (subChannelIndices[i] !=
+              *getConstantIntValue(the_other_chan_o.getIndices()[i]))
+            allEqual = false;
+        }
+        if (allEqual)
+          the_other_chan_o->setAttr(
+              "metadata", FlatSymbolRefAttr::get(the_other_chan_o->getContext(),
+                                                 dma_name_attr));
+      } else
+        the_other_chan_o->setAttr(
+            "metadata", FlatSymbolRefAttr::get(the_other_chan_o->getContext(),
+                                               dma_name_attr));
     }
   }
 
@@ -2215,7 +2288,7 @@ public:
                                   MemRefType memref_ty) {
     // Label air.dmamemcpynd ops with symbolic ref. to shimdmaalloc op
     hier.walk([&](air::MemcpyInterface o) {
-      if (o.getId() == target_op_id) {
+      if (o.getId() == target_op_id && !o->hasAttr("metadata")) {
         if (isa<air::DmaMemcpyNdOp>(o.getOperation()))
           o->setAttr("metadata",
                      FlatSymbolRefAttr::get(hier->getContext(), dma_name_attr));
@@ -3089,7 +3162,7 @@ public:
 
         allocL1Buffers(device, tileToHerdMap, BufferId);
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
-        
+
         renumberChannelOps(&device.getBodyRegion().front(),
                            chan_renumber_reverse_map);
         lowerAIRMemcpyOp<air::ChannelInterface>(device, shimDmaAlloc, options);

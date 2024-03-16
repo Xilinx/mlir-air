@@ -348,6 +348,20 @@ std::string air::to_string(mlir::Type t) {
   return type_str;
 }
 
+// Create channel name as string
+std::string air::createChannelName(Operation *scope) {
+  if (!scope->hasTrait<OpTrait::SymbolTable>()) {
+    scope->emitOpError("has no symbol table trait");
+  }
+  std::string new_cname = "channel_0";
+  std::string cname = "channel";
+  int which_try = 0;
+  while (mlir::SymbolTable::lookupSymbolIn(scope, new_cname))
+    new_cname = cname + "_" + std::to_string(++which_try);
+  cname = new_cname;
+  return cname;
+}
+
 // Return memory space as string
 std::string air::getMemorySpaceAsString(Value memref) {
   if (!memref.getType().isa<MemRefType>()) {
@@ -959,12 +973,33 @@ void air::foldForLoopNestAsExtendedSizesAndStrides(
   }
 }
 
+// If wrap-and-stride lists are empty, populate them with default data access
+// layout (contiguous, row-major).
+void air::populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
+                                         SmallVector<Value> &offsets,
+                                         SmallVector<Value> &wraps,
+                                         SmallVector<Value> &strides) {
+  auto loc = builder.getUnknownLoc();
+  if (offsets.empty() && wraps.empty() && strides.empty()) {
+    auto memref_shape = getTensorShape(memref.getType());
+    int current_stride = getTensorVolume(memref.getType());
+    for (unsigned i = 0; i < memref_shape.size(); i++) {
+      offsets.push_back(builder.create<arith::ConstantIndexOp>(loc, 0));
+      wraps.push_back(
+          builder.create<arith::ConstantIndexOp>(loc, memref_shape[i]));
+      current_stride /= memref_shape[i];
+      strides.push_back(
+          builder.create<arith::ConstantIndexOp>(loc, current_stride));
+    }
+  }
+}
+
 // Get the memref size along a given dimension, that the access pattern actually
 // covers.
 SmallVector<int64_t>
 air::getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
-                                        SmallVector<Value> sizes,
-                                        SmallVector<Value> strides) {
+                                             SmallVector<Value> sizes,
+                                             SmallVector<Value> strides) {
   SmallVector<int64_t> access_bounds(memref_shape.size(), -1);
   for (int i = sizes.size() - 1; i >= 0; i--) {
     int current_memref_volumn = 1;
@@ -982,12 +1017,15 @@ air::getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
   return access_bounds;
 }
 
-// Get the overall data access pattern from air.channel ops which access the memref.
-SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(Value memref, SmallVector<air::ChannelInterface> chanOps){
+// Get the overall data access pattern from air.channel ops which access the
+// memref.
+SmallVector<int64_t> air::getDataAccessShapeFromMemcpyOp(
+    Value memref, SmallVector<air::ChannelInterface> chanOps) {
   auto memref_shape = getTensorShape(memref.getType());
   SmallVector<int64_t> overall_access_bounds(memref_shape.size(), -1);
   for (auto chanOp : chanOps) {
-    if (chanOp.getMemref() != memref) continue;
+    if (chanOp.getMemref() != memref)
+      continue;
     SmallVector<int64_t> access_bounds(memref_shape.size(), -1);
     if (chanOp.getOffsets().empty())
       for (unsigned i = 0; i < memref_shape.size(); i++)

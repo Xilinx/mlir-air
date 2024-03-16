@@ -65,6 +65,9 @@ void renumberChannelOps(Block *region, std::map<int, int> &reverse_map);
 // Return op name as string
 std::string to_string(Operation *op);
 std::string to_string(mlir::Type t);
+
+// Generate a new unique channel name
+std::string createChannelName(Operation *scope);
 // Return memory space as string
 std::string getMemorySpaceAsString(Value memref);
 
@@ -141,12 +144,19 @@ void foldForLoopNestAsExtendedSizesAndStrides(
     SmallVector<Value> &offsets, SmallVector<Value> &wraps,
     SmallVector<Value> &strides, Value memref);
 
+// Canonicalize wrap and stride lists, by removing redundant dimensions.
 LogicalResult canonicalizeWrapAndStrideList(OpBuilder builder,
                                             SmallVector<Value> &offsets,
                                             SmallVector<Value> &sizes,
                                             SmallVector<Value> &strides,
                                             int memref_volume);
 
+// If wrap-and-stride lists are empty, populate them with default data access
+// layout (contiguous, row-major).
+void populateDefaultWrapsAndStrides(OpBuilder builder, Value memref,
+                                    SmallVector<Value> &offsets,
+                                    SmallVector<Value> &wraps,
+                                    SmallVector<Value> &strides);
 // Get the memref size along a given dimension, that the access pattern actually
 // covers.
 SmallVector<int64_t>
@@ -154,8 +164,11 @@ getEffectiveMemrefSizeFromAccessPattern(SmallVector<int> memref_shape,
                                         SmallVector<Value> sizes,
                                         SmallVector<Value> strides);
 
-// Get the overall data access pattern from air.channel ops which access the memref.
-SmallVector<int64_t> getDataAccessShapeFromMemcpyOp(Value memref, SmallVector<air::ChannelInterface> chanOps);
+// Get the overall data access pattern from air.channel ops which access the
+// memref.
+SmallVector<int64_t>
+getDataAccessShapeFromMemcpyOp(Value memref,
+                               SmallVector<air::ChannelInterface> chanOps);
 
 } // namespace air
 } // namespace xilinx
