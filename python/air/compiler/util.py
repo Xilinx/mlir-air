@@ -6,8 +6,9 @@
 
 import air.ir
 import air.passmanager
-import air._mlir_libs._airMlir
-import air._mlir_libs._airMlir.runner as runner
+import air._mlir_libs._air
+import air._mlir_libs._air.runner as runner
+from air._mlir_libs._air import run_transform as run_transform
 
 import json
 import tempfile
@@ -15,7 +16,8 @@ import os
 
 __all__ = [
     "CostModel",
-    "LINALG_TENSOR_TO_MEMREF_PIPELINE"
+    "LINALG_TENSOR_TO_MEMREF_PIPELINE",
+    "run_transform"
 ]
 
 LINALG_TENSOR_TO_MEMREF_PIPELINE = "builtin.module(" + ",".join([

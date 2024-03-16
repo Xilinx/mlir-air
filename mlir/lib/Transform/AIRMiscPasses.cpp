@@ -963,7 +963,7 @@ void AIRCollapseHerdPass::runOnOperation() {
     maximumColumnSize = INT_MAX; // max-col-size disabled.
   func.walk([&](air::HerdOp op) {
     if (op.getNumCols() != 1 && op.getNumDims() == 2 &&
-        op.getNumRows() * op.getNumCols() <= maximumColumnSize)
+        op.getNumRows() * op.getNumCols() <= (unsigned)maximumColumnSize)
       herds.push_back(op);
   });
 
@@ -1096,7 +1096,7 @@ template <typename T> void push_back_if_unique(SmallVector<T> &vec, T entry) {
 // Find GCD of a vector of ints.
 int findGCD(SmallVector<int> vec) {
   int result = vec[0];
-  for (int i = 1; i < vec.size(); i++) {
+  for (unsigned i = 1; i < vec.size(); i++) {
     result = std::gcd(vec[i], result);
 
     if (result == 1) {
@@ -1133,7 +1133,7 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
     originalApplyOperands.push_back(
         builder.create<arith::ConstantIndexOp>(loc, 0));
   SmallVector<Value> tokens;
-  for (unsigned i = 0; i < factor; i++) {
+  for (int i = 0; i < factor; i++) {
     SmallVector<Value> newIndices{
         builder.create<arith::ConstantIndexOp>(loc, i),
         builder.create<arith::ConstantIndexOp>(loc, 0)};
@@ -1222,7 +1222,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         air::getSizesFromSpatialLoop(user->getParentOp(), lbs_spatial,
                                      ubs_spatial);
         int parCount = 1;
-        for (int i = 0; i < lbs_spatial.size(); i++)
+        for (unsigned i = 0; i < lbs_spatial.size(); i++)
           parCount *= ubs_spatial[i] - lbs_spatial[i] + 1;
         if (isa<air::ChannelPutOp>(user) && parCount > maxMM2SChannelCount) {
           if (!targetMemrefsToColTilingFactors.count(allocOp)) {

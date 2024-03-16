@@ -390,34 +390,6 @@ def air_WaitAllOp: air_Op<"wait_all", [air_AsyncOpInterface]> {
   let hasCanonicalizer = 1;
 }
 
-def air_AllocOp: air_Op<"alloc", [air_AsyncOpInterface]> {
-  let summary = "alloc operator";
-  let arguments = (
-    ins Variadic<air_AsyncToken>:$async_dependencies
-  );
-  let results = (outs Optional<air_AsyncToken>:$async_token, AnyMemRef:$result);
-  let assemblyFormat = [{
-    custom<AsyncDependencies>(type($async_token), $async_dependencies) attr-dict `:` type($result)
-  }];
-  let description = [{
-    Allocate memory
-  }];
-}
-
-def air_DeallocOp: air_Op<"dealloc", [air_AsyncOpInterface]> {
-  let summary = "dealloc operator";
-  let arguments = (
-    ins Variadic<air_AsyncToken>:$async_dependencies, AnyMemRef:$memref
-  );
-  let results = (outs Optional<air_AsyncToken>:$async_token);
-  let assemblyFormat = [{
-    custom<AsyncDependencies>(type($async_token), $async_dependencies) $memref attr-dict `:` type($memref)
-  }];
-  let description = [{
-    Deallocate memory
-  }];
-}
-
 // AIR channel
 
 def air_ChannelOp : air_Op<"channel", [Symbol]>,

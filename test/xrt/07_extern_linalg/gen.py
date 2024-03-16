@@ -9,7 +9,7 @@ from air.passmanager import *
 from air.dialects import air as airdialect
 from air.dialects import arith, func, linalg, memref
 from air.dialects.linalg.opdsl.lang import *
-from air._mlir_libs._airMlir import _run_air_transform as run_air_transform
+from air.compiler.util import run_transform
 
 def generate_add_module(shape, dtype):
     module = Module.create()
@@ -56,14 +56,13 @@ def generate_add_module(shape, dtype):
     pm = PassManager.parse('builtin.module(func.func(linalg-generalize-named-ops))')
     pm.run(module.operation)
     transform_ir = Module.parse(transform_ir_string)
-    run_air_transform(transform_ir, module)
+    run_transform(transform_ir, module)
 
     pm = PassManager.parse('builtin.module(func.func(canonicalize,cse))')
     pm.run(module.operation)
     return module
 
 with Context() as ctx, Location.unknown():
-    airdialect.register_dialect(ctx)
     mlir_module = generate_add_module([128,128], BF16Type.get())
 
     # print("\nTiled AIR Module:\n\n", mlir_module)

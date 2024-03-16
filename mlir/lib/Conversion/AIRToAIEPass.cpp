@@ -2033,8 +2033,8 @@ public:
                                              put.getChanName().str());
         }
         bool tooManyChannelConnections =
-            uniqueS2MMChannels.size() > maxMemtileDstConnections ||
-            uniqueMM2SChannels.size() > maxMemtileSrcConnections;
+            (int)uniqueS2MMChannels.size() > maxMemtileDstConnections ||
+            (int)uniqueMM2SChannels.size() > maxMemtileSrcConnections;
         if (tooManyChannelConnections) {
           if (auto exec = dyn_cast<air::ExecuteOp>(allocOp->getParentOp()))
             memrefs.push_back(exec->getResult(1));

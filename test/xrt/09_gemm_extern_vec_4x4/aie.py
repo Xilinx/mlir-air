@@ -1,14 +1,18 @@
+# aie.py -*- Python -*-
+#
+# Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 import air
 import air.compiler.util
 from air.dialects import linalg, tensor, arith, func, memref
 from air.ir import *
 import air.passmanager
 from air.dialects import air as airdialect
-from air._mlir_libs._airMlir import _run_air_transform as run_air_transform
+from air.compiler.util import run_transform
 import sys
 
 with air.ir.Context() as ctx, Location.unknown():
-    airdialect.register_dialect(ctx)
     
     ################################################
     ## Tiling
