@@ -640,3 +640,109 @@ module {
     return
   }
 }
+
+// -----
+
+// Multiple Shim DMAs.
+
+// CHECK: aie.shim_dma_allocation @airMemcpyId45(S2MM, 0, 0)
+// CHECK: aie.shim_dma_allocation @airMemcpyId46(S2MM, 1, 0)
+// CHECK: aie.shim_dma_allocation @airMemcpyId47(S2MM, 0, 1)
+// CHECK: aie.shim_dma_allocation @airMemcpyId48(S2MM, 1, 1)
+// CHECK: aie.shim_dma_allocation @airMemcpyId7(MM2S, 0, 0)
+// CHECK: aie.shim_dma_allocation @airMemcpyId17(MM2S, 0, 0)
+// CHECK: aie.shim_dma_allocation @airMemcpyId12(MM2S, 1, 0)
+// CHECK: aie.shim_dma_allocation @airMemcpyId22(MM2S, 1, 0)
+// CHECK-LABEL: func.func @func15
+// CHECK-SAME: %[[VAL_0:.*]]: memref<262144xi32>, %[[VAL_1:.*]]: memref<262144xi32>, %[[VAL_2:.*]]: memref<131072xi32>) {
+// CHECK: aiex.ipu.dma_memcpy_nd(0, 0, %[[VAL_0]][0, 0, 0, 0][2, 4, 256, 128][0, 128, 512]) {id = 0 : i64, metadata = @airMemcpyId7} : memref<262144xi32>
+// CHECK: aiex.ipu.dma_memcpy_nd(0, 0, %[[VAL_0]][0, 0, 0, 131072][2, 4, 256, 128][0, 128, 512]) {id = 1 : i64, metadata = @airMemcpyId7} : memref<262144xi32>
+// CHECK: aiex.ipu.dma_memcpy_nd(0, 0, %[[VAL_1]][0, 0, 0, 0][2, 2, 512, 128][128, 131072, 256]) {id = 2 : i64, metadata = @airMemcpyId12} : memref<262144xi32>
+// CHECK: aiex.ipu.dma_memcpy_nd(0, 0, %[[VAL_1]][0, 0, 0, 0][2, 2, 512, 128][128, 131072, 256]) {id = 3 : i64, metadata = @airMemcpyId12} : memref<262144xi32>
+// CHECK: aiex.ipu.dma_memcpy_nd(0, 0, %[[VAL_2]][0, 0, 0, 0][2, 2, 64, 128][65536, 128, 256]) {id = 4 : i64, metadata = @airMemcpyId45} : memref<131072xi32>
+// CHECK: aiex.ipu.dma_memcpy_nd(0, 0, %[[VAL_2]][0, 0, 0, 16384][2, 2, 64, 128][65536, 128, 256]) {id = 5 : i64, metadata = @airMemcpyId46} : memref<131072xi32>
+// CHECK: aiex.ipu.dma_memcpy_nd(0, 0, %[[VAL_2]][0, 0, 0, 32768][2, 2, 64, 128][65536, 128, 256]) {id = 6 : i64, metadata = @airMemcpyId47} : memref<131072xi32>
+// CHECK: aiex.ipu.dma_memcpy_nd(0, 0, %[[VAL_2]][0, 0, 0, 49152][2, 2, 64, 128][65536, 128, 256]) {id = 7 : i64, metadata = @airMemcpyId48} : memref<131072xi32>
+// CHECK: aiex.ipu.sync {channel = 0 : i32, column = 1 : i32, column_num = 1 : i32, direction = 0 : i32, row = 0 : i32, row_num = 1 : i32}
+// CHECK: aiex.ipu.sync {channel = 1 : i32, column = 0 : i32, column_num = 1 : i32, direction = 0 : i32, row = 0 : i32, row_num = 1 : i32}
+// CHECK: aiex.ipu.sync {channel = 0 : i32, column = 0 : i32, column_num = 1 : i32, direction = 0 : i32, row = 0 : i32, row_num = 1 : i32}
+// CHECK: aiex.ipu.sync {channel = 1 : i32, column = 1 : i32, column_num = 1 : i32, direction = 0 : i32, row = 0 : i32, row_num = 1 : i32}
+
+#map = affine_map<()[s0] -> (s0 * 256)>
+#map1 = affine_map<()[s0] -> (s0 * 256 + 64)>
+#map2 = affine_map<()[s0] -> (s0 * 256 + 128)>
+#map3 = affine_map<()[s0] -> (s0 * 256 + 192)>
+module {
+  aie.device(ipu) {
+    aie.shim_dma_allocation @airMemcpyId45(S2MM, 0, 0)
+    memref.global "public" @airMemcpyId45 : memref<256x256xbf16, 1>
+    aie.shim_dma_allocation @airMemcpyId46(S2MM, 1, 0)
+    memref.global "public" @airMemcpyId46 : memref<256x256xbf16, 1>
+    aie.shim_dma_allocation @airMemcpyId47(S2MM, 0, 1)
+    memref.global "public" @airMemcpyId47 : memref<256x256xbf16, 1>
+    aie.shim_dma_allocation @airMemcpyId48(S2MM, 1, 1)
+    memref.global "public" @airMemcpyId48 : memref<256x256xbf16, 1>
+    aie.shim_dma_allocation @airMemcpyId7(MM2S, 0, 0)
+    memref.global "public" @airMemcpyId7 : memref<256x256xbf16, 1>
+    aie.shim_dma_allocation @airMemcpyId17(MM2S, 0, 0)
+    memref.global "public" @airMemcpyId17 : memref<256x256xbf16, 1>
+    aie.shim_dma_allocation @airMemcpyId12(MM2S, 1, 0)
+    memref.global "public" @airMemcpyId12 : memref<256x256xbf16, 1>
+    aie.shim_dma_allocation @airMemcpyId22(MM2S, 1, 0)
+    memref.global "public" @airMemcpyId22 : memref<256x256xbf16, 1>
+  } {sym_name = "segment_0"}
+  func.func @func15(%arg0: memref<512x1024xbf16>, %arg1: memref<1024x512xbf16>, %arg2: memref<512x512xbf16>) {
+    %c64_i64 = arith.constant 64 : i64
+    %c512_i64 = arith.constant 512 : i64
+    %c4_i64 = arith.constant 4 : i64
+    %c1024_i64 = arith.constant 1024 : i64
+    %c256_i64 = arith.constant 256 : i64
+    %c45_i32 = arith.constant 45 : i32
+    %c12_i32 = arith.constant 12 : i32
+    %c7_i32 = arith.constant 7 : i32
+    %c1_i64 = arith.constant 1 : i64
+    %c0_i64 = arith.constant 0 : i64
+    affine.for %arg3 = 0 to 2 {
+      affine.for %arg4 = 0 to 2 {
+        %0 = affine.apply #map()[%arg3]
+        %1 = arith.index_cast %arg3 : index to i64
+        %2 = arith.index_cast %arg4 : index to i64
+        %3 = arith.index_cast %0 : index to i64
+        %4 = airrt.dma_memcpy_nd(%c7_i32, %1, %2, %arg0[%c0_i64, %c0_i64, %3, %c0_i64], [%c1_i64, %c4_i64, %c256_i64, %c256_i64], [%c0_i64, %c256_i64, %c1024_i64]) {metadata = @airMemcpyId7} : (i32, i64, i64, memref<512x1024xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+        %5 = affine.apply #map()[%arg4]
+        %6 = arith.index_cast %arg3 : index to i64
+        %7 = arith.index_cast %arg4 : index to i64
+        %8 = arith.index_cast %5 : index to i64
+        %9 = airrt.dma_memcpy_nd(%c12_i32, %6, %7, %arg1[%c0_i64, %c0_i64, %c0_i64, %8], [%c1_i64, %c1_i64, %c1024_i64, %c256_i64], [%c0_i64, %c0_i64, %c512_i64]) {metadata = @airMemcpyId12} : (i32, i64, i64, memref<1024x512xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+        %10 = affine.apply #map()[%arg4]
+        %11 = affine.apply #map()[%arg3]
+        %12 = arith.index_cast %arg3 : index to i64
+        %13 = arith.index_cast %arg4 : index to i64
+        %14 = arith.index_cast %11 : index to i64
+        %15 = arith.index_cast %10 : index to i64
+        %16 = airrt.dma_memcpy_nd(%c45_i32, %12, %13, %arg2[%c0_i64, %c0_i64, %14, %15], [%c1_i64, %c1_i64, %c64_i64, %c256_i64], [%c0_i64, %c0_i64, %c512_i64]) {metadata = @airMemcpyId45} : (i32, i64, i64, memref<512x512xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+        %17 = affine.apply #map1()[%arg3]
+        %18 = arith.index_cast %arg3 : index to i64
+        %19 = arith.index_cast %arg4 : index to i64
+        %20 = arith.index_cast %17 : index to i64
+        %21 = arith.index_cast %10 : index to i64
+        %22 = airrt.dma_memcpy_nd(%c45_i32, %18, %19, %arg2[%c0_i64, %c0_i64, %20, %21], [%c1_i64, %c1_i64, %c64_i64, %c256_i64], [%c0_i64, %c0_i64, %c512_i64]) {metadata = @airMemcpyId46} : (i32, i64, i64, memref<512x512xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+        %23 = affine.apply #map2()[%arg3]
+        %24 = arith.index_cast %arg3 : index to i64
+        %25 = arith.index_cast %arg4 : index to i64
+        %26 = arith.index_cast %23 : index to i64
+        %27 = arith.index_cast %10 : index to i64
+        %28 = airrt.dma_memcpy_nd(%c45_i32, %24, %25, %arg2[%c0_i64, %c0_i64, %26, %27], [%c1_i64, %c1_i64, %c64_i64, %c256_i64], [%c0_i64, %c0_i64, %c512_i64]) {metadata = @airMemcpyId47} : (i32, i64, i64, memref<512x512xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+        %29 = affine.apply #map3()[%arg3]
+        %30 = arith.index_cast %arg3 : index to i64
+        %31 = arith.index_cast %arg4 : index to i64
+        %32 = arith.index_cast %29 : index to i64
+        %33 = arith.index_cast %10 : index to i64
+        %34 = airrt.dma_memcpy_nd(%c45_i32, %30, %31, %arg2[%c0_i64, %c0_i64, %32, %33], [%c1_i64, %c1_i64, %c64_i64, %c256_i64], [%c0_i64, %c0_i64, %c512_i64]) {metadata = @airMemcpyId48} : (i32, i64, i64, memref<512x512xbf16>, [i64, i64, i64, i64], [i64, i64, i64, i64], [i64, i64, i64]) : !airrt.event
+        %35 = airrt.wait_all %16, %22, %28, %34 : !airrt.event
+        %p = airrt.segment_load "segment_0" : i64
+      }
+    }
+    return
+  }
+}

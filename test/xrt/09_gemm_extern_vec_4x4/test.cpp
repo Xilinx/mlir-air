@@ -26,9 +26,9 @@
 
 #include "matrix_multiplication.h"
 
-constexpr int M = 256;
+constexpr int M = 512;
 constexpr int K = 1024;
-constexpr int N = 256;
+constexpr int N = 512;
 
 constexpr int A_VOLUME = M * K;
 constexpr int B_VOLUME = N * K;
