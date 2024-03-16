@@ -1545,15 +1545,15 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
     if (auto sfo = dyn_cast<scf::ForOp>(containingOp)) {
       if (!getStaticScfForTripCountAsInt(sfo))
         return failure();
+      int tripCount = *getStaticScfForTripCountAsInt(sfo);
       auto new_ub = evaluateConstantInMap(
           apply.getAffineMap(), *mlir::getConstantIntValue(sfo.getUpperBound()),
           ctx);
       auto new_lb = evaluateConstantInMap(
           apply.getAffineMap(), *mlir::getConstantIntValue(sfo.getLowerBound()),
           ctx);
-      auto new_step = evaluateConstantInMap(
-          apply.getAffineMap(), *mlir::getConstantIntValue(sfo.getStep()), ctx);
-      assert(new_ub && new_lb && new_step);
+      assert(new_ub && new_lb);
+      int newStepInInt = mlir::ceilDiv(*new_ub - *new_lb, tripCount);
       IRMapping remap;
       if (auto exec = dyn_cast<air::ExecuteOp>(apply->getParentOp())) {
         rewriter.setInsertionPoint(exec);
@@ -1566,23 +1566,24 @@ struct CanonicalizeAffineApplyOnLoopInductionVar
         rewriter.eraseOp(apply);
       }
       rewriter.setInsertionPoint(sfo);
-      updateScfForBounds(rewriter, remap, sfo, *new_lb, *new_ub, *new_step);
+      updateScfForBounds(rewriter, remap, sfo, *new_lb, *new_ub, newStepInInt);
       rewriter.eraseOp(sfo);
     } else if (auto afo = dyn_cast<affine::AffineForOp>(containingOp)) {
       if (!afo.hasConstantBounds())
         return failure();
+      int tripCount = *getStaticAffineForTripCountAsInt(afo);
       auto new_ub = evaluateConstantInMap(apply.getAffineMap(),
                                           afo.getConstantUpperBound(), ctx);
       auto new_lb = evaluateConstantInMap(apply.getAffineMap(),
                                           afo.getConstantLowerBound(), ctx);
-      auto new_step =
-          evaluateConstantInMap(apply.getAffineMap(), afo.getStepAsInt(), ctx);
-      assert(new_ub && new_lb && new_step);
+      assert(new_ub && new_lb);
+      int newStepInInt = mlir::ceilDiv(*new_ub - *new_lb, tripCount);
       IRMapping remap;
       rewriter.setInsertionPoint(afo);
       apply.getResult().replaceAllUsesWith(afo.getInductionVar());
       rewriter.eraseOp(apply);
-      updateAffineForBounds(rewriter, remap, afo, *new_lb, *new_ub, *new_step);
+      updateAffineForBounds(rewriter, remap, afo, *new_lb, *new_ub,
+                            newStepInInt);
       rewriter.eraseOp(afo);
     } else
       return failure();
@@ -1717,19 +1718,10 @@ struct AIRSpecializeChannelWrapAndStrideInScfFor
 
     // If empty offsets/sizes/strides, then populate the lists with default
     // values.
-    if (offsets.empty() && wraps.empty() && strides.empty()) {
-      auto memref_shape = getTensorShape(channel_ops[0].getMemref().getType());
-      int current_stride =
-          getTensorVolume(channel_ops[0].getMemref().getType());
-      for (unsigned i = 0; i < memref_shape.size(); i++) {
-        offsets.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
-        wraps.push_back(
-            rewriter.create<arith::ConstantIndexOp>(loc, memref_shape[i]));
-        current_stride /= memref_shape[i];
-        strides.push_back(
-            rewriter.create<arith::ConstantIndexOp>(loc, current_stride));
-      }
-    }
+    if (offsets.empty() && wraps.empty() && strides.empty())
+      populateDefaultWrapsAndStrides(rewriter, channel_ops[0].getMemref(),
+                                     offsets, wraps, strides);
+
     foldForLoopNestAsExtendedSizesAndStrides(
         rewriter, for_op.getOperation(), channel_ops[0].getOperation(), offsets,
         wraps, strides, channel_ops[0].getMemref());
@@ -2150,6 +2142,7 @@ public:
       air::HerdOp hl_op = nullptr;
       bool isVariantWrtHerdRows = false;
       bool isVariantWrtHerdCols = false;
+      // Create an affine set to represent the broadcast pattern
       auto ctx = dma_op->getContext();
       for (auto v : loop_dep_history) {
         // Check row-wise or col-wise broadcastable based on variance wrt herd
@@ -2182,7 +2175,6 @@ public:
           isVariantWrtHerdCols = true;
       }
 
-      // Create an affine set to represent the broadcast pattern
       if (hl_op && isVariantWrtHerdRows && !isVariantWrtHerdCols) {
         auto numColsOp = dyn_cast<arith::ConstantIndexOp>(
             hl_op.getSizeOperands()[1].getDefiningOp());
@@ -3421,7 +3413,8 @@ struct ShrinkMemrefSizesByAccessPattern
     }
 
     // Analyze data access pattern.
-    SmallVector<int64_t> overall_access_bounds = air::getDataAccessShapeFromMemcpyOp(memref, chanOps);
+    SmallVector<int64_t> overall_access_bounds =
+        air::getDataAccessShapeFromMemcpyOp(memref, chanOps);
     auto memref_shape = getTensorShape(memref.getType());
 
     bool shrinkMemref = false;

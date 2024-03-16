@@ -1110,6 +1110,26 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
           }
         }
       }
+
+      // Attempt to make ipu.sync ops contiguous if they are not operating on
+      // the same channel.
+      SmallVector<AIEX::IpuSyncOp> previsouSyncs;
+      f.walk([&](Operation *op) {
+        if (auto sync = dyn_cast<AIEX::IpuSyncOp>(op))
+          previsouSyncs.push_back(sync);
+        else if (auto dma = dyn_cast<AIEX::IpuDmaMemcpyNdOp>(op)) {
+          auto infoOp = getAllocOpForSymbol(d, dma.getMetadata());
+          if (infoOp && infoOp->getChannelDir() == AIE::DMAChannelDir::S2MM &&
+              !previsouSyncs.empty()) {
+            for (auto prevSync : previsouSyncs)
+              prevSync->moveAfter(op);
+          } else if (infoOp &&
+                     infoOp->getChannelDir() == AIE::DMAChannelDir::MM2S &&
+                     !previsouSyncs.empty()) {
+            previsouSyncs.clear();
+          }
+        }
+      });
     });
   }
 
