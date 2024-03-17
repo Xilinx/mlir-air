@@ -2965,9 +2965,8 @@ struct DmaToChannelPass : public air::impl::DmaToChannelBase<DmaToChannelPass> {
             memcpy_op.getOperation(), sink_op_memref_reads,
             sink_op_memref_writes, sink_op_scalar_ins, sink_op_scalar_outs);
 
-        assert(sink_op_memref_reads.size() ||
-               sink_op_memref_writes.size() &&
-                   "cannot read memref from channel op");
+        assert((sink_op_memref_reads.size() || sink_op_memref_writes.size()) &&
+               "cannot read memref from channel op");
 
         if (sink_wait_all_op) {
           // Detect RAW deps
