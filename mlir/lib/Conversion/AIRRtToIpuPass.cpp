@@ -1152,10 +1152,9 @@ struct AIRRtToIpuPass : public impl::AIRRtToIpuBase<AIRRtToIpuPass> {
           memref = cast.getOperand(0);
       }
       // push back if unique
-      if (std::find(memrefs.begin(), memrefs.end(), dma.getMemref()) ==
-          memrefs.end()) {
-        memrefs.push_back(dma.getMemref());
-        memrefTypes.push_back(dma.getMemref().getType());
+      if (std::find(memrefs.begin(), memrefs.end(), memref) == memrefs.end()) {
+        memrefs.push_back(memref);
+        memrefTypes.push_back(memref.getType());
       }
     });
 
