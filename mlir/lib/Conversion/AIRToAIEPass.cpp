@@ -3022,14 +3022,14 @@ public:
           specializeHerdAffineIf(d);
           lowerAirExecute(d);
           lowerScfAirTokens(d);
-          allocL1Buffers(d, tileToHerdMap, BufferId);
-          allocL2Buffers(d, bufferToMemtileMap, BufferId);
-          builder.setInsertionPointToStart(d.getBody());
           std::map<std::string, std::string> chan_to_chan_map;
           specializeChannelBundle(d, chan_to_chan_map);
-          renumberChannelOps(d.getBody());
-          // ShimDMAAllocator shimDmaAlloc(d);
-          // lowerAIRMemcpyOp<air::ChannelInterface>(d, shimDmaAlloc, options);
+          specializeL2MemrefsIntoMemtiles(d);
+          allocL1Buffers(d, tileToHerdMap, BufferId);
+          allocL2Buffers(d, bufferToMemtileMap, BufferId);
+          std::map<int, int> chan_renumber_reverse_map;
+          renumberChannelOps(&d.getBodyRegion().front(),
+                             chan_renumber_reverse_map);
         }
       }
     }
@@ -3155,14 +3155,10 @@ public:
         specializeHerdAffineIf(device);
         lowerAirExecute(device);
         lowerScfAirTokens(device);
-
-        // Copy over L2 and L3 memcpy ops into device op
         specializeChannelBundle(device, chan_to_chan_map);
         specializeL2MemrefsIntoMemtiles(device);
-
         allocL1Buffers(device, tileToHerdMap, BufferId);
         allocL2Buffers(device, bufferToMemtileMap, BufferId);
-
         renumberChannelOps(&device.getBodyRegion().front(),
                            chan_renumber_reverse_map);
         lowerAIRMemcpyOp<air::ChannelInterface>(device, shimDmaAlloc, options);
