@@ -8,8 +8,9 @@ from ..ir import *
 from ._air_ops_gen import *
 from . import arith
 from ._ods_common import get_default_loc_context as _ods_get_default_loc_context
+from ..extras.meta import region_op
 
-class LaunchOp(LaunchOp):
+class Launch(LaunchOp):
   """Specialization for LaunchOp class."""
   def __init__(self, name=None, sizes=[], async_token=None, async_dependencies=[], operands=[], attributes={}, loc=None, ip=None):
     iTy = IndexType.get()
@@ -25,7 +26,7 @@ class LaunchOp(LaunchOp):
                     [o.type for o in operands]
     self.regions[0].blocks.append(*operand_types)
 
-class SegmentOp(SegmentOp):
+class Segment(SegmentOp):
   """Specialization for SegmentOp class."""
   def __init__(self, name=None, sizes=[], async_token=None, async_dependencies=[], operands=[], attributes={}, loc=None, ip=None):
     iTy = IndexType.get()
@@ -38,11 +39,11 @@ class SegmentOp(SegmentOp):
                     [o.type for o in operands]
     self.regions[0].blocks.append(*operand_types)
 
-class HerdOp(HerdOp):
+class Herd(HerdOp):
   """Specialization for HerdOp class."""
   def __init__(self, name=None, sizes=[1,1], async_token=None, async_dependencies=[], operands=[], attributes={}, loc=None, ip=None):
     iTy = IndexType.get()
-    sizes = [arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) for i in sizes]
+    sizes = [arith.ConstantOp(iTy, IntegerAttr.get(iTy, i)) if isinstance(i, int) else i for i in sizes]
     super().__init__(async_token=async_token,
                      async_dependencies=async_dependencies,
                      sizes=sizes, herd_operands=operands,
@@ -50,3 +51,7 @@ class HerdOp(HerdOp):
     operand_types = [s.type for s in sizes]*2 + \
                     [o.type for o in operands]
     self.regions[0].blocks.append(*operand_types)
+
+herd = region_op(Herd)
+launch = region_op(Launch)
+segment = region_op(Segment)
