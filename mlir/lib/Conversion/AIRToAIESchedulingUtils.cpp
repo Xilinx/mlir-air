@@ -200,8 +200,9 @@ std::vector<AIE::BDDimLayoutAttr>
 air::getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
                         SmallVector<Value> memcpy_strides,
                         int byte_count_per_elem, MLIRContext *ctx) {
-  assert(byte_count_per_elem == 4 || byte_count_per_elem == 2 ||
-         byte_count_per_elem == 1 && "unsupported data format");
+  assert((byte_count_per_elem == 4 || byte_count_per_elem == 2 ||
+          byte_count_per_elem == 1) &&
+         "unsupported data format");
   int div_factor = mlir::ceilDiv(4, byte_count_per_elem);
   if (memcpy_sizes.empty() || memcpy_strides.empty())
     return std::vector<AIE::BDDimLayoutAttr>{};
