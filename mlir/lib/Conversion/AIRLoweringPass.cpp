@@ -637,7 +637,6 @@ public:
 
     rewriter.eraseOp(op);
     return success();
-    return success();
   }
 };
 
