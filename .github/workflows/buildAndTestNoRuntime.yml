@@ -52,9 +52,6 @@ jobs:
       - name: Install packages
         run: sudo apt-get install -y libboost-all-dev clang lld && sudo apt-get clean
 
-      - name: Install pip packages
-        run: sudo pip install psutil pybind11 numpy launchpadlib
-
       - name: Install Ninja
         uses: llvm/actions/install-ninja@55d844821959226fab4911f96f37071c1d4c3268
 
@@ -69,6 +66,17 @@ jobs:
           key: ${{ matrix.build_type }}-${{ runner.os }}-${{ matrix.ubuntu_version }}
           max-size: 1G
 
+      - name: Get mlir-aie
+        id: clone-mlir-aie
+        run: utils/clone-mlir-aie.sh
+        shell: bash
+
+      - name: Install pip packages
+        run: |
+          pushd mlir-aie
+          pip install -r python/requirements.txt
+          popd
+
       - name: Get LLVM
         id: clone-llvm
         run: utils/clone-llvm.sh
@@ -79,11 +87,6 @@ jobs:
 
       - name: Rebuild and Install libxaie
         run: utils/github-clone-build-libxaie.sh
-
-      - name: Get mlir-aie
-        id: clone-mlir-aie
-        run: utils/clone-mlir-aie.sh
-        shell: bash
 
       - name: Rebuild and Install mlir-aie
         run: |
@@ -101,7 +104,7 @@ jobs:
               -DMLIR_DIR=`pwd`/../../llvm/install/lib/cmake/mlir/ \
               -DLLVM_DIR=`pwd`/../../llvm/install/lib/cmake/llvm/ \
               -DCMAKE_LINKER=lld \
-              -DLLVM_EXTERNAL_LIT=`pwd`/../../llvm/build/bin/llvm-lit \
+              -DLLVM_EXTERNAL_LIT=$(which lit) \
               -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
               -DLibXAIE_x86_64_DIR=`pwd`/../../aienginev2/install/lib \
               -DCMAKE_INSTALL_PREFIX=`pwd`/../install
@@ -127,7 +130,7 @@ jobs:
             -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
             -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
             -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
-            -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
+            -DLLVM_EXTERNAL_LIT=$(which lit) \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_INSTALL_PREFIX=install
           ninja
@@ -155,7 +158,7 @@ jobs:
             -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
             -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
             -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
-            -DLLVM_EXTERNAL_LIT=`pwd`/../llvm/build/bin/llvm-lit \
+            -DLLVM_EXTERNAL_LIT=$(which lit) \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_INSTALL_PREFIX=install
           make -j$(nproc)
