@@ -1102,8 +1102,6 @@ class AIRDmaToAIRChannelConversion
           insertionPointAtHierOp; // To keep a record of the insertion point as
                                   // destination for hoisting
       rewriter.setInsertionPoint(hier_op);
-      MemRefType externalMemrefTy =
-          externalGetPut[0].getMemref().getType().cast<MemRefType>();
       if (herd) {
         // Scf parallel shape is either herd shape, or channel set shape if
         // broadcasting

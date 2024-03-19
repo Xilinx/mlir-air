@@ -603,7 +603,6 @@ public:
   LogicalResult
   matchAndRewrite(xilinx::air::ChannelPutOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto loc = op->getLoc();
     auto ctx = op->getContext();
 
     if (op->getParentOfType<air::HerdOp>())
@@ -650,7 +649,6 @@ public:
   LogicalResult
   matchAndRewrite(xilinx::air::ChannelGetOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto loc = op->getLoc();
     auto ctx = op->getContext();
 
     if (op->getParentOfType<air::HerdOp>())
@@ -930,7 +928,7 @@ public:
             opers.push_back(oper);
           }
         }
-        auto y = rewriter.create<scf::YieldOp>(o.getLoc(), opers);
+        rewriter.create<scf::YieldOp>(o.getLoc(), opers);
       } else {
         rewriter.clone(o, remap);
       }
@@ -981,7 +979,7 @@ public:
             opers.push_back(oper);
           }
         }
-        auto y = rewriter.create<scf::YieldOp>(o.getLoc(), opers);
+        rewriter.create<scf::YieldOp>(o.getLoc(), opers);
       } else {
         rewriter.clone(o, remap);
       }
