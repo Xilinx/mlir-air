@@ -1069,6 +1069,255 @@ void AIRUnrollOuterPerfectlyNestedLoopsPass::runOnOperation() {
   }
 }
 
+class AIRSplitL2MemrefForBufferConstraintPass
+    : public air::impl::AIRSplitL2MemrefForBufferConstraintPassBase<
+          AIRSplitL2MemrefForBufferConstraintPass> {
+
+public:
+  AIRSplitL2MemrefForBufferConstraintPass() = default;
+  AIRSplitL2MemrefForBufferConstraintPass(
+      const AIRSplitL2MemrefForBufferConstraintPass &pass){};
+  AIRSplitL2MemrefForBufferConstraintPass(
+      const ::xilinx::air::AIRSplitL2MemrefForBufferConstraintPassOptions
+          &options)
+      : AIRSplitL2MemrefForBufferConstraintPassBase(options) {}
+
+  void runOnOperation() override;
+
+private:
+};
+
+template <typename T> void push_back_if_unique(SmallVector<T> &vec, T entry) {
+  if (std::find(vec.begin(), vec.end(), entry) == vec.end()) {
+    vec.push_back(entry);
+  }
+}
+
+// Find GCD of a vector of ints.
+int findGCD(SmallVector<int> vec) {
+  int result = vec[0];
+  for (unsigned i = 1; i < vec.size(); i++) {
+    result = std::gcd(vec[i], result);
+
+    if (result == 1) {
+      return 1;
+    }
+  }
+  return result;
+}
+
+// Check if an air.channel is single-consumer-single-producer.
+bool hasSinglePutAndGet(air::ChannelOp chan) {
+  auto puts =
+      getChannelPutOpThroughSymbol(chan, chan->getParentOfType<ModuleOp>());
+  auto gets =
+      getChannelGetOpThroughSymbol(chan, chan->getParentOfType<ModuleOp>());
+  return puts.size() == 1 && gets.size() == 1;
+}
+
+// Tile air.channel put/get wrt a memref.
+Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
+                            int originalMemrefSize, air::ChannelOp newChanOp,
+                            Location loc, MLIRContext *ctx) {
+  OpBuilder builder(originalChanOp);
+  SmallVector<Value> originalApplyOperands;
+  Operation *affineApplyOp = nullptr;
+  if (!originalChanOp.getOffsets().empty())
+    affineApplyOp = originalChanOp.getOffsets().front().getDefiningOp();
+  if (affineApplyOp && isa<affine::AffineApplyOp>(affineApplyOp))
+    originalApplyOperands = affineApplyOp->getOperands();
+  else if (affineApplyOp && isa<air::ExecuteOp>(affineApplyOp)) {
+    auto execOp = dyn_cast<air::ExecuteOp>(affineApplyOp);
+    originalApplyOperands = execOp.getChildOp()->getOperands();
+  } else
+    originalApplyOperands.push_back(
+        builder.create<arith::ConstantIndexOp>(loc, 0));
+  SmallVector<Value> tokens;
+  for (int i = 0; i < factor; i++) {
+    SmallVector<Value> newIndices{
+        builder.create<arith::ConstantIndexOp>(loc, i),
+        builder.create<arith::ConstantIndexOp>(loc, 0)};
+    // Update y offset.
+    // Create affine.apply on induction variable.
+    AffineExpr s0 = builder.getAffineSymbolExpr(0);
+    AffineExpr mul = s0 * originalMemrefSize;
+    AffineExpr add = mul + i * mlir::ceilDiv(originalMemrefSize, factor);
+    auto map = AffineMap::get(0, 1, add);
+    auto newApplyOp =
+        builder.create<affine::AffineApplyOp>(loc, map, originalApplyOperands);
+    SmallVector<Value> newOffsets = originalChanOp.getOffsets();
+    SmallVector<Value> newWraps = originalChanOp.getSizes();
+    SmallVector<Value> newStrides = originalChanOp.getStrides();
+    if (newOffsets.empty() && newWraps.empty())
+      air::populateDefaultWrapsAndStrides(builder, originalChanOp.getMemref(),
+                                          newOffsets, newWraps, newStrides);
+    newOffsets[0] = newApplyOp.getResult();
+    newWraps[0] = builder.create<arith::ConstantIndexOp>(
+        loc, mlir::ceilDiv(originalMemrefSize, factor));
+    auto deps = dyn_cast<air::AsyncOpInterface>(originalChanOp.getOperation())
+                    .getAsyncDependencies();
+    SmallVector<Type, 4> tys = {air::AsyncTokenType::get(ctx)};
+    if (isa<air::ChannelGetOp>(originalChanOp)) {
+      auto newGetOp = builder.create<air::ChannelGetOp>(
+          loc, tys, deps, newChanOp.getSymName(), newIndices,
+          originalChanOp.getMemref(), newOffsets, newWraps, newStrides);
+      newGetOp->setAttr("id",
+                        mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
+                                               originalChanOp.getId()));
+      tokens.push_back(newGetOp.getAsyncToken());
+    } else {
+      auto newPutOp = builder.create<air::ChannelPutOp>(
+          loc, tys, deps, newChanOp.getSymName(), newIndices,
+          originalChanOp.getMemref(), newOffsets, newWraps, newStrides);
+      newPutOp->setAttr("id",
+                        mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
+                                               originalChanOp.getId()));
+      tokens.push_back(newPutOp.getAsyncToken());
+    }
+  }
+  auto newWaitAll = builder.create<air::WaitAllOp>(
+      loc, air::AsyncTokenType::get(ctx), tokens);
+  return newWaitAll.getAsyncToken();
+}
+
+// Check if each L2 memref shall violate buffer hardware constraint, and if so,
+// attempt to split it (in columns, per IPU device layout).
+void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
+  // Buffer hardware constraint: MM2S channel count.
+  int maxMM2SChannelCount = clMM2SChannels;
+  if (clMM2SChannels == -1)
+    maxMM2SChannelCount = INT_MAX;
+  // Buffer hardware constraint: S2MM channel count.
+  int maxS2MMChannelCount = clS2MMChannels;
+  if (clS2MMChannels == -1)
+    maxS2MMChannelCount = INT_MAX;
+  SmallVector<air::HerdOp> herds;
+  auto func = getOperation();
+  SmallVector<memref::AllocOp> allocOps;
+  func.walk([&](memref::AllocOp allocOp) {
+    if (allocOp->getParentOfType<air::SegmentOp>() &&
+        allocOp.getMemref()
+                .getType()
+                .cast<MemRefType>()
+                .getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+      allocOps.push_back(allocOp);
+    }
+  });
+
+  // Filter out L2 memrefs who shall not fit in memtile due to hw buffer
+  // constraints.
+  SmallVector<memref::AllocOp> targetMemrefs;
+  // Map between the target memref alloc ops and all column-wise tiling factors
+  // per alloc.
+  std::map<memref::AllocOp, SmallVector<int>> targetMemrefsToColTilingFactors;
+  for (auto allocOp : allocOps) {
+    Value memref = allocOp.getMemref();
+    if (auto exec = dyn_cast<air::ExecuteOp>(allocOp->getParentOp()))
+      memref = exec->getResult(1);
+    for (auto user : memref.getUsers()) {
+      if (isa<air::ChannelInterface>(user) &&
+          isa<scf::ParallelOp>(user->getParentOp())) {
+        SmallVector<int, 2> lbs_spatial;
+        SmallVector<int, 2> ubs_spatial;
+        air::getSizesFromSpatialLoop(user->getParentOp(), lbs_spatial,
+                                     ubs_spatial);
+        int parCount = 1;
+        for (unsigned i = 0; i < lbs_spatial.size(); i++)
+          parCount *= ubs_spatial[i] - lbs_spatial[i] + 1;
+        if (isa<air::ChannelPutOp>(user) && parCount > maxMM2SChannelCount) {
+          if (!targetMemrefsToColTilingFactors.count(allocOp)) {
+            targetMemrefsToColTilingFactors[allocOp] =
+                SmallVector<int>{ubs_spatial.back() - lbs_spatial.back() + 1};
+            targetMemrefs.push_back(allocOp);
+          } else
+            targetMemrefsToColTilingFactors[allocOp].push_back(
+                ubs_spatial.back() - lbs_spatial.back() + 1);
+        }
+        if (isa<air::ChannelGetOp>(user) && parCount > maxS2MMChannelCount) {
+          if (!targetMemrefsToColTilingFactors.count(allocOp)) {
+            targetMemrefsToColTilingFactors[allocOp] =
+                SmallVector<int>{ubs_spatial.back() - lbs_spatial.back() + 1};
+            targetMemrefs.push_back(allocOp);
+          } else
+            targetMemrefsToColTilingFactors[allocOp].push_back(
+                ubs_spatial.back() - lbs_spatial.back() + 1);
+        }
+      }
+    }
+  }
+  if (targetMemrefs.empty())
+    return;
+
+  for (auto allocOp : targetMemrefs) {
+    int targetColTilingFactor =
+        findGCD(targetMemrefsToColTilingFactors[allocOp]);
+    Value memref = isa<air::ExecuteOp>(allocOp->getParentOp())
+                       ? allocOp->getParentOp()->getResult(1)
+                       : dyn_cast<Value>(allocOp.getMemref());
+    for (auto user : memref.getUsers()) {
+      if (auto chanUserOp = dyn_cast<air::ChannelInterface>(user)) {
+        auto chanUserChannelDeclr =
+            air::getChannelDeclarationThroughSymbol(chanUserOp);
+        if (!hasSinglePutAndGet(chanUserChannelDeclr)) {
+          assert(false && "NYI");
+        } else if (isa<scf::ParallelOp>(user->getParentOp())) {
+          SmallVector<int, 2> lbs_spatial;
+          SmallVector<int, 2> ubs_spatial;
+          air::getSizesFromSpatialLoop(user->getParentOp(), lbs_spatial,
+                                       ubs_spatial);
+          if (ubs_spatial.back() - lbs_spatial.back() + 1 <
+              targetColTilingFactor) {
+            // Tile the air.channel op by targetColTilingFactor. NYI.
+            assert(false && "NYI");
+          }
+        } else {
+          // Tile the air.channel op by targetColTilingFactor.
+          auto loc = chanUserOp->getLoc();
+          auto ctx = chanUserOp->getContext();
+          OpBuilder builder(chanUserOp);
+          builder.setInsertionPointToStart(
+              chanUserOp->getParentOfType<ModuleOp>().getBody());
+          SmallVector<Type, 4> tys = {
+              air::AsyncTokenType::get(chanUserOp->getContext())};
+          auto cname =
+              air::createChannelName(chanUserOp->getParentOfType<ModuleOp>());
+          SmallVector<int64_t, 2> channel_sizes = {targetColTilingFactor, 1};
+          auto new_chan = builder.create<air::ChannelOp>(
+              loc, cname, builder.getI64ArrayAttr(channel_sizes));
+          auto memrefShape = air::getTensorShape(memref.getType());
+
+          auto newWaitAll =
+              tileChannelOpByFactor(chanUserOp, targetColTilingFactor,
+                                    memrefShape.front(), new_chan, loc, ctx);
+
+          // Update async dependency.
+          auto old_token =
+              dyn_cast<air::AsyncOpInterface>(chanUserOp.getOperation())
+                  .getAsyncToken();
+          old_token.replaceAllUsesWith(newWaitAll);
+
+          // Update the other channel op of the chanUserChannelDeclr.
+          auto theOtherChanOp =
+              air::getTheOtherChannelOpThroughSymbol(chanUserOp);
+          Value newWaitAll1 =
+              tileChannelOpByFactor(theOtherChanOp[0], targetColTilingFactor,
+                                    memrefShape.front(), new_chan, loc, ctx);
+
+          // Update dependency.
+          auto oldToken =
+              dyn_cast<air::AsyncOpInterface>(theOtherChanOp[0].getOperation())
+                  .getAsyncToken();
+          oldToken.replaceAllUsesWith(newWaitAll1);
+          theOtherChanOp[0].erase();
+          chanUserOp.erase();
+        }
+      }
+    }
+  }
+
+  air::renumberChannelOps(&func.getBody().front());
+}
+
 } // anonymous namespace
 
 namespace xilinx {
@@ -1130,6 +1379,15 @@ std::unique_ptr<Pass> createAIRUnrollOuterPerfectlyNestedLoopsPass() {
 std::unique_ptr<Pass> createAIRUnrollOuterPerfectlyNestedLoopsPass(
     AIRUnrollOuterPerfectlyNestedLoopsPassOptions options) {
   return std::make_unique<AIRUnrollOuterPerfectlyNestedLoopsPass>(options);
+}
+
+std::unique_ptr<Pass> createAIRSplitL2MemrefForBufferConstraintPass() {
+  return std::make_unique<AIRSplitL2MemrefForBufferConstraintPass>();
+}
+
+std::unique_ptr<Pass> createAIRSplitL2MemrefForBufferConstraintPass(
+    AIRSplitL2MemrefForBufferConstraintPassOptions options) {
+  return std::make_unique<AIRSplitL2MemrefForBufferConstraintPass>(options);
 }
 
 } // namespace air

@@ -769,3 +769,185 @@ func.func @func11(%arg0: memref<128xbf16>, %arg1: memref<128xbf16>) {
   return
 }
 
+// -----
+
+// 4x4 herd support.
+// CHECK: aie.device(xcve2802)
+// CHECK: %[[tile_2_0:.*]] = aie.tile(2, 0)
+// CHECK: %[[tile_3_0:.*]] = aie.tile(3, 0)
+// CHECK: %[[tile_2_1:.*]] = aie.tile(2, 1)
+// CHECK: %[[tile_3_1:.*]] = aie.tile(3, 1)
+// CHECK: %[[tile_4_1:.*]] = aie.tile(4, 1)
+// CHECK: %[[tile_5_1:.*]] = aie.tile(5, 1)
+// CHECK: %[[tile_0_3:.*]] = aie.tile(0, 3)
+// CHECK: %[[tile_1_3:.*]] = aie.tile(1, 3)
+// CHECK: %[[tile_2_3:.*]] = aie.tile(2, 3)
+// CHECK: %[[tile_3_3:.*]] = aie.tile(3, 3)
+// CHECK: %[[tile_0_4:.*]] = aie.tile(0, 4)
+// CHECK: %[[tile_1_4:.*]] = aie.tile(1, 4)
+// CHECK: %[[tile_2_4:.*]] = aie.tile(2, 4)
+// CHECK: %[[tile_3_4:.*]] = aie.tile(3, 4)
+// CHECK: %[[tile_0_5:.*]] = aie.tile(0, 5)
+// CHECK: %[[tile_1_5:.*]] = aie.tile(1, 5)
+// CHECK: %[[tile_2_5:.*]] = aie.tile(2, 5)
+// CHECK: %[[tile_3_5:.*]] = aie.tile(3, 5)
+// CHECK: %[[tile_0_6:.*]] = aie.tile(0, 6)
+// CHECK: %[[tile_1_6:.*]] = aie.tile(1, 6)
+// CHECK: %[[tile_2_6:.*]] = aie.tile(2, 6)
+// CHECK: %[[tile_3_6:.*]] = aie.tile(3, 6)
+// CHECK: %[[buf19:.*]] = aie.buffer(%[[tile_2_1]]) {sym_name = "buf19"} : memref<64x256xbf16, 1> 
+// CHECK: %[[buf18:.*]] = aie.buffer(%[[tile_3_1]]) {sym_name = "buf18"} : memref<64x256xbf16, 1> 
+// CHECK: %[[buf17:.*]] = aie.buffer(%[[tile_4_1]]) {sym_name = "buf17"} : memref<64x256xbf16, 1> 
+// CHECK: %[[buf16:.*]] = aie.buffer(%[[tile_5_1]]) {sym_name = "buf16"} : memref<64x256xbf16, 1> 
+// CHECK: %[[buf15:.*]] = aie.buffer(%[[tile_3_6]]) {sym_name = "buf15"} : memref<16x16x4x4xbf16, 2> 
+// CHECK: %[[buf14:.*]] = aie.buffer(%[[tile_2_6]]) {sym_name = "buf14"} : memref<16x16x4x4xbf16, 2> 
+// CHECK: %[[buf13:.*]] = aie.buffer(%[[tile_1_6]]) {sym_name = "buf13"} : memref<16x16x4x4xbf16, 2> 
+// CHECK: %[[buf12:.*]] = aie.buffer(%[[tile_0_6]]) {sym_name = "buf12"} : memref<16x16x4x4xbf16, 2> 
+// CHECK: %[[buf11:.*]] = aie.buffer(%[[tile_3_5]]) {sym_name = "buf11"} : memref<16x16x4x4xbf16, 2> 
+// CHECK: %[[buf10:.*]] = aie.buffer(%[[tile_2_5]]) {sym_name = "buf10"} : memref<16x16x4x4xbf16, 2> 
+// CHECK: %[[buf9:.*]] = aie.buffer(%[[tile_1_5]]) {sym_name = "buf9"} : memref<16x16x4x4xbf16, 2> 
+// CHECK: %[[buf8:.*]] = aie.buffer(%[[tile_0_5]]) {sym_name = "buf8"} : memref<16x16x4x4xbf16, 2> 
+// CHECK: %[[buf7:.*]] = aie.buffer(%[[tile_3_4]]) {sym_name = "buf7"} : memref<16x16x4x4xbf16, 2> 
+// CHECK: %[[buf6:.*]] = aie.buffer(%[[tile_2_4]]) {sym_name = "buf6"} : memref<16x16x4x4xbf16, 2> 
+// CHECK: %[[buf5:.*]] = aie.buffer(%[[tile_1_4]]) {sym_name = "buf5"} : memref<16x16x4x4xbf16, 2> 
+// CHECK: %[[buf4:.*]] = aie.buffer(%[[tile_0_4]]) {sym_name = "buf4"} : memref<16x16x4x4xbf16, 2> 
+// CHECK: %[[buf3:.*]] = aie.buffer(%[[tile_3_3]]) {sym_name = "buf3"} : memref<16x16x4x4xbf16, 2> 
+// CHECK: %[[buf2:.*]] = aie.buffer(%[[tile_2_3]]) {sym_name = "buf2"} : memref<16x16x4x4xbf16, 2> 
+// CHECK: %[[buf1:.*]] = aie.buffer(%[[tile_1_3]]) {sym_name = "buf1"} : memref<16x16x4x4xbf16, 2> 
+// CHECK: %[[buf0:.*]] = aie.buffer(%[[tile_0_3]]) {sym_name = "buf0"} : memref<16x16x4x4xbf16, 2> 
+// CHECK: aie.core(%[[tile_3_6]])
+// CHECK: aie.core(%[[tile_2_6]])
+// CHECK: aie.core(%[[tile_1_6]])
+// CHECK: aie.core(%[[tile_0_6]])
+// CHECK: aie.core(%[[tile_3_5]])
+// CHECK: aie.core(%[[tile_2_5]])
+// CHECK: aie.core(%[[tile_1_5]])
+// CHECK: aie.core(%[[tile_0_5]])
+// CHECK: aie.core(%[[tile_3_4]])
+// CHECK: aie.core(%[[tile_2_4]])
+// CHECK: aie.core(%[[tile_1_4]])
+// CHECK: aie.core(%[[tile_0_4]])
+// CHECK: aie.core(%[[tile_3_3]])
+// CHECK: aie.core(%[[tile_2_3]])
+// CHECK: aie.core(%[[tile_1_3]])
+// CHECK: aie.core(%[[tile_0_3]])
+// CHECK: aie.flow(%[[tile_5_1]], DMA : 0, %[[tile_2_0]], DMA : 0)
+// CHECK: aie.flow(%[[tile_4_1]], DMA : 0, %[[tile_2_0]], DMA : 1)
+// CHECK: aie.flow(%[[tile_3_1]], DMA : 0, %[[tile_3_0]], DMA : 0)
+// CHECK: aie.flow(%[[tile_2_1]], DMA : 0, %[[tile_3_0]], DMA : 1)
+// CHECK: aie.flow(%[[tile_0_3]], DMA : 0, %[[tile_5_1]], DMA : 0)
+// CHECK: aie.flow(%[[tile_1_3]], DMA : 0, %[[tile_4_1]], DMA : 0)
+// CHECK: aie.flow(%[[tile_2_3]], DMA : 0, %[[tile_3_1]], DMA : 0)
+// CHECK: aie.flow(%[[tile_3_3]], DMA : 0, %[[tile_2_1]], DMA : 0)
+// CHECK: aie.flow(%[[tile_0_4]], DMA : 0, %[[tile_5_1]], DMA : 1)
+// CHECK: aie.flow(%[[tile_1_4]], DMA : 0, %[[tile_4_1]], DMA : 1)
+// CHECK: aie.flow(%[[tile_2_4]], DMA : 0, %[[tile_3_1]], DMA : 1)
+// CHECK: aie.flow(%[[tile_3_4]], DMA : 0, %[[tile_2_1]], DMA : 1)
+// CHECK: aie.flow(%[[tile_0_5]], DMA : 0, %[[tile_5_1]], DMA : 2)
+// CHECK: aie.flow(%[[tile_1_5]], DMA : 0, %[[tile_4_1]], DMA : 2)
+// CHECK: aie.flow(%[[tile_2_5]], DMA : 0, %[[tile_3_1]], DMA : 2)
+// CHECK: aie.flow(%[[tile_3_5]], DMA : 0, %[[tile_2_1]], DMA : 2)
+// CHECK: aie.flow(%[[tile_0_6]], DMA : 0, %[[tile_5_1]], DMA : 3)
+// CHECK: aie.flow(%[[tile_1_6]], DMA : 0, %[[tile_4_1]], DMA : 3)
+// CHECK: aie.flow(%[[tile_2_6]], DMA : 0, %[[tile_3_1]], DMA : 3)
+// CHECK: aie.flow(%[[tile_3_6]], DMA : 0, %[[tile_2_1]], DMA : 3)
+// CHECK: aie.memtile_dma(%[[tile_5_1]])
+// CHECK: aie.memtile_dma(%[[tile_4_1]])
+// CHECK: aie.memtile_dma(%[[tile_3_1]])
+// CHECK: aie.memtile_dma(%[[tile_2_1]])
+// CHECK: @func12
+
+#map = affine_map<()[s0] -> (s0 * 256)>
+#map1 = affine_map<()[s0] -> (s0 * 256 + 64)>
+#map2 = affine_map<()[s0] -> (s0 * 256 + 128)>
+#map3 = affine_map<()[s0] -> (s0 * 256 + 192)>
+#map4 = affine_map<()[s0] -> (s0 * 64)>
+module {
+  air.channel @channel_12 [4, 1]
+  air.channel @channel_10 [4, 4]
+  func.func @func12(%arg0: memref<512x1024xbf16>, %arg1: memref<1024x512xbf16>, %arg2: memref<512x512xbf16>) {
+    %c2 = arith.constant 2 : index
+    %0 = air.launch async (%arg3, %arg4) in (%arg5=%c2, %arg6=%c2) args(%arg7=%arg2) : memref<512x512xbf16> attributes {id = 1 : i32} {
+      %c3 = arith.constant 3 : index
+      %c2_0 = arith.constant 2 : index
+      %c64 = arith.constant 64 : index
+      %c0 = arith.constant 0 : index
+      %c512 = arith.constant 512 : index
+      %c1 = arith.constant 1 : index
+      %c256 = arith.constant 256 : index
+      %async_token, %results = air.execute -> (index) {
+        %11 = affine.apply #map()[%arg4]
+        air.execute_terminator %11 : index
+      }
+      %1 = affine.apply #map()[%arg3]
+      %2 = air.channel.get async [%async_token]  @channel_12[%c0, %c0] (%arg7[%1, %results] [%c64, %c256] [%c512, %c1]) {id = 3 : i32} : (memref<512x512xbf16>)
+      %3 = affine.apply #map1()[%arg3]
+      %4 = air.channel.get async [%async_token]  @channel_12[%c1, %c0] (%arg7[%3, %results] [%c64, %c256] [%c512, %c1]) {id = 4 : i32} : (memref<512x512xbf16>)
+      %5 = affine.apply #map2()[%arg3]
+      %6 = air.channel.get async [%async_token]  @channel_12[%c2_0, %c0] (%arg7[%5, %results] [%c64, %c256] [%c512, %c1]) {id = 5 : i32} : (memref<512x512xbf16>)
+      %7 = affine.apply #map3()[%arg3]
+      %8 = air.channel.get async [%async_token]  @channel_12[%c3, %c0] (%arg7[%7, %results] [%c64, %c256] [%c512, %c1]) {id = 6 : i32} : (memref<512x512xbf16>)
+      %9 = air.wait_all async [%2, %4, %6, %8] 
+      %10 = air.segment @segment_0 async  attributes {id = 2 : i32, x_loc = 0 : i64, x_size = 4 : i64, y_loc = 3 : i64, y_size = 4 : i64} {
+        %c3_1 = arith.constant 3 : index
+        %c2_2 = arith.constant 2 : index
+        %c192 = arith.constant 192 : index
+        %c64_3 = arith.constant 64 : index
+        %c128 = arith.constant 128 : index
+        %c1_4 = arith.constant 1 : index
+        %c4 = arith.constant 4 : index
+        %c0_5 = arith.constant 0 : index
+        %c256_6 = arith.constant 256 : index
+        %async_token_7, %results_8 = air.execute -> (memref<256x256xbf16, 1>) {
+          %alloc = memref.alloc() : memref<256x256xbf16, 1>
+          air.execute_terminator %alloc : memref<256x256xbf16, 1>
+        }
+        %11 = scf.parallel (%arg8, %arg9) = (%c0_5, %c0_5) to (%c4, %c4) step (%c1_4, %c1_4) init (%async_token_7) -> !air.async.token {
+          %async_token_10, %results_11 = air.execute -> (index) {
+            %19 = affine.apply #map4()[%arg8]
+            air.execute_terminator %19 : index
+          }
+          %async_token_12, %results_13 = air.execute -> (index) {
+            %19 = affine.apply #map4()[%arg9]
+            air.execute_terminator %19 : index
+          }
+          %18 = air.channel.get async [%async_token_7, %async_token_12, %async_token_10]  @channel_10[%arg8, %arg9] (%results_8[%results_11, %results_13] [%c64_3, %c64_3] [%c256_6, %c1_4]) {id = 27 : i32} : (memref<256x256xbf16, 1>)
+          scf.reduce(%18 : !air.async.token) {
+          ^bb0(%arg10: !air.async.token, %arg11: !air.async.token):
+            %19 = air.wait_all async [%arg10, %arg11] 
+            scf.reduce.return %19 : !air.async.token
+          }
+        }
+        %12 = air.herd @herd_0 async [%async_token_7]  tile (%arg8, %arg9) in (%arg10=%c4, %arg11=%c4) attributes {id = 3 : i32, link_with = "mm.o", x_loc = 0 : i64, y_loc = 3 : i64} {
+          %c64_10 = arith.constant 64 : index
+          %c256_11 = arith.constant 256 : index
+          %c4_12 = arith.constant 4 : index
+          %c16 = arith.constant 16 : index
+          %c1_13 = arith.constant 1 : index
+          %c0_14 = arith.constant 0 : index
+          %async_token_15, %results_16 = air.execute -> (memref<16x16x4x4xbf16, 2>) {
+            %alloc = memref.alloc() : memref<16x16x4x4xbf16, 2>
+            air.execute_terminator %alloc : memref<16x16x4x4xbf16, 2>
+          }
+          %18 = air.channel.put async [%async_token_15]  @channel_10[%arg8, %arg9] (%results_16[%c0_14, %c0_14, %c0_14] [%c64_10, %c16, %c4_12] [%c4_12, %c256_11, %c1_13]) {id = 44 : i32} : (memref<16x16x4x4xbf16, 2>)
+          %async_token_17 = air.execute [%18] {
+            memref.dealloc %results_16 : memref<16x16x4x4xbf16, 2>
+          }
+          air.herd_terminator
+        }
+        %13 = air.channel.put async [%12]  @channel_12[%c0_5, %c0_5] (%results_8[%c0_5, %c0_5] [%c64_3, %c256_6] [%c256_6, %c1_4]) {id = 45 : i32} : (memref<256x256xbf16, 1>)
+        %14 = air.channel.put async [%12]  @channel_12[%c1_4, %c0_5] (%results_8[%c64_3, %c0_5] [%c64_3, %c256_6] [%c256_6, %c1_4]) {id = 46 : i32} : (memref<256x256xbf16, 1>)
+        %15 = air.channel.put async [%12]  @channel_12[%c2_2, %c0_5] (%results_8[%c128, %c0_5] [%c64_3, %c256_6] [%c256_6, %c1_4]) {id = 47 : i32} : (memref<256x256xbf16, 1>)
+        %16 = air.channel.put async [%12]  @channel_12[%c3_1, %c0_5] (%results_8[%c192, %c0_5] [%c64_3, %c256_6] [%c256_6, %c1_4]) {id = 48 : i32} : (memref<256x256xbf16, 1>)
+        %17 = air.wait_all async [%13, %14, %15, %16] 
+        %async_token_9 = air.execute [%17] {
+          memref.dealloc %results_8 : memref<256x256xbf16, 1>
+        }
+        air.segment_terminator
+      }
+      air.launch_terminator
+    }
+    return
+  }
+}
+

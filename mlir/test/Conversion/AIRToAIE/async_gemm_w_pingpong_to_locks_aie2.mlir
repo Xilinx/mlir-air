@@ -15,16 +15,17 @@
 // CHECK:   %[[VAL_5:.*]] = aie.tile(6, 3)
 // CHECK:   %[[VAL_6:.*]] = aie.tile(5, 4)
 // CHECK:   %[[VAL_7:.*]] = aie.tile(6, 4)
-// CHECK-COUNT-10:    aie.lock(%[[VAL_2]], {{.*}})
+// CHECK-COUNT-8:    aie.lock(%[[VAL_3]], {{.*}})
+// CHECK-COUNT-2:    aie.lock(%[[VAL_2]], {{.*}})
 // CHECK-COUNT-8:    aie.lock(%[[VAL_4]], {{.*}})
 // CHECK-COUNT-8:    aie.lock(%[[VAL_5]], {{.*}})
 // CHECK-COUNT-8:    aie.lock(%[[VAL_6]], {{.*}})
 // CHECK-COUNT-8:    aie.lock(%[[VAL_7]], {{.*}})
 // CHECK:    aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<64x64xi32, 1>
-// CHECK:    aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<64x128xi32, 1>
-// CHECK:    aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<128x64xi32, 1>
-// CHECK:    aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<64x128xi32, 1>
-// CHECK:    aie.buffer(%[[VAL_2]]) {sym_name = {{.*}}} : memref<128x64xi32, 1>
+// CHECK:    aie.buffer(%[[VAL_3]]) {sym_name = {{.*}}} : memref<64x128xi32, 1>
+// CHECK:    aie.buffer(%[[VAL_3]]) {sym_name = {{.*}}} : memref<128x64xi32, 1>
+// CHECK:    aie.buffer(%[[VAL_3]]) {sym_name = {{.*}}} : memref<64x128xi32, 1>
+// CHECK:    aie.buffer(%[[VAL_3]]) {sym_name = {{.*}}} : memref<128x64xi32, 1>
 // CHECK-COUNT-20:    aie.buffer({{.*}}) {sym_name = {{.*}}} : memref<32x32xi32, 2>
 // CHECK:   aie.mem(%[[VAL_7]])
 // CHECK:   aie.core(%[[VAL_7]]) {
