@@ -973,6 +973,16 @@ _Specialize dma operations_
 
 _Specialize dma operations for broadcast pattern_
 
+### `-air-split-l2-memref`
+
+_Split L2 memref into smaller buffers if it couldn't fit with the buffer harware constraints_
+
+
+#### Options
+```
+-mm2s-channel-count : The number of memory-mapped-to-streaming (MM2S) channels each hardware buffer has.
+-s2mm-channel-count : The number of streaming-to-memory-mapped (S2MM) channels each hardware buffer has.
+```
 ### `-air-transform`
 
 _Transform IR with transform dialect_
