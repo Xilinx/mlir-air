@@ -14,11 +14,15 @@ on:
 jobs:
   build-repo:
     name: Build and Test
-    runs-on: ubuntu-20.04
-    steps:
-      - name: Configure Environment
-        run: echo "$GITHUB_WORKSPACE/llvm/install/bin" >> $GITHUB_PATH
+    runs-on: ubuntu-${{ matrix.ubuntu_version }}
 
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [ Assert, Release ]
+        ubuntu_version: [ 20.04, 22.04 ]
+
+    steps:
       # Clone the repo and its submodules. Do shallow clone to save clone
       # time.
       - name: Get repo
@@ -26,6 +30,24 @@ jobs:
         with:
           fetch-depth: 2
           submodules: "true"
+
+      - name: Upgrade gcc
+        if: matrix.ubuntu_version == '20.04'
+        run: |
+          sudo apt install build-essential manpages-dev software-properties-common
+          sudo add-apt-repository ppa:ubuntu-toolchain-r/test
+          GCC_VERSION=11
+          sudo apt update && sudo apt install gcc-$GCC_VERSION g++-$GCC_VERSION
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 90 \
+            --slave /usr/bin/g++ g++ /usr/bin/g++-9 \
+            --slave /usr/bin/gcov gcov /usr/bin/gcov-9 \
+            --slave /usr/bin/gcc-ar gcc-ar /usr/bin/gcc-ar-9 \
+            --slave /usr/bin/gcc-ranlib gcc-ranlib /usr/bin/gcc-ranlib-9
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-$GCC_VERSION 110 \
+            --slave /usr/bin/g++ g++ /usr/bin/g++-$GCC_VERSION \
+            --slave /usr/bin/gcov gcov /usr/bin/gcov-$GCC_VERSION \
+            --slave /usr/bin/gcc-ar gcc-ar /usr/bin/gcc-ar-$GCC_VERSION \
+            --slave /usr/bin/gcc-ranlib gcc-ranlib /usr/bin/gcc-ranlib-$GCC_VERSION
 
       - name: Install libboost
         run: sudo apt-get install -y libboost-all-dev
@@ -44,7 +66,7 @@ jobs:
       - name: Ccache for C++ compilation
         uses: hendrikmuhs/ccache-action@4687d037e4d7cf725512d9b819137a3af34d39b3
         with:
-          key: ${{ runner.os }}-clangreleaseasserts-${{ steps.get-submodule-hash.outputs.hash }}
+          key: ${{ matrix.build_type }}-${{ runner.os }}-${{ matrix.ubuntu_version }}
           max-size: 1G
 
       - name: Get cmakeModules
@@ -88,8 +110,6 @@ jobs:
               -DMLIR_DIR=`pwd`/../../llvm/install/lib/cmake/mlir/ \
               -DLLVM_DIR=`pwd`/../../llvm/install/lib/cmake/llvm/ \
               -DCMAKE_LINKER=lld \
-              -DCMAKE_C_COMPILER=clang-12 \
-              -DCMAKE_CXX_COMPILER=clang++-12 \
               -DLLVM_EXTERNAL_LIT=`pwd`/../../llvm/build/bin/llvm-lit \
               -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
               -DLibXAIE_x86_64_DIR=`pwd`/../../aienginev2/install/lib \
@@ -99,6 +119,7 @@ jobs:
 
       # Build the repo test target in debug mode to build and test.
       - name: Build and test (Assert)
+        if: matrix.build_type == 'Assert'
         run: |
           mkdir build_assert
           pushd build_assert
@@ -127,6 +148,7 @@ jobs:
 
       # Build the repo test target in release mode to build and test.
       - name: Build and test (Release)
+        if: matrix.build_type == 'Release'
         run: |
           mkdir build_release
           pushd build_release
