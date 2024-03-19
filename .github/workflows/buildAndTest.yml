@@ -14,11 +14,15 @@ on:
 jobs:
   build-repo:
     name: Build and Test with ROCm runtime
-    runs-on: ubuntu-20.04
-    steps:
-      - name: Configure Environment
-        run: echo "$GITHUB_WORKSPACE/llvm/install/bin" >> $GITHUB_PATH
+    runs-on: ubuntu-${{ matrix.ubuntu_version }}
 
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [ Assert, Release ]
+        ubuntu_version: [ 20.04, 22.04 ]
+
+    steps:
       # Clone the repo and its submodules. Do shallow clone to save clone
       # time.
       - name: Get repo
@@ -32,7 +36,7 @@ jobs:
           python-version: '3.10'
 
       - name: Upgrade gcc
-        #if: matrix.ubuntu_version == '20.04'
+        if: matrix.ubuntu_version == '20.04'
         run: |
           sudo apt-get install -y ninja-build clang lld
 
@@ -121,6 +125,7 @@ jobs:
 
       # Build the repo test target in debug mode to build and test.
       - name: Build and test (Assert)
+        if: matrix.build_type == 'Assert'
         run: |
           mkdir build_assert
           pushd build_assert
@@ -152,6 +157,7 @@ jobs:
 
       # Build the repo test target in release mode to build and test.
       - name: Build and test (Release)
+        if: matrix.build_type == 'Release'
         run: |
           mkdir build_release
           pushd build_release
