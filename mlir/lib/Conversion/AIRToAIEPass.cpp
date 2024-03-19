@@ -1815,22 +1815,20 @@ public:
                         dyn_cast<mlir::affine::AffineApplyOp>(child_op))
                   position_apply = apply_op;
               }
-              int position_iv = -1;
-              if (position_apply)
-                for (unsigned i = 0; i < par.getInductionVars().size(); i++)
-                  for (auto map_o : position_apply.getMapOperands())
-                    if (par.getInductionVars()[i] == map_o)
-                      position_iv = i;
-              if (position_apply && position_iv >= 0) {
-                // Evaluate the affine expression and specialize the operand
-                auto c = position_apply.getAffineMap().getResult(0);
-                SmallVector<AffineExpr, 1> const_syms{
-                    getAffineConstantExpr(position[position_iv],
-                                          builder.getContext()),
-                };
-                auto newC = c.replaceSymbols(const_syms);
-                auto expr = dyn_cast<AffineConstantExpr>(
-                    simplifyAffineExpr(newC, 0, 1));
+              if (position_apply) {
+                SmallVector<AffineExpr> const_syms;
+                for (unsigned i = 0; i < par.getInductionVars().size(); i++) {
+                  for (auto map_o : position_apply.getMapOperands()) {
+                    if (par.getInductionVars()[i] == map_o) {
+                      const_syms.push_back(getAffineConstantExpr(
+                          position[i], builder.getContext()));
+                    }
+                  }
+                }
+                AffineExpr newC = position_apply.getAffineMap().getResult(0);
+                newC = newC.replaceSymbols(const_syms);
+                auto expr = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(
+                    newC, 0, position_apply.getMapOperands().size()));
                 assert(expr);
                 int result = expr.getValue();
                 remap.map(oper, builder.create<arith::ConstantIndexOp>(

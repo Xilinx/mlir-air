@@ -200,8 +200,9 @@ std::vector<AIE::BDDimLayoutAttr>
 air::getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
                         SmallVector<Value> memcpy_strides,
                         int byte_count_per_elem, MLIRContext *ctx) {
-  assert(byte_count_per_elem == 4 || byte_count_per_elem == 2 ||
-         byte_count_per_elem == 1 && "unsupported data format");
+  assert((byte_count_per_elem == 4 || byte_count_per_elem == 2 ||
+          byte_count_per_elem == 1) &&
+         "unsupported data format");
   int div_factor = mlir::ceilDiv(4, byte_count_per_elem);
   if (memcpy_sizes.empty() || memcpy_strides.empty())
     return std::vector<AIE::BDDimLayoutAttr>{};
@@ -235,6 +236,11 @@ bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
   SmallVector<int> memref_shape = getTensorShape(memref.getType());
   if (memcpy_sizes.size() != memref_shape.size())
     return false;
+  if (memcpy_sizes.size() == 1 && memcpy_strides.size() == 1) {
+    auto stepsize = mlir::getConstantIntValue(memcpy_strides[0]);
+    if (stepsize && *stepsize == 1)
+      return true;
+  }
   unsigned stride_factor = 1;
   for (int i = memcpy_sizes.size() - 1; i >= 0; i--) {
     auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);

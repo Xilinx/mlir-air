@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#map0 = affine_map<(d0,d1) -> (d0 * 32 + d1 * 8)>
+#map0 = affine_map<()[d0,d1] -> (d0 * 32 + d1 * 8)>
 module {
 
 func.func @graph(%arg0 : memref<256x16xi32>, %arg1 : memref<256x16xi32>) -> () {
@@ -19,7 +19,7 @@ func.func @graph(%arg0 : memref<256x16xi32>, %arg1 : memref<256x16xi32>) -> () {
     %c8 = arith.constant 8 : index
     %buf0 = memref.alloc() {sym_name = "scratch"}: memref<8x8xi32, 2>
     %buf1 = memref.alloc() {sym_name = "scratch_copy"}: memref<8x8xi32, 2>
-    %5 = affine.apply #map0(%tx, %ty)
+    %5 = affine.apply #map0()[%tx, %ty]
     air.dma_memcpy_nd (%buf0[%c0, %c0][%c8, %c8][%c8, %c0], %ext0[%c0, %5][%c8, %c8][%c256, %c0]) {id = 1 : i32} : (memref<8x8xi32, 2>, memref<256x16xi32>)
     affine.for %j = 0 to 8 {
       affine.for %i = 0 to 8 {
@@ -36,5 +36,3 @@ func.func @graph(%arg0 : memref<256x16xi32>, %arg1 : memref<256x16xi32>) -> () {
 }
 
 }
-
-
