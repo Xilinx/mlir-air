@@ -352,8 +352,7 @@ void outlineAIECores(OpBuilder &builder, AIE::DeviceOp aie_device,
 std::vector<AIE::TileOp> getMemtilesFromDeviceOp(AIE::DeviceOp d) {
   std::vector<AIE::TileOp> memtiles;
   for (auto t : d.getOps<AIE::TileOp>()) {
-    // TODO: Hard coded memtile row as 1 here
-    if (t.rowIndex() == 1) {
+    if (t.isMemTile()) {
       memtiles.push_back(t);
     }
   }
@@ -963,23 +962,23 @@ void allocL1Buffers(AIE::DeviceOp m,
 bool areReferencedByTheSameAIRChannel(Value memref_a, Value memref_b) {
   for (auto user_a : memref_a.getUsers()) {
     for (auto user_b : memref_b.getUsers()) {
-      if (auto chan_user_a = dyn_cast<air::ChannelInterface>(user_a)) {
-        if (auto chan_user_b = dyn_cast<air::ChannelInterface>(user_b)) {
-          if (chan_user_a.getChanName().str() ==
-                  chan_user_b.getChanName().str() &&
-              chan_user_a.getIndices().size() ==
-                  chan_user_b.getIndices().size()) {
-            bool hasIdenticalIndices = true;
-            for (unsigned i = 0; i < chan_user_a.getIndices().size(); i++) {
-              if (*getConstantIntValue(chan_user_a.getIndices()[i]) !=
-                  *getConstantIntValue(chan_user_b.getIndices()[i]))
-                hasIdenticalIndices = false;
-            }
-            if (hasIdenticalIndices)
-              return true;
-          }
-        }
+      auto chan_user_a = dyn_cast<air::ChannelInterface>(user_a);
+      auto chan_user_b = dyn_cast<air::ChannelInterface>(user_b);
+      if (!chan_user_a || !chan_user_b)
+        continue;
+      if (chan_user_a.getChanName().str() != chan_user_b.getChanName().str())
+        continue;
+      if (chan_user_a.getIndices().size() != chan_user_b.getIndices().size())
+        continue;
+
+      bool hasIdenticalIndices = true;
+      for (unsigned i = 0; i < chan_user_a.getIndices().size(); i++) {
+        if (*getConstantIntValue(chan_user_a.getIndices()[i]) !=
+            *getConstantIntValue(chan_user_b.getIndices()[i]))
+          hasIdenticalIndices = false;
       }
+      if (hasIdenticalIndices)
+        return true;
     }
   }
   return false;
@@ -1916,14 +1915,14 @@ public:
     return true;
   }
   bool
-  everyAIRChannelAccessIsNonOverlapping(std::vector<air::ChannelPutOp> ops) {
+  everyAIRChannelAccessIsNonOverlapping(std::vector<air::ChannelPutOp> &ops) {
     std::vector<air::ChannelInterface> chanOps;
     for (auto op : ops)
       chanOps.push_back(op);
     return everyAIRChannelAccessIsNonOverlapping(chanOps);
   }
   bool
-  everyAIRChannelAccessIsNonOverlapping(std::vector<air::ChannelGetOp> ops) {
+  everyAIRChannelAccessIsNonOverlapping(std::vector<air::ChannelGetOp> &ops) {
     std::vector<air::ChannelInterface> chanOps;
     for (auto op : ops)
       chanOps.push_back(op);
@@ -1937,8 +1936,8 @@ public:
     return puts.size() == 1 && gets.size() == 1;
   }
 
-  void partitionMemref(std::vector<air::ChannelPutOp> puts,
-                       std::vector<air::ChannelGetOp> gets) {
+  void partitionMemref(std::vector<air::ChannelPutOp> &puts,
+                       std::vector<air::ChannelGetOp> &gets) {
     std::map<int, SmallVector<air::ChannelInterface>> chanOpPartitions;
     std::vector<int> keys;
     for (auto op : puts) {
