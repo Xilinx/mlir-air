@@ -49,8 +49,8 @@ jobs:
             --slave /usr/bin/gcc-ar gcc-ar /usr/bin/gcc-ar-$GCC_VERSION \
             --slave /usr/bin/gcc-ranlib gcc-ranlib /usr/bin/gcc-ranlib-$GCC_VERSION
 
-      - name: Install libboost
-        run: sudo apt-get install -y libboost-all-dev
+      - name: Install packages
+        run: sudo apt-get install -y libboost-all-dev clang lld
 
       - name: Install pip packages
         run: sudo pip install psutil pybind11 numpy launchpadlib
