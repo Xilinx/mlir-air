@@ -224,4 +224,26 @@ module {
     %1 = air.channel.put async @channel_18[] (%arg0[%c0, %c0, %c0, %c0] [%c4, %c2, %c8, %c4] [%c64, %c32, %c4, %c1]) : (memref<1x1x4x2x8x4xi32>)
     return
   }
+
+  // CHECK-LABEL: test7
+  // CHECK: put async  @channel_19[%c0, %c0] (%arg0[%c0] [%c16384] [%c1]) : (memref<256x256xbf16>)
+  // CHECK: put async  @channel_19[%c1, %c0] (%arg0[%c16384] [%c16384] [%c1]) : (memref<256x256xbf16>)
+  // CHECK: put async  @channel_19[%c2, %c0] (%arg0[%c32768] [%c16384] [%c1]) : (memref<256x256xbf16>)
+  // CHECK: put async  @channel_19[%c3, %c0] (%arg0[%c49152] [%c16384] [%c1]) : (memref<256x256xbf16>)
+
+  func.func @test7(%arg0: memref<256x256xbf16>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c3 = arith.constant 3 : index
+    %c128 = arith.constant 128 : index
+    %c192 = arith.constant 192 : index
+    %c256 = arith.constant 256 : index
+    %c64 = arith.constant 64 : index
+    %1 = air.channel.put async @channel_19[%c0, %c0] (%arg0[%c0, %c0] [%c64, %c256] [%c256, %c1]) : (memref<256x256xbf16>)
+    %2 = air.channel.put async @channel_19[%c1, %c0] (%arg0[%c64, %c0] [%c64, %c256] [%c256, %c1]) : (memref<256x256xbf16>)
+    %3 = air.channel.put async @channel_19[%c2, %c0] (%arg0[%c128, %c0] [%c64, %c256] [%c256, %c1]) : (memref<256x256xbf16>)
+    %4 = air.channel.put async @channel_19[%c3, %c0] (%arg0[%c192, %c0] [%c64, %c256] [%c256, %c1]) : (memref<256x256xbf16>)
+    return
+  }
 }
