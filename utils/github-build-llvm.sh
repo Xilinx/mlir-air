@@ -28,8 +28,6 @@ cmake ../llvm \
   -DLLVM_ENABLE_OCAMLDOC=OFF \
   -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
   -DLLVM_INSTALL_UTILS=ON \
-  -DCMAKE_C_COMPILER=clang-12 \
-  -DCMAKE_CXX_COMPILER=clang++-12 \
   -DLLVM_CCACHE_BUILD=ON \
   -DLLVM_ENABLE_LLD=ON \
   -DCMAKE_BUILD_TYPE=Release \
@@ -38,3 +36,4 @@ cmake ../llvm \
 
 cmake --build . --target install -- -j$(nproc)
 popd
+rm -rf llvm/$BUILD_DIR
