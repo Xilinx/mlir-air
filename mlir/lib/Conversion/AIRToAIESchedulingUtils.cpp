@@ -229,18 +229,20 @@ air::getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
 bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
                                      SmallVector<Value> memcpy_strides,
                                      Value memref) {
-  if (memcpy_sizes.empty() || memcpy_strides.empty())
+  if (memcpy_sizes.size() != memcpy_strides.size())
     return false;
   // If the sizes and strides were already accessing the memref in default
   // order, then wraps and strides are not needed
-  SmallVector<int> memref_shape = getTensorShape(memref.getType());
-  if (memcpy_sizes.size() != memref_shape.size())
-    return false;
+  if (memcpy_sizes.empty() || memcpy_strides.empty())
+    return true;
   if (memcpy_sizes.size() == 1 && memcpy_strides.size() == 1) {
     auto stepsize = mlir::getConstantIntValue(memcpy_strides[0]);
     if (stepsize && *stepsize == 1)
       return true;
   }
+  SmallVector<int> memref_shape = getTensorShape(memref.getType());
+  if (memcpy_sizes.size() != memref_shape.size())
+    return false;
   unsigned stride_factor = 1;
   for (int i = memcpy_sizes.size() - 1; i >= 0; i--) {
     auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);

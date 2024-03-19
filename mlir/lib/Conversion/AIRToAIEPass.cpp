@@ -1861,6 +1861,9 @@ public:
     for (auto op : ops) {
       auto memref = op.getMemref();
       auto memrefShape = air::getTensorShape(memref.getType());
+      // The default data access pattern is contiguous and row major.
+      if (isDefaultDataAccessPattern(op.getSizes(), op.getStrides(), memref))
+        continue;
       if (op.getStrides().size() != memrefShape.size())
         return false;
       int current_stride = 1;
@@ -1958,13 +1961,15 @@ public:
       auto memref = chanOpPartitions[key][0].getMemref();
       auto allocOp = memref.getDefiningOp();
       MemRefType ty = memref.getType().cast<MemRefType>();
-      // New memref shape is a column of (4) tiles.
       SmallVector<int64_t> newMemrefShape;
       for (unsigned i = 0; i < air::getTensorShape(ty).size(); i++) {
         newMemrefShape.push_back(air::getTensorShape(ty)[i]);
       }
-      newMemrefShape.front() =
-          *getConstantIntValue(chanOpPartitions[key][0].getSizes().front());
+      for (auto op : chanOpPartitions[key])
+        if (op.getSizes().size() == newMemrefShape.size()) {
+          newMemrefShape.front() = *getConstantIntValue(op.getSizes().front());
+          break;
+        }
 
       OpBuilder builder(allocOp);
       auto loc = allocOp->getLoc();
@@ -1987,8 +1992,12 @@ public:
         SmallVector<Value> offsets;
         SmallVector<Value> wraps;
         SmallVector<Value> strides;
-        populateDefaultWrapsAndStrides(builder, newMemref, offsets, wraps,
-                                       strides);
+        // One dimensional default stride value.
+        if (op.getSizes().size() == 1)
+          strides.push_back(builder.create<arith::ConstantIndexOp>(loc, 1));
+        else
+          populateDefaultWrapsAndStrides(builder, newMemref, offsets, wraps,
+                                         strides);
         int firstStrideOperandOffset =
             memrefOperandOffset + op.getOffsets().size() * 2 + 1;
         for (unsigned i = 0; i < op.getStrides().size(); i++) {
