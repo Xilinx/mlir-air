@@ -169,7 +169,7 @@ void AffineLoopOptPass::tileLoops(
 
     unsigned loop_depth = band.size();
     actualTileSizes.resize(loop_depth, 1);
-    for (int i = 0; i < band.size(); i++) {
+    for (size_t i = 0; i < band.size(); i++) {
       // Do nothing if we do not have constant bounds.
       if (!band[i].hasConstantLowerBound() ||
           !band[i].hasConstantUpperBound()) {
