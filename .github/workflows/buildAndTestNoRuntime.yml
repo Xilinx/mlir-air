@@ -69,15 +69,6 @@ jobs:
           key: ${{ matrix.build_type }}-${{ runner.os }}-${{ matrix.ubuntu_version }}
           max-size: 1G
 
-      - name: Get cmakeModules
-        id: clone-cmakeModules
-        run: |
-          git clone https://github.com/Xilinx/cmakeModules.git
-          pushd cmakeModules
-          git checkout -b air 2c3885644ea115d1d61bbf102abbd41be8ba8427
-          popd
-        shell: bash
-
       - name: Get LLVM
         id: clone-llvm
         run: utils/clone-llvm.sh
@@ -128,7 +119,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
             -DCMAKE_BUILD_TYPE=Debug \
             -DLLVM_ENABLE_ASSERTIONS=ON \
-            -DCMAKE_MODULE_PATH=`pwd`/../cmakeModules \
+            -DCMAKE_MODULE_PATH=`pwd`/../mlir-aie/cmake/modulesXilinx \
             -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
@@ -156,7 +147,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_ENABLE_ASSERTIONS=OFF \
-            -DCMAKE_MODULE_PATH=`pwd`/../cmakeModules \
+            -DCMAKE_MODULE_PATH=`pwd`/../mlir-aie/cmake/modulesXilinx \
             -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
             -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
