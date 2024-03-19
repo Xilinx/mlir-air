@@ -35,6 +35,20 @@ using namespace xilinx::air;
 
 namespace {
 
+/// Returns the largest number that perfectly divides `num` that is less than or
+/// equal to max
+int findLargestFactor(int num, int max) {
+  if (num < max) {
+    return num;
+  }
+  for (int i = max; i > 0; i--) {
+    if (num % i == 0) {
+      return i;
+    }
+  }
+  return 1;
+}
+
 class AffineLoopOptPass
     : public xilinx::air::impl::AffineLoopOptPassBase<AffineLoopOptPass> {
 
@@ -155,6 +169,19 @@ void AffineLoopOptPass::tileLoops(
 
     unsigned loop_depth = band.size();
     actualTileSizes.resize(loop_depth, 1);
+    for (size_t i = 0; i < band.size(); i++) {
+      // Do nothing if we do not have constant bounds.
+      if (!band[i].hasConstantLowerBound() ||
+          !band[i].hasConstantUpperBound()) {
+        continue;
+      }
+      int64_t untiledSize =
+          (band[i].getConstantUpperBound() - band[i].getConstantLowerBound()) /
+          band[i].getStepAsInt();
+      // Make sure the tile size divides the untiled size and is less than or
+      // equal to the desired tile size.
+      actualTileSizes[i] = findLargestFactor(untiledSize, actualTileSizes[i]);
+    }
 
     if (failed(tilePerfectlyNested(band, actualTileSizes, &tiledNest)))
       return signalPassFailure();
