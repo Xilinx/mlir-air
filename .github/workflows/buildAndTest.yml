@@ -35,11 +35,13 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Upgrade gcc
-        if: matrix.ubuntu_version == '20.04'
+      - name: Install packages
         run: |
           sudo apt-get install -y ninja-build clang lld
 
+      - name: Upgrade gcc
+        if: matrix.ubuntu_version == '20.04'
+        run: |
           sudo apt install build-essential manpages-dev software-properties-common
           sudo add-apt-repository ppa:ubuntu-toolchain-r/test
           GCC_VERSION=11
@@ -69,7 +71,7 @@ jobs:
       - name: Ccache for C++ compilation
         uses: hendrikmuhs/ccache-action@4687d037e4d7cf725512d9b819137a3af34d39b3
         with:
-          key: ${{ runner.os }}-clangreleaseasserts-${{ steps.get-submodule-hash.outputs.hash }}
+          key: ${{ matrix.build_type }}-${{ runner.os }}-${{ matrix.ubuntu_version }}
           max-size: 1G
 
       - name: Install necessary build tools for the ROCm runtime
