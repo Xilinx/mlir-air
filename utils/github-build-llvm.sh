@@ -36,3 +36,4 @@ cmake ../llvm \
 
 cmake --build . --target install -- -j$(nproc)
 popd
+rm -rf llvm/$BUILD_DIR

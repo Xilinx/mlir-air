@@ -50,7 +50,7 @@ jobs:
             --slave /usr/bin/gcc-ranlib gcc-ranlib /usr/bin/gcc-ranlib-$GCC_VERSION
 
       - name: Install packages
-        run: sudo apt-get install -y libboost-all-dev clang lld
+        run: sudo apt-get install -y libboost-all-dev clang lld && sudo apt-get clean
 
       - name: Install pip packages
         run: sudo pip install psutil pybind11 numpy launchpadlib
@@ -92,7 +92,7 @@ jobs:
           pushd mlir-aie/build
           cmake .. \
               -GNinja \
-              -DCMAKE_BUILD_TYPE=Debug \
+              -DCMAKE_BUILD_TYPE=Release \
               -DAIE_COMPILER=NONE \
               -DAIE_LINKER=NONE \
               -DHOST_COMPILER=NONE \
@@ -107,6 +107,7 @@ jobs:
               -DCMAKE_INSTALL_PREFIX=`pwd`/../install
           ninja install
           popd
+          rm -rf mlir-aie/build
 
       # Build the repo test target in debug mode to build and test.
       - name: Build and test (Assert)
