@@ -120,8 +120,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug \
             -DLLVM_ENABLE_ASSERTIONS=ON \
             -DCMAKE_MODULE_PATH=`pwd`/../mlir-aie/cmake/modulesXilinx \
-            -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
-            -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
+            -DMLIR_DIR=`pwd`/../llvm/install/lib/cmake/mlir/ \
+            -DLLVM_DIR=`pwd`/../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
             -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
             -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
@@ -148,8 +148,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_ENABLE_ASSERTIONS=OFF \
             -DCMAKE_MODULE_PATH=`pwd`/../mlir-aie/cmake/modulesXilinx \
-            -DMLIR_DIR=../llvm/install/lib/cmake/mlir/ \
-            -DLLVM_DIR=../llvm/install/lib/cmake/llvm/ \
+            -DMLIR_DIR=`pwd`/../llvm/install/lib/cmake/mlir/ \
+            -DLLVM_DIR=`pwd`/../llvm/install/lib/cmake/llvm/ \
             -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
             -DLibXAIE_ROOT=`pwd`/../aienginev2/install \
             -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
