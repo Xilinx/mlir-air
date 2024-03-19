@@ -584,9 +584,9 @@ func.func @func8(%arg0 : memref<8x16xi32>, %arg1 : memref<16x8xi32>){
 // CHECK:   aie.dma_bd({{.*}} : memref<32xf32, 2>, 0, 32)
 // CHECK: %[[memTileDMA_2_1:.*]] = aie.memtile_dma
 // CHECK:   aie.dma_start(MM2S, 0, ^bb1, ^bb3)
-// CHECK:   aie.dma_bd({{.*}} : memref<64xf32, 1>, 0, 32, [<size = 32, stride = 1>])
+// CHECK:   aie.dma_bd({{.*}} : memref<64xf32, 1>, 0, 32)
 // CHECK:   aie.dma_start(MM2S, 1, ^bb4, ^bb2)
-// CHECK:   aie.dma_bd({{.*}} : memref<64xf32, 1>, 128, 32, [<size = 32, stride = 1>])
+// CHECK:   aie.dma_bd({{.*}} : memref<64xf32, 1>, 128, 32)
 // CHECK: @func9
 #map = affine_map<()[s0] -> (s0 * 32)>
 air.channel @channel_1 [2, 1]
