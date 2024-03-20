@@ -666,6 +666,85 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
   return new_for_op;
 }
 
+// Unroll scf.parallel ops.
+LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder, scf::ParallelOp par, Operation * originalChanOp, IRMapping &remap){
+  SmallVector<int, 2> lbs_spatial, ubs_spatial;
+  air::getSizesFromSpatialLoop(par.getOperation(), lbs_spatial, ubs_spatial);
+  std::vector<unsigned> par_size;
+  unsigned par_vol = 1;
+  for (unsigned i = 0; i < lbs_spatial.size(); i++) {
+    par_size.push_back(ubs_spatial[i] - lbs_spatial[i] + 1);
+    par_vol *= ubs_spatial[i] - lbs_spatial[i] + 1;
+  }
+  for (unsigned iter = 0; iter < par_vol; iter++) {
+    std::vector<unsigned> position =
+        air::getMDVectorFromIterator(par_size, iter);
+    SmallVector<Value, 4> emptyVec = {};
+    SmallVector<Type, 4> tys = {};
+    if (auto putget = dyn_cast<air::ChannelInterface>(originalChanOp)) {
+      auto air_chan = getChannelDeclarationThroughSymbol(putget);
+      auto air_chan_size =
+          extractFromIntegerArrayAttr<int64_t>(air_chan.getSize());
+      if (position.size() == putget.getIndices().size()) {
+        for (unsigned i = 0; i < putget.getIndices().size(); i++)
+          remap.map(putget.getIndices()[i],
+                    builder.create<arith::ConstantIndexOp>(
+                        builder.getUnknownLoc(), position[i]));
+      } else if (position.size() == 1 &&
+                std::find(air_chan_size.begin(), air_chan_size.end(),
+                          air_chan.getBundleSize()) !=
+                    air_chan_size.end()) {
+        auto idx = std::find(air_chan_size.begin(), air_chan_size.end(),
+                            air_chan.getBundleSize()) -
+                  air_chan_size.begin();
+        remap.map(putget.getIndices()[idx],
+                  builder.create<arith::ConstantIndexOp>(
+                      builder.getUnknownLoc(), position[0]));
+      } else
+        assert(false && "mismatching dimension counts between loop "
+                        "iteration space and air.channel shape");
+    }
+    // Specialize any affine apply mappings to operand
+    for (auto oper : originalChanOp->getOperands()) {
+      if (oper.getDefiningOp()) {
+        mlir::affine::AffineApplyOp position_apply = nullptr;
+        if (auto apply_op = dyn_cast<mlir::affine::AffineApplyOp>(
+                oper.getDefiningOp()))
+          position_apply = apply_op;
+        else if (auto exec =
+                    dyn_cast<air::ExecuteOp>(oper.getDefiningOp())) {
+          auto child_op = &exec.getBody().front().getOperations().front();
+          if (auto apply_op =
+                  dyn_cast<mlir::affine::AffineApplyOp>(child_op))
+            position_apply = apply_op;
+        }
+        if (position_apply) {
+          SmallVector<AffineExpr> const_syms;
+          for (unsigned i = 0; i < par.getInductionVars().size(); i++) {
+            for (auto map_o : position_apply.getMapOperands()) {
+              if (par.getInductionVars()[i] == map_o) {
+                const_syms.push_back(getAffineConstantExpr(
+                    position[i], builder.getContext()));
+              }
+            }
+          }
+          AffineExpr newC = position_apply.getAffineMap().getResult(0);
+          newC = newC.replaceSymbols(const_syms);
+          auto expr = dyn_cast<AffineConstantExpr>(simplifyAffineExpr(
+              newC, 0, position_apply.getMapOperands().size()));
+          assert(expr);
+          int result = expr.getValue();
+          remap.map(oper, builder.create<arith::ConstantIndexOp>(
+                              builder.getUnknownLoc(), result));
+        }
+      }
+    }
+    auto new_memcpy = builder.clone(*originalChanOp, remap);
+    clearAsyncDependenciesOfAsyncOp(new_memcpy);
+  }
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // Dependency graph
 //===----------------------------------------------------------------------===//

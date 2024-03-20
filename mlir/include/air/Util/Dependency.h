@@ -64,6 +64,7 @@ void addAsyncDependencyIfNew(Operation *op, Value token);
 bool isAsyncOp(Operation *op);
 scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
                                      SmallVector<Operation *> target_ops);
+LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder, scf::ParallelOp par, Operation * originalChanOp, IRMapping &remap);
 
 //===----------------------------------------------------------------------===//
 // Dependency graph

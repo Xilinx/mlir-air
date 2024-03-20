@@ -226,38 +226,6 @@ air::getWrapsAndStrides(SmallVector<Value> memcpy_sizes,
   return output;
 }
 
-bool air::isDefaultDataAccessPattern(SmallVector<Value> memcpy_sizes,
-                                     SmallVector<Value> memcpy_strides,
-                                     Value memref) {
-  if (memcpy_sizes.size() != memcpy_strides.size())
-    return false;
-  // If the sizes and strides were already accessing the memref in default
-  // order, then wraps and strides are not needed
-  if (memcpy_sizes.empty() || memcpy_strides.empty())
-    return true;
-  if (memcpy_sizes.size() == 1 && memcpy_strides.size() == 1) {
-    auto stepsize = mlir::getConstantIntValue(memcpy_strides[0]);
-    if (stepsize && *stepsize == 1)
-      return true;
-  }
-  SmallVector<int> memref_shape = getTensorShape(memref.getType());
-  if (memcpy_sizes.size() != memref_shape.size())
-    return false;
-  unsigned stride_factor = 1;
-  for (int i = memcpy_sizes.size() - 1; i >= 0; i--) {
-    auto stepsize = mlir::getConstantIntValue(memcpy_strides[i]);
-    assert(stepsize && "non-static stride");
-    auto wrap = mlir::getConstantIntValue(memcpy_sizes[i]);
-    assert(wrap && "non-static wrap");
-    if (*stepsize != stride_factor)
-      return false;
-    if (*wrap != memref_shape[i])
-      return false;
-    stride_factor *= *wrap;
-  }
-  return true;
-}
-
 std::pair<int64_t, int64_t> air::getLockValuePair(AIE::AIEArch arch,
                                                   Value buffer_memref) {
   bool isAIE2 = (arch == AIE::AIEArch::AIE2);

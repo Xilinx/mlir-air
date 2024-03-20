@@ -1085,6 +1085,11 @@ public:
   void runOnOperation() override;
 
 private:
+  void partitionMemref(SmallVector<air::ChannelPutOp> &puts,
+                        SmallVector<air::ChannelGetOp> &gets);
+  SmallVector<memref::AllocOp> getTargetMemrefAllocs(func::FuncOp func, std::map<memref::AllocOp, SmallVector<int>> &targetMemrefsToColTilingFactors);
+  int maxMM2SChannelCount;
+  int maxS2MMChannelCount;
 };
 
 template <typename T> void push_back_if_unique(SmallVector<T> &vec, T entry) {
@@ -1180,19 +1185,206 @@ Value tileChannelOpByFactor(air::ChannelInterface originalChanOp, int factor,
   return newWaitAll.getAsyncToken();
 }
 
-// Check if each L2 memref shall violate buffer hardware constraint, and if so,
-// attempt to split it (in columns, per IPU device layout).
-void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
-  // Buffer hardware constraint: MM2S channel count.
-  int maxMM2SChannelCount = clMM2SChannels;
-  if (clMM2SChannels == -1)
-    maxMM2SChannelCount = INT_MAX;
-  // Buffer hardware constraint: S2MM channel count.
-  int maxS2MMChannelCount = clS2MMChannels;
-  if (clS2MMChannels == -1)
-    maxS2MMChannelCount = INT_MAX;
-  SmallVector<air::HerdOp> herds;
-  auto func = getOperation();
+bool everyAIRChannelAccessIsContiguousRowMajor(
+    SmallVector<air::ChannelInterface> ops) {
+  for (auto op : ops) {
+    auto memref = op.getMemref();
+    auto memrefShape = air::getTensorShape(memref.getType());
+    // The default data access pattern is contiguous and row major.
+    if (air::isDefaultDataAccessPattern(op.getSizes(), op.getStrides(), memref))
+      continue;
+    if (op.getStrides().size() != memrefShape.size())
+      return false;
+    int current_stride = 1;
+    for (int i = op.getStrides().size() - 1; i >= 0; i--) {
+      if (!getConstantIntValue(op.getStrides()[i])) return false;
+      if (*getConstantIntValue(op.getStrides()[i]) != current_stride)
+        return false;
+      current_stride *= memrefShape[i];
+    }
+  }
+  return true;
+}
+
+// Check whether every channel op in the vector has non-overlapping access
+// pattern, by exhaustively scan through pairs of air channel ops in the
+// vector.
+bool everyAIRChannelAccessIsNonOverlapping(
+    SmallVector<air::ChannelInterface> ops) {
+  if (!everyAIRChannelAccessIsContiguousRowMajor(ops))
+    return false; // Incontiguous or not row-major, NYI.
+  for (unsigned i = 0; i < ops.size() - 1; i++) {
+    for (unsigned j = i + 1; j < ops.size(); j++) {
+      air::ChannelInterface op1 = ops[i];
+      air::ChannelInterface op2 = ops[j];
+      if (op1.getOffsets().size() != op2.getOffsets().size())
+        return false;
+      if (op1.getSizes().size() != op2.getSizes().size())
+        return false;
+      bool isOverlappingPair =
+          true; // True if every dimension is overlapping.
+      for (unsigned k = 0; k < op1.getOffsets().size(); k++) {
+        if (!getConstantIntValue(op1.getOffsets()[k]) || !getConstantIntValue(op2.getOffsets()[k])) return false;
+        if (!getConstantIntValue(op1.getSizes()[k]) || !getConstantIntValue(op2.getSizes()[k])) return false;
+        int op1Offset = *getConstantIntValue(op1.getOffsets()[k]);
+        int op2Offset = *getConstantIntValue(op2.getOffsets()[k]);
+        int op1LowerRange = op1Offset;
+        int op1UpperRange =
+            op1Offset + *getConstantIntValue(op1.getSizes()[k]);
+        int op2LowerRange = op2Offset;
+        int op2UpperRange =
+            op2Offset + *getConstantIntValue(op2.getSizes()[k]);
+        bool isOverlappingDim = false;
+        if (op1Offset >= op2LowerRange && op1Offset < op2UpperRange)
+          isOverlappingDim = true;
+        else if (op2Offset >= op1LowerRange && op2Offset < op1UpperRange)
+          isOverlappingDim = true;
+        if (!isOverlappingDim)
+          isOverlappingPair = false;
+      }
+      if (isOverlappingPair)
+        return false;
+    }
+  }
+  return true;
+}
+bool
+everyAIRChannelAccessIsNonOverlapping(SmallVector<air::ChannelPutOp> &ops) {
+  SmallVector<air::ChannelInterface> chanOps;
+  for (auto op : ops)
+    chanOps.push_back(op);
+  return everyAIRChannelAccessIsNonOverlapping(chanOps);
+}
+bool
+everyAIRChannelAccessIsNonOverlapping(SmallVector<air::ChannelGetOp> &ops) {
+  SmallVector<air::ChannelInterface> chanOps;
+  for (auto op : ops)
+    chanOps.push_back(op);
+  return everyAIRChannelAccessIsNonOverlapping(chanOps);
+}
+
+// Partition L2 memref.
+void AIRSplitL2MemrefForBufferConstraintPass::partitionMemref(SmallVector<air::ChannelPutOp> &puts,
+                      SmallVector<air::ChannelGetOp> &gets) {
+  std::map<int, SmallVector<air::ChannelInterface>> chanOpPartitions;
+  SmallVector<int> keys;
+  for (auto op : puts) {
+    int firstOffset = *getConstantIntValue(op.getOffsets().front());
+    push_back_if_unique<int>(keys, firstOffset);
+    if (!chanOpPartitions.count(firstOffset))
+      chanOpPartitions[firstOffset] = SmallVector<air::ChannelInterface>{op};
+    else
+      chanOpPartitions[firstOffset].push_back(op);
+  }
+  for (auto op : gets) {
+    int firstOffset = *getConstantIntValue(op.getOffsets().front());
+    push_back_if_unique<int>(keys, firstOffset);
+    if (!chanOpPartitions.count(firstOffset))
+      chanOpPartitions[firstOffset] = SmallVector<air::ChannelInterface>{op};
+    else
+      chanOpPartitions[firstOffset].push_back(op);
+  }
+  auto memref = puts.front().getMemref();
+  auto allocOp = memref.getDefiningOp();
+  Operation * deallocOp = nullptr;
+  for (auto user : memref.getUsers()){
+    if (auto execOp = dyn_cast<air::ExecuteOp>(user->getParentOp())){
+      if (isa<memref::DeallocOp>(execOp.getChildOp())) {
+        deallocOp = execOp;
+        break;
+      }
+    }
+    else if (isa<memref::DeallocOp>(user)) {
+      deallocOp = user;
+      break;
+    }
+  }
+  OpBuilder builder(allocOp);
+  for (auto key : keys) {
+    MemRefType ty = memref.getType().cast<MemRefType>();
+    SmallVector<int64_t> newMemrefShape;
+    for (unsigned i = 0; i < air::getTensorShape(ty).size(); i++) {
+      newMemrefShape.push_back(air::getTensorShape(ty)[i]);
+    }
+    for (auto op : chanOpPartitions[key])
+      if (op.getSizes().size() == newMemrefShape.size()) {
+        newMemrefShape.front() = *getConstantIntValue(op.getSizes().front());
+        break;
+      }
+
+    auto loc = allocOp->getLoc();
+    auto newMemrefType = MemRefType::get(newMemrefShape, ty.getElementType(),
+                                ty.getLayout().getAffineMap(),
+                                ty.getMemorySpaceAsInt());
+    Value newMemref = nullptr;
+    // Create new alloc ops.
+    if (isa<air::ExecuteOp>(allocOp)){
+      auto execOp = builder.create<air::ExecuteOp>(
+        loc, air::AsyncTokenType::get(allocOp->getContext()), newMemrefType, SmallVector<Value>{});
+      Block *async_bb = builder.createBlock(&execOp.getBody());
+      builder.setInsertionPointToStart(async_bb);
+      auto childMemAlloc = builder.create<memref::AllocOp>(
+          loc, newMemrefType);
+      builder.create<xilinx::air::ExecuteTerminatorOp>(loc,
+                                                      childMemAlloc->getResults());
+      newMemref = execOp->getResult(1);
+      builder.setInsertionPoint(execOp);
+    }
+    else 
+      newMemref = builder.create<memref::AllocOp>(
+          loc, newMemrefType);
+    // Create new dealloc ops.
+    if (deallocOp){
+      builder.setInsertionPoint(deallocOp);
+      if (auto execDeallocOp = dyn_cast<air::ExecuteOp>(deallocOp)){ 
+        auto execOp = builder.create<air::ExecuteOp>(
+          loc, air::AsyncTokenType::get(deallocOp->getContext()), execDeallocOp.getAsyncDependencies());
+        Block *async_bb = builder.createBlock(&execOp.getBody());
+        builder.setInsertionPointToStart(async_bb);
+        builder.create<memref::DeallocOp>(
+            loc, newMemref);
+        builder.create<xilinx::air::ExecuteTerminatorOp>(loc);
+      }
+      else 
+        builder.create<memref::DeallocOp>(
+              loc, newMemref);
+      builder.setInsertionPoint(newMemref.getDefiningOp());
+    }
+    // Mutate air.channel.put/get opoperands.
+    for (auto op : chanOpPartitions[key]) {
+      int memrefOperandOffset =
+          dyn_cast<air::AsyncOpInterface>(op.getOperation())
+              .getAsyncDependencies()
+              .size() + op.getIndices().size();
+      auto &memrefOpOper = op->getOpOperand(memrefOperandOffset);
+      memrefOpOper.assign(newMemref);
+      int firstOffsetOperandOffset = memrefOperandOffset + 1;
+      auto &firstOffsetOpOper = op->getOpOperand(firstOffsetOperandOffset);
+      firstOffsetOpOper.assign(
+          builder.create<arith::ConstantIndexOp>(loc, 0));
+      // Update strides (contiguous, row-major) after memref tiling.
+      SmallVector<Value> offsets;
+      SmallVector<Value> wraps;
+      SmallVector<Value> strides;
+      // One dimensional default stride value.
+      if (op.getSizes().size() == 1)
+        strides.push_back(builder.create<arith::ConstantIndexOp>(loc, 1));
+      else
+        air::populateDefaultWrapsAndStrides(builder, newMemref, offsets, wraps,
+                                        strides);
+      int firstStrideOperandOffset =
+          memrefOperandOffset + op.getOffsets().size() * 2 + 1;
+      for (unsigned i = 0; i < op.getStrides().size(); i++) {
+        auto &strideOpOper = op->getOpOperand(firstStrideOperandOffset + i);
+        strideOpOper.assign(strides[i]);
+      }
+    }
+  }
+  if (deallocOp) deallocOp->erase();
+}
+
+SmallVector<memref::AllocOp> AIRSplitL2MemrefForBufferConstraintPass::getTargetMemrefAllocs(func::FuncOp func, std::map<memref::AllocOp, SmallVector<int>> &targetMemrefsToColTilingFactors){
+  
   SmallVector<memref::AllocOp> allocOps;
   func.walk([&](memref::AllocOp allocOp) {
     if (allocOp->getParentOfType<air::SegmentOp>() &&
@@ -1209,7 +1401,6 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
   SmallVector<memref::AllocOp> targetMemrefs;
   // Map between the target memref alloc ops and all column-wise tiling factors
   // per alloc.
-  std::map<memref::AllocOp, SmallVector<int>> targetMemrefsToColTilingFactors;
   for (auto allocOp : allocOps) {
     Value memref = allocOp.getMemref();
     if (auto exec = dyn_cast<air::ExecuteOp>(allocOp->getParentOp()))
@@ -1229,6 +1420,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
             targetMemrefsToColTilingFactors[allocOp] =
                 SmallVector<int>{ubs_spatial.back() - lbs_spatial.back() + 1};
             targetMemrefs.push_back(allocOp);
+            allocOp->setAttr("split", BoolAttr::get(func.getContext(), true));
           } else
             targetMemrefsToColTilingFactors[allocOp].push_back(
                 ubs_spatial.back() - lbs_spatial.back() + 1);
@@ -1238,6 +1430,7 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
             targetMemrefsToColTilingFactors[allocOp] =
                 SmallVector<int>{ubs_spatial.back() - lbs_spatial.back() + 1};
             targetMemrefs.push_back(allocOp);
+            allocOp->setAttr("split", BoolAttr::get(func.getContext(), true));
           } else
             targetMemrefsToColTilingFactors[allocOp].push_back(
                 ubs_spatial.back() - lbs_spatial.back() + 1);
@@ -1245,9 +1438,45 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
       }
     }
   }
+  return targetMemrefs;
+}
+
+// Check if each L2 memref shall violate buffer hardware constraint, and if so,
+// attempt to split it (in columns, per IPU device layout).
+void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
+  // Buffer hardware constraint: MM2S channel count.
+  maxMM2SChannelCount = clMM2SChannels;
+  if (clMM2SChannels == -1)
+    maxMM2SChannelCount = INT_MAX;
+  // Buffer hardware constraint: S2MM channel count.
+  maxS2MMChannelCount = clS2MMChannels;
+  if (clS2MMChannels == -1)
+    maxS2MMChannelCount = INT_MAX;
+  SmallVector<air::HerdOp> herds;
+  auto func = getOperation();
+  SmallVector<memref::AllocOp> allocOps;
+  func.walk([&](memref::AllocOp allocOp) {
+    if (allocOp->getParentOfType<air::SegmentOp>() &&
+        allocOp.getMemref()
+                .getType()
+                .cast<MemRefType>()
+                .getMemorySpaceAsInt() == (int)air::MemorySpace::L2) {
+      allocOps.push_back(allocOp);
+    }
+  });
+
+  // Filter out L2 memrefs who shall not fit in memtile due to hw buffer
+  // constraints.
+
+  // Map between the target memref alloc ops and all column-wise tiling factors
+  // per alloc.
+  std::map<memref::AllocOp, SmallVector<int>> targetMemrefsToColTilingFactors;
+
+  SmallVector<memref::AllocOp> targetMemrefs = getTargetMemrefAllocs(func, targetMemrefsToColTilingFactors);
   if (targetMemrefs.empty())
     return;
 
+  // Tile memrefs.
   for (auto allocOp : targetMemrefs) {
     int targetColTilingFactor =
         findGCD(targetMemrefsToColTilingFactors[allocOp]);
@@ -1260,9 +1489,8 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
             air::getChannelDeclarationThroughSymbol(chanUserOp);
         if (!hasSinglePutAndGet(chanUserChannelDeclr)) {
           assert(false && "NYI");
-        } else if (isa<scf::ParallelOp>(user->getParentOp())) {
-          SmallVector<int, 2> lbs_spatial;
-          SmallVector<int, 2> ubs_spatial;
+        } else if (auto par = dyn_cast<scf::ParallelOp>(user->getParentOp())) {
+          SmallVector<int, 2> lbs_spatial, ubs_spatial;
           air::getSizesFromSpatialLoop(user->getParentOp(), lbs_spatial,
                                        ubs_spatial);
           if (ubs_spatial.back() - lbs_spatial.back() + 1 <
@@ -1270,6 +1498,10 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
             // Tile the air.channel op by targetColTilingFactor. NYI.
             assert(false && "NYI");
           }
+          OpBuilder builder(user->getParentOp());
+          IRMapping remap;
+          (void)air::unrollAIRChannelPutGetInScfParallel(builder, par, user, remap);
+          par.erase();
         } else {
           // Tile the air.channel op by targetColTilingFactor.
           auto loc = chanUserOp->getLoc();
@@ -1313,6 +1545,49 @@ void AIRSplitL2MemrefForBufferConstraintPass::runOnOperation() {
         }
       }
     }
+  }
+
+  auto context = &getContext();
+  RewritePatternSet canoPatterns(context);
+  // Fold constants.
+  mlir::arith::ConstantIndexOp::getCanonicalizationPatterns(canoPatterns, context);
+  (void)applyPatternsAndFoldGreedily(func, std::move(canoPatterns));
+
+  // Split memrefs.
+  allocOps.clear();
+  func.walk([&](memref::AllocOp allocOp) {
+    if (allocOp->hasAttr("split")) {
+      allocOps.push_back(allocOp);
+    }
+  });
+  for (auto allocOp : allocOps){
+    Value memref = isa<air::ExecuteOp>(allocOp->getParentOp())
+                       ? allocOp->getParentOp()->getResult(1)
+                       : dyn_cast<Value>(allocOp.getMemref());
+    SmallVector<air::ChannelPutOp> puts;
+    SmallVector<air::ChannelGetOp> gets;
+    for (auto user : memref.getUsers()) {
+      if (auto put = dyn_cast<air::ChannelPutOp>(user))
+        puts.push_back(put);
+      else if (auto get = dyn_cast<air::ChannelGetOp>(user))
+        gets.push_back(get);
+    }
+    if (everyAIRChannelAccessIsNonOverlapping(gets) &&
+        everyAIRChannelAccessIsNonOverlapping(puts)) {
+      partitionMemref(puts, gets);
+    } else
+      continue; // Multiple of puts and multiple of gets, NYI.
+  }
+  for (auto allocOp : allocOps) {
+    if (auto execOp = dyn_cast<air::ExecuteOp>(allocOp->getParentOp())){
+      OpBuilder builder(execOp);
+      auto waitAllOp = builder.create<air::WaitAllOp>(
+          allocOp->getLoc(), air::AsyncTokenType::get(allocOp->getContext()), execOp.getAsyncDependencies());
+      execOp.getAsyncToken().replaceAllUsesWith(waitAllOp.getAsyncToken());
+      execOp->erase();
+    }
+    else
+      allocOp->erase();
   }
 
   air::renumberChannelOps(&func.getBody().front());
