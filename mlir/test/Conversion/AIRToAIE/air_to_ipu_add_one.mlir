@@ -24,7 +24,7 @@
 // CHECK: %[[VAL13:.*]] = aie.buffer(%[[VAL1]]) {sym_name = {{.*}}} : memref<64xi32, 2>
 // CHECK: %[[VAL14:.*]] = aie.buffer(%[[VAL1]]) {sym_name = {{.*}}} : memref<64xi32, 2>
 // CHECK: aie.mem(%[[VAL1]]) {
-// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
+// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb3)
 // CHECK: ^bb1:
 // CHECK:   aie.use_lock(%[[VAL7]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL13]] : memref<64xi32, 2>, 0, 64)
@@ -60,7 +60,7 @@
 // CHECK: aie.flow(%[[VAL1]], DMA : 0, %[[VAL0]], DMA : 1)
 // CHECK: aie.flow(%[[VAL0]], DMA : 1, %[[VAL2]], DMA : 0)
 // CHECK: aie.memtile_dma(%[[VAL0]]) {
-// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb7, repeat_count = 1)
+// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb7)
 // CHECK: ^bb1:
 // CHECK:   aie.use_lock(%[[VAL5]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL11]] : memref<64xi32, 1>, 0, 64)
@@ -74,14 +74,14 @@
 // CHECK:   aie.use_lock(%[[VAL4]], Release, 1)
 // CHECK:   aie.next_bd ^bb4
 // CHECK: ^bb5:
-// CHECK:   aie.dma_start(MM2S, 0, ^bb6, ^bb3, repeat_count = 1)
+// CHECK:   aie.dma_start(MM2S, 0, ^bb6, ^bb3)
 // CHECK: ^bb6:
 // CHECK:   aie.use_lock(%[[VAL6]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL11]] : memref<64xi32, 1>, 0, 64)
 // CHECK:   aie.use_lock(%[[VAL5]], Release, 1)
 // CHECK:   aie.next_bd ^bb6
 // CHECK: ^bb7:
-// CHECK:   aie.dma_start(MM2S, 1, ^bb8, ^bb5, repeat_count = 1)
+// CHECK:   aie.dma_start(MM2S, 1, ^bb8, ^bb5)
 // CHECK: ^bb8:
 // CHECK:   aie.use_lock(%[[VAL4]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL12]] : memref<64xi32, 1>, 0, 64)
@@ -156,7 +156,7 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
 // CHECK: %[[VAL13:.*]] = aie.buffer(%[[VAL1]]) {sym_name = {{.*}}} : memref<64xi32, 2>
 // CHECK: %[[VAL14:.*]] = aie.buffer(%[[VAL1]]) {sym_name = {{.*}}} : memref<64xi32, 2>
 // CHECK: aie.mem(%[[VAL1]]) {
-// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb3, repeat_count = 1)
+// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb3)
 // CHECK: ^bb1:
 // CHECK:   aie.use_lock(%[[VAL7]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL13]] : memref<64xi32, 2>, 0, 64)
@@ -192,7 +192,7 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
 // CHECK: aie.flow(%[[VAL1]], DMA : 0, %[[VAL0]], DMA : 1)
 // CHECK: aie.flow(%[[VAL0]], DMA : 1, %[[VAL2]], DMA : 0)
 // CHECK: aie.memtile_dma(%[[VAL0]]) {
-// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb7, repeat_count = 1)
+// CHECK:   aie.dma_start(S2MM, 0, ^bb1, ^bb7)
 // CHECK: ^bb1:
 // CHECK:   aie.use_lock(%[[VAL5]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL11]] : memref<64xi32, 1>, 0, 64)
@@ -206,14 +206,14 @@ func.func @func0(%arg0 : memref<64xi32>, %arg1 : memref<64xi32>) -> () {
 // CHECK:   aie.use_lock(%[[VAL4]], Release, 1)
 // CHECK:   aie.next_bd ^bb4
 // CHECK: ^bb5:
-// CHECK:   aie.dma_start(MM2S, 0, ^bb6, ^bb3, repeat_count = 1)
+// CHECK:   aie.dma_start(MM2S, 0, ^bb6, ^bb3)
 // CHECK: ^bb6:
 // CHECK:   aie.use_lock(%[[VAL6]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL11]] : memref<64xi32, 1>, 0, 64)
 // CHECK:   aie.use_lock(%[[VAL5]], Release, 1)
 // CHECK:   aie.next_bd ^bb6
 // CHECK: ^bb7:
-// CHECK:   aie.dma_start(MM2S, 1, ^bb8, ^bb5, repeat_count = 1)
+// CHECK:   aie.dma_start(MM2S, 1, ^bb8, ^bb5)
 // CHECK: ^bb8:
 // CHECK:   aie.use_lock(%[[VAL4]], AcquireGreaterEqual, 1)
 // CHECK:   aie.dma_bd(%[[VAL12]] : memref<64xi32, 1>, 0, 64)
