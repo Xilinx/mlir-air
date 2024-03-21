@@ -37,9 +37,6 @@ jobs:
 
       - name: Setup environment
         run: |
-          pwd; ls
-          rm -rf air-venv mlir-aie build_assert install
-
           python3.10 -m venv air-venv
           source air-venv/bin/activate
           pip cache purge
@@ -48,23 +45,25 @@ jobs:
 
       - name: Get mlir-aie
         id: clone-mlir-aie
-        run: utils/clone-mlir-aie.sh
+        run: |
+          utils/clone-mlir-aie.sh
+          source air-venv/bin/activate
+          pushd mlir-aie
+          pip install -r python/requirements.txt
+          popd
+
+      - name: Get LLVM
+        id: clone-llvm
+        run: utils/clone-llvm.sh
         shell: bash
+        
+      - name: Build and Install LLVM
+        run: utils/github-build-llvm.sh
 
       - name: Build and Install mlir-aie
         run: |
           source air-venv/bin/activate
           pushd mlir-aie
-          pip install -r python/requirements.txt
-
-          VERSION=$(utils/clone-llvm.sh --get-wheel-version)
-          pip -q download mlir==$VERSION \
-            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
-          unzip -q mlir-*.whl
-          # I have no clue why but the system clock on GHA containers is like 12 hours ahead.
-          # That means wheels have file with time stamps in the future which makes ninja loop
-          # forever when configuring. Set the time to some arbitrary stamp in the past just to be safe.
-          find mlir -exec touch -a -m -t 201108231405.14 {} \;
 
           mkdir build
           pushd build
@@ -82,8 +81,7 @@ jobs:
             -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld" \
             -DCMAKE_MODULE_PATH=$PWD/../cmake/modulesXilinx \
             -DLLVM_EXTERNAL_LIT=$(which lit) \
-            -DLLVM_ENABLE_RTTI=ON \
-            -DMLIR_DIR=$PWD/../mlir/lib/cmake/mlir \
+            -DMLIR_DIR=$PWD/../../llvm/install/lib/cmake/mlir/ \
             -DXRT_ROOT=/opt/xilinx/xrt \
             -DAIE_ENABLE_PYTHON_PASSES=OFF \
             -DAIE_ENABLE_XRT_PYTHON_BINDINGS=ON \
@@ -116,8 +114,7 @@ jobs:
             -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld" \
             -DCMAKE_MODULE_PATH=$PWD/../mlir-aie/cmake/modulesXilinx \
             -DLLVM_EXTERNAL_LIT=$(which lit) \
-            -DLLVM_ENABLE_RTTI=ON \
-            -DMLIR_DIR=$PWD/../mlir-aie/mlir/lib/cmake/mlir \
+            -DMLIR_DIR=$PWD/../llvm/install/lib/cmake/mlir/ \
             -DAIE_DIR=$PWD/../mlir-aie/install/lib/cmake/aie/ \
             -Dx86_64_TOOLCHAIN_FILE=$PWD/../cmake/modules/toolchain_x86_64.cmake \
             -DLibXAIE_ROOT=$PWD/../mlir-aie/install/runtime_lib/x86_64/xaiengine \

@@ -31,7 +31,9 @@ cmake ../llvm \
   -DLLVM_CCACHE_BUILD=ON \
   -DLLVM_ENABLE_LLD=ON \
   -DCMAKE_BUILD_TYPE=Release \
-  -DLLVM_ENABLE_RTTI=ON \
+  -DCMAKE_VISIBILITY_INLINES_HIDDEN=ON \
+  -DCMAKE_C_VISIBILITY_PRESET=hidden \
+  -DCMAKE_CXX_VISIBILITY_PRESET=hidden \
   -DLLVM_ENABLE_ASSERTIONS=ON
 
 cmake --build . --target install -- -j$(nproc)
