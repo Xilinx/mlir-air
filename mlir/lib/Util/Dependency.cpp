@@ -11,6 +11,8 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include <sys/stat.h>
 
+#include <iostream>
+
 #define DEBUG_TYPE "air-dependency-util"
 
 using namespace mlir;
@@ -572,19 +574,31 @@ bool isAsyncOp(Operation *op) {
   return false;
 }
 
+bool areAsyncDependent(Operation *a, Operation *b) {
+  auto async_a = dyn_cast<air::AsyncOpInterface>(a);
+  auto async_b = dyn_cast<air::AsyncOpInterface>(b);
+  if (!async_a) return false;
+  if (!async_b) return false;
+  for (auto dep : async_a.getAsyncDependencies()){
+    if (dep.getDefiningOp() == async_b) return true;
+  }
+  for (auto dep : async_b.getAsyncDependencies()){
+    if (dep.getDefiningOp() == async_a) return true;
+  }
+  return false;
+}
+
 // Splits an SCF for loop into two for loops, by hoisting target operations in
 // for loop to a new for loop located at the same scope.
 scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
                                      SmallVector<Operation *> target_ops) {
   auto loc = for_op->getLoc();
   // If target ops are already perfectly nested, then skip
-  auto hasNElements = [](Block *block, unsigned N) {
-    auto op_ptr = block->begin();
-    for (unsigned i = 0; i < N; i++)
-      op_ptr = std::next(op_ptr);
-    return op_ptr != block->end() && &*op_ptr == &block->back();
+  auto hasNChannelOps = [](Block *block, unsigned N) {
+    auto count = llvm::range_size(block->getOps<air::ChannelInterface>());
+    return count == N;
   };
-  if (hasNElements(for_op.getBody(), target_ops.size() + 1))
+  if (hasNChannelOps(for_op.getBody(), 1))
     return for_op;
 
   // Preprocess target ops by canonicalizing dependencies in target ops' region.
@@ -614,6 +628,12 @@ scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
   for (auto op : target_ops) {
     if (op->getParentOp() != for_op.getOperation())
       continue;
+    // Clone operands' defining ops.
+    for (auto operand : op->getOperands()){
+      if (!operand.getDefiningOp()) continue;
+      if (operand.getDefiningOp()->getParentOp() != for_op.getOperation()) continue;
+      builder.clone(*operand.getDefiningOp(), remap);
+    }
     auto new_op = builder.clone(*op, remap);
     yield_operands.push_back(new_op->getResult(0));
   }

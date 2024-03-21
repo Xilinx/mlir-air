@@ -62,6 +62,7 @@ scf::ReduceOp createSCFReduceForAsyncSCFParallel(OpBuilder builder,
 SmallVector<Value> getAsyncDependenciesFromOp(Operation *op);
 void addAsyncDependencyIfNew(Operation *op, Value token);
 bool isAsyncOp(Operation *op);
+bool areAsyncDependent(Operation *a, Operation *b);
 scf::ForOp hoistTargetOpsToNewSCFFor(OpBuilder builder, scf::ForOp for_op,
                                      SmallVector<Operation *> target_ops);
 LogicalResult unrollAIRChannelPutGetInScfParallel(OpBuilder builder, scf::ParallelOp par, Operation * originalChanOp, IRMapping &remap);

@@ -3292,12 +3292,18 @@ public:
           while (parent->getParentOp() != for_op.getOperation()) {
             parent = parent->getParentOp();
           }
-          if (parent == memcpyOp.getOperation())
-            return;
           if (isa<air::HierarchyInterface>(parent))
             return;
+          // Check if for loop is splittable by tracing air dependency.
+          for (auto op : target_ops_map[for_op]){
+            if (areAsyncDependent(op, parent)){
+              target_ops_map.erase(for_op);
+              return;
+            }
+          }
           push_back_if_unique<Operation *>(target_ops_map[for_op], parent);
           // Check if any memref.alloc needs to be hoisted.
+          if (memcpyOp.getSrcMemref() && !memcpyOp.getSrcMemref().getDefiningOp()) return;
           if (memcpyOp.getSrcMemref() &&
               for_op->isProperAncestor(
                   memcpyOp.getSrcMemref().getDefiningOp())) {
@@ -3313,6 +3319,7 @@ public:
                 "hoist_alloc",
                 mlir::BoolAttr::get(memref_def->getContext(), true));
           }
+          if (memcpyOp.getDstMemref() && !memcpyOp.getDstMemref().getDefiningOp()) return;
           if (memcpyOp.getDstMemref() &&
               for_op->isProperAncestor(
                   memcpyOp.getDstMemref().getDefiningOp())) {
