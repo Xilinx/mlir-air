@@ -1,0 +1,115 @@
+name: Build and Test with AIE tools on Ryzen AI
+
+on:
+  push:
+    branches:
+      - main
+      - test-ryzen-ai
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  # A PR number if a pull request and otherwise the commit hash. This cancels
+  # queued and in-progress runs for the same PR (presubmit) or commit
+  # (postsubmit).
+  group: ci-build-test-ryzenai-${{ github.event.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  XILINXD_LICENSE_FILE: /opt/xilinx/Xilinx.lic
+
+jobs:
+  build-repo:
+    name: Build and Test with AIE tools on Ryzen AI
+
+    runs-on: amd7940hs
+
+    steps:
+
+      - uses: actions/checkout@v3
+        with:
+          submodules: "true"
+
+      - name: Setup python venv
+        run: |
+          pip cache purge
+          python -m venv air-venv
+          source air-venv/bin/activate
+
+      - name: Get mlir-aie
+        id: clone-mlir-aie
+        run: utils/clone-mlir-aie.sh
+        shell: bash
+
+      - name: Build and Install mlir-aie
+        run: |
+          pushd mlir-aie
+          pip install -r python/requirements.txt
+
+          VERSION=$(utils/clone-llvm.sh --get-wheel-version)
+          pip -q download mlir==$VERSION \
+            -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/mlir-distro
+          unzip -q mlir-*.whl
+          # I have no clue why but the system clock on GHA containers is like 12 hours ahead.
+          # That means wheels have file with time stamps in the future which makes ninja loop
+          # forever when configuring. Set the time to some arbitrary stamp in the past just to be safe.
+          find mlir -exec touch -a -m -t 201108231405.14 {} \;
+
+          mkdir build
+          pushd build
+
+          export PATH=/opt/Xilinx/Vitis/2023.2/bin:/opt/Xilinx/Vitis/2023.2/aietools/bin:$PATH
+          cmake .. -G Ninja \
+            -DPython3_EXECUTABLE=$(which python) \
+            -DCMAKE_INSTALL_PREFIX=$PWD/../install \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_EXE_LINKER_FLAGS_INIT="-fuse-ld=lld" \
+            -DCMAKE_MODULE_LINKER_FLAGS_INIT="-fuse-ld=lld" \
+            -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld" \
+            -DCMAKE_MODULE_PATH=$PWD/../cmake/modulesXilinx \
+            -DLLVM_EXTERNAL_LIT=$(which lit) \
+            -DMLIR_DIR=$PWD/../mlir/lib/cmake/mlir \
+            -DXRT_ROOT=/opt/xilinx/xrt \
+            -DAIE_ENABLE_PYTHON_PASSES=OFF \
+            -DAIE_ENABLE_XRT_PYTHON_BINDINGS=ON \
+            -DAIE_INCLUDE_INTEGRATION_TESTS=OFF
+
+          ninja install
+          popd
+
+          rm -rf build
+          popd
+
+      # Build the repo test target in debug mode to build and test.
+      - name: Build and test (Assert)
+        run: |
+          mkdir build_assert
+          pushd build_assert
+          cmake .. \
+            -GNinja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DLLVM_ENABLE_ASSERTIONS=ON \
+            -DCMAKE_MODULE_PATH=`pwd`/../mlir-aie/cmake/modulesXilinx \
+            -DMLIR_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/mlir \
+            -DLLVM_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/llvm \
+            -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
+            -DLibXAIE_ROOT=`pwd`/../mlir-aie/install/lib \
+            -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
+            -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
+            -DLLVM_EXTERNAL_LIT=$(which lit) \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DLLVM_USE_LINKER=lld \
+            -DCMAKE_INSTALL_PREFIX=install
+          ninja install
+          ninja check-air-cpp
+          ninja check-air-mlir
+          ninja check-air-python
+          ninja check-air-e2e
+          popd
+          rm -rf build_assert
