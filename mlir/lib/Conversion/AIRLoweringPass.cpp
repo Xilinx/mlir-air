@@ -870,18 +870,17 @@ public:
     auto newIf = rewriter.replaceOpWithNewOp<scf::IfOp>(
         op, retTys, op.getCondition(), hasElseBlock);
 
-    auto &thenOps = op.thenBlock()->getOperations();
-    auto &newThenOps = newIf.thenBlock()->getOperations();
-    newThenOps.splice(newThenOps.begin(), thenOps, thenOps.begin(),
-                      thenOps.end());
+    IRMapping remap;
+    rewriter.setInsertionPointToStart(newIf.thenBlock());
+    for (auto &o : op.thenBlock()->getOperations())
+      rewriter.clone(o, remap);
 
     if (!hasElseBlock)
       return success();
 
-    auto &elseOps = op.elseBlock()->getOperations();
-    auto &newElseOps = newIf.elseBlock()->getOperations();
-    newElseOps.splice(newElseOps.begin(), elseOps, elseOps.begin(),
-                      elseOps.end());
+    rewriter.setInsertionPointToStart(newIf.elseBlock());
+    for (auto &o : op.elseBlock()->getOperations())
+      rewriter.clone(o, remap);
 
     return success();
   }
