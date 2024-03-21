@@ -35,11 +35,16 @@ jobs:
         with:
           submodules: "true"
 
-      - name: Setup python venv
+      - name: Setup environment
         run: |
-          pip cache purge
-          python -m venv air-venv
+          pwd; ls
+          rm -rf air-venv mlir-aie build_assert install
+
+          python3.10 -m venv air-venv
           source air-venv/bin/activate
+          pip cache purge
+          pip install --upgrade pip
+          pip install lit cmake joblib bfloat16
 
       - name: Get mlir-aie
         id: clone-mlir-aie
@@ -48,6 +53,7 @@ jobs:
 
       - name: Build and Install mlir-aie
         run: |
+          source air-venv/bin/activate
           pushd mlir-aie
           pip install -r python/requirements.txt
 
@@ -64,7 +70,9 @@ jobs:
           pushd build
 
           export PATH=/opt/Xilinx/Vitis/2023.2/bin:/opt/Xilinx/Vitis/2023.2/aietools/bin:$PATH
-          cmake .. -G Ninja \
+          cmake .. \
+            -GNinja \
+            -DCMAKE_BUILD_TYPE=Debug \
             -DPython3_EXECUTABLE=$(which python) \
             -DCMAKE_INSTALL_PREFIX=$PWD/../install \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
@@ -74,6 +82,7 @@ jobs:
             -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld" \
             -DCMAKE_MODULE_PATH=$PWD/../cmake/modulesXilinx \
             -DLLVM_EXTERNAL_LIT=$(which lit) \
+            -DLLVM_ENABLE_RTTI=ON \
             -DMLIR_DIR=$PWD/../mlir/lib/cmake/mlir \
             -DXRT_ROOT=/opt/xilinx/xrt \
             -DAIE_ENABLE_PYTHON_PASSES=OFF \
@@ -89,23 +98,32 @@ jobs:
       # Build the repo test target in debug mode to build and test.
       - name: Build and test (Assert)
         run: |
+          source air-venv/bin/activate
           mkdir build_assert
           pushd build_assert
+
+          export PATH=/opt/Xilinx/Vitis/2023.2/bin:/opt/Xilinx/Vitis/2023.2/aietools/bin:$PATH
           cmake .. \
             -GNinja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DLLVM_ENABLE_ASSERTIONS=ON \
-            -DCMAKE_MODULE_PATH=`pwd`/../mlir-aie/cmake/modulesXilinx \
-            -DMLIR_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/mlir \
-            -DLLVM_DIR=`pwd`/../mlir-aie/mlir/lib/cmake/llvm \
-            -DAIE_DIR=`pwd`/../mlir-aie/install/lib/cmake/aie/ \
-            -DLibXAIE_ROOT=`pwd`/../mlir-aie/install/lib \
-            -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
-            -Dx86_64_TOOLCHAIN_FILE=`pwd`/../cmake/modules/toolchain_x86_64.cmake \
+            -DPython3_EXECUTABLE=$(which python) \
+            -DCMAKE_INSTALL_PREFIX=$PWD/../install \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_EXE_LINKER_FLAGS_INIT="-fuse-ld=lld" \
+            -DCMAKE_MODULE_LINKER_FLAGS_INIT="-fuse-ld=lld" \
+            -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld" \
+            -DCMAKE_MODULE_PATH=$PWD/../mlir-aie/cmake/modulesXilinx \
             -DLLVM_EXTERNAL_LIT=$(which lit) \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            -DLLVM_USE_LINKER=lld \
-            -DCMAKE_INSTALL_PREFIX=install
+            -DLLVM_ENABLE_RTTI=ON \
+            -DMLIR_DIR=$PWD/../mlir-aie/mlir/lib/cmake/mlir \
+            -DAIE_DIR=$PWD/../mlir-aie/install/lib/cmake/aie/ \
+            -Dx86_64_TOOLCHAIN_FILE=$PWD/../cmake/modules/toolchain_x86_64.cmake \
+            -DLibXAIE_ROOT=$PWD/../mlir-aie/install/runtime_lib/x86_64/xaiengine \
+            -DAIR_RUNTIME_TARGETS:STRING="x86_64" \
+            -DXRT_ROOT=/opt/xilinx/xrt \
+            -DENABLE_RUN_XRT_TESTS=ON
           ninja install
           ninja check-air-cpp
           ninja check-air-mlir
