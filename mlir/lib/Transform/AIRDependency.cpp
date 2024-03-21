@@ -209,6 +209,9 @@ public:
           // No air execute for subview ops
           if (isa<mlir::OffsetSizeAndStrideOpInterface>(op))
             isCandidateExecute = false;
+          // No air execute for memref.extract_strided_metadata ops.
+          if (isa<memref::ExtractStridedMetadataOp>(op))
+            isCandidateExecute = false;
           // No air execute for terminators
           if (op->mightHaveTrait<OpTrait::IsTerminator>()) {
             isCandidateExecute = false;
